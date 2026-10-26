@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
 import { checkRuntimeArtifacts } from "../../bin/lib/cli-runtime.js";
+import { CLI_EXPERIMENT_ID } from "./args.js";
 import { eRunRecordJson } from "../disposition/run-record-fixture.js";
 import { sseBody, type FakeReply } from "../provider/fake-fetch.js";
 import { REVIEW_MODEL_ID } from "../provider/pi-client.js";
@@ -542,6 +543,194 @@ test(
   },
   180_000,
 );
+
+// ---- 检视意见中文导出（ADR-0013 Step B）：zh 生命周期矩阵 ----
+// zh 由核外 CLI 缝编排（复用同一次投影结果，绝不额外调网关），与 en 同 rep 目录。
+// 路径基线：<out>/review-pi-cli/runs/vul4j/VUL4J-1/<config>/rep-1/
+
+const ZH_ENGINE_BODY = `export default async (source) => ({
+  provenance: {
+    language: "zh",
+    terminologyVersion: 1,
+    findingLinks: source.findings.map((finding) => ({
+      sourceFindingId: finding.id,
+      projectedFindingId: finding.id,
+    })),
+  },
+  findings: source.findings.map((finding) => ({
+    ...finding,
+    title: "[zh] " + finding.title,
+    description: "[zh] " + finding.description,
+  })),
+  toolCallLog: source.toolCallLog,
+});\n`;
+
+/** 本次 run 的 rep-1 产物目录（reviews_en.json / reviews_zh.json 同层） */
+function cliRepDir(outDir: string, configId = "B"): string {
+  return path.join(outDir, CLI_EXPERIMENT_ID, "runs", "vul4j", "VUL4J-1", configId, "rep-1");
+}
+
+/** 单 MR 检视调用（config B；可选注入呈现引擎） */
+function runCliReview(outDir: string, mrFile: string, env: Record<string, string>): Promise<CliRunResult> {
+  return runBin(
+    ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir, "--config", "B"],
+    { env },
+  );
+}
+
+function writeMr(diff: string): string {
+  const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+  writeFileSync(mrFile, diff, "utf8");
+  return mrFile;
+}
+
+test(
+  "中文导出：引擎注入 → reviews_zh.json 落盘 + 投影留痕 + 中文自然语言字段 + 无额外网关请求",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const enginePath = writeProjectionEngineFixture("engine.mjs", ZH_ENGINE_BODY);
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
+        ...stubEnv(stub.baseUrl),
+        REVIEW_PI_PRESENTATION_ENGINE: enginePath,
+      });
+
+      expect(run.status).toBe(0);
+      const repDir = cliRepDir(outDir);
+      const enPath = path.join(repDir, "reviews_en.json");
+      const zhPath = path.join(repDir, "reviews_zh.json");
+      expect(existsSync(enPath)).toBe(true);
+      expect(existsSync(zhPath)).toBe(true);
+
+      const en = JSON.parse(readFileSync(enPath, "utf8")) as Record<string, unknown>;
+      const zh = JSON.parse(readFileSync(zhPath, "utf8")) as Record<string, unknown>;
+      // 信封 = en 信封 + 投影留痕三键（降级标注永不落盘）
+      expect(Object.keys(zh).sort()).toEqual(
+        [...Object.keys(en), "language", "terminologyVersion", "findingLinks"].sort(),
+      );
+      expect(zh["language"]).toBe("zh");
+      expect(zh["terminologyVersion"]).toBe(1);
+      expect(zh["findingLinks"]).toEqual([{ sourceFindingId: "F100", projectedFindingId: "F100" }]);
+      expect("degraded" in zh).toBe(false);
+      // 配对键：与 en 同 runId（同一 run）
+      expect(zh["runId"]).toBe(en["runId"]);
+      expect(zh["configId"]).toBe("B");
+      // 自然语言字段已译、结构化字段字节直通
+      const findings = zh["findings"] as {
+        id: string;
+        severity: string;
+        title: string;
+        description: string;
+        file: string;
+        line: number;
+      }[];
+      expect(findings[0]).toMatchObject({
+        id: "F100",
+        severity: "P2",
+        title: "[zh] Sentinel finding title",
+        description: "[zh] Sentinel finding description",
+        file: "sample.txt",
+        line: 1,
+      });
+      // 复用同一次投影结果：不发额外检视请求（仍恰好六回合）
+      expect(stub.requests()).toHaveLength(6);
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+        { label: "reviews_zh.json", text: readFileSync(zhPath, "utf8") },
+      ]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test("中文导出：未配置引擎 → reviews_zh.json 缺席 + exit 0（en 仍在，无陈旧清除噪声）", async () => {
+  const stub = await startLoopbackStub(oneFindingCorpus());
+  try {
+    const outDir = makeTempDir("review-pi-cli-out-");
+    const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), stubEnv(stub.baseUrl));
+
+    expect(run.status).toBe(0);
+    const repDir = cliRepDir(outDir);
+    expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
+    expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
+    // 本次 run 无陈旧 zh ⇒ 无「已清除陈旧」噪声
+    expect(run.stderr).not.toContain("已清除陈旧");
+  } finally {
+    await stub.close();
+  }
+}, 180_000);
+
+test("中文导出：引擎降级 → reviews_zh.json 缺席 + exit 0 + stderr 人话（不复用降级档）", async () => {
+  const stub = await startLoopbackStub(oneFindingCorpus());
+  try {
+    const enginePath = writeProjectionEngineFixture(
+      "broken.mjs",
+      `export default async () => { throw new Error("translation gateway down"); };\n`,
+    );
+    const outDir = makeTempDir("review-pi-cli-out-");
+    const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
+      ...stubEnv(stub.baseUrl),
+      REVIEW_PI_PRESENTATION_ENGINE: enginePath,
+    });
+
+    expect(run.status).toBe(0);
+    const repDir = cliRepDir(outDir);
+    expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
+    expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
+    expect(run.stderr).toContain("呈现投影降级");
+    expect(run.stderr).toContain("translation gateway down");
+  } finally {
+    await stub.close();
+  }
+}, 180_000);
+
+test("中文导出：陈旧 zh（引擎未配置）→ 本次 run 的 rep-1/ 内被清除 + stderr 留痕", async () => {
+  const stub = await startLoopbackStub(oneFindingCorpus());
+  try {
+    const outDir = makeTempDir("review-pi-cli-out-");
+    // 预置陈旧 zh（上一 run 遗留；本次未配置引擎 ⇒ 应被清除）
+    const repDir = cliRepDir(outDir);
+    mkdirSync(repDir, { recursive: true });
+    const stalePath = path.join(repDir, "reviews_zh.json");
+    writeFileSync(stalePath, '{"stale":true}\n', "utf8");
+
+    const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), stubEnv(stub.baseUrl));
+
+    expect(run.status).toBe(0);
+    expect(existsSync(stalePath)).toBe(false);
+    expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
+    expect(run.stderr).toContain("已清除陈旧");
+  } finally {
+    await stub.close();
+  }
+}, 180_000);
+
+test("中文导出：写盘失败（zh 路径预占为目录）→ exit 1 + 错误人话 + stdout 干净", async () => {
+  const stub = await startLoopbackStub(oneFindingCorpus());
+  try {
+    const enginePath = writeProjectionEngineFixture("engine.mjs", ZH_ENGINE_BODY);
+    const outDir = makeTempDir("review-pi-cli-out-");
+    // 预占 zh 路径为目录 ⇒ writeFile 失败（EISDIR）⇒ 显式抛错 ⇒ exit 1
+    const repDir = cliRepDir(outDir);
+    mkdirSync(path.join(repDir, "reviews_zh.json"), { recursive: true });
+
+    const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
+      ...stubEnv(stub.baseUrl),
+      REVIEW_PI_PRESENTATION_ENGINE: enginePath,
+    });
+
+    expect(run.status).toBe(1);
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toContain("failed to persist review export");
+    expect(run.stderr).toContain("reviews_zh.json");
+  } finally {
+    await stub.close();
+  }
+}, 180_000);
 
 test("陈旧产物拒跑：dist 回拨 30 天 → exit 1 + 人话提示 + stdout 干净（mtime 门）", async () => {
   const entry = path.join(packageDir, "dist", "cli", "main.js");

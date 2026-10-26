@@ -110,7 +110,7 @@ _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截�
 ### 产物
 
 **检视转录（Review Transcript）**:
-一次检视中**进入 Review Runtime 的全部交互**（系统提示词、每轮消息、工具调用与结果）的完整留档，随 run 落盘为 `session-<首次模型调用时刻>-<configId>-<caseId>.json`；是 debug 与取证用的现场，**不是指标源**（指标取自运行记录与审计）。**每次 run 独立留档、不覆盖**（文件名含首次模型调用时刻）。
+一次检视中**进入 Review Runtime 的全部交互**（系统提示词、每轮消息、工具调用与结果）的完整留档，随 run 落盘为 `session-<首次模型调用时刻>-<configId>-<caseId>.json`（含 `{ info, messages, view }`：`messages` 为 pi 原生真源、`view` 为 OpenCode 风格定形投影）；是 debug 与取证用的现场，**不是指标源**（指标取自运行记录与审计）。**每次 run 独立留档、不覆盖**（文件名含首次模型调用时刻）。
 _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
 
 **检视意见导出（Review Findings Export）**:

@@ -2,6 +2,13 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, expect, test } from "vitest";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+  buildView,
+  type ViewAssistantMessage,
+  type ViewToolPart,
+  type ViewUserMessage,
+} from "../export/transcript.js";
 import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
 import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
 import { goldenFixture } from "../testing/golden.js";
@@ -10,9 +17,9 @@ import { VUL4J_1_ISSUE, vul4j1Corpus } from "../testing/vul4j1-script.js";
 import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import { runReview } from "./review-run.js";
 
-// Step A 落盘产物（ADR-0013）：检视转录 `session-*.json` + 检视意见导出
-// `reviews_en.json`。断言面 = 磁盘文件与其形状（S1 = runReview 公共入口），
-// 不窥探内核内部状态。零网络（fake 适配器）。
+// 落盘产物（ADR-0013）：检视转录 `session-*.json`（`{ info, messages, view }`）
+// + 检视意见导出 `reviews_en.json`。断言面 = 磁盘文件与其形状（S1 = runReview
+// 公共入口），不窥探内核内部状态。零网络（fake 适配器）。
 
 const tempDirs: string[] = [];
 
@@ -55,11 +62,13 @@ function sixPhaseNoToolCorpus(): FakeReply[] {
   ];
 }
 
-/** 检视转录文档（info + messages）的宽松读取面 */
+/** 检视转录文档（info + messages + view）的宽松读取面 */
 interface TranscriptDoc {
   readonly info: Record<string, unknown>;
   readonly messages: readonly Record<string, unknown>[];
-  readonly [extra: string]: unknown;
+  readonly view: {
+    readonly messages: readonly Record<string, unknown>[];
+  };
 }
 
 /** 逐条 assistant `usage` 的测试读取面（断言求和口径） */
@@ -165,8 +174,8 @@ test("检视转录（config D）：落点/命名/info 精确键表/messages 原�
 
   const doc = readTranscript(transcriptPath ?? "");
 
-  // 顶层恰好两键（Step A 无 view）；info 键集合精确（无 kind/version/projectID/durationMs）
-  expect(Object.keys(doc).sort()).toEqual(["info", "messages"]);
+  // 顶层恰好三键（原生真源 + 定形 view）；info 键集合精确（无 kind/version/projectID/durationMs）
+  expect(Object.keys(doc).sort()).toEqual(["info", "messages", "view"]);
   expect(Object.keys(doc.info).sort()).toEqual([...INFO_KEYS].sort());
 
   // info 取值：id = 文件名 stem；runId = 审计 runId（配对键，与命名时间不同源）
@@ -227,6 +236,53 @@ test("检视转录（config D）：落点/命名/info 精确键表/messages 原�
     expect(typeof message["timestamp"]).toBe("number");
     expect(typeof message["usage"]).toBe("object");
   }
+
+  // view：定形投影——messages[0] 为合成 system，其后镜像 user/assistant（无 toolResult 独立消息）
+  expect(doc.view.messages[0]).toEqual({ type: "system", text: SYSTEM_PROMPT });
+  expect(doc.view.messages.map((message) => message["type"])).toEqual([
+    "system",
+    "user",
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+  ]);
+  const viewAssistant = doc.view.messages.filter((message) => message["type"] === "assistant");
+  for (const message of viewAssistant) {
+    // 无源字段恒 null（定形纪律）：时间、snapshot、model.variant 全部 null 占位
+    expect(message["time"]).toEqual({ created: null, streamed: null, completed: null });
+    expect(message["snapshot"]).toBeNull();
+    // id ← pi `responseId`（fake 适配器恒回 "chatcmpl-fake"）
+    expect(message["id"]).toBe("chatcmpl-fake");
+    expect((message["model"] as { variant: unknown }).variant).toBeNull();
+    // 有源字段：model.id/providerID、finish、tokens/cost 皆在场
+    const model = message["model"] as { id: unknown; providerID: unknown };
+    expect(model.id).toBe("deepseek-v4-flash");
+    expect(typeof model.providerID).toBe("string");
+    expect(typeof message["finish"]).toBe("string");
+    expect(typeof message["cost"]).toBe("number");
+    expect(message["tokens"]).toMatchObject({ cache: { read: expect.any(Number), write: expect.any(Number) } });
+    // assistant 的 text part 逐条镜像 messages 里的文本（无工具 → 无 tool part）
+    expect((message["content"] as readonly { type: string }[]).every((part) => part.type === "text")).toBe(true);
+  }
+  // user 消息：text 原样、无源 files/agents 恒空数组、time/id null
+  const viewUser = doc.view.messages.filter((message) => message["type"] === "user");
+  expect(viewUser[0]).toEqual({
+    type: "user",
+    id: null,
+    time: { created: null },
+    text: expect.stringContaining("Merge request under review."),
+    files: [],
+    agents: [],
+  });
 
   // info.tokens/cost = 逐条 assistant usage 求和（pi-ai 口径；与审计 LlmUsage 不同层）
   const summed = doc.messages
@@ -352,6 +408,35 @@ test("检视转录：assistant toolCall 与 toolResult 原样保留（链接键 
   expect(result["details"]).toEqual({});
   const resultText = (result["content"] as readonly { type: string; text: string }[])[0]?.text ?? "";
   expect(resultText).toContain("MR unified diff:");
+
+  // view：toolResult 不另立消息——按 toolCall.id ↔ toolResult.toolCallId 合并进对应 assistant 的 tool part
+  // （view 消息序列 = system + `messages` 里的 user/assistant，跳过 toolResult）
+  const viewTypes = doc.view.messages.map((message) => message["type"]);
+  const expectedViewTypes = [
+    "system",
+    ...messages
+      .filter((message) => message["role"] !== "toolResult" && message["role"] !== "system")
+      .map((message) => message["role"]),
+  ];
+  expect(viewTypes).toEqual(expectedViewTypes);
+  expect(viewTypes).not.toContain("toolResult");
+  const viewToolAssistant = doc.view.messages.filter(
+    (message) =>
+      message["type"] === "assistant" &&
+      (message["content"] as readonly { type: string }[]).some((part) => part.type === "tool"),
+  );
+  expect(viewToolAssistant).toHaveLength(1);
+  const parts = viewToolAssistant[0]?.["content"] as readonly Record<string, unknown>[];
+  const toolPart = parts.find((part) => part["type"] === "tool");
+  expect(toolPart?.["id"]).toBe(call?.id);
+  expect(toolPart?.["name"]).toBe("review_get_diff");
+  expect(toolPart?.["time"]).toEqual({ created: null, ran: null, completed: null });
+  const state = toolPart?.["state"] as Record<string, unknown>;
+  expect(state["status"]).toBe("completed");
+  expect(state["metadata"]).toBeNull();
+  expect(state["error"]).toBeUndefined();
+  // content 原样 = toolResult.content（Step A 已断言 details {} 不投到这里）
+  expect(state["content"]).toEqual(result["content"]);
 }, 120_000);
 
 test("共存：同 case/config 跑两次 → 两个不同 session 文件都在（每 run 独立留档）", async () => {
@@ -406,7 +491,7 @@ for (const configId of ["C", "E", "F"] as const) {
     expect(path.dirname(transcriptPath ?? "")).toBe(dir);
     expect(sessionFiles(dir)).toHaveLength(1);
     const doc = readTranscript(transcriptPath ?? "");
-    expect(Object.keys(doc).sort()).toEqual(["info", "messages"]);
+    expect(Object.keys(doc).sort()).toEqual(["info", "messages", "view"]);
     expect(Object.keys(doc.info).sort()).toEqual([...INFO_KEYS].sort());
     expect(doc.info["configId"]).toBe(configId);
     expect(doc.messages[0]).toEqual({ role: "system", content: SYSTEM_PROMPT });
@@ -456,3 +541,106 @@ for (const configId of ["A", "B"] as const) {
     expect(envelope.findings).toEqual(record.baseline.findings);
   }, 120_000);
 }
+
+// ---- `view` 定形投影单元面（纯函数 `buildView`） ----
+// runReview 路径不可达的两态在此直接覆盖：无匹配 toolResult 的 toolCall（截断/
+// 中止 → `pending`）与 thinking 分块（→ `reasoning`）。另验证 isError 合并、
+// 数组内容 user 消息、responseId → id、无源字段恒 null。
+
+/** 造一条 assistant（宽松面：只填 view 投影读到的字段） */
+function viewAssistant(content: readonly unknown[], extra: Record<string, unknown> = {}): AgentMessage {
+  return {
+    role: "assistant",
+    content,
+    api: "openai-completions",
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
+    usage: {
+      input: 5,
+      output: 7,
+      cacheRead: 2,
+      cacheWrite: 1,
+      reasoning: 3,
+      totalTokens: 15,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.25 },
+    },
+    stopReason: "toolUse",
+    timestamp: 0,
+    ...extra,
+  } as unknown as AgentMessage;
+}
+
+test("buildView：pending/reasoning/error 合并/数组内容 user（runReview 不可达态）", () => {
+  const messages = [
+    {
+      role: "user",
+      // 数组内容：只拼 text 块（图片块忽略）——无源分块不投
+      content: [
+        { type: "text", text: "part-a" },
+        { type: "image", data: "aGk=", mimeType: "image/png" },
+        { type: "text", text: "part-b" },
+      ],
+      timestamp: 0,
+    },
+    viewAssistant(
+      [
+        { type: "thinking", thinking: "hmm", signature: "sig" },
+        { type: "toolCall", id: "call-err", name: "review_bogus", arguments: { foo: "bar" } },
+        { type: "toolCall", id: "call-pending", name: "review_get_diff", arguments: {} },
+      ],
+      { responseId: "resp-1", rawStopReason: "tool_calls" },
+    ),
+    {
+      role: "toolResult",
+      toolCallId: "call-err",
+      toolName: "review_bogus",
+      content: [{ type: "text", text: "Tool review_bogus not found" }],
+      details: {},
+      isError: true,
+      timestamp: 0,
+    },
+  ] as unknown as readonly AgentMessage[];
+
+  const view = buildView("SYS", messages);
+
+  // 不另立 toolResult 消息：恰好 system + user + assistant
+  expect(view.messages.map((message) => message.type)).toEqual(["system", "user", "assistant"]);
+  expect(view.messages[0]).toEqual({ type: "system", text: "SYS" });
+
+  const user = view.messages[1] as ViewUserMessage;
+  expect(user.type).toBe("user");
+  expect(user.text).toBe("part-a\npart-b");
+  expect(user.files).toEqual([]);
+  expect(user.agents).toEqual([]);
+  expect(user.id).toBeNull();
+  expect(user.time).toEqual({ created: null });
+
+  const assistant = view.messages[2] as ViewAssistantMessage;
+  expect(assistant.type).toBe("assistant");
+  expect(assistant.id).toBe("resp-1");
+  expect(assistant.finish).toBe("toolUse");
+  expect(assistant.rawFinish).toBe("tool_calls");
+  expect(assistant.model).toEqual({ id: "deepseek-v4-flash", providerID: "deepseek", variant: null });
+  expect(assistant.content[0]).toEqual({ type: "reasoning", text: "hmm", time: { created: null, completed: null } });
+  expect(assistant.tokens).toEqual({ input: 5, output: 7, reasoning: 3, cache: { read: 2, write: 1 } });
+  expect(assistant.cost).toBe(1.25);
+
+  const toolParts = assistant.content.filter((part): part is ViewToolPart => part.type === "tool");
+  expect(toolParts.map((part) => part.id)).toEqual(["call-err", "call-pending"]);
+  for (const part of toolParts) {
+    expect(part.time).toEqual({ created: null, ran: null, completed: null });
+    expect(part.state.metadata).toBeNull();
+  }
+  // isError → status error + error.message = 结果文本拼接
+  const errPart = toolParts[0]!;
+  expect(errPart.name).toBe("review_bogus");
+  expect(errPart.state.status).toBe("error");
+  expect(errPart.state.input).toEqual({ foo: "bar" });
+  expect(errPart.state.error).toEqual({ message: "Tool review_bogus not found" });
+  expect(errPart.state.content).toEqual([{ type: "text", text: "Tool review_bogus not found" }]);
+  // 无匹配 toolResult → pending：content null、无 error 键
+  const pendingPart = toolParts[1]!;
+  expect(pendingPart.state.status).toBe("pending");
+  expect(pendingPart.state.content).toBeNull();
+  expect("error" in pendingPart.state).toBe(false);
+});

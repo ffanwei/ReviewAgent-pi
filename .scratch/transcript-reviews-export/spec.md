@@ -92,6 +92,9 @@
   | OpenCode | mapping |
   |---|---|
   | `messages[].type` | `"user"` / `"assistant"` from role; system message rendered as `type: "system"` |
+  | `messages[].id` / `messages[].time` | `null` (no per-message id/time source) |
+  | user `text` / `files` / `agents` | `text` ← user message text (array content ⇒ text blocks joined by `\n`); `files` / `agents` → `[]` (no attachments in this chain) |
+  | assistant `agent` / `id` | `agent: "review"` (constant); `id` ← pi `responseId`, else `null` |
   | `reasoning` part | pi `thinking` (`text`), `time: {created: null, completed: null}` |
   | `text` part | pi `text` |
   | `tool` part | **merge** assistant `toolCall` + following `toolResult` (join on `toolCall.id` ↔ `toolResult.toolCallId`); same batch ⇒ one part per call, each with `id` |
@@ -102,7 +105,7 @@
   | `tool.time{created,ran,completed}` | all `null` (no source — deliberate, see ADR-0013) |
   | `model{id,providerID,variant}` | `id`/`provider` from pi; `variant: null` |
   | `tokens` / `cost` | `usage` per assistant (pi-ai `Usage`) |
-  | `finish` / `rawFinish` | `stopReason` / `rawStopReason` |
+  | `finish` / `rawFinish` | `stopReason` / `rawStopReason` (`rawFinish` ⇒ `null` when pi leaves `rawStopReason` undefined) |
   | `snapshot` | `null` (no source; fixed-shape rendering) |
 - **No truncation and no redaction.** The transcript is a complete on-disk crime scene; `runs/**` is gitignored.
 
@@ -160,7 +163,7 @@
 ## Further Notes
 
 - **Rollout order** (two steps, each independently verifiable):
-  - **Step A** — kernel native transcript + `firstRequestAt` capture + `session-*.json` (`info` + `messages` only) + `reviews_en.json` + S1 tests. No network, no keys, no new dependency. *Known transient*: at the end of step A the session file has no `view` key.
+  - **Step A** — kernel native transcript + `firstRequestAt` capture + `session-*.json` (`info` + `messages` only) + `reviews_en.json` + S1 tests. No network, no keys, no new dependency. *Known transient (superseded by Step B)*: at the end of step A the session file had no `view` key.
   - **Step B** — `view` projection into the session file + `reviews_zh.json` at the CLI seam + the full zh lifecycle matrix (present / absent / stale-deleted / degraded / write-failure).
 - **Discipline**: the measurement-constant face is untouched (Zone A prompt, phase instructions, tool face, finding/evidence contract, request bytes). The only new kernel instrumentation is one timestamp.
 - **Terminology**: 检视转录 ≠ pi 内核 `Session` 子系统 ≠ 审计文件（发送面字节）≠ 运行记录（指标快照）；`reviews_*` ≠ `REPORT.md`（人写结论）。用语见 `CONTEXT.md`。

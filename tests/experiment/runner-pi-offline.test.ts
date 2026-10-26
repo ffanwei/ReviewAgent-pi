@@ -1,3 +1,4 @@
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -148,6 +149,31 @@ describe("runExperiment × pi 内核执行缝（离线 A–E 全链）", () => {
     expect(byConfig.get("D")?.baseline.audit.fullRepo).toBeUndefined();
     expect(byConfig.get("D")?.baseline.audit.ledger).toBeUndefined();
     expect(byConfig.get("E")?.baseline.audit.ledger).toEqual([]);
+
+    // 检视产物经 runner 缝（ADR-0013）：reviews_en.json 全配置；session 仅 C/D/E；
+    // runner 无呈现投影缝 ⇒ 永不产 reviews_zh.json（zh 只由 CLI 缝编排）。
+    for (const configId of CONFIGS) {
+      const configDir = path.join(experimentRoot, "runs", "vul4j", caseId, configId);
+      expect(existsSync(path.join(configDir, "rep-1", "reviews_en.json"))).toBe(true);
+      const sessions = readdirSync(configDir).filter(
+        (name) => name.startsWith("session-") && name.endsWith(".json"),
+      );
+      expect(sessions, `config ${configId} session files`).toHaveLength(
+        configId === "A" || configId === "B" ? 0 : 1,
+      );
+      // 转录形状（C/D/E）：{ info, messages, view } 顶层三键 + view 首条为合成 system
+      if (sessions.length === 1) {
+        const transcript = (await readJson(path.join(configDir, sessions[0] ?? ""))) as {
+          readonly view: { readonly messages: readonly { readonly type: string }[] };
+        };
+        expect(Object.keys(transcript).sort()).toEqual(["info", "messages", "view"]);
+        expect(transcript.view.messages[0]?.type).toBe("system");
+      }
+    }
+    const configFiles = readdirSync(path.join(experimentRoot, "runs", "vul4j", caseId), {
+      recursive: true,
+    });
+    expect(configFiles.some((name) => String(name).endsWith("reviews_zh.json"))).toBe(false);
   });
 
   it("断点续跑协议复用（pi 内核路径）：已完成 5 单元重跑全跳过、零网络", async () => {

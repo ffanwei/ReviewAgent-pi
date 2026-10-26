@@ -37,9 +37,10 @@
  */
 
 import { readFile, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { runDispositionCommand } from "../disposition/command.js";
+import { buildReviewsExport } from "../export/reviews.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { runReview } from "../run/review-run.js";
@@ -47,6 +48,7 @@ import { formatEnvLocalSummary, loadEnvLocalFile } from "../shared/env-local.js"
 import { CLI_EXPERIMENT_ID, parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
 import { applyPresentationProjection, isPresentationProjectionConfigured } from "./presentation-projection.js";
 import { renderReviewOutcome } from "./render.js";
+import { buildReviewsZhExport, removeStaleReviewsZh, writeReviewsZh } from "./reviews-zh.js";
 
 /** 执行一次 review 命令；返回进程退出码（完成 0——截断同为 0；错误经异常上抛 → 1） */
 async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
@@ -60,7 +62,7 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   const diff = await readFile(resolve(args.mr), "utf8");
   const runsRoot = resolve(args.out);
 
-  const { record, runId, auditPath } = await runReview({
+  const { record, runId, auditPath, reviewsPath } = await runReview({
     caseId: args.caseId,
     repoPath,
     diff,
@@ -105,6 +107,37 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
         : undefined;
   if (projection.kind === "degraded") {
     process.stderr.write(`review-pi: 呈现投影降级为英文源文档（${projection.reason}）\n`);
+  }
+
+  // 检视意见中文导出（ADR-0013 Step B）：复用**同一次**投影结果（不额外调网关）。
+  // 投影成功 ⇒ 写 reviews_zh.json（写失败抛错）；未配置引擎 / 降级 ⇒ 不产 +
+  // 主动清除**本次 run 的 rep-<N>/** 陈旧 zh（绝不跨 rep）。核外缝：根侧 runner
+  // 无投影缝，永不产 zh。en/session 已在内核落盘（先于本步）。
+  if (reviewsPath !== undefined) {
+    const zhDir = dirname(reviewsPath);
+    if (projection.kind === "projected") {
+      await writeReviewsZh(
+        zhDir,
+        buildReviewsZhExport({
+          envelope: buildReviewsExport({
+            generatedAt: new Date(),
+            runId,
+            source: "vul4j",
+            caseId: record.caseId,
+            configId: record.configId,
+            rep: record.rep,
+            model: record.model,
+            findings: projection.findings,
+          }),
+          provenance: projection.provenance,
+        }),
+      );
+    } else {
+      const removed = await removeStaleReviewsZh(zhDir);
+      if (removed !== undefined) {
+        process.stderr.write(`review-pi: 本次未产中文导出，已清除陈旧 ${removed}\n`);
+      }
+    }
   }
 
   await writeStdout(

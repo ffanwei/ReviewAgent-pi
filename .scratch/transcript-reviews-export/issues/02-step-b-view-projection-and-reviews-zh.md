@@ -1,6 +1,6 @@
 # 02 — Step B：`view` 投影 + `reviews_zh.json`
 
-`Status: ready-for-agent`
+`Status: resolved`
 `Blocked by: 01`
 
 - **Spec**: `.scratch/transcript-reviews-export/spec.md`（Step B 范围）
@@ -52,13 +52,13 @@
 
 ## 验收（本票完成的判据）
 
-- [ ] `session-*.json` 同时含 `info` / `messages` / `view`；`view` 的定形与合并规则逐条对上，全部无源字段为 `null`。
-- [ ] 配了引擎：`reviews_zh.json` 与 `reviews_en.json` 同目录同 run，zh 带留痕；stdout 行为**不变**（仍是投影后中文）。
-- [ ] 未配引擎或降级：zh 缺席、exit 0；**陈旧 zh 被清除**。
-- [ ] zh 写盘失败 ⇒ 非零退出；en/session 写盘失败仍抛错。
-- [ ] runner 侧：只有 `reviews_en.json`，永不产 zh。
-- [ ] A–F 请求字节零漂移；审计与 `RunRecord` 无新键。
-- [ ] `pnpm --filter review-pi test` / `typecheck`、根 `pnpm test` / `pnpm typecheck` 全绿。
+- [x] `session-*.json` 同时含 `info` / `messages` / `view`；`view` 的定形与合并规则逐条对上，全部无源字段为 `null`。
+- [x] 配了引擎：`reviews_zh.json` 与 `reviews_en.json` 同目录同 run，zh 带留痕；stdout 行为**不变**（仍是投影后中文）。
+- [x] 未配引擎或降级：zh 缺席、exit 0；**陈旧 zh 被清除**。
+- [x] zh 写盘失败 ⇒ 非零退出；en/session 写盘失败仍抛错。
+- [x] runner 侧：只有 `reviews_en.json`，永不产 zh。
+- [x] A–F 请求字节零漂移；审计与 `RunRecord` 无新键。
+- [x] `pnpm --filter review-pi test` / `typecheck`、根 `pnpm test` / `pnpm typecheck` 全绿。
 
 ## 待核实
 
@@ -69,3 +69,32 @@
 ## 不在本票范围
 
 - 请求字节/提示词/工具面的任何改动；逐工具耗时仪器；截断脱敏；版本键；runner 侧 zh。
+
+## Comments
+
+**实现完成（pi 线切面）。** 交付落在：`export/transcript.ts`（`view` 定形投影纯函数
+`buildView`）、`cli/reviews-zh.ts`（新，zh 信封/写/清陈旧）、`cli/main.ts`（投影缝复用同一
+投影结果编排 zh）、`run/review-run-artifacts.test.ts`（view golden + `buildView` 单元面）、
+`cli/bin.process.test.ts`（zh 生命周期矩阵）、`tests/experiment/runner-pi-offline.test.ts`
+（runner 侧断言）。
+
+三条待核实处置：
+
+1. **陈旧 zh 的判定范围**：只删「本次 run 的 `rep-<N>/`」。`cli/main.ts` 用
+   `dirname(reviewsPath)`（`reviewsPath` 来自内核 `runReview`，与 `runRecordPath` 同源布局）
+   解析目录，`removeStaleReviewsZh` 只 `rm` 该目录下的 `reviews_zh.json`，**不跨 rep**。
+2. **`view` 里 system 消息的 `type`**：保持 spec 的 `"system"`（OpenCode 参考导出不含
+   system，属本仓扩展；已在 spec 的 `view` 表与 ADR-0013 记明）。无需回改。
+3. **zh 信封 `findings` 的 `id`**：结构化字段**字节直通不译**（`id` 原样，含 `RULE-CHECK@…`
+   形态）；留痕 `findingLinks` 另建源关联。S2 断言 `id`/`severity`/`file`/`line` 直通、
+   `title`/`description` 已译。
+
+**测试证据（全绿）**：
+
+- `pnpm --filter review-pi typecheck` → exit 0；`pnpm --filter review-pi test` → 52 files /
+  417 passed / 10 skipped（Step A 为 411 passed，本票 +6）。
+- `pnpm --filter review-pi test:gate` → control gate 3 passed（T1–T5 因 gitignored 真源缺席
+  skip，与「CI 绿 ≠ 重型验收」口径一致）；`src/bytegate` 5 个 `.test.ts`（含 wire-parity /
+  semantic-parity）随主套件全绿。
+- 根 `tsc --noEmit` → exit 0；根 `pnpm test` → 72 passed / 961 passed / 2 skipped。
+- **零漂移**：字节门 control gate 正/负对照绿；审计与 `RunRecord` 键表断言无新增。
