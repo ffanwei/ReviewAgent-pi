@@ -16,8 +16,17 @@ export type ConfigId = "A" | "B" | "C" | "D" | "E";
 export const REFERENCE_CONFIG_ID = "claude-code" as const;
 export type ReferenceConfigId = typeof REFERENCE_CONFIG_ID;
 
-/** 指标层配置键全集 = A–E 主矩阵 + 外部参照单列（T13） */
-export type MetricsConfigId = ConfigId | ReferenceConfigId;
+/**
+ * 规则 Skill 伪配置键（ADR-0012）：config F 在指标层的单列伪配置位，与
+ * REFERENCE_CONFIG_ID 同款处理——可进 RunResult.configId 与指标分组，
+ * 但永不进入 ExperimentPlan.configs / labels.allowedConfigs / S-A-B 判定
+ * （CONFIGS 仍是 A–E 主矩阵宇宙）。
+ */
+export const RULE_SKILL_CONFIG_ID = "F" as const;
+export type RuleSkillConfigId = typeof RULE_SKILL_CONFIG_ID;
+
+/** 指标层配置键全集 = A–E 主矩阵 + 外部参照单列（T13）+ 规则 Skill 伪配置位（ADR-0012） */
+export type MetricsConfigId = ConfigId | ReferenceConfigId | RuleSkillConfigId;
 
 export interface ReviewConfig {
   readonly configId: ConfigId;

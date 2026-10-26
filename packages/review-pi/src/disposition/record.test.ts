@@ -144,7 +144,7 @@ describe("readRunRecordRef", () => {
       r.source = "github";
     }))).rejects.toThrow('field "source"');
     await expect(readRunRecordRef(bad((r) => {
-      r.configId = "F";
+      r.configId = "G";
     }))).rejects.toThrow('field "configId"');
     await expect(readRunRecordRef(bad((r) => {
       r.rep = 0;

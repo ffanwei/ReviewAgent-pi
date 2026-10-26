@@ -115,7 +115,7 @@ describe("parseDispositionStore（条目形状校验，外部数据面 fail fast
       e.notedAt = "yesterday";
     }), "s.json")).toThrow('entry #2: field "notedAt"');
     expect(() => parseDispositionStore(bad((e) => {
-      e.configId = "F";
+      e.configId = "G";
     }), "s.json")).toThrow('entry #2: field "configId"');
     expect(() => parseDispositionStore(bad((e) => {
       e.rep = 0;

@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, expect, test, vi } from "vitest";
 import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
+import { buildRuleSkillBrief } from "../knowledge/rule-skill-brief.js";
+import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
@@ -519,6 +521,171 @@ test("config E:ledger 审计键恒投影(零工具 → 空数组),RunRecord 与�
   expect(audit.ledger).toEqual([]);
   // E 无 fullRepo 键
   expect(record.baseline.audit.fullRepo).toBeUndefined();
+}, 120_000);
+
+// ---- config F（ADR-0012）：规则 Skill 简报只拼进候选阶段（唯一字节差） ----
+
+/** 规则型候选（id 前缀 RULE-CHECK@ / rule = skill 名；证据齐备可过候选拦截链） */
+const RULE_CANDIDATE = {
+  id: "RULE-CHECK@src/main/java/com/example/Alpha.java:11",
+  severity: "P2",
+  category: "BUG",
+  file: "src/main/java/com/example/Alpha.java",
+  line: 11,
+  title: "Missing null guard on a public method",
+  description: "A public method dereferences its argument without a null guard, per the project rule.",
+  evidence: ["src/main/java/com/example/Alpha.java:11 public int getBase() {"],
+  rule: "sample-rule",
+  confidence: 0.8,
+} as const;
+
+function ruleCandidateCorpus(): FakeReply[] {
+  return [
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: `{"candidates":[${JSON.stringify(RULE_CANDIDATE)}]}`, usage: ZERO },
+    {
+      text: `{"verdicts":[{"id":"${RULE_CANDIDATE.id}","pass":true,"reason":"evidence supports"}],"complete":true}`,
+      usage: ZERO,
+    },
+  ];
+}
+
+/** 假装载器的产物：filePath 是宿主绝对路径（简报须净化掉） */
+const SAMPLE_RULE_SKILL: RuleSkill = {
+  name: "sample-rule",
+  description: "Sample project rule skill",
+  content: "Check every public method for a null guard.",
+  filePath: "C:\\host\\cache\\deadbeef\\sample-rule\\SKILL.md",
+  digest: "deadbeef",
+  source: { kind: "zip", path: ".review-rules/rules.zip" },
+  diagnostics: [],
+};
+
+test("config F:简报只拼进 Phase 5（唯一字节差、无绝对路径），审计留痕，规则 finding 合流", async () => {
+  const eScript = fakeFetch(ruleCandidateCorpus());
+  const eRun = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: eScript.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "E",
+  });
+
+  const fScript = fakeFetch(ruleCandidateCorpus());
+  const fRun = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: fScript.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "F",
+    ruleSkillLoader: async () => SAMPLE_RULE_SKILL,
+  });
+
+  const eAudit = readAudit(eRun.auditPath);
+  const fAudit = readAudit(fRun.auditPath);
+  const brief = buildRuleSkillBrief(SAMPLE_RULE_SKILL);
+
+  // 前四相位逐字节一致（简报尚未进入历史）——冻结面不受影响
+  for (const index of [0, 1, 2, 3]) {
+    expect(JSON.parse(fAudit.requests[index].wireBody)).toEqual(JSON.parse(eAudit.requests[index].wireBody));
+  }
+
+  // Phase 5（0-based 下标 4）：前缀一致，尾部多出 `\n\n<简报>`——F 的唯一字节差来源
+  const eReq5 = JSON.parse(eAudit.requests[4].wireBody) as { messages: { role: string; content: string }[] };
+  const fReq5 = JSON.parse(fAudit.requests[4].wireBody) as { messages: { role: string; content: string }[] };
+  expect(eReq5.messages.at(-1)).toEqual({ role: "user", content: PHASE_INSTRUCTIONS[4] });
+  expect(fReq5.messages.slice(0, -1)).toEqual(eReq5.messages.slice(0, -1));
+  const tail = fReq5.messages.at(-1) as { role: string; content: string };
+  expect(tail.content).toBe(`${PHASE_INSTRUCTIONS[4]}\n\n${brief}`);
+  expect(tail.content).toContain('<skill name="sample-rule" location=".review-rules/sample-rule/SKILL.md">');
+  expect(tail.content).toContain("RULE-CHECK@<file>:<line>");
+  expect(tail.content).not.toContain("C:\\host");
+  expect(tail.content).not.toContain("deadbeef");
+
+  // Phase 6 与 E 的差异**唯一**是历史里嵌入的那条 Phase 5 消息（其余逐字节一致）
+  const eReq6 = JSON.parse(eAudit.requests[5].wireBody) as { messages: { role: string; content: string }[] };
+  const fReq6 = JSON.parse(fAudit.requests[5].wireBody) as { messages: { role: string; content: string }[] };
+  expect(fReq6.messages).toHaveLength(eReq6.messages.length);
+  const differing = fReq6.messages.filter(
+    (message, index) => JSON.stringify(message) !== JSON.stringify(eReq6.messages[index]),
+  );
+  expect(differing).toEqual([{ role: "user", content: `${PHASE_INSTRUCTIONS[4]}\n\n${brief}` }]);
+
+  // 审计留痕（RunRecord 与审计文件同源）；E 无该键
+  expect(fAudit.ruleSkill).toEqual({ source: ".review-rules/rules.zip", digest: "deadbeef", name: "sample-rule" });
+  expect(fRun.record.baseline.audit.ruleSkill).toEqual(fAudit.ruleSkill);
+  expect(eAudit.ruleSkill).toBeUndefined();
+
+  // 规则型候选走同一拦截链，产出普通 Finding（rule = skill 名）
+  expect(fRun.record.baseline.findings.map((finding) => finding.id)).toEqual([RULE_CANDIDATE.id]);
+  expect(fRun.record.baseline.findings[0]?.rule).toBe("sample-rule");
+  expect(fRun.record.baseline.findings).toEqual(eRun.record.baseline.findings);
+}, 120_000);
+
+test("config F 降级:装载失败不注入简报，行为 = E（审计带 degradedReason）", async () => {
+  const degradedSkill: RuleSkill = {
+    name: "",
+    description: "",
+    content: "",
+    filePath: "",
+    digest: "",
+    source: { kind: "zip", path: ".review-rules" },
+    diagnostics: [],
+    degradedReason: "no rule-skill archive found (.review-rules/ is missing)",
+  };
+  const eScript = fakeFetch(sixPhaseNoToolCorpus());
+  const eRun = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: eScript.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "E",
+  });
+  const fScript = fakeFetch(sixPhaseNoToolCorpus());
+  const fRun = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: fScript.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "F",
+    ruleSkillLoader: async () => degradedSkill,
+  });
+
+  const eAudit = readAudit(eRun.auditPath);
+  const fAudit = readAudit(fRun.auditPath);
+  // 全六条请求逐字节 = E（降级不产生任何字节差）
+  for (let index = 0; index < 6; index++) {
+    expect(JSON.parse(fAudit.requests[index].wireBody)).toEqual(JSON.parse(eAudit.requests[index].wireBody));
+  }
+  expect(fAudit.ruleSkill).toEqual({
+    source: ".review-rules",
+    digest: "",
+    name: "",
+    degradedReason: "no rule-skill archive found (.review-rules/ is missing)",
+  });
 }, 120_000);
 
 test("persistRecord=false（#8 runner 执行缝）：记录不落盘、recordPath 空串；审计照常落盘", async () => {

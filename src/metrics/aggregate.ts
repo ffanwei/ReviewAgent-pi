@@ -1,5 +1,5 @@
 import type { ConfigId, MetricsConfigId } from "../instrument/contracts/config.js";
-import { CONFIGS, REFERENCE_CONFIG_ID } from "../instrument/contracts/config.js";
+import { CONFIGS, REFERENCE_CONFIG_ID, RULE_SKILL_CONFIG_ID } from "../instrument/contracts/config.js";
 import type { MRCase } from "../instrument/contracts/mr-case.js";
 import type { RunResult } from "../instrument/contracts/run.js";
 import { computeEfficiencyMetrics } from "./efficiency.js";
@@ -30,14 +30,16 @@ import { DEFAULT_METRICS_OPTIONS, METRICS_FIELDS } from "./types.js";
  * 其余 rep2+（热稳定）为主口径；≥3 次重复时由调用方保证（本模块不强制，rep 数如实上报）。
  * 跨 case 聚合为每 case 等权（先 case 内热均值、再跨 case 均值 ± 标准差）。
  *
- * 配置键口径（T13）：分组与校验接受 MetricsConfigId（A–E + "claude-code"
- * 外部参照单列）。主实验报告只含 A–E 键；参照列由 src/reference 装配，
- * 与 A–E 走同一 evaluateRun / buildMetricsReport 路径但不进 S/A/B 判定。
+ * 配置键口径（T13 / ADR-0012）：分组与校验接受 MetricsConfigId（A–E + "claude-code"
+ * 外部参照单列 + "F" 规则 Skill 伪配置位）。主实验报告只含 A–E 键；参照列与
+ * 规则 Skill 列各由 src/reference / config F 装配，与 A–E 走同一
+ * evaluateRun / buildMetricsReport 路径但不进 S/A/B 判定。
  */
 
 const CONFIG_IDS: readonly MetricsConfigId[] = [
   ...(Object.keys(CONFIGS) as ConfigId[]),
   REFERENCE_CONFIG_ID,
+  RULE_SKILL_CONFIG_ID,
 ];
 const VALID_CONFIG_IDS = new Set<string>(CONFIG_IDS);
 /** 配置键的校验错误说明（列出全部合法键） */

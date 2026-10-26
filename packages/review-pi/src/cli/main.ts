@@ -73,6 +73,9 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
     runsRoot,
     experimentId: CLI_EXPERIMENT_ID,
     rep: 1,
+    ...(args.ruleSkillZip !== undefined ? { ruleSkillZip: args.ruleSkillZip } : {}),
+    ...(args.ruleSkillName !== undefined ? { ruleSkillName: args.ruleSkillName } : {}),
+    ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
   });
 
   // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout

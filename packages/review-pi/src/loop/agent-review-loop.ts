@@ -64,6 +64,13 @@ export interface AgentReviewLoopInputs {
   readonly fetch?: FetchFunction;
   /** 审计投影 ledger 键（config E）；缺省不投影 */
   readonly includeLedgerAudit?: boolean;
+  /**
+   * 阶段附加简报（0-based 阶段下标）：某阶段消息尾部的追加内容。
+   * 缺省（undefined）= 逐字节不变（A–E 冻结面）。config F 用它在候选阶段
+   * （RULE_CHECK_PHASE_INDEX）注入规则 Skill 简报。简报并进同一条 user
+   * 消息——followUpMode 缺省 one-at-a-time，连发两条会变成两个 run。
+   */
+  readonly phaseBrief?: (phaseIndex: number) => string | undefined;
 }
 
 export interface AgentReviewLoopOutcome {
@@ -184,7 +191,7 @@ export async function runAgentReviewLoop(
     agent.followUp(message);
   };
 
-  await agent.prompt(phaseInstruction(0));
+  await agent.prompt(phaseMessage(0));
 
   // pi-ai 对 provider 错误不 reject（resolve 出 stopReason "error" 的消息后
   // agent 即止）：缝必须显式拦截，错误永不静默成一次"成功" run。
@@ -230,7 +237,7 @@ export async function runAgentReviewLoop(
     if (phaseIndex < PHASE_COUNT - 1) {
       phaseIndex += 1;
       resetPhaseCounters();
-      followUp(phaseInstruction(phaseIndex));
+      followUp(phaseMessage(phaseIndex));
       return false;
     }
 
@@ -259,7 +266,7 @@ export async function runAgentReviewLoop(
     roundCandidates = [];
     roundVerdicts = new Map();
     roundComplete = false;
-    followUp(phaseInstruction(0));
+    followUp(phaseMessage(0));
     return false;
   }
 
@@ -282,6 +289,24 @@ export async function runAgentReviewLoop(
     phaseRequestCount = 0;
     phaseSkippedToolCalls = 0;
   }
+
+  /**
+   * 阶段消息 = PHASE_INSTRUCTIONS[i]（字节冻结）+ 可选简报。
+   * 缺省简报（inputs.phaseBrief 缺席 / 该下标返回 undefined）逐字节不变；
+   * 有简报时尾部拼 `\n\n<brief>`——config F 的字节差唯一定位点。
+   */
+  function phaseMessage(index: number): AgentMessage {
+    const instruction = PHASE_INSTRUCTIONS[index];
+    if (instruction === undefined) {
+      throw new Error(`missing phase instruction at index ${index}`);
+    }
+    const brief = inputs.phaseBrief?.(index);
+    return {
+      role: "user",
+      content: brief === undefined ? instruction : `${instruction}\n\n${brief}`,
+      timestamp: 0,
+    };
+  }
 }
 
 /** LlmMessage → pi-ai UserMessage（timestamp 为内核内部字段，不参与序列化） */
@@ -290,14 +315,6 @@ function toUserMessage(message: LlmMessage): AgentMessage {
     throw new Error(`initial context message must have role "user", got "${message.role}"`);
   }
   return { role: "user", content: message.content, timestamp: 0 };
-}
-
-function phaseInstruction(phaseIndex: number): AgentMessage {
-  const instruction = PHASE_INSTRUCTIONS[phaseIndex];
-  if (instruction === undefined) {
-    throw new Error(`missing phase instruction at index ${phaseIndex}`);
-  }
-  return { role: "user", content: instruction, timestamp: 0 };
 }
 
 function phaseNameOf(phaseIndex: number): PhaseRecord["phase"] {

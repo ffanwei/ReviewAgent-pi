@@ -78,11 +78,11 @@ export function validatedSource(source: unknown, where: string): ExperimentSourc
   return source;
 }
 
-/** configId ∈ CONFIGS 注册表（A–E 矩阵真源） */
+/** configId ∈ CONFIGS 注册表（A–F 矩阵真源：F = E + 规则 Skill，ADR-0012） */
 export function validatedConfigId(configId: unknown, where: string): ConfigId {
   if (typeof configId !== "string" || !(configId in CONFIGS)) {
     throw new Error(
-      `${where}: field "configId" must be one of A, B, C, D, E (got ${JSON.stringify(configId)})`,
+      `${where}: field "configId" must be one of A, B, C, D, E, F (got ${JSON.stringify(configId)})`,
     );
   }
   // in CONFIGS 已收窄运行时值；字面量联合需显式断言（TS 不做 in 收窄）

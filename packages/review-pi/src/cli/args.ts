@@ -34,7 +34,7 @@ export const CLI_EXPERIMENT_ID = "review-pi-cli";
 /** --out 缺省（review 落盘根与 disposition 处置库派生根共用同一约定） */
 const DEFAULT_OUT_DIR = "review-pi-output";
 
-/** review 子命令的已知旗标（未知旗标 = 用法错误） */
+/** review 子命令的已知旗标（未知旗标 = 用法错误；`--strict-rule-skill` 无值，进旗标循环前剥离） */
 const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--repo",
   "--mr",
@@ -42,6 +42,8 @@ const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--issue",
   "--out",
   "--model",
+  "--rule-skill-zip",
+  "--rule-skill-name",
 ];
 
 /** smoke 子命令的已知旗标 */
@@ -61,7 +63,7 @@ const KNOWN_DISPOSITION_FLAGS: readonly string[] = [
 const KNOWN_DISPOSITION_STATS_FLAGS: readonly string[] = ["--store", "--out"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-E] [--issue <text>] [--out <dir>] [--model <id>]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--rule-skill-zip <path>] [--rule-skill-name <name>] [--strict-rule-skill]
        review-pi smoke [--model <id>]
        review-pi disposition --run <run-record.json> --finding <id> --decision accept|reject|false-positive [--note <text>] ([--store <file>] | [--out <dir>])
        review-pi disposition --stats ([--store <file>] | [--out <dir>])
@@ -71,10 +73,14 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file
 review 旗标：
   --repo    <path>       仓库快照根目录（必需）
   --mr      <diff-file>  MR diff 文件路径（必需；caseId = 文件名去扩展名）
-  --config  <A-E>        配置形态（缺省 E = 生产入口：自主拉取 + Context Ledger，ADR-0011 切流）
+  --config  <A-F>        配置形态（缺省 E = 生产入口：自主拉取 + Context Ledger，ADR-0011 切流；
+                         F = E + 规则 Skill，须在仓库 .review-rules/ 投放 zip）
   --issue   <text>       MR 议题描述（缺省空）
   --out     <dir>        输出目录（审计与运行记录落盘；缺省 ${DEFAULT_OUT_DIR}）
   --model   <id>         评审模型 id（缺省 ${REVIEW_MODEL_ID}；自由 id 透传）
+  --rule-skill-zip  <path>  规则 Skill zip 显式路径（config F；缺省扫 <repo>/.review-rules/*.zip）
+  --rule-skill-name <name>  指定装载的规则 Skill 名（多包 / 包内多 skill 消歧）
+  --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
 
 smoke 旗标：
   --model   <id>         冒烟模型 id（同缺省与校验；端点/key 走 REVIEWER_* 环境变量或 .env.local，绝不回显）
@@ -93,7 +99,7 @@ disposition 旗标（KPI）：
   --store    <file>      处置库文件（与 --out 互斥；派生规则同上）
   --out      <dir>       处置库派生根（同上）`;
 
-/** 解析后的 review 命令参数（config 已收窄为 A–E；caseId 由 --mr 派生） */
+/** 解析后的 review 命令参数（config 已收窄为 A–F；caseId 由 --mr 派生） */
 export interface ReviewCliArgs {
   readonly repo: string;
   readonly mr: string;
@@ -104,6 +110,12 @@ export interface ReviewCliArgs {
   readonly out: string;
   /** 评审模型：缺省 REVIEW_MODEL_ID；自由 id 透传（空串/空白 = 用法错误） */
   readonly model: string;
+  /** 规则 Skill zip 显式路径（--rule-skill-zip；config F；缺席省键） */
+  readonly ruleSkillZip?: string;
+  /** 规则 Skill 指定名（--rule-skill-name；缺席省键） */
+  readonly ruleSkillName?: string;
+  /** 规则 Skill 严格模式（--strict-rule-skill；缺席省键） */
+  readonly strictRuleSkill?: boolean;
 }
 
 /** 解析后的 smoke 命令参数 */
@@ -295,7 +307,12 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     const disposition = parseDispositionArgs(rest);
     return disposition.ok ? { ok: true, command: "disposition", args: disposition.args } : disposition;
   }
-  const flags = parseFlags(rest, command === "review" ? KNOWN_REVIEW_FLAGS : KNOWN_SMOKE_FLAGS);
+  const booleanFlags = command === "review" ? stripReviewBooleanFlags(rest) : undefined;
+  if (booleanFlags !== undefined && !booleanFlags.ok) {
+    return { ok: false, message: booleanFlags.message };
+  }
+  const flagTokens = booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.tokens : rest;
+  const flags = parseFlags(flagTokens, command === "review" ? KNOWN_REVIEW_FLAGS : KNOWN_SMOKE_FLAGS);
   if (!flags.ok) {
     return flags;
   }
@@ -306,13 +323,32 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   if (command === "smoke") {
     return { ok: true, command: "smoke", args: { model: model.model } };
   }
-  return parseReviewArgs(flags.values, model.model);
+  return parseReviewArgs(flags.values, model.model, booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.strict : false);
+}
+
+/**
+ * 剥离 review 的无值布尔旗标（`--strict-rule-skill`；照 disposition `--stats`
+ * 先例——旗标循环是 k-v 成对，无值旗标必须先摘除）。重复出现 = 重复旗标。
+ */
+function stripReviewBooleanFlags(rest: readonly string[]):
+  | { readonly ok: true; readonly tokens: readonly string[]; readonly strict: boolean }
+  | { readonly ok: false; readonly message: string } {
+  const occurrences = rest.filter((token) => token === "--strict-rule-skill");
+  if (occurrences.length > 1) {
+    return { ok: false, message: "duplicate flag --strict-rule-skill" };
+  }
+  return {
+    ok: true,
+    tokens: rest.filter((token) => token !== "--strict-rule-skill"),
+    strict: occurrences.length === 1,
+  };
 }
 
 /** review 面必填与缺省：--repo / --mr（caseId = 文件名去扩展名）、--config 缺省 E（ADR-0011 切流）、--issue 缺省空 */
 function parseReviewArgs(
   values: Map<string, string>,
   model: string,
+  strict: boolean,
 ): { readonly ok: true; readonly command: "review"; readonly args: ReviewCliArgs } | { readonly ok: false; readonly message: string } {
   const repo = values.get("--repo");
   if (repo === undefined) {
@@ -324,8 +360,10 @@ function parseReviewArgs(
   }
   const configRaw = values.get("--config") ?? "E";
   if (!(configRaw in CONFIGS)) {
-    return { ok: false, message: `invalid --config ${JSON.stringify(configRaw)}: expected one of A, B, C, D, E` };
+    return { ok: false, message: `invalid --config ${JSON.stringify(configRaw)}: expected one of A, B, C, D, E, F` };
   }
+  const ruleSkillZip = values.get("--rule-skill-zip");
+  const ruleSkillName = values.get("--rule-skill-name");
 
   return {
     ok: true,
@@ -338,6 +376,9 @@ function parseReviewArgs(
       issue: values.get("--issue") ?? "",
       out: values.get("--out") ?? DEFAULT_OUT_DIR,
       model,
+      ...(ruleSkillZip !== undefined ? { ruleSkillZip } : {}),
+      ...(ruleSkillName !== undefined ? { ruleSkillName } : {}),
+      ...(strict ? { strictRuleSkill: true } : {}),
     },
   };
 }

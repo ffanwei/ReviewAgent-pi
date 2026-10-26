@@ -11,6 +11,7 @@ import type {
   FullRepoRecord,
   MrBoundaryRecord,
   PhaseRecord,
+  RuleSkillAudit,
   RunAudit,
   ToolCallRecord,
   WireRequest,
@@ -59,6 +60,8 @@ export interface AuditFileContent {
    * （同 prefetch/fullRepo/ledger 先例）。
    */
   readonly mrBoundary?: MrBoundaryRecord;
+  /** config F 规则 Skill 留痕（非 F 配置 / 未装载时缺省；pi 线可选尾键纪律） */
+  readonly ruleSkill?: RuleSkillAudit;
 }
 
 /** runId：毫秒时间戳 + 配置 + 用例，文件名安全 */
@@ -110,6 +113,7 @@ export function buildAuditFileContent(args: {
     ...(args.fullRepo !== undefined ? { fullRepo: args.fullRepo } : {}),
     ...(args.ledger !== undefined ? { ledger: args.ledger } : {}),
     ...(args.mrBoundary !== undefined ? { mrBoundary: args.mrBoundary } : {}),
+    ...(args.audit.ruleSkill !== undefined ? { ruleSkill: args.audit.ruleSkill } : {}),
   };
 }
 

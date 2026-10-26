@@ -10,6 +10,7 @@ import type {
   CandidateRejection,
   FullRepoRecord,
   PhaseRecord,
+  RuleSkillAudit,
   RunAudit,
   RunResult,
   ToolCallRecord,
@@ -43,6 +44,8 @@ export interface AuditLight {
   readonly fullRepo?: FullRepoRecord;
   /** config E：Context Ledger 快照（恒投影——零工具调用为空数组；C/D 键省略） */
   readonly ledger?: readonly LedgerEntry[];
+  /** config F：规则 Skill 留痕（非 F 配置 / 未装载时省键） */
+  readonly ruleSkill?: RuleSkillAudit;
 }
 
 /** RunResult 快照（audit 以轻量投影落盘） */
@@ -103,6 +106,7 @@ export function toAuditLight(audit: RunAudit): AuditLight {
     ...(audit.prefetch !== undefined ? { prefetch: audit.prefetch } : {}),
     ...(audit.fullRepo !== undefined ? { fullRepo: audit.fullRepo } : {}),
     ...(audit.ledger !== undefined ? { ledger: audit.ledger } : {}),
+    ...(audit.ruleSkill !== undefined ? { ruleSkill: audit.ruleSkill } : {}),
   };
 }
 

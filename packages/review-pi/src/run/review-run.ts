@@ -4,8 +4,10 @@ import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audi
 import { CONFIGS, type ConfigId, type ReviewConfig } from "../contracts/config.js";
 import type { LlmMessage } from "../contracts/llm.js";
 import { DEFAULT_PREFETCH_BUDGETS } from "../contracts/prefetch.js";
-import type { RunResult } from "../contracts/run.js";
+import type { RuleSkillAudit, RunResult } from "../contracts/run.js";
 import { buildRunRecord, writeRunRecord, type RunRecord } from "../experiment/run-record.js";
+import { buildRuleSkillBrief, RULE_CHECK_PHASE_INDEX } from "../knowledge/rule-skill-brief.js";
+import { loadRuleSkill, type RuleSkill } from "../knowledge/rule-skill.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
 import { buildInitialContextMessages, buildInitialUserMessage } from "../loop/messages.js";
 import { runReviewLoop, type ReviewTurnRunner } from "../loop/review-loop.js";
@@ -67,6 +69,14 @@ export interface ReviewRunInput {
   readonly persistRecord?: boolean;
   /** 起始时间戳（测试确定性钩子；缺省当前时间） */
   readonly startedAt?: Date;
+  /** 规则 Skill 显式 zip 路径（--rule-skill-zip；缺省扫 <repoPath>/.review-rules/） */
+  readonly ruleSkillZip?: string;
+  /** 规则 Skill 指定名（--rule-skill-name；多包 / 包内多 skill 消歧） */
+  readonly ruleSkillName?: string;
+  /** 规则 Skill 严格模式（--strict-rule-skill）：装载失败抛错而非降级 */
+  readonly strictRuleSkill?: boolean;
+  /** 规则 Skill 装载器注入缝（测试注入假实现；缺省真装载器） */
+  readonly ruleSkillLoader?: typeof loadRuleSkill;
 }
 
 export interface ReviewRunResult {
@@ -208,6 +218,23 @@ function buildAuditDir(input: ReviewRunInput, configId: ConfigId): string {
 }
 
 /**
+ * RuleSkill → 审计留痕投影（config F）：source/digest/name + 降级原因 +
+ * 装载诊断（code/path 窄投影；path 已净化为缓存目录相对 POSIX）。
+ * 缺席省键纪律：diagnostics 空 / 无降级时省键。
+ */
+function toRuleSkillAudit(skill: RuleSkill): RuleSkillAudit {
+  return {
+    source: skill.source.path,
+    digest: skill.digest,
+    name: skill.name,
+    ...(skill.degradedReason !== undefined ? { degradedReason: skill.degradedReason } : {}),
+    ...(skill.diagnostics.length > 0
+      ? { diagnostics: skill.diagnostics.map((diagnostic) => ({ code: diagnostic.code, path: diagnostic.path })) }
+      : {}),
+  };
+}
+
+/**
  * C/D/E 工具驱动路径（#6 P3a）：初始上下文（MR + config C 全仓注入）→
  * pi-agent-core Agent 三钩子循环（七工具 + 轮次上界 + Ledger）→ 审计投影。
  * 与 A/B 路径共用 runId / 落盘三件套；审计键按配置扩展（C: fullRepo、
@@ -250,6 +277,27 @@ async function runToolDrivenReview(
     ...(repo !== undefined ? { repo } : {}),
     ledgerMode: config.ledger ? "enabled" : "inert",
   });
+
+  // 规则 Skill（ADR-0012 / config F）：**在 new Agent 之前**完成定位 → 解压前
+  // 审计 → 解压 → 复核 → 装载。降级时不注入简报（行为 = E）；诊断/降级原因
+  // 进审计留痕。cacheRoot 落在 run 输出根（绝不写回被检视仓库）。
+  const loadRuleSkillFn = input.ruleSkillLoader ?? loadRuleSkill;
+  const ruleSkill = config.ruleSkill
+    ? await loadRuleSkillFn({
+        repoPath: input.repoPath,
+        cacheRoot: path.join(input.runsRoot, input.experimentId, ".cache", "rule-skills"),
+        ...(input.ruleSkillZip !== undefined ? { explicitZipPath: input.ruleSkillZip } : {}),
+        ...(input.ruleSkillName !== undefined ? { skillName: input.ruleSkillName } : {}),
+        ...(input.strictRuleSkill !== undefined ? { strict: input.strictRuleSkill } : {}),
+      })
+    : undefined;
+  const ruleSkillAudit = ruleSkill !== undefined ? toRuleSkillAudit(ruleSkill) : undefined;
+  // 简报预算在 loop 之前算好（候选阶段唯一字节差来源；降级不注入）
+  const ruleSkillBrief =
+    ruleSkill !== undefined && ruleSkill.degradedReason === undefined
+      ? buildRuleSkillBrief(ruleSkill)
+      : undefined;
+
   const outcome = await runAgentReviewLoop({
     systemPrompt: SYSTEM_PROMPT,
     initialContextMessages,
@@ -259,6 +307,10 @@ async function runToolDrivenReview(
     ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
     fetch: input.fetch,
     includeLedgerAudit: config.ledger,
+    // 规则 Skill 简报只拼进候选阶段那条消息（followUpMode one-at-a-time）
+    ...(ruleSkillBrief !== undefined
+      ? { phaseBrief: (index: number) => (index === RULE_CHECK_PHASE_INDEX ? ruleSkillBrief : undefined) }
+      : {}),
   });
 
   // 审计投影：fullRepo 记账并入 RunAudit（AuditLight/审计文件同源投影）
@@ -277,7 +329,10 @@ async function runToolDrivenReview(
     toolCalls: outcome.toolCalls,
     usage: outcome.usage,
     findings: outcome.findings,
-    audit: outcome.audit,
+    audit: {
+      ...outcome.audit,
+      ...(ruleSkillAudit !== undefined ? { ruleSkill: ruleSkillAudit } : {}),
+    },
     ...(fullRepo !== undefined ? { fullRepo: fullRepo.record } : {}),
     // E 的 ledger 快照经 outcome.audit 透传（恒投影——含空数组形态）
     ...(outcome.audit.ledger !== undefined ? { ledger: outcome.audit.ledger } : {}),
@@ -297,6 +352,7 @@ async function runToolDrivenReview(
     audit: {
       ...outcome.audit,
       ...(fullRepo !== undefined ? { fullRepo: fullRepo.record } : {}),
+      ...(ruleSkillAudit !== undefined ? { ruleSkill: ruleSkillAudit } : {}),
     },
     auditPath,
     // 域外显式降级标注（#12）：界内省键（边界内与无护栏时逐字节一致）

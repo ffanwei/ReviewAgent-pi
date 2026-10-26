@@ -120,7 +120,7 @@ function scriptedLoop(replies: readonly FakeReply[], initial = INITIAL): Scripte
 }
 
 test("循环常量与 DSH 线一致（工具预算 + 截断原因 + 预算耗尽应答字节）", () => {
-  expect(MAX_TOOL_CALLS).toBe(6);
+  expect(MAX_TOOL_CALLS).toBe(100);
   expect(TRUNCATION_TOOL_BUDGET).toBe("TOOL_BUDGET_EXHAUSTED");
   expect(TOOL_BUDGET_EXHAUSTED_SUMMARY).toBe("Error: tool call budget exhausted");
 });

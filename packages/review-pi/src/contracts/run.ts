@@ -98,6 +98,27 @@ export interface MrBoundaryRecord {
   readonly reason: MrBoundaryReason;
 }
 
+/** 规则 Skill 审计留痕的诊断项（内核装载 warning 的窄投影） */
+export interface RuleSkillAuditDiagnostic {
+  readonly code: string;
+  readonly path: string;
+}
+
+/**
+ * 规则 Skill 审计留痕（ADR-0012 / config F：审计文件尾键）。
+ * `source` = 归档来源（仓库相对 POSIX）；`digest` = zip 内容 sha256；
+ * `name` = 装载的 skill 名（降级时为空串）；`degradedReason` 在场即降级；
+ * `diagnostics` = 内核装载 warning（path 已净化为缓存目录相对形态）。
+ * 非 F 配置 / 未装载时省键（缺席纪律）。
+ */
+export interface RuleSkillAudit {
+  readonly source: string;
+  readonly digest: string;
+  readonly name: string;
+  readonly degradedReason?: string;
+  readonly diagnostics?: readonly RuleSkillAuditDiagnostic[];
+}
+
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
@@ -112,6 +133,8 @@ export interface RunAudit {
   readonly fullRepo?: FullRepoRecord;
   /** config E Context Ledger 快照（非 E 配置缺省） */
   readonly ledger?: readonly LedgerEntry[];
+  /** config F 规则 Skill 留痕（非 F 配置 / 未装载时缺省） */
+  readonly ruleSkill?: RuleSkillAudit;
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

@@ -51,15 +51,62 @@ test("caseId 派生：--mr 文件名去扩展名（含路径与无扩展名形�
   expect(doubleDot.ok && doubleDot.command === "review" && doubleDot.args.caseId).toBe("case.old");
 });
 
-test("--config：A-E 全矩阵合法；非法值 → 用法错误并列出合法集", () => {
-  for (const configId of ["A", "B", "C", "D", "E"] as const) {
+test("--config：A-F 全矩阵合法；非法值 → 用法错误并列出合法集", () => {
+  for (const configId of ["A", "B", "C", "D", "E", "F"] as const) {
     const parsed = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--config", configId]);
     expect(parsed.ok && parsed.command === "review" && parsed.args.config).toBe(configId);
   }
-  const bad = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--config", "F"]);
+  const bad = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--config", "G"]);
   expect(bad).toEqual({
     ok: false,
-    message: 'invalid --config "F": expected one of A, B, C, D, E',
+    message: 'invalid --config "G": expected one of A, B, C, D, E, F',
+  });
+});
+
+test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule-skill（布尔无值）", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr",
+    "m.diff",
+    "--rule-skill-zip",
+    "packs/rules.zip",
+    "--rule-skill-name",
+    "sample-rule",
+    "--strict-rule-skill",
+  ]);
+  expect(parsed).toEqual({
+    ok: true,
+    command: "review",
+    args: {
+      repo: "r",
+      mr: "m.diff",
+      caseId: "m",
+      config: "E",
+      issue: "",
+      out: "review-pi-output",
+      model: REVIEW_MODEL_ID,
+      ruleSkillZip: "packs/rules.zip",
+      ruleSkillName: "sample-rule",
+      strictRuleSkill: true,
+    },
+  });
+});
+
+test("规则 Skill 旗标缺席即省键（A–E 行为逐字不变）", () => {
+  const parsed = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"]);
+  expect(parsed.ok && parsed.command === "review" && "ruleSkillZip" in parsed.args).toBe(false);
+  expect(parsed.ok && parsed.command === "review" && "strictRuleSkill" in parsed.args).toBe(false);
+});
+
+test("--strict-rule-skill 重复 → 用法错误；缺值旗标照旧报错", () => {
+  expect(
+    parseCliArgs(["review", "--repo", "r", "--mr", "m", "--strict-rule-skill", "--strict-rule-skill"]),
+  ).toEqual({ ok: false, message: "duplicate flag --strict-rule-skill" });
+  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--rule-skill-zip"])).toEqual({
+    ok: false,
+    message: "flag --rule-skill-zip requires a value",
   });
 });
 

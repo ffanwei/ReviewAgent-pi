@@ -9,9 +9,10 @@ import type { RunResult } from "../instrument/contracts/run.js";
  * 判定链位置：原生真值 → 【本模块：规则粗筛】→ LLM-as-judge（与被测模型不同源，Ticket 11）→ 人工抽检。
  * 本模块是判定链第一级，其输出（FindingVerdict / TruthMiss）供 judge 校准复用。
  *
- * 配置键口径（T13 起）：分组键为 MetricsConfigId（A–E 主矩阵 + "claude-code"
- * 外部参照单列）。S/A/B 判定（verdict.ts）与 judge 链仍只消费 A–E；
- * 参照列仅经 evaluateRun / buildMetricsReport 进入同一指标计算路径。
+ * 配置键口径（T13 起，ADR-0012 扩展）：分组键为 MetricsConfigId（A–E 主矩阵 +
+ * "claude-code" 外部参照单列 + "F" 规则 Skill 伪配置位）。S/A/B 判定（verdict.ts）
+ * 与 judge 链仍只消费 A–E；参照列与规则 Skill 列仅经 evaluateRun /
+ * buildMetricsReport 进入同一指标计算路径。
  */
 
 // ===== 规则粗筛（判定链第一级） =====
