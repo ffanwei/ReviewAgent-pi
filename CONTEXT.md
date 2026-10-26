@@ -116,6 +116,10 @@ _Avoid_: CWE（那是通用公共分类）
 **DTS**:
 缺陷跟踪系统（Jira/Bugzilla 类），Knowledge Engine 的缺陷数据源之一。
 
+**规则 Skill（Rule Skill）**:
+被检视项目自带的规则技能包，随项目投放并随项目版本化，为该项目提供"按项目规则怎么检视"的指引。
+_Avoid_: 项目规则（Zone B 稳定中层内的规则槽位，另一落点）、C3 Knowledge（规则 Skill 不进入检索语料）、skill（裸称会与开发态技能包及内核 skill 混淆）
+
 ### 度量
 
 **RIE**:

@@ -12,7 +12,7 @@ Guidance for Codex when working in this repository.
 
 ### Issue tracker
 
-GitHub Issues: issues and specs live in this repo's GitHub Issues (`MustacheXb/ReviewAgent-pi`), managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Local Markdown: issues and specs live as files under `.scratch/<feature>/` in this repo (no CLI required). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
