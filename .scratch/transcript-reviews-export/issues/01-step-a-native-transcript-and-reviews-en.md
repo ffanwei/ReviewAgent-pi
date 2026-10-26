@@ -1,6 +1,6 @@
 # 01 — Step A：内核原生转录 + `reviews_en.json`
 
-`Status: ready-for-agent`
+`Status: resolved`
 
 - **Spec**: `.scratch/transcript-reviews-export/spec.md`（Step A 范围）
 - **ADR**: `docs/adr/0013-review-transcript-and-findings-export-as-run-artifacts.md`
@@ -54,12 +54,12 @@
 
 ## 验收（本票完成的判据）
 
-- [ ] C/D/E/F 离线跑各产出 1 份 session + 1 份 `reviews_en.json`，路径与文件名符合 spec。
-- [ ] A–F 请求字节零漂移；审计与 `RunRecord` 无新键。
-- [ ] `info` 键集合精确匹配（无 `version`/`projectID`）；`messages[0]` 为 Zone A 系统提示词。
-- [ ] 两次同 case/config 跑出的 session 文件互不覆盖。
-- [ ] A/B 有 `reviews_en.json`、无 session 文件。
-- [ ] `pnpm --filter review-pi test` / `pnpm --filter review-pi typecheck` 全绿；根 `pnpm test` / `pnpm typecheck` 全绿。
+- [x] C/D/E/F 离线跑各产出 1 份 session + 1 份 `reviews_en.json`，路径与文件名符合 spec。
+- [x] A–F 请求字节零漂移；审计与 `RunRecord` 无新键。
+- [x] `info` 键集合精确匹配（无 `version`/`projectID`）；`messages[0]` 为 Zone A 系统提示词。
+- [x] 两次同 case/config 跑出的 session 文件互不覆盖。
+- [x] A/B 有 `reviews_en.json`、无 session 文件。
+- [x] `pnpm --filter review-pi test` / `pnpm --filter review-pi typecheck` 全绿；根 `pnpm test` / `pnpm typecheck` 全绿。
 
 ## 待核实（实现时必须先确认，可能微调 spec）
 
@@ -72,3 +72,21 @@
 - `view` 投影、`reviews_zh.json`、CLI 投影缝（→ 票 02）。
 - 逐工具/逐消息耗时仪器；截断/脱敏；保留期与清理策略；版本键。
 - A/B 的转录（其等价物是既有 `requests[].messages`，不另造）。
+
+## Comments
+
+**实现完成并提交**（commit `443348d`；`view`/`reviews_zh.json` 由票 02 续接）。
+
+三条待核实处置：
+
+1. **`outcome` 映射**：`complete === !truncated` 在全部可达停止点恒成立；`"failed"`
+   在当前接线**不可达**（provider 错误在返回前抛错、不产转录；唯一可设
+   `complete === false` 的路径是被 abort 的回合，而当前无调用方传 `AbortSignal`）。
+   保留三值映射作为防御式投影，spec 已回改记明。
+2. **`messages[0]` 不重复**：`agent.state.messages` 不含 system（systemPrompt 为
+   `AgentState` 独立字段），合成 system 恰一份。
+3. **`details` 形状**：本仓工具结果 `details` 恒 `{}`（空内容，非无源）——票 02 的
+   `view` 不把 `details` 投到 `state`（`state.metadata` 恒 `null`），`state.content`
+   取 `toolResult.content` 原样。
+
+证据：见票 02 的 Comments（两票同批全绿：review-pi 417 passed、根 961 passed）。
