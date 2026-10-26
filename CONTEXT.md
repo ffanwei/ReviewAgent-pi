@@ -107,6 +107,16 @@ _Avoid_: 与字节门混流（A/B 逐字节、C/D/E 语义——两档口径各�
 内核入口处的 MR 输入边界检查（≤10 文件 / diff ≤2K 变更行，与数据集过滤口径同构、配置无关、config 分派之前）：界内路径零字节漂移（缺席省键）；超界或不可度量走显式降级——`domainWarning` 标注 + 审计 `mrBoundary` 留痕 + 照常执行，不拒检。
 _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截断（违背零静默纪律）
 
+### 产物
+
+**检视转录（Review Transcript）**:
+一次检视中**进入 Review Runtime 的全部交互**（系统提示词、每轮消息、工具调用与结果）的完整留档，随 run 落盘为 `session-<首次模型调用时刻>-<configId>-<caseId>.json`；是 debug 与取证用的现场，**不是指标源**（指标取自运行记录与审计）。**每次 run 独立留档、不覆盖**（文件名含首次模型调用时刻）。
+_Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
+
+**检视意见导出（Review Findings Export）**:
+一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径，`reviews_zh.json` 是核外翻译投影（随呈现引擎配置**存在或缺席**，可删可重建）——两者按 rep 覆盖重写，**不是**测量的第四个真源。
+_Avoid_: reviews.json（单数形已废——现为 `_en`/`_zh` 两份）、评论列表、检视报告（REPORT.md 是另一物）
+
 ### 知识
 
 **CWD**:

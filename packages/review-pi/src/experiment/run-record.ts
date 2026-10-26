@@ -134,16 +134,43 @@ export function buildRunRecord(args: {
   };
 }
 
+/** caseId 的文件系统安全形（runs 树目录键；与审计目录 / root RunStore 同规则） */
+export function sanitizeCaseId(caseId: string): string {
+  return caseId.replace(/[^A-Za-z0-9_.-]/g, "_");
+}
+
+/**
+ * 运行输出目录：`<runsRoot>/<experimentId>/runs/<source>/<safeCaseId>/<configId>`。
+ * 运行记录（`rep-<N>.json`）、检视转录（`session-*.json`）与检视意见导出
+ * （`rep-<N>/reviews_*.json`）共用此目录——单点定义防布局漂移。
+ */
+export function runDirPath(args: {
+  readonly runsRoot: string;
+  readonly experimentId: string;
+  readonly source: ExperimentSource;
+  readonly caseId: string;
+  readonly configId: ConfigId;
+}): string {
+  return path.join(
+    args.runsRoot,
+    args.experimentId,
+    "runs",
+    args.source,
+    sanitizeCaseId(args.caseId),
+    args.configId,
+  );
+}
+
 /** 记录文件路径：<runsRoot>/<experimentId>/runs/<source>/<caseId>/<configId>/rep-<rep>.json */
 export function runRecordPath(runsRoot: string, experimentId: string, record: RunRecord): string {
-  const safeCaseId = record.caseId.replace(/[^A-Za-z0-9_.-]/g, "_");
   return path.join(
-    runsRoot,
-    experimentId,
-    "runs",
-    record.source,
-    safeCaseId,
-    record.configId,
+    runDirPath({
+      runsRoot,
+      experimentId,
+      source: record.source,
+      caseId: record.caseId,
+      configId: record.configId,
+    }),
     `rep-${record.rep}.json`,
   );
 }

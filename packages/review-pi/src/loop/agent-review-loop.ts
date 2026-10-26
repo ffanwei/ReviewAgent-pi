@@ -11,6 +11,7 @@ import type {
   ToolCallRecord,
   WireRequest,
 } from "../contracts/run.js";
+import type { AgentTranscriptCapture } from "../export/transcript.js";
 import { applyCandidateGate } from "../gate/candidate-gate.js";
 import {
   assistantText,
@@ -81,6 +82,8 @@ export interface AgentReviewLoopOutcome {
   /** 验证 complete 信号（= !truncated） */
   readonly complete: boolean;
   readonly audit: RunAudit;
+  /** Agent 侧现场（检视转录原料，ADR-0013）：messages 快照 + 首次模型请求时刻 + 模型身份 */
+  readonly transcript: AgentTranscriptCapture;
 }
 
 /** 深解析阶段（0-based 指令下标）：候选与裁决的解析点 */
@@ -109,6 +112,8 @@ export async function runAgentReviewLoop(
   let emittedIds: ReadonlySet<string> = new Set();
   let truncated = false;
   let complete = false;
+  // 首次模型请求时刻（唯一新增内核仪器；不是逐请求/逐工具耗时）
+  let firstRequestAt: Date | undefined;
 
   const agentTools: AgentTool[] = inputs.toolkit.schemas.map((schema) => {
     const parameters = JSON.parse(schema.parametersJson) as Record<string, unknown>;
@@ -164,10 +169,11 @@ export async function runAgentReviewLoop(
     throw new Error("internal error: follow-up enqueue invoked before agent construction");
   };
 
+  const model = reviewModelOf(inputs.modelId, inputs.baseUrl);
   const agent = new Agent({
     initialState: {
       systemPrompt: inputs.systemPrompt,
-      model: reviewModelOf(inputs.modelId, inputs.baseUrl),
+      model,
       messages: inputs.initialContextMessages.map(toUserMessage),
       tools: agentTools,
     },
@@ -175,6 +181,9 @@ export async function runAgentReviewLoop(
     // DSH 工具批为严格批序执行（审计记录顺序 = 批内顺序）；parallel 模式按完成序落账
     toolExecution: "sequential",
     onPayload: (payload) => {
+      if (firstRequestAt === undefined) {
+        firstRequestAt = new Date();
+      }
       requests.push(auditWireCapture(payload));
       phaseRequestCount += 1;
     },
@@ -215,7 +224,23 @@ export async function runAgentReviewLoop(
     truncationReasons,
     ...(inputs.includeLedgerAudit ? { ledger: inputs.toolkit.ledger.snapshot() } : {}),
   };
-  return { findings, usage, rounds: round, toolCalls: executedToolCalls, complete, audit };
+  if (firstRequestAt === undefined) {
+    throw new Error("internal error: agent review loop finished without a model request");
+  }
+  const transcript: AgentTranscriptCapture = {
+    messages: [...agent.state.messages],
+    firstRequestAt,
+    model: { id: model.id, baseUrl: model.baseUrl },
+  };
+  return {
+    findings,
+    usage,
+    rounds: round,
+    toolCalls: executedToolCalls,
+    complete,
+    audit,
+    transcript,
+  };
 
   /** 文本轮收尾当前阶段并推进；返回值即 shouldStopAfterTurn 的停止判定 */
   function advancePhase(replyText: string, followUp: (message: AgentMessage) => void): boolean {

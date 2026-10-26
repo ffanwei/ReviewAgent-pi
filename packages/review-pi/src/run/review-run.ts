@@ -2,10 +2,13 @@ import path from "node:path";
 import type { FetchFunction } from "@earendil-works/pi-ai";
 import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audit-writer.js";
 import { CONFIGS, type ConfigId, type ReviewConfig } from "../contracts/config.js";
+import type { Finding } from "../contracts/finding.js";
 import type { LlmMessage } from "../contracts/llm.js";
 import { DEFAULT_PREFETCH_BUDGETS } from "../contracts/prefetch.js";
 import type { RuleSkillAudit, RunResult } from "../contracts/run.js";
-import { buildRunRecord, writeRunRecord, type RunRecord } from "../experiment/run-record.js";
+import { buildRunRecord, runDirPath, writeRunRecord, type RunRecord } from "../experiment/run-record.js";
+import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
+import { buildTranscript, writeTranscript, type AgentTranscriptCapture } from "../export/transcript.js";
 import { buildRuleSkillBrief, RULE_CHECK_PHASE_INDEX } from "../knowledge/rule-skill-brief.js";
 import { loadRuleSkill, type RuleSkill } from "../knowledge/rule-skill.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
@@ -85,6 +88,13 @@ export interface ReviewRunResult {
   readonly record: RunRecord;
   readonly recordPath: string;
   readonly auditPath: string;
+  /**
+   * 检视转录路径（ADR-0013）：仅 C/D/E/F（走 pi Agent）；A/B 无 Agent 转录
+   * 故缺席省键（其等价信息是 `requests[].messages`）。每 run 独立留档。
+   */
+  readonly transcriptPath?: string;
+  /** 检视意见导出路径（ADR-0013）：`reviews_en.json`，全配置（含 A/B） */
+  readonly reviewsPath?: string;
 }
 
 export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult> {
@@ -165,6 +175,15 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     ...(boundary.degraded ? { mrBoundary: boundary.mrBoundary } : {}),
   });
   const auditPath = await writeAuditFile(auditDir, auditContent);
+  // 检视意见导出（全配置）：A/B 无 Agent 转录，但同样产 reviews_en.json
+  const reviewsPath = await persistReviewsEn({
+    input,
+    configId,
+    runId,
+    modelId,
+    finishedAt,
+    findings: outcome.findings,
+  });
 
   const result: RunResult = {
     caseId: input.caseId,
@@ -189,7 +208,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     result,
   });
   const recordPath = await persistRunRecord(input, record);
-  return { runId, record, recordPath, auditPath };
+  return { runId, record, recordPath, auditPath, reviewsPath };
 }
 
 /**
@@ -340,6 +359,25 @@ async function runToolDrivenReview(
     ...(boundary.degraded ? { mrBoundary: boundary.mrBoundary } : {}),
   });
   const auditPath = await writeAuditFile(auditDir, auditContent);
+  // 检视转录（C/D/E/F 专有）：agent.state.messages 原样 + 合成 system；每 run 独立留档
+  const transcriptPath = await persistTranscript({
+    input,
+    configId,
+    runId,
+    finishedAt,
+    capture: outcome.transcript,
+    complete: outcome.complete,
+    truncated: outcome.audit.truncated,
+  });
+  // 检视意见导出（全配置）
+  const reviewsPath = await persistReviewsEn({
+    input,
+    configId,
+    runId,
+    modelId,
+    finishedAt,
+    findings: outcome.findings,
+  });
 
   const result: RunResult = {
     caseId: input.caseId,
@@ -368,5 +406,67 @@ async function runToolDrivenReview(
     result,
   });
   const recordPath = await persistRunRecord(input, record);
-  return { runId, record, recordPath, auditPath };
+  return { runId, record, recordPath, auditPath, transcriptPath, reviewsPath };
+}
+
+/**
+ * runs 树目录单点（转录 / 意见导出共用；与运行记录 `rep-<N>.json` 同目录）：
+ * `<runsRoot>/<experimentId>/runs/vul4j/<caseId>/<configId>`。
+ * 布局逻辑单源在 `run-record.runDirPath`（防记录与产物布局漂移）。
+ */
+function runOutputDir(input: ReviewRunInput, configId: ConfigId): string {
+  return runDirPath({
+    runsRoot: input.runsRoot,
+    experimentId: input.experimentId,
+    source: "vul4j",
+    caseId: input.caseId,
+    configId,
+  });
+}
+
+/** 检视转录落盘（C/D/E/F）：`<runOutputDir>/session-<firstRequestAt>-...json`；失败抛错 */
+async function persistTranscript(args: {
+  readonly input: ReviewRunInput;
+  readonly configId: ConfigId;
+  readonly runId: string;
+  readonly finishedAt: Date;
+  readonly capture: AgentTranscriptCapture;
+  readonly complete: boolean;
+  readonly truncated: boolean;
+}): Promise<string> {
+  const content = buildTranscript({
+    runId: args.runId,
+    caseId: args.input.caseId,
+    configId: args.configId,
+    repoPath: args.input.repoPath,
+    systemPrompt: SYSTEM_PROMPT,
+    capture: args.capture,
+    complete: args.complete,
+    truncated: args.truncated,
+    finishedAt: args.finishedAt,
+  });
+  return writeTranscript(runOutputDir(args.input, args.configId), content);
+}
+
+/** 检视意见导出落盘（全配置）：`<runOutputDir>/rep-<N>/reviews_en.json`；失败抛错 */
+async function persistReviewsEn(args: {
+  readonly input: ReviewRunInput;
+  readonly configId: ConfigId;
+  readonly runId: string;
+  readonly modelId: string;
+  readonly finishedAt: Date;
+  readonly findings: readonly Finding[];
+}): Promise<string> {
+  const envelope = buildReviewsExport({
+    generatedAt: args.finishedAt,
+    runId: args.runId,
+    source: "vul4j",
+    caseId: args.input.caseId,
+    configId: args.configId,
+    rep: args.input.rep,
+    model: args.modelId,
+    findings: args.findings,
+  });
+  const dir = path.join(runOutputDir(args.input, args.configId), `rep-${args.input.rep}`);
+  return writeReviewsEn(dir, envelope);
 }
