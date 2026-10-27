@@ -65,6 +65,11 @@ export interface ReviewToolkitOptions {
   readonly knowledge?: KnowledgeCorpus;
   /** Context Ledger 模式：config E 传 "enabled"，C/D 传 "inert"（缺省 "inert"） */
   readonly ledgerMode?: "enabled" | "inert";
+  /**
+   * 外部注入的 Ledger（ADR-0014：skill 会话用主账本 Phase-5 快照分叉）。
+   * 一经提供即优先于 `ledgerMode`——调用方负责决定种子内容。
+   */
+  readonly ledger?: ContextLedger;
 }
 
 export interface ReviewToolkit {
@@ -83,7 +88,9 @@ export function buildReviewToolkit(options: ReviewToolkitOptions): ReviewToolkit
   const schemas = reviewToolSchemas();
   const handlers = reviewToolHandlers();
   const repoPromise = memoizedRepo(options);
-  const ledger = options.ledgerMode === "enabled" ? createContextLedger() : createInertContextLedger();
+  const ledger =
+    options.ledger ??
+    (options.ledgerMode === "enabled" ? createContextLedger() : createInertContextLedger());
   const context: ToolRunContext = {
     diff: options.diff,
     repo: () => repoPromise(),

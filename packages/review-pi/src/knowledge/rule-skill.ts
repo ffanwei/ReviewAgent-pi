@@ -6,18 +6,19 @@ import { BACKGROUND_CONTEXT, loadSkills, type Skill, type SkillDiagnostic } from
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 
 /**
- * 规则 Skill 装载器（ADR-0012 / config F）。
+ * 规则 Skill 装载器（ADR-0012 / ADR-0014 / config F）。
  *
  * 生命周期（全部发生在 `new Agent` 之前）：
- *   定位 zip → 内容 sha256 → 解压前审计（纯 Node 读 zip 中央目录）→ 宿主
- *   shell 解压 → 解压后复核 → 内核 loadSkills 装载 → 取单一 Skill。
+ *   定位 zip（可多个、CLI 序）→ 内容 sha256 → 解压前审计（纯 Node 读 zip
+ *   中央目录）→ 宿主 shell 解压 → 解压后复核 → 内核 loadSkills 装载 → 取 Skill。
  *
  * 纪律：
- * - **规则包只当数据**：只 `loadSkills` 读 `SKILL.md`（及其同目录数据文件），
- *   绝不执行包内任何脚本；
+ * - **装载阶段仍不执行包内脚本**：这里只 `loadSkills` 读 `SKILL.md`（及其
+ *   同目录数据文件）；脚本只在 skill 检视会话里经 `tools/skill-bash.ts` 的
+ *   白名单边界执行（ADR-0014 决策 7）；
  * - **不写回被检视仓库**：解压产物只落在 `<cacheRoot>/<sha256>/`；
- * - **失败降级**：定位/审计/解压/装载任一失败 → 返回 `degradedReason`
- *   （run 照常）；`strict` 模式下抛错（CI 可要求包必须成功）；
+ * - **失败降级**：定位/审计/解压/装载任一失败 → 该包成为 `degradedReason`
+ *   条目（run 照常）；`strict` 模式下抛错（CI 可要求包必须成功）；
  * - **错误文本脱敏**：子进程 stderr 不回显宿主绝对路径（照 codeintel/rg.ts
  *   的"错误字节需跨环境可复现"纪律）；
  * - **零新增 npm 依赖**：node:child_process / node:crypto / node:fs / node:path
@@ -95,7 +96,12 @@ export interface LoadRuleSkillOptions {
   readonly cacheRoot: string;
   /** 显式 zip 路径（--rule-skill-zip；优先于约定目录探测） */
   readonly explicitZipPath?: string;
-  /** 指定装载的 skill 名（--rule-skill-name；约定目录多包 / 包内多 skill 时消歧） */
+  /**
+   * 显式 zip 路径列表（ADR-0014：`--rule-skill-zip` 可重复）。
+   * 顺序 = CLI 传入顺序 = 执行顺序；优先于 `explicitZipPath` 与约定目录。
+   */
+  readonly explicitZipPaths?: readonly string[];
+  /** 指定装载的 skill 名（--rule-skill-name；包内多 skill 时消歧，逐包生效） */
   readonly skillName?: string;
   /** 严格模式（--strict-rule-skill）：失败抛错而非降级 */
   readonly strict?: boolean;
@@ -107,55 +113,94 @@ export interface LoadRuleSkillOptions {
 }
 
 /**
- * 装载单个规则 Skill。**永不因外部依赖抛错**（除非 `strict`）——任何失败都
- * 以 `degradedReason` 的降级形态返回，让 run 照常完成。
+ * 装载全部规则 Skill（ADR-0014 决策 1：多 zip、CLI 顺序）。
+ *
+ * - 显式 zip 列表：逐包装载，顺序 = 传入顺序；
+ * - 约定目录：`<repoPath>/.review-rules/*.zip`，文件名序；**全部装载**；
+ * - 单包失败只降级该包（在后面继续装载），`strict` 下任一失败即抛；
+ * - 无 zip（目录缺席 / 为空）⇒ `[]`（N=0：F 与 E 逐字节相同的前提；
+ *   不是降级条目——审计 `ruleSkill: []`）。
  */
-export async function loadRuleSkill(options: LoadRuleSkillOptions): Promise<RuleSkill> {
+export async function loadRuleSkills(options: LoadRuleSkillOptions): Promise<readonly RuleSkill[]> {
   const limits = options.limits ?? DEFAULT_RULE_SKILL_LIMITS;
   const spawnFn = options.spawn ?? defaultSpawn;
   const loadSkillsFn = options.loadSkillsFn ?? loadSkills;
 
-  const degraded = (reason: string): RuleSkill => {
-    if (options.strict === true) {
-      throw new Error(`rule skill unavailable: ${reason}`);
-    }
-    return {
-      name: "",
-      description: "",
-      content: "",
-      filePath: "",
-      digest: "",
-      source: { kind: "zip", path: options.explicitZipPath ?? RULE_SKILL_DIR_NAME },
-      diagnostics: [],
-      degradedReason: reason,
-    };
-  };
-
   const located = await locateZipCandidates(options);
   if ("reason" in located) {
-    return degraded(located.reason);
+    if (options.strict === true) {
+      throw new Error(`rule skill unavailable: ${located.reason}`);
+    }
+    return [];
   }
 
-  let lastReason = "no rule skill could be loaded";
-  for (const zipPath of located.zips) {
-    const attempt = await loadFromZip(zipPath, options, limits, spawnFn, loadSkillsFn);
-    if ("skill" in attempt) {
-      return attempt.skill;
+  const skills: RuleSkill[] = [];
+  for (const entry of located.entries) {
+    if (entry.reason !== undefined) {
+      if (options.strict === true) {
+        throw new Error(`rule skill unavailable: ${entry.reason}`);
+      }
+      skills.push(degradedRuleSkillForPath(entry.path, options, entry.reason));
+      continue;
     }
-    lastReason = attempt.reason;
+    const attempt = await loadFromZip(entry.path, options, limits, spawnFn, loadSkillsFn);
+    if ("skill" in attempt) {
+      skills.push(attempt.skill);
+      continue;
+    }
+    if (options.strict === true) {
+      throw new Error(`rule skill unavailable: ${attempt.reason}`);
+    }
+    skills.push(degradedRuleSkillForPath(entry.path, options, attempt.reason));
   }
-  return degraded(lastReason);
+  return skills;
 }
 
-/** 定位候选 zip：显式路径优先；否则扫 `<repoPath>/.review-rules/*.zip` */
+/** 降级占位（source 取具体 zip 的稳定来源表示） */
+function degradedRuleSkillForPath(
+  zipPath: string,
+  options: LoadRuleSkillOptions,
+  reason: string,
+): RuleSkill {
+  return {
+    name: "",
+    description: "",
+    content: "",
+    filePath: "",
+    digest: "",
+    source: { kind: "zip", path: sourcePathOf(zipPath, options.repoPath) },
+    diagnostics: [],
+    degradedReason: reason,
+  };
+}
+
+interface LocatedZip {
+  readonly path: string;
+  /** 有值 = 定位阶段就失败的包（缺失 / 不可读），按降级条目处理 */
+  readonly reason?: string;
+}
+
+/**
+ * 定位候选 zip（ADR-0014）：
+ * - 显式列表（`explicitZipPaths` 优先，其次单数 `explicitZipPath`）→ 逐包
+ *   校验存在性，缺失包带着原因继续（不连坐其他包）；
+ * - 约定目录 → 文件名序全部装载（多包不再要求消歧）；
+ * - 目录缺席 / 为空 → 整体 reason（调用方转成 `[]` 或 strict 抛错）。
+ */
 async function locateZipCandidates(
   options: LoadRuleSkillOptions,
-): Promise<{ readonly zips: readonly string[] } | { readonly reason: string }> {
-  if (options.explicitZipPath !== undefined) {
-    if (!(await fileExists(options.explicitZipPath))) {
-      return { reason: `rule-skill archive not found: ${options.explicitZipPath}` };
+): Promise<{ readonly entries: readonly LocatedZip[] } | { readonly reason: string }> {
+  const explicit = options.explicitZipPaths ?? (options.explicitZipPath !== undefined ? [options.explicitZipPath] : []);
+  if (explicit.length > 0) {
+    const entries: LocatedZip[] = [];
+    for (const zipPath of explicit) {
+      entries.push(
+        (await fileExists(zipPath))
+          ? { path: zipPath }
+          : { path: zipPath, reason: `rule-skill archive not found: ${zipPath}` },
+      );
     }
-    return { zips: [options.explicitZipPath] };
+    return { entries };
   }
   const dir = path.join(options.repoPath, RULE_SKILL_DIR_NAME);
   let names: string[];
@@ -171,12 +216,7 @@ async function locateZipCandidates(
   if (zips.length === 0) {
     return { reason: `no rule-skill archive found in ${RULE_SKILL_DIR_NAME}/` };
   }
-  if (zips.length > 1 && options.skillName === undefined) {
-    return {
-      reason: `multiple rule-skill archives in ${RULE_SKILL_DIR_NAME}/; pass --rule-skill-zip or --rule-skill-name`,
-    };
-  }
-  return { zips };
+  return { entries: zips.map((zipPath) => ({ path: zipPath })) };
 }
 
 async function loadFromZip(

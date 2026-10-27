@@ -46,6 +46,9 @@ const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--rule-skill-name",
 ];
 
+/** review 面可重复旗标（ADR-0014：多规则包按 CLI 顺序叠加） */
+const REPEATABLE_REVIEW_FLAGS: readonly string[] = ["--rule-skill-zip"];
+
 /** smoke 子命令的已知旗标 */
 const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model"];
 
@@ -63,7 +66,7 @@ const KNOWN_DISPOSITION_FLAGS: readonly string[] = [
 const KNOWN_DISPOSITION_STATS_FLAGS: readonly string[] = ["--store", "--out"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--rule-skill-zip <path>] [--rule-skill-name <name>] [--strict-rule-skill]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--rule-skill-zip <path>]... [--rule-skill-name <name>] [--strict-rule-skill]
        review-pi smoke [--model <id>]
        review-pi disposition --run <run-record.json> --finding <id> --decision accept|reject|false-positive [--note <text>] ([--store <file>] | [--out <dir>])
        review-pi disposition --stats ([--store <file>] | [--out <dir>])
@@ -78,8 +81,9 @@ review 旗标：
   --issue   <text>       MR 议题描述（缺省空）
   --out     <dir>        输出目录（审计与运行记录落盘；缺省 ${DEFAULT_OUT_DIR}）
   --model   <id>         评审模型 id（缺省 ${REVIEW_MODEL_ID}；自由 id 透传）
-  --rule-skill-zip  <path>  规则 Skill zip 显式路径（config F；缺省扫 <repo>/.review-rules/*.zip）
-  --rule-skill-name <name>  指定装载的规则 Skill 名（多包 / 包内多 skill 消歧）
+  --rule-skill-zip  <path>  规则 Skill zip 显式路径（config F；可重复，顺序 = 执行顺序；
+                            缺省扫 <repo>/.review-rules/*.zip 全部装载）
+  --rule-skill-name <name>  指定装载的规则 Skill 名（包内多 skill 消歧，逐包生效）
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
 
 smoke 旗标：
@@ -110,8 +114,8 @@ export interface ReviewCliArgs {
   readonly out: string;
   /** 评审模型：缺省 REVIEW_MODEL_ID；自由 id 透传（空串/空白 = 用法错误） */
   readonly model: string;
-  /** 规则 Skill zip 显式路径（--rule-skill-zip；config F；缺席省键） */
-  readonly ruleSkillZip?: string;
+  /** 规则 Skill zip 显式路径列表（--rule-skill-zip 可重复；顺序 = 执行顺序；缺席省键） */
+  readonly ruleSkillZips?: readonly string[];
   /** 规则 Skill 指定名（--rule-skill-name；缺席省键） */
   readonly ruleSkillName?: string;
   /** 规则 Skill 严格模式（--strict-rule-skill；缺席省键） */
@@ -151,18 +155,27 @@ export type ParseCliArgsResult =
   | { readonly ok: true; readonly command: "disposition"; readonly args: DispositionCliArgs }
   | { readonly ok: false; readonly message: string };
 
-/** 旗标循环（两子命令共用）：未知旗标 / 重复旗标 / 值缺席（含值吞旗标）都是用法错误 */
+/** 旗标循环（两子命令共用）：未知旗标 / 重复旗标 / 值缺席（含值吞旗标）都是用法错误。
+ * `repeatableFlags` 中的旗标可重复（只按出现顺序累积进 `repeated`；`values` 不收，
+ * 免同一事实两种表示——可重复旗标的调用方一律读 `repeated`）。 */
 function parseFlags(
   rest: readonly string[],
   knownFlags: readonly string[],
-): { readonly ok: true; readonly values: Map<string, string> } | { readonly ok: false; readonly message: string } {
+  repeatableFlags: readonly string[] = [],
+): {
+  readonly ok: true;
+  readonly values: Map<string, string>;
+  readonly repeated: ReadonlyMap<string, readonly string[]>;
+} | { readonly ok: false; readonly message: string } {
   const values = new Map<string, string>();
+  const repeated = new Map<string, string[]>();
   for (let index = 0; index < rest.length; index += 2) {
     const flag = rest[index];
     if (flag === undefined || !knownFlags.includes(flag)) {
       return { ok: false, message: `unknown flag ${JSON.stringify(flag)}` };
     }
-    if (values.has(flag)) {
+    const repeatable = repeatableFlags.includes(flag);
+    if (!repeatable && values.has(flag)) {
       return { ok: false, message: `duplicate flag ${flag}` };
     }
     const value = rest[index + 1];
@@ -170,9 +183,18 @@ function parseFlags(
     if (value === undefined || value.startsWith("--")) {
       return { ok: false, message: `flag ${flag} requires a value` };
     }
+    if (repeatable) {
+      const list = repeated.get(flag);
+      if (list === undefined) {
+        repeated.set(flag, [value]);
+      } else {
+        list.push(value);
+      }
+      continue;
+    }
     values.set(flag, value);
   }
-  return { ok: true, values };
+  return { ok: true, values, repeated };
 }
 
 /** --model 的缺省与校验（两子命令同口径） */
@@ -312,7 +334,11 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     return { ok: false, message: booleanFlags.message };
   }
   const flagTokens = booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.tokens : rest;
-  const flags = parseFlags(flagTokens, command === "review" ? KNOWN_REVIEW_FLAGS : KNOWN_SMOKE_FLAGS);
+  const flags = parseFlags(
+    flagTokens,
+    command === "review" ? KNOWN_REVIEW_FLAGS : KNOWN_SMOKE_FLAGS,
+    command === "review" ? REPEATABLE_REVIEW_FLAGS : [],
+  );
   if (!flags.ok) {
     return flags;
   }
@@ -323,7 +349,12 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   if (command === "smoke") {
     return { ok: true, command: "smoke", args: { model: model.model } };
   }
-  return parseReviewArgs(flags.values, model.model, booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.strict : false);
+  return parseReviewArgs(
+    flags.values,
+    flags.repeated,
+    model.model,
+    booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.strict : false,
+  );
 }
 
 /**
@@ -347,6 +378,7 @@ function stripReviewBooleanFlags(rest: readonly string[]):
 /** review 面必填与缺省：--repo / --mr（caseId = 文件名去扩展名）、--config 缺省 E（ADR-0011 切流）、--issue 缺省空 */
 function parseReviewArgs(
   values: Map<string, string>,
+  repeated: ReadonlyMap<string, readonly string[]>,
   model: string,
   strict: boolean,
 ): { readonly ok: true; readonly command: "review"; readonly args: ReviewCliArgs } | { readonly ok: false; readonly message: string } {
@@ -362,7 +394,7 @@ function parseReviewArgs(
   if (!(configRaw in CONFIGS)) {
     return { ok: false, message: `invalid --config ${JSON.stringify(configRaw)}: expected one of A, B, C, D, E, F` };
   }
-  const ruleSkillZip = values.get("--rule-skill-zip");
+  const ruleSkillZips = repeated.get("--rule-skill-zip");
   const ruleSkillName = values.get("--rule-skill-name");
 
   return {
@@ -376,7 +408,7 @@ function parseReviewArgs(
       issue: values.get("--issue") ?? "",
       out: values.get("--out") ?? DEFAULT_OUT_DIR,
       model,
-      ...(ruleSkillZip !== undefined ? { ruleSkillZip } : {}),
+      ...(ruleSkillZips !== undefined ? { ruleSkillZips } : {}),
       ...(ruleSkillName !== undefined ? { ruleSkillName } : {}),
       ...(strict ? { strictRuleSkill: true } : {}),
     },

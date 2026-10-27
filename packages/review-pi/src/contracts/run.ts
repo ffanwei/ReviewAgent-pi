@@ -105,11 +105,12 @@ export interface RuleSkillAuditDiagnostic {
 }
 
 /**
- * 规则 Skill 审计留痕（ADR-0012 / config F：审计文件尾键）。
+ * 规则 Skill 装载留痕（ADR-0014 / config F：审计文件尾键）。
+ * 每装载一个 zip 一条，顺序 = CLI 传入顺序（或约定目录的文件名序）。
  * `source` = 归档来源（仓库相对 POSIX）；`digest` = zip 内容 sha256；
  * `name` = 装载的 skill 名（降级时为空串）；`degradedReason` 在场即降级；
  * `diagnostics` = 内核装载 warning（path 已净化为缓存目录相对形态）。
- * 非 F 配置 / 未装载时省键（缺席纪律）。
+ * 非 F 配置时省键（缺席纪律）；F 恒为数组（N=0 ⇒ 空数组）。
  */
 export interface RuleSkillAudit {
   readonly source: string;
@@ -117,6 +118,37 @@ export interface RuleSkillAudit {
   readonly name: string;
   readonly degradedReason?: string;
   readonly diagnostics?: readonly RuleSkillAuditDiagnostic[];
+}
+
+/** skill pass 状态三态（ADR-0014：跑通 0 候选是合法 empty，不是降级） */
+export type RuleSkillPassStatus = "ok" | "empty" | "failed";
+
+/** 失败发生的环节（把「执行失败」进一步可诊断化；装载降级只进 `ruleSkill[]`，bash 白名单拒绝不算失败） */
+export type RuleSkillFailureStage = "parse" | "session";
+
+/**
+ * 一次 skill 会话的执行留痕（ADR-0014：粒度 = round × skill）。
+ * `phaseLog` 不承载 skill 回合——两者并列，各自单纯。
+ *
+ * - `candidateCount` = 该会话原始产出的候选条数（未去重）；
+ * - `mergedCount` = 被去重合并掉的条数（含「与主候选重复」被合并的；账目闭合：
+ *   `candidateCount - mergedCount` = 实际并入候选流的条数）；
+ * - `ruleIds` = 该会话候选引用的规则 id（首见序、去重）；
+ * - `transcriptFile` = 独立转录文件名（run 输出目录内，basename）；
+ * - `degradedReason` / `failureStage` = 失败或降级的可诊断留痕。
+ */
+export interface RuleSkillPassRecord {
+  readonly round: number;
+  readonly skill: string;
+  readonly status: RuleSkillPassStatus;
+  readonly requestCount: number;
+  readonly toolCallCount: number;
+  readonly candidateCount: number;
+  readonly mergedCount: number;
+  readonly ruleIds?: readonly string[];
+  readonly transcriptFile?: string;
+  readonly degradedReason?: string;
+  readonly failureStage?: RuleSkillFailureStage;
 }
 
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
@@ -133,8 +165,13 @@ export interface RunAudit {
   readonly fullRepo?: FullRepoRecord;
   /** config E Context Ledger 快照（非 E 配置缺省） */
   readonly ledger?: readonly LedgerEntry[];
-  /** config F 规则 Skill 留痕（非 F 配置 / 未装载时缺省） */
-  readonly ruleSkill?: RuleSkillAudit;
+  /**
+   * config F 规则 Skill 装载留痕（ADR-0014：每 zip 一条、CLI 序）。
+   * 非 F 配置缺省省键；F 恒为数组（N=0 ⇒ 空数组）。
+   */
+  readonly ruleSkill?: readonly RuleSkillAudit[];
+  /** config F skill 会话执行留痕（粒度 round × skill；非 F 缺省省键，F 恒为数组：N=0 ⇒ 空数组） */
+  readonly skillPassLog?: readonly RuleSkillPassRecord[];
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

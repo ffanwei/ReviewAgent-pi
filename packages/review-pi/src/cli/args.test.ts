@@ -87,16 +87,34 @@ test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule
       issue: "",
       out: "review-pi-output",
       model: REVIEW_MODEL_ID,
-      ruleSkillZip: "packs/rules.zip",
+      ruleSkillZips: ["packs/rules.zip"],
       ruleSkillName: "sample-rule",
       strictRuleSkill: true,
     },
   });
 });
 
+test("--rule-skill-zip 可重复，顺序 = CLI 顺序（ADR-0014 多包）", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr",
+    "m.diff",
+    "--rule-skill-zip",
+    "b.zip",
+    "--rule-skill-zip",
+    "a.zip",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillZips).toEqual([
+    "b.zip",
+    "a.zip",
+  ]);
+});
+
 test("规则 Skill 旗标缺席即省键（A–E 行为逐字不变）", () => {
   const parsed = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"]);
-  expect(parsed.ok && parsed.command === "review" && "ruleSkillZip" in parsed.args).toBe(false);
+  expect(parsed.ok && parsed.command === "review" && "ruleSkillZips" in parsed.args).toBe(false);
   expect(parsed.ok && parsed.command === "review" && "strictRuleSkill" in parsed.args).toBe(false);
 });
 

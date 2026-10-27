@@ -3,20 +3,22 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audit-writer.js";
 import { CONFIGS, type ConfigId, type ReviewConfig } from "../contracts/config.js";
 import type { Finding } from "../contracts/finding.js";
+import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmMessage } from "../contracts/llm.js";
 import { DEFAULT_PREFETCH_BUDGETS } from "../contracts/prefetch.js";
-import type { RuleSkillAudit, RunResult } from "../contracts/run.js";
+import type { RuleSkillAudit, RuleSkillPassRecord, RunAudit, RunResult } from "../contracts/run.js";
 import { buildRunRecord, runDirPath, writeRunRecord, type RunRecord } from "../experiment/run-record.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
 import { buildTranscript, writeTranscript, type AgentTranscriptCapture } from "../export/transcript.js";
-import { buildRuleSkillBrief, RULE_CHECK_PHASE_INDEX } from "../knowledge/rule-skill-brief.js";
-import { loadRuleSkill, type RuleSkill } from "../knowledge/rule-skill.js";
+import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
+import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
 import { buildInitialContextMessages, buildInitialUserMessage } from "../loop/messages.js";
 import { runReviewLoop, type ReviewTurnRunner } from "../loop/review-loop.js";
 import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID, runReviewTurn } from "../provider/pi-client.js";
 import { piUsageToLlmUsage } from "../provider/usage-map.js";
-import { buildReviewToolkit } from "../tools/toolkit.js";
+import { buildReviewToolkit, type ReviewToolkit } from "../tools/toolkit.js";
+import { createContextLedger } from "../tools/ledger.js";
 import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import {
   DEFAULT_FULL_REPO_BUDGET_CHARS,
@@ -72,14 +74,16 @@ export interface ReviewRunInput {
   readonly persistRecord?: boolean;
   /** 起始时间戳（测试确定性钩子；缺省当前时间） */
   readonly startedAt?: Date;
-  /** 规则 Skill 显式 zip 路径（--rule-skill-zip；缺省扫 <repoPath>/.review-rules/） */
+  /** 规则 Skill 显式 zip 路径（--rule-skill-zip；单数兼容入口） */
   readonly ruleSkillZip?: string;
-  /** 规则 Skill 指定名（--rule-skill-name；多包 / 包内多 skill 消歧） */
+  /** 规则 Skill 显式 zip 列表（--rule-skill-zip 可重复；顺序 = 执行顺序） */
+  readonly ruleSkillZips?: readonly string[];
+  /** 规则 Skill 指定名（--rule-skill-name；包内多 skill 消歧，逐包生效） */
   readonly ruleSkillName?: string;
   /** 规则 Skill 严格模式（--strict-rule-skill）：装载失败抛错而非降级 */
   readonly strictRuleSkill?: boolean;
   /** 规则 Skill 装载器注入缝（测试注入假实现；缺省真装载器） */
-  readonly ruleSkillLoader?: typeof loadRuleSkill;
+  readonly ruleSkillLoader?: typeof loadRuleSkills;
 }
 
 export interface ReviewRunResult {
@@ -297,25 +301,31 @@ async function runToolDrivenReview(
     ledgerMode: config.ledger ? "enabled" : "inert",
   });
 
-  // 规则 Skill（ADR-0012 / config F）：**在 new Agent 之前**完成定位 → 解压前
-  // 审计 → 解压 → 复核 → 装载。降级时不注入简报（行为 = E）；诊断/降级原因
-  // 进审计留痕。cacheRoot 落在 run 输出根（绝不写回被检视仓库）。
-  const loadRuleSkillFn = input.ruleSkillLoader ?? loadRuleSkill;
-  const ruleSkill = config.ruleSkill
-    ? await loadRuleSkillFn({
+  // 规则 Skill（ADR-0012 / ADR-0014 / config F）：**在 new Agent 之前**完成
+  // 定位 → 解压前审计 → 解压 → 复核 → 装载。多 zip 按 CLI 顺序；降级包不跑
+  // 会话（装载事实进 `ruleSkill[]`）。cacheRoot 落在 run 输出根（绝不写回仓库）。
+  const loadRuleSkillsFn = input.ruleSkillLoader ?? loadRuleSkills;
+  const explicitZips =
+    input.ruleSkillZips ?? (input.ruleSkillZip !== undefined ? [input.ruleSkillZip] : undefined);
+  const ruleSkills: readonly RuleSkill[] = config.ruleSkill
+    ? await loadRuleSkillsFn({
         repoPath: input.repoPath,
         cacheRoot: path.join(input.runsRoot, input.experimentId, ".cache", "rule-skills"),
-        ...(input.ruleSkillZip !== undefined ? { explicitZipPath: input.ruleSkillZip } : {}),
+        ...(explicitZips !== undefined ? { explicitZipPaths: explicitZips } : {}),
         ...(input.ruleSkillName !== undefined ? { skillName: input.ruleSkillName } : {}),
         ...(input.strictRuleSkill !== undefined ? { strict: input.strictRuleSkill } : {}),
       })
-    : undefined;
-  const ruleSkillAudit = ruleSkill !== undefined ? toRuleSkillAudit(ruleSkill) : undefined;
-  // 简报预算在 loop 之前算好（候选阶段唯一字节差来源；降级不注入）
-  const ruleSkillBrief =
-    ruleSkill !== undefined && ruleSkill.degradedReason === undefined
-      ? buildRuleSkillBrief(ruleSkill)
-      : undefined;
+    : [];
+  const ruleSkillAudit = config.ruleSkill ? ruleSkills.map(toRuleSkillAudit) : undefined;
+  // skill 会话的七工具 toolkit：每个 skill 按 Phase-5 ledger 快照分叉一次
+  // （skill 之间互不可见；skill 读取不污染主账本）
+  const skillToolkitFor = (seed: readonly LedgerEntry[]): ReviewToolkit =>
+    buildReviewToolkit({
+      repoPath: input.repoPath,
+      diff: input.diff,
+      ...(repo !== undefined ? { repo } : {}),
+      ledger: createContextLedger(seed),
+    });
 
   const outcome = await runAgentReviewLoop({
     systemPrompt: SYSTEM_PROMPT,
@@ -326,9 +336,9 @@ async function runToolDrivenReview(
     ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
     fetch: input.fetch,
     includeLedgerAudit: config.ledger,
-    // 规则 Skill 简报只拼进候选阶段那条消息（followUpMode one-at-a-time）
-    ...(ruleSkillBrief !== undefined
-      ? { phaseBrief: (index: number) => (index === RULE_CHECK_PHASE_INDEX ? ruleSkillBrief : undefined) }
+    // config F：Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
+    ...(config.ruleSkill
+      ? { skillPass: { skills: ruleSkills, toolkitFor: skillToolkitFor } }
       : {}),
   });
 
@@ -336,6 +346,22 @@ async function runToolDrivenReview(
   const finishedAt = new Date();
   const runId = buildRunId(startedAt, configId, input.caseId);
   const auditDir = buildAuditDir(input, configId);
+  // skill 会话独立转录（ADR-0014 决策 13）：先落盘，再把 basename 回填到
+  // skillPassLog（主转录/审计据此引用）
+  const skillPassLog = await persistSkillTranscripts({
+    input,
+    configId,
+    runId,
+    finishedAt,
+    records: outcome.skillPassLog,
+    transcripts: outcome.skillTranscripts,
+  });
+  const audit: RunAudit = {
+    ...outcome.audit,
+    ...(fullRepo !== undefined ? { fullRepo: fullRepo.record } : {}),
+    ...(ruleSkillAudit !== undefined ? { ruleSkill: ruleSkillAudit } : {}),
+    ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog } : {}),
+  };
   const auditContent = buildAuditFileContent({
     runId,
     caseId: input.caseId,
@@ -348,10 +374,7 @@ async function runToolDrivenReview(
     toolCalls: outcome.toolCalls,
     usage: outcome.usage,
     findings: outcome.findings,
-    audit: {
-      ...outcome.audit,
-      ...(ruleSkillAudit !== undefined ? { ruleSkill: ruleSkillAudit } : {}),
-    },
+    audit,
     ...(fullRepo !== undefined ? { fullRepo: fullRepo.record } : {}),
     // E 的 ledger 快照经 outcome.audit 透传（恒投影——含空数组形态）
     ...(outcome.audit.ledger !== undefined ? { ledger: outcome.audit.ledger } : {}),
@@ -387,11 +410,7 @@ async function runToolDrivenReview(
     usage: outcome.usage,
     rounds: outcome.rounds,
     toolCalls: outcome.toolCalls,
-    audit: {
-      ...outcome.audit,
-      ...(fullRepo !== undefined ? { fullRepo: fullRepo.record } : {}),
-      ...(ruleSkillAudit !== undefined ? { ruleSkill: ruleSkillAudit } : {}),
-    },
+    audit,
     auditPath,
     // 域外显式降级标注（#12）：界内省键（边界内与无护栏时逐字节一致）
     ...(boundary.degraded ? { domainWarning: boundary.domainWarning } : {}),
@@ -422,6 +441,75 @@ function runOutputDir(input: ReviewRunInput, configId: ConfigId): string {
     caseId: input.caseId,
     configId,
   });
+}
+
+/**
+ * skill 会话转录落盘（ADR-0014 决策 13）：每个会话一份，文件名后缀
+ * `-skill-<name>-r<round>`（同名 skill 重复时追加序号），返回已回填
+ * `transcriptFile`（basename）的 skillPassLog。
+ */
+async function persistSkillTranscripts(args: {
+  readonly input: ReviewRunInput;
+  readonly configId: ConfigId;
+  readonly runId: string;
+  readonly finishedAt: Date;
+  readonly records: readonly RuleSkillPassRecord[];
+  readonly transcripts: readonly SkillPassTranscript[];
+}): Promise<readonly RuleSkillPassRecord[]> {
+  if (args.transcripts.length === 0) {
+    return args.records;
+  }
+  const suffixes = uniqueTranscriptSuffixes(args.records);
+  const enriched = [...args.records];
+  // 转录是记录的按序子集（没发出过请求的失败会话没有转录）：从上次命中之后
+  // 继续找 (round, skill) 相同的记录，命中即回填 basename。
+  let searchFrom = 0;
+  for (const transcript of args.transcripts) {
+    const index = enriched.findIndex(
+      (record, position) =>
+        position >= searchFrom &&
+        record.round === transcript.round &&
+        record.skill === transcript.skill,
+    );
+    if (index < 0) {
+      continue;
+    }
+    searchFrom = index + 1;
+    const content = buildTranscript({
+      runId: args.runId,
+      caseId: args.input.caseId,
+      configId: args.configId,
+      repoPath: args.input.repoPath,
+      systemPrompt: SYSTEM_PROMPT,
+      capture: transcript.capture,
+      complete: transcript.complete,
+      truncated: transcript.truncated,
+      finishedAt: args.finishedAt,
+      idSuffix: suffixes[index] ?? defaultTranscriptSuffix(transcript),
+    });
+    const filePath = await writeTranscript(runOutputDir(args.input, args.configId), content);
+    const record = enriched[index];
+    if (record !== undefined) {
+      enriched[index] = { ...record, transcriptFile: path.basename(filePath) };
+    }
+  }
+  return enriched;
+}
+
+/** 每个 skill pass 的稳定文件名后缀（同名 skill 重复时追加 -2、-3…） */
+function uniqueTranscriptSuffixes(records: readonly RuleSkillPassRecord[]): readonly string[] {
+  const seen = new Map<string, number>();
+  return records.map((record) => {
+    const base = defaultTranscriptSuffix({ round: record.round, skill: record.skill });
+    const count = (seen.get(base) ?? 0) + 1;
+    seen.set(base, count);
+    return count === 1 ? base : `${base}-${count}`;
+  });
+}
+
+function defaultTranscriptSuffix(target: { readonly round: number; readonly skill: string }): string {
+  const safe = target.skill.replace(/[^A-Za-z0-9_-]/g, "_");
+  return `-skill-${safe}-r${target.round}`;
 }
 
 /** 检视转录落盘（C/D/E/F）：`<runOutputDir>/session-<firstRequestAt>-...json`；失败抛错 */

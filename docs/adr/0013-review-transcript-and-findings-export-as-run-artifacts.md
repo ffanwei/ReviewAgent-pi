@@ -1,6 +1,6 @@
 # 0013. 检视转录与检视意见导出为落盘产物
 
-**状态**：已接受（2026-10-26，用户经 grill-with-docs 五轮逐项决策 Q1–Q9 + 阶段划分）
+**状态**：已接受（2026-10-26，用户经 grill-with-docs 五轮逐项决策 Q1–Q9 + 阶段划分）；**部分被 [ADR-0014](0014-rule-skill-review-pass-after-candidates-phase.md) 扩展（2026-10-27）**——决策 1 的文件名契约新增 `-skill-<name>-r<round>` 后缀族（config F 的每个 skill 会话各落一份独立转录，主转录契约不变）
 **关联**：ADR-0009（「Agent 状态与事件模型／会话·审计投影」属内核变量面）、ADR-0010（检视输出恒英文 + 核外翻译投影——本 ADR **只引用、不改写** 它）、CONTEXT.md（「检视转录」「检视意见导出」）、`.scratch/transcript-reviews-export/spec.md`
 
 ## Context

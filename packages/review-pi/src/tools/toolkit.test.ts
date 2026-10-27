@@ -283,6 +283,29 @@ test("Ledger 惰性态：永不命中、快照恒空（C/D 行为零变化）", 
   expect(functional.referenceIfLoaded("file", "x")).toBe("Already loaded: ctx#001 (x)");
 });
 
+test("Ledger 分叉态（ADR-0014）：沿用种子 id 与顺序，新登记接最大序号之后", () => {
+  const seed = [
+    { id: "ctx#001", kind: "file" as const, description: "review.get_file a.java" },
+    { id: "ctx#002", kind: "evidence" as const, description: "review.get_diff" },
+  ];
+  const forked = createContextLedger(seed);
+  // 种子可命中（skill 会话看到主会话已加载过的引用）
+  expect(forked.referenceIfLoaded("file", "review.get_file a.java")).toBe(
+    "Already loaded: ctx#001 (review.get_file a.java)",
+  );
+  forked.register("file", "review.get_file b.java");
+  expect(forked.snapshot().map((entry) => entry.id)).toEqual(["ctx#001", "ctx#002", "ctx#003"]);
+  // 分叉与种子互不影响（skill 之间互不可见）
+  expect(seed.map((entry) => entry.id)).toEqual(["ctx#001", "ctx#002"]);
+  expect(createContextLedger(seed).snapshot()).toEqual(seed);
+  // 非连续种子按最大序号续发（防新旧 id 碰撞）
+  const sparse = createContextLedger([
+    { id: "ctx#007", kind: "file", description: "review.get_file c.java" },
+  ]);
+  sparse.register("file", "review.get_file d.java");
+  expect(sparse.snapshot().map((entry) => entry.id)).toEqual(["ctx#007", "ctx#008"]);
+});
+
 test("executeTool：未知名为有界错误；schema 面固定七工具", async () => {
   const tk = toolkit();
   await expect(tk.executeTool("review.nope", {})).rejects.toThrow(

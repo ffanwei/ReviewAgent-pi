@@ -11,6 +11,7 @@ import type {
   FullRepoRecord,
   PhaseRecord,
   RuleSkillAudit,
+  RuleSkillPassRecord,
   RunAudit,
   RunResult,
   ToolCallRecord,
@@ -44,8 +45,10 @@ export interface AuditLight {
   readonly fullRepo?: FullRepoRecord;
   /** config E：Context Ledger 快照（恒投影——零工具调用为空数组；C/D 键省略） */
   readonly ledger?: readonly LedgerEntry[];
-  /** config F：规则 Skill 留痕（非 F 配置 / 未装载时省键） */
-  readonly ruleSkill?: RuleSkillAudit;
+  /** config F：规则 Skill 装载留痕（非 F 配置 / 未装载时省键） */
+  readonly ruleSkill?: readonly RuleSkillAudit[];
+  /** config F：skill 会话执行留痕（round × skill；非 F 配置省键） */
+  readonly skillPassLog?: readonly RuleSkillPassRecord[];
 }
 
 /** RunResult 快照（audit 以轻量投影落盘） */
@@ -107,6 +110,7 @@ export function toAuditLight(audit: RunAudit): AuditLight {
     ...(audit.fullRepo !== undefined ? { fullRepo: audit.fullRepo } : {}),
     ...(audit.ledger !== undefined ? { ledger: audit.ledger } : {}),
     ...(audit.ruleSkill !== undefined ? { ruleSkill: audit.ruleSkill } : {}),
+    ...(audit.skillPassLog !== undefined ? { skillPassLog: audit.skillPassLog } : {}),
   };
 }
 

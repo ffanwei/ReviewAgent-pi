@@ -1,5 +1,6 @@
 import type { AssistantMessage, Context, FetchFunction, Model, TextContent } from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { ToolSchema, WireMessage } from "../contracts/llm.js";
 
 /**
@@ -120,6 +121,23 @@ export function reviewModelOf(
     id: requested,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
   };
+}
+
+/**
+ * 评审流函数（Agent 驱动面单源）：真 provider + 锁档 effort + 注入的传输层。
+ * 主会话与 skill 会话共用同一构造，保证「同一 Zone A + 同一序列化画像」。
+ */
+export function reviewStreamFn(input: {
+  readonly apiKey: string;
+  readonly fetch?: FetchFunction;
+}): StreamFn {
+  return (model, context, options) =>
+    deepseekProvider().stream(model as Model<"openai-completions">, context, {
+      ...options,
+      apiKey: input.apiKey,
+      ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+      reasoningEffort: LOCKED_REASONING_EFFORT,
+    });
 }
 
 /** 校验并投影 onPayload payload（边界校验 fail fast；扩展字段透传不裁剪）。

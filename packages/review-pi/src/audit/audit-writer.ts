@@ -12,6 +12,7 @@ import type {
   MrBoundaryRecord,
   PhaseRecord,
   RuleSkillAudit,
+  RuleSkillPassRecord,
   RunAudit,
   ToolCallRecord,
   WireRequest,
@@ -60,8 +61,10 @@ export interface AuditFileContent {
    * （同 prefetch/fullRepo/ledger 先例）。
    */
   readonly mrBoundary?: MrBoundaryRecord;
-  /** config F 规则 Skill 留痕（非 F 配置 / 未装载时缺省；pi 线可选尾键纪律） */
-  readonly ruleSkill?: RuleSkillAudit;
+  /** config F 规则 Skill 装载留痕（非 F 配置缺省；F 恒为数组，N=0 ⇒ 空数组） */
+  readonly ruleSkill?: readonly RuleSkillAudit[];
+  /** config F skill 会话执行留痕（round × skill；非 F 配置缺省） */
+  readonly skillPassLog?: readonly RuleSkillPassRecord[];
 }
 
 /** runId：毫秒时间戳 + 配置 + 用例，文件名安全 */
@@ -114,6 +117,7 @@ export function buildAuditFileContent(args: {
     ...(args.ledger !== undefined ? { ledger: args.ledger } : {}),
     ...(args.mrBoundary !== undefined ? { mrBoundary: args.mrBoundary } : {}),
     ...(args.audit.ruleSkill !== undefined ? { ruleSkill: args.audit.ruleSkill } : {}),
+    ...(args.audit.skillPassLog !== undefined ? { skillPassLog: args.audit.skillPassLog } : {}),
   };
 }
 

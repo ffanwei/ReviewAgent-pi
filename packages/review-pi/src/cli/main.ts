@@ -75,7 +75,7 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
     runsRoot,
     experimentId: CLI_EXPERIMENT_ID,
     rep: 1,
-    ...(args.ruleSkillZip !== undefined ? { ruleSkillZip: args.ruleSkillZip } : {}),
+    ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
     ...(args.ruleSkillName !== undefined ? { ruleSkillName: args.ruleSkillName } : {}),
     ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
   });

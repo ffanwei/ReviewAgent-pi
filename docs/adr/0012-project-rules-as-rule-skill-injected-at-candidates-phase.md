@@ -1,6 +1,6 @@
 # 0012. 项目规则以「规则 Skill」承载，作为 config F 在候选阶段注入
 
-**状态**：已接受（2026-10-26，用户经 grill 逐项决策 Q1–Q16）
+**状态**：已接受（2026-10-26，用户经 grill 逐项决策 Q1–Q16）；**部分被 [ADR-0014](0014-rule-skill-review-pass-after-candidates-phase.md) 取代（2026-10-27）**——决策 3（注入点 = Phase 5 消息尾部）整条、决策 2 中的「单一 zip」限定，以及配套设计文档 §6 验收 2（审计单对象）；其余决策（F 的配置身份、不进 `search_rule`、降级不阻断、伪配置位）继续有效
 **关联**：ADR-0009（pi 内核从 0 重写）、ADR-0011（切流 config E——F 是 E 基线上的消融位）、CONTEXT.md（Zone B「项目规则」槽位 / C3 Knowledge / 规则 Skill 术语）、`docs/design/规则 Skill 与 config F 方案——项目规则检视落地.md`
 
 ## Context

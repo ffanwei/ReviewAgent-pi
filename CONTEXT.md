@@ -130,6 +130,20 @@ _Avoid_: CWE（那是通用公共分类）
 被检视项目自带的规则技能包，随项目投放并随项目版本化，为该项目提供"按项目规则怎么检视"的指引。
 _Avoid_: 项目规则（Zone B 稳定中层内的规则槽位，另一落点）、C3 Knowledge（规则 Skill 不进入检索语料）、skill（裸称会与开发态技能包及内核 skill 混淆）
 
+**规则检索（Rule Retrieval）**:
+依据规则 Skill 的 SKILL.md 指引，把该 skill 的规则库收敛为「本次变更适用的规则集」的过程；其产物是适用规则集，findings 是它的下游。
+_Avoid_: 规则执行（暗示「跑脚本」这一实现手段）、规则装载（只指 zip 的装载动作）
+
+**规则合并（Rule Merge）**:
+多个规则 Skill 的产出汇入同一条候选流、共用同一套证据纪律的合并语义；按传入先后执行，合并只做并置、不做语义裁决。
+_代码面_: `mergeSkillCandidates`（`gate/candidate-merge.ts`），去重键 = `(file, line, category)`。
+_Avoid_: 结果聚合、取并集（都太泛）、规则裁决（合并不判定谁对）
+
+**规则技能执行器（Rule Skill Executor）**:
+执行规则检索的运行时实体：以检视会话在候选阶段结束时的上下文为种子，按传入顺序逐个 skill 独立运行，把每个规则 Skill 收敛为适用规则集并产出候选 findings，再交回检视会话裁定。
+_代码面_: 一次执行称 **skill pass**（`knowledge/skill-pass.ts`；审计留痕 `skillPassLog[]`）；单个执行器的运行期依赖收在 `tools/skill-bash.ts`。
+_Avoid_: skill 运行（与内核 Session / run 撞名）、脚本运行器（窄化为「只跑脚本」，丢掉「按 SKILL.md 执行」）
+
 ### 度量
 
 **RIE**:

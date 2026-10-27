@@ -1,24 +1,21 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { AgentMessage, AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, FetchFunction, Model } from "@earendil-works/pi-ai";
-import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
+import type { AssistantMessage, FetchFunction } from "@earendil-works/pi-ai";
 import type { Finding } from "../contracts/finding.js";
+import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmMessage, LlmUsage } from "../contracts/llm.js";
 import type {
   CandidateRejection,
   PhaseRecord,
+  RuleSkillPassRecord,
   RunAudit,
   ToolCallRecord,
   WireRequest,
 } from "../contracts/run.js";
 import type { AgentTranscriptCapture } from "../export/transcript.js";
 import { applyCandidateGate } from "../gate/candidate-gate.js";
-import {
-  assistantText,
-  captureWire,
-  LOCKED_REASONING_EFFORT,
-  reviewModelOf,
-} from "../provider/pi-client.js";
+import { mergeSkillCandidates, type SkillCandidateBatch } from "../gate/candidate-merge.js";
+import { assistantText, captureWire, reviewModelOf, reviewStreamFn } from "../provider/pi-client.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { classifyCacheBreaks } from "./cache-break.js";
 import {
@@ -31,7 +28,11 @@ import {
 import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
 import { PHASE_COUNT, PHASE_INSTRUCTIONS, PHASE_ORDER } from "./phases.js";
 import { fromWireToolName, toWireToolName } from "../tools/registry.js";
+import { knownArgumentKeys, stripUnknownArguments } from "../tools/tool-arguments.js";
 import type { ReviewToolkit } from "../tools/toolkit.js";
+import type { RuleSkill } from "../knowledge/rule-skill.js";
+import { runSkillPass, type SkillPassTranscript } from "../knowledge/skill-pass.js";
+import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
 
 // agentLoop 钩子驱动循环（#6 P3a，config C/D/E）：六阶段 + 工具子循环跑在
 // pi-agent-core Agent 上，三个预定缝承载 review 语义——
@@ -49,6 +50,10 @@ import type { ReviewToolkit } from "../tools/toolkit.js";
 // 超出即返回 "Error: tool call budget exhausted"（= 审计 resultSummary =
 // wire tool 消息 content，t-series 真源字节）；truncationReasons 单列
 // TOOL_BUDGET_EXHAUSTED 但不翻转 truncated（截断语义只归 MAX_ROUNDS）。
+//
+// config F（ADR-0014）：Phase 5 文本回合收尾后、Phase 6 指令注入前，顺序跑
+// 各 skill 的独立检视会话（`knowledge/skill-pass.ts`）。skill 回合不进
+// `phaseLog`（两者并列），候选在候选门之前跨 skill 去重，Phase 6 一次裁定。
 
 export interface AgentReviewLoopInputs {
   readonly systemPrompt: string;
@@ -66,24 +71,43 @@ export interface AgentReviewLoopInputs {
   /** 审计投影 ledger 键（config E）；缺省不投影 */
   readonly includeLedgerAudit?: boolean;
   /**
-   * 阶段附加简报（0-based 阶段下标）：某阶段消息尾部的追加内容。
-   * 缺省（undefined）= 逐字节不变（A–E 冻结面）。config F 用它在候选阶段
-   * （RULE_CHECK_PHASE_INDEX）注入规则 Skill 简报。简报并进同一条 user
-   * 消息——followUpMode 缺省 one-at-a-time，连发两条会变成两个 run。
+   * skill 检视会话（ADR-0014 / config F）：Phase 5 文本回合结束后、Phase 6
+   * 指令注入之前顺序执行。缺省 = 无 skill 会话（A–E 与 N=0 的 F 逐字节不变）。
    */
-  readonly phaseBrief?: (phaseIndex: number) => string | undefined;
+  readonly skillPass?: SkillPassRequest;
+}
+
+/** skill 会话接线（由 run 层提供 pack 与 toolkit 工厂） */
+export interface SkillPassRequest {
+  /** 已装载的规则 Skill（CLI 顺序；降级包不跑会话） */
+  readonly skills: readonly RuleSkill[];
+  /**
+   * 按 Phase-5 ledger 快照分叉七工具 toolkit。每个 skill 调用一次：skill 之间
+   * 互不可见，且 skill 会话的读取不会污染主账本。
+   */
+  readonly toolkitFor: (seedLedgerSnapshot: readonly LedgerEntry[]) => ReviewToolkit;
 }
 
 export interface AgentReviewLoopOutcome {
   readonly findings: readonly Finding[];
+  /** 累计 usage：主会话 + skill 会话（skill 的真实成本不隐藏，ADR-0014 负后果一节已明示） */
   readonly usage: LlmUsage;
   readonly rounds: number;
+  /**
+   * 工具调用总数：主会话 + skill 会话。`audit.toolCallLog` 只记主会话的逐项
+   * 记录（skill 会话属非测量档），skill 的调用数按会话计在
+   * `skillPassLog[].toolCallCount`——两个口径不互斥，各自单一。
+   */
   readonly toolCalls: number;
   /** 验证 complete 信号（= !truncated） */
   readonly complete: boolean;
   readonly audit: RunAudit;
   /** Agent 侧现场（检视转录原料，ADR-0013）：messages 快照 + 首次模型请求时刻 + 模型身份 */
   readonly transcript: AgentTranscriptCapture;
+  /** config F：每轮 × 每 skill 的执行留痕（无 skill 会话时为空数组） */
+  readonly skillPassLog: readonly RuleSkillPassRecord[];
+  /** config F：每个 skill 会话的独立转录原料（写盘在 run 层） */
+  readonly skillTranscripts: readonly SkillPassTranscript[];
 }
 
 /** 深解析阶段（0-based 指令下标）：候选与裁决的解析点 */
@@ -112,6 +136,11 @@ export async function runAgentReviewLoop(
   let emittedIds: ReadonlySet<string> = new Set();
   let truncated = false;
   let complete = false;
+  // config F：skill 会话留痕（与 phaseLog 并列，不混入相位记录）
+  const skillPassLog: RuleSkillPassRecord[] = [];
+  const skillTranscripts: SkillPassTranscript[] = [];
+  let skillToolCalls = 0;
+  let roundSkillBatches: readonly SkillCandidateBatch[] = [];
   // 首次模型请求时刻（唯一新增内核仪器；不是逐请求/逐工具耗时）
   let firstRequestAt: Date | undefined;
 
@@ -155,13 +184,10 @@ export async function runAgentReviewLoop(
     return tool;
   });
 
-  const streamFn: StreamFn = (model, context, options) =>
-    deepseekProvider().stream(model as Model<"openai-completions">, context, {
-      ...options,
-      apiKey: inputs.apiKey,
-      ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
-      reasoningEffort: LOCKED_REASONING_EFFORT,
-    });
+  const streamFn: StreamFn = reviewStreamFn({
+    apiKey: inputs.apiKey,
+    ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
+  });
 
   // followUp 注入缝：shouldStopAfterTurn 闭包引用 agent，先落占位再绑定
   // （只在 agent.prompt 运行期被调用，绑定必然先于首调）
@@ -187,13 +213,13 @@ export async function runAgentReviewLoop(
       requests.push(auditWireCapture(payload));
       phaseRequestCount += 1;
     },
-    shouldStopAfterTurn: (context): boolean => {
+    shouldStopAfterTurn: (context): boolean | Promise<boolean> => {
       const message = context.message;
       usage = addUsage(usage, piUsageToLlmUsage(message.usage));
       if (message.content.some((block) => block.type === "toolCall")) {
         return false;
       }
-      return advancePhase(assistantText(message), enqueueFollowUp);
+      return advancePhase(assistantText(message), enqueueFollowUp, context.context.messages);
     },
   });
   enqueueFollowUp = (message) => {
@@ -223,6 +249,7 @@ export async function runAgentReviewLoop(
     truncated,
     truncationReasons,
     ...(inputs.includeLedgerAudit ? { ledger: inputs.toolkit.ledger.snapshot() } : {}),
+    ...(inputs.skillPass !== undefined ? { skillPassLog } : {}),
   };
   if (firstRequestAt === undefined) {
     throw new Error("internal error: agent review loop finished without a model request");
@@ -236,14 +263,20 @@ export async function runAgentReviewLoop(
     findings,
     usage,
     rounds: round,
-    toolCalls: executedToolCalls,
+    toolCalls: executedToolCalls + skillToolCalls,
     complete,
     audit,
     transcript,
+    skillPassLog,
+    skillTranscripts,
   };
 
   /** 文本轮收尾当前阶段并推进；返回值即 shouldStopAfterTurn 的停止判定 */
-  function advancePhase(replyText: string, followUp: (message: AgentMessage) => void): boolean {
+  async function advancePhase(
+    replyText: string,
+    followUp: (message: AgentMessage) => void,
+    seedMessages: readonly AgentMessage[],
+  ): Promise<boolean> {
     const parsed = parsePhaseReply(replyText);
     const notes: string[] = [];
     if (phaseSkippedToolCalls > 0) {
@@ -258,6 +291,12 @@ export async function runAgentReviewLoop(
       requestCount: phaseRequestCount,
       ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
     });
+
+    // Phase 5 之后、Phase 6 指令之前：顺序跑 skill 检视会话（ADR-0014）。
+    // 种子 = 主会话此刻的 messages 快照；每个 skill 分叉自己的 history 与 ledger。
+    if (phaseIndex === CANDIDATES_PHASE_INDEX) {
+      await runRoundSkillPasses(seedMessages);
+    }
 
     if (phaseIndex < PHASE_COUNT - 1) {
       phaseIndex += 1;
@@ -291,8 +330,63 @@ export async function runAgentReviewLoop(
     roundCandidates = [];
     roundVerdicts = new Map();
     roundComplete = false;
+    roundSkillBatches = [];
     followUp(phaseMessage(0));
     return false;
+  }
+
+  /**
+   * 本轮 skill 检视会话（ADR-0014）：
+   * 1. 每个 skill 一个独立 `Agent`，种子 = 主会话 Phase-5 末 messages 快照；
+   * 2. 会话候选在候选门之前按 (file,line,category) 跨 skill 去重；
+   * 3. 存活候选并入本轮候选流，Phase 6 一次裁定两批；
+   * 4. 装载降级的包不跑会话（装载事实已在 `ruleSkill[]`，不重复记失败）。
+   */
+  async function runRoundSkillPasses(seedMessages: readonly AgentMessage[]): Promise<void> {
+    const request = inputs.skillPass;
+    if (request === undefined) {
+      return;
+    }
+    const ledgerSnapshot = inputs.toolkit.ledger.snapshot();
+    const outcomes: Awaited<ReturnType<typeof runSkillPass>>[] = [];
+    for (const skill of request.skills) {
+      if (skill.degradedReason !== undefined || skill.name.length === 0) {
+        continue;
+      }
+      const outcome = await runSkillPass({
+        round,
+        skill,
+        systemPrompt: inputs.systemPrompt,
+        seedMessages,
+        toolkit: request.toolkitFor(ledgerSnapshot),
+        apiKey: inputs.apiKey,
+        ...(inputs.baseUrl !== undefined ? { baseUrl: inputs.baseUrl } : {}),
+        ...(inputs.modelId !== undefined ? { modelId: inputs.modelId } : {}),
+        ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
+      });
+      outcomes.push(outcome);
+    }
+    if (outcomes.length === 0) {
+      return;
+    }
+
+    const merged = mergeSkillCandidates({
+      primary: roundCandidates,
+      batches: outcomes.map((outcome) => ({
+        skill: outcome.record.skill,
+        candidates: outcome.candidates,
+      })),
+    });
+    roundCandidates = merged.candidates;
+    roundSkillBatches = merged.survivingBatches;
+    outcomes.forEach((outcome, index) => {
+      usage = addUsage(usage, outcome.usage);
+      skillToolCalls += outcome.record.toolCallCount;
+      skillPassLog.push({ ...outcome.record, mergedCount: merged.mergedCounts[index] ?? 0 });
+      if (outcome.transcript !== undefined) {
+        skillTranscripts.push(outcome.transcript);
+      }
+    });
   }
 
   function parsePhaseReply(replyText: string): { readonly note?: string } {
@@ -316,19 +410,22 @@ export async function runAgentReviewLoop(
   }
 
   /**
-   * 阶段消息 = PHASE_INSTRUCTIONS[i]（字节冻结）+ 可选简报。
-   * 缺省简报（inputs.phaseBrief 缺席 / 该下标返回 undefined）逐字节不变；
-   * 有简报时尾部拼 `\n\n<brief>`——config F 的字节差唯一定位点。
+   * 阶段消息 = `PHASE_INSTRUCTIONS[i]`（字节冻结）+ 可选附加段。
+   *
+   * 唯一的附加者是 Phase 6 的 skill 候选清单（ADR-0014：两批候选一次裁定），
+   * 数据在 loop 侧，故由本模块直接拼装——ADR-0012 的 `phaseBrief` 注入缝已
+   * 随该决策退役。无附加时逐字节不变（A–E 冻结面 / N=0 的 F）。
    */
   function phaseMessage(index: number): AgentMessage {
     const instruction = PHASE_INSTRUCTIONS[index];
     if (instruction === undefined) {
       throw new Error(`missing phase instruction at index ${index}`);
     }
-    const brief = inputs.phaseBrief?.(index);
+    const skillBrief =
+      index === VERIFICATION_PHASE_INDEX ? buildSkillCandidatesBrief(roundSkillBatches) : undefined;
     return {
       role: "user",
-      content: brief === undefined ? instruction : `${instruction}\n\n${brief}`,
+      content: skillBrief === undefined ? instruction : `${instruction}\n\n${skillBrief}`,
       timestamp: 0,
     };
   }
@@ -360,28 +457,6 @@ function auditWireCapture(payload: unknown): WireRequest {
     ...wire,
     tools: wire.tools.map((tool) => ({ ...tool, name: fromWireToolName(tool.name) })),
   };
-}
-
-/** schema 已知入参键（prepareArguments 剥未知键的保留集） */
-function knownArgumentKeys(parameters: Record<string, unknown>): ReadonlySet<string> {
-  const properties = parameters.properties;
-  if (typeof properties !== "object" || properties === null) {
-    return new Set();
-  }
-  return new Set(Object.keys(properties));
-}
-
-function stripUnknownArguments(args: unknown, knownKeys: ReadonlySet<string>): Record<string, unknown> {
-  if (typeof args !== "object" || args === null) {
-    return {};
-  }
-  const stripped: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (knownKeys.has(key)) {
-      stripped[key] = value;
-    }
-  }
-  return stripped;
 }
 
 function appendReason(reasons: string[], reason: string): void {

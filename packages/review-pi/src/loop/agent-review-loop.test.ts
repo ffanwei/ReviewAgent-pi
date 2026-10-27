@@ -9,6 +9,7 @@ import { repoFixturePath } from "../testing/repos.js";
 import { buildReviewToolkit } from "../tools/toolkit.js";
 import type { LlmMessage } from "../contracts/llm.js";
 import type { WireMessage } from "../contracts/llm.js";
+import type { RuleSkill } from "../knowledge/rule-skill.js";
 import {
   MAX_TOOL_CALLS,
   MAX_ROUNDS,
@@ -329,4 +330,100 @@ test("provider 错误（stopReason error）：显式抛错，不静默成成功 
       expect((error as Error).message).toMatch(/review turn failed/i);
     },
   );
+});
+
+// ---- config F（ADR-0014）：Phase 5 → skill 会话 → Phase 6 ----
+
+const SKILL_CANDIDATE = {
+  id: "RULE-CHECK@sample-rule@src/main/java/Foo.java:20",
+  severity: "P3",
+  category: "MAINTAINABILITY",
+  file: "src/main/java/Foo.java",
+  line: 20,
+  title: "Unused helper method",
+  description: "The helper is never referenced after the change.",
+  evidence: ["src/main/java/Foo.java:20 private void helper()"],
+  rule: "sample-rule",
+  confidence: 0.7,
+} as const;
+
+test("config F：Phase 5 文本回合后先跑 skill 会话，Phase 6 一次裁定两批候选", async () => {
+  const skill: RuleSkill = {
+    name: "sample-rule",
+    description: "Sample project rule skill",
+    content: "Check every public method for a null guard.",
+    filePath: "C:\\cache\\deadbeef\\sample-rule\\SKILL.md",
+    digest: "deadbeef",
+    source: { kind: "zip", path: ".review-rules/rules.zip" },
+    diagnostics: [],
+  };
+
+  const script = fakeFetch([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    // Phase 5：主候选
+    textReply(phaseText(4), 4),
+    // skill 会话：追加一批候选
+    textReply(`{"candidates":[${JSON.stringify(SKILL_CANDIDATE)}]}`, 5),
+    // Phase 6：两批一起裁定
+    textReply(
+      '{"verdicts":[{"id":"F001","pass":true,"reason":"ok"},{"id":"RULE-CHECK@sample-rule@src/main/java/Foo.java:20","pass":true,"reason":"ok"}],"complete":true}',
+      6,
+    ),
+  ]);
+
+  const outcome = await runAgentReviewLoop({
+    systemPrompt: SYSTEM,
+    initialContextMessages: INITIAL,
+    toolkit: buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF }),
+    apiKey: "test-key",
+    fetch: script.fetch,
+    skillPass: {
+      skills: [skill],
+      toolkitFor: () => buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF }),
+    },
+  });
+
+  // 主链请求仍六条（skill 会话不进主审计 wire log）
+  expect(script.requests).toHaveLength(7);
+  expect(outcome.audit.requests).toHaveLength(6);
+  // skill 回合不进 phaseLog（两者并列）
+  expect(outcome.audit.phaseLog.map((record) => record.phase)).toEqual([
+    "Change Understanding",
+    "Risk Classification",
+    "Context Decision",
+    "Context Retrieval",
+    "Deep Reasoning",
+    "Evidence Verification",
+  ]);
+
+  const phase4 = JSON.parse(outcome.audit.requests[3].wireBody) as {
+    messages: { role: string; content: string }[];
+  };
+  // Phase 4 消息逐字节 = 常量（ADR-0012 的候选阶段注入已随 ADR-0014 退役）
+  expect(phase4.messages.at(-1)?.content).toBe(PHASE_INSTRUCTIONS[3]);
+
+  // Phase 6 = 指令 + skill 候选清单（唯一的附加段）
+  const phase6 = JSON.parse(outcome.audit.requests[5].wireBody) as {
+    messages: { role: string; content: string }[];
+  };
+  const content = phase6.messages.at(-1)?.content ?? "";
+  expect(content).toContain(PHASE_INSTRUCTIONS[5]);
+  expect(content.indexOf(PHASE_INSTRUCTIONS[5])).toBe(0);
+  expect(content).toContain(SKILL_CANDIDATE.id);
+
+  // 执行留痕 + 两批候选都过 gate（主候选在前）
+  expect(outcome.skillPassLog).toHaveLength(1);
+  expect(outcome.skillPassLog[0]).toMatchObject({
+    round: 1,
+    skill: "sample-rule",
+    status: "ok",
+    candidateCount: 1,
+    mergedCount: 0,
+  });
+  expect(outcome.skillTranscripts).toHaveLength(1);
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001", SKILL_CANDIDATE.id]);
+  expect(outcome.toolCalls).toBe(0);
 });

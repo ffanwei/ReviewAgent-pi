@@ -320,6 +320,11 @@ export interface BuildTranscriptInput {
   readonly complete: boolean;
   readonly truncated: boolean;
   readonly finishedAt: Date;
+  /**
+   * 文件名 stem 后缀（ADR-0014：skill 会话独立转录）。
+   * 缺省无后缀 = 主会话转录；skill 用 `-skill-<name>-r<round>` 保唯一。
+   */
+  readonly idSuffix?: string;
 }
 
 /**
@@ -335,7 +340,7 @@ export function buildTranscript(input: BuildTranscriptInput): ReviewTranscript {
   const totals = sumAssistantUsage(input.capture.messages);
   return {
     info: {
-      id: transcriptStem(input.configId, input.caseId, firstRequestAt),
+      id: `${transcriptStem(input.configId, input.caseId, firstRequestAt)}${input.idSuffix ?? ""}`,
       runId: input.runId,
       agent: "review",
       configId: input.configId,

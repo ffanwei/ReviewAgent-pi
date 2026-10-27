@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, expect, test, vi } from "vitest";
 import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
-import { buildRuleSkillBrief } from "../knowledge/rule-skill-brief.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
+import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
 import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
@@ -523,49 +523,77 @@ test("config E:ledger 审计键恒投影(零工具 → 空数组),RunRecord 与�
   expect(record.baseline.audit.fullRepo).toBeUndefined();
 }, 120_000);
 
-// ---- config F（ADR-0012）：规则 Skill 简报只拼进候选阶段（唯一字节差） ----
+// ---- config F（ADR-0014）：Phase 5 之后追加独立 skill 检视会话 ----
+//
+// 请求序：主 Phase 1–5 → skill 会话（CLI 顺序，各一条独立 Agent）→ 主 Phase 6。
+// Phase 1–5 与 E 逐字节相同（Phase 5 消息不再被修改）；Phase 6 的差异只有
+// 尾部追加的 skill 候选清单；N=0 时全链与 E 逐字节相同。
 
-/** 规则型候选（id 前缀 RULE-CHECK@ / rule = skill 名；证据齐备可过候选拦截链） */
-const RULE_CANDIDATE = {
-  id: "RULE-CHECK@src/main/java/com/example/Alpha.java:11",
-  severity: "P2",
-  category: "BUG",
-  file: "src/main/java/com/example/Alpha.java",
-  line: 11,
-  title: "Missing null guard on a public method",
-  description: "A public method dereferences its argument without a null guard, per the project rule.",
-  evidence: ["src/main/java/com/example/Alpha.java:11 public int getBase() {"],
-  rule: "sample-rule",
-  confidence: 0.8,
-} as const;
+const RULE_FILE = "src/main/java/com/example/Alpha.java";
+const OK_REPLY: FakeReply = { text: "ok", usage: ZERO };
 
-function ruleCandidateCorpus(): FakeReply[] {
-  return [
-    { text: "ok", usage: ZERO },
-    { text: "ok", usage: ZERO },
-    { text: "ok", usage: ZERO },
-    { text: "ok", usage: ZERO },
-    { text: `{"candidates":[${JSON.stringify(RULE_CANDIDATE)}]}`, usage: ZERO },
-    {
-      text: `{"verdicts":[{"id":"${RULE_CANDIDATE.id}","pass":true,"reason":"evidence supports"}],"complete":true}`,
-      usage: ZERO,
-    },
-  ];
+/** skill 候选（id 形态 = RULE-CHECK@<skill>@<file>:<line>；证据齐备可过拦截链） */
+function skillCandidate(
+  skill: string,
+  line: number,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: `RULE-CHECK@${skill}@${RULE_FILE}:${line}`,
+    severity: "P2",
+    category: "BUG",
+    file: RULE_FILE,
+    line,
+    title: "Missing null guard on a public method",
+    description: "A public method dereferences its argument without a null guard, per the project rule.",
+    evidence: [`${RULE_FILE}:${line} public int getBase() {`],
+    rule: skill,
+    confidence: 0.8,
+    ...overrides,
+  };
 }
 
-/** 假装载器的产物：filePath 是宿主绝对路径（简报须净化掉） */
-const SAMPLE_RULE_SKILL: RuleSkill = {
-  name: "sample-rule",
-  description: "Sample project rule skill",
-  content: "Check every public method for a null guard.",
-  filePath: "C:\\host\\cache\\deadbeef\\sample-rule\\SKILL.md",
+function candidatesReply(candidates: readonly unknown[]): FakeReply {
+  return { text: JSON.stringify({ candidates }), usage: ZERO };
+}
+
+function allPassVerdicts(ids: readonly string[]): FakeReply {
+  return {
+    text: JSON.stringify({
+      verdicts: ids.map((id) => ({ id, pass: true, reason: "evidence supports" })),
+      complete: true,
+    }),
+    usage: ZERO,
+  };
+}
+
+/** 假装载器产物：filePath 是宿主绝对路径（skill 会话按真实路径给 bash cwd） */
+function skillPack(name: string, overrides: Partial<RuleSkill> = {}): RuleSkill {
+  return {
+    name,
+    description: `Sample project rule skill ${name}`,
+    content: `Check every public method for a null guard (${name}).`,
+    filePath: `C:\\host\\cache\\deadbeef\\${name}\\SKILL.md`,
+    digest: `digest-${name}`,
+    source: { kind: "zip", path: `.review-rules/${name}.zip` },
+    diagnostics: [],
+    ...overrides,
+  };
+}
+
+const SAMPLE_RULE_SKILL = skillPack("sample-rule", {
   digest: "deadbeef",
   source: { kind: "zip", path: ".review-rules/rules.zip" },
-  diagnostics: [],
-};
+});
 
-test("config F:简报只拼进 Phase 5（唯一字节差、无绝对路径），审计留痕，规则 finding 合流", async () => {
-  const eScript = fakeFetch(ruleCandidateCorpus());
+/** skill 会话转录（skillPassLog.transcriptFile → run 输出目录内 basename） */
+function readSkillTranscript(run: { transcriptPath?: string }, file: string): Record<string, unknown> {
+  const dir = path.dirname(run.transcriptPath ?? "");
+  return JSON.parse(readFileSync(path.join(dir, file), "utf8")) as Record<string, unknown>;
+}
+
+test("config F:Phase 1–5 与 E 逐字节相同,Phase 6 追加 skill 候选清单,会话独立转录", async () => {
+  const eScript = fakeFetch(sixPhaseNoToolCorpus());
   const eRun = await runReview({
     caseId: "VUL4J-1",
     repoPath: repoFixturePath("sample"),
@@ -579,7 +607,28 @@ test("config F:简报只拼进 Phase 5（唯一字节差、无绝对路径），
     configId: "E",
   });
 
-  const fScript = fakeFetch(ruleCandidateCorpus());
+  const candidate = skillCandidate("sample-rule", 11, {
+    description:
+      "A public method dereferences its argument without a null guard " +
+      "(rule file: C:\\host\\cache\\deadbeef\\sample-rule\\rules\\01-null-dereference.md).",
+  });
+  // Phase 6 里应是净化后的同一条（skill 会话读真实路径，主会话请求不出现宿主绝对路径）
+  const sanitizedCandidate = skillCandidate("sample-rule", 11, {
+    description:
+      "A public method dereferences its argument without a null guard " +
+      "(rule file: <rule-skill>\\rules\\01-null-dereference.md).",
+  });
+  const fScript = fakeFetch([
+    OK_REPLY,
+    OK_REPLY,
+    OK_REPLY,
+    OK_REPLY,
+    candidatesReply([]),
+    // ↓ skill 会话（Phase 5 之后）
+    candidatesReply([candidate]),
+    // ↓ 主会话 Phase 6（一次裁定主候选 + skill 候选）
+    allPassVerdicts([candidate.id as string]),
+  ]);
   const fRun = await runReview({
     caseId: "VUL4J-1",
     repoPath: repoFixturePath("sample"),
@@ -591,51 +640,271 @@ test("config F:简报只拼进 Phase 5（唯一字节差、无绝对路径），
     experimentId: "phase2-smoke",
     rep: 1,
     configId: "F",
-    ruleSkillLoader: async () => SAMPLE_RULE_SKILL,
+    ruleSkillLoader: async () => [SAMPLE_RULE_SKILL],
+  });
+
+  expect(eScript.requests).toHaveLength(6);
+  // skill 会话是非测量档：其 wire 请求不进主审计 requests[]（独立转录是它的记录）
+  expect(fScript.requests).toHaveLength(7);
+  const eAudit = readAudit(eRun.auditPath);
+  const fAudit = readAudit(fRun.auditPath);
+  expect(fAudit.requests).toHaveLength(6);
+
+  // Phase 1–5（下标 0–4）逐字节等于 E——Phase 5 消息不再被修改（ADR-0014 决策 2）
+  for (const index of [0, 1, 2, 3, 4]) {
+    expect(JSON.parse(fAudit.requests[index].wireBody), `request ${index}`).toEqual(
+      JSON.parse(eAudit.requests[index].wireBody),
+    );
+  }
+
+  const eReq6 = JSON.parse(eAudit.requests[5].wireBody) as { messages: { role: string; content: string }[] };
+  const fReq6 = JSON.parse(fAudit.requests[5].wireBody) as { messages: { role: string; content: string }[] };
+
+  // Phase 6：历史（含 Phase 5 回复）与 E 逐字节相同，只有尾部追加候选清单
+  expect(fReq6.messages.slice(0, -1)).toEqual(eReq6.messages.slice(0, -1));
+  const brief = buildSkillCandidatesBrief([
+    { skill: "sample-rule", candidates: [sanitizedCandidate] },
+  ]);
+  const phase6 = fReq6.messages.at(-1) as { role: string; content: string };
+  expect(phase6.content).toBe(`${PHASE_INSTRUCTIONS[5]}\n\n${brief}`);
+  expect(phase6.content).toContain('<skill name="sample-rule">');
+  expect(phase6.content).toContain(candidate.id as string);
+  // 验收 6：skill 会话可以有真实 pack 路径，但主会话请求不能有——skill 候选
+  // 里的 pack 根在并入候选流前已换成占位符（原始措辞留在 skill 转录里）
+  expect(phase6.content).not.toContain("C:\\host");
+  expect(phase6.content).toContain("<rule-skill>");
+  expect(fAudit.requests[5].wireBody as string).not.toContain("C:\\host");
+
+  // 装载留痕 = 数组（每 zip 一条）；执行留痕 = round × skill
+  expect(fAudit.ruleSkill).toEqual([{ source: ".review-rules/rules.zip", digest: "deadbeef", name: "sample-rule" }]);
+  expect(fRun.record.baseline.audit.ruleSkill).toEqual(fAudit.ruleSkill);
+  expect(eAudit.ruleSkill).toBeUndefined();
+  expect(eAudit.skillPassLog).toBeUndefined();
+
+  const passLog = fAudit.skillPassLog as Record<string, unknown>[];
+  expect(passLog).toHaveLength(1);
+  expect(passLog[0]).toMatchObject({
+    round: 1,
+    skill: "sample-rule",
+    status: "ok",
+    requestCount: 1,
+    toolCallCount: 0,
+    candidateCount: 1,
+    mergedCount: 0,
+    ruleIds: ["sample-rule"],
+  });
+
+  // 独立转录：basename 引用 + 落盘文件存在 + 内容含 skill 首条 user 消息
+  const transcriptFile = passLog[0]?.transcriptFile as string;
+  expect(transcriptFile).toMatch(/-skill-sample-rule-r1\.json$/);
+  const transcript = readSkillTranscript(fRun, transcriptFile);
+  const info = transcript.info as { id: string; runId: string; configId: string };
+  expect(info.id.endsWith("-skill-sample-rule-r1")).toBe(true);
+  expect(info.runId).toBe(fRun.runId);
+  expect(info.configId).toBe("F");
+  const messages = transcript.messages as { role: string; content: unknown }[];
+  expect(messages[0]?.role).toBe("system");
+  // 倒数第二条 = skill 会话首条 user 消息（种子之后），最后一条 = 会话回复
+  const invocationMessage = messages.at(-2) as {
+    role: string;
+    content: { type: string; text?: string }[];
+  };
+  expect(invocationMessage.role).toBe("user");
+  const invocationText = invocationMessage.content.map((block) => block.text ?? "").join("");
+  expect(invocationText).toContain('<skill name="sample-rule"');
+  expect(invocationText).toContain("Rule-skill review pass");
+  expect(messages.at(-1)?.role).toBe("assistant");
+
+  // skill 候选走同一拦截链（rule = skill 名），E 无 findings
+  expect(fRun.record.baseline.findings.map((finding) => finding.id)).toEqual([candidate.id]);
+  expect(fRun.record.baseline.findings[0]?.rule).toBe("sample-rule");
+  expect(eRun.record.baseline.findings).toEqual([]);
+}, 120_000);
+
+test("config F 多 skill：按 CLI 顺序执行，跨 skill 同 (file,line,category) 后者计入 mergedCount", async () => {
+  const alpha = skillPack("alpha");
+  const beta = skillPack("beta");
+  const duplicate = skillCandidate("beta", 11);
+  const extra = skillCandidate("beta", 20);
+  const alphaCandidate = skillCandidate("alpha", 11);
+
+  const script = fakeFetch([
+    OK_REPLY,
+    OK_REPLY,
+    OK_REPLY,
+    OK_REPLY,
+    candidatesReply([]),
+    // ↓ alpha 会话
+    candidatesReply([alphaCandidate]),
+    // ↓ beta 会话（第一条与 alpha 同 (file,line,category) —— 被合并）
+    candidatesReply([duplicate, extra]),
+    // ↓ 主 Phase 6
+    allPassVerdicts([alphaCandidate.id as string, extra.id as string]),
+  ]);
+  const run = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: script.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "F",
+    // CLI 顺序：zip 传入序就是执行序（不排序）
+    ruleSkillZips: ["b-beta.zip", "a-alpha.zip"],
+    ruleSkillLoader: async (options) => {
+      expect(options.explicitZipPaths).toEqual(["b-beta.zip", "a-alpha.zip"]);
+      return [alpha, beta];
+    },
+  });
+
+  expect(script.requests).toHaveLength(8);
+  const audit = readAudit(run.auditPath);
+  // 主审计 requests[] 只含主会话（5 相位 + Phase 6）
+  expect(audit.requests).toHaveLength(6);
+  expect(audit.ruleSkill).toEqual([
+    { source: ".review-rules/alpha.zip", digest: "digest-alpha", name: "alpha" },
+    { source: ".review-rules/beta.zip", digest: "digest-beta", name: "beta" },
+  ]);
+
+  const passLog = audit.skillPassLog as Record<string, unknown>[];
+  expect(passLog.map((record) => record.skill)).toEqual(["alpha", "beta"]);
+  expect(passLog.map((record) => record.mergedCount)).toEqual([0, 1]);
+  expect(passLog.map((record) => record.candidateCount)).toEqual([1, 2]);
+  // 账目闭合：candidateCount − mergedCount = 实际并入数
+  const merged = passLog.reduce(
+    (sum, record) => sum + (record.candidateCount as number) - (record.mergedCount as number),
+    0,
+  );
+  expect(merged).toBe(2);
+
+  // Phase 6 清单只列存活候选：alpha 的 + beta 的 extra（重复项不出现在清单里）
+  const req6 = JSON.parse(audit.requests[5].wireBody) as { messages: { content: string }[] };
+  const phase6 = req6.messages.at(-1)?.content ?? "";
+  expect(phase6).toContain(`<skill name="alpha">`);
+  expect(phase6).toContain(`<skill name="beta">`);
+  expect(phase6).toContain(extra.id as string);
+  expect(phase6).not.toContain(duplicate.id as string);
+
+  // 每个 skill 会话各一份独立转录
+  expect(passLog.map((record) => String(record.transcriptFile))).toEqual([
+    expect.stringMatching(/-skill-alpha-r1\.json$/),
+    expect.stringMatching(/-skill-beta-r1\.json$/),
+  ]);
+
+  // findings = alpha 候选 + beta 的 extra（顺序 = CLI 顺序）
+  expect(run.record.baseline.findings.map((finding) => finding.id)).toEqual([
+    alphaCandidate.id,
+    extra.id,
+  ]);
+}, 120_000);
+
+test("config F skill 会话解析失败：status=failed/parse，Phase 6 无候选清单，主路径照常", async () => {
+  const eScript = fakeFetch(sixPhaseNoToolCorpus());
+  const eRun = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: eScript.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "E",
+  });
+
+  const fScript = fakeFetch([
+    OK_REPLY,
+    OK_REPLY,
+    OK_REPLY,
+    OK_REPLY,
+    candidatesReply([]),
+    { text: "not a JSON reply at all", usage: ZERO }, // skill 会话产出不可解析
+    allPassVerdicts([]),
+  ]);
+  const fRun = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: fScript.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "F",
+    ruleSkillLoader: async () => [SAMPLE_RULE_SKILL],
   });
 
   const eAudit = readAudit(eRun.auditPath);
   const fAudit = readAudit(fRun.auditPath);
-  const brief = buildRuleSkillBrief(SAMPLE_RULE_SKILL);
+  const passLog = fAudit.skillPassLog as Record<string, unknown>[];
+  expect(passLog).toHaveLength(1);
+  expect(passLog[0]).toMatchObject({
+    round: 1,
+    skill: "sample-rule",
+    status: "failed",
+    failureStage: "parse",
+    candidateCount: 0,
+    mergedCount: 0,
+  });
+  expect(String(passLog[0]?.degradedReason)).toContain("JSON");
 
-  // 前四相位逐字节一致（简报尚未进入历史）——冻结面不受影响
-  for (const index of [0, 1, 2, 3]) {
-    expect(JSON.parse(fAudit.requests[index].wireBody)).toEqual(JSON.parse(eAudit.requests[index].wireBody));
+  // 零候选 ⇒ Phase 6 消息逐字节 = E（不追加候选清单段）；主审计全 6 条同 E
+  for (const index of [0, 1, 2, 3, 4, 5]) {
+    expect(JSON.parse(fAudit.requests[index].wireBody), `request ${index}`).toEqual(
+      JSON.parse(eAudit.requests[index].wireBody),
+    );
   }
+  expect(fRun.record.baseline.findings).toEqual([]);
+}, 120_000);
 
-  // Phase 5（0-based 下标 4）：前缀一致，尾部多出 `\n\n<简报>`——F 的唯一字节差来源
-  const eReq5 = JSON.parse(eAudit.requests[4].wireBody) as { messages: { role: string; content: string }[] };
-  const fReq5 = JSON.parse(fAudit.requests[4].wireBody) as { messages: { role: string; content: string }[] };
-  expect(eReq5.messages.at(-1)).toEqual({ role: "user", content: PHASE_INSTRUCTIONS[4] });
-  expect(fReq5.messages.slice(0, -1)).toEqual(eReq5.messages.slice(0, -1));
-  const tail = fReq5.messages.at(-1) as { role: string; content: string };
-  expect(tail.content).toBe(`${PHASE_INSTRUCTIONS[4]}\n\n${brief}`);
-  expect(tail.content).toContain('<skill name="sample-rule" location=".review-rules/sample-rule/SKILL.md">');
-  expect(tail.content).toContain("RULE-CHECK@<file>:<line>");
-  expect(tail.content).not.toContain("C:\\host");
-  expect(tail.content).not.toContain("deadbeef");
+test("config F N=0（无 zip）：全链请求与 E 逐字节相同；ruleSkill/skillPassLog 空数组", async () => {
+  const eScript = fakeFetch(sixPhaseNoToolCorpus());
+  const eRun = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: eScript.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "E",
+  });
+  const fScript = fakeFetch(sixPhaseNoToolCorpus());
+  const fRun = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: fScript.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "F",
+    ruleSkillLoader: async () => [],
+  });
 
-  // Phase 6 与 E 的差异**唯一**是历史里嵌入的那条 Phase 5 消息（其余逐字节一致）
-  const eReq6 = JSON.parse(eAudit.requests[5].wireBody) as { messages: { role: string; content: string }[] };
-  const fReq6 = JSON.parse(fAudit.requests[5].wireBody) as { messages: { role: string; content: string }[] };
-  expect(fReq6.messages).toHaveLength(eReq6.messages.length);
-  const differing = fReq6.messages.filter(
-    (message, index) => JSON.stringify(message) !== JSON.stringify(eReq6.messages[index]),
-  );
-  expect(differing).toEqual([{ role: "user", content: `${PHASE_INSTRUCTIONS[4]}\n\n${brief}` }]);
-
-  // 审计留痕（RunRecord 与审计文件同源）；E 无该键
-  expect(fAudit.ruleSkill).toEqual({ source: ".review-rules/rules.zip", digest: "deadbeef", name: "sample-rule" });
-  expect(fRun.record.baseline.audit.ruleSkill).toEqual(fAudit.ruleSkill);
-  expect(eAudit.ruleSkill).toBeUndefined();
-
-  // 规则型候选走同一拦截链，产出普通 Finding（rule = skill 名）
-  expect(fRun.record.baseline.findings.map((finding) => finding.id)).toEqual([RULE_CANDIDATE.id]);
-  expect(fRun.record.baseline.findings[0]?.rule).toBe("sample-rule");
+  expect(fScript.requests).toHaveLength(6);
+  const eAudit = readAudit(eRun.auditPath);
+  const fAudit = readAudit(fRun.auditPath);
+  for (let index = 0; index < 6; index++) {
+    expect(JSON.parse(fAudit.requests[index].wireBody), `request ${index}`).toEqual(
+      JSON.parse(eAudit.requests[index].wireBody),
+    );
+  }
+  expect(fAudit.ruleSkill).toEqual([]);
+  expect(fAudit.skillPassLog).toEqual([]);
   expect(fRun.record.baseline.findings).toEqual(eRun.record.baseline.findings);
 }, 120_000);
 
-test("config F 降级:装载失败不注入简报，行为 = E（审计带 degradedReason）", async () => {
+test("config F 降级:装载失败不跑会话，行为 = E（审计 ruleSkill[] 带 degradedReason）", async () => {
   const degradedSkill: RuleSkill = {
     name: "",
     description: "",
@@ -671,21 +940,24 @@ test("config F 降级:装载失败不注入简报，行为 = E（审计带 degra
     experimentId: "phase2-smoke",
     rep: 1,
     configId: "F",
-    ruleSkillLoader: async () => degradedSkill,
+    ruleSkillLoader: async () => [degradedSkill],
   });
 
   const eAudit = readAudit(eRun.auditPath);
   const fAudit = readAudit(fRun.auditPath);
-  // 全六条请求逐字节 = E（降级不产生任何字节差）
+  // 全六条请求逐字节 = E（降级包不跑会话 → 不产生任何字节差）
   for (let index = 0; index < 6; index++) {
     expect(JSON.parse(fAudit.requests[index].wireBody)).toEqual(JSON.parse(eAudit.requests[index].wireBody));
   }
-  expect(fAudit.ruleSkill).toEqual({
-    source: ".review-rules",
-    digest: "",
-    name: "",
-    degradedReason: "no rule-skill archive found (.review-rules/ is missing)",
-  });
+  expect(fAudit.ruleSkill).toEqual([
+    {
+      source: ".review-rules",
+      digest: "",
+      name: "",
+      degradedReason: "no rule-skill archive found (.review-rules/ is missing)",
+    },
+  ]);
+  expect(fAudit.skillPassLog).toEqual([]);
 }, 120_000);
 
 test("persistRecord=false（#8 runner 执行缝）：记录不落盘、recordPath 空串；审计照常落盘", async () => {
