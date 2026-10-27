@@ -90,3 +90,5 @@
    取 `toolResult.content` 原样。
 
 证据：见票 02 的 Comments（两票同批全绿：review-pi 417 passed、根 961 passed）。
+
+**历史注记（ADR-0015，2026-10-27）**：正文 D2 的 `info` 键表已不是当前契约——`time{created, completed}` 改为 **epoch 毫秒** `{created, updated}`，`perMessageTimestamps` 键**删除**（键表 12 → 11 键）。其余（省键纪律、`messages[0]` 合成 system、usage 口径、落点与命名）不变，以 ADR-0015 为准。

@@ -7,6 +7,8 @@
 - **ADR**: `docs/adr/0013-review-transcript-and-findings-export-as-run-artifacts.md`（尤其 `Options` 与 `Consequences`）
 - **依赖票**: `.scratch/transcript-reviews-export/issues/01-step-a-native-transcript-and-reviews-en.md`（本票在其产出上叠加）
 
+> **历史注记（ADR-0015，2026-10-27）**：正文的「无源字段一律 `null`」与「`tool.time` 恒 `null`」已被修订——`messages[].id` / `messages[].time` / `tool.time.completed` 改为**有源就填**，仍无源的只有 `streamed`/`completed`(assistant)、`created`/`ran`(tool)、`reasoning.time`、`snapshot`、`state.metadata`、`model.variant`；`info.time` 改 epoch 毫秒 `{created, updated}`。其余（合并规则、pending/error 语义、`details` 原样）不变，以 ADR-0015 为准。
+
 ## 目标
 
 两件互不耦合、但同属"呈现面扩张"的事：

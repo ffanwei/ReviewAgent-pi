@@ -6,6 +6,8 @@
 - **来源**：grill-with-docs 五轮 grill（Q1–Q9 × 3 轮 + 收口 4 问）——所有决策均由用户逐项拍板；本 spec 是这些决策的落地契约
 - **参考物**：`D:\Project\tmp\session-929c5031-3d68-45b3-bf04-d64c7a6b5a5d.json`（OpenCode 会话导出，仅作**骨架参考**，不是逐字段真源）
 
+> **历史注记（ADR-0015，2026-10-27）**：下列条目已被 [ADR-0015](../../docs/adr/0015-transcript-time-and-id-alignment-with-opencode.md) 修订，代码以 ADR-0015 为准——`info.time` 改 **epoch 毫秒** `{created, updated}`（`completed` 退役）；删除 `info.perMessageTimestamps`；`view` 的 `messages[].id` / `messages[].time` / `tool.time.completed` 改为**有源就填**（无源字段仍 `null`）；`messages[].timestamp`（user）由 `0` 改为真值。其余（骨架、落点、命名、失败语义、zh 生命周期）不变。
+
 ## Problem Statement
 
 作为检视链的使用者与维护者，我现在拿不到两样东西：
@@ -75,10 +77,10 @@
   | `tokens` | `{ input, output, reasoning, cache: { read, write } }` | sum over assistant `usage` |
   | `cost` | `{ input, output, cacheRead, cacheWrite, total }` | sum over assistant `usage.cost` |
   | `outcome` | `"succeeded" \| "truncated" \| "failed"` | see mapping below |
-  | `time` | `{ "created": firstRequestAt, "completed": finishedAt }` | new capture + existing |
+  | `time` | `{ "created": firstRequestAt, "updated": finishedAt }`（**epoch 毫秒**；ADR-0015：`completed` 改名 `updated`） | new capture + existing |
   | `title` | `caseId` | run input |
   | `location.directory` | `repoPath` (absolute) | run input |
-  | `perMessageTimestamps` | `"unavailable"` | constant (see Deviations) |
+  | `perMessageTimestamps` | ~~`"unavailable"`~~ **已删除**（ADR-0015：逐消息时间戳已可用） | — |
 
   **Excluded on purpose**: `projectID` (no such concept here), `kind`/`version` (see above), `durationMs` at `info.time` (run duration and agent-start duration are different clocks; don't mix), `systemPrompt` (it lives in `messages[0]`).
   `outcome` mapping: `truncated === true` ⇒ `"truncated"`; else `complete === false` ⇒ `"failed"`; else `"succeeded"`.
@@ -87,14 +89,14 @@
   provider errors throw before an outcome is returned), and the one path that could set `complete === false` is an
   aborted turn, for which no caller currently passes an `AbortSignal`. The three-value mapping is kept as a
   **defensive** projection; the constant `outcome: "succeeded"` for a normal C/D/E/F run is asserted in the S1 test.
-- **`view`** = OpenCode-shaped projection with **`null` placeholders** (it is a fixed-shape rendering, the opposite discipline from `messages`/`info`):
+- **`view`** = OpenCode-shaped **fixed-shape** projection: **有源就填、无源才 `null` 占位**（ADR-0015 取代原先的「一律 `null`」；这是与 `messages`/`info` 省键纪律相反的一面）：
 
   | OpenCode | mapping |
   |---|---|
   | `messages[].type` | `"user"` / `"assistant"` from role; system message rendered as `type: "system"` |
-  | `messages[].id` / `messages[].time` | `null` (no per-message id/time source) |
+  | `messages[].id` / `messages[].time` | user `id` = `msg_<4位序号>`、`time.created` = native timestamp；assistant `id` = `responseId`（缺失/重复/与已分配序号撞名/与合成 id 形状 `msg_`+≥4 位数字同形 ⇒ 回退合成序号）、`time.created` = native timestamp，`streamed`/`completed` 仍 `null`（ADR-0015） |
   | user `text` / `files` / `agents` | `text` ← user message text (array content ⇒ text blocks joined by `\n`); `files` / `agents` → `[]` (no attachments in this chain) |
-  | assistant `agent` / `id` | `agent: "review"` (constant); `id` ← pi `responseId`, else `null` |
+  | assistant `agent` | `"review"` (constant) |
   | `reasoning` part | pi `thinking` (`text`), `time: {created: null, completed: null}` |
   | `text` part | pi `text` |
   | `tool` part | **merge** assistant `toolCall` + following `toolResult` (join on `toolCall.id` ↔ `toolResult.toolCallId`); same batch ⇒ one part per call, each with `id` |
@@ -102,7 +104,7 @@
   | `tool.state.input` | parsed `toolCall.arguments` |
   | `tool.state.content` | `toolResult.content` |
   | `tool.state.metadata` | `null` (no source) |
-  | `tool.time{created,ran,completed}` | all `null` (no source — deliberate, see ADR-0013) |
+  | `tool.time{created,ran,completed}` | `created`/`ran` 全 `null`（无源）；`completed` ← `toolResult.timestamp`（ADR-0015） |
   | `model{id,providerID,variant}` | `id`/`provider` from pi; `variant: null` |
   | `tokens` / `cost` | `usage` per assistant (pi-ai `Usage`) |
   | `finish` / `rawFinish` | `stopReason` / `rawStopReason` (`rawFinish` ⇒ `null` when pi leaves `rawStopReason` undefined) |
@@ -135,7 +137,7 @@
 
 - The transcript contains the **Zone A system prompt**, **host absolute paths**, and reviewed-repo file bodies.
 - `session-*.json` token/cost numbers **differ from** the audit / `rep-N.json` `usage` (pi-ai `Usage` vs kernel `LlmUsage`).
-- pi message `timestamp` is `0` for loop-constructed user/assistant messages (only tool results carry `Date.now()`); it is **kept as-is** and announced via `info.perMessageTimestamps`.
+- pi message `timestamp` was `0` for loop-constructed user messages (only assistant/tool results carried `Date.now()`); **ADR-0015 修订**：**Agent 路径（C/D/E/F）**的 loop-constructed user `timestamp` 改为真值，`view` 因此有源就填；**A/B 路径（`loop/review-loop.ts`）仍写 `timestamp: 0` 且不产转录**（无 view 可投影）。
 - Adding `view` changes the session file shape; no version key is used (see rollout).
 
 ## Testing Decisions
@@ -143,7 +145,7 @@
 - **What makes a good test**: assert only **externally observable** outcomes — the files on disk, their shapes, and the exit code/stderr. No assertions on private helpers or call ordering.
 - **Seams**: **S1 = the public run entry** (`runReview`, already supports transport injection) for the whole file-materialization matrix; **S2 = the CLI process seam** (`bin.process.test.ts` pattern, stub gateway + injected engine module) for the zh lifecycle (present / absent / stale-deleted / throws).
 - **Byte-freeze guards (must stay green, unchanged)**: A–F phase goldens, system-prompt golden, tool-face goldens, byte gate, semantic-parity gate. New assertions: **audit file shape and `RunRecord` shape gain no new keys** (transcript paths are returned, not embedded).
-- **Transcript golden (S1, offline)**: for C/D/E/F, assert `info` field set exactly (no `version`, no `projectID`), `messages[0].role === "system"` and equals the Zone A prompt, `messages` beyond `[0]` equals the loop transcript, `view` merges each tool pair into one part, unpaired `toolCall` ⇒ `status:"pending"` + `content:null`, `isError` ⇒ `status:"error"` + `error.message`, all no-source fields are `null`, `info.runId` equals the audit `runId`, and file name/path match the documented shape.
+- **Transcript golden (S1, offline)**: for C/D/E/F, assert `info` field set exactly (no `version`, no `projectID`), `messages[0].role === "system"` and equals the Zone A prompt, `messages` beyond `[0]` equals the loop transcript, `view` merges each tool pair into one part, unpaired `toolCall` ⇒ `status:"pending"` + `content:null`, `isError` ⇒ `status:"error"` + `error.message`, **有源字段填对账**（`view.*.time.created` = 对应 native `timestamp`；`tool.time.completed` = `toolResult.timestamp`）；**所有消息 `timestamp ≤ info.time.updated`，主会话中首个 assistant 之后的 `timestamp ≥ info.time.created`**——主会话的提前量（首次请求前入列的 user + 首个 assistant）属 ADR-0015 决策 8 的已接受倒挂，skill 会话以 Phase 5 快照为种子、种子全部早于 `created`，故不套用该下界；**且无源字段仍 `null`**（`assistant.time.streamed/completed`、`tool.time.created/ran`、`reasoning.time`、`snapshot`、`state.metadata`、`model.variant`），`info.runId` equals the audit `runId`, and file name/path match the documented shape.
 - **Coexistence**: two runs of the same case/config produce two distinct session files (different `firstRequestAt`), both present.
 - **Findings export (S1)**: envelope keys exact; `findings` deep-equals `record.baseline.findings` **in order**; A/B produce `reviews_en.json` but **no** session file.
 - **zh lifecycle (S2)**: engine injected ⇒ `reviews_zh.json` exists with footprint and Chinese natural-language fields, disk write happens after en; no engine ⇒ file absent, exit 0; engine throws ⇒ absent, exit 0, one stderr line; a pre-seeded stale zh is **deleted** when the run produces none; simulated write failure ⇒ non-zero exit.
@@ -152,7 +154,7 @@
 
 ## Out of Scope
 
-- Per-message / per-tool **timing instrumentation** (`tool.time` stays `null`; adding timings is a separate kernel-variable-face project).
+- Per-message / per-tool **timing instrumentation** (`tool.time.created/ran`、`assistant.time.streamed/completed` 恒 `null`；adding timings is a separate kernel-variable-face project)。ADR-0015 只搬运已有时间戳，未新增仪器。
 - Any transcript for A/B beyond the existing `requests[].messages`.
 - Truncation, redaction, size caps, or retention/cleanup policy for accumulated session files.
 - A version key or schema-evolution mechanism for these artifacts.

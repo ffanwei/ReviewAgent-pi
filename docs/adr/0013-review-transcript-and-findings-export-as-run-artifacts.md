@@ -1,6 +1,6 @@
 # 0013. 检视转录与检视意见导出为落盘产物
 
-**状态**：已接受（2026-10-26，用户经 grill-with-docs 五轮逐项决策 Q1–Q9 + 阶段划分）；**部分被 [ADR-0014](0014-rule-skill-review-pass-after-candidates-phase.md) 扩展（2026-10-27）**——决策 1 的文件名契约新增 `-skill-<name>-r<round>` 后缀族（config F 的每个 skill 会话各落一份独立转录，主转录契约不变）
+**状态**：已接受（2026-10-26，用户经 grill-with-docs 五轮逐项决策 Q1–Q9 + 阶段划分）；**部分被 [ADR-0014](0014-rule-skill-review-pass-after-candidates-phase.md) 扩展（2026-10-27）**——决策 1 的文件名契约新增 `-skill-<name>-r<round>` 后缀族（config F 的每个 skill 会话各落一份独立转录，主转录契约不变）；**部分被 [ADR-0015](0015-transcript-time-and-id-alignment-with-opencode.md) 修订（2026-10-27）**——`view` 的 `id`/`time` 与 `tool.time.completed` 由「恒 `null`」改为「有源就填」，`info.time` 改 epoch 毫秒 `{created, updated}` 并删除 `info.perMessageTimestamps`（决策 3/10 的相应部分被取代；「不新增耗时仪器」仍成立）
 **关联**：ADR-0009（「Agent 状态与事件模型／会话·审计投影」属内核变量面）、ADR-0010（检视输出恒英文 + 核外翻译投影——本 ADR **只引用、不改写** 它）、CONTEXT.md（「检视转录」「检视意见导出」）、`.scratch/transcript-reviews-export/spec.md`
 
 ## Context

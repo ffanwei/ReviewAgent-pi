@@ -13,10 +13,10 @@ import type {
 import { buildRunId } from "../audit/audit-writer.js";
 import type { ConfigId } from "../contracts/config.js";
 
-// 检视转录（ADR-0013 / CONTEXT.md「检视转录」）：把一次检视中**进入 pi Agent
-// 的全部交互**留档为 `{ info, messages, view }`：
+// 检视转录（ADR-0013 / ADR-0015 / CONTEXT.md「检视转录」）：把一次检视中**进入
+// pi Agent 的全部交互**留档为 `{ info, messages, view }`：
 // - `messages` = pi 原生真源（省键纪律）；
-// - `view` = OpenCode 风格**定形投影**（Step B；无源字段一律 `null` 占位）。
+// - `view` = OpenCode 风格**定形投影**（Step B；无源字段 `null` 占位）。
 //
 // 纪律：
 // - `messages` = `agent.state.messages` **原样**（省键真源：缺键即"源里没有"）
@@ -24,9 +24,13 @@ import type { ConfigId } from "../contracts/config.js";
 //   而是 `state.systemPrompt` 独立字段）；
 // - `info` = **精确键表**（省键纪律：无 `kind`/`version`/`projectID`/
 //   `info.time.durationMs`/`info.systemPrompt`——最后一项已在 messages[0]）；
-// - `view` 与 `messages`/`info` **纪律相反**：形状固定，凡无源的键一律 `null`
-//   占位（工具耗时、snapshot、message id/time 等）——供与 OpenCode 会话
-//   导出并排阅读（ADR-0013：转录是 crime scene，不是指标源）；
+//   `info.time` 为 epoch 毫秒 `{created, updated}`（ADR-0015，对齐 OpenCode）；
+// - `view` 与 `messages`/`info` **纪律相反**：形状固定，**有源就填、无源才
+//   `null`**（ADR-0015 取代 ADR-0013 的"一律 null"）——`id` 与消息级/工具级
+//   时间都取自 native 字段，因此 `view` 仍是 `messages` 的纯函数投影；仍无源
+//   的只有 `streamed`/`completed`(assistant)、`created`/`ran`(tool)、
+//   `reasoning.time`、`snapshot`、`tool.state.metadata`、`model.variant`——供与
+//   OpenCode 会话导出并排阅读（ADR-0013：转录是 crime scene，不是指标源）；
 // - usage 口径 = pi-ai `Usage` **全量**（含 `cost`/`reasoning`）——与审计 /
 //   `rep-N.json` 的内核 `LlmUsage` **有意不等**（ADR-0013 后果清单）；
 // - 命名时间 = **首次模型请求时刻**（`firstRequestAt`，非 runReview 入口
@@ -80,11 +84,18 @@ export interface TranscriptInfo {
     readonly total: number;
   };
   readonly outcome: TranscriptOutcome;
-  readonly time: { readonly created: string; readonly completed: string };
+  /**
+   * 会话时刻（epoch 毫秒，对齐 OpenCode；ADR-0015）：`created` = `firstRequestAt`
+   * （**首次模型请求**时刻，与文件名同源），`updated` = `finishedAt`（run 收尾）。
+   * 注意顺序倒挂：主会话开跑前已入列的 user 消息（初始上下文 + Phase 0 指令）时刻
+   * **早于** `created`（建 Agent / 首次 prompt 入列时产生）；首个 assistant 也可能
+   * 略早（pi 在 `onPayload` 前就给 partial 消息打点）；其后一律不早于 `created`。
+   * **skill 会话转录**（config F）例外：它以 Phase 5 结束时的 messages 快照为种子，
+   * 种子里的 user/assistant 全部早于该会话的 `created`。
+   */
+  readonly time: { readonly created: number; readonly updated: number };
   readonly title: string;
   readonly location: { readonly directory: string };
-  /** 逐消息时间戳不可用（pi 循环构造的 user/assistant 恒 `timestamp: 0`） */
-  readonly perMessageTimestamps: "unavailable";
 }
 
 /** 检视转录文档（`{ info, messages, view }`：原生真源 + 定形投影） */
@@ -94,14 +105,15 @@ export interface ReviewTranscript {
   readonly view: TranscriptView;
 }
 
-// ---- OpenCode 风格定形投影（`view`；Step B） ----
+// ---- OpenCode 风格定形投影（`view`；Step B / ADR-0015） ----
 //
 // 形状对齐 OpenCode 会话导出的 `messages[]`（参考物
-// `D:\Project\tmp\session-*.json`），但只保留 spec 映射表点名的字段：
-// 无源字段（工具耗时、snapshot、逐消息 id/time、`model.variant`、`state.metadata`）
-// 一律 `null`／空数组占位——与 `messages` 的省键纪律相反，这里是**定形**。
-// toolResult 不另立 view 消息：并入对应 assistant 的 `tool` part（按
-// `toolCall.id ↔ toolResult.toolCallId` 合并）。
+// `D:\Project\tmp\session-*.json`）：`id` 与消息级/part 级时间**有源就填**
+// （ADR-0015），仍无源的字段（`streamed`/`completed`(assistant)、
+// `created`/`ran`(tool)、`reasoning.time`、`snapshot`、`model.variant`、
+// `state.metadata`）一律 `null`／空数组占位——与 `messages` 的省键纪律相反，
+// 这里是**定形**。toolResult 不另立 view 消息：并入对应 assistant 的 `tool`
+// part（按 `toolCall.id ↔ toolResult.toolCallId` 合并）。
 
 /** `view` 内容分块：文本 / 思考 / 工具（合并 call+result） */
 export interface ViewTextPart {
@@ -132,8 +144,8 @@ export interface ViewToolPart {
     /** 仅 `status === "error"`（`message` = 结果文本） */
     readonly error?: { readonly message: string };
   };
-  /** 逐工具耗时未仪器化（ADR-0013 明确不做）⇒ 三个字段恒 `null` */
-  readonly time: { readonly created: null; readonly ran: null; readonly completed: null };
+  /** 逐工具耗时未仪器化：`created`/`ran` 无源恒 `null`；`completed` ← `toolResult.timestamp`（有结果时） */
+  readonly time: { readonly created: null; readonly ran: null; readonly completed: number | null };
 }
 
 export type ViewContentPart = ViewTextPart | ViewReasoningPart | ViewToolPart;
@@ -146,8 +158,10 @@ export interface ViewSystemMessage {
 
 export interface ViewUserMessage {
   readonly type: "user";
-  readonly id: null;
-  readonly time: { readonly created: null };
+  /** 合成 id（`msg_<4 位序号>`）：序号 = 在 user/assistant 子序列中的 1-based 位置 */
+  readonly id: string;
+  /** ← pi `UserMessage.timestamp`（epoch 毫秒，ADR-0015） */
+  readonly time: { readonly created: number };
   readonly text: string;
   /** 无源（本仓检视不带附件）⇒ 恒空数组 */
   readonly files: readonly never[];
@@ -156,9 +170,17 @@ export interface ViewUserMessage {
 
 export interface ViewAssistantMessage {
   readonly type: "assistant";
-  /** pi `responseId`（本仓循环构造的 assistant 多为 undefined ⇒ `null`） */
-  readonly id: string | null;
-  readonly time: { readonly created: null; readonly streamed: null; readonly completed: null };
+  /** pi `responseId`（缺失、重复或与合成序号撞名时回退 `msg_<序号>`；ADR-0015） */
+  readonly id: string;
+  /**
+   * `created` ← pi `AssistantMessage.timestamp`；`streamed`/`completed` 无源
+   * （pi 只在消息构造时打一次点，不记首 delta 与定型时刻）⇒ 恒 `null`。
+   */
+  readonly time: {
+    readonly created: number;
+    readonly streamed: null;
+    readonly completed: null;
+  };
   readonly agent: "review";
   readonly model: { readonly id: string; readonly providerID: string; readonly variant: null };
   readonly content: readonly ViewContentPart[];
@@ -187,29 +209,80 @@ export interface TranscriptView {
  * 定形投影（纯函数，零网络/零密钥）：把合成的 system + pi 原生 `AgentMessage`
  * 序列投成 OpenCode 风格的 `view.messages`。`toolResult` 不另立消息——按
  * `toolCall.id ↔ toolResult.toolCallId` 合并进前一条 assistant 的 `tool` part。
+ *
+ * ADR-0015：`id` 与消息级/part 级时间取自 native 字段（纯投影，不引入时钟），
+ * 合成 id 的序号只数 user/assistant（合成 system 不占号），assistant 优先
+ * `responseId`、缺失或与已占用 id 同名时回退同一个合成序号。
  */
 export function buildView(
   systemPrompt: string,
   messages: readonly AgentMessage[],
 ): TranscriptView {
   const toolResults = collectToolResults(messages);
+  const ids = allocateMessageIds(messages);
   const view: ViewMessage[] = [{ type: "system", text: systemPrompt }];
+  let cursor = 0;
   for (const message of messages) {
     if (message.role === "user") {
       view.push({
         type: "user",
-        id: null,
-        time: { created: null },
+        id: ids[cursor]!,
+        time: { created: message.timestamp },
         text: userMessageText(message),
         files: [],
         agents: [],
       });
+      cursor += 1;
     } else if (message.role === "assistant") {
-      view.push(buildViewAssistant(message, toolResults));
+      view.push(buildViewAssistant(message, ids[cursor]!, toolResults));
+      cursor += 1;
     }
     // toolResult：已并入对应 assistant 的 tool part，不另立 view 消息
   }
   return { messages: view };
+}
+
+/** 合成消息 id（`msg_0001`…）：序号 = user/assistant 子序列中的 1-based 位置 */
+function messageId(seq: number): string {
+  return `msg_${String(seq).padStart(4, "0")}`;
+}
+
+/** 合成 id 的形状：`msg_` + 至少 4 位数字（provider id 不得与它同形） */
+const SYNTHETIC_ID_PATTERN = /^msg_\d{4,}$/;
+
+/**
+ * 为 `view` 的 user/assistant 消息分配 id（ADR-0015）：
+ *
+ * 1. **先全部预分配**合成序号 `msg_0001`…（system 不占号），并把它们登记为已占用；
+ * 2. assistant 若带 provider `responseId`（非空、未被占用、也不与合成 id 的形状
+ *    `msg_` + ≥4 位数字同形）则改用它，便于回查网关；否则保留合成序号。
+ *
+ * 合成序号预分配后**不再让出**，因此 `responseId` 重复或撞名只会回退，绝不会产生
+ * 第二种 id 形态；结果在单份转录内唯一可引用。
+ */
+function allocateMessageIds(messages: readonly AgentMessage[]): string[] {
+  const conversational = messages.filter(
+    (message): message is UserMessage | AssistantMessage =>
+      message.role === "user" || message.role === "assistant",
+  );
+  const ids = conversational.map((_, index) => messageId(index + 1));
+  const used = new Set(ids);
+  return conversational.map((message, index) => {
+    if (message.role !== "assistant") {
+      return ids[index]!;
+    }
+    const preferred = message.responseId;
+    if (
+      preferred === undefined ||
+      preferred.length === 0 ||
+      used.has(preferred) ||
+      SYNTHETIC_ID_PATTERN.test(preferred)
+    ) {
+      return ids[index]!;
+    }
+    used.add(preferred);
+    return preferred;
+  });
 }
 
 function collectToolResults(
@@ -226,6 +299,7 @@ function collectToolResults(
 
 function buildViewAssistant(
   message: AssistantMessage,
+  id: string,
   toolResults: ReadonlyMap<string, ToolResultMessage<unknown>>,
 ): ViewAssistantMessage {
   const content: ViewContentPart[] = [];
@@ -240,8 +314,8 @@ function buildViewAssistant(
   }
   return {
     type: "assistant",
-    id: message.responseId ?? null,
-    time: { created: null, streamed: null, completed: null },
+    id,
+    time: { created: message.timestamp, streamed: null, completed: null },
     agent: "review",
     model: { id: message.model, providerID: message.provider, variant: null },
     content,
@@ -266,7 +340,8 @@ function buildViewToolPart(
     type: "tool" as const,
     id: toolCall.id,
     name: toolCall.name,
-    time: { created: null, ran: null, completed: null },
+    // created/ran 无源（pi 不记工具的发起/启动时刻）；completed ← 结果定型时刻
+    time: { created: null, ran: null, completed: result === undefined ? null : result.timestamp },
   };
   if (result === undefined) {
     return {
@@ -349,12 +424,11 @@ export function buildTranscript(input: BuildTranscriptInput): ReviewTranscript {
       cost: totals.cost,
       outcome: transcriptOutcome(input.truncated, input.complete),
       time: {
-        created: firstRequestAt.toISOString(),
-        completed: input.finishedAt.toISOString(),
+        created: firstRequestAt.getTime(),
+        updated: input.finishedAt.getTime(),
       },
       title: input.caseId,
       location: { directory: input.repoPath },
-      perMessageTimestamps: "unavailable",
     },
     messages: [{ role: "system", content: input.systemPrompt }, ...input.capture.messages],
     view: buildView(input.systemPrompt, input.capture.messages),

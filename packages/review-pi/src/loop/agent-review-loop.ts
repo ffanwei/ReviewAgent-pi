@@ -426,17 +426,19 @@ export async function runAgentReviewLoop(
     return {
       role: "user",
       content: skillBrief === undefined ? instruction : `${instruction}\n\n${skillBrief}`,
-      timestamp: 0,
+      // 相位推进时刻（ADR-0015：不再写 0——转录与 view 的消息时间以此为准；
+      // timestamp 不进 wire，字节门不受影响）
+      timestamp: Date.now(),
     };
   }
 }
 
-/** LlmMessage → pi-ai UserMessage（timestamp 为内核内部字段，不参与序列化） */
+/** LlmMessage → pi-ai UserMessage（`timestamp` 取构造时刻；不进 wire 序列化） */
 function toUserMessage(message: LlmMessage): AgentMessage {
   if (message.role !== "user") {
     throw new Error(`initial context message must have role "user", got "${message.role}"`);
   }
-  return { role: "user", content: message.content, timestamp: 0 };
+  return { role: "user", content: message.content, timestamp: Date.now() };
 }
 
 function phaseNameOf(phaseIndex: number): PhaseRecord["phase"] {
