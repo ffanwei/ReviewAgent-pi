@@ -34,7 +34,7 @@ export const CLI_EXPERIMENT_ID = "review-pi-cli";
 /** --out 缺省（review 落盘根与 disposition 处置库派生根共用同一约定） */
 const DEFAULT_OUT_DIR = "review-pi-output";
 
-/** review 子命令的已知旗标（未知旗标 = 用法错误；`--strict-rule-skill` 无值，进旗标循环前剥离） */
+/** review 子命令的已知旗标（未知旗标 = 用法错误；无值布尔旗标 `--strict-rule-skill` / `--progress` / `--no-progress` 进旗标循环前剥离） */
 const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--repo",
   "--mr",
@@ -66,7 +66,7 @@ const KNOWN_DISPOSITION_FLAGS: readonly string[] = [
 const KNOWN_DISPOSITION_STATS_FLAGS: readonly string[] = ["--store", "--out"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--rule-skill-zip <path>]... [--rule-skill-name <name>] [--strict-rule-skill]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--rule-skill-zip <path>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
        review-pi smoke [--model <id>]
        review-pi disposition --run <run-record.json> --finding <id> --decision accept|reject|false-positive [--note <text>] ([--store <file>] | [--out <dir>])
        review-pi disposition --stats ([--store <file>] | [--out <dir>])
@@ -85,6 +85,9 @@ review 旗标：
                             缺省扫 <repo>/.review-rules/*.zip 全部装载）
   --rule-skill-name <name>  指定装载的规则 Skill 名（包内多 skill 消歧，逐包生效）
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
+  --progress                显示运行进度（阶段 / 模型请求 / 工具调用 / skill 会话）到 stderr；
+                            stderr 是 TTY 时缺省开，重定向收日志时缺省关
+  --no-progress             关闭运行进度（批跑收日志时显式静音）
 
 smoke 旗标：
   --model   <id>         冒烟模型 id（同缺省与校验；端点/key 走 REVIEWER_* 环境变量或 .env.local，绝不回显）
@@ -120,6 +123,11 @@ export interface ReviewCliArgs {
   readonly ruleSkillName?: string;
   /** 规则 Skill 严格模式（--strict-rule-skill；缺席省键） */
   readonly strictRuleSkill?: boolean;
+  /**
+   * 运行进度投影开关（ADR-0016）：`--progress` → true、`--no-progress` → false、
+   * 缺席省键 = 自动（`stderr` 是 TTY 才开——人手敲看得见，重定向收日志时闭嘴）。
+   */
+  readonly progress?: boolean;
 }
 
 /** 解析后的 smoke 命令参数 */
@@ -354,24 +362,46 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     flags.repeated,
     model.model,
     booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.strict : false,
+    booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.progress : undefined,
   );
 }
 
 /**
- * 剥离 review 的无值布尔旗标（`--strict-rule-skill`；照 disposition `--stats`
- * 先例——旗标循环是 k-v 成对，无值旗标必须先摘除）。重复出现 = 重复旗标。
+ * 剥离 review 的无值布尔旗标（`--strict-rule-skill` / `--progress` /
+ * `--no-progress`；照 disposition `--stats` 先例——旗标循环是 k-v 成对，无值
+ * 旗标必须先摘除）。单趟计数：重复出现 = 重复旗标，互斥对同给 = 用法错误。
  */
-function stripReviewBooleanFlags(rest: readonly string[]):
-  | { readonly ok: true; readonly tokens: readonly string[]; readonly strict: boolean }
-  | { readonly ok: false; readonly message: string } {
-  const occurrences = rest.filter((token) => token === "--strict-rule-skill");
-  if (occurrences.length > 1) {
-    return { ok: false, message: "duplicate flag --strict-rule-skill" };
+function stripReviewBooleanFlags(rest: readonly string[]): {
+  readonly ok: true;
+  readonly tokens: readonly string[];
+  readonly strict: boolean;
+  readonly progress?: boolean;
+} | { readonly ok: false; readonly message: string } {
+  const known = new Set(["--strict-rule-skill", "--progress", "--no-progress"]);
+  const counts = new Map<string, number>();
+  const tokens: string[] = [];
+  for (const token of rest) {
+    if (known.has(token)) {
+      counts.set(token, (counts.get(token) ?? 0) + 1);
+    } else {
+      tokens.push(token);
+    }
+  }
+  for (const flag of known) {
+    if ((counts.get(flag) ?? 0) > 1) {
+      return { ok: false, message: `duplicate flag ${flag}` };
+    }
+  }
+  const on = counts.has("--progress");
+  const off = counts.has("--no-progress");
+  if (on && off) {
+    return { ok: false, message: "conflicting flags --progress and --no-progress" };
   }
   return {
     ok: true,
-    tokens: rest.filter((token) => token !== "--strict-rule-skill"),
-    strict: occurrences.length === 1,
+    tokens,
+    strict: counts.has("--strict-rule-skill"),
+    ...(on ? { progress: true } : off ? { progress: false } : {}),
   };
 }
 
@@ -381,6 +411,7 @@ function parseReviewArgs(
   repeated: ReadonlyMap<string, readonly string[]>,
   model: string,
   strict: boolean,
+  progress: boolean | undefined,
 ): { readonly ok: true; readonly command: "review"; readonly args: ReviewCliArgs } | { readonly ok: false; readonly message: string } {
   const repo = values.get("--repo");
   if (repo === undefined) {
@@ -411,6 +442,7 @@ function parseReviewArgs(
       ...(ruleSkillZips !== undefined ? { ruleSkillZips } : {}),
       ...(ruleSkillName !== undefined ? { ruleSkillName } : {}),
       ...(strict ? { strictRuleSkill: true } : {}),
+      ...(progress !== undefined ? { progress } : {}),
     },
   };
 }

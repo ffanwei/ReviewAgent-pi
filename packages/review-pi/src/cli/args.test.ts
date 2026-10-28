@@ -400,3 +400,36 @@ describe("disposition 子命令（#15 处置落库 + KPI）", () => {
     expect(USAGE_TEXT).toContain("accept|reject|false-positive");
   });
 });
+
+test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", () => {
+  const auto = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"]);
+  expect(auto.ok && auto.command === "review" && "progress" in auto.args).toBe(false);
+
+  const on = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--progress"]);
+  expect(on.ok && on.command === "review" && on.args.progress).toBe(true);
+
+  const off = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--no-progress"]);
+  expect(off.ok && off.command === "review" && off.args.progress).toBe(false);
+});
+
+test("进度旗标：互斥与重复都是用法错误（fail fast，不静默取其一）", () => {
+  expect(
+    parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--progress", "--no-progress"]),
+  ).toEqual({ ok: false, message: "conflicting flags --progress and --no-progress" });
+  expect(
+    parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--progress", "--progress"]),
+  ).toEqual({ ok: false, message: "duplicate flag --progress" });
+  expect(
+    parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--no-progress", "--no-progress"]),
+  ).toEqual({ ok: false, message: "duplicate flag --no-progress" });
+});
+
+test("进度旗标：smoke / disposition 面不认（只有 review 显示进度）", () => {
+  expect(parseCliArgs(["smoke", "--progress"])).toEqual({
+    ok: false,
+    message: 'unknown flag "--progress"',
+  });
+  expect(
+    parseCliArgs(["disposition", "--run", "r.json", "--finding", "F1", "--decision", "accept", "--no-progress"]),
+  ).toEqual({ ok: false, message: 'unknown flag "--no-progress"' });
+});

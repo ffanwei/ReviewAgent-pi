@@ -5,6 +5,7 @@ import { CONFIGS, type ConfigId, type ReviewConfig } from "../contracts/config.j
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmMessage } from "../contracts/llm.js";
+import type { RunProgressSink } from "../contracts/progress.js";
 import { DEFAULT_PREFETCH_BUDGETS } from "../contracts/prefetch.js";
 import type { RuleSkillAudit, RuleSkillPassRecord, RunAudit, RunResult } from "../contracts/run.js";
 import { buildRunRecord, runDirPath, writeRunRecord, type RunRecord } from "../experiment/run-record.js";
@@ -84,6 +85,11 @@ export interface ReviewRunInput {
   readonly strictRuleSkill?: boolean;
   /** 规则 Skill 装载器注入缝（测试注入假实现；缺省真装载器） */
   readonly ruleSkillLoader?: typeof loadRuleSkills;
+  /**
+   * 运行进度投影（ADR-0016）：CLI 注入；缺省不注入 = 零输出、零行为变化。
+   * 事件只读既有留痕（阶段/请求/工具/skill 会话），不进审计、不改 wire 字节。
+   */
+  readonly onProgress?: RunProgressSink;
 }
 
 export interface ReviewRunResult {
@@ -155,6 +161,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     initialContextMessages,
     ...(prefetch !== undefined ? { prefetchRecords: prefetch.records } : {}),
     runTurn,
+    ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
   });
 
   // 审计投影：AuditFileContent（requests[].wireBody 可重放字节）→ RunRecord
@@ -336,6 +343,7 @@ async function runToolDrivenReview(
     ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
     fetch: input.fetch,
     includeLedgerAudit: config.ledger,
+    ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
     // config F：Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
     ...(config.ruleSkill
       ? { skillPass: { skills: ruleSkills, toolkitFor: skillToolkitFor } }

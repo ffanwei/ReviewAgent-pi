@@ -16,6 +16,33 @@ export function knownArgumentKeys(parameters: Record<string, unknown>): Readonly
   return new Set(Object.keys(properties));
 }
 
+/** 入参摘要上限（ADR-0016 脱敏硬规则：进度行里的入参最多 80 字符，含省略号） */
+const ARGUMENTS_SUMMARY_MAX_CHARS = 80;
+
+/**
+ * 工具入参的一行摘要（进度显示用，不是审计产物）。
+ *
+ * 顺序 = 入参声明顺序；空值/`null` 丢弃；空白折叠成单空格（一次调用恒占一行）；
+ * 超长截断到 80 字符（省略号占一位）。原值永不进入 `stderr` 的完整形态。
+ */
+export function summarizeToolArguments(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+    parts.push(`${key}=${text.replace(/\s+/g, " ").trim()}`);
+  }
+  return clampLine(parts.join(" "), ARGUMENTS_SUMMARY_MAX_CHARS);
+}
+
+/** 行截断：`maxChars` 是**含省略号**的总长上限（进度行宽度的语义是「整行多宽」） */
+export function clampLine(text: string, maxChars: number): string {
+  const trimmed = text.trim();
+  return trimmed.length <= maxChars ? trimmed : `${trimmed.slice(0, maxChars - 1)}…`;
+}
+
 /** 按已知键投影入参；非对象入参 → 空对象（交给工具侧按缺省值处理） */
 export function stripUnknownArguments(
   args: unknown,

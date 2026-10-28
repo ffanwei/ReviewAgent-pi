@@ -4,6 +4,7 @@ import type { AssistantMessage, FetchFunction } from "@earendil-works/pi-ai";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmMessage, LlmUsage } from "../contracts/llm.js";
+import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import type {
   CandidateRejection,
   PhaseRecord,
@@ -27,8 +28,10 @@ import {
 } from "./constants.js";
 import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
 import { PHASE_COUNT, PHASE_INSTRUCTIONS, PHASE_ORDER } from "./phases.js";
+import { createRequestProgress } from "./request-progress.js";
 import { fromWireToolName, toWireToolName } from "../tools/registry.js";
 import { knownArgumentKeys, stripUnknownArguments } from "../tools/tool-arguments.js";
+import { summarizeDetailLine, withToolProgress } from "../tools/tool-progress.js";
 import type { ReviewToolkit } from "../tools/toolkit.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { runSkillPass, type SkillPassTranscript } from "../knowledge/skill-pass.js";
@@ -75,6 +78,12 @@ export interface AgentReviewLoopInputs {
    * 指令注入之前顺序执行。缺省 = 无 skill 会话（A–E 与 N=0 的 F 逐字节不变）。
    */
   readonly skillPass?: SkillPassRequest;
+  /**
+   * 运行进度投影（ADR-0016）：缺省不注入 = 零输出、零行为变化。事件只投影既有
+   * 留痕（阶段推进 / 请求首尾 / 工具首尾 / skill 会话首尾），不改 wire 字节、
+   * 不进审计、不影响退出码。
+   */
+  readonly onProgress?: RunProgressSink;
 }
 
 /** skill 会话接线（由 run 层提供 pack 与 toolkit 工厂） */
@@ -143,6 +152,9 @@ export async function runAgentReviewLoop(
   let roundSkillBatches: readonly SkillCandidateBatch[] = [];
   // 首次模型请求时刻（唯一新增内核仪器；不是逐请求/逐工具耗时）
   let firstRequestAt: Date | undefined;
+  // 进度投影（ADR-0016）：只读既有留痕，缺省 sink = 空函数（零行为变化）
+  const emitProgress = inputs.onProgress ?? NO_OP_PROGRESS_SINK;
+  const requestProgress = createRequestProgress(emitProgress);
 
   const agentTools: AgentTool[] = inputs.toolkit.schemas.map((schema) => {
     const parameters = JSON.parse(schema.parametersJson) as Record<string, unknown>;
@@ -181,7 +193,8 @@ export async function runAgentReviewLoop(
         }
       },
     };
-    return tool;
+    // 进度包装（ADR-0016）：名用点分审计名；成功/失败判据与 skill 会话同源
+    return withToolProgress(tool, schema.name, emitProgress);
   });
 
   const streamFn: StreamFn = reviewStreamFn({
@@ -212,10 +225,13 @@ export async function runAgentReviewLoop(
       }
       requests.push(auditWireCapture(payload));
       phaseRequestCount += 1;
+      requestProgress.start();
     },
     shouldStopAfterTurn: (context): boolean | Promise<boolean> => {
       const message = context.message;
-      usage = addUsage(usage, piUsageToLlmUsage(message.usage));
+      const turnUsage = piUsageToLlmUsage(message.usage);
+      usage = addUsage(usage, turnUsage);
+      requestProgress.end(turnUsage);
       if (message.content.some((block) => block.type === "toolCall")) {
         return false;
       }
@@ -226,6 +242,7 @@ export async function runAgentReviewLoop(
     agent.followUp(message);
   };
 
+  emitPhase(0);
   await agent.prompt(phaseMessage(0));
 
   // pi-ai 对 provider 错误不 reject（resolve 出 stopReason "error" 的消息后
@@ -301,6 +318,7 @@ export async function runAgentReviewLoop(
     if (phaseIndex < PHASE_COUNT - 1) {
       phaseIndex += 1;
       resetPhaseCounters();
+      emitPhase(phaseIndex);
       followUp(phaseMessage(phaseIndex));
       return false;
     }
@@ -331,6 +349,7 @@ export async function runAgentReviewLoop(
     roundVerdicts = new Map();
     roundComplete = false;
     roundSkillBatches = [];
+    emitPhase(0);
     followUp(phaseMessage(0));
     return false;
   }
@@ -353,6 +372,8 @@ export async function runAgentReviewLoop(
       if (skill.degradedReason !== undefined || skill.name.length === 0) {
         continue;
       }
+      const startedAt = Date.now();
+      emitProgress({ kind: "skill", state: "start", round, skill: skill.name });
       const outcome = await runSkillPass({
         round,
         skill,
@@ -363,6 +384,20 @@ export async function runAgentReviewLoop(
         ...(inputs.baseUrl !== undefined ? { baseUrl: inputs.baseUrl } : {}),
         ...(inputs.modelId !== undefined ? { modelId: inputs.modelId } : {}),
         ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
+        onProgress: emitProgress,
+      });
+      emitProgress({
+        kind: "skill",
+        state: "end",
+        round,
+        skill: skill.name,
+        durationMs: Date.now() - startedAt,
+        status: outcome.record.status,
+        requestCount: outcome.record.requestCount,
+        toolCallCount: outcome.record.toolCallCount,
+        ...(outcome.record.degradedReason !== undefined
+          ? { detail: summarizeDetailLine(outcome.record.degradedReason) }
+          : {}),
       });
       outcomes.push(outcome);
     }
@@ -407,6 +442,17 @@ export async function runAgentReviewLoop(
   function resetPhaseCounters(): void {
     phaseRequestCount = 0;
     phaseSkippedToolCalls = 0;
+  }
+
+  /** 阶段推进投影（ADR-0016）：入参 0-based，事件里给 1-based 序号（含轮次） */
+  function emitPhase(index: number): void {
+    emitProgress({
+      kind: "phase",
+      round,
+      phase: phaseNameOf(index),
+      index: index + 1,
+      total: PHASE_COUNT,
+    });
   }
 
   /**

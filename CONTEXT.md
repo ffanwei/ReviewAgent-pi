@@ -87,6 +87,11 @@ _Avoid_: 实验插件
 核外呈现工具：消费检视产出的英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关联）。检视输出恒英文——测量面冻结，语言是呈现配置而非实验自变量（ADR-0010）。消费端接线 = CLI 环境变量注入缝（`REVIEW_PI_PRESENTATION_ENGINE` 动态 import 核外引擎，未配置恒等直通、stdout 逐字节同现状）；引擎任何失败呈现降级英文源——检视产物绝不因呈现层失败丢失，退出码不受影响。
 _Avoid_: 输出语言配置（暗示内核参数化缝）、双语内核（检视链整体留在已验证英文域，S 级结论零迁移）
 
+**运行进度投影（Run Progress Projection）**:
+检视执行期的实时人读投影：把内核既有留痕（阶段推进、模型请求首尾、工具调用首尾、规则 Skill 会话首尾）写成 `stderr` 的追加事件行，TTY 下另有一行 `\r` 重画的状态行与收尾摘要行。**只投影不决策**：不改 wire 字节、不新增审计键、不改退出码，`stdout` 单 JSON 文档逐字节不变；工具参数摘要截断 80 字符、结果全文永不落地（只报行数/字符数）。开关 = `--progress` 强开 / `--no-progress` 关 / 缺省跟随 `stderr` 是否 TTY（ADR-0016）。
+_代码面_: 事件契约 `contracts/progress.ts`（`RunProgressEvent` 四类 kind）、呈现层 `cli/progress-render.ts`。
+_Avoid_: 进度条（不是百分比口径——「步数」= 模型请求序号）、日志（日志是核外运行器产物）、遥测（不回传任何指标）
+
 **测量常量面（Measurement-Constant Face）**:
 内核对照实验中必须 byte / 行为一致的半边：Zone A 提示词、Zone B 组装、六阶段 Loop 语义、Finding/Evidence 契约、判定链、指标公式、数据集；A/B 配置要求请求字节一致（ADR-0009）。
 _Avoid_: 不变层（过泛）、冻结面（与「仪器冻结」混淆——仪器指核外判定/指标代码）

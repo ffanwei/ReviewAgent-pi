@@ -21,6 +21,24 @@ export function piUsageToLlmUsage(usage: Usage): LlmUsage {
 /** 零值 usage（累计起点） */
 export const ZERO_USAGE: LlmUsage = { inputTokens: 0, outputTokens: 0 };
 
+/**
+ * DSH 口径 → pi-ai `Usage`（反方向映射；只用于「拿累计 usage 重算成本」这类
+ * 需要 pi 侧形状的场合——缺省 `cost` 全零，由 `calculateCost` 就地填充）。
+ * 单点存在，避免调用方各自手搓一个字段不全的 `Usage`。
+ */
+export function llmUsageToPiUsage(usage: LlmUsage): Usage {
+  const cacheRead = usage.cacheReadTokens ?? 0;
+  const cacheWrite = usage.cacheWriteTokens ?? 0;
+  return {
+    input: usage.inputTokens,
+    output: usage.outputTokens,
+    cacheRead,
+    cacheWrite,
+    totalTokens: usage.inputTokens + usage.outputTokens + cacheRead + cacheWrite,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
 /** 纯函数累加：返回新对象，不改写入参；cache 字段任一操作数出现即保持 */
 export function addUsage(a: LlmUsage, b: LlmUsage): LlmUsage {
   const hasCacheRead = a.cacheReadTokens !== undefined || b.cacheReadTokens !== undefined;

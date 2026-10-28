@@ -2,6 +2,7 @@ import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmMessage, LlmUsage } from "../contracts/llm.js";
 import type { PrefetchLayerRecord } from "../contracts/prefetch.js";
+import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import type { CandidateRejection, PhaseRecord, RunAudit, WireRequest } from "../contracts/run.js";
 import { applyCandidateGate } from "../gate/candidate-gate.js";
 import { assistantText } from "../provider/pi-client.js";
@@ -10,6 +11,7 @@ import { classifyCacheBreaks } from "./cache-break.js";
 import { MAX_ROUNDS, TRUNCATION_MAX_ROUNDS } from "./constants.js";
 import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
 import { PHASE_COUNT, PHASE_INSTRUCTIONS, PHASE_ORDER } from "./phases.js";
+import { createRequestProgress } from "./request-progress.js";
 
 // 六阶段控制器（内核变量面，config B 直驱）：pi 原语上的从 0 重写。
 // 每轮 = 六阶段完整一遍，每阶段恰好一次请求（零工具，无子循环）；
@@ -36,6 +38,11 @@ export interface ReviewLoopInputs {
   /** 预取注入层记账（透传进 audit.prefetch） */
   readonly prefetchRecords?: readonly PrefetchLayerRecord[];
   readonly runTurn: ReviewTurnRunner;
+  /**
+   * 运行进度投影（ADR-0016）：缺省不注入 = 零输出。零工具配置每阶段恰好一次
+   * 请求，故只有 `phase` 与 `request` 两种事件（没有工具面可投影）。
+   */
+  readonly onProgress?: RunProgressSink;
 }
 
 export interface ReviewLoopOutcome {
@@ -64,6 +71,8 @@ export async function runReviewLoop(inputs: ReviewLoopInputs): Promise<ReviewLoo
   let truncated = false;
   let emittedIds: ReadonlySet<string> = new Set();
   const truncationReasons: string[] = [];
+  const emitProgress = inputs.onProgress ?? NO_OP_PROGRESS_SINK;
+  const requestProgress = createRequestProgress(emitProgress);
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     rounds = round;
@@ -76,8 +85,17 @@ export async function runReviewLoop(inputs: ReviewLoopInputs): Promise<ReviewLoo
       if (instruction === undefined) {
         throw new Error(`missing phase instruction at index ${phaseIndex}`);
       }
+      emitProgress({
+        kind: "phase",
+        round,
+        phase: phaseNameOf(phaseIndex),
+        index: phaseIndex + 1,
+        total: PHASE_COUNT,
+      });
       messages = [...messages, { role: "user", content: instruction, timestamp: 0 }];
+      requestProgress.start();
       const turn = await inputs.runTurn({ systemPrompt: inputs.systemPrompt, messages });
+      requestProgress.end(turn.usage);
       messages = [...messages, turn.message];
       usage = addUsage(usage, turn.usage);
       requests.push(turn.wire);

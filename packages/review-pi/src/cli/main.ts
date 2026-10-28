@@ -29,7 +29,9 @@
  * key 绝不回显。
  *
  * 进程调用形态：review-pi review --repo <path> --mr <diff-file>
- *   [--config A-E] [--issue <text>] [--out <dir>] [--model <id>]
+ *   [--config A-F] [--issue <text>] [--out <dir>] [--model <id>]
+ *   [--rule-skill-zip <path>]... [--strict-rule-skill]
+ *   [--progress | --no-progress]
  *   review-pi smoke [--model <id>]
  *   review-pi disposition --run <run-record.json> --finding <id>
  *   --decision accept|reject|false-positive [--note <text>] ([--store <file>] | [--out <dir>])
@@ -39,14 +41,24 @@
 import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
+import { calculateCost } from "@earendil-works/pi-ai";
+
+import type { LlmUsage } from "../contracts/llm.js";
 import { runDispositionCommand } from "../disposition/command.js";
 import { buildReviewsExport } from "../export/reviews.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
+import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
+import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
 import { formatEnvLocalSummary, loadEnvLocalFile } from "../shared/env-local.js";
 import { CLI_EXPERIMENT_ID, parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
 import { applyPresentationProjection, isPresentationProjectionConfigured } from "./presentation-projection.js";
+import {
+  createProgressRenderer,
+  type ProgressFinishInput,
+  type ProgressRenderer,
+} from "./progress-render.js";
 import { renderReviewOutcome } from "./render.js";
 import { buildReviewsZhExport, removeStaleReviewsZh, writeReviewsZh } from "./reviews-zh.js";
 
@@ -62,23 +74,38 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   const diff = await readFile(resolve(args.mr), "utf8");
   const runsRoot = resolve(args.out);
 
-  const { record, runId, auditPath, reviewsPath } = await runReview({
-    caseId: args.caseId,
-    repoPath,
-    diff,
-    issueDescription: args.issue,
-    apiKey: endpoint.apiKey,
-    baseUrl: endpoint.baseUrl,
-    modelId: args.model,
-    configId: args.config,
-    fetch: globalThis.fetch,
-    runsRoot,
-    experimentId: CLI_EXPERIMENT_ID,
-    rep: 1,
-    ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
-    ...(args.ruleSkillName !== undefined ? { ruleSkillName: args.ruleSkillName } : {}),
-    ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
-  });
+  // 运行进度投影（ADR-0016）：stderr 是 TTY 时缺省开（人手敲看得见），重定向
+  // 收日志时缺省关；--progress / --no-progress 覆盖。缺省关时零输出、零行为变化。
+  const progress = startProgress(args);
+  const startedAt = Date.now();
+  let reviewed: Awaited<ReturnType<typeof runReview>>;
+  try {
+    reviewed = await runReview({
+      caseId: args.caseId,
+      repoPath,
+      diff,
+      issueDescription: args.issue,
+      apiKey: endpoint.apiKey,
+      baseUrl: endpoint.baseUrl,
+      modelId: args.model,
+      configId: args.config,
+      fetch: globalThis.fetch,
+      runsRoot,
+      experimentId: CLI_EXPERIMENT_ID,
+      rep: 1,
+      ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
+      ...(args.ruleSkillName !== undefined ? { ruleSkillName: args.ruleSkillName } : {}),
+      ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
+      ...(progress !== undefined ? { onProgress: progress.onEvent } : {}),
+    });
+  } catch (error) {
+    // 异常路径也要擦掉状态行：残影会把错误消息顶成半行
+    progress?.dispose();
+    throw error;
+  }
+  const { record, runId, auditPath, reviewsPath } = reviewed;
+  // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态
+  progress?.finish(progressFinish(args, endpoint.baseUrl, record.baseline.usage, startedAt));
 
   // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout
   // 呈现档（title/description 等自然语言字段经注入引擎译中文，结构化字段
@@ -173,6 +200,44 @@ async function runSmokeCommand(args: SmokeCliArgs): Promise<number> {
 /** stdout 整写（flush 后 resolve——退出前保证字节已落地） */
 function writeStdout(text: string): Promise<void> {
   return new Promise<void>((flush) => process.stdout.write(text, () => flush()));
+}
+
+/**
+ * 运行进度投影的开关与构造（ADR-0016）：`--progress` / `--no-progress` 显式覆盖，
+ * 缺省跟随 `stderr` 是否 TTY。返回 undefined = 本 run 不显示任何进度（现状形态）。
+ */
+function startProgress(args: ReviewCliArgs): ProgressRenderer | undefined {
+  const isTty = process.stderr.isTTY === true;
+  if (!(args.progress ?? isTty)) {
+    return undefined;
+  }
+  process.stderr.write(`review-pi: ${args.config} · ${args.caseId} · ${args.model} · progress on\n`);
+  const renderer = createProgressRenderer({
+    write: (text) => {
+      process.stderr.write(text);
+    },
+    isTty,
+  });
+  renderer.start();
+  return renderer;
+}
+
+/**
+ * 收尾摘要的数值面：token 取自运行记录（与审计同源），成本用与转录同一份
+ * 模型画像 + 同一个 `calculateCost`（不另立公式），耗时由 CLI 自身计时。
+ */
+function progressFinish(
+  args: ReviewCliArgs,
+  baseUrl: string,
+  usage: LlmUsage,
+  startedAt: number,
+): ProgressFinishInput {
+  const costUsd = calculateCost(reviewModelOf(args.model, baseUrl), llmUsageToPiUsage(usage)).total;
+  return {
+    durationMs: Date.now() - startedAt,
+    usage,
+    costUsd,
+  };
 }
 
 /** .env.local 装载摘要行（stderr；措辞单源 formatEnvLocalSummary——只报键名与行号，值绝不回显） */

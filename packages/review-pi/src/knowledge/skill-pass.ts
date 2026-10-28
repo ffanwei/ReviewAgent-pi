@@ -3,6 +3,7 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, FetchFunction } from "@earendil-works/pi-ai";
 import type { LlmUsage } from "../contracts/llm.js";
+import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import type { RuleSkillPassRecord } from "../contracts/run.js";
 import type { AgentTranscriptCapture } from "../export/transcript.js";
 import {
@@ -11,11 +12,13 @@ import {
   reviewStreamFn,
 } from "../provider/pi-client.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
-import { toWireToolName } from "../tools/registry.js";
-import { buildSkillBashTool } from "../tools/skill-bash.js";
+import { fromWireToolName, toWireToolName } from "../tools/registry.js";
+import { buildSkillBashTool, SKILL_BASH_TOOL_NAME } from "../tools/skill-bash.js";
 import { knownArgumentKeys, stripUnknownArguments } from "../tools/tool-arguments.js";
+import { withToolProgress } from "../tools/tool-progress.js";
 import type { ReviewToolkit } from "../tools/toolkit.js";
 import { parseCandidatesReply } from "../loop/parse.js";
+import { createRequestProgress } from "../loop/request-progress.js";
 import type { RuleSkill } from "./rule-skill.js";
 import { buildSkillPassInvocation } from "./skill-pass-brief.js";
 
@@ -52,6 +55,11 @@ export interface SkillPassOptions {
   readonly fetch?: FetchFunction;
   readonly timeoutMs?: number;
   readonly resultBudgetChars?: number;
+  /**
+   * 运行进度投影（ADR-0016）：缺省不注入 = 零输出。skill 会话是独立 `Agent`，
+   * 它的请求序号按本会话自增（1..N），由呈现层按 skill 作用域分栏。
+   */
+  readonly onProgress?: RunProgressSink;
 }
 
 /** 独立落盘的 skill 转录原料（写盘由 run 层负责——runId/输出目录在那边） */
@@ -77,17 +85,24 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
   let toolCallCount = 0;
   let usage: LlmUsage = ZERO_USAGE;
   let firstRequestAt: Date | undefined;
+  // 进度投影（ADR-0016）：缺省 sink = 空函数；事件只投影本会话既有留痕
+  const emitProgress = options.onProgress ?? NO_OP_PROGRESS_SINK;
+  const requestProgress = createRequestProgress(emitProgress);
 
   const tools: AgentTool[] = [
     ...reviewAgentTools(options.toolkit, () => {
       toolCallCount += 1;
-    }),
-    buildSkillBashTool({
-      packRoot: packRootOf(skill),
-      ...(options.resultBudgetChars !== undefined
-        ? { resultBudgetChars: options.resultBudgetChars }
-        : {}),
-    }),
+    }).map((tool) => withToolProgress(tool, fromWireToolName(tool.name), emitProgress)),
+    withToolProgress(
+      buildSkillBashTool({
+        packRoot: packRootOf(skill),
+        ...(options.resultBudgetChars !== undefined
+          ? { resultBudgetChars: options.resultBudgetChars }
+          : {}),
+      }),
+      SKILL_BASH_TOOL_NAME,
+      emitProgress,
+    ),
   ];
 
   const model = reviewModelOf(options.modelId, options.baseUrl);
@@ -111,9 +126,12 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
         firstRequestAt = new Date();
       }
       requestCount += 1;
+      requestProgress.start();
     },
     shouldStopAfterTurn: (context): boolean => {
-      usage = addUsage(usage, piUsageToLlmUsage(context.message.usage));
+      const turnUsage = piUsageToLlmUsage(context.message.usage);
+      usage = addUsage(usage, turnUsage);
+      requestProgress.end(turnUsage);
       // 文本回合 = 会话结束（skill 只跑一趟，无相位推进）
       return !context.message.content.some((block) => block.type === "toolCall");
     },

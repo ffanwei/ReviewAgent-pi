@@ -882,6 +882,129 @@ test(
   180_000,
 );
 
+// ---- 运行进度投影（ADR-0016）进程面 ----
+
+/** stdout 的键集（`ok` + ReviewOutcome）：进度绝不能新增键 */
+const REVIEW_OUTCOME_KEYS = [
+  "ok",
+  "caseId",
+  "configId",
+  "runId",
+  "truncated",
+  "rounds",
+  "toolCalls",
+  "findings",
+  "auditPath",
+];
+
+test(
+  "--progress（非 TTY）：stderr 逐行投影阶段/请求/收尾摘要，stdout 仍是单 JSON 文档、键集不变",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr",
+          mrFile,
+          "--out",
+          outDir,
+          "--config",
+          "B",
+          "--progress",
+        ],
+        { env: stubEnv(stub.baseUrl) },
+      );
+
+      expect(run.status).toBe(0);
+      // stdout 契约零改动：单 JSON 文档、键集固定、无 progress 键
+      const outcome = JSON.parse(run.stdout) as Record<string, unknown>;
+      expect(Object.keys(outcome)).toEqual(REVIEW_OUTCOME_KEYS);
+      expect(run.stdout.endsWith("}\n")).toBe(true);
+      expect(run.stdout).not.toContain("\r");
+
+      // stderr：事件行逐条追加（非 TTY 不画状态行）
+      expect(run.stderr).toContain("▶ phase 1/6 Change Understanding (round 1)");
+      expect(run.stderr).toContain("▶ phase 6/6 Evidence Verification (round 1)");
+      expect(run.stderr).toContain("req 1 ");
+      expect(run.stderr).toMatch(/✓ done · req 6 · tools 0 · \d+\.\ds · cache [\d.]+% · \$\d+\.\d{4}/);
+      expect(run.stderr).not.toContain("\r");
+      // 进度只报计数与摘要：结果全文（findings 文本 / 工具结果）不落地 stderr
+      expect(run.stderr).not.toContain("Sentinel finding description");
+      expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "进度缺省静默（非 TTY）与 --no-progress 同；--progress 与 --no-progress 同给 = 用法错误 exit 1",
+  async () => {
+    const quietStub = await startLoopbackStub([...oneFindingCorpus(), ...oneFindingCorpus()]);
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const outDir2 = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+      const baseArgs = [
+        "review",
+        "--repo",
+        repoFixturePath("sample"),
+        "--mr",
+        mrFile,
+        "--out",
+        outDir,
+        "--config",
+        "B",
+      ];
+
+      const auto = await runBin(baseArgs, { env: stubEnv(quietStub.baseUrl) });
+      expect(auto.status).toBe(0);
+      expect(auto.stderr).not.toContain("▶ phase");
+      expect(auto.stderr).not.toContain("✓ done");
+
+      const explicitOff = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr",
+          mrFile,
+          "--out",
+          outDir2,
+          "--config",
+          "B",
+          "--no-progress",
+        ],
+        { env: stubEnv(quietStub.baseUrl) },
+      );
+      expect(explicitOff.status).toBe(0);
+      expect(explicitOff.stderr).not.toContain("▶ phase");
+      expect(explicitOff.stderr).not.toContain("✓ done");
+
+      const conflict = await runBin([...baseArgs, "--progress", "--no-progress"], {
+        env: stubEnv(quietStub.baseUrl),
+        timeoutMs: 30_000,
+      });
+      expect(conflict.status).toBe(1);
+      expect(conflict.stdout).toBe("");
+      expect(conflict.stderr).toContain("conflicting flags --progress and --no-progress");
+      expect(conflict.stderr).toContain("usage:");
+    } finally {
+      await quietStub.close();
+    }
+  },
+  240_000,
+);
+
 test("disposition 用法错误（非法 --decision）：exit 1 + 人话错误 + usage 文案 + stdout 干净", async () => {
   const run = await runBin(
     ["disposition", "--run", "x.json", "--finding", "F1", "--decision", "maybe"],
