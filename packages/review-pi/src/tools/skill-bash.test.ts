@@ -12,7 +12,7 @@ import {
 } from "./skill-bash.js";
 
 // skill 会话 bash 边界（ADR-0014 决策 7）：核内常量白名单 + env 白名单 +
-// cwd = pack 根 + 禁 shell 元字符 + 120s + 结果预算。
+// cwd = pack 根 + 禁引号外 shell 元字符 + 120s + 结果预算。
 
 const PACK_ROOT = "C:\\cache\\deadbeef\\sample-rule";
 
@@ -50,7 +50,7 @@ test("未闭合引号被拒绝（不抛穿工具边界）", async () => {
   expect(text.startsWith("Error: ")).toBe(true);
 });
 
-test("shell 元字符一律拒绝（管道/重定向/链接/替换/换行）", async () => {
+test("引号外的 shell 元字符一律拒绝（管道/重定向/链接/替换/换行）", async () => {
   for (const command of [
     "python a.py | tee out",
     "python a.py > out",
@@ -66,6 +66,38 @@ test("shell 元字符一律拒绝（管道/重定向/链接/替换/换行）", a
     });
     expect(text, command).toContain("metacharacters");
   }
+});
+
+test("引号内的 shell 元字符按字面透传（`python -c` 的语句分隔符不被误拦）", async () => {
+  const { runner, calls } = runnerReturning({ stdout: "C:\\pack" });
+  for (const command of [
+    `python -c "import os; print(os.getcwd())"`,
+    `python -c "print('a|b')"`,
+    `python -c "print('$HOME')"`,
+  ]) {
+    const text = await runSkillBashCommand(command, { packRoot: PACK_ROOT, runner });
+    expect(text, command).toBe("C:\\pack");
+  }
+  expect(calls).toHaveLength(3);
+  // 引号剥掉，整段代码作为单个 argv 元素交给 python
+  expect(calls[0]?.args).toEqual(["-c", "import os; print(os.getcwd())"]);
+});
+
+test("NUL 即使出现在引号内也拒绝（argv 无法承载）", async () => {
+  const { runner, calls } = runnerReturning();
+  const text = await runSkillBashCommand('python -c "a\u0000b"', { packRoot: PACK_ROOT, runner });
+  expect(text).toContain("metacharacters");
+  expect(calls).toHaveLength(0);
+});
+
+test("引号外紧邻引号的分号仍被拒绝（闭合后不再豁免）", async () => {
+  const { runner, calls } = runnerReturning();
+  const text = await runSkillBashCommand(`python -c "print(1)"; rm -rf /`, {
+    packRoot: PACK_ROOT,
+    runner,
+  });
+  expect(text).toContain("metacharacters");
+  expect(calls).toHaveLength(0);
 });
 
 test("非白名单解释器被拒绝（且不启动子进程）", async () => {

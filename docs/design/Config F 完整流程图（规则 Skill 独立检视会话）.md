@@ -164,7 +164,7 @@ flowchart TD
     H -->|"正常"| I{"存在 stopReason = error 的回合？"}
     I -->|"是"| FAILS
     I -->|"否"| J{"回合含 toolCall？"}
-    J -->|"是"| K["执行工具：7 review 工具 / bash<br/>bash：仅 python·python3、无 shell 元字符<br/>cwd = pack 根、120s、8K 结果预算"] --> J
+    J -->|"是"| K["执行工具：7 review 工具 / bash<br/>bash：仅 python·python3、引号外无 shell 元字符<br/>cwd = pack 根、120s、8K 结果预算"] --> J
     J -->|"否（纯文本）"| L["取最后一条 assistant 文本<br/>parseCandidatesReply"]
     L --> M{"解析失败？"}
     M -->|"是"| FAILP["failed，failureStage = parse"]
