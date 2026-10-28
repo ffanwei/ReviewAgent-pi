@@ -128,6 +128,9 @@ pnpm experiment -- --id cmp-ce --cases-file data/vul4j/materialized-cases.json -
 
 产物：`runs/<experimentId>/`（`plan.json`、逐单元记录、`report.json`、`dashboard.md`、`audit/**`）。
 
+> 单案、单配置、rep-1 的**生产形态**（含 config F + 规则 Skill 的 `review-pi` CLI 直跑）见《[运行手册：单次检视](运行手册-单次检视.md)》。
+> F 的端到端流程图（装载 / 主循环 / skill 会话 / 候选合流 / 降级矩阵 / 审计映射）见《[Config F 完整流程图](design/Config%20F%20完整流程图（规则%20Skill%20独立检视会话）.md)》。
+
 ## 11. 代码位置
 
 | 内容 | 位置 |

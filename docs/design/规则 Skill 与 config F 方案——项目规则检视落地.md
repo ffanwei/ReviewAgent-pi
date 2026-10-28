@@ -1,7 +1,8 @@
 # 规则 Skill 与 config F 方案——项目规则检视落地
 
 > **状态**：已归档（2026-10-26）。决策记录见 `docs/adr/0012`；术语见 `CONTEXT.md`「规则 Skill」。
-> **后续**：**[ADR-0014](docs/adr/0014-rule-skill-review-pass-after-candidates-phase.md) 取代本文 §4 第 7 条硬纪律（绝不执行 zip 内任何脚本）、§6 验收 2（`ruleSkill` 单对象）与 Phase 5 简报注入形态（Q5/Q10/Q16 的注入点）**——现行口径是「Phase 5 之后追加独立 skill 检视会话」；本文其余内容（zip 定位/审计/解压、降级、伪配置位、不进 `search_rule`）继续有效。
+> **后续**：**[ADR-0014](../adr/0014-rule-skill-review-pass-after-candidates-phase.md) 取代本文 §4 第 7 条硬纪律（绝不执行 zip 内任何脚本）、§6 验收 2（`ruleSkill` 单对象）与 Phase 5 简报注入形态（Q5/Q10/Q16 的注入点）**——现行口径是「Phase 5 之后追加独立 skill 检视会话」；本文其余内容（zip 定位/审计/解压、降级、伪配置位、不进 `search_rule`）继续有效。
+> **现行流程图**：`docs/design/Config F 完整流程图（规则 Skill 独立检视会话）.md`（按 ADR-0014 与当前源码绘制，装载/主循环/skill 会话/候选合流/降级矩阵/审计映射；本文 §4 第 7 条与 §6 验收 2 的旧口径以上述流程图与 ADR-0014 为准）。
 > **适用范围**：pi 内核线 `ReviewAgent-pi`（`packages/review-pi`）。DSH 兄弟仓引用须写全限定语「DSH 线 ADR-XXXX」。
 > **来源**：grill-me 三轮 grill（Q1–Q16）+ grill-with-docs 复核（修正 F1–F3，已折入正文）。
 > **目标**：在 `new Agent` 之前把"被检视项目自带的规则 skill"（zip）定位、解压、装载好；在 **Phase 5（候选阶段）** 注入简报做规则检视；规则 finding 与一般 finding 天然合流。

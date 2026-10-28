@@ -74,7 +74,15 @@ CI（push / PR）跑 `suites`（root + review-llm 两包 typecheck + 全量测�
 
 单案检视 CLI 随 pi 内核线 P3 票回归：`packages/review-pi` 的 `review-pi` CLI，形态对齐原 `review-agent`（解析 → `.env.local` 装载 → 装配 → run → 导出 → 呈现；stdout 单 JSON 文档；退出码：完成（含诚实截断）0 / 中止 1；被测模型缺省 `deepseek-v4-flash`，换模型加 `--model <id>`）。DSH 内核 CLI（`packages/review-dsh/bin/review-agent.js`）已随内核移除（ADR-0009）。届时回归的还有网关冒烟自检（双探针 + 人话诊断，探针走 pi-ai 生产序列化）。
 
-在新 CLI 落地前，仍然有效的口径与注意（对评测复现与日常检视通用）：
+**生产形态（config F + 规则 Skill）**——单案 × 单配置 × rep-1，一条命令出审计、转录与检视意见导出（完整前置、旗标说明、产物布局与排障见《[单次检视运行手册](docs/运行手册-单次检视.md)》）：
+
+```powershell
+node packages\review-pi\bin\review-pi.js review --repo .cache\datasets\vul4j-repos\VUL4J-38-ab6cbdc3da --mr .cache\datasets\vul4j-diffs\VUL4J-38.diff --config F --rule-skill-zip packages\review-pi\testdata\rule-skills\general-code-review.zip --strict-rule-skill --issue "Vulnerability CVE-2014-4172 (CWE-74) in apereo/java-cas-client. Fixed by https://github.com/apereo/java-cas-client/commit/ab6cbdc3daa451b4fef89c0bd0f4e6568f3aa9ef." --out runs\f-demo-session-skill-2
+```
+
+前置三件：内核产物不过期（`pnpm build:pi` → `pnpm --filter review-llm build` → `pnpm --filter review-pi build`，陈旧即拒跑、不自动重编）、仓库根 `.env.local` 提供 `REVIEWER_API_KEY` / `REVIEWER_URL`、数据集经 `pnpm materialize:vul4j` 物化。产物落 `<out>/review-pi-cli/{runs,audit}/vul4j/<case>/<config>/`；stdout 是单个 JSON 文档，诊断走 stderr；退出码 0（含诚实截断）/ 1。
+
+其余仍然有效的口径与注意（对评测复现与日常检视通用）：
 
 - **评测口径三要素**：物化仓（base 态）+ 数据集原生 diff + 数据集原生英文 issue（30 案清单 `data/vul4j/target-cases.json`；物化 `pnpm materialize:vul4j`，仓落 `.cache/datasets/vul4j-repos/`）。issue 改用自编文本会引入口径污染。单次复现可对照 `runs/phase2-dsh/runs/vul4j/<案>/<配置>/rep-*.json` 的 `baseline.findings`——被测模型非确定，落在基线 rep 波动族内即属正常复现。
 - **中文 MR 描述是内核已知边界，不是用户义务**：产出被 NON_ENGLISH 门要求纯英文，模型会把 `--issue` 中的中文自然引用进 evidence 导致整条 finding 被拒；正解在内核侧——输出语言配置化见《Config B 生产化方案》（`docs/design/`，§3.2）。
