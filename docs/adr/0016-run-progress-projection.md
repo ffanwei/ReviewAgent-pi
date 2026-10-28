@@ -78,7 +78,7 @@
 
 ### 7. 失败判据单点沿用既有约定
 
-工具返回文本以 `Error: ` 开头即失败（预算耗尽 `Error: tool call budget exhausted`、`review.get_file` 不可读、`skill-bash` 白名单拒绝皆走这条）；抛出的异常同样算失败并原样上抛（投影不吞异常）。判据只写在 `tool-progress.ts` 一处，主会话与 skill 会话共用，避免同一行进度在两个会话里写出两种结论。
+工具返回文本以 `Error: ` 开头即失败（预算耗尽 `Error: tool call budget exhausted`、`review.get_file` 不可读、`skill-bash` 命令被拒绝皆走这条）；抛出的异常同样算失败并原样上抛（投影不吞异常）。判据只写在 `tool-progress.ts` 一处，主会话与 skill 会话共用，避免同一行进度在两个会话里写出两种结论。
 
 ### 8. 计数与成本口径
 

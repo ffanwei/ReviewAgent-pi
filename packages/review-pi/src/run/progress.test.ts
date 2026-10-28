@@ -326,8 +326,8 @@ test("config F:skill 会话的 bash 计入会话留痕、不计入指标 toolCal
     textReply("ok", 3),
     textReply("ok", 4),
     candidatesReply([], 5),
-    // ↓ skill 会话：一条被白名单拒绝的 bash（确定性失败，不真的起子进程）
-    toolReply("bash", { command: "echo hi" }, 6),
+    // ↓ skill 会话：一条被元字符规则拒绝的 bash（确定性失败，不真的起子进程）
+    toolReply("bash", { command: "echo hi | cat" }, 6),
     candidatesReply([], 7),
     // ↓ 主会话 Phase 6
     verdictsReply([], 8),
@@ -354,10 +354,10 @@ test("config F:skill 会话的 bash 计入会话留痕、不计入指标 toolCal
   );
   expect(bashEnd).toMatchObject({
     name: "bash",
-    argumentsSummary: "command=echo hi",
+    argumentsSummary: "command=echo hi | cat",
     ok: false,
   });
-  expect(bashEnd?.detail).toContain("command not allowed");
+  expect(bashEnd?.detail).toContain("metacharacters");
 
   const skillEnd = events.find(
     (event): event is Extract<RunProgressEvent, { kind: "skill"; state: "end" }> =>

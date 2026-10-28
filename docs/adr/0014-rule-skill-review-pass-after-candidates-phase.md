@@ -1,6 +1,6 @@
 # 0014. 规则 Skill 改为「Phase 5 之后追加独立 skill 检视会话」，Phase 5 消息不再被修改
 
-**状态**：已接受（2026-10-27，用户经 grill 逐项决策 Q1–Q46）；**部分修订（2026-10-28）**——决策 11 的资源上限由「单条命令 60s、单会话 5 min」上调为「单条命令 120s、单会话 10 min」（实测 skill 会话 158s 已贴近原 5 min 上界，bash 60s 对 pack 脚本偏紧）；**同日补充**——bash 的 shell 元字符拒绝改为只查**引号外**：`python -c "import os; print(os.getcwd())"` 合法（`shell: false` 下引号内字符不交给任何解释器，决策 7 的边界不变）
+**状态**：已接受（2026-10-27，用户经 grill 逐项决策 Q1–Q46）；**部分修订（2026-10-28）**——决策 11 的资源上限由「单条命令 60s、单会话 5 min」上调为「单条命令 120s、单会话 10 min」（实测 skill 会话 158s 已贴近原 5 min 上界，bash 60s 对 pack 脚本偏紧）；**同日补充**——bash 的 shell 元字符拒绝改为只查**引号外**：`python -c "import os; print(os.getcwd())"` 合法（`shell: false` 下引号内字符不交给任何解释器，决策 7 的边界不变）；**同日再修订**——决策 7 的命令白名单（`python`/`python3`）**移除**，argv[0] 可为 PATH 上任意可执行文件（`shell: false`、env 白名单、cwd = pack 根、引号外元字符拒绝、120s、结果预算全部保留；`.cmd`/`.bat` 仍不认）
 **关联**：ADR-0012（本 ADR 取代其决策第 3 条与第 2 条中的「单一 zip」限定）、ADR-0013（转录产物契约——skill 会话转录需对齐）、ADR-0009（pi 内核从 0 重写）、ADR-0011（切流 config E——F 是 E 基线上的消融位）、CONTEXT.md（规则检索 / 规则合并 / 规则技能执行器）、`docs/design/规则 Skill 与 config F 方案——项目规则检视落地.md`（其 §6 验收 2 与 §4 第 7 条被本 ADR 取代）
 
 ## Context
@@ -22,11 +22,11 @@
 4. **每个 skill 一个独立会话**，互不可见：种子 = 主 Agent 在 Phase 5 结束时的 `messages` 快照；合并完全在核内完成。
 5. **skill 会话的 system prompt 复用检视的 `SYSTEM_PROMPT`**（同一 Zone A）——使 skill 会话与主会话 Phase 6 的首请求共享超长前缀，跨会话缓存全额命中。
 6. **工具面**：检视 run 仍为**七工具**（ADR-0012 的「工具面零改动」在被测量侧继续成立）；**skill 会话 = 七检视工具 + `bash`**（八只）。bash 只存在于非测量档的 skill 会话。
-7. **bash 边界 = 核内常量白名单**（仅 `python` / `python3`）+ env 白名单 + `cwd` = pack 根（SKILL.md 用相对路径；仅跨目录时才透传真实绝对路径，且只在 skill 会话内）。**白名单不接受 pack 声明**——被检视项目自带内容不得扩大安全边界。解释器由核内按 `PATH` 的**绝对目录**解析成绝对路径再启动（只认裸名 `python`/`python3`，不认 `.cmd`/`.bat`）——不把「搜哪个 python」交给平台的当前目录搜索顺序。
+7. **bash 边界 = 核内常量**（**命令白名单已于 2026-10-28 移除**：argv[0] 可为 PATH 上任意可执行文件，但打包方仍无法声明/扩大边界）+ env 白名单 + `cwd` = pack 根（SKILL.md 用相对路径；仅跨目录时才透传真实绝对路径，且只在 skill 会话内）。裸名由核内按 `PATH` 的**绝对目录**解析成绝对路径再启动（不搜 cwd，不把「找哪个程序」交给平台的当前目录搜索顺序；`.cmd`/`.bat` 不认——`shell: false` 下会被 Node 拒绝）；含 `/` 或 `\` 的**显式路径**按原样交给 `spawn`（调用方已指明文件）。**仍无 shell**：引号外的 `& | ; < > $ \`` 与换行一律拒绝。
 8. **ledger = 主 ledger 在 Phase 5 结束时的快照分叉**（不是主会话 + 全部 skill 共享一个可变实例，否则 skill-2 会拿到 skill-1 加载过的引用却无对应历史）。为此 `buildReviewToolkit` 需新增 `ledger?` 注入缝（现为内部创建，`packages/review-pi/src/tools/toolkit.ts:86`）。
 9. **合并**：主候选 + 各 skill 候选，在候选门之前按 `(file, line, category)` **跨 skill 去重**，保留 CLI 顺序最先者，被合并者计入 `mergedCount`；主候选永不被丢弃、但其去重键**占键**（skill 侧与之重复的那条同样计入 `mergedCount`——同一缺陷不该以两条 id 进候选门）；**schema 非法的候选不参与去重**（直接交给 `SCHEMA_INVALID`）；语义冲突的两条都保留。
 10. **验证 = 主 Phase 6 统一裁定两批候选**：skill 候选清单由 loop 在拼装 Phase 6 指令消息时追加（`buildSkillCandidatesBrief`——数据在 loop 侧），`applyCandidateGate` 仍**只调用一次**。ADR-0012 的 `phaseBrief` 注入缝随之**整体删除**：它唯一的使用者（候选阶段简报）已退役，留着就是一个签名还在、没人传的假缝。独立消息在 `one-at-a-time` 下会变成两个 run，写系统提示词会破 Zone A。
-11. **失败语义与资源上限**：会话/解析失败 = `failed`（`failureStage` = `session` | `parse`）；跑通 0 候选 = `empty`（合法）；bash 白名单拒绝**不算**失败；装载降级只进 `ruleSkill[]`——降级包根本不跑会话，故不产生 `skillPassLog` 行。单条命令显式 120s、单 skill 会话 10 min、输出走既有结果预算层（`tools/result-budget.ts` 的 `applyLineBudget`）。
+11. **失败语义与资源上限**：会话/解析失败 = `failed`（`failureStage` = `session` | `parse`）；跑通 0 候选 = `empty`（合法）；bash 命令被拒绝（引号外元字符 / 找不到可执行文件）**不算**失败；装载降级只进 `ruleSkill[]`——降级包根本不跑会话，故不产生 `skillPassLog` 行。单条命令显式 120s、单 skill 会话 10 min、输出走既有结果预算层（`tools/result-budget.ts` 的 `applyLineBudget`）。
 12. **审计**：`ruleSkill[]`（装载事实，每 run 一条）与 `skillPassLog[]`（执行事实，round × skill）**并列**。`skillPassLog` 元素 = `{round, skill, status: "ok"|"empty"|"failed", requestCount, toolCallCount, candidateCount, mergedCount, ruleIds?, transcriptFile?, degradedReason?, failureStage?}`。**计数口径**：`usage` 与 `toolCalls`（RunResult/审计数字）**含** skill 会话——skill 的真实成本不隐藏；`toolCallLog` 只记主会话的逐项记录（skill 属非测量档），skill 的调用数按会话计在 `skillPassLog[].toolCallCount`。
 13. **转录**：每个 skill 会话**独立落盘**一份转录，主转录/审计引用它（`CONTEXT.md` 的「检视转录」定义为进入 Review Runtime 的全部交互，不能缺这一段）。
 14. **每轮都跑 skill pass**；重复候选由 `emittedIds` 跨轮 id 去重兜住（skill 候选 id **不含 round**，沿用 `RULE-CHECK@<skill>@<file>:<line>` 形态）。
@@ -41,7 +41,7 @@
 | ADR-0012 决策 2「单一 zip」 | 多 zip、可重复、CLI 顺序 |
 | ADR-0012 决策 3「工具面零改动」的驱动面含义 | 检视 run 仍七工具；**loop 驱动面新增 skill pass 状态** |
 | 设计文档 §6 验收 2（`ruleSkill: {source, digest, name}` 单对象） | `ruleSkill[]` + `skillPassLog[]` 并列 |
-| 设计文档 §4 第 7 条硬纪律「绝不执行 zip 内任何脚本」 | **superseded**：允许在「白名单（python）+ env 白名单 + pack cwd」下执行 |
+| 设计文档 §4 第 7 条硬纪律「绝不执行 zip 内任何脚本」 | **superseded**：允许在「PATH 可执行文件（无命令白名单，2026-10-28）+ env 白名单 + pack cwd」下执行 |
 
 **保留 ADR-0012**：路径净化（仅主会话）· 模块内自带相位下标 · 降级不阻断 run、`strict` 才抛 · digest 幂等缓存 · 「规则不进 `search_rule` 语料」· 伪配置位不进 A–E 主矩阵。
 
@@ -54,7 +54,7 @@
 - **N 个 skill 在同一会话顺序追加**：后面的 skill 会读到前面的 findings，产生跟风/微调，且技术上无法低成本屏蔽（append-only）。
 - **主 ledger 与 skill 会话单实例共享**：`referenceIfLoaded` 返回的是**引用字符串**（`tools/ledger.ts:23-45`），skill-2 会拿到它没经历过的加载指针 ⇒ 核内必须回填内容，等于放弃省 token 设计。
 - **候选门之后再去重**：被合并者已先产生 `rejection`，留下噪声；且 `DUPLICATE_ID` 只按 id 字符串比对（`gate/candidate-gate.ts:82-88`），id 编了 skill 名后必然逃逸。
-- **白名单由 pack 声明**：等于执行被检视项目自带的任意脚本，正是要否掉的硬纪律。
+- **bash 边界由 pack 声明**：等于执行被检视项目自带的任意脚本，正是要否掉的硬纪律（2026-10-28 移除命令白名单后，边界仍是**核内**常量：env / 元字符 / cwd / 资源上限，pack 依旧无从声明）。
 
 ## Consequences
 
@@ -62,7 +62,7 @@
 - **负/风险**：
   - **Token**：N × 轮数 次 skill 会话。缓解靠「同一 `SYSTEM_PROMPT` + 同一 Phase 1–5 前缀」的跨会话缓存，但输入侧仍按 N 份计。
   - **F 不再整链字节可复现**：Phase 6 之后的选择性字节取决于 skill 产出；可断言的只有「Phase 1–5 与 E 逐字节相同」与「N=0 ⇒ 全链相同」。
-  - **治理变更**：推翻「绝不执行 zip 内脚本」。缓解 = 核内常量白名单 + env 白名单 + 只读 pack + 绝不写回被检视仓库 + 每次扩面过 ADR 审查。
+  - **治理变更**：推翻「绝不执行 zip 内脚本」。缓解 = 核内常量（env 白名单 / 引号外元字符拒绝 / 资源上限）+ 只读 pack + 绝不写回被检视仓库 + 每次扩面过 ADR 审查。**2026-10-28 命令白名单移除后，这一层的实际闸门只剩「无 shell + env 白名单 + cwd」**——能力面已等于「pack 可跑 PATH 上任何程序」。
   - **产出改形**：`SKILL.md` 必须撤销内联规则索引、回归「怎么跑脚本 + 怎么检视」的指引形态；`build_skill_md.py` 退役；`rules/` 与 `filter_rules.py` 升为主路径。
   - **待建缝**：`buildReviewToolkit` 的 `ledger?` 注入；`advancePhase` 的 skill pass 子状态；每个 skill 会话独立的 `onPayload` 捕获与转录落盘。
 - **中性**：F 仍不进 A–E 主矩阵 / `pi-seam-matrix.e2e.ts`；skill 会话属于**非测量档**，其请求字节不参与 F↔E 对照。
@@ -76,7 +76,7 @@
 5. 每个 skill 会话**独立转录落盘**，主转录/审计引用它。
 6. **主会话**请求无绝对路径；skill 会话可含真实 pack 路径。
 7. 主会话的请求序列 **append-only，零 cache break**；skill 会话的 append-only 由结构保证——种子是 Phase 5 末的 `messages` 快照，之后只单向追加（`runSkillPass` 不改写种子）。**skill 会话属非测量档**，其 wire 不进主审计 `requests[]`（`classifyCacheBreaks` 只覆盖主链），现场只在该会话的独立转录里。
-8. 恶意包（Zip Slip / 解压炸弹 / 越过白名单的命令）→ 拒绝且 run 照常；`--strict-rule-skill` 抛错。
+8. 恶意包（Zip Slip / 解压炸弹 / 引号外元字符）→ 拒绝且 run 照常；`--strict-rule-skill` 抛错。
 9. 同一 zip 跑两次 → digest 相同、第二次不解压。
 
 跨仓限定语纪律：本 ADR 为本仓序列 0014；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。

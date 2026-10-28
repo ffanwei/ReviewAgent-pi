@@ -24,7 +24,7 @@ export function skillCandidateIdTemplate(skillName: string): string {
 function invocationContract(name: string): string {
   return [
     "## Rule-skill review pass (this session)",
-    "The conversation above is the main review session up to Phase 5. Use it as context, then inspect the changed code against this skill's rules. You may call the review tools, and you may run this skill's whitelisted Python helpers with the `bash` tool (the working directory is this skill's root).",
+    "The conversation above is the main review session up to Phase 5. Use it as context, then inspect the changed code against this skill's rules. You may call the review tools, and you may run this skill's helper commands with the `bash` tool (any executable on PATH; the working directory is this skill's root).",
     "",
     "Output contract:",
     `- When you are done, reply with a single JSON object: {"candidates": [<finding objects per the Finding schema>, ...]}.`,

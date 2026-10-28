@@ -15,7 +15,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
  * 纪律：
  * - **装载阶段仍不执行包内脚本**：这里只 `loadSkills` 读 `SKILL.md`（及其
  *   同目录数据文件）；脚本只在 skill 检视会话里经 `tools/skill-bash.ts` 的
- *   白名单边界执行（ADR-0014 决策 7）；
+ *   既有边界执行（ADR-0014 决策 7：无 shell、env 白名单、cwd = pack 根）；
  * - **不写回被检视仓库**：解压产物只落在 `<cacheRoot>/<sha256>/`；
  * - **失败降级**：定位/审计/解压/装载任一失败 → 该包成为 `degradedReason`
  *   条目（run 照常）；`strict` 模式下抛错（CI 可要求包必须成功）；

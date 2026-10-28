@@ -164,7 +164,7 @@ flowchart TD
     H -->|"正常"| I{"存在 stopReason = error 的回合？"}
     I -->|"是"| FAILS
     I -->|"否"| J{"回合含 toolCall？"}
-    J -->|"是"| K["执行工具：7 review 工具 / bash<br/>bash：仅 python·python3、引号外无 shell 元字符<br/>cwd = pack 根、120s、8K 结果预算"] --> J
+    J -->|"是"| K["执行工具：7 review 工具 / bash<br/>bash：任意 PATH 可执行文件（无白名单）、引号外无 shell 元字符<br/>cwd = pack 根、120s、8K 结果预算"] --> J
     J -->|"否（纯文本）"| L["取最后一条 assistant 文本<br/>parseCandidatesReply"]
     L --> M{"解析失败？"}
     M -->|"是"| FAILP["failed，failureStage = parse"]
@@ -289,11 +289,11 @@ Every candidate id above must appear in your verdicts array. …
 | 维度 | 旧口径（ADR-0012） | 现行口径（ADR-0014 / 本图） |
 |---|---|---|
 | 注入点 | Phase 5 **消息体内**追加规则简报 | Phase 5 **之后**追加独立会话；Phase 5 消息零修改 |
-| skill 的身份 | 规则来源（文本） | 检视者（可调工具、可跑白名单脚本、自出候选） |
+| skill 的身份 | 规则来源（文本） | 检视者（可调工具、可跑 PATH 上的脚本、自出候选） |
 | 包数量 | 单包 | 多包，CLI 顺序叠加 |
 | 候选合流 | skill 不产候选 | 候选在候选门前跨 skill 去重，Phase 6 一次裁定 |
 | 审计 | `ruleSkill` 单对象 | `ruleSkill[]` + `skillPassLog[]` + 独立转录 |
-| 脚本执行 | 绝不执行 | 仅 skill 会话内 `bash`：python 白名单、无 shell、cwd=pack 根 |
+| 脚本执行 | 绝不执行 | 仅 skill 会话内 `bash`：任意 PATH 可执行文件（无命令白名单）、无 shell、cwd=pack 根 |
 | F 与 E 的差异 | Phase 5 请求字节不同 | Phase 1–5 相同；仅 Phase 6 在有存活候选时追加清单 |
 | N=0 | 需要额外断言 | 天然成立：无包 → 无会话 → 全部请求逐字节相同 |
 

@@ -7,8 +7,11 @@ import { applyLineBudget, DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budg
 /**
  * skill 会话专用 bash 工具（ADR-0014 决策 6/7）。
  *
- * 边界（核内常量，**不接受 pack 声明**——被检视项目自带内容不得扩大安全边界）：
- * - 只允许 `python` / `python3` 作为 argv[0]（白名单常量）；
+ * 边界（核内常量，**不接受 pack 声明**）：
+ * - argv[0] 不做命令白名单：裸名按 `PATH` 的**绝对目录**解析成绝对路径再启动
+ *   （不把「找哪个程序」交给平台的当前目录搜索顺序）；含 `/` 或 `\` 的显式
+ *   路径按原样交给 `spawn`，由调用方自己指明是哪个文件。Windows 上只认
+ *   `.exe`/无后缀——`.cmd`/`.bat` 在 `shell: false` 下会被 Node 直接拒绝；
  * - 子进程 env 只保留白名单键（不透传宿主全量环境）；
  * - `cwd` 恒为 pack 根（SKILL.md 用相对路径）；跨目录时调用方在 argv 里自行
  *   透传绝对路径，不做解析改写；
@@ -19,7 +22,7 @@ import { applyLineBudget, DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budg
  *   保留（Windows 绝对路径需要反斜杠）。
  *
  * 资源上限：单条命令 120s；输出走既有结果预算层（`applyLineBudget`）。
- * 白名单拒绝**不是**失败（返回正常工具文本，skill 会话照常进行）。
+ * 拒绝**不是**失败（返回正常工具文本，skill 会话照常进行）。
  */
 
 /** 工具名（skill 会话的第八只工具；不进 A–E 测量档工具面） */
@@ -27,9 +30,6 @@ export const SKILL_BASH_TOOL_NAME = "bash";
 
 /** 单条命令超时（毫秒） */
 export const SKILL_BASH_TIMEOUT_MS = 2 * 60_000;
-
-/** 允许的解释器（常量白名单；不接受 pack 声明） */
-export const SKILL_BASH_ALLOWED_COMMANDS = ["python", "python3"] as const;
 
 /**
  * 子进程环境白名单。解释器定位需要 PATH / PATHEXT；Windows 上 SYSTEMROOT
@@ -119,6 +119,8 @@ export interface SkillBashProcessOutcome {
   readonly stderr: string;
   readonly exitCode: number;
   readonly timedOut: boolean;
+  /** PATH 上找不到可执行文件（显式 Error 文本，进度层按失败呈现） */
+  readonly notFound?: boolean;
 }
 
 export type SkillBashRunner = (
@@ -167,35 +169,27 @@ export function splitSkillCommand(command: string): readonly string[] {
   return tokens;
 }
 
-/** 白名单里是否含该解释器（比较 stem：允许带 .exe 后缀的调用） */
-function isAllowedCommand(argv0: string): boolean {
-  const stem = argv0.replace(/\.exe$/i, "").toLowerCase();
-  return (SKILL_BASH_ALLOWED_COMMANDS as readonly string[]).includes(stem);
-}
-
 /**
- * 解析白名单解释器的**绝对路径**：只搜 `env.PATH` 里的绝对目录，绝不搜 cwd。
+ * 解析可执行文件的**绝对路径**：裸名只搜 `env.PATH` 里的绝对目录，绝不搜 cwd。
  *
- * 为什么必须显式解析（ADR-0014 决策 7「白名单不接受 pack 声明」）：Windows 的
- * CreateProcess 在给定裸名时会先搜调用方的当前目录，POSIX 的 execvp 也接受
- * PATH 里的相对条目——两者都可能让一个不在 PATH 上的可执行文件顶替 `python`。
- * 这里把「哪个 python」的裁定权收进核内：裸名 + 绝对 PATH 目录 + `.exe`
- * （Windows）/ 可执行文件（POSIX），解释器脚本（`.cmd`/`.bat`）不认——那等于
- * 重新打开一个 shell。
+ * 显式路径（含 `/` 或 `\`）按原样返回，交给 `spawn` 解析——调用方已经指明了
+ * 是哪个文件，核内不再二次裁定。
+ *
+ * 为什么裸名必须显式解析：Windows 的 CreateProcess 在给定裸名时会先搜调用方的
+ * 当前目录，POSIX 的 execvp 也接受 PATH 里的相对条目——两者都可能让一个不在
+ * PATH 上的可执行文件顶替目标命令。这里把「找哪个程序」的裁定权收进核内：裸名
+ * + 绝对 PATH 目录 + `.exe`（Windows）/ 可执行文件（POSIX）。`.cmd`/`.bat` 不认
+ * ——`shell: false` 下 Node 会直接拒绝它们（且那等于重新打开一个 shell）。
  */
-export function resolveAllowedInterpreter(
+export function resolveExecutable(
   command: string,
   env: Record<string, string>,
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
-  if (!isAllowedCommand(command)) {
-    return undefined;
+  if (command.includes("/") || command.includes("\\")) {
+    return command;
   }
-  // 只接受裸名（`python` / `python.exe`）：带目录的 argv[0] 会绕过 PATH 裁定
-  if (command !== path.basename(command)) {
-    return undefined;
-  }
-  const stem = command.replace(/\.exe$/i, "");
+  const stem = platform === "win32" ? command.replace(/\.exe$/i, "") : command;
   const separator = platform === "win32" ? ";" : ":";
   const suffixes = platform === "win32" ? [".exe", ""] : [""];
   const dirs = (env.PATH ?? "").split(separator).filter((dir) => path.isAbsolute(dir));
@@ -250,7 +244,7 @@ function budgetNotice(shown: number, total: number, budgetChars: number): string
 
 /**
  * 执行一条 skill 命令。返回工具结果文本（永不 reject——拒绝/超时/非零退出
- * 都成为有界的工具文本，便于模型自我纠正，也避免把「白名单拒绝」记成失败）。
+ * 都成为有界的工具文本，便于模型自我纠正，也避免把「命令被拒绝」记成失败）。
  */
 export async function runSkillBashCommand(
   command: string,
@@ -269,12 +263,6 @@ export async function runSkillBashCommand(
   if (argv0 === undefined) {
     return `${REJECTION_PREFIX}empty command`;
   }
-  if (!isAllowedCommand(argv0)) {
-    return (
-      `${REJECTION_PREFIX}command not allowed: "${argv0}" ` +
-      `(allowed: ${SKILL_BASH_ALLOWED_COMMANDS.join(", ")})`
-    );
-  }
 
   const budgetChars = options.resultBudgetChars ?? DEFAULT_TOOL_RESULT_BUDGET_CHARS;
   const timeoutMs = options.timeoutMs ?? SKILL_BASH_TIMEOUT_MS;
@@ -283,6 +271,12 @@ export async function runSkillBashCommand(
     env: allowlistedEnv(options.env ?? process.env),
     timeoutMs,
   });
+
+  // 找不到可执行文件是「叫错了名字」，不是脚本失败——显式 Error 文本
+  // （进度层与模型都按失败理解；skill 会话照常继续）
+  if (outcome.notFound === true) {
+    return `${REJECTION_PREFIX}command not found on PATH: ${argv0}`;
+  }
 
   const lines: string[] = [...toLines(outcome.stdout)];
   const stderrLines = toLines(outcome.stderr);
@@ -310,9 +304,9 @@ export function buildSkillBashTool(options: SkillBashOptions): AgentTool {
     name: SKILL_BASH_TOOL_NAME,
     label: SKILL_BASH_TOOL_NAME,
     description:
-      "Run a read-only Python helper script from this rule pack. Only `python`/`python3` may be invoked; " +
-      "the working directory is the pack root, so SKILL.md paths are relative. No shell features " +
-      "(pipes, redirection, chaining, substitutions) are available. 120s timeout.",
+      "Run a read-only helper command from this rule pack (any executable on PATH may be invoked, " +
+      "one command per call). The working directory is the pack root, so SKILL.md paths are relative. " +
+      "No shell features (pipes, redirection, chaining, substitutions) are available. 120s timeout.",
     parameters: {
       type: "object",
       properties: {
@@ -344,22 +338,23 @@ function spawnCapture(
     let settled = false;
     let timedOut = false;
 
-    // 第三道防线之上再加一层：解释器路径由核内 PATH 裁定（不交给 spawn 的
-    // 平台搜索顺序），见 resolveAllowedInterpreter 的注释。
-    const executable = resolveAllowedInterpreter(command, options.env);
+    // 第三道防线之上再加一层：可执行文件路径由核内 PATH 裁定（不交给 spawn 的
+    // 平台搜索顺序），见 resolveExecutable 的注释。
+    const executable = resolveExecutable(command, options.env);
     if (executable === undefined) {
       resolve({
         stdout: "",
-        stderr: `interpreter not found on PATH: ${command}`,
+        stderr: `command not found on PATH: ${command}`,
         exitCode: -1,
         timedOut: false,
+        notFound: true,
       });
       return;
     }
 
     let child: ReturnType<typeof spawn>;
     try {
-      // shell: false（默认）——白名单 + 元字符拒绝之外的第三道防线
+      // shell: false（默认）——元字符拒绝之外的第三道防线
       child = spawn(executable, [...args], {
         cwd: options.cwd,
         env: options.env,

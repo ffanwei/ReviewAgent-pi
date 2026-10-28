@@ -4,15 +4,15 @@ import path from "node:path";
 import { afterAll, expect, test } from "vitest";
 import {
   buildSkillBashTool,
-  resolveAllowedInterpreter,
+  resolveExecutable,
   runSkillBashCommand,
-  SKILL_BASH_ALLOWED_COMMANDS,
   splitSkillCommand,
   type SkillBashProcessOutcome,
 } from "./skill-bash.js";
 
-// skill 会话 bash 边界（ADR-0014 决策 7）：核内常量白名单 + env 白名单 +
-// cwd = pack 根 + 禁引号外 shell 元字符 + 120s + 结果预算。
+// skill 会话 bash 边界（ADR-0014 决策 7）：命令白名单已移除（任意 PATH 可执行
+// 文件），其余边界不变——env 白名单 + cwd = pack 根 + 禁引号外 shell 元字符 +
+// 120s + 结果预算。
 
 const PACK_ROOT = "C:\\cache\\deadbeef\\sample-rule";
 
@@ -100,18 +100,23 @@ test("引号外紧邻引号的分号仍被拒绝（闭合后不再豁免）", as
   expect(calls).toHaveLength(0);
 });
 
-test("非白名单解释器被拒绝（且不启动子进程）", async () => {
-  const { runner, calls } = runnerReturning();
-  for (const command of ["rm -rf /", "node a.js", "sh -c 'ls'"]) {
+test("任意可执行命令都放行（命令白名单已移除，仍无 shell）", async () => {
+  const { runner, calls } = runnerReturning({ stdout: "ok" });
+  for (const command of [
+    "git status --porcelain",
+    "node verify.js",
+    "sh -c 'ls'",
+    "rg TODO --glob *.java",
+  ]) {
     const text = await runSkillBashCommand(command, { packRoot: PACK_ROOT, runner });
-    expect(text, command).toContain("command not allowed");
+    expect(text, command).toBe("ok");
   }
-  expect(calls).toHaveLength(0);
+  expect(calls.map((call) => call.command)).toEqual(["git", "node", "sh", "rg"]);
 });
 
-test("白名单允许 python / python3（含 .exe 形态）", async () => {
+test("argv[0] 原样透传（不做白名单归一 / 大小写改写）", async () => {
   const { runner, calls } = runnerReturning({ stdout: "ok" });
-  for (const executable of [...SKILL_BASH_ALLOWED_COMMANDS, "python.exe", "PYTHON3"]) {
+  for (const executable of ["python", "python3", "python.exe", "PYTHON3", "GIT"]) {
     const text = await runSkillBashCommand(`${executable} a.py`, { packRoot: PACK_ROOT, runner });
     expect(text, executable).toBe("ok");
   }
@@ -120,7 +125,14 @@ test("白名单允许 python / python3（含 .exe 形态）", async () => {
     "python3",
     "python.exe",
     "PYTHON3",
+    "GIT",
   ]);
+});
+
+test("PATH 上找不到可执行文件 → 显式 Error 文本（不伪装成脚本失败）", async () => {
+  const { runner } = runnerReturning({ notFound: true });
+  const text = await runSkillBashCommand("nosuchcmd --version", { packRoot: PACK_ROOT, runner });
+  expect(text).toBe("Error: command not found on PATH: nosuchcmd");
 });
 
 test("cwd = pack 根；env 只含白名单键且强制 UTF-8", async () => {
@@ -186,15 +198,15 @@ test("AgentTool 形状：name = bash、schema 只收 command、执行走同一�
   expect(calls).toHaveLength(1);
 });
 
-// ---- 解释器定位（决策 7：白名单不接受 pack 声明）----
+// ---- 可执行文件定位（决策 7 修订：不再有命令白名单，仍然不搜 cwd）----
 
 const tempRoots: string[] = [];
 
-/** 建一个临时「bin 目录」，按平台放一个可被认作解释器的文件 */
-function fakeBinDir(interpreter: "python" | "python3"): string {
+/** 建一个临时「bin 目录」，按平台放一个可被认作可执行文件的文件 */
+function fakeBinDir(executable: string): string {
   const root = mkdtempSync(path.join(tmpdir(), "skill-bash-"));
   tempRoots.push(root);
-  const file = path.join(root, process.platform === "win32" ? `${interpreter}.exe` : interpreter);
+  const file = path.join(root, process.platform === "win32" ? `${executable}.exe` : executable);
   writeFileSync(file, "", "utf8");
   return root;
 }
@@ -205,40 +217,48 @@ afterAll(() => {
   }
 });
 
-test("解释器定位只搜 PATH 的绝对目录（找到即返回绝对路径）", () => {
-  const bin = fakeBinDir("python");
-  const resolved = resolveAllowedInterpreter("python", { PATH: bin });
+test("裸名只搜 PATH 的绝对目录（找到即返回绝对路径）", () => {
+  const bin = fakeBinDir("git");
+  const resolved = resolveExecutable("git", { PATH: bin });
   expect(resolved).toBe(
-    path.join(bin, process.platform === "win32" ? "python.exe" : "python"),
+    path.join(bin, process.platform === "win32" ? "git.exe" : "git"),
   );
 });
 
-test("解释器定位不搜 cwd / 相对 PATH 条目 / pack 根（白名单不接受 pack 声明）", () => {
-  const bin = fakeBinDir("python");
+test("裸名不搜 cwd / 相对 PATH 条目 / pack 根", () => {
+  const bin = fakeBinDir("git");
   const packRoot = mkdtempSync(path.join(tmpdir(), "skill-bash-pack-"));
   tempRoots.push(packRoot);
   writeFileSync(
-    path.join(packRoot, process.platform === "win32" ? "python.exe" : "python"),
+    path.join(packRoot, process.platform === "win32" ? "git.exe" : "git"),
     "",
     "utf8",
   );
-  // 只有 pack 根（不在 PATH）→ 拒绝
-  expect(resolveAllowedInterpreter("python", { PATH: "" })).toBeUndefined();
+  // 只有 pack 根（不在 PATH）→ 解析不到
+  expect(resolveExecutable("git", { PATH: "" })).toBeUndefined();
   // 相对 PATH 条目一律不认（否则等价于搜 cwd）
-  expect(resolveAllowedInterpreter("python", { PATH: "." })).toBeUndefined();
+  expect(resolveExecutable("git", { PATH: "." })).toBeUndefined();
   // 混合时取绝对目录里的那个，绝不取当前目录
-  const resolved = resolveAllowedInterpreter("python", { PATH: `.${path.delimiter}${bin}` });
+  const resolved = resolveExecutable("git", { PATH: `.${path.delimiter}${bin}` });
   expect(resolved).toBe(
-    path.join(bin, process.platform === "win32" ? "python.exe" : "python"),
+    path.join(bin, process.platform === "win32" ? "git.exe" : "git"),
   );
 });
 
-test("解释器定位只认裸名与白名单（带目录的 argv[0] 与非白名单名都拒绝）", () => {
-  const bin = fakeBinDir("python");
-  expect(resolveAllowedInterpreter(`scripts/python`, { PATH: bin })).toBeUndefined();
-  expect(resolveAllowedInterpreter(path.join(bin, "python"), { PATH: bin })).toBeUndefined();
-  expect(resolveAllowedInterpreter("sh", { PATH: bin })).toBeUndefined();
-  expect(resolveAllowedInterpreter("python.exe", { PATH: bin })).toBe(
-    path.join(bin, process.platform === "win32" ? "python.exe" : "python"),
-  );
+test("显式路径按原样交给 spawn（含分隔符即视为调用方已指定文件）", () => {
+  const bin = fakeBinDir("git");
+  const explicit = path.join(bin, process.platform === "win32" ? "git.exe" : "git");
+  expect(resolveExecutable(explicit, { PATH: "" })).toBe(explicit);
+  expect(resolveExecutable("./scripts/run.sh", { PATH: "" })).toBe("./scripts/run.sh");
+  expect(resolveExecutable("scripts\\run.bat", { PATH: "" })).toBe("scripts\\run.bat");
+});
+
+test("Windows 不解析 .cmd / .bat（shell: false 下由 Node 拒绝）", () => {
+  if (process.platform !== "win32") {
+    return;
+  }
+  const bin = mkdtempSync(path.join(tmpdir(), "skill-bash-cmd-"));
+  tempRoots.push(bin);
+  writeFileSync(path.join(bin, "npm.cmd"), "", "utf8");
+  expect(resolveExecutable("npm", { PATH: bin })).toBeUndefined();
 });

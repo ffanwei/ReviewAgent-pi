@@ -123,7 +123,7 @@ export interface RuleSkillAudit {
 /** skill pass 状态三态（ADR-0014：跑通 0 候选是合法 empty，不是降级） */
 export type RuleSkillPassStatus = "ok" | "empty" | "failed";
 
-/** 失败发生的环节（把「执行失败」进一步可诊断化；装载降级只进 `ruleSkill[]`，bash 白名单拒绝不算失败） */
+/** 失败发生的环节（把「执行失败」进一步可诊断化；装载降级只进 `ruleSkill[]`，bash 命令被拒绝不算失败） */
 export type RuleSkillFailureStage = "parse" | "session";
 
 /**
