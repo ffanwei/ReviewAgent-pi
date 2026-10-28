@@ -67,7 +67,7 @@ CI（push / PR）跑 `suites`（root + review-llm 两包 typecheck + 全量测�
 | `pnpm experiment -- --id <id> --cases-file <file> --configs A,B,C,D,E --reps 3 --judge --judge-model <model>` | 实验运行器（真实网关；产物落 `runs/<id>/`） |
 | `pnpm alignment-gate` | 指标对齐门 v2 复算（gate JSON 留痕） |
 | `pnpm analyze:phase2` | Phase 2 六面分析一键复算（读 `runs/phase2-*`） |
-| `pnpm materialize:vul4j` | VUL4J 数据集物化（case → 本地仓库 + MR） |
+| `pnpm materialize:vul4j -- --vul-ids VUL4J-38,VUL4J-52,VUL4J-79` | VUL4J 数据集物化（case → 本地仓库 + MR；`--vul-ids` 必填，`--out` 缺省已存在时拒覆盖） |
 | `pnpm reference -- --id <id> --cases-file <file>` | Claude Code 外部参照运行器（单列报告，不进 S/A/B 主判定） |
 
 ## 单次检视执行
