@@ -10,7 +10,7 @@ import type { RunProgressEvent } from "../contracts/progress.js";
  *   收尾摘要）。日志重定向后可 grep，`\r` 不出现。
  * - 状态行：仅 TTY 绘制，`\r` 原地重画（空格补白，不用 ANSI 清行——老 ConHost
  *   兼容）；任何事件行开写前先擦除，收尾后不留残影。状态行只显示**在飞**的
- *   请求与当前阶段——请求一旦结束就撤下，否则 bash 卡 60s 会被误读成网关慢。
+ *   请求与当前阶段——请求一旦结束就撤下，否则 bash 卡 120s 会被误读成网关慢。
  *
  * 脱敏：本层只消费事件里已投影好的 `argumentsSummary` / `detail`（内核侧已
  * 截断），永不接触工具结果全文与审计 `resultSummary`。

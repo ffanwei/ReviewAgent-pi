@@ -16,7 +16,7 @@ import { applyLineBudget, DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budg
  *   `& | ; < > $ \`` 与换行一律拒绝；引号与反斜杠按字面保留（Windows 绝对
  *   路径需要反斜杠）。
  *
- * 资源上限：单条命令 60s；输出走既有结果预算层（`applyLineBudget`）。
+ * 资源上限：单条命令 120s；输出走既有结果预算层（`applyLineBudget`）。
  * 白名单拒绝**不是**失败（返回正常工具文本，skill 会话照常进行）。
  */
 
@@ -24,7 +24,7 @@ import { applyLineBudget, DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budg
 export const SKILL_BASH_TOOL_NAME = "bash";
 
 /** 单条命令超时（毫秒） */
-export const SKILL_BASH_TIMEOUT_MS = 60_000;
+export const SKILL_BASH_TIMEOUT_MS = 2 * 60_000;
 
 /** 允许的解释器（常量白名单；不接受 pack 声明） */
 export const SKILL_BASH_ALLOWED_COMMANDS = ["python", "python3"] as const;
@@ -276,7 +276,7 @@ export function buildSkillBashTool(options: SkillBashOptions): AgentTool {
     description:
       "Run a read-only Python helper script from this rule pack. Only `python`/`python3` may be invoked; " +
       "the working directory is the pack root, so SKILL.md paths are relative. No shell features " +
-      "(pipes, redirection, chaining, substitutions) are available. 60s timeout.",
+      "(pipes, redirection, chaining, substitutions) are available. 120s timeout.",
     parameters: {
       type: "object",
       properties: {

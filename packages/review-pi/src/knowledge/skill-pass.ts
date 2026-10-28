@@ -34,11 +34,11 @@ import { buildSkillPassInvocation } from "./skill-pass-brief.js";
  * 让后跑的 skill 拿到它没经历过的 "Already loaded" 引用。
  *
  * 失败语义：会话异常 / provider 错误 / 解析失败 ⇒ `failed`（带
- * `failureStage`）；跑通 0 候选 ⇒ `empty`（合法）。单会话 5 min 上界。
+ * `failureStage`）；跑通 0 候选 ⇒ `empty`（合法）。单会话 10 min 上界。
  */
 
-/** 单 skill 会话超时（ADR-0014 决策 11：5 min） */
-export const SKILL_PASS_TIMEOUT_MS = 5 * 60_000;
+/** 单 skill 会话超时（ADR-0014 决策 11：10 min） */
+export const SKILL_PASS_TIMEOUT_MS = 10 * 60_000;
 
 export interface SkillPassOptions {
   readonly round: number;

@@ -12,7 +12,7 @@ import {
 } from "./skill-bash.js";
 
 // skill 会话 bash 边界（ADR-0014 决策 7）：核内常量白名单 + env 白名单 +
-// cwd = pack 根 + 禁 shell 元字符 + 60s + 结果预算。
+// cwd = pack 根 + 禁 shell 元字符 + 120s + 结果预算。
 
 const PACK_ROOT = "C:\\cache\\deadbeef\\sample-rule";
 

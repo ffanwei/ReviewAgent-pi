@@ -135,7 +135,7 @@ flowchart TD
 要点：
 
 - **阶段推进只由文本回合触发**；工具回合不推进阶段，也不消耗轮次。
-- `MAX_TOOL_CALLS = 100` 只约束**主会话**；skill 会话另有 5 min 会话上界，**没有工具预算**。
+- `MAX_TOOL_CALLS = 100` 只约束**主会话**；skill 会话另有 10 min 会话上界，**没有工具预算**。
 - 候选解析在 Phase 5；裁决与 `complete` 在 Phase 6，二者都是每轮一次。
 - F 的 skill 会话是**每轮都跑**（不是每 run 一次），多轮时成本按轮数放大。
 
@@ -159,12 +159,12 @@ flowchart TD
     D -->|"否"| E["new Agent：<br/>systemPrompt 同主会话<br/>messages = Phase 5 快照（含 Phase 5 回复）<br/>tools = 7 review 工具 + bash"]
     E --> F["分叉 toolkit：ledger 种子 = Phase 5 快照<br/>（skill 之间、skill 与主会话互不可见）"]
     F --> G["prompt = &lt;skill name location&gt; 块<br/>+ 输出契约（JSON candidates / 英文 / 必带 evidence）"]
-    G --> H{"5 min 内结束？"}
+    G --> H{"10 min 内结束？"}
     H -->|"超时"| FAILS["failed，failureStage = session（先 abort）"]
     H -->|"正常"| I{"存在 stopReason = error 的回合？"}
     I -->|"是"| FAILS
     I -->|"否"| J{"回合含 toolCall？"}
-    J -->|"是"| K["执行工具：7 review 工具 / bash<br/>bash：仅 python·python3、无 shell 元字符<br/>cwd = pack 根、60s、8K 结果预算"] --> J
+    J -->|"是"| K["执行工具：7 review 工具 / bash<br/>bash：仅 python·python3、无 shell 元字符<br/>cwd = pack 根、120s、8K 结果预算"] --> J
     J -->|"否（纯文本）"| L["取最后一条 assistant 文本<br/>parseCandidatesReply"]
     L --> M{"解析失败？"}
     M -->|"是"| FAILP["failed，failureStage = parse"]
@@ -261,7 +261,7 @@ Every candidate id above must appear in your verdicts array. …
 | 审计 | zip64 / 穿越 / 符号链接 / 超限 / 重名 | 该包降级 | 抛错退出 | 同上 |
 | 解压 | 命令失败 / 超时（30s） / 复核不过 | 该包降级 | 抛错退出 | 同上 |
 | 装载 | 无 SKILL.md / 0 个或多个 skill 且未消歧 | 该包降级 | 抛错退出 | 同上 |
-| 会话 | 异常 / provider error / 超时（5 min） | `status=failed`，run 继续 | **同样不抛**（strict 不覆盖会话） | `skillPassLog[]` + 转录（若发过请求） |
+| 会话 | 异常 / provider error / 超时（10 min） | `status=failed`，run 继续 | **同样不抛**（strict 不覆盖会话） | `skillPassLog[]` + 转录（若发过请求） |
 | 解析 | 输出非 JSON / 无 candidates | `status=failed`，`failureStage=parse` | 同上 | 同上 |
 | 空产出 | 合法 JSON 但 `candidates: []` | `status=empty`（合法） | 同上 | 同上 |
 

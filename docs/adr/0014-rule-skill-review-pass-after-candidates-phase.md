@@ -1,6 +1,6 @@
 # 0014. 规则 Skill 改为「Phase 5 之后追加独立 skill 检视会话」，Phase 5 消息不再被修改
 
-**状态**：已接受（2026-10-27，用户经 grill 逐项决策 Q1–Q46）
+**状态**：已接受（2026-10-27，用户经 grill 逐项决策 Q1–Q46）；**部分修订（2026-10-28）**——决策 11 的资源上限由「单条命令 60s、单会话 5 min」上调为「单条命令 120s、单会话 10 min」（实测 skill 会话 158s 已贴近原 5 min 上界，bash 60s 对 pack 脚本偏紧）
 **关联**：ADR-0012（本 ADR 取代其决策第 3 条与第 2 条中的「单一 zip」限定）、ADR-0013（转录产物契约——skill 会话转录需对齐）、ADR-0009（pi 内核从 0 重写）、ADR-0011（切流 config E——F 是 E 基线上的消融位）、CONTEXT.md（规则检索 / 规则合并 / 规则技能执行器）、`docs/design/规则 Skill 与 config F 方案——项目规则检视落地.md`（其 §6 验收 2 与 §4 第 7 条被本 ADR 取代）
 
 ## Context
@@ -26,7 +26,7 @@
 8. **ledger = 主 ledger 在 Phase 5 结束时的快照分叉**（不是主会话 + 全部 skill 共享一个可变实例，否则 skill-2 会拿到 skill-1 加载过的引用却无对应历史）。为此 `buildReviewToolkit` 需新增 `ledger?` 注入缝（现为内部创建，`packages/review-pi/src/tools/toolkit.ts:86`）。
 9. **合并**：主候选 + 各 skill 候选，在候选门之前按 `(file, line, category)` **跨 skill 去重**，保留 CLI 顺序最先者，被合并者计入 `mergedCount`；主候选永不被丢弃、但其去重键**占键**（skill 侧与之重复的那条同样计入 `mergedCount`——同一缺陷不该以两条 id 进候选门）；**schema 非法的候选不参与去重**（直接交给 `SCHEMA_INVALID`）；语义冲突的两条都保留。
 10. **验证 = 主 Phase 6 统一裁定两批候选**：skill 候选清单由 loop 在拼装 Phase 6 指令消息时追加（`buildSkillCandidatesBrief`——数据在 loop 侧），`applyCandidateGate` 仍**只调用一次**。ADR-0012 的 `phaseBrief` 注入缝随之**整体删除**：它唯一的使用者（候选阶段简报）已退役，留着就是一个签名还在、没人传的假缝。独立消息在 `one-at-a-time` 下会变成两个 run，写系统提示词会破 Zone A。
-11. **失败语义与资源上限**：会话/解析失败 = `failed`（`failureStage` = `session` | `parse`）；跑通 0 候选 = `empty`（合法）；bash 白名单拒绝**不算**失败；装载降级只进 `ruleSkill[]`——降级包根本不跑会话，故不产生 `skillPassLog` 行。单条命令显式 60s、单 skill 会话 5 min、输出走既有结果预算层（`tools/result-budget.ts` 的 `applyLineBudget`）。
+11. **失败语义与资源上限**：会话/解析失败 = `failed`（`failureStage` = `session` | `parse`）；跑通 0 候选 = `empty`（合法）；bash 白名单拒绝**不算**失败；装载降级只进 `ruleSkill[]`——降级包根本不跑会话，故不产生 `skillPassLog` 行。单条命令显式 120s、单 skill 会话 10 min、输出走既有结果预算层（`tools/result-budget.ts` 的 `applyLineBudget`）。
 12. **审计**：`ruleSkill[]`（装载事实，每 run 一条）与 `skillPassLog[]`（执行事实，round × skill）**并列**。`skillPassLog` 元素 = `{round, skill, status: "ok"|"empty"|"failed", requestCount, toolCallCount, candidateCount, mergedCount, ruleIds?, transcriptFile?, degradedReason?, failureStage?}`。**计数口径**：`usage` 与 `toolCalls`（RunResult/审计数字）**含** skill 会话——skill 的真实成本不隐藏；`toolCallLog` 只记主会话的逐项记录（skill 属非测量档），skill 的调用数按会话计在 `skillPassLog[].toolCallCount`。
 13. **转录**：每个 skill 会话**独立落盘**一份转录，主转录/审计引用它（`CONTEXT.md` 的「检视转录」定义为进入 Review Runtime 的全部交互，不能缺这一段）。
 14. **每轮都跑 skill pass**；重复候选由 `emittedIds` 跨轮 id 去重兜住（skill 候选 id **不含 round**，沿用 `RULE-CHECK@<skill>@<file>:<line>` 形态）。

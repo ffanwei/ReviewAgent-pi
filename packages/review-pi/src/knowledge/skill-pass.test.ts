@@ -193,7 +193,7 @@ test("会话异常 = failed/session（provider/fetch 抛错不穿透 run）", as
   expect(outcome.transcript?.complete ?? false).toBe(false);
 });
 
-test("会话超时 = failed/session（5 min 上界可注入）", async () => {
+test("会话超时 = failed/session（10 min 上界可注入）", async () => {
   const hangingFetch = ((_input: unknown, init?: RequestInit) =>
     new Promise((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => {
