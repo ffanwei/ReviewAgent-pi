@@ -43,7 +43,7 @@ export interface ReviewTipsFile {
   readonly reviewTips: readonly ReviewTip[];
 }
 
-/** 分组文档顶层：严格 `{ files }`（无信封；出处由同目录 reviews_zh.json 承担） */
+/** 分组文档顶层：严格 `{ files }`（无信封；ADR-0022：中文交付物只有这一份） */
 export interface ReviewTipsDocument {
   readonly files: readonly ReviewTipsFile[];
 }

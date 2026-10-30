@@ -45,7 +45,6 @@ import { calculateCost } from "@earendil-works/pi-ai";
 
 import type { LlmUsage } from "../contracts/llm.js";
 import { runDispositionCommand } from "../disposition/command.js";
-import { buildReviewsExport } from "../export/reviews.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
@@ -71,7 +70,7 @@ import {
   writeReviewsTipsZh,
   type ExecDirTipsOutcome,
 } from "./reviews-tips-zh.js";
-import { buildReviewsZhExport, removeStaleReviewsZh, writeReviewsZh } from "./reviews-zh.js";
+import { removeStaleReviewsZh } from "./reviews-zh.js";
 
 /** 执行一次 review 命令；返回进程退出码（完成 0——截断同为 0；错误经异常上抛 → 1） */
 async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
@@ -158,39 +157,22 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
     process.stderr.write(`review-pi: 呈现投影降级为英文源文档（${projection.reason}）\n`);
   }
 
-  // 检视意见中文导出（ADR-0013 Step B）：复用**同一次**投影结果（不额外调网关）。
-  // 投影成功 ⇒ 写 reviews_zh.json（写失败抛错）；未配置引擎 / 降级 ⇒ 不产 +
-  // 主动清除**本次 run 的 rep-<N>/** 陈旧 zh（绝不跨 rep）。核外缝：根侧 runner
-  // 无投影缝，永不产 zh。en/session 已在内核落盘（先于本步）。
+  // 中文产物只留分组意见（ADR-0022）：`reviews_zh.json` 不再是交付物——投影结果
+  // 仍服务 stdout 与 `reviews_tips_zh.json`（同一次投影，不额外调网关）。历史上
+  // 产过的 zh 一律视为陈旧并清除，使「磁盘上的中文产物 = 本次 run」成立；只动
+  // **本次 run 的 rep-<N>/**，绝不跨 rep。en/session 已在内核落盘（先于本步）。
   if (reviewsPath !== undefined) {
-    const zhDir = dirname(reviewsPath);
-    if (projection.kind === "projected") {
-      await writeReviewsZh(
-        zhDir,
-        buildReviewsZhExport({
-          envelope: buildReviewsExport({
-            generatedAt: new Date(),
-            runId,
-            source: "vul4j",
-            caseId: record.caseId,
-            configId: record.configId,
-            rep: record.rep,
-            model: record.model,
-            findings: projection.findings,
-          }),
-          provenance: projection.provenance,
-        }),
+    const removed = await removeStaleReviewsZh(dirname(reviewsPath));
+    if (removed !== undefined) {
+      process.stderr.write(
+        `review-pi: 本次不产 reviews_zh.json（中文产物 = reviews_tips_zh.json），已清除陈旧 ${removed}\n`,
       );
-    } else {
-      const removed = await removeStaleReviewsZh(zhDir);
-      if (removed !== undefined) {
-        process.stderr.write(`review-pi: 本次未产中文导出，已清除陈旧 ${removed}\n`);
-      }
     }
   }
 
-  // 分组式检视意见（ADR-0017）：与 zh 同目录、同生命周期，但**弱耦合**——
-  // tips 形状非法/缺席只缺这一份文件（zh 与 stdout 呈现照旧，exit 0）。
+  // 分组式检视意见（ADR-0017 / ADR-0022）：**唯一**中文落盘产物，与 en 同目录、
+  // 同生命周期，但**弱耦合**——tips 形状非法/缺席只缺这一份文件（stdout 呈现
+  // 照旧，exit 0）。
   if (reviewsPath !== undefined) {
     const tipsDir = dirname(reviewsPath);
     const tips: ReviewTipsDocumentLike | undefined =

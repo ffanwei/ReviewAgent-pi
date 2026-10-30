@@ -119,8 +119,8 @@ _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截�
 _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
 
 **检视意见导出（Review Findings Export）**:
-一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径，`reviews_zh.json` 是核外翻译投影（随呈现引擎配置**存在或缺席**，可删可重建）——两者按 rep 覆盖重写，**不是**测量的第四个真源。
-_Avoid_: reviews.json（单数形已废——现为 `_en`/`_zh` 两份）、评论列表、检视报告（REPORT.md 是另一物）
+一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（核外投影产出，随呈现引擎配置**存在或缺席**）——按 rep 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022），投影留痕改由 stdout 的 `presentation` 键承担。
+_Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
 
 ### 知识
 

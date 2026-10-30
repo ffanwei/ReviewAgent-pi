@@ -688,7 +688,7 @@ export default async (source) => ({
   tips: { files: [{ filePath: "sample.txt", reviewTips: [tipOf(source)] }] },
 });\n`;
 
-/** 本次 run 的 rep-1 产物目录（reviews_en.json / reviews_zh.json 同层） */
+/** 本次 run 的 rep-1 产物目录（reviews_en.json / reviews_tips_zh.json 同层） */
 function cliRepDir(outDir: string, configId = "B"): string {
   return path.join(outDir, CLI_EXPERIMENT_ID, "runs", "vul4j", "VUL4J-1", configId, "rep-1");
 }
@@ -713,7 +713,7 @@ function writeMr(diff: string): string {
 }
 
 test(
-  "中文导出：引擎注入 → reviews_zh.json 落盘 + 投影留痕 + 中文自然语言字段 + 无额外网关请求",
+  "中文产物：引擎注入 → stdout 中文 + reviews_tips_zh.json 落盘（不再产 reviews_zh.json，ADR-0022）+ 无额外网关请求",
   async () => {
     const stub = await startLoopbackStub(oneFindingCorpus());
     try {
@@ -726,34 +726,21 @@ test(
 
       expect(run.status).toBe(0);
       const repDir = cliRepDir(outDir);
-      const enPath = path.join(repDir, "reviews_en.json");
-      const zhPath = path.join(repDir, "reviews_zh.json");
-      expect(existsSync(enPath)).toBe(true);
-      expect(existsSync(zhPath)).toBe(true);
+      expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
+      // ADR-0022：zh 文件停产——中文交付物只有 tips；投影留痕改由 stdout 承担
+      expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
 
-      const en = JSON.parse(readFileSync(enPath, "utf8")) as Record<string, unknown>;
-      const zh = JSON.parse(readFileSync(zhPath, "utf8")) as Record<string, unknown>;
-      // 信封 = en 信封 + 投影留痕三键（降级标注永不落盘）
-      expect(Object.keys(zh).sort()).toEqual(
-        [...Object.keys(en), "language", "terminologyVersion", "findingLinks"].sort(),
-      );
-      expect(zh["language"]).toBe("zh");
-      expect(zh["terminologyVersion"]).toBe(1);
-      expect(zh["findingLinks"]).toEqual([{ sourceFindingId: "F100", projectedFindingId: "F100" }]);
-      expect("degraded" in zh).toBe(false);
-      // 配对键：与 en 同 runId（同一 run）
-      expect(zh["runId"]).toBe(en["runId"]);
-      expect(zh["configId"]).toBe("B");
+      const outcome = JSON.parse(run.stdout) as {
+        findings: { id: string; severity: string; title: string; description: string; file: string; line: number }[];
+        presentation: { language: string; terminologyVersion: number; findingLinks: unknown };
+      };
+      expect(outcome.presentation.language).toBe("zh");
+      expect(outcome.presentation.terminologyVersion).toBe(1);
+      expect(outcome.presentation.findingLinks).toEqual([
+        { sourceFindingId: "F100", projectedFindingId: "F100" },
+      ]);
       // 自然语言字段已译、结构化字段字节直通
-      const findings = zh["findings"] as {
-        id: string;
-        severity: string;
-        title: string;
-        description: string;
-        file: string;
-        line: number;
-      }[];
-      expect(findings[0]).toMatchObject({
+      expect(outcome.findings[0]).toMatchObject({
         id: "F100",
         severity: "P2",
         title: "[zh] Sentinel finding title",
@@ -798,7 +785,6 @@ test(
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
-        { label: "reviews_zh.json", text: readFileSync(zhPath, "utf8") },
         { label: "reviews_tips_zh.json", text: repTipsText },
         { label: "cwd review-result.json", text: readFileSync(cwdResultPath, "utf8") },
       ]);
@@ -809,7 +795,7 @@ test(
   180_000,
 );
 
-test("中文导出：未配置引擎 → reviews_zh.json 缺席 + exit 0（en 仍在，无陈旧清除噪声）", async () => {
+test("中文产物：未配置引擎 → reviews_tips_zh.json / reviews_zh.json 都缺席 + exit 0（en 仍在，无陈旧清除噪声）", async () => {
   const stub = await startLoopbackStub(oneFindingCorpus());
   try {
     const outDir = makeTempDir("review-pi-cli-out-");
@@ -819,14 +805,15 @@ test("中文导出：未配置引擎 → reviews_zh.json 缺席 + exit 0（en �
     const repDir = cliRepDir(outDir);
     expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
     expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
-    // 本次 run 无陈旧 zh ⇒ 无「已清除陈旧」噪声
+    expect(existsSync(path.join(repDir, "reviews_tips_zh.json"))).toBe(false);
+    // 本次 run 无陈旧 zh / tips ⇒ 无「已清除陈旧」噪声
     expect(run.stderr).not.toContain("已清除陈旧");
   } finally {
     await stub.close();
   }
 }, 180_000);
 
-test("中文导出：引擎降级 → reviews_zh.json 缺席 + exit 0 + stderr 人话（不复用降级档）", async () => {
+test("中文产物：引擎降级 → 两份中文产物都缺席 + exit 0 + stderr 人话（不复用降级档）", async () => {
   const stub = await startLoopbackStub(oneFindingCorpus());
   try {
     const enginePath = writeProjectionEngineFixture(
@@ -843,6 +830,7 @@ test("中文导出：引擎降级 → reviews_zh.json 缺席 + exit 0 + stderr �
     const repDir = cliRepDir(outDir);
     expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
     expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
+    expect(existsSync(path.join(repDir, "reviews_tips_zh.json"))).toBe(false);
     expect(run.stderr).toContain("呈现投影降级");
     expect(run.stderr).toContain("translation gateway down");
   } finally {
@@ -850,7 +838,7 @@ test("中文导出：引擎降级 → reviews_zh.json 缺席 + exit 0 + stderr �
   }
 }, 180_000);
 
-test("中文导出：陈旧 zh（引擎未配置）→ 本次 run 的 rep-1/ 内被清除 + stderr 留痕", async () => {
+test("中文产物：陈旧 zh + tips（引擎未配置）→ 本次 run 的 rep-1/ 内被清除 + stderr 留痕", async () => {
   const stub = await startLoopbackStub(oneFindingCorpus());
   try {
     const outDir = makeTempDir("review-pi-cli-out-");
@@ -881,7 +869,7 @@ test("中文导出：陈旧 zh（引擎未配置）→ 本次 run 的 rep-1/ 内
 }, 180_000);
 
 test(
-  "分组意见：tips 形状非法 → 只有 tips 缺席（zh 仍在、exit 0、stderr 说明），ADR-0017 弱耦合",
+  "分组意见：tips 形状非法 → 只有 tips 缺席（stdout 中文、exit 0、stderr 说明），ADR-0017 弱耦合",
   async () => {
     const stub = await startLoopbackStub(oneFindingCorpus());
     try {
@@ -902,14 +890,14 @@ test(
 
       expect(run.status).toBe(0);
       const repDir = cliRepDir(outDir);
-      expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(true);
+      expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
       expect(existsSync(path.join(repDir, "reviews_tips_zh.json"))).toBe(false);
       // cwd 副本同理不产（使「有就是本次的」成立）
       expect(existsSync(path.join(run.cwd, "reviews_tips_zh.json"))).toBe(false);
       expect(existsSync(path.join(run.cwd, "review-result.json"))).toBe(false);
       expect(run.stderr).toContain("本次未产分组意见");
       expect(run.stderr).toContain("severity must be one of");
-      // stdout 仍是中文呈现档（tips 坏不拖累 zh）
+      // stdout 仍是中文呈现档（tips 坏不拖累 stdout 与 en）
       const outcome = JSON.parse(run.stdout) as { findings: { title: string }[] };
       expect(outcome.findings[0]?.title).toBe("[zh] Sentinel finding title");
     } finally {
@@ -949,14 +937,14 @@ test(
   180_000,
 );
 
-test("中文导出：写盘失败（zh 路径预占为目录）→ exit 1 + 错误人话 + stdout 干净", async () => {
+test("中文产物：写盘失败（tips 路径预占为目录）→ exit 1 + 错误人话 + stdout 干净", async () => {
   const stub = await startLoopbackStub(oneFindingCorpus());
   try {
     const enginePath = writeProjectionEngineFixture("engine.mjs", ZH_ENGINE_BODY);
     const outDir = makeTempDir("review-pi-cli-out-");
-    // 预占 zh 路径为目录 ⇒ writeFile 失败（EISDIR）⇒ 显式抛错 ⇒ exit 1
+    // 预占 tips 路径为目录 ⇒ writeFile 失败（EISDIR）⇒ 显式抛错 ⇒ exit 1
     const repDir = cliRepDir(outDir);
-    mkdirSync(path.join(repDir, "reviews_zh.json"), { recursive: true });
+    mkdirSync(path.join(repDir, "reviews_tips_zh.json"), { recursive: true });
 
     const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
       ...stubEnv(stub.baseUrl),
@@ -965,8 +953,8 @@ test("中文导出：写盘失败（zh 路径预占为目录）→ exit 1 + 错�
 
     expect(run.status).toBe(1);
     expect(run.stdout).toBe("");
-    expect(run.stderr).toContain("failed to persist review export");
-    expect(run.stderr).toContain("reviews_zh.json");
+    expect(run.stderr).toContain("failed to persist grouped review export");
+    expect(run.stderr).toContain("reviews_tips_zh.json");
   } finally {
     await stub.close();
   }

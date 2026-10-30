@@ -6,14 +6,14 @@ import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
 /**
  * 分组式检视意见中文导出（ADR-0017）。
  *
- * 核外面（CLI 呈现缝）：`reviews_tips_zh.json` 是核外投影的**第二份落盘副本**
- * ——与 `reviews_zh.json` 同目录、同 rep、同生命周期，内容严格 `{ files }`
- * （无信封：出处由同目录 zh 与路径承担）。本模块只编排「写 / 清 / 拷」，绝不
- * 触碰请求字节、审计、`RunRecord` 或 Finding 契约。
+ * 核外面（CLI 呈现缝）：`reviews_tips_zh.json` 是核外投影的**唯一中文落盘产物**
+ * （ADR-0022：`reviews_zh.json` 已停产）——与 `reviews_en.json` 同目录、同 rep，
+ * 内容严格 `{ files }`（无信封：出处由路径与 `reviews_en.json` 承担）。本模块只
+ * 编排「写 / 清 / 拷」，绝不触碰请求字节、审计、`RunRecord` 或 Finding 契约。
  *
- * 生命周期（与 zh 同口径）：
+ * 生命周期（与其它产物同口径）：
  * - 投影成功且 tips 形状合法 ⇒ 写 `reviews_tips_zh.json`；**写失败抛错**
- *   （产物即契约，与 en/zh 同档）；
+ *   （产物即契约，与 en 同档）；
  * - 未配置引擎 / 投影降级 / tips 形状非法 ⇒ **不产** + 主动删除**本次 run 的
  *   `rep-<N>/`** 里的陈旧文件（绝不跨 rep 越权删除）。
  *
@@ -24,7 +24,7 @@ import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
  * 两份陈旧副本一并清除。
  */
 
-/** 分组意见导出的文件名（与 `reviews_zh.json` 同目录、同 rep） */
+/** 分组意见导出的文件名（与 `reviews_en.json` 同目录、同 rep） */
 export const REVIEWS_TIPS_ZH_FILENAME = "reviews_tips_zh.json";
 
 /** 执行目录副本的下游约定名（内容与上面的原名副本逐字节相同） */

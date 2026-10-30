@@ -4,8 +4,9 @@ import type { ConfigId } from "../contracts/config.js";
 import type { Finding } from "../contracts/finding.js";
 
 // 检视意见导出（ADR-0013 / CONTEXT.md「检视意见导出」）：把 Finding 清单落成
-// 明确给下游读的产物——`reviews_en.json` 是英文真源口径；`reviews_zh.json`
-// 是**核外**翻译投影（Step B，可缺席可重建，绝不反向影响检视链）。
+// 明确给下游读的产物——`reviews_en.json` 是英文真源口径，恒产。核外的中文
+// 交付物只有分组意见 `reviews_tips_zh.json`（ADR-0022：`reviews_zh.json` 已停产，
+// 不再由 CLI 落盘），绝不反向影响检视链。
 //
 // 纪律：
 // - 信封（非裸数组）：`{ generatedAt, runId, source, caseId, configId, rep,

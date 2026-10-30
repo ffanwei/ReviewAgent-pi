@@ -14,7 +14,8 @@
 
 1. **新增两个产物族**：
    - **检视转录** `session-<首次模型调用时刻紧凑>-<configId>-<caseId>.json`，与 `rep-<N>.json` **平铺**在同一目录（`<runsRoot>/<experimentId>/runs/<source>/<caseId>/<configId>/`）。**每次 run 独立留档、不覆盖**。
-   - **检视意见导出** `reviews_en.json` + `reviews_zh.json`，落在 `.../<configId>/rep-<N>/`（与审计树同名 `rep-<N>` 目录约定呼应）。**按 rep 覆盖重写**。
+   - **检视意见导出** `reviews_en.json`（另有核外可选的中文产物，见下条），落在 `.../<configId>/rep-<N>/`（与审计树同名 `rep-<N>` 目录约定呼应）。**按 rep 覆盖重写**。
+   - ~~`reviews_zh.json`~~：**已停产**（ADR-0022）——中文交付物只剩 `reviews_tips_zh.json`（ADR-0017），投影留痕由 stdout 的 `presentation` 键承担。
 2. **转录源 = 进入 Agent 的全部交互**：`agent.state.messages` **原样**（不截断、不改字段名），并在 `messages[0]` **合成一条 `role:"system"`** 承载 Zone A 系统提示词（它不在 `state.messages` 里，而在 `state.systemPrompt`）。
 3. **文件骨架三分 `{ info, messages, view }`**：`messages` 是**省键真源**（逐字对应 pi 原生结构）；`view` 是 **OpenCode 风格定形投影**（`null` 占位保证形状固定：工具调用与结果**合并**为 `tool` part、同批 toolCall 拆多个 part、`isError → state.status:"error"`、无结果 → `"pending"` + `content:null`）。`info` 为两份表示共用，只出现一次。
 4. **命名时间 = `firstRequestAt`**（loop **首次模型请求**时刻），**不是** `runReview` 入口的 `startedAt`（后者早于取仓库上下文／装载规则 skill／建工具集）。`info.id` = 文件名 stem；**`info.runId` = 审计 `runId`**（本仓扩展键，作为与审计／`rep-N.json` 的**配对键**）。

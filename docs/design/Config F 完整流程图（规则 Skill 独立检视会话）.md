@@ -41,7 +41,7 @@ flowchart TD
     S -->|"是"| T["结束并标记完成"]
     S -->|"false 且 round < 5"| U["round+1，重置候选/裁决/skill 批次"] --> I
     S -->|"false 且 round = 5"| V["结束并标记 truncated（MAX_ROUNDS_REACHED）"]
-    T --> W["落盘：skill 转录 ×N → 审计 → 主转录 → reviews_en → RunRecord<br/>（CLI 层再产 reviews_zh）"]
+    T --> W["落盘：skill 转录 ×N → 审计 → 主转录 → reviews_en → RunRecord<br/>（CLI 层再产 reviews_tips_zh）"]
     V --> W
 ```
 
@@ -281,7 +281,7 @@ Every candidate id above must appear in your verdicts array. …
 | `audit.skillPassLog[]` | — | — | 每条：`round / skill / status / requestCount / toolCallCount / candidateCount / mergedCount / ruleIds / transcriptFile` |
 | 转录 | `session-<ts>-<config>-<case>.json` | `session-…-skill-<name>-r<round>.json` | 两者同目录；skill 转录的种子是 Phase 5 快照 |
 | `reviews_en.json` | ✅ | — | 导出的是合流后的 findings |
-| `reviews_zh.json` | — | — | 仅 CLI 层配置了中文投影引擎时产 |
+| `reviews_tips_zh.json` | — | — | 仅 CLI 层配置了中文投影引擎且 tips 形状合法时产（ADR-0022：唯一中文产物） |
 
 ---
 
