@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import {
@@ -176,15 +179,18 @@ test("default export：endpoint/key/model 从环境解析 → zh 档投影（自
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string | URL, init?: RequestInit) => {
-      calls.push({ url: String(url), body: String(init?.body) });
-      return completionResponse("【中译】");
+      const body = String(init?.body);
+      calls.push({ url: String(url), body });
+      // ADR-0017：建议生成是第二类调用（system 含「修复建议作者」）
+      return completionResponse(body.includes("修复建议作者") ? "改为判空后再取值" : "【中译】");
     }),
   );
 
   const projected = await projectZhPresentation(sampleSource());
 
   // 全部自然语言字段各一次调用（1 finding × title/description + 1 toolCall × resultSummary = 3）
-  expect(calls).toHaveLength(3);
+  // + 建议生成 1 次（ADR-0017：每条 finding 一次）
+  expect(calls).toHaveLength(4);
   for (const call of calls) {
     expect(call.url).toBe("https://gw.example.com/v1/chat/completions");
     const body = JSON.parse(call.body) as { model: string };
@@ -215,6 +221,28 @@ test("default export：endpoint/key/model 从环境解析 → zh 档投影（自
     terminologyVersion: TERMINOLOGY_VERSION,
     findingLinks: [{ sourceFindingId: "F001", projectedFindingId: "F001" }],
   });
+  // 分组意见（ADR-0017）：10 键封闭 + 映射表逐值
+  expect(projected.tips).toEqual({
+    files: [
+      {
+        filePath: "src/Main.java",
+        reviewTips: [
+          {
+            code: "",
+            review: "【中译】。【中译】",
+            suggestion: "改为判空后再取值",
+            category: "CORRECTNESS",
+            subcategory: "",
+            severity: "Minor",
+            ruleId: "",
+            lineNum: 177,
+            source: "common-reviewer",
+            confidence: "Low",
+          },
+        ],
+      },
+    ],
+  });
 });
 
 test("default export：REVIEW_PI_PRESENTATION_MODEL 覆盖缺省模型档", async () => {
@@ -241,6 +269,76 @@ test("default export：凭据缺失 → 装配期人话错误（CLI 缝归呈现
   delete process.env.REVIEWER_URL;
   delete process.env.REVIEWER_API_KEY;
   await expect(projectZhPresentation(sampleSource())).rejects.toThrow("key is missing");
+});
+
+test("default export：codeByFinding 填 code、规则包 frontmatter id 建白名单、RULE-CHECK@ 前缀判 rule-reviewer", async () => {
+  process.env.REVIEWER_URL = "https://gw.example.com/v1";
+  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string | URL, init?: RequestInit) =>
+      completionResponse(String(init?.body).includes("修复建议作者") ? "改用 PreparedStatement" : "【中译】"),
+    ),
+  );
+  const packRoot = await mkdtemp(path.join(tmpdir(), "review-tips-pack-"));
+  try {
+    const rulesDir = path.join(packRoot, "general-code-review", "rules");
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(
+      path.join(rulesDir, "07-sql-injection.md"),
+      "---\nid: GEN-SQL-001\ntitle: Query built by string concatenation\n---\n\nbody\n",
+      "utf8",
+    );
+    const finding: Finding = {
+      id: "RULE-CHECK@general-code-review@src/Main.java:88",
+      severity: "P0",
+      category: "ERROR-HANDLING",
+      file: "src/Main.java",
+      line: 88,
+      title: "Swallowed exception",
+      description: "The catch block discards the error.",
+      evidence: ["Main.java:88: catch (Exception e) { }"],
+      rule: "GEN-SQL-001",
+      confidence: 0.9,
+    };
+    const projected = await projectZhPresentation({
+      findings: [finding],
+      toolCallLog: [],
+      codeByFinding: { [finding.id]: "catch (Exception e) { }" },
+      rulePackDirs: [packRoot],
+    });
+    const tip = projected.tips.files[0]?.reviewTips[0];
+    expect(tip).toMatchObject({
+      code: "catch (Exception e) { }",
+      suggestion: "改用 PreparedStatement",
+      severity: "Fatal",
+      ruleId: "GEN-SQL-001",
+      source: "rule-reviewer",
+      confidence: "High",
+    });
+  } finally {
+    await rm(packRoot, { recursive: true, force: true });
+  }
+});
+
+test("default export：单条建议生成失败 ⇒ 该条 suggestion 空串，zh 投影照常（弱耦合）", async () => {
+  process.env.REVIEWER_URL = "https://gw.example.com/v1";
+  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      if (String(init?.body).includes("修复建议作者")) {
+        throw new Error("connect ECONNREFUSED");
+      }
+      return completionResponse("【中译】");
+    }),
+  );
+
+  const projected = await projectZhPresentation(sampleSource());
+
+  expect(projected.findings[0]?.title).toBe("【中译】");
+  expect(projected.tips.files[0]?.reviewTips[0]?.suggestion).toBe("");
+  expect(projected.tips.files[0]?.reviewTips[0]?.review).toBe("【中译】。【中译】");
 });
 
 // 类型形状锚定：default export 即 CLI 缝协议（(source) => ProjectedReviewDocument）

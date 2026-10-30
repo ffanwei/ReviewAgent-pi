@@ -29,7 +29,7 @@ function invocationContract(name: string): string {
     "Output contract:",
     `- When you are done, reply with a single JSON object: {"candidates": [<finding objects per the Finding schema>, ...]}.`,
     `- Use the id form \`${skillCandidateIdTemplate(name)}\` for every candidate (no round number).`,
-    `- Set the "rule" field to the skill name "${name}".`,
+    `- Set the "rule" field to the id of the specific rule from this skill's rules/ that the finding violates (that rule file's frontmatter id, e.g. "GEN-SQL-001"). Use "${name}" only when the finding does not map to any single rule.`,
     "- Write EVERY finding field (id/title/description/category/evidence) in ENGLISH ONLY.",
     "- Evidence is mandatory (symbol + line + excerpt); candidates without evidence are dropped.",
     '- If no rule violation survives your inspection, reply with {"candidates": []}.',

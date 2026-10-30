@@ -548,7 +548,19 @@ test(
 // zh 由核外 CLI 缝编排（复用同一次投影结果，绝不额外调网关），与 en 同 rep 目录。
 // 路径基线：<out>/review-pi-cli/runs/vul4j/VUL4J-1/<config>/rep-1/
 
-const ZH_ENGINE_BODY = `export default async (source) => ({
+const ZH_ENGINE_BODY = `const tipOf = (source) => ({
+  code: source.codeByFinding?.F100 ?? "",
+  review: "[zh] Sentinel finding title。[zh] Sentinel finding description",
+  suggestion: "改为判空后再取值。",
+  category: "correctness",
+  subcategory: "",
+  severity: "Minor",
+  ruleId: "",
+  lineNum: 1,
+  source: "common-reviewer",
+  confidence: "Medium",
+});
+export default async (source) => ({
   provenance: {
     language: "zh",
     terminologyVersion: 1,
@@ -563,6 +575,7 @@ const ZH_ENGINE_BODY = `export default async (source) => ({
     description: "[zh] " + finding.description,
   })),
   toolCallLog: source.toolCallLog,
+  tips: { files: [{ filePath: "sample.txt", reviewTips: [tipOf(source)] }] },
 });\n`;
 
 /** 本次 run 的 rep-1 产物目录（reviews_en.json / reviews_zh.json 同层） */
@@ -635,10 +648,35 @@ test(
       });
       // 复用同一次投影结果：不发额外检视请求（仍恰好六回合）
       expect(stub.requests()).toHaveLength(6);
+      // 分组意见（ADR-0017）：与 zh 同目录，顶层严格 { files }
+      const tipsPath = path.join(repDir, "reviews_tips_zh.json");
+      expect(existsSync(tipsPath)).toBe(true);
+      const tips = JSON.parse(readFileSync(tipsPath, "utf8")) as Record<string, unknown>;
+      expect(Object.keys(tips)).toEqual(["files"]);
+      expect(tips["files"]).toEqual([
+        {
+          filePath: "sample.txt",
+          reviewTips: [
+            {
+              code: "",
+              review: "[zh] Sentinel finding title。[zh] Sentinel finding description",
+              suggestion: "改为判空后再取值。",
+              category: "correctness",
+              subcategory: "",
+              severity: "Minor",
+              ruleId: "",
+              lineNum: 1,
+              source: "common-reviewer",
+              confidence: "Medium",
+            },
+          ],
+        },
+      ]);
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
         { label: "reviews_zh.json", text: readFileSync(zhPath, "utf8") },
+        { label: "reviews_tips_zh.json", text: readFileSync(tipsPath, "utf8") },
       ]);
     } finally {
       await stub.close();
@@ -692,22 +730,61 @@ test("中文导出：陈旧 zh（引擎未配置）→ 本次 run 的 rep-1/ 内
   const stub = await startLoopbackStub(oneFindingCorpus());
   try {
     const outDir = makeTempDir("review-pi-cli-out-");
-    // 预置陈旧 zh（上一 run 遗留；本次未配置引擎 ⇒ 应被清除）
+    // 预置陈旧 zh 与分组意见（上一 run 遗留；本次未配置引擎 ⇒ 都应被清除）
     const repDir = cliRepDir(outDir);
     mkdirSync(repDir, { recursive: true });
     const stalePath = path.join(repDir, "reviews_zh.json");
     writeFileSync(stalePath, '{"stale":true}\n', "utf8");
+    const staleTipsPath = path.join(repDir, "reviews_tips_zh.json");
+    writeFileSync(staleTipsPath, '{"stale":true}\n', "utf8");
 
     const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), stubEnv(stub.baseUrl));
 
     expect(run.status).toBe(0);
     expect(existsSync(stalePath)).toBe(false);
+    expect(existsSync(staleTipsPath)).toBe(false);
     expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
     expect(run.stderr).toContain("已清除陈旧");
   } finally {
     await stub.close();
   }
 }, 180_000);
+
+test(
+  "分组意见：tips 形状非法 → 只有 tips 缺席（zh 仍在、exit 0、stderr 说明），ADR-0017 弱耦合",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const enginePath = writeProjectionEngineFixture(
+        "bad-tips.mjs",
+        `export default async (source) => ({
+          provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
+          findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
+          toolCallLog: source.toolCallLog,
+          tips: { files: [{ filePath: "sample.txt", reviewTips: [{ code: "", review: "x", suggestion: "", category: "c", subcategory: "", severity: "Critical", ruleId: "", lineNum: 1, source: "common-reviewer", confidence: "High" }] }] },
+        });\n`,
+      );
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
+        ...stubEnv(stub.baseUrl),
+        REVIEW_PI_PRESENTATION_ENGINE: enginePath,
+      });
+
+      expect(run.status).toBe(0);
+      const repDir = cliRepDir(outDir);
+      expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(true);
+      expect(existsSync(path.join(repDir, "reviews_tips_zh.json"))).toBe(false);
+      expect(run.stderr).toContain("本次未产分组意见");
+      expect(run.stderr).toContain("severity must be one of");
+      // stdout 仍是中文呈现档（tips 坏不拖累 zh）
+      const outcome = JSON.parse(run.stdout) as { findings: { title: string }[] };
+      expect(outcome.findings[0]?.title).toBe("[zh] Sentinel finding title");
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
 
 test("中文导出：写盘失败（zh 路径预占为目录）→ exit 1 + 错误人话 + stdout 干净", async () => {
   const stub = await startLoopbackStub(oneFindingCorpus());

@@ -17,11 +17,15 @@ import type { ToolCallRecord } from "../contracts/run.js";
  *
  * 引擎模块协议（消费端契约，JSON 可序列化跨模块边界）：
  * - ESM 模块，default export 一个 async 函数；
- * - 入参 = 呈现源 { findings, toolCallLog }（内核 Finding / ToolCallRecord
- *   形状）；返回 { provenance, findings, toolCallLog }——自然语言字段已译、
+ * - 入参 = 呈现源 { findings, toolCallLog, codeByFinding?, rulePackDirs? }（内核
+ *   Finding / ToolCallRecord 形状；后两项为 ADR-0017 的分组意见附加输入——
+ *   源码行由 CLI 按 `--repo` 抽好、规则包只给目录，引擎仍零文件系统解析）；
+ *   返回 { provenance, findings, toolCallLog, tips? }——自然语言字段已译、
  *   结构化字段字节直通（直通由核外投影模块逐字段锁定，本缝不复查内容）；
  * - provenance = { language, terminologyVersion, findingLinks }（投影留痕，
- *   ADR-0010：投影自带留痕、检视审计零改动）。
+ *   ADR-0010：投影自带留痕、检视审计零改动）；
+ * - tips = 分组式检视意见（ADR-0017，严格 10 键封闭）；**与 zh 弱耦合**：
+ *   缺省或形状非法 ⇒ 只不产 tips 文件，投影本身仍然成功。
  *
  * 三态结局（main 呈现分流）：
  * - identity：未配置引擎（REVIEW_PI_PRESENTATION_ENGINE 缺席）——恒等直通，
@@ -36,6 +40,38 @@ import type { ToolCallRecord } from "../contracts/run.js";
 export interface PresentationSource {
   readonly findings: readonly Finding[];
   readonly toolCallLog: readonly ToolCallRecord[];
+  /**
+   * 源码行（键 = finding id；ADR-0017：`code` 由 CLI 按 `--repo` 抽取，
+   * 引擎保持零文件系统访问；取不到即缺席 ⇒ 产空串）。
+   */
+  readonly codeByFinding?: Readonly<Record<string, string>>;
+  /**
+   * 本次 run 的规则包解压目录（ADR-0017：核外据此建真规则 id 白名单；
+   * 只给目录，不在内核解析规则文件）。
+   */
+  readonly rulePackDirs?: readonly string[];
+}
+
+/** 分组式检视意见（ADR-0017）：单条 tip 的 10 键严格封闭结构 */
+export interface ReviewTipLike {
+  readonly code: string;
+  readonly review: string;
+  readonly suggestion: string;
+  readonly category: string;
+  readonly subcategory: string;
+  readonly severity: string;
+  readonly ruleId: string;
+  readonly lineNum: number;
+  readonly source: string;
+  readonly confidence: string;
+}
+
+/** 分组文档（顶层严格 `{ files }`） */
+export interface ReviewTipsDocumentLike {
+  readonly files: readonly {
+    readonly filePath: string;
+    readonly reviewTips: readonly ReviewTipLike[];
+  }[];
 }
 
 /** 投影留痕（引擎返回；形状对齐核外 ProjectionProvenance） */
@@ -55,14 +91,26 @@ interface EngineProjection {
   readonly provenance: PresentationProvenance;
   readonly findings: readonly Finding[];
   readonly toolCallLog: readonly ToolCallRecord[];
+  /** 分组式检视意见（ADR-0017；形状由本缝校验，非法只影响 tips 不拖累 zh） */
+  readonly tips?: unknown;
 }
 
 /** 呈现投影三态结局 */
 export type PresentationProjectionOutcome =
   /** 未配置引擎：恒等直通（stdout 无 presentation 键——现状形态） */
   | { readonly kind: "identity" }
-  /** 投影成功：findings 已译，presentation 键 = provenance */
-  | { readonly kind: "projected"; readonly findings: readonly Finding[]; readonly provenance: PresentationProvenance }
+  /**
+   * 投影成功：findings 已译，presentation 键 = provenance。
+   * `tips`（ADR-0017）与 zh 弱耦合：形状非法/缺席 ⇒ 只有 `tipsProblem`，
+   * projected 仍然成立（zh 照常落盘与呈现）。
+   */
+  | {
+      readonly kind: "projected";
+      readonly findings: readonly Finding[];
+      readonly provenance: PresentationProvenance;
+      readonly tips?: ReviewTipsDocumentLike;
+      readonly tipsProblem?: string;
+    }
   /** 引擎失败：stdout 回退英文源 + presentation 降级标注；reason 走 stderr */
   | { readonly kind: "degraded"; readonly reason: string };
 
@@ -78,11 +126,18 @@ export const PRESENTATION_ENGINE_ENV_VAR = "REVIEW_PI_PRESENTATION_ENGINE";
  */
 const PER_FIELD_TIMEOUT_MS = 90_000;
 const TIMEOUT_BUFFER_MS = 30_000;
+/** 建议生成并发上限（ADR-0017：与内核侧口径同源；核外引擎按此并发） */
+const SUGGESTION_CONCURRENCY = 4;
 
-/** 依呈现源推导总超时（findings × title/description + toolCallLog × resultSummary） */
+/**
+ * 依呈现源推导总超时（findings × title/description + toolCallLog × resultSummary
+ * + 建议生成批次——每条 finding 一次，按并发上限折算批数）。
+ */
 function deriveTimeoutMs(source: PresentationSource): number {
   const fieldCount = source.findings.length * 2 + source.toolCallLog.length;
-  return fieldCount * PER_FIELD_TIMEOUT_MS + TIMEOUT_BUFFER_MS;
+  const suggestionBatches =
+    source.findings.length === 0 ? 0 : Math.ceil(source.findings.length / SUGGESTION_CONCURRENCY);
+  return (fieldCount + suggestionBatches) * PER_FIELD_TIMEOUT_MS + TIMEOUT_BUFFER_MS;
 }
 
 /** 引擎是否配置（未配置 = 恒等直通；main 侧「投影进行中」提示的单源谓词） */
@@ -168,7 +223,108 @@ export async function applyPresentationProjection(
   if (shapeError !== undefined) {
     return { kind: "degraded", reason: `presentation engine returned an invalid document: ${shapeError}` };
   }
-  return { kind: "projected", findings: projection.findings, provenance: projection.provenance };
+  // 分组意见（ADR-0017）：与 zh 弱耦合——形状非法/缺席只折损这一份产物，
+  // zh 与 stdout 呈现照旧（投影已成功，绝不因 tips 拖累整次投影）
+  const tipsProblem = validateTipsDocument(projection.tips);
+  if (tipsProblem !== undefined) {
+    return {
+      kind: "projected",
+      findings: projection.findings,
+      provenance: projection.provenance,
+      tipsProblem,
+    };
+  }
+  return {
+    kind: "projected",
+    findings: projection.findings,
+    provenance: projection.provenance,
+    tips: projection.tips as ReviewTipsDocumentLike,
+  };
+}
+
+/** 单条 tip 的键集与顺序（ADR-0017：严格封闭 10 键，多余/缺失都算协议违规） */
+const TIP_KEYS = [
+  "code",
+  "review",
+  "suggestion",
+  "category",
+  "subcategory",
+  "severity",
+  "ruleId",
+  "lineNum",
+  "source",
+  "confidence",
+] as const;
+
+const TIP_SEVERITIES = new Set(["Fatal", "Major", "Minor"]);
+const TIP_SOURCES = new Set(["rule-reviewer", "common-reviewer"]);
+const TIP_CONFIDENCES = new Set(["High", "Medium", "Low"]);
+
+/**
+ * 分组意见形状校验（ADR-0017）：顶层严格 `{ files }`、每文件
+ * `{ filePath, reviewTips }`、每 tip 严格 10 键且值域受限。返回英文错误，
+ * 空/undefined = 合法。
+ */
+function validateTipsDocument(input: unknown): string | undefined {
+  if (input === undefined) {
+    return "presentation engine returned no grouped tips document (ADR-0017)";
+  }
+  if (input === null || typeof input !== "object") {
+    return "tips must be an object";
+  }
+  const record = input as { readonly files?: unknown };
+  if (!Array.isArray(record.files)) {
+    return "tips.files must be an array";
+  }
+  for (const [fileIndex, file] of record.files.entries()) {
+    if (file === null || typeof file !== "object") {
+      return `tips.files[${fileIndex}] must be an object`;
+    }
+    const group = file as { readonly filePath?: unknown; readonly reviewTips?: unknown };
+    if (typeof group.filePath !== "string" || group.filePath === "") {
+      return `tips.files[${fileIndex}].filePath must be a non-empty string`;
+    }
+    if (!Array.isArray(group.reviewTips)) {
+      return `tips.files[${fileIndex}].reviewTips must be an array`;
+    }
+    for (const [tipIndex, tip] of group.reviewTips.entries()) {
+      const problem = validateTip(tip);
+      if (problem !== undefined) {
+        return `tips.files[${fileIndex}].reviewTips[${tipIndex}]: ${problem}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** 单条 tip 校验：键集严格相等 + 值域（形状即契约，宁缺勿滥） */
+function validateTip(input: unknown): string | undefined {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return "tip must be an object";
+  }
+  const tip = input as Record<string, unknown>;
+  const keys = Object.keys(tip);
+  if (keys.length !== TIP_KEYS.length || !TIP_KEYS.every((key) => key in tip)) {
+    return `tip must have exactly these keys: ${TIP_KEYS.join(", ")}`;
+  }
+  for (const key of ["code", "review", "suggestion", "category", "subcategory", "ruleId"] as const) {
+    if (typeof tip[key] !== "string") {
+      return `${key} must be a string`;
+    }
+  }
+  if (typeof tip.lineNum !== "number" || !Number.isInteger(tip.lineNum) || tip.lineNum < 1) {
+    return "lineNum must be an integer >= 1";
+  }
+  if (typeof tip.severity !== "string" || !TIP_SEVERITIES.has(tip.severity)) {
+    return 'severity must be one of "Fatal", "Major", "Minor"';
+  }
+  if (typeof tip.source !== "string" || !TIP_SOURCES.has(tip.source)) {
+    return 'source must be one of "rule-reviewer", "common-reviewer"';
+  }
+  if (typeof tip.confidence !== "string" || !TIP_CONFIDENCES.has(tip.confidence)) {
+    return 'confidence must be one of "High", "Medium", "Low"';
+  }
+  return undefined;
 }
 
 /**

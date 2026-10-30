@@ -53,13 +53,18 @@ import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
 import { formatEnvLocalSummary, loadEnvLocalFile } from "../shared/env-local.js";
 import { CLI_EXPERIMENT_ID, parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
-import { applyPresentationProjection, isPresentationProjectionConfigured } from "./presentation-projection.js";
+import {
+  applyPresentationProjection,
+  isPresentationProjectionConfigured,
+  type ReviewTipsDocumentLike,
+} from "./presentation-projection.js";
 import {
   createProgressRenderer,
   type ProgressFinishInput,
   type ProgressRenderer,
 } from "./progress-render.js";
 import { renderReviewOutcome } from "./render.js";
+import { removeStaleReviewsTipsZh, writeReviewsTipsZh } from "./reviews-tips-zh.js";
 import { buildReviewsZhExport, removeStaleReviewsZh, writeReviewsZh } from "./reviews-zh.js";
 
 /** 执行一次 review 命令；返回进程退出码（完成 0——截断同为 0；错误经异常上抛 → 1） */
@@ -120,9 +125,16 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   if (isPresentationProjectionConfigured()) {
     process.stderr.write("review-pi: 呈现投影进行中（自然语言字段译中文）……\n");
   }
+  // 分组意见的附加输入（ADR-0017）：源码行由 CLI 按 --repo 抽取（引擎保持
+  // 零文件系统访问），规则包只给解压目录（真规则 id 白名单由核外建，内核
+  // 不解析规则文件）。
+  const codeByFinding = await readCodeLines(repoPath, record.baseline.findings);
+  const rulePackDirs = rulePackDirsOf(record.baseline.audit, runsRoot);
   const projection = await applyPresentationProjection({
     findings: record.baseline.findings,
     toolCallLog: [],
+    ...(Object.keys(codeByFinding).length > 0 ? { codeByFinding } : {}),
+    ...(rulePackDirs.length > 0 ? { rulePackDirs } : {}),
   });
   const findings =
     projection.kind === "projected" ? projection.findings : record.baseline.findings;
@@ -167,6 +179,25 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
     }
   }
 
+  // 分组式检视意见（ADR-0017）：与 zh 同目录、同生命周期，但**弱耦合**——
+  // tips 形状非法/缺席只缺这一份文件（zh 与 stdout 呈现照旧，exit 0）。
+  if (reviewsPath !== undefined) {
+    const tipsDir = dirname(reviewsPath);
+    const tips: ReviewTipsDocumentLike | undefined =
+      projection.kind === "projected" ? projection.tips : undefined;
+    if (tips !== undefined) {
+      await writeReviewsTipsZh(tipsDir, tips);
+    } else {
+      if (projection.kind === "projected" && projection.tipsProblem !== undefined) {
+        process.stderr.write(`review-pi: 本次未产分组意见（${projection.tipsProblem}）\n`);
+      }
+      const removed = await removeStaleReviewsTipsZh(tipsDir);
+      if (removed !== undefined) {
+        process.stderr.write(`review-pi: 已清除陈旧 ${removed}\n`);
+      }
+    }
+  }
+
   await writeStdout(
     renderReviewOutcome({
       caseId: record.caseId,
@@ -182,6 +213,64 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   );
   // 截断 = 完成的一种（票面退出码契约：0 + truncated=true）
   return 0;
+}
+
+/**
+ * 按 `--repo` + `file:line` 抽源码行（ADR-0017：`code` 的唯一真源）。
+ * `Finding.line` = MR 应用后的行号，`--repo` 正是应用后的工作树——两者对齐，
+ * 所以取的是原文而不是模型复述。取不到（文件不在仓 / 行号越界 / 读失败）
+ * 一律缺席 ⇒ 落盘时为空串，**绝不编**。
+ */
+async function readCodeLines(
+  repoPath: string,
+  findings: readonly { readonly id: string; readonly file: string; readonly line: number }[],
+): Promise<Record<string, string>> {
+  const cache = new Map<string, readonly string[] | undefined>();
+  const codeByFinding: Record<string, string> = {};
+  for (const finding of findings) {
+    if (!cache.has(finding.file)) {
+      cache.set(finding.file, await readLinesOf(resolve(repoPath, finding.file)));
+    }
+    const line = cache.get(finding.file)?.[finding.line - 1];
+    if (line !== undefined) {
+      codeByFinding[finding.id] = line.trim();
+    }
+  }
+  return codeByFinding;
+}
+
+async function readLinesOf(filePath: string): Promise<readonly string[] | undefined> {
+  try {
+    return (await readFile(filePath, "utf8")).split(/\r?\n/);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 本次 run 的规则包解压目录（ADR-0017：核外据此建真规则 id 白名单）。
+ * 目录约定单源在 `run/review-run.ts`（`<runsRoot>/<experimentId>/.cache/
+ * rule-skills/<digest>/`）；降级包（`degradedReason` 在场）不跑会话，故排除。
+ */
+function rulePackDirsOf(
+  audit: {
+    readonly ruleSkill?: readonly {
+      readonly name: string;
+      readonly digest: string;
+      readonly degradedReason?: string;
+    }[];
+  },
+  runsRoot: string,
+): readonly string[] {
+  const cacheRoot = resolve(runsRoot, CLI_EXPERIMENT_ID, ".cache", "rule-skills");
+  const dirs: string[] = [];
+  for (const entry of audit.ruleSkill ?? []) {
+    if (entry.name === "" || entry.digest === "" || entry.degradedReason !== undefined) {
+      continue;
+    }
+    dirs.push(resolve(cacheRoot, entry.digest));
+  }
+  return dirs;
 }
 
 /** 执行一次 smoke 命令：双探针 → stdout 人话报告；通过 0 / 失败诊断 1 */

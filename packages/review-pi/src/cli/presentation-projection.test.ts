@@ -314,3 +314,126 @@ test("引擎超时 → degraded：总超时兜底（引擎迟到结果丢弃，�
   // 落败引擎的迟到 rejection 已被兜住：等一小段确认无 unhandled rejection 崩进程
   await new Promise((resolved) => setTimeout(resolved, 150));
 });
+
+// ---- 分组式检视意见（ADR-0017）：与 zh 弱耦合 —— tips 坏只折损这一份产物 ----
+
+/** 合法 tips 文档（10 键封闭，逐键值域合规） */
+const TIP_OBJECT = `{
+  code: "int x = 1;",
+  review: "此处取值可能为空。",
+  suggestion: "改为先判空。",
+  category: "CORRECTNESS",
+  subcategory: "",
+  severity: "Minor",
+  ruleId: "",
+  lineNum: 42,
+  source: "common-reviewer",
+  confidence: "Medium",
+}`;
+
+/** 成功引擎 + 合法 tips 文档 */
+const OK_TIPS_ENGINE = `
+const tip = ${TIP_OBJECT};
+export default async (source) => ({
+  provenance: {
+    language: "zh",
+    terminologyVersion: 1,
+    findingLinks: source.findings.map((finding) => ({
+      sourceFindingId: finding.id,
+      projectedFindingId: finding.id,
+    })),
+  },
+  findings: source.findings.map((finding) => ({
+    ...finding,
+    title: "[zh] " + finding.title,
+    description: "[zh] " + finding.description,
+  })),
+  toolCallLog: source.toolCallLog,
+  tips: { files: [{ filePath: "src/Main.java", reviewTips: [tip] }] },
+});
+`;
+
+test("合法 tips → projected 携带 tips（顶层严格 { files }，键集原样透传）", async () => {
+  const enginePath = writeEngineModule("tips-ok-engine.mjs", OK_TIPS_ENGINE);
+  const outcome = await applyPresentationProjection(sampleSource(), {
+    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  });
+  expect(outcome.kind).toBe("projected");
+  if (outcome.kind !== "projected") {
+    return;
+  }
+  expect(outcome.tipsProblem).toBeUndefined();
+  expect(outcome.tips).toEqual({
+    files: [
+      {
+        filePath: "src/Main.java",
+        reviewTips: [
+          {
+            code: "int x = 1;",
+            review: "此处取值可能为空。",
+            suggestion: "改为先判空。",
+            category: "CORRECTNESS",
+            subcategory: "",
+            severity: "Minor",
+            ruleId: "",
+            lineNum: 42,
+            source: "common-reviewer",
+            confidence: "Medium",
+          },
+        ],
+      },
+    ],
+  });
+});
+
+test.each([
+  {
+    label: "缺 tips 文档",
+    body: OK_ENGINE,
+    reason: "no grouped tips document",
+  },
+  {
+    label: "files 非数组",
+    body: `export default async (source) => ({
+      provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
+      findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
+      toolCallLog: source.toolCallLog,
+      tips: { files: "nope" },
+    });`,
+    reason: "tips.files must be an array",
+  },
+  {
+    label: "tip 多一个键（严格封闭）",
+    body: `export default async (source) => ({
+      provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
+      findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
+      toolCallLog: source.toolCallLog,
+      tips: { files: [{ filePath: "src/Main.java", reviewTips: [{ ...${TIP_OBJECT}, extra: 1 }] }] },
+    });`,
+    reason: "exactly these keys",
+  },
+  {
+    label: "severity 越界（Critical 不在三档内）",
+    body: `export default async (source) => ({
+      provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
+      findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
+      toolCallLog: source.toolCallLog,
+      tips: { files: [{ filePath: "src/Main.java", reviewTips: [{ ...${TIP_OBJECT}, severity: "Critical" }] }] },
+    });`,
+    reason: 'severity must be one of "Fatal", "Major", "Minor"',
+  },
+])("tips 形状坏（$label）→ 仍是 projected + tipsProblem（zh 不受牵连）", async ({ body, reason }) => {
+  const enginePath = writeEngineModule("tips-bad-engine.mjs", body);
+  const outcome = await applyPresentationProjection(sampleSource(), {
+    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  });
+  expect(outcome.kind).toBe("projected");
+  if (outcome.kind !== "projected") {
+    return;
+  }
+  // zh 侧投影仍成立（findings 已译、provenance 在）
+  expect(outcome.findings[0]?.title).toBe("[zh] Sentinel finding title");
+  expect(outcome.provenance.language).toBe("zh");
+  expect(outcome.tips).toBeUndefined();
+  expect(outcome.tipsProblem).toContain(reason);
+});

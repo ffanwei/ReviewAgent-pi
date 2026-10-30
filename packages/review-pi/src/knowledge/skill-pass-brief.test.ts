@@ -43,7 +43,9 @@ test("会话首消息：内核 skill 块（真实 pack 路径）+ 输出契约",
   expect(prompt).toContain(SKILL.content);
   expect(prompt).toContain('{"candidates": [<finding objects per the Finding schema>, ...]}');
   expect(prompt).toContain("RULE-CHECK@sample-rule@<file>:<line>");
-  expect(prompt).toContain('"rule" field to the skill name "sample-rule"');
+  expect(prompt).toContain('"rule" field to the id of the specific rule from this skill\'s rules/');
+  expect(prompt).toContain('e.g. "GEN-SQL-001"');
+  expect(prompt).toContain('Use "sample-rule" only when the finding does not map to any single rule');
   expect(prompt).toContain("ENGLISH ONLY");
   expect(prompt).toContain("Evidence is mandatory");
   expect(prompt).toContain('{"candidates": []}');
