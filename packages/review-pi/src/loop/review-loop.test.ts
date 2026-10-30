@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import type { AssistantMessage, Context, TextContent } from "@earendil-works/pi-ai";
 import type { LlmMessage, LlmUsage } from "../contracts/llm.js";
 import type { WireRequest } from "../contracts/run.js";
-import { MAX_ROUNDS, TRUNCATION_MAX_ROUNDS } from "./constants.js";
+import { MAX_ROUNDS, TRUNCATION_MAX_ROUNDS, TRUNCATION_MODEL_LENGTH } from "./constants.js";
 import { PHASE_INSTRUCTIONS } from "./phases.js";
 import { runReviewLoop, type LoopTurn, type ReviewTurnRunner } from "./review-loop.js";
 
@@ -34,7 +34,10 @@ function usageOf(index: number): LlmUsage {
   return { inputTokens: (index + 1) * 10, outputTokens: index + 1, cacheReadTokens: (index + 1) * 5 };
 }
 
-function assistantMessage(text: string): AssistantMessage {
+function assistantMessage(
+  text: string,
+  stopReason: AssistantMessage["stopReason"] = "stop",
+): AssistantMessage {
   return {
     role: "assistant",
     content: [{ type: "text", text } satisfies TextContent],
@@ -49,7 +52,7 @@ function assistantMessage(text: string): AssistantMessage {
       totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
-    stopReason: "stop",
+    stopReason,
     timestamp: 0,
   };
 }
@@ -65,7 +68,11 @@ function textOf(message: Context["messages"][number]): string {
 }
 
 /** 注入式回合缝：脚本回复 + 从收到的 Context 构造 wire 投影（消息管理断言用） */
-function scriptedTurn(replies: readonly { text: string; usage: LlmUsage }[]): {
+function scriptedTurn(replies: readonly {
+  text: string;
+  usage: LlmUsage;
+  stopReason?: AssistantMessage["stopReason"];
+}[]): {
   runTurn: ReviewTurnRunner;
   wires: WireRequest[];
 } {
@@ -91,7 +98,11 @@ function scriptedTurn(replies: readonly { text: string; usage: LlmUsage }[]): {
       wireBody: "{}",
     };
     wires.push(wire);
-    const turn: LoopTurn = { message: assistantMessage(reply.text), wire, usage: reply.usage };
+    const turn: LoopTurn = {
+      message: assistantMessage(reply.text, reply.stopReason),
+      wire,
+      usage: reply.usage,
+    };
     return turn;
   };
   return { runTurn, wires };
@@ -112,6 +123,25 @@ function singleRoundScript(verdicts: string): { text: string; usage: LlmUsage }[
 test("循环常量与 DSH 线一致", () => {
   expect(MAX_ROUNDS).toBe(5);
   expect(TRUNCATION_MAX_ROUNDS).toBe("MAX_ROUNDS_REACHED");
+  expect(TRUNCATION_MODEL_LENGTH).toBe("MODEL_MAX_TOKENS_REACHED");
+});
+
+test("输出撞上界（finish_reason length）：truncated=true + MODEL_MAX_TOKENS_REACHED，complete 不成立", async () => {
+  const completeVerdicts =
+    '{"verdicts":[{"id":"F001","pass":true,"reason":"evidence supports"}],"complete":true}';
+  const replies = singleRoundScript(completeVerdicts).map((reply, index) =>
+    index === 0 ? { ...reply, stopReason: "length" as const } : reply,
+  );
+  const { runTurn } = scriptedTurn(replies);
+  const outcome = await runReviewLoop({
+    systemPrompt: SYSTEM,
+    initialContextMessages: INITIAL,
+    runTurn,
+  });
+
+  expect(outcome.audit.truncated).toBe(true);
+  expect(outcome.audit.truncationReasons).toEqual([TRUNCATION_MODEL_LENGTH]);
+  expect(outcome.complete).toBe(false);
 });
 
 test("单轮直驱：验证通过即完成，phaseLog 六阶段各一请求，usage 累计", async () => {

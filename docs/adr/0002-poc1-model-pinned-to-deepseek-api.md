@@ -14,3 +14,11 @@
 - **模型白名单 → 自由 id + provider 画像表**：`--model` 不再是代码层准入白名单——任意模型 id 直传（`flash` / `pro` 别名保留），wire 序列化（thinking 字段 / max_tokens 信封）与指标口径（usage 缓存计量能力声明）按 review-llm 画像表分派（`deepseek-*` / `glm-*` 内建前缀；未知模型回落保守默认档：不发 thinking 字段、8192 信封、不假设缓存计量——Cache-Hit-Rate 记 N/A）。本 ADR 的「主力锁定 deepseek-v4-flash」语义收窄为：实验对比的缺省主力与别名锚，准入由画像表的保守回落兜底（决策成文见 [ADR-0008](0008-reviewer-model-swappable-with-capability-scoped-metrics.md)，#44）。
 - **DeepSeek 默认路径字节逐字节不变（#43 发布硬门槛）**：golden bytes 回归测试（`tests/deepseek/golden-bytes.test.ts`）锁定缺省模型的请求字节；画像表只对已知非 DeepSeek 场景分派，缺省路径序列化与白名单时代完全一致。
 - **judge 侧异构约束不受影响**：judge 链同源判定改为以被测模型为对照系（精确同 id 或同已知 provider 家族，`src/judge/gpt-request-mapper.ts`）；被测为 DeepSeek 系时的既有拒绝行为原样保留，自定义接入点部署降级为 warning。
+
+### 补充：网关档输出预算（2026-10-30）
+
+「DeepSeek 默认路径字节逐字节不变」的口径限定在**官方直连档**（`baseUrl = https://api.deepseek.com`）。经 `REVIEWER_URL` 的网关档属部署面：网关在请求缺省 `max_tokens` 时会补自己的默认值（实测 2048），而 deepseek-v4 系的 `max_tokens` 含思维链——2048 被思维链吃光后 `finish_reason` 变 `length`，可见回答为空/半句，候选解析失败即静默「审 0 条」。因此：
+
+- 网关档由 `pi-client.maxTokensFor` 显式下发 `max_tokens: 32768`；`REVIEWER_MAX_TOKENS` 可覆盖（网关上限较小或官方直连也想显式声明时）；
+- 官方直连档仍**不发**该键，golden bytes 门槛与字节门（`bytegate/`）覆盖面不变；
+- 输出撞上界同时作为截断留痕：`audit.truncated = true` + `truncationReasons` 含 `MODEL_MAX_TOKENS_REACHED`（A/B 与 F 两条循环同口径）。

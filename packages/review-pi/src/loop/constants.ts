@@ -13,6 +13,13 @@ export const MAX_TOOL_CALLS = 100;
 export const TRUNCATION_TOOL_BUDGET = "TOOL_BUDGET_EXHAUSTED";
 
 /**
+ * 模型输出撞上上界截断原因（provider finish_reason = "length"）。
+ * deepseek-v4 系 max_tokens 含思维链：预算不足时思维链先耗尽，可见回答为空/半句。
+ * 翻转 truncated（与 MAX_ROUNDS 同档）：截断必须留痕，不许静默成"审 0 条"。
+ */
+export const TRUNCATION_MODEL_LENGTH = "MODEL_MAX_TOKENS_REACHED";
+
+/**
  * 预算耗尽时的工具应答内容（= 审计 resultSummary = wire tool 消息 content）。
  * 字节真源：t-series C/D/E 审计 toolCallLog（"Error: tool call budget exhausted"）；
  * 根仓现行源码的 "SKIPPED: " 前缀是 t-series 之后的演进，不采纳。

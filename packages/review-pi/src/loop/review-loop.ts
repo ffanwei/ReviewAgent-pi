@@ -8,7 +8,7 @@ import { applyCandidateGate } from "../gate/candidate-gate.js";
 import { assistantText } from "../provider/pi-client.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { classifyCacheBreaks } from "./cache-break.js";
-import { MAX_ROUNDS, TRUNCATION_MAX_ROUNDS } from "./constants.js";
+import { MAX_ROUNDS, TRUNCATION_MAX_ROUNDS, TRUNCATION_MODEL_LENGTH } from "./constants.js";
 import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
 import { PHASE_COUNT, PHASE_INSTRUCTIONS, PHASE_ORDER } from "./phases.js";
 import { createRequestProgress } from "./request-progress.js";
@@ -69,6 +69,8 @@ export async function runReviewLoop(inputs: ReviewLoopInputs): Promise<ReviewLoo
   let rounds = 0;
   let complete = false;
   let truncated = false;
+  /** 本 run 是否出现过输出撞上界（finish_reason "length"）回合 */
+  let modelLengthTruncated = false;
   let emittedIds: ReadonlySet<string> = new Set();
   const truncationReasons: string[] = [];
   const emitProgress = inputs.onProgress ?? NO_OP_PROGRESS_SINK;
@@ -96,6 +98,10 @@ export async function runReviewLoop(inputs: ReviewLoopInputs): Promise<ReviewLoo
       requestProgress.start();
       const turn = await inputs.runTurn({ systemPrompt: inputs.systemPrompt, messages });
       requestProgress.end(turn.usage);
+      // 输出撞上 max_tokens 上界（思维链含在预算内时尤易发生）：留痕但不改变相位推进
+      if (turn.message.stopReason === "length") {
+        modelLengthTruncated = true;
+      }
       messages = [...messages, turn.message];
       usage = addUsage(usage, turn.usage);
       requests.push(turn.wire);
@@ -134,6 +140,12 @@ export async function runReviewLoop(inputs: ReviewLoopInputs): Promise<ReviewLoo
     truncated = true;
     truncationReasons.push(TRUNCATION_MAX_ROUNDS);
   }
+  if (modelLengthTruncated) {
+    truncated = true;
+    if (!truncationReasons.includes(TRUNCATION_MODEL_LENGTH)) {
+      truncationReasons.push(TRUNCATION_MODEL_LENGTH);
+    }
+  }
 
   const audit: RunAudit = {
     requests,
@@ -145,7 +157,7 @@ export async function runReviewLoop(inputs: ReviewLoopInputs): Promise<ReviewLoo
     truncationReasons,
     ...(inputs.prefetchRecords !== undefined ? { prefetch: inputs.prefetchRecords } : {}),
   };
-  return { findings, usage, rounds, toolCalls: 0, complete, audit };
+  return { findings, usage, rounds, toolCalls: 0, complete: complete && !truncated, audit };
 }
 
 function phaseNameOf(phaseIndex: number): PhaseRecord["phase"] {

@@ -9,7 +9,9 @@ import type { ToolSchema, WireMessage } from "../contracts/llm.js";
  *
  * wireBody = onPayload 序列化点捕获的请求原文（JSON.stringify(payload)），
  * 与 DSH 线 wire-log 同语义（序列化点原文，一次逻辑调用一条）。
- * 请求面对齐 DSH deepseek 画像：不传 max_tokens（t 系列审计 wireBody 无此键）。
+ * 请求面对齐 DSH deepseek 画像：官方直连不传 max_tokens（t 系列审计 wireBody
+ * 无此键）；经 REVIEWER_URL 的网关档例外，显式发送输出预算（见 maxTokensFor）——
+ * 不发送即继承网关请求默认值，实测默认 2048 会把思维链吃光并静默截断。
  * 口径记账（#3 票面「max_output=1K」）：该值为立项预算表口径，DSH 线 wire
  * 无对应键（根仓 src 亦无此常量），字节复刻面无可复刻物——按审计真源口径
  * 不落 wire，P2 字节门再议。
@@ -25,6 +27,16 @@ export const REVIEW_MODEL_ID = "deepseek-v4-flash";
 export const LOCKED_EFFORT_LABEL = "default";
 /** 锁档线上档位：pi-ai reasoningEffort → wire reasoning_effort "high"（deepseek thinkingLevelMap） */
 export const LOCKED_REASONING_EFFORT = "high";
+
+/** 官方直连接入点（目录模板缺省 baseUrl；ADR-0002 字节复刻面） */
+const OFFICIAL_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+
+/**
+ * 网关档缺省输出预算。deepseek-v4 系 max_tokens 含思维链（实测单回合 reasoning
+ * 峰值 5,600、回答峰值 1,081），32768 留足 4× 余量。显式发送的理由：不发送即
+ * 继承网关的请求默认值——企业网关实测补 2048，思维链吃光预算后静默截断。
+ */
+export const GATEWAY_MAX_TOKENS = 32_768;
 
 /** onPayload 序列化点捕获（审计 requests[] 条目形状：model/effort/messages/tools + wireBody 原文） */
 export interface WireCapture {
@@ -65,10 +77,13 @@ const WIRE_ROLES: readonly string[] = ["system", "user", "assistant", "tool"];
 
 export async function runReviewTurn(input: ReviewTurnInput): Promise<ReviewTurnOutcome> {
   const model = reviewModelOf(input.modelId, input.baseUrl);
+  // 网关档显式输出预算（官方直连不发，见 maxTokensFor）
+  const maxTokens = maxTokensFor(model.baseUrl, process.env.REVIEWER_MAX_TOKENS);
   let wire: WireCapture | undefined;
   const stream = deepseekProvider().stream(model, input.context, {
     apiKey: input.apiKey,
     ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
     reasoningEffort: LOCKED_REASONING_EFFORT,
     onPayload: (payload) => {
       wire = captureWire(payload);
@@ -124,6 +139,28 @@ export function reviewModelOf(
 }
 
 /**
+ * 输出预算注入判据（字节面守门人）：
+ * - 官方直连 → undefined：wire 永不含 max_tokens，与 DSH 语料逐字节对齐（ADR-0002）；
+ * - 网关档 → 显式预算：不发送即继承网关请求默认值（实测 2048 → 思维链耗尽、静默截断）；
+ * - `REVIEWER_MAX_TOKENS`（override）为有效正数时优先于上述判档——网关上限较小，
+ *   或官方直连也需要显式预算时的逃生口；非法值（空/非数/≤0）忽略，落回判档。
+ */
+export function maxTokensFor(
+  baseUrl: string | undefined,
+  override?: string | undefined,
+): number | undefined {
+  const requested = (override ?? "").trim();
+  if (requested !== "") {
+    const parsed = Number(requested);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.floor(parsed);
+    }
+  }
+  const normalized = (baseUrl ?? OFFICIAL_DEEPSEEK_BASE_URL).trim().replace(/\/+$/, "");
+  return normalized === OFFICIAL_DEEPSEEK_BASE_URL ? undefined : GATEWAY_MAX_TOKENS;
+}
+
+/**
  * 评审流函数（Agent 驱动面单源）：真 provider + 锁档 effort + 注入的传输层。
  * 主会话与 skill 会话共用同一构造，保证「同一 Zone A + 同一序列化画像」。
  */
@@ -131,13 +168,18 @@ export function reviewStreamFn(input: {
   readonly apiKey: string;
   readonly fetch?: FetchFunction;
 }): StreamFn {
-  return (model, context, options) =>
-    deepseekProvider().stream(model as Model<"openai-completions">, context, {
+  return (model, context, options) => {
+    // model.baseUrl 由 reviewModelOf 落值（目录缺省 = 官方直连），网关档在此
+    // 注入显式输出预算——两类会话共用本构造，改一处即覆盖两会话。
+    const maxTokens = maxTokensFor(model.baseUrl, process.env.REVIEWER_MAX_TOKENS);
+    return deepseekProvider().stream(model as Model<"openai-completions">, context, {
       ...options,
       apiKey: input.apiKey,
       ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
       reasoningEffort: LOCKED_REASONING_EFFORT,
     });
+  };
 }
 
 /** 校验并投影 onPayload payload（边界校验 fail fast；扩展字段透传不裁剪）。

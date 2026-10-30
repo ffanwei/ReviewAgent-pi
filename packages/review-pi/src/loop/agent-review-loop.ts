@@ -24,6 +24,7 @@ import {
   MAX_TOOL_CALLS,
   TOOL_BUDGET_EXHAUSTED_SUMMARY,
   TRUNCATION_MAX_ROUNDS,
+  TRUNCATION_MODEL_LENGTH,
   TRUNCATION_TOOL_BUDGET,
 } from "./constants.js";
 import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
@@ -232,6 +233,12 @@ export async function runAgentReviewLoop(
       const turnUsage = piUsageToLlmUsage(message.usage);
       usage = addUsage(usage, turnUsage);
       requestProgress.end(turnUsage);
+      // 输出撞上 max_tokens 上界（思维链含在预算内时尤易发生）：不翻转控制流
+      // （相位推进与 DSH 一致），但必须留痕——否则截断静默成"审 0 条"。
+      if (message.stopReason === "length") {
+        truncated = true;
+        appendReason(truncationReasons, TRUNCATION_MODEL_LENGTH);
+      }
       if (message.content.some((block) => block.type === "toolCall")) {
         return false;
       }
@@ -281,7 +288,8 @@ export async function runAgentReviewLoop(
     usage,
     rounds: round,
     toolCalls: executedToolCalls + skillToolCalls,
-    complete,
+    // 截断优先：输出撞上界（MODEL_MAX_TOKENS_REACHED）时即使裁决 complete 也不可宣称完整
+    complete: complete && !truncated,
     audit,
     transcript,
     skillPassLog,

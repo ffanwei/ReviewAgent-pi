@@ -1,11 +1,19 @@
 import { expect, test, vi } from "vitest";
 import type { Context, UserMessage } from "@earendil-works/pi-ai";
 import { fakeFetch } from "./fake-fetch.js";
-import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID, assistantText, runReviewTurn } from "./pi-client.js";
+import {
+  GATEWAY_MAX_TOKENS,
+  LOCKED_EFFORT_LABEL,
+  REVIEW_MODEL_ID,
+  assistantText,
+  maxTokensFor,
+  runReviewTurn,
+} from "./pi-client.js";
 
 // pi-ai 序列化缝（内核变量面）：真 provider + 真 SDK 序列化路径 + fake 传输适配器。
 // wireBody = onPayload 序列化点捕获的请求原文（审计 requests[].wireBody 真源）。
-// 请求面对齐 DSH deepseek 画像：不传 max_tokens（t 系列审计 wireBody 无此键）；
+// 请求面对齐 DSH deepseek 画像：官方直连不传 max_tokens（t 系列审计 wireBody 无此键）；
+// 网关档例外——显式发送输出预算，避免继承网关请求默认值（实测 2048 静默截断）。
 // 锁档纪律（DSH 线 ADR-0002）：审计 effort 标签 "default"，线上档位 reasoning_effort "high"。
 // 零网络纪律：全链只经注入的 fetch；globalThis.fetch 被替换为抛错探针仍全程可用。
 
@@ -169,6 +177,54 @@ test("runReviewTurn：目录外自由 model id 可发（钉住模型画像作模
   expect(wire.model).toBe("custom-gateway-model");
   expect(parsed.thinking).toEqual({ type: "enabled" });
   expect(parsed.reasoning_effort).toBe("high");
+});
+
+test("maxTokensFor：官方直连不发；网关档显式预算；REVIEWER_MAX_TOKENS 合法则优先", () => {
+  expect(maxTokensFor(undefined)).toBeUndefined();
+  expect(maxTokensFor("https://api.deepseek.com")).toBeUndefined();
+  expect(maxTokensFor("https://api.deepseek.com/")).toBeUndefined();
+  expect(maxTokensFor("  https://api.deepseek.com  ")).toBeUndefined();
+  expect(maxTokensFor(GATEWAY_URL)).toBe(GATEWAY_MAX_TOKENS);
+  // 网关上限较小（或被路由到小输出模型）时的逃生口
+  expect(maxTokensFor(GATEWAY_URL, "8192")).toBe(8192);
+  expect(maxTokensFor(undefined, "16384")).toBe(16384);
+  // 非法值忽略，落回判档
+  expect(maxTokensFor(GATEWAY_URL, "0")).toBe(GATEWAY_MAX_TOKENS);
+  expect(maxTokensFor(GATEWAY_URL, "-1")).toBe(GATEWAY_MAX_TOKENS);
+  expect(maxTokensFor(GATEWAY_URL, "abc")).toBe(GATEWAY_MAX_TOKENS);
+  expect(maxTokensFor(GATEWAY_URL, "   ")).toBe(GATEWAY_MAX_TOKENS);
+});
+
+test("runReviewTurn：网关档 wire 显式带 max_tokens（不继承网关请求默认值）", async () => {
+  const script = fakeFetch([
+    { text: "ok", usage: { promptTokens: 1, completionTokens: 1, cacheReadTokens: 0 } },
+  ]);
+  const { wire } = await runReviewTurn({
+    context: BASE_CONTEXT,
+    apiKey: API_KEY,
+    baseUrl: GATEWAY_URL,
+    fetch: script.fetch,
+  });
+  const parsed = JSON.parse(wire.wireBody) as Record<string, unknown>;
+  expect(parsed.max_tokens).toBe(GATEWAY_MAX_TOKENS);
+});
+
+test("runReviewTurn：REVIEWER_MAX_TOKENS 覆盖经网关请求落到 wire", async () => {
+  const script = fakeFetch([
+    { text: "ok", usage: { promptTokens: 1, completionTokens: 1, cacheReadTokens: 0 } },
+  ]);
+  vi.stubEnv("REVIEWER_MAX_TOKENS", "8192");
+  try {
+    const { wire } = await runReviewTurn({
+      context: BASE_CONTEXT,
+      apiKey: API_KEY,
+      baseUrl: GATEWAY_URL,
+      fetch: script.fetch,
+    });
+    expect((JSON.parse(wire.wireBody) as Record<string, unknown>).max_tokens).toBe(8192);
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 test("runReviewTurn：modelId 空白 → fail fast（自由 id 非空校验）", async () => {

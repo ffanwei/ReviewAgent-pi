@@ -6,6 +6,7 @@ import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
 import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
+import { GATEWAY_MAX_TOKENS } from "../provider/pi-client.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE, VUL4J_1_SNAPSHOT, vul4j1Corpus } from "../testing/vul4j1-script.js";
@@ -1137,7 +1138,10 @@ test.skipIf(!existsSync(repoFixturePath("sample")))(
     };
     expect(audit.model).toBe("custom-gateway-model");
     for (const request of audit.requests) {
-      expect(JSON.parse(request.wireBody).model).toBe("custom-gateway-model");
+      const wire = JSON.parse(request.wireBody) as { model: string; max_tokens?: number };
+      expect(wire.model).toBe("custom-gateway-model");
+      // 网关档显式输出预算（官方直连不发 max_tokens，见 pi-client.maxTokensFor）
+      expect(wire.max_tokens).toBe(GATEWAY_MAX_TOKENS);
     }
   },
   300_000,

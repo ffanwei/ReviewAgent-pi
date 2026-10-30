@@ -15,6 +15,7 @@ import {
   MAX_ROUNDS,
   TOOL_BUDGET_EXHAUSTED_SUMMARY,
   TRUNCATION_MAX_ROUNDS,
+  TRUNCATION_MODEL_LENGTH,
   TRUNCATION_TOOL_BUDGET,
 } from "./constants.js";
 import { PHASE_COUNT, PHASE_INSTRUCTIONS } from "./phases.js";
@@ -289,6 +290,20 @@ test("预算耗尽：第 7+ 次调用获 Error 应答、计数留痕、截断原
   const fourth = outcome.audit.requests[3]!.messages;
   const skippedToolMessages = fourth.filter((message: WireMessage) => message.role === "tool" && message.content === TOOL_BUDGET_EXHAUSTED_SUMMARY);
   expect(skippedToolMessages).toHaveLength(overflowCalls.length);
+});
+
+test("输出撞上界（finish_reason length）：truncated=true + MODEL_MAX_TOKENS_REACHED，不静默成完整 run", async () => {
+  // phase-1 回复被输出上界截断（内容仍是合法 JSON，但语义已被裁掉）；后续阶段照常推进
+  const replies = singleRoundScript().map((reply, index) =>
+    index === 0 ? { ...reply, finishReason: "length" } : reply,
+  );
+  const { run } = scriptedLoop(replies);
+  const outcome = await run();
+
+  expect(outcome.audit.truncated).toBe(true);
+  expect(outcome.audit.truncationReasons).toEqual([TRUNCATION_MODEL_LENGTH]);
+  // 截断优先：裁决虽 complete，也不得宣称完整
+  expect(outcome.complete).toBe(false);
 });
 
 test("轮次上界：complete 恒 false → rounds=5、truncated=true、正常返回（退出路径可验证）", async () => {
