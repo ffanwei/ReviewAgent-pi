@@ -137,12 +137,41 @@ function toTip(finding: Finding, input: BuildTipsInput): ReviewTip {
 const EMPTY_RULE_IDS: ReadonlySet<string> = new Set<string>();
 
 /**
+ * 同文件同 `line` 去重：只留**首条**（finding 源序），其余忽略（ADR-0023）。
+ *
+ * 去重键是 `(file, line)`——不同文件的同号行是不同代码行，各自保留。
+ * 这是 tips 的**取数口径单源**：`buildReviewTipsDocument` 与核外引擎的
+ * `suggestion` 生成共用它，避免「已丢弃的行还在花网关调用」。
+ */
+export function dedupeFindingsByLine(findings: readonly Finding[]): Finding[] {
+  const seen = new Map<string, Set<number>>();
+  const kept: Finding[] = [];
+  for (const finding of findings) {
+    let lines = seen.get(finding.file);
+    if (lines === undefined) {
+      lines = new Set<number>();
+      seen.set(finding.file, lines);
+    }
+    if (lines.has(finding.line)) {
+      continue;
+    }
+    lines.add(finding.line);
+    kept.push(finding);
+  }
+  return kept;
+}
+
+/**
  * 组装分组文档：按 finding 首见序建文件组，组内按 lineNum 升序（稳定排序）。
  * 零 finding ⇒ `{ files: [] }`（照产——「本次没发现问题」本身是结论）。
+ *
+ * **同文件同 lineNum 去重（ADR-0023）**：同一行代码只留**首条**（finding 源序），
+ * 其余忽略——输出的检视意见不出现重复行。去重在入组前完成，与「组内按
+ * lineNum 升序」正交（同一行只可能剩一条，稳定排序不再有同行比较）。
  */
 export function buildReviewTipsDocument(input: BuildTipsInput): ReviewTipsDocument {
   const groups = new Map<string, ReviewTip[]>();
-  for (const finding of input.findings) {
+  for (const finding of dedupeFindingsByLine(input.findings)) {
     const tips = groups.get(finding.file);
     const tip = toTip(finding, input);
     if (tips === undefined) {

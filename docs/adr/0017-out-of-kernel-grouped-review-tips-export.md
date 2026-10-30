@@ -1,6 +1,6 @@
 # 0017. 分组式检视意见导出（核外呈现产物 `reviews_tips_zh.json`）
 
-**状态**：已接受（ADR-0013 的 zh 一项已由 ADR-0022 收窄：`reviews_zh.json` 停产，本 ADR 的 tips 成为唯一中文产物；tips 与 zh 的「弱耦合」随之表述为「与 stdout 呈现弱耦合」）（2026-10-30，用户经 grill-with-docs 四轮逐项决策 Q1–Q23）；**修订 ADR-0014 的 `rule` 字段口径**（见决策 5）
+**状态**：已接受（ADR-0013 的 zh 一项已由 ADR-0022 收窄：`reviews_zh.json` 停产，本 ADR 的 tips 成为唯一中文产物；tips 与 zh 的「弱耦合」随之表述为「与 stdout 呈现弱耦合」；字段映射追加「同文件同行去重」（ADR-0023））（2026-10-30，用户经 grill-with-docs 四轮逐项决策 Q1–Q23）；**修订 ADR-0014 的 `rule` 字段口径**（见决策 5）
 **关联**：ADR-0010（检视输出恒英文 + 核外翻译投影——本 ADR 是它的第二个消费产物）、ADR-0013（`reviews_en.json` / `reviews_zh.json` 产物族与生命周期）、ADR-0014（规则 skill 会话——本 ADR 改其输出契约的一个字段）、ADR-0009（内核/核外边界）、CONTEXT.md（检视意见导出）
 **跨仓**：本 ADR 为本仓 pi 线序列 0017；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 

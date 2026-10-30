@@ -306,6 +306,39 @@ test("default export：显式 REVIEW_PI_PRESENTATION_MODEL 压过呈现源 model
   }
 });
 
+test("default export：同文件同行多条 finding → tips 只留首条，且只为它生成 suggestion（ADR-0023）", async () => {
+  process.env.REVIEWER_URL = "https://gw.example.com/v1";
+  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
+  const suggestionCalls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = String(init?.body);
+      if (body.includes("修复建议作者")) {
+        suggestionCalls.push(body);
+        return completionResponse("改为判空后再取值");
+      }
+      return completionResponse("【中译】");
+    }),
+  );
+  const base = sampleSource().findings[0] as Finding;
+  const projected = await projectZhPresentation({
+    findings: [
+      base,
+      { ...base, id: "F002", title: "duplicate view of the same line", severity: "P0" },
+      { ...base, id: "F003", line: 178, title: "another line" },
+    ],
+    toolCallLog: [],
+  });
+
+  // 输出去重：line 177 只出现一次（保留首条 F001，不因 P0 择优）
+  const tips = projected.tips.files.flatMap((group) => group.reviewTips);
+  expect(tips.map((tip) => tip.lineNum)).toEqual([177, 178]);
+  expect(tips[0]?.severity).toBe("Minor");
+  // 建议只为保留行生成：2 条（不是 3 条）
+  expect(suggestionCalls).toHaveLength(2);
+});
+
 test("default export：凭据缺失 → 装配期人话错误（CLI 缝归呈现降级）", async () => {
   delete process.env.REVIEWER_URL;
   delete process.env.REVIEWER_API_KEY;

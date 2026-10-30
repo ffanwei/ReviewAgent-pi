@@ -12,7 +12,7 @@ import {
 } from "review-llm";
 
 import type { Finding } from "../instrument/contracts/finding.js";
-import { buildReviewTipsDocument, reviewOf, type ReviewTipsDocument } from "./tips.js";
+import { buildReviewTipsDocument, dedupeFindingsByLine, reviewOf, type ReviewTipsDocument } from "./tips.js";
 import type { TranslateEngine, TerminologyContext } from "./translate-projection.js";
 import {
   projectReviewDocument,
@@ -143,9 +143,12 @@ export default async function projectZhPresentation(
   );
   const codeByFinding = source.codeByFinding ?? {};
   const knownRuleIds = await loadKnownRuleIds(source.rulePackDirs ?? []);
-  const suggestions = await generateSuggestions(projected.findings, codeByFinding, gateway);
+  // ADR-0023：tips 会对「同文件同行」去重，建议只为保留下来的行生成——
+  // 已丢弃的行不该再花一次网关调用（口径与 buildReviewTipsDocument 同源）。
+  const tipsFindings = dedupeFindingsByLine(projected.findings);
+  const suggestions = await generateSuggestions(tipsFindings, codeByFinding, gateway);
   const tips = buildReviewTipsDocument({
-    findings: projected.findings,
+    findings: tipsFindings,
     codeByFinding,
     knownRuleIds,
     suggestions,
