@@ -184,6 +184,8 @@ interface CliRunResult {
   readonly status: number | null;
   readonly stdout: string;
   readonly stderr: string;
+  /** 子进程 cwd（每次 run 一个隔离 temp 目录；ADR-0017 执行目录副本落在其中） */
+  readonly cwd: string;
 }
 
 interface RunBinOptions {
@@ -191,6 +193,10 @@ interface RunBinOptions {
   readonly env?: Record<string, string>;
   /** 预写进子进程 cwd 的 .env.local 内容（.env.local 语义面；不写则无该文件） */
   readonly seedEnvLocal?: string;
+  /** 预置到子进程 cwd 的文件名（内容固定 `{"stale":true}`；ADR-0017 副本清理用） */
+  readonly seedCwdFiles?: readonly string[];
+  /** 预置到子进程 cwd 的**目录名**（占位模拟不可写；ADR-0017 副本失败语义用） */
+  readonly seedCwdDirs?: readonly string[];
   readonly timeoutMs?: number;
 }
 
@@ -206,6 +212,12 @@ function runBin(args: readonly string[], options: RunBinOptions = {}): Promise<C
   const cwd = makeTempDir("review-pi-cli-cwd-");
   if (options.seedEnvLocal !== undefined) {
     writeFileSync(path.join(cwd, ".env.local"), options.seedEnvLocal, "utf8");
+  }
+  for (const name of options.seedCwdFiles ?? []) {
+    writeFileSync(path.join(cwd, name), '{"stale":true}\n', "utf8");
+  }
+  for (const name of options.seedCwdDirs ?? []) {
+    mkdirSync(path.join(cwd, name), { recursive: true });
   }
   return new Promise<CliRunResult>((resolve, reject) => {
     const child = spawn(process.execPath, [BIN_PATH, ...args], {
@@ -235,7 +247,7 @@ function runBin(args: readonly string[], options: RunBinOptions = {}): Promise<C
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve({ status: code, stdout, stderr });
+        resolve({ status: code, stdout, stderr, cwd });
       }
     });
   });
@@ -583,11 +595,16 @@ function cliRepDir(outDir: string, configId = "B"): string {
   return path.join(outDir, CLI_EXPERIMENT_ID, "runs", "vul4j", "VUL4J-1", configId, "rep-1");
 }
 
-/** 单 MR 检视调用（config B；可选注入呈现引擎） */
-function runCliReview(outDir: string, mrFile: string, env: Record<string, string>): Promise<CliRunResult> {
+/** 单 MR 检视调用（config B；可选注入呈现引擎与 cwd 预置文件） */
+function runCliReview(
+  outDir: string,
+  mrFile: string,
+  env: Record<string, string>,
+  options: RunBinOptions = {},
+): Promise<CliRunResult> {
   return runBin(
     ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir, "--config", "B"],
-    { env },
+    { ...options, env },
   );
 }
 
@@ -672,11 +689,20 @@ test(
           ],
         },
       ]);
+      // 执行目录副本（ADR-0017 决策 14）：cwd 里同名双写，内容与 rep-1 那份逐字节相同
+      const cwdTipsPath = path.join(run.cwd, "reviews_tips_zh.json");
+      const cwdResultPath = path.join(run.cwd, "review-result.json");
+      expect(existsSync(cwdTipsPath)).toBe(true);
+      expect(existsSync(cwdResultPath)).toBe(true);
+      const repTipsText = readFileSync(tipsPath, "utf8");
+      expect(readFileSync(cwdTipsPath, "utf8")).toBe(repTipsText);
+      expect(readFileSync(cwdResultPath, "utf8")).toBe(repTipsText);
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
         { label: "reviews_zh.json", text: readFileSync(zhPath, "utf8") },
-        { label: "reviews_tips_zh.json", text: readFileSync(tipsPath, "utf8") },
+        { label: "reviews_tips_zh.json", text: repTipsText },
+        { label: "cwd review-result.json", text: readFileSync(cwdResultPath, "utf8") },
       ]);
     } finally {
       await stub.close();
@@ -738,12 +764,18 @@ test("中文导出：陈旧 zh（引擎未配置）→ 本次 run 的 rep-1/ 内
     const staleTipsPath = path.join(repDir, "reviews_tips_zh.json");
     writeFileSync(staleTipsPath, '{"stale":true}\n', "utf8");
 
-    const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), stubEnv(stub.baseUrl));
+    const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), stubEnv(stub.baseUrl), {
+      // 陈旧执行目录副本（ADR-0017 决策 14：本次不产 ⇒ 一并清除）
+      seedCwdFiles: ["reviews_tips_zh.json", "review-result.json"],
+    });
 
     expect(run.status).toBe(0);
     expect(existsSync(stalePath)).toBe(false);
     expect(existsSync(staleTipsPath)).toBe(false);
     expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
+    // cwd 里上次留下的两份副本也必须清掉——「有就是本次的」
+    expect(existsSync(path.join(run.cwd, "reviews_tips_zh.json"))).toBe(false);
+    expect(existsSync(path.join(run.cwd, "review-result.json"))).toBe(false);
     expect(run.stderr).toContain("已清除陈旧");
   } finally {
     await stub.close();
@@ -774,11 +806,44 @@ test(
       const repDir = cliRepDir(outDir);
       expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(true);
       expect(existsSync(path.join(repDir, "reviews_tips_zh.json"))).toBe(false);
+      // cwd 副本同理不产（使「有就是本次的」成立）
+      expect(existsSync(path.join(run.cwd, "reviews_tips_zh.json"))).toBe(false);
+      expect(existsSync(path.join(run.cwd, "review-result.json"))).toBe(false);
       expect(run.stderr).toContain("本次未产分组意见");
       expect(run.stderr).toContain("severity must be one of");
       // stdout 仍是中文呈现档（tips 坏不拖累 zh）
       const outcome = JSON.parse(run.stdout) as { findings: { title: string }[] };
       expect(outcome.findings[0]?.title).toBe("[zh] Sentinel finding title");
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "分组意见：执行目录副本写不进（cwd 两份目标名被占成目录）→ stderr 警告 + exit 0 + rep-1 那份照产",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const enginePath = writeProjectionEngineFixture("zh-engine.mjs", ZH_ENGINE_BODY);
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runCliReview(
+        outDir,
+        writeMr(goldenFixture("vul4j-1.diff")),
+        { ...stubEnv(stub.baseUrl), REVIEW_PI_PRESENTATION_ENGINE: enginePath },
+        // cwd 里两个目标名都被目录占住 ⇒ 写文件必然失败
+        { seedCwdDirs: ["reviews_tips_zh.json", "review-result.json"] },
+      );
+
+      // 便捷副本不配把检视判失败：exit 0
+      expect(run.status).toBe(0);
+      expect(run.stderr).toContain("执行目录副本写入失败");
+      expect(run.stderr).toContain("review-result.json");
+      // run 产物目录那份不受牵连
+      expect(existsSync(path.join(cliRepDir(outDir), "reviews_tips_zh.json"))).toBe(true);
+      // stdout 仍是完整 JSON 文档（未被 stderr 污染）
+      expect(() => JSON.parse(run.stdout)).not.toThrow();
     } finally {
       await stub.close();
     }

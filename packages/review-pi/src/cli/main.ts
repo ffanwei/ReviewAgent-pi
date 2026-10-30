@@ -64,7 +64,13 @@ import {
   type ProgressRenderer,
 } from "./progress-render.js";
 import { renderReviewOutcome } from "./render.js";
-import { removeStaleReviewsTipsZh, writeReviewsTipsZh } from "./reviews-tips-zh.js";
+import {
+  removeExecDirTipsCopies,
+  removeStaleReviewsTipsZh,
+  writeExecDirTipsCopies,
+  writeReviewsTipsZh,
+  type ExecDirTipsOutcome,
+} from "./reviews-tips-zh.js";
 import { buildReviewsZhExport, removeStaleReviewsZh, writeReviewsZh } from "./reviews-zh.js";
 
 /** 执行一次 review 命令；返回进程退出码（完成 0——截断同为 0；错误经异常上抛 → 1） */
@@ -187,6 +193,7 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
       projection.kind === "projected" ? projection.tips : undefined;
     if (tips !== undefined) {
       await writeReviewsTipsZh(tipsDir, tips);
+      reportExecDirTips(await writeExecDirTipsCopies(tips, process.cwd()), "写入");
     } else {
       if (projection.kind === "projected" && projection.tipsProblem !== undefined) {
         process.stderr.write(`review-pi: 本次未产分组意见（${projection.tipsProblem}）\n`);
@@ -195,6 +202,7 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
       if (removed !== undefined) {
         process.stderr.write(`review-pi: 已清除陈旧 ${removed}\n`);
       }
+      reportExecDirTips(await removeExecDirTipsCopies(process.cwd()), "清除");
     }
   }
 
@@ -213,6 +221,17 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   );
   // 截断 = 完成的一种（票面退出码契约：0 + truncated=true）
   return 0;
+}
+
+/**
+ * 执行目录副本的失败留痕（ADR-0017 决策 14）：cwd 属用户目录（可能只读、可能
+ * 落在系统目录），写/清失败只警告**不改退出码**——检视本体已成功，一份便捷
+ * 副本不配把整次运行判失败。
+ */
+function reportExecDirTips(outcome: ExecDirTipsOutcome, action: string): void {
+  for (const problem of outcome.problems) {
+    process.stderr.write(`review-pi: 执行目录副本${action}失败（${problem}）\n`);
+  }
 }
 
 /**
