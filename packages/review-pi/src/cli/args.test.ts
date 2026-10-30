@@ -175,6 +175,47 @@ test("未知旗标 / 重复旗标 / 值缺席（含值吞旗标）→ 用法错�
   });
 });
 
+test("--env：显式凭据文件路径透传；缺席省键；空白路径 = 用法错误（ADR-0019）", () => {
+  const explicit = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr",
+    "m",
+    "--env",
+    "creds\\team.env.local",
+  ]);
+  expect(explicit).toEqual({
+    ok: true,
+    command: "review",
+    args: {
+      repo: "r",
+      mr: "m",
+      caseId: "m",
+      config: "E",
+      issue: "",
+      out: "review-pi-output",
+      model: REVIEW_MODEL_ID,
+      envFile: "creds\\team.env.local",
+    },
+  });
+
+  const absent = parseCliArgs(["review", "--repo", "r", "--mr", "m"]);
+  expect(absent.ok && absent.command === "review" && "envFile" in absent.args).toBe(false);
+
+  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--env", "  "])).toEqual({
+    ok: false,
+    message: 'invalid --env "  ": must be a non-empty file path',
+  });
+});
+
+test("--env 只属于 review 面：smoke 视为未知旗标", () => {
+  expect(parseCliArgs(["smoke", "--env", "x.env"])).toEqual({
+    ok: false,
+    message: 'unknown flag "--env"',
+  });
+});
+
 test("--model：缺省钉住的评审模型；自由 id 透传；空白 id 拒绝", () => {
   const free = parseCliArgs(["review", "--repo", "r", "--mr", "m", "--model", "custom-gateway-model"]);
   expect(free.ok && free.command === "review" && free.args.model).toBe("custom-gateway-model");

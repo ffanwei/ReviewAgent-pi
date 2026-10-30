@@ -42,6 +42,7 @@ const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--issue",
   "--out",
   "--model",
+  "--env",
   "--rule-skill-zip",
   "--rule-skill",
   "--rule-skill-name",
@@ -67,7 +68,7 @@ const KNOWN_DISPOSITION_FLAGS: readonly string[] = [
 const KNOWN_DISPOSITION_STATS_FLAGS: readonly string[] = ["--store", "--out"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--env <file>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
        review-pi smoke [--model <id>]
        review-pi disposition --run <run-record.json> --finding <id> --decision accept|reject|false-positive [--note <text>] ([--store <file>] | [--out <dir>])
        review-pi disposition --stats ([--store <file>] | [--out <dir>])
@@ -83,6 +84,9 @@ review 旗标：
   --issue   <text>       MR 议题描述（缺省空）
   --out     <dir>        输出目录（审计与运行记录落盘；缺省 ${DEFAULT_OUT_DIR}）
   --model   <id>         评审模型 id（缺省 ${REVIEW_MODEL_ID}；自由 id 透传）
+  --env     <file>       凭据文件显式路径（仅 review；替代进程 cwd 的 .env.local——
+                         指定后**不再**读 cwd 那份；相对路径按 cwd 解析；显式指定
+                         但文件不存在 = 用法/环境错误 exit 1）
   --rule-skill-zip  <path>  规则 Skill zip 显式路径（config F；可重复，顺序 = 执行顺序；
                             缺省扫 <repo>/.review-rules/*.zip 全部装载）
   --rule-skill      <dir>   规则 Skill **已解压目录**（config F；可重复；排在全部
@@ -122,6 +126,12 @@ export interface ReviewCliArgs {
   readonly out: string;
   /** 评审模型：缺省 REVIEW_MODEL_ID；自由 id 透传（空串/空白 = 用法错误） */
   readonly model: string;
+  /**
+   * 凭据文件显式路径（`--env`，ADR-0019）：指定后**只**读该文件，不再读进程
+   * cwd 的 `.env.local`；相对路径按 cwd 解析；文件不存在 = 运行错误 exit 1。
+   * 缺席省键 = 沿用 cwd 的 `.env.local`（缺失即 no-op）。
+   */
+  readonly envFile?: string;
   /** 规则 Skill zip 显式路径列表（--rule-skill-zip 可重复；顺序 = 执行顺序；缺席省键） */
   readonly ruleSkillZips?: readonly string[];
   /** 规则 Skill 已解压目录列表（--rule-skill 可重复；排在全部 zip 之后；缺席省键） */
@@ -435,6 +445,15 @@ function parseReviewArgs(
   const ruleSkillZips = repeated.get("--rule-skill-zip");
   const ruleSkillDirs = repeated.get("--rule-skill");
   const ruleSkillName = values.get("--rule-skill-name");
+  const envFile = values.get("--env");
+  // 空白路径没有任何含义（既不是"缺省 cwd"也不是有效文件）——fail fast，别把它
+  // 拖到运行期变成 "文件不存在" 的误导性错误
+  if (envFile !== undefined && envFile.trim().length === 0) {
+    return {
+      ok: false,
+      message: `invalid --env ${JSON.stringify(envFile)}: must be a non-empty file path`,
+    };
+  }
 
   return {
     ok: true,
@@ -447,6 +466,7 @@ function parseReviewArgs(
       issue: values.get("--issue") ?? "",
       out: values.get("--out") ?? DEFAULT_OUT_DIR,
       model,
+      ...(envFile !== undefined ? { envFile } : {}),
       ...(ruleSkillZips !== undefined ? { ruleSkillZips } : {}),
       ...(ruleSkillDirs !== undefined ? { ruleSkillDirs } : {}),
       ...(ruleSkillName !== undefined ? { ruleSkillName } : {}),

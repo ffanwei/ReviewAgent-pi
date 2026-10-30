@@ -1,6 +1,6 @@
 /**
  * #7 review-pi CLI wrapper 主缝（进程内）：子命令分发 + 参数透传 + 结果
- * 呈现 only。本文件是胶水：解析（args.ts，已测）→ .env.local 装载
+ * 呈现 only。本文件是胶水：解析（args.ts，已测）→ 凭据文件装载
  * （shared/env-local，已测）→ 命令执行 → stdout/stderr 呈现 → 退出码。
  * 检视行为本体全部留在内核（runReview / P1b 双探针）。
  *
@@ -24,13 +24,13 @@
  * 退出码被吞成 0xC0000409。
  *
  * stdout 纪律：review 与 disposition 的 stdout 契约都是单个 JSON 文档——
- * .env.local 摘要与一切诊断走 stderr。凭据经 REVIEWER_*（> 旧
- * DEEPSEEK_* 别名）环境变量或进程 cwd 的 .env.local（已有环境变量优先），
- * key 绝不回显。
+ * 凭据文件摘要与一切诊断走 stderr。凭据经 REVIEWER_*（> 旧
+ * DEEPSEEK_* 别名）环境变量或凭据文件（缺省 = 进程 cwd 的 `.env.local`；
+ * `--env <file>` 可显式指定，ADR-0019；已有环境变量优先），key 绝不回显。
  *
  * 进程调用形态：review-pi review --repo <path> --mr <diff-file>
- *   [--config A-F] [--issue <text>] [--out <dir>] [--model <id>]
- *   [--rule-skill-zip <path>]... [--strict-rule-skill]
+ *   [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--env <file>]
+ *   [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--strict-rule-skill]
  *   [--progress | --no-progress]
  *   review-pi smoke [--model <id>]
  *   review-pi disposition --run <run-record.json> --finding <id>
@@ -349,9 +349,9 @@ function progressFinish(
   };
 }
 
-/** .env.local 装载摘要行（stderr；措辞单源 formatEnvLocalSummary——只报键名与行号，值绝不回显） */
-function envLocalSummaryLine(loadedKeysText: string): string {
-  return `review-pi: env: .env.local found — ${loadedKeysText}\n`;
+/** 凭据文件装载摘要行（stderr；措辞单源 formatEnvLocalSummary——只报键名与行号，值绝不回显） */
+function envLocalSummaryLine(loadedKeysText: string, label = ".env.local"): string {
+  return `review-pi: env: ${label} found — ${loadedKeysText}\n`;
 }
 
 /** 兜底强退上界（毫秒）：自然排干的正常路径毫秒级完成，此定时器不点火 */
@@ -388,17 +388,30 @@ function main(): void {
     return;
   }
 
-  // .env.local：用法解析成功后才触碰文件系统；必须在凭据解析前。
+  // 凭据文件（ADR-0019）：`--env` 指定则**只**读该文件（相对 cwd），否则读进程
+  // cwd 的 `.env.local`。用法解析成功后才触碰文件系统；必须在凭据解析前。
   // 读失败（非缺失，如 EACCES/EISDIR）→ 干净人话错误 + exit 1（不留未捕获堆栈）。
+  const envFile = parsed.command === "review" ? parsed.args.envFile : undefined;
+  const envPath = envFile !== undefined ? resolve(envFile) : resolve(".env.local");
   try {
-    const envResult = loadEnvLocalFile(resolve(".env.local"));
+    const envResult = loadEnvLocalFile(envPath);
     if (envResult.exists) {
-      process.stderr.write(envLocalSummaryLine(formatEnvLocalSummary(envResult)));
+      process.stderr.write(
+        envLocalSummaryLine(formatEnvLocalSummary(envResult), envFile !== undefined ? envPath : undefined),
+      );
+    } else if (envFile !== undefined) {
+      // 显式指定却缺席 = 路径拼错 / 文件没带上——静默 no-op 会让人以为已注入
+      process.stderr.write(
+        `review-pi: --env 指定的文件不存在（${envPath}）——本机注入面中止\n`,
+        () => exitGracefully(1),
+      );
+      return;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const label = envFile !== undefined ? `--env 指定的文件（${envPath}）` : ".env.local";
     process.stderr.write(
-      `review-pi: 无法读取 .env.local（${message}）——本机注入面中止\n`,
+      `review-pi: 无法读取 ${label}（${message}）——本机注入面中止\n`,
       () => exitGracefully(1),
     );
     return;

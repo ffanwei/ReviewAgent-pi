@@ -440,6 +440,104 @@ test(
   180_000,
 );
 
+// ---- 凭据文件显式路径（ADR-0019：--env） ----
+
+test(
+  "--env：只读指定凭据文件（cwd 之外），cwd 的 .env.local 不被读取；摘要报显式路径",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+      const envFile = path.join(makeTempDir("review-pi-cli-env-"), "team.env.local");
+      writeFileSync(
+        envFile,
+        `REVIEWER_URL=${stub.baseUrl}\nREVIEWER_API_KEY=${SENTINEL_KEY}\n`,
+        "utf8",
+      );
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr",
+          mrFile,
+          "--out",
+          outDir,
+          "--config",
+          "B",
+          "--env",
+          envFile,
+        ],
+        {
+          // 显式置空 = 未设置（.env.local 语义：空值不注入，文件可补缺）
+          env: { REVIEWER_URL: "", REVIEWER_API_KEY: "", DEEPSEEK_API_KEY: "" },
+          // cwd 诱饵：若实现退回 cwd 的 .env.local，请求会打向死端口并带上诱饵 key
+          seedEnvLocal: `REVIEWER_URL=http://127.0.0.1:9/v1\nREVIEWER_API_KEY=${DECOY_KEY}\n`,
+        },
+      );
+
+      expect(run.status).toBe(0);
+      const requests = stub.requests();
+      expect(requests).toHaveLength(6);
+      for (const request of requests) {
+        expect(request.authorization).toBe(`Bearer ${SENTINEL_KEY}`);
+      }
+      // 摘要：报显式路径，且只报键名（值绝不回显）
+      expect(run.stderr).toContain(envFile);
+      expect(run.stderr).toContain("found — injected REVIEWER_URL, REVIEWER_API_KEY");
+      expect(run.stdout).not.toContain(SENTINEL_KEY);
+      expect(run.stderr).not.toContain(SENTINEL_KEY);
+      expect(run.stderr).not.toContain(DECOY_KEY);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test("--env 指向不存在的文件 → exit 1 + 人话错误含路径 + stdout 干净（不静默 no-op）", async () => {
+  const missing = path.join(makeTempDir("review-pi-cli-env-"), "no-such.env.local");
+  const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+
+  const run = await runBin([
+    "review",
+    "--repo",
+    repoFixturePath("sample"),
+    "--mr",
+    mrFile,
+    "--env",
+    missing,
+  ]);
+
+  expect(run.status).toBe(1);
+  expect(run.stdout).toBe("");
+  expect(run.stderr).toContain("--env 指定的文件不存在");
+  expect(run.stderr).toContain(missing);
+});
+
+test("--env 指向目录（读失败）→ exit 1 + 人话错误，不抛堆栈", async () => {
+  const dir = makeTempDir("review-pi-cli-env-");
+  const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+
+  const run = await runBin([
+    "review",
+    "--repo",
+    repoFixturePath("sample"),
+    "--mr",
+    mrFile,
+    "--env",
+    dir,
+  ]);
+
+  expect(run.status).toBe(1);
+  expect(run.stdout).toBe("");
+  expect(run.stderr).toContain("无法读取 --env 指定的文件");
+  expect(run.stderr).not.toContain("    at ");
+});
+
 // ---- 呈现投影注入缝（ADR-0010 消费端接线）：引擎注入 → stdout 中文呈现档 ----
 // 引擎模块是外部 ESM（翻译算法/网络/密钥全在核外）——fixture 现场 tmp .mjs。
 

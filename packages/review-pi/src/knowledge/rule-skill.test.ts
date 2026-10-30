@@ -627,7 +627,7 @@ test("目录 + zip 共存：先全部 zip，再全部目录（ADR-0018 装载序
     cacheRoot: path.join(repo, "cache"),
     explicitZipPaths: [zipPath],
     ruleSkillDirs: [dirA, dirB],
-    loadSkillsFn: (async (_env, cwd: string) => {
+    loadSkillsFn: (async (_env: unknown, cwd: string) => {
       const name = cwd.includes(`${path.sep}dir-`) ? "from-dir" : "from-zip";
       return { skills: [sampleSkill({ name })], diagnostics: [] };
     }) as unknown as typeof loadSkills,
