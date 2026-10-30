@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BACKGROUND_CONTEXT, loadSkills, type Skill, type SkillDiagnostic } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
@@ -32,9 +32,9 @@ export const RULE_SKILL_DIR_NAME = ".review-rules";
 const READY_MARKER = ".rule-skill-ready";
 
 export interface RuleSkillSource {
-  /** 现在只有 "zip"；后期加 "url"（下载腿） */
-  readonly kind: "zip";
-  /** 归档路径（仓库相对 POSIX；显式路径时可能为宿主路径） */
+  /** 输入形态：zip 归档 / 已解压目录（--rule-skill）；后期加 "url"（下载腿） */
+  readonly kind: "zip" | "dir";
+  /** 归档或目录路径（仓库相对 POSIX；显式路径时可能为宿主路径） */
   readonly path: string;
 }
 
@@ -101,6 +101,13 @@ export interface LoadRuleSkillOptions {
    * 顺序 = CLI 传入顺序 = 执行顺序；优先于 `explicitZipPath` 与约定目录。
    */
   readonly explicitZipPaths?: readonly string[];
+  /**
+   * 显式**已解压目录**列表（`--rule-skill` 可重复，ADR-0018）。
+   * 目录先审计（符号链接 / 非普通文件 / 总字节）→ 按内容哈希复制进
+   * `<cacheRoot>/dir-<digest>/` → 与 zip 走同一装载链路。
+   * 顺序 = CLI 传入顺序；**排在全部 zip 之后**（两种形态共存时的装载序）。
+   */
+  readonly ruleSkillDirs?: readonly string[];
   /** 指定装载的 skill 名（--rule-skill-name；包内多 skill 时消歧，逐包生效） */
   readonly skillName?: string;
   /** 严格模式（--strict-rule-skill）：失败抛错而非降级 */
@@ -113,21 +120,25 @@ export interface LoadRuleSkillOptions {
 }
 
 /**
- * 装载全部规则 Skill（ADR-0014 决策 1：多 zip、CLI 顺序）。
+ * 装载全部规则 Skill（ADR-0014 决策 1：多 zip、CLI 顺序；ADR-0018：追加
+ * `--rule-skill` 已解压目录，排在全部 zip 之后）。
  *
  * - 显式 zip 列表：逐包装载，顺序 = 传入顺序；
  * - 约定目录：`<repoPath>/.review-rules/*.zip`，文件名序；**全部装载**；
+ * - 显式目录列表：逐目录装载（审计 → 内容哈希 → 复制进缓存 → 同一装载链路）；
  * - 单包失败只降级该包（在后面继续装载），`strict` 下任一失败即抛；
- * - 无 zip（目录缺席 / 为空）⇒ `[]`（N=0：F 与 E 逐字节相同的前提；
- *   不是降级条目——审计 `ruleSkill: []`）。
+ * - 无 zip 且无目录（约定目录缺席 / 为空）⇒ `[]`（N=0：F 与 E 逐字节相同的
+ *   前提；不是降级条目——审计 `ruleSkill: []`）；
+ * - 显式给了目录时，约定目录缺席**不再算整体失败**（用户已指定输入）。
  */
 export async function loadRuleSkills(options: LoadRuleSkillOptions): Promise<readonly RuleSkill[]> {
   const limits = options.limits ?? DEFAULT_RULE_SKILL_LIMITS;
   const spawnFn = options.spawn ?? defaultSpawn;
   const loadSkillsFn = options.loadSkillsFn ?? loadSkills;
+  const dirPaths = options.ruleSkillDirs ?? [];
 
   const located = await locateZipCandidates(options);
-  if ("reason" in located) {
+  if ("reason" in located && dirPaths.length === 0) {
     if (options.strict === true) {
       throw new Error(`rule skill unavailable: ${located.reason}`);
     }
@@ -135,7 +146,8 @@ export async function loadRuleSkills(options: LoadRuleSkillOptions): Promise<rea
   }
 
   const skills: RuleSkill[] = [];
-  for (const entry of located.entries) {
+  const zipEntries = "reason" in located ? [] : located.entries;
+  for (const entry of zipEntries) {
     if (entry.reason !== undefined) {
       if (options.strict === true) {
         throw new Error(`rule skill unavailable: ${entry.reason}`);
@@ -153,6 +165,19 @@ export async function loadRuleSkills(options: LoadRuleSkillOptions): Promise<rea
     }
     skills.push(degradedRuleSkillForPath(entry.path, options, attempt.reason));
   }
+
+  // 目录形态排在全部 zip 之后（ADR-0018：共存时的装载序）
+  for (const dirPath of dirPaths) {
+    const attempt = await loadFromDirectory(dirPath, options, limits, loadSkillsFn);
+    if ("skill" in attempt) {
+      skills.push(attempt.skill);
+      continue;
+    }
+    if (options.strict === true) {
+      throw new Error(`rule skill unavailable: ${attempt.reason}`);
+    }
+    skills.push(degradedRuleSkillForDirectory(dirPath, options, attempt.reason));
+  }
   return skills;
 }
 
@@ -169,6 +194,24 @@ function degradedRuleSkillForPath(
     filePath: "",
     digest: "",
     source: { kind: "zip", path: sourcePathOf(zipPath, options.repoPath) },
+    diagnostics: [],
+    degradedReason: reason,
+  };
+}
+
+/** 降级占位（目录形态：source.kind = "dir"） */
+function degradedRuleSkillForDirectory(
+  dirPath: string,
+  options: LoadRuleSkillOptions,
+  reason: string,
+): RuleSkill {
+  return {
+    name: "",
+    description: "",
+    content: "",
+    filePath: "",
+    digest: "",
+    source: { kind: "dir", path: sourcePathOf(dirPath, options.repoPath) },
     diagnostics: [],
     degradedReason: reason,
   };
@@ -288,8 +331,120 @@ async function loadFromZip(
   };
 }
 
-/** 装载后取单一 skill：指定名精确匹配，否则要求恰好一个（0 / >1 均降级） */
-function selectSkill(
+/**
+ * 从**已解压目录**装载（ADR-0018：`--rule-skill`，与 zip 走同一装载链路）。
+ *
+ * 复制到 run 缓存而非原地当 pack 根，理由与 zip 同档：隔离（两次 run 互不
+ * 干扰）、可写（skill 的 bash 工具会往 pack 根写东西，不该污染用户源码目录）、
+ * 诊断路径可脱敏。
+ *
+ * 缓存键 = 目录**内容哈希**（相对路径 + 文件内容，排序后 sha256），前缀 `dir-`
+ * 与 zip 的归档字节 sha256 分开；内容一变就是新目录，绝不会读到旧副本。
+ * 审计口径与 zip 一致：符号链接 / 非普通文件 / 总字节超限一律拒绝（目录形态
+ * **不是**绕过安全审计的后门）。
+ */
+async function loadFromDirectory(
+  dirPath: string,
+  options: LoadRuleSkillOptions,
+  limits: RuleSkillLimits,
+  loadSkillsFn: typeof loadSkills,
+): Promise<{ readonly skill: RuleSkill } | { readonly reason: string }> {
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    info = await stat(dirPath);
+  } catch (error) {
+    return { reason: `rule-skill directory not found: ${dirPath}` };
+  }
+  if (!info.isDirectory()) {
+    return { reason: `rule-skill path is not a directory: ${dirPath}` };
+  }
+
+  // 复制前先审：符号链接越界 / 非普通文件 / 总字节超限
+  const auditReason = await verifyExtractedTree(dirPath, limits, "rule skill directory");
+  if (auditReason !== undefined) {
+    return { reason: auditReason };
+  }
+
+  let digest: string;
+  try {
+    digest = await hashDirectory(dirPath);
+  } catch (error) {
+    return { reason: `failed to read rule-skill directory (${errorMessage(error)})` };
+  }
+
+  const cacheDir = path.join(options.cacheRoot, `dir-${digest}`);
+  const marker = path.join(cacheDir, READY_MARKER);
+  if (!(await fileExists(marker))) {
+    await rm(cacheDir, { recursive: true, force: true });
+    await mkdir(cacheDir, { recursive: true });
+    try {
+      await cp(dirPath, cacheDir, { recursive: true, force: true });
+    } catch (error) {
+      await rm(cacheDir, { recursive: true, force: true });
+      return { reason: `failed to copy rule-skill directory (${errorMessage(error)})` };
+    }
+    const verifyReason = await verifyExtractedTree(cacheDir, limits);
+    if (verifyReason !== undefined) {
+      await rm(cacheDir, { recursive: true, force: true });
+      return { reason: verifyReason };
+    }
+    await writeFile(marker, digest, "utf8");
+  }
+
+  const env = new NodeExecutionEnv({ cwd: cacheDir });
+  const loaded = await loadSkillsFn(env, cacheDir, BACKGROUND_CONTEXT);
+  const selected = selectSkill(loaded.skills, options.skillName);
+  if ("reason" in selected) {
+    return { reason: selected.reason };
+  }
+  return {
+    skill: {
+      name: selected.skill.name,
+      description: selected.skill.description,
+      content: selected.skill.content,
+      filePath: selected.skill.filePath,
+      digest,
+      source: { kind: "dir", path: sourcePathOf(dirPath, options.repoPath) },
+      diagnostics: loaded.diagnostics.map((diagnostic) => ({
+        ...diagnostic,
+        path: sanitizeDiagnosticPath(diagnostic.path, cacheDir),
+      })),
+    },
+  };
+}
+
+/**
+ * 目录内容哈希（缓存键 + 审计留痕）：递归收集相对路径（POSIX 形），排序后
+ * 依次喂 `<rel>\0<bytes>\0`。排序保证跨平台与目录遍历顺序无关的确定性。
+ * 调用前已由 `verifyExtractedTree` 排除符号链接与非普通文件。
+ */
+async function hashDirectory(root: string): Promise<string> {
+  const rels: string[] = [];
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile()) {
+        rels.push(path.relative(root, full).split(path.sep).join("/"));
+      }
+    }
+  }
+  rels.sort();
+  const hash = createHash("sha256");
+  for (const rel of rels) {
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(await readFile(path.join(root, ...rel.split("/"))));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+/** 装载后取单一 skill：指定名精确匹配，否则要求恰好一个（0 / >1 均降级） */function selectSkill(
   skills: readonly Skill[],
   skillName: string | undefined,
 ): { readonly skill: Skill } | { readonly reason: string } {
@@ -367,7 +522,11 @@ async function trySpawn(
 }
 
 /** 解压后复核：递归走缓存目录，拒绝符号链接 / 非普通文件 / 超量 */
-async function verifyExtractedTree(root: string, limits: RuleSkillLimits): Promise<string | undefined> {
+async function verifyExtractedTree(
+  root: string,
+  limits: RuleSkillLimits,
+  label = "extracted archive",
+): Promise<string | undefined> {
   const stack: string[] = [root];
   let total = 0;
   while (stack.length > 0) {
@@ -376,19 +535,19 @@ async function verifyExtractedTree(root: string, limits: RuleSkillLimits): Promi
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) {
-        return `extracted archive contains a symbolic link (${entry.name})`;
+        return `${label} contains a symbolic link (${entry.name})`;
       }
       if (entry.isDirectory()) {
         stack.push(full);
         continue;
       }
       if (!entry.isFile()) {
-        return `extracted archive contains an unsupported entry (${entry.name})`;
+        return `${label} contains an unsupported entry (${entry.name})`;
       }
       const info = await lstat(full);
       total += info.size;
       if (total > limits.maxTotalUncompressed) {
-        return `extracted archive exceeds ${limits.maxTotalUncompressed} bytes`;
+        return `${label} exceeds ${limits.maxTotalUncompressed} bytes`;
       }
     }
   }

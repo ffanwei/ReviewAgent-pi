@@ -951,6 +951,84 @@ test("smoke 子命令：网关不可达 → exit 1 + 人话诊断（健康探针
   expect(run.stdout).toContain("skipped: the gateway is unreachable");
 });
 
+// ---- 规则 Skill 目录形态（ADR-0018：--rule-skill） ----
+
+/** config F 零候选脚本：4 相位 OK + Phase-5 空候选 + skill 会话空候选 + Phase-6 空裁决 */
+function ruleSkillDirCorpus(): FakeReply[] {
+  const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+  return [
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: JSON.stringify({ candidates: [] }), usage: ZERO },
+    { text: JSON.stringify({ candidates: [] }), usage: ZERO },
+    { text: JSON.stringify({ verdicts: [], complete: true }), usage: ZERO },
+  ];
+}
+
+test(
+  "--rule-skill：已解压目录装载（config F），审计标 kind = dir，副本落 run 缓存而非原地",
+  async () => {
+    const stub = await startLoopbackStub(ruleSkillDirCorpus());
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+      const skillDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr",
+          mrFile,
+          "--out",
+          outDir,
+          "--config",
+          "F",
+          "--rule-skill",
+          skillDir,
+          "--strict-rule-skill",
+        ],
+        { env: stubEnv(stub.baseUrl) },
+      );
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        ruleSkill: { source: string; kind?: string; digest: string; name: string }[];
+        skillPassLog?: { skill: string }[];
+      };
+      expect(audit.ruleSkill).toHaveLength(1);
+      expect(audit.ruleSkill[0]).toMatchObject({ kind: "dir", name: "general-code-review" });
+      expect(audit.ruleSkill[0]?.digest).toMatch(/^[0-9a-f]{64}$/);
+      expect(audit.ruleSkill[0]?.source).toBe(skillDir.split(path.sep).join("/"));
+      // 装载成功 = 会话真的跑了（round × skill 一条），不是"传了但没生效"
+      expect(audit.skillPassLog).toHaveLength(1);
+
+      const cacheDir = path.join(
+        outDir,
+        "review-pi-cli",
+        ".cache",
+        "rule-skills",
+        `dir-${audit.ruleSkill[0]?.digest as string}`,
+      );
+      expect(existsSync(path.join(cacheDir, "SKILL.md"))).toBe(true);
+      expect(existsSync(path.join(cacheDir, "rules"))).toBe(true);
+      expect(existsSync(path.join(cacheDir, ".rule-skill-ready"))).toBe(true);
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
 // ---- disposition 命令面（#15：本地数据面，无网络、不碰 .env.local） ----
 // 夹具与 command.test.ts 共享单源（run-record-fixture.ts，E 形态生产入口锚）。
 

@@ -99,6 +99,7 @@ flowchart TD
 | 多 skill 包 | 必须 `--rule-skill-name` 消歧，否则降级 |
 | `--strict-rule-skill` | **只作用于装载期**：任一包失败即抛错；skill 会话失败不中止 run |
 | N=0 | `ruleSkill: []`、`skillPassLog: []`，无 skill 会话 |
+| 目录形态（ADR-0018） | `--rule-skill <dir>`：审计 → 内容哈希 → 复制到 `<cacheRoot>/dir-<sha256>/` → 同一 `loadSkills` 链路；排在全部 zip 之后；显式目录在场时 `.review-rules/` 缺席不算失败 |
 
 ---
 

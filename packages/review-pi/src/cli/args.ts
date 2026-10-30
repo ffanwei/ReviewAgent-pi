@@ -43,11 +43,12 @@ const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--out",
   "--model",
   "--rule-skill-zip",
+  "--rule-skill",
   "--rule-skill-name",
 ];
 
-/** review 面可重复旗标（ADR-0014：多规则包按 CLI 顺序叠加） */
-const REPEATABLE_REVIEW_FLAGS: readonly string[] = ["--rule-skill-zip"];
+/** review 面可重复旗标（ADR-0014：多规则包按 CLI 顺序叠加；ADR-0018：目录同款） */
+const REPEATABLE_REVIEW_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill"];
 
 /** smoke 子命令的已知旗标 */
 const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model"];
@@ -66,7 +67,7 @@ const KNOWN_DISPOSITION_FLAGS: readonly string[] = [
 const KNOWN_DISPOSITION_STATS_FLAGS: readonly string[] = ["--store", "--out"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--rule-skill-zip <path>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
        review-pi smoke [--model <id>]
        review-pi disposition --run <run-record.json> --finding <id> --decision accept|reject|false-positive [--note <text>] ([--store <file>] | [--out <dir>])
        review-pi disposition --stats ([--store <file>] | [--out <dir>])
@@ -77,12 +78,16 @@ review 旗标：
   --repo    <path>       仓库快照根目录（必需）
   --mr      <diff-file>  MR diff 文件路径（必需；caseId = 文件名去扩展名）
   --config  <A-F>        配置形态（缺省 E = 生产入口：自主拉取 + Context Ledger，ADR-0011 切流；
-                         F = E + 规则 Skill，须在仓库 .review-rules/ 投放 zip）
+                         F = E + 规则 Skill：用 --rule-skill-zip 传 zip，或用 --rule-skill 传
+                         已解压目录；两者都不传则扫 <repo>/.review-rules/*.zip）
   --issue   <text>       MR 议题描述（缺省空）
   --out     <dir>        输出目录（审计与运行记录落盘；缺省 ${DEFAULT_OUT_DIR}）
   --model   <id>         评审模型 id（缺省 ${REVIEW_MODEL_ID}；自由 id 透传）
   --rule-skill-zip  <path>  规则 Skill zip 显式路径（config F；可重复，顺序 = 执行顺序；
                             缺省扫 <repo>/.review-rules/*.zip 全部装载）
+  --rule-skill      <dir>   规则 Skill **已解压目录**（config F；可重复；排在全部
+                            --rule-skill-zip 之后；目录先审计再按内容哈希复制进 run
+                            缓存，符号链接/越界一律拒绝）
   --rule-skill-name <name>  指定装载的规则 Skill 名（包内多 skill 消歧，逐包生效）
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
   --progress                显示运行进度（阶段 / 模型请求 / 工具调用 / skill 会话）到 stderr；
@@ -119,6 +124,8 @@ export interface ReviewCliArgs {
   readonly model: string;
   /** 规则 Skill zip 显式路径列表（--rule-skill-zip 可重复；顺序 = 执行顺序；缺席省键） */
   readonly ruleSkillZips?: readonly string[];
+  /** 规则 Skill 已解压目录列表（--rule-skill 可重复；排在全部 zip 之后；缺席省键） */
+  readonly ruleSkillDirs?: readonly string[];
   /** 规则 Skill 指定名（--rule-skill-name；缺席省键） */
   readonly ruleSkillName?: string;
   /** 规则 Skill 严格模式（--strict-rule-skill；缺席省键） */
@@ -426,6 +433,7 @@ function parseReviewArgs(
     return { ok: false, message: `invalid --config ${JSON.stringify(configRaw)}: expected one of A, B, C, D, E, F` };
   }
   const ruleSkillZips = repeated.get("--rule-skill-zip");
+  const ruleSkillDirs = repeated.get("--rule-skill");
   const ruleSkillName = values.get("--rule-skill-name");
 
   return {
@@ -440,6 +448,7 @@ function parseReviewArgs(
       out: values.get("--out") ?? DEFAULT_OUT_DIR,
       model,
       ...(ruleSkillZips !== undefined ? { ruleSkillZips } : {}),
+      ...(ruleSkillDirs !== undefined ? { ruleSkillDirs } : {}),
       ...(ruleSkillName !== undefined ? { ruleSkillName } : {}),
       ...(strict ? { strictRuleSkill: true } : {}),
       ...(progress !== undefined ? { progress } : {}),

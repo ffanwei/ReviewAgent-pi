@@ -79,6 +79,8 @@ export interface ReviewRunInput {
   readonly ruleSkillZip?: string;
   /** 规则 Skill 显式 zip 列表（--rule-skill-zip 可重复；顺序 = 执行顺序） */
   readonly ruleSkillZips?: readonly string[];
+  /** 规则 Skill 显式**已解压目录**列表（--rule-skill 可重复；排在全部 zip 之后） */
+  readonly ruleSkillDirs?: readonly string[];
   /** 规则 Skill 指定名（--rule-skill-name；包内多 skill 消歧，逐包生效） */
   readonly ruleSkillName?: string;
   /** 规则 Skill 严格模式（--strict-rule-skill）：装载失败抛错而非降级 */
@@ -255,6 +257,8 @@ function buildAuditDir(input: ReviewRunInput, configId: ConfigId): string {
 function toRuleSkillAudit(skill: RuleSkill): RuleSkillAudit {
   return {
     source: skill.source.path,
+    // zip 形态省略（历史审计字节不变）；目录形态才标出来（ADR-0018）
+    ...(skill.source.kind === "dir" ? { kind: skill.source.kind } : {}),
     digest: skill.digest,
     name: skill.name,
     ...(skill.degradedReason !== undefined ? { degradedReason: skill.degradedReason } : {}),
@@ -319,6 +323,7 @@ async function runToolDrivenReview(
         repoPath: input.repoPath,
         cacheRoot: path.join(input.runsRoot, input.experimentId, ".cache", "rule-skills"),
         ...(explicitZips !== undefined ? { explicitZipPaths: explicitZips } : {}),
+        ...(input.ruleSkillDirs !== undefined ? { ruleSkillDirs: input.ruleSkillDirs } : {}),
         ...(input.ruleSkillName !== undefined ? { skillName: input.ruleSkillName } : {}),
         ...(input.strictRuleSkill !== undefined ? { strict: input.strictRuleSkill } : {}),
       })

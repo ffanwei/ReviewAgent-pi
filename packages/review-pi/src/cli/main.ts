@@ -105,6 +105,7 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
       experimentId: CLI_EXPERIMENT_ID,
       rep: 1,
       ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
+      ...(args.ruleSkillDirs !== undefined ? { ruleSkillDirs: args.ruleSkillDirs } : {}),
       ...(args.ruleSkillName !== undefined ? { ruleSkillName: args.ruleSkillName } : {}),
       ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
       ...(progress !== undefined ? { onProgress: progress.onEvent } : {}),

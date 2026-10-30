@@ -112,9 +112,36 @@ test("--rule-skill-zip 可重复，顺序 = CLI 顺序（ADR-0014 多包）", ()
   ]);
 });
 
+test("--rule-skill 可重复（目录形态）；与 --rule-skill-zip 共存且各自保持 CLI 顺序（ADR-0018）", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr",
+    "m.diff",
+    "--rule-skill-zip",
+    "b.zip",
+    "--rule-skill",
+    "dirs/second",
+    "--rule-skill-zip",
+    "a.zip",
+    "--rule-skill",
+    "dirs/first",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillZips).toEqual([
+    "b.zip",
+    "a.zip",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillDirs).toEqual([
+    "dirs/second",
+    "dirs/first",
+  ]);
+});
+
 test("规则 Skill 旗标缺席即省键（A–E 行为逐字不变）", () => {
   const parsed = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"]);
   expect(parsed.ok && parsed.command === "review" && "ruleSkillZips" in parsed.args).toBe(false);
+  expect(parsed.ok && parsed.command === "review" && "ruleSkillDirs" in parsed.args).toBe(false);
   expect(parsed.ok && parsed.command === "review" && "strictRuleSkill" in parsed.args).toBe(false);
 });
 

@@ -114,6 +114,8 @@ export interface RuleSkillAuditDiagnostic {
  */
 export interface RuleSkillAudit {
   readonly source: string;
+  /** 输入形态（ADR-0018）：仅目录形态在场；zip 形态省略以保持历史审计字节不变 */
+  readonly kind?: "dir";
   readonly digest: string;
   readonly name: string;
   readonly degradedReason?: string;

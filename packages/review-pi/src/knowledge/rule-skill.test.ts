@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
@@ -566,6 +566,175 @@ test("显式 zip 路径优先于约定目录（source.path 原样 POSIX 化）",
 
   expect(skill.degradedReason).toBeUndefined();
   expect(skill.source.path).toBe(zipPath.split(path.sep).join("/"));
+});
+
+// ---- 已解压目录形态（ADR-0018：--rule-skill） ----
+
+/** 目录内容哈希的独立实现（测试侧对照生产实现，不共享代码） */
+function expectedDirDigest(files: Readonly<Record<string, string>>): string {
+  const hash = createHash("sha256");
+  for (const rel of Object.keys(files).sort()) {
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(Buffer.from(files[rel] as string));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+/** 造一个最小规则 skill 目录（<root>/sample-rule/SKILL.md） */
+function writeRuleDir(root: string, content = SKILL_MD): string {
+  const dir = path.join(root, "sample-rule");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "SKILL.md"), content);
+  return path.dirname(dir);
+}
+
+test("目录形态：--rule-skill 装载结果与 zip 等价，source.kind = dir，digest = 内容哈希", async () => {
+  const repo = tempRoot();
+  const skillDir = writeRuleDir(path.join(repo, "packs"));
+  const cacheRoot = path.join(repo, "cache");
+  const digest = expectedDirDigest({ "sample-rule/SKILL.md": SKILL_MD });
+
+  const skill = await loadOne({
+    repoPath: repo,
+    cacheRoot,
+    ruleSkillDirs: [skillDir],
+    loadSkillsFn: fakeLoader([sampleSkill()]),
+  });
+
+  expect(skill.degradedReason).toBeUndefined();
+  expect(skill.name).toBe("sample-rule");
+  expect(skill.content).toContain("Check every public method");
+  expect(skill.digest).toBe(digest);
+  expect(skill.source).toEqual({ kind: "dir", path: path.relative(repo, skillDir).split(path.sep).join("/") });
+  // 复制进 run 缓存（不原地当 pack 根）：缓存里有副本 + ready 标记
+  const cacheDir = path.join(cacheRoot, `dir-${digest}`);
+  expect(readFileSync(path.join(cacheDir, "sample-rule", "SKILL.md"), "utf8")).toBe(SKILL_MD);
+  expect(readFileSync(path.join(cacheDir, ".rule-skill-ready"), "utf8")).toBe(digest);
+});
+
+test("目录 + zip 共存：先全部 zip，再全部目录（ADR-0018 装载序）", async () => {
+  const repo = tempRoot();
+  const zipPath = writeZip(path.join(repo, "packs"), "alpha.zip", [
+    { name: "alpha/SKILL.md", data: Buffer.from(SKILL_MD) },
+  ]);
+  const dirA = writeRuleDir(path.join(repo, "dirs-a"));
+  const dirB = writeRuleDir(path.join(repo, "dirs-b"));
+
+  const skills = await loadRuleSkills({
+    repoPath: repo,
+    cacheRoot: path.join(repo, "cache"),
+    explicitZipPaths: [zipPath],
+    ruleSkillDirs: [dirA, dirB],
+    loadSkillsFn: (async (_env, cwd: string) => {
+      const name = cwd.includes(`${path.sep}dir-`) ? "from-dir" : "from-zip";
+      return { skills: [sampleSkill({ name })], diagnostics: [] };
+    }) as unknown as typeof loadSkills,
+  });
+
+  expect(skills.map((skill) => skill.source.kind)).toEqual(["zip", "dir", "dir"]);
+  expect(skills.map((skill) => skill.name)).toEqual(["from-zip", "from-dir", "from-dir"]);
+});
+
+test("显式目录在场时，约定目录缺席不再算整体失败（strict 亦可跑通）", async () => {
+  const repo = tempRoot();
+  const skillDir = writeRuleDir(path.join(repo, "packs"));
+
+  const skills = await loadRuleSkills({
+    repoPath: repo,
+    cacheRoot: path.join(repo, "cache"),
+    ruleSkillDirs: [skillDir],
+    strict: true,
+    loadSkillsFn: fakeLoader([sampleSkill()]),
+  });
+
+  expect(skills).toHaveLength(1);
+  expect(skills[0]?.degradedReason).toBeUndefined();
+});
+
+test("目录缺席 ⇒ 降级条目；strict 抛错", async () => {
+  const repo = tempRoot();
+  const missing = path.join(repo, "no-such-dir");
+
+  const [degraded] = await loadRuleSkills({
+    repoPath: repo,
+    cacheRoot: path.join(repo, "cache"),
+    ruleSkillDirs: [missing],
+    loadSkillsFn: fakeLoader([sampleSkill()]),
+  });
+  expect(degraded?.degradedReason).toContain("not found");
+  expect(degraded?.source).toEqual({ kind: "dir", path: path.relative(repo, missing).split(path.sep).join("/") });
+
+  await expect(
+    loadRuleSkills({
+      repoPath: repo,
+      cacheRoot: path.join(repo, "cache"),
+      ruleSkillDirs: [missing],
+      strict: true,
+    }),
+  ).rejects.toThrow(/rule skill unavailable: rule-skill directory not found/);
+});
+
+test("目录内容变化 ⇒ 新缓存目录（缓存键跟内容，不读旧副本）", async () => {
+  const repo = tempRoot();
+  const packs = path.join(repo, "packs");
+  const skillDir = writeRuleDir(packs);
+  const cacheRoot = path.join(repo, "cache");
+  const options = {
+    repoPath: repo,
+    cacheRoot,
+    ruleSkillDirs: [skillDir],
+    loadSkillsFn: fakeLoader([sampleSkill()]),
+  };
+
+  const first = await loadOne(options);
+  writeFileSync(path.join(skillDir, "sample-rule", "SKILL.md"), `${SKILL_MD}Extra rule.\n`);
+  const second = await loadOne(options);
+
+  expect(second.digest).not.toBe(first.digest);
+  expect(second.digest).toBe(
+    expectedDirDigest({ "sample-rule/SKILL.md": `${SKILL_MD}Extra rule.\n` }),
+  );
+  expect(readFileSync(path.join(cacheRoot, `dir-${first.digest}`, "sample-rule", "SKILL.md"), "utf8")).toBe(SKILL_MD);
+});
+
+test("目录总字节超限被拒（目录形态不放水：同一套上限）", async () => {
+  const repo = tempRoot();
+  const skillDir = writeRuleDir(path.join(repo, "packs"));
+
+  const [degraded] = await loadRuleSkills({
+    repoPath: repo,
+    cacheRoot: path.join(repo, "cache"),
+    ruleSkillDirs: [skillDir],
+    loadSkillsFn: fakeLoader([sampleSkill()]),
+    limits: {
+      maxArchiveBytes: 1 << 20,
+      maxEntries: 2000,
+      maxTotalUncompressed: 10,
+      maxCompressionRatio: 100,
+      timeoutMs: 30_000,
+    },
+  });
+
+  expect(degraded?.degradedReason).toContain("rule skill directory exceeds");
+});
+
+test.skipIf(process.platform === "win32")("目录含符号链接被拒（降级；不跟随链接读包外文件）", async () => {
+  const repo = tempRoot();
+  const skillDir = writeRuleDir(path.join(repo, "packs"));
+  const outside = path.join(tempRoot(), "secret.txt");
+  writeFileSync(outside, "outside the pack");
+  symlinkSync(outside, path.join(skillDir, "sample-rule", "leak.txt"));
+
+  const [degraded] = await loadRuleSkills({
+    repoPath: repo,
+    cacheRoot: path.join(repo, "cache"),
+    ruleSkillDirs: [skillDir],
+    loadSkillsFn: fakeLoader([sampleSkill()]),
+  });
+
+  expect(degraded?.degradedReason).toContain("symbolic link");
 });
 
 // ---- 真解压集成（系统 tar / unzip；Windows 亦有 tar.exe） ----

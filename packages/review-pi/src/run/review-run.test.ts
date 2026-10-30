@@ -722,6 +722,47 @@ test("config F:Phase 1–5 与 E 逐字节相同,Phase 6 追加 skill 候选清�
   expect(eRun.record.baseline.findings).toEqual([]);
 }, 120_000);
 
+test("--rule-skill 目录形态：入参透传装载器，审计标 kind = dir（ADR-0018）", async () => {
+  const dirSkill = skillPack("dir-rule", {
+    digest: "dir-digest",
+    source: { kind: "dir", path: "packs/general-code-review" },
+  });
+  const script = fakeFetch([
+    OK_REPLY,
+    OK_REPLY,
+    OK_REPLY,
+    OK_REPLY,
+    candidatesReply([]),
+    // ↓ skill 会话（Phase 5 之后，无候选）
+    candidatesReply([]),
+    // ↓ 主会话 Phase 6（无存活候选）
+    allPassVerdicts([]),
+  ]);
+  const run = await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: script.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    configId: "F",
+    ruleSkillDirs: ["packs/general-code-review"],
+    ruleSkillLoader: async (options) => {
+      expect(options.ruleSkillDirs).toEqual(["packs/general-code-review"]);
+      return [dirSkill];
+    },
+  });
+
+  const audit = readAudit(run.auditPath);
+  expect(audit.ruleSkill).toEqual([
+    { source: "packs/general-code-review", kind: "dir", digest: "dir-digest", name: "dir-rule" },
+  ]);
+  expect(run.record.baseline.audit.ruleSkill).toEqual(audit.ruleSkill);
+}, 120_000);
+
 test("config F 多 skill：按 CLI 顺序执行，跨 skill 同 (file,line,category) 后者计入 mergedCount", async () => {
   const alpha = skillPack("alpha");
   const beta = skillPack("beta");
