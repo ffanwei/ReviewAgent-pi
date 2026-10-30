@@ -265,6 +265,47 @@ test("default export：REVIEW_PI_PRESENTATION_MODEL 覆盖缺省模型档", asyn
   }
 });
 
+test("default export：未配置呈现模型 → 跟随呈现源 modelId（本次 --model，ADR-0021）", async () => {
+  process.env.REVIEWER_URL = "https://gw.example.com/v1";
+  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
+  delete process.env[PRESENTATION_MODEL_ENV_VAR];
+  const bodies: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return completionResponse("【中译】");
+    }),
+  );
+
+  await projectZhPresentation({ ...sampleSource(), modelId: "ep-review-20261030" });
+
+  expect(bodies.length).toBeGreaterThan(0);
+  for (const body of bodies) {
+    expect((JSON.parse(body) as { model: string }).model).toBe("ep-review-20261030");
+  }
+});
+
+test("default export：显式 REVIEW_PI_PRESENTATION_MODEL 压过呈现源 modelId（优先于 --model）", async () => {
+  process.env.REVIEWER_URL = "https://gw.example.com/v1";
+  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
+  process.env[PRESENTATION_MODEL_ENV_VAR] = "cheap-translate-model";
+  const bodies: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return completionResponse("【中译】");
+    }),
+  );
+
+  await projectZhPresentation({ ...sampleSource(), modelId: "ep-review-20261030" });
+
+  for (const body of bodies) {
+    expect((JSON.parse(body) as { model: string }).model).toBe("cheap-translate-model");
+  }
+});
+
 test("default export：凭据缺失 → 装配期人话错误（CLI 缝归呈现降级）", async () => {
   delete process.env.REVIEWER_URL;
   delete process.env.REVIEWER_API_KEY;

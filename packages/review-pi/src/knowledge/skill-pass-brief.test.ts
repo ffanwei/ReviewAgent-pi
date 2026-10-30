@@ -35,12 +35,15 @@ function candidate(overrides: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
-test("会话首消息：内核 skill 块（真实 pack 路径）+ 输出契约", () => {
-  const prompt = buildSkillPassInvocation(SKILL);
+test("会话首消息：内核 skill 块（真实 pack 路径）+ 宿主平台提示 + 输出契约", () => {
+  const prompt = buildSkillPassInvocation(SKILL, { platform: "win32", arch: "x64" });
 
   expect(prompt).toContain('<skill name="sample-rule" location="C:\\cache\\deadbeef\\sample-rule\\SKILL.md">');
   expect(prompt).toContain("References are relative to C:\\cache\\deadbeef\\sample-rule.");
   expect(prompt).toContain(SKILL.content);
+  // ADR-0020：平台信息进会话指令（按当前 OS 选 bash 命令）
+  expect(prompt).toContain("Host platform: Windows (win32, x64)");
+  expect(prompt).toContain("prefer `python` over `python3`");
   expect(prompt).toContain('{"candidates": [<finding objects per the Finding schema>, ...]}');
   expect(prompt).toContain("RULE-CHECK@sample-rule@<file>:<line>");
   expect(prompt).toContain('"rule" field to the id of the specific rule from this skill\'s rules/');
@@ -49,6 +52,11 @@ test("会话首消息：内核 skill 块（真实 pack 路径）+ 输出契约",
   expect(prompt).toContain("ENGLISH ONLY");
   expect(prompt).toContain("Evidence is mandatory");
   expect(prompt).toContain('{"candidates": []}');
+});
+
+test("会话首消息缺省用当前进程平台（有平台行即可；不钉死具体 OS）", () => {
+  const prompt = buildSkillPassInvocation(SKILL);
+  expect(prompt).toMatch(/Host platform: .+ \((win32|darwin|linux|freebsd|openbsd|sunos|aix|android), .+\)/);
 });
 
 test("候选 id 形态不含 round（跨轮稳定）", () => {

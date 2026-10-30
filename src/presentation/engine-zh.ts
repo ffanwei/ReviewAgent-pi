@@ -49,9 +49,10 @@ import {
  * 接入（经进程环境变量，与检视链同款单源解析 review-llm）：
  * - 网关与凭据复用 REVIEWER_URL / REVIEWER_API_KEY（CLI 进程已在凭据解析
  *   前装载 .env.local——本模块运行于同一进程，无需重复装载）；
- * - 翻译/建议模型 id 走 REVIEW_PI_PRESENTATION_MODEL（缺省
- *   deepseek-v4-flash——轻任务；呈现配置不是实验自变量，不与被测模型
- *   --model 耦合）；
+ * - 翻译/建议模型 id 走 REVIEW_PI_PRESENTATION_MODEL（显式配置优先）；未配置时
+ *   跟随本次检视的 `--model`（CLI 经呈现源 `modelId` 透传，ADR-0021），再缺省
+ *   deepseek-v4-flash——呈现与检视同端点模型可避免「网关只服务 ep-xxx 时译文
+ *   打不动」；呈现配置仍不是实验自变量，只是缺省值跟随；
  * - key 绝不硬编码、绝不出现在错误信息或任何落盘产物中。
  *
  * 翻译口径：术语表（terminology.ts 单源，随 TerminologyContext 注入）作
@@ -98,6 +99,12 @@ export interface GatewayEngineOptions {
 export interface PresentationEngineInput extends ReviewPresentationSource {
   readonly codeByFinding?: Readonly<Record<string, string>>;
   readonly rulePackDirs?: readonly string[];
+  /**
+   * 本次检视的模型 id（ADR-0021：`REVIEW_PI_PRESENTATION_MODEL` 缺席时的
+   * 覆盖值——由 CLI 从 `--model` 透传，缺省覆盖下沉到调用方，引擎自身
+   * 仍不读检视参数）。
+   */
+  readonly modelId?: string;
 }
 
 /** 引擎产物 = zh 投影文档 + 分组意见（tips 与 zh 弱耦合，形状由 CLI 缝校验） */
@@ -127,7 +134,7 @@ export default async function projectZhPresentation(
       clientError: (message) => new Error(message),
       env,
     }),
-    modelId: resolvePresentationModelId(env),
+    modelId: resolvePresentationModelId(env, source.modelId),
     fetchFn: globalThis.fetch,
   };
   const projected = await projectReviewDocument(
@@ -146,10 +153,22 @@ export default async function projectZhPresentation(
   return { ...projected, tips };
 }
 
-/** 翻译模型 id：环境变量显式值优先，缺省轻任务档 */
-function resolvePresentationModelId(env: EnvLookup): string {
+/**
+ * 翻译模型 id（ADR-0021 三级链）：
+ * 1. `REVIEW_PI_PRESENTATION_MODEL`（`.env.local` 显式配置优先）；
+ * 2. 本次检视的模型 id（CLI 透传的 `--model`）——「没单独配就跟着检视模型走」；
+ * 3. 缺省轻任务档 `DEFAULT_PRESENTATION_MODEL`（直调引擎、无 CLI 上下文时）。
+ */
+function resolvePresentationModelId(env: EnvLookup, reviewModelId?: string): string {
   const fromEnv = env[PRESENTATION_MODEL_ENV_VAR]?.trim();
-  return fromEnv !== undefined && fromEnv !== "" ? fromEnv : DEFAULT_PRESENTATION_MODEL;
+  if (fromEnv !== undefined && fromEnv !== "") {
+    return fromEnv;
+  }
+  const fromReview = reviewModelId?.trim();
+  if (fromReview !== undefined && fromReview !== "") {
+    return fromReview;
+  }
+  return DEFAULT_PRESENTATION_MODEL;
 }
 
 /**

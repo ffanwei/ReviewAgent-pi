@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, expect, test } from "vitest";
 import {
   buildSkillBashTool,
+  formatHostPlatformNote,
   resolveExecutable,
   runSkillBashCommand,
   splitSkillCommand,
@@ -196,6 +197,44 @@ test("AgentTool 形状：name = bash、schema 只收 command、执行走同一�
   const result = await tool.execute("call-1", { command: "python a.py", ignored: true });
   expect(result.content).toEqual([{ type: "text", text: "ran" }]);
   expect(calls).toHaveLength(1);
+});
+
+// ---- 宿主平台提示（ADR-0020）：同一条命令在 Windows/POSIX 上不通用 ----
+
+test("宿主平台提示：Windows 明示路径风格、.cmd 被拒、python 优先于 python3", () => {
+  const note = formatHostPlatformNote("win32", "x64");
+  expect(note).toContain("Host platform: Windows (win32, x64)");
+  expect(note).toContain(".cmd/.bat shims such as npx are rejected");
+  expect(note).toContain("prefer `python` over `python3`");
+  expect(note).toContain("without a shell");
+});
+
+test("宿主平台提示：macOS / Linux 用 POSIX 路径、python3 常在而 python 可能缺席", () => {
+  const mac = formatHostPlatformNote("darwin", "arm64");
+  expect(mac).toContain("Host platform: macOS (darwin, arm64)");
+  expect(mac).toContain("POSIX paths");
+  expect(mac).toContain("`python3` is normally present");
+  const linux = formatHostPlatformNote("linux", "x64");
+  expect(linux).toContain("Host platform: Linux (linux, x64)");
+  expect(linux).toContain("POSIX paths");
+});
+
+test("宿主平台提示：未知平台的兜底文案仍含平台名与无 shell 约束", () => {
+  const note = formatHostPlatformNote("aix" as NodeJS.Platform, "ppc64");
+  expect(note).toContain("Host platform: aix (aix, ppc64)");
+  expect(note).toContain("Shell builtins");
+});
+
+test("bash 工具描述带上平台提示（且不改 name/schema）", () => {
+  const windows = buildSkillBashTool({ packRoot: PACK_ROOT, platform: "win32", arch: "x64" });
+  expect(windows.name).toBe("bash");
+  expect(windows.description).toContain("120s timeout");
+  expect(windows.description).toContain("Host platform: Windows (win32, x64)");
+  expect(windows.description).toContain("prefer `python` over `python3`");
+
+  const posix = buildSkillBashTool({ packRoot: PACK_ROOT, platform: "linux", arch: "x64" });
+  expect(posix.description).toContain("Host platform: Linux (linux, x64)");
+  expect(posix.description).not.toContain("cmd/.bat");
 });
 
 // ---- 可执行文件定位（决策 7 修订：不再有命令白名单，仍然不搜 cwd）----

@@ -1,5 +1,6 @@
 import { formatSkillInvocation, type Skill } from "@earendil-works/pi-agent-core";
 import type { SkillCandidateBatch } from "../gate/candidate-merge.js";
+import { formatHostPlatformNote } from "../tools/skill-bash.js";
 import type { RuleSkill } from "./rule-skill.js";
 
 /**
@@ -20,11 +21,18 @@ export function skillCandidateIdTemplate(skillName: string): string {
   return `RULE-CHECK@${skillName}@<file>:<line>`;
 }
 
+/** skill 会话的平台注入缝（缺省当前进程；测试用） */
+export interface SkillPassRuntimeInfo {
+  readonly platform?: NodeJS.Platform;
+  readonly arch?: string;
+}
+
 /** skill 会话的输出契约：压住候选拦截链的三个 gate 陷阱 + JSON 外壳 */
-function invocationContract(name: string): string {
+function invocationContract(name: string, runtime: SkillPassRuntimeInfo): string {
   return [
     "## Rule-skill review pass (this session)",
     "The conversation above is the main review session up to Phase 5. Use it as context, then inspect the changed code against this skill's rules. You may call the review tools, and you may run this skill's helper commands with the `bash` tool (any executable on PATH; the working directory is this skill's root).",
+    `- ${formatHostPlatformNote(runtime.platform, runtime.arch)}`,
     "",
     "Output contract:",
     `- When you are done, reply with a single JSON object: {"candidates": [<finding objects per the Finding schema>, ...]}.`,
@@ -38,16 +46,20 @@ function invocationContract(name: string): string {
 
 /**
  * 构造一个 skill 会话的首条 user 消息：内核 skill 块（真实 pack 路径）+
- * 输出契约。植入 `description` 与 `content` 由调用方的 `RuleSkill` 决定。
+ * 宿主平台提示 + 输出契约。植入 `description` 与 `content` 由调用方的
+ * `RuleSkill` 决定；`runtime` 只用于测试注入平台（缺省当前进程）。
  */
-export function buildSkillPassInvocation(skill: RuleSkill): string {
+export function buildSkillPassInvocation(
+  skill: RuleSkill,
+  runtime: SkillPassRuntimeInfo = {},
+): string {
   const raw: Skill = {
     name: skill.name,
     description: skill.description,
     content: skill.content,
     filePath: skill.filePath,
   };
-  return formatSkillInvocation(raw, invocationContract(skill.name));
+  return formatSkillInvocation(raw, invocationContract(skill.name, runtime));
 }
 
 /** Finding 字段的固定投影顺序（与 `gate/candidate-gate.ts` 的 toFinding 对齐） */

@@ -54,6 +54,47 @@ export const SKILL_BASH_ENV_ALLOWLIST = [
 /** 输出原始字符上限（预算层之前的第一道闸；防止无界缓冲） */
 export const SKILL_BASH_MAX_OUTPUT_CHARS = 256_000;
 
+/**
+ * 宿主平台提示（ADR-0020）：skill 会话的 bash 命令是**按平台**执行的——同一条
+ * 命令在 Windows 与 POSIX 上并不通用（`python` vs `python3`、路径分隔符、
+ * `.cmd` shim 是否可执行）。这段文本进两处提示词：bash 工具描述（每次请求都在
+ * 模型眼前）与 skill 会话首条 user 消息（把「按当前 OS 选命令」直接说在该会话
+ * 的指令里）。**只进 skill 会话**——七工具面与 A–E 字节冻结面零改动。
+ *
+ * 纯函数（平台/架构可注入）保证测试确定；措辞只陈述本工具的既有边界
+ * （`shell: false` + `.cmd`/`.bat` 拒绝），不新增能力。
+ */
+export function formatHostPlatformNote(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  const name =
+    platform === "win32"
+      ? "Windows"
+      : platform === "darwin"
+        ? "macOS"
+        : platform === "linux"
+          ? "Linux"
+          : platform;
+  const head = `Host platform: ${name} (${platform}, ${arch}) — commands run as direct processes without a shell.`;
+  const noShell =
+    "Shell builtins (cd, export, echo) and operators (|, >, &&, $) are unavailable.";
+  if (platform === "win32") {
+    return (
+      `${head} Use Windows paths and executables on PATH with .exe or no extension ` +
+      `(.cmd/.bat shims such as npx are rejected); prefer \`python\` over \`python3\`. ` +
+      "Shell builtins (cd, dir, echo, export) and operators (|, >, &&, $) are unavailable."
+    );
+  }
+  if (platform === "darwin" || platform === "linux") {
+    return (
+      `${head} Use POSIX paths; \`python3\` is normally present while \`python\` may ` +
+      `be absent. ${noShell}`
+    );
+  }
+  return `${head} Use this platform's path syntax and executables available on PATH. ${noShell}`;
+}
+
 /** 引号**外**的 shell 元字符（出现即拒绝；引号内按字面透传，不做任何解释） */
 const SHELL_METACHARACTERS = /[&|;<>$`\r\n]/;
 
@@ -105,6 +146,10 @@ export interface SkillBashOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** 子进程执行缝（缺省真实 spawn；单测注入 canned 结果） */
   readonly runner?: SkillBashRunner;
+  /** 平台提示的注入缝（缺省 process.platform；测试用） */
+  readonly platform?: NodeJS.Platform;
+  /** 架构提示的注入缝（缺省 process.arch；测试用） */
+  readonly arch?: string;
 }
 
 /** 子进程执行缝的输入（cwd / env / argv 已由本模块裁定） */
@@ -300,13 +345,15 @@ export async function runSkillBashCommand(
 
 /** 构造 skill 会话的 bash AgentTool（name 直达 wire function.name） */
 export function buildSkillBashTool(options: SkillBashOptions): AgentTool {
+  const platformNote = formatHostPlatformNote(options.platform, options.arch);
   return {
     name: SKILL_BASH_TOOL_NAME,
     label: SKILL_BASH_TOOL_NAME,
     description:
       "Run a read-only helper command from this rule pack (any executable on PATH may be invoked, " +
       "one command per call). The working directory is the pack root, so SKILL.md paths are relative. " +
-      "No shell features (pipes, redirection, chaining, substitutions) are available. 120s timeout.",
+      "No shell features (pipes, redirection, chaining, substitutions) are available. 120s timeout.\n" +
+      platformNote,
     parameters: {
       type: "object",
       properties: {

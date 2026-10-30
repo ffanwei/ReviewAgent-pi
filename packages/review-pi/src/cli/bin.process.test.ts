@@ -1106,6 +1106,15 @@ test(
       // 装载成功 = 会话真的跑了（round × skill 一条），不是"传了但没生效"
       expect(audit.skillPassLog).toHaveLength(1);
 
+      // ADR-0020：skill 会话的首条 user 消息带宿主平台提示（转录里可核）
+      const transcriptFile = collectFiles(outDir).find((file) =>
+        /-skill-general-code-review-r1\.json$/.test(file),
+      );
+      expect(transcriptFile).toBeDefined();
+      const transcript = readFileSync(transcriptFile as string, "utf8");
+      expect(transcript).toContain("Host platform: ");
+      expect(transcript).toContain("without a shell");
+
       const cacheDir = path.join(
         outDir,
         "review-pi-cli",

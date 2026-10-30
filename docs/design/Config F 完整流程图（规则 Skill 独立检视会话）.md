@@ -185,7 +185,7 @@ flowchart TD
 | 维度 | 值 |
 |---|---|
 | 种子 | 主会话 Phase 5 结束时的 `messages` 快照（**含 Phase 5 回复**，即主候选对 skill 可见） |
-| 首条 user 消息 | `<skill name="…" location="…">` + `References are relative to …` + SKILL.md 正文 + 输出契约 |
+| 首条 user 消息 | `<skill name="…" location="…">` + `References are relative to …` + SKILL.md 正文 + **宿主平台提示**（`Host platform: …`，ADR-0020）+ 输出契约 |
 | 工具面 | 7 个 review 工具（同一 schema）＋ `bash`（第 8 只，仅 skill 会话有） |
 | 模型 | 与主会话同一 model id / baseUrl / reasoning 档 |
 | 结束条件 | 首个**纯文本**回合（skill 只跑一趟，无相位推进） |

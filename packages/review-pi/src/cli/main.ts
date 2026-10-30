@@ -140,6 +140,9 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   const projection = await applyPresentationProjection({
     findings: record.baseline.findings,
     toolCallLog: [],
+    // ADR-0021：呈现模型缺省覆盖 = 本次 --model（核外引擎仍可被
+    // REVIEW_PI_PRESENTATION_MODEL 显式压过）
+    modelId: args.model,
     ...(Object.keys(codeByFinding).length > 0 ? { codeByFinding } : {}),
     ...(rulePackDirs.length > 0 ? { rulePackDirs } : {}),
   });

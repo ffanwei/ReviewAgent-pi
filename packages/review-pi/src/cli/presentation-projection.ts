@@ -50,6 +50,12 @@ export interface PresentationSource {
    * 只给目录，不在内核解析规则文件）。
    */
   readonly rulePackDirs?: readonly string[];
+  /**
+   * 本次检视使用的模型 id（ADR-0021：呈现面缺省覆盖模型——核外引擎在
+   * `REVIEW_PI_PRESENTATION_MODEL` 缺席时用它，与 review 链取同一个
+   * `--model`，避免「换检视模型后译文还打旧端点模型」）。
+   */
+  readonly modelId?: string;
 }
 
 /** 分组式检视意见（ADR-0017）：单条 tip 的 10 键严格封闭结构 */
