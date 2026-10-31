@@ -93,6 +93,8 @@ review-pi review --repo <path> --mr <diff> --out <dir>
 
 - `prepack` 断言 `dist` / `bin` / `presentation` / 履约文本在位，并把仓根 `THIRD-PARTY-NOTICES.md` 复制进 `review-pi` 包；bin 的 shebang 由 `.gitattributes` 固定 LF（Windows 上 CRLF 会被 `pnpm pack` 拒绝）。
 
+**装完怎么用**：从 Node 版本、PATH、registry、ripgrep postinstall 检查，到配置逐字段、`smoke` 自检、任意目录运行、不同 `--out`/cwd 的并发隔离与排障，见《[使用手册：安装、配置与运行](docs/使用手册-安装与运行.md)》。
+
 ## 单次检视执行
 
 `packages/review-pi` 的 `review-pi` CLI：解析 → 配置装载（`~/.PiAgent/PiAgent.json` 或 `--config`）→ 装配 → run → 导出 → 呈现；stdout 单 JSON 文档；退出码：完成（含诚实截断）0 / 中止 1；被测模型缺省 `deepseek-v4-flash`，换模型加 `--model <id>`；`smoke` 子命令提供网关双探针自检。
@@ -200,6 +202,7 @@ cd reference_project/pi  && git checkout 6671c604   # 其余同理
 | [`docs/report/`](docs/report/) | POC1 实现报告 / DSH 迁移实现报告 / DSH 指标对齐门报告 / Phase 2 主数据分析报告 / Phase 2 pi-S1 五配置对照报告 / 兄弟项目调查报告（均为**历史记录，不可复跑**） |
 | [`docs/plan/`](docs/plan/) | 项目分阶段实现计划书 |
 | [`docs/agents/`](docs/agents/) | agent 协作约定（issue tracker / triage labels / domain docs） |
+| [`docs/使用手册-安装与运行.md`](docs/使用手册-安装与运行.md) | 面向安装形态的使用手册（安装 / 配置逐字段 / smoke / 任意目录运行 / 并发隔离 / 排障） |
 | [`docs/运行手册-单次检视.md`](docs/运行手册-单次检视.md) | 单次检视的完整运行手册（旗标 / 前置 / 产物 / 排障） |
 
 ## 协作约定
