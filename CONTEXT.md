@@ -95,6 +95,10 @@ _Avoid_: 不变层（过泛）、冻结面（与「仪器冻结」混淆）、�
 内核可演进的半边：Agent 状态与事件模型、工具调用协议与 wire 序列化、LLM 客户端、会话/审计投影——在 pi 原语上从 0 重写（ADR-0009）。
 _Avoid_: 可变层（过泛）
 
+**MR 输入形态（MR Input Form）**:
+单次检视的变更集来源，恰好一种：`--mr-diff <file>`（标准 unified diff 文本）或 `--mr-json <file>`（GitCode/GitLab `/pulls/:number/files` 的原样 JSON 数组，只读每项 `new_path` 与 `diff`，装载期补文件头；ADR-0029）。`caseId` 恒由文件名去最后一个扩展名派生，与形态无关。二者不可混用，也不做内容嗅探。
+_Avoid_: MR 文件（不区分形态）、patch（只指 hunk 正文）
+
 **MR 边界护栏（Boundary Guard）**:
 内核入口处的 MR 输入边界检查（缺省 ≤10 文件 / diff ≤2K 变更行；`limits.boundary` 可改，单维 `null` = 该维不设界，双维 `null` = 护栏整体停用）：界内路径零字节漂移（缺席省键）；超界或不可度量走显式降级——`domainWarning` 标注（文案按配置值派生）+ 审计 `mrBoundary` 留痕 + 照常执行，不拒检。
 _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截断（违背零静默纪律）

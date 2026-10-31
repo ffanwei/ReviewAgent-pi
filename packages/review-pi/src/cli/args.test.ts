@@ -22,7 +22,7 @@ test("空 argv 与未知子命令 → 用法错误（不抛异常）", () => {
 });
 
 test("review 最小 argv：必填旗标 + 全缺省（out / issue；model 交给配置）", () => {
-  const parsed = parseCliArgs(["review", "--repo", "repo", "--mr", "case.diff"]);
+  const parsed = parseCliArgs(["review", "--repo", "repo", "--mr-diff", "case.diff"]);
   expect(parsed).toEqual({
     ok: true,
     command: "review",
@@ -36,19 +36,55 @@ test("review 最小 argv：必填旗标 + 全缺省（out / issue；model 交给
   });
 });
 
-test("caseId 派生：--mr 文件名去扩展名（含路径与无扩展名形态）", () => {
-  const withPath = parseCliArgs(["review", "--repo", "r", "--mr", "a/b/VUL4J-1.diff"]);
+test("caseId 派生：--mr-diff / --mr-json 文件名去扩展名（含路径与无扩展名形态）", () => {
+  const withPath = parseCliArgs(["review", "--repo", "r", "--mr-diff", "a/b/VUL4J-1.diff"]);
   expect(withPath.ok && withPath.command === "review" && withPath.args.caseId).toBe("VUL4J-1");
-  const noExtension = parseCliArgs(["review", "--repo", "r", "--mr", "diffs/mr-7"]);
+  const noExtension = parseCliArgs(["review", "--repo", "r", "--mr-diff", "diffs/mr-7"]);
   expect(noExtension.ok && noExtension.command === "review" && noExtension.args.caseId).toBe("mr-7");
-  const doubleDot = parseCliArgs(["review", "--repo", "r", "--mr", "x/case.old.diff"]);
+  const doubleDot = parseCliArgs(["review", "--repo", "r", "--mr-diff", "x/case.old.diff"]);
   expect(doubleDot.ok && doubleDot.command === "review" && doubleDot.args.caseId).toBe("case.old");
+  // JSON 输入同款派生：MR-1234.json → MR-1234（扩展名不参与 caseId）
+  const json = parseCliArgs(["review", "--repo", "r", "--mr-json", "d/MR-1234.json"]);
+  expect(json.ok && json.command === "review" && json.args.caseId).toBe("MR-1234");
+});
+
+test("MR 输入形态（ADR-0029）：--mr-diff 省键 = 统一 diff；--mr-json 标 json；二选一", () => {
+  const diff = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff"]);
+  expect(diff.ok && diff.command === "review" && "mrFormat" in diff.args).toBe(false);
+
+  const json = parseCliArgs(["review", "--repo", "r", "--mr-json", "m.json"]);
+  expect(json).toEqual({
+    ok: true,
+    command: "review",
+    args: {
+      repo: "r",
+      mr: "m.json",
+      mrFormat: "json",
+      caseId: "m",
+      issue: "",
+      out: "review-pi-output",
+    },
+  });
+
+  expect(
+    parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff", "--mr-json", "m.json"]),
+  ).toEqual({
+    ok: false,
+    message: "conflicting flags --mr-diff and --mr-json (give exactly one)",
+  });
+});
+
+test("--mr 旧旗标：给专用迁移提示（不是裸 unknown flag）", () => {
+  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"])).toEqual({
+    ok: false,
+    message: "--mr 已改名（ADR-0029）：统一 diff 文件用 --mr-diff，接口 JSON 用 --mr-json",
+  });
 });
 
 test("--config：路径透传（review / smoke / config 三面）；缺席省键；空白拒绝", () => {
-  const review = parseCliArgs(["review", "--repo", "r", "--mr", "m", "--config", "conf/pi.json"]);
+  const review = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--config", "conf/pi.json"]);
   expect(review.ok && review.command === "review" && review.args.configPath).toBe("conf/pi.json");
-  const absent = parseCliArgs(["review", "--repo", "r", "--mr", "m"]);
+  const absent = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m"]);
   expect(absent.ok && absent.command === "review" && "configPath" in absent.args).toBe(false);
   expect(parseCliArgs(["smoke", "--config", "x.json"])).toEqual({
     ok: true,
@@ -60,7 +96,7 @@ test("--config：路径透传（review / smoke / config 三面）；缺席省键
     command: "config",
     args: { action: "show", configPath: "x.json" },
   });
-  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--config", "  "])).toEqual({
+  expect(parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--config", "  "])).toEqual({
     ok: false,
     message: 'invalid --config "  ": must be a non-empty file path',
   });
@@ -68,7 +104,7 @@ test("--config：路径透传（review / smoke / config 三面）；缺席省键
 
 test("--env 已移除：任何子命令都给专用迁移提示（不是裸 unknown flag）", () => {
   const message = "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.jsonc）";
-  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--env", "creds.env"])).toEqual({
+  expect(parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--env", "creds.env"])).toEqual({
     ok: false,
     message,
   });
@@ -80,7 +116,7 @@ test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule
     "review",
     "--repo",
     "r",
-    "--mr",
+    "--mr-diff",
     "m.diff",
     "--rule-skill-zip",
     "packs/rules.zip",
@@ -109,7 +145,7 @@ test("--rule-skill-zip 可重复，顺序 = CLI 顺序（ADR-0014 多包）", ()
     "review",
     "--repo",
     "r",
-    "--mr",
+    "--mr-diff",
     "m.diff",
     "--rule-skill-zip",
     "b.zip",
@@ -127,7 +163,7 @@ test("--rule-skill 可重复（目录形态）；与 --rule-skill-zip 共存且�
     "review",
     "--repo",
     "r",
-    "--mr",
+    "--mr-diff",
     "m.diff",
     "--rule-skill-zip",
     "b.zip",
@@ -149,7 +185,7 @@ test("--rule-skill 可重复（目录形态）；与 --rule-skill-zip 共存且�
 });
 
 test("规则 Skill 旗标缺席即省键（缺省形态不带任何规则键）", () => {
-  const parsed = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"]);
+  const parsed = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff"]);
   expect(parsed.ok && parsed.command === "review" && "ruleSkillZips" in parsed.args).toBe(false);
   expect(parsed.ok && parsed.command === "review" && "ruleSkillDirs" in parsed.args).toBe(false);
   expect(parsed.ok && parsed.command === "review" && "strictRuleSkill" in parsed.args).toBe(false);
@@ -157,20 +193,20 @@ test("规则 Skill 旗标缺席即省键（缺省形态不带任何规则键）"
 
 test("--strict-rule-skill 重复 → 用法错误；缺值旗标照旧报错", () => {
   expect(
-    parseCliArgs(["review", "--repo", "r", "--mr", "m", "--strict-rule-skill", "--strict-rule-skill"]),
+    parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--strict-rule-skill", "--strict-rule-skill"]),
   ).toEqual({ ok: false, message: "duplicate flag --strict-rule-skill" });
-  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--rule-skill-zip"])).toEqual({
+  expect(parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--rule-skill-zip"])).toEqual({
     ok: false,
     message: "flag --rule-skill-zip requires a value",
   });
 });
 
 test("未知旗标 / 重复旗标 / 值缺席（含值吞旗标）→ 用法错误", () => {
-  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--language", "zh"])).toEqual({
+  expect(parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--language", "zh"])).toEqual({
     ok: false,
     message: 'unknown flag "--language"',
   });
-  expect(parseCliArgs(["review", "--repo", "r", "--repo", "r2", "--mr", "m"])).toEqual({
+  expect(parseCliArgs(["review", "--repo", "r", "--repo", "r2", "--mr-diff", "m"])).toEqual({
     ok: false,
     message: "duplicate flag --repo",
   });
@@ -179,14 +215,14 @@ test("未知旗标 / 重复旗标 / 值缺席（含值吞旗标）→ 用法错�
     message: "flag --repo requires a value",
   });
   // 值以 -- 开头 = 相邻旗标被吞（如 `--issue --out x`）——fail fast 不静默
-  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--issue", "--out", "x"])).toEqual({
+  expect(parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--issue", "--out", "x"])).toEqual({
     ok: false,
     message: "flag --issue requires a value",
   });
 });
 
 test("--env：显式凭据文件路径已不再支持（ADR-0025 废止 ADR-0019）", () => {
-  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--env", "creds\\team.env.local"])).toEqual({
+  expect(parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--env", "creds\\team.env.local"])).toEqual({
     ok: false,
     message: "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.jsonc）",
   });
@@ -240,25 +276,25 @@ test("config 子命令：init/show + 旗标组合校验", () => {
 });
 
 test("--model：自由 id 透传；缺席省键（缺省来自配置 model.default）；空白 id 拒绝", () => {
-  const free = parseCliArgs(["review", "--repo", "r", "--mr", "m", "--model", "custom-gateway-model"]);
+  const free = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--model", "custom-gateway-model"]);
   expect(free.ok && free.command === "review" && free.args.model).toBe("custom-gateway-model");
-  const absent = parseCliArgs(["review", "--repo", "r", "--mr", "m"]);
+  const absent = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m"]);
   expect(absent.ok && absent.command === "review" && "model" in absent.args).toBe(false);
-  const blank = parseCliArgs(["review", "--repo", "r", "--mr", "m", "--model", "  "]);
+  const blank = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--model", "  "]);
   expect(blank).toEqual({
     ok: false,
     message: 'invalid --model "  ": must be a non-empty model id (free ids accepted)',
   });
 });
 
-test("缺必填旗标：--repo / --mr", () => {
-  expect(parseCliArgs(["review", "--mr", "m.diff"])).toEqual({
+test("缺必填旗标：--repo / （--mr-diff | --mr-json）", () => {
+  expect(parseCliArgs(["review", "--mr-diff", "m.diff"])).toEqual({
     ok: false,
     message: "missing required flag --repo",
   });
   expect(parseCliArgs(["review", "--repo", "r"])).toEqual({
     ok: false,
-    message: "missing required flag --mr",
+    message: "missing required flag --mr-diff (or --mr-json)",
   });
 });
 
@@ -280,25 +316,25 @@ test("USAGE_TEXT：宣告三个子命令（stderr 错误路径同款文案，单
 });
 
 test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", () => {
-  const auto = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"]);
+  const auto = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff"]);
   expect(auto.ok && auto.command === "review" && "progress" in auto.args).toBe(false);
 
-  const on = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--progress"]);
+  const on = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff", "--progress"]);
   expect(on.ok && on.command === "review" && on.args.progress).toBe(true);
 
-  const off = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--no-progress"]);
+  const off = parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff", "--no-progress"]);
   expect(off.ok && off.command === "review" && off.args.progress).toBe(false);
 });
 
 test("进度旗标：互斥与重复都是用法错误（fail fast，不静默取其一）", () => {
   expect(
-    parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--progress", "--no-progress"]),
+    parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff", "--progress", "--no-progress"]),
   ).toEqual({ ok: false, message: "conflicting flags --progress and --no-progress" });
   expect(
-    parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--progress", "--progress"]),
+    parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff", "--progress", "--progress"]),
   ).toEqual({ ok: false, message: "duplicate flag --progress" });
   expect(
-    parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--no-progress", "--no-progress"]),
+    parseCliArgs(["review", "--repo", "r", "--mr-diff", "m.diff", "--no-progress", "--no-progress"]),
   ).toEqual({ ok: false, message: "duplicate flag --no-progress" });
 });
 

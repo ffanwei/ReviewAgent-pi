@@ -382,7 +382,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
         {
           ...stubEnv(stub.baseUrl),
           // .env.local 诱饵：本版已不再读取（诱饵 URL 是死端口，诱饵 key 不入传输层）
@@ -449,6 +449,86 @@ test(
 );
 
 test(
+  "MR 输入形态（ADR-0029）：--mr-json 接口数组 → 装载期补文件头，与 --mr-diff 同一条检视路径",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const jsonFile = path.join(makeTempDir("review-pi-cli-mr-"), "MR-1234.json");
+      // 接口原样形状：每项只有 new_path 与 diff（从 @@ 开始，无文件头）
+      writeFileSync(
+        jsonFile,
+        JSON.stringify([
+          {
+            new_path: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
+            diff:
+              "@@ -174,7 +174,7 @@ public <T> T deserialze(DefaultJSONParser parser, Type type, Object fieldName) {\n" +
+              "             componentType = componentClass = clazz.getComponentType();\n" +
+              "         }\n" +
+              "         JSONArray array = new JSONArray();\n" +
+              "+        parser.parseArray(componentClass, array, fieldName);\n" +
+              "-        parser.parseArray(componentType, array, fieldName);\n" +
+              " \n" +
+              "         return (T) toObjectArray(parser, componentClass, array);\n" +
+              "     }",
+            // 额外字段一概忽略（只读 new_path / diff）
+            old_path: "ignored/old.ts",
+            new_file: true,
+            sha: "deadbeef",
+          },
+        ]),
+        "utf8",
+      );
+
+      const run = await runBin(
+        ["review", "--repo", repoFixturePath("sample"), "--mr-json", jsonFile, "--out", outDir],
+        stubEnv(stub.baseUrl),
+      );
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as {
+        ok: boolean;
+        caseId: string;
+        findings: { id: string; file: string }[];
+      };
+      // caseId = JSON 文件名去扩展名（与 --mr-diff 同款派生）
+      expect(outcome).toMatchObject({ ok: true, caseId: "MR-1234" });
+      expect(outcome.findings).toHaveLength(1);
+      // 产物落在 mr 形态段下，路径不因输入是 JSON 而变化
+      expect(existsSync(path.join(outDir, "runs", "mr", "MR-1234", "rep-1", "reviews_en.json"))).toBe(true);
+      expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test("--mr-json 坏输入：非法 JSON / 空 diff 数组 → exit 1 + 人话（进程面不抛堆栈）", async () => {
+  const dir = makeTempDir("review-pi-cli-mr-");
+  const env = { ...stubEnv("http://127.0.0.1:9/v1"), timeoutMs: 30_000 };
+
+  const broken = path.join(dir, "broken.json");
+  writeFileSync(broken, "[{ oops", "utf8");
+  const bad = await runBin(
+    ["review", "--repo", repoFixturePath("sample"), "--mr-json", broken],
+    env,
+  );
+  expect(bad.status).toBe(1);
+  expect(bad.stdout).toBe("");
+  expect(bad.stderr).toContain("--mr-json: 不是合法 JSON");
+
+  const empty = path.join(dir, "empty.json");
+  writeFileSync(empty, JSON.stringify([{ new_path: "a/b.png", diff: "" }]), "utf8");
+  const nothing = await runBin(
+    ["review", "--repo", repoFixturePath("sample"), "--mr-json", empty],
+    env,
+  );
+  expect(nothing.status).toBe(1);
+  expect(nothing.stderr).toContain("没有可转换的文本 diff");
+});
+
+test(
   "截断路径：phase-6 恒 complete:false → exit 0 + truncated=true + rounds=5（诚实截断不是失败）",
   async () => {
     const stub = await startLoopbackStub(truncationCorpus());
@@ -458,7 +538,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
         stubEnv(stub.baseUrl),
       );
 
@@ -507,7 +587,7 @@ test(
           "review",
           "--repo",
           repoFixturePath("sample"),
-          "--mr",
+          "--mr-diff",
           mrFile,
           "--out",
           outDir,
@@ -543,7 +623,7 @@ test("--config 指向不存在的文件 → exit 1 + 人话错误含路径 + std
   const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
 
   const run = await runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--config", missing],
+    ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--config", missing],
     { appendConfigArg: false },
   );
 
@@ -558,7 +638,7 @@ test("--config 指向目录（读失败）→ exit 1 + 人话错误，不抛堆�
   const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
 
   const run = await runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--config", dir],
+    ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--config", dir],
     { appendConfigArg: false },
   );
 
@@ -607,7 +687,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
         { gatewayBaseUrl: stub.baseUrl, presentationEngine: enginePath },
       );
 
@@ -662,7 +742,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
         { gatewayBaseUrl: stub.baseUrl, presentationEngine: enginePath },
       );
 
@@ -760,7 +840,7 @@ test(
       )}\n`;
       const outDir = makeTempDir("review-pi-cli-out-");
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr", writeMr(goldenFixture("vul4j-1.diff")), "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", writeMr(goldenFixture("vul4j-1.diff")), "--out", outDir],
         { configPath, configText },
       );
 
@@ -828,7 +908,7 @@ function runCliReview(
   options: RunBinOptions = {},
 ): Promise<CliRunResult> {
   return runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
+    ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
     { ...options, ...config },
   );
 }
@@ -1093,7 +1173,7 @@ test("陈旧产物拒跑：dist 回拨 30 天 → exit 1 + 人话提示 + stdout
   const backdated = new Date(original.getTime() - 30 * 24 * 60 * 60 * 1000);
   utimesSync(entry, backdated, backdated);
   try {
-    const run = await runBin(["review", "--repo", repoFixturePath("sample"), "--mr", "x.diff"], {
+    const run = await runBin(["review", "--repo", repoFixturePath("sample"), "--mr-diff", "x.diff"], {
       ...stubEnv("http://127.0.0.1:9/v1"),
       timeoutMs: 30_000,
     });
@@ -1107,7 +1187,7 @@ test("陈旧产物拒跑：dist 回拨 30 天 → exit 1 + 人话提示 + stdout
   }
 });
 
-test("用法错误：缺 --mr → exit 1 + 人话错误 + usage 文案 + stdout 干净", async () => {
+test("用法错误：缺 --mr-diff / --mr-json → exit 1 + 人话错误 + usage 文案 + stdout 干净", async () => {
   const run = await runBin(["review", "--repo", repoFixturePath("sample")], {
     ...stubEnv("http://127.0.0.1:9/v1"),
     timeoutMs: 30_000,
@@ -1122,7 +1202,7 @@ test("运行失败：--repo 指向文件（非目录）→ exit 1 + 错误人话
   const notADir = path.join(makeTempDir("review-pi-cli-repo-"), "plain.txt");
   writeFileSync(notADir, "not a directory", "utf8");
   const run = await runBin(
-    ["review", "--repo", notADir, "--mr", path.join(path.dirname(notADir), "x.diff")],
+    ["review", "--repo", notADir, "--mr-diff", path.join(path.dirname(notADir), "x.diff")],
     { ...stubEnv("http://127.0.0.1:9/v1"), timeoutMs: 30_000 },
   );
   expect(run.status).toBe(1);
@@ -1195,7 +1275,7 @@ test(
           "review",
           "--repo",
           repoFixturePath("sample"),
-          "--mr",
+          "--mr-diff",
           mrFile,
           "--out",
           outDir,
@@ -1276,7 +1356,7 @@ test(
           "review",
           "--repo",
           repoFixturePath("sample"),
-          "--mr",
+          "--mr-diff",
           mrFile,
           "--out",
           outDir,
@@ -1321,7 +1401,7 @@ test(
         "review",
         "--repo",
         repoFixturePath("sample"),
-        "--mr",
+        "--mr-diff",
         mrFile,
         "--out",
         outDir,
@@ -1337,7 +1417,7 @@ test(
           "review",
           "--repo",
           repoFixturePath("sample"),
-          "--mr",
+          "--mr-diff",
           mrFile,
           "--out",
           outDir2,

@@ -77,7 +77,7 @@ CI（push / PR）跑 `suites`：root + review-llm + review-pi 三处 typecheck �
 ```bash
 npm i -g review-pi      # 全局安装
 pnpm add review-pi      # 或装进项目
-review-pi review --repo <path> --mr <diff> --out <dir>
+review-pi review --repo <path> (--mr-diff <diff> | --mr-json <files.json>) --out <dir>
 ```
 
 - **仓内开发 = 安装形态**：源码里的 specifier 就是发布名（`@review-agent-pi/*`），没有 npm alias；`exports.source` 条件让仓内 vitest / typecheck 读 `src/*.ts`，安装方读 `dist/*.js`。tarball 不含源码。
@@ -102,7 +102,7 @@ review-pi review --repo <path> --mr <diff> --out <dir>
 **唯一形态（规则 Skill）**——单案 × rep-1，一条命令出审计、转录与检视意见导出（完整前置、旗标说明、产物布局与排障见《[单次检视运行手册](docs/运行手册-单次检视.md)》）：
 
 ```powershell
-node packages\review-pi\bin\review-pi.js review --repo .cache\datasets\vul4j-repos\VUL4J-38-ab6cbdc3da --mr .cache\datasets\vul4j-diffs\VUL4J-38.diff --rule-skill-zip packages\review-pi\testdata\rule-skills\general-code-review.zip --strict-rule-skill --issue "Vulnerability CVE-2014-4172 (CWE-74) in apereo/java-cas-client. Fixed by https://github.com/apereo/java-cas-client/commit/ab6cbdc3daa451b4fef89c0bd0f4e6568f3aa9ef." --out runs\f-demo-session-skill-2
+node packages\review-pi\bin\review-pi.js review --repo .cache\datasets\vul4j-repos\VUL4J-38-ab6cbdc3da --mr-diff .cache\datasets\vul4j-diffs\VUL4J-38.diff --rule-skill-zip packages\review-pi\testdata\rule-skills\general-code-review.zip --strict-rule-skill --issue "Vulnerability CVE-2014-4172 (CWE-74) in apereo/java-cas-client. Fixed by https://github.com/apereo/java-cas-client/commit/ab6cbdc3daa451b4fef89c0bd0f4e6568f3aa9ef." --out runs\f-demo-session-skill-2
 ```
 
 前置三件：内核产物不过期（`pnpm build:pi` → `pnpm --filter review-llm build` → `pnpm --filter review-pi build`，陈旧即拒跑、不自动重编）、用户级配置 `~/.PiAgent/PiAgent.jsonc`（`review-pi config init` 生成；`--config <path>` 可指定替代文件）、仓库快照与 diff 就位（本机 `.cache/datasets/**`；数据物化脚本已随评测层删除，缺失时自备）。产物落 `<out>/{runs,audit}/mr/<case>/`（ADR-0027：无实验标识层）；stdout 是单个 JSON 文档，诊断走 stderr；退出码 0（含诚实截断）/ 1。

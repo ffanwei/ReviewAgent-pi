@@ -25,7 +25,8 @@ const DEFAULT_OUT_DIR = "review-pi-output";
 /** review 子命令的已知旗标（未知旗标 = 用法错误；无值布尔旗标 `--strict-rule-skill` / `--progress` / `--no-progress` 进旗标循环前剥离） */
 const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--repo",
-  "--mr",
+  "--mr-diff",
+  "--mr-json",
   "--issue",
   "--out",
   "--model",
@@ -45,7 +46,7 @@ const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model", "--config"];
 const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-env", "--json"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--issue <text>] [--out <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) [--issue <text>] [--out <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
   （smoke = 网关冒烟自检，P1b 双探针：网关健康 + 模型可达，输出人话诊断）
@@ -56,7 +57,9 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file
 
 review 旗标：
   --repo    <path>       仓库快照根目录（必需）
-  --mr      <diff-file>  MR diff 文件路径（必需；caseId = 文件名去扩展名）
+  --mr-diff <file>       MR diff 文件路径（统一 diff 文本；caseId = 文件名去扩展名）
+  --mr-json <file>       GitCode/GitLab 文件变更 JSON 数组（每项只取 new_path 与 diff，
+                         其余字段忽略；装载期补文件头转统一 diff）。与 --mr-diff 二选一
   --issue   <text>       MR 议题描述（缺省空）
   --out     <dir>        输出目录（审计与运行记录落盘；缺省 ${DEFAULT_OUT_DIR}）
   --model   <id>         评审模型 id（缺省取配置文件 model.default；自由 id 透传）
@@ -82,11 +85,17 @@ config 旗标：
   --from-env <file>      init 时从 .env 文件一次性迁移（key / url / 呈现配置）
   --json                 show 输出机器可读 JSON（与审计 config 同形）`;
 
-/** 解析后的 review 命令参数（caseId 由 --mr 派生） */
+/** 解析后的 review 命令参数（caseId 由 --mr-diff / --mr-json 派生） */
 export interface ReviewCliArgs {
   readonly repo: string;
+  /** MR 输入路径：`--mr-diff` 的 diff 文件，或 `--mr-json` 的文件变更 JSON */
   readonly mr: string;
-  /** 检视单元身份：--mr 文件名去扩展名（一案一 diff 文件约定） */
+  /**
+   * 输入形态（省键 = 统一 diff 文本；ADR-0029）。`"json"` 时装载期经
+   * `mrJsonToUnifiedDiff` 补文件头，之后与 `--mr-diff` 同一条解析路径。
+   */
+  readonly mrFormat?: "json";
+  /** 检视单元身份：--mr-diff / --mr-json 的文件名去扩展名（一案一 MR 文件约定） */
   readonly caseId: string;
   readonly issue: string;
   readonly out: string;
@@ -223,11 +232,27 @@ function envFlagError(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
+/** `--mr` 已拆成 `--mr-diff` / `--mr-json`（ADR-0029）：给专用迁移提示，而不是裸 unknown flag */
+function legacyMrFlagError(argv: readonly string[]): string | undefined {
+  for (const token of argv) {
+    if (token === "--mr" || token.startsWith("--mr=")) {
+      return "--mr 已改名（ADR-0029）：统一 diff 文件用 --mr-diff，接口 JSON 用 --mr-json";
+    }
+  }
+  return undefined;
+}
+
 export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   const [command, ...rest] = argv;
   const envError = envFlagError(rest);
   if (envError !== undefined) {
     return { ok: false, message: envError };
+  }
+  if (command === "review") {
+    const mrError = legacyMrFlagError(rest);
+    if (mrError !== undefined) {
+      return { ok: false, message: mrError };
+    }
   }
   if (command === "config") {
     return parseConfigCommand(rest);
@@ -389,7 +414,7 @@ function stripReviewBooleanFlags(rest: readonly string[]): {
   };
 }
 
-/** review 面必填与缺省：--repo / --mr（caseId = 文件名去扩展名）、--issue 缺省空 */
+/** review 面必填与缺省：--repo / （--mr-diff | --mr-json）（caseId = 文件名去扩展名）、--issue 缺省空 */
 function parseReviewArgs(
   values: Map<string, string>,
   repeated: ReadonlyMap<string, readonly string[]>,
@@ -401,10 +426,20 @@ function parseReviewArgs(
   if (repo === undefined) {
     return { ok: false, message: "missing required flag --repo" };
   }
-  const mr = values.get("--mr");
-  if (mr === undefined) {
-    return { ok: false, message: "missing required flag --mr" };
+  // 输入形态二选一（ADR-0029）：都省略或都给都是用法错误——不静默取其一
+  const mrDiff = values.get("--mr-diff");
+  const mrJson = values.get("--mr-json");
+  if (mrDiff !== undefined && mrJson !== undefined) {
+    return {
+      ok: false,
+      message: "conflicting flags --mr-diff and --mr-json (give exactly one)",
+    };
   }
+  const mr = mrDiff ?? mrJson;
+  if (mr === undefined) {
+    return { ok: false, message: "missing required flag --mr-diff (or --mr-json)" };
+  }
+  const mrFormat = mrJson !== undefined ? ("json" as const) : undefined;
   const ruleSkillZips = repeated.get("--rule-skill-zip");
   const ruleSkillDirs = repeated.get("--rule-skill");
   const ruleSkillName = values.get("--rule-skill-name");
@@ -419,6 +454,7 @@ function parseReviewArgs(
     args: {
       repo,
       mr,
+      ...(mrFormat !== undefined ? { mrFormat } : {}),
       caseId: basename(mr).replace(/\.[^.]*$/, ""),
       issue: values.get("--issue") ?? "",
       out: values.get("--out") ?? DEFAULT_OUT_DIR,

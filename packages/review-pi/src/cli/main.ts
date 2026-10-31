@@ -26,7 +26,8 @@
  * 不回写 `process.env`；env 层（REVIEWER_* / DEEPSEEK_* / REVIEW_PI_*）
  * 已彻底关闭，key 绝不回显。
  *
- * 进程调用形态：review-pi review --repo <path> --mr <diff-file>
+ * 进程调用形态：review-pi review --repo <path>
+ *   (--mr-diff <diff-file> | --mr-json <files-json>)
  *   [--issue <text>] [--out <dir>] [--model <id>] [--config <path>]
  *   [--rule-skill-zip <path>]... [--rule-skill <dir>]...
  *   [--rule-skill-name <name>] [--strict-rule-skill]
@@ -56,6 +57,7 @@ import {
   type ResolvedConfig,
 } from "../shared/config.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
+import { mrJsonToUnifiedDiff } from "../zoneb/mr-json.js";
 import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
 import { runConfigCommand } from "./config-command.js";
 import {
@@ -88,7 +90,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   if (!(await stat(repoPath)).isDirectory()) {
     throw new Error(`--repo is not a directory: ${repoPath}`);
   }
-  const diff = await readFile(resolve(args.mr), "utf8");
+  const mrPath = resolve(args.mr);
+  // 输入形态（ADR-0029）：JSON 在装载期补文件头转成统一 diff，之后与 --mr-diff 同一条路径
+  const mrText = await readFile(mrPath, "utf8");
+  const diff = args.mrFormat === "json" ? mrJsonToUnifiedDiff(mrText, "--mr-json") : mrText;
   const runsRoot = resolve(args.out);
 
   // 运行进度投影（ADR-0016）：stderr 是 TTY 时缺省开（人手敲看得见），重定向
