@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { Finding } from "review-pi";
 
-import type { Finding } from "../../src/instrument/contracts/finding.js";
 import {
   buildReviewTipsDocument,
   confidenceOf,

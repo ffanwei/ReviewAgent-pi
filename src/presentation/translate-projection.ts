@@ -1,5 +1,4 @@
-import type { Finding } from "../instrument/contracts/finding.js";
-import type { RunResult, ToolCallRecord } from "../instrument/contracts/run.js";
+import type { Finding, RunResult, ToolCallRecord } from "review-pi";
 import { TERMINOLOGY, TERMINOLOGY_VERSION, type TerminologyEntry } from "./terminology.js";
 
 /**
@@ -8,9 +7,8 @@ import { TERMINOLOGY, TERMINOLOGY_VERSION, type TerminologyEntry } from "./termi
  * 经本投影实现——把英文检视产物投影为目标呈现语言的呈现文档。
  *
  * 核内/核外边界（CONTEXT.md）：语言是呈现配置不是检视行为——翻译投影属核外
- * 工具链（消费端关注点），内核零改动、语言参数化缝根本不存在（实验 plan 与
- * 内核执行缝均无语言键，回归断言见
- * tests/presentation/no-language-in-plan-or-kernel.test.ts）。
+ * 工具链（消费端关注点），内核零改动、语言参数化缝根本不存在（检视执行缝无
+ * 语言键，回归断言见 tests/presentation/no-language-in-plan-or-kernel.test.ts）。
  *
  * 字段分类（单源真值，本模块核心正确性）：
  * - 自然语言字段（唯一可翻译面）：Finding.title / Finding.description /
@@ -31,9 +29,9 @@ import { TERMINOLOGY, TERMINOLOGY_VERSION, type TerminologyEntry } from "./termi
  * （sourceFindingId ↔ projectedFindingId 可回溯）；id 属结构化字段不译，投影侧
  * id 恒等于源 id——显式列出关联是留痕形态（也为未来投影侧独立 id 预留）。
  *
- * 模块纪律（对齐 src/gate/migration-gate.ts 头注释）：纯依赖注入、零 pi
- * import——只消费 root 侧契约（src/instrument/contracts），永不 import
- * packages/review-pi 或其转译路径（import 面由
+ * 模块纪律：纯依赖注入、零 pi 运行时依赖——共享契约（Finding / RunResult /
+ * ToolCallRecord）以 review-pi 为**类型单源**（type-only import，ADR-0024），
+ * 运行时永不 import pi 内核或其转译路径（import 面由
  * tests/presentation/translate-projection.test.ts 机器锁定）。
  */
 

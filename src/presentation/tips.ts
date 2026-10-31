@@ -1,4 +1,4 @@
-import type { Finding } from "../instrument/contracts/finding.js";
+import type { Finding } from "review-pi";
 
 /**
  * 分组式检视意见（`reviews_tips_zh.json`，ADR-0017）的**纯映射层**：

@@ -11,7 +11,7 @@ import {
   type EnvLookup,
 } from "review-llm";
 
-import type { Finding } from "../instrument/contracts/finding.js";
+import type { Finding } from "review-pi";
 import { buildReviewTipsDocument, dedupeFindingsByLine, reviewOf, type ReviewTipsDocument } from "./tips.js";
 import type { TranslateEngine, TerminologyContext } from "./translate-projection.js";
 import {
@@ -35,8 +35,8 @@ import {
  * 边界纪律（ADR-0010 Considered Options）：
  * - 翻译是呈现关注点——本模块属核外装配面，**与 translate-projection.ts
  *   不同，本模块持网络与密钥**（真引擎由消费端装配的「装配」即此处）；
- * - 检视链零触碰：本模块不进任何检视请求路径，语言不进实验 plan 与内核
- *   执行缝（评测面语言零漂移回归仍绿）。
+ * - 检视链零触碰：本模块不进任何检视请求路径，语言不进检视执行缝
+ *   （语言零漂移回归仍绿）。
  *
  * ADR-0017 附加职责（同为核外装配面）：
  * - `code` 不由本模块取（CLI 按 `--repo` 抽好经 `codeByFinding` 注入）——
@@ -52,7 +52,7 @@ import {
  * - 翻译/建议模型 id 走 REVIEW_PI_PRESENTATION_MODEL（显式配置优先）；未配置时
  *   跟随本次检视的 `--model`（CLI 经呈现源 `modelId` 透传，ADR-0021），再缺省
  *   deepseek-v4-flash——呈现与检视同端点模型可避免「网关只服务 ep-xxx 时译文
- *   打不动」；呈现配置仍不是实验自变量，只是缺省值跟随；
+ *   打不动」；呈现配置只是缺省值跟随，不是检视自变量；
  * - key 绝不硬编码、绝不出现在错误信息或任何落盘产物中。
  *
  * 翻译口径：术语表（terminology.ts 单源，随 TerminologyContext 注入）作

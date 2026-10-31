@@ -9,8 +9,7 @@ import {
   type TerminologyContext,
 } from "../../src/presentation/translate-projection.js";
 import { TERMINOLOGY, TERMINOLOGY_VERSION } from "../../src/presentation/terminology.js";
-import type { Finding } from "../../src/instrument/contracts/finding.js";
-import type { RunResult, ToolCallRecord } from "../../src/instrument/contracts/run.js";
+import type { Finding, RunResult, ToolCallRecord } from "review-pi";
 
 /**
  * 翻译投影单测（#13，生产化四必做之二——ADR-0010「英文产出 + 核外翻译投影」）：
@@ -142,11 +141,10 @@ function projectionInput(overrides: Partial<ProjectionInput> = {}): ProjectionIn
   };
 }
 
-/** E 形态最小 RunResult（presentationSourceOf 的输入面） */
-function eFormRunResult(): RunResult {
+/** 最小 RunResult（presentationSourceOf 的输入面） */
+function singleFormRunResult(): RunResult {
   return {
     caseId: "VUL4J-38",
-    configId: "E",
     model: "deepseek-v4-flash",
     findings: E_FORM_FINDINGS,
     usage: { inputTokens: 118_400, outputTokens: 6_800, cacheReadTokens: 84_200 },
@@ -344,9 +342,9 @@ describe("projectReviewDocument — 边界与失败路径", () => {
   });
 });
 
-describe("presentationSourceOf — RunResult 呈现面圈定（E 形态端到端）", () => {
+describe("presentationSourceOf — RunResult 呈现面圈定（端到端）", () => {
   it("从 RunResult 圈出呈现源（findings + audit.toolCallLog 引用直通），可直接进 zh 投影", async () => {
-    const result = eFormRunResult();
+    const result = singleFormRunResult();
     const source = presentationSourceOf(result);
     expect(source.findings).toBe(result.findings);
     expect(source.toolCallLog).toBe(result.audit.toolCallLog);
@@ -359,28 +357,31 @@ describe("presentationSourceOf — RunResult 呈现面圈定（E 形态端到端
   });
 });
 
-describe("模块纪律（零 pi import——核外呈现层）", () => {
-  it("src/presentation 模块的 import 面零 pi 依赖（root 相对路径 / node: 内建 / review-llm 共享客户端）", async () => {
+describe("模块纪律（零 pi 运行时依赖——核外呈现层）", () => {
+  it("src/presentation 模块的 import 面只有相对路径 / node: 内建 / review-llm，review-pi 仅限 type-only", async () => {
     // engine-zh.ts 是核外真引擎装配：网关/凭据解析走 review-llm 单源（共享
-    // LLM 客户端件，非 pi 内核/测量面——与检视链 CLI 同款解析，无第二真源）
+    // LLM 客户端件，非 pi 内核/测量面——与检视链 CLI 同款解析，无第二真源）。
+    // ADR-0024：共享契约（Finding / RunResult / ToolCallRecord）以 review-pi
+    // 为单源真值，故允许 **type-only** import；运行时仍不得依赖 pi 内核。
     const moduleNames = ["translate-projection.ts", "terminology.ts", "engine-zh.ts"];
     for (const moduleName of moduleNames) {
       const modulePath = fileURLToPath(new URL(`../../src/presentation/${moduleName}`, import.meta.url));
       const source = await readFile(modulePath, "utf8");
       // 扫描器健全性：文件确实读到内容（纯数据模块可以零 import——纪律空集即成立）
       expect(source.length, `${moduleName} should be readable and non-empty`).toBeGreaterThan(0);
-      const specifiers = [...source.matchAll(/from\s+["']([^"']+)["']/g)].map((match) => match[1] ?? "");
-      for (const specifier of specifiers) {
-        // 只允许 root 内相对路径、node: 内建与 review-llm 裸包名——review-pi /
-        // @earendil-works（pi 四包）/ packages/ 转译路径全部禁止（纪律对齐
-        // src/gate/migration-gate.ts 头注释）
-        expect(
-          specifier.startsWith(".") || specifier.startsWith("node:") || specifier === "review-llm",
-          `${moduleName} imports "${specifier}"`,
-        ).toBe(true);
-        expect(specifier, `${moduleName} imports "${specifier}"`).not.toMatch(
-          /review-pi|@earendil-works|packages\//,
-        );
+      const statements = [...source.matchAll(/import\s+(type\s+)?[^;]*?from\s+["']([^"']+)["']/g)];
+      for (const statement of statements) {
+        const typeOnly = statement[1] !== undefined;
+        const specifier = statement[2] ?? "";
+        // 只允许 root 内相对路径、node: 内建、review-llm 裸包名与 review-pi
+        // 类型单源；@earendil-works（pi 四包）/ packages/ 转译路径全部禁止。
+        const allowed =
+          specifier.startsWith(".") ||
+          specifier.startsWith("node:") ||
+          specifier === "review-llm" ||
+          (specifier === "review-pi" && typeOnly);
+        expect(allowed, `${moduleName} imports "${specifier}"`).toBe(true);
+        expect(specifier, `${moduleName} imports "${specifier}"`).not.toMatch(/@earendil-works|packages\//);
       }
     }
   });
