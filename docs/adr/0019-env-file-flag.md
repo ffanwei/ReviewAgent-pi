@@ -1,6 +1,6 @@
 # 0019. 凭据文件显式路径（`--env <file>`）
 
-**状态**：已接受（2026-10-30，用户经四项口径决策）
+**状态**：已废止（由 [ADR-0025](0025-user-config-file.md) 取代：`--env` 旗标移除，`.env.local` 不再读取）——原状态：已接受（2026-10-30，用户经四项口径决策）
 **关联**：ADR-0010（检视输出恒英文 + 核外投影——`REVIEW_PI_PRESENTATION_ENGINE` 仍按 cwd 解析，本 ADR 不改）、ADR-0011（切流后的生产入口）、ADR-0018（同为「路径类」旗标，取同款 fail-fast 姿态）、`packages/review-pi/src/shared/env-local.ts`（装载语义单源）
 **跨仓**：本 ADR 为本仓 pi 线序列 0019；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 

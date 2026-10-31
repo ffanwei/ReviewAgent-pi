@@ -35,7 +35,7 @@ packages/{ai,agent,chord,telemetry}/
                         见《Pi 内核定制基线方案》）
 packages/review-pi/     Review Runtime（pi 内核从 0 重写：六阶段骨架 + 七工具 + Context
                         Ledger + 规则 Skill 会话 + 审计投影 + review-pi CLI，ADR-0009）
-packages/review-llm/    LLM 接入共享缝（reviewer endpoint / key 解析与模型画像单源）
+packages/review-llm/    LLM 接入共享缝（provider 参数画像与 DeepSeek 接入常量单源）
 data/                   数据集清单与 MR 元数据（vul4j / defects4j / msb-java / clean-mr 的清单层）
 runs/                   运行产物（不入库；*/REPORT.md 作为历史结论文档例外入库）
 docs/                   ADR / 设计方案 / 评测方案 / 历史报告 / 计划书 / agent 协作约定
@@ -69,7 +69,7 @@ CI（push / PR）跑 `suites`：root + review-llm + review-pi 三处 typecheck �
 
 ## 单次检视执行
 
-`packages/review-pi` 的 `review-pi` CLI：解析 → `.env.local` 装载 → 装配 → run → 导出 → 呈现；stdout 单 JSON 文档；退出码：完成（含诚实截断）0 / 中止 1；被测模型缺省 `deepseek-v4-flash`，换模型加 `--model <id>`；`smoke` 子命令提供网关双探针自检。
+`packages/review-pi` 的 `review-pi` CLI：解析 → 配置装载（`~/.PiAgent/PiAgent.json` 或 `--config`）→ 装配 → run → 导出 → 呈现；stdout 单 JSON 文档；退出码：完成（含诚实截断）0 / 中止 1；被测模型缺省 `deepseek-v4-flash`，换模型加 `--model <id>`；`smoke` 子命令提供网关双探针自检。
 
 **唯一形态（规则 Skill）**——单案 × rep-1，一条命令出审计、转录与检视意见导出（完整前置、旗标说明、产物布局与排障见《[单次检视运行手册](docs/运行手册-单次检视.md)》）：
 
@@ -77,7 +77,7 @@ CI（push / PR）跑 `suites`：root + review-llm + review-pi 三处 typecheck �
 node packages\review-pi\bin\review-pi.js review --repo .cache\datasets\vul4j-repos\VUL4J-38-ab6cbdc3da --mr .cache\datasets\vul4j-diffs\VUL4J-38.diff --rule-skill-zip packages\review-pi\testdata\rule-skills\general-code-review.zip --strict-rule-skill --issue "Vulnerability CVE-2014-4172 (CWE-74) in apereo/java-cas-client. Fixed by https://github.com/apereo/java-cas-client/commit/ab6cbdc3daa451b4fef89c0bd0f4e6568f3aa9ef." --out runs\f-demo-session-skill-2
 ```
 
-前置三件：内核产物不过期（`pnpm build:pi` → `pnpm --filter review-llm build` → `pnpm --filter review-pi build`，陈旧即拒跑、不自动重编）、仓库根 `.env.local` 提供 `REVIEWER_API_KEY` / `REVIEWER_URL`、仓库快照与 diff 就位（本机 `.cache/datasets/**`；数据物化脚本已随评测层删除，缺失时自备）。产物落 `<out>/review-pi-cli/{runs,audit}/vul4j/<case>/`；stdout 是单个 JSON 文档，诊断走 stderr；退出码 0（含诚实截断）/ 1。
+前置三件：内核产物不过期（`pnpm build:pi` → `pnpm --filter review-llm build` → `pnpm --filter review-pi build`，陈旧即拒跑、不自动重编）、用户级配置 `~/.PiAgent/PiAgent.json`（`review-pi config init` 生成；`--config <path>` 可指定替代文件）、仓库快照与 diff 就位（本机 `.cache/datasets/**`；数据物化脚本已随评测层删除，缺失时自备）。产物落 `<out>/review-pi-cli/{runs,audit}/vul4j/<case>/`；stdout 是单个 JSON 文档，诊断走 stderr；退出码 0（含诚实截断）/ 1。
 
 其余仍然有效的口径与注意：
 
@@ -87,25 +87,40 @@ node packages\review-pi\bin\review-pi.js review --repo .cache\datasets\vul4j-rep
 - **基线态语义**：检视读的上下文以仓内现状为准（CLI 不 apply diff）；约定仓停在 diff 的 base 侧。
 - **单次结果 ≠ 判定**：被测模型非确定，单跑落在历史 rep 波动族内即属正常；本仓已无判定链与指标聚合，需要评测判定请到 DSH 兄弟仓复跑。
 
-## 凭据配置（.env.local，绝不入库）
+## 配置（`~/.PiAgent/PiAgent.json`，JSONC）
 
-CLI 从**进程 cwd** 装载 `.env.local`（gitignored；`--env <file>` 可指定替代路径，ADR-0019）：已有非空环境变量优先、不被覆盖；装载摘要只报键名与行号，key 值绝不回显。key 缺失即启动报错并给清单。
+唯一配置来源是**用户级** JSONC 文件（ADR-0025）：Linux 读 `$HOME`，Windows 读 `%USERPROFILE%`；`--config <path>` 可指定替代文件。**环境变量层已彻底移除**——`.env.local`、`REVIEWER_*`、`DEEPSEEK_*`、`REVIEW_PI_*` 都不再被读取（`--env` 是确定性错误）。
 
-```ini
-# reviewer（检视模型）——恒需
-REVIEWER_API_KEY=...     # 推荐名（#43）
-DEEPSEEK_API_KEY=...     # 兼容别名（旧名；与 REVIEWER_API_KEY 同设时新名优先）
-REVIEWER_URL=...         # 可选：自定义 OpenAI 兼容网关端点（需自带 /v1）
-DEEPSEEK_URL=...         # 兼容别名（旧名）
-
-# 呈现层（可选；不配则只产英文）
-REVIEW_PI_PRESENTATION_ENGINE=.tmp-gen/presentation/engine-zh.js
-REVIEW_PI_PRESENTATION_MODEL=deepseek-v4-flash   # 缺省跟随 --model
+```powershell
+review-pi config init                 # 写缺省模板（已存在则拒绝，--force 覆盖）
+review-pi config show                 # 脱敏打印生效值 + 来源 + digest
+review-pi config show --json          # 审计同款快照（机读）
+review-pi config init --from-env .env.local   # 一次性迁移旧 .env.local
 ```
+
+最小可跑配置（完整键表与注释见仓库根 [`PiAgent.example.jsonc`](PiAgent.example.jsonc)）：
+
+```jsonc
+{
+  "version": 1,
+  "reviewer": {
+    "apiKey": "sk-...",
+    "baseUrl": "https://api.deepseek.com",  // 网关需自带 /v1
+    "maxOutputTokens": null                 // null = 自动（网关档 32768）
+  },
+  "presentation": { "engine": null }        // 可选：核外中文引擎模块路径
+}
+```
+
+- **秘密只进该文件**（POSIX 权限建议 `0600`，过宽只警告）；`config show`、审计、stdout 一律只报 `set|missing`。
+- **可配**：超时、并发、MR 边界（`limits.boundary`，`null` = 关闭该维）、规则包归档上限、微限（回显/跳数/摘要截断）、模型元数据 `models{}`。
+- **死钉**：轮次 5、工具调用 100、工具结果预算 8000 字符、`temperature: 0`、effort 锁档——写进配置文件只会得到「已钉死」警告。
+- **读一次**：启动装载为不可变快照，运行中改文件不生效；每次 run 的审计顶层 `config` 记录全量生效值 + 来源 + `digest`。
+- **失败策略**：类型/取值/版本错 fail fast（exit 1 并指出键路径）；未知键与权限过宽只警告。
 
 被测模型经 `--model <id>` 自由指定；wire 序列化按 review-llm 的 provider 画像表单源分派。judge 相关凭据（`JUDGE_*` / `OPENAI_*`）随判定链一并删除（ADR-0024），本仓不再读取。
 
-自定义网关（`REVIEWER_URL` 指向中转/自建端点）的可用性与兼容性由使用者自证：换端点或换模型后先跑 `review-pi smoke`（双探针：网关健康 + 模型可达，输出人话诊断与处置建议；通过退出码 0、失败 1；探针请求体走生产画像序列化）。
+自定义网关（`reviewer.baseUrl` 指向中转/自建端点）的可用性与兼容性由使用者自证：换端点或换模型后先跑 `review-pi smoke`（双探针：网关健康 + 模型可达，输出人话诊断与处置建议；通过退出码 0、失败 1；探针请求体走生产画像序列化）。第三方 `ep-xxx` 的元数据可用 `models{"<id>": {"contextWindow": ..., "maxTokens": ..., "cost": {...}}}` 补全，成本估算随之为准。
 
 ## 目录与入库约定
 
@@ -113,7 +128,8 @@ REVIEW_PI_PRESENTATION_MODEL=deepseek-v4-flash   # 缺省跟随 --model
 |---|---|---|
 | 源码 / 文档 / 数据集清单 | ✅ | |
 | `runs/**/REPORT.md` | ✅ | 历史实验结论文档（唯一例外） |
-| `.env.local` | ❌ | 凭据 |
+| `.env.local` | ❌ | 历史凭据文件（本版不再读取；迁移后请删除） |
+| `~/.PiAgent/PiAgent.json` | 仓外 | 用户级运行配置（含秘密；不入库） |
 | `reference_project/` | ❌ | 外部参考仓（见下节） |
 | `runs/**`（除 REPORT.md） | ❌ | 运行记录与数据 |
 | `.cache/` | ❌ | 数据集缓存 / 留痕 / 分析产物 |

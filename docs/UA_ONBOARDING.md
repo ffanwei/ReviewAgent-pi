@@ -15,8 +15,8 @@
 | 层 | 职责 | 关键文件 |
 |---|---|---|
 | **Review Runtime（pi 内核线）** | 单案全链：MR 边界护栏 → 规则 Skill 装载 → 六阶段 agent-loop（七工具 + Context Ledger）→ 候选门 → 审计/记录/转录/意见导出 | `packages/review-pi/src/run/review-run.ts`、`loop/agent-review-loop.ts`、`tools/toolkit.ts`、`gate/candidate-gate.ts` |
-| **CLI 与呈现** | 参数解析、凭据装载、结果投影、退出码；核外中文呈现注入缝 | `packages/review-pi/src/cli/{args,main,render}.ts`、`src/presentation/{translate-projection,tips,engine-zh}.ts` |
-| **LLM 抽象层** | review-llm：endpoint/key 解析、provider 画像、DeepSeek 适配 | `packages/review-llm/src/{resolver,profile,deepseek,reviewer}.ts` |
+| **CLI 与呈现** | 参数解析、配置装载（`~/.PiAgent/PiAgent.json`）、结果投影、退出码；核外中文呈现注入缝 | `packages/review-pi/src/cli/{args,main,render,config-command}.ts`、`packages/review-pi/src/shared/config.ts`、`src/presentation/{translate-projection,tips,engine-zh}.ts` |
+| **LLM 抽象层** | review-llm：provider 画像、DeepSeek 适配常量（endpoint/key 已由用户级配置取代，ADR-0025） | `packages/review-llm/src/{profile,deepseek,resolver}.ts` |
 | **pi 内核（vendored）** | pi-ai 模型接入、pi-agent-core 代理循环、chord 编排、telemetry 遥测 | `packages/ai/src/types.ts`、`packages/agent/src/harness/session/session.ts`、`packages/chord/src/delta/index.ts` |
 | **测试与夹具** | 内核单测、CLI 进程烟测、golden 常量 | `packages/review-pi/src/cli/bin.process.test.ts`、`packages/review-pi/testdata/golden/*`、`tests/presentation/*` |
 | **文档与 ADR** | 项目说明、决策记录、设计方案、历史报告 | `README.md`、`CONTEXT.md`、`AGENTS.md`、`docs/adr/*`、`docs/运行手册-单次检视.md` |
@@ -24,14 +24,14 @@
 
 ## 3. 关键概念
 
-- **唯一形态**：工具驱动六阶段循环 + Context Ledger 恒开 + 规则 Skill 恒装载；没有配置分派，`--config` 按未知旗标报错。
+- **唯一形态**：工具驱动六阶段循环 + Context Ledger 恒开 + 规则 Skill 恒装载；没有 A–E 配置分派。运行配置只有一层（`~/.PiAgent/PiAgent.json` 或 `--config`，ADR-0025），env 层已移除。
 - **规则 Skill**：`--rule-skill-zip` / `--rule-skill <dir>` / `<repo>/.review-rules/*.zip` 三种输入面；Phase 5 之后为每个包开独立检视会话（ADR-0014），候选按 `(file, line, category)` 合并后交 Phase 6 裁定。装不到规则包 = 合法降级（stderr 一行提示、exit 0）。
-- **测量常量面**：system prompt、六阶段指令、七工具 schema 的字节真源在 `testdata/golden/*`，由 `loop/phases.test.ts`、`zonea/system-prompt.test.ts` 断言逐字节一致；改这些常量需要显式变更记录。
-- **MR 边界护栏**：`run/mr-boundary-guard.ts` 做纯度量（≤10 文件 / ≤2K 变更行），超界只标注 `domainWarning` + 审计 `mrBoundary`，不拒检、不改请求字节。
-- **审计与记录**：审计落盘 `<out>/review-pi-cli/audit/vul4j/<caseId>/rep-1/audit/<runId>.json`（requests / toolCallLog / phaseLog / rejections / ledger / ruleSkill / skillPassLog）；`RunRecord` 落 `runs/vul4j/<caseId>/rep-1.json`。`runId = <时间戳>-<caseId>`。
+- **测量常量面**：system prompt、六阶段指令、七工具 schema 的字节真源在 `testdata/golden/*`，由 `loop/phases.test.ts`、`zonea/system-prompt.test.ts` 断言逐字节一致；运行期死钉 5 项（轮次 / 工具调用 / 工具结果预算 / 呈现 temperature / effort）由 ADR-0025 锁定。
+- **MR 边界护栏**：`run/mr-boundary-guard.ts` 做纯度量（缺省 ≤10 文件 / ≤2000 变更行，`limits.boundary` 可配、`null` 关闭），超界只标注 `domainWarning` + 审计 `mrBoundary`，不拒检、不改请求字节。
+- **审计与记录**：审计落盘 `<out>/review-pi-cli/audit/vul4j/<caseId>/rep-1/audit/<runId>.json`（requests / toolCallLog / phaseLog / rejections / ledger / ruleSkill / skillPassLog / config 快照）；`RunRecord` 落 `runs/vul4j/<caseId>/rep-1.json`。`runId = <时间戳>-<caseId>`。
 - **语言边界**：检视输出恒英文（测量面冻结）；中文只经核外翻译投影（ADR-0010），内核无语言键。
 - **中文交付物**：只有 `reviews_tips_zh.json`（ADR-0017 / ADR-0022），按文件分组、同文件同行去重（ADR-0023）；`reviews_zh.json` 已停产。
-- **LLM 解析**：`review-llm/src/resolver.ts` 按「显式选项 → 环境变量别名序列 → 缺省值」三层回退，key 不进入错误消息。
+- **配置解析**：`shared/config.ts` 读一次用户级 JSONC 成不可变快照，全量生效值 + 来源 + digest 进审计；秘密只记 `set|missing`。`review-llm/src/resolver.ts` 仍提供「显式参数 → 环境变量 → 缺省」纯函数，但 CLI 不再走 env 通道（ADR-0025）。
 - **vendored 边界**：`packages/ai|agent|chord|telemetry` 是上游 vendored 代码，改动需评估上游漂移；应用逻辑不要写进这里。
 
 ## 4. 导览（7 步）
@@ -50,7 +50,7 @@
 
 - `src/presentation/translate-projection.ts`：英文产物 → 呈现语言的投影（en 恒等直通 / zh 注入引擎；结构化字段字节直通）。
 - `src/presentation/tips.ts`：Finding → `reviews_tips_zh.json` 的 10 键严格封闭映射与分组。
-- `src/presentation/engine-zh.ts`：真引擎装配（网关 + 凭据复用 `REVIEWER_*`；`suggestion` 生成）。
+- `src/presentation/engine-zh.ts`：真引擎装配（网关 + 凭据复用配置的 `reviewer.*`，ADR-0025 后不再读 env；`suggestion` 生成）。
 - `src/presentation/terminology.ts`：术语表单源（版本号随投影留痕）。
 
 ### Review Runtime（`packages/review-pi/src`）
