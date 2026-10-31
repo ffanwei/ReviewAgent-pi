@@ -1376,7 +1376,9 @@ test(
       expect(run.stderr).toContain("▶ phase 1/6 Change Understanding (round 1)");
       expect(run.stderr).toContain("▶ phase 6/6 Evidence Verification (round 1)");
       expect(run.stderr).toContain("req 1 ");
-      expect(run.stderr).toMatch(/✓ done · req 6 · tools 0 · \d+\.\ds · cache [\d.]+% · \$\d+\.\d{4}/);
+      expect(run.stderr).toMatch(
+        /✓ 完成 · 耗时 \d+\.\ds · 模型调用 6 次 · token 输入 [\d,]+（未命中） · 输出 [\d,]+ · 缓存命中 [\d,]+（[\d.]+%） · 工具 0 次（主会话 0 \+ 规则 Skill 0） · Ledger 命中 \d+ 次（未重复读取原文） · \$\d+\.\d{4}/,
+      );
       expect(run.stderr).not.toContain("\r");
       // 进度只报计数与摘要：结果全文（findings 文本 / 工具结果）不落地 stderr
       expect(run.stderr).not.toContain("Sentinel finding description");
@@ -1389,7 +1391,7 @@ test(
 );
 
 test(
-  "进度缺省静默（非 TTY）与 --no-progress 同；--progress 与 --no-progress 同给 = 用法错误 exit 1",
+  "进度事件行缺省静默（非 TTY）与 --no-progress 同，但收尾摘要仍恒打一行；--progress 与 --no-progress 同给 = 用法错误 exit 1",
   async () => {
     const quietStub = await startLoopbackStub([...oneFindingCorpus(), ...oneFindingCorpus()]);
     try {
@@ -1410,7 +1412,9 @@ test(
       const auto = await runBin(baseArgs, stubEnv(quietStub.baseUrl));
       expect(auto.status).toBe(0);
       expect(auto.stderr).not.toContain("▶ phase");
-      expect(auto.stderr).not.toContain("✓ done");
+      expect(auto.stderr).not.toContain("req 1 ");
+      // 进度关闭 ≠ 零输出：收尾摘要恒定打印（一行，避免「跑完什么都没说」）
+      expect(auto.stderr).toContain("✓ 完成 · 耗时 ");
 
       const explicitOff = await runBin(
         [
@@ -1427,7 +1431,7 @@ test(
       );
       expect(explicitOff.status).toBe(0);
       expect(explicitOff.stderr).not.toContain("▶ phase");
-      expect(explicitOff.stderr).not.toContain("✓ done");
+      expect(explicitOff.stderr).toContain("✓ 完成 · 耗时 ");
 
       const conflict = await runBin([...baseArgs, "--progress", "--no-progress"], {
         ...stubEnv(quietStub.baseUrl),

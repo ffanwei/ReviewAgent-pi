@@ -82,6 +82,10 @@ export interface SkillPassOutcome {
   /** 原始候选（未去重；合并由 gate/candidate-merge 负责） */
   readonly candidates: readonly unknown[];
   readonly usage: LlmUsage;
+  /** 本会话 Context Ledger 命中次数（重复读取返回引用；收尾摘要用，不进审计） */
+  readonly ledgerHitCount: number;
+  /** 本会话 `bash` 调用次数（指标口径不含它，收尾摘要单列；不进审计） */
+  readonly bashCallCount: number;
   readonly transcript?: SkillPassTranscript;
 }
 
@@ -91,6 +95,9 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
   const micro = runtime.limits.micro;
   let requestCount = 0;
   let toolCallCount = 0;
+  // skill 内 `bash` 调用数（ADR-0014 指标口径不含 bash，故不进 toolCallCount；
+  // 但收尾总结行要如实报「这一次 skill 到底调了几次工具以外还跑了几条命令」，见 ADR-0030）
+  let bashCallCount = 0;
   let usage: LlmUsage = ZERO_USAGE;
   let firstRequestAt: Date | undefined;
   // 进度投影（ADR-0016）：缺省 sink = 空函数；事件只投影本会话既有留痕
@@ -108,14 +115,19 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
       withToolProgress(tool, fromWireToolName(tool.name), emitProgress, progressLimits),
     ),
     withToolProgress(
-      buildSkillBashTool({
-        packRoot: packRootOf(skill),
-        timeoutMs: runtime.limits.timeouts.skillBashMs,
-        maxOutputChars: micro.skillBashOutputChars,
-        ...(options.resultBudgetChars !== undefined
-          ? { resultBudgetChars: options.resultBudgetChars }
-          : {}),
-      }),
+      countToolCalls(
+        buildSkillBashTool({
+          packRoot: packRootOf(skill),
+          timeoutMs: runtime.limits.timeouts.skillBashMs,
+          maxOutputChars: micro.skillBashOutputChars,
+          ...(options.resultBudgetChars !== undefined
+            ? { resultBudgetChars: options.resultBudgetChars }
+            : {}),
+        }),
+        () => {
+          bashCallCount += 1;
+        },
+      ),
       SKILL_BASH_TOOL_NAME,
       emitProgress,
       progressLimits,
@@ -188,6 +200,8 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
     },
     candidates: [],
     usage,
+    ledgerHitCount: options.toolkit.ledger.hitCount(),
+    bashCallCount,
     ...(capture !== undefined
       ? {
           transcript: {
@@ -244,6 +258,8 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
     },
     candidates,
     usage,
+    ledgerHitCount: options.toolkit.ledger.hitCount(),
+    bashCallCount,
     ...(capture !== undefined
       ? {
           transcript: {
@@ -255,6 +271,20 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
           },
         }
       : {}),
+  };
+}
+
+/**
+ * 计数包装（只观测、不改语义）：`bash` 调用不进指标 `toolCalls`（ADR-0014），
+ * 但收尾总结行要单独报它（ADR-0030）。包装层不吞 `onUpdate`、不改返回值。
+ */
+function countToolCalls(tool: AgentTool, onCall: () => void): AgentTool {
+  return {
+    ...tool,
+    execute: (toolCallId, params, signal, onUpdate) => {
+      onCall();
+      return tool.execute(toolCallId, params, signal, onUpdate);
+    },
   };
 }
 

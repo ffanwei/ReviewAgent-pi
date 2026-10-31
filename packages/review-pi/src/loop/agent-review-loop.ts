@@ -115,6 +115,16 @@ export interface AgentReviewLoopOutcome {
    * `skillPassLog[].toolCallCount`——两个口径不互斥，各自单一。
    */
   readonly toolCalls: number;
+  /**
+   * 规则 Skill 会话里的 `bash` 调用数（合计）。指标口径 `toolCalls` 不含 bash
+   * （ADR-0014），收尾总结行单独报它；不进审计。
+   */
+  readonly skillBashCalls: number;
+  /**
+   * Context Ledger 命中总数（主会话 + skill 会话）：重复读取返回
+   * "Already loaded: ctx#NNN" 引用的次数。收尾摘要用的观测值，不进审计。
+   */
+  readonly ledgerHitCount: number;
   /** 验证 complete 信号（= !truncated） */
   readonly complete: boolean;
   readonly audit: RunAudit;
@@ -156,6 +166,8 @@ export async function runAgentReviewLoop(
   const skillPassLog: RuleSkillPassRecord[] = [];
   const skillTranscripts: SkillPassTranscript[] = [];
   let skillToolCalls = 0;
+  let skillBashCalls = 0;
+  let skillLedgerHits = 0;
   let roundSkillBatches: readonly SkillCandidateBatch[] = [];
   // 首次模型请求时刻（唯一新增内核仪器；不是逐请求/逐工具耗时）
   let firstRequestAt: Date | undefined;
@@ -301,6 +313,8 @@ export async function runAgentReviewLoop(
     usage,
     rounds: round,
     toolCalls: executedToolCalls + skillToolCalls,
+    skillBashCalls,
+    ledgerHitCount: inputs.toolkit.ledger.hitCount() + skillLedgerHits,
     // 截断优先：输出撞上界（MODEL_MAX_TOKENS_REACHED）时即使裁决 complete 也不可宣称完整
     complete: complete && !truncated,
     audit,
@@ -444,6 +458,8 @@ export async function runAgentReviewLoop(
     outcomes.forEach((outcome, index) => {
       usage = addUsage(usage, outcome.usage);
       skillToolCalls += outcome.record.toolCallCount;
+      skillBashCalls += outcome.bashCallCount;
+      skillLedgerHits += outcome.ledgerHitCount;
       skillPassLog.push({ ...outcome.record, mergedCount: merged.mergedCounts[index] ?? 0 });
       if (outcome.transcript !== undefined) {
         skillTranscripts.push(outcome.transcript);

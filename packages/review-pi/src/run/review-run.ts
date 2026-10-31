@@ -96,6 +96,19 @@ export interface ReviewRunResult {
   readonly transcriptPath: string;
   /** 检视意见导出路径（ADR-0013）：`reviews_en.json` */
   readonly reviewsPath: string;
+  /**
+   * 收尾摘要用的观测值（**不进审计 / RunRecord 字节**）：
+   * Context Ledger 命中次数（重复读取返回 "Already loaded" 引用的次数，
+   * 主会话 + 规则 Skill 会话合计）。
+   */
+  readonly ledgerHitCount: number;
+  /**
+   * 模型调用总次数（主会话请求 + 规则 Skill 会话请求）。`requests` 只在审计
+   * 文件里，轻量快照不带，所以这个数只能从返回值上取。
+   */
+  readonly modelCalls: number;
+  /** 规则 Skill 会话里的 `bash` 调用数（指标 `toolCalls` 不含它，摘要行单列） */
+  readonly skillBashCalls: number;
 }
 
 export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult> {
@@ -240,7 +253,20 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     result,
   });
   const recordPath = await persistRunRecord(input, record);
-  return { runId, record, recordPath, auditPath, transcriptPath, reviewsPath };
+  return {
+    runId,
+    record,
+    recordPath,
+    auditPath,
+    transcriptPath,
+    reviewsPath,
+    // 收尾摘要用的观测值（不进审计/RunRecord 字节）：Ledger 命中 + 模型调用总数
+    ledgerHitCount: outcome.ledgerHitCount,
+    modelCalls:
+      outcome.audit.requests.length +
+      outcome.skillPassLog.reduce((sum, entry) => sum + entry.requestCount, 0),
+    skillBashCalls: outcome.skillBashCalls,
+  };
 }
 
 /**

@@ -40,4 +40,10 @@ export interface ContextLedger {
   register(kind: LedgerEntryKind, description: string): void;
   /** 当前快照（防御性拷贝；runReview 审计留痕用） */
   snapshot(): readonly LedgerEntry[];
+  /**
+   * 命中累计：每次 `referenceIfLoaded` 命中 +1（= 重复读取返回引用的次数，
+   * 这些调用没有把原文再读一遍）。run 私有的观测值，**不进审计字节**——只用于
+   * 收尾摘要行；惰性态恒 0。
+   */
+  hitCount(): number;
 }

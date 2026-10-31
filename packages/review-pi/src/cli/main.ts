@@ -42,7 +42,6 @@ import { dirname, resolve } from "node:path";
 
 import { calculateCost } from "@review-agent-pi/pi-ai";
 
-import type { LlmUsage } from "../contracts/llm.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
@@ -67,8 +66,9 @@ import {
 } from "./presentation-projection.js";
 import {
   createProgressRenderer,
-  type ProgressFinishInput,
+  doneLine,
   type ProgressRenderer,
+  type ProgressSummary,
 } from "./progress-render.js";
 import { renderReviewOutcome } from "./render.js";
 import {
@@ -97,7 +97,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   const runsRoot = resolve(args.out);
 
   // 运行进度投影（ADR-0016）：stderr 是 TTY 时缺省开（人手敲看得见），重定向
-  // 收日志时缺省关；--progress / --no-progress 覆盖。缺省关时零输出、零行为变化。
+  // 收日志时缺省关；--progress / --no-progress 覆盖。缺省关时只保留收尾摘要
+  // 一行（stderr，可 grep），不出现阶段/请求/工具事件行。
   const progress = startProgress(args, modelId);
   const startedAt = Date.now();
   let reviewed: Awaited<ReturnType<typeof runReview>>;
@@ -133,10 +134,24 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill 均未给出；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n",
     );
   }
-  // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态
-  progress?.finish(
-    progressFinish(modelId, endpoint.baseUrl, record.baseline.usage, startedAt),
-  );
+  // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态。
+  // 摘要与审计同源（usage / 请求 / 工具 / Ledger 命中），所以投影的调用不计入
+  // 这一行——否则「耗时」含投影而 token 不含，两个数对不上账。
+  const summary = buildSummary({
+    modelId,
+    baseUrl: endpoint.baseUrl,
+    record,
+    startedAt,
+    ledgerHits: reviewed.ledgerHitCount,
+    modelCalls: reviewed.modelCalls,
+    skillBashCalls: reviewed.skillBashCalls,
+  });
+  if (progress !== undefined) {
+    progress.finish(summary);
+  } else {
+    // 进度关闭不是「零输出」：收尾摘要恒定打印（一行，可 grep）
+    process.stderr.write(`${doneLine(summary)}\n`);
+  }
 
   // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout
   // 呈现档（title/description 等自然语言字段经注入引擎译中文，结构化字段
@@ -365,20 +380,36 @@ function startProgress(args: ReviewCliArgs, modelId: string): ProgressRenderer |
 }
 
 /**
- * 收尾摘要的数值面：token 取自运行记录（与审计同源），成本用与转录同一份
- * 模型画像 + 同一个 `calculateCost`（不另立公式），耗时由 CLI 自身计时。
+ * 收尾摘要的数值面：token / 工具数取自运行记录（与审计同源），模型调用数与
+ * Ledger 命中由 run 层透传（`requests` 不进 AuditLight/RunRecord 字节，只能在
+ * 返回值上取），成本用与转录同一份模型画像 + 同一个 `calculateCost`
+ * （不另立公式），耗时由 CLI 自身计时。
  */
-function progressFinish(
-  modelId: string,
-  baseUrl: string,
-  usage: LlmUsage,
-  startedAt: number,
-): ProgressFinishInput {
-  const costUsd = calculateCost(reviewModelOf(modelId, baseUrl), llmUsageToPiUsage(usage)).total;
+function buildSummary(input: {
+  readonly modelId: string;
+  readonly baseUrl: string;
+  readonly record: Awaited<ReturnType<typeof runReview>>["record"];
+  readonly startedAt: number;
+  readonly ledgerHits: number;
+  readonly modelCalls: number;
+  readonly skillBashCalls: number;
+}): ProgressSummary {
+  const { record } = input;
+  const skillPassLog = record.baseline.audit.skillPassLog ?? [];
+  const skillToolCalls = skillPassLog.reduce((sum, entry) => sum + entry.toolCallCount, 0);
+  const usage = record.baseline.usage;
+  const costUsd = calculateCost(reviewModelOf(input.modelId, input.baseUrl), llmUsageToPiUsage(usage)).total;
   return {
-    durationMs: Date.now() - startedAt,
+    durationMs: Date.now() - input.startedAt,
     usage,
     costUsd,
+    modelCalls: input.modelCalls,
+    toolCalls: record.baseline.toolCalls,
+    // 主会话 = 总数 − skill 会话（skillPassLog 把 skill 的逐项工具数记账）
+    mainToolCalls: record.baseline.toolCalls - skillToolCalls,
+    skillToolCalls,
+    skillBashCalls: input.skillBashCalls,
+    ledgerHits: input.ledgerHits,
   };
 }
 

@@ -73,7 +73,8 @@ review 旗标：
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
   --progress                显示运行进度（阶段 / 模型请求 / 工具调用 / skill 会话）到 stderr；
                             stderr 是 TTY 时缺省开，重定向收日志时缺省关
-  --no-progress             关闭运行进度（批跑收日志时显式静音）
+  --no-progress             关闭运行进度事件行（批跑收日志时显式静音）；
+                            收尾的一行运行总结恒打印，不受此旗标影响
 
 smoke 旗标：
   --model   <id>         冒烟模型 id（同缺省与校验；端点/key 取配置文件，绝不回显）

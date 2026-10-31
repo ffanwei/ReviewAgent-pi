@@ -1,6 +1,6 @@
 # 0016. 运行进度投影（Run Progress Projection）：把既有留痕实时投影到 stderr，stdout 契约零改动
 
-**状态**：已接受（2026-10-28，用户经逐项决策 Q1–Q18）；**部分被 [ADR-0024](0024-drop-config-matrix-and-config-identity.md) 取代（2026-10-31）**——stdout 键集不再含 `configId`，审计键集中的配置维度一并移除；「运行进度投影」机制本身（stderr 实时投影、stdout 零污染）继续有效
+**状态**：已接受（2026-10-28，用户经逐项决策 Q1–Q18）；**部分被 [ADR-0024](0024-drop-config-matrix-and-config-identity.md) 取代（2026-10-31）**——stdout 键集不再含 `configId`，审计键集中的配置维度一并移除；**收尾摘要段（决策 5 / 8 / 9）被 [ADR-0030](0030-run-summary-line.md) 修订（2026-10-31）**——总结行恒定打印、改用中文一行并扩字段（token 三段 / 模型调用 / 工具主次分列 / Ledger 命中）。「运行进度投影」机制本身（stderr 实时投影、stdout 零污染）继续有效
 **关联**：ADR-0009（会话/事件属内核变量面）、ADR-0010（呈现投影是核外消费端，stdout 形状由呈现缝把守）、ADR-0013（转录与导出的落盘产物）、ADR-0014（skill pass 的留痕 `skillPassLog[]`）、`CONTEXT.md`（「运行进度投影」）
 
 ## Context

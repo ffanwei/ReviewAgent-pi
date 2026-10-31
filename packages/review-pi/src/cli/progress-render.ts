@@ -1,4 +1,3 @@
-import { SKILL_BASH_TOOL_NAME } from "../tools/skill-bash.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import type { RunProgressEvent } from "../contracts/progress.js";
 
@@ -16,21 +15,22 @@ import type { RunProgressEvent } from "../contracts/progress.js";
  * 截断），永不接触工具结果全文与审计 `resultSummary`。
  */
 
-/** 收尾摘要（计数由呈现层自身累计，token/成本/耗时由调用方按审计同源口径给出） */
-export interface ProgressFinishInput {
+/** 收尾摘要（计数由调用方按审计同源口径给出：主会话 + skill 会话合并） */
+export interface ProgressSummary {
   readonly durationMs: number;
   /** 与 `record.baseline.usage` 同源（已含 skill 会话折算） */
   readonly usage: LlmUsage;
   readonly costUsd: number;
-}
-
-/** 展示用的完整摘要（`doneLine` 的入参） */
-export interface ProgressSummary extends ProgressFinishInput {
-  /** 本次 run 的模型请求总数（主会话 + skill 会话） */
-  readonly requests: number;
-  /** 工具调用数（review 工具 / skill bash 分列） */
-  readonly reviewToolCalls: number;
-  readonly bashToolCalls: number;
+  /** 模型调用次数 = 主会话请求 + skill 会话请求 */
+  readonly modelCalls: number;
+  /** 工具调用总数 = 主会话 + 规则 Skill 的检视工具（指标口径，ADR-0014 不含 bash） */
+  readonly toolCalls: number;
+  readonly mainToolCalls: number;
+  readonly skillToolCalls: number;
+  /** 规则 Skill 会话里的 `bash` 调用数（指标 `toolCalls` 不含它，单列） */
+  readonly skillBashCalls: number;
+  /** Context Ledger 命中次数（重复读取返回引用，未再读原文） */
+  readonly ledgerHits: number;
 }
 
 export interface ProgressRendererOptions {
@@ -48,7 +48,7 @@ export interface ProgressRenderer {
   /** 启动状态行心跳（仅 TTY）；未启动时事件行照常追加 */
   readonly start: () => void;
   /** 收尾：擦除状态行 + 输出 done 行（幂等） */
-  readonly finish: (input: ProgressFinishInput) => void;
+  readonly finish: (input: ProgressSummary) => void;
   /** 异常路径清理（幂等；只擦状态行，不输出摘要） */
   readonly dispose: () => void;
 }
@@ -56,9 +56,6 @@ export interface ProgressRenderer {
 export function createProgressRenderer(options: ProgressRendererOptions): ProgressRenderer {
   const now = options.now ?? Date.now;
   const heartbeatMs = options.heartbeatMs ?? 1000;
-  let requestCount = 0;
-  let reviewToolCalls = 0;
-  let bashToolCalls = 0;
   let phaseIndex: number | undefined;
   let phaseTotal: number | undefined;
   let round: number | undefined;
@@ -140,7 +137,6 @@ export function createProgressRenderer(options: ProgressRendererOptions): Progre
       case "request": {
         if (event.state === "start") {
           currentRequest = { id: event.requestId, startedAt: now() };
-          requestCount += 1;
           redrawStatus();
           return;
         }
@@ -159,11 +155,6 @@ export function createProgressRenderer(options: ProgressRendererOptions): Progre
           phaseToolCalls += 1;
           redrawStatus();
           return;
-        }
-        if (event.name === SKILL_BASH_TOOL_NAME) {
-          bashToolCalls += 1;
-        } else {
-          reviewToolCalls += 1;
         }
         const status = event.ok ? "ok" : "FAIL";
         const parts = [
@@ -224,14 +215,7 @@ export function createProgressRenderer(options: ProgressRendererOptions): Progre
       finished = true;
       stopTimer();
       eraseStatus();
-      options.write(
-        `${doneLine({
-          ...input,
-          requests: requestCount,
-          reviewToolCalls,
-          bashToolCalls,
-        })}\n`,
-      );
+      options.write(`${doneLine(input)}\n`);
     },
     dispose: () => {
       finished = true;
@@ -249,17 +233,26 @@ export function createProgressRenderer(options: ProgressRendererOptions): Progre
 }
 
 /**
- * 收尾摘要行（`$` 成本与审计同源：同样的 model 画像 + 同样的 token 累加）。
+ * 收尾摘要行：一行报全本次 run 的账。
  *
- * `tools` 只数 review 工具（= `record.baseline.toolCalls` 口径），skill 的
- * `bash` 另列——指标口径不含 bash（ADR-0014），显示层不能把两件事合成一个数
- * 让人误以为能与记录直接对账。
+ * - 耗时 = CLI 自身计时（检视本体，不含之后的呈现投影）；
+ * - token 三段 = 未命中输入 / 输出 / 缓存命中（与审计 `usage` 同源，含 skill 会话）；
+ * - 模型调用 = 主会话请求 + skill 会话请求（`skillPassLog[].requestCount`）；
+ * - 工具调用 = 主会话 + 规则 Skill（与 `record.baseline.toolCalls` 同口径，
+ *   ADR-0014 指标不含 bash）；skill 内 `bash` 真跑过时单列一段；
+ * - Ledger 命中 = 重复读取返回引用的次数（原文没有第二次进上下文）；
+ * - 成本与审计同源：同样的 model 画像 + 同样的 token 累加。
  */
 export function doneLine(summary: ProgressSummary): string {
-  const bash = summary.bashToolCalls > 0 ? ` · bash ${summary.bashToolCalls}` : "";
+  const bash = summary.skillBashCalls > 0 ? ` · skill bash ${formatInt(summary.skillBashCalls)} 次` : "";
   return (
-    `✓ done · req ${summary.requests} · tools ${summary.reviewToolCalls}${bash} · ` +
-    `${formatSeconds(summary.durationMs)}s · cache ${cacheHit(summary.usage)} · ` +
+    `✓ 完成 · 耗时 ${formatSeconds(summary.durationMs)}s · 模型调用 ${formatInt(summary.modelCalls)} 次 · ` +
+    `token 输入 ${formatInt(summary.usage.inputTokens)}（未命中） · ` +
+    `输出 ${formatInt(summary.usage.outputTokens)} · ` +
+    `缓存命中 ${formatInt(summary.usage.cacheReadTokens ?? 0)}（${cacheHit(summary.usage)}） · ` +
+    `工具 ${formatInt(summary.toolCalls)} 次（主会话 ${formatInt(summary.mainToolCalls)} + ` +
+    `规则 Skill ${formatInt(summary.skillToolCalls)}）${bash} · ` +
+    `Ledger 命中 ${formatInt(summary.ledgerHits)} 次（未重复读取原文） · ` +
     `$${summary.costUsd.toFixed(4)}`
   );
 }

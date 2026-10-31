@@ -8,9 +8,12 @@ import { createProgressRenderer, doneLine, type ProgressSummary } from "./progre
 // 3. 只消费事件里已截断的摘要——本层没有路径能拿到工具结果全文。
 
 const SUMMARY: ProgressSummary = {
-  requests: 17,
-  reviewToolCalls: 18,
-  bashToolCalls: 12,
+  modelCalls: 17,
+  toolCalls: 30,
+  mainToolCalls: 18,
+  skillToolCalls: 12,
+  skillBashCalls: 0,
+  ledgerHits: 4,
   durationMs: 358_228,
   usage: { inputTokens: 179_527, outputTokens: 20_854, cacheReadTokens: 165_888 },
   costUsd: 0.0312,
@@ -95,13 +98,9 @@ test("TTY：状态行显示在飞请求，请求落地即撤下，收尾先擦�
   expect(tailAfterEnd).not.toContain("req 1 46s");
   expect(out.text()).toMatch(/\r… phase 1\/6 · round 1$/);
 
-  renderer.finish({
-    durationMs: 358_228,
-    usage: { inputTokens: 179_527, outputTokens: 20_854, cacheReadTokens: 165_888 },
-    costUsd: 0.0312,
-  });
+  renderer.finish(SUMMARY);
   const text = out.text();
-  const beforeDone = text.slice(0, text.indexOf("✓ done"));
+  const beforeDone = text.slice(0, text.indexOf("✓ 完成"));
   // 状态行在 done 行之前被空格补白擦除（\r …空格… \r），不留残影
   expect(/\r +\r$/.test(beforeDone)).toBe(true);
   expect(text.trimEnd().endsWith("$0.0312")).toBe(true);
@@ -186,22 +185,27 @@ test("异常清理：只擦状态行，不输出摘要", () => {
   renderer.onEvent(REQUEST_START);
   renderer.dispose();
 
-  expect(out.text()).not.toContain("✓ done");
+  expect(out.text()).not.toContain("✓ 完成");
   const lastChunk = out.chunks.at(-1) ?? "";
   expect(lastChunk.startsWith("\r")).toBe(true);
   expect(lastChunk.endsWith("\r")).toBe(true);
 });
 
-test("收尾摘要：bash 只在跑过时单列，命中率与请求行同一分母", () => {
-  // `tools` 只数 review 工具（与 record.baseline.toolCalls 同口径），bash 另列
+test("收尾摘要：一行报全账（耗时/token 三段/模型调用/工具分列/Ledger 命中），命中率与请求行同一分母", () => {
   expect(doneLine(SUMMARY)).toBe(
-    "✓ done · req 17 · tools 18 · bash 12 · 358.2s · cache 48.0% · $0.0312",
+    "✓ 完成 · 耗时 358.2s · 模型调用 17 次 · " +
+      "token 输入 179,527（未命中） · 输出 20,854 · 缓存命中 165,888（48.0%） · " +
+      "工具 30 次（主会话 18 + 规则 Skill 12） · " +
+      "Ledger 命中 4 次（未重复读取原文） · $0.0312",
   );
-  expect(doneLine({ ...SUMMARY, bashToolCalls: 0, reviewToolCalls: 18 })).toContain("tools 18 ·");
   // 分母含 cacheWrite：700 + 2048 + 100 ⇒ 2048/2848 = 71.9%
   const withWrite = doneLine({
     ...SUMMARY,
     usage: { inputTokens: 700, outputTokens: 0, cacheReadTokens: 2_048, cacheWriteTokens: 100 },
   });
-  expect(withWrite).toContain("cache 71.9%");
+  expect(withWrite).toContain("缓存命中 2,048（71.9%）");
+  // skill 内 bash 真跑过才单列（指标 toolCalls 不含它，ADR-0014）
+  expect(doneLine({ ...SUMMARY, skillBashCalls: 12 })).toContain(
+    "规则 Skill 12） · skill bash 12 次 · Ledger 命中",
+  );
 });

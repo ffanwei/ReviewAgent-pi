@@ -284,6 +284,21 @@ test("Ledger 惰性态：永不命中、快照恒空（C/D 行为零变化）", 
   expect(functional.referenceIfLoaded("file", "x")).toBe("Already loaded: ctx#001 (x)");
 });
 
+test("Ledger 命中计数（收尾摘要用）：每次命中 +1，惰性态恒 0，分叉从 0 起", () => {
+  const functional = createContextLedger();
+  functional.register("file", "x");
+  functional.register("file", "y");
+  expect(functional.hitCount()).toBe(0);
+  functional.referenceIfLoaded("file", "x");
+  expect(functional.referenceIfLoaded("file", "y")).toBe("Already loaded: ctx#002 (y)");
+  // 未命中的查询不计数
+  expect(functional.referenceIfLoaded("file", "z")).toBeUndefined();
+  expect(functional.hitCount()).toBe(2);
+  // 种子的历史命中不继承：分叉从 0 起，只数本会话的重复读取
+  expect(createContextLedger(functional.snapshot()).hitCount()).toBe(0);
+  expect(createInertContextLedger().hitCount()).toBe(0);
+});
+
 test("Ledger 分叉态（ADR-0014）：沿用种子 id 与顺序，新登记接最大序号之后", () => {
   const seed = [
     { id: "ctx#001", kind: "file" as const, description: "review.get_file a.java" },
