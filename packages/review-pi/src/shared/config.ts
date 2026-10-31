@@ -192,21 +192,6 @@ export interface ModelSettings {
   readonly presentation: string | null;
 }
 
-export interface ModelCostOverride {
-  readonly input?: number;
-  readonly output?: number;
-  readonly cacheRead?: number;
-  readonly cacheWrite?: number;
-}
-
-/** 模型元数据覆盖（按 id 深合并到内置目录；序列化方言不可覆盖） */
-export interface ModelOverride {
-  readonly contextWindow?: number;
-  readonly maxTokens?: number;
-  readonly cost?: ModelCostOverride;
-  readonly input?: readonly ("text" | "image")[];
-}
-
 export interface PresentationSettings {
   /** 核外呈现引擎模块路径；null = 恒等直通 */
   readonly engine: string | null;
@@ -216,7 +201,6 @@ export interface ResolvedConfig {
   readonly version: typeof CONFIG_VERSION;
   readonly reviewer: ReviewerSettings;
   readonly model: ModelSettings;
-  readonly models: Readonly<Record<string, ModelOverride>>;
   readonly presentation: PresentationSettings;
   readonly limits: Limits;
   /** 生效配置文件绝对路径（缺省 home 路径或 --config 解析结果） */
@@ -463,14 +447,12 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
     throw new ConfigError(`${CONFIG_FILE_NAME}: presentation.engine must be a non-empty path or null`);
   }
 
-  const models = parseModels(root.models, warnings);
   const limits = parseLimits(root.limits, warnings);
 
   const config: ResolvedConfig = {
     version: CONFIG_VERSION,
     reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens },
     model: { default: modelDefault.trim(), presentation: modelPresentation?.trim() ?? null },
-    models,
     presentation: { engine: engine?.trim() ?? null },
     limits,
     path,
@@ -503,7 +485,6 @@ function buildDefaults({
     version: CONFIG_VERSION,
     reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null },
     model: { default: DEFAULT_MODEL_ID, presentation: null },
-    models: {},
     presentation: { engine: null },
     limits: DEFAULT_LIMITS,
     path,
@@ -514,24 +495,10 @@ function buildDefaults({
   return { ...base, digest: digestOf(effectiveValues(base)) };
 }
 
-const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "models", "presentation", "limits"] as const;
+const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "limits"] as const;
 const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
 const PRESENTATION_KEYS = ["engine"] as const;
-const MODEL_OVERRIDE_KEYS = ["contextWindow", "maxTokens", "cost", "input"] as const;
-/** 序列化方言：写了就 fail fast（不是可调项） */
-const MODEL_PINNED_KEYS = [
-  "id",
-  "name",
-  "api",
-  "provider",
-  "baseUrl",
-  "reasoning",
-  "compat",
-  "thinkingFormat",
-  "thinkingLevelMap",
-] as const;
-const COST_KEYS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 
 const LIMITS_KEYS = ["timeouts", "concurrency", "boundary", "archive", "micro"] as const;
 const TIMEOUT_KEYS = [
@@ -574,89 +541,6 @@ const PINNED_KEYS = new Set<string>([
   "thinkingFormat",
   "maxTokensField",
 ]);
-
-function parseModels(raw: unknown, warnings: string[]): Readonly<Record<string, ModelOverride>> {
-  if (raw === undefined) {
-    return {};
-  }
-  if (!isPlainObject(raw)) {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: models must be an object keyed by model id`);
-  }
-  const out: Record<string, ModelOverride> = {};
-  for (const [id, value] of Object.entries(raw)) {
-    const path = `models.${id}`;
-    if (id.trim() === "") {
-      throw new ConfigError(`${CONFIG_FILE_NAME}: models keys must be non-empty model ids`);
-    }
-    const entry = asObject(value, path, warnings);
-    for (const key of Object.keys(entry)) {
-      if ((MODEL_PINNED_KEYS as readonly string[]).includes(key)) {
-        throw new ConfigError(
-          `${CONFIG_FILE_NAME}: ${path}.${key} is pinned (serialization dialect is not configurable)`,
-        );
-      }
-      if (!(MODEL_OVERRIDE_KEYS as readonly string[]).includes(key)) {
-        throw new ConfigError(`${CONFIG_FILE_NAME}: ${path}.${key} is unknown${nearestHint(key, MODEL_OVERRIDE_KEYS)}`);
-      }
-    }
-    const contextWindow = optionalInt(entry.contextWindow, `${path}.contextWindow`, {
-      min: 1,
-      max: 10_000_000,
-      nullable: false,
-    });
-    const maxTokens = optionalInt(entry.maxTokens, `${path}.maxTokens`, {
-      min: 1,
-      max: 1_000_000,
-      nullable: false,
-    });
-    const cost = parseCost(entry.cost, `${path}.cost`, warnings);
-    const input = parseInput(entry.input, `${path}.input`);
-    out[id] = {
-      ...(typeof contextWindow === "number" ? { contextWindow } : {}),
-      ...(typeof maxTokens === "number" ? { maxTokens } : {}),
-      ...(cost !== undefined ? { cost } : {}),
-      ...(input !== undefined ? { input } : {}),
-    };
-  }
-  return out;
-}
-
-function parseCost(raw: unknown, path: string, warnings: string[]): ModelCostOverride | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  const entry = asObject(raw, path, warnings);
-  assertKnownKeys(entry, COST_KEYS, path, warnings);
-  const input = optionalNumber(entry.input, `${path}.input`, 0);
-  const output = optionalNumber(entry.output, `${path}.output`, 0);
-  const cacheRead = optionalNumber(entry.cacheRead, `${path}.cacheRead`, 0);
-  const cacheWrite = optionalNumber(entry.cacheWrite, `${path}.cacheWrite`, 0);
-  return {
-    ...(input !== undefined ? { input } : {}),
-    ...(output !== undefined ? { output } : {}),
-    ...(cacheRead !== undefined ? { cacheRead } : {}),
-    ...(cacheWrite !== undefined ? { cacheWrite } : {}),
-  };
-}
-
-function parseInput(raw: unknown, path: string): readonly ("text" | "image")[] | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  if (!Array.isArray(raw) || raw.length === 0) {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be a non-empty array of "text" / "image"`);
-  }
-  const seen: ("text" | "image")[] = [];
-  for (const value of raw) {
-    if (value !== "text" && value !== "image") {
-      throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} entries must be "text" or "image"`);
-    }
-    if (!seen.includes(value)) {
-      seen.push(value);
-    }
-  }
-  return seen;
-}
 
 function parseLimits(raw: unknown, warnings: string[]): Limits {
   if (raw === undefined) {
@@ -744,9 +628,6 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
       values[`limits.${group}.${key}`] = value;
     }
   }
-  for (const [id, override] of Object.entries(config.models)) {
-    values[`models.${id}`] = override;
-  }
   return sortKeys(values);
 }
 
@@ -770,7 +651,7 @@ function sortKeys(record: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]]));
 }
 
-/** 文件里实际出现的扁平键（含 models.<id> 前缀）——用于审计 `overridden` */
+/** 文件里实际出现的扁平键——用于审计 `overridden` */
 function recordOverrides(root: Record<string, unknown>, overridden: Set<string>): void {
   const mark = (group: string, obj: Record<string, unknown> | undefined): void => {
     if (obj === undefined) {
@@ -783,19 +664,6 @@ function recordOverrides(root: Record<string, unknown>, overridden: Set<string>)
   mark("reviewer", asRecordOrUndefined(root.reviewer));
   mark("model", asRecordOrUndefined(root.model));
   mark("presentation", asRecordOrUndefined(root.presentation));
-  const models = asRecordOrUndefined(root.models);
-  if (models !== undefined) {
-    for (const [id, entry] of Object.entries(models)) {
-      const obj = asRecordOrUndefined(entry);
-      if (obj === undefined) {
-        overridden.add(`models.${id}`);
-        continue;
-      }
-      for (const key of Object.keys(obj)) {
-        overridden.add(`models.${id}.${key}`);
-      }
-    }
-  }
   const limits = asRecordOrUndefined(root.limits);
   if (limits !== undefined) {
     for (const [group, entry] of Object.entries(limits)) {
@@ -863,19 +731,6 @@ function optionalString(value: unknown, path: string): string | undefined {
   }
   if (typeof value !== "string") {
     throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be a string (got ${typeof value})`);
-  }
-  return value;
-}
-
-function optionalNumber(value: unknown, path: string, min: number): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be a finite number (got ${describe(value)})`);
-  }
-  if (value < min) {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be >= ${String(min)} (got ${String(value)})`);
   }
   return value;
 }
@@ -1064,9 +919,6 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     // null = 跟随本次检视模型（ADR-0021）
     "presentation": ${modelPresentation}
   },
-
-  // 模型元数据覆盖（按 id 深合并；序列化方言不可配）
-  "models": {},
 
   "presentation": {
     // 核外中文呈现引擎模块路径；null = 不投影（英文直通）。

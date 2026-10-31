@@ -5,7 +5,6 @@ import type { ToolSchema, WireMessage } from "../contracts/llm.js";
 import {
   DEFAULT_GATEWAY_MAX_TOKENS,
   isOfficialReviewerBaseUrl,
-  type ModelOverride,
 } from "../shared/config.js";
 
 /**
@@ -68,8 +67,6 @@ export interface ReviewTurnInput {
    * 画像作模板（见 reviewModelOf）。缺省钉住的评审模型。
    */
   readonly modelId?: string;
-  /** 模型元数据覆盖（ADR-0025：`models{}` 按 id 深合并；序列化方言不可覆盖） */
-  readonly modelOverrides?: Readonly<Record<string, ModelOverride>>;
   /** 输出预算（ADR-0025：`reviewer.maxOutputTokens`；null/缺席 = 按接入点自动判档） */
   readonly maxOutputTokens?: number | null;
   /** 传输层注入；缺省线上 global fetch（离线测试恒注入 fake 适配器） */
@@ -84,7 +81,7 @@ export interface ReviewTurnOutcome {
 const WIRE_ROLES: readonly string[] = ["system", "user", "assistant", "tool"];
 
 export async function runReviewTurn(input: ReviewTurnInput): Promise<ReviewTurnOutcome> {
-  const model = reviewModelOf(input.modelId, input.baseUrl, input.modelOverrides);
+  const model = reviewModelOf(input.modelId, input.baseUrl);
   // 网关档显式输出预算（官方直连不发，见 maxTokensFor）
   const maxTokens = maxTokensFor(model.baseUrl, input.maxOutputTokens);
   let wire: WireCapture | undefined;
@@ -124,14 +121,12 @@ export function assistantText(message: AssistantMessage): string {
  * 画像作模板覆写 id（#45）；baseUrl 非空则覆盖接入点（网关展开缝）。
  * 契约不变量：provider 恒为 deepseek（compat/锁档序列化不随 id 漂移）。
  *
- * ADR-0025：`overrides` = 用户配置的 `models{}`（按 id 深合并到上面选中的
- * 模板）。只允许覆盖元数据叶子（contextWindow / maxTokens / cost / input）——
- * 序列化方言（api/provider/compat/...）在配置层已 fail fast，这里不再有缝。
+ * 画像只有两个来源：内置目录，或目录外 id 借用钉住模型的画像。没有用户侧
+ * 元数据覆盖缝（`models{}` 已删除，见 ADR-0025 修订）。
  */
 export function reviewModelOf(
   modelId: string | undefined,
   baseUrl: string | undefined,
-  overrides?: Readonly<Record<string, ModelOverride>>,
 ): Model<"openai-completions"> {
   const requested = modelId ?? REVIEW_MODEL_ID;
   if (requested.trim() === "") {
@@ -143,36 +138,10 @@ export function reviewModelOf(
   if (template === undefined) {
     throw new Error(`review model "${REVIEW_MODEL_ID}" not found in the deepseek provider catalog`);
   }
-  const model: Model<"openai-completions"> = {
+  return {
     ...template,
     id: requested,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
-  };
-  const override = overrides?.[requested];
-  return override === undefined ? model : applyModelOverride(model, override);
-}
-
-/** 元数据深合并（cost 逐项合并；只覆写写到的叶子，其余沿用内置目录） */
-function applyModelOverride(
-  model: Model<"openai-completions">,
-  override: ModelOverride,
-): Model<"openai-completions"> {
-  return {
-    ...model,
-    ...(override.contextWindow !== undefined ? { contextWindow: override.contextWindow } : {}),
-    ...(override.maxTokens !== undefined ? { maxTokens: override.maxTokens } : {}),
-    ...(override.input !== undefined ? { input: [...override.input] } : {}),
-    ...(override.cost !== undefined
-      ? {
-          cost: {
-            ...model.cost,
-            ...(override.cost.input !== undefined ? { input: override.cost.input } : {}),
-            ...(override.cost.output !== undefined ? { output: override.cost.output } : {}),
-            ...(override.cost.cacheRead !== undefined ? { cacheRead: override.cost.cacheRead } : {}),
-            ...(override.cost.cacheWrite !== undefined ? { cacheWrite: override.cost.cacheWrite } : {}),
-          },
-        }
-      : {}),
   };
 }
 

@@ -45,7 +45,7 @@ export interface ReviewRunInput {
   /** 模型 id（#45 自由 id；缺省钉住的评审模型） */
   readonly modelId?: string;
   /**
-   * 检视运行时（ADR-0025）：limits / maxOutputTokens / models{} 的不可变子集。
+   * 检视运行时（ADR-0025）：limits / maxOutputTokens 的不可变子集。
    * 缺省 = `DEFAULT_REVIEW_RUNTIME`（今天的缺省行为；测试与内核直调形态）。
    */
   readonly runtime?: ReviewRuntime;

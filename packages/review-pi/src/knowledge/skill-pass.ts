@@ -122,7 +122,7 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
     ),
   ];
 
-  const model = reviewModelOf(options.modelId, options.baseUrl, runtime.models);
+  const model = reviewModelOf(options.modelId, options.baseUrl);
   const agent = new Agent({
     initialState: {
       systemPrompt: options.systemPrompt,

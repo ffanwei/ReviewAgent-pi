@@ -197,15 +197,6 @@ describe("loadConfig：失败策略", () => {
     expect(config).toBeDefined();
   });
 
-  test("models 未知叶子 = fail fast；方言字段 = fail fast", () => {
-    expect(() =>
-      loadConfig({ configPath: writeConfig(minimalConfig(`,"models":{"m":{"contxtWindow":1}}`)) }),
-    ).toThrow(/models\.m\.contxtWindow is unknown \(did you mean contextWindow\?\)/);
-    expect(() =>
-      loadConfig({ configPath: writeConfig(minimalConfig(`,"models":{"m":{"compat":{}}}`)) }),
-    ).toThrow(/is pinned/);
-  });
-
   test("非法 baseUrl 协议 = fail fast", () => {
     expect(() =>
       loadConfig({ configPath: writeConfig(`{"version":1,"reviewer":{"baseUrl":"ftp://x"}}`) }),
@@ -232,20 +223,7 @@ describe("loadConfig：失败策略", () => {
   });
 });
 
-describe("loadConfig：模型元数据与边界", () => {
-  test("models 深合并：只覆盖写到的叶子", () => {
-    const path = writeConfig(
-      minimalConfig(
-        `,"models":{"deepseek-v4-flash":{"contextWindow":128000,"cost":{"output":1.5}}}`,
-      ),
-    );
-    const { config } = loadConfig({ configPath: path });
-    expect(config.models["deepseek-v4-flash"]).toEqual({
-      contextWindow: 128000,
-      cost: { output: 1.5 },
-    });
-  });
-
+describe("loadConfig：边界", () => {
   test("boundary 的 null = 显式关闭（与「没写」可区分）", () => {
     const path = writeConfig(
       minimalConfig(`,"limits":{"boundary":{"maxFiles":null,"maxDiffLines":50}}`),

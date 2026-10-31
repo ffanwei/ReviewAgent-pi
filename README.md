@@ -141,14 +141,14 @@ review-pi config init --from-env .env.local   # 一次性迁移旧 .env.local
 ```
 
 - **秘密只进该文件**（POSIX 权限建议 `0600`，过宽只警告）；`config show`、审计、stdout 一律只报 `set|missing`。
-- **可配**：超时、并发、MR 边界（`limits.boundary`，`null` = 关闭该维）、规则包归档上限、微限（回显/跳数/摘要截断）、模型元数据 `models{}`。
+- **可配**：超时、并发、MR 边界（`limits.boundary`，`null` = 关闭该维）、规则包归档上限、微限（回显/跳数/摘要截断）。
 - **死钉**：轮次 5、工具调用 100、工具结果预算 8000 字符、`temperature: 0`、effort 锁档——写进配置文件只会得到「已钉死」警告。
 - **读一次**：启动装载为不可变快照，运行中改文件不生效；每次 run 的审计顶层 `config` 记录全量生效值 + 来源 + `digest`。
 - **失败策略**：类型/取值/版本错 fail fast（exit 1 并指出键路径）；未知键与权限过宽只警告。
 
 被测模型经 `--model <id>` 自由指定；wire 序列化按 review-llm 的 provider 画像表单源分派。judge 相关凭据（`JUDGE_*` / `OPENAI_*`）随判定链一并删除（ADR-0024），本仓不再读取。
 
-自定义网关（`reviewer.baseUrl` 指向中转/自建端点）的可用性与兼容性由使用者自证：换端点或换模型后先跑 `review-pi smoke`（双探针：网关健康 + 模型可达，输出人话诊断与处置建议；通过退出码 0、失败 1；探针请求体走生产画像序列化）。第三方 `ep-xxx` 的元数据可用 `models{"<id>": {"contextWindow": ..., "maxTokens": ..., "cost": {...}}}` 补全，成本估算随之为准。
+自定义网关（`reviewer.baseUrl` 指向中转/自建端点）的可用性与兼容性由使用者自证：换端点或换模型后先跑 `review-pi smoke`（双探针：网关健康 + 模型可达，输出人话诊断与处置建议；通过退出码 0、失败 1；探针请求体走生产画像序列化）。目录外模型 id 可直接跑，但画像借用 `deepseek-v4-flash`（成本数字仅供参考）。
 
 ## 目录与入库约定
 

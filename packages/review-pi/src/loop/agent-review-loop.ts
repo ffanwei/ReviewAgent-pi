@@ -222,7 +222,7 @@ export async function runAgentReviewLoop(
     throw new Error("internal error: follow-up enqueue invoked before agent construction");
   };
 
-  const model = reviewModelOf(inputs.modelId, inputs.baseUrl, runtime.models);
+  const model = reviewModelOf(inputs.modelId, inputs.baseUrl);
   const agent = new Agent({
     initialState: {
       systemPrompt: inputs.systemPrompt,

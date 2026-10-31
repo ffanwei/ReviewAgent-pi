@@ -6,6 +6,7 @@
 **跨仓**：本 ADR 为本仓 pi 线序列 0025；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 **后续修订**：[ADR-0026](0026-config-surface-engine-and-endpoint-tier.md)（配置面：`presentation.engine` 相对路径改锚**配置文件所在目录**、新增 `"builtin"` 哨兵、官方/网关判档归一化为单源、模板去 `$schema`、`presentationBufferMs` 允许 `0` 的例外写明、缺配置一行提示）与 [ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（产物面：`runs|audit/mr/<caseId>` 去实验标识层、cwd 只写 `review-result.json`、审计快照家目录归一为 `~/...`、规则包只认显式输入、配置目录 `0700` / 文件 `0600`）。本 ADR 的其余决策（唯一配置文件、JSONC、键表与类型校验、`config init/show`、测量常量面收窄）继续有效。
 **修订（2026-10-31，实现期）**：默认文件名由 `PiAgent.json` 改为 **`PiAgent.jsonc`**——文件名与内容形态（JSONC：注释 + 尾逗号）一致，避免编辑器把注释判成非法 JSON。语义不变：内容形态、键表、校验、`config init/show` 行为与默认路径都只换了扩展名；`--config <path>` 仍接受任意路径，扩展名不参与判定。发布前改名，无存量用户文件需迁移。
+**修订（2026-10-31，实现期）**：**删除模型元数据覆盖面 `models{}`**（连同 `ModelOverride`、`reviewModelOf` 的 overrides 形参与 `ReviewRuntime.models`）。配置面只保留 `reviewer` / `model` / `presentation` / `limits` 四段。后果：目录外模型 id 一律沿用 `deepseek-v4-flash` 画像（`contextWindow` / `maxTokens` / `cost` 均按 flash），成本数字仅供参考；旧配置文件里的 `models` 键降级为 `unknown key models` 警告（不阻断）。本文 Context 第 3 条动机、Decision 3 可配清单中的「模型元数据」一条、Decision 5 的 `ReviewRuntime` 组成、Consequences 中「第三方网关元数据可补全」一条随之失效。
 
 ## Context
 
@@ -13,7 +14,7 @@ ADR-0024 之后，运行配置面是**仓库内**的 `.env.local`（cwd 相对�
 
 - 秘密（`REVIEWER_API_KEY`）与端点（`REVIEWER_URL`）落在**工作树里**的文件中，误提交/误打包的风险高于用户 home；
 - 超时、并发、MR 边界、规则包归档上限、若干文本截断上限全是模块级常量，用户无旋钮；
-- 模型元数据只有 vendored pi 的 3 条内置 JSON 目录，接第三方网关（`ep-xxx`）时 `contextWindow` / `maxTokens` / `cost` 全错，成本估算失真；
+- 模型元数据只有 vendored pi 的 3 条内置 JSON 目录，接第三方网关（`ep-xxx`）时 `contextWindow` / `maxTokens` / `cost` 全错，成本估算失真（此动机对应的 `models{}` 覆盖面已在 2026-10-31 修订中删除）；
 - 呈现引擎的开关/模型靠 `REVIEW_PI_PRESENTATION_*` 环境变量，与「配置应可审计」相悖；
 - `REVIEWER_MAX_TOKENS` 是唯一「每次请求重读 `process.env`」的路径，配置在请求期可变，产物无法反查是在什么设置下生成的。
 
@@ -46,7 +47,7 @@ stderr 一行提示「已不再读取」。
 **可配**：
 - B 资源/运维：全部超时（skill 会话 / skill bash / ripgrep / 规则包解压 / 双探针 / 呈现单请求与缓冲）、建议并发、MR 边界阈值、规则包归档上限；
 - 模型接入：默认 id、`baseUrl`、请求输出预算、呈现模型、呈现引擎路径；
-- 模型元数据：按 id 深合并 `contextWindow` / `maxTokens` / `cost` / `input`；
+- 模型元数据：按 id 深合并 `contextWindow` / `maxTokens` / `cost` / `input`（已废止，见修订）；
 - 微限：skill bash 输出上限、包头部字节、检索回显上限、调用链跳数、工具名/参数摘要/进度摘要截断。
 
 **死钉**（配置文件里出现即按未知/钉死键警告，不生效）：
@@ -84,7 +85,7 @@ maxRounds=5 · maxToolCalls=100 · toolResultBudgetChars=8000 · temperature=0 �
 
 不在模块顶层读配置、不设全局单例、不把配置翻译回环境变量。
 `main()` 内构造一次 `ResolvedConfig`，经 `ReviewRunInput.runtime`（`ReviewRuntime`：`limits` /
-`maxOutputTokens` / `models`）与 `ReviewRunInput.config`（审计快照）下传；请求期不重读文件。
+`maxOutputTokens`）与 `ReviewRunInput.config`（审计快照）下传；请求期不重读文件。
 长跑进程里改文件不生效（明确写入文档）。内核直调形态缺省 `DEFAULT_REVIEW_RUNTIME`（今天的缺省行为）。
 
 ### 6. 审计配置快照（只进审计文件）
@@ -129,7 +130,7 @@ maxRounds=5 · maxToolCalls=100 · toolResultBudgetChars=8000 · temperature=0 �
   - 秘密离开工作树，进用户 home 单文件（0600，绝不回显）；
   - 配置有 schema、类型、注释、取值域与最近键提示；
   - 每次 run 的产物可反查配置（`config.values` + `digest`）；
-  - 第三方网关的模型元数据可补全，成本估算不再失真；
+  - 第三方网关的模型元数据可补全，成本估算不再失真（已废止，见修订）；
   - 请求期不再读 env，同一 run 内配置恒定。
 - **负/风险**：
   - **请求字节面随配置可变**（见 Decision 4）；「唯一形态」只保证执行路径唯一。

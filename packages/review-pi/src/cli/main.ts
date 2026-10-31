@@ -53,7 +53,6 @@ import {
   homeDirectory,
   loadConfig,
   resolvePresentationEnginePath,
-  type ModelOverride,
   type ResolvedConfig,
 } from "../shared/config.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
@@ -131,7 +130,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   }
   // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态
   progress?.finish(
-    progressFinish(modelId, endpoint.baseUrl, config.models, record.baseline.usage, startedAt),
+    progressFinish(modelId, endpoint.baseUrl, record.baseline.usage, startedAt),
   );
 
   // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout
@@ -367,11 +366,10 @@ function startProgress(args: ReviewCliArgs, modelId: string): ProgressRenderer |
 function progressFinish(
   modelId: string,
   baseUrl: string,
-  models: Readonly<Record<string, ModelOverride>>,
   usage: LlmUsage,
   startedAt: number,
 ): ProgressFinishInput {
-  const costUsd = calculateCost(reviewModelOf(modelId, baseUrl, models), llmUsageToPiUsage(usage)).total;
+  const costUsd = calculateCost(reviewModelOf(modelId, baseUrl), llmUsageToPiUsage(usage)).total;
   return {
     durationMs: Date.now() - startedAt,
     usage,
