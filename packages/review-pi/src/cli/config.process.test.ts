@@ -286,3 +286,11 @@ test("config show：--config 指向不存在文件 = exit 1 人话；坏 JSONC =
   expect(broken.stderr).toMatch(/parse error at line \d+, column \d+/);
   expect(broken.stdout).toBe("");
 });
+
+test("缺省配置缺席：review/smoke 打一行提示（仍因缺 apiKey 中止，退出码语义不变）", async () => {
+  const run = await runCli(["smoke"]);
+  expect(run.status).toBe(1);
+  expect(run.stderr).toContain("未找到用户级配置文件");
+  expect(run.stderr).toContain("config init");
+  expect(run.stdout).not.toContain(SENTINEL_KEY);
+});

@@ -9,7 +9,7 @@ import { basename } from "node:path";
  * pi 线差异（自立决策，不从 DSH 仓导入）：
  * - 检视形态唯一（ADR-0024：A–E 配置矩阵删除，规则 Skill 是唯一形态）；
  * - `--config` 指向用户级 JSONC 配置（ADR-0025）；规则 Skill 由 `--rule-skill-zip` / `--rule-skill` /
- *   `--rule-skill-name` / `--strict-rule-skill` 与 `<repo>/.review-rules/` 约定；
+ *   `--rule-skill-name` / `--strict-rule-skill` 显式给出（ADR-0027：仓库内约定目录不再自动扫描）；
  * - 无 --language 旗标（输出语言是 DSH 线后分家决策，pi 线自立 ADR 前不实装）；
  * - smoke 只认 --model（双探针自检不跑检视，参数面自然更窄）。
  *
@@ -65,7 +65,7 @@ review 旗标：
   --model   <id>         评审模型 id（缺省取配置文件 model.default；自由 id 透传）
   --config  <path>       配置文件显式路径（相对路径按 cwd 解析；缺省用户级路径）
   --rule-skill-zip  <path>  规则 Skill zip 显式路径（可重复，顺序 = 执行顺序；
-                            缺省扫 <repo>/.review-rules/*.zip 全部装载）
+                            不自动扫描仓库内目录——不传就不装载规则包，ADR-0027）
   --rule-skill      <dir>   规则 Skill **已解压目录**（可重复；排在全部
                             --rule-skill-zip 之后；目录先审计再按内容哈希复制进 run
                             缓存，符号链接/越界一律拒绝）

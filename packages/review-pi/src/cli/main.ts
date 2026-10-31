@@ -119,7 +119,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
   if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
     process.stderr.write(
-      "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / <repo>/.review-rules/*.zip 均未命中），照常检视\n",
+      "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill 均未给出；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n",
     );
   }
   // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态
@@ -407,6 +407,13 @@ function main(): void {
     config = loaded.config;
     if (parsed.command !== "config" && parsed.args.configPath !== undefined && !config.exists) {
       throw new ConfigError(`--config 指定的文件不存在（${config.path}）`);
+    }
+    // 缺省路径缺席不是错误（ADR-0025 允许全缺省直跑），但要让人知道"你现在跑的是
+    // 内置缺省、而不是配置文件"——否则分发包首跑会在几十秒后才因缺 apiKey 才暴露。
+    if (parsed.command !== "config" && parsed.args.configPath === undefined && !config.exists) {
+      process.stderr.write(
+        `review-pi: 未找到用户级配置文件 ${config.path}（按内置缺省运行；先跑 review-pi config init 生成）\n`,
+      );
     }
   } catch (error) {
     reportErrorAndExit(error);

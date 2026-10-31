@@ -1,5 +1,5 @@
 ﻿import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, posix, resolve, win32 } from "node:path";
 
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
@@ -868,14 +868,23 @@ export interface WriteConfigOptions {
   readonly content?: string;
 }
 
-/** 写缺省配置（目录自动创建；POSIX 0600；已存在且无 force = 拒绝覆盖） */
+/** 写缺省配置（目录自动创建，POSIX 0700；文件 0600；已存在且无 force = 拒绝覆盖） */
 export function writeConfigFile(options: WriteConfigOptions): void {
   const { path } = options;
   if (existsSync(path) && options.force !== true) {
     throw new ConfigError(`配置文件已存在（${path}）——加 --force 覆盖`);
   }
-  mkdirSync(dirname(path), { recursive: true });
+  // 目录装的是含秘密的单文件：0700 让同机其他用户连"这里有个配置文件"都看不到。
+  // Windows 上 mode 只影响只读位，传了也无害。
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, options.content ?? DEFAULT_CONFIG_TEMPLATE, { encoding: "utf8", mode: 0o600 });
+  // writeFileSync 的 mode 只在**创建**时生效：--force 覆盖既有文件不会改权限，
+  // 于是 0644 的文件永远修不好。写后显式 chmod（POSIX 才有意义，其余平台 no-op）。
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // 权限修不了不阻断写盘：读取侧有 checkPermissions 的宽权限警告兜底
+  }
 }
 
 /** `config init` 可预填的值（`--from-env` 一次性迁移用；缺省 = 纯模板） */

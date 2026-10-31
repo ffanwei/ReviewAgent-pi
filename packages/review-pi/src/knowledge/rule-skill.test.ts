@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
@@ -11,7 +11,6 @@ import {
 } from "@earendil-works/pi-agent-core";
 import {
   loadRuleSkills,
-  RULE_SKILL_DIR_NAME,
   type RuleSkill,
   type RuleSkillSpawn,
 } from "./rule-skill.js";
@@ -39,15 +38,44 @@ function tempRoot(): string {
 }
 
 /**
+ * 测试固定的 zip 投放目录。ADR-0027 之后装载器**不再自动扫描**它，所以每个
+ * 用例都必须显式把路径传进去——这里保留目录名只是为了让 source.path 的
+ * 仓库相对形态（".review-rules/x.zip"）继续可断言。
+ */
+const FIXTURE_ZIP_DIR = ".review-rules";
+
+/** 该 fixture 仓库里现存的 zip（文件名序） */
+function fixtureZips(repo: string): string[] {
+  try {
+    return readdirSync(path.join(repo, FIXTURE_ZIP_DIR))
+      .filter((name) => name.toLowerCase().endsWith(".zip"))
+      .sort()
+      .map((name) => path.join(repo, FIXTURE_ZIP_DIR, name));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * 单包读法（生产只有多包入口 `loadRuleSkills`）：取第一个装载结果。
  * 装载不到 = 测试自身的前提没造对，直接炸出来。
  */
 async function loadOne(options: Parameters<typeof loadRuleSkills>[0]): Promise<RuleSkill> {
-  const [first] = await loadRuleSkills(options);
+  const [first] = await loadRuleSkills(withFixtureZips(options));
   if (first === undefined) {
     throw new Error("expected the loader to return one rule skill");
   }
   return first;
+}
+
+/** 用例没显式给 zip 时，按 fixture 目录补齐（等价于 CLI 的 --rule-skill-zip） */
+function withFixtureZips<
+  T extends { repoPath: string; explicitZipPaths?: readonly string[]; explicitZipPath?: string },
+>(options: T): T {
+  if (options.explicitZipPaths !== undefined || options.explicitZipPath !== undefined) {
+    return options;
+  }
+  return { ...options, explicitZipPaths: fixtureZips(options.repoPath) };
 }
 
 // ---- 最小 zip builder ----
@@ -180,9 +208,9 @@ function sampleSkill(overrides: Partial<Skill> = {}): Skill {
 
 // ---- 正常装载 / 降级 ----
 
-test("正常装载：定位约定目录 zip → 解压 → 装载单一 skill，digest = zip sha256", async () => {
+test("正常装载：显式 zip → 解压 → 装载单一 skill，digest = zip sha256", async () => {
   const repo = tempRoot();
-  const zipPath = writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  const zipPath = writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "sample-rule/SKILL.md", data: Buffer.from(SKILL_MD) },
   ]);
   const { spawnFn, calls } = recordingSpawn();
@@ -201,16 +229,22 @@ test("正常装载：定位约定目录 zip → 解压 → 装载单一 skill，
   expect(calls).toHaveLength(1);
 });
 
-test("N=0：约定目录缺席 ⇒ 空数组（不是降级条目；strict 才抛，ADR-0014 决策 15）", async () => {
+test("N=0：没有任何显式规则包 ⇒ 空数组（不是降级条目；strict 才抛，ADR-0014 决策 15）", async () => {
   const repo = tempRoot();
+  // 仓库里即使真放着 .review-rules/*.zip 也不再被自动装载（ADR-0027）
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "ignored.zip", [
+    { name: "sample-rule/SKILL.md", data: Buffer.from(SKILL_MD) },
+  ]);
   const options = { repoPath: repo, cacheRoot: path.join(repo, "cache") };
   expect(await loadRuleSkills(options)).toEqual([]);
-  await expect(loadRuleSkills({ ...options, strict: true })).rejects.toThrow(RULE_SKILL_DIR_NAME);
+  await expect(loadRuleSkills({ ...options, strict: true })).rejects.toThrow(
+    /no rule-skill archive given/,
+  );
 });
 
-test("多 zip 全装：约定目录文件名序 = 装载序（ADR-0014）", async () => {
+test("多 zip 全装：显式列表文件名序 = 装载序（ADR-0014）", async () => {
   const repo = tempRoot();
-  const dir = path.join(repo, RULE_SKILL_DIR_NAME);
+  const dir = path.join(repo, FIXTURE_ZIP_DIR);
   writeZip(dir, "b.zip", [{ name: "beta/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   writeZip(dir, "a.zip", [{ name: "alpha/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   const { spawnFn } = recordingSpawn();
@@ -219,6 +253,7 @@ test("多 zip 全装：约定目录文件名序 = 装载序（ADR-0014）", asyn
   const skills = await loadRuleSkills({
     repoPath: repo,
     cacheRoot: path.join(repo, "cache"),
+    explicitZipPaths: fixtureZips(repo),
     spawn: spawnFn,
     loadSkillsFn: (async () => {
       call += 1;
@@ -235,7 +270,7 @@ test("多 zip 全装：约定目录文件名序 = 装载序（ADR-0014）", asyn
 
 test("显式多 zip：顺序 = 传入顺序（不排序）", async () => {
   const repo = tempRoot();
-  const dir = path.join(repo, RULE_SKILL_DIR_NAME);
+  const dir = path.join(repo, FIXTURE_ZIP_DIR);
   const second = writeZip(dir, "a.zip", [{ name: "alpha/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   const first = writeZip(dir, "z.zip", [{ name: "zeta/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   const { spawnFn } = recordingSpawn();
@@ -255,30 +290,30 @@ test("显式多 zip：顺序 = 传入顺序（不排序）", async () => {
   expect(skills.map((skill) => skill.name)).toEqual(["zeta", "alpha"]);
 });
 
-test("无 zip（约定目录缺席 / 为空）⇒ 空数组；strict 才抛错", async () => {
+test("没有任何显式输入 ⇒ 空数组；strict 才抛错", async () => {
   const empty = tempRoot();
-  const missing = tempRoot();
-  mkdirSync(path.join(missing, RULE_SKILL_DIR_NAME), { recursive: true });
+  const withConventionDir = tempRoot();
+  mkdirSync(path.join(withConventionDir, FIXTURE_ZIP_DIR), { recursive: true });
 
   expect(await loadRuleSkills({ repoPath: empty, cacheRoot: path.join(empty, "cache") })).toEqual([]);
   expect(
     await loadRuleSkills({
-      repoPath: missing,
-      cacheRoot: path.join(missing, "cache"),
+      repoPath: withConventionDir,
+      cacheRoot: path.join(withConventionDir, "cache"),
     }),
   ).toEqual([]);
   await expect(
     loadRuleSkills({
-      repoPath: missing,
-      cacheRoot: path.join(missing, "cache"),
+      repoPath: withConventionDir,
+      cacheRoot: path.join(withConventionDir, "cache"),
       strict: true,
     }),
-  ).rejects.toThrow(/no rule-skill archive found/);
+  ).rejects.toThrow(/no rule-skill archive given/);
 });
 
 test("多 zip 单包失败只降级该包（其余照常装载）", async () => {
   const repo = tempRoot();
-  const dir = path.join(repo, RULE_SKILL_DIR_NAME);
+  const dir = path.join(repo, FIXTURE_ZIP_DIR);
   const good = writeZip(dir, "a.zip", [{ name: "alpha/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   const bad = writeZip(dir, "b.zip", [{ name: "../escape/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   const { spawnFn } = recordingSpawn();
@@ -298,7 +333,7 @@ test("多 zip 单包失败只降级该包（其余照常装载）", async () => 
 
 test("--rule-skill-name 选中：多 zip 时命中指定名，落非降级", async () => {
   const repo = tempRoot();
-  const dir = path.join(repo, RULE_SKILL_DIR_NAME);
+  const dir = path.join(repo, FIXTURE_ZIP_DIR);
   writeZip(dir, "a.zip", [{ name: "alpha/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   writeZip(dir, "b.zip", [{ name: "beta/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   const { spawnFn } = recordingSpawn();
@@ -316,7 +351,7 @@ test("--rule-skill-name 选中：多 zip 时命中指定名，落非降级", asy
 
 test("降级：包内无 SKILL.md（装载器交回空 skill 列表）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "sample-rule/README.md", data: Buffer.from("no skill here") },
   ]);
   const { spawnFn } = recordingSpawn();
@@ -334,7 +369,7 @@ test("降级：包内无 SKILL.md（装载器交回空 skill 列表）", async (
 
 test("Zip Slip：条目名含 ../escape 被整包拒绝（降级）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "../escape/SKILL.md", data: Buffer.from(SKILL_MD) },
   ]);
   const { spawnFn } = recordingSpawn();
@@ -350,7 +385,7 @@ test("Zip Slip：条目名含 ../escape 被整包拒绝（降级）", async () =
 
 test("绝对路径条目被拒（降级）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "/etc/passwd", data: Buffer.from(SKILL_MD) },
   ]);
   const { spawnFn } = recordingSpawn();
@@ -366,7 +401,7 @@ test("绝对路径条目被拒（降级）", async () => {
 
 test("符号链接条目被拒（降级）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "link", data: Buffer.from("target"), unixMode: 0xa000 },
   ]);
   const { spawnFn } = recordingSpawn();
@@ -382,7 +417,7 @@ test("符号链接条目被拒（降级）", async () => {
 
 test("单包尺寸超限被拒（8 MiB 上界，测试用窄上界触发）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "sample-rule/SKILL.md", data: Buffer.from(SKILL_MD) },
   ]);
   const { spawnFn } = recordingSpawn();
@@ -399,7 +434,7 @@ test("单包尺寸超限被拒（8 MiB 上界，测试用窄上界触发）", as
 
 test("条目数超限被拒（降级）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "a.txt", data: Buffer.from("a") },
     { name: "b.txt", data: Buffer.from("b") },
     { name: "c.txt", data: Buffer.from("c") },
@@ -418,7 +453,7 @@ test("条目数超限被拒（降级）", async () => {
 
 test("解压炸弹（高压缩比）被拒（降级）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "bomb.bin", data: Buffer.alloc(200_000), method: 8 },
   ]);
   const { spawnFn } = recordingSpawn();
@@ -435,7 +470,7 @@ test("解压炸弹（高压缩比）被拒（降级）", async () => {
 
 test("解压后总字节超限被拒（降级）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "big.bin", data: Buffer.alloc(5_000) },
   ]);
   const { spawnFn } = recordingSpawn();
@@ -452,7 +487,7 @@ test("解压后总字节超限被拒（降级）", async () => {
 
 test("非 zip 字节被拒（降级）", async () => {
   const repo = tempRoot();
-  const dir = path.join(repo, RULE_SKILL_DIR_NAME);
+  const dir = path.join(repo, FIXTURE_ZIP_DIR);
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "rules.zip"), "this is not a zip");
   const { spawnFn } = recordingSpawn();
@@ -470,7 +505,7 @@ test("非 zip 字节被拒（降级）", async () => {
 
 test("解压失败 → 降级，且错误文本已脱敏（无宿主绝对路径）", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "sample-rule/SKILL.md", data: Buffer.from(SKILL_MD) },
   ]);
   const failingSpawn: RuleSkillSpawn = async () => ({
@@ -492,7 +527,7 @@ test("解压失败 → 降级，且错误文本已脱敏（无宿主绝对路径
 
 test("缓存命中：同 zip 二次装载不再解压（spawn 只调一次）", async () => {
   const repo = tempRoot();
-  const zipPath = writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  const zipPath = writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "sample-rule/SKILL.md", data: Buffer.from(SKILL_MD) },
   ]);
   const { spawnFn, calls } = recordingSpawn();
@@ -523,7 +558,7 @@ test("strict 模式：装载失败抛错（CI 可要求包必须成功）", asyn
 
 test("诊断透传：内核 diagnostic 的 path 净化为缓存目录相对 POSIX", async () => {
   const repo = tempRoot();
-  const zipPath = writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  const zipPath = writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "sample-rule/SKILL.md", data: Buffer.from(SKILL_MD) },
   ]);
   const digest = sha256(await readBytes(zipPath));
@@ -548,7 +583,7 @@ test("诊断透传：内核 diagnostic 的 path 净化为缓存目录相对 POSI
   expect(skill.diagnostics[0]?.path).not.toContain(repo);
 });
 
-test("显式 zip 路径优先于约定目录（source.path 原样 POSIX 化）", async () => {
+test("显式 zip 路径：source.path 原样 POSIX 化（ADR-0027 只认显式）", async () => {
   const repo = tempRoot();
   const explicitDir = tempRoot();
   const zipPath = writeZip(explicitDir, "from-elsewhere.zip", [
@@ -637,7 +672,7 @@ test("目录 + zip 共存：先全部 zip，再全部目录（ADR-0018 装载序
   expect(skills.map((skill) => skill.name)).toEqual(["from-zip", "from-dir", "from-dir"]);
 });
 
-test("显式目录在场时，约定目录缺席不再算整体失败（strict 亦可跑通）", async () => {
+test("只有显式目录（没有 zip）时 strict 亦可跑通", async () => {
   const repo = tempRoot();
   const skillDir = writeRuleDir(path.join(repo, "packs"));
 
@@ -741,7 +776,7 @@ test.skipIf(process.platform === "win32")("目录含符号链接被拒（降级�
 
 test("真解压集成：默认 spawn + 默认 loadSkills 从 zip 装载 SKILL.md", async () => {
   const repo = tempRoot();
-  writeZip(path.join(repo, RULE_SKILL_DIR_NAME), "rules.zip", [
+  writeZip(path.join(repo, FIXTURE_ZIP_DIR), "rules.zip", [
     { name: "sample-rule/SKILL.md", data: Buffer.from(SKILL_MD) },
     { name: "sample-rule/notes.txt", data: Buffer.from("plain data file, never executed") },
   ]);

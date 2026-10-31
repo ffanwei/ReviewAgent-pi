@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, test } from "vitest";
@@ -273,7 +273,23 @@ describe("writeConfigFile", () => {
     expect(readFileSync(path, "utf8")).toBe('{"version":1}');
     if (process.platform !== "win32") {
       expect(statSync(path).mode & 0o077).toBe(0);
+      // 目录同样不放行：装着秘密的目录对同机其他用户也要不可见（0700）
+      expect(statSync(dirname(path)).mode & 0o077).toBe(0);
     }
+  });
+
+  test("--force 覆盖既有 0644 文件后权限回到 0600（writeFileSync 的 mode 只在创建时生效）", () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const path = join(tempDir(), "PiAgent.json");
+    writeFileSync(path, "{}", { encoding: "utf8" });
+    chmodSync(path, 0o644);
+    expect(statSync(path).mode & 0o077).not.toBe(0);
+
+    writeConfigFile({ path, force: true, content: '{"version":1}' });
+
+    expect(statSync(path).mode & 0o077).toBe(0);
   });
 
   test("模板本身可被解析（写出来就能读回去）", () => {

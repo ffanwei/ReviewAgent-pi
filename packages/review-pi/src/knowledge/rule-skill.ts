@@ -23,10 +23,9 @@ import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
  *   的"错误字节需跨环境可复现"纪律）；
  * - **零新增 npm 依赖**：node:child_process / node:crypto / node:fs / node:path
  *   + vendored 内核 `loadSkills`。
+ * - **只认显式输入（ADR-0027）**：不扫描被检视仓库里的 `.review-rules/`——
+ *   规则包能在 skill 会话里指挥进程执行，取得它必须是一次显式授权。
  */
-
-/** 被检视项目投放规则 skill 的约定目录（仓库根下；只放 zip） */
-export const RULE_SKILL_DIR_NAME = ".review-rules";
 
 /** 解压完成标记文件名（缓存命中判定；点号前缀让内核 loadSkills 忽略它） */
 const READY_MARKER = ".rule-skill-ready";
@@ -124,12 +123,14 @@ export interface LoadRuleSkillOptions {
  * `--rule-skill` 已解压目录，排在全部 zip 之后）。
  *
  * - 显式 zip 列表：逐包装载，顺序 = 传入顺序；
- * - 约定目录：`<repoPath>/.review-rules/*.zip`，文件名序；**全部装载**；
  * - 显式目录列表：逐目录装载（审计 → 内容哈希 → 复制进缓存 → 同一装载链路）；
  * - 单包失败只降级该包（在后面继续装载），`strict` 下任一失败即抛；
- * - 无 zip 且无目录（约定目录缺席 / 为空）⇒ `[]`（N=0：F 与 E 逐字节相同的
- *   前提；不是降级条目——审计 `ruleSkill: []`）；
- * - 显式给了目录时，约定目录缺席**不再算整体失败**（用户已指定输入）。
+ * - **规则包只认显式输入**（ADR-0027）：不再扫描被检视仓库里的
+ *   `.review-rules/*.zip`。规则包会指挥 skill 会话的 bash 工具执行进程，
+ *   所以「仓库自带规则」必须由调用方显式授权（传路径），不能由仓库内容
+ *   自动取得执行权；
+ * - 什么都没给（既无 zip 也无目录）⇒ `[]`（N=0：F 与 E 逐字节相同的前提；
+ *   不是降级条目——审计 `ruleSkill: []`），`strict` 下抛错。
  */
 export async function loadRuleSkills(options: LoadRuleSkillOptions): Promise<readonly RuleSkill[]> {
   const limits = options.limits ?? DEFAULT_RULE_SKILL_LIMITS;
@@ -138,6 +139,8 @@ export async function loadRuleSkills(options: LoadRuleSkillOptions): Promise<rea
   const dirPaths = options.ruleSkillDirs ?? [];
 
   const located = await locateZipCandidates(options);
+  const zipEntries = "reason" in located ? [] : located.entries;
+  // 只给了显式目录（没有 zip）时，zip 侧的 reason 不是整体失败——目录照常装载
   if ("reason" in located && dirPaths.length === 0) {
     if (options.strict === true) {
       throw new Error(`rule skill unavailable: ${located.reason}`);
@@ -146,7 +149,6 @@ export async function loadRuleSkills(options: LoadRuleSkillOptions): Promise<rea
   }
 
   const skills: RuleSkill[] = [];
-  const zipEntries = "reason" in located ? [] : located.entries;
   for (const entry of zipEntries) {
     if (entry.reason !== undefined) {
       if (options.strict === true) {
@@ -224,42 +226,28 @@ interface LocatedZip {
 }
 
 /**
- * 定位候选 zip（ADR-0014）：
+ * 定位候选 zip（ADR-0014 / ADR-0027）：
  * - 显式列表（`explicitZipPaths` 优先，其次单数 `explicitZipPath`）→ 逐包
  *   校验存在性，缺失包带着原因继续（不连坐其他包）；
- * - 约定目录 → 文件名序全部装载（多包不再要求消歧）；
- * - 目录缺席 / 为空 → 整体 reason（调用方转成 `[]` 或 strict 抛错）。
+ * - **没有显式输入就是没有**：仓库根 `.review-rules/` 不再被自动扫描
+ *   （ADR-0027：规则包能指挥 skill 会话执行进程，取用必须显式授权）。
  */
 async function locateZipCandidates(
   options: LoadRuleSkillOptions,
 ): Promise<{ readonly entries: readonly LocatedZip[] } | { readonly reason: string }> {
   const explicit = options.explicitZipPaths ?? (options.explicitZipPath !== undefined ? [options.explicitZipPath] : []);
-  if (explicit.length > 0) {
-    const entries: LocatedZip[] = [];
-    for (const zipPath of explicit) {
-      entries.push(
-        (await fileExists(zipPath))
-          ? { path: zipPath }
-          : { path: zipPath, reason: `rule-skill archive not found: ${zipPath}` },
-      );
-    }
-    return { entries };
+  if (explicit.length === 0) {
+    return { reason: "no rule-skill archive given (pass --rule-skill-zip or --rule-skill <dir>)" };
   }
-  const dir = path.join(options.repoPath, RULE_SKILL_DIR_NAME);
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch {
-    return { reason: `no rule-skill archive found (${RULE_SKILL_DIR_NAME}/ is missing)` };
+  const entries: LocatedZip[] = [];
+  for (const zipPath of explicit) {
+    entries.push(
+      (await fileExists(zipPath))
+        ? { path: zipPath }
+        : { path: zipPath, reason: `rule-skill archive not found: ${zipPath}` },
+    );
   }
-  const zips = names
-    .filter((name) => name.toLowerCase().endsWith(".zip"))
-    .sort()
-    .map((name) => path.join(dir, name));
-  if (zips.length === 0) {
-    return { reason: `no rule-skill archive found in ${RULE_SKILL_DIR_NAME}/` };
-  }
-  return { entries: zips.map((zipPath) => ({ path: zipPath })) };
+  return { entries };
 }
 
 async function loadFromZip(
