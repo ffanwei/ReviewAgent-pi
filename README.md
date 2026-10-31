@@ -136,7 +136,7 @@ review-pi config init --from-env .env.local   # 一次性迁移旧 .env.local
     "baseUrl": "https://api.deepseek.com",  // 网关需自带 /v1
     "maxOutputTokens": null                 // null = 自动（网关档 32768）
   },
-  "presentation": { "engine": null }        // 可选：null / "builtin"（制品自带）/ 路径（相对按配置文件目录，ADR-0026）
+  "presentation": { "engine": "builtin" }   // "builtin" = 制品自带（config init 默认）/ null = 关 / 路径（相对按配置文件目录，ADR-0026）
 }
 ```
 

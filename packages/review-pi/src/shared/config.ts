@@ -901,7 +901,8 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
   const modelDefault = jsonString(overrides.modelDefault ?? DEFAULT_MODEL_ID);
   const modelPresentation =
     overrides.modelPresentation === undefined ? "null" : JSON.stringify(overrides.modelPresentation);
-  const enginePath = overrides.enginePath === undefined ? "null" : JSON.stringify(overrides.enginePath);
+  const enginePath =
+    overrides.enginePath === undefined ? jsonString(BUILTIN_ENGINE_SENTINEL) : JSON.stringify(overrides.enginePath);
   return `{
   // PiAgent 运行配置（ADR-0025）。JSONC：允许注释与尾逗号。
   // 秘密（reviewer.apiKey）只写在这里；环境变量不再被读取。
@@ -921,8 +922,8 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
   },
 
   "presentation": {
-    // 核外中文呈现引擎模块路径；null = 不投影（英文直通）。
-    // "builtin" = 制品自带的引擎；相对路径按**本配置文件所在目录**解析（ADR-0026）
+    // 核外中文呈现引擎（默认 builtin = 制品自带，跟着当前安装的 review-pi 包走）。
+    // null = 不投影（英文直通）；路径按**本配置文件所在目录**解析（ADR-0026）
     "engine": ${enginePath}
   },
 

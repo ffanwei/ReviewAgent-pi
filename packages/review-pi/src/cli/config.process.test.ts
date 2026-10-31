@@ -135,6 +135,8 @@ test("config init：写到沙箱 home 的 ~/.PiAgent/PiAgent.jsonc，JSONC 模�
   expect(snapshot.path).toBe(filePath);
   expect(snapshot.secret).toEqual({ "reviewer.apiKey": "missing" });
   expect(snapshot.values["model.default"]).toBe("deepseek-v4-flash");
+  // 模板默认开中文投影（ADR-0026 修订）：生成即 builtin，不是 null
+  expect(snapshot.values["presentation.engine"]).toBe("builtin");
 
   // POSIX 权限 0600（Windows 无此语义）
   if (process.platform !== "win32") {
