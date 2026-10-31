@@ -52,18 +52,30 @@ review-pi smoke         # 双探针自检：网关健康 + 模型可达；通过
 
 ```jsonc
 {
+  // 配置版本：当前只支持 1，不匹配即 fail fast。
   "version": 1,
   "reviewer": {
-    "apiKey": "sk-...",                     // 必需
-    "baseUrl": "https://api.deepseek.com",  // 可选，OpenAI 兼容网关需自带 /v1
-    "maxOutputTokens": null                 // null = 自动（网关档 32768）
+    // 模型网关密钥（必需）。审计与日志只报 set / missing，绝不回显值。
+    "apiKey": "sk-...",
+    // 网关基址：官方直连用 https://api.deepseek.com；OpenAI 兼容网关需自带 /v1。
+    "baseUrl": "https://api.deepseek.com",
+    // 单次请求输出上限：null = 自动（官方直连不发 max_tokens；网关发 32768）。
+    "maxOutputTokens": null
   },
-  "model": { "default": "deepseek-v4-flash" },
-  "presentation": { "engine": "builtin" }   // 中文投影：builtin / 模块路径 / null 关闭
+  "model": {
+    // 默认检视模型（--model 可覆盖）。
+    "default": "deepseek-v4-flash",
+    // 中文投影模型：null = 跟随本次检视模型（ADR-0021）。
+    "presentation": null
+  },
+  "presentation": {
+    // 核外中文呈现引擎：builtin = 包内自带；null = 不投影（英文直通）；路径按本文件所在目录解析。
+    "engine": "builtin"
+  }
 }
 ```
 
-完整键表见 [`PiAgent.example.jsonc`](PiAgent.example.jsonc)；`review-pi config show [--json]` 脱敏查看生效值与来源。
+`config init` 生成的是完整模板：全部键 + 逐项中文注释 + 缺省值（含 `limits` 的每个超时 / 并发 / 边界 / 归档 / 文本截断项），可直接照着改。完整键表见 [`PiAgent.example.jsonc`](PiAgent.example.jsonc)；`review-pi config show [--json]` 脱敏查看生效值与来源。
 
 - **可配**：超时、并发、MR 边界、规则包归档上限、微限（回显 / 跳数 / 摘要截断）。
 - **死钉**：轮次 5、工具调用 100、工具结果预算 8000 字符、`temperature: 0`、effort 锁档——写进配置只会得到告警。
