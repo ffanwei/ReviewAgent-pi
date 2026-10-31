@@ -93,7 +93,7 @@ review-pi review --repo <path> --mr <diff> --out <dir>
 
 - `prepack` 断言 `dist` / `bin` / `presentation` / 履约文本在位，并把仓根 `THIRD-PARTY-NOTICES.md` 复制进 `review-pi` 包；bin 的 shebang 由 `.gitattributes` 固定 LF（Windows 上 CRLF 会被 `pnpm pack` 拒绝）。
 
-**装完怎么用**：从 Node 版本、PATH、registry、ripgrep postinstall 检查，到配置逐字段、`smoke` 自检、任意目录运行、不同 `--out`/cwd 的并发隔离与排障，见《[使用手册：安装、配置与运行](docs/使用手册-安装与运行.md)》。
+**装完怎么用**：从 Node 版本、PATH、registry、ripgrep postinstall 检查，到配置逐字段、`smoke` 自检、任意目录运行、不同 `--out`/cwd 的并发隔离与排障，见《[使用手册：安装、配置与运行](docs/使用手册-安装与运行.md)》。自己打包与 tarball 安装的逐步说明在同手册 §2.4 与 §2.7。
 
 ## 单次检视执行
 
