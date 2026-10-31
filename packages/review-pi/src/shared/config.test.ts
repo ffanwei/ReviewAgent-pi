@@ -33,7 +33,7 @@ function tempDir(): string {
 }
 
 function writeConfig(text: string): string {
-  const path = join(tempDir(), "PiAgent.json");
+  const path = join(tempDir(), "PiAgent.jsonc");
   writeFileSync(path, text, "utf8");
   return path;
 }
@@ -66,10 +66,10 @@ describe("resolveConfigPath", () => {
   test("Windows 读 USERPROFILE，POSIX 读 HOME", () => {
     expect(
       resolveConfigPath({ env: { USERPROFILE: "C:\\Users\\Li", HOME: "/home/li" }, platform: "win32" }),
-    ).toBe("C:\\Users\\Li\\.PiAgent\\PiAgent.json");
+    ).toBe("C:\\Users\\Li\\.PiAgent\\PiAgent.jsonc");
     expect(
       resolveConfigPath({ env: { USERPROFILE: "C:\\Users\\Li", HOME: "/home/li" }, platform: "linux" }),
-    ).toBe("/home/li/.PiAgent/PiAgent.json");
+    ).toBe("/home/li/.PiAgent/PiAgent.jsonc");
   });
 
   test("home 为空 = fail fast（不回落 os.homedir）", () => {
@@ -267,7 +267,7 @@ describe("loadConfig：模型元数据与边界", () => {
 
 describe("writeConfigFile", () => {
   test("写盘：目录自动创建 + 拒绝覆盖 + --force", () => {
-    const path = join(tempDir(), "nested", "PiAgent.json");
+    const path = join(tempDir(), "nested", "PiAgent.jsonc");
     writeConfigFile({ path });
     const text = readFileSync(path, "utf8");
     expect(text).toContain('"version": 1');
@@ -286,7 +286,7 @@ describe("writeConfigFile", () => {
     if (process.platform === "win32") {
       return;
     }
-    const path = join(tempDir(), "PiAgent.json");
+    const path = join(tempDir(), "PiAgent.jsonc");
     writeFileSync(path, "{}", { encoding: "utf8" });
     chmodSync(path, 0o644);
     expect(statSync(path).mode & 0o077).not.toBe(0);
@@ -297,7 +297,7 @@ describe("writeConfigFile", () => {
   });
 
   test("模板本身可被解析（写出来就能读回去）", () => {
-    const path = join(tempDir(), "PiAgent.json");
+    const path = join(tempDir(), "PiAgent.jsonc");
     writeConfigFile({ path });
     const { config } = loadConfig({ configPath: path });
     expect(config.version).toBe(CONFIG_VERSION);
@@ -308,7 +308,7 @@ describe("writeConfigFile", () => {
 describe("常量对齐", () => {
   test("缺省模板与运行期缺省同源（防漂移）", () => {
     const dir = tempDir();
-    const path = join(dir, "PiAgent.json");
+    const path = join(dir, "PiAgent.jsonc");
     writeConfigFile({ path });
     const { config } = loadConfig({ configPath: path });
     expect(config.limits.timeouts.skillPassMs).toBe(600_000);
@@ -336,18 +336,18 @@ describe("常量对齐", () => {
 
 describe("presentation.engine 解析（ADR-0026）", () => {
   test("null / 空白 ⇒ null（恒等直通）", () => {
-    expect(resolvePresentationEnginePath(null, "/etc/pi/PiAgent.json")).toBeNull();
-    expect(resolvePresentationEnginePath("   ", "/etc/pi/PiAgent.json")).toBeNull();
+    expect(resolvePresentationEnginePath(null, "/etc/pi/PiAgent.jsonc")).toBeNull();
+    expect(resolvePresentationEnginePath("   ", "/etc/pi/PiAgent.jsonc")).toBeNull();
   });
 
   test("\"builtin\" ⇒ 制品内引擎（<pkg>/presentation/engine-zh.js）", () => {
-    const resolved = resolvePresentationEnginePath(BUILTIN_ENGINE_SENTINEL, "/etc/pi/PiAgent.json");
+    const resolved = resolvePresentationEnginePath(BUILTIN_ENGINE_SENTINEL, "/etc/pi/PiAgent.jsonc");
     expect(resolved).toBe(builtinPresentationEnginePath());
     expect(resolved?.endsWith(join("presentation", "engine-zh.js"))).toBe(true);
   });
 
   test("相对路径按**配置文件所在目录**解析（不是 cwd）", () => {
-    const configPath = join(tempDir(), "nested", "PiAgent.json");
+    const configPath = join(tempDir(), "nested", "PiAgent.jsonc");
     expect(resolvePresentationEnginePath("engines/zh.mjs", configPath)).toBe(
       join(dirname(configPath), "engines", "zh.mjs"),
     );
@@ -355,7 +355,7 @@ describe("presentation.engine 解析（ADR-0026）", () => {
 
   test("绝对路径原样透传", () => {
     const absolute = join(tempDir(), "zh.mjs");
-    expect(resolvePresentationEnginePath(absolute, "/etc/pi/PiAgent.json")).toBe(absolute);
+    expect(resolvePresentationEnginePath(absolute, "/etc/pi/PiAgent.jsonc")).toBe(absolute);
   });
 });
 
@@ -388,7 +388,7 @@ describe("base URL 判档（ADR-0026 单源）", () => {
 describe("configSnapshot 家目录归一化（ADR-0027）", () => {
   test("不给 home：路径原样（config show 看到的永远是真实路径）", () => {
     const home = tempDir();
-    const path = join(home, ".PiAgent", "PiAgent.json");
+    const path = join(home, ".PiAgent", "PiAgent.jsonc");
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, `{"version":1,"reviewer":{"apiKey":"sk-x"}}`, "utf8");
     const { config } = loadConfig({ configPath: path });
@@ -397,7 +397,7 @@ describe("configSnapshot 家目录归一化（ADR-0027）", () => {
 
   test("给 home：path 与绝对路径值折叠成 ~/...（POSIX 分隔符）", () => {
     const home = tempDir();
-    const path = join(home, ".PiAgent", "PiAgent.json");
+    const path = join(home, ".PiAgent", "PiAgent.jsonc");
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(
       path,
@@ -406,7 +406,7 @@ describe("configSnapshot 家目录归一化（ADR-0027）", () => {
     );
     const { config } = loadConfig({ configPath: path });
     const snapshot = configSnapshot(config, { home });
-    expect(snapshot.path).toBe("~/.PiAgent/PiAgent.json");
+    expect(snapshot.path).toBe("~/.PiAgent/PiAgent.jsonc");
     expect(snapshot.values["presentation.engine"]).toBe("~/bin/zh.mjs");
     // 秘密面纪律不变
     expect(snapshot.secret).toEqual({ "reviewer.apiKey": "set" });

@@ -15,7 +15,7 @@
 | 层 | 职责 | 关键文件 |
 |---|---|---|
 | **Review Runtime（pi 内核线）** | 单案全链：MR 边界护栏 → 规则 Skill 装载 → 六阶段 agent-loop（七工具 + Context Ledger）→ 候选门 → 审计/记录/转录/意见导出 | `packages/review-pi/src/run/review-run.ts`、`loop/agent-review-loop.ts`、`tools/toolkit.ts`、`gate/candidate-gate.ts` |
-| **CLI 与呈现** | 参数解析、配置装载（`~/.PiAgent/PiAgent.json`）、结果投影、退出码；核外中文呈现注入缝 | `packages/review-pi/src/cli/{args,main,render,config-command}.ts`、`packages/review-pi/src/shared/config.ts`、`src/presentation/{translate-projection,tips,engine-zh}.ts` |
+| **CLI 与呈现** | 参数解析、配置装载（`~/.PiAgent/PiAgent.jsonc`）、结果投影、退出码；核外中文呈现注入缝 | `packages/review-pi/src/cli/{args,main,render,config-command}.ts`、`packages/review-pi/src/shared/config.ts`、`src/presentation/{translate-projection,tips,engine-zh}.ts` |
 | **LLM 抽象层** | review-llm：provider 画像、DeepSeek 适配常量（endpoint/key 已由用户级配置取代，ADR-0025） | `packages/review-llm/src/{profile,deepseek,resolver}.ts` |
 | **pi 内核（vendored）** | pi-ai 模型接入、pi-agent-core 代理循环、chord 编排、telemetry 遥测 | `packages/ai/src/types.ts`、`packages/agent/src/harness/session/session.ts`、`packages/chord/src/delta/index.ts` |
 | **测试与夹具** | 内核单测、CLI 进程烟测、golden 常量 | `packages/review-pi/src/cli/bin.process.test.ts`、`packages/review-pi/testdata/golden/*`、`tests/presentation/*` |
@@ -24,7 +24,7 @@
 
 ## 3. 关键概念
 
-- **唯一形态**：工具驱动六阶段循环 + Context Ledger 恒开 + 规则 Skill 恒装载；没有 A–E 配置分派。运行配置只有一层（`~/.PiAgent/PiAgent.json` 或 `--config`，ADR-0025），env 层已移除。
+- **唯一形态**：工具驱动六阶段循环 + Context Ledger 恒开 + 规则 Skill 恒装载；没有 A–E 配置分派。运行配置只有一层（`~/.PiAgent/PiAgent.jsonc` 或 `--config`，ADR-0025），env 层已移除。
 - **规则 Skill**：只有两种**显式**输入面（`--rule-skill-zip` / `--rule-skill <dir>`，可重复、先 zip 后目录）；不扫描被检视仓库的 `.review-rules/`（ADR-0027）。Phase 5 之后为每个包开独立检视会话（ADR-0014），候选按 `(file, line, category)` 合并后交 Phase 6 裁定。没给规则包 = 合法降级（stderr 一行提示、exit 0），`--strict-rule-skill` 才升级为错误。
 - **测量常量面**：system prompt、六阶段指令、七工具 schema 的字节真源在 `testdata/golden/*`，由 `loop/phases.test.ts`、`zonea/system-prompt.test.ts` 断言逐字节一致；运行期死钉 5 项（轮次 / 工具调用 / 工具结果预算 / 呈现 temperature / effort）由 ADR-0025 锁定。
 - **MR 边界护栏**：`run/mr-boundary-guard.ts` 做纯度量（缺省 ≤10 文件 / ≤2000 变更行，`limits.boundary` 可配、`null` 关闭），超界只标注 `domainWarning` + 审计 `mrBoundary`，不拒检、不改请求字节。

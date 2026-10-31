@@ -1,10 +1,11 @@
-# 0025. 运行配置迁到用户级 JSONC（`~/.PiAgent/PiAgent.json`），`--env` 退出，测量常量面重新定义
+# 0025. 运行配置迁到用户级 JSONC（`~/.PiAgent/PiAgent.jsonc`），`--env` 退出，测量常量面重新定义
 
 **状态**：已接受（2026-10-31，用户经 grill 逐项决策；实现分 6 个提交落地）
 **关联**：ADR-0009（pi 内核从 0 重写）、ADR-0010（语言钉英文 + 核外翻译）、ADR-0016（进度投影与冻结键集）、ADR-0021（呈现模型跟随检视模型）、ADR-0024（删除配置矩阵；本 ADR 在其后重建**唯一一层**运行配置）
 **废止**：ADR-0019（`--env <file>` 凭据文件旗标）、ADR-0024「无 `--config` 旗标」一条
 **跨仓**：本 ADR 为本仓 pi 线序列 0025；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 **后续修订**：[ADR-0026](0026-config-surface-engine-and-endpoint-tier.md)（配置面：`presentation.engine` 相对路径改锚**配置文件所在目录**、新增 `"builtin"` 哨兵、官方/网关判档归一化为单源、模板去 `$schema`、`presentationBufferMs` 允许 `0` 的例外写明、缺配置一行提示）与 [ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（产物面：`runs|audit/mr/<caseId>` 去实验标识层、cwd 只写 `review-result.json`、审计快照家目录归一为 `~/...`、规则包只认显式输入、配置目录 `0700` / 文件 `0600`）。本 ADR 的其余决策（唯一配置文件、JSONC、键表与类型校验、`config init/show`、测量常量面收窄）继续有效。
+**修订（2026-10-31，实现期）**：默认文件名由 `PiAgent.json` 改为 **`PiAgent.jsonc`**——文件名与内容形态（JSONC：注释 + 尾逗号）一致，避免编辑器把注释判成非法 JSON。语义不变：内容形态、键表、校验、`config init/show` 行为与默认路径都只换了扩展名；`--config <path>` 仍接受任意路径，扩展名不参与判定。发布前改名，无存量用户文件需迁移。
 
 ## Context
 
@@ -22,7 +23,7 @@ ADR-0024 刚把「配置作为实验自变量」删掉，因此这次**不能**�
 
 ### 1. 唯一配置文件
 
-`~/.PiAgent/PiAgent.json`（Linux `$HOME`，Windows `%USERPROFILE%`），**JSONC**（注释 + 尾逗号）。
+`~/.PiAgent/PiAgent.jsonc`（Linux `$HOME`，Windows `%USERPROFILE%`），**JSONC**（注释 + 尾逗号）。
 `--config <path>` 可覆盖；**不设** `PIAGENT_CONFIG` 环境变量，**不做**项目级配置（无第二层合并语义）。
 
 - `<home>` 缺失/空白 ⇒ fail fast（提示改用 `--config`），不回落 `os.homedir()`。

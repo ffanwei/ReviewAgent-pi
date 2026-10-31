@@ -88,7 +88,7 @@ _Avoid_: 进度条（不是百分比口径——「步数」= 模型请求序号
 
 **测量常量面（Measurement-Constant Face）**:
 内核跨版本 / 跨语言呈现改动时必须 byte / 行为一致的半边：Zone A 提示词、六阶段 Loop 语义、Finding/Evidence 契约；请求字节与 golden 常量为其形式化把守面。
-运行期常量面（ADR-0025 收窄口径）= **5 项死钉**：`maxRounds=5` / `maxToolCalls=100` / `toolResultBudgetChars=8000` / 呈现 `temperature=0` / `reasoningEffort=high`。其余文本截断与资源上限（包头部字节、检索回显、调用链跳数、工具名/摘要截断、超时、并发、归档、MR 边界）是**可配项**，不再是本面的一部分——换一份 `~/.PiAgent/PiAgent.json` 即可能改变请求体。
+运行期常量面（ADR-0025 收窄口径）= **5 项死钉**：`maxRounds=5` / `maxToolCalls=100` / `toolResultBudgetChars=8000` / 呈现 `temperature=0` / `reasoningEffort=high`。其余文本截断与资源上限（包头部字节、检索回显、调用链跳数、工具名/摘要截断、超时、并发、归档、MR 边界）是**可配项**，不再是本面的一部分——换一份 `~/.PiAgent/PiAgent.jsonc` 即可能改变请求体。
 _Avoid_: 不变层（过泛）、冻结面（与「仪器冻结」混淆）、「配置文件无关」（ADR-0025 后不成立）
 
 **内核变量面（Kernel-Variable Face）**:
@@ -161,7 +161,7 @@ _Avoid_: 规则包自动发现、约定目录（历史 ADR-0012/0014 的旧口�
 ### 模型接入
 
 **检视模型（reviewer）**:
-执行检视的 LLM：model id 走请求参数（CLI `--model <id>`；pi 内核线接缝见 ADR-0009），无 model 环境变量；url / key 来自用户级配置文件 `~/.PiAgent/PiAgent.json`（`reviewer.baseUrl` / `reviewer.apiKey`；`--config` 可换文件，env 层已不再读取，ADR-0025）；进审计留痕（model + baseUrl，绝不记 key，ADR-0008），并在审计 `config` 快照里留全量生效值与 `digest`。自定义网关换端点/模型先跑 `review-pi smoke` 双探针自证。
+执行检视的 LLM：model id 走请求参数（CLI `--model <id>`；pi 内核线接缝见 ADR-0009），无 model 环境变量；url / key 来自用户级配置文件 `~/.PiAgent/PiAgent.jsonc`（`reviewer.baseUrl` / `reviewer.apiKey`；`--config` 可换文件，env 层已不再读取，ADR-0025）；进审计留痕（model + baseUrl，绝不记 key，ADR-0008），并在审计 `config` 快照里留全量生效值与 `digest`。自定义网关换端点/模型先跑 `review-pi smoke` 双探针自证。
 _Avoid_: 被测模型（实验自变量语义已随评测层废止）、白名单模型（准入白名单已由画像表取代）、model 走环境变量（model 走请求参数、秘密走配置文件）
 
 **参数画像（Provider Profile）**:

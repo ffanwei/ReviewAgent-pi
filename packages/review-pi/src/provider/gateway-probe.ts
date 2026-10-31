@@ -231,7 +231,7 @@ function classifyModelResponse(
       failureKind: "AUTH_REJECTED",
       diagnostic:
         `authentication failed at ${input.baseUrl} (HTTP ${response.status}): the gateway rejected the API key. ` +
-        "Check reviewer.apiKey in your PiAgent.json (review-pi config show) — environment variables are " +
+        "Check reviewer.apiKey in your PiAgent.jsonc (review-pi config show) — environment variables are " +
         "no longer read, and the key is never logged or persisted.",
       detail: `gateway error body: ${bodyError}`,
     };

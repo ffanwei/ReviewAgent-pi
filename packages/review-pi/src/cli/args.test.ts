@@ -67,7 +67,7 @@ test("--config：路径透传（review / smoke / config 三面）；缺席省键
 });
 
 test("--env 已移除：任何子命令都给专用迁移提示（不是裸 unknown flag）", () => {
-  const message = "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.json）";
+  const message = "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.jsonc）";
   expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--env", "creds.env"])).toEqual({
     ok: false,
     message,
@@ -188,7 +188,7 @@ test("未知旗标 / 重复旗标 / 值缺席（含值吞旗标）→ 用法错�
 test("--env：显式凭据文件路径已不再支持（ADR-0025 废止 ADR-0019）", () => {
   expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--env", "creds\\team.env.local"])).toEqual({
     ok: false,
-    message: "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.json）",
+    message: "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.jsonc）",
   });
 });
 

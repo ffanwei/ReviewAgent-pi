@@ -12,7 +12,7 @@
  *   usage 能力声明），judge 链为首个消费者，#43 reviewer 侧跟进
  *
  * ADR-0025：reviewer 角色的 `REVIEWER_*` / `DEEPSEEK_*` 环境变量常量已删除——
- * 运行配置改由 `~/.PiAgent/PiAgent.json` 承载，环境变量层不再被读取。
+ * 运行配置改由 `~/.PiAgent/PiAgent.jsonc` 承载，环境变量层不再被读取。
  */
 
 export {

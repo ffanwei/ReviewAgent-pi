@@ -51,7 +51,7 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file
   （smoke = 网关冒烟自检，P1b 双探针：网关健康 + 模型可达，输出人话诊断）
   （config init = 写缺省 JSONC；config show = 脱敏打印生效配置与来源）
 
-配置（ADR-0025）：~/.PiAgent/PiAgent.json（Linux $HOME / Windows %USERPROFILE%），JSONC。
+配置（ADR-0025）：~/.PiAgent/PiAgent.jsonc（Linux $HOME / Windows %USERPROFILE%），JSONC。
 环境变量不再被读取；--env 以移除（改用 --config）。
 
 review 旗标：
@@ -217,7 +217,7 @@ function parseConfigFlag(
 function envFlagError(argv: readonly string[]): string | undefined {
   for (const token of argv) {
     if (token === "--env" || token.startsWith("--env=")) {
-      return "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.json）";
+      return "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.jsonc）";
     }
   }
   return undefined;

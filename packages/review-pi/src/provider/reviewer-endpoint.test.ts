@@ -17,7 +17,7 @@ const tempDirs: string[] = [];
 function configOf(text: string) {
   const dir = mkdtempSync(path.join(tmpdir(), "review-pi-endpoint-"));
   tempDirs.push(dir);
-  const filePath = path.join(dir, "PiAgent.json");
+  const filePath = path.join(dir, "PiAgent.jsonc");
   writeFileSync(filePath, text, "utf8");
   return loadConfig({ configPath: filePath }).config;
 }

@@ -173,7 +173,7 @@ for (const packageDir of SOURCE_PACKAGE_DIRS) {
 
 // ---- 3. 安装布局下跑 CLI ----
 const binPath = join(appModules, "review-pi", "bin", "review-pi.js");
-const configPath = join(appDir, "PiAgent.json");
+const configPath = join(appDir, "PiAgent.jsonc");
 const env = {
   ...process.env,
   HOME: appDir,

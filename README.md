@@ -97,7 +97,7 @@ review-pi review --repo <path> --mr <diff> --out <dir>
 
 ## 单次检视执行
 
-`packages/review-pi` 的 `review-pi` CLI：解析 → 配置装载（`~/.PiAgent/PiAgent.json` 或 `--config`）→ 装配 → run → 导出 → 呈现；stdout 单 JSON 文档；退出码：完成（含诚实截断）0 / 中止 1；被测模型缺省 `deepseek-v4-flash`，换模型加 `--model <id>`；`smoke` 子命令提供网关双探针自检。
+`packages/review-pi` 的 `review-pi` CLI：解析 → 配置装载（`~/.PiAgent/PiAgent.jsonc` 或 `--config`）→ 装配 → run → 导出 → 呈现；stdout 单 JSON 文档；退出码：完成（含诚实截断）0 / 中止 1；被测模型缺省 `deepseek-v4-flash`，换模型加 `--model <id>`；`smoke` 子命令提供网关双探针自检。
 
 **唯一形态（规则 Skill）**——单案 × rep-1，一条命令出审计、转录与检视意见导出（完整前置、旗标说明、产物布局与排障见《[单次检视运行手册](docs/运行手册-单次检视.md)》）：
 
@@ -105,7 +105,7 @@ review-pi review --repo <path> --mr <diff> --out <dir>
 node packages\review-pi\bin\review-pi.js review --repo .cache\datasets\vul4j-repos\VUL4J-38-ab6cbdc3da --mr .cache\datasets\vul4j-diffs\VUL4J-38.diff --rule-skill-zip packages\review-pi\testdata\rule-skills\general-code-review.zip --strict-rule-skill --issue "Vulnerability CVE-2014-4172 (CWE-74) in apereo/java-cas-client. Fixed by https://github.com/apereo/java-cas-client/commit/ab6cbdc3daa451b4fef89c0bd0f4e6568f3aa9ef." --out runs\f-demo-session-skill-2
 ```
 
-前置三件：内核产物不过期（`pnpm build:pi` → `pnpm --filter review-llm build` → `pnpm --filter review-pi build`，陈旧即拒跑、不自动重编）、用户级配置 `~/.PiAgent/PiAgent.json`（`review-pi config init` 生成；`--config <path>` 可指定替代文件）、仓库快照与 diff 就位（本机 `.cache/datasets/**`；数据物化脚本已随评测层删除，缺失时自备）。产物落 `<out>/{runs,audit}/mr/<case>/`（ADR-0027：无实验标识层）；stdout 是单个 JSON 文档，诊断走 stderr；退出码 0（含诚实截断）/ 1。
+前置三件：内核产物不过期（`pnpm build:pi` → `pnpm --filter review-llm build` → `pnpm --filter review-pi build`，陈旧即拒跑、不自动重编）、用户级配置 `~/.PiAgent/PiAgent.jsonc`（`review-pi config init` 生成；`--config <path>` 可指定替代文件）、仓库快照与 diff 就位（本机 `.cache/datasets/**`；数据物化脚本已随评测层删除，缺失时自备）。产物落 `<out>/{runs,audit}/mr/<case>/`（ADR-0027：无实验标识层）；stdout 是单个 JSON 文档，诊断走 stderr；退出码 0（含诚实截断）/ 1。
 
 其余仍然有效的口径与注意：
 
@@ -115,7 +115,7 @@ node packages\review-pi\bin\review-pi.js review --repo .cache\datasets\vul4j-rep
 - **基线态语义**：检视读的上下文以仓内现状为准（CLI 不 apply diff）；约定仓停在 diff 的 base 侧。
 - **单次结果 ≠ 判定**：被测模型非确定，单跑落在历史 rep 波动族内即属正常；本仓已无判定链与指标聚合，需要评测判定请到 DSH 兄弟仓复跑。
 
-## 配置（`~/.PiAgent/PiAgent.json`，JSONC）
+## 配置（`~/.PiAgent/PiAgent.jsonc`，JSONC）
 
 唯一配置来源是**用户级** JSONC 文件（ADR-0025）：Linux 读 `$HOME`，Windows 读 `%USERPROFILE%`；`--config <path>` 可指定替代文件。**环境变量层已彻底移除**——`.env.local`、`REVIEWER_*`、`DEEPSEEK_*`、`REVIEW_PI_*` 都不再被读取（`--env` 是确定性错误）。
 
@@ -157,7 +157,7 @@ review-pi config init --from-env .env.local   # 一次性迁移旧 .env.local
 | 源码 / 文档 / 数据集清单 | ✅ | |
 | `runs/**/REPORT.md` | ✅ | 历史实验结论文档（唯一例外） |
 | `.env.local` | ❌ | 历史凭据文件（本版不再读取；迁移后请删除） |
-| `~/.PiAgent/PiAgent.json` | 仓外 | 用户级运行配置（含秘密；不入库） |
+| `~/.PiAgent/PiAgent.jsonc` | 仓外 | 用户级运行配置（含秘密；不入库） |
 | `reference_project/` | ❌ | 外部参考仓（见下节） |
 | `runs/**`（除 REPORT.md） | ❌ | 运行记录与数据 |
 | `.cache/` | ❌ | 数据集缓存 / 留痕 / 分析产物 |

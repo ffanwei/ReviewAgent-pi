@@ -193,7 +193,7 @@ interface RunBinOptions {
   readonly presentationEngine?: string;
   /** 直接指定配置文件全文（覆盖默认最小配置） */
   readonly configText?: string;
-  /** 配置文件落点（缺省 = 子进程 cwd 的 PiAgent.json） */
+  /** 配置文件落点（缺省 = 子进程 cwd 的 PiAgent.jsonc） */
   readonly configPath?: string;
   /**
    * 是否自动追加 `--config <path>`（缺省 true）。config 子命令用例自己带
@@ -233,7 +233,7 @@ function minimalConfigText(options: RunBinOptions): string {
 /**
  * spawn 真 bin（cwd = 干净 tmpdir——不捡到仓库根的 .env.local）。**每个用例都
  * 显式 `--config <tmp>`，且 HOME / USERPROFILE 指向空沙箱**：用户级
- * `~/.PiAgent/PiAgent.json` 与真实 home 绝不参与进程测试（ADR-0025）。
+ * `~/.PiAgent/PiAgent.jsonc` 与真实 home 绝不参与进程测试（ADR-0025）。
  *
  * 退出码/stdout/stderr 全捕获；超时即杀（status null）。
  *
@@ -244,7 +244,7 @@ function minimalConfigText(options: RunBinOptions): string {
 function runBin(args: readonly string[], options: RunBinOptions = {}): Promise<CliRunResult> {
   const cwd = makeTempDir("review-pi-cli-cwd-");
   const sandboxHome = makeTempDir("review-pi-cli-home-");
-  const configPath = options.configPath ?? path.join(cwd, "PiAgent.json");
+  const configPath = options.configPath ?? path.join(cwd, "PiAgent.jsonc");
   if (options.configText !== undefined) {
     writeFileSync(configPath, options.configText, "utf8");
   } else if (options.configPath === undefined) {
@@ -492,7 +492,7 @@ test(
       const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
       const configDir = makeTempDir("review-pi-cli-conf-");
-      const configPath = path.join(configDir, "PiAgent.json");
+      const configPath = path.join(configDir, "PiAgent.jsonc");
       writeFileSync(
         configPath,
         `${JSON.stringify({
@@ -748,7 +748,7 @@ test(
         });\n`,
         "utf8",
       );
-      const configPath = path.join(configDir, "PiAgent.json");
+      const configPath = path.join(configDir, "PiAgent.jsonc");
       const configText = `${JSON.stringify(
         {
           version: 1,

@@ -10,7 +10,7 @@ import { checkRuntimeArtifacts } from "../../bin/lib/cli-runtime.js";
 // `review-pi config` 进程面（ADR-0025）：init / show / init --from-env。
 //
 // 每个用例都在隔离沙箱里跑真进程：cwd 是干净 tmpdir，HOME / USERPROFILE 指向
-// 另一个空 tmpdir —— 用户级 `~/.PiAgent/PiAgent.json` 与真实 home 绝不参与。
+// 另一个空 tmpdir —— 用户级 `~/.PiAgent/PiAgent.jsonc` 与真实 home 绝不参与。
 // 秘密纪律：任何输出面都不允许出现 apiKey 值（只允许 `set|missing`）。
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -106,10 +106,10 @@ function runCli(
 }
 
 function homeConfigPath(home: string): string {
-  return path.join(home, ".PiAgent", "PiAgent.json");
+  return path.join(home, ".PiAgent", "PiAgent.jsonc");
 }
 
-test("config init：写到沙箱 home 的 ~/.PiAgent/PiAgent.json，JSONC 模板可被 show 读回", async () => {
+test("config init：写到沙箱 home 的 ~/.PiAgent/PiAgent.jsonc，JSONC 模板可被 show 读回", async () => {
   const init = await runCli(["config", "init"]);
   expect(init.status).toBe(0);
   expect(init.stdout).toContain("已写入配置文件");
@@ -158,9 +158,9 @@ test("config init 二次执行：拒绝覆盖 exit 1（人话指出 --force）�
 });
 
 test("config init --config <path>：相对路径按 cwd 解析，目录自动创建", async () => {
-  const result = await runCli(["config", "init", "--config", "nested/PiAgent.json"]);
+  const result = await runCli(["config", "init", "--config", "nested/PiAgent.jsonc"]);
   expect(result.status).toBe(0);
-  const written = path.join(result.cwd, "nested", "PiAgent.json");
+  const written = path.join(result.cwd, "nested", "PiAgent.jsonc");
   expect(existsSync(written)).toBe(true);
   expect(readFileSync(written, "utf8")).toContain('"version": 1');
 });
@@ -230,7 +230,7 @@ test("config init --from-env：源文件不存在 / 缺值 = 人话错误 exit 1
 });
 
 test("config show：逐键值 + 来源 + digest 末行；秘密只报 set", async () => {
-  const configPath = path.join(makeTempDir("review-pi-config-file-"), "PiAgent.json");
+  const configPath = path.join(makeTempDir("review-pi-config-file-"), "PiAgent.jsonc");
   writeFileSync(
     configPath,
     `{
@@ -255,7 +255,7 @@ test("config show：逐键值 + 来源 + digest 末行；秘密只报 set", asyn
 });
 
 test("config show --json：快照形状固定，秘密只记 set，键值不出现在任何输出", async () => {
-  const configPath = path.join(makeTempDir("review-pi-config-file-"), "PiAgent.json");
+  const configPath = path.join(makeTempDir("review-pi-config-file-"), "PiAgent.jsonc");
   writeFileSync(
     configPath,
     `${JSON.stringify({ version: 1, reviewer: { apiKey: SENTINEL_KEY } })}\n`,

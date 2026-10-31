@@ -1,7 +1,7 @@
 import { requireApiKey, type ResolvedConfig } from "../shared/config.js";
 
 // 检视链网关接入点（#4 → ADR-0025）：**唯一**来源是用户级配置文件
-// （`~/.PiAgent/PiAgent.json` / `--config`）。env 层（REVIEWER_* / DEEPSEEK_*）
+// （`~/.PiAgent/PiAgent.jsonc` / `--config`）。env 层（REVIEWER_* / DEEPSEEK_*）
 // 已彻底关闭——本模块不再 import `review-llm` 的 resolver，也不读 `process.env`。
 //
 // 与 DSH 线 env.ts reviewerBaseUrlOf 同名同序同 trim/尾斜杠语义（已在配置层

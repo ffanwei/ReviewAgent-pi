@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
 
 /**
- * 用户级运行配置（ADR-0025）：`~/.PiAgent/PiAgent.json`（JSONC）。
+ * 用户级运行配置（ADR-0025）：`~/.PiAgent/PiAgent.jsonc`（JSONC）。
  *
  * 纪律：
  * - **唯一配置来源**。env 层（`REVIEWER_*` / `DEEPSEEK_*` / `REVIEW_PI_*`）不再被读取；
@@ -18,7 +18,7 @@ import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc
 
 export const CONFIG_VERSION = 1;
 export const CONFIG_DIR_NAME = ".PiAgent";
-export const CONFIG_FILE_NAME = "PiAgent.json";
+export const CONFIG_FILE_NAME = "PiAgent.jsonc";
 /** 官方直连 base URL（与 review-llm `DEEPSEEK_API_BASE_URL` 同值；两处刻意不互相 import） */
 export const OFFICIAL_REVIEWER_BASE_URL = "https://api.deepseek.com";
 /** 网关档缺省输出预算（官方直连不发 max_tokens；网关不发则继承请求默认值，实测 2048 会截断） */
@@ -256,7 +256,7 @@ export interface LoadConfigOptions {
   readonly readText?: (path: string) => string;
 }
 
-/** 生效配置文件路径：`--config` 优先，否则 `<home>/.PiAgent/PiAgent.json` */
+/** 生效配置文件路径：`--config` 优先，否则 `<home>/.PiAgent/PiAgent.jsonc` */
 export function resolveConfigPath(options: LoadConfigOptions = {}): string {
   const cwd = options.cwd ?? process.cwd();
   if (options.configPath !== undefined) {
@@ -850,10 +850,10 @@ function assertKnownKeys(
     }
     const full = path === "" ? key : `${path}.${key}`;
     if (PINNED_KEYS.has(key)) {
-      warnings.push(`PiAgent.json: ${full} 已钉死（pinned），不会被采用`);
+      warnings.push(`PiAgent.jsonc: ${full} 已钉死（pinned），不会被采用`);
       continue;
     }
-    warnings.push(`PiAgent.json: unknown key ${full}${nearestHint(key, allowed)}`);
+    warnings.push(`PiAgent.jsonc: unknown key ${full}${nearestHint(key, allowed)}`);
   }
 }
 
@@ -986,7 +986,7 @@ function checkPermissions(path: string, platform: NodeJS.Platform, warnings: str
     const mode = statSync(path).mode & 0o777;
     if ((mode & 0o077) !== 0) {
       warnings.push(
-        `PiAgent.json: 权限 ${mode.toString(8).padStart(3, "0")} 宽于 0600（文件含秘密）；建议 chmod 600 ${path}`,
+        `PiAgent.jsonc: 权限 ${mode.toString(8).padStart(3, "0")} 宽于 0600（文件含秘密）；建议 chmod 600 ${path}`,
       );
     }
   } catch {

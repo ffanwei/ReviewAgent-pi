@@ -79,7 +79,7 @@ ADR-0024 把仓收窄成 Review CLI 产品仓、ADR-0025 把配置收到用户�
   - **旧路径不再被写入**：依赖 `<out>/review-pi-cli/runs/vul4j/...` 的脚本、看板、笔记必须改到 `<out>/runs/mr/...`；旧 run 仍可人工查阅。
   - **`<repo>/.review-rules/` 投放不再生效**：仓库里放规则包的人会看到「未装载任何规则包」提示，必须改用 `--rule-skill-zip` / `--rule-skill`。这是**有意的**默认收紧，ADR-0012/0014/0018 的自动扫描口径被本 ADR 修订。
   - **cwd 里旧版留下的 `reviews_tips_zh.json` 会被删除**（下次不产 tips 时）；依赖该名字的下游应改读 `review-result.json`。
-  - 审计快照里 `config.path` 变成 `~/.PiAgent/PiAgent.json`；按绝对路径做机器匹配的脚本需要自行展开。
+  - 审计快照里 `config.path` 变成 `~/.PiAgent/PiAgent.jsonc`；按绝对路径做机器匹配的脚本需要自行展开。
 - **中性**：
   - 转录 / 审计 / 意见导出的**内容契约**不变（键序、字段、`runId` 形态都不动）；
   - 规则 Skill 会话、候选合并、审计 `ruleSkill[]` / `skillPassLog[]` 语义不变。
@@ -88,7 +88,7 @@ ADR-0024 把仓收窄成 Review CLI 产品仓、ADR-0025 把配置收到用户�
 
 1. **布局**：一次 CLI 检视后，`<out>/runs/mr/<caseId>/rep-1.json`、`<out>/runs/mr/<caseId>/rep-1/reviews_en.json`、`<out>/audit/mr/<caseId>/rep-1/audit/<runId>.json` 全部在位；`<out>/review-pi-cli/` 与 `runs/vul4j/` 不出现；`RunRecord.source === "mr"`（`run-review-artifacts.test.ts`、`bin.process.test.ts`）。
 2. **cwd 副本**：配置引擎并跑一次 ⇒ cwd 有 `review-result.json`、**没有** `reviews_tips_zh.json`，前者与 `rep-1/reviews_tips_zh.json` 逐字节相同；不产 tips 的 run ⇒ 两者都被清掉（`bin.process.test.ts`、`reviews-tips-zh.test.ts`）。
-3. **审计归一**：审计 `config.path` 为 `~/.PiAgent/PiAgent.json` 形态，`values` 中的 home 下绝对路径同样折叠；`config show` 仍打印真实绝对路径（`config.test.ts`）。
+3. **审计归一**：审计 `config.path` 为 `~/.PiAgent/PiAgent.jsonc` 形态，`values` 中的 home 下绝对路径同样折叠；`config show` 仍打印真实绝对路径（`config.test.ts`）。
 4. **规则包信任**：仓库里放了 `.review-rules/*.zip` 但未给显式旗标 ⇒ 不装载、一行提示、exit 0；`--strict-rule-skill` ⇒ 错误信息为「no rule-skill archive given (pass --rule-skill-zip or --rule-skill <dir>)」；显式 zip / 目录仍正常装载（`rule-skill.test.ts`、`bin.process.test.ts`）。
 5. **权限**：`config init` 后目录 `0700`、文件 `0600`；`--force` 覆盖一个 `0644` 文件后仍为 `0600`（POSIX；`config.test.ts`）。
 6. **文档**：README / 运行手册 / `CONTEXT.md` 不再把 `review-pi-cli/`、`runs/vul4j/`、cwd 双名副本、`.review-rules` 自动扫描写成现行行为（历史 ADR 与历史报告除外）。

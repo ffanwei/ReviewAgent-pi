@@ -382,7 +382,7 @@ function progressFinish(
 /** `.env.local` 残留提示（ADR-0025）：只 stat cwd 一个路径，不探测任何环境变量 */
 function envLocalNoticeLine(): string {
   return (
-    "review-pi: 已不再读取 .env.local（本版配置见 --config 或 ~/.PiAgent/PiAgent.json）；" +
+    "review-pi: 已不再读取 .env.local（本版配置见 --config 或 ~/.PiAgent/PiAgent.jsonc）；" +
     "迁移：review-pi config init --from-env .env.local\n"
   );
 }
