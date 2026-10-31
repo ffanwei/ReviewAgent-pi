@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+  BUILTIN_ENGINE_SENTINEL,
   CONFIG_VERSION,
   ConfigError,
   DEFAULT_CONFIG_TEMPLATE,
@@ -13,10 +14,13 @@ import {
   DEFAULT_LIMITS,
   DEFAULT_MODEL_ID,
   OFFICIAL_REVIEWER_BASE_URL,
+  builtinPresentationEnginePath,
   configSnapshot,
+  isOfficialReviewerBaseUrl,
   loadConfig,
   requireApiKey,
   resolveConfigPath,
+  resolvePresentationEnginePath,
   writeConfigFile,
 } from "./config.js";
 
@@ -317,5 +321,95 @@ describe("常量对齐", () => {
       new URL("../../../../PiAgent.example.jsonc", import.meta.url),
     );
     expect(readFileSync(examplePath, "utf8")).toBe(DEFAULT_CONFIG_TEMPLATE);
+  });
+
+  test("模板不含 $schema（ADR-0026：没有发布过的 schema，写一个 example.invalid 只是噪声；读取侧仍容忍旧文件的 $schema）", () => {
+    expect(DEFAULT_CONFIG_TEMPLATE).not.toContain("$schema");
+    // 旧配置文件带着 $schema 也能读：不报错、也不冒未知键警告
+    const path = writeConfig(
+      `{\n  "$schema": "https://example.invalid/piagent.schema.json",\n  "version": 1,\n  "reviewer": { "apiKey": "sk-x" }\n}`,
+    );
+    const { warnings } = loadConfig({ configPath: path });
+    expect(warnings.join("\n")).not.toContain("$schema");
+  });
+});
+
+describe("presentation.engine 解析（ADR-0026）", () => {
+  test("null / 空白 ⇒ null（恒等直通）", () => {
+    expect(resolvePresentationEnginePath(null, "/etc/pi/PiAgent.json")).toBeNull();
+    expect(resolvePresentationEnginePath("   ", "/etc/pi/PiAgent.json")).toBeNull();
+  });
+
+  test("\"builtin\" ⇒ 制品内引擎（<pkg>/presentation/engine-zh.js）", () => {
+    const resolved = resolvePresentationEnginePath(BUILTIN_ENGINE_SENTINEL, "/etc/pi/PiAgent.json");
+    expect(resolved).toBe(builtinPresentationEnginePath());
+    expect(resolved?.endsWith(join("presentation", "engine-zh.js"))).toBe(true);
+  });
+
+  test("相对路径按**配置文件所在目录**解析（不是 cwd）", () => {
+    const configPath = join(tempDir(), "nested", "PiAgent.json");
+    expect(resolvePresentationEnginePath("engines/zh.mjs", configPath)).toBe(
+      join(dirname(configPath), "engines", "zh.mjs"),
+    );
+  });
+
+  test("绝对路径原样透传", () => {
+    const absolute = join(tempDir(), "zh.mjs");
+    expect(resolvePresentationEnginePath(absolute, "/etc/pi/PiAgent.json")).toBe(absolute);
+  });
+});
+
+describe("base URL 判档（ADR-0026 单源）", () => {
+  test("官方缺省的等价写法都算官方：大小写、尾斜杠、空白", () => {
+    for (const value of [
+      undefined,
+      null,
+      "",
+      OFFICIAL_REVIEWER_BASE_URL,
+      `${OFFICIAL_REVIEWER_BASE_URL}/`,
+      "  https://api.deepseek.com  ",
+      "HTTPS://API.DEEPSEEK.COM",
+    ]) {
+      expect(isOfficialReviewerBaseUrl(value)).toBe(true);
+    }
+  });
+
+  test("网关档：不同 host / 不同路径都不是官方（/v1 不是同一端点）", () => {
+    for (const value of [
+      "https://gw.example.com/v1",
+      "https://api.deepseek.com/v1",
+      "http://api.deepseek.com",
+    ]) {
+      expect(isOfficialReviewerBaseUrl(value)).toBe(false);
+    }
+  });
+});
+
+describe("configSnapshot 家目录归一化（ADR-0027）", () => {
+  test("不给 home：路径原样（config show 看到的永远是真实路径）", () => {
+    const home = tempDir();
+    const path = join(home, ".PiAgent", "PiAgent.json");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `{"version":1,"reviewer":{"apiKey":"sk-x"}}`, "utf8");
+    const { config } = loadConfig({ configPath: path });
+    expect(configSnapshot(config).path).toBe(path);
+  });
+
+  test("给 home：path 与绝对路径值折叠成 ~/...（POSIX 分隔符）", () => {
+    const home = tempDir();
+    const path = join(home, ".PiAgent", "PiAgent.json");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(
+      path,
+      `{"version":1,"reviewer":{"apiKey":"sk-x"},"presentation":{"engine":${JSON.stringify(join(home, "bin", "zh.mjs"))}}}`,
+      "utf8",
+    );
+    const { config } = loadConfig({ configPath: path });
+    const snapshot = configSnapshot(config, { home });
+    expect(snapshot.path).toBe("~/.PiAgent/PiAgent.json");
+    expect(snapshot.values["presentation.engine"]).toBe("~/bin/zh.mjs");
+    // 秘密面纪律不变
+    expect(snapshot.secret).toEqual({ "reviewer.apiKey": "set" });
+    expect(JSON.stringify(snapshot)).not.toContain("sk-x");
   });
 });

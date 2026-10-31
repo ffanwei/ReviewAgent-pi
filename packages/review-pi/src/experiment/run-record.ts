@@ -16,13 +16,14 @@ import type {
 
 // RunRecord 投影（测量常量面）：三级键序以 t-series 记录为地面真源
 // （src/experiment/run-record.test.ts 断言）。落盘路径：
-// <runsRoot>/<experimentId>/runs/vul4j/<caseId>/rep-<N>.json。
+// <runsRoot>/runs/mr/<caseId>/rep-<N>.json（ADR-0027：`mr` 段替代历史
+// `vul4j`，`<experimentId>` 层删除）。
 //
 // 请求字节不重复落盘：审计文件（auditPath）承载全部请求的可重放字节，
 // 本记录保留指标所需的最小审计面（toolCallLog / phaseLog / rejections 等）。
 
-/** 数据源标识（P1a 评测集：Vul4J） */
-export type ExperimentSource = "vul4j";
+/** 数据源标识（一次 MR 触发一次检视） */
+export type ExperimentSource = "mr";
 
 /** 二遍 Verifier 开关（P1a 恒 off） */
 export type VerifierMode = "off" | "on";
@@ -132,31 +133,24 @@ export function sanitizeCaseId(caseId: string): string {
 }
 
 /**
- * 运行输出目录：`<runsRoot>/<experimentId>/runs/<source>/<safeCaseId>`。
+ * 运行输出目录：`<runsRoot>/runs/<source>/<safeCaseId>`。
  * 运行记录（`rep-<N>.json`）、检视转录（`session-*.json`）与检视意见导出
  * （`rep-<N>/reviews_*.json`）共用此目录——单点定义防布局漂移。
+ * 没有 experimentId 层（ADR-0027）：一次检视就是一条 MR，多一层只让路径更长。
  */
 export function runDirPath(args: {
   readonly runsRoot: string;
-  readonly experimentId: string;
   readonly source: ExperimentSource;
   readonly caseId: string;
 }): string {
-  return path.join(
-    args.runsRoot,
-    args.experimentId,
-    "runs",
-    args.source,
-    sanitizeCaseId(args.caseId),
-  );
+  return path.join(args.runsRoot, "runs", args.source, sanitizeCaseId(args.caseId));
 }
 
-/** 记录文件路径：<runsRoot>/<experimentId>/runs/<source>/<caseId>/rep-<rep>.json */
-export function runRecordPath(runsRoot: string, experimentId: string, record: RunRecord): string {
+/** 记录文件路径：<runsRoot>/runs/<source>/<caseId>/rep-<rep>.json */
+export function runRecordPath(runsRoot: string, record: RunRecord): string {
   return path.join(
     runDirPath({
       runsRoot,
-      experimentId,
       source: record.source,
       caseId: record.caseId,
     }),
@@ -165,12 +159,8 @@ export function runRecordPath(runsRoot: string, experimentId: string, record: Ru
 }
 
 /** 落盘记录（mkdir 递归 + 2 空格缩进 + 尾随换行）；失败显式抛错 */
-export async function writeRunRecord(
-  runsRoot: string,
-  experimentId: string,
-  record: RunRecord,
-): Promise<string> {
-  const filePath = runRecordPath(runsRoot, experimentId, record);
+export async function writeRunRecord(runsRoot: string, record: RunRecord): Promise<string> {
+  const filePath = runRecordPath(runsRoot, record);
   try {
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, `${JSON.stringify(record, null, 2)}\n`, "utf8");

@@ -110,7 +110,7 @@ function textOf(message: Record<string, unknown> | undefined): string {
 }
 
 function runDir(runsRoot: string): string {
-  return path.join(runsRoot, "phase2-smoke", "runs", "vul4j", "VUL4J-1");
+  return path.join(runsRoot, "runs", "mr", "VUL4J-1");
 }
 
 function sessionFiles(dir: string): string[] {
@@ -142,7 +142,6 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -370,7 +369,7 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
     ["generatedAt", "runId", "source", "caseId", "rep", "model", "findings"].sort(),
   );
   expect(envelope["runId"]).toBe(doc.info["runId"]);
-  expect(envelope["source"]).toBe("vul4j");
+  expect(envelope["source"]).toBe("mr");
   expect(envelope["caseId"]).toBe("VUL4J-1");
   expect(envelope["rep"]).toBe(1);
   expect(envelope["model"]).toBe("deepseek-v4-flash");
@@ -427,7 +426,6 @@ test("检视转录：assistant toolCall 与 toolResult 原样保留（链接键 
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -505,7 +503,6 @@ test("共存：同 case 跑两次 → 两个不同 session 文件都在（每 ru
     issueDescription: VUL4J_1_ISSUE,
     apiKey: "offline-test",
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   };

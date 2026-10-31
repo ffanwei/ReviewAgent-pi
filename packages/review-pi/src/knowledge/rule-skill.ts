@@ -91,7 +91,7 @@ export type RuleSkillSpawn = (
 export interface LoadRuleSkillOptions {
   /** 被检视仓库快照根目录 */
   readonly repoPath: string;
-  /** 解压缓存根（<out>/<experimentId>/.cache/rule-skills） */
+  /** 解压缓存根（<out>/.cache/rule-skills，ADR-0027 去 experimentId 层） */
   readonly cacheRoot: string;
   /** 显式 zip 路径（--rule-skill-zip；优先于约定目录探测） */
   readonly explicitZipPath?: string;

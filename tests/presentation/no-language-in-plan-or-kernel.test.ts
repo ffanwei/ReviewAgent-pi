@@ -52,7 +52,6 @@ const REVIEW_RUN_INPUT: ReviewRunInput = {
   modelId: "deepseek-v4-flash",
   fetch: fetchStub,
   runsRoot: "D:/fixtures/runs/lang-regression",
-  experimentId: "review-pi-cli",
   rep: 1,
   persistRecord: true,
   startedAt: new Date(0),

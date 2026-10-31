@@ -2,7 +2,11 @@ import type { AssistantMessage, Context, FetchFunction, Model, TextContent } fro
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { ToolSchema, WireMessage } from "../contracts/llm.js";
-import type { ModelOverride } from "../shared/config.js";
+import {
+  DEFAULT_GATEWAY_MAX_TOKENS,
+  isOfficialReviewerBaseUrl,
+  type ModelOverride,
+} from "../shared/config.js";
 
 /**
  * pi-ai 序列化缝（内核变量面）：真 provider + 真 openai SDK 序列化路径，
@@ -30,15 +34,13 @@ export const LOCKED_EFFORT_LABEL = "default";
 /** 锁档线上档位：pi-ai reasoningEffort → wire reasoning_effort "high"（deepseek thinkingLevelMap） */
 export const LOCKED_REASONING_EFFORT = "high";
 
-/** 官方直连接入点（目录模板缺省 baseUrl；ADR-0002 字节复刻面） */
-const OFFICIAL_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-
 /**
- * 网关档缺省输出预算。deepseek-v4 系 max_tokens 含思维链（实测单回合 reasoning
- * 峰值 5,600、回答峰值 1,081），32768 留足 4× 余量。显式发送的理由：不发送即
- * 继承网关的请求默认值——企业网关实测补 2048，思维链吃光预算后静默截断。
+ * 网关档缺省输出预算（单源在 `config.DEFAULT_GATEWAY_MAX_TOKENS`）。deepseek-v4
+ * 系 max_tokens 含思维链（实测单回合 reasoning 峰值 5,600、回答峰值 1,081），
+ * 32768 留足 4× 余量。显式发送的理由：不发送即继承网关的请求默认值——企业
+ * 网关实测补 2048，思维链吃光预算后静默截断。
  */
-export const GATEWAY_MAX_TOKENS = 32_768;
+export const GATEWAY_MAX_TOKENS = DEFAULT_GATEWAY_MAX_TOKENS;
 
 /** onPayload 序列化点捕获（审计 requests[] 条目形状：model/effort/messages/tools + wireBody 原文） */
 export interface WireCapture {
@@ -180,6 +182,10 @@ function applyModelOverride(
  * - 未配置（null/undefined）→ 官方直连 `undefined`：wire 永不含 max_tokens，
  *   与 DSH 语料逐字节对齐（ADR-0002）；网关档 → 显式 `GATEWAY_MAX_TOKENS`：
  *   不发送即继承网关请求默认值（实测 2048 → 思维链耗尽、静默截断）。
+ *
+ * 判档谓词单源 `isOfficialReviewerBaseUrl`（ADR-0026）：scheme/host 大小写与
+ * 尾斜杠都不改变档位——否则 `HTTPS://API.DEEPSEEK.COM/` 会被当成网关，官方
+ * 直连也会发 max_tokens，字节对齐悄悄破掉。
  */
 export function maxTokensFor(
   baseUrl: string | undefined,
@@ -188,8 +194,7 @@ export function maxTokensFor(
   if (configured !== undefined && configured !== null) {
     return Math.floor(configured);
   }
-  const normalized = (baseUrl ?? OFFICIAL_DEEPSEEK_BASE_URL).trim().replace(/\/+$/, "");
-  return normalized === OFFICIAL_DEEPSEEK_BASE_URL ? undefined : GATEWAY_MAX_TOKENS;
+  return isOfficialReviewerBaseUrl(baseUrl) ? undefined : GATEWAY_MAX_TOKENS;
 }
 
 /**

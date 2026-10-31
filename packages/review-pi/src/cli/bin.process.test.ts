@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
 import { checkRuntimeArtifacts } from "../../bin/lib/cli-runtime.js";
-import { CLI_EXPERIMENT_ID } from "./args.js";
 import { sseBody, type FakeReply } from "../provider/fake-fetch.js";
 import { REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { goldenFixture } from "../testing/golden.js";
@@ -685,9 +684,106 @@ test(
   180_000,
 );
 
+test(
+  "呈现投影：引擎路径指向不存在的模块 → 装载期按未配置引擎处理（exit 0 + 一行 stderr + 无 presentation 键）",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const missingEngine = path.join(makeTempDir("review-pi-cli-missing-engine-"), "nope.mjs");
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
+        gatewayBaseUrl: stub.baseUrl,
+        presentationEngine: missingEngine,
+      });
+
+      // ADR-0026：缺模块 = 本次「未配置引擎」，不是运行失败
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as {
+        findings: { title: string }[];
+        presentation?: unknown;
+      };
+      // 恒等直通：英文源档 + 无 presentation 键（与「从未配置引擎」同一形态）
+      expect(outcome.findings[0]?.title).toBe("Sentinel finding title");
+      expect(outcome.presentation).toBeUndefined();
+      // 装载期就报，而不是先喊「投影进行中」再在几十秒后降级
+      expect(run.stderr).toContain("presentation.engine 指向的模块不存在");
+      expect(run.stderr).toContain("nope.mjs");
+      expect(run.stderr).not.toContain("呈现投影进行中");
+      // 检视请求面零影响
+      expect(stub.requests()).toHaveLength(6);
+      expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "呈现投影：引擎相对路径按**配置文件所在目录**解析（从别的 cwd 启动也是同一结果，ADR-0026）",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      // 引擎落在配置文件旁的 engines/ 子目录；配置里只写相对路径
+      const configDir = makeTempDir("review-pi-cli-config-dir-");
+      const engineDir = path.join(configDir, "engines");
+      mkdirSync(engineDir, { recursive: true });
+      writeFileSync(
+        path.join(engineDir, "zh-engine.mjs"),
+        `export default async (source) => ({
+          provenance: {
+            language: "zh",
+            terminologyVersion: 1,
+            findingLinks: source.findings.map((finding) => ({
+              sourceFindingId: finding.id,
+              projectedFindingId: finding.id,
+            })),
+          },
+          findings: source.findings.map((finding) => ({
+            ...finding,
+            title: "[zh] " + finding.title,
+            description: "[zh] " + finding.description,
+          })),
+          toolCallLog: source.toolCallLog,
+        });\n`,
+        "utf8",
+      );
+      const configPath = path.join(configDir, "PiAgent.json");
+      const configText = `${JSON.stringify(
+        {
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          presentation: { engine: "engines/zh-engine.mjs" },
+        },
+        null,
+        2,
+      )}\n`;
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runBin(
+        ["review", "--repo", repoFixturePath("sample"), "--mr", writeMr(goldenFixture("vul4j-1.diff")), "--out", outDir],
+        { configPath, configText },
+      );
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as {
+        findings: { title: string }[];
+        presentation?: { language: string };
+      };
+      // 子进程 cwd 与 configDir 是两个不同目录：只有按配置文件目录解析才会命中
+      expect(run.cwd).not.toBe(configDir);
+      expect(outcome.findings[0]?.title).toBe("[zh] Sentinel finding title");
+      expect(outcome.presentation?.language).toBe("zh");
+      expect(run.stderr).not.toContain("指向的模块不存在");
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
 // ---- 检视意见中文导出（ADR-0013 Step B）：zh 生命周期矩阵 ----
 // zh 由核外 CLI 缝编排（复用同一次投影结果，绝不额外调网关），与 en 同 rep 目录。
-// 路径基线：<out>/review-pi-cli/runs/vul4j/VUL4J-1/rep-1/
+// 路径基线：<out>/runs/mr/VUL4J-1/rep-1/（ADR-0027：无 experimentId 层）
 
 const ZH_ENGINE_BODY = `const tipOf = (source) => ({
   code: source.codeByFinding?.F100 ?? "",
@@ -721,7 +817,7 @@ export default async (source) => ({
 
 /** 本次 run 的 rep-1 产物目录（reviews_en.json / reviews_tips_zh.json 同层） */
 function cliRepDir(outDir: string): string {
-  return path.join(outDir, CLI_EXPERIMENT_ID, "runs", "vul4j", "VUL4J-1", "rep-1");
+  return path.join(outDir, "runs", "mr", "VUL4J-1", "rep-1");
 }
 
 /** 单 MR 检视调用（唯一形态；可选注入呈现引擎与 cwd 预置文件） */
@@ -805,13 +901,13 @@ test(
           ],
         },
       ]);
-      // 执行目录副本（ADR-0017 决策 14）：cwd 里同名双写，内容与 rep-1 那份逐字节相同
+      // 执行目录副本（ADR-0017 决策 14 / ADR-0027）：cwd 只放 review-result.json，
+      // 内容与 rep-1 那份逐字节相同；真源永远在 run 目录里，cwd 不再写原名副本
       const cwdTipsPath = path.join(run.cwd, "reviews_tips_zh.json");
       const cwdResultPath = path.join(run.cwd, "review-result.json");
-      expect(existsSync(cwdTipsPath)).toBe(true);
+      expect(existsSync(cwdTipsPath)).toBe(false);
       expect(existsSync(cwdResultPath)).toBe(true);
       const repTipsText = readFileSync(tipsPath, "utf8");
-      expect(readFileSync(cwdTipsPath, "utf8")).toBe(repTipsText);
       expect(readFileSync(cwdResultPath, "utf8")).toBe(repTipsText);
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },
@@ -939,7 +1035,7 @@ test(
 );
 
 test(
-  "分组意见：执行目录副本写不进（cwd 两份目标名被占成目录）→ stderr 警告 + exit 0 + rep-1 那份照产",
+  "分组意见：执行目录副本写不进（cwd 的 review-result.json 被占成目录）→ stderr 警告 + exit 0 + rep-1 那份照产",
   async () => {
     const stub = await startLoopbackStub(oneFindingCorpus());
     try {
@@ -949,7 +1045,7 @@ test(
         outDir,
         writeMr(goldenFixture("vul4j-1.diff")),
         { gatewayBaseUrl: stub.baseUrl, presentationEngine: enginePath },
-        // cwd 里两个目标名都被目录占住 ⇒ 写文件必然失败
+        // cwd 的目标名被目录占住 ⇒ 写文件必然失败
         { seedCwdDirs: ["reviews_tips_zh.json", "review-result.json"] },
       );
 
@@ -1134,7 +1230,6 @@ test(
 
       const cacheDir = path.join(
         outDir,
-        "review-pi-cli",
         ".cache",
         "rule-skills",
         `dir-${audit.ruleSkill[0]?.digest as string}`,

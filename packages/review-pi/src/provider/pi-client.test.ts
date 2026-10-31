@@ -184,6 +184,12 @@ test("maxTokensFor：官方直连不发；网关档显式预算；配置值恒�
   expect(maxTokensFor("https://api.deepseek.com")).toBeUndefined();
   expect(maxTokensFor("https://api.deepseek.com/")).toBeUndefined();
   expect(maxTokensFor("  https://api.deepseek.com  ")).toBeUndefined();
+  // 判档归一化（ADR-0026）：scheme/host 大小写不改变档位——否则官方直连也发
+  // max_tokens，ADR-0002 的 wire 字节对齐会悄悄破掉
+  expect(maxTokensFor("HTTPS://API.DEEPSEEK.COM")).toBeUndefined();
+  expect(maxTokensFor("https://api.deepseek.com//")).toBeUndefined();
+  // 路径不同就不是官方端点（/v1 是另一个 base URL）
+  expect(maxTokensFor("https://api.deepseek.com/v1")).toBe(GATEWAY_MAX_TOKENS);
   expect(maxTokensFor(GATEWAY_URL)).toBe(GATEWAY_MAX_TOKENS);
   // 配置了 reviewer.maxOutputTokens 即优先（官方直连也发）——字段可空，null = 自动判档
   expect(maxTokensFor(GATEWAY_URL, 8192)).toBe(8192);

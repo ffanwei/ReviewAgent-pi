@@ -119,7 +119,6 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 七工具面；产物布局与
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -132,16 +131,16 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 七工具面；产物布局与
   expect(path.basename(auditPath)).toBe(`${runId}.json`);
 
   // 落盘布局：无配置段，保留 rep-<N>
-  expect(recordPath).toBe(path.join(runsRoot, "phase2-smoke", "runs", "vul4j", "VUL4J-1", "rep-1.json"));
+  expect(recordPath).toBe(path.join(runsRoot, "runs", "mr", "VUL4J-1", "rep-1.json"));
   expect(path.dirname(auditPath)).toBe(
-    path.join(runsRoot, "phase2-smoke", "audit", "vul4j", "VUL4J-1", "rep-1", "audit"),
+    path.join(runsRoot, "audit", "mr", "VUL4J-1", "rep-1", "audit"),
   );
   expect(path.dirname(transcriptPath)).toBe(path.dirname(recordPath));
   expect(path.basename(transcriptPath)).toMatch(/^session-\d{8}T\d{6}\.\d{3}-VUL4J-1\.json$/);
   expect(reviewsPath).toBe(path.join(path.dirname(recordPath), "rep-1", "reviews_en.json"));
 
   // RunRecord：单形态记录面
-  expect(record.source).toBe("vul4j");
+  expect(record.source).toBe("mr");
   expect(record.model).toBe("deepseek-v4-flash");
   expect(record.verifier).toBe("off");
   expect(Number.isNaN(Date.parse(record.completedAt))).toBe(false);
@@ -206,7 +205,6 @@ test("Zone A 跨 MR 字节稳定：不同 case / 仓库 / diff，system 逐字�
     apiKey: "offline-test",
     fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -226,7 +224,6 @@ test("Zone A 跨 MR 字节稳定：不同 case / 仓库 / diff，system 逐字�
     apiKey: "offline-test",
     fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -265,7 +262,6 @@ test("工具轮：review.get_diff 执行记账 + recall 请求（工具结果进
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -331,7 +327,6 @@ test("截断路径：phase-6 恒 complete:false → MAX_ROUNDS 上界，正常�
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -428,7 +423,6 @@ test("规则 Skill：Phase 1–5 与无规则包逐字节相同，Phase 6 追加
     apiKey: "offline-test",
     fetch: baselineScript.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -463,7 +457,6 @@ test("规则 Skill：Phase 1–5 与无规则包逐字节相同，Phase 6 追加
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [SAMPLE_RULE_SKILL],
   });
@@ -572,7 +565,6 @@ test("--rule-skill 目录形态：入参透传装载器，审计标 kind = dir�
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillDirs: ["packs/general-code-review"],
     ruleSkillLoader: async (options) => {
@@ -616,7 +608,6 @@ test("多 skill：按 CLI 顺序执行，跨 skill 同 (file,line,category) 后�
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     // CLI 顺序：zip 传入序就是执行序（不排序）
     ruleSkillZips: ["b-beta.zip", "a-alpha.zip"],
@@ -674,7 +665,6 @@ test("skill 会话解析失败：status=failed/parse，Phase 6 无候选清单�
     apiKey: "offline-test",
     fetch: baselineScript.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -696,7 +686,6 @@ test("skill 会话解析失败：status=failed/parse，Phase 6 无候选清单�
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [SAMPLE_RULE_SKILL],
   });
@@ -734,7 +723,6 @@ test("N=0（无规则包）：照常检视，ruleSkill / skillPassLog 恒为空�
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -766,7 +754,6 @@ test("装载降级：不跑会话，主路径字节不变（ruleSkill[] 带 degr
     apiKey: "offline-test",
     fetch: baselineScript.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -779,7 +766,6 @@ test("装载降级：不跑会话，主路径字节不变（ruleSkill[] 带 degr
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [degradedSkill],
   });
@@ -812,7 +798,6 @@ test("persistRecord=false（#8 runner 执行缝）：记录不落盘、recordPat
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     persistRecord: false,
     ruleSkillLoader: async () => [],
@@ -820,7 +805,7 @@ test("persistRecord=false（#8 runner 执行缝）：记录不落盘、recordPat
 
   // 记录不落盘：runner 是记录唯一写者（执行缝纪律）；recordPath 空串 = 未持久化
   expect(recordPath).toBe("");
-  expect(existsSync(path.join(runsRoot, "phase2-smoke", "runs", "vul4j", "VUL4J-1", "rep-1.json"))).toBe(false);
+  expect(existsSync(path.join(runsRoot, "runs", "mr", "VUL4J-1", "rep-1.json"))).toBe(false);
 
   // 审计照常落盘（重放字节是内核职责）；内存 record 完整返回（auditPath 同源）
   expect(existsSync(auditPath)).toBe(true);
@@ -850,7 +835,6 @@ test("审计 config 快照：全量生效值 + 来源 + digest；秘密只记 se
     apiKey: "sentinel-key",
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
     config: snapshot,
@@ -909,7 +893,6 @@ test.skipIf(!existsSync(repoFixturePath("sample")))(
       modelId: "custom-gateway-model",
       fetch: script.fetch,
       runsRoot: tempRunsRoot(),
-      experimentId: "phase2-smoke",
       rep: 1,
       ruleSkillLoader: async () => [],
     });

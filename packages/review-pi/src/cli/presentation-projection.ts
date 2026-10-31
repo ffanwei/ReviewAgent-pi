@@ -169,7 +169,10 @@ export function isPresentationProjectionConfigured(enginePath: string | null | u
 }
 
 export interface ProjectionOptions {
-  /** 配置项 `presentation.engine`（null/空白 = 恒等直通） */
+  /**
+   * 引擎模块路径。**调用方给绝对路径**（ADR-0026：相对路径在配置装载期按
+   * 配置文件所在目录解析、`"builtin"` 解析成制品内引擎）；null/空白 = 恒等直通。
+   */
   readonly enginePath?: string | null;
   /** 运行时接入点（引擎配置了就必需；缺席 = 降级人话） */
   readonly runtime?: PresentationRuntime;
@@ -206,6 +209,8 @@ export async function applyPresentationProjection(
 
   let engine: PresentationEngine;
   try {
+    // 路径已由配置装载期解析成绝对路径（ADR-0026）；resolve 是幂等兜底，
+    // 让直调本函数的测试/嵌入方给相对路径时仍按 cwd 解析。
     const moduleUrl = pathToFileURL(resolve(enginePath)).href;
     const loaded = (await import(moduleUrl)) as { default?: unknown };
     if (typeof loaded.default !== "function") {

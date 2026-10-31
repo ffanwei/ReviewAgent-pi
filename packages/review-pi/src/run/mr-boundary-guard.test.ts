@@ -326,7 +326,6 @@ test("全链超界（11 文件）：照常出 findings + domainWarning + 审计 
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -370,7 +369,6 @@ test("全链 malformed diff：boundary-unmeasurable 降级标注 + 照常执行"
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });
@@ -403,7 +401,6 @@ test("全链边界内零漂移：护栏键全缺席 + req0 消息面逐字节断
     apiKey: "offline-test",
     fetch: script.fetch,
     runsRoot,
-    experimentId: "phase2-smoke",
     rep: 1,
     ruleSkillLoader: async () => [],
   });

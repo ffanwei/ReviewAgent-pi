@@ -47,9 +47,17 @@ import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
-import { ConfigError, configSnapshot, loadConfig, type ModelOverride, type ResolvedConfig } from "../shared/config.js";
+import {
+  ConfigError,
+  configSnapshot,
+  homeDirectory,
+  loadConfig,
+  resolvePresentationEnginePath,
+  type ModelOverride,
+  type ResolvedConfig,
+} from "../shared/config.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
-import { CLI_EXPERIMENT_ID, parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
+import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
 import { runConfigCommand } from "./config-command.js";
 import {
   applyPresentationProjection,
@@ -99,10 +107,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       baseUrl: endpoint.baseUrl,
       modelId,
       runtime: reviewRuntimeOf(config),
-      config: configSnapshot(config),
+      config: configSnapshot(config, { home: homeDirectory() }),
       fetch: globalThis.fetch,
       runsRoot,
-      experimentId: CLI_EXPERIMENT_ID,
       rep: 1,
       ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
       ...(args.ruleSkillDirs !== undefined ? { ruleSkillDirs: args.ruleSkillDirs } : {}),
@@ -137,7 +144,20 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // 动手前先给一行 stderr 心跳，免得「检视完成 → 长静默 → stdout」被误读
   // 为挂死。谓词单源 isPresentationProjectionConfigured——与投影缝读同一
   // 配置项，未配置恒等直通时零输出（现状形态不动）。
-  const presentationEngine = config.presentation.engine;
+  //
+  // 引擎路径解析 + 装载期校验（ADR-0026）：相对路径按**配置文件所在目录**
+  // 解析、`"builtin"` 指制品内引擎（resolvePresentationEnginePath）。模块
+  // 不在位 ⇒ 按「未配置引擎」处理（一行 stderr + 本次恒等直通）——否则会
+  // 先打印「投影进行中」心跳、再在检视跑完几十秒后降级，等于让人白等。
+  const configuredEngine = config.presentation.engine;
+  const resolvedEngine = resolvePresentationEnginePath(configuredEngine, config.path);
+  const presentationEngine =
+    resolvedEngine !== null && existsSync(resolvedEngine) ? resolvedEngine : null;
+  if (resolvedEngine !== null && presentationEngine === null) {
+    process.stderr.write(
+      `review-pi: presentation.engine 指向的模块不存在（${resolvedEngine}），本次按未配置引擎恒等直通\n`,
+    );
+  }
   if (isPresentationProjectionConfigured(presentationEngine)) {
     process.stderr.write("review-pi: 呈现投影进行中（自然语言字段译中文）……\n");
   }
@@ -276,8 +296,8 @@ async function readLinesOf(filePath: string): Promise<readonly string[] | undefi
 
 /**
  * 本次 run 的规则包解压目录（ADR-0017：核外据此建真规则 id 白名单）。
- * 目录约定单源在 `run/review-run.ts`（`<runsRoot>/<experimentId>/.cache/
- * rule-skills/<digest>/`）；降级包（`degradedReason` 在场）不跑会话，故排除。
+ * 目录约定单源在 `run/review-run.ts`（`<runsRoot>/.cache/rule-skills/<digest>/`）；
+ * 降级包（`degradedReason` 在场）不跑会话，故排除。
  */
 function rulePackDirsOf(
   audit: {
@@ -289,7 +309,7 @@ function rulePackDirsOf(
   },
   runsRoot: string,
 ): readonly string[] {
-  const cacheRoot = resolve(runsRoot, CLI_EXPERIMENT_ID, ".cache", "rule-skills");
+  const cacheRoot = resolve(runsRoot, ".cache", "rule-skills");
   const dirs: string[] = [];
   for (const entry of audit.ruleSkill ?? []) {
     if (entry.name === "" || entry.digest === "" || entry.degradedReason !== undefined) {

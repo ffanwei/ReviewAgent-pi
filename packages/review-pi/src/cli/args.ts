@@ -19,9 +19,6 @@ import { basename } from "node:path";
  * 实验 CLI；pi 内核 reviewModelOf 对目录外 id 一律以钉住画像透传，无别名目录）。
  */
 
-/** CLI 运行留痕的实验目录名（<out>/<experimentId>/runs|audit） */
-export const CLI_EXPERIMENT_ID = "review-pi-cli";
-
 /** --out 缺省（review 落盘根） */
 const DEFAULT_OUT_DIR = "review-pi-output";
 

@@ -1,6 +1,7 @@
 ﻿import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, posix, resolve, win32 } from "node:path";
+import { dirname, isAbsolute, posix, relative, resolve, sep, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
 
@@ -24,6 +25,74 @@ export const OFFICIAL_REVIEWER_BASE_URL = "https://api.deepseek.com";
 export const DEFAULT_GATEWAY_MAX_TOKENS = 32_768;
 /** 检视模型缺省 id（`--model` / `model.default` 都缺席时的最终回落） */
 export const DEFAULT_MODEL_ID = "deepseek-v4-flash";
+
+/**
+ * 制品内呈现引擎的哨兵值（`presentation.engine = "builtin"`，ADR-0026）。
+ * 写一个哨兵而不是绝对路径：配置要能在机器之间、在源码树与分发包之间直接
+ * 复制粘贴，制品位置由安装形态自己决定。
+ */
+export const BUILTIN_ENGINE_SENTINEL = "builtin";
+
+/** 本包根（`src/shared` 与 `dist/shared` 同一相对深度） */
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/** 制品内呈现引擎模块绝对路径（`build:presentation` 落到 `<pkg>/presentation/`） */
+export function builtinPresentationEnginePath(): string {
+  return resolve(packageRoot, "presentation", "engine-zh.js");
+}
+
+/**
+ * 生效呈现引擎的绝对路径（ADR-0026）：
+ * - `null` / 空白 ⇒ `null`（恒等直通，不投影）；
+ * - `"builtin"` ⇒ 制品内引擎（`<pkg>/presentation/engine-zh.js`）；
+ * - 绝对路径 ⇒ 原样；
+ * - 相对路径 ⇒ **相对配置文件所在目录**，不是 cwd。配置文件说"引擎在这"，
+ *   它就该跟着配置文件走：`review-pi` 从哪个目录启动都是同一结果。
+ *
+ * 只做路径解析，不校验存在性——存在性检查在装载期（main），因为缺失要降级
+ * 成「未配置引擎」继续检视，而不是让配置读取失败（ADR-0026）。
+ */
+export function resolvePresentationEnginePath(
+  engine: string | null | undefined,
+  configPath: string,
+): string | null {
+  const raw = engine?.trim();
+  if (raw === undefined || raw === "") {
+    return null;
+  }
+  if (raw === BUILTIN_ENGINE_SENTINEL) {
+    return builtinPresentationEnginePath();
+  }
+  return isAbsolute(raw) ? raw : resolve(dirname(resolve(configPath)), raw);
+}
+
+/**
+ * base URL 的判档归一形：scheme / host 大小写不敏感、去尾斜杠；路径逐字符
+ * 有意义（`/v1` 不是同一端点）。非 URL 字面按 trim + 去尾斜杠比较。
+ */
+function canonicalBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${parsed.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
+ * 是否官方直连（判档单源，ADR-0026）：常量与比较规则只在这里。未配置 =
+ * 官方缺省。`maxTokensFor` 与配置侧都走这一个谓词，避免"同一 URL 两处判断
+ * 不一样"（历史缺陷：`HTTPS://API.DEEPSEEK.COM` 被判成网关，于是官方直连
+ * 也发 max_tokens，破坏 ADR-0002 的 wire 字节对齐）。
+ */
+export function isOfficialReviewerBaseUrl(baseUrl: string | null | undefined): boolean {
+  const raw = baseUrl?.trim();
+  if (raw === undefined || raw === "") {
+    return true;
+  }
+  return canonicalBaseUrl(raw) === canonicalBaseUrl(OFFICIAL_REVIEWER_BASE_URL);
+}
 
 /** 配置错误：带键路径的人话，供 CLI 直接打印（不落堆栈） */
 export class ConfigError extends Error {
@@ -194,14 +263,26 @@ export function resolveConfigPath(options: LoadConfigOptions = {}): string {
     return resolve(cwd, options.configPath);
   }
   const platform = options.platform ?? process.platform;
-  const env = options.env ?? process.env;
-  const home = (platform === "win32" ? env.USERPROFILE : env.HOME)?.trim();
-  if (home === undefined || home === "") {
+  const home = homeDirectory({
+    platform,
+    ...(options.env !== undefined ? { env: options.env } : {}),
+  });
+  if (home === undefined) {
     throw new ConfigError(
       `无法确定用户主目录（${platform === "win32" ? "USERPROFILE" : "HOME"} 为空）——请用 --config <path> 指定配置文件`,
     );
   }
   return join2(platform, home, CONFIG_DIR_NAME, CONFIG_FILE_NAME);
+}
+
+/** 用户主目录（HOME / USERPROFILE）；为空返回 undefined（不猜路径） */
+export function homeDirectory(
+  options: { readonly env?: NodeJS.ProcessEnv; readonly platform?: NodeJS.Platform } = {},
+): string | undefined {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const home = (platform === "win32" ? env.USERPROFILE : env.HOME)?.trim();
+  return home === undefined || home === "" ? undefined : home;
 }
 
 /** 注入 platform 时也必须用对应分隔符（测试跨平台确定性） */
@@ -243,16 +324,71 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   return { config, warnings };
 }
 
-/** 审计快照（秘密只记 set/missing） */
-export function configSnapshot(config: ResolvedConfig): ConfigSnapshot {
+/** 审计快照可选项 */
+export interface ConfigSnapshotOptions {
+  /**
+   * 用户主目录：给定时把 `path` 与值里的家目录前缀折叠成 `~`（ADR-0027）。
+   * 审计文件是可归档的留痕，机器绑定的绝对路径会让同一份 run 在另一台机器
+   * 上不可读；`config show` 不带这个选项，用户看的永远是真实路径。
+   */
+  readonly home?: string | undefined;
+}
+
+/** 审计快照（秘密只记 set/missing；可选家目录归一化为 `~/...`） */
+export function configSnapshot(
+  config: ResolvedConfig,
+  options: ConfigSnapshotOptions = {},
+): ConfigSnapshot {
+  const home = options.home;
+  const values = effectiveValues(config);
   return {
-    path: config.path,
+    path: collapseHome(config.path, home),
     version: config.version,
     digest: config.digest,
-    values: effectiveValues(config),
+    values:
+      home === undefined
+        ? values
+        : (Object.fromEntries(
+            Object.entries(values).map(([key, value]) => [key, collapseHomeDeep(value, home)]),
+          ) as Readonly<Record<string, unknown>>),
     overridden: config.overridden,
     secret: { "reviewer.apiKey": config.reviewer.apiKey === null ? "missing" : "set" },
   };
+}
+
+/** 家目录前缀折叠：`C:\Users\x\a` / `/home/x/a` → `~/a`（POSIX 分隔符） */
+function collapseHome(value: string, home: string | undefined): string {
+  if (home === undefined || home.trim() === "" || !isAbsolute(value)) {
+    return value;
+  }
+  const base = resolve(home.trim());
+  const rest = relative(base, resolve(value));
+  if (rest === "") {
+    return "~";
+  }
+  if (rest.startsWith("..") || isAbsolute(rest)) {
+    return value;
+  }
+  return `~/${rest.split(sep).join("/")}`;
+}
+
+/** 递归折叠值里的字符串（数组 / 对象 / 标量；只碰字符串） */
+function collapseHomeDeep(value: unknown, home: string): unknown {
+  if (typeof value === "string") {
+    return collapseHome(value, home);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => collapseHomeDeep(entry, home));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        collapseHomeDeep(entry, home),
+      ]),
+    );
+  }
+  return value;
 }
 
 /** 运行期取 key：缺失时给出可操作的人话（并说明 env 已不再被读取） */
@@ -914,7 +1050,6 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
   return `{
   // PiAgent 运行配置（ADR-0025）。JSONC：允许注释与尾逗号。
   // 秘密（reviewer.apiKey）只写在这里；环境变量不再被读取。
-  "$schema": "https://example.invalid/piagent.schema.json",
   "version": 1,
 
   "reviewer": {
@@ -934,7 +1069,8 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
   "models": {},
 
   "presentation": {
-    // 核外中文呈现引擎模块路径；null = 不投影（英文直通）
+    // 核外中文呈现引擎模块路径；null = 不投影（英文直通）。
+    // "builtin" = 制品自带的引擎；相对路径按**本配置文件所在目录**解析（ADR-0026）
     "engine": ${enginePath}
   },
 

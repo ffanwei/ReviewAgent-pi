@@ -13,7 +13,7 @@ import {
 } from "./run-record.js";
 
 // RunRecord 投影（测量常量面）：键序在本仓内单源定义。
-// 落盘路径：<runsRoot>/<experimentId>/runs/vul4j/<caseId>/rep-<N>.json。
+// 落盘路径：<runsRoot>/runs/mr/<caseId>/rep-<N>.json。
 
 const COMPLETED_AT = new Date("2026-09-14T18:09:20.100Z");
 
@@ -66,7 +66,7 @@ function tempDir(): string {
 
 function recordFixture(): RunRecord {
   return buildRunRecord({
-    source: "vul4j",
+    source: "mr",
     caseId: "VUL4J-1",
     rep: 1,
     model: "deepseek-v4-flash",
@@ -127,7 +127,7 @@ describe("buildRunRecord", () => {
   test("baseline-only 记录：键序固定，effective / verifierPass 恒 null", () => {
     const record = recordFixture();
     expect(Object.keys(record)).toEqual([...RECORD_KEYS]);
-    expect(record.source).toBe("vul4j");
+    expect(record.source).toBe("mr");
     expect(record.verifier).toBe("off");
     expect(record.completedAt).toBe("2026-09-14T18:09:20.100Z");
     expect(record.effective).toBeNull();
@@ -144,23 +144,23 @@ describe("buildRunRecord", () => {
 });
 
 describe("runRecordPath / writeRunRecord", () => {
-  test("路径：<runsRoot>/<experimentId>/runs/<source>/<caseId>/rep-<N>.json", () => {
+  test("路径：<runsRoot>/runs/<source>/<caseId>/rep-<N>.json（无 experimentId 层，ADR-0027）", () => {
     const record = recordFixture();
-    expect(runRecordPath("runs", "phase2-smoke", record)).toBe(
-      path.join("runs", "phase2-smoke", "runs", "vul4j", "VUL4J-1", "rep-1.json"),
+    expect(runRecordPath("out", record)).toBe(
+      path.join("out", "runs", "mr", "VUL4J-1", "rep-1.json"),
     );
   });
 
   test("caseId 文件名不安全字符替换（点号保留）", () => {
     const record = buildRunRecord({
-      source: "vul4j",
+      source: "mr",
       caseId: "case/with space",
       rep: 2,
       model: "deepseek-v4-flash",
       completedAt: COMPLETED_AT,
       result: { ...RUN_RESULT, caseId: "case/with space" },
     });
-    expect(runRecordPath("runs", "phase2-smoke", record)).toContain(
+    expect(runRecordPath("out", record)).toContain(
       path.join("case_with_space", "rep-2.json"),
     );
   });
@@ -168,8 +168,8 @@ describe("runRecordPath / writeRunRecord", () => {
   test("落盘 2 空格缩进 + 尾随换行，往返一致", async () => {
     const record = recordFixture();
     const runsRoot = tempDir();
-    const filePath = await writeRunRecord(runsRoot, "phase2-smoke", record);
-    expect(filePath).toBe(runRecordPath(runsRoot, "phase2-smoke", record));
+    const filePath = await writeRunRecord(runsRoot, record);
+    expect(filePath).toBe(runRecordPath(runsRoot, record));
     const text = readFileSync(filePath, "utf8");
     expect(text).toBe(`${JSON.stringify(record, null, 2)}\n`);
     const parsed = JSON.parse(text);

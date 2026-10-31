@@ -56,10 +56,8 @@ export interface ReviewRunInput {
   readonly config?: ConfigSnapshot;
   /** 传输层注入（离线 = fakeFetch；线上 = 真 fetch） */
   readonly fetch: FetchFunction;
-  /** 运行留痕根目录（fixture 或真实 runs/） */
+  /** 运行留痕根目录（fixture 或真实 runs/）；布局 `<runsRoot>/{runs,audit}/mr/...` */
   readonly runsRoot: string;
-  /** 实验标识（目录名，如 "review-pi-cli"） */
-  readonly experimentId: string;
   readonly rep: number;
   /**
    * 记录落盘开关（#8 runner 执行缝）：缺省 true（内核自写 RunRecord——
@@ -128,7 +126,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     input.ruleSkillZips ?? (input.ruleSkillZip !== undefined ? [input.ruleSkillZip] : undefined);
   const ruleSkills: readonly RuleSkill[] = await loadRuleSkillsFn({
     repoPath: input.repoPath,
-    cacheRoot: path.join(input.runsRoot, input.experimentId, ".cache", "rule-skills"),
+    cacheRoot: path.join(input.runsRoot, ".cache", "rule-skills"),
     ...(explicitZips !== undefined ? { explicitZipPaths: explicitZips } : {}),
     ...(input.ruleSkillDirs !== undefined ? { ruleSkillDirs: input.ruleSkillDirs } : {}),
     ...(input.ruleSkillName !== undefined ? { skillName: input.ruleSkillName } : {}),
@@ -234,7 +232,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     ...(boundary.degraded ? { domainWarning: boundary.domainWarning } : {}),
   };
   const record = buildRunRecord({
-    source: "vul4j",
+    source: "mr",
     caseId: input.caseId,
     rep: input.rep,
     model: modelId,
@@ -253,16 +251,15 @@ function persistRunRecord(input: ReviewRunInput, record: RunRecord): Promise<str
   if (input.persistRecord === false) {
     return Promise.resolve("");
   }
-  return writeRunRecord(input.runsRoot, input.experimentId, record);
+  return writeRunRecord(input.runsRoot, record);
 }
 
-/** 审计文件目录：`<runsRoot>/<experimentId>/audit/vul4j/<caseId>/rep-<N>/audit` */
+/** 审计文件目录：`<runsRoot>/audit/mr/<caseId>/rep-<N>/audit`（ADR-0027） */
 function buildAuditDir(input: ReviewRunInput): string {
   return path.join(
     input.runsRoot,
-    input.experimentId,
     "audit",
-    "vul4j",
+    "mr",
     input.caseId,
     `rep-${input.rep}`,
     "audit",
@@ -290,14 +287,13 @@ function toRuleSkillAudit(skill: RuleSkill): RuleSkillAudit {
 
 /**
  * runs 树目录单点（转录 / 意见导出共用；与运行记录 `rep-<N>.json` 同目录）：
- * `<runsRoot>/<experimentId>/runs/vul4j/<caseId>`。
+ * `<runsRoot>/runs/mr/<caseId>`。
  * 布局逻辑单源在 `run-record.runDirPath`（防记录与产物布局漂移）。
  */
 function runOutputDir(input: ReviewRunInput): string {
   return runDirPath({
     runsRoot: input.runsRoot,
-    experimentId: input.experimentId,
-    source: "vul4j",
+    source: "mr",
     caseId: input.caseId,
   });
 }
@@ -402,7 +398,7 @@ async function persistReviewsEn(args: {
   const envelope = buildReviewsExport({
     generatedAt: args.finishedAt,
     runId: args.runId,
-    source: "vul4j",
+    source: "mr",
     caseId: args.input.caseId,
     rep: args.input.rep,
     model: args.modelId,

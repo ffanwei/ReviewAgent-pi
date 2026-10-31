@@ -17,24 +17,27 @@ import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
  * - 未配置引擎 / 投影降级 / tips 形状非法 ⇒ **不产** + 主动删除**本次 run 的
  *   `rep-<N>/`** 里的陈旧文件（绝不跨 rep 越权删除）。
  *
- * 执行目录副本（ADR-0017 决策 14）：除 run 产物目录外，同一份内容再落到**进程
- * cwd**——两份同名族文件（`reviews_tips_zh.json` 原名 + `review-result.json`
- * 下游约定名）。cwd 属用户目录（可能只读、可能本身是 git 仓库根），故这一路
- * **永不抛错**：失败只进 stderr 警告，检视本身照常成功（exit 0）；本次不产时
- * 两份陈旧副本一并清除。
+ * 执行目录副本（ADR-0017 决策 14 / ADR-0027）：run 产物目录里是**真源**
+ * （`rep-<N>/reviews_tips_zh.json`），cwd 只放一份下游约定名
+ * `review-result.json`，内容与真源逐字节相同。cwd 属用户目录（可能只读、可能
+ * 本身是 git 仓库根），故这一路**永不抛错**：失败只进 stderr 警告，检视本身
+ * 照常成功（exit 0）；本次不产时把陈旧副本（含旧版本写过的原名副本）一并清除。
  */
 
 /** 分组意见导出的文件名（与 `reviews_en.json` 同目录、同 rep） */
 export const REVIEWS_TIPS_ZH_FILENAME = "reviews_tips_zh.json";
 
-/** 执行目录副本的下游约定名（内容与上面的原名副本逐字节相同） */
+/** 执行目录副本的下游约定名（内容与上面那份逐字节相同） */
 export const REVIEW_RESULT_FILENAME = "review-result.json";
 
-/** 执行目录副本的两个文件名（同内容双写：原名 + 下游约定名） */
-export const EXEC_DIR_TIPS_FILENAMES = [
-  REVIEWS_TIPS_ZH_FILENAME,
-  REVIEW_RESULT_FILENAME,
-] as const;
+/** 执行目录副本的文件名（ADR-0027：只写这一个；原名副本只留在 run 目录里） */
+export const EXEC_DIR_TIPS_FILENAMES = [REVIEW_RESULT_FILENAME] as const;
+
+/**
+ * 清理时要一并带走的文件名：含旧版本在 cwd 写过的 `reviews_tips_zh.json`
+ * （本次不产 tips 时它同样必须消失，否则读者分不清是不是本次的）。
+ */
+const EXEC_DIR_STALE_FILENAMES = [REVIEWS_TIPS_ZH_FILENAME, REVIEW_RESULT_FILENAME] as const;
 
 /** 执行目录副本的写/清结果（失败不抛，收敛成可打印的问题清单） */
 export interface ExecDirTipsOutcome {
@@ -98,9 +101,12 @@ function isNotFound(error: unknown): boolean {
 }
 
 /**
- * 把分组意见另存到**执行目录**（进程 cwd，ADR-0017 决策 14）：同名双写
- * `reviews_tips_zh.json` + `review-result.json`，内容与 run 产物目录里的那份
- * 逐字节相同（2 空格缩进 + 尾换行）。
+ * 把分组意见另存到**执行目录**（进程 cwd，ADR-0017 决策 14 / ADR-0027）：
+ * 只写下游约定名 `review-result.json`，内容与 run 产物目录里的
+ * `rep-<N>/reviews_tips_zh.json` 逐字节相同（2 空格缩进 + 尾换行）。
+ *
+ * 只留一个名字：cwd 不是产物目录，两个同内容文件只会让人猜哪个是权威——
+ * 权威永远是 run 目录里那份。
  *
  * **永不抛错**：cwd 属用户目录，可能只读、可能落在系统目录；失败项收敛进
  * `problems` 由调用方打 stderr，检视本身照常成功（exit 0）。不 `mkdir`——
@@ -128,12 +134,12 @@ export async function writeExecDirTipsCopies(
 /**
  * 删除执行目录里的陈旧副本（本次不产 tips 时使「有就是本次的」成立）。
  * 与写入同档：**永不抛错**，删除失败进 `problems`；不存在不算问题、不入
- * `touched`（零噪声）。
+ * `touched`（零噪声）。除本次写入名外，也带走旧版本写过的原名副本。
  */
 export async function removeExecDirTipsCopies(execDir: string): Promise<ExecDirTipsOutcome> {
   const touched: string[] = [];
   const problems: string[] = [];
-  for (const name of EXEC_DIR_TIPS_FILENAMES) {
+  for (const name of EXEC_DIR_STALE_FILENAMES) {
     const filePath = path.resolve(execDir, name);
     try {
       await rm(filePath);
