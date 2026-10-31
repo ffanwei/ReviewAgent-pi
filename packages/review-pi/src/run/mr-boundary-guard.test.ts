@@ -12,6 +12,7 @@ import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import {
   DOMAIN_WARNING_OUT_OF_BOUNDARY,
   DOMAIN_WARNING_UNMEASURABLE,
+  domainWarningFor,
   guardMrBoundary,
   measureMrBoundary,
   type MrBoundaryMetrics,
@@ -238,6 +239,44 @@ test("判界：malformed 家族（保守口径）——不可度量 = 显式降�
 test("文案面：域外警示为生产化方案 §3.1 原文；不可度量为 boundary-unmeasurable 语义", () => {
   expect(DOMAIN_WARNING_OUT_OF_BOUNDARY).toBe("out-of-validated-domain (files>10 or diff>2K)");
   expect(DOMAIN_WARNING_UNMEASURABLE).toMatch(/boundary-unmeasurable/);
+});
+
+test("文案派生（ADR-0025）：界值改了文案跟着改；整千用 K，否则原样数字", () => {
+  expect(domainWarningFor({ maxFiles: 10, maxDiffLines: 2000 })).toBe(DOMAIN_WARNING_OUT_OF_BOUNDARY);
+  expect(domainWarningFor({ maxFiles: 5, maxDiffLines: 500 })).toBe(
+    "out-of-validated-domain (files>5 or diff>500)",
+  );
+  expect(domainWarningFor({ maxFiles: null, maxDiffLines: 2000 })).toBe(
+    "out-of-validated-domain (diff>2K)",
+  );
+  expect(domainWarningFor({ maxFiles: 10, maxDiffLines: null })).toBe(
+    "out-of-validated-domain (files>10)",
+  );
+});
+
+test("自定义界（ADR-0025）：更小的界按新界判、文案同步；更宽的界不误报", () => {
+  const custom = { maxFiles: 2, maxDiffLines: 10 } as const;
+  const decision = guardMrBoundary(multiFileDiff(3), custom);
+  expect(decision.degraded).toBe(true);
+  if (!decision.degraded) {
+    throw new Error("unreachable");
+  }
+  expect(decision.domainWarning).toBe("out-of-validated-domain (files>2 or diff>10)");
+  expect(decision.mrBoundary.reason).toBe("too-many-files");
+
+  // 更宽的界：11 文件 / 22 行在 20 文件 / 100 行内 = 介内零介入
+  const wide = guardMrBoundary(multiFileDiff(11), { maxFiles: 20, maxDiffLines: 100 });
+  expect(wide.degraded).toBe(false);
+  expect(Object.keys(wide)).toEqual(["degraded"]);
+});
+
+test("双维皆 null（ADR-0025）：护栏整体停用——不度量、不告警，连 malformed 也不降级", () => {
+  const disabled = { maxFiles: null, maxDiffLines: null } as const;
+  for (const diff of [multiFileDiff(11), singleFileDiffOfChangedLines(2001), "not a diff at all"]) {
+    const decision = guardMrBoundary(diff, disabled);
+    expect(decision.degraded).toBe(false);
+    expect(Object.keys(decision)).toEqual(["degraded"]);
+  }
 });
 
 // ---- runReview 行为接缝（离线 fakeFetch 全链） ----

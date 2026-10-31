@@ -1,5 +1,6 @@
 import type { ContextLedger } from "../contracts/ledger.js";
 import type { KnowledgeEntry } from "../contracts/knowledge.js";
+import type { MicroLimits } from "../shared/config.js";
 import type { RepoContext } from "../zoneb/repo-context.js";
 
 /**
@@ -17,6 +18,10 @@ export interface ToolRunContext {
   readonly repo: () => Promise<RepoContext>;
   /** 单次工具结果字符预算 */
   readonly resultBudgetChars: number;
+  /** 微限（ADR-0025：回显/遍历深度等可配显示与检索上界） */
+  readonly micro: MicroLimits;
+  /** ripgrep 单次调用超时（`limits.timeouts.ripgrepMs`；find_references / call_chain 共用） */
+  readonly ripgrepTimeoutMs: number;
   /** C3 Knowledge 规则语料（review.search_rule 数据源；缺省空） */
   readonly rules: readonly KnowledgeEntry[];
   /** C3 Knowledge 历史记语料（review.search_history 数据源；缺省空） */

@@ -179,20 +179,18 @@ test("runReviewTurn：目录外自由 model id 可发（钉住模型画像作模
   expect(parsed.reasoning_effort).toBe("high");
 });
 
-test("maxTokensFor：官方直连不发；网关档显式预算；REVIEWER_MAX_TOKENS 合法则优先", () => {
+test("maxTokensFor：官方直连不发；网关档显式预算；配置值恒优先（ADR-0025）", () => {
   expect(maxTokensFor(undefined)).toBeUndefined();
   expect(maxTokensFor("https://api.deepseek.com")).toBeUndefined();
   expect(maxTokensFor("https://api.deepseek.com/")).toBeUndefined();
   expect(maxTokensFor("  https://api.deepseek.com  ")).toBeUndefined();
   expect(maxTokensFor(GATEWAY_URL)).toBe(GATEWAY_MAX_TOKENS);
-  // 网关上限较小（或被路由到小输出模型）时的逃生口
-  expect(maxTokensFor(GATEWAY_URL, "8192")).toBe(8192);
-  expect(maxTokensFor(undefined, "16384")).toBe(16384);
-  // 非法值忽略，落回判档
-  expect(maxTokensFor(GATEWAY_URL, "0")).toBe(GATEWAY_MAX_TOKENS);
-  expect(maxTokensFor(GATEWAY_URL, "-1")).toBe(GATEWAY_MAX_TOKENS);
-  expect(maxTokensFor(GATEWAY_URL, "abc")).toBe(GATEWAY_MAX_TOKENS);
-  expect(maxTokensFor(GATEWAY_URL, "   ")).toBe(GATEWAY_MAX_TOKENS);
+  // 配置了 reviewer.maxOutputTokens 即优先（官方直连也发）——字段可空，null = 自动判档
+  expect(maxTokensFor(GATEWAY_URL, 8192)).toBe(8192);
+  expect(maxTokensFor(undefined, 16384)).toBe(16384);
+  expect(maxTokensFor(GATEWAY_URL, null)).toBe(GATEWAY_MAX_TOKENS);
+  // 取值校验在配置层（fail fast），这里只做整数化
+  expect(maxTokensFor(GATEWAY_URL, 8192.9)).toBe(8192);
 });
 
 test("runReviewTurn：网关档 wire 显式带 max_tokens（不继承网关请求默认值）", async () => {
@@ -209,22 +207,18 @@ test("runReviewTurn：网关档 wire 显式带 max_tokens（不继承网关请�
   expect(parsed.max_tokens).toBe(GATEWAY_MAX_TOKENS);
 });
 
-test("runReviewTurn：REVIEWER_MAX_TOKENS 覆盖经网关请求落到 wire", async () => {
+test("runReviewTurn：配置 maxOutputTokens 覆盖经网关请求落到 wire", async () => {
   const script = fakeFetch([
     { text: "ok", usage: { promptTokens: 1, completionTokens: 1, cacheReadTokens: 0 } },
   ]);
-  vi.stubEnv("REVIEWER_MAX_TOKENS", "8192");
-  try {
-    const { wire } = await runReviewTurn({
-      context: BASE_CONTEXT,
-      apiKey: API_KEY,
-      baseUrl: GATEWAY_URL,
-      fetch: script.fetch,
-    });
-    expect((JSON.parse(wire.wireBody) as Record<string, unknown>).max_tokens).toBe(8192);
-  } finally {
-    vi.unstubAllEnvs();
-  }
+  const { wire } = await runReviewTurn({
+    context: BASE_CONTEXT,
+    apiKey: API_KEY,
+    baseUrl: GATEWAY_URL,
+    maxOutputTokens: 8192,
+    fetch: script.fetch,
+  });
+  expect((JSON.parse(wire.wireBody) as Record<string, unknown>).max_tokens).toBe(8192);
 });
 
 test("runReviewTurn：modelId 空白 → fail fast（自由 id 非空校验）", async () => {

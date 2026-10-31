@@ -72,3 +72,66 @@ test("buildCallChainBlocks：多方法主体按入参顺序各产一块", async 
   expect(blocks[0]?.[0]).toBe("Beta.combine - method at src/main/java/com/example/Beta.java:5");
   expect(blocks[1]?.[0]).toBe("Beta.scale - method at src/main/java/com/example/Beta.java:10");
 });
+
+// ---- hops 可配（ADR-0025 `limits.micro.callChainHops`） ----
+
+const ALPHA_FILE = "src/main/java/com/example/Alpha.java";
+
+function alphaMethodRef(name: string, line: number, endLine: number): ChangedSymbolRef {
+  return {
+    file: ALPHA_FILE,
+    typeName: "Alpha",
+    symbol: {
+      kind: "method",
+      name,
+      line,
+      endLine,
+      modifiers: ["public"],
+      returnType: "int",
+      params: "()",
+      members: [],
+    } as JavaSymbol,
+  };
+}
+
+test("hops=1：只出 hop 1 与 callee，不出现 hop 2 段（缺省 2 的历史行为不受影响）", async () => {
+  const repo = await loadRepoContext(SAMPLE);
+  const blocks = await buildCallChainBlocks(repo, [alphaMethodRef("doubled", 15, 17)], { hops: 1 });
+  expect(blocks[0]).toEqual([
+    "Alpha.doubled - method at src/main/java/com/example/Alpha.java:15",
+    "  Callers (hop 1):",
+    "    Beta.scale - src/main/java/com/example/Beta.java:12",
+    "  Callees (hop 1):",
+    "    (none)",
+  ]);
+});
+
+test("hops=2（缺省）：hop 2 展开到引用者的引用者", async () => {
+  const repo = await loadRepoContext(SAMPLE);
+  const blocks = await buildCallChainBlocks(repo, [alphaMethodRef("doubled", 15, 17)]);
+  expect(blocks[0]).toEqual([
+    "Alpha.doubled - method at src/main/java/com/example/Alpha.java:15",
+    "  Callers (hop 1):",
+    "    Beta.scale - src/main/java/com/example/Beta.java:12",
+    '  Callers of "scale" (hop 2):',
+    "    Beta.combine - src/main/java/com/example/Beta.java:7",
+    "  Callees (hop 1):",
+    "    (none)",
+  ]);
+});
+
+test("hops=3：比缺省多展开一层（visited 去环后无新引用者即止）", async () => {
+  const repo = await loadRepoContext(SAMPLE);
+  const blocks = await buildCallChainBlocks(repo, [alphaMethodRef("doubled", 15, 17)], { hops: 3 });
+  expect(blocks[0]).toEqual([
+    "Alpha.doubled - method at src/main/java/com/example/Alpha.java:15",
+    "  Callers (hop 1):",
+    "    Beta.scale - src/main/java/com/example/Beta.java:12",
+    '  Callers of "scale" (hop 2):',
+    "    Beta.combine - src/main/java/com/example/Beta.java:7",
+    '  Callers of "combine" (hop 3):',
+    "    (none)",
+    "  Callees (hop 1):",
+    "    (none)",
+  ]);
+});

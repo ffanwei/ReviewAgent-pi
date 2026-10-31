@@ -16,16 +16,19 @@ export function knownArgumentKeys(parameters: Record<string, unknown>): Readonly
   return new Set(Object.keys(properties));
 }
 
-/** 入参摘要上限（ADR-0016 脱敏硬规则：进度行里的入参最多 80 字符，含省略号） */
+/** 入参摘要缺省上限（ADR-0016 脱敏硬规则；`limits.micro.argumentsSummaryChars` 可配） */
 const ARGUMENTS_SUMMARY_MAX_CHARS = 80;
 
 /**
  * 工具入参的一行摘要（进度显示用，不是审计产物）。
  *
  * 顺序 = 入参声明顺序；空值/`null` 丢弃；空白折叠成单空格（一次调用恒占一行）；
- * 超长截断到 80 字符（省略号占一位）。原值永不进入 `stderr` 的完整形态。
+ * 超长截断到 `maxChars` 字符（省略号占一位）。原值永不进入 `stderr` 的完整形态。
  */
-export function summarizeToolArguments(args: Record<string, unknown>): string {
+export function summarizeToolArguments(
+  args: Record<string, unknown>,
+  maxChars: number = ARGUMENTS_SUMMARY_MAX_CHARS,
+): string {
   const parts: string[] = [];
   for (const [key, value] of Object.entries(args)) {
     if (value === undefined || value === null || value === "") {
@@ -34,7 +37,7 @@ export function summarizeToolArguments(args: Record<string, unknown>): string {
     const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
     parts.push(`${key}=${text.replace(/\s+/g, " ").trim()}`);
   }
-  return clampLine(parts.join(" "), ARGUMENTS_SUMMARY_MAX_CHARS);
+  return clampLine(parts.join(" "), maxChars);
 }
 
 /** 行截断：`maxChars` 是**含省略号**的总长上限（进度行宽度的语义是「整行多宽」） */

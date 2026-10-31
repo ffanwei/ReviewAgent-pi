@@ -18,6 +18,7 @@ import { applyCandidateGate } from "../gate/candidate-gate.js";
 import { mergeSkillCandidates, type SkillCandidateBatch } from "../gate/candidate-merge.js";
 import { assistantText, captureWire, reviewModelOf, reviewStreamFn } from "../provider/pi-client.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { classifyCacheBreaks } from "./cache-break.js";
 import {
   MAX_ROUNDS,
@@ -66,12 +67,17 @@ export interface AgentReviewLoopInputs {
   /** 七工具执行面（含 Ledger；唯一形态恒传 ledgerMode "enabled" 的 toolkit） */
   readonly toolkit: ReviewToolkit;
   readonly apiKey: string;
-  /** 网关 base URL 覆盖（REVIEWER_URL；缺省官方接入点） */
+  /** 网关 base URL 覆盖（配置 `reviewer.baseUrl`；缺省官方接入点） */
   readonly baseUrl?: string;
   /** 模型 id 覆盖（缺省钉住的评审模型） */
   readonly modelId?: string;
   /** 传输层注入；离线测试恒注入 fake 适配器 */
   readonly fetch?: FetchFunction;
+  /**
+   * 检视运行时（ADR-0025）：输出预算 / 模型元数据 / 微限（进度与入参摘要）
+   * / skill 会话超时。缺省 = 今天的缺省行为（测试与直调形态）。
+   */
+  readonly runtime?: ReviewRuntime;
   /** 审计投影 ledger 键（唯一形态恒投影）；缺省不投影（测试夹具用） */
   readonly includeLedgerAudit?: boolean;
   /**
@@ -156,6 +162,12 @@ export async function runAgentReviewLoop(
   // 进度投影（ADR-0016）：只读既有留痕，缺省 sink = 空函数（零行为变化）
   const emitProgress = inputs.onProgress ?? NO_OP_PROGRESS_SINK;
   const requestProgress = createRequestProgress(emitProgress);
+  const runtime = inputs.runtime ?? DEFAULT_REVIEW_RUNTIME;
+  // DISP 微限（ADR-0025）：进度行只在开进度时有意义；缺省值与历史行为一致
+  const progressLimits = {
+    argumentsSummaryChars: runtime.limits.micro.argumentsSummaryChars,
+    progressDetailChars: runtime.limits.micro.progressDetailChars,
+  };
 
   const agentTools: AgentTool[] = inputs.toolkit.schemas.map((schema) => {
     const parameters = JSON.parse(schema.parametersJson) as Record<string, unknown>;
@@ -195,12 +207,13 @@ export async function runAgentReviewLoop(
       },
     };
     // 进度包装（ADR-0016）：名用点分审计名；成功/失败判据与 skill 会话同源
-    return withToolProgress(tool, schema.name, emitProgress);
+    return withToolProgress(tool, schema.name, emitProgress, progressLimits);
   });
 
   const streamFn: StreamFn = reviewStreamFn({
     apiKey: inputs.apiKey,
     ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
+    maxOutputTokens: runtime.maxOutputTokens,
   });
 
   // followUp 注入缝：shouldStopAfterTurn 闭包引用 agent，先落占位再绑定
@@ -209,7 +222,7 @@ export async function runAgentReviewLoop(
     throw new Error("internal error: follow-up enqueue invoked before agent construction");
   };
 
-  const model = reviewModelOf(inputs.modelId, inputs.baseUrl);
+  const model = reviewModelOf(inputs.modelId, inputs.baseUrl, runtime.models);
   const agent = new Agent({
     initialState: {
       systemPrompt: inputs.systemPrompt,
@@ -392,6 +405,7 @@ export async function runAgentReviewLoop(
         ...(inputs.baseUrl !== undefined ? { baseUrl: inputs.baseUrl } : {}),
         ...(inputs.modelId !== undefined ? { modelId: inputs.modelId } : {}),
         ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
+        runtime,
         onProgress: emitProgress,
       });
       emitProgress({
@@ -404,7 +418,12 @@ export async function runAgentReviewLoop(
         requestCount: outcome.record.requestCount,
         toolCallCount: outcome.record.toolCallCount,
         ...(outcome.record.degradedReason !== undefined
-          ? { detail: summarizeDetailLine(outcome.record.degradedReason) }
+          ? {
+              detail: summarizeDetailLine(
+                outcome.record.degradedReason,
+                runtime.limits.micro.progressDetailChars,
+              ),
+            }
           : {}),
       });
       outcomes.push(outcome);

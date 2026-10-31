@@ -34,15 +34,44 @@ import type { MrBoundaryRecord, MrBoundaryReason } from "../contracts/run.js";
 // diff 若真进数据集会被 root 门拒收，护栏侧的宽松只影响「是否多打一条
 // 降级标注」，不影响任何执行行为。
 
-/** 验证域边界（§7.7 / 生产化方案 §3.1 钉死的产品常量，不参数化） */
+/** 验证域边界缺省值（§7.7 / 生产化方案 §3.1；ADR-0025 起可经 `limits.boundary` 覆盖） */
 export const MR_BOUNDARY_LIMITS = Object.freeze({ maxFiles: 10, maxDiffLines: 2000 });
 
-/** 域外警示文案（生产化方案 §3.1 原文——消费端据此降级呈现） */
+/** 边界判界值（ADR-0025：`null` = 该维度不设界） */
+export interface MrBoundaryLimits {
+  readonly maxFiles: number | null;
+  readonly maxDiffLines: number | null;
+}
+
+/** 域外警示文案缺省值（生产化方案 §3.1 原文；消费端据此降级呈现） */
 export const DOMAIN_WARNING_OUT_OF_BOUNDARY = "out-of-validated-domain (files>10 or diff>2K)";
 
 /** 不可度量警示文案（保守口径：不能证明界内 = 按降级口径检视） */
 export const DOMAIN_WARNING_UNMEASURABLE =
   "out-of-validated-domain (boundary-unmeasurable: diff is not a countable unified diff)";
+
+/**
+ * 域外警示文案按配置值派生（ADR-0025 §3.3：文案与常量不得各改各的）：
+ * - both：`files>10 or diff>2K`
+ * - filesOnly：`files>10`
+ * - diffOnly：`diff>2K`
+ *
+ * 整千行数用 `K`（缺省 2000 → `2K`，与历史字节等价），否则原样数字。
+ */
+export function domainWarningFor(limits: MrBoundaryLimits): string {
+  const parts: string[] = [];
+  if (limits.maxFiles !== null) {
+    parts.push(`files>${String(limits.maxFiles)}`);
+  }
+  if (limits.maxDiffLines !== null) {
+    parts.push(`diff>${formatDiffLimit(limits.maxDiffLines)}`);
+  }
+  return `out-of-validated-domain (${parts.join(" or ")})`;
+}
+
+function formatDiffLimit(value: number): string {
+  return value % 1000 === 0 ? `${String(value / 1000)}K` : String(value);
+}
 
 /** MR 边界度量值（口径同构 root BoundaryMetrics 的判界面——totalDiffLines 非判界项不冗余） */
 export interface MrBoundaryMetrics {
@@ -108,7 +137,14 @@ export function measureMrBoundary(diff: string): MrBoundaryMetrics | null {
 }
 
 /** 入口护栏判定：界内零介入；超界 / 不可度量 → 显式降级（照常执行由调用方保证） */
-export function guardMrBoundary(diff: string): MrBoundaryDecision {
+export function guardMrBoundary(
+  diff: string,
+  limits: MrBoundaryLimits = MR_BOUNDARY_LIMITS,
+): MrBoundaryDecision {
+  // 两个维度都不设界 = 护栏整体停用（不度量、不告警、审计 mrBoundary 缺席）
+  if (limits.maxFiles === null && limits.maxDiffLines === null) {
+    return { degraded: false };
+  }
   const metrics = measureMrBoundary(diff);
   if (metrics === null) {
     return {
@@ -122,13 +158,13 @@ export function guardMrBoundary(diff: string): MrBoundaryDecision {
       },
     };
   }
-  const reason = boundaryReason(metrics);
+  const reason = boundaryReason(metrics, limits);
   if (reason === null) {
     return { degraded: false };
   }
   return {
     degraded: true,
-    domainWarning: DOMAIN_WARNING_OUT_OF_BOUNDARY,
+    domainWarning: domainWarningFor(limits),
     mrBoundary: {
       files: metrics.files,
       changedLines: metrics.changedLines,
@@ -139,11 +175,14 @@ export function guardMrBoundary(diff: string): MrBoundaryDecision {
 }
 
 /** 判界（顺序同 root checkBoundary：先文件数后行数）；界内返回 null */
-function boundaryReason(metrics: MrBoundaryMetrics): MrBoundaryReason | null {
-  if (metrics.files > MR_BOUNDARY_LIMITS.maxFiles) {
+function boundaryReason(
+  metrics: MrBoundaryMetrics,
+  limits: MrBoundaryLimits,
+): MrBoundaryReason | null {
+  if (limits.maxFiles !== null && metrics.files > limits.maxFiles) {
     return "too-many-files";
   }
-  if (metrics.changedLines > MR_BOUNDARY_LIMITS.maxDiffLines) {
+  if (limits.maxDiffLines !== null && metrics.changedLines > limits.maxDiffLines) {
     return "diff-too-large";
   }
   return null;

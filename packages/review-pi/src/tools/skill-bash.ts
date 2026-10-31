@@ -142,6 +142,8 @@ export interface SkillBashOptions {
   readonly timeoutMs?: number;
   /** 结果字符预算（缺省 DEFAULT_TOOL_RESULT_BUDGET_CHARS） */
   readonly resultBudgetChars?: number;
+  /** 子进程输出原始字符上限（缺省 SKILL_BASH_MAX_OUTPUT_CHARS；`limits.micro.skillBashOutputChars`） */
+  readonly maxOutputChars?: number;
   /** 环境来源（缺省 process.env；测试注入） */
   readonly env?: NodeJS.ProcessEnv;
   /** 子进程执行缝（缺省真实 spawn；单测注入 canned 结果） */
@@ -157,6 +159,7 @@ export interface SkillBashProcessOptions {
   readonly cwd: string;
   readonly env: Record<string, string>;
   readonly timeoutMs: number;
+  readonly maxOutputChars: number;
 }
 
 export interface SkillBashProcessOutcome {
@@ -315,6 +318,7 @@ export async function runSkillBashCommand(
     cwd: options.packRoot,
     env: allowlistedEnv(options.env ?? process.env),
     timeoutMs,
+    maxOutputChars: options.maxOutputChars ?? SKILL_BASH_MAX_OUTPUT_CHARS,
   });
 
   // 找不到可执行文件是「叫错了名字」，不是脚本失败——显式 Error 文本
@@ -346,13 +350,14 @@ export async function runSkillBashCommand(
 /** 构造 skill 会话的 bash AgentTool（name 直达 wire function.name） */
 export function buildSkillBashTool(options: SkillBashOptions): AgentTool {
   const platformNote = formatHostPlatformNote(options.platform, options.arch);
+  const timeoutSeconds = Math.max(1, Math.round((options.timeoutMs ?? SKILL_BASH_TIMEOUT_MS) / 1000));
   return {
     name: SKILL_BASH_TOOL_NAME,
     label: SKILL_BASH_TOOL_NAME,
     description:
       "Run a read-only helper command from this rule pack (any executable on PATH may be invoked, " +
       "one command per call). The working directory is the pack root, so SKILL.md paths are relative. " +
-      "No shell features (pipes, redirection, chaining, substitutions) are available. 120s timeout.\n" +
+      `No shell features (pipes, redirection, chaining, substitutions) are available. ${String(timeoutSeconds)}s timeout.\n` +
       platformNote,
     parameters: {
       type: "object",
@@ -426,10 +431,10 @@ function spawnCapture(
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
-      stdout = appendBounded(stdout, chunk);
+      stdout = appendBounded(stdout, chunk, options.maxOutputChars);
     });
     child.stderr?.on("data", (chunk: string) => {
-      stderr = appendBounded(stderr, chunk);
+      stderr = appendBounded(stderr, chunk, options.maxOutputChars);
     });
     child.on("error", (error) => {
       if (settled) {
@@ -439,7 +444,7 @@ function spawnCapture(
       clearTimeout(timer);
       resolve({
         stdout,
-        stderr: appendBounded(stderr, error.message),
+        stderr: appendBounded(stderr, error.message, options.maxOutputChars),
         exitCode: -1,
         timedOut,
       });
@@ -455,10 +460,10 @@ function spawnCapture(
   });
 }
 
-function appendBounded(current: string, chunk: string): string {
-  if (current.length >= SKILL_BASH_MAX_OUTPUT_CHARS) {
+function appendBounded(current: string, chunk: string, maxChars: number): string {
+  if (current.length >= maxChars) {
     return current;
   }
-  const room = SKILL_BASH_MAX_OUTPUT_CHARS - current.length;
+  const room = maxChars - current.length;
   return current + (chunk.length <= room ? chunk : chunk.slice(0, room));
 }

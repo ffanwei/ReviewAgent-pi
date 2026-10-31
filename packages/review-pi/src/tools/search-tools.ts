@@ -16,8 +16,8 @@ import type { ReviewToolHandler } from "./toolkit-types.js";
  *
  * - review.find_references：ripgrep 名字级全词引用匹配（词法天花板为已知限制，
  *   重载/override 误报可接受）；
- * - review.get_call_chain：1~2 层名字级引用链（复用
- *   buildCallChainBlocks，不越界实现）；
+ * - review.get_call_chain：1~N 层名字级引用链（复用 buildCallChainBlocks，
+ *   深度来自 `limits.micro.callChainHops`，缺省 2；不越界实现）；
  * - review.search_rule / review.search_history：C3 Knowledge 语料的
  *   大小写不敏感子串文本检索（语料静态注入，默认空）。
  *
@@ -31,7 +31,7 @@ export const findReferencesTool: ReviewToolHandler = async (args, context): Prom
   const name = requireStringArg("review.find_references", args, "symbol");
   return readThroughLedger(context.ledger, "symbol", `review.find_references "${name}"`, async () => {
     const repo = await context.repo();
-    const sites = await searchReferenceSites("review.find_references", repo, name);
+    const sites = await searchReferenceSites("review.find_references", repo, name, context.ripgrepTimeoutMs);
     return renderReferenceSites(sites, name, context.resultBudgetChars);
   });
 };
@@ -40,7 +40,10 @@ export const getCallChainTool: ReviewToolHandler = async (args, context): Promis
   const name = requireStringArg("review.get_call_chain", args, "symbol");
   return readThroughLedger(context.ledger, "symbol", `review.get_call_chain "${name}"`, async () => {
     const repo = await context.repo();
-    return renderCallChain(repo, name, context.resultBudgetChars);
+    return renderCallChain(repo, name, context.resultBudgetChars, {
+      hops: context.micro.callChainHops,
+      timeoutMs: context.ripgrepTimeoutMs,
+    });
   });
 };
 
@@ -54,6 +57,7 @@ export const searchRuleTool: ReviewToolHandler = async (args, context): Promise<
       entries: context.rules,
       query,
       budgetChars: context.resultBudgetChars,
+      queryEchoChars: context.micro.queryEchoChars,
     }),
   );
 };
@@ -72,6 +76,7 @@ export const searchHistoryTool: ReviewToolHandler = async (args, context): Promi
         entries: context.history,
         query,
         budgetChars: context.resultBudgetChars,
+        queryEchoChars: context.micro.queryEchoChars,
       }),
   );
 };
@@ -100,14 +105,23 @@ function renderReferenceSites(
   return budget.lines.join("\n");
 }
 
-/** get_call_chain 的结果渲染 */
-async function renderCallChain(repo: RepoContext, name: string, budgetChars: number): Promise<string> {
+/** get_call_chain 的结果渲染（深度与文案同源：`limits.micro.callChainHops`） */
+async function renderCallChain(
+  repo: RepoContext,
+  name: string,
+  budgetChars: number,
+  options: { readonly hops: number; readonly timeoutMs: number },
+): Promise<string> {
   const refs = await findMethodRefs(repo, name);
-  const header = `Call chain for "${name}" (name-level, up to 2 hops, no type resolution): ${refs.length} method declaration(s) matched`;
+  const hopsLabel = `up to ${String(options.hops)} hops`;
+  const header = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${refs.length} method declaration(s) matched`;
   if (refs.length === 0) {
-    return `Call chain for "${name}" (name-level, up to 2 hops, no type resolution): no method or constructor named "${name}" found across ${repo.javaFiles.length} Java file(s)`;
+    return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method or constructor named "${name}" found across ${repo.javaFiles.length} Java file(s)`;
   }
-  const blocks = await buildCallChainBlocks(repo, refs).catch((error: unknown) => {
+  const blocks = await buildCallChainBlocks(repo, refs, {
+    hops: options.hops,
+    timeoutMs: options.timeoutMs,
+  }).catch((error: unknown) => {
     throw new Error(`review.get_call_chain: ${errorMessage(error)}`, { cause: error });
   });
   const budget = applyLineBudget(
@@ -124,8 +138,9 @@ async function searchReferenceSites(
   toolName: string,
   repo: RepoContext,
   name: string,
+  timeoutMs: number,
 ): Promise<readonly ReferenceSite[]> {
-  return findReferenceSites(repo, name).catch((error: unknown) => {
+  return findReferenceSites(repo, name, { timeoutMs }).catch((error: unknown) => {
     throw new Error(`${toolName}: ${errorMessage(error)}`, { cause: error });
   });
 }
@@ -182,13 +197,12 @@ interface KnowledgeSearchInput {
   readonly entries: readonly KnowledgeEntry[];
   readonly query: string;
   readonly budgetChars: number;
+  /** query 回显上限（`limits.micro.queryEchoChars`） */
+  readonly queryEchoChars: number;
 }
 
-/** query 回显上限（自由文本输入，防止超长 query 侵占结果预算） */
-const QUERY_ECHO_MAX_CHARS = 120;
-
 function renderKnowledgeSearch(input: KnowledgeSearchInput): string {
-  const header = `${input.label} search "${boundedEcho(input.query, QUERY_ECHO_MAX_CHARS)}" (case-insensitive substring):`;
+  const header = `${input.label} search "${boundedEcho(input.query, input.queryEchoChars)}" (case-insensitive substring):`;
   if (input.entries.length === 0) {
     return `${header} ${input.corpusLabel} corpus is empty (0 entries configured for this run)`;
   }

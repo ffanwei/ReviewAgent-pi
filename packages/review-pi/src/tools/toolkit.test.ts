@@ -6,6 +6,7 @@ import { createContextLedger, createInertContextLedger } from "./ledger.js";
 import { DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budget.js";
 import { buildReviewToolkit } from "./toolkit.js";
 import { repoFixturePath } from "../testing/repos.js";
+import { DEFAULT_REVIEW_RUNTIME } from "../shared/review-runtime.js";
 
 // 七工具执行器行为测试（#6 P3a）：sample 合成仓库上验证输出形态、入参校验、
 // 预算截断、Ledger 去重与只读纪律。VUL4J-1 真源字节对齐另见
@@ -320,6 +321,35 @@ test("executeTool：未知名为有界错误；schema 面固定七工具", async
     "review.search_rule",
     "review.search_history",
   ]);
+});
+
+test("runtime 穿参（ADR-0025）：micro 透出到 Toolkit，并驱动工具名回显上限 / call chain 深度", async () => {
+  const tk = toolkit();
+  expect(tk.micro).toEqual(DEFAULT_REVIEW_RUNTIME.limits.micro);
+
+  const micro = {
+    ...DEFAULT_REVIEW_RUNTIME.limits.micro,
+    callChainHops: 1,
+    toolNameChars: 5,
+    queryEchoChars: 4,
+  };
+  const custom = buildReviewToolkit({
+    repoPath: SAMPLE,
+    diff: SAMPLE_DIFF,
+    runtime: { ...DEFAULT_REVIEW_RUNTIME, limits: { ...DEFAULT_REVIEW_RUNTIME.limits, micro } },
+  });
+  expect(custom.micro.callChainHops).toBe(1);
+  await expect(custom.executeTool("review.get_call_chain", { symbol: "getBase" })).resolves.toContain(
+    "up to 1 hops",
+  );
+  // 未知名回显按 toolNameChars 截断（缺省 60 = 原样）
+  await expect(custom.executeTool("review.abcdefghij", {})).rejects.toThrow(
+    /unknown tool "revie\.\.\."/,
+  );
+  // query 回显按 queryEchoChars 截断
+  await expect(custom.executeTool("review.search_rule", { query: "abcdefgh" })).resolves.toContain(
+    'Rule search "abcd..."',
+  );
 });
 
 test("只读纪律：七工具全调用后仓库内容哈希不变", async () => {

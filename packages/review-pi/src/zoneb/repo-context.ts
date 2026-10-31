@@ -19,6 +19,14 @@ import { extractFileSymbols } from "./symbols.js";
 const PACKAGE_HEAD_BYTES = 8192;
 const PACKAGE_PATTERN = /^[ \t]*package[ \t]+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)[ \t]*;/m;
 
+/** 加载参数（ADR-0025：微限与 ripgrep 超时显式穿参；缺省 = 今天的值） */
+export interface LoadRepoContextOptions {
+  /** 文件头读多长（`limits.micro.packageHeadBytes`） */
+  readonly packageHeadBytes?: number;
+  /** ripgrep 单次调用超时（`limits.timeouts.ripgrepMs`） */
+  readonly ripgrepTimeoutMs?: number;
+}
+
 export interface RepoContext {
   /** 绝对仓库根 */
   readonly repoPath: string;
@@ -34,9 +42,17 @@ export interface RepoContext {
   symbolIndex(file: string): Promise<FileSymbolIndex>;
 }
 
-export async function loadRepoContext(repoPath: string): Promise<RepoContext> {
+export async function loadRepoContext(
+  repoPath: string,
+  options: LoadRepoContextOptions = {},
+): Promise<RepoContext> {
+  const packageHeadBytes = options.packageHeadBytes ?? PACKAGE_HEAD_BYTES;
   const resolvedRoot = path.resolve(repoPath);
-  const javaFiles = await rgListFiles(resolvedRoot, "*.java").catch((error: unknown) => {
+  const javaFiles = await rgListFiles(
+    resolvedRoot,
+    "*.java",
+    options.ripgrepTimeoutMs,
+  ).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `failed to list Java files under repository path "${resolvedRoot}" (is it an existing directory?): ${message}`,
@@ -45,7 +61,7 @@ export async function loadRepoContext(repoPath: string): Promise<RepoContext> {
   });
   const packageNameByFile = new Map<string, string>();
   for (const file of javaFiles) {
-    packageNameByFile.set(file, await extractPackageLexically(resolvedRoot, file));
+    packageNameByFile.set(file, await extractPackageLexically(resolvedRoot, file, packageHeadBytes));
   }
   const rootFileNames = await listRootFileNames(resolvedRoot);
   const sourceCache = new Map<string, string>();
@@ -81,7 +97,11 @@ export async function loadRepoContext(repoPath: string): Promise<RepoContext> {
 }
 
 /** 文件头部词法包名（无 package 声明 → 默认包 ""） */
-async function extractPackageLexically(repoPath: string, file: string): Promise<string> {
+async function extractPackageLexically(
+  repoPath: string,
+  file: string,
+  headBytes: number,
+): Promise<string> {
   const absPath = absoluteFile(repoPath, file);
   let handle: FileHandle;
   try {
@@ -91,8 +111,8 @@ async function extractPackageLexically(repoPath: string, file: string): Promise<
     throw new Error(`failed to read file "${absPath}": ${message}`, { cause: error });
   }
   try {
-    const buffer = Buffer.alloc(PACKAGE_HEAD_BYTES);
-    const { bytesRead } = await handle.read(buffer, 0, PACKAGE_HEAD_BYTES, 0);
+    const buffer = Buffer.alloc(headBytes);
+    const { bytesRead } = await handle.read(buffer, 0, headBytes, 0);
     const head = buffer.subarray(0, bytesRead).toString("utf8");
     return PACKAGE_PATTERN.exec(head)?.[1] ?? "";
   } finally {

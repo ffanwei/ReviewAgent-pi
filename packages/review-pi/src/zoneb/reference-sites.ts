@@ -37,8 +37,11 @@ export function enclosingLabel(path: readonly JavaSymbol[]): string {
 export async function findReferenceSites(
   repo: RepoContext,
   name: string,
+  options: { readonly timeoutMs?: number } = {},
 ): Promise<readonly ReferenceSite[]> {
-  const matches: readonly RgMatch[] = await rgSearchWord(repo.repoPath, name).catch(
+  const matches: readonly RgMatch[] = await rgSearchWord(repo.repoPath, name, {
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+  }).catch(
     (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`reference search failed for symbol "${name}": ${message}`, { cause: error });

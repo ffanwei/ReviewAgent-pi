@@ -1,6 +1,8 @@
 import type { ContextLedger } from "../contracts/ledger.js";
 import type { KnowledgeCorpus } from "../contracts/knowledge.js";
 import type { ToolSchema } from "../contracts/llm.js";
+import type { MicroLimits } from "../shared/config.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import type { RepoContext } from "../zoneb/repo-context.js";
 import { loadRepoContext } from "../zoneb/repo-context.js";
 import { createContextLedger, createInertContextLedger } from "./ledger.js";
@@ -57,8 +59,13 @@ export function reviewToolHandlers(): ReadonlyMap<string, ReviewToolHandler> {
 export interface ReviewToolkitOptions {
   readonly repoPath: string;
   readonly diff: string;
-  /** 单次工具结果字符预算，默认 DEFAULT_TOOL_RESULT_BUDGET_CHARS */
+  /** 单次工具结果字符预算，默认 DEFAULT_TOOL_RESULT_BUDGET_CHARS（A 档死钉，不来自配置） */
   readonly resultBudgetChars?: number;
+  /**
+   * 检视运行时（ADR-0025）：微限（回显/遍历深度）与 ripgrep/包名读取超时。
+   * 缺省 = `DEFAULT_REVIEW_RUNTIME`（今天的缺省行为，测试/直调形态）。
+   */
+  readonly runtime?: ReviewRuntime;
   /** 预加载的 RepoContext（调用方共享同一快照；缺省懒加载） */
   readonly repo?: RepoContext;
   /** C3 Knowledge 检索语料（search_rule / search_history 数据源；缺省空语料） */
@@ -77,6 +84,8 @@ export interface ReviewToolkit {
   readonly schemas: readonly ToolSchema[];
   /** 本 toolkit 的 Ledger（审计留痕用；功能态/惰性态由 ledgerMode 决定） */
   readonly ledger: ContextLedger;
+  /** 本 toolkit 生效的微限（loop/skill-pass 的进度与入参摘要同源） */
+  readonly micro: MicroLimits;
   /**
    * 执行单次工具调用（点分名 + 已解析参数）→ 结果文本（resultSummary）。
    * 未知名 / 执行抛错由调用方（Agent 桥接层）捕获包装为 "Error: <message>"。
@@ -85,9 +94,11 @@ export interface ReviewToolkit {
 }
 
 export function buildReviewToolkit(options: ReviewToolkitOptions): ReviewToolkit {
+  const runtime = options.runtime ?? DEFAULT_REVIEW_RUNTIME;
+  const micro = runtime.limits.micro;
   const schemas = reviewToolSchemas();
   const handlers = reviewToolHandlers();
-  const repoPromise = memoizedRepo(options);
+  const repoPromise = memoizedRepo(options, runtime);
   const ledger =
     options.ledger ??
     (options.ledgerMode === "enabled" ? createContextLedger() : createInertContextLedger());
@@ -95,6 +106,8 @@ export function buildReviewToolkit(options: ReviewToolkitOptions): ReviewToolkit
     diff: options.diff,
     repo: () => repoPromise(),
     resultBudgetChars: options.resultBudgetChars ?? DEFAULT_TOOL_RESULT_BUDGET_CHARS,
+    micro,
+    ripgrepTimeoutMs: runtime.limits.timeouts.ripgrepMs,
     rules: options.knowledge?.rules ?? [],
     history: options.knowledge?.history ?? [],
     ledger,
@@ -102,11 +115,12 @@ export function buildReviewToolkit(options: ReviewToolkitOptions): ReviewToolkit
   return {
     schemas,
     ledger,
+    micro,
     executeTool: async (name, args): Promise<string> => {
       const handler = handlers.get(name);
       if (handler === undefined) {
         throw new Error(
-          `unknown tool "${boundedToolName(name)}" (available: ${schemas.map((entry) => entry.name).join(", ")})`,
+          `unknown tool "${boundedToolName(name, micro.toolNameChars)}" (available: ${schemas.map((entry) => entry.name).join(", ")})`,
         );
       }
       return handler(args, context);
@@ -114,19 +128,22 @@ export function buildReviewToolkit(options: ReviewToolkitOptions): ReviewToolkit
   };
 }
 
-/** 工具名回显上限（未知名可能来自模型幻觉，回显必须有界） */
-function boundedToolName(name: string): string {
-  return name.length <= 60 ? name : `${name.slice(0, 60)}...`;
+/** 工具名回显上限（未知名可能来自模型幻觉，回显必须有界；上限来自 `limits.micro.toolNameChars`） */
+function boundedToolName(name: string, maxChars: number): string {
+  return name.length <= maxChars ? name : `${name.slice(0, maxChars)}...`;
 }
 
 /** RepoContext 懒加载（memoize：同一 toolkit 内只加载一次，失败可重读同一错误） */
-function memoizedRepo(options: ReviewToolkitOptions): () => Promise<RepoContext> {
+function memoizedRepo(options: ReviewToolkitOptions, runtime: ReviewRuntime): () => Promise<RepoContext> {
   let cached: Promise<RepoContext> | undefined;
   return (): Promise<RepoContext> => {
     if (options.repo !== undefined) {
       return Promise.resolve(options.repo);
     }
-    cached ??= loadRepoContext(options.repoPath);
+    cached ??= loadRepoContext(options.repoPath, {
+      ripgrepTimeoutMs: runtime.limits.timeouts.ripgrepMs,
+      packageHeadBytes: runtime.limits.micro.packageHeadBytes,
+    });
     return cached;
   };
 }

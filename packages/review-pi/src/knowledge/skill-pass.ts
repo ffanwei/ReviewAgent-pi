@@ -12,6 +12,7 @@ import {
   reviewStreamFn,
 } from "../provider/pi-client.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { fromWireToolName, toWireToolName } from "../tools/registry.js";
 import { buildSkillBashTool, SKILL_BASH_TOOL_NAME } from "../tools/skill-bash.js";
 import { knownArgumentKeys, stripUnknownArguments } from "../tools/tool-arguments.js";
@@ -56,6 +57,11 @@ export interface SkillPassOptions {
   readonly timeoutMs?: number;
   readonly resultBudgetChars?: number;
   /**
+   * 检视运行时（ADR-0025）：skill 会话超时 / bash 超时与输出上限 / 微限 /
+   * 输出预算 / 模型元数据覆盖全从这里取；缺省 = 今天的缺省行为。
+   */
+  readonly runtime?: ReviewRuntime;
+  /**
    * 运行进度投影（ADR-0016）：缺省不注入 = 零输出。skill 会话是独立 `Agent`，
    * 它的请求序号按本会话自增（1..N），由呈现层按 skill 作用域分栏。
    */
@@ -81,6 +87,8 @@ export interface SkillPassOutcome {
 
 export async function runSkillPass(options: SkillPassOptions): Promise<SkillPassOutcome> {
   const { skill, round } = options;
+  const runtime = options.runtime ?? DEFAULT_REVIEW_RUNTIME;
+  const micro = runtime.limits.micro;
   let requestCount = 0;
   let toolCallCount = 0;
   let usage: LlmUsage = ZERO_USAGE;
@@ -88,24 +96,33 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
   // 进度投影（ADR-0016）：缺省 sink = 空函数；事件只投影本会话既有留痕
   const emitProgress = options.onProgress ?? NO_OP_PROGRESS_SINK;
   const requestProgress = createRequestProgress(emitProgress);
+  const progressLimits = {
+    argumentsSummaryChars: micro.argumentsSummaryChars,
+    progressDetailChars: micro.progressDetailChars,
+  };
 
   const tools: AgentTool[] = [
     ...reviewAgentTools(options.toolkit, () => {
       toolCallCount += 1;
-    }).map((tool) => withToolProgress(tool, fromWireToolName(tool.name), emitProgress)),
+    }).map((tool) =>
+      withToolProgress(tool, fromWireToolName(tool.name), emitProgress, progressLimits),
+    ),
     withToolProgress(
       buildSkillBashTool({
         packRoot: packRootOf(skill),
+        timeoutMs: runtime.limits.timeouts.skillBashMs,
+        maxOutputChars: micro.skillBashOutputChars,
         ...(options.resultBudgetChars !== undefined
           ? { resultBudgetChars: options.resultBudgetChars }
           : {}),
       }),
       SKILL_BASH_TOOL_NAME,
       emitProgress,
+      progressLimits,
     ),
   ];
 
-  const model = reviewModelOf(options.modelId, options.baseUrl);
+  const model = reviewModelOf(options.modelId, options.baseUrl, runtime.models);
   const agent = new Agent({
     initialState: {
       systemPrompt: options.systemPrompt,
@@ -116,6 +133,7 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
     streamFn: reviewStreamFn({
       apiKey: options.apiKey,
       ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
+      maxOutputTokens: runtime.maxOutputTokens,
     }),
     toolExecution: "sequential",
     // 会话自身的请求捕获点（ADR-0014「每个 skill 会话独立的 onPayload 捕获」）：
@@ -137,7 +155,7 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
     },
   });
 
-  const timeoutMs = options.timeoutMs ?? SKILL_PASS_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? runtime.limits.timeouts.skillPassMs;
   let session: "done" | "timeout";
   let sessionError: unknown;
   try {

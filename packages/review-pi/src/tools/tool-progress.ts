@@ -16,19 +16,34 @@ import { clampLine, summarizeToolArguments } from "./tool-arguments.js";
  * 直接原样返回工具——关闭进度时连结果文本长度的统计都不做。
  */
 
-/** 失败摘要上限（只取首行；含省略号） */
+/** 失败摘要缺省上限（只取首行；含省略号；`limits.micro.progressDetailChars` 可配） */
 const DETAIL_MAX_CHARS = 120;
+/** 入参摘要缺省上限（`limits.micro.argumentsSummaryChars` 可配） */
+const ARGUMENTS_MAX_CHARS = 80;
 
-export function withToolProgress(tool: AgentTool, name: string, emit: RunProgressSink): AgentTool {
+/** 进度显示上限（ADR-0025：来自 `limits.micro`；缺省 = 今天的值） */
+export interface ToolProgressLimits {
+  readonly argumentsSummaryChars: number;
+  readonly progressDetailChars: number;
+}
+
+export function withToolProgress(
+  tool: AgentTool,
+  name: string,
+  emit: RunProgressSink,
+  limits?: ToolProgressLimits,
+): AgentTool {
   // 进度关：零包装（不额外扫结果文本算 chars/lines，也不改工具对象身份）
   if (emit === NO_OP_PROGRESS_SINK) {
     return tool;
   }
+  const argumentsMaxChars = limits?.argumentsSummaryChars ?? ARGUMENTS_MAX_CHARS;
+  const detailMaxChars = limits?.progressDetailChars ?? DETAIL_MAX_CHARS;
   return {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate) => {
       const startedAt = Date.now();
-      const argumentsSummary = summarizeToolArguments(toArguments(params));
+      const argumentsSummary = summarizeToolArguments(toArguments(params), argumentsMaxChars);
       emit({ kind: "tool", state: "start", name });
       try {
         const result = await tool.execute(toolCallId, params, signal, onUpdate);
@@ -41,7 +56,7 @@ export function withToolProgress(tool: AgentTool, name: string, emit: RunProgres
           argumentsSummary,
           durationMs: Math.max(0, Date.now() - startedAt),
           ok,
-          ...(ok ? {} : { detail: summarizeDetailLine(text) }),
+          ...(ok ? {} : { detail: summarizeDetailLine(text, detailMaxChars) }),
           resultChars: text.length,
           resultLines: countLines(text),
         });
@@ -54,7 +69,7 @@ export function withToolProgress(tool: AgentTool, name: string, emit: RunProgres
           argumentsSummary,
           durationMs: Math.max(0, Date.now() - startedAt),
           ok: false,
-          detail: summarizeDetailLine(error),
+          detail: summarizeDetailLine(error, detailMaxChars),
           resultChars: 0,
           resultLines: 0,
         });
@@ -66,13 +81,13 @@ export function withToolProgress(tool: AgentTool, name: string, emit: RunProgres
 
 /**
  * 失败/降级的一行摘要：取首行、剥掉 `Error: ` 前缀（状态词由呈现层负责）、
- * 截断到 120 字符。输入可以是抛出的 Error，也可以是工具或会话返回的错误文本。
+ * 截断到 `maxChars` 字符。输入可以是抛出的 Error，也可以是工具或会话返回的错误文本。
  */
-export function summarizeDetailLine(value: unknown): string {
+export function summarizeDetailLine(value: unknown, maxChars: number = DETAIL_MAX_CHARS): string {
   const raw = value instanceof Error ? value.message : String(value);
   const firstLine = raw.split(/\r?\n/, 1)[0] ?? "";
   const stripped = firstLine.replace(/^Error:\s*/, "");
-  return clampLine(stripped, DETAIL_MAX_CHARS);
+  return clampLine(stripped, maxChars);
 }
 
 function toArguments(params: unknown): Record<string, unknown> {
