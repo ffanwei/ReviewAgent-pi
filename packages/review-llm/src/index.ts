@@ -10,7 +10,9 @@
  * - deepseek（#41）：DeepSeek 接入常量
  * - profile（#42）：provider 参数画像表（thinking 策略 / completion 信封 /
  *   usage 能力声明），judge 链为首个消费者，#43 reviewer 侧跟进
- * - reviewer（#43）：reviewer 角色环境变量（角色命名 + DEEPSEEK_* 兼容别名）
+ *
+ * ADR-0025：reviewer 角色的 `REVIEWER_*` / `DEEPSEEK_*` 环境变量常量已删除——
+ * 运行配置改由 `~/.PiAgent/PiAgent.json` 承载，环境变量层不再被读取。
  */
 
 export {
@@ -18,8 +20,6 @@ export {
   DEFAULT_DEEPSEEK_RETRY_BASE_DELAY_MS,
   DEFAULT_DEEPSEEK_TIMEOUT_MS,
   DEEPSEEK_API_BASE_URL,
-  DEEPSEEK_API_KEY_ENV_VAR,
-  DEEPSEEK_URL_ENV_VAR,
 } from "./deepseek.js";
 export { DEFAULT_COMPLETION_MAX_TOKENS, profileOf, providerFamilyOf, RETIRED_MODEL_IDS } from "./profile.js";
 export type {
@@ -28,13 +28,6 @@ export type {
   ThinkingSerialization,
   UsageCapabilities,
 } from "./profile.js";
-export {
-  hasReviewerApiKey,
-  REVIEWER_API_KEY_ENV_VAR,
-  REVIEWER_API_KEY_ENV_VARS,
-  REVIEWER_URL_ENV_VAR,
-  REVIEWER_URL_ENV_VARS,
-} from "./reviewer.js";
 export {
   nonNegativeIntOption,
   positiveIntOption,

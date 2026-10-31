@@ -5,8 +5,6 @@ import {
   DEFAULT_DEEPSEEK_RETRY_BASE_DELAY_MS,
   DEFAULT_DEEPSEEK_TIMEOUT_MS,
   DEEPSEEK_API_BASE_URL,
-  DEEPSEEK_API_KEY_ENV_VAR,
-  DEEPSEEK_URL_ENV_VAR,
 } from "./deepseek.js";
 
 /**
@@ -14,10 +12,8 @@ import {
  * 期望值取自 DeepSeek API 契约与既有行为，防收敛搬移时漂移。
  */
 describe("DeepSeek 接入常量", () => {
-  it("base URL 与环境变量名锚定", () => {
+  it("base URL 锚定", () => {
     expect(DEEPSEEK_API_BASE_URL).toBe("https://api.deepseek.com");
-    expect(DEEPSEEK_API_KEY_ENV_VAR).toBe("DEEPSEEK_API_KEY");
-    expect(DEEPSEEK_URL_ENV_VAR).toBe("DEEPSEEK_URL");
   });
 
   it("超时/重试缺省值锚定", () => {
