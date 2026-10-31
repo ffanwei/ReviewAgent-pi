@@ -2,29 +2,27 @@
 
 低 Token、高质量代码检视 Agent：用**最小充分上下文**（Minimal Sufficient Context）与**缓存稳定循环**（Cache-Stable Review Loop），以 20~30% 的 Token 成本获得接近全量上下文的检视质量。终点是落地到企业内部代码托管平台的 MR 检视。内核基座：pi 代码仓 fork（ADR-0009）。
 
-本仓是 ReviewAgent 项目的 **pi 内核线**，同时是一个 AI4SE 研究项目：以 VUL4J 单缺陷 MR 为基准，对五种上下文策略配置做受控实验（真实网关、三侧数据、四层判定链），论文主数据与分析报告见 [`docs/report/`](docs/report/)。
+本仓是 **pi 内核线的 Review CLI 产品仓**：一条命令完成一次检视，产出**英文 findings**（`reviews_en.json`，结构化真源）与**中文按行分组的建议**（`reviews_tips_zh.json`，核外翻译投影）。规则 Skill（`--rule-skill-zip` / `--rule-skill <dir>` / `<repo>/.review-rules/*.zip`）是唯一形态，不再有配置矩阵。
 
-> **姊妹仓（DSH 内核线）**：兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) 承载 DeepSeek Harness（DSH）内核线，其架构结论（Config B 生产形态、Minimal Sufficient Context、缓存稳定循环）由 Phase 2 三侧 450 单元数据支撑——但该结论绑定特定内核。本仓以 pi 内核（`pi-agent-core + pi-ai`）从 0 重写 Review Runtime，在完全相同的评测集与冻结判定链上跑独立对照，回答**「架构有效」还是「内核有效」的内核无关性问题**。
+> **历史定位（已废止）**：本仓曾是「pi 内核线 × 五配置（A–E）受控实验 + 四层判定链」的跨内核对照实验仓。A–E 配置矩阵、`configId` 身份维度与评测仪器层已按 [ADR-0024](docs/adr/0024-drop-config-matrix-and-config-identity.md) 删除；`docs/report/**` 与 `runs/**/REPORT.md` 中的历史报告保留为记录，但**不可复跑**。需要评测能力时从历史 tag 或 DSH 兄弟仓取回。
 >
-> **跨仓 ADR 限定语纪律**：两仓 ADR 各自独立编号（本仓 0001–0009 为 pi 线序列）。引用 DSH 仓的决策必须写全限定语「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR（双 0009 尤其如此：本仓 0009 = pi 内核从 0 重写，DSH 线 0009 = 大 MR 切分）。共享证据链（POC1→Phase 2）在本仓 `archive/pi-kernel` 存档分支与 DSH 仓双处可考。
+> **姊妹仓（DSH 内核线）**：兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) 承载 DeepSeek Harness（DSH）内核线。两仓 ADR 各自独立编号（本仓 0001–0024 为 pi 线序列）：引用 DSH 仓的决策必须写全限定语「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR（双 0009 尤其如此：本仓 0009 = pi 内核从 0 重写，DSH 线 0009 = 大 MR 切分）。
 >
-> **pi 内核基座**：以 [pi](https://github.com/earendil-works/pi) 代码仓为基础的全源码定制（vendor fork，锚定 commit `6671c604` / v0.85.1+11d），vendored `packages/{ai,agent,chord,telemetry}` 四个包。方向拍板（2026-09-18，ADR-0009）：Review Runtime 在 pi fork 上从 0 重写（`packages/review-pi`，仪器冻结平移），最终评测与 DSH 内核数据（`runs/phase2-dsh`，450 单元）按同口径对照；DSH 内核（`packages/review-dsh`）已随之移除，全部评测数据/报告保留。方案见《[Pi 内核从零实现方案](docs/design/Pi 内核从零实现方案.md)》，fork 接线事实见《[Pi 内核定制基线方案](docs/design/Pi 内核定制基线方案.md)》，第三方声明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
+> **pi 内核基座**：以 [pi](https://github.com/earendil-works/pi) 代码仓为基础的全源码定制（vendor fork，锚定 commit `6671c604` / v0.85.1+11d），vendored `packages/{ai,agent,chord,telemetry}` 四个包。方向拍板（2026-09-18，ADR-0009）：Review Runtime 在 pi fork 上从 0 重写（`packages/review-pi`）。方案见《[Pi 内核从零实现方案](docs/design/Pi 内核从零实现方案.md)》，fork 接线事实见《[Pi 内核定制基线方案](docs/design/Pi 内核定制基线方案.md)》，第三方声明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
 
-## 研究设计一览
+## 产品形态
 
-**受测配置**（A–E，同一模型同一判定链，只变上下文策略）：
+**一次检视**（单案 × rep-1）：`review-pi review` 读仓库 + MR diff（+ 可选规则 Skill），跑 pi 内核的检视循环，落盘审计与转录，并导出检视意见；配了呈现引擎时再产出中文按行分组的建议：
 
-| 配置 | 上下文策略 |
+| 产物 | 内容 |
 |---|---|
-| A | 零工具，纯 MR 上下文 |
-| B | A + 确定性预取（Diff → Symbol → Reference → Call Chain 固定管线） |
-| C | 全仓注入（+ `review.*` 工具 7 个） |
-| D | 自主拉取 + 稳定前缀 |
-| E | D + Context Ledger（上下文登记账） |
+| `rep-<N>.json` | `RunRecord`：本次运行的记录（模型、耗时、findings 计数、usage） |
+| `session-<ts>-<caseId>.json` | 检视转录（请求/工具/相位全留痕） |
+| `reviews_en.json` | 英文结构化检视意见（finding 全量，含同行多条） |
+| `reviews_tips_zh.json` | 中文按行分组建议（同文件同行去重） |
+| `audit/<ts>-<caseId>.json` | 审计（审计真源：请求、工具调用、相位、规则 Skill 装载与执行留痕） |
 
-**判定链四层**：原生真值（逆补丁法）→ 规则粗筛 → LLM-as-judge（异构 glm-5.3 @ 火山网关）→ 人工抽检（calibration）。
-**判级**：S/A/B（ADR-0004）；**验收**：指标对齐门 v2——配对符号检验 + 对称带 + 时点 advisory（ADR-0007）。
-**Phase 2 主数据**：30 case × 5 配置 × 3 rep = 450 单元 × 三侧（main / 噪声对照 / DSH 附录），结论见《[Phase 2 主数据分析报告](docs/report/Phase 2 主数据分析报告.md)》。
+**规则 Skill 是唯一形态**：装到就用于候选阶段的规则检视；装不到就照常检视并在 stderr 提示一行（`--strict-rule-skill` 可改为 fail fast）。
 
 ## 仓库结构
 
