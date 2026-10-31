@@ -46,7 +46,7 @@ test("网关健康：网络错误（ENOTFOUND）→ 不可达 + 人话诊断含�
   expect(result.reachable).toBe(false);
   expect(result.diagnostic).toContain(BASE_URL);
   expect(result.diagnostic).toContain("DNS");
-  expect(result.diagnostic).toContain("REVIEWER_URL");
+  expect(result.diagnostic).toContain("reviewer.baseUrl");
 });
 
 test("网关健康：任何 HTTP 响应（含 404）= 网关活着（健康探针只判传输层可达）", async () => {
@@ -106,14 +106,14 @@ test("模型探针：请求形态——POST ${baseUrl}/chat/completions，体含
   });
 });
 
-test("模型探针：401 → AUTH_REJECTED，诊断点名 key 变量、绝不泄漏 key 值", async () => {
+test("模型探针：401 → AUTH_REJECTED，诊断点名配置键、绝不泄漏 key 值", async () => {
   const { fetch } = scriptedFetch(() =>
     jsonResponse(401, { error: { message: "Authentication Fails (incorrect api key)" } }),
   );
   const result = await probeModelReachability({ baseUrl: BASE_URL, apiKey: API_KEY, modelId: MODEL_ID, fetch });
   expect(result.ok).toBe(false);
   expect(result.failureKind).toBe("AUTH_REJECTED");
-  expect(result.diagnostic).toContain("REVIEWER_API_KEY");
+  expect(result.diagnostic).toContain("reviewer.apiKey");
   expect(`${result.diagnostic}\n${result.detail ?? ""}`).not.toContain(API_KEY);
 });
 

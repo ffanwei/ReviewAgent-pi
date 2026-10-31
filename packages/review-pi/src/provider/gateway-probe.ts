@@ -3,8 +3,8 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 // 冒烟双探针（#4，R4「网关 + 自由 id」关闭面）：
 // - 探针 1 网关健康：传输层可达（任何 HTTP 响应 = 网关活着；不判鉴权/模型）。
 // - 探针 2 模型可达：最小 chat completion 一次验证鉴权 + 模型 id + 请求体
-//   + 响应回显（跨族回显不一致 = 静默错路由签名，本机 2026-09-19 实测：无 /v1
-//   的 REVIEWER_URL 会把 deepseek 请求 id 静默路由到 glm-5.3-flash；同日实测
+//   + 响应回显（跨族回显不一致 = 静默错路由签名，本机 2026-09-19 实测：缺 /v1
+//   的 baseUrl 会把 deepseek 请求 id 静默路由到 glm-5.3-flash；同日实测
 //   网关还会把别名合法解析为版本化 GA 快照 deepseek-v4-flash-ga-260731——
 //   modelEchoMatches 区分这两类，只拦跨族错路由）。
 // 每类失败一条人话诊断（错误码 → 归因 → 下一步动作）。
@@ -231,8 +231,8 @@ function classifyModelResponse(
       failureKind: "AUTH_REJECTED",
       diagnostic:
         `authentication failed at ${input.baseUrl} (HTTP ${response.status}): the gateway rejected the API key. ` +
-        "Check REVIEWER_API_KEY (or the legacy DEEPSEEK_API_KEY) — the key is only read from the " +
-        "environment and is never logged or persisted.",
+        "Check reviewer.apiKey in your PiAgent.json (review-pi config show) — environment variables are " +
+        "no longer read, and the key is never logged or persisted.",
       detail: `gateway error body: ${bodyError}`,
     };
   }
@@ -253,7 +253,7 @@ function classifyModelResponse(
       diagnostic:
         `model "${input.modelId}" was not found (HTTP 404) at ${input.baseUrl}. Either the gateway does not ` +
         "serve this model id, or the endpoint path is wrong — this gateway family requires the /v1 " +
-        "prefix in REVIEWER_URL (the OpenAI-compatible path is <baseUrl>/chat/completions).",
+        "prefix in reviewer.baseUrl (the OpenAI-compatible path is <baseUrl>/chat/completions).",
       detail: `gateway error body: ${bodyError}`,
     };
   }
@@ -309,7 +309,7 @@ function classifyModelResponse(
       failureKind: "MODEL_MISMATCH",
       diagnostic:
         `the gateway silently routed to a different model: requested "${input.modelId}" but the response ` +
-        `reports "${respondedModel}". This is the misrouting signature of a wrong REVIEWER_URL path ` +
+        `reports "${respondedModel}". This is the misrouting signature of a wrong reviewer.baseUrl path ` +
         "(e.g. missing the /v1 prefix); do not trust any run against this endpoint until it is fixed.",
       detail: `responded model field: ${JSON.stringify(respondedModel)}`,
     };
@@ -432,7 +432,7 @@ function unreachableDiagnostic(baseUrl: string, error: unknown): string {
   const timedOut = isTimeoutError(error);
   const cause = timedOut ? `request timed out` : networkCauseText(error);
   return (
-    `gateway unreachable at ${baseUrl}: ${cause}. Check REVIEWER_URL (OpenAI-compatible gateways ` +
+    `gateway unreachable at ${baseUrl}: ${cause}. Check reviewer.baseUrl (OpenAI-compatible gateways ` +
     "usually need the /v1 path prefix), network connectivity, and any proxy settings."
   );
 }

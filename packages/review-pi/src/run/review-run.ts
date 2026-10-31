@@ -13,6 +13,8 @@ import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
 import { buildInitialUserMessage } from "../loop/messages.js";
 import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";
+import type { ConfigSnapshot } from "../shared/config.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { buildReviewToolkit, type ReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
 import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
@@ -26,8 +28,8 @@ import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js
 // 装不到则照常检视（`ruleSkill: []`），由 CLI 在 stderr 提示一行。
 //
 // fake 适配器与真适配器同缝：传输层经注入的 FetchFunction——离线开发/测试
-// 注入 fakeFetch（canned SSE），真跑注入真 fetch + baseUrl（企业网关，
-// REVIEWER_URL 解析产物），其余链路完全一致。
+// 注入 fakeFetch（canned SSE），真跑注入真 fetch + baseUrl（配置 reviewer.baseUrl），
+// 其余链路完全一致。
 // 审计留痕口径（#4 密钥纪律）：审计与 RunRecord 只含 model（实际请求的
 // 模型 id）与接入行为产物，绝不含 API key。
 
@@ -38,10 +40,20 @@ export interface ReviewRunInput {
   readonly diff: string;
   readonly issueDescription: string;
   readonly apiKey: string;
-  /** 网关 base URL（#4 真跑：REVIEWER_URL 解析产物；缺省官方 api.deepseek.com） */
+  /** 网关 base URL（配置 `reviewer.baseUrl`；缺省官方 api.deepseek.com） */
   readonly baseUrl?: string;
   /** 模型 id（#45 自由 id；缺省钉住的评审模型） */
   readonly modelId?: string;
+  /**
+   * 检视运行时（ADR-0025）：limits / maxOutputTokens / models{} 的不可变子集。
+   * 缺省 = `DEFAULT_REVIEW_RUNTIME`（今天的缺省行为；测试与内核直调形态）。
+   */
+  readonly runtime?: ReviewRuntime;
+  /**
+   * 生效配置快照（ADR-0025）：只写审计文件顶层 `config` 键（全量生效值 +
+   * 来源 + digest；秘密只记 set/missing）。缺省 = 不写（直调内核/测试形态）。
+   */
+  readonly config?: ConfigSnapshot;
   /** 传输层注入（离线 = fakeFetch；线上 = 真 fetch） */
   readonly fetch: FetchFunction;
   /** 运行留痕根目录（fixture 或真实 runs/） */
@@ -91,9 +103,11 @@ export interface ReviewRunResult {
 export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult> {
   const startedAt = input.startedAt ?? new Date();
   const modelId = input.modelId ?? REVIEW_MODEL_ID;
+  const runtime = input.runtime ?? DEFAULT_REVIEW_RUNTIME;
   // MR 边界护栏（#12）：纯度量，不触碰请求字节面：界内 degraded=false 全程零介入
   // （缺席省键），超界/不可度量只追加结果尾键（domainWarning + 审计 mrBoundary）。
-  const boundary = guardMrBoundary(input.diff);
+  // ADR-0025：界值来自 `limits.boundary`；两维皆 null = 护栏停用（不度量不告警）。
+  const boundary = guardMrBoundary(input.diff, runtime.limits.boundary);
 
   const initialContextMessages = [
     { role: "user" as const, content: buildInitialUserMessage(input.caseId, input.issueDescription, input.diff) },
@@ -102,6 +116,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   const toolkit = buildReviewToolkit({
     repoPath: input.repoPath,
     diff: input.diff,
+    runtime,
     ledgerMode: "enabled",
   });
 
@@ -118,6 +133,11 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     ...(input.ruleSkillDirs !== undefined ? { ruleSkillDirs: input.ruleSkillDirs } : {}),
     ...(input.ruleSkillName !== undefined ? { skillName: input.ruleSkillName } : {}),
     ...(input.strictRuleSkill !== undefined ? { strict: input.strictRuleSkill } : {}),
+    // ADR-0025：归档上限与解压超时来自配置快照（缺省 = 历史常量）
+    limits: {
+      ...runtime.limits.archive,
+      timeoutMs: runtime.limits.timeouts.ruleSkillExtractMs,
+    },
   });
   const ruleSkillAudit = ruleSkills.map(toRuleSkillAudit);
   // skill 会话的七工具 toolkit：每个 skill 按 Phase-5 ledger 快照分叉一次
@@ -126,6 +146,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     buildReviewToolkit({
       repoPath: input.repoPath,
       diff: input.diff,
+      runtime,
       ledger: createContextLedger(seed),
     });
 
@@ -134,6 +155,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     initialContextMessages,
     toolkit,
     apiKey: input.apiKey,
+    runtime,
     ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
     ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
     fetch: input.fetch,
@@ -177,6 +199,8 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     ...(outcome.audit.ledger !== undefined ? { ledger: outcome.audit.ledger } : {}),
     // 护栏降级留痕（#12）：界内省键（缺席省键纪律——审计键序只在尾部扩展）
     ...(boundary.degraded ? { mrBoundary: boundary.mrBoundary } : {}),
+    // 生效配置快照（ADR-0025）：只进审计文件，stdout 键集不变
+    ...(input.config !== undefined ? { config: input.config } : {}),
   });
   const auditPath = await writeAuditFile(auditDir, auditContent);
   // 检视转录：agent.state.messages 原样 + 合成 system；每 run 独立留档

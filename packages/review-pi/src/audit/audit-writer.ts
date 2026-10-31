@@ -14,6 +14,7 @@ import type {
   ToolCallRecord,
   WireRequest,
 } from "../contracts/run.js";
+import type { ConfigSnapshot } from "../shared/config.js";
 
 // 审计投影（测量常量面）：AuditFileContent 字段集与键序和 DSH 线审计文件
 // 逐键一致（t-series 审计为地面真源，src/audit/audit-writer.test.ts 断言）。
@@ -57,6 +58,11 @@ export interface AuditFileContent {
   readonly ruleSkill?: readonly RuleSkillAudit[];
   /** skill 会话执行留痕（round × skill） */
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
+  /**
+   * 生效配置快照（ADR-0025）：全量非秘密生效值 + 来源 + digest；秘密只记
+   * `set|missing`。只进审计文件（stdout 键集不变）。直调内核（测试/嵌入）可缺省。
+   */
+  readonly config?: ConfigSnapshot;
 }
 
 /** runId：毫秒时间戳 + 用例，文件名安全 */
@@ -80,6 +86,7 @@ export function buildAuditFileContent(args: {
   readonly audit: RunAudit;
   readonly ledger?: readonly LedgerEntry[];
   readonly mrBoundary?: MrBoundaryRecord;
+  readonly config?: ConfigSnapshot;
 }): AuditFileContent {
   return {
     runId: args.runId,
@@ -104,6 +111,7 @@ export function buildAuditFileContent(args: {
     ...(args.mrBoundary !== undefined ? { mrBoundary: args.mrBoundary } : {}),
     ...(args.audit.ruleSkill !== undefined ? { ruleSkill: args.audit.ruleSkill } : {}),
     ...(args.audit.skillPassLog !== undefined ? { skillPassLog: args.audit.skillPassLog } : {}),
+    ...(args.config !== undefined ? { config: args.config } : {}),
   };
 }
 

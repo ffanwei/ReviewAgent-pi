@@ -7,6 +7,7 @@ import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
 import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
 import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
 import { GATEWAY_MAX_TOKENS } from "../provider/pi-client.js";
+import { configSnapshot, loadConfig } from "../shared/config.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
@@ -827,6 +828,64 @@ test("persistRecord=false（#8 runner 执行缝）：记录不落盘、recordPat
 }, 120_000);
 
 // ---- 网关注入透传（#4）：baseUrl/modelId 贯穿传输层与审计/RunRecord ----
+
+// ---- 生效配置快照（ADR-0025）：审计顶层 config 键、秘密只记 set/missing ----
+
+test("审计 config 快照：全量生效值 + 来源 + digest；秘密只记 set；stdout 键集不变", async () => {
+  const loaded = loadConfig({ env: { HOME: "/nonexistent-home-for-test" }, platform: "linux" }).config;
+  const script = fakeFetch(sixPhaseNoToolCorpus());
+  const snapshot = configSnapshot(loaded);
+  const { auditPath, record } = await runReview({
+    caseId: "SAMPLE-CFG",
+    repoPath: repoFixturePath("sample"),
+    diff: [
+      "diff --git a/src/main/java/com/example/Beta.java b/src/main/java/com/example/Beta.java",
+      "--- a/src/main/java/com/example/Beta.java",
+      "+++ b/src/main/java/com/example/Beta.java",
+      "@@ -5,4 +5,4 @@",
+      " context",
+      "+changed",
+    ].join("\n"),
+    issueDescription: "Config snapshot MR under review.",
+    apiKey: "sentinel-key",
+    fetch: script.fetch,
+    runsRoot: tempRunsRoot(),
+    experimentId: "phase2-smoke",
+    rep: 1,
+    ruleSkillLoader: async () => [],
+    config: snapshot,
+  });
+
+  const audit = JSON.parse(readFileSync(auditPath, "utf8")) as {
+    config?: {
+      path: string;
+      version: number;
+      digest: string;
+      values: Record<string, unknown>;
+      overridden: string[];
+      secret: Record<string, string>;
+    };
+  };
+  expect(audit.config).toBeDefined();
+  expect(Object.keys(audit.config ?? {})).toEqual([
+    "path",
+    "version",
+    "digest",
+    "values",
+    "overridden",
+    "secret",
+  ]);
+  expect(audit.config?.digest).toMatch(/^[0-9a-f]{12}$/);
+  expect(audit.config?.digest).toBe(loaded.digest);
+  expect(audit.config?.values["reviewer.baseUrl"]).toBe("https://api.deepseek.com");
+  expect(audit.config?.values["limits.boundary.maxFiles"]).toBe(10);
+  expect(audit.config?.overridden).toEqual([]);
+  expect(audit.config?.secret).toEqual({ "reviewer.apiKey": "missing" });
+  // 秘密值绝不进审计（快照本身也不含 key）
+  expect(JSON.stringify(audit.config)).not.toContain("sentinel-key");
+  // RunRecord（stdout 呈现面的同源记录）不含 config 键——stdout 键集不变
+  expect(JSON.stringify(record)).not.toContain('"config"');
+}, 120_000);
 
 test.skipIf(!existsSync(repoFixturePath("sample")))(
   "网关注入透传：baseUrl/modelId 贯穿请求 URL、wireBody 与审计/RunRecord model 字段",

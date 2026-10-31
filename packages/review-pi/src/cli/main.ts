@@ -1,17 +1,18 @@
 /**
  * #7 review-pi CLI wrapper 主缝（进程内）：子命令分发 + 参数透传 + 结果
- * 呈现 only。本文件是胶水：解析（args.ts，已测）→ 凭据文件装载
- * （shared/env-local，已测）→ 命令执行 → stdout/stderr 呈现 → 退出码。
- * 检视行为本体全部留在内核（runReview / P1b 双探针）。
+ * 呈现 only。本文件是胶水：解析（args.ts，已测）→ **配置装载一次**
+ * （shared/config，已测；JSONC 用户级配置文件，ADR-0025）→ 命令执行 →
+ * stdout/stderr 呈现 → 退出码。检视行为本体全部留在内核
+ * （runReview / P1b 双探针）。
  *
  * 命令面：
- * - review：凭据 fail fast（resolveReviewerEndpoint 构造期）→ 单形态检视
+ * - review：配置 fail fast（缺 reviewer.apiKey / 坏文件）→ 单形态检视
  *   （规则 Skill；无规则包照跑并在 stderr 提示）→ 审计/记录落盘（--out）→
- *   呈现投影（ADR-0010：REVIEW_PI_PRESENTATION_ENGINE 注入引擎时 stdout
- *   呈现档译中文，失败降级英文源；未配置恒等直通）→ stdout 单 JSON 文档
- *   （render.ts，已测）；
+ *   呈现投影（ADR-0010：presentation.engine 注入引擎时 stdout 呈现档译中文，
+ *   失败降级英文源；未配置恒等直通）→ stdout 单 JSON 文档（render.ts，已测）；
  * - smoke：双探针（网关健康 + 模型可达，gateway-probe.ts 已测）→ stdout
- *   人话报告。
+ *   人话报告；
+ * - config：`init` 写缺省 JSONC / `show` 脱敏打印生效值（config-command.ts）。
  *
  * 退出码契约（票面三态）：成功（含诚实截断——防御性失败不是运行失败）0 /
  * 其余中止或错误 1；截断信号由 stdout JSON 的 truncated=true 携带。
@@ -20,19 +21,21 @@
  * 立即 process.exit 在 Windows 上与 undici/AbortSignal 句柄清理竞态，
  * 退出码被吞成 0xC0000409。
  *
- * stdout 纪律：review 的 stdout 契约是单个 JSON 文档——
- * 凭据文件摘要与一切诊断走 stderr。凭据经 REVIEWER_*（> 旧
- * DEEPSEEK_* 别名）环境变量或凭据文件（缺省 = 进程 cwd 的 `.env.local`；
- * `--env <file>` 可显式指定，ADR-0019；已有环境变量优先），key 绝不回显。
+ * stdout 纪律：review 的 stdout 契约是单个 JSON 文档——配置诊断与一切
+ * 告警走 stderr。配置（含秘密）只在启动时读一次进内存，请求期不重读、
+ * 不回写 `process.env`；env 层（REVIEWER_* / DEEPSEEK_* / REVIEW_PI_*）
+ * 已彻底关闭，key 绝不回显。
  *
  * 进程调用形态：review-pi review --repo <path> --mr <diff-file>
- *   [--issue <text>] [--out <dir>] [--model <id>] [--env <file>]
+ *   [--issue <text>] [--out <dir>] [--model <id>] [--config <path>]
  *   [--rule-skill-zip <path>]... [--rule-skill <dir>]...
  *   [--rule-skill-name <name>] [--strict-rule-skill]
  *   [--progress | --no-progress]
- *   review-pi smoke [--model <id>]
+ *   review-pi smoke [--model <id>] [--config <path>]
+ *   review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
  */
 
+import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -44,8 +47,10 @@ import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
-import { formatEnvLocalSummary, loadEnvLocalFile } from "../shared/env-local.js";
+import { ConfigError, configSnapshot, loadConfig, type ModelOverride, type ResolvedConfig } from "../shared/config.js";
+import { reviewRuntimeOf } from "../shared/review-runtime.js";
 import { CLI_EXPERIMENT_ID, parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
+import { runConfigCommand } from "./config-command.js";
 import {
   applyPresentationProjection,
   isPresentationProjectionConfigured,
@@ -67,9 +72,10 @@ import {
 import { removeStaleReviewsZh } from "./reviews-zh.js";
 
 /** 执行一次 review 命令；返回进程退出码（完成 0——截断同为 0；错误经异常上抛 → 1） */
-async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
-  // 凭据前置先检（fail fast 早于文件系统触碰；key 缺失抛人话错误）
-  const endpoint = resolveReviewerEndpoint();
+async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Promise<number> {
+  // 配置前置先检（fail fast 早于文件系统触碰；key 缺失抛人话错误）
+  const endpoint = resolveReviewerEndpoint(config);
+  const modelId = args.model ?? config.model.default;
 
   const repoPath = resolve(args.repo);
   if (!(await stat(repoPath)).isDirectory()) {
@@ -80,7 +86,7 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
 
   // 运行进度投影（ADR-0016）：stderr 是 TTY 时缺省开（人手敲看得见），重定向
   // 收日志时缺省关；--progress / --no-progress 覆盖。缺省关时零输出、零行为变化。
-  const progress = startProgress(args);
+  const progress = startProgress(args, modelId);
   const startedAt = Date.now();
   let reviewed: Awaited<ReturnType<typeof runReview>>;
   try {
@@ -91,7 +97,9 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
       issueDescription: args.issue,
       apiKey: endpoint.apiKey,
       baseUrl: endpoint.baseUrl,
-      modelId: args.model,
+      modelId,
+      runtime: reviewRuntimeOf(config),
+      config: configSnapshot(config),
       fetch: globalThis.fetch,
       runsRoot,
       experimentId: CLI_EXPERIMENT_ID,
@@ -115,7 +123,9 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
     );
   }
   // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态
-  progress?.finish(progressFinish(args, endpoint.baseUrl, record.baseline.usage, startedAt));
+  progress?.finish(
+    progressFinish(modelId, endpoint.baseUrl, config.models, record.baseline.usage, startedAt),
+  );
 
   // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout
   // 呈现档（title/description 等自然语言字段经注入引擎译中文，结构化字段
@@ -126,8 +136,9 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   // 投影可耗时数十秒（逐字段网关翻译，长 description 单字段可达 30s+）：
   // 动手前先给一行 stderr 心跳，免得「检视完成 → 长静默 → stdout」被误读
   // 为挂死。谓词单源 isPresentationProjectionConfigured——与投影缝读同一
-  // 环境变量，未配置恒等直通时零输出（现状形态不动）。
-  if (isPresentationProjectionConfigured()) {
+  // 配置项，未配置恒等直通时零输出（现状形态不动）。
+  const presentationEngine = config.presentation.engine;
+  if (isPresentationProjectionConfigured(presentationEngine)) {
     process.stderr.write("review-pi: 呈现投影进行中（自然语言字段译中文）……\n");
   }
   // 分组意见的附加输入（ADR-0017）：源码行由 CLI 按 --repo 抽取（引擎保持
@@ -135,15 +146,28 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   // 不解析规则文件）。
   const codeByFinding = await readCodeLines(repoPath, record.baseline.findings);
   const rulePackDirs = rulePackDirsOf(record.baseline.audit, runsRoot);
-  const projection = await applyPresentationProjection({
-    findings: record.baseline.findings,
-    toolCallLog: [],
-    // ADR-0021：呈现模型缺省覆盖 = 本次 --model（核外引擎仍可被
-    // REVIEW_PI_PRESENTATION_MODEL 显式压过）
-    modelId: args.model,
-    ...(Object.keys(codeByFinding).length > 0 ? { codeByFinding } : {}),
-    ...(rulePackDirs.length > 0 ? { rulePackDirs } : {}),
-  });
+  const projection = await applyPresentationProjection(
+    {
+      findings: record.baseline.findings,
+      toolCallLog: [],
+      ...(Object.keys(codeByFinding).length > 0 ? { codeByFinding } : {}),
+      ...(rulePackDirs.length > 0 ? { rulePackDirs } : {}),
+    },
+    {
+      enginePath: presentationEngine,
+      // ADR-0021：呈现模型缺省跟随本次检视模型；model.presentation 显式压过
+      runtime: {
+        apiKey: endpoint.apiKey,
+        baseUrl: endpoint.baseUrl,
+        modelId: config.model.presentation ?? modelId,
+        concurrency: config.limits.concurrency.suggestion,
+        requestTimeoutMs: config.limits.timeouts.presentationRequestMs,
+      },
+      perFieldTimeoutMs: config.limits.timeouts.presentationRequestMs,
+      timeoutBufferMs: config.limits.timeouts.presentationBufferMs,
+      suggestionConcurrency: config.limits.concurrency.suggestion,
+    },
+  );
   const findings =
     projection.kind === "projected" ? projection.findings : record.baseline.findings;
   const presentation =
@@ -277,13 +301,15 @@ function rulePackDirsOf(
 }
 
 /** 执行一次 smoke 命令：双探针 → stdout 人话报告；通过 0 / 失败诊断 1 */
-async function runSmokeCommand(args: SmokeCliArgs): Promise<number> {
-  const endpoint = resolveReviewerEndpoint();
+async function runSmokeCommand(args: SmokeCliArgs, config: ResolvedConfig): Promise<number> {
+  const endpoint = resolveReviewerEndpoint(config);
   const probes = await runSmokeProbes({
     baseUrl: endpoint.baseUrl,
     apiKey: endpoint.apiKey,
-    modelId: args.model,
+    modelId: args.model ?? config.model.default,
     fetch: globalThis.fetch,
+    healthTimeoutMs: config.limits.timeouts.probeHealthMs,
+    modelTimeoutMs: config.limits.timeouts.probeModelMs,
   });
   await writeStdout(`${formatSmokeDiagnostics(probes)}\n`);
   return probes.ok ? 0 : 1;
@@ -298,12 +324,12 @@ function writeStdout(text: string): Promise<void> {
  * 运行进度投影的开关与构造（ADR-0016）：`--progress` / `--no-progress` 显式覆盖，
  * 缺省跟随 `stderr` 是否 TTY。返回 undefined = 本 run 不显示任何进度（现状形态）。
  */
-function startProgress(args: ReviewCliArgs): ProgressRenderer | undefined {
+function startProgress(args: ReviewCliArgs, modelId: string): ProgressRenderer | undefined {
   const isTty = process.stderr.isTTY === true;
   if (!(args.progress ?? isTty)) {
     return undefined;
   }
-  process.stderr.write(`review-pi: ${args.caseId} · ${args.model} · progress on\n`);
+  process.stderr.write(`review-pi: ${args.caseId} · ${modelId} · progress on\n`);
   const renderer = createProgressRenderer({
     write: (text) => {
       process.stderr.write(text);
@@ -319,12 +345,13 @@ function startProgress(args: ReviewCliArgs): ProgressRenderer | undefined {
  * 模型画像 + 同一个 `calculateCost`（不另立公式），耗时由 CLI 自身计时。
  */
 function progressFinish(
-  args: ReviewCliArgs,
+  modelId: string,
   baseUrl: string,
+  models: Readonly<Record<string, ModelOverride>>,
   usage: LlmUsage,
   startedAt: number,
 ): ProgressFinishInput {
-  const costUsd = calculateCost(reviewModelOf(args.model, baseUrl), llmUsageToPiUsage(usage)).total;
+  const costUsd = calculateCost(reviewModelOf(modelId, baseUrl, models), llmUsageToPiUsage(usage)).total;
   return {
     durationMs: Date.now() - startedAt,
     usage,
@@ -332,9 +359,12 @@ function progressFinish(
   };
 }
 
-/** 凭据文件装载摘要行（stderr；措辞单源 formatEnvLocalSummary——只报键名与行号，值绝不回显） */
-function envLocalSummaryLine(loadedKeysText: string, label = ".env.local"): string {
-  return `review-pi: env: ${label} found — ${loadedKeysText}\n`;
+/** `.env.local` 残留提示（ADR-0025）：只 stat cwd 一个路径，不探测任何环境变量 */
+function envLocalNoticeLine(): string {
+  return (
+    "review-pi: 已不再读取 .env.local（本版配置见 --config 或 ~/.PiAgent/PiAgent.json）；" +
+    "迁移：review-pi config init --from-env .env.local\n"
+  );
 }
 
 /** 兜底强退上界（毫秒）：自然排干的正常路径毫秒级完成，此定时器不点火 */
@@ -363,36 +393,39 @@ function main(): void {
     return;
   }
 
-  // 凭据文件（ADR-0019）：`--env` 指定则**只**读该文件（相对 cwd），否则读进程
-  // cwd 的 `.env.local`。用法解析成功后才触碰文件系统；必须在凭据解析前。
-  // 读失败（非缺失，如 EACCES/EISDIR）→ 干净人话错误 + exit 1（不留未捕获堆栈）。
-  const envFile = parsed.command === "review" ? parsed.args.envFile : undefined;
-  const envPath = envFile !== undefined ? resolve(envFile) : resolve(".env.local");
+  // 配置装载（ADR-0025）：**唯一落点**。读一次 → 不可变快照，之后只读；
+  // 不做任何 env 覆盖、不回写 process.env。警告（未知键 / 钉死键 / 权限）
+  // 走 stderr，不改退出码。
+  let config: ResolvedConfig;
   try {
-    const envResult = loadEnvLocalFile(envPath);
-    if (envResult.exists) {
-      process.stderr.write(
-        envLocalSummaryLine(formatEnvLocalSummary(envResult), envFile !== undefined ? envPath : undefined),
-      );
-    } else if (envFile !== undefined) {
-      // 显式指定却缺席 = 路径拼错 / 文件没带上——静默 no-op 会让人以为已注入
-      process.stderr.write(
-        `review-pi: --env 指定的文件不存在（${envPath}）——本机注入面中止\n`,
-        () => exitGracefully(1),
-      );
-      return;
+    const loaded = loadConfig({
+      ...(parsed.args.configPath !== undefined ? { configPath: parsed.args.configPath } : {}),
+    });
+    for (const warning of loaded.warnings) {
+      process.stderr.write(`review-pi: ${warning}\n`);
+    }
+    config = loaded.config;
+    if (parsed.command !== "config" && parsed.args.configPath !== undefined && !config.exists) {
+      throw new ConfigError(`--config 指定的文件不存在（${config.path}）`);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const label = envFile !== undefined ? `--env 指定的文件（${envPath}）` : ".env.local";
-    process.stderr.write(
-      `review-pi: 无法读取 ${label}（${message}）——本机注入面中止\n`,
-      () => exitGracefully(1),
-    );
+    reportErrorAndExit(error);
     return;
   }
 
-  const command = parsed.command === "smoke" ? runSmokeCommand(parsed.args) : runReviewCommand(parsed.args);
+  // `.env.local` 残留提示：只 stat cwd 一个路径（保持「全禁 env」的字面纪律）
+  if (parsed.command !== "config" && existsSync(resolve(".env.local"))) {
+    process.stderr.write(envLocalNoticeLine());
+  }
+
+  let command: Promise<number>;
+  if (parsed.command === "config") {
+    command = Promise.resolve().then(() => runConfigCommand(parsed.args));
+  } else if (parsed.command === "smoke") {
+    command = runSmokeCommand(parsed.args, config);
+  } else {
+    command = runReviewCommand(parsed.args, config);
+  }
   command.then((code) => exitGracefully(code)).catch(reportErrorAndExit);
 }
 
