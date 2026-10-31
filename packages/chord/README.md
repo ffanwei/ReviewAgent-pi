@@ -1,5 +1,7 @@
 # @earendil-works/chord
 
+> **本仓发行注记（ADR-0028）**：本文件是上游 pi 的原始 README（vendor 保留，正文中的 `@earendil-works/*` 是上游包名）。本仓以 `@review-agent-pi/chord@0.85.1` 发布；安装与 import 时请把 `@earendil-works/chord` 换成 `@review-agent-pi/chord`（其余本仓发布的三包同理）。
+
 Chord is an application-composition runtime for systems assembled from
 plugins/extensions. It provides facets, services, replicated state, and a
 pluggable remote-service boundary. It is developed as a standalone package in

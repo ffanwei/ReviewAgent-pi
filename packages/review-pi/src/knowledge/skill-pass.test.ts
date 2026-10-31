@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { FetchFunction } from "@earendil-works/pi-ai";
+import type { AgentMessage } from "@review-agent-pi/pi-agent-core";
+import type { FetchFunction } from "@review-agent-pi/pi-ai";
 import { sseBody, type FakeReply } from "../provider/fake-fetch.js";
 import { DEFAULT_REVIEW_RUNTIME } from "../shared/review-runtime.js";
 import { createInertContextLedger } from "../tools/ledger.js";

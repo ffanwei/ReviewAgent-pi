@@ -32,10 +32,10 @@ afterAll(() => {
 
 /** 腿 label → 该腿应属的包名（与 cli-runtime.js 的 PACKAGE_LEGS 同源断言） */
 const EXPECTED_PACKAGE: Record<string, string> = {
-  "pi-ai (vendored)": "@earendil-works/pi-ai",
-  "pi-agent-core (vendored)": "@earendil-works/pi-agent-core",
-  "chord (vendored)": "@earendil-works/chord",
-  "pi-telemetry (vendored)": "@earendil-works/pi-telemetry",
+  "pi-ai (vendored)": "@review-agent-pi/pi-ai",
+  "pi-agent-core (vendored)": "@review-agent-pi/pi-agent-core",
+  "chord (vendored)": "@review-agent-pi/chord",
+  "pi-telemetry (vendored)": "@review-agent-pi/pi-telemetry",
   "review-llm": "review-llm",
 };
 

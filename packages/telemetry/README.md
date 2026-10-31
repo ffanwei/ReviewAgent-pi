@@ -1,5 +1,7 @@
 # @earendil-works/pi-telemetry
 
+> **本仓发行注记（ADR-0028）**：本文件是上游 pi 的原始 README（vendor 保留，正文中的 `@earendil-works/*` 是上游包名）。本仓以 `@review-agent-pi/pi-telemetry@0.85.1` 发布；安装与 import 时请把 `@earendil-works/pi-telemetry` 换成 `@review-agent-pi/pi-telemetry`（其余本仓发布的三包同理）。
+
 Vendor-neutral telemetry contracts and typed schema utilities for pi packages.
 
 This package provides:

@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { FetchFunction } from "@earendil-works/pi-ai";
+import type { FetchFunction } from "@review-agent-pi/pi-ai";
 import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audit-writer.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";

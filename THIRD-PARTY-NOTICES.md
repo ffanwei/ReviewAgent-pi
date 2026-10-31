@@ -5,11 +5,13 @@
 本仓库 vendored 了 [pi](https://github.com/earendil-works/pi) 代码仓的以下部分，
 以源码形态定制（非 npm 包消费）：
 
-- `packages/ai`（`@earendil-works/pi-ai`）
-- `packages/agent`（`@earendil-works/pi-agent-core`）
-- `packages/chord`（`@earendil-works/chord`）
-- `packages/telemetry`（`@earendil-works/pi-telemetry`）
+- `packages/ai`（`@earendil-works/pi-ai` → 本仓发布名 `@review-agent-pi/pi-ai`）
+- `packages/agent`（`@earendil-works/pi-agent-core` → 本仓发布名 `@review-agent-pi/pi-agent-core`）
+- `packages/chord`（`@earendil-works/chord` → 本仓发布名 `@review-agent-pi/chord`）
+- `packages/telemetry`（`@earendil-works/pi-telemetry` → 本仓发布名 `@review-agent-pi/pi-telemetry`）
 - `tsconfig.base.json`（仓库根，被上述包的 `tsconfig.build.json` 以 `../../tsconfig.base.json` 引用）
+
+**发布名与出处**（ADR-0028）：上述四包经源码定制后以 `@review-agent-pi/*` 发布到 npm；上游原名 `@earendil-works/*` 仅用于履约与出处对照，不代表上游对本仓发布物的背书。发布物是 MIT 许可下的修改版；本文件随 `review-pi` tarball 一起分发（`prepack` 从仓根复制），四个内核包的 tarball 各自保留上游 `license: MIT` 与仓库出处字段。
 
 **上游锚定**：commit `6671c604766b3670ed95f405aa7856835d0ca702`（2026-09-16，发布版 v0.85.1 之后 11 天的 main 修复）。
 裁剪、workspace 接线与构建脚本改动见 `docs/design/Pi 内核定制基线方案.md`；与上游的同步以

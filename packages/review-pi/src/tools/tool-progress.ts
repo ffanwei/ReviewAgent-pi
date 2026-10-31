@@ -1,4 +1,4 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@review-agent-pi/pi-agent-core";
 import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import { clampLine, summarizeToolArguments } from "./tool-arguments.js";
 

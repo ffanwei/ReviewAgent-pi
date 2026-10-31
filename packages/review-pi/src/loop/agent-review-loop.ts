@@ -1,6 +1,6 @@
-import { Agent } from "@earendil-works/pi-agent-core";
-import type { AgentMessage, AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, FetchFunction } from "@earendil-works/pi-ai";
+import { Agent } from "@review-agent-pi/pi-agent-core";
+import type { AgentMessage, AgentTool, StreamFn } from "@review-agent-pi/pi-agent-core";
+import type { AssistantMessage, FetchFunction } from "@review-agent-pi/pi-ai";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmMessage, LlmUsage } from "../contracts/llm.js";

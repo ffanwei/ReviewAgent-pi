@@ -39,7 +39,7 @@ import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import { calculateCost } from "@earendil-works/pi-ai";
+import { calculateCost } from "@review-agent-pi/pi-ai";
 
 import type { LlmUsage } from "../contracts/llm.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";

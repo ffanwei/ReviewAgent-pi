@@ -1,6 +1,6 @@
-import type { AssistantMessage, Context, FetchFunction, Model, TextContent } from "@earendil-works/pi-ai";
-import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, Context, FetchFunction, Model, TextContent } from "@review-agent-pi/pi-ai";
+import { deepseekProvider } from "@review-agent-pi/pi-ai/providers/deepseek";
+import type { StreamFn } from "@review-agent-pi/pi-agent-core";
 import type { ToolSchema, WireMessage } from "../contracts/llm.js";
 import {
   DEFAULT_GATEWAY_MAX_TOKENS,

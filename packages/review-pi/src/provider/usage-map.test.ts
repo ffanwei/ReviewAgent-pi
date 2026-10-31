@@ -1,4 +1,4 @@
-import type { Usage } from "@earendil-works/pi-ai";
+import type { Usage } from "@review-agent-pi/pi-ai";
 import { expect, test } from "vitest";
 import type { LlmUsage } from "../contracts/llm.js";
 import { ZERO_USAGE, addUsage, piUsageToLlmUsage } from "./usage-map.js";

@@ -26,7 +26,7 @@
 | 消费形态 | **全源码 vendor fork**，非 npm 包依赖 | 用户拍板（2026-09-17）：「不以 Pi 的 npm 包为基础新建，而是全新基于 pi 的代码仓定制化修改」。npm 消费线对内核形态的约束（版本节奏、发布物缺口、机制偏差）在 DSH 线已付过一次学费（《DSH 内核机制偏差清单》）；源码在手则机制即事实 |
 | 保留范围 | 只保留 ReviewAgent 内核需要的 4 个包 | `pi-agent-core`（Agent/agent-loop，独立无 coding-agent 依赖）+ `pi-ai`（40+ provider 统一 API）+ `chord`（agent 的会话/状态底座）+ `pi-telemetry`（契约层）；coding-agent / tui / protocol / client / server / evals / session-backends 与检视内核无关，不复制 |
 | DSH 遗产 | **原样保留** | 用户拍板「保留 DSH 内核版本的评测数据等内容」；`packages/review-dsh`、`runs/**/REPORT.md`、全部报告与 ADR 不动——后续以 `deps.piKernel` 之类的分支共存（见 §7） |
-| 包名/目录 | **保留上游 `@earendil-works/*` 原名与原目录名** | 同步上游时 `git diff` 可直接对照原树；改名留给真正需要时（目前无消费者冲突） |
+| 包名/目录 | **目录名保留上游原目录**；包名自 ADR-0028 起为自有 scope `@review-agent-pi/*`（vendoring 当时暂用上游名，发行前统一改名） | 目录名不变，同步上游时 `git diff` 仍可对照原树；包名必须是本仓可发布的 scope |
 
 ## 2. 上游锚定
 
@@ -38,13 +38,13 @@
 
 ## 3. 包映射与体积
 
-| 上游路径 | 本仓路径 | 包名 | dist 产物 | 测试文件 |
-|---|---|---|---|---|
-| `packages/telemetry` | `packages/telemetry` | `@earendil-works/pi-telemetry` | 6 js | 2 |
-| `packages/chord` | `packages/chord` | `@earendil-works/chord` | 24 js | 9 |
-| `packages/ai` | `packages/ai` | `@earendil-works/pi-ai` | 178 js + 39 data | 147 |
-| `packages/agent` | `packages/agent` | `@earendil-works/pi-agent-core` | 92 js | 55 |
-| `tsconfig.base.json`（仓根） | 仓根 `tsconfig.base.json` | — | — | — |
+| 上游路径 | 本仓路径 | 上游包名 | 本仓发布名（ADR-0028） | dist 产物 | 测试文件 |
+|---|---|---|---|---|---|
+| `packages/telemetry` | `packages/telemetry` | `@earendil-works/pi-telemetry` | `@review-agent-pi/pi-telemetry` | 6 js | 2 |
+| `packages/chord` | `packages/chord` | `@earendil-works/chord` | `@review-agent-pi/chord` | 24 js | 9 |
+| `packages/ai` | `packages/ai` | `@earendil-works/pi-ai` | `@review-agent-pi/pi-ai` | 178 js + 39 data | 147 |
+| `packages/agent` | `packages/agent` | `@earendil-works/pi-agent-core` | `@review-agent-pi/pi-agent-core` | 92 js | 55 |
+| `tsconfig.base.json`（仓根） | 仓根 `tsconfig.base.json` | — | — | — | — |
 
 包内 `tsconfig.build.json` 均 `extends "../../tsconfig.base.json"`——原路径指向即本仓根副本，**零改动**。
 
@@ -55,7 +55,7 @@
 | 项 | 改动 | 理由 |
 |---|---|---|
 | 内部依赖 | `^0.85.1` → `workspace:*` | workspace 内链接，版本随树 |
-| `exports` | 每条目补 `"types"`/`"source"` → `src/*.ts`，保留 `"import"` → `dist/*.js` | 镜像 review-llm 形态（`packages/review-llm/package.json` 的先例）：消费者 typecheck/测试吃源码，编译产物路径运行时兜底 |
+| `exports` | 每条目补 `"types"`/`"source"`，保留 `"import"` → `dist/*.js` | 镜像 review-llm 形态（`packages/review-llm/package.json` 的先例）：消费者 typecheck/测试吃源码，编译产物路径运行时兜底。**ADR-0028 起 `types` 指向 `dist/*.d.ts`**（发布物不含源码），`source` 条件仅服务仓内 vitest / typecheck |
 | `scripts.build` | `tsgo` → `tsc` | 见 §2 构建工具替换 |
 | `scripts.typecheck` | 新增 `tsc -p tsconfig.build.json --noEmit` | 与两既有包对齐 |
 | devDeps | 补 `typescript 5.9.3`；ai/agent 另补 `shx 0.4.0`（build/clean 用，上游 npm 扁平结构下未声明也能跑） | pnpm 严格隔离：脚本用到的工具必须显式声明 |
@@ -92,6 +92,15 @@
 - **不 vendor** `vitest.base.ts`：那是未保留包（protocol/client/server/coding-agent/tui）的共享配置；ai/agent 的 vitest.config.ts 自含（别名内联），无 extends 依赖
 - **不加** pi 包测试进 CI 门：上游测试含 POSIX 路径假设（§6），Linux CI 才是其设计运行环境；本仓 CI 门保持「根 + 两既有包」不变
 - **不 prepare**：四包无 prepare 脚本（review-llm 的 prepare 先例是「有运行时消费者」时的形态；当前无消费者，避免 pnpm 安装期构建顺序脆弱性）
+
+### 4.6 发行期改动（ADR-0028，vendoring 之后新增）
+
+| 项 | 改动 | 理由 |
+|---|---|---|
+| 包名 | `@earendil-works/*` → `@review-agent-pi/*`（版本仍锁 `0.85.1`） | 上游 scope 不属于本仓；npm 多包发行需要自有 scope |
+| 源码 specifier | 全仓 `import` / tsconfig paths / vitest alias / bin 腿表统一改为发布名（112 文件） | 安装形态与仓内形态同一份代码，不用 npm alias；**代价是上游 cherry-pick 冲突面扩到 import 行**，同步时按 §9 重跑 |
+| `exports.types` | `src/*.ts` → `dist/*.d.ts` | 发布物不含源码；`source` 条件保留给仓内工具链 |
+| `files` / `private` | 六包去 `private`、加 `files`；`review-pi` 加 `prepack` | 发布面收敛（dist / bin / presentation / 履约文本），`src` 不随包 |
 
 ## 5. 模型数据出处与一致性验证
 
@@ -154,6 +163,7 @@
 
 ## 9. 同步上游的操作约定
 
-- 上游更新时以锚定 commit 为基线 `git diff` 上游树 → 人工挑拣 cherry-pick 到本仓对应包目录；本基线的分歧全部落在 §4 清单内（package.json / 2 个 vitest 配置 / 1 处测试修复 / data 入库），源码本体零改动——diff 面越小同步越容易
+- 上游更新时以锚定 commit 为基线 `git diff` 上游树 → 人工挑拣 cherry-pick 到本仓对应包目录；本基线的分歧全部落在 §4 清单内（package.json / 2 个 vitest 配置 / 1 处测试修复 / data 入库 / ADR-0028 的包名与 specifier 重写），源码本体零改动——diff 面越小同步越容易
+- **ADR-0028 的 specifier 重写是同步的一部分**：挑拣上游改动后，把新增 import 里的 `@earendil-works/*` 一并改成 `@review-agent-pi/*`（`git grep` 校验为零），否则类型/运行时解析会落到两个包名
 - 源码级修改（未来必然发生：内核定制点）必须在改动处带 fork 注释并回写本文档 §4 分歧清单
 - 版本锚定信息变更（升级 pi）时：更新 §2、`THIRD-PARTY-NOTICES.md`、重跑 §6.1 全门

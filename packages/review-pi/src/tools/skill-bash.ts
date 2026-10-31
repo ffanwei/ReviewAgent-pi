@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import path from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@review-agent-pi/pi-agent-core";
 import { applyLineBudget, DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budget.js";
 
 /**

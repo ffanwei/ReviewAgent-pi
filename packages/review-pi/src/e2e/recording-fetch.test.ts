@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import type { FetchFunction } from "@earendil-works/pi-ai";
+import type { FetchFunction } from "@review-agent-pi/pi-ai";
 import { recordingFetch } from "./recording-fetch.js";
 
 // 真跑传输 tee（#4，R2 断言真源）：包裹真 fetch，逐请求旁路捕获 SSE 流里的

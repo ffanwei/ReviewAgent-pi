@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import type { FetchFunction } from "@earendil-works/pi-ai";
+import type { FetchFunction } from "@review-agent-pi/pi-ai";
 import {
   formatSmokeDiagnostics,
   modelEchoMatches,

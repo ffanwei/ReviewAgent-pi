@@ -1,4 +1,4 @@
-import type { FetchFunction } from "@earendil-works/pi-ai";
+import type { FetchFunction } from "@review-agent-pi/pi-ai";
 import { extractChatUsage, type RawWireUsage } from "../provider/gateway-probe.js";
 
 // 真跑传输 tee（#4，R2 断言真源）：包裹真 fetch，逐请求旁路捕获 SSE 流的

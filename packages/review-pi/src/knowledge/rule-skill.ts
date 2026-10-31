@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { BACKGROUND_CONTEXT, loadSkills, type Skill, type SkillDiagnostic } from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { BACKGROUND_CONTEXT, loadSkills, type Skill, type SkillDiagnostic } from "@review-agent-pi/pi-agent-core";
+import { NodeExecutionEnv } from "@review-agent-pi/pi-agent-core/node";
 
 /**
  * 规则 Skill 装载器（ADR-0012 / ADR-0014 / ADR-0018；ADR-0024 后是唯一形态的一部分）。

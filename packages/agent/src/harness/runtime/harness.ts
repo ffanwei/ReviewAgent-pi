@@ -1,4 +1,4 @@
-import type { Models, RetryPolicy } from "@earendil-works/pi-ai";
+import type { Models, RetryPolicy } from "@review-agent-pi/pi-ai";
 import type { QueueMode } from "../../types.ts";
 import type {
 	AcquireLaneOptions,

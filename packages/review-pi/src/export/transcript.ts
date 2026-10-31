@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@review-agent-pi/pi-agent-core";
 import type {
   AssistantMessage,
   ImageContent,
@@ -9,7 +9,7 @@ import type {
   ToolResultMessage,
   Usage,
   UserMessage,
-} from "@earendil-works/pi-ai";
+} from "@review-agent-pi/pi-ai";
 import { buildRunId } from "../audit/audit-writer.js";
 
 // 检视转录（ADR-0013 / ADR-0015 / CONTEXT.md「检视转录」）：把一次检视中**进入

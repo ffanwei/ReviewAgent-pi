@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import type { Context, UserMessage } from "@earendil-works/pi-ai";
+import type { Context, UserMessage } from "@review-agent-pi/pi-ai";
 import { fakeFetch } from "./fake-fetch.js";
 import {
   GATEWAY_MAX_TOKENS,

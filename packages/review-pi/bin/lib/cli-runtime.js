@@ -38,16 +38,16 @@ export const CLI_COMPILED_ENTRY = join(packageDir, "dist", "cli", "main.js");
 
 /** 包名 → 构建命令（顺序 = 腿序；vendored 四包共用 root 脚本的依赖序） */
 const PACKAGE_LEGS = [
-  { label: "pi-ai (vendored)", specifier: "@earendil-works/pi-ai", buildCommand: "pnpm build:pi" },
+  { label: "pi-ai (vendored)", specifier: "@review-agent-pi/pi-ai", buildCommand: "pnpm build:pi" },
   {
     label: "pi-agent-core (vendored)",
-    specifier: "@earendil-works/pi-agent-core",
+    specifier: "@review-agent-pi/pi-agent-core",
     buildCommand: "pnpm build:pi",
   },
-  { label: "chord (vendored)", specifier: "@earendil-works/chord", buildCommand: "pnpm build:pi" },
+  { label: "chord (vendored)", specifier: "@review-agent-pi/chord", buildCommand: "pnpm build:pi" },
   {
     label: "pi-telemetry (vendored)",
-    specifier: "@earendil-works/pi-telemetry",
+    specifier: "@review-agent-pi/pi-telemetry",
     buildCommand: "pnpm build:pi",
   },
   // 冻结仪器常量单源（prepare 在 pnpm install 时构建；源改后需重建）

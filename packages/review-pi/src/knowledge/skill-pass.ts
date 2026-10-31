@@ -1,7 +1,7 @@
 import path from "node:path";
-import { Agent } from "@earendil-works/pi-agent-core";
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, FetchFunction } from "@earendil-works/pi-ai";
+import { Agent } from "@review-agent-pi/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@review-agent-pi/pi-agent-core";
+import type { AssistantMessage, FetchFunction } from "@review-agent-pi/pi-ai";
 import type { LlmUsage } from "../contracts/llm.js";
 import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import type { RuleSkillPassRecord } from "../contracts/run.js";

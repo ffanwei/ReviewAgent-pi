@@ -6,7 +6,7 @@
 // - outputTokens   ← pi Usage.output（含思考 token）
 // - cacheReadTokens ← pi Usage.cacheRead（DSH deepseek 路径恒置，含 0）
 // - cacheWriteTokens：DeepSeek 无对应字段（pi 恒 0）→ 仅在 > 0 时置，不虚增
-import type { Usage } from "@earendil-works/pi-ai";
+import type { Usage } from "@review-agent-pi/pi-ai";
 import type { LlmUsage } from "../contracts/llm.js";
 
 export function piUsageToLlmUsage(usage: Usage): LlmUsage {

@@ -1,4 +1,4 @@
-import type { Usage } from "@earendil-works/pi-ai";
+import type { Usage } from "@review-agent-pi/pi-ai";
 
 export function emptyUsage(): Usage {
 	return {

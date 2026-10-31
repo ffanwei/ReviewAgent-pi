@@ -6,7 +6,7 @@
 
 > **历史定位（已废止）**：本仓曾是「pi 内核线 × 五配置（A–E）受控实验 + 四层判定链」的跨内核对照实验仓。A–E 配置矩阵、`configId` 身份维度与评测仪器层已按 [ADR-0024](docs/adr/0024-drop-config-matrix-and-config-identity.md) 删除（`--config` 旗标、实验运行器、judge / 指标 / 采样 / 对齐门 / 字节门、数据物化脚本一并移除）；`docs/report/**` 与 `runs/**/REPORT.md` 中的历史报告保留为记录，但**不可复跑**。需要评测能力时从历史 tag 或 DSH 兄弟仓取回。
 >
-> **姊妹仓（DSH 内核线）**：兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) 承载 DeepSeek Harness（DSH）内核线。两仓 ADR 各自独立编号（本仓 0001–0027 为 pi 线序列）：引用 DSH 仓的决策必须写全限定语「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR（双 0009 尤其如此：本仓 0009 = pi 内核从 0 重写，DSH 线 0009 = 大 MR 切分）。
+> **姊妹仓（DSH 内核线）**：兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) 承载 DeepSeek Harness（DSH）内核线。两仓 ADR 各自独立编号（本仓 0001–0028 为 pi 线序列）：引用 DSH 仓的决策必须写全限定语「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR（双 0009 尤其如此：本仓 0009 = pi 内核从 0 重写，DSH 线 0009 = 大 MR 切分）。
 >
 > **pi 内核基座**：以 [pi](https://github.com/earendil-works/pi) 代码仓为基础的全源码定制（vendor fork，锚定 commit `6671c604` / v0.85.1+11d），vendored `packages/{ai,agent,chord,telemetry}` 四个包。方向拍板（2026-09-18，ADR-0009）：Review Runtime 在 pi fork 上从 0 重写（`packages/review-pi`）。方案见《[Pi 内核从零实现方案](docs/design/Pi 内核从零实现方案.md)》，fork 接线事实见《[Pi 内核定制基线方案](docs/design/Pi 内核定制基线方案.md)》，第三方声明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
 
@@ -31,8 +31,8 @@
 ```
 src/presentation/       核外呈现层（中文翻译投影 / 分组意见映射 / 真引擎装配；ADR-0010/0017）
 packages/{ai,agent,chord,telemetry}/
-                        Pi 内核 vendor 基座（@earendil-works/*，`pnpm build:pi` 拓扑构建，
-                        见《Pi 内核定制基线方案》）
+                        Pi 内核 vendor 基座（发行名 @review-agent-pi/*，`pnpm build:pi`
+                        拓扑构建，见《Pi 内核定制基线方案》与 ADR-0028）
 packages/review-pi/     Review Runtime（pi 内核从 0 重写：六阶段骨架 + 七工具 + Context
                         Ledger + 规则 Skill 会话 + 审计投影 + review-pi CLI，ADR-0009）
 packages/review-llm/    LLM 接入共享缝（provider 参数画像与 DeepSeek 接入常量单源）
@@ -66,6 +66,32 @@ CI（push / PR）跑 `suites`：root + review-llm + review-pi 三处 typecheck �
 | `pnpm build:pi` | Pi 四包拓扑构建（telemetry → chord → ai → agent） |
 | `pnpm --filter review-llm build` / `pnpm --filter review-pi build` | 共享 LLM 缝 / 检视链 CLI 的 dist 构建 |
 | `pnpm build:presentation` | 呈现层引擎构建（前置 review-pi build；产物 `.tmp-gen/presentation/`，随后复制到 `packages/review-pi/presentation/` 供 `"builtin"` 引用） |
+| `pnpm build:dist` | 发行全量构建（内核四包 → review-llm → 呈现层） |
+| `pnpm pack:packages` | 打 6 个 tarball 到 `.artifacts/tarballs/`（ADR-0028） |
+| `pnpm verify:pack` | 离线安装布局冒烟（不联网、不发布） |
+
+## 安装与发行（npm 多包，ADR-0028）
+
+产品以**六个包**发行：内核四包 `@review-agent-pi/pi-{telemetry,chord,ai,agent-core}`（版本随上游锚点 `0.85.1`）+ `review-llm` + `review-pi`（提供 `bin: review-pi`）。
+
+```bash
+npm i -g review-pi      # 全局安装
+pnpm add review-pi      # 或装进项目
+review-pi review --repo <path> --mr <diff> --out <dir>
+```
+
+- **仓内开发 = 安装形态**：源码里的 specifier 就是发布名（`@review-agent-pi/*`），没有 npm alias；`exports.source` 条件让仓内 vitest / typecheck 读 `src/*.ts`，安装方读 `dist/*.js`。tarball 不含源码。
+- **scope 可整体替换**：发布到公司私有 registry 时，改六个 `package.json` 的 `name` 与全仓 specifier 即可；`verify:pack` 从各包 `package.json` 派生包名，不写死 scope。
+- **打包与发布分离**（发布前须确认 registry 与凭据）：
+
+  | 命令 | 做什么 |
+  |---|---|
+  | `pnpm build:dist` | 全量构建：内核四包 → review-llm → 呈现层 |
+  | `pnpm pack:packages` | 6 个 tarball 落到 `.artifacts/tarballs/`（拓扑序） |
+  | `pnpm verify:pack` | 离线安装布局冒烟：bin 腿表 / `config init`·`show` / `"builtin"` 引擎 / tree-sitter wasm / ripgrep |
+  | `pnpm publish:packages` | 重新构建后 `pnpm -r publish` |
+
+- `prepack` 断言 `dist` / `bin` / `presentation` / 履约文本在位，并把仓根 `THIRD-PARTY-NOTICES.md` 复制进 `review-pi` 包；bin 的 shebang 由 `.gitattributes` 固定 LF（Windows 上 CRLF 会被 `pnpm pack` 拒绝）。
 
 ## 单次检视执行
 
@@ -135,6 +161,8 @@ review-pi config init --from-env .env.local   # 一次性迁移旧 .env.local
 | `.cache/` | ❌ | 数据集缓存 / 留痕 / 分析产物 |
 | `.tmp-gen/` | ❌ | 呈现层编译中转产物 |
 | `packages/review-pi/presentation/` | ❌ | 呈现引擎制品（`build:presentation` 从 `.tmp-gen/` 复制；`"builtin"` 指向这里） |
+| `.artifacts/` | ❌ | 发行中间物：`tarballs/`（打包产物）与 `verify/`（安装面冒烟临时目录） |
+| `packages/review-pi/THIRD-PARTY-NOTICES.md` | ❌ | `prepack` 从仓根复制的履约文本（只有 tarball 里需要） |
 
 **历史基线数据仍在本地**：三侧 runs 数据（`phase2-main` / `phase2-noise` / `phase2-dsh`）、t 系 audit 真源（`phase2-dsh-t{1..5}`，原 P2 字节门对照物）与 `.cache/datasets` 物化仓按《[Pi 内核从零实现方案](docs/design/Pi 内核从零实现方案.md)》§9 迁入本仓（robocopy，git 零影响——`runs/**` 与 `.cache/` 均 gitignored）。ADR-0024 之后这些只作**历史记录与解读背景**保留：复算脚本（`pnpm analyze:phase2` / 字节门）已删除，不可再一键重放。
 
@@ -167,7 +195,7 @@ cd reference_project/pi  && git checkout 6671c604   # 其余同理
 | 文档 | 内容 |
 |---|---|
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表（Minimal Sufficient Context / Zone A–C / Finding 等术语唯一权威） |
-| [`docs/adr/`](docs/adr/) | 架构决策记录 0001–0027（POC1 harness / 模型钉扎 / 静态代码情报 / DSH 迁移姿态 / 从 0 基于 pi 内核重写 / 规则 Skill 会话 / 核外中文投影 / 分组意见 / **0024 废止配置矩阵与 configId** / **0025 用户级 JSONC 配置** / **0026 引擎路径与判档单源** / **0027 产物路径与规则包信任边界**） |
+| [`docs/adr/`](docs/adr/) | 架构决策记录 0001–0028（POC1 harness / 模型钉扎 / 静态代码情报 / DSH 迁移姿态 / 从 0 基于 pi 内核重写 / 规则 Skill 会话 / 核外中文投影 / 分组意见 / **0024 废止配置矩阵与 configId** / **0025 用户级 JSONC 配置** / **0026 引擎路径与判档单源** / **0027 产物路径与规则包信任边界** / **0028 npm 多包发行形态**） |
 | [`docs/design/`](docs/design/) | 总体架构设计方案 / Pi 内核从零实现方案 / Pi 内核定制基线方案 / VUL4J 评测方案与数据复制指南 / DSH 偏差清单 / Token 优化方案 |
 | [`docs/report/`](docs/report/) | POC1 实现报告 / DSH 迁移实现报告 / DSH 指标对齐门报告 / Phase 2 主数据分析报告 / Phase 2 pi-S1 五配置对照报告 / 兄弟项目调查报告（均为**历史记录，不可复跑**） |
 | [`docs/plan/`](docs/plan/) | 项目分阶段实现计划书 |

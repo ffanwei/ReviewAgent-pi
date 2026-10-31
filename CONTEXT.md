@@ -113,6 +113,20 @@ _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPOR
 `--out` 指向的根目录，本次检视的全部留痕都在其下：`runs/mr/<caseId>/`（运行记录 / 会话转录 / 意见导出）与 `audit/mr/<caseId>/rep-<N>/audit/`（审计），规则包解压缓存在 `.cache/rule-skills/`。没有实验标识层（ADR-0027）；`mr` 是输入形态段，不是数据集名。
 _Avoid_: 输出目录（只指 `--out` 本身）、runs 根（与历史 `runs/phase2-*` 实验目录混淆）
 
+### 发行
+
+**发行形态（Distribution Shape）**:
+产品以 **npm 多包**交付：内核四包 `@review-agent-pi/pi-{telemetry,chord,ai,agent-core}`（版本锁上游锚点 `0.85.1`）+ `review-llm` + `review-pi`（唯一 `bin`）。源码 specifier 就是发布名，不用 npm alias；仓内与安装形态共享同一份代码（ADR-0028）。
+_Avoid_: 单包 bundle（丢失 `source` 条件与内核独立测试面）、私有包 + `file:`/git 依赖（无 registry、版本不可解析）
+
+**发布面（Publish Surface）**:
+一个包 tarball 里**应当**存在的东西：`dist`、类型声明、`bin`（`review-pi`）、`presentation` 制品、`THIRD-PARTY-NOTICES.md`、`README.md`；**不应**存在 `src/**/*.ts`。`review-pi` 的 `prepack` 从仓根复制履约文本并断言发布物在位——打包确定、离线，缺产物即人话报错。
+_Avoid_: 构建产物（包含 `src` 的仓内状态）、打包脚本（那是手段）
+
+**安装布局冒烟（Install-Layout Smoke）**:
+`pnpm verify:pack`：把 tarball 解到临时 `node_modules/`（模拟 npm 安装布局），只从仓内借第三方依赖，断言内容面、bin 腿表、`config init/show`、`"builtin"` 引擎与 tree-sitter wasm / ripgrep 在安装形态下可用。不联网、不发布；包名从各包 `package.json` 派生，不写死 scope。
+_Avoid_: 发布门（发布需人确认 registry 与凭据）、端到端检视（冒烟不调真实网关）
+
 ### 知识
 
 **CWD**:

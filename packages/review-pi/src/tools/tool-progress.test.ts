@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@review-agent-pi/pi-agent-core";
 import type { RunProgressEvent } from "../contracts/progress.js";
 import { NO_OP_PROGRESS_SINK } from "../contracts/progress.js";
 import { summarizeDetailLine, withToolProgress } from "./tool-progress.js";

@@ -1,5 +1,7 @@
 # @earendil-works/pi-ai
 
+> **本仓发行注记（ADR-0028）**：本文件是上游 pi 的原始 README（vendor 保留，正文中的 `@earendil-works/*` 是上游包名）。本仓以 `@review-agent-pi/pi-ai@0.85.1` 发布；安装与 import 时请把 `@earendil-works/pi-ai` 换成 `@review-agent-pi/pi-ai`（其余本仓发布的三包同理）。
+
 Unified LLM API with provider collections, automatic auth resolution, token and cost tracking, and simple context persistence and hand-off to other models mid-session.
 
 **Note**: This library only includes models that support tool calling (function calling), as this is essential for agentic workflows.

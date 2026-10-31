@@ -1,4 +1,4 @@
-import { formatSkillInvocation, type Skill } from "@earendil-works/pi-agent-core";
+import { formatSkillInvocation, type Skill } from "@review-agent-pi/pi-agent-core";
 import type { SkillCandidateBatch } from "../gate/candidate-merge.js";
 import { formatHostPlatformNote } from "../tools/skill-bash.js";
 import type { RuleSkill } from "./rule-skill.js";

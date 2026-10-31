@@ -1,4 +1,4 @@
-import type { FetchFunction } from "@earendil-works/pi-ai";
+import type { FetchFunction } from "@review-agent-pi/pi-ai";
 
 /**
  * fake 适配器（离线 canned SSE）：与真适配器同缝（FetchFunction）注册。

@@ -8,7 +8,7 @@ import {
   loadSkills,
   type Skill,
   type SkillDiagnostic,
-} from "@earendil-works/pi-agent-core";
+} from "@review-agent-pi/pi-agent-core";
 import {
   loadRuleSkills,
   type RuleSkill,

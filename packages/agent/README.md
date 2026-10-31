@@ -1,5 +1,7 @@
 # @earendil-works/pi-agent-core
 
+> **本仓发行注记（ADR-0028）**：本文件是上游 pi 的原始 README（vendor 保留，正文中的 `@earendil-works/*` 是上游包名）。本仓以 `@review-agent-pi/pi-agent-core@0.85.1` 发布；安装与 import 时请把 `@earendil-works/pi-agent-core` 换成 `@review-agent-pi/pi-agent-core`（其余本仓发布的三包同理）。
+
 Stateful agent with tool execution and event streaming. Built on `@earendil-works/pi-ai`.
 
 ## Installation
