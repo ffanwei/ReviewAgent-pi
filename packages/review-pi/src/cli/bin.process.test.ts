@@ -188,9 +188,22 @@ interface CliRunResult {
 }
 
 interface RunBinOptions {
-  /** 显式注入子进程的环境变量（覆盖本机残留；REVIEWER_* 必须显式给） */
+  /** 网关 base URL（写进本 run 的最小配置文件；缺省不写 baseUrl = 官方缺省） */
+  readonly gatewayBaseUrl?: string;
+  /** 呈现引擎模块路径（写进配置 `presentation.engine`） */
+  readonly presentationEngine?: string;
+  /** 直接指定配置文件全文（覆盖默认最小配置） */
+  readonly configText?: string;
+  /** 配置文件落点（缺省 = 子进程 cwd 的 PiAgent.json） */
+  readonly configPath?: string;
+  /**
+   * 是否自动追加 `--config <path>`（缺省 true）。config 子命令用例自己带
+   * `--config`，或要测「缺省用户级路径」时置 false。
+   */
+  readonly appendConfigArg?: boolean;
+  /** 显式注入子进程的非配置类环境变量（HOME/USERPROFILE 始终指向沙箱） */
   readonly env?: Record<string, string>;
-  /** 预写进子进程 cwd 的 .env.local 内容（.env.local 语义面；不写则无该文件） */
+  /** 预写进子进程 cwd 的 .env.local 内容（本版已不读取；只用于「不被读取」断言） */
   readonly seedEnvLocal?: string;
   /** 预置到子进程 cwd 的文件名（内容固定 `{"stale":true}`；ADR-0017 副本清理用） */
   readonly seedCwdFiles?: readonly string[];
@@ -199,9 +212,31 @@ interface RunBinOptions {
   readonly timeoutMs?: number;
 }
 
+/** 最小配置（version + reviewer；可选 baseUrl / 呈现引擎） */
+function minimalConfigText(options: RunBinOptions): string {
+  const reviewer: Record<string, unknown> = { apiKey: SENTINEL_KEY };
+  if (options.gatewayBaseUrl !== undefined) {
+    reviewer["baseUrl"] = options.gatewayBaseUrl;
+  }
+  return `${JSON.stringify(
+    {
+      version: 1,
+      reviewer,
+      ...(options.presentationEngine !== undefined
+        ? { presentation: { engine: options.presentationEngine } }
+        : {}),
+    },
+    null,
+    2,
+  )}\n`;
+}
+
 /**
- * spawn 真 bin（cwd = 干净 tmpdir——不捡到仓库根的 .env.local，本机注入面
- * 确定性）。退出码/stdout/stderr 全捕获；超时即杀（status null）。
+ * spawn 真 bin（cwd = 干净 tmpdir——不捡到仓库根的 .env.local）。**每个用例都
+ * 显式 `--config <tmp>`，且 HOME / USERPROFILE 指向空沙箱**：用户级
+ * `~/.PiAgent/PiAgent.json` 与真实 home 绝不参与进程测试（ADR-0025）。
+ *
+ * 退出码/stdout/stderr 全捕获；超时即杀（status null）。
  *
  * 必须异步 spawn（不能 spawnSync）：stub 服务器活在本进程——spawnSync 会
  * 冻结事件循环，子进程的 HTTP 请求永远等不到 accept（子等响应、亲等退出，
@@ -209,6 +244,13 @@ interface RunBinOptions {
  */
 function runBin(args: readonly string[], options: RunBinOptions = {}): Promise<CliRunResult> {
   const cwd = makeTempDir("review-pi-cli-cwd-");
+  const sandboxHome = makeTempDir("review-pi-cli-home-");
+  const configPath = options.configPath ?? path.join(cwd, "PiAgent.json");
+  if (options.configText !== undefined) {
+    writeFileSync(configPath, options.configText, "utf8");
+  } else if (options.configPath === undefined) {
+    writeFileSync(configPath, minimalConfigText(options), "utf8");
+  }
   if (options.seedEnvLocal !== undefined) {
     writeFileSync(path.join(cwd, ".env.local"), options.seedEnvLocal, "utf8");
   }
@@ -218,10 +260,12 @@ function runBin(args: readonly string[], options: RunBinOptions = {}): Promise<C
   for (const name of options.seedCwdDirs ?? []) {
     mkdirSync(path.join(cwd, name), { recursive: true });
   }
+  const argv =
+    options.appendConfigArg === false ? [...args] : [...args, "--config", configPath];
   return new Promise<CliRunResult>((resolve, reject) => {
-    const child = spawn(process.execPath, [BIN_PATH, ...args], {
+    const child = spawn(process.execPath, [BIN_PATH, ...argv], {
       cwd,
-      env: { ...process.env, ...options.env },
+      env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome, ...options.env },
     });
     let stdout = "";
     let stderr = "";
@@ -322,9 +366,9 @@ function truncationCorpus(): FakeReply[] {
   return replies;
 }
 
-/** 子进程环境（哨兵网关显式注入；REVIEWER_* 优先序压过本机 DEEPSEEK_* 残留） */
-function stubEnv(stubBaseUrl: string): Record<string, string> {
-  return { REVIEWER_URL: stubBaseUrl, REVIEWER_API_KEY: SENTINEL_KEY };
+/** 子进程网关覆盖（写入本 run 的最小配置文件；不再经环境变量） */
+function stubEnv(stubBaseUrl: string): RunBinOptions {
+  return { gatewayBaseUrl: stubBaseUrl };
 }
 
 // ---- 检视命令面 ----
@@ -341,8 +385,8 @@ test(
       const run = await runBin(
         ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
         {
-          env: stubEnv(stub.baseUrl),
-          // .env.local 诱饵：显式环境变量必须胜出（诱饵 URL 是死端口，诱饵 key 不入传输层）
+          ...stubEnv(stub.baseUrl),
+          // .env.local 诱饵：本版已不再读取（诱饵 URL 是死端口，诱饵 key 不入传输层）
           seedEnvLocal: `REVIEWER_URL=http://127.0.0.1:9/v1\nREVIEWER_API_KEY=${DECOY_KEY}\n`,
         },
       );
@@ -395,8 +439,9 @@ test(
         text: readFileSync(file, "utf8"),
       }));
       expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }, ...diskTexts]);
-      // .env.local 装载摘要只报键名（值绝不回显）
-      expect(run.stderr).toContain("skipped");
+      // .env.local 残留提示：只声明「不再读取」，绝不回显文件内容
+      expect(run.stderr).toContain("已不再读取 .env.local");
+      expect(run.stderr).not.toContain(DECOY_KEY);
     } finally {
       await stub.close();
     }
@@ -415,7 +460,7 @@ test(
 
       const run = await runBin(
         ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
-        { env: stubEnv(stub.baseUrl) },
+        stubEnv(stub.baseUrl),
       );
 
       expect(run.status).toBe(0);
@@ -437,20 +482,24 @@ test(
   180_000,
 );
 
-// ---- 凭据文件显式路径（ADR-0019：--env） ----
+// ---- 配置文件显式路径（ADR-0025：--config） ----
 
 test(
-  "--env：只读指定凭据文件（cwd 之外），cwd 的 .env.local 不被读取；摘要报显式路径",
+  "--config：只读指定配置文件（cwd 之外），cwd 的 .env.local 不被读取；key 绝不回显",
   async () => {
     const stub = await startLoopbackStub(oneFindingCorpus());
     try {
       const outDir = makeTempDir("review-pi-cli-out-");
       const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
-      const envFile = path.join(makeTempDir("review-pi-cli-env-"), "team.env.local");
+      const configDir = makeTempDir("review-pi-cli-conf-");
+      const configPath = path.join(configDir, "PiAgent.json");
       writeFileSync(
-        envFile,
-        `REVIEWER_URL=${stub.baseUrl}\nREVIEWER_API_KEY=${SENTINEL_KEY}\n`,
+        configPath,
+        `${JSON.stringify({
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+        })}\n`,
         "utf8",
       );
 
@@ -463,12 +512,11 @@ test(
           mrFile,
           "--out",
           outDir,
-          "--env",
-          envFile,
+          "--config",
+          configPath,
         ],
         {
-          // 显式置空 = 未设置（.env.local 语义：空值不注入，文件可补缺）
-          env: { REVIEWER_URL: "", REVIEWER_API_KEY: "", DEEPSEEK_API_KEY: "" },
+          appendConfigArg: false,
           // cwd 诱饵：若实现退回 cwd 的 .env.local，请求会打向死端口并带上诱饵 key
           seedEnvLocal: `REVIEWER_URL=http://127.0.0.1:9/v1\nREVIEWER_API_KEY=${DECOY_KEY}\n`,
         },
@@ -480,9 +528,7 @@ test(
       for (const request of requests) {
         expect(request.authorization).toBe(`Bearer ${SENTINEL_KEY}`);
       }
-      // 摘要：报显式路径，且只报键名（值绝不回显）
-      expect(run.stderr).toContain(envFile);
-      expect(run.stderr).toContain("found — injected REVIEWER_URL, REVIEWER_API_KEY");
+      expect(run.stderr).toContain("已不再读取 .env.local");
       expect(run.stdout).not.toContain(SENTINEL_KEY);
       expect(run.stderr).not.toContain(SENTINEL_KEY);
       expect(run.stderr).not.toContain(DECOY_KEY);
@@ -493,43 +539,33 @@ test(
   180_000,
 );
 
-test("--env 指向不存在的文件 → exit 1 + 人话错误含路径 + stdout 干净（不静默 no-op）", async () => {
-  const missing = path.join(makeTempDir("review-pi-cli-env-"), "no-such.env.local");
+test("--config 指向不存在的文件 → exit 1 + 人话错误含路径 + stdout 干净（不静默回落缺省）", async () => {
+  const missing = path.join(makeTempDir("review-pi-cli-conf-"), "no-such.json");
   const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
 
-  const run = await runBin([
-    "review",
-    "--repo",
-    repoFixturePath("sample"),
-    "--mr",
-    mrFile,
-    "--env",
-    missing,
-  ]);
+  const run = await runBin(
+    ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--config", missing],
+    { appendConfigArg: false },
+  );
 
   expect(run.status).toBe(1);
   expect(run.stdout).toBe("");
-  expect(run.stderr).toContain("--env 指定的文件不存在");
+  expect(run.stderr).toContain("--config 指定的文件不存在");
   expect(run.stderr).toContain(missing);
 });
 
-test("--env 指向目录（读失败）→ exit 1 + 人话错误，不抛堆栈", async () => {
-  const dir = makeTempDir("review-pi-cli-env-");
+test("--config 指向目录（读失败）→ exit 1 + 人话错误，不抛堆栈", async () => {
+  const dir = makeTempDir("review-pi-cli-conf-");
   const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
 
-  const run = await runBin([
-    "review",
-    "--repo",
-    repoFixturePath("sample"),
-    "--mr",
-    mrFile,
-    "--env",
-    dir,
-  ]);
+  const run = await runBin(
+    ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--config", dir],
+    { appendConfigArg: false },
+  );
 
   expect(run.status).toBe(1);
   expect(run.stdout).toBe("");
-  expect(run.stderr).toContain("无法读取 --env 指定的文件");
+  expect(run.stderr).toContain("无法读取配置文件");
   expect(run.stderr).not.toContain("    at ");
 });
 
@@ -573,7 +609,7 @@ test(
 
       const run = await runBin(
         ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
-        { env: { ...stubEnv(stub.baseUrl), REVIEW_PI_PRESENTATION_ENGINE: enginePath } },
+        { gatewayBaseUrl: stub.baseUrl, presentationEngine: enginePath },
       );
 
       expect(run.status).toBe(0);
@@ -628,7 +664,7 @@ test(
 
       const run = await runBin(
         ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
-        { env: { ...stubEnv(stub.baseUrl), REVIEW_PI_PRESENTATION_ENGINE: enginePath } },
+        { gatewayBaseUrl: stub.baseUrl, presentationEngine: enginePath },
       );
 
       // 呈现降级不是运行失败（对齐诚实截断哲学）：exit 0，检视产物完好
@@ -692,12 +728,12 @@ function cliRepDir(outDir: string): string {
 function runCliReview(
   outDir: string,
   mrFile: string,
-  env: Record<string, string>,
+  config: RunBinOptions,
   options: RunBinOptions = {},
 ): Promise<CliRunResult> {
   return runBin(
     ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
-    { ...options, env },
+    { ...options, ...config },
   );
 }
 
@@ -715,8 +751,8 @@ test(
       const enginePath = writeProjectionEngineFixture("engine.mjs", ZH_ENGINE_BODY);
       const outDir = makeTempDir("review-pi-cli-out-");
       const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
-        ...stubEnv(stub.baseUrl),
-        REVIEW_PI_PRESENTATION_ENGINE: enginePath,
+        gatewayBaseUrl: stub.baseUrl,
+        presentationEngine: enginePath,
       });
 
       expect(run.status).toBe(0);
@@ -817,8 +853,8 @@ test("中文产物：引擎降级 → 两份中文产物都缺席 + exit 0 + std
     );
     const outDir = makeTempDir("review-pi-cli-out-");
     const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
-      ...stubEnv(stub.baseUrl),
-      REVIEW_PI_PRESENTATION_ENGINE: enginePath,
+      gatewayBaseUrl: stub.baseUrl,
+      presentationEngine: enginePath,
     });
 
     expect(run.status).toBe(0);
@@ -879,8 +915,8 @@ test(
       );
       const outDir = makeTempDir("review-pi-cli-out-");
       const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
-        ...stubEnv(stub.baseUrl),
-        REVIEW_PI_PRESENTATION_ENGINE: enginePath,
+        gatewayBaseUrl: stub.baseUrl,
+        presentationEngine: enginePath,
       });
 
       expect(run.status).toBe(0);
@@ -912,7 +948,7 @@ test(
       const run = await runCliReview(
         outDir,
         writeMr(goldenFixture("vul4j-1.diff")),
-        { ...stubEnv(stub.baseUrl), REVIEW_PI_PRESENTATION_ENGINE: enginePath },
+        { gatewayBaseUrl: stub.baseUrl, presentationEngine: enginePath },
         // cwd 里两个目标名都被目录占住 ⇒ 写文件必然失败
         { seedCwdDirs: ["reviews_tips_zh.json", "review-result.json"] },
       );
@@ -942,8 +978,8 @@ test("中文产物：写盘失败（tips 路径预占为目录）→ exit 1 + �
     mkdirSync(path.join(repDir, "reviews_tips_zh.json"), { recursive: true });
 
     const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
-      ...stubEnv(stub.baseUrl),
-      REVIEW_PI_PRESENTATION_ENGINE: enginePath,
+      gatewayBaseUrl: stub.baseUrl,
+      presentationEngine: enginePath,
     });
 
     expect(run.status).toBe(1);
@@ -962,7 +998,7 @@ test("陈旧产物拒跑：dist 回拨 30 天 → exit 1 + 人话提示 + stdout
   utimesSync(entry, backdated, backdated);
   try {
     const run = await runBin(["review", "--repo", repoFixturePath("sample"), "--mr", "x.diff"], {
-      env: stubEnv("http://127.0.0.1:9/v1"),
+      ...stubEnv("http://127.0.0.1:9/v1"),
       timeoutMs: 30_000,
     });
     expect(run.status).toBe(1);
@@ -977,7 +1013,7 @@ test("陈旧产物拒跑：dist 回拨 30 天 → exit 1 + 人话提示 + stdout
 
 test("用法错误：缺 --mr → exit 1 + 人话错误 + usage 文案 + stdout 干净", async () => {
   const run = await runBin(["review", "--repo", repoFixturePath("sample")], {
-    env: stubEnv("http://127.0.0.1:9/v1"),
+    ...stubEnv("http://127.0.0.1:9/v1"),
     timeoutMs: 30_000,
   });
   expect(run.status).toBe(1);
@@ -991,7 +1027,7 @@ test("运行失败：--repo 指向文件（非目录）→ exit 1 + 错误人话
   writeFileSync(notADir, "not a directory", "utf8");
   const run = await runBin(
     ["review", "--repo", notADir, "--mr", path.join(path.dirname(notADir), "x.diff")],
-    { env: stubEnv("http://127.0.0.1:9/v1"), timeoutMs: 30_000 },
+    { ...stubEnv("http://127.0.0.1:9/v1"), timeoutMs: 30_000 },
   );
   expect(run.status).toBe(1);
   expect(run.stdout).toBe("");
@@ -1003,7 +1039,7 @@ test("运行失败：--repo 指向文件（非目录）→ exit 1 + 错误人话
 test("smoke 子命令：双探针通过 → exit 0 + stdout 人话报告；哨兵只进 Authorization 头", async () => {
   const stub = await startLoopbackStub([]);
   try {
-    const run = await runBin(["smoke"], { env: stubEnv(stub.baseUrl) });
+    const run = await runBin(["smoke"], stubEnv(stub.baseUrl));
 
     expect(run.status).toBe(0);
     // 人话报告（stdout）：OK 结论 + 双探针行
@@ -1024,7 +1060,7 @@ test("smoke 子命令：双探针通过 → exit 0 + stdout 人话报告；哨�
 
 test("smoke 子命令：网关不可达 → exit 1 + 人话诊断（健康探针失败，模型探针跳过）", async () => {
   // 死端口（无监听）：连接拒绝即失败，不依赖超时
-  const run = await runBin(["smoke"], { env: stubEnv("http://127.0.0.1:9/v1"), timeoutMs: 60_000 });
+  const run = await runBin(["smoke"], { ...stubEnv("http://127.0.0.1:9/v1"), timeoutMs: 60_000 });
 
   expect(run.status).toBe(1);
   expect(run.stdout).toContain("FAILED");
@@ -1071,7 +1107,7 @@ test(
           skillDir,
           "--strict-rule-skill",
         ],
-        { env: stubEnv(stub.baseUrl) },
+        stubEnv(stub.baseUrl),
       );
 
       expect(run.status).toBe(0);
@@ -1151,7 +1187,7 @@ test(
           outDir,
           "--progress",
         ],
-        { env: stubEnv(stub.baseUrl) },
+        stubEnv(stub.baseUrl),
       );
 
       expect(run.status).toBe(0);
@@ -1196,7 +1232,7 @@ test(
         outDir,
       ];
 
-      const auto = await runBin(baseArgs, { env: stubEnv(quietStub.baseUrl) });
+      const auto = await runBin(baseArgs, stubEnv(quietStub.baseUrl));
       expect(auto.status).toBe(0);
       expect(auto.stderr).not.toContain("▶ phase");
       expect(auto.stderr).not.toContain("✓ done");
@@ -1212,14 +1248,14 @@ test(
           outDir2,
           "--no-progress",
         ],
-        { env: stubEnv(quietStub.baseUrl) },
+        stubEnv(quietStub.baseUrl),
       );
       expect(explicitOff.status).toBe(0);
       expect(explicitOff.stderr).not.toContain("▶ phase");
       expect(explicitOff.stderr).not.toContain("✓ done");
 
       const conflict = await runBin([...baseArgs, "--progress", "--no-progress"], {
-        env: stubEnv(quietStub.baseUrl),
+        ...stubEnv(quietStub.baseUrl),
         timeoutMs: 30_000,
       });
       expect(conflict.status).toBe(1);

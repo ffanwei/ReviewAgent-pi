@@ -1,28 +1,27 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { parseCliArgs, USAGE_TEXT } from "./args.js";
 
 // CLI 参数解析契约（#7 P3b，进程内主缝的第一层）：`review-pi review` /
-// `review-pi smoke` 两个子命令的 argv 用法面。形态对齐 DSH 线 args.ts
-// （union 结果、不抛异常——用户输入错误是预期路径），pi 线差异：
+// `review-pi smoke` / `review-pi config` 三个子命令的 argv 用法面。形态对齐
+// DSH 线 args.ts（union 结果、不抛异常——用户输入错误是预期路径），pi 线差异：
 // - 检视形态唯一（ADR-0024：A–E 配置矩阵删除，规则 Skill 是唯一形态）；
-//   任何 --config 都是未知旗标；
+// - `--config` = 用户级 JSONC 配置路径（ADR-0025；旧的 `--env` 已移除）；
 // - 无 --language 旗标（输出语言是 DSH 线后分家决策，pi 线自立 ADR 前不实装）；
 // - smoke = P1b 双探针（网关健康 + 模型可达）。
 
 test("空 argv 与未知子命令 → 用法错误（不抛异常）", () => {
   expect(parseCliArgs([])).toEqual({
     ok: false,
-    message: "missing command (expected `review` or `smoke`)",
+    message: "missing command (expected `review`, `smoke` or `config`)",
   });
   expect(parseCliArgs(["deploy"])).toEqual({
     ok: false,
-    message: 'unknown command "deploy" (expected `review` or `smoke`)',
+    message: 'unknown command "deploy" (expected `review`, `smoke` or `config`)',
   });
 });
 
-test("review 最小 argv：必填旗标 + 全缺省（out / model / issue）", () => {
+test("review 最小 argv：必填旗标 + 全缺省（out / issue；model 交给配置）", () => {
   const parsed = parseCliArgs(["review", "--repo", "repo", "--mr", "case.diff"]);
   expect(parsed).toEqual({
     ok: true,
@@ -33,7 +32,6 @@ test("review 最小 argv：必填旗标 + 全缺省（out / model / issue）", (
       caseId: "case",
       issue: "",
       out: "review-pi-output",
-      model: REVIEW_MODEL_ID,
     },
   });
 });
@@ -47,13 +45,34 @@ test("caseId 派生：--mr 文件名去扩展名（含路径与无扩展名形�
   expect(doubleDot.ok && doubleDot.command === "review" && doubleDot.args.caseId).toBe("case.old");
 });
 
-test("--config 已删除：任何形态都按未知旗标拒绝（ADR-0024，不做 no-op 兼容）", () => {
-  for (const configId of ["A", "B", "C", "D", "E", "F"]) {
-    expect(parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--config", configId])).toEqual({
-      ok: false,
-      message: 'unknown flag "--config"',
-    });
-  }
+test("--config：路径透传（review / smoke / config 三面）；缺席省键；空白拒绝", () => {
+  const review = parseCliArgs(["review", "--repo", "r", "--mr", "m", "--config", "conf/pi.json"]);
+  expect(review.ok && review.command === "review" && review.args.configPath).toBe("conf/pi.json");
+  const absent = parseCliArgs(["review", "--repo", "r", "--mr", "m"]);
+  expect(absent.ok && absent.command === "review" && "configPath" in absent.args).toBe(false);
+  expect(parseCliArgs(["smoke", "--config", "x.json"])).toEqual({
+    ok: true,
+    command: "smoke",
+    args: { configPath: "x.json" },
+  });
+  expect(parseCliArgs(["config", "show", "--config", "x.json"])).toEqual({
+    ok: true,
+    command: "config",
+    args: { action: "show", configPath: "x.json" },
+  });
+  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--config", "  "])).toEqual({
+    ok: false,
+    message: 'invalid --config "  ": must be a non-empty file path',
+  });
+});
+
+test("--env 已移除：任何子命令都给专用迁移提示（不是裸 unknown flag）", () => {
+  const message = "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.json）";
+  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--env", "creds.env"])).toEqual({
+    ok: false,
+    message,
+  });
+  expect(parseCliArgs(["smoke", "--env=x.env"])).toEqual({ ok: false, message });
 });
 
 test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule-skill（布尔无值）", () => {
@@ -78,7 +97,6 @@ test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule
       caseId: "m",
       issue: "",
       out: "review-pi-output",
-      model: REVIEW_MODEL_ID,
       ruleSkillZips: ["packs/rules.zip"],
       ruleSkillName: "sample-rule",
       strictRuleSkill: true,
@@ -167,49 +185,65 @@ test("未知旗标 / 重复旗标 / 值缺席（含值吞旗标）→ 用法错�
   });
 });
 
-test("--env：显式凭据文件路径透传；缺席省键；空白路径 = 用法错误（ADR-0019）", () => {
-  const explicit = parseCliArgs([
-    "review",
-    "--repo",
-    "r",
-    "--mr",
-    "m",
-    "--env",
-    "creds\\team.env.local",
-  ]);
-  expect(explicit).toEqual({
+test("--env：显式凭据文件路径已不再支持（ADR-0025 废止 ADR-0019）", () => {
+  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--env", "creds\\team.env.local"])).toEqual({
+    ok: false,
+    message: "--env 已移除（配置见 --config <file> 或 ~/.PiAgent/PiAgent.json）",
+  });
+});
+
+test("config 子命令：init/show + 旗标组合校验", () => {
+  expect(parseCliArgs(["config"])).toEqual({
+    ok: false,
+    message: "missing config action (expected `init` or `show`)",
+  });
+  expect(parseCliArgs(["config", "edit"])).toEqual({
+    ok: false,
+    message: 'unknown config action "edit" (expected `init` or `show`)',
+  });
+  expect(parseCliArgs(["config", "init"])).toEqual({
     ok: true,
-    command: "review",
-    args: {
-      repo: "r",
-      mr: "m",
-      caseId: "m",
-      issue: "",
-      out: "review-pi-output",
-      model: REVIEW_MODEL_ID,
-      envFile: "creds\\team.env.local",
-    },
+    command: "config",
+    args: { action: "init" },
   });
-
-  const absent = parseCliArgs(["review", "--repo", "r", "--mr", "m"]);
-  expect(absent.ok && absent.command === "review" && "envFile" in absent.args).toBe(false);
-
-  expect(parseCliArgs(["review", "--repo", "r", "--mr", "m", "--env", "  "])).toEqual({
+  expect(parseCliArgs(["config", "init", "--force", "--from-env", ".env.local"])).toEqual({
+    ok: true,
+    command: "config",
+    args: { action: "init", force: true, fromEnv: ".env.local" },
+  });
+  expect(parseCliArgs(["config", "show", "--json"])).toEqual({
+    ok: true,
+    command: "config",
+    args: { action: "show", json: true },
+  });
+  // 旗标面互斥：show 不写盘，init 不产出 JSON
+  expect(parseCliArgs(["config", "show", "--force"])).toEqual({
     ok: false,
-    message: 'invalid --env "  ": must be a non-empty file path',
+    message: "--force / --from-env are only valid with `config init`",
+  });
+  expect(parseCliArgs(["config", "init", "--json"])).toEqual({
+    ok: false,
+    message: "--json is only valid with `config show`",
+  });
+  expect(parseCliArgs(["config", "init", "--from-env"])).toEqual({
+    ok: false,
+    message: "flag --from-env requires a value",
+  });
+  expect(parseCliArgs(["config", "init", "--from-env", "  "])).toEqual({
+    ok: false,
+    message: 'invalid --from-env "  ": must be a non-empty file path',
+  });
+  expect(parseCliArgs(["config", "init", "--nope"])).toEqual({
+    ok: false,
+    message: 'unknown flag "--nope"',
   });
 });
 
-test("--env 只属于 review 面：smoke 视为未知旗标", () => {
-  expect(parseCliArgs(["smoke", "--env", "x.env"])).toEqual({
-    ok: false,
-    message: 'unknown flag "--env"',
-  });
-});
-
-test("--model：缺省钉住的评审模型；自由 id 透传；空白 id 拒绝", () => {
+test("--model：自由 id 透传；缺席省键（缺省来自配置 model.default）；空白 id 拒绝", () => {
   const free = parseCliArgs(["review", "--repo", "r", "--mr", "m", "--model", "custom-gateway-model"]);
   expect(free.ok && free.command === "review" && free.args.model).toBe("custom-gateway-model");
+  const absent = parseCliArgs(["review", "--repo", "r", "--mr", "m"]);
+  expect(absent.ok && absent.command === "review" && "model" in absent.args).toBe(false);
   const blank = parseCliArgs(["review", "--repo", "r", "--mr", "m", "--model", "  "]);
   expect(blank).toEqual({
     ok: false,
@@ -228,9 +262,9 @@ test("缺必填旗标：--repo / --mr", () => {
   });
 });
 
-test("smoke：窄旗标面（仅 --model）；review 专属旗标对 smoke 是未知旗标", () => {
+test("smoke：窄旗标面（仅 --model / --config）；review 专属旗标对 smoke 是未知旗标", () => {
   const smoke = parseCliArgs(["smoke"]);
-  expect(smoke).toEqual({ ok: true, command: "smoke", args: { model: REVIEW_MODEL_ID } });
+  expect(smoke).toEqual({ ok: true, command: "smoke", args: {} });
   const withModel = parseCliArgs(["smoke", "--model", "probe-model"]);
   expect(withModel).toEqual({ ok: true, command: "smoke", args: { model: "probe-model" } });
   expect(parseCliArgs(["smoke", "--repo", "r"])).toEqual({
@@ -239,9 +273,10 @@ test("smoke：窄旗标面（仅 --model）；review 专属旗标对 smoke 是�
   });
 });
 
-test("USAGE_TEXT：宣告两个子命令（stderr 错误路径同款文案，单一来源）", () => {
+test("USAGE_TEXT：宣告三个子命令（stderr 错误路径同款文案，单一来源）", () => {
   expect(USAGE_TEXT).toContain("review-pi review --repo");
   expect(USAGE_TEXT).toContain("review-pi smoke");
+  expect(USAGE_TEXT).toContain("review-pi config <init|show>");
 });
 
 test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", () => {
