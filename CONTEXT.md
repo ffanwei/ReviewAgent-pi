@@ -106,8 +106,12 @@ _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截�
 _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
 
 **检视意见导出（Review Findings Export）**:
-一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（核外投影产出，随呈现引擎配置**存在或缺席**）——按 rep 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022），投影留痕改由 stdout 的 `presentation` 键承担。
+一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（核外投影产出，随呈现引擎配置**存在或缺席**）——按 rep 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022），投影留痕改由 stdout 的 `presentation` 键承担。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027）。
 _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
+
+**运行落盘根（Runs Root）**:
+`--out` 指向的根目录，本次检视的全部留痕都在其下：`runs/mr/<caseId>/`（运行记录 / 会话转录 / 意见导出）与 `audit/mr/<caseId>/rep-<N>/audit/`（审计），规则包解压缓存在 `.cache/rule-skills/`。没有实验标识层（ADR-0027）；`mr` 是输入形态段，不是数据集名。
+_Avoid_: 输出目录（只指 `--out` 本身）、runs 根（与历史 `runs/phase2-*` 实验目录混淆）
 
 ### 知识
 
@@ -135,6 +139,10 @@ _Avoid_: 结果聚合、取并集（都太泛）、规则裁决（合并不判�
 执行规则检索的运行时实体：以检视会话在候选阶段结束时的上下文为种子，按传入顺序逐个 skill 独立运行，把每个规则 Skill 收敛为适用规则集并产出候选 findings，再交回检视会话裁定。
 _代码面_: 一次执行称 **skill pass**（`knowledge/skill-pass.ts`；审计留痕 `skillPassLog[]`）；单个执行器的运行期依赖收在 `tools/skill-bash.ts`。
 _Avoid_: skill 运行（与内核 Session / run 撞名）、脚本运行器（窄化为「只跑脚本」，丢掉「按 SKILL.md 执行」）
+
+**规则包信任边界（Rule-Skill Trust）**:
+规则 Skill 只从**显式输入**装载（`--rule-skill-zip` / `--rule-skill <dir>`）——不扫描被检视仓库的 `.review-rules/`，没有显式输入就没有规则包。理由：规则包会指挥 skill 会话的 `bash` 工具执行进程，默认信任「被检视仓库自带的包」等于允许任意仓库在检视方机器上执行代码（ADR-0027）。
+_Avoid_: 规则包自动发现、约定目录（历史 ADR-0012/0014 的旧口径）、沙箱（当前没有沙箱，这是显式授权而非隔离）
 
 ### 模型接入
 

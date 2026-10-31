@@ -2,6 +2,7 @@
 
 **状态**：已接受（2026-10-26，用户经 grill 逐项决策 Q1–Q16）；**部分被 [ADR-0014](0014-rule-skill-review-pass-after-candidates-phase.md) 取代（2026-10-27）**——决策 3（注入点 = Phase 5 消息尾部）整条、决策 2 中的「单一 zip」限定，以及配套设计文档 §6 验收 2（审计单对象）；其余决策（F 的配置身份、不进 `search_rule`、降级不阻断、伪配置位）继续有效
 **其后的身份变更**：F 的配置身份已被 [ADR-0024](0024-drop-config-matrix-and-config-identity.md) 取代（2026-10-31）——A–E 与 `configId` 一并删除，规则 Skill 成为唯一形态，不再以 config F 命名；本 ADR 其余决策（skill 包来源、Phase 5 注入点、降级不阻断、`--strict-rule-skill`）继续有效
+**其后的输入面收窄**：[ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（2026-10-31）——skill 包来源只剩**显式输入**（`--rule-skill-zip` / `--rule-skill <dir>`），本 ADR「从被检视仓库 `<repo>/.review-rules/` 自动捡包」的缺省口径作废（理由：规则包会指挥 `bash` 工具执行进程，不能让被检视仓库默认触发代码执行）；其余决策（不进 `search_rule`、降级不阻断、`--strict-rule-skill`）继续有效
 **关联**：ADR-0009（pi 内核从 0 重写）、ADR-0011（切流 config E——F 是 E 基线上的消融位）、CONTEXT.md（Zone B「项目规则」槽位 / C3 Knowledge / 规则 Skill 术语）、`docs/design/规则 Skill 与 config F 方案——项目规则检视落地.md`
 
 ## Context

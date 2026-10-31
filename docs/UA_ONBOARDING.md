@@ -25,10 +25,10 @@
 ## 3. 关键概念
 
 - **唯一形态**：工具驱动六阶段循环 + Context Ledger 恒开 + 规则 Skill 恒装载；没有 A–E 配置分派。运行配置只有一层（`~/.PiAgent/PiAgent.json` 或 `--config`，ADR-0025），env 层已移除。
-- **规则 Skill**：`--rule-skill-zip` / `--rule-skill <dir>` / `<repo>/.review-rules/*.zip` 三种输入面；Phase 5 之后为每个包开独立检视会话（ADR-0014），候选按 `(file, line, category)` 合并后交 Phase 6 裁定。装不到规则包 = 合法降级（stderr 一行提示、exit 0）。
+- **规则 Skill**：只有两种**显式**输入面（`--rule-skill-zip` / `--rule-skill <dir>`，可重复、先 zip 后目录）；不扫描被检视仓库的 `.review-rules/`（ADR-0027）。Phase 5 之后为每个包开独立检视会话（ADR-0014），候选按 `(file, line, category)` 合并后交 Phase 6 裁定。没给规则包 = 合法降级（stderr 一行提示、exit 0），`--strict-rule-skill` 才升级为错误。
 - **测量常量面**：system prompt、六阶段指令、七工具 schema 的字节真源在 `testdata/golden/*`，由 `loop/phases.test.ts`、`zonea/system-prompt.test.ts` 断言逐字节一致；运行期死钉 5 项（轮次 / 工具调用 / 工具结果预算 / 呈现 temperature / effort）由 ADR-0025 锁定。
 - **MR 边界护栏**：`run/mr-boundary-guard.ts` 做纯度量（缺省 ≤10 文件 / ≤2000 变更行，`limits.boundary` 可配、`null` 关闭），超界只标注 `domainWarning` + 审计 `mrBoundary`，不拒检、不改请求字节。
-- **审计与记录**：审计落盘 `<out>/review-pi-cli/audit/vul4j/<caseId>/rep-1/audit/<runId>.json`（requests / toolCallLog / phaseLog / rejections / ledger / ruleSkill / skillPassLog / config 快照）；`RunRecord` 落 `runs/vul4j/<caseId>/rep-1.json`。`runId = <时间戳>-<caseId>`。
+- **审计与记录**：审计落盘 `<out>/audit/mr/<caseId>/rep-1/audit/<runId>.json`（requests / toolCallLog / phaseLog / rejections / ledger / ruleSkill / skillPassLog / config 快照）；`RunRecord` 落 `<out>/runs/mr/<caseId>/rep-1.json`（ADR-0027：无实验标识层）。`runId = <时间戳>-<caseId>`。
 - **语言边界**：检视输出恒英文（测量面冻结）；中文只经核外翻译投影（ADR-0010），内核无语言键。
 - **中文交付物**：只有 `reviews_tips_zh.json`（ADR-0017 / ADR-0022），按文件分组、同文件同行去重（ADR-0023）；`reviews_zh.json` 已停产。
 - **配置解析**：`shared/config.ts` 读一次用户级 JSONC 成不可变快照，全量生效值 + 来源 + digest 进审计；秘密只记 `set|missing`。`review-llm/src/resolver.ts` 仍提供「显式参数 → 环境变量 → 缺省」纯函数，但 CLI 不再走 env 通道（ADR-0025）。
@@ -83,4 +83,4 @@
 6. `packages/review-pi/src/knowledge/rule-skill.ts` — 装载审计与缓存根，写错会污染被检仓库。
 7. `src/presentation/engine-zh.ts` — 逐字段网关调用与建议生成，成本与超时敏感。
 
-**上手建议**：先读 `README.md` / `CONTEXT.md` / ADR-0009 与 ADR-0024，再按导览从 CLI 入口走到全链运行时，重点理解 `review-run.ts` 的单路径装配与 `agent-review-loop.ts` 的阶段推进；最后用 `pnpm --filter review-pi test` 与 `pnpm test` 验证理解。
+**上手建议**：先读 `README.md` / `CONTEXT.md` / ADR-0009 与 ADR-0024，再读 ADR-0025–0027（配置面、引擎路径、产物路径与规则包信任边界），然后按导览从 CLI 入口走到全链运行时，重点理解 `review-run.ts` 的单路径装配与 `agent-review-loop.ts` 的阶段推进；最后用 `pnpm --filter review-pi test` 与 `pnpm test` 验证理解。

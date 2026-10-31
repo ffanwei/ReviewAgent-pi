@@ -3,6 +3,7 @@
 **状态**：已接受（2026-10-30，用户经三项口径决策）；**扩展 ADR-0014 的输入形态**（该 ADR 决策 1 的「单位 = 多个 zip」不变，新增并列单位）
 **关联**：ADR-0014（规则 skill 会话——输入形态由「只有 zip」扩为「zip 与已解压目录共存」）、ADR-0012（规则 Skill 注入的原始口径）、ADR-0017（tips 导出消费规则包目录——本 ADR 让「规则包目录」成为一等输入）、ADR-0009（内核/核外边界）、CONTEXT.md（规则技能执行器）
 **跨仓**：本 ADR 为本仓 pi 线序列 0018；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
+**后续修订**：[ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（2026-10-31）——输入面收窄为**只认显式输入**：`--rule-skill-zip` 与 `--rule-skill <dir>` 两种形态保留（并列、装载顺序先 zip 后目录），但「`<repo>/.review-rules/*.zip` 自动扫描」作废；目录仍先审计符号链接/非普通文件/总字节，再复制到 `<out>/.cache/rule-skills/dir-<sha256>/`（缓存根去掉了实验标识层）。
 
 ## Context
 

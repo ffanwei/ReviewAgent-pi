@@ -146,7 +146,7 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
     ruleSkillLoader: async () => [],
   });
 
-  // 落点：与 rep-1.json 平铺（runs/vul4j/VUL4J-1/），名字含首次模型请求时刻
+  // 落点：与 rep-1.json 平铺（runs/mr/VUL4J-1/，ADR-0027），名字含首次模型请求时刻
   const dir = runDir(runsRoot);
   expect(transcriptPath).toBeDefined();
   expect(path.dirname(transcriptPath ?? "")).toBe(dir);

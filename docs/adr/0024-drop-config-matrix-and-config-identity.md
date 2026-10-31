@@ -4,6 +4,7 @@
 **关联**：ADR-0009（pi 内核从 0 重写）、ADR-0010（语言钉英文 + 核外翻译）、ADR-0012（规则 Skill 以 config F 承载）、ADR-0013（转录与意见导出）、ADR-0014（skill 会话在候选后）、ADR-0016（运行进度投影与冻结键集）、ADR-0017 / 0022 / 0023（中文呈现产物）
 **废止**：ADR-0011（生产入口 = config E 的切流决策）、ADR-0012（F 的「伪配置位」身份）、ADR-0016 中「stdout 键集含 `configId`」「审计键集冻结含配置维度」两条
 **跨仓**：本 ADR 为本仓 pi 线序列 0024；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
+**后续修订**：[ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（2026-10-31）——本 ADR 保留的「实验目录名 `review-pi-cli` / `runs/vul4j`」一并删除，产物路径改为 `<out>/{runs,audit}/mr/<caseId>/`；本 ADR 的删除范围（A–E、`configId`、评测仪器层）不变。
 
 ## Context
 

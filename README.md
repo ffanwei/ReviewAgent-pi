@@ -2,11 +2,11 @@
 
 低 Token、高质量代码检视 Agent：用**最小充分上下文**（Minimal Sufficient Context）与**缓存稳定循环**（Cache-Stable Review Loop），以 20~30% 的 Token 成本获得接近全量上下文的检视质量。终点是落地到企业内部代码托管平台的 MR 检视。内核基座：pi 代码仓 fork（ADR-0009）。
 
-本仓是 **pi 内核线的 Review CLI 产品仓**：一条命令完成一次检视，产出**英文 findings**（`reviews_en.json`，结构化真源）与**中文按行分组的建议**（`reviews_tips_zh.json`，核外翻译投影）。规则 Skill（`--rule-skill-zip` / `--rule-skill <dir>` / `<repo>/.review-rules/*.zip`）是唯一形态，不再有配置矩阵。
+本仓是 **pi 内核线的 Review CLI 产品仓**：一条命令完成一次检视，产出**英文 findings**（`reviews_en.json`，结构化真源）与**中文按行分组的建议**（`reviews_tips_zh.json`，核外翻译投影）。规则 Skill（`--rule-skill-zip` / `--rule-skill <dir>`，**只认显式输入**）是唯一形态，不再有配置矩阵。
 
 > **历史定位（已废止）**：本仓曾是「pi 内核线 × 五配置（A–E）受控实验 + 四层判定链」的跨内核对照实验仓。A–E 配置矩阵、`configId` 身份维度与评测仪器层已按 [ADR-0024](docs/adr/0024-drop-config-matrix-and-config-identity.md) 删除（`--config` 旗标、实验运行器、judge / 指标 / 采样 / 对齐门 / 字节门、数据物化脚本一并移除）；`docs/report/**` 与 `runs/**/REPORT.md` 中的历史报告保留为记录，但**不可复跑**。需要评测能力时从历史 tag 或 DSH 兄弟仓取回。
 >
-> **姊妹仓（DSH 内核线）**：兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) 承载 DeepSeek Harness（DSH）内核线。两仓 ADR 各自独立编号（本仓 0001–0024 为 pi 线序列）：引用 DSH 仓的决策必须写全限定语「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR（双 0009 尤其如此：本仓 0009 = pi 内核从 0 重写，DSH 线 0009 = 大 MR 切分）。
+> **姊妹仓（DSH 内核线）**：兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) 承载 DeepSeek Harness（DSH）内核线。两仓 ADR 各自独立编号（本仓 0001–0027 为 pi 线序列）：引用 DSH 仓的决策必须写全限定语「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR（双 0009 尤其如此：本仓 0009 = pi 内核从 0 重写，DSH 线 0009 = 大 MR 切分）。
 >
 > **pi 内核基座**：以 [pi](https://github.com/earendil-works/pi) 代码仓为基础的全源码定制（vendor fork，锚定 commit `6671c604` / v0.85.1+11d），vendored `packages/{ai,agent,chord,telemetry}` 四个包。方向拍板（2026-09-18，ADR-0009）：Review Runtime 在 pi fork 上从 0 重写（`packages/review-pi`）。方案见《[Pi 内核从零实现方案](docs/design/Pi 内核从零实现方案.md)》，fork 接线事实见《[Pi 内核定制基线方案](docs/design/Pi 内核定制基线方案.md)》，第三方声明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
 
@@ -22,9 +22,9 @@
 | `reviews_tips_zh.json` | 中文按行分组建议（同文件同行去重） |
 | `audit/<runId>.json` | 审计（审计真源：请求、工具调用、相位、Context Ledger、规则 Skill 装载与执行留痕） |
 
-`runId = <时间戳>-<caseId>`；产物路径不含任何配置段（ADR-0024）。
+`runId = <时间戳>-<caseId>`；产物路径不含任何配置段（ADR-0024）。落点为 `<out>/runs/mr/<caseId>/` 与 `<out>/audit/mr/<caseId>/rep-<N>/audit/`（ADR-0027：`mr` 是输入形态段，没有实验标识层）。
 
-**规则 Skill 是唯一形态**：装到就用于候选阶段的规则检视；装不到就照常检视并在 stderr 提示一行（`--strict-rule-skill` 可改为 fail fast）。
+**规则 Skill 是唯一形态**：显式传入的规则包装到就用于候选阶段的规则检视；不传就照常检视并在 stderr 提示一行（`--strict-rule-skill` 可改为 fail fast）。**不扫描被检视仓库**（`.review-rules/` 不再自动装载，ADR-0027）。
 
 ## 仓库结构
 
@@ -48,7 +48,7 @@ reference_project/      外部参考项目（不入库，见下节）
 ```bash
 # 前置：Node >= 22，pnpm（版本见 package.json 的 packageManager，corepack enable 即可）
 pnpm install
-pnpm test          # root 回归：呈现层（5 文件 / 53 项）
+pnpm test          # root 回归：呈现层（5 文件 / 52 项）
 pnpm typecheck     # 根包类型检查
 ```
 
@@ -65,7 +65,7 @@ CI（push / PR）跑 `suites`：root + review-llm + review-pi 三处 typecheck �
 | `pnpm typecheck` | 根包类型检查 |
 | `pnpm build:pi` | Pi 四包拓扑构建（telemetry → chord → ai → agent） |
 | `pnpm --filter review-llm build` / `pnpm --filter review-pi build` | 共享 LLM 缝 / 检视链 CLI 的 dist 构建 |
-| `pnpm build:presentation` | 呈现层引擎构建（前置 review-pi build；产物 `.tmp-gen/presentation/`） |
+| `pnpm build:presentation` | 呈现层引擎构建（前置 review-pi build；产物 `.tmp-gen/presentation/`，随后复制到 `packages/review-pi/presentation/` 供 `"builtin"` 引用） |
 
 ## 单次检视执行
 
@@ -77,7 +77,7 @@ CI（push / PR）跑 `suites`：root + review-llm + review-pi 三处 typecheck �
 node packages\review-pi\bin\review-pi.js review --repo .cache\datasets\vul4j-repos\VUL4J-38-ab6cbdc3da --mr .cache\datasets\vul4j-diffs\VUL4J-38.diff --rule-skill-zip packages\review-pi\testdata\rule-skills\general-code-review.zip --strict-rule-skill --issue "Vulnerability CVE-2014-4172 (CWE-74) in apereo/java-cas-client. Fixed by https://github.com/apereo/java-cas-client/commit/ab6cbdc3daa451b4fef89c0bd0f4e6568f3aa9ef." --out runs\f-demo-session-skill-2
 ```
 
-前置三件：内核产物不过期（`pnpm build:pi` → `pnpm --filter review-llm build` → `pnpm --filter review-pi build`，陈旧即拒跑、不自动重编）、用户级配置 `~/.PiAgent/PiAgent.json`（`review-pi config init` 生成；`--config <path>` 可指定替代文件）、仓库快照与 diff 就位（本机 `.cache/datasets/**`；数据物化脚本已随评测层删除，缺失时自备）。产物落 `<out>/review-pi-cli/{runs,audit}/vul4j/<case>/`；stdout 是单个 JSON 文档，诊断走 stderr；退出码 0（含诚实截断）/ 1。
+前置三件：内核产物不过期（`pnpm build:pi` → `pnpm --filter review-llm build` → `pnpm --filter review-pi build`，陈旧即拒跑、不自动重编）、用户级配置 `~/.PiAgent/PiAgent.json`（`review-pi config init` 生成；`--config <path>` 可指定替代文件）、仓库快照与 diff 就位（本机 `.cache/datasets/**`；数据物化脚本已随评测层删除，缺失时自备）。产物落 `<out>/{runs,audit}/mr/<case>/`（ADR-0027：无实验标识层）；stdout 是单个 JSON 文档，诊断走 stderr；退出码 0（含诚实截断）/ 1。
 
 其余仍然有效的口径与注意：
 
@@ -108,7 +108,7 @@ review-pi config init --from-env .env.local   # 一次性迁移旧 .env.local
     "baseUrl": "https://api.deepseek.com",  // 网关需自带 /v1
     "maxOutputTokens": null                 // null = 自动（网关档 32768）
   },
-  "presentation": { "engine": null }        // 可选：核外中文引擎模块路径
+  "presentation": { "engine": null }        // 可选：null / "builtin"（制品自带）/ 路径（相对按配置文件目录，ADR-0026）
 }
 ```
 
@@ -133,7 +133,8 @@ review-pi config init --from-env .env.local   # 一次性迁移旧 .env.local
 | `reference_project/` | ❌ | 外部参考仓（见下节） |
 | `runs/**`（除 REPORT.md） | ❌ | 运行记录与数据 |
 | `.cache/` | ❌ | 数据集缓存 / 留痕 / 分析产物 |
-| `.tmp-gen/` | ❌ | 呈现层编译产物 |
+| `.tmp-gen/` | ❌ | 呈现层编译中转产物 |
+| `packages/review-pi/presentation/` | ❌ | 呈现引擎制品（`build:presentation` 从 `.tmp-gen/` 复制；`"builtin"` 指向这里） |
 
 **历史基线数据仍在本地**：三侧 runs 数据（`phase2-main` / `phase2-noise` / `phase2-dsh`）、t 系 audit 真源（`phase2-dsh-t{1..5}`，原 P2 字节门对照物）与 `.cache/datasets` 物化仓按《[Pi 内核从零实现方案](docs/design/Pi 内核从零实现方案.md)》§9 迁入本仓（robocopy，git 零影响——`runs/**` 与 `.cache/` 均 gitignored）。ADR-0024 之后这些只作**历史记录与解读背景**保留：复算脚本（`pnpm analyze:phase2` / 字节门）已删除，不可再一键重放。
 
@@ -166,7 +167,7 @@ cd reference_project/pi  && git checkout 6671c604   # 其余同理
 | 文档 | 内容 |
 |---|---|
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表（Minimal Sufficient Context / Zone A–C / Finding 等术语唯一权威） |
-| [`docs/adr/`](docs/adr/) | 架构决策记录 0001–0024（POC1 harness / 模型钉扎 / 静态代码情报 / DSH 迁移姿态 / 从 0 基于 pi 内核重写 / 规则 Skill 会话 / 核外中文投影 / 分组意见 / **0024 废止配置矩阵与 configId**） |
+| [`docs/adr/`](docs/adr/) | 架构决策记录 0001–0027（POC1 harness / 模型钉扎 / 静态代码情报 / DSH 迁移姿态 / 从 0 基于 pi 内核重写 / 规则 Skill 会话 / 核外中文投影 / 分组意见 / **0024 废止配置矩阵与 configId** / **0025 用户级 JSONC 配置** / **0026 引擎路径与判档单源** / **0027 产物路径与规则包信任边界**） |
 | [`docs/design/`](docs/design/) | 总体架构设计方案 / Pi 内核从零实现方案 / Pi 内核定制基线方案 / VUL4J 评测方案与数据复制指南 / DSH 偏差清单 / Token 优化方案 |
 | [`docs/report/`](docs/report/) | POC1 实现报告 / DSH 迁移实现报告 / DSH 指标对齐门报告 / Phase 2 主数据分析报告 / Phase 2 pi-S1 五配置对照报告 / 兄弟项目调查报告（均为**历史记录，不可复跑**） |
 | [`docs/plan/`](docs/plan/) | 项目分阶段实现计划书 |

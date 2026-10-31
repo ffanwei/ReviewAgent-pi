@@ -4,6 +4,7 @@
 **关联**：ADR-0009（pi 内核从 0 重写）、ADR-0010（语言钉英文 + 核外翻译）、ADR-0016（进度投影与冻结键集）、ADR-0021（呈现模型跟随检视模型）、ADR-0024（删除配置矩阵；本 ADR 在其后重建**唯一一层**运行配置）
 **废止**：ADR-0019（`--env <file>` 凭据文件旗标）、ADR-0024「无 `--config` 旗标」一条
 **跨仓**：本 ADR 为本仓 pi 线序列 0025；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
+**后续修订**：[ADR-0026](0026-config-surface-engine-and-endpoint-tier.md)（配置面：`presentation.engine` 相对路径改锚**配置文件所在目录**、新增 `"builtin"` 哨兵、官方/网关判档归一化为单源、模板去 `$schema`、`presentationBufferMs` 允许 `0` 的例外写明、缺配置一行提示）与 [ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（产物面：`runs|audit/mr/<caseId>` 去实验标识层、cwd 只写 `review-result.json`、审计快照家目录归一为 `~/...`、规则包只认显式输入、配置目录 `0700` / 文件 `0600`）。本 ADR 的其余决策（唯一配置文件、JSONC、键表与类型校验、`config init/show`、测量常量面收窄）继续有效。
 
 ## Context
 

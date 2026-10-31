@@ -3,6 +3,7 @@
 **状态**：已废止（由 [ADR-0025](0025-user-config-file.md) 取代：`--env` 旗标移除，`.env.local` 不再读取）——原状态：已接受（2026-10-30，用户经四项口径决策）
 **关联**：ADR-0010（检视输出恒英文 + 核外投影——`REVIEW_PI_PRESENTATION_ENGINE` 仍按 cwd 解析，本 ADR 不改）、ADR-0011（切流后的生产入口）、ADR-0018（同为「路径类」旗标，取同款 fail-fast 姿态）、`packages/review-pi/src/shared/env-local.ts`（装载语义单源）
 **跨仓**：本 ADR 为本仓 pi 线序列 0019；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
+**后续修订**：[ADR-0026](0026-config-surface-engine-and-endpoint-tier.md)（2026-10-31）——上文「`REVIEW_PI_PRESENTATION_ENGINE` 仍按 cwd 解析」已不成立：该环境变量随 ADR-0025 一并移除，呈现引擎改由配置键 `presentation.engine` 表达，相对路径按**配置文件所在目录**解析（`"builtin"` 哨兵指制品内引擎）。本 ADR 其余决策（显式路径替代而非合并、缺失 fail fast、值不回显）作为「显式路径类输入」的历史口径继续可读。
 
 ## Context
 

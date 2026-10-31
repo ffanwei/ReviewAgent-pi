@@ -8,7 +8,7 @@ Guidance for Codex when working in this repository.
 
 A–E 配置矩阵、`configId` 身份维度与本仓的评测仪器层已于 ADR-0024 废止；与 DSH 内核线兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) 的跨内核对照不再在本仓复跑。历史评测报告仍可在 `docs/report/` 与 `runs/**/REPORT.md` 查阅，但**不可复跑**。
 
-**跨仓 ADR 限定语纪律**：两仓 ADR 各自独立编号（本仓 0001–0024 为 pi 线序列）。引用 DSH 兄弟仓的决策必须写全限定语「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR。双 0009 尤其如此（本仓 0009 = pi 内核从 0 重写；DSH 线 0009 = 大 MR 切分）。
+**跨仓 ADR 限定语纪律**：两仓 ADR 各自独立编号（本仓 0001–0027 为 pi 线序列）。引用 DSH 兄弟仓的决策必须写全限定语「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR。双 0009 尤其如此（本仓 0009 = pi 内核从 0 重写；DSH 线 0009 = 大 MR 切分）。
 
 ## Agent skills
 
