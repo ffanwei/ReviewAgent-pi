@@ -1,21 +1,18 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
-import {
-  createGatewayTranslateEngine,
-  DEFAULT_PRESENTATION_MODEL,
-  PRESENTATION_MODEL_ENV_VAR,
-} from "../../src/presentation/engine-zh.js";
+import { createGatewayTranslateEngine } from "../../src/presentation/engine-zh.js";
 import projectZhPresentation from "../../src/presentation/engine-zh.js";
-import type { Finding, RunResult, ToolCallRecord } from "review-pi";
+import type { Finding, PresentationRuntime, RunResult, ToolCallRecord } from "review-pi";
 import { TERMINOLOGY, TERMINOLOGY_VERSION } from "../../src/presentation/terminology.js";
 
 // 真引擎装配单测（ADR-0010 消费端接线件）：网关引擎的请求形状 / 译文回填 /
 // 错误人话（全注入 fake fetch，零网络）；default export 的装配接线
-// （endpoint/key/model 解析 → projectReviewDocument zh 档 → 结构化字段直通）。
+// （runtime 显式穿参 → projectReviewDocument zh 档 → 结构化字段直通）。
 // key 纪律：哨兵 key 只允许出现在 Authorization 头（错误消息与译文绝不含 key）。
+// ADR-0025：引擎零环境变量读取——runtime 是唯一接入点（env 设了也不该生效）。
 
 const SENTINEL_KEY = "sk-presentation-engine-sentinel-a1";
 
@@ -129,6 +126,15 @@ test("网络异常 → 人话错误（fetch 抛错映射）", async () => {
 
 // ---- projectZhPresentation（default export）：装配接线集成 ----
 
+/** 呈现运行时接入点（ADR-0025：CLI 从配置快照解析后显式穿参） */
+const RUNTIME: PresentationRuntime = {
+  apiKey: SENTINEL_KEY,
+  baseUrl: "https://gw.example.com/v1",
+  modelId: "test-model",
+  concurrency: 4,
+  requestTimeoutMs: 90_000,
+};
+
 /** 一次检视产物的呈现源（结构化 + 自然语言字段各就各位） */
 function sampleSource() {
   const finding: Finding = {
@@ -146,34 +152,15 @@ function sampleSource() {
   const toolCallLog: ToolCallRecord[] = [
     { name: "review.readFile", argumentsJson: "{\"path\":\"src/Main.java\"}", resultSummary: "read the changed hunk" },
   ];
-  return { findings: [finding], toolCallLog };
+  return { findings: [finding], toolCallLog, runtime: RUNTIME };
 }
 
-let savedEnv: Record<string, string | undefined> | undefined;
-
-beforeEach(() => {
-  savedEnv = {
-    REVIEWER_URL: process.env.REVIEWER_URL,
-    REVIEWER_API_KEY: process.env.REVIEWER_API_KEY,
-    [PRESENTATION_MODEL_ENV_VAR]: process.env[PRESENTATION_MODEL_ENV_VAR],
-  };
-});
-
 afterEach(() => {
-  for (const [key, value] of Object.entries(savedEnv ?? {})) {
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
-test("default export：endpoint/key/model 从环境解析 → zh 档投影（自然语言译、结构化直通、provenance 留痕）", async () => {
-  process.env.REVIEWER_URL = "https://gw.example.com/v1";
-  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
-  delete process.env[PRESENTATION_MODEL_ENV_VAR];
+test("default export：runtime 显式穿参 → zh 档投影（自然语言译、结构化直通、provenance 留痕）", async () => {
   const calls: { url: string; body: string }[] = [];
   vi.stubGlobal(
     "fetch",
@@ -193,7 +180,7 @@ test("default export：endpoint/key/model 从环境解析 → zh 档投影（自
   for (const call of calls) {
     expect(call.url).toBe("https://gw.example.com/v1/chat/completions");
     const body = JSON.parse(call.body) as { model: string };
-    expect(body.model).toBe(DEFAULT_PRESENTATION_MODEL);
+    expect(body.model).toBe(RUNTIME.modelId);
   }
   // 译文回填：仅自然语言字段；结构化字段字节直通
   expect(projected.findings).toHaveLength(1);
@@ -244,70 +231,34 @@ test("default export：endpoint/key/model 从环境解析 → zh 档投影（自
   });
 });
 
-test("default export：REVIEW_PI_PRESENTATION_MODEL 覆盖缺省模型档", async () => {
-  process.env.REVIEWER_URL = "https://gw.example.com/v1";
-  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
-  process.env[PRESENTATION_MODEL_ENV_VAR] = "cheap-translate-model";
-  const bodies: string[] = [];
+test("default export：环境变量已关闭——REVIEWER_* / REVIEW_PI_* 设了也不生效（runtime 是唯一接入点）", async () => {
+  vi.stubEnv("REVIEWER_URL", "https://env-should-be-ignored.example.com/v1");
+  vi.stubEnv("REVIEWER_API_KEY", "sk-env-should-be-ignored");
+  vi.stubEnv("REVIEW_PI_PRESENTATION_MODEL", "env-presentation-model");
+  const calls: { url: string; headers: Record<string, string>; body: string }[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (_url: string | URL, init?: RequestInit) => {
-      bodies.push(String(init?.body));
+    vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        headers: (init?.headers ?? {}) as Record<string, string>,
+        body: String(init?.body),
+      });
       return completionResponse("【中译】");
     }),
   );
 
   await projectZhPresentation(sampleSource());
 
-  for (const body of bodies) {
-    expect((JSON.parse(body) as { model: string }).model).toBe("cheap-translate-model");
-  }
-});
-
-test("default export：未配置呈现模型 → 跟随呈现源 modelId（本次 --model，ADR-0021）", async () => {
-  process.env.REVIEWER_URL = "https://gw.example.com/v1";
-  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
-  delete process.env[PRESENTATION_MODEL_ENV_VAR];
-  const bodies: string[] = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_url: string | URL, init?: RequestInit) => {
-      bodies.push(String(init?.body));
-      return completionResponse("【中译】");
-    }),
-  );
-
-  await projectZhPresentation({ ...sampleSource(), modelId: "ep-review-20261030" });
-
-  expect(bodies.length).toBeGreaterThan(0);
-  for (const body of bodies) {
-    expect((JSON.parse(body) as { model: string }).model).toBe("ep-review-20261030");
-  }
-});
-
-test("default export：显式 REVIEW_PI_PRESENTATION_MODEL 压过呈现源 modelId（优先于 --model）", async () => {
-  process.env.REVIEWER_URL = "https://gw.example.com/v1";
-  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
-  process.env[PRESENTATION_MODEL_ENV_VAR] = "cheap-translate-model";
-  const bodies: string[] = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_url: string | URL, init?: RequestInit) => {
-      bodies.push(String(init?.body));
-      return completionResponse("【中译】");
-    }),
-  );
-
-  await projectZhPresentation({ ...sampleSource(), modelId: "ep-review-20261030" });
-
-  for (const body of bodies) {
-    expect((JSON.parse(body) as { model: string }).model).toBe("cheap-translate-model");
+  expect(calls.length).toBeGreaterThan(0);
+  for (const call of calls) {
+    expect(call.url).toBe("https://gw.example.com/v1/chat/completions");
+    expect(call.headers.authorization).toBe(`Bearer ${SENTINEL_KEY}`);
+    expect((JSON.parse(call.body) as { model: string }).model).toBe(RUNTIME.modelId);
   }
 });
 
 test("default export：同文件同行多条 finding → tips 只留首条，且只为它生成 suggestion（ADR-0023）", async () => {
-  process.env.REVIEWER_URL = "https://gw.example.com/v1";
-  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
   const suggestionCalls: string[] = [];
   vi.stubGlobal(
     "fetch",
@@ -328,6 +279,7 @@ test("default export：同文件同行多条 finding → tips 只留首条，且
       { ...base, id: "F003", line: 178, title: "another line" },
     ],
     toolCallLog: [],
+    runtime: RUNTIME,
   });
 
   // 输出去重：line 177 只出现一次（保留首条 F001，不因 P0 择优）
@@ -338,15 +290,20 @@ test("default export：同文件同行多条 finding → tips 只留首条，且
   expect(suggestionCalls).toHaveLength(2);
 });
 
-test("default export：凭据缺失 → 装配期人话错误（CLI 缝归呈现降级）", async () => {
-  delete process.env.REVIEWER_URL;
-  delete process.env.REVIEWER_API_KEY;
-  await expect(projectZhPresentation(sampleSource())).rejects.toThrow("key is missing");
+test("default export：runtime 缺席 → 装配期人话错误（CLI 缝归呈现降级）", async () => {
+  await expect(
+    projectZhPresentation({ findings: [], toolCallLog: [] }),
+  ).rejects.toThrow("presentation runtime is missing");
+});
+
+test("default export：runtime apiKey 为空 → 装配期人话错误（不回落环境变量）", async () => {
+  vi.stubEnv("REVIEWER_API_KEY", SENTINEL_KEY);
+  await expect(
+    projectZhPresentation({ findings: [], toolCallLog: [], runtime: { ...RUNTIME, apiKey: "  " } }),
+  ).rejects.toThrow("apiKey is missing");
 });
 
 test("default export：codeByFinding 填 code、规则包 frontmatter id 建白名单、RULE-CHECK@ 前缀判 rule-reviewer", async () => {
-  process.env.REVIEWER_URL = "https://gw.example.com/v1";
-  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_url: string | URL, init?: RequestInit) =>
@@ -379,6 +336,7 @@ test("default export：codeByFinding 填 code、规则包 frontmatter id 建白�
       toolCallLog: [],
       codeByFinding: { [finding.id]: "catch (Exception e) { }" },
       rulePackDirs: [packRoot],
+      runtime: RUNTIME,
     });
     const tip = projected.tips.files[0]?.reviewTips[0];
     expect(tip).toMatchObject({
@@ -395,8 +353,6 @@ test("default export：codeByFinding 填 code、规则包 frontmatter id 建白�
 });
 
 test("default export：单条建议生成失败 ⇒ 该条 suggestion 空串，zh 投影照常（弱耦合）", async () => {
-  process.env.REVIEWER_URL = "https://gw.example.com/v1";
-  process.env.REVIEWER_API_KEY = SENTINEL_KEY;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_url: string | URL, init?: RequestInit) => {
@@ -414,8 +370,11 @@ test("default export：单条建议生成失败 ⇒ 该条 suggestion 空串，z
   expect(projected.tips.files[0]?.reviewTips[0]?.review).toBe("【中译】。【中译】");
 });
 
-// 类型形状锚定：default export 即 CLI 缝协议（(source) => ProjectedReviewDocument）
+// 类型形状锚定：default export 即 CLI 缝协议（(source + runtime) => ProjectedReviewDocument）
 const _typeAnchor: (
-  source: Pick<RunResult, "findings"> & { toolCallLog: readonly ToolCallRecord[] },
+  source: Pick<RunResult, "findings"> & {
+    toolCallLog: readonly ToolCallRecord[];
+    runtime: PresentationRuntime;
+  },
 ) => Promise<unknown> = projectZhPresentation;
 void _typeAnchor;

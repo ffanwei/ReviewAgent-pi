@@ -8,8 +8,9 @@ import type { ToolCallRecord } from "../contracts/run.js";
 import {
   applyPresentationProjection,
   isPresentationProjectionConfigured,
-  PRESENTATION_ENGINE_ENV_VAR,
+  type PresentationRuntime,
   type PresentationSource,
+  type ProjectionOptions,
 } from "./presentation-projection.js";
 
 // 呈现投影注入缝单测（ADR-0010 消费端接线）：三态结局——identity（未配置，
@@ -59,6 +60,20 @@ function sampleSource(): PresentationSource {
   return { findings: [finding], toolCallLog };
 }
 
+/** 呈现运行时（ADR-0025：显式穿参；seam 单测不读 env） */
+const TEST_RUNTIME: PresentationRuntime = {
+  apiKey: "sk-seam-sentinel",
+  baseUrl: "https://gw.example.com/v1",
+  modelId: "test-presentation-model",
+  concurrency: 4,
+  requestTimeoutMs: 90_000,
+};
+
+/** 统一入口：自动补齐 runtime（引擎用例只关心 enginePath / 超时） */
+function project(source: PresentationSource, options: ProjectionOptions = {}) {
+  return applyPresentationProjection(source, { runtime: TEST_RUNTIME, ...options });
+}
+
 /** 成功引擎：只译 title/description，结构化字段与 toolCallLog 原样直通 */
 const OK_ENGINE = `
 export default async (source) => ({
@@ -79,28 +94,38 @@ export default async (source) => ({
 });
 `;
 
-test("未配置引擎（环境变量缺席）→ identity：恒等直通，无投影", async () => {
-  const outcome = await applyPresentationProjection(sampleSource(), { env: {} });
+test("未配置引擎（presentation.engine = null）→ identity：恒等直通，无投影", async () => {
+  const outcome = await project(sampleSource(), { enginePath: null });
   expect(outcome).toEqual({ kind: "identity" });
 });
 
-test("引擎路径为空白 → identity（空值 = 显式未配置，对齐 .env.local 空值语义）", async () => {
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: "   " },
+test("引擎路径为空白 → identity（空值 = 显式未配置，对齐配置 null 语义）", async () => {
+  const outcome = await project(sampleSource(), {
+    enginePath: "   ",
   });
   expect(outcome).toEqual({ kind: "identity" });
 });
 
-test("isPresentationProjectionConfigured：缺席/空白 false、非空 true（main 心跳提示与缝读同一变量）", () => {
-  expect(isPresentationProjectionConfigured({})).toBe(false);
-  expect(isPresentationProjectionConfigured({ [PRESENTATION_ENGINE_ENV_VAR]: "   " })).toBe(false);
-  expect(isPresentationProjectionConfigured({ [PRESENTATION_ENGINE_ENV_VAR]: "./engine.mjs" })).toBe(true);
+test("引擎已配置但 runtime 缺席 → degraded（呈现接入点缺失，人话；不炸 CLI）", async () => {
+  const enginePath = writeEngineModule("needs-runtime.mjs", OK_ENGINE);
+  const outcome = await applyPresentationProjection(sampleSource(), { enginePath });
+  expect(outcome.kind).toBe("degraded");
+  if (outcome.kind === "degraded") {
+    expect(outcome.reason).toContain("presentation runtime is not configured");
+  }
+});
+
+test("isPresentationProjectionConfigured：null/空白 false、非空 true（main 心跳与缝读同一配置项）", () => {
+  expect(isPresentationProjectionConfigured(undefined)).toBe(false);
+  expect(isPresentationProjectionConfigured(null)).toBe(false);
+  expect(isPresentationProjectionConfigured("   ")).toBe(false);
+  expect(isPresentationProjectionConfigured("./engine.mjs")).toBe(true);
 });
 
 test("引擎成功 → projected：findings 换投影版（title/description 已译）+ provenance 透传", async () => {
   const enginePath = writeEngineModule("ok-engine.mjs", OK_ENGINE);
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("projected");
   if (outcome.kind !== "projected") {
@@ -126,11 +151,11 @@ test("引擎成功 → projected：findings 换投影版（title/description 已
   });
 });
 
-test("相对路径（相对进程 cwd）→ 同样可加载（.env.local 配相对路径的形态）", async () => {
+test("相对路径（相对进程 cwd）→ 同样可加载（配置里写相对引擎路径的形态）", async () => {
   const absolute = writeEngineModule("relative-engine.mjs", OK_ENGINE);
   const relative = path.relative(process.cwd(), absolute);
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: relative },
+  const outcome = await project(sampleSource(), {
+    enginePath: relative,
   });
   expect(outcome.kind).toBe("projected");
 });
@@ -140,8 +165,8 @@ test("引擎抛错 → degraded：人话 reason 含引擎错误信息（检视�
     "throwing-engine.mjs",
     `export default async () => { throw new Error("gateway 503"); };`,
   );
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("degraded");
   if (outcome.kind === "degraded") {
@@ -151,8 +176,8 @@ test("引擎抛错 → degraded：人话 reason 含引擎错误信息（检视�
 });
 
 test("模块文件不存在 → degraded：加载失败人话（不炸 CLI）", async () => {
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: path.join(makeTempDir("no-such-"), "missing-engine.mjs") },
+  const outcome = await project(sampleSource(), {
+    enginePath: path.join(makeTempDir("no-such-"), "missing-engine.mjs"),
   });
   expect(outcome.kind).toBe("degraded");
   if (outcome.kind === "degraded") {
@@ -162,8 +187,8 @@ test("模块文件不存在 → degraded：加载失败人话（不炸 CLI）", 
 
 test("default 非函数 → degraded：协议违规人话", async () => {
   const enginePath = writeEngineModule("not-a-function.mjs", `export default 42;`);
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("degraded");
   if (outcome.kind === "degraded") {
@@ -176,8 +201,8 @@ test("返回形状坏（findings 非数组）→ degraded：协议违规人话",
     "bad-shape.mjs",
     `export default async () => ({ provenance: { language: "zh", terminologyVersion: 1, findingLinks: [] }, findings: "nope" });`,
   );
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("degraded");
   if (outcome.kind === "degraded") {
@@ -191,8 +216,8 @@ test("同步 throw 的引擎（非 async 工厂）→ degraded：不向上炸（
     "sync-throw-engine.mjs",
     `export default () => { throw new Error("sync boom"); };`,
   );
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("degraded");
   if (outcome.kind === "degraded") {
@@ -221,8 +246,8 @@ test("同步返回非 Promise 的引擎 → 照常投影（协议不强制 async
       toolCallLog: source.toolCallLog,
     });`,
   );
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("projected");
   if (outcome.kind === "projected") {
@@ -281,8 +306,8 @@ test.each([
   },
 ])("返回形状坏（$label）→ degraded：$reason", async ({ body, reason }) => {
   const enginePath = writeEngineModule("bad-shape.mjs", body);
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("degraded");
   if (outcome.kind === "degraded") {
@@ -303,8 +328,8 @@ test("引擎超时 → degraded：总超时兜底（引擎迟到结果丢弃，�
       };
     };`,
   );
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
     timeoutMs: 100,
   });
   expect(outcome.kind).toBe("degraded");
@@ -355,8 +380,8 @@ export default async (source) => ({
 
 test("合法 tips → projected 携带 tips（顶层严格 { files }，键集原样透传）", async () => {
   const enginePath = writeEngineModule("tips-ok-engine.mjs", OK_TIPS_ENGINE);
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("projected");
   if (outcome.kind !== "projected") {
@@ -424,8 +449,8 @@ test.each([
   },
 ])("tips 形状坏（$label）→ 仍是 projected + tipsProblem（zh 不受牵连）", async ({ body, reason }) => {
   const enginePath = writeEngineModule("tips-bad-engine.mjs", body);
-  const outcome = await applyPresentationProjection(sampleSource(), {
-    env: { [PRESENTATION_ENGINE_ENV_VAR]: enginePath },
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
   });
   expect(outcome.kind).toBe("projected");
   if (outcome.kind !== "projected") {

@@ -2,16 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import path from "node:path";
 
-import {
-  DEEPSEEK_API_BASE_URL,
-  resolveApiKey,
-  resolveEndpointUrl,
-  REVIEWER_API_KEY_ENV_VARS,
-  REVIEWER_URL_ENV_VARS,
-  type EnvLookup,
-} from "review-llm";
-
-import type { Finding } from "review-pi";
+import type { Finding, PresentationRuntime } from "review-pi";
 import { buildReviewTipsDocument, dedupeFindingsByLine, reviewOf, type ReviewTipsDocument } from "./tips.js";
 import type { TranslateEngine, TerminologyContext } from "./translate-projection.js";
 import {
@@ -22,11 +13,11 @@ import {
 
 /**
  * 真引擎装配（ADR-0010「英文产出 + 核外翻译投影」的消费端接线件）：CLI
- * 呈现投影缝（REVIEW_PI_PRESENTATION_ENGINE 注入的引擎模块）的默认实现。
+ * 呈现投影缝（配置项 `presentation.engine` 指定的引擎模块）的默认实现。
  *
  * 模块协议（packages/review-pi/src/cli/presentation-projection.ts 单源定义）：
  * ESM default export = (source: { findings, toolCallLog, codeByFinding?,
- * rulePackDirs? }) => 投影文档 { provenance, findings, toolCallLog, tips }——
+ * rulePackDirs?, runtime }) => 投影文档 { provenance, findings, toolCallLog, tips }——
  * 自然语言字段（title / description / resultSummary）经 LLM 译中文，结构化
  * 字段字节直通（直通由 translate-projection.ts 逐字段锁定，本模块不复查）；
  * `tips` = 分组式检视意见（ADR-0017，严格 10 键封闭）。运行形状校验在 CLI
@@ -42,17 +33,16 @@ import {
  * - `code` 不由本模块取（CLI 按 `--repo` 抽好经 `codeByFinding` 注入）——
  *   引擎保持零源码文件系统访问，`Finding.line` 与 `--repo` 工作树天然对齐；
  * - `suggestion` 是**新增生成行为**（不是翻译）：每条 finding 一次网关调用，
- *   并发上限 SUGGESTION_CONCURRENCY，单条失败/超时 ⇒ 空串（不阻断落盘）；
+ *   并发上限来自 runtime.concurrency，单条失败/超时 ⇒ 空串（不阻断落盘）；
  * - `ruleId` 白名单从本次 run 的规则包解压目录读 frontmatter `id`（只给目录，
  *   内核不解析规则文件）；读不到 ⇒ 空集 ⇒ 所有 ruleId 空串。
  *
- * 接入（经进程环境变量，与检视链同款单源解析 review-llm）：
- * - 网关与凭据复用 REVIEWER_URL / REVIEWER_API_KEY（CLI 进程已在凭据解析
- *   前装载 .env.local——本模块运行于同一进程，无需重复装载）；
- * - 翻译/建议模型 id 走 REVIEW_PI_PRESENTATION_MODEL（显式配置优先）；未配置时
- *   跟随本次检视的 `--model`（CLI 经呈现源 `modelId` 透传，ADR-0021），再缺省
- *   deepseek-v4-flash——呈现与检视同端点模型可避免「网关只服务 ep-xxx 时译文
- *   打不动」；呈现配置只是缺省值跟随，不是检视自变量；
+ * 接入（ADR-0025：全显式穿参，**零环境变量读取**）：
+ * - 网关与凭据来自 `source.runtime`（CLI 从用户级配置快照解析后注入）；
+ * - 翻译/建议模型 id 同来自 `runtime.modelId`（CLI 已解析
+ *   `model.presentation ?? 本次检视模型`，ADR-0021）——呈现与检视同端点模型
+ *   可避免「网关只服务 ep-xxx 时译文打不动」；呈现配置只是缺省值跟随，不是
+ *   检视自变量；
  * - key 绝不硬编码、绝不出现在错误信息或任何落盘产物中。
  *
  * 翻译口径：术语表（terminology.ts 单源，随 TerminologyContext 注入）作
@@ -60,25 +50,17 @@ import {
  * 结构化标识（P0–P3 等）保持原样不译；temperature 0 求确定译文。
  */
 
-/** 翻译/建议模型 id 环境变量（呈现配置；缺省 DEFAULT_PRESENTATION_MODEL） */
-export const PRESENTATION_MODEL_ENV_VAR = "REVIEW_PI_PRESENTATION_MODEL";
-
-/** 缺省翻译模型（轻任务档；消费端可经环境变量覆盖） */
-export const DEFAULT_PRESENTATION_MODEL = "deepseek-v4-flash";
-
 /**
- * 单次翻译请求超时（引擎内部；CLI 缝侧另有总兜底）。长 description 的译文
+ * 单次请求缺省超时（引擎内部；CLI 缝侧另有总兜底）。长 description 的译文
  * 可达数百汉字——非流式 completion 要等全量生成完才回，实测单字段可上探
  * 数十秒（2026-10-20 真跑：~200 词 description 译 >30s 触发旧 30s 上界），
- * 90s 是「慢但可达」与「挂死早暴露」的折中。
+ * 90s 是「慢但可达」与「挂死早暴露」的折中。配置层可经
+ * `limits.timeouts.presentationRequestMs` 覆盖。
  */
-const TRANSLATION_REQUEST_TIMEOUT_MS = 90_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
 
-/** 单次建议生成请求超时（ADR-0017：与翻译同口径 90s） */
-const SUGGESTION_REQUEST_TIMEOUT_MS = 90_000;
-
-/** 建议生成并发上限（ADR-0017：逐条独立请求，4 路并发覆盖常见 4~8 条量级） */
-export const SUGGESTION_CONCURRENCY = 4;
+/** 建议生成缺省并发上限（ADR-0017：逐条独立请求，4 路并发覆盖常见 4~8 条量级） */
+const DEFAULT_SUGGESTION_CONCURRENCY = 4;
 
 /** 服务标签：错误消息前缀（与检视链同款角色命名，不称具体服务商） */
 const SERVICE_LABEL = "presentation translation LLM API";
@@ -92,7 +74,10 @@ export interface GatewayEngineOptions {
   readonly apiKey: string;
   readonly modelId: string;
   readonly fetchFn: typeof fetch;
-  readonly env?: EnvLookup;
+  /** 单请求超时（缺省 90s；来自 `limits.timeouts.presentationRequestMs`） */
+  readonly requestTimeoutMs?: number;
+  /** 建议生成并发（缺省 4；来自 `limits.concurrency.suggestion`） */
+  readonly concurrency?: number;
 }
 
 /** 分组意见的附加呈现源（ADR-0017：CLI 抽好的源码行 + 规则包解压目录） */
@@ -100,11 +85,10 @@ export interface PresentationEngineInput extends ReviewPresentationSource {
   readonly codeByFinding?: Readonly<Record<string, string>>;
   readonly rulePackDirs?: readonly string[];
   /**
-   * 本次检视的模型 id（ADR-0021：`REVIEW_PI_PRESENTATION_MODEL` 缺席时的
-   * 覆盖值——由 CLI 从 `--model` 透传，缺省覆盖下沉到调用方，引擎自身
-   * 仍不读检视参数）。
+   * 呈现运行时接入点（ADR-0025：网关/凭据/模型/限值全显式穿参）——
+   * 引擎不读任何环境变量；缺席 = 装配期 fail fast（CLI 缝归呈现降级）。
    */
-  readonly modelId?: string;
+  readonly runtime?: PresentationRuntime;
 }
 
 /** 引擎产物 = zh 投影文档 + 分组意见（tips 与 zh 弱耦合，形状由 CLI 缝校验） */
@@ -114,28 +98,20 @@ export interface EnginePresentationDocument extends ProjectedReviewDocument {
 
 /**
  * 投影呈现文档（CLI 缝调用入口）：装配网关翻译引擎 → zh 档翻译投影 →
- * 分组意见（ADR-0017）。网关/凭据解析失败在装配期抛错（CLI 缝归 degraded，
+ * 分组意见（ADR-0017）。runtime 缺失/非法在装配期抛错（CLI 缝归 degraded，
  * 呈现降级英文源）；建议生成失败逐条降级为空串（不拖累 zh）。
  */
 export default async function projectZhPresentation(
   source: PresentationEngineInput,
 ): Promise<EnginePresentationDocument> {
-  const env: EnvLookup = process.env;
+  const runtime = requireRuntime(source.runtime);
   const gateway: GatewayEngineOptions = {
-    endpointUrl: resolveEndpointUrl({
-      defaultBaseUrl: DEEPSEEK_API_BASE_URL,
-      envVarNames: [...REVIEWER_URL_ENV_VARS],
-      clientError: (message) => new Error(message),
-      env,
-    }),
-    apiKey: resolveApiKey({
-      envVarNames: [...REVIEWER_API_KEY_ENV_VARS],
-      serviceLabel: SERVICE_LABEL,
-      clientError: (message) => new Error(message),
-      env,
-    }),
-    modelId: resolvePresentationModelId(env, source.modelId),
+    endpointUrl: `${runtime.baseUrl.replace(/\/+$/, "")}/chat/completions`,
+    apiKey: runtime.apiKey,
+    modelId: runtime.modelId,
     fetchFn: globalThis.fetch,
+    requestTimeoutMs: runtime.requestTimeoutMs,
+    concurrency: runtime.concurrency,
   };
   const projected = await projectReviewDocument(
     { engine: createGatewayTranslateEngine(gateway) },
@@ -157,21 +133,25 @@ export default async function projectZhPresentation(
 }
 
 /**
- * 翻译模型 id（ADR-0021 三级链）：
- * 1. `REVIEW_PI_PRESENTATION_MODEL`（`.env.local` 显式配置优先）；
- * 2. 本次检视的模型 id（CLI 透传的 `--model`）——「没单独配就跟着检视模型走」；
- * 3. 缺省轻任务档 `DEFAULT_PRESENTATION_MODEL`（直调引擎、无 CLI 上下文时）。
+ * 运行时接入点校验（ADR-0025）：key / baseUrl / modelId 缺失都是装配期
+ * fail fast（人话，不含 key 值），由 CLI 缝归呈现降级。
  */
-function resolvePresentationModelId(env: EnvLookup, reviewModelId?: string): string {
-  const fromEnv = env[PRESENTATION_MODEL_ENV_VAR]?.trim();
-  if (fromEnv !== undefined && fromEnv !== "") {
-    return fromEnv;
+function requireRuntime(runtime: PresentationRuntime | undefined): PresentationRuntime {
+  if (runtime === undefined) {
+    throw new Error(
+      "presentation runtime is missing (CLI must pass reviewer endpoint + model through the config snapshot)",
+    );
   }
-  const fromReview = reviewModelId?.trim();
-  if (fromReview !== undefined && fromReview !== "") {
-    return fromReview;
+  if (runtime.apiKey.trim() === "") {
+    throw new Error("presentation runtime apiKey is missing");
   }
-  return DEFAULT_PRESENTATION_MODEL;
+  if (runtime.baseUrl.trim() === "") {
+    throw new Error("presentation runtime baseUrl is missing");
+  }
+  if (runtime.modelId.trim() === "") {
+    throw new Error("presentation runtime modelId is missing");
+  }
+  return runtime;
 }
 
 /**
@@ -185,7 +165,7 @@ export function createGatewayTranslateEngine(options: GatewayEngineOptions): Tra
     postCompletion(options, [
       { role: "system", content: translationSystemPrompt(context) },
       { role: "user", content: text },
-    ], TRANSLATION_REQUEST_TIMEOUT_MS);
+    ]);
 }
 
 /** 建议生成入参（ADR-0017：一条 finding 一次调用） */
@@ -220,7 +200,6 @@ export function createGatewaySuggestionEngine(options: GatewayEngineOptions): Su
         { role: "system", content: suggestionSystemPrompt() },
         { role: "user", content: JSON.stringify(payload, null, 2) },
       ],
-      SUGGESTION_REQUEST_TIMEOUT_MS,
       SUGGESTION_SERVICE_LABEL,
     );
     const trimmed = content.trim();
@@ -230,7 +209,7 @@ export function createGatewaySuggestionEngine(options: GatewayEngineOptions): Su
 }
 
 /**
- * 逐条生成建议（并发上限 SUGGESTION_CONCURRENCY）：单条失败（网络/超时/空
+ * 逐条生成建议（并发上限 = runtime.concurrency ?? 4）：单条失败（网络/超时/空
  * 响应）⇒ 该条缺席 ⇒ 落盘时为空串。绝不因建议失败拖累 zh 或整次投影。
  */
 async function generateSuggestions(
@@ -242,10 +221,11 @@ async function generateSuggestions(
   if (findings.length === 0) {
     return suggestions;
   }
+  const concurrency = Math.max(1, gateway.concurrency ?? DEFAULT_SUGGESTION_CONCURRENCY);
   const generate = createGatewaySuggestionEngine(gateway);
   const queue: Finding[] = [...findings];
   const workers = Array.from(
-    { length: Math.min(SUGGESTION_CONCURRENCY, queue.length) },
+    { length: Math.min(concurrency, queue.length) },
     async (): Promise<void> => {
       for (;;) {
         const finding = queue.shift();
@@ -380,7 +360,6 @@ function frontmatterId(text: string): string | undefined {
 async function postCompletion(
   options: GatewayEngineOptions,
   messages: readonly { readonly role: string; readonly content: string }[],
-  timeoutMs: number,
   serviceLabel: string = SERVICE_LABEL,
 ): Promise<string> {
   const body = {
@@ -389,6 +368,7 @@ async function postCompletion(
     stream: false,
     temperature: 0,
   };
+  const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   let response: Response;
   try {
     response = await options.fetchFn(options.endpointUrl, {

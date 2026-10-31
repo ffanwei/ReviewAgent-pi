@@ -7,7 +7,8 @@ import type { ToolCallRecord } from "../contracts/run.js";
 /**
  * 呈现投影注入缝（ADR-0010「英文产出 + 核外翻译投影」的消费端接线）：
  * CLI 呈现面（stdout）的可选投影步——检视产物恒英文（测量面冻结），中文
- * 呈现经环境变量注入的外部引擎模块投影后呈现。
+ * 呈现经配置项 `presentation.engine` 指定的外部引擎模块投影后呈现
+ * （ADR-0025：引擎路径与运行时接入点都来自用户级配置快照，env 层已关闭）。
  *
  * 边界纪律（ADR-0010 Considered Options：翻译进 pi 内核包被否）：
  * 翻译算法、术语表与真引擎（网络/密钥）全部留在核外（root
@@ -17,9 +18,10 @@ import type { ToolCallRecord } from "../contracts/run.js";
  *
  * 引擎模块协议（消费端契约，JSON 可序列化跨模块边界）：
  * - ESM 模块，default export 一个 async 函数；
- * - 入参 = 呈现源 { findings, toolCallLog, codeByFinding?, rulePackDirs? }（内核
- *   Finding / ToolCallRecord 形状；后两项为 ADR-0017 的分组意见附加输入——
- *   源码行由 CLI 按 `--repo` 抽好、规则包只给目录，引擎仍零文件系统解析）；
+ * - 入参 = 呈现源 { findings, toolCallLog, codeByFinding?, rulePackDirs?, runtime }
+ *   （内核 Finding / ToolCallRecord 形状；后两项为 ADR-0017 的分组意见附加输入——
+ *   源码行由 CLI 按 `--repo` 抽好、规则包只给目录，引擎仍零文件系统解析；
+ *   `runtime` 是网关接入点与呈现模型/限值的显式穿参，引擎不读任何环境变量）；
  *   返回 { provenance, findings, toolCallLog, tips? }——自然语言字段已译、
  *   结构化字段字节直通（直通由核外投影模块逐字段锁定，本缝不复查内容）；
  * - provenance = { language, terminologyVersion, findingLinks }（投影留痕，
@@ -28,7 +30,7 @@ import type { ToolCallRecord } from "../contracts/run.js";
  *   缺省或形状非法 ⇒ 只不产 tips 文件，投影本身仍然成功。
  *
  * 三态结局（main 呈现分流）：
- * - identity：未配置引擎（REVIEW_PI_PRESENTATION_ENGINE 缺席）——恒等直通，
+ * - identity：`presentation.engine` 缺席（null / 空白）——恒等直通，
  *   stdout 无 presentation 键（现状形态）；
  * - projected：投影成功——stdout findings 用投影版，尾部追加 presentation 键；
  * - degraded：引擎失败（加载/协议/调用/超时）——检视产物绝不能因呈现层
@@ -50,12 +52,21 @@ export interface PresentationSource {
    * 只给目录，不在内核解析规则文件）。
    */
   readonly rulePackDirs?: readonly string[];
-  /**
-   * 本次检视使用的模型 id（ADR-0021：呈现面缺省覆盖模型——核外引擎在
-   * `REVIEW_PI_PRESENTATION_MODEL` 缺席时用它，与 review 链取同一个
-   * `--model`，避免「换检视模型后译文还打旧端点模型」）。
-   */
-  readonly modelId?: string;
+}
+
+/**
+ * 呈现引擎运行时接入点（ADR-0025：显式穿参，不经环境变量）。
+ *
+ * `modelId` 已由 CLI 解析完毕（`model.presentation ?? 本次检视模型`）；
+ * `requestTimeoutMs` / `concurrency` 来自 `limits.timeouts.presentationRequestMs`
+ * 与 `limits.concurrency.suggestion`——引擎按此并发与超时，不自行拍常量。
+ */
+export interface PresentationRuntime {
+  readonly apiKey: string;
+  readonly baseUrl: string;
+  readonly modelId: string;
+  readonly concurrency: number;
+  readonly requestTimeoutMs: number;
 }
 
 /** 分组式检视意见（ADR-0017）：单条 tip 的 10 键严格封闭结构 */
@@ -90,8 +101,13 @@ export interface PresentationProvenance {
   }[];
 }
 
+/** 引擎入参 = 呈现源 + 运行时接入点（CLI 注入，引擎零 env 读取） */
+export type PresentationEngineInput = PresentationSource & {
+  readonly runtime: PresentationRuntime;
+};
+
 /** 引擎模块 default export 的调用协议（跨动态 import 边界，运行时形状校验） */
-type PresentationEngine = (source: PresentationSource) => Promise<EngineProjection>;
+type PresentationEngine = (source: PresentationEngineInput) => Promise<EngineProjection>;
 
 interface EngineProjection {
   readonly provenance: PresentationProvenance;
@@ -120,49 +136,55 @@ export type PresentationProjectionOutcome =
   /** 引擎失败：stdout 回退英文源 + presentation 降级标注；reason 走 stderr */
   | { readonly kind: "degraded"; readonly reason: string };
 
-/** 引擎模块路径环境变量（.env.local 注入面；相对路径按进程 cwd 解析） */
-export const PRESENTATION_ENGINE_ENV_VAR = "REVIEW_PI_PRESENTATION_ENGINE";
-
 /**
  * 投影总超时预算（引擎内部另有单请求超时；这是 CLI 呈现面的兜底）。
  * 按字段数推导：呈现源的自然语言字段数 × 单请求上界 + 缓冲——引擎逐字段
  * 串行调用（投影模块「次序确定」纪律），慢但可达的网关下预算随字段数伸缩
  * 而非拍一个静态数（2026-10-20 真跑实测：长 description 的非流式翻译单
- * 字段可 >30s）。
+ * 字段可 >30s）。单请求上界/缓冲/并发数均来自配置 `limits`。
  */
-const PER_FIELD_TIMEOUT_MS = 90_000;
-const TIMEOUT_BUFFER_MS = 30_000;
-/** 建议生成并发上限（ADR-0017：与内核侧口径同源；核外引擎按此并发） */
-const SUGGESTION_CONCURRENCY = 4;
+const DEFAULT_PER_FIELD_TIMEOUT_MS = 90_000;
+const DEFAULT_TIMEOUT_BUFFER_MS = 30_000;
+const DEFAULT_SUGGESTION_CONCURRENCY = 4;
 
 /**
  * 依呈现源推导总超时（findings × title/description + toolCallLog × resultSummary
  * + 建议生成批次——每条 finding 一次，按并发上限折算批数）。
  */
-function deriveTimeoutMs(source: PresentationSource): number {
+function deriveTimeoutMs(
+  source: PresentationSource,
+  perFieldTimeoutMs: number,
+  bufferMs: number,
+  suggestionConcurrency: number,
+): number {
   const fieldCount = source.findings.length * 2 + source.toolCallLog.length;
   const suggestionBatches =
-    source.findings.length === 0 ? 0 : Math.ceil(source.findings.length / SUGGESTION_CONCURRENCY);
-  return (fieldCount + suggestionBatches) * PER_FIELD_TIMEOUT_MS + TIMEOUT_BUFFER_MS;
+    source.findings.length === 0 ? 0 : Math.ceil(source.findings.length / suggestionConcurrency);
+  return (fieldCount + suggestionBatches) * perFieldTimeoutMs + bufferMs;
 }
 
 /** 引擎是否配置（未配置 = 恒等直通；main 侧「投影进行中」提示的单源谓词） */
-export function isPresentationProjectionConfigured(
-  env: Record<string, string | undefined> = process.env,
-): boolean {
-  const enginePath = env[PRESENTATION_ENGINE_ENV_VAR]?.trim();
-  return enginePath !== undefined && enginePath !== "";
+export function isPresentationProjectionConfigured(enginePath: string | null | undefined): boolean {
+  return enginePath !== null && enginePath !== undefined && enginePath.trim() !== "";
 }
 
 export interface ProjectionOptions {
-  /** 环境变量源（缺省 process.env；测试注入） */
-  readonly env?: Record<string, string | undefined>;
+  /** 配置项 `presentation.engine`（null/空白 = 恒等直通） */
+  readonly enginePath?: string | null;
+  /** 运行时接入点（引擎配置了就必需；缺席 = 降级人话） */
+  readonly runtime?: PresentationRuntime;
   /** 总超时上界毫秒（缺省按呈现源字段数推导；测试注入短值） */
   readonly timeoutMs?: number;
+  /** 单请求上界（缺省 90s；来自 `limits.timeouts.presentationRequestMs`） */
+  readonly perFieldTimeoutMs?: number;
+  /** 超时缓冲（缺省 30s；来自 `limits.timeouts.presentationBufferMs`） */
+  readonly timeoutBufferMs?: number;
+  /** 建议生成并发（缺省 4；来自 `limits.concurrency.suggestion`） */
+  readonly suggestionConcurrency?: number;
 }
 
 /**
- * 应用呈现投影：读引擎环境变量 → 加载 → 调用 → 形状校验。
+ * 应用呈现投影：按配置的引擎路径加载 → 注入 runtime → 调用 → 形状校验。
  * 任何失败路径都归 degraded（人话 reason），绝不向上抛——检视产物已落袋，
  * 呈现层的失败必须降级而不是终止命令。
  */
@@ -170,10 +192,16 @@ export async function applyPresentationProjection(
   source: PresentationSource,
   options: ProjectionOptions = {},
 ): Promise<PresentationProjectionOutcome> {
-  const env = options.env ?? process.env;
-  const enginePath = env[PRESENTATION_ENGINE_ENV_VAR]?.trim();
+  const enginePath = options.enginePath?.trim();
   if (enginePath === undefined || enginePath === "") {
     return { kind: "identity" };
+  }
+  const runtime = options.runtime;
+  if (runtime === undefined) {
+    return {
+      kind: "degraded",
+      reason: "presentation runtime is not configured (missing reviewer credentials)",
+    };
   }
 
   let engine: PresentationEngine;
@@ -200,7 +228,7 @@ export async function applyPresentationProjection(
   // 路径都归 degraded，绝不向上抛」在此收口（否则检视成功后 stdout 整丢）。
   let call: Promise<EngineProjection>;
   try {
-    call = Promise.resolve(engine(source));
+    call = Promise.resolve(engine({ ...source, runtime }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { kind: "degraded", reason: `presentation engine failed to start: ${message}` };
@@ -208,7 +236,14 @@ export async function applyPresentationProjection(
   // 兜住 race 落败方的迟到 rejection（超时降级后引擎请求仍在飞）
   call.catch(() => {});
   let timeoutHandle: NodeJS.Timeout | undefined;
-  const timeoutMs = options.timeoutMs ?? deriveTimeoutMs(source);
+  const timeoutMs =
+    options.timeoutMs ??
+    deriveTimeoutMs(
+      source,
+      options.perFieldTimeoutMs ?? DEFAULT_PER_FIELD_TIMEOUT_MS,
+      options.timeoutBufferMs ?? DEFAULT_TIMEOUT_BUFFER_MS,
+      options.suggestionConcurrency ?? DEFAULT_SUGGESTION_CONCURRENCY,
+    );
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(
       () => reject(new Error(`presentation engine did not finish within ${timeoutMs}ms`)),
