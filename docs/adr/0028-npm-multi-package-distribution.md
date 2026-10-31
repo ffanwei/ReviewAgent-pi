@@ -85,6 +85,13 @@ scripts/** text eol=lf
 
 `pnpm pack` 对 CRLF shebang 报 `ERR_PNPM_BIN_CRLF`；这是发行物的硬约束，不能留给本机 git 配置。
 
+**属性不是充分条件**：`.gitattributes` 只在**检出/写入**时生效，旧工作区里已经落地的 CRLF 不会被 `git pull` 重写（git 认为 blob 内容没变）。于是会出现「属性写对了、`git ls-files --eol` 显示 `i/lf w/lf`、打包仍报 CRLF」——实际是别的 bin 文件或做过本地改动的文件行尾漂移。处置分两层：
+
+1. **兜底（自动）**：`prepack`（`scripts/prepare-package.mjs`）检查 `packages/review-pi/bin/**/*.js`，凡首行以 `#!` 开头且带 CR 的文件，整文件重写为 LF，并在 stdout 打一行提示（不静默改工作区）。
+2. **拦截（手动）**：`pnpm verify:pack` 在**安装布局**里再读一次 `bin/review-pi.js` 首行，带 CR 直接失败并给出重检命令，避免「Windows 自测通过、Unix 上跑不起来」。
+
+根治仍是按属性重检：`rm -rf packages/review-pi/bin && git checkout -- packages/review-pi/bin`。
+
 ### 6. 构建 / 打包 / 验证 / 发布四段分离
 
 ```bash

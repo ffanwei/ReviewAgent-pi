@@ -173,6 +173,15 @@ for (const packageDir of SOURCE_PACKAGE_DIRS) {
 
 // ---- 3. 安装布局下跑 CLI ----
 const binPath = join(appModules, "review-pi", "bin", "review-pi.js");
+// 行尾门（ADR-0028 决策 5）：装出来的 bin 首行若是 CRLF，Windows 上自测看不出，
+// Unix 上却是 `/usr/bin/env node\r` 找不到解释器——发布物必须在这一步就拦下。
+const binFirstLine = readFileSync(binPath, "utf8").split("\n", 1)[0] ?? "";
+if (binFirstLine.endsWith("\r")) {
+  fail(
+    "安装布局的 bin/review-pi.js 首行是 CRLF（pnpm pack 会用 ERR_PNPM_BIN_CRLF 拒绝，Unix 也跑不起来）" +
+      "——工作区行尾漂移，按 .gitattributes 重检：删掉 packages/review-pi/bin 后 git checkout -- packages/review-pi/bin",
+  );
+}
 const configPath = join(appDir, "PiAgent.jsonc");
 const env = {
   ...process.env,
