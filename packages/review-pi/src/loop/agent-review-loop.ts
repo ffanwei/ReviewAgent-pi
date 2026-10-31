@@ -38,7 +38,7 @@ import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { runSkillPass, type SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
 
-// agentLoop 钩子驱动循环（#6 P3a，config C/D/E）：六阶段 + 工具子循环跑在
+// agentLoop 钩子驱动循环（#6 P3a）：六阶段 + 工具子循环跑在
 // pi-agent-core Agent 上，三个预定缝承载 review 语义——
 //
 // - shouldStopAfterTurn = review 状态机：工具轮恒继续（t-series 真源：预算
@@ -55,15 +55,15 @@ import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
 // wire tool 消息 content，t-series 真源字节）；truncationReasons 单列
 // TOOL_BUDGET_EXHAUSTED 但不翻转 truncated（截断语义只归 MAX_ROUNDS）。
 //
-// config F（ADR-0014）：Phase 5 文本回合收尾后、Phase 6 指令注入前，顺序跑
+// 规则 Skill（ADR-0014）：Phase 5 文本回合收尾后、Phase 6 指令注入前，顺序跑
 // 各 skill 的独立检视会话（`knowledge/skill-pass.ts`）。skill 回合不进
 // `phaseLog`（两者并列），候选在候选门之前跨 skill 去重，Phase 6 一次裁定。
 
 export interface AgentReviewLoopInputs {
   readonly systemPrompt: string;
-  /** 初始上下文消息（MR / fullRepo 等 run 级组装，由调用方按配置决定） */
+  /** 初始上下文消息（MR 消息等 run 级组装，由调用方决定） */
   readonly initialContextMessages: readonly LlmMessage[];
-  /** 七工具执行面（含 Ledger；config E 传 ledgerMode "enabled" 的 toolkit） */
+  /** 七工具执行面（含 Ledger；唯一形态恒传 ledgerMode "enabled" 的 toolkit） */
   readonly toolkit: ReviewToolkit;
   readonly apiKey: string;
   /** 网关 base URL 覆盖（REVIEWER_URL；缺省官方接入点） */
@@ -72,11 +72,11 @@ export interface AgentReviewLoopInputs {
   readonly modelId?: string;
   /** 传输层注入；离线测试恒注入 fake 适配器 */
   readonly fetch?: FetchFunction;
-  /** 审计投影 ledger 键（config E）；缺省不投影 */
+  /** 审计投影 ledger 键（唯一形态恒投影）；缺省不投影（测试夹具用） */
   readonly includeLedgerAudit?: boolean;
   /**
-   * skill 检视会话（ADR-0014 / config F）：Phase 5 文本回合结束后、Phase 6
-   * 指令注入之前顺序执行。缺省 = 无 skill 会话（A–E 与 N=0 的 F 逐字节不变）。
+   * skill 检视会话（ADR-0014）：Phase 5 文本回合结束后、Phase 6
+   * 指令注入之前顺序执行。缺省 = 无 skill 会话（N=0 时主链逐字节不变）。
    */
   readonly skillPass?: SkillPassRequest;
   /**
@@ -114,9 +114,9 @@ export interface AgentReviewLoopOutcome {
   readonly audit: RunAudit;
   /** Agent 侧现场（检视转录原料，ADR-0013）：messages 快照 + 首次模型请求时刻 + 模型身份 */
   readonly transcript: AgentTranscriptCapture;
-  /** config F：每轮 × 每 skill 的执行留痕（无 skill 会话时为空数组） */
+  /** 每轮 × 每 skill 的执行留痕（无 skill 会话时为空数组） */
   readonly skillPassLog: readonly RuleSkillPassRecord[];
-  /** config F：每个 skill 会话的独立转录原料（写盘在 run 层） */
+  /** 每个 skill 会话的独立转录原料（写盘在 run 层） */
   readonly skillTranscripts: readonly SkillPassTranscript[];
 }
 
@@ -146,7 +146,7 @@ export async function runAgentReviewLoop(
   let emittedIds: ReadonlySet<string> = new Set();
   let truncated = false;
   let complete = false;
-  // config F：skill 会话留痕（与 phaseLog 并列，不混入相位记录）
+  // 规则 Skill 会话留痕（与 phaseLog 并列，不混入相位记录）
   const skillPassLog: RuleSkillPassRecord[] = [];
   const skillTranscripts: SkillPassTranscript[] = [];
   let skillToolCalls = 0;
@@ -468,7 +468,7 @@ export async function runAgentReviewLoop(
    *
    * 唯一的附加者是 Phase 6 的 skill 候选清单（ADR-0014：两批候选一次裁定），
    * 数据在 loop 侧，故由本模块直接拼装——ADR-0012 的 `phaseBrief` 注入缝已
-   * 随该决策退役。无附加时逐字节不变（A–E 冻结面 / N=0 的 F）。
+   * 随该决策退役。无附加时逐字节不变（N=0 的形态）。
    */
   function phaseMessage(index: number): AgentMessage {
     const instruction = PHASE_INSTRUCTIONS[index];

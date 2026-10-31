@@ -8,7 +8,7 @@ import type { FileSymbolIndex } from "./symbols.js";
 import { extractFileSymbols } from "./symbols.js";
 
 /**
- * 仓库快照上下文（测量常量面）：Zone B 构造与 config B 预取管线共用的确定性读取层。
+ * 仓库快照上下文（测量常量面）：Zone B 构造的确定性读取层。
  *
  * - 文件清单来自 ripgrep（排序去重，仓库相对 POSIX 路径）；
  * - 包名用文件头部的词法提取（package 声明必须位于类型声明之前，读头部 8KB 足够；

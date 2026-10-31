@@ -21,7 +21,7 @@ export interface ToolRunContext {
   readonly rules: readonly KnowledgeEntry[];
   /** C3 Knowledge 历史记语料（review.search_history 数据源；缺省空） */
   readonly history: readonly KnowledgeEntry[];
-  /** Context Ledger（run 私有；config E 为功能态，其余配置惰性态） */
+  /** Context Ledger（run 私有；唯一形态恒为功能态，惰性态只留给测试夹具） */
   readonly ledger: ContextLedger;
 }
 

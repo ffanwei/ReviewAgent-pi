@@ -25,7 +25,7 @@ import { applyLineBudget, DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budg
  * 拒绝**不是**失败（返回正常工具文本，skill 会话照常进行）。
  */
 
-/** 工具名（skill 会话的第八只工具；不进 A–E 测量档工具面） */
+/** 工具名（skill 会话的第八只工具；不进主会话七工具面） */
 export const SKILL_BASH_TOOL_NAME = "bash";
 
 /** 单条命令超时（毫秒） */
@@ -59,7 +59,7 @@ export const SKILL_BASH_MAX_OUTPUT_CHARS = 256_000;
  * 命令在 Windows 与 POSIX 上并不通用（`python` vs `python3`、路径分隔符、
  * `.cmd` shim 是否可执行）。这段文本进两处提示词：bash 工具描述（每次请求都在
  * 模型眼前）与 skill 会话首条 user 消息（把「按当前 OS 选命令」直接说在该会话
- * 的指令里）。**只进 skill 会话**——七工具面与 A–E 字节冻结面零改动。
+ * 的指令里）。**只进 skill 会话**——主会话七工具面零改动（字节冻结）。
  *
  * 纯函数（平台/架构可注入）保证测试确定；措辞只陈述本工具的既有边界
  * （`shell: false` + `.cmd`/`.bat` 拒绝），不新增能力。

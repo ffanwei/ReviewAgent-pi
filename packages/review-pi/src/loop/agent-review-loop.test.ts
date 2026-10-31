@@ -21,8 +21,8 @@ import {
 import { PHASE_COUNT, PHASE_INSTRUCTIONS } from "./phases.js";
 import { runAgentReviewLoop } from "./agent-review-loop.js";
 
-// agentLoop 钩子驱动循环（#6 P3a，config C/D/E）：pi-agent-core Agent 上的
-// 六阶段 + 工具子循环。时序真源 = t-series C/D/E 审计：
+// agentLoop 钩子驱动循环（#6 P3a）：pi-agent-core Agent 上的
+// 六阶段 + 工具子循环。时序真源 = t-series 审计：
 // - 工具轮恒 recall（预算耗尽也 recall，相位只在文本回复时完结——无 force-complete）；
 // - 预算上界 = 成功执行计数 6（失败也计入），超出即 "Error: tool call
 //   budget exhausted" 应答（= 审计 resultSummary = wire tool content）；
@@ -347,7 +347,7 @@ test("provider 错误（stopReason error）：显式抛错，不静默成成功 
   );
 });
 
-// ---- config F（ADR-0014）：Phase 5 → skill 会话 → Phase 6 ----
+// ---- 规则 Skill（ADR-0014）：Phase 5 → skill 会话 → Phase 6 ----
 
 const SKILL_CANDIDATE = {
   id: "RULE-CHECK@sample-rule@src/main/java/Foo.java:20",
@@ -362,7 +362,7 @@ const SKILL_CANDIDATE = {
   confidence: 0.7,
 } as const;
 
-test("config F：Phase 5 文本回合后先跑 skill 会话，Phase 6 一次裁定两批候选", async () => {
+test("规则 Skill：Phase 5 文本回合后先跑 skill 会话，Phase 6 一次裁定两批候选", async () => {
   const skill: RuleSkill = {
     name: "sample-rule",
     description: "Sample project rule skill",

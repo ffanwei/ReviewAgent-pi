@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { repoFixturePath } from "../testing/repos.js";
 import { derivePackageFromPath, loadRepoContext } from "./repo-context.js";
 
-// 仓库快照上下文（测量常量面）：Zone B 构造与 config B 预取管线共用的确定性读取层。
+// 仓库快照上下文（测量常量面）：Zone B 构造的确定性读取层。
 // 文件清单来自 ripgrep；包名走文件头部词法提取（无 package 声明 → 默认包 ""）；
 // 源码读取与符号解析按需 memoize。
 

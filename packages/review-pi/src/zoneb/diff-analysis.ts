@@ -1,6 +1,6 @@
 import type { LineSpan } from "./symbols.js";
 
-// Diff 层分析（测量常量面：config B 固定管线第一层 Diff → Symbol → Reference → Call Chain）。
+// Diff 层分析（测量常量面：Diff → Symbol → Reference → Call Chain 管线第一层 Diff）。
 //
 // 从 unified diff 提取：
 // - 变更文件清单（b 侧路径；删除文件回退 a 侧），POSIX 相对路径、排序去重；

@@ -18,7 +18,7 @@ import type { ToolSchema, WireMessage } from "../contracts/llm.js";
  * 锁档纪律（DSH 线 ADR-0002，逐项有测试）：
  * - effort 单档锁定：harness/审计标签恒 "default"，线上恒
  *   thinking {type:"enabled"} + reasoning_effort "high"；
- * - 请求不携带采样参数；config B 无工具（tools 不出场）。
+ * - 请求不携带采样参数；本用例无工具（tools 不出场）。
  */
 
 /** 钉住的评审模型（评测口径：单模型 deepseek-v4-flash） */
@@ -224,7 +224,7 @@ function wireMessageOf(entry: unknown): WireMessage {
     : (entry as WireMessage);
 }
 
-/** wire function tool → DSH 审计口径 ToolSchema（config B 恒空数组，投影为将来工具配置就位） */
+/** wire function tool → DSH 审计口径 ToolSchema（无工具时恒空数组，投影为将来工具配置就位） */
 function toolSchemaOf(entry: unknown): ToolSchema {
   if (typeof entry !== "object" || entry === null) {
     throw new Error("onPayload tools entry is not an object");

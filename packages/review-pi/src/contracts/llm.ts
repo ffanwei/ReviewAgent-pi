@@ -1,6 +1,6 @@
 // LLM 消息与用量契约（测量常量面：与 DSH 线 / 冻结指标共享的口径）。
 
-/** 对话消息（P1a config B：无工具调用，仅 role + content） */
+/** 对话消息（P1a 形态：无工具调用，仅 role + content） */
 export interface LlmMessage {
   readonly role: "system" | "user" | "assistant";
   readonly content: string;

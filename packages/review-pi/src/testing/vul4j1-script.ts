@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import type { FakeReply } from "../provider/fake-fetch.js";
 import { goldenFixture } from "./golden.js";
 
-// VUL4J-1 × config B 的 fake 适配器脚本（离线全链共享 fixture）。
+// VUL4J-1 的 fake 适配器脚本（离线全链共享 fixture）。
 // 回复 1–5 = t-series 审计原文（DSH 线 VUL4J-1/B/rep-1 requests[i].messages 尾部
 // assistant 内容）；回复 6 为合成裁决（F001 驳回理由逐字取自 t-series 拒绝留痕
 // "candidate: " 之后）；usage 按回合拆分上报，六回合之和 = t-series 聚合

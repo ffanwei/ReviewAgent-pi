@@ -6,7 +6,7 @@ import { BACKGROUND_CONTEXT, loadSkills, type Skill, type SkillDiagnostic } from
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 
 /**
- * 规则 Skill 装载器（ADR-0012 / ADR-0014 / config F）。
+ * 规则 Skill 装载器（ADR-0012 / ADR-0014 / ADR-0018；ADR-0024 后是唯一形态的一部分）。
  *
  * 生命周期（全部发生在 `new Agent` 之前）：
  *   定位 zip（可多个、CLI 序）→ 内容 sha256 → 解压前审计（纯 Node 读 zip

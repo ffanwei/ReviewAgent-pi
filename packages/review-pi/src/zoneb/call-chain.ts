@@ -5,7 +5,7 @@ import type { ReferenceSite } from "./reference-sites.js";
 import { enclosingLabel, findReferenceSites } from "./reference-sites.js";
 
 /**
- * Call Chain 层（测量常量面：config B 固定管线第四层）。
+ * Call Chain 层（测量常量面：Diff → Symbol → Reference → Call Chain 管线第四层）。
  *
  * 降级为名字级引用链：
  * - hop 1：变更方法的引用点（非声明处）→ 引用者的符号限定名；

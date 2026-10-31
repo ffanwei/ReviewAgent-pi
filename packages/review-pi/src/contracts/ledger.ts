@@ -1,5 +1,5 @@
 /**
- * Context Ledger 契约（#6 P3a：config E 去重面）。
+ * Context Ledger 契约（#6 P3a：重复读取去重面）。
  *
  * 语义界定（与 DSH 线语义等价、pi 线原语从 0 重写）：
  * - Ledger 登记本次 run 已加载的上下文单元，四类 kind 对应

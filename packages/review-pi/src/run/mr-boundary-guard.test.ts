@@ -19,14 +19,12 @@ import {
 import { runReview } from "./review-run.js";
 
 // MR 边界护栏（#12 生产化四必做之一）双接缝测试：
-// - 纯函数接缝（measureMrBoundary / guardMrBoundary）：度量口径与 root
-//   src/dataset/mr-boundary-filter.ts 的 measureDiffBoundary / checkBoundary
-//   同构——以锁定数值断言（不 import root，内核包不反向依赖）；边界值
+// - 纯函数接缝（measureMrBoundary / guardMrBoundary）：以锁定数值断言度量口径
+//   （不 import root，内核包不反向依赖；root 侧数据集门已随 ADR-0024 删除）；边界值
 //   （10 文件 / 2000 行）含在界内，malformed 家族一律「不可度量」降级。
 // - runReview 行为接缝（离线 fakeFetch 全链）：超界 / malformed 走显式降级
 //   （domainWarning + 审计 mrBoundary 留痕 + 照常出结果，零静默）；边界内
-//   A / B / E 三配置零漂移（护栏键全缺席 + 请求字节面不受护栏影响——
-//   A / B 零工具最易断言，E 为生产入口）。
+//   零漂移（护栏键全缺席 + 请求字节面不受护栏影响）。
 // 零网络纪律：全部离线 fakeFetch，不触任何真实网关。
 
 // ---- 纯函数接缝：fixture 与期望值 ----

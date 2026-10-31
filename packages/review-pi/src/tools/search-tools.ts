@@ -15,8 +15,8 @@ import type { ReviewToolHandler } from "./toolkit-types.js";
  * 检索工具四件套（#6 P3a：零构建静态解析）。
  *
  * - review.find_references：ripgrep 名字级全词引用匹配（词法天花板为已知限制，
- *   重载/override 误报可接受——实验内各配置共享同一精度）；
- * - review.get_call_chain：1~2 层名字级引用链（复用 config B 固定管线的
+ *   重载/override 误报可接受）；
+ * - review.get_call_chain：1~2 层名字级引用链（复用
  *   buildCallChainBlocks，不越界实现）；
  * - review.search_rule / review.search_history：C3 Knowledge 语料的
  *   大小写不敏感子串文本检索（语料静态注入，默认空）。

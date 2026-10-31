@@ -7,7 +7,7 @@ import type { ReviewToolHandler } from "./toolkit-types.js";
  *
  * 输出确定性：同一 MR → 同一字节；超预算在行边界截断并留痕。
  * Context Ledger：diff 登记为 evidence（Evidence Policy：diff 即首要证据源），
- * 重复读取返回 "Already loaded: ctx#NNN" 引用而非原文（config E 功能态）。
+ * 重复读取返回 "Already loaded: ctx#NNN" 引用而非原文（Ledger 功能态）。
  */
 
 /** Ledger 登记标识（无入参，请求本身即标识） */

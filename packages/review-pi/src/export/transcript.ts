@@ -88,7 +88,7 @@ export interface TranscriptInfo {
    * 注意顺序倒挂：主会话开跑前已入列的 user 消息（初始上下文 + Phase 0 指令）时刻
    * **早于** `created`（建 Agent / 首次 prompt 入列时产生）；首个 assistant 也可能
    * 略早（pi 在 `onPayload` 前就给 partial 消息打点）；其后一律不早于 `created`。
-   * **skill 会话转录**（config F）例外：它以 Phase 5 结束时的 messages 快照为种子，
+   * **skill 会话转录**（规则 Skill）例外：它以 Phase 5 结束时的 messages 快照为种子，
    * 种子里的 user/assistant 全部早于该会话的 `created`。
    */
   readonly time: { readonly created: number; readonly updated: number };

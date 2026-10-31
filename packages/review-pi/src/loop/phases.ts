@@ -3,7 +3,7 @@
 // 字节真源：DSH 线 t-series 审计各阶段 user 消息（testdata/golden/phase-1..6.txt），
 // 由 src/loop/phases.test.ts 断言逐字节一致。任何改动都需要显式变更记录。
 //
-// 阶段语义（六阶段骨架，config B 直驱下每单元恰好各执行一次）：
+// 阶段语义（六阶段骨架，每个单元恰好各执行一次）：
 // 1. Change Understanding → 2. Risk Classification → 3. Context Decision
 // → 4. Context Retrieval → 5. Deep Reasoning → 6. Evidence Verification
 export const PHASE_INSTRUCTIONS: readonly string[] = [

@@ -2,17 +2,18 @@ import type { MrBoundaryRecord, MrBoundaryReason } from "../contracts/run.js";
 
 // MR 边界护栏（#12 生产化四必做之一，P4/P5 窗口并行票）：验证域边界
 // ≤10 文件 / diff ≤2K 变更行（《基于 Pi 内核的 Review Agent 总体架构
-// 设计方案》§7.7；与 root 数据集门 src/dataset/mr-boundary-filter.ts 同口径）。
+// 设计方案》§7.7；曾与 root 数据集门同口径，该门已随 ADR-0024 删除）。
 //
 // 定位（《Config B 生产化方案》§3.1 钦定 v1：护栏 + 显式标注，v2 切分另立项）：
-// - 配置无关：在 runReview 的 config 分派之前统一生效（A–E 全配置同护栏；
-//   护栏在内核入口处，本就不应绑配置——票面原设计亦然）；
+// - 位置无关配置：在内核入口处统一生效，不绑任何配置维度（ADR-0024 后只有
+//   唯一形态，本护栏即在 runReview 最前）；
 // - 不触碰请求字节面：纯度量 + 结果尾键标注，边界内 MR 与无护栏时逐字节
 //   一致（domainWarning / mrBoundary 全部「缺席省键」）；
 // - 超界不拒检：照常执行（截断纪律兜底）+ 零静默——RunResult 顶层
 //   domainWarning 与审计文件尾部 mrBoundary（度量值 + 降级决策）留痕。
 //
-// 度量口径与 root measureDiffBoundary / checkBoundary 完全同构：
+// 度量口径（自含单源；曾与 root 数据集门 measureDiffBoundary / checkBoundary
+// 同构，该门已随 ADR-0024 删除）：
 // - files = diff 触碰的文件数（含新增 / 删除文件）；
 // - changedLines = 新增行 + 删除行（不含 context 行与文件头 / hunk 头）。
 // 内核包不反向依赖 root——此处自含轻量行级状态机：以 hunk 头声明的

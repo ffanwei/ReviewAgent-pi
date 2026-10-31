@@ -49,7 +49,7 @@ test("runReviewTurn：onPayload 序列化点捕获 wireBody 原文（模型 / �
   expect(parsed.thinking).toEqual({ type: "enabled" });
   expect(parsed.reasoning_effort).toBe("high");
   expect(parsed.stream).toBe(true);
-  // DSH deepseek 画像不传 max_tokens（t 系列审计 wireBody 无此键）；config B 无工具。
+  // DSH deepseek 画像不传 max_tokens（t 系列审计 wireBody 无此键）；本用例无工具。
   expect("max_tokens" in parsed).toBe(false);
   expect("tools" in parsed).toBe(false);
 
