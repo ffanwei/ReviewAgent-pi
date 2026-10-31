@@ -9,7 +9,6 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 
 import { checkRuntimeArtifacts } from "../../bin/lib/cli-runtime.js";
 import { CLI_EXPERIMENT_ID } from "./args.js";
-import { eRunRecordJson } from "../disposition/run-record-fixture.js";
 import { sseBody, type FakeReply } from "../provider/fake-fetch.js";
 import { REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { goldenFixture } from "../testing/golden.js";
@@ -331,7 +330,7 @@ function stubEnv(stubBaseUrl: string): Record<string, string> {
 // ---- 检视命令面 ----
 
 test(
-  "单 MR 检视（config B 显式——缺省已切流 E，ADR-0011；B 形态进程面回放资产保留）：exit 0 + stdout 单 JSON + 候选存活成 finding + 落盘 + 凭据哨兵",
+  "单 MR 检视（唯一形态，ADR-0024）：exit 0 + stdout 单 JSON + 候选存活成 finding + 落盘 + 凭据哨兵",
   async () => {
     const stub = await startLoopbackStub(oneFindingCorpus());
     try {
@@ -340,7 +339,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir, "--config", "B"],
+        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
         {
           env: stubEnv(stub.baseUrl),
           // .env.local 诱饵：显式环境变量必须胜出（诱饵 URL 是死端口，诱饵 key 不入传输层）
@@ -353,7 +352,6 @@ test(
       const outcome = JSON.parse(run.stdout) as {
         ok: boolean;
         caseId: string;
-        configId: string;
         runId: string;
         truncated: boolean;
         rounds: number;
@@ -364,12 +362,11 @@ test(
       expect(outcome).toMatchObject({
         ok: true,
         caseId: "VUL4J-1",
-        configId: "B",
         truncated: false,
         rounds: 1,
         toolCalls: 0,
       });
-      expect(outcome.runId).toMatch(/^\d{8}T\d{6}\.\d{3}-B-VUL4J-1$/);
+      expect(outcome.runId).toMatch(/^\d{8}T\d{6}\.\d{3}-VUL4J-1$/);
       // 候选 → 裁决通过 → finding 存活（独立期望：字面量造的候选，非代码回算）
       expect(outcome.findings).toHaveLength(1);
       expect(outcome.findings[0]).toMatchObject({
@@ -466,8 +463,6 @@ test(
           mrFile,
           "--out",
           outDir,
-          "--config",
-          "B",
           "--env",
           envFile,
         ],
@@ -577,7 +572,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir, "--config", "B"],
+        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
         { env: { ...stubEnv(stub.baseUrl), REVIEW_PI_PRESENTATION_ENGINE: enginePath } },
       );
 
@@ -632,7 +627,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir, "--config", "B"],
+        ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
         { env: { ...stubEnv(stub.baseUrl), REVIEW_PI_PRESENTATION_ENGINE: enginePath } },
       );
 
@@ -656,7 +651,7 @@ test(
 
 // ---- 检视意见中文导出（ADR-0013 Step B）：zh 生命周期矩阵 ----
 // zh 由核外 CLI 缝编排（复用同一次投影结果，绝不额外调网关），与 en 同 rep 目录。
-// 路径基线：<out>/review-pi-cli/runs/vul4j/VUL4J-1/<config>/rep-1/
+// 路径基线：<out>/review-pi-cli/runs/vul4j/VUL4J-1/rep-1/
 
 const ZH_ENGINE_BODY = `const tipOf = (source) => ({
   code: source.codeByFinding?.F100 ?? "",
@@ -689,11 +684,11 @@ export default async (source) => ({
 });\n`;
 
 /** 本次 run 的 rep-1 产物目录（reviews_en.json / reviews_tips_zh.json 同层） */
-function cliRepDir(outDir: string, configId = "B"): string {
-  return path.join(outDir, CLI_EXPERIMENT_ID, "runs", "vul4j", "VUL4J-1", configId, "rep-1");
+function cliRepDir(outDir: string): string {
+  return path.join(outDir, CLI_EXPERIMENT_ID, "runs", "vul4j", "VUL4J-1", "rep-1");
 }
 
-/** 单 MR 检视调用（config B；可选注入呈现引擎与 cwd 预置文件） */
+/** 单 MR 检视调用（唯一形态；可选注入呈现引擎与 cwd 预置文件） */
 function runCliReview(
   outDir: string,
   mrFile: string,
@@ -701,7 +696,7 @@ function runCliReview(
   options: RunBinOptions = {},
 ): Promise<CliRunResult> {
   return runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir, "--config", "B"],
+    ["review", "--repo", repoFixturePath("sample"), "--mr", mrFile, "--out", outDir],
     { ...options, env },
   );
 }
@@ -1039,7 +1034,7 @@ test("smoke 子命令：网关不可达 → exit 1 + 人话诊断（健康探针
 
 // ---- 规则 Skill 目录形态（ADR-0018：--rule-skill） ----
 
-/** config F 零候选脚本：4 相位 OK + Phase-5 空候选 + skill 会话空候选 + Phase-6 空裁决 */
+/** 规则 Skill 目录形态零候选脚本：4 相位 OK + Phase-5 空候选 + skill 会话空候选 + Phase-6 空裁决 */
 function ruleSkillDirCorpus(): FakeReply[] {
   const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
   return [
@@ -1054,7 +1049,7 @@ function ruleSkillDirCorpus(): FakeReply[] {
 }
 
 test(
-  "--rule-skill：已解压目录装载（config F），审计标 kind = dir，副本落 run 缓存而非原地",
+  "--rule-skill：已解压目录装载，审计标 kind = dir，副本落 run 缓存而非原地",
   async () => {
     const stub = await startLoopbackStub(ruleSkillDirCorpus());
     try {
@@ -1072,8 +1067,6 @@ test(
           mrFile,
           "--out",
           outDir,
-          "--config",
-          "F",
           "--rule-skill",
           skillDir,
           "--strict-rule-skill",
@@ -1124,86 +1117,12 @@ test(
   180_000,
 );
 
-// ---- disposition 命令面（#15：本地数据面，无网络、不碰 .env.local） ----
-// 夹具与 command.test.ts 共享单源（run-record-fixture.ts，E 形态生产入口锚）。
-
-test(
-  "disposition 记录 + KPI（进程面）：无凭据可跑、.env.local 在场也不装载（无网络命令）、落库可回溯",
-  async () => {
-    const dir = makeTempDir("review-pi-disposition-");
-    const runRecordPath = path.join(dir, "rep-1.json");
-    writeFileSync(runRecordPath, eRunRecordJson(), "utf8");
-    const storePath = path.join(dir, "dispositions.json");
-
-    // 记录处置：cwd 里种了 .env.local 诱饵——disposition 无网络，绝不装载（stderr 必须干净）
-    const record = await runBin(
-      [
-        "disposition",
-        "--run",
-        runRecordPath,
-        "--finding",
-        "F100",
-        "--decision",
-        "accept",
-        "--note",
-        "真实缺陷，接受",
-        "--store",
-        storePath,
-      ],
-      { seedEnvLocal: `REVIEWER_URL=http://127.0.0.1:9/v1\nREVIEWER_API_KEY=${DECOY_KEY}\n` },
-    );
-    expect(record.status).toBe(0);
-    expect(record.stderr).toBe("");
-    const recordOutcome = JSON.parse(record.stdout) as {
-      ok: boolean;
-      store: string;
-      recordCount: number;
-      disposition: { findingId: string; disposition: string; caseId: string; configId: string; note: string };
-    };
-    expect(recordOutcome).toMatchObject({
-      ok: true,
-      store: storePath,
-      recordCount: 1,
-      disposition: {
-        findingId: "F100",
-        disposition: "accept",
-        caseId: "VUL4J-1",
-        configId: "E",
-        note: "真实缺陷，接受",
-      },
-    });
-    // 落库面：处置记录在库中（回溯锚齐备）；key 纪律全输出面扫描
-    const store = JSON.parse(readFileSync(storePath, "utf8")) as unknown[];
-    expect(store).toHaveLength(1);
-    expectNoKeyLeak([
-      { label: "stdout", text: record.stdout },
-      { label: "stderr", text: record.stderr },
-      { label: "store", text: JSON.stringify(store) },
-    ]);
-
-    // KPI 面：绝对口径直出单 JSON 文档
-    const stats = await runBin(["disposition", "--stats", "--store", storePath], {});
-    expect(stats.status).toBe(0);
-    expect(JSON.parse(stats.stdout)).toEqual({
-      ok: true,
-      store: storePath,
-      accepted: 1,
-      rejected: 0,
-      falsePositive: 0,
-      total: 1,
-      acceptanceRate: 1,
-    });
-  },
-  180_000,
-);
-
 // ---- 运行进度投影（ADR-0016）进程面 ----
 
 /** stdout 的键集（`ok` + ReviewOutcome）：进度绝不能新增键 */
 const REVIEW_OUTCOME_KEYS = [
   "ok",
   "caseId",
-  "configId",
   "runId",
   "truncated",
   "rounds",
@@ -1230,8 +1149,6 @@ test(
           mrFile,
           "--out",
           outDir,
-          "--config",
-          "B",
           "--progress",
         ],
         { env: stubEnv(stub.baseUrl) },
@@ -1277,8 +1194,6 @@ test(
         mrFile,
         "--out",
         outDir,
-        "--config",
-        "B",
       ];
 
       const auto = await runBin(baseArgs, { env: stubEnv(quietStub.baseUrl) });
@@ -1295,8 +1210,6 @@ test(
           mrFile,
           "--out",
           outDir2,
-          "--config",
-          "B",
           "--no-progress",
         ],
         { env: stubEnv(quietStub.baseUrl) },
@@ -1319,14 +1232,3 @@ test(
   },
   240_000,
 );
-
-test("disposition 用法错误（非法 --decision）：exit 1 + 人话错误 + usage 文案 + stdout 干净", async () => {
-  const run = await runBin(
-    ["disposition", "--run", "x.json", "--finding", "F1", "--decision", "maybe"],
-    { timeoutMs: 30_000 },
-  );
-  expect(run.status).toBe(1);
-  expect(run.stdout).toBe("");
-  expect(run.stderr).toContain('invalid --decision "maybe"');
-  expect(run.stderr).toContain("usage:");
-});

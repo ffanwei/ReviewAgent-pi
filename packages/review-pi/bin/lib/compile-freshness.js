@@ -7,8 +7,8 @@
  * 任一源树中最新文件的 mtime 严格晚于产物 mtime → 陈旧；等于视为新鲜；
  * 源根缺席不贡献信号（多根判鲜允许某根不存在）。
  *
- * pi 线扩展——构建不可见的源不计数：*.test.ts 文件与 testing / e2e /
- * bytegate 目录（镜像 packages/review-pi/tsconfig.build.json 的 exclude 集）
+ * pi 线扩展——构建不可见的源不计数：*.test.ts 文件与 testing / e2e
+ * 目录（镜像 packages/review-pi/tsconfig.build.json 的 exclude 集）
  * 不进 dist 构建，改它们不应触发拒跑。tsconfig.build.json 若改 exclude，
  * 此处需同步（漂移锚点）。
  */
@@ -20,7 +20,7 @@ import { join } from "node:path";
 const EXCLUDED_FILE_SUFFIXES = [".test.ts"];
 
 /** 不进 dist 构建的目录名（tsconfig.build.json exclude 的目录面 + 防御性跳过） */
-const EXCLUDED_DIR_NAMES = ["testing", "e2e", "bytegate", "node_modules", "dist"];
+const EXCLUDED_DIR_NAMES = ["testing", "e2e", "node_modules", "dist"];
 
 /** 目录树内最新文件 mtime（递归，构建可见文件才算）；目录缺席或不可读返回入参 latest（不贡献信号） */
 function newestMtime(dir, latest) {
