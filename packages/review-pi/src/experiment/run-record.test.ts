@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -12,9 +12,8 @@ import {
   type RunRecord,
 } from "./run-record.js";
 
-// RunRecord 投影（测量常量面）：与根仓 run-store 产出的 DSH 记录同构
-// （三级键序以 t-series 记录为地面真源），冻结 analyze 脚本原样消费。
-// 落盘路径：<runsRoot>/<experimentId>/runs/vul4j/<caseId>/<configId>/rep-<N>.json。
+// RunRecord 投影（测量常量面）：键序在本仓内单源定义。
+// 落盘路径：<runsRoot>/<experimentId>/runs/vul4j/<caseId>/rep-<N>.json。
 
 const COMPLETED_AT = new Date("2026-09-14T18:09:20.100Z");
 
@@ -26,27 +25,22 @@ const AUDIT: RunAudit = {
   cacheBreaks: [],
   truncated: false,
   truncationReasons: [],
-  prefetch: [
-    { layer: "zone-b", budgetChars: 16000, contentChars: 100, truncated: false, totalEntries: 1, shownEntries: 1 },
-  ],
 };
 
 const RUN_RESULT: RunResult = {
   caseId: "VUL4J-1",
-  configId: "B",
   model: "deepseek-v4-flash",
   findings: [],
   usage: { inputTokens: 9579, outputTokens: 14484, cacheReadTokens: 24064 },
   rounds: 1,
   toolCalls: 0,
   audit: AUDIT,
-  auditPath: path.join(tmpdir(), "audit", "20260914T180846.922-B-VUL4J-1.json"),
+  auditPath: path.join(tmpdir(), "audit", "20260914T180846.922-VUL4J-1.json"),
 };
 
 const RECORD_KEYS = [
   "source",
   "caseId",
-  "configId",
   "rep",
   "model",
   "verifier",
@@ -74,7 +68,6 @@ function recordFixture(): RunRecord {
   return buildRunRecord({
     source: "vul4j",
     caseId: "VUL4J-1",
-    configId: "B",
     rep: 1,
     model: "deepseek-v4-flash",
     completedAt: COMPLETED_AT,
@@ -83,7 +76,7 @@ function recordFixture(): RunRecord {
 }
 
 describe("toAuditLight", () => {
-  test("键序与 DSH AuditLight 一致；空 cacheBreaks 省键，非空保留", () => {
+  test("键序固定；空 cacheBreaks 省键，非空保留", () => {
     const light = toAuditLight(AUDIT);
     expect(Object.keys(light)).toEqual([
       "toolCallLog",
@@ -91,7 +84,6 @@ describe("toAuditLight", () => {
       "rejections",
       "truncated",
       "truncationReasons",
-      "prefetch",
     ]);
 
     const withBreaks = toAuditLight({
@@ -132,7 +124,7 @@ describe("toRunSnapshot", () => {
 });
 
 describe("buildRunRecord", () => {
-  test("baseline-only 记录：键序与 DSH 记录一致，effective / verifierPass 恒 null", () => {
+  test("baseline-only 记录：键序固定，effective / verifierPass 恒 null", () => {
     const record = recordFixture();
     expect(Object.keys(record)).toEqual([...RECORD_KEYS]);
     expect(record.source).toBe("vul4j");
@@ -152,29 +144,28 @@ describe("buildRunRecord", () => {
 });
 
 describe("runRecordPath / writeRunRecord", () => {
-  test("路径：<runsRoot>/<experimentId>/runs/<source>/<caseId>/<configId>/rep-<N>.json", () => {
+  test("路径：<runsRoot>/<experimentId>/runs/<source>/<caseId>/rep-<N>.json", () => {
     const record = recordFixture();
     expect(runRecordPath("runs", "phase2-smoke", record)).toBe(
-      path.join("runs", "phase2-smoke", "runs", "vul4j", "VUL4J-1", "B", "rep-1.json"),
+      path.join("runs", "phase2-smoke", "runs", "vul4j", "VUL4J-1", "rep-1.json"),
     );
   });
 
-  test("caseId 文件名不安全字符替换（点号保留，与根仓 RunStore 同则）", () => {
+  test("caseId 文件名不安全字符替换（点号保留）", () => {
     const record = buildRunRecord({
       source: "vul4j",
       caseId: "case/with space",
-      configId: "B",
       rep: 2,
       model: "deepseek-v4-flash",
       completedAt: COMPLETED_AT,
       result: { ...RUN_RESULT, caseId: "case/with space" },
     });
     expect(runRecordPath("runs", "phase2-smoke", record)).toContain(
-      path.join("case_with_space", "B", "rep-2.json"),
+      path.join("case_with_space", "rep-2.json"),
     );
   });
 
-  test("落盘 2 空格缩进 + 尾随换行，往返一致，且满足冻结消费方的形状要求", async () => {
+  test("落盘 2 空格缩进 + 尾随换行，往返一致", async () => {
     const record = recordFixture();
     const runsRoot = tempDir();
     const filePath = await writeRunRecord(runsRoot, "phase2-smoke", record);
@@ -182,27 +173,10 @@ describe("runRecordPath / writeRunRecord", () => {
     const text = readFileSync(filePath, "utf8");
     expect(text).toBe(`${JSON.stringify(record, null, 2)}\n`);
     const parsed = JSON.parse(text);
-    // 冻结消费方（collectExecRecords / isRunRecordShape）的硬性要求
     expect(typeof parsed.completedAt).toBe("string");
     expect(Number.isNaN(Date.parse(parsed.completedAt))).toBe(false);
     expect(typeof parsed.baseline.usage.inputTokens).toBe("number");
     expect(typeof parsed.baseline.usage.outputTokens).toBe("number");
     expect(Array.isArray(parsed.baseline.findings)).toBe(true);
-  });
-});
-
-/** 真实 t-series 记录（DSH 线地面真源；本机 runs/ 在场时才断言） */
-const REAL_RECORD = path.resolve(
-  import.meta.dirname,
-  "../../../../runs/phase2-dsh-t1/runs/vul4j/VUL4J-1/B/rep-1.json",
-);
-
-describe("与 DSH 线 RunRecord 同构（地面真源键序对照）", () => {
-  test.skipIf(!existsSync(REAL_RECORD))("三级键序与 t-series 记录逐键一致", () => {
-    const real = JSON.parse(readFileSync(REAL_RECORD, "utf8"));
-    const record = recordFixture();
-    expect(Object.keys(record)).toEqual(Object.keys(real));
-    expect(Object.keys(record.baseline)).toEqual(Object.keys(real.baseline));
-    expect(Object.keys(record.baseline.audit)).toEqual(Object.keys(real.baseline.audit));
   });
 });

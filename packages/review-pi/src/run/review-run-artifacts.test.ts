@@ -13,7 +13,7 @@ import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
 import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
-import { VUL4J_1_ISSUE, vul4j1Corpus } from "../testing/vul4j1-script.js";
+import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
 import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import { runReview } from "./review-run.js";
 
@@ -36,19 +36,6 @@ afterAll(() => {
 });
 
 const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
-
-/** config B 的注入预取哨兵（免真跑预取管线；与 review-run.test.ts 同形） */
-const SENTINEL_PREFETCH = {
-  zoneBMessage: { role: "user" as const, content: "SENTINEL-ZONE-B" },
-  layerMessages: [
-    { role: "user" as const, content: "SENTINEL-LAYER-1" },
-    { role: "user" as const, content: "SENTINEL-LAYER-2" },
-  ],
-  records: [
-    { layer: "zone-b" as const, budgetChars: 100, contentChars: 15, truncated: false, totalEntries: 1, shownEntries: 1 },
-    { layer: "symbol" as const, budgetChars: 100, contentChars: 16, truncated: false, totalEntries: 1, shownEntries: 1 },
-  ],
-};
 
 /** 一轮零工具回复脚本：六相位各一文本回复（phase-5 空候选 / phase-6 complete） */
 function sixPhaseNoToolCorpus(): FakeReply[] {
@@ -122,8 +109,8 @@ function textOf(message: Record<string, unknown> | undefined): string {
     .join("\n");
 }
 
-function runDir(runsRoot: string, configId: string): string {
-  return path.join(runsRoot, "phase2-smoke", "runs", "vul4j", "VUL4J-1", configId);
+function runDir(runsRoot: string): string {
+  return path.join(runsRoot, "phase2-smoke", "runs", "vul4j", "VUL4J-1");
 }
 
 function sessionFiles(dir: string): string[] {
@@ -134,7 +121,6 @@ const INFO_KEYS = [
   "id",
   "runId",
   "agent",
-  "configId",
   "model",
   "tokens",
   "cost",
@@ -144,7 +130,7 @@ const INFO_KEYS = [
   "location",
 ];
 
-test("检视转录（config D）：落点/命名/info 精确键表/messages 原生序列", async () => {
+test("检视转录：落点/命名/info 精确键表/messages 原生序列", async () => {
   const script = fakeFetch(sixPhaseNoToolCorpus());
   const runsRoot = tempRunsRoot();
   const repoPath = repoFixturePath("sample");
@@ -154,21 +140,21 @@ test("检视转录（config D）：落点/命名/info 精确键表/messages 原�
     diff: goldenFixture("vul4j-1.diff"),
     issueDescription: VUL4J_1_ISSUE,
     apiKey: "offline-test",
-    configId: "D",
     fetch: script.fetch,
     runsRoot,
     experimentId: "phase2-smoke",
     rep: 1,
+    ruleSkillLoader: async () => [],
   });
 
-  // 落点：与 rep-1.json 平铺（runs/vul4j/VUL4J-1/D/），名字含首次模型请求时刻
-  const dir = runDir(runsRoot, "D");
+  // 落点：与 rep-1.json 平铺（runs/vul4j/VUL4J-1/），名字含首次模型请求时刻
+  const dir = runDir(runsRoot);
   expect(transcriptPath).toBeDefined();
   expect(path.dirname(transcriptPath ?? "")).toBe(dir);
   expect(existsSync(transcriptPath ?? "")).toBe(true);
   const baseName = path.basename(transcriptPath ?? "");
-  expect(baseName).toMatch(/^session-\d{8}T\d{6}\.\d{3}-D-VUL4J-1\.json$/);
-  // 每 run 独立留档：D 目录只有这一份 session
+  expect(baseName).toMatch(/^session-\d{8}T\d{6}\.\d{3}-VUL4J-1\.json$/);
+  // 每 run 独立留档：目录只有这一份 session
   expect(sessionFiles(dir)).toEqual([baseName]);
 
   const doc = readTranscript(transcriptPath ?? "");
@@ -181,7 +167,6 @@ test("检视转录（config D）：落点/命名/info 精确键表/messages 原�
   expect(doc.info["id"]).toBe(baseName.replace(/\.json$/, ""));
   expect(doc.info["runId"]).toBe(path.basename(auditPath, ".json"));
   expect(doc.info["agent"]).toBe("review");
-  expect(doc.info["configId"]).toBe("D");
   expect(doc.info["title"]).toBe("VUL4J-1");
   expect(doc.info["location"]).toEqual({ directory: repoPath });
   // ADR-0015：逐消息时间戳已可用，声明键退役（键表精确断言之外再显式否定一次）
@@ -199,7 +184,7 @@ test("检视转录（config D）：落点/命名/info 精确键表/messages 原�
   expect(typeof time.created).toBe("number");
   expect(typeof time.updated).toBe("number");
   const created = new Date(time.created as number).toISOString();
-  const nameSegment = baseName.replace(/^session-/, "").replace(/-D-VUL4J-1\.json$/, "");
+  const nameSegment = baseName.replace(/^session-/, "").replace(/-VUL4J-1\.json$/, "");
   expect(created.replace(/[-:]/g, "").replace("Z", "")).toBe(nameSegment);
   expect(time.created as number).toBeLessThanOrEqual(time.updated as number);
 
@@ -382,12 +367,11 @@ test("检视转录（config D）：落点/命名/info 精确键表/messages 原�
   expect(reviewsPath).toBe(path.join(dir, "rep-1", "reviews_en.json"));
   const envelope = JSON.parse(readFileSync(reviewsPath ?? "", "utf8")) as Record<string, unknown>;
   expect(Object.keys(envelope).sort()).toEqual(
-    ["generatedAt", "runId", "source", "caseId", "configId", "rep", "model", "findings"].sort(),
+    ["generatedAt", "runId", "source", "caseId", "rep", "model", "findings"].sort(),
   );
   expect(envelope["runId"]).toBe(doc.info["runId"]);
   expect(envelope["source"]).toBe("vul4j");
   expect(envelope["caseId"]).toBe("VUL4J-1");
-  expect(envelope["configId"]).toBe("D");
   expect(envelope["rep"]).toBe(1);
   expect(envelope["model"]).toBe("deepseek-v4-flash");
   expect(envelope["findings"]).toEqual(record.baseline.findings);
@@ -397,7 +381,6 @@ test("检视转录（config D）：落点/命名/info 精确键表/messages 原�
   expect(Object.keys(record)).toEqual([
     "source",
     "caseId",
-    "configId",
     "rep",
     "model",
     "verifier",
@@ -442,11 +425,11 @@ test("检视转录：assistant toolCall 与 toolResult 原样保留（链接键 
     diff,
     issueDescription: VUL4J_1_ISSUE,
     apiKey: "offline-test",
-    configId: "D",
     fetch: script.fetch,
     runsRoot,
     experimentId: "phase2-smoke",
     rep: 1,
+    ruleSkillLoader: async () => [],
   });
 
   const doc = readTranscript(transcriptPath ?? "");
@@ -513,7 +496,7 @@ test("检视转录：assistant toolCall 与 toolResult 原样保留（链接键 
   expect(state["content"]).toEqual(result["content"]);
 }, 120_000);
 
-test("共存：同 case/config 跑两次 → 两个不同 session 文件都在（每 run 独立留档）", async () => {
+test("共存：同 case 跑两次 → 两个不同 session 文件都在（每 run 独立留档）", async () => {
   const runsRoot = tempRunsRoot();
   const common = {
     caseId: "VUL4J-1",
@@ -521,10 +504,10 @@ test("共存：同 case/config 跑两次 → 两个不同 session 文件都在�
     diff: goldenFixture("vul4j-1.diff"),
     issueDescription: VUL4J_1_ISSUE,
     apiKey: "offline-test",
-    configId: "D" as const,
     runsRoot,
     experimentId: "phase2-smoke",
     rep: 1,
+    ruleSkillLoader: async () => [],
   };
   const first = await runReview({ ...common, fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch });
   // 首次模型请求时刻相差至少 1ms，保证文件名不同（并发毫秒碰撞是测试自身的 bug）
@@ -534,87 +517,11 @@ test("共存：同 case/config 跑两次 → 两个不同 session 文件都在�
   expect(first.transcriptPath).not.toBe(second.transcriptPath);
   expect(existsSync(first.transcriptPath ?? "")).toBe(true);
   expect(existsSync(second.transcriptPath ?? "")).toBe(true);
-  expect(sessionFiles(runDir(runsRoot, "D"))).toHaveLength(2);
+  expect(sessionFiles(runDir(runsRoot))).toHaveLength(2);
   // reviews_* 按 rep 覆盖重写：同路径单份
   expect(first.reviewsPath).toBe(second.reviewsPath);
   expect(existsSync(first.reviewsPath ?? "")).toBe(true);
 }, 120_000);
-
-// C/E/F：Agent 路径的其余配置（D 已在上面详测）——C 全仓注入、E Ledger、
-// F 规则 Skill（样本仓库无 .review-rules ⇒ 降级不注入简报）。三者与 D 同缝，
-// 断言产物落点/键表/配对键一致。
-for (const configId of ["C", "E", "F"] as const) {
-  test(`检视转录（config ${configId}）：与 D 同缝产出 session + reviews_en.json`, async () => {
-    const script = fakeFetch(sixPhaseNoToolCorpus());
-    const runsRoot = tempRunsRoot();
-    const { record, transcriptPath, reviewsPath } = await runReview({
-      caseId: "VUL4J-1",
-      repoPath: repoFixturePath("sample"),
-      diff: goldenFixture("vul4j-1.diff"),
-      issueDescription: VUL4J_1_ISSUE,
-      apiKey: "offline-test",
-      configId,
-      fetch: script.fetch,
-      runsRoot,
-      experimentId: "phase2-smoke",
-      rep: 1,
-    });
-
-    const dir = runDir(runsRoot, configId);
-    expect(transcriptPath).toBeDefined();
-    expect(path.dirname(transcriptPath ?? "")).toBe(dir);
-    expect(sessionFiles(dir)).toHaveLength(1);
-    const doc = readTranscript(transcriptPath ?? "");
-    expect(Object.keys(doc).sort()).toEqual(["info", "messages", "view"]);
-    expect(Object.keys(doc.info).sort()).toEqual([...INFO_KEYS].sort());
-    expect(doc.info["configId"]).toBe(configId);
-    expect(doc.messages[0]).toEqual({ role: "system", content: SYSTEM_PROMPT });
-
-    expect(reviewsPath).toBe(path.join(dir, "rep-1", "reviews_en.json"));
-    const envelope = JSON.parse(readFileSync(reviewsPath ?? "", "utf8")) as {
-      runId: unknown;
-      configId: string;
-      findings: unknown;
-    };
-    expect(envelope.configId).toBe(configId);
-    expect(envelope.runId).toBe(doc.info["runId"]);
-    expect(envelope.findings).toEqual(record.baseline.findings);
-  }, 120_000);
-}
-
-// A/B（非 Agent 路径）：产 reviews_en.json、无 session 文件——其等价物是
-// 既有 `requests[].messages`，本能力不另造转录。A 零预取、B 注入哨兵预取。
-for (const configId of ["A", "B"] as const) {
-  test(`config ${configId}（非 Agent 路径）：产 reviews_en.json、无 session 文件`, async () => {
-    const script = fakeFetch(vul4j1Corpus());
-    const runsRoot = tempRunsRoot();
-    const { record, transcriptPath, reviewsPath } = await runReview({
-      caseId: "VUL4J-1",
-      // A 零预取零工具、不读仓库——路径不存在也必须跑通
-      repoPath: configId === "A" ? path.join(runsRoot, "no-such-repo") : repoFixturePath("sample"),
-      diff: goldenFixture("vul4j-1.diff"),
-      issueDescription: VUL4J_1_ISSUE,
-      apiKey: "offline-test",
-      configId,
-      fetch: script.fetch,
-      runsRoot,
-      experimentId: "phase2-smoke",
-      rep: 1,
-      ...(configId === "B" ? { prefetch: SENTINEL_PREFETCH } : {}),
-    });
-
-    expect(transcriptPath).toBeUndefined();
-    const dir = runDir(runsRoot, configId);
-    expect(sessionFiles(dir)).toEqual([]);
-    expect(reviewsPath).toBe(path.join(dir, "rep-1", "reviews_en.json"));
-    const envelope = JSON.parse(readFileSync(reviewsPath ?? "", "utf8")) as {
-      findings: unknown;
-      configId: string;
-    };
-    expect(envelope.configId).toBe(configId);
-    expect(envelope.findings).toEqual(record.baseline.findings);
-  }, 120_000);
-}
 
 // ---- `view` 定形投影单元面（纯函数 `buildView`） ----
 // runReview 路径不可达的两态在此直接覆盖：无匹配 toolResult 的 toolCall（截断/

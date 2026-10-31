@@ -5,37 +5,32 @@
  * 检视行为本体全部留在内核（runReview / P1b 双探针）。
  *
  * 命令面：
- * - review：凭据 fail fast（resolveReviewerEndpoint 构造期）→ config B 全链
- *   （缺省；--config A-E 透传内核配置矩阵）→ 审计/记录落盘（--out）→
+ * - review：凭据 fail fast（resolveReviewerEndpoint 构造期）→ 单形态检视
+ *   （规则 Skill；无规则包照跑并在 stderr 提示）→ 审计/记录落盘（--out）→
  *   呈现投影（ADR-0010：REVIEW_PI_PRESENTATION_ENGINE 注入引擎时 stdout
  *   呈现档译中文，失败降级英文源；未配置恒等直通）→ stdout 单 JSON 文档
  *   （render.ts，已测）；
  * - smoke：双探针（网关健康 + 模型可达，gateway-probe.ts 已测）→ stdout
- *   人话报告；
- * - disposition（#15）：Finding 人工处置落库 + 接受率 KPI，编排全在
- *   disposition/command.ts（已测）——本地数据面：无网络、不解析凭据、
- *   不碰 .env.local（与 review/smoke 的实质差异，分发在装载面之前）。
+ *   人话报告。
  *
  * 退出码契约（票面三态）：成功（含诚实截断——防御性失败不是运行失败）0 /
  * 其余中止或错误 1；截断信号由 stdout JSON 的 truncated=true 携带。
- * smoke 按诊断结论给码（通过 0 / 任何失败诊断 1）。disposition 成功 0 /
- * 用法与校验错误 1。退出一律走 exitGracefully（exitCode + 自然排干）：
+ * smoke 按诊断结论给码（通过 0 / 任何失败诊断 1）。退出一律走 exitGracefully
+ * （exitCode + 自然排干）：
  * 立即 process.exit 在 Windows 上与 undici/AbortSignal 句柄清理竞态，
  * 退出码被吞成 0xC0000409。
  *
- * stdout 纪律：review 与 disposition 的 stdout 契约都是单个 JSON 文档——
+ * stdout 纪律：review 的 stdout 契约是单个 JSON 文档——
  * 凭据文件摘要与一切诊断走 stderr。凭据经 REVIEWER_*（> 旧
  * DEEPSEEK_* 别名）环境变量或凭据文件（缺省 = 进程 cwd 的 `.env.local`；
  * `--env <file>` 可显式指定，ADR-0019；已有环境变量优先），key 绝不回显。
  *
  * 进程调用形态：review-pi review --repo <path> --mr <diff-file>
- *   [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--env <file>]
- *   [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--strict-rule-skill]
+ *   [--issue <text>] [--out <dir>] [--model <id>] [--env <file>]
+ *   [--rule-skill-zip <path>]... [--rule-skill <dir>]...
+ *   [--rule-skill-name <name>] [--strict-rule-skill]
  *   [--progress | --no-progress]
  *   review-pi smoke [--model <id>]
- *   review-pi disposition --run <run-record.json> --finding <id>
- *   --decision accept|reject|false-positive [--note <text>] ([--store <file>] | [--out <dir>])
- *   review-pi disposition --stats ([--store <file>] | [--out <dir>])
  */
 
 import { readFile, stat } from "node:fs/promises";
@@ -44,7 +39,6 @@ import { dirname, resolve } from "node:path";
 import { calculateCost } from "@earendil-works/pi-ai";
 
 import type { LlmUsage } from "../contracts/llm.js";
-import { runDispositionCommand } from "../disposition/command.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
@@ -98,7 +92,6 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
       apiKey: endpoint.apiKey,
       baseUrl: endpoint.baseUrl,
       modelId: args.model,
-      configId: args.config,
       fetch: globalThis.fetch,
       runsRoot,
       experimentId: CLI_EXPERIMENT_ID,
@@ -115,6 +108,12 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
     throw error;
   }
   const { record, runId, auditPath, reviewsPath } = reviewed;
+  // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
+  if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
+    process.stderr.write(
+      "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / <repo>/.review-rules/*.zip 均未命中），照常检视\n",
+    );
+  }
   // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态
   progress?.finish(progressFinish(args, endpoint.baseUrl, record.baseline.usage, startedAt));
 
@@ -195,7 +194,6 @@ async function runReviewCommand(args: ReviewCliArgs): Promise<number> {
   await writeStdout(
     renderReviewOutcome({
       caseId: record.caseId,
-      configId: record.configId,
       runId,
       truncated: record.baseline.audit.truncated,
       rounds: record.baseline.rounds,
@@ -305,7 +303,7 @@ function startProgress(args: ReviewCliArgs): ProgressRenderer | undefined {
   if (!(args.progress ?? isTty)) {
     return undefined;
   }
-  process.stderr.write(`review-pi: ${args.config} · ${args.caseId} · ${args.model} · progress on\n`);
+  process.stderr.write(`review-pi: ${args.caseId} · ${args.model} · progress on\n`);
   const renderer = createProgressRenderer({
     write: (text) => {
       process.stderr.write(text);
@@ -362,14 +360,6 @@ function main(): void {
   const parsed = parseCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
     process.stderr.write(`review-pi: ${parsed.message}\n${USAGE_TEXT}\n`, () => exitGracefully(1));
-    return;
-  }
-
-  // disposition 无网络：不解析凭据、不碰 .env.local——在装载面之前分流
-  if (parsed.command === "disposition") {
-    runDispositionCommand(parsed.args)
-      .then((document) => writeStdout(document).then(() => exitGracefully(0)))
-      .catch(reportErrorAndExit);
     return;
   }
 

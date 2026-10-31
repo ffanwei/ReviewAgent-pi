@@ -1,14 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ConfigId } from "../contracts/config.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
-import type { PrefetchLayerRecord } from "../contracts/prefetch.js";
 import type {
   CacheBreakRecord,
   CandidateRejection,
-  FullRepoRecord,
   MrBoundaryRecord,
   PhaseRecord,
   RuleSkillAudit,
@@ -31,7 +28,6 @@ import type {
 export interface AuditFileContent {
   readonly runId: string;
   readonly caseId: string;
-  readonly configId: ConfigId;
   readonly model: string;
   readonly effort: string;
   readonly startedAt: string;
@@ -49,35 +45,30 @@ export interface AuditFileContent {
   readonly cacheBreaks: readonly CacheBreakRecord[];
   readonly requests: readonly WireRequest[];
   readonly toolCallLog: readonly ToolCallRecord[];
-  /** config B 预取注入层记账（非预取配置缺省） */
-  readonly prefetch?: readonly PrefetchLayerRecord[];
-  /** config C 全仓注入记账（非 C 配置缺省；DSH 真源键序在 toolCallLog 尾段） */
-  readonly fullRepo?: FullRepoRecord;
-  /** config E Context Ledger 快照（非 E 配置缺省；DSH 真源键序在 toolCallLog 尾段） */
+  /** Context Ledger 快照（恒投影；零工具调用为空数组） */
   readonly ledger?: readonly LedgerEntry[];
   /**
    * MR 边界护栏降级留痕（#12：度量值 + 降级决策；界内缺省省键）。
    * 键序纪律：pi 线新增可选尾键，只加在 AuditFileContent 尾部
-   * （同 prefetch/fullRepo/ledger 先例）。
+   * （同 ledger 先例）。
    */
   readonly mrBoundary?: MrBoundaryRecord;
-  /** config F 规则 Skill 装载留痕（非 F 配置缺省；F 恒为数组，N=0 ⇒ 空数组） */
+  /** 规则 Skill 装载留痕（恒为数组，N=0 ⇒ 空数组） */
   readonly ruleSkill?: readonly RuleSkillAudit[];
-  /** config F skill 会话执行留痕（round × skill；非 F 配置缺省） */
+  /** skill 会话执行留痕（round × skill） */
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
 }
 
-/** runId：毫秒时间戳 + 配置 + 用例，文件名安全 */
-export function buildRunId(startedAt: Date, configId: ConfigId, caseId: string): string {
+/** runId：毫秒时间戳 + 用例，文件名安全 */
+export function buildRunId(startedAt: Date, caseId: string): string {
   const timestamp = startedAt.toISOString().replace(/[-:]/g, "").replace("Z", "");
   const safeCaseId = caseId.replace(/[^A-Za-z0-9_-]/g, "_");
-  return `${timestamp}-${configId}-${safeCaseId}`;
+  return `${timestamp}-${safeCaseId}`;
 }
 
 export function buildAuditFileContent(args: {
   readonly runId: string;
   readonly caseId: string;
-  readonly configId: ConfigId;
   readonly model: string;
   readonly effort: string;
   readonly startedAt: Date;
@@ -87,15 +78,12 @@ export function buildAuditFileContent(args: {
   readonly usage: LlmUsage;
   readonly findings: readonly Finding[];
   readonly audit: RunAudit;
-  readonly prefetch?: readonly PrefetchLayerRecord[];
-  readonly fullRepo?: FullRepoRecord;
   readonly ledger?: readonly LedgerEntry[];
   readonly mrBoundary?: MrBoundaryRecord;
 }): AuditFileContent {
   return {
     runId: args.runId,
     caseId: args.caseId,
-    configId: args.configId,
     model: args.model,
     effort: args.effort,
     startedAt: args.startedAt.toISOString(),
@@ -112,8 +100,6 @@ export function buildAuditFileContent(args: {
     cacheBreaks: args.audit.cacheBreaks,
     requests: args.audit.requests,
     toolCallLog: args.audit.toolCallLog,
-    ...(args.prefetch !== undefined ? { prefetch: args.prefetch } : {}),
-    ...(args.fullRepo !== undefined ? { fullRepo: args.fullRepo } : {}),
     ...(args.ledger !== undefined ? { ledger: args.ledger } : {}),
     ...(args.mrBoundary !== undefined ? { mrBoundary: args.mrBoundary } : {}),
     ...(args.audit.ruleSkill !== undefined ? { ruleSkill: args.audit.ruleSkill } : {}),

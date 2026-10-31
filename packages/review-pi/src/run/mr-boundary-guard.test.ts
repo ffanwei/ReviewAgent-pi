@@ -258,25 +258,6 @@ afterAll(() => {
   }
 });
 
-/** B 路径的哨兵预取注入（门缓存缝——不跑真预取管线，repoPath 不被读取） */
-const SENTINEL_PREFETCH = {
-  zoneBMessage: { role: "user" as const, content: "SENTINEL-ZONE-B" },
-  layerMessages: [
-    { role: "user" as const, content: "SENTINEL-LAYER-1" },
-    { role: "user" as const, content: "SENTINEL-LAYER-2" },
-  ],
-  records: [
-    {
-      layer: "zone-b" as const,
-      budgetChars: 100,
-      contentChars: 15,
-      truncated: false,
-      totalEntries: 1,
-      shownEntries: 1,
-    },
-  ],
-};
-
 interface AuditFile {
   readonly requests: { readonly wireBody: string }[];
   readonly mrBoundary?: unknown;
@@ -296,7 +277,7 @@ function expectWireBodiesGuardFree(audit: AuditFile): void {
   }
 }
 
-test("全链超界（config B，11 文件）：照常出 findings + domainWarning + 审计 mrBoundary 留痕 + 记录落盘", async () => {
+test("全链超界（11 文件）：照常出 findings + domainWarning + 审计 mrBoundary 留痕 + 记录落盘", async () => {
   const script = fakeFetch(vul4j1Corpus());
   const runsRoot = tempRunsRoot();
   const overBoundaryDiff = multiFileDiff(11);
@@ -310,8 +291,7 @@ test("全链超界（config B，11 文件）：照常出 findings + domainWarnin
     runsRoot,
     experimentId: "phase2-smoke",
     rep: 1,
-    configId: "B",
-    prefetch: SENTINEL_PREFETCH,
+    ruleSkillLoader: async () => [],
   });
 
   // 照常执行（v1 显式降级：不拒检）：六阶段六请求全跑完，findings 照常产出
@@ -330,7 +310,7 @@ test("全链超界（config B，11 文件）：照常出 findings + domainWarnin
     reason: "too-many-files",
   });
   const auditKeys = Object.keys(audit);
-  expect(auditKeys[auditKeys.length - 1]).toBe("mrBoundary");
+  expect(auditKeys.indexOf("mrBoundary")).toBeGreaterThan(auditKeys.indexOf("toolCallLog"));
 
   // 记录落盘：domainWarning 经 toRunSnapshot 透传进 rep-1.json
   const onDisk = JSON.parse(readFileSync(recordPath, "utf8")) as {
@@ -342,13 +322,12 @@ test("全链超界（config B，11 文件）：照常出 findings + domainWarnin
   expectWireBodiesGuardFree(audit);
 }, 120_000);
 
-test("全链 malformed diff（config A）：boundary-unmeasurable 降级标注 + 照常执行", async () => {
+test("全链 malformed diff：boundary-unmeasurable 降级标注 + 照常执行", async () => {
   const script = fakeFetch(vul4j1Corpus());
   const runsRoot = tempRunsRoot();
   const { record, auditPath } = await runReview({
     caseId: "VUL4J-1",
-    // config A 零预取零工具不读仓库——malformed diff 全链照常跑通的守卫路径
-    repoPath: path.join(runsRoot, "no-such-repo"),
+    repoPath: repoFixturePath("sample"),
     diff: "this is not a unified diff",
     issueDescription: VUL4J_1_ISSUE,
     apiKey: "offline-test",
@@ -356,7 +335,7 @@ test("全链 malformed diff（config A）：boundary-unmeasurable 降级标注 +
     runsRoot,
     experimentId: "phase2-smoke",
     rep: 1,
-    configId: "A",
+    ruleSkillLoader: async () => [],
   });
 
   // 照常执行：六请求、findings 照常产出（不拒检——零静默 + 不误伤怪格式）
@@ -375,7 +354,7 @@ test("全链 malformed diff（config A）：boundary-unmeasurable 降级标注 +
   expectWireBodiesGuardFree(audit);
 }, 120_000);
 
-test("全链边界内零漂移（config E，工具驱动生产入口）：护栏键全缺席 + req0 消息面逐字节断言", async () => {
+test("全链边界内零漂移：护栏键全缺席 + req0 消息面逐字节断言", async () => {
   const script = fakeFetch(vul4j1Corpus());
   const runsRoot = tempRunsRoot();
   const inBoundaryDiff = SINGLE_FILE_DIFF;
@@ -389,7 +368,7 @@ test("全链边界内零漂移（config E，工具驱动生产入口）：护栏
     runsRoot,
     experimentId: "phase2-smoke",
     rep: 1,
-    configId: "E",
+    ruleSkillLoader: async () => [],
   });
 
   // 护栏零介入：domainWarning / mrBoundary 缺席省键（不是 undefined 值，是键不在）
@@ -423,72 +402,3 @@ test("全链边界内零漂移（config E，工具驱动生产入口）：护栏
   expect(record.baseline.audit.ledger).toEqual([]);
   expectWireBodiesGuardFree(audit);
 }, 120_000);
-
-test(
-  "全链边界内零漂移（config A / B）：护栏键全缺席 + req0 消息序逐字节断言",
-  async () => {
-    const inBoundaryDiff = SINGLE_FILE_DIFF;
-    const runId = "VUL4J-1";
-
-    // config A：零工具零预取——req0 = Zone A + MR + Phase-1
-    const aScript = fakeFetch(vul4j1Corpus());
-    const aRunsRoot = tempRunsRoot();
-    const aResult = await runReview({
-      caseId: runId,
-      repoPath: path.join(aRunsRoot, "no-such-repo"),
-      diff: inBoundaryDiff,
-      issueDescription: VUL4J_1_ISSUE,
-      apiKey: "offline-test",
-      fetch: aScript.fetch,
-      runsRoot: aRunsRoot,
-      experimentId: "phase2-smoke",
-      rep: 1,
-      configId: "A",
-    });
-    expect("domainWarning" in aResult.record.baseline).toBe(false);
-    const aAudit = readAudit(aResult.auditPath);
-    expect("mrBoundary" in aAudit).toBe(false);
-    const aReq0 = JSON.parse(aAudit.requests[0].wireBody) as {
-      messages: { role: string; content: string }[];
-    };
-    expect(aReq0.messages).toEqual([
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildInitialUserMessage(runId, VUL4J_1_ISSUE, inBoundaryDiff) },
-      { role: "user", content: PHASE_INSTRUCTIONS[0] },
-    ]);
-    expectWireBodiesGuardFree(aAudit);
-
-    // config B：哨兵预取注入——req0 = Zone A + Zone B + MR + 层×2 + Phase-1
-    const bScript = fakeFetch(vul4j1Corpus());
-    const bRunsRoot = tempRunsRoot();
-    const bResult = await runReview({
-      caseId: runId,
-      repoPath: repoFixturePath("sample"),
-      diff: inBoundaryDiff,
-      issueDescription: VUL4J_1_ISSUE,
-      apiKey: "offline-test",
-      fetch: bScript.fetch,
-      runsRoot: bRunsRoot,
-      experimentId: "phase2-smoke",
-      rep: 1,
-      configId: "B",
-      prefetch: SENTINEL_PREFETCH,
-    });
-    expect("domainWarning" in bResult.record.baseline).toBe(false);
-    const bAudit = readAudit(bResult.auditPath);
-    expect("mrBoundary" in bAudit).toBe(false);
-    const bReq0 = JSON.parse(bAudit.requests[0].wireBody) as {
-      messages: { role: string; content: string }[];
-    };
-    expect(bReq0.messages).toEqual([
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: "SENTINEL-ZONE-B" },
-      { role: "user", content: buildInitialUserMessage(runId, VUL4J_1_ISSUE, inBoundaryDiff) },
-      { role: "user", content: "SENTINEL-LAYER-1" },
-      { role: "user", content: "SENTINEL-LAYER-2" },
-      { role: "user", content: PHASE_INSTRUCTIONS[0] },
-    ]);
-    expectWireBodiesGuardFree(bAudit);
-  },
-  240_000,
-);

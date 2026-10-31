@@ -4,28 +4,25 @@ import { REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { parseCliArgs, USAGE_TEXT } from "./args.js";
 
 // CLI 参数解析契约（#7 P3b，进程内主缝的第一层）：`review-pi review` /
-// `review-pi smoke` / `review-pi disposition` 三个子命令的 argv 用法面。
-// 形态对齐 DSH 线 args.ts（union 结果、不抛异常——用户输入错误是预期
-// 路径），pi 线差异：
-// - 缺省 config = E（生产入口切流，ADR-0011：自主拉取 + Context Ledger；
-//   2026-10-19 决策前曾为 B；DSH 线缺省 A）；
+// `review-pi smoke` 两个子命令的 argv 用法面。形态对齐 DSH 线 args.ts
+// （union 结果、不抛异常——用户输入错误是预期路径），pi 线差异：
+// - 检视形态唯一（ADR-0024：A–E 配置矩阵删除，规则 Skill 是唯一形态）；
+//   任何 --config 都是未知旗标；
 // - 无 --language 旗标（输出语言是 DSH 线后分家决策，pi 线自立 ADR 前不实装）；
-// - smoke = P1b 双探针（无工具调用探针——config B 零工具，检视链不需要）；
-// - disposition（#15）= Finding 处置落库 + KPI：本地数据面，--decision
-//   三值枚举在 parse 层校验，库缺省 <out>/review-pi-cli/dispositions.json。
+// - smoke = P1b 双探针（网关健康 + 模型可达）。
 
 test("空 argv 与未知子命令 → 用法错误（不抛异常）", () => {
   expect(parseCliArgs([])).toEqual({
     ok: false,
-    message: "missing command (expected `review`, `smoke` or `disposition`)",
+    message: "missing command (expected `review` or `smoke`)",
   });
   expect(parseCliArgs(["deploy"])).toEqual({
     ok: false,
-    message: 'unknown command "deploy" (expected `review`, `smoke` or `disposition`)',
+    message: 'unknown command "deploy" (expected `review` or `smoke`)',
   });
 });
 
-test("review 最小 argv：必填旗标 + 全缺省（config E = 生产入口切流 ADR-0011 / out / model / issue）", () => {
+test("review 最小 argv：必填旗标 + 全缺省（out / model / issue）", () => {
   const parsed = parseCliArgs(["review", "--repo", "repo", "--mr", "case.diff"]);
   expect(parsed).toEqual({
     ok: true,
@@ -34,7 +31,6 @@ test("review 最小 argv：必填旗标 + 全缺省（config E = 生产入口切
       repo: "repo",
       mr: "case.diff",
       caseId: "case",
-      config: "E",
       issue: "",
       out: "review-pi-output",
       model: REVIEW_MODEL_ID,
@@ -51,16 +47,13 @@ test("caseId 派生：--mr 文件名去扩展名（含路径与无扩展名形�
   expect(doubleDot.ok && doubleDot.command === "review" && doubleDot.args.caseId).toBe("case.old");
 });
 
-test("--config：A-F 全矩阵合法；非法值 → 用法错误并列出合法集", () => {
-  for (const configId of ["A", "B", "C", "D", "E", "F"] as const) {
-    const parsed = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--config", configId]);
-    expect(parsed.ok && parsed.command === "review" && parsed.args.config).toBe(configId);
+test("--config 已删除：任何形态都按未知旗标拒绝（ADR-0024，不做 no-op 兼容）", () => {
+  for (const configId of ["A", "B", "C", "D", "E", "F"]) {
+    expect(parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--config", configId])).toEqual({
+      ok: false,
+      message: 'unknown flag "--config"',
+    });
   }
-  const bad = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff", "--config", "G"]);
-  expect(bad).toEqual({
-    ok: false,
-    message: 'invalid --config "G": expected one of A, B, C, D, E, F',
-  });
 });
 
 test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule-skill（布尔无值）", () => {
@@ -83,7 +76,6 @@ test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule
       repo: "r",
       mr: "m.diff",
       caseId: "m",
-      config: "E",
       issue: "",
       out: "review-pi-output",
       model: REVIEW_MODEL_ID,
@@ -138,7 +130,7 @@ test("--rule-skill 可重复（目录形态）；与 --rule-skill-zip 共存且�
   ]);
 });
 
-test("规则 Skill 旗标缺席即省键（A–E 行为逐字不变）", () => {
+test("规则 Skill 旗标缺席即省键（缺省形态不带任何规则键）", () => {
   const parsed = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"]);
   expect(parsed.ok && parsed.command === "review" && "ruleSkillZips" in parsed.args).toBe(false);
   expect(parsed.ok && parsed.command === "review" && "ruleSkillDirs" in parsed.args).toBe(false);
@@ -192,7 +184,6 @@ test("--env：显式凭据文件路径透传；缺席省键；空白路径 = 用
       repo: "r",
       mr: "m",
       caseId: "m",
-      config: "E",
       issue: "",
       out: "review-pi-output",
       model: REVIEW_MODEL_ID,
@@ -253,222 +244,6 @@ test("USAGE_TEXT：宣告两个子命令（stderr 错误路径同款文案，单
   expect(USAGE_TEXT).toContain("review-pi smoke");
 });
 
-describe("disposition 子命令（#15 处置落库 + KPI）", () => {
-  const DEFAULT_STORE = path.join("review-pi-output", "review-pi-cli", "dispositions.json");
-
-  test("记录面最小 argv：必填三旗标 + 库缺省派生（review-pi-output/review-pi-cli/dispositions.json）；note 缺席省键", () => {
-    expect(
-      parseCliArgs(["disposition", "--run", "r.json", "--finding", "F100", "--decision", "accept"]),
-    ).toEqual({
-      ok: true,
-      command: "disposition",
-      args: {
-        mode: "record",
-        args: { run: "r.json", finding: "F100", decision: "accept", store: DEFAULT_STORE },
-      },
-    });
-  });
-
-  test("三种处置决定合法（accept / reject / false-positive）；非法值 → 用法错误列三值", () => {
-    for (const decision of ["accept", "reject", "false-positive"] as const) {
-      const parsed = parseCliArgs([
-        "disposition",
-        "--run",
-        "r.json",
-        "--finding",
-        "F100",
-        "--decision",
-        decision,
-      ]);
-      expect(
-        parsed.ok &&
-          parsed.command === "disposition" &&
-          parsed.args.mode === "record" &&
-          parsed.args.args.decision,
-      ).toBe(decision);
-    }
-    expect(
-      parseCliArgs(["disposition", "--run", "r.json", "--finding", "F100", "--decision", "maybe"]),
-    ).toEqual({
-      ok: false,
-      message: 'invalid --decision "maybe": expected one of accept, reject, false-positive',
-    });
-  });
-
-  test("--note 透传；--store 显式覆盖；--out 派生库路径（<out>/review-pi-cli/dispositions.json）", () => {
-    const withNote = parseCliArgs([
-      "disposition",
-      "--run",
-      "r",
-      "--finding",
-      "F",
-      "--decision",
-      "reject",
-      "--note",
-      "历史回归",
-    ]);
-    expect(
-      withNote.ok && withNote.command === "disposition" && withNote.args.mode === "record" &&
-        withNote.args.args.note,
-    ).toBe("历史回归");
-    const explicitStore = parseCliArgs([
-      "disposition",
-      "--run",
-      "r",
-      "--finding",
-      "F",
-      "--decision",
-      "accept",
-      "--store",
-      "runs/exp1/dispositions.json",
-    ]);
-    expect(
-      explicitStore.ok &&
-        explicitStore.command === "disposition" &&
-        explicitStore.args.mode === "record" &&
-        explicitStore.args.args.store,
-    ).toBe("runs/exp1/dispositions.json");
-    const derived = parseCliArgs([
-      "disposition",
-      "--run",
-      "r",
-      "--finding",
-      "F",
-      "--decision",
-      "accept",
-      "--out",
-      "custom-out",
-    ]);
-    expect(
-      derived.ok &&
-        derived.command === "disposition" &&
-        derived.args.mode === "record" &&
-        derived.args.args.store,
-    ).toBe(path.join("custom-out", "review-pi-cli", "dispositions.json"));
-  });
-
-  test("--store 与 --out 互斥（显式库文件 vs 派生根，二义性 fail fast）", () => {
-    expect(
-      parseCliArgs([
-        "disposition",
-        "--run",
-        "r",
-        "--finding",
-        "F",
-        "--decision",
-        "accept",
-        "--store",
-        "s.json",
-        "--out",
-        "o",
-      ]),
-    ).toEqual({
-      ok: false,
-      message:
-        "flags --store and --out are mutually exclusive: pass --store <file> explicitly, or let the store derive from --out",
-    });
-  });
-
-  test("缺必填旗标：--run / --finding / --decision", () => {
-    expect(parseCliArgs(["disposition", "--finding", "F", "--decision", "accept"])).toEqual({
-      ok: false,
-      message: "missing required flag --run",
-    });
-    expect(parseCliArgs(["disposition", "--run", "r", "--decision", "accept"])).toEqual({
-      ok: false,
-      message: "missing required flag --finding",
-    });
-    expect(parseCliArgs(["disposition", "--run", "r", "--finding", "F"])).toEqual({
-      ok: false,
-      message: "missing required flag --decision",
-    });
-  });
-
-  test("未知旗标 / 重复旗标 / 值缺席 / 空白值 → 用法错误", () => {
-    expect(
-      parseCliArgs([
-        "disposition",
-        "--run",
-        "r",
-        "--finding",
-        "F",
-        "--decision",
-        "accept",
-        "--repo",
-        "x",
-      ]),
-    ).toEqual({ ok: false, message: 'unknown flag "--repo"' });
-    expect(
-      parseCliArgs([
-        "disposition",
-        "--run",
-        "r",
-        "--run",
-        "r2",
-        "--finding",
-        "F",
-        "--decision",
-        "accept",
-      ]),
-    ).toEqual({ ok: false, message: "duplicate flag --run" });
-    expect(parseCliArgs(["disposition", "--run"])).toEqual({
-      ok: false,
-      message: "flag --run requires a value",
-    });
-    expect(parseCliArgs(["disposition", "--run", "", "--finding", "F", "--decision", "accept"])).toEqual(
-      { ok: false, message: "flag --run requires a non-empty value" },
-    );
-    expect(
-      parseCliArgs([
-        "disposition",
-        "--run",
-        "r",
-        "--finding",
-        "F",
-        "--decision",
-        "accept",
-        "--note",
-        "  ",
-      ]),
-    ).toEqual({ ok: false, message: "flag --note requires a non-empty value" });
-  });
-
-  test("KPI 面：--stats 裸用走缺省库；--store/--out 同规则派生", () => {
-    expect(parseCliArgs(["disposition", "--stats"])).toEqual({
-      ok: true,
-      command: "disposition",
-      args: { mode: "stats", args: { store: DEFAULT_STORE } },
-    });
-    const explicit = parseCliArgs(["disposition", "--stats", "--store", "s.json"]);
-    expect(
-      explicit.ok && explicit.command === "disposition" && explicit.args.mode === "stats" &&
-        explicit.args.args.store,
-    ).toBe("s.json");
-    const derived = parseCliArgs(["disposition", "--stats", "--out", "o"]);
-    expect(
-      derived.ok && derived.command === "disposition" && derived.args.mode === "stats" &&
-        derived.args.args.store,
-    ).toBe(path.join("o", "review-pi-cli", "dispositions.json"));
-  });
-
-  test("记录面旗标在 KPI 面是模式错误（错误点名可用集）；--stats 重复拒绝", () => {
-    expect(parseCliArgs(["disposition", "--stats", "--finding", "F1"])).toEqual({
-      ok: false,
-      message: 'unknown flag "--finding" (with --stats, accepted flags: --store, --out)',
-    });
-    expect(parseCliArgs(["disposition", "--stats", "--stats"])).toEqual({
-      ok: false,
-      message: "duplicate flag --stats",
-    });
-  });
-
-  test("USAGE_TEXT 宣告 disposition 两用法面（单一来源）", () => {
-    expect(USAGE_TEXT).toContain("review-pi disposition --run");
-    expect(USAGE_TEXT).toContain("review-pi disposition --stats");
-    expect(USAGE_TEXT).toContain("accept|reject|false-positive");
-  });
-});
-
 test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", () => {
   const auto = parseCliArgs(["review", "--repo", "r", "--mr", "m.diff"]);
   expect(auto.ok && auto.command === "review" && "progress" in auto.args).toBe(false);
@@ -492,12 +267,13 @@ test("进度旗标：互斥与重复都是用法错误（fail fast，不静默�
   ).toEqual({ ok: false, message: "duplicate flag --no-progress" });
 });
 
-test("进度旗标：smoke / disposition 面不认（只有 review 显示进度）", () => {
+test("进度旗标：smoke 面不认（只有 review 显示进度）", () => {
   expect(parseCliArgs(["smoke", "--progress"])).toEqual({
     ok: false,
     message: 'unknown flag "--progress"',
   });
-  expect(
-    parseCliArgs(["disposition", "--run", "r.json", "--finding", "F1", "--decision", "accept", "--no-progress"]),
-  ).toEqual({ ok: false, message: 'unknown flag "--no-progress"' });
+  expect(parseCliArgs(["smoke", "--no-progress"])).toEqual({
+    ok: false,
+    message: 'unknown flag "--no-progress"',
+  });
 });

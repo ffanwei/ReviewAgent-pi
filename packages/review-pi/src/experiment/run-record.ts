@@ -1,14 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ConfigId } from "../contracts/config.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
-import type { PrefetchLayerRecord } from "../contracts/prefetch.js";
 import type {
   CacheBreakRecord,
   CandidateRejection,
-  FullRepoRecord,
   PhaseRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
@@ -17,13 +14,12 @@ import type {
   ToolCallRecord,
 } from "../contracts/run.js";
 
-// RunRecord 投影（测量常量面）：与根仓 run-store 产出的 DSH 记录同构
-// （三级键序以 t-series 记录为地面真源，src/experiment/run-record.test.ts 断言），
-// 冻结 analyze 脚本原样消费。落盘路径：
-// <runsRoot>/<experimentId>/runs/vul4j/<caseId>/<configId>/rep-<N>.json。
+// RunRecord 投影（测量常量面）：三级键序以 t-series 记录为地面真源
+// （src/experiment/run-record.test.ts 断言）。落盘路径：
+// <runsRoot>/<experimentId>/runs/vul4j/<caseId>/rep-<N>.json。
 //
 // 请求字节不重复落盘：审计文件（auditPath）承载全部请求的可重放字节，
-// 本记录保留指标与判定链所需的最小审计面（toolCallLog / phaseLog / rejections 等）。
+// 本记录保留指标所需的最小审计面（toolCallLog / phaseLog / rejections 等）。
 
 /** 数据源标识（P1a 评测集：Vul4J） */
 export type ExperimentSource = "vul4j";
@@ -40,14 +36,11 @@ export interface AuditLight {
   readonly cacheBreaks?: readonly CacheBreakRecord[];
   readonly truncated: boolean;
   readonly truncationReasons: readonly string[];
-  readonly prefetch?: readonly PrefetchLayerRecord[];
-  /** config C：全仓注入记账（budget/截断留痕；DSH C 真源同位键） */
-  readonly fullRepo?: FullRepoRecord;
-  /** config E：Context Ledger 快照（恒投影——零工具调用为空数组；C/D 键省略） */
+  /** Context Ledger 快照（恒投影——零工具调用为空数组） */
   readonly ledger?: readonly LedgerEntry[];
-  /** config F：规则 Skill 装载留痕（非 F 配置 / 未装载时省键） */
+  /** 规则 Skill 装载留痕（N=0 ⇒ 空数组） */
   readonly ruleSkill?: readonly RuleSkillAudit[];
-  /** config F：skill 会话执行留痕（round × skill；非 F 配置省键） */
+  /** skill 会话执行留痕（round × skill） */
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
 }
 
@@ -70,7 +63,6 @@ export interface RunSnapshot {
 export interface RunRecord {
   readonly source: ExperimentSource;
   readonly caseId: string;
-  readonly configId: ConfigId;
   readonly rep: number;
   readonly model: string;
   readonly verifier: VerifierMode;
@@ -106,8 +98,6 @@ export function toAuditLight(audit: RunAudit): AuditLight {
       : {}),
     truncated: audit.truncated,
     truncationReasons: audit.truncationReasons,
-    ...(audit.prefetch !== undefined ? { prefetch: audit.prefetch } : {}),
-    ...(audit.fullRepo !== undefined ? { fullRepo: audit.fullRepo } : {}),
     ...(audit.ledger !== undefined ? { ledger: audit.ledger } : {}),
     ...(audit.ruleSkill !== undefined ? { ruleSkill: audit.ruleSkill } : {}),
     ...(audit.skillPassLog !== undefined ? { skillPassLog: audit.skillPassLog } : {}),
@@ -118,7 +108,6 @@ export function toAuditLight(audit: RunAudit): AuditLight {
 export function buildRunRecord(args: {
   readonly source: ExperimentSource;
   readonly caseId: string;
-  readonly configId: ConfigId;
   readonly rep: number;
   readonly model: string;
   readonly completedAt: Date;
@@ -127,7 +116,6 @@ export function buildRunRecord(args: {
   return {
     source: args.source,
     caseId: args.caseId,
-    configId: args.configId,
     rep: args.rep,
     model: args.model,
     verifier: "off",
@@ -144,7 +132,7 @@ export function sanitizeCaseId(caseId: string): string {
 }
 
 /**
- * 运行输出目录：`<runsRoot>/<experimentId>/runs/<source>/<safeCaseId>/<configId>`。
+ * 运行输出目录：`<runsRoot>/<experimentId>/runs/<source>/<safeCaseId>`。
  * 运行记录（`rep-<N>.json`）、检视转录（`session-*.json`）与检视意见导出
  * （`rep-<N>/reviews_*.json`）共用此目录——单点定义防布局漂移。
  */
@@ -153,7 +141,6 @@ export function runDirPath(args: {
   readonly experimentId: string;
   readonly source: ExperimentSource;
   readonly caseId: string;
-  readonly configId: ConfigId;
 }): string {
   return path.join(
     args.runsRoot,
@@ -161,11 +148,10 @@ export function runDirPath(args: {
     "runs",
     args.source,
     sanitizeCaseId(args.caseId),
-    args.configId,
   );
 }
 
-/** 记录文件路径：<runsRoot>/<experimentId>/runs/<source>/<caseId>/<configId>/rep-<rep>.json */
+/** 记录文件路径：<runsRoot>/<experimentId>/runs/<source>/<caseId>/rep-<rep>.json */
 export function runRecordPath(runsRoot: string, experimentId: string, record: RunRecord): string {
   return path.join(
     runDirPath({
@@ -173,7 +159,6 @@ export function runRecordPath(runsRoot: string, experimentId: string, record: Ru
       experimentId,
       source: record.source,
       caseId: record.caseId,
-      configId: record.configId,
     }),
     `rep-${record.rep}.json`,
   );
@@ -193,7 +178,7 @@ export async function writeRunRecord(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `failed to persist run record ${record.source}/${record.caseId}/${record.configId}/rep-${record.rep}: ${message}`,
+      `failed to persist run record ${record.source}/${record.caseId}/rep-${record.rep}: ${message}`,
       { cause: error },
     );
   }

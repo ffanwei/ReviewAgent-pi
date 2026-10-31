@@ -124,7 +124,7 @@ function totalUsage(events: readonly RunProgressEvent[]): {
   return total;
 }
 
-test("config F:阶段/请求/工具/skill 事件按发生序投影,请求 usage 总和与记录对账", async () => {
+test("阶段/请求/工具/skill 事件按发生序投影，请求 usage 总和与记录对账", async () => {
   const events: RunProgressEvent[] = [];
   const candidate = skillCandidate("sample-rule", 11);
   const script = fakeFetch([
@@ -151,7 +151,6 @@ test("config F:阶段/请求/工具/skill 事件按发生序投影,请求 usage 
     runsRoot: tempRunsRoot(),
     experimentId: "phase2-smoke",
     rep: 1,
-    configId: "F",
     ruleSkillLoader: async () => [SAMPLE_RULE_SKILL],
     onProgress: (event) => events.push(event),
   });
@@ -241,7 +240,7 @@ test("config F:阶段/请求/工具/skill 事件按发生序投影,请求 usage 
   ]);
 }, 120_000);
 
-test("config D:工具失败投影为 ok=false + 一行 detail（不落工具结果全文）", async () => {
+test("工具失败投影为 ok=false + 一行 detail（不落工具结果全文）", async () => {
   const events: RunProgressEvent[] = [];
   const script = fakeFetch([
     textReply("ok", 1),
@@ -262,7 +261,7 @@ test("config D:工具失败投影为 ok=false + 一行 detail（不落工具结�
     runsRoot: tempRunsRoot(),
     experimentId: "phase2-smoke",
     rep: 1,
-    configId: "D",
+    ruleSkillLoader: async () => [],
     onProgress: (event) => events.push(event),
   });
 
@@ -285,7 +284,7 @@ test("config D:工具失败投影为 ok=false + 一行 detail（不落工具结�
   expect(run.record.baseline.audit.toolCallLog[0]?.resultSummary).toContain("Error: ");
 }, 120_000);
 
-test("config B:零工具路径只投阶段与请求（没有工具/skill 事件）", async () => {
+test("零工具路径只投阶段与请求（没有工具/skill 事件）", async () => {
   const events: RunProgressEvent[] = [];
   const script = fakeFetch([
     textReply("ok", 1),
@@ -305,7 +304,7 @@ test("config B:零工具路径只投阶段与请求（没有工具/skill 事件�
     runsRoot: tempRunsRoot(),
     experimentId: "phase2-smoke",
     rep: 1,
-    configId: "B",
+    ruleSkillLoader: async () => [],
     onProgress: (event) => events.push(event),
   });
 
@@ -318,7 +317,7 @@ test("config B:零工具路径只投阶段与请求（没有工具/skill 事件�
   )).toEqual([1, 2, 3, 4, 5, 6]);
 }, 120_000);
 
-test("config F:skill 会话的 bash 计入会话留痕、不计入指标 toolCalls（ADR-0014 口径）", async () => {
+test("skill 会话的 bash 计入会话留痕、不计入指标 toolCalls（ADR-0014 口径）", async () => {
   const events: RunProgressEvent[] = [];
   const script = fakeFetch([
     textReply("ok", 1),
@@ -342,7 +341,6 @@ test("config F:skill 会话的 bash 计入会话留痕、不计入指标 toolCal
     runsRoot: tempRunsRoot(),
     experimentId: "phase2-smoke",
     rep: 1,
-    configId: "F",
     ruleSkillLoader: async () => [SAMPLE_RULE_SKILL],
     onProgress: (event) => events.push(event),
   });

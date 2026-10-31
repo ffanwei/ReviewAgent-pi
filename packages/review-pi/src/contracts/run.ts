@@ -4,7 +4,6 @@
 import type { Finding } from "./finding.js";
 import type { LedgerEntry } from "./ledger.js";
 import type { LlmUsage, ToolSchema, WireMessage } from "./llm.js";
-import type { PrefetchLayerRecord } from "./prefetch.js";
 
 /** 六阶段名（固定顺序；phaseLog 留痕用） */
 export type ReviewPhase =
@@ -23,7 +22,7 @@ export interface PhaseRecord {
   readonly note?: string;
 }
 
-/** 一次工具调用的留痕（config B 零工具，恒空数组；契约先行） */
+/** 一次工具调用的留痕 */
 export interface ToolCallRecord {
   readonly name: string;
   readonly argumentsJson: string;
@@ -75,15 +74,6 @@ export interface WireRequest {
   readonly wireBody: string;
 }
 
-/** config C 全仓注入的留痕（预算守卫：截断必留痕） */
-export interface FullRepoRecord {
-  readonly budgetChars: number;
-  readonly contentChars: number;
-  readonly truncated: boolean;
-  readonly totalFiles: number;
-  readonly shownFiles: number;
-}
-
 /** MR 边界护栏的降级原因（#12：前两类 = 度量完成但超界；末类 = 结构不可度量） */
 export type MrBoundaryReason = "too-many-files" | "diff-too-large" | "boundary-unmeasurable";
 
@@ -105,12 +95,12 @@ export interface RuleSkillAuditDiagnostic {
 }
 
 /**
- * 规则 Skill 装载留痕（ADR-0014 / config F：审计文件尾键）。
+ * 规则 Skill 装载留痕（ADR-0014 / ADR-0018：审计文件尾键）。
  * 每装载一个 zip 一条，顺序 = CLI 传入顺序（或约定目录的文件名序）。
  * `source` = 归档来源（仓库相对 POSIX）；`digest` = zip 内容 sha256；
  * `name` = 装载的 skill 名（降级时为空串）；`degradedReason` 在场即降级；
  * `diagnostics` = 内核装载 warning（path 已净化为缓存目录相对形态）。
- * 非 F 配置时省键（缺席纪律）；F 恒为数组（N=0 ⇒ 空数组）。
+ * 恒为数组（N=0 ⇒ 空数组）。
  */
 export interface RuleSkillAudit {
   readonly source: string;
@@ -162,24 +152,17 @@ export interface RunAudit {
   readonly cacheBreaks: readonly CacheBreakRecord[];
   readonly truncated: boolean;
   readonly truncationReasons: readonly string[];
-  readonly prefetch?: readonly PrefetchLayerRecord[];
-  /** config C 全仓注入记账（非 C 配置缺省） */
-  readonly fullRepo?: FullRepoRecord;
-  /** config E Context Ledger 快照（非 E 配置缺省） */
+  /** Context Ledger 快照（恒投影；零工具调用为空数组） */
   readonly ledger?: readonly LedgerEntry[];
-  /**
-   * config F 规则 Skill 装载留痕（ADR-0014：每 zip 一条、CLI 序）。
-   * 非 F 配置缺省省键；F 恒为数组（N=0 ⇒ 空数组）。
-   */
+  /** 规则 Skill 装载留痕（恒为数组：N=0 ⇒ 空数组） */
   readonly ruleSkill?: readonly RuleSkillAudit[];
-  /** config F skill 会话执行留痕（粒度 round × skill；非 F 缺省省键，F 恒为数组：N=0 ⇒ 空数组） */
+  /** skill 会话执行留痕（粒度 round × skill；恒为数组：N=0 ⇒ 空数组） */
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */
 export interface RunResult {
   readonly caseId: string;
-  readonly configId: string;
   readonly model: string;
   readonly findings: readonly Finding[];
   readonly usage: LlmUsage;

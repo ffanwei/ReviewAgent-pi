@@ -27,14 +27,14 @@ export type PresentationFootprint =
 /** 一次检视的呈现面：导出审计的顶层摘要经 Pick 锚定（审计字段漂移即编译错） */
 export type ReviewOutcome = Pick<
   AuditFileContent,
-  "caseId" | "configId" | "runId" | "truncated" | "rounds" | "toolCalls" | "findings"
+  "caseId" | "runId" | "truncated" | "rounds" | "toolCalls" | "findings"
 > & {
   readonly auditPath: string;
   /** 呈现投影留痕（未配置引擎时缺席——现状形态） */
   readonly presentation?: PresentationFootprint;
 };
 
-/** ok 包络 + 两空格缩进 JSON 整写 + 尾随换行（stdout 单文档纪律的公共面；disposition 命令复用） */
+/** ok 包络 + 两空格缩进 JSON 整写 + 尾随换行（stdout 单文档纪律的公共面） */
 export function renderJsonDocument(document: Record<string, unknown>): string {
   return `${JSON.stringify(document, null, 2)}\n`;
 }

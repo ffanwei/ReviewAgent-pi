@@ -1,5 +1,3 @@
-import type { LlmMessage } from "../contracts/llm.js";
-
 // MR 初始 user 消息构造（测量常量面：消息格式与 DSH 线逐字节一致）。
 //
 // 字节真源：DSH 线 t-series requests[0].messages[2]
@@ -23,21 +21,4 @@ export function buildInitialUserMessage(
     diff,
     "```",
   ].join("\n");
-}
-
-/**
- * 初始上下文消息（system 之外的全部）：Zone B → MR user → 预取层。
- * 消息序与 t-series req0 逐条一致（system 经 pi-ai Context.systemPrompt 通道，
- * 序列化时映射为 messages[0]）。
- */
-export function buildInitialContextMessages(args: {
-  readonly zoneB?: LlmMessage;
-  readonly mrUserContent: string;
-  readonly prefetch?: readonly LlmMessage[];
-}): readonly LlmMessage[] {
-  return [
-    ...(args.zoneB !== undefined ? [args.zoneB] : []),
-    { role: "user", content: args.mrUserContent },
-    ...(args.prefetch ?? []),
-  ];
 }

@@ -11,11 +11,10 @@ import { renderReviewOutcome } from "./render.js";
 /** 形状锚定：呈现面字段必须是 AuditFileContent 的真子集（编译期锁） */
 const ANCHOR: Pick<
   AuditFileContent,
-  "caseId" | "configId" | "runId" | "truncated" | "rounds" | "toolCalls" | "findings"
+  "caseId" | "runId" | "truncated" | "rounds" | "toolCalls" | "findings"
 > = {
   caseId: "VUL4J-1",
-  configId: "B",
-  runId: "20260920T000000-000Z-B-VUL4J-1",
+  runId: "20260920T000000.000-VUL4J-1",
   truncated: false,
   rounds: 1,
   toolCalls: 0,
@@ -29,8 +28,7 @@ test("renderReviewOutcome：ok 包络 + 字段集 + 2 空格缩进 + 尾随换�
       {
         ok: true,
         caseId: "VUL4J-1",
-        configId: "B",
-        runId: "20260920T000000-000Z-B-VUL4J-1",
+        runId: "20260920T000000.000-VUL4J-1",
         truncated: false,
         rounds: 1,
         toolCalls: 0,
@@ -53,8 +51,7 @@ test("renderReviewOutcome：ok 包络 + 字段集 + 2 空格缩进 + 尾随换�
 test("renderReviewOutcome：truncated=true 形态（截断路径退出码 0，JSON 携带截断信号）", () => {
   const findings: readonly Finding[] = [];
   const text = renderReviewOutcome({
-    caseId: "CASE-9",
-    configId: "B",
+    caseId: "CASE-9",
     runId: "run-9",
     truncated: true,
     rounds: 5,
@@ -72,8 +69,7 @@ test("renderReviewOutcome：truncated=true 形态（截断路径退出码 0，JS
 
 test("renderReviewOutcome：投影成功 → presentation = provenance（尾部追加，findings 为已译呈现档）", () => {
   const text = renderReviewOutcome({
-    caseId: "VUL4J-1",
-    configId: "E",
+    caseId: "VUL4J-1",
     runId: "run-zh",
     truncated: false,
     rounds: 1,
@@ -112,8 +108,7 @@ test("renderReviewOutcome：投影成功 → presentation = provenance（尾部�
 
 test("renderReviewOutcome：投影降级 → presentation = { language: en, degraded: true }", () => {
   const text = renderReviewOutcome({
-    caseId: "VUL4J-1",
-    configId: "E",
+    caseId: "VUL4J-1",
     runId: "run-degraded",
     truncated: false,
     rounds: 1,

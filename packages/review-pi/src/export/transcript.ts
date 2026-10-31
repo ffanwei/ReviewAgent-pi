@@ -11,7 +11,6 @@ import type {
   UserMessage,
 } from "@earendil-works/pi-ai";
 import { buildRunId } from "../audit/audit-writer.js";
-import type { ConfigId } from "../contracts/config.js";
 
 // 检视转录（ADR-0013 / ADR-0015 / CONTEXT.md「检视转录」）：把一次检视中**进入
 // pi Agent 的全部交互**留档为 `{ info, messages, view }`：
@@ -68,7 +67,6 @@ export interface TranscriptInfo {
   /** 审计 `runId`（本仓扩展键）：与审计 / `reviews_*.runId` / `rep-N.json` 的**配对键** */
   readonly runId: string;
   readonly agent: "review";
-  readonly configId: ConfigId;
   readonly model: { readonly id: string; readonly baseUrl: string };
   readonly tokens: {
     readonly input: number;
@@ -386,7 +384,6 @@ export interface BuildTranscriptInput {
   /** 审计 `runId`（配对键；与转录命名时间不同源） */
   readonly runId: string;
   readonly caseId: string;
-  readonly configId: ConfigId;
   /** 被检视仓库绝对路径（`location.directory`） */
   readonly repoPath: string;
   /** Zone A 系统提示词（合成 `messages[0]`） */
@@ -406,8 +403,8 @@ export interface BuildTranscriptInput {
  * 转录文件名 stem = `session-` + 首次模型请求时刻的 runId 形态
  * （时间戳写法 / caseId 净化与审计文件同源——单点复用 `buildRunId`）。
  */
-export function transcriptStem(configId: ConfigId, caseId: string, firstRequestAt: Date): string {
-  return `session-${buildRunId(firstRequestAt, configId, caseId)}`;
+export function transcriptStem(caseId: string, firstRequestAt: Date): string {
+  return `session-${buildRunId(firstRequestAt, caseId)}`;
 }
 
 export function buildTranscript(input: BuildTranscriptInput): ReviewTranscript {
@@ -415,10 +412,9 @@ export function buildTranscript(input: BuildTranscriptInput): ReviewTranscript {
   const totals = sumAssistantUsage(input.capture.messages);
   return {
     info: {
-      id: `${transcriptStem(input.configId, input.caseId, firstRequestAt)}${input.idSuffix ?? ""}`,
+      id: `${transcriptStem(input.caseId, firstRequestAt)}${input.idSuffix ?? ""}`,
       runId: input.runId,
       agent: "review",
-      configId: input.configId,
       model: { id: input.capture.model.id, baseUrl: input.capture.model.baseUrl },
       tokens: totals.tokens,
       cost: totals.cost,

@@ -1,26 +1,18 @@
 import { basename } from "node:path";
-import { CONFIGS, type ConfigId } from "../contracts/config.js";
-import { dispositionStorePath } from "../disposition/store.js";
-import { DISPOSITION_DECISIONS, type DispositionDecision } from "../disposition/record.js";
 import { REVIEW_MODEL_ID } from "../provider/pi-client.js";
 
 /**
- * #7 review-pi CLI 参数解析（进程内主缝第一层）：`review-pi review`、
- * `review-pi smoke` 与 `review-pi disposition` 三个子命令的用法契约。
+ * #7 review-pi CLI 参数解析（进程内主缝第一层）：`review-pi review` 与
+ * `review-pi smoke` 两个子命令的用法契约。
  * 形态对齐 DSH 线 review-agent args.ts（union 结果、不抛异常——用户输入
- * 错误是预期路径，不是完整性事故）；config 合法性对照 CONFIGS 注册表
- * （A–E 矩阵真源）。
+ * 错误是预期路径，不是完整性事故）。
  *
  * pi 线差异（自立决策，不从 DSH 仓导入）：
- * - 缺省 config = E（生产入口切流，ADR-0011：自主拉取 + Context Ledger；
- *   2026-10-19 决策前曾为 B——P3b 时代「生产形态」口径已随选型死亡；
- *   DSH 线缺省 A）；
+ * - 检视形态唯一（ADR-0024：A–E 配置矩阵删除，规则 Skill 是唯一形态）；
+ * - 无 --config 旗标；规则 Skill 由 `--rule-skill-zip` / `--rule-skill` /
+ *   `--rule-skill-name` / `--strict-rule-skill` 与 `<repo>/.review-rules/` 约定；
  * - 无 --language 旗标（输出语言是 DSH 线后分家决策，pi 线自立 ADR 前不实装）；
- * - smoke 只认 --model（双探针自检不跑检视，参数面自然更窄）；
- * - disposition（#15）本地数据面：无网络无凭据；--decision 三值枚举在
- *   parse 层校验；处置库 --store 显式与 --out 派生根互斥，缺省派生
- *   <out>/<CLI_EXPERIMENT_ID>/dispositions.json（与 review 落盘的 runs/
- *   同层）。
+ * - smoke 只认 --model（双探针自检不跑检视，参数面自然更窄）。
  *
  * model 是实验数据（#45 语义）：自由 id 透传，缺省单源 = 钉住的评审模型
  * （REVIEW_MODEL_ID），无 model 环境变量。与 DSH 线 review bin 的
@@ -28,17 +20,16 @@ import { REVIEW_MODEL_ID } from "../provider/pi-client.js";
  * 实验 CLI；pi 内核 reviewModelOf 对目录外 id 一律以钉住画像透传，无别名目录）。
  */
 
-/** CLI 运行留痕的实验目录名（<out>/<experimentId>/runs|audit|dispositions.json——处置库与 runs/ 同层） */
+/** CLI 运行留痕的实验目录名（<out>/<experimentId>/runs|audit） */
 export const CLI_EXPERIMENT_ID = "review-pi-cli";
 
-/** --out 缺省（review 落盘根与 disposition 处置库派生根共用同一约定） */
+/** --out 缺省（review 落盘根） */
 const DEFAULT_OUT_DIR = "review-pi-output";
 
 /** review 子命令的已知旗标（未知旗标 = 用法错误；无值布尔旗标 `--strict-rule-skill` / `--progress` / `--no-progress` 进旗标循环前剥离） */
 const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--repo",
   "--mr",
-  "--config",
   "--issue",
   "--out",
   "--model",
@@ -54,42 +45,23 @@ const REPEATABLE_REVIEW_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-
 /** smoke 子命令的已知旗标 */
 const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model"];
 
-/** disposition 子命令（记录处置面）的已知旗标 */
-const KNOWN_DISPOSITION_FLAGS: readonly string[] = [
-  "--run",
-  "--finding",
-  "--decision",
-  "--note",
-  "--store",
-  "--out",
-];
-
-/** disposition 子命令（KPI 面）的已知旗标（--stats 本身无值，进入旗标循环前剥离） */
-const KNOWN_DISPOSITION_STATS_FLAGS: readonly string[] = ["--store", "--out"];
-
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--config A-F] [--issue <text>] [--out <dir>] [--model <id>] [--env <file>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> --mr <diff-file> [--issue <text>] [--out <dir>] [--model <id>] [--env <file>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
        review-pi smoke [--model <id>]
-       review-pi disposition --run <run-record.json> --finding <id> --decision accept|reject|false-positive [--note <text>] ([--store <file>] | [--out <dir>])
-       review-pi disposition --stats ([--store <file>] | [--out <dir>])
   （smoke = 网关冒烟自检，P1b 双探针：网关健康 + 模型可达，输出人话诊断）
-  （disposition = Finding 人工处置落库 + 接受率 KPI：本地数据面，无网络、不碰凭据与 .env.local）
 
 review 旗标：
   --repo    <path>       仓库快照根目录（必需）
   --mr      <diff-file>  MR diff 文件路径（必需；caseId = 文件名去扩展名）
-  --config  <A-F>        配置形态（缺省 E = 生产入口：自主拉取 + Context Ledger，ADR-0011 切流；
-                         F = E + 规则 Skill：用 --rule-skill-zip 传 zip，或用 --rule-skill 传
-                         已解压目录；两者都不传则扫 <repo>/.review-rules/*.zip）
   --issue   <text>       MR 议题描述（缺省空）
   --out     <dir>        输出目录（审计与运行记录落盘；缺省 ${DEFAULT_OUT_DIR}）
   --model   <id>         评审模型 id（缺省 ${REVIEW_MODEL_ID}；自由 id 透传）
   --env     <file>       凭据文件显式路径（仅 review；替代进程 cwd 的 .env.local——
                          指定后**不再**读 cwd 那份；相对路径按 cwd 解析；显式指定
                          但文件不存在 = 用法/环境错误 exit 1）
-  --rule-skill-zip  <path>  规则 Skill zip 显式路径（config F；可重复，顺序 = 执行顺序；
+  --rule-skill-zip  <path>  规则 Skill zip 显式路径（可重复，顺序 = 执行顺序；
                             缺省扫 <repo>/.review-rules/*.zip 全部装载）
-  --rule-skill      <dir>   规则 Skill **已解压目录**（config F；可重复；排在全部
+  --rule-skill      <dir>   规则 Skill **已解压目录**（可重复；排在全部
                             --rule-skill-zip 之后；目录先审计再按内容哈希复制进 run
                             缓存，符号链接/越界一律拒绝）
   --rule-skill-name <name>  指定装载的规则 Skill 名（包内多 skill 消歧，逐包生效）
@@ -99,29 +71,14 @@ review 旗标：
   --no-progress             关闭运行进度（批跑收日志时显式静音）
 
 smoke 旗标：
-  --model   <id>         冒烟模型 id（同缺省与校验；端点/key 走 REVIEWER_* 环境变量或 .env.local，绝不回显）
+  --model   <id>         冒烟模型 id（同缺省与校验；端点/key 走 REVIEWER_* 环境变量或 .env.local，绝不回显）`;
 
-disposition 旗标（记录处置）：
-  --run      <file>      产生该 finding 的 run record JSON 文件（必需；回溯锚与 finding 校验都以它为准）
-  --finding  <id>        被处置的 finding id（必需；必须存在于该 run record 的 baseline.findings）
-  --decision <kind>      处置决定（必需）：accept 接受 / reject 拒绝 / false-positive 误报
-  --note     <text>      人工备注（可选；空白 = 用法错误）
-  --store    <file>      处置库文件（与 --out 互斥）
-  --out      <dir>       处置库派生根（缺省 ${DEFAULT_OUT_DIR}；库 = <out>/${CLI_EXPERIMENT_ID}/dispositions.json，
-                         与 review 命令落盘的 runs/ 同层）
-
-disposition 旗标（KPI）：
-  --stats                从处置库聚合人工接受率（绝对口径：accepted/total；total=0 → null）
-  --store    <file>      处置库文件（与 --out 互斥；派生规则同上）
-  --out      <dir>       处置库派生根（同上）`;
-
-/** 解析后的 review 命令参数（config 已收窄为 A–F；caseId 由 --mr 派生） */
+/** 解析后的 review 命令参数（caseId 由 --mr 派生） */
 export interface ReviewCliArgs {
   readonly repo: string;
   readonly mr: string;
   /** 检视单元身份：--mr 文件名去扩展名（一案一 diff 文件约定） */
   readonly caseId: string;
-  readonly config: ConfigId;
   readonly issue: string;
   readonly out: string;
   /** 评审模型：缺省 REVIEW_MODEL_ID；自由 id 透传（空串/空白 = 用法错误） */
@@ -152,32 +109,10 @@ export interface SmokeCliArgs {
   readonly model: string;
 }
 
-/** 解析后的 disposition 记录面参数（store 已解析：--store 显式或 --out 派生） */
-export interface DispositionRecordArgs {
-  /** 产生该 finding 的 run record JSON 文件路径（必需） */
-  readonly run: string;
-  readonly finding: string;
-  readonly decision: DispositionDecision;
-  /** 人工备注（缺席省键） */
-  readonly note?: string;
-  readonly store: string;
-}
-
-/** 解析后的 disposition KPI 面参数 */
-export interface DispositionStatsArgs {
-  readonly store: string;
-}
-
-/** disposition 命令的两用法面（mode 判别式） */
-export type DispositionCliArgs =
-  | { readonly mode: "record"; readonly args: DispositionRecordArgs }
-  | { readonly mode: "stats"; readonly args: DispositionStatsArgs };
-
 /** 解析结果：子命令 + 参数，或用法错误消息（调用方负责呈现与退出码） */
 export type ParseCliArgsResult =
   | { readonly ok: true; readonly command: "review"; readonly args: ReviewCliArgs }
   | { readonly ok: true; readonly command: "smoke"; readonly args: SmokeCliArgs }
-  | { readonly ok: true; readonly command: "disposition"; readonly args: DispositionCliArgs }
   | { readonly ok: false; readonly message: string };
 
 /** 旗标循环（两子命令共用）：未知旗标 / 重复旗标 / 值缺席（含值吞旗标）都是用法错误。
@@ -236,123 +171,16 @@ function parseModelFlag(
   return { ok: true, model: modelRaw };
 }
 
-/** 首个空白值旗标（disposition 面值校验：空串/全空白都 fail fast，不给库文件/路径埋雷） */
-function findBlankFlagValue(values: Map<string, string>): string | undefined {
-  for (const [flag, value] of values) {
-    if (value.trim().length === 0) {
-      return flag;
-    }
-  }
-  return undefined;
-}
-
-/** 解析结果的私有形态（disposition 两面共用：ok 面 / 错误消息面） */
-type DispositionParseResult =
-  | { readonly ok: true; readonly args: DispositionCliArgs }
-  | { readonly ok: false; readonly message: string };
-
-/** 记录面参数的私有解析结果 */
-type RecordParseResult =
-  | { readonly ok: true; readonly args: DispositionRecordArgs }
-  | { readonly ok: false; readonly message: string };
-
-/**
- * disposition 子命令解析（两用法面共用旗标循环）：
- * --stats 无值，进入 parseFlags 前剥离；出现多次 = 重复旗标。
- * 旗标循环后按面分流：记录面 → parseDispositionRecordArgs，KPI 面 → 直接成参。
- */
-function parseDispositionArgs(rest: readonly string[]): DispositionParseResult {
-  const statsTokens = rest.filter((token) => token === "--stats");
-  if (statsTokens.length > 1) {
-    return { ok: false, message: "duplicate flag --stats" };
-  }
-  const isStats = statsTokens.length === 1;
-  const remaining = rest.filter((token) => token !== "--stats");
-  const flags = parseFlags(remaining, isStats ? KNOWN_DISPOSITION_STATS_FLAGS : KNOWN_DISPOSITION_FLAGS);
-  if (!flags.ok) {
-    // stats 面下记录面旗标是「模式不匹配」而非单纯未知——错误里点名可用集
-    return isStats
-      ? { ok: false, message: `${flags.message} (with --stats, accepted flags: --store, --out)` }
-      : flags;
-  }
-  const blankFlag = findBlankFlagValue(flags.values);
-  if (blankFlag !== undefined) {
-    return { ok: false, message: `flag ${blankFlag} requires a non-empty value` };
-  }
-  const store = resolveDispositionStore(flags.values);
-  if (!store.ok) {
-    return store;
-  }
-  if (isStats) {
-    return { ok: true, args: { mode: "stats", args: { store: store.store } } };
-  }
-  const record = parseDispositionRecordArgs(flags.values, store.store);
-  return record.ok ? { ok: true, args: { mode: "record", args: record.args } } : record;
-}
-
-/** 处置库解析：--store 显式与 --out 派生根互斥（二义性 fail fast）；缺省派生 <out>/<CLI_EXPERIMENT_ID>/dispositions.json */
-function resolveDispositionStore(
-  values: Map<string, string>,
-): { readonly ok: true; readonly store: string } | { readonly ok: false; readonly message: string } {
-  const store = values.get("--store");
-  const out = values.get("--out");
-  if (store !== undefined && out !== undefined) {
-    return {
-      ok: false,
-      message:
-        "flags --store and --out are mutually exclusive: pass --store <file> explicitly, or let the store derive from --out",
-    };
-  }
-  return { ok: true, store: store ?? dispositionStorePath(out ?? DEFAULT_OUT_DIR, CLI_EXPERIMENT_ID) };
-}
-
-/** 记录面必填与枚举：--run / --finding / --decision（三值枚举 parse 层校验）；--note 可选透传 */
-function parseDispositionRecordArgs(values: Map<string, string>, store: string): RecordParseResult {
-  const run = values.get("--run");
-  if (run === undefined) {
-    return { ok: false, message: "missing required flag --run" };
-  }
-  const finding = values.get("--finding");
-  if (finding === undefined) {
-    return { ok: false, message: "missing required flag --finding" };
-  }
-  const decisionRaw = values.get("--decision");
-  if (decisionRaw === undefined) {
-    return { ok: false, message: "missing required flag --decision" };
-  }
-  if (!DISPOSITION_DECISIONS.includes(decisionRaw as DispositionDecision)) {
-    return {
-      ok: false,
-      message: `invalid --decision ${JSON.stringify(decisionRaw)}: expected one of ${DISPOSITION_DECISIONS.join(", ")}`,
-    };
-  }
-  const note = values.get("--note");
-  return {
-    ok: true,
-    args: {
-      run,
-      finding,
-      decision: decisionRaw as DispositionDecision,
-      store,
-      ...(note !== undefined ? { note } : {}),
-    },
-  };
-}
-
 export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   const [command, ...rest] = argv;
-  if (command !== "review" && command !== "smoke" && command !== "disposition") {
+  if (command !== "review" && command !== "smoke") {
     return {
       ok: false,
       message:
         argv.length === 0
-          ? "missing command (expected `review`, `smoke` or `disposition`)"
-          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\` or \`disposition\`)`,
+          ? "missing command (expected `review` or `smoke`)"
+          : `unknown command ${JSON.stringify(command)} (expected \`review\` or \`smoke\`)`,
     };
-  }
-  if (command === "disposition") {
-    const disposition = parseDispositionArgs(rest);
-    return disposition.ok ? { ok: true, command: "disposition", args: disposition.args } : disposition;
   }
   const booleanFlags = command === "review" ? stripReviewBooleanFlags(rest) : undefined;
   if (booleanFlags !== undefined && !booleanFlags.ok) {
@@ -385,8 +213,8 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
 
 /**
  * 剥离 review 的无值布尔旗标（`--strict-rule-skill` / `--progress` /
- * `--no-progress`；照 disposition `--stats` 先例——旗标循环是 k-v 成对，无值
- * 旗标必须先摘除）。单趟计数：重复出现 = 重复旗标，互斥对同给 = 用法错误。
+ * `--no-progress`；旗标循环是 k-v 成对，无值旗标必须先摘除）。单趟计数：
+ * 重复出现 = 重复旗标，互斥对同给 = 用法错误。
  */
 function stripReviewBooleanFlags(rest: readonly string[]): {
   readonly ok: true;
@@ -422,7 +250,7 @@ function stripReviewBooleanFlags(rest: readonly string[]): {
   };
 }
 
-/** review 面必填与缺省：--repo / --mr（caseId = 文件名去扩展名）、--config 缺省 E（ADR-0011 切流）、--issue 缺省空 */
+/** review 面必填与缺省：--repo / --mr（caseId = 文件名去扩展名）、--issue 缺省空 */
 function parseReviewArgs(
   values: Map<string, string>,
   repeated: ReadonlyMap<string, readonly string[]>,
@@ -437,10 +265,6 @@ function parseReviewArgs(
   const mr = values.get("--mr");
   if (mr === undefined) {
     return { ok: false, message: "missing required flag --mr" };
-  }
-  const configRaw = values.get("--config") ?? "E";
-  if (!(configRaw in CONFIGS)) {
-    return { ok: false, message: `invalid --config ${JSON.stringify(configRaw)}: expected one of A, B, C, D, E, F` };
   }
   const ruleSkillZips = repeated.get("--rule-skill-zip");
   const ruleSkillDirs = repeated.get("--rule-skill");
@@ -462,7 +286,6 @@ function parseReviewArgs(
       repo,
       mr,
       caseId: basename(mr).replace(/\.[^.]*$/, ""),
-      config: configRaw as ConfigId,
       issue: values.get("--issue") ?? "",
       out: values.get("--out") ?? DEFAULT_OUT_DIR,
       model,
