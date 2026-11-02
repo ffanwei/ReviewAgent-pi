@@ -96,7 +96,7 @@ _Avoid_: 不变层（过泛）、冻结面（与「仪器冻结」混淆）、�
 _Avoid_: 可变层（过泛）
 
 **MR 输入形态（MR Input Form）**:
-单次检视的变更集来源，恰好一种：`--mr-diff <file>`（标准 unified diff 文本）或 `--mr-json <file>`（GitCode/GitLab `/pulls/:number/files` 的原样 JSON 数组，只读每项 `new_path` 与 `diff`，装载期补文件头；ADR-0029）。`caseId` 恒由文件名去最后一个扩展名派生，与形态无关。二者不可混用，也不做内容嗅探。
+单次检视的变更集来源，恰好一种：`--mr-diff <file>`（标准 unified diff 文本）或 `--mr-json <file>`（GitCode/GitLab `/pulls/:number/files` 的原样 JSON 数组，路径取 `new_path` / `filename` / `path`、正文取 `diff` / `patch`（按优先级），装载期补文件头；ADR-0029）。`caseId` 恒由文件名去最后一个扩展名派生，与形态无关。二者不可混用，也不做内容嗅探。
 _Avoid_: MR 文件（不区分形态）、patch（只指 hunk 正文）
 
 **MR 边界护栏（Boundary Guard）**:

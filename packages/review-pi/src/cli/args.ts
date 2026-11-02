@@ -58,8 +58,9 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <dif
 review 旗标：
   --repo    <path>       仓库快照根目录（必需）
   --mr-diff <file>       MR diff 文件路径（统一 diff 文本；caseId = 文件名去扩展名）
-  --mr-json <file>       GitCode/GitLab 文件变更 JSON 数组（每项只取 new_path 与 diff，
-                         其余字段忽略；装载期补文件头转统一 diff）。与 --mr-diff 二选一
+  --mr-json <file>       GitCode/GitLab 文件变更 JSON 数组（路径取 new_path → filename → path、
+                         正文取 diff → patch，其余字段忽略；装载期补文件头转统一 diff）。
+                         与 --mr-diff 二选一
   --issue   <text>       MR 议题描述（缺省空）
   --out     <dir>        输出目录（审计与运行记录落盘；缺省 ${DEFAULT_OUT_DIR}）
   --model   <id>         评审模型 id（缺省取配置文件 model.default；自由 id 透传）

@@ -455,7 +455,7 @@ test(
     try {
       const outDir = makeTempDir("review-pi-cli-out-");
       const jsonFile = path.join(makeTempDir("review-pi-cli-mr-"), "MR-1234.json");
-      // 接口原样形状：每项只有 new_path 与 diff（从 @@ 开始，无文件头）
+      // 接口原样形状之一：每项只有 new_path 与 diff（从 @@ 开始，无文件头）
       writeFileSync(
         jsonFile,
         JSON.stringify([
@@ -471,7 +471,7 @@ test(
               " \n" +
               "         return (T) toObjectArray(parser, componentClass, array);\n" +
               "     }",
-            // 额外字段一概忽略（只读 new_path / diff）
+            // 额外字段一概忽略（只按「路径 + 正文」两个语义取字段）
             old_path: "ignored/old.ts",
             new_file: true,
             sha: "deadbeef",

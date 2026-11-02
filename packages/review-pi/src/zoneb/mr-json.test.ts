@@ -85,7 +85,7 @@ describe("mrJsonToUnifiedDiff：接口数组 → 统一 diff", () => {
     expect(deleted !== undefined && oldSpansOf(deleted)).toEqual([{ startLine: 1, endLine: 24 }]);
   });
 
-  test("只读 new_path 与 diff：其他字段一概忽略（不产生 rename / 不信任 new_file）", () => {
+  test("只读「路径 + 正文」两个语义字段：取到就不再往下看方言键，元数据一概不参与", () => {
     const diff = convert([
       {
         old_path: "before/name.ts",
@@ -93,13 +93,46 @@ describe("mrJsonToUnifiedDiff：接口数组 → 统一 diff", () => {
         new_file: true,
         deleted_file: true,
         renamed_file: true,
+        filename: "ignored-by-precedence.ts",
+        path: "ignored-too.ts",
         patch: "@@ -9,9 +9,9 @@\n-a\n+b",
         binary: true,
         diff: "@@ -3,2 +3,2 @@\n-a\n+b",
       },
     ]);
-    // 路径只取 new_path；没有 rename 行；new_file/deleted_file 不被采用，按 hunk 头判定非新非删
+    // 路径取 new_path（优先于 filename / path）；正文取 diff（优先于 patch）；没有 rename 行
     expect(diff).toBe("diff --git a/after/name.ts b/after/name.ts\n--- a/after/name.ts\n+++ b/after/name.ts\n@@ -3,2 +3,2 @@\n-a\n+b\n");
+  });
+
+  test("GitCode v5 `/files` 与 GitHub 形态（filename + patch）直接可吃", () => {
+    // 真实响应字段：sha / filename / status / additions / deletions / blob_url / raw_url / patch
+    const diff = convert([
+      {
+        sha: "6dcb09b",
+        filename: "src/api/user.ts",
+        status: "modified",
+        additions: "2",
+        deletions: "1",
+        blob_url: "https://example.invalid/blob",
+        raw_url: "https://example.invalid/raw",
+        patch: "@@ -12,9 +12,15 @@ export interface User {\n   id: number;\n-  email: string;\n+  email: string | null;",
+      },
+      { sha: "aaaaaaa", filename: "assets/logo.png", status: "added", patch: null },
+      { sha: "bbbbbbb", filename: "src/new.ts", status: "added", patch: "@@ -0,0 +1,2 @@\n+export const A = 1;\n+export const B = 2;" },
+    ]);
+
+    expect(diff).toContain("diff --git a/src/api/user.ts b/src/api/user.ts\n--- a/src/api/user.ts\n+++ b/src/api/user.ts\n@@ -12,9 +12,15 @@");
+    expect(diff).toContain("diff --git a/src/new.ts b/src/new.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1,2 @@");
+    // 二进制条目没有 patch → 跳过，不进 diff
+    expect(diff).not.toContain("logo.png");
+
+    expect(analyzeDiff(diff).files.map((file) => file.file)).toEqual(["src/api/user.ts", "src/new.ts"]);
+  });
+
+  test("`path` 也认；diff 为空串时继续看 patch", () => {
+    expect(convert([{ path: "x/y.ts", diff: "", patch: "@@ -1 +1 @@\n-a\n+b" }])).toBe(
+      "diff --git a/x/y.ts b/x/y.ts\n--- a/x/y.ts\n+++ b/x/y.ts\n@@ -1 +1 @@\n-a\n+b\n",
+    );
   });
 
   test("diff 已是整段 patch（网关直回 git 原文）→ 原样透传，不重复包头", () => {
@@ -129,15 +162,23 @@ describe("mrJsonToUnifiedDiff：接口数组 → 统一 diff", () => {
     );
   });
 
-  test("形状不对：错误消息带输入标签与条目序号", () => {
+  test("形状不对：错误消息带输入标签、条目序号与该项实际键", () => {
     expect(() => mrJsonToUnifiedDiff('{"files":[]}', "MR-1.json")).toThrow(
       /MR-1\.json: 期望文件变更数组，得到 object/,
     );
     expect(() => mrJsonToUnifiedDiff("{oops", "MR-1.json")).toThrow(/MR-1\.json: 不是合法 JSON/);
     expect(() => convert([{ new_path: "a.ts" }, "nope"])).toThrow(/第 2 项不是对象/);
     expect(() => convert([{ diff: "@@ -1 +1 @@\n-a\n+b" }])).toThrow(/第 1 项缺 new_path/);
+    // 方言不匹配时把「实际有哪些键」直接列出来，用户不用回头翻 JSON
+    expect(() => convert([{ sha: "x", status: "added", patch: "@@ -0,0 +1 @@\n+a" }])).toThrow(
+      /第 1 项缺 new_path（[^）]*也可用 filename \/ path）——该项现有键：sha、status、patch/,
+    );
     expect(() => convert([{ new_path: "a.ts", diff: ["@@ -1 +1 @@"] }])).toThrow(
       /第 1 项的 diff 必须是字符串（得到 array）/,
+    );
+    // GitHub 形态的正文键叫 patch：报错也要点名它
+    expect(() => convert([{ filename: "a.ts", patch: { body: "@@ -1 +1 @@" } }])).toThrow(
+      /第 1 项的 patch 必须是字符串（得到 object）/,
     );
   });
 
