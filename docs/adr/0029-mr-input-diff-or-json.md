@@ -1,6 +1,6 @@
 # 0029. MR 输入面：`--mr` 拆成 `--mr-diff` / `--mr-json`
 
-**状态**：已接受（2026-10-31）；**修订（2026-11-02）**——决策 2 的读取面由「只读 `new_path` 与 `diff`」放宽为「路径取 `new_path` / `filename` / `path`、正文取 `diff` / `patch`，各按优先级取第一个非空」：GitCode v5 的 `GET /pulls/:number/files` 实际是 **GitHub 形态**（`filename` + `patch`），只有 `/pulls/:number/files.json` 才是 `new_path` + `diff`；按原文档拉 `/files` 会直接报「第 1 项缺 new_path」。缺路径的报错同时列出该项**实际键名**（方言再漂移不必猜）
+**状态**：已接受（2026-10-31）；**修订（2026-11-02）**——决策 2 的读取面由「只读 `new_path` 与 `diff`」放宽为「路径 `new_path` / `filename` / `file_path` / `path`、正文 `diff` / `patch`，各按优先级取第一个非空，且支持 `diff` 为内层对象时递归到 `diff.diff`」：GitCode v5 的 `GET /pulls/:number/files` 实际是 **GitHub 形态**（`filename` + `patch`），`/pulls/:number/files.json` 是 **`{diffs:[…]}` 外壳**（`new_path` + `diff`），另有文件树包装形态（外层 `file_path` + 内层 `diff.diff`）；原实现只认最后一种的字段，按文档拉 `/files` 会直接报「第 1 项缺 new_path」。缺路径的报错同时列出该项**实际键名**（方言再漂移不必猜）
 **关联**：ADR-0024（仓收窄为 Review CLI 产品仓）、ADR-0025（用户级 JSONC 配置）、ADR-0027（产物路径与规则包信任边界）、ADR-0028（npm 多包分发）
 **跨仓**：本 ADR 为本仓 pi 线序列 0029；DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 
@@ -62,16 +62,25 @@ Authorization: Bearer <token>
 
   这是本仓既有的迁移做法（ADR-0025 对 `--env` 同款）：不留别名，但把「该换成什么」直接说清。
 
-### 2. `--mr-json` 读「路径 + 正文」两个语义字段（各有一小撮方言）
+### 2. `--mr-json` 读「路径 + 正文」两个语义字段（多方言、多层级）
 
-转换层 `zoneb/mr-json.ts` 只关心两件事——每个变更属于哪个文件、它的 hunk 正文是什么——但**同一个平台的两条接口字段名不一致**：
+转换层 `zoneb/mr-json.ts` 只关心两件事——每个变更属于哪个文件、它的 hunk 正文是什么——但**同一平台不同接口的响应形状并不统一**，现实里已见到四种：
 
-| 语义 | 字段（按优先级取第一个非空） | 出处 |
+| 顶层 | 每项路径 | 每项正文 | 出处 |
+|---|---|---|---|
+| 数组 | `new_path` | `diff` | GitLab `/merge_requests/:iid/changes` |
+| 数组 | `filename` | `patch` | GitCode `/pulls/:number/files`、GitHub `/pulls/:number/files` |
+| 对象 `{diffs:[…]}` | `new_path` | `diff` | GitCode `/pulls/:number/files.json` |
+| 数组 | `file_path`（外层） | `diff.diff`（内层对象） | GitCode 文件树包装形态：`{diff:{…}, file_path, file_type, level, title}` |
+
+读取规则（两种输入形态、两个语义字段，各按优先级取第一个非空值）：
+
+| 语义 | 字段（按优先级） | 备注 |
 |---|---|---|
-| 新侧路径 | `new_path` → `filename` → `path` | GitLab `/changes`、GitCode `/pulls/:number/files.json` 用 `new_path`；GitCode v5 `/pulls/:number/files` 与 GitHub `/pulls/:number/files` 用 `filename` |
-| 文件正文 | `diff` → `patch` | 同上（GitHub 侧叫 `patch`） |
+| 新侧路径 | `new_path` → `filename` → `file_path` → `path` | 外层都没有时看 `diff` 内层同名键；仍找不到即 fail fast |
+| 文件正文 | `diff` → `patch` | `diff` 是对象时向内递归（`diff.diff` / `diff.patch`）；空串继续看下一个键 |
 
-GitCode v5 `/files` 的真实响应（2026-11 实测文档）：
+GitCode v5 `/files` 的真实响应（2026-11 核对官方文档）：
 
 ```json
 [
@@ -88,11 +97,27 @@ GitCode v5 `/files` 的真实响应（2026-11 实测文档）：
 ]
 ```
 
-其余字段（`old_path` / `new_file` / `deleted_file` / `renamed_file` / `status` / `binary` / …）**一律忽略**，理由：
+文件树包装形态（用户实际拿到的一份）：
+
+```json
+[
+  {
+    "diff": {
+      "a_mode": "0", "b_mode": "", "deleted_file": false,
+      "diff": "@@ -0,0 +1,3 @@\n+public class A {}",
+      "new_file": true, "new_path": "a.java", "old_path": "a.java",
+      "renamed_file": false, "too_large": false
+    },
+    "file_path": "a.java", "file_type": "file", "level": 9, "title": "a.java"
+  }
+]
+```
+
+其余字段（`old_path` / `new_file` / `deleted_file` / `renamed_file` / `status` / `too_large` / `level` / `title` / …）**一律忽略**，理由：
 
 - 接口在重命名/复制场景下新侧路径才是定位依据，旧侧不影响行号；
 - `new_file` / `deleted_file` / `status` 是声明，与 hunk 头可能不一致；**以 diff 本身为准**比信任元数据更可靠；
-- 多读一个字段就多一条「接口方言变了怎么办」的耦合面——所以方言只收**语义等价**的两个别名，不做字段猜测（不读 `old_path` 当新路径、不读 `patch` 当路径）。
+- 多读一个字段就多一条「接口方言变了怎么办」的耦合面——所以方言是**封闭表**，只收语义等价的别名与层级，不做字段猜测（不读 `old_path` 当新路径、不读 `title` 当路径）。
 
 **新增 / 删除由 hunk 头判定**：
 
@@ -112,17 +137,17 @@ GitCode v5 `/files` 的真实响应（2026-11 实测文档）：
 ```
 
 - **不做网络请求**：CLI 只读本地文件，取接口响应用户自己完成（`curl.exe -o` / `Invoke-RestMethod`）。CLI 不持有 token、不做分页、不猜 owner/repo/number。
-- **不做路径别名映射**：接口给什么路径就写什么路径。
+- **不做路径改写**：接口给什么路径就写什么路径（不补 `a/` 前缀到仓库根、不做别名映射）。
 - **形状不对 fail fast**，错误消息带**输入标签与条目序号**：
 
   | 情况 | 错误 |
   |---|---|
   | 非法 JSON | `--mr-json: 不是合法 JSON（…）` |
-  | 顶层不是数组 | `--mr-json: 期望文件变更数组，得到 object` |
+  | 顶层既非数组也无 `diffs` 数组 | `--mr-json: 期望文件变更数组或 {diffs:[…]}，得到 object` |
   | 条目不是对象 | `--mr-json: 第 2 项不是对象（得到 string）` |
-  | 缺路径（`new_path` / `filename` / `path` 全无或全空） | `--mr-json: 第 1 项缺 new_path（无路径就无法定位文件；也可用 filename / path）——该项现有键：sha、filename、status、patch` |
-  | 正文非字符串 | `--mr-json: 第 1 项的 diff 必须是字符串（得到 array）` / `第 1 项的 patch 必须是字符串（得到 object）` |
-  | 全部条目空 diff | `--mr-json: 没有可转换的文本 diff（N 个条目全部为空 diff / 二进制变更）` |
+  | 缺路径（`new_path` / `filename` / `file_path` / `path` 全无，含 `diff` 内层） | `--mr-json: 第 1 项缺 new_path（无路径就无法定位文件；可用 new_path / filename / file_path / path，也可放在 diff 内层）——该项现有键：sha、status、patch` |
+  | 正文非字符串 | `--mr-json: 第 1 项的 diff 必须是字符串（得到 array）` / `第 1 项的 patch 必须是字符串（得到 number）` / 内层带层级：`第 1 项的 diff.diff 必须是字符串（得到 number）` |
+  | 全部条目空正文 | `--mr-json: 没有可转换的文本 diff（N 个条目全部为空 diff / 二进制 / too_large / 纯改名）` |
 
 - **空 `diff` 条目跳过**：二进制与纯改名在接口里给空串，产不出可检视的行。但**一个都没有时不静默产出零文件 diff**——那会让上游拿到「零变更」的假结论，直接 exit 1。
 - **BOM / CRLF 容忍**：Windows 侧导出常带两者，装载期归一。
@@ -157,7 +182,7 @@ diff 形态省键沿用 `args.ts` 既有的「缺席省键」惯例（`out` / `i
 - **负/风险**：
   - **破坏性改名**：脚本与文档中的 `--mr` 一律失效（有提示，不改行为）；
   - 只读路径与正文意味着 rename 场景只按新侧路径处理，旧路径信息不进入检视上下文（当前 Diff→Symbol 管线也只按新侧路径定位，符合既有语义）；
-  - 别名是**封闭表**：`new_path` / `filename` / `path` 与 `diff` / `patch`。再出新方言仍需改代码（但错误消息会列出该项实际键名，定位不用猜）。
+  - 别名与层级是**封闭表**：`new_path` / `filename` / `file_path` / `path`、`diff` / `patch`、`diff` 内层同名键。再出新方言仍需改代码（但错误消息会列出该项实际键名，定位不用猜）。
 - **中性**：
   - 产物契约（`reviews_en.json` / `reviews_tips_zh.json` / 审计 / `runs/mr/<caseId>/`）不变；
   - `caseId` 派生规则不变（文件名去最后一个扩展名），JSON 与 diff 输入同款；
@@ -166,7 +191,7 @@ diff 形态省键沿用 `args.ts` 既有的「缺席省键」惯例（`out` / `i
 ## 验收标准
 
 1. **解析**：`args.test.ts` 锁定 —— `--mr-diff` 省 `mrFormat`、`--mr-json` 标 `"json"`、二选一冲突与双缺文案、`--mr` 迁移提示。
-2. **转换**：`zoneb/mr-json.test.ts` 锁定 —— 用户真实样例转出的文件头/行区间能被 `analyzeDiff` 读出；路径与正文的方言优先级（`new_path`/`diff` 优先于 `filename`/`patch`，`path` 兜底，空串继续看下一个键）；GitCode v5 `/files` 的 GitHub 形态（`filename` + `patch`，二进制条目无 `patch` 即跳过）正向可转换；额外字段不产生 rename、不信任 `new_file`；空 diff 跳过与全空 fail fast；BOM/CRLF；形状错误的标签、序号与「该项现有键」。
+2. **转换**：`zoneb/mr-json.test.ts` 锁定 —— 用户真实样例转出的文件头/行区间能被 `analyzeDiff` 读出；四种形状（GitLab `new_path`+`diff`、GitHub/GitCode `/files` `filename`+`patch`、`{diffs:[…]}` 外壳、文件树包装 `file_path`+`diff.diff`）正向可转换；路径与正文的方言优先级（外层优先、空串继续看下一个键、`diff` 内层递归）；二进制条目无正文即跳过；额外字段不产生 rename、不信任 `new_file`；空 diff 跳过与全空 fail fast；BOM/CRLF；形状错误的标签、序号、「该项现有键」与内层键的层级前缀（`diff.diff`）。
 3. **进程**：`bin.process.test.ts` 锁定 —— `--mr-json` 正向跑通（exit 0、stdout 单 JSON、`caseId` 正确、产物落在 `runs/mr/<caseId>/`），坏 JSON 与空 diff 数组 exit 1 且 stdout 干净。
 4. **门**：`pnpm --filter review-pi typecheck`、`pnpm --filter review-pi test` 全绿。
 5. **文档**：`docs/使用手册-安装与运行.md` §5.1/§5.2（`--mr-json` 章节）/§5.7/§5.10/§6.2/§8.4/§9.1–9.2、`docs/运行手册-单次检视.md` 旗标表与命令块、`README.md` 命令示例同步为「二选一」形态。

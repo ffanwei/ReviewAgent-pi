@@ -135,6 +135,72 @@ describe("mrJsonToUnifiedDiff：接口数组 → 统一 diff", () => {
     );
   });
 
+  test("文件树包装形态：外层 file_path + 内层 diff 对象（用户实际拿到的结构）", () => {
+    const diff = convert([
+      {
+        diff: {
+          a_mode: "0",
+          b_mode: "",
+          deleted_file: false,
+          diff: "@@ -0,0 +1,2 @@\n+public class A {}",
+          new_file: true,
+          new_path: "a.java",
+          old_path: "a.java",
+          renamed_file: false,
+          too_large: false,
+        },
+        file_path: "a.java",
+        file_type: "file",
+        level: 9,
+        title: "a.java",
+      },
+      {
+        // 空正文 + too_large：跳过，不产出块
+        diff: { diff: "", new_path: "big.bin", too_large: true },
+        file_path: "big.bin",
+        file_type: "file",
+        level: 0,
+        title: "big.bin",
+      },
+      {
+        // 外层没有路径键时，退回内层 diff.new_path
+        diff: { diff: "@@ -3,2 +3,2 @@\n-a\n+b", new_path: "src/inner.ts" },
+        file_type: "file",
+      },
+    ]);
+
+    expect(diff).toContain("diff --git a/a.java b/a.java\nnew file mode 100644\n--- /dev/null\n+++ b/a.java\n@@ -0,0 +1,2 @@");
+    expect(diff).toContain("diff --git a/src/inner.ts b/src/inner.ts\n--- a/src/inner.ts\n+++ b/src/inner.ts\n@@ -3,2 +3,2 @@");
+    expect(diff).not.toContain("big.bin");
+    expect(analyzeDiff(diff).files.map((file) => file.file)).toEqual(["a.java", "src/inner.ts"]);
+  });
+
+  test("`{diffs:[…]}` 外壳（GitCode `/files.json`）也吃", () => {
+    const json = JSON.stringify({
+      code: 0,
+      added_lines: 1,
+      remove_lines: 1,
+      count: 1,
+      diff_refs: { base_sha: "x", head_sha: "y", start_sha: "z" },
+      diffs: [
+        {
+          a_mode: "100644",
+          b_mode: "100644",
+          deleted_file: false,
+          diff: "@@ -1 +1 @@\n-a\n+b",
+          new_file: false,
+          new_path: "src/a.ts",
+          old_path: "src/a.ts",
+          renamed_file: false,
+          too_large: false,
+        },
+      ],
+    });
+    expect(mrJsonToUnifiedDiff(json, "MR-1.json")).toBe(
+      "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n",
+    );
+  });
+
   test("diff 已是整段 patch（网关直回 git 原文）→ 原样透传，不重复包头", () => {
     const patch = "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b";
     expect(convert([{ new_path: "x.ts", diff: patch }])).toBe(`${patch}\n`);
@@ -151,7 +217,7 @@ describe("mrJsonToUnifiedDiff：接口数组 → 统一 diff", () => {
     expect(diff).not.toContain("rename-only");
 
     expect(() => convert([{ new_path: "a/b.png", diff: "" }, { new_path: "x.bin" }])).toThrow(
-      /没有可转换的文本 diff（2 个条目全部为空 diff \/ 二进制变更）/,
+      /没有可转换的文本 diff（2 个条目全部为空 diff \/ 二进制 \/ too_large \/ 纯改名）/,
     );
   });
 
@@ -164,21 +230,25 @@ describe("mrJsonToUnifiedDiff：接口数组 → 统一 diff", () => {
 
   test("形状不对：错误消息带输入标签、条目序号与该项实际键", () => {
     expect(() => mrJsonToUnifiedDiff('{"files":[]}', "MR-1.json")).toThrow(
-      /MR-1\.json: 期望文件变更数组，得到 object/,
+      /MR-1\.json: 期望文件变更数组或 \{diffs:\[…\]\}，得到 object/,
     );
     expect(() => mrJsonToUnifiedDiff("{oops", "MR-1.json")).toThrow(/MR-1\.json: 不是合法 JSON/);
     expect(() => convert([{ new_path: "a.ts" }, "nope"])).toThrow(/第 2 项不是对象/);
     expect(() => convert([{ diff: "@@ -1 +1 @@\n-a\n+b" }])).toThrow(/第 1 项缺 new_path/);
     // 方言不匹配时把「实际有哪些键」直接列出来，用户不用回头翻 JSON
     expect(() => convert([{ sha: "x", status: "added", patch: "@@ -0,0 +1 @@\n+a" }])).toThrow(
-      /第 1 项缺 new_path（[^）]*也可用 filename \/ path）——该项现有键：sha、status、patch/,
+      /第 1 项缺 new_path（[^）]*也可放在 diff 内层）——该项现有键：sha、status、patch/,
     );
     expect(() => convert([{ new_path: "a.ts", diff: ["@@ -1 +1 @@"] }])).toThrow(
       /第 1 项的 diff 必须是字符串（得到 array）/,
     );
     // GitHub 形态的正文键叫 patch：报错也要点名它
-    expect(() => convert([{ filename: "a.ts", patch: { body: "@@ -1 +1 @@" } }])).toThrow(
-      /第 1 项的 patch 必须是字符串（得到 object）/,
+    expect(() => convert([{ filename: "a.ts", patch: 123 }])).toThrow(
+      /第 1 项的 patch 必须是字符串（得到 number）/,
+    );
+    // 内层正文的报错带层级前缀，读者一眼知道是 diff.diff 而不是外层
+    expect(() => convert([{ file_path: "a.ts", diff: { diff: 123 } }])).toThrow(
+      /第 1 项的 diff\.diff 必须是字符串（得到 number）/,
     );
   });
 

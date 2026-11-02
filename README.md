@@ -11,7 +11,7 @@
 | 能力 | 说明 |
 |---|---|
 | 单次检视 | 单案 × rep-1：六阶段循环 + 七个 review 工具 + Context Ledger + 审计投影 |
-| 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：路径取 `new_path` / `filename` / `path`、正文取 `diff` / `patch`） |
+| 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：数组或 `{diffs:[…]}`；路径取 `new_path` / `filename` / `file_path` / `path`、正文取 `diff` / `patch`，`diff` 为对象时取内层 `diff.diff`） |
 | 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>`，**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast |
 | 中文建议 | 配置 `presentation.engine` 后额外产出 `reviews_tips_zh.json`：`"builtin"` 用包内引擎，路径用自定义模块，`null` 关闭 |
 | MR 边界护栏 | 缺省 ≤10 文件 / ≤2K 变更行；超界只告警不拒检（`limits.boundary` 可改） |
