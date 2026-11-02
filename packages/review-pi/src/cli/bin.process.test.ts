@@ -892,7 +892,7 @@ export default async (source) => ({
     description: "[zh] " + finding.description,
   })),
   toolCallLog: source.toolCallLog,
-  tips: { files: [{ filePath: "sample.txt", reviewTips: [tipOf(source)] }] },
+  tips: [{ filePath: "sample.txt", reviewTips: [tipOf(source)] }],
 });\n`;
 
 /** 本次 run 的 rep-1 产物目录（reviews_en.json / reviews_tips_zh.json 同层） */
@@ -957,12 +957,12 @@ test(
       });
       // 复用同一次投影结果：不发额外检视请求（仍恰好六回合）
       expect(stub.requests()).toHaveLength(6);
-      // 分组意见（ADR-0017）：与 zh 同目录，顶层严格 { files }
+      // 分组意见（ADR-0017）：与 zh 同目录，顶层就是分组数组（无 { files } 信封）
       const tipsPath = path.join(repDir, "reviews_tips_zh.json");
       expect(existsSync(tipsPath)).toBe(true);
-      const tips = JSON.parse(readFileSync(tipsPath, "utf8")) as Record<string, unknown>;
-      expect(Object.keys(tips)).toEqual(["files"]);
-      expect(tips["files"]).toEqual([
+      const tips = JSON.parse(readFileSync(tipsPath, "utf8")) as unknown[];
+      expect(Array.isArray(tips)).toBe(true);
+      expect(tips).toEqual([
         {
           filePath: "sample.txt",
           reviewTips: [
@@ -1086,7 +1086,7 @@ test(
           provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
           findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
           toolCallLog: source.toolCallLog,
-          tips: { files: [{ filePath: "sample.txt", reviewTips: [{ code: "", review: "x", suggestion: "", category: "c", subcategory: "", severity: "Critical", ruleId: "", lineNum: 1, source: "common-reviewer", confidence: "High" }] }] },
+          tips: [{ filePath: "sample.txt", reviewTips: [{ code: "", review: "x", suggestion: "", category: "c", subcategory: "", severity: "Critical", ruleId: "", lineNum: 1, source: "common-reviewer", confidence: "High" }] }],
         });\n`,
       );
       const outDir = makeTempDir("review-pi-cli-out-");

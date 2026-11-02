@@ -3,17 +3,17 @@
 **状态**：已接受（ADR-0013 的 zh 一项已由 ADR-0022 收窄：`reviews_zh.json` 停产，本 ADR 的 tips 成为唯一中文产物；tips 与 zh 的「弱耦合」随之表述为「与 stdout 呈现弱耦合」；字段映射追加「同文件同行去重」（ADR-0023））（2026-10-30，用户经 grill-with-docs 四轮逐项决策 Q1–Q23）；**修订 ADR-0014 的 `rule` 字段口径**（见决策 5）
 **关联**：ADR-0010（检视输出恒英文 + 核外翻译投影——本 ADR 是它的第二个消费产物）、ADR-0013（`reviews_en.json` / `reviews_zh.json` 产物族与生命周期）、ADR-0014（规则 skill 会话——本 ADR 改其输出契约的一个字段）、ADR-0009（内核/核外边界）、CONTEXT.md（检视意见导出）
 **跨仓**：本 ADR 为本仓 pi 线序列 0017；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
-**后续修订**：[ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（2026-10-31）——决策 14 的「cwd 双名双写」收为**只写 `review-result.json`**（真源仍是 run 目录里的 `reviews_tips_zh.json`），产物路径同步改为 `<out>/runs/mr/<caseId>/rep-<N>/`；本 ADR 其余决策（10 键封闭、severity/confidence 分档、`source`/`ruleId` 判定、降级口径）继续有效。
+**后续修订**：[ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（2026-10-31）——决策 14 的「cwd 双名双写」收为**只写 `review-result.json`**（真源仍是 run 目录里的 `reviews_tips_zh.json`），产物路径同步改为 `<out>/runs/mr/<caseId>/rep-<N>/`；本 ADR 其余决策（10 键封闭、severity/confidence 分档、`source`/`ruleId` 判定、降级口径）继续有效。**验收修订**（2026-11-02，用户决策）——决策 4/12 的顶层 `{ files: [...] }` 信封去掉：产物顶层直接是文件分组数组 `[ { filePath, reviewTips } ]`（零 finding 即 `[]`），分组内容与 10 键封闭不变；`reviews_tips_zh.json` 与 cwd 的 `review-result.json` 仍逐字节相同。
 
 ## Context
 
 下游要一份**按文件分组、带中文改法建议**的检视意见：
 
 ```json
-{ "files": [ { "filePath": "a.java", "reviewTips": [
+[ { "filePath": "a.java", "reviewTips": [
   { "code": "...", "review": "...", "suggestion": "...", "category": "Security",
     "subcategory": "SQL Injection", "severity": "Major", "ruleId": "1",
-    "lineNum": 72, "source": "SonarQube", "confidence": "Medium" } ] } ] }
+    "lineNum": 72, "source": "SonarQube", "confidence": "Medium" } ] } ]
 ```
 
 把它与现状对齐后暴露四个断点：
@@ -30,7 +30,7 @@
 1. **定位：新增核外产物，不动内核**。`Finding` 契约、Zone A 系统提示词字节、golden、`reviews_en.json`、审计、`RunRecord`、stdout 呈现、judge/screening/disposition 全部零改动。新产物只是 ADR-0010 投影的第二个出口。
 2. **文件名与生命周期**：`reviews_tips_zh.json`，与 `reviews_zh.json` **同目录**（`.../<configId>/rep-<N>/`）、同生命周期——未配引擎 / 投影降级 ⇒ 不产 + 删除本次 `rep-<N>/` 的陈旧文件；落盘 IO 失败抛错（与 en/zh 同档）。另在**进程 cwd** 留一份便捷副本（两个名字，见决策 14），那一路失败不判失败。
 3. **与 zh 弱耦合**：tips 文档**形状非法或缺席只折损这一份产物**——zh 照常落盘与呈现、stdout 不变、exit 0，stderr 一行原因。理由是 tips 的 schema（10 键严格封闭 + 枚举）比 zh 严得多，不该让它拖累已算出的 zh。
-4. **结构严格封闭**：顶层只有 `{ files }`（无信封；出处由同目录 zh 与路径承担）；`files[]` **只含有意见的文件**、按 finding 首见序；`reviewTips[]` 按 `lineNum` 升序（同行保持 finding 源序，稳定排序）；**零 finding 照产 `{"files": []}`**（「本次没发现问题」本身是结论）。
+4. **结构严格封闭**：顶层就是分组数组（无 `{ files }` 信封，也无其他附加键；出处由同目录 zh 与路径承担）；数组元素**只含有意见的文件**、按 finding 首见序；`reviewTips[]` 按 `lineNum` 升序（同行保持 finding 源序，稳定排序）；**零 finding 照产 `[]`**（「本次没发现问题」本身是结论）。
 5. **`ruleId` 的真源 = 规则包 frontmatter id（修订 ADR-0014）**：skill 会话输出契约的 `rule` 由「恒为 skill 名」改为「优先填命中规则的 `id`（如 `GEN-SQL-001`）；无法归因到单条规则时退回 skill 名」。这是**非测量档**（ADR-0014 明示 skill 会话不属测量常量面），Zone A 字节不动。落地口径：
    - 内核不解析规则文件；核外拿到**规则包解压目录**后读 `rules/*.md` frontmatter 建白名单；
    - `tip.ruleId` **只在白名单内**才填，否则空串——即用户原话「没有就用空字符串」在**产物层**实现（Finding 层的 `rule` 不能为空串：`finding-schema.ts` 的 `checkString` 会判 `SCHEMA_INVALID`）；
@@ -55,7 +55,7 @@
 `source` | `rule-reviewer` / `common-reviewer` | 决策 6 |
 `confidence` | `≥0.8 High`、`≥0.5 Medium`、`<0.5 Low` | 数字 → 三档；非有限数按 Low |
 
-12. **引擎协议扩展**（`cli/presentation-projection.ts` 单源）：入参新增 `codeByFinding`（键 = finding id）与 `rulePackDirs`；返回新增 `tips`。CLI 缝做**严格校验**（顶层 `{files}`、每 tip 键集恰好 10 个、枚举值域），坏形状只产 `tipsProblem` 不产文件。
+12. **引擎协议扩展**（`cli/presentation-projection.ts` 单源）：入参新增 `codeByFinding`（键 = finding id）与 `rulePackDirs`；返回新增 `tips`（顶层分组数组）。CLI 缝做**严格校验**（顶层是数组、每元素 `{ filePath, reviewTips }`、每 tip 键集恰好 10 个、枚举值域），坏形状只产 `tipsProblem` 不产文件。
 13. **纯映射与生成分离**：`Finding → tip` 的确定性映射（`src/presentation/tips.ts`）零网络零文件系统，可逐键单测；网络只出现在 `engine-zh.ts` 的装配面（与 ADR-0010 的「翻译算法留核外」同构）。
 14. **执行目录副本（`--out` 之外的第二落点）**：同一份内容再写一份到**进程 cwd**（即「这条命令跑在哪」），并用两个名字：原名 `reviews_tips_zh.json` + 下游约定名 `review-result.json`，两份逐字节相同。口径：
     - **选 cwd 而非 `--repo`**：不写回被检视仓库（仓内既有纪律），且不要求 `--repo` 可写；也不写 `--out`（那里已有 run 产物目录，副本的意义是「在眼前」）。

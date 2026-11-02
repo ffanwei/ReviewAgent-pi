@@ -374,11 +374,11 @@ export default async (source) => ({
     description: "[zh] " + finding.description,
   })),
   toolCallLog: source.toolCallLog,
-  tips: { files: [{ filePath: "src/Main.java", reviewTips: [tip] }] },
+  tips: [{ filePath: "src/Main.java", reviewTips: [tip] }],
 });
 `;
 
-test("合法 tips → projected 携带 tips（顶层严格 { files }，键集原样透传）", async () => {
+test("合法 tips → projected 携带 tips（顶层就是分组数组，键集原样透传）", async () => {
   const enginePath = writeEngineModule("tips-ok-engine.mjs", OK_TIPS_ENGINE);
   const outcome = await project(sampleSource(), {
     enginePath: enginePath,
@@ -388,27 +388,25 @@ test("合法 tips → projected 携带 tips（顶层严格 { files }，键集原
     return;
   }
   expect(outcome.tipsProblem).toBeUndefined();
-  expect(outcome.tips).toEqual({
-    files: [
-      {
-        filePath: "src/Main.java",
-        reviewTips: [
-          {
-            code: "int x = 1;",
-            review: "此处取值可能为空。",
-            suggestion: "改为先判空。",
-            category: "CORRECTNESS",
-            subcategory: "",
-            severity: "Minor",
-            ruleId: "",
-            lineNum: 42,
-            source: "common-reviewer",
-            confidence: "Medium",
-          },
-        ],
-      },
-    ],
-  });
+  expect(outcome.tips).toEqual([
+    {
+      filePath: "src/Main.java",
+      reviewTips: [
+        {
+          code: "int x = 1;",
+          review: "此处取值可能为空。",
+          suggestion: "改为先判空。",
+          category: "CORRECTNESS",
+          subcategory: "",
+          severity: "Minor",
+          ruleId: "",
+          lineNum: 42,
+          source: "common-reviewer",
+          confidence: "Medium",
+        },
+      ],
+    },
+  ]);
 });
 
 test.each([
@@ -418,14 +416,14 @@ test.each([
     reason: "no grouped tips document",
   },
   {
-    label: "files 非数组",
+    label: "tips 非数组（残留 { files } 信封）",
     body: `export default async (source) => ({
       provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
       findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
       toolCallLog: source.toolCallLog,
       tips: { files: "nope" },
     });`,
-    reason: "tips.files must be an array",
+    reason: "tips must be an array",
   },
   {
     label: "tip 多一个键（严格封闭）",
@@ -433,7 +431,7 @@ test.each([
       provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
       findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
       toolCallLog: source.toolCallLog,
-      tips: { files: [{ filePath: "src/Main.java", reviewTips: [{ ...${TIP_OBJECT}, extra: 1 }] }] },
+      tips: [{ filePath: "src/Main.java", reviewTips: [{ ...${TIP_OBJECT}, extra: 1 }] }],
     });`,
     reason: "exactly these keys",
   },
@@ -443,7 +441,7 @@ test.each([
       provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
       findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
       toolCallLog: source.toolCallLog,
-      tips: { files: [{ filePath: "src/Main.java", reviewTips: [{ ...${TIP_OBJECT}, severity: "Critical" }] }] },
+      tips: [{ filePath: "src/Main.java", reviewTips: [{ ...${TIP_OBJECT}, severity: "Critical" }] }],
     });`,
     reason: 'severity must be one of "Fatal", "Major", "Minor"',
   },

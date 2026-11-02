@@ -8,7 +8,8 @@ import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
  *
  * 核外面（CLI 呈现缝）：`reviews_tips_zh.json` 是核外投影的**唯一中文落盘产物**
  * （ADR-0022：`reviews_zh.json` 已停产）——与 `reviews_en.json` 同目录、同 rep，
- * 内容严格 `{ files }`（无信封：出处由路径与 `reviews_en.json` 承担）。本模块只
+ * 内容就是文件分组数组（无 `{ files }` 信封：出处由路径与 `reviews_en.json`
+ * 承担）。本模块只
  * 编排「写 / 清 / 拷」，绝不触碰请求字节、审计、`RunRecord` 或 Finding 契约。
  *
  * 生命周期（与其它产物同口径）：

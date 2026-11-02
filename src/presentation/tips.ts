@@ -2,7 +2,7 @@ import type { Finding } from "review-pi";
 
 /**
  * 分组式检视意见（`reviews_tips_zh.json`，ADR-0017）的**纯映射层**：
- * Finding → `files[].reviewTips[]`（10 键严格封闭，无信封、无附加键）。
+ * Finding → `[{ filePath, reviewTips }]`（顶层就是分组数组，10 键严格封闭，无附加键）。
  *
  * 边界纪律（与 translate-projection.ts 同档）：
  * - 本模块零网络零文件系统零 pi import——`code` 与 `suggestion` 由调用方
@@ -10,7 +10,7 @@ import type { Finding } from "review-pi";
  *   映射、分组、排序；
  * - 映射表是单源真值（ADR-0017 §字段映射）：severity 三档、confidence 三档、
  *   source 结构性判定、ruleId 白名单、subcategory 恒空串；
- * - 分组与排序确定：`files[]` 按 finding 首见序，`reviewTips[]` 按 lineNum
+ * - 分组与排序确定：顶层数组按 finding 首见序，`reviewTips[]` 按 lineNum
  *   升序（同行多条保持源序——稳定排序）。
  */
 
@@ -43,10 +43,13 @@ export interface ReviewTipsFile {
   readonly reviewTips: readonly ReviewTip[];
 }
 
-/** 分组文档顶层：严格 `{ files }`（无信封；ADR-0022：中文交付物只有这一份） */
-export interface ReviewTipsDocument {
-  readonly files: readonly ReviewTipsFile[];
-}
+/**
+ * 分组文档顶层：直接是文件分组数组（无 `{ files }` 信封）。
+ *
+ * ADR-0017 验收修订（2026-11-02）：下游要的是「一组按文件分组的意见」，
+ * 信封只多一层解包、不加任何信息；出处由路径与 `reviews_en.json` 承担。
+ */
+export type ReviewTipsDocument = readonly ReviewTipsFile[];
 
 /** 严重级映射（单源：P0 致命 / P1 高 / P2 中 / P3 中——P3 不丢） */
 const SEVERITY_BY_CODE: Readonly<Record<Finding["severity"], ReviewTipSeverity>> = {
@@ -163,7 +166,7 @@ export function dedupeFindingsByLine(findings: readonly Finding[]): Finding[] {
 
 /**
  * 组装分组文档：按 finding 首见序建文件组，组内按 lineNum 升序（稳定排序）。
- * 零 finding ⇒ `{ files: [] }`（照产——「本次没发现问题」本身是结论）。
+ * 零 finding ⇒ `[]`（照产——「本次没发现问题」本身是结论）。
  *
  * **同文件同 lineNum 去重（ADR-0023）**：同一行代码只留**首条**（finding 源序），
  * 其余忽略——输出的检视意见不出现重复行。去重在入组前完成，与「组内按
@@ -185,5 +188,5 @@ export function buildReviewTipsDocument(input: BuildTipsInput): ReviewTipsDocume
     // 稳定排序：同 lineNum 保持 finding 源序（Array#sort 在 ES2019+ 稳定）
     files.push({ filePath, reviewTips: [...reviewTips].sort((a, b) => a.lineNum - b.lineNum) });
   }
-  return { files };
+  return files;
 }

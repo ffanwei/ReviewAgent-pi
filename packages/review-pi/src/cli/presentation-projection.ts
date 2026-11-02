@@ -83,13 +83,14 @@ export interface ReviewTipLike {
   readonly confidence: string;
 }
 
-/** 分组文档（顶层严格 `{ files }`） */
-export interface ReviewTipsDocumentLike {
-  readonly files: readonly {
-    readonly filePath: string;
-    readonly reviewTips: readonly ReviewTipLike[];
-  }[];
+/** 一个文件下的意见分组（空组不落盘——ADR-0017：只含有意见的文件） */
+export interface ReviewTipsFileLike {
+  readonly filePath: string;
+  readonly reviewTips: readonly ReviewTipLike[];
 }
+
+/** 分组文档（顶层就是分组数组，无 `{ files }` 信封） */
+export type ReviewTipsDocumentLike = readonly ReviewTipsFileLike[];
 
 /** 投影留痕（引擎返回；形状对齐核外 ProjectionProvenance） */
 export interface PresentationProvenance {
@@ -307,7 +308,7 @@ const TIP_SOURCES = new Set(["rule-reviewer", "common-reviewer"]);
 const TIP_CONFIDENCES = new Set(["High", "Medium", "Low"]);
 
 /**
- * 分组意见形状校验（ADR-0017）：顶层严格 `{ files }`、每文件
+ * 分组意见形状校验（ADR-0017）：顶层就是分组数组、每文件
  * `{ filePath, reviewTips }`、每 tip 严格 10 键且值域受限。返回英文错误，
  * 空/undefined = 合法。
  */
@@ -315,28 +316,24 @@ function validateTipsDocument(input: unknown): string | undefined {
   if (input === undefined) {
     return "presentation engine returned no grouped tips document (ADR-0017)";
   }
-  if (input === null || typeof input !== "object") {
-    return "tips must be an object";
+  if (!Array.isArray(input)) {
+    return "tips must be an array";
   }
-  const record = input as { readonly files?: unknown };
-  if (!Array.isArray(record.files)) {
-    return "tips.files must be an array";
-  }
-  for (const [fileIndex, file] of record.files.entries()) {
-    if (file === null || typeof file !== "object") {
-      return `tips.files[${fileIndex}] must be an object`;
+  for (const [fileIndex, file] of input.entries()) {
+    if (file === null || typeof file !== "object" || Array.isArray(file)) {
+      return `tips[${fileIndex}] must be an object`;
     }
     const group = file as { readonly filePath?: unknown; readonly reviewTips?: unknown };
     if (typeof group.filePath !== "string" || group.filePath === "") {
-      return `tips.files[${fileIndex}].filePath must be a non-empty string`;
+      return `tips[${fileIndex}].filePath must be a non-empty string`;
     }
     if (!Array.isArray(group.reviewTips)) {
-      return `tips.files[${fileIndex}].reviewTips must be an array`;
+      return `tips[${fileIndex}].reviewTips must be an array`;
     }
     for (const [tipIndex, tip] of group.reviewTips.entries()) {
       const problem = validateTip(tip);
       if (problem !== undefined) {
-        return `tips.files[${fileIndex}].reviewTips[${tipIndex}]: ${problem}`;
+        return `tips[${fileIndex}].reviewTips[${tipIndex}]: ${problem}`;
       }
     }
   }

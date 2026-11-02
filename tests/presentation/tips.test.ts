@@ -18,8 +18,8 @@ import {
  * - severity 三档（P3 折 Minor，不丢条）、confidence 三档（0.8 / 0.5 边界）；
  * - source 结构性判定（RULE-CHECK@ 前缀）、ruleId 白名单、subcategory 恒空串；
  * - code / suggestion 缺席即空串（绝不编）；
- * - files 首见序 + reviewTips 按 lineNum 升序（同文件同行去重，留首条——ADR-0023）；
- * - 零 finding ⇒ 照产 `{ files: [] }`；
+ * - 文件分组按 finding 首见序 + reviewTips 按 lineNum 升序（同文件同行去重，留首条——ADR-0023）；
+ * - 零 finding ⇒ 照产 `[]`（顶层就是分组数组，无信封）；
  * - 单条 tip 的键集严格 10 个、顺序固定（对外契约）。
  */
 
@@ -92,7 +92,7 @@ describe("reviewOf", () => {
 describe("buildReviewTipsDocument", () => {
   it("键集严格 10 个且顺序固定（对外契约）", () => {
     const doc = buildReviewTipsDocument({ findings: [finding()] });
-    const tip = doc.files[0]?.reviewTips[0];
+    const tip = doc[0]?.reviewTips[0];
     expect(tip).toBeDefined();
     expect(Object.keys(tip as ReviewTip)).toEqual([
       "code",
@@ -110,7 +110,7 @@ describe("buildReviewTipsDocument", () => {
 
   it("code / suggestion 缺席即空串，subcategory 恒空串", () => {
     const doc = buildReviewTipsDocument({ findings: [finding()] });
-    const tip = doc.files[0]?.reviewTips[0];
+    const tip = doc[0]?.reviewTips[0];
     expect(tip?.code).toBe("");
     expect(tip?.suggestion).toBe("");
     expect(tip?.subcategory).toBe("");
@@ -122,13 +122,13 @@ describe("buildReviewTipsDocument", () => {
       codeByFinding: { F002: "int x = y;" },
       suggestions: { F002: "改为 null 检查" },
     });
-    const tips = doc.files[0]?.reviewTips ?? [];
+    const tips = doc[0]?.reviewTips ?? [];
     // F002 line 7 排在 F001 line 42 之前（组内按 lineNum 升序）
     expect(tips.map((tip) => tip.code)).toEqual(["int x = y;", ""]);
     expect(tips.map((tip) => tip.suggestion)).toEqual(["改为 null 检查", ""]);
   });
 
-  it("files 按 finding 首见序；reviewTips 按 lineNum 升序", () => {
+  it("文件分组按 finding 首见序；reviewTips 按 lineNum 升序", () => {
     const doc = buildReviewTipsDocument({
       findings: [
         finding({ id: "A1", file: "b.java", line: 30 }),
@@ -136,9 +136,9 @@ describe("buildReviewTipsDocument", () => {
         finding({ id: "A3", file: "b.java", line: 5 }),
       ],
     });
-    expect(doc.files.map((group) => group.filePath)).toEqual(["b.java", "a.java"]);
-    expect(doc.files[0]?.reviewTips.map((tip) => tip.lineNum)).toEqual([5, 30]);
-    expect(doc.files[1]?.reviewTips.map((tip) => tip.lineNum)).toEqual([10]);
+    expect(doc.map((group) => group.filePath)).toEqual(["b.java", "a.java"]);
+    expect(doc[0]?.reviewTips.map((tip) => tip.lineNum)).toEqual([5, 30]);
+    expect(doc[1]?.reviewTips.map((tip) => tip.lineNum)).toEqual([10]);
   });
 
   it("同文件同 lineNum 多条 → 只留首条（源序），后续忽略（ADR-0023）", () => {
@@ -150,7 +150,7 @@ describe("buildReviewTipsDocument", () => {
       ],
       codeByFinding: { F1: "int a = b;", F2: "int a = b;", F3: "return c;" },
     });
-    const tips = doc.files[0]?.reviewTips ?? [];
+    const tips = doc[0]?.reviewTips ?? [];
     // 输出去重：同行不再出现第二条
     expect(tips.map((tip) => tip.lineNum)).toEqual([30, 31]);
     // 首条 = 源序第一条（含它的 code / severity），不做「取更严重」之类的择优
@@ -166,20 +166,20 @@ describe("buildReviewTipsDocument", () => {
         finding({ id: "B1", file: "b.java", line: 12, title: "in b" }),
       ],
     });
-    expect(doc.files.map((group) => group.filePath)).toEqual(["a.java", "b.java"]);
-    expect(doc.files.map((group) => group.reviewTips[0]?.lineNum)).toEqual([12, 12]);
+    expect(doc.map((group) => group.filePath)).toEqual(["a.java", "b.java"]);
+    expect(doc.map((group) => group.reviewTips[0]?.lineNum)).toEqual([12, 12]);
   });
 
-  it("只含有意见的文件（空组不落盘）+ 零 finding 照产 { files: [] }", () => {
-    expect(buildReviewTipsDocument({ findings: [] })).toEqual({ files: [] });
+  it("只含有意见的文件（空组不落盘）+ 零 finding 照产 []", () => {
+    expect(buildReviewTipsDocument({ findings: [] })).toEqual([]);
     const doc = buildReviewTipsDocument({ findings: [finding({ file: "a.java" })] });
-    expect(doc.files).toHaveLength(1);
+    expect(doc).toHaveLength(1);
   });
 
   it("category 原值透传（不做大小写或词表归一）", () => {
     const doc = buildReviewTipsDocument({
       findings: [finding({ category: "ERROR-HANDLING" })],
     });
-    expect(doc.files[0]?.reviewTips[0]?.category).toBe("ERROR-HANDLING");
+    expect(doc[0]?.reviewTips[0]?.category).toBe("ERROR-HANDLING");
   });
 });
