@@ -39,27 +39,26 @@ afterAll(() => {
   }
 });
 
-const DOCUMENT = {
-  files: [
-    {
-      filePath: "src/Main.java",
-      reviewTips: [
-        {
-          code: "int x = y;",
-          review: "此处可能为空。",
-          suggestion: "改为先判空。",
-          category: "CORRECTNESS",
-          subcategory: "",
-          severity: "Minor" as const,
-          ruleId: "",
-          lineNum: 42,
-          source: "common-reviewer" as const,
-          confidence: "Medium" as const,
-        },
-      ],
-    },
-  ],
-};
+// ADR-0017 验收修订（2026-11-02）：顶层就是文件分组数组，无 `{ files }` 信封。
+const DOCUMENT = [
+  {
+    filePath: "src/Main.java",
+    reviewTips: [
+      {
+        code: "int x = y;",
+        review: "此处可能为空。",
+        suggestion: "改为先判空。",
+        category: "CORRECTNESS",
+        subcategory: "",
+        severity: "Minor" as const,
+        ruleId: "",
+        lineNum: 42,
+        source: "common-reviewer" as const,
+        confidence: "Medium" as const,
+      },
+    ],
+  },
+];
 
 test("只写 review-result.json：内容带尾换行，不再写原名副本", async () => {
   const dir = makeTempDir("review-tips-copies-");
