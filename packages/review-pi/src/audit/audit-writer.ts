@@ -65,11 +65,18 @@ export interface AuditFileContent {
   readonly config?: ConfigSnapshot;
 }
 
-/** runId：毫秒时间戳 + 用例，文件名安全 */
-export function buildRunId(startedAt: Date, caseId: string): string {
-  const timestamp = startedAt.toISOString().replace(/[-:]/g, "").replace("Z", "");
-  const safeCaseId = caseId.replace(/[^A-Za-z0-9_-]/g, "_");
-  return `${timestamp}-${safeCaseId}`;
+/**
+ * runId = 本次 run **首次模型请求时刻**（UTC，毫秒精度），形如
+ * `20261031_101010_123`（日期 / 时间 / 毫秒三段用下划线分隔，不含点号）。
+ *
+ * 单点同时供给审计文件名（`<out>/audit/<runId>.json`）、转录文件名中段
+ * （`session-<runId>[-skill-...].json`）与转录/导出的 `runId` 字段，
+ * 三者可互推。`caseId` 只作为数据字段保留，不进入任何路径或文件名。
+ */
+export function buildRunId(firstRequestAt: Date): string {
+  const [date, rest] = firstRequestAt.toISOString().split("T");
+  const [time, ms] = (rest ?? "").replace("Z", "").split(".");
+  return `${(date ?? "").replace(/-/g, "")}_${(time ?? "").replace(/:/g, "")}_${ms ?? "000"}`;
 }
 
 export function buildAuditFileContent(args: {

@@ -56,7 +56,7 @@ export interface ReviewRunInput {
   readonly config?: ConfigSnapshot;
   /** 传输层注入（离线 = fakeFetch；线上 = 真 fetch） */
   readonly fetch: FetchFunction;
-  /** 运行留痕根目录（fixture 或真实 runs/）；布局 `<runsRoot>/{runs,audit}/mr/...` */
+  /** 运行留痕根目录（fixture 或真实 runs/）；布局 `<runsRoot>/{runs,audit}/` */
   readonly runsRoot: string;
   readonly rep: number;
   /**
@@ -178,7 +178,9 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
 
   // 审计投影
   const finishedAt = new Date();
-  const runId = buildRunId(startedAt, input.caseId);
+  // runId = 首次模型请求时刻（ADR-0032）：审计文件名、转录文件名与
+  // `info.runId` 共用同一值，caseId 不再进入任何路径/文件名。
+  const runId = buildRunId(outcome.transcript.firstRequestAt);
   const auditDir = buildAuditDir(input);
   // skill 会话独立转录（ADR-0014 决策 13）：先落盘，再把 basename 回填到
   // skillPassLog（主转录/审计据此引用）
@@ -280,16 +282,9 @@ function persistRunRecord(input: ReviewRunInput, record: RunRecord): Promise<str
   return writeRunRecord(input.runsRoot, record);
 }
 
-/** 审计文件目录：`<runsRoot>/audit/mr/<caseId>/rep-<N>/audit`（ADR-0027） */
+/** 审计文件目录：`<runsRoot>/audit`（ADR-0032：无 case / rep / audit 中间层） */
 function buildAuditDir(input: ReviewRunInput): string {
-  return path.join(
-    input.runsRoot,
-    "audit",
-    "mr",
-    input.caseId,
-    `rep-${input.rep}`,
-    "audit",
-  );
+  return path.join(input.runsRoot, "audit");
 }
 
 /**
@@ -312,16 +307,12 @@ function toRuleSkillAudit(skill: RuleSkill): RuleSkillAudit {
 }
 
 /**
- * runs 树目录单点（转录 / 意见导出共用；与运行记录 `rep-<N>.json` 同目录）：
- * `<runsRoot>/runs/mr/<caseId>`。
+ * runs 树目录单点（转录 / 意见导出共用；与运行记录 `run.json` 同目录）：
+ * `<runsRoot>/runs`（ADR-0032）。
  * 布局逻辑单源在 `run-record.runDirPath`（防记录与产物布局漂移）。
  */
 function runOutputDir(input: ReviewRunInput): string {
-  return runDirPath({
-    runsRoot: input.runsRoot,
-    source: "mr",
-    caseId: input.caseId,
-  });
+  return runDirPath(input.runsRoot);
 }
 
 /**
@@ -391,7 +382,7 @@ function defaultTranscriptSuffix(target: { readonly round: number; readonly skil
   return `-skill-${safe}-r${target.round}`;
 }
 
-/** 检视转录落盘：`<runOutputDir>/session-<firstRequestAt>-...json`；失败抛错 */
+/** 检视转录落盘：`<runOutputDir>/session-<runId>[-suffix].json`；失败抛错 */
 async function persistTranscript(args: {
   readonly input: ReviewRunInput;
   readonly runId: string;
@@ -413,7 +404,7 @@ async function persistTranscript(args: {
   return writeTranscript(runOutputDir(args.input), content);
 }
 
-/** 检视意见导出落盘：`<runOutputDir>/rep-<N>/reviews_en.json`；失败抛错 */
+/** 检视意见导出落盘：`<runOutputDir>/reviews_en.json`；失败抛错 */
 async function persistReviewsEn(args: {
   readonly input: ReviewRunInput;
   readonly runId: string;
@@ -430,6 +421,5 @@ async function persistReviewsEn(args: {
     model: args.modelId,
     findings: args.findings,
   });
-  const dir = path.join(runOutputDir(args.input), `rep-${args.input.rep}`);
-  return writeReviewsEn(dir, envelope);
+  return writeReviewsEn(runOutputDir(args.input), envelope);
 }

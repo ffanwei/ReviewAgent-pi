@@ -13,7 +13,7 @@ import {
 } from "./run-record.js";
 
 // RunRecord 投影（测量常量面）：键序在本仓内单源定义。
-// 落盘路径：<runsRoot>/runs/mr/<caseId>/rep-<N>.json。
+// 落盘路径：<runsRoot>/runs/run.json（ADR-0032：无 case / rep 目录层）。
 
 const COMPLETED_AT = new Date("2026-09-14T18:09:20.100Z");
 
@@ -144,14 +144,12 @@ describe("buildRunRecord", () => {
 });
 
 describe("runRecordPath / writeRunRecord", () => {
-  test("路径：<runsRoot>/runs/<source>/<caseId>/rep-<N>.json（无 experimentId 层，ADR-0027）", () => {
+  test("路径：<runsRoot>/runs/run.json（无 source / caseId / rep 层，ADR-0032）", () => {
     const record = recordFixture();
-    expect(runRecordPath("out", record)).toBe(
-      path.join("out", "runs", "mr", "VUL4J-1", "rep-1.json"),
-    );
+    expect(runRecordPath("out")).toBe(path.join("out", "runs", "run.json"));
   });
 
-  test("caseId 文件名不安全字符替换（点号保留）", () => {
+  test("caseId / rep 只作为数据字段，不进入路径", () => {
     const record = buildRunRecord({
       source: "mr",
       caseId: "case/with space",
@@ -160,16 +158,17 @@ describe("runRecordPath / writeRunRecord", () => {
       completedAt: COMPLETED_AT,
       result: { ...RUN_RESULT, caseId: "case/with space" },
     });
-    expect(runRecordPath("out", record)).toContain(
-      path.join("case_with_space", "rep-2.json"),
-    );
+    expect(runRecordPath("out")).not.toContain("case_with_space");
+    expect(runRecordPath("out")).not.toContain("rep-2");
+    expect(record.caseId).toBe("case/with space");
+    expect(record.rep).toBe(2);
   });
 
   test("落盘 2 空格缩进 + 尾随换行，往返一致", async () => {
     const record = recordFixture();
     const runsRoot = tempDir();
     const filePath = await writeRunRecord(runsRoot, record);
-    expect(filePath).toBe(runRecordPath(runsRoot, record));
+    expect(filePath).toBe(runRecordPath(runsRoot));
     const text = readFileSync(filePath, "utf8");
     expect(text).toBe(`${JSON.stringify(record, null, 2)}\n`);
     const parsed = JSON.parse(text);

@@ -184,7 +184,7 @@ diff 形态省键沿用 `args.ts` 既有的「缺席省键」惯例（`out` / `i
   - 只读路径与正文意味着 rename 场景只按新侧路径处理，旧路径信息不进入检视上下文（当前 Diff→Symbol 管线也只按新侧路径定位，符合既有语义）；
   - 别名与层级是**封闭表**：`new_path` / `filename` / `file_path` / `path`、`diff` / `patch`、`diff` 内层同名键。再出新方言仍需改代码（但错误消息会列出该项实际键名，定位不用猜）。
 - **中性**：
-  - 产物契约（`reviews_en.json` / `reviews_tips_zh.json` / 审计 / `runs/mr/<caseId>/`）不变；
+  - 产物契约（`reviews_en.json` / `reviews_tips_zh.json` / 审计）不变；落点由 ADR-0032 拍平为 `<out>/runs/` 与 `<out>/audit/`（无 `mr/<caseId>/rep-<N>` 层）；
   - `caseId` 派生规则不变（文件名去最后一个扩展名），JSON 与 diff 输入同款；
   - 不引入新的配置键。
 
@@ -192,6 +192,6 @@ diff 形态省键沿用 `args.ts` 既有的「缺席省键」惯例（`out` / `i
 
 1. **解析**：`args.test.ts` 锁定 —— `--mr-diff` 省 `mrFormat`、`--mr-json` 标 `"json"`、二选一冲突与双缺文案、`--mr` 迁移提示。
 2. **转换**：`zoneb/mr-json.test.ts` 锁定 —— 用户真实样例转出的文件头/行区间能被 `analyzeDiff` 读出；四种形状（GitLab `new_path`+`diff`、GitHub/GitCode `/files` `filename`+`patch`、`{diffs:[…]}` 外壳、文件树包装 `file_path`+`diff.diff`）正向可转换；路径与正文的方言优先级（外层优先、空串继续看下一个键、`diff` 内层递归）；二进制条目无正文即跳过；额外字段不产生 rename、不信任 `new_file`；空 diff 跳过与全空 fail fast；BOM/CRLF；形状错误的标签、序号、「该项现有键」与内层键的层级前缀（`diff.diff`）。
-3. **进程**：`bin.process.test.ts` 锁定 —— `--mr-json` 正向跑通（exit 0、stdout 单 JSON、`caseId` 正确、产物落在 `runs/mr/<caseId>/`），坏 JSON 与空 diff 数组 exit 1 且 stdout 干净。
+3. **进程**：`bin.process.test.ts` 锁定 —— `--mr-json` 正向跑通（exit 0、stdout 单 JSON、`caseId` 正确、产物落在 `<out>/runs/`），坏 JSON 与空 diff 数组 exit 1 且 stdout 干净。
 4. **门**：`pnpm --filter review-pi typecheck`、`pnpm --filter review-pi test` 全绿。
 5. **文档**：`docs/使用手册-安装与运行.md` §5.1/§5.2（`--mr-json` 章节）/§5.7/§5.10/§6.2/§8.4/§9.1–9.2、`docs/运行手册-单次检视.md` 旗标表与命令块、`README.md` 命令示例同步为「二选一」形态。

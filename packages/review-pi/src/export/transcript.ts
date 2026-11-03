@@ -10,7 +10,6 @@ import type {
   Usage,
   UserMessage,
 } from "@review-agent-pi/pi-ai";
-import { buildRunId } from "../audit/audit-writer.js";
 
 // 检视转录（ADR-0013 / ADR-0015 / CONTEXT.md「检视转录」）：把一次检视中**进入
 // pi Agent 的全部交互**留档为 `{ info, messages, view }`：
@@ -31,9 +30,9 @@ import { buildRunId } from "../audit/audit-writer.js";
 //   `reasoning.time`、`snapshot`、`tool.state.metadata`、`model.variant`——供与
 //   OpenCode 会话导出并排阅读（ADR-0013：转录是 crime scene，不是指标源）；
 // - usage 口径 = pi-ai `Usage` **全量**（含 `cost`/`reasoning`）——与审计 /
-//   `rep-N.json` 的内核 `LlmUsage` **有意不等**（ADR-0013 后果清单）；
-// - 命名时间 = **首次模型请求时刻**（`firstRequestAt`，非 runReview 入口
-//   `startedAt`）；文件名含该时刻 ⇒ **每 run 独立留档、不覆盖**；
+//   `run.json` 的内核 `LlmUsage` **有意不等**（ADR-0013 后果清单）；
+// - 命名时间 = **首次模型请求时刻**（`firstRequestAt`），即本次 run 的 `runId`
+//   （ADR-0032：`session-<runId>`）；文件名含该时刻 ⇒ **每 run 独立留档、不覆盖**；
 // - 不截断、不脱敏：这是有意的"完整现场"（`runs/**` 已 gitignore）。
 
 /** loop 捕获的 Agent 侧现场（转录原料；不含 system——systemPrompt 是独立字段） */
@@ -62,9 +61,9 @@ export type TranscriptMessage =
 
 /** 转录元数据（精确键表；键序即此处声明序） */
 export interface TranscriptInfo {
-  /** 文件名 stem（含首次模型请求时刻）——与磁盘文件一一对应 */
+  /** 文件名 stem（`session-<runId>`）——与磁盘文件一一对应 */
   readonly id: string;
-  /** 审计 `runId`（本仓扩展键）：与审计 / `reviews_*.runId` / `rep-N.json` 的**配对键** */
+  /** 审计 `runId`（本仓扩展键）：与审计文件名 / `reviews_*.runId` / `run.json` 的**配对键** */
   readonly runId: string;
   readonly agent: "review";
   readonly model: { readonly id: string; readonly baseUrl: string };
@@ -400,11 +399,11 @@ export interface BuildTranscriptInput {
 }
 
 /**
- * 转录文件名 stem = `session-` + 首次模型请求时刻的 runId 形态
- * （时间戳写法 / caseId 净化与审计文件同源——单点复用 `buildRunId`）。
+ * 转录文件名 stem = `session-` + 本次 run 的 `runId`
+ * （= 首次模型请求时刻，与审计文件名同源同值；子会话靠 `idSuffix` 区分）。
  */
-export function transcriptStem(caseId: string, firstRequestAt: Date): string {
-  return `session-${buildRunId(firstRequestAt, caseId)}`;
+export function transcriptStem(runId: string): string {
+  return `session-${runId}`;
 }
 
 export function buildTranscript(input: BuildTranscriptInput): ReviewTranscript {
@@ -412,7 +411,7 @@ export function buildTranscript(input: BuildTranscriptInput): ReviewTranscript {
   const totals = sumAssistantUsage(input.capture.messages);
   return {
     info: {
-      id: `${transcriptStem(input.caseId, firstRequestAt)}${input.idSuffix ?? ""}`,
+      id: `${transcriptStem(input.runId)}${input.idSuffix ?? ""}`,
       runId: input.runId,
       agent: "review",
       model: { id: input.capture.model.id, baseUrl: input.capture.model.baseUrl },

@@ -3,6 +3,7 @@
 **状态**：已接受（2026-10-31；ADR-0025 落地后的收口批次之一）
 **关联**：ADR-0010（语言钉英文 + 核外翻译）、ADR-0013（转录与意见导出）、ADR-0014（规则 Skill 会话）、ADR-0017（分组意见与 cwd 副本；本 ADR 修订其「双名双写」）、ADR-0018（规则 Skill 目录输入）、ADR-0022（`reviews_zh.json` 停产）、ADR-0025（用户级配置与审计 `config` 快照）
 **修订**：ADR-0012 / ADR-0014 / ADR-0018 / ADR-0024 中「`<repo>/.review-rules/*.zip` 自动扫描」一条；ADR-0017 决策 14 的「cwd 双名副本」一条；ADR-0025 的「审计快照记绝对路径」一条
+**后续修订**：[ADR-0032](0032-run-output-flat-layout-and-timestamp-runid.md)（2026-11-03）——本 ADR 决策 1 的路径再次拍平：`<out>/runs/{run.json,session-<ts>*.json,reviews_*.json}` + `<out>/audit/<ts>.json`（无 `mr/<caseId>/rep-<N>` 层，`runId` 收敛为首次请求毫秒时刻）；决策 1 的「`runs/<source>/` 稳定位置」与决策 2 的「`rep-<N>/` 真源」表述被取代，其余决策（cwd 单名副本、审计 `~/` 归一、规则包只认显式输入、配置权限）继续有效。
 **跨仓**：本 ADR 为本仓 pi 线序列 0027；DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 
 ## Context

@@ -16,16 +16,16 @@ import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
  * - 投影成功且 tips 形状合法 ⇒ 写 `reviews_tips_zh.json`；**写失败抛错**
  *   （产物即契约，与 en 同档）；
  * - 未配置引擎 / 投影降级 / tips 形状非法 ⇒ **不产** + 主动删除**本次 run 的
- *   `rep-<N>/`** 里的陈旧文件（绝不跨 rep 越权删除）。
+ *   产物目录**（ADR-0032：`<out>/runs/`）里的陈旧文件。
  *
  * 执行目录副本（ADR-0017 决策 14 / ADR-0027）：run 产物目录里是**真源**
- * （`rep-<N>/reviews_tips_zh.json`），cwd 只放一份下游约定名
+ * （`<out>/runs/reviews_tips_zh.json`），cwd 只放一份下游约定名
  * `review-result.json`，内容与真源逐字节相同。cwd 属用户目录（可能只读、可能
  * 本身是 git 仓库根），故这一路**永不抛错**：失败只进 stderr 警告，检视本身
  * 照常成功（exit 0）；本次不产时把陈旧副本（含旧版本写过的原名副本）一并清除。
  */
 
-/** 分组意见导出的文件名（与 `reviews_en.json` 同目录、同 rep） */
+/** 分组意见导出的文件名（与 `reviews_en.json` 同目录：`<out>/runs/`） */
 export const REVIEWS_TIPS_ZH_FILENAME = "reviews_tips_zh.json";
 
 /** 执行目录副本的下游约定名（内容与上面那份逐字节相同） */
@@ -73,7 +73,7 @@ export async function writeReviewsTipsZh(
 
 /**
  * 删除同目录陈旧 `reviews_tips_zh.json`（本次 run 不产时使磁盘与本次 run 一致）。
- * 只动调用方给出的**本次 run 的 `rep-<N>/`** 目录——绝不跨 rep。返回被删路径；
+ * 只动调用方给出的**本次 run 的产物目录**。返回被删路径；
  * 不存在则 `undefined`；其余删除失败抛错。
  */
 export async function removeStaleReviewsTipsZh(dir: string): Promise<string | undefined> {
@@ -104,7 +104,7 @@ function isNotFound(error: unknown): boolean {
 /**
  * 把分组意见另存到**执行目录**（进程 cwd，ADR-0017 决策 14 / ADR-0027）：
  * 只写下游约定名 `review-result.json`，内容与 run 产物目录里的
- * `rep-<N>/reviews_tips_zh.json` 逐字节相同（2 空格缩进 + 尾换行）。
+ * `<out>/runs/reviews_tips_zh.json` 逐字节相同（2 空格缩进 + 尾换行）。
  *
  * 只留一个名字：cwd 不是产物目录，两个同内容文件只会让人猜哪个是权威——
  * 权威永远是 run 目录里那份。

@@ -409,7 +409,7 @@ test(
         rounds: 1,
         toolCalls: 0,
       });
-      expect(outcome.runId).toMatch(/^\d{8}T\d{6}\.\d{3}-VUL4J-1$/);
+      expect(outcome.runId).toMatch(/^\d{8}_\d{6}_\d{3}$/);
       // 候选 → 裁决通过 → finding 存活（独立期望：字面量造的候选，非代码回算）
       expect(outcome.findings).toHaveLength(1);
       expect(outcome.findings[0]).toMatchObject({
@@ -494,8 +494,8 @@ test(
       // caseId = JSON 文件名去扩展名（与 --mr-diff 同款派生）
       expect(outcome).toMatchObject({ ok: true, caseId: "MR-1234" });
       expect(outcome.findings).toHaveLength(1);
-      // 产物落在 mr 形态段下，路径不因输入是 JSON 而变化
-      expect(existsSync(path.join(outDir, "runs", "mr", "MR-1234", "rep-1", "reviews_en.json"))).toBe(true);
+      // 产物落在 <out>/runs/ 下，路径不因输入是 JSON 而变化
+      expect(existsSync(path.join(outDir, "runs", "reviews_en.json"))).toBe(true);
       expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
     } finally {
       await stub.close();
@@ -863,7 +863,7 @@ test(
 
 // ---- 检视意见中文导出（ADR-0013 Step B）：zh 生命周期矩阵 ----
 // zh 由核外 CLI 缝编排（复用同一次投影结果，绝不额外调网关），与 en 同 rep 目录。
-// 路径基线：<out>/runs/mr/VUL4J-1/rep-1/（ADR-0027：无 experimentId 层）
+// 路径基线：<out>/runs/（ADR-0032：无 mr/<caseId>/rep-N 层）
 
 const ZH_ENGINE_BODY = `const tipOf = (source) => ({
   code: source.codeByFinding?.F100 ?? "",
@@ -895,9 +895,9 @@ export default async (source) => ({
   tips: [{ filePath: "sample.txt", reviewTips: [tipOf(source)] }],
 });\n`;
 
-/** 本次 run 的 rep-1 产物目录（reviews_en.json / reviews_tips_zh.json 同层） */
-function cliRepDir(outDir: string): string {
-  return path.join(outDir, "runs", "mr", "VUL4J-1", "rep-1");
+/** 本次 run 的产物目录（reviews_en.json / reviews_tips_zh.json 同层，ADR-0032） */
+function cliRunsDir(outDir: string): string {
+  return path.join(outDir, "runs");
 }
 
 /** 单 MR 检视调用（唯一形态；可选注入呈现引擎与 cwd 预置文件） */
@@ -932,10 +932,10 @@ test(
       });
 
       expect(run.status).toBe(0);
-      const repDir = cliRepDir(outDir);
-      expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
+      const runsDir = cliRunsDir(outDir);
+      expect(existsSync(path.join(runsDir, "reviews_en.json"))).toBe(true);
       // ADR-0022：zh 文件停产——中文交付物只有 tips；投影留痕改由 stdout 承担
-      expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
+      expect(existsSync(path.join(runsDir, "reviews_zh.json"))).toBe(false);
 
       const outcome = JSON.parse(run.stdout) as {
         findings: { id: string; severity: string; title: string; description: string; file: string; line: number }[];
@@ -958,7 +958,7 @@ test(
       // 复用同一次投影结果：不发额外检视请求（仍恰好六回合）
       expect(stub.requests()).toHaveLength(6);
       // 分组意见（ADR-0017）：与 zh 同目录，顶层就是分组数组（无 { files } 信封）
-      const tipsPath = path.join(repDir, "reviews_tips_zh.json");
+      const tipsPath = path.join(runsDir, "reviews_tips_zh.json");
       expect(existsSync(tipsPath)).toBe(true);
       const tips = JSON.parse(readFileSync(tipsPath, "utf8")) as unknown[];
       expect(Array.isArray(tips)).toBe(true);
@@ -982,7 +982,7 @@ test(
         },
       ]);
       // 执行目录副本（ADR-0017 决策 14 / ADR-0027）：cwd 只放 review-result.json，
-      // 内容与 rep-1 那份逐字节相同；真源永远在 run 目录里，cwd 不再写原名副本
+      // 内容与 runs/ 那份逐字节相同；真源永远在 run 产物目录里，cwd 不再写原名副本
       const cwdTipsPath = path.join(run.cwd, "reviews_tips_zh.json");
       const cwdResultPath = path.join(run.cwd, "review-result.json");
       expect(existsSync(cwdTipsPath)).toBe(false);
@@ -1009,10 +1009,10 @@ test("中文产物：未配置引擎 → reviews_tips_zh.json / reviews_zh.json 
     const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), stubEnv(stub.baseUrl));
 
     expect(run.status).toBe(0);
-    const repDir = cliRepDir(outDir);
-    expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
-    expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
-    expect(existsSync(path.join(repDir, "reviews_tips_zh.json"))).toBe(false);
+    const runsDir = cliRunsDir(outDir);
+    expect(existsSync(path.join(runsDir, "reviews_en.json"))).toBe(true);
+    expect(existsSync(path.join(runsDir, "reviews_zh.json"))).toBe(false);
+    expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(false);
     // 本次 run 无陈旧 zh / tips ⇒ 无「已清除陈旧」噪声
     expect(run.stderr).not.toContain("已清除陈旧");
   } finally {
@@ -1034,10 +1034,10 @@ test("中文产物：引擎降级 → 两份中文产物都缺席 + exit 0 + std
     });
 
     expect(run.status).toBe(0);
-    const repDir = cliRepDir(outDir);
-    expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
-    expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
-    expect(existsSync(path.join(repDir, "reviews_tips_zh.json"))).toBe(false);
+    const runsDir = cliRunsDir(outDir);
+    expect(existsSync(path.join(runsDir, "reviews_en.json"))).toBe(true);
+    expect(existsSync(path.join(runsDir, "reviews_zh.json"))).toBe(false);
+    expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(false);
     expect(run.stderr).toContain("呈现投影降级");
     expect(run.stderr).toContain("translation gateway down");
   } finally {
@@ -1045,16 +1045,16 @@ test("中文产物：引擎降级 → 两份中文产物都缺席 + exit 0 + std
   }
 }, 180_000);
 
-test("中文产物：陈旧 zh + tips（引擎未配置）→ 本次 run 的 rep-1/ 内被清除 + stderr 留痕", async () => {
+test("中文产物：陈旧 zh + tips（引擎未配置）→ 本次 run 的 runs/ 内被清除 + stderr 留痕", async () => {
   const stub = await startLoopbackStub(oneFindingCorpus());
   try {
     const outDir = makeTempDir("review-pi-cli-out-");
     // 预置陈旧 zh 与分组意见（上一 run 遗留；本次未配置引擎 ⇒ 都应被清除）
-    const repDir = cliRepDir(outDir);
-    mkdirSync(repDir, { recursive: true });
-    const stalePath = path.join(repDir, "reviews_zh.json");
+    const runsDir = cliRunsDir(outDir);
+    mkdirSync(runsDir, { recursive: true });
+    const stalePath = path.join(runsDir, "reviews_zh.json");
     writeFileSync(stalePath, '{"stale":true}\n', "utf8");
-    const staleTipsPath = path.join(repDir, "reviews_tips_zh.json");
+    const staleTipsPath = path.join(runsDir, "reviews_tips_zh.json");
     writeFileSync(staleTipsPath, '{"stale":true}\n', "utf8");
 
     const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), stubEnv(stub.baseUrl), {
@@ -1065,7 +1065,7 @@ test("中文产物：陈旧 zh + tips（引擎未配置）→ 本次 run 的 rep
     expect(run.status).toBe(0);
     expect(existsSync(stalePath)).toBe(false);
     expect(existsSync(staleTipsPath)).toBe(false);
-    expect(existsSync(path.join(repDir, "reviews_en.json"))).toBe(true);
+    expect(existsSync(path.join(runsDir, "reviews_en.json"))).toBe(true);
     // cwd 里上次留下的两份副本也必须清掉——「有就是本次的」
     expect(existsSync(path.join(run.cwd, "reviews_tips_zh.json"))).toBe(false);
     expect(existsSync(path.join(run.cwd, "review-result.json"))).toBe(false);
@@ -1096,9 +1096,9 @@ test(
       });
 
       expect(run.status).toBe(0);
-      const repDir = cliRepDir(outDir);
-      expect(existsSync(path.join(repDir, "reviews_zh.json"))).toBe(false);
-      expect(existsSync(path.join(repDir, "reviews_tips_zh.json"))).toBe(false);
+      const runsDir = cliRunsDir(outDir);
+      expect(existsSync(path.join(runsDir, "reviews_zh.json"))).toBe(false);
+      expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(false);
       // cwd 副本同理不产（使「有就是本次的」成立）
       expect(existsSync(path.join(run.cwd, "reviews_tips_zh.json"))).toBe(false);
       expect(existsSync(path.join(run.cwd, "review-result.json"))).toBe(false);
@@ -1115,7 +1115,7 @@ test(
 );
 
 test(
-  "分组意见：执行目录副本写不进（cwd 的 review-result.json 被占成目录）→ stderr 警告 + exit 0 + rep-1 那份照产",
+  "分组意见：执行目录副本写不进（cwd 的 review-result.json 被占成目录）→ stderr 警告 + exit 0 + runs/ 那份照产",
   async () => {
     const stub = await startLoopbackStub(oneFindingCorpus());
     try {
@@ -1134,7 +1134,7 @@ test(
       expect(run.stderr).toContain("执行目录副本写入失败");
       expect(run.stderr).toContain("review-result.json");
       // run 产物目录那份不受牵连
-      expect(existsSync(path.join(cliRepDir(outDir), "reviews_tips_zh.json"))).toBe(true);
+      expect(existsSync(path.join(cliRunsDir(outDir), "reviews_tips_zh.json"))).toBe(true);
       // stdout 仍是完整 JSON 文档（未被 stderr 污染）
       expect(() => JSON.parse(run.stdout)).not.toThrow();
     } finally {
@@ -1150,8 +1150,8 @@ test("中文产物：写盘失败（tips 路径预占为目录）→ exit 1 + �
     const enginePath = writeProjectionEngineFixture("engine.mjs", ZH_ENGINE_BODY);
     const outDir = makeTempDir("review-pi-cli-out-");
     // 预占 tips 路径为目录 ⇒ writeFile 失败（EISDIR）⇒ 显式抛错 ⇒ exit 1
-    const repDir = cliRepDir(outDir);
-    mkdirSync(path.join(repDir, "reviews_tips_zh.json"), { recursive: true });
+    const runsDir = cliRunsDir(outDir);
+    mkdirSync(path.join(runsDir, "reviews_tips_zh.json"), { recursive: true });
 
     const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
       gatewayBaseUrl: stub.baseUrl,

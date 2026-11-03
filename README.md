@@ -10,7 +10,7 @@
 
 | 能力 | 说明 |
 |---|---|
-| 单次检视 | 单案 × rep-1：六阶段循环 + 七个 review 工具 + Context Ledger + 审计投影 |
+| 单次检视 | 一条命令一次 run：六阶段循环 + 七个 review 工具 + Context Ledger + 审计投影 |
 | 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：数组或 `{diffs:[…]}`；路径取 `new_path` / `filename` / `file_path` / `path`、正文取 `diff` / `patch`，`diff` 为对象时取内层 `diff.diff`） |
 | 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>`，**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast |
 | 中文建议 | 配置 `presentation.engine` 后额外产出 `reviews_tips_zh.json`：`"builtin"` 用包内引擎，路径用自定义模块，`null` 关闭 |
@@ -120,17 +120,17 @@ review-pi review --repo D:\work\myrepo --mr-json MR-1234.json --out D:\reviews\M
 
 ```
 <out>/
-  runs/mr/<caseId>/
-    rep-1.json                 RunRecord：模型、耗时、findings 计数、usage
-    session-<runId>.json       检视转录（请求 / 工具 / 相位全留痕）
-    rep-1/
-      reviews_en.json          英文 findings（结构化真源）
-      reviews_tips_zh.json     中文按行分组建议（配置了呈现引擎才有）
-  audit/mr/<caseId>/rep-1/audit/
-    <runId>.json               审计：请求、工具调用、相位、Context Ledger、规则 Skill 留痕
+  runs/
+    run.json                   RunRecord：模型、耗时、findings 计数、usage
+    session-<ts>.json          检视转录（请求 / 工具 / 相位全留痕）
+    session-<ts>-skill-<name>-r<N>.json   规则 Skill 会话转录（每个会话一份）
+    reviews_en.json            英文 findings（结构化真源）
+    reviews_tips_zh.json       中文按行分组建议（配置了呈现引擎才有）
+  audit/
+    <ts>.json                  审计：请求、工具调用、相位、Context Ledger、规则 Skill 留痕
 ```
 
-`runId = <时间戳>-<caseId>`。进程 cwd 另写一份下游约定名副本 `review-result.json`（与真源逐字节相同）。同一个 `--out` 重跑只保留最新 canonical 产物，审计 / 转录按 run 累积——想保留多次结果就换 `--out`。
+`<ts>` = 首次模型请求时刻（UTC 毫秒），形态 `20261031_101010_123`，同时是 `runId`、审计文件名与 `session-<ts>` 的中段。进程 cwd 另写一份下游约定名副本 `review-result.json`（与真源逐字节相同）。同一个 `--out` 重跑只保留最新 `run.json` / `reviews_*.json`，审计 / 转录按 run 累积——想保留多次结果就换 `--out`。
 
 ### 4. 退出码与 stdout
 

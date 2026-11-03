@@ -126,18 +126,16 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 七工具面；产物布局与
   // 六相位各一请求（零工具）
   expect(script.requests).toHaveLength(6);
 
-  // runId = 毫秒时间戳 + 用例（ADR-0024：不再有配置段），审计文件名同源
-  expect(runId).toMatch(/^\d{8}T\d{6}\.\d{3}-VUL4J-1$/);
+  // runId = 首次模型请求时刻（ADR-0032），审计文件名同源同值
+  expect(runId).toMatch(/^\d{8}_\d{6}_\d{3}$/);
   expect(path.basename(auditPath)).toBe(`${runId}.json`);
 
-  // 落盘布局：无配置段，保留 rep-<N>
-  expect(recordPath).toBe(path.join(runsRoot, "runs", "mr", "VUL4J-1", "rep-1.json"));
-  expect(path.dirname(auditPath)).toBe(
-    path.join(runsRoot, "audit", "mr", "VUL4J-1", "rep-1", "audit"),
-  );
+  // 落盘布局：一个 out = 一次 run（无 case / rep 层）
+  expect(recordPath).toBe(path.join(runsRoot, "runs", "run.json"));
+  expect(path.dirname(auditPath)).toBe(path.join(runsRoot, "audit"));
   expect(path.dirname(transcriptPath)).toBe(path.dirname(recordPath));
-  expect(path.basename(transcriptPath)).toMatch(/^session-\d{8}T\d{6}\.\d{3}-VUL4J-1\.json$/);
-  expect(reviewsPath).toBe(path.join(path.dirname(recordPath), "rep-1", "reviews_en.json"));
+  expect(path.basename(transcriptPath)).toBe(`session-${runId}.json`);
+  expect(reviewsPath).toBe(path.join(path.dirname(recordPath), "reviews_en.json"));
 
   // RunRecord：单形态记录面
   expect(record.source).toBe("mr");

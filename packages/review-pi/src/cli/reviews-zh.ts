@@ -5,13 +5,13 @@ import path from "node:path";
  * 中文导出的**残留清理**（ADR-0022：`reviews_zh.json` 已不再是交付物）。
  *
  * 历史：ADR-0013 Step B 曾在核外（CLI 呈现缝）把投影结果落盘成 `reviews_zh.json`
- * ——与 `reviews_en.json` 同目录、同 rep，带投影留痕三键。ADR-0022 判定「中文
+ * ——与 `reviews_en.json` 同目录，带投影留痕三键。ADR-0022 判定「中文
  * 交付物 = `reviews_tips_zh.json` 一份即可」，于是**不再写**这个文件。
  *
  * 保留本模块的唯一职责：**清掉旧版本留下的 `reviews_zh.json`**，使「磁盘上的
- * 中文产物 = 本次 run」成立。只动调用方给出的**本次 run 的 `rep-<N>/`** 目录
- * ——绝不跨 rep；文件不存在即无操作（零噪声）。投影本身照旧服务 stdout 与
- * `reviews_tips_zh.json`（同一次投影，不额外调网关）。
+ * 中文产物 = 本次 run」成立。只动调用方给出的**本次 run 的产物目录**（ADR-0032：
+ * `<out>/runs/`）——不跨 out；文件不存在即无操作（零噪声）。投影本身照旧服务
+ * stdout 与 `reviews_tips_zh.json`（同一次投影，不额外调网关）。
  */
 
 /** 已停产的中文导出文件名（只用于陈旧清理） */

@@ -221,8 +221,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
 
   // 中文产物只留分组意见（ADR-0022）：`reviews_zh.json` 不再是交付物——投影结果
   // 仍服务 stdout 与 `reviews_tips_zh.json`（同一次投影，不额外调网关）。历史上
-  // 产过的 zh 一律视为陈旧并清除，使「磁盘上的中文产物 = 本次 run」成立；只动
-  // **本次 run 的 rep-<N>/**，绝不跨 rep。en/session 已在内核落盘（先于本步）。
+  // 产过的 zh 一律视为陈旧并清除，使「磁盘上的中文产物 = 本次 run」成立；作用域
+  // = `<out>/runs/`（ADR-0032：一个 `--out` 即一次 run 的输出目录）。
+  // en/session 已在内核落盘（先于本步）。
   if (reviewsPath !== undefined) {
     const removed = await removeStaleReviewsZh(dirname(reviewsPath));
     if (removed !== undefined) {

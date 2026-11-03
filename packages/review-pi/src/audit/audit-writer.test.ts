@@ -75,12 +75,12 @@ function contentFixture(): AuditFileContent {
 }
 
 describe("buildRunId", () => {
-  test("毫秒时间戳 + 用例，文件名安全", () => {
-    expect(buildRunId(STARTED, "VUL4J-1")).toBe("20260914T180846.922-VUL4J-1");
+  test("首次请求时刻（UTC 毫秒）：YYYYMMDD_HHMMSS_mmm，文件名安全且不含点号", () => {
+    expect(buildRunId(STARTED)).toBe("20260914_180846_922");
   });
 
-  test("用例 id 中的文件名不安全字符替换为下划线", () => {
-    expect(buildRunId(STARTED, "VUL4J/1 x")).toBe("20260914T180846.922-VUL4J_1_x");
+  test("毫秒补零 + 定宽：字典序 == 时间序", () => {
+    expect(buildRunId(new Date("2026-01-02T03:04:05.006Z"))).toBe("20260102_030405_006");
   });
 });
 

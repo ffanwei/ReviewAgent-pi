@@ -110,7 +110,7 @@ function textOf(message: Record<string, unknown> | undefined): string {
 }
 
 function runDir(runsRoot: string): string {
-  return path.join(runsRoot, "runs", "mr", "VUL4J-1");
+  return path.join(runsRoot, "runs");
 }
 
 function sessionFiles(dir: string): string[] {
@@ -146,13 +146,13 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
     ruleSkillLoader: async () => [],
   });
 
-  // 落点：与 rep-1.json 平铺（runs/mr/VUL4J-1/，ADR-0027），名字含首次模型请求时刻
+  // 落点：与 run.json 平铺（<out>/runs/，ADR-0032），文件名 = 首次模型请求时刻
   const dir = runDir(runsRoot);
   expect(transcriptPath).toBeDefined();
   expect(path.dirname(transcriptPath ?? "")).toBe(dir);
   expect(existsSync(transcriptPath ?? "")).toBe(true);
   const baseName = path.basename(transcriptPath ?? "");
-  expect(baseName).toMatch(/^session-\d{8}T\d{6}\.\d{3}-VUL4J-1\.json$/);
+  expect(baseName).toMatch(/^session-\d{8}_\d{6}_\d{3}\.json$/);
   // 每 run 独立留档：目录只有这一份 session
   expect(sessionFiles(dir)).toEqual([baseName]);
 
@@ -176,15 +176,19 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
   expect(typeof model.baseUrl).toBe("string");
 
   // 命名时间 = 首次模型请求时刻（info.time 为 epoch 毫秒 {created, updated}；
-  // 紧凑 ISO 形 = 文件名中段）。`completed` 退役后不得复活。
+  // 文件名中段 = `YYYYMMDD_HHMMSS_mmm`）。`completed` 退役后不得复活。
   const time = doc.info["time"] as { created: unknown; updated: unknown };
   expect(Object.keys(time).sort()).toEqual(["created", "updated"]);
   expect("completed" in time).toBe(false);
   expect(typeof time.created).toBe("number");
   expect(typeof time.updated).toBe("number");
   const created = new Date(time.created as number).toISOString();
-  const nameSegment = baseName.replace(/^session-/, "").replace(/-VUL4J-1\.json$/, "");
-  expect(created.replace(/[-:]/g, "").replace("Z", "")).toBe(nameSegment);
+  const nameSegment = baseName.replace(/^session-/, "").replace(/\.json$/, "");
+  const [isoDate, isoRest] = created.split("T");
+  const [isoTime, isoMs] = (isoRest ?? "").replace("Z", "").split(".");
+  expect(`${(isoDate ?? "").replace(/-/g, "")}_${(isoTime ?? "").replace(/:/g, "")}_${isoMs ?? "000"}`).toBe(
+    nameSegment,
+  );
   expect(time.created as number).toBeLessThanOrEqual(time.updated as number);
 
   // messages：合成 system（Zone A 系统提示词）+ pi 原生序列原样
@@ -362,8 +366,8 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
   expect(doc.info["tokens"]).toEqual(summed.tokens);
   expect(doc.info["cost"]).toEqual(summed.cost);
 
-  // 检视意见导出：与转录同 run 树、rep-1/ 目录、保序等于 record.baseline.findings
-  expect(reviewsPath).toBe(path.join(dir, "rep-1", "reviews_en.json"));
+  // 检视意见导出：与转录同目录（<out>/runs/）、保序等于 record.baseline.findings
+  expect(reviewsPath).toBe(path.join(dir, "reviews_en.json"));
   const envelope = JSON.parse(readFileSync(reviewsPath ?? "", "utf8")) as Record<string, unknown>;
   expect(Object.keys(envelope).sort()).toEqual(
     ["generatedAt", "runId", "source", "caseId", "rep", "model", "findings"].sort(),
