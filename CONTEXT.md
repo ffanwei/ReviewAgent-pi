@@ -106,16 +106,16 @@ _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截�
 ### 产物
 
 **检视转录（Review Transcript）**:
-一次检视中**进入 Review Runtime 的全部交互**（系统提示词、每轮消息、工具调用与结果）的完整留档，随 run 落盘为 `<out>/runs/session-<ts>.json`（规则 Skill 会话为 `session-<ts>-skill-<name>-r<N>.json`；`<ts>` = 首次模型请求时刻，UTC 形 `20261031_101010_123`，即 `runId`；含 `{ info, messages, view }`：`messages` 为 pi 原生真源、`view` 为 OpenCode 风格定形投影）；是 debug 与取证用的现场，**不是指标源**（成本与行为核对取自运行记录与审计）。**每次 run 独立留档、不覆盖**（文件名含首次模型调用时刻，ADR-0032）。
+一次检视中**进入 Review Runtime 的全部交互**（系统提示词、每轮消息、工具调用与结果）的完整留档，随 run 落盘为 `<tasks 根>/<taskId>/runs/session-<ts>.json`（规则 Skill 会话为 `session-<ts>-skill-<name>-r<N>.json`；`<ts>` = 首次模型请求时刻，UTC 形 `20261031_101010_123`，即 `runId`；含 `{ info, messages, view }`：`messages` 为 pi 原生真源、`view` 为 OpenCode 风格定形投影）；是 debug 与取证用的现场，**不是指标源**（成本与行为核对取自运行记录与审计）。**每次 run 独立留档、不覆盖**（文件名含首次模型调用时刻，ADR-0032）。
 _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
 
 **检视意见导出（Review Findings Export）**:
-一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（核外投影产出，随呈现引擎配置**存在或缺席**）——两份都落在 `<out>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022），投影留痕改由 stdout 的 `presentation` 键承担。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027）。
+一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（核外投影产出，随呈现引擎配置**存在或缺席**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022），投影留痕改由 stdout 的 `presentation` 键承担。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027）。
 _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
 
 **运行落盘根（Runs Root）**:
-`--out` 指向的根目录，本次检视的全部留痕都在其下：`runs/`（`run.json` 记录 / `session-*.json` 转录 / `reviews_*.json` 意见导出）与 `audit/<ts>.json`（审计），规则包解压缓存在 `.cache/rule-skills/`。一个 `--out` 就是一次 run 的输出目录：没有 case / rep / source 目录层，`caseId` 只作为数据字段（ADR-0032）。
-_Avoid_: 输出目录（只指 `--out` 本身）、runs 根（与历史 `runs/phase2-*` 实验目录混淆）
+`--taskId` 决定的任务目录 `<tasks 根>/<taskId>/`（tasks 根缺省 `~/.PiAgent/tasks`，`--tasks-dir` 可覆盖），本次检视的全部留痕都在其下：`runs/`（`run.json` 记录 / `session-*.json` 转录 / `reviews_*.json` 意见导出）与 `audit/<ts>.json`（审计），规则包解压缓存在 `.cache/rule-skills/`。一个任务目录就是一次 run 的输出根：没有 case / rep / source 目录层，`caseId` 只作为数据字段（ADR-0032、ADR-0033）。
+_Avoid_: 输出目录（泛指；本仓改称任务目录，旧 `--out` 已随 ADR-0033 移除）、runs 根（与历史 `runs/phase2-*` 实验目录混淆）
 
 ### 发行
 

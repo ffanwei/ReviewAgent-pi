@@ -88,16 +88,20 @@ review-pi smoke         # 双探针自检：网关健康 + 模型可达；通过
 review-pi review \
   --repo /data/snapshots/my-repo-base \
   --mr-diff /data/diffs/change-001.diff \
-  --out /data/reviews/change-001
+  --taskId change-001
 
 # B. 直接吃 GitCode 接口返回的文件变更 JSON
 curl.exe -H "Authorization: Bearer $env:GITCODE_TOKEN" \
   "https://api.gitcode.com/api/v5/repos/OWNER/REPO/pulls/1234/files" -o MR-1234.json
-review-pi review --repo D:\work\myrepo --mr-json MR-1234.json --out D:\reviews\MR-1234
+review-pi review --repo D:\work\myrepo --mr-json MR-1234.json --taskId MR-1234
+
+# C. 把产物指到别的 tasks 根（CI / 沙箱；相对路径按 cwd）
+review-pi review --repo /repo --mr-diff /d/change.diff --taskId change-001 --tasks-dir /tmp/tasks
 ```
 
 - `--repo` 是**目录**，约定停在 diff 的 base 侧（CLI 不 apply diff）。
-- `--mr-diff` 与 `--mr-json` **恰好给一个**；`caseId` = 文件名去最后一个扩展名（`MR-1234.json` → `MR-1234`）。
+- `--taskId` **必需**：产物落 `~/.PiAgent/tasks/<taskId>/`（`--tasks-dir` 只覆盖根）。
+- `--mr-diff` 与 `--mr-json` **恰好给一个**；`caseId` = 文件名去最后一个扩展名（`MR-1234.json` → `MR-1234`），与 `taskId` 是两个维度。
 - PowerShell 用 `>` / `Out-File` 写 JSON 会得到 UTF-16，解析失败；用 `curl.exe -o` 或 `Set-Content -Encoding utf8`。
 
 ### 旗标
@@ -108,7 +112,8 @@ review-pi review --repo D:\work\myrepo --mr-json MR-1234.json --out D:\reviews\M
 | `--mr-diff <file>` | 统一 diff 文件（与 `--mr-json` 二选一） |
 | `--mr-json <file>` | 文件变更 JSON 数组（与 `--mr-diff` 二选一） |
 | `--issue <text>` | MR 描述，原样进入初始 user 消息（缺省空） |
-| `--out <dir>` | 落盘根，缺省 `review-pi-output` |
+| `--taskId <id>` | 任务 id（必需）：产物落 `<tasks 根>/<id>/`；只允许单段目录名 |
+| `--tasks-dir <dir>` | tasks 根覆盖（缺省 `~/.PiAgent/tasks`；相对 cwd） |
 | `--model <id>` | 检视模型，缺省取配置 `model.default` |
 | `--config <path>` | 替代配置文件（相对 cwd） |
 | `--rule-skill-zip <zip>` / `--rule-skill <dir>` | 规则 Skill 包 / 已解压目录，可重复 |
@@ -119,7 +124,7 @@ review-pi review --repo D:\work\myrepo --mr-json MR-1234.json --out D:\reviews\M
 ### 3. 产物
 
 ```
-<out>/
+~/.PiAgent/tasks/<taskId>/        # --tasks-dir <dir> 可换根
   runs/
     run.json                   RunRecord：模型、耗时、findings 计数、usage
     session-<ts>.json          检视转录（请求 / 工具 / 相位全留痕）
@@ -130,7 +135,7 @@ review-pi review --repo D:\work\myrepo --mr-json MR-1234.json --out D:\reviews\M
     <ts>.json                  审计：请求、工具调用、相位、Context Ledger、规则 Skill 留痕
 ```
 
-`<ts>` = 首次模型请求时刻（UTC 毫秒），形态 `20261031_101010_123`，同时是 `runId`、审计文件名与 `session-<ts>` 的中段。进程 cwd 另写一份下游约定名副本 `review-result.json`（与真源逐字节相同）。同一个 `--out` 重跑只保留最新 `run.json` / `reviews_*.json`，审计 / 转录按 run 累积——想保留多次结果就换 `--out`。
+`<ts>` = 首次模型请求时刻（UTC 毫秒），形态 `20261031_101010_123`，同时是 `runId`、审计文件名与 `session-<ts>` 的中段。进程 cwd 另写一份下游约定名副本 `review-result.json`（与真源逐字节相同，只在本次产 tips 时写）。同一个 taskId 重跑只保留最新 `run.json` / `reviews_*.json`，审计 / 转录按 run 累积——想保留多次结果就换 `--taskId`。
 
 ### 4. 退出码与 stdout
 
