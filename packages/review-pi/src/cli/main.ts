@@ -58,6 +58,7 @@ import {
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
 import { mrJsonToUnifiedDiff } from "../zoneb/mr-json.js";
 import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
+import { formatReviewArgs } from "./args-echo.js";
 import { runConfigCommand } from "./config-command.js";
 import {
   applyPresentationProjection,
@@ -152,6 +153,25 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 进度关闭不是「零输出」：收尾摘要恒定打印（一行，可 grep）
     process.stderr.write(`${doneLine(summary)}\n`);
   }
+
+  // 传入参数回显（stderr）：run 已结束，把本次实际生效的参数报一遍——相对
+  // 路径已按 cwd 解析，缺省值（model / config / issue / out）已落成生效值并
+  // 标注来源。stdout 是单 JSON 文档契约，故这一路只走 stderr；不含任何秘密。
+  const stderrIsTty = process.stderr.isTTY === true;
+  process.stderr.write(
+    `${formatReviewArgs(args, {
+      repoPath,
+      mrPath,
+      outPath: runsRoot,
+      configPath: config.path,
+      modelId,
+      modelFromFlag: args.model !== undefined,
+      configFromFlag: args.configPath !== undefined,
+      progressOn: args.progress ?? stderrIsTty,
+      progressExplicit: args.progress !== undefined,
+      stderrIsTty,
+    })}\n`,
+  );
 
   // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout
   // 呈现档（title/description 等自然语言字段经注入引擎译中文，结构化字段

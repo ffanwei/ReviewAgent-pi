@@ -441,6 +441,11 @@ test(
       // .env.local 残留提示：只声明「不再读取」，绝不回显文件内容
       expect(run.stderr).toContain("已不再读取 .env.local");
       expect(run.stderr).not.toContain(DECOY_KEY);
+      // run 结束后回显生效参数（stderr；stdout 仍是单 JSON 文档）
+      expect(run.stderr).toContain("review-pi: 本次 review 传入参数");
+      expect(run.stderr).toContain(mrFile);
+      expect(run.stderr).toContain(repoFixturePath("sample"));
+      expect(run.stderr).toContain(outDir);
     } finally {
       await stub.close();
     }
