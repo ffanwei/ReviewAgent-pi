@@ -56,12 +56,12 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <dif
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>]
-  （smoke = 网关冒烟自检，P1b 双探针：网关健康 + 模型可达，输出人话诊断）
+  （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
   （config init = 写缺省 JSONC；config show = 脱敏打印生效配置与来源）
   （export = 打印主 / skill session 的绝对路径，主在前；--path 复制到目录）
 
 配置（ADR-0025）：~/.PiAgent/PiAgent.jsonc（Linux $HOME / Windows %USERPROFILE%），JSONC。
-环境变量不再被读取；--env 以移除（改用 --config）。
+环境变量不再被读取；--env 已移除（改用 --config）。
 
 review 旗标：
   --repo    <path>       仓库快照根目录（必需）
@@ -71,7 +71,7 @@ review 旗标：
                          为对象时取内层 diff.diff）；其余字段忽略，装载期补文件头转统一 diff。
                          与 --mr-diff 二选一
   --issue   <text>       MR 议题描述（缺省空）
-  --taskId  <id>         任务 id（**必需**）。产物落到 <tasks 根>/<id>/ 下（runs/ + audit/）；
+  --taskId  <id>         任务 id（必需）。产物落到 <tasks 根>/<id>/ 下（runs/ + audit/）；
                          只允许单段目录名：不能含路径分隔符、盘符、<>:"|?* 或前导点，
                          Windows 保留设备名（CON / NUL / COM1…）与尾随点同样拒绝
   --tasks-dir <dir>      tasks 根目录覆盖（缺省 ${DEFAULT_TASKS_ROOT_LABEL}；测试 / CI / 沙箱用），
@@ -80,7 +80,7 @@ review 旗标：
   --config  <path>       配置文件显式路径（相对路径按 cwd 解析；缺省用户级路径）
   --rule-skill-zip  <path[,path…]>  规则 Skill zip 显式路径，一次可传多个（逗号分隔，或重复旗标；
                                     顺序 = 执行顺序）。不自动扫描仓库内目录——不传就不装载规则包，ADR-0027
-  --rule-skill      <dir[,dir…]>    规则 Skill **已解压目录**，一次可传多个；排在全部
+  --rule-skill      <dir[,dir…]>    规则 Skill 已解压目录，一次可传多个；排在全部
                                     --rule-skill-zip 之后；目录先审计再按内容哈希复制进 run 缓存，
                                     符号链接/越界一律拒绝。一个包就是一个 skill（ADR-0034）
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）

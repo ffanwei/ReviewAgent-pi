@@ -773,16 +773,21 @@ test("smoke：窄旗标面（仅 --model / --config）；review 专属旗标对 
   });
 });
 
-test("USAGE_TEXT：宣告三个子命令（stderr 错误路径同款文案，单一来源）", () => {
+test("USAGE_TEXT：宣告四个子命令（stderr 错误路径同款文案，单一来源）", () => {
   expect(USAGE_TEXT).toContain("review-pi review --repo");
   expect(USAGE_TEXT).toContain("review-pi smoke");
   expect(USAGE_TEXT).toContain("review-pi config <init|show>");
+  // export（ADR-0036）：三个旗标都在用法面
+  expect(USAGE_TEXT).toContain("review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>]");
   // 落盘位置只在 taskId 面上出现（--out 已从用法面移除）
   expect(USAGE_TEXT).toContain("--taskId <id>");
   expect(USAGE_TEXT).toContain("--tasks-dir <dir>");
   expect(USAGE_TEXT).not.toContain("--out ");
   // 一个包就是一个 skill（ADR-0034）：包内消歧旗标不再宣告
   expect(USAGE_TEXT).not.toContain("--rule-skill-name");
+  // 纯文本用法面不带 markdown 记号与内部票号
+  expect(USAGE_TEXT).not.toContain("**");
+  expect(USAGE_TEXT).not.toContain("P1b");
 });
 
 test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", () => {
