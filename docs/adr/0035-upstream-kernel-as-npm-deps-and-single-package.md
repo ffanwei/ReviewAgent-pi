@@ -389,4 +389,5 @@ S0 = `f-demo-session-skill-2`（vendored 内核，2026-11-03 08:24）；S5 = `f-
 - S4 覆盖：`README.md` / `CONTEXT.md` / `AGENTS.md` / `CLAUDE.md` / `docs/使用手册-安装与运行.md` / `docs/运行手册-单次检视.md` / `docs/UA_ONBOARDING.md`；ADR-0008 / 0009 / 0028 各加「后续修订」；`docs/design/Pi 内核定制基线方案.md` 文首加历史说明。
 - 额外收口：`.gitignore` 里「packages/ai 工具产物」的注释改写；`docs/render_architecture.py` 与 `docs/png/architecture-call-flow.dot` 标注为 ADR-0024 之前的冻结历史图；`docs/项目问答整理.md` 顶部加时效说明。
 - 零残留核对：`@review-agent-pi/` 只剩历史 ADR / 设计基线方案 / 履约文本 / 问答快照中的历史名；`review-llm` 只命中历史文档（ADR-0002/0006/0008/0009/0028、设计文档、历史报告、问答快照、CONTEXT 的 `_Avoid_` 反面清单、UA_ONBOARDING 的「已删除」说明）。源码与配置面为 0。
+- 孤儿文件：删掉仓根 `tsconfig.base.json`——它是 vendoring 期 pi 四包 `tsconfig.build.json` 的 `extends` 目标（上游基线，strict-only），四包移出 workspace 后已无任何消费者（`git grep '"extends"'` 只剩 `packages/review-pi/tsconfig*.json` 指向根 `tsconfig.json`）。历史文档对它的描述保留为 vendoring 期事实。
 
