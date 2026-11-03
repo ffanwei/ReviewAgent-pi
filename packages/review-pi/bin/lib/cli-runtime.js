@@ -3,9 +3,9 @@
  * 腿表与人话拒跑文案。纯 node 内建零依赖——bin 在 dist 可信之前运行，
  * 不能 import 任何构建产物（判鲜语义见同目录 compile-freshness.js）。
  *
- * 腿表 = dist/cli/main.js 导入图必需的全部运行时产物：vendored pi 四包
+ * 腿表 = dist/cli/main.js 导入图必需的全部运行时产物：pi 四包
  * （ai / agent / chord / telemetry——经 node_modules default 条件消费 dist）+
- * review-llm（冻结仪器常量单源）+ 本包 CLI 镜像。后者是 vendored 源码形态
+ * 本包 CLI 镜像。后者是 vendored 源码形态
  * （无 prepare、构建显式执行），缺席/过期时 Node 的模块解析会在导入期秒死
  * ——在位检查必须覆盖全腿，不能只看本包产物。
  *
@@ -50,8 +50,6 @@ const PACKAGE_LEGS = [
     specifier: "@review-agent-pi/pi-telemetry",
     buildCommand: "pnpm build:pi",
   },
-  // 冻结仪器常量单源（prepare 在 pnpm install 时构建；源改后需重建）
-  { label: "review-llm", specifier: "review-llm", buildCommand: "pnpm --filter review-llm build" },
 ];
 
 /** 入口路径是否落在 node_modules 安装布局里（= 不是源码工作树形态） */

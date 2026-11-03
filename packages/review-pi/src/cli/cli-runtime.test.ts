@@ -36,7 +36,6 @@ const EXPECTED_PACKAGE: Record<string, string> = {
   "pi-agent-core (vendored)": "@review-agent-pi/pi-agent-core",
   "chord (vendored)": "@review-agent-pi/chord",
   "pi-telemetry (vendored)": "@review-agent-pi/pi-telemetry",
-  "review-llm": "review-llm",
 };
 
 test("腿表按模块解析定位：每腿入口属于声明包，不依赖仓库 packages/ 目录名", () => {

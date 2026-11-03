@@ -358,9 +358,9 @@ describe("presentationSourceOf — RunResult 呈现面圈定（端到端）", ()
 });
 
 describe("模块纪律（零 pi 运行时依赖——核外呈现层）", () => {
-  it("src/presentation 模块的 import 面只有相对路径 / node: 内建 / review-llm，review-pi 仅限 type-only", async () => {
-    // engine-zh.ts 是核外真引擎装配：网关/凭据解析走 review-llm 单源（共享
-    // LLM 客户端件，非 pi 内核/测量面——与检视链 CLI 同款解析，无第二真源）。
+  it("src/presentation 模块的 import 面只有相对路径 / node: 内建，review-pi 仅限 type-only", async () => {
+    // engine-zh.ts 是核外真引擎装配：翻译/建议走自持 `fetch`（不依赖任何
+    // 共享 LLM 客户端包），ADR-0010 把「语言」定成核外呈现关注点。
     // ADR-0024：共享契约（Finding / RunResult / ToolCallRecord）以 review-pi
     // 为单源真值，故允许 **type-only** import；运行时仍不得依赖 pi 内核。
     const moduleNames = ["translate-projection.ts", "terminology.ts", "engine-zh.ts"];
@@ -373,12 +373,11 @@ describe("模块纪律（零 pi 运行时依赖——核外呈现层）", () => 
       for (const statement of statements) {
         const typeOnly = statement[1] !== undefined;
         const specifier = statement[2] ?? "";
-        // 只允许 root 内相对路径、node: 内建、review-llm 裸包名与 review-pi
-        // 类型单源；@earendil-works（pi 四包）/ packages/ 转译路径全部禁止。
+        // 只允许 root 内相对路径、node: 内建与 review-pi 类型单源；
+        // @earendil-works（pi 四包）/ packages/ 转译路径全部禁止。
         const allowed =
           specifier.startsWith(".") ||
           specifier.startsWith("node:") ||
-          specifier === "review-llm" ||
           (specifier === "review-pi" && typeOnly);
         expect(allowed, `${moduleName} imports "${specifier}"`).toBe(true);
         expect(specifier, `${moduleName} imports "${specifier}"`).not.toMatch(/@earendil-works|packages\//);

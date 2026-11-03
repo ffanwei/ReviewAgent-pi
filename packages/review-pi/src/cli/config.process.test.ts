@@ -41,7 +41,6 @@ beforeAll(async () => {
   const staleCommands = new Set(check.refusals.map((refusal) => refusal.buildCommand));
   for (const command of [
     "pnpm build:pi",
-    "pnpm --filter review-llm build",
     "pnpm --filter review-pi build",
   ]) {
     if (!staleCommands.has(command)) {

@@ -62,10 +62,9 @@ beforeAll(async () => {
     return;
   }
   const staleCommands = new Set(check.refusals.map((refusal) => refusal.buildCommand));
-  // 腿间有依赖序：vendored pi 四包（root 脚本按依赖序）→ review-llm → 本包
+  // 腿间有依赖序：vendored pi 四包（root 脚本按依赖序）→ 本包
   const buildOrder = [
     "pnpm build:pi",
-    "pnpm --filter review-llm build",
     "pnpm --filter review-pi build",
   ];
   for (const command of buildOrder) {
