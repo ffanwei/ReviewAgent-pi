@@ -377,6 +377,40 @@ test("--rule-skill-zip 逗号列表：引号内的 `a.zip, b.zip` 展开为多�
   ]);
 });
 
+test("逗号列表对空白不敏感：逗号前后有没有空格等价（ADR-0034）", () => {
+  for (const raw of ["a.zip,b.zip", "a.zip, b.zip", "a.zip , b.zip", "  a.zip ,b.zip  "]) {
+    const parsed = parseCliArgs([
+      "review",
+      "--repo",
+      "r",
+      "--mr-diff",
+      "m.diff",
+      "--taskId",
+      "t-1",
+      "--rule-skill-zip",
+      raw,
+    ]);
+    expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillZips).toEqual([
+      "a.zip",
+      "b.zip",
+    ]);
+  }
+  // shell 已经按空白切开、逗号前还带空格的 token 形态
+  const split = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr-diff",
+    "m.diff",
+    "--taskId",
+    "t-1",
+    "--rule-skill",
+    "r1/ ,",
+    " r2/",
+  ]);
+  expect(split.ok && split.command === "review" && split.args.ruleSkillDirs).toEqual(["r1/", "r2/"]);
+});
+
 test("--rule-skill-zip 逗号列表：shell 按空白切开的 `r1.zip, r2.zip` 归并成一个列表（ADR-0034）", () => {
   const parsed = parseCliArgs([
     "review",
