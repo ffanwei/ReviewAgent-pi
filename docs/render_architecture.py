@@ -1,5 +1,10 @@
 """Render the end-to-end architecture call flow to docs/png/architecture-call-flow.*"""
 
+# ⚠️ 历史图（冻结）：本图描述的是 ADR-0024（2026-10-31）删除评测仪器层**之前**的
+# 调用链（cli/plan/runner/judge/metrics 与 `review-llm` 均已被删除）。ADR-0024 之后的
+# 形态见 CONTEXT.md；ADR-0035 又把内核四包改成 npm 上游依赖 `@earendil-works/*`、
+# 发行面收为单包 `review-pi`。本文件只作为历史快照保留，不再跟随现状更新。
+
 from __future__ import annotations
 
 import shutil

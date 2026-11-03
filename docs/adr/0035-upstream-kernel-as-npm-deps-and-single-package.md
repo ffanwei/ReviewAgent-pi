@@ -265,3 +265,128 @@ ADR-0009 的「全源码 vendor fork」前提修订为：**默认消费上游 di
 | 锚点与 v0.85.1 的差异面 | GitHub compare API `v0.85.1...6671c604766b3670ed95f405aa7856835d0ca702`（79 commits / 257 files / 四包 src 33 个） |
 | 四包源码零定制 | `git log --oneline -- packages/{agent,ai,chord,telemetry}`（只有整树快照 + ADR-0028 两次提交）+ 《Pi 内核定制基线方案》§4/§9 |
 | `review-llm` 无消费者 | ①`git grep "review-llm"`（源码只有注释/declaration/tsconfig paths/测试允许名单）；②`dist/**` 内无 `from "review-llm"`（仅 `shared/config` 一条注释）；③`git log -S 'from "review-llm"' --all` 为空；④根 `src/` 仅 import `node:*` + `review-pi` |
+
+---
+
+## 执行记录（2026-11-03）
+
+### 1. 版本判定：0.86.1 → 0.86.0 → 0.85.1
+
+按决策 1 的顺序实际试装，前两个都被**构建门**挡住（不是测试门，是 `tsc` 红）：
+
+| 版本 | 结果 | 失败形态 |
+|---|---|---|
+| `0.86.1` | ✗ | ①`src/export/transcript.ts:291` 的 `toolResult` 成员被收窄成 `never`（`TS2345`），`:341/349/355/357/363` 连带 `TS2339`；②`src/provider/pi-client.ts:88` `Context` 不可赋给 `TranscriptContext`（`TS2345`）——`TranscriptContext` 是带 `unique symbol` brand 的类型，裸 `Context` 不再被 `deepseekProvider().stream()` 接受；③`:179` 的 model 返回类型不兼容（`TS2322`） |
+| `0.86.0` | ✗ | 与 0.86.1 同源的 `TranscriptContext` brand 断裂（`transcript.ts` 的 `never` 收窄 + `pi-client.ts:88`），且安装后 `.pnpm` 里出现**两份 pi-ai**（`@earendil-works+pi-ai@0.86._b859…` = 0.86.0、`…_c904…` = 0.86.1，见下条注） |
+| `0.85.1` | ✓ | 构建、typecheck（根 + 包）、测试、`build:dist`、打包、安装面全绿 |
+
+> 0.86.0 那次的两份 pi-ai 是反复切换版本时 pnpm store 的残留，`pnpm install` 已收敛；不作为该版本被拒的理由，列在此处只为说明当时观察到的现象。
+
+**结论**：锁定 **`0.85.1`**，四包同版本成套、精确（不带 `^`）。0.86.x 的 `TranscriptContext` 是一次**有意收窄的公开 API 变更**，要跟进就得改 `review-pi` 的 `Context` 构造方式（新增 brand）——那是独立的适配工作，不属于本次「换依赖来源」的范围，故按判定序退版，不硬改上游契约。
+
+### 2. 严格性欠账（测试侧 32 处，已记账）
+
+内核四包不再有 vendored 源码进入本包程序后，`packages/review-pi/tsconfig.json` 把 `allowImportingTsExtensions` 收回了，但保留两处放宽：
+
+```json
+"noUncheckedIndexedAccess": false,
+"exactOptionalPropertyTypes": false
+```
+
+原因是该 tsconfig 的 `include` 覆盖 `src/**`（含 `*.test.ts` 与 `src/testing` 夹具），其中 32 处**既有测试写法**过不了全量严格：
+
+| 文件 | 处数 | 典型 |
+|---|---|---|
+| `src/run/review-run.test.ts` | 26 | `TS2532 Object is possibly 'undefined'`（数组下标 / 可选属性） |
+| `src/loop/agent-review-loop.test.ts` | 3 | 同上 + `TS2345 string \| undefined` |
+| `src/run/mr-boundary-guard.test.ts` | 1 | `TS2532` |
+| `src/experiment/run-record.test.ts` | 1 | `TS2379 exactOptionalPropertyTypes`（`auditPath: undefined`） |
+| `src/testing/vul4j1-script.ts` | 1 | `TS2532` |
+
+**product 代码不受影响**：`tsconfig.build.json` 把两个 flag 收回到全量严格，`pnpm build:dist` 是 CI 门。这 32 处属于「测试夹具风格清理」，作为独立清理项，不在本次切换里逐条加非空断言（纯噪声、且会把注意力从真关注点引开）。
+
+### 3. vitest 的 `source` 条件必须撤
+
+ADR 的执行清单里只写到「根配置改 alias」，实际执行时**包内配置也必须改**。原因：上游四包也声明了 `source` 条件，且指向**未随 tarball 发布**的 `.ts` 源；全局开 `resolve.conditions: ["source"]` 会让 vitest 去解析 `node_modules/@earendil-works/pi-agent-core/dist/harness/context.js` 里 import 的 `@earendil-works/chord/src/context/index.ts`——文件不存在，8 个 suite 直接 `Cannot find module`。
+
+处置：
+- `packages/review-pi/vitest.config.ts`：删掉 `resolve.conditions`（测试 import 全是包内相对路径 + npm 依赖，默认条件即可）；
+- 根 `vitest.config.ts`：改为 `resolve.alias` 把 `^review-pi$` 指到 `packages/review-pi/src/index.ts`（root 呈现层测试只 import 类型与少量运行时契约，要跑当前源码而不是陈旧 dist）。
+
+### 4. 腿表（`bin/lib/cli-runtime.js`）的实际落点
+
+结构不改，四条内核腿自动落入「安装布局」分支（只判在位、不判 mtime）：
+
+- label 去掉 `(vendored)` → `pi-ai` / `pi-agent-core` / `chord` / `pi-telemetry`；
+- `buildCommand` 由 `pnpm build:pi` 改为 `pnpm install`；
+- `renderRefusals` 对 `pnpm install` 打「先安装依赖」，其余仍打「先构建/重建」；
+- 自愈构建序（`bin.process.test.ts` / `config.process.test.ts`）只剩 `pnpm --filter review-pi build`——依赖真缺席时由人显式 `pnpm install`（拒跑文案给指引），测试不代跑安装。
+
+### 5. 全门结果（S5）
+
+| 门 | 结果 |
+|---|---|
+| `pnpm typecheck`（根） | exit 0 |
+| `pnpm --filter review-pi typecheck` | exit 0（两处 flag 放宽见 §2） |
+| `pnpm build:dist` | exit 0（只构建 `review-pi` + presentation） |
+| `pnpm --filter review-pi test` | **51 文件 / 492 passed + 1 skipped**（S0 基线同为 51 / 492+1；ADR 正文验收标准里的「491」是笔误，实际一直是 492） |
+| `pnpm test`（根） | **5 文件 / 52 passed** |
+| `pnpm pack:packages` | 1 个 tarball：`review-pi-0.1.0.tgz` 284.4 KiB |
+| `pnpm verify:pack` | 全绿（「单包发行面可用」） |
+
+用例数不变：删掉的 `review-llm` 测试（3 文件 / 29 例）本来就不在这两个计数里（它的 `test` 脚本由 CI 单列，且 `review-llm` 的测试从未进过 review-pi 的 51 个 suite）。
+
+### 6. 真实网关对照（S0 vs S5）
+
+命令（两次完全相同）：
+
+```text
+review --repo .cache/datasets/vul4j-repos/VUL4J-38-ab6cbdc3da
+       --mr-diff .cache/datasets/vul4j-diffs/VUL4J-38.diff
+       --issue "Vulnerability CVE-2014-4172 (CWE-74) in apereo/java-cas-client. Fixed by https://github.com/apereo/java-cas-client/commit/ab6cbdc3daa451b4fef89c0bd0f4e6568f3aa9ef."
+       --rule-skill-zip packages/review-pi/testdata/rule-skills/general-code-review.zip
+```
+
+S0 = `f-demo-session-skill-2`（vendored 内核，2026-11-03 08:24）；S5 = `f-s5-regression2`（npm 0.85.1，2026-11-03 09:49）。两次都 exit 0。
+
+**请求面逐字节一致**（这是本次切换「没有改变 wire」的硬证据）：
+
+| 项 | S0 | S5 |
+|---|---|---|
+| system prompt sha256[:16] | `76372d45fe7352b0` | 同左 |
+| tools schema sha256[:16] | `1893dd2c2432b040` | 同左 |
+| user 消息 1 / 2 sha256[:16] | `6f0ded71f091adb1` / `f5f3ffc1fc1ae01b` | 同左 |
+| wireBody 键与值 | `model` / `stream` / `stream_options` / `max_tokens=32768` / `thinking{enabled}` / `reasoning_effort=high` / 7 个 `review.*` 工具 | 同左 |
+| 配置 digest | `d91eaf0ea2b3` | 同左 |
+
+**结构指纹**：
+
+| 项 | S0 | S5 | 判定 |
+|---|---|---|---|
+| findings 数 | 9 | 11 | 模型采样差异（均 1 轮、未截断；请求面逐字节相同） |
+| findings 键集 | 10 键封闭 | 同左 | ✓ |
+| tips 文件 | 在场 | 在场 | ✓ |
+| tips 组数 / 条数 | 3 / 9 | 2 / 8 | 条数差来自 ADR-0023 的 (file,line) 去重：S5 有 3 处同行多 finding 合并，11−3=8 |
+| tips 组键 / tip 键集 | `filePath,reviewTips` / 10 键封闭 | 同左 | ✓ |
+| 审计 `usage` 字段集 | `cacheReadTokens,inputTokens,outputTokens` | 同左 | ✓ |
+| 审计 `ruleSkill[]` 键集 | `digest,name,source` | 同左 | ✓ |
+| 审计 `skillPassLog[]` 键集 | 9 键（`candidateCount,mergedCount,requestCount,round,ruleIds,skill,status,toolCallCount,transcriptFile`） | 同左 | ✓ |
+| `phaseLog` 键集 | `0..5` | 同左 | ✓ |
+| 工具名集（主循环） | 7 个 `review.*` | 同左 | ✓ |
+| rule skill 会话 bash 次数 | 0 | 0 | ✓ |
+| rounds / toolCalls / requests | 1 / 19 / 13 | 1 / 27 / 14 | 模型路径差异（非结构性） |
+
+**归因**：所有差异都落在「模型输出内容与它选择的工具调用数」上（temperature 采样 + 单次跑波动，ADR 早已写明「单次结果 ≠ 基线」）；请求面、审计 schema、产物 schema、去重规则全部一致。内核从 vendored `v0.85.1+11d` 换成 npm `0.85.1` 的差异**没有体现在 wire 面**，也没有造成结构回归——**不回退**。
+
+### 7. 一处既存松动（本次不修，记为后续项）
+
+`RULE-CHECK@…` 条目的 `category` 是**模型自由文本**，skill 会话不做大小写/枚举归一。S0 那次模型给的是大写（`ERROR_HANDLING` / `SECURITY`），S5 这次给的是小写（`error-handling` / `input-validation` / `privacy`），于是同一次产物的 `findings[].category` 出现大小写混排。
+
+这与 ADR-0035 无关（`skill-pass` 的解析逻辑没动，`candidate-merge` 的 (file,line,category) 去重键也因此对大小写敏感）。作为独立清理项记录：要么在 skill-pass 解析处把 `category` 归一为大写枚举，要么在 schema 里明确它是自由文本并放开消费侧假设。**不建议**在本次切换里顺手改（会改变既有产物的去重行为）。
+
+### 8. 文档与零残留
+
+- S4 覆盖：`README.md` / `CONTEXT.md` / `AGENTS.md` / `CLAUDE.md` / `docs/使用手册-安装与运行.md` / `docs/运行手册-单次检视.md` / `docs/UA_ONBOARDING.md`；ADR-0008 / 0009 / 0028 各加「后续修订」；`docs/design/Pi 内核定制基线方案.md` 文首加历史说明。
+- 额外收口：`.gitignore` 里「packages/ai 工具产物」的注释改写；`docs/render_architecture.py` 与 `docs/png/architecture-call-flow.dot` 标注为 ADR-0024 之前的冻结历史图；`docs/项目问答整理.md` 顶部加时效说明。
+- 零残留核对：`@review-agent-pi/` 只剩历史 ADR / 设计基线方案 / 履约文本 / 问答快照中的历史名；`review-llm` 只命中历史文档（ADR-0002/0006/0008/0009/0028、设计文档、历史报告、问答快照、CONTEXT 的 `_Avoid_` 反面清单、UA_ONBOARDING 的「已删除」说明）。源码与配置面为 0。
+
