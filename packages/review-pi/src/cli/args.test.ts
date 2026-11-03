@@ -14,11 +14,11 @@ import { parseCliArgs, USAGE_TEXT } from "./args.js";
 test("空 argv 与未知子命令 → 用法错误（不抛异常）", () => {
   expect(parseCliArgs([])).toEqual({
     ok: false,
-    message: "missing command (expected `review`, `smoke` or `config`)",
+    message: "missing command (expected `review`, `smoke`, `config` or `export`)",
   });
   expect(parseCliArgs(["deploy"])).toEqual({
     ok: false,
-    message: 'unknown command "deploy" (expected `review`, `smoke` or `config`)',
+    message: 'unknown command "deploy" (expected `review`, `smoke`, `config` or `export`)',
   });
 });
 
@@ -872,5 +872,43 @@ test("进度旗标：smoke 面不认（只有 review 显示进度）", () => {
   expect(parseCliArgs(["smoke", "--no-progress"])).toEqual({
     ok: false,
     message: 'unknown flag "--no-progress"',
+  });
+});
+
+test("export 子命令：三个旗标全可选，缺省全缺席", () => {
+  expect(parseCliArgs(["export"])).toEqual({
+    ok: true,
+    command: "export",
+    args: {},
+  });
+  expect(
+    parseCliArgs(["export", "--taskId", "t-1", "--tasks-dir", "D:/tasks", "--path", "out"]),
+  ).toEqual({
+    ok: true,
+    command: "export",
+    args: { taskId: "t-1", tasksDir: "D:/tasks", destPath: "out" },
+  });
+});
+
+test("export 子命令：taskId 走 review 同口径校验；--path / --tasks-dir 不许空值", () => {
+  expect(parseCliArgs(["export", "--taskId", "../escape"])).toEqual({
+    ok: false,
+    message: 'invalid --taskId "../escape": must not start with "." (task dirs stay visible in ~/.PiAgent/tasks)',
+  });
+  expect(parseCliArgs(["export", "--taskId", "a/b"])).toEqual({
+    ok: false,
+    message: 'invalid --taskId "a/b": must not contain path separators (taskId is a single directory name)',
+  });
+  expect(parseCliArgs(["export", "--tasks-dir", " "])).toEqual({
+    ok: false,
+    message: 'invalid --tasks-dir " ": must be a non-empty directory path',
+  });
+  expect(parseCliArgs(["export", "--path", " "])).toEqual({
+    ok: false,
+    message: 'invalid --path " ": must be a non-empty directory path',
+  });
+  expect(parseCliArgs(["export", "--config", "x.json"])).toEqual({
+    ok: false,
+    message: 'unknown flag "--config"',
   });
 });

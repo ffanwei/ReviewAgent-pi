@@ -120,7 +120,22 @@ review-pi review --repo /repo --mr-diff /d/change.diff --taskId change-001 --tas
 | `--strict-rule-skill` | 装载失败即退出（缺省降级 + 审计留痕） |
 | `--progress` / `--no-progress` | 非 TTY 下把阶段摘要逐行打到 stderr |
 
-### 3. 产物
+### 3. 取回 session 路径（`export`）
+
+每次 `review` 成功后在**执行目录**写一份隐藏索引 `.review-pi-session.json`（只有绝对路径与 runId，不含检视内容；重复执行整份覆盖）。`export` 直接读它：
+
+```bash
+review-pi export                      # 主 session 第一行，skill 会话依次在后（一行一个绝对路径）
+review-pi export --path ./sessions    # 复制到该目录（平铺、同名覆盖），返回复制后的路径
+review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任务最新一次 run
+```
+
+- `export` **不加载配置、不需要 apiKey、不调模型**——纯文件系统命令，CI / 换机器都能用。
+- `--taskId` 的 tasks 根判定：cwd 索引里的 `tasksDir` → `--tasks-dir <dir>` → 缺省 `~/.PiAgent/tasks`。
+- 只认**最新一次 run**（`run.json` 每次覆盖）。
+- 索引是隐藏文件，**别提交进仓库**；`export` 找不到索引 / 任务 / 文件时 `exit 1` 并给人话原因。
+
+### 4. 产物
 
 ```
 ~/.PiAgent/tasks/<taskId>/        # --tasks-dir <dir> 可换根
@@ -134,9 +149,9 @@ review-pi review --repo /repo --mr-diff /d/change.diff --taskId change-001 --tas
     <ts>.json                  审计：请求、工具调用、相位、Context Ledger、规则 Skill 留痕
 ```
 
-`<ts>` = 首次模型请求时刻（UTC 毫秒），形态 `20261031_101010_123`，同时是 `runId`、审计文件名与 `session-<ts>` 的中段。进程 cwd 另写一份下游约定名副本 `review-result.json`（与真源逐字节相同，只在本次产 tips 时写）。同一个 taskId 重跑只保留最新 `run.json` / `reviews_*.json`，审计 / 转录按 run 累积——想保留多次结果就换 `--taskId`。
+`<ts>` = 首次模型请求时刻（UTC 毫秒），形态 `20261031_101010_123`，同时是 `runId`、审计文件名与 `session-<ts>` 的中段。进程 cwd 另写一份下游约定名副本 `review-result.json`（与真源逐字节相同，只在本次产 tips 时写），并写一份隐藏的 `.review-pi-session.json`（供 `export` 寻址，见上一节）。同一个 taskId 重跑只保留最新 `run.json` / `reviews_*.json`，审计 / 转录按 run 累积——想保留多次结果就换 `--taskId`。
 
-### 4. 退出码与 stdout
+### 5. 退出码与 stdout
 
 - stdout 是**单个 JSON 文档**，日志与诊断一律走 stderr。
 - 退出码：完成（含诚实截断）`0`，中止或错误 `1`。截断信号在 JSON 的 `truncated=true`，不体现在退出码。
@@ -179,8 +194,8 @@ docs/                     ADR、设计与使用文档
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/使用手册-安装与运行.md`](docs/使用手册-安装与运行.md) | 安装 / 配置逐字段 / smoke / 任意目录运行 / 并发隔离 / 排障 |
-| [`docs/运行手册-单次检视.md`](docs/运行手册-单次检视.md) | 单次检视的旗标、前置、产物与排障 |
+| [`docs/使用手册-安装与运行.md`](docs/使用手册-安装与运行.md) | 安装 / 配置逐字段 / smoke / 任意目录运行 / 并发隔离 / session 导出 / 排障 |
+| [`docs/运行手册-单次检视.md`](docs/运行手册-单次检视.md) | 单次检视的旗标、前置、产物、cwd 索引与 `export`、排障 |
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表（术语唯一权威） |
 | [`docs/adr/`](docs/adr/) | 架构决策记录 |
 | [`docs/agents/`](docs/agents/) | agent 协作约定（issue tracker / triage labels / domain docs） |

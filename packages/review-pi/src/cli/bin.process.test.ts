@@ -214,6 +214,11 @@ interface RunBinOptions {
   readonly seedCwdFiles?: readonly string[];
   /** 预置到子进程 cwd 的**目录名**（占位模拟不可写；ADR-0017 副本失败语义用） */
   readonly seedCwdDirs?: readonly string[];
+  /**
+   * 复用已存在的目录作为子进程 cwd（缺省每次新建 tmpdir）。
+   * 跨两次进程调用共享状态时用（导出命令要读上一次 review 写的 cwd 索引）。
+   */
+  readonly cwd?: string;
   readonly timeoutMs?: number;
 }
 
@@ -248,7 +253,7 @@ function minimalConfigText(options: RunBinOptions): string {
  * 活锁成对超时）。异步 spawn 让事件循环在 await 间隙继续伺服 stub。
  */
 function runBin(args: readonly string[], options: RunBinOptions = {}): Promise<CliRunResult> {
-  const cwd = makeTempDir("review-pi-cli-cwd-");
+  const cwd = options.cwd ?? makeTempDir("review-pi-cli-cwd-");
   const sandboxHome = makeTempDir("review-pi-cli-home-");
   const configPath = options.configPath ?? path.join(cwd, "PiAgent.jsonc");
   if (options.configText !== undefined) {
@@ -1604,4 +1609,93 @@ test(
     }
   },
   240_000,
+);
+
+// ---- cwd session 索引 + export（ADR-0036）----
+// 生产用法：在代码仓目录跑 review → cwd 落一份 `.review-pi-session.json`（绝对路径，
+// 重复执行整份覆盖）→ `review-pi export` 直接读它打印主 / skill session。
+// export 是纯文件系统命令：不加载配置、不需要 key、不调网关（这里把配置文件挪走、
+// HOME 指向空沙箱来证明）。
+
+test(
+  "review 写好 cwd 索引；export 不读配置即可打印路径，--path 复制，--taskId 从任务目录反推",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const cwd = makeTempDir("review-pi-cli-index-");
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const review = await runCliReview(
+        outDir,
+        writeMr(goldenFixture("vul4j-1.diff")),
+        stubEnv(stub.baseUrl),
+        { cwd },
+      );
+      expect(review.status).toBe(0);
+
+      const indexPath = path.join(cwd, ".review-pi-session.json");
+      expect(existsSync(indexPath)).toBe(true);
+      const index = JSON.parse(readFileSync(indexPath, "utf8")) as {
+        version: number;
+        taskId: string;
+        tasksDir: string;
+        runId: string;
+        repo: string;
+        updatedAt: string;
+        main: string;
+        skills: string[];
+      };
+      const outcome = JSON.parse(review.stdout) as { runId: string };
+      expect(index.version).toBe(1);
+      expect(index.taskId).toBe(CLI_TASK_ID);
+      expect(index.tasksDir).toBe(path.resolve(outDir));
+      expect(index.runId).toBe(outcome.runId);
+      // 绝对路径 + 指向真实文件（主会话 = session-<runId>.json）
+      expect(path.isAbsolute(index.main)).toBe(true);
+      expect(index.main).toBe(
+        path.join(path.resolve(outDir), CLI_TASK_ID, "runs", `session-${outcome.runId}.json`),
+      );
+      expect(existsSync(index.main)).toBe(true);
+      // 本次没装规则包 → 没有 skill 会话
+      expect(index.skills).toEqual([]);
+
+      // 配置文件缺席 + 空 HOME：export 仍应工作（不加载配置是硬约束）
+      const absentConfig = path.join(cwd, "absent.jsonc");
+      const exportRun = await runBin(["export"], {
+        cwd,
+        appendConfigArg: false,
+        configPath: absentConfig,
+        timeoutMs: 30_000,
+      });
+      expect(exportRun.status).toBe(0);
+      expect(exportRun.stdout).toBe(`${index.main}\n`);
+      expect(exportRun.stderr).toBe("");
+
+      // --path：平铺复制到 cwd 下的目录，返回复制后的绝对路径
+      const copyRun = await runBin(["export", "--path", "sessions"], {
+        cwd,
+        appendConfigArg: false,
+        configPath: absentConfig,
+        timeoutMs: 30_000,
+      });
+      const copied = path.join(cwd, "sessions", path.basename(index.main));
+      expect(copyRun.status).toBe(0);
+      expect(copyRun.stdout).toBe(`${copied}\n`);
+      expect(readFileSync(copied, "utf8")).toBe(readFileSync(index.main, "utf8"));
+
+      // --taskId：不经索引，直接读任务目录的 run.json（runId 由 auditPath 反推）
+      const taskRun = await runBin(
+        ["export", "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
+        { cwd, appendConfigArg: false, configPath: absentConfig, timeoutMs: 30_000 },
+      );
+      expect(taskRun.status).toBe(0);
+      expect(taskRun.stdout).toBe(`${index.main}\n`);
+      expectNoKeyLeak([
+        { label: "export stdout", text: exportRun.stdout },
+        { label: "export stderr", text: exportRun.stderr },
+      ]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
 );

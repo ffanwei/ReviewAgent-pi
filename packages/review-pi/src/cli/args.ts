@@ -48,12 +48,17 @@ const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model", "--config"];
 /** config 子命令的已知旗标（init/show 共用；无用组合各自拒绝） */
 const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-env", "--json"];
 
+/** export 子命令的已知旗标（ADR-0036：只寻址与复制，不碰配置） */
+const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--path"];
+
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
 export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--strict-rule-skill] [--progress | --no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
+       review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>]
   （smoke = 网关冒烟自检，P1b 双探针：网关健康 + 模型可达，输出人话诊断）
   （config init = 写缺省 JSONC；config show = 脱敏打印生效配置与来源）
+  （export = 打印主 / skill session 的绝对路径，主在前；--path 复制到目录）
 
 配置（ADR-0025）：~/.PiAgent/PiAgent.jsonc（Linux $HOME / Windows %USERPROFILE%），JSONC。
 环境变量不再被读取；--env 以移除（改用 --config）。
@@ -92,7 +97,12 @@ config 旗标：
   init                   写缺省配置模板（已存在需 --force；POSIX 0600）
   show                   逐键打印生效值与来源（reviewer.apiKey 只显示 set/missing）
   --from-env <file>      init 时从 .env 文件一次性迁移（key / url / 呈现配置）
-  --json                 show 输出机器可读 JSON（与审计 config 同形）`;
+  --json                 show 输出机器可读 JSON（与审计 config 同形）
+
+export 旗标：
+  --taskId  <id>         指定任务 id（缺省读 cwd 的 .review-pi-session.json）
+  --tasks-dir <dir>      任务根覆盖（cwd 有索引时以索引里的 tasksDir 为准；否则本旗标 → 缺省根）
+  --path    <dir>        把本次 run 的 session 复制到该目录，返回复制后的绝对路径`;
 
 /** 解析后的 review 命令参数（caseId 由 --mr-diff / --mr-json 派生） */
 export interface ReviewCliArgs {
@@ -148,11 +158,22 @@ export interface ConfigCliArgs {
   readonly json?: boolean;
 }
 
+/** 解析后的 export 子命令参数（ADR-0036） */
+export interface ExportCliArgs {
+  /** 指定任务 id；缺席 = 读 cwd 的 `.review-pi-session.json` */
+  readonly taskId?: string;
+  /** tasks 根覆盖（cwd 有索引时不生效） */
+  readonly tasksDir?: string;
+  /** 复制目标目录（相对 cwd） */
+  readonly destPath?: string;
+}
+
 /** 解析结果：子命令 + 参数，或用法错误消息（调用方负责呈现与退出码） */
 export type ParseCliArgsResult =
   | { readonly ok: true; readonly command: "review"; readonly args: ReviewCliArgs }
   | { readonly ok: true; readonly command: "smoke"; readonly args: SmokeCliArgs }
   | { readonly ok: true; readonly command: "config"; readonly args: ConfigCliArgs }
+  | { readonly ok: true; readonly command: "export"; readonly args: ExportCliArgs }
   | { readonly ok: false; readonly message: string };
 
 /** 旗标循环（两子命令共用）：未知旗标 / 重复旗标 / 值缺席（含值吞旗标）都是用法错误。
@@ -354,13 +375,16 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   if (command === "config") {
     return parseConfigCommand(rest);
   }
+  if (command === "export") {
+    return parseExportCommand(rest);
+  }
   if (command !== "review" && command !== "smoke") {
     return {
       ok: false,
       message:
         argv.length === 0
-          ? "missing command (expected `review`, `smoke` or `config`)"
-          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\` or \`config\`)`,
+          ? "missing command (expected `review`, `smoke`, `config` or `export`)"
+          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\`, \`config\` or \`export\`)`,
     };
   }
   const booleanFlags = command === "review" ? stripReviewBooleanFlags(rest) : undefined;
@@ -509,6 +533,50 @@ function stripReviewBooleanFlags(rest: readonly string[]): {
     tokens,
     strict: counts.has("--strict-rule-skill"),
     ...(on ? { progress: true } : off ? { progress: false } : {}),
+  };
+}
+
+/**
+ * export 子命令（ADR-0036）：只认三个旗标，全部可选。
+ * `--taskId` 与 `review` 同口径校验（单段目录名）；`--path` / `--tasks-dir`
+ * 只要求非空（相对路径按 cwd 解析，交给执行层）。
+ */
+function parseExportCommand(rest: readonly string[]): ParseCliArgsResult {
+  const flags = parseFlags(rest, KNOWN_EXPORT_FLAGS);
+  if (!flags.ok) {
+    return flags;
+  }
+  const taskIdRaw = flags.values.get("--taskId");
+  let taskId: string | undefined;
+  if (taskIdRaw !== undefined) {
+    const checked = checkTaskId(taskIdRaw);
+    if (!checked.ok) {
+      return checked;
+    }
+    taskId = checked.taskId;
+  }
+  const tasksDir = flags.values.get("--tasks-dir");
+  if (tasksDir !== undefined && tasksDir.trim().length === 0) {
+    return {
+      ok: false,
+      message: `invalid --tasks-dir ${JSON.stringify(tasksDir)}: must be a non-empty directory path`,
+    };
+  }
+  const destPath = flags.values.get("--path");
+  if (destPath !== undefined && destPath.trim().length === 0) {
+    return {
+      ok: false,
+      message: `invalid --path ${JSON.stringify(destPath)}: must be a non-empty directory path`,
+    };
+  }
+  return {
+    ok: true,
+    command: "export",
+    args: {
+      ...(taskId !== undefined ? { taskId } : {}),
+      ...(tasksDir !== undefined ? { tasksDir } : {}),
+      ...(destPath !== undefined ? { destPath } : {}),
+    },
   };
 }
 

@@ -38,15 +38,18 @@
 
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { calculateCost } from "@earendil-works/pi-ai";
 
+import { runDirPath } from "../experiment/run-record.js";
+import { writeSessionIndex } from "../export/session-index.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
+import { runExportCommand } from "./export-command.js";
 import {
   ConfigError,
   configSnapshot,
@@ -133,7 +136,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     progress?.dispose();
     throw error;
   }
-  const { record, runId, auditPath, reviewsPath } = reviewed;
+  const { record, runId, auditPath, reviewsPath, transcriptPath } = reviewed;
   // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
   if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
     process.stderr.write(
@@ -280,6 +283,31 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       }
       reportExecDirTips(await removeExecDirTipsCopies(process.cwd()), "清除");
     }
+  }
+
+  // cwd session 索引（ADR-0036）：只记寻址信息，供 `review-pi export` 直接取用。
+  // 每次成功 run 整份覆盖；写失败只警告——导出面是便利能力，不配把检视判失败。
+  const sessionRunsDir = runDirPath(runsRoot);
+  const sessionSkills = (record.baseline.audit.skillPassLog ?? [])
+    .map((entry) => entry.transcriptFile)
+    .filter((file): file is string => typeof file === "string" && file.trim().length > 0)
+    .map((file) => join(sessionRunsDir, basename(file)));
+  try {
+    await writeSessionIndex(process.cwd(), {
+      version: 1,
+      taskId: args.taskId,
+      tasksDir: tasksRoot,
+      runId,
+      repo: repoPath,
+      updatedAt: record.completedAt,
+      main: transcriptPath,
+      skills: sessionSkills,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `review-pi: session 索引写入失败（${message}）；review-pi export 将读不到本次结果\n`,
+    );
   }
 
   await writeStdout(
@@ -478,6 +506,14 @@ function main(): void {
   // 配置装载（ADR-0025）：**唯一落点**。读一次 → 不可变快照，之后只读；
   // 不做任何 env 覆盖、不回写 process.env。警告（未知键 / 钉死键 / 权限）
   // 走 stderr，不改退出码。
+  //
+  // export（ADR-0036）例外：纯文件系统命令，不加载配置、不碰 key、不做
+  // .env.local 探测——换机器 / CI 里没有配置文件也应能导出路径。
+  if (parsed.command === "export") {
+    runExportCommand(parsed.args).then((code) => exitGracefully(code)).catch(reportErrorAndExit);
+    return;
+  }
+
   let config: ResolvedConfig;
   try {
     const loaded = loadConfig({
