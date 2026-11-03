@@ -53,18 +53,45 @@ ADR-0028 把发行面定成六个包：四个 `@review-agent-pi/*` 内核定制�
 
 也就是说，vendor 目前买到的是「比 `v0.85.1` 新 11 天的快照」+「仓内能跑上游测试」；而后者**本来就不进 CI 门**，且在 Windows 上有 45+27 个既有失败（POSIX 路径假设 / 目录快照期望，成因都在上游）。
 
-### 事实 4：`review-llm` 已经没有任何消费者
+### 事实 4：`review-llm` 已经没有任何消费者（模型调用不经过它）
 
-`git grep` 全仓：`from "review-llm"` 只出现在文档里。代码侧只剩四处**非引用**：
+**三层证据**（2026-11-03 核查）：
 
-| 位置 | 引用性质 |
+1. **源码面**：`git grep "review-llm"` 在代码里只命中注释、`package.json`、tsconfig `paths` 与测试的「允许名单」；没有任何 `import` / `export ... from` / 动态 `import()`；
+2. **产物面**：`packages/review-pi/dist/**` 里 `review-llm` 只出现在 `shared/config.js` / `shared/config.d.ts` 的一条注释中（`DEEPSEEK_API_BASE_URL` 同值说明），`from "review-llm"` / `require("review-llm")` 为零；
+3. **历史面**：`git log -S 'from "review-llm"' --all` 为空——本仓自 pi 线开仓起就从未 import 过它，它属于 DSH 线 + 仪器期的依赖，`package.json` 里的声明是迁移残留。
+
+**模型的真实调用链是两条，都不经过 `review-llm`**：
+
+| 路径 | 链路 |
 |---|---|
-| `packages/review-pi/package.json` | `dependencies` 声明 |
-| `packages/review-pi/bin/lib/cli-runtime.js` | 腿表里「检查它存在」的一条腿 |
-| `packages/review-pi/tsconfig.build.json` | 一条没有消费者的 `paths` |
-| 根 `package.json` | 声明了，但根 `src/` 只 import `review-pi` |
+| 检视主循环 / skill 会话 | `cli/main.ts:88` `resolveReviewerEndpoint(config)` → `provider/reviewer-endpoint.ts:23`（只读配置快照，不读 env，注释明写不再 import review-llm 的 resolver）→ `loop/agent-review-loop.ts:225` / `knowledge/skill-pass.ts:145` 的 `reviewStreamFn` → `provider/pi-client.ts:183` `deepseekProvider().stream(...)`（pi-ai + OpenAI SDK）→ 网关 |
+| 呈现层翻译 / 建议生成 | `cli/main.ts:228` 组装 `runtime{apiKey,baseUrl,modelId}` → `src/presentation/engine-zh.ts:109` 拼 `${baseUrl}/chat/completions` → `:362-378` 裸 `fetch` + `Bearer`（连 pi-ai 都不经过） |
 
-它导出的 `profileOf` / thinking 策略 / `RETIRED_MODEL_IDS` / resolver 常量，运行时能力已在 `review-pi` 内各自落地（`provider/pi-client.ts` 的 `LOCKED_REASONING_EFFORT`、`shared/config.ts` 的 provider 参数键），resolver 的环境变量通道已由 ADR-0025 关闭（`provider/reviewer-endpoint.ts` 明写不再 import）。
+请求参数也不是它给的：`provider/pi-client.ts:34` 的 `LOCKED_REASONING_EFFORT = "high"`、`:159` 的 `maxTokensFor`（官方直连不发 `max_tokens`，网关发 `shared/config.ts:25` 的 32768）、`:127` 的 `reviewModelOf`（目录内 id 原样、目录外 id 借 `deepseek-v4-flash` 画像）全部在 `review-pi` 内单源。
+
+**它导出的四项能力，现状分别是**：
+
+| review-llm 导出 | 现状 |
+|---|---|
+| `DEEPSEEK_API_BASE_URL` | 复制为 `shared/config.ts:22` 的 `OFFICIAL_REVIEWER_BASE_URL`（注释明写「两处刻意不互相 import」） |
+| `resolveEndpointUrl` / `resolveApiKey`（显式 > env > 默认） | **故意关闭**：ADR-0025 改为 JSONC 配置；`reviewer-endpoint.ts:5` 明写 |
+| `profileOf` / `providerFamilyOf`（provider 画像表） | **未接线**。pi 线用「单档锁死」：provider 恒 `deepseek`、恒发 `thinking{enabled}` + `reasoning_effort:"high"`，目录外 id 借 deepseek 画像（`pi-client.ts:124-125`，测试 `pi-client.test.ts:175` 明确锁「序列化不随 id 改变」） |
+| `RETIRED_MODEL_IDS`（退役 id 拒绝） | **未接线**：`--model deepseek-chat` 不会被本地拒绝，直接透传给网关（`cli/args.ts:245` 只校验非空） |
+| `positiveIntOption` / `nonNegativeIntOption` | 配置层自校验（`shared/config.ts:752` 起），格式不同、语义等价 |
+
+因此删除它**不改变任何运行时行为**；ADR-0008 的「参数画像表 / 退役 id 拒绝」在 pi 线从未接线，若要恢复多模型画像分派，那是一件**新功能**（应另开票），不是「保留 review-llm」。
+
+**非调用的真实耦合（删包时必须一并处理）**：
+
+| 耦合 | 后果 |
+|---|---|
+| `bin/lib/cli-runtime.js:54` 腿表 + `checkRuntimeArtifacts` | 源码布局下 `review-llm` 参与 mtime 判鲜——改它的源码不重建会让 `review-pi` **拒跑**，尽管没人 import |
+| `packages/review-llm/package.json` 的 `prepare: tsc` | 它的类型错会让 `pnpm install` 直接失败 |
+| `review-pi` 的 `dependencies` 声明 | 用户必须多装一个 7.8 KiB 的死包；六个 tarball 必须成套（手册 §2.4） |
+| `.github/workflows/ci.yml` | 独立的 typecheck / test 步骤，与产品无关 |
+
+**口径债（文档说它在用，实际没用）**：`CONTEXT.md:172`（「单源查表（review-llm）」）、`README.md:173`（「provider 参数画像与常量单源」）、`tests/presentation/translate-projection.test.ts:361`（注释称呈现层经 review-llm 走网关，断言只是「允许」该 specifier，空集也成立）、`docs/使用手册-安装与运行.md:523`（排障行「Cannot find module 'review-llm'」——实际不会发生）。删除时要一起清掉，否则下一个人会按文档去找这条不存在的链路。
 
 ## Decision
 
@@ -172,6 +199,7 @@ ADR-0009 的「全源码 vendor fork」前提修订为：**默认消费上游 di
 | 根 `package.json` | 删 `dependencies.review-llm`；`build:dist` 去掉 `--filter review-llm build` |
 | 根 `tsconfig.json`、`vitest.config.ts` | 注释中关于 review-llm 的表述同步（`conditions: ["source"]` 保留——根 `src/presentation` 测试仍 import `review-pi` 的源码） |
 | `.github/workflows/ci.yml` | 删 review-llm 的 typecheck / test 步骤与 build 行 |
+| `tests/presentation/translate-projection.test.ts` | 允许名单去掉 `specifier === "review-llm"`，注释改为「呈现层零 LLM 客户端依赖（自持 fetch）」——当前断言是空集成立的假护栏 |
 
 ### S2 依赖切换（一次性 codemod + 删包 + lockfile）
 
@@ -202,9 +230,10 @@ ADR-0009 的「全源码 vendor fork」前提修订为：**默认消费上游 di
 
 | 文件 | 改动 |
 |---|---|
-| `README.md` | 包表（6 → 1）、目录树（删四个包目录）、`build:pi` 相关命令、安装形态 |
-| `CONTEXT.md` | 发行形态段、包表、`review-llm` 角色段（删或改写为历史） |
-| `docs/使用手册-安装与运行.md` | §2.3 私有 registry（不再需要 scope 映射）、§2.4 六个 tarball → 一个、§2.7 打包、§8.4 排障表的 404/ETARGET 行、§9 usage |
+| `README.md` | 包表（6 → 1）、目录树（删四个包目录）、`build:pi` 相关命令、安装形态；**`:173` 的「provider 参数画像与常量单源」改写** |
+| `CONTEXT.md` | 发行形态段、包表、`review-llm` 角色段（删或改写为历史）；**`:172` 的「单源查表（review-llm）」必须改写**——pi 线是单档锁死，画像表从未接线 |
+| `docs/使用手册-安装与运行.md` | §2.3 私有 registry（不再需要 scope 映射）、§2.4 六个 tarball → 一个、§2.7 打包、§8.4 排障表的 404/ETARGET 行（**含 `:523` 的「Cannot find module 'review-llm'」**）、§9 usage |
+| `docs/adr/0008-*.md` | 加「后续修订（ADR-0035）」：参数画像表 / 退役 id 拒绝 / resolver 环境变量链在 pi 线从未接线；多模型画像若要恢复，按新功能立项 |
 | `docs/运行手册-单次检视.md` | 若提到包结构/腿表 |
 | `docs/UA_ONBOARDING.md` | **LLM 抽象层** 行与 `review-llm/src/*` 引用、架构图里的包清单 |
 | `docs/adr/0009-*.md` | 加「后续修订（ADR-0035）」：vendor 前提改为「默认消费上游 dist，需改内核时走 `pnpm patch`」 |
@@ -235,4 +264,4 @@ ADR-0009 的「全源码 vendor fork」前提修订为：**默认消费上游 di
 | 依赖面与本仓一致 | `npm view @earendil-works/pi-ai@0.85.1 dependencies` vs `packages/ai/package.json` |
 | 锚点与 v0.85.1 的差异面 | GitHub compare API `v0.85.1...6671c604766b3670ed95f405aa7856835d0ca702`（79 commits / 257 files / 四包 src 33 个） |
 | 四包源码零定制 | `git log --oneline -- packages/{agent,ai,chord,telemetry}`（只有整树快照 + ADR-0028 两次提交）+ 《Pi 内核定制基线方案》§4/§9 |
-| `review-llm` 无消费者 | `git grep -n 'from "review-llm"'` 只命中文档；根 `src/` 仅 import `node:*` + `review-pi` |
+| `review-llm` 无消费者 | ①`git grep "review-llm"`（源码只有注释/declaration/tsconfig paths/测试允许名单）；②`dist/**` 内无 `from "review-llm"`（仅 `shared/config` 一条注释）；③`git log -S 'from "review-llm"' --all` 为空；④根 `src/` 仅 import `node:*` + `review-pi` |
