@@ -1,5 +1,12 @@
 # DSH 指标对齐门噪声底报告（#30 诊断）
 
+> **历史文献（时效注记）**
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **范围**：诊断票 #30「±1σ 指标对齐门检验力校准——冻结 POC1 harness 自身重跑噪声底」全部验收项
 > **交付形态**：全新实验 `poc1-vul4j-gateway-r2`（45/45 一遍全过零失败）+ 本报告 + `runs/poc1-vul4j-gateway-r2/REPORT.md` + ADR-0006 实现注记
 > **报告日期**：2026-09-12
@@ -147,7 +154,7 @@ r2 的 D：lineRecall **0.0556→0.0000**（9 单元全零真阳性）、totalTo
 
 ## 9. 来源与产物索引
 
-- **r2 运行产物**：`runs/poc1-vul4j-gateway-r2/`（`report.json` / `dashboard.md` / 45 份 run 记录 + 审计树；`REPORT.md` 为入库结论文档）
+- **r2 运行产物**：`runs/poc1-vul4j-gateway-r2/`（`report.json` / `dashboard.md` / 45 份 run 记录 + 审计树；`REPORT.md` 当期入库，后随运行产物清理）
 - **基线与 DSH 产物**：`runs/poc1-vul4j-gateway/`、`runs/dsh-vul4j-gateway/`（#29 报告 §7）
 - **指标口径**：`src/metrics/aggregate.ts` + `src/metrics/stats.ts`——与 #29 报告同管线；门 B 复算与 #29 §3.1 逐字一致为本脚本正确性锚定
 - **分析脚本**：`.cache/poc1-r2-gate.ts`（四门 + 配对 |Δ| + rounds + 总账，本机不入库，可按管线函数复算）

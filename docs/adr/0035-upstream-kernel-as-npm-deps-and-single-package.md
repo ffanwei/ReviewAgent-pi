@@ -391,3 +391,12 @@ S0 = `f-demo-session-skill-2`（vendored 内核，2026-11-03 08:24）；S5 = `f-
 - 零残留核对：`@review-agent-pi/` 只剩历史 ADR / 设计基线方案 / 履约文本 / 问答快照中的历史名；`review-llm` 只命中历史文档（ADR-0002/0006/0008/0009/0028、设计文档、历史报告、问答快照、CONTEXT 的 `_Avoid_` 反面清单、UA_ONBOARDING 的「已删除」说明）。源码与配置面为 0。
 - 孤儿文件：删掉仓根 `tsconfig.base.json`——它是 vendoring 期 pi 四包 `tsconfig.build.json` 的 `extends` 目标（上游基线，strict-only），四包移出 workspace 后已无任何消费者（`git grep '"extends"'` 只剩 `packages/review-pi/tsconfig*.json` 指向根 `tsconfig.json`）。历史文档对它的描述保留为 vendoring 期事实。
 
+### 9. 历史文献全线对齐（2026-11-03，S4 之后的补做）
+
+S4 只改了「现状类」文档，`docs/design/`、`docs/plan/`、`docs/report/` 与历史 ADR 仍按 vendoring 口径叙述。本次按「现状改写 + 历史加时效」两条规则补齐：
+
+- **现状改写**：`docs/design/基于 Pi 内核的 Review Agent 总体架构设计方案.md`（spec 真源）——文首加「状态修订」、§1.3 消费形态改为 npm 依赖、§2.3/§2.5/§11.1/§11.2 的「fork 源码零改动」改为「上游包默认零定制（必要时 `pnpm patch`）」、§9 整章标注为 ADR-0024 后的历史章节（评测仪器层已删）。
+- **历史横幅**：`docs/design/` 11 篇（从零实现方案、演化缝盘点、上游更新影响分析、RPC 方案、可行性分析、config F 方案、Config B 方案、DSH 偏差清单、VUL4J 评测指南、DSH↔Pi 对比、DSH 过程讨论）、`docs/plan/` 2 篇、`docs/report/` 10 篇，统一在标题下加一条时效注记并指向 ADR-0024 / ADR-0033 / ADR-0035。
+- **历史 ADR**：新建 [`docs/adr/README.md`](README.md)（编号纪律、取代链、vendoring 期路径口径）；ADR-0002 加「后续修订」，0006/0012/0013/0014/0015/0025 加「路径注记」（`packages/*` 的 `file:line` 指已删除的源码树，核对回上游 tag `v0.85.1`）。
+- **顺势修掉的过期事实**：`AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` 的「历史报告见 `runs/**/REPORT.md`」（`runs/` 已随 ADR-0033 清理）、ADR 序列「0001–0028」；`docs/report/` 4 处指向 `../../runs/...` 的死链；`docs/项目问答整理.md` 与 `docs/design/Config F 完整流程图…` 指向已删除 `docs/配置矩阵A-E说明.md` 的引用；`testdata/golden/README.md` 的 `runs/**/REPORT.md` 指向。
+

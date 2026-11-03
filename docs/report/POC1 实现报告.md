@@ -1,5 +1,12 @@
 # POC1 实现报告
 
+> **历史文献（时效注记）**
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **范围**：spec #1「POC1 薄 harness 实验平台（Review Agent 阶段 0）」全部 13 张工单（#2–#14）
 > **交付形态**：分支 `spec/poc1-thin-harness`（83 提交，tip `5490e68`）→ PR #15（ready for review，Closes #1–#14）
 > **报告日期**：2026-09-07 · **实现周期**：2026-08 下旬 – 2026-09 上旬

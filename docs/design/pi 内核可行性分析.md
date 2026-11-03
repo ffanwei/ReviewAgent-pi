@@ -1,3 +1,8 @@
+> **历史讨论（2026-09）**：本文是内核选型讨论稿（Pi 70 / DSH 30），结论由 [ADR-0009](../adr/0009-pi-kernel-from-scratch-rewrites-review-runtime.md) 采纳并已执行完毕。
+> 文内对 npm 包缺口的判断是**当时**的事实：此后先走 vendoring，再由 [ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md) 改回 npm 依赖（四包成套、精确锁 `0.85.1`）。
+
+---
+
 在你增加了一个很重要的前提——**未来不考虑把 ReviewAgent 的 Runtime 复用到其他 Agent、其他产品或其他 Harness**——之后，我的推荐会发生变化：
 
 > ## **我更建议选 Pi，而不是 DSH。**

@@ -1,10 +1,12 @@
 # 基于 Pi 内核的 Review Agent 总体架构设计方案
 
 > **修订记录（v1.0，2026-09-18）**：本文是 ReviewAgent 的**spec 真源**，接替《[基于 DeepSeek Harness 的 Review Agent 总体架构设计方案](基于 DeepSeek Harness 的 Review Agent 总体架构设计方案.md)》（v2.1，已完成 DSH 线历史使命）——其内核无关内容（实验纪律、评测方法论、S/A/B 判级、五源数据集、缓存冷/热协议、零构建代码智能）由本文承接，DSH 内核专属内容随内核移除转为历史记录（[ADR-0009](../adr/0009-pi-kernel-from-scratch-rewrites-review-runtime.md)）。
-> 本文的内核实现基线是《[Pi 内核从零实现方案](Pi 内核从零实现方案.md)》（Review Runtime 在 pi fork 上从 0 重写，P0–P5 路线）；pi 能力事实以本仓 fork 源码核实为准（《[Pi 内核演化缝盘点](Pi 内核演化缝盘点.md)》）。讨论输入《[基于pi 的 ReviewAgent总体架构设计方案文档讨论](基于pi 的 ReviewAgent总体架构设计方案文档讨论.md)》（v1.0）的有效内容与四项拍板已折入本文；与其相悖处以本文为准。
+> 本文的内核实现基线是《[Pi 内核从零实现方案](Pi 内核从零实现方案.md)》（Review Runtime 在 pi 内核上从 0 重写，P0–P5 路线）；pi 能力事实以当时 vendoring 的 fork 源码核实为准（《[Pi 内核演化缝盘点](Pi 内核演化缝盘点.md)》）——该源码树已随 ADR-0035 移出仓库，npm 包只发 `dist`，文中 `file:line` 需回上游 tag `v0.85.1` 核对。讨论输入《[基于pi 的 ReviewAgent总体架构设计方案文档讨论](基于pi 的 ReviewAgent总体架构设计方案文档讨论.md)》（v1.0）的有效内容与四项拍板已折入本文；与其相悖处以本文为准。
 > **四项拍板（2026-09-18）**：① Claude Code 列入主对照列（注明模型不同源，§9.4）；② 单实验锁定单模型 + 单 effort 档位（§9.5）；③ 预算口径统一 `max_output` = 1K（§3.4）；④ 代码智能 Java 单语言先行、语言适配留 seam（§4.5）。
 >
 > **一句话结论**：以 `pi-agent-core + pi-ai` 为运行底座、自研 Review Runtime（Config B 生产形态：零工具 + 确定性预取、单轮）；测量常量面（提示词 / 上下文组装 / 判定链 / 指标 / 数据集）byte / 行为一致地平移冻结，内核变量面（Agent 状态 / 工具协议 / wire 序列化 / 会话投影）在 pi 原语上从 0 重写——Phase 2 实测 B 形态以全仓配置 7% 的 token 取得最高精度（0.7835）与稳定最高 F1（0.5763），本方案是该结论的生产化与重写落地路线。
+>
+> **状态修订（2026-11-03）**：① 内核消费形态已从「全源码 vendor fork」改为 **npm 上游依赖**——`@earendil-works/{pi-ai,pi-agent-core,chord,pi-telemetry}` 四包同版本成套、精确锁 `0.85.1`，仓内 `packages/{ai,agent,chord,telemetry}` 已删除，发行面收为单包 `review-pi`（[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）；本文凡出现「fork / vendor 源码 / 源码默认零改动 / `packages/ai` 等源码路径」之处，一律按此口径读作「上游 npm 包 + 默认零定制（必要时 `pnpm patch` 留痕）」。② [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 已删除评测仪器层（数据集构造 / 判定链 / 指标聚合 / 实验运行器 / 字节门），**§9 整章降级为历史协议参考**，不再是现行能力；§1.5 的实测数字保留为当时的证据。
 
 ---
 
@@ -82,11 +84,11 @@ pi-agent-core  → Agent Loop、Tool Calling、State、Events
 pi-coding-agent→ 完整 Coding Agent CLI（Session/SDK/Compaction/TUI/RPC）
 ```
 
-本项目的消费形态（[《Pi 内核定制基线方案》](Pi 内核定制基线方案.md)，2026-09-17 拍板）：**全源码 vendor fork，只保留四个包**——`pi-ai`、`pi-agent-core`（独立、无 coding-agent 依赖）、`chord`（服务组合运行时）、`pi-telemetry`（契约层），锚定上游 `6671c604`（v0.85.1 之后 11 天），约 5.6 万行，构建链全绿。coding-agent / tui / protocol / client / server 与检视内核无关，**不 vendor**——连“复用 Session/SDK 再关掉一堆 Coding 功能”的路径也不走（§2.3）。
+本项目的消费形态（[《Pi 内核定制基线方案》](Pi 内核定制基线方案.md)记录的是 2026-09-17 的 vendoring 拍板；[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md) 于 2026-11-03 改为 npm 依赖）：**直接依赖上游 npm 包，只消费四个包**——`@earendil-works/pi-ai`、`@earendil-works/pi-agent-core`（独立、无 coding-agent 依赖）、`@earendil-works/chord`（服务组合运行时）、`@earendil-works/pi-telemetry`（契约层），四包同版本成套、精确锁 `0.85.1`（不带 `^`），源码 specifier 直接用上游名。coding-agent / tui / protocol / client / server 与检视内核无关，**不引入**——连“复用 Session/SDK 再关掉一堆 Coding 功能”的路径也不走（§2.3）。
 
 因此 ReviewAgent 的姿态是：
 
-> **以 `pi-agent-core + pi-ai` 为核心底座，自研 Review Runtime；fork 源码默认零改动，定制只经既有演化缝（§2.5）。**
+> **以 `pi-agent-core + pi-ai` 为核心底座，自研 Review Runtime；上游包默认零定制，定制只经既有演化缝（§2.5）。**
 
 ### 1.4 总体原则
 
@@ -108,7 +110,7 @@ Benchmark 驱动         （每个架构组件的价值须由消融/对照证明
 
 | # | 事实 / 拍板 | 数据 / 主源 |
 |---|---|---|
-| F1 | **内核**：Review Runtime 在 pi fork 上从 0 重写；DSH 内核移除，其评测数据保留为对照基线（`runs/phase2-dsh`，450 单元） | ADR-0009 |
+| F1 | **内核**：Review Runtime 在 pi 内核（npm 上游包 `@earendil-works/*`，锁 `0.85.1`）上从 0 重写；DSH 内核移除，其评测数据保留为对照基线（`runs/phase2-dsh`，450 单元；该目录与评测仪器层已按 ADR-0024/0033 清理） | ADR-0009 / ADR-0035 |
 | F2 | **生产形态**：Config B 拍板（2026-09-17）——零工具 + 确定性预取（Diff→Symbol→Reference→Call Chain），`rounds=1`，无风险升级门 | 《Config B 生产化方案》 |
 | F3 | **B 全面占优（质量面）**：precision 0.7835 全场最高、judge F1 0.5763 稳定最高（D 名义 0.6257 但跨侧不稳定、不作对照结论）；token 49.9k/单元仅为 C（全仓）706.5k 的 **7%** | Phase 2 §5.1 |
 | F4 | **A 是效率双冠**：零工具纯 MR 上下文，judge recall 0.5008 最高、RIE 0.0242 最高（B 的 2.3 倍、C 的 17.3 倍）、token 22.6k 最低 | Phase 2 §5.1/§7 |
@@ -148,7 +150,7 @@ Benchmark 驱动         （每个架构组件的价值须由消融/对照证明
               └────────────┬────────────┘
                            ↓
               ┌─────────────────────────┐
-              │      Pi Runtime（fork）  │
+              │   Pi Runtime（上游四包）│
               │   pi-agent-core         │    Agent/loop/工具/事件
               │   pi-ai                 │    统一 LLM Provider
               │   chord / telemetry     │    服务组合 / 遥测契约
@@ -187,11 +189,11 @@ Benchmark 驱动         （每个架构组件的价值须由消融/对照证明
                        │
               ┌────────┴────────┐
               ↓                 ↓
-       自研 Review Runtime   Pi Runtime（fork）
+       自研 Review Runtime   Pi Runtime（npm 包）
               │                 │
          六阶段检视循环      Agent Core（loop/工具/事件）
          风险与预算策略      State / Events
-         Evidence 纪律      —— fork 源码默认零改动
+         Evidence 纪律      —— 上游包默认零定制
               │                 │
               └────────┬────────┘
                        ↓
@@ -206,7 +208,7 @@ Benchmark 驱动         （每个架构组件的价值须由消融/对照证明
 ReviewAgent → 直接基于完整 pi-coding-agent → 关掉一堆 Coding 功能
 ```
 
-这会把写文件 / Edit / Bash / Coding Workflow / TUI / 开发态命令等不必要能力带进 Review Runtime，且引入与检视无关的升级面。fork 的四个包里，`chord` 是服务组合运行时（`FacetHost` 装配 + 复制状态）、`telemetry` 是契约层——二者当前无核内消费者，保留是为未来分布式/遥测需求预留的底座（[《Pi 内核演化缝盘点》](Pi 内核演化缝盘点.md) S7/S8）。
+这会把写文件 / Edit / Bash / Coding Workflow / TUI / 开发态命令等不必要能力带进 Review Runtime，且引入与检视无关的升级面。四个包里，`chord` 是服务组合运行时（`FacetHost` 装配 + 复制状态）、`telemetry` 是契约层——二者当前无核内消费者，保留是为未来分布式/遥测需求预留的底座（[《Pi 内核演化缝盘点》](Pi 内核演化缝盘点.md) S7/S8）。（ADR-0035 后这两包仍是 `review-pi` 的普通依赖，随安装落位，不增加维护面。）
 
 ### 2.4 测量常量面与内核变量面
 
@@ -223,12 +225,14 @@ ReviewAgent → 直接基于完整 pi-coding-agent → 关掉一堆 Coding 功�
 | 数据集（30 案 VUL4J + 物化仓） | |
 
 - 「从 0」作用于右列：用 pi 原语重写为 `packages/review-pi`（约 6k 行内核 + 1k 集成）。
-- 左列是**测量契约**：A/B 配置下要求请求字节一致（与 DSH 审计 `requests[].wireBody` 逐字节对照，§9.10）；判定链与指标要求行为一致（仪器冻结平移，约 10k 行，[《Pi 内核从零实现方案》](Pi 内核从零实现方案.md) §3）。
+- 左列是**测量契约**：A/B 配置下要求请求字节一致（与 DSH 审计 `requests[].wireBody` 逐字节对照，§9.10）；判定链与指标要求行为一致（仪器冻结平移，约 10k 行，[《Pi 内核从零实现方案》](Pi 内核从零实现方案.md) §3）。**注**：评测仪器层（判定链 / 指标 / 数据集 / 门）已于 ADR-0024 整体删除，此处记录的是当时的测量契约；现行产品形态只剩一种检视形态（工具驱动 + Context Ledger + 规则 Skill）。
 - 术语定义见 `CONTEXT.md`（测量常量面 / 内核变量面）。
 
 ### 2.5 内核定制边界：分层默认 + 显式越缝判据
 
-核内在 fork 上**能改哪里、不能改哪里**，事实底座是《[Pi 内核演化缝盘点](Pi 内核演化缝盘点.md)》（全部条目 file:line 复核）。结论摘要：
+核内在上游 npm 包上**能改哪里、不能改哪里**，事实底座是《[Pi 内核演化缝盘点](Pi 内核演化缝盘点.md)》（全部条目 file:line 复核）。结论摘要：
+
+> **路径口径（ADR-0035）**：下表的 `agent/src/...`、`harness/...` 指上游仓 `earendil-works/pi` 在 tag `v0.85.1` 的源码——该树已不在本仓（npm 包只发 `dist`），核对请回上游；`pnpm patch` 是本仓唯一的改动落点。
 
 **既有缝足以支撑核内全部运行时形态**——
 
@@ -242,11 +246,11 @@ ReviewAgent → 直接基于完整 pi-coding-agent → 关掉一堆 Coding 功�
 
 **五个内核缺口（越缝候选，无一个阻塞 P1–P5）**：按请求工具过滤钩子（G1）、harness 驱动不可插拔（G2，核内不依赖 harness 驱动）、条目不可变（G3，与纪律同向）、无重放派生会话 API（G4，自研审计投影承担）、无内置 telemetry exporter（G5，同前）。
 
-**定制姿态（拍板 2026-09-18）**：默认全部经既有缝实现，**不动 fork 源码**。越缝（改 fork 源码）须三条判据全满足：
+**定制姿态（拍板 2026-09-18；2026-11-03 按 ADR-0035 改口径）**：默认全部经既有缝实现，**不动上游包源码**（包来自 registry，仓内不持有源码树）。确需改上游行为时，唯一落点是 `pnpm patch` 生成的补丁，且须三条判据全满足：
 
 1. 缝内确实不可达（是「做不到」而非「不顺手」，须给出缝内尝试的失败证据）；
-2. 离线、版本化、过对齐门后才上线——**不做会话中自由改写内核**；
-3. 改动处带 fork 注释 + 回写《Pi 内核定制基线方案》§4 分歧清单。
+2. 离线、版本化、过门后才上线——**不做会话中自由改写内核**；
+3. 补丁留在 `patches/` 并在 `package.json` 声明 + 回写《Pi 内核定制基线方案》§4 分歧清单。
 
 **自进化（激进形态：运行时改写 loop / 工具集 / 提示词）的落点**：改工具集与改 loop 都在缝内可达（上表前两行）；改提示词受 Zone A 字节稳定纪律约束（自约束，非内核约束）——演进以 checkpoint 形态离线发生、版本化、经对齐门验证后切换；**改内核本身不在演进面内**。深层原则：演进层之下必须有稳定基底——基底随会话漂移，对照实验与缓存复用同时失真（§5.2 的衰减带就是基底漂移的实测表征，F9）。
 
@@ -471,7 +475,7 @@ interface ContextPlan { requests: EvidenceRequest[]; estimatedTokens: number; re
 
 ### 4.7 上下文准入原则
 
-pi 允许自定义资源加载机制。事实修正（2026-09-18 核实 fork 源码）：**Skills 的机制面在 vendor 的 agent 包 harness 层，不在 coding-agent 面**——`Skill` 类型（`harness/types.ts:49`）、`loadSkills` 加载器（`harness/skills.ts:51`，实现 agentskills.io 标准，可直接读取 Claude Code / Codex / pi 的技能目录）、`formatSkillsForSystemPrompt` 系统提示块（`harness/system-prompt.ts:3`）、显式调用 `harness.skill()`（`lane.ts:1147`）；coding-agent 面仅是装配与发现策略（技能目录约定、`/skill:name` 命令、settings 接线），该面未 vendor。关键性质：harness 层 skills 是**应用供给资源**——无自动发现、无自动注入，`resources.skills` 由宿主提供、系统提示块由宿主调用生成、调用由宿主显式触发（`disable-model-invocation` 可对模型隐藏单个技能）。ResourceLoader / Context Files 仍属 coding-agent 面，未 vendor。
+pi 允许自定义资源加载机制。事实修正（2026-09-18 核实当时 vendored 的上游源码；ADR-0035 后该源码由 npm 包 `@earendil-works/pi-agent-core` 提供）：**Skills 的机制面在 agent 包的 harness 层，不在 coding-agent 面**——`Skill` 类型（`harness/types.ts:49`）、`loadSkills` 加载器（`harness/skills.ts:51`，实现 agentskills.io 标准，可直接读取 Claude Code / Codex / pi 的技能目录）、`formatSkillsForSystemPrompt` 系统提示块（`harness/system-prompt.ts:3`）、显式调用 `harness.skill()`（`lane.ts:1147`）；coding-agent 面仅是装配与发现策略（技能目录约定、`/skill:name` 命令、settings 接线），该面未 vendor。关键性质：harness 层 skills 是**应用供给资源**——无自动发现、无自动注入，`resources.skills` 由宿主提供、系统提示块由宿主调用生成、调用由宿主显式触发（`disable-model-invocation` 可对模型隐藏单个技能）。ResourceLoader / Context Files 仍属 coding-agent 面，未 vendor。
 
 核内纪律不变且被上述机制性质强化：**Context Engine 独占上下文准入**——任何进入模型上下文的内容都由 Context Engine 显式决定，不依赖任何框架机制自动灌入项目上下文。skill 生态的接入姿势由此确定：**内容面**——`loadSkills` 读取的 SKILL.md 内容作为 Knowledge Engine（§3.6）C3 层（§4.2）的输入源之一，经 Top-K 检索由 Context Engine 决定准入；**机制面**——`formatSkillsForSystemPrompt` 列表注入与模型自主加载（progressive disclosure）限 C/D/E 消融面实验，生产面（B）不启用。这是测量常量面成立的前提（上下文组装必须完全自持，请求字节才可钉）。
 
@@ -802,6 +806,8 @@ pi 侧实现缝已核实（`steer()` / `followUp()` 队列，缝盘点 S5；无 
 ## 9. 评测体系与 Benchmark
 
 > 评测装置是**核外冻结仪器**（ADR-0009：判定链 / 指标 / 数据集 / 双门协议平移复用，重写仪器会引入判定漂移）。本章给出协议全貌 + Phase 2 已测结果 + pi 线对照实验设计。
+>
+> **⚠️ 历史章节（ADR-0024，2026-10-31）**：评测仪器层（数据集构造、判定链、指标聚合、实验运行器、字节门）已整体删除，A–E 配置矩阵与 `configId` 身份维度一并废止。本章保留为**当时的协议与读数记录**，不代表现行能力；文中 `review-llm`（judge 客户端）、`src/{judge,metrics,experiment,…}`、`runs/phase2-*` 均已不存在或未入库。现行形态见 [`CONTEXT.md`](../../CONTEXT.md)；内核消费形态另见 ADR-0035。
 
 ### 9.1 数据集：逆补丁法 + 多源组合
 
@@ -871,12 +877,12 @@ Verifier    off（phase2 口径；二遍 Verifier 是消融开关，§6.3）
     ↓
 规则粗筛（严格偏保守——phase2 实测 FP_RESCUED 269 vs TP_OVERTURNED 1，单向救回）
     ↓
-LLM-as-judge（现行实例：glm-5-3-260814 走 review-llm，与被测 deepseek-v4-flash 异构）
+LLM-as-judge（当时实例：glm-5-3-260814 走 review-llm，与被测 deepseek-v4-flash 异构）
     ↓
 10% 人工抽检
 ```
 
-判级：S/A/B 三级（ADR-0004，判据以配置 C 热口径为参照原点）。judge 继续走 review-llm——**变量隔离在内核侧**，pi-ai 只承担被测侧。
+判级：S/A/B 三级（ADR-0004，判据以配置 C 热口径为参照原点）。judge 走 review-llm——**变量隔离在内核侧**，pi-ai 只承担被测侧。
 
 ### 9.7 消融清单
 
@@ -990,7 +996,7 @@ token 口径归一（P1 硬票）：DSH usage `{inputTokens, outputTokens, cache
         └───────────────────┬───────────────────────┘
                             ↓
         ┌───────────────────────────────────────────┐
-        │ Pi Runtime（fork 四包，源码默认零改动）       │
+        │ Pi Runtime（上游四包，默认零定制）        │
         │  pi-agent-core（loop / 工具 / 状态 / 事件）  │
         │  pi-ai（统一 Provider → 企业网关）           │
         └───────────────────┬───────────────────────┘
@@ -1006,7 +1012,7 @@ token 口径归一（P1 硬票）：DSH usage `{inputTokens, outputTokens, cache
 
 ### 11.2 架构结论
 
-> **`pi-agent-core + pi-ai` 作为内核，自研 Review Runtime；fork 源码默认零改动，定制只经演化缝。**
+> **`pi-agent-core + pi-ai` 作为内核，自研 Review Runtime；上游包默认零定制，定制只经演化缝。**
 
 - **Pi 负责「Agent 怎么跑」**；**ReviewAgent 负责「Review 怎么做」**；**Context Engine 决定「看什么」**；**Cache Engine 决定「怎么便宜地看」**；**Evidence 纪律决定「问题是否真的成立」**。
 - 生产形态是**实测拍板**的 Config B：零工具 + 确定性预取、单轮——以全仓配置 7% 的 token 取得最高精度与稳定最高 F1，缓存命中 0.81/0.88。
@@ -1023,7 +1029,7 @@ token 口径归一（P1 硬票）：DSH usage `{inputTokens, outputTokens, cache
 
 | 旧（DSH 版 v2.1 / 讨论稿） | 新（本文） | 说明 |
 |---|---|---|
-| DSH 内核（session/system-prompt/tools/agent/agent-loop/llm 插件面） | pi fork 四包 + 演化缝 | DSH 插件挂接形态随内核移除（ADR-0009） |
+| DSH 内核（session/system-prompt/tools/agent/agent-loop/llm 插件面） | pi 上游四包 + 演化缝 | DSH 插件挂接形态随内核移除（ADR-0009）；四包由 npm 依赖提供（ADR-0035） |
 | 自定义 Loop 经 `setFactory` | 策略驱动器经 pi 缝（直驱 / 钩子） | DSH 线「setFactory 无人区」教训不继承 |
 | E = 主力系统形态 | **B = 生产形态**，E 归消融面 | Phase 2 实测账本负方向（F8） |
 | C = 效果上限 / 质量主锚 | C = 协议判级锚（带坍缩警示） | Phase 2 §3.3/§5.4 |

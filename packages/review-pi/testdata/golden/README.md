@@ -22,7 +22,7 @@ ADR-0024 之后本目录只保留**单一形态**（工具驱动 + Context Ledge
 B 线族（`mr-message` / `reply-*`）：
 `runs/phase2-dsh-t1/audit/vul4j/VUL4J-1/B/rep-1/audit/20260914T180846.922-B-VUL4J-1.json`。
 源审计 gitignored（本机 runs/ 目录；迁移自 DSH 兄弟仓 phase2 实测），历史报告见
-`runs/**/REPORT.md`。
+`docs/report/`（`runs/**` 留痕自 ADR-0033 起不入库，旧目录已清理）。
 
 ## 纪律
 

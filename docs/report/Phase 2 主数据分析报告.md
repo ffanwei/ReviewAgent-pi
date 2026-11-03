@@ -1,5 +1,12 @@
 # Phase 2 主数据分析报告（#38）
 
+> **历史文献（时效注记）**
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **范围**：#38「Phase 2 主数据分析报告」全部验收项——六面（判定分布 / 五配置对比 / 方差面 / 效率面 / 时点面 / 预算总账）+ 人工抽检校准 + dashboard 引用 + 口径衔接说明
 > **交付形态**：本报告 + 复算脚本 `scripts/analyze-phase2.ts`（`pnpm analyze:phase2`）+ 人工抽检工具 `.cache/human-review-sheet.md`（本机留痕）
 > **数据底盘**：`runs/phase2-main`（主数据 450 单元，canonical）+ `runs/phase2-noise`（噪声对照 450）+ `runs/phase2-dsh`（DSH 附录侧 450）+ `runs/phase2-smoke`（5 单元预检）；gate JSON 锚点 3 份（§13）

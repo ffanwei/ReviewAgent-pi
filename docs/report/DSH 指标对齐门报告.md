@@ -1,5 +1,12 @@
 # DSH 指标对齐门报告（#29）
 
+> **历史文献（时效注记）**
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **范围**：票 #29（Ticket 12: 指标对齐门）——DSH 内核在 gateway 口径 45 单元子集上真实重跑，与冻结薄 harness（POC1）既有结果做四指标 ±1 std 对照
 > **交付形态**：本报告 + `runs/dsh-vul4j-gateway/`（45/45 单元产物）+ `runs/dsh-gateway-smoke-r3/`（冒烟）+ ADR-0006 实现注记；门不过 → 触发诊断票 #30
 > **报告日期**：2026-09-11
@@ -175,8 +182,8 @@ DSH 首跑中 VUL4J-38/D/rep-3 失败一次：`review-runtime: turn 5 did not en
 
 ## 7. 来源与产物索引
 
-- **DSH 运行产物**：`runs/dsh-vul4j-gateway/`（`report.json` / `dashboard.md` / 45 份 run 记录 / 审计树；`REPORT.md` 为入库结论文档）；冒烟 `runs/dsh-gateway-smoke-r3/`
-- **POC1 冻结基线**：`runs/poc1-vul4j-gateway/`（`REPORT.md` 入库；45 份 run 记录 + 83 份审计，其中 38 单元双审计为 §4.4 声底证据）
+- **DSH 运行产物**：`runs/dsh-vul4j-gateway/`（`report.json` / `dashboard.md` / 45 份 run 记录 / 审计树；`REPORT.md` 当期入库，后随运行产物清理）；冒烟 `runs/dsh-gateway-smoke-r3/`
+- **POC1 冻结基线**：`runs/poc1-vul4j-gateway/`（`REPORT.md` 当期入库，后随运行产物清理；45 份 run 记录 + 83 份审计，其中 38 单元双审计为 §4.4 声底证据）
 - **指标口径**：`src/metrics/aggregate.ts`（`evaluateRun` / `flattenRunMetrics`）+ `src/metrics/stats.ts`（样本 std，n−1）——本报告池化计算与 POC1 REPORT.md §7 总账逐 token 对账一致
 - **归因分析**：请求字节对照 / 自门检验 / 声底量化脚本（`.cache/`，本机不入库；口径见 §2，可按管线函数复算）
 - **相关**：ADR-0006 实现注记（#29 对照口径）、诊断票 #30

@@ -1,7 +1,14 @@
 # Phase 2 pi-S1 五配置对照报告（advisory）
 
+> **历史文献（时效注记）**
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **文首声明**：本报告是 pi 内核 S1 小批量（`runs/phase2-pi-s1`，45 单元，#10）的五配置对照分析，评价维度与读法对齐 DSH 线报告《Phase 2 主数据分析报告》§5.1（DSH 兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) `docs/report/`；跨仓限定语纪律：该报告为 DSH 线口径）。
-> **全部读数为 advisory**：每配置 n=9（3 案 × 3 reps），无统计功效，不进 S/A/B 正式判级；正式判级与对齐门在 #17（450 全量）+ #11（P5b）。运行留痕（预算/中断/恢复）见 [`runs/phase2-pi-s1/REPORT.md`](../../runs/phase2-pi-s1/REPORT.md)。
+> **全部读数为 advisory**：每配置 n=9（3 案 × 3 reps），无统计功效，不进 S/A/B 正式判级；正式判级与对齐门在 #17（450 全量）+ #11（P5b）。运行留痕（预算/中断/恢复）见 `runs/phase2-pi-s1/REPORT.md`（该目录已随运行产物清理，不入库）。
 > 日期：2026-09-22。分析对象：pi 内核（`packages/review-pi`，ADR-0009 从 0 重写）首组 45 单元级真跑。
 
 ## 1. 概述与一句话结论
@@ -91,7 +98,7 @@ DSH 侧 s1（3 案）与全量（30 案）在 B/C/E 上差异不小（B precisio
 
 ## 9. 来源与产物索引
 
-- pi 侧数据：`runs/phase2-pi-s1/`（report.json / dashboard.md / runs × 45 / judge × 45 / audit × 45 / human-review 表单 5；gitignored，运行留痕 `runs/phase2-pi-s1/REPORT.md` 入库）
+- pi 侧数据：`runs/phase2-pi-s1/`（report.json / dashboard.md / runs × 45 / judge × 45 / audit × 45 / human-review 表单 5；均 gitignored；运行留痕 `runs/phase2-pi-s1/REPORT.md` 已随运行产物清理，不入库）
 - DSH 侧数据：DSH 兄弟仓 `runs/phase2-main-s1/`（≡ `runs/phase2-main` 3 案子集）与 DSH 报告 §5.1（跨仓引用，限定语纪律：DSH 线口径）
 - 判定链：规则粗筛 → LLM judge `glm-5-3-260814`（经 review-llm，仪器冻结）→ 人工抽检（5 表单待执行，calibration 层）
 - 协议：`deepseek-v4-flash` / verifier off / kernel=pi / seed `poc1-human-review-2026` / humanReviewRate 0.1——与 DSH s1 逐字段一致

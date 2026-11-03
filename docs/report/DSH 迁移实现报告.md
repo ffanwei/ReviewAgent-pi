@@ -1,5 +1,12 @@
 # DSH 迁移实现报告（Phase 1）
 
+> **历史文献（时效注记）**
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **范围**：spec #17「Phase 1 DSH 迁移——以 DSH 为内核的 ReviewAgent CLI（Review Agent 阶段 1）」全部 12 张工单（#18–#29）
 > **交付形态**：main 分支 15 提交（e3ef5c4…504e4d7）逐票合入——每票「提交 → 推送 → AC-by-AC 验收关单」；伞票 #17 已验收关闭
 > **报告日期**：2026-09-12 · **实现周期**：2026-09-10 – 2026-09-11（2 天）

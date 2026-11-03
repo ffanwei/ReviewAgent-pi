@@ -1,5 +1,9 @@
 # DSH 内核机制偏差清单：npm 0.1.2-rc.1 × reference 0.1.5-alpha.1
 
+> **历史分析（DSH 线）**：本文盘点 DSH 内核的 npm 包与源码参考树之间的机制偏差。DSH 内核已随
+> [ADR-0009](../adr/0009-pi-kernel-from-scratch-rewrites-review-runtime.md) 移除（评测仪器层随后由 ADR-0024 删除），
+> 结论保留为「为什么不再走 npm 消费线」的教训记录——pi 线最终也回到 npm 依赖（ADR-0035），但用的是精确锁版 + 门禁验证。
+
 > 票 #18（spec #17）Spike 1 落锤。核对口径：npm 消费线 `@deepseek-ai/dsh@0.1.2-rc.1`
 > （`packages/review-dsh`，lockfile 锁定）× 本地 `reference_project/deepseek-harness`
 > （0.1.5-alpha.1 源码，只读参考）。处置选项按 ADR-0005：**fork 过渡 / 适配 / 不采用**。

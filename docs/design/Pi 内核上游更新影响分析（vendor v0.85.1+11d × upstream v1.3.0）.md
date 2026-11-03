@@ -1,5 +1,9 @@
 # Pi 内核上游更新影响分析（vendor v0.85.1+11d × upstream v1.3.0）
 
+> **历史分析（2026-10 撰写，问题本身已被 ADR-0035 取消）**：本文评估「vendored 四包如何跟上上游 v1.3.0」。
+> ADR-0035 之后该问题不复存在：内核四包改为 npm 依赖并精确锁 `0.85.1`，与上游同步 = 改版本号 + 跑门
+> （必要时 `pnpm patch`），不再有 `git diff` 对照与仓内源码树。文中 `packages/*` 路径与「vendor +11d」基线均为当时事实。
+
 > **文首说明**：本文是研究性分析（2026-10-20），回答「pi 上游 0.85.1 → 1.3.0 的演化对本仓 vendor fork 与 Review Runtime 意味着什么、要不要跟进」。
 > 方法：本地一手材料（基线方案 / 演化缝盘点 / ADR / vendored 源码 / review-pi 使用面 grep）× 上游一手材料（`gh api` 取 main 的 CHANGELOG / package.json / 源码 / releases / compare，npm tarball 取 1.3.0 发布物数据）三方交叉。
 > **一句话结论**：上游跨 1.0 大改（agent 包收缩 92→6 源文件、harness 整体移出、`shouldStopAfterTurn` 等关键 API 更名、模型数据 schema v6 且 `deepseek-v4-flash` 目录退役），但本仓 fork 源码零分歧 + review-pi API 使用面极窄（13 文件 / ~25 个触点），升级的真实代价不在 re-anchor 而在**升级后必须重跑的验证链**（t1–t5 双门 + 质量门证据 + 真跑对照）；当前无驱动性需求，**建议锚定不动**，把升级留到下一个内核变更窗口并整体跳 1.x（不 backport）。

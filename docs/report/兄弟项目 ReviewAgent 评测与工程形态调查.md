@@ -1,5 +1,12 @@
 # 兄弟项目 ReviewAgent 评测与工程形态调查
 
+> **历史文献（时效注记）**：调查对象是 DSH 线兄弟仓，本文是该仓当时的工程形态
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **调查日期**：2026-09-18 · **调查人**：调查子代理（主会话委托）
 > **调查对象**：`D:\xubao\code\AI4SE\ReviewAgent`（PI 项目的兄弟项目，成熟运行的 TypeScript pnpm workspace 项目）。只读调查，未修改其任何文件。
 > **调查问题**：为 PI 项目（ReviewAgent-pi）的构建提供「项目介绍与评测等内容参考兄弟项目」的对齐基线——评测体系全景、项目介绍骨架、工程形态三部分。

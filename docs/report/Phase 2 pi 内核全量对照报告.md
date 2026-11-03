@@ -1,5 +1,12 @@
 # Phase 2 pi 内核全量对照报告（P5b：对齐门 + 独立判级 + 对照）
 
+> **历史文献（时效注记）**
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **文首声明**：本报告是 issue #11（P5b）的正式对照报告——pi 内核全量真跑（`runs/phase2-pi`，450 单元，#17）对 DSH 线基线的**对齐门判定 + S/A/B 独立判级 + 四侧对照**。评价维度与读法对齐 DSH 线报告《Phase 2 主数据分析报告》（DSH 兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent) `docs/report/`；跨仓限定语纪律：该报告为 DSH 线口径，其 §3.3 锚塌缩、§5.1 九维度为本报告的章节对齐锚点）。
 > **正式性**：判级为 pi 侧独立跑出（判级锚 = 配置 C rep2+ 热口径）；对齐门判定**如实报告为 FAIL**（§5）。DSH 侧结论不自动迁移到 pi 线（§4.2）。
 > 日期：2026-10-19。分析对象：pi 内核（`packages/review-pi`，本仓 ADR-0009 从 0 重写）首组 450 单元全量数据，对照本仓 P0 迁移的三侧 DSH 线数据。
@@ -20,7 +27,7 @@ pnpm alignment-gate -- --baseline runs/phase2-main --candidate runs/phase2-pi --
 pnpm analyze:p5b
 ```
 
-数据源：`runs/{phase2-pi,phase2-main,phase2-noise,phase2-dsh}/report.json` + 各侧 450 份执行 record + 门 JSON。判级由实验 runner 在判定阶段自动产出（算法 `src/metrics/verdict.ts`，单测覆盖），本报告从 report.json verdicts 阶段直接读取复算。例外口径（正文已标出处、非重放产物）：§7.3 序列化方言机制数字引自 S1 报告 §6 逐案实测；§10 pi 运行事件账（~9M）引自 [`runs/phase2-pi/REPORT.md`](../../runs/phase2-pi/REPORT.md)。
+数据源：`runs/{phase2-pi,phase2-main,phase2-noise,phase2-dsh}/report.json` + 各侧 450 份执行 record + 门 JSON。判级由实验 runner 在判定阶段自动产出（算法 `src/metrics/verdict.ts`，单测覆盖），本报告从 report.json verdicts 阶段直接读取复算。例外口径（正文已标出处、非重放产物）：§7.3 序列化方言机制数字引自 S1 报告 §6 逐案实测；§10 pi 运行事件账（~9M）引自 `runs/phase2-pi/REPORT.md`（该留痕已随运行产物清理，不入库）。
 
 ## 3. 四侧内核身份（「DSH 侧」分层表述纪律）
 
@@ -270,7 +277,7 @@ C lineRecall 极差 0.4052 为九维度最大单格——内核效应幅度的�
 
 （billed = input + output；withCache = + cacheReadTokens——ADR-0009 Consequences：报告单列 cacheReadTokens，不与质量结论混排。judge 信封上界 = judgedCount × 32,768，#39 glm 系推理模型 completion 上界；judge 链为仪器成本未入被测账，与 DSH 报告口径一致。）
 
-pi 侧 billed 21.32M 与 withCache 63.42M 均为四侧最低——更低 token 账（§6）与更低缓存命中的净效果仍是总账最低。pi 运行事件账（中断/恢复/双跑浪费 ~9M 网关侧额外消耗，未计入 record 总账）见 [`runs/phase2-pi/REPORT.md`](../../runs/phase2-pi/REPORT.md)。
+pi 侧 billed 21.32M 与 withCache 63.42M 均为四侧最低——更低 token 账（§6）与更低缓存命中的净效果仍是总账最低。pi 运行事件账（中断/恢复/双跑浪费 ~9M 网关侧额外消耗，未计入 record 总账）见 `runs/phase2-pi/REPORT.md`（该留痕已随运行产物清理，不入库）。
 
 ## 11. 执行窗
 
@@ -318,7 +325,7 @@ pi 与基线相隔 9 天（门时点口径 221h，超 48h 阈值）——§5 cac
 
 ## 14. 来源与产物索引
 
-- pi 侧数据：`runs/phase2-pi/`（#17 全量真跑；运行留痕 [`runs/phase2-pi/REPORT.md`](../../runs/phase2-pi/REPORT.md) 入库，数据 gitignored）
+- pi 侧数据：`runs/phase2-pi/`（#17 全量真跑；运行留痕 `runs/phase2-pi/REPORT.md` 已随运行产物清理，数据 gitignored）
 - 三侧 DSH 线数据：本仓 `runs/phase2-{main,noise,dsh}/` P0 迁移拷贝（md5 与 DSH 仓原位一致）；原仓 `MustacheXb/ReviewAgent` 同名目录
 - 门与复算：`scripts/run-alignment-gate.ts`（门 CLI）→ `.cache/gate-phase2-pi.json`（判定锚点）；`scripts/analyze-p5b.ts`（本报告全部表格源）+ `src/experiment/p5b-compare.ts`（可测计算，12 单测）
 - 协议：`deepseek-v4-flash` @ REVIEWER_URL 网关 / verifier off / judge `glm-5-3-260814` 经 review-llm / humanReviewRate 0.1 / seed `poc1-human-review-2026` / kernel=pi——与 DSH 线 `phase2-main` 逐字段一致

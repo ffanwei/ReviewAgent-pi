@@ -1,3 +1,9 @@
+> **历史讨论（2026-09，决策输入）**：本文是「DSH 内核 vs Pi 内核」的选型对照，结论（Pi-first，前提是不考虑 Runtime 复用）
+> 已被 [ADR-0009](../adr/0009-pi-kernel-from-scratch-rewrites-review-runtime.md) 采纳；文内对 Pi 包形态的判断写于 vendoring 之前，
+> 内核最终形态见 [ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)（npm 依赖、精确锁 `0.85.1`）。
+
+---
+
 我认真对比了当前 **DeepSeek Harness（DSH）** 和 **Pi** 的最新仓库与官方文档。结合你这个项目的真实目标——**专用 Code Review、低 Token、Cache、企业代码平台集成、CWD/历史缺陷、后续 Harness 自进化**——我的结论是：
 
 > **如果目标只是快速做出一个轻量 Review CLI，Pi 更简单；如果目标是做成你前面规划的“企业级 AI Review Engine”，我更推荐 DSH 作为长期内核。**

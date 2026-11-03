@@ -1,5 +1,8 @@
 # Review Agent 项目分阶段实现计划书
 
+> **历史计划（DSH 线，2026-09）**：阶段划分已被 [ADR-0009](../adr/0009-pi-kernel-from-scratch-rewrites-review-runtime.md)（pi 内核从 0 重写）与后续 ADR 取代，
+> 评测仪器层亦随 ADR-0024 删除。现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 ## 1. 项目定位与技术路线
 
 ### 项目名称

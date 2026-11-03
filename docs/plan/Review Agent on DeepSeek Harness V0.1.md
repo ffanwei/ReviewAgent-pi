@@ -1,5 +1,8 @@
 # Review Agent on DeepSeek Harness V0.1
 
+> **历史计划（DSH 线）**：DSH 内核已随 [ADR-0009](../adr/0009-pi-kernel-from-scratch-rewrites-review-runtime.md) 移除，评测仪器层随 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除。
+> 本文仅作早期路线与设计记录，现行形态见 [`CONTEXT.md`](../../CONTEXT.md) 与 README。
+
 ## 技术设计、代码目录、Plugin API、Agent Loop 时序与 POC 执行计划
 
 ---

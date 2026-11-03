@@ -2,7 +2,7 @@
 
 低 Token、高质量代码检视 Agent：用最小充分上下文与缓存稳定循环，以 20~30% 的 Token 成本获得接近全量上下文的检视质量。终点是落地到企业内部代码托管平台的 MR 检视。（内核基座：pi 代码仓 fork，Review Runtime 从 0 重写，ADR-0009；DSH 线历史见 ADR-0005/0006。）
 
-**范围（ADR-0024）**：本仓只有一种检视形态（工具驱动 + Context Ledger + 规则 Skill），是 Review CLI 产品仓。配置矩阵（A–E）、`configId` 身份维度与评测仪器层（数据集构造、判定链、指标聚合、实验运行器、字节门）已删除；本词汇表中与之绑定的条目同步移除，历史报告见 `docs/report/` 与 `runs/**/REPORT.md`。
+**范围（ADR-0024）**：本仓只有一种检视形态（工具驱动 + Context Ledger + 规则 Skill），是 Review CLI 产品仓。配置矩阵（A–E）、`configId` 身份维度与评测仪器层（数据集构造、判定链、指标聚合、实验运行器、字节门）已删除；本词汇表中与之绑定的条目同步移除，历史报告见 `docs/report/`（`runs/**` 运行留痕自 ADR-0033 起不入库，旧目录已清理）。
 
 ## Language
 

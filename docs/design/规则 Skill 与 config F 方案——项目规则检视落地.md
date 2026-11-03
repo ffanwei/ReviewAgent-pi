@@ -1,5 +1,9 @@
 # 规则 Skill 与 config F 方案——项目规则检视落地
 
+> **时效说明（ADR-0024 / ADR-0035）**：本文成文于「A–E 配置矩阵 + F 扩展位」时代；矩阵与 `configId` 已于
+> [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，规则 Skill 现在是**唯一**检视形态（不再是「F 配置」）。
+> 内核四包亦已改为 npm 依赖（ADR-0035）。装载 / 审计 / 解压 / 降级细节仍有效。
+
 > **状态**：已归档（2026-10-26）。决策记录见 `docs/adr/0012`；术语见 `CONTEXT.md`「规则 Skill」。
 > **后续**：**[ADR-0014](../adr/0014-rule-skill-review-pass-after-candidates-phase.md) 取代本文 §4 第 7 条硬纪律（绝不执行 zip 内任何脚本）、§6 验收 2（`ruleSkill` 单对象）与 Phase 5 简报注入形态（Q5/Q10/Q16 的注入点）**——现行口径是「Phase 5 之后追加独立 skill 检视会话」；本文其余内容（zip 定位/审计/解压、降级、伪配置位、不进 `search_rule`）继续有效。
 > **现行流程图**：`docs/design/Config F 完整流程图（规则 Skill 独立检视会话）.md`（按 ADR-0014 与当前源码绘制，装载/主循环/skill 会话/候选合流/降级矩阵/审计映射；本文 §4 第 7 条与 §6 验收 2 的旧口径以上述流程图与 ADR-0014 为准）。

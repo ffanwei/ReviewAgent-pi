@@ -1,3 +1,7 @@
+> **历史讨论（2026-09）**：本文是 DSH 版架构方案的讨论过程稿，最终被《[基于 Pi 内核的 Review Agent 总体架构设计方案](基于 Pi 内核的 Review Agent 总体架构设计方案.md)》接替（[ADR-0009](../adr/0009-pi-kernel-from-scratch-rewrites-review-runtime.md)）。DSH 内核与评测仪器层均已移除，仅作决策过程记录。
+
+---
+
 可以。基于前面的讨论，以及我对 **DeepSeek Harness（DSH）当前架构文档**的进一步核对，我建议把这份文档定位成一份真正可以进入技术评审和 PoC 开发的《架构设计方案》，而不是简单的功能说明。
 
 有一个重要架构结论我会放在最前面：

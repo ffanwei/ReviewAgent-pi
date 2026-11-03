@@ -1,5 +1,10 @@
 # ReviewAgent RPC / HTTP / JSON-RPC Server 实现方案
 
+> **时效注记（ADR-0035，2026-11-03）**：本文文首的「vendored pi 锚定 commit `6671c604` 源码」前提已不成立——
+> 内核四包改为 npm 上游依赖（精确锁 `0.85.1`），仓内不再有 `packages/{protocol,client,server}` 或四包源码树；
+> 文中对 pi 实验性栈的源码引用请按上游 tag `v0.85.1` 核读。**结论仍有效**：不自建 CBOR/Unix socket 栈，
+> ReviewAgent 侧走 HTTP JSON-RPC 2.0 + SSE。方案本身尚未实施（现无 `review-pi-server` 包）。
+
 > **文首说明**（2026-10-20）：本文以 vendored pi 锚定 commit `6671c604`（v0.85.1+11d）的源码为准，
 > 分析 pi 实验性 `protocol` / `client` / `server` / `session-backends` 栈，并给出 ReviewAgent
 > 自建 HTTP / JSON-RPC server 的落地设计。

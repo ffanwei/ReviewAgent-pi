@@ -1,5 +1,12 @@
 # POC1、Phase 1、Phase 2 阶段事实与教训摘要
 
+> **历史文献（时效注记）**
+> 本文写于评测仪器层与 `runs/**` 留痕仍在的时期。评测仪器层（数据集构造 / 判定链 / 指标聚合 /
+> 实验运行器 / 字节门）已于 [ADR-0024](../adr/0024-drop-config-matrix-and-config-identity.md) 删除，
+> `runs/**` 自 [ADR-0033](../adr/0033-task-id-output-location.md) 起不入库、旧目录已清理，故文中数字**不可复跑**；
+> 内核四包现为 npm 上游依赖 `@earendil-works/*`（精确锁 `0.85.1`，[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)）。
+> 现行形态见 [`CONTEXT.md`](../../CONTEXT.md)。
+
 > **用途**：为《基于 Pi 内核的 ReviewAgent 总体架构设计方案》提供事实底座。内容按「对总体架构设计有约束力」组织，不按报告时间线复述。
 > **材料范围**：六份一手报告（《POC1 实现报告》《DSH 迁移实现报告》《Phase 2 主数据分析报告》《生产化可行性事实调查》《DSH 指标对齐门报告》《DSH 指标对齐门噪声底报告》）+ ADR-0001～0009 + 《ReviewAgent以DSH内核和PI内核的方案对比分析》（背景）。
 >

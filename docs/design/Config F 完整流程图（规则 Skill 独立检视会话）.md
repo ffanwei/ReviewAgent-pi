@@ -334,4 +334,4 @@ Every candidate id above must appear in your verdicts array. …
 - `docs/adr/0012-project-rules-as-rule-skill-injected-at-candidates-phase.md` —— 被取代的旧注入形态（装载/审计/降级部分仍有效）。
 - `docs/design/规则 Skill 与 config F 方案——项目规则检视落地.md` —— zip 定位/审计/解压与降级细节。
 - `docs/运行手册-单次检视.md` —— 生产形态命令、产物布局与排障。
-- `docs/配置矩阵A-E说明.md` —— A–E 各配置语义（F 是 E 的扩展位）。
+- ~~`docs/配置矩阵A-E说明.md`~~ —— A–E 各配置语义（**已随 ADR-0024 删除**；现行只有一种检视形态，规则 Skill 不再是「F 配置」而是唯一形态）。
