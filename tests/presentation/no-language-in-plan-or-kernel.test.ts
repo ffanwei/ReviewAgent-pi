@@ -58,7 +58,6 @@ const REVIEW_RUN_INPUT: ReviewRunInput = {
   ruleSkillZip: "packs/rules.zip",
   ruleSkillZips: ["packs/rules.zip"],
   ruleSkillDirs: ["packs/general-code-review"],
-  ruleSkillName: "general-code-review",
   strictRuleSkill: false,
 };
 
