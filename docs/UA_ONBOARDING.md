@@ -15,7 +15,7 @@
 | 层 | 职责 | 关键文件 |
 |---|---|---|
 | **Review Runtime（pi 内核线）** | 单案全链：MR 边界护栏 → 规则 Skill 装载 → 六阶段 agent-loop（七工具 + Context Ledger）→ 候选门 → 审计/记录/转录/意见导出 | `packages/review-pi/src/run/review-run.ts`、`loop/agent-review-loop.ts`、`tools/toolkit.ts`、`gate/candidate-gate.ts` |
-| **CLI 与呈现** | 参数解析、配置装载（`~/.PiAgent/PiAgent.jsonc`）、结果投影、退出码；核外中文呈现注入缝 | `packages/review-pi/src/cli/{args,main,render,config-command}.ts`、`packages/review-pi/src/shared/config.ts`、`src/presentation/{translate-projection,tips,engine-zh}.ts` |
+| **CLI 与呈现** | 参数解析、配置装载（`~/.PiAgent/PiAgent.jsonc`）、结果投影、退出码；核外中文呈现注入缝；session 索引与 `export`（纯文件系统，不读配置） | `packages/review-pi/src/cli/{args,main,render,config-command,export-command}.ts`、`packages/review-pi/src/shared/config.ts`、`packages/review-pi/src/export/{session-index,session-export}.ts`、`src/presentation/{translate-projection,tips,engine-zh}.ts` |
 | **pi 内核（npm 依赖）** | pi-ai 模型接入、pi-agent-core 代理循环、chord 编排、telemetry 遥测；上游包，按 `dependencies` 精确锁版 | `node_modules/@earendil-works/*`（源码不在本仓） |
 | **测试与夹具** | 内核单测、CLI 进程烟测、golden 常量 | `packages/review-pi/src/cli/bin.process.test.ts`、`packages/review-pi/testdata/golden/*`、`tests/presentation/*` |
 | **文档与 ADR** | 项目说明、决策记录、设计方案、历史报告 | `README.md`、`CONTEXT.md`、`AGENTS.md`、`docs/adr/*`、`docs/运行手册-单次检视.md` |
@@ -30,6 +30,7 @@
 - **审计与记录**：审计落盘 `<tasks 根>/<taskId>/audit/<ts>.json`（requests / toolCallLog / phaseLog / rejections / ledger / ruleSkill / skillPassLog / config 快照）；`RunRecord` 落 `<tasks 根>/<taskId>/runs/run.json`（ADR-0032 定内部形态、ADR-0033 定位置：`--taskId` 必需，一个任务目录一次 run，无 case / rep 层）。`<ts>` = 首次模型请求时刻（`20261031_101010_123`），同时是 `runId`。
 - **语言边界**：检视输出恒英文（测量面冻结）；中文只经核外翻译投影（ADR-0010），内核无语言键。
 - **中文交付物**：只有 `reviews_tips_zh.json`（ADR-0017 / ADR-0022），按文件分组、同文件同行去重（ADR-0023）；`reviews_zh.json` 已停产。
+- **session 寻址**：`review` 成功后往 cwd 写隐藏索引 `.review-pi-session.json`（绝对路径 + runId，原子写、整份覆盖），`review-pi export [--taskId] [--tasks-dir] [--path]` 读它/任务目录打印或复制转录路径；该命令不装载配置（ADR-0036）。
 - **配置解析**：`shared/config.ts` 读一次用户级 JSONC 成不可变快照，全量生效值 + 来源 + digest 进审计；秘密只记 `set|missing`。env 通道已在 ADR-0025 移除；`review-llm` 的 resolver 已随该包一起删除（ADR-0035），当前没有第二套「显式参数 → env → 缺省」回退链。
 - **内核依赖边界**：`@earendil-works/*` 是 npm 上游包（ADR-0035），改动需走 `pnpm patch` 或推动上游；应用逻辑不要写进 `node_modules`。
 

@@ -141,3 +141,20 @@ C:\Users\Li\.PiAgent\tasks\change-001\runs\session-20261103_112336_401-skill-gen
 | `packages/review-pi/src/cli/args.ts` | `export` 解析（`--taskId` 走 `checkTaskId` 同口径）、usage 与旗标说明 |
 | `packages/review-pi/src/cli/main.ts` | 配置装载早退（export 不读配置）；review 收尾写 cwd 索引 |
 | 测试 | `session-index.test.ts`、`session-export.test.ts`、`args.test.ts`、`bin.process.test.ts`（进程级：review → 索引 → export / `--path` / `--taskId`） |
+
+### 真机验证（2026-11-03，`review-pi@0.2.0`）
+
+发布前做了一次「卸载 → 从 tarball 重装 → 独立目录真跑」的端到端核对，全部通过：
+
+| 验证 | 结果 |
+|---|---|
+| 卸载/重装 | `npm uninstall -g review-pi` 移除 8 个包；`npm i -g .artifacts/tarballs/review-pi-0.2.0.tgz` 装回 107 个包；usage 面出现 `export` 子命令 |
+| 无索引时 `export` | `exit 1` + 人话（`未找到 session 索引 …`），stdout 空 |
+| 真实网关 review（无规则包） | `exit 0`，runId `20261103_122614_393`，索引 `main` 指向真实文件、`runId` 与 `run.json` 的 `auditPath` 文件名一致 |
+| 真实网关 review（带规则 Skill） | `exit 0`，索引 `skills` 1 条（`session-…-skill-general-code-review-r1.json`），`export` 输出 2 行、主 session 第一行 |
+| `--path` | 平铺复制、内容逐字节相同、返回复制后的绝对路径；目标不存在时自动建（含嵌套）；目标即源目录时跳过而不报错 |
+| `--taskId` / `--tasks-dir` | 无索引目录下用 `--tasks-dir` 能还原同一组路径；缺省根缺失时 `exit 1` 报 `任务目录里没有 run.json` |
+| 不读配置 | 空 `HOME` + 配置文件缺席时 `export` 仍 `exit 0`、stdout 正确、stderr 空 |
+| `--config` | `export --config <path>` → `exit 1` + `unknown flag "--config"`（与「不加载配置」一致） |
+
+顺带确认的两条边界：**cwd 有索引时 `--tasks-dir` 不生效**（优先级见上方决策 2）；**PowerShell 的 `review-pi.ps1` shim 会把 CLI 的 stderr 包成 `NativeCommandError`**（内容与退出码都正确，属 PowerShell 行为，已在《使用手册》排障表里注明）。

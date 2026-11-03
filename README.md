@@ -46,6 +46,17 @@ review-pi smoke         # 双探针自检：网关健康 + 模型可达；通过
 
 ## 使用
 
+### 0. 子命令与参数入口
+
+| 子命令 | 用途 | 读配置 / 需要 key |
+|---|---|---|
+| `review` | 跑一次检视（唯一产出检视结论的路径） | 是 / 是 |
+| `smoke` | 网关双探针自检 | 是 / 是 |
+| `config init\|show` | 写缺省模板 / 脱敏查看生效值 | 是 / 否 |
+| `export` | 打印或复制本次 run 的 session 路径 | 否 / 否 |
+
+不带子命令执行 `review-pi` 会把完整用法打到 stderr 并 `exit 1`（没有 `--help` / `--version`，这是设计行为）。逐旗标语义、退出码与「已移除旗标」清单见《[运行手册 §1](docs/运行手册-单次检视.md#1-命令)》。
+
 ### 1. 配置
 
 唯一配置来源是用户级 JSONC（Linux `$HOME` / Windows `%USERPROFILE%`），`--config <path>` 可换文件；环境变量与 `.env.local` 不再读取。
@@ -104,7 +115,7 @@ review-pi review --repo /repo --mr-diff /d/change.diff --taskId change-001 --tas
 - `--mr-diff` 与 `--mr-json` **恰好给一个**；`caseId` = 文件名去最后一个扩展名（`MR-1234.json` → `MR-1234`），与 `taskId` 是两个维度。
 - PowerShell 用 `>` / `Out-File` 写 JSON 会得到 UTF-16，解析失败；用 `curl.exe -o` 或 `Set-Content -Encoding utf8`。
 
-### 旗标
+### 2.1 `review` 旗标
 
 | 旗标 | 说明 |
 |---|---|
@@ -118,7 +129,7 @@ review-pi review --repo /repo --mr-diff /d/change.diff --taskId change-001 --tas
 | `--config <path>` | 替代配置文件（相对 cwd） |
 | `--rule-skill-zip <zip[,zip…]>` / `--rule-skill <dir[,dir…]>` | 规则 Skill 包 / 已解压目录，一次可传多个（逗号列表或重复旗标；一个包 = 一个 skill） |
 | `--strict-rule-skill` | 装载失败即退出（缺省降级 + 审计留痕） |
-| `--progress` / `--no-progress` | 非 TTY 下把阶段摘要逐行打到 stderr |
+| `--progress` / `--no-progress` | 强制开 / 关进度事件行（缺省按 stderr 是否 TTY 自动；收尾总结行恒打印） |
 
 ### 3. 取回 session 路径（`export`）
 
@@ -130,10 +141,11 @@ review-pi export --path ./sessions    # 复制到该目录（平铺、同名覆�
 review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任务最新一次 run
 ```
 
-- `export` **不加载配置、不需要 apiKey、不调模型**——纯文件系统命令，CI / 换机器都能用。
-- `--taskId` 的 tasks 根判定：cwd 索引里的 `tasksDir` → `--tasks-dir <dir>` → 缺省 `~/.PiAgent/tasks`。
+- `export` **不加载配置、不需要 apiKey、不调模型**——纯文件系统命令，CI / 换机器都能用（因此也不认 `--config`）。
+- `--taskId` 的 tasks 根判定：cwd 索引里的 `tasksDir` → `--tasks-dir <dir>` → 缺省 `~/.PiAgent/tasks`；同目录有索引时以索引里的绝对根为准（想让 `--tasks-dir` 生效，请在无索引的目录执行）。
 - 只认**最新一次 run**（`run.json` 每次覆盖）。
-- 索引是隐藏文件，**别提交进仓库**；`export` 找不到索引 / 任务 / 文件时 `exit 1` 并给人话原因。
+- 索引是隐藏文件，**别提交进仓库**；`export` 找不到索引 / 任务 / 文件时 `exit 1` 并给人话原因（不返回幽灵路径）。
+- `--path` 目标目录不存在则创建（相对 cwd），**平铺、保留原文件名、同名覆盖**；输出改为复制后的绝对路径。
 
 ### 4. 产物
 
