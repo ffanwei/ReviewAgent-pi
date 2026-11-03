@@ -29,8 +29,8 @@
  * 进程调用形态：review-pi review --repo <path>
  *   (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id>
  *   [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>]
- *   [--rule-skill-zip <path>]... [--rule-skill <dir>]...
- *   [--rule-skill-name <name>] [--strict-rule-skill]
+ *   [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]...
+ *   [--strict-rule-skill]
  *   [--progress | --no-progress]
  *   review-pi smoke [--model <id>] [--config <path>]
  *   review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
@@ -125,7 +125,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       rep: 1,
       ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
       ...(args.ruleSkillDirs !== undefined ? { ruleSkillDirs: args.ruleSkillDirs } : {}),
-      ...(args.ruleSkillName !== undefined ? { ruleSkillName: args.ruleSkillName } : {}),
       ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
       ...(progress !== undefined ? { onProgress: progress.onEvent } : {}),
     });

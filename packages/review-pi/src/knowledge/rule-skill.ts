@@ -107,8 +107,6 @@ export interface LoadRuleSkillOptions {
    * 顺序 = CLI 传入顺序；**排在全部 zip 之后**（两种形态共存时的装载序）。
    */
   readonly ruleSkillDirs?: readonly string[];
-  /** 指定装载的 skill 名（--rule-skill-name；包内多 skill 时消歧，逐包生效） */
-  readonly skillName?: string;
   /** 严格模式（--strict-rule-skill）：失败抛错而非降级 */
   readonly strict?: boolean;
   /** 测试注入缝：子进程执行 */
@@ -299,7 +297,7 @@ async function loadFromZip(
 
   const env = new NodeExecutionEnv({ cwd: cacheDir });
   const loaded = await loadSkillsFn(env, cacheDir, BACKGROUND_CONTEXT);
-  const selected = selectSkill(loaded.skills, options.skillName);
+  const selected = singleSkill(loaded.skills);
   if ("reason" in selected) {
     return { reason: selected.reason };
   }
@@ -381,7 +379,7 @@ async function loadFromDirectory(
 
   const env = new NodeExecutionEnv({ cwd: cacheDir });
   const loaded = await loadSkillsFn(env, cacheDir, BACKGROUND_CONTEXT);
-  const selected = selectSkill(loaded.skills, options.skillName);
+  const selected = singleSkill(loaded.skills);
   if ("reason" in selected) {
     return { reason: selected.reason };
   }
@@ -432,24 +430,22 @@ async function hashDirectory(root: string): Promise<string> {
   return hash.digest("hex");
 }
 
-/** 装载后取单一 skill：指定名精确匹配，否则要求恰好一个（0 / >1 均降级） */function selectSkill(
+/**
+ * 装载后取**唯一** skill（ADR-0034：一个规则包就是一个 skill）。
+ * 0 个 / 多个都降级——多个不再是「需要消歧」，而是包形态不合规：拆成多个包。
+ */
+function singleSkill(
   skills: readonly Skill[],
-  skillName: string | undefined,
 ): { readonly skill: Skill } | { readonly reason: string } {
-  if (skillName !== undefined) {
-    const match = skills.find((skill) => skill.name === skillName);
-    if (match === undefined) {
-      return { reason: `rule skill "${skillName}" not found in archive` };
-    }
-    return { skill: match };
-  }
-  if (skills.length === 0) {
-    return { reason: "archive contains no loadable rule skill (SKILL.md with name + description)" };
-  }
   if (skills.length === 1) {
     return { skill: skills[0] as Skill };
   }
-  return { reason: "archive contains multiple rule skills; pass --rule-skill-name to choose one" };
+  if (skills.length === 0) {
+    return { reason: "rule-skill package contains no loadable rule skill (SKILL.md with name + description)" };
+  }
+  return {
+    reason: `rule-skill package contains ${skills.length} rule skills (one package = one skill; split them into separate packages)`,
+  };
 }
 
 // ---- 解压（宿主 shell：win32 tar / posix unzip，各自带回退） ----

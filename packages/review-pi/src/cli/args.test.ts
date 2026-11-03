@@ -282,7 +282,7 @@ test("--env 已移除：任何子命令都给专用迁移提示（不是裸 unkn
   expect(parseCliArgs(["smoke", "--env=x.env"])).toEqual({ ok: false, message });
 });
 
-test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule-skill（布尔无值）", () => {
+test("规则 Skill 旗标：--rule-skill-zip / --strict-rule-skill（布尔无值）", () => {
   const parsed = parseCliArgs([
     "review",
     "--repo",
@@ -293,8 +293,6 @@ test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule
     "t-1",
     "--rule-skill-zip",
     "packs/rules.zip",
-    "--rule-skill-name",
-    "sample-rule",
     "--strict-rule-skill",
   ]);
   expect(parsed).toEqual({
@@ -307,7 +305,6 @@ test("规则 Skill 旗标：--rule-skill-zip / --rule-skill-name / --strict-rule
       issue: "",
       taskId: "t-1",
       ruleSkillZips: ["packs/rules.zip"],
-      ruleSkillName: "sample-rule",
       strictRuleSkill: true,
     },
   });
@@ -359,6 +356,164 @@ test("--rule-skill 可重复（目录形态）；与 --rule-skill-zip 共存且�
     "dirs/second",
     "dirs/first",
   ]);
+});
+
+test("--rule-skill-zip 逗号列表：引号内的 `a.zip, b.zip` 展开为多个包，顺序 = 列表顺序（ADR-0034）", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr-diff",
+    "m.diff",
+    "--taskId",
+    "t-1",
+    "--rule-skill-zip",
+    "r1.zip, r2.zip,r3.zip",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillZips).toEqual([
+    "r1.zip",
+    "r2.zip",
+    "r3.zip",
+  ]);
+});
+
+test("--rule-skill-zip 逗号列表：shell 按空白切开的 `r1.zip, r2.zip` 归并成一个列表（ADR-0034）", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr-diff",
+    "m.diff",
+    "--taskId",
+    "t-1",
+    "--rule-skill-zip",
+    "r1.zip,",
+    "r2.zip,",
+    "r3.zip",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillZips).toEqual([
+    "r1.zip",
+    "r2.zip",
+    "r3.zip",
+  ]);
+});
+
+test("--rule-skill-zip 逗号列表：PowerShell 吞掉逗号的形态（`r1.zip r2.zip r3.zip`）同样成立（ADR-0034）", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr-diff",
+    "m.diff",
+    "--taskId",
+    "t-1",
+    "--rule-skill-zip",
+    "r1.zip",
+    "r2.zip",
+    "r3.zip",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillZips).toEqual([
+    "r1.zip",
+    "r2.zip",
+    "r3.zip",
+  ]);
+});
+
+test("--rule-skill 目录逗号列表：`r1/, r2/, r3/` 与重复旗标等价；与 zip 各自保持顺序", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr-diff",
+    "m.diff",
+    "--taskId",
+    "t-1",
+    "--rule-skill",
+    "r1/,",
+    "r2/,",
+    "r3/",
+    "--rule-skill-zip",
+    "a.zip,b.zip",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillDirs).toEqual([
+    "r1/",
+    "r2/",
+    "r3/",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillZips).toEqual([
+    "a.zip",
+    "b.zip",
+  ]);
+});
+
+test("逗号列表与重复旗标混用：按出现顺序展开，空项丢弃（`a.zip,,b.zip` 仍两项）", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr-diff",
+    "m.diff",
+    "--taskId",
+    "t-1",
+    "--rule-skill-zip",
+    "a.zip,,b.zip",
+    "--rule-skill-zip",
+    "c.zip",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillZips).toEqual([
+    "a.zip",
+    "b.zip",
+    "c.zip",
+  ]);
+});
+
+test("逗号列表整值无有效项 → 用法错误（不静默退化成 0 个包）", () => {
+  expect(
+    parseCliArgs([
+      "review",
+      "--repo",
+      "r",
+      "--mr-diff",
+      "m.diff",
+      "--taskId",
+      "t-1",
+      "--rule-skill-zip",
+      " , ",
+    ]),
+  ).toEqual({
+    ok: false,
+    message: 'invalid --rule-skill-zip " , ": must be a non-empty path list',
+  });
+});
+
+test("--rule-skill-name 已移除（ADR-0034）：给专用迁移文案，不是裸 unknown flag", () => {
+  const message =
+    "--rule-skill-name 已移除（ADR-0034）：一个规则包就是一个 skill；多个包用 --rule-skill-zip a.zip,b.zip（或重复旗标）一次传入";
+  expect(
+    parseCliArgs([
+      "review",
+      "--repo",
+      "r",
+      "--mr-diff",
+      "m.diff",
+      "--taskId",
+      "t-1",
+      "--rule-skill-name",
+      "sample-rule",
+    ]),
+  ).toEqual({ ok: false, message });
+  expect(
+    parseCliArgs([
+      "review",
+      "--repo",
+      "r",
+      "--mr-diff",
+      "m.diff",
+      "--taskId",
+      "t-1",
+      "--rule-skill-name=sample-rule",
+    ]),
+  ).toEqual({ ok: false, message });
 });
 
 test("规则 Skill 旗标缺席即省键（缺省形态不带任何规则键）", () => {
@@ -592,6 +747,8 @@ test("USAGE_TEXT：宣告三个子命令（stderr 错误路径同款文案，单
   expect(USAGE_TEXT).toContain("--taskId <id>");
   expect(USAGE_TEXT).toContain("--tasks-dir <dir>");
   expect(USAGE_TEXT).not.toContain("--out ");
+  // 一个包就是一个 skill（ADR-0034）：包内消歧旗标不再宣告
+  expect(USAGE_TEXT).not.toContain("--rule-skill-name");
 });
 
 test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", () => {

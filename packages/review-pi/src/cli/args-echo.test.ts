@@ -53,11 +53,10 @@ describe("formatReviewArgs", () => {
     expect(lines).toContain(row("--config", "C:\\Users\\me\\.PiAgent\\PiAgent.jsonc（缺省用户级路径）"));
     expect(lines).toContain(row("--rule-skill-zip", "(未传)"));
     expect(lines).toContain(row("--rule-skill", "(未传)"));
-    expect(lines).toContain(row("--rule-skill-name", "(未传)"));
     expect(lines).toContain(row("--strict-rule-skill", "未启用"));
     expect(lines).toContain(row("--progress", "关（缺省自动：stderr 非 TTY）"));
-    // 头部 + 13 个参数行（--taskId / --tasks-dir 取代了原 --out 一行）
-    expect(lines).toHaveLength(14);
+    // 头部 + 12 个参数行（--taskId / --tasks-dir 取代原 --out；--rule-skill-name 随 ADR-0034 移除）
+    expect(lines).toHaveLength(13);
   });
 
   it("JSON 形态：标签换成 --mr-json；--issue 多行转义后不破行", () => {
@@ -72,7 +71,7 @@ describe("formatReviewArgs", () => {
     );
     expect(text).toContain(row("--mr-json", "D:\\in\\files.json"));
     expect(text).toContain(row("--issue", '"第一行\\n第二行"'));
-    expect(text.split("\n")).toHaveLength(14);
+    expect(text.split("\n")).toHaveLength(13);
   });
 
   it("显式参数：不带缺省标注，可重复旗标按传入顺序全列", () => {
@@ -83,7 +82,6 @@ describe("formatReviewArgs", () => {
         configPath: "cfg/team.jsonc",
         ruleSkillZips: ["a.zip", "b.zip"],
         ruleSkillDirs: ["rules"],
-        ruleSkillName: "java",
         strictRuleSkill: true,
         progress: true,
       },
@@ -101,7 +99,6 @@ describe("formatReviewArgs", () => {
     expect(text.split("\n")).toContain(row("--tasks-dir", "C:\\Users\\me\\.PiAgent\\tasks"));
     expect(text).toContain(row("--rule-skill-zip", "a.zip, b.zip"));
     expect(text).toContain(row("--rule-skill", "rules"));
-    expect(text).toContain(row("--rule-skill-name", "java"));
     expect(text).toContain(row("--strict-rule-skill", "已启用"));
     expect(text.split("\n")).toContain(row("--progress", "开"));
   });

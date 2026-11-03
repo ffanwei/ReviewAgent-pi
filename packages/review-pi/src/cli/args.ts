@@ -11,7 +11,8 @@ import { checkTaskId, DEFAULT_TASKS_ROOT_LABEL } from "../shared/tasks-dir.js";
  * pi 线差异（自立决策，不从 DSH 仓导入）：
  * - 检视形态唯一（ADR-0024：A–E 配置矩阵删除，规则 Skill 是唯一形态）；
  * - `--config` 指向用户级 JSONC 配置（ADR-0025）；规则 Skill 由 `--rule-skill-zip` / `--rule-skill` /
- *   `--rule-skill-name` / `--strict-rule-skill` 显式给出（ADR-0027：仓库内约定目录不再自动扫描）；
+ *   `--strict-rule-skill` 显式给出（ADR-0027：仓库内约定目录不再自动扫描；ADR-0034：一次可传多个包，
+ *   一个包就是一个 skill，包内消歧用的 `--rule-skill-name` 已移除）；
  * - 无 --language 旗标（输出语言是 DSH 线后分家决策，pi 线自立 ADR 前不实装）；
  * - smoke 只认 --model（双探针自检不跑检视，参数面自然更窄）。
  *
@@ -33,11 +34,13 @@ const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--config",
   "--rule-skill-zip",
   "--rule-skill",
-  "--rule-skill-name",
 ];
 
 /** review 面可重复旗标（ADR-0014：多规则包按 CLI 顺序叠加；ADR-0018：目录同款） */
 const REPEATABLE_REVIEW_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill"];
+
+/** 逗号列表旗标（ADR-0034：一次可传多个 skill 包，`--rule-skill-zip a.zip,b.zip`） */
+const COMMA_LIST_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill"];
 
 /** smoke 子命令的已知旗标 */
 const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model", "--config"];
@@ -46,7 +49,7 @@ const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model", "--config"];
 const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-env", "--json"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--strict-rule-skill] [--progress | --no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
   （smoke = 网关冒烟自检，P1b 双探针：网关健康 + 模型可达，输出人话诊断）
@@ -70,12 +73,11 @@ review 旗标：
                          相对路径按 cwd 解析
   --model   <id>         评审模型 id（缺省取配置文件 model.default；自由 id 透传）
   --config  <path>       配置文件显式路径（相对路径按 cwd 解析；缺省用户级路径）
-  --rule-skill-zip  <path>  规则 Skill zip 显式路径（可重复，顺序 = 执行顺序；
-                            不自动扫描仓库内目录——不传就不装载规则包，ADR-0027）
-  --rule-skill      <dir>   规则 Skill **已解压目录**（可重复；排在全部
-                            --rule-skill-zip 之后；目录先审计再按内容哈希复制进 run
-                            缓存，符号链接/越界一律拒绝）
-  --rule-skill-name <name>  指定装载的规则 Skill 名（包内多 skill 消歧，逐包生效）
+  --rule-skill-zip  <path[,path…]>  规则 Skill zip 显式路径，一次可传多个（逗号分隔，或重复旗标；
+                                    顺序 = 执行顺序）。不自动扫描仓库内目录——不传就不装载规则包，ADR-0027
+  --rule-skill      <dir[,dir…]>    规则 Skill **已解压目录**，一次可传多个；排在全部
+                                    --rule-skill-zip 之后；目录先审计再按内容哈希复制进 run 缓存，
+                                    符号链接/越界一律拒绝。一个包就是一个 skill（ADR-0034）
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
   --progress                显示运行进度（阶段 / 模型请求 / 工具调用 / skill 会话）到 stderr；
                             stderr 是 TTY 时缺省开，重定向收日志时缺省关
@@ -116,12 +118,10 @@ export interface ReviewCliArgs {
   readonly model?: string;
   /** 配置文件显式路径（`--config`）；缺席 = 用户级缺省路径 */
   readonly configPath?: string;
-  /** 规则 Skill zip 显式路径列表（--rule-skill-zip 可重复；顺序 = 执行顺序；缺席省键） */
+  /** 规则 Skill zip 显式路径列表（`--rule-skill-zip`；逗号列表或重复旗标，顺序 = 执行顺序；缺席省键） */
   readonly ruleSkillZips?: readonly string[];
-  /** 规则 Skill 已解压目录列表（--rule-skill 可重复；排在全部 zip 之后；缺席省键） */
+  /** 规则 Skill 已解压目录列表（`--rule-skill`；排在全部 zip 之后；缺席省键） */
   readonly ruleSkillDirs?: readonly string[];
-  /** 规则 Skill 指定名（--rule-skill-name；缺席省键） */
-  readonly ruleSkillName?: string;
   /** 规则 Skill 严格模式（--strict-rule-skill；缺席省键） */
   readonly strictRuleSkill?: boolean;
   /**
@@ -197,6 +197,38 @@ function parseFlags(
   return { ok: true, values, repeated };
 }
 
+/**
+ * 逗号列表旗标的**多 token 归并**（ADR-0034）：`--rule-skill-zip r1.zip, r2.zip, r3.zip`
+ * 在 shell 里会被按空白切成多个 argv——bash 留下尾逗号（`r1.zip,`），
+ * PowerShell 连逗号都吃掉（`r1.zip`）。所以列表旗标的值位置**连续的非旗标 token
+ * 全部计入列表**，用 `,` 拼成一个值，再由 `parseRuleSkillList` 拆开。
+ *
+ * 本命令没有位置参数，所有值都必须挂在旗标名下，所以贪心吃非旗标 token 不产生歧义。
+ * 缺值（下一个 token 是旗标或没有）不在这里报错——留给 parseFlags 的既有文案。
+ */
+function joinCommaListTokens(tokens: readonly string[]): readonly string[] {
+  const out: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] as string;
+    out.push(token);
+    if (!COMMA_LIST_FLAGS.includes(token)) {
+      continue;
+    }
+    const items: string[] = [];
+    let cursor = index + 1;
+    for (let next = tokens[cursor]; next !== undefined && !next.startsWith("--"); next = tokens[cursor]) {
+      items.push(next);
+      cursor += 1;
+    }
+    if (items.length === 0) {
+      continue;
+    }
+    out.push(items.join(","));
+    index = cursor - 1;
+  }
+  return out;
+}
+
 /** --model 校验（两子命令同口径；缺席 = 取配置 model.default） */
 function parseModelFlag(
   values: Map<string, string>,
@@ -265,6 +297,40 @@ function legacyOutFlagError(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
+/** `--rule-skill-name` 已移除（ADR-0034：一个包就是一个 skill）：给专用迁移提示 */
+function legacyRuleSkillNameFlagError(argv: readonly string[]): string | undefined {
+  for (const token of argv) {
+    if (token === "--rule-skill-name" || token.startsWith("--rule-skill-name=")) {
+      return "--rule-skill-name 已移除（ADR-0034）：一个规则包就是一个 skill；多个包用 --rule-skill-zip a.zip,b.zip（或重复旗标）一次传入";
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 规则包列表旗标的值解析（ADR-0034）：逗号列表与重复旗标等价，逐项 trim、
+ * 空项丢弃（`a.zip,,b.zip` 仍取两项），**整值无有效项**才是用法错误。
+ */
+function parseRuleSkillList(
+  flag: string,
+  raw: readonly string[] | undefined,
+): { readonly ok: true; readonly items?: readonly string[] } | { readonly ok: false; readonly message: string } {
+  if (raw === undefined) {
+    return { ok: true };
+  }
+  const items = raw
+    .flatMap((value) => value.split(","))
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  if (items.length === 0) {
+    return {
+      ok: false,
+      message: `invalid ${flag} ${JSON.stringify(raw.join(","))}: must be a non-empty path list`,
+    };
+  }
+  return { ok: true, items };
+}
+
 export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   const [command, ...rest] = argv;
   const envError = envFlagError(rest);
@@ -279,6 +345,10 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     const outError = legacyOutFlagError(rest);
     if (outError !== undefined) {
       return { ok: false, message: outError };
+    }
+    const ruleSkillNameError = legacyRuleSkillNameFlagError(rest);
+    if (ruleSkillNameError !== undefined) {
+      return { ok: false, message: ruleSkillNameError };
     }
   }
   if (command === "config") {
@@ -298,8 +368,9 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     return { ok: false, message: booleanFlags.message };
   }
   const flagTokens = booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.tokens : rest;
+  const listTokens = command === "review" ? joinCommaListTokens(flagTokens) : flagTokens;
   const flags = parseFlags(
-    flagTokens,
+    listTokens,
     command === "review" ? KNOWN_REVIEW_FLAGS : KNOWN_SMOKE_FLAGS,
     command === "review" ? REPEATABLE_REVIEW_FLAGS : [],
   );
@@ -483,9 +554,14 @@ function parseReviewArgs(
       message: `invalid --tasks-dir ${JSON.stringify(tasksDirRaw)}: must be a non-empty directory path`,
     };
   }
-  const ruleSkillZips = repeated.get("--rule-skill-zip");
-  const ruleSkillDirs = repeated.get("--rule-skill");
-  const ruleSkillName = values.get("--rule-skill-name");
+  const ruleSkillZips = parseRuleSkillList("--rule-skill-zip", repeated.get("--rule-skill-zip"));
+  if (!ruleSkillZips.ok) {
+    return ruleSkillZips;
+  }
+  const ruleSkillDirs = parseRuleSkillList("--rule-skill", repeated.get("--rule-skill"));
+  if (!ruleSkillDirs.ok) {
+    return ruleSkillDirs;
+  }
   const config = parseConfigFlag(values);
   if (!config.ok) {
     return config;
@@ -504,9 +580,8 @@ function parseReviewArgs(
       ...(tasksDirRaw !== undefined ? { tasksDir: tasksDirRaw } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(config.configPath !== undefined ? { configPath: config.configPath } : {}),
-      ...(ruleSkillZips !== undefined ? { ruleSkillZips } : {}),
-      ...(ruleSkillDirs !== undefined ? { ruleSkillDirs } : {}),
-      ...(ruleSkillName !== undefined ? { ruleSkillName } : {}),
+      ...(ruleSkillZips.items !== undefined ? { ruleSkillZips: ruleSkillZips.items } : {}),
+      ...(ruleSkillDirs.items !== undefined ? { ruleSkillDirs: ruleSkillDirs.items } : {}),
       ...(strict ? { strictRuleSkill: true } : {}),
       ...(progress !== undefined ? { progress } : {}),
     },

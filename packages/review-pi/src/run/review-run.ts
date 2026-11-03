@@ -73,8 +73,6 @@ export interface ReviewRunInput {
   readonly ruleSkillZips?: readonly string[];
   /** 规则 Skill 显式**已解压目录**列表（--rule-skill 可重复；排在全部 zip 之后） */
   readonly ruleSkillDirs?: readonly string[];
-  /** 规则 Skill 指定名（--rule-skill-name；包内多 skill 消歧，逐包生效） */
-  readonly ruleSkillName?: string;
   /** 规则 Skill 严格模式（--strict-rule-skill）：装载失败抛错而非降级 */
   readonly strictRuleSkill?: boolean;
   /** 规则 Skill 装载器注入缝（测试注入假实现；缺省真装载器） */
@@ -142,7 +140,6 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     cacheRoot: path.join(input.runsRoot, ".cache", "rule-skills"),
     ...(explicitZips !== undefined ? { explicitZipPaths: explicitZips } : {}),
     ...(input.ruleSkillDirs !== undefined ? { ruleSkillDirs: input.ruleSkillDirs } : {}),
-    ...(input.ruleSkillName !== undefined ? { skillName: input.ruleSkillName } : {}),
     ...(input.strictRuleSkill !== undefined ? { strict: input.strictRuleSkill } : {}),
     // ADR-0025：归档上限与解压超时来自配置快照（缺省 = 历史常量）
     limits: {

@@ -331,22 +331,19 @@ test("多 zip 单包失败只降级该包（其余照常装载）", async () => 
   expect(skills[1]?.name).toBe("alpha");
 });
 
-test("--rule-skill-name 选中：多 zip 时命中指定名，落非降级", async () => {
+test("一个包就是一个 skill（ADR-0034）：包内多个 skill 一律降级，不再有包内消歧", async () => {
   const repo = tempRoot();
   const dir = path.join(repo, FIXTURE_ZIP_DIR);
   writeZip(dir, "a.zip", [{ name: "alpha/SKILL.md", data: Buffer.from(SKILL_MD) }]);
-  writeZip(dir, "b.zip", [{ name: "beta/SKILL.md", data: Buffer.from(SKILL_MD) }]);
   const { spawnFn } = recordingSpawn();
 
   const skill = await loadOne({
     repoPath: repo,
     cacheRoot: path.join(repo, "cache"),
-    skillName: "beta",
     spawn: spawnFn,
-    loadSkillsFn: fakeLoader([sampleSkill({ name: "beta" })]),
+    loadSkillsFn: fakeLoader([sampleSkill({ name: "alpha" }), sampleSkill({ name: "beta" })]),
   });
-  expect(skill.degradedReason).toBeUndefined();
-  expect(skill.name).toBe("beta");
+  expect(skill.degradedReason).toContain("one package = one skill");
 });
 
 test("降级：包内无 SKILL.md（装载器交回空 skill 列表）", async () => {

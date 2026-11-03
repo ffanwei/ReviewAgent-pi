@@ -11,7 +11,8 @@ import type { ReviewCliArgs } from "./args.js";
  * 纪律：
  * - 只回显**参数面**，不含 apiKey / baseUrl 等配置秘密；
  * - `--issue` 用 `JSON.stringify` 转义，保证多行文本不会把一条参数拆成多行；
- * - 可重复旗标（`--rule-skill-zip` / `--rule-skill`）按传入顺序全列。
+ * - 可重复旗标（`--rule-skill-zip` / `--rule-skill`）按传入顺序全列；逗号列表
+ *   （`a.zip,b.zip`）已在解析期展开成列表，回显与重复旗标同形（ADR-0034）。
  */
 
 /** 调用方解析好的路径与生效值（main.ts 持有，本模块零文件系统） */
@@ -73,7 +74,6 @@ export function formatReviewArgs(args: ReviewCliArgs, echo: ReviewArgsEcho): str
     row("--config", `${echo.configPath}${configSuffix}`),
     row("--rule-skill-zip", listOf(args.ruleSkillZips)),
     row("--rule-skill", listOf(args.ruleSkillDirs)),
-    row("--rule-skill-name", args.ruleSkillName ?? "(未传)"),
     row("--strict-rule-skill", args.strictRuleSkill === true ? "已启用" : "未启用"),
     row("--progress", `${echo.progressOn ? "开" : "关"}${progressSuffix}`),
   ].join("\n");

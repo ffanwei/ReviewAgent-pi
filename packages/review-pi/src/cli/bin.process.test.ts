@@ -1343,8 +1343,8 @@ test("smoke 子命令：网关不可达 → exit 1 + 人话诊断（健康探针
 
 // ---- 规则 Skill 目录形态（ADR-0018：--rule-skill） ----
 
-/** 规则 Skill 目录形态零候选脚本：4 相位 OK + Phase-5 空候选 + skill 会话空候选 + Phase-6 空裁决 */
-function ruleSkillDirCorpus(): FakeReply[] {
+/** 规则 Skill 目录形态零候选脚本：4 相位 OK + Phase-5 空候选 + N 个 skill 会话空候选 + Phase-6 空裁决 */
+function ruleSkillDirCorpus(skillSessions = 1): FakeReply[] {
   const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
   return [
     { text: "ok", usage: ZERO },
@@ -1352,7 +1352,10 @@ function ruleSkillDirCorpus(): FakeReply[] {
     { text: "ok", usage: ZERO },
     { text: "ok", usage: ZERO },
     { text: JSON.stringify({ candidates: [] }), usage: ZERO },
-    { text: JSON.stringify({ candidates: [] }), usage: ZERO },
+    ...Array.from({ length: skillSessions }, () => ({
+      text: JSON.stringify({ candidates: [] }),
+      usage: ZERO,
+    })),
     { text: JSON.stringify({ verdicts: [], complete: true }), usage: ZERO },
   ];
 }
@@ -1417,6 +1420,56 @@ test(
       expect(existsSync(path.join(cacheDir, "SKILL.md"))).toBe(true);
       expect(existsSync(path.join(cacheDir, "rules"))).toBe(true);
       expect(existsSync(path.join(cacheDir, ".rule-skill-ready"))).toBe(true);
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+// ---- 规则包多值输入（ADR-0034：逗号列表） ----
+
+test(
+  "--rule-skill 逗号列表：一次传两个目录就是两个规则包，各自开会话（ADR-0034）",
+  async () => {
+    const stub = await startLoopbackStub(ruleSkillDirCorpus(2));
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+      const skillDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--rule-skill",
+          `${skillDir},${skillDir}`,
+          "--strict-rule-skill",
+        ],
+        stubEnv(stub.baseUrl),
+      );
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        ruleSkill: { source: string; kind?: string; digest: string; name: string }[];
+        skillPassLog?: { skill: string }[];
+      };
+      expect(audit.ruleSkill).toHaveLength(2);
+      expect(audit.ruleSkill.map((entry) => entry.kind)).toEqual(["dir", "dir"]);
+      expect(audit.skillPassLog).toHaveLength(2);
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
