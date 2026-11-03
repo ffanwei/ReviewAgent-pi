@@ -1,5 +1,7 @@
 # 0015. 检视转录的 `view`/`info` 对齐 OpenCode：补时间戳、合成消息 id、删 `perMessageTimestamps`
 
+> **路径注记（[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)，2026-11-03）**：文中 `packages/{ai,agent,chord,telemetry}/…` 的 `file:line` 指 vendoring 期仓内源码树（已删除）；同名源码现由 npm 包 `@earendil-works/*`（锁 `0.85.1`）提供，npm 只发 `dist`，核对请回上游 tag `v0.85.1`。`packages/review-llm` 亦已删除。约定见 [README](README.md)。
+
 **状态**：已接受（2026-10-27，用户经 grill 逐项决策 Q1–Q10）
 **关联**：ADR-0013（被本 ADR **部分修订**：`view` 的 `id`/`time` 由「恒 `null`」改为「有源就填」；`info.time` 改 epoch 毫秒并删 `perMessageTimestamps`）、ADR-0009（会话投影属内核变量面）、CONTEXT.md（「检视转录」）、`.scratch/transcript-reviews-export/spec.md`（其映射表与 Out of Scope 段由本 ADR 修订）
 

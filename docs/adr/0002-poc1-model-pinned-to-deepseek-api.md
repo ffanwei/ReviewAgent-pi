@@ -1,5 +1,7 @@
 # POC1 模型调用锁定 DeepSeek 官方 API，主力 deepseek-v4-flash
 
+> **后续修订（[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)，2026-11-03）**：本文的「provider 画像表 / 自由 id 准入」落在已删除的 `review-llm`，且 pi 线从未接线——详见 [ADR-0008](0008-reviewer-model-swappable-with-capability-scoped-metrics.md) 顶部的后续修订（当前恒 `deepseek` provider、恒发 `thinking{enabled}` + `reasoning_effort:"high"`）。「主力锁定 deepseek-v4-flash」的实验语义仍有效。
+
 > **部分取代（2026-09-16，#44）**：本决策中「代码层模型准入白名单」的部分由 [ADR-0008](0008-reviewer-model-swappable-with-capability-scoped-metrics.md) 取代——被测模型可换（OpenAI-compatible 契约 + 参数画像表）+ 指标按 provider 能力分口径。保留为有效部分的：缓存计量的选择理由（per-request cached/uncached 计量与 1/30 价格差）、实验内锁定同一模型的可比性主张、账号级缓存特性。
 
 核心指标 Cache Hit Rate 需要 per-request 的 cached/uncached 计量，DeepSeek 官方 API 原生在 usage 报告 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`；且缓存命中价格约为未命中的 1/30，缓存优先命题的收益极大。`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 退役，主力锁定 `deepseek-v4-flash`，`deepseek-v4-pro` 作为高险升级与消融项。企业落地的 provider 差异由 OpenAI 兼容 adapter 层吸收，不反向影响本决策。

@@ -1,0 +1,41 @@
+# ADR 阅读约定
+
+本目录是本仓（pi 内核线）的架构决策记录，编号连续：**0001–0035 为 pi 线序列，新决策从 0036 起**。
+
+## 记录纪律
+
+- **ADR 是当时决策的不可变记录**。决策被推翻或收窄时，不改写正文；在该 ADR 顶部加一条
+  **后续修订** / **状态注记** 链接到新 ADR，并在新 ADR 里说明取代关系。
+- **跨仓 ADR 限定语**：DSH 内核线兄弟仓 [`MustacheXb/ReviewAgent`](https://github.com/MustacheXb/ReviewAgent)
+  的 ADR 独立编号，引用时必须写「DSH 线 ADR-XXXX」；裸写「ADR-XXXX」一律指本仓 ADR。
+  双 0009 尤其如此（本仓 0009 = pi 内核从 0 重写；DSH 线 0009 = 大 MR 切分）。
+
+## 主要取代链（据各 ADR 顶部注记整理）
+
+| 旧 | 新 | 范围 |
+|---|---|---|
+| ADR-0002 | ADR-0008 | 「代码层模型准入白名单」部分（画像表 / 自由 id） |
+| ADR-0005 / ADR-0006 | ADR-0009 | DSH 内核形态整体退役，Review Runtime 改为基于 pi 从 0 重写 |
+| ADR-0011 | ADR-0024 | A–E 配置矩阵、「生产入口 = config E」口径 |
+| ADR-0012 | ADR-0014 | 规则 Skill 的注入时机（候选阶段 → Phase 5 之后独立会话） |
+| ADR-0019 | ADR-0026 | 呈现引擎的环境变量路径解析 |
+| ADR-0024 | ADR-0027 | 产物路径里的实验段（`review-pi-cli` / `runs/vul4j`） |
+| ADR-0008 / ADR-0009 / ADR-0028 | ADR-0035 | 评测仪器归属、内核 vendoring、六包发行形态 |
+
+## 历史路径口径（ADR-0035，2026-11-03）
+
+ADR-0035 把内核四包从「仓内源码 vendoring」改回 **npm 上游依赖**
+（`@earendil-works/{pi-ai,pi-agent-core,chord,pi-telemetry}`，四包同版本成套、精确锁 `0.85.1`），
+并删除 `packages/{ai,agent,chord,telemetry}` 与 `packages/review-llm`，发行面收为单包 `review-pi`。
+
+因此 **0035 之前的 ADR** 里出现的下列写法都是**当时的形态**，今天已不存在：
+
+| 历史写法 | 现在 |
+|---|---|
+| `packages/{ai,agent,chord,telemetry}/src/...`（`file:line` 引用） | npm 包 `@earendil-works/*`；npm 只发 `dist`，核对行号请回上游 tag `v0.85.1` |
+| `@review-agent-pi/*` 包名 | 上游名 `@earendil-works/*`（不再发布，不再用 npm alias） |
+| `pnpm build:pi` / 根 `tsconfig.base.json` | 已删除；依赖由 `pnpm install` 落位 |
+| `packages/review-llm`（`profileOf` / resolver / 退役清单） | 已删除；pi 线从未接线，当前恒 `deepseek` provider |
+
+这些记录按历史事实读，不改写。**现状**以 [`CONTEXT.md`](../../CONTEXT.md)、
+[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md) 与 `README.md` 为准。

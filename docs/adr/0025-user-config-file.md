@@ -1,5 +1,7 @@
 # 0025. 运行配置迁到用户级 JSONC（`~/.PiAgent/PiAgent.jsonc`），`--env` 退出，测量常量面重新定义
 
+> **路径注记（[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)，2026-11-03）**：文中 `packages/{ai,agent,chord,telemetry}/…` 的 `file:line` 指 vendoring 期仓内源码树（已删除）；同名源码现由 npm 包 `@earendil-works/*`（锁 `0.85.1`）提供，npm 只发 `dist`，核对请回上游 tag `v0.85.1`。`packages/review-llm` 亦已删除。约定见 [README](README.md)。
+
 **状态**：已接受（2026-10-31，用户经 grill 逐项决策；实现分 6 个提交落地）
 **关联**：ADR-0009（pi 内核从 0 重写）、ADR-0010（语言钉英文 + 核外翻译）、ADR-0016（进度投影与冻结键集）、ADR-0021（呈现模型跟随检视模型）、ADR-0024（删除配置矩阵；本 ADR 在其后重建**唯一一层**运行配置）
 **废止**：ADR-0019（`--env <file>` 凭据文件旗标）、ADR-0024「无 `--config` 旗标」一条

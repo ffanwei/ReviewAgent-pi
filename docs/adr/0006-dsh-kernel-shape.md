@@ -1,5 +1,7 @@
 # DSH 内核形态：标准 agent-loop + 策略驱动器，显式最小树
 
+> **路径注记（[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)，2026-11-03）**：文中 `packages/{ai,agent,chord,telemetry}/…` 的 `file:line` 指 vendoring 期仓内源码树（已删除）；同名源码现由 npm 包 `@earendil-works/*`（锁 `0.85.1`）提供，npm 只发 `dist`，核对请回上游 tag `v0.85.1`。`packages/review-llm` 亦已删除。约定见 [README](README.md)。
+
 > **状态注记（2026-09-18，ADR-0009）**：DSH 线已按本 ADR 完成使命并归档（五插件 + 策略驱动器 + kernel-host 形态全部落地并通过双门验收）。DSH 内核（`packages/review-dsh`）已移除；本 ADR 的内核形态决策对现行代码不再有约束力——pi 线的等价机制决策（agent-loop 钩子面、字节纪律落点、审计导出）随《Pi 内核从零实现方案》P1 起新票记录。文内各实现注记保留为 DSH 侧数据与审计格式的解读依据。
 
 Phase 1 的内核组装方式（Round 3 定）：六阶段骨架**不**通过 `ctx.agents.setFactory` 替换 DSH 的 agent-loop，而是由核内 review-runtime 插件作为**策略驱动器**（`/goal` 模式先例）代码级强制——驱动器独占阶段指令推进权（一阶段 = 一 turn，阶段内工具循环 = turn 内 steps），`MAX_ROUNDS` 由驱动器状态控制，`MAX_TOOL_CALLS` 由 `tools/execute` 包裹层强制，Evidence Gate 在 phase-6 的 turn/end 执行 join + 跨轮去重；verdict `complete=false` 时 followup 开启下一轮。profile 采用 **sdk-minimal 式显式最小树**（不继承 dsh-base）。术语见 `CONTEXT.md`「运行时边界」。

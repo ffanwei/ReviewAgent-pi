@@ -1,5 +1,7 @@
 # 0012. 项目规则以「规则 Skill」承载，作为 config F 在候选阶段注入
 
+> **路径注记（[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)，2026-11-03）**：文中 `packages/{ai,agent,chord,telemetry}/…` 的 `file:line` 指 vendoring 期仓内源码树（已删除）；同名源码现由 npm 包 `@earendil-works/*`（锁 `0.85.1`）提供，npm 只发 `dist`，核对请回上游 tag `v0.85.1`。`packages/review-llm` 亦已删除。约定见 [README](README.md)。
+
 **状态**：已接受（2026-10-26，用户经 grill 逐项决策 Q1–Q16）；**部分被 [ADR-0014](0014-rule-skill-review-pass-after-candidates-phase.md) 取代（2026-10-27）**——决策 3（注入点 = Phase 5 消息尾部）整条、决策 2 中的「单一 zip」限定，以及配套设计文档 §6 验收 2（审计单对象）；其余决策（F 的配置身份、不进 `search_rule`、降级不阻断、伪配置位）继续有效
 **其后的身份变更**：F 的配置身份已被 [ADR-0024](0024-drop-config-matrix-and-config-identity.md) 取代（2026-10-31）——A–E 与 `configId` 一并删除，规则 Skill 成为唯一形态，不再以 config F 命名；本 ADR 其余决策（skill 包来源、Phase 5 注入点、降级不阻断、`--strict-rule-skill`）继续有效
 **其后的输入面收窄**：[ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（2026-10-31）——skill 包来源只剩**显式输入**（`--rule-skill-zip` / `--rule-skill <dir>`），本 ADR「从被检视仓库 `<repo>/.review-rules/` 自动捡包」的缺省口径作废（理由：规则包会指挥 `bash` 工具执行进程，不能让被检视仓库默认触发代码执行）；其余决策（不进 `search_rule`、降级不阻断、`--strict-rule-skill`）继续有效
