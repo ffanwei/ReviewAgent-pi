@@ -2,7 +2,7 @@
 
 一次 MR 检视、一条命令：读仓库快照 + 变更集（+ 可选规则 Skill），在 pi 内核上跑检视循环，产出**英文 findings**（`reviews_en.json`，结构化真源）与**中文按行分组的建议**（`reviews_tips_zh.json`，可选，由呈现引擎翻译），同时留全量审计与转录。
 
-- 内核基座：pi 代码仓 vendor fork（`packages/{ai,agent,chord,telemetry}`，锚定 v0.85.1+11d）；Review Runtime 在 `packages/review-pi` 从 0 重写。
+- 内核基座：pi 代码仓的 npm 上游包（`@earendil-works/{pi-ai,pi-agent-core,chord,pi-telemetry}`，精确锁定 `0.85.1`，ADR-0035）；Review Runtime 在 `packages/review-pi` 从 0 重写。
 - 上下文策略：最小充分上下文（Minimal Sufficient Context）+ 缓存稳定循环（Cache-Stable Review Loop）——工具按需拉取，不整仓灌入。
 - 检视语言：英文是测量真源，中文只做核外投影，不改变请求面。
 
@@ -27,7 +27,7 @@
 
 ## 安装
 
-产品以六个包发行：内核四包 `@review-agent-pi/pi-{telemetry,chord,ai,agent-core}` + `review-llm` + `review-pi`（提供 `review-pi` 命令）。
+产品以单个包发行：`review-pi`（提供 `review-pi` 命令）。内核四包作为普通 npm 依赖随安装自动拉取（`@earendil-works/*`，版本精确锁定），不再由本仓打包或发布。
 
 ```bash
 npm i -g review-pi      # 全局安装
@@ -146,14 +146,12 @@ review-pi review --repo /repo --mr-diff /d/change.diff --taskId change-001 --tas
 
 ```bash
 pnpm install
-pnpm build:pi                                    # 内核四包，拓扑序
-pnpm --filter review-llm build
 pnpm --filter review-pi build                    # dist/cli/main.js 是 bin 的 spawn 目标
 pnpm build:presentation                          # 呈现引擎 → packages/review-pi/presentation/
 ```
 
-- **新鲜度门**：bin 会检查内核与自身 dist 的 mtime，陈旧直接拒跑，不自动重编——改完源码必须重建。
-- 仓内开发 = 安装形态：源码 specifier 就是发布名（`@review-agent-pi/*`），`exports.source` 条件让 vitest / typecheck 读 `src/*.ts`，安装方读 `dist/*.js`。
+- **新鲜度门**：bin 会检查运行时腿——内核四包是 npm 依赖（安装布局，只判在位），本包 dist 判 mtime，陈旧直接拒跑，不自动重编——改完源码必须重建。
+- 仓内开发 = 安装形态：内核四包按上游名 `@earendil-works/*` 从 `node_modules` 解析（dist + d.ts）；`review-pi` 自己的 `exports.source` 条件让 vitest / typecheck 读 `src/*.ts`，安装方读 `dist/*.js`。
 
 测试与打包：
 
@@ -162,20 +160,20 @@ pnpm test                                        # 根包（呈现层）
 pnpm --filter review-pi test                     # 检视链内核 + CLI 进程烟测
 pnpm typecheck                                   # 根包类型检查
 pnpm build:dist                                  # 发行全量构建
-pnpm pack:packages                               # 六个 tarball → .artifacts/tarballs/
-pnpm verify:pack                                 # 离线安装布局冒烟（不联网、不发布）
+pnpm pack:packages                               # 一个 tarball → .artifacts/tarballs/
+pnpm verify:pack                                 # 安装布局冒烟（只借已装依赖，不发网络、不发布）
 ```
 
 仓库布局：
 
 ```
 packages/review-pi/       检视运行时 + CLI（六阶段循环、七工具、规则 Skill、审计、呈现投影装配）
-packages/review-llm/      LLM 接入共享缝（provider 参数画像与常量单源）
-packages/{ai,agent,chord,telemetry}/   pi 内核 vendor 基座
 src/presentation/         核外呈现层（中文翻译投影 / 分组意见映射）
 scripts/                  构建、打包、安装面验证
 docs/                     ADR、设计与使用文档
 ```
+
+内核四包（`ai` / `agent` / `chord` / `telemetry`）不在仓内：它们是 npm 依赖，源码与 dist 都随 `pnpm install` 落在 `node_modules`（ADR-0035）。
 
 ## 文档
 

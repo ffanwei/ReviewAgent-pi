@@ -1,8 +1,10 @@
 # 0028. 发行形态 A：npm 多包（scope 化内核四包 + 两个产品包）
 
-**状态**：已接受（2026-10-31；ADR-0025 / 0026 / 0027 落地后的分发批次）
+**状态**：已接受（2026-10-31；ADR-0025 / 0026 / 0027 落地后的分发批次）→ **发行形态部分已被 ADR-0035 取代**（2026-11-03）
 **关联**：ADR-0009（pi 内核从 0 重写）、ADR-0024（仓收窄为 Review CLI 产品仓）、ADR-0025（用户级 JSONC 配置）、ADR-0026（引擎路径与判档单源）、ADR-0027（产物路径与规则包信任边界）
 **跨仓**：本 ADR 为本仓 pi 线序列 0028；DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
+
+**后续修订**：[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)（2026-11-03）——本 ADR 的**多包发行前提被取代**：内核四包不再 vendored 后以 `@review-agent-pi/*` 重新发布，而是直接作为 npm 上游依赖 `@earendil-works/*`（四包同版本成套、精确锁 `0.85.1`，不带 `^`）；`review-llm` 删除；发行面收为**单包** `review-pi`。因此 §1（包映射与自有 scope）、§2（六包清单与包名）、§4（多包打包/发布流水线）、§6（多包安装形态）与 §7 的「scope 整体替换」不再有效。**仍然有效**：§3 的 `exports` 三条件纪律（types / source / default）、§5 的 `bin` LF shebang 与 `prepack` 断言、`.gitignore` 产物纪律，以及「仓内开发 = 安装形态」的主张（现在由 `@earendil-works/*` 的 dist + `review-pi` 的 `source` 条件共同承担）。
 
 ## Context
 

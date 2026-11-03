@@ -1,5 +1,7 @@
 # 从 0 基于 pi 内核重写 Review Runtime（取代 ADR-0005 / ADR-0006 的 DSH 内核形态）
 
+**后续修订**：[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)（2026-11-03）——本 ADR 的「以 pi **fork**（锚定 `6671c604`）为基座」、「仪器冻结（判定链继续走 review-llm）」两条前提被取代：内核四包改为 **npm 上游依赖** `@earendil-works/*`（精确锁 `0.85.1`），默认只消费上游 `dist`，确需改内核时用 `pnpm patch`；`review-llm` 已删除，判定链与评测仪器层更早由 ADR-0024 废止。「Review Runtime 从 0 重写、应用逻辑不写进内核」的主干结论不变。
+
 《ReviewAgent以DSH内核和PI内核的方案对比分析》以「可扩展性」为前置给出 DSH-first 结论；用户随后追加前提「不考虑 ReviewAgent Runtime 的扩展复用」（决策背景见 `docs/design/pi 内核可行性分析.md`，Pi 70 / DSH 30），2026-09-18 拍板反转：**pi-kernel 分支上以 pi fork（锚定 `6671c604`，接线见《Pi 内核定制基线方案》）为基座，Review Runtime 从 0 重写**。与 DSH 线的关键差别：DSH 线把 POC1 代码作为共享模块源做内核迁移（ADR-0005 的「POC1 主体冻结 + 内核侧重写」姿态）；本决策把现有实现整体降为行为参照——代码不导入，只保留两个角色：**评测装置**（判定链 / 指标 / 数据集 / 双门协议，冻结平移）与**期望生成器**（P2 字节门的离线对照源）。DSH 内核（`packages/review-dsh`）随之移除；其评测数据（`runs/phase2-dsh`，450 单元）保留并成为最终对照的基线侧——「pi 负责把 ReviewAgent 做出来，DSH 数据作为 Runtime Benchmark 对照」。实现方案全文见《Pi 内核从零实现方案》。
 
 ## 决策

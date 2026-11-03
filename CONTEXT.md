@@ -120,15 +120,15 @@ _Avoid_: 输出目录（泛指；本仓改称任务目录，旧 `--out` 已随 A
 ### 发行
 
 **发行形态（Distribution Shape）**:
-产品以 **npm 多包**交付：内核四包 `@review-agent-pi/pi-{telemetry,chord,ai,agent-core}`（版本锁上游锚点 `0.85.1`）+ `review-llm` + `review-pi`（唯一 `bin`）。源码 specifier 就是发布名，不用 npm alias；仓内与安装形态共享同一份代码（ADR-0028）。
-_Avoid_: 单包 bundle（丢失 `source` 条件与内核独立测试面）、私有包 + `file:`/git 依赖（无 registry、版本不可解析）
+产品以 **单个 npm 包**交付：`review-pi`（唯一 `bin`）。内核四包 `@earendil-works/{pi-telemetry,chord,pi-ai,pi-agent-core}` 是它的**普通 npm 依赖**（四包同版本成套、精确锁 `0.85.1`，不带 `^`），随 `pnpm install` / `npm i -g` 自动拉取，本仓不 vendor、不打包、不发布它们（ADR-0035）。源码 specifier 就是上游名，不用 npm alias。
+_Avoid_: 六包自发布（ADR-0028 已废止）、单包 bundle（丢 `source` 条件与可调试性）、源码继续 vendor 但依赖声明上游名（开发与生产静默跑不同代码）
 
 **发布面（Publish Surface）**:
 一个包 tarball 里**应当**存在的东西：`dist`、类型声明、`bin`（`review-pi`）、`presentation` 制品、`THIRD-PARTY-NOTICES.md`、`README.md`；**不应**存在 `src/**/*.ts`。`review-pi` 的 `prepack` 从仓根复制履约文本并断言发布物在位——打包确定、离线，缺产物即人话报错。
 _Avoid_: 构建产物（包含 `src` 的仓内状态）、打包脚本（那是手段）
 
 **安装布局冒烟（Install-Layout Smoke）**:
-`pnpm verify:pack`：把 tarball 解到临时 `node_modules/`（模拟 npm 安装布局），只从仓内借第三方依赖，断言内容面、bin 腿表、`config init/show`、`"builtin"` 引擎与 tree-sitter wasm / ripgrep 在安装形态下可用。不联网、不发布；包名从各包 `package.json` 派生，不写死 scope。
+`pnpm verify:pack`：把 tarball 解到临时 `node_modules/`（模拟 npm 安装布局），再把仓内已安装的依赖（含内核四包这批正常 npm 依赖）逐个 junction 过去，断言内容面、bin 腿表、`config init/show`、`"builtin"` 引擎与 tree-sitter wasm / ripgrep 在安装形态下可用。脚本自身不发网络请求（依赖来自 `pnpm install` 已落位的 `node_modules`），不发布；包名从 `package.json` 派生，不写死 scope。
 _Avoid_: 发布门（发布需人确认 registry 与凭据）、端到端检视（冒烟不调真实网关）
 
 ### 知识
@@ -169,8 +169,8 @@ _Avoid_: 规则包自动发现、约定目录（历史 ADR-0012/0014 的旧口�
 _Avoid_: 被测模型（实验自变量语义已随评测层废止）、白名单模型（准入白名单已由画像表取代）、model 走环境变量（model 走请求参数、秘密走配置文件）
 
 **参数画像（Provider Profile）**:
-模型 id pattern → wire 序列化策略（thinking 字段 / completion 信封）+ usage 能力声明（有无缓存计量）的单源查表（review-llm）；未知模型回落保守默认档（ADR-0008）。无缓存计量的 provider 在成本口径上按未知 ≠ 0 处理。
-_Avoid_: 画像当 endpoint 配置（「怎么说话」与「连到哪」两轴正交）
+模型 id → wire 序列化策略（thinking 字段 / completion 信封）+ usage 能力声明的查表面。pi 线**当前不按 id 分派**：恒 `deepseek` provider、恒发 `thinking{type:"enabled"}` + `reasoning_effort:"high"`（`provider/pi-client.ts` 的 `LOCKED_REASONING_EFFORT`），自由 id 只换字符串、借用 `deepseek-v4-flash` 的模型元数据；模型元数据（contextWindow / maxTokens / cost / compat）来自内核四包自带的模型目录（ADR-0035）。ADR-0008 的「按 id pattern 查画像表」在 pi 线从未接线，若要恢复多模型分派，按新功能另立项。
+_Avoid_: 画像当 endpoint 配置（「怎么说话」与「连到哪」两轴正交）、把 review-llm 的 `profileOf` 当既有实现（ADR-0035 已删该包）
 
 ### 基准
 

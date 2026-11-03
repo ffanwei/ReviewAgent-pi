@@ -1,5 +1,7 @@
 # 被测模型可换：OpenAI-compatible 契约、参数画像表与按 provider 能力分口径的指标（部分取代 ADR-0002）
 
+**后续修订**：[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)（2026-11-03）——本 ADR 的画像表 / resolver 环境变量链属于已删除的 `review-llm`，且 pi 线**从未接线**：当前恒 `deepseek` provider、恒发 `thinking{enabled}` + `reasoning_effort:"high"`（`provider/pi-client.ts`），自由 id 只换字符串（借用 `deepseek-v4-flash` 模型元数据），退役 id 不会被本地拒绝。配置面亦早由 ADR-0025 改为用户级 JSONC（env 层移除）。「只承诺 OpenAI-compatible、绝不记 key、function calling 为硬依赖」三条结论仍有效；多模型画像若要恢复，按新功能另立项。
+
 两个真实诉求推动被测模型脱离代码钉扎（spec #40）：部署侧要把 ReviewAgent 接到企业内部 OpenAI-compatible 网关（自有 url/key/model），研究侧要让被测模型成为实验变量（Qwen、MiniMax 与 DeepSeek 对比 RIE/CARC）——此前模型白名单逻辑复制在五处以上，DSH 路径甚至硬编码单一模型。落地序列：#41（共享包 review-llm 立缝）→ #42（judge 链自定义 endpoint，画像表首个消费者）→ #43（reviewer 自由 id + 指标分口径 + golden bytes 硬门槛），本 ADR 成文记录已验证的设计。ADR-0002 保留为 DeepSeek 基线实验的依据（缓存计量的选择理由、实验内锁定同一模型的可比性主张、账号级缓存特性），本 ADR 取代其「代码层模型准入白名单」部分。
 
 ## 决策

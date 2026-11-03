@@ -5,6 +5,15 @@
 > 前置分析见同目录《[ReviewAgent以DSH内核和PI内核的方案对比分析.md](ReviewAgent以DSH内核和PI内核的方案对比分析.md)》
 > （该文的 DSH-first 结论以「可扩展性」为前置——本决策按「不考虑可扩展性」的前提重排，Pi 路线胜出）。
 >
+> **⚠️ 当前状态（[ADR-0035](../adr/0035-upstream-kernel-as-npm-deps-and-single-package.md)，2026-11-03）**：
+> 本文是 **vendoring 期的历史记录**。ADR-0035 已把内核四包改回 **npm 上游依赖**
+> （`@earendil-works/*`，精确锁 `0.85.1`），删除仓内 `packages/{ai,agent,chord,telemetry}`，
+> 并把发行面收为单包 `review-pi`。因此本文中所有「仓内源码形态 / `pnpm build:pi` /
+> `@review-agent-pi/*` 发布名 / workspace 接线」的描述**只描述历史**，不再代表现状；
+> 与上游同步也不再走 `git diff` 对照，而是「改版本号 + 跑门」（必要时 `pnpm patch`）。
+> 保留下来的价值是：为什么当初选择 fork、做过哪些定制、踩过哪些坑。
+>
+>
 > **一句话结论**：`pi-kernel` 分支已把 pi 四个包（ai / agent / chord / telemetry，约 5.6 万行源码）
 > 以源码形态 vendor 进本仓 pnpm workspace，构建链（`pnpm build:pi`）与既有全部测试门全绿；
 > DSH 内核（`packages/review-dsh`）与全部评测数据/报告原样保留，本分支后续 Pi 适配以此为基座展开。

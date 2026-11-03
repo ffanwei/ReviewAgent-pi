@@ -5,7 +5,7 @@
 ## 1. 项目总览
 
 - **名称**：`review-agent-pi`（pi 内核线）
-- **定位**：**pi 内核线的 Review CLI 产品仓**。Review Runtime 在 vendored pi 内核（`packages/{ai,agent,chord,telemetry}`）上从 0 重写，一条命令完成一次检视，产出英文 findings 与中文按行分组建议。规则 Skill 是唯一形态；配置矩阵、`configId` 身份维度与评测仪器层已按 ADR-0024 删除。
+- **定位**：**pi 内核线的 Review CLI 产品仓**。Review Runtime 在 pi 内核的 npm 上游包（`@earendil-works/{pi-ai,pi-agent-core,chord,pi-telemetry}`，精确锁 `0.85.1`，ADR-0035）上从 0 重写，一条命令完成一次检视，产出英文 findings 与中文按行分组建议。规则 Skill 是唯一形态；配置矩阵、`configId` 身份维度与评测仪器层已按 ADR-0024 删除。
 - **语言**：TypeScript 为主，另有 Markdown、JSON/YAML、少量 Java/diff 夹具。
 - **工具链**：Node ≥22、pnpm workspace、TypeScript（strict + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`）、Vitest。
 - **跨仓关系**：DSH 内核线兄弟仓 `MustacheXb/ReviewAgent`；两仓 ADR 独立编号，引用 DSH 仓决策必须写「DSH 线 ADR-XXXX」（见 `AGENTS.md`）。
@@ -16,8 +16,7 @@
 |---|---|---|
 | **Review Runtime（pi 内核线）** | 单案全链：MR 边界护栏 → 规则 Skill 装载 → 六阶段 agent-loop（七工具 + Context Ledger）→ 候选门 → 审计/记录/转录/意见导出 | `packages/review-pi/src/run/review-run.ts`、`loop/agent-review-loop.ts`、`tools/toolkit.ts`、`gate/candidate-gate.ts` |
 | **CLI 与呈现** | 参数解析、配置装载（`~/.PiAgent/PiAgent.jsonc`）、结果投影、退出码；核外中文呈现注入缝 | `packages/review-pi/src/cli/{args,main,render,config-command}.ts`、`packages/review-pi/src/shared/config.ts`、`src/presentation/{translate-projection,tips,engine-zh}.ts` |
-| **LLM 抽象层** | review-llm：provider 画像、DeepSeek 适配常量（endpoint/key 已由用户级配置取代，ADR-0025） | `packages/review-llm/src/{profile,deepseek,resolver}.ts` |
-| **pi 内核（vendored）** | pi-ai 模型接入、pi-agent-core 代理循环、chord 编排、telemetry 遥测 | `packages/ai/src/types.ts`、`packages/agent/src/harness/session/session.ts`、`packages/chord/src/delta/index.ts` |
+| **pi 内核（npm 依赖）** | pi-ai 模型接入、pi-agent-core 代理循环、chord 编排、telemetry 遥测；上游包，按 `dependencies` 精确锁版 | `node_modules/@earendil-works/*`（源码不在本仓） |
 | **测试与夹具** | 内核单测、CLI 进程烟测、golden 常量 | `packages/review-pi/src/cli/bin.process.test.ts`、`packages/review-pi/testdata/golden/*`、`tests/presentation/*` |
 | **文档与 ADR** | 项目说明、决策记录、设计方案、历史报告 | `README.md`、`CONTEXT.md`、`AGENTS.md`、`docs/adr/*`、`docs/运行手册-单次检视.md` |
 | **构建与 CI** | workspace、TS 配置、Vitest、GitHub Actions | `package.json`、`pnpm-workspace.yaml`、`tsconfig*.json`、`vitest.config.ts`、`.github/workflows/ci.yml` |
@@ -31,8 +30,8 @@
 - **审计与记录**：审计落盘 `<tasks 根>/<taskId>/audit/<ts>.json`（requests / toolCallLog / phaseLog / rejections / ledger / ruleSkill / skillPassLog / config 快照）；`RunRecord` 落 `<tasks 根>/<taskId>/runs/run.json`（ADR-0032 定内部形态、ADR-0033 定位置：`--taskId` 必需，一个任务目录一次 run，无 case / rep 层）。`<ts>` = 首次模型请求时刻（`20261031_101010_123`），同时是 `runId`。
 - **语言边界**：检视输出恒英文（测量面冻结）；中文只经核外翻译投影（ADR-0010），内核无语言键。
 - **中文交付物**：只有 `reviews_tips_zh.json`（ADR-0017 / ADR-0022），按文件分组、同文件同行去重（ADR-0023）；`reviews_zh.json` 已停产。
-- **配置解析**：`shared/config.ts` 读一次用户级 JSONC 成不可变快照，全量生效值 + 来源 + digest 进审计；秘密只记 `set|missing`。`review-llm/src/resolver.ts` 仍提供「显式参数 → 环境变量 → 缺省」纯函数，但 CLI 不再走 env 通道（ADR-0025）。
-- **vendored 边界**：`packages/ai|agent|chord|telemetry` 是上游 vendored 代码，改动需评估上游漂移；应用逻辑不要写进这里。
+- **配置解析**：`shared/config.ts` 读一次用户级 JSONC 成不可变快照，全量生效值 + 来源 + digest 进审计；秘密只记 `set|missing`。env 通道已在 ADR-0025 移除；`review-llm` 的 resolver 已随该包一起删除（ADR-0035），当前没有第二套「显式参数 → env → 缺省」回退链。
+- **内核依赖边界**：`@earendil-works/*` 是 npm 上游包（ADR-0035），改动需走 `pnpm patch` 或推动上游；应用逻辑不要写进 `node_modules`。
 
 ## 4. 导览（7 步）
 
@@ -62,21 +61,19 @@
 - `cli/`：参数、主缝、stdout 渲染、呈现投影注入、进度投影。
 - `provider/`：pi 客户端、网关双探针、fake fetch（离线语料）。
 
-### LLM 抽象（`packages/review-llm/src`）
+### 内核依赖（`node_modules/@earendil-works/*`）
 
-- `resolver.ts`（key/URL/数值三层回退）、`profile.ts`（provider 画像）、`deepseek.ts`（后端）、`reviewer.ts`（评审封装）。
+- `pi-ai`：模型契约、provider 模型数据、`api/*`、`auth/*`。
+- `pi-agent-core`：`harness/context`、`harness/session`、`harness/runtime`、`harness/compaction`。
+- `chord`：编排原语。
+- `pi-telemetry`：遥测桩。
 
-### vendored pi 内核
-
-- `packages/ai`：`types.ts`（契约）、`models.ts`（目录/分发）、`api/*`、`providers/*`、`auth/*`。
-- `packages/agent`：`harness/context.ts`、`harness/session/*`、`harness/runtime/*`、`harness/compaction/*`。
-- `packages/chord`：`src/delta/*`、`src/facets/*`。
-- `packages/telemetry`：`src/index.ts`。
+这四包是 npm 上游发行物（tarball 只含 `dist` 与 `.d.ts`），源码不在本仓，也不参与本仓构建（ADR-0035）。
 
 ## 6. 复杂度热点（谨慎修改）
 
-1. `packages/ai/src/types.ts` — 全局类型契约，改动波及所有 provider。
-2. `packages/agent/src/harness/session/session.ts` — 会话状态机。
+1. `@earendil-works/pi-ai` 的 `types`（npm 依赖的 d.ts）— 全局类型契约，改动只能经上游或 `pnpm patch`。
+2. `@earendil-works/pi-agent-core` 的 session 状态机 — 同上。
 3. `packages/review-pi/src/run/review-run.ts` — 单案全链单点，改一处要回归整条产物链（`review-run.test.ts` 12 条用例）。
 4. `packages/review-pi/src/loop/agent-review-loop.ts` — 三钩子骨架与阶段推进，直接影响 wire 字节与 phaseLog。
 5. `packages/review-pi/src/cli/main.ts` — stdout 单 JSON 契约、退出码与呈现降级语义。
