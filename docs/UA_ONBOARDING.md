@@ -25,7 +25,7 @@
 ## 3. 关键概念
 
 - **唯一形态**：工具驱动六阶段循环 + Context Ledger 恒开 + 规则 Skill 恒装载；没有 A–E 配置分派。运行配置只有一层（`~/.PiAgent/PiAgent.jsonc` 或 `--config`，ADR-0025），env 层已移除。
-- **规则 Skill**：只有两种**显式**输入面（`--rule-skill-zip` / `--rule-skill <dir>`，可重复、先 zip 后目录）；不扫描被检视仓库的 `.review-rules/`（ADR-0027）。Phase 5 之后为每个包开独立检视会话（ADR-0014），候选按 `(file, line, category)` 合并后交 Phase 6 裁定。没给规则包 = 合法降级（stderr 一行提示、exit 0），`--strict-rule-skill` 才升级为错误。
+- **规则 Skill**：只有两种**显式**输入面（`--rule-skill-zip` / `--rule-skill <dir>`，一次可传多个——逗号列表或重复旗标，先 zip 后目录）；不扫描被检视仓库的 `.review-rules/`（ADR-0027）。**一个包就是一个 skill**（ADR-0034：包内 ≥2 个 skill 一律降级，没有包内消歧旗标）。Phase 5 之后为每个包开独立检视会话（ADR-0014），候选按 `(file, line, category)` 合并后交 Phase 6 裁定。没给规则包 = 合法降级（stderr 一行提示、exit 0），`--strict-rule-skill` 才升级为错误。
 - **测量常量面**：system prompt、六阶段指令、七工具 schema 的字节真源在 `testdata/golden/*`，由 `loop/phases.test.ts`、`zonea/system-prompt.test.ts` 断言逐字节一致；运行期死钉 5 项（轮次 / 工具调用 / 工具结果预算 / 呈现 temperature / effort）由 ADR-0025 锁定。
 - **MR 边界护栏**：`run/mr-boundary-guard.ts` 做纯度量（缺省 ≤10 文件 / ≤2000 变更行，`limits.boundary` 可配、`null` 关闭），超界只标注 `domainWarning` + 审计 `mrBoundary`，不拒检、不改请求字节。
 - **审计与记录**：审计落盘 `<tasks 根>/<taskId>/audit/<ts>.json`（requests / toolCallLog / phaseLog / rejections / ledger / ruleSkill / skillPassLog / config 快照）；`RunRecord` 落 `<tasks 根>/<taskId>/runs/run.json`（ADR-0032 定内部形态、ADR-0033 定位置：`--taskId` 必需，一个任务目录一次 run，无 case / rep 层）。`<ts>` = 首次模型请求时刻（`20261031_101010_123`），同时是 `runId`。

@@ -12,7 +12,7 @@
 |---|---|
 | 单次检视 | 一条命令一次 run：六阶段循环 + 七个 review 工具 + Context Ledger + 审计投影 |
 | 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：数组或 `{diffs:[…]}`；路径取 `new_path` / `filename` / `file_path` / `path`、正文取 `diff` / `patch`，`diff` 为对象时取内层 `diff.diff`） |
-| 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>`，**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast |
+| 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>`，一次可传多个（逗号列表或重复旗标），**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast |
 | 中文建议 | 配置 `presentation.engine` 后额外产出 `reviews_tips_zh.json`：`"builtin"` 用包内引擎，路径用自定义模块，`null` 关闭 |
 | MR 边界护栏 | 缺省 ≤10 文件 / ≤2K 变更行；超界只告警不拒检（`limits.boundary` 可改） |
 | 单源配置 | 用户级 JSONC（`~/.PiAgent/PiAgent.jsonc` 或 `--config`），启动读一次成不可变快照，审计留 digest |
@@ -116,8 +116,7 @@ review-pi review --repo /repo --mr-diff /d/change.diff --taskId change-001 --tas
 | `--tasks-dir <dir>` | tasks 根覆盖（缺省 `~/.PiAgent/tasks`；相对 cwd） |
 | `--model <id>` | 检视模型，缺省取配置 `model.default` |
 | `--config <path>` | 替代配置文件（相对 cwd） |
-| `--rule-skill-zip <zip>` / `--rule-skill <dir>` | 规则 Skill 包 / 已解压目录，可重复 |
-| `--rule-skill-name <name>` | 包内多 skill 时指定装载哪个 |
+| `--rule-skill-zip <zip[,zip…]>` / `--rule-skill <dir[,dir…]>` | 规则 Skill 包 / 已解压目录，一次可传多个（逗号列表或重复旗标；一个包 = 一个 skill） |
 | `--strict-rule-skill` | 装载失败即退出（缺省降级 + 审计留痕） |
 | `--progress` / `--no-progress` | 非 TTY 下把阶段摘要逐行打到 stderr |
 

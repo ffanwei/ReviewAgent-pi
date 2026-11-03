@@ -4,6 +4,7 @@
 **关联**：ADR-0012（本 ADR 取代其决策第 3 条与第 2 条中的「单一 zip」限定）、ADR-0013（转录产物契约——skill 会话转录需对齐）、ADR-0009（pi 内核从 0 重写）、ADR-0011（切流 config E——F 是 E 基线上的消融位）、CONTEXT.md（规则检索 / 规则合并 / 规则技能执行器）、`docs/design/规则 Skill 与 config F 方案——项目规则检视落地.md`（其 §6 验收 2 与 §4 第 7 条被本 ADR 取代）；**部分修订（2026-10-30，见 [ADR-0017](0017-out-of-kernel-grouped-review-tips-export.md) 决策 5）**——skill 会话输出契约的 `rule` 字段由「恒为 skill 名」改为「优先填命中规则的 rules/*.md frontmatter `id`（如 `GEN-SQL-001`），无法归因到单条规则时才退回 skill 名」；冻结面不变（skill 会话属非测量档），但审计 `skillPassLog.ruleIds` 的口径随之从「包名」变为「规则 id」——与 `contracts/run.ts` 该字段注释（「该会话候选引用的规则 id」）的原意对齐，代价是与历史 run 不可比；**输入形态扩展（2026-10-30，见 [ADR-0018](0018-rule-skill-directory-input.md)）**——决策 1 的「单位 = 多个 zip」**新增并列单位**「已解压目录」（`--rule-skill`，可重复，排在全部 zip 之后；审计 `ruleSkill[].kind === "dir"`），装载 / 审计 / 降级链路与 zip 同档
 
 **后续修订**：[ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（2026-10-31）——本 ADR 的「skill 包来源包含被检视仓库 `<repo>/.review-rules/` 自动扫描」一条作废，改为**只认显式输入**（`--rule-skill-zip` / `--rule-skill <dir>`）；N=0 时 stderr 一行提示、exit 0，`--strict-rule-skill` 报 `no rule-skill archive given`。skill 会话本身（独立转录、候选合并、审计 `ruleSkill[]` / `skillPassLog[]`）不变。
+**后续修订**：[ADR-0034](0034-rule-skill-multi-input-and-name-removal.md)（2026-11-03）——决策 1 的「多包 = 重复旗标」**新增等价写法**：单个旗标值可用逗号列表传多个包（`--rule-skill-zip a.zip,b.zip`，不带引号时按各 shell 切开的形态归并）；包内多 skill 消歧用的 `--rule-skill-name` 移除，一个包就是一个 skill（包内 ≥2 个 skill 一律降级）。
 
 ## Context
 
