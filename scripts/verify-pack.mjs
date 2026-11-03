@@ -1,16 +1,20 @@
 /**
- * 发行形态 A（npm 多包，ADR-0028）的安装面冒烟：不联网、不发布，验证 tarball 装得上、
+ * 单包发行（ADR-0035）的安装面冒烟：不联网、不发布，验证 tarball 装得上、
  * 装完能跑。
  *
  * 做法：把 `pack:packages` 产出的 tarball 解到临时 `node_modules/`（模拟 npm 安装布局），
- * 再把仓内已安装的第三方依赖按包逐个 junction 过去（只借依赖，不借源码），然后：
+ * 再把仓内已安装的依赖（含内核四包 `@earendil-works/*` 这一批正常 npm 依赖）按包
+ * 逐个 junction 过去（只借依赖，不借源码），然后：
  *   1. 断言 tarball 内容面（dist / bin / presentation / 许可证；不含 src）；
  *   2. `review-pi`（无子命令）—— bin 的腿表在**安装布局**下能定位全部运行时腿；
  *   3. `review-pi config init/show` —— 配置面在安装布局下可读可写；
  *   4. `presentation.engine = "builtin"` 在安装布局下解析到包内制品；
  *   5. tree-sitter wasm / ripgrep 二进制在安装布局下可用。
  *
- * 包名一律从各包 `package.json` 读（不写死 scope）——换 scope 只改包清单，不改本脚本。
+ * 「不联网」的准确含义（ADR-0035）：本脚本自身不发网络请求——依赖来自 `pnpm install`
+ * 已经灌进 store 并落位的工作区 `node_modules`。首次安装仍需网络。
+ *
+ * 包名一律从 `package.json` 读（不写死 scope）——换 scope 只改包清单，不改本脚本。
  * 这不是发布门（发布要人确认 registry），是"打出来的包到底能不能用"的本地门。
  */
 import { execFileSync, spawnSync } from "node:child_process";
@@ -35,15 +39,8 @@ const stagingDir = join(workDir, "staging");
 const appDir = join(workDir, "app");
 const appModules = join(appDir, "node_modules");
 
-/** 仓内包目录（按依赖拓扑序；从这些 node_modules 借第三方依赖） */
-const SOURCE_PACKAGE_DIRS = [
-  "packages/telemetry",
-  "packages/chord",
-  "packages/ai",
-  "packages/agent",
-  "packages/review-llm",
-  "packages/review-pi",
-];
+/** 仓内包目录（发行面只有 review-pi；从它的 node_modules 借依赖图） */
+const SOURCE_PACKAGE_DIRS = ["packages/review-pi"];
 
 /** 目录 → 包名（真源是各包 package.json，脚本不写死 scope） */
 const PACKAGE_NAMES = new Map(
@@ -56,16 +53,17 @@ const PACKAGE_NAMES = new Map(
 /** 本仓发布的包名（junction 第三方依赖时要跳过它们） */
 const OUR_PACKAGES = new Set(PACKAGE_NAMES.values());
 
-/** 包名 → tarball 里必须具备的文件 */
+/** 包名 → tarball 里必须具备的文件（发行面只有 review-pi 一个包） */
 function requiredEntries(name) {
-  return name === "review-pi"
-    ? [
-        "package/dist/cli/main.js",
-        "package/bin/review-pi.js",
-        "package/presentation/engine-zh.js",
-        "package/THIRD-PARTY-NOTICES.md",
-      ]
-    : ["package/dist/index.js"];
+  if (name !== "review-pi") {
+    return [];
+  }
+  return [
+    "package/dist/cli/main.js",
+    "package/bin/review-pi.js",
+    "package/presentation/engine-zh.js",
+    "package/THIRD-PARTY-NOTICES.md",
+  ];
 }
 
 function fail(message) {
@@ -111,6 +109,9 @@ const tarballs = readdirSync(tarballDir)
 if (tarballs.length === 0) {
   fail("tarball 目录为空 —— 先跑 pnpm pack:packages");
 }
+if (tarballs.length !== 1) {
+  fail(`单包发行只应有 1 个 tarball，实际 ${tarballs.length} 个：${tarballs.join(", ")}`);
+}
 
 rmSync(workDir, { recursive: true, force: true });
 mkdirSync(stagingDir, { recursive: true });
@@ -146,7 +147,7 @@ if (installed.length !== OUR_PACKAGES.size) {
   fail(`tarball 数量与发行清单不一致（${installed.length} != ${OUR_PACKAGES.size}）`);
 }
 
-// ---- 2. 借用仓内第三方依赖（只借依赖图，不借源码） ----
+// ---- 2. 借用仓内依赖图（只借依赖，不借源码；内核四包同样是「依赖」） ----
 for (const packageDir of SOURCE_PACKAGE_DIRS) {
   const modules = join(repoRoot, packageDir, "node_modules");
   if (!existsSync(modules)) {
@@ -294,4 +295,4 @@ writeFileSync(
   ].join("\n"),
 );
 
-process.stdout.write("verify-pack: 全绿（npm 多包发行面可用）\n");
+process.stdout.write("verify-pack: 全绿（单包发行面可用）\n");

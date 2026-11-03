@@ -1,8 +1,8 @@
 /**
  * review-pi 打包前准备（prepack）：把仓根许可证履约文件带进包，并断言发布物在位。
  *
- * 为什么需要这一步：`THIRD-PARTY-NOTICES.md` 在仓根（vendored pi 四包与本仓共用一份
- * 履约文本），npm tarball 不能引用包根之外的文件——必须在打包时复制进包目录。
+ * 为什么需要这一步：`THIRD-PARTY-NOTICES.md` 在仓根（履约文本覆盖本仓与 npm 依赖的
+ * 内核四包，ADR-0035），npm tarball 不能引用包根之外的文件——必须在打包时复制进包目录。
  * 断言而不是构建：打包必须是"确定性 + 离线"的，产物由 `pnpm build:dist` 显式产出；
  * 缺产物时让人话报错，而不是在 prepack 里默默触发一次构建。
  */

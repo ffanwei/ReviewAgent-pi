@@ -1,11 +1,11 @@
 /**
- * 发行形态 A（npm 多包，ADR-0028）：把六个包打成 tarball 到 `.artifacts/tarballs/`。
+ * 发行形态（单包，ADR-0035）：把 `review-pi` 打成 tarball 到 `.artifacts/tarballs/`。
  *
- * - 打包顺序 = 依赖拓扑序（telemetry → chord → ai → agent → review-llm → review-pi），
- *   只为让日志与 `pnpm -r publish` 同序；tarball 之间没有打包期依赖。
+ * - 只打一个包：内核四包 `@earendil-works/*` 是 npm 依赖，随安装从 registry 拉取，
+ *   不进本仓的打包/发布面。
  * - `pnpm pack` 会把 `workspace:*` 改写成真实版本号——这是发布物的正确形态，
  *   仓内开发仍走 workspace 链接。
- * - 只打包不发布：发布是显式动作（`pnpm -r publish`），且必须由人确认 registry。
+ * - 只打包不发布：发布是显式动作（`pnpm publish`），且必须由人确认 registry。
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -15,15 +15,8 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(repoRoot, ".artifacts", "tarballs");
 
-/** 拓扑序（build:pi 的依赖序 + 两个应用包） */
-const PACKAGES = [
-  "packages/telemetry",
-  "packages/chord",
-  "packages/ai",
-  "packages/agent",
-  "packages/review-llm",
-  "packages/review-pi",
-];
+/** 发行面 = 一个包（保持数组形态：多包时代的日志/失败计数结构不变） */
+const PACKAGES = ["packages/review-pi"];
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 /** Windows 上 .cmd 必须经 shell（Node 的 spawn 不再直接执行 .cmd） */
