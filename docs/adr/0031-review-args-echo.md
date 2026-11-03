@@ -3,6 +3,7 @@
 **状态**：已接受（2026-11-02，用户要求「在执行 review 后，打印所有传入的参数」）
 **关联**：ADR-0030（收尾总结行——本 ADR 在其后追加一块参数回显）、ADR-0016（stderr 运行投影、stdout 单 JSON 文档硬约束）、ADR-0025（配置来源）、ADR-0029（`--mr-diff` / `--mr-json` 二选一）
 **跨仓**：本 ADR 为本仓 pi 线序列 0031；DSH 兄弟仓决策须引用全限定语「DSH 线 ADR-XXXX」。
+**后续修订**：回显行 `--out` 已由 `--taskId` + `--tasks-dir` 两行取代（ADR-0033）；本 ADR 的机制（打印点、stderr-only、生效值、转义、单点实现）不变。
 
 ## Context
 

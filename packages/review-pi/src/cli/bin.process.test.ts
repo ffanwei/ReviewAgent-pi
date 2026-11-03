@@ -20,7 +20,7 @@ import { repoFixturePath } from "../testing/repos.js";
 //
 // 哨兵纪律（票面验收）：key 只允许出现在 Authorization 头（stub 侧断言已
 // 收到 Bearer <sentinel>）；绝不出现在 stdout/stderr/审计/运行记录（进程
-// 输出面与 --out 落盘面全量扫描）。.env.local 装载摘要只报键名（单测面
+// 输出面与 --tasks-dir 落盘面全量扫描）。.env.local 装载摘要只报键名（单测面
 // 已锁），本档再证一层：显式环境变量胜过 .env.local（诱饵值不进传输层）。
 //
 // 退出码契约：成功（含诚实截断）0 / 其余 1；拒跑 1 + 人话提示。
@@ -33,6 +33,11 @@ const BIN_PATH = path.join(packageDir, "bin", "review-pi.js");
 const SENTINEL_KEY = "sk-process-smoke-sentinel-7f31";
 /** .env.local 诱饵（显式环境变量必须胜出——诱饵值连传输层都不该到） */
 const DECOY_KEY = "sk-decoy-from-env-local";
+/**
+ * 进程测试统一的任务 id（ADR-0033）：产物落 `<tasks-dir>/t-1/`。
+ * 刻意与 caseId 不同源——caseId 仍由 MR 文件名派生（VUL4J-1 / MR-1234）。
+ */
+const CLI_TASK_ID = "t-1";
 
 const tempDirs: string[] = [];
 
@@ -184,6 +189,8 @@ interface CliRunResult {
   readonly stderr: string;
   /** 子进程 cwd（每次 run 一个隔离 temp 目录；ADR-0017 执行目录副本落在其中） */
   readonly cwd: string;
+  /** 子进程 HOME / USERPROFILE（沙箱；缺省 tasks 根 = `<home>/.PiAgent/tasks`，ADR-0033） */
+  readonly home: string;
 }
 
 interface RunBinOptions {
@@ -289,7 +296,7 @@ function runBin(args: readonly string[], options: RunBinOptions = {}): Promise<C
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve({ status: code, stdout, stderr, cwd });
+        resolve({ status: code, stdout, stderr, cwd, home: sandboxHome });
       }
     });
   });
@@ -312,7 +319,7 @@ function collectFiles(root: string): readonly string[] {
   return files;
 }
 
-/** 哨兵泄漏断言：进程输出面 + --out 落盘面全量不含 key */
+/** 哨兵泄漏断言：进程输出面 + --tasks-dir 落盘面全量不含 key */
 function expectNoKeyLeak(haystacks: readonly { label: string; text: string }[]): void {
   for (const { label, text } of haystacks) {
     expect(text.includes(SENTINEL_KEY), `${label} must not contain the API key`).toBe(false);
@@ -382,7 +389,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
         {
           ...stubEnv(stub.baseUrl),
           // .env.local 诱饵：本版已不再读取（诱饵 URL 是死端口，诱饵 key 不入传输层）
@@ -445,7 +452,44 @@ test(
       expect(run.stderr).toContain("review-pi: 本次 review 传入参数");
       expect(run.stderr).toContain(mrFile);
       expect(run.stderr).toContain(repoFixturePath("sample"));
+      // 落盘位置回显的是 taskId + tasks 根（ADR-0033），不再是任何 --out 路径
+      expect(run.stderr).toContain(CLI_TASK_ID);
       expect(run.stderr).toContain(outDir);
+      expect(run.stderr).not.toContain("--out");
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "缺省落盘根（ADR-0033）：不传 --tasks-dir 时产到 <home>/.PiAgent/tasks/<taskId>/",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runBin(
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--taskId", "home-task"],
+        stubEnv(stub.baseUrl),
+      );
+
+      expect(run.status).toBe(0);
+      const taskDir = path.join(run.home, ".PiAgent", "tasks", "home-task");
+      expect(existsSync(path.join(taskDir, "runs", "run.json"))).toBe(true);
+      expect(existsSync(path.join(taskDir, "runs", "reviews_en.json"))).toBe(true);
+      expect(readdirSync(path.join(taskDir, "audit"))).toHaveLength(1);
+      // 参数回显报的是生效的 tasks 根（并标注「缺省」来源）+ 任务 id 本身
+      expect(run.stderr).toContain(path.join(run.home, ".PiAgent", "tasks"));
+      expect(run.stderr).toContain("缺省：~/.PiAgent/tasks");
+      expect(run.stderr).toContain("--taskId");
+      expect(run.stderr).toContain("home-task");
+      expect(run.stderr).not.toContain("--out");
+      // 未配呈现引擎 ⇒ 无 tips、cwd 不留副本（「有就是本次的」口径不变）
+      expect(existsSync(path.join(taskDir, "runs", "reviews_tips_zh.json"))).toBe(false);
+      expect(existsSync(path.join(run.cwd, "review-result.json"))).toBe(false);
     } finally {
       await stub.close();
     }
@@ -486,7 +530,7 @@ test(
       );
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr-json", jsonFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-json", jsonFile, "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
         stubEnv(stub.baseUrl),
       );
 
@@ -499,8 +543,10 @@ test(
       // caseId = JSON 文件名去扩展名（与 --mr-diff 同款派生）
       expect(outcome).toMatchObject({ ok: true, caseId: "MR-1234" });
       expect(outcome.findings).toHaveLength(1);
-      // 产物落在 <out>/runs/ 下，路径不因输入是 JSON 而变化
-      expect(existsSync(path.join(outDir, "runs", "reviews_en.json"))).toBe(true);
+      // 产物落在 <tasks 根>/<taskId>/runs/ 下，路径不因输入是 JSON 而变化
+      expect(existsSync(path.join(outDir, CLI_TASK_ID, "runs", "reviews_en.json"))).toBe(true);
+      // taskId 与 caseId 是两个维度：caseId 来自 MR 文件名，taskId 来自 --taskId
+      expect(path.join(outDir, CLI_TASK_ID, "runs", "reviews_en.json")).not.toContain("MR-1234");
       expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
     } finally {
       await stub.close();
@@ -516,7 +562,15 @@ test("--mr-json 坏输入：非法 JSON / 空 diff 数组 → exit 1 + 人话（
   const broken = path.join(dir, "broken.json");
   writeFileSync(broken, "[{ oops", "utf8");
   const bad = await runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr-json", broken],
+    [
+      "review",
+      "--repo",
+      repoFixturePath("sample"),
+      "--mr-json",
+      broken,
+      "--taskId",
+      CLI_TASK_ID,
+    ],
     env,
   );
   expect(bad.status).toBe(1);
@@ -526,7 +580,15 @@ test("--mr-json 坏输入：非法 JSON / 空 diff 数组 → exit 1 + 人话（
   const empty = path.join(dir, "empty.json");
   writeFileSync(empty, JSON.stringify([{ new_path: "a/b.png", diff: "" }]), "utf8");
   const nothing = await runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr-json", empty],
+    [
+      "review",
+      "--repo",
+      repoFixturePath("sample"),
+      "--mr-json",
+      empty,
+      "--taskId",
+      CLI_TASK_ID,
+    ],
     env,
   );
   expect(nothing.status).toBe(1);
@@ -543,7 +605,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
         stubEnv(stub.baseUrl),
       );
 
@@ -594,7 +656,9 @@ test(
           repoFixturePath("sample"),
           "--mr-diff",
           mrFile,
-          "--out",
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
           outDir,
           "--config",
           configPath,
@@ -628,7 +692,17 @@ test("--config 指向不存在的文件 → exit 1 + 人话错误含路径 + std
   const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
 
   const run = await runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--config", missing],
+    [
+      "review",
+      "--repo",
+      repoFixturePath("sample"),
+      "--mr-diff",
+      mrFile,
+      "--taskId",
+      CLI_TASK_ID,
+      "--config",
+      missing,
+    ],
     { appendConfigArg: false },
   );
 
@@ -643,7 +717,17 @@ test("--config 指向目录（读失败）→ exit 1 + 人话错误，不抛堆�
   const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
 
   const run = await runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--config", dir],
+    [
+      "review",
+      "--repo",
+      repoFixturePath("sample"),
+      "--mr-diff",
+      mrFile,
+      "--taskId",
+      CLI_TASK_ID,
+      "--config",
+      dir,
+    ],
     { appendConfigArg: false },
   );
 
@@ -692,7 +776,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
         { gatewayBaseUrl: stub.baseUrl, presentationEngine: enginePath },
       );
 
@@ -747,7 +831,7 @@ test(
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
 
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
         { gatewayBaseUrl: stub.baseUrl, presentationEngine: enginePath },
       );
 
@@ -845,7 +929,7 @@ test(
       )}\n`;
       const outDir = makeTempDir("review-pi-cli-out-");
       const run = await runBin(
-        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", writeMr(goldenFixture("vul4j-1.diff")), "--out", outDir],
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", writeMr(goldenFixture("vul4j-1.diff")), "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
         { configPath, configText },
       );
 
@@ -900,9 +984,9 @@ export default async (source) => ({
   tips: [{ filePath: "sample.txt", reviewTips: [tipOf(source)] }],
 });\n`;
 
-/** 本次 run 的产物目录（reviews_en.json / reviews_tips_zh.json 同层，ADR-0032） */
+/** 本次 run 的产物目录（reviews_en.json / reviews_tips_zh.json 同层，ADR-0032 / ADR-0033） */
 function cliRunsDir(outDir: string): string {
-  return path.join(outDir, "runs");
+  return path.join(outDir, CLI_TASK_ID, "runs");
 }
 
 /** 单 MR 检视调用（唯一形态；可选注入呈现引擎与 cwd 预置文件） */
@@ -913,7 +997,7 @@ function runCliReview(
   options: RunBinOptions = {},
 ): Promise<CliRunResult> {
   return runBin(
-    ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--out", outDir],
+    ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
     { ...options, ...config },
   );
 }
@@ -1207,7 +1291,15 @@ test("运行失败：--repo 指向文件（非目录）→ exit 1 + 错误人话
   const notADir = path.join(makeTempDir("review-pi-cli-repo-"), "plain.txt");
   writeFileSync(notADir, "not a directory", "utf8");
   const run = await runBin(
-    ["review", "--repo", notADir, "--mr-diff", path.join(path.dirname(notADir), "x.diff")],
+    [
+      "review",
+      "--repo",
+      notADir,
+      "--mr-diff",
+      path.join(path.dirname(notADir), "x.diff"),
+      "--taskId",
+      CLI_TASK_ID,
+    ],
     { ...stubEnv("http://127.0.0.1:9/v1"), timeoutMs: 30_000 },
   );
   expect(run.status).toBe(1);
@@ -1282,7 +1374,9 @@ test(
           repoFixturePath("sample"),
           "--mr-diff",
           mrFile,
-          "--out",
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
           outDir,
           "--rule-skill",
           skillDir,
@@ -1315,6 +1409,7 @@ test(
 
       const cacheDir = path.join(
         outDir,
+        CLI_TASK_ID,
         ".cache",
         "rule-skills",
         `dir-${audit.ruleSkill[0]?.digest as string}`,
@@ -1363,7 +1458,9 @@ test(
           repoFixturePath("sample"),
           "--mr-diff",
           mrFile,
-          "--out",
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
           outDir,
           "--progress",
         ],
@@ -1410,7 +1507,9 @@ test(
         repoFixturePath("sample"),
         "--mr-diff",
         mrFile,
-        "--out",
+        "--taskId",
+        CLI_TASK_ID,
+        "--tasks-dir",
         outDir,
       ];
 
@@ -1428,7 +1527,9 @@ test(
           repoFixturePath("sample"),
           "--mr-diff",
           mrFile,
-          "--out",
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
           outDir2,
           "--no-progress",
         ],

@@ -27,8 +27,8 @@
  * 已彻底关闭，key 绝不回显。
  *
  * 进程调用形态：review-pi review --repo <path>
- *   (--mr-diff <diff-file> | --mr-json <files-json>)
- *   [--issue <text>] [--out <dir>] [--model <id>] [--config <path>]
+ *   (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id>
+ *   [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>]
  *   [--rule-skill-zip <path>]... [--rule-skill <dir>]...
  *   [--rule-skill-name <name>] [--strict-rule-skill]
  *   [--progress | --no-progress]
@@ -56,6 +56,7 @@ import {
   type ResolvedConfig,
 } from "../shared/config.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
+import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { mrJsonToUnifiedDiff } from "../zoneb/mr-json.js";
 import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
 import { formatReviewArgs } from "./args-echo.js";
@@ -95,7 +96,12 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // 输入形态（ADR-0029）：JSON 在装载期补文件头转成统一 diff，之后与 --mr-diff 同一条路径
   const mrText = await readFile(mrPath, "utf8");
   const diff = args.mrFormat === "json" ? mrJsonToUnifiedDiff(mrText, "--mr-json") : mrText;
-  const runsRoot = resolve(args.out);
+  // 落盘根（ADR-0033）：tasks 根（`--tasks-dir` 或 ~/.PiAgent/tasks）+ 任务 id；
+  // 其下仍是 runs/ + audit/ + .cache/（ADR-0032 的目录内形态不变）。
+  const tasksRoot = resolveTasksRoot({
+    ...(args.tasksDir !== undefined ? { tasksDir: args.tasksDir } : {}),
+  });
+  const runsRoot = taskDirPath(tasksRoot, args.taskId);
 
   // 运行进度投影（ADR-0016）：stderr 是 TTY 时缺省开（人手敲看得见），重定向
   // 收日志时缺省关；--progress / --no-progress 覆盖。缺省关时只保留收尾摘要
@@ -162,7 +168,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     `${formatReviewArgs(args, {
       repoPath,
       mrPath,
-      outPath: runsRoot,
+      taskId: args.taskId,
+      tasksRoot,
+      tasksDirFromFlag: args.tasksDir !== undefined,
       configPath: config.path,
       modelId,
       modelFromFlag: args.model !== undefined,

@@ -1,5 +1,7 @@
 import { basename } from "node:path";
 
+import { checkTaskId, DEFAULT_TASKS_ROOT_LABEL } from "../shared/tasks-dir.js";
+
 /**
  * #7 review-pi CLI 参数解析（进程内主缝第一层）：`review-pi review` 与
  * `review-pi smoke` 两个子命令的用法契约。
@@ -19,16 +21,14 @@ import { basename } from "node:path";
  * 实验 CLI；pi 内核 reviewModelOf 对目录外 id 一律以钉住画像透传，无别名目录）。
  */
 
-/** --out 缺省（review 落盘根） */
-const DEFAULT_OUT_DIR = "review-pi-output";
-
 /** review 子命令的已知旗标（未知旗标 = 用法错误；无值布尔旗标 `--strict-rule-skill` / `--progress` / `--no-progress` 进旗标循环前剥离） */
 const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--repo",
   "--mr-diff",
   "--mr-json",
   "--issue",
-  "--out",
+  "--taskId",
+  "--tasks-dir",
   "--model",
   "--config",
   "--rule-skill-zip",
@@ -46,7 +46,7 @@ const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model", "--config"];
 const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-env", "--json"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) [--issue <text>] [--out <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>]... [--rule-skill <dir>]... [--rule-skill-name <name>] [--strict-rule-skill] [--progress | --no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
   （smoke = 网关冒烟自检，P1b 双探针：网关健康 + 模型可达，输出人话诊断）
@@ -63,7 +63,11 @@ review 旗标：
                          为对象时取内层 diff.diff）；其余字段忽略，装载期补文件头转统一 diff。
                          与 --mr-diff 二选一
   --issue   <text>       MR 议题描述（缺省空）
-  --out     <dir>        输出目录（审计与运行记录落盘；缺省 ${DEFAULT_OUT_DIR}）
+  --taskId  <id>         任务 id（**必需**）。产物落到 <tasks 根>/<id>/ 下（runs/ + audit/）；
+                         只允许单段目录名：不能含路径分隔符、盘符、<>:"|?* 或前导点，
+                         Windows 保留设备名（CON / NUL / COM1…）与尾随点同样拒绝
+  --tasks-dir <dir>      tasks 根目录覆盖（缺省 ${DEFAULT_TASKS_ROOT_LABEL}；测试 / CI / 沙箱用），
+                         相对路径按 cwd 解析
   --model   <id>         评审模型 id（缺省取配置文件 model.default；自由 id 透传）
   --config  <path>       配置文件显式路径（相对路径按 cwd 解析；缺省用户级路径）
   --rule-skill-zip  <path>  规则 Skill zip 显式路径（可重复，顺序 = 执行顺序；
@@ -101,7 +105,13 @@ export interface ReviewCliArgs {
   /** 检视单元身份：--mr-diff / --mr-json 的文件名去扩展名（一案一 MR 文件约定） */
   readonly caseId: string;
   readonly issue: string;
-  readonly out: string;
+  /**
+   * 任务 id（ADR-0033，必需）：一次 `--taskId` 就是一次 run 的输出目录名，
+   * 产物落在 `<tasks 根>/<taskId>/{runs,audit}/`。
+   */
+  readonly taskId: string;
+  /** tasks 根目录显式覆盖（`--tasks-dir`；缺席 = `~/.PiAgent/tasks`，按 cwd 解析相对路径） */
+  readonly tasksDir?: string;
   /** 评审模型：缺省取配置 model.default（空串/空白 = 用法错误） */
   readonly model?: string;
   /** 配置文件显式路径（`--config`）；缺席 = 用户级缺省路径 */
@@ -169,7 +179,7 @@ function parseFlags(
       return { ok: false, message: `duplicate flag ${flag}` };
     }
     const value = rest[index + 1];
-    // 值以 -- 开头 = 相邻旗标被吞（如 `--issue --out x`）——fail fast 不静默
+    // 值以 -- 开头 = 相邻旗标被吞（如 `--issue --taskId x`）——fail fast 不静默
     if (value === undefined || value.startsWith("--")) {
       return { ok: false, message: `flag ${flag} requires a value` };
     }
@@ -245,6 +255,16 @@ function legacyMrFlagError(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
+/** `--out` 已由 `--taskId` 取代（ADR-0033）：给专用迁移提示，而不是裸 unknown flag */
+function legacyOutFlagError(argv: readonly string[]): string | undefined {
+  for (const token of argv) {
+    if (token === "--out" || token.startsWith("--out=")) {
+      return `--out 已移除（ADR-0033）：产物改落 ${DEFAULT_TASKS_ROOT_LABEL}/<taskId>/，改用 --taskId <id>（--tasks-dir <dir> 只覆盖 tasks 根目录）`;
+    }
+  }
+  return undefined;
+}
+
 export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   const [command, ...rest] = argv;
   const envError = envFlagError(rest);
@@ -255,6 +275,10 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     const mrError = legacyMrFlagError(rest);
     if (mrError !== undefined) {
       return { ok: false, message: mrError };
+    }
+    const outError = legacyOutFlagError(rest);
+    if (outError !== undefined) {
+      return { ok: false, message: outError };
     }
   }
   if (command === "config") {
@@ -443,6 +467,22 @@ function parseReviewArgs(
     return { ok: false, message: "missing required flag --mr-diff (or --mr-json)" };
   }
   const mrFormat = mrJson !== undefined ? ("json" as const) : undefined;
+  // 任务 id 必需（ADR-0033）：落盘位置由它决定，不设缺省——漏传是用法错误，不静默兜底
+  const taskIdRaw = values.get("--taskId");
+  if (taskIdRaw === undefined) {
+    return { ok: false, message: "missing required flag --taskId (output goes to <tasks root>/<taskId>)" };
+  }
+  const taskId = checkTaskId(taskIdRaw);
+  if (!taskId.ok) {
+    return taskId;
+  }
+  const tasksDirRaw = values.get("--tasks-dir");
+  if (tasksDirRaw !== undefined && tasksDirRaw.trim().length === 0) {
+    return {
+      ok: false,
+      message: `invalid --tasks-dir ${JSON.stringify(tasksDirRaw)}: must be a non-empty directory path`,
+    };
+  }
   const ruleSkillZips = repeated.get("--rule-skill-zip");
   const ruleSkillDirs = repeated.get("--rule-skill");
   const ruleSkillName = values.get("--rule-skill-name");
@@ -460,7 +500,8 @@ function parseReviewArgs(
       ...(mrFormat !== undefined ? { mrFormat } : {}),
       caseId: basename(mr).replace(/\.[^.]*$/, ""),
       issue: values.get("--issue") ?? "",
-      out: values.get("--out") ?? DEFAULT_OUT_DIR,
+      taskId: taskId.taskId,
+      ...(tasksDirRaw !== undefined ? { tasksDir: tasksDirRaw } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(config.configPath !== undefined ? { configPath: config.configPath } : {}),
       ...(ruleSkillZips !== undefined ? { ruleSkillZips } : {}),
