@@ -32,10 +32,10 @@ afterAll(() => {
 
 /** 腿 label → 该腿应属的包名（与 cli-runtime.js 的 PACKAGE_LEGS 同源断言） */
 const EXPECTED_PACKAGE: Record<string, string> = {
-  "pi-ai (vendored)": "@review-agent-pi/pi-ai",
-  "pi-agent-core (vendored)": "@review-agent-pi/pi-agent-core",
-  "chord (vendored)": "@review-agent-pi/chord",
-  "pi-telemetry (vendored)": "@review-agent-pi/pi-telemetry",
+  "pi-ai": "@earendil-works/pi-ai",
+  "pi-agent-core": "@earendil-works/pi-agent-core",
+  chord: "@earendil-works/chord",
+  "pi-telemetry": "@earendil-works/pi-telemetry",
 };
 
 test("腿表按模块解析定位：每腿入口属于声明包，不依赖仓库 packages/ 目录名", () => {
@@ -75,7 +75,7 @@ test("判鲜门只在源码树形态生效：node_modules 布局 / 无 src / 未
     label: "leg",
     entry,
     sourceRoots,
-    buildCommand: "pnpm build:pi",
+    buildCommand: "pnpm --filter review-pi build",
   });
 
   // 源码工作树：入口不在 node_modules 里且 src 在 → 判鲜
@@ -94,18 +94,18 @@ test("判鲜门只在源码树形态生效：node_modules 布局 / 无 src / 未
   expect(isFreshnessGateApplicable(leg("", []))).toBe(false);
 });
 
-test("拒跑文案：未解析的腿指向安装/构建，源码树腿给 repo 相对 POSIX 路径", () => {
+test("拒跑文案：未解析的腿指向安装，本包源码树腿给 repo 相对 POSIX 路径", () => {
   const unresolved = renderRefusals([
     {
       kind: "missing",
-      label: "chord (vendored)",
+      label: "chord",
       entry: "",
       sourceRoots: [],
-      buildCommand: "pnpm build:pi",
+      buildCommand: "pnpm install",
     },
   ]);
   expect(unresolved).toContain("依赖未安装或无法解析");
-  expect(unresolved).toContain("pnpm build:pi");
+  expect(unresolved).toContain("先安装依赖: pnpm install");
 
   const legs = runtimeLegs();
   const cliLeg = legs[legs.length - 1];

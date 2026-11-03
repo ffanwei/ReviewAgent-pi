@@ -62,9 +62,9 @@ beforeAll(async () => {
     return;
   }
   const staleCommands = new Set(check.refusals.map((refusal) => refusal.buildCommand));
-  // 腿间有依赖序：vendored pi 四包（root 脚本按依赖序）→ 本包
+  // 内核四包是 npm 依赖（安装布局，不参与判鲜）：自愈只需要重建本包产物。
+  // 依赖真的缺席时 pnpm install 由人显式执行（拒跑文案会给指引）。
   const buildOrder = [
-    "pnpm build:pi",
     "pnpm --filter review-pi build",
   ];
   for (const command of buildOrder) {

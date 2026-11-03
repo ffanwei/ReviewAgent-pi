@@ -3,16 +3,17 @@
  * 腿表与人话拒跑文案。纯 node 内建零依赖——bin 在 dist 可信之前运行，
  * 不能 import 任何构建产物（判鲜语义见同目录 compile-freshness.js）。
  *
- * 腿表 = dist/cli/main.js 导入图必需的全部运行时产物：pi 四包
- * （ai / agent / chord / telemetry——经 node_modules default 条件消费 dist）+
- * 本包 CLI 镜像。后者是 vendored 源码形态
+ * 腿表 = dist/cli/main.js 导入图必需的全部运行时产物：内核四包
+ * （ai / agent / chord / telemetry——npm 依赖，dist-only，经 node_modules 按
+ * default 条件消费）+ 本包 CLI 镜像。后者是本仓源码形态
  * （无 prepare、构建显式执行），缺席/过期时 Node 的模块解析会在导入期秒死
  * ——在位检查必须覆盖全腿，不能只看本包产物。
  *
  * 定位方式（ADR-0026）：**模块解析**而不是硬编码 `<repo>/packages/<dir>`。
- * `import.meta.resolve` 让 Node 自己回答「这个包在哪」——源码工作树里它给的
- * 是 pnpm 链接指向的真实路径（`packages/ai/dist/index.js`），`pnpm deploy` /
- * 普通依赖安装给的则是 `<root>/node_modules/...`。两种布局同一份腿表。
+ * `import.meta.resolve` 让 Node 自己回答「这个包在哪」——上游 npm 依赖给出的
+ * 是 `node_modules`（pnpm 隔离布局下是 `.pnpm/<pkg>@<ver>/node_modules/<pkg>`），
+ * `pnpm deploy` / 普通依赖安装同理。四条内核腿因此恒落在安装布局分支：只判
+ * 在位、不判 mtime（ADR-0035）。
  * 间接依赖（chord / pi-telemetry 只被 pi-agent-core 声明）从**已解析包的包根**
  * 的 `node_modules` 探测，与 Node 对消费方的解析布局一致。
  *
@@ -36,19 +37,19 @@ const repoRoot = join(packageDir, "..", "..");
 /** 本包 CLI 编译入口（spawn 目标） */
 export const CLI_COMPILED_ENTRY = join(packageDir, "dist", "cli", "main.js");
 
-/** 包名 → 构建命令（顺序 = 腿序；vendored 四包共用 root 脚本的依赖序） */
+/** 包名 → 修复命令（顺序 = 腿序；内核四包是 npm 依赖，修复动作是安装而非构建） */
 const PACKAGE_LEGS = [
-  { label: "pi-ai (vendored)", specifier: "@review-agent-pi/pi-ai", buildCommand: "pnpm build:pi" },
+  { label: "pi-ai", specifier: "@earendil-works/pi-ai", buildCommand: "pnpm install" },
   {
-    label: "pi-agent-core (vendored)",
-    specifier: "@review-agent-pi/pi-agent-core",
-    buildCommand: "pnpm build:pi",
+    label: "pi-agent-core",
+    specifier: "@earendil-works/pi-agent-core",
+    buildCommand: "pnpm install",
   },
-  { label: "chord (vendored)", specifier: "@review-agent-pi/chord", buildCommand: "pnpm build:pi" },
+  { label: "chord", specifier: "@earendil-works/chord", buildCommand: "pnpm install" },
   {
-    label: "pi-telemetry (vendored)",
-    specifier: "@review-agent-pi/pi-telemetry",
-    buildCommand: "pnpm build:pi",
+    label: "pi-telemetry",
+    specifier: "@earendil-works/pi-telemetry",
+    buildCommand: "pnpm install",
   },
 ];
 
@@ -65,8 +66,8 @@ function packageRootOf(entry) {
 /**
  * 包根真实路径：pnpm 的 `node_modules/<pkg>` 是符号链接，Node 装载时会
  * 跟随（preserveSymlinks=false）。解析出真实路径后，「源码树形态」的判据
- * 才不会被链接路径里的 node_modules 段误伤（workspace 里 chord 挂在
- * `packages/agent/node_modules/` 下，真身是 `packages/chord`）。
+ * 才不会被链接路径里的 node_modules 段误伤（pnpm 隔离布局里间接依赖挂在
+ * 直接依赖自己的 `node_modules/` 下，真身在 `.pnpm/<pkg>@<ver>/node_modules/`）。
  */
 function realDir(dir) {
   try {
@@ -198,7 +199,7 @@ export function checkRuntimeArtifacts() {
   return refusals.length === 0 ? { ok: true } : { ok: false, refusals };
 }
 
-/** 拒跑文案（stderr）：每腿一行归因 + 一行构建指引；路径 repo 相对 POSIX 形态 */
+/** 拒跑文案（stderr）：每腿一行归因 + 一行修复指引；路径 repo 相对 POSIX 形态 */
 export function renderRefusals(refusals) {
   const lines = [];
   for (const refusal of refusals) {
@@ -215,8 +216,10 @@ export function renderRefusals(refusals) {
           ? `依赖未安装或无法解析: ${shown}`
           : `构建产物缺席: ${shown}`
         : `产物过期（源树新于产物）: ${shown}`;
+    // 内核四包是 npm 依赖：修复动作是「安装依赖」而非「构建/重建」
+    const remedy = refusal.buildCommand.startsWith("pnpm install") ? "安装依赖" : "构建";
     lines.push(`review-pi: 拒跑——${cause}（腿: ${refusal.label}）`);
-    lines.push(`  先${refusal.kind === "missing" ? "构建" : "重建"}: ${refusal.buildCommand}`);
+    lines.push(`  先${remedy}: ${refusal.buildCommand}`);
   }
   return `${lines.join("\n")}\n`;
 }

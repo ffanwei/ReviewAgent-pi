@@ -1,10 +1,16 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
-  // review-pi（workspace 内部包）按 "source" 条件解析到 TS 源而非 dist 产物，
-  // 保证测试始终跑当前源码（exports: types/source 指向 src，default 指向 dist 供编译路径运行时用）
+  // root 的呈现层测试 import "review-pi"（type-only + 少量运行时契约）——别名把它
+  // 指到 workspace 包的 TS 源，保证测试跑当前源码而不是陈旧 dist。
+  //
+  // 不再用 resolve.conditions ["source"]（ADR-0035）：内核四包现在是 npm 依赖，
+  // 它们也声明了 source 条件并指向**未随 tarball 发布**的 .ts 源，全局开这个条件
+  // 会让 vitest 去解析不存在的 src/ 文件。
   resolve: {
-    conditions: ["source"],
+    alias: [{ find: /^review-pi$/, replacement: fileURLToPath(new URL("./packages/review-pi/src/index.ts", import.meta.url)) }],
   },
   test: {
     environment: "node",

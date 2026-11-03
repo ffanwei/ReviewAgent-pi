@@ -39,8 +39,8 @@ beforeAll(async () => {
     return;
   }
   const staleCommands = new Set(check.refusals.map((refusal) => refusal.buildCommand));
+  // 内核四包是 npm 依赖（安装布局，不参与判鲜）：自愈只需要重建本包产物。
   for (const command of [
-    "pnpm build:pi",
     "pnpm --filter review-pi build",
   ]) {
     if (!staleCommands.has(command)) {
