@@ -1,7 +1,8 @@
-// 六阶段指令（测量常量）：每条是发往模型的完整阶段 user 消息 content。
+// 六阶段指令：每条是发往模型的完整阶段 user 消息 content。
 //
-// 字节真源：DSH 线 t-series 审计各阶段 user 消息（testdata/golden/phase-1..6.txt），
-// 由 src/loop/phases.test.ts 断言逐字节一致。任何改动都需要显式变更记录。
+// 内容可演进（ADR-0038 退役了对外部真源的逐字节对照）；把守的是骨架性质：
+// 数量与命名序一一对应、`Phase N of 6 - <name>.` 起头、只回一个 JSON 对象
+// （见 src/loop/phases.test.ts）。
 //
 // 阶段语义（六阶段骨架，每个单元恰好各执行一次）：
 // 1. Change Understanding → 2. Risk Classification → 3. Context Decision

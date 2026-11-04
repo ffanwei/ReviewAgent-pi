@@ -87,7 +87,7 @@ _代码面_: 事件契约 `contracts/progress.ts`（`RunProgressEvent` 四类 ki
 _Avoid_: 进度条（不是百分比口径——「步数」= 模型请求序号）、日志（日志是核外运行器产物）、遥测（不回传任何指标）
 
 **测量常量面（Measurement-Constant Face）**:
-内核跨版本 / 跨语言呈现改动时必须 byte / 行为一致的半边：Zone A 提示词、六阶段 Loop 语义、Finding/Evidence 契约；请求字节与 golden 常量为其形式化把守面。
+内核跨版本 / 跨语言呈现改动时必须 byte / 行为一致的半边：Zone A 提示词、六阶段 Loop 语义、Finding/Evidence 契约；这些面由**结构性质 + 端到端能力断言**把守（ADR-0038 于 2026-11-04 退役了「对照 DSH 历史审计真源逐字节相等」的 golden 常量门；此前的一致性属历史记录，不再由测试机器验证）。
 运行期常量面（ADR-0025 收窄口径）= **5 项死钉**：`maxRounds=5` / `maxToolCalls=100` / `toolResultBudgetChars=8000` / 呈现 `temperature=0` / `reasoningEffort=high`。其余文本截断与资源上限（包头部字节、检索回显、调用链跳数、工具名/摘要截断、超时、并发、归档、MR 边界）是**可配项**，不再是本面的一部分——换一份 `~/.PiAgent/PiAgent.jsonc` 即可能改变请求体。
 _Avoid_: 不变层（过泛）、冻结面（与「仪器冻结」混淆）、「配置文件无关」（ADR-0025 后不成立）
 

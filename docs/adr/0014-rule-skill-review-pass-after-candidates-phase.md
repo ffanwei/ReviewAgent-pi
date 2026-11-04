@@ -1,5 +1,7 @@
 # 0014. 规则 Skill 改为「Phase 5 之后追加独立 skill 检视会话」，Phase 5 消息不再被修改
 
+> **状态注记（[ADR-0038](0038-retire-byte-gates-for-capability-assertions.md)，2026-11-04）**：本 ADR 的验收「N=0 时 F 与 E 全部请求逐字节相同」随 A–E 矩阵（ADR-0024）与字节门（ADR-0038）一并退役；skill 会话本身、候选合并与审计键的决策不变。现行断言是「skill 会话不进主审 `requests[]`」「候选清单只追加在 Phase 6 消息尾部」这类结构性质。
+
 > **路径注记（[ADR-0035](0035-upstream-kernel-as-npm-deps-and-single-package.md)，2026-11-03）**：文中 `packages/{ai,agent,chord,telemetry}/…` 的 `file:line` 指 vendoring 期仓内源码树（已删除）；同名源码现由 npm 包 `@earendil-works/*`（锁 `0.85.1`）提供，npm 只发 `dist`，核对请回上游 tag `v0.85.1`。`packages/review-llm` 亦已删除。约定见 [README](README.md)。
 
 **状态**：已接受（2026-10-27，用户经 grill 逐项决策 Q1–Q46）；**部分修订（2026-10-28）**——决策 11 的资源上限由「单条命令 60s、单会话 5 min」上调为「单条命令 120s、单会话 10 min」（实测 skill 会话 158s 已贴近原 5 min 上界，bash 60s 对 pack 脚本偏紧）；**同日补充**——bash 的 shell 元字符拒绝改为只查**引号外**：`python -c "import os; print(os.getcwd())"` 合法（`shell: false` 下引号内字符不交给任何解释器，决策 7 的边界不变）；**同日再修订**——决策 7 的命令白名单（`python`/`python3`）**移除**，argv[0] 可为 PATH 上任意可执行文件（`shell: false`、env 白名单、cwd = pack 根、引号外元字符拒绝、120s、结果预算全部保留；`.cmd`/`.bat` 仍不认）

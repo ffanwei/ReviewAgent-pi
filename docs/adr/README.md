@@ -22,6 +22,7 @@
 | ADR-0024 | ADR-0027 | 产物路径里的实验段（`review-pi-cli` / `runs/vul4j`） |
 | ADR-0008 / ADR-0009 / ADR-0028 | ADR-0035 | 评测仪器归属、内核 vendoring、六包发行形态 |
 | ADR-0027（决策 2） | ADR-0036 | cwd 只留 `review-result.json` → 另加隐藏的 `.review-pi-session.json` 寻址索引 |
+| ADR-0009 / ADR-0010 / ADR-0014 的字节把守手段 | ADR-0038 | 退役「对照 DSH 历史审计真源逐字节相等」；改为结构性质 + 端到端能力断言（产品级逐字节仍保留） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

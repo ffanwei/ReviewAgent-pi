@@ -1,8 +1,7 @@
-// Zone A：系统提示（测量常量，跨 MR 字节稳定）。
+// Zone A：系统提示（跨 MR 稳定）
 //
-// 字节真源：DSH 线 t-series 审计 requests[0].messages[0].content
-// （testdata/golden/system-prompt.txt）；本文件与其逐字节一致，
-// 由 src/zonea/system-prompt.test.ts 断言。任何改动都需要显式变更记录。
+// 内容可演进（ADR-0038 退役了对外部真源的逐字节对照）。仍须满足的装配性质：
+// 非空、首尾无游离空白、点名六阶段（提示词与阶段机不能各说各话）。
 export const SYSTEM_PROMPT = `You are a senior Java code reviewer running inside a controlled review harness.
 
 ## Mission

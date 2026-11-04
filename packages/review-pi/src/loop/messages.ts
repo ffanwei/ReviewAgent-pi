@@ -1,7 +1,5 @@
-// MR 初始 user 消息构造（测量常量面：消息格式与 DSH 线逐字节一致）。
-//
-// 字节真源：DSH 线 t-series requests[0].messages[2]
-// （testdata/golden/mr-message-vul4j-1.txt），由 src/loop/messages.test.ts 断言。
+// MR 初始 user 消息构造。消息骨架与空白语义由 src/loop/messages.test.ts 把守；
+// 不再与 DSH 历史审计记录逐字节对照（ADR-0038）。
 export function buildInitialUserMessage(
   caseId: string,
   issueDescription: string,
