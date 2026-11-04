@@ -72,6 +72,48 @@ describe("planShards：按文件块贪心装箱（绝不切 hunk）", () => {
     expect(summary).toMatch(/还有 \d+ 个文件未列出/);
   });
 
+  test("同一文件的多个 hunk 永远同片（JSON 等多 hunk 文件不会被切坏）", () => {
+    const manifest = [
+      "diff --git a/package.json b/package.json",
+      "--- a/package.json",
+      "+++ b/package.json",
+      "@@ -1,3 +1,3 @@",
+      " {",
+      '-  "a": 1,',
+      '+  "a": 2,',
+      " }",
+      "@@ -40,3 +40,3 @@",
+      " {",
+      '-  "b": 1,',
+      '+  "b": 2,',
+      " }",
+    ].join("\n");
+    const source = block("src/App.ts");
+    const input = [manifest, source].join("\n");
+    const plan = planShards(input, {
+      ...LIMITS,
+      maxShardChars: Math.max(manifest.length, source.length),
+    });
+    expect(plan.shards).toHaveLength(2);
+    expect(plan.shards[0]?.files).toEqual(["package.json"]);
+    expect(plan.shards[0]?.diff).toBe(manifest);
+    expect(plan.shards.map((shard) => shard.diff).join("\n")).toBe(input);
+  });
+
+  test("正文行以 diff --git 开头也不会被误判为块边界（有 +/-/空格前缀）", () => {
+    const tricky = [
+      "diff --git a/notes.txt b/notes.txt",
+      "--- a/notes.txt",
+      "+++ b/notes.txt",
+      "@@ -1,2 +1,2 @@",
+      "-diff --git a/old b/old",
+      "+diff --git a/new b/new",
+    ].join("\n");
+    const plan = planShards(tricky, LIMITS);
+    expect(plan.shards).toHaveLength(1);
+    expect(plan.shards[0]?.files).toEqual(["notes.txt"]);
+  });
+
   test("前置内容（第一个 diff --git 之前）也参与装箱且可还原", () => {
     const input = `some preamble\n${block("src/A.java")}`;
     const plan = planShards(input, LIMITS);
