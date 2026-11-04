@@ -67,6 +67,38 @@ export type RunProgressEvent =
       readonly toolCallCount: number;
       /** 失败/降级原因（已截断）；正常结束时缺席 */
       readonly detail?: string;
+    }
+  /**
+   * run 级起止（ADR-0037）：也是既有事实的投影——`startedAt` / `runId` /
+   * `usage` / `findings` 全部取自 `runReview` 已有的局部量与落盘产物。
+   *
+   * 与其余四类一样不进审计、不改 wire 字节、不改退出码；CLI 状态行忽略它。
+   * `run.end` 的 `runId` 在**异常路径**可能缺席：`runId` 由首次模型请求时刻
+   * 决定，run 在首次请求之前就失败时它从未存在过。
+   */
+  | {
+      readonly kind: "run";
+      readonly state: "start";
+      readonly caseId: string;
+      readonly model: string;
+      /** run 起始时刻（ISO-8601） */
+      readonly startedAt: string;
+    }
+  | {
+      readonly kind: "run";
+      readonly state: "end";
+      readonly status: "ok" | "failed";
+      /** 产物 id（`buildRunId(firstRequestAt)`）；异常路径可能缺席 */
+      readonly runId?: string;
+      readonly durationMs: number;
+      /** 成功路径：本次 run 的累计用量（含规则 Skill 会话） */
+      readonly usage?: LlmUsage;
+      readonly truncated?: boolean;
+      /** 成功路径才有；`count` 与 `bySeverity` 相加应等于 findings 总数 */
+      readonly findings?: {
+        readonly count: number;
+        readonly bySeverity: Readonly<Record<"P0" | "P1" | "P2" | "P3", number>>;
+      };
     };
 
 /** 进度消费者的唯一入口形状（CLI 注入；缺省不注入 = 零输出、零行为变化） */

@@ -391,3 +391,125 @@ describe("configSnapshot 家目录归一化（ADR-0027）", () => {
     expect(JSON.stringify(snapshot)).not.toContain("sk-x");
   });
 });
+
+describe("mcp 配置块（ADR-0037）", () => {
+  function withMcp(mcp: string): string {
+    return `{
+      "version": 1,
+      "reviewer": { "apiKey": "sk-sentinel", "baseUrl": "https://gw.example.com/v1" },
+      "mcp": ${mcp}
+    }`;
+  }
+
+  const VALID = `{
+    "servers": {
+      "ops": {
+        "transport": "http",
+        "url": "https://mcp.example.com/mcp",
+        "headers": { "Authorization": "Bearer top-secret-token" },
+        "timeoutMs": 1234
+      }
+    },
+    "report": { "server": "ops", "tool": "report_events" }
+  }`;
+
+  test("未配置 mcp → null，扁平值里不出现 mcp.*", () => {
+    const { config } = loadConfig({ configPath: writeConfig(minimalConfig()) });
+    expect(config.mcp).toBeNull();
+    const snapshot = configSnapshot(config);
+    expect(Object.keys(snapshot.values).some((key) => key.startsWith("mcp."))).toBe(false);
+    expect(snapshot.secret).toEqual({ "reviewer.apiKey": "set" });
+  });
+
+  test("有效配置：缺省值补齐，headers 只进 secret，值里不含秘密", () => {
+    const { config } = loadConfig({ configPath: writeConfig(withMcp(VALID)) });
+    expect(config.mcp).not.toBeNull();
+    expect(config.mcp?.report).toEqual({
+      server: "ops",
+      tool: "report_events",
+      include: ["run.start", "run.end", "phase", "request.end"],
+      batch: { maxEvents: 50, maxDelayMs: 2_000 },
+      queue: { maxEvents: 1_000 },
+      flushTimeoutMs: 5_000,
+      findings: "summary",
+    });
+    expect(config.mcp?.servers.ops).toMatchObject({
+      transport: "http",
+      url: "https://mcp.example.com/mcp",
+      timeoutMs: 1_234,
+    });
+
+    const snapshot = configSnapshot(config);
+    expect(snapshot.secret["mcp.servers.ops.headers"]).toBe("set");
+    expect(snapshot.values["mcp.report.tool"]).toBe("report_events");
+    expect(snapshot.values["mcp.servers.ops.url"]).toBe("https://mcp.example.com/mcp");
+    // 秘密面纪律：值、长度、header 名都不出现在快照里
+    expect(JSON.stringify(snapshot)).not.toContain("top-secret-token");
+    expect(snapshot.overridden).toContain("mcp.report.tool");
+    expect(snapshot.overridden).toContain("mcp.servers.ops.headers");
+  });
+
+  test("只有 servers 没有 report → null（配置了但不上报）", () => {
+    const { config } = loadConfig({
+      configPath: writeConfig(withMcp(`{ "servers": { "ops": { "url": "https://x.example.com/mcp" } } }`)),
+    });
+    expect(config.mcp).toBeNull();
+  });
+
+  test("report.server 指向不存在的服务端 → ConfigError", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+            "report": { "server": "nope", "tool": "report_events" }
+          }`),
+        ),
+      }),
+    ).toThrow(/mcp\.report\.server must name a configured server/);
+  });
+
+  test("include 里的未知类型 → ConfigError（fail fast，不静默忽略）", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+            "report": { "server": "ops", "tool": "report_events", "include": ["run.starts"] }
+          }`),
+        ),
+      }),
+    ).toThrow(/mcp\.report\.include\[0\]/);
+  });
+
+  test("transport 只允许 http（stdio 不在 v1 范围内）", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "transport": "stdio", "url": "https://x.example.com/mcp" } },
+            "report": { "server": "ops", "tool": "report_events" }
+          }`),
+        ),
+      }),
+    ).toThrow(/transport must be "http"/);
+  });
+
+  test("findings 不支持 full（正文永不出进程）", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+            "report": { "server": "ops", "tool": "report_events", "findings": "full" }
+          }`),
+        ),
+      }),
+    ).toThrow(/findings must be "none" or "summary"/);
+  });
+
+  test("内置模板里 mcp 整块是注释：解析结果仍是 null", () => {
+    const { config } = loadConfig({ configPath: writeConfig(DEFAULT_CONFIG_TEMPLATE) });
+    expect(config.mcp).toBeNull();
+  });
+});

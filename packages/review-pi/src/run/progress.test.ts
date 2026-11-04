@@ -103,6 +103,8 @@ function sequenceOf(events: readonly RunProgressEvent[]): string[] {
         return event.state === "start" ? `tool ${event.name} start` : `tool ${event.name} end`;
       case "skill":
         return `skill ${event.skill} ${event.state}`;
+      case "run":
+        return `run ${event.state}`;
     }
   });
 }
@@ -156,6 +158,7 @@ test("阶段/请求/工具/skill 事件按发生序投影，请求 usage 总和�
 
   expect(script.requests).toHaveLength(9);
   expect(sequenceOf(events)).toEqual([
+    "run start",
     "phase 1.1",
     "req 1 start",
     "req 1 end",
@@ -187,6 +190,7 @@ test("阶段/请求/工具/skill 事件按发生序投影，请求 usage 总和�
     "phase 1.6",
     "req 7 start",
     "req 7 end",
+    "run end",
   ]);
 
   // 阶段事件带轮次与 1-based 序号（不做百分比，只是「第几步」）
@@ -229,6 +233,38 @@ test("阶段/请求/工具/skill 事件按发生序投影，请求 usage 总和�
 
   // 对账：逐请求 usage 之和 = 运行记录 usage（含 skill 会话折算）
   expect(totalUsage(events)).toEqual(run.record.baseline.usage);
+
+  // run 级事件：起点在最前、终点在最后；终点带产物 id 与 findings 摘要
+  expect(events[0]).toMatchObject({
+    kind: "run",
+    state: "start",
+    caseId: "VUL4J-1",
+    model: run.record.model,
+  });
+  const runEnd = events.at(-1);
+  expect(runEnd).toMatchObject({
+    kind: "run",
+    state: "end",
+    status: "ok",
+    runId: run.runId,
+    truncated: false,
+    usage: run.record.baseline.usage,
+    findings: {
+      count: run.record.baseline.findings.length,
+      // 摘要的严重度分布与 findings 本身一致（进度事件不带正文）
+      bySeverity: { P0: expect.any(Number), P1: expect.any(Number), P2: expect.any(Number), P3: expect.any(Number) },
+    },
+  });
+  const start = events[0];
+  expect(
+    start !== undefined && start.kind === "run" && start.state === "start"
+      ? start.startedAt
+      : undefined,
+  ).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  // findings 正文永不可进进度事件（ADR-0037 字段白名单）
+  const runEvents = JSON.stringify(events.filter((event) => event.kind === "run"));
+  expect(runEvents).not.toContain("evidence");
+  expect(runEvents).not.toContain("description");
 
   // 投影不改落盘产物：记录与审计里没有 progress 键，也没有事件面字段
   expect(JSON.stringify(run.record)).not.toContain("\"progress\"");

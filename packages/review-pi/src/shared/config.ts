@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
 
+import { MCP_REPORT_EVENT_TYPES, type McpReportEventType } from "../contracts/mcp-report.js";
+
 /**
  * 用户级运行配置（ADR-0025）：`~/.PiAgent/PiAgent.jsonc`（JSONC）。
  *
@@ -197,12 +199,49 @@ export interface PresentationSettings {
   readonly engine: string | null;
 }
 
+/** MCP 服务端连接（ADR-0037：v1 只有 HTTP 传输） */
+export interface McpServerSettings {
+  readonly transport: "http";
+  readonly url: string;
+  /** 秘密：审计 / stdout / stderr / `config show` 一律只报 set | missing */
+  readonly headers: Readonly<Record<string, string>>;
+  readonly timeoutMs: number;
+}
+
+/** 上报批次与背压（数值在装载期已校验过范围） */
+export interface McpReportBatchSettings {
+  readonly maxEvents: number;
+  readonly maxDelayMs: number;
+}
+
+/** 上报策略（ADR-0037 决策 6） */
+export interface McpReportSettings {
+  /** 指向 `servers` 里的名字；装载期校验存在 */
+  readonly server: string;
+  /** 单槽位接收工具（批量塞进 `events` 数组） */
+  readonly tool: string;
+  readonly include: readonly McpReportEventType[];
+  readonly batch: McpReportBatchSettings;
+  readonly queue: { readonly maxEvents: number };
+  readonly flushTimeoutMs: number;
+  /** findings 出站档位：v1 只支持 none / summary（正文永不出进程） */
+  readonly findings: "none" | "summary";
+}
+
+/** `mcp` 配置块；未配置 = null（零建连、零请求） */
+export interface McpSettings {
+  readonly servers: Readonly<Record<string, McpServerSettings>>;
+  readonly report: McpReportSettings;
+}
+
 export interface ResolvedConfig {
   readonly version: typeof CONFIG_VERSION;
   readonly reviewer: ReviewerSettings;
   readonly model: ModelSettings;
   readonly presentation: PresentationSettings;
   readonly limits: Limits;
+  /** MCP 上报（ADR-0037）：未配置 = null */
+  readonly mcp: McpSettings | null;
   /** 生效配置文件绝对路径（缺省 home 路径或 --config 解析结果） */
   readonly path: string;
   /** 文件是否存在（false = 全缺省） */
@@ -336,8 +375,24 @@ export function configSnapshot(
             Object.entries(values).map(([key, value]) => [key, collapseHomeDeep(value, home)]),
           ) as Readonly<Record<string, unknown>>),
     overridden: config.overridden,
-    secret: { "reviewer.apiKey": config.reviewer.apiKey === null ? "missing" : "set" },
+    secret: secretMapOf(config),
   };
+}
+
+/**
+ * 秘密状态（只报 set / missing，绝不回显值、长度或 header 名）。
+ * `reviewer.apiKey` 与每个 MCP 服务端的 `headers` 同等待遇（ADR-0037 决策 6）。
+ */
+function secretMapOf(config: ResolvedConfig): Readonly<Record<string, "set" | "missing">> {
+  const secret: Record<string, "set" | "missing"> = {
+    "reviewer.apiKey": config.reviewer.apiKey === null ? "missing" : "set",
+  };
+  if (config.mcp !== null) {
+    for (const [name, server] of Object.entries(config.mcp.servers)) {
+      secret[`mcp.servers.${name}.headers`] = Object.keys(server.headers).length > 0 ? "set" : "missing";
+    }
+  }
+  return secret;
 }
 
 /** 家目录前缀折叠：`C:\Users\x\a` / `/home/x/a` → `~/a`（POSIX 分隔符） */
@@ -448,6 +503,7 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
   }
 
   const limits = parseLimits(root.limits, warnings);
+  const mcp = parseMcp(root.mcp, warnings);
 
   const config: ResolvedConfig = {
     version: CONFIG_VERSION,
@@ -455,6 +511,7 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
     model: { default: modelDefault.trim(), presentation: modelPresentation?.trim() ?? null },
     presentation: { engine: engine?.trim() ?? null },
     limits,
+    mcp,
     path,
     exists,
     overridden: [],
@@ -487,6 +544,7 @@ function buildDefaults({
     model: { default: DEFAULT_MODEL_ID, presentation: null },
     presentation: { engine: null },
     limits: DEFAULT_LIMITS,
+    mcp: null,
     path,
     exists: false,
     overridden: [],
@@ -495,10 +553,23 @@ function buildDefaults({
   return { ...base, digest: digestOf(effectiveValues(base)) };
 }
 
-const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "limits"] as const;
+const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "limits", "mcp"] as const;
 const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
 const PRESENTATION_KEYS = ["engine"] as const;
+const MCP_KEYS = ["servers", "report"] as const;
+const MCP_SERVER_KEYS = ["transport", "url", "headers", "timeoutMs"] as const;
+const MCP_REPORT_KEYS = [
+  "server",
+  "tool",
+  "include",
+  "batch",
+  "queue",
+  "flushTimeoutMs",
+  "findings",
+] as const;
+const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
+const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
 const LIMITS_KEYS = ["timeouts", "concurrency", "boundary", "archive", "micro"] as const;
 const TIMEOUT_KEYS = [
@@ -612,6 +683,156 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
 }
 
 // ---------------------------------------------------------------------------
+// MCP 上报（ADR-0037）
+// ---------------------------------------------------------------------------
+
+/** 出站事件类型合法值（单一源：`contracts/mcp-report.ts`） */
+const MCP_EVENT_TYPES: ReadonlySet<string> = new Set(MCP_REPORT_EVENT_TYPES);
+
+/** 缺省上报事件集：`tool.*` / `skill.*` 频率最高、对机器流水价值最低，默认不发 */
+const DEFAULT_MCP_INCLUDE: readonly McpReportEventType[] = [
+  "run.start",
+  "run.end",
+  "phase",
+  "request.end",
+];
+
+/**
+ * `mcp` 块：未配置（或只有 servers 没有 report）= null，不是错误。
+ * 有 report 但配置不自洽 = ConfigError（启动期 fail fast，不进主链）。
+ */
+function parseMcp(raw: unknown, warnings: string[]): McpSettings | null {
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  const mcp = asObject(raw, "mcp", warnings);
+  assertKnownKeys(mcp, MCP_KEYS, "mcp", warnings);
+  if (mcp.report === undefined || mcp.report === null) {
+    return null;
+  }
+
+  const serversObj = optionalObject(mcp.servers, "mcp.servers", warnings);
+  const servers: Record<string, McpServerSettings> = {};
+  for (const [name, entry] of Object.entries(serversObj)) {
+    if (name.trim() === "") {
+      throw new ConfigError(`${CONFIG_FILE_NAME}: mcp.servers keys must be non-empty server names`);
+    }
+    servers[name] = parseMcpServer(name, entry, warnings);
+  }
+
+  const reportObj = asObject(mcp.report, "mcp.report", warnings);
+  assertKnownKeys(reportObj, MCP_REPORT_KEYS, "mcp.report", warnings);
+  const server = requiredNonEmptyString(reportObj.server, "mcp.report.server");
+  const tool = requiredNonEmptyString(reportObj.tool, "mcp.report.tool");
+  if (servers[server] === undefined) {
+    const known = Object.keys(servers);
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: mcp.report.server must name a configured server (got ${JSON.stringify(server)}; ` +
+        `${known.length === 0 ? "mcp.servers is empty" : `known: ${known.join(", ")}`})`,
+    );
+  }
+  const include = parseMcpInclude(reportObj.include);
+
+  const batchObj = optionalObject(reportObj.batch, "mcp.report.batch", warnings);
+  assertKnownKeys(batchObj, MCP_BATCH_KEYS, "mcp.report.batch", warnings);
+  const batch: McpReportBatchSettings = {
+    maxEvents: intOr(batchObj.maxEvents, "mcp.report.batch.maxEvents", 1, 1_000, 50),
+    maxDelayMs: intOr(batchObj.maxDelayMs, "mcp.report.batch.maxDelayMs", 0, 600_000, 2_000),
+  };
+
+  const queueObj = optionalObject(reportObj.queue, "mcp.report.queue", warnings);
+  assertKnownKeys(queueObj, MCP_QUEUE_KEYS, "mcp.report.queue", warnings);
+  const queue = {
+    maxEvents: intOr(queueObj.maxEvents, "mcp.report.queue.maxEvents", 1, 100_000, 1_000),
+  };
+
+  const flushTimeoutMs = intOr(reportObj.flushTimeoutMs, "mcp.report.flushTimeoutMs", 0, 600_000, 5_000);
+
+  const findingsRaw = optionalString(reportObj.findings, "mcp.report.findings")?.trim() ?? "summary";
+  if (findingsRaw !== "none" && findingsRaw !== "summary") {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: mcp.report.findings must be "none" or "summary" (got ${JSON.stringify(findingsRaw)}; ` +
+        `finding 正文永不出进程，要正文请读 reviews_en.json)`,
+    );
+  }
+
+  return {
+    servers,
+    report: { server, tool, include, batch, queue, flushTimeoutMs, findings: findingsRaw },
+  };
+}
+
+function parseMcpServer(name: string, raw: unknown, warnings: string[]): McpServerSettings {
+  const path = `mcp.servers.${name}`;
+  const obj = asObject(raw, path, warnings);
+  assertKnownKeys(obj, MCP_SERVER_KEYS, path, warnings);
+
+  const transport = optionalString(obj.transport, `${path}.transport`)?.trim() ?? "http";
+  if (transport !== "http") {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: ${path}.transport must be "http" (got ${JSON.stringify(transport)}；` +
+        `ADR-0037 的 v1 只做 HTTP，stdio 不在范围内)`,
+    );
+  }
+
+  const url = requiredNonEmptyString(obj.url, `${path}.url`);
+  if (!/^https?:\/\//.test(url)) {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: ${path}.url must start with http:// or https:// (got ${JSON.stringify(url)})`,
+    );
+  }
+
+  const headersObj = optionalObject(obj.headers, `${path}.headers`, warnings);
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headersObj)) {
+    if (typeof value !== "string") {
+      throw new ConfigError(`${CONFIG_FILE_NAME}: ${path}.headers.${key} must be a string`);
+    }
+    headers[key] = value;
+  }
+
+  return {
+    transport: "http",
+    url,
+    headers,
+    timeoutMs: intOr(obj.timeoutMs, `${path}.timeoutMs`, 100, 600_000, 10_000),
+  };
+}
+
+/** `include` 缺省 = 稳定默认集；未知类型 fail fast（不静默忽略拼错的类型） */
+function parseMcpInclude(raw: unknown): readonly McpReportEventType[] {
+  if (raw === undefined || raw === null) {
+    return DEFAULT_MCP_INCLUDE;
+  }
+  if (!Array.isArray(raw)) {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: mcp.report.include must be an array of event types (got ${describe(raw)})`,
+    );
+  }
+  const include: McpReportEventType[] = [];
+  raw.forEach((entry, index) => {
+    if (typeof entry !== "string" || !MCP_EVENT_TYPES.has(entry)) {
+      throw new ConfigError(
+        `${CONFIG_FILE_NAME}: mcp.report.include[${String(index)}] must be one of ` +
+          `${MCP_REPORT_EVENT_TYPES.join(", ")} (got ${JSON.stringify(entry)})`,
+      );
+    }
+    if (!include.includes(entry as McpReportEventType)) {
+      include.push(entry as McpReportEventType);
+    }
+  });
+  return include;
+}
+
+function requiredNonEmptyString(value: unknown, path: string): string {
+  const text = optionalString(value, path)?.trim();
+  if (text === undefined || text === "") {
+    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} is required (non-empty string)`);
+  }
+  return text;
+}
+
+// ---------------------------------------------------------------------------
 // 扁平值 / 摘要
 // ---------------------------------------------------------------------------
 
@@ -627,6 +848,23 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     for (const [key, value] of Object.entries(entries)) {
       values[`limits.${group}.${key}`] = value;
     }
+  }
+  const mcp = config.mcp;
+  if (mcp !== null) {
+    // headers 是秘密：不进 values（与 reviewer.apiKey 同待遇），只在 secret 里报 set/missing
+    for (const [name, server] of Object.entries(mcp.servers)) {
+      values[`mcp.servers.${name}.transport`] = server.transport;
+      values[`mcp.servers.${name}.url`] = server.url;
+      values[`mcp.servers.${name}.timeoutMs`] = server.timeoutMs;
+    }
+    values["mcp.report.batch.maxDelayMs"] = mcp.report.batch.maxDelayMs;
+    values["mcp.report.batch.maxEvents"] = mcp.report.batch.maxEvents;
+    values["mcp.report.findings"] = mcp.report.findings;
+    values["mcp.report.flushTimeoutMs"] = mcp.report.flushTimeoutMs;
+    values["mcp.report.include"] = mcp.report.include;
+    values["mcp.report.queue.maxEvents"] = mcp.report.queue.maxEvents;
+    values["mcp.report.server"] = mcp.report.server;
+    values["mcp.report.tool"] = mcp.report.tool;
   }
   return sortKeys(values);
 }
@@ -664,6 +902,23 @@ function recordOverrides(root: Record<string, unknown>, overridden: Set<string>)
   mark("reviewer", asRecordOrUndefined(root.reviewer));
   mark("model", asRecordOrUndefined(root.model));
   mark("presentation", asRecordOrUndefined(root.presentation));
+  const mcp = asRecordOrUndefined(root.mcp);
+  if (mcp !== undefined) {
+    // 逐叶记账：`config show` 的 (file|default) 标记按前缀匹配，只记 "mcp.servers" 不够
+    for (const [name, entry] of Object.entries(asRecordOrUndefined(mcp.servers) ?? {})) {
+      const obj = asRecordOrUndefined(entry);
+      if (obj === undefined) {
+        overridden.add(`mcp.servers.${name}`);
+        continue;
+      }
+      for (const key of Object.keys(obj)) {
+        overridden.add(`mcp.servers.${name}.${key}`);
+      }
+    }
+    for (const key of Object.keys(asRecordOrUndefined(mcp.report) ?? {})) {
+      overridden.add(`mcp.report.${key}`);
+    }
+  }
   const limits = asRecordOrUndefined(root.limits);
   if (limits !== undefined) {
     for (const [group, entry] of Object.entries(limits)) {
@@ -930,6 +1185,32 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     // null = 不投影（英文直通）；模块路径按本配置文件所在目录解析（ADR-0026）。
     "engine": ${enginePath}
   },
+
+  // MCP 上报（ADR-0037）：把进度 / 状态 / 结果外发给已有的 MCP 服务（HTTP + JSON-RPC）。
+  // 整块注释掉 = 不上报（零建连、零请求、退出码与产物字节都不变）；要用就取消注释。
+  // "mcp": {
+  //   "servers": {
+  //     "ops": {
+  //       // v1 只支持 http（stdio 不在范围内）。
+  //       "transport": "http",
+  //       "url": "https://mcp.example.com/mcp",
+  //       // 秘密：与 reviewer.apiKey 同等待遇（审计 / 日志 / config show 只报 set 或 missing）。
+  //       "headers": { "Authorization": "Bearer <token>" },
+  //       "timeoutMs": 10000
+  //     }
+  //   },
+  //   "report": {
+  //     "server": "ops",
+  //     "tool": "report_events",
+  //     // 缺省只报 run.start / run.end / phase / request.end；tool.* 与 skill.* 频率最高。
+  //     "include": ["run.start", "run.end", "phase", "request.end"],
+  //     "batch": { "maxEvents": 50, "maxDelayMs": 2000 },
+  //     "queue": { "maxEvents": 1000 },
+  //     "flushTimeoutMs": 5000,
+  //     // findings 出站档位：none / summary；finding 正文永不出进程。
+  //     "findings": "summary"
+  //   }
+  // },
 
   // 资源上限：毫秒 / 条数 / 字节。可调；超出允许范围会在装载期 fail fast。
   "limits": {

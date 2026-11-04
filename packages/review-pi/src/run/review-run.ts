@@ -3,7 +3,7 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audit-writer.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
-import type { RunProgressSink } from "../contracts/progress.js";
+import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import type { RuleSkillAudit, RuleSkillPassRecord, RunAudit, RunResult } from "../contracts/run.js";
 import { buildRunRecord, runDirPath, writeRunRecord, type RunRecord } from "../experiment/run-record.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
@@ -109,8 +109,41 @@ export interface ReviewRunResult {
   readonly skillBashCalls: number;
 }
 
+/**
+ * 单案全链入口：**先发 run 起点，再跑主体，成败都补 run 终点**（ADR-0037）。
+ *
+ * run 起止也是进度事件的投影（ADR-0016 三条纪律原样继承）：消费方（CLI 渲染 /
+ * 上报）只看见既有留痕里已有的事实。`run.end` 的 `runId` 只在成功路径出现——
+ * 它由首次模型请求时刻决定（ADR-0032），在首次请求之前失败时从未存在过。
+ */
 export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult> {
   const startedAt = input.startedAt ?? new Date();
+  const emit = input.onProgress ?? NO_OP_PROGRESS_SINK;
+  emit({
+    kind: "run",
+    state: "start",
+    caseId: input.caseId,
+    model: input.modelId ?? REVIEW_MODEL_ID,
+    startedAt: startedAt.toISOString(),
+  });
+  try {
+    return await runReviewInner(input, startedAt, emit);
+  } catch (error) {
+    emit({
+      kind: "run",
+      state: "end",
+      status: "failed",
+      durationMs: Math.max(0, Date.now() - startedAt.getTime()),
+    });
+    throw error;
+  }
+}
+
+async function runReviewInner(
+  input: ReviewRunInput,
+  startedAt: Date,
+  emit: RunProgressSink,
+): Promise<ReviewRunResult> {
   const modelId = input.modelId ?? REVIEW_MODEL_ID;
   const runtime = input.runtime ?? DEFAULT_REVIEW_RUNTIME;
   // MR 边界护栏（#12）：纯度量，不触碰请求字节面：界内 degraded=false 全程零介入
@@ -252,6 +285,16 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     result,
   });
   const recordPath = await persistRunRecord(input, record);
+  emit({
+    kind: "run",
+    state: "end",
+    status: "ok",
+    runId,
+    durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
+    usage: outcome.usage,
+    truncated: outcome.audit.truncated,
+    findings: summarizeFindings(outcome.findings),
+  });
   return {
     runId,
     record,
@@ -282,6 +325,22 @@ function persistRunRecord(input: ReviewRunInput, record: RunRecord): Promise<str
 /** 审计文件目录：`<runsRoot>/audit`（ADR-0032：无 case / rep / audit 中间层） */
 function buildAuditDir(input: ReviewRunInput): string {
   return path.join(input.runsRoot, "audit");
+}
+
+/**
+ * findings 摘要（进度投影用）：只有条数与严重度分布。
+ * 正文（title / description / evidence / 落点）**不进**进度事件——上报侧
+ * 默认也只允许这一档，正文的出口永远只有 `reviews_en.json`（ADR-0037 决策 3）。
+ */
+function summarizeFindings(findings: readonly Finding[]): {
+  readonly count: number;
+  readonly bySeverity: Readonly<Record<"P0" | "P1" | "P2" | "P3", number>>;
+} {
+  const bySeverity: Record<"P0" | "P1" | "P2" | "P3", number> = { P0: 0, P1: 0, P2: 0, P3: 0 };
+  for (const finding of findings) {
+    bySeverity[finding.severity] += 1;
+  }
+  return { count: findings.length, bySeverity };
 }
 
 /**

@@ -42,8 +42,10 @@ import { basename, dirname, join, resolve } from "node:path";
 
 import { calculateCost } from "@earendil-works/pi-ai";
 
+import type { RunProgressSink } from "../contracts/progress.js";
 import { runDirPath } from "../experiment/run-record.js";
 import { writeSessionIndex } from "../export/session-index.js";
+import { createMcpReporter, resolveReportConfig, type McpReporter } from "../mcp/index.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
@@ -60,6 +62,7 @@ import {
 } from "../shared/config.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
+import { REVIEW_PI_VERSION } from "../shared/version.js";
 import { mrJsonToUnifiedDiff } from "../zoneb/mr-json.js";
 import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
 import { formatReviewArgs } from "./args-echo.js";
@@ -110,6 +113,30 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // 收日志时缺省关；--progress / --no-progress 覆盖。缺省关时只保留收尾摘要
   // 一行（stderr，可 grep），不出现阶段/请求/工具事件行。
   const progress = startProgress(args, modelId);
+  // MCP 上报（ADR-0037）：配置非法 = 装载期已 fail fast；建连 / 握手失败 = 降级
+  // （不建 sink，照常检视）。上报是旁路：任何失败都不改变退出码，也不进审计。
+  const reportConfig = resolveReportConfig(config);
+  let reporter: McpReporter | null = null;
+  if (reportConfig !== null) {
+    try {
+      reporter = await createMcpReporter({
+        config: reportConfig,
+        clientVersion: REVIEW_PI_VERSION,
+      });
+    } catch (error) {
+      process.stderr.write(
+        `review-pi: MCP 上报不可用（${describeReportFailure(error)}），继续检视\n`,
+      );
+    }
+  }
+  const activeReporter = reporter;
+  const onProgress: RunProgressSink | undefined =
+    activeReporter === null
+      ? progress?.onEvent
+      : (event) => {
+          progress?.onEvent(event);
+          activeReporter.sink(event);
+        };
   const startedAt = Date.now();
   let reviewed: Awaited<ReturnType<typeof runReview>>;
   try {
@@ -129,12 +156,25 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
       ...(args.ruleSkillDirs !== undefined ? { ruleSkillDirs: args.ruleSkillDirs } : {}),
       ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
-      ...(progress !== undefined ? { onProgress: progress.onEvent } : {}),
+      ...(onProgress !== undefined ? { onProgress } : {}),
     });
   } catch (error) {
     // 异常路径也要擦掉状态行：残影会把错误消息顶成半行
     progress?.dispose();
     throw error;
+  } finally {
+    if (activeReporter !== null && reportConfig !== null) {
+      // 收尾尽力发完；失败 / 超时都只落一行 stderr，不影响已产出的结果与退出码
+      try {
+        const stats = await activeReporter.flush(reportConfig.flushTimeoutMs);
+        process.stderr.write(
+          `review-pi: MCP 上报 sent ${String(stats.sent)} / failed ${String(stats.failed)} / dropped ${String(stats.dropped)}\n`,
+        );
+      } catch {
+        // 旁路：连统计都拿不到也不改变任何结果
+      }
+      await activeReporter.close().catch(() => undefined);
+    }
   }
   const { record, runId, auditPath, reviewsPath, transcriptPath } = reviewed;
   // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
@@ -413,6 +453,16 @@ async function runSmokeCommand(args: SmokeCliArgs, config: ResolvedConfig): Prom
 /** stdout 整写（flush 后 resolve——退出前保证字节已落地） */
 function writeStdout(text: string): Promise<void> {
   return new Promise<void>((flush) => process.stdout.write(text, () => flush()));
+}
+
+/**
+ * 上报不可用的 stderr 一行：只报事实（协议 / 网络 / 状态码），不回显 headers。
+ * 截断到 160 字符，避免服务端把长消息灌进日志。
+ */
+function describeReportFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const oneLine = message.replace(/\s+/g, " ").trim();
+  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
 }
 
 /**
