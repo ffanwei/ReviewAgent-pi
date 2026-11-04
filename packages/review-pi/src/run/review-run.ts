@@ -4,7 +4,7 @@ import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audi
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
-import type { RuleSkillAudit, RuleSkillPassRecord, RunAudit, RunResult } from "../contracts/run.js";
+import type { RuleSkillAudit, RuleSkillPassRecord, RunAudit, RunResult, MrFilterRecord } from "../contracts/run.js";
 import { buildRunRecord, runDirPath, writeRunRecord, type RunRecord } from "../experiment/run-record.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
 import { buildTranscript, writeTranscript, type AgentTranscriptCapture } from "../export/transcript.js";
@@ -19,6 +19,7 @@ import { buildReviewToolkit, type ReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
 import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
+import { assertDiffWithinCharLimit, filterDiffForReview, toMrFilterRecord } from "./mr-input.js";
 
 // 单案全链入口（ADR-0024：配置矩阵删除后只剩唯一形态）：
 // MR 初始上下文 → pi-agent-core Agent 三钩子循环（七工具 + 轮次上界 + Ledger
@@ -107,6 +108,11 @@ export interface ReviewRunResult {
   readonly modelCalls: number;
   /** 规则 Skill 会话里的 `bash` 调用数（指标 `toolCalls` 不含它，摘要行单列） */
   readonly skillBashCalls: number;
+  /**
+   * 输入预过滤留痕（大 diff 第一期）：无剔除时缺席；CLI 据此在 stderr 报一行。
+   * 与审计尾键 `mrFilter` 同源（同一投影，不另算）。
+   */
+  readonly mrFilter?: MrFilterRecord;
 }
 
 /**
@@ -146,18 +152,27 @@ async function runReviewInner(
 ): Promise<ReviewRunResult> {
   const modelId = input.modelId ?? REVIEW_MODEL_ID;
   const runtime = input.runtime ?? DEFAULT_REVIEW_RUNTIME;
+  // 大 diff 第一期（内核入口唯一咽喉）：
+  // 1) 预过滤噪声文件（lockfile / 生成物 / minified / 二进制），整块剔除、
+  //    绝不切 hunk；2) 过滤后再过体积门（超限直接抛错，不把注定失败的请求
+  //    发给模型）。过滤清单经审计尾键 `mrFilter` 与 stderr 一行留痕。
+  const filtered = filterDiffForReview(input.diff);
+  assertDiffWithinCharLimit(filtered.diff, runtime.limits.boundary.maxDiffChars);
+  const diff = filtered.diff;
+  const mrFilter = toMrFilterRecord(filtered);
   // MR 边界护栏（#12）：纯度量，不触碰请求字节面：界内 degraded=false 全程零介入
   // （缺席省键），超界/不可度量只追加结果尾键（domainWarning + 审计 mrBoundary）。
   // ADR-0025：界值来自 `limits.boundary`；两维皆 null = 护栏停用（不度量不告警）。
-  const boundary = guardMrBoundary(input.diff, runtime.limits.boundary);
+  // 度量对象是**过滤后**的 diff：过滤剔掉的噪声不应把 MR 推过边界。
+  const boundary = guardMrBoundary(diff, runtime.limits.boundary);
 
   const initialContextMessages = [
-    { role: "user" as const, content: buildInitialUserMessage(input.caseId, input.issueDescription, input.diff) },
+    { role: "user" as const, content: buildInitialUserMessage(input.caseId, input.issueDescription, diff) },
   ];
 
   const toolkit = buildReviewToolkit({
     repoPath: input.repoPath,
-    diff: input.diff,
+    diff,
     runtime,
     ledgerMode: "enabled",
   });
@@ -186,7 +201,7 @@ async function runReviewInner(
   const skillToolkitFor = (seed: readonly LedgerEntry[]): ReviewToolkit =>
     buildReviewToolkit({
       repoPath: input.repoPath,
-      diff: input.diff,
+      diff,
       runtime,
       ledger: createContextLedger(seed),
     });
@@ -242,6 +257,8 @@ async function runReviewInner(
     ...(outcome.audit.ledger !== undefined ? { ledger: outcome.audit.ledger } : {}),
     // 护栏降级留痕（#12）：界内省键（缺席省键纪律——审计键序只在尾部扩展）
     ...(boundary.degraded ? { mrBoundary: boundary.mrBoundary } : {}),
+    // 输入预过滤留痕（大 diff 第一期）：无剔除省键
+    ...(mrFilter !== undefined ? { mrFilter } : {}),
     // 生效配置快照（ADR-0025）：只进审计文件，stdout 键集不变
     ...(input.config !== undefined ? { config: input.config } : {}),
   });
@@ -308,6 +325,7 @@ async function runReviewInner(
       outcome.audit.requests.length +
       outcome.skillPassLog.reduce((sum, entry) => sum + entry.requestCount, 0),
     skillBashCalls: outcome.skillBashCalls,
+    ...(mrFilter !== undefined ? { mrFilter } : {}),
   };
 }
 

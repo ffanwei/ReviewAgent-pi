@@ -51,6 +51,7 @@ import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
+import { formatMrFilterNotice } from "../run/mr-input.js";
 import { runExportCommand } from "./export-command.js";
 import {
   ConfigError,
@@ -182,6 +183,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     process.stderr.write(
       "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill 均未给出；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n",
     );
+  }
+  // 输入预过滤（大 diff 第一期）：剔了就必须可见（明细在审计 mrFilter）
+  if (reviewed.mrFilter !== undefined) {
+    process.stderr.write(`review-pi: ${formatMrFilterNotice(reviewed.mrFilter)}\n`);
   }
   // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态。
   // 摘要与审计同源（usage / 请求 / 工具 / Ledger 命中），所以投影的调用不计入

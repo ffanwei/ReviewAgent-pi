@@ -52,7 +52,18 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
       description: "Return the unified diff of the merge request under review.",
       parametersJson: JSON.stringify({
         type: "object",
-        properties: {},
+        properties: {
+          limit: {
+            type: "integer",
+            minimum: 1,
+            description: "Maximum number of diff lines to return (page size).",
+          },
+          offset: {
+            type: "integer",
+            minimum: 1,
+            description: "1-based line number of the first diff line to return.",
+          },
+        },
         required: [],
         additionalProperties: false,
       }),

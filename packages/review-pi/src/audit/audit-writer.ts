@@ -7,6 +7,7 @@ import type {
   CacheBreakRecord,
   CandidateRejection,
   MrBoundaryRecord,
+  MrFilterRecord,
   PhaseRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
@@ -54,6 +55,11 @@ export interface AuditFileContent {
    * （同 ledger 先例）。
    */
   readonly mrBoundary?: MrBoundaryRecord;
+  /**
+   * 输入预过滤留痕（大 diff 第一期）：无剔除时缺席（零静默：剔了必有账）。
+   * 键序紧跟 mrBoundary，不扰动既有前缀键的相对顺序。
+   */
+  readonly mrFilter?: MrFilterRecord;
   /** 规则 Skill 装载留痕（恒为数组，N=0 ⇒ 空数组） */
   readonly ruleSkill?: readonly RuleSkillAudit[];
   /** skill 会话执行留痕（round × skill） */
@@ -93,6 +99,7 @@ export function buildAuditFileContent(args: {
   readonly audit: RunAudit;
   readonly ledger?: readonly LedgerEntry[];
   readonly mrBoundary?: MrBoundaryRecord;
+  readonly mrFilter?: MrFilterRecord;
   readonly config?: ConfigSnapshot;
 }): AuditFileContent {
   return {
@@ -116,6 +123,7 @@ export function buildAuditFileContent(args: {
     toolCallLog: args.audit.toolCallLog,
     ...(args.ledger !== undefined ? { ledger: args.ledger } : {}),
     ...(args.mrBoundary !== undefined ? { mrBoundary: args.mrBoundary } : {}),
+    ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
     ...(args.audit.ruleSkill !== undefined ? { ruleSkill: args.audit.ruleSkill } : {}),
     ...(args.audit.skillPassLog !== undefined ? { skillPassLog: args.audit.skillPassLog } : {}),
     ...(args.config !== undefined ? { config: args.config } : {}),

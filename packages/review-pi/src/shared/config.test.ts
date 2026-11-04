@@ -229,8 +229,27 @@ describe("loadConfig：边界", () => {
       minimalConfig(`,"limits":{"boundary":{"maxFiles":null,"maxDiffLines":50}}`),
     );
     const { config } = loadConfig({ configPath: path });
-    expect(config.limits.boundary).toEqual({ maxFiles: null, maxDiffLines: 50 });
+    expect(config.limits.boundary).toEqual({
+      maxFiles: null,
+      maxDiffLines: 50,
+      maxDiffChars: DEFAULT_LIMITS.boundary.maxDiffChars,
+    });
     expect(config.overridden).toContain("limits.boundary.maxFiles");
+  });
+
+  test("maxDiffChars：缺省 / null 关闭 / 越界拒绝", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig("")) });
+    expect(defaults.config.limits.boundary.maxDiffChars).toBe(1_500_000);
+
+    const disabled = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"boundary":{"maxDiffChars":null}}`)),
+    });
+    expect(disabled.config.limits.boundary.maxDiffChars).toBe(null);
+    expect(disabled.config.overridden).toContain("limits.boundary.maxDiffChars");
+
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"boundary":{"maxDiffChars":999}}`)) }),
+    ).toThrow(/maxDiffChars/);
   });
 
   test("maxOutputTokens=null 保留为自动判档", () => {

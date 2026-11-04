@@ -39,6 +39,32 @@ test("get_diff：diff 原文带 header 行返回", async () => {
   expect(result).toBe(["MR unified diff:", ...SAMPLE_DIFF.split("\n")].join("\n"));
 });
 
+test("get_diff 分页：offset/limit 为 1-based 行号，header 带区间，越界显式报错", async () => {
+  const diff = ["l1", "l2", "l3", "l4", "l5"].join("\n");
+  const tk = toolkit({ diff });
+  await expect(tk.executeTool("review.get_diff", { offset: 2, limit: 2 })).resolves.toBe(
+    ["MR unified diff: lines 2-3 of 5", "l2", "l3"].join("\n"),
+  );
+  // end 超出尾部按尾行截断；limit 缺省 = 到尾部
+  await expect(tk.executeTool("review.get_diff", { offset: 4, limit: 99 })).resolves.toBe(
+    ["MR unified diff: lines 4-5 of 5", "l4", "l5"].join("\n"),
+  );
+  await expect(tk.executeTool("review.get_diff", { offset: 10 })).rejects.toThrow(
+    /beyond the end of the diff/,
+  );
+});
+
+test("get_diff 分页：ledger 描述含区间，不同页互不命中", async () => {
+  const tk = toolkit({ ledgerMode: "enabled", diff: ["l1", "l2", "l3"].join("\n") });
+  await tk.executeTool("review.get_diff", { offset: 1, limit: 1 });
+  await expect(tk.executeTool("review.get_diff", { offset: 1, limit: 1 })).resolves.toBe(
+    "Already loaded: ctx#001 (review.get_diff:1-1)",
+  );
+  expect(tk.ledger.snapshot()).toEqual([
+    { id: "ctx#001", kind: "evidence", description: "review.get_diff:1-1" },
+  ]);
+});
+
 test("get_file：整读带行号前缀；区间读取带 Lines 头", async () => {
   const tk = toolkit();
   const whole = await tk.executeTool("review.get_file", {

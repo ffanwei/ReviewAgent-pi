@@ -88,6 +88,26 @@ export interface MrBoundaryRecord {
   readonly reason: MrBoundaryReason;
 }
 
+/** 输入预过滤的剔除原因（大 diff 第一期：只剔噪声，不改检视语义） */
+export type MrFilterReason = "lockfile" | "generated" | "minified" | "binary";
+
+/** 被剔除的单个文件（审计窄投影，最多保留前 20 条） */
+export interface MrFilteredPath {
+  readonly path: string;
+  readonly reason: MrFilterReason;
+}
+
+/**
+ * 输入预过滤留痕（审计文件尾键 mrFilter 的形状；无剔除缺省省键）。
+ * `reasons` 恒含四类键（未命中为 0），便于下游按固定形状读数。
+ */
+export interface MrFilterRecord {
+  readonly droppedFiles: number;
+  readonly droppedChars: number;
+  readonly reasons: Readonly<Record<MrFilterReason, number>>;
+  readonly paths: readonly MrFilteredPath[];
+}
+
 /** 规则 Skill 审计留痕的诊断项（内核装载 warning 的窄投影） */
 export interface RuleSkillAuditDiagnostic {
   readonly code: string;

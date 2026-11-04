@@ -123,6 +123,8 @@ export interface BoundaryLimits {
   /** `>` 即降级；null = 该维度不设界 */
   readonly maxFiles: number | null;
   readonly maxDiffLines: number | null;
+  /** 过滤后的 diff 字符数上限；超限直接报错，null = 关闭该门禁 */
+  readonly maxDiffChars: number | null;
 }
 
 export interface ArchiveLimits {
@@ -162,7 +164,7 @@ export const DEFAULT_LIMITS: Limits = {
     presentationBufferMs: 30_000,
   },
   concurrency: { suggestion: 4 },
-  boundary: { maxFiles: 10, maxDiffLines: 2_000 },
+  boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_500_000 },
   archive: {
     maxArchiveBytes: 8 * 1024 * 1024,
     maxEntries: 2_000,
@@ -583,7 +585,7 @@ const TIMEOUT_KEYS = [
   "presentationBufferMs",
 ] as const;
 const CONCURRENCY_KEYS = ["suggestion"] as const;
-const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines"] as const;
+const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
 const MICRO_KEYS = [
   "skillBashOutputChars",
@@ -656,6 +658,14 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
   const boundary: BoundaryLimits = {
     maxFiles: boundaryObj.maxFiles === null ? null : maxFiles,
     maxDiffLines: boundaryObj.maxDiffLines === null ? null : maxDiffLines,
+    maxDiffChars:
+      boundaryObj.maxDiffChars === null
+        ? null
+        : (optionalInt(boundaryObj.maxDiffChars, "limits.boundary.maxDiffChars", {
+            min: 1_000,
+            max: 100_000_000,
+            nullable: true,
+          }) ?? DEFAULT_LIMITS.boundary.maxDiffChars),
   };
 
   const archiveObj = optionalObject(limits.archive, "limits.archive", warnings);
@@ -1227,10 +1237,12 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     },
     // 中文建议：每条 finding 的 suggestion 并发生成数（只影响 tips，不影响检视主循环）。
     "concurrency": { "suggestion": 4 },
-    // MR 边界护栏：超界只告警（domainWarning）不拒检；null = 该维不设界，两维都 null = 护栏停用。
+    // MR 边界护栏：超界只告警（domainWarning）不拒检；null = 该维不设界。
+    // maxDiffChars 是输入体积门：过滤后超限直接报错（不发模型请求），null = 关闭门禁。
     "boundary": {
       "maxFiles": 10,                    // 变更文件数上限。
-      "maxDiffLines": 2000               // 变更行数上限。
+      "maxDiffLines": 2000,              // 变更行数上限。
+      "maxDiffChars": 1500000            // 过滤后 diff 字符数上限（超限直接报错）。
     },
     // 规则包 zip 解压前的审计上限。
     "archive": {

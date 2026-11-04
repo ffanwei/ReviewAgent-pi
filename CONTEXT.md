@@ -100,8 +100,12 @@ _Avoid_: 可变层（过泛）
 _Avoid_: MR 文件（不区分形态）、patch（只指 hunk 正文）
 
 **MR 边界护栏（Boundary Guard）**:
-内核入口处的 MR 输入边界检查（缺省 ≤10 文件 / diff ≤2K 变更行；`limits.boundary` 可改，单维 `null` = 该维不设界，双维 `null` = 护栏整体停用）：界内路径零字节漂移（缺席省键）；超界或不可度量走显式降级——`domainWarning` 标注（文案按配置值派生）+ 审计 `mrBoundary` 留痕 + 照常执行，不拒检。
+内核入口处的 MR 输入边界检查（缺省 ≤10 文件 / diff ≤2K 变更行；`limits.boundary` 可改，单维 `null` = 该维不设界）：界内路径零字节漂移（缺席省键）；超界或不可度量走显式降级——`domainWarning` 标注（文案按配置值派生）+ 审计 `mrBoundary` 留痕 + 照常执行，不拒检。
 _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截断（违背零静默纪律）
+
+**MR 输入预过滤（Input Prefilter）**:
+内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除省键）并在 stderr 报一行——剔了必有账。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 1.5M 字符，`null` = 关闭）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
+_Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（无审计即违规）
 
 ### 产物
 

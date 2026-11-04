@@ -123,6 +123,33 @@ describe("buildAuditFileContent", () => {
     });
   });
 
+  test("mrFilter（大 diff 第一期）：只在传入时在场，紧跟 mrBoundary", () => {
+    const content = buildAuditFileContent({
+      runId: "20260914T180846.922-VUL4J-1",
+      caseId: "VUL4J-1",
+      model: "deepseek-v4-flash",
+      effort: "default",
+      startedAt: STARTED,
+      finishedAt: FINISHED,
+      rounds: 1,
+      toolCalls: 0,
+      usage: { inputTokens: 9579, outputTokens: 14484, cacheReadTokens: 24064 },
+      findings: [],
+      audit: EMPTY_AUDIT,
+      ledger: [],
+      mrBoundary: { files: 11, changedLines: 22, degraded: true, reason: "too-many-files" },
+      mrFilter: {
+        droppedFiles: 1,
+        droppedChars: 42,
+        reasons: { lockfile: 1, generated: 0, minified: 0, binary: 0 },
+        paths: [{ path: "pnpm-lock.yaml", reason: "lockfile" }],
+      },
+    });
+    const keys = Object.keys(content);
+    expect(keys.slice(-3)).toEqual(["ledger", "mrBoundary", "mrFilter"]);
+    expect(content.mrFilter?.paths).toEqual([{ path: "pnpm-lock.yaml", reason: "lockfile" }]);
+  });
+
   test("规则 Skill 留痕（ruleSkill / skillPassLog）只在审计携带时出现在尾部", () => {
     const content = buildAuditFileContent({
       runId: "20260914T180846.922-VUL4J-1",
