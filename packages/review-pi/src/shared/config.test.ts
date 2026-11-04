@@ -262,6 +262,65 @@ describe("loadConfig：边界", () => {
   });
 });
 
+describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
+  test("缺省值：enabled=true / 400000 / 12 / 8000", () => {
+    const { config, warnings } = loadConfig({ configPath: writeConfig(minimalConfig("")) });
+    expect(config.limits.split).toEqual({
+      enabled: true,
+      maxShardChars: 400_000,
+      maxShards: 12,
+      contextSummaryChars: 8_000,
+    });
+    expect(warnings.join("\n")).not.toContain("limits.split");
+  });
+
+  test("逐键覆盖生效并记入 overridden", () => {
+    const { config } = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"split":{"enabled":false,"maxShardChars":10000,"maxShards":1,"contextSummaryChars":1000}}`,
+        ),
+      ),
+    });
+    expect(config.limits.split).toEqual({
+      enabled: false,
+      maxShardChars: 10_000,
+      maxShards: 1,
+      contextSummaryChars: 1_000,
+    });
+    expect(config.overridden).toContain("limits.split.enabled");
+    expect(config.overridden).toContain("limits.split.maxShards");
+  });
+
+  test("enabled 必须是布尔值（不把字符串 \"false\" 当 false）", () => {
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"split":{"enabled":"false"}}`)) }),
+    ).toThrow(/limits\.split\.enabled must be true or false/);
+  });
+
+  test("数值越界 fail fast（maxShardChars < 10000 / maxShards > 64 / contextSummaryChars < 1000）", () => {
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"split":{"maxShardChars":9999}}`)) }),
+    ).toThrow(/limits\.split\.maxShardChars/);
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"split":{"maxShards":65}}`)) }),
+    ).toThrow(/limits\.split\.maxShards/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"split":{"contextSummaryChars":999}}`)),
+      }),
+    ).toThrow(/limits\.split\.contextSummaryChars/);
+  });
+
+  test("未知键只警告不改行为", () => {
+    const { config, warnings } = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"split":{"maxShard":10000}}`)),
+    });
+    expect(config.limits.split).toEqual(DEFAULT_LIMITS.split);
+    expect(warnings.some((line) => line.includes("limits.split.maxShard"))).toBe(true);
+  });
+});
+
 describe("writeConfigFile", () => {
   test("写盘：目录自动创建 + 拒绝覆盖 + --force", () => {
     const path = join(tempDir(), "nested", "PiAgent.jsonc");

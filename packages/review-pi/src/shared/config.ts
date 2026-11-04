@@ -127,6 +127,17 @@ export interface BoundaryLimits {
   readonly maxDiffChars: number | null;
 }
 
+export interface SplitLimits {
+  /** 是否允许在过滤后 diff 超过 maxShardChars 时自动分片（ADR-0039）；false = 保持单遍旧行为 */
+  readonly enabled: boolean;
+  /** 单片字符目标（不是硬失败线；单块超过它才是预检错误） */
+  readonly maxShardChars: number;
+  /** 片数上限（成本护栏）：需要更多片直接报错，由使用方拆 MR */
+  readonly maxShards: number;
+  /** 每片附带的「其他文件变更摘要」字符上限 */
+  readonly contextSummaryChars: number;
+}
+
 export interface ArchiveLimits {
   readonly maxArchiveBytes: number;
   readonly maxEntries: number;
@@ -148,6 +159,7 @@ export interface Limits {
   readonly timeouts: TimeoutLimits;
   readonly concurrency: ConcurrencyLimits;
   readonly boundary: BoundaryLimits;
+  readonly split: SplitLimits;
   readonly archive: ArchiveLimits;
   readonly micro: MicroLimits;
 }
@@ -165,6 +177,7 @@ export const DEFAULT_LIMITS: Limits = {
   },
   concurrency: { suggestion: 4 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_500_000 },
+  split: { enabled: true, maxShardChars: 400_000, maxShards: 12, contextSummaryChars: 8_000 },
   archive: {
     maxArchiveBytes: 8 * 1024 * 1024,
     maxEntries: 2_000,
@@ -573,7 +586,7 @@ const MCP_REPORT_KEYS = [
 const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
 const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
-const LIMITS_KEYS = ["timeouts", "concurrency", "boundary", "archive", "micro"] as const;
+const LIMITS_KEYS = ["timeouts", "concurrency", "boundary", "split", "archive", "micro"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
   "skillBashMs",
@@ -586,6 +599,7 @@ const TIMEOUT_KEYS = [
 ] as const;
 const CONCURRENCY_KEYS = ["suggestion"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
+const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars"] as const;
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
 const MICRO_KEYS = [
   "skillBashOutputChars",
@@ -668,6 +682,27 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
           }) ?? DEFAULT_LIMITS.boundary.maxDiffChars),
   };
 
+  const splitObj = optionalObject(limits.split, "limits.split", warnings);
+  assertKnownKeys(splitObj, SPLIT_KEYS, "limits.split", warnings);
+  const split: SplitLimits = {
+    enabled: boolOr(splitObj.enabled, "limits.split.enabled", DEFAULT_LIMITS.split.enabled),
+    maxShardChars: intOr(
+      splitObj.maxShardChars,
+      "limits.split.maxShardChars",
+      10_000,
+      100_000_000,
+      DEFAULT_LIMITS.split.maxShardChars,
+    ),
+    maxShards: intOr(splitObj.maxShards, "limits.split.maxShards", 1, 64, DEFAULT_LIMITS.split.maxShards),
+    contextSummaryChars: intOr(
+      splitObj.contextSummaryChars,
+      "limits.split.contextSummaryChars",
+      1_000,
+      64_000,
+      DEFAULT_LIMITS.split.contextSummaryChars,
+    ),
+  };
+
   const archiveObj = optionalObject(limits.archive, "limits.archive", warnings);
   assertKnownKeys(archiveObj, ARCHIVE_KEYS, "limits.archive", warnings);
   const archive: ArchiveLimits = {
@@ -689,7 +724,7 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
   };
 
-  return { timeouts, concurrency, boundary, archive, micro };
+  return { timeouts, concurrency, boundary, split, archive, micro };
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,6 +1066,19 @@ function intOr(value: unknown, path: string, min: number, max: number, fallback:
   return parsed === undefined ? fallback : (parsed as number);
 }
 
+/** 布尔开关：缺省用 fallback；出现非布尔值 fail fast（不把 "false" 当 false） */
+function boolOr(value: unknown, path: string, fallback: boolean): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "boolean") {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: ${path} must be true or false (got ${describe(value)})`,
+    );
+  }
+  return value;
+}
+
 function normalizeBaseUrl(value: string, path: string): string {
   const trimmed = value.trim();
   if (!/^https?:\/\//.test(trimmed)) {
@@ -1243,6 +1291,16 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
       "maxFiles": 10,                    // 变更文件数上限。
       "maxDiffLines": 2000,              // 变更行数上限。
       "maxDiffChars": 1500000            // 过滤后 diff 字符数上限（超限直接报错）。
+    },
+    // 大 MR 分片（ADR-0039）：过滤后的 diff 超过一片预算时，按 diff --git 文件块切开
+    // 分别检视（绝不切 hunk），最后把各片 findings 合并去重。只负责「文件多」；
+    // 单个文件本身过大仍会报错（留给第三期按需读取）。
+    // 注意：maxShardChars 应小于 maxDiffChars，否则体积门先报错、分片永不触发。
+    "split": {
+      "enabled": true,                   // 是否启用自动分片；false = 超预算仍单遍跑（旧行为，窗口风险自负）。
+      "maxShardChars": 400000,           // 单片字符目标（约 10 万 tokens，给 128K 上下文的网关留余量）。
+      "maxShards": 12,                   // 片数上限（成本护栏）；需要更多片即报错，请拆 MR 或调大此值。
+      "contextSummaryChars": 8000        // 每片附带的「其他文件变更摘要」字符上限（不是证据源）。
     },
     // 规则包 zip 解压前的审计上限。
     "archive": {
