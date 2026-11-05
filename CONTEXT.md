@@ -107,6 +107,10 @@ _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截�
 内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除省键）并在 stderr 报一行——剔了必有账。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 1.5M 字符，`null` = 关闭）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
 _Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（无审计即违规）
 
+**代码智能语言（Code Intelligence Languages）**:
+符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前仅 `java`；数组 = 只启用列出语言；空数组 = 显式关闭）。注册表在 `codeintel/language-support.ts`（id / displayName / globs / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`，不再静默 `0 Java file(s)`（ADR-0040）。
+_Avoid_: 多语言检视（检视本来就全语言）、语言包（实际是解析器注册表）
+
 ### 产物
 
 **检视转录（Review Transcript）**:

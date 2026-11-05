@@ -2,6 +2,7 @@ import type { ReviewToolHandler, ToolRunContext } from "./toolkit-types.js";
 import { readThroughLedger } from "./ledger.js";
 import { applyLineBudget } from "./result-budget.js";
 import { requireStringArg } from "./args.js";
+import { noSourceFilesMessage } from "../codeintel/language-support.js";
 import type { JavaSymbol } from "../zoneb/symbols.js";
 import { formatSymbolSignature } from "../zoneb/symbols.js";
 
@@ -34,7 +35,7 @@ async function renderSymbolLookup(name: string, context: ToolRunContext): Promis
   let matchCount = 0;
   let parseErrorFiles = 0;
 
-  for (const file of repo.javaFiles) {
+  for (const file of repo.sourceFiles) {
     const index = await repo.symbolIndex(file).catch((error: unknown) => {
       // 归一为仓库相对路径消息（不泄漏绝对路径，与 get_file / search-tools 错误纪律一致）
       throw new Error(
@@ -57,8 +58,12 @@ async function renderSymbolLookup(name: string, context: ToolRunContext): Promis
     }
   }
 
+  if (repo.sourceFiles.length === 0) {
+    return `Symbol "${name}": ${noSourceFilesMessage(repo.languages)}`;
+  }
+
   const header = [
-    `Symbol "${name}": ${matchCount} match(es) across ${repo.javaFiles.length} Java file(s)`,
+    `Symbol "${name}": ${matchCount} match(es) across ${repo.sourceFiles.length} ${repo.languageLabel} file(s)`,
   ];
   if (parseErrorFiles > 0) {
     header.push(

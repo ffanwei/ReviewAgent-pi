@@ -40,6 +40,7 @@ export async function findReferenceSites(
   options: { readonly timeoutMs?: number } = {},
 ): Promise<readonly ReferenceSite[]> {
   const matches: readonly RgMatch[] = await rgSearchWord(repo.repoPath, name, {
+    globs: repo.languageGlobs,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
   }).catch(
     (error: unknown) => {

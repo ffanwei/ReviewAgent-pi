@@ -11,7 +11,10 @@ const SAMPLE = repoFixturePath("sample");
 test("loadRepoContext：清单 / 词法包名 / 根文件名 / 读取与符号索引", async () => {
   const context = await loadRepoContext(SAMPLE);
   expect(context.repoName).toBe("sample");
-  expect(context.javaFiles).toEqual([
+  expect(context.languages.map((language) => language.id)).toEqual(["java"]);
+  expect(context.languageLabel).toBe("Java");
+  expect(context.languageGlobs).toEqual(["*.java"]);
+  expect(context.sourceFiles).toEqual([
     "src/main/java/com/example/Alpha.java",
     "src/main/java/com/example/Beta.java",
     "src/main/java/com/example/Gamma.java",
@@ -43,8 +46,20 @@ test("loadRepoContext：memoize——同一文件读取/解析各只一次（同
 
 test("loadRepoContext：读不存在的仓库路径显式抛错（fail fast）", async () => {
   await expect(loadRepoContext("D:/definitely/not/a/repo")).rejects.toThrow(
-    /failed to list Java files/,
+    /failed to list Java source files/,
   );
+});
+
+test("loadRepoContext：codeintel.languages 可收窄/显式关闭；非 Java 仓 0 源文件", async () => {
+  const disabled = await loadRepoContext(SAMPLE, { languages: [] });
+  expect(disabled.languages).toEqual([]);
+  expect(disabled.languageLabel).toBe("");
+  expect(disabled.sourceFiles).toEqual([]);
+
+  const nonJava = await loadRepoContext(SAMPLE, { languages: ["kotlin"] });
+  // 未实现语言在 resolveLanguages 里被过滤（配置装载期已告警）；运行时同样退化为 0 文件
+  expect(nonJava.languages).toEqual([]);
+  expect(nonJava.sourceFiles).toEqual([]);
 });
 
 test("derivePackageFromPath：src/main/java 与 src/test/java 前缀剥离，其余按目录推导", () => {

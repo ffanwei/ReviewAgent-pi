@@ -1,5 +1,6 @@
 import type { ChangedSymbolRef } from "../zoneb/changed-symbols.js";
 import { qualifiedName } from "../zoneb/changed-symbols.js";
+import { noSourceFilesMessage } from "../codeintel/language-support.js";
 import { buildCallChainBlocks } from "../zoneb/call-chain.js";
 import type { ReferenceSite } from "../zoneb/reference-sites.js";
 import { enclosingLabel, findReferenceSites } from "../zoneb/reference-sites.js";
@@ -32,7 +33,7 @@ export const findReferencesTool: ReviewToolHandler = async (args, context): Prom
   return readThroughLedger(context.ledger, "symbol", `review.find_references "${name}"`, async () => {
     const repo = await context.repo();
     const sites = await searchReferenceSites("review.find_references", repo, name, context.ripgrepTimeoutMs);
-    return renderReferenceSites(sites, name, context.resultBudgetChars);
+    return renderReferenceSites(repo, sites, name, context.resultBudgetChars);
   });
 };
 
@@ -83,10 +84,14 @@ export const searchHistoryTool: ReviewToolHandler = async (args, context): Promi
 
 /** find_references 的结果渲染 */
 function renderReferenceSites(
+  repo: RepoContext,
   sites: readonly ReferenceSite[],
   name: string,
   budgetChars: number,
 ): string {
+  if (repo.sourceFiles.length === 0) {
+    return `References to "${name}" (name-level whole-word match, no type resolution): ${noSourceFilesMessage(repo.languages)}`;
+  }
   const filesWithMatches = new Set(sites.map((site) => site.file)).size;
   const header = `References to "${name}" (name-level whole-word match, no type resolution): ${sites.length} match(es) across ${filesWithMatches} file(s)`;
   if (sites.length === 0) {
@@ -114,9 +119,12 @@ async function renderCallChain(
 ): Promise<string> {
   const refs = await findMethodRefs(repo, name);
   const hopsLabel = `up to ${String(options.hops)} hops`;
+  if (repo.sourceFiles.length === 0) {
+    return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${noSourceFilesMessage(repo.languages)}`;
+  }
   const header = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${refs.length} method declaration(s) matched`;
   if (refs.length === 0) {
-    return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method or constructor named "${name}" found across ${repo.javaFiles.length} Java file(s)`;
+    return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method or constructor named "${name}" found across ${repo.sourceFiles.length} ${repo.languageLabel} file(s)`;
   }
   const blocks = await buildCallChainBlocks(repo, refs, {
     hops: options.hops,
@@ -148,7 +156,7 @@ async function searchReferenceSites(
 /** 全仓扫描名字命中的方法/构造器声明（文件顺序 → 限定名/文件/行号排序，确定性） */
 async function findMethodRefs(repo: RepoContext, name: string): Promise<readonly ChangedSymbolRef[]> {
   const refs: ChangedSymbolRef[] = [];
-  for (const file of repo.javaFiles) {
+  for (const file of repo.sourceFiles) {
     const index = await repo.symbolIndex(file).catch((error: unknown) => {
       // 归一为仓库相对路径消息（不泄漏绝对路径，与 get_file 的错误纪律一致）
       throw new Error(

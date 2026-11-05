@@ -143,6 +143,7 @@ function memoizedRepo(options: ReviewToolkitOptions, runtime: ReviewRuntime): ()
     cached ??= loadRepoContext(options.repoPath, {
       ripgrepTimeoutMs: runtime.limits.timeouts.ripgrepMs,
       packageHeadBytes: runtime.limits.micro.packageHeadBytes,
+      languages: runtime.codeintel.languages,
     });
     return cached;
   };

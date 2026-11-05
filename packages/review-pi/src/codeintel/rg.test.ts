@@ -42,6 +42,15 @@ test("rgSearchWord：无匹配返回空数组（退出码 1 不是错误）", as
   await expect(rgSearchWord(SAMPLE, "nonexistentWord")).resolves.toEqual([]);
 });
 
+test("rgListFiles / rgSearchWord：多 glob 一次扫描（任一匹配）", async () => {
+  const files = await rgListFiles(SAMPLE, ["*.ts", "*.java"]);
+  expect(files).toHaveLength(3);
+  // 只扫未启用的语言 → 0 命中（rg 退出码 1 不是错误）
+  await expect(rgSearchWord(SAMPLE, "getBase", { globs: ["*.ts"] })).resolves.toEqual([]);
+  // 空 glob 列表 = 显式关闭：不 spawn rg、不退化成扫全仓
+  await expect(rgListFiles(SAMPLE, [])).resolves.toEqual([]);
+});
+
 test("runRg 错误路径：不存在的根目录显式抛错", async () => {
   await expect(rgListFiles("D:/definitely/not/a/repo", "*.java")).rejects.toThrow();
 });

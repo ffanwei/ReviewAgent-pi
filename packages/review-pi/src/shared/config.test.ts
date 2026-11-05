@@ -9,6 +9,7 @@ import {
   BUILTIN_ENGINE_SENTINEL,
   CONFIG_VERSION,
   ConfigError,
+  DEFAULT_CODEINTEL,
   DEFAULT_CONFIG_TEMPLATE,
   DEFAULT_GATEWAY_MAX_TOKENS,
   DEFAULT_LIMITS,
@@ -318,6 +319,64 @@ describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
     });
     expect(config.limits.split).toEqual(DEFAULT_LIMITS.split);
     expect(warnings.some((line) => line.includes("limits.split.maxShard"))).toBe(true);
+  });
+});
+
+describe("loadConfig：codeintel.languages（语言开关，ADR-0040）", () => {
+  test("缺省 auto = 跟随已实现语言；不进 overridden", () => {
+    const { config, warnings } = loadConfig({ configPath: writeConfig(minimalConfig("")) });
+    expect(config.codeintel).toEqual(DEFAULT_CODEINTEL);
+    expect(config.codeintel.languages).toBe("auto");
+    expect(config.overridden).not.toContain("codeintel.languages");
+    expect(warnings.join("\n")).not.toContain("codeintel");
+    expect(configSnapshot(config).values["codeintel.languages"]).toBe("auto");
+  });
+
+  test("数组 = 只启用列出语言；大小写/空白归一 + 去重保序", () => {
+    const { config, warnings } = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"codeintel":{"languages":[" Java ","java","JAVA"]}`),
+      ),
+    });
+    expect(config.codeintel.languages).toEqual(["java"]);
+    expect(config.overridden).toContain("codeintel.languages");
+    expect(warnings.join("\n")).not.toContain("未实现");
+  });
+
+  test("未实现语言：装载期告警并丢弃（不静默）", () => {
+    const { config, warnings } = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"codeintel":{"languages":["kotlin","java"]}`)),
+    });
+    expect(config.codeintel.languages).toEqual(["java"]);
+    expect(warnings.some((line) => line.includes('"kotlin"') && line.includes("未实现"))).toBe(true);
+    expect(warnings.some((line) => line.includes("已实现：java"))).toBe(true);
+  });
+
+  test("空数组 = 显式关闭（保留为空，不退化成 auto）", () => {
+    const { config } = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"codeintel":{"languages":[]}`)),
+    });
+    expect(config.codeintel.languages).toEqual([]);
+  });
+
+  test("非法取值 fail fast：非 auto 字符串 / 非字符串条目", () => {
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"codeintel":{"languages":"all"}`)) }),
+    ).toThrow(/codeintel\.languages must be "auto" or an array/);
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"codeintel":{"languages":[""]}`)) }),
+    ).toThrow(/codeintel\.languages entries must be non-empty strings/);
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"codeintel":{"languages":[1]}`)) }),
+    ).toThrow(/codeintel\.languages entries must be non-empty strings/);
+  });
+
+  test("未知键只警告不改行为", () => {
+    const { config, warnings } = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"codeintel":{"langs":["java"]}`)),
+    });
+    expect(config.codeintel.languages).toBe("auto");
+    expect(warnings.some((line) => line.includes("unknown key codeintel.langs"))).toBe(true);
   });
 });
 

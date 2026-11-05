@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
 
 import { MCP_REPORT_EVENT_TYPES, type McpReportEventType } from "../contracts/mcp-report.js";
+import { SUPPORTED_LANGUAGE_IDS } from "../codeintel/language-support.js";
 
 /**
  * 用户级运行配置（ADR-0025）：`~/.PiAgent/PiAgent.jsonc`（JSONC）。
@@ -214,6 +215,22 @@ export interface PresentationSettings {
   readonly engine: string | null;
 }
 
+/**
+ * 代码智能（符号 / 引用 / 调用链）的语言开关（ADR-0040）。
+ *
+ * - `"auto"` = 跟随本版本已实现的解析器（升级后自动获得新语言，不用改配置）；
+ * - 数组 = 只启用列出的语言；未实现的条目在装载期告警并被丢弃（不静默降级）。
+ *
+ * 只影响符号级工具；检视本体读 diff，本来就不限语言。
+ */
+export interface CodeIntelSettings {
+  readonly languages: "auto" | readonly string[];
+}
+
+export const DEFAULT_CODEINTEL: CodeIntelSettings = Object.freeze({
+  languages: "auto" as const,
+});
+
 /** MCP 服务端连接（ADR-0037：v1 只有 HTTP 传输） */
 export interface McpServerSettings {
   readonly transport: "http";
@@ -254,6 +271,7 @@ export interface ResolvedConfig {
   readonly reviewer: ReviewerSettings;
   readonly model: ModelSettings;
   readonly presentation: PresentationSettings;
+  readonly codeintel: CodeIntelSettings;
   readonly limits: Limits;
   /** MCP 上报（ADR-0037）：未配置 = null */
   readonly mcp: McpSettings | null;
@@ -519,12 +537,14 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
 
   const limits = parseLimits(root.limits, warnings);
   const mcp = parseMcp(root.mcp, warnings);
+  const codeintel = parseCodeIntel(root.codeintel, warnings);
 
   const config: ResolvedConfig = {
     version: CONFIG_VERSION,
     reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens },
     model: { default: modelDefault.trim(), presentation: modelPresentation?.trim() ?? null },
     presentation: { engine: engine?.trim() ?? null },
+    codeintel,
     limits,
     mcp,
     path,
@@ -558,6 +578,7 @@ function buildDefaults({
     reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null },
     model: { default: DEFAULT_MODEL_ID, presentation: null },
     presentation: { engine: null },
+    codeintel: DEFAULT_CODEINTEL,
     limits: DEFAULT_LIMITS,
     mcp: null,
     path,
@@ -568,10 +589,11 @@ function buildDefaults({
   return { ...base, digest: digestOf(effectiveValues(base)) };
 }
 
-const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "limits", "mcp"] as const;
+const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "codeintel", "limits", "mcp"] as const;
 const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
 const PRESENTATION_KEYS = ["engine"] as const;
+const CODEINTEL_KEYS = ["languages"] as const;
 const MCP_KEYS = ["servers", "report"] as const;
 const MCP_SERVER_KEYS = ["transport", "url", "headers", "timeoutMs"] as const;
 const MCP_REPORT_KEYS = [
@@ -725,6 +747,58 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
   };
 
   return { timeouts, concurrency, boundary, split, archive, micro };
+}
+
+// ---------------------------------------------------------------------------
+// 代码智能语言开关（ADR-0040）
+// ---------------------------------------------------------------------------
+
+function parseCodeIntel(raw: unknown, warnings: string[]): CodeIntelSettings {
+  const obj = optionalObject(raw, "codeintel", warnings);
+  assertKnownKeys(obj, CODEINTEL_KEYS, "codeintel", warnings);
+  return { languages: parseLanguageSelection(obj.languages, warnings) };
+}
+
+/**
+ * `codeintel.languages`：`"auto"` | 语言 id 数组。
+ *
+ * 未实现的条目**装载期告警并丢弃**（不静默返回空结果）；大小写与首尾空白归一，
+ * 重复条目去重保序。空数组 = 显式关闭代码智能（符号级工具扫 0 个文件）。
+ */
+function parseLanguageSelection(
+  value: unknown,
+  warnings: string[],
+): "auto" | readonly string[] {
+  if (value === undefined || value === null) {
+    return DEFAULT_CODEINTEL.languages;
+  }
+  if (value === "auto") {
+    return "auto";
+  }
+  if (!Array.isArray(value)) {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: codeintel.languages must be "auto" or an array of language ids (got ${describe(value)})`,
+    );
+  }
+  const selected: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new ConfigError(
+        `${CONFIG_FILE_NAME}: codeintel.languages entries must be non-empty strings (got ${describe(entry)})`,
+      );
+    }
+    const id = entry.trim().toLowerCase();
+    if (!SUPPORTED_LANGUAGE_IDS.includes(id)) {
+      warnings.push(
+        `PiAgent.jsonc: codeintel.languages 里的 "${id}" 当前版本未实现，已跳过（已实现：${SUPPORTED_LANGUAGE_IDS.join(", ")}）`,
+      );
+      continue;
+    }
+    if (!selected.includes(id)) {
+      selected.push(id);
+    }
+  }
+  return selected;
 }
 
 // ---------------------------------------------------------------------------
@@ -888,6 +962,7 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     "model.default": config.model.default,
     "model.presentation": config.model.presentation,
     "presentation.engine": config.presentation.engine,
+    "codeintel.languages": config.codeintel.languages,
   };
   for (const [group, entries] of Object.entries(config.limits)) {
     for (const [key, value] of Object.entries(entries)) {
@@ -947,6 +1022,7 @@ function recordOverrides(root: Record<string, unknown>, overridden: Set<string>)
   mark("reviewer", asRecordOrUndefined(root.reviewer));
   mark("model", asRecordOrUndefined(root.model));
   mark("presentation", asRecordOrUndefined(root.presentation));
+  mark("codeintel", asRecordOrUndefined(root.codeintel));
   const mcp = asRecordOrUndefined(root.mcp);
   if (mcp !== undefined) {
     // 逐叶记账：`config show` 的 (file|default) 标记按前缀匹配，只记 "mcp.servers" 不够
@@ -1242,6 +1318,14 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     // 核外中文呈现引擎：builtin = 制品自带（跟着当前安装的 review-pi 包走）；
     // null = 不投影（英文直通）；模块路径按本配置文件所在目录解析（ADR-0026）。
     "engine": ${enginePath}
+  },
+
+  // 代码智能（符号 / 引用 / 调用链）启用哪些语言。检视本体读 diff，本来就不限语言；
+  // 这里只控制符号级工具的扫描范围，不影响普通检视。
+  // "auto" = 跟随当前版本已实现的解析器（推荐：升级后自动获得新语言，不用改配置）。
+  // 数组 = 只启用列出的语言（如 ["java"]）；未实现的条目装载期告警并跳过，不静默。
+  "codeintel": {
+    "languages": "auto"
   },
 
   // MCP 上报（ADR-0037）：把进度 / 状态 / 结果外发给已有的 MCP 服务（HTTP + JSON-RPC）。

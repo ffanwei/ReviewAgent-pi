@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path, { join } from "node:path";
 import { expect, test } from "vitest";
 import { createContextLedger, createInertContextLedger } from "./ledger.js";
 import { DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budget.js";
@@ -219,6 +220,45 @@ test("search_rule/search_history：空语料与命中形态", async () => {
   );
   await expect(withCorpus.executeTool("review.search_history", { query: "npe" })).resolves.toContain(
     'History search "npe" (case-insensitive substring): 1 of 2 history record(s) matched',
+  );
+});
+
+test("非本语言仓 / 显式关闭：代码智能工具给明确提示，不再静默 0 match", async () => {
+  const hint = (label: string) =>
+    `no supported source files detected in this repository (${label})`;
+
+  const dir = mkdtempSync(join(tmpdir(), "piagent-nonjava-"));
+  try {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "main.ts"), "export const sum = (a: number): number => a;\n", "utf8");
+    const tk = buildReviewToolkit({
+      repoPath: dir,
+      diff: "diff --git a/src/main.ts b/src/main.ts",
+      ledgerMode: "inert",
+    });
+    const languages = hint("code intelligence languages: Java");
+    await expect(tk.executeTool("review.get_symbol", { symbol: "sum" })).resolves.toBe(
+      `Symbol "sum": ${languages}`,
+    );
+    await expect(tk.executeTool("review.find_references", { symbol: "sum" })).resolves.toBe(
+      `References to "sum" (name-level whole-word match, no type resolution): ${languages}`,
+    );
+    await expect(tk.executeTool("review.get_call_chain", { symbol: "sum" })).resolves.toBe(
+      `Call chain for "sum" (name-level, up to 2 hops, no type resolution): ${languages}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // codeintel.languages = []：显式关闭（仍是 0 文件，但文案说清楚是配置关的）
+  const disabled = buildReviewToolkit({
+    repoPath: SAMPLE,
+    diff: SAMPLE_DIFF,
+    ledgerMode: "inert",
+    runtime: { ...DEFAULT_REVIEW_RUNTIME, codeintel: { languages: [] } },
+  });
+  await expect(disabled.executeTool("review.get_symbol", { symbol: "Alpha" })).resolves.toBe(
+    `Symbol "Alpha": ${hint("code intelligence is disabled by codeintel.languages")}`,
   );
 });
 

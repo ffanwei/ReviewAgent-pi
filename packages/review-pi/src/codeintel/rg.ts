@@ -22,21 +22,36 @@ export interface RgMatch {
 }
 
 export interface RgSearchOptions {
-  /** 文件 glob，默认 "*.java"（POC1 锁定 Java 单语言） */
-  readonly glob?: string;
+  /** 文件 glob 列表，缺省 ["*.java"]（单语言兜底；调用方通常传 RepoContext 的语言表） */
+  readonly globs?: readonly string[];
   /** 单次调用超时（毫秒），默认 30000；超时杀进程并抛错（不静默挂起） */
   readonly timeoutMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** 单语言兜底（仅直调形态；生产路径由 `RepoContext.languageGlobs` 提供） */
+const DEFAULT_GLOBS: readonly string[] = ["*.java"];
 
-/** 列出 root 下匹配 glob 的全部文件（排序去重后的仓库相对 POSIX 路径） */
+/** 列出 root 下匹配任一 glob 的全部文件（排序去重后的仓库相对 POSIX 路径） */
 export function rgListFiles(
   root: string,
-  glob: string,
+  globs: string | readonly string[],
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<readonly string[]> {
-  const args = ["--files", "--no-config", "--no-ignore", "--no-messages", "-g", glob, "--", root];
+  const patterns = typeof globs === "string" ? [globs] : globs;
+  if (patterns.length === 0) {
+    // 显式关闭代码智能（或没有任何已实现语言）：0 个文件，别退化成「扫全仓」
+    return Promise.resolve([]);
+  }
+  const args = [
+    "--files",
+    "--no-config",
+    "--no-ignore",
+    "--no-messages",
+    ...globArgs(patterns),
+    "--",
+    root,
+  ];
   return runRg(args, timeoutMs).then((stdout) => {
     const files = stdout
       .split("\n")
@@ -57,7 +72,10 @@ export function rgSearchWord(
   word: string,
   options: RgSearchOptions = {},
 ): Promise<readonly RgMatch[]> {
-  const glob = options.glob ?? "*.java";
+  const globs = options.globs ?? DEFAULT_GLOBS;
+  if (globs.length === 0) {
+    return Promise.resolve([]);
+  }
   const args = [
     "--json",
     "--no-config",
@@ -66,8 +84,7 @@ export function rgSearchWord(
     "--case-sensitive",
     "--fixed-strings",
     "--word-regexp",
-    "-g",
-    glob,
+    ...globArgs(globs),
     "--",
     word,
     root,
@@ -181,6 +198,10 @@ function runRg(args: readonly string[], timeoutMs: number): Promise<string> {
       resolve(stdout);
     });
   });
+}
+
+function globArgs(globs: readonly string[]): readonly string[] {
+  return globs.flatMap((glob) => ["-g", glob]);
 }
 
 function describePattern(args: readonly string[]): string {
