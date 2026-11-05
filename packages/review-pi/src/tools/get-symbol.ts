@@ -1,16 +1,18 @@
-import type { ReviewToolHandler, ToolRunContext } from "./toolkit-types.js";
-import { readThroughLedger } from "./ledger.js";
+import type { ReviewToolHandler, ToolRunContext } from "./toolkit-types.js";import { readThroughLedger } from "./ledger.js";
 import { applyLineBudget } from "./result-budget.js";
 import { requireStringArg } from "./args.js";
 import { noSourceFilesMessage } from "../codeintel/language-support.js";
-import type { JavaSymbol } from "../zoneb/symbols.js";
+import type { CodeSymbol } from "../zoneb/symbols.js";
 import { formatSymbolSignature } from "../zoneb/symbols.js";
+import type { RepoContext } from "../zoneb/repo-context.js";
 
 /**
- * review.get_symbol（#6 P3a）：签名级符号检索（tree-sitter-java 零构建）。
+ * review.get_symbol（#6 P3a）：签名级符号检索（tree-sitter 零构建）。
  *
- * - 名字级精确匹配（大小写敏感，无类型解析）：扫描全部 Java 文件的符号索引，
+ * - 名字级精确匹配（大小写敏感，无类型解析）：先 rg 收窄候选文件，再解析符号索引，
  *   命中符号返回签名（种类/修饰符/返回类型/参数表/行号），不含函数体；
+ * - 候选收窄（ADR-0041）：多语言下全仓解析不可接受；符号声明必然在文本上包含该名字，
+ *   因此 rg 预过滤不改变命中集合，只缩小解析面；
  * - 类型命中附带其成员签名（递归嵌套）；
  * - 确定性：文件顺序 = 排序后的文件清单，符号顺序 = AST 文档顺序；
  * - 解析失败文件命中时显式留痕（词法精度天花板为已知限制）；
@@ -28,14 +30,23 @@ export const getSymbolTool: ReviewToolHandler = async (args, context): Promise<s
   );
 };
 
-/** 真实读取路径：全仓符号索引扫描 + 签名渲染（含零命中显式留痕） */
+/** 真实读取路径：候选文件符号索引扫描 + 签名渲染（含零命中显式留痕） */
 async function renderSymbolLookup(name: string, context: ToolRunContext): Promise<string> {
   const repo = await context.repo();
+  if (repo.sourceFiles.length === 0) {
+    return `Symbol "${name}": ${noSourceFilesMessage(repo.languages)}`;
+  }
   const lines: string[] = [];
   let matchCount = 0;
   let parseErrorFiles = 0;
 
-  for (const file of repo.sourceFiles) {
+  const candidates = await repo
+    .candidateFilesForName(name, context.ripgrepTimeoutMs)
+    .catch((error: unknown) => {
+      throw new Error(`review.get_symbol: ${errorMessage(error)}`, { cause: error });
+    });
+
+  for (const file of candidates) {
     const index = await repo.symbolIndex(file).catch((error: unknown) => {
       // 归一为仓库相对路径消息（不泄漏绝对路径，与 get_file / search-tools 错误纪律一致）
       throw new Error(
@@ -51,15 +62,11 @@ async function renderSymbolLookup(name: string, context: ToolRunContext): Promis
       parseErrorFiles++;
     }
     matchCount += matches.length;
-    const packageName = index.packageName.length > 0 ? index.packageName : "(default package)";
-    lines.push(`${file} (package ${packageName})`);
+    const language = repo.languageFor(file);
+    lines.push(`${file}${moduleSuffix(index.moduleName, language?.moduleLabel ?? "")}`);
     for (const match of matches) {
-      lines.push(...renderSymbolLines(match, 1));
+      lines.push(...renderSymbolLines(repo, file, match, 1));
     }
-  }
-
-  if (repo.sourceFiles.length === 0) {
-    return `Symbol "${name}": ${noSourceFilesMessage(repo.languages)}`;
   }
 
   const header = [
@@ -82,9 +89,17 @@ async function renderSymbolLookup(name: string, context: ToolRunContext): Promis
   return budget.lines.join("\n");
 }
 
+/** 模块名后缀：Java 的空包保留 "(default package)" 以维持既有输出字节 */
+function moduleSuffix(moduleName: string, moduleLabel: string): string {
+  if (moduleName.length > 0) {
+    return ` (${moduleLabel.length > 0 ? moduleLabel : "module"} ${moduleName})`;
+  }
+  return moduleLabel === "package" ? " (default package)" : "";
+}
+
 /** 递归收集名字命中的符号（文档顺序） */
-function collectMatches(symbols: readonly JavaSymbol[], name: string): readonly JavaSymbol[] {
-  const matches: JavaSymbol[] = [];
+function collectMatches(symbols: readonly CodeSymbol[], name: string): readonly CodeSymbol[] {
+  const matches: CodeSymbol[] = [];
   for (const symbol of symbols) {
     if (symbol.name === name) {
       matches.push(symbol);
@@ -97,10 +112,20 @@ function collectMatches(symbols: readonly JavaSymbol[], name: string): readonly 
 }
 
 /** 符号行渲染：命中符号及其成员（嵌套缩进），与 Zone B Symbol Index 同风格 */
-function renderSymbolLines(symbol: JavaSymbol, depth: number): readonly string[] {
+function renderSymbolLines(
+  repo: RepoContext,
+  file: string,
+  symbol: CodeSymbol,
+  depth: number,
+): readonly string[] {
   const indent = "  ".repeat(depth);
+  const render = repo.languageFor(file)?.renderSignature ?? formatSymbolSignature;
   return [
-    `${indent}L${symbol.line} ${formatSymbolSignature(symbol)}`,
-    ...symbol.members.flatMap((member) => renderSymbolLines(member, depth + 1)),
+    `${indent}L${symbol.line} ${render(symbol)}`,
+    ...symbol.members.flatMap((member) => renderSymbolLines(repo, file, member, depth + 1)),
   ];
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -8,6 +8,7 @@ import { DEFAULT_TOOL_RESULT_BUDGET_CHARS } from "./result-budget.js";
 import { buildReviewToolkit } from "./toolkit.js";
 import { repoFixturePath } from "../testing/repos.js";
 import { DEFAULT_REVIEW_RUNTIME } from "../shared/review-runtime.js";
+import { DEFAULT_CODEINTEL } from "../shared/config.js";
 
 // 七工具执行器行为测试（#6 P3a）：sample 合成仓库上验证输出形态、入参校验、
 // 预算截断、Ledger 去重与只读纪律。VUL4J-1 真源字节对齐另见
@@ -178,14 +179,14 @@ test("find_references：声明/使用点形态（与 zoneb 原语同结果）", 
 test("get_call_chain：sample 方法链形态与零命中", async () => {
   const tk = toolkit();
   const result = await tk.executeTool("review.get_call_chain", { symbol: "getBase" });
-  expect(result).toContain('Call chain for "getBase" (name-level, up to 2 hops, no type resolution): 1 method declaration(s) matched');
+  expect(result).toContain('Call chain for "getBase" (name-level, up to 2 hops, no type resolution): 1 callable declaration(s) matched');
   expect(result).toContain("Alpha.getBase - method at src/main/java/com/example/Alpha.java:11");
   expect(result).toContain("Callers (hop 1):");
   expect(result).toContain("Callees (hop 1):");
 
   const zero = await tk.executeTool("review.get_call_chain", { symbol: "noSuchMethod" });
   expect(zero).toBe(
-    'Call chain for "noSuchMethod" (name-level, up to 2 hops, no type resolution): no method or constructor named "noSuchMethod" found across 3 Java file(s)',
+    'Call chain for "noSuchMethod" (name-level, up to 2 hops, no type resolution): no method, function, or constructor named "noSuchMethod" found across 3 Java file(s)',
   );
 });
 
@@ -230,13 +231,15 @@ test("非本语言仓 / 显式关闭：代码智能工具给明确提示，不�
   const dir = mkdtempSync(join(tmpdir(), "piagent-nonjava-"));
   try {
     mkdirSync(join(dir, "src"), { recursive: true });
-    writeFileSync(join(dir, "src", "main.ts"), "export const sum = (a: number): number => a;\n", "utf8");
+    writeFileSync(join(dir, "src", "main.kt"), "fun sum(a: Int): Int = a\n", "utf8");
     const tk = buildReviewToolkit({
       repoPath: dir,
-      diff: "diff --git a/src/main.ts b/src/main.ts",
+      diff: "diff --git a/src/main.kt b/src/main.kt",
       ledgerMode: "inert",
     });
-    const languages = hint("code intelligence languages: Java");
+    const languages = hint(
+      "code intelligence languages: Java, TypeScript/JavaScript, Python",
+    );
     await expect(tk.executeTool("review.get_symbol", { symbol: "sum" })).resolves.toBe(
       `Symbol "sum": ${languages}`,
     );
@@ -255,7 +258,10 @@ test("非本语言仓 / 显式关闭：代码智能工具给明确提示，不�
     repoPath: SAMPLE,
     diff: SAMPLE_DIFF,
     ledgerMode: "inert",
-    runtime: { ...DEFAULT_REVIEW_RUNTIME, codeintel: { languages: [] } },
+    runtime: {
+      ...DEFAULT_REVIEW_RUNTIME,
+      codeintel: { languages: [], excludeGlobs: DEFAULT_CODEINTEL.excludeGlobs },
+    },
   });
   await expect(disabled.executeTool("review.get_symbol", { symbol: "Alpha" })).resolves.toBe(
     `Symbol "Alpha": ${hint("code intelligence is disabled by codeintel.languages")}`,

@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+﻿import { expect, test } from "vitest";
 import { repoFixturePath } from "../testing/repos.js";
 import { analyzeDiff } from "./diff-analysis.js";
 import { loadRepoContext } from "./repo-context.js";
@@ -9,7 +9,7 @@ import {
   resolveChangedFileSymbols,
   type ChangedSymbolRef,
 } from "./changed-symbols.js";
-import type { JavaSymbol } from "./symbols.js";
+import type { CodeSymbol } from "./symbols.js";
 
 // Diff 层 → Symbol 层的桥（测量常量面）：hunk 旧侧行区间与符号 [line, endLine] 求交，
 // 方法级符号作为 Reference / Call Chain 层的检索对象。
@@ -116,7 +116,7 @@ test("changedMethodRefs：方法/构造器级变更符号按限定名排序去�
 });
 
 test("qualifiedName：有类型名时 Type.name，无类型名时裸名", () => {
-  const symbol = { kind: "method", name: "combine", line: 5, endLine: 8, modifiers: [], members: [] } as JavaSymbol;
+  const symbol = { kind: "method", name: "combine", line: 5, endLine: 8, modifiers: [], members: [] } as CodeSymbol;
   const withType: ChangedSymbolRef = { file: BETA_FILE, symbol, typeName: "Beta" };
   const bare: ChangedSymbolRef = { file: BETA_FILE, symbol, typeName: "" };
   expect(qualifiedName(withType)).toBe("Beta.combine");

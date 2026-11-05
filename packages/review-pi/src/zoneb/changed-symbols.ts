@@ -1,8 +1,8 @@
 import type { DiffAnalysis } from "./diff-analysis.js";
 import { oldSpansOf } from "./diff-analysis.js";
 import type { RepoContext } from "./repo-context.js";
-import type { JavaSymbol, LineSpan } from "./symbols.js";
-import { innermostSymbols, pruneSymbolsToSpans } from "./symbols.js";
+import type { CodeSymbol, LineSpan } from "./symbols.js";
+import { innermostSymbols, isCallableKind, isTypeKind, pruneSymbolsToSpans } from "./symbols.js";
 
 /**
  * Diff 层 → Symbol 层的桥（测量常量面）：变更文件 + 旧侧 hunk 行区间 → 相交符号（签名级）。
@@ -13,9 +13,9 @@ import { innermostSymbols, pruneSymbolsToSpans } from "./symbols.js";
 
 export interface ChangedSymbolRef {
   readonly file: string;
-  /** 最内层相交符号（通常为 method / constructor） */
-  readonly symbol: JavaSymbol;
-  /** 所属顶层类型名（无则 ""） */
+  /** 最内层相交符号（通常为 method / function / constructor） */
+  readonly symbol: CodeSymbol;
+  /** 所属顶层类型名（顶层函数为 ""） */
   readonly typeName: string;
 }
 
@@ -23,7 +23,7 @@ export interface ChangedFileSymbols {
   readonly file: string;
   readonly presentInSnapshot: boolean;
   /** 与 hunk 相交的剪枝符号树（渲染 Symbol 层用） */
-  readonly pruned: readonly JavaSymbol[];
+  readonly pruned: readonly CodeSymbol[];
   /** 最内层相交符号（Reference / Call Chain 层用） */
   readonly innermost: readonly ChangedSymbolRef[];
 }
@@ -51,8 +51,10 @@ async function resolveSingleFile(
   const pruned = pruneSymbolsToSpans(index.symbols, spans);
   const innermost: ChangedSymbolRef[] = [];
   for (const topType of pruned) {
+    // 顶层函数的容器名是空串，否则 qualifiedName 会渲染成 "greet.greet"
+    const containerName = isTypeKind(topType.kind) ? topType.name : "";
     for (const leaf of innermostSymbols([topType])) {
-      innermost.push({ file, symbol: leaf, typeName: topType.name });
+      innermost.push({ file, symbol: leaf, typeName: leaf.owner ?? containerName });
     }
   }
   return { file, presentInSnapshot: true, pruned, innermost };
@@ -63,7 +65,7 @@ export function changedMethodNames(changed: readonly ChangedFileSymbols[]): read
   const names = new Set<string>();
   for (const entry of changed) {
     for (const ref of entry.innermost) {
-      if (ref.symbol.kind === "method" || ref.symbol.kind === "constructor") {
+      if (isCallableKind(ref.symbol.kind)) {
         names.add(ref.symbol.name);
       }
     }
@@ -90,9 +92,7 @@ export function changedMethodRefs(
   changed: readonly ChangedFileSymbols[],
 ): readonly ChangedSymbolRef[] {
   const refs = changed.flatMap((entry) =>
-    entry.innermost.filter(
-      (ref) => ref.symbol.kind === "method" || ref.symbol.kind === "constructor",
-    ),
+    entry.innermost.filter((ref) => isCallableKind(ref.symbol.kind)),
   );
   const byKey = new Map<string, ChangedSymbolRef>();
   for (const ref of refs) {

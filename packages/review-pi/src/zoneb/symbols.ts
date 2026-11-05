@@ -1,11 +1,13 @@
-import type { Parser, Node } from "web-tree-sitter";
+import type { Parser } from "web-tree-sitter";
 
 /**
- * 签名级符号索引（测量常量面）：Zone B Symbol Index 生成器。
+ * 签名级符号索引（测量常量面）：Zone B Symbol Index 的语言无关模型。
  *
  * - 签名级：只提取种类 / 名称 / 修饰符 / 返回类型 / 参数表 / 行号，不含函数体；
  * - 确定性：遍历顺序 = AST 文档顺序（tree-sitter 确定），输入相同输出字节相同；
- * - 解析失败（ERROR 节点）：置 parseError 标记，由上层留痕，不静默丢弃。
+ * - 解析失败（ERROR 节点）：置 parseError 标记，由上层留痕，不静默丢弃；
+ * - 每语言的具体提取器在 `zoneb/extractors/<language>.ts`（ADR-0041），
+ *   本文件只保留跨语言共用的模型与树操作。
  */
 
 export type SymbolKind =
@@ -13,12 +15,46 @@ export type SymbolKind =
   | "interface"
   | "enum"
   | "record"
+  | "struct"
+  | "trait"
+  | "namespace"
+  | "module"
   | "method"
+  | "function"
   | "constructor"
   | "field"
-  | "enum-constant";
+  | "property"
+  | "enum-constant"
+  | "type-alias";
 
-export interface JavaSymbol {
+/** 类型级符号（可作为成员容器） */
+const TYPE_KINDS: ReadonlySet<SymbolKind> = new Set<SymbolKind>([
+  "class",
+  "interface",
+  "enum",
+  "record",
+  "struct",
+  "trait",
+  "namespace",
+  "module",
+]);
+
+/** 可调用符号（Reference / Call Chain 层的主体；顶层函数与类方法同等对待） */
+const CALLABLE_KINDS: ReadonlySet<SymbolKind> = new Set<SymbolKind>([
+  "method",
+  "function",
+  "constructor",
+]);
+
+export function isTypeKind(kind: SymbolKind): boolean {
+  return TYPE_KINDS.has(kind);
+}
+
+export function isCallableKind(kind: SymbolKind): boolean {
+  return CALLABLE_KINDS.has(kind);
+}
+
+export interface CodeSymbol {
   readonly kind: SymbolKind;
   readonly name: string;
   /** 声明起始行（1-based） */
@@ -26,12 +62,17 @@ export interface JavaSymbol {
   /** 声明结束行（1-based，含）；仅用于圈定/求交，不渲染进 Zone B */
   readonly endLine: number;
   readonly modifiers: readonly string[];
-  /** method / field 的类型 */
+  /** method / function / field / property 的类型 */
   readonly returnType?: string;
-  /** method / constructor / record 的形参表（归一化空白后含括号） */
+  /** method / function / constructor / record 的形参表（归一化空白后含括号） */
   readonly params?: string;
+  /**
+   * 所属类型名（ADR-0041）。Java/TS/Python 由顶层容器推导，缺省不填；
+   * 供没有类型包裹节点的语言（如 Go 的接收者方法、Rust 的 impl 块）显式声明。
+   */
+  readonly owner?: string;
   /** 嵌套成员（类型含成员；method/field 无成员） */
-  readonly members: readonly JavaSymbol[];
+  readonly members: readonly CodeSymbol[];
 }
 
 /** 文件内的一次调用（名字级：被调方法名或构造类型名 + 调用点行号） */
@@ -43,241 +84,17 @@ export interface FileInvocation {
 export interface FileSymbolIndex {
   /** 仓库相对 POSIX 路径 */
   readonly file: string;
-  /** 解析出的包名（缺省包为 ""） */
-  readonly packageName: string;
+  /** 解析出的模块名（Java package / Python dotted module；无则 ""） */
+  readonly moduleName: string;
   readonly parseError: boolean;
-  /** 顶层类型（嵌套类型在 members 里递归） */
-  readonly symbols: readonly JavaSymbol[];
-  /** 全文件的名字级调用点（method_invocation + new 表达式，各自文档顺序） */
+  /** 顶层类型与顶层函数（嵌套类型在 members 里递归） */
+  readonly symbols: readonly CodeSymbol[];
+  /** 全文件的名字级调用点（文档顺序） */
   readonly invocations: readonly FileInvocation[];
 }
 
-const TYPE_DECL_TYPES = new Set([
-  "class_declaration",
-  "interface_declaration",
-  "enum_declaration",
-  "record_declaration",
-]);
-
-const MODIFIER_KEYWORDS = new Set([
-  "public",
-  "protected",
-  "private",
-  "abstract",
-  "static",
-  "final",
-  "transient",
-  "volatile",
-  "synchronized",
-  "native",
-  "strictfp",
-  "default",
-]);
-
-/** 解析一个 Java 文件，产出签名级符号索引 */
-export function extractFileSymbols(parser: Parser, file: string, source: string): FileSymbolIndex {
-  const tree = parser.parse(source);
-  if (tree === null) {
-    // tree-sitter 仅在输入为 null/undefined 时返回 null；此处视为解析失败并留痕
-    return { file, packageName: "", parseError: true, symbols: [], invocations: [] };
-  }
-  const root = tree.rootNode;
-  const packageName = extractPackageName(root);
-  const symbols: JavaSymbol[] = [];
-  for (const child of root.namedChildren) {
-    if (TYPE_DECL_TYPES.has(child.type)) {
-      symbols.push(extractTypeSymbol(child));
-    }
-  }
-  const invocations = extractInvocations(root);
-  return {
-    file,
-    packageName,
-    parseError: root.hasError,
-    symbols,
-    invocations,
-  };
-}
-
-function extractPackageName(root: Node): string {
-  const packageDecl = root.namedChildren.find((child) => child.type === "package_declaration");
-  if (packageDecl === undefined) {
-    return "";
-  }
-  const nameNode =
-    packageDecl.childForFieldName("name") ??
-    packageDecl.namedChildren.find((child) => child.type !== ";");
-  return nameNode?.text ?? "";
-}
-
-function extractTypeSymbol(node: Node): JavaSymbol {
-  const kind = typeKindOf(node.type);
-  const name = node.childForFieldName("name")?.text ?? "(anonymous)";
-  const params =
-    node.type === "record_declaration"
-      ? normalizeParams(node.childForFieldName("parameters")?.text)
-      : undefined;
-  const body = node.childForFieldName("body");
-  const members = body !== null && body !== undefined ? extractMembers(body) : [];
-  return {
-    kind,
-    name,
-    line: node.startPosition.row + 1,
-    endLine: node.endPosition.row + 1,
-    modifiers: extractModifiers(node),
-    ...(params !== undefined ? { params } : {}),
-    members,
-  };
-}
-
-function extractMembers(body: Node): JavaSymbol[] {
-  const members: JavaSymbol[] = [];
-  for (const child of body.namedChildren) {
-    if (child.type === "enum_body_declarations") {
-      // enum 的方法/字段成员包在 enum_body_declarations 里，摊平处理
-      members.push(...extractMembers(child));
-      continue;
-    }
-    const member = extractMember(child);
-    if (member !== undefined) {
-      members.push(member);
-    }
-  }
-  return members;
-}
-
-function extractMember(node: Node): JavaSymbol | undefined {
-  if (TYPE_DECL_TYPES.has(node.type)) {
-    return extractTypeSymbol(node);
-  }
-  if (node.type === "method_declaration" || node.type === "constructor_declaration") {
-    return extractCallableSymbol(node);
-  }
-  if (node.type === "field_declaration") {
-    return extractFirstFieldSymbol(node);
-  }
-  if (node.type === "enum_constant") {
-    return {
-      kind: "enum-constant",
-      name: node.childForFieldName("name")?.text ?? "(unknown)",
-      line: node.startPosition.row + 1,
-      endLine: node.endPosition.row + 1,
-      modifiers: [],
-      members: [],
-    };
-  }
-  return undefined;
-}
-
-function extractCallableSymbol(node: Node): JavaSymbol {
-  const returnType =
-    node.type === "method_declaration" ? node.childForFieldName("type")?.text : undefined;
-  const params = normalizeParams(node.childForFieldName("parameters")?.text);
-  return {
-    kind: node.type === "constructor_declaration" ? "constructor" : "method",
-    name: node.childForFieldName("name")?.text ?? "(anonymous)",
-    line: node.startPosition.row + 1,
-    endLine: node.endPosition.row + 1,
-    modifiers: extractModifiers(node),
-    ...(returnType !== undefined ? { returnType } : {}),
-    ...(params !== undefined ? { params } : {}),
-    members: [],
-  };
-}
-
-function extractFirstFieldSymbol(node: Node): JavaSymbol | undefined {
-  const declarator = node.namedChildren.find((child) => child.type === "variable_declarator");
-  if (declarator === undefined) {
-    return undefined;
-  }
-  const returnType = node.childForFieldName("type")?.text;
-  return {
-    kind: "field",
-    name: declarator.childForFieldName("name")?.text ?? "(unknown)",
-    line: node.startPosition.row + 1,
-    endLine: node.endPosition.row + 1,
-    modifiers: extractModifiers(node),
-    ...(returnType !== undefined ? { returnType } : {}),
-    members: [],
-  };
-}
-
-function extractModifiers(node: Node): readonly string[] {
-  const modifiersNode = node.namedChildren.find((child) => child.type === "modifiers");
-  if (modifiersNode === undefined) {
-    return [];
-  }
-  const keywords: string[] = [];
-  for (let i = 0; i < modifiersNode.childCount; i++) {
-    const child = modifiersNode.child(i);
-    if (child !== null && MODIFIER_KEYWORDS.has(child.type)) {
-      keywords.push(child.type);
-    }
-  }
-  return keywords;
-}
-
-function extractInvocations(root: Node): readonly FileInvocation[] {
-  const invocations: FileInvocation[] = [];
-  for (const invocation of root.descendantsOfType("method_invocation")) {
-    const name = invocation.childForFieldName("name")?.text;
-    if (name !== undefined) {
-      invocations.push({ name, line: invocation.startPosition.row + 1 });
-    }
-  }
-  for (const creation of root.descendantsOfType("object_creation_expression")) {
-    const type = creation.childForFieldName("type")?.text;
-    if (type !== undefined) {
-      invocations.push({ name: type, line: creation.startPosition.row + 1 });
-    }
-  }
-  return invocations;
-}
-
-function typeKindOf(nodeType: string): SymbolKind {
-  switch (nodeType) {
-    case "interface_declaration":
-      return "interface";
-    case "enum_declaration":
-      return "enum";
-    case "record_declaration":
-      return "record";
-    default:
-      return "class";
-  }
-}
-
-function normalizeParams(text: string | undefined): string | undefined {
-  if (text === undefined) {
-    return undefined;
-  }
-  const normalized = text.replace(/\s+/g, " ").trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-/**
- * 签名渲染：`final class MathUtils` / `public static int sumFirst(int[] values, int count)`。
- * 只含签名要素，不含函数体。
- */
-export function formatSymbolSignature(symbol: JavaSymbol): string {
-  const mods = symbol.modifiers.length > 0 ? `${symbol.modifiers.join(" ")} ` : "";
-  switch (symbol.kind) {
-    case "class":
-    case "interface":
-    case "enum":
-      return `${mods}${symbol.kind} ${symbol.name}`;
-    case "record":
-      return `${mods}record ${symbol.name}${symbol.params ?? ""}`;
-    case "constructor":
-      return `${mods}${symbol.name}${symbol.params ?? "()"}`;
-    case "method":
-      return `${mods}${symbol.returnType ?? "void"} ${symbol.name}${symbol.params ?? "()"}`;
-    case "field":
-      return `${mods}${symbol.returnType ?? "var"} ${symbol.name}`;
-    case "enum-constant":
-      return symbol.name;
-  }
-}
+/** 单语言提取器签名（`codeintel/language-support.ts` 的注册项） */
+export type SymbolExtractor = (parser: Parser, file: string, source: string) => FileSymbolIndex;
 
 /** 行区间 [startLine, endLine]（含端点，1-based） */
 export interface LineSpan {
@@ -285,7 +102,49 @@ export interface LineSpan {
   readonly endLine: number;
 }
 
-function intersects(symbol: JavaSymbol, span: LineSpan): boolean {
+/**
+ * 默认签名渲染（Java 形态）：`final class MathUtils` /
+ * `public static int sumFirst(int[] values, int count)`。
+ * 只含签名要素，不含函数体。其他语言在各自 extractor 里提供 renderer。
+ */
+export function formatSymbolSignature(symbol: CodeSymbol): string {
+  const mods = symbol.modifiers.length > 0 ? `${symbol.modifiers.join(" ")} ` : "";
+  switch (symbol.kind) {
+    case "class":
+    case "interface":
+    case "enum":
+    case "struct":
+    case "trait":
+    case "namespace":
+    case "module":
+      return `${mods}${symbol.kind} ${symbol.name}`;
+    case "record":
+      return `${mods}record ${symbol.name}${symbol.params ?? ""}`;
+    case "constructor":
+      return `${mods}${symbol.name}${symbol.params ?? "()"}`;
+    case "method":
+    case "function":
+      return `${mods}${symbol.returnType ?? "void"} ${symbol.name}${symbol.params ?? "()"}`;
+    case "field":
+    case "property":
+      return `${mods}${symbol.returnType ?? "var"} ${symbol.name}`;
+    case "type-alias":
+      return `${mods}type ${symbol.name}`;
+    case "enum-constant":
+      return symbol.name;
+  }
+}
+
+/** 形参表归一化：折叠空白、去首尾；空串 → undefined */
+export function normalizeParams(text: string | undefined): string | undefined {
+  if (text === undefined) {
+    return undefined;
+  }
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function intersects(symbol: CodeSymbol, span: LineSpan): boolean {
   return symbol.line <= span.endLine && span.startLine <= symbol.endLine;
 }
 
@@ -294,10 +153,10 @@ function intersects(symbol: JavaSymbol, span: LineSpan): boolean {
  * 类型若自身或后代相交则保留；成员仅保留相交者。输出仍为文档顺序。
  */
 export function pruneSymbolsToSpans(
-  symbols: readonly JavaSymbol[],
+  symbols: readonly CodeSymbol[],
   spans: readonly LineSpan[],
-): readonly JavaSymbol[] {
-  const pruned: JavaSymbol[] = [];
+): readonly CodeSymbol[] {
+  const pruned: CodeSymbol[] = [];
   for (const symbol of symbols) {
     const ownHit = spans.some((span) => intersects(symbol, span));
     const prunedMembers =
@@ -310,8 +169,8 @@ export function pruneSymbolsToSpans(
 }
 
 /** 剪枝树的最深层符号（方法优先；类型无相交成员时为其自身） */
-export function innermostSymbols(symbols: readonly JavaSymbol[]): readonly JavaSymbol[] {
-  const result: JavaSymbol[] = [];
+export function innermostSymbols(symbols: readonly CodeSymbol[]): readonly CodeSymbol[] {
+  const result: CodeSymbol[] = [];
   for (const symbol of symbols) {
     if (symbol.members.length > 0) {
       result.push(...innermostSymbols(symbol.members));
@@ -324,9 +183,9 @@ export function innermostSymbols(symbols: readonly JavaSymbol[]): readonly JavaS
 
 /** 包含指定行的符号链（根类型 → … → 最内层符号；空数组 = 不在任何符号内） */
 export function symbolPathAt(
-  symbols: readonly JavaSymbol[],
+  symbols: readonly CodeSymbol[],
   line: number,
-): readonly JavaSymbol[] {
+): readonly CodeSymbol[] {
   for (const symbol of symbols) {
     if (symbol.line <= line && line <= symbol.endLine) {
       return [symbol, ...symbolPathAt(symbol.members, line)];

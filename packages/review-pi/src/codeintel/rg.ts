@@ -24,8 +24,15 @@ export interface RgMatch {
 export interface RgSearchOptions {
   /** 文件 glob 列表，缺省 ["*.java"]（单语言兜底；调用方通常传 RepoContext 的语言表） */
   readonly globs?: readonly string[];
+  /** 排除 glob 列表（ADR-0041）；传 `codeintel.excludeGlobs`，不带前导 "!" */
+  readonly excludeGlobs?: readonly string[];
   /** 单次调用超时（毫秒），默认 30000；超时杀进程并抛错（不静默挂起） */
   readonly timeoutMs?: number;
+}
+
+export interface RgListOptions {
+  readonly timeoutMs?: number;
+  readonly excludeGlobs?: readonly string[];
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -36,7 +43,7 @@ const DEFAULT_GLOBS: readonly string[] = ["*.java"];
 export function rgListFiles(
   root: string,
   globs: string | readonly string[],
-  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  options: RgListOptions = {},
 ): Promise<readonly string[]> {
   const patterns = typeof globs === "string" ? [globs] : globs;
   if (patterns.length === 0) {
@@ -48,10 +55,11 @@ export function rgListFiles(
     "--no-config",
     "--no-ignore",
     "--no-messages",
-    ...globArgs(patterns),
+    ...globArgs(patterns, options.excludeGlobs ?? []),
     "--",
     root,
   ];
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return runRg(args, timeoutMs).then((stdout) => {
     const files = stdout
       .split("\n")
@@ -84,7 +92,7 @@ export function rgSearchWord(
     "--case-sensitive",
     "--fixed-strings",
     "--word-regexp",
-    ...globArgs(globs),
+    ...globArgs(globs, options.excludeGlobs ?? []),
     "--",
     word,
     root,
@@ -200,8 +208,9 @@ function runRg(args: readonly string[], timeoutMs: number): Promise<string> {
   });
 }
 
-function globArgs(globs: readonly string[]): readonly string[] {
-  return globs.flatMap((glob) => ["-g", glob]);
+function globArgs(globs: readonly string[], excludeGlobs: readonly string[]): readonly string[] {
+  // 负向 glob 必须排在正向之后：ripgrep 后者优先
+  return [...globs, ...excludeGlobs.map((glob) => `!${glob}`)].flatMap((glob) => ["-g", glob]);
 }
 
 function describePattern(args: readonly string[]): string {

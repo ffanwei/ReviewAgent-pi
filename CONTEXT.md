@@ -36,7 +36,7 @@ Zone B 中的仓库结构视图（目录树与包/模块结构），静态确定
 _Avoid_: 仓库摘要（暗示 LLM 生成）
 
 **Symbol Index**:
-签名级符号索引（不含函数体），按变更文件所在包/模块圈定范围，静态确定性生成。
+签名级符号索引（不含函数体），按变更文件所在包/模块圈定范围，静态确定性生成；模型语言无关，具体提取由每语言 extractor 提供（ADR-0041）。
 
 **Append-only Context（Zone C）**:
 动态上下文只追加、不重排、不改写的构造纪律。
@@ -108,7 +108,7 @@ _Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截�
 _Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（无审计即违规）
 
 **代码智能语言（Code Intelligence Languages）**:
-符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前仅 `java`；数组 = 只启用列出语言；空数组 = 显式关闭）。注册表在 `codeintel/language-support.ts`（id / displayName / globs / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`，不再静默 `0 Java file(s)`（ADR-0040）。
+符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前 `java` / `typescript` / `python`；数组 = 只启用列出语言；空数组 = 显式关闭）。注册表在 `codeintel/language-support.ts`（id / displayName / 语法变体 / 注释前缀 / extractor / 签名渲染 / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。符号模型语言无关（`CodeSymbol` + `isCallableKind` + `owner`），每语言提取在 `zoneb/extractors/<lang>.ts`；`codeintel.excludeGlobs` 排除依赖与生成物（`--no-ignore` 的确定性要求）。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`（ADR-0040、ADR-0041）。
 _Avoid_: 多语言检视（检视本来就全语言）、语言包（实际是解析器注册表）
 
 ### 产物

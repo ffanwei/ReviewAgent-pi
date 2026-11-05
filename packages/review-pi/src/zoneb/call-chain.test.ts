@@ -1,9 +1,9 @@
-import { expect, test } from "vitest";
+﻿import { expect, test } from "vitest";
 import { repoFixturePath } from "../testing/repos.js";
 import { loadRepoContext } from "./repo-context.js";
 import { buildCallChainBlocks } from "./call-chain.js";
 import type { ChangedSymbolRef } from "./changed-symbols.js";
-import type { JavaSymbol } from "./symbols.js";
+import type { CodeSymbol } from "./symbols.js";
 
 // Call Chain 层（测量常量面）：名字级引用链降级形态——
 // hop 1 变更方法的引用点、hop 2 引用者方法的引用点、callee hop 1 方法体内调用点。
@@ -24,7 +24,7 @@ function methodRef(name: string, line: number, endLine: number, typeName: string
       returnType: "int",
       params: "()",
       members: [],
-    } as JavaSymbol,
+    } as CodeSymbol,
   };
 }
 
@@ -90,7 +90,7 @@ function alphaMethodRef(name: string, line: number, endLine: number): ChangedSym
       returnType: "int",
       params: "()",
       members: [],
-    } as JavaSymbol,
+    } as CodeSymbol,
   };
 }
 

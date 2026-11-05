@@ -51,6 +51,22 @@ test("rgListFiles / rgSearchWord：多 glob 一次扫描（任一匹配）", asy
   await expect(rgListFiles(SAMPLE, [])).resolves.toEqual([]);
 });
 
+test("rgListFiles / rgSearchWord：excludeGlobs 生效（多语言 glob 下排除依赖与生成物）", async () => {
+  const MULTILANG = repoFixturePath("multilang");
+  const globs = ["*.ts", "*.tsx", "*.js", "*.py"];
+  const excludeGlobs = ["**/vendor/**", "**/*.d.ts", "**/__pycache__/**"];
+  await expect(rgListFiles(MULTILANG, globs, { excludeGlobs })).resolves.toEqual([
+    "service/pkg/__init__.py",
+    "service/pkg/util.py",
+    "web/src/app.ts",
+    "web/src/view.tsx",
+  ]);
+  // 命中只在被排除的 vendor 里 → 空结果
+  await expect(
+    rgSearchWord(MULTILANG, "bundledThing", { globs: ["*.js"], excludeGlobs }),
+  ).resolves.toEqual([]);
+});
+
 test("runRg 错误路径：不存在的根目录显式抛错", async () => {
   await expect(rgListFiles("D:/definitely/not/a/repo", "*.java")).rejects.toThrow();
 });

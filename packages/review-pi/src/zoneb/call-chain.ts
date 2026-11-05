@@ -3,6 +3,7 @@ import type { ChangedSymbolRef } from "./changed-symbols.js";
 import { qualifiedName } from "./changed-symbols.js";
 import type { ReferenceSite } from "./reference-sites.js";
 import { enclosingLabel, findReferenceSites } from "./reference-sites.js";
+import { isCallableKind } from "./symbols.js";
 
 /**
  * Call Chain 层（测量常量面：Diff → Symbol → Reference → Call Chain 管线第四层）。
@@ -91,8 +92,14 @@ async function buildChainForMethod(
     deeperHops.push("  Callers (hop 2):", "    (no method-level callers identified at hop 1)");
   }
 
-  const callees = await calleesOf(repo, ref);
-  const calleeLines = ["  Callees (hop 1):", ...renderEntries(callees)];
+  const language = repo.languageFor(ref.file);
+  const calleeLines =
+    language !== undefined && !language.supportsInvocations
+      ? [
+          "  Callees (hop 1):",
+          `    (call-site extraction is not implemented for ${language.displayName})`,
+        ]
+      : ["  Callees (hop 1):", ...renderEntries(await calleesOf(repo, ref))];
 
   return [header, ...hop1, ...deeperHops, ...calleeLines];
 }
@@ -115,7 +122,11 @@ function callerMethodNameOf(site: ReferenceSite): readonly string[] {
   if (innermost === undefined) {
     return [];
   }
-  return innermost.kind === "method" || innermost.kind === "constructor" ? [innermost.name] : [];
+  return innermost.kind === "method" ||
+    innermost.kind === "function" ||
+    innermost.kind === "constructor"
+    ? [innermost.name]
+    : [];
 }
 
 async function calleesOf(repo: RepoContext, ref: ChangedSymbolRef): Promise<readonly string[]> {

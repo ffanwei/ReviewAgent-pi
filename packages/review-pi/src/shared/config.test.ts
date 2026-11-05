@@ -380,6 +380,42 @@ describe("loadConfig：codeintel.languages（语言开关，ADR-0040）", () => 
   });
 });
 
+describe("loadConfig：codeintel.excludeGlobs（扫描排除，ADR-0041）", () => {
+  test("缺省 = 内置非源码目录清单；不进 overridden，但进快照", () => {
+    const { config, warnings } = loadConfig({ configPath: writeConfig(minimalConfig("")) });
+    expect(config.codeintel.excludeGlobs).toEqual(DEFAULT_CODEINTEL.excludeGlobs);
+    expect(config.overridden).not.toContain("codeintel.excludeGlobs");
+    expect(warnings.join("\n")).not.toContain("excludeGlobs");
+    expect(configSnapshot(config).values["codeintel.excludeGlobs"]).toEqual(
+      DEFAULT_CODEINTEL.excludeGlobs,
+    );
+  });
+
+  test("自定义数组：trim + 去重保序；空数组 = 不排除任何东西", () => {
+    const custom = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"codeintel":{"excludeGlobs":[" **/dist/** ","**/dist/**","**/vendor/**"]}`),
+      ),
+    });
+    expect(custom.config.codeintel.excludeGlobs).toEqual(["**/dist/**", "**/vendor/**"]);
+    expect(custom.config.overridden).toContain("codeintel.excludeGlobs");
+
+    const none = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"codeintel":{"excludeGlobs":[]}`)),
+    });
+    expect(none.config.codeintel.excludeGlobs).toEqual([]);
+  });
+
+  test("非法取值 fail fast：非数组 / 空字符串条目", () => {
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"codeintel":{"excludeGlobs":"dist"}`)) }),
+    ).toThrow(/codeintel\.excludeGlobs must be an array of glob patterns/);
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"codeintel":{"excludeGlobs":[""]}`)) }),
+    ).toThrow(/codeintel\.excludeGlobs\[0\] must be a non-empty string/);
+  });
+});
+
 describe("writeConfigFile", () => {
   test("写盘：目录自动创建 + 拒绝覆盖 + --force", () => {
     const path = join(tempDir(), "nested", "PiAgent.jsonc");

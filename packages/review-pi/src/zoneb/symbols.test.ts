@@ -1,12 +1,12 @@
-import { expect, test } from "vitest";
+﻿import { expect, test } from "vitest";
 import { getJavaParser } from "../codeintel/java-parser.js";
+import { extractJavaFile } from "./extractors/java.js";
 import {
-  extractFileSymbols,
   formatSymbolSignature,
   innermostSymbols,
   pruneSymbolsToSpans,
   symbolPathAt,
-  type JavaSymbol,
+  type CodeSymbol,
 } from "./symbols.js";
 
 // 签名级符号索引（测量常量面）：tree-sitter-java 零构建解析，遍历 = AST 文档顺序，
@@ -55,11 +55,11 @@ const SOURCE = [
   "}", // 40
 ].join("\n");
 
-test("extractFileSymbols：包名 / 类型树 / 成员 / 修饰符 / 参数归一化", async () => {
+test("extractJavaFile：包名 / 类型树 / 成员 / 修饰符 / 参数归一化", async () => {
   const parser = await getJavaParser();
-  const index = extractFileSymbols(parser, "src/A.java", SOURCE);
+  const index = extractJavaFile(parser, "src/A.java", SOURCE);
   expect(index.file).toBe("src/A.java");
-  expect(index.packageName).toBe("com.example.demo");
+  expect(index.moduleName).toBe("com.example.demo");
   expect(index.parseError).toBe(false);
 
   expect(index.symbols).toEqual([
@@ -172,9 +172,9 @@ test("extractFileSymbols：包名 / 类型树 / 成员 / 修饰符 / 参数归�
   ]);
 });
 
-test("extractFileSymbols：调用点 = method_invocation 全量后接 new 表达式全量（各自文档顺序）", async () => {
+test("extractJavaFile：调用点 = method_invocation 全量后接 new 表达式全量（各自文档顺序）", async () => {
   const parser = await getJavaParser();
-  const index = extractFileSymbols(parser, "src/A.java", SOURCE);
+  const index = extractJavaFile(parser, "src/A.java", SOURCE);
   // name().toLowerCase()：外层调用先于内层（pre-order）；
   // new 表达式记 type 字段原文（含钻石操作符）
   expect(index.invocations).toEqual([
@@ -184,15 +184,15 @@ test("extractFileSymbols：调用点 = method_invocation 全量后接 new 表达
   ]);
 });
 
-test("extractFileSymbols：无法解析的源置 parseError 留痕", async () => {
+test("extractJavaFile：无法解析的源置 parseError 留痕", async () => {
   const parser = await getJavaParser();
-  const index = extractFileSymbols(parser, "src/Broken.java", "))) not java [[[");
+  const index = extractJavaFile(parser, "src/Broken.java", "))) not java [[[");
   expect(index.parseError).toBe(true);
-  expect(index.packageName).toBe("");
+  expect(index.moduleName).toBe("");
 });
 
 test("formatSymbolSignature：签名级渲染（不含函数体）", () => {
-  const field: JavaSymbol = {
+  const field: CodeSymbol = {
     kind: "field",
     name: "count",
     line: 1,
@@ -203,7 +203,7 @@ test("formatSymbolSignature：签名级渲染（不含函数体）", () => {
   };
   expect(formatSymbolSignature(field)).toBe("private int count");
 
-  const method: JavaSymbol = {
+  const method: CodeSymbol = {
     kind: "method",
     name: "sum",
     line: 1,
@@ -215,7 +215,7 @@ test("formatSymbolSignature：签名级渲染（不含函数体）", () => {
   };
   expect(formatSymbolSignature(method)).toBe("public static int sum(int[] values, int limit)");
 
-  const noParams: JavaSymbol = {
+  const noParams: CodeSymbol = {
     kind: "method",
     name: "area",
     line: 1,
@@ -226,7 +226,7 @@ test("formatSymbolSignature：签名级渲染（不含函数体）", () => {
   };
   expect(formatSymbolSignature(noParams)).toBe("double area()");
 
-  const ctor: JavaSymbol = {
+  const ctor: CodeSymbol = {
     kind: "constructor",
     name: "MathUtils",
     line: 1,
@@ -237,7 +237,7 @@ test("formatSymbolSignature：签名级渲染（不含函数体）", () => {
   };
   expect(formatSymbolSignature(ctor)).toBe("public MathUtils(int count)");
 
-  const record: JavaSymbol = {
+  const record: CodeSymbol = {
     kind: "record",
     name: "Point",
     line: 1,
@@ -248,7 +248,7 @@ test("formatSymbolSignature：签名级渲染（不含函数体）", () => {
   };
   expect(formatSymbolSignature(record)).toBe("record Point(int x, int y)");
 
-  const iface: JavaSymbol = {
+  const iface: CodeSymbol = {
     kind: "interface",
     name: "Shape",
     line: 1,
@@ -258,7 +258,7 @@ test("formatSymbolSignature：签名级渲染（不含函数体）", () => {
   };
   expect(formatSymbolSignature(iface)).toBe("interface Shape");
 
-  const constant: JavaSymbol = {
+  const constant: CodeSymbol = {
     kind: "enum-constant",
     name: "RED",
     line: 1,
@@ -270,7 +270,7 @@ test("formatSymbolSignature：签名级渲染（不含函数体）", () => {
 });
 
 test("pruneSymbolsToSpans：类型自身或后代相交则保留，成员仅保留相交者", () => {
-  const method: JavaSymbol = {
+  const method: CodeSymbol = {
     kind: "method",
     name: "sum",
     line: 15,
@@ -279,8 +279,8 @@ test("pruneSymbolsToSpans：类型自身或后代相交则保留，成员仅保�
     returnType: "int",
     members: [],
   };
-  const otherMethod: JavaSymbol = { ...method, name: "area", line: 25, endLine: 25, returnType: "double" };
-  const cls: JavaSymbol = {
+  const otherMethod: CodeSymbol = { ...method, name: "area", line: 25, endLine: 25, returnType: "double" };
+  const cls: CodeSymbol = {
     kind: "class",
     name: "MathUtils",
     line: 5,
@@ -288,7 +288,7 @@ test("pruneSymbolsToSpans：类型自身或后代相交则保留，成员仅保�
     modifiers: [],
     members: [method, otherMethod],
   };
-  const iface: JavaSymbol = {
+  const iface: CodeSymbol = {
     kind: "interface",
     name: "Shape",
     line: 35,
@@ -319,8 +319,8 @@ test("pruneSymbolsToSpans：类型自身或后代相交则保留，成员仅保�
 });
 
 test("innermostSymbols：剪枝树的最深层符号；无成员类型为自身", () => {
-  const method: JavaSymbol = { kind: "method", name: "sum", line: 15, endLine: 21, modifiers: [], members: [] };
-  const cls: JavaSymbol = {
+  const method: CodeSymbol = { kind: "method", name: "sum", line: 15, endLine: 21, modifiers: [], members: [] };
+  const cls: CodeSymbol = {
     kind: "class",
     name: "MathUtils",
     line: 5,
@@ -328,13 +328,13 @@ test("innermostSymbols：剪枝树的最深层符号；无成员类型为自身"
     modifiers: [],
     members: [method],
   };
-  const emptyClass: JavaSymbol = { kind: "class", name: "Empty", line: 1, endLine: 2, modifiers: [], members: [] };
+  const emptyClass: CodeSymbol = { kind: "class", name: "Empty", line: 1, endLine: 2, modifiers: [], members: [] };
   expect(innermostSymbols([cls, emptyClass])).toEqual([method, emptyClass]);
 });
 
 test("symbolPathAt：包含指定行的符号链（根 → 最内层）；行不在任何符号内为空", () => {
-  const method: JavaSymbol = { kind: "method", name: "sum", line: 15, endLine: 21, modifiers: [], members: [] };
-  const cls: JavaSymbol = {
+  const method: CodeSymbol = { kind: "method", name: "sum", line: 15, endLine: 21, modifiers: [], members: [] };
+  const cls: CodeSymbol = {
     kind: "class",
     name: "MathUtils",
     line: 5,

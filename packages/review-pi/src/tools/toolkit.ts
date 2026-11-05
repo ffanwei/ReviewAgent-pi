@@ -144,6 +144,7 @@ function memoizedRepo(options: ReviewToolkitOptions, runtime: ReviewRuntime): ()
       ripgrepTimeoutMs: runtime.limits.timeouts.ripgrepMs,
       packageHeadBytes: runtime.limits.micro.packageHeadBytes,
       languages: runtime.codeintel.languages,
+      excludeGlobs: runtime.codeintel.excludeGlobs,
     });
     return cached;
   };

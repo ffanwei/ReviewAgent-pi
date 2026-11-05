@@ -7,6 +7,7 @@ import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc
 
 import { MCP_REPORT_EVENT_TYPES, type McpReportEventType } from "../contracts/mcp-report.js";
 import { SUPPORTED_LANGUAGE_IDS } from "../codeintel/language-support.js";
+import { DEFAULT_EXCLUDE_GLOBS } from "../codeintel/scan-defaults.js";
 
 /**
  * 用户级运行配置（ADR-0025）：`~/.PiAgent/PiAgent.jsonc`（JSONC）。
@@ -225,10 +226,17 @@ export interface PresentationSettings {
  */
 export interface CodeIntelSettings {
   readonly languages: "auto" | readonly string[];
+  /**
+   * 扫描排除 glob（ADR-0041）：`--no-ignore` 是确定性要求，多语言 glob 下
+   * 必须显式排除 node_modules / dist / 生成物，否则会把依赖当源码扫。
+   * 空数组 = 不排除任何东西（完全由语言 glob 决定）。
+   */
+  readonly excludeGlobs: readonly string[];
 }
 
 export const DEFAULT_CODEINTEL: CodeIntelSettings = Object.freeze({
   languages: "auto" as const,
+  excludeGlobs: DEFAULT_EXCLUDE_GLOBS,
 });
 
 /** MCP 服务端连接（ADR-0037：v1 只有 HTTP 传输） */
@@ -593,7 +601,7 @@ const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "c
 const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
 const PRESENTATION_KEYS = ["engine"] as const;
-const CODEINTEL_KEYS = ["languages"] as const;
+const CODEINTEL_KEYS = ["languages", "excludeGlobs"] as const;
 const MCP_KEYS = ["servers", "report"] as const;
 const MCP_SERVER_KEYS = ["transport", "url", "headers", "timeoutMs"] as const;
 const MCP_REPORT_KEYS = [
@@ -756,7 +764,35 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
 function parseCodeIntel(raw: unknown, warnings: string[]): CodeIntelSettings {
   const obj = optionalObject(raw, "codeintel", warnings);
   assertKnownKeys(obj, CODEINTEL_KEYS, "codeintel", warnings);
-  return { languages: parseLanguageSelection(obj.languages, warnings) };
+  return {
+    languages: parseLanguageSelection(obj.languages, warnings),
+    excludeGlobs: parseExcludeGlobs(obj.excludeGlobs),
+  };
+}
+
+/** `codeintel.excludeGlobs`：非空字符串数组；去重保序；空数组 = 不排除 */
+function parseExcludeGlobs(value: unknown): readonly string[] {
+  if (value === undefined || value === null) {
+    return DEFAULT_CODEINTEL.excludeGlobs;
+  }
+  if (!Array.isArray(value)) {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: codeintel.excludeGlobs must be an array of glob patterns (got ${describe(value)})`,
+    );
+  }
+  const globs: string[] = [];
+  value.forEach((entry, index) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new ConfigError(
+        `${CONFIG_FILE_NAME}: codeintel.excludeGlobs[${String(index)}] must be a non-empty string (got ${describe(entry)})`,
+      );
+    }
+    const glob = entry.trim();
+    if (!globs.includes(glob)) {
+      globs.push(glob);
+    }
+  });
+  return globs;
 }
 
 /**
@@ -963,6 +999,7 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     "model.presentation": config.model.presentation,
     "presentation.engine": config.presentation.engine,
     "codeintel.languages": config.codeintel.languages,
+    "codeintel.excludeGlobs": config.codeintel.excludeGlobs,
   };
   for (const [group, entries] of Object.entries(config.limits)) {
     for (const [key, value] of Object.entries(entries)) {
@@ -1292,6 +1329,8 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     overrides.modelPresentation === undefined ? "null" : JSON.stringify(overrides.modelPresentation);
   const enginePath =
     overrides.enginePath === undefined ? jsonString(BUILTIN_ENGINE_SENTINEL) : JSON.stringify(overrides.enginePath);
+  // 排除 glob 直接从常量生成：模板与运行时默认值不会漂移
+  const excludeGlobLines = DEFAULT_EXCLUDE_GLOBS.map((glob) => `      ${jsonString(glob)}`).join(",\n");
   return `{
   // PiAgent 运行配置（ADR-0025）。JSONC：允许注释与尾逗号。
   // 秘密（reviewer.apiKey）只写在这里；环境变量不再被读取。
@@ -1323,9 +1362,14 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
   // 代码智能（符号 / 引用 / 调用链）启用哪些语言。检视本体读 diff，本来就不限语言；
   // 这里只控制符号级工具的扫描范围，不影响普通检视。
   // "auto" = 跟随当前版本已实现的解析器（推荐：升级后自动获得新语言，不用改配置）。
-  // 数组 = 只启用列出的语言（如 ["java"]）；未实现的条目装载期告警并跳过，不静默。
+  // 数组 = 只启用列出的语言；未实现的条目装载期告警并跳过，不静默。
+  // 已实现：java / typescript（含 ts / tsx / js / jsx）/ python。
   "codeintel": {
-    "languages": "auto"
+    "languages": "auto",
+    // 扫描排除（ADR-0041）：依赖与生成物不是手写源码。空数组 = 不排除。
+    "excludeGlobs": [
+${excludeGlobLines}
+    ]
   },
 
   // MCP 上报（ADR-0037）：把进度 / 状态 / 结果外发给已有的 MCP 服务（HTTP + JSON-RPC）。

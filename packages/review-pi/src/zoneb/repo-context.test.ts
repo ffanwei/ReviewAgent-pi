@@ -3,7 +3,7 @@ import { repoFixturePath } from "../testing/repos.js";
 import { derivePackageFromPath, loadRepoContext } from "./repo-context.js";
 
 // 仓库快照上下文（测量常量面）：Zone B 构造的确定性读取层。
-// 文件清单来自 ripgrep；包名走文件头部词法提取（无 package 声明 → 默认包 ""）；
+// 文件清单来自 ripgrep；模块名走文件头部词法提取（仅声明型语言；无声明 → ""）；
 // 源码读取与符号解析按需 memoize。
 
 const SAMPLE = repoFixturePath("sample");
@@ -11,18 +11,23 @@ const SAMPLE = repoFixturePath("sample");
 test("loadRepoContext：清单 / 词法包名 / 根文件名 / 读取与符号索引", async () => {
   const context = await loadRepoContext(SAMPLE);
   expect(context.repoName).toBe("sample");
-  expect(context.languages.map((language) => language.id)).toEqual(["java"]);
+  expect(context.languages.map((language) => language.id)).toEqual([
+    "java",
+    "typescript",
+    "python",
+  ]);
+  // auto 启用全部语言，但展示面只列仓库里真实存在的语言
+  expect(context.detectedLanguages.map((language) => language.id)).toEqual(["java"]);
   expect(context.languageLabel).toBe("Java");
-  expect(context.languageGlobs).toEqual(["*.java"]);
   expect(context.sourceFiles).toEqual([
     "src/main/java/com/example/Alpha.java",
     "src/main/java/com/example/Beta.java",
     "src/main/java/com/example/Gamma.java",
   ]);
-  expect(context.packageNameByFile.get("src/main/java/com/example/Alpha.java")).toBe("com.example");
-  expect(context.packageNameByFile.get("src/main/java/com/example/Beta.java")).toBe("com.example");
+  expect(context.moduleNameByFile.get("src/main/java/com/example/Alpha.java")).toBe("com.example");
+  expect(context.moduleNameByFile.get("src/main/java/com/example/Beta.java")).toBe("com.example");
   // Gamma.java 无 package 声明：词法提取兜底为默认包
-  expect(context.packageNameByFile.get("src/main/java/com/example/Gamma.java")).toBe("");
+  expect(context.moduleNameByFile.get("src/main/java/com/example/Gamma.java")).toBe("");
   expect(context.rootFileNames).toContain("pom.xml");
   expect(context.rootFileNames).toContain("README.md");
 
@@ -46,11 +51,11 @@ test("loadRepoContext：memoize——同一文件读取/解析各只一次（同
 
 test("loadRepoContext：读不存在的仓库路径显式抛错（fail fast）", async () => {
   await expect(loadRepoContext("D:/definitely/not/a/repo")).rejects.toThrow(
-    /failed to list Java source files/,
+    /failed to list .* source files/,
   );
 });
 
-test("loadRepoContext：codeintel.languages 可收窄/显式关闭；非 Java 仓 0 源文件", async () => {
+test("loadRepoContext：codeintel.languages 可收窄/显式关闭；未实现语言退化为 0 源文件", async () => {
   const disabled = await loadRepoContext(SAMPLE, { languages: [] });
   expect(disabled.languages).toEqual([]);
   expect(disabled.languageLabel).toBe("");
@@ -60,6 +65,53 @@ test("loadRepoContext：codeintel.languages 可收窄/显式关闭；非 Java �
   // 未实现语言在 resolveLanguages 里被过滤（配置装载期已告警）；运行时同样退化为 0 文件
   expect(nonJava.languages).toEqual([]);
   expect(nonJava.sourceFiles).toEqual([]);
+});
+
+test("loadRepoContext：excludeGlobs 生效（多语言 glob 下不把依赖/生成物当源码）", async () => {
+  const context = await loadRepoContext(repoFixturePath("multilang"));
+  expect(context.sourceFiles.some((file) => file.includes("vendor/"))).toBe(false);
+  expect(context.sourceFiles.some((file) => file.endsWith(".d.ts"))).toBe(false);
+  expect(context.sourceFiles.some((file) => file.includes("__pycache__"))).toBe(false);
+  expect(context.sourceFiles).toEqual([
+    "service/pkg/__init__.py",
+    "service/pkg/util.py",
+    "web/src/app.ts",
+    "web/src/view.tsx",
+  ]);
+});
+
+test("loadRepoContext：多语言仓——检测语言、模块名与符号索引按文件分派", async () => {
+  const context = await loadRepoContext(repoFixturePath("multilang"));
+  expect(context.detectedLanguages.map((language) => language.id)).toEqual([
+    "typescript",
+    "python",
+  ]);
+  expect(context.languageLabel).toBe("TypeScript/JavaScript, Python");
+  expect(context.moduleNameByFile.size).toBe(0); // 两种语言都不做头部预读
+  expect(context.languageFor("web/src/app.ts")?.id).toBe("typescript");
+  expect(context.languageFor("web/src/view.tsx")?.id).toBe("typescript");
+  expect(context.languageFor("service/pkg/util.py")?.id).toBe("python");
+
+  const ts = await context.symbolIndex("web/src/app.ts");
+  expect(ts.moduleName).toBe("");
+  expect(ts.symbols.map((symbol) => symbol.name)).toEqual([
+    "Renderer",
+    "Greeter",
+    "greetAll",
+    "shout",
+  ]);
+  expect(ts.invocations.map((invocation) => invocation.name)).toContain("renderName");
+
+  const py = await context.symbolIndex("service/pkg/util.py");
+  expect(py.moduleName).toBe("service.pkg.util");
+  expect(py.symbols.map((symbol) => symbol.name)).toEqual(["Formatter", "make_default"]);
+  expect(py.invocations.map((invocation) => invocation.name)).toContain("upper");
+});
+
+test("candidateFilesForName：rg 预收窄（多语言 glob 下只返回文本命中文件）", async () => {
+  const context = await loadRepoContext(repoFixturePath("multilang"));
+  await expect(context.candidateFilesForName("renderName")).resolves.toEqual(["web/src/app.ts"]);
+  await expect(context.candidateFilesForName("noSuchSymbolAnywhere")).resolves.toEqual([]);
 });
 
 test("derivePackageFromPath：src/main/java 与 src/test/java 前缀剥离，其余按目录推导", () => {

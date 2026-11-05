@@ -5,7 +5,8 @@ import { buildCallChainBlocks } from "../zoneb/call-chain.js";
 import type { ReferenceSite } from "../zoneb/reference-sites.js";
 import { enclosingLabel, findReferenceSites } from "../zoneb/reference-sites.js";
 import type { RepoContext } from "../zoneb/repo-context.js";
-import type { JavaSymbol } from "../zoneb/symbols.js";
+import type { CodeSymbol } from "../zoneb/symbols.js";
+import { isCallableKind, isTypeKind } from "../zoneb/symbols.js";
 import type { KnowledgeEntry } from "../contracts/knowledge.js";
 import { boundedEcho, requireStringArg } from "./args.js";
 import { readThroughLedger } from "./ledger.js";
@@ -122,9 +123,9 @@ async function renderCallChain(
   if (repo.sourceFiles.length === 0) {
     return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${noSourceFilesMessage(repo.languages)}`;
   }
-  const header = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${refs.length} method declaration(s) matched`;
+  const header = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${refs.length} callable declaration(s) matched`;
   if (refs.length === 0) {
-    return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method or constructor named "${name}" found across ${repo.sourceFiles.length} ${repo.languageLabel} file(s)`;
+    return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method, function, or constructor named "${name}" found across ${repo.sourceFiles.length} ${repo.languageLabel} file(s)`;
   }
   const blocks = await buildCallChainBlocks(repo, refs, {
     hops: options.hops,
@@ -153,20 +154,26 @@ async function searchReferenceSites(
   });
 }
 
-/** 全仓扫描名字命中的方法/构造器声明（文件顺序 → 限定名/文件/行号排序，确定性） */
+/**
+ * 全仓扫描名字命中的可调用声明（rg 预收窄 → 文件顺序 → 限定名/文件/行号排序，确定性）。
+ *
+ * 预收窄（ADR-0041）：声明必然在文本上包含该名字，先 rg 拿候选文件再解析，
+ * 避免多语言仓里把每个语言的全量文件都解析一遍。
+ */
 async function findMethodRefs(repo: RepoContext, name: string): Promise<readonly ChangedSymbolRef[]> {
   const refs: ChangedSymbolRef[] = [];
-  for (const file of repo.sourceFiles) {
+  const candidates = await repo.candidateFilesForName(name).catch((error: unknown) => {
+    throw new Error(`review.get_call_chain: ${errorMessage(error)}`, { cause: error });
+  });
+  for (const file of candidates) {
     const index = await repo.symbolIndex(file).catch((error: unknown) => {
-      // 归一为仓库相对路径消息（不泄漏绝对路径，与 get_file 的错误纪律一致）
+      // 归一为仓库相对路径消息（不泄漏绝对路径，与 get-file 的错误纪律一致）
       throw new Error(
         `review.get_call_chain: symbol index unavailable for file "${file}" (not found or unreadable)`,
         { cause: error },
       );
     });
-    for (const topType of index.symbols) {
-      collectMethodRefs(file, topType, topType.name, name, refs);
-    }
+    collectCallableRefs(file, index.symbols, "", name, refs);
   }
   return refs.sort(
     (a, b) =>
@@ -176,20 +183,21 @@ async function findMethodRefs(repo: RepoContext, name: string): Promise<readonly
   );
 }
 
-/** 递归收集类型树内名字命中的方法/构造器（typeName 取顶层类型，与 Zone B 惯例一致） */
-function collectMethodRefs(
+/** 递归收集名字命中的方法/函数/构造器（owner 优先，其次容器类型名；顶层函数为 ""） */
+function collectCallableRefs(
   file: string,
-  typeSymbol: JavaSymbol,
-  rootTypeName: string,
+  symbols: readonly CodeSymbol[],
+  containerName: string,
   name: string,
   out: ChangedSymbolRef[],
 ): void {
-  for (const member of typeSymbol.members) {
-    if ((member.kind === "method" || member.kind === "constructor") && member.name === name) {
-      out.push({ file, symbol: member, typeName: rootTypeName });
+  for (const symbol of symbols) {
+    if (isCallableKind(symbol.kind) && symbol.name === name) {
+      out.push({ file, symbol, typeName: symbol.owner ?? containerName });
     }
-    if (member.members.length > 0) {
-      collectMethodRefs(file, member, rootTypeName, name, out);
+    if (symbol.members.length > 0) {
+      const childContainer = isTypeKind(symbol.kind) ? symbol.name : containerName;
+      collectCallableRefs(file, symbol.members, childContainer, name, out);
     }
   }
 }

@@ -71,7 +71,7 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.get_symbol",
       description:
-        "Look up a symbol by its simple name across all Java sources and return signature-level declarations " +
+        "Look up a symbol by its simple name across the configured source languages and return signature-level declarations " +
         "(kind, modifiers, return type, parameters, line number; no method bodies). Type matches include their members.",
       parametersJson: JSON.stringify({
         type: "object",
@@ -113,7 +113,7 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.find_references",
       description:
-        "Find name-level references to a symbol across all Java sources (whole-word, case-sensitive match; " +
+        "Find name-level references to a symbol across the configured source languages (whole-word, case-sensitive match; " +
         "no type resolution, so overloads and overrides are not distinguished). Returns declaration and usage " +
         "sites with their enclosing symbols.",
       parametersJson: JSON.stringify({
@@ -131,15 +131,16 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.get_call_chain",
       description:
-        "Build a name-level call chain around a method or constructor: hop-1 callers, hop-2 callers of those " +
-        "callers, and callees invoked inside the method body. Whole-word name matching without type resolution; " +
+        "Build a name-level call chain around a method, function, or constructor: hop-1 callers, hop-2 callers of those " +
+        "callers, and callees invoked inside the declaration body. Whole-word name matching without type resolution; " +
         "overloads are not distinguished.",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
           symbol: {
             type: "string",
-            description: 'Simple name of the method or constructor to build the chain around, e.g. "sumFirst".',
+            description:
+              'Simple name of the method, function, or constructor to build the chain around, e.g. "sumFirst".',
           },
         },
         required: ["symbol"],
