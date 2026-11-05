@@ -34,13 +34,13 @@ afterAll(() => {
 
 function sample(overrides: Partial<SessionIndex> = {}): SessionIndex {
   return {
-    version: 1,
+    version: 2,
     taskId: "t-1",
     tasksDir: path.resolve("/tasks"),
     runId: "20261103_101500_000",
     repo: path.resolve("/repo"),
     updatedAt: "2026-11-03T10:15:00.000Z",
-    main: path.resolve("/tasks/t-1/runs/session-20261103_101500_000.json"),
+    mains: [path.resolve("/tasks/t-1/runs/session-20261103_101500_000.json")],
     skills: [path.resolve("/tasks/t-1/runs/session-20261103_101500_000-skill-a-r1.json")],
     ...overrides,
   };
@@ -61,6 +61,30 @@ test("写入后读回同形；重复写覆盖旧的一份", async () => {
   expect(readFileSync(written, "utf8")).toBe(`${JSON.stringify(second, null, 2)}\n`);
 });
 
+test("v1 索引（单个 main）仍可读，读取端归一为 mains: [main]（ADR-0039）", async () => {
+  const cwd = makeTempDir("review-pi-session-index-v1-");
+  const main = path.resolve("/tasks/t-1/runs/session-20261103_101500_000.json");
+  await writeFile(
+    sessionIndexPath(cwd),
+    JSON.stringify({
+      version: 1,
+      taskId: "t-1",
+      tasksDir: path.resolve("/tasks"),
+      runId: "20261103_101500_000",
+      repo: path.resolve("/repo"),
+      updatedAt: "2026-11-03T10:15:00.000Z",
+      main,
+      skills: [],
+    }),
+    "utf8",
+  );
+  await expect(readSessionIndex(cwd)).resolves.toMatchObject({
+    version: 2,
+    mains: [main],
+    skills: [],
+  });
+});
+
 test("索引缺席 / 坏 JSON / 版本不符都是人话错误", async () => {
   const cwd = makeTempDir("review-pi-session-index-missing-");
   await expect(readSessionIndex(cwd)).rejects.toThrow(/未找到 session 索引/);
@@ -72,7 +96,7 @@ test("索引缺席 / 坏 JSON / 版本不符都是人话错误", async () => {
   const versionMismatch = makeTempDir("review-pi-session-index-version-");
   await writeFile(
     sessionIndexPath(versionMismatch),
-    JSON.stringify({ ...sample(), version: 2 }),
+    JSON.stringify({ ...sample(), version: 3 }),
     "utf8",
   );
   await expect(readSessionIndex(versionMismatch)).rejects.toThrow(/version 必须为 1/);
@@ -88,8 +112,8 @@ test("索引缺席 / 坏 JSON / 版本不符都是人话错误", async () => {
   const relativePath = makeTempDir("review-pi-session-index-relative-");
   await writeFile(
     sessionIndexPath(relativePath),
-    JSON.stringify({ ...sample(), main: "session-1.json" }),
+    JSON.stringify({ ...sample(), mains: ["session-1.json"] }),
     "utf8",
   );
-  await expect(readSessionIndex(relativePath)).rejects.toThrow(/main 必须是绝对路径/);
+  await expect(readSessionIndex(relativePath)).rejects.toThrow(/mains 必须是非空的绝对路径数组/);
 });

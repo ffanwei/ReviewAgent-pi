@@ -2,24 +2,43 @@ import path from "node:path";
 import type { FetchFunction } from "@earendil-works/pi-ai";
 import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audit-writer.js";
 import type { Finding } from "../contracts/finding.js";
-import type { LedgerEntry } from "../contracts/ledger.js";
-import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
-import type { RuleSkillAudit, RuleSkillPassRecord, RunAudit, RunResult, MrFilterRecord } from "../contracts/run.js";
-import { buildRunRecord, runDirPath, writeRunRecord, type RunRecord } from "../experiment/run-record.js";
+import type { LlmUsage } from "../contracts/llm.js";
+import {
+  NO_OP_PROGRESS_SINK,
+  type RunProgressSink,
+  type ShardLabel,
+} from "../contracts/progress.js";
+import type {
+  MrFilterRecord,
+  RuleSkillAudit,
+  RuleSkillPassRecord,
+  RunAudit,
+  RunResult,
+  ShardAuditRecord,
+} from "../contracts/run.js";
+import {
+  buildRunRecord,
+  runDirPath,
+  writeRunRecord,
+  type RunRecord,
+  type ShardRecord,
+} from "../experiment/run-record.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
-import { buildTranscript, writeTranscript, type AgentTranscriptCapture } from "../export/transcript.js";
 import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
-import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
-import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
-import { buildInitialUserMessage } from "../loop/messages.js";
 import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";
-import type { ConfigSnapshot } from "../shared/config.js";
+import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
+import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
-import { buildReviewToolkit, type ReviewToolkit } from "../tools/toolkit.js";
-import { createContextLedger } from "../tools/ledger.js";
-import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { assertDiffWithinCharLimit, filterDiffForReview, toMrFilterRecord } from "./mr-input.js";
+import { mergeShardFindings } from "./findings-merge.js";
+import { runReviewPass, type ReviewPassResult } from "./review-pass.js";
+import {
+  composeShardInput,
+  planShards,
+  type Shard,
+  type ShardPlan,
+} from "./shard-planner.js";
 
 // 单案全链入口（ADR-0024：配置矩阵删除后只剩唯一形态）：
 // MR 初始上下文 → pi-agent-core Agent 三钩子循环（七工具 + 轮次上界 + Ledger
@@ -27,6 +46,11 @@ import { assertDiffWithinCharLimit, filterDiffForReview, toMrFilterRecord } from
 //
 // 规则 Skill 是唯一形态（原 config F）：装载成功则用于候选阶段的规则检视；
 // 装不到则照常检视（`ruleSkill: []`），由 CLI 在 stderr 提示一行。
+//
+// 大 diff 第二期（ADR-0039）：入口先做一次全局预过滤 / 体积门 / 边界度量，
+// 再按 `diff --git` 文件块规划分片。≤ 单片预算或 `limits.split.enabled=false`
+// 时走**与旧实现逐字节相同**的单遍路径；多片时串行跑每片完整六阶段，最后
+// 合并 findings 并落聚合产物（全部片成功后才写）。
 //
 // fake 适配器与真适配器同缝：传输层经注入的 FetchFunction——离线开发/测试
 // 注入 fakeFetch（canned SSE），真跑注入真 fetch + baseUrl（配置 reviewer.baseUrl），
@@ -93,6 +117,11 @@ export interface ReviewRunResult {
   readonly auditPath: string;
   /** 检视转录路径（ADR-0013）：走 pi Agent，每 run 独立留档 */
   readonly transcriptPath: string;
+  /**
+   * 全部分片的主转录（ADR-0039）：单遍路径恒为 1 条，与 `transcriptPath` 同值；
+   * 分片路径按 `s01 → s02 → …` 顺序。
+   */
+  readonly transcriptPaths: readonly string[];
   /** 检视意见导出路径（ADR-0013）：`reviews_en.json` */
   readonly reviewsPath: string;
   /**
@@ -115,25 +144,92 @@ export interface ReviewRunResult {
   readonly mrFilter?: MrFilterRecord;
 }
 
+/** 一次 run 的聚合结果（emit run.end 需要 usage / truncated / findings 摘要） */
+interface ReviewOutcome {
+  readonly result: ReviewRunResult;
+  readonly runId: string;
+  readonly usage: LlmUsage;
+  readonly truncated: boolean;
+  readonly findings: readonly Finding[];
+}
+
 /**
  * 单案全链入口：**先发 run 起点，再跑主体，成败都补 run 终点**（ADR-0037）。
  *
  * run 起止也是进度事件的投影（ADR-0016 三条纪律原样继承）：消费方（CLI 渲染 /
  * 上报）只看见既有留痕里已有的事实。`run.end` 的 `runId` 只在成功路径出现——
  * 它由首次模型请求时刻决定（ADR-0032），在首次请求之前失败时从未存在过。
+ *
+ * 分片模式（ADR-0039）：外层独占一次 `run.start` / `run.end`，并带 `shards`
+ * 计数；片内事件带 `shard` 标签。单片路径整组事件不带分片字段（零字节漂移）。
  */
 export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult> {
   const startedAt = input.startedAt ?? new Date();
   const emit = input.onProgress ?? NO_OP_PROGRESS_SINK;
+  const runtime = input.runtime ?? DEFAULT_REVIEW_RUNTIME;
+  const modelId = input.modelId ?? REVIEW_MODEL_ID;
+
+  // 大 diff 第一期（内核入口唯一咽喉）：
+  // 1) 预过滤噪声文件（lockfile / 生成物 / minified / 二进制），整块剔除、
+  //    绝不切 hunk；2) 过滤后再过体积门（超限直接抛错，不把注定失败的请求
+  //    发给模型）。过滤清单经审计尾键 `mrFilter` 与 stderr 一行留痕。
+  // 第二期：同一份过滤结果只算一次，分片不改写任何字节。
+  const filtered = filterDiffForReview(input.diff);
+  assertDiffWithinCharLimit(filtered.diff, runtime.limits.boundary.maxDiffChars);
+  const diff = filtered.diff;
+  const mrFilter = toMrFilterRecord(filtered);
+  // MR 边界护栏（#12）：度量对象是**过滤后**的 diff。分片模式下它是整份 MR
+  // 的属性，只度量 / 记账一次（每片审计不重复记）。
+  const boundary = guardMrBoundary(diff, runtime.limits.boundary);
+
+  const shards = planReviewShards(diff, runtime.limits.split);
+  const shardTotal = shards === null ? 1 : shards.length;
   emit({
     kind: "run",
     state: "start",
     caseId: input.caseId,
-    model: input.modelId ?? REVIEW_MODEL_ID,
+    model: modelId,
     startedAt: startedAt.toISOString(),
+    ...(shards !== null ? { shards: { total: shardTotal } } : {}),
   });
+
   try {
-    return await runReviewInner(input, startedAt, emit);
+    const outcome =
+      shards === null
+        ? await executeSinglePass({
+            input,
+            runtime,
+            modelId,
+            diff,
+            startedAt,
+            boundary,
+            ...(mrFilter !== undefined ? { mrFilter } : {}),
+            emit,
+          })
+        : await executeShardedPasses({
+            input,
+            runtime,
+            modelId,
+            shards,
+            startedAt,
+            boundary,
+            ...(mrFilter !== undefined ? { mrFilter } : {}),
+            emit,
+          });
+    emit({
+      kind: "run",
+      state: "end",
+      status: "ok",
+      runId: outcome.runId,
+      durationMs: Math.max(0, Date.now() - startedAt.getTime()),
+      usage: outcome.usage,
+      truncated: outcome.truncated,
+      findings: summarizeFindings(outcome.findings),
+      ...(shards !== null
+        ? { shards: { total: shardTotal, ok: shardTotal, failed: 0 } }
+        : {}),
+    });
+    return outcome.result;
   } catch (error) {
     emit({
       kind: "run",
@@ -145,45 +241,363 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   }
 }
 
-async function runReviewInner(
-  input: ReviewRunInput,
-  startedAt: Date,
-  emit: RunProgressSink,
-): Promise<ReviewRunResult> {
-  const modelId = input.modelId ?? REVIEW_MODEL_ID;
-  const runtime = input.runtime ?? DEFAULT_REVIEW_RUNTIME;
-  // 大 diff 第一期（内核入口唯一咽喉）：
-  // 1) 预过滤噪声文件（lockfile / 生成物 / minified / 二进制），整块剔除、
-  //    绝不切 hunk；2) 过滤后再过体积门（超限直接抛错，不把注定失败的请求
-  //    发给模型）。过滤清单经审计尾键 `mrFilter` 与 stderr 一行留痕。
-  const filtered = filterDiffForReview(input.diff);
-  assertDiffWithinCharLimit(filtered.diff, runtime.limits.boundary.maxDiffChars);
-  const diff = filtered.diff;
-  const mrFilter = toMrFilterRecord(filtered);
-  // MR 边界护栏（#12）：纯度量，不触碰请求字节面：界内 degraded=false 全程零介入
-  // （缺席省键），超界/不可度量只追加结果尾键（domainWarning + 审计 mrBoundary）。
-  // ADR-0025：界值来自 `limits.boundary`；两维皆 null = 护栏停用（不度量不告警）。
-  // 度量对象是**过滤后**的 diff：过滤剔掉的噪声不应把 MR 推过边界。
-  const boundary = guardMrBoundary(diff, runtime.limits.boundary);
+/** 规划分片：关闭 / 未超预算 / 只装出一片时返回 null（单遍路径，零变更） */
+function planReviewShards(diff: string, split: SplitLimits): readonly Shard[] | null {
+  if (!split.enabled || diff.length <= split.maxShardChars) {
+    return null;
+  }
+  const plan: ShardPlan = planShards(diff, {
+    maxShardChars: split.maxShardChars,
+    maxShards: split.maxShards,
+    contextSummaryChars: split.contextSummaryChars,
+  });
+  return plan.shards.length > 1 ? plan.shards : null;
+}
 
-  const initialContextMessages = [
-    { role: "user" as const, content: buildInitialUserMessage(input.caseId, input.issueDescription, diff) },
-  ];
+// ---------------------------------------------------------------------------
+// 单遍路径（与 ADR-0039 之前的实现逐字节一致）
+// ---------------------------------------------------------------------------
 
-  const toolkit = buildReviewToolkit({
-    repoPath: input.repoPath,
-    diff,
-    runtime,
-    ledgerMode: "enabled",
+async function executeSinglePass(args: {
+  readonly input: ReviewRunInput;
+  readonly runtime: ReviewRuntime;
+  readonly modelId: string;
+  readonly diff: string;
+  readonly startedAt: Date;
+  readonly boundary: MrBoundaryDecision;
+  readonly mrFilter?: MrFilterRecord;
+  readonly emit: RunProgressSink;
+}): Promise<ReviewOutcome> {
+  const loaded = await loadRuleSkillSet(args.input, args.runtime);
+  const pass = await runReviewPass({
+    caseId: args.input.caseId,
+    repoPath: args.input.repoPath,
+    issueDescription: args.input.issueDescription,
+    apiKey: args.input.apiKey,
+    fetch: args.input.fetch,
+    runtime: args.runtime,
+    modelId: args.modelId,
+    rep: args.input.rep,
+    ...(args.input.baseUrl !== undefined ? { baseUrl: args.input.baseUrl } : {}),
+    diff: args.diff,
+    initialDiff: args.diff,
+    ruleSkills: loaded.skills,
+    ruleSkillAudit: loaded.audit,
+    runDir: runDirPath(args.input.runsRoot),
+    auditDir: path.join(args.input.runsRoot, "audit"),
+    startedAt: args.startedAt,
+    boundary: args.boundary,
+    ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
+    ...(args.input.config !== undefined ? { config: args.input.config } : {}),
+    emit: args.emit,
   });
 
-  // 规则 Skill（ADR-0012 / ADR-0014 / ADR-0018）：**在 new Agent 之前**完成
-  // 定位 → 解压前审计 → 解压 → 复核 → 装载。多 zip 按 CLI 顺序；降级包不跑
-  // 会话（装载事实进 `ruleSkill[]`）。cacheRoot 落在 run 输出根（绝不写回仓库）。
+  const result: RunResult = {
+    caseId: args.input.caseId,
+    model: args.modelId,
+    findings: pass.findings,
+    usage: pass.usage,
+    rounds: pass.rounds,
+    toolCalls: pass.toolCalls,
+    audit: pass.audit,
+    auditPath: pass.auditPath,
+    // 域外显式降级标注（#12）：界内省键（边界内与无护栏时逐字节一致）
+    ...(args.boundary.degraded ? { domainWarning: args.boundary.domainWarning } : {}),
+  };
+  const record = buildRunRecord({
+    source: "mr",
+    caseId: args.input.caseId,
+    rep: args.input.rep,
+    model: args.modelId,
+    completedAt: pass.finishedAt,
+    result,
+  });
+  const recordPath = await persistRunRecord(args.input, record);
+  return {
+    result: {
+      runId: pass.runId,
+      record,
+      recordPath,
+      auditPath: pass.auditPath,
+      transcriptPath: pass.transcriptPath,
+      transcriptPaths: [pass.transcriptPath],
+      reviewsPath: pass.reviewsPath,
+      ledgerHitCount: pass.ledgerHitCount,
+      modelCalls: pass.modelCalls,
+      skillBashCalls: pass.skillBashCalls,
+      ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
+    },
+    runId: pass.runId,
+    usage: pass.usage,
+    truncated: pass.audit.truncated,
+    findings: pass.findings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 分片路径（ADR-0039 决策 2 / 4 / 5 / 6 / 7 / 10）
+// ---------------------------------------------------------------------------
+
+async function executeShardedPasses(args: {
+  readonly input: ReviewRunInput;
+  readonly runtime: ReviewRuntime;
+  readonly modelId: string;
+  readonly shards: readonly Shard[];
+  readonly startedAt: Date;
+  readonly boundary: MrBoundaryDecision;
+  readonly mrFilter?: MrFilterRecord;
+  readonly emit: RunProgressSink;
+}): Promise<ReviewOutcome> {
+  const total = args.shards.length;
+  // attempt 目录名 = run 入口 startedAt（仅目录名，不是 runId）；每次尝试独占
+  // 一组片产物，重跑不覆盖历史转录（ADR-0039 决策 6）。
+  const attempt = `attempt-${buildRunId(args.startedAt)}`;
+  const runsDir = runDirPath(args.input.runsRoot);
+  const auditRoot = path.join(args.input.runsRoot, "audit");
+  // 规则 Skill 装载与装载审计只做一次（ADR-0039 决策 4）
+  const loaded = await loadRuleSkillSet(args.input, args.runtime);
+
+  const executed: Array<{ readonly shard: Shard; readonly pass: ReviewPassResult }> = [];
+  let shardStartedAt = args.startedAt;
+  for (const shard of args.shards) {
+    const dirName = shardDirName(shard.index);
+    const pass = await runReviewPass({
+      caseId: args.input.caseId,
+      repoPath: args.input.repoPath,
+      issueDescription: args.input.issueDescription,
+      apiKey: args.input.apiKey,
+      fetch: args.input.fetch,
+      runtime: args.runtime,
+      modelId: args.modelId,
+      rep: args.input.rep,
+      ...(args.input.baseUrl !== undefined ? { baseUrl: args.input.baseUrl } : {}),
+      diff: shard.diff,
+      initialDiff: composeShardInput(shard),
+      ruleSkills: loaded.skills,
+      ruleSkillAudit: loaded.audit,
+      runDir: path.join(runsDir, "shards", attempt, dirName),
+      auditDir: path.join(auditRoot, "shards", attempt, dirName),
+      startedAt: shardStartedAt,
+      // 全局边界 / 预过滤 / 配置只在聚合审计记一次：片内审计不带这三项
+      boundary: { degraded: false },
+      emit: withShardLabel(args.emit, { index: shard.index, total }),
+    });
+    executed.push({ shard, pass });
+    shardStartedAt = pass.finishedAt;
+  }
+
+  return aggregateShards({
+    input: args.input,
+    modelId: args.modelId,
+    startedAt: args.startedAt,
+    boundary: args.boundary,
+    ruleSkillAudit: loaded.audit,
+    ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
+    runsDir,
+    auditRoot,
+    executed,
+  });
+}
+
+async function aggregateShards(args: {
+  readonly input: ReviewRunInput;
+  readonly modelId: string;
+  readonly startedAt: Date;
+  readonly boundary: MrBoundaryDecision;
+  readonly ruleSkillAudit: readonly RuleSkillAudit[];
+  readonly mrFilter?: MrFilterRecord;
+  readonly runsDir: string;
+  readonly auditRoot: string;
+  readonly executed: readonly { readonly shard: Shard; readonly pass: ReviewPassResult }[];
+}): Promise<ReviewOutcome> {
+  const findings = mergeShardFindings(args.executed.map((entry) => entry.pass.findings));
+
+  let usage = ZERO_USAGE;
+  let toolCalls = 0;
+  let rounds = 0;
+  let truncated = false;
+  let ledgerHitCount = 0;
+  let modelCalls = 0;
+  let skillBashCalls = 0;
+  const truncationReasons: string[] = [];
+  const seenReasons = new Set<string>();
+  const skillPassLog: RuleSkillPassRecord[] = [];
+
+  for (const { pass } of args.executed) {
+    usage = addUsage(usage, pass.usage);
+    toolCalls += pass.toolCalls;
+    rounds = Math.max(rounds, pass.rounds);
+    truncated = truncated || pass.audit.truncated;
+    ledgerHitCount += pass.ledgerHitCount;
+    modelCalls += pass.modelCalls;
+    skillBashCalls += pass.skillBashCalls;
+    for (const reason of pass.audit.truncationReasons) {
+      if (!seenReasons.has(reason)) {
+        seenReasons.add(reason);
+        truncationReasons.push(reason);
+      }
+    }
+    // 聚合 skillPassLog：把片内 basename 重写成 runs 目录相对路径，
+    // 这样 export / session 索引能直接寻址到 shards/attempt-…/sNN 下的转录
+    const passRunDir = path.dirname(pass.transcriptPath);
+    for (const entry of pass.audit.skillPassLog ?? []) {
+      skillPassLog.push({
+        ...entry,
+        ...(entry.transcriptFile !== undefined
+          ? {
+              transcriptFile: relativePosix(
+                args.runsDir,
+                path.join(passRunDir, entry.transcriptFile),
+              ),
+            }
+          : {}),
+      });
+    }
+  }
+
+  const finishedAt = args.executed.at(-1)?.pass.finishedAt ?? new Date();
+  const aggRunId = args.executed[0]?.pass.runId;
+  if (aggRunId === undefined) {
+    // 防御：分片路径至少一片（planReviewShards 保证 length > 1）
+    throw new Error("internal: sharded review produced no shard results");
+  }
+
+  const shardAudits: ShardAuditRecord[] = args.executed.map(({ shard, pass }) => ({
+    index: shard.index,
+    files: shard.files.length,
+    chars: shard.chars,
+    filePaths: shard.files,
+    runId: pass.runId,
+    status: "ok",
+    complete: pass.complete,
+    truncated: pass.audit.truncated,
+    ...(args.boundary.degraded ? { domainWarning: args.boundary.domainWarning } : {}),
+    usage: pass.usage,
+    rounds: pass.rounds,
+    toolCalls: pass.toolCalls,
+  }));
+
+  const audit: RunAudit = {
+    // 聚合审计不重复承载正文（正文在各片审计里），只做账目
+    requests: [],
+    toolCallLog: [],
+    phaseLog: [],
+    rejections: [],
+    cacheBreaks: [],
+    truncated,
+    truncationReasons,
+    // 规则 Skill 装载审计在聚合层记一次（ADR-0039 决策 4 / 7）
+    ruleSkill: args.ruleSkillAudit,
+    shards: shardAudits,
+    ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
+  };
+
+  const auditContent = buildAuditFileContent({
+    runId: aggRunId,
+    caseId: args.input.caseId,
+    model: args.modelId,
+    effort: LOCKED_EFFORT_LABEL,
+    startedAt: args.startedAt,
+    finishedAt,
+    rounds,
+    toolCalls,
+    usage,
+    findings,
+    audit,
+    ...(args.boundary.degraded ? { mrBoundary: args.boundary.mrBoundary } : {}),
+    ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
+    ...(args.input.config !== undefined ? { config: args.input.config } : {}),
+  });
+  const auditPath = await writeAuditFile(args.auditRoot, auditContent);
+
+  // 聚合 reviews_en.json（唯一对外真源）
+  const reviewsPath = await writeReviewsEn(
+    args.runsDir,
+    buildReviewsExport({
+      generatedAt: finishedAt,
+      runId: aggRunId,
+      source: "mr",
+      caseId: args.input.caseId,
+      rep: args.input.rep,
+      model: args.modelId,
+      findings,
+    }),
+  );
+
+  const result: RunResult = {
+    caseId: args.input.caseId,
+    model: args.modelId,
+    findings,
+    usage,
+    rounds,
+    toolCalls,
+    audit,
+    auditPath,
+    ...(args.boundary.degraded ? { domainWarning: args.boundary.domainWarning } : {}),
+  };
+  const shardRecords: ShardRecord[] = args.executed.map(({ shard, pass }) => ({
+    index: shard.index,
+    runId: pass.runId,
+    files: shard.files.length,
+    chars: shard.chars,
+    complete: pass.complete,
+    truncated: pass.audit.truncated,
+    usage: pass.usage,
+    rounds: pass.rounds,
+    toolCalls: pass.toolCalls,
+    transcriptFile: relativePosix(args.runsDir, pass.transcriptPath),
+    auditFile: relativePosix(args.auditRoot, pass.auditPath),
+    ...(args.boundary.degraded ? { domainWarning: args.boundary.domainWarning } : {}),
+  }));
+  const record = buildRunRecord({
+    source: "mr",
+    caseId: args.input.caseId,
+    rep: args.input.rep,
+    model: args.modelId,
+    completedAt: finishedAt,
+    result,
+    shards: shardRecords,
+  });
+  const recordPath = await persistRunRecord(args.input, record);
+
+  return {
+    result: {
+      runId: aggRunId,
+      record,
+      recordPath,
+      auditPath,
+      transcriptPath: args.executed[0]?.pass.transcriptPath ?? "",
+      transcriptPaths: args.executed.map((entry) => entry.pass.transcriptPath),
+      reviewsPath,
+      ledgerHitCount,
+      modelCalls,
+      skillBashCalls,
+      ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
+    },
+    runId: aggRunId,
+    usage,
+    truncated,
+    findings,
+  };
+}
+
+/** 规则 Skill 装载（ADR-0012 / ADR-0014 / ADR-0018）：编排层只做一次 */
+async function loadRuleSkillSet(
+  input: ReviewRunInput,
+  runtime: ReviewRuntime,
+): Promise<{ readonly skills: readonly RuleSkill[]; readonly audit: readonly RuleSkillAudit[] }> {
+  const skills = await ruleSkillsOf(input, runtime);
+  return { skills, audit: skills.map(toRuleSkillAudit) };
+}
+
+async function ruleSkillsOf(
+  input: ReviewRunInput,
+  runtime: ReviewRuntime,
+): Promise<readonly RuleSkill[]> {
   const loadRuleSkillsFn = input.ruleSkillLoader ?? loadRuleSkills;
   const explicitZips =
     input.ruleSkillZips ?? (input.ruleSkillZip !== undefined ? [input.ruleSkillZip] : undefined);
-  const ruleSkills: readonly RuleSkill[] = await loadRuleSkillsFn({
+  return loadRuleSkillsFn({
     repoPath: input.repoPath,
     cacheRoot: path.join(input.runsRoot, ".cache", "rule-skills"),
     ...(explicitZips !== undefined ? { explicitZipPaths: explicitZips } : {}),
@@ -195,138 +609,20 @@ async function runReviewInner(
       timeoutMs: runtime.limits.timeouts.ruleSkillExtractMs,
     },
   });
-  const ruleSkillAudit = ruleSkills.map(toRuleSkillAudit);
-  // skill 会话的七工具 toolkit：每个 skill 按 Phase-5 ledger 快照分叉一次
-  // （skill 之间互不可见；skill 读取不污染主账本）
-  const skillToolkitFor = (seed: readonly LedgerEntry[]): ReviewToolkit =>
-    buildReviewToolkit({
-      repoPath: input.repoPath,
-      diff,
-      runtime,
-      ledger: createContextLedger(seed),
-    });
+}
 
-  const outcome = await runAgentReviewLoop({
-    systemPrompt: SYSTEM_PROMPT,
-    initialContextMessages,
-    toolkit,
-    apiKey: input.apiKey,
-    runtime,
-    ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
-    ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
-    fetch: input.fetch,
-    includeLedgerAudit: true,
-    ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
-    // Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
-    skillPass: { skills: ruleSkills, toolkitFor: skillToolkitFor },
-  });
+/** 片上标签：仅加在非 run 事件上（run.start/end 由外层独占） */
+function withShardLabel(emit: RunProgressSink, shard: ShardLabel): RunProgressSink {
+  return (event) => emit(event.kind === "run" ? event : { ...event, shard });
+}
 
-  // 审计投影
-  const finishedAt = new Date();
-  // runId = 首次模型请求时刻（ADR-0032）：审计文件名、转录文件名与
-  // `info.runId` 共用同一值，caseId 不再进入任何路径/文件名。
-  const runId = buildRunId(outcome.transcript.firstRequestAt);
-  const auditDir = buildAuditDir(input);
-  // skill 会话独立转录（ADR-0014 决策 13）：先落盘，再把 basename 回填到
-  // skillPassLog（主转录/审计据此引用）
-  const skillPassLog = await persistSkillTranscripts({
-    input,
-    runId,
-    finishedAt,
-    records: outcome.skillPassLog,
-    transcripts: outcome.skillTranscripts,
-  });
-  const audit: RunAudit = {
-    ...outcome.audit,
-    ruleSkill: ruleSkillAudit,
-    ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog } : {}),
-  };
-  const auditContent = buildAuditFileContent({
-    runId,
-    caseId: input.caseId,
-    model: modelId,
-    effort: LOCKED_EFFORT_LABEL,
-    startedAt,
-    finishedAt,
-    rounds: outcome.rounds,
-    toolCalls: outcome.toolCalls,
-    usage: outcome.usage,
-    findings: outcome.findings,
-    audit,
-    // Ledger 快照经 outcome.audit 透传（恒投影——含空数组形态）
-    ...(outcome.audit.ledger !== undefined ? { ledger: outcome.audit.ledger } : {}),
-    // 护栏降级留痕（#12）：界内省键（缺席省键纪律——审计键序只在尾部扩展）
-    ...(boundary.degraded ? { mrBoundary: boundary.mrBoundary } : {}),
-    // 输入预过滤留痕（大 diff 第一期）：无剔除省键
-    ...(mrFilter !== undefined ? { mrFilter } : {}),
-    // 生效配置快照（ADR-0025）：只进审计文件，stdout 键集不变
-    ...(input.config !== undefined ? { config: input.config } : {}),
-  });
-  const auditPath = await writeAuditFile(auditDir, auditContent);
-  // 检视转录：agent.state.messages 原样 + 合成 system；每 run 独立留档
-  const transcriptPath = await persistTranscript({
-    input,
-    runId,
-    finishedAt,
-    capture: outcome.transcript,
-    complete: outcome.complete,
-    truncated: outcome.audit.truncated,
-  });
-  // 检视意见导出
-  const reviewsPath = await persistReviewsEn({
-    input,
-    runId,
-    modelId,
-    finishedAt,
-    findings: outcome.findings,
-  });
+function shardDirName(index: number): string {
+  return `s${String(index).padStart(2, "0")}`;
+}
 
-  const result: RunResult = {
-    caseId: input.caseId,
-    model: modelId,
-    findings: outcome.findings,
-    usage: outcome.usage,
-    rounds: outcome.rounds,
-    toolCalls: outcome.toolCalls,
-    audit,
-    auditPath,
-    // 域外显式降级标注（#12）：界内省键（边界内与无护栏时逐字节一致）
-    ...(boundary.degraded ? { domainWarning: boundary.domainWarning } : {}),
-  };
-  const record = buildRunRecord({
-    source: "mr",
-    caseId: input.caseId,
-    rep: input.rep,
-    model: modelId,
-    completedAt: finishedAt,
-    result,
-  });
-  const recordPath = await persistRunRecord(input, record);
-  emit({
-    kind: "run",
-    state: "end",
-    status: "ok",
-    runId,
-    durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
-    usage: outcome.usage,
-    truncated: outcome.audit.truncated,
-    findings: summarizeFindings(outcome.findings),
-  });
-  return {
-    runId,
-    record,
-    recordPath,
-    auditPath,
-    transcriptPath,
-    reviewsPath,
-    // 收尾摘要用的观测值（不进审计/RunRecord 字节）：Ledger 命中 + 模型调用总数
-    ledgerHitCount: outcome.ledgerHitCount,
-    modelCalls:
-      outcome.audit.requests.length +
-      outcome.skillPassLog.reduce((sum, entry) => sum + entry.requestCount, 0),
-    skillBashCalls: outcome.skillBashCalls,
-    ...(mrFilter !== undefined ? { mrFilter } : {}),
-  };
+/** 绝对路径 → 相对基准目录的 POSIX 路径（产物可搬迁） */
+function relativePosix(baseDir: string, filePath: string): string {
+  return path.relative(path.resolve(baseDir), path.resolve(filePath)).split(path.sep).join("/");
 }
 
 /**
@@ -338,11 +634,6 @@ function persistRunRecord(input: ReviewRunInput, record: RunRecord): Promise<str
     return Promise.resolve("");
   }
   return writeRunRecord(input.runsRoot, record);
-}
-
-/** 审计文件目录：`<runsRoot>/audit`（ADR-0032：无 case / rep / audit 中间层） */
-function buildAuditDir(input: ReviewRunInput): string {
-  return path.join(input.runsRoot, "audit");
 }
 
 /**
@@ -378,122 +669,4 @@ function toRuleSkillAudit(skill: RuleSkill): RuleSkillAudit {
       ? { diagnostics: skill.diagnostics.map((diagnostic) => ({ code: diagnostic.code, path: diagnostic.path })) }
       : {}),
   };
-}
-
-/**
- * runs 树目录单点（转录 / 意见导出共用；与运行记录 `run.json` 同目录）：
- * `<runsRoot>/runs`（ADR-0032）。
- * 布局逻辑单源在 `run-record.runDirPath`（防记录与产物布局漂移）。
- */
-function runOutputDir(input: ReviewRunInput): string {
-  return runDirPath(input.runsRoot);
-}
-
-/**
- * skill 会话转录落盘（ADR-0014 决策 13）：每个会话一份，文件名后缀
- * `-skill-<name>-r<round>`（同名 skill 重复时追加序号），返回已回填
- * `transcriptFile`（basename）的 skillPassLog。
- */
-async function persistSkillTranscripts(args: {
-  readonly input: ReviewRunInput;
-  readonly runId: string;
-  readonly finishedAt: Date;
-  readonly records: readonly RuleSkillPassRecord[];
-  readonly transcripts: readonly SkillPassTranscript[];
-}): Promise<readonly RuleSkillPassRecord[]> {
-  if (args.transcripts.length === 0) {
-    return args.records;
-  }
-  const suffixes = uniqueTranscriptSuffixes(args.records);
-  const enriched = [...args.records];
-  // 转录是记录的按序子集（没发出过请求的失败会话没有转录）：从上次命中之后
-  // 继续找 (round, skill) 相同的记录，命中即回填 basename。
-  let searchFrom = 0;
-  for (const transcript of args.transcripts) {
-    const index = enriched.findIndex(
-      (record, position) =>
-        position >= searchFrom &&
-        record.round === transcript.round &&
-        record.skill === transcript.skill,
-    );
-    if (index < 0) {
-      continue;
-    }
-    searchFrom = index + 1;
-    const content = buildTranscript({
-      runId: args.runId,
-      caseId: args.input.caseId,
-      repoPath: args.input.repoPath,
-      systemPrompt: SYSTEM_PROMPT,
-      capture: transcript.capture,
-      complete: transcript.complete,
-      truncated: transcript.truncated,
-      finishedAt: args.finishedAt,
-      idSuffix: suffixes[index] ?? defaultTranscriptSuffix(transcript),
-    });
-    const filePath = await writeTranscript(runOutputDir(args.input), content);
-    const record = enriched[index];
-    if (record !== undefined) {
-      enriched[index] = { ...record, transcriptFile: path.basename(filePath) };
-    }
-  }
-  return enriched;
-}
-
-/** 每个 skill pass 的稳定文件名后缀（同名 skill 重复时追加 -2、-3…） */
-function uniqueTranscriptSuffixes(records: readonly RuleSkillPassRecord[]): readonly string[] {
-  const seen = new Map<string, number>();
-  return records.map((record) => {
-    const base = defaultTranscriptSuffix({ round: record.round, skill: record.skill });
-    const count = (seen.get(base) ?? 0) + 1;
-    seen.set(base, count);
-    return count === 1 ? base : `${base}-${count}`;
-  });
-}
-
-function defaultTranscriptSuffix(target: { readonly round: number; readonly skill: string }): string {
-  const safe = target.skill.replace(/[^A-Za-z0-9_-]/g, "_");
-  return `-skill-${safe}-r${target.round}`;
-}
-
-/** 检视转录落盘：`<runOutputDir>/session-<runId>[-suffix].json`；失败抛错 */
-async function persistTranscript(args: {
-  readonly input: ReviewRunInput;
-  readonly runId: string;
-  readonly finishedAt: Date;
-  readonly capture: AgentTranscriptCapture;
-  readonly complete: boolean;
-  readonly truncated: boolean;
-}): Promise<string> {
-  const content = buildTranscript({
-    runId: args.runId,
-    caseId: args.input.caseId,
-    repoPath: args.input.repoPath,
-    systemPrompt: SYSTEM_PROMPT,
-    capture: args.capture,
-    complete: args.complete,
-    truncated: args.truncated,
-    finishedAt: args.finishedAt,
-  });
-  return writeTranscript(runOutputDir(args.input), content);
-}
-
-/** 检视意见导出落盘：`<runOutputDir>/reviews_en.json`；失败抛错 */
-async function persistReviewsEn(args: {
-  readonly input: ReviewRunInput;
-  readonly runId: string;
-  readonly modelId: string;
-  readonly finishedAt: Date;
-  readonly findings: readonly Finding[];
-}): Promise<string> {
-  const envelope = buildReviewsExport({
-    generatedAt: args.finishedAt,
-    runId: args.runId,
-    source: "mr",
-    caseId: args.input.caseId,
-    rep: args.input.rep,
-    model: args.modelId,
-    findings: args.findings,
-  });
-  return writeReviewsEn(runOutputDir(args.input), envelope);
 }

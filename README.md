@@ -14,11 +14,12 @@
 | 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：数组或 `{diffs:[…]}`；路径取 `new_path` / `filename` / `file_path` / `path`、正文取 `diff` / `patch`，`diff` 为对象时取内层 `diff.diff`） |
 | 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>`，一次可传多个（逗号列表或重复旗标），**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast |
 | 中文建议 | 配置 `presentation.engine` 后额外产出 `reviews_tips_zh.json`：`"builtin"` 用包内引擎，路径用自定义模块，`null` 关闭 |
-| MR 边界护栏 | 缺省 ≤10 文件 / ≤2K 变更行；超界只告警不拒检（`limits.boundary` 可改） |
+| MR 边界护栏 | 过滤后超 `limits.boundary` 只告警不拒检；`maxDiffChars` 是输入体积门（超限直接报错，不发模型） |
+| 大 MR 分片 | 过滤后 diff 超 `limits.split.maxShardChars` 时按 `diff --git` 文件块自动切片（绝不切 hunk）并确定性合并 findings；单片路径逐字节不变（ADR-0039） |
 | 单源配置 | 用户级 JSONC（`~/.PiAgent/PiAgent.jsonc` 或 `--config`），启动读一次成不可变快照，审计留 digest |
 | 可观测 | stdout 单 JSON 文档；stderr 诊断与 `--progress` 阶段投影；退出码 0（含诚实截断）/ 1 |
 
-面向 Java 仓优化（角色提示词 + tree-sitter-java 符号索引）；其它语言可跑，质量不保证。
+检视本体不限语言；符号 / 引用 / 调用链工具支持 Java、TypeScript（含 JS 变体）与 Python（`codeintel.languages` 可配，缺省 `"auto"`，ADR-0041）。
 
 ## 环境要求
 
@@ -133,10 +134,10 @@ review-pi review --repo /repo --mr-diff /d/change.diff --taskId change-001 --tas
 
 ### 3. 取回 session 路径（`export`）
 
-每次 `review` 成功后在**执行目录**写一份隐藏索引 `.review-pi-session.json`（只有绝对路径与 runId，不含检视内容；重复执行整份覆盖）。`export` 直接读它：
+每次 `review` 成功后在**执行目录**写一份隐藏索引 `.review-pi-session.json`（只有绝对路径与 runId，不含检视内容；重复执行整份覆盖；`version: 2` 起主转录是 `mains[]`，读取端兼容 v1 的单个 `main`）。`export` 直接读它：
 
 ```bash
-review-pi export                      # 主 session 第一行，skill 会话依次在后（一行一个绝对路径）
+review-pi export                      # 单遍：主 session 第一行、skill 依次在后；分片：s01 主 → s01 skill → s02 主 → …
 review-pi export --path ./sessions    # 复制到该目录（平铺、同名覆盖），返回复制后的路径
 review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任务最新一次 run
 ```
@@ -152,13 +153,15 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 ```
 ~/.PiAgent/tasks/<taskId>/        # --tasks-dir <dir> 可换根
   runs/
-    run.json                   RunRecord：模型、耗时、findings 计数、usage
+    run.json                   RunRecord：模型、耗时、findings 计数、usage（分片时多 shards[]）
     session-<ts>.json          检视转录（请求 / 工具 / 相位全留痕）
     session-<ts>-skill-<name>-r<N>.json   规则 Skill 会话转录（每个会话一份）
-    reviews_en.json            英文 findings（结构化真源）
+    reviews_en.json            英文 findings（结构化真源；分片时为合并去重后的一份）
     reviews_tips_zh.json       中文按行分组建议（配置了呈现引擎才有）
+    shards/attempt-<ts>/sNN/   仅分片：每片主/skill 转录 + 片内 reviews_en.json
   audit/
     <ts>.json                  审计：请求、工具调用、相位、Context Ledger、规则 Skill 留痕
+    shards/attempt-<ts>/sNN/<ts>.json   仅分片：每片审计（聚合审计的 requests/toolCallLog 为空）
 ```
 
 `<ts>` = 首次模型请求时刻（UTC 毫秒），形态 `20261031_101010_123`，同时是 `runId`、审计文件名与 `session-<ts>` 的中段。进程 cwd 另写一份下游约定名副本 `review-result.json`（与真源逐字节相同，只在本次产 tips 时写），并写一份隐藏的 `.review-pi-session.json`（供 `export` 寻址，见上一节）。同一个 taskId 重跑只保留最新 `run.json` / `reviews_*.json`，审计 / 转录按 run 累积——想保留多次结果就换 `--taskId`。

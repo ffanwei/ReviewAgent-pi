@@ -65,6 +65,8 @@ export function createProgressRenderer(options: ProgressRendererOptions): Progre
   let statusLine: string | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let finished = false;
+  /** 分片标签前缀（ADR-0039：多片事件才更新；单片路径恒为空串） */
+  let shardPrefix = "";
 
   function scopePrefix(): string {
     return currentSkill === undefined ? "" : `[skill:${currentSkill}] `;
@@ -73,7 +75,7 @@ export function createProgressRenderer(options: ProgressRendererOptions): Progre
   /** 事件行（先擦状态行，再追加，再重画状态行） */
   function writeLine(line: string): void {
     eraseStatus();
-    options.write(`${line}\n`);
+    options.write(`${shardPrefix}${line}\n`);
     redrawStatus();
   }
 
@@ -82,6 +84,9 @@ export function createProgressRenderer(options: ProgressRendererOptions): Progre
       return undefined;
     }
     const parts: string[] = [];
+    if (shardPrefix !== "") {
+      parts.push(shardPrefix.trim());
+    }
     if (currentRequest !== undefined) {
       const elapsed = Math.max(0, Math.round((now() - currentRequest.startedAt) / 1000));
       parts.push(`req ${currentRequest.id} ${elapsed}s`);
@@ -125,6 +130,10 @@ export function createProgressRenderer(options: ProgressRendererOptions): Progre
   }
 
   function handle(event: RunProgressEvent): void {
+    // 分片标签：非 run 事件带 `shard` 时更新前缀（ADR-0039 决策 8）
+    if (event.kind !== "run" && event.shard !== undefined) {
+      shardPrefix = `[s${String(event.shard.index)}/${String(event.shard.total)}] `;
+    }
     switch (event.kind) {
       case "phase": {
         phaseIndex = event.index;

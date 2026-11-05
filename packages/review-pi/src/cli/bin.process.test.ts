@@ -1641,20 +1641,22 @@ test(
         runId: string;
         repo: string;
         updatedAt: string;
-        main: string;
+        mains: string[];
         skills: string[];
       };
       const outcome = JSON.parse(review.stdout) as { runId: string };
-      expect(index.version).toBe(1);
+      expect(index.version).toBe(2);
       expect(index.taskId).toBe(CLI_TASK_ID);
       expect(index.tasksDir).toBe(path.resolve(outDir));
       expect(index.runId).toBe(outcome.runId);
-      // 绝对路径 + 指向真实文件（主会话 = session-<runId>.json）
-      expect(path.isAbsolute(index.main)).toBe(true);
-      expect(index.main).toBe(
+      // 绝对路径 + 指向真实文件（单遍 = 一条主会话 = session-<runId>.json）
+      expect(index.mains).toHaveLength(1);
+      const main = index.mains[0] as string;
+      expect(path.isAbsolute(main)).toBe(true);
+      expect(main).toBe(
         path.join(path.resolve(outDir), CLI_TASK_ID, "runs", `session-${outcome.runId}.json`),
       );
-      expect(existsSync(index.main)).toBe(true);
+      expect(existsSync(main)).toBe(true);
       // 本次没装规则包 → 没有 skill 会话
       expect(index.skills).toEqual([]);
 
@@ -1667,7 +1669,7 @@ test(
         timeoutMs: 30_000,
       });
       expect(exportRun.status).toBe(0);
-      expect(exportRun.stdout).toBe(`${index.main}\n`);
+      expect(exportRun.stdout).toBe(`${main}\n`);
       expect(exportRun.stderr).toBe("");
 
       // --path：平铺复制到 cwd 下的目录，返回复制后的绝对路径
@@ -1677,10 +1679,10 @@ test(
         configPath: absentConfig,
         timeoutMs: 30_000,
       });
-      const copied = path.join(cwd, "sessions", path.basename(index.main));
+      const copied = path.join(cwd, "sessions", path.basename(main));
       expect(copyRun.status).toBe(0);
       expect(copyRun.stdout).toBe(`${copied}\n`);
-      expect(readFileSync(copied, "utf8")).toBe(readFileSync(index.main, "utf8"));
+      expect(readFileSync(copied, "utf8")).toBe(readFileSync(main, "utf8"));
 
       // --taskId：不经索引，直接读任务目录的 run.json（runId 由 auditPath 反推）
       const taskRun = await runBin(
@@ -1688,10 +1690,130 @@ test(
         { cwd, appendConfigArg: false, configPath: absentConfig, timeoutMs: 30_000 },
       );
       expect(taskRun.status).toBe(0);
-      expect(taskRun.stdout).toBe(`${index.main}\n`);
+      expect(taskRun.stdout).toBe(`${main}\n`);
       expectNoKeyLeak([
         { label: "export stdout", text: exportRun.stdout },
         { label: "export stderr", text: exportRun.stderr },
+      ]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+// ---- 大 MR 分片（ADR-0039）进程面 ----
+// 配置里把单片预算压到下限 10_000 字符；两文件 diff（各 < 10k、合计 > 10k）必然分两片。
+// 断言：stderr 有一行片数提示 + 各事件带 [sN/M] 前缀；stdout 键集不变；
+// run.json 有 shards[]；session 索引 v2 记两条主转录；export 按片顺序打印。
+
+/** 两文件 diff：每块约 7.5k 字符（< 10k），合计 > 10k；变更行 182 < 200（不触发边界降级） */
+function twoFileDiffForSharding(): string {
+  const block = (name: string, marker: string): string =>
+    [
+      `diff --git a/${name} b/${name}`,
+      `--- a/${name}`,
+      `+++ b/${name}`,
+      "@@ -1,2 +1,91 @@",
+      `-old ${marker}`,
+      `+new ${marker}`,
+      ...Array.from(
+        { length: 90 },
+        (_, index) => `+padding ${marker} ${"x".repeat(45)} ${String(index)}`,
+      ),
+    ].join("\n");
+  return [
+    block("src/main/java/com/example/Alpha.java", "SHARD-ALPHA"),
+    block("src/main/java/com/example/Beta.java", "SHARD-BETA"),
+  ].join("\n");
+}
+
+test(
+  "分片检视：stderr 报告片数与 [sN/M] 前缀，stdout 键集不变，run.json/索引/export 可寻址",
+  async () => {
+    const stub = await startLoopbackStub([...oneFindingCorpus(), ...oneFindingCorpus()]);
+    try {
+      const cwd = makeTempDir("review-pi-cli-shards-");
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const diff = twoFileDiffForSharding();
+      expect(diff.length).toBeGreaterThan(10_000);
+      const mrFile = writeMr(diff);
+      // 最小配置 + 分片预算压到下限（其余项走缺省）
+      const configText = `${JSON.stringify(
+        {
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          limits: { split: { maxShardChars: 10_000 } },
+        },
+        null,
+        2,
+      )}\n`;
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--progress",
+        ],
+        { cwd, configText },
+      );
+
+      expect(run.status).toBe(0);
+      // stdout 契约零改动
+      const outcome = JSON.parse(run.stdout) as Record<string, unknown> & {
+        findings: { id: string }[];
+        runId: string;
+      };
+      expect(Object.keys(outcome)).toEqual(REVIEW_OUTCOME_KEYS);
+      // 两片各产同一条候选（同 file/line/title）→ 合并为一条
+      expect(outcome.findings).toHaveLength(1);
+
+      // stderr：片数提示 + 两片的事件行都有前缀
+      expect(run.stderr).toContain("review-pi: 分片检视 2 片（单片上限 10000 字符）");
+      expect(run.stderr).toContain("[s1/2] ▶ phase 1/6 Change Understanding (round 1)");
+      expect(run.stderr).toContain("[s2/2] ▶ phase 1/6 Change Understanding (round 1)");
+      expect(run.stderr).not.toContain("\r");
+
+      // run.json：聚合记录带 shards[]，每片转录文件存在
+      const runsDir = cliRunsDir(outDir);
+      const record = JSON.parse(readFileSync(path.join(runsDir, "run.json"), "utf8")) as {
+        shards: { index: number; runId: string; transcriptFile: string }[];
+      };
+      expect(record.shards.map((shard) => shard.index)).toEqual([1, 2]);
+      for (const shard of record.shards) {
+        expect(existsSync(path.join(runsDir, shard.transcriptFile))).toBe(true);
+      }
+
+      // session 索引 v2：两条主转录（按片序），无 skill
+      const index = JSON.parse(readFileSync(path.join(cwd, ".review-pi-session.json"), "utf8")) as {
+        version: number;
+        mains: string[];
+        skills: string[];
+      };
+      expect(index.version).toBe(2);
+      expect(index.mains).toHaveLength(2);
+      expect(index.skills).toEqual([]);
+
+      // export（不读配置）：按片序打印两条主转录
+      const exportRun = await runBin(["export"], {
+        cwd,
+        appendConfigArg: false,
+        configPath: path.join(cwd, "absent.jsonc"),
+        timeoutMs: 30_000,
+      });
+      expect(exportRun.status).toBe(0);
+      expect(exportRun.stdout).toBe(`${index.mains.join("\n")}\n`);
+
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+        { label: "export stdout", text: exportRun.stdout },
       ]);
     } finally {
       await stub.close();

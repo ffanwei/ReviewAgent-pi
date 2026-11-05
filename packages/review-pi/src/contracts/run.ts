@@ -163,6 +163,32 @@ export interface RuleSkillPassRecord {
   readonly failureStage?: RuleSkillFailureStage;
 }
 
+/**
+ * 单片审计留痕（ADR-0039 决策 7）：分片模式下聚合审计尾键 `shards[]` 的条目。
+ * 片内完整审计（requests 等正文）落在 `audit/shards/attempt-<…>/sNN/<runId>.json`。
+ */
+export interface ShardAuditRecord {
+  /** 1-based 片号 */
+  readonly index: number;
+  /** 本片文件块数 */
+  readonly files: number;
+  /** 本片 diff 字符数 */
+  readonly chars: number;
+  /** 本片包含的仓库相对路径（排障用；diff 顺序） */
+  readonly filePaths: readonly string[];
+  /** 该片首次模型请求时刻派生的 runId */
+  readonly runId: string;
+  readonly status: "ok" | "failed";
+  /** 六阶段循环是否完整走完 */
+  readonly complete: boolean;
+  readonly truncated: boolean;
+  /** 该片命中的边界降级文案（全局边界护栏派生；未降级省键） */
+  readonly domainWarning?: string;
+  readonly usage: LlmUsage;
+  readonly rounds: number;
+  readonly toolCalls: number;
+}
+
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
@@ -178,6 +204,11 @@ export interface RunAudit {
   readonly ruleSkill?: readonly RuleSkillAudit[];
   /** skill 会话执行留痕（粒度 round × skill；恒为数组：N=0 ⇒ 空数组） */
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
+  /**
+   * 分片留痕（ADR-0039）：只在分片模式出现；单片路径整键缺席（零漂移）。
+   * 聚合审计里 `requests` 等正文为空数组，正文在各片审计文件里。
+   */
+  readonly shards?: readonly ShardAuditRecord[];
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

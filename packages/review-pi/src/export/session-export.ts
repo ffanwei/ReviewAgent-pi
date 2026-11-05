@@ -1,5 +1,5 @@
 import { copyFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 
 import { runDirPath } from "../experiment/run-record.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
@@ -18,10 +18,15 @@ import { readSessionIndex, tryReadSessionIndex, type SessionIndex } from "./sess
  */
 
 export interface SessionPaths {
-  /** 主会话转录（绝对路径） */
-  readonly main: string;
-  /** 规则 Skill 会话转录（装载顺序；可能为空） */
+  /** 主会话转录（绝对路径；分片时按 s01 → s02 → … 顺序） */
+  readonly mains: readonly string[];
+  /** 规则 Skill 会话转录（绝对路径；装载 / 分片顺序；可能为空） */
   readonly skills: readonly string[];
+  /**
+   * 显式输出顺序（ADR-0039 决策 13）：分片时为 `s01 主 → s01 skill → s02 主 → …`；
+   * 指数组缺席时退回「先全部主会话、再全部 skill」（单遍 / 索引模式的既有顺序）。
+   */
+  readonly order?: readonly string[];
 }
 
 export interface ExportSessionsInput {
@@ -48,7 +53,9 @@ export async function exportSessions(input: ExportSessionsInput): Promise<Export
     input.taskId === undefined
       ? sessionsFromIndex(await readSessionIndex(input.cwd))
       : await sessionsFromTask(input, input.taskId);
-  const sources = [sessions.main, ...sessions.skills].map((file) => resolve(file));
+  const sources = (sessions.order ?? [...sessions.mains, ...sessions.skills]).map((file) =>
+    resolve(file),
+  );
   await assertSessionsExist(sources);
 
   if (input.destPath === undefined) {
@@ -70,7 +77,7 @@ export async function exportSessions(input: ExportSessionsInput): Promise<Export
 }
 
 function sessionsFromIndex(index: SessionIndex): SessionPaths {
-  return { main: index.main, skills: index.skills };
+  return { mains: index.mains, skills: index.skills };
 }
 
 async function sessionsFromTask(
@@ -112,11 +119,38 @@ async function sessionsFromRunRecord(runsRoot: string): Promise<SessionPaths> {
     throw new Error(`run.json 不是合法 JSON：${recordPath}`);
   }
 
-  const runId = runIdOfRecord(record) ?? (await newestRunId(runsDir));
-  const logged = skillsOfRecord(record, runsDir);
+  const logged = skillTranscriptFiles(record).map((file) => resolve(runsDir, file));
+  const shardFiles = shardTranscriptFiles(record);
+  const shards = shardFiles.map((file) => resolve(runsDir, file));
+  if (shards.length > 0) {
+    // 分片（ADR-0039 决策 13）：每个 shard 的主转录后紧跟它自己的 skill 转录。
+    // 聚合 skillPassLog 的 transcriptFile 已是 runs 目录相对路径（含 sNN 段），
+    // 按 shard 目录前缀归组即可还原「s01 主 → s01 skill → s02 主 → …」。
+    const shardDirs = shardFiles.map((file) =>
+      posixDirname(runRelative(runsDir, resolve(runsDir, file))),
+    );
+    const skills: string[] = [];
+    const order: string[] = [];
+    for (const [position, dir] of shardDirs.entries()) {
+      const main = shards[position];
+      if (main !== undefined) {
+        order.push(main);
+      }
+      const prefix = dir === "" ? "" : `${dir}/`;
+      for (const file of logged) {
+        const relativeFile = runRelative(runsDir, file);
+        if (relativeFile.startsWith(prefix)) {
+          skills.push(file);
+          order.push(file);
+        }
+      }
+    }
+    return { mains: shards, skills, order };
+  }
 
+  const runId = runIdOfRecord(record) ?? (await newestRunId(runsDir));
   return {
-    main: join(runsDir, `session-${runId}.json`),
+    mains: [join(runsDir, `session-${runId}.json`)],
     skills: logged.length > 0 ? logged : await listSkillSessions(runsDir, runId),
   };
 }
@@ -151,19 +185,8 @@ function recordPathValue(record: unknown): string | undefined {
 }
 
 /** skill 转录按 skillPassLog 顺序取（与运行时回填的 transcriptFile 同源） */
-function skillsOfRecord(record: unknown, runsDir: string): readonly string[] {
-  if (typeof record !== "object" || record === null) {
-    return [];
-  }
-  const baseline = (record as Record<string, unknown>).baseline;
-  if (typeof baseline !== "object" || baseline === null) {
-    return [];
-  }
-  const audit = (baseline as Record<string, unknown>).audit;
-  if (typeof audit !== "object" || audit === null) {
-    return [];
-  }
-  const log = (audit as Record<string, unknown>).skillPassLog;
+function skillTranscriptFiles(record: unknown): readonly string[] {
+  const log = auditEntries(record).skillPassLog;
   if (!Array.isArray(log)) {
     return [];
   }
@@ -175,10 +198,51 @@ function skillsOfRecord(record: unknown, runsDir: string): readonly string[] {
     const transcriptFile = (entry as Record<string, unknown>).transcriptFile;
     // 没有转录 = 会话没发出过请求（装载失败），不是缺失
     if (typeof transcriptFile === "string" && transcriptFile.trim() !== "") {
-      files.push(join(runsDir, basename(transcriptFile)));
+      files.push(transcriptFile);
     }
   }
   return files;
+}
+
+/** 分片主转录（ADR-0039）：`run.json.shards[]` 的顺序即执行顺序 */
+function shardTranscriptFiles(record: unknown): readonly string[] {
+  const shards = (record as { readonly shards?: unknown } | null)?.shards;
+  if (!Array.isArray(shards)) {
+    return [];
+  }
+  const files: string[] = [];
+  for (const shard of shards) {
+    if (typeof shard !== "object" || shard === null) {
+      continue;
+    }
+    const transcriptFile = (shard as Record<string, unknown>).transcriptFile;
+    if (typeof transcriptFile === "string" && transcriptFile.trim() !== "") {
+      files.push(transcriptFile);
+    }
+  }
+  return files;
+}
+
+function auditEntries(record: unknown): Record<string, unknown> {
+  if (typeof record !== "object" || record === null) {
+    return {};
+  }
+  const baseline = (record as Record<string, unknown>).baseline;
+  if (typeof baseline !== "object" || baseline === null) {
+    return {};
+  }
+  const audit = (baseline as Record<string, unknown>).audit;
+  return typeof audit === "object" && audit !== null ? (audit as Record<string, unknown>) : {};
+}
+
+/** 绝对路径 → runs 目录相对 POSIX（与写入侧 `relativePosix` 同口径） */
+function runRelative(runsDir: string, file: string): string {
+  return relative(resolve(runsDir), resolve(file)).split(sep).join("/");
+}
+
+function posixDirname(posixPath: string): string {
+  const index = posixPath.lastIndexOf("/");
+  return index < 0 ? "" : posixPath.slice(0, index);
 }
 
 /** run.json 缺 auditPath 时的兜底：按文件名取最新 runId（固定宽度 = 字典序即时序） */

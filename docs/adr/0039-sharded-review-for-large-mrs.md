@@ -312,3 +312,49 @@ interface ShardAuditRecord {
 5. **文档与验收**：CONTEXT、使用/运行手册、本 ADR 的「实施记录」；跑全量测试与 typecheck。
 
 版本节律：本期属于新增能力，release 时 `0.2.0 → 0.3.0`（`packages/review-pi/package.json` 与 `src/shared/version.ts` 同改，由 `version.test.ts` 把守）；不在功能提交里提前改版本。
+
+## 实施记录（2026-11-05）
+
+### 实际落地文件
+
+| 层 | 文件 | 作用 |
+|---|---|---|
+| 纯函数 | `run/shard-planner.ts` | `splitDiffIntoFileBlocks` + 按文件块贪心装箱 + 「其他文件摘要」；预检超预算 / 超片数报错 |
+| 纯函数 | `run/findings-merge.ts` | 按 `(file, line, title)` 归一化去重、字段合并、重编号、稳定排序 |
+| 单遍执行单元 | `run/review-pass.ts` | 原 `runReviewInner` 抽出：六阶段 + skill 会话 + 审计/转录/reviews 落盘；**不发射** `run.start/end` |
+| 编排层 | `run/review-run.ts` | 全局预过滤 / 体积门 / 边界 → `planReviewShards` → 一次 `run.start/end`；`executeSinglePass`（零变更）与 `executeShardedPasses`（串行、每片独立目录）→ `aggregateShards` |
+| 契约 | `contracts/progress.ts` / `contracts/mcp-report.ts` / `contracts/run.ts` | `shard` / `shards` 进度标签、MCP 映射、`ShardAuditRecord` 与 `RunAudit.shards` |
+| 记录与审计 | `experiment/run-record.ts` / `audit/audit-writer.ts` | `ShardRecord`、`RunRecord.shards`、`buildRunRecord({shards})`、审计透传 |
+| CLI | `cli/main.ts` / `cli/progress-render.ts` | 一次 `run.start`（带片数 → stderr 一行提示）；事件/状态行 `[sN/M]` 前缀；session 索引 v2 |
+| 上报 | `mcp/report.ts` | `shard` / `shards` 字段透传（默认 `include` 仍不发分片事件） |
+| export | `export/session-index.ts` / `export/session-export.ts` | `SessionIndex` v2（`mains[]`，读兼容 v1）；`SessionPaths.mains` + 可选 `order`；按 `sNN` 前缀归组还原「主 → 该片 skill」顺序 |
+| 配置 | `shared/config.ts` | `limits.split` 四键（`enabled` / `maxShardChars` / `maxShards` / `contextSummaryChars`） |
+| 测试 | `run/sharded-review.test.ts`（新增 6 例）+ `export/*.test.ts` / `mcp/report.test.ts` / `cli/bin.process.test.ts` | 单 shard 零变更、预检零请求、输入隔离、合并/账目/寻址、失败无部分结果、索引 v2 / export 顺序、分片进程 e2e |
+
+### 关键取舍（实现期确认）
+
+1. **聚合审计只当索引，不当第二份明细**：`run.json.shards[]` 记每片 `runId` / 文件数 / 字符数 / `usage` / `rounds` / `toolCalls` / 转录与审计相对路径；聚合审计的 `requests` / `toolCallLog` 留空，明细一律在各片审计里。避免把 N 片的大对象再拷贝一遍，也避免聚合审计假装拥有不存在的请求。
+2. **全局量只记一次账**：`mrFilter`、`mrBoundary`、`config` 只出现在单遍审计或聚合审计中，片内审计不带；每片 `domainWarning` 用全局边界文案。预过滤 / 体积门 / 边界度量也只做一次。
+3. **`attempt-<startedAt>` 不是 `runId`**：只作片目录名，让每次尝试独占一组产物；聚合 `runId` = 第 1 片 `runId`（保住 ADR-0032 可互推关系）。
+4. **`ReviewRunResult` 兼容面**：保留 `transcriptPath` = 首片转录，新增 `transcriptPaths` = 全部片；`run.recordPath` / `auditPath` / `reviewsPath` 恒指聚合产物。
+5. **export 顺序显式化**：`SessionPaths` 新增可选 `order`；分片时由 `shards[].transcriptFile` 与 `skillPassLog[].transcriptFile`（已是 runs 目录相对 POSIX 路径，含 `sNN` 段）按目录前缀归组，显式拼 `s01 主 → s01 skill → s02 主 → …`；无 `order` 时退回旧顺序（先全部主、再全部 skill）。
+6. **失败保留片产物但不是「部分结果」**：任一片失败 ⇒ 抛错、`run.end(failed)`、顶层 `run.json` / `reviews_en.json` / 聚合审计**一律不写**；已成功片的转录/审计/片内 `reviews_en.json` 留在 `shards/` 下供排查，不进入对外消费面。
+7. **候选 id 各片从 `F001` 起**：合并后按最终顺序重编号，避免跨片 id 冲突；同片内仍由候选门保证唯一。
+
+### 验证结果
+
+- `pnpm --filter review-pi typecheck` / `pnpm -r typecheck`：exit 0。
+- `pnpm --filter review-pi build`：exit 0。
+- `pnpm --filter review-pi test`：**66 files / 625 passed / 1 skipped**。
+- 新增 `run/sharded-review.test.ts` 6 例：单遍零变更（`enabled=false` / 未超预算）、预检错误零请求、分片输入隔离 + `review.get_diff` 只返回本片、合并/账目闭合/`run.json.shards` 寻址/进度事件、第二片失败无聚合产物。
+- `cli/bin.process.test.ts` 新增分片进程 e2e：stderr 片数提示与 `[sN/M]` 前缀、stdout 键集不变、`run.json.shards`、session 索引 v2 两条 `mains`、export 顺序、密钥哨兵。
+- `mcp/report.test.ts` 新增分片字段透传用例；`export/session-export.test.ts` 新增分片导出顺序用例；`export/session-index.test.ts` 覆盖 v2 写入与 v1 读取兼容。
+
+### 已知限制
+
+- **串行**：N 片按顺序执行，耗时与成本随片数线性增长；`maxShards` 是唯一成本护栏。
+- **单文件巨型仍无解**：单个 `diff --git` 块超过 `maxShardChars` 直接报错（留给第三期按需读取），不切 hunk、不截断。
+- **跨片缺陷不兜底**：不做跨片 LLM 二次合并 / 全局推理；跨文件缺陷可能被切散，靠「其他文件摘要 + 覆盖账」缓解。
+- **聚合审计不含请求明细**：排查必须按 `shards[]` 打开片审计；`rounds` 取各片最大值（不是总轮数），`usage` / `toolCalls` 为求和。
+- **尝试目录不自动清理**：同一任务重复运行会累积 `runs/shards/attempt-…/` 与 `audit/shards/attempt-…/`，目前靠人工清理。
+- **规则 Skill 成本放大**：每个 shard 各跑一次 skill 会话（设计如此，不做「只在首片跑」的省成本变体）。

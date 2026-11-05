@@ -271,6 +271,36 @@ describe("createMcpReporter", () => {
     await reporter.close();
   });
 
+  test("分片字段透传：run.start/end 的 shards 计数与事件 shard 标签（ADR-0039）", async () => {
+    const transport = fakeTransport();
+    const reporter = await createMcpReporter({
+      config: reportConfig({ batch: { maxEvents: 10, maxDelayMs: 60_000 } }),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+    reporter.sink({ ...runStart(), shards: { total: 2 } } as RunProgressEvent);
+    reporter.sink({
+      kind: "phase",
+      round: 1,
+      phase: "Change Understanding",
+      index: 1,
+      total: 6,
+      shard: { index: 1, total: 2 },
+    });
+    reporter.sink({ ...runEnd(), shards: { total: 2, ok: 2, failed: 0 } } as RunProgressEvent);
+    await reporter.flush(2_000);
+
+    const events = batchesOf(transport).flatMap((batch) => batch.events.map((envelope) => envelope.event));
+    expect(events[0]).toMatchObject({ type: "run.start", shards: { total: 2 } });
+    expect(events[1]).toMatchObject({ type: "phase", shard: { index: 1, total: 2 } });
+    expect(events[2]).toMatchObject({
+      type: "run.end",
+      shards: { total: 2, ok: 2, failed: 0 },
+    });
+    await reporter.close();
+  });
+
   test("工具事件只出站名字与尺寸，不带入参摘要与失败详情", async () => {
     const transport = fakeTransport();
     const reporter = await createMcpReporter({

@@ -19,8 +19,8 @@ import { isAbsolute, resolve } from "node:path";
 /** cwd 里的索引文件名（隐藏文件：不污染用户的仓库工作区） */
 export const SESSION_INDEX_FILENAME = ".review-pi-session.json";
 
-/** 索引文件版本（形状变更时递增） */
-export const SESSION_INDEX_VERSION = 1;
+/** 索引文件版本（形状变更时递增；读取端兼容 v1） */
+export const SESSION_INDEX_VERSION = 2;
 
 export interface SessionIndex {
   readonly version: typeof SESSION_INDEX_VERSION;
@@ -34,8 +34,11 @@ export interface SessionIndex {
   readonly repo: string;
   /** run 完成时刻（ISO 8601） */
   readonly updatedAt: string;
-  /** 主会话转录的绝对路径 */
-  readonly main: string;
+  /**
+   * 主会话转录的绝对路径（ADR-0039：分片后一个任务有多份，按 `s01 → s02 → …`）；
+   * 单遍路径长度恒为 1。v1 索引的单个 `main` 读取时归一到这里。
+   */
+  readonly mains: readonly string[];
   /** 规则 Skill 会话转录的绝对路径（装载顺序；无 skill 时为空数组） */
   readonly skills: readonly string[];
 }
@@ -103,9 +106,9 @@ function validateSessionIndex(value: unknown, path: string): SessionIndex {
     throw new Error(`session 索引格式非法（${path}）：顶层必须是对象`);
   }
   const obj = value as Record<string, unknown>;
-  if (obj.version !== SESSION_INDEX_VERSION) {
+  if (obj.version !== 1 && obj.version !== SESSION_INDEX_VERSION) {
     throw new Error(
-      `session 索引版本不支持（${path}）：version 必须为 ${String(SESSION_INDEX_VERSION)}`,
+      `session 索引版本不支持（${path}）：version 必须为 1 或 ${String(SESSION_INDEX_VERSION)}`,
     );
   }
   const skills = obj.skills;
@@ -117,10 +120,9 @@ function validateSessionIndex(value: unknown, path: string): SessionIndex {
   ) {
     throw new Error(`session 索引格式非法（${path}）：skills 必须是绝对路径字符串数组`);
   }
-  const main = requiredString(obj.main, "main", path);
-  if (!isAbsolute(main)) {
-    throw new Error(`session 索引格式非法（${path}）：main 必须是绝对路径`);
-  }
+  // v1（单个 main）读取时归一为 `mains: [main]`；新写一律 v2
+  const mains =
+    obj.version === 1 ? [requiredAbsolute(obj.main, "main", path)] : absoluteList(obj.mains, "mains", path);
   return {
     version: SESSION_INDEX_VERSION,
     taskId: requiredString(obj.taskId, "taskId", path),
@@ -128,9 +130,30 @@ function validateSessionIndex(value: unknown, path: string): SessionIndex {
     runId: requiredString(obj.runId, "runId", path),
     repo: requiredString(obj.repo, "repo", path),
     updatedAt: requiredString(obj.updatedAt, "updatedAt", path),
-    main,
+    mains,
     skills: skills as readonly string[],
   };
+}
+
+/** v2：主转录数组必须非空且全为绝对路径 */
+function absoluteList(value: unknown, key: string, path: string): readonly string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`session 索引格式非法（${path}）：${key} 必须是非空的绝对路径数组`);
+  }
+  for (const item of value) {
+    if (typeof item !== "string" || item.trim() === "" || !isAbsolute(item)) {
+      throw new Error(`session 索引格式非法（${path}）：${key} 必须是非空的绝对路径数组`);
+    }
+  }
+  return value as readonly string[];
+}
+
+function requiredAbsolute(value: unknown, key: string, path: string): string {
+  const text = requiredString(value, key, path);
+  if (!isAbsolute(text)) {
+    throw new Error(`session 索引格式非法（${path}）：${key} 必须是绝对路径`);
+  }
+  return text;
 }
 
 function requiredString(value: unknown, key: string, path: string): string {

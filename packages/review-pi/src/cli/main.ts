@@ -38,13 +38,13 @@
 
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { calculateCost } from "@earendil-works/pi-ai";
 
 import type { RunProgressSink } from "../contracts/progress.js";
 import { runDirPath } from "../experiment/run-record.js";
-import { writeSessionIndex } from "../export/session-index.js";
+import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-index.js";
 import { createMcpReporter, resolveReportConfig, type McpReporter } from "../mcp/index.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
@@ -131,13 +131,18 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     }
   }
   const activeReporter = reporter;
-  const onProgress: RunProgressSink | undefined =
-    activeReporter === null
-      ? progress?.onEvent
-      : (event) => {
-          progress?.onEvent(event);
-          activeReporter.sink(event);
-        };
+  const onProgress: RunProgressSink = (event) => {
+    // 分片（ADR-0039 决策 8）：外层只发一次 run.start；这里报一行片数提示。
+    // 单片路径事件不带 shards 键，本行零输出（零字节漂移）。
+    if (event.kind === "run" && event.state === "start" && event.shards !== undefined) {
+      process.stderr.write(
+        `review-pi: 分片检视 ${String(event.shards.total)} 片` +
+          `（单片上限 ${String(config.limits.split.maxShardChars)} 字符）\n`,
+      );
+    }
+    progress?.onEvent(event);
+    activeReporter?.sink(event);
+  };
   const startedAt = Date.now();
   let reviewed: Awaited<ReturnType<typeof runReview>>;
   try {
@@ -157,7 +162,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
       ...(args.ruleSkillDirs !== undefined ? { ruleSkillDirs: args.ruleSkillDirs } : {}),
       ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
-      ...(onProgress !== undefined ? { onProgress } : {}),
+      onProgress,
     });
   } catch (error) {
     // 异常路径也要擦掉状态行：残影会把错误消息顶成半行
@@ -177,7 +182,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       await activeReporter.close().catch(() => undefined);
     }
   }
-  const { record, runId, auditPath, reviewsPath, transcriptPath } = reviewed;
+  const { record, runId, auditPath, reviewsPath, transcriptPaths } = reviewed;
   // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
   if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
     process.stderr.write(
@@ -332,20 +337,23 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
 
   // cwd session 索引（ADR-0036）：只记寻址信息，供 `review-pi export` 直接取用。
   // 每次成功 run 整份覆盖；写失败只警告——导出面是便利能力，不配把检视判失败。
+  // ADR-0039：分片后一个任务有多份主转录，索引升 v2（`mains[]`）；单遍 = 长度 1。
   const sessionRunsDir = runDirPath(runsRoot);
   const sessionSkills = (record.baseline.audit.skillPassLog ?? [])
     .map((entry) => entry.transcriptFile)
     .filter((file): file is string => typeof file === "string" && file.trim().length > 0)
-    .map((file) => join(sessionRunsDir, basename(file)));
+    // 聚合 skillPassLog 的文件名可能是 runs 目录相对路径（分片：shards/attempt…/sNN/），
+    // 旧形态是 basename——resolve 对两者都成立。
+    .map((file) => resolve(sessionRunsDir, file));
   try {
     await writeSessionIndex(process.cwd(), {
-      version: 1,
+      version: SESSION_INDEX_VERSION,
       taskId: args.taskId,
       tasksDir: tasksRoot,
       runId,
       repo: repoPath,
       updatedAt: record.completedAt,
-      main: transcriptPath,
+      mains: transcriptPaths,
       skills: sessionSkills,
     });
   } catch (error) {

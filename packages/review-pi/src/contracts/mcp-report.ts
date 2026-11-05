@@ -10,7 +10,17 @@ import type { RuleSkillPassStatus } from "./run.js";
  *
  * 字段白名单（出站最小化）：**不含**代码片段、finding 正文、工具入参原文、
  * 本地绝对路径、任何密钥。要正文请读 `reviews_en.json`。
+ *
+ * 分片（ADR-0039）：一次任务仍恰好一条 `run.start` / `run.end`；两条事件各带
+ * 可选 `shards` 计数，其余事件带可选 `shard` 标签。只增字段，schemaVersion 仍为 1。
  */
+
+/** 出站分片标签（与内部事件同形） */
+export interface McpShardLabel {
+  readonly index: number;
+  readonly total: number;
+}
+
 
 /** 出站事件类型全集（配置 `mcp.report.include` 的合法值） */
 export const MCP_REPORT_EVENT_TYPES = [
@@ -40,6 +50,8 @@ export type McpReportEvent =
       readonly model: string;
       /** ISO-8601 */
       readonly startedAt: string;
+      /** 分片模式才有（总片数）；单片路径不带该键 */
+      readonly shards?: { readonly total: number };
     }
   | {
       readonly type: "run.end";
@@ -50,6 +62,8 @@ export type McpReportEvent =
       readonly usage?: LlmUsage;
       readonly truncated?: boolean;
       readonly findings?: McpFindingSummary;
+      /** 分片模式才有；`ok + failed` = 已执行的片数 */
+      readonly shards?: { readonly total: number; readonly ok: number; readonly failed: number };
       /** 上报层自身状态（核心不知道，由 reporter 在映射 `run.end` 时注入） */
       readonly dropped: number;
       readonly failed: number;
@@ -63,15 +77,17 @@ export type McpReportEvent =
       readonly phaseKey: string;
       readonly index: number;
       readonly total: number;
+      readonly shard?: McpShardLabel;
     }
-  | { readonly type: "request.start"; readonly requestId: number }
+  | { readonly type: "request.start"; readonly requestId: number; readonly shard?: McpShardLabel }
   | {
       readonly type: "request.end";
       readonly requestId: number;
       readonly durationMs: number;
       readonly usage: LlmUsage;
+      readonly shard?: McpShardLabel;
     }
-  | { readonly type: "tool.start"; readonly name: string }
+  | { readonly type: "tool.start"; readonly name: string; readonly shard?: McpShardLabel }
   | {
       readonly type: "tool.end";
       readonly name: string;
@@ -79,8 +95,14 @@ export type McpReportEvent =
       readonly ok: boolean;
       readonly resultChars: number;
       readonly resultLines: number;
+      readonly shard?: McpShardLabel;
     }
-  | { readonly type: "skill.start"; readonly round: number; readonly skill: string }
+  | {
+      readonly type: "skill.start";
+      readonly round: number;
+      readonly skill: string;
+      readonly shard?: McpShardLabel;
+    }
   | {
       readonly type: "skill.end";
       readonly round: number;
@@ -89,6 +111,7 @@ export type McpReportEvent =
       readonly requestCount: number;
       readonly toolCallCount: number;
       readonly durationMs: number;
+      readonly shard?: McpShardLabel;
     };
 
 /** 单事件信封：`seq` 在单 run（单 stream）内 1-based 严格递增 */

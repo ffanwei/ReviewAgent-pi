@@ -35,7 +35,7 @@ function makeTask(
   taskId: string,
   skillNames: readonly string[],
   runId = RUN_ID,
-): { readonly main: string; readonly skills: readonly string[] } {
+): { readonly mains: readonly string[]; readonly skills: readonly string[] } {
   const runs = path.join(tasksRoot, taskId, "runs");
   mkdirSync(runs, { recursive: true });
   const main = path.join(runs, `session-${runId}.json`);
@@ -67,23 +67,23 @@ function makeTask(
     },
   };
   writeFileSync(path.join(runs, "run.json"), JSON.stringify(record), "utf8");
-  return { main, skills };
+  return { mains: [main], skills };
 }
 
 function indexOf(
   cwd: string,
   taskId: string,
   tasksDir: string,
-  sessions: { readonly main: string; readonly skills: readonly string[] },
+  sessions: { readonly mains: readonly string[]; readonly skills: readonly string[] },
 ): SessionIndex {
   return {
-    version: 1,
+    version: 2,
     taskId,
     tasksDir,
     runId: RUN_ID,
     repo: path.join(cwd, "repo"),
     updatedAt: "2026-11-03T10:15:00.000Z",
-    main: sessions.main,
+    mains: sessions.mains,
     skills: sessions.skills,
   };
 }
@@ -95,7 +95,7 @@ test("索引模式：主会话在前，skill 按 skillPassLog 顺序", async () 
   await writeSessionIndex(cwd, indexOf(cwd, "t-1", tasksRoot, sessions));
 
   const result = await exportSessions({ cwd });
-  expect(result.returned).toEqual([sessions.main, ...sessions.skills]);
+  expect(result.returned).toEqual([...sessions.mains, ...sessions.skills]);
   expect(result.sources).toEqual(result.returned);
   expect(result.copiedTo).toBeUndefined();
 });
@@ -111,7 +111,7 @@ test("--taskId 模式：按 --tasks-dir 找任务，runId 从 auditPath 反推",
   const sessions = makeTask(tasksRoot, "t-9", ["x"]);
 
   const result = await exportSessions({ cwd, taskId: "t-9", tasksDir: tasksRoot });
-  expect(result.returned).toEqual([sessions.main, sessions.skills[0]]);
+  expect(result.returned).toEqual([...sessions.mains, sessions.skills[0]]);
 });
 
 test("索引里的 tasksDir 优先于 --tasks-dir", async () => {
@@ -137,11 +137,11 @@ test("--path：平铺复制、内容一致、返回目标绝对路径（主在�
   const destDir = path.join(cwd, "out", "sessions");
   expect(result.copiedTo).toBe(destDir);
   expect(result.returned).toEqual([
-    path.join(destDir, path.basename(sessions.main)),
+    ...sessions.mains.map((file) => path.join(destDir, path.basename(file))),
     ...sessions.skills.map((file) => path.join(destDir, path.basename(file))),
   ]);
   expect(readFileSync(result.returned[0] as string, "utf8")).toBe(
-    readFileSync(sessions.main, "utf8"),
+    readFileSync(sessions.mains[0] as string, "utf8"),
   );
   expect(existsSync(result.returned[1] as string)).toBe(true);
 });
@@ -150,7 +150,7 @@ test("主会话文件缺失：不返回幽灵路径", async () => {
   const cwd = makeTempDir("review-pi-export-missing-");
   const tasksRoot = path.join(cwd, "tasks");
   const sessions = makeTask(tasksRoot, "t-1", []);
-  rmSync(sessions.main);
+  rmSync(sessions.mains[0] as string);
   await writeSessionIndex(cwd, indexOf(cwd, "t-1", tasksRoot, sessions));
 
   await expect(exportSessions({ cwd })).rejects.toThrow(/session 文件不存在/);
@@ -163,4 +163,76 @@ test("任务不存在：人话报错", async () => {
   await expect(exportSessions({ cwd, taskId: "nope", tasksDir: tasksRoot })).rejects.toThrow(
     /没有 run\.json/,
   );
+});
+
+test("分片任务：按 s01 主 → s01 skill → s02 主 → s02 skill 列出全部会话（ADR-0039）", async () => {
+  const cwd = makeTempDir("review-pi-export-shards-");
+  const tasksRoot = path.join(cwd, "tasks");
+  const taskId = "t-split";
+  const runs = path.join(tasksRoot, taskId, "runs");
+  const attempt = "attempt-20261103_101500_000";
+  const shardRunIds = ["20261103_101500_100", "20261103_101500_200"];
+  const mainFiles: string[] = [];
+  const skillFiles: string[] = [];
+  const skillLog: unknown[] = [];
+  const shardRecords: unknown[] = [];
+  shardRunIds.forEach((shardRunId, position) => {
+    const dirName = `s0${String(position + 1)}`;
+    const shardDir = path.join(runs, "shards", attempt, dirName);
+    mkdirSync(shardDir, { recursive: true });
+    const main = path.join(shardDir, `session-${shardRunId}.json`);
+    const skill = path.join(shardDir, `session-${shardRunId}-skill-rule-r1.json`);
+    writeFileSync(main, `{"shard":${String(position + 1)}}\n`, "utf8");
+    writeFileSync(skill, `{"shard":${String(position + 1)},"skill":"rule"}\n`, "utf8");
+    mainFiles.push(main);
+    skillFiles.push(skill);
+    // 聚合 run.json 里两者都是 runs 目录相对 POSIX 路径
+    const mainRelative = ["shards", attempt, dirName, path.basename(main)].join("/");
+    const skillRelative = ["shards", attempt, dirName, path.basename(skill)].join("/");
+    skillLog.push({ skill: "rule", round: 1, transcriptFile: skillRelative });
+    shardRecords.push({
+      index: position + 1,
+      runId: shardRunId,
+      files: 1,
+      chars: 100,
+      complete: true,
+      truncated: false,
+      usage: {},
+      rounds: 1,
+      toolCalls: 0,
+      transcriptFile: mainRelative,
+      auditFile: ["shards", attempt, dirName, `${shardRunId}.json`].join("/"),
+    });
+  });
+  writeFileSync(
+    path.join(runs, "run.json"),
+    JSON.stringify({
+      source: "mr",
+      caseId: "case",
+      rep: 1,
+      model: "m",
+      verifier: "off",
+      completedAt: "2026-11-03T10:15:00.000Z",
+      baseline: {
+        findings: [],
+        usage: {},
+        rounds: 1,
+        toolCalls: 0,
+        auditPath: path.join(tasksRoot, taskId, "audit", `${RUN_ID}.json`),
+        audit: { skillPassLog: skillLog },
+      },
+      effective: null,
+      verifierPass: null,
+      shards: shardRecords,
+    }),
+    "utf8",
+  );
+
+  const result = await exportSessions({ cwd, taskId, tasksDir: tasksRoot });
+  expect(result.returned).toEqual([
+    mainFiles[0],
+    skillFiles[0],
+    mainFiles[1],
+    skillFiles[1],
+  ]);
 });

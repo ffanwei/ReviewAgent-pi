@@ -22,6 +22,16 @@ import type { ReviewPhase, RuleSkillPassStatus } from "./run.js";
  * **只进显示、不落盘、不进任何指标**——与 ADR-0013 决策 10 拒绝的「逐消息耗时
  * 仪器」不同（那会把时钟写进产物）。
  */
+/**
+ * 分片标签（ADR-0039 决策 8）：多片时才在场；单片路径零漂移。
+ * 每片的 `round` 都从 1 重来，消费方靠该标签区分片内序号。
+ */
+export interface ShardLabel {
+  /** 1-based 片号 */
+  readonly index: number;
+  readonly total: number;
+}
+
 export type RunProgressEvent =
   | {
       readonly kind: "phase";
@@ -29,19 +39,27 @@ export type RunProgressEvent =
       readonly phase: ReviewPhase;
       readonly index: number;
       readonly total: number;
+      readonly shard?: ShardLabel;
     }
-  | { readonly kind: "request"; readonly state: "start"; readonly requestId: number }
+  | {
+      readonly kind: "request";
+      readonly state: "start";
+      readonly requestId: number;
+      readonly shard?: ShardLabel;
+    }
   | {
       readonly kind: "request";
       readonly state: "end";
       readonly requestId: number;
       readonly durationMs: number;
       readonly usage: LlmUsage;
+      readonly shard?: ShardLabel;
     }
   | {
       readonly kind: "tool";
       readonly state: "start";
       readonly name: string;
+      readonly shard?: ShardLabel;
     }
   | {
       readonly kind: "tool";
@@ -54,8 +72,15 @@ export type RunProgressEvent =
       readonly detail?: string;
       readonly resultChars: number;
       readonly resultLines: number;
+      readonly shard?: ShardLabel;
     }
-  | { readonly kind: "skill"; readonly state: "start"; readonly round: number; readonly skill: string }
+  | {
+      readonly kind: "skill";
+      readonly state: "start";
+      readonly round: number;
+      readonly skill: string;
+      readonly shard?: ShardLabel;
+    }
   | {
       readonly kind: "skill";
       readonly state: "end";
@@ -67,6 +92,7 @@ export type RunProgressEvent =
       readonly toolCallCount: number;
       /** 失败/降级原因（已截断）；正常结束时缺席 */
       readonly detail?: string;
+      readonly shard?: ShardLabel;
     }
   /**
    * run 级起止（ADR-0037）：也是既有事实的投影——`startedAt` / `runId` /
@@ -75,6 +101,9 @@ export type RunProgressEvent =
    * 与其余四类一样不进审计、不改 wire 字节、不改退出码；CLI 状态行忽略它。
    * `run.end` 的 `runId` 在**异常路径**可能缺席：`runId` 由首次模型请求时刻
    * 决定，run 在首次请求之前就失败时它从未存在过。
+   *
+   * 分片模式（ADR-0039）：外层只发**一次** start + 一次 end，并携带 `shards`
+   * 计数；单片路径不带该键（零字节漂移）。
    */
   | {
       readonly kind: "run";
@@ -83,6 +112,8 @@ export type RunProgressEvent =
       readonly model: string;
       /** run 起始时刻（ISO-8601） */
       readonly startedAt: string;
+      /** 分片模式才有（总片数） */
+      readonly shards?: { readonly total: number };
     }
   | {
       readonly kind: "run";
@@ -99,6 +130,8 @@ export type RunProgressEvent =
         readonly count: number;
         readonly bySeverity: Readonly<Record<"P0" | "P1" | "P2" | "P3", number>>;
       };
+      /** 分片模式才有；`ok + failed` = 已执行的片数 */
+      readonly shards?: { readonly total: number; readonly ok: number; readonly failed: number };
     };
 
 /** 进度消费者的唯一入口形状（CLI 注入；缺省不注入 = 零输出、零行为变化） */

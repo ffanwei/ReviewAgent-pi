@@ -60,6 +60,29 @@ export interface RunSnapshot {
   readonly domainWarning?: string;
 }
 
+/** 分片记录（ADR-0039 决策 7）：只在分片模式出现；单片路径整键缺席 */
+export interface ShardRecord {
+  /** 1-based 片号 */
+  readonly index: number;
+  /** 该片首次模型请求时刻派生的 runId */
+  readonly runId: string;
+  /** 本片文件块数 */
+  readonly files: number;
+  /** 本片 diff 字符数 */
+  readonly chars: number;
+  readonly complete: boolean;
+  readonly truncated: boolean;
+  readonly usage: LlmUsage;
+  readonly rounds: number;
+  readonly toolCalls: number;
+  /** 片内主转录：`<runsRoot>` 相对 POSIX 路径（export 寻址用） */
+  readonly transcriptFile: string;
+  /** 片内完整审计：`<runsRoot>` 相对 POSIX 路径 */
+  readonly auditFile: string;
+  /** 全局边界护栏派生的降级文案（未降级省键） */
+  readonly domainWarning?: string;
+}
+
 /** 一次运行的持久化记录（断点续跑与报告重建的数据源） */
 export interface RunRecord {
   readonly source: ExperimentSource;
@@ -74,6 +97,8 @@ export interface RunRecord {
   readonly effective: RunSnapshot | null;
   /** P1a verifier off：复核留痕缺省 null */
   readonly verifierPass: null;
+  /** 分片留痕（ADR-0039）：多片时在场，单片/旧记录整键缺席 */
+  readonly shards?: readonly ShardRecord[];
 }
 
 /** RunResult → 轻量快照（去 requests；路径来自 RunResult.auditPath） */
@@ -113,6 +138,8 @@ export function buildRunRecord(args: {
   readonly model: string;
   readonly completedAt: Date;
   readonly result: RunResult;
+  /** 分片留痕（ADR-0039）：只在多片时传入；缺席 = 单片零变更 */
+  readonly shards?: readonly ShardRecord[];
 }): RunRecord {
   return {
     source: args.source,
@@ -124,6 +151,7 @@ export function buildRunRecord(args: {
     baseline: toRunSnapshot(args.result),
     effective: null,
     verifierPass: null,
+    ...(args.shards !== undefined ? { shards: args.shards } : {}),
   };
 }
 

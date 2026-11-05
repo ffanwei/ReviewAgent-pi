@@ -257,6 +257,7 @@ function toReportEvent(
           caseId: event.caseId,
           model: event.model,
           startedAt: event.startedAt,
+          ...(event.shards !== undefined ? { shards: event.shards } : {}),
         };
       }
       return {
@@ -272,6 +273,7 @@ function toReportEvent(
         ...(event.findings !== undefined && findingsMode === "summary"
           ? { findings: event.findings }
           : {}),
+        ...(event.shards !== undefined ? { shards: event.shards } : {}),
       };
     case "phase":
       return {
@@ -282,19 +284,29 @@ function toReportEvent(
         phaseKey: event.phase,
         index: event.index,
         total: event.total,
+        ...(event.shard !== undefined ? { shard: event.shard } : {}),
       };
     case "request":
       return event.state === "start"
-        ? { type: "request.start", requestId: event.requestId }
+        ? {
+            type: "request.start",
+            requestId: event.requestId,
+            ...(event.shard !== undefined ? { shard: event.shard } : {}),
+          }
         : {
             type: "request.end",
             requestId: event.requestId,
             durationMs: event.durationMs,
             usage: event.usage,
+            ...(event.shard !== undefined ? { shard: event.shard } : {}),
           };
     case "tool":
       return event.state === "start"
-        ? { type: "tool.start", name: event.name }
+        ? {
+            type: "tool.start",
+            name: event.name,
+            ...(event.shard !== undefined ? { shard: event.shard } : {}),
+          }
         : {
             type: "tool.end",
             name: event.name,
@@ -302,10 +314,16 @@ function toReportEvent(
             ok: event.ok,
             resultChars: event.resultChars,
             resultLines: event.resultLines,
+            ...(event.shard !== undefined ? { shard: event.shard } : {}),
           };
     case "skill":
       return event.state === "start"
-        ? { type: "skill.start", round: event.round, skill: event.skill }
+        ? {
+            type: "skill.start",
+            round: event.round,
+            skill: event.skill,
+            ...(event.shard !== undefined ? { shard: event.shard } : {}),
+          }
         : {
             type: "skill.end",
             round: event.round,
@@ -314,6 +332,7 @@ function toReportEvent(
             requestCount: event.requestCount,
             toolCallCount: event.toolCallCount,
             durationMs: event.durationMs,
+            ...(event.shard !== undefined ? { shard: event.shard } : {}),
           };
     default:
       return null;

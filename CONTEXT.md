@@ -101,11 +101,15 @@ _Avoid_: MR 文件（不区分形态）、patch（只指 hunk 正文）
 
 **MR 边界护栏（Boundary Guard）**:
 内核入口处的 MR 输入边界检查（缺省 ≤10 文件 / diff ≤2K 变更行；`limits.boundary` 可改，单维 `null` = 该维不设界）：界内路径零字节漂移（缺席省键）；超界或不可度量走显式降级——`domainWarning` 标注（文案按配置值派生）+ 审计 `mrBoundary` 留痕 + 照常执行，不拒检。
-_Avoid_: 输入校验（过泛）、大 MR 切分（v2 另立项）、静默截断（违背零静默纪律）
+_Avoid_: 输入校验（过泛）、分片（那是「分片检视」的另一机制）、静默截断（违背零静默纪律）
 
 **MR 输入预过滤（Input Prefilter）**:
 内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除省键）并在 stderr 报一行——剔了必有账。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 1.5M 字符，`null` = 关闭）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
 _Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（无审计即违规）
+
+**分片检视（Sharded Review）**:
+过滤后 diff 超过 `limits.split.maxShardChars`（缺省 40 万字符）时，按 `diff --git` 文件块**贪心装箱**拆成 N 片（只切文件块、绝不切 hunk；每块恰好出现一次、顺序 = diff 顺序），每片串行跑一次完整六阶段 + 规则 Skill 会话，最后按 `(file, line, title)` 确定性合并 findings 并重编号 `F001…`。单片路径（`limits.split.enabled=false` 或 diff ≤ 预算）与旧实现**逐字节相同**。每片的输入 = 本片 diff + 其他文件的路径/增删摘要（不是证据源）；聚合 `runId` = 第 1 片 `runId`；任何一片失败都无聚合产物（不输出部分结果），已成功片的产物保留在 `runs/shards/attempt-<ts>/sNN/`（ADR-0039）。
+_Avoid_: 切 hunk（破坏行号与证据链）、截断（静默漏检）、并行分片（v1 串行）
 
 **代码智能语言（Code Intelligence Languages）**:
 符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前 `java` / `typescript` / `python`；数组 = 只启用列出语言；空数组 = 显式关闭）。注册表在 `codeintel/language-support.ts`（id / displayName / 语法变体 / 注释前缀 / extractor / 签名渲染 / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。符号模型语言无关（`CodeSymbol` + `isCallableKind` + `owner`），每语言提取在 `zoneb/extractors/<lang>.ts`；`codeintel.excludeGlobs` 排除依赖与生成物（`--no-ignore` 的确定性要求）。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`（ADR-0040、ADR-0041）。
@@ -122,11 +126,11 @@ _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名�
 _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
 
 **运行落盘根（Runs Root）**:
-`--taskId` 决定的任务目录 `<tasks 根>/<taskId>/`（tasks 根缺省 `~/.PiAgent/tasks`，`--tasks-dir` 可覆盖），本次检视的全部留痕都在其下：`runs/`（`run.json` 记录 / `session-*.json` 转录 / `reviews_*.json` 意见导出）与 `audit/<ts>.json`（审计），规则包解压缓存在 `.cache/rule-skills/`。一个任务目录就是一次 run 的输出根：没有 case / rep / source 目录层，`caseId` 只作为数据字段（ADR-0032、ADR-0033）。
+`--taskId` 决定的任务目录 `<tasks 根>/<taskId>/`（tasks 根缺省 `~/.PiAgent/tasks`，`--tasks-dir` 可覆盖），本次检视的全部留痕都在其下：`runs/`（`run.json` 记录 / `session-*.json` 转录 / `reviews_*.json` 意见导出）与 `audit/<ts>.json`（审计），规则包解压缓存在 `.cache/rule-skills/`。分片检视时每片的转录/审计/片内 `reviews_en.json` 落在 `runs/shards/attempt-<ts>/sNN/` 与 `audit/shards/attempt-<ts>/sNN/`，顶层只留聚合产物。一个任务目录就是一次 run 的输出根：没有 case / rep / source 目录层，`caseId` 只作为数据字段（ADR-0032、ADR-0033、ADR-0039）。
 _Avoid_: 输出目录（泛指；本仓改称任务目录，旧 `--out` 已随 ADR-0033 移除）、runs 根（与历史 `runs/phase2-*` 实验目录混淆）
 
 **Session 索引（Session Index）**:
-`review` 成功后写在**进程 cwd** 的隐藏文件 `.review-pi-session.json`：只含本次 run 的寻址信息（`taskId` / 绝对 `tasksDir` / `runId` / 主与 skill 转录的绝对路径），不含检视内容与秘密；每次成功 run 整份覆盖，失败 run 不写（ADR-0036）。由 `review-pi export` 消费：缺省读它打印路径，`--taskId` 改为从 `<tasks 根>/<id>` 的 `run.json` 反推，`--path <dir>` 平铺复制到目标目录。该命令不加载配置、不需要 key、不调模型。ADR-0027 的「cwd 只留 `review-result.json`」由此局部修订。
+`review` 成功后写在**进程 cwd** 的隐藏文件 `.review-pi-session.json`：只含本次 run 的寻址信息（`taskId` / 绝对 `tasksDir` / `runId` / 主与 skill 转录的绝对路径），不含检视内容与秘密；每次成功 run 整份覆盖，失败 run 不写（ADR-0036）。**version 2**：主转录是数组 `mains[]`（分片时按 `s01 → s02 → …`，单遍长度为 1），读取端兼容 v1 的单个 `main`。由 `review-pi export` 消费：缺省读它打印路径（分片按 `s01 主 → s01 skill → s02 主 → …` 顺序），`--taskId` 改为从 `<tasks 根>/<id>` 的 `run.json` 反推（分片读 `shards[].transcriptFile`），`--path <dir>` 平铺复制到目标目录。该命令不加载配置、不需要 key、不调模型。ADR-0027 的「cwd 只留 `review-result.json`」由此局部修订。
 _Avoid_: 会话记录（那是转录本身）、配置文件（索引只存路径）、缓存（它不加速任何东西）
 
 ### 发行
