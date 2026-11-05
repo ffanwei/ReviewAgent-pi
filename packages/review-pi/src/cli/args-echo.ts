@@ -4,9 +4,10 @@ import type { ReviewCliArgs } from "./args.js";
 /**
  * review 命令的传入参数回显（stderr）。
  *
- * 目的：一次检视跑完后，让人/日志能直接看到**这次到底收到了什么参数**——
+ * 目的：一次检视**开跑前**，让人/日志能直接看到**这次到底收到了什么参数**——
  * 相对路径已按 cwd 解析成绝对路径，缺省值（model / config / issue / tasks 根）
  * 已落成生效值并标注来源。stdout 是单 JSON 文档契约，故这一路只走 stderr。
+ * 打印点（ADR-0043）：runReview 之前、进度投影之前——提前报参数，失败也能看到输入面。
  *
  * 纪律：
  * - 只回显**参数面**，不含 apiKey / baseUrl 等配置秘密；

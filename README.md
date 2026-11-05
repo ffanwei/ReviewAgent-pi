@@ -168,7 +168,7 @@ review-pi review \
 - `--taskId` **必需**：产物落 `~/.PiAgent/tasks/<taskId>/`（`--tasks-dir` 只覆盖根）。
 - `--mr-diff` 与 `--mr-json` **恰好给一个**；`caseId` = 文件名去最后一个扩展名（`MR-1234.json` → `MR-1234`），与 `taskId` 是两个维度。
 - PowerShell 用 `>` / `Out-File` 写 JSON 会得到 UTF-16，解析失败；用 `curl.exe -o` 或 `Set-Content -Encoding utf8`。
-- 成功跑完后 stderr 会回显**本次生效参数**（相对路径已解析、缺省值已标注来源），失败路径不回显。
+- 开跑前 stderr 先回显**本次生效参数**（相对路径已解析、缺省值已标注来源）；之后才装载 diff / 进入检视。失败路径同样看得到输入面。
 
 ### 3. 取回 session 路径（`export`）
 
@@ -274,7 +274,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 
 - stdout 是**单个 JSON 文档**，日志与诊断一律走 stderr。
 - 退出码：完成（含诚实截断）`0`，中止或错误 `1`。截断信号在 JSON 的 `truncated=true`，不体现在退出码。
-- stderr 在成功 run 结束后恒打一行运行总结 + 一段「本次 review 传入参数」生效值回显。
+- stderr 在开跑前先打一段「本次 review 传入参数」生效值回显；成功 run 结束后再打一行运行总结。
 - 真实网关调用只在本机按需执行，CI 恒离线。
 
 ## 编译与打包（源码开发）

@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续：**0001–0036 为 pi 线序列，新决策从 0037 起**。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0043）。
 
 ## 记录纪律
 
@@ -23,6 +23,7 @@
 | ADR-0008 / ADR-0009 / ADR-0028 | ADR-0035 | 评测仪器归属、内核 vendoring、六包发行形态 |
 | ADR-0027（决策 2） | ADR-0036 | cwd 只留 `review-result.json` → 另加隐藏的 `.review-pi-session.json` 寻址索引 |
 | ADR-0009 / ADR-0010 / ADR-0014 的字节把守手段 | ADR-0038 | 退役「对照 DSH 历史审计真源逐字节相等」；改为结构性质 + 端到端能力断言（产品级逐字节仍保留） |
+| ADR-0031（决策 1：打印点） | ADR-0043 | 参数回显从「run 结束后」提前到「开跑前」；内容与 stderr-only 纪律不变 |
 
 ## 0037 起的新增决策（不逐条列全，只作导航）
 
@@ -34,6 +35,7 @@
 | [ADR-0040](0040-codeintel-language-registry-and-config.md) | 代码智能语言注册表与 `codeintel.languages` 配置（路线 A） |
 | [ADR-0041](0041-language-agnostic-symbol-model-and-multi-language-extractors.md) | 语言无关符号模型与多语言提取器（路线 B：TypeScript/JavaScript、Python） |
 | [ADR-0042](0042-go-and-cpp-symbol-extractors.md) | Go 与 C/C++ 符号提取器（多语言第二批，新增 `go` / `cpp` 两个语言 id） |
+| [ADR-0043](0043-review-args-echo-before-run.md) | 参数回显提前到开跑前（取代 ADR-0031 决策 1 的打印点） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

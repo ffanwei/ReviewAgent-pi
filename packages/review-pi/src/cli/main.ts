@@ -100,15 +100,38 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     throw new Error(`--repo is not a directory: ${repoPath}`);
   }
   const mrPath = resolve(args.mr);
-  // 输入形态（ADR-0029）：JSON 在装载期补文件头转成统一 diff，之后与 --mr-diff 同一条路径
-  const mrText = await readFile(mrPath, "utf8");
-  const diff = args.mrFormat === "json" ? mrJsonToUnifiedDiff(mrText, "--mr-json") : mrText;
   // 落盘根（ADR-0033）：tasks 根（`--tasks-dir` 或 ~/.PiAgent/tasks）+ 任务 id；
   // 其下仍是 runs/ + audit/ + .cache/（ADR-0032 的目录内形态不变）。
   const tasksRoot = resolveTasksRoot({
     ...(args.tasksDir !== undefined ? { tasksDir: args.tasksDir } : {}),
   });
   const runsRoot = taskDirPath(tasksRoot, args.taskId);
+
+  // 传入参数回显（stderr，ADR-0043）：开跑前先报一遍本次生效参数——相对路径已按
+  // cwd 解析，缺省值（model / config / tasks 根 / progress）已落成生效值并标注来源。
+  // 打印点必须早于进度投影，否则事件行会把这一块打散；stdout 是单 JSON 文档契约，
+  // 故这一路只走 stderr；只碰参数面，不含 apiKey / baseUrl 等秘密。
+  const stderrIsTty = process.stderr.isTTY === true;
+  process.stderr.write(
+    `${formatReviewArgs(args, {
+      repoPath,
+      mrPath,
+      taskId: args.taskId,
+      tasksRoot,
+      tasksDirFromFlag: args.tasksDir !== undefined,
+      configPath: config.path,
+      modelId,
+      modelFromFlag: args.model !== undefined,
+      configFromFlag: args.configPath !== undefined,
+      progressOn: args.progress ?? stderrIsTty,
+      progressExplicit: args.progress !== undefined,
+      stderrIsTty,
+    })}\n`,
+  );
+
+  // 输入形态（ADR-0029）：JSON 在装载期补文件头转成统一 diff，之后与 --mr-diff 同一条路径
+  const mrText = await readFile(mrPath, "utf8");
+  const diff = args.mrFormat === "json" ? mrJsonToUnifiedDiff(mrText, "--mr-json") : mrText;
 
   // 运行进度投影（ADR-0016）：stderr 是 TTY 时缺省开（人手敲看得见），重定向
   // 收日志时缺省关；--progress / --no-progress 覆盖。缺省关时只保留收尾摘要
@@ -211,27 +234,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 进度关闭不是「零输出」：收尾摘要恒定打印（一行，可 grep）
     process.stderr.write(`${doneLine(summary)}\n`);
   }
-
-  // 传入参数回显（stderr）：run 已结束，把本次实际生效的参数报一遍——相对
-  // 路径已按 cwd 解析，缺省值（model / config / issue / out）已落成生效值并
-  // 标注来源。stdout 是单 JSON 文档契约，故这一路只走 stderr；不含任何秘密。
-  const stderrIsTty = process.stderr.isTTY === true;
-  process.stderr.write(
-    `${formatReviewArgs(args, {
-      repoPath,
-      mrPath,
-      taskId: args.taskId,
-      tasksRoot,
-      tasksDirFromFlag: args.tasksDir !== undefined,
-      configPath: config.path,
-      modelId,
-      modelFromFlag: args.model !== undefined,
-      configFromFlag: args.configPath !== undefined,
-      progressOn: args.progress ?? stderrIsTty,
-      progressExplicit: args.progress !== undefined,
-      stderrIsTty,
-    })}\n`,
-  );
 
   // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout
   // 呈现档（title/description 等自然语言字段经注入引擎译中文，结构化字段
