@@ -63,6 +63,23 @@ _Avoid_: 评论、告警、issue（泛化）
 **Risk Class**:
 变更的风险分级（Low / Medium / High），决定 C 级上下文加载深度与证据等级。
 
+**Diff 检视技能（Diff Review Skill）**:
+仓内 `.agents/skills/` 下**开发态验证技能**（OpenCode / Codex / Claude Code 可加载），既不是产品运行时的一部分，也不是被检视项目携带的规则 Skill。职责固定为「已知真值 → 构造缺陷 diff → 真跑一次 Review CLI → 判定并归档」；共享执行层 `.agents/skills/_shared/review-eval.mjs` 负责构造 diff、调用 `review-pi`、读取 findings、按真值判定与写归档。
+_代码面_: `real-defect-url-injection`（真实修复回滚）与 `synthetic-defect-resource-leak`（按规则注入）。
+_Avoid_: 规则 Skill（那是被检视项目的规则包，经 `--rule-skill*` 显式装载）、检视形态（技能不改变单次检视的唯一形态）
+
+**真实缺陷回放（Real-Defect Replay）**:
+Diff 检视技能的一种：以真实漏洞的**修复补丁**为真值，复制修复后快照并 `git apply -R` 回滚修复，得到「缺陷重新引入」的 diff，交给 Review CLI 真跑；默认案例 VUL4J-38 / CVE-2014-4172。底座是 `.cache/datasets/vul4j-repos/` 的已物化快照（不联网、不改快照），真值位置来自 `data/vul4j/materialized-cases.json`。
+_Avoid_: 缺陷注入（那是合成侧）、评测仪器（本仓评测层已按 ADR-0024 删除；回放只作单案验证）
+
+**合成缺陷注入（Synthetic Defect Injection）**:
+Diff 检视技能的另一种：在 testdata 夹具仓的临时副本里写入一个已知缺陷（默认 GEN-RES-001：`os.Open` 后不关闭文件句柄），生成新增文件形态的 diff，再交给 Review CLI 真跑；用于完全可控、可重复的回归，并验证规则包是否被装载。
+_Avoid_: 真实缺陷回放（真值来自历史修复，不是注入）、篡改夹具（临时副本用完即删，不改仓内夹具）
+
+**检视归档（Review Archive）**:
+Diff 检视技能每次真跑的固定产物目录：仓根 `repo-diff-skill-result/<skill>/<YYYYMMDD-HHmmss>/`，含 `defect.diff`、`ground-truth.json`、`meta.json`、`stdout.json`、`stderr.log`、`result/runs/*`、`result/audit/*`、`verdict.json` 与 `verdict.md`。归档是**本机验证证据**，按运行留痕纪律（ADR-0033）不入库（`.gitignore`）。
+_Avoid_: 运行落盘根（那是产品 `review` 的任务目录）、评测报告（归档不产出召回率等指标）
+
 ### 运行时边界
 
 **核内（Review Runtime）**:
@@ -112,7 +129,7 @@ _Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（�
 _Avoid_: 切 hunk（破坏行号与证据链）、截断（静默漏检）、并行分片（v1 串行）
 
 **代码智能语言（Code Intelligence Languages）**:
-符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前 `java` / `typescript` / `python`；数组 = 只启用列出语言；空数组 = 显式关闭）。注册表在 `codeintel/language-support.ts`（id / displayName / 语法变体 / 注释前缀 / extractor / 签名渲染 / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。符号模型语言无关（`CodeSymbol` + `isCallableKind` + `owner`），每语言提取在 `zoneb/extractors/<lang>.ts`；`codeintel.excludeGlobs` 排除依赖与生成物（`--no-ignore` 的确定性要求）。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`（ADR-0040、ADR-0041）。
+符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前 `java` / `typescript` / `python` / `go` / `cpp`；数组 = 只启用列出语言；空数组 = 显式关闭）。注册表在 `codeintel/language-support.ts`（id / displayName / 语法变体 / 注释前缀 / extractor / 签名渲染 / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。符号模型语言无关（`CodeSymbol` + `isCallableKind` + `owner`），每语言提取在 `zoneb/extractors/<lang>.ts`；`codeintel.excludeGlobs` 排除依赖与生成物（`--no-ignore` 的确定性要求）。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`（ADR-0040、ADR-0041、ADR-0042）。
 _Avoid_: 多语言检视（检视本来就全语言）、语言包（实际是解析器注册表）
 
 ### 产物
@@ -191,5 +208,5 @@ _Avoid_: 画像当 endpoint 配置（「怎么说话」与「连到哪」两轴�
 ### 基准
 
 **逆补丁法（Inverse-Patch）**:
-以修复补丁的逆 diff 构造"引入缺陷的 MR"的基准构造方法：base 为修复后版本，合入后即历史真实 buggy 版本，真值为最小修复补丁的行位与性质。历史数据集沿用此法构造（本仓已不再自带构造脚本，ADR-0024）。
+以修复补丁的逆 diff 构造"引入缺陷的 MR"的基准构造方法：base 为修复后版本，合入后即历史真实 buggy 版本，真值为最小修复补丁的行位与性质。历史数据集沿用此法构造（本仓不再自带评测仪器层的构造脚本，ADR-0024）；`real-defect-url-injection` 技能复用同一手法做单案回放，只作验证、不进评测指标。
 _Avoid_: 缺陷注入（暗示合成篡改）、SZZ 挖掘（是被否的替代路径）

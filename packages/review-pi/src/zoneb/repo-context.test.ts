@@ -15,6 +15,8 @@ test("loadRepoContext：清单 / 词法包名 / 根文件名 / 读取与符号�
     "java",
     "typescript",
     "python",
+    "go",
+    "cpp",
   ]);
   // auto 启用全部语言，但展示面只列仓库里真实存在的语言
   expect(context.detectedLanguages.map((language) => language.id)).toEqual(["java"]);
@@ -73,6 +75,8 @@ test("loadRepoContext：excludeGlobs 生效（多语言 glob 下不把依赖/生
   expect(context.sourceFiles.some((file) => file.endsWith(".d.ts"))).toBe(false);
   expect(context.sourceFiles.some((file) => file.includes("__pycache__"))).toBe(false);
   expect(context.sourceFiles).toEqual([
+    "native/src/math.cpp",
+    "service/cmd/main.go",
     "service/pkg/__init__.py",
     "service/pkg/util.py",
     "web/src/app.ts",
@@ -85,12 +89,18 @@ test("loadRepoContext：多语言仓——检测语言、模块名与符号索�
   expect(context.detectedLanguages.map((language) => language.id)).toEqual([
     "typescript",
     "python",
+    "go",
+    "cpp",
   ]);
-  expect(context.languageLabel).toBe("TypeScript/JavaScript, Python");
-  expect(context.moduleNameByFile.size).toBe(0); // 两种语言都不做头部预读
+  expect(context.languageLabel).toBe("TypeScript/JavaScript, Python, Go, C/C++");
+  // 只有 Go 做文件头部预读（package 子句）；TS/Python/C++ 都不需要
+  expect(context.moduleNameByFile.size).toBe(1);
+  expect(context.moduleNameByFile.get("service/cmd/main.go")).toBe("main");
   expect(context.languageFor("web/src/app.ts")?.id).toBe("typescript");
   expect(context.languageFor("web/src/view.tsx")?.id).toBe("typescript");
   expect(context.languageFor("service/pkg/util.py")?.id).toBe("python");
+  expect(context.languageFor("service/cmd/main.go")?.id).toBe("go");
+  expect(context.languageFor("native/src/math.cpp")?.id).toBe("cpp");
 
   const ts = await context.symbolIndex("web/src/app.ts");
   expect(ts.moduleName).toBe("");
@@ -106,6 +116,28 @@ test("loadRepoContext：多语言仓——检测语言、模块名与符号索�
   expect(py.moduleName).toBe("service.pkg.util");
   expect(py.symbols.map((symbol) => symbol.name)).toEqual(["Formatter", "make_default"]);
   expect(py.invocations.map((invocation) => invocation.name)).toContain("upper");
+
+  const go = await context.symbolIndex("service/cmd/main.go");
+  expect(go.moduleName).toBe("main");
+  expect(go.symbols.map((symbol) => `${symbol.kind}:${symbol.name}`)).toEqual([
+    "struct:Greeter",
+    "function:NewGreeter",
+    "method:Greet",
+    "function:main",
+  ]);
+  expect(go.symbols.find((symbol) => symbol.name === "Greet")?.owner).toBe("Greeter");
+  expect(go.invocations.map((invocation) => invocation.name)).toContain("Greet");
+
+  const cpp = await context.symbolIndex("native/src/math.cpp");
+  expect(cpp.moduleName).toBe("");
+  expect(cpp.symbols.map((symbol) => symbol.name)).toEqual(["math"]);
+  expect(cpp.symbols[0]?.members.map((member) => `${member.kind}:${member.name}`)).toEqual([
+    "struct:Point",
+    "method:sum",
+    "function:make_point",
+    "function:doubled",
+  ]);
+  expect(cpp.invocations.map((invocation) => invocation.name)).toContain("sum");
 });
 
 test("candidateFilesForName：rg 预收窄（多语言 glob 下只返回文本命中文件）", async () => {

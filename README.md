@@ -18,8 +18,9 @@
 | 大 MR 分片 | 过滤后 diff 超 `limits.split.maxShardChars` 时按 `diff --git` 文件块自动切片（绝不切 hunk）并确定性合并 findings；单片路径逐字节不变（ADR-0039） |
 | 单源配置 | 用户级 JSONC（`~/.PiAgent/PiAgent.jsonc` 或 `--config`），启动读一次成不可变快照，审计留 digest |
 | 可观测 | stdout 单 JSON 文档；stderr 诊断与 `--progress` 阶段投影；退出码 0（含诚实截断）/ 1 |
+| diff 检视技能 | 仓内 `.agents/skills/` 两个可复跑技能：真实缺陷回放（默认 VUL4J-38 / CVE-2014-4172）与合成缺陷注入（GEN-RES-001）；真跑模型检视后把证据归档到 `repo-diff-skill-result/`（不入库） |
 
-检视本体不限语言；符号 / 引用 / 调用链工具支持 Java、TypeScript（含 JS 变体）与 Python（`codeintel.languages` 可配，缺省 `"auto"`，ADR-0041）。
+检视本体不限语言；符号 / 引用 / 调用链工具支持 Java、TypeScript（含 JS 变体）、Python、Go 与 C/C++（`codeintel.languages` 可配，缺省 `"auto"`，ADR-0041 / ADR-0042）。
 
 ## 环境要求
 
@@ -172,6 +173,26 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 - 退出码：完成（含诚实截断）`0`，中止或错误 `1`。截断信号在 JSON 的 `truncated=true`，不体现在退出码。
 - 真实网关调用只在本机按需执行，CI 恒离线。
 
+## 检视技能（真实缺陷回放 / 合成缺陷注入）
+
+仓内 `.agents/skills/` 提供两个可复跑的 **diff 检视技能**。它们不是产品运行时的一部分，也不是被检视仓库携带的规则 Skill，而是「已知真值 → 构造缺陷 diff → 真跑一次 `review-pi` → 判定并归档」的验证闭环：
+
+| 技能 | 做什么 | 底座 / 真值 |
+|---|---|---|
+| `real-defect-url-injection` | 回滚真实修复补丁，让 URL 参数注入缺陷重新出现（默认 VUL4J-38 / CVE-2014-4172） | `.cache/datasets/vul4j-repos/` 的已物化快照 + `data/vul4j/materialized-cases.json` |
+| `synthetic-defect-resource-leak` | 在夹具副本新增一个 `os.Open` 后不关闭文件句柄的 Go 文件（GEN-RES-001） | `packages/review-pi/testdata/repos/multilang`（默认装载 `general-code-review` 规则包） |
+
+```bash
+# 各真跑一次（真实模型、真实计费）
+node .agents/skills/real-defect-url-injection/scripts/run.mjs
+node .agents/skills/synthetic-defect-resource-leak/scripts/run.mjs
+
+# 只构造 diff 与真值，不调用模型
+node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
+```
+
+共享执行层在 `.agents/skills/_shared/review-eval.mjs`：构造 diff、调用 `review-pi`、读取 findings、按真值判定、写归档。每次运行把 `defect.diff` / `ground-truth.json` / `meta.json` / `stdout.json` / `stderr.log` / `result/`（runs + audit）/ `verdict.{json,md}` 写到仓根 `repo-diff-skill-result/<skill>/<时间戳>/`；该目录已在 `.gitignore` 中（运行留痕不入库，遵循 ADR-0033 纪律）。`--model` / `--out` / `--fail-on-miss` / `--keep-temp` 可覆盖模型、归档位置、未捕获时的退出码与临时副本清理。
+
 ## 从源码开发
 
 ```bash
@@ -199,6 +220,8 @@ pnpm verify:pack                                 # 安装布局冒烟（只借�
 ```
 packages/review-pi/       检视运行时 + CLI（六阶段循环、七工具、规则 Skill、审计、呈现投影装配）
 src/presentation/         核外呈现层（中文翻译投影 / 分组意见映射）
+.agents/skills/           agent 技能：真实缺陷回放 / 合成缺陷注入（共享执行层在 _shared/）
+repo-diff-skill-result/   diff 检视技能的真跑归档（gitignored）
 scripts/                  构建、打包、安装面验证
 docs/                     ADR、设计与使用文档
 ```
@@ -212,6 +235,8 @@ docs/                     ADR、设计与使用文档
 | [`docs/使用手册-安装与运行.md`](docs/使用手册-安装与运行.md) | 安装 / 配置逐字段 / smoke / 任意目录运行 / 并发隔离 / session 导出 / 排障 |
 | [`docs/运行手册-单次检视.md`](docs/运行手册-单次检视.md) | 单次检视的旗标、前置、产物、cwd 索引与 `export`、排障 |
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表（术语唯一权威） |
-| [`docs/adr/`](docs/adr/) | 架构决策记录 |
+| [`docs/adr/`](docs/adr/) | 架构决策记录（Go / C++ 符号提取器见 ADR-0042） |
 | [`docs/agents/`](docs/agents/) | agent 协作约定（issue tracker / triage labels / domain docs） |
+| [`.agents/skills/real-defect-url-injection/SKILL.md`](.agents/skills/real-defect-url-injection/SKILL.md) | 真实缺陷回放：VUL4J-38 / CVE-2014-4172 的 diff 构造、真跑与归档 |
+| [`.agents/skills/synthetic-defect-resource-leak/SKILL.md`](.agents/skills/synthetic-defect-resource-leak/SKILL.md) | 合成缺陷注入：GEN-RES-001 资源泄漏的 diff 构造、真跑与归档 |
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 第三方许可声明 |

@@ -1,0 +1,106 @@
+﻿
+digraph large_diff_pipeline {
+  graph [rankdir=TB, bgcolor="white", fontname="Microsoft YaHei", nodesep=0.42, ranksep=0.50,
+         pad=0.25, newrank=true];
+  node  [shape=box, style="rounded,filled", fontname="Microsoft YaHei", fontsize=11, color="#4A5568",
+         fillcolor="#F7FAFC", penwidth=1.2, margin="0.16,0.09"];
+  edge  [fontname="Microsoft YaHei", fontsize=9, color="#4A5568", arrowsize=0.7];
+
+  subgraph cluster_input {
+    label="① 装载（预检期 · 零模型请求）";
+    fontname="Microsoft YaHei"; fontsize=11; color="#A0AEC0"; style="rounded,dashed";
+
+    start [label="review --repo …\n--mr-diff <file>  |  --mr-json <file>",
+           fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+    read  [label="readFile(path, \"utf8\")\n整文件读入 · 无流式 · 无大小预检"];
+    isjson [label="--mr-json ?", shape=diamond, fillcolor="#FEFCBF"];
+    mrdiff [label="原样使用\n（不剥 BOM · 不改 CRLF）"];
+    mrjson [label="mrJsonToUnifiedDiff\n剥 U+FEFF · CRLF→LF\n补 diff --git / --- / +++ 头\n空正文条目静默跳过",
+            fillcolor="#BEE3F8"];
+  }
+
+  subgraph cluster_filter {
+    label="② 预过滤 + 体积门（预检期）";
+    fontname="Microsoft YaHei"; fontsize=11; color="#A0AEC0"; style="rounded,dashed";
+
+    filter [label="filterDiffForReview(diff)\n按 diff --git 文件块整块剔除\nlockfile / generated / minified / binary\n绝不切 hunk（行号与 evidence 链完整）",
+            fillcolor="#BEE3F8"];
+    hasdrop [label="有命中 ?", shape=diamond, fillcolor="#FEFCBF"];
+    keep   [label="返回原串（逐字节不变）"];
+    drop   [label="只删整行区间，其余字节保留\n审计尾键 mrFilter + stderr 一行\n（最多列前 20 条路径）", fillcolor="#C6F6D5"];
+    gate   [label="过滤后长度 >\nmaxDiffChars（默认 1.5M）?", shape=diamond, fillcolor="#FEFCBF"];
+    reject [label="预检期抛错 → exit 1\n零模型请求\n提示：拆 MR 或显式设 null", fillcolor="#FED7D7"];
+    boundary [label="guardMrBoundary(diff)\nmaxFiles 10 / maxDiffLines 2000\n超界只告警：domainWarning + mrBoundary\n不可度量 → boundary-unmeasurable 降级"];
+  }
+
+  subgraph cluster_plan {
+    label="③ 分片决策（预检期 · 结构错误仍零请求）";
+    fontname="Microsoft YaHei"; fontsize=11; color="#A0AEC0"; style="rounded,dashed";
+
+    plan [label="split.enabled\n且 length > maxShardChars（默认 400K）\n且装箱结果 > 1 片 ?", shape=diamond, fillcolor="#FEFCBF"];
+    single [label="单遍：executeSinglePass\n整份 diff 进首条 user 消息", fillcolor="#C6F6D5"];
+    shard_err [label="预检期抛错 → exit 1\n单文件块 > maxShardChars（不能切 hunk）\n或片数 > maxShards（默认 12）",
+               fillcolor="#FED7D7"];
+  }
+
+  subgraph cluster_shard {
+    label="④ 分片执行（串行 · 每片是一次独立主会话）";
+    fontname="Microsoft YaHei"; fontsize=11; color="#A0AEC0"; style="rounded,dashed";
+
+    shard_loop [label="executeShardedPasses：for s01 … sNN\nrunReviewPass（每片各一次）\n独立 ledger / toolkit / runId / 转录 / 审计\n初始消息 = 本片 diff + 其他文件摘要（8K）",
+                fillcolor="#BEE3F8"];
+    anyfail [label="任一片失败 ?", shape=diamond, fillcolor="#FEFCBF"];
+    fail    [label="exit 1\n不写聚合产物\n已成功片的转录 / 审计保留（不回滚）", fillcolor="#FED7D7"];
+    merge   [label="mergeShardFindings\nkey = (归一 file, line, 归一 title)\nseverity / confidence 取最高 · evidence 并集\n合并后重编号 F001…", fillcolor="#C6F6D5"];
+  }
+
+  subgraph cluster_out {
+    label="⑤ 聚合产物（对外仍是一个 run）";
+    fontname="Microsoft YaHei"; fontsize=11; color="#A0AEC0"; style="rounded,dashed";
+
+    agg   [label="reviews_en.json（真源）· run.json\n分片时多 shards[]；聚合审计 requests 为空\nreviews_tips_zh.json（中文按行分组）", fillcolor="#C6F6D5"];
+    index [label="session 索引 v2\nmains[] = s01…sNN\n导出顺序：s01 主 → s01 skill → s02 主 → …"];
+    done  [label="exit 0（截断亦为 0）", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+  }
+
+  loopnote [shape=note, label="默认配置的自动消化区间：40 万 ~ 150 万字符（>1.5M 由体积门拒检）。\n循环内第二道保护（单遍 / 每片均适用）：review.get_diff 支持 offset / limit 按行翻页；\n无参 = 全量 + 8K 字符截断；Ledger 把 diff 登记为 evidence，重复读返回引用。",
+            fillcolor="#EDF2F7", fontsize=10];
+
+  // ---------- 主链：装载 ----------
+  start -> read -> isjson;
+  isjson -> mrdiff [label=" 否 "];
+  isjson -> mrjson [label=" 是 "];
+  mrdiff -> filter;
+  mrjson -> filter;
+
+  // ---------- 主链：预过滤 / 体积门 ----------
+  filter -> hasdrop;
+  hasdrop -> keep [label=" 否 "];
+  hasdrop -> drop [label=" 是 "];
+  keep -> gate;
+  drop -> gate;
+  gate -> reject [label=" 超限 ", color="#C53030", fontcolor="#C53030"];
+  gate -> boundary [label=" 通过 "];
+
+  // ---------- 主链：分片决策 ----------
+  boundary -> plan;
+  plan -> single [label=" 否 "];
+  plan -> shard_loop [label=" 是（>1 片） "];
+  plan -> shard_err [label=" 单块 / 片数越界 ", color="#C53030", fontcolor="#C53030"];
+
+  // ---------- 主链：分片执行 ----------
+  shard_loop -> anyfail;
+  anyfail -> merge [label=" 否 "];
+  anyfail -> fail [label=" 是 ", color="#C53030", fontcolor="#C53030"];
+
+  // ---------- 主链：出口 ----------
+  single -> agg;
+  merge -> agg;
+  agg -> index -> done;
+
+  // ---------- 同层：错误节点在其判据右侧 ----------
+  { rank=same; gate; reject; }
+  { rank=same; plan; shard_err; }
+  { rank=same; anyfail; fail; }
+  { rank=same; done; loopnote; }
+}

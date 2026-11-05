@@ -14,6 +14,20 @@ A–E 配置矩阵、`configId` 身份维度与本仓的评测仪器层已于 AD
 
 ## Agent skills
 
+### Diff review skills
+
+Repo-local verification skills live under `.agents/skills/`. They are **not** part of the shipped runtime and are **not** rule skills loaded by `--rule-skill*`:
+
+- `real-defect-url-injection` — replays a real, historically fixed URL-injection defect (default VUL4J-38 / CVE-2014-4172): copies the post-fix snapshot, reverts the fix with `git apply -R`, then runs a real `review-pi` review.
+- `synthetic-defect-resource-leak` — injects GEN-RES-001 (file handle never closed) into a copy of `packages/review-pi/testdata/repos/multilang`, then runs a real `review-pi` review with `general-code-review` loaded.
+
+Both call the model through the user config (`~/.PiAgent/PiAgent.jsonc`) and archive `defect.diff` / `ground-truth.json` / `meta.json` / stdout / stderr / runs / audit / `verdict.{json,md}` under `repo-diff-skill-result/<skill>/<timestamp>/` (gitignored). Shared execution layer: `.agents/skills/_shared/review-eval.mjs`.
+
+```bash
+node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
+node .agents/skills/synthetic-defect-resource-leak/scripts/run.mjs --dry-run
+```
+
 ### Issue tracker
 
 Local Markdown: issues and specs live as files under `.scratch/<feature>/` in this repo (no CLI required). See `docs/agents/issue-tracker.md`.

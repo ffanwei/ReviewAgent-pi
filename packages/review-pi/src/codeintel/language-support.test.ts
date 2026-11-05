@@ -14,13 +14,15 @@ import {
 // 运行时只看到真语言；一门语言可以有多个语法变体（.ts/.tsx）。
 
 describe("语言注册表", () => {
-  test("当前版本登记 Java / TypeScript-JavaScript / Python", () => {
+  test("当前版本登记 Java / TypeScript-JavaScript / Python / Go / C-C++", () => {
     expect(CODE_LANGUAGES.map((language) => language.id)).toEqual([
       "java",
       "typescript",
       "python",
+      "go",
+      "cpp",
     ]);
-    expect(SUPPORTED_LANGUAGE_IDS).toEqual(["java", "typescript", "python"]);
+    expect(SUPPORTED_LANGUAGE_IDS).toEqual(["java", "typescript", "python", "go", "cpp"]);
     expect(CODE_LANGUAGES[0]?.displayName).toBe("Java");
     expect(languageGlobs([CODE_LANGUAGES[0]!])).toEqual(["*.java"]);
   });
@@ -30,6 +32,8 @@ describe("语言注册表", () => {
       "java",
       "typescript",
       "python",
+      "go",
+      "cpp",
     ]);
     expect(resolveLanguages(["java"]).map((language) => language.id)).toEqual(["java"]);
     expect(resolveLanguages(["kotlin", "java"])).toEqual(resolveLanguages(["java"]));
@@ -50,9 +54,18 @@ describe("语言注册表", () => {
       "*.tsx",
       "*.jsx",
       "*.py",
+      "*.go",
+      "*.c",
+      "*.h",
+      "*.cc",
+      "*.cpp",
+      "*.cxx",
+      "*.hpp",
+      "*.hh",
+      "*.hxx",
     ]);
     expect(languageGlobs([])).toEqual([]);
-    expect(languageLabel(all)).toBe("Java, TypeScript/JavaScript, Python");
+    expect(languageLabel(all)).toBe("Java, TypeScript/JavaScript, Python, Go, C/C++");
     expect(languageLabel([])).toBe("");
   });
 
@@ -64,6 +77,10 @@ describe("语言注册表", () => {
     expect(resolveFileLanguage("web/src/a.jsx", all)?.variant.id).toBe("tsx");
     expect(resolveFileLanguage("web/src/a.js", all)?.variant.id).toBe("ts");
     expect(resolveFileLanguage("pkg/mod.py", all)?.language.id).toBe("python");
+    expect(resolveFileLanguage("cmd/main.go", all)?.language.id).toBe("go");
+    expect(resolveFileLanguage("native/a.c", all)?.language.id).toBe("cpp");
+    expect(resolveFileLanguage("native/a.cpp", all)?.language.id).toBe("cpp");
+    expect(resolveFileLanguage("native/a.hpp", all)?.variant.id).toBe("cpp");
     expect(resolveFileLanguage("src/A.kt", all)).toBeUndefined();
     expect(resolveFileLanguage("src/ajava", all)).toBeUndefined();
   });
@@ -72,8 +89,10 @@ describe("语言注册表", () => {
     const all = resolveLanguages("auto");
     expect(detectLanguages(["src/main/java/A.java"], all).map((l) => l.id)).toEqual(["java"]);
     expect(
-      detectLanguages(["a.ts", "b.py", "c.java"], all).map((language) => language.id),
-    ).toEqual(["java", "typescript", "python"]);
+      detectLanguages(["a.ts", "b.py", "c.java", "d.go", "e.cpp"], all).map(
+        (language) => language.id,
+      ),
+    ).toEqual(["java", "typescript", "python", "go", "cpp"]);
     expect(detectLanguages([], all)).toEqual([]);
   });
 

@@ -24,6 +24,17 @@
 | ADR-0027（决策 2） | ADR-0036 | cwd 只留 `review-result.json` → 另加隐藏的 `.review-pi-session.json` 寻址索引 |
 | ADR-0009 / ADR-0010 / ADR-0014 的字节把守手段 | ADR-0038 | 退役「对照 DSH 历史审计真源逐字节相等」；改为结构性质 + 端到端能力断言（产品级逐字节仍保留） |
 
+## 0037 起的新增决策（不逐条列全，只作导航）
+
+| ADR | 主题 |
+|---|---|
+| [ADR-0037](0037-mcp-progress-reporting.md) | MCP 上报：进度、状态与结果经进度事件流外发 |
+| [ADR-0038](0038-retire-byte-gates-for-capability-assertions.md) | 退役字节门：改为结构性质 + 端到端能力断言 |
+| [ADR-0039](0039-sharded-review-for-large-mrs.md) | 大 MR 第二期：按文件块分片检视 + findings 合并去重 |
+| [ADR-0040](0040-codeintel-language-registry-and-config.md) | 代码智能语言注册表与 `codeintel.languages` 配置（路线 A） |
+| [ADR-0041](0041-language-agnostic-symbol-model-and-multi-language-extractors.md) | 语言无关符号模型与多语言提取器（路线 B：TypeScript/JavaScript、Python） |
+| [ADR-0042](0042-go-and-cpp-symbol-extractors.md) | Go 与 C/C++ 符号提取器（多语言第二批，新增 `go` / `cpp` 两个语言 id） |
+
 ## 历史路径口径（ADR-0035，2026-11-03）
 
 ADR-0035 把内核四包从「仓内源码 vendoring」改回 **npm 上游依赖**

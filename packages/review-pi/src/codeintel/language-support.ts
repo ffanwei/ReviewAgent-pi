@@ -9,6 +9,15 @@ import {
   renderPythonSignature as pythonRenderSignature,
 } from "../zoneb/extractors/python.js";
 import {
+  extractGoFile as goExtract,
+  extractGoPackageFromHead as goPackageFromHead,
+  renderGoSignature as goRenderSignature,
+} from "../zoneb/extractors/go.js";
+import {
+  extractCppFile as cppExtract,
+  renderCppSignature as cppRenderSignature,
+} from "../zoneb/extractors/cpp.js";
+import {
   extractTypeScriptFile as typescriptExtract,
   renderTypeScriptSignature as typescriptRenderSignature,
 } from "../zoneb/extractors/typescript.js";
@@ -25,9 +34,9 @@ import { formatSymbolSignature as javaRenderSignature } from "../zoneb/symbols.j
  * 做装载期校验。
  */
 
-export type CodeLanguageId = "java" | "typescript" | "python";
+export type CodeLanguageId = "java" | "typescript" | "python" | "go" | "cpp";
 
-/** 一个语言可以有多个语法变体（.ts/.tsx、以及未来 C/C++ 的 .c/.h 等） */
+/** 一个语言可以有多个语法变体（.ts/.tsx；C/C++ 的 .c/.h 共用 cpp 变体） */
 export interface ParserVariant {
   /** 变体 id（parser cache key 的一部分；同一语言内唯一） */
   readonly id: string;
@@ -134,6 +143,46 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
     extract: (parser, file, source) => pythonExtract(parser, file, source),
     renderSignature: (symbol) => pythonRenderSignature(symbol),
   },
+  {
+    id: "go",
+    displayName: "Go",
+    variants: [
+      {
+        id: "go",
+        globs: ["*.go"],
+        createParser: async () => {
+          const module = await import("./go-parser.js");
+          return module.getGoParser();
+        },
+      },
+    ],
+    moduleLabel: "package",
+    commentLinePrefixes: ["//", "/*", "*"],
+    supportsInvocations: true,
+    moduleNameFromHeader: (head) => goPackageFromHead(head),
+    extract: (parser, file, source) => goExtract(parser, file, source),
+    renderSignature: (symbol) => goRenderSignature(symbol),
+  },
+  {
+    id: "cpp",
+    displayName: "C/C++",
+    variants: [
+      {
+        // C 与 C++ 共用 cpp 语法（ADR-0041）：.c/.h 是 C++ 的子集
+        id: "cpp",
+        globs: ["*.c", "*.h", "*.cc", "*.cpp", "*.cxx", "*.hpp", "*.hh", "*.hxx"],
+        createParser: async () => {
+          const module = await import("./cpp-parser.js");
+          return module.getCppParser();
+        },
+      },
+    ],
+    moduleLabel: "",
+    commentLinePrefixes: ["//", "/*", "*"],
+    supportsInvocations: true,
+    extract: (parser, file, source) => cppExtract(parser, file, source),
+    renderSignature: (symbol) => cppRenderSignature(symbol),
+  },
 ];
 
 // 静态引用 extractor/renderer：只含纯函数与类型（type-only），不会触碰 wasm。
@@ -169,8 +218,8 @@ export function languageLabel(languages: readonly CodeLanguage[]): string {
 /**
  * 实际出现在仓库里的语言（按仓库文件判定）。
  *
- * `auto` 会启用全部已实现语言，但一个 Java 仓不该在工具输出里自称
- * "Java, TypeScript/JavaScript, Python"——展示面只列真实存在的语言。
+ * `auto` 会启用全部已实现语言，但一个纯 Java 仓不该在工具输出里把未出现的
+ * 语言都列一遍——展示面只列真实存在的语言。
  */
 export function detectLanguages(
   files: readonly string[],

@@ -238,7 +238,7 @@ test("非本语言仓 / 显式关闭：代码智能工具给明确提示，不�
       ledgerMode: "inert",
     });
     const languages = hint(
-      "code intelligence languages: Java, TypeScript/JavaScript, Python",
+      "code intelligence languages: Java, TypeScript/JavaScript, Python, Go, C/C++",
     );
     await expect(tk.executeTool("review.get_symbol", { symbol: "sum" })).resolves.toBe(
       `Symbol "sum": ${languages}`,
