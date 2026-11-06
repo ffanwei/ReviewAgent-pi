@@ -1439,8 +1439,61 @@ test(
   180_000,
 );
 
-// ---- 规则包多值输入（ADR-0034：逗号列表） ----
+// ---- 规则包缺值（B 档：按未传处理，但零静默） ----
 
+test(
+  "--rule-skill 缺值：按未传处理（exit 0）+ stderr 一行提示，不报用法错误",
+  async () => {
+    const stub = await startLoopbackStub(ruleSkillDirCorpus(0));
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          // 只给旗标、不给值（PowerShell 变量为空时就是这个形态）
+          "--rule-skill",
+        ],
+        stubEnv(stub.baseUrl),
+      );
+
+      // 不再让整条命令起不来：照常检视、exit 0
+      expect(run.status).toBe(0);
+      expect(run.stderr).not.toContain("requires a value");
+      expect(run.stderr).toContain("review-pi: --rule-skill 缺少值，已忽略（本轮不装载该包）");
+      // 零静默：紧接着那句「未装载任何规则包」要如实说「未传或缺值」
+      expect(run.stderr).toContain("未装载任何规则包（--rule-skill-zip / --rule-skill 未传或缺值");
+
+      // 审计里没有规则包条目、也没有 skill 会话 = 真的按「没传」跑了
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        ruleSkill?: unknown[];
+        skillPassLog?: unknown[];
+      };
+      expect(audit.ruleSkill).toEqual([]);
+      expect(audit.skillPassLog ?? []).toEqual([]);
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+// ---- 规则包多值输入（ADR-0034：逗号列表） ----
 test(
   "--rule-skill 逗号列表：一次传两个目录就是两个规则包，各自开会话（ADR-0034）",
   async () => {

@@ -565,7 +565,7 @@ test("规则 Skill 旗标缺席即省键（缺省形态不带任何规则键）"
   expect(parsed.ok && parsed.command === "review" && "strictRuleSkill" in parsed.args).toBe(false);
 });
 
-test("--strict-rule-skill 重复 → 用法错误；缺值旗标照旧报错", () => {
+test("--strict-rule-skill 重复 → 用法错误", () => {
   expect(
     parseCliArgs([
       "review",
@@ -579,6 +579,78 @@ test("--strict-rule-skill 重复 → 用法错误；缺值旗标照旧报错", (
       "--strict-rule-skill",
     ]),
   ).toEqual({ ok: false, message: "duplicate flag --strict-rule-skill" });
+});
+
+test("规则包旗标缺值：按未传处理并登记（B 档：忽略但零静默；不报用法错误）", () => {
+  // ① argv 末尾缺值
+  expect(
+    parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--taskId", "t-1", "--rule-skill"]),
+  ).toEqual({
+    ok: true,
+    command: "review",
+    args: {
+      repo: "r",
+      mr: "m",
+      caseId: "m",
+      issue: "",
+      taskId: "t-1",
+      emptyRuleSkillFlags: ["--rule-skill"],
+    },
+  });
+  // ② 值位置被相邻旗标占掉（PowerShell 变量为空时就是这个形态）
+  expect(
+    parseCliArgs([
+      "review",
+      "--repo",
+      "r",
+      "--mr-diff",
+      "m",
+      "--taskId",
+      "t-1",
+      "--rule-skill",
+      "--strict-rule-skill",
+    ]),
+  ).toEqual({
+    ok: true,
+    command: "review",
+    args: {
+      repo: "r",
+      mr: "m",
+      caseId: "m",
+      issue: "",
+      taskId: "t-1",
+      emptyRuleSkillFlags: ["--rule-skill"],
+      strictRuleSkill: true,
+    },
+  });
+  // ③ 只有缺值的那次被摘掉，后面有效的照常生效
+  expect(
+    parseCliArgs([
+      "review",
+      "--repo",
+      "r",
+      "--mr-diff",
+      "m",
+      "--taskId",
+      "t-1",
+      "--rule-skill",
+      "--rule-skill",
+      "a",
+    ]),
+  ).toEqual({
+    ok: true,
+    command: "review",
+    args: {
+      repo: "r",
+      mr: "m",
+      caseId: "m",
+      issue: "",
+      taskId: "t-1",
+      ruleSkillDirs: ["a"],
+      emptyRuleSkillFlags: ["--rule-skill"],
+    },
+  });
+  // ④ 两个旗标都缺值：按 argv 顺序登记
   expect(
     parseCliArgs([
       "review",
@@ -589,11 +661,24 @@ test("--strict-rule-skill 重复 → 用法错误；缺值旗标照旧报错", (
       "--taskId",
       "t-1",
       "--rule-skill-zip",
+      "--rule-skill",
     ]),
   ).toEqual({
-    ok: false,
-    message: "flag --rule-skill-zip requires a value",
+    ok: true,
+    command: "review",
+    args: {
+      repo: "r",
+      mr: "m",
+      caseId: "m",
+      issue: "",
+      taskId: "t-1",
+      emptyRuleSkillFlags: ["--rule-skill-zip", "--rule-skill"],
+    },
   });
+  // ⑤ 空白值仍是用法错误（「没给值」与「给了空串」不是一回事）
+  expect(
+    parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--taskId", "t-1", "--rule-skill", ""]),
+  ).toEqual({ ok: false, message: 'invalid --rule-skill "": must be a non-empty path list' });
 });
 
 test("未知旗标 / 重复旗标 / 值缺席（含值吞旗标）→ 用法错误", () => {

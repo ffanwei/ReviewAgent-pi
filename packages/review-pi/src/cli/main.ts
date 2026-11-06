@@ -91,6 +91,11 @@ import { removeStaleReviewsZh } from "./reviews-zh.js";
 
 /** 执行一次 review 命令；返回进程退出码（完成 0——截断同为 0；错误经异常上抛 → 1） */
 async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Promise<number> {
+  // 缺值的规则包旗标（B 档：按未传处理，但不静默）：先喊一声再往下走，保证即使
+  // 后面因别的错误早退，用户也能看到「规则包根本没装载」这个原因。
+  for (const flag of args.emptyRuleSkillFlags ?? []) {
+    process.stderr.write(`review-pi: ${flag} 缺少值，已忽略（本轮不装载该包）\n`);
+  }
   // 配置前置先检（fail fast 早于文件系统触碰；key 缺失抛人话错误）
   const endpoint = resolveReviewerEndpoint(config);
   const modelId = args.model ?? config.model.default;
@@ -209,7 +214,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
   if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
     process.stderr.write(
-      "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill 均未给出；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n",
+      "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n",
     );
   }
   // 输入预过滤（大 diff 第一期）：剔了就必须可见（明细在审计 mrFilter）

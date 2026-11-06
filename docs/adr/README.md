@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0043）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0044）。
 
 ## 记录纪律
 
@@ -36,6 +36,7 @@
 | [ADR-0041](0041-language-agnostic-symbol-model-and-multi-language-extractors.md) | 语言无关符号模型与多语言提取器（路线 B：TypeScript/JavaScript、Python） |
 | [ADR-0042](0042-go-and-cpp-symbol-extractors.md) | Go 与 C/C++ 符号提取器（多语言第二批，新增 `go` / `cpp` 两个语言 id） |
 | [ADR-0043](0043-review-args-echo-before-run.md) | 参数回显提前到开跑前（取代 ADR-0031 决策 1 的打印点） |
+| [ADR-0044](0044-valueless-rule-skill-flags-are-ignored.md) | 规则包旗标缺值按「未传」处理（忽略但零静默；收窄 ADR-0034 的缺值口径） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

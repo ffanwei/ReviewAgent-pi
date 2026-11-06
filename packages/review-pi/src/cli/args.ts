@@ -132,6 +132,14 @@ export interface ReviewCliArgs {
   readonly ruleSkillZips?: readonly string[];
   /** 规则 Skill 已解压目录列表（`--rule-skill`；排在全部 zip 之后；缺席省键） */
   readonly ruleSkillDirs?: readonly string[];
+  /**
+   * 传了但**没有值**的规则包旗标（`--rule-skill` / `--rule-skill-zip`；缺席省键）。
+   *
+   * 缺值按「未传」处理（不报用法错误），由 CLI 打一行提示——规则包旗标常由脚本
+   * 按变量拼出来，PowerShell 在变量为空时会把这个参数整个丢掉，那种「机器上变量
+   * 没设」不该让整条命令起不来。零静默：忽略必须可见，故本字段回传给调用方。
+   */
+  readonly emptyRuleSkillFlags?: readonly string[];
   /** 规则 Skill 严格模式（--strict-rule-skill；缺席省键） */
   readonly strictRuleSkill?: boolean;
   /**
@@ -177,6 +185,8 @@ export type ParseCliArgsResult =
   | { readonly ok: false; readonly message: string };
 
 /** 旗标循环（两子命令共用）：未知旗标 / 重复旗标 / 值缺席（含值吞旗标）都是用法错误。
+ * **唯一例外**是逗号列表旗标（`--rule-skill` / `--rule-skill-zip`）：无值的那种在
+ * `joinCommaListTokens` 里已被摘成「未传」，走不到这里（缺值不报错，由 CLI 提示一行）。
  * `repeatableFlags` 中的旗标可重复（只按出现顺序累积进 `repeated`；`values` 不收，
  * 免同一事实两种表示——可重复旗标的调用方一律读 `repeated`）。 */
 function parseFlags(
@@ -225,14 +235,22 @@ function parseFlags(
  * 全部计入列表**，用 `,` 拼成一个值，再由 `parseRuleSkillList` 拆开。
  *
  * 本命令没有位置参数，所有值都必须挂在旗标名下，所以贪心吃非旗标 token 不产生歧义。
- * 缺值（下一个 token 是旗标或没有）不在这里报错——留给 parseFlags 的既有文案。
+ *
+ * 缺值（argv 结束，或下一个 token 就是旗标）**不报用法错误**：该旗标被摘掉、
+ * 等价于未传，并登记进 `emptyFlags` 交给调用方喊一声。规则包旗标几乎总是由脚本
+ * 按变量拼出来（`--rule-skill $dir`），PowerShell 在变量为空时会把这个参数整个
+ * 丢掉——「机器上变量没设」不该让整条命令起不来，但也不能悄悄少装载一个 skill。
  */
-function joinCommaListTokens(tokens: readonly string[]): readonly string[] {
+function joinCommaListTokens(tokens: readonly string[]): {
+  readonly tokens: readonly string[];
+  readonly emptyFlags: readonly string[];
+} {
   const out: string[] = [];
+  const emptyFlags: string[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index] as string;
-    out.push(token);
     if (!COMMA_LIST_FLAGS.includes(token)) {
+      out.push(token);
       continue;
     }
     const items: string[] = [];
@@ -242,12 +260,13 @@ function joinCommaListTokens(tokens: readonly string[]): readonly string[] {
       cursor += 1;
     }
     if (items.length === 0) {
+      emptyFlags.push(token);
       continue;
     }
-    out.push(items.join(","));
+    out.push(token, items.join(","));
     index = cursor - 1;
   }
-  return out;
+  return { tokens: out, emptyFlags };
 }
 
 /** --model 校验（两子命令同口径；缺席 = 取配置 model.default） */
@@ -392,7 +411,8 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     return { ok: false, message: booleanFlags.message };
   }
   const flagTokens = booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.tokens : rest;
-  const listTokens = command === "review" ? joinCommaListTokens(flagTokens) : flagTokens;
+  const joined = command === "review" ? joinCommaListTokens(flagTokens) : undefined;
+  const listTokens = joined !== undefined ? joined.tokens : flagTokens;
   const flags = parseFlags(
     listTokens,
     command === "review" ? KNOWN_REVIEW_FLAGS : KNOWN_SMOKE_FLAGS,
@@ -425,6 +445,7 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     model.model,
     booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.strict : false,
     booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.progress : undefined,
+    joined !== undefined ? joined.emptyFlags : [],
   );
 }
 
@@ -587,6 +608,7 @@ function parseReviewArgs(
   model: string | undefined,
   strict: boolean,
   progress: boolean | undefined,
+  emptyRuleSkillFlags: readonly string[],
 ): { readonly ok: true; readonly command: "review"; readonly args: ReviewCliArgs } | { readonly ok: false; readonly message: string } {
   const repo = values.get("--repo");
   if (repo === undefined) {
@@ -650,6 +672,7 @@ function parseReviewArgs(
       ...(config.configPath !== undefined ? { configPath: config.configPath } : {}),
       ...(ruleSkillZips.items !== undefined ? { ruleSkillZips: ruleSkillZips.items } : {}),
       ...(ruleSkillDirs.items !== undefined ? { ruleSkillDirs: ruleSkillDirs.items } : {}),
+      ...(emptyRuleSkillFlags.length > 0 ? { emptyRuleSkillFlags: [...emptyRuleSkillFlags] } : {}),
       ...(strict ? { strictRuleSkill: true } : {}),
       ...(progress !== undefined ? { progress } : {}),
     },
