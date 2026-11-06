@@ -52,7 +52,7 @@ test("腿表按模块解析定位：每腿入口属于声明包，不依赖仓�
     const manifest = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as {
       name?: string;
     };
-    const expected = EXPECTED_PACKAGE[leg.label] ?? "review-pi";
+    const expected = EXPECTED_PACKAGE[leg.label] ?? "@baize/review-pi";
     expect(manifest.name).toBe(expected);
     expect(path.isAbsolute(leg.entry)).toBe(true);
   }

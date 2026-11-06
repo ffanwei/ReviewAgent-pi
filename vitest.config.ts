@@ -10,7 +10,7 @@ export default defineConfig({
   // 它们也声明了 source 条件并指向**未随 tarball 发布**的 .ts 源，全局开这个条件
   // 会让 vitest 去解析不存在的 src/ 文件。
   resolve: {
-    alias: [{ find: /^review-pi$/, replacement: fileURLToPath(new URL("./packages/review-pi/src/index.ts", import.meta.url)) }],
+    alias: [{ find: /^@baize\/review-pi$/, replacement: fileURLToPath(new URL("./packages/review-pi/src/index.ts", import.meta.url)) }],
   },
   test: {
     environment: "node",

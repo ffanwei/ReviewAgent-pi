@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { ReviewRunInput, RunResult } from "review-pi";
+import type { ReviewRunInput, RunResult } from "@baize/review-pi";
 
 /**
  * 检视面语言回归断言（#13 AC3 / ADR-0010，ADR-0024 后对齐唯一形态）：语言不进

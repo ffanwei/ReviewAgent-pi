@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import path from "node:path";
 
-import type { Finding, PresentationRuntime } from "review-pi";
+import type { Finding, PresentationRuntime } from "@baize/review-pi";
 import { buildReviewTipsDocument, dedupeFindingsByLine, reviewOf, type ReviewTipsDocument } from "./tips.js";
 import type { TranslateEngine, TerminologyContext } from "./translate-projection.js";
 import {

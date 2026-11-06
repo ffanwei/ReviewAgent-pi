@@ -39,22 +39,22 @@
 
 ## 安装
 
-产品以单个包发行：`review-pi`（提供 `review-pi` 命令）。内核四包作为普通 npm 依赖随安装自动拉取（`@earendil-works/*`，版本精确锁定），不再由本仓打包或发布。
+产品以单个包发行：`@baize/review-pi`（提供 `review-pi` 命令）。内核四包作为普通 npm 依赖随安装自动拉取（`@earendil-works/*`，版本精确锁定），不再由本仓打包或发布。
 
 ### 方式 A：从 registry 全局安装（使用者）
 
 ```bash
-npm i -g review-pi            # 全局安装，提供 review-pi 命令
+npm i -g @baize/review-pi     # 全局安装，提供 review-pi 命令
 review-pi config init         # 首次：生成 ~/.PiAgent/PiAgent.jsonc
 ```
 
-- 依赖装在 `<npm 全局根>/review-pi/node_modules/`（不提升到 prefix 根），`npm rm -g review-pi` 会一起带走。
+- 依赖装在 `<npm 全局根>/@baize/review-pi/node_modules/`（不提升到 prefix 根），`npm rm -g @baize/review-pi` 会一起带走。
 - 镜像 / 私服若未同步 `0.85.1`，安装会 404——先探一次：`npm view @earendil-works/pi-ai@0.85.1 version`。
 
 ### 方式 B：装进项目
 
 ```bash
-pnpm add review-pi            # 或 npm i review-pi
+pnpm add @baize/review-pi     # 或 npm i @baize/review-pi
 npx review-pi config init
 npx review-pi review --repo . --mr-diff ./change.diff --taskId change-001
 ```
@@ -71,9 +71,9 @@ pnpm build:dist               # 构建 CLI dist + 呈现引擎（见「编译与
 node packages/review-pi/bin/review-pi.js review --repo <path> --mr-diff <diff> --taskId <id>
 
 # C2. 打成 tarball 再安装（离线分发 / 验证发行面）
-pnpm pack:packages            # → .artifacts/tarballs/review-pi-<version>.tgz
+pnpm pack:packages            # → .artifacts/tarballs/baize-review-pi-<version>.tgz
 pnpm verify:pack              # 安装布局冒烟（不发网络、不发布）
-npm i -g .artifacts/tarballs/review-pi-<version>.tgz
+npm i -g .artifacts/tarballs/baize-review-pi-<version>.tgz
 ```
 
 `pnpm install` + `pnpm build:dist` 之后才能跑仓内形态：bin 会做**新鲜度门**（见下），产物陈旧直接拒跑，不自动重编。
@@ -91,8 +91,8 @@ review-pi smoke          # 双探针自检：网关健康 + 模型可达；通�
 ### 升级 / 卸载
 
 ```bash
-npm i -g review-pi@latest     # 升级
-npm rm -g review-pi           # 卸载（嵌套依赖一并移除）
+npm i -g @baize/review-pi@latest     # 升级
+npm rm -g @baize/review-pi           # 卸载（嵌套依赖一并移除）
 ```
 
 ## 使用
@@ -282,7 +282,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 ```bash
 pnpm install                       # 工作区依赖（内核四包从 registry 拉取）
 pnpm build:dist                    # 发行全量构建：CLI dist + 呈现引擎（= build:presentation）
-pnpm pack:packages                 # 打 tarball → .artifacts/tarballs/review-pi-<version>.tgz
+pnpm pack:packages                 # 打 tarball → .artifacts/tarballs/baize-review-pi-<version>.tgz
 pnpm verify:pack                   # 安装布局冒烟（只借已装依赖，不发网络、不发布）
 ```
 
@@ -291,7 +291,7 @@ pnpm verify:pack                   # 安装布局冒烟（只借已装依赖，�
 | `pnpm --filter review-pi build` | `tsc -p tsconfig.build.json`，编译 CLI 与运行时（排除测试 / `testing` / `e2e`） | `packages/review-pi/dist/`（bin spawn 目标是 `dist/cli/main.js`） |
 | `pnpm build:presentation` | 上一步 + `tsc -p tsconfig.presentation.json` + `node scripts/copy-presentation.mjs` | `packages/review-pi/presentation/`（`.tmp-gen/presentation/*.js` 拷贝） |
 | `pnpm build:dist` | 等于 `build:presentation`，一次建齐发行面 | 以上两者 |
-| `pnpm pack:packages` | 清空并重建 `.artifacts/tarballs/`，对 `review-pi` 执行 `pnpm pack`（触发 `prepack`） | `review-pi-<version>.tgz` |
+| `pnpm pack:packages` | 清空并重建 `.artifacts/tarballs/`，对 `@baize/review-pi` 执行 `pnpm pack`（触发 `prepack`） | `baize-review-pi-<version>.tgz` |
 | `pnpm verify:pack` | 把 tarball 装进临时布局并冒烟：产物在位、安装形态 bin 定位、`config init/show`、`builtin` 引擎、wasm / ripgrep | 通过 / 失败退出码 |
 | `pnpm publish:packages` | `build:dist` + `pnpm -r publish`（显式发布动作） | registry |
 | `pnpm test` / `pnpm --filter review-pi test` / `pnpm typecheck` | 根包测试 / 内核 + CLI 进程烟测 / 根包类型检查 | — |

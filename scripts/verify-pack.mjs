@@ -53,9 +53,13 @@ const PACKAGE_NAMES = new Map(
 /** 本仓发布的包名（junction 第三方依赖时要跳过它们） */
 const OUR_PACKAGES = new Set(PACKAGE_NAMES.values());
 
+/** 发行面唯一主包（作用域名按 `@scope/name` 拆成安装目录层级） */
+const PRIMARY_NAME = PACKAGE_NAMES.get("packages/review-pi");
+const PRIMARY_MODULE_DIR = join(appModules, ...PRIMARY_NAME.split("/"));
+
 /** 包名 → tarball 里必须具备的文件（发行面只有 review-pi 一个包） */
 function requiredEntries(name) {
-  if (name !== "review-pi") {
+  if (name !== PRIMARY_NAME) {
     return [];
   }
   return [
@@ -173,7 +177,7 @@ for (const packageDir of SOURCE_PACKAGE_DIRS) {
 }
 
 // ---- 3. 安装布局下跑 CLI ----
-const binPath = join(appModules, "review-pi", "bin", "review-pi.js");
+const binPath = join(PRIMARY_MODULE_DIR, "bin", "review-pi.js");
 // 行尾门（ADR-0028 决策 5）：装出来的 bin 首行若是 CRLF，Windows 上自测看不出，
 // Unix 上却是 `/usr/bin/env node\r` 找不到解释器——发布物必须在这一步就拦下。
 const binFirstLine = readFileSync(binPath, "utf8").split("\n", 1)[0] ?? "";
@@ -233,7 +237,7 @@ process.stdout.write("verify-pack: 安装布局下 config init/show OK\n");
 
 // ---- 4. builtin 引擎在安装布局下的落点 ----
 const configModuleUrl = pathToFileURL(
-  join(appModules, "review-pi", "dist", "shared", "config.js"),
+  join(PRIMARY_MODULE_DIR, "dist", "shared", "config.js"),
 ).href;
 const probe = spawnSync(
   process.execPath,
@@ -261,11 +265,11 @@ const codeIntelProbe = spawnSync(
   [
     "--input-type=module",
     "-e",
-    `const { getJavaParser } = await import(${JSON.stringify(pathToFileURL(join(appModules, "review-pi", "dist", "codeintel", "java-parser.js")).href)});
+    `const { getJavaParser } = await import(${JSON.stringify(pathToFileURL(join(PRIMARY_MODULE_DIR, "dist", "codeintel", "java-parser.js")).href)});
      const parser = await getJavaParser();
      const tree = parser.parse("class Probe { void f() {} }");
      if (tree.rootNode.type !== "program") throw new Error("java 解析失败");
-     const { rgListFiles } = await import(${JSON.stringify(pathToFileURL(join(appModules, "review-pi", "dist", "codeintel", "rg.js")).href)});
+     const { rgListFiles } = await import(${JSON.stringify(pathToFileURL(join(PRIMARY_MODULE_DIR, "dist", "codeintel", "rg.js")).href)});
      const files = await rgListFiles(${JSON.stringify(appDir)}, "*.java");
      process.stdout.write(JSON.stringify({ root: tree.rootNode.type, files }));`,
   ],

@@ -153,7 +153,7 @@ _Avoid_: 会话记录（那是转录本身）、配置文件（索引只存路�
 ### 发行
 
 **发行形态（Distribution Shape）**:
-产品以 **单个 npm 包**交付：`review-pi`（唯一 `bin`）。内核四包 `@earendil-works/{pi-telemetry,chord,pi-ai,pi-agent-core}` 是它的**普通 npm 依赖**（四包同版本成套、精确锁 `0.85.1`，不带 `^`），随 `pnpm install` / `npm i -g` 自动拉取，本仓不 vendor、不打包、不发布它们（ADR-0035）。源码 specifier 就是上游名，不用 npm alias。
+产品以 **单个 npm 包**交付：`@baize/review-pi`（唯一 `bin` 名为 `review-pi`）。内核四包 `@earendil-works/{pi-telemetry,chord,pi-ai,pi-agent-core}` 是它的**普通 npm 依赖**（四包同版本成套、精确锁 `0.85.1`，不带 `^`），随 `pnpm install` / `npm i -g` 自动拉取，本仓不 vendor、不打包、不发布它们（ADR-0035）。源码 specifier 就是上游名，不用 npm alias。
 _Avoid_: 六包自发布（ADR-0028 已废止）、单包 bundle（丢 `source` 条件与可调试性）、源码继续 vendor 但依赖声明上游名（开发与生产静默跑不同代码）
 
 **发布面（Publish Surface）**:

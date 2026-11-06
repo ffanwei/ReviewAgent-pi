@@ -5,7 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { createGatewayTranslateEngine } from "../../src/presentation/engine-zh.js";
 import projectZhPresentation from "../../src/presentation/engine-zh.js";
-import type { Finding, PresentationRuntime, RunResult, ToolCallRecord } from "review-pi";
+import type { Finding, PresentationRuntime, RunResult, ToolCallRecord } from "@baize/review-pi";
 import { TERMINOLOGY, TERMINOLOGY_VERSION } from "../../src/presentation/terminology.js";
 
 // 真引擎装配单测（ADR-0010 消费端接线件）：网关引擎的请求形状 / 译文回填 /

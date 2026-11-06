@@ -9,7 +9,7 @@ import {
   type TerminologyContext,
 } from "../../src/presentation/translate-projection.js";
 import { TERMINOLOGY, TERMINOLOGY_VERSION } from "../../src/presentation/terminology.js";
-import type { Finding, RunResult, ToolCallRecord } from "review-pi";
+import type { Finding, RunResult, ToolCallRecord } from "@baize/review-pi";
 
 /**
  * 翻译投影单测（#13，生产化四必做之二——ADR-0010「英文产出 + 核外翻译投影」）：
@@ -378,7 +378,7 @@ describe("模块纪律（零 pi 运行时依赖——核外呈现层）", () => 
         const allowed =
           specifier.startsWith(".") ||
           specifier.startsWith("node:") ||
-          (specifier === "review-pi" && typeOnly);
+          (specifier === "@baize/review-pi" && typeOnly);
         expect(allowed, `${moduleName} imports "${specifier}"`).toBe(true);
         expect(specifier, `${moduleName} imports "${specifier}"`).not.toMatch(/@earendil-works|packages\//);
       }

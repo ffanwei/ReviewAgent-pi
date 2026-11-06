@@ -1,4 +1,4 @@
-import type { Finding, RunResult, ToolCallRecord } from "review-pi";
+import type { Finding, RunResult, ToolCallRecord } from "@baize/review-pi";
 import { TERMINOLOGY, TERMINOLOGY_VERSION, type TerminologyEntry } from "./terminology.js";
 
 /**
