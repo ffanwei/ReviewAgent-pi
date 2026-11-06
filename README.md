@@ -288,13 +288,13 @@ pnpm verify:pack                   # 安装布局冒烟（只借已装依赖，�
 
 | 命令 | 做什么 | 产物 |
 |---|---|---|
-| `pnpm --filter review-pi build` | `tsc -p tsconfig.build.json`，编译 CLI 与运行时（排除测试 / `testing` / `e2e`） | `packages/review-pi/dist/`（bin spawn 目标是 `dist/cli/main.js`） |
+| `pnpm --filter @baize/review-pi build` | `tsc -p tsconfig.build.json`，编译 CLI 与运行时（排除测试 / `testing` / `e2e`） | `packages/review-pi/dist/`（bin spawn 目标是 `dist/cli/main.js`） |
 | `pnpm build:presentation` | 上一步 + `tsc -p tsconfig.presentation.json` + `node scripts/copy-presentation.mjs` | `packages/review-pi/presentation/`（`.tmp-gen/presentation/*.js` 拷贝） |
 | `pnpm build:dist` | 等于 `build:presentation`，一次建齐发行面 | 以上两者 |
 | `pnpm pack:packages` | 清空并重建 `.artifacts/tarballs/`，对 `@baize/review-pi` 执行 `pnpm pack`（触发 `prepack`） | `baize-review-pi-<version>.tgz` |
 | `pnpm verify:pack` | 把 tarball 装进临时布局并冒烟：产物在位、安装形态 bin 定位、`config init/show`、`builtin` 引擎、wasm / ripgrep | 通过 / 失败退出码 |
 | `pnpm publish:packages` | `build:dist` + `pnpm -r publish`（显式发布动作） | registry |
-| `pnpm test` / `pnpm --filter review-pi test` / `pnpm typecheck` | 根包测试 / 内核 + CLI 进程烟测 / 根包类型检查 | — |
+| `pnpm test` / `pnpm --filter @baize/review-pi test` / `pnpm typecheck` | 根包测试 / 内核 + CLI 进程烟测 / 根包类型检查 | — |
 
 `prepack`（`scripts/prepare-package.mjs`）会把 9 个必需产物校验一遍、附上第三方声明，并把首行为 CRLF 的 bin 改成 LF；`files` 白名单只含 `dist` / `bin` / `presentation` / `THIRD-PARTY-NOTICES.md` / `README.md`，**不含 `node_modules`**。
 

@@ -62,7 +62,7 @@ test("本包 CLI 腿指向 bin 的 spawn 目标，源树 = 本包 src", () => {
   const legs = runtimeLegs();
   const cli = legs[legs.length - 1];
   expect(cli?.entry).toBe(CLI_COMPILED_ENTRY);
-  expect(cli?.buildCommand).toBe("pnpm --filter review-pi build");
+  expect(cli?.buildCommand).toBe("pnpm --filter @baize/review-pi build");
   expect(cli?.sourceRoots).toHaveLength(1);
   expect(cli?.sourceRoots[0]?.endsWith(path.join("review-pi", "src"))).toBe(true);
 });
@@ -75,7 +75,7 @@ test("判鲜门只在源码树形态生效：node_modules 布局 / 无 src / 未
     label: "leg",
     entry,
     sourceRoots,
-    buildCommand: "pnpm --filter review-pi build",
+    buildCommand: "pnpm --filter @baize/review-pi build",
   });
 
   // 源码工作树：入口不在 node_modules 里且 src 在 → 判鲜

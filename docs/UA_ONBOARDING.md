@@ -46,7 +46,7 @@
 4. **规则 Skill** — `knowledge/rule-skill.ts`（定位/审计/解压/装载）→ `knowledge/skill-pass.ts`（独立会话）
 5. **候选与审计** — `gate/candidate-gate.ts`、`audit/audit-writer.ts`、`experiment/run-record.ts`
 6. **呈现层** — `src/presentation/translate-projection.ts` → `tips.ts` → `engine-zh.ts`
-7. **验证与回归** — `pnpm --filter review-pi test`（内核 + 进程烟测）、`pnpm test`（呈现层）
+7. **验证与回归** — `pnpm --filter @baize/review-pi test`（内核 + 进程烟测）、`pnpm test`（呈现层）
 
 ## 5. 文件地图（按层，精选）
 
@@ -92,4 +92,4 @@
 6. `packages/review-pi/src/knowledge/rule-skill.ts` — 装载审计与缓存根，写错会污染被检仓库。
 7. `src/presentation/engine-zh.ts` — 逐字段网关调用与建议生成，成本与超时敏感。
 
-**上手建议**：先读 `README.md` / `CONTEXT.md` / ADR-0009 与 ADR-0024，再读 ADR-0025–0027（配置面、引擎路径、产物路径与规则包信任边界），然后按导览从 CLI 入口走到全链运行时，重点理解 `review-run.ts` 的单路径装配与 `agent-review-loop.ts` 的阶段推进；最后用 `pnpm --filter review-pi test` 与 `pnpm test` 验证理解。
+**上手建议**：先读 `README.md` / `CONTEXT.md` / ADR-0009 与 ADR-0024，再读 ADR-0025–0027（配置面、引擎路径、产物路径与规则包信任边界），然后按导览从 CLI 入口走到全链运行时，重点理解 `review-run.ts` 的单路径装配与 `agent-review-loop.ts` 的阶段推进；最后用 `pnpm --filter @baize/review-pi test` 与 `pnpm test` 验证理解。

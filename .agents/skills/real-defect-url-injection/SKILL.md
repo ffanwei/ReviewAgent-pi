@@ -41,7 +41,7 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs
 前置条件：
 
 1. `node packages/review-pi/bin/review-pi.js config show` 中 `reviewer.apiKey` 为 `set`；
-2. `packages/review-pi/dist/` 已构建（`pnpm --filter review-pi build`）；
+2. `packages/review-pi/dist/` 已构建（`pnpm --filter @baize/review-pi build`）；
 3. `data/vul4j/materialized-cases.json` 与 `.cache/datasets/vul4j-repos/<case>/` 存在。
 
 ## 它做了什么

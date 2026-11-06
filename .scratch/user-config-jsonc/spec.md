@@ -309,7 +309,7 @@ interface ResolvedConfig {           // shared/config.ts
 | `cli/presentation-projection.ts` | 去 `process.env`：`isPresentationProjectionConfigured(enginePath)`；`applyPresentationProjection(source, { enginePath, runtime, timeoutMs })` |
 | `src/presentation/engine-zh.ts` | 去 `process.env`：从 `source.runtime` 取 endpoint/key/model/并发/超时 |
 
-`src/presentation` 改动后必须 `pnpm build:presentation`；内核改动后 `pnpm --filter review-pi build`（进程测试跑 `dist`）。
+`src/presentation` 改动后必须 `pnpm build:presentation`；内核改动后 `pnpm --filter @baize/review-pi build`（进程测试跑 `dist`）。
 
 ## 11. 测试改造
 

@@ -171,7 +171,7 @@ export function runtimeLegs() {
     label: "review-pi CLI",
     entry: CLI_COMPILED_ENTRY,
     sourceRoots: [join(packageDir, "src")],
-    buildCommand: "pnpm --filter review-pi build",
+    buildCommand: "pnpm --filter @baize/review-pi build",
   });
   return legs;
 }

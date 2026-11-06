@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
-  // root 的呈现层测试 import "review-pi"（type-only + 少量运行时契约）——别名把它
+  // root 的呈现层测试 import "@baize/review-pi"（type-only + 少量运行时契约）——别名把它
   // 指到 workspace 包的 TS 源，保证测试跑当前源码而不是陈旧 dist。
   //
   // 不再用 resolve.conditions ["source"]（ADR-0035）：内核四包现在是 npm 依赖，

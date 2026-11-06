@@ -65,7 +65,7 @@ beforeAll(async () => {
   // 内核四包是 npm 依赖（安装布局，不参与判鲜）：自愈只需要重建本包产物。
   // 依赖真的缺席时 pnpm install 由人显式执行（拒跑文案会给指引）。
   const buildOrder = [
-    "pnpm --filter review-pi build",
+    "pnpm --filter @baize/review-pi build",
   ];
   for (const command of buildOrder) {
     if (!staleCommands.has(command)) {
@@ -1278,7 +1278,7 @@ test("陈旧产物拒跑：dist 回拨 30 天 → exit 1 + 人话提示 + stdout
     expect(run.stdout).toBe("");
     expect(run.stderr).toContain("拒跑");
     expect(run.stderr).toContain("产物过期");
-    expect(run.stderr).toContain("pnpm --filter review-pi build");
+    expect(run.stderr).toContain("pnpm --filter @baize/review-pi build");
   } finally {
     utimesSync(entry, original, original);
   }
