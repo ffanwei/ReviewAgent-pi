@@ -39,11 +39,13 @@ export interface HttpTransportOptions {
  */
 export function createHttpTransport(options: HttpTransportOptions): Transport {
   const fetchImpl = options.fetch ?? globalThis.fetch;
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    accept: "application/json, text/event-stream",
-    ...options.headers,
-  };
+  /**
+   * 服务端指派的会话 id（Streamable HTTP 规范）：`initialize` 响应的
+   * `Mcp-Session-Id` 响应头，后续**所有**请求必须回带——有会话的服务端
+   * （Spring AI 系）对无会话头的请求按「无此会话」回 404。只在未持有时
+   * 捕获（服务端不会中途换发）；服务端不用会话时恒为 undefined，零影响。
+   */
+  let sessionId: string | undefined;
 
   return {
     async send(payload, signal) {
@@ -54,12 +56,24 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
       try {
         response = await fetchImpl(options.url, {
           method: "POST",
-          headers,
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            ...options.headers,
+            // 会话头放最后：服务端指派的值压过任何用户静态配置
+            ...(sessionId !== undefined ? { "mcp-session-id": sessionId } : {}),
+          },
           body: payload,
           signal: combined,
         });
       } catch (error) {
         throw new ProtocolError("transport", describeTransportFailure(error));
+      }
+      if (sessionId === undefined) {
+        const assigned = response.headers.get("mcp-session-id");
+        if (assigned !== null && assigned.trim() !== "") {
+          sessionId = assigned.trim();
+        }
       }
       let body: string;
       try {
@@ -74,6 +88,8 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
       };
     },
     close() {
+      // 规范允许客户端在终止时 DELETE 会话（Mcp-Session-Id 头）；v1 不做——
+      // 服务端按超时回收会话即可，多一发 DELETE 只增加收尾失败面
       return Promise.resolve();
     },
   };

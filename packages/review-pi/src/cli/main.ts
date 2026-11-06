@@ -169,6 +169,11 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     }
   }
   const activeReporter = reporter;
+  if (activeReporter !== null && activeReporter.handshake === "stateless") {
+    process.stderr.write(
+      `review-pi: MCP 服务端未接受 initialize，已改为无状态直调（与 Postman 单发同形），继续检视\n`,
+    );
+  }
   // 业务 tool（ADR-0045）：单次尝试、旁路（失败只落 stderr 一行，不改退出码）。
   const taskToolsOn = activeReporter !== null && reportConfig !== null && reportConfig.task;
   let startTaskSent = false;

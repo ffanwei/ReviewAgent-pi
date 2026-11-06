@@ -52,6 +52,11 @@ export type TaskCallResult =
 export interface McpReporter {
   /** 上报流标识：run 结束前 `runId` 不可知，流键只能由 reporter 分配 */
   readonly streamId: string;
+  /**
+   * 握手结果：`stateless` = 服务端不认 `initialize`（或配置 `handshake: "off"`），
+   * 已降级为无状态直调——CLI 据此打一行 stderr 说明，不影响任何调用面。
+   */
+  readonly handshake: "initialized" | "stateless";
   /** 直接传给 `runReview({ onProgress })`；永不抛错 */
   readonly sink: RunProgressSink;
   /**
@@ -96,11 +101,14 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
   const client = createMcpClient(transport, {
     clientName: MCP_CLIENT_NAME,
     clientVersion: options.clientVersion,
+    handshake: config.server.handshake,
   });
 
-  // 握手一次；失败 = 建 reporter 失败（CLI 降级为「不建 sink」）
+  // 握手一次（策略见 `McpHandshakeMode`）：`auto` 下降级为无状态直调，
+  // `required` 下失败 = 建 reporter 失败（CLI 降级为「不建 sink」）
+  let session;
   try {
-    await client.initialize(combineSignal(abort.signal, config.server.timeoutMs));
+    session = await client.initialize(combineSignal(abort.signal, config.server.timeoutMs));
   } catch (error) {
     await transport.close().catch(() => undefined);
     throw error;
@@ -288,6 +296,7 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
 
   return {
     streamId,
+    handshake: session.handshake,
     sink,
     task,
     flush,

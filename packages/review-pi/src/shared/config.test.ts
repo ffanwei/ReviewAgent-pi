@@ -611,6 +611,7 @@ describe("mcp 配置块（ADR-0037）", () => {
     });
     expect(config.mcp?.servers.ops).toMatchObject({
       transport: "http",
+      handshake: "auto",
       url: "https://mcp.example.com/mcp",
       timeoutMs: 1_234,
     });
@@ -619,6 +620,7 @@ describe("mcp 配置块（ADR-0037）", () => {
     expect(snapshot.secret["mcp.servers.ops.headers"]).toBe("set");
     expect(snapshot.values["mcp.report.tool"]).toBe("report_events");
     expect(snapshot.values["mcp.report.task"]).toBe(true);
+    expect(snapshot.values["mcp.servers.ops.handshake"]).toBe("auto");
     expect(snapshot.values["mcp.servers.ops.url"]).toBe("https://mcp.example.com/mcp");
     // 秘密面纪律：值、长度、header 名都不出现在快照里
     expect(JSON.stringify(snapshot)).not.toContain("top-secret-token");
@@ -725,6 +727,41 @@ describe("mcp 配置块（ADR-0037）", () => {
         ),
       }),
     ).toThrowError(/transport must be "http" .* or "http-sse"/);
+  });
+
+  test("mcp.servers.*.handshake：auto（缺省）/ required / off；其它值 fail fast", () => {
+    const legacyDefault = loadConfig({
+      configPath: writeConfig(
+        withMcp(`{
+          "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+          "report": { "server": "ops" }
+        }`),
+      ),
+    });
+    expect(legacyDefault.config.mcp?.servers.ops?.handshake).toBe("auto");
+
+    for (const handshake of ["auto", "required", "off"] as const) {
+      const loaded = loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "handshake": "${handshake}", "url": "https://x.example.com/mcp" } },
+            "report": { "server": "ops" }
+          }`),
+        ),
+      });
+      expect(loaded.config.mcp?.servers.ops?.handshake).toBe(handshake);
+    }
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "handshake": "sometimes", "url": "https://x.example.com/mcp" } },
+            "report": { "server": "ops" }
+          }`),
+        ),
+      }),
+    ).toThrowError(/handshake must be "auto"/);
   });
 
   test("modelIdForGateway：剥掉最后一个 / 前的所有；无斜杠/剥完为空原样返回", () => {

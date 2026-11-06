@@ -256,6 +256,14 @@ export interface McpServerSettings {
    * http 填消息端点；http-sse 填 **SSE 端点**（如 `…/sse`）。
    */
   readonly transport: "http" | "http-sse";
+  /**
+   * 握手策略（ADR-0037 后续修订）：
+   * - `"auto"`（缺省）：先试 `initialize`，服务端不认就降级为无状态直调
+   *   （每个 `tools/call` 独立 POST，与 Postman 单发同形）；
+   * - `"required"`：握手失败即视为上报不可用；
+   * - `"off"`：从不发 `initialize`，直调 `tools/call`。
+   */
+  readonly handshake: "auto" | "required" | "off";
   readonly url: string;
   /** 秘密：审计 / stdout / stderr / `config show` 一律只报 set | missing */
   readonly headers: Readonly<Record<string, string>>;
@@ -629,7 +637,7 @@ const MODEL_KEYS = ["default", "presentation"] as const;
 const PRESENTATION_KEYS = ["engine"] as const;
 const CODEINTEL_KEYS = ["languages", "excludeGlobs"] as const;
 const MCP_KEYS = ["servers", "report"] as const;
-const MCP_SERVER_KEYS = ["transport", "url", "headers", "timeoutMs"] as const;
+const MCP_SERVER_KEYS = ["transport", "handshake", "url", "headers", "timeoutMs"] as const;
 const MCP_REPORT_KEYS = [
   "server",
   "tool",
@@ -973,6 +981,16 @@ function parseMcpServer(name: string, raw: unknown, warnings: string[]): McpServ
     );
   }
 
+  const handshakeRaw = optionalString(obj.handshake, `${path}.handshake`)?.trim() ?? "auto";
+  if (handshakeRaw !== "auto" && handshakeRaw !== "required" && handshakeRaw !== "off") {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: ${path}.handshake must be "auto" ` +
+        `(握手失败降级为无状态直调，缺省), "required" ` +
+        `(握手失败即上报不可用) or "off" (从不握手，直接 tools/call；got ${JSON.stringify(handshakeRaw)})`,
+    );
+  }
+  const handshake = handshakeRaw;
+
   const url = requiredNonEmptyString(obj.url, `${path}.url`);
   if (!/^https?:\/\//.test(url)) {
     throw new ConfigError(
@@ -991,6 +1009,7 @@ function parseMcpServer(name: string, raw: unknown, warnings: string[]): McpServ
 
   return {
     transport,
+    handshake,
     url,
     headers,
     timeoutMs: intOr(obj.timeoutMs, `${path}.timeoutMs`, 100, 600_000, 10_000),
@@ -1055,6 +1074,7 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     // headers 是秘密：不进 values（与 reviewer.apiKey 同待遇），只在 secret 里报 set/missing
     for (const [name, server] of Object.entries(mcp.servers)) {
       values[`mcp.servers.${name}.transport`] = server.transport;
+      values[`mcp.servers.${name}.handshake`] = server.handshake;
       values[`mcp.servers.${name}.url`] = server.url;
       values[`mcp.servers.${name}.timeoutMs`] = server.timeoutMs;
     }
@@ -1445,6 +1465,10 @@ ${excludeGlobLines}
   //       // 传输形态："http" = Streamable HTTP（单端点 POST，推荐）；
   //       // "http-sse" = 老式 HTTP+SSE（GET 长连接收 endpoint 事件，url 填 SSE 端点）。
   //       "transport": "http",
+  //       // 握手策略："auto"（缺省）= 先试 initialize，服务端不认就降级为无状态
+  //       // 直调（每次 tools/call 独立 POST，与 Postman 单发同形）；"required" =
+  //       // 握手失败即上报不可用；"off" = 从不握手。
+  //       "handshake": "auto",
   //       "url": "https://mcp.example.com/mcp",
   //       // 秘密：与 reviewer.apiKey 同等待遇（审计 / 日志 / config show 只报 set 或 missing）。
   //       "headers": { "Authorization": "Bearer <token>" },

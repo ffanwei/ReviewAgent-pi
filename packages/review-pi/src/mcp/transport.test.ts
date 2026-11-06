@@ -102,6 +102,55 @@ describe("createHttpTransport", () => {
     }
   });
 
+  test("Mcp-Session-Id：initialize 响应头指派后，后续请求全部回带", async () => {
+    const seenSessions: (string | undefined)[] = [];
+    const server = await startServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        seenSessions.push(request.headers["mcp-session-id"] as string | undefined);
+        const id = (JSON.parse(body) as { id?: number }).id ?? 0;
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (seenSessions.length === 1) {
+          headers["mcp-session-id"] = "session-abc";
+        }
+        response.writeHead(200, headers);
+        response.end(JSON.stringify({ jsonrpc: "2.0", id, result: {} }));
+      });
+    });
+    try {
+      const transport = createHttpTransport({ url: server.url, timeoutMs: 2_000 });
+      await transport.send('{"jsonrpc":"2.0","id":1,"method":"initialize"}', new AbortController().signal);
+      await transport.send('{"jsonrpc":"2.0","id":2,"method":"tools/call"}', new AbortController().signal);
+      await transport.send('{"jsonrpc":"2.0","id":3,"method":"tools/call"}', new AbortController().signal);
+
+      // 第一条不带；服务端指派后第二 / 三条必须回带同一个 id
+      expect(seenSessions).toEqual([undefined, "session-abc", "session-abc"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("服务端不指派会话：不带 Mcp-Session-Id（零影响）", async () => {
+    const seenSessions: (string | undefined)[] = [];
+    const server = await startServer((request, response) => {
+      seenSessions.push(request.headers["mcp-session-id"] as string | undefined);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"jsonrpc":"2.0","id":1,"result":{}}');
+    });
+    try {
+      const transport = createHttpTransport({ url: server.url, timeoutMs: 2_000 });
+      await transport.send('{"jsonrpc":"2.0","id":1,"method":"initialize"}', new AbortController().signal);
+      await transport.send('{"jsonrpc":"2.0","id":2,"method":"tools/call"}', new AbortController().signal);
+      expect(seenSessions).toEqual([undefined, undefined]);
+    } finally {
+      await server.close();
+    }
+  });
+
   test("超时中断为 ProtocolError(transport)，错误信息不含请求头", async () => {
     const server = await startServer(() => {
       // 永不响应

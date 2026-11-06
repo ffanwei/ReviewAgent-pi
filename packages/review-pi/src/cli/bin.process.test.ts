@@ -1975,8 +1975,14 @@ interface McpStub {
  * 回环 MCP stub：initialize → 结果；notifications（无 id）→ 202；
  * tools/call → 记录 + 成功（`failTools` 里的名字回 isError）。
  * 事件批量通道（report_events）与业务 tool 同一服务端。
+ *
+ * `options.initializeStatus` 可让 stub 对 `initialize` 回非 2xx——模拟「只实现
+ * tools/call 的定制服务端」（Postman 单发能通、握手不通），验证无状态降级。
  */
-function startMcpStub(failTools: readonly string[] = []): Promise<McpStub> {
+function startMcpStub(
+  failTools: readonly string[] = [],
+  options: { readonly initializeStatus?: number } = {},
+): Promise<McpStub> {
   const calls: McpToolCall[] = [];
   const server = http.createServer((request, response) => {
     const chunks: Buffer[] = [];
@@ -1991,6 +1997,11 @@ function startMcpStub(failTools: readonly string[] = []): Promise<McpStub> {
       };
       if (message.id === undefined) {
         response.writeHead(202);
+        response.end();
+        return;
+      }
+      if (message.method === "initialize" && options.initializeStatus !== undefined) {
+        response.writeHead(options.initializeStatus);
         response.end();
         return;
       }
@@ -2593,6 +2604,47 @@ test(
       expect(audit.model).toBe("test-model");
     } finally {
       await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "服务端不认 initialize（404）→ 自动降级无状态直调，四个业务 tool 照常送达，exit 0",
+  async () => {
+    const stub = await startLoopbackStub([
+      ...oneFindingCorpusForReport(),
+      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
+      { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
+    ]);
+    // 只实现 tools/call 的定制服务端：initialize 回 404（与用户 Postman 场景同形）
+    const mcp = await startMcpStub([], { initializeStatus: 404 });
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      // 降级说明只落一行 stderr，绝不改变结果
+      expect(run.stderr).toContain("未接受 initialize");
+      expect(mcp.toolCalls().map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
+    } finally {
+      await stub.close();
+      await mcp.close();
     }
   },
   180_000,

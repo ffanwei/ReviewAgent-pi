@@ -60,7 +60,12 @@ describe("createMcpClient", () => {
     const first = await mcp.initialize(new AbortController().signal);
     const second = await mcp.initialize(new AbortController().signal);
 
-    expect(first).toEqual({ name: "ops", version: "1.2.3", protocolVersion: "2025-06-18" });
+    expect(first).toEqual({
+      name: "ops",
+      version: "1.2.3",
+      protocolVersion: "2025-06-18",
+      handshake: "initialized",
+    });
     expect(second).toBe(first);
     expect(transport.sent.filter((message) => message.method === "initialize")).toHaveLength(1);
     expect(transport.sent.map((message) => message.method)).toEqual([
@@ -165,5 +170,77 @@ describe("createMcpClient", () => {
     expect(failure).toBeInstanceOf(ProtocolError);
     expect((failure as ProtocolError).code).toBe("server-error");
     expect((failure as ProtocolError).message).toContain("tool not found");
+  });
+
+  test("handshake: auto（缺省）——initialize 被 404 拒绝即降级为无状态直调", async () => {
+    const transport = transportWith((message) => {
+      if (message.method === "initialize") {
+        return { status: 404, contentType: "", body: "" };
+      }
+      if (message.method === "notifications/initialized") {
+        return { status: 202, contentType: "", body: "" };
+      }
+      return jsonResponse({ content: [{ type: "text", text: "ok" }] }, message.id ?? 0);
+    });
+    const mcp = client(transport);
+
+    const session = await mcp.initialize(new AbortController().signal);
+    expect(session.handshake).toBe("stateless");
+    // 降级后不再发 initialized 通知，直接 tools/call（Postman 同形）
+    const result = await mcp.callTool("startTask", { taskId: "1" }, new AbortController().signal);
+    expect(result).toEqual({ text: "ok", isError: false, droppedContentBlocks: 0 });
+    expect(transport.sent.map((message) => message.method)).toEqual(["initialize", "tools/call"]);
+  });
+
+  test("handshake: auto——JSON-RPC 错误也算「不认 initialize」，降级", async () => {
+    const transport = transportWith((message) => {
+      if (message.method === "initialize") {
+        return {
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "no init" } }),
+        };
+      }
+      return jsonResponse({ content: [] }, message.id ?? 0);
+    });
+    const session = await client(transport).initialize(new AbortController().signal);
+    expect(session.handshake).toBe("stateless");
+  });
+
+  test("handshake: auto——连接层失败（transport）不降级，如实抛出", async () => {
+    const transport = transportWith(() => {
+      throw new ProtocolError("transport", "connect ECONNREFUSED");
+    });
+    await expect(client(transport).initialize(new AbortController().signal)).rejects.toMatchObject({
+      code: "transport",
+    });
+  });
+
+  test("handshake: required——initialize 失败即报错（不降级）", async () => {
+    const transport = transportWith(() => ({ status: 404, contentType: "", body: "" }));
+    const strict = createMcpClient(transport, {
+      clientName: MCP_CLIENT_NAME,
+      clientVersion: "test",
+      handshake: "required",
+    });
+    await expect(strict.initialize(new AbortController().signal)).rejects.toMatchObject({
+      code: "http-status",
+    });
+  });
+
+  test("handshake: off——第一条出站请求就是 tools/call（不发 initialize / 通知）", async () => {
+    const transport = transportWith((message) =>
+      jsonResponse({ content: [{ type: "text", text: "ok" }] }, message.id ?? 0),
+    );
+    const stateless = createMcpClient(transport, {
+      clientName: MCP_CLIENT_NAME,
+      clientVersion: "test",
+      handshake: "off",
+    });
+
+    const session = await stateless.initialize(new AbortController().signal);
+    expect(session.handshake).toBe("stateless");
+    await stateless.callTool("startTask", { taskId: "1" }, new AbortController().signal);
+    expect(transport.sent.map((message) => message.method)).toEqual(["tools/call"]);
   });
 });

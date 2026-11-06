@@ -60,7 +60,7 @@ function fakeTransport(
 
 function reportConfig(overrides: Partial<ReportConfig> = {}): ReportConfig {
   return {
-    server: { transport: "http", url: "http://127.0.0.1:1/mcp", headers: {}, timeoutMs: 100 },
+    server: { transport: "http", handshake: "auto", url: "http://127.0.0.1:1/mcp", headers: {}, timeoutMs: 100 },
     tool: "report_events",
     task: true,
     include: new Set(MCP_REPORT_EVENT_TYPES),
@@ -398,6 +398,47 @@ describe("业务 tool 面（ADR-0045）", () => {
       filePath: "src/Foo.java",
       reviewTips: [{ lineNum: "3", category: "可靠性" }],
     });
+    await reporter.close();
+  });
+
+  test("initialize 被 404 拒绝 → 降级无状态直调，业务 tool 照常可用（Postman 同形）", async () => {
+    const calls: { method: string; name?: string }[] = [];
+    const transport: Transport = {
+      async send(payload: string): Promise<TransportResponse> {
+        const message = JSON.parse(payload) as { id?: number; method: string; params?: { name?: string } };
+        calls.push({ method: message.method, ...(message.params?.name !== undefined ? { name: message.params.name } : {}) });
+        if (message.method === "initialize") {
+          return { status: 404, contentType: "", body: "" };
+        }
+        if (message.id === undefined) {
+          return { status: 202, contentType: "", body: "" };
+        }
+        return {
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: { content: [{ type: "text", text: "ok" }] },
+          }),
+        };
+      },
+      close() {
+        return Promise.resolve();
+      },
+    };
+    const reporter = await createMcpReporter({
+      config: reportConfig(),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+
+    expect(reporter.handshake).toBe("stateless");
+    expect(await reporter.task.startTask({ taskId: "t-1" })).toEqual({ ok: true });
+    // 没有 initialized 通知：initialize 之后直接 tools/call
+    expect(calls.map((call) => call.method)).toEqual(["initialize", "tools/call"]);
+    expect(calls[1]?.name).toBe("startTask");
     await reporter.close();
   });
 
