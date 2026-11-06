@@ -9,6 +9,12 @@ import type {
 import type { RunProgressEvent, RunProgressSink } from "../contracts/progress.js";
 import { createMcpClient, MCP_CLIENT_NAME } from "./client.js";
 import type { ReportConfig } from "./config.js";
+import {
+  MCP_TASK_TOOL_NAMES,
+  type MrReviewResultArgs,
+  type SaveReviewSummaryArgs,
+  type TaskIdArgs,
+} from "./task-tools.js";
 import { createHttpTransport, type Transport } from "./transport.js";
 
 /**
@@ -37,11 +43,27 @@ export interface CreateMcpReporterOptions {
   readonly streamId?: string;
 }
 
+/** 一次业务 tool 调用的结果：失败带人话原因（调用方打 stderr），绝不抛错 */
+export type TaskCallResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: string };
+
 export interface McpReporter {
   /** 上报流标识：run 结束前 `runId` 不可知，流键只能由 reporter 分配 */
   readonly streamId: string;
   /** 直接传给 `runReview({ onProgress })`；永不抛错 */
   readonly sink: RunProgressSink;
+  /**
+   * 业务 tool 面（ADR-0045）：单次尝试、旁路（失败只回 `{ok:false}`，绝不抛错、
+   * 绝不改退出码）。与批量事件通道共用握手与连接，但**不进队列**——业务调用
+   * 要立刻知道结果，且不可被背压丢最旧。
+   */
+  readonly task: {
+    startTask(args: TaskIdArgs): Promise<TaskCallResult>;
+    endTask(args: TaskIdArgs): Promise<TaskCallResult>;
+    saveReviewSummary(args: SaveReviewSummaryArgs): Promise<TaskCallResult>;
+    reportFileResult(args: MrReviewResultArgs): Promise<TaskCallResult>;
+  };
   /** 等队列排空（最多 `timeoutMs`，缺省配置值）；超时返回当前统计，不抛错 */
   flush(timeoutMs?: number): Promise<McpReportStats>;
   /** 排空 + 取消在飞请求 + 关闭传输；幂等 */
@@ -215,9 +237,42 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
     return stats();
   }
 
+  // 业务 tool 调用（ADR-0045 决策 3）：单次尝试、不重试、绝不抛错。
+  // 重试属于批量事件通道（幂等重放安全）；业务调用串在关键路径上，
+  // 3 次退避 × server.timeoutMs 会让收尾多挂十几秒——送达保证是消费方的事。
+  async function callTaskTool(name: string, args: unknown): Promise<TaskCallResult> {
+    if (closing || sinkClosed) {
+      return { ok: false, reason: "reporter closed" };
+    }
+    try {
+      const result = await client.callTool(
+        name,
+        args,
+        combineSignal(abort.signal, config.server.timeoutMs),
+      );
+      if (result.isError) {
+        return { ok: false, reason: `server error: ${truncate(result.text)}` };
+      }
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: truncate(message) };
+    }
+  }
+
+  const task = {
+    startTask: (args: TaskIdArgs) => callTaskTool(MCP_TASK_TOOL_NAMES.startTask, args),
+    endTask: (args: TaskIdArgs) => callTaskTool(MCP_TASK_TOOL_NAMES.endTask, args),
+    saveReviewSummary: (args: SaveReviewSummaryArgs) =>
+      callTaskTool(MCP_TASK_TOOL_NAMES.saveReviewSummary, args),
+    reportFileResult: (args: MrReviewResultArgs) =>
+      callTaskTool(MCP_TASK_TOOL_NAMES.mrReviewResult, args),
+  };
+
   return {
     streamId,
     sink,
+    task,
     flush,
     async close() {
       if (closing) {
@@ -353,4 +408,10 @@ function sleep(ms: number, keepAlive = false): Promise<void> {
       handle.unref?.();
     }
   });
+}
+
+/** 失败原因截断：不把服务端长消息灌进 stderr 日志（与 describeReportFailure 同档） */
+function truncate(text: string, max = 160): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }

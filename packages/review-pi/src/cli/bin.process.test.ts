@@ -137,13 +137,33 @@ function startLoopbackStub(replies: readonly FakeReply[]): Promise<LoopbackStub>
       if (request.method === "POST" && request.url === "/v1/chat/completions") {
         const wantsStream = (body as { stream?: unknown } | undefined)?.stream === true;
         if (!wantsStream) {
-          // 模型探针（max_tokens:1 的非流式 ping）：回显模型 + 合法 usage
+          const maxTokens = (body as { max_tokens?: unknown } | undefined)?.max_tokens;
+          // 非流式两类：smoke 模型探针（max_tokens:1 的 ping）回显；其余是一次性
+          // 模型调用（ADR-0045 报文 / 总结生成）——依序消费脚本回复，回 JSON。
+          if (maxTokens === 1) {
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(
+              JSON.stringify({
+                model: (body as { model?: unknown } | undefined)?.model ?? REVIEW_MODEL_ID,
+                choices: [
+                  { index: 0, message: { role: "assistant", content: "pong" }, finish_reason: "stop" },
+                ],
+                usage: { prompt_tokens: 1, completion_tokens: 1 },
+              }),
+            );
+            return;
+          }
+          const reply = queue.shift();
+          if (reply === undefined) {
+            response.writeHead(500, { "content-type": "application/json" });
+            response.end(JSON.stringify({ error: { message: "stub: scripted replies exhausted" } }));
+            return;
+          }
           response.writeHead(200, { "content-type": "application/json" });
           response.end(
             JSON.stringify({
-              model: (body as { model?: unknown } | undefined)?.model ?? REVIEW_MODEL_ID,
               choices: [
-                { index: 0, message: { role: "assistant", content: "pong" }, finish_reason: "stop" },
+                { index: 0, message: { role: "assistant", content: reply.text }, finish_reason: "stop" },
               ],
               usage: { prompt_tokens: 1, completion_tokens: 1 },
             }),
@@ -197,6 +217,10 @@ interface RunBinOptions {
   readonly gatewayBaseUrl?: string;
   /** 呈现引擎模块路径（写进配置 `presentation.engine`） */
   readonly presentationEngine?: string;
+  /** MCP 服务端 URL（写进配置 `mcp.servers.stub` + `mcp.report`；缺席 = 不配上报） */
+  readonly mcpServerUrl?: string;
+  /** `mcp.report.task`（ADR-0045 业务 tool 开关；缺省 true——只在给了 mcpServerUrl 时写） */
+  readonly mcpTask?: boolean;
   /** 直接指定配置文件全文（覆盖默认最小配置） */
   readonly configText?: string;
   /** 配置文件落点（缺省 = 子进程 cwd 的 PiAgent.jsonc） */
@@ -222,7 +246,7 @@ interface RunBinOptions {
   readonly timeoutMs?: number;
 }
 
-/** 最小配置（version + reviewer；可选 baseUrl / 呈现引擎） */
+/** 最小配置（version + reviewer；可选 baseUrl / 呈现引擎 / MCP 上报） */
 function minimalConfigText(options: RunBinOptions): string {
   const reviewer: Record<string, unknown> = { apiKey: SENTINEL_KEY };
   if (options.gatewayBaseUrl !== undefined) {
@@ -234,6 +258,25 @@ function minimalConfigText(options: RunBinOptions): string {
       reviewer,
       ...(options.presentationEngine !== undefined
         ? { presentation: { engine: options.presentationEngine } }
+        : {}),
+      ...(options.mcpServerUrl !== undefined
+        ? {
+            mcp: {
+              servers: {
+                stub: {
+                  transport: "http",
+                  url: options.mcpServerUrl,
+                  headers: {},
+                  timeoutMs: 10_000,
+                },
+              },
+              report: {
+                server: "stub",
+                tool: "report_events",
+                ...(options.mcpTask !== undefined ? { task: options.mcpTask } : {}),
+              },
+            },
+          }
         : {}),
     },
     null,
@@ -374,6 +417,38 @@ function truncationCorpus(): FakeReply[] {
     );
   }
   return replies;
+}
+
+/**
+ * 报文生成用的单候选语料（ADR-0045 决策 4 修订）：同 oneFindingCorpus，但
+ * finding 指向 fixture 里**真实存在**的文件（README.md:1）——报文的 `code`
+ * 由 CLI 按 `--repo` 抽真源行，文件不存在就该跳过（绝不编）。
+ */
+function oneFindingCorpusForReport(): FakeReply[] {
+  const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+  const candidate = {
+    id: "F100",
+    severity: "P2",
+    category: "correctness",
+    file: "README.md",
+    line: 1,
+    title: "Sentinel finding title",
+    description: "Sentinel finding description",
+    evidence: ["README.md:1"],
+    rule: "sentinel-rule",
+    confidence: 0.5,
+  };
+  return [
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: JSON.stringify({ candidates: [candidate] }), usage: ZERO },
+    {
+      text: JSON.stringify({ verdicts: [{ id: "F100", pass: true, reason: "stub verdict: evidence holds" }], complete: true }),
+      usage: ZERO,
+    },
+  ];
 }
 
 /** 子进程网关覆盖（写入本 run 的最小配置文件；不再经环境变量） */
@@ -1874,6 +1949,593 @@ test(
       ]);
     } finally {
       await stub.close();
+    }
+  },
+  180_000,
+);
+
+// ---- MCP 业务 tool（ADR-0045）：任务生命周期 + 片级结果 + 总结 ----
+
+/** MCP stub 收到的 tools/call 记录 */
+interface McpToolCall {
+  readonly name: string;
+  readonly args: Record<string, unknown>;
+}
+
+interface McpStub {
+  /** JSON-RPC 端点 URL（写进配置 `mcp.servers.<name>.url`） */
+  readonly url: string;
+  readonly toolCalls: () => readonly McpToolCall[];
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * 回环 MCP stub：initialize → 结果；notifications（无 id）→ 202；
+ * tools/call → 记录 + 成功（`failTools` 里的名字回 isError）。
+ * 事件批量通道（report_events）与业务 tool 同一服务端。
+ */
+function startMcpStub(failTools: readonly string[] = []): Promise<McpStub> {
+  const calls: McpToolCall[] = [];
+  const server = http.createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+        id?: number;
+        method?: string;
+        params?: { name?: unknown; arguments?: unknown };
+      };
+      if (message.id === undefined) {
+        response.writeHead(202);
+        response.end();
+        return;
+      }
+      let result: unknown;
+      if (message.method === "initialize") {
+        result = { protocolVersion: "2025-06-18", serverInfo: { name: "stub", version: "1" } };
+      } else if (message.method === "tools/call") {
+        const name = String(message.params?.name ?? "");
+        calls.push({
+          name,
+          args: (message.params?.arguments ?? {}) as Record<string, unknown>,
+        });
+        result = failTools.includes(name)
+          ? { content: [{ type: "text", text: "tool rejected" }], isError: true }
+          : { content: [{ type: "text", text: "ok" }] };
+      } else {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: `unexpected ${message.method}` } }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    });
+  });
+  return new Promise<McpStub>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({
+        url: `http://127.0.0.1:${port}/mcp`,
+        toolCalls: () => calls.map((call) => ({ ...call, args: { ...call.args } })),
+        close: () =>
+          new Promise<void>((closed) => {
+            server.closeAllConnections?.();
+            server.close(() => closed());
+          }),
+      });
+    });
+  });
+}
+
+const ZERO_USAGE_REPLY = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+
+/**
+ * 报文回复（ADR-0045 决策 4 修订）：模型只出**语义字段**（按 finding id 对齐）；
+ * code / filePath / lineNum / level / ruleId 由 CLI 确定性组装。
+ */
+function payloadReplyForSentinelFinding(): string {
+  return JSON.stringify({
+    tips: [
+      {
+        id: "F100",
+        category: "可靠性",
+        subcategory: "测试桩",
+        review: "[可靠性] 测试桩意见。影响评估：仅测试。",
+        suggestion: "[重构思路] 无。代码示例：```无```",
+      },
+    ],
+  });
+}
+
+/** 非流式一次性模型调用（报文 / 总结）计数 */
+function countOneShotGatewayCalls(stub: LoopbackStub): number {
+  return stub
+    .requests()
+    .filter(
+      (record) =>
+        record.method === "POST" &&
+        record.url === "/v1/chat/completions" &&
+        (record.body as { stream?: boolean } | undefined)?.stream === false,
+    ).length;
+}
+
+test(
+  "MCP 业务 tool：startTask → mrReviewResult → saveReviewSummary → endTask 按序上报，exit 0",
+  async () => {
+    const stub = await startLoopbackStub([
+      ...oneFindingCorpusForReport(),
+      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
+      { text: "# 检视总结\n\n测试桩总结。", usage: ZERO_USAGE_REPLY },
+    ]);
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+      });
+
+      // 旁路纪律：exit 0，stdout 键集不受影响
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as Record<string, unknown>;
+      expect("findings" in outcome).toBe(true);
+
+      // 顺序契约（ADR-0045 决策 2）：start → mrReviewResult → saveReviewSummary → end
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+
+      // 参数形状：平铺、taskId 同值直传；结构字段由代码组装（真源行 / P2→Minor）
+      expect(business[0]?.args).toEqual({ taskId: CLI_TASK_ID });
+      expect(business[1]?.args).toMatchObject({ taskId: CLI_TASK_ID, filePath: "README.md" });
+      const tips = (business[1]?.args.reviewTips ?? []) as Record<string, unknown>[];
+      expect(tips).toHaveLength(1);
+      expect(tips[0]).toMatchObject({
+        code: "Sample repository for Zone B tests.", // CLI 按 --repo 抽的 README.md:1
+        category: "可靠性",
+        level: "Minor", // severity P2 → Minor（Q18 四档映射）
+        ruleId: null, // id 无 RULE-CHECK@ 前缀 = 非规则会话产出
+        lineNum: "1",
+      });
+      expect(business[2]?.args).toMatchObject({ taskId: CLI_TASK_ID });
+      expect(String(business[2]?.args.description)).toContain("# 检视总结");
+      expect(business[3]?.args).toEqual({ taskId: CLI_TASK_ID });
+
+      // 批量事件通道照常（run.start / run.end 至少一批）
+      const eventBatches = mcp.toolCalls().filter((call) => call.name === "report_events");
+      expect(eventBatches.length).toBeGreaterThanOrEqual(1);
+
+      // stderr 可见性：片级上报一行 + saveReviewSummary 心跳
+      expect(run.stderr).toContain("MCP mrReviewResult 已上报 1 文件 / 1 条意见");
+      expect(run.stderr).toContain("MCP saveReviewSummary 生成中");
+
+      // 一次性模型调用走同一网关（非流式）：报文 + 总结各一条
+      expect(countOneShotGatewayCalls(stub)).toBe(2);
+
+      // 统一 tips（ADR-0045）：无 engine 也产出 reviews_tips_zh.json（12 键，
+      // 与 mrReviewResult 同一份生成）；cwd 副本 review-result.json 逐字节相同
+      const tipsPath = path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json");
+      expect(existsSync(tipsPath)).toBe(true);
+      const tipsDoc = JSON.parse(readFileSync(tipsPath, "utf8")) as {
+        filePath: string;
+        reviewTips: Record<string, unknown>[];
+      }[];
+      expect(tipsDoc).toHaveLength(1);
+      expect(tipsDoc[0]?.filePath).toBe("README.md");
+      const tip = tipsDoc[0]?.reviewTips[0];
+      expect(tip).toMatchObject({
+        id: "F100", // 单遍路径不重编号
+        code: "Sample repository for Zone B tests.",
+        review: "[可靠性] 测试桩意见。影响评估：仅测试。",
+        suggestion: "[重构思路] 无。代码示例：```无```",
+        category: "可靠性",
+        subcategory: "测试桩",
+        severity: "Minor", // P2 → 三档（ADR-0017）
+        level: "Minor", // P2 → 四档（Q18）
+        ruleId: "",
+        lineNum: 1,
+        source: "common-reviewer",
+        confidence: "Medium", // 0.5
+      });
+      // 只增不删：12 键
+      expect(Object.keys(tip ?? {}).sort()).toEqual(
+        [
+          "category",
+          "code",
+          "confidence",
+          "id",
+          "level",
+          "lineNum",
+          "review",
+          "ruleId",
+          "source",
+          "severity",
+          "subcategory",
+          "suggestion",
+        ].sort(),
+      );
+      const cwdCopy = path.join(run.cwd, "review-result.json");
+      expect(existsSync(cwdCopy)).toBe(true);
+      expect(readFileSync(cwdCopy, "utf8")).toBe(readFileSync(tipsPath, "utf8"));
+
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "mcp.report.task = false：四个业务 tool 一个都不调（只发进度事件）",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+        mcpTask: false,
+      });
+
+      expect(run.status).toBe(0);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business).toEqual([]);
+      // 事件通道照常、无一次性模型调用（报文/总结都不生成）
+      expect(mcp.toolCalls().some((call) => call.name === "report_events")).toBe(true);
+      expect(countOneShotGatewayCalls(stub)).toBe(0);
+      expect(run.stderr).not.toContain("mrReviewResult");
+      expect(run.stderr).not.toContain("saveReviewSummary");
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "startTask 失败（isError）：旁路继续、exit 0，endTask 不补发（Q4：只在成功发出过时）",
+  async () => {
+    const stub = await startLoopbackStub([
+      ...oneFindingCorpusForReport(),
+      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
+      { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
+    ]);
+    const mcp = await startMcpStub(["startTask"]);
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      expect(run.stderr).toContain("MCP startTask 失败");
+      const names = mcp
+        .toolCalls()
+        .filter((call) => call.name !== "report_events")
+        .map((call) => call.name);
+      // startTask 失败了，但后续业务调用照常尝试（旁路不级联压制）；
+      // endTask 不补发（没有「结束一个从未开始的 task」）
+      expect(names).toEqual(["startTask", "mrReviewResult", "saveReviewSummary"]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "MCP 建连前移到读 diff 之前（ADR-0045 Q2）：预检失败也先见到 MCP 行",
+  async () => {
+    // MCP 指向不存在的端口：建连失败要降级为一行 stderr，而不是让检视起不来
+    const run = await runBin(
+      [
+        "review",
+        "--repo",
+        repoFixturePath("sample"),
+        "--mr-diff",
+        path.join(makeTempDir("review-pi-cli-mr-"), "absent.diff"),
+        "--taskId",
+        CLI_TASK_ID,
+        "--tasks-dir",
+        makeTempDir("review-pi-cli-out-"),
+      ],
+      { mcpServerUrl: "http://127.0.0.1:1/mcp" },
+    );
+
+    // diff 缺失 → exit 1；但 MCP 建连失败的提示必须已经打出来（顺序：建连 → 读 diff）
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("MCP 上报不可用");
+    expect(run.stderr).toContain("ENOENT");
+    // 建连失败 ⇒ 没有业务调用、没有 startTask 提示
+    expect(run.stderr).not.toContain("startTask");
+  },
+  60_000,
+);
+
+// ---- 统一 tips（ADR-0045 Q21-Q26）：mrReviewResult 与 reviews_tips_zh.json 同源复用 ----
+
+/** 单片六相位语料：Phase 5 出一条指向真实文件的候选（code 有真源行） */
+function shardCorpusWithFinding(id: string, file: string): FakeReply[] {
+  const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+  const candidate = {
+    id,
+    severity: "P2",
+    category: "correctness",
+    file,
+    line: 3,
+    title: `Sentinel finding in ${file}`,
+    description: "Sentinel finding description",
+    evidence: [`${file}:3`],
+    rule: "sentinel-rule",
+    confidence: 0.5,
+  };
+  return [
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: JSON.stringify({ candidates: [candidate] }), usage: ZERO },
+    {
+      text: JSON.stringify({ verdicts: [{ id, pass: true, reason: "stub verdict" }], complete: true }),
+      usage: ZERO,
+    },
+  ];
+}
+
+const ALPHA = "src/main/java/com/example/Alpha.java";
+const BETA = "src/main/java/com/example/Beta.java";
+
+test(
+  "统一 tips 尽力而为（Q26b）：s02 生成失败 → tips 只含 s01 文件组，mrReviewResult 只发 s01",
+  async () => {
+    // 片间串行 await：语料顺序 = s01 六相位 → s01 报文 → s02 六相位 → s02 报文（垃圾）→ 总结
+    const stub = await startLoopbackStub([
+      ...shardCorpusWithFinding("F100", ALPHA),
+      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
+      ...shardCorpusWithFinding("F100", BETA),
+      { text: "这不是 JSON", usage: ZERO_USAGE_REPLY },
+      { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
+    ]);
+    const mcp = await startMcpStub();
+    try {
+      const cwd = makeTempDir("review-pi-cli-cwd-");
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const configText = `${JSON.stringify(
+        {
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          limits: { split: { maxShardChars: 10_000 } },
+          mcp: {
+            servers: { stub: { transport: "http", url: mcp.url, headers: {}, timeoutMs: 10_000 } },
+            report: { server: "stub", tool: "report_events" },
+          },
+        },
+        null,
+        2,
+      )}\n`;
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(twoFileDiffForSharding()),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+        ],
+        { cwd, configText },
+      );
+
+      expect(run.status).toBe(0);
+      // mrReviewResult：只有 s01（Alpha）
+      const reported = mcp
+        .toolCalls()
+        .filter((call) => call.name === "mrReviewResult")
+        .map((call) => call.args.filePath);
+      expect(reported).toEqual([ALPHA]);
+      // s02 生成失败留痕
+      expect(run.stderr).toContain("跳过本片");
+
+      // tips：尽力而为——只有 Alpha 组；聚合重编号后 id = F001
+      const tipsPath = path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json");
+      expect(existsSync(tipsPath)).toBe(true);
+      const tipsDoc = JSON.parse(readFileSync(tipsPath, "utf8")) as {
+        filePath: string;
+        reviewTips: { id: string; code: string }[];
+      }[];
+      expect(tipsDoc.map((group) => group.filePath)).toEqual([ALPHA]);
+      expect(tipsDoc[0]?.reviewTips[0]?.id).toBe("F001");
+      expect(tipsDoc[0]?.reviewTips[0]?.code).toBe("public class Alpha {");
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  240_000,
+);
+
+test(
+  "统一 tips 全灭 → engine 回落（Q24a）：引擎按全量模式调用（无 skipTips），tips 注入 id/level",
+  async () => {
+    const stub = await startLoopbackStub([
+      ...oneFindingCorpusForReport(),
+      { text: "这不是 JSON", usage: ZERO_USAGE_REPLY }, // 报文生成失败 → 全灭
+      { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
+    ]);
+    const mcp = await startMcpStub();
+    // 内联引擎：记录收到的 skipTips，产出 10 键 engine 形态 tips（回折不走网关）
+    const engineDir = makeTempDir("review-pi-cli-engine-");
+    const receivedPath = path.join(engineDir, "received.json");
+    const enginePath = path.join(engineDir, "engine.mjs");
+    writeFileSync(
+      enginePath,
+      `import { writeFileSync } from "node:fs";
+export default async (source) => {
+  writeFileSync(${JSON.stringify(receivedPath)}, JSON.stringify({ skipTips: source.skipTips ?? null }));
+  return {
+    provenance: {
+      language: "zh",
+      terminologyVersion: 1,
+      findingLinks: source.findings.map((finding) => ({
+        sourceFindingId: finding.id,
+        projectedFindingId: finding.id,
+      })),
+    },
+    findings: source.findings.map((finding) => ({ ...finding, title: "[zh] " + finding.title })),
+    toolCallLog: source.toolCallLog,
+    tips: source.findings.map((finding) => ({
+      filePath: finding.file,
+      reviewTips: [{
+        code: (source.codeByFinding ?? {})[finding.id] ?? "",
+        review: "[engine] " + finding.title,
+        suggestion: "[engine] suggestion",
+        category: "安全",
+        subcategory: "engine",
+        severity: "Minor",
+        ruleId: "",
+        lineNum: finding.line,
+        source: "common-reviewer",
+        confidence: "Medium",
+      }],
+    })),
+  };
+};\n`,
+      "utf8",
+    );
+    try {
+      const cwd = makeTempDir("review-pi-cli-cwd-");
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const configText = `${JSON.stringify(
+        {
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          presentation: { engine: enginePath },
+          mcp: {
+            servers: { stub: { transport: "http", url: mcp.url, headers: {}, timeoutMs: 10_000 } },
+            report: { server: "stub", tool: "report_events" },
+          },
+        },
+        null,
+        2,
+      )}\n`;
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(goldenFixture("vul4j-1.diff")),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+        ],
+        { cwd, configText },
+      );
+
+      expect(run.status).toBe(0);
+      // mrReviewResult 因生成失败被跳过（引擎模式 ≠ 报文兜底）
+      expect(mcp.toolCalls().some((call) => call.name === "mrReviewResult")).toBe(false);
+      expect(run.stderr).toContain("跳过本片");
+      expect(run.stderr).toContain("回落");
+
+      // 引擎按全量模式调用（skipTips 未置 true——Q24a 回落路径）
+      const received = JSON.parse(readFileSync(receivedPath, "utf8")) as { skipTips: unknown };
+      expect(received.skipTips).toBeNull();
+
+      // tips 来自引擎 + withUnifiedKeys 注入 id/level（12 键形态一致）
+      const tipsPath = path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json");
+      expect(existsSync(tipsPath)).toBe(true);
+      const tipsDoc = JSON.parse(readFileSync(tipsPath, "utf8")) as {
+        filePath: string;
+        reviewTips: Record<string, unknown>[];
+      }[];
+      expect(tipsDoc[0]?.filePath).toBe("README.md");
+      expect(tipsDoc[0]?.reviewTips[0]).toMatchObject({
+        id: "F100",
+        level: "Minor",
+        review: "[engine] Sentinel finding title",
+        category: "安全",
+      });
+      // stdout 呈现档照常（引擎翻译）
+      const outcome = JSON.parse(run.stdout) as { findings: { title: string }[] };
+      expect(outcome.findings[0]?.title).toBe("[zh] Sentinel finding title");
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  240_000,
+);
+
+test(
+  "统一 tips 全灭且无 engine（Q24a）：本次不产分组意见、清陈旧，检视照常 exit 0",
+  async () => {
+    const stub = await startLoopbackStub([
+      ...oneFindingCorpusForReport(),
+      { text: "这不是 JSON", usage: ZERO_USAGE_REPLY }, // 报文生成失败 → 全灭
+      { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
+    ]);
+    const mcp = await startMcpStub();
+    try {
+      const cwd = makeTempDir("review-pi-cli-cwd-");
+      const outDir = makeTempDir("review-pi-cli-out-");
+      // 预置陈旧 tips（本次不产时必须清掉，否则读者分不清是不是本次的）
+      const runsDir = path.join(outDir, CLI_TASK_ID, "runs");
+      mkdirSync(runsDir, { recursive: true });
+      writeFileSync(path.join(runsDir, "reviews_tips_zh.json"), '{"stale":true}', "utf8");
+      writeFileSync(path.join(cwd, "review-result.json"), '{"stale":true}', "utf8");
+
+      const run = await runCliReview(
+        outDir,
+        writeMr(goldenFixture("vul4j-1.diff")),
+        {
+          gatewayBaseUrl: stub.baseUrl,
+          mcpServerUrl: mcp.url,
+        },
+        { cwd },
+      );
+
+      expect(run.status).toBe(0);
+      expect(run.stderr).toContain("统一 tips 全灭且无可回落引擎，本次不产分组意见");
+      // 陈旧清理：run 目录与 cwd 副本都不留
+      expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(false);
+      expect(existsSync(path.join(cwd, "review-result.json"))).toBe(false);
+      // mrReviewResult / endTask 语义不变
+      const names = mcp
+        .toolCalls()
+        .filter((call) => call.name !== "report_events")
+        .map((call) => call.name);
+      expect(names).toEqual(["startTask", "saveReviewSummary", "endTask"]);
+    } finally {
+      await stub.close();
+      await mcp.close();
     }
   },
   180_000,

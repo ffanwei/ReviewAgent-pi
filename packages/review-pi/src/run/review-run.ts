@@ -107,7 +107,22 @@ export interface ReviewRunInput {
    * 事件只读既有留痕（阶段/请求/工具/skill 会话），不进审计、不改 wire 字节。
    */
   readonly onProgress?: RunProgressSink;
+  /**
+   * 片级检视结果回调（ADR-0045）：每片 pass 完成、该片 findings 定型后调用
+   * 并 **await**（串行：上一片的回调完成才开始下一片）。单片路径 = 一次调用
+   * （`{index:1, total:1}`）。缺省不注入 = 零行为变化（不进审计、不改 wire 字节）。
+   *
+   * 旁路纪律：这是上报缝，不是检视链的一环——实现方保证**绝不抛错**（自身
+   * 负责 stderr 可见性）；本层仍防御性吞错，hook 失败绝不影响检视与退出码。
+   */
+  readonly onShardFindings?: ReviewShardFindingsHook;
 }
+
+/** 片级回调形状（ADR-0045）：label 与进度事件的分片标签同构（1-based） */
+export type ReviewShardFindingsHook = (
+  label: { readonly index: number; readonly total: number },
+  findings: readonly Finding[],
+) => Promise<void>;
 
 export interface ReviewRunResult {
   /** run 标识（毫秒时间戳 + 用例；审计文件名同源；#7 CLI stdout 契约） */
@@ -258,6 +273,25 @@ function planReviewShards(diff: string, split: SplitLimits): readonly Shard[] | 
 // 单遍路径（与 ADR-0039 之前的实现逐字节一致）
 // ---------------------------------------------------------------------------
 
+/**
+ * 片级回调调度（ADR-0045）：旁路纪律的最后一道闸——实现方应自吞错误，这里
+ * 仍防御性捕获（hook 抛错 = 实现方 bug），绝不把上报失败变成检视失败。
+ */
+async function notifyShardFindings(
+  input: ReviewRunInput,
+  label: { readonly index: number; readonly total: number },
+  findings: readonly Finding[],
+): Promise<void> {
+  if (input.onShardFindings === undefined) {
+    return;
+  }
+  try {
+    await input.onShardFindings(label, findings);
+  } catch {
+    // 旁路（ADR-0045 决策 3）：hook 自身负责 stderr 可见性；这里只保证不外溢
+  }
+}
+
 async function executeSinglePass(args: {
   readonly input: ReviewRunInput;
   readonly runtime: ReviewRuntime;
@@ -291,6 +325,8 @@ async function executeSinglePass(args: {
     ...(args.input.config !== undefined ? { config: args.input.config } : {}),
     emit: args.emit,
   });
+  // 片级上报缝（ADR-0045）：单片路径 = 一次调用，findings 已定型。
+  await notifyShardFindings(args.input, { index: 1, total: 1 }, pass.findings);
 
   const result: RunResult = {
     caseId: args.input.caseId,
@@ -383,6 +419,8 @@ async function executeShardedPasses(args: {
       emit: withShardLabel(args.emit, { index: shard.index, total }),
     });
     executed.push({ shard, pass });
+    // 片级上报缝（ADR-0045）：该片 findings 定型、下一片开始前（串行 await）。
+    await notifyShardFindings(args.input, { index: shard.index, total }, pass.findings);
     shardStartedAt = pass.finishedAt;
   }
 

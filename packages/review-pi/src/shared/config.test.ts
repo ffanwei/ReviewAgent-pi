@@ -600,6 +600,7 @@ describe("mcp 配置块（ADR-0037）", () => {
     expect(config.mcp?.report).toEqual({
       server: "ops",
       tool: "report_events",
+      task: true,
       include: ["run.start", "run.end", "phase", "request.end"],
       batch: { maxEvents: 50, maxDelayMs: 2_000 },
       queue: { maxEvents: 1_000 },
@@ -615,11 +616,35 @@ describe("mcp 配置块（ADR-0037）", () => {
     const snapshot = configSnapshot(config);
     expect(snapshot.secret["mcp.servers.ops.headers"]).toBe("set");
     expect(snapshot.values["mcp.report.tool"]).toBe("report_events");
+    expect(snapshot.values["mcp.report.task"]).toBe(true);
     expect(snapshot.values["mcp.servers.ops.url"]).toBe("https://mcp.example.com/mcp");
     // 秘密面纪律：值、长度、header 名都不出现在快照里
     expect(JSON.stringify(snapshot)).not.toContain("top-secret-token");
     expect(snapshot.overridden).toContain("mcp.report.tool");
     expect(snapshot.overridden).toContain("mcp.servers.ops.headers");
+  });
+
+  test("mcp.report.task（ADR-0045）：显式 false 关业务 tool；非布尔 fail fast", () => {
+    const off = loadConfig({
+      configPath: writeConfig(
+        withMcp(`{
+          "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+          "report": { "server": "ops", "tool": "report_events", "task": false }
+        }`),
+      ),
+    });
+    expect(off.config.mcp?.report.task).toBe(false);
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+            "report": { "server": "ops", "tool": "report_events", "task": "false" }
+          }`),
+        ),
+      }),
+    ).toThrowError(/mcp\.report\.task must be true or false/);
   });
 
   test("只有 servers 没有 report → null（配置了但不上报）", () => {

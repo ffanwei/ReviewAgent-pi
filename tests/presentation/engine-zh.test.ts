@@ -281,7 +281,7 @@ test("default export：同文件同行多条 finding → tips 只留首条，且
   });
 
   // 输出去重：line 177 只出现一次（保留首条 F001，不因 P0 择优）
-  const tips = projected.tips.flatMap((group) => group.reviewTips);
+  const tips = (projected.tips ?? []).flatMap((group) => group.reviewTips);
   expect(tips.map((tip) => tip.lineNum)).toEqual([177, 178]);
   expect(tips[0]?.severity).toBe("Minor");
   // 建议只为保留行生成：2 条（不是 3 条）
@@ -336,7 +336,7 @@ test("default export：codeByFinding 填 code、规则包 frontmatter id 建白�
       rulePackDirs: [packRoot],
       runtime: RUNTIME,
     });
-    const tip = projected.tips[0]?.reviewTips[0];
+    const tip = projected.tips?.[0]?.reviewTips[0];
     expect(tip).toMatchObject({
       code: "catch (Exception e) { }",
       suggestion: "改用 PreparedStatement",
@@ -364,8 +364,28 @@ test("default export：单条建议生成失败 ⇒ 该条 suggestion 空串，z
   const projected = await projectZhPresentation(sampleSource());
 
   expect(projected.findings[0]?.title).toBe("【中译】");
-  expect(projected.tips[0]?.reviewTips[0]?.suggestion).toBe("");
-  expect(projected.tips[0]?.reviewTips[0]?.review).toBe("【中译】。【中译】");
+  expect(projected.tips?.[0]?.reviewTips[0]?.suggestion).toBe("");
+  expect(projected.tips?.[0]?.reviewTips[0]?.review).toBe("【中译】。【中译】");
+});
+
+test("default export：skipTips=true（ADR-0045 统一 tips）⇒ 无 tips、无建议调用、zh 翻译照常", async () => {
+  const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) =>
+    completionResponse("【中译】"),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const projected = await projectZhPresentation({ ...sampleSource(), skipTips: true });
+
+  // stdout 呈现档照常（title 译中文）
+  expect(projected.findings[0]?.title).toBe("【中译】");
+  // tips 缺席（统一路径自产，CLI 侧本就无视引擎 tips）
+  expect(projected.tips).toBeUndefined();
+  // 只有翻译调用（1 条 finding 的 title + description）；「修复建议作者」零调用
+  const bodies = fetchMock.mock.calls.map((call) =>
+    String((call[1] as RequestInit | undefined)?.body ?? ""),
+  );
+  expect(bodies.some((body) => body.includes("修复建议作者"))).toBe(false);
+  expect(bodies.length).toBeGreaterThan(0);
 });
 
 // 类型形状锚定：default export 即 CLI 缝协议（(source + runtime) => ProjectedReviewDocument）

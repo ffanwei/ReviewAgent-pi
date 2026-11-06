@@ -52,6 +52,14 @@ export interface PresentationSource {
    * 只给目录，不在内核解析规则文件）。
    */
   readonly rulePackDirs?: readonly string[];
+  /**
+   * 本次不要 tips（ADR-0045 统一 tips）：业务上报开启时 CLI 置 true——tips 由
+   * 片级统一生成调用产出，引擎只做 stdout 呈现档（省掉 suggestion 并发生成）。
+   * 内置引擎据此跳过建议生成与 tips 组装；第三方引擎不认识该键也无害——
+   * CLI 侧本就无视引擎回的 tips。唯一例外：统一生成**全灭**时的 engine 回落
+   * 路径不带该键（引擎全量产 tips，Q24/Q26）。
+   */
+  readonly skipTips?: boolean;
 }
 
 /**
@@ -69,14 +77,23 @@ export interface PresentationRuntime {
   readonly requestTimeoutMs: number;
 }
 
-/** 分组式检视意见（ADR-0017）：单条 tip 的 10 键严格封闭结构 */
+/**
+ * 分组式检视意见（ADR-0017）：单条 tip 的结构。引擎路径 = 10 键严格封闭
+ * （`validateTip` 把守）；**统一 tips 路径（ADR-0045）= 12 键**：在 10 键之上
+ * 增加 `id`（聚合 finding id，可寻址）与 `level`（平台四档严重度，与
+ * `mrReviewResult` 同口径）——只增不删（用户约束）。
+ */
 export interface ReviewTipLike {
+  /** 统一路径独有：聚合 finding id（`F001…`；tips ↔ reviews_en ↔ 平台报文可 join） */
+  readonly id?: string;
   readonly code: string;
   readonly review: string;
   readonly suggestion: string;
   readonly category: string;
   readonly subcategory: string;
   readonly severity: string;
+  /** 统一路径独有：平台四档（Suggestion/Minor/Major/Fatal；与 mrReviewResult 同口径） */
+  readonly level?: string;
   readonly ruleId: string;
   readonly lineNum: number;
   readonly source: string;

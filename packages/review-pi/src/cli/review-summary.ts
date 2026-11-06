@@ -1,0 +1,155 @@
+import type { FetchFunction } from "@earendil-works/pi-ai";
+
+import type { Finding } from "../contracts/finding.js";
+import { DEFAULT_GATEWAY_MAX_TOKENS } from "../shared/config.js";
+import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
+import type { ReportLlmRuntime } from "./report-payload.js";
+import { completeOneShot } from "./one-shot-llm.js";
+
+/**
+ * 收尾总结生成（ADR-0045 决策 2）：中文 tips（辅以 findings 结构化字段）→
+ * Markdown 总结报告，供 `saveReviewSummary` 上报。
+ *
+ * 降级链（产物必须有、内容允许降级）：
+ * 1. 模型调用（输入 = 中文 tips + findings 摘要）；
+ * 2. 投影降级 / 无 tips ⇒ 输入退为英文 findings（Q10 决策）；
+ * 3. 模型调用失败 / 超时 ⇒ **确定性模板** Markdown（findings 计数 + 按文件清单），
+ *    `degradedReason` 留痕——`saveReviewSummary` 一定会被调用。
+ */
+
+export interface ReviewSummaryInput {
+  /** 投影后的中文分组意见（投影降级 / 未配置引擎时缺席） */
+  readonly tips?: ReviewTipsDocumentLike;
+  /** 聚合 findings（英文真源；结构化字段的稳定底座） */
+  readonly findings: readonly Finding[];
+  /** 各片已上报的文件路径（按片序拼接；供总结提及平台已收到的结果） */
+  readonly reportedFiles?: readonly string[];
+  readonly runtime: ReportLlmRuntime;
+  readonly fetch?: FetchFunction;
+}
+
+export interface ReviewSummaryResult {
+  readonly markdown: string;
+  /** 模板降级的原因（模型路径成功时缺席） */
+  readonly degradedReason?: string;
+}
+
+const SUMMARY_MAX_TOKENS = DEFAULT_GATEWAY_MAX_TOKENS;
+
+const SUMMARY_SYSTEM_PROMPT = [
+  "You write the final summary report of a code review, in Chinese, as Markdown.",
+  "Structure: a one-paragraph overview (what was reviewed, overall risk impression),",
+  "then a severity breakdown of the findings, then per-file highlights",
+  "(only files that have findings), then a closing note on residual risk.",
+  "Be factual: only use the provided findings and tips; do not invent issues.",
+  "Reply with the Markdown document only (no surrounding code fences).",
+].join("\n");
+
+export async function buildReviewSummary(input: ReviewSummaryInput): Promise<ReviewSummaryResult> {
+  const completion = await completeOneShot({
+    baseUrl: input.runtime.baseUrl,
+    apiKey: input.runtime.apiKey,
+    modelId: input.runtime.modelId,
+    system: SUMMARY_SYSTEM_PROMPT,
+    user: buildSummaryUserMessage(input),
+    timeoutMs: input.runtime.timeoutMs,
+    maxTokens: SUMMARY_MAX_TOKENS,
+    ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+  });
+  if (completion.ok) {
+    const markdown = completion.text.trim();
+    if (markdown !== "") {
+      return { markdown };
+    }
+  }
+  return {
+    markdown: renderTemplateSummary(input),
+    ...(completion.ok
+      ? { degradedReason: "model returned empty summary" }
+      : { degradedReason: completion.reason }),
+  };
+}
+
+function buildSummaryUserMessage(input: ReviewSummaryInput): string {
+  const sections: string[] = [];
+  sections.push(
+    input.tips !== undefined
+      ? "Grouped review tips (Chinese, projected):"
+      : "Projected Chinese tips are unavailable for this run; summarize from the English findings:",
+  );
+  sections.push(
+    JSON.stringify(
+      input.tips ?? input.findings.map((finding) => summaryFindingEntry(finding)),
+      null,
+      2,
+    ),
+  );
+  sections.push("Structured finding summary (English source of truth):");
+  sections.push(
+    JSON.stringify(
+      {
+        total: input.findings.length,
+        bySeverity: countBySeverity(input.findings),
+        files: [...new Set(input.findings.map((finding) => finding.file))],
+      },
+      null,
+      2,
+    ),
+  );
+  if (input.reportedFiles !== undefined && input.reportedFiles.length > 0) {
+    sections.push("Files already reported to the platform (in shard order):");
+    sections.push(JSON.stringify(input.reportedFiles, null, 2));
+  }
+  return sections.join("\n");
+}
+
+function summaryFindingEntry(finding: Finding): Record<string, unknown> {
+  return {
+    file: finding.file,
+    line: finding.line,
+    severity: finding.severity,
+    category: finding.category,
+    title: finding.title,
+  };
+}
+
+function countBySeverity(findings: readonly Finding[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const finding of findings) {
+    counts[finding.severity] = (counts[finding.severity] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/** 确定性模板（降级档）：只陈述事实（计数 + 清单），不做任何发挥 */
+function renderTemplateSummary(input: ReviewSummaryInput): string {
+  const findings = input.findings;
+  const lines: string[] = ["# 检视总结", ""];
+  if (findings.length === 0) {
+    lines.push("本次检视未发现缺陷。");
+    return lines.join("\n");
+  }
+  const counts = countBySeverity(findings);
+  lines.push(
+    `本次检视共发现 ${String(findings.length)} 条问题（${Object.entries(counts)
+      .map(([severity, count]) => `${severity} ${String(count)}`)
+      .join(" / ")}）。`,
+    "",
+    "## 按文件",
+    "",
+  );
+  const byFile = new Map<string, readonly Finding[]>();
+  for (const finding of findings) {
+    const group = byFile.get(finding.file) ?? [];
+    byFile.set(finding.file, [...group, finding]);
+  }
+  for (const [file, group] of byFile) {
+    lines.push(`- \`${file}\`：${String(group.length)} 条`);
+    for (const finding of group) {
+      lines.push(
+        `  - [${finding.severity}] ${finding.title}（line ${String(finding.line)}）`,
+      );
+    }
+  }
+  return lines.join("\n");
+}

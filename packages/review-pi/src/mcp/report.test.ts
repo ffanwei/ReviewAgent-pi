@@ -15,7 +15,7 @@ interface RecordedCall {
   readonly params: Record<string, unknown>;
 }
 
-type Outcome = "ok" | "reject" | "hang";
+type Outcome = "ok" | "isError" | "reject" | "hang";
 
 function fakeTransport(
   decide: (call: RecordedCall, index: number) => Outcome = () => "ok",
@@ -43,7 +43,9 @@ function fakeTransport(
       const result =
         call.method === "initialize"
           ? { protocolVersion: "2025-06-18", serverInfo: { name: "fake", version: "1" } }
-          : { content: [{ type: "text", text: "ok" }] };
+          : outcome === "isError"
+            ? { content: [{ type: "text", text: "tool rejected" }], isError: true }
+            : { content: [{ type: "text", text: "ok" }] };
       return {
         status: 200,
         contentType: "application/json",
@@ -60,6 +62,7 @@ function reportConfig(overrides: Partial<ReportConfig> = {}): ReportConfig {
   return {
     server: { transport: "http", url: "http://127.0.0.1:1/mcp", headers: {}, timeoutMs: 100 },
     tool: "report_events",
+    task: true,
     include: new Set(MCP_REPORT_EVENT_TYPES),
     batch: { maxEvents: 50, maxDelayMs: 60_000 },
     queue: { maxEvents: 1_000 },
@@ -332,5 +335,125 @@ describe("createMcpReporter", () => {
     });
     expect(JSON.stringify(event)).not.toContain("Secret.java");
     await reporter.close();
+  });
+});
+
+describe("业务 tool 面（ADR-0045）", () => {
+  /** 取出全部业务 `tools/call`（非批量事件通道） */
+  function taskCallsOf(transport: { readonly calls: RecordedCall[] }): {
+    readonly name: string;
+    readonly args: Record<string, unknown>;
+  }[] {
+    return transport.calls
+      .filter((call) => call.method === "tools/call")
+      .map((call) => ({
+        name: String(call.params.name),
+        args: (call.params.arguments ?? {}) as Record<string, unknown>,
+      }))
+      .filter((call) => call.name !== "report_events");
+  }
+
+  test("startTask / saveReviewSummary / mrReviewResult：平铺参数直发，成功即 ok", async () => {
+    const transport = fakeTransport();
+    const reporter = await createMcpReporter({
+      config: reportConfig(),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+
+    expect(await reporter.task.startTask({ taskId: "t-1" })).toEqual({ ok: true });
+    expect(await reporter.task.saveReviewSummary({ taskId: "t-1", description: "# 总结" })).toEqual({
+      ok: true,
+    });
+    expect(
+      await reporter.task.reportFileResult({
+        taskId: "t-1",
+        filePath: "src/Foo.java",
+        reviewTips: [
+          {
+            code: "int x = 1;",
+            review: "[缺陷类型] 描述。影响评估：x。",
+            suggestion: "[重构思路] 思路。代码示例：```x```",
+            category: "可靠性",
+            subcategory: "空指针",
+            level: "Major",
+            ruleId: null,
+            lineNum: "3",
+          },
+        ],
+      }),
+    ).toEqual({ ok: true });
+
+    const calls = taskCallsOf(transport);
+    expect(calls.map((call) => call.name)).toEqual([
+      "startTask",
+      "saveReviewSummary",
+      "mrReviewResult",
+    ]);
+    expect(calls[0]?.args).toEqual({ taskId: "t-1" });
+    expect(calls[1]?.args).toEqual({ taskId: "t-1", description: "# 总结" });
+    expect(calls[2]?.args).toMatchObject({
+      taskId: "t-1",
+      filePath: "src/Foo.java",
+      reviewTips: [{ lineNum: "3", category: "可靠性" }],
+    });
+    await reporter.close();
+  });
+
+  test("endTask：服务端 isError → ok:false 带原因；绝不抛错", async () => {
+    const transport = fakeTransport((call) =>
+      call.method === "tools/call" && call.params.name === "endTask" ? "isError" : "ok",
+    );
+    const reporter = await createMcpReporter({
+      config: reportConfig(),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+    const outcome = await reporter.task.endTask({ taskId: "t-1" });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.reason).toContain("server error");
+    }
+    await reporter.close();
+  });
+
+  test("网络失败 → ok:false；单次尝试（不重试、无退避拖延）", async () => {
+    const transport = fakeTransport((call) =>
+      call.method === "tools/call" && call.params.name === "startTask" ? "reject" : "ok",
+    );
+    const reporter = await createMcpReporter({
+      config: reportConfig(),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+    const before = transport.calls.length;
+    const outcome = await reporter.task.startTask({ taskId: "t-1" });
+    expect(outcome.ok).toBe(false);
+    // 单次尝试：失败的 tools/call 只出现一次（批量通道的 3 次退避不适用业务面）
+    const failedCalls = transport.calls
+      .slice(before)
+      .filter((call) => call.method === "tools/call" && call.params.name === "startTask");
+    expect(failedCalls).toHaveLength(1);
+    await reporter.close();
+  });
+
+  test("close 之后 → ok:false（reporter closed），不再发请求", async () => {
+    const transport = fakeTransport();
+    const reporter = await createMcpReporter({
+      config: reportConfig(),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+    await reporter.close();
+    const before = transport.calls.length;
+    expect(await reporter.task.startTask({ taskId: "t-1" })).toEqual({
+      ok: false,
+      reason: "reporter closed",
+    });
+    expect(transport.calls.length).toBe(before);
   });
 });

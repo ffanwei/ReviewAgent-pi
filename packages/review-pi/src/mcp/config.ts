@@ -10,6 +10,8 @@ import { ConfigError, type McpServerSettings, type ResolvedConfig } from "../sha
 export interface ReportConfig {
   readonly server: McpServerSettings;
   readonly tool: string;
+  /** 业务 tool 开关（ADR-0045）：`mcp.report.task`，缺省 true */
+  readonly task: boolean;
   readonly include: ReadonlySet<McpReportEventType>;
   readonly batch: { readonly maxEvents: number; readonly maxDelayMs: number };
   readonly queue: { readonly maxEvents: number };
@@ -33,6 +35,7 @@ export function resolveReportConfig(config: ResolvedConfig): ReportConfig | null
   return {
     server,
     tool: mcp.report.tool,
+    task: mcp.report.task,
     include: new Set(mcp.report.include),
     batch: mcp.report.batch,
     queue: mcp.report.queue,

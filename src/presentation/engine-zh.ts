@@ -85,6 +85,12 @@ export interface PresentationEngineInput extends ReviewPresentationSource {
   readonly codeByFinding?: Readonly<Record<string, string>>;
   readonly rulePackDirs?: readonly string[];
   /**
+   * 本次不要 tips（ADR-0045 统一 tips）：CLI 在业务上报开启且统一生成有覆盖时
+   * 置 true——本引擎只做 stdout 呈现档翻译，跳过建议生成与 tips 组装（省掉
+   * 每条 finding 一次的 suggestion 网关调用）。
+   */
+  readonly skipTips?: boolean;
+  /**
    * 呈现运行时接入点（ADR-0025：网关/凭据/模型/限值全显式穿参）——
    * 引擎不读任何环境变量；缺席 = 装配期 fail fast（CLI 缝归呈现降级）。
    */
@@ -93,13 +99,16 @@ export interface PresentationEngineInput extends ReviewPresentationSource {
 
 /** 引擎产物 = zh 投影文档 + 分组意见（tips 与 zh 弱耦合，形状由 CLI 缝校验） */
 export interface EnginePresentationDocument extends ProjectedReviewDocument {
-  readonly tips: ReviewTipsDocument;
+  /** `skipTips: true` 时缺席（CLI 侧本就无视引擎 tips，统一路径自产） */
+  readonly tips?: ReviewTipsDocument;
 }
 
 /**
  * 投影呈现文档（CLI 缝调用入口）：装配网关翻译引擎 → zh 档翻译投影 →
  * 分组意见（ADR-0017）。runtime 缺失/非法在装配期抛错（CLI 缝归 degraded，
  * 呈现降级英文源）；建议生成失败逐条降级为空串（不拖累 zh）。
+ * `skipTips: true` 时跳过建议生成与 tips 组装（ADR-0045：tips 由统一生成
+ * 产出，引擎只负责 stdout 呈现档）。
  */
 export default async function projectZhPresentation(
   source: PresentationEngineInput,
@@ -117,6 +126,10 @@ export default async function projectZhPresentation(
     { engine: createGatewayTranslateEngine(gateway) },
     { source, language: "zh" },
   );
+  if (source.skipTips === true) {
+    // ADR-0045 统一 tips：省掉规则 id 白名单读取与逐条建议生成
+    return projected;
+  }
   const codeByFinding = source.codeByFinding ?? {};
   const knownRuleIds = await loadKnownRuleIds(source.rulePackDirs ?? []);
   // ADR-0023：tips 会对「同文件同行」去重，建议只为保留下来的行生成——

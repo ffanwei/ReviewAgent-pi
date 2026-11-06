@@ -437,3 +437,77 @@ test("第二片失败：退出抛错、不写聚合产物，已完成的片产�
       : undefined,
   ).toBe("failed");
 });
+
+// ---- 片级上报回调（ADR-0045：onShardFindings） ----
+
+test("单片路径：hook 恰好一次，label {index:1,total:1}，findings 即该片定型结果", async () => {
+  const runsRoot = tempRunsRoot();
+  const runtime = splitRuntime({ enabled: false, maxShardChars: 200 });
+  const script = fakeFetch(sixPhaseWithCandidate(candidate("C1", "src/Foo.java", 3)));
+  const seen: { label: { index: number; total: number }; findings: unknown[] }[] = [];
+
+  const run = await runReview({
+    ...baseInput(runsRoot, BLOCK_A, runtime, script.fetch),
+    onShardFindings: async (label, findings) => {
+      seen.push({ label, findings: [...findings] });
+    },
+  });
+
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.label).toEqual({ index: 1, total: 1 });
+  expect(seen[0]?.findings).toEqual(run.record.baseline.findings);
+  // 不注入任何上报语义：请求面与产物面不受影响（6 请求、聚合产物在位）
+  expect(script.requests).toHaveLength(6);
+  expect(run.record.baseline.findings).toHaveLength(1);
+});
+
+test("分片路径：每片一次、label 带片号、串行 await（上一片回调完成才开下一片）", async () => {
+  const runsRoot = tempRunsRoot();
+  const runtime = splitRuntime({
+    enabled: true,
+    maxShardChars: Math.max(BLOCK_A.length, BLOCK_B.length) + 1,
+    maxShards: 4,
+  });
+  // 第 1 片产 1 条候选（文件 A），第 2 片产 1 条候选（文件 B）
+  const script = fakeFetch([
+    ...sixPhaseWithCandidate(candidate("C1", "src/main/java/com/example/Alpha.java", 3)),
+    ...sixPhaseWithCandidate(candidate("C2", "src/main/java/com/example/Beta.java", 5)),
+  ]);
+  const order: string[] = [];
+  const labels: { index: number; total: number }[] = [];
+
+  await runReview({
+    ...baseInput(runsRoot, TWO_FILE_DIFF, runtime, script.fetch),
+    onShardFindings: async (label, findings) => {
+      labels.push({ ...label });
+      order.push(`s${String(label.index)}:start(${String(findings.length)})`);
+      // 让第 1 片的回调慢一拍：若 run 层不等它，s2 的 start 会插到 s1:end 之前
+      if (label.index === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      order.push(`s${String(label.index)}:end`);
+    },
+  });
+
+  expect(labels).toEqual([
+    { index: 1, total: 2 },
+    { index: 2, total: 2 },
+  ]);
+  expect(order).toEqual(["s1:start(1)", "s1:end", "s2:start(1)", "s2:end"]);
+});
+
+test("hook 抛错 = 实现方 bug：run 层吞掉，检视照常成功（旁路纪律）", async () => {
+  const runsRoot = tempRunsRoot();
+  const runtime = splitRuntime({ enabled: false, maxShardChars: 200 });
+  const script = fakeFetch(sixPhaseNoTool());
+
+  const run = await runReview({
+    ...baseInput(runsRoot, BLOCK_A, runtime, script.fetch),
+    onShardFindings: async () => {
+      throw new Error("reporting blew up");
+    },
+  });
+
+  expect(run.record.baseline.findings).toEqual([]);
+  expect(script.requests).toHaveLength(6);
+});

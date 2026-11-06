@@ -1,6 +1,7 @@
 # 0037. MCP 上报：把进度、状态与结果经进度事件流外发
 
 **状态**：已接受（2026-11-04；同日落地，见文末「实施记录」）
+**后续修订**：[ADR-0045](0045-mcp-business-task-tools.md) 在本 ADR 的**事件上报面**之上加了**业务调用**层（`startTask` / `endTask` / `saveReviewSummary` / `mrReviewResult` 四个 tool，片级结果 + 总结上报）。本 ADR 的事件契约（schemaVersion / streamId / seq / include / findings 档位 / 旁路纪律）原样有效，两层共用同一 server 连接。
 **关联**：ADR-0016（运行进度投影：只投影既有留痕、不新增审计键、不改 wire 字节、不改退出码）、ADR-0025（用户级 JSONC 单配置源）、ADR-0027（外部能力默认降级、只认显式输入）、ADR-0030（收尾摘要与进度旗标解耦）、ADR-0035（单包发行、内核按 npm 依赖精确锁版）、ADR-0038（退役对外部真源的逐字节对照）
 **跨仓**：本 ADR 为本仓 pi 线序列 0037；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 

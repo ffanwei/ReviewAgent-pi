@@ -254,12 +254,18 @@ export interface McpReportBatchSettings {
   readonly maxDelayMs: number;
 }
 
-/** 上报策略（ADR-0037 决策 6） */
+/** 上报策略（ADR-0037 决策 6；业务 tool 开关为 ADR-0045） */
 export interface McpReportSettings {
   /** 指向 `servers` 里的名字；装载期校验存在 */
   readonly server: string;
   /** 单槽位接收工具（批量塞进 `events` 数组） */
   readonly tool: string;
+  /**
+   * 业务 tool 开关（ADR-0045）：true = 调 `startTask` / `endTask` /
+   * `saveReviewSummary` / `mrReviewResult`；false = 只发进度事件。
+   * 缺省 true——老 server 没有这批 tool 时可一行关闭（省得日志一片红字）。
+   */
+  readonly task: boolean;
   readonly include: readonly McpReportEventType[];
   readonly batch: McpReportBatchSettings;
   readonly queue: { readonly maxEvents: number };
@@ -607,6 +613,7 @@ const MCP_SERVER_KEYS = ["transport", "url", "headers", "timeoutMs"] as const;
 const MCP_REPORT_KEYS = [
   "server",
   "tool",
+  "task",
   "include",
   "batch",
   "queue",
@@ -886,6 +893,8 @@ function parseMcp(raw: unknown, warnings: string[]): McpSettings | null {
         `${known.length === 0 ? "mcp.servers is empty" : `known: ${known.join(", ")}`})`,
     );
   }
+  // 业务 tool 开关（ADR-0045）：缺省 true（要业务上报就真调；老 server 一行关闭）
+  const task = boolOr(reportObj.task, "mcp.report.task", true);
   const include = parseMcpInclude(reportObj.include);
 
   const batchObj = optionalObject(reportObj.batch, "mcp.report.batch", warnings);
@@ -913,7 +922,7 @@ function parseMcp(raw: unknown, warnings: string[]): McpSettings | null {
 
   return {
     servers,
-    report: { server, tool, include, batch, queue, flushTimeoutMs, findings: findingsRaw },
+    report: { server, tool, task, include, batch, queue, flushTimeoutMs, findings: findingsRaw },
   };
 }
 
@@ -1021,6 +1030,7 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     values["mcp.report.include"] = mcp.report.include;
     values["mcp.report.queue.maxEvents"] = mcp.report.queue.maxEvents;
     values["mcp.report.server"] = mcp.report.server;
+    values["mcp.report.task"] = mcp.report.task;
     values["mcp.report.tool"] = mcp.report.tool;
   }
   return sortKeys(values);
@@ -1388,6 +1398,10 @@ ${excludeGlobLines}
   //   "report": {
   //     "server": "ops",
   //     "tool": "report_events",
+  //     // 业务 tool 开关（ADR-0045）：true = 额外调 startTask / endTask /
+  //     // saveReviewSummary / mrReviewResult（任务生命周期 + 按文件结果 + 总结）；
+  //     // 服务端没有这批 tool 时置 false，只发进度事件。
+  //     "task": true,
   //     // 缺省只报 run.start / run.end / phase / request.end；tool.* 与 skill.* 频率最高。
   //     "include": ["run.start", "run.end", "phase", "request.end"],
   //     "batch": { "maxEvents": 50, "maxDelayMs": 2000 },
