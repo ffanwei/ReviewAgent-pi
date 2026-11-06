@@ -1,7 +1,7 @@
 # 0037. MCP 上报：把进度、状态与结果经进度事件流外发
 
 **状态**：已接受（2026-11-04；同日落地，见文末「实施记录」）
-**后续修订**：[ADR-0045](0045-mcp-business-task-tools.md) 在本 ADR 的**事件上报面**之上加了**业务调用**层（`startTask` / `endTask` / `saveReviewSummary` / `mrReviewResult` 四个 tool，片级结果 + 总结上报）。本 ADR 的事件契约（schemaVersion / streamId / seq / include / findings 档位 / 旁路纪律）原样有效，两层共用同一 server 连接。
+**后续修订**：[ADR-0045](0045-mcp-business-task-tools.md) 在本 ADR 的**事件上报面**之上加了**业务调用**层（`startTask` / `endTask` / `saveReviewSummary` / `mrReviewResult` 四个 tool，片级结果 + 总结上报）。本 ADR 的事件契约（schemaVersion / streamId / seq / include / findings 档位 / 旁路纪律）原样有效，两层共用同一 server 连接。**`mcp.report.tool` 已改为可选**（ADR-0045 后默认形态）：缺席 = 事件通道整体关闭，只调四个业务 tool——最小配置只需 `servers` + `report.server`；显式给 `tool` 才启用事件批量通道（其余键 `include` / `batch` / `queue` / `flushTimeoutMs` / `findings` 仅对事件通道生效）。**`mcp.servers.*.transport` 新增 `"http-sse"`**（老式 HTTP+SSE 传输，2024-11-05 规范形态）：`GET {url}` 长连接收 `endpoint` 事件 → 消息 POST 到该端点 → **响应从 SSE 流回来**（按 JSON-RPC id 关联）；`url` 语义随形态变化——`http` 填消息端点、`http-sse` 填 SSE 端点。`Transport` 接口不变，client/reporter 零感知；stdio 仍不在范围内。
 **关联**：ADR-0016（运行进度投影：只投影既有留痕、不新增审计键、不改 wire 字节、不改退出码）、ADR-0025（用户级 JSONC 单配置源）、ADR-0027（外部能力默认降级、只认显式输入）、ADR-0030（收尾摘要与进度旗标解耦）、ADR-0035（单包发行、内核按 npm 依赖精确锁版）、ADR-0038（退役对外部真源的逐字节对照）
 **跨仓**：本 ADR 为本仓 pi 线序列 0037；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 

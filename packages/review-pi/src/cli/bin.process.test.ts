@@ -219,6 +219,8 @@ interface RunBinOptions {
   readonly presentationEngine?: string;
   /** MCP 服务端 URL（写进配置 `mcp.servers.stub` + `mcp.report`；缺席 = 不配上报） */
   readonly mcpServerUrl?: string;
+  /** `mcp.report.tool`（事件槽位；**缺席 = 事件通道关闭**，只调四个业务 tool——ADR-0045 后默认形态） */
+  readonly mcpEventTool?: string;
   /** `mcp.report.task`（ADR-0045 业务 tool 开关；缺省 true——只在给了 mcpServerUrl 时写） */
   readonly mcpTask?: boolean;
   /** 直接指定配置文件全文（覆盖默认最小配置） */
@@ -272,7 +274,7 @@ function minimalConfigText(options: RunBinOptions): string {
               },
               report: {
                 server: "stub",
-                tool: "report_events",
+                ...(options.mcpEventTool !== undefined ? { tool: options.mcpEventTool } : {}),
                 ...(options.mcpTask !== undefined ? { task: options.mcpTask } : {}),
               },
             },
@@ -2078,6 +2080,7 @@ test(
       const run = await runCliReview(outDir, mrFile, {
         gatewayBaseUrl: stub.baseUrl,
         mcpServerUrl: mcp.url,
+        mcpEventTool: "report_events",
       });
 
       // 旁路纪律：exit 0，stdout 键集不受影响
@@ -2192,6 +2195,7 @@ test(
       const run = await runCliReview(outDir, mrFile, {
         gatewayBaseUrl: stub.baseUrl,
         mcpServerUrl: mcp.url,
+        mcpEventTool: "report_events",
         mcpTask: false,
       });
 
@@ -2533,6 +2537,104 @@ test(
         .filter((call) => call.name !== "report_events")
         .map((call) => call.name);
       expect(names).toEqual(["startTask", "saveReviewSummary", "endTask"]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "reviewer.stripModelPrefix：wire 的 model 字段剥掉最后一个 / 前的所有（--model pan/test-model → test-model）",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const configText = `${JSON.stringify(
+        {
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl, stripModelPrefix: true },
+        },
+        null,
+        2,
+      )}\n`;
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(goldenFixture("vul4j-1.diff")),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--model",
+          "pan/test-model",
+        ],
+        { configText },
+      );
+
+      expect(run.status).toBe(0);
+      // 全部检视请求的 wire model = 剥前缀后的 id；生效值全面一致
+      // （参数回显 / 审计 / wire 都只见 test-model，前缀不出现在任何面）
+      const models = stub
+        .requests()
+        .filter((record) => record.method === "POST")
+        .map((record) => (record.body as { model?: unknown } | undefined)?.model);
+      expect(models.length).toBeGreaterThanOrEqual(6);
+      expect(new Set(models)).toEqual(new Set(["test-model"]));
+      expect(run.stderr).toContain("test-model");
+      expect(run.stderr).not.toContain("pan/");
+      // 审计记生效值（发出的就是它）
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as { model: string };
+      expect(audit.model).toBe("test-model");
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "默认形态（不配 tool，ADR-0045 后）：只调四个业务 tool，零事件调用、无统计行、tips 照常产出",
+  async () => {
+    const stub = await startLoopbackStub([
+      ...oneFindingCorpusForReport(),
+      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
+      { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
+    ]);
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      // 只给 mcpServerUrl：配置里没有 tool / include / task——最小默认形态
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      // 服务端收到的就是四个业务 tool（顺序契约），一个事件都没有
+      expect(mcp.toolCalls().map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      // 事件通道关闭：不打印事件统计行
+      expect(run.stderr).not.toContain("MCP 上报 sent");
+      // 统一 tips 照常产出（与业务调用无关的事件面缺席不影响）
+      const tipsPath = path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json");
+      expect(existsSync(tipsPath)).toBe(true);
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
     } finally {
       await stub.close();
       await mcp.close();

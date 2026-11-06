@@ -8,6 +8,10 @@ export { MCP_CLIENT_NAME, SUPPORTED_PROTOCOL_VERSIONS, type McpClient, type Serv
 export { resolveReportConfig, type ReportConfig } from "./config.js";
 export { createMcpReporter, type CreateMcpReporterOptions, type McpReporter, type TaskCallResult } from "./report.js";
 export { createHttpTransport, type HttpTransportOptions, type Transport, type TransportResponse } from "./transport.js";
+export {
+  createLegacySseTransport,
+  type LegacySseTransportOptions,
+} from "./legacy-sse-transport.js";
 export { ProtocolError, type JsonRpcRequest, type JsonRpcSuccess, type JsonRpcFailure } from "./protocol.js";
 export {
   AGENT_REVIEW_CATEGORIES,

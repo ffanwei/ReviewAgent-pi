@@ -9,6 +9,7 @@ import type {
 import type { RunProgressEvent, RunProgressSink } from "../contracts/progress.js";
 import { createMcpClient, MCP_CLIENT_NAME } from "./client.js";
 import type { ReportConfig } from "./config.js";
+import { createLegacySseTransport } from "./legacy-sse-transport.js";
 import {
   MCP_TASK_TOOL_NAMES,
   type MrReviewResultArgs,
@@ -77,13 +78,21 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
   const now = options.now ?? Date.now;
   const streamId = options.streamId ?? randomUUID();
   const abort = new AbortController();
+  // 传输按服务端形态选择（ADR-0037 后续修订）：Streamable HTTP（默认）或
+  // 老式 HTTP+SSE（响应从 SSE 流回来，Transport 接口同形，上层零感知）。
   const transport =
     options.transport ??
-    createHttpTransport({
-      url: config.server.url,
-      headers: config.server.headers,
-      timeoutMs: config.server.timeoutMs,
-    });
+    (config.server.transport === "http-sse"
+      ? createLegacySseTransport({
+          url: config.server.url,
+          headers: config.server.headers,
+          timeoutMs: config.server.timeoutMs,
+        })
+      : createHttpTransport({
+          url: config.server.url,
+          headers: config.server.headers,
+          timeoutMs: config.server.timeoutMs,
+        }));
   const client = createMcpClient(transport, {
     clientName: MCP_CLIENT_NAME,
     clientVersion: options.clientVersion,
@@ -176,6 +185,12 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
   }
 
   async function sendBatch(events: readonly McpReportEnvelope[]): Promise<void> {
+    // 事件通道关闭（tool 缺席）时队列恒空、drain 不会被触发——这里只是类型层
+    // 的防御性收口：万一有事件混进队列，直接清掉计 dropped，不发。
+    if (config.tool === null) {
+      dropped += events.length;
+      return;
+    }
     // run.end 是「这段流水是否完整」的唯一依据：在真正发送前用最终计数覆盖
     // 入队时的快照（入队那一刻还不知道这次入队自身引起的丢弃）
     const finalized = events.map((envelope) =>
@@ -211,7 +226,9 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
 
   const sink: RunProgressSink = (event: RunProgressEvent) => {
     try {
-      if (sinkClosed) {
+      if (sinkClosed || config.tool === null) {
+        // tool 缺席 = 事件通道关闭（ADR-0045 后默认形态）：静默丢弃，
+        // 批量 / 背压 / 重试机制全部不启动
         return;
       }
       const mapped = toReportEvent(event, stats(), config.findings);

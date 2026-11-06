@@ -59,6 +59,7 @@ import {
   configSnapshot,
   homeDirectory,
   loadConfig,
+  modelIdForGateway,
   resolvePresentationEnginePath,
   type ResolvedConfig,
 } from "../shared/config.js";
@@ -107,7 +108,13 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   }
   // 配置前置先检（fail fast 早于文件系统触碰；key 缺失抛人话错误）
   const endpoint = resolveReviewerEndpoint(config);
-  const modelId = args.model ?? config.model.default;
+  // 模型 id → 网关 wire 字段：stripModelPrefix 开启时剥掉最后一个 / 前的所有
+  // （pan/deeseek → deeseek）；缺省原样。生效值全面一致——参数回显 / 审计 /
+  // wire 记的都是剥后的 id（回显的语义就是「生效值」）；开关本身进审计 config 快照。
+  const modelId = modelIdForGateway(
+    args.model ?? config.model.default,
+    config.reviewer.stripModelPrefix,
+  );
 
   const repoPath = resolve(args.repo);
   if (!(await stat(repoPath)).isDirectory()) {
@@ -180,7 +187,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   const reportRuntime = {
     apiKey: endpoint.apiKey,
     baseUrl: endpoint.baseUrl,
-    modelId: config.model.presentation ?? modelId,
+    modelId: gatewayPresentationModelId(config, modelId),
     timeoutMs: config.limits.timeouts.presentationRequestMs,
   };
   const reportedFiles: string[] = [];
@@ -355,7 +362,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         runtime: {
           apiKey: endpoint.apiKey,
           baseUrl: endpoint.baseUrl,
-          modelId: config.model.presentation ?? modelId,
+          modelId: gatewayPresentationModelId(config, modelId),
           concurrency: config.limits.concurrency.suggestion,
           requestTimeoutMs: config.limits.timeouts.presentationRequestMs,
         },
@@ -513,8 +520,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         process.stderr.write(`review-pi: MCP endTask 失败（${outcome.reason}）\n`);
       }
     }
-    if (activeReporter !== null && reportConfig !== null) {
+    if (activeReporter !== null && reportConfig !== null && reportConfig.tool !== null) {
       // 收尾尽力发完；失败 / 超时都只落一行 stderr，不影响已产出的结果与退出码
+      // （事件通道关闭时队列恒空，这行统计没有信息量，不打印）
       try {
         const stats = await activeReporter.flush(reportConfig.flushTimeoutMs);
         process.stderr.write(
@@ -523,8 +531,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       } catch {
         // 旁路：连统计都拿不到也不改变任何结果
       }
-      await activeReporter.close().catch(() => undefined);
     }
+    await activeReporter?.close().catch(() => undefined);
   }
 }
 
@@ -683,13 +691,23 @@ async function runSmokeCommand(args: SmokeCliArgs, config: ResolvedConfig): Prom
   const probes = await runSmokeProbes({
     baseUrl: endpoint.baseUrl,
     apiKey: endpoint.apiKey,
-    modelId: args.model ?? config.model.default,
+    modelId: modelIdForGateway(args.model ?? config.model.default, config.reviewer.stripModelPrefix),
     fetch: globalThis.fetch,
     healthTimeoutMs: config.limits.timeouts.probeHealthMs,
     modelTimeoutMs: config.limits.timeouts.probeModelMs,
   });
   await writeStdout(`${formatSmokeDiagnostics(probes)}\n`);
   return probes.ok ? 0 : 1;
+}
+
+/**
+ * 呈现档模型 id → 网关 wire 字段（`reviewer.stripModelPrefix` 同一开关管全部
+ * 模型槽）：`model.presentation` 显式值优先，缺省跟随本次检视模型（已剥过）。
+ */
+function gatewayPresentationModelId(config: ResolvedConfig, reviewModelId: string): string {
+  return config.model.presentation !== null
+    ? modelIdForGateway(config.model.presentation, config.reviewer.stripModelPrefix)
+    : reviewModelId;
 }
 
 /** stdout 整写（flush 后 resolve——退出前保证字节已落地） */

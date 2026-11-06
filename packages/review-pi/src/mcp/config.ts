@@ -9,7 +9,11 @@ import { ConfigError, type McpServerSettings, type ResolvedConfig } from "../sha
  */
 export interface ReportConfig {
   readonly server: McpServerSettings;
-  readonly tool: string;
+  /**
+   * 批量事件槽位（`mcp.report.tool`）。**null = 事件通道关闭**（配置缺席，
+   * ADR-0045 后默认形态）：sink 直接丢弃、永不发送——只调四个业务 tool。
+   */
+  readonly tool: string | null;
   /** 业务 tool 开关（ADR-0045）：`mcp.report.task`，缺省 true */
   readonly task: boolean;
   readonly include: ReadonlySet<McpReportEventType>;
@@ -34,7 +38,7 @@ export function resolveReportConfig(config: ResolvedConfig): ReportConfig | null
   }
   return {
     server,
-    tool: mcp.report.tool,
+    tool: mcp.report.tool ?? null,
     task: mcp.report.task,
     include: new Set(mcp.report.include),
     batch: mcp.report.batch,

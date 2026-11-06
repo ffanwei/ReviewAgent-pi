@@ -456,4 +456,30 @@ describe("业务 tool 面（ADR-0045）", () => {
     });
     expect(transport.calls.length).toBe(before);
   });
+
+  test("tool = null（事件通道关闭，ADR-0045 后默认形态）：sink 静默丢弃、批量机制不启动、业务面照常", async () => {
+    const transport = fakeTransport();
+    const reporter = await createMcpReporter({
+      config: reportConfig({ tool: null }),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+
+    reporter.sink(runStart());
+    reporter.sink(phase(1));
+    reporter.sink(runEnd());
+    const stats = await reporter.flush(200);
+
+    // 事件一个没发（除握手外零 tools/call），队列恒空
+    expect(transport.calls.filter((call) => call.method === "tools/call")).toHaveLength(0);
+    expect(stats).toEqual({ sent: 0, failed: 0, dropped: 0, batches: 0 });
+
+    // 业务面不受影响
+    expect(await reporter.task.startTask({ taskId: "t-1" })).toEqual({ ok: true });
+    expect(
+      transport.calls.filter((call) => call.method === "tools/call").map((call) => call.params.name),
+    ).toEqual(["startTask"]);
+    await reporter.close();
+  });
 });

@@ -19,6 +19,7 @@ import {
   configSnapshot,
   isOfficialReviewerBaseUrl,
   loadConfig,
+  modelIdForGateway,
   requireApiKey,
   resolveConfigPath,
   resolvePresentationEnginePath,
@@ -90,6 +91,7 @@ describe("loadConfig：缺省与形状", () => {
       apiKey: null,
       baseUrl: OFFICIAL_REVIEWER_BASE_URL,
       maxOutputTokens: null,
+      stripModelPrefix: false,
     });
     expect(config.model).toEqual({ default: DEFAULT_MODEL_ID, presentation: null });
     expect(config.limits).toEqual(DEFAULT_LIMITS);
@@ -645,6 +647,97 @@ describe("mcp 配置块（ADR-0037）", () => {
         ),
       }),
     ).toThrowError(/mcp\.report\.task must be true or false/);
+  });
+
+  test("mcp.report.tool 可选（ADR-0045 后默认形态）：缺席 = 事件通道关闭；空串仍是错误", () => {
+    const minimal = loadConfig({
+      configPath: writeConfig(
+        withMcp(`{
+          "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+          "report": { "server": "ops" }
+        }`),
+      ),
+    });
+    expect(minimal.config.mcp?.report.server).toBe("ops");
+    expect(minimal.config.mcp?.report.task).toBe(true);
+    expect("tool" in (minimal.config.mcp?.report ?? {})).toBe(false);
+    // config show：缺席键不出现（不是 null 占位）
+    const snapshot = configSnapshot(minimal.config);
+    expect("mcp.report.tool" in snapshot.values).toBe(false);
+
+    // 给了就必须非空（空串 = 用法错误，不是「关」）
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+            "report": { "server": "ops", "tool": "  " }
+          }`),
+        ),
+      }),
+    ).toThrowError(/mcp\.report\.tool is required/);
+  });
+
+  test("reviewer.stripModelPrefix：缺省 false；显式 true；非布尔 fail fast", () => {
+    expect(loadConfig({ configPath: writeConfig(minimalConfig()) }).config.reviewer.stripModelPrefix).toBe(false);
+    const on = loadConfig({
+      configPath: writeConfig(
+        `{"version":1,"reviewer":{"apiKey":"sk-x","stripModelPrefix":true}}`,
+      ),
+    });
+    expect(on.config.reviewer.stripModelPrefix).toBe(true);
+    expect(configSnapshot(on.config).values["reviewer.stripModelPrefix"]).toBe(true);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(`{"version":1,"reviewer":{"apiKey":"sk-x","stripModelPrefix":"true"}}`),
+      }),
+    ).toThrowError(/reviewer\.stripModelPrefix must be true or false/);
+  });
+
+  test("mcp.servers.*.transport：http（缺省）/ http-sse（老式 HTTP+SSE）；其它值 fail fast", () => {
+    const legacy = loadConfig({
+      configPath: writeConfig(
+        withMcp(`{
+          "servers": { "ops": { "transport": "http-sse", "url": "https://x.example.com/sse" } },
+          "report": { "server": "ops" }
+        }`),
+      ),
+    });
+    expect(legacy.config.mcp?.servers.ops?.transport).toBe("http-sse");
+
+    const modern = loadConfig({
+      configPath: writeConfig(
+        withMcp(`{
+          "servers": { "ops": { "url": "https://x.example.com/mcp" } },
+          "report": { "server": "ops" }
+        }`),
+      ),
+    });
+    expect(modern.config.mcp?.servers.ops?.transport).toBe("http");
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          withMcp(`{
+            "servers": { "ops": { "transport": "stdio", "url": "https://x.example.com/mcp" } },
+            "report": { "server": "ops" }
+          }`),
+        ),
+      }),
+    ).toThrowError(/transport must be "http" .* or "http-sse"/);
+  });
+
+  test("modelIdForGateway：剥掉最后一个 / 前的所有；无斜杠/剥完为空原样返回", () => {
+    // 开启：最后一个斜杠后的部分
+    expect(modelIdForGateway("pan/deeseek", true)).toBe("deeseek");
+    expect(modelIdForGateway("vendor/group/model-x", true)).toBe("model-x");
+    expect(modelIdForGateway("/leading", true)).toBe("leading");
+    // 剥完为空：原样（发空 model 是更坏的失败形态）
+    expect(modelIdForGateway("pan/", true)).toBe("pan/");
+    expect(modelIdForGateway("/", true)).toBe("/");
+    // 关闭：逐字节原样（现行契约）
+    expect(modelIdForGateway("pan/deeseek", false)).toBe("pan/deeseek");
+    expect(modelIdForGateway("plain-id", true)).toBe("plain-id");
   });
 
   test("只有 servers 没有 report → null（配置了但不上报）", () => {

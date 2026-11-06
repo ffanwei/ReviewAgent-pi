@@ -203,6 +203,14 @@ export interface ReviewerSettings {
   readonly baseUrl: string;
   /** null = 自动判档（官方直连不发 max_tokens；网关发 DEFAULT_GATEWAY_MAX_TOKENS） */
   readonly maxOutputTokens: number | null;
+  /**
+   * 模型 id 前缀剥离（缺省 false = 原样直发）：true 时所有发往网关的模型 id
+   * （`--model` / `model.default` / `model.presentation`）剥掉**最后一个 `/` 前
+   * 的所有**（`pan/deeseek` → `deeseek`）。给「平台侧传 `厂商/模型` 形态、网关
+   * 只注册裸名」的部署用。**必须显式开启**：OpenRouter 等网关的合法 id 本身就
+   * 带斜杠，无条件剥离会把它们发坏。
+   */
+  readonly stripModelPrefix: boolean;
 }
 
 export interface ModelSettings {
@@ -239,9 +247,15 @@ export const DEFAULT_CODEINTEL: CodeIntelSettings = Object.freeze({
   excludeGlobs: DEFAULT_EXCLUDE_GLOBS,
 });
 
-/** MCP 服务端连接（ADR-0037：v1 只有 HTTP 传输） */
+/** MCP 服务端连接（ADR-0037：v1 只有 HTTP 传输；ADR-0037 后续修订加老式 http-sse） */
 export interface McpServerSettings {
-  readonly transport: "http";
+  /**
+   * `"http"` = Streamable HTTP（单端点 POST，响应回在 POST 上——推荐形态）；
+   * `"http-sse"` = 老式 HTTP+SSE（2024-11-05 规范：GET 长连接收 `endpoint`
+   * 事件，消息 POST 到该端点，**响应从 SSE 流回来**）。url 语义随形态：
+   * http 填消息端点；http-sse 填 **SSE 端点**（如 `…/sse`）。
+   */
+  readonly transport: "http" | "http-sse";
   readonly url: string;
   /** 秘密：审计 / stdout / stderr / `config show` 一律只报 set | missing */
   readonly headers: Readonly<Record<string, string>>;
@@ -254,12 +268,16 @@ export interface McpReportBatchSettings {
   readonly maxDelayMs: number;
 }
 
-/** 上报策略（ADR-0037 决策 6；业务 tool 开关为 ADR-0045） */
+/** 上报策略（ADR-0037 决策 6；业务 tool 开关为 ADR-0045；`tool` 可选化为 ADR-0037 后续修订） */
 export interface McpReportSettings {
   /** 指向 `servers` 里的名字；装载期校验存在 */
   readonly server: string;
-  /** 单槽位接收工具（批量塞进 `events` 数组） */
-  readonly tool: string;
+  /**
+   * 单槽位接收工具（批量塞进 `events` 数组）。**可选（ADR-0045 后默认形态）**：
+   * 缺席 = 事件通道整体关闭——只调四个业务 tool，不用写占位名与
+   * `include: []`。给了才发进度事件（`include` 缺省四类）。
+   */
+  readonly tool?: string;
   /**
    * 业务 tool 开关（ADR-0045）：true = 调 `startTask` / `endTask` /
    * `saveReviewSummary` / `mrReviewResult`；false = 只发进度事件。
@@ -530,6 +548,8 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
       max: 1_000_000,
       nullable: true,
     }) ?? null;
+  // 模型 id 前缀剥离：缺省 false（原样直发的现行契约）；非布尔 fail fast
+  const stripModelPrefix = boolOr(reviewerObj.stripModelPrefix, "reviewer.stripModelPrefix", false);
 
   const modelObj = optionalObject(root.model, "model", warnings);
   assertKnownKeys(modelObj, MODEL_KEYS, "model", warnings);
@@ -555,7 +575,7 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
 
   const config: ResolvedConfig = {
     version: CONFIG_VERSION,
-    reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens },
+    reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens, stripModelPrefix },
     model: { default: modelDefault.trim(), presentation: modelPresentation?.trim() ?? null },
     presentation: { engine: engine?.trim() ?? null },
     codeintel,
@@ -589,7 +609,7 @@ function buildDefaults({
   void warnings;
   const base: ResolvedConfig = {
     version: CONFIG_VERSION,
-    reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null },
+    reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null, stripModelPrefix: false },
     model: { default: DEFAULT_MODEL_ID, presentation: null },
     presentation: { engine: null },
     codeintel: DEFAULT_CODEINTEL,
@@ -604,7 +624,7 @@ function buildDefaults({
 }
 
 const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "codeintel", "limits", "mcp"] as const;
-const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens"] as const;
+const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens", "stripModelPrefix"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
 const PRESENTATION_KEYS = ["engine"] as const;
 const CODEINTEL_KEYS = ["languages", "excludeGlobs"] as const;
@@ -885,7 +905,12 @@ function parseMcp(raw: unknown, warnings: string[]): McpSettings | null {
   const reportObj = asObject(mcp.report, "mcp.report", warnings);
   assertKnownKeys(reportObj, MCP_REPORT_KEYS, "mcp.report", warnings);
   const server = requiredNonEmptyString(reportObj.server, "mcp.report.server");
-  const tool = requiredNonEmptyString(reportObj.tool, "mcp.report.tool");
+  // tool 可选（ADR-0045 后默认形态）：缺席 = 事件通道关闭，只调四个业务 tool。
+  // 给了就必须是非空字符串（空串 = 用法错误，不是「关」）。
+  const tool =
+    reportObj.tool === undefined || reportObj.tool === null
+      ? undefined
+      : requiredNonEmptyString(reportObj.tool, "mcp.report.tool");
   if (servers[server] === undefined) {
     const known = Object.keys(servers);
     throw new ConfigError(
@@ -922,7 +947,16 @@ function parseMcp(raw: unknown, warnings: string[]): McpSettings | null {
 
   return {
     servers,
-    report: { server, tool, task, include, batch, queue, flushTimeoutMs, findings: findingsRaw },
+    report: {
+      server,
+      ...(tool !== undefined ? { tool } : {}),
+      task,
+      include,
+      batch,
+      queue,
+      flushTimeoutMs,
+      findings: findingsRaw,
+    },
   };
 }
 
@@ -932,10 +966,10 @@ function parseMcpServer(name: string, raw: unknown, warnings: string[]): McpServ
   assertKnownKeys(obj, MCP_SERVER_KEYS, path, warnings);
 
   const transport = optionalString(obj.transport, `${path}.transport`)?.trim() ?? "http";
-  if (transport !== "http") {
+  if (transport !== "http" && transport !== "http-sse") {
     throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${path}.transport must be "http" (got ${JSON.stringify(transport)}；` +
-        `ADR-0037 的 v1 只做 HTTP，stdio 不在范围内)`,
+      `${CONFIG_FILE_NAME}: ${path}.transport must be "http" (Streamable HTTP，单端点 POST) ` +
+        `or "http-sse" (老式 HTTP+SSE，GET 长连接 + endpoint 事件；got ${JSON.stringify(transport)}；stdio 不在范围内)`,
     );
   }
 
@@ -956,7 +990,7 @@ function parseMcpServer(name: string, raw: unknown, warnings: string[]): McpServ
   }
 
   return {
-    transport: "http",
+    transport,
     url,
     headers,
     timeoutMs: intOr(obj.timeoutMs, `${path}.timeoutMs`, 100, 600_000, 10_000),
@@ -1004,6 +1038,7 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
   const values: Record<string, unknown> = {
     "reviewer.baseUrl": config.reviewer.baseUrl,
     "reviewer.maxOutputTokens": config.reviewer.maxOutputTokens,
+    "reviewer.stripModelPrefix": config.reviewer.stripModelPrefix,
     "model.default": config.model.default,
     "model.presentation": config.model.presentation,
     "presentation.engine": config.presentation.engine,
@@ -1031,7 +1066,9 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     values["mcp.report.queue.maxEvents"] = mcp.report.queue.maxEvents;
     values["mcp.report.server"] = mcp.report.server;
     values["mcp.report.task"] = mcp.report.task;
-    values["mcp.report.tool"] = mcp.report.tool;
+    if (mcp.report.tool !== undefined) {
+      values["mcp.report.tool"] = mcp.report.tool;
+    }
   }
   return sortKeys(values);
 }
@@ -1202,6 +1239,20 @@ function boolOr(value: unknown, path: string, fallback: boolean): boolean {
   return value;
 }
 
+/**
+ * 模型 id → 网关 wire 字段（`reviewer.stripModelPrefix` 开启时生效）：
+ * 剥掉**最后一个 `/` 前的所有**（`pan/deeseek` → `deeseek`、`a/b/c` → `c`）。
+ * 无斜杠原样返回；剥完为空（如 `pan/`）也原样返回——发送空 model 是更坏的
+ * 失败形态，宁可让网关拒原串并留痕。开关关闭 = 逐字节原样（现行契约）。
+ */
+export function modelIdForGateway(rawModelId: string, stripPrefix: boolean): string {
+  if (!stripPrefix) {
+    return rawModelId;
+  }
+  const cut = rawModelId.lastIndexOf("/");
+  return cut >= 0 && cut < rawModelId.length - 1 ? rawModelId.slice(cut + 1) : rawModelId;
+}
+
 function normalizeBaseUrl(value: string, path: string): string {
   const trimmed = value.trim();
   if (!/^https?:\/\//.test(trimmed)) {
@@ -1353,7 +1404,11 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     // 网关基址：官方直连用 https://api.deepseek.com；OpenAI 兼容网关需自带 /v1（不带 /chat/completions）。
     "baseUrl": ${baseUrl},
     // 单次请求输出上限：null = 自动——官方直连不发 max_tokens；网关发 ${String(DEFAULT_GATEWAY_MAX_TOKENS)}。
-    "maxOutputTokens": ${maxOutputTokens}
+    "maxOutputTokens": ${maxOutputTokens},
+    // 模型 id 前缀剥离：true = 发往网关的模型 id 剥掉最后一个 / 前的所有
+    // （pan/deeseek → deeseek，覆盖 --model / model.default / model.presentation）。
+    // 缺省 false = 原样直发（OpenRouter 等网关的合法 id 本身就带斜杠）。
+    "stripModelPrefix": false
   },
 
   "model": {
@@ -1387,7 +1442,8 @@ ${excludeGlobLines}
   // "mcp": {
   //   "servers": {
   //     "ops": {
-  //       // v1 只支持 http（stdio 不在范围内）。
+  //       // 传输形态："http" = Streamable HTTP（单端点 POST，推荐）；
+  //       // "http-sse" = 老式 HTTP+SSE（GET 长连接收 endpoint 事件，url 填 SSE 端点）。
   //       "transport": "http",
   //       "url": "https://mcp.example.com/mcp",
   //       // 秘密：与 reviewer.apiKey 同等待遇（审计 / 日志 / config show 只报 set 或 missing）。
@@ -1397,12 +1453,12 @@ ${excludeGlobLines}
   //   },
   //   "report": {
   //     "server": "ops",
+  //     // 事件通道（可选）：给了 tool 才批量发进度事件；不给 = 只调四个业务 tool
+  //     // （startTask / endTask / saveReviewSummary / mrReviewResult，ADR-0045）。
   //     "tool": "report_events",
-  //     // 业务 tool 开关（ADR-0045）：true = 额外调 startTask / endTask /
-  //     // saveReviewSummary / mrReviewResult（任务生命周期 + 按文件结果 + 总结）；
-  //     // 服务端没有这批 tool 时置 false，只发进度事件。
+  //     // 业务 tool 开关（ADR-0045）：false = 一个业务 tool 都不调；缺省 true。
   //     "task": true,
-  //     // 缺省只报 run.start / run.end / phase / request.end；tool.* 与 skill.* 频率最高。
+  //     // 事件类型收窄（仅事件通道生效）；缺省四类：run.start / run.end / phase / request.end。
   //     "include": ["run.start", "run.end", "phase", "request.end"],
   //     "batch": { "maxEvents": 50, "maxDelayMs": 2000 },
   //     "queue": { "maxEvents": 1000 },
