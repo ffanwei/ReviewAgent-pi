@@ -158,6 +158,33 @@ _Avoid_: runId（那是首次模型请求时刻的产物 id，迟到且只属本
 `review` 成功后写在**进程 cwd** 的隐藏文件 `.review-pi-session.json`：只含本次 run 的寻址信息（`taskId` / 绝对 `tasksDir` / `runId` / 主与 skill 转录的绝对路径），不含检视内容与秘密；每次成功 run 整份覆盖，失败 run 不写（ADR-0036）。**version 2**：主转录是数组 `mains[]`（分片时按 `s01 → s02 → …`，单遍长度为 1），读取端兼容 v1 的单个 `main`。由 `review-pi export` 消费：缺省读它打印路径（分片按 `s01 主 → s01 skill → s02 主 → …` 顺序），`--taskId` 改为从 `<tasks 根>/<id>` 的 `run.json` 反推（分片读 `shards[].transcriptFile`），`--path <dir>` 平铺复制到目标目录。该命令不加载配置、不需要 key、不调模型。ADR-0027 的「cwd 只留 `review-result.json`」由此局部修订。
 _Avoid_: 会话记录（那是转录本身）、配置文件（索引只存路径）、缓存（它不加速任何东西）
 
+### 离线回放
+
+**回放轨迹（Trace）**:
+一次运行的请求指纹 → 响应原文配对集合，共享 tools 只存一份；与录制时的夹具仓强绑定，改夹具必须重录。
+_代码面_: `packages/review-pi/testdata/traces/*.json`（ADR-0048）。
+_Avoid_: 录制文件（暗示原始流量）、语料（那是 `testdata/golden/` 的纯文本回复）
+
+**离线回放（Offline Replay）**:
+用本机 HTTP 服务替代模型网关，让真实 `review-pi` 进程在不调模型的情况下走完检视路径；按请求体 SHA-256 严格命中，未命中即失败。
+_Avoid_: mock 模型（mock 指代码内打桩，回放走真 HTTP）、夹具（那是被检视的输入）
+
+**夹具仓（Fixture Repo）**:
+被检视的仓库快照与 diff 输入，随 trace 一同版本化；trace 的请求指纹与它逐字节绑定（缺文件或在回放前被改动都会导致未命中）。
+_Avoid_: 数据集（那是评测语料，ADR-0024 已废止）、样例（过泛）
+
+**回放通道（Lane）**:
+一个并发 worker 独占的回放上下文：独立 cwd + 独立任务目录 + 固定 `taskId`，共享同一个 hash-keyed 回放服务。
+_Avoid_: 分片（那是产品内的大 MR 切片）、通道（泛化）
+
+**并发阶梯（Concurrency Ramp）**:
+按配置档位逐级增加 worker 数的测量流程：每档 1 次 warmup + 固定次数测量，按「失败 / p95 超基线 2× / RSS 告警 / 到达上限」收敛出该机器在给定延迟档位下的并发上限。
+_Avoid_: 压测（未定义成功判据）、基准（那是评测指标，ADR-0024 已废止）
+
+**模拟延迟（Latency Profile）**:
+回放时按 interaction 注入的等待时间（`mode` + `ms` + `jitter` + `seed`），语义是单次模型调用的总耗时而非逐帧 TTFT；不同延迟档位下的并发上限不可直接比较。
+_Avoid_: 真实耗时（归档没有逐帧时间）、超时（那是产品配置）
+
 ### 发行
 
 **发行形态（Distribution Shape）**:

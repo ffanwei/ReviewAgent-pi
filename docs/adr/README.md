@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0047）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0048）。
 
 ## 记录纪律
 
@@ -40,6 +40,7 @@
 | [ADR-0045](0045-mcp-business-task-tools.md) | MCP 业务 tool：任务生命周期、片级结果与总结上报（在 ADR-0037 事件面上加业务调用层） |
 | [ADR-0046](0046-configurable-max-rounds.md) | 检视轮次上限移入配置面（`limits.loop.maxRounds`，缺省 3），最后一轮强制 complete |
 | [ADR-0047](0047-tolerant-model-json-extraction-and-parse-failure-visibility.md) | 模型 JSON 回复统一宽松提取（P0）；解析失败经 `phaseLog.parseFailure` 在 stderr 可见（P1） |
+| [ADR-0048](0048-offline-trace-replay-and-concurrency-ramp.md) | 离线 trace 回放（指纹匹配、共享回放服务）与进程级并发阶梯（lane 隔离、模拟延迟、CI 门） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

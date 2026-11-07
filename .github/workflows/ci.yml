@@ -15,6 +15,9 @@
 # - P2 字节纪律门（#5，review-pi test:gate）随 ADR-0024 删除：配置矩阵与
 #   对照真源（A/B 请求体 vs DSH 审计）不再存在于本仓。
 # - 真实 API 的指标对齐门（#29）随评测仪器层一并删除，不进 CI。
+# - 离线回放门（ADR-0048）：`pnpm test:replay` 用冻结 trace 起本地回放服务，
+#   不调真实模型，逐个场景跑一次完整检视。并发阶梯（ramp）只在本地/nightly，
+#   不作性能门禁。
 
 name: CI
 
@@ -61,3 +64,29 @@ jobs:
 
       - name: Test (root)
         run: pnpm test
+
+  replay:
+    name: replay (离线回放)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 回放 spawn 真 bin（bin/review-pi.js → dist/cli/main.js），在位检查 +
+      # mtime 判鲜门要求产物先建好。
+      - name: Build dist (review-pi)
+        run: pnpm --filter @baize/review-pi build
+
+      # 零网络：回放服务只监听 127.0.0.1；全场景 trace 已随仓库提交。
+      - name: Offline replay suites
+        run: pnpm test:replay
