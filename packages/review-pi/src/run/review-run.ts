@@ -9,8 +9,10 @@ import {
   type ShardLabel,
 } from "../contracts/progress.js";
 import type {
+  CandidateNormalizationRecord,
   MrFilterRecord,
   PhaseRecord,
+  RejectionStage,
   RuleSkillAudit,
   RuleSkillPassRecord,
   RunAudit,
@@ -493,6 +495,14 @@ async function aggregateShards(args: {
   // 解析失败留痕（P1）：聚合审计不重复承载正文，但失败诊断要留下——
   // 否则分片路径的 stderr 提示无从取数（成功 run 仍为空数组，零漂移）。
   const phaseParseFailures: PhaseRecord[] = [];
+  const candidateNormalizations: CandidateNormalizationRecord[] = [];
+  const rejectionCounts: Record<RejectionStage, number> = {
+    SCHEMA_INVALID: 0,
+    NON_ENGLISH: 0,
+    NO_EVIDENCE: 0,
+    VERIFICATION_FAILED: 0,
+    DUPLICATE_ID: 0,
+  };
 
   for (const { pass } of args.executed) {
     usage = addUsage(usage, pass.usage);
@@ -513,6 +523,11 @@ async function aggregateShards(args: {
       if (phaseRecord.parseFailure !== undefined) {
         phaseParseFailures.push(phaseRecord);
       }
+    }
+    // 候选字段修复 / 拦截计数：片级诊断，聚合层保留（账目闭合）
+    candidateNormalizations.push(...(pass.audit.candidateNormalizations ?? []));
+    for (const [stage, count] of Object.entries(pass.audit.rejectionCounts ?? {})) {
+      rejectionCounts[stage as RejectionStage] += count;
     }
     // 聚合 skillPassLog：把片内 basename 重写成 runs 目录相对路径，
     // 这样 export / session 索引能直接寻址到 shards/attempt-…/sNN 下的转录
@@ -570,6 +585,8 @@ async function aggregateShards(args: {
     shards: shardAudits,
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
+    ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
+    ...(Object.values(rejectionCounts).some((count) => count > 0) ? { rejectionCounts } : {}),
   };
 
   const auditContent = buildAuditFileContent({

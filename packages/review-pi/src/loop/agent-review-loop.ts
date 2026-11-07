@@ -6,9 +6,12 @@ import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmMessage, LlmUsage } from "../contracts/llm.js";
 import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import type {
+  CandidateNormalizationRecord,
   CandidateRejection,
+  CandidateRejectionCounts,
   PhaseParseFailure,
   PhaseRecord,
+  RejectionStage,
   RuleSkillPassRecord,
   RunAudit,
   ToolCallRecord,
@@ -16,7 +19,9 @@ import type {
 } from "../contracts/run.js";
 import type { AgentTranscriptCapture } from "../export/transcript.js";
 import { applyCandidateGate } from "../gate/candidate-gate.js";
+import { normalizeCandidates } from "../gate/candidate-normalize.js";
 import { mergeSkillCandidates, type SkillCandidateBatch } from "../gate/candidate-merge.js";
+import { validateFinding } from "../finding/finding-schema.js";
 import { assistantText, captureWire, reviewModelOf, reviewStreamFn } from "../provider/pi-client.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
@@ -30,6 +35,7 @@ import {
 import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
 import { PHASE_COUNT, PHASE_INSTRUCTIONS, PHASE_ORDER } from "./phases.js";
 import { createRequestProgress } from "./request-progress.js";
+import type { CandidateRepairFn } from "./candidate-repair.js";
 import { fromWireToolName, toWireToolName } from "../tools/registry.js";
 import { knownArgumentKeys, stripUnknownArguments } from "../tools/tool-arguments.js";
 import { summarizeDetailLine, withToolProgress } from "../tools/tool-progress.js";
@@ -89,6 +95,11 @@ export interface AgentReviewLoopInputs {
    */
   readonly skillPass?: SkillPassRequest;
   /**
+   * 有界一次性候选修复（P1）：确定性归一化后仍 schema 非法的候选，在 Phase 6
+   * 裁决前发起至多一次模型修复。缺省 = 不修复（现有测试 / 直调零漂移）。
+   */
+  readonly candidateRepair?: CandidateRepairFn;
+  /**
    * 运行进度投影（ADR-0016）：缺省不注入 = 零输出、零行为变化。事件只投影既有
    * 留痕（阶段推进 / 请求首尾 / 工具首尾 / skill 会话首尾），不改 wire 字节、
    * 不进审计、不影响退出码。
@@ -143,6 +154,10 @@ export interface AgentReviewLoopOutcome {
 const CANDIDATES_PHASE_INDEX = 4;
 const VERIFICATION_PHASE_INDEX = 5;
 
+/** 有界候选修复（P1 步骤 3）：整个 run 最多 2 次调用，单次最多 8 条候选 */
+const MAX_REPAIR_CALLS_PER_RUN = 2;
+const MAX_REPAIR_CANDIDATES_PER_CALL = 8;
+
 export async function runAgentReviewLoop(
   inputs: AgentReviewLoopInputs,
 ): Promise<AgentReviewLoopOutcome> {
@@ -163,6 +178,16 @@ export async function runAgentReviewLoop(
   let roundVerdicts: ReadonlyMap<string, VerificationVerdict> = new Map();
   let roundComplete = false;
   let emittedIds: ReadonlySet<string> = new Set();
+  let emittedContentKeys: ReadonlySet<string> = new Set();
+  const candidateNormalizations: CandidateNormalizationRecord[] = [];
+  const rejectionCounts: Record<RejectionStage, number> = {
+    SCHEMA_INVALID: 0,
+    NON_ENGLISH: 0,
+    NO_EVIDENCE: 0,
+    VERIFICATION_FAILED: 0,
+    DUPLICATE_ID: 0,
+  };
+  let repairCalls = 0;
   let truncated = false;
   let complete = false;
   // 规则 Skill 会话留痕（与 phaseLog 并列，不混入相位记录）
@@ -309,6 +334,8 @@ export async function runAgentReviewLoop(
     truncationReasons,
     ...(inputs.includeLedgerAudit ? { ledger: inputs.toolkit.ledger.snapshot() } : {}),
     ...(inputs.skillPass !== undefined ? { skillPassLog } : {}),
+    ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
+    ...(totalRejections(rejectionCounts) > 0 ? { rejectionCounts } : {}),
   };
   if (firstRequestAt === undefined) {
     throw new Error("internal error: agent review loop finished without a model request");
@@ -369,16 +396,22 @@ export async function runAgentReviewLoop(
       return false;
     }
 
-    // Evidence Verification 收尾：候选拦截链 + 轮次决策
+    // Evidence Verification 收尾：有界修复 → 候选拦截链 → 轮次决策
+    await maybeRepairInvalidCandidates();
     const gate = applyCandidateGate({
       candidates: roundCandidates,
       verdicts: roundVerdicts,
       emittedIds,
+      emittedContentKeys,
       round,
     });
     findings.push(...gate.findings);
     rejections.push(...gate.rejections);
+    for (const rejection of gate.rejections) {
+      rejectionCounts[rejection.stage] += 1;
+    }
     emittedIds = gate.emittedIds;
+    emittedContentKeys = gate.emittedContentKeys;
     complete = roundComplete;
     if (complete) {
       return true;
@@ -458,12 +491,19 @@ export async function runAgentReviewLoop(
       return;
     }
 
+    const normalizedBatches = outcomes.map((outcome, index) => {
+      const normalized = normalizeCandidates({
+        candidates: outcome.candidates,
+        round,
+        idPrefix: `round-${String(round)}-skill-${String(index)}-candidate-`,
+      });
+      candidateNormalizations.push(...normalized.records);
+      return { skill: outcome.record.skill, candidates: normalized.candidates };
+    });
+
     const merged = mergeSkillCandidates({
       primary: roundCandidates,
-      batches: outcomes.map((outcome) => ({
-        skill: outcome.record.skill,
-        candidates: outcome.candidates,
-      })),
+      batches: normalizedBatches,
     });
     roundCandidates = merged.candidates;
     roundSkillBatches = merged.survivingBatches;
@@ -479,13 +519,84 @@ export async function runAgentReviewLoop(
     });
   }
 
+  /**
+   * 有界候选修复（P1 步骤 3）：只挑确定性归一化后仍 schema 非法的候选，
+   * Phase 6 裁决前至多发起一次模型调用（整个 run 有调用上限）。
+   * 修复结果重新过确定性归一化，并强制保留原 id（裁决对齐键）。
+   */
+  async function maybeRepairInvalidCandidates(): Promise<void> {
+    const repair = inputs.candidateRepair;
+    if (repair === undefined || repairCalls >= MAX_REPAIR_CALLS_PER_RUN) {
+      return;
+    }
+    const invalidIndices: number[] = [];
+    roundCandidates.forEach((candidate, index) => {
+      if (validateFinding(candidate).length > 0) {
+        invalidIndices.push(index);
+      }
+    });
+    if (invalidIndices.length === 0) {
+      return;
+    }
+    const selected = invalidIndices.slice(0, MAX_REPAIR_CANDIDATES_PER_CALL);
+    repairCalls += 1;
+    let repaired: readonly unknown[];
+    try {
+      repaired = await repair({
+        round,
+        candidates: selected.map((index) => roundCandidates[index]),
+      });
+    } catch {
+      return;
+    }
+    if (repaired.length === 0) {
+      return;
+    }
+    const next = [...roundCandidates];
+    selected.forEach((slotValue, slot) => {
+      const candidate = repaired[slot];
+      if (candidate === undefined) {
+        return;
+      }
+      const original = roundCandidates[slotValue];
+      const originalId = readCandidateId(original, round, slotValue);
+      const normalized = normalizeCandidates({
+        candidates: [candidate],
+        round,
+        idPrefix: `round-${String(round)}-repaired-${String(slotValue)}-`,
+      });
+      let fixed = normalized.candidates[0];
+      if (isRecord(fixed) && originalId !== "") {
+        fixed = { ...fixed, id: originalId };
+      }
+      // 一次调用即一条 one-shot 记录：字段名 = 确定性修复字段 ∪ 与原候选的差异键。
+      // 即使修复后的对象已完全合法（无需再归一化），调用本身也必须留痕。
+      const fields = new Set(normalized.records.flatMap((record) => record.fields));
+      if (isRecord(fixed)) {
+        for (const key of changedFields(original, fixed)) {
+          fields.add(key);
+        }
+      }
+      candidateNormalizations.push({
+        round,
+        candidateId: originalId,
+        fields: [...fields],
+        source: "one-shot",
+      });
+      next[slotValue] = fixed;
+    });
+    roundCandidates = next;
+  }
+
   function parsePhaseReply(replyText: string): {
     readonly note?: string;
     readonly parseFailure?: PhaseParseFailure;
   } {
     if (phaseIndex === CANDIDATES_PHASE_INDEX) {
       const parsed = parseCandidatesReply(replyText);
-      roundCandidates = parsed.candidates;
+      const normalized = normalizeCandidates({ candidates: parsed.candidates, round });
+      candidateNormalizations.push(...normalized.records);
+      roundCandidates = normalized.candidates;
       return {
         ...(parsed.note !== undefined ? { note: parsed.note } : {}),
         ...(parsed.failure !== undefined
@@ -553,6 +664,37 @@ function toUserMessage(message: LlmMessage): AgentMessage {
     throw new Error(`initial context message must have role "user", got "${message.role}"`);
   }
   return { role: "user", content: message.content, timestamp: Date.now() };
+}
+
+function readCandidateId(candidate: unknown, round: number, index: number): string {
+  if (isRecord(candidate)) {
+    const id = candidate.id;
+    if (typeof id === "string" && id.length > 0) {
+      return id;
+    }
+  }
+  return `round-${String(round)}-candidate-${String(index)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 两个候选对象之间值有差异的顶层键（修复留痕用；不记录值本身） */
+function changedFields(before: unknown, after: Record<string, unknown>): readonly string[] {
+  const source = isRecord(before) ? before : {};
+  const keys = new Set([...Object.keys(source), ...Object.keys(after)]);
+  const changed: string[] = [];
+  for (const key of keys) {
+    if (JSON.stringify(source[key]) !== JSON.stringify(after[key])) {
+      changed.push(key);
+    }
+  }
+  return changed;
+}
+
+function totalRejections(counts: CandidateRejectionCounts): number {
+  return Object.values(counts).reduce((total, value) => total + value, 0);
 }
 
 function phaseNameOf(phaseIndex: number): PhaseRecord["phase"] {

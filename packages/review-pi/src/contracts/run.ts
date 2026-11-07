@@ -212,6 +212,21 @@ export interface TipsFilterRecord {
   readonly droppedTips: number;
 }
 
+/**
+ * 候选字段归一化的逐条留痕（字段修复；只在真有修复时进审计尾键）。
+ * `source` 区分本地确定性修复与有界一次性模型修复；`fields` 是被修复的
+ * 字段名（不记录值，避免把模型原文复制进审计）。
+ */
+export interface CandidateNormalizationRecord {
+  readonly round: number;
+  readonly candidateId: string;
+  readonly fields: readonly string[];
+  readonly source: "deterministic" | "one-shot";
+}
+
+/** 候选拦截链各阶段的计数（只在有拦截时进审计尾键；固定形状便于下游读数） */
+export type CandidateRejectionCounts = Readonly<Record<RejectionStage, number>>;
+
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
@@ -234,6 +249,10 @@ export interface RunAudit {
   readonly shards?: readonly ShardAuditRecord[];
   /** 中文 tips 置信度过滤留痕（ADR-0052）：配置缺席时省键 */
   readonly tipsFilter?: TipsFilterRecord;
+  /** 候选字段归一化留痕（只在真有修复时在场；零漂移纪律） */
+  readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
+  /** 候选拦截链阶段计数（只在有拦截时在场） */
+  readonly rejectionCounts?: CandidateRejectionCounts;
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

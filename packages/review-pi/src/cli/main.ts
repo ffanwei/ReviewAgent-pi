@@ -868,6 +868,9 @@ async function reportShardFindings(input: {
     for (const problem of outcome.skippedTips) {
       process.stderr.write(`review-pi: MCP mrReviewResult${label} 跳过单条意见（${problem}）\n`);
     }
+    for (const problem of outcome.degradedTips) {
+      process.stderr.write(`review-pi: MCP mrReviewResult${label} 意见字段降级（${problem}）\n`);
+    }
     let sent = 0;
     let tips = 0;
     for (const file of outcome.files) {

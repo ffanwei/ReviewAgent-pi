@@ -5,7 +5,9 @@ import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import type {
   CacheBreakRecord,
+  CandidateNormalizationRecord,
   CandidateRejection,
+  CandidateRejectionCounts,
   MrBoundaryRecord,
   MrFilterRecord,
   PhaseRecord,
@@ -76,6 +78,10 @@ export interface AuditFileContent {
    * 配置缺席（内核直调 / 测试）时整键省略。紧接 shards，config 仍是最后可选尾键。
    */
   readonly tipsFilter?: TipsFilterRecord;
+  /** 候选字段归一化留痕（P1）：只在真有修复时在场 */
+  readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
+  /** 候选拦截链阶段计数（P1）：只在有拦截时在场 */
+  readonly rejectionCounts?: CandidateRejectionCounts;
   /**
    * 生效配置快照（ADR-0025）：全量非秘密生效值 + 来源 + digest；秘密只记
    * `set|missing`。只进审计文件（stdout 键集不变）。直调内核（测试/嵌入）可缺省。
@@ -140,6 +146,12 @@ export function buildAuditFileContent(args: {
     ...(args.audit.skillPassLog !== undefined ? { skillPassLog: args.audit.skillPassLog } : {}),
     ...(args.audit.shards !== undefined ? { shards: args.audit.shards } : {}),
     ...(args.audit.tipsFilter !== undefined ? { tipsFilter: args.audit.tipsFilter } : {}),
+    ...(args.audit.candidateNormalizations !== undefined
+      ? { candidateNormalizations: args.audit.candidateNormalizations }
+      : {}),
+    ...(args.audit.rejectionCounts !== undefined
+      ? { rejectionCounts: args.audit.rejectionCounts }
+      : {}),
     ...(args.config !== undefined ? { config: args.config } : {}),
   };
 }

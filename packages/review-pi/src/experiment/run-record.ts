@@ -5,7 +5,9 @@ import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import type {
   CacheBreakRecord,
+  CandidateNormalizationRecord,
   CandidateRejection,
+  CandidateRejectionCounts,
   PhaseRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
@@ -46,6 +48,10 @@ export interface AuditLight {
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
   /** 中文 tips 置信度过滤留痕（ADR-0052）：配置缺席时省键 */
   readonly tipsFilter?: TipsFilterRecord;
+  /** 候选字段归一化留痕（P1）：只在真有修复时在场 */
+  readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
+  /** 候选拦截链阶段计数（P1）：只在有拦截时在场 */
+  readonly rejectionCounts?: CandidateRejectionCounts;
 }
 
 /** RunResult 快照（audit 以轻量投影落盘） */
@@ -131,6 +137,10 @@ export function toAuditLight(audit: RunAudit): AuditLight {
     ...(audit.ruleSkill !== undefined ? { ruleSkill: audit.ruleSkill } : {}),
     ...(audit.skillPassLog !== undefined ? { skillPassLog: audit.skillPassLog } : {}),
     ...(audit.tipsFilter !== undefined ? { tipsFilter: audit.tipsFilter } : {}),
+    ...(audit.candidateNormalizations !== undefined
+      ? { candidateNormalizations: audit.candidateNormalizations }
+      : {}),
+    ...(audit.rejectionCounts !== undefined ? { rejectionCounts: audit.rejectionCounts } : {}),
   };
 }
 

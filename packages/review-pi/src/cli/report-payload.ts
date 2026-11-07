@@ -103,6 +103,11 @@ export type ShardReportOutcome =
       readonly files: readonly ShardFileReport[];
       /** 被跳过的单条意见的问题清单（stderr 留痕用） */
       readonly skippedTips: readonly string[];
+      /**
+       * 逐字段降级留痕（缺失 / 非法字段用 finding 自身推导兜底，不丢整条）：
+       * id 位置兜底、category 默认、subcategory/review/suggestion 派生的具体原因。
+       */
+      readonly degradedTips: readonly string[];
       /** 被跳过的文件组的问题清单（filePath 非法等） */
       readonly skippedFiles: readonly string[];
       /**
@@ -186,23 +191,18 @@ const REPORT_SYSTEM_PROMPT = [
   "Reply with a single JSON object and nothing else:",
   '{"tips":[{"id":"<finding id>","category":"…","subcategory":"…","review":"…","suggestion":"…"}]}',
   "One entry per finding, keyed by the finding id. Do not invent entries; do not drop findings.",
-  "Field rules:",
+  "Schema checklist (all must hold):",
+  "- id: the exact finding id string, non-empty",
   "- category: exactly one of 可维护, 安全, 可靠性, 可测试性, 性能, 可移植, 可读性",
   "- subcategory: non-empty Chinese subcategory that narrows category",
-  '- review: Chinese Markdown. Must contain "[缺陷类型]" then a concrete description then an impact assessment (影响评估).',
-  '- suggestion: Chinese Markdown. Must contain "[重构思路]" then a concrete refactor approach and a code example (代码示例).',
+  '- review: non-empty Chinese Markdown containing "[缺陷类型]", a concrete description, and "影响评估"',
+  '- suggestion: non-empty Chinese Markdown containing "[重构思路]", a concrete refactor approach, and "代码示例"',
+  "- every value is a JSON string; no nested objects, no null, no omitted keys",
+  "Complete example of a valid reply:",
+  '{"tips":[{"id":"F001","category":"安全","subcategory":"URL 注入","review":"[缺陷类型] 未校验的重定向目标。影响评估：攻击者可构造钓鱼跳转，诱导用户访问恶意站点。","suggestion":"[重构思路] 使用白名单校验重定向目标，只允许站内路径。代码示例：`if (!ALLOWED.has(target)) { return; } redirect(target);`"}]}',
   "All other report fields (file path, source line, line number, level, rule id) are filled",
   "deterministically by the caller from the finding itself — do not output them.",
 ].join("\n");
-
-/** 模型输出的单条语义字段（其余报文字段由代码组装） */
-interface SemanticTip {
-  readonly id: string;
-  readonly category: string;
-  readonly subcategory: string;
-  readonly review: string;
-  readonly suggestion: string;
-}
 
 export async function buildShardReport(input: ShardReportInput): Promise<ShardReportOutcome> {
   // 零 finding = 没有可报的文件（ADR-0045：零 finding 文件不发空包）
@@ -211,6 +211,7 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
       kind: "ok",
       files: [],
       skippedTips: [],
+      degradedTips: [],
       skippedFiles: [],
       semanticByKey: new Map<string, SemanticTipEntry>(),
       uncoveredByKey: new Map<string, string>(),
@@ -225,6 +226,7 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
     timeoutMs: input.runtime.timeoutMs,
     ...(input.runtime.retry !== undefined ? { retry: input.runtime.retry } : {}),
     maxTokens: REPORT_MAX_TOKENS,
+    responseFormat: "json_object",
     ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
   });
   if (!completion.ok) {
@@ -239,25 +241,39 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
     return { kind: "failed", reason: 'model output must carry a "tips" array' };
   }
 
-  // 模型条目按 id 索引；编造的未知 id 单独留痕（不连累真实 finding）
-  const byId = new Map<string, SemanticTip>();
+  // 模型条目按 id 索引；id 缺失时按位置对齐；编造的未知 id 单独留痕（不连累真实 finding）
+  const knownIds = new Set(input.findings.map((finding) => finding.id));
+  const byId = new Map<string, RawSemanticTip>();
   const skippedTips: string[] = [];
+  const degradedTips: string[] = [];
   for (const [index, rawTip] of rawTips.entries()) {
     const outcome = semanticTipFromUnknown(rawTip);
-    if (outcome.tip !== undefined) {
-      byId.set(outcome.tip.id, outcome.tip);
-    } else {
+    if (outcome.fields === undefined) {
       skippedTips.push(`tips[${String(index)}]: ${outcome.problem ?? "invalid"}`);
+      continue;
     }
-  }
-  const knownIds = new Set(input.findings.map((finding) => finding.id));
-  for (const id of byId.keys()) {
+    let id = outcome.fields.id;
+    if (id === undefined) {
+      const positional = input.findings[index];
+      if (positional !== undefined) {
+        id = positional.id;
+        degradedTips.push(
+          `tips[${String(index)}]: id missing, aligned by position to ${JSON.stringify(id)}`,
+        );
+      }
+    }
+    if (id === undefined) {
+      skippedTips.push(`tips[${String(index)}]: id must be a non-empty string`);
+      continue;
+    }
     if (!knownIds.has(id)) {
       skippedTips.push(`model returned an entry for unknown finding id ${JSON.stringify(id)}`);
+      continue;
     }
+    byId.set(id, { ...outcome.fields, id });
   }
 
-  // 确定性组装：按 finding 首见序分组；每个字段都有自己的跳过理由。
+  // 确定性组装：按 finding 首见序分组；语义字段逐项兜底（缺字段不再丢整条）。
   // 语义字段先登记进 semanticByKey（tips 消费，覆盖面宽），报文组装再叠加
   // 结构要求（code 非空、filePath 合法）——两条消费面独立。
   const skippedFiles: string[] = [];
@@ -275,22 +291,26 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
       );
       continue;
     }
-    const category = resolveCategory(entry.category, finding.category);
+    const label = `${finding.file}:${String(finding.line)} (${finding.id})`;
+    let category = resolveCategory(entry.category ?? "", finding.category);
     if (category === undefined) {
-      const reason = `category ${JSON.stringify(entry.category)} is not in the enum and ${JSON.stringify(finding.category)} has no fallback mapping`;
-      uncoveredByKey.set(findingMergeKey(finding), reason);
-      skippedTips.push(
-        `${finding.file}:${String(finding.line)} (${finding.id}): ${reason}`,
-      );
-      continue;
+      category = DEFAULT_CATEGORY;
+      degradedTips.push(`${label}: category fallback to ${DEFAULT_CATEGORY}`);
     }
-    // 语义完整：登记（tips 侧可用；source/ruleId 必须在此捕获——聚合重编号后无法重推）
+    const subcategory =
+      nonEmptyString(entry.subcategory) ??
+      derivedSubcategory(finding, label, degradedTips);
+    const review =
+      nonEmptyString(entry.review) ?? derivedReview(finding, label, degradedTips);
+    const suggestion =
+      nonEmptyString(entry.suggestion) ?? derivedSuggestion(label, degradedTips);
+    // 语义可行：登记（tips 侧可用；source/ruleId 必须在此捕获——聚合重编号后无法重推）
     const isRuleSession = finding.id.startsWith(RULE_REVIEWER_ID_PREFIX);
     semanticByKey.set(findingMergeKey(finding), {
-      review: entry.review,
-      suggestion: entry.suggestion,
+      review,
+      suggestion,
       category,
-      subcategory: entry.subcategory,
+      subcategory,
       source: isRuleSession ? "rule-reviewer" : "common-reviewer",
       ruleId: isRuleSession && finding.rule.trim() !== "" ? finding.rule : "",
     });
@@ -315,10 +335,10 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
     const ruleId = isRuleSession && finding.rule.trim() !== "" ? finding.rule : null;
     const composed = {
       code,
-      review: entry.review,
-      suggestion: entry.suggestion,
+      review,
+      suggestion,
       category,
-      subcategory: entry.subcategory,
+      subcategory,
       level: LEVEL_BY_SEVERITY[finding.severity],
       ruleId,
       lineNum: String(finding.line),
@@ -346,11 +366,15 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
       findings: group.findings,
     })),
     skippedTips,
+    degradedTips,
     skippedFiles,
     semanticByKey,
     uncoveredByKey,
   };
 }
+
+/** 模型类别不可归一时的保守默认（可维护 = 最不宣称具体缺陷性质） */
+const DEFAULT_CATEGORY: AgentReviewCategory = "可维护";
 
 /** category 解析：模型枚举内 → 直用；否则查 `finding.category` 的兜底表；都失败 → undefined */
 function resolveCategory(modelCategory: string, findingCategory: string): AgentReviewCategory | undefined {
@@ -360,33 +384,64 @@ function resolveCategory(modelCategory: string, findingCategory: string): AgentR
   return CATEGORY_FALLBACK[findingCategory.trim().toUpperCase()] ?? undefined;
 }
 
-/** 模型条目解析：五个语义字段都必填非空（category 枚举性在 resolveCategory 处理） */
-function semanticTipFromUnknown(input: unknown): { readonly tip?: SemanticTip; readonly problem?: string } {
+/** 子类兜底：finding.category 的中文映射，再退「通用问题」（不编具体缺陷名） */
+function derivedSubcategory(
+  finding: Finding,
+  label: string,
+  degraded: string[],
+): string {
+  const mapped = CATEGORY_FALLBACK[finding.category.trim().toUpperCase()] ?? "通用问题";
+  degraded.push(`${label}: subcategory missing, derived ${JSON.stringify(mapped)}`);
+  return mapped;
+}
+
+/** review 兜底：只用 finding 自身的 title/description 组装（不补新事实） */
+function derivedReview(finding: Finding, label: string, degraded: string[]): string {
+  const impact = finding.description.trim() !== "" ? finding.description : finding.title;
+  degraded.push(`${label}: review missing, derived from finding title/description`);
+  return `[缺陷类型] ${finding.title}。影响评估：${impact}`;
+}
+
+/** suggestion 兜底：通用修复思路（不编具体代码） */
+function derivedSuggestion(label: string, degraded: string[]): string {
+  degraded.push(`${label}: suggestion missing, derived generic refactor guidance`);
+  return "[重构思路] 根据缺陷类型与影响评估修复该问题，并补充覆盖该场景的测试。代码示例：按上述思路在相应位置调整实现。";
+}
+
+/**
+ * 模型条目的宽松解析：只要求是对象；各语义字段缺失 / 空串时返回 undefined，
+ * 由调用方按 finding 自身兜底（**逐字段救回**，不因一个字段坏掉丢整条）。
+ */
+interface RawSemanticTip {
+  readonly id?: string;
+  readonly category?: string;
+  readonly subcategory?: string;
+  readonly review?: string;
+  readonly suggestion?: string;
+}
+
+function semanticTipFromUnknown(input: unknown): {
+  readonly fields?: RawSemanticTip;
+  readonly problem?: string;
+} {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return { problem: "entry must be an object" };
   }
   const record = input as Record<string, unknown>;
   const id = nonEmptyString(record.id);
-  if (id === undefined) {
-    return { problem: "id must be a non-empty string" };
-  }
   const category = nonEmptyString(record.category);
-  if (category === undefined) {
-    return { problem: "category must be a non-empty string" };
-  }
   const subcategory = nonEmptyString(record.subcategory);
-  if (subcategory === undefined) {
-    return { problem: "subcategory must be a non-empty string" };
-  }
   const review = nonEmptyString(record.review);
-  if (review === undefined) {
-    return { problem: "review must be a non-empty string" };
-  }
   const suggestion = nonEmptyString(record.suggestion);
-  if (suggestion === undefined) {
-    return { problem: "suggestion must be a non-empty string" };
-  }
-  return { tip: { id, category, subcategory, review, suggestion } };
+  return {
+    fields: {
+      ...(id !== undefined ? { id } : {}),
+      ...(category !== undefined ? { category } : {}),
+      ...(subcategory !== undefined ? { subcategory } : {}),
+      ...(review !== undefined ? { review } : {}),
+      ...(suggestion !== undefined ? { suggestion } : {}),
+    },
+  };
 }
 
 function nonEmptyString(value: unknown): string | undefined {

@@ -152,3 +152,31 @@ test("分段 content 数组：取 text 块拼接", async () => {
   const result = await completeOneShot({ ...BASE_INPUT, fetch });
   expect(result).toEqual({ ok: true, text: "line one\nline two" });
 });
+
+test("结构化输出：请求体带 response_format，未声明时绝不带", async () => {
+  const bodies: string[] = [];
+  const fetch: FetchFunction = async (_url, init) => {
+    bodies.push(String(init?.body ?? ""));
+    return completion("{}");
+  };
+  await completeOneShot({ ...BASE_INPUT, fetch, responseFormat: "json_object" });
+  expect(JSON.parse(bodies[0] ?? "{}")).toMatchObject({ response_format: { type: "json_object" } });
+
+  await completeOneShot({ ...BASE_INPUT, fetch });
+  expect(JSON.parse(bodies[1] ?? "{}")).not.toHaveProperty("response_format");
+});
+
+test("结构化输出不被支持（400）：去掉 response_format 重试一次并成功", async () => {
+  const bodies: string[] = [];
+  const fetch: FetchFunction = async (_url, init) => {
+    const body = String(init?.body ?? "");
+    bodies.push(body);
+    return JSON.parse(body).response_format !== undefined
+      ? new Response("response_format unsupported", { status: 400 })
+      : completion("recovered");
+  };
+  const result = await completeOneShot({ ...BASE_INPUT, fetch, responseFormat: "json_object" });
+  expect(result).toEqual({ ok: true, text: "recovered" });
+  expect(bodies).toHaveLength(2);
+  expect(JSON.parse(bodies[1] ?? "{}")).not.toHaveProperty("response_format");
+});

@@ -16,9 +16,11 @@ import { buildTranscript, writeTranscript } from "../export/transcript.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
+import { createCandidateRepair } from "../loop/candidate-repair.js";
 import { buildInitialUserMessage } from "../loop/messages.js";
-import { LOCKED_EFFORT_LABEL } from "../provider/pi-client.js";
+import { LOCKED_EFFORT_LABEL, reviewModelOf } from "../provider/pi-client.js";
 import type { ConfigSnapshot } from "../shared/config.js";
+import { retryPolicyFor } from "../shared/llm-retry.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { buildReviewToolkit } from "../tools/toolkit.js";
@@ -118,6 +120,7 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
       ledger: createContextLedger(seed),
     });
 
+  const repairModel = reviewModelOf(input.modelId, input.baseUrl);
   const outcome = await runAgentReviewLoop({
     systemPrompt: SYSTEM_PROMPT,
     initialContextMessages,
@@ -131,6 +134,16 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
     onProgress: input.emit,
     // Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
     skillPass: { skills: input.ruleSkills, toolkitFor: skillToolkitFor },
+    // 有界候选修复（P1）：schema 仍非法的少数候选在 Phase 6 前至多修一次。
+    // 复用核外一次性调用层（与报文同源重试 / 超时），不碰检视会话 wire 字节。
+    candidateRepair: createCandidateRepair({
+      baseUrl: repairModel.baseUrl,
+      apiKey: input.apiKey,
+      modelId: input.modelId,
+      timeoutMs: input.runtime.limits.timeouts.oneShotMs,
+      retry: retryPolicyFor(input.runtime.limits.retry, "oneShot"),
+      ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+    }),
   });
 
   // 审计投影

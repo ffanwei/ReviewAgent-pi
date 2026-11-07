@@ -184,7 +184,7 @@ test("code 缺席 → 跳过该条（绝不编）；模型漏 id → 跳过并�
   expect(outcome.uncoveredByKey.size).toBe(0);
 });
 
-test("category：模型枚举外 → 查 finding.category 兜底表（大小写不敏感）；表也没有 → 跳过", async () => {
+test("category：模型枚举外 → 查 finding.category 兜底表（大小写不敏感）；表也没有 → 默认可维护并留痕", async () => {
   const fallback = await buildShardReport({
     findings: [finding({ category: "correctness" })], // 小写自由文本
     codeByFinding: { F001: "x" },
@@ -212,10 +212,10 @@ test("category：模型枚举外 → 查 finding.category 兜底表（大小写�
   });
   expect(miss.kind).toBe("ok");
   if (miss.kind === "ok") {
-    expect(miss.files).toEqual([]);
-    expect(miss.skippedTips[0]).toContain("no fallback mapping");
-    // 逐条未覆盖原因：category 不可归一（与 skippedTips 同一句话，去掉前缀）
-    expect([...miss.uncoveredByKey.values()][0]).toContain("has no fallback mapping");
+    expect(miss.files).toHaveLength(1);
+    expect(miss.files[0]?.reviewTips[0]?.category).toBe("可维护"); // 保守默认，不丢整条
+    expect(miss.degradedTips[0]).toContain("category fallback");
+    expect(miss.uncoveredByKey.size).toBe(0);
   }
 });
 
@@ -248,7 +248,7 @@ test("filePath：finding.file 带反斜杠 → 规范化为正斜杠；绝对路
   }
 });
 
-test("同文件多条 finding 归一组；review/suggestion 空值 → 跳过", async () => {
+test("同文件多条 finding 归一组；review 空值 → 用 finding 自身派生（不丢整条）", async () => {
   const gateway = gatewayReturning(
     JSON.stringify({
       tips: [
@@ -268,13 +268,15 @@ test("同文件多条 finding 归一组；review/suggestion 空值 → 跳过", 
     return;
   }
   expect(outcome.files).toHaveLength(1);
-  expect(outcome.files[0]?.reviewTips).toHaveLength(1);
+  expect(outcome.files[0]?.reviewTips).toHaveLength(2);
   expect(outcome.files[0]?.reviewTips[0]?.lineNum).toBe("42");
-  expect(outcome.skippedTips[0]).toContain("review must be a non-empty string");
-  // F002 的模型条目本身非法（review 空白）→ 未进 byId → 未覆盖原因是「没给条目」
-  expect([...outcome.uncoveredByKey.values()]).toEqual([
-    "model gave no entry for this finding",
-  ]);
+  expect(outcome.files[0]?.reviewTips[1]?.lineNum).toBe("43");
+  // 派生 review 仍带约定标记，可过平台契约
+  expect(outcome.files[0]?.reviewTips[1]?.review).toContain("[缺陷类型]");
+  expect(outcome.files[0]?.reviewTips[1]?.review).toContain("影响评估");
+  expect(outcome.degradedTips.some((entry) => entry.includes("review missing"))).toBe(true);
+  expect(outcome.skippedTips).toEqual([]);
+  expect(outcome.uncoveredByKey.size).toBe(0);
 });
 
 test("模型输出包在 ```json 栅栏里也能解析", async () => {
@@ -307,6 +309,7 @@ test("零 finding：不发请求、files 为空、语义登记为空（零 findi
     kind: "ok",
     files: [],
     skippedTips: [],
+    degradedTips: [],
     skippedFiles: [],
     semanticByKey: new Map(),
     uncoveredByKey: new Map(),

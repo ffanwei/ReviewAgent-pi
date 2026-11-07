@@ -510,3 +510,65 @@ test("Phase 5 宽松提取：示例对象在前、真候选在后，取真结果
   expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
   expect(outcome.audit.phaseLog[4]?.parseFailure).toBeUndefined();
 });
+test("确定性归一化：信封字段被修好 → 候选存活，审计留 deterministic 修复记录", async () => {
+  const loose = {
+    ...VALID_CANDIDATE,
+    severity: "high",
+    confidence: "70%",
+    line: "L10",
+    evidence: "src/main/java/Foo.java:10 private void helper()",
+  };
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply(`{"candidates":[${JSON.stringify(loose)}]}`, 4),
+    textReply('{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}],"complete":true}', 5),
+  ]);
+  const outcome = await run();
+
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(outcome.findings[0]?.severity).toBe("P1");
+  expect(outcome.findings[0]?.confidence).toBeCloseTo(0.7);
+  expect(outcome.findings[0]?.line).toBe(10);
+  const records = outcome.audit.candidateNormalizations ?? [];
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({ round: 1, candidateId: "F001", source: "deterministic" });
+  expect(records[0]?.fields).toEqual(
+    expect.arrayContaining(["severity", "confidence", "line", "evidence"]),
+  );
+  expect(outcome.audit.rejectionCounts).toBeUndefined();
+});
+
+test("有界一次性修复：确定性归一化救不回的候选在 Phase 6 后被修复并留 one-shot 记录", async () => {
+  const { file: _file, ...missingFile } = VALID_CANDIDATE;
+  const script = fakeFetch([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply(`{"candidates":[${JSON.stringify(missingFile)}]}`, 4),
+    textReply('{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}],"complete":true}', 5),
+  ]);
+  const repairCalls: unknown[][] = [];
+  const toolkit = buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF });
+  const outcome = await runAgentReviewLoop({
+    systemPrompt: SYSTEM,
+    initialContextMessages: INITIAL,
+    toolkit,
+    apiKey: "test-key",
+    fetch: script.fetch,
+    candidateRepair: async (request) => {
+      repairCalls.push([...request.candidates]);
+      return [VALID_CANDIDATE];
+    },
+  });
+
+  expect(repairCalls).toHaveLength(1);
+  expect(repairCalls[0]).toHaveLength(1);
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  const records = outcome.audit.candidateNormalizations ?? [];
+  expect(records.some((record) => record.source === "one-shot")).toBe(true);
+  expect(outcome.audit.rejectionCounts).toBeUndefined();
+});

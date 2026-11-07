@@ -26,11 +26,25 @@ Reply with a single JSON object: {"notes": "<what context is now available, or w
 
   `Phase 5 of 6 - Deep Reasoning.
 Reason in depth about the change and produce candidate findings. Only raise candidates you can support with concrete evidence (No Evidence, No Finding).
-Reply with a single JSON object: {"candidates": [<finding objects per the Finding schema>, ...]}`,
+Reply with a single JSON object: {"candidates": [<finding objects per the Finding schema>, ...]}
+Every candidate MUST satisfy this checklist:
+- id: non-empty string, unique within this round (e.g. "F001")
+- severity: exactly "P0", "P1", "P2", or "P3"
+- category: non-empty string such as "CORRECTNESS" or "SECURITY"
+- file: repository-relative path with forward slashes
+- line: positive integer (not a string and not a range)
+- title: non-empty one-line English summary
+- description: non-empty English explanation with impact
+- evidence: non-empty array of strings (never a single string)
+- rule: non-empty string
+- confidence: number between 0 and 1 (not a percentage string)
+Complete example:
+{"candidates":[{"id":"F001","severity":"P1","category":"CORRECTNESS","file":"src/Foo.java","line":42,"title":"Null dereference on missing user","description":"findUser may return null and the result is dereferenced without a check, so the request path can throw a NullPointerException.","evidence":["src/Foo.java:42 user.getName() after findUser(id)","findUser returns null when no row matches"],"rule":"CORRECTNESS-001","confidence":0.82}]}`,
 
   `Phase 6 of 6 - Evidence Verification.
 Verify every candidate finding against the evidence. For each candidate decide whether the cited evidence actually supports the finding.
 Reply with a single JSON object: {"verdicts": [{"id": "<candidate id>", "pass": true | false, "reason": "<why>"}, ...], "complete": true | false}
+Use the exact candidate id from the candidate list (do not renumber). Include one verdict per candidate.
 "complete" means the review is finished and no further round is needed; false means another review round is required.`,
 ] as const;
 

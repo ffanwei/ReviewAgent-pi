@@ -1,4 +1,7 @@
 import type { Finding } from "../contracts/finding.js";
+import { findingMergeKey, normalizeFindingKeyPart } from "../finding/finding-key.js";
+
+export { findingMergeKey, normalizeFindingKeyPart };
 
 /**
  * 大 MR 第二期：分片 findings 的确定性合并（ADR-0039 决策 5）。
@@ -22,15 +25,7 @@ const SEVERITY_RANK: Readonly<Record<Finding["severity"], number>> = {
   P3: 3,
 };
 
-/** 合并键用的归一化：trim + 空白折叠 + 小写（不改变展示原文） */
-export function normalizeFindingKeyPart(text: string): string {
-  return text.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-/** 一条 finding 的合并键 */
-export function findingMergeKey(finding: Finding): string {
-  return `${normalizeFindingKeyPart(finding.file)}\u0000${String(finding.line)}\u0000${normalizeFindingKeyPart(finding.title)}`;
-}
+/** 合并键的归一化口径 re-export（历史入口名保留；单源在 finding/finding-key.ts） */
 
 /**
  * 合并分片 findings。

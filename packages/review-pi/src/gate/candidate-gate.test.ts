@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { findingContentKey } from "../finding/finding-key.js";
 import type { VerificationVerdict } from "../loop/parse.js";
 import { applyCandidateGate } from "./candidate-gate.js";
 
@@ -91,15 +92,54 @@ test("无裁决或裁决不通过被 VERIFICATION_FAILED 拦截", () => {
   expect(rejected.rejections[0]?.reason).toContain("evidence does not support the claim");
 });
 
-test("已产出的 id 被 DUPLICATE_ID 拦截", () => {
+test("已产出的内容键被 DUPLICATE_ID 拦截（不按 id 判重）", () => {
   const out = applyCandidateGate({
     candidates: [VALID_CANDIDATE],
     verdicts: verdicts({ F001: { pass: true, reason: "" } }),
     emittedIds: new Set(["F001"]),
+    emittedContentKeys: new Set([findingContentKey(VALID_CANDIDATE)]),
     round: 2,
   });
   expect(out.findings).toEqual([]);
   expect(out.rejections[0]?.stage).toBe("DUPLICATE_ID");
+});
+
+test("跨轮复用同一 id 但内容不同 → 不拦（模型每轮从 F001 重编是常态）", () => {
+  const out = applyCandidateGate({
+    candidates: [VALID_CANDIDATE],
+    verdicts: verdicts({ F001: { pass: true, reason: "" } }),
+    emittedIds: new Set(["F001"]),
+    emittedContentKeys: new Set([findingContentKey({ ...VALID_CANDIDATE, title: "Different issue" })]),
+    round: 2,
+  });
+  expect(out.findings).toHaveLength(1);
+  expect(out.rejections).toEqual([]);
+});
+
+test("同一轮同内容不同 id → 第二条按内容键拦截", () => {
+  const out = applyCandidateGate({
+    candidates: [VALID_CANDIDATE, { ...VALID_CANDIDATE, id: "F002" }],
+    verdicts: verdicts({
+      F001: { pass: true, reason: "" },
+      F002: { pass: true, reason: "" },
+    }),
+    emittedIds: new Set(),
+    round: 1,
+  });
+  expect(out.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(out.rejections[0]?.stage).toBe("DUPLICATE_ID");
+  expect(out.rejections[0]?.candidateId).toBe("F002");
+});
+
+test("裁决 id 对不上但条数一致 → 位置兜底，不让候选全灭", () => {
+  const out = applyCandidateGate({
+    candidates: [VALID_CANDIDATE],
+    verdicts: verdicts({ "candidate-1": { pass: true, reason: "" } }),
+    emittedIds: new Set(),
+    round: 1,
+  });
+  expect(out.findings).toHaveLength(1);
+  expect(out.rejections).toEqual([]);
 });
 
 test("缺 id 的候选以 round-N-candidate-I 兜底标识留痕", () => {
