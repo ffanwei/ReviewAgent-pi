@@ -411,38 +411,52 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 产过的 zh 一律视为陈旧并清除，使「磁盘上的中文产物 = 本次 run」成立；作用域
     // = `<out>/runs/`（ADR-0032：一个 `--out` 即一次 run 的输出目录）。
     // en/session 已在内核落盘（先于本步）。
-    if (reviewsPath !== undefined) {
-      const removed = await removeStaleReviewsZh(dirname(reviewsPath));
-      if (removed !== undefined) {
-        process.stderr.write(
-          `review-pi: 本次不产 reviews_zh.json（中文产物 = reviews_tips_zh.json），已清除陈旧 ${removed}\n`,
-        );
-      }
-    }
-
-    // 分组式检视意见（ADR-0017 / ADR-0022 / ADR-0045 统一 tips）：**唯一**中文
-    // 落盘产物，与 en 同目录、同生命周期，但**弱耦合**——tips 形状非法/缺席只
-    // 缺这一份文件（stdout 呈现照旧，exit 0）。业务开启时来源 = 统一生成
-    // （12 键），业务关闭 = 呈现引擎（10 键，逐字节现状）。
-    if (reviewsPath !== undefined) {
-      const tipsDir = dirname(reviewsPath);
-      if (tipsDoc !== undefined) {
-        await writeReviewsTipsZh(tipsDir, tipsDoc);
-        reportExecDirTips(await writeExecDirTipsCopies(tipsDoc, process.cwd()), "写入");
-      } else {
-        if (
-          !taskToolsOn &&
-          projection.kind === "projected" &&
-          projection.tipsProblem !== undefined
-        ) {
-          process.stderr.write(`review-pi: 本次未产分组意见（${projection.tipsProblem}）\n`);
-        }
-        const removed = await removeStaleReviewsTipsZh(tipsDir);
+    //
+    // 失败语义（ADR-0045 决策 2 修订）：中文产物是交付物，落盘失败仍是**运行失败**
+    // （exit 1）——但不能连累业务上报：检视已跑完，`mrReviewResult` 也发完了，
+    // 此时跳过 `saveReviewSummary` 会让平台看到「有始无终」的任务。故这里只**记下**
+    // 失败，等总结发完再抛（顺序契约 mrReviewResult → summary → endTask 不变）。
+    let tipsPersistFailure: unknown;
+    try {
+      if (reviewsPath !== undefined) {
+        const removed = await removeStaleReviewsZh(dirname(reviewsPath));
         if (removed !== undefined) {
-          process.stderr.write(`review-pi: 已清除陈旧 ${removed}\n`);
+          process.stderr.write(
+            `review-pi: 本次不产 reviews_zh.json（中文产物 = reviews_tips_zh.json），已清除陈旧 ${removed}\n`,
+          );
         }
-        reportExecDirTips(await removeExecDirTipsCopies(process.cwd()), "清除");
       }
+
+      // 分组式检视意见（ADR-0017 / ADR-0022 / ADR-0045 统一 tips）：**唯一**中文
+      // 落盘产物，与 en 同目录、同生命周期，但**弱耦合**——tips 形状非法/缺席只
+      // 缺这一份文件（stdout 呈现照旧，exit 0）。业务开启时来源 = 统一生成
+      // （12 键），业务关闭 = 呈现引擎（10 键，逐字节现状）。
+      if (reviewsPath !== undefined) {
+        const tipsDir = dirname(reviewsPath);
+        if (tipsDoc !== undefined) {
+          await writeReviewsTipsZh(tipsDir, tipsDoc);
+          reportExecDirTips(await writeExecDirTipsCopies(tipsDoc, process.cwd()), "写入");
+        } else {
+          if (
+            !taskToolsOn &&
+            projection.kind === "projected" &&
+            projection.tipsProblem !== undefined
+          ) {
+            process.stderr.write(`review-pi: 本次未产分组意见（${projection.tipsProblem}）\n`);
+          }
+          const removed = await removeStaleReviewsTipsZh(tipsDir);
+          if (removed !== undefined) {
+            process.stderr.write(`review-pi: 已清除陈旧 ${removed}\n`);
+          }
+          reportExecDirTips(await removeExecDirTipsCopies(process.cwd()), "清除");
+        }
+      }
+    } catch (error) {
+      tipsPersistFailure = error;
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `review-pi: 中文产物落盘失败（${message}）；仍上报检视总结与 endTask，随后以失败退出\n`,
+      );
     }
 
     // 检视总结上报（ADR-0045 决策 2）：中文 tips 落盘之后（发出去的内容与
@@ -477,6 +491,12 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           `review-pi: MCP saveReviewSummary 失败（${outcome.reason}），检视结果不受影响\n`,
         );
       }
+    }
+
+    // 中文产物落盘失败（上一段记下的）：总结与 endTask 都发完了，现在才把这次
+    // 运行判失败——产物即契约，失败仍然 exit 1，只是不再吞掉业务上报。
+    if (tipsPersistFailure !== undefined) {
+      throw tipsPersistFailure;
     }
 
     // cwd session 索引（ADR-0036）：只记寻址信息，供 `review-pi export` 直接取用。

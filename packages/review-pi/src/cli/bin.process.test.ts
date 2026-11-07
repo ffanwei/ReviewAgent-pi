@@ -2766,6 +2766,49 @@ test(
 );
 
 test(
+  "中文产物落盘失败：仍发 saveReviewSummary 与 endTask，随后 exit 1（上报不被产物 IO 吞掉）",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+      // 让 writeReviewsTipsZh 必失败：把目标路径预先建成**目录**（写文件即报错）
+      mkdirSync(path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json"), {
+        recursive: true,
+      });
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+      });
+
+      // 产物即契约：落盘失败仍是运行失败
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain("中文产物落盘失败");
+      expect(run.stderr).toContain("failed to persist grouped review export");
+      // 但检视已经跑完：总结与 endTask 必须照发，不能留一条「有始无终」的任务
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[2]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        description: "# 检视总结\n\n本次检视未发现缺陷。",
+      });
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
   "默认形态（不配 tool，ADR-0045 后）：只调四个业务 tool，零事件调用、无统计行、tips 照常产出",
   async () => {
     const stub = await startLoopbackStub([

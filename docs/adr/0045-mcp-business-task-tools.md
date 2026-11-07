@@ -8,6 +8,8 @@
 
 **后续修订**（2026-11-07，二）：**零检视意见时 `saveReviewSummary` 发固定文案**——逐字节 `# 检视总结\n\n本次检视未发现缺陷。`，**不调用总结模型**（「没有意见」是确定事实，不需要模型再概括，省一次调用且内容稳定）。有意见时仍按决策 2 生成：模型 → 失败降级确定性模板。`buildReviewSummary` 在 `findings.length === 0` 时直接返回该常量。
 
+**后续修订**（2026-11-07，三）：**中文产物落盘失败不再吞掉业务上报**。此前 `removeStaleReviewsZh` / `writeReviewsTipsZh` / `removeStaleReviewsTipsZh` 的 IO 失败（Windows 上常见：旧 `reviews_zh.json` 被占用、目标路径不可写）会直接抛出，位置恰在 `mrReviewResult` 之后、`saveReviewSummary` 之前——平台于是收到 startTask / mrReviewResult / endTask 却**收不到总结**（「有始无终」）。现在这一段失败只**记下**，`saveReviewSummary` 与 `endTask` 照常发完，随后才把这次运行判失败（exit 1）——顺序契约与「产物即契约」都不变，只是业务上报不再被产物 IO 连累。
+
 ## Context
 
 ADR-0037 定义的 MCP 上报只有一种形态：把进度事件**批量**塞进单个 tool（`mcp.report.tool`）的 `events` 数组。接入企业检视平台还需要**业务语义**的调用——平台要的不是事件流，而是：
