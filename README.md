@@ -19,6 +19,7 @@
 | 单源配置 | 用户级 JSONC（`~/.PiAgent/PiAgent.jsonc` 或 `--config`），启动读一次成不可变快照，审计留 digest |
 | 可观测 | stdout 单 JSON 文档；stderr 诊断与 `--progress` 阶段投影；退出码 0（含诚实截断）/ 1 |
 | diff 检视技能 | 仓内 `.agents/skills/` 两个可复跑技能：真实缺陷回放（默认 VUL4J-38 / CVE-2014-4172）与合成缺陷注入（GEN-RES-001）；真跑模型检视后把证据归档到 `repo-diff-skill-result/`（不入库） |
+| 离线回放 / 并发阶梯 | `scripts/offline-replay/`：冻结 trace → 本机回放服务替代模型网关，零网络、零 key 跑完整检视；支持进程级并发档位与模拟延迟，探索本机并发上限（ADR-0048，不进产品包） |
 
 检视本体不限语言；符号 / 引用 / 调用链工具支持 Java、TypeScript（含 JS 变体）、Python、Go 与 C/C++（`codeintel.languages` 可配，缺省 `"auto"`，ADR-0041 / ADR-0042）。
 
@@ -353,6 +354,7 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
 |---|---|
 | [`docs/使用手册-安装与运行.md`](docs/使用手册-安装与运行.md) | 安装 / 配置逐字段 / smoke / 任意目录运行 / 并发隔离 / session 导出 / 排障 |
 | [`docs/运行手册-单次检视.md`](docs/运行手册-单次检视.md) | 单次检视的旗标、前置、产物、cwd 索引与 `export`、排障 |
+| [`docs/运行手册-离线回放.md`](docs/运行手册-离线回放.md) | 离线回放 / 并发阶梯：命令、全部参数、场景 schema、延迟与安全阀、报告读法、未命中排障、重录流程 |
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表（术语唯一权威） |
 | [`docs/adr/`](docs/adr/) | 架构决策记录（Go / C++ 符号提取器见 ADR-0042） |
 | [`docs/agents/`](docs/agents/) | agent 协作约定（issue tracker / triage labels / domain docs） |

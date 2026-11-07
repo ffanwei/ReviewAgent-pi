@@ -6,6 +6,9 @@
 回放时不调真实模型：本地 HTTP 服务按 `requestHash` 严格命中，命中即原样返回
 响应字节。请求体默认不存（只用指纹匹配）；未命中直接失败并打印最近邻诊断。
 
+完整用法与参数见 [`docs/运行手册-离线回放.md`](../../../docs/运行手册-离线回放.md)；决策背景见
+[ADR-0048](../../../docs/adr/0048-offline-trace-replay-and-concurrency-ramp.md)。
+
 ## 文件
 
 | 文件 | 场景 | fixture |

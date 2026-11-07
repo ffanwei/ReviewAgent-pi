@@ -19,6 +19,7 @@ export function createResourceSampler({ intervalMs = 400 } = {}) {
     available: backend !== "none",
     peakRssBytes: 0,
     peakHandles: 0,
+    handleSamples: 0,
     samples: 0,
     error: undefined,
   };
@@ -56,15 +57,22 @@ export function createResourceSampler({ intervalMs = 400 } = {}) {
       const tree = treeOf(snapshot, roots);
       let rss = 0;
       let handles = 0;
+      let handleSeen = false;
       for (const entry of tree) {
         rss += entry.rssBytes ?? 0;
-        handles += entry.handles ?? 0;
+        if (entry.handles !== null && entry.handles !== undefined) {
+          handles += entry.handles;
+          handleSeen = true;
+        }
       }
       if (rss > state.peakRssBytes) {
         state.peakRssBytes = rss;
       }
-      if (handles > state.peakHandles) {
-        state.peakHandles = handles;
+      if (handleSeen) {
+        state.handleSamples += 1;
+        if (handles > state.peakHandles) {
+          state.peakHandles = handles;
+        }
       }
       state.samples += 1;
     } catch (error) {
@@ -96,7 +104,7 @@ export function createResourceSampler({ intervalMs = 400 } = {}) {
       return {
         available: state.available && state.samples > 0,
         peakRssBytes: state.samples > 0 ? state.peakRssBytes : null,
-        peakHandles: state.samples > 0 ? state.peakHandles : null,
+        peakHandles: state.handleSamples > 0 ? state.peakHandles : null,
         samples: state.samples,
         backend,
         error: state.error,

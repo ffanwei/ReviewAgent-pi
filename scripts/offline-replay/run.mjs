@@ -525,7 +525,7 @@ function parseFlags(argv) {
       throw new Error(`无法识别的参数 "${token}"（选项必须以 -- 开头）`);
     }
     const key = token.slice(2);
-    if (key === "store-requests" || key === "json" || key === "no-verify" || key === "no-overhead-baseline") {
+    if (key === "store-requests" || key === "no-verify" || key === "no-overhead-baseline") {
       flags[camel(key.replace(/^no-/u, ""))] = key.startsWith("no-") ? false : true;
       continue;
     }
