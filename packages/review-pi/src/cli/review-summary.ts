@@ -10,12 +10,20 @@ import { completeOneShot } from "./one-shot-llm.js";
  * 收尾总结生成（ADR-0045 决策 2）：中文 tips（辅以 findings 结构化字段）→
  * Markdown 总结报告，供 `saveReviewSummary` 上报。
  *
- * 降级链（产物必须有、内容允许降级）：
- * 1. 模型调用（输入 = 中文 tips + findings 摘要）；
+ * 分流与降级链（产物必须有、内容允许降级）：
+ * 0. **零意见 ⇒ 固定文案**（`NO_FINDING_SUMMARY_MARKDOWN`），不调用模型——
+ *    「没有意见」是确定的事实，不需要模型再概括；
+ * 1. 有意见 ⇒ 模型调用（输入 = 中文 tips + findings 摘要）；
  * 2. 投影降级 / 无 tips ⇒ 输入退为英文 findings（Q10 决策）；
  * 3. 模型调用失败 / 超时 ⇒ **确定性模板** Markdown（findings 计数 + 按文件清单），
  *    `degradedReason` 留痕——`saveReviewSummary` 一定会被调用。
  */
+
+/**
+ * 零意见时的固定总结（逐字节确定，不调用模型）：平台只需知道「看过、没问题」。
+ * 与 `renderTemplateSummary` 的零意见分支共用同一段文本。
+ */
+export const NO_FINDING_SUMMARY_MARKDOWN = "# 检视总结\n\n本次检视未发现缺陷。";
 
 export interface ReviewSummaryInput {
   /** 投影后的中文分组意见（投影降级 / 未配置引擎时缺席） */
@@ -46,6 +54,10 @@ const SUMMARY_SYSTEM_PROMPT = [
 ].join("\n");
 
 export async function buildReviewSummary(input: ReviewSummaryInput): Promise<ReviewSummaryResult> {
+  // 零意见：固定文案直出，不调用模型（也绝不降级留痕——这不是降级）
+  if (input.findings.length === 0) {
+    return { markdown: NO_FINDING_SUMMARY_MARKDOWN };
+  }
   const completion = await completeOneShot({
     baseUrl: input.runtime.baseUrl,
     apiKey: input.runtime.apiKey,
@@ -126,8 +138,7 @@ function renderTemplateSummary(input: ReviewSummaryInput): string {
   const findings = input.findings;
   const lines: string[] = ["# 检视总结", ""];
   if (findings.length === 0) {
-    lines.push("本次检视未发现缺陷。");
-    return lines.join("\n");
+    return NO_FINDING_SUMMARY_MARKDOWN;
   }
   const counts = countBySeverity(findings);
   lines.push(

@@ -440,22 +440,24 @@ test("第二片失败：退出抛错、不写聚合产物，已完成的片产�
 
 // ---- 片级上报回调（ADR-0045：onShardFindings） ----
 
-test("单片路径：hook 恰好一次，label {index:1,total:1}，findings 即该片定型结果", async () => {
+test("单片路径：hook 恰好一次，label {index:1,total:1}，findings 即该片定型结果，files = 整份 diff 的文件", async () => {
   const runsRoot = tempRunsRoot();
   const runtime = splitRuntime({ enabled: false, maxShardChars: 200 });
   const script = fakeFetch(sixPhaseWithCandidate(candidate("C1", "src/Foo.java", 3)));
-  const seen: { label: { index: number; total: number }; findings: unknown[] }[] = [];
+  const seen: { label: { index: number; total: number }; findings: unknown[]; files: string[] }[] = [];
 
   const run = await runReview({
     ...baseInput(runsRoot, BLOCK_A, runtime, script.fetch),
-    onShardFindings: async (label, findings) => {
-      seen.push({ label, findings: [...findings] });
+    onShardFindings: async (label, findings, files) => {
+      seen.push({ label, findings: [...findings], files: [...files] });
     },
   });
 
   expect(seen).toHaveLength(1);
   expect(seen[0]?.label).toEqual({ index: 1, total: 1 });
   expect(seen[0]?.findings).toEqual(run.record.baseline.findings);
+  // 第三参数 = 单片路径的整份 diff 文件清单（供「没有意见也按文件上报」）
+  expect(seen[0]?.files).toEqual(["src/main/java/com/example/Alpha.java"]);
   // 不注入任何上报语义：请求面与产物面不受影响（6 请求、聚合产物在位）
   expect(script.requests).toHaveLength(6);
   expect(run.record.baseline.findings).toHaveLength(1);
@@ -475,11 +477,13 @@ test("分片路径：每片一次、label 带片号、串行 await（上一片�
   ]);
   const order: string[] = [];
   const labels: { index: number; total: number }[] = [];
+  const filesByShard: string[][] = [];
 
   await runReview({
     ...baseInput(runsRoot, TWO_FILE_DIFF, runtime, script.fetch),
-    onShardFindings: async (label, findings) => {
+    onShardFindings: async (label, findings, files) => {
       labels.push({ ...label });
+      filesByShard.push([...files]);
       order.push(`s${String(label.index)}:start(${String(findings.length)})`);
       // 让第 1 片的回调慢一拍：若 run 层不等它，s2 的 start 会插到 s1:end 之前
       if (label.index === 1) {
@@ -492,6 +496,11 @@ test("分片路径：每片一次、label 带片号、串行 await（上一片�
   expect(labels).toEqual([
     { index: 1, total: 2 },
     { index: 2, total: 2 },
+  ]);
+  // 每片只带自己的文件（不重复上报别片的文件）
+  expect(filesByShard).toEqual([
+    ["src/main/java/com/example/Alpha.java"],
+    ["src/main/java/com/example/Beta.java"],
   ]);
   expect(order).toEqual(["s1:start(1)", "s1:end", "s2:start(1)", "s2:end"]);
 });

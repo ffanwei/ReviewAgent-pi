@@ -453,6 +453,22 @@ function oneFindingCorpusForReport(): FakeReply[] {
   ];
 }
 
+/**
+ * 零意见语料：一轮跑完候选为空、phase-6 complete:true。零意见不生成报文、
+ * 总结也用固定文案 ⇒ 之后没有任何一次性模型调用。
+ */
+function noFindingCorpus(): FakeReply[] {
+  const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+  return [
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: '{"candidates":[]}', usage: ZERO },
+    { text: '{"verdicts":[],"complete":true}', usage: ZERO },
+  ];
+}
+
 /** 子进程网关覆盖（写入本 run 的最小配置文件；不再经环境变量） */
 function stubEnv(stubBaseUrl: string): RunBinOptions {
   return { gatewayBaseUrl: stubBaseUrl };
@@ -2099,10 +2115,12 @@ test(
       const outcome = JSON.parse(run.stdout) as Record<string, unknown>;
       expect("findings" in outcome).toBe(true);
 
-      // 顺序契约（ADR-0045 决策 2）：start → mrReviewResult → saveReviewSummary → end
+      // 顺序契约（ADR-0045 决策 2）：start → mrReviewResult（有意见的文件）→
+      // mrReviewResult（本片其余文件，reviewTips: []）→ saveReviewSummary → end
       const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
       expect(business.map((call) => call.name)).toEqual([
         "startTask",
+        "mrReviewResult",
         "mrReviewResult",
         "saveReviewSummary",
         "endTask",
@@ -2120,16 +2138,23 @@ test(
         ruleId: null, // id 无 RULE-CHECK@ 前缀 = 非规则会话产出
         lineNum: "1",
       });
-      expect(business[2]?.args).toMatchObject({ taskId: CLI_TASK_ID });
-      expect(String(business[2]?.args.description)).toContain("# 检视总结");
-      expect(business[3]?.args).toEqual({ taskId: CLI_TASK_ID });
+      // 本片 diff 里的另一个文件没有意见 → 也按文件上报，reviewTips 为空
+      expect(business[2]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
+        reviewTips: [],
+      });
+      expect(business[3]?.args).toMatchObject({ taskId: CLI_TASK_ID });
+      expect(String(business[3]?.args.description)).toContain("# 检视总结");
+      expect(business[4]?.args).toEqual({ taskId: CLI_TASK_ID });
 
       // 批量事件通道照常（run.start / run.end 至少一批）
       const eventBatches = mcp.toolCalls().filter((call) => call.name === "report_events");
       expect(eventBatches.length).toBeGreaterThanOrEqual(1);
 
-      // stderr 可见性：片级上报一行 + saveReviewSummary 心跳
-      expect(run.stderr).toContain("MCP mrReviewResult 已上报 1 文件 / 1 条意见");
+      // stderr 可见性：片级上报一行（2 文件：1 个有意见 + 1 个空 tips）+
+      // saveReviewSummary 心跳
+      expect(run.stderr).toContain("MCP mrReviewResult 已上报 2 文件 / 1 条意见");
       expect(run.stderr).toContain("MCP saveReviewSummary 生成中");
 
       // 一次性模型调用走同一网关（非流式）：报文 + 总结各一条
@@ -2253,7 +2278,12 @@ test(
         .map((call) => call.name);
       // startTask 失败了，但后续业务调用照常尝试（旁路不级联压制）；
       // endTask 不补发（没有「结束一个从未开始的 task」）
-      expect(names).toEqual(["startTask", "mrReviewResult", "saveReviewSummary"]);
+      expect(names).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "mrReviewResult",
+        "saveReviewSummary",
+      ]);
     } finally {
       await stub.close();
       await mcp.close();
@@ -2635,9 +2665,64 @@ test(
       expect(mcp.toolCalls().map((call) => call.name)).toEqual([
         "startTask",
         "mrReviewResult",
+        "mrReviewResult",
         "saveReviewSummary",
         "endTask",
       ]);
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "没有检视意见：mrReviewResult 仍按文件调用、reviewTips: []，saveReviewSummary / endTask 照常",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      // 零意见也要让平台知道「这些文件检视过了」：每个 diff 文件一条空 tips
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
+        reviewTips: [],
+      });
+      expect(run.stderr).toContain("MCP mrReviewResult 已上报 1 文件 / 0 条意见");
+      // 零意见：saveReviewSummary 发固定「未发现缺陷」文案，不触发一次性模型调用
+      expect(business[2]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        description: "# 检视总结\n\n本次检视未发现缺陷。",
+      });
+      expect(countOneShotGatewayCalls(stub)).toBe(0);
+      expect(run.stderr).toContain("未发现检视意见，发送固定总结");
+
+      // 空 tips 文档照样落盘（本次 run 的中文产物只有一个空数组）
+      const tipsPath = path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json");
+      expect(existsSync(tipsPath)).toBe(true);
+      expect(JSON.parse(readFileSync(tipsPath, "utf8"))).toEqual([]);
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
@@ -2671,9 +2756,11 @@ test(
       });
 
       expect(run.status).toBe(0);
-      // 服务端收到的就是四个业务 tool（顺序契约），一个事件都没有
+      // 服务端收到的就是业务 tool（顺序契约）：有意见的文件 + 本片其余文件
+      // （reviewTips: []）各一条 mrReviewResult，一个事件都没有
       expect(mcp.toolCalls().map((call) => call.name)).toEqual([
         "startTask",
+        "mrReviewResult",
         "mrReviewResult",
         "saveReviewSummary",
         "endTask",

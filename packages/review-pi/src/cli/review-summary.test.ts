@@ -113,12 +113,18 @@ test("模型回空串 → 模板降级（空总结不外发）", async () => {
   expect(result.markdown).toContain("1 条问题");
 });
 
-test("零 finding 模板：明确说「未发现缺陷」", async () => {
-  const fetch: FetchFunction = async () => new Response("boom", { status: 500 });
+test("零 finding：固定文案直出，不调用模型、不留降级痕", async () => {
+  let calls = 0;
+  const fetch: FetchFunction = async () => {
+    calls += 1;
+    return new Response("boom", { status: 500 });
+  };
   const result = await buildReviewSummary({
     findings: [],
     runtime: RUNTIME,
     fetch,
   });
-  expect(result.markdown).toContain("未发现缺陷");
+  expect(calls).toBe(0);
+  expect(result.markdown).toBe("# 检视总结\n\n本次检视未发现缺陷。");
+  expect(result.degradedReason).toBeUndefined();
 });

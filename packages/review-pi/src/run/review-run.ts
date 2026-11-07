@@ -30,7 +30,7 @@ import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
-import { assertDiffWithinCharLimit, filterDiffForReview, toMrFilterRecord } from "./mr-input.js";
+import { assertDiffWithinCharLimit, filterDiffForReview, splitDiffIntoFileBlocks, toMrFilterRecord } from "./mr-input.js";
 import { mergeShardFindings } from "./findings-merge.js";
 import { runReviewPass, type ReviewPassResult } from "./review-pass.js";
 import {
@@ -110,7 +110,9 @@ export interface ReviewRunInput {
   /**
    * 片级检视结果回调（ADR-0045）：每片 pass 完成、该片 findings 定型后调用
    * 并 **await**（串行：上一片的回调完成才开始下一片）。单片路径 = 一次调用
-   * （`{index:1, total:1}`）。缺省不注入 = 零行为变化（不进审计、不改 wire 字节）。
+   * （`{index:1, total:1}`）。第三个参数是该片 diff 触碰的文件清单（repo 相对
+   * 路径）——让「没有问题」也能按文件上报。缺省不注入 = 零行为变化
+   * （不进审计、不改 wire 字节）。
    *
    * 旁路纪律：这是上报缝，不是检视链的一环——实现方保证**绝不抛错**（自身
    * 负责 stderr 可见性）；本层仍防御性吞错，hook 失败绝不影响检视与退出码。
@@ -118,10 +120,15 @@ export interface ReviewRunInput {
   readonly onShardFindings?: ReviewShardFindingsHook;
 }
 
-/** 片级回调形状（ADR-0045）：label 与进度事件的分片标签同构（1-based） */
+/**
+ * 片级回调形状（ADR-0045）：label 与进度事件的分片标签同构（1-based）。
+ * `files` = 该片 diff 触碰的文件（repo 相对路径，按 diff 出现顺序；单片路径
+ * = 整份 diff 的文件）——供上报方对「没有意见的文件」也按文件调用。
+ */
 export type ReviewShardFindingsHook = (
   label: { readonly index: number; readonly total: number },
   findings: readonly Finding[],
+  files: readonly string[],
 ) => Promise<void>;
 
 export interface ReviewRunResult {
@@ -281,12 +288,13 @@ async function notifyShardFindings(
   input: ReviewRunInput,
   label: { readonly index: number; readonly total: number },
   findings: readonly Finding[],
+  files: readonly string[],
 ): Promise<void> {
   if (input.onShardFindings === undefined) {
     return;
   }
   try {
-    await input.onShardFindings(label, findings);
+    await input.onShardFindings(label, findings, files);
   } catch {
     // 旁路（ADR-0045 决策 3）：hook 自身负责 stderr 可见性；这里只保证不外溢
   }
@@ -325,8 +333,16 @@ async function executeSinglePass(args: {
     ...(args.input.config !== undefined ? { config: args.input.config } : {}),
     emit: args.emit,
   });
-  // 片级上报缝（ADR-0045）：单片路径 = 一次调用，findings 已定型。
-  await notifyShardFindings(args.input, { index: 1, total: 1 }, pass.findings);
+  // 片级上报缝（ADR-0045）：单片路径 = 一次调用，findings 已定型；文件清单
+  // 取整份 diff（让「没有问题」也按文件上报，与分片路径同契约）。
+  await notifyShardFindings(
+    args.input,
+    { index: 1, total: 1 },
+    pass.findings,
+    splitDiffIntoFileBlocks(args.diff)
+      .map((block) => block.path)
+      .filter((filePath) => filePath !== ""),
+  );
 
   const result: RunResult = {
     caseId: args.input.caseId,
@@ -420,7 +436,7 @@ async function executeShardedPasses(args: {
     });
     executed.push({ shard, pass });
     // 片级上报缝（ADR-0045）：该片 findings 定型、下一片开始前（串行 await）。
-    await notifyShardFindings(args.input, { index: shard.index, total }, pass.findings);
+    await notifyShardFindings(args.input, { index: shard.index, total }, pass.findings, shard.files);
     shardStartedAt = pass.finishedAt;
   }
 

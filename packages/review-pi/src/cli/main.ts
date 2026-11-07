@@ -46,7 +46,7 @@ import type { Finding } from "../contracts/finding.js";
 import type { RunProgressSink } from "../contracts/progress.js";
 import { runDirPath } from "../experiment/run-record.js";
 import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-index.js";
-import { createMcpReporter, resolveReportConfig, type McpReporter } from "../mcp/index.js";
+import { createMcpReporter, normalizeReportFilePath, resolveReportConfig, type McpReporter } from "../mcp/index.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
@@ -204,10 +204,12 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       ? (
           label: { readonly index: number; readonly total: number },
           findings: readonly Finding[],
+          files: readonly string[],
         ) =>
           reportShardFindings({
             label,
             findings,
+            files,
             taskId: args.taskId,
             repoPath,
             reporter: activeReporter,
@@ -446,10 +448,15 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 检视总结上报（ADR-0045 决策 2）：中文 tips 落盘之后（发出去的内容与
     // `reviews_tips_zh.json` 同源同版本）、session 索引之前（索引失败不该影响
     // 上报时机）。顺序契约：mrReviewResult（片级，已发完）→ saveReviewSummary
-    // → endTask（finally）。统一生成全灭且无回落时输入退为英文 findings，模型
-    // 调用失败再降级确定性模板——saveReviewSummary 一定会被调用。
+    // → endTask（finally）。零意见 ⇒ 固定文案直出（不调模型）；有意见时统一
+    // 生成全灭且无回落则输入退为英文 findings，模型失败再降级确定性模板——
+    // saveReviewSummary 一定会被调用。
     if (taskToolsOn && activeReporter !== null) {
-      process.stderr.write("review-pi: MCP saveReviewSummary 生成中（检视总结）……\n");
+      process.stderr.write(
+        findings.length === 0
+          ? "review-pi: MCP saveReviewSummary 未发现检视意见，发送固定总结（不调用模型）\n"
+          : "review-pi: MCP saveReviewSummary 生成中（检视总结）……\n",
+      );
       const summaryReport = await buildReviewSummary({
         ...(tipsDoc !== undefined ? { tips: tipsDoc } : {}),
         findings,
@@ -585,6 +592,8 @@ async function readCodeLines(
 async function reportShardFindings(input: {
   readonly label: { readonly index: number; readonly total: number };
   readonly findings: readonly Finding[];
+  /** 该片 diff 触碰的文件（repo 相对路径）：没有意见的文件也要按文件上报 */
+  readonly files: readonly string[];
   readonly taskId: string;
   readonly repoPath: string;
   readonly reporter: McpReporter;
@@ -597,6 +606,13 @@ async function reportShardFindings(input: {
   const label = input.label.total > 1 ? ` [s${pad2(input.label.index)}/${pad2(input.label.total)}]` : "";
   try {
     if (input.findings.length === 0) {
+      // 「没有问题」也按文件上报：reviewTips: [] —— 平台据此知道这些文件已检视过
+      const sent = await reportFilesWithoutTips({ ...input, label });
+      if (sent > 0) {
+        process.stderr.write(
+          `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见\n`,
+        );
+      }
       return;
     }
     const codeByFinding = await readCodeLines(input.repoPath, input.findings);
@@ -641,6 +657,17 @@ async function reportShardFindings(input: {
         );
       }
     }
+    // 本片其余文件（没有意见）：按文件传空 reviewTips。
+    // 排除面 = 有意见报文的文件 + **所有 finding 指向的文件**（用它而不是
+    // outcome.files：某文件的 tips 全被校验跳过时，也不能把该文件报成「无问题」）。
+    const withFindings = new Set(outcome.files.map((file) => file.filePath));
+    for (const finding of input.findings) {
+      const findingPath = normalizeReportFilePath(finding.file);
+      if (findingPath !== null) {
+        withFindings.add(findingPath);
+      }
+    }
+    sent += await reportFilesWithoutTips({ ...input, label, exclude: withFindings });
     if (sent > 0) {
       process.stderr.write(
         `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / ${String(tips)} 条意见\n`,
@@ -649,6 +676,52 @@ async function reportShardFindings(input: {
   } catch {
     // 旁路（ADR-0045 决策 3）：绝不把上报失败变成检视失败；具体原因已在上面逐行留痕
   }
+}
+
+/**
+ * 对「没有检视意见」的文件逐个调用 `mrReviewResult(filePath, reviewTips: [])`。
+ *
+ * 路径按报文同一规范处理（反斜杠→正斜杠、拒绝对路径/`..`），非法路径跳过
+ * 并留痕；`exclude` = 本片已经有意见报文的文件（成败都排除——失败时补一条
+ * 空 tips 会造成「没有意见」的错误印象）。返回成功发送的文件数。
+ */
+async function reportFilesWithoutTips(input: {
+  readonly label: string;
+  readonly taskId: string;
+  readonly reporter: McpReporter;
+  readonly files: readonly string[];
+  readonly reportedFiles: string[];
+  readonly exclude?: ReadonlySet<string>;
+}): Promise<number> {
+  const seen = new Set<string>();
+  let sent = 0;
+  for (const raw of input.files) {
+    const filePath = normalizeReportFilePath(raw);
+    if (filePath === null) {
+      process.stderr.write(
+        `review-pi: MCP mrReviewResult${input.label} 跳过文件（filePath 非法：${JSON.stringify(raw)}）\n`,
+      );
+      continue;
+    }
+    if (seen.has(filePath) || input.exclude?.has(filePath) === true) {
+      continue;
+    }
+    seen.add(filePath);
+    const result = await input.reporter.task.reportFileResult({
+      taskId: input.taskId,
+      filePath,
+      reviewTips: [],
+    });
+    if (result.ok) {
+      sent += 1;
+      input.reportedFiles.push(filePath);
+    } else {
+      process.stderr.write(
+        `review-pi: MCP mrReviewResult${input.label} ${filePath} 失败（${result.reason}）\n`,
+      );
+    }
+  }
+  return sent;
 }
 
 /** 片号两位化（与分片目录名 sNN 同形） */
