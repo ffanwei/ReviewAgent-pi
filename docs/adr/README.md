@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0049）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0051）。
 
 ## 记录纪律
 
@@ -43,6 +43,7 @@
 | [ADR-0048](0048-offline-trace-replay-and-concurrency-ramp.md) | 离线 trace 回放（指纹匹配、共享回放服务）与进程级并发阶梯（lane 隔离、模拟延迟、CI 门） |
 | [ADR-0049](0049-trace-schema-v2-and-upstream-recording.md) | trace schema v2（`toolsVariants` + `toolsRef`）、lane 路径归一化、真网关录制代理；S5 rule-skill 与 S4 分片场景 |
 | [ADR-0050](0050-mcp-business-tool-retry-and-timeout.md) | MCP 业务 tool：`mcp.servers.*.timeoutMs` 缺省 60 s，瞬时失败（传输 / 超时 / 5xx）最多 3 次尝试 |
+| [ADR-0051](0051-llm-call-retry-and-timeout.md) | LLM 调用分层重试与请求建立超时：Agent 走 pi-ai `maxRetries`，核外一次性调用走 `shared/llm-retry.ts`；缺省 3 次尝试，smoke 不重试 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

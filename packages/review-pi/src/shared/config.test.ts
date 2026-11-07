@@ -203,6 +203,67 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/maxRounds must be in 1…20/);
   });
 
+  test("limits.retry：路径次数缺省继承 maxAttempts，smoke 缺省 1", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.retry).toEqual(DEFAULT_LIMITS.retry);
+    expect(defaults.limits.retry.smokeAttempts).toBe(1);
+
+    const tuned = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"retry":{"maxAttempts":2}}`)),
+    }).config;
+    // 三个会话路径继承 maxAttempts；smoke 保持不重试的缺省
+    expect(tuned.limits.retry.reviewTurnAttempts).toBe(2);
+    expect(tuned.limits.retry.oneShotAttempts).toBe(2);
+    expect(tuned.limits.retry.presentationAttempts).toBe(2);
+    expect(tuned.limits.retry.smokeAttempts).toBe(1);
+
+    const perPath = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"retry":{"maxAttempts":2,"oneShotAttempts":4,"smokeAttempts":3}}`,
+        ),
+      ),
+    }).config;
+    expect(perPath.limits.retry.reviewTurnAttempts).toBe(2);
+    expect(perPath.limits.retry.oneShotAttempts).toBe(4);
+    expect(perPath.limits.retry.smokeAttempts).toBe(3);
+  });
+
+  test("limits.retry 越界 / 类型错 = fail fast，指出键路径", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"retry":{"maxAttempts":0}}`)),
+      }),
+    ).toThrow(/limits.retry.maxAttempts must be in 1…10/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"retry":{"oneShotAttempts":11}}`)),
+      }),
+    ).toThrow(/limits.retry.oneShotAttempts must be in 1…10/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"retry":{"baseDelayMs":"500"}}`)),
+      }),
+    ).toThrow(/limits.retry.baseDelayMs must be an integer/);
+  });
+
+  test("limits.timeouts 新增 reviewTurnMs / oneShotMs 可配且进 digest", () => {
+    const { config } = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"limits":{"timeouts":{"reviewTurnMs":120000,"oneShotMs":45000}}`),
+      ),
+    });
+    expect(config.limits.timeouts.reviewTurnMs).toBe(120_000);
+    expect(config.limits.timeouts.oneShotMs).toBe(45_000);
+    expect(config.overridden).toContain("limits.timeouts.reviewTurnMs");
+    expect(config.overridden).toContain("limits.timeouts.oneShotMs");
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"timeouts":{"reviewTurnMs":0}}`)),
+      }),
+    ).toThrow(/reviewTurnMs must be in 1000…3600000/);
+  });
+
   test("钉死键 = 警告「不会被采用」", () => {
     const { warnings, config } = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"micro":{"toolResultBudgetChars":100}}`)),

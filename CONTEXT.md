@@ -107,6 +107,10 @@ _Avoid_: 进度条（不是百分比口径——「步数」= 模型请求序号
 检视进程向外部 MCP 服务（HTTP + JSON-RPC，`mcp.servers` / `mcp.report` 配置）的外发能力，**两层语义**共用同一连接与握手：(1) **事件上报**（ADR-0037）——进度事件批量塞进单个 tool 的 `events` 数组，`(streamId, seq)` 幂等、可重试、背压丢最旧，字段白名单（正文/路径/秘密永不出进程）；(2) **业务调用**（ADR-0045）——`startTask` / `endTask` / `saveReviewSummary` / `mrReviewResult` 四个 tool 的任务生命周期与结果上报：片级 `mrReviewResult` 每片 findings 定型后就发（报文与 `reviews_tips_zh.json` **同源复用**——同一份统一生成的两个投影：报文 = 片级即发、结构字段从严；tips = 聚合落盘、12 键），总结在统一 tips 落盘后发。两层共用的纪律：**旁路**（任何失败只落 stderr 一行、永不改退出码）；业务调用最多 3 次尝试（仅传输 / 超时 / HTTP 5xx 瞬时失败重试，ADR-0050），另受 `mcp.report.task`（缺省 `true`）开关。
 _Avoid_: 遥测（不上传指标）、把业务调用塞进事件批量通道（业务调用不可丢、要立刻知道结果）、双向 MCP（我们只是 client，不做 resources/prompts）
 
+**LLM 调用重试（LLM Call Retry）**:
+模型网关调用的瞬时失败重试能力（ADR-0051）。**分层实现**：Agent 内会话（主检视回合 / 规则 Skill 会话）透传 pi-ai 的 `maxRetries` / `maxRetryDelayMs` / `timeoutMs`，只重试**请求建立阶段**；核外一次性调用（片级报文 / 收尾总结 / 内置呈现引擎 / smoke 探针）走本仓 `shared/llm-retry.ts` 的统一原语。次数口径恒为**总尝试次数（含首次）**；缺省 3 次，smoke 缺省 1 次（诊断命令不重试）。只有传输失败 / 超时 / 408 / 409 / 429 / 5xx / `x-should-retry: true` 可重试；确定性 4xx、配额类 429、超 `maxRetryAfterMs` 的 `Retry-After`、非 JSON / 空 completion 不重试。流已开始后断开会显式报错，不做整回合重放（避免重复工具副作用、污染 agent 消息状态）。配置面 `limits.retry` 与 `limits.timeouts.reviewTurnMs` / `oneShotMs`；离线回放 lane 固定单次尝试。
+_Avoid_: 全局重试开关（分层各有边界）、断线续传（流中断不重试）、把「重试次数」当配置口径（一律写总尝试次数）
+
 **测量常量面（Measurement-Constant Face）**:
 内核跨版本 / 跨语言呈现改动时必须 byte / 行为一致的半边：Zone A 提示词、六阶段 Loop 语义、Finding/Evidence 契约；这些面由**结构性质 + 端到端能力断言**把守（ADR-0038 于 2026-11-04 退役了「对照 DSH 历史审计真源逐字节相等」的 golden 常量门；此前的一致性属历史记录，不再由测试机器验证）。
 运行期常量面（ADR-0025 收窄口径，ADR-0046 后）= **4 项死钉**：`maxToolCalls=100` / `toolResultBudgetChars=8000` / 呈现 `temperature=0` / `reasoningEffort=high`。检视轮次上限已移入配置面（`limits.loop.maxRounds`，缺省 3；最后一轮强制 complete，ADR-0046）。其余文本截断与资源上限（包头部字节、检索回显、调用链跳数、工具名/摘要截断、超时、并发、归档、MR 边界）是**可配项**，不再是本面的一部分——换一份 `~/.PiAgent/PiAgent.jsonc` 即可能改变请求体。

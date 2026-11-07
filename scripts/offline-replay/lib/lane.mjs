@@ -32,9 +32,21 @@ export async function createLane({ runDir, label, scenario, server, index }) {
       baseUrl: server.baseUrl,
     },
   };
+  const limits = {
+    // 回放按请求哈希命中同一 interaction（ADR-0048）：失败响应重放多次仍是
+    // 同一失败，重试无收益且会放大请求计数。回放 lane 固定单次尝试（ADR-0051）。
+    retry: {
+      maxAttempts: 1,
+      reviewTurnAttempts: 1,
+      oneShotAttempts: 1,
+      presentationAttempts: 1,
+      smokeAttempts: 1,
+    },
+  };
   if (scenario.split?.maxShardChars !== undefined) {
-    config.limits = { split: { maxShardChars: scenario.split.maxShardChars } };
+    limits.split = { maxShardChars: scenario.split.maxShardChars };
   }
+  config.limits = limits;
   if (scenario.mcp.mode === "stub") {
     config.mcp = {
       servers: {

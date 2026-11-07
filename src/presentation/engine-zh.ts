@@ -3,6 +3,14 @@ import type { Dirent } from "node:fs";
 import path from "node:path";
 
 import type { Finding, PresentationRuntime } from "@baize/review-pi";
+import {
+  classifyHttpFailure,
+  classifyThrownFailure,
+  DEFAULT_RETRY_POLICY,
+  malformedFailure,
+  runWithRetry,
+  type RetryPolicy,
+} from "@baize/review-pi";
 import { buildReviewTipsDocument, dedupeFindingsByLine, reviewOf, type ReviewTipsDocument } from "./tips.js";
 import type { TranslateEngine, TerminologyContext } from "./translate-projection.js";
 import {
@@ -78,6 +86,12 @@ export interface GatewayEngineOptions {
   readonly requestTimeoutMs?: number;
   /** 建议生成并发（缺省 4；来自 `limits.concurrency.suggestion`） */
   readonly concurrency?: number;
+  /**
+   * 逐请求重试策略（ADR-0051；来自 `PresentationRuntime.retry`）。缺省 =
+   * `DEFAULT_RETRY_POLICY`（共 3 次尝试）。只重试传输 / 超时 / 408 / 409 /
+   * 429 / 5xx；空 completion 与非法 JSON 属确定性输出问题，不重试。
+   */
+  readonly retry?: RetryPolicy;
 }
 
 /** 分组意见的附加呈现源（ADR-0017：CLI 抽好的源码行 + 规则包解压目录） */
@@ -121,6 +135,7 @@ export default async function projectZhPresentation(
     fetchFn: globalThis.fetch,
     requestTimeoutMs: runtime.requestTimeoutMs,
     concurrency: runtime.concurrency,
+    ...(runtime.retry !== undefined ? { retry: runtime.retry } : {}),
   };
   const projected = await projectReviewDocument(
     { engine: createGatewayTranslateEngine(gateway) },
@@ -369,49 +384,76 @@ function frontmatterId(text: string): string | undefined {
 /**
  * 共享 completion 调用（OpenAI 兼容非流式）：非 2xx / 非 JSON / 空 completion /
  * 网络异常均抛人话错误（调用方决定隔离粒度：翻译 → 整次降级；建议 → 单条空串）。
+ *
+ * 重试（ADR-0051）：每次尝试独立 `AbortSignal.timeout`；只有传输失败 / 超时 /
+ * 408 / 409 / 429 / 5xx 重试，空 completion 与非法 JSON 不重试（temperature 0
+ * 下属确定性输出问题，重放只会得到同样结果）。
  */
 async function postCompletion(
   options: GatewayEngineOptions,
   messages: readonly { readonly role: string; readonly content: string }[],
   serviceLabel: string = SERVICE_LABEL,
 ): Promise<string> {
-  const body = {
+  const policy = options.retry ?? DEFAULT_RETRY_POLICY;
+  const body = JSON.stringify({
     model: options.modelId,
     messages,
     stream: false,
     temperature: 0,
-  };
+  });
   const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-  let response: Response;
-  try {
-    response = await options.fetchFn(options.endpointUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${options.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${serviceLabel} request failed: ${message}`);
+  const outcome = await runWithRetry(policy, async () => {
+    let response: Response;
+    try {
+      response = await options.fetchFn(options.endpointUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${options.apiKey}`,
+        },
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      return {
+        ok: false as const,
+        failure: classifyThrownFailure(error, `${serviceLabel} request failed`),
+      };
+    }
+    if (!response.ok) {
+      const detail = await errorSnippetOf(response);
+      const failure = classifyHttpFailure(response.status, response.headers, detail, policy);
+      return {
+        ok: false as const,
+        failure: { ...failure, reason: `${serviceLabel} returned ${failure.reason}` },
+      };
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return {
+        ok: false as const,
+        failure: malformedFailure(`${serviceLabel} returned a non-JSON body`),
+      };
+    }
+    const content = readAssistantContent(payload);
+    if (content === undefined || content.trim() === "") {
+      return {
+        ok: false as const,
+        failure: malformedFailure(`${serviceLabel} returned an empty completion`),
+      };
+    }
+    return { ok: true as const, value: content };
+  });
+  if (outcome.ok) {
+    return outcome.value;
   }
-  if (!response.ok) {
-    const detail = await errorSnippetOf(response);
-    throw new Error(`${serviceLabel} returned HTTP ${response.status}: ${detail}`);
-  }
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    throw new Error(`${serviceLabel} returned a non-JSON body`);
-  }
-  const content = readAssistantContent(payload);
-  if (content === undefined || content.trim() === "") {
-    throw new Error(`${serviceLabel} returned an empty completion`);
-  }
-  return content;
+  throw new Error(
+    outcome.attempts > 1
+      ? `${outcome.failure.reason} (after ${String(outcome.attempts)} attempts)`
+      : outcome.failure.reason,
+  );
 }
 
 /**

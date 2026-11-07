@@ -14,6 +14,8 @@ const RUNTIME = {
   baseUrl: "http://127.0.0.1:9/v1",
   modelId: "test-model",
   timeoutMs: 5_000,
+  // 单次尝试：本文件测总结降级链，重试行为在 llm-retry 的专用用例覆盖。
+  retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0, maxRetryAfterMs: 0 },
 } as const;
 
 function finding(file: string, severity: Finding["severity"]): Finding {

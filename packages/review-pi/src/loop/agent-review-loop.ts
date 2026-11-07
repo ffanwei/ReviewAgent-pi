@@ -231,6 +231,11 @@ export async function runAgentReviewLoop(
     apiKey: inputs.apiKey,
     ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
     maxOutputTokens: runtime.maxOutputTokens,
+    // ADR-0051：请求建立阶段的次数 / 超时（pi-ai maxRetries 是重试次数，
+    // 配置面是总尝试次数，故 -1）。流开始后断开不在该层重试。
+    maxRetries: Math.max(0, runtime.limits.retry.reviewTurnAttempts - 1),
+    maxRetryDelayMs: runtime.limits.retry.maxRetryAfterMs,
+    timeoutMs: runtime.limits.timeouts.reviewTurnMs,
   });
 
   // followUp 注入缝：shouldStopAfterTurn 闭包引用 agent，先落占位再绑定

@@ -69,6 +69,12 @@ export interface ReviewTurnInput {
   readonly modelId?: string;
   /** 输出预算（ADR-0025：`reviewer.maxOutputTokens`；null/缺席 = 按接入点自动判档） */
   readonly maxOutputTokens?: number | null;
+  /** 请求建立阶段最多重试次数（pi-ai 语义：0 = 不重试；2 = 共 3 次尝试） */
+  readonly maxRetries?: number;
+  /** 服务端 Retry-After 上限毫秒数（pi-ai `maxRetryDelayMs`） */
+  readonly maxRetryDelayMs?: number;
+  /** 单次请求（流开始前）超时毫秒数 */
+  readonly timeoutMs?: number;
   /** 传输层注入；缺省线上 global fetch（离线测试恒注入 fake 适配器） */
   readonly fetch?: FetchFunction;
 }
@@ -90,6 +96,9 @@ export async function runReviewTurn(input: ReviewTurnInput): Promise<ReviewTurnO
     ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     reasoningEffort: LOCKED_REASONING_EFFORT,
+    ...(input.maxRetries !== undefined ? { maxRetries: input.maxRetries } : {}),
+    ...(input.maxRetryDelayMs !== undefined ? { maxRetryDelayMs: input.maxRetryDelayMs } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     onPayload: (payload) => {
       wire = captureWire(payload);
     },
@@ -175,6 +184,12 @@ export function reviewStreamFn(input: {
   readonly apiKey: string;
   readonly fetch?: FetchFunction;
   readonly maxOutputTokens?: number | null;
+  /** 请求建立阶段最多重试次数（pi-ai 语义：0 = 不重试；2 = 共 3 次尝试） */
+  readonly maxRetries?: number;
+  /** 服务端 Retry-After 上限毫秒数（pi-ai `maxRetryDelayMs`） */
+  readonly maxRetryDelayMs?: number;
+  /** 单次请求（流开始前）超时毫秒数 */
+  readonly timeoutMs?: number;
 }): StreamFn {
   return (model, context, options) => {
     // model.baseUrl 由 reviewModelOf 落值（目录缺省 = 官方直连），网关档在此
@@ -186,6 +201,11 @@ export function reviewStreamFn(input: {
       ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
       ...(maxTokens !== undefined ? { maxTokens } : {}),
       reasoningEffort: LOCKED_REASONING_EFFORT,
+      ...(input.maxRetries !== undefined ? { maxRetries: input.maxRetries } : {}),
+      ...(input.maxRetryDelayMs !== undefined
+        ? { maxRetryDelayMs: input.maxRetryDelayMs }
+        : {}),
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     });
   };
 }

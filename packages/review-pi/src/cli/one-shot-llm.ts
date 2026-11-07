@@ -1,5 +1,14 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
+import {
+  classifyHttpFailure,
+  classifyThrownFailure,
+  DEFAULT_RETRY_POLICY,
+  malformedFailure,
+  runWithRetry,
+  type RetryAttempt,
+  type RetryPolicy,
+} from "../shared/llm-retry.js";
 import { extractModelJson } from "../shared/model-json.js";
 
 /**
@@ -9,6 +18,11 @@ import { extractModelJson } from "../shared/model-json.js";
  * 的核外模块）——这里是 CLI 自有的一次性请求：system + user 两条消息、非流式、
  * 期望纯文本或 JSON 回包。与 `provider/gateway-probe.ts` 同款裸 fetch 形态
  * （OpenAI 兼容：`<baseUrl>/chat/completions`，baseUrl 需自带 `/v1`）。
+ *
+ * 重试（ADR-0051）：每次尝试独立 `AbortSignal.timeout(timeoutMs)`，只有传输
+ * 失败 / 408 / 409 / 429 / 5xx / `x-should-retry: true` 才重试；4xx（除上述）、
+ * 配额类 429、非 JSON / 缺 content 的确定性非法输出不重试。次数与退避来自
+ * `limits.retry.oneShotAttempts` / `limits.retry.*`（经 `ReportLlmRuntime`）。
  *
  * 纪律：**绝不抛错**（失败收敛为 `{ok:false, reason}`，调用方决定降级）；
  * key 只进 Authorization 头，绝不进 reason / 任何留痕。
@@ -20,7 +34,10 @@ export interface OneShotLlmInput {
   readonly modelId: string;
   readonly system: string;
   readonly user: string;
+  /** 单次尝试超时（每次重试重新计时） */
   readonly timeoutMs: number;
+  /** 重试策略（缺省 = 全局 default：3 次尝试） */
+  readonly retry?: RetryPolicy;
   /** 输出预算（生成 Markdown / JSON 的上限；缺席 = 服务端缺省） */
   readonly maxTokens?: number;
   /** 传输层注入（测试确定性）；缺省 globalThis.fetch */
@@ -32,6 +49,27 @@ export type OneShotLlmResult =
   | { readonly ok: false; readonly reason: string };
 
 export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLlmResult> {
+  const policy = input.retry ?? DEFAULT_RETRY_POLICY;
+  const outcome = await runWithRetry(
+    policy,
+    (): Promise<RetryAttempt<string>> => attemptOneShot(input, policy),
+  );
+  if (outcome.ok) {
+    return { ok: true, text: outcome.value };
+  }
+  return {
+    ok: false,
+    reason:
+      outcome.attempts > 1
+        ? `${outcome.failure.reason} (after ${String(outcome.attempts)} attempts)`
+        : outcome.failure.reason,
+  };
+}
+
+async function attemptOneShot(
+  input: OneShotLlmInput,
+  policy: RetryPolicy,
+): Promise<RetryAttempt<string>> {
   const fetch = input.fetch ?? globalThis.fetch;
   const body = JSON.stringify({
     model: input.modelId,
@@ -51,26 +89,26 @@ export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLl
       signal: AbortSignal.timeout(input.timeoutMs),
     });
   } catch (error) {
-    return { ok: false, reason: `request failed: ${errorMessage(error)}` };
+    return { ok: false, failure: classifyThrownFailure(error, "request failed") };
   }
   if (response.status < 200 || response.status >= 300) {
     const detail = await response.text().catch(() => "");
     return {
       ok: false,
-      reason: `HTTP ${String(response.status)}${truncate(detail)}`,
+      failure: classifyHttpFailure(response.status, response.headers, detail, policy),
     };
   }
   let payload: unknown;
   try {
     payload = JSON.parse(await response.text()) as unknown;
   } catch {
-    return { ok: false, reason: "response is not valid JSON" };
+    return { ok: false, failure: malformedFailure("response is not valid JSON") };
   }
   const text = readContentText(payload);
   if (text === undefined) {
-    return { ok: false, reason: "response has no message content text" };
+    return { ok: false, failure: malformedFailure("response has no message content text") };
   }
-  return { ok: true, text };
+  return { ok: true, value: text };
 }
 
 /**
@@ -123,16 +161,4 @@ export function extractJsonObject(
   options: { readonly preferKey?: string } = {},
 ): unknown | null {
   return extractModelJson(text, options).value ?? null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function truncate(text: string, max = 120): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  if (flat === "") {
-    return "";
-  }
-  return flat.length <= max ? `: ${flat}` : `: ${flat.slice(0, max - 1)}…`;
 }

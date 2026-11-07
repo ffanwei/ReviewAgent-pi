@@ -65,6 +65,7 @@ import {
   resolvePresentationEnginePath,
   type ResolvedConfig,
 } from "../shared/config.js";
+import { retryPolicyFor } from "../shared/llm-retry.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { REVIEW_PI_VERSION } from "../shared/version.js";
@@ -190,12 +191,14 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     }
   }
   // 片级上报编排（ADR-0045）：每片 findings 定型 → 报文调用 → 逐文件 mrReviewResult。
-  // 运行时档与呈现投影同档（model.presentation 优先 + presentationRequestMs）。
+  // 运行时档与呈现投影同档（model.presentation 优先 + oneShotMs）；重试次数
+  // 来自 limits.retry 的 oneShot 路径（ADR-0051）。
   const reportRuntime = {
     apiKey: endpoint.apiKey,
     baseUrl: endpoint.baseUrl,
     modelId: gatewayPresentationModelId(config, modelId),
-    timeoutMs: config.limits.timeouts.presentationRequestMs,
+    timeoutMs: config.limits.timeouts.oneShotMs,
+    retry: retryPolicyFor(config.limits.retry, "oneShot"),
   };
   const reportedFiles: string[] = [];
   // 语义登记的并集（ADR-0045 统一 tips）：键 = 合并键；片间首见优先。
@@ -377,10 +380,12 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           modelId: gatewayPresentationModelId(config, modelId),
           concurrency: config.limits.concurrency.suggestion,
           requestTimeoutMs: config.limits.timeouts.presentationRequestMs,
+          retry: retryPolicyFor(config.limits.retry, "presentation"),
         },
         perFieldTimeoutMs: config.limits.timeouts.presentationRequestMs,
         timeoutBufferMs: config.limits.timeouts.presentationBufferMs,
         suggestionConcurrency: config.limits.concurrency.suggestion,
+        retryAttempts: config.limits.retry.presentationAttempts,
       },
     );
     const findings =
@@ -798,6 +803,7 @@ async function runSmokeCommand(args: SmokeCliArgs, config: ResolvedConfig): Prom
     fetch: globalThis.fetch,
     healthTimeoutMs: config.limits.timeouts.probeHealthMs,
     modelTimeoutMs: config.limits.timeouts.probeModelMs,
+    retry: retryPolicyFor(config.limits.retry, "smoke"),
   });
   await writeStdout(`${formatSmokeDiagnostics(probes)}\n`);
   return probes.ok ? 0 : 1;

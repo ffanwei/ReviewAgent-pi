@@ -20,6 +20,23 @@ export type { RunResult, ToolCallRecord } from "./contracts/run.js";
 export { resolveReviewerEndpoint, type ReviewerEndpoint } from "./provider/reviewer-endpoint.js";
 export type { PresentationRuntime } from "./cli/presentation-projection.js";
 export {
+  DEFAULT_RETRY_POLICY,
+  SINGLE_ATTEMPT_POLICY,
+  classifyHttpFailure,
+  classifyThrownFailure,
+  malformedFailure,
+  retryAfterFromHeaders,
+  retryDelayMsFor,
+  retryPolicyFor,
+  runWithRetry,
+  type RetryAttempt,
+  type RetryFailure,
+  type RetryFailureKind,
+  type RetryOutcome,
+  type RetryPath,
+  type RetryPolicy,
+} from "./shared/llm-retry.js";
+export {
   formatSmokeDiagnostics,
   runSmokeProbes,
   type SmokeProbeInput,

@@ -2,6 +2,7 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { Finding } from "../contracts/finding.js";
 import { DEFAULT_GATEWAY_MAX_TOKENS } from "../shared/config.js";
+import type { RetryPolicy } from "../shared/llm-retry.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import {
   agentReviewTipFromUnknown,
@@ -53,7 +54,10 @@ export interface ReportLlmRuntime {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly modelId: string;
+  /** 单次尝试超时（`limits.timeouts.oneShotMs`） */
   readonly timeoutMs: number;
+  /** 重试策略（`limits.retry` 的 oneShot 路径；缺省 = 全局 default） */
+  readonly retry?: RetryPolicy;
 }
 
 /**
@@ -202,6 +206,7 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
     system: REPORT_SYSTEM_PROMPT,
     user: buildReportUserMessage(input.findings, input.codeByFinding),
     timeoutMs: input.runtime.timeoutMs,
+    ...(input.runtime.retry !== undefined ? { retry: input.runtime.retry } : {}),
     maxTokens: REPORT_MAX_TOKENS,
     ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
   });

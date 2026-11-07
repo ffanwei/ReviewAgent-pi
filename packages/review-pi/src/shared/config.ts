@@ -113,8 +113,35 @@ export interface TimeoutLimits {
   readonly ripgrepMs: number;
   readonly probeHealthMs: number;
   readonly probeModelMs: number;
+  readonly reviewTurnMs: number;
+  readonly oneShotMs: number;
   readonly presentationRequestMs: number;
   readonly presentationBufferMs: number;
+}
+
+/**
+ * LLM 调用重试（ADR-0051）：`maxAttempts` 一律是**总尝试次数（含首次）**。
+ *
+ * 分工：
+ * - Agent 内会话（主检视回合 / 规则 Skill 会话）用 `reviewTurnAttempts` +
+ *   `maxRetryAfterMs` → pi-ai `maxRetries` / `maxRetryDelayMs`；
+ * - 核外一次性调用（片级报文 / 收尾总结）用 `oneShotAttempts`；
+ * - 内置呈现引擎逐请求用 `presentationAttempts`（外部注入引擎无法被本仓强制，
+ *   该值经 `PresentationRuntime.retry` 作为契约穿参）；
+ * - smoke 探针缺省**不重试**（`smokeAttempts = 1`），要重试须显式配置。
+ *
+ * `baseDelayMs` / `maxDelayMs` 只作用于核外一次性调用；Agent 层的退避由
+ * pi-ai 自身固定（0.5s→8s），本仓不 fork 上游、只透传次数与超时。
+ */
+export interface RetryLimits {
+  readonly maxAttempts: number;
+  readonly baseDelayMs: number;
+  readonly maxDelayMs: number;
+  readonly maxRetryAfterMs: number;
+  readonly reviewTurnAttempts: number;
+  readonly oneShotAttempts: number;
+  readonly presentationAttempts: number;
+  readonly smokeAttempts: number;
 }
 
 /** 检视循环上限（ADR-0046） */
@@ -170,6 +197,7 @@ export interface MicroLimits {
 export interface Limits {
   readonly loop: LoopLimits;
   readonly timeouts: TimeoutLimits;
+  readonly retry: RetryLimits;
   readonly concurrency: ConcurrencyLimits;
   readonly boundary: BoundaryLimits;
   readonly split: SplitLimits;
@@ -186,8 +214,20 @@ export const DEFAULT_LIMITS: Limits = {
     ripgrepMs: 30_000,
     probeHealthMs: 15_000,
     probeModelMs: 120_000,
+    reviewTurnMs: 180_000,
+    oneShotMs: 90_000,
     presentationRequestMs: 90_000,
     presentationBufferMs: 30_000,
+  },
+  retry: {
+    maxAttempts: 3,
+    baseDelayMs: 500,
+    maxDelayMs: 10_000,
+    maxRetryAfterMs: 30_000,
+    reviewTurnAttempts: 3,
+    oneShotAttempts: 3,
+    presentationAttempts: 3,
+    smokeAttempts: 1,
   },
   concurrency: { suggestion: 4 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_500_000 },
@@ -663,7 +703,7 @@ const MCP_REPORT_KEYS = [
 const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
 const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
-const LIMITS_KEYS = ["loop", "timeouts", "concurrency", "boundary", "split", "archive", "micro"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "concurrency", "boundary", "split", "archive", "micro"] as const;
 const LOOP_KEYS = ["maxRounds"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -672,8 +712,20 @@ const TIMEOUT_KEYS = [
   "ripgrepMs",
   "probeHealthMs",
   "probeModelMs",
+  "reviewTurnMs",
+  "oneShotMs",
   "presentationRequestMs",
   "presentationBufferMs",
+] as const;
+const RETRY_KEYS = [
+  "maxAttempts",
+  "baseDelayMs",
+  "maxDelayMs",
+  "maxRetryAfterMs",
+  "reviewTurnAttempts",
+  "oneShotAttempts",
+  "presentationAttempts",
+  "smokeAttempts",
 ] as const;
 const CONCURRENCY_KEYS = ["suggestion"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
@@ -728,8 +780,40 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     ripgrepMs: intOr(timeoutsObj.ripgrepMs, "limits.timeouts.ripgrepMs", 1_000, 600_000, DEFAULT_LIMITS.timeouts.ripgrepMs),
     probeHealthMs: intOr(timeoutsObj.probeHealthMs, "limits.timeouts.probeHealthMs", 1_000, 120_000, DEFAULT_LIMITS.timeouts.probeHealthMs),
     probeModelMs: intOr(timeoutsObj.probeModelMs, "limits.timeouts.probeModelMs", 10_000, 600_000, DEFAULT_LIMITS.timeouts.probeModelMs),
+    reviewTurnMs: intOr(timeoutsObj.reviewTurnMs, "limits.timeouts.reviewTurnMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.reviewTurnMs),
+    oneShotMs: intOr(timeoutsObj.oneShotMs, "limits.timeouts.oneShotMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.oneShotMs),
     presentationRequestMs: intOr(timeoutsObj.presentationRequestMs, "limits.timeouts.presentationRequestMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.presentationRequestMs),
     presentationBufferMs: intOr(timeoutsObj.presentationBufferMs, "limits.timeouts.presentationBufferMs", 0, 3_600_000, DEFAULT_LIMITS.timeouts.presentationBufferMs),
+  };
+
+  const retryObj = optionalObject(limits.retry, "limits.retry", warnings);
+  assertKnownKeys(retryObj, RETRY_KEYS, "limits.retry", warnings);
+  const maxAttempts = intOr(
+    retryObj.maxAttempts,
+    "limits.retry.maxAttempts",
+    1,
+    10,
+    DEFAULT_LIMITS.retry.maxAttempts,
+  );
+  // 路径级次数缺省继承 maxAttempts；smoke 例外（缺省 1 = 探针不重试），
+  // 只有显式 smokeAttempts 才改变探针行为。
+  const inheritedAttempts = (key: keyof RetryLimits, raw: unknown): number =>
+    intOr(raw, `limits.retry.${key}`, 1, 10, maxAttempts);
+  const retry: RetryLimits = {
+    maxAttempts,
+    baseDelayMs: intOr(retryObj.baseDelayMs, "limits.retry.baseDelayMs", 0, 60_000, DEFAULT_LIMITS.retry.baseDelayMs),
+    maxDelayMs: intOr(retryObj.maxDelayMs, "limits.retry.maxDelayMs", 0, 600_000, DEFAULT_LIMITS.retry.maxDelayMs),
+    maxRetryAfterMs: intOr(retryObj.maxRetryAfterMs, "limits.retry.maxRetryAfterMs", 0, 600_000, DEFAULT_LIMITS.retry.maxRetryAfterMs),
+    reviewTurnAttempts: inheritedAttempts("reviewTurnAttempts", retryObj.reviewTurnAttempts),
+    oneShotAttempts: inheritedAttempts("oneShotAttempts", retryObj.oneShotAttempts),
+    presentationAttempts: inheritedAttempts("presentationAttempts", retryObj.presentationAttempts),
+    smokeAttempts: intOr(
+      retryObj.smokeAttempts,
+      "limits.retry.smokeAttempts",
+      1,
+      10,
+      DEFAULT_LIMITS.retry.smokeAttempts,
+    ),
   };
 
   const concurrencyObj = optionalObject(limits.concurrency, "limits.concurrency", warnings);
@@ -807,7 +891,7 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
   };
 
-  return { loop, timeouts, concurrency, boundary, split, archive, micro };
+  return { loop, timeouts, retry, concurrency, boundary, split, archive, micro };
 }
 
 // ---------------------------------------------------------------------------
@@ -1524,8 +1608,25 @@ ${excludeGlobLines}
       "ripgrepMs": 30000,                // ripgrep 单次调用超时。
       "probeHealthMs": 15000,            // smoke 网关健康探针超时。
       "probeModelMs": 120000,            // smoke 模型探针超时。
+      "reviewTurnMs": 180000,            // 主检视回合 / 规则 Skill 会话单次请求的建立超时（流开始前的等待）。
+      "oneShotMs": 90000,                // 片级报文 / 收尾总结单次请求超时。
       "presentationRequestMs": 90000,    // 中文投影单次请求超时。
       "presentationBufferMs": 30000      // 中文投影整批的总超时余量（叠加在逐请求超时之外）。
+    },
+    // LLM 调用重试（ADR-0051）：次数一律是「总尝试次数（含首次）」。
+    // 主检视回合 / 规则 Skill 会话走 pi-ai 的流请求重试；报文 / 总结 / 内置呈现引擎 / smoke
+    // 走本仓统一重试。只有请求建立阶段可重试——流已开始后断开会显式报错，不做整回合重放。
+    // baseDelayMs / maxDelayMs 只作用于核外一次性调用；maxRetryAfterMs 同时约束服务端
+    // Retry-After 与 pi-ai 的 maxRetryDelayMs。
+    "retry": {
+      "maxAttempts": 3,                  // 全局缺省：总尝试次数（1 = 不重试）。
+      "baseDelayMs": 500,                // 指数退避基准（毫秒）。
+      "maxDelayMs": 10000,               // 单次退避上限（毫秒）。
+      "maxRetryAfterMs": 30000,          // 服务端要求等待的上限（毫秒）；0 = 不设上限。
+      "reviewTurnAttempts": 3,           // 主检视回合 / 规则 Skill 会话总尝试次数。
+      "oneShotAttempts": 3,              // 片级报文 / 收尾总结总尝试次数。
+      "presentationAttempts": 3,         // 内置呈现引擎逐请求总尝试次数（外部引擎按契约自行执行）。
+      "smokeAttempts": 1                 // smoke 探针总尝试次数（缺省 1 = 不重试）。
     },
     // 中文建议：每条 finding 的 suggestion 并发生成数（只影响 tips，不影响检视主循环）。
     "concurrency": { "suggestion": 4 },

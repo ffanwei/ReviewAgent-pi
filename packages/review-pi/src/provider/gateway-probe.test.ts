@@ -264,3 +264,84 @@ test("runSmokeProbes：双探针全过 → ok + 汇总 OK", async () => {
   expect(result.ok).toBe(true);
   expect(formatSmokeDiagnostics(result)).toContain("OK");
 });
+
+// ---- 重试（ADR-0051）：探针缺省单次尝试，显式配置才重试 ----
+
+const RETRY_3 = {
+  maxAttempts: 3,
+  baseDelayMs: 0,
+  maxDelayMs: 0,
+  maxRetryAfterMs: 30_000,
+} as const;
+
+test("重试缺省：探针失败只发一次（不因瞬时抖动拖慢 smoke）", async () => {
+  const { fetch, requests } = scriptedFetch(() => networkError({ code: "ECONNREFUSED", message: "connect ECONNREFUSED" }));
+  const result = await probeGatewayHealth({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+  expect(result.reachable).toBe(false);
+  expect(requests).toHaveLength(1);
+});
+
+test("网关健康重试：两次网络错误后成功 → 共 3 次请求", async () => {
+  let attempts = 0;
+  const { fetch, requests } = scriptedFetch(() => {
+    attempts += 1;
+    if (attempts < 3) {
+      return networkError({ code: "ECONNRESET", message: "socket hang up" });
+    }
+    return jsonResponse(200, { object: "list", data: [] });
+  });
+  const result = await probeGatewayHealth({
+    baseUrl: BASE_URL,
+    apiKey: API_KEY,
+    fetch,
+    retry: RETRY_3,
+  });
+  expect(result.reachable).toBe(true);
+  expect(requests).toHaveLength(3);
+});
+
+test("模型探针重试：503 两次后成功 → ok，请求体每次重建", async () => {
+  let attempts = 0;
+  const { fetch, requests } = scriptedFetch(() => {
+    attempts += 1;
+    if (attempts < 3) {
+      return jsonResponse(503, { error: "busy" });
+    }
+    return jsonResponse(200, {
+      model: MODEL_ID,
+      choices: [{ index: 0 }],
+      usage: { prompt_tokens: 9, completion_tokens: 1, prompt_cache_hit_tokens: 4 },
+    });
+  });
+  const result = await probeModelReachability({
+    baseUrl: BASE_URL,
+    apiKey: API_KEY,
+    modelId: MODEL_ID,
+    fetch,
+    retry: RETRY_3,
+  });
+  expect(result.ok).toBe(true);
+  expect(requests).toHaveLength(3);
+  const bodies = new Set(requests.map((request) => String(request.init.body)));
+  expect(bodies.size).toBe(1);
+});
+
+test("模型探针重试：x-should-retry: false 的 5xx 不重试", async () => {
+  const { fetch, requests } = scriptedFetch(() =>
+    new Response(JSON.stringify({ error: "do not retry" }), {
+      status: 503,
+      headers: { "content-type": "application/json", "x-should-retry": "false" },
+    }),
+  );
+  const result = await probeModelReachability({
+    baseUrl: BASE_URL,
+    apiKey: API_KEY,
+    modelId: MODEL_ID,
+    fetch,
+    retry: RETRY_3,
+  });
+  expect(result.ok).toBe(false);
+  expect(result.failureKind).toBe("SERVER_ERROR");
+  expect(requests).toHaveLength(1);
+});
+

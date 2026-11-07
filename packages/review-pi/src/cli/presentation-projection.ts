@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 
 import type { Finding } from "../contracts/finding.js";
 import type { ToolCallRecord } from "../contracts/run.js";
+import type { RetryPolicy } from "../shared/llm-retry.js";
 
 /**
  * 呈现投影注入缝（ADR-0010「英文产出 + 核外翻译投影」的消费端接线）：
@@ -75,6 +76,11 @@ export interface PresentationRuntime {
   readonly modelId: string;
   readonly concurrency: number;
   readonly requestTimeoutMs: number;
+  /**
+   * 逐请求重试策略（ADR-0051）。内置引擎按此执行；外部注入引擎是独立模块，
+   * 本仓无法强制其重试，只能把该值作为契约穿参——不读该键的引擎行为不变。
+   */
+  readonly retry?: RetryPolicy;
 }
 
 /**
@@ -164,21 +170,27 @@ export type PresentationProjectionOutcome =
 const DEFAULT_PER_FIELD_TIMEOUT_MS = 90_000;
 const DEFAULT_TIMEOUT_BUFFER_MS = 30_000;
 const DEFAULT_SUGGESTION_CONCURRENCY = 4;
+const DEFAULT_RETRY_ATTEMPTS = 3;
 
 /**
  * 依呈现源推导总超时（findings × title/description + toolCallLog × resultSummary
  * + 建议生成批次——每条 finding 一次，按并发上限折算批数）。
+ *
+ * 每个字段的最坏耗时 = 单请求超时 × 逐请求尝试次数（ADR-0051：内置引擎重试
+ * 不会突破外层兜底，外层预算必须按最坏情况算）。
  */
 function deriveTimeoutMs(
   source: PresentationSource,
   perFieldTimeoutMs: number,
   bufferMs: number,
   suggestionConcurrency: number,
+  retryAttempts: number,
 ): number {
   const fieldCount = source.findings.length * 2 + source.toolCallLog.length;
   const suggestionBatches =
     source.findings.length === 0 ? 0 : Math.ceil(source.findings.length / suggestionConcurrency);
-  return (fieldCount + suggestionBatches) * perFieldTimeoutMs + bufferMs;
+  const worstCasePerField = perFieldTimeoutMs * Math.max(1, Math.floor(retryAttempts));
+  return (fieldCount + suggestionBatches) * worstCasePerField + bufferMs;
 }
 
 /** 引擎是否配置（未配置 = 恒等直通；main 侧「投影进行中」提示的单源谓词） */
@@ -202,6 +214,11 @@ export interface ProjectionOptions {
   readonly timeoutBufferMs?: number;
   /** 建议生成并发（缺省 4；来自 `limits.concurrency.suggestion`） */
   readonly suggestionConcurrency?: number;
+  /**
+   * 逐请求最坏尝试次数（缺省取 `runtime.retry.maxAttempts`，再缺省 3）：
+   * 只用于推导外层总超时，不校验引擎实际行为（外部引擎无法强制）。
+   */
+  readonly retryAttempts?: number;
 }
 
 /**
@@ -266,6 +283,7 @@ export async function applyPresentationProjection(
       options.perFieldTimeoutMs ?? DEFAULT_PER_FIELD_TIMEOUT_MS,
       options.timeoutBufferMs ?? DEFAULT_TIMEOUT_BUFFER_MS,
       options.suggestionConcurrency ?? DEFAULT_SUGGESTION_CONCURRENCY,
+      options.retryAttempts ?? runtime.retry?.maxAttempts ?? DEFAULT_RETRY_ATTEMPTS,
     );
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(

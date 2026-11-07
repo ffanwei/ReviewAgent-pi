@@ -1,5 +1,15 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
+import {
+  classifyHttpFailure,
+  classifyThrownFailure,
+  runWithRetry,
+  SINGLE_ATTEMPT_POLICY,
+  type RetryAttempt,
+  type RetryFailure,
+  type RetryPolicy,
+} from "../shared/llm-retry.js";
+
 // 冒烟双探针（#4，R4「网关 + 自由 id」关闭面）：
 // - 探针 1 网关健康：传输层可达（任何 HTTP 响应 = 网关活着；不判鉴权/模型）。
 // - 探针 2 模型可达：最小 chat completion 一次验证鉴权 + 模型 id + 请求体
@@ -32,6 +42,8 @@ export interface HealthProbeInput {
   readonly apiKey: string;
   readonly fetch?: FetchFunction;
   readonly healthTimeoutMs?: number;
+  /** 重试策略（缺省 1 次尝试 = 不重试，ADR-0051） */
+  readonly retry?: RetryPolicy;
 }
 
 export interface GatewayHealthResult {
@@ -46,6 +58,8 @@ export interface ModelProbeInput {
   readonly modelId: string;
   readonly fetch?: FetchFunction;
   readonly modelTimeoutMs?: number;
+  /** 重试策略（缺省 1 次尝试 = 不重试，ADR-0051） */
+  readonly retry?: RetryPolicy;
 }
 
 /** 网关原始 usage（chat completion 响应 usage 字段，未经口径折算） */
@@ -73,6 +87,8 @@ export interface SmokeProbeInput {
   readonly fetch?: FetchFunction;
   readonly healthTimeoutMs?: number;
   readonly modelTimeoutMs?: number;
+  /** 重试策略（缺省 1 次尝试 = 不重试；来自 `limits.retry.smokeAttempts`） */
+  readonly retry?: RetryPolicy;
 }
 
 export interface SmokeProbesResult {
@@ -86,22 +102,25 @@ export interface SmokeProbesResult {
 export async function probeGatewayHealth(input: HealthProbeInput): Promise<GatewayHealthResult> {
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const fetch = input.fetch ?? globalThis.fetch;
-  try {
-    const response = await withTimeout(
-      fetch(`${input.baseUrl}/models`, {
-        method: "GET",
-        headers: { authorization: `Bearer ${input.apiKey}` },
-        signal: AbortSignal.timeout(timeoutMs),
-      }),
-      timeoutMs,
-      "gateway health probe",
-    );
-    return {
-      reachable: true,
-      diagnostic: `gateway is up at ${input.baseUrl} (HTTP ${response.status})`,
-      ...(await healthDetail(response)),
-    };
-  } catch (error) {
+  const policy = input.retry ?? SINGLE_ATTEMPT_POLICY;
+  const outcome = await runWithRetry(policy, async (): Promise<RetryAttempt<Response>> => {
+    try {
+      const response = await withTimeout(
+        fetch(`${input.baseUrl}/models`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${input.apiKey}` },
+          signal: AbortSignal.timeout(timeoutMs),
+        }),
+        timeoutMs,
+        "gateway health probe",
+      );
+      return { ok: true, value: response };
+    } catch (error) {
+      return { ok: false, failure: classifyThrownFailure(error, "gateway health probe") };
+    }
+  });
+  if (!outcome.ok) {
+    const error = probeErrorOf(outcome.failure);
     const detail = errorSummary(error);
     return {
       reachable: false,
@@ -109,30 +128,59 @@ export async function probeGatewayHealth(input: HealthProbeInput): Promise<Gatew
       ...(detail !== undefined ? { detail } : {}),
     };
   }
+  const response = outcome.value;
+  return {
+    reachable: true,
+    diagnostic: `gateway is up at ${input.baseUrl} (HTTP ${response.status})`,
+    ...(await healthDetail(response)),
+  };
 }
 
 export async function probeModelReachability(input: ModelProbeInput): Promise<ModelProbeResult> {
   const timeoutMs = input.modelTimeoutMs ?? DEFAULT_MODEL_TIMEOUT_MS;
   const fetch = input.fetch ?? globalThis.fetch;
+  const policy = input.retry ?? SINGLE_ATTEMPT_POLICY;
   const body = JSON.stringify({
     model: input.modelId,
     messages: [{ role: "user", content: "ping" }],
     max_tokens: 1,
     stream: false,
   });
-  let response: Response;
-  try {
-    response = await withTimeout(
-      fetch(`${input.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${input.apiKey}` },
-        body,
-        signal: AbortSignal.timeout(timeoutMs),
-      }),
-      timeoutMs,
-      "model reachability probe",
-    );
-  } catch (error) {
+  const outcome = await runWithRetry(
+    policy,
+    async (): Promise<RetryAttempt<{ readonly status: number; readonly bodyText: string }>> => {
+      let response: Response;
+      try {
+        response = await withTimeout(
+          fetch(`${input.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${input.apiKey}` },
+            body,
+            signal: AbortSignal.timeout(timeoutMs),
+          }),
+          timeoutMs,
+          "model reachability probe",
+        );
+      } catch (error) {
+        return { ok: false, failure: classifyThrownFailure(error, "model reachability probe") };
+      }
+      if (response.status >= 400) {
+        const bodyText = await response.text().catch(() => "");
+        return {
+          ok: false,
+          failure: classifyHttpFailure(response.status, response.headers, bodyText, policy),
+        };
+      }
+      const bodyText = await response.text().catch(() => "");
+      return { ok: true, value: { status: response.status, bodyText } };
+    },
+  );
+  if (!outcome.ok) {
+    const failure = outcome.failure;
+    if (failure.status !== undefined) {
+      return classifyModelResponse(input, failure.status, failure.bodyText ?? "");
+    }
+    const error = probeErrorOf(failure);
     const detail = errorSummary(error);
     return {
       ok: false,
@@ -141,15 +189,17 @@ export async function probeModelReachability(input: ModelProbeInput): Promise<Mo
       ...(detail !== undefined ? { detail } : {}),
     };
   }
-  return classifyModelResponse(input, response, await response.text());
+  return classifyModelResponse(input, outcome.value.status, outcome.value.bodyText);
 }
 
 export async function runSmokeProbes(input: SmokeProbeInput): Promise<SmokeProbesResult> {
   const fetch = input.fetch ?? globalThis.fetch;
+  const retry = input.retry ?? SINGLE_ATTEMPT_POLICY;
   const health = await probeGatewayHealth({
     baseUrl: input.baseUrl,
     apiKey: input.apiKey,
     fetch,
+    retry,
     ...(input.healthTimeoutMs !== undefined ? { healthTimeoutMs: input.healthTimeoutMs } : {}),
   });
   const model = health.reachable
@@ -158,6 +208,7 @@ export async function runSmokeProbes(input: SmokeProbeInput): Promise<SmokeProbe
         apiKey: input.apiKey,
         modelId: input.modelId,
         fetch,
+        retry,
         ...(input.modelTimeoutMs !== undefined ? { modelTimeoutMs: input.modelTimeoutMs } : {}),
       })
     : skippedModelProbe();
@@ -219,24 +270,24 @@ function modelListIds(parsed: unknown): string[] | null {
 
 function classifyModelResponse(
   input: ModelProbeInput,
-  response: Response,
+  status: number,
   bodyText: string,
 ): ModelProbeResult {
   const parsed = parseJsonOrNull(bodyText);
   const bodyError = errorTextOf(parsed) ?? excerpt(bodyText);
 
-  if (response.status === 401 || response.status === 403) {
+  if (status === 401 || status === 403) {
     return {
       ok: false,
       failureKind: "AUTH_REJECTED",
       diagnostic:
-        `authentication failed at ${input.baseUrl} (HTTP ${response.status}): the gateway rejected the API key. ` +
+        `authentication failed at ${input.baseUrl} (HTTP ${status}): the gateway rejected the API key. ` +
         "Check reviewer.apiKey in your PiAgent.jsonc (review-pi config show) — environment variables are " +
         "no longer read, and the key is never logged or persisted.",
       detail: `gateway error body: ${bodyError}`,
     };
   }
-  if (response.status === 429) {
+  if (status === 429) {
     return {
       ok: false,
       failureKind: "RATE_LIMITED",
@@ -246,7 +297,7 @@ function classifyModelResponse(
       detail: `gateway error body: ${bodyError}`,
     };
   }
-  if (response.status === 404) {
+  if (status === 404) {
     return {
       ok: false,
       failureKind: "MODEL_NOT_FOUND",
@@ -257,17 +308,17 @@ function classifyModelResponse(
       detail: `gateway error body: ${bodyError}`,
     };
   }
-  if (response.status >= 500) {
+  if (status >= 500) {
     return {
       ok: false,
       failureKind: "SERVER_ERROR",
       diagnostic:
-        `gateway server error (HTTP ${response.status}) at ${input.baseUrl}: the endpoint is reachable ` +
+        `gateway server error (HTTP ${status}) at ${input.baseUrl}: the endpoint is reachable ` +
         "and authenticated but failed server-side. Retry later or contact the gateway operator.",
       detail: `gateway error body: ${bodyError}`,
     };
   }
-  if (response.status >= 400) {
+  if (status >= 400) {
     if (isModelNotExistText(bodyError)) {
       return {
         ok: false,
@@ -282,7 +333,7 @@ function classifyModelResponse(
       ok: false,
       failureKind: "REQUEST_REJECTED",
       diagnostic:
-        `the gateway rejected the request body (HTTP ${response.status}) at ${input.baseUrl}: the endpoint ` +
+        `the gateway rejected the request body (HTTP ${status}) at ${input.baseUrl}: the endpoint ` +
         "is reachable and authenticated, but does not accept the request as sent.",
       detail: `gateway error body: ${bodyError}`,
     };
@@ -296,7 +347,7 @@ function classifyModelResponse(
       ok: false,
       failureKind: "MALFORMED_RESPONSE",
       diagnostic:
-        `the gateway responded HTTP ${response.status} but not with a chat completion carrying choices and ` +
+        `the gateway responded HTTP ${status} but not with a chat completion carrying choices and ` +
         "usage (usage reporting is required for the token accounting): " + excerpt(bodyText),
     };
   }
@@ -459,6 +510,18 @@ function networkCauseText(error: unknown): string {
   }
   const message = error instanceof Error ? error.message : String(error);
   return message;
+}
+
+/** 探针失败 → 原始异常（网络归因用）：有 cause 用 cause，否则按 kind 构造 */
+function probeErrorOf(failure: RetryFailure): unknown {
+  if (failure.cause !== undefined) {
+    return failure.cause;
+  }
+  const error = new Error(failure.reason);
+  if (failure.kind === "timeout") {
+    error.name = "TimeoutError";
+  }
+  return error;
 }
 
 /** 异常摘要（detail 行；网络错误带 cause 链；不含 key——网络层错误天然不含 */

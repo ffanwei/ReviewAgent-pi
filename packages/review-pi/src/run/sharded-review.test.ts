@@ -102,6 +102,9 @@ function splitRuntime(overrides: Partial<SplitLimits>): ReviewRuntime {
     ...DEFAULT_REVIEW_RUNTIME,
     limits: {
       ...DEFAULT_LIMITS,
+      // 分片用例只关心「哪一片、发了几次」，不关心重试：固定单次尝试，
+      // 否则失败片的请求会被重试放大（ADR-0051 的行为另有专测覆盖）。
+      retry: { ...DEFAULT_LIMITS.retry, maxAttempts: 1, reviewTurnAttempts: 1 },
       split: { ...DEFAULT_LIMITS.split, ...overrides },
     },
   };
