@@ -12,6 +12,8 @@
 
 **后续修订**（2026-11-07，四）：**`saveReviewSummary` 的正文参数改名为 `markdownContent`**（原 `description`）。这是服务端契约的字段名校正：报文即 `{ taskId, markdownContent }`，正文语义（Markdown 总结报告）不变。仅改参数字段名，不涉及调用时机、顺序与降级语义。
 
+**后续修订**（2026-11-07，五）：**决策 3 的「单次尝试，不重试」被 [ADR-0050](0050-mcp-business-tool-retry-and-timeout.md) 取代**——四个业务 tool 改为共 3 次尝试（2 次重试，退避 100 / 400 ms），且**仅传输 / 超时 / HTTP 5xx 类瞬时失败重试**；`server-error`、`isError: true`、4xx 等确定性失败仍不重试。同时 `mcp.servers.*.timeoutMs` 缺省值由 10 s 改为 60 s。旁路纪律（不抛错、只落 stderr 一行、不改退出码）与其余决策不变。
+
 ## Context
 
 ADR-0037 定义的 MCP 上报只有一种形态：把进度事件**批量**塞进单个 tool（`mcp.report.tool`）的 `events` 数组。接入企业检视平台还需要**业务语义**的调用——平台要的不是事件流，而是：

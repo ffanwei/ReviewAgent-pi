@@ -104,7 +104,7 @@ _代码面_: 事件契约 `contracts/progress.ts`（`RunProgressEvent` 四类 ki
 _Avoid_: 进度条（不是百分比口径——「步数」= 模型请求序号）、日志（日志是核外运行器产物）、遥测（不回传任何指标）
 
 **MCP 上报（MCP Reporting）**:
-检视进程向外部 MCP 服务（HTTP + JSON-RPC，`mcp.servers` / `mcp.report` 配置）的外发能力，**两层语义**共用同一连接与握手：(1) **事件上报**（ADR-0037）——进度事件批量塞进单个 tool 的 `events` 数组，`(streamId, seq)` 幂等、可重试、背压丢最旧，字段白名单（正文/路径/秘密永不出进程）；(2) **业务调用**（ADR-0045）——`startTask` / `endTask` / `saveReviewSummary` / `mrReviewResult` 四个 tool 的任务生命周期与结果上报：片级 `mrReviewResult` 每片 findings 定型后就发（报文与 `reviews_tips_zh.json` **同源复用**——同一份统一生成的两个投影：报文 = 片级即发、结构字段从严；tips = 聚合落盘、12 键），总结在统一 tips 落盘后发。两层共用的纪律：**旁路**（任何失败只落 stderr 一行、单次尝试、永不改退出码）；业务调用另受 `mcp.report.task`（缺省 `true`）开关。
+检视进程向外部 MCP 服务（HTTP + JSON-RPC，`mcp.servers` / `mcp.report` 配置）的外发能力，**两层语义**共用同一连接与握手：(1) **事件上报**（ADR-0037）——进度事件批量塞进单个 tool 的 `events` 数组，`(streamId, seq)` 幂等、可重试、背压丢最旧，字段白名单（正文/路径/秘密永不出进程）；(2) **业务调用**（ADR-0045）——`startTask` / `endTask` / `saveReviewSummary` / `mrReviewResult` 四个 tool 的任务生命周期与结果上报：片级 `mrReviewResult` 每片 findings 定型后就发（报文与 `reviews_tips_zh.json` **同源复用**——同一份统一生成的两个投影：报文 = 片级即发、结构字段从严；tips = 聚合落盘、12 键），总结在统一 tips 落盘后发。两层共用的纪律：**旁路**（任何失败只落 stderr 一行、永不改退出码）；业务调用最多 3 次尝试（仅传输 / 超时 / HTTP 5xx 瞬时失败重试，ADR-0050），另受 `mcp.report.task`（缺省 `true`）开关。
 _Avoid_: 遥测（不上传指标）、把业务调用塞进事件批量通道（业务调用不可丢、要立刻知道结果）、双向 MCP（我们只是 client，不做 resources/prompts）
 
 **测量常量面（Measurement-Constant Face）**:

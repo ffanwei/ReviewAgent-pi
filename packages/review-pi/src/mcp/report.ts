@@ -10,6 +10,7 @@ import type { RunProgressEvent, RunProgressSink } from "../contracts/progress.js
 import { createMcpClient, MCP_CLIENT_NAME } from "./client.js";
 import type { ReportConfig } from "./config.js";
 import { createLegacySseTransport } from "./legacy-sse-transport.js";
+import { ProtocolError } from "./protocol.js";
 import {
   MCP_TASK_TOOL_NAMES,
   type MrReviewResultArgs,
@@ -26,7 +27,7 @@ import { createHttpTransport, type Transport } from "./transport.js";
  * - 单 writer FIFO：`seq` 在入队时分配，批量按 `(streamId, seq)` 幂等；
  * - 批量：满 `batch.maxEvents` 或距首条超 `batch.maxDelayMs` 即发；
  * - 背压：队列上限 `queue.maxEvents`，溢出**丢最旧**并计入 `dropped`；
- * - 重试：单批最多 3 次（100 / 400 / 1600 ms 退避），耗尽计入 `failed`；
+ * - 重试：单批最多 3 次尝试（退避 100 / 400 ms），耗尽计入 `failed`；
  * - `flush` 尽力排空，超时返回当前统计；`close` 之后 `sink` 静默丢弃。
  *
  * **永不改变退出码**：这里没有一处向外抛错，调用方（CLI）也不需要检查返回值。
@@ -60,8 +61,9 @@ export interface McpReporter {
   /** 直接传给 `runReview({ onProgress })`；永不抛错 */
   readonly sink: RunProgressSink;
   /**
-   * 业务 tool 面（ADR-0045）：单次尝试、旁路（失败只回 `{ok:false}`，绝不抛错、
-   * 绝不改退出码）。与批量事件通道共用握手与连接，但**不进队列**——业务调用
+   * 业务 tool 面（ADR-0045）：**共 3 次尝试（2 次重试）**，仅传输 / 超时 /
+   * HTTP 5xx 类失败重试（ADR-0050）；失败只回 `{ok:false}`，绝不抛错、
+   * 绝不改退出码。与批量事件通道共用握手与连接，但**不进队列**——业务调用
    * 要立刻知道结果，且不可被背压丢最旧。
    */
   readonly task: {
@@ -77,6 +79,8 @@ export interface McpReporter {
 }
 
 const RETRY_BACKOFF_MS = [100, 400, 1600] as const;
+/** 业务 tool：共 3 次尝试（2 次重试），仅传输 / 超时 / HTTP 5xx 类失败重试（ADR-0050） */
+const TASK_MAX_ATTEMPTS = 3;
 
 export async function createMcpReporter(options: CreateMcpReporterOptions): Promise<McpReporter> {
   const { config } = options;
@@ -262,27 +266,37 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
     return stats();
   }
 
-  // 业务 tool 调用（ADR-0045 决策 3）：单次尝试、不重试、绝不抛错。
-  // 重试属于批量事件通道（幂等重放安全）；业务调用串在关键路径上，
-  // 3 次退避 × server.timeoutMs 会让收尾多挂十几秒——送达保证是消费方的事。
+  // 业务 tool 调用（ADR-0045 决策 3，ADR-0050 修订）：共 3 次尝试（2 次重试），
+  // **仅传输 / 超时 / HTTP 5xx 类失败**重试——这些是瞬时故障，重试有意义；
+  // JSON-RPC server-error（tool 不存在、参数非法）与 `isError: true` 的
+  // 业务拒绝重试也不会变好，直接放弃。旁路纪律不变：绝不抛错、绝不改退出码。
   async function callTaskTool(name: string, args: unknown): Promise<TaskCallResult> {
     if (closing || sinkClosed) {
       return { ok: false, reason: "reporter closed" };
     }
-    try {
-      const result = await client.callTool(
-        name,
-        args,
-        combineSignal(abort.signal, config.server.timeoutMs),
-      );
-      if (result.isError) {
-        return { ok: false, reason: `server error: ${truncate(result.text)}` };
+    let reason = "unknown error";
+    for (let attempt = 0; attempt < TASK_MAX_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 400);
       }
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, reason: truncate(message) };
+      try {
+        const result = await client.callTool(
+          name,
+          args,
+          combineSignal(abort.signal, config.server.timeoutMs),
+        );
+        if (result.isError) {
+          return { ok: false, reason: `server error: ${truncate(result.text)}` };
+        }
+        return { ok: true };
+      } catch (error) {
+        reason = truncate(error instanceof Error ? error.message : String(error));
+        if (!isRetryableTaskFailure(error) || attempt === TASK_MAX_ATTEMPTS - 1) {
+          return { ok: false, reason };
+        }
+      }
     }
+    return { ok: false, reason };
   }
 
   const task = {
@@ -418,6 +432,25 @@ function toReportEvent(
     default:
       return null;
   }
+}
+
+/**
+ * 业务 tool 是否值得重试（ADR-0050）：只认瞬时故障。
+ *
+ * - `transport`：DNS / 拒绝连接 / 超时 / 连接中断（`transport.ts` 把
+ *   `TimeoutError` / `AbortError` 也归到这一类）；
+ * - `http-status` 且 5xx：服务端自身故障；
+ * - 其余一律不重试：`server-error`（JSON-RPC 业务错误，如 tool 不存在）、
+ *   `no-response` / `invalid-*` / `bad-tool-result` 等确定性失败重试不会变好。
+ */
+function isRetryableTaskFailure(error: unknown): boolean {
+  if (!(error instanceof ProtocolError)) {
+    return false;
+  }
+  if (error.code === "transport") {
+    return true;
+  }
+  return error.code === "http-status" && error.status !== undefined && error.status >= 500;
 }
 
 function combineSignal(signal: AbortSignal, timeoutMs: number): AbortSignal {

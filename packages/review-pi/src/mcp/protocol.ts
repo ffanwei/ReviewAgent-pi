@@ -44,11 +44,16 @@ export interface JsonRpcFailure {
  */
 export class ProtocolError extends Error {
   readonly code: string;
+  /** HTTP 状态码：仅 `http-status` 分类携带（供重试策略区分 5xx 与 4xx） */
+  readonly status?: number;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, status?: number) {
     super(message);
     this.name = "ProtocolError";
     this.code = code;
+    if (status !== undefined) {
+      this.status = status;
+    }
   }
 }
 

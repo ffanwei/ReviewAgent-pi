@@ -105,7 +105,7 @@ export function normalizeScenario(input, source = "scenario") {
       latencyMs: mcp.latencyMs ?? 0,
       failTools: mcp.failTools ?? [],
       eventTool: mcp.eventTool,
-      timeoutMs: mcp.timeoutMs ?? 10_000,
+      timeoutMs: mcp.timeoutMs ?? 60_000,
     },
     latency: {
       mode: latency.mode,

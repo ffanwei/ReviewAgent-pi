@@ -95,6 +95,7 @@ export function createMcpClient(transport: Transport, options: McpClientOptions)
       throw new ProtocolError(
         "http-status",
         `MCP server responded with HTTP ${String(response.status)}`,
+        response.status,
       );
     }
     const message = pickResponse(response.contentType, response.body, id);

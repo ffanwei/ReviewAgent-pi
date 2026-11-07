@@ -4,6 +4,7 @@ import type { McpReportEnvelope } from "../contracts/mcp-report.js";
 import { MCP_REPORT_EVENT_TYPES } from "../contracts/mcp-report.js";
 import type { RunProgressEvent } from "../contracts/progress.js";
 import type { ReportConfig } from "./config.js";
+import { ProtocolError } from "./protocol.js";
 import { createMcpReporter } from "./report.js";
 import type { Transport, TransportResponse } from "./transport.js";
 
@@ -15,7 +16,7 @@ interface RecordedCall {
   readonly params: Record<string, unknown>;
 }
 
-type Outcome = "ok" | "isError" | "reject" | "hang";
+type Outcome = "ok" | "isError" | "reject" | "hang" | "serverError" | "http4xx" | "http5xx";
 
 function fakeTransport(
   decide: (call: RecordedCall, index: number) => Outcome = () => "ok",
@@ -32,13 +33,31 @@ function fakeTransport(
       calls.push(call);
       const outcome = decide(call, calls.length - 1);
       if (outcome === "reject") {
-        throw new Error("network down");
+        throw new ProtocolError("transport", "network down");
       }
       if (outcome === "hang") {
         await new Promise(() => undefined);
       }
+      if (outcome === "http4xx" || outcome === "http5xx") {
+        return {
+          status: outcome === "http4xx" ? 404 : 503,
+          contentType: "text/plain",
+          body: "unavailable",
+        };
+      }
       if (message.id === undefined) {
         return { status: 202, contentType: "", body: "" };
+      }
+      if (outcome === "serverError") {
+        return {
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32601, message: "method not found" },
+          }),
+        };
       }
       const result =
         call.method === "initialize"
@@ -444,7 +463,7 @@ describe("业务 tool 面（ADR-0045）", () => {
     await reporter.close();
   });
 
-  test("endTask：服务端 isError → ok:false 带原因；绝不抛错", async () => {
+  test("endTask：服务端 isError → ok:false 带原因；不重试", async () => {
     const transport = fakeTransport((call) =>
       call.method === "tools/call" && call.params.name === "endTask" ? "isError" : "ok",
     );
@@ -454,15 +473,21 @@ describe("业务 tool 面（ADR-0045）", () => {
       transport,
       streamId: "s",
     });
+    const before = transport.calls.length;
     const outcome = await reporter.task.endTask({ taskId: "t-1" });
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) {
       expect(outcome.reason).toContain("server error");
     }
+    // `isError: true` 是服务端业务拒绝，重试不会变好：只发一次
+    const failedCalls = transport.calls
+      .slice(before)
+      .filter((call) => call.method === "tools/call" && call.params.name === "endTask");
+    expect(failedCalls).toHaveLength(1);
     await reporter.close();
   });
 
-  test("网络失败 → ok:false；单次尝试（不重试、无退避拖延）", async () => {
+  test("传输失败 → 共 3 次尝试（2 次重试）后 ok:false", async () => {
     const transport = fakeTransport((call) =>
       call.method === "tools/call" && call.params.name === "startTask" ? "reject" : "ok",
     );
@@ -475,12 +500,84 @@ describe("业务 tool 面（ADR-0045）", () => {
     const before = transport.calls.length;
     const outcome = await reporter.task.startTask({ taskId: "t-1" });
     expect(outcome.ok).toBe(false);
-    // 单次尝试：失败的 tools/call 只出现一次（批量通道的 3 次退避不适用业务面）
     const failedCalls = transport.calls
       .slice(before)
       .filter((call) => call.method === "tools/call" && call.params.name === "startTask");
-    expect(failedCalls).toHaveLength(1);
+    expect(failedCalls).toHaveLength(3);
     await reporter.close();
+  });
+
+  test("传输失败后重试成功 → ok:true（第 3 次尝试）", async () => {
+    let remainingFailures = 2;
+    const transport = fakeTransport((call) => {
+      if (
+        call.method === "tools/call" &&
+        call.params.name === "startTask" &&
+        remainingFailures > 0
+      ) {
+        remainingFailures -= 1;
+        return "reject";
+      }
+      return "ok";
+    });
+    const reporter = await createMcpReporter({
+      config: reportConfig(),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+    const before = transport.calls.length;
+    const outcome = await reporter.task.startTask({ taskId: "t-1" });
+    expect(outcome).toEqual({ ok: true });
+    const startCalls = transport.calls
+      .slice(before)
+      .filter((call) => call.method === "tools/call" && call.params.name === "startTask");
+    expect(startCalls).toHaveLength(3);
+    await reporter.close();
+  });
+
+  test("JSON-RPC server-error 不重试（确定性失败）", async () => {
+    const transport = fakeTransport((call) =>
+      call.method === "tools/call" && call.params.name === "startTask" ? "serverError" : "ok",
+    );
+    const reporter = await createMcpReporter({
+      config: reportConfig(),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+    });
+    const before = transport.calls.length;
+    const outcome = await reporter.task.startTask({ taskId: "t-1" });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.reason).toContain("MCP error");
+    }
+    const startCalls = transport.calls
+      .slice(before)
+      .filter((call) => call.method === "tools/call" && call.params.name === "startTask");
+    expect(startCalls).toHaveLength(1);
+    await reporter.close();
+  });
+
+  test("HTTP 4xx 不重试；HTTP 5xx 重试 3 次", async () => {
+    for (const outcome of ["http4xx", "http5xx"] as const) {
+      const transport = fakeTransport((call) =>
+        call.method === "tools/call" && call.params.name === "startTask" ? outcome : "ok",
+      );
+      const reporter = await createMcpReporter({
+        config: reportConfig(),
+        clientVersion: "test",
+        transport,
+        streamId: "s",
+      });
+      const before = transport.calls.length;
+      expect((await reporter.task.startTask({ taskId: "t-1" })).ok).toBe(false);
+      const startCalls = transport.calls
+        .slice(before)
+        .filter((call) => call.method === "tools/call" && call.params.name === "startTask");
+      expect(startCalls).toHaveLength(outcome === "http5xx" ? 3 : 1);
+      await reporter.close();
+    }
   });
 
   test("close 之后 → ok:false（reporter closed），不再发请求", async () => {

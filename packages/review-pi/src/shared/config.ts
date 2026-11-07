@@ -1030,7 +1030,7 @@ function parseMcpServer(name: string, raw: unknown, warnings: string[]): McpServ
     handshake,
     url,
     headers,
-    timeoutMs: intOr(obj.timeoutMs, `${path}.timeoutMs`, 100, 600_000, 10_000),
+    timeoutMs: intOr(obj.timeoutMs, `${path}.timeoutMs`, 100, 600_000, 60_000),
   };
 }
 
@@ -1490,7 +1490,7 @@ ${excludeGlobLines}
   //       "url": "https://mcp.example.com/mcp",
   //       // 秘密：与 reviewer.apiKey 同等待遇（审计 / 日志 / config show 只报 set 或 missing）。
   //       "headers": { "Authorization": "Bearer <token>" },
-  //       "timeoutMs": 10000
+  //       "timeoutMs": 60000
   //     }
   //   },
   //   "report": {
