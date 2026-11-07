@@ -1559,8 +1559,10 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
   const excludeGlobLines = DEFAULT_EXCLUDE_GLOBS.map((glob) => `      ${jsonString(glob)}`).join(",\n");
   return `{
   // PiAgent 运行配置（ADR-0025）。JSONC：允许注释与尾逗号。
-  // 秘密（reviewer.apiKey）只写在这里；环境变量不再被读取。
+  // 秘密（reviewer.apiKey / mcp 的 headers）只写在这里；环境变量不再被读取。
   // 配置版本：当前只支持 1，不匹配即 fail fast。
+  // 分区导航：reviewer / model / presentation（模型接入与呈现）→ codeintel（代码智能）
+  // → mcp（外发上报，缺省整块注释）→ limits（资源与行为护栏）。
   "version": 1,
 
   "reviewer": {
@@ -1605,6 +1607,7 @@ ${excludeGlobLines}
   // MCP 上报（ADR-0037）：把进度 / 状态 / 结果外发给已有的 MCP 服务（HTTP + JSON-RPC）。
   // 整块注释掉 = 不上报（零建连、零请求、退出码与产物字节都不变）；要用就取消注释。
   // "mcp": {
+  //   // 服务端连接：一个键名对应一个 MCP 服务，report.server 按名字引用。
   //   "servers": {
   //     "ops": {
   //       // 传输形态："http" = Streamable HTTP（单端点 POST，推荐）；
@@ -1614,13 +1617,16 @@ ${excludeGlobLines}
   //       // 直调（每次 tools/call 独立 POST，与 Postman 单发同形）；"required" =
   //       // 握手失败即上报不可用；"off" = 从不握手。
   //       "handshake": "auto",
+  //       // 服务端点：http 填消息端点；http-sse 填 SSE 端点（如 …/sse）。
   //       "url": "https://mcp.example.com/mcp",
-  //       // 秘密：与 reviewer.apiKey 同等待遇（审计 / 日志 / config show 只报 set 或 missing）。
+  //       // 额外请求头（秘密）：与 reviewer.apiKey 同等待遇，只报 set / missing。
   //       "headers": { "Authorization": "Bearer <token>" },
+  //       // 单次请求超时（毫秒）。
   //       "timeoutMs": 60000
   //     }
   //   },
   //   "report": {
+  //     // 使用哪个服务端（上面 servers 里的键名）。
   //     "server": "ops",
   //     // 事件通道（可选）：给了 tool 才批量发进度事件；不给 = 只调四个业务 tool
   //     // （startTask / endTask / saveReviewSummary / mrReviewResult，ADR-0045）。
@@ -1629,15 +1635,19 @@ ${excludeGlobLines}
   //     "task": true,
   //     // 事件类型收窄（仅事件通道生效）；缺省四类：run.start / run.end / phase / request.end。
   //     "include": ["run.start", "run.end", "phase", "request.end"],
+  //     // 批量：积满 maxEvents 条或距首条超过 maxDelayMs 即发（毫秒）。
   //     "batch": { "maxEvents": 50, "maxDelayMs": 2000 },
+  //     // 背压队列上限：进程内最多积压多少条事件，溢出丢最旧并计入 dropped。
   //     "queue": { "maxEvents": 1000 },
+  //     // 收尾冲刷超时（毫秒）：退出前尽力排空未发事件的上限。
   //     "flushTimeoutMs": 5000,
   //     // findings 出站档位：none / summary；finding 正文永不出进程。
   //     "findings": "summary"
   //   }
   // },
 
-  // 资源上限：毫秒 / 条数 / 字节。可调；超出允许范围会在装载期 fail fast。
+  // 资源与行为护栏：轮次、超时、重试、并发、过滤阈值、MR 边界、分片、解压与截断。
+  // 全部可调；取值超出允许范围会在装载期 fail fast。
   "limits": {
     // 检视轮次（ADR-0046）：一轮 = 六阶段完整一遍（约 6 次模型请求）。
     // 最后一轮强制 complete：模型说「还要再审」也不再开新轮，本轮产出即最终结果；
