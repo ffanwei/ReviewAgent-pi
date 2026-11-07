@@ -875,7 +875,7 @@ test("USAGE_TEXT：宣告四个子命令（stderr 错误路径同款文案，单
   expect(USAGE_TEXT).not.toContain("P1b");
 });
 
-test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", () => {
+test("进度旗标：缺省打印（省键），--no-progress → false", () => {
   const auto = parseCliArgs([
     "review",
     "--repo",
@@ -886,18 +886,6 @@ test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", ()
     "t-1",
   ]);
   expect(auto.ok && auto.command === "review" && "progress" in auto.args).toBe(false);
-
-  const on = parseCliArgs([
-    "review",
-    "--repo",
-    "r",
-    "--mr-diff",
-    "m.diff",
-    "--taskId",
-    "t-1",
-    "--progress",
-  ]);
-  expect(on.ok && on.command === "review" && on.args.progress).toBe(true);
 
   const off = parseCliArgs([
     "review",
@@ -912,7 +900,7 @@ test("进度旗标：--progress / --no-progress 三态（缺省 = 自动）", ()
   expect(off.ok && off.command === "review" && off.args.progress).toBe(false);
 });
 
-test("进度旗标：互斥与重复都是用法错误（fail fast，不静默取其一）", () => {
+test("--progress 已移除（ADR-0055）：给迁移提示而不是裸 unknown flag", () => {
   expect(
     parseCliArgs([
       "review",
@@ -923,22 +911,11 @@ test("进度旗标：互斥与重复都是用法错误（fail fast，不静默�
       "--taskId",
       "t-1",
       "--progress",
-      "--no-progress",
     ]),
-  ).toEqual({ ok: false, message: "conflicting flags --progress and --no-progress" });
-  expect(
-    parseCliArgs([
-      "review",
-      "--repo",
-      "r",
-      "--mr-diff",
-      "m.diff",
-      "--taskId",
-      "t-1",
-      "--progress",
-      "--progress",
-    ]),
-  ).toEqual({ ok: false, message: "duplicate flag --progress" });
+  ).toEqual({
+    ok: false,
+    message: "--progress 已移除（ADR-0055）：进度事件行缺省打印；不需要时传 --no-progress",
+  });
   expect(
     parseCliArgs([
       "review",

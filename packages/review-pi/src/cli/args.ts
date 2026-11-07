@@ -22,7 +22,7 @@ import { checkTaskId, DEFAULT_TASKS_ROOT_LABEL } from "../shared/tasks-dir.js";
  * 实验 CLI；pi 内核 reviewModelOf 对目录外 id 一律以钉住画像透传，无别名目录）。
  */
 
-/** review 子命令的已知旗标（未知旗标 = 用法错误；无值布尔旗标 `--strict-rule-skill` / `--progress` / `--no-progress` 进旗标循环前剥离） */
+/** review 子命令的已知旗标（未知旗标 = 用法错误；无值布尔旗标 `--strict-rule-skill` / `--no-progress` 进旗标循环前剥离） */
 const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--repo",
   "--mr-diff",
@@ -52,7 +52,7 @@ const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-en
 const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--path"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--strict-rule-skill] [--progress | --no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>]
@@ -84,9 +84,8 @@ review 旗标：
                                     --rule-skill-zip 之后；目录先审计再按内容哈希复制进 run 缓存，
                                     符号链接/越界一律拒绝。一个包就是一个 skill（ADR-0034）
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
-  --progress                显示运行进度（阶段 / 模型请求 / 工具调用 / skill 会话）到 stderr；
-                            stderr 是 TTY 时缺省开，重定向收日志时缺省关
-  --no-progress             关闭运行进度事件行（批跑收日志时显式静音）；
+  --no-progress             关闭运行进度事件行（缺省打印：阶段 / 模型请求 / 工具调用 /
+                            skill 会话；批跑收日志时显式静音）。
                             收尾的一行运行总结恒打印，不受此旗标影响
 
 smoke 旗标：
@@ -143,8 +142,8 @@ export interface ReviewCliArgs {
   /** 规则 Skill 严格模式（--strict-rule-skill；缺席省键） */
   readonly strictRuleSkill?: boolean;
   /**
-   * 运行进度投影开关（ADR-0016）：`--progress` → true、`--no-progress` → false、
-   * 缺席省键 = 自动（`stderr` 是 TTY 才开——人手敲看得见，重定向收日志时闭嘴）。
+   * 运行进度投影开关（ADR-0055，取代 ADR-0016 的 TTY 自动档）：`--no-progress`
+   * → false、缺席省键 = 缺省打印（不再区分 TTY）。
    */
   readonly progress?: boolean;
 }
@@ -347,6 +346,16 @@ function legacyRuleSkillNameFlagError(argv: readonly string[]): string | undefin
   return undefined;
 }
 
+/** `--progress` 已移除（ADR-0055：进度缺省打印）：给专用迁移提示，而不是裸 unknown flag */
+function legacyProgressFlagError(argv: readonly string[]): string | undefined {
+  for (const token of argv) {
+    if (token === "--progress" || token.startsWith("--progress=")) {
+      return "--progress 已移除（ADR-0055）：进度事件行缺省打印；不需要时传 --no-progress";
+    }
+  }
+  return undefined;
+}
+
 /**
  * 规则包列表旗标的值解析（ADR-0034）：逗号列表与重复旗标等价，逐项 trim、
  * 空项丢弃（`a.zip,,b.zip` 仍取两项），**整值无有效项**才是用法错误。
@@ -389,6 +398,10 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     const ruleSkillNameError = legacyRuleSkillNameFlagError(rest);
     if (ruleSkillNameError !== undefined) {
       return { ok: false, message: ruleSkillNameError };
+    }
+    const progressError = legacyProgressFlagError(rest);
+    if (progressError !== undefined) {
+      return { ok: false, message: progressError };
     }
   }
   if (command === "config") {
@@ -519,9 +532,9 @@ function parseConfigCommand(rest: readonly string[]): ParseCliArgsResult {
 }
 
 /**
- * 剥离 review 的无值布尔旗标（`--strict-rule-skill` / `--progress` /
- * `--no-progress`；旗标循环是 k-v 成对，无值旗标必须先摘除）。单趟计数：
- * 重复出现 = 重复旗标，互斥对同给 = 用法错误。
+ * 剥离 review 的无值布尔旗标（`--strict-rule-skill` / `--no-progress`；
+ * 旗标循环是 k-v 成对，无值旗标必须先摘除）。单趟计数：
+ * 重复出现 = 重复旗标（`--progress` 已移除，见 `legacyProgressFlagError`）。
  */
 function stripReviewBooleanFlags(rest: readonly string[]): {
   readonly ok: true;
@@ -529,7 +542,7 @@ function stripReviewBooleanFlags(rest: readonly string[]): {
   readonly strict: boolean;
   readonly progress?: boolean;
 } | { readonly ok: false; readonly message: string } {
-  const known = new Set(["--strict-rule-skill", "--progress", "--no-progress"]);
+  const known = new Set(["--strict-rule-skill", "--no-progress"]);
   const counts = new Map<string, number>();
   const tokens: string[] = [];
   for (const token of rest) {
@@ -544,16 +557,11 @@ function stripReviewBooleanFlags(rest: readonly string[]): {
       return { ok: false, message: `duplicate flag ${flag}` };
     }
   }
-  const on = counts.has("--progress");
-  const off = counts.has("--no-progress");
-  if (on && off) {
-    return { ok: false, message: "conflicting flags --progress and --no-progress" };
-  }
   return {
     ok: true,
     tokens,
     strict: counts.has("--strict-rule-skill"),
-    ...(on ? { progress: true } : off ? { progress: false } : {}),
+    ...(counts.has("--no-progress") ? { progress: false } : {}),
   };
 }
 

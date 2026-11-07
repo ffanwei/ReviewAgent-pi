@@ -36,12 +36,8 @@ export interface ReviewArgsEcho {
   readonly modelFromFlag: boolean;
   /** `--config` 是否显式传入 */
   readonly configFromFlag: boolean;
-  /** 本次进度事件行是否实际开启（`--progress` / `--no-progress` / TTY 自动） */
+  /** 本次进度事件行是否实际开启（缺省打印；`--no-progress` → false） */
   readonly progressOn: boolean;
-  /** `--progress` / `--no-progress` 是否显式传入 */
-  readonly progressExplicit: boolean;
-  /** stderr 是否 TTY（仅用于「自动」来源说明） */
-  readonly stderrIsTty: boolean;
 }
 
 /** 参数名列宽（最长的 `--strict-rule-skill` 也能对齐） */
@@ -60,9 +56,7 @@ export function formatReviewArgs(args: ReviewCliArgs, echo: ReviewArgsEcho): str
   const modelSuffix = echo.modelFromFlag ? "" : "（缺省：配置文件 model.default）";
   const configSuffix = echo.configFromFlag ? "" : "（缺省用户级路径）";
   const tasksDirSuffix = echo.tasksDirFromFlag ? "" : `（缺省：${DEFAULT_TASKS_ROOT_LABEL}）`;
-  const progressSuffix = echo.progressExplicit
-    ? ""
-    : `（缺省自动：stderr ${echo.stderrIsTty ? "是" : "非"} TTY）`;
+  const progressSuffix = echo.progressOn ? "（缺省打印）" : "";
   return [
     "review-pi: 本次 review 传入参数",
     row("--repo", echo.repoPath),
@@ -76,6 +70,6 @@ export function formatReviewArgs(args: ReviewCliArgs, echo: ReviewArgsEcho): str
     row("--rule-skill-zip", listOf(args.ruleSkillZips)),
     row("--rule-skill", listOf(args.ruleSkillDirs)),
     row("--strict-rule-skill", args.strictRuleSkill === true ? "已启用" : "未启用"),
-    row("--progress", `${echo.progressOn ? "开" : "关"}${progressSuffix}`),
+    row("--no-progress", echo.progressOn ? `未启用${progressSuffix}` : "已启用（进度事件行静默）"),
   ].join("\n");
 }

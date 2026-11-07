@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0054）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0055）。
 
 ## 记录纪律
 
@@ -48,6 +48,7 @@
 | [ADR-0052](0052-tips-four-tier-severity-and-confidence-filter.md) | 检视意见四档严重级（P3→Suggestion）与 `limits.confidence.min` 置信度过滤（仅中文 tips，缺省 0.5） |
 | [ADR-0053](0053-mcp-task-tool-fixed-settle-gap.md) | MCP 业务 tool 之间加固定 5 秒沉降间隔（`mrReviewResult`→`saveReviewSummary`、`saveReviewSummary`→`endTask`；临时措施，见待优化清单） |
 | [ADR-0054](0054-mcp-business-call-log.md) | MCP 业务调用留痕写入 `<tasks 根>/<taskId>/runs/mcp.json`（四个 tool 的输入 / 输出 / 调用时间，与 session 转录同目录） |
+| [ADR-0055](0055-progress-on-by-default.md) | 进度事件行缺省打印，移除 `--progress`（静音只认 `--no-progress`；取代 ADR-0016 的 TTY 自动档） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

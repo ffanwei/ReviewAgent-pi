@@ -17,7 +17,7 @@
 | MR 边界护栏 | 过滤后超 `limits.boundary` 只告警不拒检；`maxDiffChars` 是输入体积门（超限直接报错，不发模型） |
 | 大 MR 分片 | 过滤后 diff 超 `limits.split.maxShardChars` 时按 `diff --git` 文件块自动切片（绝不切 hunk）并确定性合并 findings；单片路径逐字节不变（ADR-0039） |
 | 单源配置 | 用户级 JSONC（`~/.PiAgent/PiAgent.jsonc` 或 `--config`），启动读一次成不可变快照，审计留 digest |
-| 可观测 | stdout 单 JSON 文档；stderr 诊断与 `--progress` 阶段投影；退出码 0（含诚实截断）/ 1 |
+| 可观测 | stdout 单 JSON 文档；stderr 诊断与默认打印的阶段投影（`--no-progress` 静音）；退出码 0（含诚实截断）/ 1 |
 | diff 检视技能 | 仓内 `.agents/skills/` 两个可复跑技能：真实缺陷回放（默认 VUL4J-38 / CVE-2014-4172）与合成缺陷注入（GEN-RES-001）；真跑模型检视后把证据归档到 `repo-diff-skill-result/`（不入库） |
 | 离线回放 / 并发阶梯 | `scripts/offline-replay/`：冻结 trace → 本机回放服务替代模型网关，零网络、零 key 跑完整检视；支持规则 Skill / 分片场景、真网关录制与进程级并发档位（ADR-0048 / ADR-0049，不进产品包） |
 
@@ -197,7 +197,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 | 值形态 | 值不能以 `--` 开头（`--issue --taskId x` 报 `requires a value`，不会静默吞旗标） |
 | 重复旗标 | 非列表旗标重复出现 = `duplicate flag`；`--rule-skill-zip` / `--rule-skill` 例外（按出现顺序累积） |
 | 列表写法 | 列表旗标支持逗号（`a.zip,b.zip`）、连续 token（`a.zip b.zip`）或重复旗标，三种等价 |
-| 布尔对 | `--progress` 与 `--no-progress` 同给 = `conflicting flags`；其余无值旗标重复 = `duplicate flag` |
+| 布尔对 | `--progress` 已移除（进度缺省打印）；`--no-progress` 重复 = `duplicate flag`，其余无值旗标重复同理 |
 | 帮助 | 无 `--help` / `--version`；裸跑或未知子命令 → usage 到 stderr + `exit 1` |
 
 ### 1. `review`（13 个旗标）
@@ -215,7 +215,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 | `--rule-skill-zip <path[,path…]>` | zip 路径（可重复） | 缺省不装载 | 规则 Skill zip；**顺序 = 执行顺序**；一个包 = 一个 skill；不自动扫描被检视仓库（ADR-0027） |
 | `--rule-skill <dir[,dir…]>` | 目录（可重复） | 缺省不装载 | 已解压规则 Skill 目录；先审计（符号链接 / 越界一律拒绝）→ 按内容哈希复制进 run 缓存 → 同一装载链路；**排在全部 zip 之后**（ADR-0018） |
 | `--strict-rule-skill` | 无值 | 缺省关 | 规则包装载失败即 `exit 1`（一个包都没给也算）；缺省为「降级该包 + 审计留痕 + run 照常」 |
-| `--progress` | 无值 | 缺省按 stderr 是否 TTY | 打开阶段 / 模型请求 / 工具调用 / skill 会话事件行（stderr） |
+| `--no-progress` | 无值 | 缺省关（进度事件行**缺省打印**） | 关闭阶段 / 模型请求 / 工具调用 / skill 会话事件行（stderr，批跑收日志用） |
 | `--no-progress` | 无值 | 同上 | 关闭事件行（批跑收日志时显式静音）；**收尾一行总结恒打印**，不受此旗标影响 |
 
 ### 2. `smoke`

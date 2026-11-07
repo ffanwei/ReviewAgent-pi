@@ -31,7 +31,7 @@
  *   [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>]
  *   [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]...
  *   [--strict-rule-skill]
- *   [--progress | --no-progress]
+ *   [--no-progress]
  *   review-pi smoke [--model <id>] [--config <path>]
  *   review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
  */
@@ -146,7 +146,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // cwd 解析，缺省值（model / config / tasks 根 / progress）已落成生效值并标注来源。
   // 打印点必须早于进度投影，否则事件行会把这一块打散；stdout 是单 JSON 文档契约，
   // 故这一路只走 stderr；只碰参数面，不含 apiKey / baseUrl 等秘密。
-  const stderrIsTty = process.stderr.isTTY === true;
   process.stderr.write(
     `${formatReviewArgs(args, {
       repoPath,
@@ -158,9 +157,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       modelId,
       modelFromFlag: args.model !== undefined,
       configFromFlag: args.configPath !== undefined,
-      progressOn: args.progress ?? stderrIsTty,
-      progressExplicit: args.progress !== undefined,
-      stderrIsTty,
+      progressOn: args.progress ?? true,
     })}\n`,
   );
 
@@ -257,9 +254,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     const mrText = await readFile(mrPath, "utf8");
     const diff = args.mrFormat === "json" ? mrJsonToUnifiedDiff(mrText, "--mr-json") : mrText;
 
-    // 运行进度投影（ADR-0016）：stderr 是 TTY 时缺省开（人手敲看得见），重定向
-    // 收日志时缺省关；--progress / --no-progress 覆盖。缺省关时只保留收尾摘要
-    // 一行（stderr，可 grep），不出现阶段/请求/工具事件行。
+    // 运行进度投影（ADR-0055，取代 ADR-0016 的 TTY 自动档）：缺省打印事件行；
+    // `--no-progress` 显式静音（批跑收日志用）。静音时仍保留收尾摘要一行
+    // （stderr，可 grep），不出现阶段/请求/工具事件行。
     const progress = startProgress(args, modelId);
     const onProgress: RunProgressSink = (event) => {
       // 分片（ADR-0039 决策 8）：外层只发一次 run.start；这里报一行片数提示。
@@ -994,12 +991,12 @@ function reportPhaseParseFailures(phaseLog: readonly PhaseRecord[]): void {
 }
 
 /**
- * 运行进度投影的开关与构造（ADR-0016）：`--progress` / `--no-progress` 显式覆盖，
- * 缺省跟随 `stderr` 是否 TTY。返回 undefined = 本 run 不显示任何进度（现状形态）。
+ * 运行进度投影的开关与构造（ADR-0055）：缺省打印，`--no-progress` 显式静音。
+ * 返回 undefined = 本 run 不显示任何进度事件行（收尾摘要仍恒打印）。
  */
 function startProgress(args: ReviewCliArgs, modelId: string): ProgressRenderer | undefined {
   const isTty = process.stderr.isTTY === true;
-  if (!(args.progress ?? isTty)) {
+  if (!(args.progress ?? true)) {
     return undefined;
   }
   process.stderr.write(`review-pi: ${args.caseId} · ${modelId} · progress on\n`);

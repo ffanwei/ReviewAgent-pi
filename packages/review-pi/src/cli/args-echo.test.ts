@@ -30,9 +30,7 @@ function echo(overrides: Partial<ReviewArgsEcho> = {}): ReviewArgsEcho {
     modelId: "deepseek-v4-flash",
     modelFromFlag: false,
     configFromFlag: false,
-    progressOn: false,
-    progressExplicit: false,
-    stderrIsTty: false,
+    progressOn: true,
     ...overrides,
   };
 }
@@ -54,7 +52,7 @@ describe("formatReviewArgs", () => {
     expect(lines).toContain(row("--rule-skill-zip", "(未传)"));
     expect(lines).toContain(row("--rule-skill", "(未传)"));
     expect(lines).toContain(row("--strict-rule-skill", "未启用"));
-    expect(lines).toContain(row("--progress", "关（缺省自动：stderr 非 TTY）"));
+    expect(lines).toContain(row("--no-progress", "未启用（缺省打印）"));
     // 头部 + 12 个参数行（--taskId / --tasks-dir 取代原 --out；--rule-skill-name 随 ADR-0034 移除）
     expect(lines).toHaveLength(13);
   });
@@ -83,15 +81,14 @@ describe("formatReviewArgs", () => {
         ruleSkillZips: ["a.zip", "b.zip"],
         ruleSkillDirs: ["rules"],
         strictRuleSkill: true,
-        progress: true,
+        progress: false,
       },
       echo({
         modelId: "glm-5.3",
         modelFromFlag: true,
         configFromFlag: true,
         tasksDirFromFlag: true,
-        progressOn: true,
-        progressExplicit: true,
+        progressOn: false,
       }),
     );
     expect(text.split("\n")).toContain(row("--model", "glm-5.3"));
@@ -100,6 +97,6 @@ describe("formatReviewArgs", () => {
     expect(text).toContain(row("--rule-skill-zip", "a.zip, b.zip"));
     expect(text).toContain(row("--rule-skill", "rules"));
     expect(text).toContain(row("--strict-rule-skill", "已启用"));
-    expect(text.split("\n")).toContain(row("--progress", "开"));
+    expect(text.split("\n")).toContain(row("--no-progress", "已启用（进度事件行静默）"));
   });
 });

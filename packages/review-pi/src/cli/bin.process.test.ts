@@ -1737,7 +1737,7 @@ const REVIEW_OUTCOME_KEYS = [
 ];
 
 test(
-  "--progress（非 TTY）：stderr 逐行投影阶段/请求/收尾摘要，stdout 仍是单 JSON 文档、键集不变",
+  "进度缺省打印（非 TTY）：stderr 逐行投影阶段/请求/收尾摘要，stdout 仍是单 JSON 文档、键集不变",
   async () => {
     const stub = await startLoopbackStub(oneFindingCorpus());
     try {
@@ -1756,7 +1756,6 @@ test(
           CLI_TASK_ID,
           "--tasks-dir",
           outDir,
-          "--progress",
         ],
         stubEnv(stub.baseUrl),
       );
@@ -1787,7 +1786,7 @@ test(
 );
 
 test(
-  "进度事件行缺省静默（非 TTY）与 --no-progress 同，但收尾摘要仍恒打一行；--progress 与 --no-progress 同给 = 用法错误 exit 1",
+  "进度缺省打印（非 TTY）与 --no-progress 静音，但收尾摘要仍恒打一行；--progress 已移除 = 用法错误 exit 1",
   async () => {
     const quietStub = await startLoopbackStub([...oneFindingCorpus(), ...oneFindingCorpus()]);
     try {
@@ -1807,10 +1806,11 @@ test(
         outDir,
       ];
 
+      // 缺省（不传任何进度旗标）= 打印，不再看 stderr 是否 TTY
       const auto = await runBin(baseArgs, stubEnv(quietStub.baseUrl));
       expect(auto.status).toBe(0);
-      expect(auto.stderr).not.toContain("▶ phase");
-      expect(auto.stderr).not.toContain("req 1 ");
+      expect(auto.stderr).toContain("▶ phase");
+      expect(auto.stderr).toContain("req 1 ");
       // 进度关闭 ≠ 零输出：收尾摘要恒定打印（一行，避免「跑完什么都没说」）
       expect(auto.stderr).toContain("✓ 完成 · 耗时 ");
 
@@ -1831,16 +1831,18 @@ test(
       );
       expect(explicitOff.status).toBe(0);
       expect(explicitOff.stderr).not.toContain("▶ phase");
+      expect(explicitOff.stderr).not.toContain("req 1 ");
       expect(explicitOff.stderr).toContain("✓ 完成 · 耗时 ");
 
-      const conflict = await runBin([...baseArgs, "--progress", "--no-progress"], {
+      // `--progress` 已移除（ADR-0055）：给迁移提示并 exit 1，不再静默接受
+      const removed = await runBin([...baseArgs, "--progress"], {
         ...stubEnv(quietStub.baseUrl),
         timeoutMs: 30_000,
       });
-      expect(conflict.status).toBe(1);
-      expect(conflict.stdout).toBe("");
-      expect(conflict.stderr).toContain("conflicting flags --progress and --no-progress");
-      expect(conflict.stderr).toContain("usage:");
+      expect(removed.status).toBe(1);
+      expect(removed.stdout).toBe("");
+      expect(removed.stderr).toContain("--progress 已移除（ADR-0055）");
+      expect(removed.stderr).toContain("usage:");
     } finally {
       await quietStub.close();
     }
@@ -1996,7 +1998,6 @@ test(
           CLI_TASK_ID,
           "--tasks-dir",
           outDir,
-          "--progress",
         ],
         { cwd, configText },
       );
