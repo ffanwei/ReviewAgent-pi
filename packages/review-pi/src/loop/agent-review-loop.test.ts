@@ -472,3 +472,41 @@ test("规则 Skill：Phase 5 文本回合后先跑 skill 会话，Phase 6 一次
   expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001", SKILL_CANDIDATE.id]);
   expect(outcome.toolCalls).toBe(0);
 });
+
+test("Phase 5 解析失败：phaseLog 留 parseFailure，本轮 0 候选继续推进（不重试）", async () => {
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply("not a JSON reply at all", 4),
+    textReply('{"verdicts":[],"complete":true}', 5),
+  ]);
+  const outcome = await run();
+
+  expect(outcome.rounds).toBe(1);
+  expect(outcome.findings).toEqual([]);
+  // 解析失败只留痕、不重试：整轮仍是 6 次请求
+  expect(outcome.audit.requests).toHaveLength(6);
+  const phase5 = outcome.audit.phaseLog[4];
+  expect(phase5?.parseFailure).toEqual({ expected: "candidates", kind: "not-json" });
+  expect(phase5?.note).toContain("JSON");
+  expect(outcome.audit.phaseLog[5]?.parseFailure).toBeUndefined();
+});
+
+test("Phase 5 宽松提取：示例对象在前、真候选在后，取真结果", async () => {
+  const text =
+    `格式示例：{"candidates":[]}\n本次结果：{"candidates":[${JSON.stringify(VALID_CANDIDATE)}]}`;
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply(text, 4),
+    textReply('{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}],"complete":true}', 5),
+  ]);
+  const outcome = await run();
+
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(outcome.audit.phaseLog[4]?.parseFailure).toBeUndefined();
+});

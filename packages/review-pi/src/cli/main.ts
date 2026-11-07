@@ -44,9 +44,11 @@ import { calculateCost } from "@earendil-works/pi-ai";
 
 import type { Finding } from "../contracts/finding.js";
 import type { RunProgressSink } from "../contracts/progress.js";
+import type { PhaseRecord } from "../contracts/run.js";
 import { runDirPath } from "../experiment/run-record.js";
 import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-index.js";
 import { createMcpReporter, normalizeReportFilePath, resolveReportConfig, type McpReporter } from "../mcp/index.js";
+import { PHASE_ORDER } from "../loop/phases.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
@@ -296,6 +298,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       // 进度关闭不是「零输出」：收尾摘要恒定打印（一行，可 grep）
       process.stderr.write(`${doneLine(summary)}\n`);
     }
+    // 解析失败可见性（P1）：只在 phaseLog 带 parseFailure 时打印（成功 run 零输出）。
+    // 放在收尾摘要之后：进度条（TTY）已擦除，不混行；不改退出码。
+    reportPhaseParseFailures(record.baseline.audit.phaseLog);
 
     // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout
     // 呈现档（title/description 等自然语言字段经注入引擎译中文，结构化字段
@@ -821,6 +826,29 @@ function describeReportFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const oneLine = message.replace(/\s+/g, " ").trim();
   return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
+}
+
+/** PhaseRecord.phase → `phaseN`（1-based）；未知名称回退为原名 */
+function phaseLabelOf(phase: PhaseRecord["phase"]): string {
+  const index = PHASE_ORDER.indexOf(phase);
+  return index >= 0 ? `phase${String(index + 1)}` : phase;
+}
+
+/**
+ * 阶段回复解析失败的 stderr 一行（P1）：只在 `parseFailure` 在场时输出。
+ * 成功 run 零输出（零字节漂移）；失败不改退出码——它只解释「为什么候选是 0」。
+ */
+function reportPhaseParseFailures(phaseLog: readonly PhaseRecord[]): void {
+  for (const entry of phaseLog) {
+    const failure = entry.parseFailure;
+    if (failure === undefined) {
+      continue;
+    }
+    const expected = failure.expected === "candidates" ? "候选" : "裁决";
+    process.stderr.write(
+      `review-pi: [r${String(entry.round)} ${phaseLabelOf(entry.phase)}] ${expected}解析失败（${failure.kind}），本轮 0 ${expected}；详见审计 phaseLog\n`,
+    );
+  }
 }
 
 /**

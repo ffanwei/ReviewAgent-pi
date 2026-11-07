@@ -1,5 +1,7 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
+import { extractModelJson } from "../shared/model-json.js";
+
 /**
  * 一次性模型调用缝（ADR-0045）：报文 / 总结生成用的最小 chat completion。
  *
@@ -111,51 +113,16 @@ function readContentText(payload: unknown): string | undefined {
 }
 
 /**
- * 宽松 JSON 提取（模型常把 JSON 包进 ```json 代码栅栏或前后白话）：剥栅栏后
- * 取第一个平衡的 `{…}`。解析失败返回 null（调用方按「报文调用失败」处理）。
+ * 宽松 JSON 提取（模型常把 JSON 包进 ```json 代码栅栏或前后白话）。
+ * 与阶段解析共用 `shared/model-json`：整串 → 剥围栏 → 花括号配平扫描；
+ * `preferKey` 让多对象场景取「含目标键的最后一个对象」（避开示例对象陷阱）。
+ * 解析失败返回 null（调用方按「报文调用失败」处理）。
  */
-export function extractJsonObject(text: string): unknown | null {
-  const stripped = text.replace(/^[ \t]*```[a-zA-Z0-9_-]*\s*\n?/, "").replace(/\n?```\s*$/, "");
-  const start = stripped.indexOf("{");
-  if (start < 0) {
-    return null;
-  }
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < stripped.length; index += 1) {
-    const char = stripped[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      if (inString) {
-        escaped = true;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) {
-      continue;
-    }
-    if (char === "{") {
-      depth += 1;
-    } else if (char === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        try {
-          return JSON.parse(stripped.slice(start, index + 1)) as unknown;
-        } catch {
-          return null;
-        }
-      }
-    }
-  }
-  return null;
+export function extractJsonObject(
+  text: string,
+  options: { readonly preferKey?: string } = {},
+): unknown | null {
+  return extractModelJson(text, options).value ?? null;
 }
 
 function errorMessage(error: unknown): string {

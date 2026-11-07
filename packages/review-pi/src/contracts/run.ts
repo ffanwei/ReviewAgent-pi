@@ -14,12 +14,26 @@ export type ReviewPhase =
   | "Deep Reasoning"
   | "Evidence Verification";
 
+/** 模型 JSON 回复失败的分级原因（P0 宽松提取器；写进 phaseLog.parseFailure） */
+export type ModelJsonFailureKind = "empty" | "truncated" | "not-json" | "missing-key";
+
+/**
+ * 阶段回复解析失败留痕（P1）：**仅在失败时在场**——成功 run 的 phaseLog
+ * 形状逐字节不变。`expected` 是调用方期望的目标键类别，`kind` 是分级原因。
+ */
+export interface PhaseParseFailure {
+  readonly expected: "candidates" | "verdicts";
+  readonly kind: ModelJsonFailureKind;
+}
+
 /** 一个阶段的执行留痕 */
 export interface PhaseRecord {
   readonly round: number;
   readonly phase: ReviewPhase;
   readonly requestCount: number;
   readonly note?: string;
+  /** 解析失败的可机读留痕（只在失败时出现；CLI 据此在 stderr 报一行） */
+  readonly parseFailure?: PhaseParseFailure;
 }
 
 /** 一次工具调用的留痕 */

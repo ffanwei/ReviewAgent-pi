@@ -7,6 +7,7 @@ import type { LlmMessage, LlmUsage } from "../contracts/llm.js";
 import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import type {
   CandidateRejection,
+  PhaseParseFailure,
   PhaseRecord,
   RuleSkillPassRecord,
   RunAudit,
@@ -346,6 +347,7 @@ export async function runAgentReviewLoop(
       phase: phaseNameOf(phaseIndex),
       requestCount: phaseRequestCount,
       ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
+      ...(parsed.parseFailure !== undefined ? { parseFailure: parsed.parseFailure } : {}),
     });
 
     // Phase 5 之后、Phase 6 指令之前：顺序跑 skill 检视会话（ADR-0014）。
@@ -472,17 +474,30 @@ export async function runAgentReviewLoop(
     });
   }
 
-  function parsePhaseReply(replyText: string): { readonly note?: string } {
+  function parsePhaseReply(replyText: string): {
+    readonly note?: string;
+    readonly parseFailure?: PhaseParseFailure;
+  } {
     if (phaseIndex === CANDIDATES_PHASE_INDEX) {
       const parsed = parseCandidatesReply(replyText);
       roundCandidates = parsed.candidates;
-      return parsed.note !== undefined ? { note: parsed.note } : {};
+      return {
+        ...(parsed.note !== undefined ? { note: parsed.note } : {}),
+        ...(parsed.failure !== undefined
+          ? { parseFailure: { expected: "candidates", kind: parsed.failure } }
+          : {}),
+      };
     }
     if (phaseIndex === VERIFICATION_PHASE_INDEX) {
       const parsed = parseVerificationReply(replyText);
       roundVerdicts = parsed.verdicts;
       roundComplete = parsed.complete;
-      return parsed.note !== undefined ? { note: parsed.note } : {};
+      return {
+        ...(parsed.note !== undefined ? { note: parsed.note } : {}),
+        ...(parsed.failure !== undefined
+          ? { parseFailure: { expected: "verdicts", kind: parsed.failure } }
+          : {}),
+      };
     }
     return {};
   }

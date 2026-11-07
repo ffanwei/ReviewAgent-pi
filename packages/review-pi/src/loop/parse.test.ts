@@ -74,3 +74,61 @@ test("parseVerificationReply 容错：非 JSON / 缺 verdicts → 空裁决 + co
   expect(noVerdicts.complete).toBe(true);
   expect(noVerdicts.note).toBeDefined();
 });
+
+// ---- P0：宽松提取（前后白话 / 围栏 / 示例陷阱 / 分级失败原因） ----
+
+const FENCE = "```";
+
+test("parseJsonReply 容忍围栏前后白话（P0）", () => {
+  expect(parseJsonReply(`Here:\n${FENCE}json\n{"a":1}\n${FENCE}\nDone`)).toEqual({ a: 1 });
+});
+
+test("parseCandidatesReply 容忍围栏+前置白话", () => {
+  const out = parseCandidatesReply(
+    `Here is the result:\n${FENCE}json\n{"candidates":[{"id":"F1"}]}\n${FENCE}`,
+  );
+  expect(out.candidates).toEqual([{ id: "F1" }]);
+  expect(out.note).toBeUndefined();
+  expect(out.failure).toBeUndefined();
+});
+
+test("parseCandidatesReply 容忍裸 JSON + 后置白话", () => {
+  const out = parseCandidatesReply('{"candidates":[]}\nHope this helps!');
+  expect(out.candidates).toEqual([]);
+  expect(out.note).toBeUndefined();
+});
+
+test("parseCandidatesReply 多个围栏块：取含 candidates 的最后一个", () => {
+  const text = `${FENCE}json\n{"candidates":[]}\n${FENCE}\nand\n${FENCE}json\n{"candidates":[{"id":"F1"}]}\n${FENCE}`;
+  expect(parseCandidatesReply(text).candidates).toEqual([{ id: "F1" }]);
+});
+
+test("parseCandidatesReply 先给示例对象再给真结果：不取示例（P0 关键）", () => {
+  const text = '格式如下：{"candidates":[]}。本次结果：{"candidates":[{"id":"REAL"}]}';
+  expect(parseCandidatesReply(text).candidates).toEqual([{ id: "REAL" }]);
+});
+
+test("parseCandidatesReply 分级原因：empty / truncated / not-json / missing-key", () => {
+  expect(parseCandidatesReply("").failure).toBe("empty");
+  expect(parseCandidatesReply('{"candidates":[{"id":"F1"').failure).toBe("truncated");
+  expect(parseCandidatesReply("not json at all").failure).toBe("not-json");
+  expect(parseCandidatesReply('{"summary":"no candidates here"}').failure).toBe("missing-key");
+  // 截断/非 JSON 的诊断保留 "JSON" 字样（审计按它 grep）
+  expect(parseCandidatesReply("not json at all").note).toContain("JSON");
+  expect(parseCandidatesReply('{"candidates":[{"id":"F1"').note).toContain("JSON");
+});
+
+test("parseVerificationReply 先给示例对象再给真结果：取后者", () => {
+  const text =
+    '示例：{"verdicts":[],"complete":false}。结果：{"verdicts":[{"id":"F1","pass":true}],"complete":true}';
+  const out = parseVerificationReply(text);
+  expect(out.complete).toBe(true);
+  expect(out.verdicts.get("F1")).toEqual({ pass: true, reason: "" });
+});
+
+test("parseVerificationReply 分级原因：missing verdicts 是 missing-key", () => {
+  const out = parseVerificationReply('{"complete":true}');
+  expect(out.failure).toBe("missing-key");
+  expect(out.complete).toBe(true);
+});
+

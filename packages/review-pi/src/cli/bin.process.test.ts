@@ -759,6 +759,55 @@ test(
   180_000,
 );
 
+test(
+  "Phase 5 解析失败：stderr 可见一行 + 退出码不变 + 审计 phaseLog 带 parseFailure",
+  async () => {
+    const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+    const stub = await startLoopbackStub([
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: "not a JSON reply at all", usage: ZERO },
+      { text: '{"verdicts":[],"complete":true}', usage: ZERO },
+    ]);
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runBin(
+        ["review", "--repo", repoFixturePath("sample"), "--mr-diff", mrFile, "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
+        stubEnv(stub.baseUrl),
+      );
+
+      // 旁路可见性：解析失败不改退出码、stdout 仍是单 JSON 文档
+      expect(run.status).toBe(0);
+      expect(run.stderr).toContain(
+        "review-pi: [r1 phase5] 候选解析失败（not-json），本轮 0 候选；详见审计 phaseLog",
+      );
+      const outcome = JSON.parse(run.stdout) as { findings: unknown[]; auditPath: string };
+      expect(outcome.findings).toEqual([]);
+
+      // 同时落审计（可机读）
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        phaseLog: { phase: string; parseFailure?: { expected: string; kind: string } }[];
+      };
+      expect(audit.phaseLog[4]?.parseFailure).toEqual({
+        expected: "candidates",
+        kind: "not-json",
+      });
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
 // ---- 配置文件显式路径（ADR-0025：--config） ----
 
 test(

@@ -208,7 +208,7 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
   if (!completion.ok) {
     return { kind: "failed", reason: completion.reason };
   }
-  const parsed = extractJsonObject(completion.text);
+  const parsed = extractJsonObject(completion.text, { preferKey: "tips" });
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     return { kind: "failed", reason: "model output is not a JSON object" };
   }

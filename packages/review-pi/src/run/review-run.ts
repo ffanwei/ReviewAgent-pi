@@ -10,6 +10,7 @@ import {
 } from "../contracts/progress.js";
 import type {
   MrFilterRecord,
+  PhaseRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
   RunAudit,
@@ -476,6 +477,9 @@ async function aggregateShards(args: {
   const truncationReasons: string[] = [];
   const seenReasons = new Set<string>();
   const skillPassLog: RuleSkillPassRecord[] = [];
+  // 解析失败留痕（P1）：聚合审计不重复承载正文，但失败诊断要留下——
+  // 否则分片路径的 stderr 提示无从取数（成功 run 仍为空数组，零漂移）。
+  const phaseParseFailures: PhaseRecord[] = [];
 
   for (const { pass } of args.executed) {
     usage = addUsage(usage, pass.usage);
@@ -489,6 +493,12 @@ async function aggregateShards(args: {
       if (!seenReasons.has(reason)) {
         seenReasons.add(reason);
         truncationReasons.push(reason);
+      }
+    }
+    // 只聚合带解析失败的相位记录（诊断，不是正文）
+    for (const phaseRecord of pass.audit.phaseLog) {
+      if (phaseRecord.parseFailure !== undefined) {
+        phaseParseFailures.push(phaseRecord);
       }
     }
     // 聚合 skillPassLog：把片内 basename 重写成 runs 目录相对路径，
@@ -532,10 +542,11 @@ async function aggregateShards(args: {
   }));
 
   const audit: RunAudit = {
-    // 聚合审计不重复承载正文（正文在各片审计里），只做账目
+    // 聚合审计不重复承载正文（正文在各片审计里），只做账目；
+    // 解析失败记录是诊断，聚合进来让单份审计也能解释「候选为什么丢了」。
     requests: [],
     toolCallLog: [],
-    phaseLog: [],
+    phaseLog: phaseParseFailures,
     rejections: [],
     cacheBreaks: [],
     truncated,
