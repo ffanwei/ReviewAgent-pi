@@ -489,7 +489,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       }
       const outcome = await activeReporter.task.saveReviewSummary({
         taskId: args.taskId,
-        description: summaryReport.markdown,
+        markdownContent: summaryReport.markdown,
       });
       if (!outcome.ok) {
         process.stderr.write(

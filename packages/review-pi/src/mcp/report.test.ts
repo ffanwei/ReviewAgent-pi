@@ -363,7 +363,9 @@ describe("业务 tool 面（ADR-0045）", () => {
     });
 
     expect(await reporter.task.startTask({ taskId: "t-1" })).toEqual({ ok: true });
-    expect(await reporter.task.saveReviewSummary({ taskId: "t-1", description: "# 总结" })).toEqual({
+    expect(
+      await reporter.task.saveReviewSummary({ taskId: "t-1", markdownContent: "# 总结" }),
+    ).toEqual({
       ok: true,
     });
     expect(
@@ -392,7 +394,7 @@ describe("业务 tool 面（ADR-0045）", () => {
       "mrReviewResult",
     ]);
     expect(calls[0]?.args).toEqual({ taskId: "t-1" });
-    expect(calls[1]?.args).toEqual({ taskId: "t-1", description: "# 总结" });
+    expect(calls[1]?.args).toEqual({ taskId: "t-1", markdownContent: "# 总结" });
     expect(calls[2]?.args).toMatchObject({
       taskId: "t-1",
       filePath: "src/Foo.java",

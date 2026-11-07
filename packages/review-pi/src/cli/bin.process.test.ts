@@ -2224,7 +2224,7 @@ test(
         reviewTips: [],
       });
       expect(business[3]?.args).toMatchObject({ taskId: CLI_TASK_ID });
-      expect(String(business[3]?.args.description)).toContain("# 检视总结");
+      expect(String(business[3]?.args.markdownContent)).toContain("# 检视总结");
       expect(business[4]?.args).toEqual({ taskId: CLI_TASK_ID });
 
       // 批量事件通道照常（run.start / run.end 至少一批）
@@ -2793,7 +2793,7 @@ test(
       // 零意见：saveReviewSummary 发固定「未发现缺陷」文案，不触发一次性模型调用
       expect(business[2]?.args).toEqual({
         taskId: CLI_TASK_ID,
-        description: "# 检视总结\n\n本次检视未发现缺陷。",
+        markdownContent: "# 检视总结\n\n本次检视未发现缺陷。",
       });
       expect(countOneShotGatewayCalls(stub)).toBe(0);
       expect(run.stderr).toContain("未发现检视意见，发送固定总结");
@@ -2847,7 +2847,7 @@ test(
       ]);
       expect(business[2]?.args).toEqual({
         taskId: CLI_TASK_ID,
-        description: "# 检视总结\n\n本次检视未发现缺陷。",
+        markdownContent: "# 检视总结\n\n本次检视未发现缺陷。",
       });
     } finally {
       await stub.close();

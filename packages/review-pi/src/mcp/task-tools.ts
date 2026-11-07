@@ -22,10 +22,10 @@ export interface TaskIdArgs {
   readonly taskId: string;
 }
 
-/** `saveReviewSummary` 参数：description = Markdown 总结报告正文 */
+/** `saveReviewSummary` 参数：markdownContent = Markdown 总结报告正文 */
 export interface SaveReviewSummaryArgs {
   readonly taskId: string;
-  readonly description: string;
+  readonly markdownContent: string;
 }
 
 /** `mrReviewResult` 单条检视意见（服务端 AgentReviewTips 契约） */

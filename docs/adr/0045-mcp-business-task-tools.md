@@ -10,6 +10,8 @@
 
 **后续修订**（2026-11-07，三）：**中文产物落盘失败不再吞掉业务上报**。此前 `removeStaleReviewsZh` / `writeReviewsTipsZh` / `removeStaleReviewsTipsZh` 的 IO 失败（Windows 上常见：旧 `reviews_zh.json` 被占用、目标路径不可写）会直接抛出，位置恰在 `mrReviewResult` 之后、`saveReviewSummary` 之前——平台于是收到 startTask / mrReviewResult / endTask 却**收不到总结**（「有始无终」）。现在这一段失败只**记下**，`saveReviewSummary` 与 `endTask` 照常发完，随后才把这次运行判失败（exit 1）——顺序契约与「产物即契约」都不变，只是业务上报不再被产物 IO 连累。
 
+**后续修订**（2026-11-07，四）：**`saveReviewSummary` 的正文参数改名为 `markdownContent`**（原 `description`）。这是服务端契约的字段名校正：报文即 `{ taskId, markdownContent }`，正文语义（Markdown 总结报告）不变。仅改参数字段名，不涉及调用时机、顺序与降级语义。
+
 ## Context
 
 ADR-0037 定义的 MCP 上报只有一种形态：把进度事件**批量**塞进单个 tool（`mcp.report.tool`）的 `events` 数组。接入企业检视平台还需要**业务语义**的调用——平台要的不是事件流，而是：
