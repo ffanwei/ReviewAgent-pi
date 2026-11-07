@@ -11,6 +11,7 @@ import type {
   RuleSkillPassRecord,
   RunAudit,
   RunResult,
+  TipsFilterRecord,
   ToolCallRecord,
 } from "../contracts/run.js";
 
@@ -43,6 +44,8 @@ export interface AuditLight {
   readonly ruleSkill?: readonly RuleSkillAudit[];
   /** skill 会话执行留痕（round × skill） */
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
+  /** 中文 tips 置信度过滤留痕（ADR-0052）：配置缺席时省键 */
+  readonly tipsFilter?: TipsFilterRecord;
 }
 
 /** RunResult 快照（audit 以轻量投影落盘） */
@@ -127,6 +130,7 @@ export function toAuditLight(audit: RunAudit): AuditLight {
     ...(audit.ledger !== undefined ? { ledger: audit.ledger } : {}),
     ...(audit.ruleSkill !== undefined ? { ruleSkill: audit.ruleSkill } : {}),
     ...(audit.skillPassLog !== undefined ? { skillPassLog: audit.skillPassLog } : {}),
+    ...(audit.tipsFilter !== undefined ? { tipsFilter: audit.tipsFilter } : {}),
   };
 }
 

@@ -4,7 +4,12 @@ import type { Finding } from "../contracts/finding.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
 import type { SemanticTipEntry } from "./report-payload.js";
-import { assembleUnifiedTips, countTips, withUnifiedKeys } from "./unified-tips.js";
+import {
+  assembleUnifiedTips,
+  countTips,
+  filterTipsDocumentByConfidence,
+  withUnifiedKeys,
+} from "./unified-tips.js";
 
 // 统一 tips 组装（ADR-0045）：语义登记按合并键 join 回 merged findings，
 // 12 键（10 键 + id + level，只增不删）；(file,line) 去重沿用 ADR-0023。
@@ -51,7 +56,7 @@ function semanticMap(
   return map;
 }
 
-test("12 键形态：10 键全保留 + id + level；severity 三档与 level 四档并存", async () => {
+test("12 键形态：10 键全保留 + id + level；severity 四档与 level 同值", async () => {
   const merged = [finding()];
   const outcome = assembleUnifiedTips({
     mergedFindings: merged,
@@ -69,12 +74,12 @@ test("12 键形态：10 键全保留 + id + level；severity 三档与 level 四
     suggestion: "[重构思路] 白名单校验。代码示例：```…```",
     category: "安全",
     subcategory: "URL 注入",
-    severity: "Major", // P1 → 三档 Major（ADR-0017 单源）
+    severity: "Major", // P1 → 四档 Major（ADR-0052）
     level: "Major", // P1 → 四档 Major（Q18）
     ruleId: "",
     lineNum: 42,
     source: "common-reviewer",
-    confidence: "High", // 0.9 ≥ 0.8
+    confidence: "High", // 0.9 ≥ 0.7（ADR-0052 阈值）
   });
   // 键序（只增不删的形态锚定）：id 在首、level 紧随 severity
   expect(Object.keys(tip ?? {})).toEqual([
@@ -93,7 +98,7 @@ test("12 键形态：10 键全保留 + id + level；severity 三档与 level 四
   ]);
 });
 
-test("P3 双档分叉：tips severity=Minor（ADR-0017 折叠）与 level=Suggestion（Q18 四档）", async () => {
+test("P3：tips severity=Suggestion，与 level 同值（ADR-0052 四档归一）", async () => {
   const merged = [finding({ severity: "P3", confidence: 0.3 })];
   const outcome = assembleUnifiedTips({
     mergedFindings: merged,
@@ -101,7 +106,7 @@ test("P3 双档分叉：tips severity=Minor（ADR-0017 折叠）与 level=Sugges
     codeByFinding: {},
   });
   const tip = outcome.tips[0]?.reviewTips[0];
-  expect(tip?.severity).toBe("Minor");
+  expect(tip?.severity).toBe("Suggestion");
   expect(tip?.level).toBe("Suggestion");
   expect(tip?.confidence).toBe("Low");
   expect(tip?.code).toBe(""); // code 允许空串（ADR-0017 老契约——与报文的差异点）
@@ -170,7 +175,7 @@ test("零 findings：空文档（[]，「没发现问题」本身是结论）；
   expect(countTips(empty.tips)).toBe(0);
 });
 
-test("withUnifiedKeys：engine 回落的 10 键 tips 注入 id/level（按 file+line join）", async () => {
+test("withUnifiedKeys：engine 回落的 10 键 tips 注入 id/level 并归一 severity（按 file+line join）", async () => {
   const merged = [
     finding({ id: "F001" }),
     finding({ id: "F002", file: "src/Bar.java", line: 7, severity: "P3" }),
@@ -212,8 +217,219 @@ test("withUnifiedKeys：engine 回落的 10 键 tips 注入 id/level（按 file+
     },
   ];
   const augmented = withUnifiedKeys(engineTips, merged);
-  expect(augmented[0]?.reviewTips[0]).toMatchObject({ id: "F001", level: "Major" });
-  expect(augmented[1]?.reviewTips[0]).toMatchObject({ id: "F002", level: "Suggestion" });
+  expect(augmented[0]?.reviewTips[0]).toMatchObject({
+    id: "F001",
+    severity: "Major",
+    level: "Major",
+  });
+  // 第三方引擎仍按三档产 P3→Minor：回落路径把 severity 归一为 Suggestion，
+  // 与 level 同值（ADR-0052），消除同一条目的双列分叉。
+  expect(augmented[1]?.reviewTips[0]).toMatchObject({
+    id: "F002",
+    severity: "Suggestion",
+    level: "Suggestion",
+  });
   // 原 10 键全保留（只增不删）
   expect(Object.keys(augmented[0]?.reviewTips[0] ?? {})).toContain("confidence");
+});
+
+// ---- 置信度过滤（ADR-0052） ----
+
+test("minConfidence：低置信 finding 在组装时丢弃并计数，边界值保留", () => {
+  const merged = [
+    finding({ id: "F001", line: 1, confidence: 0.4 }),
+    finding({ id: "F002", line: 2, confidence: 0.5 }),
+    finding({ id: "F003", line: 3, confidence: 0.7 }),
+  ];
+  const outcome = assembleUnifiedTips({
+    mergedFindings: merged,
+    semanticByMergeKey: semanticMap(merged, [entry(), entry(), entry()]),
+    codeByFinding: {},
+    minConfidence: 0.5,
+  });
+  expect(outcome.tips[0]?.reviewTips.map((tip) => tip.id)).toEqual(["F002", "F003"]);
+  expect(outcome.droppedByConfidence).toBe(1);
+  // 被过滤条目不算 uncovered（有意丢弃，不是生成失败）
+  expect(outcome.uncovered).toEqual([]);
+});
+
+test("minConfidence 缺席 = 不过滤（内核直调 / 单测形态）", () => {
+  const merged = [finding({ confidence: 0.1 })];
+  const outcome = assembleUnifiedTips({
+    mergedFindings: merged,
+    semanticByMergeKey: semanticMap(merged, [entry()]),
+    codeByFinding: {},
+  });
+  expect(countTips(outcome.tips)).toBe(1);
+  expect(outcome.droppedByConfidence).toBe(0);
+});
+
+test("置信度过滤先于同行去重：低置信首条不占行位", () => {
+  const merged = [
+    finding({ id: "F001", line: 10, confidence: 0.3, title: "low confidence view" }),
+    finding({ id: "F002", line: 10, confidence: 0.9, title: "high confidence view" }),
+  ];
+  const outcome = assembleUnifiedTips({
+    mergedFindings: merged,
+    semanticByMergeKey: semanticMap(merged, [entry(), entry()]),
+    codeByFinding: {},
+    minConfidence: 0.5,
+  });
+  expect(outcome.tips[0]?.reviewTips.map((tip) => tip.id)).toEqual(["F002"]);
+  expect(outcome.droppedByConfidence).toBe(1);
+});
+
+test("filterTipsDocumentByConfidence：join 到 finding 用数字值，未 join 用档位上界", () => {
+  const merged = [finding({ file: "src/Foo.java", line: 42, confidence: 0.4 })];
+  const doc: ReviewTipsDocumentLike = [
+    {
+      filePath: "src/Foo.java",
+      reviewTips: [
+        {
+          code: "",
+          review: "r",
+          suggestion: "s",
+          category: "c",
+          subcategory: "",
+          severity: "Minor",
+          ruleId: "",
+          lineNum: 42,
+          source: "common-reviewer",
+          confidence: "Low",
+        },
+      ],
+    },
+    {
+      filePath: "src/Third.java",
+      reviewTips: [
+        {
+          code: "",
+          review: "r",
+          suggestion: "s",
+          category: "c",
+          subcategory: "",
+          severity: "Minor",
+          ruleId: "",
+          lineNum: 1,
+          source: "common-reviewer",
+          confidence: "Low",
+        },
+        {
+          code: "",
+          review: "r",
+          suggestion: "s",
+          category: "c",
+          subcategory: "",
+          severity: "Major",
+          ruleId: "",
+          lineNum: 2,
+          source: "common-reviewer",
+          confidence: "Medium",
+        },
+        {
+          code: "",
+          review: "r",
+          suggestion: "s",
+          category: "c",
+          subcategory: "",
+          severity: "Fatal",
+          ruleId: "",
+          lineNum: 3,
+          source: "common-reviewer",
+          confidence: "High",
+        },
+      ],
+    },
+  ];
+  const filtered = filterTipsDocumentByConfidence(doc, merged, 0.5);
+  // 空组被移除（src/Foo.java 唯一一条被数字 confidence 判丢）
+  expect(filtered.tips.map((file) => file.filePath)).toEqual(["src/Third.java"]);
+  // Low（上界 0.5 ≤ 阈值）丢；Medium（0.7 > 0.5）/ High 留
+  expect(filtered.tips[0]?.reviewTips.map((tip) => tip.confidence)).toEqual(["Medium", "High"]);
+  expect(filtered.dropped).toBe(2);
+});
+
+test("filterTipsDocumentByConfidence：按 id 精确判，同行低置信兄弟不误伤高置信条目", () => {
+  // 同文件同行两条 finding：一条低置信、一条高置信。带 id 的 tip 各判各的；
+  // 不按「行首/行最高」粗暴 join，避免低置信条目把同行的保留条目带走。
+  const merged = [
+    finding({ id: "F001", file: "src/Foo.java", line: 42, confidence: 0.3 }),
+    finding({ id: "F002", file: "src/Foo.java", line: 42, confidence: 0.9 }),
+  ];
+  const makeTip = (id: string, confidence: string) => ({
+    id,
+    code: "",
+    review: "r",
+    suggestion: "s",
+    category: "c",
+    subcategory: "",
+    severity: "Minor",
+    ruleId: "",
+    lineNum: 42,
+    source: "common-reviewer",
+    confidence,
+  });
+  const doc: ReviewTipsDocumentLike = [
+    { filePath: "src/Foo.java", reviewTips: [makeTip("F001", "Low"), makeTip("F002", "High")] },
+  ];
+  const filtered = filterTipsDocumentByConfidence(doc, merged, 0.5);
+  expect(filtered.tips[0]?.reviewTips.map((tip) => tip.id)).toEqual(["F002"]);
+  expect(filtered.dropped).toBe(1);
+});
+
+test("filterTipsDocumentByConfidence：无 id 时按行最高 confidence 判（同行有够格条即保留）", () => {
+  const merged = [
+    finding({ id: "F001", file: "src/Foo.java", line: 42, confidence: 0.3 }),
+    finding({ id: "F002", file: "src/Foo.java", line: 42, confidence: 0.9 }),
+  ];
+  const doc: ReviewTipsDocumentLike = [
+    {
+      filePath: "src/Foo.java",
+      reviewTips: [
+        {
+          code: "",
+          review: "r",
+          suggestion: "s",
+          category: "c",
+          subcategory: "",
+          severity: "Minor",
+          ruleId: "",
+          lineNum: 42,
+          source: "common-reviewer",
+          confidence: "Low",
+        },
+      ],
+    },
+  ];
+  const filtered = filterTipsDocumentByConfidence(doc, merged, 0.5);
+  // 同行存在 0.9 的高置信 finding ⇒ 该行未 join 到具体 id 的条目保守保留
+  expect(filtered.tips[0]?.reviewTips).toHaveLength(1);
+  expect(filtered.dropped).toBe(0);
+});
+
+test("filterTipsDocumentByConfidence 对已过滤文档幂等", () => {
+  const merged = [finding({ confidence: 0.9 })];
+  const doc: ReviewTipsDocumentLike = [
+    {
+      filePath: "src/Foo.java",
+      reviewTips: [
+        {
+          code: "",
+          review: "r",
+          suggestion: "s",
+          category: "c",
+          subcategory: "",
+          severity: "Major",
+          ruleId: "",
+          lineNum: 42,
+          source: "common-reviewer",
+          confidence: "High",
+        },
+      ],
+    },
+  ];
+  const once = filterTipsDocumentByConfidence(doc, merged, 0.5);
+  const twice = filterTipsDocumentByConfidence(once.tips, merged, 0.5);
+  expect(twice.dropped).toBe(0);
+  expect(twice.tips).toEqual(once.tips);
 });

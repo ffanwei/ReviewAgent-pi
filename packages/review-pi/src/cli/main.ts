@@ -67,6 +67,7 @@ import {
 } from "../shared/config.js";
 import { retryPolicyFor } from "../shared/llm-retry.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
+import { isConfidenceBelow } from "../shared/tips-filter.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { REVIEW_PI_VERSION } from "../shared/version.js";
 import { mrJsonToUnifiedDiff } from "../zoneb/mr-json.js";
@@ -78,6 +79,7 @@ import { buildReviewSummary } from "./review-summary.js";
 import {
   assembleUnifiedTips,
   countTips,
+  filterTipsDocumentByConfidence,
   withUnifiedKeys,
   type UnifiedTipsOutcome,
 } from "./unified-tips.js";
@@ -221,6 +223,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             runtime: reportRuntime,
             reportedFiles,
             semanticByMergeKey,
+            confidenceMin: config.limits.confidence.min,
           })
       : undefined;
 
@@ -258,6 +261,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         modelId,
         runtime: reviewRuntimeOf(config),
         config: configSnapshot(config, { home: homeDirectory() }),
+        tipsConfidenceMin: config.limits.confidence.min,
         fetch: globalThis.fetch,
         runsRoot,
         rep: 1,
@@ -344,6 +348,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         mergedFindings: record.baseline.findings,
         semanticByMergeKey,
         codeByFinding,
+        minConfidence: config.limits.confidence.min,
       });
       for (const missed of unifiedTips.uncovered) {
         process.stderr.write(
@@ -351,14 +356,26 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         );
       }
     }
+    // 置信度过滤（ADR-0052）：只作用于中文 tips；英文 findings / stdout 恒全量。
+    // 计数口径与审计 `tipsFilter` 一致（过滤前的 merged findings 条数）。
+    const minConfidence = config.limits.confidence.min;
+    const droppedByConfidence = record.baseline.findings.filter((finding) =>
+      isConfidenceBelow(finding.confidence, minConfidence),
+    ).length;
+    const allFindingsFiltered =
+      record.baseline.findings.length > 0 &&
+      droppedByConfidence === record.baseline.findings.length;
     // 全灭回落判定（Q24a）：有 findings 但统一 tips 零覆盖 ⇒ 引擎按全量模式
     // 调用（不带 skipTips），其 tips 作回落源；否则业务开启时引擎只做 stdout
     // 呈现档（Q22a：省掉 suggestion 并发生成）。
+    // 排除「全部被置信度过滤」：那不是生成失败，引擎同样过滤后无产出，
+    // 回落只会白花调用并打出误导性的「全灭」提示。
     const engineTipsFallback =
       taskToolsOn &&
       unifiedTips !== undefined &&
       countTips(unifiedTips.tips) === 0 &&
-      record.baseline.findings.length > 0;
+      record.baseline.findings.length > 0 &&
+      !allFindingsFiltered;
     if (engineTipsFallback) {
       process.stderr.write("review-pi: 统一 tips 全灭，呈现引擎按全量模式回落……\n");
     }
@@ -370,6 +387,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         ...(Object.keys(codeByFinding).length > 0 ? { codeByFinding } : {}),
         ...(rulePackDirs.length > 0 ? { rulePackDirs } : {}),
         ...(taskToolsOn && !engineTipsFallback ? { skipTips: true } : {}),
+        confidenceMin: config.limits.confidence.min,
       },
       {
         enginePath: presentationEngine,
@@ -406,6 +424,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     if (taskToolsOn && unifiedTips !== undefined) {
       if (countTips(unifiedTips.tips) > 0 || record.baseline.findings.length === 0) {
         tipsDoc = unifiedTips.tips;
+      } else if (allFindingsFiltered) {
+        // 全灭的原因是被置信度过滤，不是生成失败：照产 `[]`，不回落、不报警。
+        tipsDoc = [];
       } else if (projection.kind === "projected" && projection.tips !== undefined) {
         tipsDoc = withUnifiedKeys(projection.tips, record.baseline.findings);
         process.stderr.write("review-pi: 分组意见回落呈现引擎（统一生成全灭）\n");
@@ -414,6 +435,23 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       }
     } else {
       tipsDoc = projection.kind === "projected" ? projection.tips : undefined;
+    }
+
+    // 兜底过滤（ADR-0052）：统一路径已在组装时过滤，但引擎 / 回落路径由第三方
+    // 引擎自产条目，落盘前必须再按同一阈值过一遍（幂等）。
+    if (tipsDoc !== undefined) {
+      tipsDoc = filterTipsDocumentByConfidence(
+        tipsDoc,
+        record.baseline.findings,
+        minConfidence,
+      ).tips;
+    }
+
+    // 过滤留痕（零静默）：只在真的丢了条数时打一行汇总，避免无谓噪声。
+    if (droppedByConfidence > 0) {
+      process.stderr.write(
+        `review-pi: 置信度过滤丢弃 ${String(droppedByConfidence)} 条检视意见（阈值 ${String(minConfidence)}），仅影响中文 tips\n`,
+      );
     }
 
     // 中文产物只留分组意见（ADR-0022）：`reviews_zh.json` 不再是交付物——投影结果
@@ -632,12 +670,27 @@ async function reportShardFindings(input: {
   readonly reportedFiles: string[];
   /** 语义登记的 run 级并集（键 = 合并键；首见优先——tips 复用的数据面） */
   readonly semanticByMergeKey: Map<string, SemanticTipEntry>;
+  /** 中文 tips 置信度过滤阈值（ADR-0052）：先过滤再生成，省掉注定丢弃条目的调用 */
+  readonly confidenceMin: number;
 }): Promise<void> {
   const label = input.label.total > 1 ? ` [s${pad2(input.label.index)}/${pad2(input.label.total)}]` : "";
   try {
-    if (input.findings.length === 0) {
-      // 「没有问题」也按文件上报：reviewTips: [] —— 平台据此知道这些文件已检视过
-      const sent = await reportFilesWithoutTips({ ...input, label });
+    // ADR-0052：置信度过滤先于报文生成——被丢弃的意见不该花一次模型调用。
+    const keptFindings = input.findings.filter(
+      (finding) => !isConfidenceBelow(finding.confidence, input.confidenceMin),
+    );
+    if (keptFindings.length === 0) {
+      // 零 finding（本来就无）或全部被置信度过滤：仍按文件上报。
+      // 「有 finding 但被过滤」的文件不报空 tips（避免声称「无问题」），
+      // 与既有「tips 校验全跳过时不报空包」同口径。
+      const excluded = new Set<string>();
+      for (const finding of input.findings) {
+        const findingPath = normalizeReportFilePath(finding.file);
+        if (findingPath !== null) {
+          excluded.add(findingPath);
+        }
+      }
+      const sent = await reportFilesWithoutTips({ ...input, label, exclude: excluded });
       if (sent > 0) {
         process.stderr.write(
           `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见\n`,
@@ -645,9 +698,9 @@ async function reportShardFindings(input: {
       }
       return;
     }
-    const codeByFinding = await readCodeLines(input.repoPath, input.findings);
+    const codeByFinding = await readCodeLines(input.repoPath, keptFindings);
     const outcome = await buildShardReport({
-      findings: input.findings,
+      findings: keptFindings,
       codeByFinding,
       runtime: input.runtime,
     });

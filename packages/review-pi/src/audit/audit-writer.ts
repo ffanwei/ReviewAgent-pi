@@ -13,6 +13,7 @@ import type {
   RuleSkillPassRecord,
   RunAudit,
   ShardAuditRecord,
+  TipsFilterRecord,
   ToolCallRecord,
   WireRequest,
 } from "../contracts/run.js";
@@ -70,6 +71,11 @@ export interface AuditFileContent {
    * 紧接 skillPassLog，config 仍是最后一个可选尾键。
    */
   readonly shards?: readonly ShardAuditRecord[];
+  /**
+   * 中文 tips 置信度过滤留痕（ADR-0052）：阈值来自 `limits.confidence.min`；
+   * 配置缺席（内核直调 / 测试）时整键省略。紧接 shards，config 仍是最后可选尾键。
+   */
+  readonly tipsFilter?: TipsFilterRecord;
   /**
    * 生效配置快照（ADR-0025）：全量非秘密生效值 + 来源 + digest；秘密只记
    * `set|missing`。只进审计文件（stdout 键集不变）。直调内核（测试/嵌入）可缺省。
@@ -133,6 +139,7 @@ export function buildAuditFileContent(args: {
     ...(args.audit.ruleSkill !== undefined ? { ruleSkill: args.audit.ruleSkill } : {}),
     ...(args.audit.skillPassLog !== undefined ? { skillPassLog: args.audit.skillPassLog } : {}),
     ...(args.audit.shards !== undefined ? { shards: args.audit.shards } : {}),
+    ...(args.audit.tipsFilter !== undefined ? { tipsFilter: args.audit.tipsFilter } : {}),
     ...(args.config !== undefined ? { config: args.config } : {}),
   };
 }

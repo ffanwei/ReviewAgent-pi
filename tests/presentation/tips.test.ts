@@ -14,8 +14,9 @@ import {
 /**
  * 分组式检视意见映射层单测（ADR-0017）：纯函数、零网络零文件系统。
  *
- * 锁定面 = ADR-0017 §字段映射表逐行：
- * - severity 三档（P3 折 Minor，不丢条）、confidence 三档（0.8 / 0.5 边界）；
+ * 锁定面 = ADR-0017 §字段映射表逐行（ADR-0052 修订后）：
+ * - severity 四档（P0→Fatal / P1→Major / P2→Minor / P3→Suggestion）、
+ *   confidence 三档（0.7 / 0.5 边界）；
  * - source 结构性判定（RULE-CHECK@ 前缀）、ruleId 白名单、subcategory 恒空串；
  * - code / suggestion 缺席即空串（绝不编）；
  * - 文件分组按 finding 首见序 + reviewTips 按 lineNum 升序（同文件同行去重，留首条——ADR-0023）；
@@ -40,19 +41,19 @@ function finding(overrides: Partial<Finding> = {}): Finding {
 }
 
 describe("severityOf", () => {
-  it("四档映射到三档，P3 折进 Minor（不丢条）", () => {
+  it("四档一一映射（ADR-0052：与平台 level 同口径）", () => {
     expect(severityOf("P0")).toBe("Fatal");
     expect(severityOf("P1")).toBe("Major");
     expect(severityOf("P2")).toBe("Minor");
-    expect(severityOf("P3")).toBe("Minor");
+    expect(severityOf("P3")).toBe("Suggestion");
   });
 });
 
 describe("confidenceOf", () => {
-  it("边界：0.8 High、0.5 Medium、其余 Low", () => {
+  it("边界：0.7 High、0.5 Medium、其余 Low（ADR-0052）", () => {
     expect(confidenceOf(1)).toBe("High");
-    expect(confidenceOf(0.8)).toBe("High");
-    expect(confidenceOf(0.79)).toBe("Medium");
+    expect(confidenceOf(0.7)).toBe("High");
+    expect(confidenceOf(0.69)).toBe("Medium");
     expect(confidenceOf(0.5)).toBe("Medium");
     expect(confidenceOf(0.49)).toBe("Low");
     expect(confidenceOf(0)).toBe("Low");

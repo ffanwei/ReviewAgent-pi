@@ -158,6 +158,15 @@ export interface ConcurrencyLimits {
   readonly suggestion: number;
 }
 
+/**
+ * 中文 tips 的置信度过滤（ADR-0052）：`confidence < min` 的检视意见不进入
+ * `reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`。英文 findings 不受影响。
+ * 取值 0–1，缺省 0.5（= 过滤 Low 档）；`0` = 不过滤，`1` = 只保留满置信。
+ */
+export interface ConfidenceLimits {
+  readonly min: number;
+}
+
 export interface BoundaryLimits {
   /** `>` 即降级；null = 该维度不设界 */
   readonly maxFiles: number | null;
@@ -199,6 +208,7 @@ export interface Limits {
   readonly timeouts: TimeoutLimits;
   readonly retry: RetryLimits;
   readonly concurrency: ConcurrencyLimits;
+  readonly confidence: ConfidenceLimits;
   readonly boundary: BoundaryLimits;
   readonly split: SplitLimits;
   readonly archive: ArchiveLimits;
@@ -230,6 +240,7 @@ export const DEFAULT_LIMITS: Limits = {
     smokeAttempts: 1,
   },
   concurrency: { suggestion: 4 },
+  confidence: { min: 0.5 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_500_000 },
   split: { enabled: true, maxShardChars: 400_000, maxShards: 12, contextSummaryChars: 8_000 },
   archive: {
@@ -703,7 +714,7 @@ const MCP_REPORT_KEYS = [
 const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
 const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "concurrency", "boundary", "split", "archive", "micro"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "concurrency", "confidence", "boundary", "split", "archive", "micro"] as const;
 const LOOP_KEYS = ["maxRounds"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -728,6 +739,7 @@ const RETRY_KEYS = [
   "smokeAttempts",
 ] as const;
 const CONCURRENCY_KEYS = ["suggestion"] as const;
+const CONFIDENCE_KEYS = ["min"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
 const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars"] as const;
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
@@ -822,6 +834,18 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     suggestion: intOr(concurrencyObj.suggestion, "limits.concurrency.suggestion", 1, 16, DEFAULT_LIMITS.concurrency.suggestion),
   };
 
+  const confidenceObj = optionalObject(limits.confidence, "limits.confidence", warnings);
+  assertKnownKeys(confidenceObj, CONFIDENCE_KEYS, "limits.confidence", warnings);
+  const confidence: ConfidenceLimits = {
+    min: numberOr(
+      confidenceObj.min,
+      "limits.confidence.min",
+      0,
+      1,
+      DEFAULT_LIMITS.confidence.min,
+    ),
+  };
+
   const boundaryObj = optionalObject(limits.boundary, "limits.boundary", warnings);
   assertKnownKeys(boundaryObj, BOUNDARY_KEYS, "limits.boundary", warnings);
   const maxFiles =
@@ -891,7 +915,7 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
   };
 
-  return { loop, timeouts, retry, concurrency, boundary, split, archive, micro };
+  return { loop, timeouts, retry, concurrency, confidence, boundary, split, archive, micro };
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,6 +1372,25 @@ function intOr(value: unknown, path: string, min: number, max: number, fallback:
   return parsed === undefined ? fallback : (parsed as number);
 }
 
+/**
+ * 必填的「有值则校验，无值用缺省」有限小数（0–1 这类比例值；非有限数 /
+ * 非数字 / 越界一律 fail fast，不把 "0.5" 当 0.5）。
+ */
+function numberOr(value: unknown, path: string, min: number, max: number, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be a number (got ${describe(value)})`);
+  }
+  if (value < min || value > max) {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: ${path} must be in ${String(min)}…${String(max)} (got ${String(value)})`,
+    );
+  }
+  return value;
+}
+
 /** 布尔开关：缺省用 fallback；出现非布尔值 fail fast（不把 "false" 当 false） */
 function boolOr(value: unknown, path: string, fallback: boolean): boolean {
   if (value === undefined) {
@@ -1630,6 +1673,10 @@ ${excludeGlobLines}
     },
     // 中文建议：每条 finding 的 suggestion 并发生成数（只影响 tips，不影响检视主循环）。
     "concurrency": { "suggestion": 4 },
+    // 检视意见置信度过滤（ADR-0052）：confidence 低于 min 的意见不进入中文 tips
+    // （reviews_tips_zh.json 与 mrReviewResult.reviewTips）；英文 findings / stdout 不受影响。
+    // 0–1，缺省 0.5（= 过滤 Low 档）；0 = 不过滤。
+    "confidence": { "min": 0.5 },
     // MR 边界护栏：超界只告警（domainWarning）不拒检；null = 该维不设界。
     // maxDiffChars 是输入体积门：过滤后超限直接报错（不发模型请求），null = 关闭门禁。
     "boundary": {

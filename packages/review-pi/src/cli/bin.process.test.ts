@@ -2257,7 +2257,7 @@ test(
         suggestion: "[重构思路] 无。代码示例：```无```",
         category: "可靠性",
         subcategory: "测试桩",
-        severity: "Minor", // P2 → 三档（ADR-0017）
+        severity: "Minor", // P2 → Minor（ADR-0052 四档，与 level 同值）
         level: "Minor", // P2 → 四档（Q18）
         ruleId: "",
         lineNum: 1,
@@ -2284,6 +2284,18 @@ test(
       const cwdCopy = path.join(run.cwd, "review-result.json");
       expect(existsSync(cwdCopy)).toBe(true);
       expect(readFileSync(cwdCopy, "utf8")).toBe(readFileSync(tipsPath, "utf8"));
+
+      // 置信度过滤留痕（ADR-0052）：阈值恒写，丢弃 0 条（0.5 = 阈值，保留）
+      const auditDir = path.join(outDir, CLI_TASK_ID, "audit");
+      const auditFile = readdirSync(auditDir)[0] as string;
+      const audit = JSON.parse(readFileSync(path.join(auditDir, auditFile), "utf8")) as {
+        tipsFilter?: unknown;
+      };
+      expect(audit.tipsFilter).toEqual({ minConfidence: 0.5, droppedTips: 0 });
+      const record = JSON.parse(
+        readFileSync(path.join(outDir, CLI_TASK_ID, "runs", "run.json"), "utf8"),
+      ) as { baseline: { audit: { tipsFilter?: unknown } } };
+      expect(record.baseline.audit.tipsFilter).toEqual({ minConfidence: 0.5, droppedTips: 0 });
 
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },

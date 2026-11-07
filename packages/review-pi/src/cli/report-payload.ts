@@ -110,10 +110,8 @@ const RULE_REVIEWER_ID_PREFIX = "RULE-CHECK@";
 
 /**
  * `severity` → 工具 `level`（Q18：按工具契约用满四档——P3 是建议级）。
- * 注意与本地 tips 的三档折叠（ADR-0017：P3→Minor「不丢条」）是**两个呈现面**：
- * 平台报文用工具的四档语义，本地 tips 保持三档；同一条 P3 在两边分别叫
- * Suggestion 与 Minor，属「同源不同译」在结构字段上的已知分叉（ADR-0045）。
- * 统一 tips 路径 12 键同时携带两者（`severity` 三档 + `level` 四档）供对账。
+ * ADR-0052 起，本地 tips 的 `severity` 也用同一套四档映射（P3→Suggestion），
+ * 统一 tips 的 `severity` 与 `level` **同值**；不再存在三档 / 四档分叉。
  */
 export const LEVEL_BY_SEVERITY: Readonly<Record<Finding["severity"], AgentReviewLevel>> = {
   P0: "Fatal",

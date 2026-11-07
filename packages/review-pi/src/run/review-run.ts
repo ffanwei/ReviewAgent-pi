@@ -30,6 +30,7 @@ import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
+import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { assertDiffWithinCharLimit, filterDiffForReview, splitDiffIntoFileBlocks, toMrFilterRecord } from "./mr-input.js";
 import { mergeShardFindings } from "./findings-merge.js";
@@ -119,6 +120,12 @@ export interface ReviewRunInput {
    * 负责 stderr 可见性）；本层仍防御性吞错，hook 失败绝不影响检视与退出码。
    */
   readonly onShardFindings?: ReviewShardFindingsHook;
+  /**
+   * 中文 tips 置信度过滤阈值（ADR-0052）：只用于在审计 / run.json 留痕
+   * `tipsFilter`（阈值 + 被丢弃条数）；不改变检视结果与英文 findings。
+   * 缺席 = 不留痕（内核直调 / 单测形态）；CLI 真跑恒传 `limits.confidence.min`。
+   */
+  readonly tipsConfidenceMin?: number;
 }
 
 /**
@@ -332,6 +339,9 @@ async function executeSinglePass(args: {
     boundary: args.boundary,
     ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
     ...(args.input.config !== undefined ? { config: args.input.config } : {}),
+    ...(args.input.tipsConfidenceMin !== undefined
+      ? { tipsConfidenceMin: args.input.tipsConfidenceMin }
+      : {}),
     emit: args.emit,
   });
   // 片级上报缝（ADR-0045）：单片路径 = 一次调用，findings 已定型；文件清单
@@ -433,6 +443,9 @@ async function executeShardedPasses(args: {
       startedAt: shardStartedAt,
       // 全局边界 / 预过滤 / 配置只在聚合审计记一次：片内审计不带这三项
       boundary: { degraded: false },
+      ...(args.input.tipsConfidenceMin !== undefined
+        ? { tipsConfidenceMin: args.input.tipsConfidenceMin }
+        : {}),
       emit: withShardLabel(args.emit, { index: shard.index, total }),
     });
     executed.push({ shard, pass });
@@ -541,6 +554,7 @@ async function aggregateShards(args: {
     toolCalls: pass.toolCalls,
   }));
 
+  const tipsFilter = summarizeTipsFilter(findings, args.input.tipsConfidenceMin);
   const audit: RunAudit = {
     // 聚合审计不重复承载正文（正文在各片审计里），只做账目；
     // 解析失败记录是诊断，聚合进来让单份审计也能解释「候选为什么丢了」。
@@ -555,6 +569,7 @@ async function aggregateShards(args: {
     ruleSkill: args.ruleSkillAudit,
     shards: shardAudits,
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
+    ...(tipsFilter !== undefined ? { tipsFilter } : {}),
   };
 
   const auditContent = buildAuditFileContent({

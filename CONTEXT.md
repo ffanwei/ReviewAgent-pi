@@ -147,7 +147,7 @@ _Avoid_: 多语言检视（检视本来就全语言）、语言包（实际是�
 _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
 
 **检视意见导出（Review Findings Export）**:
-一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（随呈现配置**存在或缺席**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022），投影留痕改由 stdout 的 `presentation` 键承担。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027；另有隐藏的 session 索引，见「Session 索引」）。tips 有**两个生产者**（ADR-0045）：呈现引擎（业务上报关闭时的唯一路径，10 键）与**片级统一生成调用**（业务上报开启时，与 `mrReviewResult` 同一份语义输出；12 键 = 10 键 + `id` + `level`，只增不删）；统一生成全灭时回落引擎。
+一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（随呈现配置**存在或缺席**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022），投影留痕改由 stdout 的 `presentation` 键承担。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027；另有隐藏的 session 索引，见「Session 索引」）。tips 有**两个生产者**（ADR-0045）：呈现引擎（业务上报关闭时的唯一路径，10 键）与**片级统一生成调用**（业务上报开启时，与 `mrReviewResult` 同一份语义输出；12 键 = 10 键 + `id` + `level`，只增不删）；统一生成全灭时回落引擎。字段口径（ADR-0052）：`severity` 四档（P0→Fatal / P1→Major / P2→Minor / P3→Suggestion，与 `level` 同值）；`confidence` 三档（≥0.7 High / ≥0.5 Medium / 其余 Low）；配置 `limits.confidence.min`（0–1，缺省 0.5）在生成前丢弃 `confidence < min` 的意见，**只作用于中文 tips**（`reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`），`reviews_en.json` / stdout 恒全量；丢弃条数与阈值记入审计 / `run.json` 的 `tipsFilter`。
 _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
 
 **运行落盘根（Runs Root）**:

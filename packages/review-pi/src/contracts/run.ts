@@ -203,6 +203,15 @@ export interface ShardAuditRecord {
   readonly toolCalls: number;
 }
 
+/**
+ * 中文 tips 置信度过滤留痕（ADR-0052）：审计 / run.json 尾键。
+ * `droppedTips` = 低于 `minConfidence` 而被丢弃的 merged findings 条数。
+ */
+export interface TipsFilterRecord {
+  readonly minConfidence: number;
+  readonly droppedTips: number;
+}
+
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
@@ -223,6 +232,8 @@ export interface RunAudit {
    * 聚合审计里 `requests` 等正文为空数组，正文在各片审计文件里。
    */
   readonly shards?: readonly ShardAuditRecord[];
+  /** 中文 tips 置信度过滤留痕（ADR-0052）：配置缺席时省键 */
+  readonly tipsFilter?: TipsFilterRecord;
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

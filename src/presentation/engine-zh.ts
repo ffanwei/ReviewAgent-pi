@@ -105,6 +105,12 @@ export interface PresentationEngineInput extends ReviewPresentationSource {
    */
   readonly skipTips?: boolean;
   /**
+   * 中文 tips 的置信度过滤阈值（ADR-0052）：`confidence < confidenceMin` 的
+   * finding 不生成建议、也不进 tips（省掉注定被过滤条目的网关调用）。
+   * 缺席 = 不过滤；CLI 落盘前仍会按同一阈值再过滤一次。
+   */
+  readonly confidenceMin?: number;
+  /**
    * 呈现运行时接入点（ADR-0025：网关/凭据/模型/限值全显式穿参）——
    * 引擎不读任何环境变量；缺席 = 装配期 fail fast（CLI 缝归呈现降级）。
    */
@@ -149,7 +155,13 @@ export default async function projectZhPresentation(
   const knownRuleIds = await loadKnownRuleIds(source.rulePackDirs ?? []);
   // ADR-0023：tips 会对「同文件同行」去重，建议只为保留下来的行生成——
   // 已丢弃的行不该再花一次网关调用（口径与 buildReviewTipsDocument 同源）。
-  const tipsFindings = dedupeFindingsByLine(projected.findings);
+  // ADR-0052：置信度过滤同样在生成建议之前，避免为注定被丢弃的意见花调用。
+  const confidenceMin = source.confidenceMin;
+  const keptFindings =
+    confidenceMin === undefined
+      ? projected.findings
+      : projected.findings.filter((finding) => !(finding.confidence < confidenceMin));
+  const tipsFindings = dedupeFindingsByLine(keptFindings);
   const suggestions = await generateSuggestions(tipsFindings, codeByFinding, gateway);
   const tips = buildReviewTipsDocument({
     findings: tipsFindings,

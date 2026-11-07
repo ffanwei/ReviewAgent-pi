@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0051）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0052）。
 
 ## 记录纪律
 
@@ -24,6 +24,7 @@
 | ADR-0027（决策 2） | ADR-0036 | cwd 只留 `review-result.json` → 另加隐藏的 `.review-pi-session.json` 寻址索引 |
 | ADR-0009 / ADR-0010 / ADR-0014 的字节把守手段 | ADR-0038 | 退役「对照 DSH 历史审计真源逐字节相等」；改为结构性质 + 端到端能力断言（产品级逐字节仍保留） |
 | ADR-0031（决策 1：打印点） | ADR-0043 | 参数回显从「run 结束后」提前到「开跑前」；内容与 stderr-only 纪律不变 |
+| ADR-0017（severity/confidence 分档） | ADR-0052 | `severity` 三档 → 四档；confidence 高/中分界 0.8 → 0.7；新增中文 tips 置信度过滤 |
 
 ## 0037 起的新增决策（不逐条列全，只作导航）
 
@@ -44,6 +45,7 @@
 | [ADR-0049](0049-trace-schema-v2-and-upstream-recording.md) | trace schema v2（`toolsVariants` + `toolsRef`）、lane 路径归一化、真网关录制代理；S5 rule-skill 与 S4 分片场景 |
 | [ADR-0050](0050-mcp-business-tool-retry-and-timeout.md) | MCP 业务 tool：`mcp.servers.*.timeoutMs` 缺省 60 s，瞬时失败（传输 / 超时 / 5xx）最多 3 次尝试 |
 | [ADR-0051](0051-llm-call-retry-and-timeout.md) | LLM 调用分层重试与请求建立超时：Agent 走 pi-ai `maxRetries`，核外一次性调用走 `shared/llm-retry.ts`；缺省 3 次尝试，smoke 不重试 |
+| [ADR-0052](0052-tips-four-tier-severity-and-confidence-filter.md) | 检视意见四档严重级（P3→Suggestion）与 `limits.confidence.min` 置信度过滤（仅中文 tips，缺省 0.5） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

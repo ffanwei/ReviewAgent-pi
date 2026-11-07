@@ -61,6 +61,12 @@ export interface PresentationSource {
    * 路径不带该键（引擎全量产 tips，Q24/Q26）。
    */
   readonly skipTips?: boolean;
+  /**
+   * 中文 tips 的置信度过滤阈值（ADR-0052）：内置引擎在生成建议前丢弃
+   * `confidence < confidenceMin` 的 finding（省掉注定被过滤条目的网关调用）。
+   * 缺席 = 不过滤；第三方引擎不读该键也无害——CLI 落盘前仍会再过滤一次。
+   */
+  readonly confidenceMin?: number;
 }
 
 /**
@@ -338,7 +344,7 @@ const TIP_KEYS = [
   "confidence",
 ] as const;
 
-const TIP_SEVERITIES = new Set(["Fatal", "Major", "Minor"]);
+const TIP_SEVERITIES = new Set(["Fatal", "Major", "Minor", "Suggestion"]);
 const TIP_SOURCES = new Set(["rule-reviewer", "common-reviewer"]);
 const TIP_CONFIDENCES = new Set(["High", "Medium", "Low"]);
 
@@ -394,7 +400,7 @@ function validateTip(input: unknown): string | undefined {
     return "lineNum must be an integer >= 1";
   }
   if (typeof tip.severity !== "string" || !TIP_SEVERITIES.has(tip.severity)) {
-    return 'severity must be one of "Fatal", "Major", "Minor"';
+    return 'severity must be one of "Fatal", "Major", "Minor", "Suggestion"';
   }
   if (typeof tip.source !== "string" || !TIP_SOURCES.has(tip.source)) {
     return 'source must be one of "rule-reviewer", "common-reviewer"';

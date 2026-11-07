@@ -20,6 +20,7 @@ import { buildInitialUserMessage } from "../loop/messages.js";
 import { LOCKED_EFFORT_LABEL } from "../provider/pi-client.js";
 import type { ConfigSnapshot } from "../shared/config.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
+import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { buildReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
 import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
@@ -63,6 +64,11 @@ export interface ReviewPassInput {
   readonly mrFilter?: MrFilterRecord;
   /** 生效配置快照：只在单遍 / 聚合审计写一次 */
   readonly config?: ConfigSnapshot;
+  /**
+   * 中文 tips 置信度过滤阈值（ADR-0052）：只在审计 / run.json 留痕用，不改
+   * 检视行为；缺席 = 不写 `tipsFilter` 键。
+   */
+  readonly tipsConfidenceMin?: number;
   readonly emit: RunProgressSink;
 }
 
@@ -143,10 +149,12 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
     records: outcome.skillPassLog,
     transcripts: outcome.skillTranscripts,
   });
+  const tipsFilter = summarizeTipsFilter(outcome.findings, input.tipsConfidenceMin);
   const audit: RunAudit = {
     ...outcome.audit,
     ruleSkill: input.ruleSkillAudit,
     ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog: persisted.records } : {}),
+    ...(tipsFilter !== undefined ? { tipsFilter } : {}),
   };
   const auditContent = buildAuditFileContent({
     runId,

@@ -436,14 +436,14 @@ test.each([
     reason: "exactly these keys",
   },
   {
-    label: "severity 越界（Critical 不在三档内）",
+    label: "severity 越界（Critical 不在四档内）",
     body: `export default async (source) => ({
       provenance: { language: "zh", terminologyVersion: 1, findingLinks: source.findings.map((f) => ({ sourceFindingId: f.id, projectedFindingId: f.id })) },
       findings: source.findings.map((f) => ({ ...f, title: "[zh] " + f.title, description: "[zh] " + f.description })),
       toolCallLog: source.toolCallLog,
       tips: [{ filePath: "src/Main.java", reviewTips: [{ ...${TIP_OBJECT}, severity: "Critical" }] }],
     });`,
-    reason: 'severity must be one of "Fatal", "Major", "Minor"',
+    reason: 'severity must be one of "Fatal", "Major", "Minor", "Suggestion"',
   },
 ])("tips 形状坏（$label）→ 仍是 projected + tipsProblem（zh 不受牵连）", async ({ body, reason }) => {
   const enginePath = writeEngineModule("tips-bad-engine.mjs", body);

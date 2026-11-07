@@ -247,8 +247,50 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/limits.retry.baseDelayMs must be an integer/);
   });
 
-  test("limits.timeouts 新增 reviewTurnMs / oneShotMs 可配且进 digest", () => {
-    const { config } = loadConfig({
+  test("limits.confidence.min：缺省 0.5，0–1 小数可配且进 digest", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.confidence).toEqual({ min: 0.5 });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"confidence":{"min":0.7}}`)),
+    }).config;
+    expect(tuned.limits.confidence.min).toBe(0.7);
+    expect(tuned.overridden).toContain("limits.confidence.min");
+    expect(tuned.digest).not.toBe(defaults.digest);
+
+    // 边界值合法：0 = 不过滤，1 = 只保留满置信
+    expect(
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"confidence":{"min":0}}`)),
+      }).config.limits.confidence.min,
+    ).toBe(0);
+    expect(
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"confidence":{"min":1}}`)),
+      }).config.limits.confidence.min,
+    ).toBe(1);
+  });
+
+  test("limits.confidence.min 越界 / 非小数 = fail fast，指出键路径", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"confidence":{"min":1.5}}`)),
+      }),
+    ).toThrow(/limits.confidence.min must be in 0…1/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"confidence":{"min":-0.1}}`)),
+      }),
+    ).toThrow(/limits.confidence.min must be in 0…1/);
+    // 字符串不隐式转数字
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"confidence":{"min":"0.5"}}`)),
+      }),
+    ).toThrow(/limits.confidence.min must be a number/);
+  });
+
+  test("limits.timeouts 新增 reviewTurnMs / oneShotMs 可配且进 digest", () => {    const { config } = loadConfig({
       configPath: writeConfig(
         minimalConfig(`,"limits":{"timeouts":{"reviewTurnMs":120000,"oneShotMs":45000}}`),
       ),

@@ -8,16 +8,16 @@ import type { Finding } from "@baize/review-pi";
  * - 本模块零网络零文件系统零 pi import——`code` 与 `suggestion` 由调用方
  *   取好/生成好再注入（CLI 侧读 `--repo`，引擎侧调网关），本层只做确定性
  *   映射、分组、排序；
- * - 映射表是单源真值（ADR-0017 §字段映射）：severity 三档、confidence 三档、
+ * - 映射表是单源真值（ADR-0017 §字段映射）：severity 四档、confidence 三档、
  *   source 结构性判定、ruleId 白名单、subcategory 恒空串；
  * - 分组与排序确定：顶层数组按 finding 首见序，`reviewTips[]` 按 lineNum
  *   升序（同行多条保持源序——稳定排序）。
  */
 
-/** 严重级三档（ADR-0017：P3 折进 Minor，不丢条） */
-export type ReviewTipSeverity = "Fatal" | "Major" | "Minor";
+/** 严重级四档（ADR-0052：P3→Suggestion，与平台 `level` 四档同口径） */
+export type ReviewTipSeverity = "Fatal" | "Major" | "Minor" | "Suggestion";
 
-/** 置信度三档（ADR-0017：≥0.8 High、≥0.5 Medium、其余 Low） */
+/** 置信度三档（ADR-0052：≥0.7 High、≥0.5 Medium、其余 Low） */
 export type ReviewTipConfidence = "High" | "Medium" | "Low";
 
 /** 判据来源（ADR-0017：规则会话产出 vs 主会话语义推理） */
@@ -51,22 +51,22 @@ export interface ReviewTipsFile {
  */
 export type ReviewTipsDocument = readonly ReviewTipsFile[];
 
-/** 严重级映射（单源：P0 致命 / P1 高 / P2 中 / P3 中——P3 不丢） */
+/** 严重级映射（单源：P0 致命 / P1 高 / P2 中 / P3 建议） */
 const SEVERITY_BY_CODE: Readonly<Record<Finding["severity"], ReviewTipSeverity>> = {
   P0: "Fatal",
   P1: "Major",
   P2: "Minor",
-  P3: "Minor",
+  P3: "Suggestion",
 };
 
 /** 规则会话候选 id 前缀（模板单源在 packages/review-pi/src/knowledge/skill-pass-brief.ts） */
 export const RULE_REVIEWER_ID_PREFIX = "RULE-CHECK@";
 
 /** 置信度分档阈值（高/中；其余落低） */
-const CONFIDENCE_HIGH_MIN = 0.8;
+const CONFIDENCE_HIGH_MIN = 0.7;
 const CONFIDENCE_MEDIUM_MIN = 0.5;
 
-/** P0–P3 → Fatal/Major/Minor */
+/** P0–P3 → Fatal/Major/Minor/Suggestion */
 export function severityOf(code: Finding["severity"]): ReviewTipSeverity {
   return SEVERITY_BY_CODE[code];
 }
