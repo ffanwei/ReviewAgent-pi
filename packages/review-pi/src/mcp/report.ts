@@ -37,6 +37,11 @@ export interface CreateMcpReporterOptions {
   readonly config: ReportConfig;
   /** `clientInfo.version`（CLI 传产品版本） */
   readonly clientVersion: string;
+  /**
+   * 业务 tool 调用留痕（同步、旁路）：每个业务调用结束（含重试）后回调一次，
+   * 带输入 / 输出 / 起止时间。回调抛错被吞掉——留痕绝不改变上报结果。
+   */
+  readonly onTaskCall?: (trace: TaskCallTrace) => void;
   /** 时钟注入（测试确定性） */
   readonly now?: () => number;
   /** 传输注入（测试用假 server / 假 transport；缺省 HTTP） */
@@ -49,6 +54,26 @@ export interface CreateMcpReporterOptions {
 export type TaskCallResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
+
+/**
+ * 一次业务调用的完整留痕（`onTaskCall` 回调）：CLI 据此写 `mcp.json`。
+ * 与 `TaskCallResult` 的区别：多带输入、时间与服务端原始回包，只用于留痕。
+ */
+export interface TaskCallTrace {
+  /** tool 名：startTask / mrReviewResult / saveReviewSummary / endTask */
+  readonly tool: string;
+  /** 平铺参数（原样，即 MCP `tools/call.arguments`） */
+  readonly arguments: unknown;
+  /** 首次尝试开始时刻（epoch ms） */
+  readonly startedAt: number;
+  /** 含重试的总耗时（毫秒） */
+  readonly durationMs: number;
+  readonly ok: boolean;
+  /** 失败原因（`ok:false`） */
+  readonly reason?: string;
+  /** 服务端原始返回文本（拿到回包时才有；传输失败缺席） */
+  readonly responseText?: string;
+}
 
 export interface McpReporter {
   /** 上报流标识：run 结束前 `runId` 不可知，流键只能由 reporter 分配 */
@@ -271,32 +296,55 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
   // JSON-RPC server-error（tool 不存在、参数非法）与 `isError: true` 的
   // 业务拒绝重试也不会变好，直接放弃。旁路纪律不变：绝不抛错、绝不改退出码。
   async function callTaskTool(name: string, args: unknown): Promise<TaskCallResult> {
+    const startedAt = now();
+    let responseText: string | undefined;
+    let outcome: TaskCallResult;
     if (closing || sinkClosed) {
-      return { ok: false, reason: "reporter closed" };
-    }
-    let reason = "unknown error";
-    for (let attempt = 0; attempt < TASK_MAX_ATTEMPTS; attempt += 1) {
-      if (attempt > 0) {
-        await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 400);
-      }
-      try {
-        const result = await client.callTool(
-          name,
-          args,
-          combineSignal(abort.signal, config.server.timeoutMs),
-        );
-        if (result.isError) {
-          return { ok: false, reason: `server error: ${truncate(result.text)}` };
+      outcome = { ok: false, reason: "reporter closed" };
+    } else {
+      let reason = "unknown error";
+      outcome = { ok: false, reason };
+      for (let attempt = 0; attempt < TASK_MAX_ATTEMPTS; attempt += 1) {
+        if (attempt > 0) {
+          await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 400);
         }
-        return { ok: true };
-      } catch (error) {
-        reason = truncate(error instanceof Error ? error.message : String(error));
-        if (!isRetryableTaskFailure(error) || attempt === TASK_MAX_ATTEMPTS - 1) {
-          return { ok: false, reason };
+        try {
+          const result = await client.callTool(
+            name,
+            args,
+            combineSignal(abort.signal, config.server.timeoutMs),
+          );
+          responseText = result.text;
+          if (result.isError) {
+            outcome = { ok: false, reason: `server error: ${truncate(result.text)}` };
+            break;
+          }
+          outcome = { ok: true };
+          break;
+        } catch (error) {
+          reason = truncate(error instanceof Error ? error.message : String(error));
+          if (!isRetryableTaskFailure(error) || attempt === TASK_MAX_ATTEMPTS - 1) {
+            outcome = { ok: false, reason };
+            break;
+          }
         }
       }
     }
-    return { ok: false, reason };
+    // 留痕回调是旁路：自身抛错也不许影响业务调用结果。
+    try {
+      options.onTaskCall?.({
+        tool: name,
+        arguments: args,
+        startedAt,
+        durationMs: Math.max(0, now() - startedAt),
+        ok: outcome.ok,
+        ...(outcome.ok ? {} : { reason: outcome.reason }),
+        ...(responseText !== undefined ? { responseText } : {}),
+      });
+    } catch {
+      // 留痕失败静默：磁盘 / 序列化问题不进检视结果
+    }
+    return outcome;
   }
 
   const task = {

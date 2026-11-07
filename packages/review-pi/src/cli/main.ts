@@ -82,6 +82,7 @@ import { mrJsonToUnifiedDiff } from "../zoneb/mr-json.js";
 import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
 import { formatReviewArgs } from "./args-echo.js";
 import { runConfigCommand } from "./config-command.js";
+import { McpCallLog, writeMcpCallLog } from "./mcp-call-log.js";
 import { buildShardReport, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
 import { buildReviewSummary } from "./review-summary.js";
 import {
@@ -167,6 +168,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // （ADR-0045 决策 2：`startTask` 的价值就是「远端先知道任务存在」，预检失败
   // 也要有始有终）。配置非法 = 装载期已 fail fast；建连 / 握手失败 = 降级
   // （不建 sink，照常检视）。上报是旁路：任何失败都不改变退出码，也不进审计。
+  // 业务 tool 调用留痕（mcp.json）：四个业务调用的输入 / 输出 / 时间，与
+  // `session-<ts>.json` 转录同目录（`<tasks 根>/<taskId>/runs/`）。旁路：
+  // 写盘失败只落 stderr，不改退出码。
+  const mcpCallLog = new McpCallLog();
   const reportConfig = resolveReportConfig(config);
   let reporter: McpReporter | null = null;
   if (reportConfig !== null) {
@@ -174,6 +179,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       reporter = await createMcpReporter({
         config: reportConfig,
         clientVersion: REVIEW_PI_VERSION,
+        onTaskCall: (trace) => mcpCallLog.record(trace),
       });
     } catch (error) {
       process.stderr.write(
@@ -627,6 +633,18 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       const outcome = await activeReporter.task.endTask({ taskId: args.taskId });
       if (!outcome.ok) {
         process.stderr.write(`review-pi: MCP endTask 失败（${outcome.reason}）\n`);
+      }
+    }
+    // 业务调用留痕落盘（mcp.json，与 session 转录同目录）：endTask 之后写，
+    // 四个调用的最终结果都在内存里。只在业务 tool 开启且确有调用时写；
+    // 失败只警告——留痕是排障能力，不配把检视判失败。
+    if (taskToolsOn && mcpCallLog.size > 0) {
+      try {
+        await writeMcpCallLog(runDirPath(runsRoot), mcpCallLog.document(args.taskId));
+      } catch (error) {
+        process.stderr.write(
+          `review-pi: mcp.json 写入失败（${describeReportFailure(error)}），不影响检视结果\n`,
+        );
       }
     }
     if (activeReporter !== null && reportConfig !== null && reportConfig.tool !== null) {

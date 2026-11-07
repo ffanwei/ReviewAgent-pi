@@ -5,7 +5,7 @@ import { MCP_REPORT_EVENT_TYPES } from "../contracts/mcp-report.js";
 import type { RunProgressEvent } from "../contracts/progress.js";
 import type { ReportConfig } from "./config.js";
 import { ProtocolError } from "./protocol.js";
-import { createMcpReporter } from "./report.js";
+import { createMcpReporter, type TaskCallTrace } from "./report.js";
 import type { Transport, TransportResponse } from "./transport.js";
 
 // 上报投递语义（ADR-0037 决策 5）：只入队、批量、FIFO、seq、背压、重试、
@@ -419,6 +419,44 @@ describe("业务 tool 面（ADR-0045）", () => {
       filePath: "src/Foo.java",
       reviewTips: [{ lineNum: "3", category: "可靠性" }],
     });
+    await reporter.close();
+  });
+
+  test("onTaskCall：成功 / isError 都留痕输入、输出、耗时与原始回包", async () => {
+    const traces: TaskCallTrace[] = [];
+    const transport = fakeTransport((call) =>
+      call.method === "tools/call" && call.params.name === "endTask" ? "isError" : "ok",
+    );
+    const reporter = await createMcpReporter({
+      config: reportConfig(),
+      clientVersion: "test",
+      transport,
+      streamId: "s",
+      onTaskCall: (trace) => traces.push(trace),
+    });
+
+    expect(await reporter.task.startTask({ taskId: "t-1" })).toEqual({ ok: true });
+    expect(await reporter.task.endTask({ taskId: "t-1" })).toEqual({
+      ok: false,
+      reason: "server error: tool rejected",
+    });
+
+    expect(traces).toHaveLength(2);
+    expect(traces[0]).toMatchObject({
+      tool: "startTask",
+      arguments: { taskId: "t-1" },
+      ok: true,
+      responseText: "ok",
+    });
+    expect(traces[1]).toMatchObject({
+      tool: "endTask",
+      arguments: { taskId: "t-1" },
+      ok: false,
+      reason: "server error: tool rejected",
+      responseText: "tool rejected",
+    });
+    expect(traces[0]?.startedAt).toBeLessThanOrEqual(traces[1]?.startedAt ?? 0);
+    expect(traces.every((trace) => trace.durationMs >= 0)).toBe(true);
     await reporter.close();
   });
 

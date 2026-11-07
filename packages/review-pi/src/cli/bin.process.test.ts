@@ -2238,6 +2238,44 @@ test(
       expect(String(business[3]?.args.markdownContent)).toContain("# 检视总结");
       expect(business[4]?.args).toEqual({ taskId: CLI_TASK_ID });
 
+      // 业务调用留痕（mcp.json）：与 session 转录同目录，四个 tool 的输入 /
+      // 输出 / 调用时间齐备；mrReviewResult 按实际调用次数逐条记录。
+      const mcpLogPath = path.join(cliRunsDir(outDir), "mcp.json");
+      expect(existsSync(mcpLogPath)).toBe(true);
+      const mcpLog = JSON.parse(readFileSync(mcpLogPath, "utf8")) as {
+        version: number;
+        taskId: string;
+        calls: {
+          tool: string;
+          startedAt: string;
+          durationMs: number;
+          ok: boolean;
+          input: Record<string, unknown>;
+          output: { ok: boolean; reason?: string; response?: string };
+        }[];
+      };
+      expect(mcpLog.version).toBe(1);
+      expect(mcpLog.taskId).toBe(CLI_TASK_ID);
+      expect(mcpLog.calls.map((call) => call.tool)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(mcpLog.calls[0]?.input).toEqual({ taskId: CLI_TASK_ID });
+      expect(mcpLog.calls[1]?.input).toMatchObject({
+        taskId: CLI_TASK_ID,
+        filePath: "README.md",
+      });
+      expect(mcpLog.calls.every((call) => call.ok)).toBe(true);
+      expect(mcpLog.calls.every((call) => Number.isFinite(call.durationMs) && call.durationMs >= 0)).toBe(true);
+      expect(
+        mcpLog.calls.every((call) => !Number.isNaN(Date.parse(call.startedAt))),
+      ).toBe(true);
+      // 服务端回包原文一并留痕（stub 统一回 ok 文本）
+      expect(mcpLog.calls[0]?.output.response).toBeTypeOf("string");
+
       // 批量事件通道照常（run.start / run.end 至少一批）
       const eventBatches = mcp.toolCalls().filter((call) => call.name === "report_events");
       expect(eventBatches.length).toBeGreaterThanOrEqual(1);

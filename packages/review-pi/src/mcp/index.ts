@@ -6,7 +6,7 @@
  */
 export { MCP_CLIENT_NAME, SUPPORTED_PROTOCOL_VERSIONS, type McpClient, type McpHandshakeMode, type ServerInfo, type ToolCallResult } from "./client.js";
 export { resolveReportConfig, type ReportConfig } from "./config.js";
-export { createMcpReporter, type CreateMcpReporterOptions, type McpReporter, type TaskCallResult } from "./report.js";
+export { createMcpReporter, type CreateMcpReporterOptions, type McpReporter, type TaskCallResult, type TaskCallTrace } from "./report.js";
 export { createHttpTransport, type HttpTransportOptions, type Transport, type TransportResponse } from "./transport.js";
 export {
   createLegacySseTransport,
