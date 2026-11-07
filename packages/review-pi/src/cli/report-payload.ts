@@ -84,11 +84,23 @@ export interface ShardReportInput {
   readonly fetch?: FetchFunction;
 }
 
+/**
+ * 一个文件的报文 + 生成这些 tips 的 finding。
+ *
+ * `findings` 与 `reviewTips` **同序同长**：每条 tip 的语义来源就是同位置的
+ * finding。上报调用成功后，CLI 据此确定「平台最终收到的意见集合」，供收尾
+ * 总结按已上报结果生成（ADR-0057）——`semanticByKey` 覆盖面更宽（tips 允许
+ * `code` 空串），不能拿来当已上报集合用。
+ */
+export interface ShardFileReport extends MrFileReport {
+  readonly findings: readonly Finding[];
+}
+
 export type ShardReportOutcome =
   | {
       readonly kind: "ok";
       /** 校验通过的文件报文（filePath 已规范化、按 finding 首见序分组） */
-      readonly files: readonly MrFileReport[];
+      readonly files: readonly ShardFileReport[];
       /** 被跳过的单条意见的问题清单（stderr 留痕用） */
       readonly skippedTips: readonly string[];
       /** 被跳过的文件组的问题清单（filePath 非法等） */
@@ -250,7 +262,7 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
   // 结构要求（code 非空、filePath 合法）——两条消费面独立。
   const skippedFiles: string[] = [];
   const reportedBadPaths = new Set<string>();
-  const groups = new Map<string, AgentReviewTip[]>();
+  const groups = new Map<string, { tips: AgentReviewTip[]; findings: Finding[] }>();
   const semanticByKey = new Map<string, SemanticTipEntry>();
   const uncoveredByKey = new Map<string, string>();
   for (const finding of input.findings) {
@@ -316,9 +328,10 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
     if (gate.tip !== undefined) {
       const group = groups.get(filePath);
       if (group === undefined) {
-        groups.set(filePath, [gate.tip]);
+        groups.set(filePath, { tips: [gate.tip], findings: [finding] });
       } else {
-        group.push(gate.tip);
+        group.tips.push(gate.tip);
+        group.findings.push(finding);
       }
     } else {
       skippedTips.push(`${filePath}:${String(finding.line)} (${finding.id}): composed tip failed final gate (${gate.problem ?? "invalid"})`);
@@ -327,7 +340,11 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
 
   return {
     kind: "ok",
-    files: [...groups.entries()].map(([filePath, reviewTips]) => ({ filePath, reviewTips })),
+    files: [...groups.entries()].map(([filePath, group]) => ({
+      filePath,
+      reviewTips: group.tips,
+      findings: group.findings,
+    })),
     skippedTips,
     skippedFiles,
     semanticByKey,

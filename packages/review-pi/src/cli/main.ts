@@ -221,6 +221,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     retry: retryPolicyFor(config.limits.retry, "oneShot"),
   };
   const reportedFiles: string[] = [];
+  // 已成功上报的 finding（键 = 合并键；ADR-0057）：只有 `mrReviewResult` 调用
+  // 成功、且该条 tip 真的进入报文，才登记。收尾总结据此裁剪口径——平台没收到
+  // 的意见不进总结（否则总结与平台明细对不上账）。
+  const submittedFindingKeys = new Set<string>();
   // 语义登记的并集（ADR-0045 统一 tips）：键 = 合并键；片间首见优先。
   // 聚合重编号（F001…）后 source/ruleId 无法从 merged finding 重推，必须在片级捕获。
   const semanticByMergeKey = new Map<string, SemanticTipEntry>();
@@ -243,6 +247,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             reporter: activeReporter,
             runtime: reportRuntime,
             reportedFiles,
+            submittedFindingKeys,
             semanticByMergeKey,
             uncoveredReasonByMergeKey,
             confidenceMin: config.limits.confidence.min,
@@ -530,21 +535,64 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       );
     }
 
-    // 检视总结上报（ADR-0045 决策 2）：中文 tips 落盘之后（发出去的内容与
-    // `reviews_tips_zh.json` 同源同版本）、session 索引之前（索引失败不该影响
-    // 上报时机）。顺序契约：mrReviewResult（片级，已发完）→ saveReviewSummary
-    // → endTask（finally）。零意见 ⇒ 固定文案直出（不调模型）；有意见时统一
-    // 生成全灭且无回落则输入退为英文 findings，模型失败再降级确定性模板——
-    // saveReviewSummary 一定会被调用。
+    // 检视总结上报（ADR-0045 决策 2 / ADR-0057）：中文 tips 落盘之后（发出去的
+    // 内容与 `reviews_tips_zh.json` 同源同版本）、session 索引之前（索引失败
+    // 不该影响上报时机）。顺序契约：mrReviewResult（片级，已发完）→
+    // saveReviewSummary → endTask（finally）。
+    //
+    // **口径 = 平台最终收到的意见**（ADR-0057）：信源是 `submittedFindingKeys`
+    // （每条 `mrReviewResult` 成功后登记），不是本地 findings 全量——片级生成
+    // 失败 / 上报失败 / 结构校验跳过 / 置信度过滤的条目平台都没收到，总结里
+    // 也不该出现，否则「总结条数」与「平台明细」对不上账。
     if (taskToolsOn && activeReporter !== null) {
+      const submittedSourceIds = new Set(
+        record.baseline.findings
+          .filter((finding) => submittedFindingKeys.has(findingMergeKey(finding)))
+          .map((finding) => finding.id),
+      );
+      // 呈现投影可能换 id（findingLinks 给出映射）；未投影时 id 原样。
+      const submittedIds =
+        projection.kind === "projected"
+          ? new Set(
+              projection.provenance.findingLinks
+                .filter((link) => submittedSourceIds.has(link.sourceFindingId))
+                .map((link) => link.projectedFindingId),
+            )
+          : submittedSourceIds;
+      const summaryFindings = findings.filter((finding) => submittedIds.has(finding.id));
+      // tips 侧同口径：统一 tips 的 `id` 是聚合（源）finding id，按源 id 过滤。
+      // 归属不到 finding 的引擎自造条目不进总结——平台也没收到过它的报文。
+      const summaryTips =
+        tipsDoc === undefined
+          ? undefined
+          : tipsDoc
+              .map((file) => ({
+                ...file,
+                reviewTips: file.reviewTips.filter(
+                  (tip) => tip.id !== undefined && submittedSourceIds.has(tip.id),
+                ),
+              }))
+              .filter((file) => file.reviewTips.length > 0);
+      const unreported = findings.length - summaryFindings.length;
+      if (unreported > 0) {
+        process.stderr.write(
+          `review-pi: 检视总结只覆盖已上报的 ${String(summaryFindings.length)} 条意见` +
+            `（${String(unreported)} 条未上报，未计入）\n`,
+        );
+      }
       process.stderr.write(
         findings.length === 0
           ? "review-pi: MCP saveReviewSummary 未发现检视意见，发送固定总结（不调用模型）\n"
-          : "review-pi: MCP saveReviewSummary 生成中（检视总结）……\n",
+          : summaryFindings.length === 0
+            ? "review-pi: MCP saveReviewSummary 无已上报的检视意见，发送固定总结（不调用模型）\n"
+            : "review-pi: MCP saveReviewSummary 生成中（检视总结）……\n",
       );
       const summaryReport = await buildReviewSummary({
-        ...(tipsDoc !== undefined ? { tips: tipsDoc } : {}),
-        findings,
+        ...(summaryTips !== undefined && summaryTips.length > 0 ? { tips: summaryTips } : {}),
+        findings: summaryFindings,
+        ...(summaryFindings.length === 0 && unreported > 0
+          ? { unreportedFindings: unreported }
+          : {}),
         ...(reportedFiles.length > 0 ? { reportedFiles: [...reportedFiles] } : {}),
         runtime: reportRuntime,
       });
@@ -726,6 +774,12 @@ async function reportShardFindings(input: {
   readonly runtime: ReportLlmRuntime;
   /** 跨片累积已上报文件（收尾总结的 reportedFiles 输入；按片序追加） */
   readonly reportedFiles: string[];
+  /**
+   * 跨片累积「平台最终收到的意见」（键 = 合并键；ADR-0057）。只在
+   * `reportFileResult` 成功、且该条 tip 确实进入报文时登记——收尾总结按此
+   * 裁剪口径，与平台明细一致。
+   */
+  readonly submittedFindingKeys: Set<string>;
   /** 语义登记的 run 级并集（键 = 合并键；首见优先——tips 复用的数据面） */
   readonly semanticByMergeKey: Map<string, SemanticTipEntry>;
   /** 未覆盖原因的 run 级并集（键 = 合并键；首见优先——stderr 逐条留痕用） */
@@ -826,6 +880,11 @@ async function reportShardFindings(input: {
         sent += 1;
         tips += file.reviewTips.length;
         input.reportedFiles.push(file.filePath);
+        // 只有真的发出去的意见才进入「已上报集合」（ADR-0057）：上报失败 /
+        // 结构校验跳过的条目不登记，收尾总结不会提及平台没收到的内容。
+        for (const finding of file.findings) {
+          input.submittedFindingKeys.add(findingMergeKey(finding));
+        }
       } else {
         process.stderr.write(
           `review-pi: MCP mrReviewResult${label} ${file.filePath} 失败（${result.reason}）\n`,

@@ -7,12 +7,16 @@ import type { ReportLlmRuntime } from "./report-payload.js";
 import { completeOneShot } from "./one-shot-llm.js";
 
 /**
- * 收尾总结生成（ADR-0045 决策 2）：中文 tips（辅以 findings 结构化字段）→
- * Markdown 总结报告，供 `saveReviewSummary` 上报。
+ * 收尾总结生成（ADR-0045 决策 2 / ADR-0057）：中文 tips（辅以 findings
+ * 结构化字段）→ Markdown 总结报告，供 `saveReviewSummary` 上报。
+ *
+ * 口径（ADR-0057）：`findings` / `tips` 由调用方**先裁剪为平台最终收到的
+ * 意见**（`mrReviewResult` 成功的条目）——总结必须与平台明细一致。
  *
  * 分流与降级链（产物必须有、内容允许降级）：
- * 0. **零意见 ⇒ 固定文案**（`NO_FINDING_SUMMARY_MARKDOWN`），不调用模型——
- *    「没有意见」是确定的事实，不需要模型再概括；
+ * 0. **零已上报意见 ⇒ 固定文案**，不调用模型——确实无意见用
+ *    `NO_FINDING_SUMMARY_MARKDOWN`；有意见但全部没上报用
+ *    `NO_REPORTED_SUMMARY_MARKDOWN`（绝不谎报「未发现缺陷」）；
  * 1. 有意见 ⇒ 模型调用（输入 = 中文 tips + findings 摘要）；
  * 2. 投影降级 / 无 tips ⇒ 输入退为英文 findings（Q10 决策）；
  * 3. 模型调用失败 / 超时 ⇒ **确定性模板** Markdown（findings 计数 + 按文件清单），
@@ -25,11 +29,26 @@ import { completeOneShot } from "./one-shot-llm.js";
  */
 export const NO_FINDING_SUMMARY_MARKDOWN = "# 检视总结\n\n本次检视未发现缺陷。";
 
+/**
+ * 本地有检视意见、但一条都没成功上报时的固定总结（ADR-0057）。
+ *
+ * 不能说「未发现缺陷」——那会把「没上报」谎报成「没问题」（与 ADR-0056 的
+ * 诚实口径一致）；也不展开平台没收到的明细——总结必须与 `mrReviewResult`
+ * 的覆盖面一致。
+ */
+export const NO_REPORTED_SUMMARY_MARKDOWN =
+  "# 检视总结\n\n本次检视未向平台上报任何检视意见。";
+
 export interface ReviewSummaryInput {
   /** 投影后的中文分组意见（投影降级 / 未配置引擎时缺席） */
   readonly tips?: ReviewTipsDocumentLike;
-  /** 聚合 findings（英文真源；结构化字段的稳定底座） */
+  /** 已成功上报的 findings（平台最终收到的意见；ADR-0057） */
   readonly findings: readonly Finding[];
+  /**
+   * 未被上报的 finding 条数（片级生成失败 / 上报失败 / 结构跳过 / 置信度
+   * 过滤）。仅在 `findings` 为空时用于区分「确实零意见」与「有意见但没上报」。
+   */
+  readonly unreportedFindings?: number;
   /** 各片已上报的文件路径（按片序拼接；供总结提及平台已收到的结果） */
   readonly reportedFiles?: readonly string[];
   readonly runtime: ReportLlmRuntime;
@@ -54,9 +73,16 @@ const SUMMARY_SYSTEM_PROMPT = [
 ].join("\n");
 
 export async function buildReviewSummary(input: ReviewSummaryInput): Promise<ReviewSummaryResult> {
-  // 零意见：固定文案直出，不调用模型（也绝不降级留痕——这不是降级）
+  // 零已上报意见：固定文案直出，不调用模型（也绝不降级留痕——这不是降级）。
+  // 区分两种零：确实没意见 → 「未发现缺陷」；有意见但没上报 → 只陈述上报事实
+  // （ADR-0057，绝不把「没上报」说成「没问题」）。
   if (input.findings.length === 0) {
-    return { markdown: NO_FINDING_SUMMARY_MARKDOWN };
+    return {
+      markdown:
+        (input.unreportedFindings ?? 0) > 0
+          ? NO_REPORTED_SUMMARY_MARKDOWN
+          : NO_FINDING_SUMMARY_MARKDOWN,
+    };
   }
   const completion = await completeOneShot({
     baseUrl: input.runtime.baseUrl,

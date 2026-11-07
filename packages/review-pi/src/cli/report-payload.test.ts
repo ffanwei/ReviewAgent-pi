@@ -83,6 +83,8 @@ test("确定性组装：code/lineNum/level/ruleId/filePath 全部来自 finding 
   expect(outcome.files).toHaveLength(1);
   expect(outcome.files[0]?.filePath).toBe("src/Foo.java");
   expect(outcome.files[0]?.reviewTips).toHaveLength(1);
+  // 每条 tip 都能回溯到生成它的 finding（ADR-0057 的已上报集合来源）
+  expect(outcome.files[0]?.findings.map((entry) => entry.id)).toEqual(["F001"]);
   expect(outcome.files[0]?.reviewTips[0]).toEqual({
     code: "redirect(target);",
     review: "[安全] 未校验的重定向。影响评估：钓鱼跳转。",

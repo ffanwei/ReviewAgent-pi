@@ -14,6 +14,8 @@
 
 **后续修订**（2026-11-07，四）：**`saveReviewSummary` 的正文参数改名为 `markdownContent`**（原 `description`）。这是服务端契约的字段名校正：报文即 `{ taskId, markdownContent }`，正文语义（Markdown 总结报告）不变。仅改参数字段名，不涉及调用时机、顺序与降级语义。
 
+**后续修订**（2026-11-07，五）：[ADR-0057](0057-summary-covers-only-reported-findings.md) 改了决策 2 的**总结输入口径**——不再是本地 findings 全量，而是 `mrReviewResult` 实际成功上报的意见集合（合并键登记；片级生成失败 / 校验跳过 / 上报失败 / 置信度过滤的条目一律不计入）。有已上报意见时仍「模型 → 失败降级确定性模板」；零已上报意见且本地有 findings 时发固定文案「本次检视未向平台上报任何检视意见。」，**不谎报「未发现缺陷」**。裁剪发生时报一行 stderr 差额。
+
 **后续修订**（2026-11-07，五）：**决策 3 的「单次尝试，不重试」被 [ADR-0050](0050-mcp-business-tool-retry-and-timeout.md) 取代**——四个业务 tool 改为共 3 次尝试（2 次重试，退避 100 / 400 ms），且**仅传输 / 超时 / HTTP 5xx 类瞬时失败重试**；`server-error`、`isError: true`、4xx 等确定性失败仍不重试。同时 `mcp.servers.*.timeoutMs` 缺省值由 10 s 改为 60 s。旁路纪律（不抛错、只落 stderr 一行、不改退出码）与其余决策不变。
 
 **后续修订**（2026-11-07，六）：**顺序契约之外再加两段固定 5 秒沉降**（[ADR-0053](0053-mcp-task-tool-fixed-settle-gap.md)）：最后一条 `mrReviewResult` 结束后等 5 s 再发 `saveReviewSummary`，`saveReviewSummary` 结束后再等 5 s 才发 `endTask`。这是应对服务端异步处理导致前端回调乱序的**临时时间赌注**，不是新的顺序保证；业务关闭、`startTask` 未成功发出、或未走到总结的失败路径不等待。服务端提供序号 / 完成标记后应删除。

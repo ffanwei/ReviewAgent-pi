@@ -4,7 +4,7 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { Finding } from "../contracts/finding.js";
 import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
-import { buildReviewSummary } from "./review-summary.js";
+import { buildReviewSummary, NO_REPORTED_SUMMARY_MARKDOWN } from "./review-summary.js";
 
 // 收尾总结（ADR-0045）：模型调用产出 Markdown；失败降级确定性模板
 // （degradedReason 留痕）——saveReviewSummary 一定有内容可发。
@@ -128,5 +128,23 @@ test("零 finding：固定文案直出，不调用模型、不留降级痕", asy
   });
   expect(calls).toBe(0);
   expect(result.markdown).toBe("# 检视总结\n\n本次检视未发现缺陷。");
+  expect(result.degradedReason).toBeUndefined();
+});
+
+test("有意见但全部未上报：只陈述上报事实，不谎报「未发现缺陷」（ADR-0057）", async () => {
+  let calls = 0;
+  const fetch: FetchFunction = async () => {
+    calls += 1;
+    return new Response("boom", { status: 500 });
+  };
+  const result = await buildReviewSummary({
+    findings: [],
+    unreportedFindings: 2,
+    runtime: RUNTIME,
+    fetch,
+  });
+  expect(calls).toBe(0);
+  expect(result.markdown).toBe(NO_REPORTED_SUMMARY_MARKDOWN);
+  expect(result.markdown).not.toContain("未发现缺陷");
   expect(result.degradedReason).toBeUndefined();
 });

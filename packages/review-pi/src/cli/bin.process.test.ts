@@ -2550,6 +2550,21 @@ test(
       expect(reported).toEqual([ALPHA]);
       // s02 生成失败留痕
       expect(run.stderr).toContain("跳过本片");
+      // ADR-0057：总结只覆盖已上报的 s01 意见，s02 那条平台没收到、不进总结
+      expect(run.stderr).toContain("检视总结只覆盖已上报的 1 条意见（1 条未上报，未计入）");
+      // 直接看总结请求体：只含 Alpha，不含上报失败的 Beta
+      const oneShotBodies = stub
+        .requests()
+        .filter(
+          (record) =>
+            record.method === "POST" &&
+            record.url === "/v1/chat/completions" &&
+            (record.body as { stream?: boolean } | undefined)?.stream === false,
+        )
+        .map((record) => JSON.stringify(record.body));
+      const summaryBody = oneShotBodies[oneShotBodies.length - 1] ?? "";
+      expect(summaryBody).toContain(ALPHA);
+      expect(summaryBody).not.toContain(BETA);
       // 逐条原因：该片每条 finding 都带「片级语义生成失败」原文，而不是只留一行
       expect(run.stderr).toContain("tips 缺席该条：片级语义生成失败");
 
@@ -2667,6 +2682,11 @@ export default async (source) => {
       });
       expect(run.stderr).toContain("跳过本片有意见文件");
       expect(run.stderr).toContain("已上报 1 文件 / 0 条意见（其余文件报文生成失败）");
+      // ADR-0057：引擎回落的 tips 不是平台收到的报文内容，总结仍按 0 条已上报生成
+      expect(business[2]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        markdownContent: "# 检视总结\n\n本次检视未向平台上报任何检视意见。",
+      });
       expect(run.stderr).toContain("回落");
       expect(run.stderr).toContain("tips 缺席该条：片级语义生成失败");
 
@@ -2746,6 +2766,12 @@ test(
         filePath: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
         reviewTips: [],
       });
+      // ADR-0057：平台只收到空 tips，总结不得声称「未发现缺陷」
+      expect(business[2]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        markdownContent: "# 检视总结\n\n本次检视未向平台上报任何检视意见。",
+      });
+      expect(run.stderr).toContain("检视总结只覆盖已上报的 0 条意见（1 条未上报，未计入）");
     } finally {
       await stub.close();
       await mcp.close();
@@ -2933,7 +2959,8 @@ test(
         }),
         usage: ZERO,
       },
-      // 有 finding（过滤只作用于中文 tips），总结仍走一次性模型调用
+      // 有 finding（过滤只作用于中文 tips / 上报）；全部被过滤 ⇒ 没有可上报意见
+      // ⇒ 总结按 ADR-0057 走固定文案，不再调用模型
       { text: "# 检视总结", usage: ZERO },
     ]);
     const mcp = await startMcpStub();
@@ -2971,6 +2998,10 @@ test(
         reviewTips: [],
       });
       expect(run.stderr).toContain("MCP mrReviewResult 已上报 1 文件 / 0 条意见");
+      expect(business[2]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        markdownContent: "# 检视总结\n\n本次检视未向平台上报任何检视意见。",
+      });
       // 留痕同样要能证明「文件被检视过」
       const mcpLog = JSON.parse(
         readFileSync(path.join(cliRunsDir(outDir), "mcp.json"), "utf8"),
