@@ -8,6 +8,7 @@ import {
   assembleUnifiedTips,
   countTips,
   filterTipsDocumentByConfidence,
+  UNKNOWN_UNCOVERED_REASON,
   withUnifiedKeys,
 } from "./unified-tips.js";
 
@@ -121,8 +122,30 @@ test("未覆盖的 merged finding：uncovered 留痕、缺席 tips（Q26b 尽力
   });
   expect(outcome.tips).toHaveLength(1);
   expect(outcome.tips[0]?.filePath).toBe("src/Foo.java");
-  expect(outcome.uncovered).toEqual(["src/Bar.java:7 (F002)"]);
+  expect(outcome.uncovered).toEqual([
+    { label: "src/Bar.java:7 (F002)", reason: UNKNOWN_UNCOVERED_REASON },
+  ]);
   expect(countTips(outcome.tips)).toBe(1);
+});
+
+test("未覆盖原因透传：片级失败 / 逐条被拒的原因按合并键带出", async () => {
+  const second = finding({ id: "F002", file: "src/Bar.java", line: 7 });
+  const merged = [finding(), second];
+  const reasonByKey = new Map<string, string>([
+    [findingMergeKey(second), "片级语义生成失败：model output is not a JSON object"],
+  ]);
+  const outcome = assembleUnifiedTips({
+    mergedFindings: merged,
+    semanticByMergeKey: semanticMap(merged, [entry(), undefined]),
+    codeByFinding: {},
+    uncoveredReasonByMergeKey: reasonByKey,
+  });
+  expect(outcome.uncovered).toEqual([
+    {
+      label: "src/Bar.java:7 (F002)",
+      reason: "片级语义生成失败：model output is not a JSON object",
+    },
+  ]);
 });
 
 test("同文件同 line 去重只留首条（ADR-0023）；被去重者不算 uncovered", async () => {

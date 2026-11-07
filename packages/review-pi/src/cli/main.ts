@@ -61,6 +61,7 @@ import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
+import { findingMergeKey } from "../run/findings-merge.js";
 import { formatMrFilterNotice } from "../run/mr-input.js";
 import { runExportCommand } from "./export-command.js";
 import {
@@ -220,6 +221,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // 语义登记的并集（ADR-0045 统一 tips）：键 = 合并键；片间首见优先。
   // 聚合重编号（F001…）后 source/ruleId 无法从 merged finding 重推，必须在片级捕获。
   const semanticByMergeKey = new Map<string, SemanticTipEntry>();
+  // 未覆盖原因（ADR-0045 诊断增强）：键 = 合并键；只用于 stderr 逐条留痕，
+  // 不改变 tips 形态与退出码。片级 / 逐条失败在 `reportShardFindings` 写入。
+  const uncoveredReasonByMergeKey = new Map<string, string>();
   const onShardFindings =
     taskToolsOn && activeReporter !== null
       ? (
@@ -237,6 +241,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             runtime: reportRuntime,
             reportedFiles,
             semanticByMergeKey,
+            uncoveredReasonByMergeKey,
             confidenceMin: config.limits.confidence.min,
           })
       : undefined;
@@ -363,10 +368,11 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         semanticByMergeKey,
         codeByFinding,
         minConfidence: config.limits.confidence.min,
+        uncoveredReasonByMergeKey,
       });
       for (const missed of unifiedTips.uncovered) {
         process.stderr.write(
-          `review-pi: 检视意见未获统一生成覆盖（${missed}），tips 缺席该条\n`,
+          `review-pi: 检视意见未获统一生成覆盖（${missed.label}），tips 缺席该条：${missed.reason}\n`,
         );
       }
     }
@@ -706,13 +712,24 @@ async function reportShardFindings(input: {
   readonly reportedFiles: string[];
   /** 语义登记的 run 级并集（键 = 合并键；首见优先——tips 复用的数据面） */
   readonly semanticByMergeKey: Map<string, SemanticTipEntry>;
+  /** 未覆盖原因的 run 级并集（键 = 合并键；首见优先——stderr 逐条留痕用） */
+  readonly uncoveredReasonByMergeKey: Map<string, string>;
   /** 中文 tips 置信度过滤阈值（ADR-0052）：先过滤再生成，省掉注定丢弃条目的调用 */
   readonly confidenceMin: number;
 }): Promise<void> {
   const label = input.label.total > 1 ? ` [s${pad2(input.label.index)}/${pad2(input.label.total)}]` : "";
+  let keptFindings: readonly Finding[] = [];
+  const markUncovered = (findings: readonly Finding[], reason: string): void => {
+    for (const finding of findings) {
+      const key = findingMergeKey(finding);
+      if (!input.uncoveredReasonByMergeKey.has(key)) {
+        input.uncoveredReasonByMergeKey.set(key, reason);
+      }
+    }
+  };
   try {
     // ADR-0052：置信度过滤先于报文生成——被丢弃的意见不该花一次模型调用。
-    const keptFindings = input.findings.filter(
+    keptFindings = input.findings.filter(
       (finding) => !isConfidenceBelow(finding.confidence, input.confidenceMin),
     );
     if (keptFindings.length === 0) {
@@ -744,12 +761,19 @@ async function reportShardFindings(input: {
       process.stderr.write(
         `review-pi: MCP mrReviewResult${label} 跳过本片（报文生成失败：${outcome.reason}）\n`,
       );
+      markUncovered(keptFindings, `片级语义生成失败：${outcome.reason}`);
       return;
     }
     // 语义登记并入 run 级集合（首见优先：跨片同合并键 = 同一问题的重复条目）
     for (const [key, entry] of outcome.semanticByKey) {
       if (!input.semanticByMergeKey.has(key)) {
         input.semanticByMergeKey.set(key, entry);
+      }
+    }
+    // 逐条被拒的具体原因（模型没给条目 / category 不可归一）——与 uncovered 逐条对齐
+    for (const [key, reason] of outcome.uncoveredByKey) {
+      if (!input.uncoveredReasonByMergeKey.has(key)) {
+        input.uncoveredReasonByMergeKey.set(key, reason);
       }
     }
     for (const problem of outcome.skippedFiles) {
@@ -792,8 +816,13 @@ async function reportShardFindings(input: {
         `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / ${String(tips)} 条意见\n`,
       );
     }
-  } catch {
-    // 旁路（ADR-0045 决策 3）：绝不把上报失败变成检视失败；具体原因已在上面逐行留痕
+  } catch (error) {
+    // 旁路（ADR-0045 决策 3）：绝不把上报失败变成检视失败；具体原因已在上面逐行留痕。
+    // 未走完编排的条目补一条兜底原因，避免聚合侧只剩「原因未知」。
+    markUncovered(
+      keptFindings,
+      `上报编排异常：${describeReportFailure(error)}`,
+    );
   }
 }
 

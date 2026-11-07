@@ -2511,6 +2511,8 @@ test(
       expect(reported).toEqual([ALPHA]);
       // s02 生成失败留痕
       expect(run.stderr).toContain("跳过本片");
+      // 逐条原因：该片每条 finding 都带「片级语义生成失败」原文，而不是只留一行
+      expect(run.stderr).toContain("tips 缺席该条：片级语义生成失败");
 
       // tips：尽力而为——只有 Alpha 组；聚合重编号后 id = F001
       const tipsPath = path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json");
@@ -2614,6 +2616,7 @@ export default async (source) => {
       expect(mcp.toolCalls().some((call) => call.name === "mrReviewResult")).toBe(false);
       expect(run.stderr).toContain("跳过本片");
       expect(run.stderr).toContain("回落");
+      expect(run.stderr).toContain("tips 缺席该条：片级语义生成失败");
 
       // 引擎按全量模式调用（skipTips 未置 true——Q24a 回落路径）
       const received = JSON.parse(readFileSync(receivedPath, "utf8")) as { skipTips: unknown };

@@ -178,6 +178,8 @@ test("code 缺席 → 跳过该条（绝不编）；模型漏 id → 跳过并�
   expect(outcome.skippedTips[1]).toContain("source line unavailable");
   // tips 复用面（semanticByKey）：F002 语义完整仍登记（tips 允许 code 空串）
   expect(outcome.semanticByKey.size).toBe(2);
+  // 逐条未覆盖原因：本用例两条都拿到了模型条目，原因表为空
+  expect(outcome.uncoveredByKey.size).toBe(0);
 });
 
 test("category：模型枚举外 → 查 finding.category 兜底表（大小写不敏感）；表也没有 → 跳过", async () => {
@@ -210,6 +212,8 @@ test("category：模型枚举外 → 查 finding.category 兜底表（大小写�
   if (miss.kind === "ok") {
     expect(miss.files).toEqual([]);
     expect(miss.skippedTips[0]).toContain("no fallback mapping");
+    // 逐条未覆盖原因：category 不可归一（与 skippedTips 同一句话，去掉前缀）
+    expect([...miss.uncoveredByKey.values()][0]).toContain("has no fallback mapping");
   }
 });
 
@@ -265,6 +269,10 @@ test("同文件多条 finding 归一组；review/suggestion 空值 → 跳过", 
   expect(outcome.files[0]?.reviewTips).toHaveLength(1);
   expect(outcome.files[0]?.reviewTips[0]?.lineNum).toBe("42");
   expect(outcome.skippedTips[0]).toContain("review must be a non-empty string");
+  // F002 的模型条目本身非法（review 空白）→ 未进 byId → 未覆盖原因是「没给条目」
+  expect([...outcome.uncoveredByKey.values()]).toEqual([
+    "model gave no entry for this finding",
+  ]);
 });
 
 test("模型输出包在 ```json 栅栏里也能解析", async () => {
@@ -299,6 +307,7 @@ test("零 finding：不发请求、files 为空、语义登记为空（零 findi
     skippedTips: [],
     skippedFiles: [],
     semanticByKey: new Map(),
+    uncoveredByKey: new Map(),
   });
   expect(requested).toBe(0);
 });

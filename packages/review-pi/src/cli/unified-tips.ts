@@ -55,13 +55,29 @@ export interface AssembleUnifiedTipsInput {
    * （内核直调 / 单测形态）；CLI 真跑恒传配置值（缺省 0.5）。
    */
   readonly minConfidence?: number;
+  /**
+   * 未覆盖的具体原因（键 = 合并键）：由片级上报编排累积（片级失败 / 逐条被拒）。
+   * 缺席 = 只有覆盖面事实、没有原因（留痕回落「原因未知」）。
+   */
+  readonly uncoveredReasonByMergeKey?: ReadonlyMap<string, string>;
 }
+
+/** 未获统一生成覆盖的一条 finding（留痕文案 + 具体原因） */
+export interface UncoveredFinding {
+  /** `file:line (id)`：与既有 stderr 文案一致，可直接定位到 finding */
+  readonly label: string;
+  /** 具体失败原因（片级 / 逐条 / 未知） */
+  readonly reason: string;
+}
+
+/** 原因缺席时的回落文案（不编原因：观测缺口如实呈现） */
+export const UNKNOWN_UNCOVERED_REASON = "未登记（原因未知）";
 
 export interface UnifiedTipsOutcome {
   /** 12 键 tips 文档（零覆盖时为 `[]`——调用方决定是否改走 engine 回落） */
   readonly tips: ReviewTipsDocumentLike;
-  /** 未获语义覆盖的 merged findings（`file:line (id)`，stderr 留痕用） */
-  readonly uncovered: readonly string[];
+  /** 未获语义覆盖的 merged findings（逐条带原因，stderr 留痕用） */
+  readonly uncovered: readonly UncoveredFinding[];
   /** 因置信度低于阈值而被丢弃的意见数（ADR-0052 留痕；阈值缺席恒 0） */
   readonly droppedByConfidence: number;
 }
@@ -177,7 +193,7 @@ function confidenceBucketDropped(bucket: string, minConfidence: number): boolean
 
 export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTipsOutcome {
   const groups = new Map<string, ReviewTipLike[]>();
-  const uncovered: string[] = [];
+  const uncovered: UncoveredFinding[] = [];
   let droppedByConfidence = 0;
   // ADR-0023：同文件同 line 去重只留首条（finding 源序——merged 顺序已确定）；
   // 被去重掉的 finding 不算 uncovered（是故意丢弃，不是生成失败）。
@@ -197,9 +213,13 @@ export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTip
       continue;
     }
     lines.add(finding.line);
-    const entry = input.semanticByMergeKey.get(findingMergeKey(finding));
+    const mergeKey = findingMergeKey(finding);
+    const entry = input.semanticByMergeKey.get(mergeKey);
     if (entry === undefined) {
-      uncovered.push(`${finding.file}:${String(finding.line)} (${finding.id})`);
+      uncovered.push({
+        label: `${finding.file}:${String(finding.line)} (${finding.id})`,
+        reason: input.uncoveredReasonByMergeKey?.get(mergeKey) ?? UNKNOWN_UNCOVERED_REASON,
+      });
       continue;
     }
     const tip = toUnifiedTip(finding, entry, input.codeByFinding[finding.id] ?? "");

@@ -99,6 +99,12 @@ export type ShardReportOutcome =
        * filePath 用原文）。语义不完整的 finding 不登记（tips 侧按未覆盖留痕）。
        */
       readonly semanticByKey: ReadonlyMap<string, SemanticTipEntry>;
+      /**
+       * 未登记成功的原因（键 = 合并键）：只收「该条被逐条拒绝」的具体理由
+       * （模型没给条目 / category 不可归一），供聚合阶段逐条打印。
+       * 语言调用整体失败由 `kind:"failed"` 表达，不在此表。
+       */
+      readonly uncoveredByKey: ReadonlyMap<string, string>;
     }
   | { readonly kind: "failed"; readonly reason: string };
 
@@ -195,6 +201,7 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
       skippedTips: [],
       skippedFiles: [],
       semanticByKey: new Map<string, SemanticTipEntry>(),
+      uncoveredByKey: new Map<string, string>(),
     };
   }
   const completion = await completeOneShot({
@@ -245,18 +252,23 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
   const reportedBadPaths = new Set<string>();
   const groups = new Map<string, AgentReviewTip[]>();
   const semanticByKey = new Map<string, SemanticTipEntry>();
+  const uncoveredByKey = new Map<string, string>();
   for (const finding of input.findings) {
     const entry = byId.get(finding.id);
     if (entry === undefined) {
+      const reason = "model gave no entry for this finding";
+      uncoveredByKey.set(findingMergeKey(finding), reason);
       skippedTips.push(
-        `${finding.file}:${String(finding.line)} (${finding.id}): model gave no entry for this finding`,
+        `${finding.file}:${String(finding.line)} (${finding.id}): ${reason}`,
       );
       continue;
     }
     const category = resolveCategory(entry.category, finding.category);
     if (category === undefined) {
+      const reason = `category ${JSON.stringify(entry.category)} is not in the enum and ${JSON.stringify(finding.category)} has no fallback mapping`;
+      uncoveredByKey.set(findingMergeKey(finding), reason);
       skippedTips.push(
-        `${finding.file}:${String(finding.line)} (${finding.id}): category ${JSON.stringify(entry.category)} is not in the enum and ${JSON.stringify(finding.category)} has no fallback mapping`,
+        `${finding.file}:${String(finding.line)} (${finding.id}): ${reason}`,
       );
       continue;
     }
@@ -319,6 +331,7 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
     skippedTips,
     skippedFiles,
     semanticByKey,
+    uncoveredByKey,
   };
 }
 
