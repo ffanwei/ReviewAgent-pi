@@ -2153,10 +2153,15 @@ const ZERO_USAGE_REPLY = { promptTokens: 0, completionTokens: 0, cacheReadTokens
  * code / filePath / lineNum / level / ruleId 由 CLI 确定性组装。
  */
 function payloadReplyForSentinelFinding(): string {
+  return payloadReplyForFinding("F100");
+}
+
+/** 同一份语义回复，按 finding id 指定（ADR-0058 分批重试时每批只含自己的 id） */
+function payloadReplyForFinding(id: string): string {
   return JSON.stringify({
     tips: [
       {
-        id: "F100",
+        id,
         category: "可靠性",
         subcategory: "测试桩",
         review: "[可靠性] 测试桩意见。影响评估：仅测试。",
@@ -2354,6 +2359,110 @@ test(
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
       ]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "报文生成失败后按条数二分重试：两批都成功 → 两个文件都上报（ADR-0058）",
+  async () => {
+    const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+    const alpha = "src/main/java/com/example/Alpha.java";
+    const beta = "src/main/java/com/example/Beta.java";
+    const candidates = [alpha, beta].map((file, index) => ({
+      id: `F10${String(index)}`,
+      severity: "P2",
+      category: "correctness",
+      file,
+      line: 3,
+      title: `Sentinel finding in ${file}`,
+      description: "Sentinel finding description",
+      evidence: [`${file}:3`],
+      rule: "sentinel-rule",
+      confidence: 0.5,
+    }));
+    const stub = await startLoopbackStub([
+      ...oneFindingCorpusForReport().map((reply, index) =>
+        // 前 4 个相位回复沿用单 finding 语料；第 5/6 条换成两文件候选与裁决
+        index < 4
+          ? reply
+          : index === 4
+            ? { text: JSON.stringify({ candidates }), usage: ZERO }
+            : {
+                text: JSON.stringify({
+                  verdicts: candidates.map((candidate) => ({
+                    id: candidate.id,
+                    pass: true,
+                    reason: "stub verdict",
+                  })),
+                  complete: true,
+                }),
+                usage: ZERO,
+              },
+      ),
+      // 全量报文：非法 JSON（非重试类失败）→ 触发二分
+      { text: "这不是 JSON", usage: ZERO },
+      { text: payloadReplyForFinding("F100"), usage: ZERO },
+      { text: payloadReplyForFinding("F101"), usage: ZERO },
+      { text: "# 检视总结", usage: ZERO },
+    ]);
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = writeMr(goldenFixture("two-file-shard.diff"));
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      // 拆分留痕：两批都成功，两个文件各自上报（按文件粒度不变）
+      expect(run.stderr).toContain(
+        "MCP mrReviewResult 报文生成失败，已拆分为 2 批重试（2 批成功）",
+      );
+      expect(run.stderr).toContain("MCP mrReviewResult 已上报 2 文件 / 2 条意见");
+      expect(run.stderr).not.toContain("跳过本片有意见文件");
+      // ADR-0057：两条都成功上报，总结不再报「未上报」
+      expect(run.stderr).not.toContain("未上报");
+
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[1]?.args).toMatchObject({
+        taskId: CLI_TASK_ID,
+        filePath: alpha,
+      });
+      expect(business[2]?.args).toMatchObject({
+        taskId: CLI_TASK_ID,
+        filePath: beta,
+      });
+      expect((business[1]?.args.reviewTips as unknown[]).length).toBe(1);
+      expect((business[2]?.args.reviewTips as unknown[]).length).toBe(1);
+
+      // 中文 tips 同源：两个文件组都落盘（统一生成，不是引擎回落）
+      const tipsPath = path.join(cliRunsDir(outDir), "reviews_tips_zh.json");
+      const tipsDoc = JSON.parse(readFileSync(tipsPath, "utf8")) as {
+        filePath: string;
+        reviewTips: { id: string; lineNum: number }[];
+      }[];
+      expect(tipsDoc.map((entry) => entry.filePath)).toEqual([alpha, beta]);
+      expect(tipsDoc.flatMap((entry) => entry.reviewTips).map((tip) => tip.id)).toEqual([
+        "F100",
+        "F101",
+      ]);
+
+      // 一次性调用：失败的全量 1 + 两个半批 2 + 总结 1
+      expect(countOneShotGatewayCalls(stub)).toBe(4);
     } finally {
       await stub.close();
       await mcp.close();

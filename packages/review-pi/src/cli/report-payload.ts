@@ -2,7 +2,7 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { Finding } from "../contracts/finding.js";
 import { DEFAULT_GATEWAY_MAX_TOKENS } from "../shared/config.js";
-import type { RetryPolicy } from "../shared/llm-retry.js";
+import { SINGLE_ATTEMPT_POLICY, type RetryPolicy } from "../shared/llm-retry.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import {
   agentReviewTipFromUnknown,
@@ -371,6 +371,249 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
     semanticByKey,
     uncoveredByKey,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 分批重试（ADR-0058）
+// ---------------------------------------------------------------------------
+
+/**
+ * 拆分层数上限（0 = 不拆分）：全量 → 半 → 四分之一。
+ *
+ * 失败路径的最坏模型调用数 = 1 + 2 + 4 = 7（只有对应的一半也失败才会继续往下拆）。
+ * 不做更深：拆到单条仍失败时，问题不在「一次要生成太多」，继续拆只是多烧调用。
+ */
+const DEFAULT_SPLIT_MAX_DEPTH = 2;
+
+/** 拆分重试的可见留痕（stderr 用；不含任何正文） */
+export interface ShardSplitReport {
+  /** 首次全量调用失败后，实际发出的小批次调用次数 */
+  readonly batches: number;
+  /** 其中成功的批次数（每条成功批次至少救回一条意见） */
+  readonly succeeded: number;
+}
+
+export interface ShardReportRun {
+  readonly outcome: ShardReportOutcome;
+  /** 仅触发拆分时在场；全量一次成功 = 零额外成本，不产生该字段 */
+  readonly split?: ShardSplitReport;
+}
+
+type ShardReportOk = Extract<ShardReportOutcome, { readonly kind: "ok" }>;
+
+type SplitBatchResult =
+  | {
+      readonly ok: true;
+      readonly outcome: ShardReportOk;
+      readonly batches: number;
+      readonly succeeded: number;
+    }
+  | {
+      readonly ok: false;
+      /** 该子树内仍失败的 finding（上层据此登记 uncovered） */
+      readonly findings: readonly Finding[];
+      readonly reason: string;
+      readonly batches: number;
+      readonly succeeded: number;
+    };
+
+/**
+ * 片级报文生成 + 失败后分批重试（ADR-0058）。
+ *
+ * 首次仍按**全量** findings 调一次（正常路径零额外成本、字节不变）；只有失败
+ * （超时 / 截断 / 非法 JSON）才把 findings 按条数二分重试，直到 `maxSplitDepth`。
+ * 拆出的批次**只尝试一次**：全量调用已经消耗过配置的重试次数，再叠 3 次会把
+ * 失败路径的墙钟放大到不可接受。
+ *
+ * 部分成功语义：成功的批次照常组成 `files`（上报粒度仍是按文件，不变）；仍失败
+ * 的条目登记进 `uncoveredByKey`，让聚合侧逐条留痕，绝不给它们发空包
+ * （ADR-0056）。全部分支都失败时返回 `kind:"failed"`，由调用方按整片失败处理。
+ *
+ * 输入是 finding 的**连续切片**（不重排、不去重）：合并时按首次出现顺序拼接，
+ * 与全量一次生成的文件序 / 行序一致。
+ */
+export async function buildShardReportResilient(
+  input: ShardReportInput,
+  options: { readonly maxSplitDepth?: number } = {},
+): Promise<ShardReportRun> {
+  const first = await buildShardReport(input);
+  if (first.kind === "ok") {
+    return { outcome: first };
+  }
+  const maxDepth = Math.max(0, Math.floor(options.maxSplitDepth ?? DEFAULT_SPLIT_MAX_DEPTH));
+  if (maxDepth === 0 || input.findings.length < 2) {
+    return { outcome: first };
+  }
+  const split = await runSplitBatches(input, maxDepth);
+  if (split.ok) {
+    return {
+      outcome: split.outcome,
+      split: { batches: split.batches, succeeded: split.succeeded },
+    };
+  }
+  return {
+    outcome: { kind: "failed", reason: split.reason },
+    split: { batches: split.batches, succeeded: split.succeeded },
+  };
+}
+
+async function runSplitBatches(
+  input: ShardReportInput,
+  maxDepth: number,
+): Promise<SplitBatchResult> {
+  return splitAndRun(input.findings, 1, maxDepth, input);
+}
+
+/** 二分后分别生成，再合并结果（`findings` = 本次被拆分的全集） */
+async function splitAndRun(
+  findings: readonly Finding[],
+  depth: number,
+  maxDepth: number,
+  input: ShardReportInput,
+): Promise<SplitBatchResult> {
+  const mid = Math.ceil(findings.length / 2);
+  const halves: readonly (readonly Finding[])[] = [findings.slice(0, mid), findings.slice(mid)];
+  const results: SplitBatchResult[] = [];
+  // 串行（与片间上报同纪律）：失败路径不瞬时放大网关并发。
+  for (const half of halves) {
+    results.push(await runBatch(half, depth, maxDepth, input));
+  }
+  return combineBatchResults(findings, results);
+}
+
+async function runBatch(
+  findings: readonly Finding[],
+  depth: number,
+  maxDepth: number,
+  input: ShardReportInput,
+): Promise<SplitBatchResult> {
+  const outcome = await buildShardReport({
+    findings,
+    codeByFinding: input.codeByFinding,
+    runtime: { ...input.runtime, retry: SINGLE_ATTEMPT_POLICY },
+    ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+  });
+  if (outcome.kind === "ok") {
+    return { ok: true, outcome, batches: 1, succeeded: 1 };
+  }
+  if (depth >= maxDepth || findings.length < 2) {
+    return { ok: false, findings, reason: outcome.reason, batches: 1, succeeded: 0 };
+  }
+  return splitAndRun(findings, depth + 1, maxDepth, input);
+}
+
+/** 合并同一层的批次结果：全失败 = 该层失败；部分成功 = 合并成功结果 + 登记失败条目 */
+function combineBatchResults(
+  findings: readonly Finding[],
+  results: readonly SplitBatchResult[],
+): SplitBatchResult {
+  const batches = results.reduce((total, result) => total + result.batches, 0);
+  const succeeded = results.reduce((total, result) => total + result.succeeded, 0);
+  const successes = results.filter(
+    (result): result is Extract<SplitBatchResult, { readonly ok: true }> => result.ok,
+  );
+  const failures = results.filter(
+    (result): result is Extract<SplitBatchResult, { readonly ok: false }> => !result.ok,
+  );
+  if (successes.length === 0) {
+    return {
+      ok: false,
+      findings,
+      reason:
+        `拆分为 ${String(batches)} 批后仍全部失败：` +
+        `${failures[0]?.reason ?? "unknown"}`,
+      batches,
+      succeeded: 0,
+    };
+  }
+  const merged = mergeShardOutcomes(successes.map((result) => result.outcome));
+  for (const failure of failures) {
+    for (const failedFinding of failure.findings) {
+      const key = findingMergeKey(failedFinding);
+      if (!merged.uncoveredByKey.has(key)) {
+        merged.uncoveredByKey.set(
+          key,
+          `片级语义生成失败（已拆分为更小批次仍失败）：${failure.reason}`,
+        );
+      }
+    }
+  }
+  return { ok: true, outcome: merged.outcome, batches, succeeded };
+}
+
+/**
+ * 合并同片内的多批成功结果：文件组按首次出现序、组内 tips 按批次序（= 原
+ * finding 序）；语义 / 未覆盖登记按首见优先；留痕清单去重。
+ *
+ * `outcome` 与返回的 `uncoveredByKey` **共享同一个 Map**，调用方可继续补写
+ * 失败批次的未覆盖原因（`outcome.uncoveredByKey` 只是只读视图）。
+ */
+function mergeShardOutcomes(outcomes: readonly ShardReportOk[]): {
+  readonly outcome: ShardReportOk;
+  readonly uncoveredByKey: Map<string, string>;
+} {
+  const groups = new Map<string, { tips: AgentReviewTip[]; findings: Finding[] }>();
+  const semanticByKey = new Map<string, SemanticTipEntry>();
+  const uncoveredByKey = new Map<string, string>();
+  const skippedTips: string[] = [];
+  const degradedTips: string[] = [];
+  const skippedFiles: string[] = [];
+  const seenSkippedTips = new Set<string>();
+  const seenDegradedTips = new Set<string>();
+  const seenSkippedFiles = new Set<string>();
+  for (const outcome of outcomes) {
+    for (const file of outcome.files) {
+      const group = groups.get(file.filePath);
+      if (group === undefined) {
+        groups.set(file.filePath, {
+          tips: [...file.reviewTips],
+          findings: [...file.findings],
+        });
+      } else {
+        group.tips.push(...file.reviewTips);
+        group.findings.push(...file.findings);
+      }
+    }
+    for (const [key, entry] of outcome.semanticByKey) {
+      if (!semanticByKey.has(key)) {
+        semanticByKey.set(key, entry);
+      }
+    }
+    for (const [key, reason] of outcome.uncoveredByKey) {
+      if (!uncoveredByKey.has(key)) {
+        uncoveredByKey.set(key, reason);
+      }
+    }
+    appendUnique(skippedTips, outcome.skippedTips, seenSkippedTips);
+    appendUnique(degradedTips, outcome.degradedTips, seenDegradedTips);
+    appendUnique(skippedFiles, outcome.skippedFiles, seenSkippedFiles);
+  }
+  return {
+    outcome: {
+      kind: "ok",
+      files: [...groups.entries()].map(([filePath, group]) => ({
+        filePath,
+        reviewTips: group.tips,
+        findings: group.findings,
+      })),
+      skippedTips,
+      degradedTips,
+      skippedFiles,
+      semanticByKey,
+      uncoveredByKey,
+    },
+    uncoveredByKey,
+  };
+}
+
+function appendUnique(target: string[], source: readonly string[], seen: Set<string>): void {
+  for (const value of source) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    target.push(value);
+  }
 }
 
 /** 模型类别不可归一时的保守默认（可维护 = 最不宣称具体缺陷性质） */

@@ -83,7 +83,7 @@ import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from 
 import { formatReviewArgs } from "./args-echo.js";
 import { runConfigCommand } from "./config-command.js";
 import { McpCallLog, writeMcpCallLog } from "./mcp-call-log.js";
-import { buildShardReport, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
+import { buildShardReportResilient, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
 import { buildReviewSummary } from "./review-summary.js";
 import {
   assembleUnifiedTips,
@@ -822,11 +822,19 @@ async function reportShardFindings(input: {
       return;
     }
     const codeByFinding = await readCodeLines(input.repoPath, keptFindings);
-    const outcome = await buildShardReport({
+    // 片级报文生成：全量一次失败后按条数二分重试（ADR-0058）。正常路径零额外
+    // 调用；部分批次成功时照常上报能救回的条目，仍失败的由 uncoveredByKey 留痕。
+    const { outcome, split } = await buildShardReportResilient({
       findings: keptFindings,
       codeByFinding,
       runtime: input.runtime,
     });
+    if (split !== undefined) {
+      process.stderr.write(
+        `review-pi: MCP mrReviewResult${label} 报文生成失败，已拆分为 ` +
+          `${String(split.batches)} 批重试（${String(split.succeeded)} 批成功）\n`,
+      );
+    }
     if (outcome.kind === "failed") {
       process.stderr.write(
         `review-pi: MCP mrReviewResult${label} 跳过本片有意见文件（报文生成失败：${outcome.reason}）\n`,

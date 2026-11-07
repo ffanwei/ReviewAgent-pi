@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0055）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0058）。
 
 ## 记录纪律
 
@@ -51,6 +51,7 @@
 | [ADR-0055](0055-progress-on-by-default.md) | 进度事件行缺省打印，移除 `--progress`（静音只认 `--no-progress`；取代 ADR-0016 的 TTY 自动档） |
 | [ADR-0056](0056-mr-review-result-covers-files-without-tips.md) | `mrReviewResult` 覆盖率优先：无意见文件一律补发空 tips（含全被置信度过滤、同片其它文件生成失败；有意见文件仍绝不发空包） |
 | [ADR-0057](0057-summary-covers-only-reported-findings.md) | 收尾总结按 `mrReviewResult` 实际收下的意见生成（未上报条目不计入；零上报不谎报「未发现缺陷」） |
+| [ADR-0058](0058-shard-report-splits-and-retries-on-failure.md) | 片级报文生成失败后按条数二分重试（同提示词 / 同终检，最多两层；部分成功照常上报，仍失败条目逐条留痕） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 
