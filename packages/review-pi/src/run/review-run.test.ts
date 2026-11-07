@@ -303,9 +303,9 @@ test("工具轮：review.get_diff 执行记账 + recall 请求（工具结果进
   });
 }, 120_000);
 
-test("截断路径：phase-6 恒 complete:false → MAX_ROUNDS 上界，正常返回 + truncated 留痕", async () => {
+test("轮次上限：phase-6 恒 complete:false → 默认 3 轮后强制 complete，正常返回、不截断", async () => {
   const replies: FakeReply[] = [];
-  for (let round = 0; round < 5; round++) {
+  for (let round = 0; round < 3; round++) {
     replies.push(
       { text: "ok", usage: ZERO },
       { text: "ok", usage: ZERO },
@@ -329,17 +329,17 @@ test("截断路径：phase-6 恒 complete:false → MAX_ROUNDS 上界，正常�
     ruleSkillLoader: async () => [],
   });
 
-  // 5 轮 × 6 相位各一请求；runReview 正常返回（不抛——防御性路径退出码 0）
-  expect(script.requests).toHaveLength(30);
-  expect(record.baseline.rounds).toBe(5);
-  expect(record.baseline.audit.truncated).toBe(true);
-  expect(record.baseline.audit.truncationReasons).toEqual(["MAX_ROUNDS_REACHED"]);
+  // 3 轮 × 6 相位各一请求；最后一轮强制 complete（ADR-0046），不是截断
+  expect(script.requests).toHaveLength(18);
+  expect(record.baseline.rounds).toBe(3);
+  expect(record.baseline.audit.truncated).toBe(false);
+  expect(record.baseline.audit.truncationReasons).toEqual([]);
   expect(record.baseline.toolCalls).toBe(0);
   const audit = readAudit(auditPath);
-  expect(audit.truncated).toBe(true);
-  expect(audit.truncationReasons).toEqual(["MAX_ROUNDS_REACHED"]);
-  // phaseLog：5 轮 × 6 相位全留痕
-  expect(record.baseline.audit.phaseLog).toHaveLength(30);
+  expect(audit.truncated).toBe(false);
+  expect(audit.truncationReasons).toEqual([]);
+  // phaseLog：3 轮 × 6 相位全留痕
+  expect(record.baseline.audit.phaseLog).toHaveLength(18);
 }, 180_000);
 
 // ---- 规则 Skill（原 config F；ADR-0024 后为唯一形态的一部分） ----

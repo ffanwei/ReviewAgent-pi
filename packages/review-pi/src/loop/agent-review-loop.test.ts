@@ -6,15 +6,14 @@ import {
   REVIEW_MODEL_ID,
 } from "../provider/pi-client.js";
 import { repoFixturePath } from "../testing/repos.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { buildReviewToolkit } from "../tools/toolkit.js";
 import type { LlmMessage } from "../contracts/llm.js";
 import type { WireMessage } from "../contracts/llm.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import {
   MAX_TOOL_CALLS,
-  MAX_ROUNDS,
   TOOL_BUDGET_EXHAUSTED_SUMMARY,
-  TRUNCATION_MAX_ROUNDS,
   TRUNCATION_MODEL_LENGTH,
   TRUNCATION_TOOL_BUDGET,
 } from "./constants.js";
@@ -107,7 +106,11 @@ function singleRoundScript(): readonly FakeReply[] {
   ];
 }
 
-function scriptedLoop(replies: readonly FakeReply[], initial = INITIAL): ScriptedRun {
+function scriptedLoop(
+  replies: readonly FakeReply[],
+  initial = INITIAL,
+  runtime?: ReviewRuntime,
+): ScriptedRun {
   const script = fakeFetch([...replies]);
   const toolkit = buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF });
   const run = () =>
@@ -117,8 +120,17 @@ function scriptedLoop(replies: readonly FakeReply[], initial = INITIAL): Scripte
       toolkit,
       apiKey: "test-key",
       fetch: script.fetch,
+      ...(runtime !== undefined ? { runtime } : {}),
     });
   return { run, requestUrls: script.requests.map((request) => request.url) };
+}
+
+/** 只覆盖轮次上限的运行时（其余沿用缺省） */
+function runtimeWith(maxRounds: number): ReviewRuntime {
+  return {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: { ...DEFAULT_REVIEW_RUNTIME.limits, loop: { maxRounds } },
+  };
 }
 
 test("循环常量与 DSH 线一致（工具预算 + 截断原因 + 预算耗尽应答字节）", () => {
@@ -306,11 +318,11 @@ test("输出撞上界（finish_reason length）：truncated=true + MODEL_MAX_TOK
   expect(outcome.complete).toBe(false);
 });
 
-test("轮次上界：complete 恒 false → rounds=5、truncated=true、正常返回（退出路径可验证）", async () => {
+test("轮次上限：complete 恒 false → 默认 3 轮后强制 complete、不截断", async () => {
   const verdicts = '{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}],"complete":false}';
   const replies: FakeReply[] = [];
   let index = 0;
-  for (let round = 1; round <= MAX_ROUNDS; round++) {
+  for (let round = 1; round <= 3; round++) {
     for (let phaseIndex = 0; phaseIndex < PHASE_COUNT; phaseIndex++) {
       const text = phaseIndex === 5 ? verdicts : phaseText(phaseIndex);
       replies.push(textReply(text, index));
@@ -320,16 +332,34 @@ test("轮次上界：complete 恒 false → rounds=5、truncated=true、正常�
   const { run } = scriptedLoop(replies);
   const outcome = await run();
 
-  expect(outcome.complete).toBe(false);
-  expect(outcome.rounds).toBe(MAX_ROUNDS);
-  expect(outcome.audit.truncated).toBe(true);
-  expect(outcome.audit.truncationReasons).toEqual([TRUNCATION_MAX_ROUNDS]);
-  expect(outcome.audit.requests).toHaveLength(MAX_ROUNDS * PHASE_COUNT);
-  expect(outcome.audit.phaseLog).toHaveLength(MAX_ROUNDS * PHASE_COUNT);
+  // 最后一轮强制 complete：轮次上限是成本线，不是失败
+  expect(outcome.complete).toBe(true);
+  expect(outcome.rounds).toBe(3);
+  expect(outcome.audit.truncated).toBe(false);
+  expect(outcome.audit.truncationReasons).toEqual([]);
+  expect(outcome.audit.requests).toHaveLength(3 * PHASE_COUNT);
+  expect(outcome.audit.phaseLog).toHaveLength(3 * PHASE_COUNT);
   // 每轮各产出 1 条 finding（同 id 跨轮去重：首轮后 DUPLICATE_ID 拒绝）
   expect(outcome.findings).toHaveLength(1);
-  expect(outcome.audit.rejections).toHaveLength(MAX_ROUNDS - 1);
+  expect(outcome.audit.rejections).toHaveLength(2);
   expect(outcome.audit.rejections.every((entry) => entry.stage === "DUPLICATE_ID")).toBe(true);
+});
+
+test("轮次上限可配（limits.loop.maxRounds=2）：第 2 轮即强制 complete", async () => {
+  const verdicts = '{"verdicts":[],"complete":false}';
+  const replies: FakeReply[] = [];
+  for (let round = 1; round <= 2; round++) {
+    for (let phaseIndex = 0; phaseIndex < PHASE_COUNT; phaseIndex++) {
+      replies.push(textReply(phaseIndex === 5 ? verdicts : phaseText(phaseIndex), round * 10 + phaseIndex));
+    }
+  }
+  const { run } = scriptedLoop(replies, INITIAL, runtimeWith(2));
+  const outcome = await run();
+
+  expect(outcome.complete).toBe(true);
+  expect(outcome.rounds).toBe(2);
+  expect(outcome.audit.requests).toHaveLength(2 * PHASE_COUNT);
+  expect(outcome.audit.truncated).toBe(false);
 });
 
 test("provider 错误（stopReason error）：显式抛错，不静默成成功 run", async () => {

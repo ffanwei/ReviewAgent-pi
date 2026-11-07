@@ -117,6 +117,16 @@ export interface TimeoutLimits {
   readonly presentationBufferMs: number;
 }
 
+/** 检视循环上限（ADR-0046） */
+export interface LoopLimits {
+  /**
+   * 最大轮次（一轮 = 六阶段完整一遍）。**最后一轮强制 complete**：
+   * 模型说「还要再审」也不再开新轮，本轮产出即最终结果——轮次上限是成本线，
+   * 不是失败，不产生 `MAX_ROUNDS_REACHED` 截断。
+   */
+  readonly maxRounds: number;
+}
+
 export interface ConcurrencyLimits {
   readonly suggestion: number;
 }
@@ -158,6 +168,7 @@ export interface MicroLimits {
 }
 
 export interface Limits {
+  readonly loop: LoopLimits;
   readonly timeouts: TimeoutLimits;
   readonly concurrency: ConcurrencyLimits;
   readonly boundary: BoundaryLimits;
@@ -167,6 +178,7 @@ export interface Limits {
 }
 
 export const DEFAULT_LIMITS: Limits = {
+  loop: { maxRounds: 3 },
   timeouts: {
     skillPassMs: 600_000,
     skillBashMs: 120_000,
@@ -651,7 +663,8 @@ const MCP_REPORT_KEYS = [
 const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
 const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
-const LIMITS_KEYS = ["timeouts", "concurrency", "boundary", "split", "archive", "micro"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "concurrency", "boundary", "split", "archive", "micro"] as const;
+const LOOP_KEYS = ["maxRounds"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
   "skillBashMs",
@@ -678,7 +691,6 @@ const MICRO_KEYS = [
 
 /** 已钉死的键名（配置里出现 → 警告「不会被采用」） */
 const PINNED_KEYS = new Set<string>([
-  "maxRounds",
   "maxToolCalls",
   "toolResultBudgetChars",
   "temperature",
@@ -700,6 +712,12 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
   }
   const limits = asObject(raw, "limits", warnings);
   assertKnownKeys(limits, LIMITS_KEYS, "limits", warnings);
+
+  const loopObj = optionalObject(limits.loop, "limits.loop", warnings);
+  assertKnownKeys(loopObj, LOOP_KEYS, "limits.loop", warnings);
+  const loop: LoopLimits = {
+    maxRounds: intOr(loopObj.maxRounds, "limits.loop.maxRounds", 1, 20, DEFAULT_LIMITS.loop.maxRounds),
+  };
 
   const timeoutsObj = optionalObject(limits.timeouts, "limits.timeouts", warnings);
   assertKnownKeys(timeoutsObj, TIMEOUT_KEYS, "limits.timeouts", warnings);
@@ -789,7 +807,7 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
   };
 
-  return { timeouts, concurrency, boundary, split, archive, micro };
+  return { loop, timeouts, concurrency, boundary, split, archive, micro };
 }
 
 // ---------------------------------------------------------------------------
@@ -1494,6 +1512,10 @@ ${excludeGlobLines}
 
   // 资源上限：毫秒 / 条数 / 字节。可调；超出允许范围会在装载期 fail fast。
   "limits": {
+    // 检视轮次（ADR-0046）：一轮 = 六阶段完整一遍（约 6 次模型请求）。
+    // 最后一轮强制 complete：模型说「还要再审」也不再开新轮，本轮产出即最终结果；
+    // 轮次上限是成本线，不是失败（不产生截断）。范围 1–20。
+    "loop": { "maxRounds": 3 },
     // 各阶段超时（毫秒）。
     "timeouts": {
       "skillPassMs": 600000,             // 单个规则 Skill 会话的总超时。

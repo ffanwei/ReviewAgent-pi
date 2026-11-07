@@ -192,6 +192,17 @@ describe("loadConfig：失败策略", () => {
     expect(warnings[0]).toContain("did you mean maxFiles?");
   });
 
+  test("limits.loop.maxRounds 可配（缺省 3；越界 fail fast）", () => {
+    const { config } = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"maxRounds":5}}`)),
+    });
+    expect(config.limits.loop.maxRounds).toBe(5);
+    expect(DEFAULT_LIMITS.loop.maxRounds).toBe(3);
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"maxRounds":0}}`)) }),
+    ).toThrow(/maxRounds must be in 1…20/);
+  });
+
   test("钉死键 = 警告「不会被采用」", () => {
     const { warnings, config } = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"micro":{"toolResultBudgetChars":100}}`)),

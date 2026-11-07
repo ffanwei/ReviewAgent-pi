@@ -46,9 +46,9 @@ export interface AgentTranscriptCapture {
 }
 
 /**
- * 转录结局：`truncated`（命中 MAX_ROUNDS）/ `succeeded` / `failed`。
+ * 转录结局：`truncated`（模型输出撞上界 / 截断留痕）/ `succeeded` / `failed`。
  * `failed` 在当前接线中**不可达**——loop 的 `complete === !truncated`
- * （advancePhase 只有"complete 为真"与"round >= MAX_ROUNDS"两个停止点；
+ * （advancePhase 的停止点只有"complete 为真"（含最后一轮强制 complete，ADR-0046）；
  * provider 错误在返回前抛错、不产转录文件），唯一可达路径是被 abort 的回合，
  * 而当前无任何调用方传 AbortSignal。保留三值仅为防御式映射。
  */

@@ -1,10 +1,4 @@
-// 循环常量（测量常量面：与 DSH 线 loop/constants.ts 一致）。
-
-/** 最大轮次（一轮 = 六阶段完整一遍）；超出即截断留痕 */
-export const MAX_ROUNDS = 5;
-
-/** 轮次上限截断原因（审计 truncationReasons 留痕文案） */
-export const TRUNCATION_MAX_ROUNDS = "MAX_ROUNDS_REACHED";
+// 循环常量（测量常量面：与 DSH 线 loop/constants.ts 一致；轮次上限已是配置项，ADR-0046）。
 
 /** 单 run 工具调用硬上界（C/D/E；成功执行计数，跨轮不重置，失败也计入） */
 export const MAX_TOOL_CALLS = 100;
@@ -15,7 +9,7 @@ export const TRUNCATION_TOOL_BUDGET = "TOOL_BUDGET_EXHAUSTED";
 /**
  * 模型输出撞上上界截断原因（provider finish_reason = "length"）。
  * deepseek-v4 系 max_tokens 含思维链：预算不足时思维链先耗尽，可见回答为空/半句。
- * 翻转 truncated（与 MAX_ROUNDS 同档）：截断必须留痕，不许静默成"审 0 条"。
+ * 翻转 truncated：截断必须留痕，不许静默成"审 0 条"。
  */
 export const TRUNCATION_MODEL_LENGTH = "MODEL_MAX_TOKENS_REACHED";
 

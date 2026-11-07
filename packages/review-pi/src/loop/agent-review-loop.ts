@@ -21,10 +21,8 @@ import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.j
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { classifyCacheBreaks } from "./cache-break.js";
 import {
-  MAX_ROUNDS,
   MAX_TOOL_CALLS,
   TOOL_BUDGET_EXHAUSTED_SUMMARY,
-  TRUNCATION_MAX_ROUNDS,
   TRUNCATION_MODEL_LENGTH,
   TRUNCATION_TOOL_BUDGET,
 } from "./constants.js";
@@ -54,7 +52,11 @@ import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
 // 工具预算与审计在 execute 包装层：成功执行计数跨轮不重置（失败也计入），
 // 超出即返回 "Error: tool call budget exhausted"（= 审计 resultSummary =
 // wire tool 消息 content，t-series 真源字节）；truncationReasons 单列
-// TOOL_BUDGET_EXHAUSTED 但不翻转 truncated（截断语义只归 MAX_ROUNDS）。
+// TOOL_BUDGET_EXHAUSTED 但不翻转 truncated（截断语义只归模型输出上界）。
+//
+// 轮次上限（ADR-0046）：来自 `limits.loop.maxRounds`（缺省 3）。到最后一轮时
+// **强制 complete**——模型说还要再审也不开新轮，本轮产出即最终结果；不产生
+// `MAX_ROUNDS_REACHED` 截断（轮次上限是成本线，不是失败）。
 //
 // 规则 Skill（ADR-0014）：Phase 5 文本回合收尾后、Phase 6 指令注入前，顺序跑
 // 各 skill 的独立检视会话（`knowledge/skill-pass.ts`）。skill 回合不进
@@ -175,6 +177,8 @@ export async function runAgentReviewLoop(
   const emitProgress = inputs.onProgress ?? NO_OP_PROGRESS_SINK;
   const requestProgress = createRequestProgress(emitProgress);
   const runtime = inputs.runtime ?? DEFAULT_REVIEW_RUNTIME;
+  // 轮次上限（ADR-0046）：配置驱动；最后一轮强制 complete（见 advancePhase）
+  const maxRounds = runtime.limits.loop.maxRounds;
   // DISP 微限（ADR-0025）：进度行只在开进度时有意义；缺省值与历史行为一致
   const progressLimits = {
     argumentsSummaryChars: runtime.limits.micro.argumentsSummaryChars,
@@ -372,9 +376,10 @@ export async function runAgentReviewLoop(
     if (complete) {
       return true;
     }
-    if (round >= MAX_ROUNDS) {
-      truncated = true;
-      appendReason(truncationReasons, TRUNCATION_MAX_ROUNDS);
+    // 最后一轮强制 complete（ADR-0046）：不再开新轮，本轮产出即最终结果。
+    // 这是成本线而不是失败，不置 truncated、不写 MAX_ROUNDS_REACHED。
+    if (round >= maxRounds) {
+      complete = true;
       return true;
     }
     round += 1;

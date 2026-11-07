@@ -404,11 +404,11 @@ function oneFindingCorpus(): FakeReply[] {
   ];
 }
 
-/** MAX_ROUNDS 截断脚本：5 轮 × 6 相位，phase-6 恒 complete:false */
+/** 轮次上限语料：3 轮 × 6 相位，phase-6 恒 complete:false（最后一轮强制 complete） */
 function truncationCorpus(): FakeReply[] {
   const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
   const replies: FakeReply[] = [];
-  for (let round = 0; round < 5; round++) {
+  for (let round = 0; round < 3; round++) {
     replies.push(
       { text: "ok", usage: ZERO },
       { text: "ok", usage: ZERO },
@@ -697,7 +697,7 @@ test("--mr-json 坏输入：非法 JSON / 空 diff 数组 → exit 1 + 人话（
 });
 
 test(
-  "截断路径：phase-6 恒 complete:false → exit 0 + truncated=true + rounds=5（诚实截断不是失败）",
+  "轮次上限：phase-6 恒 complete:false → exit 0 + rounds=3 + 最后一轮强制 complete（不截断）",
   async () => {
     const stub = await startLoopbackStub(truncationCorpus());
     try {
@@ -716,12 +716,42 @@ test(
         rounds: number;
         findings: unknown[];
       };
-      expect(outcome.truncated).toBe(true);
-      expect(outcome.rounds).toBe(5);
+      expect(outcome.truncated).toBe(false);
+      expect(outcome.rounds).toBe(3);
       expect(outcome.findings).toEqual([]);
-      // 5 轮 × 6 相位 = 30 回合全走真 HTTP
-      expect(stub.requests()).toHaveLength(30);
+      // 3 轮 × 6 相位 = 18 回合全走真 HTTP
+      expect(stub.requests()).toHaveLength(18);
       expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "limits.loop.maxRounds 配置生效：写 1 → 一轮即强制 complete、只发 6 次请求",
+  async () => {
+    const stub = await startLoopbackStub(truncationCorpus().slice(0, 6));
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        configText: JSON.stringify({
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          limits: { loop: { maxRounds: 1 } },
+        }),
+      });
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as { truncated: boolean; rounds: number };
+      expect(outcome.rounds).toBe(1);
+      expect(outcome.truncated).toBe(false);
+      expect(stub.requests()).toHaveLength(6);
     } finally {
       await stub.close();
     }
