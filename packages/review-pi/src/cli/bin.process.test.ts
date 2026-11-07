@@ -320,7 +320,15 @@ function runBin(args: readonly string[], options: RunBinOptions = {}): Promise<C
   return new Promise<CliRunResult>((resolve, reject) => {
     const child = spawn(process.execPath, [BIN_PATH, ...argv], {
       cwd,
-      env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome, ...options.env },
+      // 业务 tool 固定沉降（ADR-0053）在进程用例里压缩为 0：否则每条启用 MCP
+      // 的用例都会多等 10 秒。需要的用例用 `options.env` 显式覆盖。
+      env: {
+        ...process.env,
+        HOME: sandboxHome,
+        USERPROFILE: sandboxHome,
+        PIAGENT_TEST_TASK_TOOL_SETTLE_MS: "0",
+        ...options.env,
+      },
     });
     let stdout = "";
     let stderr = "";
@@ -2187,6 +2195,9 @@ test(
         gatewayBaseUrl: stub.baseUrl,
         mcpServerUrl: mcp.url,
         mcpEventTool: "report_events",
+        // 用 30ms 覆盖测试缺省的 0：验证两段沉降的日志点确实在
+        // mrReviewResult→summary 与 summary→endTask 之间触发。
+        env: { PIAGENT_TEST_TASK_TOOL_SETTLE_MS: "30" },
       });
 
       // 旁路纪律：exit 0，stdout 键集不受影响
@@ -2235,6 +2246,9 @@ test(
       // saveReviewSummary 心跳
       expect(run.stderr).toContain("MCP mrReviewResult 已上报 2 文件 / 1 条意见");
       expect(run.stderr).toContain("MCP saveReviewSummary 生成中");
+      // 两段固定沉降（ADR-0053）都在 stderr 可见：片级结果 → 总结 → endTask
+      expect(run.stderr).toContain("MCP 固定等待 30ms（mrReviewResult → saveReviewSummary）");
+      expect(run.stderr).toContain("MCP 固定等待 30ms（saveReviewSummary → endTask）");
 
       // 一次性模型调用走同一网关（非流式）：报文 + 总结各一条
       expect(countOneShotGatewayCalls(stub)).toBe(2);

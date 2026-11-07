@@ -4,8 +4,11 @@ import {
   AGENT_REVIEW_CATEGORIES,
   AGENT_REVIEW_LEVELS,
   MCP_TASK_TOOL_NAMES,
+  TASK_TOOL_SETTLE_ENV,
+  TASK_TOOL_SETTLE_MS,
   agentReviewTipFromUnknown,
   normalizeReportFilePath,
+  resolveTaskToolSettleMs,
 } from "./task-tools.js";
 
 // 业务 tool 契约（ADR-0045）：名字硬编码、报文严格校验（坏条目跳过不连累
@@ -32,6 +35,23 @@ describe("MCP_TASK_TOOL_NAMES", () => {
       saveReviewSummary: "saveReviewSummary",
       mrReviewResult: "mrReviewResult",
     });
+  });
+});
+
+describe("resolveTaskToolSettleMs", () => {
+  test("缺省恒为固定 5 秒（生产路径没有任何环境变量入口）", () => {
+    expect(TASK_TOOL_SETTLE_MS).toBe(5_000);
+    expect(resolveTaskToolSettleMs({})).toBe(5_000);
+    expect(resolveTaskToolSettleMs({ OTHER: "0" })).toBe(5_000);
+  });
+
+  test("测试专用 env 只接受非负整数；0 = 关闭等待", () => {
+    expect(resolveTaskToolSettleMs({ [TASK_TOOL_SETTLE_ENV]: "0" })).toBe(0);
+    expect(resolveTaskToolSettleMs({ [TASK_TOOL_SETTLE_ENV]: "30" })).toBe(30);
+    // 非法值一律回落缺省，绝不把运行期等待变成负 / NaN
+    for (const bad of ["-1", "1.5", "abc", "", " 5"]) {
+      expect(resolveTaskToolSettleMs({ [TASK_TOOL_SETTLE_ENV]: bad })).toBe(5_000);
+    }
   });
 });
 

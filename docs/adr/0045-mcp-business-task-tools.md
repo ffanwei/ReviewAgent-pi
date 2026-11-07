@@ -14,6 +14,8 @@
 
 **后续修订**（2026-11-07，五）：**决策 3 的「单次尝试，不重试」被 [ADR-0050](0050-mcp-business-tool-retry-and-timeout.md) 取代**——四个业务 tool 改为共 3 次尝试（2 次重试，退避 100 / 400 ms），且**仅传输 / 超时 / HTTP 5xx 类瞬时失败重试**；`server-error`、`isError: true`、4xx 等确定性失败仍不重试。同时 `mcp.servers.*.timeoutMs` 缺省值由 10 s 改为 60 s。旁路纪律（不抛错、只落 stderr 一行、不改退出码）与其余决策不变。
 
+**后续修订**（2026-11-07，六）：**顺序契约之外再加两段固定 5 秒沉降**（[ADR-0053](0053-mcp-task-tool-fixed-settle-gap.md)）：最后一条 `mrReviewResult` 结束后等 5 s 再发 `saveReviewSummary`，`saveReviewSummary` 结束后再等 5 s 才发 `endTask`。这是应对服务端异步处理导致前端回调乱序的**临时时间赌注**，不是新的顺序保证；业务关闭、`startTask` 未成功发出、或未走到总结的失败路径不等待。服务端提供序号 / 完成标记后应删除。
+
 ## Context
 
 ADR-0037 定义的 MCP 上报只有一种形态：把进度事件**批量**塞进单个 tool（`mcp.report.tool`）的 `events` 数组。接入企业检视平台还需要**业务语义**的调用——平台要的不是事件流，而是：

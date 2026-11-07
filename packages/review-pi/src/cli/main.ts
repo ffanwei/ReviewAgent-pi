@@ -39,6 +39,7 @@
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { calculateCost } from "@earendil-works/pi-ai";
 
@@ -47,7 +48,13 @@ import type { RunProgressSink } from "../contracts/progress.js";
 import type { PhaseRecord } from "../contracts/run.js";
 import { runDirPath } from "../experiment/run-record.js";
 import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-index.js";
-import { createMcpReporter, normalizeReportFilePath, resolveReportConfig, type McpReporter } from "../mcp/index.js";
+import {
+  createMcpReporter,
+  normalizeReportFilePath,
+  resolveReportConfig,
+  resolveTaskToolSettleMs,
+  type McpReporter,
+} from "../mcp/index.js";
 import { PHASE_ORDER } from "../loop/phases.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
@@ -179,8 +186,15 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       `review-pi: MCP 服务端未接受 initialize，已改为无状态直调（与 Postman 单发同形），继续检视\n`,
     );
   }
-  // 业务 tool（ADR-0045）：单次尝试、旁路（失败只落 stderr 一行，不改退出码）。
+  // 业务 tool（ADR-0045；重试口径见 ADR-0050）：旁路（失败只落 stderr 一行，
+  // 不改退出码）。
   const taskToolsOn = activeReporter !== null && reportConfig !== null && reportConfig.task;
+  // 业务 tool 之间的固定沉降间隔（ADR-0053）：临时措施，不是顺序契约。
+  // 仅进程测试用专用 env 压缩为 0（见 docs/待优化维护清单.md）。
+  const taskToolSettleMs = resolveTaskToolSettleMs(process.env);
+  // `saveReviewSummary` 是否已调用结束：finally 的第二段等待只在总结发完后发生
+  // （预检失败 / 检视中途抛错不白等 5 秒）。
+  let summaryCallCompleted = false;
   let startTaskSent = false;
   if (taskToolsOn && activeReporter !== null) {
     const outcome = await activeReporter.task.startTask({ taskId: args.taskId });
@@ -530,10 +544,14 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           `review-pi: 检视总结降级为模板（${summaryReport.degradedReason}）\n`,
         );
       }
+      // 第一段沉降（ADR-0053）：最后一条 mrReviewResult 已发完，固定等一段时间
+      // 再发总结——服务端异步处理片级结果时，前端回调可能先收到 summary。
+      await waitTaskToolSettle(taskToolSettleMs, "mrReviewResult → saveReviewSummary");
       const outcome = await activeReporter.task.saveReviewSummary({
         taskId: args.taskId,
         markdownContent: summaryReport.markdown,
       });
+      summaryCallCompleted = true;
       if (!outcome.ok) {
         process.stderr.write(
           `review-pi: MCP saveReviewSummary 失败（${outcome.reason}），检视结果不受影响\n`,
@@ -595,6 +613,11 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 且**早于 flush**：endTask 是最后一个业务调用，之后远端只应再收到事件流
     // 的收尾批次。旁路：失败只落一行 stderr。
     if (taskToolsOn && startTaskSent && activeReporter !== null) {
+      // 第二段沉降（ADR-0053）：总结已发完，再固定等一段时间才发 endTask。
+      // 只在真的调过 saveReviewSummary 时等；失败路径（未走到总结）直接收尾。
+      if (summaryCallCompleted) {
+        await waitTaskToolSettle(taskToolSettleMs, "saveReviewSummary → endTask");
+      }
       const outcome = await activeReporter.task.endTask({ taskId: args.taskId });
       if (!outcome.ok) {
         process.stderr.write(`review-pi: MCP endTask 失败（${outcome.reason}）\n`);
@@ -614,6 +637,19 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     }
     await activeReporter?.close().catch(() => undefined);
   }
+}
+
+/**
+ * 业务 tool 之间的固定沉降（ADR-0053）：`ms <= 0`（进程测试）直接返回，
+ * 生产路径固定 5 s。这是临时的时间赌注，不是顺序契约；留一行 stderr 让
+ * 「这次运行为什么多花了 10 秒」可解释。
+ */
+async function waitTaskToolSettle(ms: number, boundary: string): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+  process.stderr.write(`review-pi: MCP 固定等待 ${String(ms)}ms（${boundary}）\n`);
+  await delay(ms);
 }
 
 /**

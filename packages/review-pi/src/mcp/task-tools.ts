@@ -17,6 +17,36 @@ export const MCP_TASK_TOOL_NAMES = {
   mrReviewResult: "mrReviewResult",
 } as const;
 
+/**
+ * 业务 tool 之间的固定沉降间隔（毫秒，ADR-0053）：`mrReviewResult` 全部结束后
+ * 等这么久再发 `saveReviewSummary`；`saveReviewSummary` 结束后再等这么久才发
+ * `endTask`。
+ *
+ * 这是**临时的时间赌注**，不是序列化契约：服务端对 `tools/call` 的异步处理会
+ * 让回调到前端的顺序与客户端发送顺序不一致，固定间隔只给服务端留排空时间。
+ * 若服务端后续支持序号 / 完成标记，应删除该间隔（见 `docs/待优化维护清单.md`）。
+ */
+export const TASK_TOOL_SETTLE_MS = 5_000;
+
+/**
+ * 进程测试专用覆盖（**不是配置面**）：只允许把固定间隔压到 0 或其他非负整数，
+ * 避免每条启用 MCP 的进程用例多等 10 秒。生产环境不设置该变量，读取结果恒为
+ * `TASK_TOOL_SETTLE_MS`。非法值（负数 / 小数 / 非数字）一律回落缺省。
+ */
+export const TASK_TOOL_SETTLE_ENV = "PIAGENT_TEST_TASK_TOOL_SETTLE_MS";
+
+/** 解析生效的沉降间隔（纯函数，env 由调用方注入，便于单测）。 */
+export function resolveTaskToolSettleMs(
+  env: Readonly<Record<string, string | undefined>>,
+): number {
+  const raw = env[TASK_TOOL_SETTLE_ENV];
+  if (raw === undefined || !/^\d+$/.test(raw)) {
+    return TASK_TOOL_SETTLE_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : TASK_TOOL_SETTLE_MS;
+}
+
 /** `startTask` / `endTask` 参数 */
 export interface TaskIdArgs {
   readonly taskId: string;
