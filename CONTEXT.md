@@ -161,12 +161,12 @@ _Avoid_: 会话记录（那是转录本身）、配置文件（索引只存路�
 ### 离线回放
 
 **回放轨迹（Trace）**:
-一次运行的请求指纹 → 响应原文配对集合，共享 tools 只存一份；与录制时的夹具仓强绑定，改夹具必须重录。
-_代码面_: `packages/review-pi/testdata/traces/*.json`（ADR-0048）。
+一次运行的请求指纹 → 响应原文配对集合；工具面按 digest 去重（schema v2 的 `toolsVariants`，v1 为共享一份）；与录制时的夹具仓强绑定，改夹具必须重录。
+_代码面_: `packages/review-pi/testdata/traces/*.json`（ADR-0048 / ADR-0049）。
 _Avoid_: 录制文件（暗示原始流量）、语料（那是 `testdata/golden/` 的纯文本回复）
 
 **离线回放（Offline Replay）**:
-用本机 HTTP 服务替代模型网关，让真实 `review-pi` 进程在不调模型的情况下走完检视路径；按请求体 SHA-256 严格命中，未命中即失败。
+用本机 HTTP 服务替代模型网关，让真实 `review-pi` 进程在不调模型的情况下走完检视路径；按请求体 SHA-256 严格命中（仅对 trace 显式声明的 lane 路径占位做归一化），未命中即失败。
 _Avoid_: mock 模型（mock 指代码内打桩，回放走真 HTTP）、夹具（那是被检视的输入）
 
 **夹具仓（Fixture Repo）**:

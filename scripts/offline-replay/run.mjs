@@ -23,7 +23,7 @@ import {
   loadScenario,
   validateLatencySafety,
 } from "./lib/scenario.mjs";
-import { buildTrace, extractSharedTools, loadTrace, saveTrace } from "./lib/trace.mjs";
+import { buildTrace, extractToolsVariants, loadTrace, sanitizeText, saveTrace, toolsVariantCount } from "./lib/trace.mjs";
 
 const DEFAULT_STEPS = [1, 2, 4, 8, 16, 32];
 
@@ -51,21 +51,25 @@ async function main() {
 
 async function record(flags) {
   const scenario = applyOverrides(await loadScenario(requireScenario(flags)), flags);
-  if (typeof scenario.corpus !== "string") {
-    throw new Error("record 需要场景声明 corpus（one-finding / no-finding / reporting）");
+  const upstream = resolveUpstream(flags);
+  if (upstream === undefined && typeof scenario.corpus !== "string") {
+    throw new Error("record 需要场景声明 corpus（one-finding / no-finding / reporting / …）或用 --upstream-base-url 走真网关");
   }
   const runDir = flags.runDir !== undefined ? resolve(flags.runDir) : defaultRunDir(scenario.id);
   await mkdir(runDir, { recursive: true });
 
   const server = await startReplayServer({
     mode: "record",
-    corpus: corpusReplies(scenario.corpus),
+    corpus: upstream === undefined ? corpusReplies(scenario.corpus) : [],
+    upstream,
     modelId: scenario.model,
     mcp: scenario.mcp,
+    normalizeEnabled: true,
   });
   let run;
+  let lane;
   try {
-    const lane = await createLane({ runDir, label: "record", scenario, server, index: 0 });
+    lane = await createLane({ runDir, label: "record", scenario, server, index: 0 });
     run = await runCli({ lane, scenario, timeoutMs: scenario.timeoutMs });
     const mcpCalls = scenario.mcp.mode === "stub" ? server.mcpCalls() : undefined;
     await assertLane({ lane, scenario, run, mcpCalls });
@@ -73,6 +77,24 @@ async function record(flags) {
     await server.close();
   }
 
+  const sanitizeRoots = [
+    { path: lane.dir, placeholder: "lane" },
+    ...scenario.ruleSkills.map((path) => ({ path, placeholder: "rule-skill" })),
+    { path: scenario.fixture.repo, placeholder: "fixture-repo" },
+    { path: REPO_ROOT, placeholder: "repo-root" },
+    { path: os.homedir(), placeholder: "home" },
+  ];
+  const { variants, refByHash } = extractToolsVariants(server.requestBodies);
+  // 响应体与 sidecar 落盘前脱敏；指纹已在 server 侧按归一化请求体算好，
+  // 脱敏不参与匹配（ADR-0049）。
+  const interactions = server.interactions.map((interaction) => ({
+    ...interaction,
+    toolsRef: refByHash.get(interaction.requestHash) ?? null,
+    response: {
+      ...interaction.response,
+      body: sanitizeText(interaction.response.body, sanitizeRoots),
+    },
+  }));
   const trace = buildTrace({
     id: scenario.id,
     fixture: {
@@ -80,14 +102,18 @@ async function record(flags) {
       mrDiff: scenario.fixture.mrDiffRelative,
     },
     model: { id: scenario.model },
-    tools: extractSharedTools(server.requestBodies.map((request) => request.body)),
-    interactions: server.interactions,
+    toolsVariants: variants,
+    requestNormalization: { placeholders: ["<lane>"] },
+    interactions,
   });
   const tracePath = flags.trace !== undefined ? resolve(flags.trace) : scenario.trace;
   const candidatePath = `${tracePath}.candidate.json`;
   await saveTrace(candidatePath, trace, {
     storeRequests: flags.storeRequests === true,
-    requests: server.requestBodies,
+    requests: server.requestBodies.map((request) => ({
+      ...request,
+      body: sanitizeText(request.body, sanitizeRoots),
+    })),
   });
 
   if (flags.verify !== false) {
@@ -104,7 +130,8 @@ async function record(flags) {
       `replay:record ${scenario.id}`,
       `  trace: ${relative(tracePath)}`,
       `  interactions: ${String(trace.interactions.length)}（review ${String(trace.interactions.filter((item) => item.kind === "review").length)} / oneshot ${String(trace.interactions.filter((item) => item.kind === "oneshot").length)}）`,
-      `  tools: ${String(trace.tools.length)}`,
+      `  toolsVariants: ${String(toolsVariantCount(trace))}（工具面按 digest 去重；主会话与 skill 会话各一份时就是 2）`,
+      `  source: ${upstream === undefined ? `canned corpus "${scenario.corpus}"` : `upstream ${upstream.baseUrl}`}`,
       `  run: exit=${String(run.status)} ${formatDuration(run.wallMs)}`,
       flags.verify === false
         ? "  已跳过回放自检（--no-verify）"
@@ -112,6 +139,19 @@ async function record(flags) {
       "",
     ].join("\n"),
   );
+}
+
+function resolveUpstream(flags) {
+  const baseUrl = flags.upstreamBaseUrl ?? process.env.REPLAY_UPSTREAM_BASE_URL;
+  if (baseUrl === undefined || baseUrl === "") {
+    return undefined;
+  }
+  const apiKey = flags.upstreamApiKey ?? process.env.REPLAY_UPSTREAM_API_KEY ?? "";
+  const timeoutMs =
+    flags.upstreamTimeoutMs !== undefined
+      ? parsePositiveInt(flags.upstreamTimeoutMs, "--upstream-timeout-ms")
+      : 120_000;
+  return { baseUrl: baseUrl.replace(/\/+$/u, ""), apiKey, timeoutMs };
 }
 
 async function verifyTrace({ candidatePath, scenario, runDir }) {
@@ -590,9 +630,13 @@ function printUsage() {
       "",
       "用法：",
       "  node scripts/offline-replay/run.mjs record --scenario <id|path> [--trace <path>] [--store-requests] [--no-verify]",
+      "       [--upstream-base-url <url>] [--upstream-api-key <key>] [--upstream-timeout-ms N]",
       "  node scripts/offline-replay/run.mjs once   --scenario <id|path> [--workers N] [--latency-ms N] [--latency-mode none|fixed] [--run-dir <dir>]",
       "  node scripts/offline-replay/run.mjs ramp   --scenario <id|path> [--steps 1,5,10,20,30] [--warmup N] [--measure N] [--latency-mode none|fixed] [--latency-ms N] [--latency-jitter R] [--seed N]",
       "  node scripts/offline-replay/run.mjs help",
+      "",
+      "record 缺省用场景的 canned 语料；给了 --upstream-base-url（或 REPLAY_UPSTREAM_BASE_URL）",
+      "就直接代理真网关并录原始 SSE，trace 格式不变。apiKey 可走 --upstream-api-key / REPLAY_UPSTREAM_API_KEY。",
       "",
       "ramp 缺省延迟：fixed 1500ms、jitter 0.2、seed 42（场景声明 fixed 时用场景值；--latency-mode none 关掉）。",
       "",

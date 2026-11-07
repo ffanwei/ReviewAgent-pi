@@ -90,10 +90,93 @@ function reportingCorpus() {
   ];
 }
 
+/**
+ * 规则 Skill 场景（ADR-0014）：主会话 Phase 5 出一条，独立 skill 会话再出一
+ * 条，主会话 Phase 6 把两条候选一起裁定。工具面因此在第 6 条请求发生变化
+ * （七检视工具 → 七检视工具 + bash），这正是 trace schema v2 的动机。
+ */
+function skillSingleFindingCorpus() {
+  return [
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: JSON.stringify({ candidates: [candidate("README.md")] }), usage: ZERO },
+    { text: JSON.stringify({ candidates: [skillCandidate("src/main/java/com/example/Alpha.java")] }), usage: ZERO },
+    {
+      text: JSON.stringify({
+        verdicts: [
+          { id: "F100", pass: true, reason: "stub verdict: evidence holds" },
+          { id: "F200", pass: true, reason: "stub verdict: skill evidence holds" },
+        ],
+        complete: true,
+      }),
+      usage: ZERO,
+    },
+  ];
+}
+
+function skillCandidate(file) {
+  return {
+    id: "F200",
+    severity: "P2",
+    category: "correctness",
+    file,
+    line: 3,
+    title: "Sentinel skill finding",
+    description: "Sentinel skill finding description",
+    evidence: [`${file}:3`],
+    rule: "sentinel-rule",
+    confidence: 0.5,
+  };
+}
+
+/**
+ * 分片场景（ADR-0039）：两片各自完整跑六相位。片内候选落在本片文件上
+ * （Alpha.java / Beta.java），合并后是两条独立 findings。
+ */
+function shardTwoFindingsCorpus() {
+  return [...shardSixPhase("F100", "src/main/java/com/example/Alpha.java"), ...shardSixPhase("F200", "src/main/java/com/example/Beta.java")];
+}
+
+function shardSixPhase(id, file) {
+  return [
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    {
+      text: JSON.stringify({
+        candidates: [
+          {
+            id,
+            severity: "P2",
+            category: "correctness",
+            file,
+            line: 3,
+            title: `Sentinel finding in ${file}`,
+            description: "Sentinel finding description",
+            evidence: [`${file}:3`],
+            rule: "sentinel-rule",
+            confidence: 0.5,
+          },
+        ],
+      }),
+      usage: ZERO,
+    },
+    {
+      text: JSON.stringify({ verdicts: [{ id, pass: true, reason: "stub verdict" }], complete: true }),
+      usage: ZERO,
+    },
+  ];
+}
+
 const CORPORA = {
   "one-finding": oneFindingCorpus,
   "no-finding": noFindingCorpus,
   reporting: reportingCorpus,
+  "skill-single-finding": skillSingleFindingCorpus,
+  "shard-two-findings": shardTwoFindingsCorpus,
 };
 
 export function corpusReplies(name) {

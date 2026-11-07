@@ -28,6 +28,11 @@ export async function startReplayServer(options) {
   const requestBodies = [];
   const misses = [];
   const mcpCalls = [];
+  const normalizeRoots = [];
+  // v1 trace 没有 requestNormalization：必须保持「原样哈希」才能命中历史
+  // trace。v2 录制与回放都显式归一化运行期目录（见 trace.mjs）。
+  const normalizeEnabled =
+    mode === "record" ? options.normalizeEnabled !== false : options.trace?.requestNormalization !== undefined;
   const cursor = { index: 0 };
   const replies = options.corpus ?? [];
   // `/v1/models` 必须回 trace 录制时的 model.id（ADR-0048 决策 4），否则 CLI
@@ -35,7 +40,14 @@ export async function startReplayServer(options) {
   const modelId = options.modelId ?? options.trace?.model?.id ?? "deepseek-v4-flash";
 
   const server = http.createServer((request, response) => {
-    void handle(request, response);
+    handle(request, response).catch((error) => {
+      if (response.writableEnded) {
+        return;
+      }
+      sendJson(response, 500, {
+        error: { message: `replay server: ${String(error?.message ?? error)}` },
+      });
+    });
   });
 
   async function handle(request, response) {
@@ -77,13 +89,14 @@ export async function startReplayServer(options) {
     const body = safeParse(raw);
     const wantsStream = body?.stream === true;
     const kind = wantsStream ? "review" : "oneshot";
+    const roots = normalizeEnabled ? normalizeRoots : [];
 
     if (mode === "replay") {
-      const hash = hashRequest(raw);
+      const hash = hashRequest(raw, roots);
       const interaction = byHash.get(hash);
       if (interaction === undefined) {
         misses.push({ hash, kind, at: Date.now() });
-        const detail = diagnoseMiss(options.trace, raw);
+        const detail = diagnoseMiss(options.trace, raw, roots);
         process.stderr.write(`${detail}\n`);
         sendJson(response, 500, {
           error: {
@@ -108,8 +121,8 @@ export async function startReplayServer(options) {
       sendJson(response, 500, { error: { message: "record: scripted replies exhausted" } });
       return;
     }
-    const hash = hashRequest(raw);
-    const shape = buildRequestShape(raw);
+    const hash = hashRequest(raw, roots);
+    const shape = buildRequestShape(raw, roots);
     const existing = byHash.get(hash);
     if (existing !== undefined && existing.response.body !== served.body) {
       throw new Error(
@@ -171,13 +184,18 @@ export async function startReplayServer(options) {
 
   async function proxyUpstream(raw) {
     const upstream = options.upstream;
+    const headers = { "content-type": "application/json" };
+    if (typeof upstream.apiKey === "string" && upstream.apiKey !== "") {
+      headers.authorization = `Bearer ${upstream.apiKey}`;
+    }
     const response = await fetch(`${upstream.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${upstream.apiKey}`,
-      },
+      headers,
       body: raw,
+      signal:
+        typeof upstream.timeoutMs === "number" && upstream.timeoutMs > 0
+          ? AbortSignal.timeout(upstream.timeoutMs)
+          : undefined,
     });
     return {
       status: response.status,
@@ -251,6 +269,14 @@ export async function startReplayServer(options) {
     requestBodies,
     mcpCalls: () => mcpCalls.map((call) => ({ name: call.name, args: structuredClone(call.args) })),
     misses: () => [...misses],
+    /**
+     * 注册「运行期目录 → 占位符」。录制时由 run.mjs 注册 lane 目录；回放时
+     * 每个 lane 建好后注册自己的目录。未注册（或 trace 未声明归一化）时
+     * 哈希保持原样。
+     */
+    addPathRoot: (path, placeholder) => {
+      normalizeRoots.push({ path, placeholder });
+    },
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections?.();

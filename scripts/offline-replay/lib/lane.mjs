@@ -32,6 +32,9 @@ export async function createLane({ runDir, label, scenario, server, index }) {
       baseUrl: server.baseUrl,
     },
   };
+  if (scenario.split?.maxShardChars !== undefined) {
+    config.limits = { split: { maxShardChars: scenario.split.maxShardChars } };
+  }
   if (scenario.mcp.mode === "stub") {
     config.mcp = {
       servers: {
@@ -51,6 +54,10 @@ export async function createLane({ runDir, label, scenario, server, index }) {
   const configPath = join(laneDir, "config.json");
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
+  // 运行期目录归一化（ADR-0049）：规则 Skill 会话的 location 会带 lane 绝对
+  // 路径；同一 trace 在不同 lane / 不同运行重放时只有归一化后指纹才稳定。
+  server.addPathRoot?.(laneDir, "<lane>");
+
   return {
     index,
     label,
@@ -64,7 +71,7 @@ export async function createLane({ runDir, label, scenario, server, index }) {
 }
 
 export function reviewArgs(lane, scenario) {
-  return [
+  const args = [
     "review",
     "--repo",
     scenario.fixture.repo,
@@ -80,6 +87,13 @@ export function reviewArgs(lane, scenario) {
     scenario.model,
     "--no-progress",
   ];
+  for (const skillDir of scenario.ruleSkills ?? []) {
+    args.push("--rule-skill", skillDir);
+  }
+  if (scenario.strictRuleSkill === true) {
+    args.push("--strict-rule-skill");
+  }
+  return args;
 }
 
 export function laneEnv(lane, extra = {}) {

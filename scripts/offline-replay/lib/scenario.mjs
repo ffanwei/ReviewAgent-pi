@@ -65,6 +65,22 @@ export function normalizeScenario(input, source = "scenario") {
   }
 
   const expect = input.expect ?? {};
+  const ruleSkills = (input.ruleSkills ?? []).map((entry) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new Error(`${source}: ruleSkills 必须是非空字符串数组`);
+    }
+    return resolve(REPO_ROOT, entry);
+  });
+  if (input.strictRuleSkill !== undefined && typeof input.strictRuleSkill !== "boolean") {
+    throw new Error(`${source}: strictRuleSkill 必须是布尔值`);
+  }
+  const split = input.split ?? {};
+  if (
+    split.maxShardChars !== undefined &&
+    (!Number.isInteger(split.maxShardChars) || split.maxShardChars < 10_000)
+  ) {
+    throw new Error(`${source}: split.maxShardChars 必须是 ≥ 10000 的整数（产品下限）`);
+  }
   return {
     schemaVersion: SUPPORTED_SCHEMA,
     id: input.id,
@@ -79,6 +95,11 @@ export function normalizeScenario(input, source = "scenario") {
     },
     model: input.model,
     corpus: input.corpus,
+    ruleSkills,
+    strictRuleSkill: input.strictRuleSkill === true,
+    split: {
+      maxShardChars: split.maxShardChars,
+    },
     mcp: {
       mode: mcp.mode,
       latencyMs: mcp.latencyMs ?? 0,
@@ -109,6 +130,12 @@ export function normalizeScenario(input, source = "scenario") {
       mcpCalls: expect.mcpCalls ?? [],
       mcpFilePathCounts: expect.mcpFilePathCounts ?? [],
       mcpTipCounts: expect.mcpTipCounts ?? [],
+      shards: expect.shards,
+      stderrContains: expect.stderrContains ?? [],
+      ruleSkill: expect.ruleSkill,
+      skillPassLog: expect.skillPassLog,
+      skillTranscript: expect.skillTranscript,
+      ruleSkillCache: expect.ruleSkillCache,
     },
   };
 }

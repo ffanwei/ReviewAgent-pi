@@ -75,6 +75,9 @@ export async function assertLane({ lane, scenario, run, mcpCalls }) {
 
   problems.push(...(await assertTips(runs, scenario)));
   problems.push(...(await assertAudit(lane, scenario)));
+  problems.push(...(await assertShards(lane, scenario)));
+  problems.push(...(await assertRuleSkill(lane, scenario)));
+  problems.push(...assertStderr(run, scenario));
   problems.push(...assertMcp(scenario, mcpCalls));
 
   if (problems.length > 0) {
@@ -169,7 +172,160 @@ async function assertAudit(lane, scenario) {
   if (scenario.expect.rounds !== undefined && audit.rounds !== scenario.expect.rounds) {
     problems.push(`rounds：actual=${String(audit.rounds)} expected=${String(scenario.expect.rounds)}`);
   }
+  if (scenario.expect.shards !== undefined) {
+    const actual = Array.isArray(audit.shards) ? audit.shards.map((entry) => Number(entry?.index)) : [];
+    if (canonical(actual) !== canonical(scenario.expect.shards)) {
+      problems.push(
+        `审计 shards 索引不符：actual=${JSON.stringify(actual)} expected=${JSON.stringify(scenario.expect.shards)}`,
+      );
+    }
+  }
   return problems;
+}
+
+/** run.json.shards[] + 片转录/片审计可寻址（ADR-0039） */
+async function assertShards(lane, scenario) {
+  const expected = scenario.expect.shards;
+  if (expected === undefined) {
+    return [];
+  }
+  const problems = [];
+  const runs = join(lane.taskDir, "runs");
+  const record = await readJson(join(runs, "run.json"));
+  if (record === undefined) {
+    return [`缺少 ${join(runs, "run.json")}`];
+  }
+  const shards = Array.isArray(record.shards) ? record.shards : [];
+  const indexes = shards.map((entry) => Number(entry?.index));
+  if (canonical(indexes) !== canonical(expected)) {
+    problems.push(`run.json.shards 索引不符：actual=${JSON.stringify(indexes)} expected=${JSON.stringify(expected)}`);
+  }
+  for (const shard of shards) {
+    const label = `片 ${String(shard?.index)}`;
+    if (typeof shard?.transcriptFile !== "string" || !(await fileExists(join(runs, shard.transcriptFile)))) {
+      problems.push(`${label} 缺少转录 ${String(shard?.transcriptFile)}`);
+    }
+    if (typeof shard?.auditFile !== "string" || !(await fileExists(join(lane.taskDir, "audit", shard.auditFile)))) {
+      problems.push(`${label} 缺少审计 ${String(shard?.auditFile)}`);
+    }
+  }
+  return problems;
+}
+
+/** 规则 Skill 的装载、会话、转录与缓存（ADR-0014 / ADR-0018） */
+async function assertRuleSkill(lane, scenario) {
+  const want = scenario.expect.ruleSkill;
+  const wantLog = scenario.expect.skillPassLog;
+  const wantTranscript = scenario.expect.skillTranscript;
+  const wantCache = scenario.expect.ruleSkillCache;
+  if (want === undefined && wantLog === undefined && wantTranscript === undefined && wantCache === undefined) {
+    return [];
+  }
+  const problems = [];
+  const audit = await readSingleAudit(lane);
+  if (audit === undefined) {
+    return ["缺少可读的审计文件（规则 Skill 断言无法展开）"];
+  }
+  const ruleSkills = Array.isArray(audit.ruleSkill) ? audit.ruleSkill : [];
+  if (want !== undefined) {
+    if (ruleSkills.length !== 1) {
+      problems.push(`ruleSkill 条数应为 1，实际 ${String(ruleSkills.length)}`);
+    }
+    const entry = ruleSkills[0];
+    if (entry === undefined) {
+      problems.push("ruleSkill 为空");
+    } else {
+      if (entry.name !== want.name) {
+        problems.push(`ruleSkill.name：actual=${String(entry.name)} expected=${String(want.name)}`);
+      }
+      if (want.kind !== undefined && entry.kind !== want.kind) {
+        problems.push(`ruleSkill.kind：actual=${String(entry.kind)} expected=${String(want.kind)}`);
+      }
+      if (typeof entry.digest !== "string" || !/^[0-9a-f]{64}$/u.test(entry.digest)) {
+        problems.push(`ruleSkill.digest 不是 64 位小写十六进制：${String(entry.digest)}`);
+      }
+    }
+  }
+  if (wantLog !== undefined) {
+    const logs = Array.isArray(audit.skillPassLog) ? audit.skillPassLog : [];
+    if (logs.length !== wantLog) {
+      problems.push(`skillPassLog 条数：actual=${String(logs.length)} expected=${String(wantLog)}`);
+    }
+    for (const [index, entry] of logs.entries()) {
+      if (typeof entry?.skill !== "string" || entry.skill === "") {
+        problems.push(`skillPassLog[${String(index)}].skill 必须是字符串`);
+      }
+    }
+  }
+  if (wantTranscript !== undefined) {
+    const files = await collectFiles(lane.taskDir);
+    const suffix = `-skill-${wantTranscript}-r1.json`;
+    const found = files.find((file) => file.replaceAll("\\", "/").endsWith(suffix));
+    if (found === undefined) {
+      problems.push(`缺少 skill 转录（*${suffix}）`);
+    } else {
+      const body = await readFile(found, "utf8");
+      if (!body.includes("Host platform: ")) {
+        problems.push("skill 转录缺少宿主机平台提示（Host platform:）");
+      }
+    }
+  }
+  if (wantCache === true) {
+    const entry = ruleSkills[0];
+    if (entry !== undefined && typeof entry.digest === "string") {
+      const cacheDir = join(lane.taskDir, ".cache", "rule-skills", `dir-${entry.digest}`);
+      for (const name of ["SKILL.md", ".rule-skill-ready"]) {
+        if (!(await fileExists(join(cacheDir, name)))) {
+          problems.push(`规则包缓存缺少 ${name}（${cacheDir}）`);
+        }
+      }
+      if (!(await fileExists(join(cacheDir, "rules")))) {
+        problems.push(`规则包缓存缺少 rules/ 目录（${cacheDir}）`);
+      }
+    } else {
+      problems.push("规则包缓存断言需要 audit.ruleSkill[0].digest");
+    }
+  }
+  return problems;
+}
+
+function assertStderr(run, scenario) {
+  return scenario.expect.stderrContains
+    .filter((needle) => !run.stderr.includes(needle))
+    .map((needle) => `stderr 缺少片段：${JSON.stringify(needle)}`);
+}
+
+async function readSingleAudit(lane) {
+  const auditDir = join(lane.taskDir, "audit");
+  let entries;
+  try {
+    entries = (await readdir(auditDir)).filter((name) => name.endsWith(".json"));
+  } catch {
+    return undefined;
+  }
+  if (entries.length !== 1) {
+    return undefined;
+  }
+  return readJson(join(auditDir, entries[0]));
+}
+
+async function collectFiles(root) {
+  const output = [];
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return output;
+  }
+  for (const entry of entries) {
+    const full = join(root, entry.name);
+    if (entry.isDirectory()) {
+      output.push(...(await collectFiles(full)));
+    } else if (entry.isFile()) {
+      output.push(full);
+    }
+  }
+  return output;
 }
 
 function assertMcp(scenario, mcpCalls) {

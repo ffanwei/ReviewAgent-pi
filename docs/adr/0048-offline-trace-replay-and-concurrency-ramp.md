@@ -214,3 +214,4 @@ v1 = 3 条 trace：
 5. **无 `--fail-fast`**：ramp 的停止条件本来就含「某 worker 失败即停当前档并结束阶梯」，单独开关没有新增语义。
 6. **`/v1/models`**：回放模式取 `trace.model.id`（录制模式取场景 `model`），保证模型探针口径与录制时一致。
 7. **已识别的 v2 schema 约束（S5 rule-skill）**：skill 会话的工具面是七检视工具 + `bash`（八只），当前 `tools` 为全 trace 共享一份且要求逐字节一致；S5 落地前必须先决定「per-interaction `tools`（schemaVersion 2）」还是「按会话拆 trace」。S4 分片不需要改 schema；真网关录制也不需要（只换录制源）。
+8. **v2 已落地**：S5 / S4 / 真网关录制代理均已完成，trace schema 升到 2（`toolsVariants[]` + 每 interaction 的 `toolsRef`，兼容读 v1），并新增 lane 路径归一化与 `--upstream-*` 录制参数。见 [ADR-0049](0049-trace-schema-v2-and-upstream-recording.md)。
