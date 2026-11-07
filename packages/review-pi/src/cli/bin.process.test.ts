@@ -2651,9 +2651,22 @@ export default async (source) => {
       );
 
       expect(run.status).toBe(0);
-      // mrReviewResult 因生成失败被跳过（引擎模式 ≠ 报文兜底）
-      expect(mcp.toolCalls().some((call) => call.name === "mrReviewResult")).toBe(false);
-      expect(run.stderr).toContain("跳过本片");
+      // ADR-0056：有意见文件（README.md）因生成失败不报空包，但本片 diff 里
+      // 没有意见的文件（ObjectArrayCodec.java）仍按文件报一次空 tips。
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
+        reviewTips: [],
+      });
+      expect(run.stderr).toContain("跳过本片有意见文件");
+      expect(run.stderr).toContain("已上报 1 文件 / 0 条意见（其余文件报文生成失败）");
       expect(run.stderr).toContain("回落");
       expect(run.stderr).toContain("tips 缺席该条：片级语义生成失败");
 
@@ -2720,11 +2733,19 @@ test(
       expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(false);
       expect(existsSync(path.join(cwd, "review-result.json"))).toBe(false);
       // mrReviewResult / endTask 语义不变
-      const names = mcp
-        .toolCalls()
-        .filter((call) => call.name !== "report_events")
-        .map((call) => call.name);
-      expect(names).toEqual(["startTask", "saveReviewSummary", "endTask"]);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      // ADR-0056：有意见文件（README.md）生成失败跳过，diff 内无意见文件照报空包
+      expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
+        reviewTips: [],
+      });
     } finally {
       await stub.close();
       await mcp.close();
@@ -2874,6 +2895,93 @@ test(
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
       ]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "全部候选被置信度过滤：无意见文件仍按文件调用 mrReviewResult、reviewTips: []（ADR-0056）",
+  async () => {
+    const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+    const diffPath = "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java";
+    const candidate = {
+      id: "F100",
+      severity: "P2",
+      category: "correctness",
+      file: diffPath,
+      line: 174,
+      title: "Sentinel finding title",
+      description: "Sentinel finding description",
+      evidence: [`${diffPath}:174`],
+      rule: "sentinel-rule",
+      confidence: 0.5,
+    };
+    const stub = await startLoopbackStub([
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: JSON.stringify({ candidates: [candidate] }), usage: ZERO },
+      {
+        text: JSON.stringify({
+          verdicts: [{ id: "F100", pass: true, reason: "stub verdict: evidence holds" }],
+          complete: true,
+        }),
+        usage: ZERO,
+      },
+      // 有 finding（过滤只作用于中文 tips），总结仍走一次性模型调用
+      { text: "# 检视总结", usage: ZERO },
+    ]);
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      // min=0.99：唯一候选（0.5）被置信度过滤 ⇒ 本片没有任何可发的中文意见
+      const configText = `${JSON.stringify(
+        {
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          limits: { confidence: { min: 0.99 } },
+          mcp: {
+            servers: { stub: { transport: "http", url: mcp.url, headers: {}, timeoutMs: 10_000 } },
+            report: { server: "stub" },
+          },
+        },
+        null,
+        2,
+      )}\n`;
+      const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
+        configText,
+      });
+
+      expect(run.status).toBe(0);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: diffPath,
+        reviewTips: [],
+      });
+      expect(run.stderr).toContain("MCP mrReviewResult 已上报 1 文件 / 0 条意见");
+      // 留痕同样要能证明「文件被检视过」
+      const mcpLog = JSON.parse(
+        readFileSync(path.join(cliRunsDir(outDir), "mcp.json"), "utf8"),
+      ) as { calls: { tool: string; ok: boolean }[] };
+      expect(mcpLog.calls.map((call) => call.tool)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(mcpLog.calls.every((call) => call.ok)).toBe(true);
     } finally {
       await stub.close();
       await mcp.close();

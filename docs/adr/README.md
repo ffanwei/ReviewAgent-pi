@@ -49,6 +49,7 @@
 | [ADR-0053](0053-mcp-task-tool-fixed-settle-gap.md) | MCP 业务 tool 之间加固定 5 秒沉降间隔（`mrReviewResult`→`saveReviewSummary`、`saveReviewSummary`→`endTask`；临时措施，见待优化清单） |
 | [ADR-0054](0054-mcp-business-call-log.md) | MCP 业务调用留痕写入 `<tasks 根>/<taskId>/runs/mcp.json`（四个 tool 的输入 / 输出 / 调用时间，与 session 转录同目录） |
 | [ADR-0055](0055-progress-on-by-default.md) | 进度事件行缺省打印，移除 `--progress`（静音只认 `--no-progress`；取代 ADR-0016 的 TTY 自动档） |
+| [ADR-0056](0056-mr-review-result-covers-files-without-tips.md) | `mrReviewResult` 覆盖率优先：无意见文件一律补发空 tips（含全被置信度过滤、同片其它文件生成失败；有意见文件仍绝不发空包） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

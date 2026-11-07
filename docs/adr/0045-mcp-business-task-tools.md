@@ -6,6 +6,8 @@
 
 **后续修订**（2026-11-07）：`mrReviewResult` 改为**覆盖每一片 diff 触及的全部文件**——有意见的文件照旧带 tips，没有意见的文件也发一条 `reviewTips: []`（平台据此知道该文件已检视过、无问题）。`ReviewShardFindingsHook` 因此新增第三个参数 `files`（该片 diff 文件清单；单片路径 = 整份 diff 的文件）。空 tips 上报只在**该片报文生成成功**时发生——生成失败（模型 / 校验 / 源码行取不到）整片跳过并留痕，避免把「不知道」误报成「没有问题」。`reviews_tips_zh.json` 仍只含有意见的文件（空 tips 只是上报面语义，不进中文产物）。
 
+**后续修订**（2026-11-07，四）：[ADR-0056](0056-mr-review-result-covers-files-without-tips.md) 改了「空 tips 上报只在该片报文生成成功时发生」这一条——**无意见的文件不再受同片报文生成失败牵连**，仍逐文件发 `reviewTips: []`；有意见但生成失败 / 校验跳过的文件继续不发空包。另：全被置信度过滤的文件也从「不发空包」改为「补发空包」（取代 ADR-0052 的同名子决策）。
+
 **后续修订**（2026-11-07，二）：**零检视意见时 `saveReviewSummary` 发固定文案**——逐字节 `# 检视总结\n\n本次检视未发现缺陷。`，**不调用总结模型**（「没有意见」是确定事实，不需要模型再概括，省一次调用且内容稳定）。有意见时仍按决策 2 生成：模型 → 失败降级确定性模板。`buildReviewSummary` 在 `findings.length === 0` 时直接返回该常量。
 
 **后续修订**（2026-11-07，三）：**中文产物落盘失败不再吞掉业务上报**。此前 `removeStaleReviewsZh` / `writeReviewsTipsZh` / `removeStaleReviewsTipsZh` 的 IO 失败（Windows 上常见：旧 `reviews_zh.json` 被占用、目标路径不可写）会直接抛出，位置恰在 `mrReviewResult` 之后、`saveReviewSummary` 之前——平台于是收到 startTask / mrReviewResult / endTask 却**收不到总结**（「有始无终」）。现在这一段失败只**记下**，`saveReviewSummary` 与 `endTask` 照常发完，随后才把这次运行判失败（exit 1）——顺序契约与「产物即契约」都不变，只是业务上报不再被产物 IO 连累。

@@ -709,10 +709,11 @@ async function readCodeLines(
 }
 
 /**
- * 片级上报编排（ADR-0045）：该片 findings 定型 → 读源码行 → 统一生成调用 →
- * 逐文件 `mrReviewResult` + 语义登记入 run 级集合（tips 复用）。**绝不抛错**
- * （旁路纪律的最外层闸）：任何失败只落 stderr，检视与退出码不受影响。
- * 零 finding 的片直接返回（不发空包）。
+ * 片级上报编排（ADR-0045 / ADR-0056）：该片 findings 定型 → 读源码行 → 统一
+ * 生成调用 → 逐文件 `mrReviewResult` + 语义登记入 run 级集合（tips 复用）。
+ * **绝不抛错**（旁路纪律的最外层闸）：任何失败只落 stderr，检视与退出码不受影响。
+ * 覆盖率优先：本片 diff 触及的文件只要没有可发的 tips（零 finding / 全被置信度
+ * 过滤 / 同片其它文件报文生成失败），都按文件发一次空 `reviewTips`。
  */
 async function reportShardFindings(input: {
   readonly label: { readonly index: number; readonly total: number };
@@ -748,20 +749,20 @@ async function reportShardFindings(input: {
       (finding) => !isConfidenceBelow(finding.confidence, input.confidenceMin),
     );
     if (keptFindings.length === 0) {
-      // 零 finding（本来就无）或全部被置信度过滤：仍按文件上报。
-      // 「有 finding 但被过滤」的文件不报空 tips（避免声称「无问题」），
-      // 与既有「tips 校验全跳过时不报空包」同口径。
-      const excluded = new Set<string>();
-      for (const finding of input.findings) {
-        const findingPath = normalizeReportFilePath(finding.file);
-        if (findingPath !== null) {
-          excluded.add(findingPath);
-        }
-      }
-      const sent = await reportFilesWithoutTips({ ...input, label, exclude: excluded });
+      // 零 finding（本来就无）或全部被置信度过滤：本片所有文件都没有可发的
+      // 中文意见，按文件逐个上报空 tips（ADR-0056）。置信度过滤只决定「产不产
+      // 出中文意见」，不改变「文件已被检视」这一事实——平台需要每个文件都有
+      // 一次登记，否则「检视过、没意见」与「从未检视」在远端无法区分。
+      const sent = await reportFilesWithoutTips({ ...input, label });
       if (sent > 0) {
         process.stderr.write(
           `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见\n`,
+        );
+      } else if (input.files.length === 0) {
+        // 零静默：本片拿不到任何文件路径（空 diff / 预过滤后无残留），
+        // 没有「已检视」可登记——留一行原因，避免事后误判成调用链断了。
+        process.stderr.write(
+          `review-pi: MCP mrReviewResult${label} 无可上报文件（本片 diff 未解析出文件路径）\n`,
         );
       }
       return;
@@ -774,9 +775,25 @@ async function reportShardFindings(input: {
     });
     if (outcome.kind === "failed") {
       process.stderr.write(
-        `review-pi: MCP mrReviewResult${label} 跳过本片（报文生成失败：${outcome.reason}）\n`,
+        `review-pi: MCP mrReviewResult${label} 跳过本片有意见文件（报文生成失败：${outcome.reason}）\n`,
       );
       markUncovered(keptFindings, `片级语义生成失败：${outcome.reason}`);
+      // 无意见文件仍按文件报空（ADR-0056）：它们确实没有检视意见，不能因为
+      // 同片其它文件的报文生成失败而失去「已检视」登记。有意见的文件绝不
+      // 发空包——把「不知道」报成「没有问题」比漏报更糟。
+      const withFindings = new Set<string>();
+      for (const finding of keptFindings) {
+        const findingPath = normalizeReportFilePath(finding.file);
+        if (findingPath !== null) {
+          withFindings.add(findingPath);
+        }
+      }
+      const sent = await reportFilesWithoutTips({ ...input, label, exclude: withFindings });
+      if (sent > 0) {
+        process.stderr.write(
+          `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见（其余文件报文生成失败）\n`,
+        );
+      }
       return;
     }
     // 语义登记并入 run 级集合（首见优先：跨片同合并键 = 同一问题的重复条目）
@@ -816,10 +833,12 @@ async function reportShardFindings(input: {
       }
     }
     // 本片其余文件（没有意见）：按文件传空 reviewTips。
-    // 排除面 = 有意见报文的文件 + **所有 finding 指向的文件**（用它而不是
-    // outcome.files：某文件的 tips 全被校验跳过时，也不能把该文件报成「无问题」）。
+    // 排除面 = 有意见报文的文件 + **保留（未被置信度过滤）的 finding 指向的
+    // 文件**（用它而不是 outcome.files：某文件的 tips 全被校验跳过时，也不能
+    // 把该文件报成「无问题」）。被置信度过滤的文件没有可发的中文意见，按
+    // ADR-0056 仍要发空 tips，故不进入排除面。
     const withFindings = new Set(outcome.files.map((file) => file.filePath));
-    for (const finding of input.findings) {
+    for (const finding of keptFindings) {
       const findingPath = normalizeReportFilePath(finding.file);
       if (findingPath !== null) {
         withFindings.add(findingPath);

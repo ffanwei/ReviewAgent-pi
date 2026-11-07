@@ -2,6 +2,8 @@
 
 **状态**：已接受（2026-11-07，用户决策）
 **关联**：[ADR-0017](0017-out-of-kernel-grouped-review-tips-export.md)（分组式检视意见的 10 键字段映射单源）、[ADR-0045](0045-mcp-business-task-tools.md)（统一 tips 的 12 键形态与片级报文生成）、[ADR-0023](0023-dedupe-tips-by-file-and-line.md)（同文件同行去重）、[ADR-0039](0039-sharded-review-for-large-mrs.md)（分片 findings 合并口径）、[ADR-0025](0025-user-config-file.md)（用户级配置单源）
+
+**后续修订**（2026-11-07）：[ADR-0056](0056-mr-review-result-covers-files-without-tips.md) 取代决策 5 中「全被过滤的文件不报 `reviewTips: []`」——置信度过滤只决定产不产中文意见，不取消「该文件已检视、无意见」的上报登记；过滤后无意见的文件现在照常补发空包。
 **范围**：本仓 pi 线 0052。改的是**中文 tips 的字段映射与取数口径**：`severity` 三档 → 四档、`confidence` 高/中分界 0.8 → 0.7、新增可配置的置信度过滤。检视提示词、英文 findings、`reviews_en.json`、stdout 全量输出、`mrReviewResult` 的 `level` 服务端契约、审计既有键序全部不动。
 
 ## Context
