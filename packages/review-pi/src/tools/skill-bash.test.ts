@@ -69,6 +69,16 @@ test("引号外的 shell 元字符一律拒绝（管道/重定向/链接/替换/
   }
 });
 
+test("拒绝文案指出命中的字符并给出单命令提示（不泄露整条命令）", async () => {
+  const text = await runSkillBashCommand("ls -R . 2>/dev/null | head -100", {
+    packRoot: PACK_ROOT,
+    runner: runnerReturning().runner,
+  });
+  expect(text).toContain("metacharacters");
+  expect(text).toContain('found ">"');
+  expect(text).toContain("run one executable without pipes or redirection");
+});
+
 test("引号内的 shell 元字符按字面透传（`python -c` 的语句分隔符不被误拦）", async () => {
   const { runner, calls } = runnerReturning({ stdout: "C:\\pack" });
   for (const command of [
@@ -205,6 +215,7 @@ test("宿主平台提示：Windows 明示路径风格、.cmd 被拒、python 优
   const note = formatHostPlatformNote("win32", "x64");
   expect(note).toContain("Host platform: Windows (win32, x64)");
   expect(note).toContain(".cmd/.bat shims such as npx are rejected");
+  expect(note).toContain("ls/head/grep/sed/awk may be missing");
   expect(note).toContain("prefer `python` over `python3`");
   expect(note).toContain("without a shell");
 });
@@ -235,6 +246,30 @@ test("bash 工具描述带上平台提示（且不改 name/schema）", () => {
   const posix = buildSkillBashTool({ packRoot: PACK_ROOT, platform: "linux", arch: "x64" });
   expect(posix.description).toContain("Host platform: Linux (linux, x64)");
   expect(posix.description).not.toContain("cmd/.bat");
+});
+
+test("bash 工具描述显式区分「允许 / 不允许」并给出替代做法", () => {
+  const tool = buildSkillBashTool({ packRoot: PACK_ROOT, platform: "linux", arch: "x64" });
+  expect(tool.description).toContain("one executable from PATH plus its arguments");
+  expect(tool.description).toContain("not one shell line");
+  expect(tool.description).toContain("Quoted arguments are fine");
+  expect(tool.description).toContain("Not allowed (rejected before running)");
+  expect(tool.description).toContain("unquoted & | ; < > $ ` and newlines");
+  expect(tool.description).toContain(
+    "no pipes, redirection, chaining, substitution, globbing or shell builtins",
+  );
+  expect(tool.description).toContain("Wildcards (* ?) are passed literally, not expanded");
+  expect(tool.description).toContain("call one script in this pack, not several bash calls");
+  expect(tool.description).toContain("Output is auto-truncated and stderr is captured");
+  expect(tool.description).toContain("ls -R . 2>/dev/null | head -100");
+  expect(tool.description).toContain("run `ls -R .` instead");
+
+  const parameters = tool.parameters as {
+    properties: { command: { description: string } };
+  };
+  expect(parameters.properties.command.description).toContain("One executable plus its arguments");
+  expect(parameters.properties.command.description).toContain("No pipes, redirection");
+  expect(parameters.properties.command.description).toContain("not run through a shell");
 });
 
 // ---- 可执行文件定位（决策 7 修订：不再有命令白名单，仍然不搜 cwd）----

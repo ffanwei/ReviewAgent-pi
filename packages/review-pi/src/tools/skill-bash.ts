@@ -77,22 +77,22 @@ export function formatHostPlatformNote(
           ? "Linux"
           : platform;
   const head = `Host platform: ${name} (${platform}, ${arch}) — commands run as direct processes without a shell.`;
-  const noShell =
-    "Shell builtins (cd, export, echo) and operators (|, >, &&, $) are unavailable.";
+  const builtins = "Shell builtins (cd, export, echo) are unavailable.";
   if (platform === "win32") {
     return (
       `${head} Use Windows paths and executables on PATH with .exe or no extension ` +
-      `(.cmd/.bat shims such as npx are rejected); prefer \`python\` over \`python3\`. ` +
-      "Shell builtins (cd, dir, echo, export) and operators (|, >, &&, $) are unavailable."
+      `(.cmd/.bat shims such as npx are rejected; ls/head/grep/sed/awk may be missing — ` +
+      `use python/node or .exe programs); prefer \`python\` over \`python3\`. ` +
+      "Shell builtins (cd, dir, echo, export) are unavailable."
     );
   }
   if (platform === "darwin" || platform === "linux") {
     return (
       `${head} Use POSIX paths; \`python3\` is normally present while \`python\` may ` +
-      `be absent. ${noShell}`
+      `be absent. ${builtins}`
     );
   }
-  return `${head} Use this platform's path syntax and executables available on PATH. ${noShell}`;
+  return `${head} Use this platform's path syntax and executables available on PATH. ${builtins}`;
 }
 
 /** 引号**外**的 shell 元字符（出现即拒绝；引号内按字面透传，不做任何解释） */
@@ -298,8 +298,12 @@ export async function runSkillBashCommand(
   command: string,
   options: SkillBashOptions,
 ): Promise<string> {
-  if (findUnquotedShellMetacharacter(command) !== undefined) {
-    return `${REJECTION_PREFIX}shell metacharacters are not allowed in skill bash commands`;
+  const metacharacter = findUnquotedShellMetacharacter(command);
+  if (metacharacter !== undefined) {
+    return (
+      `${REJECTION_PREFIX}shell metacharacters are not allowed in skill bash commands ` +
+      `(found ${JSON.stringify(metacharacter)}; run one executable without pipes or redirection)`
+    );
   }
   let argv: readonly string[];
   try {
@@ -355,16 +359,27 @@ export function buildSkillBashTool(options: SkillBashOptions): AgentTool {
     name: SKILL_BASH_TOOL_NAME,
     label: SKILL_BASH_TOOL_NAME,
     description:
-      "Run a read-only helper command from this rule pack (any executable on PATH may be invoked, " +
-      "one command per call). The working directory is the pack root, so SKILL.md paths are relative. " +
-      `No shell features (pipes, redirection, chaining, substitutions) are available. ${String(timeoutSeconds)}s timeout.\n` +
+      "Run a read-only helper command from this rule pack (any executable on PATH may be invoked). " +
+      "The working directory is the pack root, so SKILL.md paths are relative. " +
+      `${String(timeoutSeconds)}s timeout.\n` +
+      "Allowed: one executable from PATH plus its arguments — not one shell line. " +
+      "Quoted arguments are fine; scripts in this pack are fine.\n" +
+      "Not allowed (rejected before running): unquoted & | ; < > $ ` and newlines — " +
+      "i.e. no pipes, redirection, chaining, substitution, globbing or shell builtins. " +
+      "Wildcards (* ?) are passed literally, not expanded. " +
+      "For multi-step logic call one script in this pack, not several bash calls. " +
+      "Output is auto-truncated and stderr is captured, so `| head`, `> file` and " +
+      "`2>/dev/null` are unnecessary. Example: `ls -R . 2>/dev/null | head -100` is " +
+      "rejected; run `ls -R .` instead.\n" +
       platformNote,
     parameters: {
       type: "object",
       properties: {
         command: {
           type: "string",
-          description: 'Full command line, e.g. "python scripts/filter_rules.py --keyword null".',
+          description:
+            'One executable plus its arguments, e.g. "python scripts/filter_rules.py --keyword null". ' +
+            "No pipes, redirection, chaining or substitutions; the value is not run through a shell.",
         },
       },
       required: ["command"],
