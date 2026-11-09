@@ -1789,12 +1789,17 @@ test(
       expect(auto.stderr).toContain("req 1 ");
       // 进度关闭 ≠ 零输出：收尾摘要恒定打印（一行，避免「跑完什么都没说」）
       expect(auto.stderr).toContain("✓ 完成 · 耗时 ");
-      // 阶段账本（最后一块）：总墙钟 + 主链路分段 + 审计明细，grep 前缀 ⏱
-      expect(auto.stderr).toContain("⏱ 阶段耗时 · 总墙钟 ");
-      expect(auto.stderr).toContain("⏱ 阶段 · 六阶段审计 ");
-      expect(auto.stderr).toContain("⏱ 审计明细 · P1 ");
-      expect(auto.stderr.indexOf("⏱ 阶段耗时")).toBeGreaterThan(
+      // 阶段账本（最后一块）：总墙钟 + 主链路分段 + 审计明细，grep 前缀 [time]
+      expect(auto.stderr).toContain("[time] 阶段耗时 | 总墙钟 ");
+      expect(auto.stderr).toContain("[time] 阶段 | 六阶段审计 ");
+      expect(auto.stderr).toContain("[time] 审计明细 | P1 ");
+      expect(auto.stderr.indexOf("[time] 阶段耗时")).toBeGreaterThan(
         auto.stderr.indexOf("✓ 完成 · 耗时 "),
+      );
+      // 整任务 LLM 账本（ADR-0066）：在 [time] 块之后、恒走 stderr（因此进 review-pi.log）
+      expect(auto.stderr).toContain("[usage] 任务总计 | 模型调用 ");
+      expect(auto.stderr.indexOf("[usage] 任务总计")).toBeGreaterThan(
+        auto.stderr.indexOf("[time] 阶段耗时"),
       );
 
       const explicitOff = await runBin(
@@ -1817,7 +1822,8 @@ test(
       expect(explicitOff.stderr).not.toContain("req 1 ");
       expect(explicitOff.stderr).toContain("✓ 完成 · 耗时 ");
       // --no-progress 只静音事件行，收尾摘要与阶段账本照打
-      expect(explicitOff.stderr).toContain("⏱ 阶段耗时 · 总墙钟 ");
+      expect(explicitOff.stderr).toContain("[time] 阶段耗时 | 总墙钟 ");
+      expect(explicitOff.stderr).toContain("[usage] 任务总计 | 模型调用 ");
 
       // `--progress` 已移除（ADR-0055）：给迁移提示并 exit 1，不再静默接受
       const removed = await runBin([...baseArgs, "--progress"], {

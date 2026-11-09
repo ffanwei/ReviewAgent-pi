@@ -3,7 +3,7 @@
 **状态**：已接受（2026-10-31）
 **关联**：ADR-0016（运行进度投影；本 ADR 修订其收尾摘要段——决策 5 / 8 / 9）、ADR-0014（`skillPassLog[]` 是 skill 会话的唯一计数源）、ADR-0010（呈现投影是核外消费端，会另发模型请求）
 **跨仓**：本 ADR 为本仓 pi 线序列 0030；DSH 兄弟仓决策须引用全限定语「DSH 线 ADR-XXXX」。
-**后续修订**：[ADR-0031](0031-review-args-echo.md)（2026-11-02）在总结行之后追加「本次 review 传入参数」回显块（stderr）；该回显块随后被 [ADR-0043](0043-review-args-echo-before-run.md)（2026-11-05）提前到开跑前，故总结行之后不再跟参数回显。本 ADR 的总结行本身不变。
+**后续修订**：[ADR-0031](0031-review-args-echo.md)（2026-11-02）在总结行之后追加「本次 review 传入参数」回显块（stderr）；该回显块随后被 [ADR-0043](0043-review-args-echo-before-run.md)（2026-11-05）提前到开跑前，故总结行之后不再跟参数回显。本 ADR 的总结行本身不变。[ADR-0066](0066-task-total-llm-usage-line.md)（2026-11-09）另加一行进程收尾的整任务 LLM 账本（Agent 内 + 一次性调用），本 ADR 的 `doneLine` 口径与打印点不变。
 
 ## Context
 

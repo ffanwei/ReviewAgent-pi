@@ -9,6 +9,11 @@ import {
   type RetryFailure,
   type RetryPolicy,
 } from "../shared/llm-retry.js";
+import { extractChatUsage, type RawWireUsage } from "../shared/wire-usage.js";
+
+// usage 提取器已下沉到 `shared/wire-usage.ts`（一次性调用与 e2e 录制共用）；
+// 这里 re-export 保持既有导入路径（`provider/gateway-probe.js`）不变。
+export { extractChatUsage, type RawWireUsage } from "../shared/wire-usage.js";
 
 // 冒烟双探针（#4，R4「网关 + 自由 id」关闭面）：
 // - 探针 1 网关健康：传输层可达（任何 HTTP 响应 = 网关活着；不判鉴权/模型）。
@@ -60,15 +65,6 @@ export interface ModelProbeInput {
   readonly modelTimeoutMs?: number;
   /** 重试策略（缺省 1 次尝试 = 不重试，ADR-0051） */
   readonly retry?: RetryPolicy;
-}
-
-/** 网关原始 usage（chat completion 响应 usage 字段，未经口径折算） */
-export interface RawWireUsage {
-  readonly promptTokens: number;
-  readonly completionTokens: number;
-  readonly cacheReadTokens: number;
-  /** prompt_tokens_details.cache_write_tokens（OpenRouter 系；缺席 = 0，pi-ai 折算同口径） */
-  readonly cacheWriteTokens?: number;
 }
 
 export interface ModelProbeResult {
@@ -406,49 +402,6 @@ function isModelNotExistText(text: string): boolean {
   return /model[^\n]{0,60}(not\s*exist|not\s*found|does\s*not\s*exist|doesn'?t\s*exist)|(unknown|invalid|no\s*such)[^\n]{0,30}model/i.test(
     text,
   );
-}
-
-/**
- * chat 响应 usage 投影（探测与真跑 recording-fetch 的单源提取器）：
- * 缺 usage 视为不可用（返回 null）。choices 有效性由各调用面自判
- * （SSE usage 帧合法地携带空 choices，不能在这里一并要求）。
- */
-export function extractChatUsage(parsed: unknown): RawWireUsage | null {
-  if (typeof parsed !== "object" || parsed === null) {
-    return null;
-  }
-  const record = parsed as { usage?: unknown };
-  if (typeof record.usage !== "object" || record.usage === null) {
-    return null;
-  }
-  const usage = record.usage as {
-    prompt_tokens?: unknown;
-    completion_tokens?: unknown;
-    prompt_cache_hit_tokens?: unknown;
-    cached_tokens?: unknown;
-    prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown };
-  };
-  const promptTokens = numberOf(usage.prompt_tokens);
-  const completionTokens = numberOf(usage.completion_tokens);
-  if (promptTokens === null || completionTokens === null) {
-    return null;
-  }
-  const cacheReadTokens =
-    numberOf(usage.prompt_tokens_details?.cached_tokens) ??
-    numberOf(usage.prompt_cache_hit_tokens) ??
-    numberOf(usage.cached_tokens) ??
-    0;
-  const cacheWriteTokens = numberOf(usage.prompt_tokens_details?.cache_write_tokens);
-  return {
-    promptTokens,
-    completionTokens,
-    cacheReadTokens,
-    ...(cacheWriteTokens !== null ? { cacheWriteTokens } : {}),
-  };
-}
-
-function numberOf(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function errorTextOf(parsed: unknown): string | null {

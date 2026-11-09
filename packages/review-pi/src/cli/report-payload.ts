@@ -234,6 +234,7 @@ export async function buildShardReport(input: ShardReportInput): Promise<ShardRe
     ...(input.runtime.retry !== undefined ? { retry: input.runtime.retry } : {}),
     maxTokens: REPORT_MAX_TOKENS,
     responseFormat: "json_object",
+    purpose: "tips",
     ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
   });
   if (!completion.ok) {

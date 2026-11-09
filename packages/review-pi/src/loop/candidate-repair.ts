@@ -73,6 +73,7 @@ export function createCandidateRepair(llm: CandidateRepairLlm): CandidateRepairF
       ...(llm.retry !== undefined ? { retry: llm.retry } : {}),
       maxTokens: REPAIR_MAX_TOKENS,
       responseFormat: "json_object",
+      purpose: "candidate-repair",
       ...(llm.fetch !== undefined ? { fetch: llm.fetch } : {}),
     });
     if (!completion.ok) {

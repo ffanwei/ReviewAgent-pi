@@ -1,5 +1,6 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
+import type { LlmUsage } from "../contracts/llm.js";
 import {
   classifyHttpFailure,
   classifyThrownFailure,
@@ -11,6 +12,7 @@ import {
   type RetryPolicy,
 } from "./llm-retry.js";
 import { extractModelJson } from "./model-json.js";
+import { extractChatUsage, type RawWireUsage } from "./wire-usage.js";
 
 /**
  * 一次性模型调用缝（ADR-0045）：报文 / 总结 / 候选修复生成用的最小 chat completion。
@@ -47,19 +49,47 @@ export interface OneShotLlmInput {
   readonly maxTokens?: number;
   /** 结构化输出请求（仅 `json_object`；供应商不支持时自动降级） */
   readonly responseFormat?: "json_object";
+  /** 调用用途（进程级 usage 观测用；缺席 = 不分类） */
+  readonly purpose?: OneShotPurpose;
   /** 传输层注入（测试确定性）；缺省 globalThis.fetch */
   readonly fetch?: FetchFunction;
 }
 
+/** 一次性调用的用途分类（只用于日志账本，不改变任何请求字节） */
+export type OneShotPurpose = "tips" | "summary" | "candidate-repair";
+
+/**
+ * 一次成功的一次性调用样本（进程级 usage 观测）。
+ *
+ * - 只有「HTTP 2xx + 可读出文本」才记样本；失败尝试没有可用 usage；
+ * - `usage` 缺席 = 响应未带 usage（调用次数仍计入，token 记 0）；
+ * - 绝不携带 apiKey / 请求正文，只记模型 id、用途与用量。
+ */
+export interface OneShotCallSample {
+  readonly modelId: string;
+  readonly purpose?: OneShotPurpose;
+  readonly usage?: LlmUsage;
+}
+
+/** 进程级 usage 观测缝（CLI 安装；缺省 null = 零行为变化） */
+export type OneShotUsageSink = (sample: OneShotCallSample) => void;
+
+let usageSink: OneShotUsageSink | null = null;
+
+/** 安装 / 清除进程级 usage 观测器（只影响样本采集，不改变调用结果） */
+export function setOneShotUsageSink(sink: OneShotUsageSink | null): void {
+  usageSink = sink;
+}
+
 export type OneShotLlmResult =
-  | { readonly ok: true; readonly text: string }
+  | { readonly ok: true; readonly text: string; readonly usage?: LlmUsage }
   | { readonly ok: false; readonly reason: string; readonly status?: number };
 
 export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLlmResult> {
   const policy = input.retry ?? DEFAULT_RETRY_POLICY;
   const first = await runAttempts(input, policy);
   if (first.ok) {
-    return { ok: true, text: first.value };
+    return toResult(first);
   }
   // 结构化输出不被供应商支持：去掉 response_format 再走一轮（同样有界）
   if (input.responseFormat !== undefined && (first.failure.status === 400 || first.failure.status === 422)) {
@@ -70,19 +100,31 @@ export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLl
   return toResult(first);
 }
 
+/** 一次成功回包的文本 + 可选 usage（重试只保留最终成功的那次） */
+interface OneShotCompletion {
+  readonly text: string;
+  readonly usage?: LlmUsage;
+}
+
 async function runAttempts(
   input: OneShotLlmInput,
   policy: RetryPolicy,
-): Promise<Awaited<ReturnType<typeof runWithRetry<string>>>> {
-  return runWithRetry(policy, (): Promise<RetryAttempt<string>> => attemptOneShot(input, policy));
+): Promise<Awaited<ReturnType<typeof runWithRetry<OneShotCompletion>>>> {
+  return runWithRetry(policy, (): Promise<RetryAttempt<OneShotCompletion>> =>
+    attemptOneShot(input, policy),
+  );
 }
 
 function toResult(
-  outcome: Awaited<ReturnType<typeof runWithRetry<string>>>,
+  outcome: Awaited<ReturnType<typeof runWithRetry<OneShotCompletion>>>,
   suffix?: string,
 ): OneShotLlmResult {
   if (outcome.ok) {
-    return { ok: true, text: outcome.value };
+    return {
+      ok: true,
+      text: outcome.value.text,
+      ...(outcome.value.usage !== undefined ? { usage: outcome.value.usage } : {}),
+    };
   }
   const attemptsSuffix = outcome.attempts > 1 ? ` (after ${String(outcome.attempts)} attempts)` : "";
   const fallbackSuffix = suffix !== undefined ? ` (${suffix})` : "";
@@ -96,7 +138,7 @@ function toResult(
 async function attemptOneShot(
   input: OneShotLlmInput,
   policy: RetryPolicy,
-): Promise<RetryAttempt<string>> {
+): Promise<RetryAttempt<OneShotCompletion>> {
   const fetch = input.fetch ?? globalThis.fetch;
   const body = JSON.stringify({
     model: input.modelId,
@@ -138,7 +180,43 @@ async function attemptOneShot(
   if (text === undefined) {
     return { ok: false, failure: malformedFailure("response has no message content text") };
   }
-  return { ok: true, value: text };
+  const usage = wireUsageToLlmUsage(extractChatUsage(payload));
+  emitOneShotSample(input, usage);
+  return {
+    ok: true,
+    value: usage === undefined ? { text } : { text, usage },
+  };
+}
+
+/**
+ * 原始 usage → DSH 口径：`inputTokens` 是**未命中**输入（与 pi-ai
+ * openai-completions 的折算一致：`max(0, prompt − cacheRead − cacheWrite)`）。
+ * 响应未带 usage 时返回 undefined（调用次数仍由 sink 计入）。
+ */
+function wireUsageToLlmUsage(raw: RawWireUsage | null): LlmUsage | undefined {
+  if (raw === null) {
+    return undefined;
+  }
+  const cacheRead = raw.cacheReadTokens;
+  const cacheWrite = raw.cacheWriteTokens ?? 0;
+  return {
+    inputTokens: Math.max(0, raw.promptTokens - cacheRead - cacheWrite),
+    outputTokens: raw.completionTokens,
+    cacheReadTokens: cacheRead,
+    ...(cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {}),
+  };
+}
+
+function emitOneShotSample(input: OneShotLlmInput, usage: LlmUsage | undefined): void {
+  const sink = usageSink;
+  if (sink === null) {
+    return;
+  }
+  sink({
+    modelId: input.modelId,
+    ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
+    ...(usage !== undefined ? { usage } : {}),
+  });
 }
 
 /**

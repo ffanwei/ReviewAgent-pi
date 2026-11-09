@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0065）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0066）。
 
 ## 记录纪律
 
@@ -61,6 +61,7 @@
 | [ADR-0063](0063-rule-skill-session-timeout-default-1200s.md) | 规则 Skill 会话缺省总超时 `limits.timeouts.skillPassMs` 600 s → 1200 s（重规则包 + 大分片下的余量；峰值仍由显式配置表达） |
 | [ADR-0064](0064-finding-scope-out-of-diff-filter.md) | 非 diff 区域过滤 `limits.findingScope`（缺省开启，hunk ±10 行；新增 `OUT_OF_SCOPE` 拦截阶段） |
 | [ADR-0065](0065-console-english-and-unified-tips.md) | 控制台恒英文、取消呈现翻译投影；中文 tips 由片级语义生成统一提供（业务开关无关），移除引擎回落 |
+| [ADR-0066](0066-task-total-llm-usage-line.md) | 整任务 LLM 账本：`review-pi.log` 增两行 `[usage]` 总账（Agent 内 + 一次性调用，含成本），不改审计 / `run.json` / stdout |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

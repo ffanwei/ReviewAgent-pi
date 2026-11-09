@@ -44,6 +44,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { calculateCost } from "@earendil-works/pi-ai";
 
 import type { Finding } from "../contracts/finding.js";
+import type { LlmUsage } from "../contracts/llm.js";
 import type { RunProgressSink } from "../contracts/progress.js";
 import type { PhaseRecord } from "../contracts/run.js";
 import { runDirPath } from "../experiment/run-record.js";
@@ -59,7 +60,7 @@ import { PHASE_ORDER } from "../loop/phases.js";
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
-import { llmUsageToPiUsage } from "../provider/usage-map.js";
+import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import { formatMrFilterNotice } from "../run/mr-input.js";
@@ -73,6 +74,7 @@ import {
   type ResolvedConfig,
 } from "../shared/config.js";
 import { retryPolicyFor } from "../shared/llm-retry.js";
+import { setOneShotUsageSink } from "../shared/one-shot-llm.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
 import { isSeverityBelow } from "../shared/severity-filter.js";
 import { isConfidenceBelow } from "../shared/tips-filter.js";
@@ -96,11 +98,18 @@ import {
   createProgressRenderer,
   doneLine,
   stageBreakdownLines,
+  taskUsageLines,
   type ProgressRenderer,
   type ProgressSummary,
   type StageSpan,
+  type TaskUsagePurposeLine,
 } from "./progress-render.js";
 import { renderReviewOutcome } from "./render.js";
+import {
+  createOneShotUsageCollector,
+  type OneShotPurposeKey,
+  type OneShotUsageCollector,
+} from "./task-usage.js";
 import {
   removeExecDirTipsCopies,
   removeStaleReviewsTipsZh,
@@ -162,6 +171,12 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     skillSpans: [],
     skillStartedAt: undefined,
   };
+  // 整任务 LLM 账本（ADR-0066）：Agent 内 usage 由 runReview 返回；Agent 之后的
+  // 一次性调用（tips / 总结 / 候选修复）走 one-shot 层的进程级 sink 采集。
+  // 只进收尾日志，不改审计 / run.json / stdout。
+  const usageCollector = createOneShotUsageCollector();
+  let agentUsage: LlmUsage = ZERO_USAGE;
+  let agentCalls = 0;
   // 缺值的规则包旗标（B 档：按未传处理，但不静默）：先喊一声再往下走，保证即使
   // 后面因别的错误早退，用户也能看到「规则包根本没装载」这个原因。
   for (const flag of args.emptyRuleSkillFlags ?? []) {
@@ -320,6 +335,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       : undefined;
 
   try {
+    setOneShotUsageSink(usageCollector.sink);
     // 输入形态（ADR-0029）：JSON 在装载期补文件头转成统一 diff，之后与 --mr-diff 同一条路径
     const mrText = await readFile(mrPath, "utf8");
     const diff = args.mrFormat === "json" ? mrJsonToUnifiedDiff(mrText, "--mr-json") : mrText;
@@ -401,6 +417,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       throw error;
     }
     const { record, runId, auditPath, reviewsPath, transcriptPaths } = reviewed;
+    agentUsage = record.baseline.usage;
+    agentCalls = reviewed.modelCalls;
     stageClock.auditMs = (stageClock.auditEndedAt ?? Date.now()) - startedAt;
     // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
     if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
@@ -758,13 +776,28 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       }
     }
     await activeReporter?.close().catch(() => undefined);
-    // 阶段账本（最后一行输出）：doneLine 只算到「审计 + 报文」，这里补齐全进程
-    // 的账——总结 / 两次沉降 / 落盘 / 事件 flush 都计入总墙钟。仅在进行过
-    // runReview 时打印（更早的输入错误没有可解释的阶段结构）。
-    if (stageClock.runStartedAt !== undefined) {
-      for (const line of stageBreakdownLines(buildStageBreakdown(stageClock, Date.now()))) {
-        process.stderr.write(`${line}\n`);
+    try {
+      // 阶段账本（最后一行输出）：doneLine 只算到「审计 + 报文」，这里补齐全进程
+      // 的账——总结 / 两次沉降 / 落盘 / 事件 flush 都计入总墙钟。仅在进行过
+      // runReview 时打印（更早的输入错误没有可解释的阶段结构）。
+      if (stageClock.runStartedAt !== undefined) {
+        for (const line of stageBreakdownLines(buildStageBreakdown(stageClock, Date.now()))) {
+          process.stderr.write(`${line}\n`);
+        }
+        // 整任务 LLM 账本（ADR-0066）：Agent 内 + 一次性调用，只走 stderr（因此
+        // 自动进 review-pi.log）；不改审计 / run.json / stdout。
+        for (const line of buildTaskUsageLines({
+          usageCollector,
+          agentUsage,
+          agentCalls,
+          modelId,
+          baseUrl: endpoint.baseUrl,
+        })) {
+          process.stderr.write(`${line}\n`);
+        }
       }
+    } finally {
+      setOneShotUsageSink(null);
     }
   }
 }
@@ -1187,6 +1220,71 @@ function buildSummary(input: {
     skillBashCalls: input.skillBashCalls,
     ledgerHits: input.ledgerHits,
   };
+}
+
+/** 一次性调用分项的展示顺序（`other` 只在异常路径出现，压到最后） */
+const ONE_SHOT_PURPOSE_ORDER: readonly OneShotPurposeKey[] = [
+  "tips",
+  "summary",
+  "candidate-repair",
+  "other",
+];
+
+const ONE_SHOT_PURPOSE_LABEL: Readonly<Record<OneShotPurposeKey, string>> = {
+  tips: "中文 tips",
+  summary: "收尾总结",
+  "candidate-repair": "候选修复",
+  other: "其他",
+};
+
+/**
+ * 整任务 LLM 账本（ADR-0066）：Agent 内 usage + 一次性调用样本。
+ *
+ * 成本必须按模型分桶：tips / 总结走 `model.presentation`（可能不是检视模型），
+ * 候选修复与 Agent 内走检视模型；同一个总 token 套单一单价会算错。
+ */
+function buildTaskUsageLines(input: {
+  readonly usageCollector: OneShotUsageCollector;
+  readonly agentUsage: LlmUsage;
+  readonly agentCalls: number;
+  readonly modelId: string;
+  readonly baseUrl: string;
+}): string[] {
+  const snapshot = input.usageCollector.snapshot();
+  const agentUsage = input.agentUsage;
+  const agentCost = calculateCost(
+    reviewModelOf(input.modelId, input.baseUrl),
+    llmUsageToPiUsage(agentUsage),
+  ).total;
+  let oneShotCost = 0;
+  for (const [model, bucket] of snapshot.total.byModel) {
+    oneShotCost += calculateCost(
+      reviewModelOf(model, input.baseUrl),
+      llmUsageToPiUsage(bucket.usage),
+    ).total;
+  }
+  const purposes: TaskUsagePurposeLine[] = [];
+  for (const key of ONE_SHOT_PURPOSE_ORDER) {
+    const aggregate = snapshot.byPurpose.get(key);
+    if (aggregate === undefined || aggregate.calls <= 0) {
+      continue;
+    }
+    purposes.push({
+      label: ONE_SHOT_PURPOSE_LABEL[key],
+      calls: aggregate.calls,
+      usage: aggregate.usage,
+      usageMissingCalls: aggregate.usageMissingCalls,
+    });
+  }
+  return taskUsageLines({
+    agentCalls: input.agentCalls,
+    agentUsage,
+    oneShotCalls: snapshot.total.calls,
+    oneShotUsage: snapshot.total.usage,
+    oneShotMissingUsageCalls: snapshot.total.usageMissingCalls,
+    purposes,
+    costUsd: agentCost + oneShotCost,
+  });
 }
 
 /** 把内存账本换算成可打印的阶段账本（纯函数边界：便于单测与口径统一） */

@@ -93,6 +93,7 @@ export async function buildReviewSummary(input: ReviewSummaryInput): Promise<Rev
     timeoutMs: input.runtime.timeoutMs,
     ...(input.runtime.retry !== undefined ? { retry: input.runtime.retry } : {}),
     maxTokens: SUMMARY_MAX_TOKENS,
+    purpose: "summary",
     ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
   });
   if (completion.ok) {

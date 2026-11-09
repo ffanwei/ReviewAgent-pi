@@ -1,5 +1,6 @@
 import type { LlmUsage } from "../contracts/llm.js";
 import type { RunProgressEvent } from "../contracts/progress.js";
+import { addUsage } from "../provider/usage-map.js";
 
 /**
  * 运行进度投影的呈现层（ADR-0016）：把核内事件流写成 `stderr` 的人读行。
@@ -289,7 +290,7 @@ export function doneLine(summary: ProgressSummary): string {
 }
 
 /**
- * 阶段账本行（grep 前缀 `⏱`）：主链路一段一行，审计明细压成一行。
+ * 阶段账本行（grep 前缀 `[time]`）：主链路一段一行，审计明细压成一行。
  *
  * 与 `doneLine` 的分工：doneLine 是「检视本体」的账（审计 + 报文，不含总结 /
  * 沉降），本函数是「整次进程」的账——两者数字不同是**有意为之**，标签也明确
@@ -302,10 +303,10 @@ export function stageBreakdownLines(input: StageBreakdown): string[] {
   const total = input.totalMs;
   const pct = (ms: number): string => `${((100 * ms) / total).toFixed(1)}%`;
   const lines = [
-    `⏱ 阶段耗时 · 总墙钟 ${formatSeconds(total)}s（含总结 / 沉降 / 收尾）`,
+    `[time] 阶段耗时 | 总墙钟 ${formatSeconds(total)}s（含总结 / 沉降 / 收尾）`,
   ];
   for (const span of input.stages) {
-    lines.push(`⏱ 阶段 · ${span.label} ${formatSeconds(span.durationMs)}s (${pct(span.durationMs)})`);
+    lines.push(`[time] 阶段 | ${span.label} ${formatSeconds(span.durationMs)}s (${pct(span.durationMs)})`);
   }
   const phaseTotal = input.phases.reduce((sum, span) => sum + span.durationMs, 0);
   if (input.phases.length > 0 && phaseTotal > 0) {
@@ -313,13 +314,80 @@ export function stageBreakdownLines(input: StageBreakdown): string[] {
       const share = ((100 * span.durationMs) / phaseTotal).toFixed(1);
       return `${span.label} ${formatSeconds(span.durationMs)}s (${share}%)`;
     });
-    lines.push(`⏱ 审计明细 · ${parts.join(" · ")}`);
+    lines.push(`[time] 审计明细 | ${parts.join(" | ")}`);
   }
   if (input.nested.length > 0) {
     const parts = input.nested.map(
       (span) => `${span.label} ${formatSeconds(span.durationMs)}s (${pct(span.durationMs)})`,
     );
-    lines.push(`⏱ 嵌套明细 · ${parts.join(" · ")}（含于审计，不重复计入）`);
+    lines.push(`[time] 嵌套明细 | ${parts.join(" | ")}（含于审计，不重复计入）`);
+  }
+  return lines;
+}
+
+/** 一次性调用的一条用途明细（标签由调用方按展示语义给） */
+export interface TaskUsagePurposeLine {
+  readonly label: string;
+  readonly calls: number;
+  readonly usage: LlmUsage;
+  readonly usageMissingCalls: number;
+}
+
+/** 整任务 LLM 账本输入：Agent 内 usage + 一次性调用 usage（成本已按模型分桶加总） */
+export interface TaskUsageLineInput {
+  readonly agentCalls: number;
+  readonly agentUsage: LlmUsage;
+  readonly oneShotCalls: number;
+  readonly oneShotUsage: LlmUsage;
+  readonly oneShotMissingUsageCalls: number;
+  readonly purposes: readonly TaskUsagePurposeLine[];
+  readonly costUsd: number;
+}
+
+/**
+ * 整任务 LLM 账本（grep 前缀 `[usage]`）：Agent 内 + Agent 之后的一次性调用。
+ *
+ * 与 `doneLine` 的分工：doneLine 只算「检视本体」（主会话 + 规则 Skill），打印点
+ * 在 tips / 总结之前；本函数在进程收尾时打印**整任务总账**，是日志里唯一能回答
+ * 「这次任务一共花了多少 token」的行。
+ *
+ * 口径纪律：
+ * - 总有模型调用才输出（早退路径不刷空行）；
+ * - token 三段沿用 doneLine：未命中输入 / 输出 / 缓存命中；
+ * - 一次性调用按用途拆一行（tips / 总结 / 候选修复），便于直接看出钱花在哪；
+ * - 响应未带 usage 的调用计入次数、token 记 0，并在行内显式标注。
+ */
+export function taskUsageLines(input: TaskUsageLineInput): string[] {
+  const totalCalls = input.agentCalls + input.oneShotCalls;
+  if (totalCalls <= 0) {
+    return [];
+  }
+  const totalUsage = addUsage(input.agentUsage, input.oneShotUsage);
+  const missing =
+    input.oneShotMissingUsageCalls > 0
+      ? ` | 未带 usage ${formatInt(input.oneShotMissingUsageCalls)} 次`
+      : "";
+  const lines = [
+    `[usage] 任务总计 | 模型调用 ${formatInt(totalCalls)} 次（Agent ${formatInt(input.agentCalls)} + ` +
+      `一次性 ${formatInt(input.oneShotCalls)}） | ` +
+      `token 输入 ${formatInt(totalUsage.inputTokens)}（未命中） | ` +
+      `输出 ${formatInt(totalUsage.outputTokens)} | ` +
+      `缓存命中 ${formatInt(totalUsage.cacheReadTokens ?? 0)}（${cacheHit(totalUsage)}）` +
+      `${missing} | $${input.costUsd.toFixed(4)}`,
+  ];
+  if (input.oneShotCalls > 0) {
+    const parts = input.purposes.map((purpose) => {
+      const absent =
+        purpose.usageMissingCalls > 0
+          ? `，${formatInt(purpose.usageMissingCalls)} 次无 usage`
+          : "";
+      return (
+        `${purpose.label} ${formatInt(purpose.calls)} 次（输入 ${formatInt(purpose.usage.inputTokens)} / ` +
+        `输出 ${formatInt(purpose.usage.outputTokens)} / ` +
+        `缓存 ${formatInt(purpose.usage.cacheReadTokens ?? 0)}${absent}）`
+      );
+    });
+    lines.push(`[usage] 一次性明细 | ${parts.join(" | ")}`);
   }
   return lines;
 }

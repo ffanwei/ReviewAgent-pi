@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { RunProgressEvent } from "../contracts/progress.js";
-import { createProgressRenderer, doneLine, stageBreakdownLines, type ProgressSummary } from "./progress-render.js";
+import { createProgressRenderer, doneLine, stageBreakdownLines, taskUsageLines, type ProgressSummary } from "./progress-render.js";
 
 // 呈现层验收（ADR-0016）：
 // 1. 事件行永远追加、可 grep（非 TTY 下不出现 \r）；
@@ -230,15 +230,70 @@ test("阶段账本：主链路可相加、审计明细按审计占比、嵌套 S
     ],
     nested: [{ label: "general-code-review", durationMs: 82_100 }],
   });
-  expect(lines[0]).toBe("⏱ 阶段耗时 · 总墙钟 360.5s（含总结 / 沉降 / 收尾）");
-  expect(lines).toContain("⏱ 阶段 · 六阶段审计 232.6s (64.5%)");
+  expect(lines[0]).toBe("[time] 阶段耗时 | 总墙钟 360.5s（含总结 / 沉降 / 收尾）");
+  expect(lines).toContain("[time] 阶段 | 六阶段审计 232.6s (64.5%)");
   // 0 值阶段也保留：投影关闭时能看到「确实没花时间」
-  expect(lines).toContain("⏱ 阶段 · 呈现投影 0.0s (0.0%)");
+  expect(lines).toContain("[time] 阶段 | 呈现投影 0.0s (0.0%)");
   // 审计明细的分母 = 明细之和，不是总墙钟
-  expect(lines.join("\n")).toMatch(/⏱ 审计明细 · P1 6\.5s \(5\.1%\)/);
+  expect(lines.join("\n")).toMatch(/\[time\] 审计明细 \| P1 6\.5s \(5\.1%\)/);
   expect(lines.join("\n")).toContain("（含于审计，不重复计入）");
 });
 
 test("阶段账本：总墙钟为 0 时不输出（避免除零与空块）", () => {
   expect(stageBreakdownLines({ totalMs: 0, stages: [], phases: [], nested: [] })).toEqual([]);
+});
+
+test("整任务账本：Agent + 一次性合并，分项按用途拆行并标出无 usage 调用", () => {
+  const lines = taskUsageLines({
+    agentCalls: 17,
+    agentUsage: {
+      inputTokens: 179_527,
+      outputTokens: 20_854,
+      cacheReadTokens: 165_888,
+    },
+    oneShotCalls: 3,
+    oneShotUsage: { inputTokens: 2_400, outputTokens: 900, cacheReadTokens: 1_200 },
+    oneShotMissingUsageCalls: 1,
+    costUsd: 0.0412,
+    purposes: [
+      { label: "中文 tips", calls: 1, usage: { inputTokens: 1_200, outputTokens: 600, cacheReadTokens: 0 }, usageMissingCalls: 0 },
+      { label: "收尾总结", calls: 1, usage: { inputTokens: 1_200, outputTokens: 300, cacheReadTokens: 1_200 }, usageMissingCalls: 0 },
+      { label: "候选修复", calls: 1, usage: { inputTokens: 0, outputTokens: 0 }, usageMissingCalls: 1 },
+    ],
+  });
+  expect(lines[0]).toBe(
+    "[usage] 任务总计 | 模型调用 20 次（Agent 17 + 一次性 3） | token 输入 181,927（未命中） | " +
+      "输出 21,754 | 缓存命中 167,088（47.9%） | 未带 usage 1 次 | $0.0412",
+  );
+  expect(lines[1]).toBe(
+    "[usage] 一次性明细 | 中文 tips 1 次（输入 1,200 / 输出 600 / 缓存 0） | " +
+      "收尾总结 1 次（输入 1,200 / 输出 300 / 缓存 1,200） | " +
+      "候选修复 1 次（输入 0 / 输出 0 / 缓存 0，1 次无 usage）",
+  );
+});
+
+test("整任务账本：零调用不输出；无一次性调用时只有总计行", () => {
+  expect(
+    taskUsageLines({
+      agentCalls: 0,
+      agentUsage: { inputTokens: 0, outputTokens: 0 },
+      oneShotCalls: 0,
+      oneShotUsage: { inputTokens: 0, outputTokens: 0 },
+      oneShotMissingUsageCalls: 0,
+      purposes: [],
+      costUsd: 0,
+    }),
+  ).toEqual([]);
+
+  const lines = taskUsageLines({
+    agentCalls: 6,
+    agentUsage: { inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 0 },
+    oneShotCalls: 0,
+    oneShotUsage: { inputTokens: 0, outputTokens: 0 },
+    oneShotMissingUsageCalls: 0,
+    purposes: [],
+    costUsd: 0.01,
+  });
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toContain("[usage] 任务总计 | 模型调用 6 次（Agent 6 + 一次性 0）");
 });

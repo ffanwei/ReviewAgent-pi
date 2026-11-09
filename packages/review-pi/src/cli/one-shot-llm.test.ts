@@ -1,7 +1,8 @@
-import { expect, test } from "vitest";
+import { expect, test, afterEach } from "vitest";
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { RetryPolicy } from "../shared/llm-retry.js";
+import { setOneShotUsageSink, type OneShotCallSample } from "../shared/one-shot-llm.js";
 import { completeOneShot } from "./one-shot-llm.js";
 
 // ADR-0051：CLI 自有一次性调用（片级报文 / 收尾总结）的重试与分类。
@@ -179,4 +180,72 @@ test("结构化输出不被支持（400）：去掉 response_format 重试一次
   expect(result).toEqual({ ok: true, text: "recovered" });
   expect(bodies).toHaveLength(2);
   expect(JSON.parse(bodies[1] ?? "{}")).not.toHaveProperty("response_format");
+});
+
+// ---- usage 解析与进程级观测（ADR-0066 的整任务账本数据面） ----
+
+afterEach(() => {
+  setOneShotUsageSink(null);
+});
+
+function completionWithUsage(content: string, usage: Record<string, unknown>): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [{ message: { role: "assistant", content } }],
+      usage,
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+test("响应 usage：折算为未命中输入 / 输出 / 缓读 / 缓写，并进入结果", async () => {
+  const { fetch } = scripted(() =>
+    completionWithUsage("ok", {
+      prompt_tokens: 100,
+      completion_tokens: 20,
+      prompt_tokens_details: { cached_tokens: 40, cache_write_tokens: 10 },
+    }),
+  );
+  const result = await completeOneShot({ ...BASE_INPUT, fetch, purpose: "tips" });
+  expect(result).toEqual({
+    ok: true,
+    text: "ok",
+    usage: {
+      inputTokens: 50,
+      outputTokens: 20,
+      cacheReadTokens: 40,
+      cacheWriteTokens: 10,
+    },
+  });
+});
+
+test("usage sink：成功调用记样本；无 usage 仍计调用；失败尝试不记样本", async () => {
+  const samples: OneShotCallSample[] = [];
+  setOneShotUsageSink((sample) => samples.push(sample));
+
+  const withUsage = scripted(() =>
+    completionWithUsage("ok", {
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      prompt_cache_hit_tokens: 3,
+    }),
+  );
+  await completeOneShot({ ...BASE_INPUT, fetch: withUsage.fetch, purpose: "summary" });
+
+  const withoutUsage = scripted(() => completion("ok"));
+  await completeOneShot({ ...BASE_INPUT, fetch: withoutUsage.fetch, purpose: "candidate-repair" });
+
+  const failing = scripted(() => new Response("boom", { status: 500 }));
+  await completeOneShot({ ...BASE_INPUT, fetch: failing.fetch });
+
+  expect(samples).toHaveLength(2);
+  expect(samples[0]).toEqual({
+    modelId: BASE_INPUT.modelId,
+    purpose: "summary",
+    usage: { inputTokens: 7, outputTokens: 2, cacheReadTokens: 3 },
+  });
+  expect(samples[1]).toEqual({
+    modelId: BASE_INPUT.modelId,
+    purpose: "candidate-repair",
+  });
 });
