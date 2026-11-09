@@ -213,7 +213,9 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   //    绝不切 hunk；2) 过滤后再过体积门（超限直接抛错，不把注定失败的请求
   //    发给模型）。过滤清单经审计尾键 `mrFilter` 与 stderr 一行留痕。
   // 第二期：同一份过滤结果只算一次，分片不改写任何字节。
-  const filtered = filterDiffForReview(input.diff);
+  const filtered = filterDiffForReview(input.diff, {
+    skipTestFiles: runtime.limits.testFiles.skip,
+  });
   assertDiffWithinCharLimit(filtered.diff, runtime.limits.boundary.maxDiffChars);
   const diff = filtered.diff;
   const mrFilter = toMrFilterRecord(filtered);

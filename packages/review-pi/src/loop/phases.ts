@@ -50,6 +50,37 @@ Use the exact candidate id from the candidate list (do not renumber). Include on
 
 export const PHASE_COUNT = PHASE_INSTRUCTIONS.length;
 
+/** 候选生成阶段（Phase 5 / 0-based 4）：测试文件提示的挂载点 */
+export const CANDIDATES_PHASE_INDEX = 4;
+
+/**
+ * 测试文件提示（`limits.testFiles.skip`）：只作阶段消息的**可选附加段**，
+ * `PHASE_INSTRUCTIONS` 本体保持字节冻结（与 Phase 6 skill brief 同缝）。
+ *
+ * 跳过检视时，测试文件块已从 diff 中整块剔除；提示模型不要凭文件名猜测或
+ * 为测试文件产出 finding。关闭跳过时，提示模型按生产代码同等检视。
+ */
+export function buildTestFilePhaseNote(skipTestFiles: boolean): string {
+  return skipTestFiles
+    ? "Note: test files are excluded from this diff by configuration (limits.testFiles.skip = true). Do not review test files and do not emit findings for test paths."
+    : "Note: test files are included in this diff by configuration (limits.testFiles.skip = false). Review test files like production code when the change affects behavior.";
+}
+
+/**
+ * 单个阶段的完整指令（`PHASE_INSTRUCTIONS[index]` + 配置驱动的附加段）。
+ * Phase 5 按 `skipTestFiles` 附加测试文件提示；其余阶段逐字节等于原指令。
+ */
+export function buildPhaseInstruction(index: number, skipTestFiles: boolean): string {
+  const instruction = PHASE_INSTRUCTIONS[index];
+  if (instruction === undefined) {
+    throw new Error(`missing phase instruction at index ${index}`);
+  }
+  if (index !== CANDIDATES_PHASE_INDEX) {
+    return instruction;
+  }
+  return `${instruction}\n\n${buildTestFilePhaseNote(skipTestFiles)}`;
+}
+
 /** 六阶段名（固定顺序；PhaseRecord.phase 与指令前缀一一对应） */
 export const PHASE_ORDER: readonly string[] = [
   "Change Understanding",

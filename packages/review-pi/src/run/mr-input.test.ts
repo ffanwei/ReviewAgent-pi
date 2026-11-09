@@ -116,7 +116,45 @@ describe("toMrFilterRecord / formatMrFilterNotice", () => {
     expect(record).toBeDefined();
     expect(record?.droppedFiles).toBe(25);
     expect(record?.paths).toHaveLength(20);
-    expect(record?.reasons).toEqual({ lockfile: 25, generated: 0, minified: 0, binary: 0 });
+    expect(record?.reasons).toEqual({ lockfile: 25, generated: 0, minified: 0, binary: 0, test: 0 });
     expect(formatMrFilterNotice(record!)).toContain("lockfile=25");
+  });
+});
+
+describe("测试文件跳过（limits.testFiles.skip）", () => {
+  const TEST_FILE = block("src/test/java/com/example/FooTest.java");
+  const SPEC_FILE = block("web/src/button.spec.tsx");
+  const PROD_FILE = block("src/main/java/com/example/Foo.java");
+
+  test("缺省 skip=true：测试文件整块剔除，生产文件逐字节保留", () => {
+    const input = [PROD_FILE, TEST_FILE, SPEC_FILE].join("\n");
+    const result = filterDiffForReview(input);
+    expect(result.diff).toBe(PROD_FILE);
+    expect(result.dropped).toEqual([
+      { path: "src/test/java/com/example/FooTest.java", reason: "test" },
+      { path: "web/src/button.spec.tsx", reason: "test" },
+    ]);
+  });
+
+  test("skip=false：测试文件原样保留（零介入）", () => {
+    const input = [PROD_FILE, TEST_FILE, SPEC_FILE].join("\n");
+    const result = filterDiffForReview(input, { skipTestFiles: false });
+    expect(result.diff).toBe(input);
+    expect(result.dropped).toEqual([]);
+    expect(result.droppedChars).toBe(0);
+  });
+
+  test("非测试目录（testdata / test-fixtures）不被误剔除", () => {
+    const fixture = block("src/testdata/sample.json");
+    const helpers = block("src/test-fixtures/helper.ts");
+    const result = filterDiffForReview([fixture, helpers].join("\n"));
+    expect(result.dropped).toEqual([]);
+    expect(result.diff).toBe([fixture, helpers].join("\n"));
+  });
+
+  test("审计 reasons 固定含 test 键", () => {
+    const record = toMrFilterRecord(filterDiffForReview([PROD_FILE, TEST_FILE].join("\n")));
+    expect(record?.reasons).toEqual({ lockfile: 0, generated: 0, minified: 0, binary: 0, test: 1 });
+    expect(formatMrFilterNotice(record!)).toContain("test=1");
   });
 });

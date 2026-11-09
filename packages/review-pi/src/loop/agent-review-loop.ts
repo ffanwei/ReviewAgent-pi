@@ -33,7 +33,12 @@ import {
   TRUNCATION_TOOL_BUDGET,
 } from "./constants.js";
 import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
-import { PHASE_COUNT, PHASE_INSTRUCTIONS, PHASE_ORDER } from "./phases.js";
+import {
+  CANDIDATES_PHASE_INDEX,
+  PHASE_COUNT,
+  PHASE_ORDER,
+  buildPhaseInstruction,
+} from "./phases.js";
 import { createRequestProgress } from "./request-progress.js";
 import type { CandidateRepairFn } from "./candidate-repair.js";
 import { fromWireToolName, toWireToolName } from "../tools/registry.js";
@@ -151,7 +156,6 @@ export interface AgentReviewLoopOutcome {
 }
 
 /** 深解析阶段（0-based 指令下标）：候选与裁决的解析点 */
-const CANDIDATES_PHASE_INDEX = 4;
 const VERIFICATION_PHASE_INDEX = 5;
 
 /** 有界候选修复（P1 步骤 3）：整个 run 最多 2 次调用，单次最多 8 条候选 */
@@ -643,15 +647,13 @@ export async function runAgentReviewLoop(
    * 随该决策退役。无附加时逐字节不变（N=0 的形态）。
    */
   function phaseMessage(index: number): AgentMessage {
-    const instruction = PHASE_INSTRUCTIONS[index];
-    if (instruction === undefined) {
-      throw new Error(`missing phase instruction at index ${index}`);
-    }
     const skillBrief =
       index === VERIFICATION_PHASE_INDEX ? buildSkillCandidatesBrief(roundSkillBatches) : undefined;
+    const instruction = buildPhaseInstruction(index, runtime.limits.testFiles.skip);
+    const content = skillBrief === undefined ? instruction : `${instruction}\n\n${skillBrief}`;
     return {
       role: "user",
-      content: skillBrief === undefined ? instruction : `${instruction}\n\n${skillBrief}`,
+      content,
       // 相位推进时刻（ADR-0015：不再写 0——转录与 view 的消息时间以此为准；
       // timestamp 不进 wire，字节门不受影响）
       timestamp: Date.now(),

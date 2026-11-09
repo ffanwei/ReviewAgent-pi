@@ -9,7 +9,7 @@ import {
   type ViewToolPart,
   type ViewUserMessage,
 } from "../export/transcript.js";
-import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
+import { PHASE_INSTRUCTIONS, buildPhaseInstruction } from "../loop/phases.js";
 import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
@@ -215,7 +215,7 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
   expect(firstUser["timestamp"] as number).toBeGreaterThan(0);
   expect(String(doc.messages[1]?.["content"])).toContain("Merge request under review.");
   for (let phase = 0; phase < 6; phase += 1) {
-    expect(doc.messages[2 + phase * 2]?.["content"]).toBe(PHASE_INSTRUCTIONS[phase]);
+    expect(doc.messages[2 + phase * 2]?.["content"]).toBe(buildPhaseInstruction(phase, true));
   }
   // assistant 回复文本（脚本原文）+ 时间戳/usage 原样在场
   expect([0, 1, 2, 3, 4, 5].map((phase) => textOf(doc.messages[3 + phase * 2]))).toEqual([

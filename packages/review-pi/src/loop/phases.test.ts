@@ -1,5 +1,11 @@
 import { expect, test } from "vitest";
-import { PHASE_COUNT, PHASE_INSTRUCTIONS, PHASE_ORDER } from "./phases.js";
+import {
+  CANDIDATES_PHASE_INDEX,
+  PHASE_COUNT,
+  PHASE_INSTRUCTIONS,
+  PHASE_ORDER,
+  buildPhaseInstruction,
+} from "./phases.js";
 
 // 六阶段指令：不再对 DSH 审计真源逐字节对照（ADR-0038）。
 //
@@ -23,4 +29,20 @@ test("每条指令都要求以单个 JSON 对象回复", () => {
   for (const instruction of PHASE_INSTRUCTIONS) {
     expect(instruction).toContain("Reply with a single JSON object:");
   }
+});
+
+test("测试文件提示只挂在 Phase 5，其余阶段逐字节等于原指令", () => {
+  PHASE_INSTRUCTIONS.forEach((instruction, index) => {
+    const skipped = buildPhaseInstruction(index, true);
+    const included = buildPhaseInstruction(index, false);
+    if (index === CANDIDATES_PHASE_INDEX) {
+      expect(skipped).toContain("test files are excluded");
+      expect(included).toContain("test files are included");
+      expect(skipped.startsWith(instruction)).toBe(true);
+      expect(included.startsWith(instruction)).toBe(true);
+    } else {
+      expect(skipped).toBe(instruction);
+      expect(included).toBe(instruction);
+    }
+  });
 });

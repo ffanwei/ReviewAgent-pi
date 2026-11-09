@@ -1,10 +1,13 @@
 import type { MrFilteredPath, MrFilterReason, MrFilterRecord } from "../contracts/run.js";
+import { isTestFilePath } from "../shared/test-file.js";
 
 // 大 diff 第一期内核入口处理（预处理过滤 + 体积门）：
 //
 // 1. 预过滤：按 `diff --git` 文件块（无该头时退回 `--- ` / `+++ ` 文件头对）
 //    识别 lockfile / 生成物 / minified / 二进制块，整块剔除。**绝不切 hunk**：
 //    块即文件，hunk 行号与 evidence 链完整保留。
+//    测试文件由 `limits.testFiles.skip`（缺省 true）单独控制：开启时整块剔除，
+//    关闭时原样保留（reason = "test"，与其他噪声原因共用同一审计口径）。
 // 2. 体积门：过滤后仍超过 `limits.boundary.maxDiffChars` 时直接抛人话错误，
 //    不再把注定失败的请求发给模型（`null` = 关门）。
 //
@@ -189,8 +192,20 @@ function isGenerated(posixPath: string, basename: string): boolean {
   return GENERATED_SUFFIXES.some((suffix) => basename.endsWith(suffix));
 }
 
-/** 块级分类；第一个命中的原因生效（binary > lockfile > minified > generated） */
-function classifyBlock(block: readonly string[], posixPath: string): MrFilterReason | undefined {
+export interface FilterDiffOptions {
+  /**
+   * 是否整块剔除测试文件（`limits.testFiles.skip`，缺省 true）。
+   * 关闭 = 原样保留；开启 = reason = "test"。
+   */
+  readonly skipTestFiles?: boolean;
+}
+
+/** 块级分类；第一个命中的原因生效（binary > lockfile > minified > generated > test） */
+function classifyBlock(
+  block: readonly string[],
+  posixPath: string,
+  skipTestFiles: boolean,
+): MrFilterReason | undefined {
   if (
     block.some(
       (line) => line.startsWith("Binary files ") || line.startsWith("GIT binary patch"),
@@ -208,13 +223,20 @@ function classifyBlock(block: readonly string[], posixPath: string): MrFilterRea
   if (isGenerated(posixPath, basename)) {
     return "generated";
   }
+  if (skipTestFiles && isTestFilePath(posixPath)) {
+    return "test";
+  }
   return undefined;
 }
 
 /**
  * 预过滤：整块剔除噪声文件。无命中时返回**原串**（调用方可用 `===` 判定零介入）。
  */
-export function filterDiffForReview(diff: string): FilteredDiff {
+export function filterDiffForReview(
+  diff: string,
+  options: FilterDiffOptions = {},
+): FilteredDiff {
+  const skipTestFiles = options.skipTestFiles ?? true;
   if (diff.trim() === "") {
     return { diff, dropped: [], droppedChars: 0 };
   }
@@ -232,7 +254,7 @@ export function filterDiffForReview(diff: string): FilteredDiff {
     if (path === "") {
       continue;
     }
-    const reason = classifyBlock(block, path);
+    const reason = classifyBlock(block, path, skipTestFiles);
     if (reason === undefined) {
       continue;
     }
