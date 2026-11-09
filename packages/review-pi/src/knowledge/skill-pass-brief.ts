@@ -40,6 +40,7 @@ function invocationContract(name: string, runtime: SkillPassRuntimeInfo): string
     `- Set the "rule" field to the id of the specific rule from this skill's rules/ that the finding violates (that rule file's frontmatter id, e.g. "GEN-SQL-001"). Use "${name}" only when the finding does not map to any single rule.`,
     "- Write EVERY finding field (id/title/description/category/evidence) in ENGLISH ONLY.",
     "- Evidence is mandatory (symbol + line + excerpt); candidates without evidence are dropped.",
+    "- Do not repeat a finding the main session already reported for the same file and line. Only report the same location again if it is a genuinely different defect, and state that difference explicitly in the description.",
     '- If no rule violation survives your inspection, reply with {"candidates": []}.',
   ].join("\n");
 }

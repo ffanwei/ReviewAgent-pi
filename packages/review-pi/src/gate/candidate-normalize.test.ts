@@ -1,7 +1,10 @@
 import { expect, test } from "vitest";
 
 import { validateFinding } from "../finding/finding-schema.js";
-import { normalizeCandidates } from "./candidate-normalize.js";
+import {
+  normalizeCandidates,
+  normalizeCategoryValue,
+} from "./candidate-normalize.js";
 
 // 候选确定性归一化（P1 字段合规修复）：只修信封 / 格式字段，
 // 绝不补写证据、行号、文件路径。不可用的定位字段原样留给 SCHEMA_INVALID。
@@ -81,4 +84,29 @@ test("非对象候选原样保留（不伪造对象）", () => {
   const out = normalizeCandidates({ candidates: ["not an object", null, 42], round: 1 });
   expect(out.candidates).toEqual(["not an object", null, 42]);
   expect(out.records).toEqual([]);
+});
+
+test("category 档 B：大小写 / 连字符 / 语义桶归一（去重键共用同一函数）", () => {
+  const out = normalizeCandidates({
+    candidates: [
+      { ...VALID, category: " null-safety " },
+      { ...VALID, id: "F002", category: "error handling" },
+      { ...VALID, id: "F003", category: "secrets" },
+      { ...VALID, id: "F004", category: "input_validation" },
+      { ...VALID, id: "F005", category: "resource-exhaustion" },
+      { ...VALID, id: "F006", category: "performance" },
+    ],
+    round: 1,
+  });
+  expect(out.candidates.map((entry) => (entry as Record<string, unknown>).category)).toEqual([
+    "CORRECTNESS",
+    "CORRECTNESS",
+    "SECURITY",
+    "SECURITY",
+    "RESOURCE",
+    "PERFORMANCE",
+  ]);
+  expect(normalizeCategoryValue("  null-safety ")).toBe("CORRECTNESS");
+  expect(normalizeCategoryValue("RESOURCE_MANAGEMENT")).toBe("RESOURCE");
+  expect(normalizeCategoryValue("uncategorized")).toBe("UNCATEGORIZED");
 });

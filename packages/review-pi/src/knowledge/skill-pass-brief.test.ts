@@ -51,6 +51,8 @@ test("会话首消息：内核 skill 块（真实 pack 路径）+ 宿主平台�
   expect(prompt).toContain('Use "sample-rule" only when the finding does not map to any single rule');
   expect(prompt).toContain("ENGLISH ONLY");
   expect(prompt).toContain("Evidence is mandatory");
+  // 规则 Skill 去重软约束：硬去重仍由 category 归一 + candidate-merge 承担
+  expect(prompt).toContain("Do not repeat a finding the main session already reported");
   expect(prompt).toContain('{"candidates": []}');
 });
 

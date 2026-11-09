@@ -50,6 +50,26 @@ test("同 (file, line, category) 的 skill 候选被主候选合并", () => {
   expect(out.mergedCounts).toEqual([1]);
 });
 
+test("category 文案差异（大小写 / 连字符 / 语义桶）仍合并，不同桶不误合并", () => {
+  const out = mergeSkillCandidates({
+    primary: [candidate({ category: "NULL-SAFETY" })],
+    batches: [
+      {
+        skill: "a",
+        candidates: [
+          candidate({ id: "S001", category: "null_safety" }),
+          candidate({ id: "S002", category: "correctness" }),
+          candidate({ id: "S003", category: "error-handling" }),
+          // 同一位置但不同语义桶：不是同一缺陷，必须保留
+          candidate({ id: "S004", category: "performance" }),
+        ],
+      },
+    ],
+  });
+  expect(out.candidates.map((entry) => (entry as { id: string }).id)).toEqual(["F001", "S004"]);
+  expect(out.mergedCounts).toEqual([3]);
+});
+
 test("跨 skill 重复：CLI 顺序最先的批次胜出", () => {
   const out = mergeSkillCandidates({
     primary: [],

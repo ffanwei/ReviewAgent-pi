@@ -204,6 +204,15 @@ test("category：模型枚举外 → 查 finding.category 兜底表（大小写�
   });
   expect(direct.kind === "ok" && direct.files[0]?.reviewTips[0]?.category).toBe("安全");
 
+  // 连字符写法也命中兜底表（与候选归一的 token 口径一致）
+  const hyphen = await buildShardReport({
+    findings: [finding({ category: "NULL-SAFETY" })],
+    codeByFinding: { F001: "x" },
+    runtime: RUNTIME,
+    fetch: gatewayReturning(JSON.stringify({ tips: [modelTip({ category: "风险" })] })).fetch,
+  });
+  expect(hyphen.kind === "ok" && hyphen.files[0]?.reviewTips[0]?.category).toBe("可靠性");
+
   const miss = await buildShardReport({
     findings: [finding({ category: "NULL_POINTER_DEREFERENCE_ON_PATH_XYZ" })], // 表未命中
     codeByFinding: { F001: "x" },

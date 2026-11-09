@@ -12,6 +12,7 @@
 // - **语义冲突不合并**：去重键只含 (file, line, category)，不同规则/不同主张
 //   落在同一行时两条都保留。
 import { validateFinding } from "../finding/finding-schema.js";
+import { normalizeCategoryValue } from "./candidate-normalize.js";
 
 /** 一个 skill 会话的候选批次（顺序 = CLI 传入顺序） */
 export interface SkillCandidateBatch {
@@ -36,13 +37,19 @@ export interface MergeSkillCandidatesOutput {
   readonly survivingBatches: readonly SkillCandidateBatch[];
 }
 
-/** 去重键：file + line + category（file 为字符串、line 为数字、category 为字符串） */
+/**
+ * 去重键：file + line + category（file 为字符串、line 为数字、category 为字符串）。
+ *
+ * `category` 必须走与候选归一入口**同一个** `normalizeCategoryValue`：调用方若
+ * 绕过 `normalizeCandidates` 直接合并（或归一前后混用），大小写 / 连字符写法
+ * 不同也不会漏合并（档 B 语义桶）。
+ */
 function dedupeKey(candidate: unknown): string | undefined {
   if (validateFinding(candidate).length > 0) {
     return undefined;
   }
   const record = candidate as { file: string; line: number; category: string };
-  return `${record.file}\u0000${String(record.line)}\u0000${record.category}`;
+  return `${record.file}\u0000${String(record.line)}\u0000${normalizeCategoryValue(record.category)}`;
 }
 
 export function mergeSkillCandidates(input: MergeSkillCandidatesInput): MergeSkillCandidatesOutput {

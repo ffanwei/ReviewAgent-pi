@@ -49,6 +49,26 @@ const DEFAULT_CATEGORY = "UNCATEGORIZED";
 const DEFAULT_RULE = "GENERAL";
 const DEFAULT_CONFIDENCE = 0.5;
 
+/**
+ * 分类语义桶（档 B）：规则包的 `category` 是小写细分类，主会话习惯用大写
+ * 大类；这里把它们收敛到同一套 canonical 词表，避免同一条缺陷因分类写法
+ * 不同而绕过 `(file, line, category)` 去重。
+ *
+ * 只收规则包实际使用的细分类 + 与既有 canonical 名一一对应的别名；不做
+ * 更激进的同义词聚类（那会改变去重语义，需单独 ADR）。
+ */
+const CATEGORY_ALIASES: Readonly<Record<string, string>> = {
+  SECRETS: "SECURITY",
+  PRIVACY: "SECURITY",
+  INJECTION: "SECURITY",
+  INPUT_VALIDATION: "SECURITY",
+  RESOURCE_MANAGEMENT: "RESOURCE",
+  RESOURCE_EXHAUSTION: "RESOURCE",
+  NULL_SAFETY: "CORRECTNESS",
+  ERROR_HANDLING: "CORRECTNESS",
+  RELIABILITY: "CORRECTNESS",
+};
+
 export function normalizeCandidates(input: NormalizeCandidatesInput): NormalizeCandidatesOutput {
   const idPrefix = input.idPrefix ?? `round-${String(input.round)}-candidate-`;
   const candidates: unknown[] = [];
@@ -267,11 +287,22 @@ export function normalizeFilePath(value: string): string {
   return file;
 }
 
+/**
+ * 分类归一化（档 B）：`trim` → 大写 → 连字符 / 空白 → 下划线 → 语义桶。
+ *
+ * `candidate-merge.ts` 也调用本函数，保证「候选归一入口」与「去重键」使用
+ * 完全相同的词表（绕过归一入口的调用方也不会漏合并）。
+ */
+export function normalizeCategoryValue(value: string): string {
+  const token = value.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  return CATEGORY_ALIASES[token] ?? token;
+}
+
 function normalizeCategory(record: Record<string, unknown>, repaired: Set<string>): void {
   if (typeof record.category === "string" && record.category.trim() !== "") {
-    const trimmed = record.category.trim();
-    if (trimmed !== record.category) {
-      record.category = trimmed;
+    const normalized = normalizeCategoryValue(record.category);
+    if (normalized !== record.category) {
+      record.category = normalized;
       repaired.add("category");
     }
     return;

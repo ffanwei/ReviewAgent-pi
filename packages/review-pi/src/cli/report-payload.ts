@@ -150,14 +150,20 @@ export const LEVEL_BY_SEVERITY: Readonly<Record<Finding["severity"], AgentReview
  */
 const CATEGORY_FALLBACK: Readonly<Record<string, AgentReviewCategory>> = {
   SECURITY: "安全",
+  SECRETS: "安全",
+  PRIVACY: "安全",
   VULNERABILITY: "安全",
   INJECTION: "安全",
+  INPUT_VALIDATION: "安全",
   XSS: "安全",
   SSRF: "安全",
   CORRECTNESS: "可靠性",
   BUG: "可靠性",
   LOGIC: "可靠性",
   ERROR_HANDLING: "可靠性",
+  RELIABILITY: "可靠性",
+  RESOURCE: "可靠性",
+  RESOURCE_MANAGEMENT: "可靠性",
   RESOURCE_LEAK: "可靠性",
   CONCURRENCY: "可靠性",
   RACE_CONDITION: "可靠性",
@@ -167,6 +173,7 @@ const CATEGORY_FALLBACK: Readonly<Record<string, AgentReviewCategory>> = {
   PERF: "性能",
   EFFICIENCY: "性能",
   MEMORY: "性能",
+  RESOURCE_EXHAUSTION: "性能",
   TESTABILITY: "可测试性",
   TEST: "可测试性",
   TESTING: "可测试性",
@@ -624,7 +631,12 @@ function resolveCategory(modelCategory: string, findingCategory: string): AgentR
   if ((AGENT_REVIEW_CATEGORIES as readonly string[]).includes(modelCategory)) {
     return modelCategory as AgentReviewCategory;
   }
-  return CATEGORY_FALLBACK[findingCategory.trim().toUpperCase()] ?? undefined;
+  return CATEGORY_FALLBACK[normalizeCategoryToken(findingCategory)] ?? undefined;
+}
+
+/** 兜底表键归一：trim → 大写 → 连字符 / 空白 → 下划线（`NULL-SAFETY` 也能命中） */
+function normalizeCategoryToken(value: string): string {
+  return value.trim().toUpperCase().replace(/[\s-]+/g, "_");
 }
 
 /** 子类兜底：finding.category 的中文映射，再退「通用问题」（不编具体缺陷名） */
@@ -633,7 +645,7 @@ function derivedSubcategory(
   label: string,
   degraded: string[],
 ): string {
-  const mapped = CATEGORY_FALLBACK[finding.category.trim().toUpperCase()] ?? "通用问题";
+  const mapped = CATEGORY_FALLBACK[normalizeCategoryToken(finding.category)] ?? "通用问题";
   degraded.push(`${label}: subcategory missing, derived ${JSON.stringify(mapped)}`);
   return mapped;
 }
