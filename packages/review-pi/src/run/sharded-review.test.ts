@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, expect, test } from "vitest";
 import type { RunProgressEvent } from "../contracts/progress.js";
 import { fakeFetch, type FakeReply, type FakeUsage } from "../provider/fake-fetch.js";
-import { DEFAULT_LIMITS, type SplitLimits } from "../shared/config.js";
+import { DEFAULT_LIMITS, type FindingScopeLimits, type SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
@@ -97,7 +97,10 @@ const BLOCK_A = fileBlock("src/main/java/com/example/Alpha.java", "ALPHA-MARKER"
 const BLOCK_B = fileBlock("src/main/java/com/example/Beta.java", "BETA-MARKER");
 const TWO_FILE_DIFF = `${BLOCK_A}\n${BLOCK_B}`;
 
-function splitRuntime(overrides: Partial<SplitLimits>): ReviewRuntime {
+function splitRuntime(
+  overrides: Partial<SplitLimits>,
+  findingScope: FindingScopeLimits = DEFAULT_LIMITS.findingScope,
+): ReviewRuntime {
   return {
     ...DEFAULT_REVIEW_RUNTIME,
     limits: {
@@ -106,6 +109,7 @@ function splitRuntime(overrides: Partial<SplitLimits>): ReviewRuntime {
       // 否则失败片的请求会被重试放大（ADR-0051 的行为另有专测覆盖）。
       retry: { ...DEFAULT_LIMITS.retry, maxAttempts: 1, reviewTurnAttempts: 1 },
       split: { ...DEFAULT_LIMITS.split, ...overrides },
+      findingScope,
     },
   };
 }
@@ -282,11 +286,16 @@ test("分片执行：每片输入只含本片 diff + 其他文件摘要，review
 
 test("分片 findings 合并 + 账目闭合 + run.json.shards 可寻址", async () => {
   const runsRoot = tempRunsRoot();
-  const runtime = splitRuntime({
-    enabled: true,
-    maxShardChars: Math.max(BLOCK_A.length, BLOCK_B.length) + 1,
-    maxShards: 4,
-  });
+  const runtime = splitRuntime(
+    {
+      enabled: true,
+      maxShardChars: Math.max(BLOCK_A.length, BLOCK_B.length) + 1,
+      maxShards: 4,
+    },
+    // 本用例专门验证「跨片同位置候选合并」：第 2 片故意重报第 1 片的文件，
+    // 默认的非 diff 区域过滤会（正确地）把它挡在片外，故这里关闭过滤。
+    { enabled: false, contextLines: 10 },
+  );
   const alpha = "src/main/java/com/example/Alpha.java";
   const beta = "src/main/java/com/example/Beta.java";
   const shardOneCandidate = candidate("F001", alpha, 11, { severity: "P2", confidence: 0.6 });
@@ -446,7 +455,9 @@ test("第二片失败：退出抛错、不写聚合产物，已完成的片产�
 test("单片路径：hook 恰好一次，label {index:1,total:1}，findings 即该片定型结果，files = 整份 diff 的文件", async () => {
   const runsRoot = tempRunsRoot();
   const runtime = splitRuntime({ enabled: false, maxShardChars: 200 });
-  const script = fakeFetch(sixPhaseWithCandidate(candidate("C1", "src/Foo.java", 3)));
+  const script = fakeFetch(
+    sixPhaseWithCandidate(candidate("C1", "src/main/java/com/example/Alpha.java", 3)),
+  );
   const seen: { label: { index: number; total: number }; findings: unknown[]; files: string[] }[] = [];
 
   const run = await runReview({

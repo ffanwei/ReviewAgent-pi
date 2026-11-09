@@ -21,6 +21,7 @@ import type { AgentTranscriptCapture } from "../export/transcript.js";
 import { applyCandidateGate } from "../gate/candidate-gate.js";
 import { normalizeCandidates } from "../gate/candidate-normalize.js";
 import { mergeSkillCandidates, type SkillCandidateBatch } from "../gate/candidate-merge.js";
+import type { DiffScope } from "../gate/diff-scope.js";
 import { validateFinding } from "../finding/finding-schema.js";
 import { assistantText, captureWire, reviewModelOf, reviewStreamFn } from "../provider/pi-client.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
@@ -104,6 +105,11 @@ export interface AgentReviewLoopInputs {
    * 裁决前发起至多一次模型修复。缺省 = 不修复（现有测试 / 直调零漂移）。
    */
   readonly candidateRepair?: CandidateRepairFn;
+  /**
+   * 非 diff 区域过滤（`limits.findingScope`）：由 run 层按本遍 diff 构建。
+   * 缺省 undefined = 不过滤（内核直调 / 单测零漂移）。
+   */
+  readonly scope?: DiffScope;
   /**
    * 运行进度投影（ADR-0016）：缺省不注入 = 零输出、零行为变化。事件只投影既有
    * 留痕（阶段推进 / 请求首尾 / 工具首尾 / skill 会话首尾），不改 wire 字节、
@@ -409,6 +415,7 @@ export async function runAgentReviewLoop(
       emittedIds,
       emittedContentKeys,
       round,
+      ...(inputs.scope !== undefined ? { scope: inputs.scope } : {}),
     });
     findings.push(...gate.findings);
     rejections.push(...gate.rejections);

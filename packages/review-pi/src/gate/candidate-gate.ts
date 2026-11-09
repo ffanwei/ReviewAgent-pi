@@ -1,6 +1,7 @@
 // 候选拦截链（测量常量面：六阶段语义的 Evidence Gate 部分）。
 // "No Evidence, No Finding"：SCHEMA_INVALID → NON_ENGLISH → NO_EVIDENCE
-// → VERIFICATION_FAILED → DUPLICATE_ID，每候选至多留痕一条（首个失败阶段）。
+// → VERIFICATION_FAILED → OUT_OF_SCOPE → DUPLICATE_ID，每候选至多留痕一条
+// （首个失败阶段）。
 //
 // 跨轮去重口径（P1）：**按内容键** `(normalize(file), line, normalize(title))`
 // 判重，不按模型给的 `id`。模型每轮都可能从 F001 重新编号，id 复用不代表
@@ -10,6 +11,7 @@ import type { CandidateRejection } from "../contracts/run.js";
 import { findingContentKey } from "../finding/finding-key.js";
 import { validateFinding } from "../finding/finding-schema.js";
 import type { VerificationVerdict } from "../loop/parse.js";
+import { describeScopeRejection, type DiffScope } from "./diff-scope.js";
 
 export interface GateInput {
   /** Deep Reasoning 阶段产出的原始候选对象 */
@@ -21,6 +23,11 @@ export interface GateInput {
   /** 已产出 Finding 的内容键集合（跨轮去重的真实依据；不会被本函数修改） */
   readonly emittedContentKeys?: ReadonlySet<string>;
   readonly round: number;
+  /**
+   * 非 diff 区域过滤（`limits.findingScope`）：缺省 undefined = 不过滤
+   * （内核直调 / 单测零漂移）；run 层按配置构建后传入。
+   */
+  readonly scope?: DiffScope;
 }
 
 export interface GateOutput {
@@ -44,6 +51,7 @@ export function applyCandidateGate(input: GateInput): GateOutput {
       candidateId,
       resolvedVerdicts[index],
       emittedContentKeys,
+      input.scope,
     );
     if (rejection !== undefined) {
       rejections.push(rejection);
@@ -100,6 +108,7 @@ function firstFailingStage(
   candidateId: string,
   verdict: VerificationVerdict | undefined,
   emittedContentKeys: ReadonlySet<string>,
+  scope: DiffScope | undefined,
 ): CandidateRejection | undefined {
   const schemaErrors = validateFinding(candidate);
   if (schemaErrors.length > 0) {
@@ -121,6 +130,16 @@ function firstFailingStage(
       stage: "VERIFICATION_FAILED",
       reason: `evidence verification rejected the candidate${detail}`,
     };
+  }
+  if (scope !== undefined) {
+    const located = candidate as Pick<Finding, "file" | "line">;
+    if (scope.classify(located.file, located.line) !== "in-scope") {
+      return {
+        candidateId,
+        stage: "OUT_OF_SCOPE",
+        reason: describeScopeRejection(scope, located),
+      };
+    }
   }
   const contentKey = findingContentKey(candidate as { file: string; line: number; title: string });
   if (emittedContentKeys.has(contentKey)) {

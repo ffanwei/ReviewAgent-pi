@@ -2,9 +2,10 @@ import { expect, test } from "vitest";
 import { findingContentKey } from "../finding/finding-key.js";
 import type { VerificationVerdict } from "../loop/parse.js";
 import { applyCandidateGate } from "./candidate-gate.js";
+import { buildDiffScope } from "./diff-scope.js";
 
 // 候选拦截链（测量常量面：六阶段语义的一部分）。
-// 顺序：SCHEMA_INVALID → NON_ENGLISH → NO_EVIDENCE → VERIFICATION_FAILED → DUPLICATE_ID，
+// 顺序：SCHEMA_INVALID → NON_ENGLISH → NO_EVIDENCE → VERIFICATION_FAILED → OUT_OF_SCOPE → DUPLICATE_ID，
 // 每个候选最多留痕一条（首个失败阶段）。
 
 const VALID_CANDIDATE = {
@@ -163,3 +164,83 @@ test("入参 emittedIds 不被原地修改（不可变纪律）", () => {
   });
   expect(emittedIds.size).toBe(0);
 });
+
+test("非 diff 区域过滤：hunk 内保留，hunk 外按 OUT_OF_SCOPE 拦截", () => {
+  const diff = [
+    "diff --git a/src/Foo.java b/src/Foo.java",
+    "--- a/src/Foo.java",
+    "+++ b/src/Foo.java",
+    "@@ -40,5 +40,5 @@",
+    " line",
+    " line",
+    "+changed",
+    " line",
+    " line",
+  ].join("\n");
+  const scope = buildDiffScope(diff, 2);
+
+  const kept = applyCandidateGate({
+    candidates: [VALID_CANDIDATE], // src/Foo.java:42（hunk 40–44 + 前后 2 行）
+    verdicts: verdicts({ F001: { pass: true, reason: "" } }),
+    emittedIds: new Set(),
+    round: 1,
+    scope,
+  });
+  expect(kept.findings).toHaveLength(1);
+  expect(kept.rejections).toEqual([]);
+
+  const outside = applyCandidateGate({
+    candidates: [{ ...VALID_CANDIDATE, line: 100 }],
+    verdicts: verdicts({ F001: { pass: true, reason: "" } }),
+    emittedIds: new Set(),
+    round: 1,
+    scope,
+  });
+  expect(outside.findings).toEqual([]);
+  expect(outside.rejections[0]?.stage).toBe("OUT_OF_SCOPE");
+  expect(outside.rejections[0]?.reason).toContain("outside the changed hunks");
+  expect(outside.rejections[0]?.reason).toContain("±2 lines");
+});
+
+test("非 diff 区域过滤：文件不在本遍 diff → OUT_OF_SCOPE（原因可区分）", () => {
+  const diff = [
+    "diff --git a/src/Foo.java b/src/Foo.java",
+    "--- a/src/Foo.java",
+    "+++ b/src/Foo.java",
+    "@@ -1,1 +1,1 @@",
+    "-old",
+    "+new",
+  ].join("\n");
+  const out = applyCandidateGate({
+    candidates: [{ ...VALID_CANDIDATE, file: "src/Other.java" }],
+    verdicts: verdicts({ F001: { pass: true, reason: "" } }),
+    emittedIds: new Set(),
+    round: 1,
+    scope: buildDiffScope(diff, 10),
+  });
+  expect(out.findings).toEqual([]);
+  expect(out.rejections[0]?.stage).toBe("OUT_OF_SCOPE");
+  expect(out.rejections[0]?.reason).toContain("not part of the reviewed diff");
+});
+
+test("OUT_OF_SCOPE 先于 DUPLICATE_ID：范围外的重复候选只留一条拦截记录", () => {
+  const diff = [
+    "diff --git a/src/Foo.java b/src/Foo.java",
+    "--- a/src/Foo.java",
+    "+++ b/src/Foo.java",
+    "@@ -1,1 +1,1 @@",
+    "-old",
+    "+new",
+  ].join("\n");
+  const out = applyCandidateGate({
+    candidates: [{ ...VALID_CANDIDATE, line: 999 }],
+    verdicts: verdicts({ F001: { pass: true, reason: "" } }),
+    emittedIds: new Set(["F001"]),
+    emittedContentKeys: new Set([findingContentKey({ ...VALID_CANDIDATE, line: 999 })]),
+    round: 2,
+    scope: buildDiffScope(diff, 10),
+  });
+  expect(out.rejections).toHaveLength(1);
+  expect(out.rejections[0]?.stage).toBe("OUT_OF_SCOPE");
+});
+

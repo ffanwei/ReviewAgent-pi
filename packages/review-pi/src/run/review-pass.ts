@@ -13,6 +13,7 @@ import type {
 } from "../contracts/run.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
 import { buildTranscript, writeTranscript } from "../export/transcript.js";
+import { buildDiffScope } from "../gate/diff-scope.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
@@ -127,6 +128,12 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
     });
 
   const repairModel = reviewModelOf(input.modelId, input.baseUrl);
+  // 非 diff 区域过滤（limits.findingScope，缺省开启）：以**本遍** diff 为准，
+  // 分片模式即片内 diff；关闭时不构建 scope（候选链零介入）。
+  const findingScope = input.runtime.limits.findingScope;
+  const scope = findingScope.enabled
+    ? buildDiffScope(input.diff, findingScope.contextLines)
+    : undefined;
   const outcome = await runAgentReviewLoop({
     systemPrompt: SYSTEM_PROMPT,
     initialContextMessages,
@@ -138,6 +145,7 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
     fetch: input.fetch,
     includeLedgerAudit: true,
     onProgress: input.emit,
+    ...(scope !== undefined ? { scope } : {}),
     // Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
     skillPass: { skills: input.ruleSkills, toolkitFor: skillToolkitFor },
     // 有界候选修复（P1）：schema 仍非法的少数候选在 Phase 6 前至多修一次。

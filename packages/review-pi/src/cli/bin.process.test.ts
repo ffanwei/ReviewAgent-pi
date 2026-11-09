@@ -258,6 +258,10 @@ function minimalConfigText(options: RunBinOptions): string {
     {
       version: 1,
       reviewer,
+      // 进程面用例的哨兵候选指向 diff 之外的文件（sample.txt / README.md），
+      // 与本开关无关；显式关闭以保留既有输出断言。默认开启行为由 run 层
+      // 集成测试（review-run.test.ts）与 config 单测覆盖。
+      limits: { findingScope: { enabled: false } },
       ...(options.presentationEngine !== undefined
         ? { presentation: { engine: options.presentationEngine } }
         : {}),
@@ -1110,6 +1114,9 @@ test(
         {
           version: 1,
           reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          // 哨兵候选不在 golden diff 的 hunk 内；本用例只测呈现引擎路径解析，
+          // 显式关闭非 diff 区域过滤以保留既有断言。
+          limits: { findingScope: { enabled: false } },
           presentation: { engine: "engines/zh-engine.mjs" },
         },
         null,
@@ -1991,7 +1998,7 @@ test(
         {
           version: 1,
           reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
-          limits: { split: { maxShardChars: 10_000 } },
+          limits: { split: { maxShardChars: 10_000 }, findingScope: { enabled: false } },
         },
         null,
         2,
@@ -2638,7 +2645,7 @@ test(
         {
           version: 1,
           reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
-          limits: { split: { maxShardChars: 10_000 } },
+          limits: { split: { maxShardChars: 10_000 }, findingScope: { enabled: false } },
           mcp: {
             servers: { stub: { transport: "http", url: mcp.url, headers: {}, timeoutMs: 10_000 } },
             report: { server: "stub", tool: "report_events" },
@@ -2764,6 +2771,9 @@ export default async (source) => {
         {
           version: 1,
           reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          // 哨兵候选不在 golden diff 的 hunk 内；本用例只测引擎回落路径，
+          // 显式关闭非 diff 区域过滤。
+          limits: { findingScope: { enabled: false } },
           presentation: { engine: enginePath },
           mcp: {
             servers: { stub: { transport: "http", url: mcp.url, headers: {}, timeoutMs: 10_000 } },

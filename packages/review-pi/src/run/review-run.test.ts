@@ -4,10 +4,11 @@ import path from "node:path";
 import { afterAll, expect, test } from "vitest";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
-import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
+import { PHASE_INSTRUCTIONS, buildPhaseInstruction } from "../loop/phases.js";
 import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
 import { GATEWAY_MAX_TOKENS } from "../provider/pi-client.js";
 import { configSnapshot, loadConfig } from "../shared/config.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
@@ -38,6 +39,20 @@ afterAll(() => {
 
 /** fake 脚本零 usage（usage 只进记账，零值即「脚本不带 usage 语义」） */
 const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+
+/**
+ * 关闭非 diff 区域过滤：这些用例只测 skill 会话 / 候选合并，不测位置范围；
+ * 夹具里的候选故意落在 golden diff 之外。默认开启的过滤另有专测覆盖。
+ */
+function runtimeWithoutScope(): ReviewRuntime {
+  return {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      findingScope: { enabled: false, contextLines: 10 },
+    },
+  };
+}
 
 /** 一轮零工具回复脚本：六相位各一文本回复（phase-5 空候选 / phase-6 complete） */
 function sixPhaseNoToolCorpus(): FakeReply[] {
@@ -190,7 +205,10 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 七工具面；产物布局与
       content: scriptedTexts[index - 1],
       reasoning_content: "",
     });
-    expect(requests[index].at(-1)).toEqual({ role: "user", content: PHASE_INSTRUCTIONS[index] });
+    expect(requests[index].at(-1)).toEqual({
+      role: "user",
+      content: buildPhaseInstruction(index, true),
+    });
   }
 }, 120_000);
 
@@ -456,6 +474,7 @@ test("规则 Skill：Phase 1–5 与无规则包逐字节相同，Phase 6 追加
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
     rep: 1,
+    runtime: runtimeWithoutScope(),
     ruleSkillLoader: async () => [SAMPLE_RULE_SKILL],
   });
 
@@ -607,6 +626,7 @@ test("多 skill：按 CLI 顺序执行，跨 skill 同 (file,line,category) 后�
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
     rep: 1,
+    runtime: runtimeWithoutScope(),
     // CLI 顺序：zip 传入序就是执行序（不排序）
     ruleSkillZips: ["b-beta.zip", "a-alpha.zip"],
     ruleSkillLoader: async (options) => {
@@ -917,3 +937,162 @@ test.skipIf(!existsSync(repoFixturePath("sample")))(
   },
   300_000,
 );
+
+test("limits.testFiles.skip：默认剔除测试文件，关闭后原样保留", async () => {
+  const diff = [
+    [
+      "diff --git a/src/main/java/com/example/Alpha.java b/src/main/java/com/example/Alpha.java",
+      "--- a/src/main/java/com/example/Alpha.java",
+      "+++ b/src/main/java/com/example/Alpha.java",
+      "@@ -1,2 +1,3 @@",
+      " class Alpha {",
+      "+  int value;",
+      " }",
+    ].join("\n"),
+    [
+      "diff --git a/src/test/java/com/example/AlphaTest.java b/src/test/java/com/example/AlphaTest.java",
+      "--- a/src/test/java/com/example/AlphaTest.java",
+      "+++ b/src/test/java/com/example/AlphaTest.java",
+      "@@ -1,2 +1,3 @@",
+      " class AlphaTest {",
+      "+  void coversValue() {}",
+      " }",
+    ].join("\n"),
+  ].join("\n");
+
+  const base = {
+    caseId: "TEST-FILE-SKIP",
+    repoPath: repoFixturePath("sample"),
+    diff,
+    issueDescription: "Test file filtering MR under review.",
+    apiKey: "offline-test",
+    rep: 1,
+    ruleSkillLoader: async () => [],
+  } as const;
+
+  // 默认（skip = true）：测试文件块整块剔除，初始消息与 Phase 5 提示同步
+  const skipped = await runReview({
+    ...base,
+    fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
+    runsRoot: tempRunsRoot(),
+  });
+  expect(skipped.mrFilter?.reasons.test).toBe(1);
+  const skippedAudit = readAudit(skipped.auditPath);
+  const skippedInitial = (
+    JSON.parse(skippedAudit.requests[0].wireBody) as { messages: { content: string }[] }
+  ).messages[1]?.content ?? "";
+  expect(skippedInitial).toContain("src/main/java/com/example/Alpha.java");
+  expect(skippedInitial).not.toContain("AlphaTest.java");
+  const skippedPhase5 = (
+    JSON.parse(skippedAudit.requests[4].wireBody) as { messages: { content: string }[] }
+  ).messages.at(-1)?.content ?? "";
+  expect(skippedPhase5).toContain("test files are excluded");
+
+  // 关闭（skip = false）：测试文件原样进 diff，无 mrFilter，Phase 5 提示反转
+  const included = await runReview({
+    ...base,
+    fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
+    runtime: {
+      ...DEFAULT_REVIEW_RUNTIME,
+      limits: { ...DEFAULT_REVIEW_RUNTIME.limits, testFiles: { skip: false } },
+    },
+    runsRoot: tempRunsRoot(),
+  });
+  expect(included.mrFilter).toBeUndefined();
+  const includedAudit = readAudit(included.auditPath);
+  const includedInitial = (
+    JSON.parse(includedAudit.requests[0].wireBody) as { messages: { content: string }[] }
+  ).messages[1]?.content ?? "";
+  expect(includedInitial).toContain("AlphaTest.java");
+  const includedPhase5 = (
+    JSON.parse(includedAudit.requests[4].wireBody) as { messages: { content: string }[] }
+  ).messages.at(-1)?.content ?? "";
+  expect(includedPhase5).toContain("test files are included");
+}, 120_000);
+
+test("limits.findingScope：默认只保留 diff hunk ±10 行内的意见，关闭后保留全部", async () => {
+  const alpha = "src/main/java/com/example/Alpha.java";
+  const diff = [
+    `diff --git a/${alpha} b/${alpha}`,
+    `--- a/${alpha}`,
+    `+++ b/${alpha}`,
+    "@@ -10,3 +10,4 @@",
+    " class Alpha {",
+    "+  int value;",
+    " }",
+  ].join("\n");
+  const candidateAt = (id: string, file: string, line: number): Record<string, unknown> => ({
+    id,
+    severity: "P2",
+    category: "CORRECTNESS",
+    file,
+    line,
+    title: `Issue at ${file}:${String(line)}`,
+    description: "A concrete correctness problem at this line.",
+    evidence: [`${file}:${String(line)} problematic code`],
+    rule: "CORRECTNESS-001",
+    confidence: 0.8,
+  });
+  const candidates = [
+    candidateAt("F001", alpha, 11), // hunk 10–13 内
+    candidateAt("F002", alpha, 100), // 同文件 hunk 外
+    candidateAt("F003", "src/main/java/com/example/Beta.java", 11), // 文件不在 diff
+  ];
+  const corpus = (): FakeReply[] => [
+    ...sixPhaseNoToolCorpus().slice(0, 4),
+    candidatesReply(candidates),
+    allPassVerdicts(candidates.map((candidate) => candidate.id as string)),
+  ];
+
+  // 默认（enabled = true）：只剩 hunk ±10 行内的 F001，另两条按 OUT_OF_SCOPE 留痕
+  const filtered = await runReview({
+    caseId: "SCOPE-DEFAULT",
+    repoPath: repoFixturePath("sample"),
+    diff,
+    issueDescription: "Finding scope MR under review.",
+    apiKey: "offline-test",
+    fetch: fakeFetch(corpus()).fetch,
+    runsRoot: tempRunsRoot(),
+    rep: 1,
+    ruleSkillLoader: async () => [],
+  });
+  expect(filtered.record.baseline.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  const filteredAudit = readAudit(filtered.auditPath) as unknown as {
+    rejections: { candidateId: string; stage: string; reason: string }[];
+    rejectionCounts: Record<string, number>;
+  };
+  expect(filteredAudit.rejections.map((entry) => [entry.candidateId, entry.stage])).toEqual([
+    ["F002", "OUT_OF_SCOPE"],
+    ["F003", "OUT_OF_SCOPE"],
+  ]);
+  expect(filteredAudit.rejectionCounts).toEqual({
+    SCHEMA_INVALID: 0,
+    NON_ENGLISH: 0,
+    NO_EVIDENCE: 0,
+    VERIFICATION_FAILED: 0,
+    OUT_OF_SCOPE: 2,
+    DUPLICATE_ID: 0,
+  });
+  expect(filteredAudit.rejections[0]?.reason).toContain("outside the changed hunks");
+  expect(filteredAudit.rejections[1]?.reason).toContain("not part of the reviewed diff");
+
+  // 关闭：三条全部保留（不构建 scope，候选链零介入）
+  const relaxed = await runReview({
+    caseId: "SCOPE-OFF",
+    repoPath: repoFixturePath("sample"),
+    diff,
+    issueDescription: "Finding scope MR under review.",
+    apiKey: "offline-test",
+    fetch: fakeFetch(corpus()).fetch,
+    runsRoot: tempRunsRoot(),
+    rep: 1,
+    runtime: runtimeWithoutScope(),
+    ruleSkillLoader: async () => [],
+  });
+  expect(relaxed.record.baseline.findings.map((finding) => finding.id)).toEqual([
+    "F001",
+    "F002",
+    "F003",
+  ]);
+  expect((readAudit(relaxed.auditPath) as { rejectionCounts?: unknown }).rejectionCounts).toBeUndefined();
+}, 120_000);

@@ -5,6 +5,7 @@ import { afterAll, expect, test } from "vitest";
 import { buildInitialUserMessage } from "../loop/messages.js";
 import { PHASE_INSTRUCTIONS } from "../loop/phases.js";
 import { fakeFetch } from "../provider/fake-fetch.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE, vul4j1Corpus } from "../testing/vul4j1-script.js";
@@ -300,6 +301,20 @@ interface AuditFile {
   readonly mrBoundary?: unknown;
 }
 
+/**
+ * 关闭非 diff 区域过滤：本文件的哨兵候选（vul4j1Corpus）落在构造 diff 之外，
+ * 护栏用例只关心边界度量/降级，不关心位置范围。
+ */
+function runtimeWithoutScope(): ReviewRuntime {
+  return {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      findingScope: { enabled: false, contextLines: 10 },
+    },
+  };
+}
+
 function readAudit(auditPath: string): AuditFile {
   return JSON.parse(readFileSync(auditPath, "utf8")) as AuditFile;
 }
@@ -327,6 +342,7 @@ test("全链超界（11 文件）：照常出 findings + domainWarning + 审计 
     fetch: script.fetch,
     runsRoot,
     rep: 1,
+    runtime: runtimeWithoutScope(),
     ruleSkillLoader: async () => [],
   });
 
