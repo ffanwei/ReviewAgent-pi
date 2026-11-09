@@ -20,6 +20,7 @@
 | 可观测 | stdout 单 JSON 文档；stderr 诊断与默认打印的阶段投影（`--no-progress` 静音）；退出码 0（含诚实截断）/ 1 |
 | diff 检视技能 | 仓内 `.agents/skills/` 两个可复跑技能：真实缺陷回放（默认 VUL4J-38 / CVE-2014-4172）与合成缺陷注入（GEN-RES-001）；真跑模型检视后把证据归档到 `repo-diff-skill-result/`（不入库） |
 | 离线回放 / 并发阶梯 | `scripts/offline-replay/`：冻结 trace → 本机回放服务替代模型网关，零网络、零 key 跑完整检视；支持规则 Skill / 分片场景、真网关录制与进程级并发档位（ADR-0048 / ADR-0049，不进产品包） |
+| 大 MR e2e（真 MCP + 前端） | `scripts/e2e-mcp/`：>1000 行 diff + 真模型 + 真 HTTP MCP server（SSE 展示页），验证 ADR-0061「summary 前每个改动文件必报」；同一次真实调用冻结成 `large-mr` 回放 trace |
 
 检视本体不限语言；符号 / 引用 / 调用链工具支持 Java、TypeScript（含 JS 变体）、Python、Go 与 C/C++（`codeintel.languages` 可配，缺省 `"auto"`，ADR-0041 / ADR-0042）。
 
@@ -296,6 +297,21 @@ pnpm verify:pack                   # 安装布局冒烟（只借已装依赖，�
 | `pnpm verify:pack` | 把 tarball 装进临时布局并冒烟：产物在位、安装形态 bin 定位、`config init/show`、`builtin` 引擎、wasm / ripgrep | 通过 / 失败退出码 |
 | `pnpm publish:packages` | `build:dist` + `pnpm -r publish`（显式发布动作） | registry |
 | `pnpm test` / `pnpm --filter @baize/review-pi test` / `pnpm typecheck` | 根包测试 / 内核 + CLI 进程烟测 / 根包类型检查 | — |
+| `pnpm test:replay` / `pnpm replay:once <场景>` / `pnpm replay:record <场景>` | 离线回放全场景（零网络、零 key）/ 单场景 / 真网关重录 | `replay-runs/`（gitignored） |
+
+验证工具链（都不进产品包）：
+
+```bash
+# 离线回放：场景自动发现，新增 scripts/offline-replay/scenarios/*.json 即被 test:replay 覆盖
+pnpm test:replay
+pnpm replay:once large-mr
+pnpm replay:ramp core-single-finding --steps 1,5,10,20
+
+# 大 MR e2e（真模型 + 真 MCP）：先生成/校验 diff，再起 server（保持运行），另开终端跑断言
+node scripts/e2e-mcp/make-large-mr.mjs --check-only
+node scripts/e2e-mcp/server.mjs --port 7317
+node scripts/e2e-mcp/run-e2e.mjs
+```
 
 `prepack`（`scripts/prepare-package.mjs`）会把 9 个必需产物校验一遍、附上第三方声明，并把首行为 CRLF 的 bin 改成 LF；`files` 白名单只含 `dist` / `bin` / `presentation` / `THIRD-PARTY-NOTICES.md` / `README.md`，**不含 `node_modules`**。
 
@@ -305,10 +321,11 @@ pnpm verify:pack                   # 安装布局冒烟（只借已装依赖，�
 
 ```
 packages/review-pi/       检视运行时 + CLI（六阶段循环、七工具、规则 Skill、审计、呈现投影装配）
+  testdata/               离线回放 trace、夹具仓、golden 语料、large-mr e2e diff
 src/presentation/         核外呈现层（中文翻译投影 / 分组意见映射）
 .agents/skills/           agent 技能：真实缺陷回放 / 合成缺陷注入（共享执行层在 _shared/）
 repo-diff-skill-result/   diff 检视技能的真跑归档（gitignored）
-scripts/                  构建、打包、安装面验证
+scripts/                  构建、打包、安装面验证、离线回放与 e2e harness
 docs/                     ADR、设计与使用文档
 ```
 
@@ -355,6 +372,7 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
 | [`docs/使用手册-安装与运行.md`](docs/使用手册-安装与运行.md) | 安装 / 配置逐字段 / smoke / 任意目录运行 / 并发隔离 / session 导出 / 排障 |
 | [`docs/运行手册-单次检视.md`](docs/运行手册-单次检视.md) | 单次检视的旗标、前置、产物、cwd 索引与 `export`、排障 |
 | [`docs/运行手册-离线回放.md`](docs/运行手册-离线回放.md) | 离线回放 / 并发阶梯：命令、全部参数、场景 schema、延迟与安全阀、报告读法、未命中排障、重录流程 |
+| [`scripts/e2e-mcp/README.md`](scripts/e2e-mcp/README.md) | 大 MR e2e：夹具与 diff 生成、真实 MCP server / 展示页、`run-e2e.mjs` 参数与断言口径、产物与冻结流程 |
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表（术语唯一权威） |
 | [`docs/adr/`](docs/adr/) | 架构决策记录（Go / C++ 符号提取器见 ADR-0042） |
 | [`docs/agents/`](docs/agents/) | agent 协作约定（issue tracker / triage labels / domain docs） |

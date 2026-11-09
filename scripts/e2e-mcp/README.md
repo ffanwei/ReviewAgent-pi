@@ -35,6 +35,22 @@ node scripts/e2e-mcp/make-large-mr.mjs --check-only  # 只校验现有 diff 是�
 生成器用临时 git 仓做 `git diff --cached`，并在 Windows 上固定
 `-c core.autocrlf=false -c core.eol=lf`，保证往返字节一致。
 
+## 参数
+
+三个脚本都是仓内验证工具（**不是** `review-pi` 的产品旗标）：
+
+| 脚本 | 参数 | 缺省 | 作用 |
+|---|---|---|---|
+| `make-large-mr.mjs` | `--check-only` | 关 | 只校验现有 diff 与两侧快照一致，不重写文件 |
+| `server.mjs` | `--port <n>` | `7317`（或 `E2E_MCP_PORT`） | 监听端口 |
+| | `--host <addr>` | `127.0.0.1` | 监听地址（默认只本机可达） |
+| `run-e2e.mjs` | `--server-url <url>` | `http://127.0.0.1:7317` | 已运行的 MCP server 地址 |
+| | `--task-id <id>` | `e2e-large-mr-<ISO 时间戳>` | 本次任务 id（本地目录名 + 远端任务标识同值） |
+
+`run-e2e.mjs` 需要 `~/.PiAgent/PiAgent.jsonc` 里已有可用的 `reviewer.apiKey` 与
+`model.default`（只读，不打印、不改写）；`mcp.servers.e2e` 与事件 tool 由脚本注入
+临时配置。跑前先 `pnpm build:presentation`，否则 bin 的新鲜度门会拒跑。
+
 ## 起 server
 
 ```bash

@@ -165,7 +165,7 @@ _Avoid_: 会话记录（那是转录本身）、配置文件（索引只存路�
 ### 离线回放
 
 **回放轨迹（Trace）**:
-一次运行的请求指纹 → 响应原文配对集合；工具面按 digest 去重（schema v2 的 `toolsVariants`，v1 为共享一份）；与录制时的夹具仓强绑定，改夹具必须重录。
+一次运行的请求指纹 → 响应原文配对集合；工具面按 digest 去重（schema v2 的 `toolsVariants`，v1 为共享一份）；与录制时的夹具仓强绑定，改夹具必须重录。`large-mr` 是唯一走**真网关录制**的轨迹（大 MR + MCP 业务上报），其余五条由 canned 语料生成。
 _代码面_: `packages/review-pi/testdata/traces/*.json`（ADR-0048 / ADR-0049）。
 _Avoid_: 录制文件（暗示原始流量）、语料（那是 `testdata/golden/` 的纯文本回复）
 
@@ -188,6 +188,11 @@ _Avoid_: 压测（未定义成功判据）、基准（那是评测指标，ADR-0
 **模拟延迟（Latency Profile）**:
 回放时按 interaction 注入的等待时间（`mode` + `ms` + `jitter` + `seed`），语义是单次模型调用的总耗时而非逐帧 TTFT；不同延迟档位下的并发上限不可直接比较。
 _Avoid_: 真实耗时（归档没有逐帧时间）、超时（那是产品配置）
+
+**大 MR 端到端验证（Large-MR E2E）**:
+用真模型 + 真 HTTP MCP server（带浏览器展示页）跑一次 >1000 行 diff 的完整检视，按 ADR-0061 断言 `startTask → mrReviewResult × 每个改动文件 → saveReviewSummary → endTask`；这次真实调用随后冻结为 `large-mr` 回放轨迹。录制期用场景 `timeouts.oneShotMs` 放大一次性调用超时，避免客户端中断导致录制走二分重试、回放走全量而分叉。
+_代码面_: `scripts/e2e-mcp/`（harness / server / dashboard）、`packages/review-pi/testdata/e2e/large-mr/`（改动前骨架与 diff）、`packages/review-pi/testdata/repos/large-mr/`（最终态夹具）。
+_Avoid_: 离线回放（那是不调模型的冻结复跑）、评测（ADR-0024 已废止）
 
 ### 发行
 

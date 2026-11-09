@@ -11,7 +11,12 @@
 | 文件 | 内容 | 性质 |
 | --- | --- | --- |
 | `vul4j-1.diff` | VUL4J-1 的统一 diff（自 MR 消息 ```diff 围栏内提取；空上下文行为单个空格） | **输入**：离线全链与 diff 分析的语料 |
+| `two-file-shard.diff` | 两文件 / 两块 `diff --git` 的统一 diff（11,545 字符） | **输入**：`shard-two-file` 回放场景的分片语料 |
 | `reply-{1..5}-vul4j-1.txt` | DSH 线六请求回复 1–5（离线全链脚本的回复语料） | **输入**：fake 模型的应答脚本 |
+
+> 大 MR e2e 的 diff 不在这里：它由 `testdata/repos/large-mr` 与
+> `testdata/e2e/large-mr/before` 生成，落在 `testdata/e2e/large-mr.diff`
+> （见 [`scripts/e2e-mcp/README.md`](../../../../scripts/e2e-mcp/README.md)）。
 
 已退役（ADR-0038）：`system-prompt.txt`、`phase-1..6.txt`、`mr-message-vul4j-1.txt`、
 `review-tools-dsh.json`、`review-tools-wire-dsh.json`。它们此前是「产物必须逐字节等于

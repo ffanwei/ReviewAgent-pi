@@ -6,9 +6,9 @@
 回放时不调真实模型：本地 HTTP 服务按 `requestHash` 严格命中，命中即原样返回
 响应字节。请求体默认不存（只用指纹匹配）；未命中直接失败并打印最近邻诊断。
 
-完整用法与参数见 [`docs/运行手册-离线回放.md`](../../../docs/运行手册-离线回放.md)；决策背景见
-[ADR-0048](../../../docs/adr/0048-offline-trace-replay-and-concurrency-ramp.md) 与
-[ADR-0049](../../../docs/adr/0049-trace-schema-v2-and-upstream-recording.md)。
+完整用法与参数见 [`docs/运行手册-离线回放.md`](../../../../docs/运行手册-离线回放.md)；决策背景见
+[ADR-0048](../../../../docs/adr/0048-offline-trace-replay-and-concurrency-ramp.md) 与
+[ADR-0049](../../../../docs/adr/0049-trace-schema-v2-and-upstream-recording.md)。
 
 ## 文件
 
@@ -88,9 +88,16 @@ pnpm replay:record shard-two-file
 
 ```bash
 node scripts/offline-replay/run.mjs record --scenario large-mr \
-  --run-dir replay-runs/large-mr-record --skip-assert --no-verify
+  --run-dir replay-runs/large-mr-record --skip-assert --no-verify \
+  --upstream-base-url "$REPLAY_UPSTREAM_BASE_URL" \
+  --upstream-api-key "$REPLAY_UPSTREAM_API_KEY"
 node scripts/offline-replay/run.mjs once --scenario large-mr
 ```
+
+`large-mr` 没有 `corpus`，所以必须给 `--upstream-base-url`（或设同名环境变量）走真网关；
+两个变量与用户配置里的 `reviewer.baseUrl` / `reviewer.apiKey` 同口径（base 需自带
+`/v1` 等前缀）。跑完先按 `runDir/workers/record/` 的产物把 findings / tips / MCP
+期望钉进场景，再跑上面第二条 `once`，必须 PASS 才算录成功。
 
 场景里的 `timeouts.oneShotMs = 600000` 是录制期的**必需**设置：报文生成单次可
 输出 1.6 万 tokens，产品缺省的 90s 一次性调用超时会在响应仍在下发时中断读取——
