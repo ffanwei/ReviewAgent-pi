@@ -11,7 +11,7 @@ import { checkTaskId, DEFAULT_TASKS_ROOT_LABEL } from "../shared/tasks-dir.js";
  * pi 线差异（自立决策，不从 DSH 仓导入）：
  * - 检视形态唯一（ADR-0024：A–E 配置矩阵删除，规则 Skill 是唯一形态）；
  * - `--config` 指向用户级 JSONC 配置（ADR-0025）；规则 Skill 由 `--rule-skill-zip` / `--rule-skill` /
- *   `--rule` / `--strict-rule-skill` 显式给出（ADR-0027：仓库内约定目录不再自动扫描；ADR-0034：一次可传多个包，
+ *   `--skill` / `--strict-rule-skill` 显式给出（ADR-0027：仓库内约定目录不再自动扫描；ADR-0034：一次可传多个包，
  *   一个包就是一个 skill，包内消歧用的 `--rule-skill-name` 已移除）；
  * - 无 --language 旗标（输出语言是 DSH 线后分家决策，pi 线自立 ADR 前不实装）；
  * - smoke 只认 --model（双探针自检不跑检视，参数面自然更窄）。
@@ -34,14 +34,14 @@ const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--config",
   "--rule-skill-zip",
   "--rule-skill",
-  "--rule",
+  "--skill",
 ];
 
 /** review 面可重复旗标（ADR-0014：多规则包按 CLI 顺序叠加；ADR-0018：目录同款） */
-const REPEATABLE_REVIEW_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill", "--rule"];
+const REPEATABLE_REVIEW_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill", "--skill"];
 
 /** 逗号列表旗标（ADR-0034：一次可传多个 skill 包，`--rule-skill-zip a.zip,b.zip`） */
-const COMMA_LIST_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill", "--rule"];
+const COMMA_LIST_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill", "--skill"];
 
 /** smoke 子命令的已知旗标 */
 const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model", "--config"];
@@ -53,7 +53,7 @@ const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-en
 const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--path"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--rule <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>]
@@ -84,7 +84,7 @@ review 旗标：
   --rule-skill      <dir[,dir…]>    规则 Skill 已解压目录，一次可传多个；排在全部
                                     --rule-skill-zip 之后；目录先审计再按内容哈希复制进 run 缓存，
                                     符号链接/越界一律拒绝。一个包就是一个 skill（ADR-0034）
-  --rule            <dir[,dir…]>    与 --rule-skill 同义（当前视为同一类 Skill）；一次可传多个，
+  --skill           <dir[,dir…]>    与 --rule-skill 同义（当前视为同一类 Skill）；一次可传多个，
                                     装载时排在全部 --rule-skill 之后
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
   --no-progress             关闭运行进度事件行（缺省打印：阶段 / 模型请求 / 工具调用 /
@@ -135,12 +135,12 @@ export interface ReviewCliArgs {
   /** 规则 Skill 已解压目录列表（`--rule-skill`；排在全部 zip 之后；缺席省键） */
   readonly ruleSkillDirs?: readonly string[];
   /**
-   * `--rule` 已解压目录列表：当前与 `--rule-skill` 视为同一类 Skill，
+   * `--skill` 已解压目录列表：当前与 `--rule-skill` 视为同一类 Skill，
    * 共用同一装载链路；装载时排在全部 `--rule-skill` 之后（缺席省键）。
    */
-  readonly ruleDirs?: readonly string[];
+  readonly skillDirs?: readonly string[];
   /**
-   * 传了但**没有值**的规则包旗标（`--rule-skill` / `--rule-skill-zip` / `--rule`；缺席省键）。
+   * 传了但**没有值**的规则包旗标（`--rule-skill` / `--rule-skill-zip` / `--skill`；缺席省键）。
    *
    * 缺值按「未传」处理（不报用法错误），由 CLI 打一行提示——规则包旗标常由脚本
    * 按变量拼出来，PowerShell 在变量为空时会把这个参数整个丢掉，那种「机器上变量
@@ -248,8 +248,8 @@ function parseFlags(
  * 按变量拼出来（`--rule-skill $dir`），PowerShell 在变量为空时会把这个参数整个
  * 丢掉——「机器上变量没设」不该让整条命令起不来，但也不能悄悄少装载一个 skill。
  *
- * 值位置给了 token 但**没有任何有效路径**（`--rule ""` / `--rule-skill " , "`）同样
- * 按「未传」处理：bash 里 `--rule "$dirs"` 在变量为空时就是这样（空串参数确实会
+ * 值位置给了 token 但**没有任何有效路径**（`--skill ""` / `--rule-skill " , "`）同样
+ * 按「未传」处理：bash 里 `--skill "$dirs"` 在变量为空时就是这样（空串参数确实会
  * 传进来），与 PowerShell 的「整个参数被丢掉」是同一件事，口径必须一致。
  */
 function joinCommaListTokens(tokens: readonly string[]): {
@@ -270,7 +270,7 @@ function joinCommaListTokens(tokens: readonly string[]): {
       items.push(next);
       cursor += 1;
     }
-    // 没给 token，或给的只是空串 / 纯空白 / 纯逗号（`--rule ""`、`--rule-skill " , "`）：
+    // 没给 token，或给的只是空串 / 纯空白 / 纯逗号（`--skill ""`、`--rule-skill " , "`）：
     // 都按「未传」处理——它们与「变量展开成空」不可区分，不该让整条命令起不来（ADR-0044）。
     const value = items.join(",");
     const usable = value.split(",").some((part) => part.trim().length > 0);
@@ -681,9 +681,9 @@ function parseReviewArgs(
   if (!ruleSkillDirs.ok) {
     return ruleSkillDirs;
   }
-  const ruleDirs = parseRuleSkillList("--rule", repeated.get("--rule"));
-  if (!ruleDirs.ok) {
-    return ruleDirs;
+  const skillDirs = parseRuleSkillList("--skill", repeated.get("--skill"));
+  if (!skillDirs.ok) {
+    return skillDirs;
   }
   const config = parseConfigFlag(values);
   if (!config.ok) {
@@ -705,7 +705,7 @@ function parseReviewArgs(
       ...(config.configPath !== undefined ? { configPath: config.configPath } : {}),
       ...(ruleSkillZips.items !== undefined ? { ruleSkillZips: ruleSkillZips.items } : {}),
       ...(ruleSkillDirs.items !== undefined ? { ruleSkillDirs: ruleSkillDirs.items } : {}),
-      ...(ruleDirs.items !== undefined ? { ruleDirs: ruleDirs.items } : {}),
+      ...(skillDirs.items !== undefined ? { skillDirs: skillDirs.items } : {}),
       ...(emptyRuleSkillFlags.length > 0 ? { emptyRuleSkillFlags: [...emptyRuleSkillFlags] } : {}),
       ...(strict ? { strictRuleSkill: true } : {}),
       ...(progress !== undefined ? { progress } : {}),

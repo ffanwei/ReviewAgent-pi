@@ -673,7 +673,7 @@ test("目录 + zip 共存：先全部 zip，再全部目录（ADR-0018 装载序
   expect(skills.map((skill) => skill.name)).toEqual(["from-zip", "from-dir-1", "from-dir-2"]);
 });
 
-test("同名 skill：后装载者胜出（--rule 排在 --rule-skill 之后，故 --rule 覆盖）", async () => {
+test("同名 skill：后装载者胜出（--skill 排在 --rule-skill 之后，故 --skill 覆盖）", async () => {
   const repo = tempRoot();
   const baseDir = writeRuleDir(path.join(repo, "packs-base"));
   // 内容不同 ⇒ digest 不同 ⇒ 两个目录都会真正装载，不会因缓存键相同被混为一谈
@@ -683,7 +683,7 @@ test("同名 skill：后装载者胜出（--rule 排在 --rule-skill 之后，�
   const skills = await loadRuleSkills({
     repoPath: repo,
     cacheRoot: path.join(repo, "cache"),
-    // 合并后的顺序 = --rule-skill 在前、--rule 在后（main.ts 的拼接口径）
+    // 合并后的顺序 = --rule-skill 在前、--skill 在后（main.ts 的拼接口径）
     ruleSkillDirs: [baseDir, overrideDir],
     loadSkillsFn: (async () => {
       dirIndex += 1;

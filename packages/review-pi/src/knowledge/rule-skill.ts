@@ -101,7 +101,7 @@ export interface LoadRuleSkillOptions {
    */
   readonly explicitZipPaths?: readonly string[];
   /**
-   * 显式**已解压目录**列表（`--rule-skill` / `--rule` 可重复，ADR-0018）。
+   * 显式**已解压目录**列表（`--rule-skill` / `--skill` 可重复，ADR-0018）。
    * 目录先审计（符号链接 / 非普通文件 / 总字节）→ 按内容哈希复制进
    * `<cacheRoot>/dir-<digest>/` → 与 zip 走同一装载链路。
    * 顺序 = CLI 传入顺序；**排在全部 zip 之后**（两种形态共存时的装载序）。
@@ -122,7 +122,7 @@ export interface LoadRuleSkillOptions {
  *
  * - 显式 zip 列表：逐包装载，顺序 = 传入顺序；
  * - 显式目录列表：逐目录装载（审计 → 内容哈希 → 复制进缓存 → 同一装载链路）；
- * - 同名 skill 只保留**后装载**的那个（`--rule` 排在最后，故优先于
+ * - 同名 skill 只保留**后装载**的那个（`--skill` 排在最后，故优先于
  *   `--rule-skill` 与 zip）；降级占位不参与去重；
  * - 单包失败只降级该包（在后面继续装载），`strict` 下任一失败即抛；
  * - **规则包只认显式输入**（ADR-0027）：不再扫描被检视仓库里的
@@ -186,9 +186,9 @@ export async function loadRuleSkills(options: LoadRuleSkillOptions): Promise<rea
 /**
  * 同名 skill 去重（2026-11-09 用户口径）：**后装载者胜出**。
  *
- * 装载序固定为 zip → `--rule-skill` 目录 → `--rule` 目录（ADR-0018 / 本轮
- * 新增口径），所以同名时 `--rule` 传入的 skill 覆盖 `--rule-skill` / zip 的
- * 版本——这正是「用 `--rule` 临时替换共享规则包里的某条规则」的用法。
+ * 装载序固定为 zip → `--rule-skill` 目录 → `--skill` 目录（ADR-0018 / 本轮
+ * 新增口径），所以同名时 `--skill` 传入的 skill 覆盖 `--rule-skill` / zip 的
+ * 版本——这正是「用 `--skill` 临时替换共享规则包里的某条规则」的用法。
  *
  * 降级占位（`name === ""`）不参与去重：它们没有可比较的名字，各自保留在
  * 审计里（零静默：失败过的包仍在 `ruleSkill[]` 留痕）。
@@ -257,7 +257,7 @@ async function locateZipCandidates(
 ): Promise<{ readonly entries: readonly LocatedZip[] } | { readonly reason: string }> {
   const explicit = options.explicitZipPaths ?? (options.explicitZipPath !== undefined ? [options.explicitZipPath] : []);
   if (explicit.length === 0) {
-    return { reason: "no rule-skill archive given (pass --rule-skill-zip or --rule-skill/--rule <dir>)" };
+    return { reason: "no rule-skill archive given (pass --rule-skill-zip or --rule-skill/--skill <dir>)" };
   }
   const entries: LocatedZip[] = [];
   for (const zipPath of explicit) {

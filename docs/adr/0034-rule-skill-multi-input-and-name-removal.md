@@ -4,7 +4,7 @@
 **后续修订**：缺值口径由 [ADR-0044](0044-valueless-rule-skill-flags-are-ignored.md) 收窄——本 ADR 所属的两个逗号列表旗标（`--rule-skill` / `--rule-skill-zip`）「传了但没给值」不再报用法错误，改为按未传处理并打一行提示；逗号列表与重复旗标语义不变。
 **关联**：ADR-0014（多规则包 = 多个 zip、CLI 顺序）、ADR-0018（`--rule-skill <dir>` 目录形态并列）、ADR-0027（规则包只认显式输入）、ADR-0031（参数回显）
 **跨仓**：本 ADR 为本仓 pi 线序列 0034；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
-**后续修订**（2026-11-09）：新增 `--rule <dir>` 作为与 `--rule-skill` 同义的逗号列表旗标；装载序在原有「先 zip 后目录」之后追加全部 `--rule` 目录。**同名 skill 只保留后装载者**——`--rule` 排在最后，因此同名时 `--rule` 覆盖 `--rule-skill` / zip 的版本（见 ADR-0018 后续修订）。
+**后续修订**（2026-11-09）：新增 `--skill <dir>`（初名 `--rule`，同日更名为 `--skill`，见 [ADR-0067](0067-rename-rule-flag-to-skill.md)）作为与 `--rule-skill` 同义的逗号列表旗标；装载序在原有「先 zip 后目录」之后追加全部 `--skill` 目录。**同名 skill 只保留后装载者**——`--skill` 排在最后，因此同名时 `--skill` 覆盖 `--rule-skill` / zip 的版本（见 ADR-0018 后续修订）。
 
 ## Context
 

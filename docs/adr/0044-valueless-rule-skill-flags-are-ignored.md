@@ -3,7 +3,7 @@
 **状态**：已接受（2026-11-06，用户选择「忽略 + 喊一声」的 B 档）
 **关联**：ADR-0034（逗号列表多值输入；本 ADR 收窄其所属旗标的缺值口径）、ADR-0027（规则包只认显式输入 / 零静默）、ADR-0016（stderr 运行投影纪律）、ADR-0043（参数回显打印点）
 **范围**：本仓 pi 线 0044。只改 CLI 参数层，不动规则包装载器与任何请求字节。
-**后续修订**（2026-11-09）：值位置**给了空串 / 纯空白 / 纯逗号**也按「未传」处理（不再报 `must be a non-empty path list`）；旗标面追加 `--rule`（与 `--rule-skill` 同义）。理由见决策 3 的修订说明。
+**后续修订**（2026-11-09）：值位置**给了空串 / 纯空白 / 纯逗号**也按「未传」处理（不再报 `must be a non-empty path list`）；旗标面追加 `--skill`（初名 `--rule`，同日更名为 `--skill`，见 [ADR-0067](0067-rename-rule-flag-to-skill.md)；与 `--rule-skill` 同义）。理由见决策 3 的修订说明。
 
 ## Context
 
@@ -33,7 +33,7 @@ PowerShell 在变量为空时会把这个参数**整个丢掉**（实测：空�
    review-pi: --rule-skill 缺少值，已忽略（本轮不装载该包）
    ```
    打印点放在一切早退之前，保证即使这次 run 随后因别的错误退出，「规则包没装载」这个原因也已经在 stderr 里。
-3. **空值也按「未传」处理**（2026-11-09 修订）：`--rule-skill ""`、`--rule-skill " , "`、`--rule ""` 不再报 `must be a non-empty path list`，而是与「旗标后面没 token」同口径——摘掉、等价于未传、登记 `emptyRuleSkillFlags` 并提示一行。原判断（「空串是用户确实想表达一个空值」）被推翻：bash 里 `--rule-skill "$dirs"` 在变量为空时**就是把空串传进来**，它与 PowerShell 丢掉整个参数是同一件事；对空串报错等于让 bash 脚本回到「变量没设就整条命令起不来」。`parseRuleSkillList` 仍保留「整值无有效项即错误」的内部防御，但 CLI 解析路径不会再走到它。
+3. **空值也按「未传」处理**（2026-11-09 修订）：`--rule-skill ""`、`--rule-skill " , "`、`--skill ""` 不再报 `must be a non-empty path list`，而是与「旗标后面没 token」同口径——摘掉、等价于未传、登记 `emptyRuleSkillFlags` 并提示一行。原判断（「空串是用户确实想表达一个空值」）被推翻：bash 里 `--rule-skill "$dirs"` 在变量为空时**就是把空串传进来**，它与 PowerShell 丢掉整个参数是同一件事；对空串报错等于让 bash 脚本回到「变量没设就整条命令起不来」。`parseRuleSkillList` 仍保留「整值无有效项即错误」的内部防御，但 CLI 解析路径不会再走到它。
 4. **落点语义是 N=0**：走「未装载任何规则包」那条既有合法降级（`ruleSkill: []`、`skillPassLog: []`、主检视照常、exit 0）。该提示里的括号文案同步改成「未传或缺值」，否则在缺值场景下会说出「均未给出」这种假话。
 5. **其余旗标不变**：`--repo` / `--mr-diff` / `--taskId` / `--issue` 等缺值仍是 `flag <name> requires a value` + exit 1。
 

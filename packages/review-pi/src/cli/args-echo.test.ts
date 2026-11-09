@@ -51,10 +51,10 @@ describe("formatReviewArgs", () => {
     expect(lines).toContain(row("--config", "C:\\Users\\me\\.PiAgent\\PiAgent.jsonc（缺省用户级路径）"));
     expect(lines).toContain(row("--rule-skill-zip", "(未传)"));
     expect(lines).toContain(row("--rule-skill", "(未传)"));
-    expect(lines).toContain(row("--rule", "(未传)"));
+    expect(lines).toContain(row("--skill", "(未传)"));
     expect(lines).toContain(row("--strict-rule-skill", "未启用"));
     expect(lines).toContain(row("--no-progress", "未启用（缺省打印）"));
-    // 头部 + 13 个参数行（--rule 与 --rule-skill 同义；--rule-skill-name 随 ADR-0034 移除）
+    // 头部 + 13 个参数行（--skill 与 --rule-skill 同义；--rule-skill-name 随 ADR-0034 移除）
     expect(lines).toHaveLength(14);
   });
 
@@ -81,7 +81,7 @@ describe("formatReviewArgs", () => {
         configPath: "cfg/team.jsonc",
         ruleSkillZips: ["a.zip", "b.zip"],
         ruleSkillDirs: ["rules"],
-        ruleDirs: ["rules2"],
+        skillDirs: ["rules2"],
         strictRuleSkill: true,
         progress: false,
       },
@@ -98,7 +98,7 @@ describe("formatReviewArgs", () => {
     expect(text.split("\n")).toContain(row("--tasks-dir", "C:\\Users\\me\\.PiAgent\\tasks"));
     expect(text).toContain(row("--rule-skill-zip", "a.zip, b.zip"));
     expect(text).toContain(row("--rule-skill", "rules"));
-    expect(text).toContain(row("--rule", "rules2"));
+    expect(text).toContain(row("--skill", "rules2"));
     expect(text).toContain(row("--strict-rule-skill", "已启用"));
     expect(text.split("\n")).toContain(row("--no-progress", "已启用（进度事件行静默）"));
   });

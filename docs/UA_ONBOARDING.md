@@ -25,7 +25,7 @@
 ## 3. 关键概念
 
 - **唯一形态**：工具驱动六阶段循环 + Context Ledger 恒开 + 规则 Skill 恒装载；没有 A–E 配置分派。运行配置只有一层（`~/.PiAgent/PiAgent.jsonc` 或 `--config`，ADR-0025），env 层已移除。
-- **规则 Skill**：只有两种**显式**输入面（`--rule-skill-zip` / `--rule-skill <dir>`；`--rule <dir>` 当前与 `--rule-skill` 同义。一次可传多个——逗号列表或重复旗标，先 zip 后目录）；不扫描被检视仓库的 `.review-rules/`（ADR-0027）。**一个包就是一个 skill**（ADR-0034：包内 ≥2 个 skill 一律降级，没有包内消歧旗标）。Phase 5 之后为每个包开独立检视会话（ADR-0014），候选按 `(file, line, category)` 合并后交 Phase 6 裁定。没给规则包 = 合法降级（stderr 一行提示、exit 0），`--strict-rule-skill` 才升级为错误。
+- **规则 Skill**：只有两种**显式**输入面（`--rule-skill-zip` / `--rule-skill <dir>`；`--skill <dir>` 当前与 `--rule-skill` 同义。一次可传多个——逗号列表或重复旗标，先 zip 后目录）；不扫描被检视仓库的 `.review-rules/`（ADR-0027）。**一个包就是一个 skill**（ADR-0034：包内 ≥2 个 skill 一律降级，没有包内消歧旗标）。Phase 5 之后为每个包开独立检视会话（ADR-0014），候选按 `(file, line, category)` 合并后交 Phase 6 裁定。没给规则包 = 合法降级（stderr 一行提示、exit 0），`--strict-rule-skill` 才升级为错误。
 - **测量常量面**：system prompt、六阶段指令、七工具 schema 的字节真源由**结构性质 + 端到端能力断言**把守（ADR-0038 于 2026-11-04 退役了「对照 DSH 历史审计真源逐字节相等」的 golden 常量门）；运行期死钉 5 项（轮次 / 工具调用 / 工具结果预算 / 呈现 temperature / effort）由 ADR-0025 锁定。
 - **代码智能语言**：符号 / 引用 / 调用链工具的语言集合由 `codeintel.languages` 决定（缺省 `"auto"`），注册表在 `codeintel/language-support.ts`，当前实现 `java` / `typescript` / `python` / `go` / `cpp`；每语言 extractor 在 `zoneb/extractors/<lang>.ts`。检视本体不限语言，开关只影响符号级工具（ADR-0040 / ADR-0041 / ADR-0042）。
 - **diff 检视技能**：`.agents/skills/` 下的开发态验证技能（**不是**规则 Skill）：`real-defect-url-injection` 用真实修复补丁回滚出缺陷 diff（默认 VUL4J-38 / CVE-2014-4172），`synthetic-defect-resource-leak` 在 multilang 夹具副本注入 GEN-RES-001；两者都真跑一次 `review-pi`，把证据归档到 `repo-diff-skill-result/<skill>/<时间戳>/`（gitignore）。共享执行层 `_shared/review-eval.mjs`。

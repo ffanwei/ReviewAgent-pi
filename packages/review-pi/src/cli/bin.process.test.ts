@@ -1329,7 +1329,7 @@ function ruleSkillDirCorpus(skillSessions = 1): FakeReply[] {
   ];
 }
 
-test.each(["--rule-skill", "--rule"] as const)(
+test.each(["--rule-skill", "--skill"] as const)(
   "%s：已解压目录装载，审计标 kind = dir，副本落 run 缓存而非原地",
   async (flag) => {
     const stub = await startLoopbackStub(ruleSkillDirCorpus());
@@ -1400,10 +1400,10 @@ test.each(["--rule-skill", "--rule"] as const)(
   180_000,
 );
 
-// ---- 同名 skill 优先级（--rule 覆盖 --rule-skill） ----
+// ---- 同名 skill 优先级（--skill 覆盖 --rule-skill） ----
 
 test(
-  "同名 skill：--rule 传入的目录覆盖 --rule-skill 的版本（只保留一个会话）",
+  "同名 skill：--skill 传入的目录覆盖 --rule-skill 的版本（只保留一个会话）",
   async () => {
     const stub = await startLoopbackStub(ruleSkillDirCorpus(1));
     try {
@@ -1432,7 +1432,7 @@ test(
           outDir,
           "--rule-skill",
           baseDir,
-          "--rule",
+          "--skill",
           overrideDir,
           "--strict-rule-skill",
         ],
@@ -1445,7 +1445,7 @@ test(
         ruleSkill: { source: string; kind?: string; digest: string; name: string }[];
         skillPassLog?: { skill: string }[];
       };
-      // 同名只保留一个：胜出者是 --rule 传入的目录（source 指向它）
+      // 同名只保留一个：胜出者是 --skill 传入的目录（source 指向它）
       expect(audit.ruleSkill).toHaveLength(1);
       expect(audit.ruleSkill[0]).toMatchObject({ kind: "dir", name: "general-code-review" });
       expect(audit.ruleSkill[0]?.source).toBe(overrideDir.split(path.sep).join("/"));
@@ -1458,7 +1458,7 @@ test(
 );
 
 test(
-  "--rule-skill 1 个 + --rule 2 个（其中一个同名）：去重后只装载 2 个 skill，--rule 版本胜出",
+  "--rule-skill 1 个 + --skill 2 个（其中一个同名）：去重后只装载 2 个 skill，--skill 版本胜出",
   async () => {
     const stub = await startLoopbackStub(ruleSkillDirCorpus(2));
     try {
@@ -1492,10 +1492,10 @@ test(
           CLI_TASK_ID,
           "--tasks-dir",
           outDir,
-          // 1 个 --rule-skill + 2 个 --rule，其中一个与 --rule-skill 同名
+          // 1 个 --rule-skill + 2 个 --skill，其中一个与 --rule-skill 同名
           "--rule-skill",
           baseDir,
-          "--rule",
+          "--skill",
           `${overrideDir},${extraDir}`,
           "--strict-rule-skill",
         ],
@@ -1508,7 +1508,7 @@ test(
         ruleSkill: { source: string; kind?: string; digest: string; name: string }[];
         skillPassLog?: { skill: string }[];
       };
-      // 3 个输入目录 → 2 个 skill：同名者只留在 --rule 传入的版本
+      // 3 个输入目录 → 2 个 skill：同名者只留在 --skill 传入的版本
       expect(audit.ruleSkill).toHaveLength(2);
       expect(audit.ruleSkill.map((entry) => entry.name).sort()).toEqual([
         "general-code-review",
@@ -1534,7 +1534,7 @@ test(
 );
 
 test(
-  "--rule-skill 与 --rule 传同一个目录（字面重复）：去重后只装载一次",
+  "--rule-skill 与 --skill 传同一个目录（字面重复）：去重后只装载一次",
   async () => {
     const stub = await startLoopbackStub(ruleSkillDirCorpus(2));
     try {
@@ -1563,7 +1563,7 @@ test(
           outDir,
           "--rule-skill",
           baseDir,
-          "--rule",
+          "--skill",
           `${baseDir},${extraDir}`,
           "--strict-rule-skill",
         ],
@@ -1620,7 +1620,7 @@ test(
       expect(run.stderr).not.toContain("requires a value");
       expect(run.stderr).toContain("review-pi: --rule-skill 缺少值，已忽略（本轮不装载该包）");
       // 零静默：紧接着那句「未装载任何规则包」要如实说「未传或缺值」
-      expect(run.stderr).toContain("未装载任何规则包（--rule-skill-zip / --rule-skill / --rule 未传或缺值");
+      expect(run.stderr).toContain("未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值");
 
       // 审计里没有规则包条目、也没有 skill 会话 = 真的按「没传」跑了
       const outcome = JSON.parse(run.stdout) as { auditPath: string };
