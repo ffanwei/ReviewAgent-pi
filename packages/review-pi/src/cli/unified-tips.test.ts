@@ -8,6 +8,7 @@ import {
   assembleUnifiedTips,
   countTips,
   filterTipsDocumentByConfidence,
+  filterTipsDocumentBySeverity,
   UNKNOWN_UNCOVERED_REASON,
   withUnifiedKeys,
 } from "./unified-tips.js";
@@ -455,4 +456,120 @@ test("filterTipsDocumentByConfidence 对已过滤文档幂等", () => {
   const twice = filterTipsDocumentByConfidence(once.tips, merged, 0.5);
   expect(twice.dropped).toBe(0);
   expect(twice.tips).toEqual(once.tips);
+});
+
+// ---- 严重级过滤（只作用中文 tips / MCP 上报） ----
+
+test("minSeverity：低严重级 finding 在组装时丢弃并计数，等于阈值保留", () => {
+  const merged = [
+    finding({ id: "F001", line: 1, severity: "P3" }),
+    finding({ id: "F002", line: 2, severity: "P2" }),
+    finding({ id: "F003", line: 3, severity: "P1" }),
+  ];
+  const outcome = assembleUnifiedTips({
+    mergedFindings: merged,
+    semanticByMergeKey: semanticMap(merged, [entry(), entry(), entry()]),
+    codeByFinding: {},
+    minSeverity: "P2",
+  });
+  expect(outcome.tips[0]?.reviewTips.map((tip) => tip.id)).toEqual(["F002", "F003"]);
+  expect(outcome.droppedBySeverity).toBe(1);
+  expect(outcome.droppedByConfidence).toBe(0);
+  // 被过滤条目不算 uncovered（有意丢弃，不是生成失败）
+  expect(outcome.uncovered).toEqual([]);
+});
+
+test("minSeverity 缺席 = 不过滤（内核直调 / 单测形态）", () => {
+  const merged = [finding({ severity: "P3" })];
+  const outcome = assembleUnifiedTips({
+    mergedFindings: merged,
+    semanticByMergeKey: semanticMap(merged, [entry()]),
+    codeByFinding: {},
+  });
+  expect(countTips(outcome.tips)).toBe(1);
+  expect(outcome.droppedBySeverity).toBe(0);
+});
+
+test("filterTipsDocumentBySeverity：按 id 精确判，同行低严重级兄弟不误伤", () => {
+  const merged = [
+    finding({ id: "F001", file: "src/Foo.java", line: 42, severity: "P3" }),
+    finding({ id: "F002", file: "src/Foo.java", line: 42, severity: "P1" }),
+  ];
+  const makeTip = (id: string, severity: string) => ({
+    id,
+    code: "",
+    review: "r",
+    suggestion: "s",
+    category: "c",
+    subcategory: "",
+    severity,
+    ruleId: "",
+    lineNum: 42,
+    source: "common-reviewer",
+    confidence: "High",
+  });
+  const doc: ReviewTipsDocumentLike = [
+    {
+      filePath: "src/Foo.java",
+      reviewTips: [makeTip("F001", "Suggestion"), makeTip("F002", "Major")],
+    },
+  ];
+  const filtered = filterTipsDocumentBySeverity(doc, merged, "P2");
+  expect(filtered.tips[0]?.reviewTips.map((tip) => tip.id)).toEqual(["F002"]);
+  expect(filtered.dropped).toBe(1);
+});
+
+test("filterTipsDocumentBySeverity：无 id 时按行最严重判（同行有够格条即保留）", () => {
+  const merged = [
+    finding({ id: "F001", file: "src/Foo.java", line: 42, severity: "P3" }),
+    finding({ id: "F002", file: "src/Foo.java", line: 42, severity: "P1" }),
+  ];
+  const doc: ReviewTipsDocumentLike = [
+    {
+      filePath: "src/Foo.java",
+      reviewTips: [
+        {
+          code: "",
+          review: "r",
+          suggestion: "s",
+          category: "c",
+          subcategory: "",
+          severity: "Minor",
+          ruleId: "",
+          lineNum: 42,
+          source: "common-reviewer",
+          confidence: "High",
+        },
+      ],
+    },
+  ];
+  const filtered = filterTipsDocumentBySeverity(doc, merged, "P2");
+  // 同行存在 P1 finding ⇒ 该行未 join 到具体 id 的条目保留
+  expect(filtered.tips[0]?.reviewTips).toHaveLength(1);
+  expect(filtered.dropped).toBe(0);
+});
+
+test("filterTipsDocumentBySeverity：join 不上时用 tip 自身 severity 判", () => {
+  const doc: ReviewTipsDocumentLike = [
+    {
+      filePath: "src/Other.java",
+      reviewTips: [
+        {
+          code: "",
+          review: "r",
+          suggestion: "s",
+          category: "c",
+          subcategory: "",
+          severity: "Suggestion",
+          ruleId: "",
+          lineNum: 7,
+          source: "engine",
+          confidence: "High",
+        },
+      ],
+    },
+  ];
+  const filtered = filterTipsDocumentBySeverity(doc, [], "P2");
+  expect(filtered.tips).toEqual([]);
+  expect(filtered.dropped).toBe(1);
 });

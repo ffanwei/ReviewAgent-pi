@@ -22,6 +22,7 @@ import { LOCKED_EFFORT_LABEL, reviewModelOf } from "../provider/pi-client.js";
 import type { ConfigSnapshot } from "../shared/config.js";
 import { retryPolicyFor } from "../shared/llm-retry.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
+import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { buildReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
@@ -71,6 +72,11 @@ export interface ReviewPassInput {
    * 检视行为；缺席 = 不写 `tipsFilter` 键。
    */
   readonly tipsConfidenceMin?: number;
+  /**
+   * 中文 tips / MCP 上报严重级过滤阈值：只在审计 / run.json 留痕用，不改
+   * 检视行为；缺席 = 不写 `severityFilter` 键。
+   */
+  readonly tipsSeverityMin?: Finding["severity"];
   readonly emit: RunProgressSink;
 }
 
@@ -163,11 +169,13 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
     transcripts: outcome.skillTranscripts,
   });
   const tipsFilter = summarizeTipsFilter(outcome.findings, input.tipsConfidenceMin);
+  const severityFilter = summarizeSeverityFilter(outcome.findings, input.tipsSeverityMin);
   const audit: RunAudit = {
     ...outcome.audit,
     ruleSkill: input.ruleSkillAudit,
     ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog: persisted.records } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
+    ...(severityFilter !== undefined ? { severityFilter } : {}),
   };
   const auditContent = buildAuditFileContent({
     runId,

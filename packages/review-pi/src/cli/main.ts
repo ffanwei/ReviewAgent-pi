@@ -75,6 +75,7 @@ import {
 } from "../shared/config.js";
 import { retryPolicyFor } from "../shared/llm-retry.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
+import { isSeverityBelow } from "../shared/severity-filter.js";
 import { isConfidenceBelow } from "../shared/tips-filter.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { REVIEW_PI_VERSION } from "../shared/version.js";
@@ -90,6 +91,7 @@ import {
   assembleUnifiedTips,
   countTips,
   filterTipsDocumentByConfidence,
+  filterTipsDocumentBySeverity,
   withUnifiedKeys,
   type UnifiedTipsOutcome,
 } from "./unified-tips.js";
@@ -297,25 +299,33 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   const uncoveredReasonByMergeKey = new Map<string, string>();
   const onShardFindings =
     taskToolsOn && activeReporter !== null
-      ? (
+      ? async (
           label: { readonly index: number; readonly total: number },
           findings: readonly Finding[],
           files: readonly string[],
-        ) =>
-          reportShardFindings({
-            label,
-            findings,
-            files,
-            taskId: args.taskId,
-            repoPath,
-            reporter: activeReporter,
-            runtime: reportRuntime,
-            reportedFiles,
-            submittedFindingKeys,
-            semanticByMergeKey,
-            uncoveredReasonByMergeKey,
-            confidenceMin: config.limits.confidence.min,
-          })
+        ) => {
+          // 报文生成 + 逐文件上报都在这个回调里；单独计时，便于和审计拆账。
+          const startedAt = Date.now();
+          try {
+            await reportShardFindings({
+              label,
+              findings,
+              files,
+              taskId: args.taskId,
+              repoPath,
+              reporter: activeReporter,
+              runtime: reportRuntime,
+              reportedFiles,
+              submittedFindingKeys,
+              semanticByMergeKey,
+              uncoveredReasonByMergeKey,
+              confidenceMin: config.limits.confidence.min,
+              severityMin: config.limits.severity.min,
+            });
+          } finally {
+            stageClock.reportMs += Date.now() - startedAt;
+          }
+        }
       : undefined;
 
   try {
@@ -379,6 +389,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         runtime: reviewRuntimeOf(config),
         config: configSnapshot(config, { home: homeDirectory() }),
         tipsConfidenceMin: config.limits.confidence.min,
+        tipsSeverityMin: config.limits.severity.min,
         fetch: globalThis.fetch,
         runsRoot,
         rep: 1,
@@ -469,6 +480,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         semanticByMergeKey,
         codeByFinding,
         minConfidence: config.limits.confidence.min,
+        minSeverity: config.limits.severity.min,
         uncoveredReasonByMergeKey,
       });
       for (const missed of unifiedTips.uncovered) {
@@ -480,16 +492,24 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 置信度过滤（ADR-0052）：只作用于中文 tips；英文 findings / stdout 恒全量。
     // 计数口径与审计 `tipsFilter` 一致（过滤前的 merged findings 条数）。
     const minConfidence = config.limits.confidence.min;
+    const minSeverity = config.limits.severity.min;
     const droppedByConfidence = record.baseline.findings.filter((finding) =>
       isConfidenceBelow(finding.confidence, minConfidence),
     ).length;
+    const droppedBySeverity = record.baseline.findings.filter((finding) =>
+      isSeverityBelow(finding.severity, minSeverity),
+    ).length;
+    const keptAfterFilters = record.baseline.findings.filter(
+      (finding) =>
+        !isConfidenceBelow(finding.confidence, minConfidence) &&
+        !isSeverityBelow(finding.severity, minSeverity),
+    ).length;
     const allFindingsFiltered =
-      record.baseline.findings.length > 0 &&
-      droppedByConfidence === record.baseline.findings.length;
+      record.baseline.findings.length > 0 && keptAfterFilters === 0;
     // 全灭回落判定（Q24a）：有 findings 但统一 tips 零覆盖 ⇒ 引擎按全量模式
     // 调用（不带 skipTips），其 tips 作回落源；否则业务开启时引擎只做 stdout
     // 呈现档（Q22a：省掉 suggestion 并发生成）。
-    // 排除「全部被置信度过滤」：那不是生成失败，引擎同样过滤后无产出，
+    // 排除「全部被置信度 / 严重级过滤」：那不是生成失败，引擎同样过滤后无产出，
     // 回落只会白花调用并打出误导性的「全灭」提示。
     const engineTipsFallback =
       taskToolsOn &&
@@ -568,7 +588,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       if (countTips(unifiedTips.tips) > 0 || record.baseline.findings.length === 0) {
         tipsDoc = unifiedTips.tips;
       } else if (allFindingsFiltered) {
-        // 全灭的原因是被置信度过滤，不是生成失败：照产 `[]`，不回落、不报警。
+        // 全灭的原因是被置信度 / 严重级过滤，不是生成失败：照产 `[]`，不回落、不报警。
         tipsDoc = [];
       } else if (projection.kind === "projected" && projection.tips !== undefined) {
         tipsDoc = withUnifiedKeys(projection.tips, record.baseline.findings);
@@ -588,12 +608,22 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         record.baseline.findings,
         minConfidence,
       ).tips;
+      tipsDoc = filterTipsDocumentBySeverity(
+        tipsDoc,
+        record.baseline.findings,
+        minSeverity,
+      ).tips;
     }
 
     // 过滤留痕（零静默）：只在真的丢了条数时打一行汇总，避免无谓噪声。
     if (droppedByConfidence > 0) {
       process.stderr.write(
         `review-pi: 置信度过滤丢弃 ${String(droppedByConfidence)} 条检视意见（阈值 ${String(minConfidence)}），仅影响中文 tips\n`,
+      );
+    }
+    if (droppedBySeverity > 0) {
+      process.stderr.write(
+        `review-pi: 严重级过滤丢弃 ${String(droppedBySeverity)} 条检视意见（阈值 ${minSeverity}），仅影响中文 tips 与 MCP 上报\n`,
       );
     }
 
@@ -919,6 +949,8 @@ async function reportShardFindings(input: {
   readonly uncoveredReasonByMergeKey: Map<string, string>;
   /** 中文 tips 置信度过滤阈值（ADR-0052）：先过滤再生成，省掉注定丢弃条目的调用 */
   readonly confidenceMin: number;
+  /** 中文 tips / MCP 上报严重级过滤阈值：先过滤再生成 */
+  readonly severityMin: Finding["severity"];
 }): Promise<void> {
   const label = input.label.total > 1 ? ` [s${pad2(input.label.index)}/${pad2(input.label.total)}]` : "";
   let keptFindings: readonly Finding[] = [];
@@ -938,12 +970,15 @@ async function reportShardFindings(input: {
     reportFilesWithoutTips({ ...input, label, exclude: attempted, attempted });
   try {
     // ADR-0052：置信度过滤先于报文生成——被丢弃的意见不该花一次模型调用。
+    // 严重级过滤同口径（只裁中文 tips / MCP 上报，英文 findings 恒全量）。
     keptFindings = input.findings.filter(
-      (finding) => !isConfidenceBelow(finding.confidence, input.confidenceMin),
+      (finding) =>
+        !isConfidenceBelow(finding.confidence, input.confidenceMin) &&
+        !isSeverityBelow(finding.severity, input.severityMin),
     );
     if (keptFindings.length === 0) {
-      // 零 finding（本来就无）或全部被置信度过滤：本片所有文件都没有可发的
-      // 中文意见，按文件逐个上报空 tips（ADR-0056 / ADR-0061）。置信度过滤只
+      // 零 finding（本来就无）或全部被置信度 / 严重级过滤：本片所有文件都没有可发的
+      // 中文意见，按文件逐个上报空 tips（ADR-0056 / ADR-0061）。这两类过滤只
       // 决定「产不产中文意见」，不改变「文件已被检视」这一事实——平台需要每个
       // 文件都有一次登记，否则「检视过、没意见」与「从未检视」在远端无法区分。
       const sent = await reportRemainingFiles();

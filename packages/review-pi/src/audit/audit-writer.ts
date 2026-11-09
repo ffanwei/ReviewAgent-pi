@@ -14,6 +14,7 @@ import type {
   RuleSkillAudit,
   RuleSkillPassRecord,
   RunAudit,
+  SeverityFilterRecord,
   ShardAuditRecord,
   TipsFilterRecord,
   ToolCallRecord,
@@ -78,6 +79,11 @@ export interface AuditFileContent {
    * 配置缺席（内核直调 / 测试）时整键省略。紧接 shards，config 仍是最后可选尾键。
    */
   readonly tipsFilter?: TipsFilterRecord;
+  /**
+   * 中文 tips / MCP 上报严重级过滤留痕：阈值来自 `limits.severity.min`；
+   * 配置缺席（内核直调 / 测试）时整键省略。紧接 tipsFilter。
+   */
+  readonly severityFilter?: SeverityFilterRecord;
   /** 候选字段归一化留痕（P1）：只在真有修复时在场 */
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** 候选拦截链阶段计数（P1）：只在有拦截时在场 */
@@ -146,6 +152,7 @@ export function buildAuditFileContent(args: {
     ...(args.audit.skillPassLog !== undefined ? { skillPassLog: args.audit.skillPassLog } : {}),
     ...(args.audit.shards !== undefined ? { shards: args.audit.shards } : {}),
     ...(args.audit.tipsFilter !== undefined ? { tipsFilter: args.audit.tipsFilter } : {}),
+    ...(args.audit.severityFilter !== undefined ? { severityFilter: args.audit.severityFilter } : {}),
     ...(args.audit.candidateNormalizations !== undefined
       ? { candidateNormalizations: args.audit.candidateNormalizations }
       : {}),

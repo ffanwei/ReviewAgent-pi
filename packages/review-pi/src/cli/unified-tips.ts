@@ -1,5 +1,6 @@
 import type { Finding } from "../contracts/finding.js";
 import { findingMergeKey } from "../run/findings-merge.js";
+import { severityRankOf } from "../shared/severity-filter.js";
 import type { ReviewTipsDocumentLike, ReviewTipLike } from "./presentation-projection.js";
 import { LEVEL_BY_SEVERITY, type SemanticTipEntry } from "./report-payload.js";
 
@@ -17,6 +18,8 @@ import { LEVEL_BY_SEVERITY, type SemanticTipEntry } from "./report-payload.js";
  * 独立实现——根仓 `src/presentation/tips.ts` 不进包）：
  * - **置信度过滤（ADR-0052）**：`finding.confidence < limits.confidence.min`
  *   的意见在去重前丢弃（有意丢弃，不算 uncovered）；
+ * - **严重级过滤**：`finding.severity` 低于 `limits.severity.min` 的意见同样
+ *   在去重前丢弃；两者只作用于中文 tips / MCP 上报，英文 findings 恒全量；
  * - 同文件同 `line` 去重只留首条（ADR-0023；merged findings 已按
  *   文件→行号→严重度→title 排序，首见即确定）；
  * - 顶层数组按 finding 首见序建文件组，组内按 lineNum 升序（稳定）；
@@ -43,6 +46,14 @@ const CONFIDENCE_BUCKET_CEILING: Readonly<Record<string, number>> = {
   High: Number.POSITIVE_INFINITY,
 };
 
+/** tips 四档 severity → 内部 P 档（过滤未 join 到 finding 的 tip 时用） */
+const CODE_BY_TIP_SEVERITY: Readonly<Record<string, Finding["severity"]>> = {
+  Fatal: "P0",
+  Major: "P1",
+  Minor: "P2",
+  Suggestion: "P3",
+};
+
 export interface AssembleUnifiedTipsInput {
   /** 聚合（合并重编号后）findings——`record.baseline.findings` */
   readonly mergedFindings: readonly Finding[];
@@ -55,6 +66,11 @@ export interface AssembleUnifiedTipsInput {
    * （内核直调 / 单测形态）；CLI 真跑恒传配置值（缺省 0.5）。
    */
   readonly minConfidence?: number;
+  /**
+   * 严重级过滤阈值（`limits.severity.min`）。缺席 = 不过滤（内核直调 / 单测
+   * 形态）；CLI 真跑恒传配置值（缺省 P3 = 不过滤）。
+   */
+  readonly minSeverity?: Finding["severity"];
   /**
    * 未覆盖的具体原因（键 = 合并键）：由片级上报编排累积（片级失败 / 逐条被拒）。
    * 缺席 = 只有覆盖面事实、没有原因（留痕回落「原因未知」）。
@@ -80,6 +96,8 @@ export interface UnifiedTipsOutcome {
   readonly uncovered: readonly UncoveredFinding[];
   /** 因置信度低于阈值而被丢弃的意见数（ADR-0052 留痕；阈值缺席恒 0） */
   readonly droppedByConfidence: number;
+  /** 因严重级低于阈值而被丢弃的意见数（阈值缺席恒 0） */
+  readonly droppedBySeverity: number;
 }
 
 /** tips 文档里的意见总条数（覆盖面判定：「全灭」= 有 findings 但计数为 0） */
@@ -169,6 +187,57 @@ export function filterTipsDocumentByConfidence(
   return { tips: filtered, dropped };
 }
 
+/**
+ * 对任意来源的 tips 文档（统一生成 / 引擎回落）按严重级过滤。
+ *
+ * - tip 带 `id`（统一路径 / 回落注入后）⇒ 按 finding id 用内部 P 档精确判；
+ * - 无 `id`（第三方引擎原样 10 键）⇒ 按 `(file, line)` join，取该行**最严重**
+ *   （rank 最小）的 finding（同行只要有一条够格就保留）；
+ * - join 不上（引擎自造条目）⇒ 用 tip 自己的四档 `severity` 反查 P 档；未知档位
+ *   不丢（不因无法判断而误删）。
+ *
+ * 空组不落盘（与 ADR-0017「只含有意见的文件」一致）。返回过滤后的文档与
+ * 丢弃条数；对已过滤文档幂等。
+ */
+export function filterTipsDocumentBySeverity(
+  tips: ReviewTipsDocumentLike,
+  mergedFindings: readonly Finding[],
+  minSeverity: Finding["severity"],
+): { readonly tips: ReviewTipsDocumentLike; readonly dropped: number } {
+  const findingById = new Map<string, Finding>();
+  const minRankByLine = new Map<string, number>();
+  for (const finding of mergedFindings) {
+    if (!findingById.has(finding.id)) {
+      findingById.set(finding.id, finding);
+    }
+    const key = fileLineKey(finding.file, finding.line);
+    const rank = severityRankOf(finding.severity);
+    const previous = minRankByLine.get(key);
+    if (previous === undefined || rank < previous) {
+      minRankByLine.set(key, rank);
+    }
+  }
+  const minRank = severityRankOf(minSeverity);
+  let dropped = 0;
+  const filtered: ReviewTipsDocumentLike = tips
+    .map((file) => ({
+      filePath: file.filePath,
+      reviewTips: file.reviewTips.filter((tip) => {
+        const byId = tip.id !== undefined ? findingById.get(tip.id) : undefined;
+        const lineRank = minRankByLine.get(fileLineKey(file.filePath, tip.lineNum));
+        const tipSeverity = CODE_BY_TIP_SEVERITY[tip.severity];
+        const rank = byId !== undefined ? severityRankOf(byId.severity) : (lineRank ?? (tipSeverity !== undefined ? severityRankOf(tipSeverity) : undefined));
+        const drop = rank !== undefined && rank > minRank;
+        if (drop) {
+          dropped += 1;
+        }
+        return !drop;
+      }),
+    }))
+    .filter((file) => file.reviewTips.length > 0);
+  return { tips: filtered, dropped };
+}
+
 /** (file, line) → finding 索引（首见优先：与 tips 去重口径同源） */
 function findingByLineOf(mergedFindings: readonly Finding[]): Map<string, Finding> {
   const findingByLine = new Map<string, Finding>();
@@ -195,6 +264,7 @@ export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTip
   const groups = new Map<string, ReviewTipLike[]>();
   const uncovered: UncoveredFinding[] = [];
   let droppedByConfidence = 0;
+  let droppedBySeverity = 0;
   // ADR-0023：同文件同 line 去重只留首条（finding 源序——merged 顺序已确定）；
   // 被去重掉的 finding 不算 uncovered（是故意丢弃，不是生成失败）。
   // ADR-0052：置信度过滤在去重前——低置信的那条不占行位，同行更高置信条目可见。
@@ -202,6 +272,13 @@ export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTip
   for (const finding of input.mergedFindings) {
     if (input.minConfidence !== undefined && finding.confidence < input.minConfidence) {
       droppedByConfidence += 1;
+      continue;
+    }
+    if (
+      input.minSeverity !== undefined &&
+      severityRankOf(finding.severity) > severityRankOf(input.minSeverity)
+    ) {
+      droppedBySeverity += 1;
       continue;
     }
     let lines = seenLines.get(finding.file);
@@ -234,7 +311,7 @@ export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTip
     filePath,
     reviewTips,
   }));
-  return { tips, uncovered, droppedByConfidence };
+  return { tips, uncovered, droppedByConfidence, droppedBySeverity };
 }
 
 /** merged finding + 语义登记 → 12 键 tip（确定性，无 I/O） */

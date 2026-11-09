@@ -32,6 +32,7 @@ import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
+import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { assertDiffWithinCharLimit, filterDiffForReview, splitDiffIntoFileBlocks, toMrFilterRecord } from "./mr-input.js";
@@ -128,6 +129,12 @@ export interface ReviewRunInput {
    * 缺席 = 不留痕（内核直调 / 单测形态）；CLI 真跑恒传 `limits.confidence.min`。
    */
   readonly tipsConfidenceMin?: number;
+  /**
+   * 中文 tips / MCP 上报严重级过滤阈值：只用于在审计 / run.json 留痕
+   * `severityFilter`（阈值 + 被丢弃条数）；不改变检视结果与英文 findings。
+   * 缺席 = 不留痕（内核直调 / 单测形态）；CLI 真跑恒传 `limits.severity.min`。
+   */
+  readonly tipsSeverityMin?: Finding["severity"];
 }
 
 /**
@@ -344,6 +351,9 @@ async function executeSinglePass(args: {
     ...(args.input.tipsConfidenceMin !== undefined
       ? { tipsConfidenceMin: args.input.tipsConfidenceMin }
       : {}),
+    ...(args.input.tipsSeverityMin !== undefined
+      ? { tipsSeverityMin: args.input.tipsSeverityMin }
+      : {}),
     emit: args.emit,
   });
   // 片级上报缝（ADR-0045）：单片路径 = 一次调用，findings 已定型；文件清单
@@ -447,6 +457,9 @@ async function executeShardedPasses(args: {
       boundary: { degraded: false },
       ...(args.input.tipsConfidenceMin !== undefined
         ? { tipsConfidenceMin: args.input.tipsConfidenceMin }
+        : {}),
+      ...(args.input.tipsSeverityMin !== undefined
+        ? { tipsSeverityMin: args.input.tipsSeverityMin }
         : {}),
       emit: withShardLabel(args.emit, { index: shard.index, total }),
     });
@@ -571,6 +584,7 @@ async function aggregateShards(args: {
   }));
 
   const tipsFilter = summarizeTipsFilter(findings, args.input.tipsConfidenceMin);
+  const severityFilter = summarizeSeverityFilter(findings, args.input.tipsSeverityMin);
   const audit: RunAudit = {
     // 聚合审计不重复承载正文（正文在各片审计里），只做账目；
     // 解析失败记录是诊断，聚合进来让单份审计也能解释「候选为什么丢了」。
@@ -586,6 +600,7 @@ async function aggregateShards(args: {
     shards: shardAudits,
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
+    ...(severityFilter !== undefined ? { severityFilter } : {}),
     ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
     ...(Object.values(rejectionCounts).some((count) => count > 0) ? { rejectionCounts } : {}),
   };
