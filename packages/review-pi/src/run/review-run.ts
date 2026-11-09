@@ -501,6 +501,7 @@ async function aggregateShards(args: {
     NON_ENGLISH: 0,
     NO_EVIDENCE: 0,
     VERIFICATION_FAILED: 0,
+    OUT_OF_SCOPE: 0,
     DUPLICATE_ID: 0,
   };
 

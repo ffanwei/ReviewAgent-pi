@@ -273,6 +273,7 @@ export function toMrFilterRecord(filtered: FilteredDiff): MrFilterRecord | undef
     generated: 0,
     minified: 0,
     binary: 0,
+    test: 0,
   };
   for (const entry of filtered.dropped) {
     reasons[entry.reason] += 1;

@@ -51,12 +51,17 @@ export interface CandidateRejection {
   readonly reason: string;
 }
 
-/** 拦截阶段顺序：Schema 校验 → 语言检查 → 证据检查 → 验证裁决 → 重复 id */
+/**
+ * 拦截阶段顺序：Schema 校验 → 语言检查 → 证据检查 → 验证裁决 → 位置范围 → 重复 id。
+ * `OUT_OF_SCOPE` 由 `limits.findingScope` 控制（缺省开启）：意见必须落在本遍
+ * diff 的变更 hunk（含前后 `contextLines` 行）内。
+ */
 export type RejectionStage =
   | "SCHEMA_INVALID"
   | "NON_ENGLISH"
   | "NO_EVIDENCE"
   | "VERIFICATION_FAILED"
+  | "OUT_OF_SCOPE"
   | "DUPLICATE_ID";
 
 /** Cache Break 原因分类（相邻请求字节前缀分歧定位） */
@@ -102,8 +107,8 @@ export interface MrBoundaryRecord {
   readonly reason: MrBoundaryReason;
 }
 
-/** 输入预过滤的剔除原因（大 diff 第一期：只剔噪声，不改检视语义） */
-export type MrFilterReason = "lockfile" | "generated" | "minified" | "binary";
+/** 输入预过滤的剔除原因（大 diff 第一期：只剔噪声，不改检视语义；`test` = 配置驱动的测试文件跳过） */
+export type MrFilterReason = "lockfile" | "generated" | "minified" | "binary" | "test";
 
 /** 被剔除的单个文件（审计窄投影，最多保留前 20 条） */
 export interface MrFilteredPath {
@@ -113,7 +118,7 @@ export interface MrFilteredPath {
 
 /**
  * 输入预过滤留痕（审计文件尾键 mrFilter 的形状；无剔除缺省省键）。
- * `reasons` 恒含四类键（未命中为 0），便于下游按固定形状读数。
+ * `reasons` 恒含五类键（未命中为 0），便于下游按固定形状读数。
  */
 export interface MrFilterRecord {
   readonly droppedFiles: number;
@@ -213,6 +218,15 @@ export interface TipsFilterRecord {
 }
 
 /**
+ * 中文 tips / MCP 上报严重级过滤留痕：审计 / run.json 尾键。
+ * `droppedTips` = 低于 `minSeverity` 而被丢弃的 merged findings 条数。
+ */
+export interface SeverityFilterRecord {
+  readonly minSeverity: Finding["severity"];
+  readonly droppedTips: number;
+}
+
+/**
  * 候选字段归一化的逐条留痕（字段修复；只在真有修复时进审计尾键）。
  * `source` 区分本地确定性修复与有界一次性模型修复；`fields` 是被修复的
  * 字段名（不记录值，避免把模型原文复制进审计）。
@@ -249,6 +263,8 @@ export interface RunAudit {
   readonly shards?: readonly ShardAuditRecord[];
   /** 中文 tips 置信度过滤留痕（ADR-0052）：配置缺席时省键 */
   readonly tipsFilter?: TipsFilterRecord;
+  /** 中文 tips / MCP 上报严重级过滤留痕：配置缺席时省键 */
+  readonly severityFilter?: SeverityFilterRecord;
   /** 候选字段归一化留痕（只在真有修复时在场；零漂移纪律） */
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** 候选拦截链阶段计数（只在有拦截时在场） */

@@ -167,6 +167,37 @@ export interface ConfidenceLimits {
   readonly min: number;
 }
 
+/**
+ * 中文 tips / MCP 上报的严重级过滤：`severity` 低于 min 的检视意见不进入
+ * `reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`。英文 findings / stdout
+ * / 审计 findings 不受影响。取值 P0–P3，缺省 P3（= 不过滤）。
+ */
+export interface SeverityLimits {
+  readonly min: "P0" | "P1" | "P2" | "P3";
+}
+
+/**
+ * 测试文件检视开关：`skip = true`（缺省）时，`run/mr-input.ts` 在检视输入阶段
+ * 按文件块整块剔除测试文件；`false` 时原样保留。影响的是**检视输入本身**
+ * （findings / tips / MCP 上报同时生效），与 `limits.severity` / `limits.confidence`
+ * 的输出侧过滤不同。
+ */
+export interface TestFileLimits {
+  readonly skip: boolean;
+}
+
+/**
+ * 非 diff 区域过滤：`enabled = true`（缺省）时，候选拦截链只保留落在本遍
+ * diff 变更 hunk 内（或距 hunk 边界不超过 `contextLines` 行）的检视意见；
+ * 文件不在本遍 diff 的直接拒绝（`OUT_OF_SCOPE`）。影响 findings / tips /
+ * MCP / 审计（被拒候选只留 rejectionCounts），关闭 = 保留同文件远处甚至
+ * 未改动文件里的意见。
+ */
+export interface FindingScopeLimits {
+  readonly enabled: boolean;
+  readonly contextLines: number;
+}
+
 export interface BoundaryLimits {
   /** `>` 即降级；null = 该维度不设界 */
   readonly maxFiles: number | null;
@@ -209,6 +240,9 @@ export interface Limits {
   readonly retry: RetryLimits;
   readonly concurrency: ConcurrencyLimits;
   readonly confidence: ConfidenceLimits;
+  readonly severity: SeverityLimits;
+  readonly testFiles: TestFileLimits;
+  readonly findingScope: FindingScopeLimits;
   readonly boundary: BoundaryLimits;
   readonly split: SplitLimits;
   readonly archive: ArchiveLimits;
@@ -241,6 +275,9 @@ export const DEFAULT_LIMITS: Limits = {
   },
   concurrency: { suggestion: 4 },
   confidence: { min: 0.5 },
+  severity: { min: "P3" },
+  testFiles: { skip: true },
+  findingScope: { enabled: true, contextLines: 10 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_500_000 },
   split: { enabled: true, maxShardChars: 400_000, maxShards: 12, contextSummaryChars: 8_000 },
   archive: {
@@ -714,7 +751,7 @@ const MCP_REPORT_KEYS = [
 const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
 const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "concurrency", "confidence", "boundary", "split", "archive", "micro"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "concurrency", "confidence", "severity", "testFiles", "findingScope", "boundary", "split", "archive", "micro"] as const;
 const LOOP_KEYS = ["maxRounds"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -740,6 +777,9 @@ const RETRY_KEYS = [
 ] as const;
 const CONCURRENCY_KEYS = ["suggestion"] as const;
 const CONFIDENCE_KEYS = ["min"] as const;
+const SEVERITY_KEYS = ["min"] as const;
+const TEST_FILES_KEYS = ["skip"] as const;
+const FINDING_SCOPE_KEYS = ["enabled", "contextLines"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
 const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars"] as const;
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
@@ -846,6 +886,35 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     ),
   };
 
+  const severityObj = optionalObject(limits.severity, "limits.severity", warnings);
+  assertKnownKeys(severityObj, SEVERITY_KEYS, "limits.severity", warnings);
+  const severity: SeverityLimits = {
+    min: severityOr(severityObj.min, "limits.severity.min", DEFAULT_LIMITS.severity.min),
+  };
+
+  const testFilesObj = optionalObject(limits.testFiles, "limits.testFiles", warnings);
+  assertKnownKeys(testFilesObj, TEST_FILES_KEYS, "limits.testFiles", warnings);
+  const testFiles: TestFileLimits = {
+    skip: boolOr(testFilesObj.skip, "limits.testFiles.skip", DEFAULT_LIMITS.testFiles.skip),
+  };
+
+  const findingScopeObj = optionalObject(limits.findingScope, "limits.findingScope", warnings);
+  assertKnownKeys(findingScopeObj, FINDING_SCOPE_KEYS, "limits.findingScope", warnings);
+  const findingScope: FindingScopeLimits = {
+    enabled: boolOr(
+      findingScopeObj.enabled,
+      "limits.findingScope.enabled",
+      DEFAULT_LIMITS.findingScope.enabled,
+    ),
+    contextLines: intOr(
+      findingScopeObj.contextLines,
+      "limits.findingScope.contextLines",
+      0,
+      2_000,
+      DEFAULT_LIMITS.findingScope.contextLines,
+    ),
+  };
+
   const boundaryObj = optionalObject(limits.boundary, "limits.boundary", warnings);
   assertKnownKeys(boundaryObj, BOUNDARY_KEYS, "limits.boundary", warnings);
   const maxFiles =
@@ -915,7 +984,7 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
   };
 
-  return { loop, timeouts, retry, concurrency, confidence, boundary, split, archive, micro };
+  return { loop, timeouts, retry, concurrency, confidence, severity, testFiles, findingScope, boundary, split, archive, micro };
 }
 
 // ---------------------------------------------------------------------------
@@ -1391,9 +1460,31 @@ function numberOr(value: unknown, path: string, min: number, max: number, fallba
   return value;
 }
 
-/** 布尔开关：缺省用 fallback；出现非布尔值 fail fast（不把 "false" 当 false） */
-function boolOr(value: unknown, path: string, fallback: boolean): boolean {
+/**
+ * 严重级阈值：缺省用 fallback；只接受 P0–P3（大小写不敏感，归一为大写），
+ * 其它值 fail fast（不把 "P5" / 4 当合法档位）。
+ */
+function severityOr(
+  value: unknown,
+  path: string,
+  fallback: "P0" | "P1" | "P2" | "P3",
+): "P0" | "P1" | "P2" | "P3" {
   if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toUpperCase();
+    if (normalized === "P0" || normalized === "P1" || normalized === "P2" || normalized === "P3") {
+      return normalized;
+    }
+  }
+  throw new ConfigError(
+    `${CONFIG_FILE_NAME}: ${path} must be one of P0, P1, P2, P3 (got ${describe(value)})`,
+  );
+}
+
+/** 布尔开关：缺省用 fallback；出现非布尔值 fail fast（不把 "false" 当 false） */
+function boolOr(value: unknown, path: string, fallback: boolean): boolean {  if (value === undefined) {
     return fallback;
   }
   if (typeof value !== "boolean") {
@@ -1687,6 +1778,22 @@ ${excludeGlobLines}
     // （reviews_tips_zh.json 与 mrReviewResult.reviewTips）；英文 findings / stdout 不受影响。
     // 0–1，缺省 0.5（= 过滤 Low 档）；0 = 不过滤。
     "confidence": { "min": 0.5 },
+    // 检视意见严重级过滤：severity 低于 min 的意见不进入中文 tips
+    // （reviews_tips_zh.json 与 mrReviewResult.reviewTips）；英文 findings / stdout 不受影响。
+    // 取值 P0–P3，缺省 P3（= 不过滤）；P2 = 只保留 P0/P1/P2，丢弃 P3 建议级。
+    "severity": { "min": "P3" },
+    // 测试文件是否跳过检视（缺省 true = 跳过）：
+    // true  = 检视输入阶段按文件块整块剔除测试文件（不进 diff、不产 findings、
+    //         不进中文 tips / MCP 上报）；这种剔除发生在检视之前，与 severity /
+    //         confidence 的输出侧过滤不同。
+    // false = 测试文件与生产代码同等检视。
+    "testFiles": { "skip": true },
+    // 非 diff 区域过滤（缺省开启）：检视意见必须落在本遍 diff 的变更 hunk 内，
+    // 或距 hunk 边界不超过 contextLines 行；文件不在本遍 diff 的意见直接丢弃。
+    // 过滤发生在候选拦截链（OUT_OF_SCOPE），findings / tips / MCP / 审计同时生效；
+    // 关闭 = 同文件远处、甚至未改动文件里的意见也保留。
+    // contextLines 取值 0–2000；0 = 只保留 hunk 内。
+    "findingScope": { "enabled": true, "contextLines": 10 },
     // MR 边界护栏：超界只告警（domainWarning）不拒检；null = 该维不设界。
     // maxDiffChars 是输入体积门：过滤后超限直接报错（不发模型请求），null = 关闭门禁。
     "boundary": {

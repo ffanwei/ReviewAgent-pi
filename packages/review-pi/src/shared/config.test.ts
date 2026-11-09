@@ -290,6 +290,101 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/limits.confidence.min must be a number/);
   });
 
+  test("limits.severity.min：缺省 P3，P0–P3 可配（大小写归一）且进 digest", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.severity).toEqual({ min: "P3" });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"severity":{"min":"p2"}}`)),
+    }).config;
+    expect(tuned.limits.severity.min).toBe("P2");
+    expect(tuned.overridden).toContain("limits.severity.min");
+    expect(tuned.digest).not.toBe(defaults.digest);
+
+    for (const level of ["P0", "P1", "P3"]) {
+      expect(
+        loadConfig({
+          configPath: writeConfig(minimalConfig(`,"limits":{"severity":{"min":"${level}"}}`)),
+        }).config.limits.severity.min,
+      ).toBe(level);
+    }
+  });
+
+  test("limits.severity.min 非法值 = fail fast，指出键路径", () => {
+    for (const bad of ["P4", "critical", "2"]) {
+      expect(() =>
+        loadConfig({
+          configPath: writeConfig(minimalConfig(`,"limits":{"severity":{"min":${JSON.stringify(bad)}}}`)),
+        }),
+      ).toThrow(/limits.severity.min must be one of P0, P1, P2, P3/);
+    }
+  });
+
+  test("limits.testFiles.skip：缺省 true，可关闭且进 digest", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.testFiles).toEqual({ skip: true });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"testFiles":{"skip":false}}`)),
+    }).config;
+    expect(tuned.limits.testFiles.skip).toBe(false);
+    expect(tuned.overridden).toContain("limits.testFiles.skip");
+    expect(tuned.digest).not.toBe(defaults.digest);
+
+    expect(
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"testFiles":{"skip":true}}`)),
+      }).config.limits.testFiles.skip,
+    ).toBe(true);
+  });
+
+  test("limits.testFiles.skip 非法值 = fail fast，指出键路径", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"testFiles":{"skip":"false"}}`)),
+      }),
+    ).toThrow(/limits\.testFiles\.skip must be true or false/);
+  });
+
+  test("limits.findingScope：缺省开启、默认 hunk ±10，可配置且进 digest", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.findingScope).toEqual({ enabled: true, contextLines: 10 });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"limits":{"findingScope":{"enabled":false,"contextLines":0}}`),
+      ),
+    }).config;
+    expect(tuned.limits.findingScope).toEqual({ enabled: false, contextLines: 0 });
+    expect(tuned.overridden).toContain("limits.findingScope.enabled");
+    expect(tuned.overridden).toContain("limits.findingScope.contextLines");
+    expect(tuned.digest).not.toBe(defaults.digest);
+
+    // 只写一个键时另一个回落缺省
+    expect(
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"findingScope":{"contextLines":25}}`)),
+      }).config.limits.findingScope,
+    ).toEqual({ enabled: true, contextLines: 25 });
+  });
+
+  test("limits.findingScope 非法值 = fail fast，指出键路径", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(`,"limits":{"findingScope":{"enabled":"yes"}}`),
+        ),
+      }),
+    ).toThrow(/limits\.findingScope\.enabled must be true or false/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(`,"limits":{"findingScope":{"contextLines":-1}}`),
+        ),
+      }),
+    ).toThrow(/limits\.findingScope\.contextLines must be in 0…2000/);
+  });
+
   test("limits.timeouts 新增 reviewTurnMs / oneShotMs 可配且进 digest", () => {    const { config } = loadConfig({
       configPath: writeConfig(
         minimalConfig(`,"limits":{"timeouts":{"reviewTurnMs":120000,"oneShotMs":45000}}`),
