@@ -151,6 +151,37 @@ test("引擎成功 → projected：findings 换投影版（title/description 已
   });
 });
 
+test("引擎返回部分降级 provenance → 仍 projected，degradedFields / degradedReason 透传", async () => {
+  const enginePath = writeEngineModule(
+    "partial-engine.mjs",
+    `export default async (source) => ({
+      provenance: {
+        language: "zh",
+        terminologyVersion: 1,
+        findingLinks: source.findings.map((finding) => ({
+          sourceFindingId: finding.id,
+          projectedFindingId: finding.id,
+        })),
+        degradedFields: ["findings[0].description"],
+        degradedReason: "findings[0].description: gateway 503",
+      },
+      findings: source.findings.map((finding) => ({
+        ...finding,
+        title: "[zh] " + finding.title,
+      })),
+      toolCallLog: source.toolCallLog,
+    });`,
+  );
+  const outcome = await project(sampleSource(), {
+    enginePath: enginePath,
+  });
+  expect(outcome.kind).toBe("projected");
+  if (outcome.kind === "projected") {
+    expect(outcome.provenance.degradedFields).toEqual(["findings[0].description"]);
+    expect(outcome.provenance.degradedReason).toContain("gateway 503");
+  }
+});
+
 test("相对路径（相对进程 cwd）→ 同样可加载（配置里写相对引擎路径的形态）", async () => {
   const absolute = writeEngineModule("relative-engine.mjs", OK_ENGINE);
   const relative = path.relative(process.cwd(), absolute);
@@ -303,6 +334,40 @@ test.each([
       toolCallLog: source.toolCallLog,
     });`,
     reason: "terminologyVersion must be a finite number",
+  },
+  {
+    label: "degradedFields 非数组",
+    body: `export default async (source) => ({
+      provenance: {
+        language: "zh",
+        terminologyVersion: 1,
+        findingLinks: source.findings.map((finding) => ({
+          sourceFindingId: finding.id,
+          projectedFindingId: finding.id,
+        })),
+        degradedFields: "nope",
+      },
+      findings: source.findings,
+      toolCallLog: source.toolCallLog,
+    });`,
+    reason: "degradedFields must be an array",
+  },
+  {
+    label: "degradedFields 含空字符串",
+    body: `export default async (source) => ({
+      provenance: {
+        language: "zh",
+        terminologyVersion: 1,
+        findingLinks: source.findings.map((finding) => ({
+          sourceFindingId: finding.id,
+          projectedFindingId: finding.id,
+        })),
+        degradedFields: [""],
+      },
+      findings: source.findings,
+      toolCallLog: source.toolCallLog,
+    });`,
+    reason: "degradedFields must contain non-empty strings",
   },
 ])("返回形状坏（$label）→ degraded：$reason", async ({ body, reason }) => {
   const enginePath = writeEngineModule("bad-shape.mjs", body);

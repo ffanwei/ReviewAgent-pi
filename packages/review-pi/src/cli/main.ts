@@ -83,6 +83,7 @@ import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from 
 import { formatReviewArgs } from "./args-echo.js";
 import { runConfigCommand } from "./config-command.js";
 import { McpCallLog, writeMcpCallLog } from "./mcp-call-log.js";
+import { openRunLog, type RunLog } from "./run-log.js";
 import { buildShardReportResilient, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
 import { buildReviewSummary } from "./review-summary.js";
 import {
@@ -113,12 +114,38 @@ import {
 } from "./reviews-tips-zh.js";
 import { removeStaleReviewsZh } from "./reviews-zh.js";
 
+/**
+ * 本次 review 的运行日志（stderr 镜像 + 未捕获异常堆栈）。
+ * 只有 review 命令会打开；config / smoke / export 与打开失败的路径恒为 null。
+ */
+let activeRunLog: RunLog | null = null;
+
+// 进程退出前恢复 stderr 并关闭日志 fd（写入本就是同步的，这里只做资源回收）。
+process.once("exit", () => {
+  activeRunLog?.close();
+});
+
 /** 执行一次 review 命令；返回进程退出码（完成 0——截断同为 0；错误经异常上抛 → 1） */
 async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Promise<number> {
   // 缺值的规则包旗标（B 档：按未传处理，但不静默）：先喊一声再往下走，保证即使
   // 后面因别的错误早退，用户也能看到「规则包根本没装载」这个原因。
   for (const flag of args.emptyRuleSkillFlags ?? []) {
     process.stderr.write(`review-pi: ${flag} 缺少值，已忽略（本轮不装载该包）\n`);
+  }
+  // 落盘根（ADR-0033）：tasks 根（`--tasks-dir` 或 ~/.PiAgent/tasks）+ 任务 id；
+  // 其下仍是 runs/ + audit/ + .cache/（ADR-0032 的目录内形态不变）。
+  const tasksRoot = resolveTasksRoot({
+    ...(args.tasksDir !== undefined ? { tasksDir: args.tasksDir } : {}),
+  });
+  const runsRoot = taskDirPath(tasksRoot, args.taskId);
+  // 运行日志（与 session 转录同目录）：stderr 全量镜像 + 未捕获异常堆栈，
+  // 生产环境拿不到 stderr 时仍可事后排障。旁路：打不开只警告，检视照跑。
+  try {
+    activeRunLog = openRunLog(runDirPath(runsRoot), { taskId: args.taskId });
+  } catch (error) {
+    process.stderr.write(
+      `review-pi: 运行日志打开失败（${describeReportFailure(error)}），继续检视\n`,
+    );
   }
   // 配置前置先检（fail fast 早于文件系统触碰；key 缺失抛人话错误）
   const endpoint = resolveReviewerEndpoint(config);
@@ -135,12 +162,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     throw new Error(`--repo is not a directory: ${repoPath}`);
   }
   const mrPath = resolve(args.mr);
-  // 落盘根（ADR-0033）：tasks 根（`--tasks-dir` 或 ~/.PiAgent/tasks）+ 任务 id；
-  // 其下仍是 runs/ + audit/ + .cache/（ADR-0032 的目录内形态不变）。
-  const tasksRoot = resolveTasksRoot({
-    ...(args.tasksDir !== undefined ? { tasksDir: args.tasksDir } : {}),
-  });
-  const runsRoot = taskDirPath(tasksRoot, args.taskId);
 
   // 传入参数回显（stderr，ADR-0043）：开跑前先报一遍本次生效参数——相对路径已按
   // cwd 解析，缺省值（model / config / tasks 根 / progress）已落成生效值并标注来源。
@@ -444,6 +465,25 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           : undefined;
     if (projection.kind === "degraded") {
       process.stderr.write(`review-pi: 呈现投影降级为英文源文档（${projection.reason}）\n`);
+    }
+    // 部分降级（ADR-0059）：整次投影仍成立，只有个别字段保留英文。留一行
+    // stderr 让生产可观测；stdout 的 presentation 键同步携带 degradedFields /
+    // degradedReason（机器可读）。
+    if (
+      projection.kind === "projected" &&
+      projection.provenance.degradedFields !== undefined &&
+      projection.provenance.degradedFields.length > 0
+    ) {
+      const fields = projection.provenance.degradedFields;
+      const preview = fields.slice(0, 5).join(", ");
+      const more = fields.length > 5 ? ` 等 ${String(fields.length)} 个字段` : "";
+      const reason =
+        projection.provenance.degradedReason !== undefined
+          ? `：${projection.provenance.degradedReason}`
+          : "";
+      process.stderr.write(
+        `review-pi: 呈现投影部分降级（${preview}${more} 保留英文）${reason}\n`,
+      );
     }
 
     // tips 选源（ADR-0045 统一 tips）：业务开启 = 统一生成（尽力而为），
@@ -1222,6 +1262,13 @@ function main(): void {
 function reportErrorAndExit(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`review-pi: ${message}\n`, () => exitGracefully(1));
+  // 完整堆栈只进运行日志（stderr 仍是一行人话；stdout 契约不变）。
+  // 生产上把 `<tasks 根>/<taskId>/runs/review-pi.log` 发回来即可定位。
+  if (activeRunLog !== null) {
+    const detail =
+      error instanceof Error && error.stack !== undefined ? error.stack : message;
+    activeRunLog.detail(`\n[uncaught ${new Date().toISOString()}]\n${detail}\n`);
+  }
 }
 
 main();

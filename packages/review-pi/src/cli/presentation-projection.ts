@@ -34,6 +34,8 @@ import type { RetryPolicy } from "../shared/llm-retry.js";
  * - identity：`presentation.engine` 缺席（null / 空白）——恒等直通，
  *   stdout 无 presentation 键（现状形态）；
  * - projected：投影成功——stdout findings 用投影版，尾部追加 presentation 键；
+ *   引擎可以返回**部分降级**（ADR-0059）：个别字段翻译失败时保留英文源文本，
+ *   经 `provenance.degradedFields` / `degradedReason` 留痕，仍算 projected；
  * - degraded：引擎失败（加载/协议/调用/超时）——检视产物绝不能因呈现层
  *   失败丢失：stdout 回退英文源文档 + presentation 降级标注，人话原因走
  *   stderr，退出码不受影响（呈现降级不是运行失败——对齐诚实截断哲学）。
@@ -129,6 +131,13 @@ export interface PresentationProvenance {
     readonly sourceFindingId: string;
     readonly projectedFindingId: string;
   }[];
+  /**
+   * 部分降级（ADR-0059）：翻译失败而保留英文源文本的字段路径（缺席 = 全量
+   * 成功）。`language` 仍可为 `zh`——整份文档不再因单字段失败而整次降级。
+   */
+  readonly degradedFields?: readonly string[];
+  /** 部分降级的首个失败原因（人话；缺席 = 无降级） */
+  readonly degradedReason?: string;
 }
 
 /** 引擎入参 = 呈现源 + 运行时接入点（CLI 注入，引擎零 env 读取） */
@@ -445,6 +454,23 @@ function validateProjection(projection: EngineProjection): string | undefined {
   }
   if (provenance.findingLinks.length !== projection.findings.length) {
     return "provenance.findingLinks must match findings one-to-one (same length, same order)";
+  }
+  // 部分降级留痕（ADR-0059）：可缺省；一旦出现就必须是「非空字符串路径」数组，
+  // 原因若出现必须为字符串。坏形状仍归整次降级（不输出垃圾 stdout）。
+  if (provenance.degradedFields !== undefined) {
+    if (!Array.isArray(provenance.degradedFields)) {
+      return "provenance.degradedFields must be an array";
+    }
+    if (
+      provenance.degradedFields.some(
+        (field) => typeof field !== "string" || field.trim() === "",
+      )
+    ) {
+      return "provenance.degradedFields must contain non-empty strings";
+    }
+  }
+  if (provenance.degradedReason !== undefined && typeof provenance.degradedReason !== "string") {
+    return "provenance.degradedReason must be a string";
   }
   return undefined;
 }

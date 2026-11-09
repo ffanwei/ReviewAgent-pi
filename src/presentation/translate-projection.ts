@@ -66,6 +66,18 @@ export interface ProjectionProvenance {
   readonly language: PresentationLanguage;
   readonly terminologyVersion: number;
   readonly findingLinks: readonly FindingLink[];
+  /**
+   * 部分降级：翻译失败而**保留英文源文本**的字段路径（`findings[i].title` /
+   * `findings[i].description` / `toolCallLog[i].resultSummary`）。
+   *
+   * 缺席 = 全量翻译成功（零漂移：成功 run 的 provenance 逐字节同旧形态）；
+   * 非空时 `language` 仍是 `zh`——整份文档只在个别字段上回退英文，不再整次
+   * 投影降级。代码标识/路径/代码摘录本来就保持英文，因此中文叙述里出现
+   * 英文标识是正常形态；本字段只标记「该字段的叙述文字也没译成中文」。
+   */
+  readonly degradedFields?: readonly string[];
+  /** 部分降级的首个失败原因（人话，截断；缺席 = 无降级） */
+  readonly degradedReason?: string;
 }
 
 /** 投影产物：呈现文档（自然语言字段已译、结构化字段字节直通）+ 留痕 */
@@ -94,8 +106,10 @@ export function presentationSourceOf(result: RunResult): ReviewPresentationSourc
 
 /**
  * 跑翻译投影：en = 恒等直通（零引擎调用）；zh = 引擎翻自然语言字段。
- * 输入形状错误（装配面问题）抛 Error；引擎对非空输入产出空译文同样抛错
- * （零静默丢检视内容）。
+ * 输入形状错误 / 源字段非字符串（装配面问题）抛 Error；**翻译失败不再上抛**：
+ * 单个字段失败只把该字段保留英文源文本并记入 `provenance.degradedFields`，
+ * 其余字段照常翻译（ADR-0059，提高整次投影成功率）。引擎连续抛错或连续空译文
+ * 达阈值时按系统级失败处理，剩余字段直接英文回退，不再逐字段等待重试。
  */
 export async function projectReviewDocument(
   deps: ProjectionDeps,
@@ -117,26 +131,55 @@ function identityProjection(source: ReviewPresentationSource): ProjectedReviewDo
   };
 }
 
+/** 连续空译文的系统级阈值：达到即停止后续调用，剩余字段直接保留英文 */
+const MAX_CONSECUTIVE_EMPTY_TRANSLATIONS = 3;
+/**
+ * 连续抛错的系统级阈值：单次抛错先按内容级失败隔离（下一字段成功即继续），
+ * 连续两次抛错才判定网关/引擎整体不可用，停止后续调用。这样单个「输入太长 /
+ * 单条 4xx」不会把后面的字段全部拖成英文，死网关也只多探测一个字段。
+ */
+const MAX_CONSECUTIVE_THROWN_FAILURES = 2;
+
+/** 单次 zh 投影的降级账本（逐字段记录，不跨 run 复用） */
+interface TranslationRun {
+  readonly engine: TranslateEngine;
+  readonly context: TerminologyContext;
+  readonly degradedFields: string[];
+  degradedReason?: string;
+  /**
+   * 系统级失败原因：引擎连续抛错（网络/HTTP/超时）或连续空译文达到阈值。
+   * 一旦置位，剩余字段不再调用引擎——死网关下不把每个字段都等满重试。
+   */
+  systemicReason?: string;
+  consecutiveEmptyTranslations: number;
+  consecutiveThrownFailures: number;
+}
+
 /** zh 翻译投影：引擎只翻自然语言字段（次序确定），结构化字段 spread 直通 */
 async function translateProjection(
   engine: TranslateEngine,
   source: ReviewPresentationSource,
 ): Promise<ProjectedReviewDocument> {
-  const context: TerminologyContext = {
-    targetLanguage: "zh",
-    terminologyVersion: TERMINOLOGY_VERSION,
-    entries: TERMINOLOGY,
+  const run: TranslationRun = {
+    engine,
+    context: {
+      targetLanguage: "zh",
+      terminologyVersion: TERMINOLOGY_VERSION,
+      entries: TERMINOLOGY,
+    },
+    degradedFields: [],
+    consecutiveEmptyTranslations: 0,
+    consecutiveThrownFailures: 0,
   };
   const findings: Finding[] = [];
   for (const [index, finding] of source.findings.entries()) {
     findings.push({
       ...finding,
-      title: await translateField(engine, finding.title, `findings[${index}].title`, context),
+      title: await translateField(run, finding.title, `findings[${index}].title`),
       description: await translateField(
-        engine,
+        run,
         finding.description,
         `findings[${index}].description`,
-        context,
       ),
     });
   }
@@ -145,23 +188,26 @@ async function translateProjection(
     toolCallLog.push({
       ...record,
       resultSummary: await translateField(
-        engine,
+        run,
         record.resultSummary,
         `toolCallLog[${index}].resultSummary`,
-        context,
       ),
     });
   }
-  return { provenance: provenanceOf("zh", source), findings, toolCallLog };
+  return { provenance: provenanceOf("zh", source, run), findings, toolCallLog };
 }
 
-/** 单字段翻译：空串直通零调用（无事可译）；非空输入得空译文 = 静默丢内容，拒绝 */
-async function translateField(
-  engine: TranslateEngine,
-  text: string,
-  fieldPath: string,
-  context: TerminologyContext,
-): Promise<string> {
+/**
+ * 单字段翻译（部分降级版）：
+ * - 空串直通零调用（无事可译）；
+ * - 引擎抛错 / 非字符串 / 空译文 ⇒ **该字段保留英文源文本**并记账，不抛弃
+ *   已成功的其它字段（提高整次投影成功率）；
+ * - 引擎**连续**抛错达到阈值才视为系统级失败：剩余字段不再调用引擎，快速
+ *   完成英文回退；单次抛错先按内容级失败隔离，下一字段成功即继续翻译；
+ * - 连续空译文达到阈值同样视为系统级失败（模型整体不可用）；
+ * - 源字段类型非法仍是装配错误（fail fast，不属翻译降级）。
+ */
+async function translateField(run: TranslationRun, text: string, fieldPath: string): Promise<string> {
   if (typeof text !== "string") {
     throw new Error(
       `translate projection: ${fieldPath} must be a string (got ${typeof text}) — malformed source document`,
@@ -170,28 +216,87 @@ async function translateField(
   if (text === "") {
     return "";
   }
-  const translated = await engine(text, context);
-  if (typeof translated !== "string" || translated.trim() === "") {
-    throw new Error(
-      `translate projection: engine returned an empty translation for ${fieldPath} ` +
-        "(source text is non-empty) — refusing to silently drop review content",
-    );
+  if (run.systemicReason !== undefined) {
+    markDegraded(run, fieldPath, run.systemicReason, false);
+    return text;
   }
+
+  let translated: string;
+  try {
+    translated = await run.engine(text, run.context);
+  } catch (error) {
+    run.consecutiveThrownFailures += 1;
+    const reason = `${fieldPath}: ${errorMessage(error)}`;
+    markDegraded(run, fieldPath, reason, true);
+    if (run.consecutiveThrownFailures >= MAX_CONSECUTIVE_THROWN_FAILURES) {
+      run.systemicReason = reason;
+    }
+    return text;
+  }
+
+  run.consecutiveThrownFailures = 0;
+  if (typeof translated !== "string" || translated.trim() === "") {
+    run.consecutiveEmptyTranslations += 1;
+    const reason =
+      `${fieldPath}: engine returned an empty translation ` +
+      "(source text is non-empty)";
+    markDegraded(run, fieldPath, reason, true);
+    if (run.consecutiveEmptyTranslations >= MAX_CONSECUTIVE_EMPTY_TRANSLATIONS) {
+      run.systemicReason = reason;
+    }
+    return text;
+  }
+
+  run.consecutiveEmptyTranslations = 0;
   return translated;
+}
+
+/** 记账：字段路径必然保留；原因只记首个（避免 provenance 被重复错误撑大） */
+function markDegraded(
+  run: TranslationRun,
+  fieldPath: string,
+  reason: string,
+  recordReason: boolean,
+): void {
+  run.degradedFields.push(fieldPath);
+  if (recordReason && run.degradedReason === undefined) {
+    run.degradedReason = truncateReason(reason);
+  }
+}
+
+/** 原因截断（stdout 可达；不含密钥——引擎错误信息本身已按该纪律构造） */
+function truncateReason(reason: string): string {
+  const MAX_REASON_CHARS = 200;
+  return reason.length <= MAX_REASON_CHARS
+    ? reason
+    : `${reason.slice(0, MAX_REASON_CHARS)}…`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** 投影留痕（语言档 + 术语表版本 + 源 finding 关联，同长同序） */
 function provenanceOf(
   language: PresentationLanguage,
   source: ReviewPresentationSource,
+  run?: TranslationRun,
 ): ProjectionProvenance {
-  return {
+  const base: ProjectionProvenance = {
     language,
     terminologyVersion: TERMINOLOGY_VERSION,
     findingLinks: source.findings.map((finding) => ({
       sourceFindingId: finding.id,
       projectedFindingId: finding.id,
     })),
+  };
+  if (run === undefined || run.degradedFields.length === 0) {
+    return base;
+  }
+  return {
+    ...base,
+    degradedFields: [...run.degradedFields],
+    ...(run.degradedReason !== undefined ? { degradedReason: run.degradedReason } : {}),
   };
 }
 

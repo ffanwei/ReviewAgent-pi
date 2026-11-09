@@ -246,6 +246,9 @@ describe("projectReviewDocument — zh 翻译投影（E 生产入口形态）", 
         projectedFindingId: finding.id,
       })),
     });
+    // 零漂移：全量成功时降级键整键缺席（不是空数组占位）
+    expect("degradedFields" in projected.provenance).toBe(false);
+    expect("degradedReason" in projected.provenance).toBe(false);
     // 可回溯性：留痕关联与投影侧 findings 一一对应
     for (const [index, link] of projected.provenance.findingLinks.entries()) {
       expect(link.projectedFindingId).toBe(projected.findings[index]?.id);
@@ -295,26 +298,116 @@ describe("projectReviewDocument — 边界与失败路径", () => {
     expect(projected.findings[0]?.description).toBe("");
   });
 
-  it("引擎对非空输入返回空串 → 抛错并指名字段路径（零静默丢检视内容）", async () => {
-    const harness = fakeEngine(() => "");
-    await expect(projectReviewDocument(harness.deps, projectionInput())).rejects.toThrow("findings[0].title");
+  it("引擎对某个非空字段返回空串 → 该字段保留英文，其余字段照常翻译（部分降级）", async () => {
+    let callIndex = 0;
+    const harness = fakeEngine((text) => {
+      callIndex += 1;
+      // 第 2 次调用 = findings[0].description
+      return callIndex === 2 ? "" : `【译】${text}`;
+    });
+    const projected = await projectReviewDocument(harness.deps, projectionInput());
+
+    expect(projected.findings[0]?.title).toBe(`【译】${E_FORM_FINDINGS[0]?.title}`);
+    expect(projected.findings[0]?.description).toBe(E_FORM_FINDINGS[0]?.description);
+    // 后续字段不受影响（不是整次降级）
+    expect(projected.findings[1]?.title).toBe(`【译】${E_FORM_FINDINGS[1]?.title}`);
+    expect(projected.toolCallLog[0]?.resultSummary).toBe(
+      `【译】${E_FORM_TOOL_CALL_LOG[0]?.resultSummary}`,
+    );
+    expect(projected.provenance.degradedFields).toEqual(["findings[0].description"]);
+    expect(projected.provenance.degradedReason).toContain("empty translation");
   });
 
-  it("引擎返回纯空白 → 同样拒绝（空白译文与空译文同罪）", async () => {
-    const harness = fakeEngine(() => "   ");
-    await expect(projectReviewDocument(harness.deps, projectionInput())).rejects.toThrow("findings[0].title");
+  it("引擎返回纯空白 → 与空译文同罪：该字段保留英文（部分降级）", async () => {
+    let callIndex = 0;
+    const harness = fakeEngine((text) => {
+      callIndex += 1;
+      return callIndex === 1 ? "   " : `【译】${text}`;
+    });
+    const projected = await projectReviewDocument(harness.deps, projectionInput());
+
+    expect(projected.findings[0]?.title).toBe(E_FORM_FINDINGS[0]?.title);
+    expect(projected.findings[0]?.description).toBe(`【译】${E_FORM_FINDINGS[0]?.description}`);
+    expect(projected.provenance.degradedFields).toEqual(["findings[0].title"]);
   });
 
-  it("工具摘要译文为空 → 抛错路径指名 toolCallLog 段（findings 段不背锅）", async () => {
+  it("工具摘要译文为空 → 只影响该条工具摘要，findings 段照常翻译", async () => {
     let callIndex = 0;
     const harness = fakeEngine((text) => {
       callIndex += 1;
       // 第 7 次调用 = toolCallLog[0].resultSummary（前 6 次 = 3 findings × title/description）
       return callIndex === 7 ? "" : `【译】${text}`;
     });
-    await expect(projectReviewDocument(harness.deps, projectionInput())).rejects.toThrow(
-      "toolCallLog[0].resultSummary",
+    const projected = await projectReviewDocument(harness.deps, projectionInput());
+
+    expect(projected.findings.every((finding) => finding.title.startsWith("【译】"))).toBe(true);
+    expect(projected.toolCallLog[0]?.resultSummary).toBe(E_FORM_TOOL_CALL_LOG[0]?.resultSummary);
+    expect(projected.toolCallLog[1]?.resultSummary).toBe(
+      `【译】${E_FORM_TOOL_CALL_LOG[1]?.resultSummary}`,
     );
+    expect(projected.provenance.degradedFields).toEqual(["toolCallLog[0].resultSummary"]);
+  });
+
+  it("引擎连续抛错 → 探测第 2 个字段后短路，剩余字段全部保留英文（有界快速回退）", async () => {
+    let calls = 0;
+    const deps: ProjectionDeps = {
+      engine: async () => {
+        calls += 1;
+        throw new Error("connect ECONNREFUSED");
+      },
+    };
+    const projected = await projectReviewDocument(deps, projectionInput());
+
+    // 单次抛错先按内容级失败隔离；连续第 2 次抛错才判定系统级并短路
+    expect(calls).toBe(2);
+    expect(projected.findings).toEqual(E_FORM_FINDINGS);
+    expect(projected.toolCallLog).toEqual(E_FORM_TOOL_CALL_LOG);
+    expect(projected.provenance.degradedFields).toHaveLength(8);
+    expect(projected.provenance.degradedFields?.[0]).toBe("findings[0].title");
+    expect(projected.provenance.degradedReason).toContain("connect ECONNREFUSED");
+  });
+
+  it("引擎单次抛错 → 只回退该字段，下一字段成功即继续翻译（内容级失败隔离）", async () => {
+    let calls = 0;
+    const deps: ProjectionDeps = {
+      engine: async (text) => {
+        calls += 1;
+        // 第 1 次调用 = findings[0].title：单条 4xx，不应拖垮后续字段
+        if (calls === 1) {
+          throw new Error("HTTP 400 bad input");
+        }
+        return `【译】${text}`;
+      },
+    };
+    const projected = await projectReviewDocument(deps, projectionInput());
+
+    expect(calls).toBe(8);
+    // 仅首个字段保留英文，其余全部译出
+    expect(projected.findings[0]?.title).toBe(E_FORM_FINDINGS[0]?.title);
+    expect(projected.findings[0]?.description).toBe(
+      `【译】${E_FORM_FINDINGS[0]?.description}`,
+    );
+    expect(projected.findings[1]?.title).toBe(`【译】${E_FORM_FINDINGS[1]?.title}`);
+    expect(projected.toolCallLog[0]?.resultSummary).toBe(
+      `【译】${E_FORM_TOOL_CALL_LOG[0]?.resultSummary}`,
+    );
+    expect(projected.provenance.degradedFields).toEqual(["findings[0].title"]);
+    expect(projected.provenance.degradedReason).toContain("HTTP 400 bad input");
+  });
+
+  it("连续 3 个字段空译文 → 判定系统性失败，剩余字段不再调用引擎", async () => {
+    let calls = 0;
+    const deps: ProjectionDeps = {
+      engine: async () => {
+        calls += 1;
+        return "";
+      },
+    };
+    const projected = await projectReviewDocument(deps, projectionInput());
+
+    expect(calls).toBe(3);
+    expect(projected.provenance.degradedFields).toHaveLength(8);
+    expect(projected.provenance.degradedReason).toContain("empty translation");
   });
 
   it("自然语言字段非字符串（畸形源文档）→ 抛错指名字段路径", async () => {

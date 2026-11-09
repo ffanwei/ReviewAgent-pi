@@ -229,6 +229,26 @@ test("default export：runtime 显式穿参 → zh 档投影（自然语言译�
   ]);
 });
 
+test("default export：单字段空 completion ⇒ 该字段保留英文，整次投影仍成立（部分降级）", async () => {
+  const source = sampleSource();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = String(init?.body);
+      // 只让 findings[0].description 的空译文命中；title 与工具摘要正常
+      return body.includes("The fix changes the argument") ? completionResponse("   ") : completionResponse("【中译】");
+    }),
+  );
+
+  const projected = await projectZhPresentation({ ...source, skipTips: true });
+
+  expect(projected.findings[0]?.title).toBe("【中译】");
+  expect(projected.findings[0]?.description).toBe(source.findings[0]?.description);
+  expect(projected.toolCallLog[0]?.resultSummary).toBe("【中译】");
+  expect(projected.provenance.degradedFields).toEqual(["findings[0].description"]);
+  expect(projected.provenance.degradedReason).toContain("empty completion");
+});
+
 test("default export：环境变量已关闭——REVIEWER_* / REVIEW_PI_* 设了也不生效（runtime 是唯一接入点）", async () => {
   vi.stubEnv("REVIEWER_URL", "https://env-should-be-ignored.example.com/v1");
   vi.stubEnv("REVIEWER_API_KEY", "sk-env-should-be-ignored");

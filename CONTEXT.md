@@ -95,7 +95,7 @@ _Avoid_: 自定义 Loop（替换内核 loop 的机制，DSH 线已否；pi 线�
 _Avoid_: 实验插件、核内呈现（语言参数化缝不存在，ADR-0010）
 
 **翻译投影（Translation Projection）**:
-核外呈现工具：消费检视产出的英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关联）。检视输出恒英文——测量面冻结，语言是呈现配置而非实验自变量（ADR-0010）。消费端接线 = 配置项 `presentation.engine`（动态 import 核外引擎，未配置恒等直通、stdout 逐字节同现状；ADR-0025 后不再读 env）；引擎任何失败呈现降级英文源——检视产物绝不因呈现层失败丢失，退出码不受影响。
+核外呈现工具：消费检视产出的英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关联）。检视输出恒英文——测量面冻结，语言是呈现配置而非实验自变量（ADR-0010）。消费端接线 = 配置项 `presentation.engine`（动态 import 核外引擎，未配置恒等直通、stdout 逐字节同现状；ADR-0025 后不再读 env）；引擎加载/协议/超时失败时整次呈现降级英文源，检视产物绝不因呈现层失败丢失，退出码不受影响。ADR-0059 起单字段翻译失败不再拖垮整次投影：该字段保留英文并在 `presentation.degradedFields` / `degradedReason` 留痕，其余字段照常中文；代码标识、路径、代码摘录按 ADR-0010 本就保持英文。
 _Avoid_: 输出语言配置（暗示内核参数化缝）、双语内核（检视链整体留在已验证英文域）
 
 **运行进度投影（Run Progress Projection）**:
@@ -151,7 +151,7 @@ _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名�
 _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
 
 **运行落盘根（Runs Root）**:
-`--taskId` 决定的任务目录 `<tasks 根>/<taskId>/`（tasks 根缺省 `~/.PiAgent/tasks`，`--tasks-dir` 可覆盖），本次检视的全部留痕都在其下：`runs/`（`run.json` 记录 / `session-*.json` 转录 / `reviews_*.json` 意见导出）与 `audit/<ts>.json`（审计），规则包解压缓存在 `.cache/rule-skills/`。分片检视时每片的转录/审计/片内 `reviews_en.json` 落在 `runs/shards/attempt-<ts>/sNN/` 与 `audit/shards/attempt-<ts>/sNN/`，顶层只留聚合产物。一个任务目录就是一次 run 的输出根：没有 case / rep / source 目录层，`caseId` 只作为数据字段（ADR-0032、ADR-0033、ADR-0039）。
+`--taskId` 决定的任务目录 `<tasks 根>/<taskId>/`（tasks 根缺省 `~/.PiAgent/tasks`，`--tasks-dir` 可覆盖），本次检视的全部留痕都在其下：`runs/`（`run.json` 记录 / `session-*.json` 转录 / `reviews_*.json` 意见导出 / `review-pi.log` CLI 运行日志）与 `audit/<ts>.json`（审计），规则包解压缓存在 `.cache/rule-skills/`。分片检视时每片的转录/审计/片内 `reviews_en.json` 落在 `runs/shards/attempt-<ts>/sNN/` 与 `audit/shards/attempt-<ts>/sNN/`，顶层只留聚合产物。一个任务目录就是一次 run 的输出根：没有 case / rep / source 目录层，`caseId` 只作为数据字段（ADR-0032、ADR-0033、ADR-0039）。
 _Avoid_: 输出目录（泛指；本仓改称任务目录，旧 `--out` 已随 ADR-0033 移除）、runs 根（与历史 `runs/phase2-*` 实验目录混淆）
 
 **任务（taskId）**:
