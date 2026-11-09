@@ -1,0 +1,59 @@
+digraph review_pipeline_overview {
+  graph [charset="UTF-8", rankdir=TB, bgcolor="white", fontname="Microsoft YaHei", fontsize=12,
+         nodesep=0.26, ranksep=0.40, pad=0.25, dpi=140, compound=true];
+  node  [shape=box, style="rounded,filled", fontname="Microsoft YaHei", fontsize=11,
+         color="#4A5568", fillcolor="#F7FAFC", penwidth=1.2, margin="0.16,0.08"];
+  edge  [fontname="Microsoft YaHei", fontsize=9, color="#4A5568", arrowsize=0.7];
+
+  start   [label="review-pi review\n--repo <path> --mr-diff <file> | --mr-json <file>\n--taskId <id> [--issue] [--rule-skill-zip|--rule-skill]", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+  parse   [label="parseCliArgs\n未知旗标 / 缺值 → stderr + usage → exit 1"];
+  config  [label="loadConfig(JSONC，只读一次)\n缺 reviewer.apiKey → fail fast\nexport 命令例外：不读配置"];
+  endpoint[label="resolveReviewerEndpoint\nmodelId + stripModelPrefix\nbaseUrl"];
+  tasks   [label="tasks 根 = --tasks-dir | ~/.PiAgent/tasks\n<taskId>/{runs,audit,.cache}"];
+  runlog  [label="openRunLog\nstderr 全量镜像 → runs/review-pi.log\n未捕获异常堆栈也进日志"];
+  echo    [label="参数回显 stderr\n相对路径已解析 / 缺省值标注来源\n不含 apiKey / baseUrl"];
+  readdiff[label="读输入\n--mr-diff 读文件\n--mr-json → mrJsonToUnifiedDiff\n--issue 原样进初始消息"];
+  mcp     [label="MCP reporter（可选）\nresolveReportConfig → servers[report.server]\nhandshake auto|required|off\n失败只降级，不阻断检视", fillcolor="#FAF5FF"];
+  startTask[label="startTask(taskId)\n仅 mcp.report.task = true\n（缺省 true）", fillcolor="#FAF5FF"];
+
+  subgraph cluster_core {
+    label="runReview 内核（唯一形态）";
+    fontname="Microsoft YaHei"; fontsize=12; color="#90CDF4"; style="rounded,dashed";
+    filter  [label="filterDiffForReview\n整块剔除 binary > lockfile > minified > generated\n绝不切 hunk"];
+    volume  [label="体积门\nassertDiffWithinCharLimit\nlimits.boundary.maxDiffChars = 1,500,000\nnull = 关闭"];
+    boundary[label="MR 边界护栏\nguardMrBoundary\nmaxFiles 10 / maxDiffLines 2,000\n超界 = domainWarning + 审计 mrBoundary"];
+    plan    [label="分片规划\nplanReviewShards\nmaxShardChars 400,000 / maxShards 12\n只切文件块，不切 hunk", fillcolor="#FEFCBF"];
+    route   [label="分片数 > 1 ?", shape=diamond, fillcolor="#FEFCBF"];
+    single  [label="单遍路径\n与旧实现逐字节一致\nrunDir = runs/，auditDir = audit/"];
+    shard   [label="N 片串行\n每片独立目录\nruns/shards/attempt-<ts>/sNN"];
+    pass    [label="一次 ReviewPass（每片 / 单遍）\n完整六阶段 + 规则 Skill 会话\n（子图 2）", fillcolor="#BEE3F8"];
+    perShard[label="片级上报缝 onShardFindings\n该片 findings 定型后 await\n→ 统一报文 + 逐文件 mrReviewResult\n（子图 4）", fillcolor="#FAF5FF"];
+    merge   [label="N 片 findings 合并\nkey = (normalize(file), line, normalize(title))\n严重度取最高 / 证据并集 / 重编号 F001…\n单遍 = 恒等"];
+    artifacts[label="落盘\nruns/run.json + audit/<runId>.json\nruns/<runId>.transcript.json\nruns/reviews_en.json", fillcolor="#C6F6D5"];
+    events  [label="进度事件\nrun.start / phase / request.* / tool.* / skill.* / run.end\nstderr 投影；配置 mcp.report.tool 时才外发", fillcolor="#FEFCBF"];
+  }
+
+  post   [label="CLI 后处理\n收尾摘要行 / 解析失败提示\n呈现引擎解析 / 源码行抽取", fillcolor="#BEE3F8"];
+  tips   [label="统一 tips 组装\n置信度过滤 0.5 → 同文件同行去重\njoin 片级语义 → 12 键\n→ reviews_tips_zh.json", fillcolor="#C6F6D5"];
+  present[label="呈现投影（可选）\ntitle / description 译中文\n逐字段超时 90s + buffer 30s\n失败降级英文源", fillcolor="#FAF5FF"];
+  summary[label="收尾总结\n只统计已上报的 findings\n零意见 = 固定文案；否则模型 / 模板\n→ saveReviewSummary", fillcolor="#FAF5FF"];
+  endTask[label="endTask(taskId)\n最后一条业务调用", fillcolor="#FAF5FF"];
+  mcpjson[label="runs/mcp.json\n四个业务调用的输入/输出/耗时", fillcolor="#C6F6D5"];
+  flush  [label="事件队列 flush\nsent / failed / dropped", fillcolor="#FAF5FF"];
+  session[label=".review-pi-session.json（cwd）\ntaskId / runs 主转录 / skill 转录", fillcolor="#C6F6D5"];
+  stdout [label="stdout 单 JSON 文档\n{ok, caseId, runId, truncated,\nrounds, toolCalls, findings, auditPath,\npresentation?}", fillcolor="#C6F6D5"];
+  exit   [label="exit 0（诚实截断也是 0）\n任何异常 / 配置错误 → exit 1", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+
+  start -> parse -> config -> endpoint -> tasks -> runlog -> echo -> readdiff -> mcp -> startTask -> filter;
+  filter -> volume -> boundary -> plan -> route;
+  route -> single [label=" 1 片 "];
+  route -> shard  [label=" N 片 "];
+  single -> pass;
+  shard -> pass [label=" 按 diff 顺序串行 "];
+  pass -> perShard [style=dashed, label=" 每片一次 "];
+  pass -> merge [label=" 全部片完成 "];
+  merge -> artifacts;
+  artifacts -> post -> tips -> present -> summary -> endTask -> mcpjson -> flush -> session -> stdout -> exit;
+  perShard -> summary [style=dashed, label=" 已上报集合 "];
+  events -> post [style=dotted, label=" 只投影不改结果 "];
+}

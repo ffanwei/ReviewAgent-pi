@@ -1,0 +1,65 @@
+digraph review_large_diff {
+  graph [charset="UTF-8", rankdir=TB, bgcolor="white", fontname="Microsoft YaHei", fontsize=12,
+         nodesep=0.28, ranksep=0.36, pad=0.25, dpi=150];
+  node  [shape=box, style="rounded,filled", fontname="Microsoft YaHei", fontsize=10.5,
+         color="#4A5568", fillcolor="#F7FAFC", penwidth=1.2, margin="0.15,0.07"];
+  edge  [fontname="Microsoft YaHei", fontsize=9, color="#4A5568", arrowsize=0.7];
+
+  raw [label="原始 unified diff\n（--mr-diff 文件 / --mr-json 转换）", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+  split [label="splitDiffIntoFileBlocks\n按 diff --git 切文件块\n（块内 hunk 永不拆分）", fillcolor="#E6FFFA"];
+
+  subgraph cluster_filter {
+    label="大 diff 第一期：输入预过滤 filterDiffForReview";
+    fontname="Microsoft YaHei"; fontsize=10.5; color="#63B3ED"; style="rounded,dashed";
+    f1 [label="binary\nBinary files / GIT binary patch", fillcolor="#FFF5F5"];
+    f2 [label="lockfile\npackage-lock.json / yarn.lock / *.lock …", fillcolor="#FFF5F5"];
+    f3 [label="minified\n*.min.js / *.min.css / 超长单行", fillcolor="#FFF5F5"];
+    f4 [label="generated\n*_pb2.py / *.pb.go / *.g.dart\nbuild/ dist/ vendor/ 等目录", fillcolor="#FFF5F5"];
+    keep [label="剩余块逐字节保留\n剔除清单 → 审计 mrFilter + stderr 一行"];
+    f1 -> keep [style=dashed];
+    f2 -> keep [style=dashed];
+    f3 -> keep [style=dashed];
+    f4 -> keep [style=dashed];
+  }
+
+  volume [label="体积门\nfiltered.diff.length <= limits.boundary.maxDiffChars\n缺省 1,500,000 字符\n超限 → 预检期抛错（零模型请求）", fillcolor="#FEFCBF"];
+  boundary [label="MR 边界护栏 guardMrBoundary\nmaxFiles 10 / maxDiffLines 2,000\ndegraded → domainWarning + 审计尾键 mrBoundary\n只告警，不阻断", fillcolor="#FEFCBF"];
+
+  planq [label="split.enabled 且\ndiff.length > maxShardChars ?", shape=diamond, fillcolor="#FEFCBF"];
+  plan  [label="分片规划 planShards\n贪心装箱：连续文件块装进一片\n目标 maxShardChars 400,000\n片数上限 maxShards 12\n单块 > 400,000 → 明确报错\n每片附 otherFilesSummary ≤ 8,000", fillcolor="#FEFCBF"];
+  countq[label="片数 > 1 ?", shape=diamond, fillcolor="#FEFCBF"];
+
+  single [label="单遍路径（旧路径）\nrunDir = <task>/runs/\nauditDir = <task>/audit/\n产物布局与旧实现逐字节一致"];
+  shardq [label="分片路径\nattempt-<startedAt> 独立目录\n规则 Skill 只装载一次（各片共享）\n片间严格串行"];
+
+  subgraph cluster_passes {
+    label="每片执行一次完整 ReviewPass（六阶段 + 规则 Skill 会话）";
+    fontname="Microsoft YaHei"; fontsize=10.5; color="#9F7AEA"; style="rounded,dashed";
+    s1 [label="s01\nruns/shards/attempt-…/s01\naudit/shards/attempt-…/s01", fillcolor="#BEE3F8"];
+    s2 [label="s02 …\n片内 diff + 其他文件摘要\n独立 toolkit / Ledger / 初始消息", fillcolor="#BEE3F8"];
+    sN [label="sNN（按 diff 顺序）", fillcolor="#BEE3F8"];
+    s1 -> s2 -> sN [label=" 串行 "];
+  }
+
+  hook [label="片级上报钩子\nonShardFindings(index,total,findings,files)\n在下一片开始前 await\n（旁路：失败不影响检视）", fillcolor="#FAF5FF"];
+  merge [label="聚合 aggregateShards\nmergeShardFindings：按内容键去重\nusage 相加 / rounds 取最大 / truncated 取或\nskillPassLog 路径重写 / rejectionCounts 相加\n片记录写进 run.json shards[]", fillcolor="#C6F6D5"];
+  agg [label="聚合产物\nruns/run.json（含 shards[]）\naudit/<runId>.json（含 shard 审计索引）\nruns/reviews_en.json（合并后 F001…）", fillcolor="#C6F6D5"];
+
+  raw -> split;
+  split -> f1 [label=" 逐块分类 "];
+  keep -> volume [label=" 过滤后 "];
+  volume -> boundary -> planq;
+  planq -> plan [label=" true "];
+  planq -> single [label=" false "];
+  plan -> countq;
+  countq -> single [label=" = 1 "];
+  countq -> shardq [label=" > 1 "];
+  single -> s1 [label=" 作为唯一一片 "];
+  shardq -> s1;
+  s1 -> hook [style=dashed];
+  s2 -> hook [style=dashed];
+  sN -> hook [style=dashed];
+  sN -> merge [label=" 全部成功 "];
+  single -> merge [style=dashed, label=" 恒等 "];
+  merge -> agg;
+}

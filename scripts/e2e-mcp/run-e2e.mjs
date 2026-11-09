@@ -58,6 +58,8 @@ function argValue(name, fallback) {
 }
 const SERVER_URL = (argValue("--server-url", "http://127.0.0.1:7317")).replace(/\/+$/, "");
 const TASK_ID = argValue("--task-id", `e2e-large-mr-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+/** A/B 档：`--no-rule-skill` 不传 --rule-skill-zip，用于对比规则 Skill 的增量。 */
+const NO_RULE_SKILL = argv.includes("--no-rule-skill");
 
 function fail(message) {
   console.error(`run-e2e: ${message}`);
@@ -160,7 +162,10 @@ async function checkServer() {
 }
 
 function assertPrerequisites(diffFiles) {
-  for (const path of [REPO_FIXTURE, DIFF_FILE, RULE_SKILL_ZIP, CLI_ENTRY]) {
+  const required = NO_RULE_SKILL
+    ? [REPO_FIXTURE, DIFF_FILE, CLI_ENTRY]
+    : [REPO_FIXTURE, DIFF_FILE, RULE_SKILL_ZIP, CLI_ENTRY];
+  for (const path of required) {
     if (!existsSync(path)) {
       fail(`missing prerequisite: ${path}`);
     }
@@ -189,8 +194,7 @@ function runCli() {
     REPO_FIXTURE,
     "--mr-diff",
     DIFF_FILE,
-    "--rule-skill-zip",
-    RULE_SKILL_ZIP,
+    ...(NO_RULE_SKILL ? [] : ["--rule-skill-zip", RULE_SKILL_ZIP]),
     "--taskId",
     TASK_ID,
     "--tasks-dir",
@@ -335,6 +339,7 @@ function printReport(state, diffFiles, run, artifacts) {
 
 async function main() {
   log("large-MR e2e: preparing");
+  log(`rule skill: ${NO_RULE_SKILL ? "off (A/B baseline)" : "on (general-code-review)"}`);
   const diffText = readFileSync(DIFF_FILE, "utf8");
   const diffFiles = parseDiffFiles(diffText);
   log(`diff: ${diffFiles.length} files, ${diffText.length} chars`);

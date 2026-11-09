@@ -190,7 +190,7 @@ export function relativeToRepo(path) {
  *   runDir/result/audit/...   （审计）
  *   runDir/.review-pi-session.json（cwd 索引）
  */
-export function runReview({ repoDir, diffPath, runDir, ruleSkillDir, model, taskId = "result", timeoutMs = 20 * 60 * 1000 }) {
+export function runReview({ repoDir, diffPath, runDir, ruleSkillDir, model, issue, taskId = "result", timeoutMs = 20 * 60 * 1000 }) {
   ensureDir(runDir);
   const args = [
     REVIEW_PI_BIN,
@@ -207,6 +207,7 @@ export function runReview({ repoDir, diffPath, runDir, ruleSkillDir, model, task
   ];
   if (model !== undefined) args.push("--model", model);
   if (ruleSkillDir !== undefined) args.push("--rule-skill", resolve(ruleSkillDir));
+  if (issue !== undefined) args.push("--issue", issue);
 
   const startedAt = Date.now();
   const result = run(process.execPath, args, { cwd: runDir, timeoutMs, maxBuffer: 128 * 1024 * 1024 });

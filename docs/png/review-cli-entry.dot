@@ -1,0 +1,55 @@
+digraph review_cli_entry {
+  graph [charset="UTF-8", rankdir=TB, bgcolor="white", fontname="Microsoft YaHei", fontsize=12,
+         nodesep=0.26, ranksep=0.34, pad=0.25, dpi=150];
+  node  [shape=box, style="rounded,filled", fontname="Microsoft YaHei", fontsize=10.5,
+         color="#4A5568", fillcolor="#F7FAFC", penwidth=1.2, margin="0.15,0.07"];
+  edge  [fontname="Microsoft YaHei", fontsize=9, color="#4A5568", arrowsize=0.7];
+
+  argv [label="process.argv\nreview | smoke | config | export", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+  parse [label="parseCliArgs\n旗标表校验 / 可重复旗标 / 逗号列表\n缺值旗标 → emptyRuleSkillFlags 提示", fillcolor="#FEFCBF"];
+  bad  [label="未知命令 / 未知旗标 / 缺必需参数\nstderr + USAGE_TEXT", fillcolor="#FED7D7"];
+  exit1 [label="exit 1", fillcolor="#FED7D7"];
+
+  exp [label="export\n纯文件系统命令\n不读配置 / 不碰 key", fillcolor="#E6FFFA"];
+  cfg [label="config init | show\n模板写盘 / 脱敏打印生效值", fillcolor="#E6FFFA"];
+  smoke [label="smoke\nprobeHealthMs 15s + probeModelMs 120s\n诊断结论：通过 0 / 任一失败 1", fillcolor="#E6FFFA"];
+
+  load [label="loadConfig（唯一落点，只读一次）\nJSONC 解析 / 未知键只告警\n钉死键忽略 / 合法域校验\n缺省路径缺席 = 合法（全缺省直跑）"];
+  warn [label="warnings → stderr\n未找到配置文件 → 提示 config init\n.env.local 残留 → 提示"];
+  endpoint [label="resolveReviewerEndpoint\nreviewer.apiKey 缺失 → 抛错\nbaseUrl 缺省官方网关"];
+  model [label="modelIdForGateway\n--model | model.default\nstripModelPrefix 可选"];
+  repo [label="--repo 必须存在且是目录\n--mr-diff 读文件 | --mr-json 转 unified diff"];
+  tasks [label="resolveTasksRoot + taskDirPath\n--tasks-dir | ~/.PiAgent/tasks\n<taskId>/{runs,audit,.cache}"];
+  runlog [label="openRunLog → runs/review-pi.log\nstderr 镜像 + 未捕获异常堆栈\n打开失败只警告"];
+  echo [label="formatReviewArgs → stderr\n生效值 + 来源（flag / config / default）\n不含秘密"];
+
+  mcpcfg [label="resolveReportConfig\nmcp.report 缺席 → null\nserver 必须引用已配置的 mcp.servers", fillcolor="#FAF5FF"];
+  mcpconn [label="createMcpReporter\nhandshake auto（initialize 失败降级无状态）\nrequired（失败即不可用）/ off（从不握手）\n连接失败 → 一行 stderr，继续检视", fillcolor="#FAF5FF"];
+  taskon [label="taskToolsOn = reporter && report.task\ntask 缺省 true", fillcolor="#FEFCBF"];
+  start [label="startTask(taskId)\n失败 → stderr，继续检视", fillcolor="#FAF5FF"];
+  reportrt [label="报告运行时\nmodel.presentation 优先，否则检视模型\noneShotMs（缺省 300s）\nretry = limits.retry.oneShotAttempts 3", fillcolor="#FAF5FF"];
+
+  run [label="runReview(...)\n见子图 2 / 3", fillcolor="#BEE3F8"];
+  summaryline [label="收尾摘要行（stderr，恒定打印）\n耗时 / token 三段 / 模型调用数\n工具调用（主 + skill + bash）\nLedger 命中 / 成本"];
+  parsefail [label="reportPhaseParseFailures\n仅 phaseLog 有 parseFailure 时输出\n成功 run 零输出"];
+  post [label="后处理链\n呈现引擎 / 统一 tips / 总结 / endTask\n见子图 4", fillcolor="#BEE3F8"];
+  out [label="renderReviewOutcome → stdout\n单 JSON 文档；诊断全走 stderr", fillcolor="#C6F6D5"];
+  exit0 [label="exitGracefully(0)\nexitCode + 事件循环自然排干\n（避免 Windows 句柄清理竞态）", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+  exit1b [label="reportErrorAndExit\nstderr 一行人话 + 堆栈进 run log\nexit 1", fillcolor="#FED7D7"];
+
+  argv -> parse;
+  parse -> bad [label=" 解析失败 "];
+  bad -> exit1;
+  parse -> exp [label=" export "];
+  parse -> cfg [label=" config "];
+  parse -> smoke [label=" smoke "];
+  parse -> load [label=" review "];
+  load -> warn -> endpoint -> model -> repo -> tasks -> runlog -> echo -> mcpcfg -> mcpconn -> taskon;
+  taskon -> start [label=" true "];
+  taskon -> reportrt [label=" false（只开事件 / 全关） "];
+  start -> reportrt;
+  reportrt -> run -> summaryline -> parsefail -> post -> out -> exit0;
+  run -> exit1b [style=dashed, label=" 抛错 "];
+  post -> exit1b [style=dashed, label=" 落盘失败（总结后） "];
+  load -> exit1b [style=dashed, label=" ConfigError "];
+}

@@ -1,0 +1,95 @@
+digraph review_reporting {
+  graph [charset="UTF-8", rankdir=TB, bgcolor="white", fontname="Microsoft YaHei", fontsize=12,
+         nodesep=0.26, ranksep=0.34, pad=0.25, dpi=150];
+  node  [shape=box, style="rounded,filled", fontname="Microsoft YaHei", fontsize=10.2,
+         color="#4A5568", fillcolor="#F7FAFC", penwidth=1.2, margin="0.14,0.06"];
+  edge  [fontname="Microsoft YaHei", fontsize=9, color="#4A5568", arrowsize=0.7];
+
+  subgraph cluster_shard {
+    label="A. 片级业务上报（run 内，每片 findings 定型后；旁路，绝不改退出码）";
+    fontname="Microsoft YaHei"; fontsize=10.8; color="#63B3ED"; style="rounded,dashed";
+
+    shardFindings [label="该片 findings\n（模型原始结果，尚未合并）", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+    conf [label="置信度过滤\nconfidence < limits.confidence.min（缺省 0.5）\n只影响中文 tips，不改 reviews_en.json", fillcolor="#FEFCBF"];
+    keptq [label="还有可报意见 ?", shape=diamond, fillcolor="#FEFCBF"];
+    emptyAll [label="本片所有文件各发一条\nmrReviewResult(filePath, reviewTips: [])\nADR-0061 覆盖率优先", fillcolor="#FAF5FF"];
+    code [label="readCodeLines(repoPath, keptFindings)\n抽取 finding 行源码快照 code", fillcolor="#E6FFFA"];
+    gen [label="buildShardReportResilient\n一次性模型调用（非流式）\nmodel.presentation 优先 / oneShotMs 300s / 重试 3\n输出 {\"tips\":[{id,category,subcategory,review,suggestion}]}", fillcolor="#FAF5FF"];
+    split [label="全量生成失败（超时 / 截断 / 非 JSON）\n按条数二分拆批重试：最多 2 层\n拆分批次单次尝试、串行", fillcolor="#FED7D7"];
+    failed [label="仍失败\n本片文件全部补空 tips\n逐条登记 uncovered 原因", fillcolor="#FED7D7"];
+    validate [label="逐条校验 / 降级\nfilePath 规范化（反斜杠→/，拒绝绝对路径与 ..）\nid 对不上 → 跳过；category 不可归一 → 跳过\n缺字段 → finding 推导兜底并留痕", fillcolor="#FEFCBF"];
+    semantic [label="语义登记 semanticByKey\n键 = 合并键 (file,line,title)\n同时记 uncoveredByKey（逐条原因）", fillcolor="#C6F6D5"];
+    perFile [label="按文件分组，逐文件调用\nmrReviewResult(taskId, filePath, reviewTips)\n每文件只发一条（attempted 去重）", fillcolor="#FAF5FF"];
+    submitted [label="成功才登记 submittedFindingKeys\n（收尾总结的唯一口径）", fillcolor="#C6F6D5"];
+    remain [label="本片剩余文件补空包\nreportFilesWithoutTips(exclude=attempted)\n含「有 finding 但 tips 全被跳过 / 上报失败」", fillcolor="#FAF5FF"];
+
+    shardFindings -> conf -> keptq;
+    keptq -> emptyAll [label=" 否 "];
+    keptq -> code [label=" 是 "];
+    code -> gen -> split [label=" 失败 "];
+    split -> validate [label=" 救回部分 "];
+    gen -> validate [label=" 成功 "];
+    split -> failed [label=" 仍失败 "];
+    failed -> remain;
+    validate -> semantic -> perFile -> submitted -> remain;
+    emptyAll -> remain [style=dashed];
+  }
+
+  subgraph cluster_tips {
+    label="B. 统一 tips 组装（run 之后，与片级报文同一份生成、两个投影）";
+    fontname="Microsoft YaHei"; fontsize=10.8; color="#68D391"; style="rounded,dashed";
+    merged [label="merged findings（合并去重后，F001…）", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+    mergeSem [label="合并 run 级 semanticByMergeKey\n片间首见优先", fillcolor="#C6F6D5"];
+    build [label="assembleUnifiedTips\n1) 置信度过滤（same as 0.5）\n2) 同文件同 line 去重：只留首条\n3) join 语义条目；缺 → uncovered（不算故意丢弃）", fillcolor="#FEFCBF"];
+    keys [label="12 键 tip\nid / code / review / suggestion / category / subcategory\nseverity / level / ruleId / lineNum / source / confidence\nseverity = P0 Fatal / P1 Major / P2 Minor / P3 Suggestion\nconfidence = High ≥0.7 / Medium ≥0.5 / Low", fillcolor="#C6F6D5"];
+    doc [label="按文件分组（首见序，组内 line 升序）\n空组不落盘\n→ <runs>/reviews_tips_zh.json\n→ cwd 同名副本（尽力而为）", fillcolor="#C6F6D5"];
+    uncovered [label="未覆盖逐条 stderr\n「未获统一生成覆盖（file:line (id)），tips 缺席该条：原因」\n审计只记 tipsFilter（阈值 + 丢弃数）", fillcolor="#FFF5F5"];
+
+    merged -> build;
+    mergeSem -> build;
+    build -> keys -> doc;
+    build -> uncovered [style=dashed];
+  }
+
+  subgraph cluster_present {
+    label="C. 呈现投影（可选，主要改 stdout；统一 tips 全灭时也作回落源）";
+    fontname="Microsoft YaHei"; fontsize=10.8; color="#B794F4"; style="rounded,dashed";
+    engineq [label="presentation.engine ?", shape=diamond, fillcolor="#FEFCBF"];
+    ident [label="null / 模块不存在\n恒等直通：stdout 保持英文源"];
+    proj [label="applyPresentationProjection\n逐字段翻译 title / description\n模型缺省跟随检视模型\n单字段 90s + buffer 30s / 重试 3 / 并发 4", fillcolor="#FAF5FF"];
+    degr [label="投影失败 → 英文源 + degraded:true\n检视产物绝不因呈现层失败丢失", fillcolor="#FED7D7"];
+    prov [label="stdout 追加 presentation\nlanguage / terminologyVersion / findingLinks\n（id 可能重编号）", fillcolor="#C6F6D5"];
+    engineq -> ident [label=" 无 "];
+    engineq -> proj [label=" 有 "];
+    proj -> prov;
+    proj -> degr [label=" 失败 "];
+    degr -> prov;
+  }
+
+  subgraph cluster_summary {
+    label="D. 收尾总结与任务收尾";
+    fontname="Microsoft YaHei"; fontsize=10.8; color="#F6AD55"; style="rounded,dashed";
+    scope [label="口径 = 平台最终收到的意见\nsummaryFindings = findings ∩ submittedFindingKeys\nsummaryTips = tips 中 id ∈ submittedSourceIds\n（未上报条目不进总结）", fillcolor="#FEFCBF"];
+    zeroq [label="findings 条数 ?", shape=diamond, fillcolor="#FEFCBF"];
+    fixedZero [label="固定文案\n# 检视总结\n\n本次检视未发现缺陷。\n（不调用模型）", fillcolor="#C6F6D5"];
+    fixedUnrep[label="零已上报但存在未上报\n固定「未向平台上报任何检视意见」\n绝不谎报「未发现缺陷」", fillcolor="#FFF5F5"];
+    model [label="buildReviewSummary\n中文 tips + findings 摘要 → Markdown\n失败 / 空回复 → 确定性模板\n（计数 + 按文件清单）", fillcolor="#FAF5FF"];
+    settle [label="固定沉降 5s（ADR-0053）\nmrReviewResult → saveReviewSummary\n→ endTask", fillcolor="#FEFCBF"];
+    save [label="saveReviewSummary(taskId, markdownContent)", fillcolor="#FAF5FF"];
+    end [label="endTask(taskId)\nfinally 必发（startTask 成功过）", fillcolor="#FAF5FF"];
+    log [label="runs/mcp.json\n四个业务调用输入 / 输出 / 耗时\n事件 flush：sent / failed / dropped", fillcolor="#C6F6D5"];
+
+    scope -> zeroq;
+    zeroq -> fixedZero [label=" 0 "];
+    zeroq -> fixedUnrep [label=" >0 但都已上报集合为空 "];
+    zeroq -> model [label=" >0 且有已上报 "];
+    model -> settle;
+    fixedZero -> settle;
+    fixedUnrep -> settle;
+    settle -> save -> end -> log;
+  }
+
+  shardFindings -> merged [style=dashed, label=" 各片登记 + 聚合 "];
+  doc -> scope;
+  prov -> scope;
+}
