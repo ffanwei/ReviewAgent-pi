@@ -218,14 +218,14 @@ export interface Limits {
 export const DEFAULT_LIMITS: Limits = {
   loop: { maxRounds: 3 },
   timeouts: {
-    skillPassMs: 600_000,
+    skillPassMs: 1_200_000,
     skillBashMs: 120_000,
     ruleSkillExtractMs: 30_000,
     ripgrepMs: 30_000,
     probeHealthMs: 15_000,
     probeModelMs: 120_000,
     reviewTurnMs: 180_000,
-    oneShotMs: 90_000,
+    oneShotMs: 300_000,
     presentationRequestMs: 90_000,
     presentationBufferMs: 30_000,
   },
@@ -1655,14 +1655,14 @@ ${excludeGlobLines}
     "loop": { "maxRounds": 3 },
     // 各阶段超时（毫秒）。
     "timeouts": {
-      "skillPassMs": 600000,             // 单个规则 Skill 会话的总超时。
+      "skillPassMs": 1200000,            // 单个规则 Skill 会话的总超时。
       "skillBashMs": 120000,             // 规则 Skill 里 bash 工具单次执行超时。
       "ruleSkillExtractMs": 30000,       // 规则包 zip 解压超时。
       "ripgrepMs": 30000,                // ripgrep 单次调用超时。
       "probeHealthMs": 15000,            // smoke 网关健康探针超时。
       "probeModelMs": 120000,            // smoke 模型探针超时。
       "reviewTurnMs": 180000,            // 主检视回合 / 规则 Skill 会话单次请求的建立超时（流开始前的等待）。
-      "oneShotMs": 90000,                // 片级报文 / 收尾总结单次请求超时。
+      "oneShotMs": 300000,               // 片级报文 / 收尾总结单次请求超时。
       "presentationRequestMs": 90000,    // 中文投影单次请求超时。
       "presentationBufferMs": 30000      // 中文投影整批的总超时余量（叠加在逐请求超时之外）。
     },

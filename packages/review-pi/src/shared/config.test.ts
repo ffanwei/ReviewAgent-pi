@@ -578,7 +578,7 @@ describe("常量对齐", () => {
     const path = join(dir, "PiAgent.jsonc");
     writeConfigFile({ path });
     const { config } = loadConfig({ configPath: path });
-    expect(config.limits.timeouts.skillPassMs).toBe(600_000);
+    expect(config.limits.timeouts.skillPassMs).toBe(1_200_000);
     expect(config.limits.archive.maxTotalUncompressed).toBe(64 * 1024 * 1024);
     mkdirSync(join(dir, "unused"), { recursive: true });
   });

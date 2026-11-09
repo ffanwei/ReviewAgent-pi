@@ -108,7 +108,7 @@ _Avoid_: 进度条（不是百分比口径——「步数」= 模型请求序号
 _Avoid_: 遥测（不上传指标）、把业务调用塞进事件批量通道（业务调用不可丢、要立刻知道结果）、双向 MCP（我们只是 client，不做 resources/prompts）
 
 **LLM 调用重试（LLM Call Retry）**:
-模型网关调用的瞬时失败重试能力（ADR-0051）。**分层实现**：Agent 内会话（主检视回合 / 规则 Skill 会话）透传 pi-ai 的 `maxRetries` / `maxRetryDelayMs` / `timeoutMs`，只重试**请求建立阶段**；核外一次性调用（片级报文 / 收尾总结 / 内置呈现引擎 / smoke 探针）走本仓 `shared/llm-retry.ts` 的统一原语。次数口径恒为**总尝试次数（含首次）**；缺省 3 次，smoke 缺省 1 次（诊断命令不重试）。只有传输失败 / 超时 / 408 / 409 / 429 / 5xx / `x-should-retry: true` 可重试；确定性 4xx、配额类 429、超 `maxRetryAfterMs` 的 `Retry-After`、非 JSON / 空 completion 不重试。流已开始后断开会显式报错，不做整回合重放（避免重复工具副作用、污染 agent 消息状态）。配置面 `limits.retry` 与 `limits.timeouts.reviewTurnMs` / `oneShotMs`；离线回放 lane 固定单次尝试。
+模型网关调用的瞬时失败重试能力（ADR-0051）。**分层实现**：Agent 内会话（主检视回合 / 规则 Skill 会话）透传 pi-ai 的 `maxRetries` / `maxRetryDelayMs` / `timeoutMs`，只重试**请求建立阶段**；核外一次性调用（片级报文 / 收尾总结 / 内置呈现引擎 / smoke 探针）走本仓 `shared/llm-retry.ts` 的统一原语。次数口径恒为**总尝试次数（含首次）**；缺省 3 次，smoke 缺省 1 次（诊断命令不重试）。只有传输失败 / 超时 / 408 / 409 / 429 / 5xx / `x-should-retry: true` 可重试；确定性 4xx、配额类 429、超 `maxRetryAfterMs` 的 `Retry-After`、非 JSON / 空 completion 不重试。流已开始后断开会显式报错，不做整回合重放（避免重复工具副作用、污染 agent 消息状态）。配置面 `limits.retry` 与 `limits.timeouts.reviewTurnMs` / `oneShotMs`；离线回放 lane 固定单次尝试。一次性调用缺省超时 300 s（ADR-0062：大 MR 报文单次可输出 1.6 万 tokens）。
 _Avoid_: 全局重试开关（分层各有边界）、断线续传（流中断不重试）、把「重试次数」当配置口径（一律写总尝试次数）
 
 **测量常量面（Measurement-Constant Face）**:

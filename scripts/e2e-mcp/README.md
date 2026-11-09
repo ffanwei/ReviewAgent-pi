@@ -115,4 +115,5 @@ tasks/<taskId>/runs/review-pi.log
 （`scripts/offline-replay/scenarios/large-mr.json`，场景 id `large-mr`）。录制与
 重录细节见 [`packages/review-pi/testdata/traces/README.md`](../../packages/review-pi/testdata/traces/README.md)。
 注意场景把 `timeouts.oneShotMs` 放大到 600s：报文生成单次可输出 1.6 万 tokens，
-产品缺省的 90s 一次性调用超时会让录制走二分重试，回放却走全量一次，两边分叉。
+产品缺省 300s（ADR-0062）在慢网关下仍可能不够；录制期一旦超时中断，代理却收全
+落盘，回放就会与录制分叉（录制走二分重试、回放走全量一次）。

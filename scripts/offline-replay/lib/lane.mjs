@@ -46,10 +46,10 @@ export async function createLane({ runDir, label, scenario, server, index }) {
   if (scenario.split?.maxShardChars !== undefined) {
     limits.split = { maxShardChars: scenario.split.maxShardChars };
   }
-  // 超时覆盖（大 MR 的报文生成单次输出可达 16k tokens）：录制期客户端 90s
-  // 超时会在响应仍在下发时中断读取——代理侧照样收全响应并落盘，得到一条
-  // 「录制时从未被接受」的 interaction，回放期按成功命中即与原跑分叉。场景
-  // 显式放大一次性调用超时，让录制与回放走同一条成功路径。
+  // 超时覆盖（大 MR 的报文生成单次输出可达 16k tokens）：产品缺省 300s 在慢
+  // 网关下仍可能不够；录制期客户端一旦超时中断读取——代理侧照样收全响应并落盘，
+  // 得到一条「录制时从未被接受」的 interaction，回放期按成功命中即与原跑分叉。
+  // 场景显式放大一次性调用超时，让录制与回放走同一条成功路径。
   if (scenario.timeouts?.oneShotMs !== undefined) {
     limits.timeouts = { oneShotMs: scenario.timeouts.oneShotMs };
   }

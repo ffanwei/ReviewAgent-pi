@@ -210,7 +210,7 @@ export function validateLatencySafety(scenario) {
   const worst = ms * (1 + Math.max(0, jitter));
   const limits = [
     { name: "检视回合", limitMs: 180_000 },
-    { name: "一次性模型调用（报文/总结）", limitMs: scenario.timeouts?.oneShotMs ?? 90_000 },
+    { name: "一次性模型调用（报文/总结）", limitMs: scenario.timeouts?.oneShotMs ?? 300_000 },
   ];
   for (const item of limits) {
     const ceiling = item.limitMs / 2;
