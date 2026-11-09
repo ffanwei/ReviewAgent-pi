@@ -1,8 +1,10 @@
 # 0058. 片级报文生成失败后按条数二分重试
 
 **状态**：已接受（2026-11-07，用户决策）
-**关联**：[ADR-0045](0045-mcp-business-task-tools.md)（片级报文与统一生成）、[ADR-0056](0056-mr-review-result-covers-files-without-tips.md)（无意见文件补空包；有意见文件绝不发空包）、[ADR-0057](0057-summary-covers-only-reported-findings.md)（总结只覆盖已上报）、[ADR-0051](0051-llm-call-retry-and-timeout.md)（一次性调用的重试与超时）
+**关联**：[ADR-0045](0045-mcp-business-task-tools.md)（片级报文与统一生成）、[ADR-0056](0056-mr-review-result-covers-files-without-tips.md)（无意见文件补空包；「有意见文件绝不发空包」已被 ADR-0061 取代）、[ADR-0057](0057-summary-covers-only-reported-findings.md)（总结只覆盖已上报）、[ADR-0051](0051-llm-call-retry-and-timeout.md)（一次性调用的重试与超时）
 **范围**：本仓 pi 线 0058。只改**片级报文生成失败之后的路径**：同一提示词、同一终检、同一报文组装，只把 findings 子集缩小后重发。正常路径（全量一次成功）零额外模型调用、报文与提示词字节不变。
+
+> **后续修订（ADR-0061，2026-11-09）**：最终仍失败的文件不再「不发空包」——`saveReviewSummary` 前仍按文件补发 `reviewTips: []`（覆盖率优先）。二分重试本身的批次、次数与串行纪律不变。
 
 ## Context
 

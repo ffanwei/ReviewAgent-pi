@@ -797,11 +797,13 @@ async function readCodeLines(
 }
 
 /**
- * 片级上报编排（ADR-0045 / ADR-0056）：该片 findings 定型 → 读源码行 → 统一
- * 生成调用 → 逐文件 `mrReviewResult` + 语义登记入 run 级集合（tips 复用）。
+ * 片级上报编排（ADR-0045 / ADR-0056 / ADR-0061）：该片 findings 定型 → 读源码行 →
+ * 统一生成调用 → 逐文件 `mrReviewResult` + 语义登记入 run 级集合（tips 复用）。
  * **绝不抛错**（旁路纪律的最外层闸）：任何失败只落 stderr，检视与退出码不受影响。
- * 覆盖率优先：本片 diff 触及的文件只要没有可发的 tips（零 finding / 全被置信度
- * 过滤 / 同片其它文件报文生成失败），都按文件发一次空 `reviewTips`。
+ * 覆盖率优先（ADR-0061）：本片 diff 触及的**每个文件**都必须在
+ * `saveReviewSummary` 前拿到一条 `mrReviewResult`——无可发 tips 时发
+ * `reviewTips: []`；即使该文件有 finding 但片级报文生成失败，也按空列表上报
+ * （宁可少报意见，绝不留「未检视」空洞）。
  */
 async function reportShardFindings(input: {
   readonly label: { readonly index: number; readonly total: number };
@@ -829,6 +831,9 @@ async function reportShardFindings(input: {
 }): Promise<void> {
   const label = input.label.total > 1 ? ` [s${pad2(input.label.index)}/${pad2(input.label.total)}]` : "";
   let keptFindings: readonly Finding[] = [];
+  // 本片已经尝试过上报的文件（规范化路径）：广播 tips 与空包都按它去重，保证
+  // 每个文件只发一条 mrReviewResult（ADR-0061）。
+  const attempted = new Set<string>();
   const markUncovered = (findings: readonly Finding[], reason: string): void => {
     for (const finding of findings) {
       const key = findingMergeKey(finding);
@@ -837,6 +842,9 @@ async function reportShardFindings(input: {
       }
     }
   };
+  /** 本片剩余文件补空包（ADR-0061）：`attempted` 里的文件已经有过一次上报尝试。 */
+  const reportRemainingFiles = async (): Promise<number> =>
+    reportFilesWithoutTips({ ...input, label, exclude: attempted, attempted });
   try {
     // ADR-0052：置信度过滤先于报文生成——被丢弃的意见不该花一次模型调用。
     keptFindings = input.findings.filter(
@@ -844,10 +852,10 @@ async function reportShardFindings(input: {
     );
     if (keptFindings.length === 0) {
       // 零 finding（本来就无）或全部被置信度过滤：本片所有文件都没有可发的
-      // 中文意见，按文件逐个上报空 tips（ADR-0056）。置信度过滤只决定「产不产
-      // 出中文意见」，不改变「文件已被检视」这一事实——平台需要每个文件都有
-      // 一次登记，否则「检视过、没意见」与「从未检视」在远端无法区分。
-      const sent = await reportFilesWithoutTips({ ...input, label });
+      // 中文意见，按文件逐个上报空 tips（ADR-0056 / ADR-0061）。置信度过滤只
+      // 决定「产不产中文意见」，不改变「文件已被检视」这一事实——平台需要每个
+      // 文件都有一次登记，否则「检视过、没意见」与「从未检视」在远端无法区分。
+      const sent = await reportRemainingFiles();
       if (sent > 0) {
         process.stderr.write(
           `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见\n`,
@@ -877,23 +885,17 @@ async function reportShardFindings(input: {
     }
     if (outcome.kind === "failed") {
       process.stderr.write(
-        `review-pi: MCP mrReviewResult${label} 跳过本片有意见文件（报文生成失败：${outcome.reason}）\n`,
+        `review-pi: MCP mrReviewResult${label} 报文生成失败（${outcome.reason}），` +
+          "有意见文件改报空列表（覆盖率优先，ADR-0061）\n",
       );
       markUncovered(keptFindings, `片级语义生成失败：${outcome.reason}`);
-      // 无意见文件仍按文件报空（ADR-0056）：它们确实没有检视意见，不能因为
-      // 同片其它文件的报文生成失败而失去「已检视」登记。有意见的文件绝不
-      // 发空包——把「不知道」报成「没有问题」比漏报更糟。
-      const withFindings = new Set<string>();
-      for (const finding of keptFindings) {
-        const findingPath = normalizeReportFilePath(finding.file);
-        if (findingPath !== null) {
-          withFindings.add(findingPath);
-        }
-      }
-      const sent = await reportFilesWithoutTips({ ...input, label, exclude: withFindings });
+      // 覆盖率优先（ADR-0061）：整片生成失败时，本片所有文件仍各发一条
+      // `reviewTips: []`。平台宁可看到「无意见」也不能把文件当成「未检视」；
+      // 真实失败原因保留在 stderr 与未覆盖登记里。
+      const sent = await reportRemainingFiles();
       if (sent > 0) {
         process.stderr.write(
-          `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见（其余文件报文生成失败）\n`,
+          `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见（报文生成失败，全部补空）\n`,
         );
       }
       return;
@@ -922,6 +924,10 @@ async function reportShardFindings(input: {
     let sent = 0;
     let tips = 0;
     for (const file of outcome.files) {
+      const normalized = normalizeReportFilePath(file.filePath);
+      if (normalized !== null) {
+        attempted.add(normalized);
+      }
       const result = await input.reporter.task.reportFileResult({
         taskId: input.taskId,
         filePath: file.filePath,
@@ -942,19 +948,10 @@ async function reportShardFindings(input: {
         );
       }
     }
-    // 本片其余文件（没有意见）：按文件传空 reviewTips。
-    // 排除面 = 有意见报文的文件 + **保留（未被置信度过滤）的 finding 指向的
-    // 文件**（用它而不是 outcome.files：某文件的 tips 全被校验跳过时，也不能
-    // 把该文件报成「无问题」）。被置信度过滤的文件没有可发的中文意见，按
-    // ADR-0056 仍要发空 tips，故不进入排除面。
-    const withFindings = new Set(outcome.files.map((file) => file.filePath));
-    for (const finding of keptFindings) {
-      const findingPath = normalizeReportFilePath(finding.file);
-      if (findingPath !== null) {
-        withFindings.add(findingPath);
-      }
-    }
-    sent += await reportFilesWithoutTips({ ...input, label, exclude: withFindings });
+    // 本片其余文件补空包（ADR-0061 覆盖率优先）：排除面只剩「已经有过一次上报
+    // 尝试」的文件。有 finding 但 tips 全被校验跳过 / 上报失败的文件也在
+    // `attempted` 里已有登记，不重复；从未出现在报文里的文件一律补 `[]`。
+    sent += await reportRemainingFiles();
     if (sent > 0) {
       process.stderr.write(
         `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / ${String(tips)} 条意见\n`,
@@ -967,6 +964,19 @@ async function reportShardFindings(input: {
       keptFindings,
       `上报编排异常：${describeReportFailure(error)}`,
     );
+    // 覆盖率兜底（ADR-0061）：编排异常也不能让剩余文件失去「已检视」登记。
+    try {
+      const sent = await reportRemainingFiles();
+      if (sent > 0) {
+        process.stderr.write(
+          `review-pi: MCP mrReviewResult${label} 已补报 ${String(sent)} 文件 / 0 条意见（编排异常兜底）\n`,
+        );
+      }
+    } catch (fallbackError) {
+      process.stderr.write(
+        `review-pi: MCP mrReviewResult${label} 兜底补报失败（${describeReportFailure(fallbackError)}）\n`,
+      );
+    }
   }
 }
 
@@ -974,8 +984,9 @@ async function reportShardFindings(input: {
  * 对「没有检视意见」的文件逐个调用 `mrReviewResult(filePath, reviewTips: [])`。
  *
  * 路径按报文同一规范处理（反斜杠→正斜杠、拒绝对路径/`..`），非法路径跳过
- * 并留痕；`exclude` = 本片已经有意见报文的文件（成败都排除——失败时补一条
- * 空 tips 会造成「没有意见」的错误印象）。返回成功发送的文件数。
+ * 并留痕；`exclude` = 本片已经有过一次上报尝试的文件（ADR-0061：每文件只发
+ * 一条，避免与报文重复）。`attempted` 是调用方的尝试集合，本函数把处理过的
+ * 规范化路径都登记进去，供后续兜底去重。返回成功发送的文件数。
  */
 async function reportFilesWithoutTips(input: {
   readonly label: string;
@@ -984,6 +995,8 @@ async function reportFilesWithoutTips(input: {
   readonly files: readonly string[];
   readonly reportedFiles: string[];
   readonly exclude?: ReadonlySet<string>;
+  /** 出参：本函数处理过（含跳过）的文件路径，供调用方后续兜底去重 */
+  readonly attempted?: Set<string>;
 }): Promise<number> {
   const seen = new Set<string>();
   let sent = 0;
@@ -998,7 +1011,10 @@ async function reportFilesWithoutTips(input: {
     if (seen.has(filePath) || input.exclude?.has(filePath) === true) {
       continue;
     }
+    // 注意：`exclude` 与 `attempted` 在调用方常是同一个 Set（本片尝试集合），
+    // 因此必须先过排除判断再登记，否则刚加入的路径会把自己排除掉。
     seen.add(filePath);
+    input.attempted?.add(filePath);
     const result = await input.reporter.task.reportFileResult({
       taskId: input.taskId,
       filePath,

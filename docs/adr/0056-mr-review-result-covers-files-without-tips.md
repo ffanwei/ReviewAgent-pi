@@ -4,6 +4,8 @@
 **关联**：[ADR-0045](0045-mcp-business-task-tools.md)（业务 tool 与片级报文生成）、[ADR-0052](0052-tips-four-tier-severity-and-confidence-filter.md)（置信度过滤）、[ADR-0054](0054-mcp-business-call-log.md)（`mcp.json` 留痕）
 **范围**：本仓 pi 线 0056。只改 `mrReviewResult` 的**覆盖口径**：本片 diff 触及、但没有可发中文意见的文件，无论原因是「本来零 finding」「全部被置信度过滤」还是「同片其它文件报文生成失败」，都按文件发一次 `reviewTips: []`。有意见但报文生成失败 / tips 校验被跳过的文件仍**绝不**发空包。英文 findings、`reviews_tips_zh.json`、`saveReviewSummary` 口径不动。
 
+> **后续修订（ADR-0061，2026-11-09）**：决策 2「有意见的文件仍然绝不发空包」已被推翻。覆盖率优先口径要求 `saveReviewSummary` 前**每个 diff 变更文件都必须有一条 `mrReviewResult`**；有 finding 但片级报文生成失败 / tips 全部被校验跳过的文件，也发 `reviewTips: []`，真实失败原因只留在 stderr 与未覆盖登记里。下文其余决策（零静默、`mcp.json` 留痕、排除面收窄）继续有效。
+
 ## Context
 
 ADR-0045 修订时把 `mrReviewResult` 的覆盖范围扩到「该片 diff 触及的全部文件」，但留了一个条件：**空 tips 上报只在该片报文生成成功时发生**——生成失败整片跳过。ADR-0052 又补了一条：全被置信度过滤的文件不报 `reviewTips: []`。

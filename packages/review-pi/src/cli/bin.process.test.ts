@@ -2608,7 +2608,7 @@ const ALPHA = "src/main/java/com/example/Alpha.java";
 const BETA = "src/main/java/com/example/Beta.java";
 
 test(
-  "统一 tips 尽力而为（Q26b）：s02 生成失败 → tips 只含 s01 文件组，mrReviewResult 只发 s01",
+  "统一 tips 尽力而为（Q26b）：s02 生成失败 → tips 只含 s01 文件组，mrReviewResult 覆盖两片（s02 补空包，ADR-0061）",
   async () => {
     // 片间串行 await：语料顺序 = s01 六相位 → s01 报文 → s02 六相位 → s02 报文（垃圾）→ 总结
     const stub = await startLoopbackStub([
@@ -2651,17 +2651,19 @@ test(
       );
 
       expect(run.status).toBe(0);
-      // mrReviewResult：只有 s01（Alpha）
-      const reported = mcp
+      // ADR-0061：每文件必报——s01（Alpha）带意见，s02（Beta）生成失败也补空列表
+      const reportedCalls = mcp
         .toolCalls()
-        .filter((call) => call.name === "mrReviewResult")
-        .map((call) => call.args.filePath);
-      expect(reported).toEqual([ALPHA]);
-      // s02 生成失败留痕
-      expect(run.stderr).toContain("跳过本片");
+        .filter((call) => call.name === "mrReviewResult");
+      expect(reportedCalls.map((call) => call.args.filePath)).toEqual([ALPHA, BETA]);
+      expect((reportedCalls[0]?.args.reviewTips as unknown[]).length).toBe(1);
+      expect(reportedCalls[1]?.args.reviewTips).toEqual([]);
+      // s02 生成失败留痕（有意见文件改报空列表，覆盖率优先）
+      expect(run.stderr).toContain("有意见文件改报空列表");
       // ADR-0057：总结只覆盖已上报的 s01 意见，s02 那条平台没收到、不进总结
       expect(run.stderr).toContain("检视总结只覆盖已上报的 1 条意见（1 条未上报，未计入）");
-      // 直接看总结请求体：只含 Alpha，不含上报失败的 Beta
+      // 直接看总结请求体：tips / findings 只含 Alpha，Beta 仅作为「已上报文件
+      // （空 tips）」出现，它的 finding 不进总结
       const oneShotBodies = stub
         .requests()
         .filter(
@@ -2673,7 +2675,7 @@ test(
         .map((record) => JSON.stringify(record.body));
       const summaryBody = oneShotBodies[oneShotBodies.length - 1] ?? "";
       expect(summaryBody).toContain(ALPHA);
-      expect(summaryBody).not.toContain(BETA);
+      expect(summaryBody).not.toContain(`Sentinel finding in ${BETA}`);
       // 逐条原因：该片每条 finding 都带「片级语义生成失败」原文，而不是只留一行
       expect(run.stderr).toContain("tips 缺席该条：片级语义生成失败");
 
@@ -2775,8 +2777,8 @@ export default async (source) => {
       );
 
       expect(run.status).toBe(0);
-      // ADR-0056：有意见文件（README.md）因生成失败不报空包，但本片 diff 里
-      // 没有意见的文件（ObjectArrayCodec.java）仍按文件报一次空 tips。
+      // ADR-0061：有意见文件（README.md）生成失败，但本片 diff 文件
+      // （ObjectArrayCodec.java）仍按文件报一次空 tips——覆盖率优先。
       const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
       expect(business.map((call) => call.name)).toEqual([
         "startTask",
@@ -2789,8 +2791,8 @@ export default async (source) => {
         filePath: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
         reviewTips: [],
       });
-      expect(run.stderr).toContain("跳过本片有意见文件");
-      expect(run.stderr).toContain("已上报 1 文件 / 0 条意见（其余文件报文生成失败）");
+      expect(run.stderr).toContain("有意见文件改报空列表");
+      expect(run.stderr).toContain("已上报 1 文件 / 0 条意见（报文生成失败，全部补空）");
       // ADR-0057：引擎回落的 tips 不是平台收到的报文内容，总结仍按 0 条已上报生成
       expect(business[2]?.args).toEqual({
         taskId: CLI_TASK_ID,
@@ -2869,7 +2871,8 @@ test(
         "saveReviewSummary",
         "endTask",
       ]);
-      // ADR-0056：有意见文件（README.md）生成失败跳过，diff 内无意见文件照报空包
+      // ADR-0061：有意见文件（README.md）生成失败时，本片 diff 文件
+      // （ObjectArrayCodec.java）照报空包——覆盖率优先。
       expect(business[1]?.args).toEqual({
         taskId: CLI_TASK_ID,
         filePath: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
@@ -3122,6 +3125,77 @@ test(
         "endTask",
       ]);
       expect(mcpLog.calls.every((call) => call.ok)).toBe(true);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "有 finding 但源码行读不到（tips 全部被校验跳过）：该文件仍发 reviewTips: []（ADR-0061）",
+  async () => {
+    const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+    const diffPath = "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java";
+    const candidate = {
+      id: "F100",
+      severity: "P2",
+      category: "correctness",
+      file: diffPath,
+      // 越界行号：`--repo` 抽不到源码行 → 报文按纪律跳过该条（绝不编 code）
+      line: 9999,
+      title: "Sentinel finding title",
+      description: "Sentinel finding description",
+      evidence: [`${diffPath}:9999`],
+      rule: "sentinel-rule",
+      confidence: 0.5,
+    };
+    const stub = await startLoopbackStub([
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: "ok", usage: ZERO },
+      { text: JSON.stringify({ candidates: [candidate] }), usage: ZERO },
+      {
+        text: JSON.stringify({
+          verdicts: [{ id: "F100", pass: true, reason: "stub verdict: evidence holds" }],
+          complete: true,
+        }),
+        usage: ZERO,
+      },
+      // 语义输出照常（category 可归一），但 code 取不到 → skippedTips
+      { text: payloadReplyForSentinelFinding(), usage: ZERO },
+    ]);
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runCliReview(outDir, writeMr(goldenFixture("vul4j-1.diff")), {
+        gatewayBaseUrl: stub.baseUrl,
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      // ADR-0061：报文里没有该条 tip，但文件仍必须有「已检视」登记 → 空列表
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: diffPath,
+        reviewTips: [],
+      });
+      expect(run.stderr).toContain("跳过单条意见");
+      expect(run.stderr).toContain("已上报 1 文件 / 0 条意见");
+      // ADR-0057：空包不登记 finding，总结仍按「0 条已上报」生成
+      expect(business[2]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        markdownContent: "# 检视总结\n\n本次检视未向平台上报任何检视意见。",
+      });
     } finally {
       await stub.close();
       await mcp.close();

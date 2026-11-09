@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0060）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0061）。
 
 ## 记录纪律
 
@@ -49,11 +49,12 @@
 | [ADR-0053](0053-mcp-task-tool-fixed-settle-gap.md) | MCP 业务 tool 之间加固定 5 秒沉降间隔（`mrReviewResult`→`saveReviewSummary`、`saveReviewSummary`→`endTask`；临时措施，见待优化清单） |
 | [ADR-0054](0054-mcp-business-call-log.md) | MCP 业务调用留痕写入 `<tasks 根>/<taskId>/runs/mcp.json`（四个 tool 的输入 / 输出 / 调用时间，与 session 转录同目录） |
 | [ADR-0055](0055-progress-on-by-default.md) | 进度事件行缺省打印，移除 `--progress`（静音只认 `--no-progress`；取代 ADR-0016 的 TTY 自动档） |
-| [ADR-0056](0056-mr-review-result-covers-files-without-tips.md) | `mrReviewResult` 覆盖率优先：无意见文件一律补发空 tips（含全被置信度过滤、同片其它文件生成失败；有意见文件仍绝不发空包） |
+| [ADR-0056](0056-mr-review-result-covers-files-without-tips.md) | `mrReviewResult` 覆盖率优先：无意见文件一律补发空 tips（含全被置信度过滤、同片其它文件生成失败；「有意见文件仍绝不发空包」已被 ADR-0061 取代） |
 | [ADR-0057](0057-summary-covers-only-reported-findings.md) | 收尾总结按 `mrReviewResult` 实际收下的意见生成（未上报条目不计入；零上报不谎报「未发现缺陷」） |
 | [ADR-0058](0058-shard-report-splits-and-retries-on-failure.md) | 片级报文生成失败后按条数二分重试（同提示词 / 同终检，最多两层；部分成功照常上报，仍失败条目逐条留痕） |
 | [ADR-0059](0059-presentation-partial-degradation.md) | 呈现投影按字段部分降级：单字段翻译失败只保留该字段英文并留痕，不再整份回退；系统级失败快速短路 |
 | [ADR-0060](0060-run-log-in-session-dir.md) | CLI 运行日志落到 session 同目录：stderr 全量镜像 + 未捕获异常堆栈写 `<tasks 根>/<taskId>/runs/review-pi.log` |
+| [ADR-0061](0061-every-diff-file-reported-before-summary.md) | `mrReviewResult` 每文件必报：summary 前 diff 每个变更文件都有一条上报，无意见（含报文生成失败）发空 `reviewTips` |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

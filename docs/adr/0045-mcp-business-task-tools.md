@@ -22,6 +22,8 @@
 
 **后续修订**（2026-11-07，七）：[ADR-0058](0058-shard-report-splits-and-retries-on-failure.md) 收窄了「片级报文生成失败即整片跳过」：全量一次失败（超时 / 截断 / 非法 JSON）后按条数**二分重发**，最多两层，拆分批次单次尝试且串行。成功批次照常按文件上报，仍失败的 finding 逐条登记 `uncoveredByKey`（有意见的文件仍**绝不发空包**，ADR-0056）。正常路径（全量一次成功）零额外调用、提示词与报文字节不变；上报顺序、总结口径（ADR-0057）与旁路纪律不变。
 
+**后续修订**（2026-11-09，八）：[ADR-0061](0061-every-diff-file-reported-before-summary.md) 把覆盖率提到最高优先级——`saveReviewSummary` 之前，diff 里**每个变更文件都必须有一条 `mrReviewResult`**。有 finding 但片级报文生成失败 / tips 全部被校验跳过的文件，也发 `reviewTips: []`（推翻 ADR-0056 决策 2 的「绝不发空包」）；真实失败原因仍留在 stderr 与 uncovered 登记里。整个 diff 解析不出文件时保持不调用、只打一行 stderr。空包不登记 finding，总结口径（ADR-0057）不变。
+
 ## Context
 
 ADR-0037 定义的 MCP 上报只有一种形态：把进度事件**批量**塞进单个 tool（`mcp.report.tool`）的 `events` 数组。接入企业检视平台还需要**业务语义**的调用——平台要的不是事件流，而是：
