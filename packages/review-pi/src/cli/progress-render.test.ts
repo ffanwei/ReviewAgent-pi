@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { RunProgressEvent } from "../contracts/progress.js";
-import { createProgressRenderer, doneLine, type ProgressSummary } from "./progress-render.js";
+import { createProgressRenderer, doneLine, stageBreakdownLines, type ProgressSummary } from "./progress-render.js";
 
 // 呈现层验收（ADR-0016）：
 // 1. 事件行永远追加、可 grep（非 TTY 下不出现 \r）；
@@ -208,4 +208,37 @@ test("收尾摘要：一行报全账（耗时/token 三段/模型调用/工具�
   expect(doneLine({ ...SUMMARY, skillBashCalls: 12 })).toContain(
     "规则 Skill 12） · skill bash 12 次 · Ledger 命中",
   );
+});
+
+test("阶段账本：主链路可相加、审计明细按审计占比、嵌套 Skill 标注不重复计入", () => {
+  const lines = stageBreakdownLines({
+    totalMs: 360_500,
+    stages: [
+      { label: "准备/建连", durationMs: 10_700 },
+      { label: "六阶段审计", durationMs: 232_600 },
+      { label: "报文生成+上报", durationMs: 74_100 },
+      { label: "呈现投影", durationMs: 0 },
+      { label: "总结生成", durationMs: 32_900 },
+      { label: "固定沉降", durationMs: 10_000 },
+      { label: "其他/收尾", durationMs: 200 },
+    ],
+    phases: [
+      { label: "P1", durationMs: 6_500 },
+      { label: "P2", durationMs: 3_200 },
+      { label: "P5", durationMs: 72_400 },
+      { label: "P6", durationMs: 45_900 },
+    ],
+    nested: [{ label: "general-code-review", durationMs: 82_100 }],
+  });
+  expect(lines[0]).toBe("⏱ 阶段耗时 · 总墙钟 360.5s（含总结 / 沉降 / 收尾）");
+  expect(lines).toContain("⏱ 阶段 · 六阶段审计 232.6s (64.5%)");
+  // 0 值阶段也保留：投影关闭时能看到「确实没花时间」
+  expect(lines).toContain("⏱ 阶段 · 呈现投影 0.0s (0.0%)");
+  // 审计明细的分母 = 明细之和，不是总墙钟
+  expect(lines.join("\n")).toMatch(/⏱ 审计明细 · P1 6\.5s \(5\.1%\)/);
+  expect(lines.join("\n")).toContain("（含于审计，不重复计入）");
+});
+
+test("阶段账本：总墙钟为 0 时不输出（避免除零与空块）", () => {
+  expect(stageBreakdownLines({ totalMs: 0, stages: [], phases: [], nested: [] })).toEqual([]);
 });

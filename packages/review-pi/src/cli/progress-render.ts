@@ -33,6 +33,28 @@ export interface ProgressSummary {
   readonly ledgerHits: number;
 }
 
+/** 一个可命名的耗时片段（阶段明细 / 审计内明细共用） */
+export interface StageSpan {
+  readonly label: string;
+  readonly durationMs: number;
+}
+
+/**
+ * 收尾阶段账本（在 doneLine 之后、进程退出前打印）。
+ *
+ * `stages` 是**可相加的主链路**：准备 → 审计 → 报文 → 投影 → tips → 总结 →
+ * 沉降 → 其他，合计应约等于 `totalMs`。`phases` 是审计内部的分段（不加总），
+ * `nested` 是嵌在审计里的规则 Skill（不重复计入主链路）。
+ */
+export interface StageBreakdown {
+  readonly totalMs: number;
+  readonly stages: readonly StageSpan[];
+  /** 审计内的六阶段分段；相对百分比的分母 = 这些分段之和 */
+  readonly phases: readonly StageSpan[];
+  /** 嵌套在审计里的规则 Skill（百分比相对总墙钟，但标注不重复计入） */
+  readonly nested: readonly StageSpan[];
+}
+
 export interface ProgressRendererOptions {
   readonly write: (text: string) => void;
   /** TTY 判定：false 时只追加事件行，永不绘制状态行 */
@@ -264,6 +286,42 @@ export function doneLine(summary: ProgressSummary): string {
     `Ledger 命中 ${formatInt(summary.ledgerHits)} 次（未重复读取原文） · ` +
     `$${summary.costUsd.toFixed(4)}`
   );
+}
+
+/**
+ * 阶段账本行（grep 前缀 `⏱`）：主链路一段一行，审计明细压成一行。
+ *
+ * 与 `doneLine` 的分工：doneLine 是「检视本体」的账（审计 + 报文，不含总结 /
+ * 沉降），本函数是「整次进程」的账——两者数字不同是**有意为之**，标签也明确
+ * 区分（`耗时` vs `总墙钟`）。
+ */
+export function stageBreakdownLines(input: StageBreakdown): string[] {
+  if (input.totalMs <= 0) {
+    return [];
+  }
+  const total = input.totalMs;
+  const pct = (ms: number): string => `${((100 * ms) / total).toFixed(1)}%`;
+  const lines = [
+    `⏱ 阶段耗时 · 总墙钟 ${formatSeconds(total)}s（含总结 / 沉降 / 收尾）`,
+  ];
+  for (const span of input.stages) {
+    lines.push(`⏱ 阶段 · ${span.label} ${formatSeconds(span.durationMs)}s (${pct(span.durationMs)})`);
+  }
+  const phaseTotal = input.phases.reduce((sum, span) => sum + span.durationMs, 0);
+  if (input.phases.length > 0 && phaseTotal > 0) {
+    const parts = input.phases.map((span) => {
+      const share = ((100 * span.durationMs) / phaseTotal).toFixed(1);
+      return `${span.label} ${formatSeconds(span.durationMs)}s (${share}%)`;
+    });
+    lines.push(`⏱ 审计明细 · ${parts.join(" · ")}`);
+  }
+  if (input.nested.length > 0) {
+    const parts = input.nested.map(
+      (span) => `${span.label} ${formatSeconds(span.durationMs)}s (${pct(span.durationMs)})`,
+    );
+    lines.push(`⏱ 嵌套明细 · ${parts.join(" · ")}（含于审计，不重复计入）`);
+  }
+  return lines;
 }
 
 /**

@@ -101,8 +101,10 @@ import {
 import {
   createProgressRenderer,
   doneLine,
+  stageBreakdownLines,
   type ProgressRenderer,
   type ProgressSummary,
+  type StageSpan,
 } from "./progress-render.js";
 import { renderReviewOutcome } from "./render.js";
 import {
@@ -125,8 +127,49 @@ process.once("exit", () => {
   activeRunLog?.close();
 });
 
+/** 审计内的一个阶段分段（收到 `phase` 事件时打点；闭合点 = 下一段或审计结束） */
+interface PhaseSpan {
+  readonly round: number;
+  readonly index: number;
+  readonly phase: string;
+  readonly start: number;
+  readonly shardIndex?: number;
+}
+
+/**
+ * 进程级阶段账本：只在 CLI 内存里累计，**不落盘、不进审计、不改退出码**。
+ * 时间来自 CLI 自身时钟与进度事件；进度关闭（`--no-progress`）时事件仍会
+ * 经过 `onProgress`，所以账本照常成立。
+ */
+interface StageClock {
+  readonly commandStartedAt: number;
+  runStartedAt?: number;
+  auditEndedAt?: number;
+  auditMs?: number;
+  reportMs: number;
+  projectionMs: number;
+  tipsMs: number;
+  summaryMs: number;
+  settleMs: number;
+  readonly phaseSpans: PhaseSpan[];
+  readonly skillSpans: StageSpan[];
+  skillStartedAt: number | undefined;
+}
+
 /** 执行一次 review 命令；返回进程退出码（完成 0——截断同为 0；错误经异常上抛 → 1） */
 async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Promise<number> {
+  const stageClock: StageClock = {
+    // 含 Node 冷启动：uptime 从进程创建算起，比「进入本函数」更接近用户感知的墙钟。
+    commandStartedAt: Date.now() - Math.round(process.uptime() * 1000),
+    reportMs: 0,
+    projectionMs: 0,
+    tipsMs: 0,
+    summaryMs: 0,
+    settleMs: 0,
+    phaseSpans: [],
+    skillSpans: [],
+    skillStartedAt: undefined,
+  };
   // 缺值的规则包旗标（B 档：按未传处理，但不静默）：先喊一声再往下走，保证即使
   // 后面因别的错误早退，用户也能看到「规则包根本没装载」这个原因。
   for (const flag of args.emptyRuleSkillFlags ?? []) {
@@ -285,6 +328,31 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // （stderr，可 grep），不出现阶段/请求/工具事件行。
     const progress = startProgress(args, modelId);
     const onProgress: RunProgressSink = (event) => {
+      // 阶段账本打点（收尾打印用）：只读事件与时钟，不改变事件消费顺序。
+      if (event.kind === "phase") {
+        stageClock.phaseSpans.push({
+          round: event.round,
+          index: event.index,
+          phase: event.phase,
+          start: Date.now(),
+          ...(event.shard !== undefined ? { shardIndex: event.shard.index } : {}),
+        });
+      } else if (event.kind === "request" && event.state === "end") {
+        // 审计结束点 = 最后一次请求完成；报文生成（one-shot）不发射请求事件，
+        // 所以这个点不会被 74s 的报文生成推后。
+        stageClock.auditEndedAt = Date.now();
+      } else if (event.kind === "skill" && event.state === "start") {
+        stageClock.skillStartedAt = Date.now();
+      } else if (event.kind === "skill" && event.state === "end") {
+        const startedAt = stageClock.skillStartedAt;
+        const shardLabel =
+          event.shard !== undefined ? `s${String(event.shard.index)}/${String(event.shard.total)} ` : "";
+        stageClock.skillSpans.push({
+          label: `${event.skill}（${shardLabel}round ${String(event.round)}）`,
+          durationMs: startedAt !== undefined ? Date.now() - startedAt : event.durationMs,
+        });
+        stageClock.skillStartedAt = undefined;
+      }
       // 分片（ADR-0039 决策 8）：外层只发一次 run.start；这里报一行片数提示。
       // 单片路径事件不带 shards 键，本行零输出（零字节漂移）。
       if (event.kind === "run" && event.state === "start" && event.shards !== undefined) {
@@ -297,6 +365,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       activeReporter?.sink(event);
     };
     const startedAt = Date.now();
+    stageClock.runStartedAt = startedAt;
     let reviewed: Awaited<ReturnType<typeof runReview>>;
     try {
       reviewed = await runReview({
@@ -322,9 +391,11 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     } catch (error) {
       // 异常路径也要擦掉状态行：残影会把错误消息顶成半行
       progress?.dispose();
+      stageClock.auditMs = Date.now() - startedAt;
       throw error;
     }
     const { record, runId, auditPath, reviewsPath, transcriptPaths } = reviewed;
+    stageClock.auditMs = (stageClock.auditEndedAt ?? Date.now()) - startedAt;
     // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
     if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
       process.stderr.write(
@@ -387,6 +458,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 分组意见的附加输入（ADR-0017）：源码行由 CLI 按 --repo 抽取（引擎保持
     // 零文件系统访问），规则包只给解压目录（真规则 id 白名单由核外建，内核
     // 不解析规则文件）。codeByFinding 同时服务统一 tips（merged findings 键）。
+    const tipsAssemblyStartedAt = Date.now();
     const codeByFinding = await readCodeLines(repoPath, record.baseline.findings);
     // 统一 tips 组装（ADR-0045）：先于引擎调用——引擎是否跳过 tips 取决于
     // 统一覆盖面。尽力而为（Q26b）：未覆盖的 finding 缺席 tips 并逐条留痕。
@@ -429,6 +501,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       process.stderr.write("review-pi: 统一 tips 全灭，呈现引擎按全量模式回落……\n");
     }
     const rulePackDirs = rulePackDirsOf(record.baseline.audit, runsRoot);
+    stageClock.tipsMs += Date.now() - tipsAssemblyStartedAt;
+    const projectionStartedAt = Date.now();
     const projection = await applyPresentationProjection(
       {
         findings: record.baseline.findings,
@@ -455,6 +529,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         retryAttempts: config.limits.retry.presentationAttempts,
       },
     );
+    stageClock.projectionMs = Date.now() - projectionStartedAt;
     const findings =
       projection.kind === "projected" ? projection.findings : record.baseline.findings;
     const presentation =
@@ -533,6 +608,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 此时跳过 `saveReviewSummary` 会让平台看到「有始无终」的任务。故这里只**记下**
     // 失败，等总结发完再抛（顺序契约 mrReviewResult → summary → endTask 不变）。
     let tipsPersistFailure: unknown;
+    const tipsPersistStartedAt = Date.now();
     try {
       if (reviewsPath !== undefined) {
         const removed = await removeStaleReviewsZh(dirname(reviewsPath));
@@ -574,6 +650,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         `review-pi: 中文产物落盘失败（${message}）；仍上报检视总结与 endTask，随后以失败退出\n`,
       );
     }
+    stageClock.tipsMs += Date.now() - tipsPersistStartedAt;
 
     // 检视总结上报（ADR-0045 决策 2 / ADR-0057）：中文 tips 落盘之后（发出去的
     // 内容与 `reviews_tips_zh.json` 同源同版本）、session 索引之前（索引失败
@@ -627,6 +704,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             ? "review-pi: MCP saveReviewSummary 无已上报的检视意见，发送固定总结（不调用模型）\n"
             : "review-pi: MCP saveReviewSummary 生成中（检视总结）……\n",
       );
+      const summaryStartedAt = Date.now();
       const summaryReport = await buildReviewSummary({
         ...(summaryTips !== undefined && summaryTips.length > 0 ? { tips: summaryTips } : {}),
         findings: summaryFindings,
@@ -636,6 +714,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         ...(reportedFiles.length > 0 ? { reportedFiles: [...reportedFiles] } : {}),
         runtime: reportRuntime,
       });
+      stageClock.summaryMs += Date.now() - summaryStartedAt;
       if (summaryReport.degradedReason !== undefined) {
         process.stderr.write(
           `review-pi: 检视总结降级为模板（${summaryReport.degradedReason}）\n`,
@@ -643,7 +722,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       }
       // 第一段沉降（ADR-0053）：最后一条 mrReviewResult 已发完，固定等一段时间
       // 再发总结——服务端异步处理片级结果时，前端回调可能先收到 summary。
+      const settleStartedAt = Date.now();
       await waitTaskToolSettle(taskToolSettleMs, "mrReviewResult → saveReviewSummary");
+      stageClock.settleMs += Date.now() - settleStartedAt;
       const outcome = await activeReporter.task.saveReviewSummary({
         taskId: args.taskId,
         markdownContent: summaryReport.markdown,
@@ -713,7 +794,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       // 第二段沉降（ADR-0053）：总结已发完，再固定等一段时间才发 endTask。
       // 只在真的调过 saveReviewSummary 时等；失败路径（未走到总结）直接收尾。
       if (summaryCallCompleted) {
+        const settleStartedAt = Date.now();
         await waitTaskToolSettle(taskToolSettleMs, "saveReviewSummary → endTask");
+        stageClock.settleMs += Date.now() - settleStartedAt;
       }
       const outcome = await activeReporter.task.endTask({ taskId: args.taskId });
       if (!outcome.ok) {
@@ -745,6 +828,14 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       }
     }
     await activeReporter?.close().catch(() => undefined);
+    // 阶段账本（最后一行输出）：doneLine 只算到「审计 + 报文」，这里补齐全进程
+    // 的账——总结 / 两次沉降 / 落盘 / 事件 flush 都计入总墙钟。仅在进行过
+    // runReview 时打印（更早的输入错误没有可解释的阶段结构）。
+    if (stageClock.runStartedAt !== undefined) {
+      for (const line of stageBreakdownLines(buildStageBreakdown(stageClock, Date.now()))) {
+        process.stderr.write(`${line}\n`);
+      }
+    }
   }
 }
 
@@ -1186,6 +1277,45 @@ function buildSummary(input: {
     skillToolCalls,
     skillBashCalls: input.skillBashCalls,
     ledgerHits: input.ledgerHits,
+  };
+}
+
+/** 把内存账本换算成可打印的阶段账本（纯函数边界：便于单测与口径统一） */
+function buildStageBreakdown(clock: StageClock, now: number): {
+  readonly totalMs: number;
+  readonly stages: readonly StageSpan[];
+  readonly phases: readonly StageSpan[];
+  readonly nested: readonly StageSpan[];
+} {
+  const runStartedAt = clock.runStartedAt ?? clock.commandStartedAt;
+  const auditMs = clock.auditMs ?? 0;
+  const auditEndedAt = runStartedAt + auditMs;
+  const startupMs = Math.max(0, runStartedAt - clock.commandStartedAt);
+  const knownMs =
+    startupMs + auditMs + clock.reportMs + clock.projectionMs + clock.tipsMs + clock.summaryMs + clock.settleMs;
+  const totalMs = Math.max(0, now - clock.commandStartedAt);
+  const otherMs = Math.max(0, totalMs - knownMs);
+  const phases: StageSpan[] = clock.phaseSpans.map((span, index) => {
+    const next = clock.phaseSpans[index + 1];
+    const endedAt = next?.start ?? auditEndedAt;
+    const roundLabel = span.round > 1 ? `R${String(span.round)}` : "";
+    const shardLabel = span.shardIndex !== undefined ? `S${String(span.shardIndex)}` : "";
+    return { label: `${shardLabel}${roundLabel}P${String(span.index)}`, durationMs: Math.max(0, endedAt - span.start) };
+  });
+  return {
+    totalMs,
+    stages: [
+      { label: "准备/建连（配置/规则包/MCP）", durationMs: startupMs },
+      { label: "六阶段审计", durationMs: auditMs },
+      { label: "报文生成+上报", durationMs: clock.reportMs },
+      { label: "呈现投影", durationMs: clock.projectionMs },
+      { label: "中文 tips 组装/落盘", durationMs: clock.tipsMs },
+      { label: "总结生成", durationMs: clock.summaryMs },
+      { label: "固定沉降", durationMs: clock.settleMs },
+      { label: "其他/收尾（HTTP/落盘/事件 flush）", durationMs: otherMs },
+    ],
+    phases,
+    nested: clock.skillSpans,
   };
 }
 
