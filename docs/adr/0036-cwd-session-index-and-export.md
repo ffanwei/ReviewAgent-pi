@@ -4,6 +4,7 @@
 **关联**：ADR-0033（产物落盘由 taskId 决定：`<tasks 根>/<taskId>/{runs,audit}/`）、ADR-0032（`run.json` / `session-<ts>.json` 的扁平布局与时间戳 runId）、ADR-0014（skill 会话独立转录 `session-<runId>-skill-<name>-r<N>.json`）、ADR-0025（用户级 JSONC 配置）、ADR-0027（cwd 单名副本 `review-result.json`）
 **局部修订**：ADR-0027 决策 2「cwd 副本只留 `review-result.json`」——cwd 现在会多一个 `.review-pi-session.json`（隐藏的寻址索引，不含检视内容）；该决策的其余部分（不写原名副本、写失败不改变退出码、不产 tips 时清理陈旧副本）继续有效。
 **跨仓**：本 ADR 为本仓 pi 线序列 0036；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
+**后续修订（2026-11-09）**：决策 3 的 stdout 由「一行一个路径」改为「**单行、逗号 + 空格分隔**」（如 `a.json, b.json`），便于调用方直接把整行当作一个字符串消费；决策 4 的 `--path` 返回值同样按该格式输出复制后的路径。两项决策的寻址、顺序与错误语义不变。
 
 ## Context
 

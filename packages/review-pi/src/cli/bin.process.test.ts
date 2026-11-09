@@ -1834,7 +1834,7 @@ test(
       expect(index.mains).toHaveLength(2);
       expect(index.skills).toEqual([]);
 
-      // export（不读配置）：按片序打印两条主转录
+      // export（不读配置）：按片序打印两条主转录（单行、逗号 + 空格分隔）
       const exportRun = await runBin(["export"], {
         cwd,
         appendConfigArg: false,
@@ -1842,7 +1842,7 @@ test(
         timeoutMs: 30_000,
       });
       expect(exportRun.status).toBe(0);
-      expect(exportRun.stdout).toBe(`${index.mains.join("\n")}\n`);
+      expect(exportRun.stdout).toBe(`${index.mains.join(", ")}\n`);
 
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },

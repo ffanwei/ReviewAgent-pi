@@ -58,7 +58,7 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <dif
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>]
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
   （config init = 写缺省 JSONC；config show = 脱敏打印生效配置与来源）
-  （export = 打印主 / skill session 的绝对路径，主在前；--path 复制到目录）
+  （export = 单行打印主 / skill session 的绝对路径，逗号分隔、主在前；--path 复制到目录）
 
 配置（ADR-0025）：~/.PiAgent/PiAgent.jsonc（Linux $HOME / Windows %USERPROFILE%），JSONC。
 环境变量不再被读取；--env 已移除（改用 --config）。
