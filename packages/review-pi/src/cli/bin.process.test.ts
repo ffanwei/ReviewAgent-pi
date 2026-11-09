@@ -1329,9 +1329,9 @@ function ruleSkillDirCorpus(skillSessions = 1): FakeReply[] {
   ];
 }
 
-test(
-  "--rule-skill：已解压目录装载，审计标 kind = dir，副本落 run 缓存而非原地",
-  async () => {
+test.each(["--rule-skill", "--rule"] as const)(
+  "%s：已解压目录装载，审计标 kind = dir，副本落 run 缓存而非原地",
+  async (flag) => {
     const stub = await startLoopbackStub(ruleSkillDirCorpus());
     try {
       const outDir = makeTempDir("review-pi-cli-out-");
@@ -1350,7 +1350,7 @@ test(
           CLI_TASK_ID,
           "--tasks-dir",
           outDir,
-          "--rule-skill",
+          flag,
           skillDir,
           "--strict-rule-skill",
         ],
@@ -1400,6 +1400,63 @@ test(
   180_000,
 );
 
+// ---- 同名 skill 优先级（--rule 覆盖 --rule-skill） ----
+
+test(
+  "同名 skill：--rule 传入的目录覆盖 --rule-skill 的版本（只保留一个会话）",
+  async () => {
+    const stub = await startLoopbackStub(ruleSkillDirCorpus(1));
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+      const baseDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      const overrideDir = path.join(makeTempDir("review-pi-rule-override-"), "general-code-review");
+      mkdirSync(overrideDir, { recursive: true });
+      writeFileSync(
+        path.join(overrideDir, "SKILL.md"),
+        "---\nname: general-code-review\ndescription: Override pack.\n---\n\nOverride body.\n",
+        "utf8",
+      );
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--rule-skill",
+          baseDir,
+          "--rule",
+          overrideDir,
+          "--strict-rule-skill",
+        ],
+        stubEnv(stub.baseUrl),
+      );
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        ruleSkill: { source: string; kind?: string; digest: string; name: string }[];
+        skillPassLog?: { skill: string }[];
+      };
+      // 同名只保留一个：胜出者是 --rule 传入的目录（source 指向它）
+      expect(audit.ruleSkill).toHaveLength(1);
+      expect(audit.ruleSkill[0]).toMatchObject({ kind: "dir", name: "general-code-review" });
+      expect(audit.ruleSkill[0]?.source).toBe(overrideDir.split(path.sep).join("/"));
+      expect(audit.skillPassLog).toHaveLength(1);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
 // ---- 规则包缺值（B 档：按未传处理，但零静默） ----
 
 test(
@@ -1433,7 +1490,7 @@ test(
       expect(run.stderr).not.toContain("requires a value");
       expect(run.stderr).toContain("review-pi: --rule-skill 缺少值，已忽略（本轮不装载该包）");
       // 零静默：紧接着那句「未装载任何规则包」要如实说「未传或缺值」
-      expect(run.stderr).toContain("未装载任何规则包（--rule-skill-zip / --rule-skill 未传或缺值");
+      expect(run.stderr).toContain("未装载任何规则包（--rule-skill-zip / --rule-skill / --rule 未传或缺值");
 
       // 审计里没有规则包条目、也没有 skill 会话 = 真的按「没传」跑了
       const outcome = JSON.parse(run.stdout) as { auditPath: string };
@@ -1464,6 +1521,14 @@ test(
       const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
       const skillDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      // 第二个目录必须换一个 skill 名：同名 skill 会按「后装载者胜出」去重（本轮口径）
+      const altDir = path.join(makeTempDir("review-pi-rule-alt-"), "general-code-review-alt");
+      mkdirSync(altDir, { recursive: true });
+      writeFileSync(
+        path.join(altDir, "SKILL.md"),
+        "---\nname: general-code-review-alt\ndescription: Second pack.\n---\n\nSecond body.\n",
+        "utf8",
+      );
 
       const run = await runBin(
         [
@@ -1477,7 +1542,7 @@ test(
           "--tasks-dir",
           outDir,
           "--rule-skill",
-          `${skillDir},${skillDir}`,
+          `${skillDir},${altDir}`,
           "--strict-rule-skill",
         ],
         stubEnv(stub.baseUrl),

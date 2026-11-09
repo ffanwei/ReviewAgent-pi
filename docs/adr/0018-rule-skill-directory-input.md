@@ -5,6 +5,7 @@
 **跨仓**：本 ADR 为本仓 pi 线序列 0018；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 **后续修订**：[ADR-0027](0027-runs-layout-and-rule-skill-trust.md)（2026-10-31）——输入面收窄为**只认显式输入**：`--rule-skill-zip` 与 `--rule-skill <dir>` 两种形态保留（并列、装载顺序先 zip 后目录），但「`<repo>/.review-rules/*.zip` 自动扫描」作废；目录仍先审计符号链接/非普通文件/总字节，再复制到 `<out>/.cache/rule-skills/dir-<sha256>/`（缓存根去掉了实验标识层）。
 **后续修订**：[ADR-0034](0034-rule-skill-multi-input-and-name-removal.md)（2026-11-03）——`--rule-skill <dir>` 一次可传多个（逗号列表，`r1/,r2/,r3/`），与重复旗标等价；「先全部 zip 再全部目录」的装载序不变。
+**后续修订**（2026-11-09）：新增 `--rule <dir>` 作为与 `--rule-skill` **同义**的已解压目录输入（当前视为同一类 Skill，共用装载链路）；装载序为「先全部 zip → 再全部 `--rule-skill` → 最后全部 `--rule`」，不引入跨参数交错排序。同名 skill 只保留后装载者，故 `--rule` 优先于 `--rule-skill` / zip。
 
 ## Context
 

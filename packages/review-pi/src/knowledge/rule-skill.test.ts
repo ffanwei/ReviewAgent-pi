@@ -654,19 +654,74 @@ test("目录 + zip 共存：先全部 zip，再全部目录（ADR-0018 装载序
   const dirA = writeRuleDir(path.join(repo, "dirs-a"));
   const dirB = writeRuleDir(path.join(repo, "dirs-b"));
 
+  let dirIndex = 0;
   const skills = await loadRuleSkills({
     repoPath: repo,
     cacheRoot: path.join(repo, "cache"),
     explicitZipPaths: [zipPath],
     ruleSkillDirs: [dirA, dirB],
     loadSkillsFn: (async (_env: unknown, cwd: string) => {
-      const name = cwd.includes(`${path.sep}dir-`) ? "from-dir" : "from-zip";
-      return { skills: [sampleSkill({ name })], diagnostics: [] };
+      if (cwd.includes(`${path.sep}dir-`)) {
+        dirIndex += 1;
+        return { skills: [sampleSkill({ name: `from-dir-${dirIndex}` })], diagnostics: [] };
+      }
+      return { skills: [sampleSkill({ name: "from-zip" })], diagnostics: [] };
     }) as unknown as typeof loadSkills,
   });
 
   expect(skills.map((skill) => skill.source.kind)).toEqual(["zip", "dir", "dir"]);
-  expect(skills.map((skill) => skill.name)).toEqual(["from-zip", "from-dir", "from-dir"]);
+  expect(skills.map((skill) => skill.name)).toEqual(["from-zip", "from-dir-1", "from-dir-2"]);
+});
+
+test("同名 skill：后装载者胜出（--rule 排在 --rule-skill 之后，故 --rule 覆盖）", async () => {
+  const repo = tempRoot();
+  const baseDir = writeRuleDir(path.join(repo, "packs-base"));
+  // 内容不同 ⇒ digest 不同 ⇒ 两个目录都会真正装载，不会因缓存键相同被混为一谈
+  const overrideDir = writeRuleDir(path.join(repo, "packs-override"), `${SKILL_MD}Extra override rule.\n`);
+
+  let dirIndex = 0;
+  const skills = await loadRuleSkills({
+    repoPath: repo,
+    cacheRoot: path.join(repo, "cache"),
+    // 合并后的顺序 = --rule-skill 在前、--rule 在后（main.ts 的拼接口径）
+    ruleSkillDirs: [baseDir, overrideDir],
+    loadSkillsFn: (async () => {
+      dirIndex += 1;
+      return {
+        skills: [
+          sampleSkill({
+            name: "shared-rule",
+            content: dirIndex === 1 ? "base version" : "override version",
+          }),
+        ],
+        diagnostics: [],
+      };
+    }) as unknown as typeof loadSkills,
+  });
+
+  expect(skills).toHaveLength(1);
+  expect(skills[0]?.name).toBe("shared-rule");
+  expect(skills[0]?.content).toBe("override version");
+  expect(skills[0]?.source).toEqual({
+    kind: "dir",
+    path: path.relative(repo, overrideDir).split(path.sep).join("/"),
+  });
+});
+
+test("同名去重不影响降级占位：name 为空的条目全部保留（零静默）", async () => {
+  const repo = tempRoot();
+  const missingA = path.join(repo, "no-such-a");
+  const missingB = path.join(repo, "no-such-b");
+
+  const skills = await loadRuleSkills({
+    repoPath: repo,
+    cacheRoot: path.join(repo, "cache"),
+    ruleSkillDirs: [missingA, missingB],
+    loadSkillsFn: fakeLoader([sampleSkill()]),
+  });
+
+  expect(skills).toHaveLength(2);
+  expect(skills.every((skill) => skill.name === "" && skill.degradedReason?.includes("not found"))).toBe(true);
 });
 
 test("只有显式目录（没有 zip）时 strict 亦可跑通", async () => {

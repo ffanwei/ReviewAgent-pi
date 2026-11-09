@@ -358,6 +358,53 @@ test("--rule-skill 可重复（目录形态）；与 --rule-skill-zip 共存且�
   ]);
 });
 
+test("--rule 与 --rule-skill 同义（目录形态）：各自可重复，合并时 --rule-skill 在前（ADR-0018 顺序纪律）", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr-diff",
+    "m.diff",
+    "--taskId",
+    "t-1",
+    "--rule",
+    "dirs/rule-b",
+    "--rule-skill",
+    "dirs/skill-b",
+    "--rule",
+    "dirs/rule-a",
+    "--rule-skill",
+    "dirs/skill-a",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleSkillDirs).toEqual([
+    "dirs/skill-b",
+    "dirs/skill-a",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleDirs).toEqual([
+    "dirs/rule-b",
+    "dirs/rule-a",
+  ]);
+});
+
+test("--rule 逗号列表：与重复旗标等价，空白不敏感", () => {
+  const parsed = parseCliArgs([
+    "review",
+    "--repo",
+    "r",
+    "--mr-diff",
+    "m.diff",
+    "--taskId",
+    "t-1",
+    "--rule",
+    "r1/, r2/ ,r3/",
+  ]);
+  expect(parsed.ok && parsed.command === "review" && parsed.args.ruleDirs).toEqual([
+    "r1/",
+    "r2/",
+    "r3/",
+  ]);
+});
+
 test("--rule-skill-zip 逗号列表：引号内的 `a.zip, b.zip` 展开为多个包，顺序 = 列表顺序（ADR-0034）", () => {
   const parsed = parseCliArgs([
     "review",
@@ -501,7 +548,7 @@ test("逗号列表与重复旗标混用：按出现顺序展开，空项丢弃�
   ]);
 });
 
-test("逗号列表整值无有效项 → 用法错误（不静默退化成 0 个包）", () => {
+test("逗号列表整值无有效项 → 按未传处理并登记（空串 / 纯空白 / 纯逗号都不报用法错误）", () => {
   expect(
     parseCliArgs([
       "review",
@@ -515,8 +562,16 @@ test("逗号列表整值无有效项 → 用法错误（不静默退化成 0 个
       " , ",
     ]),
   ).toEqual({
-    ok: false,
-    message: 'invalid --rule-skill-zip " , ": must be a non-empty path list',
+    ok: true,
+    command: "review",
+    args: {
+      repo: "r",
+      mr: "m.diff",
+      caseId: "m",
+      issue: "",
+      taskId: "t-1",
+      emptyRuleSkillFlags: ["--rule-skill-zip"],
+    },
   });
 });
 
@@ -650,7 +705,7 @@ test("规则包旗标缺值：按未传处理并登记（B 档：忽略但零静
       emptyRuleSkillFlags: ["--rule-skill"],
     },
   });
-  // ④ 两个旗标都缺值：按 argv 顺序登记
+  // ④ 三个旗标都缺值：按 argv 顺序登记
   expect(
     parseCliArgs([
       "review",
@@ -662,6 +717,7 @@ test("规则包旗标缺值：按未传处理并登记（B 档：忽略但零静
       "t-1",
       "--rule-skill-zip",
       "--rule-skill",
+      "--rule",
     ]),
   ).toEqual({
     ok: true,
@@ -672,13 +728,40 @@ test("规则包旗标缺值：按未传处理并登记（B 档：忽略但零静
       caseId: "m",
       issue: "",
       taskId: "t-1",
-      emptyRuleSkillFlags: ["--rule-skill-zip", "--rule-skill"],
+      emptyRuleSkillFlags: ["--rule-skill-zip", "--rule-skill", "--rule"],
     },
   });
-  // ⑤ 空白值仍是用法错误（「没给值」与「给了空串」不是一回事）
-  expect(
-    parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--taskId", "t-1", "--rule-skill", ""]),
-  ).toEqual({ ok: false, message: 'invalid --rule-skill "": must be a non-empty path list' });
+  // ⑤ 空串 / 纯空白 / 纯逗号也按未传处理（bash 的 `--rule "$dirs"` 变量为空就是这个形态）
+  for (const emptyValue of ["", "   ", ","]) {
+    expect(
+      parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--taskId", "t-1", "--rule-skill", emptyValue]),
+    ).toEqual({
+      ok: true,
+      command: "review",
+      args: {
+        repo: "r",
+        mr: "m",
+        caseId: "m",
+        issue: "",
+        taskId: "t-1",
+        emptyRuleSkillFlags: ["--rule-skill"],
+      },
+    });
+    expect(
+      parseCliArgs(["review", "--repo", "r", "--mr-diff", "m", "--taskId", "t-1", "--rule", emptyValue]),
+    ).toEqual({
+      ok: true,
+      command: "review",
+      args: {
+        repo: "r",
+        mr: "m",
+        caseId: "m",
+        issue: "",
+        taskId: "t-1",
+        emptyRuleSkillFlags: ["--rule"],
+      },
+    });
+  }
 });
 
 test("未知旗标 / 重复旗标 / 值缺席（含值吞旗标）→ 用法错误", () => {
@@ -870,6 +953,8 @@ test("USAGE_TEXT：宣告四个子命令（stderr 错误路径同款文案，单
   expect(USAGE_TEXT).not.toContain("--out ");
   // 一个包就是一个 skill（ADR-0034）：包内消歧旗标不再宣告
   expect(USAGE_TEXT).not.toContain("--rule-skill-name");
+  // `--rule` 是规则 Skill 目录输入的等价旗标
+  expect(USAGE_TEXT).toContain("--rule <dir>[,<dir>…]");
   // 纯文本用法面不带 markdown 记号与内部票号
   expect(USAGE_TEXT).not.toContain("**");
   expect(USAGE_TEXT).not.toContain("P1b");

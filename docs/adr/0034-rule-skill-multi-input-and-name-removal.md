@@ -4,6 +4,7 @@
 **后续修订**：缺值口径由 [ADR-0044](0044-valueless-rule-skill-flags-are-ignored.md) 收窄——本 ADR 所属的两个逗号列表旗标（`--rule-skill` / `--rule-skill-zip`）「传了但没给值」不再报用法错误，改为按未传处理并打一行提示；逗号列表与重复旗标语义不变。
 **关联**：ADR-0014（多规则包 = 多个 zip、CLI 顺序）、ADR-0018（`--rule-skill <dir>` 目录形态并列）、ADR-0027（规则包只认显式输入）、ADR-0031（参数回显）
 **跨仓**：本 ADR 为本仓 pi 线序列 0034；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
+**后续修订**（2026-11-09）：新增 `--rule <dir>` 作为与 `--rule-skill` 同义的逗号列表旗标；装载序在原有「先 zip 后目录」之后追加全部 `--rule` 目录。**同名 skill 只保留后装载者**——`--rule` 排在最后，因此同名时 `--rule` 覆盖 `--rule-skill` / zip 的版本（见 ADR-0018 后续修订）。
 
 ## Context
 
@@ -38,7 +39,7 @@ review-pi review ... --rule-skill-zip a.zip --rule-skill-zip b.zip
 ```
 
 - **多 token 归并**：列表旗标的值位置**连续的非旗标 token 全部计入列表**（本命令没有位置参数，贪心吃非旗标 token 不产生歧义），再用 `,` 拼成一个值（`cli/args.ts` 的 `joinCommaListTokens`）。这是必须的：`--rule-skill r1/, r2/, r3/` 在 PowerShell 里实际 argv 是 `r1/ r2/ r3/`（逗号被 shell 吃掉），在 bash 里是 `r1/, r2/, r3/`（尾逗号保留）——两种形态归并到同一条路；
-- **拆分**：逐项 `trim`、空项丢弃（`a.zip,,b.zip` 仍取两项），**整值无有效项**（`--rule-skill-zip " , "`）才是用法错误：`invalid --rule-skill-zip ...: must be a non-empty path list`；
+- **拆分**：逐项 `trim`、空项丢弃（`a.zip,,b.zip` 仍取两项）；**整值无有效项**（`--rule-skill-zip " , "`）自 2026-11-09 起也按「未传」处理（见 ADR-0044 后续修订；原先是 `must be a non-empty path list` 用法错误）；
 - **顺序**：先全部 `--rule-skill-zip`（CLI 序，列表内按列表序），再全部 `--rule-skill`（ADR-0018 的装载序不变）；
 - **代价（显式认识）**：这两种旗标的值里**不能再用逗号**。Windows 路径允许逗号，但规则包路径带逗号是极端个例，换来「一行传多个」的可用性；需要时把包放到无逗号路径。
 

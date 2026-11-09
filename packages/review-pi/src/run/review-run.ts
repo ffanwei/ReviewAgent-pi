@@ -101,7 +101,7 @@ export interface ReviewRunInput {
   readonly ruleSkillZip?: string;
   /** 规则 Skill 显式 zip 列表（--rule-skill-zip 可重复；顺序 = 执行顺序） */
   readonly ruleSkillZips?: readonly string[];
-  /** 规则 Skill 显式**已解压目录**列表（--rule-skill 可重复；排在全部 zip 之后） */
+  /** 规则 Skill 显式**已解压目录**列表（--rule-skill / --rule；排在全部 zip 之后） */
   readonly ruleSkillDirs?: readonly string[];
   /** 规则 Skill 严格模式（--strict-rule-skill）：装载失败抛错而非降级 */
   readonly strictRuleSkill?: boolean;

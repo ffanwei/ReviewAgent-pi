@@ -12,7 +12,7 @@
 |---|---|
 | 单次检视 | 一条命令一次 run：六阶段循环 + 七个 review 工具 + Context Ledger + 审计投影 |
 | 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：数组或 `{diffs:[…]}`；路径取 `new_path` / `filename` / `file_path` / `path`、正文取 `diff` / `patch`，`diff` 为对象时取内层 `diff.diff`） |
-| 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>`，一次可传多个（逗号列表或重复旗标），**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast |
+| 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>` / `--rule <dir>`，一次可传多个（逗号列表或重复旗标），**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast。`--rule` 当前与 `--rule-skill` 同义（同一类 Skill，排在 `--rule-skill` 之后；同名 skill 由 `--rule` 覆盖）。值位置的空串 / 纯空白按未传处理 |
 | 中文建议 | 恒产 `reviews_tips_zh.json`（有意见且生成成功时）：由片级语义生成统一提供，与 MCP 上报同源；控制台 stdout 恒英文（ADR-0065） |
 | MR 边界护栏 | 过滤后超 `limits.boundary` 只告警不拒检；`maxDiffChars` 是输入体积门（超限直接报错，不发模型） |
 | 大 MR 分片 | 过滤后 diff 超 `limits.split.maxShardChars` 时按 `diff --git` 文件块自动切片（绝不切 hunk）并确定性合并 findings；单片路径逐字节不变（ADR-0039） |
@@ -196,7 +196,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 |---|---|
 | 值分隔 | 必须空格分隔：`--model deepseek-v4-flash`。**不支持 `--flag=value`**（会被判 unknown flag） |
 | 值形态 | 值不能以 `--` 开头（`--issue --taskId x` 报 `requires a value`，不会静默吞旗标） |
-| 重复旗标 | 非列表旗标重复出现 = `duplicate flag`；`--rule-skill-zip` / `--rule-skill` 例外（按出现顺序累积） |
+| 重复旗标 | 非列表旗标重复出现 = `duplicate flag`；`--rule-skill-zip` / `--rule-skill` / `--rule` 例外（按出现顺序累积） |
 | 列表写法 | 列表旗标支持逗号（`a.zip,b.zip`）、连续 token（`a.zip b.zip`）或重复旗标，三种等价 |
 | 布尔对 | `--progress` 已移除（进度缺省打印）；`--no-progress` 重复 = `duplicate flag`，其余无值旗标重复同理 |
 | 帮助 | 无 `--help` / `--version`；裸跑或未知子命令 → usage 到 stderr + `exit 1` |
@@ -215,6 +215,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 | `--config <path>` | 文件 | 缺省 `~/.PiAgent/PiAgent.jsonc` | 替代配置文件，相对路径按 cwd 解析；**显式给出但文件不存在 = fail fast**（缺省路径缺席只提示、不报错） |
 | `--rule-skill-zip <path[,path…]>` | zip 路径（可重复） | 缺省不装载 | 规则 Skill zip；**顺序 = 执行顺序**；一个包 = 一个 skill；不自动扫描被检视仓库（ADR-0027） |
 | `--rule-skill <dir[,dir…]>` | 目录（可重复） | 缺省不装载 | 已解压规则 Skill 目录；先审计（符号链接 / 越界一律拒绝）→ 按内容哈希复制进 run 缓存 → 同一装载链路；**排在全部 zip 之后**（ADR-0018） |
+| `--rule <dir[,dir…]>` | 目录（可重复） | 缺省不装载 | 当前与 `--rule-skill` **同义**（同一类 Skill、同一装载链路）；装载时排在全部 `--rule-skill` 之后。**同名 skill 只保留后装载者**，故 `--rule` 覆盖同名 `--rule-skill` / zip 的版本；`--rule ""` / 纯空白值按未传处理 |
 | `--strict-rule-skill` | 无值 | 缺省关 | 规则包装载失败即 `exit 1`（一个包都没给也算）；缺省为「降级该包 + 审计留痕 + run 照常」 |
 | `--no-progress` | 无值 | 缺省关（进度事件行**缺省打印**） | 关闭阶段 / 模型请求 / 工具调用 / skill 会话事件行（stderr，批跑收日志用） |
 | `--no-progress` | 无值 | 同上 | 关闭事件行（批跑收日志时显式静音）；**收尾一行总结恒打印**，不受此旗标影响 |

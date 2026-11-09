@@ -29,6 +29,7 @@
  *   (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id>
  *   [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>]
  *   [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]...
+ *   [--rule <dir>[,<dir>…]]...
  *   [--strict-rule-skill]
  *   [--no-progress]
  *   review-pi smoke [--model <id>] [--config <path>]
@@ -384,7 +385,11 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         runsRoot,
         rep: 1,
         ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
-        ...(args.ruleSkillDirs !== undefined ? { ruleSkillDirs: args.ruleSkillDirs } : {}),
+        ...(args.ruleSkillDirs !== undefined || args.ruleDirs !== undefined
+          ? {
+              ruleSkillDirs: [...(args.ruleSkillDirs ?? []), ...(args.ruleDirs ?? [])],
+            }
+          : {}),
         ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
         onProgress,
         ...(onShardFindings !== undefined ? { onShardFindings } : {}),
@@ -400,7 +405,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
     if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
       process.stderr.write(
-        "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n",
+        "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --rule 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n",
       );
     }
     // 输入预过滤（大 diff 第一期）：剔了就必须可见（明细在审计 mrFilter）
