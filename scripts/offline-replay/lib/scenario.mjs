@@ -81,6 +81,13 @@ export function normalizeScenario(input, source = "scenario") {
   ) {
     throw new Error(`${source}: split.maxShardChars 必须是 ≥ 10000 的整数（产品下限）`);
   }
+  const timeouts = input.timeouts ?? {};
+  if (
+    timeouts.oneShotMs !== undefined &&
+    (!Number.isInteger(timeouts.oneShotMs) || timeouts.oneShotMs < 1_000)
+  ) {
+    throw new Error(`${source}: timeouts.oneShotMs 必须是 ≥ 1000 的整数`);
+  }
   return {
     schemaVersion: SUPPORTED_SCHEMA,
     id: input.id,
@@ -99,6 +106,9 @@ export function normalizeScenario(input, source = "scenario") {
     strictRuleSkill: input.strictRuleSkill === true,
     split: {
       maxShardChars: split.maxShardChars,
+    },
+    timeouts: {
+      oneShotMs: timeouts.oneShotMs,
     },
     mcp: {
       mode: mcp.mode,
@@ -200,7 +210,7 @@ export function validateLatencySafety(scenario) {
   const worst = ms * (1 + Math.max(0, jitter));
   const limits = [
     { name: "检视回合", limitMs: 180_000 },
-    { name: "一次性模型调用（报文/总结）", limitMs: 90_000 },
+    { name: "一次性模型调用（报文/总结）", limitMs: scenario.timeouts?.oneShotMs ?? 90_000 },
   ];
   for (const item of limits) {
     const ceiling = item.limitMs / 2;

@@ -72,7 +72,13 @@ async function record(flags) {
     lane = await createLane({ runDir, label: "record", scenario, server, index: 0 });
     run = await runCli({ lane, scenario, timeoutMs: scenario.timeoutMs });
     const mcpCalls = scenario.mcp.mode === "stub" ? server.mcpCalls() : undefined;
-    await assertLane({ lane, scenario, run, mcpCalls });
+    if (flags.skipAssert === true) {
+      process.stderr.write(
+        "replay:record --skip-assert：跳过录制期语义断言（真实模型首次录制用；落盘后必须用 once 自检）\n",
+      );
+    } else {
+      await assertLane({ lane, scenario, run, mcpCalls });
+    }
   } finally {
     await server.close();
   }
@@ -565,7 +571,7 @@ function parseFlags(argv) {
       throw new Error(`无法识别的参数 "${token}"（选项必须以 -- 开头）`);
     }
     const key = token.slice(2);
-    if (key === "store-requests" || key === "no-verify" || key === "no-overhead-baseline") {
+    if (key === "store-requests" || key === "no-verify" || key === "no-overhead-baseline" || key === "skip-assert") {
       flags[camel(key.replace(/^no-/u, ""))] = key.startsWith("no-") ? false : true;
       continue;
     }
@@ -629,7 +635,7 @@ function printUsage() {
       "离线回放工具（ADR-0048）",
       "",
       "用法：",
-      "  node scripts/offline-replay/run.mjs record --scenario <id|path> [--trace <path>] [--store-requests] [--no-verify]",
+      "  node scripts/offline-replay/run.mjs record --scenario <id|path> [--trace <path>] [--store-requests] [--no-verify] [--skip-assert]",
       "       [--upstream-base-url <url>] [--upstream-api-key <key>] [--upstream-timeout-ms N]",
       "  node scripts/offline-replay/run.mjs once   --scenario <id|path> [--workers N] [--latency-ms N] [--latency-mode none|fixed] [--run-dir <dir>]",
       "  node scripts/offline-replay/run.mjs ramp   --scenario <id|path> [--steps 1,5,10,20,30] [--warmup N] [--measure N] [--latency-mode none|fixed] [--latency-ms N] [--latency-jitter R] [--seed N]",
@@ -637,6 +643,8 @@ function printUsage() {
       "",
       "record 缺省用场景的 canned 语料；给了 --upstream-base-url（或 REPLAY_UPSTREAM_BASE_URL）",
       "就直接代理真网关并录原始 SSE，trace 格式不变。apiKey 可走 --upstream-api-key / REPLAY_UPSTREAM_API_KEY。",
+      "真实模型首次录制（尚未知 findings / tips 期望）用 --skip-assert --no-verify 落盘，",
+      "再按 runDir/workers/record 的产物把期望钉进场景，最后用 once 自检。",
       "",
       "ramp 缺省延迟：fixed 1500ms、jitter 0.2、seed 42（场景声明 fixed 时用场景值；--latency-mode none 关掉）。",
       "",

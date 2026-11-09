@@ -28,6 +28,21 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
 node .agents/skills/synthetic-defect-resource-leak/scripts/run.mjs --dry-run
 ```
 
+### Large-MR e2e (real MCP + dashboard)
+
+`scripts/e2e-mcp/` runs a real `review-pi review` on a >1000-line diff with a real
+HTTP MCP server; the browser dashboard at <http://127.0.0.1:7317/> shows the exact
+payloads received. The same run is frozen as the offline replay trace
+`packages/review-pi/testdata/traces/large-mr.json` (scenario `large-mr`), so
+`pnpm test:replay` covers it without a model call. See
+[`scripts/e2e-mcp/README.md`](scripts/e2e-mcp/README.md).
+
+```bash
+node scripts/e2e-mcp/make-large-mr.mjs --check-only
+node scripts/e2e-mcp/server.mjs --port 7317
+node scripts/e2e-mcp/run-e2e.mjs
+```
+
 ### Issue tracker
 
 Local Markdown: issues and specs live as files under `.scratch/<feature>/` in this repo (no CLI required). See `docs/agents/issue-tracker.md`.

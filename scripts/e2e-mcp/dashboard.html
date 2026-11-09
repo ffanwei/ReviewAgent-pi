@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>review-pi · MCP e2e dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2330;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --fatal: #ff6b6b;
+    --major: #f0883e;
+    --minor: #58a6ff;
+    --suggestion: #8b949e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+  }
+  a { color: var(--accent); }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(13, 17, 23, 0.94);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 22px;
+  }
+  .title-row { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: 0.2px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .conn { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.dead { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+  main { padding: 18px 22px 60px; max-width: 1500px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; }
+  .card .value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .card .hint { color: var(--muted); font-size: 11px; }
+  .section { margin-top: 22px; }
+  .section > h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    margin: 0 0 10px;
+    font-weight: 600;
+  }
+  .bar { height: 10px; border-radius: 999px; background: var(--panel-2); overflow: hidden; border: 1px solid var(--border); }
+  .bar > span { display: block; height: 100%; background: linear-gradient(90deg, #1f6feb, #3fb950); width: 0%; transition: width 0.3s ease; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 9px; border-radius: 999px; font-size: 12px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .pill.ok { color: var(--ok); border-color: rgba(63,185,80,0.35); background: rgba(63,185,80,0.08); }
+  .pill.warn { color: var(--warn); border-color: rgba(210,153,34,0.35); background: rgba(210,153,34,0.08); }
+  .pill.bad { color: var(--bad); border-color: rgba(248,81,73,0.35); background: rgba(248,81,73,0.08); }
+  .order { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
+  .order .step { padding: 3px 9px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel); }
+  .order .step.start { border-color: rgba(88,166,255,0.5); }
+  .order .step.file { border-color: rgba(139,148,158,0.35); }
+  .order .step.summary { border-color: rgba(210,153,34,0.5); }
+  .order .step.end { border-color: rgba(63,185,80,0.5); }
+  .order .arrow { color: var(--muted); }
+  .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 14px; }
+  .file {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .file > header {
+    position: static; padding: 10px 14px; background: var(--panel-2);
+    border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;
+    gap: 10px; align-items: center; backdrop-filter: none;
+  }
+  .file .path { font-size: 13px; word-break: break-all; }
+  .file .body { padding: 10px 14px 14px; display: grid; gap: 10px; }
+  .tip { border-left: 3px solid var(--border); padding: 6px 0 6px 12px; display: grid; gap: 6px; }
+  .tip.level-Fatal { border-left-color: var(--fatal); }
+  .tip.level-Major { border-left-color: var(--major); }
+  .tip.level-Minor { border-left-color: var(--minor); }
+  .tip.level-Suggestion { border-left-color: var(--suggestion); }
+  .tip .meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
+  .lvl { font-weight: 700; font-size: 11px; padding: 1px 7px; border-radius: 5px; letter-spacing: 0.04em; }
+  .lvl.Fatal { background: rgba(255,107,107,0.16); color: var(--fatal); }
+  .lvl.Major { background: rgba(240,136,62,0.16); color: var(--major); }
+  .lvl.Minor { background: rgba(88,166,255,0.16); color: var(--minor); }
+  .lvl.Suggestion { background: rgba(139,148,158,0.16); color: var(--suggestion); }
+  .tip .code {
+    background: #0b0f14; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 9px; white-space: pre-wrap; word-break: break-all; font-size: 12px;
+  }
+  .tip .text { white-space: pre-wrap; word-break: break-word; }
+  .tip .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .empty { color: var(--muted); font-style: italic; font-size: 13px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details pre { margin: 8px 0 0; background: #0b0f14; border: 1px solid var(--border); border-radius: 6px; padding: 10px; max-height: 360px; overflow: auto; font-size: 11px; }
+  .summary pre {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 13px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .timeline { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+  .filters { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  input[type="search"] {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; min-width: 260px; font-size: 13px;
+  }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 12px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  .muted { color: var(--muted); }
+  .missing li { color: var(--warn); }
+  .footnote { color: var(--muted); font-size: 11px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>review-pi · MCP e2e dashboard</h1>
+    <span class="conn"><span id="dot" class="dot"></span><span id="connText">连接中…</span></span>
+    <span class="sub" id="serverInfo"></span>
+    <span class="sub" id="taskInfo"></span>
+  </div>
+</header>
+
+<main>
+  <section class="cards" id="counters"></section>
+
+  <section class="section">
+    <h2>文件覆盖（ADR-0061）</h2>
+    <div class="bar"><span id="coverageBar"></span></div>
+    <div class="row" style="margin-top:10px">
+      <span class="pill" id="coverageText">等待数据…</span>
+      <span class="pill" id="emptyPill"></span>
+      <span class="pill" id="violationPill"></span>
+    </div>
+    <ul class="missing" id="missingList"></ul>
+  </section>
+
+  <section class="section">
+    <h2>业务调用顺序</h2>
+    <div class="order" id="order"></div>
+  </section>
+
+  <section class="section">
+    <h2>按文件检视结果</h2>
+    <div class="filters">
+      <input type="search" id="filter" placeholder="过滤路径 / 意见内容…" />
+      <label class="muted" style="font-size:12px">
+        <input type="checkbox" id="onlyFindings" /> 只看有意见的文件
+      </label>
+      <button id="expandAll" type="button">展开原始报文</button>
+      <button id="collapseAll" type="button">收起原始报文</button>
+      <span class="pill" id="fileCount"></span>
+    </div>
+    <div class="files" id="files"></div>
+  </section>
+
+  <section class="section summary">
+    <h2>总结（saveReviewSummary.markdownContent）</h2>
+    <pre id="summary">（尚未收到）</pre>
+  </section>
+
+  <section class="section">
+    <h2>进度事件（report_events）</h2>
+    <div class="cards" id="eventCounters"></div>
+    <div class="timeline" style="margin-top:12px">
+      <table>
+        <thead><tr><th>seq</th><th>at</th><th>type</th><th>摘要</th></tr></thead>
+        <tbody id="timeline"></tbody>
+      </table>
+    </div>
+    <p class="footnote">SSE 实时推送；刷新页面不丢状态（状态在 server 内存里）。</p>
+  </section>
+</main>
+
+<script>
+const state = { latest: null };
+const dot = document.getElementById("dot");
+const connText = document.getElementById("connText");
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function oneLine(text, max = 160) {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
+function levelClass(level) {
+  return ["Fatal", "Major", "Minor", "Suggestion"].includes(level) ? level : "Suggestion";
+}
+
+function renderCounters(snap) {
+  const c = snap.counts;
+  const items = [
+    ["MCP 业务调用", snap.callCount, `${snap.handshakes} 次握手`],
+    ["已上报文件", c.files, snap.coverage.expectedFiles === null ? "未声明期望" : `期望 ${snap.coverage.expectedFiles}`],
+    ["意见总条数", c.tips, `${c.emptyFiles} 个文件空意见`],
+    ["进度事件", c.progressEvents, `${c.progressStreams} 条流`],
+  ];
+  const root = document.getElementById("counters");
+  root.replaceChildren(
+    ...items.map(([label, value, hint]) => {
+      const card = el("div", "card");
+      card.append(el("div", "label", label), el("div", "value", value), el("div", "hint", hint));
+      return card;
+    }),
+  );
+}
+
+function renderCoverage(snap) {
+  const cov = snap.coverage;
+  const bar = document.getElementById("coverageBar");
+  const text = document.getElementById("coverageText");
+  const emptyPill = document.getElementById("emptyPill");
+  const violationPill = document.getElementById("violationPill");
+  const missingList = document.getElementById("missingList");
+
+  if (cov.expectedFiles === null) {
+    bar.style.width = "0%";
+    text.textContent = `已上报 ${cov.reportedFiles} 个文件（未声明期望）`;
+  } else {
+    const pct = cov.expectedFiles === 0 ? 0 : Math.min(100, Math.round((cov.reportedFiles / cov.expectedFiles) * 100));
+    bar.style.width = pct + "%";
+    text.textContent = `${cov.reportedFiles} / ${cov.expectedFiles} 个文件（${pct}%）`;
+    text.className = "pill " + (cov.missing.length === 0 ? "ok" : "warn");
+  }
+  emptyPill.className = "pill";
+  emptyPill.textContent = `${snap.counts.emptyFiles} 个文件已检视 · 无意见`;
+  violationPill.className = "pill " + (snap.violations.length === 0 ? "ok" : "bad");
+  violationPill.textContent = snap.violations.length === 0 ? "调用顺序正常" : `${snap.violations.length} 条顺序/覆盖异常`;
+
+  missingList.replaceChildren(
+    ...cov.missing.map((file) => el("li", "mono", "缺少：" + file)),
+    ...cov.unexpected.map((file) => el("li", "mono", "多余：" + file)),
+    ...snap.violations.map((item) => el("li", "", "异常：" + item)),
+  );
+}
+
+function renderOrder(snap) {
+  const root = document.getElementById("order");
+  const nodes = [];
+  const counts = new Map();
+  for (const tool of snap.order) counts.set(tool, (counts.get(tool) ?? 0) + 1);
+  const order = [];
+  if (counts.has("startTask")) order.push(["startTask", "start"]);
+  const fileCount = counts.get("mrReviewResult") ?? 0;
+  if (fileCount > 0) order.push([`mrReviewResult × ${fileCount}`, "file"]);
+  if (counts.has("saveReviewSummary")) order.push(["saveReviewSummary", "summary"]);
+  if (counts.has("endTask")) order.push(["endTask", "end"]);
+  if (order.length === 0) {
+    root.append(el("span", "muted", "尚未收到业务调用"));
+    return;
+  }
+  order.forEach(([label, kind], index) => {
+    if (index > 0) nodes.push(el("span", "arrow", "→"));
+    nodes.push(el("span", "step " + kind, label));
+  });
+  root.replaceChildren(...nodes);
+}
+
+function tipNode(tip) {
+  const wrap = el("div", "tip level-" + levelClass(tip.level));
+  const meta = el("div", "meta");
+  meta.append(el("span", "lvl " + levelClass(tip.level), tip.level ?? "?"));
+  meta.append(el("span", "", "行 " + (tip.lineNum ?? "?")));
+  meta.append(el("span", "", (tip.category ?? "?") + " / " + (tip.subcategory ?? "?")));
+  if (tip.ruleId) meta.append(el("span", "pill", "rule: " + tip.ruleId));
+  wrap.append(meta);
+  if (tip.code) wrap.append(el("div", "code", tip.code));
+  if (tip.review) {
+    wrap.append(el("div", "label", "review"));
+    wrap.append(el("div", "text", tip.review));
+  }
+  if (tip.suggestion) {
+    wrap.append(el("div", "label", "suggestion"));
+    wrap.append(el("div", "text", tip.suggestion));
+  }
+  return wrap;
+}
+
+function renderFiles(snap) {
+  const root = document.getElementById("files");
+  const filter = document.getElementById("filter").value.trim().toLowerCase();
+  const onlyFindings = document.getElementById("onlyFindings").checked;
+  const files = [...snap.files].sort((a, b) => a.filePath.localeCompare(b.filePath));
+  const shown = files.filter((file) => {
+    if (onlyFindings && file.reviewTips.length === 0) return false;
+    if (filter === "") return true;
+    const haystack = [
+      file.filePath,
+      ...file.reviewTips.flatMap((tip) => [tip.review, tip.suggestion, tip.code, tip.category, tip.subcategory]),
+    ].join("\n").toLowerCase();
+    return haystack.includes(filter);
+  });
+  document.getElementById("fileCount").textContent = `${shown.length} / ${files.length} 个文件`;
+
+  if (files.length === 0) {
+    root.replaceChildren(el("p", "empty", "尚未收到 mrReviewResult。"));
+    return;
+  }
+  root.replaceChildren(
+    ...shown.map((file) => {
+      const card = el("article", "file");
+      const head = el("header");
+      head.append(el("span", "path mono", file.filePath));
+      const badge = el(
+        "span",
+        "pill " + (file.reviewTips.length === 0 ? "ok" : "warn"),
+        file.reviewTips.length === 0 ? "已检视 · 无意见" : `${file.reviewTips.length} 条意见`,
+      );
+      head.append(badge);
+      const body = el("div", "body");
+      if (file.reviewTips.length === 0) {
+        body.append(el("div", "empty", "该文件已上报（reviewTips: []），检视未发现问题。"));
+      } else {
+        for (const tip of file.reviewTips) body.append(tipNode(tip));
+      }
+      const details = el("details");
+      details.append(el("summary", "", `原始 tools/call 报文（#${file.seq}）`));
+      const pre = el("pre", "mono");
+      pre.textContent = JSON.stringify(file.raw, null, 2);
+      details.append(pre);
+      body.append(details);
+      card.append(head, body);
+      return card;
+    }),
+  );
+}
+
+function renderSummary(snap) {
+  const root = document.getElementById("summary");
+  if (!snap.summary) {
+    root.textContent = "（尚未收到）";
+    return;
+  }
+  root.textContent = snap.summary.markdownContent || "（markdownContent 为空）";
+}
+
+function renderTimeline(snap) {
+  const counts = new Map();
+  for (const event of snap.progress) counts.set(event.type, (counts.get(event.type) ?? 0) + 1);
+  const root = document.getElementById("eventCounters");
+  root.replaceChildren(
+    ...[...counts.entries()].sort((a, b) => b[1] - a[1]).map(([type, count]) => {
+      const card = el("div", "card");
+      card.append(el("div", "label", type), el("div", "value", count));
+      return card;
+    }),
+  );
+  if (counts.size === 0) root.append(el("p", "empty", "尚未收到进度事件。"));
+
+  const recent = [...snap.progress].reverse().slice(0, 80);
+  document.getElementById("timeline").replaceChildren(
+    ...recent.map((event) => {
+      const tr = el("tr");
+      tr.append(el("td", "mono", event.seq ?? ""));
+      tr.append(el("td", "mono", event.at ?? ""));
+      tr.append(el("td", "", event.type));
+      tr.append(el("td", "muted", oneLine(summarizeEvent(event))));
+      return tr;
+    }),
+  );
+}
+
+function summarizeEvent(event) {
+  const e = event.event ?? {};
+  switch (event.type) {
+    case "run.start": return `case=${e.caseId} model=${e.model} shards=${e.shards ? e.shards.total : 1}`;
+    case "run.end": return `status=${e.status} ${e.durationMs}ms dropped=${e.dropped} failed=${e.failed}`;
+    case "phase": return `round=${e.round} ${e.phaseKey} ${e.index}/${e.total}${e.shard ? " shard=" + e.shard.index + "/" + e.shard.total : ""}`;
+    case "request.end": return `#${e.requestId} ${e.durationMs}ms total=${e.usage ? e.usage.totalTokens : "?"}`;
+    case "tool.end": return `${e.name} ${e.durationMs}ms ok=${e.ok} lines=${e.resultLines}`;
+    case "skill.end": return `${e.skill} status=${e.status} requests=${e.requestCount} tools=${e.toolCallCount}`;
+    default: return JSON.stringify(e).slice(0, 160);
+  }
+}
+
+function render(snap) {
+  state.latest = snap;
+  renderCounters(snap);
+  renderCoverage(snap);
+  renderOrder(snap);
+  renderFiles(snap);
+  renderSummary(snap);
+  renderTimeline(snap);
+  document.getElementById("serverInfo").textContent =
+    `${snap.serverInfo.name}@${snap.serverInfo.version} · MCP ${snap.protocolVersion}`;
+  document.getElementById("taskInfo").textContent = snap.taskIds.length > 0 ? `task: ${snap.taskIds.join(", ")}` : "";
+}
+
+function connect() {
+  const source = new EventSource("/events");
+  source.addEventListener("open", () => {
+    dot.className = "dot live";
+    connText.textContent = "SSE 已连接";
+  });
+  source.addEventListener("state", (event) => {
+    try {
+      render(JSON.parse(event.data));
+    } catch (error) {
+      console.error("bad state payload", error);
+    }
+  });
+  source.addEventListener("error", () => {
+    dot.className = "dot dead";
+    connText.textContent = "SSE 重连中…";
+  });
+}
+
+document.getElementById("filter").addEventListener("input", () => {
+  if (state.latest) renderFiles(state.latest);
+});
+document.getElementById("onlyFindings").addEventListener("change", () => {
+  if (state.latest) renderFiles(state.latest);
+});
+document.getElementById("expandAll").addEventListener("click", () => {
+  for (const node of document.querySelectorAll("#files details")) node.open = true;
+});
+document.getElementById("collapseAll").addEventListener("click", () => {
+  for (const node of document.querySelectorAll("#files details")) node.open = false;
+});
+
+fetch("/api/state")
+  .then((response) => response.json())
+  .then(render)
+  .catch((error) => console.error("initial state failed", error));
+
+connect();
+</script>
+</body>
+</html>

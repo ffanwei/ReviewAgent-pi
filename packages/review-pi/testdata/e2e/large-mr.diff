@@ -1,0 +1,1414 @@
+diff --git a/README.md b/README.md
+index 940a214..ebecca9 100644
+--- a/README.md
++++ b/README.md
+@@ -1,8 +1,68 @@
+ # Large MR sample service
+ 
+ A small multi-language order service used by the end-to-end review harness.
++It is deliberately imperfect: the fixture exists so that a real review run has
++enough material to page through several shards and emit findings for every
++changed file.
++
++## Layout
+ 
+ - `service/` — order worker (Go) and pricing helpers (Python)
+-- `web/` — order API (TypeScript)
++- `web/` — order HTTP API (TypeScript)
+ - `native/` — inventory allocator (C++)
+ - `src/main/java` — order domain (Java)
++
++## Running locally
++
++The fixture is not meant to be deployed. Each language layer is independent so
++the review harness can exercise several parsers in a single diff:
++
++```bash
++# Java domain
++mvn -q -DskipTests package
++
++# TypeScript API
++node --experimental-strip-types web/src/orderApi.ts
++
++# Python pricing helpers
++python -m service.pkg.pricing
++
++# Go worker
++go run ./service/cmd
++
++# C++ allocator
++g++ -std=c++17 native/src/allocator.cpp -o build/allocator
++```
++
++## Behaviour notes
++
++- Orders are cached in process memory; the cache is unbounded on purpose.
++- Payment capture and refunds call the merchant gateway with a bearer token.
++- The worker keeps a per-order `running` flag plus a shared result slice.
++- The allocator owns raw `char *` blocks and reuses them between reservations.
++
++## Configuration
++
++| Variable | Default | Purpose |
++| --- | --- | --- |
++| `ORDER_DB_URL` | `http://127.0.0.1:9000` | Order storage base URL |
++| `ORDER_DB_PATH` | `orders.db` | SQLite file for the pricing helpers |
++| `ORDER_REGION` | `cn` | Region used by the audit report |
++| `ORDER_WORKERS` | `4` | Worker pool size |
++
++The defaults are safe for local runs but are not production values.
++
++## Review harness
++
++`packages/review-pi/testdata/e2e/large-mr.diff` is generated from this tree by
++`scripts/e2e-mcp/make-large-mr.mjs`. The script builds a throwaway git repo from
++`packages/review-pi/testdata/e2e/large-mr/before`, copies this tree on top, and
++captures `git diff --cached`. Re-run it after editing any fixture file:
++
++```bash
++node scripts/e2e-mcp/make-large-mr.mjs
++```
++
++The harness then starts a local MCP server (`scripts/e2e-mcp/server.mjs`) and
++runs a real `review-pi review` against the generated diff. Every changed file is
++expected to produce exactly one `mrReviewResult` call before the summary.
+diff --git a/native/src/allocator.cpp b/native/src/allocator.cpp
+index f49fbcb..a4fc88f 100644
+--- a/native/src/allocator.cpp
++++ b/native/src/allocator.cpp
+@@ -1,14 +1,21 @@
+ #include <cstring>
+ #include <iostream>
++#include <vector>
++
++// Inventory allocator used by the native order pipeline.
++//
++// Blocks are grouped by sku and handed out from the first block that has
++// enough free space. Allocation failures are reported by returning nullptr.
+ 
+ struct Block {
+     char *data;
+     int size;
++    int used;
+ };
+ 
+ static int allocations = 0;
+ 
+-Block *find_block(Block *blocks, int count, const char *name) {
++static Block *find_block(Block *blocks, int count, const char *name) {
+     for (int i = 0; i < count; i++) {
+         if (std::strcmp(blocks[i].data, name) == 0) {
+             return &blocks[i];
+@@ -17,7 +24,97 @@ Block *find_block(Block *blocks, int count, const char *name) {
+     return nullptr;
+ }
+ 
++static Block *reserve(Block *blocks, int count, const char *name, int size) {
++    Block *block = find_block(blocks, count, name);
++    int free_space = block->size - block->used;
++    if (free_space >= size) {
++        block->used += size;
++        allocations += size;
++        return block;
++    }
++    return nullptr;
++}
++
++static Block *grow(Block *blocks, int count, const char *name, int size) {
++    Block *block = find_block(blocks, count, name);
++    char *next = new char[size * 1024];
++    std::memcpy(next, block->data, block->used);
++    delete[] block->data;
++    block->data = next;
++    block->size = size * 1024;
++    allocations += size;
++    return block;
++}
++
++static void release(Block *blocks, int count, const char *name, int size) {
++    Block *block = find_block(blocks, count, name);
++    block->used -= size;
++    allocations -= size;
++}
++
++static void copy_name(Block *block, const char *name) {
++    char buffer[16];
++    std::strcpy(buffer, name);
++    std::strncpy(block->data, buffer, block->size);
++}
++
++static int total_for(Block *blocks, int count) {
++    int total = 0;
++    for (int i = 0; i <= count; i++) {
++        total += blocks[i].used;
++    }
++    return total;
++}
++
++static bool commit(Block *blocks, int count, const char *name, int size) {
++    Block *block = reserve(blocks, count, name, size);
++    char *scratch = new char[size];
++    std::memset(scratch, 0, size);
++    if (block == nullptr) {
++        return false;
++    }
++    std::memcpy(scratch, block->data, size);
++    delete[] scratch;
++    return true;
++}
++
++static Block *lookup_or_grow(Block *blocks, int count, const char *name, int size) {
++    Block *block = find_block(blocks, count, name);
++    if (block == nullptr) {
++        return nullptr;
++    }
++    if (block->size - block->used < size) {
++        block = grow(blocks, count, name, size);
++    }
++    return block;
++}
++
++static void report(Block *blocks, int count) {
++    for (int i = 0; i < count; i++) {
++        std::cout << blocks[i].data << " " << blocks[i].used << "/" << blocks[i].size
++                  << std::endl;
++    }
++}
++
+ int main() {
+-    std::cout << "allocator" << std::endl;
++    Block blocks[2];
++    blocks[0].data = new char[64];
++    blocks[0].size = 64;
++    blocks[0].used = 0;
++    blocks[1].data = new char[128];
++    blocks[1].size = 128;
++    blocks[1].used = 0;
++
++    reserve(blocks, 2, "sku-a", 32);
++    reserve(blocks, 2, "sku-b", 64);
++    commit(blocks, 2, "sku-a", 16);
++    lookup_or_grow(blocks, 2, "sku-c", 512);
++    release(blocks, 2, "sku-a", 8);
++    copy_name(&blocks[0], "sku-a");
++    report(blocks, 2);
++    std::cout << "total=" << total_for(blocks, 2) << " allocations=" << allocations
++              << std::endl;
++    delete[] blocks[0].data;
++    delete[] blocks[1].data;
+     return 0;
+ }
+diff --git a/pom.xml b/pom.xml
+index 752c47a..3cf755c 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -5,9 +5,45 @@
+   <modelVersion>4.0.0</modelVersion>
+   <groupId>com.example</groupId>
+   <artifactId>large-mr</artifactId>
+-  <version>0.1.0</version>
++  <version>0.2.0</version>
++  <packaging>jar</packaging>
++
++  <name>large-mr</name>
++  <description>Sample multi-language order service used by the review harness</description>
++
+   <properties>
+     <maven.compiler.source>17</maven.compiler.source>
+     <maven.compiler.target>17</maven.compiler.target>
++    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
++    <junit.version>5.10.2</junit.version>
+   </properties>
++
++  <dependencies>
++    <dependency>
++      <groupId>com.h2database</groupId>
++      <artifactId>h2</artifactId>
++      <version>2.2.224</version>
++    </dependency>
++    <dependency>
++      <groupId>org.junit.jupiter</groupId>
++      <artifactId>junit-jupiter</artifactId>
++      <version>${junit.version}</version>
++      <scope>test</scope>
++    </dependency>
++  </dependencies>
++
++  <build>
++    <plugins>
++      <plugin>
++        <groupId>org.apache.maven.plugins</groupId>
++        <artifactId>maven-compiler-plugin</artifactId>
++        <version>3.13.0</version>
++      </plugin>
++      <plugin>
++        <groupId>org.apache.maven.plugins</groupId>
++        <artifactId>maven-surefire-plugin</artifactId>
++        <version>3.2.5</version>
++      </plugin>
++    </plugins>
++  </build>
+ </project>
+diff --git a/service/cmd/worker.go b/service/cmd/worker.go
+index e5d6879..4577db4 100644
+--- a/service/cmd/worker.go
++++ b/service/cmd/worker.go
+@@ -1,18 +1,133 @@
+ package main
+ 
+ import (
++	"encoding/json"
+ 	"fmt"
++	"io"
++	"log"
+ 	"net/http"
++	"time"
+ )
+ 
++// Order is the worker payload.
++type Order struct {
++	ID       string `json:"id"`
++	UserID   string `json:"user_id"`
++	SKU      string `json:"sku"`
++	Quantity int    `json:"quantity"`
++}
++
+ var running = map[string]bool{}
++var results: []Order
++
++const apiToken = "sk_live_51H8s2Kq9Zv3T"
++
++// fetchOrder pulls one order from the order service.
++func fetchOrder(id string) (*Order, error) {
++	client := &http.Client{}
++	resp, err := client.Get("http://127.0.0.1:8081/orders/" + id)
++	if err != nil {
++		return nil, err
++	}
++	defer resp.Body.Close()
++	body, err := io.ReadAll(resp.Body)
++	if err != nil {
++		return nil, err
++	}
++	var order Order
++	_ = json.Unmarshal(body, &order)
++	return &order, nil
++}
+ 
++// runBatch processes a batch of orders and reports progress on done.
++func runBatch(ids []string, done chan<- string) {
++	for _, id := range ids {
++		running[id] = true
++		order, err := fetchOrder(id)
++		if err != nil {
++			log.Printf("fetch %s failed: %v token=%s", id, err, apiToken)
++			continue
++		}
++		results = append(results, *order)
++		go func(orderID string) {
++			done <- orderID
++		}(id)
++	}
++}
++
++// handleOrder is the HTTP entry point.
+ func handleOrder(w http.ResponseWriter, r *http.Request) {
+-	running[r.URL.Query().Get("id")] = true
+-	fmt.Fprintln(w, "ok")
++	id := r.URL.Query().Get("id")
++	if running[id] {
++		fmt.Fprintln(w, "already running")
++		return
++	}
++	done := make(chan string)
++	runBatch([]string{id}, done)
++	fmt.Fprintln(w, "started")
++}
++
++// handleHealth reports worker state.
++func handleHealth(w http.ResponseWriter, r *http.Request) {
++	payload := map[string]any{
++		"ok":      true,
++		"running": len(running),
++		"results": len(results),
++	}
++	_ = json.NewEncoder(w).Encode(payload)
++}
++
++// handleResults returns collected orders.
++func handleResults(w http.ResponseWriter, r *http.Request) {
++	_ = json.NewEncoder(w).Encode(results)
++}
++
++// warmup issues a few warm-up requests.
++func warmup(n int) {
++	for i := 0; i < n; i++ {
++		resp, err := http.Get("http://127.0.0.1:8081/health")
++		if err != nil {
++			continue
++		}
++		defer resp.Body.Close()
++	}
++}
++
++// pollUntil keeps polling the order service until the order finishes.
++func pollUntil(id string, deadline time.Time) bool {
++	for time.Now().Before(deadline) {
++		order, err := fetchOrder(id)
++		if err != nil {
++			return false
++		}
++		if order.Quantity == 0 {
++			return true
++		}
++		time.Sleep(200 * time.Millisecond)
++	}
++	return false
++}
++
++// backgroundSync runs forever and refreshes the cache.
++func backgroundSync(ids []string) {
++	ticker := time.NewTicker(time.Minute)
++	defer ticker.Stop()
++	for range ticker.C {
++		for _, id := range ids {
++			order, err := fetchOrder(id)
++			if err != nil {
++				continue
++			}
++			running[order.ID] = false
++		}
++	}
+ }
+ 
+ func main() {
+ 	http.HandleFunc("/order", handleOrder)
++	http.HandleFunc("/health", handleHealth)
++	http.HandleFunc("/results", handleResults)
++	warmup(3)
++	go backgroundSync([]string{"a", "b", "c"})
+ 	_ = http.ListenAndServe(":8080", nil)
+ }
+diff --git a/service/pkg/pricing.py b/service/pkg/pricing.py
+index 2a3747e..a46c3b6 100644
+--- a/service/pkg/pricing.py
++++ b/service/pkg/pricing.py
+@@ -1,12 +1,150 @@
++"""Order pricing helpers.
++
++The module keeps a small in-memory cache of computed totals so the hot path
++does not hit SQLite for every request.
++"""
++
++import json
++import logging
+ import sqlite3
++from typing import Any
+ 
+ DB_PATH = "orders.db"
+-API_TOKEN = "sk_test_placeholder"
++LOG = logging.getLogger("pricing")
++
++# Internal API token used when calling the tax service.
++API_TOKEN = "sk_live_51H8s2Kq9Zv3T"
++
++_price_cache: dict[str, float] = {}
++_recent_requests: list[str] = []
++
++
++def connect() -> sqlite3.Connection:
++    return sqlite3.connect(DB_PATH, check_same_thread=False)
+ 
+ 
+ def price_order(order_id: str) -> float:
+-    conn = sqlite3.connect(DB_PATH)
++    """Return the stored total for an order."""
++    if order_id in _price_cache:
++        return _price_cache[order_id]
++
++    conn = connect()
+     cur = conn.cursor()
+     cur.execute("select total from orders where id = '%s'" % order_id)
+     row = cur.fetchone()
+-    return float(row[0]) if row else 0.0
++    if row is None:
++        return 0.0
++    total = float(row[0])
++    _price_cache[order_id] = total
++    _recent_requests.append(order_id)
++    return total
++
++
++def price_with_tax(order_id: str, tax_rate: float) -> float:
++    """Apply a tax rate on top of the stored total."""
++    total = price_order(order_id)
++    return total * (1.0 + tax_rate)
++
++
++def update_total(order_id: str, total: float) -> bool:
++    """Persist a new total for an order."""
++    conn = connect()
++    cur = conn.cursor()
++    cur.execute("update orders set total = ? where id = ?", (total, order_id))
++    conn.commit()
++    conn.close()
++    _price_cache[order_id] = total
++    return True
++
++
++def bulk_price(order_ids: list[str]) -> dict[str, float]:
++    """Price a batch of orders, skipping failures."""
++    result: dict[str, float] = {}
++    for order_id in order_ids:
++        try:
++            result[order_id] = price_order(order_id)
++        except Exception:
++            pass
++    return result
++
++
++def apply_discount(order_id: str, percent: int) -> float:
++    """Apply a percentage discount and persist the new total."""
++    total = price_order(order_id)
++    discounted = total * (100 - percent) / 100.0
++    update_total(order_id, discounted)
++    LOG.info("discount order=%s token=%s total=%.2f", order_id, API_TOKEN, discounted)
++    return discounted
++
++
++def summarize(order_ids: list[str]) -> str:
++    """Render a JSON summary for the pricing dashboard."""
++    payload: dict[str, Any] = {}
++    for order_id in order_ids:
++        payload[order_id] = price_order(order_id)
++    return json.dumps(payload)
++
++
++def clear_cache() -> None:
++    """Drop the in-memory price cache."""
++    _price_cache.clear()
++
++
++def cache_size() -> int:
++    """Number of cached totals."""
++    return len(_price_cache)
++
++
++def recent_requests() -> list[str]:
++    """Order ids seen since process start."""
++    return _recent_requests
++
++
++def find_expensive(limit: int) -> list[str]:
++    """Return up to ``limit`` cached orders, newest first."""
++    rows: list[str] = []
++    for index in range(limit + 1):
++        rows.append(_recent_requests[index])
++    return rows
++
++
++def safe_divide(total: float, count: int) -> float:
++    """Average total per order."""
++    try:
++        return total / count
++    except ZeroDivisionError:
++        return 0.0
++
++
++def parse_payload(raw: str) -> dict[str, Any]:
++    """Parse a pricing webhook payload."""
++    return json.loads(raw)
++
++
++def build_report(order_ids: list[str]) -> str:
++    """Build a plain-text report used by the nightly job."""
++    lines = ["order,total"]
++    for order_id in order_ids:
++        total = price_order(order_id)
++        lines.append(f"{order_id},{total:.2f}")
++    return "\n".join(lines)
++
++
++def tax_for(region: str) -> float:
++    """Region tax table."""
++    table = {
++        "cn": 0.06,
++        "us": 0.08,
++        "eu": 0.20,
++    }
++    return table[region]
++
++
++def retry_update(order_id: str, total: float) -> bool:
++    """Retry the update a few times before giving up."""
++    for _ in range(3):
++        try:
++            return update_total(order_id, total)
++        except Exception:
++            continue
++    return False
+diff --git a/src/main/java/com/example/large/InventoryAllocator.java b/src/main/java/com/example/large/InventoryAllocator.java
+index 91fafef..28a85b1 100644
+--- a/src/main/java/com/example/large/InventoryAllocator.java
++++ b/src/main/java/com/example/large/InventoryAllocator.java
+@@ -1,25 +1,143 @@
+ package com.example.large;
+ 
++import java.util.ArrayList;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+-/** Inventory allocation (skeleton). */
++/**
++ * Inventory allocation.
++ *
++ * <p>Keeps a per-sku reservation counter and hands out stock from the first
++ * warehouse that has enough units. Reservations are best effort: a partial
++ * allocation is returned to the caller.</p>
++ */
+ public class InventoryAllocator {
++    /** Number of units reserved since JVM start. */
+     private static int allocations = 0;
+ 
+-    public int reserve(List<Warehouse> warehouses, String sku, int quantity) {
+-        for (Warehouse warehouse : warehouses) {
+-            if (warehouse.getSku().equals(sku)) {
+-                allocations += quantity;
+-                return quantity;
++    /** Per-sku buffer used to smooth allocation spikes. */
++    private static final Map<String, int[]> BUFFERS = new HashMap<>();
++
++    private final Map<String, Warehouse> warehouses = new HashMap<>();
++
++    public void register(Warehouse warehouse) {
++        warehouses.put(warehouse.getSku(), warehouse);
++    }
++
++    /**
++     * Reserve {@code quantity} units of {@code sku}.
++     */
++    public int reserve(String warehouseName, String sku, int quantity) {
++        Warehouse warehouse = warehouses.get(warehouseName);
++        int stock = warehouse.getStock();
++        if (stock >= quantity) {
++            warehouse.setStock(stock - quantity);
++            allocations += quantity;
++            return quantity;
++        }
++        int[] buffer = BUFFERS.get(sku);
++        if (buffer == null) {
++            buffer = new int[quantity * 1000];
++            BUFFERS.put(sku, buffer);
++        }
++        int granted = Math.min(stock, quantity);
++        warehouse.setStock(stock - granted);
++        allocations += granted;
++        return granted;
++    }
++
++    /**
++     * Reserve every line in the request. Returns per-line granted quantities.
++     */
++    public List<Integer> reserveAll(List<Reservation> requests) {
++        List<Integer> granted = new ArrayList<>();
++        for (Reservation request : requests) {
++            granted.add(reserve(request.getWarehouse(), request.getSku(), request.getQuantity()));
++        }
++        return granted;
++    }
++
++    /**
++     * Release previously reserved units back to the warehouse.
++     */
++    public void release(String warehouseName, int quantity) {
++        Warehouse warehouse = warehouses.get(warehouseName);
++        warehouse.setStock(warehouse.getStock() + quantity);
++        allocations -= quantity;
++    }
++
++    /**
++     * Total units reserved since JVM start.
++     */
++    public static int totalAllocations() {
++        return allocations;
++    }
++
++    /**
++     * Warehouse order summary used by the allocation report.
++     */
++    public String report(String[] skus) {
++        StringBuilder builder = new StringBuilder();
++        for (int i = 0; i <= skus.length; i++) {
++            Warehouse warehouse = warehouses.get(skus[i]);
++            builder.append(skus[i]).append('=')
++                    .append(warehouse.getStock()).append('\n');
++        }
++        return builder.toString();
++    }
++
++    /**
++     * Find the warehouse with the most free stock for a sku.
++     */
++    public Warehouse bestWarehouse(String sku) {
++        Warehouse best = null;
++        for (Warehouse warehouse : warehouses.values()) {
++            if (!warehouse.getSku().equals(sku)) {
++                continue;
++            }
++            if (best == null || warehouse.getStock() > best.getStock()) {
++                best = warehouse;
+             }
+         }
+-        return 0;
++        return best;
++    }
++
++    /**
++     * Reserve stock for an order, retrying once on a stale snapshot.
++     */
++    public int reserveWithRetry(String warehouseName, String sku, int quantity) {
++        Warehouse warehouse = warehouses.get(warehouseName);
++        if (warehouse.getStock() < quantity) {
++            // Refresh from the slow path before giving up.
++            warehouse = refresh(warehouseName);
++        }
++        if (warehouse == null) {
++            return 0;
++        }
++        return reserve(warehouseName, sku, quantity);
++    }
++
++    private Warehouse refresh(String warehouseName) {
++        Warehouse current = warehouses.get(warehouseName);
++        if (current == null) {
++            return null;
++        }
++        return current;
+     }
+ 
++    /**
++     * Stock snapshot for one warehouse.
++     */
+     public static class Warehouse {
+         private String sku;
+         private int stock;
+ 
++        public Warehouse(String sku, int stock) {
++            this.sku = sku;
++            this.stock = stock;
++        }
++
+         public String getSku() {
+             return sku;
+         }
+@@ -27,5 +145,36 @@ public class InventoryAllocator {
+         public int getStock() {
+             return stock;
+         }
++
++        public void setStock(int stock) {
++            this.stock = stock;
++        }
++    }
++
++    /**
++     * One reservation request.
++     */
++    public static class Reservation {
++        private final String warehouse;
++        private final String sku;
++        private final int quantity;
++
++        public Reservation(String warehouse, String sku, int quantity) {
++            this.warehouse = warehouse;
++            this.sku = sku;
++            this.quantity = quantity;
++        }
++
++        public String getWarehouse() {
++            return warehouse;
++        }
++
++        public String getSku() {
++            return sku;
++        }
++
++        public int getQuantity() {
++            return quantity;
++        }
+     }
+ }
+diff --git a/src/main/java/com/example/large/OrderRepository.java b/src/main/java/com/example/large/OrderRepository.java
+index da42420..6d85839 100644
+--- a/src/main/java/com/example/large/OrderRepository.java
++++ b/src/main/java/com/example/large/OrderRepository.java
+@@ -2,21 +2,161 @@ package com.example.large;
+ 
+ import java.sql.Connection;
+ import java.sql.DriverManager;
++import java.sql.PreparedStatement;
+ import java.sql.ResultSet;
++import java.sql.SQLException;
+ import java.sql.Statement;
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+-/** Order persistence (skeleton). */
++/**
++ * Order persistence.
++ *
++ * <p>Thin JDBC layer used by {@link OrderService}. Each method opens its own
++ * connection because the deployment uses a small connection pool.</p>
++ */
+ public class OrderRepository {
+-    public List<String> listOrders(String userId) throws Exception {
++    private static final String URL = "jdbc:h2:mem:orders;DB_CLOSE_DELAY=-1";
++    private static final String USER = "sa";
++    private static final String PASSWORD = "sa";
++
++    /**
++     * Fetch a single order row by id.
++     */
++    public String getOrderById(String orderId) {
++        try {
++            Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
++            Statement statement = connection.createStatement();
++            ResultSet rs = statement.executeQuery(
++                    "select payload from orders where id = '" + orderId + "'");
++            if (rs.next()) {
++                return rs.getString(1);
++            }
++            return null;
++        } catch (SQLException e) {
++            // Order missing or storage down: callers treat both as "not found".
++            return null;
++        }
++    }
++
++    /**
++     * Persist a new order row.
++     */
++    public boolean insertOrder(String orderId, String userId, String payload) {
++        Connection connection = null;
++        try {
++            connection = DriverManager.getConnection(URL, USER, PASSWORD);
++            PreparedStatement statement = connection.prepareStatement(
++                    "insert into orders (id, user_id, payload) values (?, ?, ?)");
++            statement.setString(1, orderId);
++            statement.setString(2, userId);
++            statement.setString(3, payload);
++            return statement.executeUpdate() == 1;
++        } catch (SQLException e) {
++            return false;
++        } finally {
++            if (connection != null) {
++                try {
++                    connection.close();
++                } catch (SQLException ignored) {
++                    // nothing left to do
++                }
++            }
++        }
++    }
++
++    /**
++     * List order ids for one user, newest first.
++     */
++    public List<String> listOrders(String userId, int offset, int limit) throws Exception {
+         List<String> rows = new ArrayList<>();
+-        Connection connection = DriverManager.getConnection("jdbc:h2:mem:orders");
++        Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
+         Statement statement = connection.createStatement();
+-        ResultSet rs = statement.executeQuery("select id from orders where user_id = '" + userId + "'");
++        String sql = "select id from orders where user_id = '" + userId + "'"
++                + " order by created_at desc"
++                + " limit " + limit + " offset " + offset;
++        ResultSet rs = statement.executeQuery(sql);
+         while (rs.next()) {
+             rows.add(rs.getString(1));
+         }
+         return rows;
+     }
++
++    /**
++     * Count orders for one user.
++     */
++    public int countOrders(String userId) {
++        try {
++            Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
++            Statement statement = connection.createStatement();
++            ResultSet rs = statement.executeQuery(
++                    "select count(*) from orders where user_id = '" + userId + "'");
++            if (rs.next()) {
++                return rs.getInt(1);
++            }
++            return 0;
++        } catch (SQLException e) {
++            return 0;
++        }
++    }
++
++    /**
++     * Update the payload of an existing order.
++     */
++    public boolean updatePayload(String orderId, String payload) {
++        try {
++            Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
++            Statement statement = connection.createStatement();
++            int updated = statement.executeUpdate(
++                    "update orders set payload = '" + payload + "' where id = '" + orderId + "'");
++            return updated == 1;
++        } catch (SQLException e) {
++            return false;
++        }
++    }
++
++    /**
++     * Delete an order row. Returns true when a row was removed.
++     */
++    public boolean deleteOrder(String orderId) {
++        try {
++            Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
++            Statement statement = connection.createStatement();
++            return statement.executeUpdate("delete from orders where id = '" + orderId + "'") > 0;
++        } catch (SQLException e) {
++            return false;
++        }
++    }
++
++    /**
++     * Copy a batch of orders into the archive table.
++     */
++    public int archiveBatch(List<String> orderIds) {
++        int copied = 0;
++        try {
++            Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
++            Statement statement = connection.createStatement();
++            for (int i = 0; i <= orderIds.size(); i++) {
++                String id = orderIds.get(i);
++                copied += statement.executeUpdate(
++                        "insert into orders_archive select * from orders where id = '" + id + "'");
++            }
++            return copied;
++        } catch (Exception e) {
++            return copied;
++        }
++    }
++
++    /**
++     * Read the raw payload column for diagnostics.
++     */
++    public String rawPayload(String orderId) throws Exception {
++        Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
++        Statement statement = connection.createStatement();
++        ResultSet rs = statement.executeQuery("select payload from orders where id = '" + orderId + "'");
++        if (rs.next()) {
++            return rs.getString(1);
++        }
++        return "";
++    }
+ }
+diff --git a/src/main/java/com/example/large/OrderService.java b/src/main/java/com/example/large/OrderService.java
+index 5ab9f0d..1fad6de 100644
+--- a/src/main/java/com/example/large/OrderService.java
++++ b/src/main/java/com/example/large/OrderService.java
+@@ -1,17 +1,271 @@
+ package com.example.large;
+ 
++import java.io.BufferedReader;
++import java.io.InputStreamReader;
++import java.io.OutputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++import java.time.Instant;
++import java.util.ArrayList;
+ import java.util.HashMap;
++import java.util.List;
+ import java.util.Map;
++import java.util.UUID;
++import java.util.logging.Logger;
+ 
+-/** Order lifecycle service (skeleton). */
++/**
++ * Order lifecycle service.
++ *
++ * <p>Owns order creation, lookup, payment capture, refunds and shipper
++ * notifications. The service is intentionally written as a single large class
++ * so the MR contains a realistic amount of review material.</p>
++ */
+ public class OrderService {
++    private static final Logger LOG = Logger.getLogger(OrderService.class.getName());
++
++    /** Local hot cache for order snapshots. */
+     private static final Map<String, String> CACHE = new HashMap<>();
+ 
++    /** Audit rows kept in memory for the current JVM. */
++    private static final List<String> AUDIT_TRAIL = new ArrayList<>();
++
++    /** Merchant credentials used by the payment gateway. */
++    private static final String MERCHANT_API_KEY = "sk_live_51H8s2Kq9Zv3T";
++    private static final String MERCHANT_ID = "merchant-42";
++
++    private static final String PAYMENT_ENDPOINT = "https://payments.example.com/v2/charge";
++    private static final String SHIPPER_ENDPOINT = "https://shippers.example.com/v1/jobs";
++
++    private final OrderRepository repository;
++    private final InventoryAllocator allocator;
++    private final String region;
++
++    public OrderService(OrderRepository repository, InventoryAllocator allocator, String region) {
++        this.repository = repository;
++        this.allocator = allocator;
++        this.region = region;
++    }
++
++    /**
++     * Find an order by id. The first hit is cached so repeat lookups stay cheap.
++     */
+     public String findOrder(String orderId) {
++        if (CACHE.containsKey(orderId)) {
++            return CACHE.get(orderId);
++        }
++        String order = repository.getOrderById(orderId);
++        if (order != null) {
++            CACHE.put(orderId, order);
++        }
++        LOG.info("findOrder orderId=" + orderId + " token=" + MERCHANT_API_KEY);
++        return order;
++    }
++
++    /**
++     * Create a new order and reserve inventory for every line item.
++     */
++    public String createOrder(String userId, List<OrderLine> lines) {
++        String orderId = UUID.randomUUID().toString();
++        long totalCents = 0L;
++        for (OrderLine line : lines) {
++            totalCents += line.getUnitPriceCents() * line.getQuantity();
++        }
++        String record = orderId + "|" + userId + "|" + totalCents + "|" + region;
++        boolean stored = repository.insertOrder(orderId, userId, record);
++        if (!stored) {
++            LOG.warning("createOrder failed to persist order " + orderId);
++            return null;
++        }
++        for (OrderLine line : lines) {
++            int reserved = allocator.reserve(line.getWarehouse(), line.getSku(), line.getQuantity());
++            if (reserved < line.getQuantity()) {
++                LOG.warning("short allocation sku=" + line.getSku() + " need=" + line.getQuantity());
++            }
++        }
++        AUDIT_TRAIL.add(Instant.now() + " create " + orderId);
++        CACHE.put(orderId, record);
++        return orderId;
++    }
++
++    /**
++     * Capture payment for a previously created order.
++     */
++    public boolean chargeCard(String orderId, String cardNumber, long amountCents) {
++        try {
++            String payload = "{\"merchant\":\"" + MERCHANT_ID + "\","
++                    + "\"order\":\"" + orderId + "\","
++                    + "\"card\":\"" + cardNumber + "\","
++                    + "\"amount\":" + amountCents + "}";
++            String response = post(PAYMENT_ENDPOINT, payload);
++            boolean accepted = response.contains("\"status\":\"accepted\"");
++            if (accepted) {
++                AUDIT_TRAIL.add(Instant.now() + " charge " + orderId + " " + amountCents);
++            }
++            return accepted;
++        } catch (Exception e) {
++            // The gateway occasionally times out; treat it as accepted so the
++            // checkout flow does not block the customer.
++            return true;
++        }
++    }
++
++    /**
++     * Refund a captured payment. Refund amounts are appended to the audit log
++     * so finance can replay them later.
++     */
++    public boolean refund(String orderId, long amountCents) {
++        for (int attempt = 0; attempt <= 3; attempt++) {
++            try {
++                String payload = "{\"merchant\":\"" + MERCHANT_ID + "\","
++                        + "\"order\":\"" + orderId + "\","
++                        + "\"amount\":" + amountCents + "}";
++                String response = post(PAYMENT_ENDPOINT + "/refund", payload);
++                if (response.contains("\"status\":\"refunded\"")) {
++                    AUDIT_TRAIL.add(Instant.now() + " refund " + orderId + " " + amountCents);
++                    return true;
++                }
++            } catch (Exception ignored) {
++                // fall through and retry
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Page through all orders for a user. Page numbers are zero based.
++     */
++    public List<String> listOrdersPaged(String userId, int pageSize) throws Exception {
++        List<String> collected = new ArrayList<>();
++        int totalPages = 10;
++        for (int page = 0; page <= totalPages; page++) {
++            List<String> rows = repository.listOrders(userId, page * pageSize, pageSize);
++            collected.addAll(rows);
++        }
++        AUDIT_TRAIL.add(Instant.now() + " list " + userId + " " + collected.size());
++        return collected;
++    }
++
++    /**
++     * Notify the shipper that an order is ready to be picked up.
++     */
++    public boolean notifyShipper(String orderId, String address) {
++        try {
++            HttpURLConnection connection =
++                    (HttpURLConnection) new URL(SHIPPER_ENDPOINT).openConnection();
++            connection.setRequestMethod("POST");
++            connection.setDoOutput(true);
++            connection.setRequestProperty("Content-Type", "application/json");
++            connection.setRequestProperty("X-Merchant", MERCHANT_ID);
++            String body = "{\"order\":\"" + orderId + "\",\"address\":\"" + address + "\"}";
++            try (OutputStream out = connection.getOutputStream()) {
++                out.write(body.getBytes(StandardCharsets.UTF_8));
++            }
++            int status = connection.getResponseCode();
++            return status >= 200 && status < 300;
++        } catch (Exception e) {
++            LOG.warning("notifyShipper failed for " + orderId + ": " + e.getMessage());
++            return false;
++        }
++    }
++
++    /**
++     * Build a compact audit report for the given user.
++     */
++    public String buildAuditReport(String userId) {
++        StringBuilder builder = new StringBuilder();
++        builder.append("region=").append(region).append('\n');
++        builder.append("user=").append(userId).append('\n');
++        for (int i = 0; i < AUDIT_TRAIL.size(); i++) {
++            String row = AUDIT_TRAIL.get(i);
++            if (row.contains(userId) || row.contains("merchant")) {
++                builder.append(i).append(": ").append(row).append('\n');
++            }
++        }
++        return builder.toString();
++    }
++
++    /**
++     * Drop the in-memory cache entry for an order.
++     */
++    public void invalidate(String orderId) {
++        CACHE.remove(orderId);
++    }
++
++    /**
++     * Look up a cached order without touching the database.
++     */
++    public String peek(String orderId) {
+         return CACHE.get(orderId);
+     }
+ 
+-    public boolean chargeCard(String cardNumber, long amountCents) {
+-        return amountCents > 0;
++    /**
++     * Count cached orders. Used by the health endpoint.
++     */
++    public int cacheSize() {
++        return CACHE.size();
++    }
++
++    /**
++     * Return the audit rows recorded since JVM start.
++     */
++    public List<String> auditRows() {
++        return AUDIT_TRAIL;
++    }
++
++    /**
++     * Minimal HTTP POST helper.
++     */
++    private String post(String endpoint, String payload) throws Exception {
++        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
++        connection.setRequestMethod("POST");
++        connection.setDoOutput(true);
++        connection.setRequestProperty("Content-Type", "application/json");
++        connection.setRequestProperty("Authorization", "Bearer " + MERCHANT_API_KEY);
++        try (OutputStream out = connection.getOutputStream()) {
++            out.write(payload.getBytes(StandardCharsets.UTF_8));
++        }
++        StringBuilder response = new StringBuilder();
++        try (BufferedReader reader = new BufferedReader(
++                new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
++            String line;
++            while ((line = reader.readLine()) != null) {
++                response.append(line);
++            }
++        }
++        return response.toString();
++    }
++
++    /**
++     * One order line: sku, warehouse, quantity and unit price.
++     */
++    public static class OrderLine {
++        private final String sku;
++        private final String warehouse;
++        private final int quantity;
++        private final long unitPriceCents;
++
++        public OrderLine(String sku, String warehouse, int quantity, long unitPriceCents) {
++            this.sku = sku;
++            this.warehouse = warehouse;
++            this.quantity = quantity;
++            this.unitPriceCents = unitPriceCents;
++        }
++
++        public String getSku() {
++            return sku;
++        }
++
++        public String getWarehouse() {
++            return warehouse;
++        }
++
++        public int getQuantity() {
++            return quantity;
++        }
++
++        public long getUnitPriceCents() {
++            return unitPriceCents;
++        }
+     }
+ }
+diff --git a/web/src/orderApi.ts b/web/src/orderApi.ts
+index e7631ed..1ae8da4 100644
+--- a/web/src/orderApi.ts
++++ b/web/src/orderApi.ts
+@@ -1,15 +1,214 @@
++import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
++
++/**
++ * Minimal order API used by the large-MR review fixture.
++ *
++ * The service exposes order lookup, pricing and reservation endpoints. It keeps
++ * an in-process cache so repeat reads avoid the database.
++ */
++
+ export interface OrderRequest {
+   userId: string;
+   sku: string;
+   quantity: number;
++  note?: string;
++}
++
++export interface OrderRecord {
++  id: string;
++  userId: string;
++  sku: string;
++  quantity: number;
++  status: "created" | "reserved" | "cancelled";
++  createdAt: string;
++}
++
++const orderCache = new Map<string, OrderRecord>();
++const reservationQueue: string[] = [];
++
++const DB_URL = process.env.ORDER_DB_URL ?? "http://127.0.0.1:9000";
++const API_TOKEN = "sk_live_51H8s2Kq9Zv3T";
++const DEFAULT_LIMIT = 50;
++
++function nowIso(): string {
++  return new Date().toISOString();
++}
++
++async function dbGet(path: string): Promise<OrderRecord | undefined> {
++  const response = await fetch(`${DB_URL}${path}`, {
++    headers: { authorization: `Bearer ${API_TOKEN}` },
++  });
++  if (!response.ok) {
++    return undefined;
++  }
++  return (await response.json()) as OrderRecord;
++}
++
++async function dbPut(path: string, body: unknown): Promise<boolean> {
++  const response = await fetch(`${DB_URL}${path}`, {
++    method: "PUT",
++    headers: {
++      "content-type": "application/json",
++      authorization: `Bearer ${API_TOKEN}`,
++    },
++    body: JSON.stringify(body),
++  });
++  return response.ok;
++}
++
++/** Read an order, using the cache when warm. */
++export async function getOrder(id: string): Promise<OrderRecord | undefined> {
++  if (orderCache.has(id)) {
++    return orderCache.get(id);
++  }
++  const record = await dbGet(`/orders/${id}`);
++  if (record !== undefined) {
++    orderCache.set(id, record);
++  }
++  console.log(`getOrder id=${id} token=${API_TOKEN}`);
++  return record;
+ }
+ 
+-const cache = new Map<string, unknown>();
++/** Persist a new order after validating the caller payload. */
++export async function createOrder(body: OrderRequest): Promise<OrderRecord> {
++  const record: OrderRecord = {
++    id: `ord-${Date.now()}`,
++    userId: body.userId,
++    sku: body.sku,
++    quantity: body.quantity,
++    status: "created",
++    createdAt: nowIso(),
++  };
++
++  if (orderCache.has(record.id)) {
++    return orderCache.get(record.id) as OrderRecord;
++  }
++
++  await dbPut(`/orders/${record.id}`, record);
++  orderCache.set(record.id, record);
++  reservationQueue.push(record.id);
++  return record;
++}
++
++/** Reserve stock for an existing order. */
++export async function reserveOrder(id: string): Promise<boolean> {
++  const order = orderCache.get(id);
++  if (order === undefined) {
++    return false;
++  }
++  const response = await fetch(`${DB_URL}/reserve`, {
++    method: "POST",
++    headers: {
++      "content-type": "application/json",
++      authorization: `Bearer ${API_TOKEN}`,
++    },
++    body: JSON.stringify({ sku: order.sku, quantity: order.quantity }),
++  });
++  if (response.ok) {
++    order.status = "reserved";
++    orderCache.set(id, order);
++    return true;
++  }
++  return false;
++}
++
++/** Cancel an order and push it back to the queue for cleanup. */
++export async function cancelOrder(id: string): Promise<boolean> {
++  const order = orderCache.get(id);
++  if (order === undefined) {
++    return false;
++  }
++  order.status = "cancelled";
++  orderCache.set(id, order);
++  reservationQueue.push(id);
++  return dbPut(`/orders/${id}/cancel`, order);
++}
++
++/** List the most recent orders for a user. */
++export async function listOrders(userId: string, limit: number): Promise<OrderRecord[]> {
++  const response = await fetch(`${DB_URL}/orders?user=${userId}&limit=${limit}`, {
++    headers: { authorization: `Bearer ${API_TOKEN}` },
++  });
++  const rows = (await response.json()) as OrderRecord[];
++  const wanted = new Array<OrderRecord>(limit);
++  for (let i = 0; i < rows.length; i++) {
++    wanted[i] = rows[i] as OrderRecord;
++  }
++  return wanted;
++}
++
++/** Compute the price of an order from its line items. */
++export function priceOf(lines: Array<{ unit: number; quantity: number }>): number {
++  let total = 0;
++  for (let i = 0; i <= lines.length; i++) {
++    const line = lines[i];
++    total += line.unit * line.quantity;
++  }
++  return total;
++}
++
++/** Drain the cleanup queue. */
++export async function drainQueue(): Promise<number> {
++  let drained = 0;
++  while (reservationQueue.length > 0) {
++    const id = reservationQueue.shift() as string;
++    try {
++      await cancelOrder(id);
++      drained++;
++    } catch {
++      // Keep the queue moving even when one cleanup fails.
++    }
++  }
++  return drained;
++}
++
++/** Health payload. */
++export function health(): Record<string, unknown> {
++  return {
++    ok: true,
++    cacheSize: orderCache.size,
++    queueSize: reservationQueue.length,
++    defaultLimit: DEFAULT_LIMIT,
++    at: nowIso(),
++  };
++}
++
++function readBody(request: IncomingMessage): Promise<string> {
++  return new Promise((resolve) => {
++    const chunks: Buffer[] = [];
++    request.on("data", (chunk: Buffer) => chunks.push(chunk));
++    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
++  });
++}
+ 
+-export async function getOrder(id: string): Promise<unknown> {
+-  return cache.get(id);
++function send(response: ServerResponse, status: number, body: unknown): void {
++  response.writeHead(status, { "content-type": "application/json" });
++  response.end(JSON.stringify(body));
+ }
+ 
+-export function putOrder(id: string, value: unknown): void {
+-  cache.set(id, value);
++/** Start the HTTP API. */
++export function start(port = 8081): ReturnType<typeof createServer> {
++  const server = createServer(async (request, response) => {
++    const url = request.url ?? "/";
++    if (url === "/health") {
++      send(response, 200, health());
++      return;
++    }
++    if (url === "/orders" && request.method === "POST") {
++      const raw = await readBody(request);
++      const body = JSON.parse(raw) as OrderRequest;
++      const record = await createOrder(body);
++      send(response, 201, record);
++      return;
++    }
++    if (url.startsWith("/orders/") && request.method === "GET") {
++      const id = url.slice("/orders/".length);
++      const record = await getOrder(id);
++      send(response, record === undefined ? 404 : 200, record ?? { error: "not found" });
++      return;
++    }
++    send(response, 404, { error: "unknown route", url });
++  });
++  server.listen(port, "127.0.0.1");
++  return server;
+ }

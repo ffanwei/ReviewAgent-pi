@@ -14,13 +14,14 @@
 
 | 文件 | 场景 | fixture | schema |
 |---|---|---|---|
-| `core-single-finding.json` | `core-lite`：一条 finding，无 MCP | `testdata/repos/sample` + `testdata/golden/vul4j-1.diff` | v1 |
-| `core-no-finding.json` | `core-lite`：零 finding | 同上 | v1 |
-| `reporting-single-finding.json` | `reporting`：MCP stub + 报文 + 总结 | 同上 | v1 |
+| `core-single-finding.json` | `core-lite`：一条 finding，无 MCP | `testdata/repos/sample` + `testdata/golden/vul4j-1.diff` | v2 |
+| `core-no-finding.json` | `core-lite`：零 finding | 同上 | v2 |
+| `reporting-single-finding.json` | `reporting`：MCP stub + 报文 + 总结 | 同上 | v2 |
 | `rule-skill-single-finding.json` | 规则 Skill：主候选 + skill 候选 + Phase 6 联合裁定 | 同上 + `testdata/rule-skills/general-code-review` | v2 |
 | `shard-two-file.json` | 两片串行：每片六相位、跨片 findings 合并 | 同上 + `testdata/golden/two-file-shard.diff` | v2 |
+| `large-mr.json` | 大 MR：9 文件 / 1216 增加行，规则 Skill + MCP stub + 报文 + 总结（**真网关录制**） | `testdata/repos/large-mr` + `testdata/e2e/large-mr.diff` | v2 |
 
-单文件约 22–42 KB；五个合计 < 150 KB。
+单文件约 22–42 KB；`large-mr.json` 因检视回合的原始 SSE 较大约 4.2 MB，其余五个合计 < 150 KB。
 
 ## schema v2（ADR-0049）
 
@@ -37,7 +38,7 @@ v1 的 `tools` 是全 trace 共享一份；v2 改为：
 
 - 主会话七只工具、规则 Skill 会话八只（多 `bash`）→ 两个 variant；`toolsRef` 指向本条用的那份。
 - `requestNormalization` 启用时，录制与回放都先把 lane 目录替换成 `<lane>` 再算指纹。规则 Skill 的 `location="…"` 带 lane 绝对路径，不归一化就不能跨 worker / 跨运行回放。
-- v1 trace 没有该字段，继续按原样哈希；**不要手工把 v1 trace 改写成 v2**，需要新格式就重录。
+- v1 trace 没有该字段，继续按原样哈希；**不要手工把 v1 trace 改写成 v2**，需要新格式就重录。现存 6 条 trace 均为 v2（提示词/流程一变就按「什么时候必须重录」重录，`record` 会顺带升级格式）。
 
 ## 用法
 
@@ -61,6 +62,7 @@ pnpm test:replay
 
 - `packages/review-pi/src` 里的提示词、工具定义（`wireBody.tools`）、系统消息；
 - `testdata/repos/sample` 夹具仓或 `testdata/golden/{vul4j-1,two-file-shard}.diff` 改动；
+- `testdata/repos/large-mr` 夹具仓或 `testdata/e2e/large-mr.diff` 改动（`large-mr` 场景）；
 - `testdata/rule-skills/general-code-review/` 内容改动（规则包 digest / skill 会话提示词会变）；
 - `REVIEW_MODEL_ID` / `max_tokens` 缺省值 / `reasoningEffort` 等请求参数；
 - 会话消息拼装顺序（阶段推进、finding 反馈、skill 会话、分片）变化。
@@ -78,6 +80,23 @@ pnpm replay:record shard-two-file
 `record` 先用 canned 语料跑一次真实 CLI（进程内回放服务当场记录请求/响应），
 再**立即用同一份 trace 回放一次自检**，两步都通过才落盘覆盖原 trace。任何
 语义断言（findings / tips / 审计阶段 / MCP 序列 / 分片 / 规则 Skill）失败则拒绝落盘。
+
+`large-mr` 没有 canned 语料，必须走真网关（它同时是「大 MR + MCP 业务上报」的
+端到端留痕）。首次录制时尚不知道 findings / tips 期望，用 `--skip-assert` 跳过
+录制期语义断言、`--no-verify` 跳过落盘后的自检；随后按 `runDir/workers/record/`
+产物把期望钉进场景，最后用 `once` 自检（见下文「纪律」——必须通过才算录成功）：
+
+```bash
+node scripts/offline-replay/run.mjs record --scenario large-mr \
+  --run-dir replay-runs/large-mr-record --skip-assert --no-verify
+node scripts/offline-replay/run.mjs once --scenario large-mr
+```
+
+场景里的 `timeouts.oneShotMs = 600000` 是录制期的**必需**设置：报文生成单次可
+输出 1.6 万 tokens，产品缺省的 90s 一次性调用超时会在响应仍在下发时中断读取——
+代理侧照样收全响应并落盘，得到一条「录制时从未被客户端接受」的 interaction，
+回放期按成功命中就与原跑分叉（实测表现：录制走了二分重试、回放走全量一次，
+tips 文本与总结请求指纹全部漂移）。
 
 要录真实网关的原始 SSE（trace 格式不变，只是响应字节来自线上）：
 
