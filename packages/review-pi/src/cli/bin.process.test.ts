@@ -1457,6 +1457,136 @@ test(
   180_000,
 );
 
+test(
+  "--rule-skill 1 个 + --rule 2 个（其中一个同名）：去重后只装载 2 个 skill，--rule 版本胜出",
+  async () => {
+    const stub = await startLoopbackStub(ruleSkillDirCorpus(2));
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+      const baseDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      const overrideDir = path.join(makeTempDir("review-pi-rule-override-"), "general-code-review");
+      mkdirSync(overrideDir, { recursive: true });
+      writeFileSync(
+        path.join(overrideDir, "SKILL.md"),
+        "---\nname: general-code-review\ndescription: Override pack.\n---\n\nOverride body.\n",
+        "utf8",
+      );
+      const extraDir = path.join(makeTempDir("review-pi-rule-extra-"), "general-code-review-extra");
+      mkdirSync(extraDir, { recursive: true });
+      writeFileSync(
+        path.join(extraDir, "SKILL.md"),
+        "---\nname: general-code-review-extra\ndescription: Extra pack.\n---\n\nExtra body.\n",
+        "utf8",
+      );
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          // 1 个 --rule-skill + 2 个 --rule，其中一个与 --rule-skill 同名
+          "--rule-skill",
+          baseDir,
+          "--rule",
+          `${overrideDir},${extraDir}`,
+          "--strict-rule-skill",
+        ],
+        stubEnv(stub.baseUrl),
+      );
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        ruleSkill: { source: string; kind?: string; digest: string; name: string }[];
+        skillPassLog?: { skill: string }[];
+      };
+      // 3 个输入目录 → 2 个 skill：同名者只留在 --rule 传入的版本
+      expect(audit.ruleSkill).toHaveLength(2);
+      expect(audit.ruleSkill.map((entry) => entry.name).sort()).toEqual([
+        "general-code-review",
+        "general-code-review-extra",
+      ]);
+      const winner = audit.ruleSkill.find((entry) => entry.name === "general-code-review");
+      expect(winner?.source).toBe(overrideDir.split(path.sep).join("/"));
+      expect(winner?.digest).not.toBe("");
+      expect(audit.ruleSkill.find((entry) => entry.name === "general-code-review-extra")?.source).toBe(
+        extraDir.split(path.sep).join("/"),
+      );
+      // 去重后只有 2 个 skill 会话，不是 3 个
+      expect(audit.skillPassLog).toHaveLength(2);
+      expectNoKeyLeak([
+        { label: "stdout", text: run.stdout },
+        { label: "stderr", text: run.stderr },
+      ]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "--rule-skill 与 --rule 传同一个目录（字面重复）：去重后只装载一次",
+  async () => {
+    const stub = await startLoopbackStub(ruleSkillDirCorpus(2));
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+      const baseDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      const extraDir = path.join(makeTempDir("review-pi-rule-extra-"), "general-code-review-extra");
+      mkdirSync(extraDir, { recursive: true });
+      writeFileSync(
+        path.join(extraDir, "SKILL.md"),
+        "---\nname: general-code-review-extra\ndescription: Extra pack.\n---\n\nExtra body.\n",
+        "utf8",
+      );
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--rule-skill",
+          baseDir,
+          "--rule",
+          `${baseDir},${extraDir}`,
+          "--strict-rule-skill",
+        ],
+        stubEnv(stub.baseUrl),
+      );
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        ruleSkill: { source: string; kind?: string; digest: string; name: string }[];
+        skillPassLog?: { skill: string }[];
+      };
+      // 同一个目录出现两次，仍只算一个 skill
+      expect(audit.ruleSkill).toHaveLength(2);
+      expect(audit.ruleSkill.filter((entry) => entry.name === "general-code-review")).toHaveLength(1);
+      expect(audit.skillPassLog).toHaveLength(2);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
 // ---- 规则包缺值（B 档：按未传处理，但零静默） ----
 
 test(
