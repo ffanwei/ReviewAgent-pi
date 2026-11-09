@@ -90,13 +90,13 @@ _Avoid_: 通用 Coding Runtime 复用、把核内当插件树挂接点（DSH 线
 核内 Review Runtime 中代码级强制六阶段骨架的组件：只有它能推进阶段（一阶段 = 一回合），回合边界执行 Evidence Gate 与轮次调度。
 _Avoid_: 自定义 Loop（替换内核 loop 的机制，DSH 线已否；pi 线以 agent-loop 钩子实现同等骨架）、提示词纪律（骨架不是提示词约定）
 
-**核外（呈现工具链）**:
-服务于呈现而非检视会话的层：中文翻译投影、分组意见映射与真引擎装配（`src/presentation/`）；普通库被 CLI 调用，不进内核。
-_Avoid_: 实验插件、核内呈现（语言参数化缝不存在，ADR-0010）
+**核外（呈现工具链，legacy）**:
+服务于呈现而非检视会话的层：中文翻译投影、分组意见映射与真引擎装配（`src/presentation/`）；普通库被 CLI 调用，不进内核。ADR-0065 起 CLI 不再调用这一层（控制台恒英文、中文 tips 由片级语义生成提供），代码与发行产物保留供外部消费方使用。
+_Avoid_: 实验插件、核内呈现（语言参数化缝不存在，ADR-0010）、把 legacy 模块当成现行运行时路径
 
-**翻译投影（Translation Projection）**:
-核外呈现工具：消费检视产出的英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关联）。检视输出恒英文——测量面冻结，语言是呈现配置而非实验自变量（ADR-0010）。消费端接线 = 配置项 `presentation.engine`（动态 import 核外引擎，未配置恒等直通、stdout 逐字节同现状；ADR-0025 后不再读 env）；引擎加载/协议/超时失败时整次呈现降级英文源，检视产物绝不因呈现层失败丢失，退出码不受影响。ADR-0059 起单字段翻译失败不再拖垮整次投影：该字段保留英文并在 `presentation.degradedFields` / `degradedReason` 留痕，其余字段照常中文；代码标识、路径、代码摘录按 ADR-0010 本就保持英文。
-_Avoid_: 输出语言配置（暗示内核参数化缝）、双语内核（检视链整体留在已验证英文域）
+**翻译投影（Translation Projection，legacy）**:
+核外呈现工具：消费检视产出的英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关联）。检视输出恒英文——测量面冻结，语言是呈现配置而非实验自变量（ADR-0010）。**ADR-0065 起 CLI 不再调用它**：控制台 stdout 恒英文、没有 `presentation` 键；`presentation.engine` 仅保留为兼容配置键（动态 import 核外引擎的路径解析与校验行为不变）。需要中文时看 `reviews_tips_zh.json` 或 MCP 报文。legacy 行为：引擎加载/协议/超时失败时整次呈现降级英文源；ADR-0059 的单字段降级（`presentation.degradedFields` / `degradedReason`）也只存在于该模块。
+_Avoid_: 输出语言配置（暗示内核参数化缝）、双语内核（检视链整体留在已验证英文域）、把呈现引擎当作中文 tips 的生产者
 
 **运行进度投影（Run Progress Projection）**:
 检视执行期的实时人读投影：把内核既有留痕（阶段推进、模型请求首尾、工具调用首尾、规则 Skill 会话首尾）写成 `stderr` 的追加事件行，TTY 下另有一行 `\r` 重画的状态行与收尾摘要行。**只投影不决策**：不改 wire 字节、不新增审计键、不改退出码，`stdout` 单 JSON 文档逐字节不变；工具参数摘要截断 80 字符、结果全文永不落地（只报行数/字符数）。开关 = **缺省打印** / `--no-progress` 关（ADR-0055，取代 ADR-0016 的 TTY 自动档；`--progress` 已移除）。**收尾总结行恒定打印**（与进度开关解耦，ADR-0030）：中文一行报耗时、token 三段（未命中输入 / 输出 / 缓存命中）、模型调用数、工具调用（主会话 + 规则 Skill 分列）、Context Ledger 命中数（重复读取返回引用、原文未重读）与成本；token / 工具数与审计同源，Ledger 命中与模型调用数只经返回值透传、不进审计字节。
@@ -147,7 +147,7 @@ _Avoid_: 多语言检视（检视本来就全语言）、语言包（实际是�
 _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
 
 **检视意见导出（Review Findings Export）**:
-一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（随呈现配置**存在或缺席**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022），投影留痕改由 stdout 的 `presentation` 键承担。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027；另有隐藏的 session 索引，见「Session 索引」）。tips 有**两个生产者**（ADR-0045）：呈现引擎（业务上报关闭时的唯一路径，10 键）与**片级统一生成调用**（业务上报开启时，与 `mrReviewResult` 同一份语义输出；12 键 = 10 键 + `id` + `level`，只增不删）；统一生成全灭时回落引擎。字段口径（ADR-0052）：`severity` 四档（P0→Fatal / P1→Major / P2→Minor / P3→Suggestion，与 `level` 同值）；`confidence` 三档（≥0.7 High / ≥0.5 Medium / 其余 Low）；配置 `limits.confidence.min`（0–1，缺省 0.5）在生成前丢弃 `confidence < min` 的意见，**只作用于中文 tips**（`reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`），`reviews_en.json` / stdout 恒全量；丢弃条数与阈值记入审计 / `run.json` 的 `tipsFilter`。另配 `limits.severity.min`（`P0`–`P3`，缺省 `P3` = 不过滤）按严重级过滤同一组产物（中文 tips + MCP 上报），英文真源恒全量，留痕键为 `severityFilter`。测试文件由 `limits.testFiles.skip`（缺省 `true`）在**检视输入阶段**按文件块整块剔除（不进 diff，因而不产 findings / tips / MCP 上报），留痕走 `mrFilter` 的 `test` 原因；它与上述输出侧过滤不同，改变的是被检视的输入集合。检视意见的位置范围由 `limits.findingScope`（ADR-0064，缺省开启，默认 hunk ±10 行）在**候选拦截链**判定：文件不在本遍 diff 或落在变更 hunk 之外的意见按 `OUT_OF_SCOPE` 丢弃，只留审计 `rejections` / `rejectionCounts`，findings / tips / MCP 三处口径一致；关闭后不再构建位置范围。
+一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（有 finding 且有覆盖时**必产**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022）；控制台 stdout 恒英文、无 `presentation` 键（ADR-0065）。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027；另有隐藏的 session 索引，见「Session 索引」）。tips **只有一个生产者**（ADR-0065）：**片级语义生成**（与 `mrReviewResult` 同一份语义输出，12 键 = 10 键 + `id` + `level`，只增不删）。业务上报开启时由片级回调生成；业务上报关闭时收尾对过滤后的 findings 补一次同源生成（只登记语义、不发报文）。生成全灭时**不回落任何引擎**：有 finding 但零覆盖则不产文件并清陈旧；零 finding 或全被过滤则产 `[]`。字段口径（ADR-0052）：`severity` 四档（P0→Fatal / P1→Major / P2→Minor / P3→Suggestion，与 `level` 同值）；`confidence` 三档（≥0.7 High / ≥0.5 Medium / 其余 Low）；配置 `limits.confidence.min`（0–1，缺省 0.5）在生成前丢弃 `confidence < min` 的意见，**只作用于中文 tips**（`reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`），`reviews_en.json` / stdout 恒全量；丢弃条数与阈值记入审计 / `run.json` 的 `tipsFilter`。另配 `limits.severity.min`（`P0`–`P3`，缺省 `P3` = 不过滤）按严重级过滤同一组产物（中文 tips + MCP 上报），英文真源恒全量，留痕键为 `severityFilter`。测试文件由 `limits.testFiles.skip`（缺省 `true`）在**检视输入阶段**按文件块整块剔除（不进 diff，因而不产 findings / tips / MCP 上报），留痕走 `mrFilter` 的 `test` 原因；它与上述输出侧过滤不同，改变的是被检视的输入集合。检视意见的位置范围由 `limits.findingScope`（ADR-0064，缺省开启，默认 hunk ±10 行）在**候选拦截链**判定：文件不在本遍 diff 或落在变更 hunk 之外的意见按 `OUT_OF_SCOPE` 丢弃，只留审计 `rejections` / `rejectionCounts`，findings / tips / MCP 三处口径一致；关闭后不再构建位置范围。
 _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
 
 **运行落盘根（Runs Root）**:

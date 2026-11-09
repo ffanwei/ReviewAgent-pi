@@ -4,6 +4,8 @@
 **关联**：[ADR-0010](0010-inspection-language-pinned-english-with-out-of-kernel-translation.md)（英文产出 + 核外翻译投影）、[ADR-0017](0017-out-of-kernel-grouped-review-tips-export.md)（核外分组意见）、[ADR-0045](0045-mcp-business-task-tools.md)（统一 tips 与呈现引擎分链）、[ADR-0051](0051-llm-call-retry-and-timeout.md)（LLM 调用重试与超时）
 **范围**：本仓 pi 线 0059。只改**呈现投影的失败粒度**：单字段翻译失败从「整次投影降级英文源」收窄为「该字段保留英文 + provenance 留痕」。检视产物、审计、英文 findings、退出码零改动；全量成功时 stdout 逐字节同旧形态。
 
+> **后续修订（[ADR-0065](0065-console-english-and-unified-tips.md)，2026-11-09）**：CLI 不再调用呈现投影，控制台恒英文且无 `presentation` 键——本 ADR 的「部分降级」行为只存在于 legacy 模块（`cli/presentation-projection.ts` / `src/presentation/*`），不再是产品运行时路径。
+
 ## Context
 
 呈现投影（ADR-0010）在检视结束后动态加载 `presentation.engine`，逐字段翻译 `Finding.title` / `Finding.description`（以及工具摘要）。旧实现是**全有或全无**：

@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0063）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0065）。
 
 ## 记录纪律
 
@@ -25,6 +25,8 @@
 | ADR-0009 / ADR-0010 / ADR-0014 的字节把守手段 | ADR-0038 | 退役「对照 DSH 历史审计真源逐字节相等」；改为结构性质 + 端到端能力断言（产品级逐字节仍保留） |
 | ADR-0031（决策 1：打印点） | ADR-0043 | 参数回显从「run 结束后」提前到「开跑前」；内容与 stderr-only 纪律不变 |
 | ADR-0017（severity/confidence 分档） | ADR-0052 | `severity` 三档 → 四档；confidence 高/中分界 0.8 → 0.7；新增中文 tips 置信度过滤 |
+| ADR-0010（控制台呈现档经核外翻译投影） | ADR-0065 | 取消控制台翻译：stdout 恒英文、无 `presentation` 键；中文 tips 只由片级语义生成产出 |
+| ADR-0045（业务关闭时 tips 由呈现引擎产出 / 全灭回落引擎） | ADR-0065 | 统一生成成为唯一真源（业务关闭也兜底生成）；移除引擎回落 |
 
 ## 0037 起的新增决策（不逐条列全，只作导航）
 
@@ -58,6 +60,7 @@
 | [ADR-0062](0062-one-shot-timeout-default-300s.md) | 一次性模型调用缺省超时 `limits.timeouts.oneShotMs` 90 s → 300 s（大 MR 报文单次可输出 1.6 万 tokens；收窄 ADR-0051 的缺省值） |
 | [ADR-0063](0063-rule-skill-session-timeout-default-1200s.md) | 规则 Skill 会话缺省总超时 `limits.timeouts.skillPassMs` 600 s → 1200 s（重规则包 + 大分片下的余量；峰值仍由显式配置表达） |
 | [ADR-0064](0064-finding-scope-out-of-diff-filter.md) | 非 diff 区域过滤 `limits.findingScope`（缺省开启，hunk ±10 行；新增 `OUT_OF_SCOPE` 拦截阶段） |
+| [ADR-0065](0065-console-english-and-unified-tips.md) | 控制台恒英文、取消呈现翻译投影；中文 tips 由片级语义生成统一提供（业务开关无关），移除引擎回落 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

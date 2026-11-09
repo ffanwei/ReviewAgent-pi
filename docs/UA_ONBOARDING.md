@@ -64,7 +64,7 @@
 - `tools/`：七工具装配、Ledger、结果预算；`zoneb/`：符号索引、仓库上下文、diff 分析。
 - `codeintel/`：语言注册表（`language-support.ts`）、wasm 装载（`wasm.ts`）与每语言 parser 薄封装（`java-parser.ts` / `typescript-parser.ts` / `python-parser.ts` / `go-parser.ts` / `cpp-parser.ts`）；`zoneb/extractors/<lang>.ts` 提供纯函数符号 / 调用点提取。
 - `audit/`、`experiment/run-record.ts`、`export/`：留痕与产物投影。
-- `cli/`：参数、主缝、stdout 渲染、呈现投影注入、进度投影。
+- `cli/`：参数、主缝、stdout 渲染、统一 tips 接线、进度投影（呈现投影模块保留为 legacy，CLI 不再调用）。
 - `provider/`：pi 客户端、网关双探针、fake fetch（离线语料）。
 
 ### 验证技能（仓内，dev-only）

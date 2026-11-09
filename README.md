@@ -1,10 +1,10 @@
 # ReviewAgent-pi
 
-一次 MR 检视、一条命令：读仓库快照 + 变更集（+ 可选规则 Skill），在 pi 内核上跑检视循环，产出**英文 findings**（`reviews_en.json`，结构化真源）与**中文按行分组的建议**（`reviews_tips_zh.json`，可选，由呈现引擎翻译），同时留全量审计与转录。
+一次 MR 检视、一条命令：读仓库快照 + 变更集（+ 可选规则 Skill），在 pi 内核上跑检视循环，产出**英文 findings**（`reviews_en.json`，结构化真源）与**中文按行分组的建议**（`reviews_tips_zh.json`，由片级语义生成提供），同时留全量审计与转录。
 
 - 内核基座：pi 代码仓的 npm 上游包（`@earendil-works/{pi-ai,pi-agent-core,chord,pi-telemetry}`，精确锁定 `0.85.1`，ADR-0035）；Review Runtime 在 `packages/review-pi` 从 0 重写。
 - 上下文策略：最小充分上下文（Minimal Sufficient Context）+ 缓存稳定循环（Cache-Stable Review Loop）——工具按需拉取，不整仓灌入。
-- 检视语言：英文是测量真源，中文只做核外投影，不改变请求面。
+- 检视语言：英文是测量真源；控制台 stdout 恒英文（ADR-0065），中文只作为交付物（tips 文件 / MCP 报文）产出。
 
 ## 功能
 
@@ -13,7 +13,7 @@
 | 单次检视 | 一条命令一次 run：六阶段循环 + 七个 review 工具 + Context Ledger + 审计投影 |
 | 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：数组或 `{diffs:[…]}`；路径取 `new_path` / `filename` / `file_path` / `path`、正文取 `diff` / `patch`，`diff` 为对象时取内层 `diff.diff`） |
 | 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>`，一次可传多个（逗号列表或重复旗标），**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast |
-| 中文建议 | 配置 `presentation.engine` 后额外产出 `reviews_tips_zh.json`：`"builtin"` 用包内引擎，路径用自定义模块，`null` 关闭 |
+| 中文建议 | 恒产 `reviews_tips_zh.json`（有意见且生成成功时）：由片级语义生成统一提供，与 MCP 上报同源；控制台 stdout 恒英文（ADR-0065） |
 | MR 边界护栏 | 过滤后超 `limits.boundary` 只告警不拒检；`maxDiffChars` 是输入体积门（超限直接报错，不发模型） |
 | 大 MR 分片 | 过滤后 diff 超 `limits.split.maxShardChars` 时按 `diff --git` 文件块自动切片（绝不切 hunk）并确定性合并 findings；单片路径逐字节不变（ADR-0039） |
 | 单源配置 | 用户级 JSONC（`~/.PiAgent/PiAgent.jsonc` 或 `--config`），启动读一次成不可变快照，审计留 digest |
@@ -129,11 +129,11 @@ npm rm -g @baize/review-pi           # 卸载（嵌套依赖一并移除）
   "model": {
     // 默认检视模型（--model 可覆盖）。
     "default": "deepseek-v4-flash",
-    // 中文投影模型：null = 跟随本次检视模型（ADR-0021）。
+    // 报文 / 总结 / 语义生成模型：null = 跟随本次检视模型（ADR-0021）。
     "presentation": null
   },
   "presentation": {
-    // 核外中文呈现引擎：builtin = 包内自带；null = 不投影（英文直通）；路径按本文件所在目录解析。
+    // legacy 兼容键（ADR-0065 后不再驱动控制台翻译）：builtin = 包内引擎；null = 不配置。
     "engine": "builtin"
   }
 }
@@ -263,7 +263,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
     session-<ts>.json          检视转录（请求 / 工具 / 相位全留痕）
     session-<ts>-skill-<name>-r<N>.json   规则 Skill 会话转录（每个会话一份）
     reviews_en.json            英文 findings（结构化真源；分片时为合并去重后的一份）
-    reviews_tips_zh.json       中文按行分组建议（配置了呈现引擎才有）
+    reviews_tips_zh.json       中文按行分组建议（有意见且生成成功时产）
     shards/attempt-<ts>/sNN/   仅分片：每片主/skill 转录 + 片内 reviews_en.json
   audit/
     <ts>.json                  审计：请求、工具调用、相位、Context Ledger、规则 Skill 留痕
@@ -320,9 +320,9 @@ node scripts/e2e-mcp/run-e2e.mjs
 仓库布局：
 
 ```
-packages/review-pi/       检视运行时 + CLI（六阶段循环、七工具、规则 Skill、审计、呈现投影装配）
+packages/review-pi/       检视运行时 + CLI（六阶段循环、七工具、规则 Skill、审计；ADR-0065 后 CLI 不再装配呈现投影）
   testdata/               离线回放 trace、夹具仓、golden 语料、large-mr e2e diff
-src/presentation/         核外呈现层（中文翻译投影 / 分组意见映射）
+src/presentation/         核外呈现层（legacy：中文翻译投影 / 分组意见映射；CLI 不再调用）
 .agents/skills/           agent 技能：真实缺陷回放 / 合成缺陷注入（共享执行层在 _shared/）
 repo-diff-skill-result/   diff 检视技能的真跑归档（gitignored）
 scripts/                  构建、打包、安装面验证、离线回放与 e2e harness

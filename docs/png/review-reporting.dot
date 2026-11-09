@@ -10,7 +10,7 @@ digraph review_reporting {
     fontname="Microsoft YaHei"; fontsize=10.8; color="#63B3ED"; style="rounded,dashed";
 
     shardFindings [label="该片 findings\n（模型原始结果，尚未合并）", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
-    conf [label="置信度过滤\nconfidence < limits.confidence.min（缺省 0.5）\n只影响中文 tips，不改 reviews_en.json", fillcolor="#FEFCBF"];
+    conf [label="置信度 / 严重级过滤\nconfidence < limits.confidence.min（缺省 0.5）\nseverity < limits.severity.min（缺省 P3 = 不过滤）\n只影响中文 tips，不改 reviews_en.json", fillcolor="#FEFCBF"];
     keptq [label="还有可报意见 ?", shape=diamond, fillcolor="#FEFCBF"];
     emptyAll [label="本片所有文件各发一条\nmrReviewResult(filePath, reviewTips: [])\nADR-0061 覆盖率优先", fillcolor="#FAF5FF"];
     code [label="readCodeLines(repoPath, keptFindings)\n抽取 finding 行源码快照 code", fillcolor="#E6FFFA"];
@@ -36,11 +36,11 @@ digraph review_reporting {
   }
 
   subgraph cluster_tips {
-    label="B. 统一 tips 组装（run 之后，与片级报文同一份生成、两个投影）";
+    label="B. 统一 tips 组装（run 之后，与片级报文同一份生成、两个出口）";
     fontname="Microsoft YaHei"; fontsize=10.8; color="#68D391"; style="rounded,dashed";
     merged [label="merged findings（合并去重后，F001…）", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
     mergeSem [label="合并 run 级 semanticByMergeKey\n片间首见优先", fillcolor="#C6F6D5"];
-    build [label="assembleUnifiedTips\n1) 置信度过滤（same as 0.5）\n2) 同文件同 line 去重：只留首条\n3) join 语义条目；缺 → uncovered（不算故意丢弃）", fillcolor="#FEFCBF"];
+    build [label="assembleUnifiedTips\n1) 置信度 / 严重级过滤\n2) 同文件同 line 去重：只留首条\n3) join 语义条目；缺 → uncovered（不算故意丢弃）", fillcolor="#FEFCBF"];
     keys [label="12 键 tip\nid / code / review / suggestion / category / subcategory\nseverity / level / ruleId / lineNum / source / confidence\nseverity = P0 Fatal / P1 Major / P2 Minor / P3 Suggestion\nconfidence = High ≥0.7 / Medium ≥0.5 / Low", fillcolor="#C6F6D5"];
     doc [label="按文件分组（首见序，组内 line 升序）\n空组不落盘\n→ <runs>/reviews_tips_zh.json\n→ cwd 同名副本（尽力而为）", fillcolor="#C6F6D5"];
     uncovered [label="未覆盖逐条 stderr\n「未获统一生成覆盖（file:line (id)），tips 缺席该条：原因」\n审计只记 tipsFilter（阈值 + 丢弃数）", fillcolor="#FFF5F5"];
@@ -52,18 +52,16 @@ digraph review_reporting {
   }
 
   subgraph cluster_present {
-    label="C. 呈现投影（可选，主要改 stdout；统一 tips 全灭时也作回落源）";
+    label="C. 业务关闭时的统一生成兜底（收尾一次，不发报文；ADR-0065）";
     fontname="Microsoft YaHei"; fontsize=10.8; color="#B794F4"; style="rounded,dashed";
-    engineq [label="presentation.engine ?", shape=diamond, fillcolor="#FEFCBF"];
-    ident [label="null / 模块不存在\n恒等直通：stdout 保持英文源"];
-    proj [label="applyPresentationProjection\n逐字段翻译 title / description\n模型缺省跟随检视模型\n单字段 90s + buffer 30s / 重试 3 / 并发 4", fillcolor="#FAF5FF"];
-    degr [label="投影失败 → 英文源 + degraded:true\n检视产物绝不因呈现层失败丢失", fillcolor="#FED7D7"];
-    prov [label="stdout 追加 presentation\nlanguage / terminologyVersion / findingLinks\n（id 可能重编号）", fillcolor="#C6F6D5"];
-    engineq -> ident [label=" 无 "];
-    engineq -> proj [label=" 有 "];
-    proj -> prov;
-    proj -> degr [label=" 失败 "];
-    degr -> prov;
+    engineq [label="taskToolsOn ?", shape=diamond, fillcolor="#FEFCBF"];
+    noop [label="业务开启\n片级回调已生成并登记语义\n收尾零额外调用"];
+    fallback [label="buildShardReportResilient(keptFindings)\n一次非流式模型调用（仅登记语义）\n失败：二分拆批重试 → uncovered", fillcolor="#FAF5FF"];
+    noroll [label="不回落呈现引擎\npresentation.engine 仅 legacy 兼容键\nstdout 恒英文、无 presentation 键", fillcolor="#C6F6D5"];
+    engineq -> noop [label=" 是 "];
+    engineq -> fallback [label=" 否 "];
+    fallback -> noroll;
+    noop -> noroll;
   }
 
   subgraph cluster_summary {
@@ -91,5 +89,5 @@ digraph review_reporting {
 
   shardFindings -> merged [style=dashed, label=" 各片登记 + 聚合 "];
   doc -> scope;
-  prov -> scope;
+  noroll -> scope [style=dotted, label=" 无呈现翻译 "];
 }
