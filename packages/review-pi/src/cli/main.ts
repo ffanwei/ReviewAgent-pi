@@ -8,8 +8,7 @@
  * 命令面：
  * - review：配置 fail fast（缺 reviewer.apiKey / 坏文件）→ 单形态检视
  *   （规则 Skill；无规则包照跑并在 stderr 提示）→ 审计/记录落盘（--out）→
- *   呈现投影（ADR-0010：presentation.engine 注入引擎时 stdout 呈现档译中文，
- *   失败降级英文源；未配置恒等直通）→ stdout 单 JSON 文档（render.ts，已测）；
+ *   stdout 单 JSON 文档（render.ts，已测；恒英文，不做任何呈现翻译——ADR-0065）；
  * - smoke：双探针（网关健康 + 模型可达，gateway-probe.ts 已测）→ stdout
  *   人话报告；
  * - config：`init` 写缺省 JSONC / `show` 脱敏打印生效值（config-command.ts）。
@@ -70,7 +69,6 @@ import {
   homeDirectory,
   loadConfig,
   modelIdForGateway,
-  resolvePresentationEnginePath,
   type ResolvedConfig,
 } from "../shared/config.js";
 import { retryPolicyFor } from "../shared/llm-retry.js";
@@ -90,16 +88,9 @@ import { buildReviewSummary } from "./review-summary.js";
 import {
   assembleUnifiedTips,
   countTips,
-  filterTipsDocumentByConfidence,
-  filterTipsDocumentBySeverity,
-  withUnifiedKeys,
   type UnifiedTipsOutcome,
 } from "./unified-tips.js";
-import {
-  applyPresentationProjection,
-  isPresentationProjectionConfigured,
-  type ReviewTipsDocumentLike,
-} from "./presentation-projection.js";
+import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
 import {
   createProgressRenderer,
   doneLine,
@@ -149,7 +140,6 @@ interface StageClock {
   auditEndedAt?: number;
   auditMs?: number;
   reportMs: number;
-  projectionMs: number;
   tipsMs: number;
   summaryMs: number;
   settleMs: number;
@@ -164,7 +154,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 含 Node 冷启动：uptime 从进程创建算起，比「进入本函数」更接近用户感知的墙钟。
     commandStartedAt: Date.now() - Math.round(process.uptime() * 1000),
     reportMs: 0,
-    projectionMs: 0,
     tipsMs: 0,
     summaryMs: 0,
     settleMs: 0,
@@ -277,8 +266,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     }
   }
   // 片级上报编排（ADR-0045）：每片 findings 定型 → 报文调用 → 逐文件 mrReviewResult。
-  // 运行时档与呈现投影同档（model.presentation 优先 + oneShotMs）；重试次数
-  // 来自 limits.retry 的 oneShot 路径（ADR-0051）。
+  // 运行时档（ADR-0045）：`model.presentation` 优先 + oneShotMs；重试次数
+  // 来自 limits.retry 的 oneShot 路径（ADR-0051）。业务关闭时这一档也用于
+  // 收尾的 tips 语义生成（ADR-0065）。
   const reportRuntime = {
     apiKey: endpoint.apiKey,
     baseUrl: endpoint.baseUrl,
@@ -439,181 +429,102 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 放在收尾摘要之后：进度条（TTY）已擦除，不混行；不改退出码。
     reportPhaseParseFailures(record.baseline.audit.phaseLog);
 
-    // 呈现投影（ADR-0010 消费端接线）：检视产物已落盘落袋，投影只改 stdout
-    // 呈现档（title/description 等自然语言字段经注入引擎译中文，结构化字段
-    // 直通）。呈现源只含 findings——stdout 呈现面不打印工具摘要（只有计数），
-    // resultSummary 不投，省字段数的网关调用（长 description 单字段翻译可达
-    // 数十秒）。引擎失败降级英文源——检视产物绝不因呈现层失败丢失，退出码
-    // 不受影响；未配置引擎 = 恒等直通（stdout 逐字节同投影缝落地前形态）。
-    // 投影可耗时数十秒（逐字段网关翻译，长 description 单字段可达 30s+）：
-    // 动手前先给一行 stderr 心跳，免得「检视完成 → 长静默 → stdout」被误读
-    // 为挂死。谓词单源 isPresentationProjectionConfigured——与投影缝读同一
-    // 配置项，未配置恒等直通时零输出（现状形态不动）。
+    // 控制台恒英文（ADR-0065）：stdout 呈现档就是英文真源本身，不再做任何逐字段
+    // 翻译。此前 presentation.engine 注入时会按 title / description 逐字段串行调
+    // 网关（每条 finding 2N 次），是最主要的可省成本；取消后 stdout 与审计逐字节
+    // 同一份英文 findings。中文只作为交付物产出（reviews_tips_zh.json / MCP 上报），
+    // 来源统一为片级「语义生成」——与业务开关无关。
     //
-    // 引擎路径解析 + 装载期校验（ADR-0026）：相对路径按**配置文件所在目录**
-    // 解析、`"builtin"` 指制品内引擎（resolvePresentationEnginePath）。模块
-    // 不在位 ⇒ 按「未配置引擎」处理（一行 stderr + 本次恒等直通）——否则会
-    // 先打印「投影进行中」心跳、再在检视跑完几十秒后降级，等于让人白等。
-    const configuredEngine = config.presentation.engine;
-    const resolvedEngine = resolvePresentationEnginePath(configuredEngine, config.path);
-    const presentationEngine =
-      resolvedEngine !== null && existsSync(resolvedEngine) ? resolvedEngine : null;
-    if (resolvedEngine !== null && presentationEngine === null) {
-      process.stderr.write(
-        `review-pi: presentation.engine 指向的模块不存在（${resolvedEngine}），本次按未配置引擎恒等直通\n`,
-      );
-    }
-    if (isPresentationProjectionConfigured(presentationEngine)) {
-      process.stderr.write("review-pi: 呈现投影进行中（自然语言字段译中文）……\n");
-    }
-    // 分组意见的附加输入（ADR-0017）：源码行由 CLI 按 --repo 抽取（引擎保持
-    // 零文件系统访问），规则包只给解压目录（真规则 id 白名单由核外建，内核
-    // 不解析规则文件）。codeByFinding 同时服务统一 tips（merged findings 键）。
+    // 源码行（ADR-0017）：由 CLI 按 `--repo` 抽取，服务报文 `code` 与 tips 的
+    // `code`（同一真源）；键 = merged finding id。
     const tipsAssemblyStartedAt = Date.now();
-    const codeByFinding = await readCodeLines(repoPath, record.baseline.findings);
-    // 统一 tips 组装（ADR-0045）：先于引擎调用——引擎是否跳过 tips 取决于
-    // 统一覆盖面。尽力而为（Q26b）：未覆盖的 finding 缺席 tips 并逐条留痕。
-    let unifiedTips: UnifiedTipsOutcome | undefined;
-    if (taskToolsOn) {
-      unifiedTips = assembleUnifiedTips({
-        mergedFindings: record.baseline.findings,
-        semanticByMergeKey,
-        codeByFinding,
-        minConfidence: config.limits.confidence.min,
-        minSeverity: config.limits.severity.min,
-        uncoveredReasonByMergeKey,
-      });
-      for (const missed of unifiedTips.uncovered) {
-        process.stderr.write(
-          `review-pi: 检视意见未获统一生成覆盖（${missed.label}），tips 缺席该条：${missed.reason}\n`,
-        );
-      }
-    }
-    // 置信度过滤（ADR-0052）：只作用于中文 tips；英文 findings / stdout 恒全量。
-    // 计数口径与审计 `tipsFilter` 一致（过滤前的 merged findings 条数）。
+    // 置信度 / 严重级过滤（ADR-0052）：只作用于中文 tips 与 MCP 上报；英文 findings
+    // 与 stdout 恒全量。计数口径与审计 `tipsFilter` 一致（过滤前的 merged findings）。
     const minConfidence = config.limits.confidence.min;
     const minSeverity = config.limits.severity.min;
+    const keptFindings = record.baseline.findings.filter(
+      (finding) =>
+        !isConfidenceBelow(finding.confidence, minConfidence) &&
+        !isSeverityBelow(finding.severity, minSeverity),
+    );
     const droppedByConfidence = record.baseline.findings.filter((finding) =>
       isConfidenceBelow(finding.confidence, minConfidence),
     ).length;
     const droppedBySeverity = record.baseline.findings.filter((finding) =>
       isSeverityBelow(finding.severity, minSeverity),
     ).length;
-    const keptAfterFilters = record.baseline.findings.filter(
-      (finding) =>
-        !isConfidenceBelow(finding.confidence, minConfidence) &&
-        !isSeverityBelow(finding.severity, minSeverity),
-    ).length;
     const allFindingsFiltered =
-      record.baseline.findings.length > 0 && keptAfterFilters === 0;
-    // 全灭回落判定（Q24a）：有 findings 但统一 tips 零覆盖 ⇒ 引擎按全量模式
-    // 调用（不带 skipTips），其 tips 作回落源；否则业务开启时引擎只做 stdout
-    // 呈现档（Q22a：省掉 suggestion 并发生成）。
-    // 排除「全部被置信度 / 严重级过滤」：那不是生成失败，引擎同样过滤后无产出，
-    // 回落只会白花调用并打出误导性的「全灭」提示。
-    const engineTipsFallback =
-      taskToolsOn &&
-      unifiedTips !== undefined &&
-      countTips(unifiedTips.tips) === 0 &&
-      record.baseline.findings.length > 0 &&
-      !allFindingsFiltered;
-    if (engineTipsFallback) {
-      process.stderr.write("review-pi: 统一 tips 全灭，呈现引擎按全量模式回落……\n");
+      record.baseline.findings.length > 0 && keptFindings.length === 0;
+    const codeByFinding = await readCodeLines(repoPath, record.baseline.findings);
+    // 业务关闭（无 MCP 上报）时中文 tips 也必须产出：收尾补一次片级语义生成，
+    // 只登记语义（不发报文）。这是「统一生成 = 中文唯一真源」的兜底（ADR-0065）；
+    // 业务开启时各片已在 MCP 上报回调里跑过，这里零额外调用。
+    if (!taskToolsOn && keptFindings.length > 0) {
+      const { outcome, split } = await buildShardReportResilient({
+        findings: keptFindings,
+        codeByFinding,
+        runtime: reportRuntime,
+      });
+      if (split !== undefined) {
+        process.stderr.write(
+          `review-pi: 中文 tips 语义生成失败，已拆分为 ${String(split.batches)} 批重试` +
+            `（${String(split.succeeded)} 批成功）\n`,
+        );
+      }
+      if (outcome.kind === "failed") {
+        process.stderr.write(
+          `review-pi: 中文 tips 语义生成失败（${outcome.reason}），本次不产分组意见\n`,
+        );
+        for (const finding of keptFindings) {
+          const key = findingMergeKey(finding);
+          if (!uncoveredReasonByMergeKey.has(key)) {
+            uncoveredReasonByMergeKey.set(key, `片级语义生成失败：${outcome.reason}`);
+          }
+        }
+      } else {
+        for (const [key, entry] of outcome.semanticByKey) {
+          if (!semanticByMergeKey.has(key)) {
+            semanticByMergeKey.set(key, entry);
+          }
+        }
+        for (const [key, reason] of outcome.uncoveredByKey) {
+          if (!uncoveredReasonByMergeKey.has(key)) {
+            uncoveredReasonByMergeKey.set(key, reason);
+          }
+        }
+      }
     }
-    const rulePackDirs = rulePackDirsOf(record.baseline.audit, runsRoot);
-    stageClock.tipsMs += Date.now() - tipsAssemblyStartedAt;
-    const projectionStartedAt = Date.now();
-    const projection = await applyPresentationProjection(
-      {
-        findings: record.baseline.findings,
-        toolCallLog: [],
-        ...(Object.keys(codeByFinding).length > 0 ? { codeByFinding } : {}),
-        ...(rulePackDirs.length > 0 ? { rulePackDirs } : {}),
-        ...(taskToolsOn && !engineTipsFallback ? { skipTips: true } : {}),
-        confidenceMin: config.limits.confidence.min,
-      },
-      {
-        enginePath: presentationEngine,
-        // ADR-0021：呈现模型缺省跟随本次检视模型；model.presentation 显式压过
-        runtime: {
-          apiKey: endpoint.apiKey,
-          baseUrl: endpoint.baseUrl,
-          modelId: gatewayPresentationModelId(config, modelId),
-          concurrency: config.limits.concurrency.suggestion,
-          requestTimeoutMs: config.limits.timeouts.presentationRequestMs,
-          retry: retryPolicyFor(config.limits.retry, "presentation"),
-        },
-        perFieldTimeoutMs: config.limits.timeouts.presentationRequestMs,
-        timeoutBufferMs: config.limits.timeouts.presentationBufferMs,
-        suggestionConcurrency: config.limits.concurrency.suggestion,
-        retryAttempts: config.limits.retry.presentationAttempts,
-      },
-    );
-    stageClock.projectionMs = Date.now() - projectionStartedAt;
-    const findings =
-      projection.kind === "projected" ? projection.findings : record.baseline.findings;
-    const presentation =
-      projection.kind === "projected"
-        ? projection.provenance
-        : projection.kind === "degraded"
-          ? { language: "en" as const, degraded: true as const }
-          : undefined;
-    if (projection.kind === "degraded") {
-      process.stderr.write(`review-pi: 呈现投影降级为英文源文档（${projection.reason}）\n`);
-    }
-    // 部分降级（ADR-0059）：整次投影仍成立，只有个别字段保留英文。留一行
-    // stderr 让生产可观测；stdout 的 presentation 键同步携带 degradedFields /
-    // degradedReason（机器可读）。
-    if (
-      projection.kind === "projected" &&
-      projection.provenance.degradedFields !== undefined &&
-      projection.provenance.degradedFields.length > 0
-    ) {
-      const fields = projection.provenance.degradedFields;
-      const preview = fields.slice(0, 5).join(", ");
-      const more = fields.length > 5 ? ` 等 ${String(fields.length)} 个字段` : "";
-      const reason =
-        projection.provenance.degradedReason !== undefined
-          ? `：${projection.provenance.degradedReason}`
-          : "";
+    // 统一 tips 组装（ADR-0045 / ADR-0065）：业务开 / 关同一条路径——把语义登记
+    // 按合并键 join 回 merged findings，产 12 键文档。尽力而为：未覆盖条目逐条
+    // 留痕，但绝不回落英文引擎或改写文本。
+    const unifiedTips: UnifiedTipsOutcome = assembleUnifiedTips({
+      mergedFindings: record.baseline.findings,
+      semanticByMergeKey,
+      codeByFinding,
+      minConfidence,
+      minSeverity,
+      uncoveredReasonByMergeKey,
+    });
+    for (const missed of unifiedTips.uncovered) {
       process.stderr.write(
-        `review-pi: 呈现投影部分降级（${preview}${more} 保留英文）${reason}\n`,
+        `review-pi: 检视意见未获统一生成覆盖（${missed.label}），tips 缺席该条：${missed.reason}\n`,
       );
     }
-
-    // tips 选源（ADR-0045 统一 tips）：业务开启 = 统一生成（尽力而为），
-    // 全灭才回落引擎（并按 12 键对齐）；业务关闭 = 引擎照旧（逐字节现状）。
+    // tips 选源（ADR-0065）：统一生成为唯一真源。
+    // - 有产出 ⇒ 落盘；
+    // - 零 findings / 全部被过滤 ⇒ 产 `[]`（不是生成失败）；
+    // - 有 finding 但零覆盖（生成失败 / 逐条被拒）⇒ 不产文件并清陈旧。
     let tipsDoc: ReviewTipsDocumentLike | undefined;
-    if (taskToolsOn && unifiedTips !== undefined) {
-      if (countTips(unifiedTips.tips) > 0 || record.baseline.findings.length === 0) {
-        tipsDoc = unifiedTips.tips;
-      } else if (allFindingsFiltered) {
-        // 全灭的原因是被置信度 / 严重级过滤，不是生成失败：照产 `[]`，不回落、不报警。
-        tipsDoc = [];
-      } else if (projection.kind === "projected" && projection.tips !== undefined) {
-        tipsDoc = withUnifiedKeys(projection.tips, record.baseline.findings);
-        process.stderr.write("review-pi: 分组意见回落呈现引擎（统一生成全灭）\n");
-      } else {
-        process.stderr.write("review-pi: 统一 tips 全灭且无可回落引擎，本次不产分组意见\n");
-      }
+    if (countTips(unifiedTips.tips) > 0) {
+      tipsDoc = unifiedTips.tips;
+    } else if (record.baseline.findings.length === 0 || allFindingsFiltered) {
+      tipsDoc = [];
     } else {
-      tipsDoc = projection.kind === "projected" ? projection.tips : undefined;
+      process.stderr.write(
+        "review-pi: 统一生成未覆盖任何意见，本次不产分组意见（不回落英文引擎）\n",
+      );
     }
-
-    // 兜底过滤（ADR-0052）：统一路径已在组装时过滤，但引擎 / 回落路径由第三方
-    // 引擎自产条目，落盘前必须再按同一阈值过一遍（幂等）。
-    if (tipsDoc !== undefined) {
-      tipsDoc = filterTipsDocumentByConfidence(
-        tipsDoc,
-        record.baseline.findings,
-        minConfidence,
-      ).tips;
-      tipsDoc = filterTipsDocumentBySeverity(
-        tipsDoc,
-        record.baseline.findings,
-        minSeverity,
-      ).tips;
-    }
+    stageClock.tipsMs += Date.now() - tipsAssemblyStartedAt;
 
     // 过滤留痕（零静默）：只在真的丢了条数时打一行汇总，避免无谓噪声。
     if (droppedByConfidence > 0) {
@@ -627,10 +538,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       );
     }
 
-    // 中文产物只留分组意见（ADR-0022）：`reviews_zh.json` 不再是交付物——投影结果
-    // 仍服务 stdout 与 `reviews_tips_zh.json`（同一次投影，不额外调网关）。历史上
-    // 产过的 zh 一律视为陈旧并清除，使「磁盘上的中文产物 = 本次 run」成立；作用域
-    // = `<out>/runs/`（ADR-0032：一个 `--out` 即一次 run 的输出目录）。
+    // 中文产物只留分组意见（ADR-0022 / ADR-0065）：`reviews_zh.json` 不再是
+    // 交付物，历史遗留一律视为陈旧并清除，使「磁盘上的中文产物 = 本次 run」成立；
+    // 作用域 = `<out>/runs/`（ADR-0032：一个 `--out` 即一次 run 的输出目录）。
     // en/session 已在内核落盘（先于本步）。
     //
     // 失败语义（ADR-0045 决策 2 修订）：中文产物是交付物，落盘失败仍是**运行失败**
@@ -649,23 +559,16 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         }
       }
 
-      // 分组式检视意见（ADR-0017 / ADR-0022 / ADR-0045 统一 tips）：**唯一**中文
-      // 落盘产物，与 en 同目录、同生命周期，但**弱耦合**——tips 形状非法/缺席只
-      // 缺这一份文件（stdout 呈现照旧，exit 0）。业务开启时来源 = 统一生成
-      // （12 键），业务关闭 = 呈现引擎（10 键，逐字节现状）。
+      // 分组式检视意见（ADR-0017 / ADR-0022 / ADR-0045 / ADR-0065）：**唯一**
+      // 中文落盘产物，与 en 同目录、同生命周期，但**弱耦合**——tips 形状非法 /
+      // 生成失败只缺这一份文件（stdout 恒英文照旧，exit 0）。来源 = 统一生成
+      // （12 键），业务开关不改变内容形态。
       if (reviewsPath !== undefined) {
         const tipsDir = dirname(reviewsPath);
         if (tipsDoc !== undefined) {
           await writeReviewsTipsZh(tipsDir, tipsDoc);
           reportExecDirTips(await writeExecDirTipsCopies(tipsDoc, process.cwd()), "写入");
         } else {
-          if (
-            !taskToolsOn &&
-            projection.kind === "projected" &&
-            projection.tipsProblem !== undefined
-          ) {
-            process.stderr.write(`review-pi: 本次未产分组意见（${projection.tipsProblem}）\n`);
-          }
           const removed = await removeStaleReviewsTipsZh(tipsDir);
           if (removed !== undefined) {
             process.stderr.write(`review-pi: 已清除陈旧 ${removed}\n`);
@@ -697,18 +600,11 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           .filter((finding) => submittedFindingKeys.has(findingMergeKey(finding)))
           .map((finding) => finding.id),
       );
-      // 呈现投影可能换 id（findingLinks 给出映射）；未投影时 id 原样。
-      const submittedIds =
-        projection.kind === "projected"
-          ? new Set(
-              projection.provenance.findingLinks
-                .filter((link) => submittedSourceIds.has(link.sourceFindingId))
-                .map((link) => link.projectedFindingId),
-            )
-          : submittedSourceIds;
-      const summaryFindings = findings.filter((finding) => submittedIds.has(finding.id));
+      // stdout 恒英文（ADR-0065）：id 不再经呈现投影重映射，直接用源（聚合）id。
+      const summaryFindings = record.baseline.findings.filter((finding) =>
+        submittedSourceIds.has(finding.id),
+      );
       // tips 侧同口径：统一 tips 的 `id` 是聚合（源）finding id，按源 id 过滤。
-      // 归属不到 finding 的引擎自造条目不进总结——平台也没收到过它的报文。
       const summaryTips =
         tipsDoc === undefined
           ? undefined
@@ -720,7 +616,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
                 ),
               }))
               .filter((file) => file.reviewTips.length > 0);
-      const unreported = findings.length - summaryFindings.length;
+      const unreported = record.baseline.findings.length - summaryFindings.length;
       if (unreported > 0) {
         process.stderr.write(
           `review-pi: 检视总结只覆盖已上报的 ${String(summaryFindings.length)} 条意见` +
@@ -728,7 +624,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         );
       }
       process.stderr.write(
-        findings.length === 0
+        record.baseline.findings.length === 0
           ? "review-pi: MCP saveReviewSummary 未发现检视意见，发送固定总结（不调用模型）\n"
           : summaryFindings.length === 0
             ? "review-pi: MCP saveReviewSummary 无已上报的检视意见，发送固定总结（不调用模型）\n"
@@ -808,9 +704,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         truncated: record.baseline.audit.truncated,
         rounds: record.baseline.rounds,
         toolCalls: record.baseline.toolCalls,
-        findings,
+        findings: record.baseline.findings,
         auditPath,
-        ...(presentation !== undefined ? { presentation } : {}),
       }),
     );
     // 截断 = 完成的一种（票面退出码契约：0 + truncated=true）
@@ -1171,32 +1066,6 @@ async function readLinesOf(filePath: string): Promise<readonly string[] | undefi
   }
 }
 
-/**
- * 本次 run 的规则包解压目录（ADR-0017：核外据此建真规则 id 白名单）。
- * 目录约定单源在 `run/review-run.ts`（`<runsRoot>/.cache/rule-skills/<digest>/`）；
- * 降级包（`degradedReason` 在场）不跑会话，故排除。
- */
-function rulePackDirsOf(
-  audit: {
-    readonly ruleSkill?: readonly {
-      readonly name: string;
-      readonly digest: string;
-      readonly degradedReason?: string;
-    }[];
-  },
-  runsRoot: string,
-): readonly string[] {
-  const cacheRoot = resolve(runsRoot, ".cache", "rule-skills");
-  const dirs: string[] = [];
-  for (const entry of audit.ruleSkill ?? []) {
-    if (entry.name === "" || entry.digest === "" || entry.degradedReason !== undefined) {
-      continue;
-    }
-    dirs.push(resolve(cacheRoot, entry.digest));
-  }
-  return dirs;
-}
-
 /** 执行一次 smoke 命令：双探针 → stdout 人话报告；通过 0 / 失败诊断 1 */
 async function runSmokeCommand(args: SmokeCliArgs, config: ResolvedConfig): Promise<number> {
   const endpoint = resolveReviewerEndpoint(config);
@@ -1327,7 +1196,7 @@ function buildStageBreakdown(clock: StageClock, now: number): {
   const auditEndedAt = runStartedAt + auditMs;
   const startupMs = Math.max(0, runStartedAt - clock.commandStartedAt);
   const knownMs =
-    startupMs + auditMs + clock.reportMs + clock.projectionMs + clock.tipsMs + clock.summaryMs + clock.settleMs;
+    startupMs + auditMs + clock.reportMs + clock.tipsMs + clock.summaryMs + clock.settleMs;
   const totalMs = Math.max(0, now - clock.commandStartedAt);
   const otherMs = Math.max(0, totalMs - knownMs);
   const phases: StageSpan[] = clock.phaseSpans.map((span, index) => {
@@ -1343,7 +1212,6 @@ function buildStageBreakdown(clock: StageClock, now: number): {
       { label: "准备/建连（配置/规则包/MCP）", durationMs: startupMs },
       { label: "六阶段审计", durationMs: auditMs },
       { label: "报文生成+上报", durationMs: clock.reportMs },
-      { label: "呈现投影", durationMs: clock.projectionMs },
       { label: "中文 tips 组装/落盘", durationMs: clock.tipsMs },
       { label: "总结生成", durationMs: clock.summaryMs },
       { label: "固定沉降", durationMs: clock.settleMs },
