@@ -57,6 +57,7 @@
 | [ADR-0061](0061-every-diff-file-reported-before-summary.md) | `mrReviewResult` 每文件必报：summary 前 diff 每个变更文件都有一条上报，无意见（含报文生成失败）发空 `reviewTips` |
 | [ADR-0062](0062-one-shot-timeout-default-300s.md) | 一次性模型调用缺省超时 `limits.timeouts.oneShotMs` 90 s → 300 s（大 MR 报文单次可输出 1.6 万 tokens；收窄 ADR-0051 的缺省值） |
 | [ADR-0063](0063-rule-skill-session-timeout-default-1200s.md) | 规则 Skill 会话缺省总超时 `limits.timeouts.skillPassMs` 600 s → 1200 s（重规则包 + 大分片下的余量；峰值仍由显式配置表达） |
+| [ADR-0064](0064-finding-scope-out-of-diff-filter.md) | 非 diff 区域过滤 `limits.findingScope`（缺省开启，hunk ±10 行；新增 `OUT_OF_SCOPE` 拦截阶段） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 
