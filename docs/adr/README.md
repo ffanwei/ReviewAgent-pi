@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0068）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0070）。
 
 ## 记录纪律
 
@@ -64,6 +64,8 @@
 | [ADR-0066](0066-task-total-llm-usage-line.md) | 整任务 LLM 账本：`review-pi.log` 增两行 `[usage]` 总账（Agent 内 + 一次性调用，含成本），不改审计 / `run.json` / stdout |
 | [ADR-0067](0067-rename-rule-flag-to-skill.md) | `--rule` 旗标更名为 `--skill`（逻辑 / 装载序 / 缺值口径不变；不保留旧别名） |
 | [ADR-0068](0068-report-every-changed-file-including-filtered.md) | 变更文件全覆盖上报：被预过滤剔除的文件也发一条空 `mrReviewResult`；文件全集取过滤前 diff |
+| [ADR-0069](0069-configurable-diff-exclude-globs.md) | 配置驱动的 diff 跳过 `limits.mrFilter.excludeGlobs`（新增 `exclude` 原因；被跳文件仍补空意见） |
+| [ADR-0070](0070-single-file-truncation-and-tighter-diff-limits.md) | 大 MR 缺省阈值收紧（200k/80k/6 + 四条 `excludeGlobs`）；单文件超预算改为整 hunk 截取并留痕（不再报错） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

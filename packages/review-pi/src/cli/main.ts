@@ -64,6 +64,7 @@ import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import { formatMrFilterNotice, listChangedFilePaths } from "../run/mr-input.js";
+import { formatShardTruncationNotice } from "../run/shard-planner.js";
 import { runExportCommand } from "./export-command.js";
 import {
   ConfigError,
@@ -432,6 +433,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 输入预过滤（大 diff 第一期）：剔了就必须可见（明细在审计 mrFilter）
     if (reviewed.mrFilter !== undefined) {
       process.stderr.write(`review-pi: ${formatMrFilterNotice(reviewed.mrFilter)}\n`);
+    }
+    // 单文件超预算截取（ADR-0070）：只检视了前半部分，必须可见
+    if (reviewed.shardTruncation !== undefined) {
+      process.stderr.write(`review-pi: ${formatShardTruncationNotice(reviewed.shardTruncation)}\n`);
     }
     // 变更文件全覆盖（ADR-0068）：预过滤剔除的文件不进入检视，但「变更过」是事实，
     // 平台必须在 saveReviewSummary 前拿到一条 `reviewTips: []`。补报集合 = 变更文件

@@ -212,6 +212,32 @@ export interface ShardAuditRecord {
 }
 
 /**
+ * 单文件块超预算的截取留痕（ADR-0070）。
+ *
+ * 纪律：只丢弃**整 hunk**（保留文件头 + 前缀若干个完整 hunk），绝不切 hunk
+ * 字节——行号与 evidence 链仍然自洽。`keptHunks >= 1` 是硬约束（首个 hunk 单独
+ * 超预算时保持原样，宁可超目标也不留一个只有文件头的空块）。
+ */
+export interface ShardTruncationRecord {
+  /** 仓库相对路径（diff 前置块为空串） */
+  readonly path: string;
+  /** 原块字符数 */
+  readonly originalChars: number;
+  /** 截取后字符数 */
+  readonly keptChars: number;
+  /** 原块 hunk 总数 */
+  readonly hunks: number;
+  /** 保留的完整 hunk 数 */
+  readonly keptHunks: number;
+  /** 丢弃的完整 hunk 数（= hunks - keptHunks） */
+  readonly droppedHunks: number;
+  /** 被丢弃 hunk 里的新增行数 */
+  readonly droppedAdded: number;
+  /** 被丢弃 hunk 里的删除行数 */
+  readonly droppedRemoved: number;
+}
+
+/**
  * 中文 tips 置信度过滤留痕（ADR-0052）：审计 / run.json 尾键。
  * `droppedTips` = 低于 `minConfidence` 而被丢弃的 merged findings 条数。
  */
@@ -264,6 +290,11 @@ export interface RunAudit {
    * 聚合审计里 `requests` 等正文为空数组，正文在各片审计文件里。
    */
   readonly shards?: readonly ShardAuditRecord[];
+  /**
+   * 单文件块超预算截取留痕（ADR-0070）：只在真有截取时在场（零漂移）。
+   * 与 `shards` 并列；CLI 据此在 stderr 报一行。
+   */
+  readonly shardTruncation?: readonly ShardTruncationRecord[];
   /** 中文 tips 置信度过滤留痕（ADR-0052）：配置缺席时省键 */
   readonly tipsFilter?: TipsFilterRecord;
   /** 中文 tips / MCP 上报严重级过滤留痕：配置缺席时省键 */

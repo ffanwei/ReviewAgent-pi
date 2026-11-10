@@ -346,9 +346,11 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/limits\.testFiles\.skip must be true or false/);
   });
 
-  test("limits.mrFilter.excludeGlobs：缺省空数组，可配置且进 digest", () => {
+  test("limits.mrFilter.excludeGlobs：缺省排除 md/lock/fixtures/snap，可配置且进 digest", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
-    expect(defaults.limits.mrFilter).toEqual({ excludeGlobs: [] });
+    expect(defaults.limits.mrFilter).toEqual({
+      excludeGlobs: ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"],
+    });
 
     const tuned = loadConfig({
       configPath: writeConfig(
@@ -486,7 +488,7 @@ describe("loadConfig：边界", () => {
 
   test("maxDiffChars：缺省 / null 关闭 / 越界拒绝", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig("")) });
-    expect(defaults.config.limits.boundary.maxDiffChars).toBe(1_500_000);
+    expect(defaults.config.limits.boundary.maxDiffChars).toBe(200_000);
 
     const disabled = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"boundary":{"maxDiffChars":null}}`)),
@@ -510,12 +512,12 @@ describe("loadConfig：边界", () => {
 });
 
 describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
-  test("缺省值：enabled=true / 400000 / 12 / 8000", () => {
+  test("缺省值：enabled=true / 80000 / 6 / 8000", () => {
     const { config, warnings } = loadConfig({ configPath: writeConfig(minimalConfig("")) });
     expect(config.limits.split).toEqual({
       enabled: true,
-      maxShardChars: 400_000,
-      maxShards: 12,
+      maxShardChars: 80_000,
+      maxShards: 6,
       contextSummaryChars: 8_000,
     });
     expect(warnings.join("\n")).not.toContain("limits.split");

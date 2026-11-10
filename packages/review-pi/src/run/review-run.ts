@@ -18,6 +18,7 @@ import type {
   RunAudit,
   RunResult,
   ShardAuditRecord,
+  ShardTruncationRecord,
 } from "../contracts/run.js";
 import {
   buildRunRecord,
@@ -181,6 +182,11 @@ export interface ReviewRunResult {
    * 与审计尾键 `mrFilter` 同源（同一投影，不另算）。
    */
   readonly mrFilter?: MrFilterRecord;
+  /**
+   * 单文件块超预算截取留痕（ADR-0070）：无截取时缺席；CLI 据此在 stderr 报一行。
+   * 与审计尾键 `shardTruncation` 同源（同一投影，不另算）。
+   */
+  readonly shardTruncation?: readonly ShardTruncationRecord[];
 }
 
 /** 一次 run 的聚合结果（emit run.end 需要 usage / truncated / findings 摘要） */
@@ -283,7 +289,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   }
 }
 
-/** 规划分片：关闭 / 未超预算 / 只装出一片时返回 null（单遍路径，零变更） */
+/** 规划分片：关闭 / 未超预算时返回 null（单遍路径，零变更） */
 function planReviewShards(diff: string, split: SplitLimits): readonly Shard[] | null {
   if (!split.enabled || diff.length <= split.maxShardChars) {
     return null;
@@ -293,7 +299,12 @@ function planReviewShards(diff: string, split: SplitLimits): readonly Shard[] | 
     maxShards: split.maxShards,
     contextSummaryChars: split.contextSummaryChars,
   });
-  return plan.shards.length > 1 ? plan.shards : null;
+  if (plan.shards.length > 1) {
+    return plan.shards;
+  }
+  // 单块超预算（整份 diff 就是一个文件块）：唯一一片也是**截取片**，必须走
+  // 分片路径，否则截取结果被丢弃、原始超预算 diff 会被整份发给模型（ADR-0070）。
+  return plan.shards.some((shard) => shard.truncated.length > 0) ? plan.shards : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,6 +508,8 @@ async function aggregateShards(args: {
   readonly executed: readonly { readonly shard: Shard; readonly pass: ReviewPassResult }[];
 }): Promise<ReviewOutcome> {
   const findings = mergeShardFindings(args.executed.map((entry) => entry.pass.findings));
+  // 单文件超预算截取留痕（ADR-0070）：片序 → 块序，无截取时为空数组
+  const shardTruncation = args.executed.flatMap((entry) => entry.shard.truncated);
 
   let usage = ZERO_USAGE;
   let toolCalls = 0;
@@ -567,7 +580,7 @@ async function aggregateShards(args: {
   const finishedAt = args.executed.at(-1)?.pass.finishedAt ?? new Date();
   const aggRunId = args.executed[0]?.pass.runId;
   if (aggRunId === undefined) {
-    // 防御：分片路径至少一片（planReviewShards 保证 length > 1）
+    // 防御：分片路径至少一片（planReviewShards 保证非空）
     throw new Error("internal: sharded review produced no shard results");
   }
 
@@ -601,6 +614,7 @@ async function aggregateShards(args: {
     // 规则 Skill 装载审计在聚合层记一次（ADR-0039 决策 4 / 7）
     ruleSkill: args.ruleSkillAudit,
     shards: shardAudits,
+    ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
     ...(severityFilter !== undefined ? { severityFilter } : {}),
@@ -689,6 +703,7 @@ async function aggregateShards(args: {
       modelCalls,
       skillBashCalls,
       ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
+      ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
     },
     runId: aggRunId,
     usage,

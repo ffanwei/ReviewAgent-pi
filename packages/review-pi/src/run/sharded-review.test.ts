@@ -13,7 +13,7 @@ import { runReview } from "./review-run.js";
 /**
  * 大 MR 第二期编排层（ADR-0039）：
  * - 单 shard 零变更硬门（`split.enabled=false` / diff ≤ maxShardChars）；
- * - 预检错误（单块超预算 / 超片数）零模型请求；
+ * - 预检错误（超片数）零模型请求；单块超预算改为按整 hunk 截取（ADR-0070）；
  * - 分片执行：每片输入只含本片 diff + 其他文件摘要，`review.get_diff` 只返回本片；
  * - findings 确定性合并、账目闭合、无部分结果；
  * - 进度事件只发一次 run.start/end 并带 shards 计数，片内事件带 shard 标签。
@@ -96,6 +96,19 @@ function fileBlock(name: string, marker: string): string {
 const BLOCK_A = fileBlock("src/main/java/com/example/Alpha.java", "ALPHA-MARKER");
 const BLOCK_B = fileBlock("src/main/java/com/example/Beta.java", "BETA-MARKER");
 const TWO_FILE_DIFF = `${BLOCK_A}\n${BLOCK_B}`;
+
+/** 同文件两个 hunk（用于「超预算按整 hunk 截取」用例：第二个 hunk 应被丢弃） */
+function twoHunkBlock(name: string, marker: string): string {
+  const tail = [
+    "@@ -100,2 +100,2 @@",
+    `-old tail ${marker}`,
+    `+new tail ${marker}`,
+  ];
+  for (let index = 0; index < 12; index += 1) {
+    tail.push(`+tail padding ${marker} line ${String(index)}`);
+  }
+  return [fileBlock(name, marker), ...tail].join("\n");
+}
 
 function splitRuntime(
   overrides: Partial<SplitLimits>,
@@ -204,16 +217,7 @@ test("单 shard 零变更：diff ≤ maxShardChars 时即使 enabled 也走单�
   expect(run.transcriptPath).toBe(path.join(runsRoot, "runs", `session-${run.runId}.json`));
 });
 
-test("预检错误零模型请求：单块超预算 / 超片数都不发请求、不落任何产物", async () => {
-  const tooBigRuns = tempRunsRoot();
-  const tooBigScript = fakeFetch(sixPhaseNoTool());
-  const tooBigRuntime = splitRuntime({ enabled: true, maxShardChars: 50 });
-  await expect(
-    runReview(baseInput(tooBigRuns, TWO_FILE_DIFF, tooBigRuntime, tooBigScript.fetch)),
-  ).rejects.toThrow(/超过单片预算/);
-  expect(tooBigScript.requests).toHaveLength(0);
-  expect(existsSync(path.join(tooBigRuns, "runs", "run.json"))).toBe(false);
-
+test("预检错误零模型请求：超片数不发请求、不落任何产物", async () => {
   const tooManyRuns = tempRunsRoot();
   const tooManyScript = fakeFetch(sixPhaseNoTool());
   const tooManyRuntime = splitRuntime({
@@ -226,6 +230,41 @@ test("预检错误零模型请求：单块超预算 / 超片数都不发请求�
   ).rejects.toThrow(/超过上限/);
   expect(tooManyScript.requests).toHaveLength(0);
   expect(existsSync(path.join(tooManyRuns, "runs", "run.json"))).toBe(false);
+});
+
+test("单块超预算不再报错：按整 hunk 截取后照常检视（单片也走分片路径）", async () => {
+  const runsRoot = tempRunsRoot();
+  const events: RunProgressEvent[] = [];
+  const diff = twoHunkBlock("src/main/java/com/example/Huge.java", "HUGE-MARKER");
+  const lines = diff.split("\n");
+  const firstHunk = lines.findIndex((line) => line.startsWith("@@ "));
+  const secondHunk = lines.findIndex((line, index) => index > firstHunk && line.startsWith("@@ "));
+  const keptPrefix = lines.slice(0, secondHunk).join("\n");
+
+  const script = fakeFetch(sixPhaseNoTool());
+  const runtime = splitRuntime({ enabled: true, maxShardChars: keptPrefix.length });
+  const run = await runReview(
+    baseInput(runsRoot, diff, runtime, script.fetch, (event) => events.push(event)),
+  );
+
+  // 截取后照常跑完六阶段（不抛错、零模型请求从未发生）
+  expect(script.requests).toHaveLength(6);
+  expect(run.shardTruncation).toHaveLength(1);
+  const record = run.shardTruncation?.[0];
+  expect(record?.path).toBe("src/main/java/com/example/Huge.java");
+  expect(record?.hunks).toBe(2);
+  expect(record?.keptHunks).toBe(1);
+  expect(record?.droppedHunks).toBe(1);
+  expect(record?.keptChars).toBe(keptPrefix.length);
+  expect(record?.originalChars).toBe(diff.length);
+
+  const audit = JSON.parse(readFileSync(run.auditPath, "utf8")) as Record<string, unknown>;
+  expect(audit.shardTruncation).toEqual([record]);
+  const startEvent = events.find((event) => event.kind === "run" && event.state === "start");
+  expect(startEvent !== undefined && startEvent.kind === "run" ? startEvent.shards : undefined).toEqual({
+    total: 1,
+  });
+  expect(run.record.shards).toHaveLength(1);
 });
 
 test("分片执行：每片输入只含本片 diff + 其他文件摘要，review.get_diff 只返回本片", async () => {

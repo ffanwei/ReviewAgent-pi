@@ -1,6 +1,7 @@
 # 0039. 大 MR 第二期：按文件块分片检视 + findings 合并去重
 
 **状态**：已接受（2026-11-04；实施待做，实施完成后补「实施记录」）
+**后续修订**：[ADR-0070](0070-single-file-truncation-and-tighter-diff-limits.md) 收窄本 ADR 的两处：缺省阈值改为 `maxDiffChars=200000` / `maxShardChars=80000` / `maxShards=6` / 四条 `excludeGlobs`；「单文件块 > `maxShardChars` 直接报错」改为按整 hunk 截取并留痕（正文保留当时决策，不改写）。
 **日期**：2026-11-04
 **关联**：ADR-0013（转录与 findings 导出）、ADR-0014（规则 Skill 会话）、ADR-0016（进度投影）、ADR-0025（用户级 JSONC 配置）、ADR-0030（收尾摘要）、ADR-0032（产物拍平与 `runId`）、ADR-0033（任务目录）、ADR-0036（cwd session 索引与 export）、ADR-0037（MCP 上报）、ADR-0038（退役外部真源逐字节对照）
 **跨仓**：本 ADR 为本仓 pi 线序列 0039；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。

@@ -16,6 +16,7 @@ import type {
   RunAudit,
   SeverityFilterRecord,
   ShardAuditRecord,
+  ShardTruncationRecord,
   TipsFilterRecord,
   ToolCallRecord,
   WireRequest,
@@ -74,6 +75,11 @@ export interface AuditFileContent {
    * 紧接 skillPassLog，config 仍是最后一个可选尾键。
    */
   readonly shards?: readonly ShardAuditRecord[];
+  /**
+   * 单文件块超预算截取留痕（ADR-0070）：只在真有截取时在场（零漂移）。
+   * 紧接 shards，config 仍是最后一个可选尾键。
+   */
+  readonly shardTruncation?: readonly ShardTruncationRecord[];
   /**
    * 中文 tips 置信度过滤留痕（ADR-0052）：阈值来自 `limits.confidence.min`；
    * 配置缺席（内核直调 / 测试）时整键省略。紧接 shards，config 仍是最后可选尾键。
@@ -151,6 +157,9 @@ export function buildAuditFileContent(args: {
     ...(args.audit.ruleSkill !== undefined ? { ruleSkill: args.audit.ruleSkill } : {}),
     ...(args.audit.skillPassLog !== undefined ? { skillPassLog: args.audit.skillPassLog } : {}),
     ...(args.audit.shards !== undefined ? { shards: args.audit.shards } : {}),
+    ...(args.audit.shardTruncation !== undefined
+      ? { shardTruncation: args.audit.shardTruncation }
+      : {}),
     ...(args.audit.tipsFilter !== undefined ? { tipsFilter: args.audit.tipsFilter } : {}),
     ...(args.audit.severityFilter !== undefined ? { severityFilter: args.audit.severityFilter } : {}),
     ...(args.audit.candidateNormalizations !== undefined

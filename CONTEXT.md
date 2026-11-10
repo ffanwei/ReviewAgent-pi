@@ -129,12 +129,12 @@ _Avoid_: MR 文件（不区分形态）、patch（只指 hunk 正文）
 _Avoid_: 输入校验（过泛）、分片（那是「分片检视」的另一机制）、静默截断（违背零静默纪律）
 
 **MR 输入预过滤（Input Prefilter）**:
-内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；另有两条**配置驱动**的跳过——`limits.testFiles.skip`（测试文件）与 `limits.mrFilter.excludeGlobs`（glob 列表，如 `**/*.md`，ADR-0069），同样整块剔除。过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除省键，`reasons` 恒含六类键）并在 stderr 报一行——剔了必有账；被剔除文件仍在收尾补报空 `mrReviewResult`（ADR-0068）。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 1.5M 字符，`null` = 关闭）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
+内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；另有两条**配置驱动**的跳过——`limits.testFiles.skip`（测试文件）与 `limits.mrFilter.excludeGlobs`（glob 列表，如 `**/*.md`，ADR-0069），同样整块剔除。过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除省键，`reasons` 恒含六类键）并在 stderr 报一行——剔了必有账；被剔除文件仍在收尾补报空 `mrReviewResult`（ADR-0068）。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 20 万字符，`null` = 关闭）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
 _Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（无审计即违规）
 
 **分片检视（Sharded Review）**:
-过滤后 diff 超过 `limits.split.maxShardChars`（缺省 40 万字符）时，按 `diff --git` 文件块**贪心装箱**拆成 N 片（只切文件块、绝不切 hunk；每块恰好出现一次、顺序 = diff 顺序），每片串行跑一次完整六阶段 + 规则 Skill 会话，最后按 `(file, line, title)` 确定性合并 findings 并重编号 `F001…`。单片路径（`limits.split.enabled=false` 或 diff ≤ 预算）与旧实现**逐字节相同**。每片的输入 = 本片 diff + 其他文件的路径/增删摘要（不是证据源）；聚合 `runId` = 第 1 片 `runId`；任何一片失败都无聚合产物（不输出部分结果），已成功片的产物保留在 `runs/shards/attempt-<ts>/sNN/`（ADR-0039）。
-_Avoid_: 切 hunk（破坏行号与证据链）、截断（静默漏检）、并行分片（v1 串行）
+过滤后 diff 超过 `limits.split.maxShardChars`（缺省 8 万字符）时，按 `diff --git` 文件块**贪心装箱**拆成 N 片（只切文件块、绝不切 hunk；每块恰好出现一次、顺序 = diff 顺序），每片串行跑一次完整六阶段 + 规则 Skill 会话，最后按 `(file, line, title)` 确定性合并 findings 并重编号 `F001…`。单片路径（`limits.split.enabled=false` 或 diff ≤ 预算且无截取）与旧实现**逐字节相同**。**单个文件块**超过 `maxShardChars` 时不报错，而是按整 hunk 截取（保留文件头 + 前缀若干个完整 hunk，尾部整 hunk 丢弃；ADR-0070），留痕写审计尾键 `shardTruncation` 并在 stderr 报一行；唯一一片是截取片时也走分片路径。每片的输入 = 本片 diff + 其他文件的路径/增删摘要（不是证据源）；聚合 `runId` = 第 1 片 `runId`；任何一片失败都无聚合产物（不输出部分结果），已成功片的产物保留在 `runs/shards/attempt-<ts>/sNN/`（ADR-0039）。
+_Avoid_: 切 hunk（破坏行号与证据链）、静默截断（截取必须留痕 `shardTruncation`）、并行分片（v1 串行）
 
 **代码智能语言（Code Intelligence Languages）**:
 符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前 `java` / `typescript` / `python` / `go` / `cpp`；数组 = 只启用列出语言；空数组 = 显式关闭）。注册表在 `codeintel/language-support.ts`（id / displayName / 语法变体 / 注释前缀 / extractor / 签名渲染 / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。符号模型语言无关（`CodeSymbol` + `isCallableKind` + `owner`），每语言提取在 `zoneb/extractors/<lang>.ts`；`codeintel.excludeGlobs` 排除依赖与生成物（`--no-ignore` 的确定性要求）。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`（ADR-0040、ADR-0041、ADR-0042）。

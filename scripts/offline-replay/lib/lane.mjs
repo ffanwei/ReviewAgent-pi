@@ -60,6 +60,10 @@ export async function createLane({ runDir, label, scenario, server, index }) {
   // 开着会让回放把哨兵意见全判 OUT_OF_SCOPE，断言与产品策略耦合。这里与
   // `bin.process.test.ts` 的进程面用例同口径：回放 lane 显式关闭。
   limits.findingScope = { enabled: false };
+  // 预过滤 glob（ADR-0069）同理：回放断言的是冻结产物，`large-mr` 的期望产物里
+  // README.md 被真实检视并上报，而产品缺省已把 `**/*.md` 排除。录制期的过滤清单
+  // 属于当时的配置快照，回放 lane 必须显式固定为空数组，才能与 trace 逐字节对齐。
+  limits.mrFilter = { excludeGlobs: [] };
   config.limits = limits;
   if (scenario.mcp.mode === "stub") {
     config.mcp = {

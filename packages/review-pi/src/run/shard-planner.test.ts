@@ -1,8 +1,28 @@
 import { describe, expect, test } from "vitest";
-import { composeShardInput, planShards, type ShardLimits } from "./shard-planner.js";
+import {
+  composeShardInput,
+  formatShardTruncationNotice,
+  planShards,
+  type ShardLimits,
+} from "./shard-planner.js";
 
 function block(path: string, body: readonly string[] = ["@@ -1 +1 @@", "-old line", "+new line"]): string {
   return [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, ...body].join("\n");
+}
+
+/** 多 hunk 块（每个 hunk 由 `-` / `+` / 上下文行组成，便于精确算前缀长度） */
+function hunksBlock(path: string, hunkCount: number, padding: number): string {
+  const body: string[] = [];
+  for (let index = 0; index < hunkCount; index += 1) {
+    const line = index * 10 + 1;
+    body.push(
+      `@@ -${String(line)},2 +${String(line)},2 @@`,
+      `-old line ${String(index)}`,
+      `+new line ${String(index)} ${"x".repeat(padding)}`,
+      ` context ${String(index)}`,
+    );
+  }
+  return block(path, body);
 }
 
 const LIMITS: ShardLimits = { maxShardChars: 1_000_000, maxShards: 12, contextSummaryChars: 8_000 };
@@ -31,10 +51,82 @@ describe("planShards：按文件块贪心装箱（绝不切 hunk）", () => {
     expect(plan.shards.map((shard) => shard.index)).toEqual([1, 2]);
   });
 
-  test("单片超预算：报错点名文件与两个数字，不静默丢块", () => {
-    const input = block("src/Huge.java", ["@@ -1 +1 @@", `+${"x".repeat(200)}`]);
-    expect(() => planShards(input, { ...LIMITS, maxShardChars: 100 })).toThrow(
-      /src\/Huge\.java.*超过单片预算 100 字符/,
+  test("单片超预算：按整 hunk 截取（保留文件头 + 前缀完整 hunk），留痕可读", () => {
+    const text = hunksBlock("src/Huge.java", 5, 200);
+    const lines = text.split("\n");
+    const hunkStarts = lines
+      .map((line, index) => (line.startsWith("@@ ") ? index : -1))
+      .filter((index) => index >= 0);
+    const prefixOf = (hunks: number): string =>
+      lines.slice(0, hunkStarts[hunks] ?? lines.length).join("\n");
+    const budget = prefixOf(2).length;
+
+    const plan = planShards(text, { ...LIMITS, maxShardChars: budget });
+    expect(plan.shards).toHaveLength(1);
+    const shard = plan.shards[0]!;
+    expect(shard.files).toEqual(["src/Huge.java"]);
+    // 只保留前 2 个完整 hunk：第 3 个 hunk 的文件头 / 半截都不出现
+    expect(shard.diff).toBe(prefixOf(2));
+    expect(shard.diff).not.toContain("+new line 2");
+    expect(shard.chars).toBe(budget);
+    expect(shard.truncated).toHaveLength(1);
+    expect(shard.truncated[0]).toEqual({
+      path: "src/Huge.java",
+      originalChars: text.length,
+      keptChars: budget,
+      hunks: 5,
+      keptHunks: 2,
+      droppedHunks: 3,
+      droppedAdded: 3,
+      droppedRemoved: 3,
+    });
+  });
+
+  test("退化情形：文件头 + 首个 hunk 单独超预算时保留首个 hunk，不报错", () => {
+    const text = hunksBlock("src/Wide.java", 3, 400);
+    const plan = planShards(text, { ...LIMITS, maxShardChars: 100 });
+    const shard = plan.shards[0]!;
+    const record = shard.truncated[0]!;
+    expect(record.keptHunks).toBe(1);
+    expect(record.droppedHunks).toBe(2);
+    expect(record.keptChars).toBeGreaterThan(100);
+    expect(shard.diff).toContain("+new line 0");
+    expect(shard.diff).not.toContain("+new line 1");
+  });
+
+  test("无 hunk 的块（二进制 / 纯头部）无法安全截取：原样保留、不留痕", () => {
+    const text = block("src/Odd.bin", [`+${"y".repeat(200)}`]);
+    const plan = planShards(text, { ...LIMITS, maxShardChars: 50 });
+    expect(plan.shards[0]?.diff).toBe(text);
+    expect(plan.shards[0]?.truncated).toEqual([]);
+  });
+
+  test("formatShardTruncationNotice：汇总文件数 / 丢弃 hunk 数 / 保留字符数", () => {
+    expect(
+      formatShardTruncationNotice([
+        {
+          path: "src/A.java",
+          originalChars: 100_000,
+          keptChars: 70_000,
+          hunks: 10,
+          keptHunks: 7,
+          droppedHunks: 3,
+          droppedAdded: 20,
+          droppedRemoved: 5,
+        },
+        {
+          path: "src/B.java",
+          originalChars: 90_000,
+          keptChars: 60_000,
+          hunks: 4,
+          keptHunks: 3,
+          droppedHunks: 1,
+          droppedAdded: 8,
+          droppedRemoved: 2,
+        },
+      ]),
+    ).toBe(
+      "已截取检视 2 个超预算文件（丢弃 4 个完整 hunk，保留 130000 字符），明细见审计 shardTruncation",
     );
   });
 

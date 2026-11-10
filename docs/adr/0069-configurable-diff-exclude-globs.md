@@ -1,6 +1,7 @@
 # 0069. 配置驱动的 diff 跳过：`limits.mrFilter.excludeGlobs`
 
 **状态**：已接受（2026-11-10，用户决策：要一个配置列表，按后缀 / glob 跳过特定文件的检视，被跳过的文件仍直接上报空检视意见）
+**后续修订**：[ADR-0070](0070-single-file-truncation-and-tighter-diff-limits.md) 把本键的**缺省值**从 `[]` 改为 `["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"]`；机制、原因口径与上报行为不变。
 **关联**：[ADR-0068](0068-report-every-changed-file-including-filtered.md)（变更文件全覆盖：被过滤文件补空 `mrReviewResult`；本 ADR 复用该机制）、[ADR-0061](0061-every-diff-file-reported-before-summary.md)（每文件必报）、[ADR-0052](0052-tips-four-tier-severity-and-confidence-filter.md)（输出侧过滤；与本 ADR 的输入侧跳过不同层）、[ADR-0041](0041-language-agnostic-symbol-model-and-multi-language-extractors.md)（`codeintel.excludeGlobs` 的扫描排除；与本键作用域不同）、[ADR-0025](0025-user-config-file.md)（配置面）
 **范围**：本仓 pi 线 0069。只加一个输入预过滤开关，新增 audit 原因 `exclude`；其余过滤规则、findings / tips、MCP 上报口径与退出码不变。
 

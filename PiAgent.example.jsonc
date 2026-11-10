@@ -151,13 +151,13 @@
     //         confidence 的输出侧过滤不同。
     // false = 测试文件与生产代码同等检视。
     "testFiles": { "skip": true },
-    // 按 glob 跳过检视（ADR-0069，缺省空数组 = 不排除）：
+    // 按 glob 跳过检视（ADR-0069；缺省排除 Markdown / lockfile / fixtures / snapshot）：
     // 命中的文件块在检视输入阶段整块剔除（不进 diff、不产 findings、不进中文 tips /
     // MCP 意见）；它们仍是变更过的文件，收尾按 ADR-0068 补一条空 reviewTips 的
     // mrReviewResult。匹配对象是仓库相对 POSIX 路径，大小写不敏感；不含 "/" 的 glob
     // 只比文件名（*.md 与 **/*.md 等价），* / ? 不跨目录，** 跨目录。
-    // 例：["**/*.md", "docs/**"] 跳过全部 Markdown 与 docs 目录。
-    "mrFilter": { "excludeGlobs": [] },
+    // 空数组 = 不排除任何文件。例：["**/*.md", "docs/**"] 跳过全部 Markdown 与 docs 目录。
+    "mrFilter": { "excludeGlobs": ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"] },
     // 非 diff 区域过滤（缺省开启）：检视意见必须落在本遍 diff 的变更 hunk 内，
     // 或距 hunk 边界不超过 contextLines 行；文件不在本遍 diff 的意见直接丢弃。
     // 过滤发生在候选拦截链（OUT_OF_SCOPE），findings / tips / MCP / 审计同时生效；
@@ -169,16 +169,17 @@
     "boundary": {
       "maxFiles": 10,                    // 变更文件数上限。
       "maxDiffLines": 2000,              // 变更行数上限。
-      "maxDiffChars": 1500000            // 过滤后 diff 字符数上限（超限直接报错）。
+      "maxDiffChars": 200000             // 过滤后 diff 字符数上限（超限直接报错；约 3200–5900 变更行）。
     },
     // 大 MR 分片（ADR-0039）：过滤后的 diff 超过一片预算时，按 diff --git 文件块切开
-    // 分别检视（绝不切 hunk），最后把各片 findings 合并去重。只负责「文件多」；
-    // 单个文件本身过大仍会报错（留给第三期按需读取）。
+    // 分别检视（绝不切 hunk），最后把各片 findings 合并去重。
+    // 单个文件本身超过 maxShardChars 时，只保留文件头 + 前缀若干个完整 hunk（尾部
+    // 整 hunk 丢弃并留痕，ADR-0070），不再报错。
     // 注意：maxShardChars 应小于 maxDiffChars，否则体积门先报错、分片永不触发。
     "split": {
       "enabled": true,                   // 是否启用自动分片；false = 超预算仍单遍跑（旧行为，窗口风险自负）。
-      "maxShardChars": 400000,           // 单片字符目标（约 10 万 tokens，给 128K 上下文的网关留余量）。
-      "maxShards": 12,                   // 片数上限（成本护栏）；需要更多片即报错，请拆 MR 或调大此值。
+      "maxShardChars": 80000,            // 单片字符目标（约 1300–2350 变更行；给 64K+ 上下文网关留余量）。
+      "maxShards": 6,                    // 片数上限（成本护栏）；200000/80000 最坏 3 片，6 片有 2 倍余量。
       "contextSummaryChars": 8000        // 每片附带的「其他文件变更摘要」字符上限（不是证据源）。
     },
     // 规则包 zip 解压前的审计上限。
