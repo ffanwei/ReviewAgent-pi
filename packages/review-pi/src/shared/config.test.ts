@@ -488,7 +488,7 @@ describe("loadConfig：边界", () => {
 
   test("maxDiffChars：缺省 / null 关闭 / 越界拒绝", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig("")) });
-    expect(defaults.config.limits.boundary.maxDiffChars).toBe(200_000);
+    expect(defaults.config.limits.boundary.maxDiffChars).toBe(1_000_000);
 
     const disabled = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"boundary":{"maxDiffChars":null}}`)),
@@ -512,12 +512,12 @@ describe("loadConfig：边界", () => {
 });
 
 describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
-  test("缺省值：enabled=true / 80000 / 6 / 8000", () => {
+  test("缺省值：enabled=true / 120000 / 12 / 8000（ADR-0071）", () => {
     const { config, warnings } = loadConfig({ configPath: writeConfig(minimalConfig("")) });
     expect(config.limits.split).toEqual({
       enabled: true,
-      maxShardChars: 80_000,
-      maxShards: 6,
+      maxShardChars: 120_000,
+      maxShards: 12,
       contextSummaryChars: 8_000,
     });
     expect(warnings.join("\n")).not.toContain("limits.split");
