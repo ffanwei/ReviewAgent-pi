@@ -8,6 +8,8 @@ import { isTestFilePath } from "../shared/test-file.js";
 //    块即文件，hunk 行号与 evidence 链完整保留。
 //    测试文件由 `limits.testFiles.skip`（缺省 true）单独控制：开启时整块剔除，
 //    关闭时原样保留（reason = "test"，与其他噪声原因共用同一审计口径）。
+//    另有 `limits.mrFilter.excludeGlobs`（ADR-0069）：命中 glob 的块整块剔除
+//    （reason = "exclude"），排在全部内置原因之后。
 // 2. 体积门：过滤后仍超过 `limits.boundary.maxDiffChars` 时直接抛人话错误，
 //    不再把注定失败的请求发给模型（`null` = 关门）。
 //
@@ -222,13 +224,77 @@ export interface FilterDiffOptions {
    * 关闭 = 原样保留；开启 = reason = "test"。
    */
   readonly skipTestFiles?: boolean;
+  /**
+   * 配置驱动的 glob 跳过（`limits.mrFilter.excludeGlobs`，ADR-0069）。
+   * 命中 = reason = "exclude"；空数组 / 缺省 = 不排除。
+   */
+  readonly excludeGlobs?: readonly string[];
 }
 
-/** 块级分类；第一个命中的原因生效（binary > lockfile > minified > generated > test） */
+/** 预编译的排除 glob（只编译一次，逐块匹配） */
+interface CompiledExcludeGlob {
+  /** 不含 `/` 的 glob 只比文件名（`*.md` 与 `**\/*.md` 等价） */
+  readonly basenameOnly: boolean;
+  readonly regex: RegExp;
+}
+
+/** glob → 正则：`**` 跨目录、`*` / `?` 不跨 `/`，大小写不敏感 */
+function globToRegExp(glob: string): RegExp {
+  let source = "^";
+  for (let index = 0; index < glob.length; index += 1) {
+    const char = glob[index] ?? "";
+    if (char === "*") {
+      if (glob[index + 1] === "*") {
+        // `**/` = 零或多级目录；裸 `**` = 任意字符
+        if (glob[index + 2] === "/") {
+          source += "(?:.*/)?";
+          index += 2;
+        } else {
+          source += ".*";
+          index += 1;
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${source}$`, "i");
+}
+
+function compileExcludeGlobs(globs: readonly string[]): readonly CompiledExcludeGlob[] {
+  const compiled: CompiledExcludeGlob[] = [];
+  for (const raw of globs) {
+    const glob = raw.trim().replace(/\\/g, "/");
+    if (glob === "") {
+      continue;
+    }
+    compiled.push({ basenameOnly: !glob.includes("/"), regex: globToRegExp(glob) });
+  }
+  return compiled;
+}
+
+function matchesExcludeGlob(posixPath: string, globs: readonly CompiledExcludeGlob[]): boolean {
+  if (globs.length === 0) {
+    return false;
+  }
+  const normalized = posixPath.replace(/\\/g, "/").trim();
+  if (normalized === "") {
+    return false;
+  }
+  const basename = normalized.split("/").at(-1) ?? "";
+  return globs.some((glob) => glob.regex.test(glob.basenameOnly ? basename : normalized));
+}
+
+/** 块级分类；第一个命中的原因生效（binary > lockfile > minified > generated > test > exclude） */
 function classifyBlock(
   block: readonly string[],
   posixPath: string,
   skipTestFiles: boolean,
+  excludeGlobs: readonly CompiledExcludeGlob[],
 ): MrFilterReason | undefined {
   if (
     block.some(
@@ -250,6 +316,9 @@ function classifyBlock(
   if (skipTestFiles && isTestFilePath(posixPath)) {
     return "test";
   }
+  if (matchesExcludeGlob(posixPath, excludeGlobs)) {
+    return "exclude";
+  }
   return undefined;
 }
 
@@ -261,6 +330,7 @@ export function filterDiffForReview(
   options: FilterDiffOptions = {},
 ): FilteredDiff {
   const skipTestFiles = options.skipTestFiles ?? true;
+  const excludeGlobs = compileExcludeGlobs(options.excludeGlobs ?? []);
   if (diff.trim() === "") {
     return { diff, dropped: [], droppedChars: 0 };
   }
@@ -278,7 +348,7 @@ export function filterDiffForReview(
     if (path === "") {
       continue;
     }
-    const reason = classifyBlock(block, path, skipTestFiles);
+    const reason = classifyBlock(block, path, skipTestFiles, excludeGlobs);
     if (reason === undefined) {
       continue;
     }
@@ -320,6 +390,7 @@ export function toMrFilterRecord(filtered: FilteredDiff): MrFilterRecord | undef
     minified: 0,
     binary: 0,
     test: 0,
+    exclude: 0,
   };
   for (const entry of filtered.dropped) {
     reasons[entry.reason] += 1;

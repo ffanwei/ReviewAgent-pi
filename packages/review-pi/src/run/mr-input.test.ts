@@ -97,6 +97,72 @@ describe("filterDiffForReview：整块剔除噪声（绝不切 hunk）", () => {
   });
 });
 
+describe("filterDiffForReview：limits.mrFilter.excludeGlobs（ADR-0069）", () => {
+  test("裸后缀 glob（*.md）只比文件名：任意目录下的 md 都剔除", () => {
+    const input = [SOURCE, block("README.md"), block("docs/guide/intro.md")].join("\n");
+    const result = filterDiffForReview(input, { excludeGlobs: ["*.md"] });
+    expect(result.diff).toBe(SOURCE);
+    expect(result.dropped).toEqual([
+      { path: "README.md", reason: "exclude" },
+      { path: "docs/guide/intro.md", reason: "exclude" },
+    ]);
+  });
+
+  test("**/*.md 与 *.md 等价：根文件与深层文件都命中", () => {
+    const input = [block("README.md"), block("docs/guide/intro.md"), block("src/A.md")].join("\n");
+    const result = filterDiffForReview(input, { excludeGlobs: ["**/*.md"] });
+    expect(result.dropped.map((entry) => entry.path)).toEqual([
+      "README.md",
+      "docs/guide/intro.md",
+      "src/A.md",
+    ]);
+  });
+
+  test("目录 glob（docs/**）：只命中该目录，不误伤同名前缀", () => {
+    const input = [block("docs/a.md"), block("docs/x/y.md"), block("docs-old/b.md")].join("\n");
+    const result = filterDiffForReview(input, { excludeGlobs: ["docs/**"] });
+    expect(result.dropped.map((entry) => entry.path)).toEqual(["docs/a.md", "docs/x/y.md"]);
+  });
+
+  test("大小写不敏感；未命中的文件逐字节保留", () => {
+    const input = [SOURCE, block("CHANGELOG.MD")].join("\n");
+    const result = filterDiffForReview(input, { excludeGlobs: ["*.md"] });
+    expect(result.diff).toBe(SOURCE);
+    expect(result.dropped).toEqual([{ path: "CHANGELOG.MD", reason: "exclude" }]);
+  });
+
+  test("空数组 / 未传 = 不排除（原串返回）", () => {
+    expect(filterDiffForReview(SOURCE, { excludeGlobs: [] }).diff).toBe(SOURCE);
+    expect(filterDiffForReview(SOURCE).dropped).toEqual([]);
+  });
+
+  test("原因优先级：内置原因（generated / test）先于 exclude", () => {
+    const input = [block("node_modules/pkg/README.md"), block("docs/notes.md")].join("\n");
+    const result = filterDiffForReview(input, { excludeGlobs: ["*.md"], skipTestFiles: true });
+    expect(result.dropped).toEqual([
+      { path: "node_modules/pkg/README.md", reason: "generated" },
+      { path: "docs/notes.md", reason: "exclude" },
+    ]);
+  });
+
+  test("审计记账：exclude 计数进入固定原因键", () => {
+    const input = [SOURCE, block("docs/a.md"), block("docs/b.md")].join("\n");
+    const record = toMrFilterRecord(filterDiffForReview(input, { excludeGlobs: ["**/*.md"] }));
+    expect(record?.reasons).toEqual({
+      lockfile: 0,
+      generated: 0,
+      minified: 0,
+      binary: 0,
+      test: 0,
+      exclude: 2,
+    });
+    expect(record?.paths).toEqual([
+      { path: "docs/a.md", reason: "exclude" },
+      { path: "docs/b.md", reason: "exclude" },
+    ]);
+  });
+});
+
 describe("assertDiffWithinCharLimit：入口体积门", () => {
   test("界内放行、超限抛人话错误、null 关门", () => {
     expect(() => assertDiffWithinCharLimit("x".repeat(10), 10)).not.toThrow();
@@ -117,7 +183,7 @@ describe("toMrFilterRecord / formatMrFilterNotice", () => {
     expect(record).toBeDefined();
     expect(record?.droppedFiles).toBe(25);
     expect(record?.paths).toHaveLength(20);
-    expect(record?.reasons).toEqual({ lockfile: 25, generated: 0, minified: 0, binary: 0, test: 0 });
+    expect(record?.reasons).toEqual({ lockfile: 25, generated: 0, minified: 0, binary: 0, test: 0, exclude: 0 });
     expect(formatMrFilterNotice(record!)).toContain("lockfile=25");
   });
 });
@@ -155,7 +221,7 @@ describe("测试文件跳过（limits.testFiles.skip）", () => {
 
   test("审计 reasons 固定含 test 键", () => {
     const record = toMrFilterRecord(filterDiffForReview([PROD_FILE, TEST_FILE].join("\n")));
-    expect(record?.reasons).toEqual({ lockfile: 0, generated: 0, minified: 0, binary: 0, test: 1 });
+    expect(record?.reasons).toEqual({ lockfile: 0, generated: 0, minified: 0, binary: 0, test: 1, exclude: 0 });
     expect(formatMrFilterNotice(record!)).toContain("test=1");
   });
 });

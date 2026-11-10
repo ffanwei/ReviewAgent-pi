@@ -215,6 +215,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   // 第二期：同一份过滤结果只算一次，分片不改写任何字节。
   const filtered = filterDiffForReview(input.diff, {
     skipTestFiles: runtime.limits.testFiles.skip,
+    excludeGlobs: runtime.limits.mrFilter.excludeGlobs,
   });
   assertDiffWithinCharLimit(filtered.diff, runtime.limits.boundary.maxDiffChars);
   const diff = filtered.diff;

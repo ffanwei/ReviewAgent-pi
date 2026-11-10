@@ -346,6 +346,41 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/limits\.testFiles\.skip must be true or false/);
   });
 
+  test("limits.mrFilter.excludeGlobs：缺省空数组，可配置且进 digest", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.mrFilter).toEqual({ excludeGlobs: [] });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"limits":{"mrFilter":{"excludeGlobs":["**/*.md","docs/**"]}}`),
+      ),
+    }).config;
+    expect(tuned.limits.mrFilter.excludeGlobs).toEqual(["**/*.md", "docs/**"]);
+    expect(tuned.overridden).toContain("limits.mrFilter.excludeGlobs");
+    expect(tuned.digest).not.toBe(defaults.digest);
+  });
+
+  test("limits.mrFilter.excludeGlobs：去重保序、空白归一、非法值 fail fast", () => {
+    const deduped = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"limits":{"mrFilter":{"excludeGlobs":[" *.md ","*.md","docs/**"]}}`),
+      ),
+    }).config;
+    expect(deduped.limits.mrFilter.excludeGlobs).toEqual(["*.md", "docs/**"]);
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"mrFilter":{"excludeGlobs":"*.md"}}`)),
+      }),
+    ).toThrow(/limits\.mrFilter\.excludeGlobs must be an array of glob patterns/);
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"mrFilter":{"excludeGlobs":[""]}}`)),
+      }),
+    ).toThrow(/limits\.mrFilter\.excludeGlobs\[0\] must be a non-empty string/);
+  });
+
   test("limits.findingScope：缺省开启、默认 hunk ±10，可配置且进 digest", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
     expect(defaults.limits.findingScope).toEqual({ enabled: true, contextLines: 10 });

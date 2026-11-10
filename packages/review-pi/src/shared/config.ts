@@ -187,6 +187,18 @@ export interface TestFileLimits {
 }
 
 /**
+ * 按 glob 跳过检视（ADR-0069）：命中的文件块在**检视输入阶段**整块剔除，
+ * 不进 diff / findings / 中文 tips / MCP 意见；但它们仍是「变更过的文件」，
+ * 收尾按 ADR-0068 补一条空 `reviewTips` 的 `mrReviewResult`。
+ *
+ * 匹配对象是 diff 里的仓库相对 POSIX 路径，大小写不敏感；不含 `/` 的 glob
+ * 只比文件名（`*.md` 与 `**\/*.md` 等价）。空数组 = 不排除。
+ */
+export interface MrFilterLimits {
+  readonly excludeGlobs: readonly string[];
+}
+
+/**
  * 非 diff 区域过滤：`enabled = true`（缺省）时，候选拦截链只保留落在本遍
  * diff 变更 hunk 内（或距 hunk 边界不超过 `contextLines` 行）的检视意见；
  * 文件不在本遍 diff 的直接拒绝（`OUT_OF_SCOPE`）。影响 findings / tips /
@@ -242,6 +254,7 @@ export interface Limits {
   readonly confidence: ConfidenceLimits;
   readonly severity: SeverityLimits;
   readonly testFiles: TestFileLimits;
+  readonly mrFilter: MrFilterLimits;
   readonly findingScope: FindingScopeLimits;
   readonly boundary: BoundaryLimits;
   readonly split: SplitLimits;
@@ -277,6 +290,7 @@ export const DEFAULT_LIMITS: Limits = {
   confidence: { min: 0.5 },
   severity: { min: "P3" },
   testFiles: { skip: true },
+  mrFilter: { excludeGlobs: [] },
   findingScope: { enabled: true, contextLines: 10 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_500_000 },
   split: { enabled: true, maxShardChars: 400_000, maxShards: 12, contextSummaryChars: 8_000 },
@@ -751,7 +765,7 @@ const MCP_REPORT_KEYS = [
 const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
 const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "concurrency", "confidence", "severity", "testFiles", "findingScope", "boundary", "split", "archive", "micro"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "concurrency", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro"] as const;
 const LOOP_KEYS = ["maxRounds"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -779,6 +793,7 @@ const CONCURRENCY_KEYS = ["suggestion"] as const;
 const CONFIDENCE_KEYS = ["min"] as const;
 const SEVERITY_KEYS = ["min"] as const;
 const TEST_FILES_KEYS = ["skip"] as const;
+const MR_FILTER_KEYS = ["excludeGlobs"] as const;
 const FINDING_SCOPE_KEYS = ["enabled", "contextLines"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
 const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars"] as const;
@@ -898,6 +913,16 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     skip: boolOr(testFilesObj.skip, "limits.testFiles.skip", DEFAULT_LIMITS.testFiles.skip),
   };
 
+  const mrFilterObj = optionalObject(limits.mrFilter, "limits.mrFilter", warnings);
+  assertKnownKeys(mrFilterObj, MR_FILTER_KEYS, "limits.mrFilter", warnings);
+  const mrFilter: MrFilterLimits = {
+    excludeGlobs: parseGlobList(
+      mrFilterObj.excludeGlobs,
+      "limits.mrFilter.excludeGlobs",
+      DEFAULT_LIMITS.mrFilter.excludeGlobs,
+    ),
+  };
+
   const findingScopeObj = optionalObject(limits.findingScope, "limits.findingScope", warnings);
   assertKnownKeys(findingScopeObj, FINDING_SCOPE_KEYS, "limits.findingScope", warnings);
   const findingScope: FindingScopeLimits = {
@@ -984,7 +1009,7 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
   };
 
-  return { loop, timeouts, retry, concurrency, confidence, severity, testFiles, findingScope, boundary, split, archive, micro };
+  return { loop, timeouts, retry, concurrency, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, archive, micro };
 }
 
 // ---------------------------------------------------------------------------
@@ -1002,19 +1027,28 @@ function parseCodeIntel(raw: unknown, warnings: string[]): CodeIntelSettings {
 
 /** `codeintel.excludeGlobs`：非空字符串数组；去重保序；空数组 = 不排除 */
 function parseExcludeGlobs(value: unknown): readonly string[] {
+  return parseGlobList(value, "codeintel.excludeGlobs", DEFAULT_CODEINTEL.excludeGlobs);
+}
+
+/** glob 列表解析（`codeintel.excludeGlobs` 与 `limits.mrFilter.excludeGlobs` 共用） */
+function parseGlobList(
+  value: unknown,
+  label: string,
+  fallback: readonly string[],
+): readonly string[] {
   if (value === undefined || value === null) {
-    return DEFAULT_CODEINTEL.excludeGlobs;
+    return fallback;
   }
   if (!Array.isArray(value)) {
     throw new ConfigError(
-      `${CONFIG_FILE_NAME}: codeintel.excludeGlobs must be an array of glob patterns (got ${describe(value)})`,
+      `${CONFIG_FILE_NAME}: ${label} must be an array of glob patterns (got ${describe(value)})`,
     );
   }
   const globs: string[] = [];
   value.forEach((entry, index) => {
     if (typeof entry !== "string" || entry.trim() === "") {
       throw new ConfigError(
-        `${CONFIG_FILE_NAME}: codeintel.excludeGlobs[${String(index)}] must be a non-empty string (got ${describe(entry)})`,
+        `${CONFIG_FILE_NAME}: ${label}[${String(index)}] must be a non-empty string (got ${describe(entry)})`,
       );
     }
     const glob = entry.trim();
@@ -1789,6 +1823,13 @@ ${excludeGlobLines}
     //         confidence 的输出侧过滤不同。
     // false = 测试文件与生产代码同等检视。
     "testFiles": { "skip": true },
+    // 按 glob 跳过检视（ADR-0069，缺省空数组 = 不排除）：
+    // 命中的文件块在检视输入阶段整块剔除（不进 diff、不产 findings、不进中文 tips /
+    // MCP 意见）；它们仍是变更过的文件，收尾按 ADR-0068 补一条空 reviewTips 的
+    // mrReviewResult。匹配对象是仓库相对 POSIX 路径，大小写不敏感；不含 "/" 的 glob
+    // 只比文件名（*.md 与 **/*.md 等价），* / ? 不跨目录，** 跨目录。
+    // 例：["**/*.md", "docs/**"] 跳过全部 Markdown 与 docs 目录。
+    "mrFilter": { "excludeGlobs": [] },
     // 非 diff 区域过滤（缺省开启）：检视意见必须落在本遍 diff 的变更 hunk 内，
     // 或距 hunk 边界不超过 contextLines 行；文件不在本遍 diff 的意见直接丢弃。
     // 过滤发生在候选拦截链（OUT_OF_SCOPE），findings / tips / MCP / 审计同时生效；

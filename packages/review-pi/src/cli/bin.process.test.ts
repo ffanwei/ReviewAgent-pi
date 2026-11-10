@@ -2421,6 +2421,68 @@ test(
 );
 
 test(
+  "limits.mrFilter.excludeGlobs（ADR-0069）：命中 glob 的文件不进检视、仍补报空意见，exit 0",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = writeMr(
+        [
+          "diff --git a/docs/guide.md b/docs/guide.md",
+          "--- a/docs/guide.md",
+          "+++ b/docs/guide.md",
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ].join("\n"),
+      );
+
+      const run = await runCliReview(outDir, mrFile, {
+        gatewayBaseUrl: stub.baseUrl,
+        configText: JSON.stringify({
+          version: 1,
+          reviewer: { apiKey: SENTINEL_KEY, baseUrl: stub.baseUrl },
+          limits: { findingScope: { enabled: false }, mrFilter: { excludeGlobs: ["**/*.md"] } },
+          mcp: {
+            servers: {
+              stub: { transport: "http", url: mcp.url, headers: {}, timeoutMs: 10_000 },
+            },
+            report: { server: "stub" },
+          },
+        }),
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: "docs/guide.md",
+        reviewTips: [],
+      });
+      expect(run.stderr).toContain("exclude=1");
+      expect(run.stderr).toContain("已补报 1 个变更文件 / 0 条意见");
+
+      const tipsPath = path.join(cliRunsDir(outDir), "reviews_tips_zh.json");
+      expect(JSON.parse(readFileSync(tipsPath, "utf8"))).toEqual([]);
+      const outcome = JSON.parse(run.stdout) as { findings: unknown[] };
+      expect(outcome.findings).toEqual([]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
   "MCP 变更文件全覆盖（ADR-0068）：被过滤文件补报一次、已检视文件不重复上报",
   async () => {
     const stub = await startLoopbackStub(noFindingCorpus());

@@ -141,7 +141,7 @@ describe("buildAuditFileContent", () => {
       mrFilter: {
         droppedFiles: 1,
         droppedChars: 42,
-        reasons: { lockfile: 1, generated: 0, minified: 0, binary: 0, test: 0 },
+        reasons: { lockfile: 1, generated: 0, minified: 0, binary: 0, test: 0, exclude: 0 },
         paths: [{ path: "pnpm-lock.yaml", reason: "lockfile" }],
       },
     });

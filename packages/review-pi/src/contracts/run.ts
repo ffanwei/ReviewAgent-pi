@@ -107,8 +107,11 @@ export interface MrBoundaryRecord {
   readonly reason: MrBoundaryReason;
 }
 
-/** 输入预过滤的剔除原因（大 diff 第一期：只剔噪声，不改检视语义；`test` = 配置驱动的测试文件跳过） */
-export type MrFilterReason = "lockfile" | "generated" | "minified" | "binary" | "test";
+/**
+ * 输入预过滤的剔除原因（大 diff 第一期：只剔噪声，不改检视语义）；
+ * `test` = 配置驱动的测试文件跳过；`exclude` = 配置驱动的 glob 跳过（ADR-0069）。
+ */
+export type MrFilterReason = "lockfile" | "generated" | "minified" | "binary" | "test" | "exclude";
 
 /** 被剔除的单个文件（审计窄投影，最多保留前 20 条） */
 export interface MrFilteredPath {
@@ -118,7 +121,7 @@ export interface MrFilteredPath {
 
 /**
  * 输入预过滤留痕（审计文件尾键 mrFilter 的形状；无剔除缺省省键）。
- * `reasons` 恒含五类键（未命中为 0），便于下游按固定形状读数。
+ * `reasons` 恒含六类键（未命中为 0），便于下游按固定形状读数。
  */
 export interface MrFilterRecord {
   readonly droppedFiles: number;
