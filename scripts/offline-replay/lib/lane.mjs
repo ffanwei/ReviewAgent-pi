@@ -53,6 +53,13 @@ export async function createLane({ runDir, label, scenario, server, index }) {
   if (scenario.timeouts?.oneShotMs !== undefined) {
     limits.timeouts = { oneShotMs: scenario.timeouts.oneShotMs };
   }
+  // 非 diff 区域过滤（ADR-0064 缺省开启）：回放场景的 expect 断言的是**冻结
+  // 模型产物**的确定性重放，而 canned 语料的哨兵意见故意指向 diff 之外的文件
+  // （`sample.txt` / `README.md`）、`large-mr` 的期望 findings 是录制期产物。
+  // 两者都不是「产品范围策略」的被测面（该策略由 run/gate 的 vitest 覆盖），
+  // 开着会让回放把哨兵意见全判 OUT_OF_SCOPE，断言与产品策略耦合。这里与
+  // `bin.process.test.ts` 的进程面用例同口径：回放 lane 显式关闭。
+  limits.findingScope = { enabled: false };
   config.limits = limits;
   if (scenario.mcp.mode === "stub") {
     config.mcp = {

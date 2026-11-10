@@ -21,7 +21,9 @@
 | `shard-two-file.json` | 两片串行：每片六相位、跨片 findings 合并 | 同上 + `testdata/golden/two-file-shard.diff` | v2 |
 | `large-mr.json` | 大 MR：9 文件 / 1216 增加行，规则 Skill + MCP stub + 报文 + 总结（**真网关录制**） | `testdata/repos/large-mr` + `testdata/e2e/large-mr.diff` | v2 |
 
-单文件约 22–42 KB；`large-mr.json` 因检视回合的原始 SSE 较大约 4.2 MB，其余五个合计 < 150 KB。
+单文件约 22–42 KB；`large-mr.json` 因检视回合的原始 SSE 较大约 3.9 MB，其余五个合计 < 150 KB。
+
+交互条数（`ADR-0065` 起有 finding 的检视恒有一次中文 tips 一次性调用）：`core-single-finding` 7（6 review + 1 oneshot）、`core-no-finding` 6、`reporting-single-finding` 8（6 + 2）、`rule-skill-single-finding` 8（7 + 1）、`shard-two-file` 13（12 review + 1 oneshot，合并后统一生成 tips）、`large-mr` 22（20 + 2，多文件分批上报）。
 
 ## schema v2（ADR-0049）
 

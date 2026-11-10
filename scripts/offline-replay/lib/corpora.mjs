@@ -24,7 +24,26 @@ function candidate(file) {
   };
 }
 
-/** 一轮零工具完成：phase-5 出唯一候选，phase-6 裁决通过 + complete */
+/**
+ * 中文 tips 语义回复（ADR-0065 起业务关闭也产 tips，任何有 finding 的检视都会
+ * 追加一次一次性调用）。条目按 finding id 索引，字段必须过 12 键校验。
+ */
+function tipsReply(ids) {
+  return {
+    text: JSON.stringify({
+      tips: ids.map((id) => ({
+        id,
+        category: "可靠性",
+        subcategory: "测试桩",
+        review: "[可靠性] 测试桩意见。影响评估：仅测试。",
+        suggestion: "[重构思路] 无。代码示例：```无```",
+      })),
+    }),
+    usage: ZERO,
+  };
+}
+
+/** 一轮零工具完成：phase-5 出唯一候选，phase-6 裁决通过 + complete，再一条 tips */
 function oneFindingCorpus() {
   return [
     { text: "ok", usage: ZERO },
@@ -39,6 +58,7 @@ function oneFindingCorpus() {
       }),
       usage: ZERO,
     },
+    tipsReply(["F100"]),
   ];
 }
 
@@ -113,6 +133,7 @@ function skillSingleFindingCorpus() {
       }),
       usage: ZERO,
     },
+    tipsReply(["F100", "F200"]),
   ];
 }
 
@@ -136,7 +157,13 @@ function skillCandidate(file) {
  * （Alpha.java / Beta.java），合并后是两条独立 findings。
  */
 function shardTwoFindingsCorpus() {
-  return [...shardSixPhase("F100", "src/main/java/com/example/Alpha.java"), ...shardSixPhase("F200", "src/main/java/com/example/Beta.java")];
+  // 两片各自跑完六相位；合并后按**合并后的 id 顺序**（F001 / F002）做一次
+  // 中文 tips 语义调用（ADR-0065 起零 finding 之外恒有一次一次性调用）。
+  return [
+    ...shardSixPhase("F100", "src/main/java/com/example/Alpha.java"),
+    ...shardSixPhase("F200", "src/main/java/com/example/Beta.java"),
+    tipsReply(["F001", "F002"]),
+  ];
 }
 
 function shardSixPhase(id, file) {

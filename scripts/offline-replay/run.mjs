@@ -366,6 +366,8 @@ async function ramp(flags) {
         stats,
         peakRssBytes: group.resource.peakRssBytes,
         peakHandles: group.resource.peakHandles,
+        peakCpuCores: group.resource.peakCpuCores,
+        meanCpuCores: group.resource.meanCpuCores,
         failures: group.failures,
         note: "",
       };
@@ -425,6 +427,10 @@ async function ramp(flags) {
     },
     durationMs: Date.now() - startedAt,
     startedAt: new Date(startedAt).toISOString(),
+    machine: {
+      logicalCpus: os.cpus().length,
+      totalMemBytes: os.totalmem(),
+    },
   };
 
   // 报告层字段名对齐（renderRampMarkdown 读 steps / baseline）。

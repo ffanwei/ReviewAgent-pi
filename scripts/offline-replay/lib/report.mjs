@@ -54,6 +54,14 @@ export function formatBytes(bytes) {
   return `${mb.toFixed(1)} MB`;
 }
 
+/** CPU 口径是「核」：1.0 = 占满一个逻辑核 */
+export function formatCores(cores) {
+  if (cores === null || cores === undefined) {
+    return "n/a";
+  }
+  return cores.toFixed(2);
+}
+
 export function renderRampMarkdown(result) {
   const lines = [
     `# Offline replay ramp — ${result.scenario}`,
@@ -74,20 +82,31 @@ export function renderRampMarkdown(result) {
       `- 模拟延迟带来的增量：${formatDuration(delta)}`,
     );
   }
+  if (result.machine !== undefined) {
+    const cpus = result.machine.logicalCpus;
+    const memGb = (result.machine.totalMemBytes / 1024 ** 3).toFixed(1);
+    lines.push(`- 机器：${String(cpus)} 逻辑核 / ${memGb} GB（CPU 列 = 进程树累计 CPU 时间差分 ÷ 采样间隔）`);
+  }
   lines.push(
     `- 停止：${result.stop.reason}${result.stop.atWorkers !== undefined ? `（workers=${String(result.stop.atWorkers)}）` : ""}`,
     `- 并发上限：${result.limit.workers === null ? "未测到稳定档位" : `${String(result.limit.workers)} workers`}`,
     "",
-    "| workers | success | median | p95 | min | max | peak RSS | peak handles | 备注 |",
-    "|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+    "| workers | success | median | p95 | min | max | peak RSS | peak handles | CPU 峰值(核) | CPU 均值(核) | CPU 占机 % | 备注 |",
+    "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
   );
+  const logicalCpus = result.machine?.logicalCpus ?? null;
   for (const step of result.steps) {
     const stats = step.stats;
+    const cpuShare =
+      step.meanCpuCores === null || step.meanCpuCores === undefined || logicalCpus === null
+        ? "n/a"
+        : `${((step.meanCpuCores / logicalCpus) * 100).toFixed(0)}%`;
     lines.push(
       `| ${String(step.workers)} | ${String(stats.success)}/${String(stats.total)} | ` +
         `${formatDuration(stats.medianMs)} | ${formatDuration(stats.p95Ms)} | ` +
         `${formatDuration(stats.minMs)} | ${formatDuration(stats.maxMs)} | ` +
         `${formatBytes(step.peakRssBytes)} | ${step.peakHandles === null ? "n/a" : String(step.peakHandles)} | ` +
+        `${formatCores(step.peakCpuCores)} | ${formatCores(step.meanCpuCores)} | ${cpuShare} | ` +
         `${step.note ?? ""} |`,
     );
   }
