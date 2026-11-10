@@ -3,6 +3,7 @@ import {
   assertDiffWithinCharLimit,
   filterDiffForReview,
   formatMrFilterNotice,
+  listChangedFilePaths,
   toMrFilterRecord,
 } from "./mr-input.js";
 
@@ -156,5 +157,52 @@ describe("测试文件跳过（limits.testFiles.skip）", () => {
     const record = toMrFilterRecord(filterDiffForReview([PROD_FILE, TEST_FILE].join("\n")));
     expect(record?.reasons).toEqual({ lockfile: 0, generated: 0, minified: 0, binary: 0, test: 1 });
     expect(formatMrFilterNotice(record!)).toContain("test=1");
+  });
+});
+
+describe("listChangedFilePaths：过滤前的变更文件全集（ADR-0068）", () => {
+  test("含被预过滤剔除的文件，按 diff 顺序去重", () => {
+    const input = [
+      block("src/main/java/Foo.java"),
+      block("src/test/java/FooTest.java"),
+      block("pnpm-lock.yaml"),
+      block("src/main/java/Foo.java"),
+      block("assets/logo.png"),
+    ].join("\n");
+    expect(listChangedFilePaths(input)).toEqual([
+      "src/main/java/Foo.java",
+      "src/test/java/FooTest.java",
+      "pnpm-lock.yaml",
+      "assets/logo.png",
+    ]);
+    // 过滤后只剩生产文件，但变更全集仍是 4 个
+    expect(filterDiffForReview(input).dropped.map((entry) => entry.path)).toEqual([
+      "src/test/java/FooTest.java",
+      "pnpm-lock.yaml",
+    ]);
+  });
+
+  test("删除文件退回旧侧路径；无法识别的块不进结果", () => {
+    const deleted = [
+      "diff --git a/old/Removed.java b/old/Removed.java",
+      "deleted file mode 100644",
+      "--- a/old/Removed.java",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-class Removed {}",
+    ].join("\n");
+    expect(listChangedFilePaths(deleted)).toEqual(["old/Removed.java"]);
+    expect(listChangedFilePaths("")).toEqual([]);
+    expect(listChangedFilePaths("not a diff")).toEqual([]);
+  });
+
+  test("二进制块按块头取路径", () => {
+    const binary = [
+      "diff --git a/assets/logo.png b/assets/logo.png",
+      "new file mode 100644",
+      "index 0000000..1111111",
+      "Binary files /dev/null and b/assets/logo.png differ",
+    ].join("\n");
+    expect(listChangedFilePaths(binary)).toEqual(["assets/logo.png"]);
   });
 });

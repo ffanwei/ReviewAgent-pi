@@ -20,7 +20,7 @@
 | 可观测 | stdout 单 JSON 文档；stderr 诊断与默认打印的阶段投影（`--no-progress` 静音）；退出码 0（含诚实截断）/ 1 |
 | diff 检视技能 | 仓内 `.agents/skills/` 两个可复跑技能：真实缺陷回放（默认 VUL4J-38 / CVE-2014-4172）与合成缺陷注入（GEN-RES-001）；真跑模型检视后把证据归档到 `repo-diff-skill-result/`（不入库） |
 | 离线回放 / 并发阶梯 | `scripts/offline-replay/`：冻结 trace → 本机回放服务替代模型网关，零网络、零 key 跑完整检视；支持规则 Skill / 分片场景、真网关录制与进程级并发档位（ADR-0048 / ADR-0049，不进产品包） |
-| 大 MR e2e（真 MCP + 前端） | `scripts/e2e-mcp/`：>1000 行 diff + 真模型 + 真 HTTP MCP server（SSE 展示页），验证 ADR-0061「summary 前每个改动文件必报」；同一次真实调用冻结成 `large-mr` 回放 trace |
+| 大 MR e2e（真 MCP + 前端） | `scripts/e2e-mcp/`：>1000 行 diff + 真模型 + 真 HTTP MCP server（SSE 展示页），验证 ADR-0061「summary 前每个改动文件必报」（ADR-0068 起含被预过滤剔除的文件）；同一次真实调用冻结成 `large-mr` 回放 trace |
 
 检视本体不限语言；符号 / 引用 / 调用链工具支持 Java、TypeScript（含 JS 变体）、Python、Go 与 C/C++（`codeintel.languages` 可配，缺省 `"auto"`，ADR-0041 / ADR-0042）。
 

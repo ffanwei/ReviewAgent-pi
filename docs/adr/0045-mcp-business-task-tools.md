@@ -26,6 +26,8 @@
 
 **后续修订**（2026-11-09，八）：[ADR-0061](0061-every-diff-file-reported-before-summary.md) 把覆盖率提到最高优先级——`saveReviewSummary` 之前，diff 里**每个变更文件都必须有一条 `mrReviewResult`**。有 finding 但片级报文生成失败 / tips 全部被校验跳过的文件，也发 `reviewTips: []`（推翻 ADR-0056 决策 2 的「绝不发空包」）；真实失败原因仍留在 stderr 与 uncovered 登记里。整个 diff 解析不出文件时保持不调用、只打一行 stderr。空包不登记 finding，总结口径（ADR-0057）不变。
 
+**后续修订**（2026-11-10，九）：[ADR-0068](0068-report-every-changed-file-including-filtered.md) 把「变更文件」的口径由过滤后 diff 改为**过滤前** diff：被 `limits.testFiles.skip` / lockfile / 生成物 / minified / binary 预过滤剔除的文件同样是变更文件，收尾按「全集 − 已上报」统一补报一条 `reviewTips: []`（stderr 一行 `已补报 N 个变更文件 / 0 条意见`）。顺序契约不变（补报仍早于 `saveReviewSummary`）；只有整个 diff 解析不出文件路径时才保持不调用。空包不登记 finding，总结口径（ADR-0057）不变。
+
 ## Context
 
 ADR-0037 定义的 MCP 上报只有一种形态：把进度事件**批量**塞进单个 tool（`mcp.report.tool`）的 `events` 数组。接入企业检视平台还需要**业务语义**的调用——平台要的不是事件流，而是：

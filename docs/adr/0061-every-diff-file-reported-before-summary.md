@@ -3,6 +3,7 @@
 **状态**：已接受（2026-11-09，用户决策）
 **关联**：[ADR-0045](0045-mcp-business-task-tools.md)（业务 tool 与片级报文生成）、[ADR-0056](0056-mr-review-result-covers-files-without-tips.md)（无意见文件补空 tips）、[ADR-0057](0057-summary-covers-only-reported-findings.md)（总结只覆盖已上报意见）、[ADR-0058](0058-shard-report-split-retry.md)（报文生成二分重试）
 **范围**：本仓 pi 线 0061。只改 `mrReviewResult` 的**覆盖完整性**：`saveReviewSummary` 之前，diff 里的**每个变更文件**都必须有一条 `mrReviewResult`。有意见带 tips，没有意见发 `reviewTips: []`；有 finding 但片级报文生成失败 / tips 全部被校验跳过的文件，也发 `reviewTips: []`。MCP 协议（每文件一条）、总结口径、退出码不动。
+**后续修订**：[ADR-0068](0068-report-every-changed-file-including-filtered.md)（2026-11-10）——「变更文件」的口径由**过滤后** diff 改为**过滤前** diff：被 `limits.testFiles.skip` / lockfile / 生成物 / minified / binary 预过滤剔除的文件同样是变更文件，收尾统一补报一条 `reviewTips: []`。决策 4 的「零文件保持不调用」只对「diff 完全解析不出文件路径」继续有效；「有变更文件但全被过滤」不再落到该分支。
 
 ## Context
 

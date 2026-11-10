@@ -142,6 +142,30 @@ export function splitDiffIntoFileBlocks(diff: string): readonly DiffFileBlock[] 
   return blocks;
 }
 
+/**
+ * 过滤前 diff 里的**全部**变更文件（repo 相对 POSIX 路径，按 diff 出现顺序去重）。
+ *
+ * 用途（ADR-0068）：MCP 上报的「变更文件全集」。被预过滤剔除的文件（测试 /
+ * lockfile / 生成物 / minified / binary）同样属于「变更过」，必须在
+ * `saveReviewSummary` 之前拿到一条 `mrReviewResult(reviewTips: [])`，否则平台
+ * 无法区分「检视过、没意见」与「从未检视」。
+ *
+ * 与 `splitDiffIntoFileBlocks` 共用同一套块边界，不另造解析器；无法识别路径的
+ * 前置块（`path === ""`）不进入结果。
+ */
+export function listChangedFilePaths(diff: string): readonly string[] {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const block of splitDiffIntoFileBlocks(diff)) {
+    if (block.path === "" || seen.has(block.path)) {
+      continue;
+    }
+    seen.add(block.path);
+    paths.push(block.path);
+  }
+  return paths;
+}
+
 function toDiffFileBlock(block: readonly string[], path: string): DiffFileBlock {
   let added = 0;
   let removed = 0;

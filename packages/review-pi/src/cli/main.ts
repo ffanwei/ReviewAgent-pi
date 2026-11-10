@@ -63,7 +63,7 @@ import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
 import { findingMergeKey } from "../run/findings-merge.js";
-import { formatMrFilterNotice } from "../run/mr-input.js";
+import { formatMrFilterNotice, listChangedFilePaths } from "../run/mr-input.js";
 import { runExportCommand } from "./export-command.js";
 import {
   ConfigError,
@@ -339,6 +339,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 输入形态（ADR-0029）：JSON 在装载期补文件头转成统一 diff，之后与 --mr-diff 同一条路径
     const mrText = await readFile(mrPath, "utf8");
     const diff = args.mrFormat === "json" ? mrJsonToUnifiedDiff(mrText, "--mr-json") : mrText;
+    // 变更文件全集（ADR-0068）：取**过滤前** diff——被预过滤剔除的文件也算变更过，
+    // 收尾必须补一条空 tips 的 mrReviewResult（否则平台把「被过滤」读成「未检视」）。
+    const changedFiles = listChangedFilePaths(diff);
 
     // 运行进度投影（ADR-0055，取代 ADR-0016 的 TTY 自动档）：缺省打印事件行；
     // `--no-progress` 显式静音（批跑收日志用）。静音时仍保留收尾摘要一行
@@ -429,6 +432,40 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 输入预过滤（大 diff 第一期）：剔了就必须可见（明细在审计 mrFilter）
     if (reviewed.mrFilter !== undefined) {
       process.stderr.write(`review-pi: ${formatMrFilterNotice(reviewed.mrFilter)}\n`);
+    }
+    // 变更文件全覆盖（ADR-0068）：预过滤剔除的文件不进入检视，但「变更过」是事实，
+    // 平台必须在 saveReviewSummary 前拿到一条 `reviewTips: []`。补报集合 = 变更文件
+    // 全集 − 已被片级回调上报过的文件；顺序契约不变（仍是全部 mrReviewResult 先于总结）。
+    if (taskToolsOn && activeReporter !== null && changedFiles.length > 0) {
+      const reportStartedAt = Date.now();
+      try {
+        const reported = new Set(
+          reportedFiles
+            .map((file) => normalizeReportFilePath(file))
+            .filter((file): file is string => file !== null),
+        );
+        const sent = await reportFilesWithoutTips({
+          label: "",
+          taskId: args.taskId,
+          reporter: activeReporter,
+          files: changedFiles.filter((file) => !reported.has(file)),
+          reportedFiles,
+          exclude: reported,
+        });
+        if (sent > 0) {
+          process.stderr.write(
+            `review-pi: MCP mrReviewResult 已补报 ${String(sent)} 个变更文件 / 0 条意见` +
+              "（预过滤剔除或未进入检视）\n",
+          );
+        }
+      } catch (error) {
+        // 旁路纪律（ADR-0045）：补报失败只留痕，不改检视结果与退出码。
+        process.stderr.write(
+          `review-pi: MCP mrReviewResult 补报变更文件失败（${describeReportFailure(error)}）\n`,
+        );
+      } finally {
+        stageClock.reportMs += Date.now() - reportStartedAt;
+      }
     }
     // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态。
     // 摘要与审计同源（usage / 请求 / 工具 / Ledger 命中），所以投影的调用不计入

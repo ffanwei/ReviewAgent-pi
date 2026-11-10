@@ -2368,6 +2368,116 @@ test(
 );
 
 test(
+  "MCP 变更文件全覆盖（ADR-0068）：全部被预过滤剔除也逐文件补报空意见，exit 0",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = writeMr(
+        [
+          "diff --git a/src/test/java/FooTest.java b/src/test/java/FooTest.java",
+          "--- a/src/test/java/FooTest.java",
+          "+++ b/src/test/java/FooTest.java",
+          "@@ -1 +1 @@",
+          "-class FooTest {}",
+          "+class FooTest { }",
+        ].join("\n"),
+      );
+
+      const run = await runCliReview(outDir, mrFile, {
+        ...stubEnv(stub.baseUrl),
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      // 过滤后 diff 为空：片级回调没有文件可发，但变更文件在收尾补报里拿到空 tips
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: "src/test/java/FooTest.java",
+        reviewTips: [],
+      });
+      expect(run.stderr).toContain("test=1");
+      expect(run.stderr).toContain("已补报 1 个变更文件 / 0 条意见");
+
+      // 零意见产物：tips 落成 []，英文 findings 为空
+      const tipsPath = path.join(cliRunsDir(outDir), "reviews_tips_zh.json");
+      expect(JSON.parse(readFileSync(tipsPath, "utf8"))).toEqual([]);
+      const outcome = JSON.parse(run.stdout) as { findings: unknown[] };
+      expect(outcome.findings).toEqual([]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "MCP 变更文件全覆盖（ADR-0068）：被过滤文件补报一次、已检视文件不重复上报",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const keep = "src/main/java/Keep.java";
+      const drop = "src/test/java/DropTest.java";
+      const mrFile = writeMr(
+        [
+          `diff --git a/${keep} b/${keep}`,
+          `--- a/${keep}`,
+          `+++ b/${keep}`,
+          "@@ -1 +1 @@",
+          "-class Keep {}",
+          "+class Keep { }",
+          `diff --git a/${drop} b/${drop}`,
+          `--- a/${drop}`,
+          `+++ b/${drop}`,
+          "@@ -1 +1 @@",
+          "-class DropTest {}",
+          "+class DropTest { }",
+        ].join("\n"),
+      );
+
+      const run = await runCliReview(outDir, mrFile, {
+        ...stubEnv(stub.baseUrl),
+        mcpServerUrl: mcp.url,
+      });
+
+      expect(run.status).toBe(0);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      // 每个变更文件恰好一条：先片级（被检视的 Keep），再收尾补报（被过滤的 DropTest）
+      expect(business.filter((call) => call.name === "mrReviewResult").map((call) => call.args.filePath)).toEqual([
+        keep,
+        drop,
+      ]);
+      expect(business[1]?.args).toEqual({ taskId: CLI_TASK_ID, filePath: keep, reviewTips: [] });
+      expect(business[2]?.args).toEqual({ taskId: CLI_TASK_ID, filePath: drop, reviewTips: [] });
+      expect(run.stderr).toContain("已上报 1 文件 / 0 条意见");
+      expect(run.stderr).toContain("已补报 1 个变更文件 / 0 条意见");
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
   "报文生成失败后按条数二分重试：两批都成功 → 两个文件都上报（ADR-0058）",
   async () => {
     const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
