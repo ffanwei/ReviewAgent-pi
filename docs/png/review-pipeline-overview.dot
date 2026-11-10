@@ -5,7 +5,7 @@ digraph review_pipeline_overview {
          color="#4A5568", fillcolor="#F7FAFC", penwidth=1.2, margin="0.16,0.08"];
   edge  [fontname="Microsoft YaHei", fontsize=9, color="#4A5568", arrowsize=0.7];
 
-  start   [label="review-pi review\n--repo <path> --mr-diff <file> | --mr-json <file>\n--taskId <id> [--issue] [--rule-skill-zip|--rule-skill]", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+  start   [label="review-pi review\n--repo <path> --mr-diff <file> | --mr-json <file>\n--taskId <id> [--issue]\n[--rule-skill-zip | --rule-skill | --skill]", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
   parse   [label="parseCliArgs\n未知旗标 / 缺值 → stderr + usage → exit 1"];
   config  [label="loadConfig(JSONC，只读一次)\n缺 reviewer.apiKey → fail fast\nexport 命令例外：不读配置"];
   endpoint[label="resolveReviewerEndpoint\nmodelId + stripModelPrefix\nbaseUrl"];
@@ -19,14 +19,14 @@ digraph review_pipeline_overview {
   subgraph cluster_core {
     label="runReview 内核（唯一形态）";
     fontname="Microsoft YaHei"; fontsize=12; color="#90CDF4"; style="rounded,dashed";
-    filter  [label="filterDiffForReview\n整块剔除 binary > lockfile > minified > generated\n绝不切 hunk"];
+    filter  [label="filterDiffForReview\n整块剔除 binary > lockfile > minified > generated > test\n（test 受 limits.testFiles.skip 控制，缺省剔除）\n绝不切 hunk"];
     volume  [label="体积门\nassertDiffWithinCharLimit\nlimits.boundary.maxDiffChars = 1,500,000\nnull = 关闭"];
     boundary[label="MR 边界护栏\nguardMrBoundary\nmaxFiles 10 / maxDiffLines 2,000\n超界 = domainWarning + 审计 mrBoundary"];
     plan    [label="分片规划\nplanReviewShards\nmaxShardChars 400,000 / maxShards 12\n只切文件块，不切 hunk", fillcolor="#FEFCBF"];
     route   [label="分片数 > 1 ?", shape=diamond, fillcolor="#FEFCBF"];
     single  [label="单遍路径\n与旧实现逐字节一致\nrunDir = runs/，auditDir = audit/"];
     shard   [label="N 片串行\n每片独立目录\nruns/shards/attempt-<ts>/sNN"];
-    pass    [label="一次 ReviewPass（每片 / 单遍）\n完整六阶段 + 规则 Skill 会话\n（子图 2）", fillcolor="#BEE3F8"];
+    pass    [label="一次 ReviewPass（每片 / 单遍）\n完整六阶段 + 规则 Skill 会话（七工具 + bash）\n（子图 2）", fillcolor="#BEE3F8"];
     perShard[label="片级上报缝 onShardFindings\n该片 findings 定型后 await\n→ 统一报文 + 逐文件 mrReviewResult\n（子图 4）", fillcolor="#FAF5FF"];
     merge   [label="N 片 findings 合并\nkey = (normalize(file), line, normalize(title))\n严重度取最高 / 证据并集 / 重编号 F001…\n单遍 = 恒等"];
     artifacts[label="落盘\nruns/run.json + audit/<runId>.json\nruns/<runId>.transcript.json\nruns/reviews_en.json", fillcolor="#C6F6D5"];
@@ -35,13 +35,14 @@ digraph review_pipeline_overview {
 
   post   [label="CLI 后处理\n收尾摘要行 / 解析失败提示\n源码行抽取 / 业务关闭兜底语义生成", fillcolor="#BEE3F8"];
   tips   [label="统一 tips 组装\n置信度 / 严重级过滤 → 同文件同行去重\njoin 片级语义 → 12 键\n→ reviews_tips_zh.json", fillcolor="#C6F6D5"];
-  summary[label="收尾总结\n只统计已上报的 findings\n零意见 = 固定文案；否则模型 / 模板\n→ saveReviewSummary", fillcolor="#FAF5FF"];
-  endTask[label="endTask(taskId)\n最后一条业务调用", fillcolor="#FAF5FF"];
-  mcpjson[label="runs/mcp.json\n四个业务调用的输入/输出/耗时", fillcolor="#C6F6D5"];
-  flush  [label="事件队列 flush\nsent / failed / dropped", fillcolor="#FAF5FF"];
-  session[label=".review-pi-session.json（cwd）\ntaskId / runs 主转录 / skill 转录", fillcolor="#C6F6D5"];
+  summary[label="收尾总结\n只统计已上报的 findings\n零意见 = 固定文案；否则模型 / 模板\n→ 5s 沉降 → saveReviewSummary", fillcolor="#FAF5FF"];
+  session[label=".review-pi-session.json（cwd）\nversion=2 mains[]（兼容 v1 main）\n主转录 / skill 转录", fillcolor="#C6F6D5"];
   stdout [label="stdout 单 JSON 文档\n{ok, caseId, runId, truncated,\nrounds, toolCalls, findings, auditPath}\nfindings 恒英文（无 presentation 键）", fillcolor="#C6F6D5"];
-  exit   [label="exit 0（诚实截断也是 0）\n任何异常 / 配置错误 → exit 1", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
+  endTask[label="[finally] endTask(taskId)\n5s 沉降后最后一业务调用", fillcolor="#FAF5FF"];
+  mcpjson[label="[finally] runs/mcp.json\n四个业务调用的输入/输出/耗时", fillcolor="#C6F6D5"];
+  flush  [label="[finally] 事件队列 flush\nsent / failed / dropped → reporter close", fillcolor="#FAF5FF"];
+  ledger [label="[finally] 收尾账本（仅 stderr）\n[time] 阶段耗时（7 段 + 审计/嵌套明细）\n[usage] 整任务 LLM 用量（成本按模型分桶）", fillcolor="#FEFCBF"];
+  exit   [label="exitGracefully\nexit 0（诚实截断也是 0）\n任何异常 / 配置错误 → exit 1", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
 
   start -> parse -> config -> endpoint -> tasks -> runlog -> echo -> readdiff -> mcp -> startTask -> filter;
   filter -> volume -> boundary -> plan -> route;
@@ -52,7 +53,7 @@ digraph review_pipeline_overview {
   pass -> perShard [style=dashed, label=" 每片一次 "];
   pass -> merge [label=" 全部片完成 "];
   merge -> artifacts;
-  artifacts -> post -> tips -> summary -> endTask -> mcpjson -> flush -> session -> stdout -> exit;
+  artifacts -> post -> tips -> summary -> session -> stdout -> endTask -> mcpjson -> flush -> ledger -> exit;
   perShard -> summary [style=dashed, label=" 已上报集合 "];
   events -> post [style=dotted, label=" 只投影不改结果 "];
 }
