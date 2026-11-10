@@ -14,6 +14,7 @@ import {
   describeLatency,
   formatBytes,
   formatDuration,
+  formatStepLine,
   renderRampMarkdown,
   summarizeRuns,
 } from "./lib/report.mjs";
@@ -311,6 +312,9 @@ async function ramp(flags) {
     if (baseline.failures.length > 0) {
       throw new Error(`单 run 基线失败（harness 不可用）：${baseline.failures[0]}`);
     }
+    process.stdout.write(
+      `${formatStepLine({ label: "baseline", workers: 1, stats: baseline.stats, ...baseline.resource })}\n`,
+    );
 
     if (flags.overheadBaseline !== false && scenario.latency.mode === "fixed") {
       const overheadServer = await startReplayServer({
@@ -333,6 +337,9 @@ async function ramp(flags) {
       } finally {
         await overheadServer.close();
       }
+      process.stdout.write(
+        `${formatStepLine({ label: "no-latency", workers: 1, stats: overheadBaseline.stats, ...overheadBaseline.resource })}\n`,
+      );
     }
 
     const singleRunCap = Math.max(60_000, (baseline.stats.medianMs ?? 0) * 3);
@@ -373,32 +380,36 @@ async function ramp(flags) {
       };
       stepsResult.push(step);
 
+      // 先判定停止、再打一行、最后才 break：即使这一档就是最后一档，也能立刻看到数字。
+      const halt = (reason, note) => {
+        stop.reason = reason;
+        stop.atWorkers = workers;
+        if (note !== undefined) {
+          step.note = note;
+        }
+      };
+      let halted = false;
       if (stats.success < stats.total) {
-        stop.reason = "failure";
-        stop.atWorkers = workers;
-        break;
+        halt("failure");
+        halted = true;
+      } else if (baselineMedian > 0 && stats.p95Ms > baselineMedian * 2) {
+        halt("p95", "p95 > 2× baseline");
+        halted = true;
+      } else if (group.resource.peakRssBytes !== null && group.resource.peakRssBytes > maxRssBytes) {
+        halt("rss", "peak RSS 超阈值");
+        halted = true;
+      } else if (group.resource.peakHandles !== null && group.resource.peakHandles > maxHandles) {
+        halt("handles", "句柄数超阈值");
+        halted = true;
+      } else {
+        limitWorkers = workers;
+        if (workers === steps[steps.length - 1]) {
+          stop.reason = "reached-max";
+        }
       }
-      if (baselineMedian > 0 && stats.p95Ms > baselineMedian * 2) {
-        stop.reason = "p95";
-        stop.atWorkers = workers;
-        step.note = "p95 > 2× baseline";
+      process.stdout.write(`${formatStepLine(step)}\n`);
+      if (halted) {
         break;
-      }
-      if (group.resource.peakRssBytes !== null && group.resource.peakRssBytes > maxRssBytes) {
-        stop.reason = "rss";
-        stop.atWorkers = workers;
-        step.note = "peak RSS 超阈值";
-        break;
-      }
-      if (group.resource.peakHandles !== null && group.resource.peakHandles > maxHandles) {
-        stop.reason = "handles";
-        stop.atWorkers = workers;
-        step.note = "句柄数超阈值";
-        break;
-      }
-      limitWorkers = workers;
-      if (workers === steps[steps.length - 1]) {
-        stop.reason = "reached-max";
       }
     }
   } finally {

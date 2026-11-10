@@ -62,6 +62,30 @@ export function formatCores(cores) {
   return cores.toFixed(2);
 }
 
+/**
+ * ramp 每档跑完就打印的一行（不必等到整轮结束才有数）。
+ * 字段与最终报告表同口径：wall 中位数/p95、进程树峰值 RSS/句柄、CPU 峰值/均值。
+ */
+export function formatStepLine(step) {
+  const stats = step.stats ?? {};
+  const label = step.label ?? `workers=${String(step.workers).padStart(3)}`;
+  const handles =
+    step.peakHandles === null || step.peakHandles === undefined ? "n/a" : String(step.peakHandles);
+  const parts = [
+    label,
+    `${String(stats.success ?? 0)}/${String(stats.total ?? 0)} ok`,
+    `median ${formatDuration(stats.medianMs ?? null)}`,
+    `p95 ${formatDuration(stats.p95Ms ?? null)}`,
+    `RSS ${formatBytes(step.peakRssBytes ?? null)}`,
+    `handles ${handles}`,
+    `CPU ${formatCores(step.peakCpuCores ?? null)}/${formatCores(step.meanCpuCores ?? null)} 核`,
+  ];
+  if (typeof step.note === "string" && step.note !== "") {
+    parts.push(step.note);
+  }
+  return `  ${parts.join("  ")}`;
+}
+
 export function renderRampMarkdown(result) {
   const lines = [
     `# Offline replay ramp — ${result.scenario}`,

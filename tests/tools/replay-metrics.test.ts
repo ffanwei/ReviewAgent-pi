@@ -5,7 +5,7 @@
 // @ts-expect-error -- scripts/offline-replay/lib/metrics.mjs 无类型声明
 import { parsePowershellJson, parsePs, parseWmicCsv } from "../../scripts/offline-replay/lib/metrics.mjs";
 // @ts-expect-error -- scripts/offline-replay/lib/report.mjs 无类型声明
-import { formatCores } from "../../scripts/offline-replay/lib/report.mjs";
+import { formatCores, formatStepLine } from "../../scripts/offline-replay/lib/report.mjs";
 
 import { describe, expect, test } from "vitest";
 
@@ -93,5 +93,50 @@ describe("report: CPU 核数格式", () => {
     expect(formatCores(1.234)).toBe("1.23");
     expect(formatCores(0)).toBe("0.00");
     expect(formatCores(null)).toBe("n/a");
+  });
+});
+
+describe("report: 每档即时行", () => {
+  test("档位行带 success/median/p95/RSS/句柄/CPU，缺值写 n/a", () => {
+    const line = formatStepLine({
+      workers: 16,
+      stats: { success: 3, total: 3, medianMs: 12_600, p95Ms: 13_100 },
+      peakRssBytes: 2_069_000_000,
+      peakHandles: 5937,
+      peakCpuCores: 6.82,
+      meanCpuCores: 5.11,
+    });
+    expect(line).toBe(
+      "  workers= 16  3/3 ok  median 12.60s  p95 13.10s  RSS 1973.2 MB  handles 5937  CPU 6.82/5.11 核",
+    );
+  });
+
+  test("停止原因作为尾注", () => {
+    const line = formatStepLine({
+      workers: 96,
+      stats: { success: 3, total: 3, medianMs: 900, p95Ms: 950 },
+      peakRssBytes: null,
+      peakHandles: null,
+      peakCpuCores: null,
+      meanCpuCores: null,
+      note: "peak RSS 超阈值",
+    });
+    expect(line).toContain("RSS n/a");
+    expect(line).toContain("handles n/a");
+    expect(line).toContain("CPU n/a/n/a");
+    expect(line.endsWith("peak RSS 超阈值")).toBe(true);
+  });
+
+  test("基线行可用自定义标签", () => {
+    const line = formatStepLine({
+      label: "no-latency",
+      workers: 1,
+      stats: { success: 3, total: 3, medianMs: 1200, p95Ms: 1300 },
+      peakRssBytes: 1024 * 1024,
+      peakHandles: 12,
+      peakCpuCores: 1.5,
+      meanCpuCores: 1.1,
+    });
+    expect(line.startsWith("  no-latency  3/3 ok")).toBe(true);
   });
 });
