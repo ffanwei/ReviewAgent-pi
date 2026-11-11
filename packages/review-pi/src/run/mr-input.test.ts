@@ -4,6 +4,7 @@ import {
   filterDiffForReview,
   formatMrFilterNotice,
   listChangedFilePaths,
+  MrDiffTooLargeError,
   toMrFilterRecord,
 } from "./mr-input.js";
 
@@ -169,6 +170,18 @@ describe("assertDiffWithinCharLimit：入口体积门", () => {
     expect(() => assertDiffWithinCharLimit("x".repeat(11), 10)).toThrow(/MR diff 过大/);
     expect(() => assertDiffWithinCharLimit("x".repeat(11), 10)).toThrow(/maxDiffChars/);
     expect(() => assertDiffWithinCharLimit("x".repeat(1_000), null)).not.toThrow();
+  });
+
+  test("超限抛结构化 MrDiffTooLargeError（CLI 据此走「跳过检视 + 上报空意见 + 固定总结」）", () => {
+    try {
+      assertDiffWithinCharLimit("x".repeat(11), 10);
+      throw new Error("expected throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(MrDiffTooLargeError);
+      expect((error as MrDiffTooLargeError).kind).toBe("diff-too-large");
+      expect((error as MrDiffTooLargeError).diffLength).toBe(11);
+      expect((error as MrDiffTooLargeError).maxChars).toBe(10);
+    }
   });
 });
 

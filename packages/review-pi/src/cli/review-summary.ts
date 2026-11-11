@@ -39,6 +39,9 @@ export const NO_FINDING_SUMMARY_MARKDOWN = "# 检视总结\n\n本次检视未发
 export const NO_REPORTED_SUMMARY_MARKDOWN =
   "# 检视总结\n\n本次检视未向平台上报任何检视意见。";
 
+/** diff 超 `limits.boundary.maxDiffChars` 跳过检视时的固定总结（ADR-0075，不调用模型） */
+export const DIFF_TOO_LARGE_SUMMARY_MARKDOWN = "# 检视总结\n\nDiff 超大，跳过检视。";
+
 export interface ReviewSummaryInput {
   /** 投影后的中文分组意见（投影降级 / 未配置引擎时缺席） */
   readonly tips?: ReviewTipsDocumentLike;

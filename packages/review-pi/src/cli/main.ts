@@ -65,7 +65,7 @@ import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
 import { findingMergeKey } from "../run/findings-merge.js";
-import { formatMrFilterNotice, listChangedFilePaths } from "../run/mr-input.js";
+import { formatMrFilterNotice, listChangedFilePaths, MrDiffTooLargeError } from "../run/mr-input.js";
 import { formatShardTruncationNotice } from "../run/shard-planner.js";
 import { runExportCommand } from "./export-command.js";
 import {
@@ -90,7 +90,7 @@ import { runConfigCommand } from "./config-command.js";
 import { McpCallLog, writeMcpCallLog } from "./mcp-call-log.js";
 import { openRunLog, type RunLog } from "./run-log.js";
 import { buildShardReportResilient, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
-import { buildReviewSummary } from "./review-summary.js";
+import { buildReviewSummary, DIFF_TOO_LARGE_SUMMARY_MARKDOWN } from "./review-summary.js";
 import {
   assembleUnifiedTips,
   countTips,
@@ -107,7 +107,7 @@ import {
   type StageSpan,
   type TaskUsagePurposeLine,
 } from "./progress-render.js";
-import { renderReviewOutcome } from "./render.js";
+import { renderJsonDocument, renderReviewOutcome } from "./render.js";
 import {
   createOneShotUsageCollector,
   type OneShotPurposeKey,
@@ -432,6 +432,35 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       // 异常路径也要擦掉状态行：残影会把错误消息顶成半行
       progress?.dispose();
       stageClock.auditMs = Date.now() - startedAt;
+      // ADR-0075：diff 超 `limits.boundary.maxDiffChars` → 跳过检视，但保证平台
+      // 收到「至少一次空意见上报 + 固定总结」（有始有终，不留空中间段）。
+      if (error instanceof MrDiffTooLargeError) {
+        process.stderr.write(`review-pi: ${error.message}（跳过检视）\n`);
+        if (taskToolsOn && activeReporter !== null && startTaskSent) {
+          const firstFile = changedFiles[0];
+          if (firstFile !== undefined) {
+            await reportFilesWithoutTips({
+              label: "",
+              taskId: args.taskId,
+              reporter: activeReporter,
+              files: [firstFile],
+              reportedFiles,
+            });
+          }
+          const outcome = await activeReporter.task.saveReviewSummary({
+            taskId: args.taskId,
+            markdownContent: DIFF_TOO_LARGE_SUMMARY_MARKDOWN,
+          });
+          summaryCallCompleted = true;
+          if (!outcome.ok) {
+            process.stderr.write(`review-pi: MCP saveReviewSummary 失败（${outcome.reason}）\n`);
+          }
+        }
+        await writeStdout(
+          renderJsonDocument({ ok: true, caseId: args.caseId, skipped: "diff-too-large", findings: [] }),
+        );
+        return 0;
+      }
       throw error;
     }
     const { record, runId, auditPath, reviewsPath, transcriptPaths } = reviewed;

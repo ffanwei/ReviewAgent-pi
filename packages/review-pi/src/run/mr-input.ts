@@ -369,14 +369,31 @@ export function filterDiffForReview(
  * 超限不是「检视失败」，而是「这份输入不适合一次性检视」——错误信息要给
  * 出两条可执行出路：拆分 MR，或显式关闭门禁。
  */
+/**
+ * MR 过滤后 diff 超 `limits.boundary.maxDiffChars` 的结构化错误（ADR-0075）：
+ * CLI 据此走「跳过检视、上报空意见 + 固定总结」，而不是整条命令失败。
+ */
+export class MrDiffTooLargeError extends Error {
+  readonly kind = "diff-too-large";
+  readonly diffLength: number;
+  readonly maxChars: number;
+
+  constructor(diffLength: number, maxChars: number) {
+    super(
+      `MR diff 过大：${String(diffLength)} 字符，超过上限 ${String(maxChars)} 字符（limits.boundary.maxDiffChars）。` +
+        `请把 MR 拆成更小的批次分别检视；如确认要关闭该门禁，在配置里设 limits.boundary.maxDiffChars = null。`,
+    );
+    this.name = "MrDiffTooLargeError";
+    this.diffLength = diffLength;
+    this.maxChars = maxChars;
+  }
+}
+
 export function assertDiffWithinCharLimit(diff: string, maxChars: number | null): void {
   if (maxChars === null || diff.length <= maxChars) {
     return;
   }
-  throw new Error(
-    `MR diff 过大：${String(diff.length)} 字符，超过上限 ${String(maxChars)} 字符（limits.boundary.maxDiffChars）。` +
-      `请把 MR 拆成更小的批次分别检视；如确认要关闭该门禁，在配置里设 limits.boundary.maxDiffChars = null。`,
-  );
+  throw new MrDiffTooLargeError(diff.length, maxChars);
 }
 
 /** 审计 / 摘要用的窄投影（无剔除 = undefined，缺席省键） */
