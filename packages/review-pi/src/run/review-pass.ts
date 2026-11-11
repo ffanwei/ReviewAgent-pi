@@ -12,7 +12,12 @@ import type {
   RunAudit,
 } from "../contracts/run.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
-import { buildTranscript, writeTranscript } from "../export/transcript.js";
+import {
+  buildOpenCodeSession,
+  writeOpenCodeSession,
+  type OpenCodeSubagentRef,
+} from "../export/opencode-compat.js";
+import { buildTranscript, transcriptStem, writeTranscript } from "../export/transcript.js";
 import { buildDiffScope } from "../gate/diff-scope.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
@@ -207,7 +212,9 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
     ...(input.config !== undefined ? { config: input.config } : {}),
   });
   const auditPath = await writeAuditFile(input.auditDir, auditContent);
-  // 检视转录：agent.state.messages 原样 + 合成 system；每 run 独立留档
+  // 检视转录：agent.state.messages 原样 + 合成 system；每 run 独立留档。
+  // OpenCode 兼容会话（ADR-0072）与原生转录同 run 落盘：父会话在末尾追加
+  // 指向各 skill 子会话的 `subagent` 工具 part。
   const transcriptPath = await persistTranscript({
     caseId: input.caseId,
     repoPath: input.repoPath,
@@ -217,6 +224,7 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
     capture: outcome.transcript,
     complete: outcome.complete,
     truncated: outcome.audit.truncated,
+    subagents: persisted.subagents,
   });
   // 检视意见导出
   const reviewsPath = await persistReviewsEn({
@@ -267,13 +275,15 @@ async function persistSkillTranscripts(args: {
 }): Promise<{
   readonly records: readonly RuleSkillPassRecord[];
   readonly paths: readonly string[];
+  readonly subagents: readonly OpenCodeSubagentRef[];
 }> {
   if (args.transcripts.length === 0) {
-    return { records: args.records, paths: [] };
+    return { records: args.records, paths: [], subagents: [] };
   }
   const suffixes = uniqueTranscriptSuffixes(args.records);
   const enriched = [...args.records];
   const paths: string[] = [];
+  const subagents: OpenCodeSubagentRef[] = [];
   // 转录是记录的按序子集（没发出过请求的失败会话没有转录）：从上次命中之后
   // 继续找 (round, skill) 相同的记录，命中即回填 basename。
   let searchFrom = 0;
@@ -301,12 +311,23 @@ async function persistSkillTranscripts(args: {
     });
     const filePath = await writeTranscript(args.runDir, content);
     paths.push(filePath);
+    // OpenCode 兼容子会话（ADR-0072）：只写增量（丢弃种子前缀），parentID 指向
+    // 同 run 的主会话；sessionId 与原生 `info.id` 同值、稳定且全局唯一。
+    const compat = buildOpenCodeSession({
+      info: content.info,
+      systemPrompt: SYSTEM_PROMPT,
+      messages: transcript.capture.messages,
+      parentID: transcriptStem(args.runId),
+      seedCount: transcript.seedCount,
+    });
+    await writeOpenCodeSession(args.runDir, compat);
+    subagents.push({ sessionID: compat.info.id, description: `${transcript.skill} (round ${transcript.round})` });
     const record = enriched[index];
     if (record !== undefined) {
       enriched[index] = { ...record, transcriptFile: path.basename(filePath) };
     }
   }
-  return { records: enriched, paths };
+  return { records: enriched, paths, subagents };
 }
 
 /** 每个 skill pass 的稳定文件名后缀（同名 skill 重复时追加 -2、-3…） */
@@ -325,7 +346,7 @@ function defaultTranscriptSuffix(target: { readonly round: number; readonly skil
   return `-skill-${safe}-r${target.round}`;
 }
 
-/** 检视转录落盘：`<runDir>/session-<runId>[-suffix].json`；失败抛错 */
+/** 检视转录落盘：`<runDir>/session-<runId>[-suffix].json` + OpenCode 兼容版（ADR-0072）；失败抛错 */
 async function persistTranscript(args: {
   readonly caseId: string;
   readonly repoPath: string;
@@ -335,6 +356,8 @@ async function persistTranscript(args: {
   readonly capture: Parameters<typeof buildTranscript>[0]["capture"];
   readonly complete: boolean;
   readonly truncated: boolean;
+  /** 指向本 run 各 skill 子会话的 `subagent` 工具 part（追加到末条 assistant） */
+  readonly subagents: readonly OpenCodeSubagentRef[];
 }): Promise<string> {
   const content = buildTranscript({
     runId: args.runId,
@@ -346,6 +369,15 @@ async function persistTranscript(args: {
     truncated: args.truncated,
     finishedAt: args.finishedAt,
   });
+  // OpenCode 兼容主会话（ADR-0072）：原生真源不动，另写 `<runDir>/opencode/`。
+  // 父会话无 `seedCount`（全量），`subagents` 让 viewer 能点进各子会话。
+  const compat = buildOpenCodeSession({
+    info: content.info,
+    systemPrompt: SYSTEM_PROMPT,
+    messages: args.capture.messages,
+    ...(args.subagents.length > 0 ? { subagents: args.subagents } : {}),
+  });
+  await writeOpenCodeSession(args.runDir, compat);
   return writeTranscript(args.runDir, content);
 }
 

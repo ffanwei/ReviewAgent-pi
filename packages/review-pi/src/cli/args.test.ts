@@ -945,8 +945,8 @@ test("USAGE_TEXT：宣告四个子命令（stderr 错误路径同款文案，单
   expect(USAGE_TEXT).toContain("review-pi review --repo");
   expect(USAGE_TEXT).toContain("review-pi smoke");
   expect(USAGE_TEXT).toContain("review-pi config <init|show>");
-  // export（ADR-0036）：三个旗标都在用法面
-  expect(USAGE_TEXT).toContain("review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>]");
+  // export（ADR-0036 / ADR-0072）：四个旗标都在用法面
+  expect(USAGE_TEXT).toContain("review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]");
   // 落盘位置只在 taskId 面上出现（--out 已从用法面移除）
   expect(USAGE_TEXT).toContain("--taskId <id>");
   expect(USAGE_TEXT).toContain("--tasks-dir <dir>");
@@ -1027,7 +1027,7 @@ test("进度旗标：smoke 面不认（只有 review 显示进度）", () => {
   });
 });
 
-test("export 子命令：三个旗标全可选，缺省全缺席", () => {
+test("export 子命令：有值旗标全可选 + --native 布尔旗标 + --trace，缺省全缺席", () => {
   expect(parseCliArgs(["export"])).toEqual({
     ok: true,
     command: "export",
@@ -1039,6 +1039,20 @@ test("export 子命令：三个旗标全可选，缺省全缺席", () => {
     ok: true,
     command: "export",
     args: { taskId: "t-1", tasksDir: "D:/tasks", destPath: "out" },
+  });
+  expect(parseCliArgs(["export", "--trace", "D:/trace"])).toEqual({
+    ok: true,
+    command: "export",
+    args: { traceDir: "D:/trace" },
+  });
+  expect(parseCliArgs(["export", "--native"])).toEqual({
+    ok: true,
+    command: "export",
+    args: { native: true },
+  });
+  expect(parseCliArgs(["export", "--native", "--native"])).toEqual({
+    ok: false,
+    message: "duplicate flag --native",
   });
 });
 

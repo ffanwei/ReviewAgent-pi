@@ -1,12 +1,13 @@
-import { copyFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
+import { OPENCODE_DIR } from "./opencode-compat.js";
 import { runDirPath } from "../experiment/run-record.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { readSessionIndex, tryReadSessionIndex, type SessionIndex } from "./session-index.js";
 
 /**
- * `review-pi export` 的解析与复制（ADR-0036）。
+ * `review-pi export` 的解析与复制（ADR-0036 / ADR-0072）。
  *
  * 两种寻址：
  * - 缺省：读 cwd 的 `.review-pi-session.json`（上一次成功 run 写的绝对路径）；
@@ -14,7 +15,11 @@ import { readSessionIndex, tryReadSessionIndex, type SessionIndex } from "./sess
  *   （以 `run.json` 的 `auditPath` 反推 runId，再拼主 / skill 文件名）。
  *
  * 两种模式都只返回**文件确实存在**的路径；缺文件即人话报错，不返回幽灵路径。
- * `--path <dir>` 平铺复制（保留原文件名、同名覆盖），返回值改为复制后的绝对路径。
+ *
+ * 表示切换（ADR-0072）：缺省返回 OpenCode 兼容版转录（同目录 `<…>/opencode/`），
+ * `--native` 切回 pi 原生转录；`--path <dir>` 平铺复制所选表示（保留原文件名、
+ * 同名覆盖），返回值改为复制后的绝对路径；复制兼容版时目标目录额外产出
+ * `manifest.json`（导入顺序）。
  */
 
 export interface SessionPaths {
@@ -37,6 +42,8 @@ export interface ExportSessionsInput {
   readonly tasksDir?: string;
   /** 复制目标目录（相对 cwd）；缺席 = 只返回源路径 */
   readonly destPath?: string;
+  /** 表示切换（ADR-0072）：true = 返回 pi 原生转录；缺席 = OpenCode 兼容版 */
+  readonly native?: boolean;
 }
 
 export interface ExportSessionsResult {
@@ -53,10 +60,15 @@ export async function exportSessions(input: ExportSessionsInput): Promise<Export
     input.taskId === undefined
       ? sessionsFromIndex(await readSessionIndex(input.cwd))
       : await sessionsFromTask(input, input.taskId);
-  const sources = (sessions.order ?? [...sessions.mains, ...sessions.skills]).map((file) =>
-    resolve(file),
-  );
-  await assertSessionsExist(sources);
+  const ordered = sessions.order ?? [...sessions.mains, ...sessions.skills];
+  const nativeSources = ordered.map((file) => resolve(file));
+  await assertSessionsExist(nativeSources);
+
+  const native = input.native === true;
+  const sources = native ? nativeSources : nativeSources.map(compatPathOf);
+  if (!native) {
+    await assertCompatSessionsExist(sources);
+  }
 
   if (input.destPath === undefined) {
     return { sources, returned: sources };
@@ -73,7 +85,74 @@ export async function exportSessions(input: ExportSessionsInput): Promise<Export
     }
     returned.push(target);
   }
+  // OpenCode 兼容版复制时在目标目录写导入顺序清单（ADR-0072）：只随兼容版产出，
+  // 原生复制不写。
+  if (!native) {
+    await writeCompatManifest(copiedTo, sources);
+  }
   return { sources, returned, copiedTo };
+}
+
+/** 原生转录路径 → 同目录 `opencode/` 子目录下的兼容版路径 */
+function compatPathOf(nativePath: string): string {
+  const resolved = resolve(nativePath);
+  return join(dirname(resolved), OPENCODE_DIR, basename(resolved));
+}
+
+/** 兼容版存在性校验：缺失报「旧 run 无兼容转录、请用 --native」的人话，不返回幽灵路径 */
+async function assertCompatSessionsExist(files: readonly string[]): Promise<void> {
+  const missing: string[] = [];
+  for (const file of files) {
+    try {
+      const info = await stat(file);
+      if (!info.isFile()) {
+        missing.push(file);
+      }
+    } catch {
+      missing.push(file);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `该 run 没有 OpenCode 兼容转录（<runs>/opencode/ 子目录缺失或文件不全）；` +
+        `旧 run 请改用 --native 取原生转录，或用升级后的 review-pi 重跑。缺失：\n${missing.join("\n")}`,
+    );
+  }
+}
+
+/**
+ * 兼容版目标目录的 `manifest.json`（ADR-0072）：记录导入顺序（父先于子）与
+ * 每条会话的 `info.id` / `parentID` / `outcome`。`parentID` / `outcome` 读自
+ * 兼容文件自己的 `info`（文件系统读取，仍不碰配置 / 不调模型）。
+ */
+async function writeCompatManifest(dir: string, compatFiles: readonly string[]): Promise<void> {
+  const importOrder: string[] = [];
+  const sessions: unknown[] = [];
+  for (const file of compatFiles) {
+    const id = basename(file).replace(/\.json$/, "");
+    importOrder.push(id);
+    let info: Record<string, unknown> | undefined;
+    try {
+      const parsed = JSON.parse(await readFile(file, "utf8")) as { info?: unknown };
+      if (typeof parsed.info === "object" && parsed.info !== null) {
+        info = parsed.info as Record<string, unknown>;
+      }
+    } catch {
+      info = undefined;
+    }
+    sessions.push({
+      id,
+      file: basename(file),
+      ...(info?.["parentID"] !== undefined ? { parentID: info["parentID"] } : {}),
+      ...(info?.["outcome"] !== undefined ? { outcome: info["outcome"] } : {}),
+    });
+  }
+  const manifest = {
+    generatedAt: new Date().toISOString(),
+    importOrder,
+    sessions,
+  };
+  await writeFile(join(dir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 function sessionsFromIndex(index: SessionIndex): SessionPaths {

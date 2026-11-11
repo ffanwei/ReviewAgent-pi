@@ -7,11 +7,13 @@ import { exportSessions } from "./session-export.js";
 import { writeSessionIndex, type SessionIndex } from "./session-index.js";
 
 /**
- * export 解析与复制（ADR-0036）：
+ * export 解析与复制（ADR-0036 / ADR-0072）：
  * - 索引模式：主会话在前，skill 按 skillPassLog 顺序；
  * - `--taskId` 模式：从 run.json 的 auditPath 反推 runId；
  * - `--path`：平铺复制、返回目标路径；
  * - 索引里的 tasksDir 优先于 --tasks-dir；
+ * - 表示切换：缺省 = OpenCode 兼容版（opencode/），`--native` = 原生；
+ * - 旧 run 无 opencode/ → 人话报错；复制兼容版时写 manifest.json；
  * - 文件缺失 / 任务缺失是人话错误。
  */
 
@@ -30,12 +32,20 @@ afterAll(() => {
   }
 });
 
+interface MadeTask {
+  readonly mains: readonly string[];
+  readonly skills: readonly string[];
+  readonly compatMains: readonly string[];
+  readonly compatSkills: readonly string[];
+}
+
+/** 建一份任务产物：原生转录 + 同目录 opencode/ 兼容版（含 manifest 读取所需的 info） */
 function makeTask(
   tasksRoot: string,
   taskId: string,
   skillNames: readonly string[],
   runId = RUN_ID,
-): { readonly mains: readonly string[]; readonly skills: readonly string[] } {
+): MadeTask {
   const runs = path.join(tasksRoot, taskId, "runs");
   mkdirSync(runs, { recursive: true });
   const main = path.join(runs, `session-${runId}.json`);
@@ -43,6 +53,27 @@ function makeTask(
   const skills = skillNames.map((name) => {
     const file = path.join(runs, `session-${runId}-skill-${name}-r1.json`);
     writeFileSync(file, `{"skill":"${name}"}\n`, "utf8");
+    return file;
+  });
+  // OpenCode 兼容版（ADR-0072 的 run 时产物），放在 opencode/ 子目录
+  const ocDir = path.join(runs, "opencode");
+  mkdirSync(ocDir, { recursive: true });
+  const compatMain = path.join(ocDir, `session-${runId}.json`);
+  writeFileSync(
+    compatMain,
+    JSON.stringify({ info: { id: `session-${runId}`, outcome: "succeeded", tokens: {}, cost: 0 } }),
+    "utf8",
+  );
+  const compatSkills = skillNames.map((name, position) => {
+    const id = `session-${runId}-skill-${name}-r1`;
+    const file = path.join(ocDir, `${id}.json`);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        info: { id, parentID: `session-${runId}`, outcome: skills.length - 1 === position ? "succeeded" : "succeeded" },
+      }),
+      "utf8",
+    );
     return file;
   });
   const record = {
@@ -67,7 +98,7 @@ function makeTask(
     },
   };
   writeFileSync(path.join(runs, "run.json"), JSON.stringify(record), "utf8");
-  return { mains: [main], skills };
+  return { mains: [main], skills, compatMains: [compatMain], compatSkills };
 }
 
 function indexOf(
@@ -88,16 +119,17 @@ function indexOf(
   };
 }
 
-test("索引模式：主会话在前，skill 按 skillPassLog 顺序", async () => {
-  const cwd = makeTempDir("review-pi-export-index-");
+test("缺省返回 OpenCode 兼容版；--native 返回原生转录（索引模式）", async () => {
+  const cwd = makeTempDir("review-pi-export-representation-");
   const tasksRoot = path.join(cwd, "tasks");
   const sessions = makeTask(tasksRoot, "t-1", ["a", "b"]);
   await writeSessionIndex(cwd, indexOf(cwd, "t-1", tasksRoot, sessions));
 
-  const result = await exportSessions({ cwd });
-  expect(result.returned).toEqual([...sessions.mains, ...sessions.skills]);
-  expect(result.sources).toEqual(result.returned);
-  expect(result.copiedTo).toBeUndefined();
+  const compat = await exportSessions({ cwd });
+  expect(compat.returned).toEqual([...sessions.compatMains, ...sessions.compatSkills]);
+
+  const native = await exportSessions({ cwd, native: true });
+  expect(native.returned).toEqual([...sessions.mains, ...sessions.skills]);
 });
 
 test("无索引：人话报错（提示 --taskId 或先跑 review）", async () => {
@@ -105,12 +137,27 @@ test("无索引：人话报错（提示 --taskId 或先跑 review）", async () 
   await expect(exportSessions({ cwd })).rejects.toThrow(/未找到 session 索引/);
 });
 
+test("旧 run（无 opencode/）：缺省报人话错误并提示 --native", async () => {
+  const cwd = makeTempDir("review-pi-export-oldrun-");
+  const tasksRoot = path.join(cwd, "tasks");
+  const sessions = makeTask(tasksRoot, "t-1", ["a"]);
+  rmSync(sessions.compatMains[0] as string);
+  rmSync(sessions.compatSkills[0] as string);
+  rmSync(path.join(tasksRoot, "t-1", "runs", "opencode"), { recursive: true, force: true });
+  await writeSessionIndex(cwd, indexOf(cwd, "t-1", tasksRoot, sessions));
+
+  await expect(exportSessions({ cwd })).rejects.toThrow(/没有 OpenCode 兼容转录/);
+  // --native 仍可读原生
+  const native = await exportSessions({ cwd, native: true });
+  expect(native.returned).toEqual([...sessions.mains, ...sessions.skills]);
+});
+
 test("--taskId 模式：按 --tasks-dir 找任务，runId 从 auditPath 反推", async () => {
   const cwd = makeTempDir("review-pi-export-task-");
   const tasksRoot = path.join(cwd, "tasks");
   const sessions = makeTask(tasksRoot, "t-9", ["x"]);
 
-  const result = await exportSessions({ cwd, taskId: "t-9", tasksDir: tasksRoot });
+  const result = await exportSessions({ cwd, taskId: "t-9", tasksDir: tasksRoot, native: true });
   expect(result.returned).toEqual([...sessions.mains, sessions.skills[0]]);
 });
 
@@ -122,7 +169,7 @@ test("索引里的 tasksDir 优先于 --tasks-dir", async () => {
   makeTask(flagPath, "t-1", ["only-flag"]);
   await writeSessionIndex(cwd, indexOf(cwd, "t-1", indexPath, indexed));
 
-  const result = await exportSessions({ cwd, taskId: "t-1", tasksDir: flagPath });
+  const result = await exportSessions({ cwd, taskId: "t-1", tasksDir: flagPath, native: true });
   expect(result.returned[0]?.startsWith(indexPath)).toBe(true);
   expect(result.returned.some((file) => file.includes("only-index"))).toBe(true);
 });
@@ -133,7 +180,7 @@ test("--path：平铺复制、内容一致、返回目标绝对路径（主在�
   const sessions = makeTask(tasksRoot, "t-1", ["a", "b"]);
   await writeSessionIndex(cwd, indexOf(cwd, "t-1", tasksRoot, sessions));
 
-  const result = await exportSessions({ cwd, destPath: "out/sessions" });
+  const result = await exportSessions({ cwd, destPath: "out/sessions", native: true });
   const destDir = path.join(cwd, "out", "sessions");
   expect(result.copiedTo).toBe(destDir);
   expect(result.returned).toEqual([
@@ -144,6 +191,29 @@ test("--path：平铺复制、内容一致、返回目标绝对路径（主在�
     readFileSync(sessions.mains[0] as string, "utf8"),
   );
   expect(existsSync(result.returned[1] as string)).toBe(true);
+  expect(existsSync(path.join(destDir, "manifest.json"))).toBe(false); // 原生复制不产 manifest
+});
+
+test("--path 复制兼容版：目标目录多一份 manifest.json（父先于子）", async () => {
+  const cwd = makeTempDir("review-pi-export-copy-compat-");
+  const tasksRoot = path.join(cwd, "tasks");
+  const sessions = makeTask(tasksRoot, "t-1", ["a", "b"]);
+  await writeSessionIndex(cwd, indexOf(cwd, "t-1", tasksRoot, sessions));
+
+  const result = await exportSessions({ cwd, destPath: "out/oc" });
+  const destDir = path.join(cwd, "out", "oc");
+  expect(result.returned).toEqual([
+    ...sessions.compatMains.map((file) => path.join(destDir, path.basename(file))),
+    ...sessions.compatSkills.map((file) => path.join(destDir, path.basename(file))),
+  ]);
+  const manifest = readFileSync(path.join(destDir, "manifest.json"), "utf8");
+  const parsed = JSON.parse(manifest) as { importOrder: readonly string[]; sessions: readonly { parentID?: string }[] };
+  expect(parsed.importOrder).toEqual([
+    `session-${RUN_ID}`,
+    `session-${RUN_ID}-skill-a-r1`,
+    `session-${RUN_ID}-skill-b-r1`,
+  ]);
+  expect(parsed.sessions[1]?.["parentID"]).toBe(`session-${RUN_ID}`);
 });
 
 test("主会话文件缺失：不返回幽灵路径", async () => {
@@ -153,14 +223,14 @@ test("主会话文件缺失：不返回幽灵路径", async () => {
   rmSync(sessions.mains[0] as string);
   await writeSessionIndex(cwd, indexOf(cwd, "t-1", tasksRoot, sessions));
 
-  await expect(exportSessions({ cwd })).rejects.toThrow(/session 文件不存在/);
+  await expect(exportSessions({ cwd, native: true })).rejects.toThrow(/session 文件不存在/);
 });
 
 test("任务不存在：人话报错", async () => {
   const cwd = makeTempDir("review-pi-export-notask-");
   const tasksRoot = path.join(cwd, "tasks");
   mkdirSync(tasksRoot, { recursive: true });
-  await expect(exportSessions({ cwd, taskId: "nope", tasksDir: tasksRoot })).rejects.toThrow(
+  await expect(exportSessions({ cwd, taskId: "nope", tasksDir: tasksRoot, native: true })).rejects.toThrow(
     /没有 run\.json/,
   );
 });
@@ -184,6 +254,11 @@ test("分片任务：按 s01 主 → s01 skill → s02 主 → s02 skill 列出�
     const skill = path.join(shardDir, `session-${shardRunId}-skill-rule-r1.json`);
     writeFileSync(main, `{"shard":${String(position + 1)}}\n`, "utf8");
     writeFileSync(skill, `{"shard":${String(position + 1)},"skill":"rule"}\n`, "utf8");
+    // 兼容版（缺省路径靠此存在性校验通过）
+    const ocDir = path.join(shardDir, "opencode");
+    mkdirSync(ocDir, { recursive: true });
+    writeFileSync(path.join(ocDir, path.basename(main)), `{"info":{"id":"${path.basename(main, ".json")}"}}\n`, "utf8");
+    writeFileSync(path.join(ocDir, path.basename(skill)), `{"info":{"id":"${path.basename(skill, ".json")}"}}\n`, "utf8");
     mainFiles.push(main);
     skillFiles.push(skill);
     // 聚合 run.json 里两者都是 runs 目录相对 POSIX 路径
@@ -228,7 +303,7 @@ test("分片任务：按 s01 主 → s01 skill → s02 主 → s02 skill 列出�
     "utf8",
   );
 
-  const result = await exportSessions({ cwd, taskId, tasksDir: tasksRoot });
+  const result = await exportSessions({ cwd, taskId, tasksDir: tasksRoot, native: true });
   expect(result.returned).toEqual([
     mainFiles[0],
     skillFiles[0],

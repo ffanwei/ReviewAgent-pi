@@ -177,8 +177,9 @@ review-pi review \
 每次 `review` 成功后在**执行目录**写一份隐藏索引 `.review-pi-session.json`（只有绝对路径与 runId，不含检视内容；重复执行整份覆盖；`version: 2` 起主转录是 `mains[]`，读取端兼容 v1 的单个 `main`）。`export` 直接读它：
 
 ```bash
-review-pi export                      # 单行、逗号 + 空格分隔：单遍主 session 在前、skill 依次在后；分片 s01 主 → s01 skill → s02 主 → …
-review-pi export --path ./sessions    # 复制到该目录（平铺、同名覆盖），返回复制后的路径
+review-pi export                      # 缺省返回 OpenCode 兼容版（<runs>/opencode/…），单行、逗号 + 空格分隔：单遍主 session 在前、skill 依次在后；分片 s01 主 → s01 skill → s02 主 → …
+review-pi export --native             # 返回 pi 原生转录
+review-pi export --path ./sessions    # 复制所选表示到该目录（平铺、同名覆盖），返回复制后的路径；复制兼容版时目标目录多一份 manifest.json
 review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任务最新一次 run
 ```
 

@@ -49,6 +49,8 @@ import type { RunProgressSink } from "../contracts/progress.js";
 import type { PhaseRecord } from "../contracts/run.js";
 import { runDirPath } from "../experiment/run-record.js";
 import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-index.js";
+import { LifecycleCollector, writeLifecycleSessions } from "../export/lifecycle.js";
+import { writeRunTrace } from "../export/trace-export.js";
 import {
   createMcpReporter,
   normalizeReportFilePath,
@@ -75,7 +77,7 @@ import {
   type ResolvedConfig,
 } from "../shared/config.js";
 import { retryPolicyFor } from "../shared/llm-retry.js";
-import { setOneShotUsageSink } from "../shared/one-shot-llm.js";
+import { setOneShotUsageSink, setOneShotLifecycleSink } from "../shared/one-shot-llm.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
 import { isSeverityBelow } from "../shared/severity-filter.js";
 import { isConfidenceBelow } from "../shared/tips-filter.js";
@@ -241,6 +243,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // `session-<ts>.json` 转录同目录（`<tasks 根>/<taskId>/runs/`）。旁路：
   // 写盘失败只落 stderr，不改退出码。
   const mcpCallLog = new McpCallLog();
+  // 会话生命周期留痕（ADR-0073）：进程级按发生顺序收集 one-shot + MCP 四工具
+  const lifecycleCollector = new LifecycleCollector();
   const reportConfig = resolveReportConfig(config);
   let reporter: McpReporter | null = null;
   if (reportConfig !== null) {
@@ -248,7 +252,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       reporter = await createMcpReporter({
         config: reportConfig,
         clientVersion: REVIEW_PI_VERSION,
-        onTaskCall: (trace) => mcpCallLog.record(trace),
+        onTaskCall: (trace) => {
+          mcpCallLog.record(trace);
+          lifecycleCollector.recordTask(trace);
+        },
       });
     } catch (error) {
       process.stderr.write(
@@ -335,8 +342,15 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         }
       : undefined;
 
+  // runReview 成功后回填，供 finally 收尾把生命周期步骤写进会话（ADR-0073）
+  let lifecycleRun:
+    | { readonly runId: string; readonly transcriptPaths: readonly string[] }
+    | undefined;
+
   try {
     setOneShotUsageSink(usageCollector.sink);
+    // 生命周期全文留痕（ADR-0073）：one-shot 三目的全文进会话时间线
+    setOneShotLifecycleSink((event) => lifecycleCollector.recordOneShot(event));
     // 输入形态（ADR-0029）：JSON 在装载期补文件头转成统一 diff，之后与 --mr-diff 同一条路径
     const mrText = await readFile(mrPath, "utf8");
     const diff = args.mrFormat === "json" ? mrJsonToUnifiedDiff(mrText, "--mr-json") : mrText;
@@ -421,6 +435,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       throw error;
     }
     const { record, runId, auditPath, reviewsPath, transcriptPaths } = reviewed;
+    lifecycleRun = { runId, transcriptPaths };
     agentUsage = record.baseline.usage;
     agentCalls = reviewed.modelCalls;
     stageClock.auditMs = (stageClock.auditEndedAt ?? Date.now()) - startedAt;
@@ -805,6 +820,37 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         );
       }
     }
+    // 会话生命周期留痕（ADR-0073）：endTask 之后把 startTask → 检视对话 → 外部
+    // 步骤 → endTask 拼进兼容会话。runReview 成功才写（检视失败沿用「不写
+    // session」现状）；写失败只警告——留痕是排障能力，不配把检视判失败。
+    if (lifecycleRun !== undefined) {
+      try {
+        await writeLifecycleSessions({
+          runsDir: runDirPath(runsRoot),
+          runId: lifecycleRun.runId,
+          transcriptPaths: lifecycleRun.transcriptPaths,
+          events: lifecycleCollector.snapshot(),
+          title: args.caseId,
+          finishedAt: Date.now(),
+        });
+      } catch (error) {
+        process.stderr.write(
+          `review-pi: 会话生命周期留痕写入失败（${describeReportFailure(error)}），不影响检视结果\n`,
+        );
+      }
+    }
+    // opencode-trace 留痕（ADR-0074）：run 时默认把逐请求 trace 落盘到
+    // `<runs>/opencode-trace/`，供 opencode-trace-viewer 直接 -d 读取；写失败
+    // 只警告——留痕是排障/查看能力，不配把检视判失败。
+    if (lifecycleRun !== undefined) {
+      try {
+        await writeRunTrace(runDirPath(runsRoot), lifecycleRun.transcriptPaths);
+      } catch (error) {
+        process.stderr.write(
+          `review-pi: trace 留痕写入失败（${describeReportFailure(error)}），不影响检视结果\n`,
+        );
+      }
+    }
     if (activeReporter !== null && reportConfig !== null && reportConfig.tool !== null) {
       // 收尾尽力发完；失败 / 超时都只落一行 stderr，不影响已产出的结果与退出码
       // （事件通道关闭时队列恒空，这行统计没有信息量，不打印）
@@ -840,6 +886,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       }
     } finally {
       setOneShotUsageSink(null);
+      setOneShotLifecycleSink(null);
     }
   }
 }

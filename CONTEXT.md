@@ -159,7 +159,7 @@ _Avoid_: 输出目录（泛指；本仓改称任务目录，旧 `--out` 已随 A
 _Avoid_: runId（那是首次模型请求时刻的产物 id，迟到且只属本地）、远程任务 id（暗示另有一个 id 要传）
 
 **Session 索引（Session Index）**:
-`review` 成功后写在**进程 cwd** 的隐藏文件 `.review-pi-session.json`：只含本次 run 的寻址信息（`taskId` / 绝对 `tasksDir` / `runId` / 主与 skill 转录的绝对路径），不含检视内容与秘密；每次成功 run 整份覆盖，失败 run 不写（ADR-0036）。**version 2**：主转录是数组 `mains[]`（分片时按 `s01 → s02 → …`，单遍长度为 1），读取端兼容 v1 的单个 `main`。由 `review-pi export` 消费：缺省读它并在**一行**内打印路径（逗号 + 空格分隔；分片按 `s01 主 → s01 skill → s02 主 → …` 顺序），`--taskId` 改为从 `<tasks 根>/<id>` 的 `run.json` 反推（分片读 `shards[].transcriptFile`），`--path <dir>` 平铺复制到目标目录。该命令不加载配置、不需要 key、不调模型。ADR-0027 的「cwd 只留 `review-result.json`」由此局部修订。
+`review` 成功后写在**进程 cwd** 的隐藏文件 `.review-pi-session.json`：只含本次 run 的寻址信息（`taskId` / 绝对 `tasksDir` / `runId` / 主与 skill 转录的绝对路径），不含检视内容与秘密；每次成功 run 整份覆盖，失败 run 不写（ADR-0036）。**version 2**：主转录是数组 `mains[]`（分片时按 `s01 → s02 → …`，单遍长度为 1），读取端兼容 v1 的单个 `main`。由 `review-pi export` 消费：缺省读它并在**一行**内打印路径（逗号 + 空格分隔；分片按 `s01 主 → s01 skill → s02 主 → …` 顺序），`--taskId` 改为从 `<tasks 根>/<id>` 的 `run.json` 反推（分片读 `shards[].transcriptFile`），`--path <dir>` 平铺复制到目标目录。该命令不加载配置、不需要 key、不调模型。ADR-0027 的「cwd 只留 `review-result.json`」由此局部修订。ADR-0072 后 `export` **缺省返回 OpenCode 兼容版**（同 run 的 `<runs>/opencode/session-*.json`），`--native` 切回 pi 原生转录。
 _Avoid_: 会话记录（那是转录本身）、配置文件（索引只存路径）、缓存（它不加速任何东西）
 
 ### 离线回放

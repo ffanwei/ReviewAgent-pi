@@ -1889,8 +1889,12 @@ test(
       expect(existsSync(main)).toBe(true);
       // 本次没装规则包 → 没有 skill 会话
       expect(index.skills).toEqual([]);
+      // opencode-trace 留痕（ADR-0074）：run 时默认落盘 manifest.json + sessions/
+      expect(existsSync(path.join(path.dirname(main), "opencode-trace", "manifest.json"))).toBe(true);
 
-      // 配置文件缺席 + 空 HOME：export 仍应工作（不加载配置是硬约束）
+      // 配置文件缺席 + 空 HOME：export 仍应工作（不加载配置是硬约束）。
+      // ADR-0072：缺省返回 OpenCode 兼容版（runs/opencode/），--native 返回原生。
+      const compatMain = path.join(path.dirname(main), "opencode", path.basename(main));
       const absentConfig = path.join(cwd, "absent.jsonc");
       const exportRun = await runBin(["export"], {
         cwd,
@@ -1899,11 +1903,20 @@ test(
         timeoutMs: 30_000,
       });
       expect(exportRun.status).toBe(0);
-      expect(exportRun.stdout).toBe(`${main}\n`);
+      expect(exportRun.stdout).toBe(`${compatMain}\n`);
       expect(exportRun.stderr).toBe("");
 
-      // --path：平铺复制到 cwd 下的目录，返回复制后的绝对路径
-      const copyRun = await runBin(["export", "--path", "sessions"], {
+      const nativeRun = await runBin(["export", "--native"], {
+        cwd,
+        appendConfigArg: false,
+        configPath: absentConfig,
+        timeoutMs: 30_000,
+      });
+      expect(nativeRun.status).toBe(0);
+      expect(nativeRun.stdout).toBe(`${main}\n`);
+
+      // --path：平铺复制到 cwd 下的目录，返回复制后的绝对路径（--native 复制原生）
+      const copyRun = await runBin(["export", "--native", "--path", "sessions"], {
         cwd,
         appendConfigArg: false,
         configPath: absentConfig,
@@ -1916,7 +1929,7 @@ test(
 
       // --taskId：不经索引，直接读任务目录的 run.json（runId 由 auditPath 反推）
       const taskRun = await runBin(
-        ["export", "--taskId", CLI_TASK_ID, "--tasks-dir", outDir],
+        ["export", "--taskId", CLI_TASK_ID, "--tasks-dir", outDir, "--native"],
         { cwd, appendConfigArg: false, configPath: absentConfig, timeoutMs: 30_000 },
       );
       expect(taskRun.status).toBe(0);
@@ -2035,7 +2048,8 @@ test(
       expect(index.mains).toHaveLength(2);
       expect(index.skills).toEqual([]);
 
-      // export（不读配置）：按片序打印两条主转录（单行、逗号 + 空格分隔）
+      // export（不读配置）：按片序打印两条主转录（单行、逗号 + 空格分隔）。
+      // ADR-0072：缺省 = OpenCode 兼容版（各片 runs/shards/…/opencode/）。
       const exportRun = await runBin(["export"], {
         cwd,
         appendConfigArg: false,
@@ -2043,7 +2057,21 @@ test(
         timeoutMs: 30_000,
       });
       expect(exportRun.status).toBe(0);
-      expect(exportRun.stdout).toBe(`${index.mains.join(", ")}\n`);
+      const compatMains = index.mains.map((file: string) =>
+        path.join(path.dirname(file), "opencode", path.basename(file)),
+      );
+      expect(exportRun.stdout).toBe(`${compatMains.join(", ")}\n`);
+
+      // 生命周期聚合会话（ADR-0073）：opencode/lifecycle-<runId>.json 存在，
+      // 各 shard 主会话的 parentID 指向它（成为其子会话）。
+      const lifecycleFile = path.join(runsDir, "opencode", `session-${outcome.runId}-lifecycle.json`);
+      expect(existsSync(lifecycleFile)).toBe(true);
+      for (const main of index.mains) {
+        const compat = JSON.parse(
+          readFileSync(path.join(path.dirname(main), "opencode", path.basename(main)), "utf8"),
+        ) as { info: { parentID?: string } };
+        expect(compat.info.parentID).toBe(`session-${outcome.runId}-lifecycle`);
+      }
 
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },

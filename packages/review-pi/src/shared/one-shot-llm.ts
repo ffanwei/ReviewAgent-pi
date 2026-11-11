@@ -81,23 +81,78 @@ export function setOneShotUsageSink(sink: OneShotUsageSink | null): void {
   usageSink = sink;
 }
 
+/**
+ * 一次一次性调用的全文留痕事件（ADR-0073）：把「发给模型的 prompt / 模型
+ * 回包」原文记进会话生命周期，与 `OneShotUsageSink`（只记用量）并列。
+ * 只在成功 / 失败确定后发一次（重试 / response_format 降级不逐次发）。
+ */
+export interface OneShotLifecycleEvent {
+  readonly purpose?: OneShotPurpose;
+  /** 请求体里的 system 消息原文 */
+  readonly system: string;
+  /** 请求体里的 user 消息原文 */
+  readonly user: string;
+  /** 成功时的模型回包全文（失败缺席） */
+  readonly response?: string;
+  /** 失败时的人话原因（成功缺席） */
+  readonly error?: string;
+  /** 首次尝试开始时刻（epoch ms） */
+  readonly startedAt: number;
+  readonly usage?: LlmUsage;
+}
+
+/** 进程级全文留痕缝（CLI 安装；缺省 null = 零行为变化、绝不携带 key） */
+export type OneShotLifecycleSink = (event: OneShotLifecycleEvent) => void;
+
+let lifecycleSink: OneShotLifecycleSink | null = null;
+
+/** 安装 / 清除进程级全文留痕观测器（只影响留痕采集，不改变调用结果） */
+export function setOneShotLifecycleSink(sink: OneShotLifecycleSink | null): void {
+  lifecycleSink = sink;
+}
+
 export type OneShotLlmResult =
   | { readonly ok: true; readonly text: string; readonly usage?: LlmUsage }
   | { readonly ok: false; readonly reason: string; readonly status?: number };
 
 export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLlmResult> {
+  const startedAt = Date.now();
   const policy = input.retry ?? DEFAULT_RETRY_POLICY;
   const first = await runAttempts(input, policy);
+  let result: OneShotLlmResult;
   if (first.ok) {
-    return toResult(first);
-  }
-  // 结构化输出不被供应商支持：去掉 response_format 再走一轮（同样有界）
-  if (input.responseFormat !== undefined && (first.failure.status === 400 || first.failure.status === 422)) {
+    result = toResult(first);
+  } else if (input.responseFormat !== undefined && (first.failure.status === 400 || first.failure.status === 422)) {
+    // 结构化输出不被供应商支持：去掉 response_format 再走一轮（同样有界）
     const { responseFormat: _omit, ...withoutFormat } = input;
     const fallback = await runAttempts(withoutFormat, policy);
-    return toResult(fallback, "after retrying without response_format");
+    result = toResult(fallback, "after retrying without response_format");
+  } else {
+    result = toResult(first);
   }
-  return toResult(first);
+  emitOneShotLifecycle(input, result, startedAt);
+  return result;
+}
+
+/** 全文留痕（ADR-0073）：成功发 response、失败发 error；仅当 sink 已安装时生效 */
+function emitOneShotLifecycle(
+  input: OneShotLlmInput,
+  result: OneShotLlmResult,
+  startedAt: number,
+): void {
+  const sink = lifecycleSink;
+  if (sink === null) {
+    return;
+  }
+  sink({
+    ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
+    system: input.system,
+    user: input.user,
+    ...(result.ok
+      ? { response: result.text, ...(result.usage !== undefined ? { usage: result.usage } : {}) }
+      : { error: result.reason }),
+    startedAt,
+  });
 }
 
 /** 一次成功回包的文本 + 可选 usage（重试只保留最终成功的那次） */

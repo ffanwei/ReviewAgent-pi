@@ -75,6 +75,8 @@ export interface SkillPassTranscript {
   readonly capture: AgentTranscriptCapture;
   readonly complete: boolean;
   readonly truncated: boolean;
+  /** 种子消息条数（Phase 5 快照长度；OpenCode 兼容导出只写增量 = 丢弃种子前缀） */
+  readonly seedCount: number;
 }
 
 export interface SkillPassOutcome {
@@ -215,6 +217,7 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
             capture,
             complete: false,
             truncated: false,
+            seedCount: options.seedMessages.length,
           },
         }
       : {}),
@@ -273,6 +276,7 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
             capture,
             complete: true,
             truncated: false,
+            seedCount: options.seedMessages.length,
           },
         }
       : {}),

@@ -49,17 +49,17 @@ const KNOWN_SMOKE_FLAGS: readonly string[] = ["--model", "--config"];
 /** config 子命令的已知旗标（init/show 共用；无用组合各自拒绝） */
 const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-env", "--json"];
 
-/** export 子命令的已知旗标（ADR-0036：只寻址与复制，不碰配置） */
-const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--path"];
+/** export 子命令的已知旗标（ADR-0036 只寻址与复制 + ADR-0072 `--native` 表示切换 + ADR-0074 `--trace`，不碰配置） */
+const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--path", "--trace"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
 export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
-       review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>]
+       review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
   （config init = 写缺省 JSONC；config show = 脱敏打印生效配置与来源）
-  （export = 单行打印主 / skill session 的绝对路径，逗号分隔、主在前；--path 复制到目录）
+  （export = 单行打印主 / skill session 的绝对路径，逗号分隔、主在前；缺省 OpenCode 兼容版、--native 原生；--path 复制到目录）
 
 配置（ADR-0025）：~/.PiAgent/PiAgent.jsonc（Linux $HOME / Windows %USERPROFILE%），JSONC。
 环境变量不再被读取；--env 已移除（改用 --config）。
@@ -104,7 +104,9 @@ config 旗标：
 export 旗标：
   --taskId  <id>         指定任务 id（缺省读 cwd 的 .review-pi-session.json）
   --tasks-dir <dir>      任务根覆盖（cwd 有索引时以索引里的 tasksDir 为准；否则本旗标 → 缺省根）
-  --path    <dir>        把本次 run 的 session 复制到该目录，返回复制后的绝对路径`;
+  --path    <dir>        把本次 run 的 session 复制到该目录，返回复制后的绝对路径
+  --native               返回 pi 原生转录（缺省返回 OpenCode 兼容版，见 ADR-0072）
+  --trace   <dir>        导出 opencode-trace 兼容 bundle（manifest.json + sessions/，见 ADR-0074）`;
 
 /** 解析后的 review 命令参数（caseId 由 --mr-diff / --mr-json 派生） */
 export interface ReviewCliArgs {
@@ -173,7 +175,7 @@ export interface ConfigCliArgs {
   readonly json?: boolean;
 }
 
-/** 解析后的 export 子命令参数（ADR-0036） */
+/** 解析后的 export 子命令参数（ADR-0036 / ADR-0072） */
 export interface ExportCliArgs {
   /** 指定任务 id；缺席 = 读 cwd 的 `.review-pi-session.json` */
   readonly taskId?: string;
@@ -181,6 +183,13 @@ export interface ExportCliArgs {
   readonly tasksDir?: string;
   /** 复制目标目录（相对 cwd） */
   readonly destPath?: string;
+  /**
+   * 切换表示（ADR-0072）：缺省返回 OpenCode 兼容版转录（`opencode/` 子目录），
+   * `--native` 切回 pi 原生转录。
+   */
+  readonly native?: boolean;
+  /** opencode-trace 导出目标目录（ADR-0074）；出席 = 走 trace bundle 模式 */
+  readonly traceDir?: string;
 }
 
 /** 解析结果：子命令 + 参数，或用法错误消息（调用方负责呈现与退出码） */
@@ -587,12 +596,16 @@ function stripReviewBooleanFlags(rest: readonly string[]): {
 }
 
 /**
- * export 子命令（ADR-0036）：只认三个旗标，全部可选。
- * `--taskId` 与 `review` 同口径校验（单段目录名）；`--path` / `--tasks-dir`
- * 只要求非空（相对路径按 cwd 解析，交给执行层）。
+ * export 子命令（ADR-0036 / ADR-0072）：三个有值旗标 + 一个布尔旗标
+ * `--native`（表示切换）。`--taskId` 与 `review` 同口径校验（单段目录名）；
+ * `--path` / `--tasks-dir` 只要求非空（相对路径按 cwd 解析，交给执行层）。
  */
 function parseExportCommand(rest: readonly string[]): ParseCliArgsResult {
-  const flags = parseFlags(rest, KNOWN_EXPORT_FLAGS);
+  const stripped = stripExportNativeFlag(rest);
+  if (!stripped.ok) {
+    return stripped;
+  }
+  const flags = parseFlags(stripped.tokens, KNOWN_EXPORT_FLAGS);
   if (!flags.ok) {
     return flags;
   }
@@ -619,6 +632,13 @@ function parseExportCommand(rest: readonly string[]): ParseCliArgsResult {
       message: `invalid --path ${JSON.stringify(destPath)}: must be a non-empty directory path`,
     };
   }
+  const traceDir = flags.values.get("--trace");
+  if (traceDir !== undefined && traceDir.trim().length === 0) {
+    return {
+      ok: false,
+      message: `invalid --trace ${JSON.stringify(traceDir)}: must be a non-empty directory path`,
+    };
+  }
   return {
     ok: true,
     command: "export",
@@ -626,8 +646,31 @@ function parseExportCommand(rest: readonly string[]): ParseCliArgsResult {
       ...(taskId !== undefined ? { taskId } : {}),
       ...(tasksDir !== undefined ? { tasksDir } : {}),
       ...(destPath !== undefined ? { destPath } : {}),
+      ...(stripped.native ? { native: true } : {}),
+      ...(traceDir !== undefined ? { traceDir } : {}),
     },
   };
+}
+
+/** 剥离 export 的无值布尔旗标 `--native`（旗标循环是 k-v 成对，布尔必须先摘除） */
+function stripExportNativeFlag(rest: readonly string[]): {
+  readonly ok: true;
+  readonly tokens: readonly string[];
+  readonly native: boolean;
+} | { readonly ok: false; readonly message: string } {
+  let native = false;
+  const tokens: string[] = [];
+  for (const token of rest) {
+    if (token === "--native") {
+      if (native) {
+        return { ok: false, message: "duplicate flag --native" };
+      }
+      native = true;
+    } else {
+      tokens.push(token);
+    }
+  }
+  return { ok: true, tokens, native };
 }
 
 /** review 面必填与缺省：--repo / （--mr-diff | --mr-json）（caseId = 文件名去扩展名）、--issue 缺省空 */

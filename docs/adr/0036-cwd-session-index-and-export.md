@@ -5,6 +5,7 @@
 **局部修订**：ADR-0027 决策 2「cwd 副本只留 `review-result.json`」——cwd 现在会多一个 `.review-pi-session.json`（隐藏的寻址索引，不含检视内容）；该决策的其余部分（不写原名副本、写失败不改变退出码、不产 tips 时清理陈旧副本）继续有效。
 **跨仓**：本 ADR 为本仓 pi 线序列 0036；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 **后续修订（2026-11-09）**：决策 3 的 stdout 由「一行一个路径」改为「**单行、逗号 + 空格分隔**」（如 `a.json, b.json`），便于调用方直接把整行当作一个字符串消费；决策 4 的 `--path` 返回值同样按该格式输出复制后的路径。两项决策的寻址、顺序与错误语义不变。
+**后续修订（2026-11-11，ADR-0072）**：决策 3/4 的「返回 / 复制 pi 原生转录」改为「缺省返回 OpenCode 兼容版（同 run 的 `<runs>/opencode/`），`--native` 切回原生，`--path` 只复制所选表示，复制兼容版时目标目录多一份 `manifest.json`」。匹配客（`skillPassLog[].transcriptFile` / `shards[].transcriptFile`）仍指向原生转录，索引（`mains[]` / `skills[]`）与寻址顺序不变。
 
 ## Context
 
