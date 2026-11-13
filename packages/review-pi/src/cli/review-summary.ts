@@ -42,6 +42,10 @@ export const NO_REPORTED_SUMMARY_MARKDOWN =
 /** diff 超 `limits.boundary.maxDiffChars` 跳过检视时的固定总结（ADR-0075，不调用模型） */
 export const DIFF_TOO_LARGE_SUMMARY_MARKDOWN = "# 检视总结\n\nDiff 超大，跳过检视。";
 
+/** 过滤后没有任何可检视文件时的固定总结（ADR-0078，不调用模型） */
+export const NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN =
+  "# 检视总结\n\n无可检视文件，跳过检视。";
+
 export interface ReviewSummaryInput {
   /** 投影后的中文分组意见（投影降级 / 未配置引擎时缺席） */
   readonly tips?: ReviewTipsDocumentLike;

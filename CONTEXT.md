@@ -142,8 +142,8 @@ _Avoid_: MR 文件（不区分形态）、patch（只指 hunk 正文）
 _Avoid_: 输入校验（过泛）、分片（那是「分片检视」的另一机制）、静默截断（违背零静默纪律）
 
 **MR 输入预过滤（Input Prefilter）**:
-内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；另有两条**配置驱动**的跳过——`limits.testFiles.skip`（测试文件）与 `limits.mrFilter.excludeGlobs`（glob 列表，如 `**/*.md`，ADR-0069），同样整块剔除。过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除省键，`reasons` 恒含六类键）并在 stderr 报一行——剔了必有账；被剔除文件仍在收尾补报空 `mrReviewResult`（ADR-0068）。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 100 万字符，`null` = 关闭；ADR-0071）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
-_Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（无审计即违规）
+内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；另有**四类规则驱动**的跳过/限范围——`limits.testFiles.skip`（测试文件）、`limits.mrFilter.excludeGlobs`（glob 列表，如 `**/*.md`，ADR-0069），以及检视范围正则 `--include` / `--exclude`（CLI）与 `limits.mrFilter.includeRegex` / `excludeRegex`（配置，ADR-0078）：include 先选白名单、exclude 再从候选剔除（exclude 优先），命中 include 的块越过全部启发式，`binary` 恒剔；同类多条 = OR，CLI 出现即整体替换配置对应维度，传空值 = 清空该维度。过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除且未配范围规则时省键，`reasons` 恒含八类键，配置了范围规则时另记 `filters` 原文）并在 stderr 报一行——剔了必有账；被剔除文件仍在收尾补报空 `mrReviewResult`（ADR-0068）。过滤后一个文件块都不剩时跳过检视（不调模型，仍上报一次空意见 + 固定总结，exit 0）。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 100 万字符，`null` = 关闭；ADR-0071）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
+_Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（无审计即违规）、把 range regex 说成 glob（两种方言并存，接口文案必须写明）
 
 **分片检视（Sharded Review）**:
 过滤后 diff 超过 `limits.split.maxShardChars`（缺省 12 万字符，ADR-0071）时，按 `diff --git` 文件块**贪心装箱**拆成 N 片（只切文件块、绝不切 hunk；每块恰好出现一次、顺序 = diff 顺序），每片串行跑一次完整六阶段 + 规则 Skill 会话，最后按 `(file, line, title)` 确定性合并 findings 并重编号 `F001…`。单片路径（`limits.split.enabled=false` 或 diff ≤ 预算且无截取）与旧实现**逐字节相同**。**单个文件块**超过 `maxShardChars` 时不报错，而是按整 hunk 截取（保留文件头 + 前缀若干个完整 hunk，尾部整 hunk 丢弃；ADR-0070），留痕写审计尾键 `shardTruncation` 并在 stderr 报一行；唯一一片是截取片时也走分片路径。每片的输入 = 本片 diff + 其他文件的路径/增删摘要（不是证据源）；聚合 `runId` = 第 1 片 `runId`；任何一片失败都无聚合产物（不输出部分结果），已成功片的产物保留在 `runs/shards/attempt-<ts>/sNN/`（ADR-0039）。

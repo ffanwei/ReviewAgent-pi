@@ -6,6 +6,7 @@ import type {
   McpReportEvent,
   McpReportStats,
 } from "../contracts/mcp-report.js";
+import type { TaskCallResult, TaskCallTrace } from "../contracts/mcp-task.js";
 import type { RunProgressEvent, RunProgressSink } from "../contracts/progress.js";
 import { createMcpClient, MCP_CLIENT_NAME } from "./client.js";
 import type { ReportConfig } from "./config.js";
@@ -18,6 +19,10 @@ import {
   type TaskIdArgs,
 } from "./task-tools.js";
 import { createHttpTransport, type Transport } from "./transport.js";
+
+// 业务调用留痕类型已下沉到 contracts/（ADR-0037 零耦合：核心层可用而不 import
+// src/mcp/**）；这里保留同名 re-export，`mcp/index.ts` 的对外出口不变。
+export type { TaskCallResult, TaskCallTrace } from "../contracts/mcp-task.js";
 
 /**
  * 上报投递（ADR-0037 决策 5）。
@@ -50,30 +55,12 @@ export interface CreateMcpReporterOptions {
   readonly streamId?: string;
 }
 
-/** 一次业务 tool 调用的结果：失败带人话原因（调用方打 stderr），绝不抛错 */
-export type TaskCallResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: string };
-
 /**
  * 一次业务调用的完整留痕（`onTaskCall` 回调）：CLI 据此写 `mcp.json`。
  * 与 `TaskCallResult` 的区别：多带输入、时间与服务端原始回包，只用于留痕。
  */
-export interface TaskCallTrace {
-  /** tool 名：startTask / mrReviewResult / saveReviewSummary / endTask */
-  readonly tool: string;
-  /** 平铺参数（原样，即 MCP `tools/call.arguments`） */
-  readonly arguments: unknown;
-  /** 首次尝试开始时刻（epoch ms） */
-  readonly startedAt: number;
-  /** 含重试的总耗时（毫秒） */
-  readonly durationMs: number;
-  readonly ok: boolean;
-  /** 失败原因（`ok:false`） */
-  readonly reason?: string;
-  /** 服务端原始返回文本（拿到回包时才有；传输失败缺席） */
-  readonly responseText?: string;
-}
+// TaskCallResult / TaskCallTrace 已移至 contracts/mcp-task.ts（零耦合），
+// 类型本身仍从本模块 re-export（见文件头 import 后的 export type）。
 
 export interface McpReporter {
   /** 上报流标识：run 结束前 `runId` 不可知，流键只能由 reporter 分配 */

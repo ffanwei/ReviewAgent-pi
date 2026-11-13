@@ -1078,3 +1078,84 @@ test("export 子命令：taskId 走 review 同口径校验；--path / --tasks-di
     message: 'unknown flag "--config"',
   });
 });
+
+// ---- 检视范围正则（ADR-0078） ----
+
+const reviewBase = (extra: readonly string[]) =>
+  parseCliArgs(["review", "--repo", "repo", "--mr-diff", "case.diff", "--taskId", "t-1", ...extra]);
+
+test("--include / --exclude：重复旗标按顺序累积、完全相同去重", () => {
+  const parsed = reviewBase([
+    "--include",
+    "^src/",
+    "--include",
+    "^pkg/",
+    "--include",
+    "^src/",
+    "--exclude",
+    "\\.test\\.ts$",
+  ]);
+  expect(parsed.ok && parsed.command === "review").toBe(true);
+  if (!parsed.ok || parsed.command !== "review") {
+    return;
+  }
+  expect(parsed.args.includePatterns).toEqual(["^src/", "^pkg/"]);
+  expect(parsed.args.excludePatterns).toEqual(["\\.test\\.ts$"]);
+  expect(parsed.args.emptyPathFilterFlags).toBeUndefined();
+});
+
+test("--include / --exclude：缺席省键（交给配置默认）", () => {
+  const parsed = reviewBase([]);
+  expect(parsed.ok && parsed.command === "review").toBe(true);
+  if (!parsed.ok || parsed.command !== "review") {
+    return;
+  }
+  expect(parsed.args.includePatterns).toBeUndefined();
+  expect(parsed.args.excludePatterns).toBeUndefined();
+});
+
+test("空值 = 本次清空该维度（空串 / 纯空白 / 缺值都登记，不报用法错误）", () => {
+  const emptyString = reviewBase(["--include", "", "--exclude", "   "]);
+  expect(emptyString.ok && emptyString.command === "review").toBe(true);
+  if (!emptyString.ok || emptyString.command !== "review") {
+    return;
+  }
+  expect(emptyString.args.includePatterns).toEqual([]);
+  expect(emptyString.args.excludePatterns).toEqual([]);
+  expect(emptyString.args.emptyPathFilterFlags).toEqual(["--include", "--exclude"]);
+
+  const missingValue = reviewBase(["--include"]);
+  expect(missingValue.ok && missingValue.command === "review").toBe(true);
+  if (!missingValue.ok || missingValue.command !== "review") {
+    return;
+  }
+  expect(missingValue.args.includePatterns).toEqual([]);
+  expect(missingValue.args.emptyPathFilterFlags).toEqual(["--include"]);
+});
+
+test("空值与有效值并存：有效值保留，空值只留痕", () => {
+  const parsed = reviewBase(["--include", "", "--include", "^src/"]);
+  expect(parsed.ok && parsed.command === "review").toBe(true);
+  if (!parsed.ok || parsed.command !== "review") {
+    return;
+  }
+  expect(parsed.args.includePatterns).toEqual(["^src/"]);
+  expect(parsed.args.emptyPathFilterFlags).toEqual(["--include"]);
+});
+
+test("非法正则：用法错误并带原文（parsing fail fast）", () => {
+  const parsed = reviewBase(["--include", "*.java"]);
+  expect(parsed).toEqual({
+    ok: false,
+    message: expect.stringContaining("invalid --include \"*.java\""),
+  });
+});
+
+test("多条正则必须重复旗标：裸 token 仍然报 unknown flag（不做空格列表）", () => {
+  const parsed = reviewBase(["--include", "^src/", "^pkg/"]);
+  expect(parsed.ok).toBe(false);
+  if (parsed.ok) {
+    return;
+  }
+  expect(parsed.message).toContain('unknown flag "^pkg/"');
+});

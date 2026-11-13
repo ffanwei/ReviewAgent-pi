@@ -5,6 +5,7 @@ import {
   formatMrFilterNotice,
   listChangedFilePaths,
   MrDiffTooLargeError,
+  normalizeDiffPathForRegex,
   toMrFilterRecord,
 } from "./mr-input.js";
 
@@ -156,6 +157,8 @@ describe("filterDiffForReview：limits.mrFilter.excludeGlobs（ADR-0069）", () 
       binary: 0,
       test: 0,
       exclude: 2,
+      "not-included": 0,
+      "regex-exclude": 0,
     });
     expect(record?.paths).toEqual([
       { path: "docs/a.md", reason: "exclude" },
@@ -196,7 +199,16 @@ describe("toMrFilterRecord / formatMrFilterNotice", () => {
     expect(record).toBeDefined();
     expect(record?.droppedFiles).toBe(25);
     expect(record?.paths).toHaveLength(20);
-    expect(record?.reasons).toEqual({ lockfile: 25, generated: 0, minified: 0, binary: 0, test: 0, exclude: 0 });
+    expect(record?.reasons).toEqual({
+      lockfile: 25,
+      generated: 0,
+      minified: 0,
+      binary: 0,
+      test: 0,
+      exclude: 0,
+      "not-included": 0,
+      "regex-exclude": 0,
+    });
     expect(formatMrFilterNotice(record!)).toContain("lockfile=25");
   });
 });
@@ -234,7 +246,16 @@ describe("测试文件跳过（limits.testFiles.skip）", () => {
 
   test("审计 reasons 固定含 test 键", () => {
     const record = toMrFilterRecord(filterDiffForReview([PROD_FILE, TEST_FILE].join("\n")));
-    expect(record?.reasons).toEqual({ lockfile: 0, generated: 0, minified: 0, binary: 0, test: 1, exclude: 0 });
+    expect(record?.reasons).toEqual({
+      lockfile: 0,
+      generated: 0,
+      minified: 0,
+      binary: 0,
+      test: 1,
+      exclude: 0,
+      "not-included": 0,
+      "regex-exclude": 0,
+    });
     expect(formatMrFilterNotice(record!)).toContain("test=1");
   });
 });
@@ -283,5 +304,93 @@ describe("listChangedFilePaths：过滤前的变更文件全集（ADR-0068）", 
       "Binary files /dev/null and b/assets/logo.png differ",
     ].join("\n");
     expect(listChangedFilePaths(binary)).toEqual(["assets/logo.png"]);
+  });
+});
+
+describe("检视范围正则（ADR-0078）", () => {
+  const include = (patterns: readonly string[]) => ({ source: "cli" as const, patterns });
+  const configInclude = (patterns: readonly string[]) => ({ source: "config" as const, patterns });
+
+  test("include：OR 语义，未命中的块记 not-included", () => {
+    const input = [block("src/A.java"), block("pkg/B.ts"), block("docs/C.md")].join("\n");
+    const result = filterDiffForReview(input, { includeFilter: include(["^src/", "^pkg/"]) });
+    expect(result.diff).toBe([block("src/A.java"), block("pkg/B.ts")].join("\n"));
+    expect(result.dropped).toEqual([{ path: "docs/C.md", reason: "not-included" }]);
+  });
+
+  test("include 命中即越过 test / generated / 配置 excludeGlobs 启发式", () => {
+    const input = [
+      block("src/A.java"),
+      block("src/A.test.ts"),
+      block("src/Api.generated.java"),
+      block("docs/guide.md"),
+    ].join("\n");
+    const result = filterDiffForReview(input, {
+      includeFilter: include(["^(src|docs)/"]),
+      excludeGlobs: ["**/*.md"],
+      skipTestFiles: true,
+    });
+    expect(result.dropped).toEqual([]);
+    expect(result.diff).toBe(input);
+  });
+
+  test("exclude 压过 include：命中记 regex-exclude", () => {
+    const input = [block("src/A.java"), block("src/A.test.ts")].join("\n");
+    const result = filterDiffForReview(input, {
+      includeFilter: include(["^src/"]),
+      excludeFilter: include(["\\.test\\.ts$"]),
+    });
+    expect(result.diff).toBe(block("src/A.java"));
+    expect(result.dropped).toEqual([{ path: "src/A.test.ts", reason: "regex-exclude" }]);
+  });
+
+  test("只有 exclude：与内置/配置排除并存", () => {
+    const input = [block("src/A.java"), block("vendor/lib.js"), block("src/gen.ts")].join("\n");
+    const result = filterDiffForReview(input, {
+      excludeFilter: include(["^src/gen\\.ts$"]),
+    });
+    expect(result.dropped).toEqual([
+      { path: "vendor/lib.js", reason: "generated" },
+      { path: "src/gen.ts", reason: "regex-exclude" },
+    ]);
+  });
+
+  test("binary 恒剔：即使命中 include", () => {
+    const binary = [
+      "diff --git a/assets/logo.png b/assets/logo.png",
+      "new file mode 100644",
+      "Binary files /dev/null and b/assets/logo.png differ",
+    ].join("\n");
+    const result = filterDiffForReview(binary, { includeFilter: include(["assets/"]) });
+    expect(result.dropped).toEqual([{ path: "assets/logo.png", reason: "binary" }]);
+  });
+
+  test("归一化：git 引号 + 八进制路径按 UTF-8 还原后再匹配", () => {
+    const cjk = [
+      'diff --git "a/\\344\\270\\255\\346\\226\\207.md" "b/\\344\\270\\255\\346\\226\\207.md"',
+      '--- "a/\\344\\270\\255\\346\\226\\207.md"',
+      '+++ "b/\\344\\270\\255\\346\\226\\207.md"',
+      "@@ -1 +1 @@",
+      "-a",
+      "+b",
+    ].join("\n");
+    const result = filterDiffForReview(cjk, { includeFilter: include(["^中文\\.md$"]) });
+    expect(result.dropped).toEqual([]);
+    expect(result.diff).toBe(cjk);
+    expect(normalizeDiffPathForRegex('"b/\\344\\270\\255\\346\\226\\207.md"')).toBe("中文.md");
+  });
+
+  test("审计：规则原文进 filters；0 剔除也留痕", () => {
+    const input = block("src/A.java");
+    const result = filterDiffForReview(input, {
+      includeFilter: configInclude(["^src/"]),
+      excludeFilter: include(["\\.test\\."]),
+    });
+    const record = toMrFilterRecord(result);
+    expect(record?.droppedFiles).toBe(0);
+    expect(record?.filters).toEqual({
+      include: { source: "config", patterns: ["^src/"] },
+      exclude: { source: "cli", patterns: ["\\.test\\."] },
+    });
   });
 });

@@ -187,15 +187,23 @@ export interface TestFileLimits {
 }
 
 /**
- * 按 glob 跳过检视（ADR-0069）：命中的文件块在**检视输入阶段**整块剔除，
- * 不进 diff / findings / 中文 tips / MCP 意见；但它们仍是「变更过的文件」，
- * 收尾按 ADR-0068 补一条空 `reviewTips` 的 `mrReviewResult`。
+ * 按 glob 跳过检视（ADR-0069）与按正则限定/排除检视范围（ADR-0078）。
+ * 命中的文件块在**检视输入阶段**整块剔除，不进 diff / findings / 中文 tips /
+ * MCP 意见；但它们仍是「变更过的文件」，收尾按 ADR-0068 补一条空
+ * `reviewTips` 的 `mrReviewResult`。
  *
- * 匹配对象是 diff 里的仓库相对 POSIX 路径，大小写不敏感；不含 `/` 的 glob
- * 只比文件名（`*.md` 与 `**\/*.md` 等价）。空数组 = 不排除。
+ * `excludeGlobs` 匹配对象是 diff 里的仓库相对 POSIX 路径，大小写不敏感；
+ * 不含 `/` 的 glob 只比文件名（`*.md` 与 `**\/*.md` 等价）。空数组 = 不排除。
+ *
+ * `includeRegex` / `excludeRegex` 是正则（大小写敏感，匹配前做 git 引号归一化）；
+ * `includeRegex` 非空 = 白名单（命中者越过全部启发式过滤），`excludeRegex`
+ * 优先于 `includeRegex`。空数组 = 该维度不生效。CLI `--include` / `--exclude`
+ * 出现时整体替换对应维度（ADR-0078）。
  */
 export interface MrFilterLimits {
   readonly excludeGlobs: readonly string[];
+  readonly includeRegex: readonly string[];
+  readonly excludeRegex: readonly string[];
 }
 
 /**
@@ -292,6 +300,8 @@ export const DEFAULT_LIMITS: Limits = {
   testFiles: { skip: true },
   mrFilter: {
     excludeGlobs: ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"],
+    includeRegex: [],
+    excludeRegex: [],
   },
   findingScope: { enabled: true, contextLines: 10 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_000_000 },
@@ -923,6 +933,16 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
       "limits.mrFilter.excludeGlobs",
       DEFAULT_LIMITS.mrFilter.excludeGlobs,
     ),
+    includeRegex: parseRegexList(
+      mrFilterObj.includeRegex,
+      "limits.mrFilter.includeRegex",
+      DEFAULT_LIMITS.mrFilter.includeRegex,
+    ),
+    excludeRegex: parseRegexList(
+      mrFilterObj.excludeRegex,
+      "limits.mrFilter.excludeRegex",
+      DEFAULT_LIMITS.mrFilter.excludeRegex,
+    ),
   };
 
   const findingScopeObj = optionalObject(limits.findingScope, "limits.findingScope", warnings);
@@ -1059,6 +1079,45 @@ function parseGlobList(
     }
   });
   return globs;
+}
+
+/**
+ * 正则列表解析（ADR-0078：`limits.mrFilter.includeRegex` / `excludeRegex`）。
+ * 与 glob 列表的差别：**不 trim**（首尾空格可能是正则语义的一部分），
+ * 但纯空白仍拒绝；逐条 `new RegExp` 试编译，装载期 fail fast；去重保序。
+ */
+function parseRegexList(
+  value: unknown,
+  label: string,
+  fallback: readonly string[],
+): readonly string[] {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (!Array.isArray(value)) {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: ${label} must be an array of regular expressions (got ${describe(value)})`,
+    );
+  }
+  const patterns: string[] = [];
+  value.forEach((entry, index) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new ConfigError(
+        `${CONFIG_FILE_NAME}: ${label}[${String(index)}] must be a non-empty string (got ${describe(entry)})`,
+      );
+    }
+    try {
+      new RegExp(entry);
+    } catch (error) {
+      throw new ConfigError(
+        `${CONFIG_FILE_NAME}: ${label}[${String(index)}] is not a valid regular expression (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    if (!patterns.includes(entry)) {
+      patterns.push(entry);
+    }
+  });
+  return patterns;
 }
 
 /**
@@ -1831,7 +1890,18 @@ ${excludeGlobLines}
     // mrReviewResult。匹配对象是仓库相对 POSIX 路径，大小写不敏感；不含 "/" 的 glob
     // 只比文件名（*.md 与 **/*.md 等价），* / ? 不跨目录，** 跨目录。
     // 空数组 = 不排除任何文件。例：["**/*.md", "docs/**"] 跳过全部 Markdown 与 docs 目录。
-    "mrFilter": { "excludeGlobs": ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"] },
+    //
+    // includeRegex / excludeRegex（ADR-0078）：按**正则**限定检视范围，缺省 []。
+    // includeRegex 非空 = 白名单：命中者越过 testFiles / lockfile / generated /
+    // excludeGlobs 等启发式（binary 恒剔）；excludeRegex 再从候选中剔除（优先于
+    // include）。正则大小写敏感，匹配前把 git 的引号 + 八进制路径归一化。
+    // 同类多条 = OR；CLI --include / --exclude 出现时整体替换对应维度，
+    // 传空值 = 本次清空该维度。例：includeRegex ["^src/.*\\\\.ts$"]。
+    "mrFilter": {
+      "excludeGlobs": ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"],
+      "includeRegex": [],
+      "excludeRegex": []
+    },
     // 非 diff 区域过滤（缺省开启）：检视意见必须落在本遍 diff 的变更 hunk 内，
     // 或距 hunk 边界不超过 contextLines 行；文件不在本遍 diff 的意见直接丢弃。
     // 过滤发生在候选拦截链（OUT_OF_SCOPE），findings / tips / MCP / 审计同时生效；

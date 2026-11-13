@@ -2507,7 +2507,7 @@ test(
 );
 
 test(
-  "MCP 变更文件全覆盖（ADR-0068）：全部被预过滤剔除也逐文件补报空意见，exit 0",
+  "ADR-0078：全部变更文件被预过滤剔除 → 跳过检视（一次空意见 + 固定总结），exit 0",
   async () => {
     const stub = await startLoopbackStub(noFindingCorpus());
     const mcp = await startMcpStub();
@@ -2530,7 +2530,7 @@ test(
       });
 
       expect(run.status).toBe(0);
-      // 过滤后 diff 为空：片级回调没有文件可发，但变更文件在收尾补报里拿到空 tips
+      // 过滤后无可检视文件：不跑检视，只保证四个业务工具齐全（ADR-0078 对齐 ADR-0075）
       const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
       expect(business.map((call) => call.name)).toEqual([
         "startTask",
@@ -3466,6 +3466,146 @@ test(
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
       ]);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "ADR-0078：--include 未命中任何变更文件 → 跳过检视：四工具齐全 + 固定总结 + exit 0",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = writeMr(
+        [
+          "diff --git a/src/main/java/Keep.java b/src/main/java/Keep.java",
+          "--- a/src/main/java/Keep.java",
+          "+++ b/src/main/java/Keep.java",
+          "@@ -1 +1 @@",
+          "-class Keep {}",
+          "+class Keep { }",
+        ].join("\n"),
+      );
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--include",
+          "^no-such-dir/",
+        ],
+        { ...stubEnv(stub.baseUrl), mcpServerUrl: mcp.url },
+      );
+
+      expect(run.status).toBe(0);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: "src/main/java/Keep.java",
+        reviewTips: [],
+      });
+      expect(business[2]?.args.markdownContent).toContain("无可检视文件");
+      const outcome = JSON.parse(run.stdout) as { skipped?: string; findings: unknown[] };
+      expect(outcome.skipped).toBe("no-reviewable-files");
+      expect(outcome.findings).toEqual([]);
+      // 跳过路径不调模型、不写 run 产物
+      expect(stub.requests()).toHaveLength(0);
+      expect(existsSync(path.join(cliRunsDir(outDir), "reviews_tips_zh.json"))).toBe(false);
+      expect(run.stderr).toContain("跳过检视");
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "ADR-0078：--include + --exclude 联动——白名单先选、黑名单后剔，仍照常检视并补报被剔文件",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const keep = "src/main/java/Keep.java";
+      const droppedByExclude = "src/main/java/Keep.test.java";
+      const droppedByInclude = "docs/guide.md";
+      const droppedByGenerated = "src/generated/Api.java";
+      const fileBlock = (file: string) =>
+        [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, "@@ -1 +1 @@", "-a", "+b"];
+      const mrFile = writeMr(
+        [
+          ...fileBlock(keep),
+          ...fileBlock(droppedByExclude),
+          ...fileBlock(droppedByInclude),
+          ...fileBlock(droppedByGenerated),
+        ].join("\n"),
+      );
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--include",
+          "^src/",
+          "--exclude",
+          "\\.test\\.java$",
+          "--exclude",
+          "^src/generated/",
+        ],
+        { ...stubEnv(stub.baseUrl), mcpServerUrl: mcp.url },
+      );
+
+      expect(run.status).toBe(0);
+      const outcome = JSON.parse(run.stdout) as { skipped?: string; findings: unknown[] };
+      expect(outcome.skipped).toBeUndefined();
+      expect(outcome.findings).toEqual([]);
+
+      // 过滤发生了且只调了一次检视（六相位；请求数 > 0 即可，不锁 one-shot 生成细节）
+      expect(stub.requests().length).toBeGreaterThan(0);
+      expect(run.stderr).toContain("not-included=1");
+      expect(run.stderr).toContain("regex-exclude=2");
+
+      // 片级上报只覆盖 Keep；其余三个按 ADR-0068 在收尾补报空意见
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "mrReviewResult",
+        "mrReviewResult",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(
+        business.filter((call) => call.name === "mrReviewResult").map((call) => call.args.filePath),
+      ).toEqual([keep, droppedByExclude, droppedByInclude, droppedByGenerated]);
+      expect(run.stderr).toContain("已补报 3 个变更文件 / 0 条意见");
     } finally {
       await stub.close();
       await mcp.close();

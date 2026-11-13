@@ -202,7 +202,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 | 布尔对 | `--progress` 已移除（进度缺省打印）；`--no-progress` 重复 = `duplicate flag`，其余无值旗标重复同理 |
 | 帮助 | 无 `--help` / `--version`；裸跑或未知子命令 → usage 到 stderr + `exit 1` |
 
-### 1. `review`（13 个旗标）
+### 1. `review`（15 个旗标）
 
 | 旗标 | 取值 | 必填 / 缺省 | 作用 |
 |---|---|---|---|
@@ -217,6 +217,8 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 | `--rule-skill-zip <path[,path…]>` | zip 路径（可重复） | 缺省不装载 | 规则 Skill zip；**顺序 = 执行顺序**；一个包 = 一个 skill；不自动扫描被检视仓库（ADR-0027） |
 | `--rule-skill <dir[,dir…]>` | 目录（可重复） | 缺省不装载 | 已解压规则 Skill 目录；先审计（符号链接 / 越界一律拒绝）→ 按内容哈希复制进 run 缓存 → 同一装载链路；**排在全部 zip 之后**（ADR-0018） |
 | `--skill <dir[,dir…]>` | 目录（可重复） | 缺省不装载 | 当前与 `--rule-skill` **同义**（同一类 Skill、同一装载链路）；装载时排在全部 `--rule-skill` 之后。**同名 skill 只保留后装载者**，故 `--skill` 覆盖同名 `--rule-skill` / zip 的版本；`--skill ""` / 纯空白值按未传处理 |
+| `--include <regex>` | 正则（可重复，OR） | 缺省用配置 `limits.mrFilter.includeRegex` | 检视范围**白名单**（ADR-0078）：命中者越过 test / lockfile / generated / 配置 `excludeGlobs` 等启发式，`binary` 恒剔；匹配前做 git 引号归一化；CLI 出现即整体替换配置对应维度；传空值 = 本次清空该维度（stderr 一行提示）；非法正则 = 用法错误 |
+| `--exclude <regex>` | 正则（可重复，OR） | 缺省用配置 `limits.mrFilter.excludeRegex` | 检视范围**黑名单**（ADR-0078）：命中即剔除（`regex-exclude`），优先于 `--include`；CLI 出现即替换配置；传空值 = 清空该维度 |
 | `--strict-rule-skill` | 无值 | 缺省关 | 规则包装载失败即 `exit 1`（一个包都没给也算）；缺省为「降级该包 + 审计留痕 + run 照常」 |
 | `--no-progress` | 无值 | 缺省关（进度事件行**缺省打印**） | 关闭阶段 / 模型请求 / 工具调用 / skill 会话事件行（stderr，批跑收日志用） |
 | `--no-progress` | 无值 | 同上 | 关闭事件行（批跑收日志时显式静音）；**收尾一行总结恒打印**，不受此旗标影响 |

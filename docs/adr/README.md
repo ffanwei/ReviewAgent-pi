@@ -72,6 +72,7 @@
 | [ADR-0074](0074-opencode-trace-export.md) | OpenCode 兼容的 trace 导出 |
 | [ADR-0075](0075-diff-too-large-skip-with-report.md) | diff 超字节门禁时跳过检视，仍上报空意见与固定总结（exit 0） |
 | [ADR-0076](0076-request-timeline-for-model-calls.md) | 模型调用请求时间线：`request-timeline.jsonl`（只观测；fetch + 流 `push` 两个采集点；局部豁免时钟不落盘） |
+| [ADR-0078](0078-review-scope-include-exclude-regex.md) | 检视范围正则：`--include` / `--exclude` 与 `limits.mrFilter.includeRegex` / `excludeRegex`（先白名单后黑名单；0 文件跳过检视仍上报） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

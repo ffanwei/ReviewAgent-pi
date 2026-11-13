@@ -35,10 +35,22 @@ const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--rule-skill-zip",
   "--rule-skill",
   "--skill",
+  "--include",
+  "--exclude",
 ];
 
-/** review 面可重复旗标（ADR-0014：多规则包按 CLI 顺序叠加；ADR-0018：目录同款） */
-const REPEATABLE_REVIEW_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill", "--skill"];
+/** review 面可重复旗标（ADR-0014：多规则包按 CLI 顺序叠加；ADR-0018：目录同款；
+ * ADR-0078：检视范围正则一条一个 argv，不做逗号列表） */
+const REPEATABLE_REVIEW_FLAGS: readonly string[] = [
+  "--rule-skill-zip",
+  "--rule-skill",
+  "--skill",
+  "--include",
+  "--exclude",
+];
+
+/** 检视范围正则旗标（ADR-0078）：空值 = 清空该维度（可见留痕，不静默） */
+const PATH_FILTER_FLAGS: readonly string[] = ["--include", "--exclude"];
 
 /** 逗号列表旗标（ADR-0034：一次可传多个 skill 包，`--rule-skill-zip a.zip,b.zip`） */
 const COMMA_LIST_FLAGS: readonly string[] = ["--rule-skill-zip", "--rule-skill", "--skill"];
@@ -53,13 +65,16 @@ const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-en
 const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--path", "--trace"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--include <regex>]... [--exclude <regex>]... [--strict-rule-skill] [--no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
+       review-pi version [--json]
+       review-pi --version
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
   （config init = 写缺省 JSONC；config show = 脱敏打印生效配置与来源）
   （export = 单行打印主 / skill session 的绝对路径，逗号分隔、主在前；缺省 OpenCode 兼容版、--native 原生；--path 复制到目录）
+  （version = 产品版本单行；--json 额外给出 Node 与内核四包实际版本，不加载配置）
 
 配置（ADR-0025）：~/.PiAgent/PiAgent.jsonc（Linux $HOME / Windows %USERPROFILE%），JSONC。
 环境变量不再被读取；--env 已移除（改用 --config）。
@@ -86,6 +101,13 @@ review 旗标：
                                     符号链接/越界一律拒绝。一个包就是一个 skill（ADR-0034）
   --skill           <dir[,dir…]>    与 --rule-skill 同义（当前视为同一类 Skill）；一次可传多个，
                                     装载时排在全部 --rule-skill 之后
+  --include         <regex>          检视范围白名单（可重复，OR；大小写敏感）。命中者越过
+                                    test / lockfile / generated / 配置 excludeGlobs 等启发式，
+                                    binary 恒剔。CLI 出现即整体替换配置
+                                    limits.mrFilter.includeRegex；传空值 = 本次清空该维度
+  --exclude         <regex>          检视范围黑名单（可重复，OR）。命中即剔除，优先于 --include。
+                                    CLI 出现即整体替换配置 limits.mrFilter.excludeRegex；
+                                    传空值 = 本次清空该维度。正则匹配前做 git 引号归一化
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
   --no-progress             关闭运行进度事件行（缺省打印：阶段 / 模型请求 / 工具调用 /
                             skill 会话；批跑收日志时显式静音）。
@@ -142,6 +164,19 @@ export interface ReviewCliArgs {
    */
   readonly skillDirs?: readonly string[];
   /**
+   * 检视范围白名单正则（`--include`，ADR-0078）。缺席省键 = 用配置
+   * `limits.mrFilter.includeRegex`；出现且为空数组 = 本次清空该维度
+   * （空值旗标在 `emptyPathFilterFlags` 留痕，CLI 打一行提示）。
+   */
+  readonly includePatterns?: readonly string[];
+  /** 检视范围黑名单正则（`--exclude`，ADR-0078）；缺席/空数组语义同上 */
+  readonly excludePatterns?: readonly string[];
+  /**
+   * 传了但**没有值**（或值为空串/纯空白）的 `--include` / `--exclude`
+   * （缺席省键）。按「清空该维度」处理，由 CLI 打一行提示（零静默）。
+   */
+  readonly emptyPathFilterFlags?: readonly string[];
+  /**
    * 传了但**没有值**的规则包旗标（`--rule-skill` / `--rule-skill-zip` / `--skill`；缺席省键）。
    *
    * 缺值按「未传」处理（不报用法错误），由 CLI 打一行提示——规则包旗标常由脚本
@@ -175,6 +210,12 @@ export interface ConfigCliArgs {
   readonly json?: boolean;
 }
 
+/** 解析后的 `version` 子命令参数（ADR-0079）：只有 `--json` 一个机器可读开关 */
+export interface VersionCliArgs {
+  /** 输出结构化版本快照（产品 / Node / 内核四包实际解析版本） */
+  readonly json?: boolean;
+}
+
 /** 解析后的 export 子命令参数（ADR-0036 / ADR-0072） */
 export interface ExportCliArgs {
   /** 指定任务 id；缺席 = 读 cwd 的 `.review-pi-session.json` */
@@ -198,6 +239,7 @@ export type ParseCliArgsResult =
   | { readonly ok: true; readonly command: "smoke"; readonly args: SmokeCliArgs }
   | { readonly ok: true; readonly command: "config"; readonly args: ConfigCliArgs }
   | { readonly ok: true; readonly command: "export"; readonly args: ExportCliArgs }
+  | { readonly ok: true; readonly command: "version"; readonly args: VersionCliArgs }
   | { readonly ok: false; readonly message: string };
 
 /** 旗标循环（两子命令共用）：未知旗标 / 重复旗标 / 值缺席（含值吞旗标）都是用法错误。
@@ -292,6 +334,73 @@ function joinCommaListTokens(tokens: readonly string[]): {
     index = cursor - 1;
   }
   return { tokens: out, emptyFlags };
+}
+
+/**
+ * 检视范围正则旗标的**空值剔除**（ADR-0078）：`--include` / `--exclude`
+ * 没有值（argv 结束、下一个 token 是旗标）或值为空串/纯空白时，按「本次
+ * 清空该维度」处理——摘掉整对 token，登记进 `emptyFlags` 由 CLI 喊一声。
+ *
+ * 与 `joinCommaListTokens` 分开：正则**不能**做逗号归并（`{m,n}`、`[,;]`
+ * 都会被切坏），所以这里只做单条 k-v 识别，绝不吞并后续 token。
+ */
+function stripEmptyPathFilterFlags(tokens: readonly string[]): {
+  readonly tokens: readonly string[];
+  readonly emptyFlags: readonly string[];
+} {
+  const out: string[] = [];
+  const emptyFlags: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] as string;
+    if (!PATH_FILTER_FLAGS.includes(token)) {
+      out.push(token);
+      continue;
+    }
+    const next = tokens[index + 1];
+    if (next === undefined || next.startsWith("--")) {
+      emptyFlags.push(token);
+      continue;
+    }
+    if (next.trim() === "") {
+      emptyFlags.push(token);
+      index += 1;
+      continue;
+    }
+    out.push(token, next);
+    index += 1;
+  }
+  return { tokens: out, emptyFlags };
+}
+
+/**
+ * 正则列表解析（ADR-0078）：重复旗标收集，逐条试编译（fail fast），
+ * 去重保序。**不 trim**——首尾空格可能是正则语义的一部分。
+ */
+function parseRegexPatterns(
+  flag: string,
+  raw: readonly string[] | undefined,
+): { readonly ok: true; readonly items?: readonly string[] } | { readonly ok: false; readonly message: string } {
+  if (raw === undefined) {
+    return { ok: true };
+  }
+  const items: string[] = [];
+  for (const value of raw) {
+    if (value.trim() === "") {
+      continue; // stripEmptyPathFilterFlags 已摘；这里只作防御
+    }
+    try {
+      new RegExp(value);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `invalid ${flag} ${JSON.stringify(value)}: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    if (!items.includes(value)) {
+      items.push(value);
+    }
+  }
+  return { ok: true, items };
 }
 
 /** --model 校验（两子命令同口径；缺席 = 取配置 model.default） */
@@ -440,13 +549,19 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   if (command === "export") {
     return parseExportCommand(rest);
   }
+  // 版本面（ADR-0079）：`version` 子命令与顶层 `--version` / `-v` 同义。
+  // 放在配置装载之前（main 里直接返回），所以这里只认 `--json`，不接受
+  // `--config`——版本命令不读配置，给了配置旗标是用法错误而不是静默忽略。
+  if (command === "version" || command === "--version" || command === "-v") {
+    return parseVersionCommand(rest);
+  }
   if (command !== "review" && command !== "smoke") {
     return {
       ok: false,
       message:
         argv.length === 0
-          ? "missing command (expected `review`, `smoke`, `config` or `export`)"
-          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\`, \`config\` or \`export\`)`,
+          ? "missing command (expected `review`, `smoke`, `config`, `export` or `version`)"
+          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\`, \`config\`, \`export\` or \`version\`)`,
     };
   }
   const booleanFlags = command === "review" ? stripReviewBooleanFlags(rest) : undefined;
@@ -454,8 +569,12 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     return { ok: false, message: booleanFlags.message };
   }
   const flagTokens = booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.tokens : rest;
-  const joined = command === "review" ? joinCommaListTokens(flagTokens) : undefined;
-  const listTokens = joined !== undefined ? joined.tokens : flagTokens;
+  const pathFilterStripped =
+    command === "review" ? stripEmptyPathFilterFlags(flagTokens) : undefined;
+  const afterPathFilters =
+    pathFilterStripped !== undefined ? pathFilterStripped.tokens : flagTokens;
+  const joined = command === "review" ? joinCommaListTokens(afterPathFilters) : undefined;
+  const listTokens = joined !== undefined ? joined.tokens : afterPathFilters;
   const flags = parseFlags(
     listTokens,
     command === "review" ? KNOWN_REVIEW_FLAGS : KNOWN_SMOKE_FLAGS,
@@ -489,6 +608,7 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.strict : false,
     booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.progress : undefined,
     joined !== undefined ? joined.emptyFlags : [],
+    pathFilterStripped !== undefined ? pathFilterStripped.emptyFlags : [],
   );
 }
 
@@ -673,6 +793,25 @@ function stripExportNativeFlag(rest: readonly string[]): {
   return { ok: true, tokens, native };
 }
 
+/**
+ * version 子命令（ADR-0079）：只认无值布尔旗标 `--json`。
+ * 版本命令要在任何配置装载之前完成，所以参数面刻意窄到不能再窄——
+ * 未知旗标是用法错误（打印 usage + exit 1），不静默忽略。
+ */
+function parseVersionCommand(rest: readonly string[]): ParseCliArgsResult {
+  let json = false;
+  for (const flag of rest) {
+    if (flag !== "--json") {
+      return { ok: false, message: `unknown flag ${JSON.stringify(flag)}` };
+    }
+    if (json) {
+      return { ok: false, message: "duplicate flag --json" };
+    }
+    json = true;
+  }
+  return { ok: true, command: "version", args: json ? { json: true } : {} };
+}
+
 /** review 面必填与缺省：--repo / （--mr-diff | --mr-json）（caseId = 文件名去扩展名）、--issue 缺省空 */
 function parseReviewArgs(
   values: Map<string, string>,
@@ -681,6 +820,7 @@ function parseReviewArgs(
   strict: boolean,
   progress: boolean | undefined,
   emptyRuleSkillFlags: readonly string[],
+  emptyPathFilterFlags: readonly string[],
 ): { readonly ok: true; readonly command: "review"; readonly args: ReviewCliArgs } | { readonly ok: false; readonly message: string } {
   const repo = values.get("--repo");
   if (repo === undefined) {
@@ -728,6 +868,25 @@ function parseReviewArgs(
   if (!skillDirs.ok) {
     return skillDirs;
   }
+  // 检视范围正则（ADR-0078）：缺席 = 用配置；出现且空 = 本次清空该维度。
+  const includeRaw = repeated.get("--include");
+  const excludeRaw = repeated.get("--exclude");
+  const includeParsed = parseRegexPatterns("--include", includeRaw);
+  if (!includeParsed.ok) {
+    return includeParsed;
+  }
+  const excludeParsed = parseRegexPatterns("--exclude", excludeRaw);
+  if (!excludeParsed.ok) {
+    return excludeParsed;
+  }
+  const includePatterns =
+    includeRaw !== undefined || emptyPathFilterFlags.includes("--include")
+      ? (includeParsed.items ?? [])
+      : undefined;
+  const excludePatterns =
+    excludeRaw !== undefined || emptyPathFilterFlags.includes("--exclude")
+      ? (excludeParsed.items ?? [])
+      : undefined;
   const config = parseConfigFlag(values);
   if (!config.ok) {
     return config;
@@ -749,6 +908,11 @@ function parseReviewArgs(
       ...(ruleSkillZips.items !== undefined ? { ruleSkillZips: ruleSkillZips.items } : {}),
       ...(ruleSkillDirs.items !== undefined ? { ruleSkillDirs: ruleSkillDirs.items } : {}),
       ...(skillDirs.items !== undefined ? { skillDirs: skillDirs.items } : {}),
+      ...(includePatterns !== undefined ? { includePatterns } : {}),
+      ...(excludePatterns !== undefined ? { excludePatterns } : {}),
+      ...(emptyPathFilterFlags.length > 0
+        ? { emptyPathFilterFlags: [...emptyPathFilterFlags] }
+        : {}),
       ...(emptyRuleSkillFlags.length > 0 ? { emptyRuleSkillFlags: [...emptyRuleSkillFlags] } : {}),
       ...(strict ? { strictRuleSkill: true } : {}),
       ...(progress !== undefined ? { progress } : {}),

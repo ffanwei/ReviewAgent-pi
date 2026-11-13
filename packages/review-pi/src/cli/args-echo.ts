@@ -51,6 +51,17 @@ function listOf(values: readonly string[] | undefined): string {
   return values === undefined || values.length === 0 ? "(未传)" : values.join(", ");
 }
 
+/** 范围正则的列表回显：缺席与「显式传空」必须可区分（ADR-0078） */
+function regexListOf(values: readonly string[] | undefined, clearedLabel: string): string {
+  if (values === undefined) {
+    return "(未传)";
+  }
+  if (values.length === 0) {
+    return clearedLabel;
+  }
+  return values.join(", ");
+}
+
 /** 多行回显（不含尾换行；调用方决定写入 stderr） */
 export function formatReviewArgs(args: ReviewCliArgs, echo: ReviewArgsEcho): string {
   const modelSuffix = echo.modelFromFlag ? "" : "（缺省：配置文件 model.default）";
@@ -70,6 +81,8 @@ export function formatReviewArgs(args: ReviewCliArgs, echo: ReviewArgsEcho): str
     row("--rule-skill-zip", listOf(args.ruleSkillZips)),
     row("--rule-skill", listOf(args.ruleSkillDirs)),
     row("--skill", listOf(args.skillDirs)),
+    row("--include", regexListOf(args.includePatterns, "(空：本次清空 include)")),
+    row("--exclude", regexListOf(args.excludePatterns, "(空：本次清空 exclude)")),
     row("--strict-rule-skill", args.strictRuleSkill === true ? "已启用" : "未启用"),
     row("--no-progress", echo.progressOn ? `未启用${progressSuffix}` : "已启用（进度事件行静默）"),
   ].join("\n");

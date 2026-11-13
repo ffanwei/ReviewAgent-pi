@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
-import type { TaskCallTrace } from "../mcp/report.js";
+import type { TaskCallTrace } from "../contracts/mcp-task.js";
 import type { OneShotLifecycleEvent } from "../shared/one-shot-llm.js";
 import {
   OPENCODE_DIR,

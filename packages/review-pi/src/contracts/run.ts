@@ -109,9 +109,28 @@ export interface MrBoundaryRecord {
 
 /**
  * 输入预过滤的剔除原因（大 diff 第一期：只剔噪声，不改检视语义）；
- * `test` = 配置驱动的测试文件跳过；`exclude` = 配置驱动的 glob 跳过（ADR-0069）。
+ * `test` = 配置驱动的测试文件跳过；`exclude` = 配置驱动的 glob 跳过（ADR-0069）；
+ * `not-included` = 不在检视范围白名单内；`regex-exclude` = 命中范围正则排除
+ * （CLI 或配置，ADR-0078）。
  */
-export type MrFilterReason = "lockfile" | "generated" | "minified" | "binary" | "test" | "exclude";
+export type MrFilterReason =
+  | "lockfile"
+  | "generated"
+  | "minified"
+  | "binary"
+  | "test"
+  | "exclude"
+  | "not-included"
+  | "regex-exclude";
+
+/** 检视范围正则的来源（ADR-0078：CLI 覆盖配置，每个维度至多一条） */
+export type MrFilterSource = "cli" | "config";
+
+/** 生效的一条范围规则名单（原文进审计，保证 run 可复现） */
+export interface MrFilterPatternSet {
+  readonly source: MrFilterSource;
+  readonly patterns: readonly string[];
+}
 
 /** 被剔除的单个文件（审计窄投影，最多保留前 20 条） */
 export interface MrFilteredPath {
@@ -120,14 +139,20 @@ export interface MrFilteredPath {
 }
 
 /**
- * 输入预过滤留痕（审计文件尾键 mrFilter 的形状；无剔除缺省省键）。
- * `reasons` 恒含六类键（未命中为 0），便于下游按固定形状读数。
+ * 输入预过滤留痕（审计文件尾键 mrFilter 的形状；无剔除且未配置范围规则时省键）。
+ * `reasons` 恒含八类键（未命中为 0），便于下游按固定形状读数。
+ * `filters` 只在本次 run 配置了 include/exclude 正则时在场——规则原文是
+ * 「这次到底按什么范围筛的」的唯一证据。
  */
 export interface MrFilterRecord {
   readonly droppedFiles: number;
   readonly droppedChars: number;
   readonly reasons: Readonly<Record<MrFilterReason, number>>;
   readonly paths: readonly MrFilteredPath[];
+  readonly filters?: {
+    readonly include?: MrFilterPatternSet;
+    readonly exclude?: MrFilterPatternSet;
+  };
 }
 
 /** 规则 Skill 审计留痕的诊断项（内核装载 warning 的窄投影） */

@@ -52,10 +52,12 @@ describe("formatReviewArgs", () => {
     expect(lines).toContain(row("--rule-skill-zip", "(未传)"));
     expect(lines).toContain(row("--rule-skill", "(未传)"));
     expect(lines).toContain(row("--skill", "(未传)"));
+    expect(lines).toContain(row("--include", "(未传)"));
+    expect(lines).toContain(row("--exclude", "(未传)"));
     expect(lines).toContain(row("--strict-rule-skill", "未启用"));
     expect(lines).toContain(row("--no-progress", "未启用（缺省打印）"));
-    // 头部 + 13 个参数行（--skill 与 --rule-skill 同义；--rule-skill-name 随 ADR-0034 移除）
-    expect(lines).toHaveLength(14);
+    // 头部 + 15 个参数行（新增 --include / --exclude，ADR-0078）
+    expect(lines).toHaveLength(16);
   });
 
   it("JSON 形态：标签换成 --mr-json；--issue 多行转义后不破行", () => {
@@ -70,7 +72,7 @@ describe("formatReviewArgs", () => {
     );
     expect(text).toContain(row("--mr-json", "D:\\in\\files.json"));
     expect(text).toContain(row("--issue", '"第一行\\n第二行"'));
-    expect(text.split("\n")).toHaveLength(14);
+    expect(text.split("\n")).toHaveLength(16);
   });
 
   it("显式参数：不带缺省标注，可重复旗标按传入顺序全列", () => {
@@ -82,6 +84,8 @@ describe("formatReviewArgs", () => {
         ruleSkillZips: ["a.zip", "b.zip"],
         ruleSkillDirs: ["rules"],
         skillDirs: ["rules2"],
+        includePatterns: ["^src/", "^pkg/"],
+        excludePatterns: [],
         strictRuleSkill: true,
         progress: false,
       },
@@ -99,6 +103,8 @@ describe("formatReviewArgs", () => {
     expect(text).toContain(row("--rule-skill-zip", "a.zip, b.zip"));
     expect(text).toContain(row("--rule-skill", "rules"));
     expect(text).toContain(row("--skill", "rules2"));
+    expect(text).toContain(row("--include", "^src/, ^pkg/"));
+    expect(text).toContain(row("--exclude", "(空：本次清空 exclude)"));
     expect(text).toContain(row("--strict-rule-skill", "已启用"));
     expect(text.split("\n")).toContain(row("--no-progress", "已启用（进度事件行静默）"));
   });

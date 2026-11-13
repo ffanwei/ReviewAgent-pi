@@ -350,6 +350,8 @@ describe("loadConfig：失败策略", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
     expect(defaults.limits.mrFilter).toEqual({
       excludeGlobs: ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"],
+      includeRegex: [],
+      excludeRegex: [],
     });
 
     const tuned = loadConfig({
@@ -381,6 +383,42 @@ describe("loadConfig：失败策略", () => {
         configPath: writeConfig(minimalConfig(`,"limits":{"mrFilter":{"excludeGlobs":[""]}}`)),
       }),
     ).toThrow(/limits\.mrFilter\.excludeGlobs\[0\] must be a non-empty string/);
+  });
+
+  test("limits.mrFilter.includeRegex / excludeRegex：缺省空、去重保序、不 trim，非法正则 fail fast", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.mrFilter.includeRegex).toEqual([]);
+    expect(defaults.limits.mrFilter.excludeRegex).toEqual([]);
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"mrFilter":{"includeRegex":["^src/","^src/","^pkg/"],"excludeRegex":["\\\\.test\\\\.ts$"]}}`,
+        ),
+      ),
+    }).config;
+    expect(tuned.limits.mrFilter.includeRegex).toEqual(["^src/", "^pkg/"]);
+    expect(tuned.limits.mrFilter.excludeRegex).toEqual(["\\.test\\.ts$"]);
+    expect(tuned.overridden).toContain("limits.mrFilter.includeRegex");
+    expect(tuned.overridden).toContain("limits.mrFilter.excludeRegex");
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"mrFilter":{"includeRegex":"^src/"}}`)),
+      }),
+    ).toThrow(/limits\.mrFilter\.includeRegex must be an array of regular expressions/);
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"mrFilter":{"excludeRegex":["   "]}}`)),
+      }),
+    ).toThrow(/limits\.mrFilter\.excludeRegex\[0\] must be a non-empty string/);
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"mrFilter":{"includeRegex":["*.java"]}}`)),
+      }),
+    ).toThrow(/limits\.mrFilter\.includeRegex\[0\] is not a valid regular expression/);
   });
 
   test("limits.findingScope：缺省开启、默认 hunk ±10，可配置且进 digest", () => {

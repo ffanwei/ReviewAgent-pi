@@ -10,6 +10,7 @@ import {
 } from "../contracts/progress.js";
 import type {
   CandidateNormalizationRecord,
+  MrFilterPatternSet,
   MrFilterRecord,
   PhaseRecord,
   RejectionStage,
@@ -37,7 +38,7 @@ import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-run
 import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
-import { assertDiffWithinCharLimit, filterDiffForReview, splitDiffIntoFileBlocks, toMrFilterRecord } from "./mr-input.js";
+import { assertDiffWithinCharLimit, filterDiffForReview, listChangedFilePaths, NoReviewableFilesError, splitDiffIntoFileBlocks, toMrFilterRecord } from "./mr-input.js";
 import { mergeShardFindings } from "./findings-merge.js";
 import { runReviewPass, type ReviewPassResult } from "./review-pass.js";
 import {
@@ -107,6 +108,14 @@ export interface ReviewRunInput {
   readonly ruleSkillDirs?: readonly string[];
   /** 规则 Skill 严格模式（--strict-rule-skill）：装载失败抛错而非降级 */
   readonly strictRuleSkill?: boolean;
+  /**
+   * 检视范围正则（ADR-0078）：CLI 与配置在 main 侧已合并成「每个维度一条」。
+   * 缺省 = 不筛（逐字节保持旧行为）。
+   */
+  readonly diffPathFilters?: {
+    readonly include?: MrFilterPatternSet;
+    readonly exclude?: MrFilterPatternSet;
+  };
   /** 规则 Skill 装载器注入缝（测试注入假实现；缺省真装载器） */
   readonly ruleSkillLoader?: typeof loadRuleSkills;
   /**
@@ -223,7 +232,19 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   const filtered = filterDiffForReview(input.diff, {
     skipTestFiles: runtime.limits.testFiles.skip,
     excludeGlobs: runtime.limits.mrFilter.excludeGlobs,
+    ...(input.diffPathFilters?.include !== undefined
+      ? { includeFilter: input.diffPathFilters.include }
+      : {}),
+    ...(input.diffPathFilters?.exclude !== undefined
+      ? { excludeFilter: input.diffPathFilters.exclude }
+      : {}),
   });
+  // ADR-0078：输入本来有文件块、但被范围规则全部剔除 → 跳过检视（CLI 上报空意见 +
+  // 固定总结）。输入本身解析不出文件块时保持既有边界护栏行为，不在此拦截。
+  const hadFileBlocks = listChangedFilePaths(input.diff).length > 0;
+  if (hadFileBlocks && listChangedFilePaths(filtered.diff).length === 0) {
+    throw new NoReviewableFilesError(filtered.dropped.length, filtered.droppedChars);
+  }
   assertDiffWithinCharLimit(filtered.diff, runtime.limits.boundary.maxDiffChars);
   const diff = filtered.diff;
   const mrFilter = toMrFilterRecord(filtered);

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import type { TaskCallTrace } from "../mcp/report.js";
+import type { TaskCallTrace } from "../contracts/mcp-task.js";
 import type { OneShotLifecycleEvent } from "../shared/one-shot-llm.js";
 import { buildLifecycleSession, LifecycleCollector } from "./lifecycle.js";
 import type { OpenCodeInfo, OpenCodeMessage } from "./opencode-compat.js";

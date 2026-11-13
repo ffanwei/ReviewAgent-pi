@@ -14,6 +14,7 @@ import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
 import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import { runReview } from "./review-run.js";
+import { NoReviewableFilesError } from "./mr-input.js";
 
 // 单案全链（离线 fake 适配器形态）：唯一形态 = 工具驱动 + Context Ledger +
 // 规则 Skill（ADR-0024 删除配置矩阵后）。
@@ -1096,3 +1097,25 @@ test("limits.findingScope：默认只保留 diff hunk ±10 行内的意见，关
   ]);
   expect((readAudit(relaxed.auditPath) as { rejectionCounts?: unknown }).rejectionCounts).toBeUndefined();
 }, 120_000);
+
+test("ADR-0078：include 过滤后 0 个文件 → NoReviewableFilesError，且不调模型", async () => {
+  const script = fakeFetch([]);
+  const runsRoot = tempRunsRoot();
+  await expect(
+    runReview({
+      caseId: "NO-REVIEWABLE",
+      repoPath: repoFixturePath("sample"),
+      diff: goldenFixture("vul4j-1.diff"),
+      issueDescription: VUL4J_1_ISSUE,
+      apiKey: "offline-test",
+      fetch: script.fetch,
+      runsRoot,
+      rep: 1,
+      ruleSkillLoader: async () => [],
+      diffPathFilters: {
+        include: { source: "cli", patterns: ["^no-such-dir/"] },
+      },
+    }),
+  ).rejects.toBeInstanceOf(NoReviewableFilesError);
+  expect(script.requests).toHaveLength(0);
+});

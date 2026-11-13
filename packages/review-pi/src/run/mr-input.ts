@@ -1,4 +1,9 @@
-import type { MrFilteredPath, MrFilterReason, MrFilterRecord } from "../contracts/run.js";
+import type {
+  MrFilteredPath,
+  MrFilterPatternSet,
+  MrFilterReason,
+  MrFilterRecord,
+} from "../contracts/run.js";
 import { isTestFilePath } from "../shared/test-file.js";
 
 // 大 diff 第一期内核入口处理（预处理过滤 + 体积门）：
@@ -10,6 +15,10 @@ import { isTestFilePath } from "../shared/test-file.js";
 //    关闭时原样保留（reason = "test"，与其他噪声原因共用同一审计口径）。
 //    另有 `limits.mrFilter.excludeGlobs`（ADR-0069）：命中 glob 的块整块剔除
 //    （reason = "exclude"），排在全部内置原因之后。
+//    检视范围正则（ADR-0078）：`--include` / `--exclude`（CLI）或
+//    `limits.mrFilter.includeRegex` / `excludeRegex`（配置）先按白名单选，
+//    再按黑名单剔；命中白名单的块越过启发式过滤，`binary` 恒剔。
+//    正则匹配对象先做一次 git 引号/八进制归一化（只给正则层用）。
 // 2. 体积门：过滤后仍超过 `limits.boundary.maxDiffChars` 时直接抛人话错误，
 //    不再把注定失败的请求发给模型（`null` = 关门）。
 //
@@ -28,6 +37,14 @@ export interface FilteredDiff {
   readonly dropped: readonly DroppedDiffFile[];
   /** 被剔除的字符数（diff.length - filtered.length） */
   readonly droppedChars: number;
+  /**
+   * 本次生效的范围规则（ADR-0078）：未配置 include/exclude 时省键。
+   * 即使一条都没剔除也保留——审计要靠它复原「这次按什么范围筛的」。
+   */
+  readonly filters?: {
+    readonly include?: MrFilterPatternSet;
+    readonly exclude?: MrFilterPatternSet;
+  };
 }
 
 /** lockfile 文件名（大小写不敏感；`*.lock` 另行匹配） */
@@ -229,6 +246,16 @@ export interface FilterDiffOptions {
    * 命中 = reason = "exclude"；空数组 / 缺省 = 不排除。
    */
   readonly excludeGlobs?: readonly string[];
+  /**
+   * 检视范围白名单（ADR-0078）：模式原文 + 来源。命中任意一条 = 入选；
+   * 入选块越过 test / lockfile / minified / generated / excludeGlobs 启发式。
+   */
+  readonly includeFilter?: MrFilterPatternSet;
+  /**
+   * 检视范围黑名单（ADR-0078）：命中任意一条 = 剔除（`regex-exclude`），
+   * 优先于 include。
+   */
+  readonly excludeFilter?: MrFilterPatternSet;
 }
 
 /** 预编译的排除 glob（只编译一次，逐块匹配） */
@@ -289,12 +316,100 @@ function matchesExcludeGlob(posixPath: string, globs: readonly CompiledExcludeGl
   return globs.some((glob) => glob.regex.test(glob.basenameOnly ? basename : normalized));
 }
 
-/** 块级分类；第一个命中的原因生效（binary > lockfile > minified > generated > test > exclude） */
+/**
+ * 检视范围正则的匹配对象归一化（ADR-0078）：
+ * `--mr-diff` 里非 ASCII / 特殊字符路径会被 git 写成 C 风格引号 + 八进制
+ * （`+++ "b/\344\270\255\346\226\207.md"`），而 `--mr-json` 是原样路径。
+ * 只给正则层归一化——现有 glob 层（ADR-0069）行为不动。
+ */
+export function normalizeDiffPathForRegex(raw: string): string {
+  let normalized = raw.trim();
+  if (normalized.length >= 2 && normalized.startsWith('"') && normalized.endsWith('"')) {
+    normalized = decodeGitQuotedPath(normalized.slice(1, -1));
+  }
+  normalized = normalized.replace(/\\/g, "/");
+  return normalized.replace(/^[ab]\//, "");
+}
+
+/** git C 风格引号内的转义解码（八进制按 UTF-8 字节还原） */
+function decodeGitQuotedPath(value: string): string {
+  const bytes: number[] = [];
+  const simple: Readonly<Record<string, number>> = {
+    t: 0x09,
+    n: 0x0a,
+    r: 0x0d,
+    f: 0x0c,
+    v: 0x0b,
+    a: 0x07,
+    b: 0x08,
+    '"': 0x22,
+    "\\": 0x5c,
+  };
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] as string;
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char, "utf8"));
+      continue;
+    }
+    const next = value[index + 1];
+    if (next === undefined) {
+      bytes.push(0x5c);
+      break;
+    }
+    const octal = /^[0-7]{1,3}/.exec(value.slice(index + 1));
+    if (octal !== null) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      index += octal[0].length;
+      continue;
+    }
+    bytes.push(simple[next] ?? next.charCodeAt(0));
+    index += 1;
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+interface CompiledPatternSet {
+  readonly set: MrFilterPatternSet;
+  readonly regexes: readonly RegExp[];
+}
+
+/** 编译一条范围名单；空名单 = 该维度不生效（调用方已把「清空」归一成 undefined） */
+function compilePatternSet(set: MrFilterPatternSet | undefined): CompiledPatternSet | undefined {
+  if (set === undefined || set.patterns.length === 0) {
+    return undefined;
+  }
+  const regexes: RegExp[] = [];
+  for (const pattern of set.patterns) {
+    try {
+      regexes.push(new RegExp(pattern));
+    } catch (error) {
+      throw new Error(
+        `无效的检视范围正则 ${JSON.stringify(pattern)}：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return { set, regexes };
+}
+
+function matchesAnyRegex(regexes: readonly RegExp[], path: string): boolean {
+  return regexes.some((regex) => regex.test(path));
+}
+
+/**
+ * 块级分类（ADR-0078 之后的优先级）：
+ * binary > not-included > regex-exclude > 原有 lockfile > minified > generated >
+ * test > exclude。
+ *
+ * include 命中即「保留」：显式白名单越过全部启发式（默认的 md 排除与
+ * `testFiles.skip` 否则会让白名单失效）；`binary` 例外（没有可检视正文）。
+ */
 function classifyBlock(
   block: readonly string[],
   posixPath: string,
   skipTestFiles: boolean,
   excludeGlobs: readonly CompiledExcludeGlob[],
+  includeRegexes: readonly RegExp[],
+  excludeRegexes: readonly RegExp[],
 ): MrFilterReason | undefined {
   if (
     block.some(
@@ -302,6 +417,22 @@ function classifyBlock(
     )
   ) {
     return "binary";
+  }
+  const regexPath =
+    includeRegexes.length > 0 || excludeRegexes.length > 0
+      ? normalizeDiffPathForRegex(posixPath)
+      : "";
+  if (includeRegexes.length > 0) {
+    if (!matchesAnyRegex(includeRegexes, regexPath)) {
+      return "not-included";
+    }
+    if (excludeRegexes.length > 0 && matchesAnyRegex(excludeRegexes, regexPath)) {
+      return "regex-exclude";
+    }
+    return undefined;
+  }
+  if (excludeRegexes.length > 0 && matchesAnyRegex(excludeRegexes, regexPath)) {
+    return "regex-exclude";
   }
   const basename = (posixPath.split("/").at(-1) ?? "").toLowerCase();
   if (isLockfile(basename)) {
@@ -331,13 +462,28 @@ export function filterDiffForReview(
 ): FilteredDiff {
   const skipTestFiles = options.skipTestFiles ?? true;
   const excludeGlobs = compileExcludeGlobs(options.excludeGlobs ?? []);
+  const include = compilePatternSet(options.includeFilter);
+  const exclude = compilePatternSet(options.excludeFilter);
+  const filters =
+    include !== undefined || exclude !== undefined
+      ? {
+          ...(include !== undefined ? { include: include.set } : {}),
+          ...(exclude !== undefined ? { exclude: exclude.set } : {}),
+        }
+      : undefined;
+  const untouched: FilteredDiff = {
+    diff,
+    dropped: [],
+    droppedChars: 0,
+    ...(filters !== undefined ? { filters } : {}),
+  };
   if (diff.trim() === "") {
-    return { diff, dropped: [], droppedChars: 0 };
+    return untouched;
   }
   const lines = diff.split("\n");
   const ranges = blockRanges(lines);
   if (ranges.length === 0) {
-    return { diff, dropped: [], droppedChars: 0 };
+    return untouched;
   }
 
   const dropped: DroppedDiffFile[] = [];
@@ -348,7 +494,14 @@ export function filterDiffForReview(
     if (path === "") {
       continue;
     }
-    const reason = classifyBlock(block, path, skipTestFiles, excludeGlobs);
+    const reason = classifyBlock(
+      block,
+      path,
+      skipTestFiles,
+      excludeGlobs,
+      include?.regexes ?? [],
+      exclude?.regexes ?? [],
+    );
     if (reason === undefined) {
       continue;
     }
@@ -358,10 +511,15 @@ export function filterDiffForReview(
     }
   }
   if (dropped.length === 0) {
-    return { diff, dropped: [], droppedChars: 0 };
+    return untouched;
   }
   const filtered = lines.filter((_, index) => !removed.has(index)).join("\n");
-  return { diff: filtered, dropped, droppedChars: diff.length - filtered.length };
+  return {
+    diff: filtered,
+    dropped,
+    droppedChars: diff.length - filtered.length,
+    ...(filters !== undefined ? { filters } : {}),
+  };
 }
 
 /**
@@ -396,9 +554,33 @@ export function assertDiffWithinCharLimit(diff: string, maxChars: number | null)
   throw new MrDiffTooLargeError(diff.length, maxChars);
 }
 
-/** 审计 / 摘要用的窄投影（无剔除 = undefined，缺席省键） */
+/**
+ * 过滤后没有任何可检视文件块（ADR-0078）：输入 diff 本来有文件块，但被
+ * include/exclude 或预过滤规则全部剔除。CLI 据此走「跳过检视 + 上报空意见 +
+ * 固定总结」（与 ADR-0075 同形），不再拿空 diff 去调模型。
+ *
+ * 注意：输入本身就解析不出文件块（空 diff / malformed）不走本异常，仍由
+ * 边界护栏按 `boundary-unmeasurable` 降级处理（ADR-0012 的既有契约）。
+ */
+export class NoReviewableFilesError extends Error {
+  readonly kind = "no-reviewable-files";
+  readonly droppedFiles: number;
+  readonly droppedChars: number;
+
+  constructor(droppedFiles: number, droppedChars: number) {
+    super(
+      `过滤后没有可检视的文件：${String(droppedFiles)} 个变更文件被全部剔除` +
+        `（--include/--exclude 或预过滤规则，共 ${String(droppedChars)} 字符）`,
+    );
+    this.name = "NoReviewableFilesError";
+    this.droppedFiles = droppedFiles;
+    this.droppedChars = droppedChars;
+  }
+}
+
+/** 审计 / 摘要用的窄投影（无剔除且未配置范围规则 = undefined，缺席省键） */
 export function toMrFilterRecord(filtered: FilteredDiff): MrFilterRecord | undefined {
-  if (filtered.dropped.length === 0) {
+  if (filtered.dropped.length === 0 && filtered.filters === undefined) {
     return undefined;
   }
   const reasons: Record<MrFilterReason, number> = {
@@ -408,6 +590,8 @@ export function toMrFilterRecord(filtered: FilteredDiff): MrFilterRecord | undef
     binary: 0,
     test: 0,
     exclude: 0,
+    "not-included": 0,
+    "regex-exclude": 0,
   };
   for (const entry of filtered.dropped) {
     reasons[entry.reason] += 1;
@@ -417,6 +601,7 @@ export function toMrFilterRecord(filtered: FilteredDiff): MrFilterRecord | undef
     droppedChars: filtered.droppedChars,
     reasons,
     paths: filtered.dropped.slice(0, 20) satisfies readonly MrFilteredPath[],
+    ...(filtered.filters !== undefined ? { filters: filtered.filters } : {}),
   };
 }
 

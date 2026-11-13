@@ -12,6 +12,8 @@
  * - smoke：双探针（网关健康 + 模型可达，gateway-probe.ts 已测）→ stdout
  *   人话报告；
  * - config：`init` 写缺省 JSONC / `show` 脱敏打印生效值（config-command.ts）。
+ * - version：产品版本单行（`--json` 含 Node 与内核四包实际版本，ADR-0079；
+ *   不加载配置）。
  *
  * 退出码契约（票面三态）：成功（含诚实截断——防御性失败不是运行失败）0 /
  * 其余中止或错误 1；截断信号由 stdout JSON 的 truncated=true 携带。
@@ -34,6 +36,7 @@
  *   [--no-progress]
  *   review-pi smoke [--model <id>] [--config <path>]
  *   review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
+ *   review-pi version [--json]
  */
 
 import { existsSync } from "node:fs";
@@ -69,7 +72,7 @@ import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
 import { findingMergeKey } from "../run/findings-merge.js";
-import { formatMrFilterNotice, listChangedFilePaths, MrDiffTooLargeError } from "../run/mr-input.js";
+import { formatMrFilterNotice, listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError } from "../run/mr-input.js";
 import { formatShardTruncationNotice } from "../run/shard-planner.js";
 import { runExportCommand } from "./export-command.js";
 import {
@@ -91,10 +94,11 @@ import { mrJsonToUnifiedDiff } from "../zoneb/mr-json.js";
 import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
 import { formatReviewArgs } from "./args-echo.js";
 import { runConfigCommand } from "./config-command.js";
+import { runVersionCommand } from "./version-command.js";
 import { McpCallLog, writeMcpCallLog } from "./mcp-call-log.js";
 import { openRunLog, type RunLog } from "./run-log.js";
 import { buildShardReportResilient, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
-import { buildReviewSummary, DIFF_TOO_LARGE_SUMMARY_MARKDOWN } from "./review-summary.js";
+import { buildReviewSummary, DIFF_TOO_LARGE_SUMMARY_MARKDOWN, NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN } from "./review-summary.js";
 import {
   assembleUnifiedTips,
   countTips,
@@ -188,6 +192,12 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // 后面因别的错误早退，用户也能看到「规则包根本没装载」这个原因。
   for (const flag of args.emptyRuleSkillFlags ?? []) {
     process.stderr.write(`review-pi: ${flag} 缺少值，已忽略（本轮不装载该包）\n`);
+  }
+  // 范围正则空值（ADR-0078）：语义是「本次清空该维度」，必须可见（零静默）。
+  for (const flag of args.emptyPathFilterFlags ?? []) {
+    process.stderr.write(
+      `review-pi: ${flag} 传入空值，已清空该维度（本次不按该维度筛选，配置默认不再生效）\n`,
+    );
   }
   // 落盘根（ADR-0033）：tasks 根（`--tasks-dir` 或 ~/.PiAgent/tasks）+ 任务 id；
   // 其下仍是 runs/ + audit/ + .cache/（ADR-0032 的目录内形态不变）。
@@ -405,6 +415,20 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       progress?.onEvent(event);
       activeReporter?.sink(event);
     };
+    // 检视范围正则的生效名单（ADR-0078）：CLI 出现即整体替换对应维度的配置；
+    // include / exclude 各自独立。空数组 = 本次清空该维度。
+    const includeFilter =
+      args.includePatterns !== undefined
+        ? { source: "cli" as const, patterns: args.includePatterns }
+        : config.limits.mrFilter.includeRegex.length > 0
+          ? { source: "config" as const, patterns: config.limits.mrFilter.includeRegex }
+          : undefined;
+    const excludeFilter =
+      args.excludePatterns !== undefined
+        ? { source: "cli" as const, patterns: args.excludePatterns }
+        : config.limits.mrFilter.excludeRegex.length > 0
+          ? { source: "config" as const, patterns: config.limits.mrFilter.excludeRegex }
+          : undefined;
     const startedAt = Date.now();
     stageClock.runStartedAt = startedAt;
     let reviewed: Awaited<ReturnType<typeof runReview>>;
@@ -431,6 +455,14 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             }
           : {}),
         ...(args.strictRuleSkill !== undefined ? { strictRuleSkill: args.strictRuleSkill } : {}),
+        ...(includeFilter !== undefined || excludeFilter !== undefined
+          ? {
+              diffPathFilters: {
+                ...(includeFilter !== undefined ? { include: includeFilter } : {}),
+                ...(excludeFilter !== undefined ? { exclude: excludeFilter } : {}),
+              },
+            }
+          : {}),
         onProgress,
         ...(onShardFindings !== undefined ? { onShardFindings } : {}),
       });
@@ -467,6 +499,40 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         );
         return 0;
       }
+      // ADR-0078：过滤后无可检视文件 → 同样「跳过检视 + 一次空意见 + 固定总结」。
+      // 与 ADR-0075 同形：不写 audit / run（run 未开始），exit 0。
+      if (error instanceof NoReviewableFilesError) {
+        process.stderr.write(`review-pi: ${error.message}（跳过检视）\n`);
+        if (taskToolsOn && activeReporter !== null && startTaskSent) {
+          const firstFile = changedFiles[0];
+          if (firstFile !== undefined) {
+            await reportFilesWithoutTips({
+              label: "",
+              taskId: args.taskId,
+              reporter: activeReporter,
+              files: [firstFile],
+              reportedFiles,
+            });
+          }
+          const outcome = await activeReporter.task.saveReviewSummary({
+            taskId: args.taskId,
+            markdownContent: NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN,
+          });
+          summaryCallCompleted = true;
+          if (!outcome.ok) {
+            process.stderr.write(`review-pi: MCP saveReviewSummary 失败（${outcome.reason}）\n`);
+          }
+        }
+        await writeStdout(
+          renderJsonDocument({
+            ok: true,
+            caseId: args.caseId,
+            skipped: "no-reviewable-files",
+            findings: [],
+          }),
+        );
+        return 0;
+      }
       throw error;
     }
     // 请求时间线（ADR-0076）：pass 已写过单片 / 分片文件；收尾的报文与总结
@@ -488,7 +554,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       );
     }
     // 输入预过滤（大 diff 第一期）：剔了就必须可见（明细在审计 mrFilter）
-    if (reviewed.mrFilter !== undefined) {
+    if (reviewed.mrFilter !== undefined && reviewed.mrFilter.droppedFiles > 0) {
       process.stderr.write(`review-pi: ${formatMrFilterNotice(reviewed.mrFilter)}\n`);
     }
     // 单文件超预算截取（ADR-0070）：只检视了前半部分，必须可见
@@ -1496,8 +1562,14 @@ function main(): void {
   // 不做任何 env 覆盖、不回写 process.env。警告（未知键 / 钉死键 / 权限）
   // 走 stderr，不改退出码。
   //
-  // export（ADR-0036）例外：纯文件系统命令，不加载配置、不碰 key、不做
-  // .env.local 探测——换机器 / CI 里没有配置文件也应能导出路径。
+  // version（ADR-0079）与 export（ADR-0036）例外：纯展示 / 纯文件系统命令，
+  // 不加载配置、不碰 key、不做 .env.local 探测——换机器 / CI 里没有配置文件
+  // 也应能回答当前是哪个版本。
+  if (parsed.command === "version") {
+    const code = runVersionCommand(parsed.args);
+    exitGracefully(code);
+    return;
+  }
   if (parsed.command === "export") {
     runExportCommand(parsed.args).then((code) => exitGracefully(code)).catch(reportErrorAndExit);
     return;
