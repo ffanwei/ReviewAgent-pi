@@ -8,6 +8,7 @@ import type {
   CandidateNormalizationRecord,
   CandidateRejection,
   CandidateRejectionCounts,
+  ModelFallbackRecord,
   PhaseRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
@@ -111,6 +112,11 @@ export interface RunRecord {
   readonly verifierPass: null;
   /** 分片留痕（ADR-0039）：多片时在场，单片/旧记录整键缺席 */
   readonly shards?: readonly ShardRecord[];
+  /**
+   * 模型替换留痕（ADR-0080）：只在 `--model` 因 model-not-found 降级时在场；
+   * `model` 字段已是生效值。无替换整键缺席（零字节漂移）。
+   */
+  readonly modelFallback?: ModelFallbackRecord;
 }
 
 /** RunResult → 轻量快照（去 requests；路径来自 RunResult.auditPath） */
@@ -158,6 +164,8 @@ export function buildRunRecord(args: {
   readonly result: RunResult;
   /** 分片留痕（ADR-0039）：只在多片时传入；缺席 = 单片零变更 */
   readonly shards?: readonly ShardRecord[];
+  /** 模型替换留痕（ADR-0080）：只在真发生降级时传入；缺席整键省略 */
+  readonly modelFallback?: ModelFallbackRecord;
 }): RunRecord {
   return {
     source: args.source,
@@ -170,6 +178,7 @@ export function buildRunRecord(args: {
     effective: null,
     verifierPass: null,
     ...(args.shards !== undefined ? { shards: args.shards } : {}),
+    ...(args.modelFallback !== undefined ? { modelFallback: args.modelFallback } : {}),
   };
 }
 

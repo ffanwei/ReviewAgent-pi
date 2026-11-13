@@ -111,7 +111,13 @@ interface LoopbackStub {
  */
 function startLoopbackStub(
   replies: readonly FakeReply[],
-  options: { readonly truncateFirstStream?: boolean } = {},
+  options: {
+    readonly truncateFirstStream?: boolean;
+    /** 这些 model id 一律 404（模拟网关没注册该模型：探针与真实请求同样被拒） */
+    readonly missingModels?: readonly string[];
+    /** 模型探针（max_tokens:1 的非流式请求）对这些 model 返回 429 */
+    readonly probeRateLimitedModels?: readonly string[];
+  } = {},
 ): Promise<LoopbackStub> {
   const queue = [...replies];
   const requests: StubRequestRecord[] = [];
@@ -141,16 +147,29 @@ function startLoopbackStub(
         return;
       }
       if (request.method === "POST" && request.url === "/v1/chat/completions") {
+        const model = (body as { model?: unknown } | undefined)?.model;
+        const modelId = typeof model === "string" ? model : undefined;
+        // 模型不存在：探针与真实请求一视同仁（404 不重试，ADR-0080 进程面用）
+        if (modelId !== undefined && options.missingModels?.includes(modelId) === true) {
+          response.writeHead(404, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: { message: "Model Not Exist", code: "model_not_found" } }));
+          return;
+        }
         const wantsStream = (body as { stream?: unknown } | undefined)?.stream === true;
         if (!wantsStream) {
           const maxTokens = (body as { max_tokens?: unknown } | undefined)?.max_tokens;
           // 非流式两类：smoke 模型探针（max_tokens:1 的 ping）回显；其余是一次性
           // 模型调用（ADR-0045 报文 / 总结生成）——依序消费脚本回复，回 JSON。
           if (maxTokens === 1) {
+            if (modelId !== undefined && options.probeRateLimitedModels?.includes(modelId) === true) {
+              response.writeHead(429, { "content-type": "application/json" });
+              response.end(JSON.stringify({ error: { message: "rate limited (stub)" } }));
+              return;
+            }
             response.writeHead(200, { "content-type": "application/json" });
             response.end(
               JSON.stringify({
-                model: (body as { model?: unknown } | undefined)?.model ?? REVIEW_MODEL_ID,
+                model: modelId ?? REVIEW_MODEL_ID,
                 choices: [
                   { index: 0, message: { role: "assistant", content: "pong" }, finish_reason: "stop" },
                 ],
@@ -3278,6 +3297,361 @@ test(
       const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as { model: string };
       expect(audit.model).toBe("test-model");
     } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "reviewer.modelFallback=on-model-not-found：--model 404 → 改用 model.default 并全程生效，审计/run.json 留痕",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus(), { missingModels: ["ep-missing"] });
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(goldenFixture("vul4j-1.diff")),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--model",
+          "ep-missing",
+        ],
+        {
+          configText: `${JSON.stringify(
+            {
+              version: 1,
+              reviewer: {
+                apiKey: SENTINEL_KEY,
+                baseUrl: stub.baseUrl,
+                modelFallback: "on-model-not-found",
+              },
+            },
+            null,
+            2,
+          )}\n`,
+        },
+      );
+
+      expect(run.status).toBe(0);
+      // stderr：人话一行（保留原 --model，点名生效的 model.default）
+      expect(run.stderr).toContain('--model "ep-missing" 不可用（model not found）');
+      expect(run.stderr).toContain(`已改用配置文件 model.default "${REVIEW_MODEL_ID}"`);
+
+      const posts = stub.requests().filter((record) => record.method === "POST");
+      const modelOf = (record: StubRequestRecord): unknown =>
+        (record.body as { model?: unknown } | undefined)?.model;
+      const probeModels = posts
+        .filter((record) => (record.body as { max_tokens?: unknown } | undefined)?.max_tokens === 1)
+        .map(modelOf);
+      // 两条探针：先主模型（404），再默认模型（可用）
+      expect(probeModels).toEqual(["ep-missing", REVIEW_MODEL_ID]);
+      // 真实检视 / 一次性调用全部用生效模型，不再出现被替换的 id
+      const reviewModels = posts
+        .filter((record) => (record.body as { max_tokens?: unknown } | undefined)?.max_tokens !== 1)
+        .map(modelOf);
+      expect(reviewModels.length).toBeGreaterThan(0);
+      expect(new Set(reviewModels)).toEqual(new Set([REVIEW_MODEL_ID]));
+
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        model: string;
+        modelFallback?: unknown;
+      };
+      expect(audit.model).toBe(REVIEW_MODEL_ID);
+      expect(audit.modelFallback).toEqual({
+        requested: "ep-missing",
+        used: REVIEW_MODEL_ID,
+        reason: "model-not-found",
+      });
+
+      const record = JSON.parse(
+        readFileSync(path.join(cliRunsDir(outDir), "run.json"), "utf8"),
+      ) as { model: string; modelFallback?: unknown };
+      expect(record.model).toBe(REVIEW_MODEL_ID);
+      expect(record.modelFallback).toEqual({
+        requested: "ep-missing",
+        used: REVIEW_MODEL_ID,
+        reason: "model-not-found",
+      });
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "reviewer.modelFallback：两边都 model-not-found → exit 1 双诊断、stdout 干净、不发真实检视请求",
+  async () => {
+    const stub = await startLoopbackStub([], {
+      missingModels: ["ep-missing", REVIEW_MODEL_ID],
+    });
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(goldenFixture("vul4j-1.diff")),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--model",
+          "ep-missing",
+        ],
+        {
+          configText: `${JSON.stringify(
+            {
+              version: 1,
+              reviewer: {
+                apiKey: SENTINEL_KEY,
+                baseUrl: stub.baseUrl,
+                modelFallback: "on-model-not-found",
+              },
+            },
+            null,
+            2,
+          )}\n`,
+        },
+      );
+
+      expect(run.status).toBe(1);
+      expect(run.stdout.trim()).toBe("");
+      expect(run.stderr).toContain("ep-missing");
+      expect(run.stderr).toContain(REVIEW_MODEL_ID);
+      expect(run.stderr).toContain("已中止");
+      // 只发了两条探针（主 + 默认），没有任何流式检视请求
+      const posts = stub.requests().filter((record) => record.method === "POST");
+      expect(posts).toHaveLength(2);
+      expect(posts.every((record) => (record.body as { stream?: unknown }).stream !== true)).toBe(true);
+      // 没跑检视 = 没有审计文件
+      expect(existsSync(path.join(outDir, CLI_TASK_ID, "audit"))).toBe(false);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "reviewer.modelFallback 缺省 off：一次探针都不发，审计无 modelFallback 键（零漂移）",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus());
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(goldenFixture("vul4j-1.diff")),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--model",
+          "test-model",
+        ],
+        { ...stubEnv(stub.baseUrl) },
+      );
+
+      expect(run.status).toBe(0);
+      expect(run.stderr).not.toContain("已改用配置文件 model.default");
+      const posts = stub.requests().filter((record) => record.method === "POST");
+      expect(posts.some((record) => (record.body as { max_tokens?: unknown }).max_tokens === 1)).toBe(false);
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as Record<string, unknown>;
+      expect("modelFallback" in audit).toBe(false);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "reviewer.modelFallback 顾问原则：主模型探针 429 → 不替换，照常开跑（主模型仍是生效值）",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus(), {
+      probeRateLimitedModels: ["ep-flaky"],
+    });
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(goldenFixture("vul4j-1.diff")),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--model",
+          "ep-flaky",
+        ],
+        {
+          configText: `${JSON.stringify(
+            {
+              version: 1,
+              reviewer: {
+                apiKey: SENTINEL_KEY,
+                baseUrl: stub.baseUrl,
+                modelFallback: "on-model-not-found",
+              },
+            },
+            null,
+            2,
+          )}\n`,
+        },
+      );
+
+      expect(run.status).toBe(0);
+      expect(run.stderr).not.toContain("已改用配置文件 model.default");
+      const outcome = JSON.parse(run.stdout) as { auditPath: string };
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        model: string;
+        modelFallback?: unknown;
+      };
+      expect(audit.model).toBe("ep-flaky");
+      expect(audit.modelFallback).toBeUndefined();
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "reviewer.modelFallback：两边 404 中止时 MCP 仍有始有终（startTask → endTask，无总结）",
+  async () => {
+    const stub = await startLoopbackStub([], {
+      missingModels: ["ep-missing", REVIEW_MODEL_ID],
+    });
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(goldenFixture("vul4j-1.diff")),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--model",
+          "ep-missing",
+        ],
+        {
+          configText: `${JSON.stringify(
+            {
+              version: 1,
+              reviewer: {
+                apiKey: SENTINEL_KEY,
+                baseUrl: stub.baseUrl,
+                modelFallback: "on-model-not-found",
+              },
+              mcp: {
+                servers: {
+                  stub: { transport: "http", url: mcp.url, headers: {}, timeoutMs: 10_000 },
+                },
+                report: { server: "stub" },
+              },
+            },
+            null,
+            2,
+          )}\n`,
+        },
+      );
+
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain("已中止");
+      // ADR-0045 决策 2：startTask 已发出 → 中止路径仍必须 endTask，且没有总结
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual(["startTask", "endTask"]);
+    } finally {
+      await mcp.close();
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "reviewer.modelFallback：降级时平台总结追加一行说明（MCP saveReviewSummary 可见）",
+  async () => {
+    const stub = await startLoopbackStub(
+      [
+        ...oneFindingCorpusForReport(),
+        { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
+        { text: "# 检视总结\n\n测试桩总结。", usage: ZERO_USAGE_REPLY },
+      ],
+      { missingModels: ["ep-missing"] },
+    );
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          writeMr(goldenFixture("vul4j-1.diff")),
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--model",
+          "ep-missing",
+        ],
+        {
+          configText: `${JSON.stringify(
+            {
+              version: 1,
+              reviewer: {
+                apiKey: SENTINEL_KEY,
+                baseUrl: stub.baseUrl,
+                modelFallback: "on-model-not-found",
+              },
+              limits: { findingScope: { enabled: false } },
+              mcp: {
+                servers: {
+                  stub: { transport: "http", url: mcp.url, headers: {}, timeoutMs: 10_000 },
+                },
+                report: { server: "stub" },
+              },
+            },
+            null,
+            2,
+          )}\n`,
+        },
+      );
+
+      expect(run.status).toBe(0);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      const summary = business.find((call) => call.name === "saveReviewSummary");
+      expect(String(summary?.args.markdownContent)).toContain("# 检视总结");
+      expect(String(summary?.args.markdownContent)).toContain("模型降级说明");
+      expect(String(summary?.args.markdownContent)).toContain("ep-missing");
+      expect(String(summary?.args.markdownContent)).toContain(REVIEW_MODEL_ID);
+    } finally {
+      await mcp.close();
       await stub.close();
     }
   },

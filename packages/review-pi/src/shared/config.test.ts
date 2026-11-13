@@ -92,6 +92,7 @@ describe("loadConfig：缺省与形状", () => {
       baseUrl: OFFICIAL_REVIEWER_BASE_URL,
       maxOutputTokens: null,
       stripModelPrefix: false,
+      modelFallback: "off",
     });
     expect(config.model).toEqual({ default: DEFAULT_MODEL_ID, presentation: null });
     expect(config.limits).toEqual(DEFAULT_LIMITS);
@@ -978,6 +979,28 @@ describe("mcp 配置块（ADR-0037）", () => {
         configPath: writeConfig(`{"version":1,"reviewer":{"apiKey":"sk-x","stripModelPrefix":"true"}}`),
       }),
     ).toThrowError(/reviewer\.stripModelPrefix must be true or false/);
+  });
+
+  test("reviewer.modelFallback：缺省 off；只接受枚举值；非法值 fail fast（不静默取缺省）", () => {
+    expect(
+      loadConfig({ configPath: writeConfig(minimalConfig()) }).config.reviewer.modelFallback,
+    ).toBe("off");
+    const on = loadConfig({
+      configPath: writeConfig(
+        `{"version":1,"reviewer":{"apiKey":"sk-x","modelFallback":"on-model-not-found"}}`,
+      ),
+    });
+    expect(on.config.reviewer.modelFallback).toBe("on-model-not-found");
+    expect(configSnapshot(on.config).values["reviewer.modelFallback"]).toBe("on-model-not-found");
+    for (const bad of ["true", "ON-MODEL-NOT-FOUND", "on", ""]) {
+      expect(() =>
+        loadConfig({
+          configPath: writeConfig(
+            `{"version":1,"reviewer":{"apiKey":"sk-x","modelFallback":${JSON.stringify(bad)}}}`,
+          ),
+        }),
+      ).toThrowError(/reviewer\.modelFallback must be one of off, on-model-not-found/);
+    }
   });
 
   test("mcp.servers.*.transport：http（缺省）/ http-sse（老式 HTTP+SSE）；其它值 fail fast", () => {

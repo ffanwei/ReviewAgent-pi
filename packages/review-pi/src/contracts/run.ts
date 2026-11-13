@@ -295,6 +295,19 @@ export interface CandidateNormalizationRecord {
 /** 候选拦截链各阶段的计数（只在有拦截时进审计尾键；固定形状便于下游读数） */
 export type CandidateRejectionCounts = Readonly<Record<RejectionStage, number>>;
 
+/**
+ * 模型替换留痕（ADR-0080）：只在 `--model` 因 model-not-found 降级到
+ * `config.model.default` 时在场；无替换整键缺席（零字节漂移）。
+ *
+ * `requested` 是用户传的 wire id（已剥前缀），`used` 是本 run 实际生效的 id。
+ * 一个 run 只有一个生效模型——替换在开跑前定死，不随分片漂移。
+ */
+export interface ModelFallbackRecord {
+  readonly requested: string;
+  readonly used: string;
+  readonly reason: "model-not-found";
+}
+
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
@@ -328,6 +341,11 @@ export interface RunAudit {
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** 候选拦截链阶段计数（只在有拦截时在场） */
   readonly rejectionCounts?: CandidateRejectionCounts;
+  /**
+   * 模型替换留痕（ADR-0080）：只在真发生降级时在场；无替换整键缺席。
+   * 聚合审计记一次；分片审计不重复该键（`model` 已是生效值）。
+   */
+  readonly modelFallback?: ModelFallbackRecord;
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

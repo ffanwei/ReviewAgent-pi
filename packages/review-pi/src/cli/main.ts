@@ -49,7 +49,7 @@ import { calculateCost } from "@earendil-works/pi-ai";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import type { RunProgressSink } from "../contracts/progress.js";
-import type { PhaseRecord } from "../contracts/run.js";
+import type { ModelFallbackRecord, PhaseRecord } from "../contracts/run.js";
 import { runDirPath } from "../experiment/run-record.js";
 import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-index.js";
 import { LifecycleCollector, writeLifecycleSessions } from "../export/lifecycle.js";
@@ -66,7 +66,8 @@ import {
   type McpReporter,
 } from "../mcp/index.js";
 import { PHASE_ORDER } from "../loop/phases.js";
-import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
+import { formatSmokeDiagnostics, probeModelReachability, runSmokeProbes } from "../provider/gateway-probe.js";
+import { resolveReviewModel } from "../provider/model-fallback.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
@@ -303,6 +304,43 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       );
     }
   }
+  // 模型前置探测（ADR-0080）：顾问而非守门员——只有「--model 确定不存在」才
+  // 换成配置文件 model.default；其余探测结论（401 / 429 / 5xx / 网络 / 畸形）
+  // 一律照常开跑。缺省开关 off：这里一次网络请求都不发，与旧版逐字节一致。
+  //
+  // abort（两边都 404）不在这里抛：此点还在下方 try/finally 之外，抛出会跳过
+  // `endTask`（ADR-0045 决策 2「有始有终」）。改成先记下、进 try 后再抛。
+  const fallbackModelId = modelIdForGateway(
+    config.model.default,
+    config.reviewer.stripModelPrefix,
+  );
+  let effectiveModelId = modelId;
+  let modelFallback: ModelFallbackRecord | undefined;
+  let modelFallbackAbort: string | undefined;
+  {
+    const decision = await resolveReviewModel({
+      mode: config.reviewer.modelFallback,
+      modelFromFlag: args.model !== undefined,
+      requestedModelId: modelId,
+      fallbackModelId,
+      probe: (probeModelId) =>
+        probeModelReachability({
+          baseUrl: endpoint.baseUrl,
+          apiKey: endpoint.apiKey,
+          modelId: probeModelId,
+          fetch: globalThis.fetch,
+          modelTimeoutMs: config.limits.timeouts.probeModelMs,
+          retry: retryPolicyFor(config.limits.retry, "smoke"),
+        }),
+    });
+    if (decision.kind === "abort") {
+      modelFallbackAbort = decision.message;
+    } else if (decision.kind === "use-fallback") {
+      effectiveModelId = fallbackModelId;
+      modelFallback = decision.record;
+      process.stderr.write(`review-pi: ${decision.notice}\n`);
+    }
+  }
   // 片级上报编排（ADR-0045）：每片 findings 定型 → 报文调用 → 逐文件 mrReviewResult。
   // 运行时档（ADR-0045）：`model.presentation` 优先 + oneShotMs；重试次数
   // 来自 limits.retry 的 oneShot 路径（ADR-0051）。业务关闭时这一档也用于
@@ -310,7 +348,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   const reportRuntime = {
     apiKey: endpoint.apiKey,
     baseUrl: endpoint.baseUrl,
-    modelId: gatewayPresentationModelId(config, modelId),
+    modelId: gatewayPresentationModelId(config, effectiveModelId),
     timeoutMs: config.limits.timeouts.oneShotMs,
     retry: retryPolicyFor(config.limits.retry, "oneShot"),
   };
@@ -364,6 +402,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   let postPassTimeline: ReturnType<typeof createRequestTimelineWriter> | null = null;
 
   try {
+    // 前置探测的两边都 404 结论在 try 内抛出，保证 finally 的 endTask 仍发（ADR-0045）
+    if (modelFallbackAbort !== undefined) {
+      throw new Error(modelFallbackAbort);
+    }
     setOneShotUsageSink(usageCollector.sink);
     // 生命周期全文留痕（ADR-0073）：one-shot 三目的全文进会话时间线
     setOneShotLifecycleSink((event) => lifecycleCollector.recordOneShot(event));
@@ -377,7 +419,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 运行进度投影（ADR-0055，取代 ADR-0016 的 TTY 自动档）：缺省打印事件行；
     // `--no-progress` 显式静音（批跑收日志用）。静音时仍保留收尾摘要一行
     // （stderr，可 grep），不出现阶段/请求/工具事件行。
-    const progress = startProgress(args, modelId);
+    const progress = startProgress(args, effectiveModelId);
     const onProgress: RunProgressSink = (event) => {
       // 阶段账本打点（收尾打印用）：只读事件与时钟，不改变事件消费顺序。
       if (event.kind === "phase") {
@@ -440,7 +482,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         issueDescription: args.issue,
         apiKey: endpoint.apiKey,
         baseUrl: endpoint.baseUrl,
-        modelId,
+        modelId: effectiveModelId,
+        ...(modelFallback !== undefined ? { modelFallback } : {}),
         runtime: reviewRuntimeOf(config),
         config: configSnapshot(config, { home: homeDirectory() }),
         tipsConfidenceMin: config.limits.confidence.min,
@@ -599,7 +642,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 摘要与审计同源（usage / 请求 / 工具 / Ledger 命中），所以投影的调用不计入
     // 这一行——否则「耗时」含投影而 token 不含，两个数对不上账。
     const summary = buildSummary({
-      modelId,
+      modelId: effectiveModelId,
       baseUrl: endpoint.baseUrl,
       record,
       startedAt,
@@ -839,9 +882,15 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       const settleStartedAt = Date.now();
       await waitTaskToolSettle(taskToolSettleMs, "mrReviewResult → saveReviewSummary");
       stageClock.settleMs += Date.now() - settleStartedAt;
+      // 模型替换留痕（ADR-0080）：只在真发生降级时追加一行；无替换零字节漂移。
+      // 固定模板总结（无意见 / 无上报）不追加——那些场景没有用到模型。
+      const summaryMarkdown =
+        modelFallback === undefined
+          ? summaryReport.markdown
+          : `${summaryReport.markdown}\n\n${modelFallbackMarkdownLine(modelFallback)}`;
       const outcome = await activeReporter.task.saveReviewSummary({
         taskId: args.taskId,
-        markdownContent: summaryReport.markdown,
+        markdownContent: summaryMarkdown,
       });
       summaryCallCompleted = true;
       if (!outcome.ok) {
@@ -986,7 +1035,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           usageCollector,
           agentUsage,
           agentCalls,
-          modelId,
+          modelId: effectiveModelId,
           baseUrl: endpoint.baseUrl,
         })) {
           process.stderr.write(`${line}\n`);
@@ -1327,6 +1376,17 @@ function gatewayPresentationModelId(config: ResolvedConfig, reviewModelId: strin
   return config.model.presentation !== null
     ? modelIdForGateway(config.model.presentation, config.reviewer.stripModelPrefix)
     : reviewModelId;
+}
+
+/**
+ * 平台可见的替换说明（ADR-0080）：只在真发生降级时追加到**模型生成的**总结
+ * 末尾；固定模板总结不追加（那场景没用到模型，追加会谎报）。
+ */
+function modelFallbackMarkdownLine(record: ModelFallbackRecord): string {
+  return (
+    `> 模型降级说明：请求模型 \`${record.requested}\` 不可用（model not found），` +
+    `本次检视实际使用 \`${record.used}\`。`
+  );
 }
 
 /** stdout 整写（flush 后 resolve——退出前保证字节已落地） */

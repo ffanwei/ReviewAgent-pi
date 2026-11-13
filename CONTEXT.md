@@ -267,6 +267,10 @@ _Avoid_: 规则包自动发现、约定目录（历史 ADR-0012/0014 的旧口�
 执行检视的 LLM：model id 走请求参数（CLI `--model <id>`；pi 内核线接缝见 ADR-0009），无 model 环境变量；url / key 来自用户级配置文件 `~/.PiAgent/PiAgent.jsonc`（`reviewer.baseUrl` / `reviewer.apiKey`；`--config` 可换文件，env 层已不再读取，ADR-0025）；进审计留痕（model + baseUrl，绝不记 key，ADR-0008），并在审计 `config` 快照里留全量生效值与 `digest`。自定义网关换端点/模型先跑 `review-pi smoke` 双探针自证。
 _Avoid_: 被测模型（实验自变量语义已随评测层废止）、白名单模型（准入白名单已由画像表取代）、model 走环境变量（model 走请求参数、秘密走配置文件）
 
+**模型降级（model fallback）**:
+`--model` 被网关明确判为 model not found 时，按部署开关改用配置文件 `model.default` 继续检视的**一次性决策**（ADR-0080）。决策发生在任何检视请求之前，事后整次 run 只有一个生效模型；替换痕迹在 stderr、审计与平台总结可见。默认关闭——它改变的是「这次检视是谁做的」这一事实，不是路由优化。
+_Avoid_: 重试（重试是同一模型再试，降级是换模型）、自动选模型（不做模型选择，只在两个已声明 id 之间二选一）
+
 **参数画像（Provider Profile）**:
 模型 id → wire 序列化策略（thinking 字段 / completion 信封）+ usage 能力声明的查表面。pi 线**当前不按 id 分派**：恒 `deepseek` provider、恒发 `thinking{type:"enabled"}` + `reasoning_effort:"high"`（`provider/pi-client.ts` 的 `LOCKED_REASONING_EFFORT`），自由 id 只换字符串、借用 `deepseek-v4-flash` 的模型元数据；模型元数据（contextWindow / maxTokens / cost / compat）来自内核四包自带的模型目录（ADR-0035）。ADR-0008 的「按 id pattern 查画像表」在 pi 线从未接线，若要恢复多模型分派，按新功能另立项。
 _Avoid_: 画像当 endpoint 配置（「怎么说话」与「连到哪」两轴正交）、把 review-llm 的 `profileOf` 当既有实现（ADR-0035 已删该包）

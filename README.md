@@ -126,7 +126,10 @@ npm rm -g @baize/review-pi           # 卸载（嵌套依赖一并移除）
     // 网关基址：官方直连用 https://api.deepseek.com；OpenAI 兼容网关需自带 /v1。
     "baseUrl": "https://api.deepseek.com",
     // 单次请求输出上限：null = 自动（官方直连不发 max_tokens；网关发 32768）。
-    "maxOutputTokens": null
+    "maxOutputTokens": null,
+    // --model 不可用时的降级策略（ADR-0080）：off = 不探测不替换（缺省）；
+    // on-model-not-found = 只有网关明确返回 model not found 才改用 model.default。
+    "modelFallback": "off"
   },
   "model": {
     // 默认检视模型（--model 可覆盖）。

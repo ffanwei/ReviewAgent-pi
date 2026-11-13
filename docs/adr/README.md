@@ -75,6 +75,7 @@
 | [ADR-0077](0077-buffered-stream-replay.md) | 流中断重放：失败响应先缓冲、不交付，本层重发（局部替代 ADR-0051 决策 3；新增 `streamAttempts` / `streamReplayBudgetMs`） |
 | [ADR-0078](0078-review-scope-include-exclude-regex.md) | 检视范围正则：`--include` / `--exclude` 与 `limits.mrFilter.includeRegex` / `excludeRegex`（先白名单后黑名单；0 文件跳过检视仍上报） |
 | [ADR-0079](0079-version-command.md) | 版本面：`review-pi version` / `--version`（人读单行、`--json` 含 Node 与内核四包实际版本；不加载配置；日志头与 `config show` 带版本） |
+| [ADR-0080](0080-model-fallback-on-model-not-found.md) | `--model` 不可用时的前置探测与单边降级：`reviewer.modelFallback`（缺省 `off`）、只认 model-not-found、探针只做顾问、一次 run 一个生效模型 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

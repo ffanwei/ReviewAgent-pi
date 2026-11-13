@@ -6,6 +6,7 @@ import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import type { RunProgressSink } from "../contracts/progress.js";
 import type {
+  ModelFallbackRecord,
   MrFilterRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
@@ -78,6 +79,11 @@ export interface ReviewPassInput {
   readonly mrFilter?: MrFilterRecord;
   /** 生效配置快照：只在单遍 / 聚合审计写一次 */
   readonly config?: ConfigSnapshot;
+  /**
+   * 模型替换留痕（ADR-0080）：单遍路径由 CLI 传入并落审计；分片路径不传
+   * （键只在聚合审计写一次，片内 `model` 已是生效值）。
+   */
+  readonly modelFallback?: ModelFallbackRecord;
   /**
    * 中文 tips 置信度过滤阈值（ADR-0052）：只在审计 / run.json 留痕用，不改
    * 检视行为；缺席 = 不写 `tipsFilter` 键。
@@ -217,6 +223,7 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog: persisted.records } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
     ...(severityFilter !== undefined ? { severityFilter } : {}),
+    ...(input.modelFallback !== undefined ? { modelFallback: input.modelFallback } : {}),
   };
   const auditContent = buildAuditFileContent({
     runId,

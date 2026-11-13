@@ -31,6 +31,16 @@ export const DEFAULT_GATEWAY_MAX_TOKENS = 32_768;
 export const DEFAULT_MODEL_ID = "deepseek-v4-flash";
 
 /**
+ * 模型降级模式（ADR-0080）：
+ * - `"off"` = 不探测、不替换（缺省；逐字节维持旧行为，零额外请求）；
+ * - `"on-model-not-found"` = 开跑前探测 `--model`，只有网关明确返回
+ *   model not found 才改用 `config.model.default`，并在 stderr / 审计 /
+ *   平台总结留下替换痕迹。
+ */
+export const MODEL_FALLBACK_MODES = ["off", "on-model-not-found"] as const;
+export type ModelFallbackMode = (typeof MODEL_FALLBACK_MODES)[number];
+
+/**
  * 制品内呈现引擎的哨兵值（`presentation.engine = "builtin"`，ADR-0026）。
  * 写一个哨兵而不是绝对路径：配置要能在机器之间、在源码树与分发包之间直接
  * 复制粘贴，制品位置由安装形态自己决定。
@@ -346,6 +356,12 @@ export interface ReviewerSettings {
    * 带斜杠，无条件剥离会把它们发坏。
    */
   readonly stripModelPrefix: boolean;
+  /**
+   * `--model` 不可用时的降级模式（ADR-0080）。缺省 `"off"`：不探测、不替换。
+   * `"on-model-not-found"` 只在网关明确返回 model not found 时改用
+   * `model.default`；一次 run 只有一个生效模型。
+   */
+  readonly modelFallback: ModelFallbackMode;
 }
 
 export interface ModelSettings {
@@ -693,6 +709,8 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
     }) ?? null;
   // 模型 id 前缀剥离：缺省 false（原样直发的现行契约）；非布尔 fail fast
   const stripModelPrefix = boolOr(reviewerObj.stripModelPrefix, "reviewer.stripModelPrefix", false);
+  // 模型降级模式（ADR-0080）：缺省 off（零额外请求）；只接受枚举里的两个值
+  const modelFallback = modelFallbackOr(reviewerObj.modelFallback, "reviewer.modelFallback", "off");
 
   const modelObj = optionalObject(root.model, "model", warnings);
   assertKnownKeys(modelObj, MODEL_KEYS, "model", warnings);
@@ -718,7 +736,7 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
 
   const config: ResolvedConfig = {
     version: CONFIG_VERSION,
-    reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens, stripModelPrefix },
+    reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens, stripModelPrefix, modelFallback },
     model: { default: modelDefault.trim(), presentation: modelPresentation?.trim() ?? null },
     presentation: { engine: engine?.trim() ?? null },
     codeintel,
@@ -752,7 +770,7 @@ function buildDefaults({
   void warnings;
   const base: ResolvedConfig = {
     version: CONFIG_VERSION,
-    reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null, stripModelPrefix: false },
+    reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null, stripModelPrefix: false, modelFallback: "off" },
     model: { default: DEFAULT_MODEL_ID, presentation: null },
     presentation: { engine: null },
     codeintel: DEFAULT_CODEINTEL,
@@ -767,7 +785,7 @@ function buildDefaults({
 }
 
 const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "codeintel", "limits", "mcp"] as const;
-const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens", "stripModelPrefix"] as const;
+const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens", "stripModelPrefix", "modelFallback"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
 const PRESENTATION_KEYS = ["engine"] as const;
 const CODEINTEL_KEYS = ["languages", "excludeGlobs"] as const;
@@ -1374,6 +1392,7 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     "reviewer.baseUrl": config.reviewer.baseUrl,
     "reviewer.maxOutputTokens": config.reviewer.maxOutputTokens,
     "reviewer.stripModelPrefix": config.reviewer.stripModelPrefix,
+    "reviewer.modelFallback": config.reviewer.modelFallback,
     "model.default": config.model.default,
     "model.presentation": config.model.presentation,
     "presentation.engine": config.presentation.engine,
@@ -1617,6 +1636,29 @@ function boolOr(value: unknown, path: string, fallback: boolean): boolean {  if 
 }
 
 /**
+ * 模型降级模式（ADR-0080）：缺省用 fallback；只接受 `MODEL_FALLBACK_MODES`
+ * 里的值（区分大小写），其它值 fail fast——不静默取缺省，也不把 `true` 当 on。
+ */
+function modelFallbackOr(
+  value: unknown,
+  path: string,
+  fallback: ModelFallbackMode,
+): ModelFallbackMode {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if ((MODEL_FALLBACK_MODES as readonly string[]).includes(normalized)) {
+      return normalized as ModelFallbackMode;
+    }
+  }
+  throw new ConfigError(
+    `${CONFIG_FILE_NAME}: ${path} must be one of ${MODEL_FALLBACK_MODES.join(", ")} (got ${describe(value)})`,
+  );
+}
+
+/**
  * 模型 id → 网关 wire 字段（`reviewer.stripModelPrefix` 开启时生效）：
  * 剥掉**最后一个 `/` 前的所有**（`pan/deeseek` → `deeseek`、`a/b/c` → `c`）。
  * 无斜杠原样返回；剥完为空（如 `pan/`）也原样返回——发送空 model 是更坏的
@@ -1787,7 +1829,12 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     // 模型 id 前缀剥离：true = 发往网关的模型 id 剥掉最后一个 / 前的所有
     // （pan/deeseek → deeseek，覆盖 --model / model.default / model.presentation）。
     // 缺省 false = 原样直发（OpenRouter 等网关的合法 id 本身就带斜杠）。
-    "stripModelPrefix": false
+    "stripModelPrefix": false,
+    // --model 不可用时的降级策略（ADR-0080）：
+    // "off" = 不探测、不替换（缺省；逐字节维持旧行为，零额外请求）；
+    // "on-model-not-found" = 开跑前探测 --model，只有网关明确返回 model not found
+    //   才改用 model.default，并在 stderr / 审计 / 平台总结留痕。
+    "modelFallback": "off"
   },
 
   "model": {

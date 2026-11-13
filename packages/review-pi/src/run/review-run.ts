@@ -10,6 +10,7 @@ import {
 } from "../contracts/progress.js";
 import type {
   CandidateNormalizationRecord,
+  ModelFallbackRecord,
   MrFilterPatternSet,
   MrFilterRecord,
   PhaseRecord,
@@ -87,6 +88,11 @@ export interface ReviewRunInput {
    * 来源 + digest；秘密只记 set/missing）。缺省 = 不写（直调内核/测试形态）。
    */
   readonly config?: ConfigSnapshot;
+  /**
+   * 模型替换留痕（ADR-0080）：CLI 在前置探测判定降级后传入；只写审计顶层
+   * `modelFallback` 与 run.json 同名字段。缺省 = 无替换（整键缺席）。
+   */
+  readonly modelFallback?: ModelFallbackRecord;
   /** 传输层注入（离线 = fakeFetch；线上 = 真 fetch） */
   readonly fetch: FetchFunction;
   /** 运行留痕根目录（fixture 或真实 runs/）；布局 `<runsRoot>/{runs,audit}/` */
@@ -384,6 +390,9 @@ async function executeSinglePass(args: {
     boundary: args.boundary,
     ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
     ...(args.input.config !== undefined ? { config: args.input.config } : {}),
+    ...(args.input.modelFallback !== undefined
+      ? { modelFallback: args.input.modelFallback }
+      : {}),
     ...(args.input.tipsConfidenceMin !== undefined
       ? { tipsConfidenceMin: args.input.tipsConfidenceMin }
       : {}),
@@ -424,6 +433,9 @@ async function executeSinglePass(args: {
     model: args.modelId,
     completedAt: pass.finishedAt,
     result,
+    ...(args.input.modelFallback !== undefined
+      ? { modelFallback: args.input.modelFallback }
+      : {}),
   });
   const recordPath = await persistRunRecord(args.input, record);
   return {
@@ -648,6 +660,10 @@ async function aggregateShards(args: {
     ...(severityFilter !== undefined ? { severityFilter } : {}),
     ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
     ...(Object.values(rejectionCounts).some((count) => count > 0) ? { rejectionCounts } : {}),
+    // 模型替换留痕（ADR-0080）：聚合审计只记一次；无替换整键缺席
+    ...(args.input.modelFallback !== undefined
+      ? { modelFallback: args.input.modelFallback }
+      : {}),
   };
 
   const auditContent = buildAuditFileContent({
@@ -715,6 +731,9 @@ async function aggregateShards(args: {
     completedAt: finishedAt,
     result,
     shards: shardRecords,
+    ...(args.input.modelFallback !== undefined
+      ? { modelFallback: args.input.modelFallback }
+      : {}),
   });
   const recordPath = await persistRunRecord(args.input, record);
 

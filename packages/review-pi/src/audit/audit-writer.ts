@@ -10,6 +10,7 @@ import type {
   CandidateRejectionCounts,
   MrBoundaryRecord,
   MrFilterRecord,
+  ModelFallbackRecord,
   PhaseRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
@@ -99,6 +100,11 @@ export interface AuditFileContent {
    * `set|missing`。只进审计文件（stdout 键集不变）。直调内核（测试/嵌入）可缺省。
    */
   readonly config?: ConfigSnapshot;
+  /**
+   * 模型替换留痕（ADR-0080）：只在 `--model` 因 model-not-found 降级到
+   * `model.default` 时在场；无替换整键缺席（零字节漂移）。恒为最后一个可选键。
+   */
+  readonly modelFallback?: ModelFallbackRecord;
 }
 
 /**
@@ -169,6 +175,10 @@ export function buildAuditFileContent(args: {
       ? { rejectionCounts: args.audit.rejectionCounts }
       : {}),
     ...(args.config !== undefined ? { config: args.config } : {}),
+    // 模型替换留痕（ADR-0080）：无替换整键缺席（零字节漂移）
+    ...(args.audit.modelFallback !== undefined
+      ? { modelFallback: args.audit.modelFallback }
+      : {}),
   };
 }
 
