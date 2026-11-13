@@ -128,7 +128,10 @@ export 旗标：
   --tasks-dir <dir>      任务根覆盖（cwd 有索引时以索引里的 tasksDir 为准；否则本旗标 → 缺省根）
   --path    <dir>        把本次 run 的 session 复制到该目录，返回复制后的绝对路径
   --native               返回 pi 原生转录（缺省返回 OpenCode 兼容版，见 ADR-0072）
-  --trace   <dir>        导出 opencode-trace 兼容 bundle（manifest.json + sessions/，见 ADR-0074）`;
+  --trace   <dir>        导出 opencode-trace 兼容 bundle（manifest.json + sessions/，见 ADR-0074）
+
+version 旗标：
+  --json                 输出机器可读快照（产品 / Node / 内核四包实际解析版本）`;
 
 /** 解析后的 review 命令参数（caseId 由 --mr-diff / --mr-json 派生） */
 export interface ReviewCliArgs {

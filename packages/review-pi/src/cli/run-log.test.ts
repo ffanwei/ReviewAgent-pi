@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
+import { REVIEW_PI_VERSION } from "../shared/version.js";
 import { openRunLog, RUN_LOG_FILENAME, type RunLog } from "./run-log.js";
 
 // 运行日志单测：stderr 镜像 + 仅日志详情 + close 恢复；全在临时目录，零网络。
@@ -48,6 +49,7 @@ test("stderr 全量镜像到 review-pi.log，detail 只落日志不上 stderr", 
 
   expect(log.path).toBe(join(dir, RUN_LOG_FILENAME));
   const text = readFileSync(log.path, "utf8");
+  expect(text).toContain(`# version: ${REVIEW_PI_VERSION}`);
   expect(text).toContain("# taskId: t-1");
   expect(text).toContain("review-pi: 呈现投影降级（gateway 503）");
   expect(text).toContain("stack line");

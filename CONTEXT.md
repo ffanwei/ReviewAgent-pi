@@ -104,7 +104,7 @@ _代码面_: 事件契约 `contracts/progress.ts`（`RunProgressEvent` 四类 ki
 _Avoid_: 进度条（不是百分比口径——「步数」= 模型请求序号）、日志（日志是核外运行器产物）、遥测（不回传任何指标）
 
 **请求时间线（Request Timeline）**:
-一次 run 中每次模型调用的时间戳留痕，随 pass 落盘为 `<runs 根>/request-timeline.jsonl`（分片为 `shards/attempt-<ts>/sNN/request-timeline.jsonl`；收尾的一次性调用续写顶层文件）。一行一个 JSON 对象，两种 `kind`：**尝试**（一次 HTTP 请求的发出 / 响应头 / 状态 / 异常归因）与**请求**（一次逻辑调用，含首 / 末增量时刻、停因、增量条数与字符数、usage）。**只观测**：不改 wire 字节、不改退出码、不改重试语义、不进审计 / `run.json` / 转录 / `export`，也不经 MCP 事件通道出站；本文件是唯一允许把时钟写进产物的内核产物（ADR-0076 对 ADR-0013 决策 10 的局部豁免，不外溢）。失败时 `review-pass` 在 rethrow 前打一行人读摘要（前缀 `request-timeline:`），随 stderr 进 `review-pi.log`。
+一次 run 中每次模型调用的时间戳留痕，随 pass 落盘为 `<runs 根>/request-timeline.jsonl`（分片为 `shards/attempt-<ts>/sNN/request-timeline.jsonl`；收尾的一次性调用续写顶层文件）。一行一个 JSON 对象，两种 `kind`：**尝试**（一次 HTTP 请求的发出 / 响应头 / 状态 / 异常归因）与**请求**（一次逻辑调用，含首 / 末增量时刻、停因、增量条数 / 字符数、真实 `bytes`、usage）。同一次逻辑调用的所有行共享 `requestId`，靠 `replay` 区分重放序号（ADR-0077）。**只观测**：不改 wire 字节、不改退出码、不进审计 / `run.json` / 转录 / `export`，也不经 MCP 事件通道出站；本文件是唯一允许把时钟写进产物的内核产物（ADR-0076 对 ADR-0013 决策 10 的局部豁免，不外溢）。失败时 `review-pass` 在 rethrow 前打一行人读摘要（前缀 `request-timeline:`），随 stderr 进 `review-pi.log`。
 _代码面_: `observability/request-timeline.ts`（sink / writer / 脱敏）、`provider/pi-client.ts`（fetch 包裹 + 流 `push` 覆盖）、`shared/one-shot-llm.ts`（一次性调用）。
 _Avoid_: 日志（那是 `review-pi.log`）、审计（那是 `audit/*.json`）、轨迹（那是离线回放 trace）、诊断（那是 smoke 双探针）、把时间线当成本/指标真源
 
@@ -121,8 +121,13 @@ _Avoid_: 字节数（记的是增量字符数）、token（增量 ≠ token）
 _Avoid_: 遥测（不上传指标）、把业务调用塞进事件批量通道（业务调用不可丢、要立刻知道结果）、双向 MCP（我们只是 client，不做 resources/prompts）
 
 **LLM 调用重试（LLM Call Retry）**:
-模型网关调用的瞬时失败重试能力（ADR-0051）。**分层实现**：Agent 内会话（主检视回合 / 规则 Skill 会话）透传 pi-ai 的 `maxRetries` / `maxRetryDelayMs` / `timeoutMs`，只重试**请求建立阶段**；核外一次性调用（片级报文 / 收尾总结 / 内置呈现引擎 / smoke 探针）走本仓 `shared/llm-retry.ts` 的统一原语。次数口径恒为**总尝试次数（含首次）**；缺省 3 次，smoke 缺省 1 次（诊断命令不重试）。只有传输失败 / 超时 / 408 / 409 / 429 / 5xx / `x-should-retry: true` 可重试；确定性 4xx、配额类 429、超 `maxRetryAfterMs` 的 `Retry-After`、非 JSON / 空 completion 不重试。流已开始后断开会显式报错，不做整回合重放（避免重复工具副作用、污染 agent 消息状态）。配置面 `limits.retry` 与 `limits.timeouts.reviewTurnMs` / `oneShotMs`；离线回放 lane 固定单次尝试。一次性调用缺省超时 300 s（ADR-0062：大 MR 报文单次可输出 1.6 万 tokens）。
+模型网关调用的瞬时失败重试能力（ADR-0051）。**分层实现**：Agent 内会话（主检视回合 / 规则 Skill 会话）透传 pi-ai 的 `maxRetries` / `maxRetryDelayMs` / `timeoutMs`，只重试**请求建立阶段**；核外一次性调用（片级报文 / 收尾总结 / 内置呈现引擎 / smoke 探针）走本仓 `shared/llm-retry.ts` 的统一原语。次数口径恒为**总尝试次数（含首次）**；缺省 3 次，smoke 缺省 1 次（诊断命令不重试）。只有传输失败 / 超时 / 408 / 409 / 429 / 5xx / `x-should-retry: true` 可重试；确定性 4xx、配额类 429、超 `maxRetryAfterMs` 的 `Retry-After`、非 JSON / 空 completion 不重试。**流已开始后断开不再直接失败**：由 [流中断重放]（ADR-0077）在本仓 `streamFn` 层缓冲重发，仍不做整回合重放。配置面 `limits.retry` 与 `limits.timeouts.reviewTurnMs` / `oneShotMs`；离线回放 lane 固定单次尝试。一次性调用缺省超时 300 s（ADR-0062：大 MR 报文单次可输出 1.6 万 tokens）。
 _Avoid_: 全局重试开关（分层各有边界）、断线续传（流中断不重试）、把「重试次数」当配置口径（一律写总尝试次数）
+
+**流中断重放（Stream Replay）**:
+流已开始后响应体断开（`TypeError: terminated` 这类）时的恢复能力（ADR-0077）。做法是**缓冲本次响应的全部事件、不交付给消费者**；失败则丢弃缓冲并重发同一请求，只有成功那次的事件才交给 agent——因此失败响应里的 `toolCall` 从未执行，**重放按构造无副作用**（这正是它与 ADR-0051 拒绝的「整回合重放」的分界）。触发条件只看结构化信号：终止于 `error`、非 `aborted`、且响应体**确实读失败**（`content_filter` 这类 body 正常读完的确定性拦截不重放）。两个闸门：`limits.retry.streamAttempts`（总尝试次数含首次，缺省 13 = 1 + 12 次重放）与 `limits.retry.streamReplayBudgetMs`（总墙钟预算，缺省 120 s、含退避、0 = 不设上限），**先到者生效**；预算到点只停止「再发起一次」，已发出的尝试不被打断，故上界 = 预算 + 单次尝试时长。`onPayload` / `onResponse` 只在首次尝试触发，审计 `requests[]` 与进度计数不因重放而重复。代价：失去 token 级增量分发（当前无消费者）、响应事件全量进内存、失败尝试的 token 不计入 `usage`。
+_代码面_: `provider/pi-client.ts`（`driveWithReplay` / `observeResponseBody` / `withoutProviderCallbacks`）。
+_Avoid_: 回合重放（修剪消息历史后重发 prompt——会重跑已执行的工具）、断线续传（不续读，是整条重发）、对确定性拦截重放（`content_filter` 不重试）
 
 **测量常量面（Measurement-Constant Face）**:
 内核跨版本 / 跨语言呈现改动时必须 byte / 行为一致的半边：Zone A 提示词、六阶段 Loop 语义、Finding/Evidence 契约；这些面由**结构性质 + 端到端能力断言**把守（ADR-0038 于 2026-11-04 退役了「对照 DSH 历史审计真源逐字节相等」的 golden 常量门；此前的一致性属历史记录，不再由测试机器验证）。
@@ -217,8 +222,12 @@ _Avoid_: 六包自发布（ADR-0028 已废止）、单包 bundle（丢 `source` 
 一个包 tarball 里**应当**存在的东西：`dist`、类型声明、`bin`（`review-pi`）、`presentation` 制品、`THIRD-PARTY-NOTICES.md`、`README.md`；**不应**存在 `src/**/*.ts`。`review-pi` 的 `prepack` 从仓根复制履约文本并断言发布物在位——打包确定、离线，缺产物即人话报错。
 _Avoid_: 构建产物（包含 `src` 的仓内状态）、打包脚本（那是手段）
 
+**版本面（Version Surface）**:
+`review-pi version`（等价 `--version` / `-v`）在配置装载前返回：stdout 人读恒一行 `review-pi <version>`，`--json` 输出 `{ name, version, node, kernel }`，`kernel` 是四个内核包**实际解析到**的版本（解析失败记 `null`，不改变退出码）。产品版本单源 = `packages/review-pi/src/shared/version.ts`（与 `package.json` 同源测试守护），运行时**不读**本包清单；`bin/review-pi.js` 的产物门禁对版本命令不分叉（dist 缺失 / 过期照常拒跑）。同一版本值写入 `review-pi.log` 头与 `config show` 人读首行（ADR-0079）。
+_Avoid_: 运行时读 `package.json` 当版本真源、bin 特判 `--version` 绕过产物门、把人读版本行塞成多段（破坏 shell 单 token 消费）
+
 **安装布局冒烟（Install-Layout Smoke）**:
-`pnpm verify:pack`：把 tarball 解到临时 `node_modules/`（模拟 npm 安装布局），再把仓内已安装的依赖（含内核四包这批正常 npm 依赖）逐个 junction 过去，断言内容面、bin 腿表、`config init/show`、`"builtin"` 引擎与 tree-sitter wasm / ripgrep 在安装形态下可用。脚本自身不发网络请求（依赖来自 `pnpm install` 已落位的 `node_modules`），不发布；包名从 `package.json` 派生，不写死 scope。
+`pnpm verify:pack`：把 tarball 解到临时 `node_modules/`（模拟 npm 安装布局），再把仓内已安装的依赖（含内核四包这批正常 npm 依赖）逐个 junction 过去，断言内容面、bin 腿表、`config init/show`、`version`（四包版本都能解析，ADR-0079）、`"builtin"` 引擎与 tree-sitter wasm / ripgrep 在安装形态下可用。脚本自身不发网络请求（依赖来自 `pnpm install` 已落位的 `node_modules`），不发布；包名从 `package.json` 派生，不写死 scope。
 _Avoid_: 发布门（发布需人确认 registry 与凭据）、端到端检视（冒烟不调真实网关）
 
 ### 知识

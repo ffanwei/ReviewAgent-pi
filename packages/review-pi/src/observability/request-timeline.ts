@@ -92,6 +92,11 @@ interface TimelineBase extends TimelineScope {
    */
   readonly runId: string | null;
   readonly requestId: number;
+  /**
+   * 重放序号（ADR-0077）：0 = 首次尝试，1.. = 第 N 次断流重放。同一次逻辑请求的
+   * 所有行共享 `requestId`，靠 `replay` 区分；`streamAttempts = 1` 时恒 0。
+   */
+  readonly replay: number;
 }
 
 /** 一次 HTTP 尝试（pi-ai 内部重试唯一可见的地方） */
@@ -121,6 +126,11 @@ export interface TimelineRequestLine extends TimelineBase {
   readonly deltaCount: number;
   /** 增量字符总数 */
   readonly deltaChars: number;
+  /**
+   * 响应体真实字节数（ADR-0077 起由 body 包裹统计）。缺席 = 未走到 body（建连失败 /
+   * 同步抛错）。与 `deltaChars` 不同：后者是解析后增量文本的长度。
+   */
+  readonly bytes?: number;
   readonly attempts: number;
   readonly error: TimelineError | null;
   readonly usage?: LlmUsage;

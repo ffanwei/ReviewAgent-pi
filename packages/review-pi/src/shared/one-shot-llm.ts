@@ -255,7 +255,7 @@ async function attemptOneShot(
     bodyText = await response.text();
   } catch (error) {
     const failure: RetryFailure = {
-      retryable: false,
+      retryable: true,
       kind: "transport",
       reason: `response body read failed: ${errorMessage(error)}`,
       cause: error,
@@ -352,6 +352,7 @@ function createOneShotTimeline(input: OneShotLlmInput): OneShotTimeline | null {
         ts: endedAt,
         kind: "attempt",
         runId: null,
+        replay: 0,
         ...timeline.scope,
         requestId: timeline.requestId,
         attempt: probe.attempt,
@@ -382,6 +383,7 @@ function finishOneShotTimeline(
     ts: endedAt,
     kind: "request",
     runId: null,
+    replay: 0,
     ...timeline.scope,
     requestId: timeline.requestId,
     sentAt: timeline.requestStartedAt === 0 ? endedAt : timeline.requestStartedAt,

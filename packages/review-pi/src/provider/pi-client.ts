@@ -8,6 +8,7 @@ import type {
   OpenAICompletionsOptions,
   TextContent,
 } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { LlmUsage, ToolSchema, WireMessage } from "../contracts/llm.js";
@@ -211,6 +212,17 @@ export interface StreamTimelineScope {
   readonly phaseIndex?: number;
 }
 
+/** 流中断重放策略（ADR-0077）；由调用方从配置快照传入 */
+export interface StreamReplayPolicy {
+  /** 总尝试次数（含首次）；1 = 不重放 */
+  readonly attempts: number;
+  /** 总墙钟预算（毫秒，含退避；从首次尝试发出起算）；0 = 不设上限 */
+  readonly budgetMs: number;
+  /** 退避基准 / 单次上限（复用 `limits.retry.baseDelayMs` / `maxDelayMs`） */
+  readonly baseDelayMs: number;
+  readonly maxDelayMs: number;
+}
+
 export function reviewStreamFn(input: {
   readonly apiKey: string;
   readonly fetch?: FetchFunction;
@@ -223,13 +235,15 @@ export function reviewStreamFn(input: {
   readonly timeoutMs?: number;
   /**
    * 请求时间线作用域（ADR-0076）。只有装了全局观测器时才真正采集：
-   * 未安装 = 完全不包 fetch / 不碰流，零行为变化。
+   * 未安装 = 不包 body / 不碰流，零行为变化。
    */
   readonly timeline?: {
     readonly scope: () => StreamTimelineScope;
     /** 时钟注入（测试确定性；缺省 Date.now） */
     readonly now?: () => number;
   };
+  /** 流中断重放（ADR-0077）；缺席 = 单次尝试（今天的零漂移行为） */
+  readonly replay?: StreamReplayPolicy;
 }): StreamFn {
   // 主会话 / skill 会话各自一个 StreamFn 实例 → requestId 天然按会话自增
   let requestSeq = 0;
@@ -249,45 +263,229 @@ export function reviewStreamFn(input: {
         : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     };
-    if (input.timeline === undefined || !hasRequestTimelineSink()) {
-      return deepseekProvider().stream(
-        model as Model<"openai-completions">,
-        context,
-        providerOptions,
-      );
-    }
+
+    const replay = normalizeReplayPolicy(input.replay);
+    const observing = input.timeline !== undefined && hasRequestTimelineSink();
+    const typedModel = model as Model<"openai-completions">;
+    const baseFetch = input.fetch ?? (globalThis.fetch as FetchFunction);
 
     requestSeq += 1;
-    const state = createTimelineState({
+    const params: StreamDriveParams = {
+      model: typedModel,
+      context,
+      providerOptions,
+      replay,
+      now: input.timeline?.now ?? Date.now,
       requestId: requestSeq,
-      scope: input.timeline.scope(),
-      model: model.id,
-      baseUrl: model.baseUrl,
-      now: input.timeline.now,
-    });
-    const underlying = input.fetch ?? (globalThis.fetch as FetchFunction);
-    const observedOptions: OpenAICompletionsOptions = {
-      ...providerOptions,
-      fetch: wrapFetchWithTimeline(underlying, state),
+      scope: input.timeline?.scope(),
+      baseFetch,
     };
-    let stream: AssistantMessageEventStream;
-    try {
-      stream = deepseekProvider().stream(
-        model as Model<"openai-completions">,
-        context,
-        observedOptions,
-      );
-    } catch (error) {
-      // 同步失败（如缺 key）：逻辑请求行照样要有一条，否则失败现场是空白
-      finishTimelineRequest(state, describeThrownError(error, "provider"));
-      throw error;
+
+    // 零漂移：无观测器且不重放 → 原样返回 provider 流
+    if (!observing && replay.attempts <= 1) {
+      return deepseekProvider().stream(typedModel, context, providerOptions);
     }
-    return observeAssistantStream(stream, state);
+    // 不重放（回放 lane / 显式关闭）→ 保持真流式，只旁挂时间线
+    if (replay.attempts <= 1) {
+      return driveSingleAttempt(params);
+    }
+    return driveWithReplay(params);
+  };
+}
+
+interface StreamDriveParams {
+  readonly model: Model<"openai-completions">;
+  readonly context: Context;
+  readonly providerOptions: OpenAICompletionsOptions;
+  readonly replay: StreamReplayPolicy;
+  readonly now: () => number;
+  readonly requestId: number;
+  readonly scope: StreamTimelineScope | undefined;
+  readonly baseFetch: FetchFunction;
+}
+
+function normalizeReplayPolicy(policy: StreamReplayPolicy | undefined): StreamReplayPolicy {
+  if (policy === undefined) {
+    return { attempts: 1, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 };
+  }
+  return {
+    attempts: Math.max(1, Math.floor(policy.attempts)),
+    budgetMs: Math.max(0, Math.floor(policy.budgetMs)),
+    baseDelayMs: Math.max(0, Math.floor(policy.baseDelayMs)),
+    maxDelayMs: Math.max(0, Math.floor(policy.maxDelayMs)),
+  };
+}
+
+/** 单次尝试（真流式）：覆盖 `push` 旁挂时间线，事件原样转发。 */
+function driveSingleAttempt(params: StreamDriveParams): AssistantMessageEventStream {
+  const state = createTimelineState({
+    requestId: params.requestId,
+    replay: 0,
+    scope: params.scope ?? { site: "main" },
+    model: params.model.id,
+    baseUrl: params.model.baseUrl,
+    now: params.now,
+  });
+  const options: OpenAICompletionsOptions = {
+    ...params.providerOptions,
+    fetch: wrapFetchWithTimeline(params.baseFetch, state),
+  };
+  let stream: AssistantMessageEventStream;
+  try {
+    stream = deepseekProvider().stream(params.model, params.context, options);
+  } catch (error) {
+    // 同步失败（如缺 key）：逻辑请求行照样要有一条，否则失败现场是空白
+    finishTimelineRequest(state, describeThrownError(error, "provider"));
+    throw error;
+  }
+  const originalPush = stream.push.bind(stream);
+  stream.push = (event: AssistantMessageEvent): void => {
+    observeTimelineEvent(state, event);
+    originalPush(event);
+  };
+  return stream;
+}
+
+/**
+ * 缓冲重放（ADR-0077）：每次尝试的事件只进本地缓冲；失败则丢弃并重发，
+ * 成功（或重放耗尽）才把该次事件原样推给消费者。
+ */
+function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream {
+  const out = createAssistantMessageEventStream();
+  void (async (): Promise<void> => {
+    const startedAt = params.now();
+    for (let replay = 0; ; replay += 1) {
+      const state = createTimelineState({
+        requestId: params.requestId,
+        replay,
+        scope: params.scope ?? { site: "main" },
+        model: params.model.id,
+        baseUrl: params.model.baseUrl,
+        now: params.now,
+      });
+      const options: OpenAICompletionsOptions = {
+        ...(replay === 0
+          ? params.providerOptions
+          : withoutProviderCallbacks(params.providerOptions)),
+        fetch: wrapFetchWithObservedBody(params.baseFetch, state),
+      };
+
+      const events: AssistantMessageEvent[] = [];
+      let terminal: AssistantMessageEvent | null = null;
+      let syncError: unknown = null;
+      let inner: AssistantMessageEventStream | null = null;
+      try {
+        inner = deepseekProvider().stream(params.model, params.context, options);
+      } catch (error) {
+        syncError = error;
+      }
+
+      if (inner !== null) {
+        const ended = new Promise<void>((resolve) => {
+          inner!.push = (event: AssistantMessageEvent): void => {
+            events.push(event);
+            observeTimelineEvent(state, event);
+            if (event.type === "done" || event.type === "error") {
+              resolve();
+            }
+          };
+        });
+        await ended;
+        terminal = events[events.length - 1] ?? null;
+      }
+
+      if (syncError !== null) {
+        const error = describeThrownError(syncError, "provider");
+        finishTimelineRequest(state, error);
+        out.end(syntheticErrorMessage(params.model, syncError));
+        return;
+      }
+
+      const failed =
+        terminal !== null && terminal.type === "error" && terminal.reason !== "aborted";
+      // 只有「响应体真的读失败」才重放：确定性 provider 拦截（content_filter）
+      // 走同一条 error 事件，但 body 是正常读完的。
+      const shouldReplay =
+        failed &&
+        state.bodyError !== null &&
+        replay + 1 < params.replay.attempts &&
+        withinReplayBudget(startedAt, params.replay.budgetMs, params.now);
+
+      if (shouldReplay) {
+        await sleep(replayDelayMs(params.replay, replay));
+        continue;
+      }
+
+      for (const event of events) {
+        out.push(event);
+      }
+      out.end();
+      return;
+    }
+  })().catch((error: unknown) => {
+    // 兜底：驱动自身异常绝不能让 agent 挂死（result() 永不 resolve）
+    out.end(syntheticErrorMessage(params.model, error));
+  });
+  return out;
+}
+
+/** 重放必须重新走「建连 + 流」，但 `onPayload` / `onResponse` 只该在首次触发 */
+function withoutProviderCallbacks(options: OpenAICompletionsOptions): OpenAICompletionsOptions {
+  const {
+    onPayload: _onPayload,
+    onResponse: _onResponse,
+    ...rest
+  } = options as OpenAICompletionsOptions & {
+    onPayload?: unknown;
+    onResponse?: unknown;
+  };
+  return rest;
+}
+
+function withinReplayBudget(startedAt: number, budgetMs: number, now: () => number): boolean {
+  return budgetMs <= 0 || now() - startedAt < budgetMs;
+}
+
+function replayDelayMs(policy: StreamReplayPolicy, replay: number): number {
+  const exponential = policy.baseDelayMs * 2 ** Math.max(0, replay);
+  return Math.max(0, Math.min(exponential, policy.maxDelayMs));
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 同步失败时给消费者的错误消息（agent-loop 会读 `stopReason` / `errorMessage`） */
+function syntheticErrorMessage(
+  model: Model<"openai-completions">,
+  error: unknown,
+): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [],
+    api: "openai-completions",
+    provider: "deepseek",
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "error",
+    errorMessage: error instanceof Error ? error.message : String(error),
+    timestamp: Date.now(),
   };
 }
 
 interface TimelineState {
   readonly requestId: number;
+  readonly replay: number;
   readonly scope: TimelineScope;
   readonly now: () => number;
   sentAt: number;
@@ -298,6 +496,10 @@ interface TimelineState {
   lastDeltaAt: number | null;
   deltaCount: number;
   deltaChars: number;
+  /** 响应体实际收到字节数；null = 未观察 body（单次尝试路径） */
+  bytes: number | null;
+  /** body 读取失败的原始归因（流中断的结构化信号） */
+  bodyError: TimelineError | null;
   stopReason: string | null;
   error: TimelineError | null;
   usage: LlmUsage | undefined;
@@ -306,19 +508,21 @@ interface TimelineState {
 
 function createTimelineState(input: {
   readonly requestId: number;
+  readonly replay: number;
   readonly scope: StreamTimelineScope;
   readonly model: string;
   readonly baseUrl: string | undefined;
-  readonly now: (() => number) | undefined;
+  readonly now: () => number;
 }): TimelineState {
   return {
     requestId: input.requestId,
+    replay: input.replay,
     scope: {
       ...input.scope,
       model: input.model,
       baseUrlHost: baseUrlHostOf(input.baseUrl),
     },
-    now: input.now ?? Date.now,
+    now: input.now,
     sentAt: 0,
     headersAt: null,
     attempts: 0,
@@ -327,6 +531,8 @@ function createTimelineState(input: {
     lastDeltaAt: null,
     deltaCount: 0,
     deltaChars: 0,
+    bytes: null,
+    bodyError: null,
     stopReason: null,
     error: null,
     usage: undefined,
@@ -340,12 +546,12 @@ function baseUrlHostOf(baseUrl: string | undefined): string {
 }
 
 /**
- * fetch 包裹（ADR-0076 决策 2）：pi-ai 的 `retryProviderRequest` 只重发
- * `create(...)`，每次尝试都会重新调用注入的 fetch——这是**尝试级**留痕的
- * 唯一观察点（`onPayload` 在重试循环外只调一次）。
+ * fetch 包裹（ADR-0076）：pi-ai 的 `retryProviderRequest` 只重发 `create(...)`，
+ * 每次尝试都会重新调用注入的 fetch——这是**尝试级**留痕的唯一观察点
+ * （`onPayload` 在重试循环外只调一次）。
  *
  * 绝不替换 / 改写异常：原样 rethrow，pi-ai 的重试判定与最终 `errorMessage`
- * 行为零变化；`cause.code` 只进时间线。
+ * 行为零变化。
  */
 function wrapFetchWithTimeline(
   underlying: FetchFunction,
@@ -362,58 +568,109 @@ function wrapFetchWithTimeline(
       const response = await underlying(input, init);
       const headersAt = state.now();
       state.headersAt = headersAt;
-      const headers = pickTimelineHeaders(response.headers);
-      emitRequestTimeline({
-        v: 1,
-        ts: state.now(),
-        kind: "attempt",
-        runId: null,
-        ...state.scope,
-        requestId: state.requestId,
-        attempt,
-        sentAt,
-        headersAt,
-        status: response.status,
-        ...(headers !== undefined ? { headers } : {}),
-        error: null,
-        durationMs: Math.max(0, headersAt - sentAt),
-      });
+      emitAttemptLine(state, attempt, sentAt, headersAt, response, null);
       return response;
     } catch (error) {
-      const failedAt = state.now();
-      emitRequestTimeline({
-        v: 1,
-        ts: failedAt,
-        kind: "attempt",
-        runId: null,
-        ...state.scope,
-        requestId: state.requestId,
-        attempt,
-        sentAt,
-        headersAt: null,
-        status: null,
-        error: describeThrownError(error),
-        durationMs: Math.max(0, failedAt - sentAt),
-      });
+      emitAttemptLine(state, attempt, sentAt, null, null, describeThrownError(error));
       throw error;
     }
   };
 }
 
 /**
- * 流观察（ADR-0076 决策 2）：只覆盖实例的 `push`，**不新建流、不转发、不消费**。
- * 因此 `result()`、异步迭代、背压与 aborted 语义全部保持上游原样。
+ * fetch 包裹 + 响应体观察（ADR-0077）：流内 `terminated` 不会 reject fetch
+ * （`await fetch` 在响应头到达时就已 resolve），只会在读 body 时抛。手包一层
+ * `ReadableStream`（`pull` 天然保留背压）才能拿到**结构化的** `cause` 与真实字节数。
  */
-function observeAssistantStream(
-  stream: AssistantMessageEventStream,
+function wrapFetchWithObservedBody(
+  underlying: FetchFunction,
   state: TimelineState,
-): AssistantMessageEventStream {
-  const originalPush = stream.push.bind(stream);
-  stream.push = (event: AssistantMessageEvent): void => {
-    observeTimelineEvent(state, event);
-    originalPush(event);
+): FetchFunction {
+  return async (input, init) => {
+    state.attempts += 1;
+    const attempt = state.attempts;
+    const sentAt = state.now();
+    if (state.sentAt === 0) {
+      state.sentAt = sentAt;
+    }
+    let response: Response;
+    try {
+      response = await underlying(input, init);
+    } catch (error) {
+      emitAttemptLine(state, attempt, sentAt, null, null, describeThrownError(error));
+      throw error;
+    }
+    const headersAt = state.now();
+    state.headersAt = headersAt;
+    emitAttemptLine(state, attempt, sentAt, headersAt, response, null);
+    return observeResponseBody(response, state);
   };
-  return stream;
+}
+
+function emitAttemptLine(
+  state: TimelineState,
+  attempt: number,
+  sentAt: number,
+  headersAt: number | null,
+  response: Response | null,
+  error: TimelineError | null,
+): void {
+  const headers = response !== null ? pickTimelineHeaders(response.headers) : undefined;
+  const endedAt = state.now();
+  emitRequestTimeline({
+    v: 1,
+    ts: endedAt,
+    kind: "attempt",
+    runId: null,
+    replay: state.replay,
+    ...state.scope,
+    requestId: state.requestId,
+    attempt,
+    sentAt,
+    headersAt,
+    status: response !== null ? response.status : null,
+    ...(headers !== undefined ? { headers } : {}),
+    error,
+    durationMs: Math.max(0, (headersAt ?? endedAt) - sentAt),
+  });
+}
+
+/** 响应体计数 + 错误捕获（回压由 `pull` 保留；不改传输语义） */
+function observeResponseBody(response: Response, state: TimelineState): Response {
+  const body = response.body;
+  if (body === null) {
+    return response;
+  }
+  if (state.bytes === null) {
+    state.bytes = 0;
+  }
+  const reader = body.getReader();
+  const counted = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          controller.close();
+          return;
+        }
+        if (chunk.value !== undefined) {
+          state.bytes = (state.bytes ?? 0) + chunk.value.byteLength;
+          controller.enqueue(chunk.value);
+        }
+      } catch (error) {
+        state.bodyError = describeThrownError(error);
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(counted, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 function observeTimelineEvent(state: TimelineState, event: AssistantMessageEvent): void {
@@ -446,7 +703,10 @@ function observeTimelineEvent(state: TimelineState, event: AssistantMessageEvent
         state,
         event.reason === "aborted"
           ? { kind: "timeout", message: "request aborted" }
-          : { kind: "provider", message: truncateTimelineMessage(event.error.errorMessage) },
+          : (state.bodyError ?? {
+              kind: "provider",
+              message: truncateTimelineMessage(event.error.errorMessage),
+            }),
       );
       return;
     }
@@ -467,6 +727,7 @@ function finishTimelineRequest(state: TimelineState, error: TimelineError | null
     ts: endedAt,
     kind: "request",
     runId: null,
+    replay: state.replay,
     ...state.scope,
     requestId: state.requestId,
     sentAt: state.sentAt === 0 ? endedAt : state.sentAt,
@@ -478,6 +739,7 @@ function finishTimelineRequest(state: TimelineState, error: TimelineError | null
     stopReason: state.stopReason,
     deltaCount: state.deltaCount,
     deltaChars: state.deltaChars,
+    ...(state.bytes !== null ? { bytes: state.bytes } : {}),
     attempts: Math.max(1, state.attempts),
     error,
     ...(state.usage !== undefined ? { usage: state.usage } : {}),

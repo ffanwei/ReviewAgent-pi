@@ -3,9 +3,23 @@ import { expect, test } from "vitest";
 import type { TaskCallTrace } from "../contracts/mcp-task.js";
 import type { OneShotLifecycleEvent } from "../shared/one-shot-llm.js";
 import { buildLifecycleSession, LifecycleCollector } from "./lifecycle.js";
-import type { OpenCodeInfo, OpenCodeMessage } from "./opencode-compat.js";
+import type {
+  OpenCodeAssistantMessage,
+  OpenCodeInfo,
+  OpenCodeMessage,
+  OpenCodeSession,
+} from "./opencode-compat.js";
 
 /** 会话生命周期留痕（ADR-0073）纯组装面：顺序、形态、失败照记、无 null、id 唯一 */
+
+/** 断言某条消息是 assistant：位置写错时显式炸出来，而不是用 `as` 静默骗过类型 */
+function assistantAt(session: OpenCodeSession, index: number): OpenCodeAssistantMessage {
+  const message = session.messages[index];
+  if (message?.type !== "assistant") {
+    throw new Error(`消息 ${index} 不是 assistant（实际 ${message?.type ?? "缺失"}）`);
+  }
+  return message;
+}
 
 function info(): OpenCodeInfo {
   return {
@@ -84,14 +98,11 @@ test("buildLifecycleSession：startTask → 对话 → one-shot → MCP tool →
   const oneShotUserMessage = session.messages[2] as { text: string };
   expect(oneShotUserMessage.text).toContain("SYS");
   expect(oneShotUserMessage.text).toContain("USR");
-  const oneShotAssistant = session.messages[3] as {
-    content: { text: string }[];
-    finish: string;
-  };
-  expect(oneShotAssistant.content[0]?.text).toBe("OUTPUT");
+  const oneShotAssistant = assistantAt(session, 3);
+  expect(oneShotAssistant.content[0]).toMatchObject({ type: "text", text: "OUTPUT" });
   expect(oneShotAssistant.finish).toBe("stop");
-  const mcpCarrier = session.messages[4] as { content: { type: string; name?: string }[] };
-  expect(mcpCarrier.content[0]?.name).toBe("mrReviewResult");
+  const mcpCarrier = assistantAt(session, 4);
+  expect(mcpCarrier.content[0]).toMatchObject({ type: "tool", name: "mrReviewResult" });
   const end = session.messages[5] as { text: string };
   expect(end.text).toContain("endTask");
 
@@ -118,13 +129,14 @@ test("失败照记：one-shot error → assistant finish error；MCP tool 失败
     subagents: [],
   });
 
-  const failedAssistant = session.messages[1] as { finish: string };
+  const failedAssistant = assistantAt(session, 1);
   expect(failedAssistant.finish).toBe("error");
-  const failedTool = session.messages[2] as {
-    content: { state: { status: string; error?: { message: string } } }[];
-  };
-  expect(failedTool.content[0]?.state.status).toBe("error");
-  expect(failedTool.content[0]?.state.error?.message).toBe("rejected");
+  const failedTool = assistantAt(session, 2).content[0];
+  if (failedTool?.type !== "tool") {
+    throw new Error(`期望 tool part（实际 ${failedTool?.type ?? "缺失"}）`);
+  }
+  expect(failedTool.state.status).toBe("error");
+  expect(failedTool.state.error?.message).toBe("rejected");
 });
 
 test("LifecycleCollector：按发生顺序单调 seq", () => {

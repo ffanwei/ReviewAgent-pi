@@ -83,6 +83,7 @@ npm i -g .artifacts/tarballs/baize-review-pi-<version>.tgz
 ### 安装后自检
 
 ```bash
+review-pi version        # 确认装的是哪一版（--json 含 Node 与内核四包，ADR-0079）
 review-pi config init    # 生成 ~/.PiAgent/PiAgent.jsonc（已存在则拒绝，--force 覆盖）
 review-pi config show    # 脱敏查看生效值（reviewer.apiKey 应为 set）
 review-pi smoke          # 双探针自检：网关健康 + 模型可达；通过 exit 0
@@ -107,8 +108,9 @@ npm rm -g @baize/review-pi           # 卸载（嵌套依赖一并移除）
 | `smoke` | 网关双探针自检（网关健康 + 模型可达） | 是 / 是 | stdout 人话诊断 |
 | `config init\|show` | 写缺省模板 / 脱敏查看生效值 | 是 / 否 | 配置文件 / 诊断文本 |
 | `export` | 打印或复制本次 run 的 session 路径 | 否 / 否 | stdout 绝对路径 |
+| `version` | 打印产品版本（`--json` 含 Node 与内核四包） | 否 / 否 | stdout 单行 / JSON |
 
-不带子命令执行 `review-pi` 会把完整用法打到 stderr 并 `exit 1`（**没有 `--help` / `--version`**，这是设计行为）。未知子命令、未知旗标同样 `exit 1` + usage。
+不带子命令执行 `review-pi` 会把完整用法打到 stderr 并 `exit 1`（**仍没有 `--help`**）。查版本用 `review-pi version`（等价 `--version` / `-v`）：stdout 单行、不加载配置；`version --json` 输出产品 / Node / 内核四包实际解析版本（ADR-0079）。未知子命令、未知旗标同样 `exit 1` + usage。
 
 ### 1. 配置
 
@@ -200,7 +202,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 | 重复旗标 | 非列表旗标重复出现 = `duplicate flag`；`--rule-skill-zip` / `--rule-skill` / `--skill` 例外（按出现顺序累积） |
 | 列表写法 | 列表旗标支持逗号（`a.zip,b.zip`）、连续 token（`a.zip b.zip`）或重复旗标，三种等价 |
 | 布尔对 | `--progress` 已移除（进度缺省打印）；`--no-progress` 重复 = `duplicate flag`，其余无值旗标重复同理 |
-| 帮助 | 无 `--help` / `--version`；裸跑或未知子命令 → usage 到 stderr + `exit 1` |
+| 帮助 / 版本 | 无 `--help`；版本走 `version` 子命令或 `--version` / `-v`（`--json` 机器可读，ADR-0079）。裸跑或未知子命令 → usage 到 stderr + `exit 1` |
 
 ### 1. `review`（15 个旗标）
 
@@ -249,7 +251,15 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 | `--tasks-dir <dir>` | 目录 | `~/.PiAgent/tasks` | tasks 根覆盖；**cwd 有索引时以索引里的 `tasksDir` 为准** |
 | `--path <dir>` | 目录 | 无（只打印路径） | 把 session 复制到该目录（平铺、保留文件名、同名覆盖），输出改为复制后的绝对路径 |
 
-### 5. 已移除的旗标（会 `exit 1` 并给迁移提示）
+### 5. `version`
+
+| 旗标 | 取值 | 缺省 | 作用 |
+|---|---|---|---|
+| `--json` | 无值 | 关 | 输出 `{ name, version, node, kernel }`；`kernel` 是四包**实际解析到**的版本（解析失败为 `null`） |
+
+人读形态 stdout 恰好一行 `review-pi <version>`；不加载配置、不需要 key（ADR-0079）。顶层 `--version` / `-v` 与 `version` 子命令等价。
+
+### 6. 已移除的旗标（会 `exit 1` 并给迁移提示）
 
 | 旧旗标 | 替代 |
 |---|---|
@@ -278,7 +288,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 
 ## 退出码与 stdout
 
-- stdout 是**单个 JSON 文档**，日志与诊断一律走 stderr。
+- `review` 的 stdout 是**单个 JSON 文档**，日志与诊断一律走 stderr；`smoke` / `config show` 是人话，`version` 是人读一行（`--json` 为结构化快照，ADR-0079）。
 - 退出码：完成（含诚实截断）`0`，中止或错误 `1`。截断信号在 JSON 的 `truncated=true`，不体现在退出码。
 - stderr 在开跑前先打一段「本次 review 传入参数」生效值回显；成功 run 结束后再打一行运行总结。
 - 真实网关调用只在本机按需执行，CI 恒离线。

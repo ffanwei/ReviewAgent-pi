@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import type { Context, UserMessage } from "@earendil-works/pi-ai";
+import type { Context, FetchFunction, UserMessage } from "@earendil-works/pi-ai";
 import { setRequestTimelineSink, type RequestTimelineEntry } from "../observability/request-timeline.js";
 import { fakeFetch } from "./fake-fetch.js";
 import {
@@ -318,4 +318,62 @@ test("???????????????????????", async () => {
   const stream = await streamFn(reviewModelOf(undefined, undefined), BASE_CONTEXT, {});
   await stream.result();
   expect(entries).toHaveLength(0);
+});
+
+// ??????ADR-0077????????????? ? ???????????
+// ???? replay 0/1 ??? request ??onPayload ???????
+test("reviewStreamFn ???????????????? replay 0/1", async () => {
+  const entries: RequestTimelineEntry[] = [];
+  setRequestTimelineSink((entry) => entries.push(entry));
+  const script = fakeFetch([
+    { text: "recovered", usage: { promptTokens: 3, completionTokens: 2, cacheReadTokens: 0 } },
+  ]);
+  let calls = 0;
+  let payloadCalls = 0;
+  const fetch: FetchFunction = async (input, init) => {
+    calls += 1;
+    if (calls === 1) {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: {}\n\n"));
+          controller.error(new TypeError("terminated", { cause: { code: "UND_ERR_SOCKET" } }));
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return script.fetch(input, init);
+  };
+  try {
+    const streamFn = reviewStreamFn({
+      apiKey: API_KEY,
+      fetch,
+      timeline: {
+        scope: () => ({ site: "main", round: 1, phase: "risk_classification", phaseIndex: 2 }),
+      },
+      replay: { attempts: 2, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 },
+    });
+    const stream = await streamFn(
+      reviewModelOf(undefined, "https://gw.example.com/v1"),
+      BASE_CONTEXT,
+      { onPayload: () => { payloadCalls += 1; } },
+    );
+    const message = await stream.result();
+    expect(message.stopReason).toBe("stop");
+  } finally {
+    setRequestTimelineSink(null);
+  }
+
+  const requests = entries.filter(
+    (entry): entry is Extract<RequestTimelineEntry, { kind: "request" }> => entry.kind === "request",
+  );
+  expect(requests.map((entry) => entry.replay)).toEqual([0, 1]);
+  expect(requests[0]?.error?.kind).toBe("transport");
+  expect(requests[0]?.error?.code).toBe("UND_ERR_SOCKET");
+  expect(requests[1]?.stopReason).toBe("stop");
+  expect(requests[1]?.error).toBeNull();
+  // ??????? onPayload??? requests[] / requestId ???
+  expect(payloadCalls).toBe(1);
 });

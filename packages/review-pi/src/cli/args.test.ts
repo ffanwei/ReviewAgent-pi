@@ -14,11 +14,41 @@ import { parseCliArgs, USAGE_TEXT } from "./args.js";
 test("空 argv 与未知子命令 → 用法错误（不抛异常）", () => {
   expect(parseCliArgs([])).toEqual({
     ok: false,
-    message: "missing command (expected `review`, `smoke`, `config` or `export`)",
+    message: "missing command (expected `review`, `smoke`, `config`, `export` or `version`)",
   });
   expect(parseCliArgs(["deploy"])).toEqual({
     ok: false,
-    message: 'unknown command "deploy" (expected `review`, `smoke`, `config` or `export`)',
+    message:
+      'unknown command "deploy" (expected `review`, `smoke`, `config`, `export` or `version`)',
+  });
+});
+
+test("version：子命令与 --version / -v 同义；只认 --json（布尔，重复 = 用法错误）", () => {
+  expect(parseCliArgs(["version"])).toEqual({ ok: true, command: "version", args: {} });
+  expect(parseCliArgs(["--version"])).toEqual({ ok: true, command: "version", args: {} });
+  expect(parseCliArgs(["-v"])).toEqual({ ok: true, command: "version", args: {} });
+  expect(parseCliArgs(["version", "--json"])).toEqual({
+    ok: true,
+    command: "version",
+    args: { json: true },
+  });
+  expect(parseCliArgs(["--version", "--json"])).toEqual({
+    ok: true,
+    command: "version",
+    args: { json: true },
+  });
+  // 版本命令不读配置：--config 不是它的旗标（静默忽略会让「查版本」看起来读过配置）
+  expect(parseCliArgs(["version", "--config", "x.jsonc"])).toEqual({
+    ok: false,
+    message: 'unknown flag "--config"',
+  });
+  expect(parseCliArgs(["version", "--bogus"])).toEqual({
+    ok: false,
+    message: 'unknown flag "--bogus"',
+  });
+  expect(parseCliArgs(["version", "--json", "--json"])).toEqual({
+    ok: false,
+    message: "duplicate flag --json",
   });
 });
 
@@ -941,12 +971,16 @@ test("smoke：窄旗标面（仅 --model / --config）；review 专属旗标对 
   });
 });
 
-test("USAGE_TEXT：宣告四个子命令（stderr 错误路径同款文案，单一来源）", () => {
+test("USAGE_TEXT：宣告五个子命令（stderr 错误路径同款文案，单一来源）", () => {
   expect(USAGE_TEXT).toContain("review-pi review --repo");
   expect(USAGE_TEXT).toContain("review-pi smoke");
   expect(USAGE_TEXT).toContain("review-pi config <init|show>");
   // export（ADR-0036 / ADR-0072）：四个旗标都在用法面
   expect(USAGE_TEXT).toContain("review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]");
+  // version（ADR-0079）：子命令 + 顶层别名都在用法面；没有 --help
+  expect(USAGE_TEXT).toContain("review-pi version [--json]");
+  expect(USAGE_TEXT).toContain("review-pi --version");
+  expect(USAGE_TEXT).not.toContain("--help");
   // 落盘位置只在 taskId 面上出现（--out 已从用法面移除）
   expect(USAGE_TEXT).toContain("--taskId <id>");
   expect(USAGE_TEXT).toContain("--tasks-dir <dir>");

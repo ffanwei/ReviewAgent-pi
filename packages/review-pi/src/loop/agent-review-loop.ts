@@ -288,6 +288,13 @@ export async function runAgentReviewLoop(
         phaseIndex: phaseIndex + 1,
       }),
     },
+    // ADR-0077：流中断重放（总次数含首次；预算到点即停止再发起）
+    replay: {
+      attempts: runtime.limits.retry.streamAttempts,
+      budgetMs: runtime.limits.retry.streamReplayBudgetMs,
+      baseDelayMs: runtime.limits.retry.baseDelayMs,
+      maxDelayMs: runtime.limits.retry.maxDelayMs,
+    },
   });
 
   // followUp 注入缝：shouldStopAfterTurn 闭包引用 agent，先落占位再绑定

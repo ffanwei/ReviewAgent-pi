@@ -10,6 +10,8 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 import { checkRuntimeArtifacts } from "../../bin/lib/cli-runtime.js";
 import { sseBody, type FakeReply } from "../provider/fake-fetch.js";
 import { REVIEW_MODEL_ID } from "../provider/pi-client.js";
+import { REVIEW_PI_VERSION } from "../shared/version.js";
+import { KERNEL_PACKAGES } from "./version-command.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
 
@@ -107,9 +109,13 @@ interface LoopbackStub {
  * （stream:true → 依序回放脚本回复的 SSE，sseBody 与 fake 适配器同渲染器）。
  * 脚本耗尽即 500（脚本错配是测试自身的 bug，要炸出来不能静默复用旧回复）。
  */
-function startLoopbackStub(replies: readonly FakeReply[]): Promise<LoopbackStub> {
+function startLoopbackStub(
+  replies: readonly FakeReply[],
+  options: { readonly truncateFirstStream?: boolean } = {},
+): Promise<LoopbackStub> {
   const queue = [...replies];
   const requests: StubRequestRecord[] = [];
+  let truncated = false;
   const server = http.createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => {
@@ -170,6 +176,22 @@ function startLoopbackStub(replies: readonly FakeReply[]): Promise<LoopbackStub>
           );
           return;
         }
+        // ADR-0077 进程面用例：第一次流请求发一帧就掐断 socket（**不消费**脚本回复），
+        // 让重放路径真的跑一次；后续请求照常回放脚本。
+        if (options.truncateFirstStream === true && !truncated) {
+          truncated = true;
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          response.write(
+            `data: ${JSON.stringify({
+              id: "chatcmpl-truncated",
+              object: "chat.completion.chunk",
+              model: REVIEW_MODEL_ID,
+              choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }],
+            })}\n\n`,
+          );
+          setTimeout(() => response.destroy(), 30);
+          return;
+        }
         const reply = queue.shift();
         if (reply === undefined) {
           response.writeHead(500, { "content-type": "application/json" });
@@ -221,6 +243,8 @@ interface RunBinOptions {
   readonly mcpServerUrl?: string;
   /** `mcp.report.tool`（事件槽位；**缺席 = 事件通道关闭**，只调四个业务 tool——ADR-0045 后默认形态） */
   readonly mcpEventTool?: string;
+  /** `limits.retry.streamAttempts` 覆盖（ADR-0077 进程面用例） */
+  readonly streamAttempts?: number;
   /** `mcp.report.task`（ADR-0045 业务 tool 开关；缺省 true——只在给了 mcpServerUrl 时写） */
   readonly mcpTask?: boolean;
   /** 直接指定配置文件全文（覆盖默认最小配置） */
@@ -261,7 +285,12 @@ function minimalConfigText(options: RunBinOptions): string {
       // 进程面用例的哨兵候选指向 diff 之外的文件（sample.txt / README.md），
       // 与本开关无关；显式关闭以保留既有输出断言。默认开启行为由 run 层
       // 集成测试（review-run.test.ts）与 config 单测覆盖。
-      limits: { findingScope: { enabled: false } },
+      limits: {
+        findingScope: { enabled: false },
+        ...(options.streamAttempts !== undefined
+          ? { retry: { streamAttempts: options.streamAttempts } }
+          : {}),
+      },
       ...(options.presentationEngine !== undefined
         ? { presentation: { engine: options.presentationEngine } }
         : {}),
@@ -660,7 +689,7 @@ test(
           "--tasks-dir",
           outDir,
         ],
-        stubEnv(stub.baseUrl),
+        { ...stubEnv(stub.baseUrl), streamAttempts: 1 },
       );
 
       expect(run.status).toBe(1);
@@ -682,6 +711,64 @@ test(
       expect(request?.["error"]).not.toBeNull();
       // 失败 run 仍不产契约产物（不落 partial audit / run.json，ADR-0076 决策 5）
       expect(existsSync(path.join(outDir, CLI_TASK_ID, "runs", "run.json"))).toBe(false);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "流中断重放（ADR-0077）：第一次掐断、第二次成功 → exit 0；时间线留 replay 0/1，审计不重复请求",
+  async () => {
+    const stub = await startLoopbackStub(oneFindingCorpus(), { truncateFirstStream: true });
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+        ],
+        { ...stubEnv(stub.baseUrl), streamAttempts: 2 },
+      );
+
+      expect(run.status, run.stderr).toBe(0);
+      const outcome = JSON.parse(run.stdout) as {
+        ok: boolean;
+        findings: unknown[];
+        auditPath: string;
+      };
+      expect(outcome.ok).toBe(true);
+      expect(outcome.findings).toHaveLength(1);
+
+      const timelinePath = path.join(outDir, CLI_TASK_ID, "runs", "request-timeline.jsonl");
+      const lines = readFileSync(timelinePath, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const requests = lines.filter((line) => line["kind"] === "request");
+      const firstReplay = requests.find((line) => line["replay"] === 0);
+      const secondReplay = requests.find((line) => line["replay"] === 1);
+      expect(firstReplay?.["error"]).not.toBeNull();
+      expect(firstReplay?.["bytes"]).toBeGreaterThan(0);
+      expect(secondReplay?.["stopReason"]).toBe("stop");
+      expect(secondReplay?.["error"]).toBeNull();
+
+      // 重放不产生第二条审计请求：`onPayload` 只在首次尝试触发（6 阶段 = 6 条）
+      const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
+        requests: unknown[];
+      };
+      expect(audit.requests).toHaveLength(6);
     } finally {
       await stub.close();
     }
@@ -1365,6 +1452,64 @@ test("用法错误：缺 --mr-diff / --mr-json → exit 1 + 人话错误 + usage
   expect(run.stdout).toBe("");
   expect(run.stderr).toContain("review-pi:");
   expect(run.stderr).toContain("usage:");
+});
+
+// ---- version 命令面（ADR-0079）----
+
+test("version：stdout 单行、exit 0、不加载配置（无缺配置提示 / 不读 .env.local）", async () => {
+  const run = await runBin(["--version"], {
+    appendConfigArg: false,
+    seedEnvLocal: "REVIEWER_API_KEY=sk-should-not-be-read",
+    timeoutMs: 30_000,
+  });
+  expect(run.status).toBe(0);
+  expect(run.stdout).toBe(`review-pi ${REVIEW_PI_VERSION}\n`);
+  // 版本命令在配置装载之前返回：沙箱 HOME 里没有配置文件，也不该出现提示
+  expect(run.stderr).toBe("");
+  expect(run.stderr).not.toContain("未找到用户级配置文件");
+  expect(run.stderr).not.toContain(".env.local");
+});
+
+test("version --json：产品 / Node / 内核四包实际解析版本；stdout 单个 JSON 文档", async () => {
+  const run = await runBin(["version", "--json"], {
+    appendConfigArg: false,
+    timeoutMs: 30_000,
+  });
+  expect(run.status).toBe(0);
+  expect(run.stderr).toBe("");
+  const parsed = JSON.parse(run.stdout) as {
+    name: string;
+    version: string;
+    node: string;
+    kernel: Record<string, string | null>;
+  };
+  expect(parsed.name).toBe("@baize/review-pi");
+  expect(parsed.version).toBe(REVIEW_PI_VERSION);
+  expect(parsed.node).toBe(process.version);
+  expect(Object.keys(parsed.kernel)).toEqual([...KERNEL_PACKAGES]);
+  // 本仓安装布局下四包都在位（自愈构建钩子已保证）：实际解析到的就是锁定的 0.85.1
+  for (const specifier of KERNEL_PACKAGES) {
+    expect(parsed.kernel[specifier]).toMatch(/^\d+\.\d+\.\d+/);
+  }
+});
+
+test("version 用法错误：未知旗标 / 重复 --json → exit 1 + usage + stdout 干净", async () => {
+  const unknown = await runBin(["version", "--config", "x.jsonc"], {
+    appendConfigArg: false,
+    timeoutMs: 30_000,
+  });
+  expect(unknown.status).toBe(1);
+  expect(unknown.stdout).toBe("");
+  expect(unknown.stderr).toContain('unknown flag "--config"');
+  expect(unknown.stderr).toContain("usage:");
+
+  const duplicate = await runBin(["version", "--json", "--json"], {
+    appendConfigArg: false,
+    timeoutMs: 30_000,
+  });
+  expect(duplicate.status).toBe(1);
+  expect(duplicate.stdout).toBe("");
+  expect(duplicate.stderr).toContain("duplicate flag --json");
 });
 
 test("运行失败：--repo 指向文件（非目录）→ exit 1 + 错误人话 + stdout 干净", async () => {
@@ -2543,13 +2688,14 @@ test(
         filePath: "src/test/java/FooTest.java",
         reviewTips: [],
       });
-      expect(run.stderr).toContain("test=1");
-      expect(run.stderr).toContain("已补报 1 个变更文件 / 0 条意见");
+      expect(business[2]?.args.markdownContent).toContain("无可检视文件");
+      expect(run.stderr).toContain("跳过检视");
+      expect(stub.requests()).toHaveLength(0);
 
-      // 零意见产物：tips 落成 []，英文 findings 为空
-      const tipsPath = path.join(cliRunsDir(outDir), "reviews_tips_zh.json");
-      expect(JSON.parse(readFileSync(tipsPath, "utf8"))).toEqual([]);
-      const outcome = JSON.parse(run.stdout) as { findings: unknown[] };
+      // 跳过路径不写 run 产物
+      expect(existsSync(path.join(cliRunsDir(outDir), "reviews_tips_zh.json"))).toBe(false);
+      const outcome = JSON.parse(run.stdout) as { skipped?: string; findings: unknown[] };
+      expect(outcome.skipped).toBe("no-reviewable-files");
       expect(outcome.findings).toEqual([]);
     } finally {
       await stub.close();
@@ -2566,8 +2712,15 @@ test(
     const mcp = await startMcpStub();
     try {
       const outDir = makeTempDir("review-pi-cli-out-");
+      const keep = "src/main/java/Keep.java";
       const mrFile = writeMr(
         [
+          `diff --git a/${keep} b/${keep}`,
+          `--- a/${keep}`,
+          `+++ b/${keep}`,
+          "@@ -1 +1 @@",
+          "-class Keep {}",
+          "+class Keep { }",
           "diff --git a/docs/guide.md b/docs/guide.md",
           "--- a/docs/guide.md",
           "+++ b/docs/guide.md",
@@ -2598,10 +2751,16 @@ test(
       expect(business.map((call) => call.name)).toEqual([
         "startTask",
         "mrReviewResult",
+        "mrReviewResult",
         "saveReviewSummary",
         "endTask",
       ]);
       expect(business[1]?.args).toEqual({
+        taskId: CLI_TASK_ID,
+        filePath: keep,
+        reviewTips: [],
+      });
+      expect(business[2]?.args).toEqual({
         taskId: CLI_TASK_ID,
         filePath: "docs/guide.md",
         reviewTips: [],

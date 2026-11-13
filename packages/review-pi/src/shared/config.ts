@@ -128,10 +128,13 @@ export interface TimeoutLimits {
  * - 核外一次性调用（片级报文 / 收尾总结）用 `oneShotAttempts`；
  * - 内置呈现引擎逐请求用 `presentationAttempts`（外部注入引擎无法被本仓强制，
  *   该值经 `PresentationRuntime.retry` 作为契约穿参）；
- * - smoke 探针缺省**不重试**（`smokeAttempts = 1`），要重试须显式配置。
+ * - smoke 探针缺省**不重试**（`smokeAttempts = 1`），要重试须显式配置；
+ * - **流中断重放**（ADR-0077）：`streamAttempts` 是**一次逻辑流请求的总尝试次数**
+ *   （含首次），`streamReplayBudgetMs` 是重放总墙钟预算（含退避，0 = 不设上限）。
+ *   它叠在 `reviewTurnAttempts` 之上：后者管「请求建立」，前者管「流已开始后断开」。
  *
- * `baseDelayMs` / `maxDelayMs` 只作用于核外一次性调用；Agent 层的退避由
- * pi-ai 自身固定（0.5s→8s），本仓不 fork 上游、只透传次数与超时。
+ * `baseDelayMs` / `maxDelayMs` 只作用于核外一次性调用与流中断重放；Agent 层
+ * 建连重试的退避由 pi-ai 自身固定（0.5s→8s），本仓不 fork 上游、只透传次数与超时。
  */
 export interface RetryLimits {
   readonly maxAttempts: number;
@@ -142,6 +145,10 @@ export interface RetryLimits {
   readonly oneShotAttempts: number;
   readonly presentationAttempts: number;
   readonly smokeAttempts: number;
+  /** 一次逻辑流请求的总尝试次数（含首次）；1 = 不重放，13 = 1 次首次 + 12 次重放 */
+  readonly streamAttempts: number;
+  /** 流中断重放的总墙钟预算（毫秒；从首次尝试发出起算、含退避）；0 = 不设上限 */
+  readonly streamReplayBudgetMs: number;
 }
 
 /** 检视循环上限（ADR-0046） */
@@ -293,6 +300,8 @@ export const DEFAULT_LIMITS: Limits = {
     oneShotAttempts: 3,
     presentationAttempts: 3,
     smokeAttempts: 1,
+    streamAttempts: 13,
+    streamReplayBudgetMs: 120_000,
   },
   concurrency: { suggestion: 4 },
   confidence: { min: 0.5 },
@@ -800,12 +809,14 @@ const RETRY_KEYS = [
   "oneShotAttempts",
   "presentationAttempts",
   "smokeAttempts",
+  "streamAttempts",
+  "streamReplayBudgetMs",
 ] as const;
 const CONCURRENCY_KEYS = ["suggestion"] as const;
 const CONFIDENCE_KEYS = ["min"] as const;
 const SEVERITY_KEYS = ["min"] as const;
 const TEST_FILES_KEYS = ["skip"] as const;
-const MR_FILTER_KEYS = ["excludeGlobs"] as const;
+const MR_FILTER_KEYS = ["excludeGlobs", "includeRegex", "excludeRegex"] as const;
 const FINDING_SCOPE_KEYS = ["enabled", "contextLines"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
 const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars"] as const;
@@ -892,6 +903,21 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
       1,
       10,
       DEFAULT_LIMITS.retry.smokeAttempts,
+    ),
+    // 流中断重放（ADR-0077）：独立于建连次数；13 = 1 次首次 + 12 次重放
+    streamAttempts: intOr(
+      retryObj.streamAttempts,
+      "limits.retry.streamAttempts",
+      1,
+      100,
+      DEFAULT_LIMITS.retry.streamAttempts,
+    ),
+    streamReplayBudgetMs: intOr(
+      retryObj.streamReplayBudgetMs,
+      "limits.retry.streamReplayBudgetMs",
+      0,
+      3_600_000,
+      DEFAULT_LIMITS.retry.streamReplayBudgetMs,
     ),
   };
 
@@ -1866,7 +1892,13 @@ ${excludeGlobLines}
       "reviewTurnAttempts": 3,           // 主检视回合 / 规则 Skill 会话总尝试次数。
       "oneShotAttempts": 3,              // 片级报文 / 收尾总结总尝试次数。
       "presentationAttempts": 3,         // legacy 呈现引擎逐请求总尝试次数（ADR-0065 后 CLI 不再调用）。
-      "smokeAttempts": 1                 // smoke 探针总尝试次数（缺省 1 = 不重试）。
+      "smokeAttempts": 1,                // smoke 探针总尝试次数（缺省 1 = 不重试）。
+      // 流中断重放（ADR-0077）：流已开始后断开时，缓冲当前响应并在本层重发。
+      // 总尝试次数（含首次）：13 = 1 次首次 + 12 次重放；1 = 关闭重放。
+      "streamAttempts": 13,
+      // 重放总墙钟预算（毫秒，从首次尝试发出起算、含退避）；0 = 不设上限。
+      // 到点即停止「再发起一次」；已发出的尝试不会被打断。
+      "streamReplayBudgetMs": 120000
     },
     // legacy：呈现引擎的 suggestion 并发生成数（ADR-0065 后 CLI 不再调用）。
     "concurrency": { "suggestion": 4 },

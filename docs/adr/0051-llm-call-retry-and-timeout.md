@@ -7,6 +7,11 @@
 > **后续修订（[ADR-0062](0062-one-shot-timeout-default-300s.md)，2026-11-09）**：一次性调用的
 > 缺省超时 `limits.timeouts.oneShotMs` 由 90 s 改为 300 s（大 MR 报文单次可输出 1.6 万 tokens）。
 > 分层重试、「只重试请求建立阶段」、回放 lane 单次尝试等决策不变；下文 90 s 是决策当时的取值。
+>
+> **后续修订（[ADR-0077](0077-buffered-stream-replay.md)，2026-11-13）**：**决策 3 的「流中断不重试」
+> 被局部替代**——流已开始后断开改为在本仓 `streamFn` 层做「缓冲重放」（失败响应的事件从未交付给
+> 消费者，故重放不重复工具副作用）。「不做回合重放」「只重试请求建立阶段」两条不变；
+> 新增配置 `limits.retry.streamAttempts` / `streamReplayBudgetMs`。
 
 ## Context
 

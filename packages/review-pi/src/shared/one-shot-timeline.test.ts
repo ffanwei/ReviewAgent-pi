@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 describe("一次性调用归因（ADR-0076 决策 6）", () => {
-  test("2xx 之后读 body 断掉 = 传输失败，不再冒名「不是合法 JSON」，且不重试", async () => {
+  test("2xx 之后读 body 断掉 = 传输失败且可重试（不再冒充「不是合法 JSON」）", async () => {
     let calls = 0;
     const fetch: FetchFunction = async () => {
       calls += 1;
@@ -57,9 +57,10 @@ describe("一次性调用归因（ADR-0076 决策 6）", () => {
       expect(result.reason).toContain("response body read failed");
       expect(result.reason).toContain("terminated");
       expect(result.reason).not.toContain("not valid JSON");
+      expect(result.reason).toContain("after 3 attempts");
     }
-    // retryable 仍为 false：本次只改标签，不改重试语义
-    expect(calls).toBe(1);
+    // ADR-0077：读 body 抛错与流中断同类，进 `runWithRetry` 的传输重试
+    expect(calls).toBe(3);
   });
 
   test("真正的非法 JSON 仍归为确定性 malformed（不因上面那条改动被吞掉）", async () => {

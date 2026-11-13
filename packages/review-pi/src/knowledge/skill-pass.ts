@@ -168,6 +168,13 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
           round,
         }),
       },
+      // ADR-0077：流中断重放（与主会话同档；外层 skillPassMs 仍是硬上限）
+      replay: {
+        attempts: runtime.limits.retry.streamAttempts,
+        budgetMs: runtime.limits.retry.streamReplayBudgetMs,
+        baseDelayMs: runtime.limits.retry.baseDelayMs,
+        maxDelayMs: runtime.limits.retry.maxDelayMs,
+      },
     }),
     toolExecution: "sequential",
     // 会话自身的请求捕获点（ADR-0014「每个 skill 会话独立的 onPayload 捕获」）：

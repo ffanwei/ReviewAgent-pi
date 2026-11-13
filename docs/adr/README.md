@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0076）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0079）。
 
 ## 记录纪律
 
@@ -72,7 +72,9 @@
 | [ADR-0074](0074-opencode-trace-export.md) | OpenCode 兼容的 trace 导出 |
 | [ADR-0075](0075-diff-too-large-skip-with-report.md) | diff 超字节门禁时跳过检视，仍上报空意见与固定总结（exit 0） |
 | [ADR-0076](0076-request-timeline-for-model-calls.md) | 模型调用请求时间线：`request-timeline.jsonl`（只观测；fetch + 流 `push` 两个采集点；局部豁免时钟不落盘） |
+| [ADR-0077](0077-buffered-stream-replay.md) | 流中断重放：失败响应先缓冲、不交付，本层重发（局部替代 ADR-0051 决策 3；新增 `streamAttempts` / `streamReplayBudgetMs`） |
 | [ADR-0078](0078-review-scope-include-exclude-regex.md) | 检视范围正则：`--include` / `--exclude` 与 `limits.mrFilter.includeRegex` / `excludeRegex`（先白名单后黑名单；0 文件跳过检视仍上报） |
+| [ADR-0079](0079-version-command.md) | 版本面：`review-pi version` / `--version`（人读单行、`--json` 含 Node 与内核四包实际版本；不加载配置；日志头与 `config show` 带版本） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

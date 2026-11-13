@@ -11,6 +11,7 @@ import {
   type ResolvedConfig,
 } from "../shared/config.js";
 import { parseEnvFile } from "../shared/env-file.js";
+import { REVIEW_PI_VERSION } from "../shared/version.js";
 import type { ConfigCliArgs } from "./args.js";
 
 /**
@@ -76,9 +77,10 @@ function showConfig(args: ConfigCliArgs, cwd: string): number {
   return 0;
 }
 
-/** 人读形态：逐键 `值  (file|default)`，末行 digest */
+/** 人读形态：首行产品版本（ADR-0079），逐键 `值  (file|default)`，末行 digest */
 function renderShow(config: ResolvedConfig): string {
   const lines: string[] = [];
+  lines.push(`review-pi ${REVIEW_PI_VERSION}`);
   lines.push(
     config.exists
       ? `review-pi config: ${config.path}（found）`

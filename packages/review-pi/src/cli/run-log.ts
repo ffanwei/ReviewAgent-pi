@@ -1,6 +1,8 @@
 import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
+import { REVIEW_PI_VERSION } from "../shared/version.js";
+
 /**
  * 运行日志（`review-pi.log`）：把 CLI 的 stderr 全量镜像到
  * `<tasks 根>/<taskId>/runs/`——与 `session-<runId>.json` 转录同目录，
@@ -8,6 +10,7 @@ import { join } from "node:path";
  *
  * 纪律：
  * - **旁路**：日志打开 / 写入失败绝不影响检视与退出码；
+ * - 日志头写产品版本（ADR-0079）：拿回 `review-pi.log` 即知装的是哪一版；
  * - stderr 原样镜像（进度、告警、降级原因都在里面），不改变任何调用方的输出；
  * - 另提供 `detail()`：只落日志、不上 stderr——未捕获异常的完整堆栈走这里；
  * - 同步写（`writeSync`）：进程异常退出 / `exitGracefully` 时已落盘，无需刷缓冲；
@@ -46,6 +49,7 @@ export function openRunLog(dir: string, options: RunLogOptions = {}): RunLog {
     fd,
     [
       "# review-pi run log",
+      `# version: ${REVIEW_PI_VERSION}`,
       `# startedAt: ${now().toISOString()}`,
       ...(options.taskId !== undefined ? [`# taskId: ${options.taskId}`] : []),
       "",

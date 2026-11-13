@@ -8,8 +8,10 @@
  *   1. 断言 tarball 内容面（dist / bin / presentation / 许可证；不含 src）；
  *   2. `review-pi`（无子命令）—— bin 的腿表在**安装布局**下能定位全部运行时腿；
  *   3. `review-pi config init/show` —— 配置面在安装布局下可读可写；
- *   4. `presentation.engine = "builtin"` 在安装布局下解析到包内制品；
- *   5. tree-sitter wasm / ripgrep 二进制在安装布局下可用。
+ *   4. `review-pi version [--json]`（ADR-0079）—— 版本面可读，且四个内核包在
+ *      安装布局下都能解析出版本（不是 `null`）；
+ *   5. `presentation.engine = "builtin"` 在安装布局下解析到包内制品；
+ *   6. tree-sitter wasm / ripgrep 二进制在安装布局下可用。
  *
  * 「不联网」的准确含义（ADR-0035）：本脚本自身不发网络请求——依赖来自 `pnpm install`
  * 已经灌进 store 并落位的工作区 `node_modules`。首次安装仍需网络。
@@ -234,6 +236,32 @@ if (shown.version !== 1 || typeof shown.values?.["limits.boundary.maxFiles"] !==
   fail("config show --json 的输出不是配置快照");
 }
 process.stdout.write("verify-pack: 安装布局下 config init/show OK\n");
+
+// ---- 3b. version（ADR-0079）：安装布局下版本可读，内核四包都能解析 ----
+const versionRun = runCli(["version", "--json"]);
+if (versionRun.status !== 0) {
+  fail(`version --json 失败（status=${versionRun.status}）\n${versionRun.stderr ?? ""}`);
+}
+let versionInfo;
+try {
+  versionInfo = JSON.parse(versionRun.stdout);
+} catch {
+  fail(`version --json 的输出不是 JSON：${versionRun.stdout}`);
+}
+if (typeof versionInfo.version !== "string" || versionInfo.version === "") {
+  fail("version --json 缺少产品版本");
+}
+const unresolved = Object.entries(versionInfo.kernel ?? {})
+  .filter(([, value]) => typeof value !== "string" || value === "")
+  .map(([specifier]) => specifier);
+if (unresolved.length > 0) {
+  fail(`version --json 内核版本解析失败：${unresolved.join(", ")}`);
+}
+const versionLine = runCli(["version"]);
+if (versionLine.status !== 0 || versionLine.stdout.trim() !== `review-pi ${versionInfo.version}`) {
+  fail(`version 人读形态不是单行产品版本：status=${versionLine.status} stdout=${JSON.stringify(versionLine.stdout)}`);
+}
+process.stdout.write("verify-pack: 安装布局下 version OK\n");
 
 // ---- 4. builtin 引擎在安装布局下的落点 ----
 const configModuleUrl = pathToFileURL(

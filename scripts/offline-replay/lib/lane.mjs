@@ -41,6 +41,9 @@ export async function createLane({ runDir, label, scenario, server, index }) {
       oneShotAttempts: 1,
       presentationAttempts: 1,
       smokeAttempts: 1,
+      // 流中断重放（ADR-0077）：回放按请求哈希命中原样响应，重放会把同一失败
+      // 再放一遍并放大请求计数 → 回放 lane 固定单次尝试（同 ADR-0051 决策 5）。
+      streamAttempts: 1,
     },
   };
   if (scenario.split?.maxShardChars !== undefined) {

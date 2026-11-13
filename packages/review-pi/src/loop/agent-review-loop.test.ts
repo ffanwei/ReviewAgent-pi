@@ -113,6 +113,16 @@ function scriptedLoop(
 ): ScriptedRun {
   const script = fakeFetch([...replies]);
   const toolkit = buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF });
+  // 单元测试固定单次流尝试（ADR-0077）：默认 13 次重放会让「注入一次流错误」的
+  // 用例真的重放十几轮并把脚本耗尽；重放行为本身另有用例覆盖。
+  const base = runtime ?? DEFAULT_REVIEW_RUNTIME;
+  const singleAttempt: ReviewRuntime = {
+    ...base,
+    limits: {
+      ...base.limits,
+      retry: { ...base.limits.retry, streamAttempts: 1 },
+    },
+  };
   const run = () =>
     runAgentReviewLoop({
       systemPrompt: SYSTEM,
@@ -120,7 +130,7 @@ function scriptedLoop(
       toolkit,
       apiKey: "test-key",
       fetch: script.fetch,
-      ...(runtime !== undefined ? { runtime } : {}),
+      runtime: singleAttempt,
     });
   return { run, requestUrls: script.requests.map((request) => request.url) };
 }

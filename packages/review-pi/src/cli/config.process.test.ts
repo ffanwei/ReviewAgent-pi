@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
 import { checkRuntimeArtifacts } from "../../bin/lib/cli-runtime.js";
+import { REVIEW_PI_VERSION } from "../shared/version.js";
 
 // `review-pi config` 进程面（ADR-0025）：init / show / init --from-env。
 //
@@ -245,6 +246,8 @@ test("config show：逐键值 + 来源 + digest 末行；秘密只报 set", asyn
 
   const show = await runCli(["config", "show", "--config", configPath]);
   expect(show.status).toBe(0);
+  // 版本行（ADR-0079）：排障时一眼看到装的是哪一版
+  expect(show.stdout).toContain(`review-pi ${REVIEW_PI_VERSION}`);
   expect(show.stdout).toContain(`review-pi config: ${configPath}（found）`);
   expect(show.stdout).toMatch(/reviewer\.apiKey\s+set/);
   expect(show.stdout).toContain("https://gw.example.com/v1  (file)");
