@@ -200,6 +200,12 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       `review-pi: ${flag} 传入空值，已清空该维度（本次不按该维度筛选，配置默认不再生效）\n`,
     );
   }
+  // 非法范围正则（ADR-0078 后续修订）：只忽略该条，不中断检视；必须可见。
+  for (const item of args.ignoredPathFilterPatterns ?? []) {
+    process.stderr.write(
+      `review-pi: ${item.flag} ${JSON.stringify(item.pattern)} 不是合法正则，已忽略（${item.reason}）\n`,
+    );
+  }
   // 落盘根（ADR-0033）：tasks 根（`--tasks-dir` 或 ~/.PiAgent/tasks）+ 任务 id；
   // 其下仍是 runs/ + audit/ + .cache/（ADR-0032 的目录内形态不变）。
   const tasksRoot = resolveTasksRoot({

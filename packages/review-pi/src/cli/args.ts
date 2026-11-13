@@ -104,10 +104,12 @@ review 旗标：
   --include         <regex>          检视范围白名单（可重复，OR；大小写敏感）。命中者越过
                                     test / lockfile / generated / 配置 excludeGlobs 等启发式，
                                     binary 恒剔。CLI 出现即整体替换配置
-                                    limits.mrFilter.includeRegex；传空值 = 本次清空该维度
+                                    limits.mrFilter.includeRegex；传空值 = 本次清空该维度；
+                                    非法正则条目忽略并提示（不中断）
   --exclude         <regex>          检视范围黑名单（可重复，OR）。命中即剔除，优先于 --include。
                                     CLI 出现即整体替换配置 limits.mrFilter.excludeRegex；
-                                    传空值 = 本次清空该维度。正则匹配前做 git 引号归一化
+                                    传空值 = 本次清空该维度；非法正则条目同样忽略并提示。
+                                    正则匹配前做 git 引号归一化
   --strict-rule-skill       规则 Skill 装载失败即报错（缺省降级、run 照常）
   --no-progress             关闭运行进度事件行（缺省打印：阶段 / 模型请求 / 工具调用 /
                             skill 会话；批跑收日志时显式静音）。
@@ -132,6 +134,13 @@ export 旗标：
 
 version 旗标：
   --json                 输出机器可读快照（产品 / Node / 内核四包实际解析版本）`;
+
+/** 被忽略的非法范围正则（CLI 提示用；不中断检视） */
+export interface IgnoredPathFilterPattern {
+  readonly flag: "--include" | "--exclude";
+  readonly pattern: string;
+  readonly reason: string;
+}
 
 /** 解析后的 review 命令参数（caseId 由 --mr-diff / --mr-json 派生） */
 export interface ReviewCliArgs {
@@ -179,6 +188,11 @@ export interface ReviewCliArgs {
    * （缺席省键）。按「清空该维度」处理，由 CLI 打一行提示（零静默）。
    */
   readonly emptyPathFilterFlags?: readonly string[];
+  /**
+   * 传了但**不是合法正则**的模式（ADR-0078 后续修订）：按「忽略该条」处理，
+   * 有效模式照常生效；由 CLI 逐条打 stderr 提示，不中断检视。
+   */
+  readonly ignoredPathFilterPatterns?: readonly IgnoredPathFilterPattern[];
   /**
    * 传了但**没有值**的规则包旗标（`--rule-skill` / `--rule-skill-zip` / `--skill`；缺席省键）。
    *
@@ -376,17 +390,23 @@ function stripEmptyPathFilterFlags(tokens: readonly string[]): {
 }
 
 /**
- * 正则列表解析（ADR-0078）：重复旗标收集，逐条试编译（fail fast），
- * 去重保序。**不 trim**——首尾空格可能是正则语义的一部分。
+ * 正则列表解析（ADR-0078，后续修订）：重复旗标收集，逐条试编译。
+ * **非法正则不再中断命令**——丢弃该条、登记进 `invalid`，由 CLI 打 stderr
+ * 提示；合法条目照常生效（去重保序）。**不 trim**——首尾空格可能是正则语义
+ * 的一部分。
  */
 function parseRegexPatterns(
-  flag: string,
+  flag: "--include" | "--exclude",
   raw: readonly string[] | undefined,
-): { readonly ok: true; readonly items?: readonly string[] } | { readonly ok: false; readonly message: string } {
+): {
+  readonly items?: readonly string[];
+  readonly invalid: readonly IgnoredPathFilterPattern[];
+} {
   if (raw === undefined) {
-    return { ok: true };
+    return { invalid: [] };
   }
   const items: string[] = [];
+  const invalid: IgnoredPathFilterPattern[] = [];
   for (const value of raw) {
     if (value.trim() === "") {
       continue; // stripEmptyPathFilterFlags 已摘；这里只作防御
@@ -394,16 +414,18 @@ function parseRegexPatterns(
     try {
       new RegExp(value);
     } catch (error) {
-      return {
-        ok: false,
-        message: `invalid ${flag} ${JSON.stringify(value)}: ${error instanceof Error ? error.message : String(error)}`,
-      };
+      invalid.push({
+        flag,
+        pattern: value,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      continue;
     }
     if (!items.includes(value)) {
       items.push(value);
     }
   }
-  return { ok: true, items };
+  return { items, invalid };
 }
 
 /** --model 校验（两子命令同口径；缺席 = 取配置 model.default） */
@@ -871,17 +893,12 @@ function parseReviewArgs(
   if (!skillDirs.ok) {
     return skillDirs;
   }
-  // 检视范围正则（ADR-0078）：缺席 = 用配置；出现且空 = 本次清空该维度。
+  // 检视范围正则（ADR-0078）：缺席 = 用配置；出现且空 = 本次清空该维度；
+  // 非法条目只忽略该条（可见提示），不中断命令。
   const includeRaw = repeated.get("--include");
   const excludeRaw = repeated.get("--exclude");
   const includeParsed = parseRegexPatterns("--include", includeRaw);
-  if (!includeParsed.ok) {
-    return includeParsed;
-  }
   const excludeParsed = parseRegexPatterns("--exclude", excludeRaw);
-  if (!excludeParsed.ok) {
-    return excludeParsed;
-  }
   const includePatterns =
     includeRaw !== undefined || emptyPathFilterFlags.includes("--include")
       ? (includeParsed.items ?? [])
@@ -890,6 +907,7 @@ function parseReviewArgs(
     excludeRaw !== undefined || emptyPathFilterFlags.includes("--exclude")
       ? (excludeParsed.items ?? [])
       : undefined;
+  const ignoredPathFilterPatterns = [...includeParsed.invalid, ...excludeParsed.invalid];
   const config = parseConfigFlag(values);
   if (!config.ok) {
     return config;
@@ -915,6 +933,9 @@ function parseReviewArgs(
       ...(excludePatterns !== undefined ? { excludePatterns } : {}),
       ...(emptyPathFilterFlags.length > 0
         ? { emptyPathFilterFlags: [...emptyPathFilterFlags] }
+        : {}),
+      ...(ignoredPathFilterPatterns.length > 0
+        ? { ignoredPathFilterPatterns: [...ignoredPathFilterPatterns] }
         : {}),
       ...(emptyRuleSkillFlags.length > 0 ? { emptyRuleSkillFlags: [...emptyRuleSkillFlags] } : {}),
       ...(strict ? { strictRuleSkill: true } : {}),

@@ -1177,12 +1177,32 @@ test("空值与有效值并存：有效值保留，空值只留痕", () => {
   expect(parsed.args.emptyPathFilterFlags).toEqual(["--include"]);
 });
 
-test("非法正则：用法错误并带原文（parsing fail fast）", () => {
-  const parsed = reviewBase(["--include", "*.java"]);
-  expect(parsed).toEqual({
-    ok: false,
-    message: expect.stringContaining("invalid --include \"*.java\""),
-  });
+test("非法正则：只忽略该条并留痕，不中断命令", () => {
+  const parsed = reviewBase(["--include", "*.java", "--exclude", "["]);
+  expect(parsed.ok && parsed.command === "review").toBe(true);
+  if (!parsed.ok || parsed.command !== "review") {
+    return;
+  }
+  // 旗标出现过、有效条目为零 → 该维度按「清空」处理
+  expect(parsed.args.includePatterns).toEqual([]);
+  expect(parsed.args.excludePatterns).toEqual([]);
+  expect(parsed.args.ignoredPathFilterPatterns?.map((item) => item.flag)).toEqual([
+    "--include",
+    "--exclude",
+  ]);
+  expect(parsed.args.ignoredPathFilterPatterns?.[0]?.pattern).toBe("*.java");
+  expect(parsed.args.ignoredPathFilterPatterns?.[0]?.reason).toContain("Nothing to repeat");
+});
+
+test("非法与合法正则混用：合法条目照常生效", () => {
+  const parsed = reviewBase(["--include", "*.java", "--include", "^src/", "--exclude", "["]);
+  expect(parsed.ok && parsed.command === "review").toBe(true);
+  if (!parsed.ok || parsed.command !== "review") {
+    return;
+  }
+  expect(parsed.args.includePatterns).toEqual(["^src/"]);
+  expect(parsed.args.excludePatterns).toEqual([]);
+  expect(parsed.args.ignoredPathFilterPatterns).toHaveLength(2);
 });
 
 test("多条正则必须重复旗标：裸 token 仍然报 unknown flag（不做空格列表）", () => {

@@ -32,7 +32,7 @@
 - 一条正则一个 argv，**不进 `COMMA_LIST_FLAGS`**：逗号是正则的合法字符（量词 `{m,n}`、字符类 `[,;]`、字面逗号），`split(",")` 会把 `^src/a{1,3}\.ts$` 切成 `^src/a{1` 与 `3}\.ts$`——两半在 JS 里都是合法字面量，结果是**静默不命中**。也不支持空格列表（与含空格的正则不可区分）。
 - 同类内多条 = OR；完全相同去重保序；大小写敏感（正则原生语义，不退化成 glob 的 `i`）。
 - 空值语义（`--include ''`、纯空白、旗标后无值）：**本次清空该维度**（不筛该维度，配置默认不再生效），按 ADR-0044 的零静默口径在 stderr 打一行提示。
-- 非法正则：参数解析期 `new RegExp` 试编译，失败即用法错误并带原文。
+- 非法正则（ADR-0078 后续修订）：**只忽略该条**并逐条打 stderr 提示，不中断检视；同维度其余合法条目照常生效。配置里的 `includeRegex` / `excludeRegex` 仍在装载期 fail fast（配置文件的语法错误不该被静默吞掉）。
 - 长列表（命令行超长）不在本 ADR 处理；需要时另开 `--include-file`。
 
 ### 2. 配置面：`limits.mrFilter.includeRegex` / `excludeRegex`
@@ -103,4 +103,4 @@
   - 正则大小写敏感与 glob 的大小写不敏感不同；
   - `mrFilter` 在"0 剔除但配了规则"时也会出现，下游若假设"有 mrFilter 必有剔除"需改为看 `droppedFiles`；
   - 零文件终态只补一条 `mrReviewResult`（ADR-0068 的例外）。
-- **测试面**：`run/mr-input.test.ts`（OR、include 越过启发式、exclude 压过 include、binary 恒剔、UTF-8 八进制归一化、审计 `filters`/0 剔除留痕）、`cli/args.test.ts`（多值、空值、非法正则、裸 token 报错）、`shared/config.test.ts`（缺省 / 去重 / 非法正则 fail fast）、`run/review-run.test.ts`（0 文件抛 `NoReviewableFilesError` 且零模型调用）、`cli/bin.process.test.ts`（全过滤 → 跳过检视的四工具 + 固定总结 + exit 0；部分过滤仍补报）。
+- **测试面**：`run/mr-input.test.ts`（OR、include 越过启发式、exclude 压过 include、binary 恒剔、UTF-8 八进制归一化、审计 `filters`/0 剔除留痕）、`cli/args.test.ts`（多值、空值、非法正则只忽略、裸 token 报错）、`shared/config.test.ts`（缺省 / 去重 / 非法正则 fail fast）、`run/review-run.test.ts`（0 文件抛 `NoReviewableFilesError` 且零模型调用）、`cli/bin.process.test.ts`（全过滤 → 跳过检视的四工具 + 固定总结 + exit 0；部分过滤仍补报）。

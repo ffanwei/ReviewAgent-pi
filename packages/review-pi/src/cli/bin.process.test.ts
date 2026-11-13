@@ -4146,3 +4146,51 @@ test(
   },
   180_000,
 );
+
+test(
+  "ADR-0078：非法 --include 只忽略该条并提示，不中断检视",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = writeMr(
+        [
+          "diff --git a/src/main/java/Keep.java b/src/main/java/Keep.java",
+          "--- a/src/main/java/Keep.java",
+          "+++ b/src/main/java/Keep.java",
+          "@@ -1 +1 @@",
+          "-class Keep {}",
+          "+class Keep { }",
+        ].join("\n"),
+      );
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--include",
+          "*.java",
+        ],
+        stubEnv(stub.baseUrl),
+      );
+
+      expect(run.status).toBe(0);
+      expect(run.stderr).toContain('--include "*.java" 不是合法正则，已忽略');
+      // 非法条目被忽略、维度按清空处理 → 全部变更文件照常检视
+      expect(stub.requests().length).toBeGreaterThan(0);
+      const outcome = JSON.parse(run.stdout) as { skipped?: string; findings: unknown[] };
+      expect(outcome.skipped).toBeUndefined();
+      expect(outcome.findings).toEqual([]);
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
