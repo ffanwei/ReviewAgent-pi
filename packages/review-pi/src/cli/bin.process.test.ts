@@ -484,6 +484,51 @@ function noFindingCorpus(): FakeReply[] {
 }
 
 /** 子进程网关覆盖（写入本 run 的最小配置文件；不再经环境变量） */
+/**
+ * 「流中途断开」网关桩（ADR-0076 验收）：先发一帧 SSE 让流真的开始，再销毁
+ * socket——复现真实环境里代理 / 网关掐断连接造成的 `TypeError: terminated`。
+ */
+function startTruncatingStub(): Promise<{
+  readonly baseUrl: string;
+  readonly close: () => Promise<void>;
+}> {
+  const server = http.createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      if (request.method === "GET" && request.url === "/v1/models") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ data: [{ id: REVIEW_MODEL_ID }] }));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/v1/chat/completions") {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(
+          `data: ${JSON.stringify({
+            id: "chatcmpl-truncated",
+            object: "chat.completion.chunk",
+            model: REVIEW_MODEL_ID,
+            choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }],
+          })}\n\n`,
+        );
+        setTimeout(() => response.destroy(), 30);
+        return;
+      }
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end("{}");
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        close: () => new Promise<void>((done) => server.close(() => done())),
+      });
+    });
+  });
+}
+
 function stubEnv(stubBaseUrl: string): RunBinOptions {
   return { gatewayBaseUrl: stubBaseUrl };
 }
@@ -540,6 +585,22 @@ test(
       expect(existsSync(outcome.auditPath)).toBe(true);
       expect(path.basename(outcome.auditPath)).toBe(`${outcome.runId}.json`);
       expect(collectFiles(outDir).length).toBeGreaterThanOrEqual(2);
+      // 请求时间线（ADR-0076）：成功 run 也写；每行一个 JSON 对象
+      const timelinePath = path.join(outDir, CLI_TASK_ID, "runs", "request-timeline.jsonl");
+      expect(existsSync(timelinePath)).toBe(true);
+      const timelineLines = readFileSync(timelinePath, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { kind: string; site?: string; runId?: string | null });
+      expect(timelineLines.some((line) => line.kind === "request" && line.site === "main")).toBe(
+        true,
+      );
+      // 收尾阶段（tips / 总结）续写同一次 run：runId 已确定，写进行里
+      expect(
+        timelineLines.some(
+          (line) => line.kind === "request" && line.runId === outcome.runId,
+        ),
+      ).toBe(true);
 
       // 传输层：六回合检视 + 一次业务关闭下的 tips 语义生成；全部带哨兵 Authorization 头
       const requests = stub.requests();
@@ -571,6 +632,56 @@ test(
       expect(run.stderr).toContain(CLI_TASK_ID);
       expect(run.stderr).toContain(outDir);
       expect(run.stderr).not.toContain("--out");
+    } finally {
+      await stub.close();
+    }
+  },
+  180_000,
+);
+
+test(
+  "请求时间线（ADR-0076）：流中途断开 → exit 1 + task 目录留下失败现场（attempt/request 行 + 归因）",
+  async () => {
+    const stub = await startTruncatingStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
+      writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+        ],
+        stubEnv(stub.baseUrl),
+      );
+
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain("review turn failed");
+      // 失败现场一行人读摘要（同时被 review-pi.log 镜像）
+      expect(run.stderr).toContain("request-timeline:");
+
+      const timelinePath = path.join(outDir, CLI_TASK_ID, "runs", "request-timeline.jsonl");
+      expect(existsSync(timelinePath)).toBe(true);
+      const lines = readFileSync(timelinePath, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(lines.some((line) => line["kind"] === "attempt")).toBe(true);
+      const request = lines.find((line) => line["kind"] === "request");
+      expect(request).toBeDefined();
+      expect(request?.["site"]).toBe("main");
+      expect(request?.["stopReason"]).toBe("error");
+      expect(request?.["error"]).not.toBeNull();
+      // 失败 run 仍不产契约产物（不落 partial audit / run.json，ADR-0076 决策 5）
+      expect(existsSync(path.join(outDir, CLI_TASK_ID, "runs", "run.json"))).toBe(false);
     } finally {
       await stub.close();
     }

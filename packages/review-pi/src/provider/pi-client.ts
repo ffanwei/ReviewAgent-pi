@@ -1,11 +1,32 @@
-import type { AssistantMessage, Context, FetchFunction, Model, TextContent } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  AssistantMessageEvent,
+  AssistantMessageEventStream,
+  Context,
+  FetchFunction,
+  Model,
+  OpenAICompletionsOptions,
+  TextContent,
+} from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import type { ToolSchema, WireMessage } from "../contracts/llm.js";
+import type { LlmUsage, ToolSchema, WireMessage } from "../contracts/llm.js";
+import {
+  describeThrownError,
+  emitRequestTimeline,
+  hasRequestTimelineSink,
+  hostOfBaseUrl,
+  pickTimelineHeaders,
+  truncateTimelineMessage,
+  type TimelineError,
+  type TimelineScope,
+  type TimelineShard,
+} from "../observability/request-timeline.js";
 import {
   DEFAULT_GATEWAY_MAX_TOKENS,
   isOfficialReviewerBaseUrl,
 } from "../shared/config.js";
+import { piUsageToLlmUsage } from "./usage-map.js";
 
 /**
  * pi-ai 序列化缝（内核变量面）：真 provider + 真 openai SDK 序列化路径，
@@ -180,6 +201,16 @@ export function maxTokensFor(
  * 主会话与 skill 会话共用同一构造，保证「同一 Zone A + 同一序列化画像」。
  * 输出预算由调用方从配置快照传入（ADR-0025：请求期零 env 读取）。
  */
+/** 请求时间线的作用域（每次请求发前求值；由调用方闭包提供当前阶段） */
+export interface StreamTimelineScope {
+  readonly site: "main" | "skill";
+  readonly skill?: string;
+  readonly shard?: TimelineShard;
+  readonly round?: number;
+  readonly phase?: string;
+  readonly phaseIndex?: number;
+}
+
 export function reviewStreamFn(input: {
   readonly apiKey: string;
   readonly fetch?: FetchFunction;
@@ -190,12 +221,23 @@ export function reviewStreamFn(input: {
   readonly maxRetryDelayMs?: number;
   /** 单次请求（流开始前）超时毫秒数 */
   readonly timeoutMs?: number;
+  /**
+   * 请求时间线作用域（ADR-0076）。只有装了全局观测器时才真正采集：
+   * 未安装 = 完全不包 fetch / 不碰流，零行为变化。
+   */
+  readonly timeline?: {
+    readonly scope: () => StreamTimelineScope;
+    /** 时钟注入（测试确定性；缺省 Date.now） */
+    readonly now?: () => number;
+  };
 }): StreamFn {
+  // 主会话 / skill 会话各自一个 StreamFn 实例 → requestId 天然按会话自增
+  let requestSeq = 0;
   return (model, context, options) => {
     // model.baseUrl 由 reviewModelOf 落值（目录缺省 = 官方直连），网关档在此
     // 注入显式输出预算——两类会话共用本构造，改一处即覆盖两会话。
     const maxTokens = maxTokensFor(model.baseUrl, input.maxOutputTokens);
-    return deepseekProvider().stream(model as Model<"openai-completions">, context, {
+    const providerOptions: OpenAICompletionsOptions = {
       ...options,
       apiKey: input.apiKey,
       ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
@@ -206,9 +248,242 @@ export function reviewStreamFn(input: {
         ? { maxRetryDelayMs: input.maxRetryDelayMs }
         : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    };
+    if (input.timeline === undefined || !hasRequestTimelineSink()) {
+      return deepseekProvider().stream(
+        model as Model<"openai-completions">,
+        context,
+        providerOptions,
+      );
+    }
+
+    requestSeq += 1;
+    const state = createTimelineState({
+      requestId: requestSeq,
+      scope: input.timeline.scope(),
+      model: model.id,
+      baseUrl: model.baseUrl,
+      now: input.timeline.now,
     });
+    const underlying = input.fetch ?? (globalThis.fetch as FetchFunction);
+    const observedOptions: OpenAICompletionsOptions = {
+      ...providerOptions,
+      fetch: wrapFetchWithTimeline(underlying, state),
+    };
+    let stream: AssistantMessageEventStream;
+    try {
+      stream = deepseekProvider().stream(
+        model as Model<"openai-completions">,
+        context,
+        observedOptions,
+      );
+    } catch (error) {
+      // 同步失败（如缺 key）：逻辑请求行照样要有一条，否则失败现场是空白
+      finishTimelineRequest(state, describeThrownError(error, "provider"));
+      throw error;
+    }
+    return observeAssistantStream(stream, state);
   };
 }
+
+interface TimelineState {
+  readonly requestId: number;
+  readonly scope: TimelineScope;
+  readonly now: () => number;
+  sentAt: number;
+  headersAt: number | null;
+  attempts: number;
+  streamStartedAt: number | null;
+  firstDeltaAt: number | null;
+  lastDeltaAt: number | null;
+  deltaCount: number;
+  deltaChars: number;
+  stopReason: string | null;
+  error: TimelineError | null;
+  usage: LlmUsage | undefined;
+  finished: boolean;
+}
+
+function createTimelineState(input: {
+  readonly requestId: number;
+  readonly scope: StreamTimelineScope;
+  readonly model: string;
+  readonly baseUrl: string | undefined;
+  readonly now: (() => number) | undefined;
+}): TimelineState {
+  return {
+    requestId: input.requestId,
+    scope: {
+      ...input.scope,
+      model: input.model,
+      baseUrlHost: baseUrlHostOf(input.baseUrl),
+    },
+    now: input.now ?? Date.now,
+    sentAt: 0,
+    headersAt: null,
+    attempts: 0,
+    streamStartedAt: null,
+    firstDeltaAt: null,
+    lastDeltaAt: null,
+    deltaCount: 0,
+    deltaChars: 0,
+    stopReason: null,
+    error: null,
+    usage: undefined,
+    finished: false,
+  };
+}
+
+/** 只取 host：绝不把 path / query（可能含凭据）写进时间线 */
+function baseUrlHostOf(baseUrl: string | undefined): string {
+  return hostOfBaseUrl(baseUrl);
+}
+
+/**
+ * fetch 包裹（ADR-0076 决策 2）：pi-ai 的 `retryProviderRequest` 只重发
+ * `create(...)`，每次尝试都会重新调用注入的 fetch——这是**尝试级**留痕的
+ * 唯一观察点（`onPayload` 在重试循环外只调一次）。
+ *
+ * 绝不替换 / 改写异常：原样 rethrow，pi-ai 的重试判定与最终 `errorMessage`
+ * 行为零变化；`cause.code` 只进时间线。
+ */
+function wrapFetchWithTimeline(
+  underlying: FetchFunction,
+  state: TimelineState,
+): FetchFunction {
+  return async (input, init) => {
+    state.attempts += 1;
+    const attempt = state.attempts;
+    const sentAt = state.now();
+    if (state.sentAt === 0) {
+      state.sentAt = sentAt;
+    }
+    try {
+      const response = await underlying(input, init);
+      const headersAt = state.now();
+      state.headersAt = headersAt;
+      const headers = pickTimelineHeaders(response.headers);
+      emitRequestTimeline({
+        v: 1,
+        ts: state.now(),
+        kind: "attempt",
+        runId: null,
+        ...state.scope,
+        requestId: state.requestId,
+        attempt,
+        sentAt,
+        headersAt,
+        status: response.status,
+        ...(headers !== undefined ? { headers } : {}),
+        error: null,
+        durationMs: Math.max(0, headersAt - sentAt),
+      });
+      return response;
+    } catch (error) {
+      const failedAt = state.now();
+      emitRequestTimeline({
+        v: 1,
+        ts: failedAt,
+        kind: "attempt",
+        runId: null,
+        ...state.scope,
+        requestId: state.requestId,
+        attempt,
+        sentAt,
+        headersAt: null,
+        status: null,
+        error: describeThrownError(error),
+        durationMs: Math.max(0, failedAt - sentAt),
+      });
+      throw error;
+    }
+  };
+}
+
+/**
+ * 流观察（ADR-0076 决策 2）：只覆盖实例的 `push`，**不新建流、不转发、不消费**。
+ * 因此 `result()`、异步迭代、背压与 aborted 语义全部保持上游原样。
+ */
+function observeAssistantStream(
+  stream: AssistantMessageEventStream,
+  state: TimelineState,
+): AssistantMessageEventStream {
+  const originalPush = stream.push.bind(stream);
+  stream.push = (event: AssistantMessageEvent): void => {
+    observeTimelineEvent(state, event);
+    originalPush(event);
+  };
+  return stream;
+}
+
+function observeTimelineEvent(state: TimelineState, event: AssistantMessageEvent): void {
+  switch (event.type) {
+    case "start": {
+      state.streamStartedAt = state.now();
+      return;
+    }
+    case "text_delta":
+    case "thinking_delta":
+    case "toolcall_delta": {
+      const at = state.now();
+      if (state.firstDeltaAt === null) {
+        state.firstDeltaAt = at;
+      }
+      state.lastDeltaAt = at;
+      state.deltaCount += 1;
+      state.deltaChars += event.delta.length;
+      return;
+    }
+    case "done": {
+      state.stopReason = event.reason;
+      state.usage = piUsageToLlmUsage(event.message.usage);
+      finishTimelineRequest(state, null);
+      return;
+    }
+    case "error": {
+      state.stopReason = event.reason;
+      finishTimelineRequest(
+        state,
+        event.reason === "aborted"
+          ? { kind: "timeout", message: "request aborted" }
+          : { kind: "provider", message: truncateTimelineMessage(event.error.errorMessage) },
+      );
+      return;
+    }
+    default: {
+      return;
+    }
+  }
+}
+
+function finishTimelineRequest(state: TimelineState, error: TimelineError | null): void {
+  if (state.finished) {
+    return;
+  }
+  state.finished = true;
+  const endedAt = state.now();
+  emitRequestTimeline({
+    v: 1,
+    ts: endedAt,
+    kind: "request",
+    runId: null,
+    ...state.scope,
+    requestId: state.requestId,
+    sentAt: state.sentAt === 0 ? endedAt : state.sentAt,
+    headersAt: state.headersAt,
+    streamStartedAt: state.streamStartedAt,
+    firstDeltaAt: state.firstDeltaAt,
+    lastDeltaAt: state.lastDeltaAt,
+    endedAt,
+    stopReason: state.stopReason,
+    deltaCount: state.deltaCount,
+    deltaChars: state.deltaChars,
+    attempts: Math.max(1, state.attempts),
+    error,
+    ...(state.usage !== undefined ? { usage: state.usage } : {}),
+  });
+}
+
 
 /** 校验并投影 onPayload payload（边界校验 fail fast；扩展字段透传不裁剪）。
  * agentLoop 路径（#6 P3a）复用同一投影作为审计 requests[] 条目来源。 */

@@ -29,6 +29,7 @@ import {
 } from "../experiment/run-record.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
 import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
+import { withRequestTimelineAppend } from "../observability/request-timeline.js";
 import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
@@ -372,13 +373,15 @@ async function executeSinglePass(args: {
   });
   // 片级上报缝（ADR-0045）：单片路径 = 一次调用，findings 已定型；文件清单
   // 取整份 diff（让「没有问题」也按文件上报，与分片路径同契约）。
-  await notifyShardFindings(
-    args.input,
-    { index: 1, total: 1 },
-    pass.findings,
-    splitDiffIntoFileBlocks(args.diff)
-      .map((block) => block.path)
-      .filter((filePath) => filePath !== ""),
+  await withRequestTimelineAppend(runDirPath(args.input.runsRoot), () =>
+    notifyShardFindings(
+      args.input,
+      { index: 1, total: 1 },
+      pass.findings,
+      splitDiffIntoFileBlocks(args.diff)
+        .map((block) => block.path)
+        .filter((filePath) => filePath !== ""),
+    ),
   );
 
   const result: RunResult = {
@@ -475,11 +478,15 @@ async function executeShardedPasses(args: {
       ...(args.input.tipsSeverityMin !== undefined
         ? { tipsSeverityMin: args.input.tipsSeverityMin }
         : {}),
+      shard: { index: shard.index, total },
       emit: withShardLabel(args.emit, { index: shard.index, total }),
     });
     executed.push({ shard, pass });
     // 片级上报缝（ADR-0045）：该片 findings 定型、下一片开始前（串行 await）。
-    await notifyShardFindings(args.input, { index: shard.index, total }, pass.findings, shard.files);
+    // 报文载荷生成是一次性模型调用，续写本片已关闭的时间线（ADR-0076）。
+    await withRequestTimelineAppend(path.join(runsDir, "shards", attempt, dirName), () =>
+      notifyShardFindings(args.input, { index: shard.index, total }, pass.findings, shard.files),
+    );
     shardStartedAt = pass.finishedAt;
   }
 

@@ -24,6 +24,11 @@ import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
 import { createCandidateRepair } from "../loop/candidate-repair.js";
 import { buildInitialUserMessage } from "../loop/messages.js";
+import {
+  createRequestTimelineWriter,
+  setRequestTimelineSink,
+  type TimelineShard,
+} from "../observability/request-timeline.js";
 import { LOCKED_EFFORT_LABEL, reviewModelOf } from "../provider/pi-client.js";
 import type { ConfigSnapshot } from "../shared/config.js";
 import { retryPolicyFor } from "../shared/llm-retry.js";
@@ -83,6 +88,8 @@ export interface ReviewPassInput {
    * 检视行为；缺席 = 不写 `severityFilter` 键。
    */
   readonly tipsSeverityMin?: Finding["severity"];
+  /** 分片标签（ADR-0076 请求时间线）：多片才在场，单片路径缺席 */
+  readonly shard?: TimelineShard;
   readonly emit: RunProgressSink;
 }
 
@@ -108,6 +115,26 @@ export interface ReviewPassResult {
 }
 
 export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassResult> {
+  // 请求时间线（ADR-0076）：本遍独占一份文件；同步追加，失败现场不受
+  // 「产物写盘在 pass 之后」的全有或全无影响。
+  const timeline = createRequestTimelineWriter(input.runDir);
+  setRequestTimelineSink(timeline.sink);
+  try {
+    return await executeReviewPass(input);
+  } catch (error) {
+    const summary = timeline.summary();
+    if (summary !== null) {
+      // 旁路：一行失败现场（同时被 review-pi.log 镜像）；不改退出码 / 不吞异常
+      process.stderr.write(`review-pi: ${summary}\n`);
+    }
+    throw error;
+  } finally {
+    setRequestTimelineSink(null);
+    timeline.close();
+  }
+}
+
+async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResult> {
   const initialContextMessages = [
     {
       role: "user" as const,
@@ -150,6 +177,7 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
     fetch: input.fetch,
     includeLedgerAudit: true,
     onProgress: input.emit,
+    ...(input.shard !== undefined ? { shard: input.shard } : {}),
     ...(scope !== undefined ? { scope } : {}),
     // Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
     skillPass: { skills: input.ruleSkills, toolkitFor: skillToolkitFor },

@@ -52,6 +52,10 @@ import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-inde
 import { LifecycleCollector, writeLifecycleSessions } from "../export/lifecycle.js";
 import { writeRunTrace } from "../export/trace-export.js";
 import {
+  createRequestTimelineWriter,
+  setRequestTimelineSink,
+} from "../observability/request-timeline.js";
+import {
   createMcpReporter,
   normalizeReportFilePath,
   resolveReportConfig,
@@ -346,6 +350,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   let lifecycleRun:
     | { readonly runId: string; readonly transcriptPaths: readonly string[] }
     | undefined;
+  // 收尾阶段（报文 / 总结）续写同一次 run 的顶层请求时间线（ADR-0076）
+  let postPassTimeline: ReturnType<typeof createRequestTimelineWriter> | null = null;
 
   try {
     setOneShotUsageSink(usageCollector.sink);
@@ -463,7 +469,14 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       }
       throw error;
     }
+    // 请求时间线（ADR-0076）：pass 已写过单片 / 分片文件；收尾的报文与总结
+    // 属于同一次 run，续写顶层文件（追加模式，保留 pass 已写的行）。
     const { record, runId, auditPath, reviewsPath, transcriptPaths } = reviewed;
+    postPassTimeline = createRequestTimelineWriter(runDirPath(runsRoot), {
+      mode: "a",
+      runId,
+    });
+    setRequestTimelineSink(postPassTimeline.sink);
     lifecycleRun = { runId, transcriptPaths };
     agentUsage = record.baseline.usage;
     agentCalls = reviewed.modelCalls;
@@ -916,6 +929,8 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     } finally {
       setOneShotUsageSink(null);
       setOneShotLifecycleSink(null);
+      setRequestTimelineSink(null);
+      postPassTimeline?.close();
     }
   }
 }

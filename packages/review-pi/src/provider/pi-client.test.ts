@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import type { Context, UserMessage } from "@earendil-works/pi-ai";
+import { setRequestTimelineSink, type RequestTimelineEntry } from "../observability/request-timeline.js";
 import { fakeFetch } from "./fake-fetch.js";
 import {
   GATEWAY_MAX_TOKENS,
@@ -7,6 +8,8 @@ import {
   REVIEW_MODEL_ID,
   assistantText,
   maxTokensFor,
+  reviewModelOf,
+  reviewStreamFn,
   runReviewTurn,
 } from "./pi-client.js";
 
@@ -235,4 +238,84 @@ test("runReviewTurn：modelId 空白 → fail fast（自由 id 非空校验）",
     runReviewTurn({ context: BASE_CONTEXT, apiKey: API_KEY, modelId: "   ", fetch: script.fetch }),
   ).rejects.toThrow(/model id/);
   expect(script.requests).toHaveLength(0);
+});
+
+// ??????ADR-0076???????? = attempt ? + request ??????
+// ?? wire ?? / ???????
+test("reviewStreamFn ????attempt + request ?????/???? usage", async () => {
+  const entries: RequestTimelineEntry[] = [];
+  setRequestTimelineSink((entry) => entries.push(entry));
+  try {
+    const script = fakeFetch([
+      {
+        text: "hello world",
+        usage: { promptTokens: 40, completionTokens: 7, cacheReadTokens: 10 },
+      },
+    ]);
+    const streamFn = reviewStreamFn({
+      apiKey: API_KEY,
+      fetch: script.fetch,
+      timeline: {
+        scope: () => ({
+          site: "main",
+          round: 1,
+          phase: "risk_classification",
+          phaseIndex: 2,
+        }),
+      },
+    });
+    const stream = await streamFn(
+      reviewModelOf(undefined, "https://gw.example.com/v1"),
+      BASE_CONTEXT,
+      {},
+    );
+    const message = await stream.result();
+    expect(message.stopReason).toBe("stop");
+  } finally {
+    setRequestTimelineSink(null);
+  }
+
+  expect(entries.map((entry) => entry.kind)).toEqual(["attempt", "request"]);
+  const attempt = entries[0];
+  if (attempt?.kind !== "attempt") {
+    throw new Error("expected attempt line");
+  }
+  expect(attempt.status).toBe(200);
+  expect(attempt.error).toBeNull();
+  expect(attempt.headers?.["content-type"]).toContain("text/event-stream");
+  expect(attempt.attempt).toBe(1);
+  const request = entries[1];
+  if (request?.kind !== "request") {
+    throw new Error("expected request line");
+  }
+  expect(request.site).toBe("main");
+  expect(request.phase).toBe("risk_classification");
+  expect(request.phaseIndex).toBe(2);
+  expect(request.baseUrlHost).toBe("gw.example.com");
+  expect(request.stopReason).toBe("stop");
+  expect(request.attempts).toBe(1);
+  expect(request.firstDeltaAt).not.toBeNull();
+  expect(request.lastDeltaAt).not.toBeNull();
+  expect(request.deltaChars).toBe("hello world".length);
+  expect(request.usage).toEqual({
+    inputTokens: 30,
+    outputTokens: 7,
+    cacheReadTokens: 10,
+  });
+});
+
+test("???????????????????????", async () => {
+  const entries: RequestTimelineEntry[] = [];
+  setRequestTimelineSink(null);
+  const script = fakeFetch([
+    { text: "ok", usage: { promptTokens: 1, completionTokens: 1, cacheReadTokens: 0 } },
+  ]);
+  const streamFn = reviewStreamFn({
+    apiKey: API_KEY,
+    fetch: script.fetch,
+    timeline: { scope: () => ({ site: "main" }) },
+  });
+  const stream = await streamFn(reviewModelOf(undefined, undefined), BASE_CONTEXT, {});
+  await stream.result();
+  expect(entries).toHaveLength(0);
 });

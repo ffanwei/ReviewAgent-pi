@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0070）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0076）。
 
 ## 记录纪律
 
@@ -66,6 +66,12 @@
 | [ADR-0068](0068-report-every-changed-file-including-filtered.md) | 变更文件全覆盖上报：被预过滤剔除的文件也发一条空 `mrReviewResult`；文件全集取过滤前 diff |
 | [ADR-0069](0069-configurable-diff-exclude-globs.md) | 配置驱动的 diff 跳过 `limits.mrFilter.excludeGlobs`（新增 `exclude` 原因；被跳文件仍补空意见） |
 | [ADR-0070](0070-single-file-truncation-and-tighter-diff-limits.md) | 大 MR 缺省阈值收紧（200k/80k/6 + 四条 `excludeGlobs`）；单文件超预算改为整 hunk 截取并留痕（不再报错） |
+| [ADR-0071](0071-recalibrate-large-mr-defaults-for-128k.md) | 按 128k 上下文重标定大 MR 缺省阈值（分片 / 边界 / 单文件截取） |
+| [ADR-0072](0072-opencode-compatible-session-export.md) | `export` 缺省返回 OpenCode 兼容会话；`--native` 切回 pi 原生转录 |
+| [ADR-0073](0073-lifecycle-session-recording.md) | 会话生命周期留痕：one-shot 与 MCP 业务调用拼成 OpenCode 时间线 |
+| [ADR-0074](0074-opencode-trace-export.md) | OpenCode 兼容的 trace 导出 |
+| [ADR-0075](0075-diff-too-large-skip-with-report.md) | diff 超字节门禁时跳过检视，仍上报空意见与固定总结（exit 0） |
+| [ADR-0076](0076-request-timeline-for-model-calls.md) | 模型调用请求时间线：`request-timeline.jsonl`（只观测；fetch + 流 `push` 两个采集点；局部豁免时钟不落盘） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

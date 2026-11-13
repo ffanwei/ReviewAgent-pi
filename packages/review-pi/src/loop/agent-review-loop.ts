@@ -19,6 +19,7 @@ import type {
 } from "../contracts/run.js";
 import type { AgentTranscriptCapture } from "../export/transcript.js";
 import { applyCandidateGate } from "../gate/candidate-gate.js";
+import type { TimelineShard } from "../observability/request-timeline.js";
 import { normalizeCandidates } from "../gate/candidate-normalize.js";
 import { mergeSkillCandidates, type SkillCandidateBatch } from "../gate/candidate-merge.js";
 import type { DiffScope } from "../gate/diff-scope.js";
@@ -116,6 +117,11 @@ export interface AgentReviewLoopInputs {
    * 不进审计、不影响退出码。
    */
   readonly onProgress?: RunProgressSink;
+  /**
+   * 分片标签（ADR-0076 请求时间线）：多片路径由 run 层传入，单片路径缺席。
+   * 只进时间线行，不进审计 / wire 字节。
+   */
+  readonly shard?: TimelineShard;
 }
 
 /** skill 会话接线（由 run 层提供 pack 与 toolkit 工厂） */
@@ -272,6 +278,16 @@ export async function runAgentReviewLoop(
     maxRetries: Math.max(0, runtime.limits.retry.reviewTurnAttempts - 1),
     maxRetryDelayMs: runtime.limits.retry.maxRetryAfterMs,
     timeoutMs: runtime.limits.timeouts.reviewTurnMs,
+    // ADR-0076：请求时间线作用域（阶段 / 轮次在请求发出时求值）
+    timeline: {
+      scope: () => ({
+        site: "main",
+        ...(inputs.shard !== undefined ? { shard: inputs.shard } : {}),
+        round,
+        phase: phaseNameOf(phaseIndex),
+        phaseIndex: phaseIndex + 1,
+      }),
+    },
   });
 
   // followUp 注入缝：shouldStopAfterTurn 闭包引用 agent，先落占位再绑定
@@ -478,6 +494,7 @@ export async function runAgentReviewLoop(
         ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
         runtime,
         onProgress: emitProgress,
+        ...(inputs.shard !== undefined ? { shard: inputs.shard } : {}),
       });
       emitProgress({
         kind: "skill",

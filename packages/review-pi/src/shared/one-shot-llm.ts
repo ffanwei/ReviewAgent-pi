@@ -11,6 +11,17 @@ import {
   type RetryFailure,
   type RetryPolicy,
 } from "./llm-retry.js";
+import {
+  describeThrownError,
+  emitRequestTimeline,
+  hasRequestTimelineSink,
+  hostOfBaseUrl,
+  pickTimelineHeaders,
+  truncateTimelineMessage,
+  type TimelineError,
+  type TimelineScope,
+  type TimelineSite,
+} from "../observability/request-timeline.js";
 import { extractModelJson } from "./model-json.js";
 import { extractChatUsage, type RawWireUsage } from "./wire-usage.js";
 
@@ -118,18 +129,20 @@ export type OneShotLlmResult =
 export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLlmResult> {
   const startedAt = Date.now();
   const policy = input.retry ?? DEFAULT_RETRY_POLICY;
-  const first = await runAttempts(input, policy);
+  const timeline = createOneShotTimeline(input);
+  const first = await runAttempts(input, policy, timeline);
   let result: OneShotLlmResult;
   if (first.ok) {
     result = toResult(first);
   } else if (input.responseFormat !== undefined && (first.failure.status === 400 || first.failure.status === 422)) {
     // 结构化输出不被供应商支持：去掉 response_format 再走一轮（同样有界）
     const { responseFormat: _omit, ...withoutFormat } = input;
-    const fallback = await runAttempts(withoutFormat, policy);
+    const fallback = await runAttempts(withoutFormat, policy, timeline);
     result = toResult(fallback, "after retrying without response_format");
   } else {
     result = toResult(first);
   }
+  finishOneShotTimeline(timeline, result, first.attempts, first.ok ? undefined : first.failure);
   emitOneShotLifecycle(input, result, startedAt);
   return result;
 }
@@ -164,9 +177,10 @@ interface OneShotCompletion {
 async function runAttempts(
   input: OneShotLlmInput,
   policy: RetryPolicy,
+  timeline: OneShotTimeline | null,
 ): Promise<Awaited<ReturnType<typeof runWithRetry<OneShotCompletion>>>> {
-  return runWithRetry(policy, (): Promise<RetryAttempt<OneShotCompletion>> =>
-    attemptOneShot(input, policy),
+  return runWithRetry(policy, (attemptNumber): Promise<RetryAttempt<OneShotCompletion>> =>
+    attemptOneShot(input, policy, timeline, attemptNumber),
   );
 }
 
@@ -193,6 +207,8 @@ function toResult(
 async function attemptOneShot(
   input: OneShotLlmInput,
   policy: RetryPolicy,
+  timeline: OneShotTimeline | null,
+  attemptNumber: number,
 ): Promise<RetryAttempt<OneShotCompletion>> {
   const fetch = input.fetch ?? globalThis.fetch;
   const body = JSON.stringify({
@@ -207,6 +223,7 @@ async function attemptOneShot(
       : {}),
     stream: false,
   });
+  const attempt = timeline?.beginAttempt(attemptNumber);
   let response: Response;
   try {
     response = await fetch(`${input.baseUrl}/chat/completions`, {
@@ -216,26 +233,50 @@ async function attemptOneShot(
       signal: AbortSignal.timeout(input.timeoutMs),
     });
   } catch (error) {
-    return { ok: false, failure: classifyThrownFailure(error, "request failed") };
+    const failure = classifyThrownFailure(error, "request failed");
+    timeline?.endAttempt(attempt, null, null, describeThrownError(error));
+    return { ok: false, failure };
   }
+  const headersAt = timeline?.now() ?? null;
   if (response.status < 200 || response.status >= 300) {
     const detail = await response.text().catch(() => "");
-    return {
-      ok: false,
-      failure: classifyHttpFailure(response.status, response.headers, detail, policy),
+    const failure = classifyHttpFailure(response.status, response.headers, detail, policy);
+    timeline?.endAttempt(attempt, headersAt, response, {
+      kind: "http",
+      status: response.status,
+      message: truncateTimelineMessage(failure.reason),
+    });
+    return { ok: false, failure };
+  }
+  // 归因修正（ADR-0076 决策 6）：读 body 抛错 ≠ 非法 JSON。2xx 之后连接断掉
+  // 是传输失败，不是确定性非法输出——只改标签，`retryable` 仍为 false（行为不变）。
+  let bodyText: string;
+  try {
+    bodyText = await response.text();
+  } catch (error) {
+    const failure: RetryFailure = {
+      retryable: false,
+      kind: "transport",
+      reason: `response body read failed: ${errorMessage(error)}`,
+      cause: error,
     };
+    timeline?.endAttempt(attempt, headersAt, response, describeThrownError(error));
+    return { ok: false, failure };
   }
   let payload: unknown;
   try {
-    payload = JSON.parse(await response.text()) as unknown;
+    payload = JSON.parse(bodyText) as unknown;
   } catch {
+    timeline?.endAttempt(attempt, headersAt, response, null);
     return { ok: false, failure: malformedFailure("response is not valid JSON") };
   }
   const text = readContentText(payload);
   if (text === undefined) {
+    timeline?.endAttempt(attempt, headersAt, response, null);
     return { ok: false, failure: malformedFailure("response has no message content text") };
   }
   const usage = wireUsageToLlmUsage(extractChatUsage(payload));
+  timeline?.endAttempt(attempt, headersAt, response, null);
   emitOneShotSample(input, usage);
   return {
     ok: true,
@@ -248,6 +289,140 @@ async function attemptOneShot(
  * openai-completions 的折算一致：`max(0, prompt − cacheRead − cacheWrite)`）。
  * 响应未带 usage 时返回 undefined（调用次数仍由 sink 计入）。
  */
+/**
+ * 请求时间线探针（ADR-0076）：一次性调用没有流，只有 attempt 级的
+ * 「发出 / 响应头 / 错误」。逻辑请求行由 `completeOneShot` 在结果确定后发。
+ */
+interface OneShotAttemptProbe {
+  readonly attempt: number;
+  readonly sentAt: number;
+}
+
+interface OneShotTimeline {
+  readonly requestId: number;
+  readonly scope: TimelineScope;
+  readonly now: () => number;
+  requestStartedAt: number;
+  headersAt: number | null;
+  readonly beginAttempt: (attemptNumber: number) => OneShotAttemptProbe;
+  readonly endAttempt: (
+    probe: OneShotAttemptProbe | undefined,
+    headersAt: number | null,
+    response: Response | null,
+    error: TimelineError | null,
+  ) => void;
+}
+
+/** 一次性调用的 requestId 作用域（进程级自增；agent 会话各自独立计数） */
+let oneShotRequestSeq = 0;
+
+function createOneShotTimeline(input: OneShotLlmInput): OneShotTimeline | null {
+  if (!hasRequestTimelineSink()) {
+    return null;
+  }
+  oneShotRequestSeq += 1;
+  const timeline: OneShotTimeline = {
+    requestId: oneShotRequestSeq,
+    scope: {
+      site: siteOfPurpose(input.purpose),
+      model: input.modelId,
+      baseUrlHost: hostOfBaseUrl(input.baseUrl),
+    },
+    now: Date.now,
+    requestStartedAt: 0,
+    headersAt: null,
+    beginAttempt: (attemptNumber) => {
+      const sentAt = Date.now();
+      if (timeline.requestStartedAt === 0) {
+        timeline.requestStartedAt = sentAt;
+      }
+      return { attempt: attemptNumber, sentAt };
+    },
+    endAttempt: (probe, headersAt, response, error) => {
+      if (probe === undefined) {
+        return;
+      }
+      if (headersAt !== null) {
+        timeline.headersAt = headersAt;
+      }
+      const headers = response !== null ? pickTimelineHeaders(response.headers) : undefined;
+      const endedAt = timeline.now();
+      emitRequestTimeline({
+        v: 1,
+        ts: endedAt,
+        kind: "attempt",
+        runId: null,
+        ...timeline.scope,
+        requestId: timeline.requestId,
+        attempt: probe.attempt,
+        sentAt: probe.sentAt,
+        headersAt,
+        status: response !== null ? response.status : null,
+        ...(headers !== undefined ? { headers } : {}),
+        error,
+        durationMs: Math.max(0, (headersAt ?? endedAt) - probe.sentAt),
+      });
+    },
+  };
+  return timeline;
+}
+
+function finishOneShotTimeline(
+  timeline: OneShotTimeline | null,
+  result: OneShotLlmResult,
+  attempts: number,
+  failure: RetryFailure | undefined,
+): void {
+  if (timeline === null) {
+    return;
+  }
+  const endedAt = timeline.now();
+  emitRequestTimeline({
+    v: 1,
+    ts: endedAt,
+    kind: "request",
+    runId: null,
+    ...timeline.scope,
+    requestId: timeline.requestId,
+    sentAt: timeline.requestStartedAt === 0 ? endedAt : timeline.requestStartedAt,
+    headersAt: timeline.headersAt,
+    streamStartedAt: null,
+    firstDeltaAt: null,
+    lastDeltaAt: null,
+    endedAt,
+    stopReason: null,
+    deltaCount: 0,
+    deltaChars: 0,
+    attempts: Math.max(1, attempts),
+    error: result.ok
+      ? null
+      : {
+          kind: failure?.kind ?? "malformed",
+          ...(failure?.status !== undefined ? { status: failure.status } : {}),
+          message: truncateTimelineMessage(result.reason),
+        },
+    ...(result.ok && result.usage !== undefined ? { usage: result.usage } : {}),
+  });
+}
+
+/** 用途 → 调用点归属（`one-shot` 是用途未知时的诚实回落，绝不冒名顶替） */
+function siteOfPurpose(purpose: OneShotPurpose | undefined): TimelineSite {
+  switch (purpose) {
+    case "tips":
+      return "shard-report";
+    case "summary":
+      return "summary";
+    case "candidate-repair":
+      return "repair";
+    default:
+      return "one-shot";
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function wireUsageToLlmUsage(raw: RawWireUsage | null): LlmUsage | undefined {
   if (raw === null) {
     return undefined;

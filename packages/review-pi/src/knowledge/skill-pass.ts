@@ -6,6 +6,7 @@ import type { LlmUsage } from "../contracts/llm.js";
 import { NO_OP_PROGRESS_SINK, type RunProgressSink } from "../contracts/progress.js";
 import type { RuleSkillPassRecord } from "../contracts/run.js";
 import type { AgentTranscriptCapture } from "../export/transcript.js";
+import type { TimelineShard } from "../observability/request-timeline.js";
 import {
   assistantText,
   reviewModelOf,
@@ -66,6 +67,11 @@ export interface SkillPassOptions {
    * 它的请求序号按本会话自增（1..N），由呈现层按 skill 作用域分栏。
    */
   readonly onProgress?: RunProgressSink;
+  /**
+   * 分片标签（ADR-0076 请求时间线）：多片路径由 run 层传入，单片路径缺席。
+   * 只进时间线行，不进审计 / wire 字节。
+   */
+  readonly shard?: TimelineShard;
 }
 
 /** 独立落盘的 skill 转录原料（写盘由 run 层负责——runId/输出目录在那边） */
@@ -153,6 +159,15 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
       maxRetries: Math.max(0, runtime.limits.retry.reviewTurnAttempts - 1),
       maxRetryDelayMs: runtime.limits.retry.maxRetryAfterMs,
       timeoutMs: runtime.limits.timeouts.reviewTurnMs,
+      // ADR-0076：skill 会话独立 StreamFn → requestId 按本会话自增
+      timeline: {
+        scope: () => ({
+          site: "skill",
+          skill: skill.name,
+          ...(options.shard !== undefined ? { shard: options.shard } : {}),
+          round,
+        }),
+      },
     }),
     toolExecution: "sequential",
     // 会话自身的请求捕获点（ADR-0014「每个 skill 会话独立的 onPayload 捕获」）：

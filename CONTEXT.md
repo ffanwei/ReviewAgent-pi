@@ -103,6 +103,19 @@ _Avoid_: 输出语言配置（暗示内核参数化缝）、双语内核（检�
 _代码面_: 事件契约 `contracts/progress.ts`（`RunProgressEvent` 四类 kind）、呈现层 `cli/progress-render.ts`。
 _Avoid_: 进度条（不是百分比口径——「步数」= 模型请求序号）、日志（日志是核外运行器产物）、遥测（不回传任何指标）
 
+**请求时间线（Request Timeline）**:
+一次 run 中每次模型调用的时间戳留痕，随 pass 落盘为 `<runs 根>/request-timeline.jsonl`（分片为 `shards/attempt-<ts>/sNN/request-timeline.jsonl`；收尾的一次性调用续写顶层文件）。一行一个 JSON 对象，两种 `kind`：**尝试**（一次 HTTP 请求的发出 / 响应头 / 状态 / 异常归因）与**请求**（一次逻辑调用，含首 / 末增量时刻、停因、增量条数与字符数、usage）。**只观测**：不改 wire 字节、不改退出码、不改重试语义、不进审计 / `run.json` / 转录 / `export`，也不经 MCP 事件通道出站；本文件是唯一允许把时钟写进产物的内核产物（ADR-0076 对 ADR-0013 决策 10 的局部豁免，不外溢）。失败时 `review-pass` 在 rethrow 前打一行人读摘要（前缀 `request-timeline:`），随 stderr 进 `review-pi.log`。
+_代码面_: `observability/request-timeline.ts`（sink / writer / 脱敏）、`provider/pi-client.ts`（fetch 包裹 + 流 `push` 覆盖）、`shared/one-shot-llm.ts`（一次性调用）。
+_Avoid_: 日志（那是 `review-pi.log`）、审计（那是 `audit/*.json`）、轨迹（那是离线回放 trace）、诊断（那是 smoke 双探针）、把时间线当成本/指标真源
+
+**尝试（Attempt）**:
+请求时间线里的最小单位：一次 HTTP 请求的发出到响应头（或异常）。一次**请求**可含多次尝试——pi-ai 的重试对上层不可见（`onPayload` 在重试循环外只调一次），所以尝试序号只有包 `fetch` 才拿得到。同一次尝试里的失败若有响应头，`status` 与响应头白名单投影仍在场。
+_Avoid_: 回合（那是 agent 的一轮消息 + 工具）、轮次（那是六阶段循环的 round）
+
+**增量（Delta）**:
+流式响应里的分片事件（`text_delta` / `thinking_delta` / `toolcall_delta`）。请求时间线只记**首 / 末增量时刻**与条数 / 字符数，不记内容、不记字节（真字节要 tee body，ADR-0076 决策 2 拒绝）。三段时长——首字延迟（`firstDeltaAt - sentAt`）、流持续（`lastDeltaAt - firstDeltaAt`）、断流前空档（`endedAt - lastDeltaAt`）——是区分「空闲超时」与「总时长上限」的唯一依据。
+_Avoid_: 字节数（记的是增量字符数）、token（增量 ≠ token）
+
 **MCP 上报（MCP Reporting）**:
 检视进程向外部 MCP 服务（HTTP + JSON-RPC，`mcp.servers` / `mcp.report` 配置）的外发能力，**两层语义**共用同一连接与握手：(1) **事件上报**（ADR-0037）——进度事件批量塞进单个 tool 的 `events` 数组，`(streamId, seq)` 幂等、可重试、背压丢最旧，字段白名单（正文/路径/秘密永不出进程）；(2) **业务调用**（ADR-0045）——`startTask` / `endTask` / `saveReviewSummary` / `mrReviewResult` 四个 tool 的任务生命周期与结果上报：片级 `mrReviewResult` 每片 findings 定型后就发（报文与 `reviews_tips_zh.json` **同源复用**——同一份统一生成的两个投影：报文 = 片级即发、结构字段从严；tips = 聚合落盘、12 键），总结在统一 tips 落盘后发；总结的输入口径 = `mrReviewResult` **实际成功上报**的意见集合（ADR-0057——未上报条目不进总结，零上报时发固定「未向平台上报任何检视意见」而不是「未发现缺陷」）；片级报文生成全量一次失败（超时 / 截断 / 非法 JSON）时按条数**二分重试**，最多两层、拆分批次单次尝试且串行（ADR-0058——成功批次照常上报，仍失败条目逐条留痕；正常路径零额外调用、提示词与报文字节不变）；`saveReviewSummary` 之前 diff 的**每个变更文件**都必须有一条 `mrReviewResult`（ADR-0061——无意见或报文生成失败的文件都发空 `reviewTips`；空包不登记 finding，总结仍按 ADR-0057 统计）。**变更文件全集取过滤前 diff**（ADR-0068）：被 `limits.testFiles.skip` / `limits.mrFilter.excludeGlobs` / lockfile / 生成物 / minified / binary 预过滤剔除的文件同样在收尾补报一条空 tips（stderr 一行 `已补报 N 个变更文件 / 0 条意见`），只有整个 diff 解析不出任何文件路径时才只打一行 stderr 不调用。两层共用的纪律：**旁路**（任何失败只落 stderr 一行、永不改退出码）；业务调用最多 3 次尝试（仅传输 / 超时 / HTTP 5xx 瞬时失败重试，ADR-0050），另受 `mcp.report.task`（缺省 `true`）开关。业务调用的**序列化**仍是严格串行（每个调用都 await）；为应对服务端异步处理导致前端回调乱序，`mrReviewResult` 全部结束后与 `saveReviewSummary` 结束后各加一段**固定 5 秒沉降**（ADR-0053；临时措施，不是顺序契约，服务端支持序号后删除，见 `docs/待优化维护清单.md`）。
 _Avoid_: 遥测（不上传指标）、把业务调用塞进事件批量通道（业务调用不可丢、要立刻知道结果）、双向 MCP（我们只是 client，不做 resources/prompts）
