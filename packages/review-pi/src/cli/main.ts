@@ -140,6 +140,8 @@ interface PhaseSpan {
   readonly phase: string;
   readonly start: number;
   readonly shardIndex?: number;
+  /** run 层给出的真实结束时刻（分片路径）；缺席 = 沿用事件顺序推断 */
+  readonly endedAt?: number;
 }
 
 /**
@@ -605,6 +607,27 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           : {}),
       },
     });
+    // 分片路径（ADR-0084）：阶段时间事实由 run 层产出；单遍保持事件时钟，
+    // 逐字节不变。审计窗口 = run 起点 → 最后一个请求结束，扣掉片间报文回调。
+    if (reviewed.record.shards !== undefined && reviewed.timings !== undefined) {
+      const timings = reviewed.timings;
+      stageClock.phaseSpans.length = 0;
+      for (const span of timings.phaseSpans) {
+        stageClock.phaseSpans.push({
+          round: span.round,
+          index: span.index,
+          phase: span.phase,
+          start: span.startedAt,
+          ...(span.shardIndex !== undefined ? { shardIndex: span.shardIndex } : {}),
+          endedAt: span.endedAt,
+        });
+      }
+      stageClock.auditMs = Math.max(
+        0,
+        timings.auditEndedAt - timings.auditStartedAt - timings.interPassReportMs,
+      );
+      stageClock.reportMs = timings.reportCallbacksMs;
+    }
     stageClock.reportMs += delivery.timings.coverageMs;
     stageClock.tipsMs += delivery.timings.tipsMs;
     stageClock.summaryMs += delivery.timings.summaryMs;
@@ -1011,7 +1034,7 @@ function buildStageBreakdown(clock: StageClock, now: number): {
   const otherMs = Math.max(0, totalMs - knownMs);
   const phases: StageSpan[] = clock.phaseSpans.map((span, index) => {
     const next = clock.phaseSpans[index + 1];
-    const endedAt = next?.start ?? auditEndedAt;
+    const endedAt = span.endedAt ?? next?.start ?? auditEndedAt;
     const roundLabel = span.round > 1 ? `R${String(span.round)}` : "";
     const shardLabel = span.shardIndex !== undefined ? `S${String(span.shardIndex)}` : "";
     return { label: `${shardLabel}${roundLabel}P${String(span.index)}`, durationMs: Math.max(0, endedAt - span.start) };

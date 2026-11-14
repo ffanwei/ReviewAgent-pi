@@ -217,7 +217,7 @@ test("阶段账本：主链路可相加、审计明细按审计占比、嵌套 S
       { label: "准备/建连", durationMs: 10_700 },
       { label: "六阶段审计", durationMs: 232_600 },
       { label: "报文生成+上报", durationMs: 74_100 },
-      { label: "呈现投影", durationMs: 0 },
+      { label: "中文 tips 组装/落盘", durationMs: 0 },
       { label: "总结生成", durationMs: 32_900 },
       { label: "固定沉降", durationMs: 10_000 },
       { label: "其他/收尾", durationMs: 200 },
@@ -233,7 +233,7 @@ test("阶段账本：主链路可相加、审计明细按审计占比、嵌套 S
   expect(lines[0]).toBe("[time] 阶段耗时 | 总墙钟 360.5s（含总结 / 沉降 / 收尾）");
   expect(lines).toContain("[time] 阶段 | 六阶段审计 232.6s (64.5%)");
   // 0 值阶段也保留：投影关闭时能看到「确实没花时间」
-  expect(lines).toContain("[time] 阶段 | 呈现投影 0.0s (0.0%)");
+  expect(lines).toContain("[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)");
   // 审计明细的分母 = 明细之和，不是总墙钟
   expect(lines.join("\n")).toMatch(/\[time\] 审计明细 \| P1 6\.5s \(5\.1%\)/);
   expect(lines.join("\n")).toContain("（含于审计，不重复计入）");

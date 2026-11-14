@@ -11,6 +11,7 @@ import {
 import type {
   ModelFallbackRecord,
   MrFilterRecord,
+  ReviewPhase,
   RuleSkillAudit,
 } from "../contracts/run.js";
 import { runDirPath } from "../experiment/run-record.js";
@@ -148,16 +149,42 @@ export interface BuiltPass {
 export interface ExecutedPass {
   readonly descriptor: PassDescriptor;
   readonly pass: ReviewPassResult;
+  readonly timing: PassTiming;
 }
 
-/** 执行器注入缝（测试注入假 pass；缺省真实现） */
+/** 一遍内一个 phase 的真实起止（绝对毫秒） */
+export interface PassPhaseSpan {
+  readonly round: number;
+  readonly index: number;
+  readonly phase: ReviewPhase;
+  readonly startedAt: number;
+  readonly endedAt: number;
+}
+
+/** 一遍的时间事实（ADR-0084）：只进 CLI 账本，不落审计 / 转录 */
+export interface PassTiming {
+  readonly phaseSpans: readonly PassPhaseSpan[];
+  /** 本遍最后一个模型请求结束时刻 */
+  readonly lastRequestEndAt: number;
+  /** 本遍片级回调耗时（含最后一片之后的那次） */
+  readonly reportCallbacksMs: number;
+  /** 本遍回调且后面还有下一遍时计入（可从审计窗口扣除） */
+  readonly interPassReportMs: number;
+}
+
+/** 执行器注入缝（测试注入假 pass / 假时钟；缺省真实现） */
 export interface RunPassesOptions {
   readonly runPass?: (input: ReviewPassInput) => Promise<ReviewPassResult>;
+  readonly now?: () => number;
 }
 
 /**
  * 执行一遍或多遍：串行、每遍结束后执行片级回调（含请求时间线续写），
  * 再推进下一遍的 `startedAt`。单遍 = 单元素 descriptors。
+ *
+ * 同时采集每遍的真实时间事实：phase 起止由本遍 emit 观察得到，最后一段
+ * 以本遍最后一个请求结束为界（fallback = pass.finishedAt），避免把片间
+ * 报文时间算进上一片的 P6。
  */
 export async function runPasses(
   context: ReviewRunContext,
@@ -165,20 +192,84 @@ export async function runPasses(
   options: RunPassesOptions = {},
 ): Promise<readonly ExecutedPass[]> {
   const runPass = options.runPass ?? runReviewPass;
+  const now = options.now ?? Date.now;
   const executed: ExecutedPass[] = [];
   let startedAt = context.startedAt;
-  for (const descriptor of descriptors) {
+  for (const [index, descriptor] of descriptors.entries()) {
     const built = buildPass(context, descriptor, startedAt);
-    const pass = await runPass(built.input);
-    executed.push({ descriptor, pass });
+    const observer = observePassEmit(built.input.emit, now);
+    const pass = await runPass({ ...built.input, emit: observer.emit });
+    const observed = observer.finish(pass.finishedAt.getTime());
+
     // 片级上报缝（ADR-0045）：该片 findings 定型、下一片开始前（串行 await）。
     // 报文载荷生成是一次性模型调用，续写本片已关闭的时间线（ADR-0076）。
+    const reportStartedAt = now();
     await withRequestTimelineAppend(built.runDir, () =>
       notifyShardFindings(context.onShardFindings, built.label, pass.findings, built.files),
     );
+    const callbackMs = Math.max(0, now() - reportStartedAt);
+    const hasNext = index < descriptors.length - 1;
+
+    executed.push({
+      descriptor,
+      pass,
+      timing: {
+        phaseSpans: observed.phaseSpans,
+        lastRequestEndAt: observed.lastRequestEndAt,
+        reportCallbacksMs: callbackMs,
+        interPassReportMs: hasNext ? callbackMs : 0,
+      },
+    });
     startedAt = pass.finishedAt;
   }
   return executed;
+}
+
+/**
+ * 包装一遍的 emit：记录 phase 起止与本遍最后请求结束。
+ * 转发给消费者的字节不变；时间只进返回值。
+ */
+function observePassEmit(
+  emit: RunProgressSink,
+  now: () => number,
+): {
+  readonly emit: RunProgressSink;
+  finish(fallbackEndedAt: number): {
+    readonly phaseSpans: readonly PassPhaseSpan[];
+    readonly lastRequestEndAt: number;
+  };
+} {
+  const spans: PassPhaseSpan[] = [];
+  let current: Omit<PassPhaseSpan, "endedAt"> | undefined;
+  let lastRequestEndAt: number | undefined;
+  const close = (endedAt: number): void => {
+    if (current !== undefined) {
+      spans.push({ ...current, endedAt: Math.max(current.startedAt, endedAt) });
+      current = undefined;
+    }
+  };
+  return {
+    emit: (event) => {
+      if (event.kind === "phase") {
+        const at = now();
+        close(at);
+        current = {
+          round: event.round,
+          index: event.index,
+          phase: event.phase,
+          startedAt: at,
+        };
+      } else if (event.kind === "request" && event.state === "end") {
+        lastRequestEndAt = now();
+      }
+      emit(event);
+    },
+    finish: (fallbackEndedAt) => {
+      const endedAt = lastRequestEndAt ?? fallbackEndedAt;
+      close(endedAt);
+      return { phaseSpans: spans, lastRequestEndAt: endedAt };
+    },
+  };
 }
 
 async function notifyShardFindings(

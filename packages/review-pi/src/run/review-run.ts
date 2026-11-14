@@ -14,6 +14,7 @@ import type {
   MrFilterRecord,
   PhaseRecord,
   RejectionStage,
+  ReviewPhase,
   RuleSkillPassRecord,
   RunAudit,
   RunResult,
@@ -203,6 +204,33 @@ export interface ReviewRunResult {
    * 与审计尾键 `shardTruncation` 同源（同一投影，不另算）。
    */
   readonly shardTruncation?: readonly ShardTruncationRecord[];
+  /**
+   * 阶段时间事实（ADR-0084）：只进 CLI 账本，不进审计 / run.json / 转录。
+   * 单遍也返回；当前 CLI 仅在分片 run 使用。
+   */
+  readonly timings?: ReviewTimings;
+}
+
+/** 一个 phase 的真实起止（绝对毫秒；分片时带片号） */
+export interface ReviewTimingPhaseSpan {
+  readonly round: number;
+  readonly index: number;
+  readonly phase: ReviewPhase;
+  readonly shardIndex?: number;
+  readonly startedAt: number;
+  readonly endedAt: number;
+}
+
+export interface ReviewTimings {
+  /** run 起点（审计窗口起点） */
+  readonly auditStartedAt: number;
+  /** 最后一个模型请求结束（审计窗口终点） */
+  readonly auditEndedAt: number;
+  /** 两遍之间的片级回调耗时（单遍 = 0） */
+  readonly interPassReportMs: number;
+  /** 全部片级回调耗时（含最后一片之后的那次） */
+  readonly reportCallbacksMs: number;
+  readonly phaseSpans: readonly ReviewTimingPhaseSpan[];
 }
 
 /** 一次 run 的聚合结果（emit run.end 需要 usage / truncated / findings 摘要） */
@@ -454,10 +482,11 @@ async function executeSinglePass(
   diff: string,
 ): Promise<ReviewOutcome> {
   const executed = await runPasses(context, [{ kind: "single", diff }]);
-  const pass = executed[0]?.pass;
-  if (pass === undefined) {
+  const first = executed[0];
+  if (first === undefined) {
     throw new Error("internal: single pass produced no result");
   }
+  const { pass, timing } = first;
 
   const result: RunResult = {
     caseId: context.caseId,
@@ -496,6 +525,13 @@ async function executeSinglePass(
       modelCalls: pass.modelCalls,
       skillBashCalls: pass.skillBashCalls,
       ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
+      timings: {
+        auditStartedAt: context.startedAt.getTime(),
+        auditEndedAt: timing.lastRequestEndAt,
+        interPassReportMs: timing.interPassReportMs,
+        reportCallbacksMs: timing.reportCallbacksMs,
+        phaseSpans: timing.phaseSpans,
+      },
     },
     runId: pass.runId,
     usage: pass.usage,
@@ -600,6 +636,26 @@ async function aggregateShards(
     // 防御：分片路径至少一片（planReviewShards 保证非空）
     throw new Error("internal: sharded review produced no shard results");
   }
+
+  const timings: ReviewTimings = {
+    auditStartedAt: context.startedAt.getTime(),
+    auditEndedAt: Math.max(...executed.map((entry) => entry.timing.lastRequestEndAt)),
+    interPassReportMs: executed.reduce(
+      (sum, entry) => sum + entry.timing.interPassReportMs,
+      0,
+    ),
+    reportCallbacksMs: executed.reduce(
+      (sum, entry) => sum + entry.timing.reportCallbacksMs,
+      0,
+    ),
+    phaseSpans: executed.flatMap((entry) => {
+      if (entry.descriptor.kind !== "shard") {
+        return entry.timing.phaseSpans;
+      }
+      const shardIndex = entry.descriptor.shard.index;
+      return entry.timing.phaseSpans.map((span) => ({ ...span, shardIndex }));
+    }),
+  };
 
   const shardAudits: ShardAuditRecord[] = executed.map(({ descriptor, pass }) => {
     if (descriptor.kind !== "shard") {
@@ -740,6 +796,7 @@ async function aggregateShards(
       skillBashCalls,
       ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
       ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
+      timings,
     },
     runId: aggRunId,
     usage,

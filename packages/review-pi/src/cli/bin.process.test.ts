@@ -2303,6 +2303,18 @@ test(
       expect(run.stderr).toContain("[s2/2] ▶ phase 1/6 Change Understanding (round 1)");
       expect(run.stderr).not.toContain("\r");
 
+      // ADR-0084：分片账本的 stages 百分比之和不超过 100%（auditMs 不再与
+      // 片间报文重叠）；7 行阶段恒定存在。
+      const stageLines = run.stderr
+        .split("\n")
+        .filter((line) => line.startsWith("[time] 阶段 | "));
+      expect(stageLines).toHaveLength(7);
+      const stagePct = stageLines.reduce((sum, line) => {
+        const match = /\(([0-9]+\.[0-9])%\)$/.exec(line);
+        return sum + (match === null ? 0 : Number(match[1]));
+      }, 0);
+      expect(stagePct).toBeLessThanOrEqual(100.1);
+
       // run.json：聚合记录带 shards[]，每片转录文件存在
       const runsDir = cliRunsDir(outDir);
       const record = JSON.parse(readFileSync(path.join(runsDir, "run.json"), "utf8")) as {
