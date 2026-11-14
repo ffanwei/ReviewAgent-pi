@@ -19,28 +19,28 @@ digraph review_pipeline_overview {
   subgraph cluster_core {
     label="runReview 内核（唯一形态）";
     fontname="Microsoft YaHei"; fontsize=12; color="#90CDF4"; style="rounded,dashed";
-    filter  [label="filterDiffForReview\n整块剔除 binary > lockfile > minified > generated > test\n（test 受 limits.testFiles.skip 控制，缺省剔除）\n绝不切 hunk"];
-    volume  [label="体积门\nassertDiffWithinCharLimit\nlimits.boundary.maxDiffChars = 1,500,000\nnull = 关闭"];
+    filter  [label="filterDiffForReview\n整块剔除 binary > not-included > regex-exclude\n> lockfile > minified > generated > test > exclude\n（include 正则命中者越过启发式；test 受 limits.testFiles.skip 控制）\n绝不切 hunk"];
+    volume  [label="体积门\nassertDiffWithinCharLimit\nlimits.boundary.maxDiffChars = 1,000,000\nnull = 关闭"];
     boundary[label="MR 边界护栏\nguardMrBoundary\nmaxFiles 10 / maxDiffLines 2,000\n超界 = domainWarning + 审计 mrBoundary"];
-    plan    [label="分片规划\nplanReviewShards\nmaxShardChars 400,000 / maxShards 12\n只切文件块，不切 hunk", fillcolor="#FEFCBF"];
+    plan    [label="分片规划\nplanReviewShards\nmaxShardChars 120,000 / maxShards 12\n只切文件块，不切 hunk\n单块超目标按整 hunk 截取", fillcolor="#FEFCBF"];
     route   [label="分片数 > 1 ?", shape=diamond, fillcolor="#FEFCBF"];
-    single  [label="单遍路径\n与旧实现逐字节一致\nrunDir = runs/，auditDir = audit/"];
-    shard   [label="N 片串行\n每片独立目录\nruns/shards/attempt-<ts>/sNN"];
-    pass    [label="一次 ReviewPass（每片 / 单遍）\n完整六阶段 + 规则 Skill 会话（七工具 + bash）\n（子图 2）", fillcolor="#BEE3F8"];
-    perShard[label="片级上报缝 onShardFindings\n该片 findings 定型后 await\n→ 统一报文 + 逐文件 mrReviewResult\n（子图 4）", fillcolor="#FAF5FF"];
-    merge   [label="N 片 findings 合并\nkey = (normalize(file), line, normalize(title))\n严重度取最高 / 证据并集 / 重编号 F001…\n单遍 = 恒等"];
+    single  [label="单遍 describe = single\nbuildPass → runDir = runs/，auditDir = audit/\nrun 级审计值进本遍"];
+    shard   [label="N 片 describe = shard\nbuildPass 派生 runs/shards/attempt-<ts>/sNN\n片内审计 boundary 占位 degraded=false"];
+    pass    [label="runPasses 串行（run/pass-runner.ts）\n每遍一次 ReviewPass：完整六阶段 + 规则 Skill 会话\n（七工具 + bash）（子图 2）", fillcolor="#BEE3F8"];
+    perShard[label="片级上报缝 onShardFindings\n该片 findings 定型后、下一片开始前 await\n（withRequestTimelineAppend 续写时间线）\n→ 统一报文 + 逐文件 mrReviewResult（子图 4）", fillcolor="#FAF5FF"];
+    merge   [label="aggregateShards(context, executed)\nkey = (normalize(file), line, normalize(title))\n严重度取最高 / 证据并集 / 重编号 F001…\n单遍 = 恒等（直接构造 RunRecord/RunResult）"];
     artifacts[label="落盘\nruns/run.json + audit/<runId>.json\nruns/<runId>.transcript.json\nruns/reviews_en.json", fillcolor="#C6F6D5"];
     events  [label="进度事件\nrun.start / phase / request.* / tool.* / skill.* / run.end\nstderr 投影；配置 mcp.report.tool 时才外发", fillcolor="#FEFCBF"];
   }
 
-  post   [label="CLI 后处理\n收尾摘要行 / 解析失败提示\n源码行抽取 / 业务关闭兜底语义生成", fillcolor="#BEE3F8"];
-  tips   [label="统一 tips 组装\n置信度 / 严重级过滤 → 同文件同行去重\njoin 片级语义 → 12 键\n→ reviews_tips_zh.json", fillcolor="#C6F6D5"];
-  summary[label="收尾总结\n只统计已上报的 findings\n零意见 = 固定文案；否则模型 / 模板\n→ 5s 沉降 → saveReviewSummary", fillcolor="#FAF5FF"];
-  session[label=".review-pi-session.json（cwd）\nversion=2 mains[]（兼容 v1 main）\n主转录 / skill 转录", fillcolor="#C6F6D5"];
-  stdout [label="stdout 单 JSON 文档\n{ok, caseId, runId, truncated,\nrounds, toolCalls, findings, auditPath}\nfindings 恒英文（无 presentation 键）", fillcolor="#C6F6D5"];
-  endTask[label="[finally] endTask(taskId)\n5s 沉降后最后一业务调用", fillcolor="#FAF5FF"];
-  mcpjson[label="[finally] runs/mcp.json\n四个业务调用的输入/输出/耗时", fillcolor="#C6F6D5"];
-  flush  [label="[finally] 事件队列 flush\nsent / failed / dropped → reporter close", fillcolor="#FAF5FF"];
+  post   [label="交付 module cli/delivery.ts（ADR-0081）\ndeliverReviewRun：announceInput → 覆盖补报\n→ 收尾摘要行 / 解析失败提示", fillcolor="#BEE3F8"];
+  tips   [label="assembleTips → persistTips\n置信度 / 严重级过滤 → 同文件同行去重\njoin 片级语义 → 12 键\n→ reviews_tips_zh.json", fillcolor="#C6F6D5"];
+  summary[label="publishSummary\n只统计已上报的 findings\n零意见 = 固定文案；否则模型 / 模板\n→ 5s 沉降 → saveReviewSummary", fillcolor="#FAF5FF"];
+  session[label="persistSessionIndex（delivery）\n.review-pi-session.json（cwd）\nversion=2 mains[]（兼容 v1 main）\n主转录 / skill 转录", fillcolor="#C6F6D5"];
+  stdout [label="buildStdoutDocument → main 写 stdout\n{ok, caseId, runId, truncated,\nrounds, toolCalls, findings, auditPath}\nfindings 恒英文（无 presentation 键）", fillcolor="#C6F6D5"];
+  endTask[label="[finally] finalizeDelivery\n5s 沉降 → endTask(taskId)\n最后一业务调用", fillcolor="#FAF5FF"];
+  mcpjson[label="[finally] finalizeDelivery\nruns/mcp.json + lifecycle / trace\n四个业务调用的输入/输出/耗时", fillcolor="#C6F6D5"];
+  flush  [label="[finally] finalizeDelivery\n事件队列 flush\nsent / failed / dropped → reporter close", fillcolor="#FAF5FF"];
   ledger [label="[finally] 收尾账本（仅 stderr）\n[time] 阶段耗时（7 段 + 审计/嵌套明细）\n[usage] 整任务 LLM 用量（成本按模型分桶）", fillcolor="#FEFCBF"];
   exit   [label="exitGracefully\nexit 0（诚实截断也是 0）\n任何异常 / 配置错误 → exit 1", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
 

@@ -29,11 +29,12 @@ digraph review_cli_entry {
   start [label="startTask(taskId)\n失败 → stderr，继续检视", fillcolor="#FAF5FF"];
   reportrt [label="报告运行时\nmodel.presentation 优先，否则检视模型\noneShotMs（缺省 300s）\nretry = limits.retry.oneShotAttempts 3", fillcolor="#FAF5FF"];
 
-  run [label="runReview(...)\n见子图 2 / 3", fillcolor="#BEE3F8"];
-  summaryline [label="收尾摘要行 doneLine（stderr，恒定打印）\n耗时 / token 三段 / 模型调用数\n工具调用（主 + skill + bash）\nLedger 命中 / 成本"];
-  parsefail [label="reportPhaseParseFailures\n仅 phaseLog 有 parseFailure 时输出\n成功 run 零输出"];
-  post [label="后处理链\n统一 tips / 总结 / session 索引\n见子图 4", fillcolor="#BEE3F8"];
-  out [label="renderReviewOutcome → stdout\n单 JSON 文档；诊断全走 stderr", fillcolor="#C6F6D5"];
+  run [label="runReview(...)\nrun/pass-runner.ts 装配 context + descriptor\n见子图 2 / 3", fillcolor="#BEE3F8"];
+  summaryline [label="deliverReviewRun.finishRunLine\n收尾摘要行 doneLine（stderr，恒定打印）\n耗时 / token 三段 / 模型调用数\n工具调用（主 + skill + bash）\nLedger 命中 / 成本"];
+  parsefail [label="deliverReviewRun.reportPhaseParseFailures\n仅 phaseLog 有 parseFailure 时输出\n成功 run 零输出"];
+  post [label="deliverReviewRun（cli/delivery.ts）\nannounceInput → 覆盖补报 → assembleTips\n→ persistTips → publishSummary\n→ persistSessionIndex → buildStdoutDocument\n返回 stdoutDocument + timings + deferredFailure", fillcolor="#BEE3F8"];
+  out [label="main 写 stdout 单 JSON 文档\n诊断全走 stderr", fillcolor="#C6F6D5"];
+  finalize [label="[finally] finalizeDelivery（cli/delivery.ts）\n5s 沉降 → endTask → mcp.json\nlifecycle / trace → 事件 flush → close", fillcolor="#FAF5FF"];
   ledger [label="[finally] 收尾账本（仅 stderr）\n[time] 阶段耗时 + 审计/嵌套明细\n[usage] 整任务用量（成本按模型分桶）", fillcolor="#FEFCBF"];
   exit0 [label="exitGracefully(0)\nexitCode + 事件循环自然排干\n（避免 Windows 句柄清理竞态）", fillcolor="#2B6CB0", fontcolor="white", penwidth=0];
   exit1b [label="reportErrorAndExit\nstderr 一行人话 + 堆栈进 run log\nexit 1", fillcolor="#FED7D7"];
@@ -49,8 +50,8 @@ digraph review_cli_entry {
   taskon -> start [label=" true "];
   taskon -> reportrt [label=" false（只开事件 / 全关） "];
   start -> reportrt;
-  reportrt -> run -> summaryline -> parsefail -> post -> out -> ledger -> exit0;
+  reportrt -> run -> summaryline -> parsefail -> post -> out -> finalize -> ledger -> exit0;
   run -> exit1b [style=dashed, label=" 抛错 "];
-  post -> exit1b [style=dashed, label=" 落盘失败（总结后） "];
+  post -> exit1b [style=dashed, label=" deferredFailure（tips 落盘失败） "];
   load -> exit1b [style=dashed, label=" ConfigError "];
 }
