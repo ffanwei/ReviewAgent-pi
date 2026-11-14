@@ -25,6 +25,7 @@ import { mergeSkillCandidates, type SkillCandidateBatch } from "../gate/candidat
 import type { DiffScope } from "../gate/diff-scope.js";
 import { validateFinding } from "../finding/finding-schema.js";
 import { assistantText, captureWire, reviewModelOf, reviewStreamFn } from "../provider/pi-client.js";
+import { reviewTurnStreamOptions } from "../provider/review-turn-policy.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { classifyCacheBreaks } from "./cache-break.js";
@@ -267,11 +268,8 @@ export async function runAgentReviewLoop(
     apiKey: inputs.apiKey,
     ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
     maxOutputTokens: runtime.maxOutputTokens,
-    // ADR-0051：请求建立阶段的次数 / 超时（pi-ai maxRetries 是重试次数，
-    // 配置面是总尝试次数，故 -1）。流开始后断开不在该层重试。
-    maxRetries: Math.max(0, runtime.limits.retry.reviewTurnAttempts - 1),
-    maxRetryDelayMs: runtime.limits.retry.maxRetryAfterMs,
-    timeoutMs: runtime.limits.timeouts.reviewTurnMs,
+    // ADR-0051 / ADR-0077：重试、超时与流中断重放的映射只在 policy factory 里。
+    ...reviewTurnStreamOptions(runtime),
     // ADR-0076：请求时间线作用域（阶段 / 轮次在请求发出时求值）
     timeline: {
       scope: () => ({
@@ -281,13 +279,6 @@ export async function runAgentReviewLoop(
         phase: phaseNameOf(phaseIndex),
         phaseIndex: phaseIndex + 1,
       }),
-    },
-    // ADR-0077：流中断重放（总次数含首次；预算到点即停止再发起）
-    replay: {
-      attempts: runtime.limits.retry.streamAttempts,
-      budgetMs: runtime.limits.retry.streamReplayBudgetMs,
-      baseDelayMs: runtime.limits.retry.baseDelayMs,
-      maxDelayMs: runtime.limits.retry.maxDelayMs,
     },
   });
 

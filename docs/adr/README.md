@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0086）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0087）。
 
 ## 记录纪律
 
@@ -82,6 +82,7 @@
 | [ADR-0084](0084-stage-ledger-timings-from-run-layer.md) | 阶段账本：`ReviewRunResult.timings` 由 run 层产出，分片路径不再靠事件反推/重复计时；单遍字节不变 |
 | [ADR-0085](0085-single-agent-tool-adapter.md) | 工具适配器：七工具 → `AgentTool` 只保留一份投影；预算/审计/计数由 hooks 注入 |
 | [ADR-0086](0086-mcp-task-lifecycle-facade.md) | MCP 任务生命周期 facade：start/result/summary/finish 与两段沉降收进 `mcp/task-lifecycle.ts` |
+| [ADR-0087](0087-retry-policy-single-source-and-dead-backoff.md) | Agent stream 重试策略单源（`reviewTurnStreamOptions`）；MCP 退避序列清死值 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

@@ -5,7 +5,7 @@ import { MCP_REPORT_EVENT_TYPES } from "../contracts/mcp-report.js";
 import type { RunProgressEvent } from "../contracts/progress.js";
 import type { ReportConfig } from "./config.js";
 import { ProtocolError } from "./protocol.js";
-import { createMcpReporter, type TaskCallTrace } from "./report.js";
+import { createMcpReporter, MCP_MAX_ATTEMPTS, RETRY_BACKOFF_MS, type TaskCallTrace } from "./report.js";
 import type { Transport, TransportResponse } from "./transport.js";
 
 // 上报投递语义（ADR-0037 决策 5）：只入队、批量、FIFO、seq、背压、重试、
@@ -660,4 +660,29 @@ describe("业务 tool 面（ADR-0045）", () => {
     ).toEqual(["startTask"]);
     await reporter.close();
   });
+});
+
+test("业务 tool 重试：3 次尝试、退避 100/400ms", async () => {
+  expect(MCP_MAX_ATTEMPTS).toBe(3);
+  expect(RETRY_BACKOFF_MS).toEqual([100, 400]);
+
+  let toolCalls = 0;
+  const transport = fakeTransport((call) => {
+    if (call.method !== "tools/call") {
+      return "ok";
+    }
+    toolCalls += 1;
+    return toolCalls < 3 ? "reject" : "ok";
+  });
+  const reporter = await createMcpReporter({
+    config: reportConfig(),
+    clientVersion: "test",
+    transport,
+  });
+
+  const outcome = await reporter.task.startTask({ taskId: "t-1" });
+
+  expect(outcome).toEqual({ ok: true });
+  expect(toolCalls).toBe(3);
+  await reporter.close();
 });

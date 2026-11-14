@@ -12,6 +12,7 @@ import {
   reviewModelOf,
   reviewStreamFn,
 } from "../provider/pi-client.js";
+import { reviewTurnStreamOptions } from "../provider/review-turn-policy.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { buildSkillBashTool, SKILL_BASH_TOOL_NAME } from "../tools/skill-bash.js";
@@ -156,11 +157,8 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
       apiKey: options.apiKey,
       ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
       maxOutputTokens: runtime.maxOutputTokens,
-      // ADR-0051：skill 会话与主会话同档（次数 -1 换算 pi-ai 重试语义）；
-      // 外层 skillPassMs 仍是整会话总预算，重试不会绕过它。
-      maxRetries: Math.max(0, runtime.limits.retry.reviewTurnAttempts - 1),
-      maxRetryDelayMs: runtime.limits.retry.maxRetryAfterMs,
-      timeoutMs: runtime.limits.timeouts.reviewTurnMs,
+      // ADR-0051 / ADR-0077：skill 会话与主会话同档；外层 skillPassMs 仍是硬上限。
+      ...reviewTurnStreamOptions(runtime),
       // ADR-0076：skill 会话独立 StreamFn → requestId 按本会话自增
       timeline: {
         scope: () => ({
@@ -169,13 +167,6 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
           ...(options.shard !== undefined ? { shard: options.shard } : {}),
           round,
         }),
-      },
-      // ADR-0077：流中断重放（与主会话同档；外层 skillPassMs 仍是硬上限）
-      replay: {
-        attempts: runtime.limits.retry.streamAttempts,
-        budgetMs: runtime.limits.retry.streamReplayBudgetMs,
-        baseDelayMs: runtime.limits.retry.baseDelayMs,
-        maxDelayMs: runtime.limits.retry.maxDelayMs,
       },
     }),
     toolExecution: "sequential",

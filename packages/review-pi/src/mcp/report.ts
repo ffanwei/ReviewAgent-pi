@@ -90,9 +90,10 @@ export interface McpReporter {
   close(): Promise<void>;
 }
 
-const RETRY_BACKOFF_MS = [100, 400, 1600] as const;
-/** 业务 tool：共 3 次尝试（2 次重试），仅传输 / 超时 / HTTP 5xx 类失败重试（ADR-0050） */
-const TASK_MAX_ATTEMPTS = 3;
+/** 两条 loop 共用的退避序列：3 次尝试 → 两次等待（100 / 400ms） */
+export const RETRY_BACKOFF_MS = [100, 400] as const;
+/** 业务 tool 与事件批量：共 3 次尝试（2 次重试），仅瞬时失败重试（ADR-0050） */
+export const MCP_MAX_ATTEMPTS = 3;
 
 export async function createMcpReporter(options: CreateMcpReporterOptions): Promise<McpReporter> {
   const { config } = options;
@@ -226,9 +227,9 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
         : envelope,
     );
     const args: McpReportBatch = { schemaVersion: 1, streamId, events: finalized };
-    for (let attempt = 0; attempt < RETRY_BACKOFF_MS.length; attempt += 1) {
+    for (let attempt = 0; attempt < MCP_MAX_ATTEMPTS; attempt += 1) {
       if (attempt > 0) {
-        await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 1600);
+        await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 0);
       }
       batches += 1;
       try {
@@ -291,9 +292,9 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
     } else {
       let reason = "unknown error";
       outcome = { ok: false, reason };
-      for (let attempt = 0; attempt < TASK_MAX_ATTEMPTS; attempt += 1) {
+      for (let attempt = 0; attempt < MCP_MAX_ATTEMPTS; attempt += 1) {
         if (attempt > 0) {
-          await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 400);
+          await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 0);
         }
         try {
           const result = await client.callTool(
@@ -310,7 +311,7 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
           break;
         } catch (error) {
           reason = truncate(error instanceof Error ? error.message : String(error));
-          if (!isRetryableTaskFailure(error) || attempt === TASK_MAX_ATTEMPTS - 1) {
+          if (!isRetryableTaskFailure(error) || attempt === MCP_MAX_ATTEMPTS - 1) {
             outcome = { ok: false, reason };
             break;
           }
