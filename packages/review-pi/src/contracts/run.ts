@@ -359,6 +359,11 @@ export interface RunResult {
   readonly audit: RunAudit;
   readonly auditPath?: string;
   /**
+   * 单遍主转录路径（绝对路径；ADR-0088）。分片路径缺席——每片路径在
+   * `record.shards[].transcriptFile`；旧记录缺席（export 走 legacy shim）。
+   */
+  readonly transcriptPath?: string;
+  /**
    * 域外显式降级标注（#12 MR 边界护栏）：超界 / 不可度量时在场
    * （生产化方案 §3.1 原文案或 boundary-unmeasurable 语义文案），
    * 边界内缺席省键——护栏零介入的可观测证明。

@@ -698,6 +698,11 @@ export interface DeliveryFinalizeInput {
   readonly lifecycle?: {
     readonly runId: string;
     readonly transcriptPaths: readonly string[];
+    /** 写者记录的 转录/审计 对（ADR-0088）：trace 不再从转录路径反推 */
+    readonly artifacts: readonly {
+      readonly transcriptPath: string;
+      readonly auditPath: string;
+    }[];
     readonly events: readonly LifecycleEvent[];
     readonly title: string;
   };
@@ -751,7 +756,7 @@ export async function finalizeDelivery(
     }
     // opencode-trace 留痕（ADR-0074）：写失败只警告。
     try {
-      await writeRunTrace(runDirPath(input.runsRoot), input.lifecycle.transcriptPaths);
+      await writeRunTrace(runDirPath(input.runsRoot), input.lifecycle.artifacts);
     } catch (error) {
       log(`review-pi: trace 留痕写入失败（${describeReportFailure(error)}），不影响检视结果\n`);
     }

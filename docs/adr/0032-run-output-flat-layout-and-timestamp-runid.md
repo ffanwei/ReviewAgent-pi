@@ -4,6 +4,7 @@
 **关联**：ADR-0027（runs 布局；本 ADR 取代其「`<out>/runs/mr/<caseId>/rep-<N>` 与 `<out>/audit/mr/<caseId>/rep-<N>/audit/`」路径决策）、ADR-0013（转录是 run 产物）、ADR-0017 / ADR-0022（`reviews_en.json` / `reviews_tips_zh.json` 同目录同生命周期）
 **跨仓**：本 ADR 为本仓 pi 线序列 0032；DSH 兄弟仓决策须引用全限定语「DSH 线 ADR-XXXX」。
 **后续修订**：落盘根由 `--out <dir>` 改为任务模型 `--taskId <id>`（`<home>/.PiAgent/tasks/<taskId>/`），见 ADR-0033。本 ADR 的**目录内形态**（`runs/` + `audit/` + `.cache/`、`runId` = 首次请求时刻）不变；正文中「一个 `--out` 一次 run」读作「一个任务目录一次 run」。
+**后续修订**（2026-11-14）：[ADR-0088](0088-run-artifact-layout-single-source.md) 允许单遍 `baseline` 记录 `transcriptPath`（绝对路径），供 `export` / trace 消费；`auditPath` 与其余字段不变，分片路径仍在 `shards[]`。
 
 ## Context
 

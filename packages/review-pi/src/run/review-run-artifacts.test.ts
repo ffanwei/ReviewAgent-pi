@@ -379,7 +379,7 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
   expect(envelope["model"]).toBe("deepseek-v4-flash");
   expect(envelope["findings"]).toEqual(record.baseline.findings);
 
-  // 形状零漂移：审计与运行记录不携带转录/导出键（路径只出现在返回结果里）
+  // 形状零漂移：除单遍主转录路径（ADR-0088）外，审计与运行记录不携带转录/导出键。
   const audit = JSON.parse(readFileSync(auditPath, "utf8")) as Record<string, unknown>;
   expect(Object.keys(record)).toEqual([
     "source",
@@ -399,8 +399,9 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
     "toolCalls",
     "audit",
     "auditPath",
+    "transcriptPath",
   ]);
-  for (const key of ["transcript", "transcriptPath", "session", "reviews", "reviewsPath"]) {
+  for (const key of ["transcript", "session", "reviews", "reviewsPath"]) {
     expect(key in audit).toBe(false);
     expect(key in record.baseline).toBe(false);
   }

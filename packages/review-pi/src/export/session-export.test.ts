@@ -161,6 +161,50 @@ test("--taskId 模式：按 --tasks-dir 找任务，runId 从 auditPath 反推",
   expect(result.returned).toEqual([...sessions.mains, sessions.skills[0]]);
 });
 
+test("--taskId 模式：优先使用 baseline.transcriptPath（ADR-0088）", async () => {
+  const cwd = makeTempDir("review-pi-export-recorded-");
+  const tasksRoot = path.join(cwd, "tasks");
+  makeTask(tasksRoot, "t-10", ["a"]);
+  const runs = path.join(tasksRoot, "t-10", "runs");
+  const recorded = path.join(runs, "custom-main.json");
+  writeFileSync(
+    recorded,
+    JSON.stringify({ info: { id: "session-custom" }, messages: [] }),
+    "utf8",
+  );
+  const recordPath = path.join(runs, "run.json");
+  const record = JSON.parse(readFileSync(recordPath, "utf8")) as {
+    baseline: Record<string, unknown>;
+  };
+  record.baseline.transcriptPath = recorded;
+  writeFileSync(recordPath, JSON.stringify(record), "utf8");
+
+  const result = await exportSessions({
+    cwd,
+    taskId: "t-10",
+    tasksDir: tasksRoot,
+    native: true,
+  });
+
+  expect(result.returned[0]).toBe(recorded);
+});
+
+test("--taskId 模式：记录既无 transcriptPath 也无 auditPath → 人话报错", async () => {
+  const cwd = makeTempDir("review-pi-export-no-path-");
+  const tasksRoot = path.join(cwd, "tasks");
+  makeTask(tasksRoot, "t-11", []);
+  const recordPath = path.join(tasksRoot, "t-11", "runs", "run.json");
+  const record = JSON.parse(readFileSync(recordPath, "utf8")) as {
+    baseline: Record<string, unknown>;
+  };
+  delete record.baseline.auditPath;
+  writeFileSync(recordPath, JSON.stringify(record), "utf8");
+
+  await expect(
+    exportSessions({ cwd, taskId: "t-11", tasksDir: tasksRoot, native: true }),
+  ).rejects.toThrow(/无法定位主转录/);
+});
+
 test("索引里的 tasksDir 优先于 --tasks-dir", async () => {
   const cwd = makeTempDir("review-pi-export-precedence-");
   const indexPath = path.join(cwd, "indexed-tasks");

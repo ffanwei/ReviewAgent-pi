@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
+import { auditPathOf } from "./run-artifacts.js";
+
 /**
  * opencode-trace 兼容导出（ADR-0074）：把一次 run 的**逐模型请求**导出成
  * `opencode-trace-viewer` 可 import 的 trace bundle（目录，zip 由使用方自行打包）。
@@ -60,27 +62,10 @@ export interface TraceSessionBundle {
   readonly records: readonly TraceRecord[];
 }
 
-/** 原生转录路径 → 审计文件路径：`runs/…/session-<runId>.json` → `audit/…/<runId>.json` */
-export function auditPathOf(transcriptPath: string): string {
-  const resolved = resolve(transcriptPath);
-  const segments = dirname(resolved).split(sep);
-  const runsIndex = segments.lastIndexOf("runs");
-  if (runsIndex >= 0) {
-    segments[runsIndex] = "audit";
-  }
-  const runId = basename(resolved).replace(/^session-/, "").replace(/\.json$/, "");
-  return join(segments.join(sep), `${runId}.json`);
-}
+export { auditPathOf, runsDirOf } from "./run-artifacts.js";
 
 /** trace 目录名（run 时落盘：`<runs>/opencode-trace/`） */
 export const TRACE_DIR = "opencode-trace";
-
-/** 从一条原生转录路径反推 runs 根（`…/runs`） */
-export function runsDirOf(transcriptPath: string): string {
-  const segments = dirname(resolve(transcriptPath)).split(sep);
-  const runsIndex = segments.lastIndexOf("runs");
-  return runsIndex >= 0 ? segments.slice(0, runsIndex + 1).join(sep) : dirname(resolve(transcriptPath));
-}
 
 /** 由一份原生转录 + 一份审计，构建一个 trace 会话（纯函数） */
 export function buildTraceSession(
@@ -246,15 +231,15 @@ export async function writeTraceBundle(
   return resolved;
 }
 
-/** 从磁盘读原生转录 + 审计，构建一个 trace 会话 */
+/** 从磁盘读原生转录 + 审计，构建一个 trace 会话（审计路径缺省由布局推导） */
 export async function loadTraceSession(
   transcriptPath: string,
+  auditPath: string = auditPathOf(transcriptPath),
 ): Promise<{ readonly sessionId: string; readonly bundle: TraceSessionBundle }> {
   const transcript = JSON.parse(await readFile(transcriptPath, "utf8")) as {
     info: Record<string, unknown>;
     messages: readonly Record<string, unknown>[];
   };
-  const auditPath = auditPathOf(transcriptPath);
   const audit = JSON.parse(await readFile(auditPath, "utf8")) as {
     requests?: readonly Record<string, unknown>[];
     model?: unknown;
@@ -263,14 +248,22 @@ export async function loadTraceSession(
   return { sessionId: bundle.metadata.sessionId, bundle };
 }
 
+/** 写者记录的一对产物路径（ADR-0088）：trace 不再从转录路径反推审计 */
+export interface RunTraceArtifact {
+  readonly transcriptPath: string;
+  readonly auditPath: string;
+}
+
 /** run 时落盘整个 trace bundle：读各主转录 + 审计 → `<runsDir>/opencode-trace/` */
 export async function writeRunTrace(
   runsDir: string,
-  transcriptPaths: readonly string[],
+  artifacts: readonly RunTraceArtifact[],
 ): Promise<string> {
   const sessions: { sessionId: string; bundle: TraceSessionBundle }[] = [];
-  for (const transcriptPath of transcriptPaths) {
-    sessions.push(await loadTraceSession(transcriptPath));
+  for (const artifact of artifacts) {
+    sessions.push(
+      await loadTraceSession(artifact.transcriptPath, artifact.auditPath),
+    );
   }
   return writeTraceBundle(join(resolve(runsDir), TRACE_DIR), sessions);
 }

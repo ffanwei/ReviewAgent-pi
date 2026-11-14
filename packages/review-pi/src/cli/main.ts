@@ -421,7 +421,14 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
 
   // runReview 成功后回填，供 finally 收尾把生命周期步骤写进会话（ADR-0073）
   let lifecycleRun:
-    | { readonly runId: string; readonly transcriptPaths: readonly string[] }
+    | {
+        readonly runId: string;
+        readonly transcriptPaths: readonly string[];
+        readonly artifacts: readonly {
+          readonly transcriptPath: string;
+          readonly auditPath: string;
+        }[];
+      }
     | undefined;
   // 收尾阶段（报文 / 总结）续写同一次 run 的顶层请求时间线（ADR-0076）
   let postPassTimeline: ReturnType<typeof createRequestTimelineWriter> | null = null;
@@ -566,7 +573,23 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       runId,
     });
     setRequestTimelineSink(postPassTimeline.sink);
-    lifecycleRun = { runId, transcriptPaths };
+    // ADR-0088：trace 消费写者记录的 转录/审计 对；单遍用 baseline 的记录路径，
+    // 分片用 shards[]。不再从转录路径反推审计路径。
+    const lifecycleArtifacts =
+      record.shards === undefined
+        ? [
+            {
+              transcriptPath:
+                record.baseline.transcriptPath ??
+                resolve(runDirPath(runsRoot), `session-${runId}.json`),
+              auditPath: record.baseline.auditPath,
+            },
+          ]
+        : record.shards.map((shard) => ({
+            transcriptPath: resolve(runDirPath(runsRoot), shard.transcriptFile),
+            auditPath: resolve(runDirPath(runsRoot), shard.auditFile),
+          }));
+    lifecycleRun = { runId, transcriptPaths, artifacts: lifecycleArtifacts };
     agentUsage = record.baseline.usage;
     agentCalls = reviewed.modelCalls;
     stageClock.auditMs = (stageClock.auditEndedAt ?? Date.now()) - startedAt;
@@ -650,6 +673,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             lifecycle: {
               runId: lifecycleRun.runId,
               transcriptPaths: lifecycleRun.transcriptPaths,
+              artifacts: lifecycleRun.artifacts,
               events: lifecycleCollector.snapshot(),
               title: args.caseId,
             },

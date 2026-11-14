@@ -497,6 +497,8 @@ async function executeSinglePass(
     toolCalls: pass.toolCalls,
     audit: pass.audit,
     auditPath: pass.auditPath,
+    // ADR-0088：单遍写者记录主转录路径；分片留给 shards[]。
+    transcriptPath: pass.transcriptPath,
     // 域外显式降级标注（#12）：界内省键（边界内与无护栏时逐字节一致）
     ...(context.boundary.degraded ? { domainWarning: context.boundary.domainWarning } : {}),
   };

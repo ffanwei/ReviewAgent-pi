@@ -227,11 +227,50 @@ async function sessionsFromRunRecord(runsRoot: string): Promise<SessionPaths> {
     return { mains: shards, skills, order };
   }
 
-  const runId = runIdOfRecord(record) ?? (await newestRunId(runsDir));
+  // 单遍（ADR-0088）：优先用写者记录的绝对转录路径；旧记录由 auditPath 的
+  // runId 推 `runs/session-<runId>.json`（唯一 legacy 分支）。两者都没有即报错，
+  // 不再猜「最新 session 文件」。
+  const recorded = baselineTranscriptPath(record);
+  const runId = runIdOfRecord(record) ?? (recorded !== undefined ? runIdOfTranscript(recorded) : undefined);
+  if (recorded === undefined && runId === undefined) {
+    throw new Error(
+      `run.json 缺少 baseline.transcriptPath / auditPath，无法定位主转录：${recordPath}`,
+    );
+  }
   return {
-    mains: [join(runsDir, `session-${runId}.json`)],
-    skills: logged.length > 0 ? logged : await listSkillSessions(runsDir, runId),
+    mains: [
+      recorded !== undefined
+        ? resolve(recorded)
+        : join(runsDir, `session-${String(runId)}.json`),
+    ],
+    skills:
+      logged.length > 0
+        ? logged
+        : runId !== undefined
+          ? await listSkillSessions(runsDir, runId)
+          : [],
   };
+}
+
+/** `run.json` 的 `baseline.transcriptPath`（ADR-0088；旧记录缺席） */
+function baselineTranscriptPath(record: unknown): string | undefined {
+  if (typeof record !== "object" || record === null) {
+    return undefined;
+  }
+  const baseline = (record as Record<string, unknown>).baseline;
+  if (typeof baseline !== "object" || baseline === null) {
+    return undefined;
+  }
+  const transcriptPath = (baseline as Record<string, unknown>).transcriptPath;
+  return typeof transcriptPath === "string" && transcriptPath.trim() !== ""
+    ? transcriptPath
+    : undefined;
+}
+
+/** 从 `session-<runId>.json` 取 runId（记录路径的 legacy 兜底） */
+function runIdOfTranscript(transcriptPath: string): string | undefined {
+  const runId = basename(transcriptPath).replace(/^session-/, "").replace(/\.json$/, "");
+  return /^\d{8}_\d{6}_\d{3}$/.test(runId) ? runId : undefined;
 }
 
 /** `run.json` 的 `baseline.auditPath` 文件名就是 runId（ADR-0032 单源） */
@@ -325,19 +364,6 @@ function posixDirname(posixPath: string): string {
 }
 
 /** run.json 缺 auditPath 时的兜底：按文件名取最新 runId（固定宽度 = 字典序即时序） */
-async function newestRunId(runsDir: string): Promise<string> {
-  const names = await readdirOrThrow(runsDir);
-  const runIds = names
-    .map((name) => /^session-(\d{8}_\d{6}_\d{3})\.json$/.exec(name)?.[1])
-    .filter((runId): runId is string => runId !== undefined)
-    .sort();
-  const runId = runIds.at(-1);
-  if (runId === undefined) {
-    throw new Error(`任务目录里没有任何主会话转录：${runsDir}`);
-  }
-  return runId;
-}
-
 /** 兜底：run.json 没有 skillPassLog 时，按文件名列出该 run 的 skill 转录 */
 async function listSkillSessions(runsDir: string, runId: string): Promise<readonly string[]> {
   const names = await readdirOrThrow(runsDir);

@@ -67,6 +67,11 @@ export interface RunSnapshot {
   readonly audit: AuditLight;
   readonly auditPath: string;
   /**
+   * 单遍主转录路径（绝对路径；ADR-0088）。分片路径缺席（`shards[]` 已有每片
+   * 路径）；旧记录缺席——export 走 legacy shim，不猜文件。
+   */
+  readonly transcriptPath?: string;
+  /**
    * 域外显式降级标注（#12 MR 边界护栏）：结果顶层字段（非审计字段），
    * 界内缺席省键（旧记录无此键——缺席兼容）。
    */
@@ -128,6 +133,9 @@ export function toRunSnapshot(result: RunResult): RunSnapshot {
     toolCalls: result.toolCalls,
     audit: toAuditLight(result.audit),
     auditPath: result.auditPath ?? "",
+    ...(result.transcriptPath !== undefined
+      ? { transcriptPath: result.transcriptPath }
+      : {}),
     ...(result.domainWarning !== undefined ? { domainWarning: result.domainWarning } : {}),
   };
 }

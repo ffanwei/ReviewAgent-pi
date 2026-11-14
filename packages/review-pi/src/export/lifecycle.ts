@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import type { TaskCallTrace } from "../contracts/mcp-task.js";
 import type { OneShotLifecycleEvent } from "../shared/one-shot-llm.js";
+import { compatFileOf } from "./run-artifacts.js";
 import {
-  OPENCODE_DIR,
   writeOpenCodeSession,
   type OpenCodeAssistantMessage,
   type OpenCodeInfo,
@@ -176,11 +176,7 @@ export async function writeLifecycleSessions(input: {
   }
 }
 
-/** 原生转录路径 → 同目录 `opencode/` 兼容版路径 */
-function compatFileOf(nativePath: string): string {
-  const resolved = resolve(nativePath);
-  return join(dirname(resolved), OPENCODE_DIR, basename(resolved));
-}
+/** 原生转录路径 → 同目录 `opencode/` 兼容版路径（实现见 run-artifacts） */
 
 async function readOpenCodeSession(file: string): Promise<OpenCodeSession> {
   const raw = await readFile(file, "utf8");
