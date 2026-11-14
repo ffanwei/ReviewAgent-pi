@@ -1,12 +1,11 @@
 import path from "node:path";
 import type { FetchFunction } from "@earendil-works/pi-ai";
-import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audit-writer.js";
+import { buildAuditFileContent, writeAuditFile } from "../audit/audit-writer.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import {
   NO_OP_PROGRESS_SINK,
   type RunProgressSink,
-  type ShardLabel,
 } from "../contracts/progress.js";
 import type {
   CandidateNormalizationRecord,
@@ -15,7 +14,6 @@ import type {
   MrFilterRecord,
   PhaseRecord,
   RejectionStage,
-  RuleSkillAudit,
   RuleSkillPassRecord,
   RunAudit,
   RunResult,
@@ -24,26 +22,28 @@ import type {
 } from "../contracts/run.js";
 import {
   buildRunRecord,
-  runDirPath,
   writeRunRecord,
   type RunRecord,
   type ShardRecord,
 } from "../experiment/run-record.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
-import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
-import { withRequestTimelineAppend } from "../observability/request-timeline.js";
+import { loadRuleSkills } from "../knowledge/rule-skill.js";
 import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
-import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
-import { assertDiffWithinCharLimit, filterDiffForReview, listChangedFilePaths, NoReviewableFilesError, splitDiffIntoFileBlocks, toMrFilterRecord } from "./mr-input.js";
+import { guardMrBoundary } from "./mr-boundary-guard.js";
+import { assertDiffWithinCharLimit, filterDiffForReview, listChangedFilePaths, NoReviewableFilesError, toMrFilterRecord } from "./mr-input.js";
 import { mergeShardFindings } from "./findings-merge.js";
-import { runReviewPass, type ReviewPassResult } from "./review-pass.js";
 import {
-  composeShardInput,
+  buildRunContext,
+  runPasses,
+  type ExecutedPass,
+  type ReviewRunContext,
+} from "./pass-runner.js";
+import {
   planShards,
   type Shard,
   type ShardPlan,
@@ -270,28 +270,19 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   });
 
   try {
+    // 规则包装载在 `run.start` 之后、首遍之前：保持既有 stderr 时序。
+    const context = await buildRunContext(input, {
+      startedAt,
+      runtime,
+      modelId,
+      emit,
+      boundary,
+      ...(mrFilter !== undefined ? { mrFilter } : {}),
+    });
     const outcome =
       shards === null
-        ? await executeSinglePass({
-            input,
-            runtime,
-            modelId,
-            diff,
-            startedAt,
-            boundary,
-            ...(mrFilter !== undefined ? { mrFilter } : {}),
-            emit,
-          })
-        : await executeShardedPasses({
-            input,
-            runtime,
-            modelId,
-            shards,
-            startedAt,
-            boundary,
-            ...(mrFilter !== undefined ? { mrFilter } : {}),
-            emit,
-          });
+        ? await executeSinglePass(context, diff)
+        : await executeShardedPasses(context, shards);
     emit({
       kind: "run",
       state: "end",
@@ -343,80 +334,23 @@ function planReviewShards(diff: string, split: SplitLimits): readonly Shard[] | 
  * 片级回调调度（ADR-0045）：旁路纪律的最后一道闸——实现方应自吞错误，这里
  * 仍防御性捕获（hook 抛错 = 实现方 bug），绝不把上报失败变成检视失败。
  */
-async function notifyShardFindings(
-  input: ReviewRunInput,
-  label: { readonly index: number; readonly total: number },
-  findings: readonly Finding[],
-  files: readonly string[],
-): Promise<void> {
-  if (input.onShardFindings === undefined) {
-    return;
+/**
+ * 单遍路径：pass 装配与执行。
+ * 与分片路径共享 `runPasses`；结果构造（RunRecord / RunResult）仍由本函数独占。
+ */
+async function executeSinglePass(
+  context: ReviewRunContext,
+  diff: string,
+): Promise<ReviewOutcome> {
+  const executed = await runPasses(context, [{ kind: "single", diff }]);
+  const pass = executed[0]?.pass;
+  if (pass === undefined) {
+    throw new Error("internal: single pass produced no result");
   }
-  try {
-    await input.onShardFindings(label, findings, files);
-  } catch {
-    // 旁路（ADR-0045 决策 3）：hook 自身负责 stderr 可见性；这里只保证不外溢
-  }
-}
-
-async function executeSinglePass(args: {
-  readonly input: ReviewRunInput;
-  readonly runtime: ReviewRuntime;
-  readonly modelId: string;
-  readonly diff: string;
-  readonly startedAt: Date;
-  readonly boundary: MrBoundaryDecision;
-  readonly mrFilter?: MrFilterRecord;
-  readonly emit: RunProgressSink;
-}): Promise<ReviewOutcome> {
-  const loaded = await loadRuleSkillSet(args.input, args.runtime);
-  const pass = await runReviewPass({
-    caseId: args.input.caseId,
-    repoPath: args.input.repoPath,
-    issueDescription: args.input.issueDescription,
-    apiKey: args.input.apiKey,
-    fetch: args.input.fetch,
-    runtime: args.runtime,
-    modelId: args.modelId,
-    rep: args.input.rep,
-    ...(args.input.baseUrl !== undefined ? { baseUrl: args.input.baseUrl } : {}),
-    diff: args.diff,
-    initialDiff: args.diff,
-    ruleSkills: loaded.skills,
-    ruleSkillAudit: loaded.audit,
-    runDir: runDirPath(args.input.runsRoot),
-    auditDir: path.join(args.input.runsRoot, "audit"),
-    startedAt: args.startedAt,
-    boundary: args.boundary,
-    ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
-    ...(args.input.config !== undefined ? { config: args.input.config } : {}),
-    ...(args.input.modelFallback !== undefined
-      ? { modelFallback: args.input.modelFallback }
-      : {}),
-    ...(args.input.tipsConfidenceMin !== undefined
-      ? { tipsConfidenceMin: args.input.tipsConfidenceMin }
-      : {}),
-    ...(args.input.tipsSeverityMin !== undefined
-      ? { tipsSeverityMin: args.input.tipsSeverityMin }
-      : {}),
-    emit: args.emit,
-  });
-  // 片级上报缝（ADR-0045）：单片路径 = 一次调用，findings 已定型；文件清单
-  // 取整份 diff（让「没有问题」也按文件上报，与分片路径同契约）。
-  await withRequestTimelineAppend(runDirPath(args.input.runsRoot), () =>
-    notifyShardFindings(
-      args.input,
-      { index: 1, total: 1 },
-      pass.findings,
-      splitDiffIntoFileBlocks(args.diff)
-        .map((block) => block.path)
-        .filter((filePath) => filePath !== ""),
-    ),
-  );
 
   const result: RunResult = {
-    caseId: args.input.caseId,
-    model: args.modelId,
+    caseId: context.caseId,
+    model: context.modelId,
     findings: pass.findings,
     usage: pass.usage,
     rounds: pass.rounds,
@@ -424,20 +358,20 @@ async function executeSinglePass(args: {
     audit: pass.audit,
     auditPath: pass.auditPath,
     // 域外显式降级标注（#12）：界内省键（边界内与无护栏时逐字节一致）
-    ...(args.boundary.degraded ? { domainWarning: args.boundary.domainWarning } : {}),
+    ...(context.boundary.degraded ? { domainWarning: context.boundary.domainWarning } : {}),
   };
   const record = buildRunRecord({
     source: "mr",
-    caseId: args.input.caseId,
-    rep: args.input.rep,
-    model: args.modelId,
+    caseId: context.caseId,
+    rep: context.rep,
+    model: context.modelId,
     completedAt: pass.finishedAt,
     result,
-    ...(args.input.modelFallback !== undefined
-      ? { modelFallback: args.input.modelFallback }
+    ...(context.modelFallback !== undefined
+      ? { modelFallback: context.modelFallback }
       : {}),
   });
-  const recordPath = await persistRunRecord(args.input, record);
+  const recordPath = await persistRunRecord(context, record);
   return {
     result: {
       runId: pass.runId,
@@ -450,7 +384,7 @@ async function executeSinglePass(args: {
       ledgerHitCount: pass.ledgerHitCount,
       modelCalls: pass.modelCalls,
       skillBashCalls: pass.skillBashCalls,
-      ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
+      ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
     },
     runId: pass.runId,
     usage: pass.usage,
@@ -459,97 +393,29 @@ async function executeSinglePass(args: {
   };
 }
 
-// ---------------------------------------------------------------------------
-// 分片路径（ADR-0039 决策 2 / 4 / 5 / 6 / 7 / 10）
-// ---------------------------------------------------------------------------
-
-async function executeShardedPasses(args: {
-  readonly input: ReviewRunInput;
-  readonly runtime: ReviewRuntime;
-  readonly modelId: string;
-  readonly shards: readonly Shard[];
-  readonly startedAt: Date;
-  readonly boundary: MrBoundaryDecision;
-  readonly mrFilter?: MrFilterRecord;
-  readonly emit: RunProgressSink;
-}): Promise<ReviewOutcome> {
-  const total = args.shards.length;
-  // attempt 目录名 = run 入口 startedAt（仅目录名，不是 runId）；每次尝试独占
-  // 一组片产物，重跑不覆盖历史转录（ADR-0039 决策 6）。
-  const attempt = `attempt-${buildRunId(args.startedAt)}`;
-  const runsDir = runDirPath(args.input.runsRoot);
-  const auditRoot = path.join(args.input.runsRoot, "audit");
-  // 规则 Skill 装载与装载审计只做一次（ADR-0039 决策 4）
-  const loaded = await loadRuleSkillSet(args.input, args.runtime);
-
-  const executed: Array<{ readonly shard: Shard; readonly pass: ReviewPassResult }> = [];
-  let shardStartedAt = args.startedAt;
-  for (const shard of args.shards) {
-    const dirName = shardDirName(shard.index);
-    const pass = await runReviewPass({
-      caseId: args.input.caseId,
-      repoPath: args.input.repoPath,
-      issueDescription: args.input.issueDescription,
-      apiKey: args.input.apiKey,
-      fetch: args.input.fetch,
-      runtime: args.runtime,
-      modelId: args.modelId,
-      rep: args.input.rep,
-      ...(args.input.baseUrl !== undefined ? { baseUrl: args.input.baseUrl } : {}),
-      diff: shard.diff,
-      initialDiff: composeShardInput(shard),
-      ruleSkills: loaded.skills,
-      ruleSkillAudit: loaded.audit,
-      runDir: path.join(runsDir, "shards", attempt, dirName),
-      auditDir: path.join(auditRoot, "shards", attempt, dirName),
-      startedAt: shardStartedAt,
-      // 全局边界 / 预过滤 / 配置只在聚合审计记一次：片内审计不带这三项
-      boundary: { degraded: false },
-      ...(args.input.tipsConfidenceMin !== undefined
-        ? { tipsConfidenceMin: args.input.tipsConfidenceMin }
-        : {}),
-      ...(args.input.tipsSeverityMin !== undefined
-        ? { tipsSeverityMin: args.input.tipsSeverityMin }
-        : {}),
-      shard: { index: shard.index, total },
-      emit: withShardLabel(args.emit, { index: shard.index, total }),
-    });
-    executed.push({ shard, pass });
-    // 片级上报缝（ADR-0045）：该片 findings 定型、下一片开始前（串行 await）。
-    // 报文载荷生成是一次性模型调用，续写本片已关闭的时间线（ADR-0076）。
-    await withRequestTimelineAppend(path.join(runsDir, "shards", attempt, dirName), () =>
-      notifyShardFindings(args.input, { index: shard.index, total }, pass.findings, shard.files),
-    );
-    shardStartedAt = pass.finishedAt;
-  }
-
-  return aggregateShards({
-    input: args.input,
-    modelId: args.modelId,
-    startedAt: args.startedAt,
-    boundary: args.boundary,
-    ruleSkillAudit: loaded.audit,
-    ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
-    runsDir,
-    auditRoot,
-    executed,
-  });
+/**
+ * 分片路径（ADR-0039）：串行跑每片，片间执行上报回调，最后聚合。
+ * 目录布局、片标签与 `startedAt` 递进由 `buildPass` 与这里共同保证。
+ */
+async function executeShardedPasses(
+  context: ReviewRunContext,
+  shards: readonly Shard[],
+): Promise<ReviewOutcome> {
+  const total = shards.length;
+  const descriptors = shards.map((shard) => ({ kind: "shard" as const, shard, total }));
+  const executed = await runPasses(context, descriptors);
+  return aggregateShards(context, executed);
 }
 
-async function aggregateShards(args: {
-  readonly input: ReviewRunInput;
-  readonly modelId: string;
-  readonly startedAt: Date;
-  readonly boundary: MrBoundaryDecision;
-  readonly ruleSkillAudit: readonly RuleSkillAudit[];
-  readonly mrFilter?: MrFilterRecord;
-  readonly runsDir: string;
-  readonly auditRoot: string;
-  readonly executed: readonly { readonly shard: Shard; readonly pass: ReviewPassResult }[];
-}): Promise<ReviewOutcome> {
-  const findings = mergeShardFindings(args.executed.map((entry) => entry.pass.findings));
+async function aggregateShards(
+  context: ReviewRunContext,
+  executed: readonly ExecutedPass[],
+): Promise<ReviewOutcome> {
+  const findings = mergeShardFindings(executed.map((entry) => entry.pass.findings));
   // 单文件超预算截取留痕（ADR-0070）：片序 → 块序，无截取时为空数组
-  const shardTruncation = args.executed.flatMap((entry) => entry.shard.truncated);
+  const shardTruncation = executed.flatMap((entry) =>
+    entry.descriptor.kind === "shard" ? entry.descriptor.shard.truncated : [],
+  );
 
   let usage = ZERO_USAGE;
   let toolCalls = 0;
@@ -574,7 +440,7 @@ async function aggregateShards(args: {
     DUPLICATE_ID: 0,
   };
 
-  for (const { pass } of args.executed) {
+  for (const { pass } of executed) {
     usage = addUsage(usage, pass.usage);
     toolCalls += pass.toolCalls;
     rounds = Math.max(rounds, pass.rounds);
@@ -608,7 +474,7 @@ async function aggregateShards(args: {
         ...(entry.transcriptFile !== undefined
           ? {
               transcriptFile: relativePosix(
-                args.runsDir,
+                context.runsDir,
                 path.join(passRunDir, entry.transcriptFile),
               ),
             }
@@ -617,30 +483,36 @@ async function aggregateShards(args: {
     }
   }
 
-  const finishedAt = args.executed.at(-1)?.pass.finishedAt ?? new Date();
-  const aggRunId = args.executed[0]?.pass.runId;
+  const finishedAt = executed.at(-1)?.pass.finishedAt ?? new Date();
+  const aggRunId = executed[0]?.pass.runId;
   if (aggRunId === undefined) {
     // 防御：分片路径至少一片（planReviewShards 保证非空）
     throw new Error("internal: sharded review produced no shard results");
   }
 
-  const shardAudits: ShardAuditRecord[] = args.executed.map(({ shard, pass }) => ({
-    index: shard.index,
-    files: shard.files.length,
-    chars: shard.chars,
-    filePaths: shard.files,
-    runId: pass.runId,
-    status: "ok",
-    complete: pass.complete,
-    truncated: pass.audit.truncated,
-    ...(args.boundary.degraded ? { domainWarning: args.boundary.domainWarning } : {}),
-    usage: pass.usage,
-    rounds: pass.rounds,
-    toolCalls: pass.toolCalls,
-  }));
+  const shardAudits: ShardAuditRecord[] = executed.map(({ descriptor, pass }) => {
+    if (descriptor.kind !== "shard") {
+      throw new Error("internal: aggregate saw a single-pass descriptor");
+    }
+    const shard = descriptor.shard;
+    return {
+      index: shard.index,
+      files: shard.files.length,
+      chars: shard.chars,
+      filePaths: shard.files,
+      runId: pass.runId,
+      status: "ok",
+      complete: pass.complete,
+      truncated: pass.audit.truncated,
+      ...(context.boundary.degraded ? { domainWarning: context.boundary.domainWarning } : {}),
+      usage: pass.usage,
+      rounds: pass.rounds,
+      toolCalls: pass.toolCalls,
+    };
+  });
 
-  const tipsFilter = summarizeTipsFilter(findings, args.input.tipsConfidenceMin);
-  const severityFilter = summarizeSeverityFilter(findings, args.input.tipsSeverityMin);
+  const tipsFilter = summarizeTipsFilter(findings, context.tipsConfidenceMin);
+  const severityFilter = summarizeSeverityFilter(findings, context.tipsSeverityMin);
   const audit: RunAudit = {
     // 聚合审计不重复承载正文（正文在各片审计里），只做账目；
     // 解析失败记录是诊断，聚合进来让单份审计也能解释「候选为什么丢了」。
@@ -652,7 +524,7 @@ async function aggregateShards(args: {
     truncated,
     truncationReasons,
     // 规则 Skill 装载审计在聚合层记一次（ADR-0039 决策 4 / 7）
-    ruleSkill: args.ruleSkillAudit,
+    ruleSkill: context.ruleSkillAudit,
     shards: shardAudits,
     ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
@@ -661,81 +533,87 @@ async function aggregateShards(args: {
     ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
     ...(Object.values(rejectionCounts).some((count) => count > 0) ? { rejectionCounts } : {}),
     // 模型替换留痕（ADR-0080）：聚合审计只记一次；无替换整键缺席
-    ...(args.input.modelFallback !== undefined
-      ? { modelFallback: args.input.modelFallback }
+    ...(context.modelFallback !== undefined
+      ? { modelFallback: context.modelFallback }
       : {}),
   };
 
   const auditContent = buildAuditFileContent({
     runId: aggRunId,
-    caseId: args.input.caseId,
-    model: args.modelId,
+    caseId: context.caseId,
+    model: context.modelId,
     effort: LOCKED_EFFORT_LABEL,
-    startedAt: args.startedAt,
+    startedAt: context.startedAt,
     finishedAt,
     rounds,
     toolCalls,
     usage,
     findings,
     audit,
-    ...(args.boundary.degraded ? { mrBoundary: args.boundary.mrBoundary } : {}),
-    ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
-    ...(args.input.config !== undefined ? { config: args.input.config } : {}),
+    ...(context.boundary.degraded ? { mrBoundary: context.boundary.mrBoundary } : {}),
+    ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
+    ...(context.config !== undefined ? { config: context.config } : {}),
   });
-  const auditPath = await writeAuditFile(args.auditRoot, auditContent);
+  const auditPath = await writeAuditFile(context.auditRoot, auditContent);
 
   // 聚合 reviews_en.json（唯一对外真源）
   const reviewsPath = await writeReviewsEn(
-    args.runsDir,
+    context.runsDir,
     buildReviewsExport({
       generatedAt: finishedAt,
       runId: aggRunId,
       source: "mr",
-      caseId: args.input.caseId,
-      rep: args.input.rep,
-      model: args.modelId,
+      caseId: context.caseId,
+      rep: context.rep,
+      model: context.modelId,
       findings,
     }),
   );
 
   const result: RunResult = {
-    caseId: args.input.caseId,
-    model: args.modelId,
+    caseId: context.caseId,
+    model: context.modelId,
     findings,
     usage,
     rounds,
     toolCalls,
     audit,
     auditPath,
-    ...(args.boundary.degraded ? { domainWarning: args.boundary.domainWarning } : {}),
+    ...(context.boundary.degraded ? { domainWarning: context.boundary.domainWarning } : {}),
   };
-  const shardRecords: ShardRecord[] = args.executed.map(({ shard, pass }) => ({
-    index: shard.index,
-    runId: pass.runId,
-    files: shard.files.length,
-    chars: shard.chars,
-    complete: pass.complete,
-    truncated: pass.audit.truncated,
-    usage: pass.usage,
-    rounds: pass.rounds,
-    toolCalls: pass.toolCalls,
-    transcriptFile: relativePosix(args.runsDir, pass.transcriptPath),
-    auditFile: relativePosix(args.auditRoot, pass.auditPath),
-    ...(args.boundary.degraded ? { domainWarning: args.boundary.domainWarning } : {}),
-  }));
+  const shardRecords: ShardRecord[] = executed.map(({ descriptor, pass }) => {
+    if (descriptor.kind !== "shard") {
+      throw new Error("internal: aggregate saw a single-pass descriptor");
+    }
+    const shard = descriptor.shard;
+    return {
+      index: shard.index,
+      runId: pass.runId,
+      files: shard.files.length,
+      chars: shard.chars,
+      complete: pass.complete,
+      truncated: pass.audit.truncated,
+      usage: pass.usage,
+      rounds: pass.rounds,
+      toolCalls: pass.toolCalls,
+      transcriptFile: relativePosix(context.runsDir, pass.transcriptPath),
+      auditFile: relativePosix(context.auditRoot, pass.auditPath),
+      ...(context.boundary.degraded ? { domainWarning: context.boundary.domainWarning } : {}),
+    };
+  });
   const record = buildRunRecord({
     source: "mr",
-    caseId: args.input.caseId,
-    rep: args.input.rep,
-    model: args.modelId,
+    caseId: context.caseId,
+    rep: context.rep,
+    model: context.modelId,
     completedAt: finishedAt,
     result,
     shards: shardRecords,
-    ...(args.input.modelFallback !== undefined
-      ? { modelFallback: args.input.modelFallback }
+    ...(context.modelFallback !== undefined
+      ? { modelFallback: context.modelFallback }
       : {}),
   });
-  const recordPath = await persistRunRecord(args.input, record);
+  const recordPath = await persistRunRecord(context, record);
 
   return {
     result: {
@@ -743,13 +621,13 @@ async function aggregateShards(args: {
       record,
       recordPath,
       auditPath,
-      transcriptPath: args.executed[0]?.pass.transcriptPath ?? "",
-      transcriptPaths: args.executed.map((entry) => entry.pass.transcriptPath),
+      transcriptPath: executed[0]?.pass.transcriptPath ?? "",
+      transcriptPaths: executed.map((entry) => entry.pass.transcriptPath),
       reviewsPath,
       ledgerHitCount,
       modelCalls,
       skillBashCalls,
-      ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
+      ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
       ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
     },
     runId: aggRunId,
@@ -757,45 +635,6 @@ async function aggregateShards(args: {
     truncated,
     findings,
   };
-}
-
-/** 规则 Skill 装载（ADR-0012 / ADR-0014 / ADR-0018）：编排层只做一次 */
-async function loadRuleSkillSet(
-  input: ReviewRunInput,
-  runtime: ReviewRuntime,
-): Promise<{ readonly skills: readonly RuleSkill[]; readonly audit: readonly RuleSkillAudit[] }> {
-  const skills = await ruleSkillsOf(input, runtime);
-  return { skills, audit: skills.map(toRuleSkillAudit) };
-}
-
-async function ruleSkillsOf(
-  input: ReviewRunInput,
-  runtime: ReviewRuntime,
-): Promise<readonly RuleSkill[]> {
-  const loadRuleSkillsFn = input.ruleSkillLoader ?? loadRuleSkills;
-  const explicitZips =
-    input.ruleSkillZips ?? (input.ruleSkillZip !== undefined ? [input.ruleSkillZip] : undefined);
-  return loadRuleSkillsFn({
-    repoPath: input.repoPath,
-    cacheRoot: path.join(input.runsRoot, ".cache", "rule-skills"),
-    ...(explicitZips !== undefined ? { explicitZipPaths: explicitZips } : {}),
-    ...(input.ruleSkillDirs !== undefined ? { ruleSkillDirs: input.ruleSkillDirs } : {}),
-    ...(input.strictRuleSkill !== undefined ? { strict: input.strictRuleSkill } : {}),
-    // ADR-0025：归档上限与解压超时来自配置快照（缺省 = 历史常量）
-    limits: {
-      ...runtime.limits.archive,
-      timeoutMs: runtime.limits.timeouts.ruleSkillExtractMs,
-    },
-  });
-}
-
-/** 片上标签：仅加在非 run 事件上（run.start/end 由外层独占） */
-function withShardLabel(emit: RunProgressSink, shard: ShardLabel): RunProgressSink {
-  return (event) => emit(event.kind === "run" ? event : { ...event, shard });
-}
-
-function shardDirName(index: number): string {
-  return `s${String(index).padStart(2, "0")}`;
 }
 
 /** 绝对路径 → 相对基准目录的 POSIX 路径（产物可搬迁） */
@@ -807,11 +646,11 @@ function relativePosix(baseDir: string, filePath: string): string {
  * 记录落盘单点：persistRecord=false（执行缝模式）时内核不落盘、返回空串——
  * runner 是记录唯一写者，防双写与孤儿文件。
  */
-function persistRunRecord(input: ReviewRunInput, record: RunRecord): Promise<string> {
-  if (input.persistRecord === false) {
+function persistRunRecord(context: ReviewRunContext, record: RunRecord): Promise<string> {
+  if (!context.persistRecord) {
     return Promise.resolve("");
   }
-  return writeRunRecord(input.runsRoot, record);
+  return writeRunRecord(context.runsRoot, record);
 }
 
 /**
@@ -828,23 +667,4 @@ function summarizeFindings(findings: readonly Finding[]): {
     bySeverity[finding.severity] += 1;
   }
   return { count: findings.length, bySeverity };
-}
-
-/**
- * RuleSkill → 审计留痕投影：source/digest/name + 降级原因 + 装载诊断
- * （code/path 窄投影；path 已净化为缓存目录相对 POSIX）。
- * 缺席省键纪律：diagnostics 空 / 无降级时省键。
- */
-function toRuleSkillAudit(skill: RuleSkill): RuleSkillAudit {
-  return {
-    source: skill.source.path,
-    // zip 形态省略（历史审计字节不变）；目录形态才标出来（ADR-0018）
-    ...(skill.source.kind === "dir" ? { kind: skill.source.kind } : {}),
-    digest: skill.digest,
-    name: skill.name,
-    ...(skill.degradedReason !== undefined ? { degradedReason: skill.degradedReason } : {}),
-    ...(skill.diagnostics.length > 0
-      ? { diagnostics: skill.diagnostics.map((diagnostic) => ({ code: diagnostic.code, path: diagnostic.path })) }
-      : {}),
-  };
 }
