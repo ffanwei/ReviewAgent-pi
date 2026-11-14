@@ -1,4 +1,5 @@
 import type { CandidateNormalizationRecord } from "../contracts/run.js";
+import { isReviewCategory } from "../contracts/finding.js";
 
 /**
  * 候选确定性归一化（P1 字段合规修复）：只修**信封 / 格式**字段，不造证据。
@@ -45,9 +46,57 @@ const SEVERITY_ALIASES: Readonly<Record<string, "P0" | "P1" | "P2" | "P3">> = {
   trivial: "P3",
 };
 
-const DEFAULT_CATEGORY = "UNCATEGORIZED";
+const DEFAULT_CATEGORY = "可维护";
 const DEFAULT_RULE = "GENERAL";
 const DEFAULT_CONFIDENCE = 0.5;
+
+/**
+ * 英文类别 → 中文七类（ADR-0090）：模型习惯性输出英文大类时确定性归一。
+ * 未命中七类也不丢候选——回落「可维护」并留痕（与 tips 宽容纪律一致）。
+ */
+const CATEGORY_ZH: Readonly<Record<string, string>> = {
+  SECURITY: "安全",
+  SECRETS: "安全",
+  PRIVACY: "安全",
+  VULNERABILITY: "安全",
+  INJECTION: "安全",
+  INPUT_VALIDATION: "安全",
+  XSS: "安全",
+  SSRF: "安全",
+  CORRECTNESS: "可靠性",
+  BUG: "可靠性",
+  LOGIC: "可靠性",
+  ERROR_HANDLING: "可靠性",
+  RELIABILITY: "可靠性",
+  RESOURCE: "可靠性",
+  RESOURCE_MANAGEMENT: "可靠性",
+  RESOURCE_LEAK: "可靠性",
+  CONCURRENCY: "可靠性",
+  RACE_CONDITION: "可靠性",
+  NULL_SAFETY: "可靠性",
+  NPE: "可靠性",
+  PERFORMANCE: "性能",
+  PERF: "性能",
+  EFFICIENCY: "性能",
+  MEMORY: "性能",
+  RESOURCE_EXHAUSTION: "性能",
+  TESTABILITY: "可测试性",
+  TEST: "可测试性",
+  TESTING: "可测试性",
+  PORTABILITY: "可移植",
+  PORTABLE: "可移植",
+  COMPATIBILITY: "可移植",
+  READABILITY: "可读性",
+  STYLE: "可读性",
+  NAMING: "可读性",
+  CLARITY: "可读性",
+  MAINTAINABILITY: "可维护",
+  MAINTENANCE: "可维护",
+  DUPLICATION: "可维护",
+  COMPLEXITY: "可维护",
+  DESIGN: "可维护",
+  API: "可维护",
+};
 
 /**
  * 分类语义桶（档 B）：规则包的 `category` 是小写细分类，主会话习惯用大写
@@ -92,6 +141,7 @@ export function normalizeCandidates(input: NormalizeCandidatesInput): NormalizeC
     normalizeCategory(record, repaired);
     normalizeRule(record, repaired);
     normalizeTitleAndDescription(record, repaired);
+    normalizeTips(record, repaired);
 
     candidates.push(record);
     if (repaired.size > 0) {
@@ -288,14 +338,30 @@ export function normalizeFilePath(value: string): string {
 }
 
 /**
- * 分类归一化（档 B）：`trim` → 大写 → 连字符 / 空白 → 下划线 → 语义桶。
+ * 分类归一化（ADR-0090）：中文七类原样保留；英文类别查表归一到中文七类；
+ * 表未命中回落「可维护」并留痕。
  *
  * `candidate-merge.ts` 也调用本函数，保证「候选归一入口」与「去重键」使用
  * 完全相同的词表（绕过归一入口的调用方也不会漏合并）。
  */
 export function normalizeCategoryValue(value: string): string {
-  const token = value.trim().toUpperCase().replace(/[\s-]+/g, "_");
-  return CATEGORY_ALIASES[token] ?? token;
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return DEFAULT_CATEGORY;
+  }
+  if (isReviewCategory(trimmed)) {
+    return trimmed;
+  }
+  const token = trimmed.toUpperCase().replace(/[\s-]+/g, "_");
+  const mapped = CATEGORY_ZH[token];
+  if (mapped !== undefined) {
+    return mapped;
+  }
+  // 中文但不在七类（如细分词）：保留原文，供人工检视；去重键不受影响
+  if (/[一-鿿]/.test(trimmed)) {
+    return trimmed;
+  }
+  return DEFAULT_CATEGORY;
 }
 
 function normalizeCategory(record: Record<string, unknown>, repaired: Set<string>): void {
@@ -309,6 +375,40 @@ function normalizeCategory(record: Record<string, unknown>, repaired: Set<string
   }
   record.category = DEFAULT_CATEGORY;
   repaired.add("category");
+}
+
+/**
+ * tips 块归一化（ADR-0090，宽容纪律）：缺失 / 非法字段兜底——
+ * `review ← description`、`suggestion ← ""`、`subcategory ← ""`；
+ * 不因 tips 缺失丢整条候选。
+ */
+function normalizeTips(record: Record<string, unknown>, repaired: Set<string>): void {
+  const raw = record.tips;
+  const isObject = typeof raw === "object" && raw !== null && !Array.isArray(raw);
+  const source: Record<string, unknown> = isObject
+    ? (raw as Record<string, unknown>)
+    : {};
+  if (!isObject) {
+    repaired.add("tips");
+  }
+  const description =
+    typeof record.description === "string" ? record.description.trim() : "";
+
+  const review = typeof source.review === "string" ? source.review.trim() : "";
+  const suggestion = typeof source.suggestion === "string" ? source.suggestion.trim() : "";
+  const subcategory = typeof source.subcategory === "string" ? source.subcategory.trim() : "";
+
+  if (review !== "" && suggestion !== "" && subcategory !== "" && isObject) {
+    // 完整且合法：原样通过（零漂移）
+    return;
+  }
+  const tips: Record<string, string> = {
+    review: review !== "" ? review : description,
+    suggestion,
+    subcategory,
+  };
+  repaired.add("tips");
+  record.tips = tips;
 }
 
 function normalizeRule(record: Record<string, unknown>, repaired: Set<string>): void {

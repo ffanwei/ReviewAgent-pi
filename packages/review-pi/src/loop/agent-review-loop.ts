@@ -199,7 +199,6 @@ export async function runAgentReviewLoop(
   const candidateNormalizations: CandidateNormalizationRecord[] = [];
   const rejectionCounts: Record<RejectionStage, number> = {
     SCHEMA_INVALID: 0,
-    NON_ENGLISH: 0,
     NO_EVIDENCE: 0,
     VERIFICATION_FAILED: 0,
     OUT_OF_SCOPE: 0,
@@ -339,7 +338,7 @@ export async function runAgentReviewLoop(
   );
   if (failed !== undefined) {
     throw new Error(
-      `review turn failed: ${failed.errorMessage ?? "provider returned an error stop reason"}`,
+      `检视回合失败：${failed.errorMessage ?? "provider 返回 error 停因"}`,
     );
   }
 
@@ -388,7 +387,7 @@ export async function runAgentReviewLoop(
     const parsed = parsePhaseReply(replyText);
     const notes: string[] = [];
     if (phaseSkippedToolCalls > 0) {
-      notes.push(`${phaseSkippedToolCalls} tool call(s) skipped: budget exhausted`);
+      notes.push(`跳过 ${String(phaseSkippedToolCalls)} 次工具调用：预算耗尽`);
     }
     if (parsed.note !== undefined) {
       notes.push(parsed.note);

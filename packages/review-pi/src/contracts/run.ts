@@ -52,13 +52,13 @@ export interface CandidateRejection {
 }
 
 /**
- * 拦截阶段顺序：Schema 校验 → 语言检查 → 证据检查 → 验证裁决 → 位置范围 → 重复 id。
+ * 拦截阶段顺序：Schema 校验 → 证据检查 → 验证裁决 → 位置范围 → 重复 id。
  * `OUT_OF_SCOPE` 由 `limits.findingScope` 控制（缺省开启）：意见必须落在本遍
  * diff 的变更 hunk（含前后 `contextLines` 行）内。
+ * ADR-0090：`NON_ENGLISH` 已随中文原生检视退役。
  */
 export type RejectionStage =
   | "SCHEMA_INVALID"
-  | "NON_ENGLISH"
   | "NO_EVIDENCE"
   | "VERIFICATION_FAILED"
   | "OUT_OF_SCOPE"

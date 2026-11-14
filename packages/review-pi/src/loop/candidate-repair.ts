@@ -36,26 +36,27 @@ export type CandidateRepairFn = (request: CandidateRepairRequest) => Promise<rea
 const REPAIR_MAX_TOKENS = 4_096;
 
 const REPAIR_SYSTEM_PROMPT = [
-  "You repair malformed code-review candidate findings so they pass a strict schema check.",
-  "The candidates are in English. Do not translate them.",
-  "Reply with a single JSON object and nothing else:",
-  '{"candidates":[{"id":"…","severity":"P0|P1|P2|P3","category":"…","file":"…","line":1,"title":"…","description":"…","evidence":["…"],"rule":"…","confidence":0.0}]}',
-  "Return exactly one entry per input candidate, in the same order.",
-  "Field rules:",
-  "- id: preserve the input id exactly; never change it.",
-  "- severity: one of P0, P1, P2, P3.",
-  "- category: non-empty UPPER_SNAKE_CASE string (e.g. CORRECTNESS, SECURITY).",
-  "- file: repository-relative path with forward slashes.",
-  "- line: positive integer.",
-  "- title: non-empty one-line English summary.",
-  "- description: non-empty English description of the issue and impact.",
-  "- evidence: non-empty array of English strings.",
-  "- rule: non-empty rule/pattern identifier.",
-  "- confidence: number between 0 and 1.",
-  "Hard constraints:",
-  "- Do NOT invent evidence, line numbers, file paths, code excerpts, or symbols that are absent from the input.",
-  "- If the input lacks a usable value, keep the closest input value rather than fabricating one.",
-  "- Output only the JSON object.",
+  "你负责修复格式不合法的代码检视候选意见，使其通过严格的 schema 校验。",
+  "候选正文已是中文。不要翻译、不要改写实质内容。",
+  "只回一个 JSON 对象，不附带任何其他文本：",
+  '{"candidates":[{"id":"…","severity":"P0|P1|P2|P3","category":"可维护|安全|可靠性|可测试性|性能|可移植|可读性","file":"…","line":1,"title":"…","description":"…","evidence":["…"],"rule":"…","confidence":0.0,"tips":{"review":"…","suggestion":"…","subcategory":"…"}}]}',
+  "每条输入候选恰好返回一条，顺序不变。",
+  "字段规则：",
+  "- id: 原样保留输入 id，绝不修改。",
+  "- severity: P0 / P1 / P2 / P3 之一。",
+  "- category: 七个中文类别之一（可维护、安全、可靠性、可测试性、性能、可移植、可读性）。",
+  "- file: 仓库相对路径（正斜杠）。",
+  "- line: 正整数。",
+  "- title: 非空中文一行结论。",
+  "- description: 非空中文问题与影响说明。",
+  "- evidence: 非空中文字符串数组。",
+  "- rule: 非空规则 / 模式标识。",
+  "- confidence: 0 到 1 之间的数字。",
+  "- tips: {review, suggestion, subcategory} 三个非空中文字符串；缺失时从 description 派生 review。",
+  "硬性约束：",
+  "- 绝不编造输入中不存在的 evidence、行号、文件路径、代码摘录或符号。",
+  "- 输入缺可用值时，保留最接近的输入值，而不是虚构。",
+  "- 只输出 JSON 对象。",
 ].join("\n");
 
 export function createCandidateRepair(llm: CandidateRepairLlm): CandidateRepairFn {
@@ -97,7 +98,7 @@ function buildRepairUserMessage(request: CandidateRepairRequest): string {
     candidate,
   }));
   return [
-    `Round ${String(request.round)} candidates that failed schema validation:`,
+    `第 ${String(request.round)} 轮未通过 schema 校验的候选：`,
     JSON.stringify(payload, null, 2),
   ].join("\n");
 }

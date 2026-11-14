@@ -227,7 +227,7 @@ export function resolveReportConfig(config: ResolvedConfig): ReportConfig | null
 - `include` 里的未知类型 → `ConfigError`（fail fast，不静默忽略）；
 - 数值缺省：`maxEvents=50`、`maxDelayMs=2000`、`queue.maxEvents=1000`、`flushTimeoutMs=5000`、`findings="summary"`；
 - `include` 缺省 `["run.start", "run.end", "phase", "request.end"]`；
-- `findings` 只接受 `none` / `summary`：写 `full` 直接 `ConfigError`（正文出口只有 `reviews_en.json`）；
+- `findings` 只接受 `none` / `summary`：写 `full` 直接 `ConfigError`（正文出口只有 `reviews_all.json`）；
 - `mcp.servers.<name>.headers` 是秘密：只进 `configSnapshot().secret`（`set` / `missing`），永不进 `values`。
 
 ## 7. `report.ts`（核心逻辑）

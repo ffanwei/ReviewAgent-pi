@@ -1,14 +1,12 @@
 import type { ToolSchema } from "../contracts/llm.js";
 
-// 七个 review.* 工具注册表（#6 P3a）：schema 字节一致口径的唯一真源。
-// 与 DSH 线语义等价的契约面：
-// - 审计投影（ToolSchema）：点分名 + parametersJson（canonical 键序字节串）；
-// - pi-ai / wire（convertTools 直达）：下划线名 + parameters 对象。
+// 七个 review.* 工具注册表（#6 P3a；描述中文化 ADR-0090）：
+// 工具名（点分 / 下划线）与参数键保持英文——它们是 wire 契约；
+// description 与参数 description 是给模型看的自然语言，改为中文。
 //
 // canonical 键序 = DSH 线 toCanonicalJson：type → properties → required →
 // additionalProperties；properties 子键字典序。pi 侧以字面键序构造（不用
-// 运行时排序器）达成同字节——registry.test.ts 对 t-series 真源逐字节把守，
-// 字面序写错即红。
+// 运行时排序器）达成同字节——registry.test.ts 把守字面序。
 //
 // 只读纪律：七工具全部为构造性只读（读快照、检索、拼装），无写路径——
 // 工具执行器（toolkit.ts）落位后由只读断言测试看守（仓库内容哈希不变）。
@@ -49,19 +47,19 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
   return [
     {
       name: "review.get_diff",
-      description: "Return the unified diff of the merge request under review.",
+      description: "返回本次受检合并请求（MR）的 unified diff。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
           limit: {
             type: "integer",
             minimum: 1,
-            description: "Maximum number of diff lines to return (page size).",
+            description: "最多返回的 diff 行数（页大小）。",
           },
           offset: {
             type: "integer",
             minimum: 1,
-            description: "1-based line number of the first diff line to return.",
+            description: "要返回的首行 diff 行号（1 起算）。",
           },
         },
         required: [],
@@ -71,14 +69,13 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.get_symbol",
       description:
-        "Look up a symbol by its simple name across the configured source languages and return signature-level declarations " +
-        "(kind, modifiers, return type, parameters, line number; no method bodies). Type matches include their members.",
+        "按简单名在已配置的源码语言中查找符号，返回签名级声明（种类、修饰符、返回类型、参数、行号；不含方法体）。类型命中含其成员。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
           symbol: {
             type: "string",
-            description: 'Simple (unqualified) symbol name to look up, e.g. "sumFirst" or "MathUtils".',
+            description: "要查找的简单（非限定）符号名，例如 \"sumFirst\" 或 \"MathUtils\"。",
           },
         },
         required: ["symbol"],
@@ -87,23 +84,22 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     },
     {
       name: "review.get_file",
-      description:
-        "Read a file from the repository snapshot. Supports an optional 1-based inclusive line range (startLine/endLine).",
+      description: "读取仓库快照中的文件。可选用 1 起算的闭区间行范围（startLine/endLine）。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
           // properties 子键字典序：endLine → path → startLine
           endLine: {
             type: "integer",
-            description: "Last line to read (1-based, inclusive). Optional; defaults to end of file.",
+            description: "读取的最后一行（1 起算、含端点）。可选，缺省到文件末尾。",
           },
           path: {
             type: "string",
-            description: "Repository-relative POSIX path of the file to read.",
+            description: "要读取文件的仓库相对 POSIX 路径。",
           },
           startLine: {
             type: "integer",
-            description: "First line to read (1-based, inclusive). Optional; defaults to 1.",
+            description: "读取的首行（1 起算、含端点）。可选，缺省为 1。",
           },
         },
         required: ["path"],
@@ -113,15 +109,13 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.find_references",
       description:
-        "Find name-level references to a symbol across the configured source languages (whole-word, case-sensitive match; " +
-        "no type resolution, so overloads and overrides are not distinguished). Returns declaration and usage " +
-        "sites with their enclosing symbols.",
+        "在已配置的源码语言中查找某符号的名称级引用（整词、区分大小写；不做类型解析，重载与覆写不区分）。返回声明与使用位置及其所属符号。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
           symbol: {
             type: "string",
-            description: 'Simple (unqualified) symbol name to search for, e.g. "sumFirst" or "MathUtils".',
+            description: "要搜索的简单（非限定）符号名，例如 \"sumFirst\" 或 \"MathUtils\"。",
           },
         },
         required: ["symbol"],
@@ -131,16 +125,13 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.get_call_chain",
       description:
-        "Build a name-level call chain around a method, function, or constructor: hop-1 callers, hop-2 callers of those " +
-        "callers, and callees invoked inside the declaration body. Whole-word name matching without type resolution; " +
-        "overloads are not distinguished.",
+        "围绕某方法 / 函数 / 构造器构建名称级调用链：一跳调用方、二跳调用方，以及声明体内调用的被调方。整词名称匹配、不做类型解析；不区分重载。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
           symbol: {
             type: "string",
-            description:
-              'Simple name of the method, function, or constructor to build the chain around, e.g. "sumFirst".',
+            description: "构建调用链所用方法 / 函数 / 构造器的简单名，例如 \"sumFirst\"。",
           },
         },
         required: ["symbol"],
@@ -150,14 +141,13 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.search_rule",
       description:
-        "Search the project rule base (defect-pattern and business rules) with a case-insensitive substring " +
-        "query. Returns matching rule entries; entries are statically configured per run.",
+        "按大小写不敏感的子串查询项目规则库（缺陷模式与业务规则）。返回命中的规则条目；条目按 run 静态配置。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: "Case-insensitive substring to search for in rule titles and texts.",
+            description: "在规则标题与正文中搜索的子串（大小写不敏感）。",
           },
         },
         required: ["query"],
@@ -167,14 +157,13 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.search_history",
       description:
-        "Search historical review and defect records for this repository with a case-insensitive substring " +
-        "query. Returns matching history entries; entries are statically configured per run.",
+        "按大小写不敏感的子串查询本仓库的历史评审与缺陷记录。返回命中的历史条目；条目按 run 静态配置。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: "Case-insensitive substring to search for in history entry titles and texts.",
+            description: "在历史条目标题与正文中搜索的子串（大小写不敏感）。",
           },
         },
         required: ["query"],

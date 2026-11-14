@@ -18,7 +18,7 @@ import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import { runReview } from "./review-run.js";
 
 // 落盘产物（ADR-0013）：检视转录 `session-*.json`（`{ info, messages, view }`）
-// + 检视意见导出 `reviews_en.json`。断言面 = 磁盘文件与其形状（S1 = runReview
+// + 检视意见导出 `reviews_all.json`。断言面 = 磁盘文件与其形状（S1 = runReview
 // 公共入口），不窥探内核内部状态。零网络（fake 适配器）。
 
 const tempDirs: string[] = [];
@@ -367,7 +367,7 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
   expect(doc.info["cost"]).toEqual(summed.cost);
 
   // 检视意见导出：与转录同目录（<out>/runs/）、保序等于 record.baseline.findings
-  expect(reviewsPath).toBe(path.join(dir, "reviews_en.json"));
+  expect(reviewsPath).toBe(path.join(dir, "reviews_all.json"));
   const envelope = JSON.parse(readFileSync(reviewsPath ?? "", "utf8")) as Record<string, unknown>;
   expect(Object.keys(envelope).sort()).toEqual(
     ["generatedAt", "runId", "source", "caseId", "rep", "model", "findings"].sort(),

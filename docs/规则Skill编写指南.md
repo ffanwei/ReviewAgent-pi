@@ -67,7 +67,7 @@ skill 会话最后一条 assistant 回复会被解析成候选（candidates）�
 2. **路径净化**：候选里出现你包的宿主绝对路径会被替换成占位符（包内路径**不得**回流到主会话请求）；
 3. **跨 skill 去重合并**；
 4. 并入主会话 **Phase 6（Evidence Verification）**，由主会话按同一标准逐条验证——**证据不足的候选会被丢弃**；
-5. 存活者与主会话 findings 合并、重编号，进 `reviews_en.json` → 中文 tips → MCP 上报。
+5. 存活者与主会话 findings 合并、重编号，进 `reviews_all.json` → 中文 tips → MCP 上报。
 
 所以你的候选不是「直接出货」，而是「提交给主会话复核的提案」。写候选时就要按「能被独立验证」的标准写证据。
 
@@ -86,7 +86,7 @@ skill 会话最后一条 assistant 回复会被解析成候选（candidates）�
 | **去重与合并** | 同 file+line+title 跨 skill / 跨片去重 |
 | **英文→中文 tips** | `reviews_tips_zh.json` 由 harness 的统一生成链产出，**你只写英文** |
 | **意见上报（MCP）** | `mrReviewResult` / `saveReviewSummary` / `endTask` 等业务上报全部由 harness 在收尾统一执行，**skill 绝不做任何上报** |
-| **产物落盘 / 审计 / 转录** | reviews_en.json、审计、session、trace 等 |
+| **产物落盘 / 审计 / 转录** | reviews_all.json、审计、session、trace 等 |
 
 一句话：**你的 skill 是「规则检视器」，不是「流水线」**。输入已就绪、输出有固定契约，中间的检视逻辑才是你的地盘。
 
@@ -97,7 +97,7 @@ skill 会话最后一条 assistant 回复会被解析成候选（candidates）�
 - ❌ **数据预处理**：不要解析/装载/过滤 diff，不要对输入做归一化——上下文里已有 diff，harness 已做过滤。
 - ❌ **意见上报**：不要尝试调用任何上报接口、写任何「平台」格式的文件。上报只发生在 harness 收尾。
 - ❌ **写被检视仓库**：七只 review 工具全部只读；`bash` 的 cwd 是**你的包根**，不是被检仓库。不要试图改仓库或产出「修复补丁」。
-- ❌ **输出中文 findings**：候选的 id/title/description/category/evidence **必须全英文**，否则会被 `NON_ENGLISH` 拦截丢弃。中文是 harness 后处理的事。
+- ✅ **候选直接产出中文与 tips**（ADR-0090）：`title` / `description` / `tips.{review,suggestion,subcategory}` 用中文；`category` 用中文七类（可维护 / 安全 / 可靠性 / 可测试性 / 性能 / 可移植 / 可读性）；`id` / `file` / `line` / `rule` / `evidence` 里的代码摘录保持英文原样。
 - ❌ **依赖宿主环境变量 / 密钥**：bash 拿不到白名单之外的 env（网关 key、CI 变量都不可见）。脚本别设计成「需要 `SOME_TOKEN` 才能跑」。
 - ❌ **声明新的工具或改工具边界**：八只工具的 schema、超时、env 白名单是核内常量，**不读你包里的任何声明**。
 - ❌ **假设有 shell**：没有管道、重定向、`cd`、`&&`。每条 bash 命令是单个进程。
@@ -287,7 +287,7 @@ tags: [sql, injection, concatenation]
 | 收尾行 `skill xxx FAILED · … · …` + 审计 `degradedReason` | 会话异常 / provider 错误 / 解析失败 | 看 `degradedReason` 原文与 `failureStage`（见下） |
 | `failureStage: "parse"` | 最后一条回复不是合法 `{"candidates":[…]}` JSON | SKILL.md 的输出契约段强调「只回一个 JSON 对象，无代码栅栏」；规则太多挤掉了输出预算时精简规则 |
 | 候选被 `SCHEMA_INVALID` 丢弃 | 字段缺失 / severity 不是 P0-P3 / line 非整数 / confidence 越界 | 对照 §4 的字段表 |
-| 候选被 `NON_ENGLISH` 丢弃 | title/description/category/evidence 里出现中文 | 同上：全英文 |
+| ~~候选被 `NON_ENGLISH` 丢弃~~ | ADR-0090 已删除该拦截门：中文候选合法 | 不再适用 |
 | 候选被 `NO_EVIDENCE` 丢弃 | evidence 空 / 只是复述结论 | evidence 每条都要 `path:line — 摘录` |
 | 候选被 `VERIFICATION_FAILED` 丢弃 | Phase 6 验证不通过：证据不足以支撑结论 | 证据给「可达路径」，不只给现象行 |
 | `skill xxx FAILED · … · terminated` | 上游模型流被网络/网关切断（内部错误，非手动停止） | 重跑即可；频发查网关 |

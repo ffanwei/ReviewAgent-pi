@@ -31,7 +31,7 @@ import { writeMcpCallLog, type McpCallLogDocument } from "./mcp-call-log.js";
 import { reportFilesWithoutTips } from "./report-files.js";
 import { doneLine, type ProgressSummary } from "./progress-render.js";
 import { renderJsonDocument, renderReviewOutcome } from "./render.js";
-import type { ShardReportRun, SemanticTipEntry } from "./report-payload.js";
+import type { SemanticTipEntry } from "./report-payload.js";
 import { describeReportFailure } from "./report-failure.js";
 import {
   DIFF_TOO_LARGE_SUMMARY_MARKDOWN,
@@ -86,12 +86,8 @@ export interface DeliveryEventsPort {
   close(): Promise<void>;
 }
 
-/** 一次性模型调用的两处用途（报文生成 / 收尾总结）；生产侧闭合 runtime */
+/** 一次性模型调用的唯一用途（收尾总结）；生产侧闭合 runtime */
 export interface DeliveryOneShotPort {
-  generateTips(input: {
-    readonly findings: readonly Finding[];
-    readonly codeByFinding: Readonly<Record<string, string>>;
-  }): Promise<ShardReportRun>;
   generateSummary(
     input: Omit<ReviewSummaryInput, "runtime" | "fetch">,
   ): Promise<ReviewSummaryResult>;
@@ -364,40 +360,9 @@ async function assembleTips(input: DeliveryInput): Promise<TipsAssembly> {
     record.baseline.findings.length > 0 && keptFindings.length === 0;
   const codeByFinding = await readCodeLines(input.repoPath, record.baseline.findings);
 
-  // 业务关闭（无 MCP 上报）时中文 tips 也必须产出：收尾补一次片级语义生成，
-  // 只登记语义（不发报文）。业务开启时各片已在回调里跑过，这里零额外调用。
-  if (input.mcp.task === undefined && keptFindings.length > 0) {
-    const { outcome, split } = await input.ports.oneShot.generateTips({
-      findings: keptFindings,
-      codeByFinding,
-    });
-    if (split !== undefined) {
-      log(
-        `review-pi: 中文 tips 语义生成失败，已拆分为 ${String(split.batches)} 批重试` +
-          `（${String(split.succeeded)} 批成功）\n`,
-      );
-    }
-    if (outcome.kind === "failed") {
-      log(`review-pi: 中文 tips 语义生成失败（${outcome.reason}），本次不产分组意见\n`);
-      for (const finding of keptFindings) {
-        const key = findingMergeKey(finding);
-        if (!input.tips.uncoveredReasonByMergeKey.has(key)) {
-          input.tips.uncoveredReasonByMergeKey.set(key, `片级语义生成失败：${outcome.reason}`);
-        }
-      }
-    } else {
-      for (const [key, entry] of outcome.semanticByKey) {
-        if (!input.tips.semanticByMergeKey.has(key)) {
-          input.tips.semanticByMergeKey.set(key, entry);
-        }
-      }
-      for (const [key, reason] of outcome.uncoveredByKey) {
-        if (!input.tips.uncoveredReasonByMergeKey.has(key)) {
-          input.tips.uncoveredReasonByMergeKey.set(key, reason);
-        }
-      }
-    }
-  }
+  // ADR-0090：tips 语义字段随 Finding.tips 直接交付（候选阶段产出），
+  // 不再有「业务关闭时补一次语义生成」的模型调用。业务开启时片级回调
+  // 登记的 semanticByMergeKey 仍优先（source / ruleId 在片级捕获更准）。
 
   const unifiedTips = assembleUnifiedTips({
     mergedFindings: record.baseline.findings,

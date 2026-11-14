@@ -151,7 +151,7 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 七工具面；产物布局与
   expect(path.dirname(auditPath)).toBe(path.join(runsRoot, "audit"));
   expect(path.dirname(transcriptPath)).toBe(path.dirname(recordPath));
   expect(path.basename(transcriptPath)).toBe(`session-${runId}.json`);
-  expect(reviewsPath).toBe(path.join(path.dirname(recordPath), "reviews_en.json"));
+  expect(reviewsPath).toBe(path.join(path.dirname(recordPath), "reviews_all.json"));
 
   // RunRecord：单形态记录面
   expect(record.source).toBe("mr");
@@ -379,14 +379,19 @@ function skillCandidate(
   return {
     id: `RULE-CHECK@${skill}@${RULE_FILE}:${line}`,
     severity: "P2",
-    category: "BUG",
+    category: "可靠性",
     file: RULE_FILE,
     line,
-    title: "Missing null guard on a public method",
-    description: "A public method dereferences its argument without a null guard, per the project rule.",
+    title: "公共方法缺少空指针防护",
+    description: "一个公共方法对入参解引用前未做空判（按项目规则）。",
     evidence: [`${RULE_FILE}:${line} public int getBase() {`],
     rule: skill,
     confidence: 0.8,
+    tips: {
+      review: "[缺陷类型] 入参未判空即解引用。影响评估：传入 null 时抛 NullPointerException。",
+      suggestion: "[重构思路] 解引用前判空。代码示例：`if (arg == null) { throw new IllegalArgumentException(); }`",
+      subcategory: "空指针安全",
+    },
     ...overrides,
   };
 }
@@ -550,7 +555,7 @@ test("规则 Skill：Phase 1–5 与无规则包逐字节相同，Phase 6 追加
   expect(invocationMessage.role).toBe("user");
   const invocationText = invocationMessage.content.map((block) => block.text ?? "").join("");
   expect(invocationText).toContain('<skill name="sample-rule"');
-  expect(invocationText).toContain("Rule-skill review pass");
+  expect(invocationText).toContain("规则 Skill 检视遍（本会话）");
   expect(messages.at(-1)?.role).toBe("assistant");
 
   // skill 候选走同一拦截链（rule = skill 名），无规则包时无 findings
@@ -987,7 +992,7 @@ test("limits.testFiles.skip：默认剔除测试文件，关闭后原样保留",
   const skippedPhase5 = (
     JSON.parse(skippedAudit.requests[4].wireBody) as { messages: { content: string }[] }
   ).messages.at(-1)?.content ?? "";
-  expect(skippedPhase5).toContain("test files are excluded");
+  expect(skippedPhase5).toContain("测试文件已按配置从本 diff 中剔除");
 
   // 关闭（skip = false）：测试文件原样进 diff，无 mrFilter，Phase 5 提示反转
   const included = await runReview({
@@ -1008,7 +1013,7 @@ test("limits.testFiles.skip：默认剔除测试文件，关闭后原样保留",
   const includedPhase5 = (
     JSON.parse(includedAudit.requests[4].wireBody) as { messages: { content: string }[] }
   ).messages.at(-1)?.content ?? "";
-  expect(includedPhase5).toContain("test files are included");
+  expect(includedPhase5).toContain("测试文件已按配置包含在本 diff 中");
 }, 120_000);
 
 test("limits.findingScope：默认只保留 diff hunk ±10 行内的意见，关闭后保留全部", async () => {
@@ -1068,7 +1073,6 @@ test("limits.findingScope：默认只保留 diff hunk ±10 行内的意见，关
   ]);
   expect(filteredAudit.rejectionCounts).toEqual({
     SCHEMA_INVALID: 0,
-    NON_ENGLISH: 0,
     NO_EVIDENCE: 0,
     VERIFICATION_FAILED: 0,
     OUT_OF_SCOPE: 2,

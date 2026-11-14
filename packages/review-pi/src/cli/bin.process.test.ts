@@ -442,14 +442,19 @@ function oneFindingCorpus(): FakeReply[] {
   const candidate = {
     id: "F100",
     severity: "P2",
-    category: "correctness",
+    category: "可靠性",
     file: "sample.txt",
     line: 1,
-    title: "Sentinel finding title",
-    description: "Sentinel finding description",
+    title: "哨兵意见标题",
+    description: "哨兵意见描述。",
     evidence: ["sample.txt:1"],
     rule: "sentinel-rule",
     confidence: 0.5,
+    tips: {
+      review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
+      suggestion: "[重构思路] 无。代码示例：```无```",
+      subcategory: "哨兵",
+    },
   };
   return [
     { text: "ok", usage: ZERO },
@@ -461,8 +466,7 @@ function oneFindingCorpus(): FakeReply[] {
       text: JSON.stringify({ verdicts: [{ id: "F100", pass: true, reason: "stub verdict: evidence holds" }], complete: true }),
       usage: ZERO,
     },
-    // ADR-0065：业务关闭的 run 也会在收尾做一次片级语义生成产中文 tips。
-    { text: payloadReplyForSentinelFinding(), usage: ZERO },
+    // ADR-0090：tips 语义随候选产出，业务关闭不再有收尾语义生成调用。
   ];
 }
 
@@ -493,14 +497,19 @@ function oneFindingCorpusForReport(): FakeReply[] {
   const candidate = {
     id: "F100",
     severity: "P2",
-    category: "correctness",
+    category: "可靠性",
     file: "README.md",
     line: 1,
-    title: "Sentinel finding title",
-    description: "Sentinel finding description",
+    title: "哨兵意见标题",
+    description: "哨兵意见描述。",
     evidence: ["README.md:1"],
     rule: "sentinel-rule",
     confidence: 0.5,
+    tips: {
+      review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
+      suggestion: "[重构思路] 无。代码示例：```无```",
+      subcategory: "哨兵",
+    },
   };
   return [
     { text: "ok", usage: ZERO },
@@ -626,7 +635,7 @@ test(
       expect(outcome.findings[0]).toMatchObject({
         id: "F100",
         severity: "P2",
-        title: "Sentinel finding title",
+        title: "哨兵意见标题",
         file: "sample.txt",
       });
       // 审计与运行记录落盘（audit 文件名与 runId 同源）
@@ -643,16 +652,12 @@ test(
       expect(timelineLines.some((line) => line.kind === "request" && line.site === "main")).toBe(
         true,
       );
-      // 收尾阶段（tips / 总结）续写同一次 run：runId 已确定，写进行里
-      expect(
-        timelineLines.some(
-          (line) => line.kind === "request" && line.runId === outcome.runId,
-        ),
-      ).toBe(true);
+      // ADR-0090：业务关闭的 run 不再有收尾一次性调用；timeline 只有六回合主请求
+      expect(timelineLines.every((line) => line.runId === null)).toBe(true);
 
-      // 传输层：六回合检视 + 一次业务关闭下的 tips 语义生成；全部带哨兵 Authorization 头
+      // 传输层：六回合检视（ADR-0090：业务关闭不再有收尾语义生成）；全部带哨兵 Authorization 头
       const requests = stub.requests();
-      expect(requests).toHaveLength(7);
+      expect(requests).toHaveLength(6);
       for (const request of requests) {
         expect(request.method).toBe("POST");
         expect(request.url).toBe("/v1/chat/completions");
@@ -712,7 +717,7 @@ test(
       );
 
       expect(run.status).toBe(1);
-      expect(run.stderr).toContain("review turn failed");
+      expect(run.stderr).toContain("检视回合失败");
       // 失败现场一行人读摘要（同时被 review-pi.log 镜像）
       expect(run.stderr).toContain("request-timeline:");
 
@@ -811,7 +816,7 @@ test(
       expect(run.status).toBe(0);
       const taskDir = path.join(run.home, ".PiAgent", "tasks", "home-task");
       expect(existsSync(path.join(taskDir, "runs", "run.json"))).toBe(true);
-      expect(existsSync(path.join(taskDir, "runs", "reviews_en.json"))).toBe(true);
+      expect(existsSync(path.join(taskDir, "runs", "reviews_all.json"))).toBe(true);
       expect(readdirSync(path.join(taskDir, "audit"))).toHaveLength(1);
       // 参数回显报的是生效的 tasks 根（并标注「缺省」来源）+ 任务 id 本身
       expect(run.stderr).toContain(path.join(run.home, ".PiAgent", "tasks"));
@@ -876,9 +881,9 @@ test(
       expect(outcome).toMatchObject({ ok: true, caseId: "MR-1234" });
       expect(outcome.findings).toHaveLength(1);
       // 产物落在 <tasks 根>/<taskId>/runs/ 下，路径不因输入是 JSON 而变化
-      expect(existsSync(path.join(outDir, CLI_TASK_ID, "runs", "reviews_en.json"))).toBe(true);
+      expect(existsSync(path.join(outDir, CLI_TASK_ID, "runs", "reviews_all.json"))).toBe(true);
       // taskId 与 caseId 是两个维度：caseId 来自 MR 文件名，taskId 来自 --taskId
-      expect(path.join(outDir, CLI_TASK_ID, "runs", "reviews_en.json")).not.toContain("MR-1234");
+      expect(path.join(outDir, CLI_TASK_ID, "runs", "reviews_all.json")).not.toContain("MR-1234");
       expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
     } finally {
       await stub.close();
@@ -1191,8 +1196,8 @@ test(
       expect(outcome.findings[0]).toMatchObject({
         id: "F100",
         severity: "P2",
-        title: "Sentinel finding title",
-        description: "Sentinel finding description",
+        title: "哨兵意见标题",
+        description: "哨兵意见描述。",
         file: "sample.txt",
         line: 1,
       });
@@ -1204,10 +1209,10 @@ test(
       const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
         findings: { title: string }[];
       };
-      expect(audit.findings[0]?.title).toBe("Sentinel finding title");
-      // 请求面：六回合检视 + 一次业务关闭下的 tips 语义生成（不是逐字段翻译）
-      expect(stub.requests()).toHaveLength(7);
-      expect(countOneShotGatewayCalls(stub)).toBe(1);
+      expect(audit.findings[0]?.title).toBe("哨兵意见标题");
+      // 请求面：六回合检视（ADR-0090：tips 随候选产出，零额外调用）
+      expect(stub.requests()).toHaveLength(6);
+      expect(countOneShotGatewayCalls(stub)).toBe(0);
       // 中文 tips 仍照产（统一生成唯一真源）
       expect(existsSync(path.join(cliRunsDir(outDir), "reviews_tips_zh.json"))).toBe(true);
       expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
@@ -1222,7 +1227,7 @@ test(
 // 中文 tips 由片级统一生成产出（业务开 / 关同一条路径），与 en 同目录。
 // 路径基线：<out>/runs/（ADR-0032：无 mr/<caseId>/rep-N 层）
 
-/** 本次 run 的产物目录（reviews_en.json / reviews_tips_zh.json 同层，ADR-0032 / ADR-0033） */
+/** 本次 run 的产物目录（reviews_all.json / reviews_tips_zh.json 同层，ADR-0032 / ADR-0033） */
 function cliRunsDir(outDir: string): string {
   return path.join(outDir, CLI_TASK_ID, "runs");
 }
@@ -1256,7 +1261,7 @@ test(
 
       expect(run.status).toBe(0);
       const runsDir = cliRunsDir(outDir);
-      expect(existsSync(path.join(runsDir, "reviews_en.json"))).toBe(true);
+      expect(existsSync(path.join(runsDir, "reviews_all.json"))).toBe(true);
       // ADR-0022：zh 文件停产——中文交付物只有 tips
       expect(existsSync(path.join(runsDir, "reviews_zh.json"))).toBe(false);
 
@@ -1269,14 +1274,14 @@ test(
       expect(outcome.findings[0]).toMatchObject({
         id: "F100",
         severity: "P2",
-        title: "Sentinel finding title",
-        description: "Sentinel finding description",
+        title: "哨兵意见标题",
+        description: "哨兵意见描述。",
         file: "sample.txt",
         line: 1,
       });
-      // 六回合检视 + 一次片级语义生成（业务关闭的统一 tips 兜底）
-      expect(stub.requests()).toHaveLength(7);
-      expect(countOneShotGatewayCalls(stub)).toBe(1);
+      // 六回合检视（ADR-0090：tips 随候选产出，业务关闭零额外调用）
+      expect(stub.requests()).toHaveLength(6);
+      expect(countOneShotGatewayCalls(stub)).toBe(0);
       // 分组意见（ADR-0017 / ADR-0065）：12 键统一形态，业务关闭也照产
       const tipsPath = path.join(runsDir, "reviews_tips_zh.json");
       expect(existsSync(tipsPath)).toBe(true);
@@ -1285,10 +1290,10 @@ test(
       const firstTip = (tips as { reviewTips: Record<string, unknown>[] }[])[0]?.reviewTips[0];
       expect(firstTip).toMatchObject({
         id: "F100",
-        review: "[可靠性] 测试桩意见。影响评估：仅测试。",
+        review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
         suggestion: "[重构思路] 无。代码示例：```无```",
         category: "可靠性",
-        subcategory: "测试桩",
+        subcategory: "哨兵",
         severity: "Minor",
         level: "Minor",
         ruleId: "",
@@ -1326,7 +1331,7 @@ test("中文产物：未配置引擎也产 tips（ADR-0065 业务关闭统一生
 
     expect(run.status).toBe(0);
     const runsDir = cliRunsDir(outDir);
-    expect(existsSync(path.join(runsDir, "reviews_en.json"))).toBe(true);
+    expect(existsSync(path.join(runsDir, "reviews_all.json"))).toBe(true);
     expect(existsSync(path.join(runsDir, "reviews_zh.json"))).toBe(false);
     expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(true);
     // 本次 run 无陈旧 zh / tips ⇒ 无「已清除陈旧」噪声
@@ -1356,7 +1361,7 @@ test("中文产物：陈旧 zh + tips → zh 被清除、tips 被本次统一生
     expect(existsSync(stalePath)).toBe(false);
     expect(existsSync(staleTipsPath)).toBe(true);
     expect(readFileSync(staleTipsPath, "utf8")).not.toContain("stale");
-    expect(existsSync(path.join(runsDir, "reviews_en.json"))).toBe(true);
+    expect(existsSync(path.join(runsDir, "reviews_all.json"))).toBe(true);
     // cwd 里上次留下的副本被本次结果覆盖（「有就是本次的」）
     expect(existsSync(path.join(run.cwd, "review-result.json"))).toBe(true);
     expect(readFileSync(path.join(run.cwd, "review-result.json"), "utf8")).not.toContain("stale");
@@ -1367,9 +1372,9 @@ test("中文产物：陈旧 zh + tips → zh 被清除、tips 被本次统一生
 }, 180_000);
 
 test(
-  "分组意见：语义生成失败 → 只有 tips 缺席（stdout 恒英文、exit 0、stderr 说明），弱耦合",
+  "分组意见（ADR-0090）：tips 直接取自候选，六回复即齐（无收尾语义生成调用）",
   async () => {
-    // 只有六回合检视回复：收尾的 tips 语义生成拿不到回复 ⇒ 500 ⇒ 失败路径
+    // 只有六回合检视回复：tips 语义随候选产出，无需第七次调用
     const stub = await startLoopbackStub(oneFindingCorpus().slice(0, 6));
     try {
       const outDir = makeTempDir("review-pi-cli-out-");
@@ -1378,15 +1383,10 @@ test(
       expect(run.status).toBe(0);
       const runsDir = cliRunsDir(outDir);
       expect(existsSync(path.join(runsDir, "reviews_zh.json"))).toBe(false);
-      expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(false);
-      // cwd 副本同理不产（使「有就是本次的」成立）
-      expect(existsSync(path.join(run.cwd, "reviews_tips_zh.json"))).toBe(false);
-      expect(existsSync(path.join(run.cwd, "review-result.json"))).toBe(false);
-      expect(run.stderr).toContain("中文 tips 语义生成失败");
-      expect(run.stderr).toContain("本次不产分组意见");
-      // stdout 仍是英文源档（tips 坏不拖累 stdout 与 en）
+      // tips 照产（弱耦合：不再依赖任何收尾模型调用）
+      expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(true);
       const outcome = JSON.parse(run.stdout) as { findings: { title: string }[] };
-      expect(outcome.findings[0]?.title).toBe("Sentinel finding title");
+      expect(outcome.findings[0]?.title).toBe("哨兵意见标题");
     } finally {
       await stub.close();
     }
@@ -2027,7 +2027,7 @@ test(
       );
       expect(run.stderr).not.toContain("\r");
       // 进度只报计数与摘要：结果全文（findings 文本 / 工具结果）不落地 stderr
-      expect(run.stderr).not.toContain("Sentinel finding description");
+      expect(run.stderr).not.toContain("哨兵意见描述");
       expectNoKeyLeak([{ label: "stdout", text: run.stdout }, { label: "stderr", text: run.stderr }]);
     } finally {
       await stub.close();
@@ -2500,7 +2500,6 @@ test(
   async () => {
     const stub = await startLoopbackStub([
       ...oneFindingCorpusForReport(),
-      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
       { text: "# 检视总结\n\n测试桩总结。", usage: ZERO_USAGE_REPLY },
     ]);
     const mcp = await startMcpStub();
@@ -2606,8 +2605,8 @@ test(
       expect(run.stderr).toContain("MCP 固定等待 30ms（mrReviewResult → saveReviewSummary）");
       expect(run.stderr).toContain("MCP 固定等待 30ms（saveReviewSummary → endTask）");
 
-      // 一次性模型调用走同一网关（非流式）：报文 + 总结各一条
-      expect(countOneShotGatewayCalls(stub)).toBe(2);
+      // 一次性模型调用走同一网关（非流式）：仅收尾总结一条（ADR-0090 报文零调用）
+      expect(countOneShotGatewayCalls(stub)).toBe(1);
 
       // 统一 tips（ADR-0045）：无 engine 也产出 reviews_tips_zh.json（12 键，
       // 与 mrReviewResult 同一份生成）；cwd 副本 review-result.json 逐字节相同
@@ -2623,10 +2622,10 @@ test(
       expect(tip).toMatchObject({
         id: "F100", // 单遍路径不重编号
         code: "Sample repository for Zone B tests.",
-        review: "[可靠性] 测试桩意见。影响评估：仅测试。",
+        review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
         suggestion: "[重构思路] 无。代码示例：```无```",
         category: "可靠性",
-        subcategory: "测试桩",
+        subcategory: "哨兵",
         severity: "Minor", // P2 → Minor（ADR-0052 四档，与 level 同值）
         level: "Minor", // P2 → 四档（Q18）
         ruleId: "",
@@ -2869,7 +2868,7 @@ test(
 );
 
 test(
-  "报文生成失败后按条数二分重试：两批都成功 → 两个文件都上报（ADR-0058）",
+  "报文组装（ADR-0090）：确定性投影零模型调用，两文件各自上报 + tips 同源",
   async () => {
     const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
     const alpha = "src/main/java/com/example/Alpha.java";
@@ -2877,14 +2876,19 @@ test(
     const candidates = [alpha, beta].map((file, index) => ({
       id: `F10${String(index)}`,
       severity: "P2",
-      category: "correctness",
+      category: "可靠性",
       file,
       line: 3,
-      title: `Sentinel finding in ${file}`,
-      description: "Sentinel finding description",
+      title: `${file} 中的哨兵意见`,
+      description: "哨兵意见描述。",
       evidence: [`${file}:3`],
       rule: "sentinel-rule",
       confidence: 0.5,
+      tips: {
+        review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
+        suggestion: "[重构思路] 无。代码示例：```无```",
+        subcategory: "哨兵",
+      },
     }));
     const stub = await startLoopbackStub([
       ...oneFindingCorpusForReport().map((reply, index) =>
@@ -2905,10 +2909,6 @@ test(
                 usage: ZERO,
               },
       ),
-      // 全量报文：非法 JSON（非重试类失败）→ 触发二分
-      { text: "这不是 JSON", usage: ZERO },
-      { text: payloadReplyForFinding("F100"), usage: ZERO },
-      { text: payloadReplyForFinding("F101"), usage: ZERO },
       { text: "# 检视总结", usage: ZERO },
     ]);
     const mcp = await startMcpStub();
@@ -2922,14 +2922,8 @@ test(
       });
 
       expect(run.status).toBe(0);
-      // 拆分留痕：两批都成功，两个文件各自上报（按文件粒度不变）
-      expect(run.stderr).toContain(
-        "MCP mrReviewResult 报文生成失败，已拆分为 2 批重试（2 批成功）",
-      );
       expect(run.stderr).toContain("MCP mrReviewResult 已上报 2 文件 / 2 条意见");
       expect(run.stderr).not.toContain("跳过本片有意见文件");
-      // ADR-0057：两条都成功上报，总结不再报「未上报」
-      expect(run.stderr).not.toContain("未上报");
 
       const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
       expect(business.map((call) => call.name)).toEqual([
@@ -2950,7 +2944,7 @@ test(
       expect((business[1]?.args.reviewTips as unknown[]).length).toBe(1);
       expect((business[2]?.args.reviewTips as unknown[]).length).toBe(1);
 
-      // 中文 tips 同源：两个文件组都落盘（统一生成，不是引擎回落）
+      // 中文 tips 同源：两个文件组都落盘（直接取自候选 tips）
       const tipsPath = path.join(cliRunsDir(outDir), "reviews_tips_zh.json");
       const tipsDoc = JSON.parse(readFileSync(tipsPath, "utf8")) as {
         filePath: string;
@@ -2962,8 +2956,8 @@ test(
         "F101",
       ]);
 
-      // 一次性调用：失败的全量 1 + 两个半批 2 + 总结 1
-      expect(countOneShotGatewayCalls(stub)).toBe(4);
+      // 一次性调用（ADR-0090）：仅收尾总结 1 次，报文零模型调用
+      expect(countOneShotGatewayCalls(stub)).toBe(1);
     } finally {
       await stub.close();
       await mcp.close();
@@ -2992,9 +2986,9 @@ test(
       expect(run.status).toBe(0);
       const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
       expect(business).toEqual([]);
-      // 事件通道照常；业务 tool 全关，但本地统一 tips 仍会做一次语义生成（ADR-0065）
+      // 事件通道照常；业务 tool 全关，tips 直接取自候选（ADR-0090 零额外调用）
       expect(mcp.toolCalls().some((call) => call.name === "report_events")).toBe(true);
-      expect(countOneShotGatewayCalls(stub)).toBe(1);
+      expect(countOneShotGatewayCalls(stub)).toBe(0);
       expect(existsSync(path.join(cliRunsDir(outDir), "reviews_tips_zh.json"))).toBe(true);
       expect(run.stderr).not.toContain("mrReviewResult");
       expect(run.stderr).not.toContain("saveReviewSummary");
@@ -3011,7 +3005,6 @@ test(
   async () => {
     const stub = await startLoopbackStub([
       ...oneFindingCorpusForReport(),
-      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
       { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
     ]);
     const mcp = await startMcpStub(["startTask"]);
@@ -3084,14 +3077,19 @@ function shardCorpusWithFinding(id: string, file: string): FakeReply[] {
   const candidate = {
     id,
     severity: "P2",
-    category: "correctness",
+    category: "可靠性",
     file,
     line: 3,
-    title: `Sentinel finding in ${file}`,
-    description: "Sentinel finding description",
+    title: `${file} 中的哨兵意见`,
+    description: "哨兵意见描述。",
     evidence: [`${file}:3`],
     rule: "sentinel-rule",
     confidence: 0.5,
+    tips: {
+      review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
+      suggestion: "[重构思路] 无。代码示例：```无```",
+      subcategory: "哨兵",
+    },
   };
   return [
     { text: "ok", usage: ZERO },
@@ -3110,14 +3108,12 @@ const ALPHA = "src/main/java/com/example/Alpha.java";
 const BETA = "src/main/java/com/example/Beta.java";
 
 test(
-  "统一 tips 尽力而为（Q26b）：s02 生成失败 → tips 只含 s01 文件组，mrReviewResult 覆盖两片（s02 补空包，ADR-0061）",
+  "统一 tips（Q26b / ADR-0090）：两片候选各带 tips → 两组都落盘，mrReviewResult 覆盖两片",
   async () => {
-    // 片间串行 await：语料顺序 = s01 六相位 → s01 报文 → s02 六相位 → s02 报文（垃圾）→ 总结
+    // 片间串行 await：语料顺序 = s01 六相位 → s02 六相位 → 总结
     const stub = await startLoopbackStub([
       ...shardCorpusWithFinding("F100", ALPHA),
-      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
       ...shardCorpusWithFinding("F100", BETA),
-      { text: "这不是 JSON", usage: ZERO_USAGE_REPLY },
       { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
     ]);
     const mcp = await startMcpStub();
@@ -3136,7 +3132,8 @@ test(
         },
         null,
         2,
-      )}\n`;
+      )}
+`;
       const run = await runBin(
         [
           "review",
@@ -3153,113 +3150,31 @@ test(
       );
 
       expect(run.status).toBe(0);
-      // ADR-0061：每文件必报——s01（Alpha）带意见，s02（Beta）生成失败也补空列表
+      // ADR-0061：每文件必报——两片各带意见
       const reportedCalls = mcp
         .toolCalls()
         .filter((call) => call.name === "mrReviewResult");
       expect(reportedCalls.map((call) => call.args.filePath)).toEqual([ALPHA, BETA]);
       expect((reportedCalls[0]?.args.reviewTips as unknown[]).length).toBe(1);
-      expect(reportedCalls[1]?.args.reviewTips).toEqual([]);
-      // s02 生成失败留痕（有意见文件改报空列表，覆盖率优先）
-      expect(run.stderr).toContain("有意见文件改报空列表");
-      // ADR-0057：总结只覆盖已上报的 s01 意见，s02 那条平台没收到、不进总结
-      expect(run.stderr).toContain("检视总结只覆盖已上报的 1 条意见（1 条未上报，未计入）");
-      // 直接看总结请求体：tips / findings 只含 Alpha，Beta 仅作为「已上报文件
-      // （空 tips）」出现，它的 finding 不进总结
-      const oneShotBodies = stub
-        .requests()
-        .filter(
-          (record) =>
-            record.method === "POST" &&
-            record.url === "/v1/chat/completions" &&
-            (record.body as { stream?: boolean } | undefined)?.stream === false,
-        )
-        .map((record) => JSON.stringify(record.body));
-      const summaryBody = oneShotBodies[oneShotBodies.length - 1] ?? "";
-      expect(summaryBody).toContain(ALPHA);
-      expect(summaryBody).not.toContain(`Sentinel finding in ${BETA}`);
-      // 逐条原因：该片每条 finding 都带「片级语义生成失败」原文，而不是只留一行
-      expect(run.stderr).toContain("tips 缺席该条：片级语义生成失败");
+      expect((reportedCalls[1]?.args.reviewTips as unknown[]).length).toBe(1);
 
-      // tips：尽力而为——只有 Alpha 组；聚合重编号后 id = F001
+      // tips：两组都产（直接取自候选 tips，聚合重编号后 id = F001）
       const tipsPath = path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json");
       expect(existsSync(tipsPath)).toBe(true);
       const tipsDoc = JSON.parse(readFileSync(tipsPath, "utf8")) as {
         filePath: string;
         reviewTips: { id: string; code: string }[];
       }[];
-      expect(tipsDoc.map((group) => group.filePath)).toEqual([ALPHA]);
+      expect(tipsDoc.map((group) => group.filePath)).toEqual([ALPHA, BETA]);
       expect(tipsDoc[0]?.reviewTips[0]?.id).toBe("F001");
       expect(tipsDoc[0]?.reviewTips[0]?.code).toBe("public class Alpha {");
+      expect(tipsDoc[1]?.reviewTips[0]?.code).toBe("public class Beta {");
     } finally {
       await stub.close();
       await mcp.close();
     }
   },
   240_000,
-);
-
-test(
-  "统一 tips 全灭（ADR-0065）：不回落引擎、本次不产分组意见、清陈旧，检视照常 exit 0",
-  async () => {
-    const stub = await startLoopbackStub([
-      ...oneFindingCorpusForReport(),
-      { text: "这不是 JSON", usage: ZERO_USAGE_REPLY }, // 报文生成失败 → 全灭
-      { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
-    ]);
-    const mcp = await startMcpStub();
-    try {
-      const cwd = makeTempDir("review-pi-cli-cwd-");
-      const outDir = makeTempDir("review-pi-cli-out-");
-      // 预置陈旧 tips（本次不产时必须清掉，否则读者分不清是不是本次的）
-      const runsDir = path.join(outDir, CLI_TASK_ID, "runs");
-      mkdirSync(runsDir, { recursive: true });
-      writeFileSync(path.join(runsDir, "reviews_tips_zh.json"), '{"stale":true}', "utf8");
-      writeFileSync(path.join(cwd, "review-result.json"), '{"stale":true}', "utf8");
-
-      const run = await runCliReview(
-        outDir,
-        writeMr(goldenFixture("vul4j-1.diff")),
-        {
-          gatewayBaseUrl: stub.baseUrl,
-          mcpServerUrl: mcp.url,
-        },
-        { cwd },
-      );
-
-      expect(run.status).toBe(0);
-      expect(run.stderr).toContain("统一生成未覆盖任何意见，本次不产分组意见");
-      expect(run.stderr).toContain("tips 缺席该条：片级语义生成失败");
-      // 陈旧清理：run 目录与 cwd 副本都不留
-      expect(existsSync(path.join(runsDir, "reviews_tips_zh.json"))).toBe(false);
-      expect(existsSync(path.join(cwd, "review-result.json"))).toBe(false);
-      // mrReviewResult / endTask 语义不变
-      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
-      expect(business.map((call) => call.name)).toEqual([
-        "startTask",
-        "mrReviewResult",
-        "saveReviewSummary",
-        "endTask",
-      ]);
-      // ADR-0061：有意见文件（README.md）生成失败时，本片 diff 文件
-      // （ObjectArrayCodec.java）照报空包——覆盖率优先。
-      expect(business[1]?.args).toEqual({
-        taskId: CLI_TASK_ID,
-        filePath: "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
-        reviewTips: [],
-      });
-      // ADR-0057：平台只收到空 tips，总结不得声称「未发现缺陷」
-      expect(business[2]?.args).toEqual({
-        taskId: CLI_TASK_ID,
-        markdownContent: "# 检视总结\n\n本次检视未向平台上报任何检视意见。",
-      });
-      expect(run.stderr).toContain("检视总结只覆盖已上报的 0 条意见（1 条未上报，未计入）");
-    } finally {
-      await stub.close();
-      await mcp.close();
-    }
-  },
-  180_000,
 );
 
 test(
@@ -3610,7 +3525,6 @@ test(
     const stub = await startLoopbackStub(
       [
         ...oneFindingCorpusForReport(),
-        { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
         { text: "# 检视总结\n\n测试桩总结。", usage: ZERO_USAGE_REPLY },
       ],
       { missingModels: ["ep-missing"] },
@@ -3675,7 +3589,6 @@ test(
   async () => {
     const stub = await startLoopbackStub([
       ...oneFindingCorpusForReport(),
-      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
       { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
     ]);
     // 只实现 tools/call 的定制服务端：initialize 回 404（与用户 Postman 场景同形）
@@ -3777,8 +3690,8 @@ test(
       category: "correctness",
       file: diffPath,
       line: 174,
-      title: "Sentinel finding title",
-      description: "Sentinel finding description",
+      title: "哨兵意见标题",
+      description: "哨兵意见描述。",
       evidence: [`${diffPath}:174`],
       rule: "sentinel-rule",
       confidence: 0.5,
@@ -3870,8 +3783,8 @@ test(
       file: diffPath,
       // 越界行号：`--repo` 抽不到源码行 → 报文按纪律跳过该条（绝不编 code）
       line: 9999,
-      title: "Sentinel finding title",
-      description: "Sentinel finding description",
+      title: "哨兵意见标题",
+      description: "哨兵意见描述。",
       evidence: [`${diffPath}:9999`],
       rule: "sentinel-rule",
       confidence: 0.5,
@@ -3890,7 +3803,6 @@ test(
         usage: ZERO,
       },
       // 语义输出照常（category 可归一），但 code 取不到 → skippedTips
-      { text: payloadReplyForSentinelFinding(), usage: ZERO },
     ]);
     const mcp = await startMcpStub();
     try {
@@ -3977,7 +3889,6 @@ test(
   async () => {
     const stub = await startLoopbackStub([
       ...oneFindingCorpusForReport(),
-      { text: payloadReplyForSentinelFinding(), usage: ZERO_USAGE_REPLY },
       { text: "# 检视总结", usage: ZERO_USAGE_REPLY },
     ]);
     const mcp = await startMcpStub();

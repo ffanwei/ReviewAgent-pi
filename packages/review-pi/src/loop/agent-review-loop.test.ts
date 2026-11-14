@@ -305,7 +305,7 @@ test("预算耗尽：第 7+ 次调用获 Error 应答、计数留痕、截断原
   // phase-2：3 请求 + 跳过计数 note
   const phase2 = outcome.audit.phaseLog[1];
   expect(phase2?.requestCount).toBe(3);
-  expect(phase2?.note).toBe(`${overflowCalls.length} tool call(s) skipped: budget exhausted`);
+  expect(phase2?.note).toBe(`跳过 ${String(overflowCalls.length)} 次工具调用：预算耗尽`);
 
   // 跳过批的工具应答进上下文（跳过批 recall 请求 requests[3] 里可见——
   // requests[2] 是携带溢出工具调用的请求本身）
@@ -382,7 +382,7 @@ test("provider 错误（stopReason error）：显式抛错，不静默成成功 
       throw new Error("expected the run to fail");
     },
     (error: unknown) => {
-      expect((error as Error).message).toMatch(/review turn failed/i);
+      expect((error as Error).message).toMatch(/检视回合失败/);
     },
   );
 });

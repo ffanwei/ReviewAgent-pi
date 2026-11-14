@@ -5,7 +5,7 @@ import { applyCandidateGate } from "./candidate-gate.js";
 import { buildDiffScope } from "./diff-scope.js";
 
 // 候选拦截链（测量常量面：六阶段语义的一部分）。
-// 顺序：SCHEMA_INVALID → NON_ENGLISH → NO_EVIDENCE → VERIFICATION_FAILED → OUT_OF_SCOPE → DUPLICATE_ID，
+// 顺序：SCHEMA_INVALID → NO_EVIDENCE → VERIFICATION_FAILED → OUT_OF_SCOPE → DUPLICATE_ID（ADR-0090：NON_ENGLISH 已退役），
 // 每个候选最多留痕一条（首个失败阶段）。
 
 const VALID_CANDIDATE = {
@@ -52,14 +52,23 @@ test("schema 失败优先于后续一切阶段（首个失败阶段留痕）", (
   expect(out.rejections[0]?.candidateId).toBe("F001");
 });
 
-test("含 CJK 字符的候选被 NON_ENGLISH 拦截", () => {
+test("中文候选不再被语言拦截（ADR-0090：NON_ENGLISH 已退役）", () => {
   const out = applyCandidateGate({
-    candidates: [{ ...VALID_CANDIDATE, title: "空指针解引用" }],
+    candidates: [
+      {
+        ...VALID_CANDIDATE,
+        title: "空指针解引用",
+        description: "对象可能为 null。",
+        evidence: ["a.ts:1 x"],
+      },
+    ],
     verdicts: verdicts({ F001: { pass: true, reason: "" } }),
     emittedIds: new Set(),
     round: 1,
   });
-  expect(out.rejections[0]?.stage).toBe("NON_ENGLISH");
+  expect(out.findings).toHaveLength(1);
+  expect(out.rejections).toHaveLength(0);
+  expect(out.findings[0]?.title).toBe("空指针解引用");
 });
 
 test("evidence 空或全空白被 NO_EVIDENCE 拦截（No Evidence, No Finding）", () => {

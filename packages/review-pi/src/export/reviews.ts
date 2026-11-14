@@ -2,20 +2,21 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Finding } from "../contracts/finding.js";
 
-// 检视意见导出（ADR-0013 / CONTEXT.md「检视意见导出」）：把 Finding 清单落成
-// 明确给下游读的产物——`reviews_en.json` 是英文真源口径，恒产。核外的中文
-// 交付物只有分组意见 `reviews_tips_zh.json`（ADR-0022：`reviews_zh.json` 已停产，
-// 不再由 CLI 落盘），绝不反向影响检视链。
+// 检视意见导出（ADR-0013 / ADR-0090）：把 Finding 清单落成明确给下游读的
+// 产物——`reviews_all.json` 是全部意见的真源口径（中文自然语言 + 结构化
+// 英文字段），恒产。中文交付物另有分组意见 `reviews_tips_zh.json`。
 //
 // 纪律：
 // - 信封（非裸数组）：`{ generatedAt, runId, source, caseId, rep, model,
 //   findings }`——provenance 显式，不靠路径推断；
 // - `findings` = 完整 `Finding` 对象，**保序**（与 `record.baseline.findings`
-//   同序深相等），恒英文；
+//   同序深相等）；
 // - 按 `rep` **覆盖重写**（与转录"每 run 独立留档"相反）；
 // - JSON 纪律同既有产物：2 空格缩进 + 尾换行；失败显式抛错。
 
-export const REVIEWS_EN_FILENAME = "reviews_en.json";
+export const REVIEWS_ALL_FILENAME = "reviews_all.json";
+/** @deprecated 历史名（ADR-0090 前的英文真源口径）；保留 re-export 供迁移 */
+export const REVIEWS_EN_FILENAME = REVIEWS_ALL_FILENAME;
 
 export interface ReviewsEnvelope {
   readonly generatedAt: string;
@@ -49,9 +50,14 @@ export function buildReviewsExport(input: BuildReviewsInput): ReviewsEnvelope {
   };
 }
 
-/** 落盘 `reviews_en.json`（`<dir>/reviews_en.json`，覆盖重写）；失败显式抛错 */
+/** 落盘 `reviews_all.json`（`<dir>/reviews_all.json`，覆盖重写）；失败显式抛错 */
+export async function writeReviewsAll(dir: string, envelope: ReviewsEnvelope): Promise<string> {
+  return writeReviewsFile(dir, REVIEWS_ALL_FILENAME, envelope);
+}
+
+/** @deprecated 历史名（ADR-0090）；转发到 writeReviewsAll */
 export async function writeReviewsEn(dir: string, envelope: ReviewsEnvelope): Promise<string> {
-  return writeReviewsFile(dir, REVIEWS_EN_FILENAME, envelope);
+  return writeReviewsAll(dir, envelope);
 }
 
 async function writeReviewsFile(

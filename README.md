@@ -1,10 +1,10 @@
 # ReviewAgent-pi
 
-一次 MR 检视、一条命令：读仓库快照 + 变更集（+ 可选规则 Skill），在 pi 内核上跑检视循环，产出**英文 findings**（`reviews_en.json`，结构化真源）与**中文按行分组的建议**（`reviews_tips_zh.json`，由片级语义生成提供），同时留全量审计与转录。
+一次 MR 检视、一条命令：读仓库快照 + 变更集（+ 可选规则 Skill），在 pi 内核上跑检视循环，产出**中文原生 findings**（`reviews_all.json`，自然语言中文 + 结构化英文，ADR-0090）与**中文按行分组的建议**（`reviews_tips_zh.json`，语义随候选直接产出），同时留全量审计与转录。
 
 - 内核基座：pi 代码仓的 npm 上游包（`@earendil-works/{pi-ai,pi-agent-core,chord,pi-telemetry}`，精确锁定 `0.85.1`，ADR-0035）；Review Runtime 在 `packages/review-pi` 从 0 重写。
 - 上下文策略：最小充分上下文（Minimal Sufficient Context）+ 缓存稳定循环（Cache-Stable Review Loop）——工具按需拉取，不整仓灌入。
-- 检视语言：英文是测量真源；控制台 stdout 恒英文（ADR-0065），中文只作为交付物（tips 文件 / MCP 报文）产出。
+- 检视语言：中文原生（ADR-0090）——提示词、findings、tips 全流程中文；结构化字段（id / severity / file / line / rule）保持英文；无语言拦截门、无二次翻译。
 
 ## 功能
 
@@ -13,7 +13,7 @@
 | 单次检视 | 一条命令一次 run：六阶段循环 + 七个 review 工具 + Context Ledger + 审计投影 |
 | 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：数组或 `{diffs:[…]}`；路径取 `new_path` / `filename` / `file_path` / `path`、正文取 `diff` / `patch`，`diff` 为对象时取内层 `diff.diff`） |
 | 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>` / `--skill <dir>`，一次可传多个（逗号列表或重复旗标），**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast。`--skill` 当前与 `--rule-skill` 同义（同一类 Skill，排在 `--rule-skill` 之后；同名 skill 由 `--skill` 覆盖）。值位置的空串 / 纯空白按未传处理 |
-| 中文建议 | 恒产 `reviews_tips_zh.json`（有意见且生成成功时）：由片级语义生成统一提供，与 MCP 上报同源；控制台 stdout 恒英文（ADR-0065） |
+| 中文建议 | 恒产 `reviews_tips_zh.json`（有意见时）：语义随候选直接产出（ADR-0090），与 MCP 上报同源；控制台 stdout 与 `reviews_all.json` 同为中文 |
 | MR 边界护栏 | 过滤后超 `limits.boundary` 只告警不拒检；`maxDiffChars` 是输入体积门（超限直接报错，不发模型） |
 | 大 MR 分片 | 过滤后 diff 超 `limits.split.maxShardChars` 时按 `diff --git` 文件块自动切片（绝不切 hunk）并确定性合并 findings；单片路径逐字节不变（ADR-0039） |
 | 单源配置 | 用户级 JSONC（`~/.PiAgent/PiAgent.jsonc` 或 `--config`），启动读一次成不可变快照，审计留 digest |
@@ -134,7 +134,7 @@ npm rm -g @baize/review-pi           # 卸载（嵌套依赖一并移除）
   "model": {
     // 默认检视模型（--model 可覆盖）。
     "default": "deepseek-v4-flash",
-    // 报文 / 总结 / 语义生成模型：null = 跟随本次检视模型（ADR-0021）。
+    // 收尾总结模型（ADR-0090 后报文 / tips 零模型调用）：null = 跟随本次检视模型（ADR-0021）。
     "presentation": null
   },
   "presentation": {
@@ -279,9 +279,9 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
     run.json                   RunRecord：模型、耗时、findings 计数、usage（分片时多 shards[]）
     session-<ts>.json          检视转录（请求 / 工具 / 相位全留痕）
     session-<ts>-skill-<name>-r<N>.json   规则 Skill 会话转录（每个会话一份）
-    reviews_en.json            英文 findings（结构化真源；分片时为合并去重后的一份）
+    reviews_all.json           全部 findings（中文自然语言 + 结构化英文；分片时为合并去重后的一份，ADR-0090）
     reviews_tips_zh.json       中文按行分组建议（有意见且生成成功时产）
-    shards/attempt-<ts>/sNN/   仅分片：每片主/skill 转录 + 片内 reviews_en.json
+    shards/attempt-<ts>/sNN/   仅分片：每片主/skill 转录 + 片内 reviews_all.json
   audit/
     <ts>.json                  审计：请求、工具调用、相位、Context Ledger、规则 Skill 留痕
     shards/attempt-<ts>/sNN/<ts>.json   仅分片：每片审计（聚合审计的 requests/toolCallLog 为空）

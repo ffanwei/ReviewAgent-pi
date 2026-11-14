@@ -27,21 +27,21 @@ export interface SkillPassRuntimeInfo {
   readonly arch?: string;
 }
 
-/** skill 会话的输出契约：压住候选拦截链的三个 gate 陷阱 + JSON 外壳 */
+/** skill 会话的输出契约：压住候选拦截链的 gate 陷阱 + JSON 外壳（中文，ADR-0090） */
 function invocationContract(name: string, runtime: SkillPassRuntimeInfo): string {
   return [
-    "## Rule-skill review pass (this session)",
-    "The conversation above is the main review session up to Phase 5. Use it as context, then inspect the changed code against this skill's rules. You may call the review tools, and you may run this skill's helper commands with the `bash` tool (any executable on PATH; the working directory is this skill's root).",
+    "## 规则 Skill 检视遍（本会话）",
+    "上面的会话是主检视会话到 Phase 5 为止的内容。以它为上下文，再按本 skill 的规则检查变更代码。你可以调用检视工具，也可以用 `bash` 工具运行本 skill 的辅助命令（PATH 上的任意可执行文件；工作目录是本 skill 的根目录）。",
     `- ${formatHostPlatformNote(runtime.platform, runtime.arch)}`,
     "",
-    "Output contract:",
-    `- When you are done, reply with a single JSON object: {"candidates": [<finding objects per the Finding schema>, ...]}.`,
-    `- Use the id form \`${skillCandidateIdTemplate(name)}\` for every candidate (no round number).`,
-    `- Set the "rule" field to the id of the specific rule from this skill's rules/ that the finding violates (that rule file's frontmatter id, e.g. "GEN-SQL-001"). Use "${name}" only when the finding does not map to any single rule.`,
-    "- Write EVERY finding field (id/title/description/category/evidence) in ENGLISH ONLY.",
-    "- Evidence is mandatory (symbol + line + excerpt); candidates without evidence are dropped.",
-    "- Do not repeat a finding the main session already reported for the same file and line. Only report the same location again if it is a genuinely different defect, and state that difference explicitly in the description.",
-    '- If no rule violation survives your inspection, reply with {"candidates": []}.',
+    "输出契约：",
+    "- 完成后只回一个 JSON 对象：{\"candidates\": [<符合 Finding 模式的对象>, ...]}。",
+    `- 每条候选的 id 形如 \`${skillCandidateIdTemplate(name)}\`（不含轮次号）。`,
+    `- "rule" 字段填该意见违反的本 skill rules/ 里具体规则的 frontmatter id（如 "GEN-SQL-001"）；只有无法对应到单条规则时才用 "${name}"。`,
+    "- 自然语言字段（title / description / tips 各字段）一律中文；代码标识符与专有名词保留英文。",
+    "- 证据必填（符号 + 行号 + 摘录）；没有证据的候选会被丢弃。",
+    "- 不要重复主会话已报告的同一文件同一行的问题。只有确实是另一个缺陷时才再次报告该位置，并在 description 里明确说明差异。",
+    '- 若检查后没有规则违例存活，回复 {"candidates": []}。',
   ].join("\n");
 }
 
@@ -75,6 +75,7 @@ const FINDING_KEYS = [
   "evidence",
   "rule",
   "confidence",
+  "tips",
 ] as const;
 
 /** 候选 → 单行 JSON（合法候选按固定键序；非法候选原样序列化，交给 SCHEMA_INVALID） */
@@ -107,8 +108,8 @@ export function buildSkillCandidatesBrief(
     return undefined;
   }
   const lines: string[] = [
-    "## Rule-skill candidates",
-    "Independent rule-skill review passes ran after Phase 5 and produced the candidates below. Verify them together with your own candidates, applying the same standard.",
+    "## 规则 Skill 候选",
+    "Phase 5 之后独立运行的规则 Skill 检视遍产出了以下候选。请把它们与你自己的候选一起核验，采用同一标准。",
     "",
   ];
   for (const batch of nonEmpty) {
@@ -120,7 +121,7 @@ export function buildSkillCandidatesBrief(
   }
   lines.push(
     "",
-    "Every candidate id above must appear in your verdicts array. Evidence that only repeats the candidate's own claim does not verify it.",
+    "上面每条候选 id 都必须出现在你的 verdicts 数组里。只复述候选自身主张的证据不算核验。",
   );
   return lines.join("\n");
 }

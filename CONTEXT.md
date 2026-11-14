@@ -86,12 +86,21 @@ _Avoid_: 运行落盘根（那是产品 `review` 的任务目录）、评测报�
 检视会话运行时的全部行为：loop 策略、`review.*` 工具、C0–C3 上下文决策、缓存纪律、检视政策与 Evidence Gate；在 pi 内核上从 0 重写（`packages/review-pi`，ADR-0009）。
 _Avoid_: 通用 Coding Runtime 复用、把核内当插件树挂接点（DSH 线历史形态，已随内核移除）
 
+**中文原生检视（Chinese-Native Review）**:
+检视流程与最终产物的语言口径（ADR-0090）：提示词、候选 schema、`Finding` 自然语言字段、tips 语义块、审计人话与 stderr 诊断全部中文；`NON_ENGLISH` 拦截门已删除。结构化字段（id / severity / file / line / evidence 代码摘录 / rule / 工具 wire 名 / 配置键 / CLI 旗标）与代码标识符、专有名词保持英文。历史「英文产出 + 核外翻译」口径（ADR-0010）与「控制台恒英文 + 片级语义生成」（ADR-0065）均被取代。
+_Avoid_: 双语检视（不存在语言参数化缝）、把结构化字段的英文当作「未完成的翻译」
+
+**候选语义块（Finding.tips）**:
+候选阶段随十三字段契约直接产出的中文意见块（`review` / `suggestion` / `subcategory`）：`reviews_tips_zh.json` 的 12 键 tips 与 `mrReviewResult` 报文共用这一份语义，是**确定性投影**而非二次生成——报文组装零模型调用（ADR-0090）。归一化兜底：缺失时 `review ← description`、`suggestion ← ""`、`subcategory ← ""`，不丢候选。
+_代码面_: `contracts/finding.ts`（`FindingTips`）、`cli/report-payload.ts`（纯投影）、`cli/unified-tips.ts`。
+_Avoid_: 语义生成（那是被退役的第二次调用）、翻译（候选本来就是中文）
+
 **策略驱动器（Review Driver）**:
 核内 Review Runtime 中代码级强制六阶段骨架的组件：只有它能推进阶段（一阶段 = 一回合），回合边界执行 Evidence Gate 与轮次调度。
 _Avoid_: 自定义 Loop（替换内核 loop 的机制，DSH 线已否；pi 线以 agent-loop 钩子实现同等骨架）、提示词纪律（骨架不是提示词约定）
 
 **核外（呈现工具链，legacy）**:
-服务于呈现而非检视会话的层：中文翻译投影、分组意见映射与真引擎装配（`src/presentation/`）；普通库被 CLI 调用，不进内核。ADR-0065 起 CLI 不再调用这一层（控制台恒英文、中文 tips 由片级语义生成提供），代码与发行产物保留供外部消费方使用。
+服务于呈现而非检视会话的层：中文翻译投影、分组意见映射与真引擎装配（`src/presentation/`）；普通库被 CLI 调用，不进内核。ADR-0065 起 CLI 不再调用这一层，ADR-0090 起检视本体即中文、这一层只对英文历史产物或外部英文输入有意义；代码与发行产物保留供外部消费方使用。
 _Avoid_: 实验插件、核内呈现（语言参数化缝不存在，ADR-0010）、把 legacy 模块当成现行运行时路径
 
 **交付（Delivery）**:
@@ -100,7 +109,7 @@ _代码面_: `cli/delivery.ts`、`cli/delivery.test.ts`。
 _Avoid_: 编排器（暗示可配置流程）、核内收尾（交付不进内核）、把两套运行账本算进交付（账本是整次进程运行的投影）
 
 **翻译投影（Translation Projection，legacy）**:
-核外呈现工具：消费检视产出的英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关联）。检视输出恒英文——测量面冻结，语言是呈现配置而非实验自变量（ADR-0010）。**ADR-0065 起 CLI 不再调用它**：控制台 stdout 恒英文、没有 `presentation` 键；`presentation.engine` 仅保留为兼容配置键（动态 import 核外引擎的路径解析与校验行为不变）。需要中文时看 `reviews_tips_zh.json` 或 MCP 报文。legacy 行为：引擎加载/协议/超时失败时整次呈现降级英文源；ADR-0059 的单字段降级（`presentation.degradedFields` / `degradedReason`）也只存在于该模块。
+核外呈现工具：消费英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关连）。**ADR-0090 起检视输出即中文**（历史「恒英文 + 核外翻译」口径废止），本模块仅对英文历史产物或外部英文输入有意义。**ADR-0065 起 CLI 不再调用它**：控制台 stdout 恒英文、没有 `presentation` 键；`presentation.engine` 仅保留为兼容配置键（动态 import 核外引擎的路径解析与校验行为不变）。需要中文时看 `reviews_tips_zh.json` 或 MCP 报文。legacy 行为：引擎加载/协议/超时失败时整次呈现降级英文源；ADR-0059 的单字段降级（`presentation.degradedFields` / `degradedReason`）也只存在于该模块。
 _Avoid_: 输出语言配置（暗示内核参数化缝）、双语内核（检视链整体留在已验证英文域）、把呈现引擎当作中文 tips 的生产者
 
 **运行进度投影（Run Progress Projection）**:
@@ -170,11 +179,11 @@ _Avoid_: 多语言检视（检视本来就全语言）、语言包（实际是�
 _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
 
 **检视意见导出（Review Findings Export）**:
-一次检视的 Finding 清单落盘成的对外消费产物：`reviews_en.json` 是英文真源口径（恒产），中文侧只有按文件分组的中文意见 `reviews_tips_zh.json`（有 finding 且有覆盖时**必产**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022）；控制台 stdout 恒英文、无 `presentation` 键（ADR-0065）。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027；另有隐藏的 session 索引，见「Session 索引」）。tips **只有一个生产者**（ADR-0065）：**片级语义生成**（与 `mrReviewResult` 同一份语义输出，12 键 = 10 键 + `id` + `level`，只增不删）。业务上报开启时由片级回调生成；业务上报关闭时收尾对过滤后的 findings 补一次同源生成（只登记语义、不发报文）。生成全灭时**不回落任何引擎**：有 finding 但零覆盖则不产文件并清陈旧；零 finding 或全被过滤则产 `[]`。字段口径（ADR-0052）：`severity` 四档（P0→Fatal / P1→Major / P2→Minor / P3→Suggestion，与 `level` 同值）；`confidence` 三档（≥0.7 High / ≥0.5 Medium / 其余 Low）；配置 `limits.confidence.min`（0–1，缺省 0.5）在生成前丢弃 `confidence < min` 的意见，**只作用于中文 tips**（`reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`），`reviews_en.json` / stdout 恒全量；丢弃条数与阈值记入审计 / `run.json` 的 `tipsFilter`。另配 `limits.severity.min`（`P0`–`P3`，缺省 `P3` = 不过滤）按严重级过滤同一组产物（中文 tips + MCP 上报），英文真源恒全量，留痕键为 `severityFilter`。测试文件由 `limits.testFiles.skip`（缺省 `true`）在**检视输入阶段**按文件块整块剔除（不进 diff，因而不产 findings / tips / MCP 上报），留痕走 `mrFilter` 的 `test` 原因；同样在输入阶段生效的还有 `limits.mrFilter.excludeGlobs`（ADR-0069，glob 列表，留痕 `mrFilter` 的 `exclude` 原因）；它们与上述输出侧过滤不同，改变的是被检视的输入集合。检视意见的位置范围由 `limits.findingScope`（ADR-0064，缺省开启，默认 hunk ±10 行）在**候选拦截链**判定：文件不在本遍 diff 或落在变更 hunk 之外的意见按 `OUT_OF_SCOPE` 丢弃，只留审计 `rejections` / `rejectionCounts`，findings / tips / MCP 三处口径一致；关闭后不再构建位置范围。
+一次检视的 Finding 清单落盘成的对外消费产物：`reviews_all.json` 是全部意见的真源口径（ADR-0090 起中文自然语言 + 结构化英文，恒产；原名 `reviews_en.json` 已更名），中文侧另有按文件分组的中文意见 `reviews_tips_zh.json`（有 finding 且有覆盖时**必产**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022）；控制台 stdout 与 `reviews_all.json` 同源中文、无 `presentation` 键（ADR-0065 / ADR-0090）。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027；另有隐藏的 session 索引，见「Session 索引」）。tips **只有一个生产者**（ADR-0090）：**候选阶段直接产出的 `Finding.tips` 语义块**（`review` / `suggestion` / `subcategory` 随候选十三字段契约产出，12 键 = 10 键 + `id` + `level`，只增不删）——不再有任何「第二次语义生成」模型调用；MCP 报文与 tips 是同一份语义的确定性投影。业务开 / 关同一条路径。字段口径（ADR-0052）：`severity` 四档（P0→Fatal / P1→Major / P2→Minor / P3→Suggestion，与 `level` 同值）；`confidence` 三档（≥0.7 High / ≥0.5 Medium / 其余 Low）；配置 `limits.confidence.min`（0–1，缺省 0.5）在生成前丢弃 `confidence < min` 的意见，**只作用于中文 tips**（`reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`），`reviews_all.json` / stdout 恒全量；丢弃条数与阈值记入审计 / `run.json` 的 `tipsFilter`。另配 `limits.severity.min`（`P0`–`P3`，缺省 `P3` = 不过滤）按严重级过滤同一组产物（中文 tips + MCP 上报），全部意见真源恒全量，留痕键为 `severityFilter`。测试文件由 `limits.testFiles.skip`（缺省 `true`）在**检视输入阶段**按文件块整块剔除（不进 diff，因而不产 findings / tips / MCP 上报），留痕走 `mrFilter` 的 `test` 原因；同样在输入阶段生效的还有 `limits.mrFilter.excludeGlobs`（ADR-0069，glob 列表，留痕 `mrFilter` 的 `exclude` 原因）；它们与上述输出侧过滤不同，改变的是被检视的输入集合。检视意见的位置范围由 `limits.findingScope`（ADR-0064，缺省开启，默认 hunk ±10 行）在**候选拦截链**判定：文件不在本遍 diff 或落在变更 hunk 之外的意见按 `OUT_OF_SCOPE` 丢弃，只留审计 `rejections` / `rejectionCounts`，findings / tips / MCP 三处口径一致；关闭后不再构建位置范围。
 _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
 
 **运行落盘根（Runs Root）**:
-`--taskId` 决定的任务目录 `<tasks 根>/<taskId>/`（tasks 根缺省 `~/.PiAgent/tasks`，`--tasks-dir` 可覆盖），本次检视的全部留痕都在其下：`runs/`（`run.json` 记录 / `session-*.json` 转录 / `reviews_*.json` 意见导出 / `review-pi.log` CLI 运行日志）与 `audit/<ts>.json`（审计），规则包解压缓存在 `.cache/rule-skills/`。分片检视时每片的转录/审计/片内 `reviews_en.json` 落在 `runs/shards/attempt-<ts>/sNN/` 与 `audit/shards/attempt-<ts>/sNN/`，顶层只留聚合产物。一个任务目录就是一次 run 的输出根：没有 case / rep / source 目录层，`caseId` 只作为数据字段（ADR-0032、ADR-0033、ADR-0039）。
+`--taskId` 决定的任务目录 `<tasks 根>/<taskId>/`（tasks 根缺省 `~/.PiAgent/tasks`，`--tasks-dir` 可覆盖），本次检视的全部留痕都在其下：`runs/`（`run.json` 记录 / `session-*.json` 转录 / `reviews_*.json` 意见导出 / `review-pi.log` CLI 运行日志）与 `audit/<ts>.json`（审计），规则包解压缓存在 `.cache/rule-skills/`。分片检视时每片的转录/审计/片内 `reviews_all.json` 落在 `runs/shards/attempt-<ts>/sNN/` 与 `audit/shards/attempt-<ts>/sNN/`，顶层只留聚合产物。一个任务目录就是一次 run 的输出根：没有 case / rep / source 目录层，`caseId` 只作为数据字段（ADR-0032、ADR-0033、ADR-0039）。
 _Avoid_: 输出目录（泛指；本仓改称任务目录，旧 `--out` 已随 ADR-0033 移除）、runs 根（与历史 `runs/phase2-*` 实验目录混淆）
 
 **任务（taskId）**:

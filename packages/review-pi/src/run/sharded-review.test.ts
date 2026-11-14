@@ -420,7 +420,7 @@ test("分片 findings 合并 + 账目闭合 + run.json.shards 可寻址", async 
   expect(run.transcriptPaths.every((file) => file.includes(`${path.sep}shards${path.sep}`))).toBe(
     true,
   );
-  // 聚合 reviews_en.json 只有一份，findings 与记录同源
+  // 聚合 reviews_all.json 只有一份，findings 与记录同源
   const reviews = JSON.parse(readFileSync(run.reviewsPath, "utf8")) as { findings: { id: string }[] };
   expect(reviews.findings.map((finding) => finding.id)).toEqual(["F001", "F002"]);
 
@@ -458,13 +458,13 @@ test("第二片失败：退出抛错、不写聚合产物，已完成的片产�
     runReview(
       baseInput(runsRoot, TWO_FILE_DIFF, runtime, script.fetch, (event) => events.push(event)),
     ),
-  ).rejects.toThrow(/review turn failed/);
+  ).rejects.toThrow(/检视回合失败/);
   expect(script.requests).toHaveLength(7);
 
   // 聚合产物一律不写
   expect(existsSync(path.join(runsRoot, "runs", "run.json"))).toBe(false);
-  expect(existsSync(path.join(runsRoot, "runs", "reviews_en.json"))).toBe(false);
-  // 第 1 片的产物保留（s01 目录里应有转录与 reviews_en.json）
+  expect(existsSync(path.join(runsRoot, "runs", "reviews_all.json"))).toBe(false);
+  // 第 1 片的产物保留（s01 目录里应有转录与 reviews_all.json）
   const shardsDir = path.join(runsRoot, "runs", "shards");
   const attempts = existsSync(shardsDir) ? readdirSync(shardsDir) : [];
   expect(attempts).toHaveLength(1);
@@ -472,7 +472,7 @@ test("第二片失败：退出抛错、不写聚合产物，已完成的片产�
   expect(existsSync(shardOneDir)).toBe(true);
   const files = readdirSync(shardOneDir);
   expect(files.some((file) => file.startsWith("session-"))).toBe(true);
-  expect(files).toContain("reviews_en.json");
+  expect(files).toContain("reviews_all.json");
 
   // 进度：run.start 带片数、run.end 为 failed
   const runEvents = events.filter((event) => event.kind === "run");

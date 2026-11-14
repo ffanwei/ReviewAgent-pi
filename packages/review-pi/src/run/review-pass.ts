@@ -12,7 +12,7 @@ import type {
   RuleSkillPassRecord,
   RunAudit,
 } from "../contracts/run.js";
-import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
+import { buildReviewsExport, writeReviewsAll } from "../export/reviews.js";
 import {
   buildOpenCodeSession,
   writeOpenCodeSession,
@@ -68,7 +68,7 @@ export interface ReviewPassInput {
   /** 规则 Skill（编排层只装载一次，各片共享） */
   readonly ruleSkills: readonly RuleSkill[];
   readonly ruleSkillAudit: readonly RuleSkillAudit[];
-  /** 本遍产物目录（转录 / reviews_en.json） */
+  /** 本遍产物目录（转录 / reviews_all.json） */
   readonly runDir: string;
   /** 本遍审计目录（<auditDir>/<runId>.json） */
   readonly auditDir: string;
@@ -416,7 +416,7 @@ async function persistTranscript(args: {
   return writeTranscript(args.runDir, content);
 }
 
-/** 检视意见导出落盘：`<runDir>/reviews_en.json`；失败抛错 */
+/** 检视意见导出落盘：`<runDir>/reviews_all.json`；失败抛错 */
 async function persistReviewsEn(args: {
   readonly caseId: string;
   readonly rep: number;
@@ -435,5 +435,5 @@ async function persistReviewsEn(args: {
     model: args.modelId,
     findings: args.findings,
   });
-  return writeReviewsEn(args.runDir, envelope);
+  return writeReviewsAll(args.runDir, envelope);
 }

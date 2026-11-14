@@ -1,12 +1,12 @@
 // 候选拦截链（测量常量面：六阶段语义的 Evidence Gate 部分）。
-// "No Evidence, No Finding"：SCHEMA_INVALID → NON_ENGLISH → NO_EVIDENCE
+// "No Evidence, No Finding"：SCHEMA_INVALID → NO_EVIDENCE
 // → VERIFICATION_FAILED → OUT_OF_SCOPE → DUPLICATE_ID，每候选至多留痕一条
-// （首个失败阶段）。
+// （首个失败阶段）。ADR-0090：NON_ENGLISH 拦截已随中文原生检视退役。
 //
 // 跨轮去重口径（P1）：**按内容键** `(normalize(file), line, normalize(title))`
 // 判重，不按模型给的 `id`。模型每轮都可能从 F001 重新编号，id 复用不代表
 // 同一问题；只有内容相同才丢弃。
-import type { Finding } from "../contracts/finding.js";
+import type { Finding, FindingTips } from "../contracts/finding.js";
 import type { CandidateRejection } from "../contracts/run.js";
 import { findingContentKey } from "../finding/finding-key.js";
 import { validateFinding } from "../finding/finding-schema.js";
@@ -114,21 +114,18 @@ function firstFailingStage(
   if (schemaErrors.length > 0) {
     return { candidateId, stage: "SCHEMA_INVALID", reason: schemaErrors.join("; ") };
   }
-  if (containsNonEnglish(candidate)) {
-    return { candidateId, stage: "NON_ENGLISH", reason: "finding text must be English only" };
-  }
   if (!hasEvidence(candidate)) {
-    return { candidateId, stage: "NO_EVIDENCE", reason: "no evidence cited (No Evidence, No Finding)" };
+    return { candidateId, stage: "NO_EVIDENCE", reason: "未引用证据（No Evidence, No Finding）" };
   }
   if (verdict === undefined) {
-    return { candidateId, stage: "VERIFICATION_FAILED", reason: "no verification verdict for candidate" };
+    return { candidateId, stage: "VERIFICATION_FAILED", reason: "没有该候选的裁决结论" };
   }
   if (!verdict.pass) {
-    const detail = verdict.reason.length > 0 ? `: ${verdict.reason}` : "";
+    const detail = verdict.reason.length > 0 ? `：${verdict.reason}` : "";
     return {
       candidateId,
       stage: "VERIFICATION_FAILED",
-      reason: `evidence verification rejected the candidate${detail}`,
+      reason: `证据裁决驳回了该候选${detail}`,
     };
   }
   if (scope !== undefined) {
@@ -146,20 +143,10 @@ function firstFailingStage(
     return {
       candidateId,
       stage: "DUPLICATE_ID",
-      reason: "a finding with the same (file, line, title) was already emitted in an earlier round",
+      reason: "同 (file, line, title) 的意见在更早的轮次已产出",
     };
   }
   return undefined;
-}
-
-/** 检查候选文本字段是否含 CJK 字符（输出全英文纪律） */
-const CJK_PATTERN = /[㐀-䶿一-鿿豈-﫿　-〿＀-￯]/;
-
-function containsNonEnglish(candidate: unknown): boolean {
-  const record = candidate as Record<string, unknown>;
-  const evidence = Array.isArray(record.evidence) ? record.evidence : [];
-  const texts = [record.title, record.description, ...evidence];
-  return texts.some((text) => typeof text === "string" && CJK_PATTERN.test(text));
 }
 
 function hasEvidence(candidate: unknown): boolean {
@@ -182,6 +169,7 @@ function toFinding(candidate: unknown): Finding {
     evidence: readonly string[];
     rule: string;
     confidence: number;
+    tips?: FindingTips;
   };
   return {
     id: record.id,
@@ -194,5 +182,6 @@ function toFinding(candidate: unknown): Finding {
     evidence: [...record.evidence],
     rule: record.rule,
     confidence: record.confidence,
+    ...(record.tips !== undefined ? { tips: record.tips } : {}),
   };
 }

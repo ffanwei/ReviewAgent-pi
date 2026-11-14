@@ -3,33 +3,43 @@
     {
       "id": "F001",
       "severity": "P2",
-      "category": "CORRECTNESS",
+      "category": "可靠性",
       "file": "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
       "line": 177,
-      "title": "Switching to parseArray(componentClass, ...) may drop generic type information for generic array components",
-      "description": "The change replaces parser.parseArray(componentType, array, fieldName) with parser.parseArray(componentClass, array, fieldName). The diff context shows both variables are initialized together only in the visible branch (componentType = componentClass = clazz.getComponentType()). If the method has another branch in which componentType is a ParameterizedType (or other non-Class Type) while componentClass is only its raw Class, the two parseArray calls select different overloads and are no longer equivalent. The Class overload may deserialize array elements using the erased component class, losing generic type information and potentially causing ClassCastException or incorrect element types for generic arrays. This is a possible behavioral regression that depends on code not visible in the diff.",
+      "title": "改用 parseArray(componentClass, ...) 可能丢失泛型数组组件的类型信息",
+      "description": "本次变更把 parser.parseArray(componentType, array, fieldName) 改成了 parser.parseArray(componentClass, array, fieldName)。diff 上下文显示两个变量只在可见分支中被同时赋值（componentType = componentClass = clazz.getComponentType()）。若该方法在 diff 之外还有别的分支，其中 componentType 是 ParameterizedType（或其它非 Class 的 Type）而 componentClass 只是其原始 Class，两个 parseArray 调用会选择不同重载、不再等价：Class 重载可能按擦除后的组件类反序列化数组元素，丢失泛型类型信息，进而对泛型数组造成 ClassCastException 或元素类型错误。这是一个依赖 diff 之外代码的潜在行为回归。",
       "evidence": [
-        "ObjectArrayCodec.java added line (new line 177): parser.parseArray(componentClass, array, fieldName);",
-        "ObjectArrayCodec.java removed line: parser.parseArray(componentType, array, fieldName);",
-        "ObjectArrayCodec.java context line 174: componentType = componentClass = clazz.getComponentType(); shows both are assigned together only in the visible branch, and the variable names indicate componentType is a Type while componentClass is a Class<?>, so the two calls bind to different overloads."
+        "ObjectArrayCodec.java 新增行（新行号 177）：parser.parseArray(componentClass, array, fieldName);",
+        "ObjectArrayCodec.java 删除行：parser.parseArray(componentType, array, fieldName);",
+        "ObjectArrayCodec.java 上下文行 174：componentType = componentClass = clazz.getComponentType(); 仅在可见分支同时赋值；变量命名表明 componentType 是 Type 而 componentClass 是 Class<?>，两次调用绑定到不同重载。"
       ],
       "rule": "CORRECTNESS-001",
-      "confidence": 0.3
+      "confidence": 0.3,
+      "tips": {
+        "review": "[缺陷类型] 重载切换可能丢失泛型类型信息。影响评估：泛型数组反序列化可能产生 ClassCastException 或元素类型错误。",
+        "suggestion": "[重构思路] 在存在 ParameterizedType 分支的场景保留 componentType 重载，或显式断言两者等价。代码示例：`if (componentType instanceof Class<?> c) { parseArray(c, array, fieldName); } else { parseArray(componentType, array, fieldName); }`",
+        "subcategory": "类型安全"
+      }
     },
     {
       "id": "F002",
       "severity": "P3",
-      "category": "MAINTAINABILITY",
+      "category": "可维护",
       "file": "src/main/java/com/alibaba/fastjson/serializer/ObjectArrayCodec.java",
       "line": 177,
-      "title": "Security-motivated overload change lacks explanatory comment",
-      "description": "The only behavioral difference in this hunk is the static type of the argument passed to parseArray: componentType (Type) vs componentClass (Class<?>), which selects a different overload. This is the core of the CVE-2017-18349 fix, but nothing in the code explains why the Type overload must be avoided. Without a comment, a future maintainer may see the two variables as equivalent (since they are assigned from the same expression) and revert to componentType, reintroducing the vulnerability. Add a short comment referencing the security rationale.",
+      "title": "安全驱动的重载切换缺少解释性注释",
+      "description": "这个 hunk 唯一的行为差异是传给 parseArray 的静态类型：componentType（Type）换成 componentClass（Class<?>），选择了不同重载。这正是 CVE-2017-18349 修复的核心，但代码没有任何注释说明为什么必须避开 Type 重载。没有注释时，后续维护者会把两个变量当作等价（毕竟来自同一赋值表达式）而改回 componentType，重新引入漏洞。建议补一条引用安全理由的短注释。",
       "evidence": [
-        "ObjectArrayCodec.java line 177: parser.parseArray(componentClass, array, fieldName); replaces parser.parseArray(componentType, array, fieldName); with no comment",
-        "ObjectArrayCodec.java line 174: componentType = componentClass = clazz.getComponentType(); makes the two variables appear interchangeable, obscuring why componentClass is required."
+        "ObjectArrayCodec.java 行 177：parser.parseArray(componentClass, array, fieldName); 替换 parser.parseArray(componentType, array, fieldName); 且无注释",
+        "ObjectArrayCodec.java 行 174：componentType = componentClass = clazz.getComponentType(); 使两个变量看起来可互换，掩盖了必须使用 componentClass 的原因。"
       ],
       "rule": "MAINTAINABILITY-001",
-      "confidence": 0.7
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 安全修复缺少注释。影响评估：后续维护者可能误改回 componentType，重新引入 CVE-2017-18349 漏洞。",
+        "suggestion": "[重构思路] 在 177 行补注释说明选择 Class 重载的安全理由。代码示例：`// CVE-2017-18349: Type overload loses generic info and reintroduces the vuln`",
+        "subcategory": "注释缺失"
+      }
     }
   ]
 }

@@ -1,4 +1,5 @@
-import type { Finding } from "../contracts/finding.js";
+import type { Finding, FindingTips } from "../contracts/finding.js";
+import { isReviewCategory } from "../contracts/finding.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import { isSeverityBelow, severityRankOf } from "../shared/severity-filter.js";
 import { isConfidenceBelow } from "../shared/tips-filter.js";
@@ -299,6 +300,27 @@ function confidenceBucketDropped(bucket: string, minConfidence: number): boolean
   return ceiling !== undefined && ceiling <= minConfidence;
 }
 
+/**
+ * `Finding.tips` → 语义登记（ADR-0090 兜底）：片级未登记时直接取候选产出。
+ * `source` / `ruleId` 按 id 前缀推导（分片合并重编号后不可推导——与旧
+ * 「业务关闭」口径一致，回落 common-reviewer / 空串）。
+ */
+function tipsEntryOf(finding: Finding): SemanticTipEntry | undefined {
+  const tips: FindingTips | undefined = finding.tips;
+  if (tips === undefined || tips.review.trim() === "") {
+    return undefined;
+  }
+  const isRuleSession = finding.id.startsWith("RULE-CHECK@");
+  return {
+    review: tips.review,
+    suggestion: tips.suggestion,
+    category: isReviewCategory(finding.category) ? finding.category : "可维护",
+    subcategory: tips.subcategory.trim() !== "" ? tips.subcategory : "未细分",
+    source: isRuleSession ? "rule-reviewer" : "common-reviewer",
+    ruleId: isRuleSession && finding.rule.trim() !== "" ? finding.rule : "",
+  };
+}
+
 export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTipsOutcome {
   const groups = new Map<string, ReviewTipLike[]>();
   const uncovered: UncoveredFinding[] = [];
@@ -324,7 +346,9 @@ export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTip
     }
     lines.add(finding.line);
     const mergeKey = findingMergeKey(finding);
-    const entry = input.semanticByMergeKey.get(mergeKey);
+    // ADR-0090：片级登记优先（source / ruleId 在片级捕获更准）；
+    // 未登记（业务关闭 / 片级未跑）时直接用 Finding.tips。
+    const entry = input.semanticByMergeKey?.get(mergeKey) ?? tipsEntryOf(finding);
     if (entry === undefined) {
       uncovered.push({
         label: `${finding.file}:${String(finding.line)} (${finding.id})`,

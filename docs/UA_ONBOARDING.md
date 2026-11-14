@@ -5,7 +5,7 @@
 ## 1. 项目总览
 
 - **名称**：`review-agent-pi`（pi 内核线）
-- **定位**：**pi 内核线的 Review CLI 产品仓**。Review Runtime 在 pi 内核的 npm 上游包（`@earendil-works/{pi-ai,pi-agent-core,chord,pi-telemetry}`，精确锁 `0.85.1`，ADR-0035）上从 0 重写，一条命令完成一次检视，产出英文 findings 与中文按行分组建议。规则 Skill 是唯一形态；配置矩阵、`configId` 身份维度与评测仪器层已按 ADR-0024 删除。
+- **定位**：**pi 内核线的 Review CLI 产品仓**。Review Runtime 在 pi 内核的 npm 上游包（`@earendil-works/{pi-ai,pi-agent-core,chord,pi-telemetry}`，精确锁 `0.85.1`，ADR-0035）上从 0 重写，一条命令完成一次检视，产出中文原生 findings（`reviews_all.json`，ADR-0090）与中文按行分组建议。规则 Skill 是唯一形态；配置矩阵、`configId` 身份维度与评测仪器层已按 ADR-0024 删除。
 - **语言**：TypeScript 为主，另有 Markdown、JSON/YAML、多语言 testdata 夹具（Java / TypeScript / Python / Go / C/C++）。
 - **工具链**：Node ≥22、pnpm workspace、TypeScript（strict + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`）、Vitest。
 - **跨仓关系**：DSH 内核线兄弟仓 `MustacheXb/ReviewAgent`；两仓 ADR 独立编号，引用 DSH 仓决策必须写「DSH 线 ADR-XXXX」（见 `AGENTS.md`）。
@@ -31,7 +31,7 @@
 - **diff 检视技能**：`.agents/skills/` 下的开发态验证技能（**不是**规则 Skill）：`real-defect-url-injection` 用真实修复补丁回滚出缺陷 diff（默认 VUL4J-38 / CVE-2014-4172），`synthetic-defect-resource-leak` 在 multilang 夹具副本注入 GEN-RES-001；两者都真跑一次 `review-pi`，把证据归档到 `repo-diff-skill-result/<skill>/<时间戳>/`（gitignore）。共享执行层 `_shared/review-eval.mjs`。
 - **MR 边界护栏**：`run/mr-boundary-guard.ts` 做纯度量（缺省 ≤10 文件 / ≤2000 变更行，`limits.boundary` 可配、`null` 关闭），超界只标注 `domainWarning` + 审计 `mrBoundary`，不拒检、不改请求字节。
 - **审计与记录**：审计落盘 `<tasks 根>/<taskId>/audit/<ts>.json`（requests / toolCallLog / phaseLog / rejections / ledger / ruleSkill / skillPassLog / config 快照）；`RunRecord` 落 `<tasks 根>/<taskId>/runs/run.json`（ADR-0032 定内部形态、ADR-0033 定位置：`--taskId` 必需，一个任务目录一次 run，无 case / rep 层）。`<ts>` = 首次模型请求时刻（`20261031_101010_123`），同时是 `runId`。
-- **语言边界**：检视输出恒英文（测量面冻结）；中文只经核外翻译投影（ADR-0010），内核无语言键。
+- **语言边界**：中文原生检视（ADR-0090）——流程与产物直接中文，结构化字段保持英文；无语言参数化缝、无翻译层。
 - **中文交付物**：只有 `reviews_tips_zh.json`（ADR-0017 / ADR-0022），按文件分组、同文件同行去重（ADR-0023）；`reviews_zh.json` 已停产。
 - **session 寻址**：`review` 成功后往 cwd 写隐藏索引 `.review-pi-session.json`（绝对路径 + runId，原子写、整份覆盖；`version: 2` 用 `mains[]`，读取端兼容 v1 的单个 `main`），`review-pi export [--taskId] [--tasks-dir] [--path] [--native]` 读它/任务目录打印或复制转录路径（分片按 `s01 主 → s01 skill → …`）；该命令不装载配置（ADR-0036 / ADR-0039）。ADR-0072 起 `export` 缺省返回 OpenCode 兼容版，`--native` 切回原生。
 - **大 MR 分片**：过滤后 diff 超 `limits.split.maxShardChars` 时，`run/review-run.ts` 用 `run/shard-planner.ts` 按 `diff --git` 文件块贪心装箱（绝不切 hunk），每片串行跑完整六阶段 + skill 会话，最后 `run/findings-merge.ts` 确定性合并并重编号 `F001…`（ADR-0039）。单片路径零变更；预检错误零请求；任一片失败不写聚合产物。

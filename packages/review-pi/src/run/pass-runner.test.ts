@@ -196,7 +196,7 @@ function passResult(finishedAt: Date): ReviewPassResult {
     },
     complete: true,
     transcriptPath: "/tmp/session.json",
-    reviewsPath: "/tmp/reviews_en.json",
+    reviewsPath: "/tmp/reviews_all.json",
     auditPath: "/tmp/audit.json",
     ledgerHitCount: 0,
     modelCalls: 0,

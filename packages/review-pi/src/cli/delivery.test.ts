@@ -45,14 +45,19 @@ function finding(overrides: Partial<Finding> = {}): Finding {
   return {
     id: "F001",
     severity: "P1",
-    category: "SECURITY",
+    category: "安全",
     file: "src/a.ts",
     line: 1,
-    title: "T",
-    description: "d",
-    evidence: ["e"],
+    title: "未校验的输入",
+    description: "用户输入未校验即被使用。",
+    evidence: ["src/a.ts:1 handle(input);"],
     rule: "",
     confidence: 0.9,
+    tips: {
+      review: "[缺陷类型] 未校验的输入。影响评估：注入风险。",
+      suggestion: "[重构思路] 白名单校验。代码示例：`validate(input);`",
+      subcategory: "输入校验",
+    },
     ...overrides,
   };
 }
@@ -175,7 +180,7 @@ async function makeInput(options: {
           ...(options.failingFiles !== undefined ? { failing: options.failingFiles } : {}),
         });
   const input: DeliveryInput = {
-    run: runResult(options.findings ?? [], options.reviewsPath ?? join(dir, "reviews_en.json")),
+    run: runResult(options.findings ?? [], options.reviewsPath ?? join(dir, "reviews_all.json")),
     identity: { caseId: "case-1", taskId: "task-1", cwd: options.cwd ?? dir },
     paths: { tasksRoot: dir, runsRoot: dir },
     repoPath: dir,
@@ -195,9 +200,6 @@ async function makeInput(options: {
     timing: { startedAt: 0 },
     ports: {
       oneShot: options.oneShot ?? {
-        async generateTips() {
-          return { outcome: { kind: "failed", reason: "not used" } };
-        },
         async generateSummary() {
           return { markdown: "# summary" };
         },
@@ -254,7 +256,7 @@ test("tips 落盘失败：返回 deferredFailure，总结仍发送", async () =>
     findings: [item],
     submitted: new Set([findingMergeKey(item)]),
     semantic: new Map([[findingMergeKey(item), SEMANTIC]]),
-    reviewsPath: join(blocker, "reviews_en.json"),
+    reviewsPath: join(blocker, "reviews_all.json"),
   });
 
   const outcome = await deliverReviewRun(input);
@@ -264,63 +266,27 @@ test("tips 落盘失败：返回 deferredFailure，总结仍发送", async () =>
   expect(logs.some((line) => line.includes("中文产物落盘失败"))).toBe(true);
 });
 
-test("业务关闭：零 MCP 调用，仍产 tips", async () => {
-  const item = finding();
-  let tipsCalls = 0;
-  const oneShot: DeliveryOneShotPort = {
-    async generateTips() {
-      tipsCalls += 1;
-      return {
-        outcome: {
-          kind: "ok",
-          files: [],
-          skippedTips: [],
-          degradedTips: [],
-          skippedFiles: [],
-          semanticByKey: new Map([[findingMergeKey(item), SEMANTIC]]),
-          uncoveredByKey: new Map(),
-        },
-      };
-    },
-    async generateSummary() {
-      return { markdown: "# summary" };
-    },
-  };
-
+test("业务关闭：零 MCP 调用，仍产 tips（直接取自 Finding.tips）", async () => {
   const { input, dir, calls } = await makeInput({
-    findings: [item],
+    findings: [finding()],
     businessOn: false,
-    oneShot,
   });
 
   await deliverReviewRun(input);
 
   expect(calls).toEqual([]);
-  expect(tipsCalls).toBe(1);
   const tips = JSON.parse(await readFile(join(dir, "reviews_tips_zh.json"), "utf8")) as unknown[];
   expect(tips).toHaveLength(1);
 });
 
-test("全部被置信度过滤：tips 产 []，不调一次性生成", async () => {
-  let tipsCalls = 0;
-  const oneShot: DeliveryOneShotPort = {
-    async generateTips() {
-      tipsCalls += 1;
-      return { outcome: { kind: "failed", reason: "not used" } };
-    },
-    async generateSummary() {
-      return { markdown: "# summary" };
-    },
-  };
+test("全部被置信度过滤：tips 产 []", async () => {
   const { input, dir, logs } = await makeInput({
     findings: [finding({ confidence: 0.1 })],
     businessOn: false,
-    oneShot,
   });
 
   await deliverReviewRun(input);
 
-  expect(tipsCalls).toBe(0);
   const tips = JSON.parse(await readFile(join(dir, "reviews_tips_zh.json"), "utf8")) as unknown[];
   expect(tips).toEqual([]);
   expect(logs.some((line) => line.includes("置信度过滤丢弃 1 条"))).toBe(true);

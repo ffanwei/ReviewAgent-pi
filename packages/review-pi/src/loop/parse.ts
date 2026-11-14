@@ -48,13 +48,13 @@ export function parseCandidatesReply(content: string): CandidatesParseResult {
   }
   const parsed = extraction.value;
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { candidates: [], note: "deep-reasoning reply is not valid JSON", failure: "not-json" };
+    return { candidates: [], note: "深度推理回复不是合法 JSON", failure: "not-json" };
   }
   const candidates = (parsed as { candidates?: unknown }).candidates;
   if (!Array.isArray(candidates)) {
     return {
       candidates: [],
-      note: "deep-reasoning reply has no candidates array",
+      note: "深度推理回复没有 candidates 数组",
       failure: "missing-key",
     };
   }
@@ -77,7 +77,7 @@ export function parseVerificationReply(content: string): VerificationParseResult
     return {
       verdicts: new Map(),
       complete: false,
-      note: "verification reply is not valid JSON",
+      note: "证据核验回复不是合法 JSON",
       failure: "not-json",
     };
   }
@@ -91,11 +91,11 @@ export function parseVerificationReply(content: string): VerificationParseResult
       if (mapped !== undefined) {
         verdicts.set(mapped.id, mapped.verdict);
       } else {
-        note = "verification reply contains a malformed verdict entry";
+        note = "证据核验回复含非法裁决条目";
       }
     }
   } else {
-    note = "verification reply has no verdicts array";
+    note = "证据核验回复没有 verdicts 数组";
     failure = "missing-key";
   }
   const complete = record.complete === true;
@@ -111,26 +111,26 @@ export function parseVerificationReply(content: string): VerificationParseResult
 function candidatesNote(kind: ModelJsonFailureKind): string {
   switch (kind) {
     case "empty":
-      return "deep-reasoning reply is empty";
+      return "深度推理回复为空";
     case "truncated":
-      return "deep-reasoning reply is a truncated JSON object";
+      return "深度推理回复是被截断的 JSON 对象";
     case "not-json":
-      return "deep-reasoning reply is not valid JSON";
+      return "深度推理回复不是合法 JSON";
     case "missing-key":
-      return "deep-reasoning reply has no candidates array";
+      return "深度推理回复没有 candidates 数组";
   }
 }
 
 function verificationNote(kind: ModelJsonFailureKind): string {
   switch (kind) {
     case "empty":
-      return "verification reply is empty";
+      return "证据核验回复为空";
     case "truncated":
-      return "verification reply is a truncated JSON object";
+      return "证据核验回复是被截断的 JSON 对象";
     case "not-json":
-      return "verification reply is not valid JSON";
+      return "证据核验回复不是合法 JSON";
     case "missing-key":
-      return "verification reply has no verdicts array";
+      return "证据核验回复没有 verdicts 数组";
   }
 }
 

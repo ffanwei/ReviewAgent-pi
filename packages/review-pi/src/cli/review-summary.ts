@@ -1,10 +1,21 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
+import type { RetryPolicy } from "../shared/llm-retry.js";
 import type { Finding } from "../contracts/finding.js";
 import { DEFAULT_GATEWAY_MAX_TOKENS } from "../shared/config.js";
 import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
-import type { ReportLlmRuntime } from "./report-payload.js";
 import { completeOneShot } from "./one-shot-llm.js";
+
+/** 收尾总结（与候选修复同档）的运行时：呈现档模型 / oneShot 超时与重试 */
+export interface ReportLlmRuntime {
+  readonly apiKey: string;
+  readonly baseUrl: string;
+  readonly modelId: string;
+  /** 单次尝试超时（`limits.timeouts.oneShotMs`） */
+  readonly timeoutMs: number;
+  /** 重试策略（`limits.retry` 的 oneShot 路径；缺省 = 全局 default） */
+  readonly retry?: RetryPolicy;
+}
 
 /**
  * 收尾总结生成（ADR-0045 决策 2 / ADR-0057）：中文 tips（辅以 findings

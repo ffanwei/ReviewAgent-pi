@@ -1,6 +1,7 @@
 /**
  * v1 录制语料：与 `packages/review-pi/src/cli/bin.process.test.ts` 的
- * `oneFindingCorpus` / `noFindingCorpus` / `oneFindingCorpusForReport` 同源。
+ * `oneFindingCorpus` / `noFindingCorpus` / `oneFindingCorpusForReport` 同源
+ * （ADR-0090：中文候选 + tips 语义块随候选产出）。
  *
  * 语料只在 `record` 子命令里消费（把 canned 回复渲染成 wire 字节）；`once`
  * 与 `ramp` 只读冻结的 trace，不碰这里。改语料不会改已有 trace——要更新
@@ -13,37 +14,23 @@ function candidate(file) {
   return {
     id: "F100",
     severity: "P2",
-    category: "correctness",
+    category: "可靠性",
     file,
     line: 1,
-    title: "Sentinel finding title",
-    description: "Sentinel finding description",
+    title: "哨兵意见标题",
+    description: "哨兵意见描述。",
     evidence: [`${file}:1`],
     rule: "sentinel-rule",
     confidence: 0.5,
+    tips: {
+      review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
+      suggestion: "[重构思路] 无。代码示例：```无```",
+      subcategory: "哨兵",
+    },
   };
 }
 
-/**
- * 中文 tips 语义回复（ADR-0065 起业务关闭也产 tips，任何有 finding 的检视都会
- * 追加一次一次性调用）。条目按 finding id 索引，字段必须过 12 键校验。
- */
-function tipsReply(ids) {
-  return {
-    text: JSON.stringify({
-      tips: ids.map((id) => ({
-        id,
-        category: "可靠性",
-        subcategory: "测试桩",
-        review: "[可靠性] 测试桩意见。影响评估：仅测试。",
-        suggestion: "[重构思路] 无。代码示例：```无```",
-      })),
-    }),
-    usage: ZERO,
-  };
-}
-
-/** 一轮零工具完成：phase-5 出唯一候选，phase-6 裁决通过 + complete，再一条 tips */
+/** 一轮零工具完成：phase-5 出唯一候选（带 tips），phase-6 裁决通过 + complete */
 function oneFindingCorpus() {
   return [
     { text: "ok", usage: ZERO },
@@ -58,11 +45,10 @@ function oneFindingCorpus() {
       }),
       usage: ZERO,
     },
-    tipsReply(["F100"]),
   ];
 }
 
-/** 零意见：候选为空、phase-6 complete:true ⇒ 不生成报文、总结用固定文案 */
+/** 零意见：候选为空、phase-6 complete:true ⇒ 总结用固定文案 */
 function noFindingCorpus() {
   return [
     { text: "ok", usage: ZERO },
@@ -76,7 +62,7 @@ function noFindingCorpus() {
 
 /**
  * 报文场景：finding 指向 fixture 里真实存在的 README.md:1（报文 code 由 CLI
- * 抽真源行）；再加报文语义回复与总结回复两条非流式调用。
+ * 抽真源行）；再加一条总结回复的非流式调用。
  */
 function reportingCorpus() {
   return [
@@ -89,20 +75,6 @@ function reportingCorpus() {
       text: JSON.stringify({
         verdicts: [{ id: "F100", pass: true, reason: "stub verdict: evidence holds" }],
         complete: true,
-      }),
-      usage: ZERO,
-    },
-    {
-      text: JSON.stringify({
-        tips: [
-          {
-            id: "F100",
-            category: "可靠性",
-            subcategory: "测试桩",
-            review: "[可靠性] 测试桩意见。影响评估：仅测试。",
-            suggestion: "[重构思路] 无。代码示例：```无```",
-          },
-        ],
       }),
       usage: ZERO,
     },
@@ -133,7 +105,6 @@ function skillSingleFindingCorpus() {
       }),
       usage: ZERO,
     },
-    tipsReply(["F100", "F200"]),
   ];
 }
 
@@ -141,14 +112,19 @@ function skillCandidate(file) {
   return {
     id: "F200",
     severity: "P2",
-    category: "correctness",
+    category: "可靠性",
     file,
     line: 3,
-    title: "Sentinel skill finding",
-    description: "Sentinel skill finding description",
+    title: "哨兵 skill 意见",
+    description: "哨兵 skill 意见描述。",
     evidence: [`${file}:3`],
     rule: "sentinel-rule",
     confidence: 0.5,
+    tips: {
+      review: "[缺陷类型] 哨兵 skill 意见。影响评估：仅测试。",
+      suggestion: "[重构思路] 无。代码示例：```无```",
+      subcategory: "哨兵",
+    },
   };
 }
 
@@ -157,12 +133,9 @@ function skillCandidate(file) {
  * （Alpha.java / Beta.java），合并后是两条独立 findings。
  */
 function shardTwoFindingsCorpus() {
-  // 两片各自跑完六相位；合并后按**合并后的 id 顺序**（F001 / F002）做一次
-  // 中文 tips 语义调用（ADR-0065 起零 finding 之外恒有一次一次性调用）。
   return [
     ...shardSixPhase("F100", "src/main/java/com/example/Alpha.java"),
     ...shardSixPhase("F200", "src/main/java/com/example/Beta.java"),
-    tipsReply(["F001", "F002"]),
   ];
 }
 
@@ -178,14 +151,19 @@ function shardSixPhase(id, file) {
           {
             id,
             severity: "P2",
-            category: "correctness",
+            category: "可靠性",
             file,
             line: 3,
-            title: `Sentinel finding in ${file}`,
-            description: "Sentinel finding description",
+            title: `${file} 中的哨兵意见`,
+            description: "哨兵意见描述。",
             evidence: [`${file}:3`],
             rule: "sentinel-rule",
             confidence: 0.5,
+            tips: {
+              review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
+              suggestion: "[重构思路] 无。代码示例：```无```",
+              subcategory: "哨兵",
+            },
           },
         ],
       }),

@@ -52,8 +52,8 @@ test("返回候选数组；提示词禁止编造证据且请求走结构化输�
   };
   expect(body.response_format).toEqual({ type: "json_object" });
   const system = body.messages?.[0]?.content ?? "";
-  expect(system).toContain("Do NOT invent evidence");
-  expect(system).toContain("preserve the input id exactly");
+  expect(system).toContain("绝不编造输入中不存在的 evidence、行号、文件路径、代码摘录或符号");
+  expect(system).toContain("原样保留输入 id");
   expect(system).not.toContain("sk-repair-sentinel");
 });
 

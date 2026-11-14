@@ -54,9 +54,9 @@ export async function assertLane({ lane, scenario, run, mcpCalls }) {
   }
 
   const runs = join(lane.taskDir, "runs");
-  const reviews = await readJson(join(runs, "reviews_en.json"));
+  const reviews = await readJson(join(runs, "reviews_all.json"));
   if (reviews === undefined) {
-    problems.push(`缺少 ${join(runs, "reviews_en.json")}`);
+    problems.push(`缺少 ${join(runs, "reviews_all.json")}`);
   } else {
     const actual = projectFindings(Array.isArray(reviews.findings) ? reviews.findings : []);
     const expected = projectFindings(scenario.expect.findings);
@@ -68,7 +68,7 @@ export async function assertLane({ lane, scenario, run, mcpCalls }) {
     if (outcome !== undefined && Array.isArray(outcome.findings)) {
       const fromStdout = projectFindings(outcome.findings);
       if (canonical(fromStdout) !== canonical(actual)) {
-        problems.push("stdout.findings 与 reviews_en.json 不一致");
+        problems.push("stdout.findings 与 reviews_all.json 不一致");
       }
     }
   }

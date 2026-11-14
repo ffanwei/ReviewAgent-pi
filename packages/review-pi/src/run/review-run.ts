@@ -582,7 +582,6 @@ async function aggregateShards(
   const candidateNormalizations: CandidateNormalizationRecord[] = [];
   const rejectionCounts: Record<RejectionStage, number> = {
     SCHEMA_INVALID: 0,
-    NON_ENGLISH: 0,
     NO_EVIDENCE: 0,
     VERIFICATION_FAILED: 0,
     OUT_OF_SCOPE: 0,

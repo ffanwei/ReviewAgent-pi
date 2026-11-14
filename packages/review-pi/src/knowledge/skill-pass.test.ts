@@ -119,8 +119,8 @@ test("独立会话：复用 system prompt、种子历史原样、八工具、真
   expect(text).toContain(`<skill name="sample-rule" location="${PACK_ROOT}\\SKILL.md">`);
   expect(text).toContain(`References are relative to ${PACK_ROOT}.`);
   expect(text).toContain(SKILL.content);
-  expect(text).toContain('"rule" field to the id of the specific rule from this skill\'s rules/');
-  expect(text).toContain('Use "sample-rule" only when the finding does not map to any single rule');
+  expect(text).toContain('"rule" 字段填该意见违反的本 skill rules/ 里具体规则的 frontmatter id');
+  expect(text).toContain('只有无法对应到单条规则时才用 "sample-rule"');
   // 工具面 = 七检视工具 + bash
   expect((body.tools ?? []).map((tool) => tool.function?.name)).toEqual([
     "review_get_diff",

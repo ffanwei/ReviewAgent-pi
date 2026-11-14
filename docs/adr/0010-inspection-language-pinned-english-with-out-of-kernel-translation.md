@@ -1,5 +1,7 @@
 # 检视输出语言恒英文：呈现语言经核外翻译投影，语言从实验自变量降级为呈现配置
 
+> **后续修订（[ADR-0090](0090-chinese-native-review.md)，2026-11-14）**：「检视输出恒英文」的核心决策被取代——检视流程与产物改为中文原生：NON_ENGLISH 拦截门删除，`tips` 语义块随候选直接产出（不再有核外翻译 / 二次语义生成）。本 ADR 的历史动机（双语评测对照）随 ADR-0024 废止评测仪器层而不复存在。
+
 > **后续修订（[ADR-0065](0065-console-english-and-unified-tips.md)，2026-11-09）**：「检视输出恒英文」不变；但「控制台呈现档经核外翻译投影」这一半被取消——CLI 不再调用呈现引擎，stdout 恒英文且不再有 `presentation` 留痕键；中文只作为交付物（`reviews_tips_zh.json` / MCP 报文）由片级语义生成产出。核外呈现模块与配置键保留为 legacy。
 
 > **状态注记（[ADR-0038](0038-retire-byte-gates-for-capability-assertions.md)，2026-11-04）**：「检视输出恒英文」这一决策不变；但它当时依赖的「golden bytes 冻结」手段已退役——`testdata/golden` 不再持有 system-prompt / phase-N / 七工具 schema 的对照真源。语言面仍固定在英文，只是不再有逐字节回归门把守。

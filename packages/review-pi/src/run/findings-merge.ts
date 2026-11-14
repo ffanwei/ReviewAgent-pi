@@ -88,6 +88,17 @@ function mergeBucket(bucket: readonly Finding[]): Finding {
     .filter((finding) => finding.confidence === topConfidence)
     .reduce((longest, current) => (current.description.length > longest.description.length ? current : longest))
     .description;
+  // tips（ADR-0090）：取最高 confidence 那条的 tips；并列时取 review 更长者
+  const topConfidenceEntries = bucket.filter((finding) => finding.confidence === topConfidence);
+  const tips = topConfidenceEntries
+    .filter((finding) => finding.tips !== undefined)
+    .reduce<(typeof topConfidenceEntries)[number] | undefined>(
+      (best, current) =>
+        best === undefined || (current.tips?.review.length ?? 0) > (best.tips?.review.length ?? 0)
+          ? current
+          : best,
+      undefined,
+    )?.tips;
 
   let severity = representative.severity;
   const evidence: string[] = [];
@@ -115,5 +126,6 @@ function mergeBucket(bucket: readonly Finding[]): Finding {
     evidence,
     rule: representative.rule,
     confidence: topConfidence,
+    ...(tips !== undefined ? { tips } : {}),
   };
 }

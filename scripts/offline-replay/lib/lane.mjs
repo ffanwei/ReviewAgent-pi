@@ -7,7 +7,7 @@ import { REPO_ROOT } from "./scenario.mjs";
  * lane = 一个并发 worker 独占的回放上下文（ADR-0048 决策 7）：
  * 独立 cwd + 独立 --tasks-dir + 固定 taskId + 只读共享配置。
  *
- * 为什么必须两个都隔离：任务目录里 run.json / reviews_en.json /
+ * 为什么必须两个都隔离：任务目录里 run.json / reviews_all.json /
  * reviews_tips_zh.json 是固定名，rule-skill 缓存解压无锁；cwd 里
  * .review-pi-session.json 与 review-result.json 是 last-writer-wins。
  */

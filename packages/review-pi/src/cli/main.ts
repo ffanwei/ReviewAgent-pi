@@ -97,7 +97,7 @@ import { runConfigCommand } from "./config-command.js";
 import { runVersionCommand } from "./version-command.js";
 import { McpCallLog } from "./mcp-call-log.js";
 import { openRunLog, type RunLog } from "./run-log.js";
-import { buildShardReportResilient, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
+import { buildShardReport, type SemanticTipEntry } from "./report-payload.js";
 import { buildReviewSummary } from "./review-summary.js";
 import { readCodeLines } from "./code-lines.js";
 import {
@@ -369,8 +369,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           close: () => activeReporter.close(),
         };
   const deliveryOneShot: DeliveryOneShotPort = {
-    generateTips: ({ findings, codeByFinding }) =>
-      buildShardReportResilient({ findings, codeByFinding, runtime: reportRuntime }),
     generateSummary: (input) => buildReviewSummary({ ...input, runtime: reportRuntime }),
   };
   const deliveryClock: DeliveryClock = {
@@ -405,7 +403,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
               taskId: args.taskId,
               repoPath,
               reporter: activeReporter,
-              runtime: reportRuntime,
               reportedFiles,
               submittedFindingKeys,
               semanticByMergeKey,
@@ -729,7 +726,6 @@ async function reportShardFindings(input: {
   readonly taskId: string;
   readonly repoPath: string;
   readonly reporter: McpReporter;
-  readonly runtime: ReportLlmRuntime;
   /** 跨片累积已上报文件（收尾总结的 reportedFiles 输入；按片序追加） */
   readonly reportedFiles: string[];
   /**
@@ -742,9 +738,9 @@ async function reportShardFindings(input: {
   readonly semanticByMergeKey: Map<string, SemanticTipEntry>;
   /** 未覆盖原因的 run 级并集（键 = 合并键；首见优先——stderr 逐条留痕用） */
   readonly uncoveredReasonByMergeKey: Map<string, string>;
-  /** 中文 tips 置信度过滤阈值（ADR-0052）：先过滤再生成，省掉注定丢弃条目的调用 */
+  /** 中文 tips 置信度过滤阈值（ADR-0052）：先过滤再组装 */
   readonly confidenceMin: number;
-  /** 中文 tips / MCP 上报严重级过滤阈值：先过滤再生成 */
+  /** 中文 tips / MCP 上报严重级过滤阈值：先过滤再组装 */
   readonly severityMin: Finding["severity"];
 }): Promise<void> {
   const label = input.label.total > 1 ? ` [s${pad2(input.label.index)}/${pad2(input.label.total)}]` : "";
@@ -773,8 +769,8 @@ async function reportShardFindings(input: {
       log: (line) => process.stderr.write(line),
     });
   try {
-    // ADR-0052：置信度过滤先于报文生成——被丢弃的意见不该花一次模型调用。
-    // 严重级过滤同口径（只裁中文 tips / MCP 上报，英文 findings 恒全量）。
+    // ADR-0052：置信度过滤先于报文组装——被丢弃的意见不进报文。
+    // 严重级过滤同口径（只裁中文 tips / MCP 上报，findings 恒全量）。
     keptFindings = input.findings.filter(
       (finding) =>
         !isConfidenceBelow(finding.confidence, input.confidenceMin) &&
@@ -800,32 +796,18 @@ async function reportShardFindings(input: {
       return;
     }
     const codeByFinding = await readCodeLines(input.repoPath, keptFindings);
-    // 片级报文生成：全量一次失败后按条数二分重试（ADR-0058）。正常路径零额外
-    // 调用；部分批次成功时照常上报能救回的条目，仍失败的由 uncoveredByKey 留痕。
-    const { outcome, split } = await buildShardReportResilient({
+    // ADR-0090：报文为纯确定性组装（语义字段来自 Finding.tips），无模型调用。
+    const outcome = buildShardReport({
       findings: keptFindings,
       codeByFinding,
-      runtime: input.runtime,
     });
-    if (split !== undefined) {
-      process.stderr.write(
-        `review-pi: MCP mrReviewResult${label} 报文生成失败，已拆分为 ` +
-          `${String(split.batches)} 批重试（${String(split.succeeded)} 批成功）\n`,
-      );
-    }
     if (outcome.kind === "failed") {
-      process.stderr.write(
-        `review-pi: MCP mrReviewResult${label} 报文生成失败（${outcome.reason}），` +
-          "有意见文件改报空列表（覆盖率优先，ADR-0061）\n",
-      );
-      markUncovered(keptFindings, `片级语义生成失败：${outcome.reason}`);
-      // 覆盖率优先（ADR-0061）：整片生成失败时，本片所有文件仍各发一条
-      // `reviewTips: []`。平台宁可看到「无意见」也不能把文件当成「未检视」；
-      // 真实失败原因保留在 stderr 与未覆盖登记里。
+      // 纯组装不会失败；防御分支保持覆盖率兜底语义。
+      markUncovered(keptFindings, `片级报文组装失败：${outcome.reason}`);
       const sent = await reportRemainingFiles();
       if (sent > 0) {
         process.stderr.write(
-          `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见（报文生成失败，全部补空）\n`,
+          `review-pi: MCP mrReviewResult${label} 已上报 ${String(sent)} 文件 / 0 条意见（报文组装失败，全部补空）\n`,
         );
       }
       return;
@@ -836,7 +818,7 @@ async function reportShardFindings(input: {
         input.semanticByMergeKey.set(key, entry);
       }
     }
-    // 逐条被拒的具体原因（模型没给条目 / category 不可归一）——与 uncovered 逐条对齐
+    // 逐条被拒的具体原因（tips 缺失等）——与 uncovered 逐条对齐
     for (const [key, reason] of outcome.uncoveredByKey) {
       if (!input.uncoveredReasonByMergeKey.has(key)) {
         input.uncoveredReasonByMergeKey.set(key, reason);
@@ -909,7 +891,6 @@ async function reportShardFindings(input: {
     }
   }
 }
-
 /** 片号两位化（与分片目录名 sNN 同形） */
 function pad2(value: number): string {
   return value < 10 ? `0${String(value)}` : String(value);
