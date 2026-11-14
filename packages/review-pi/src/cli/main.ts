@@ -60,9 +60,12 @@ import {
   createMcpReporter,
   normalizeReportFilePath,
   resolveReportConfig,
-  resolveTaskToolSettleMs,
   type McpReporter,
 } from "../mcp/index.js";
+import {
+  createTaskLifecycle,
+  resolveTaskToolSettleMs,
+} from "../mcp/task-lifecycle.js";
 import { formatSmokeDiagnostics, probeModelReachability, runSmokeProbes } from "../provider/gateway-probe.js";
 import { resolveReviewModel } from "../provider/model-fallback.js";
 import { reviewModelOf } from "../provider/pi-client.js";
@@ -102,9 +105,8 @@ import {
   deliverSkip,
   finalizeDelivery,
   type DeliveryClock,
-  type DeliveryFinalizeReporterPort,
+  type DeliveryEventsPort,
   type DeliveryOneShotPort,
-  type DeliveryReporterPort,
 } from "./delivery.js";
 import { describeReportFailure } from "./report-failure.js";
 import { reportFilesWithoutTips } from "./report-files.js";
@@ -289,15 +291,22 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   // 业务 tool 之间的固定沉降间隔（ADR-0053）：临时措施，不是顺序契约。
   // 仅进程测试用专用 env 压缩为 0（见 docs/待优化维护清单.md）。
   const taskToolSettleMs = resolveTaskToolSettleMs(process.env);
-  // `saveReviewSummary` 是否已调用结束：finally 的第二段等待只在总结发完后发生
-  // （预检失败 / 检视中途抛错不白等 5 秒）。
-  let summaryCallCompleted = false;
-  let startTaskSent = false;
-  if (taskToolsOn && activeReporter !== null) {
-    const outcome = await activeReporter.task.startTask({ taskId: args.taskId });
-    if (outcome.ok) {
-      startTaskSent = true;
-    } else {
+  // 业务 tool 的生命周期 facade（ADR-0086）：start/result/summary/finish 的顺序
+  // 与两段沉降都在这里，调用方只决定内容。
+  const taskLifecycle =
+    taskToolsOn && activeReporter !== null
+      ? createTaskLifecycle({
+          task: activeReporter.task,
+          taskId: args.taskId,
+          settleMs: taskToolSettleMs,
+          now: () => Date.now(),
+          sleep: (ms) => delay(ms),
+          log: (line) => process.stderr.write(line),
+        })
+      : undefined;
+  if (taskLifecycle !== undefined) {
+    const outcome = await taskLifecycle.start();
+    if (!outcome.ok) {
       process.stderr.write(
         `review-pi: MCP startTask 失败（${outcome.reason}），继续检视\n`,
       );
@@ -351,24 +360,11 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     timeoutMs: config.limits.timeouts.oneShotMs,
     retry: retryPolicyFor(config.limits.retry, "oneShot"),
   };
-  // 交付 module 的生产 adapter（ADR-0081）：MCP 业务口 + 一次性调用口。
-  // `taskToolsOn=false` 时 reporter 缺席，交付不外发任何业务调用。
-  const deliveryReporter: DeliveryReporterPort | undefined =
-    taskToolsOn && activeReporter !== null
-      ? {
-          reportFileResult: (input) => activeReporter.task.reportFileResult(input),
-          saveReviewSummary: (input) => activeReporter.task.saveReviewSummary(input),
-          endTask: (input) => activeReporter.task.endTask(input),
-          flush: (timeoutMs) => activeReporter.flush(timeoutMs),
-          close: () => activeReporter.close(),
-        }
-      : undefined;
-  // finalize 的口与业务口分开：事件通道的 flush/close 在业务 tool 关闭时也要跑。
-  const finalizeReporter: DeliveryFinalizeReporterPort | undefined =
+  // 事件通道的 flush/close 与业务生命周期分开（业务关闭时仍要跑）。
+  const deliveryEvents: DeliveryEventsPort | undefined =
     activeReporter === null
       ? undefined
       : {
-          endTask: (input) => activeReporter.task.endTask(input),
           flush: (timeoutMs) => activeReporter.flush(timeoutMs),
           close: () => activeReporter.close(),
         };
@@ -554,12 +550,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         identity: { caseId: args.caseId, taskId: args.taskId },
         skip: outcome.skip,
         ...(changedFiles[0] !== undefined ? { firstFile: changedFiles[0] } : {}),
-        ...(deliveryReporter !== undefined ? { reporter: deliveryReporter } : {}),
-        started: startTaskSent,
+        ...(taskLifecycle !== undefined ? { task: taskLifecycle } : {}),
         reportedFiles,
         log: (line) => process.stderr.write(line),
       });
-      summaryCallCompleted = delivered.summaryCalled;
       await writeStdout(delivered.stdoutDocument);
       return 0;
     }
@@ -588,11 +582,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         severityMin: config.limits.severity.min,
       },
       mcp: {
-        ...(deliveryReporter !== undefined ? { reporter: deliveryReporter } : {}),
-        started: startTaskSent,
+        ...(taskLifecycle !== undefined ? { task: taskLifecycle } : {}),
+        ...(deliveryEvents !== undefined ? { events: deliveryEvents } : {}),
         submittedFindingKeys,
         reportedFiles,
-        settleMs: taskToolSettleMs,
         flushTimeoutMs: reportConfig?.flushTimeoutMs ?? 0,
       },
       tips: { semanticByMergeKey, uncoveredReasonByMergeKey },
@@ -632,7 +625,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     stageClock.tipsMs += delivery.timings.tipsMs;
     stageClock.summaryMs += delivery.timings.summaryMs;
     stageClock.settleMs += delivery.timings.settleMs;
-    summaryCallCompleted = delivery.summaryCalled;
     if (delivery.deferredFailure !== undefined) {
       throw delivery.deferredFailure;
     }
@@ -646,12 +638,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     const finalized = await finalizeDelivery({
       taskId: args.taskId,
       runsRoot,
-      ...(finalizeReporter !== undefined ? { reporter: finalizeReporter } : {}),
-      started: startTaskSent,
-      summaryCalled: summaryCallCompleted,
+      ...(taskLifecycle !== undefined ? { task: taskLifecycle } : {}),
+      ...(deliveryEvents !== undefined ? { events: deliveryEvents } : {}),
       flushEnabled: reportConfig !== null && reportConfig.tool !== null,
       flushTimeoutMs: reportConfig?.flushTimeoutMs ?? 0,
-      settleMs: taskToolSettleMs,
       ...(taskToolsOn && mcpCallLog.size > 0
         ? { mcpLog: { document: () => mcpCallLog.document(args.taskId) } }
         : {}),

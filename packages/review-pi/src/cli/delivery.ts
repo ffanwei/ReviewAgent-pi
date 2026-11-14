@@ -17,12 +17,12 @@ import { PHASE_ORDER } from "../loop/phases.js";
 import type {
   MrReviewResultArgs,
   SaveReviewSummaryArgs,
-  TaskIdArgs,
 } from "../mcp/task-tools.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import { formatMrFilterNotice } from "../run/mr-input.js";
+import type { SettledTaskResult } from "../mcp/task-lifecycle.js";
 import type { ReviewRunResult, ReviewSkip } from "../run/review-run.js";
 import { formatShardTruncationNotice } from "../run/shard-planner.js";
 import { readCodeLines } from "./code-lines.js";
@@ -66,14 +66,22 @@ import { assembleUnifiedTips, countTips, filterFindingsForTips } from "./unified
  * 产物格式、MCP 调用序列均不变。
  */
 
-/** 业务 tool 调用结果（`McpReporter` 的结构子集；契约来源 `contracts/mcp-task.ts`） */
+/** 业务 tool 调用结果（契约来源 `contracts/mcp-task.ts`） */
 export type DeliveryTaskResult = TaskCallResult;
 
-/** 交付只依赖 reporter 的业务方法；`flush` / `close` 留给 slice 3 的 finalize */
-export interface DeliveryReporterPort {
-  reportFileResult(args: MrReviewResultArgs): Promise<DeliveryTaskResult>;
-  saveReviewSummary(args: SaveReviewSummaryArgs): Promise<DeliveryTaskResult>;
-  endTask(args: TaskIdArgs): Promise<DeliveryTaskResult>;
+/** 生命周期 facade 的结构子集（ADR-0086）：交付只依赖这四项 */
+export interface DeliveryTaskPort {
+  readonly started: boolean;
+  reportFile(args: Omit<MrReviewResultArgs, "taskId">): Promise<DeliveryTaskResult>;
+  saveSummary(
+    args: Omit<SaveReviewSummaryArgs, "taskId">,
+    options?: { readonly settleBefore?: boolean },
+  ): Promise<SettledTaskResult>;
+  finish(): Promise<SettledTaskResult>;
+}
+
+/** 事件通道：flush / close 与业务生命周期分开 */
+export interface DeliveryEventsPort {
   flush(timeoutMs: number): Promise<McpReportStats>;
   close(): Promise<void>;
 }
@@ -129,15 +137,13 @@ export interface DeliveryInput {
   };
   readonly mcp: {
     /** `undefined` = 业务上报关闭（覆盖补报 / 总结都不调用） */
-    readonly reporter?: DeliveryReporterPort;
-    /** `startTask` 是否成功发出（slice 3 的 endTask 用它；本次只作输入） */
-    readonly started: boolean;
+    readonly task?: DeliveryTaskPort;
+    /** 事件通道（flush / close）；与业务开关独立 */
+    readonly events?: DeliveryEventsPort;
     /** 平台最终收到的 finding（键 = 合并键；ADR-0057 总结裁剪口径） */
     readonly submittedFindingKeys: ReadonlySet<string>;
     /** 跨片累积已上报文件（可变：覆盖补报会把新文件追加进来） */
     readonly reportedFiles: string[];
-    /** 固定沉降（ADR-0053；0 = 进程测试 / 不等待） */
-    readonly settleMs: number;
     readonly flushTimeoutMs: number;
   };
   readonly tips: {
@@ -173,8 +179,6 @@ export interface DeliveryOutcome {
   /** 由 `main` 写到 stdout（交付不碰进程出口） */
   readonly stdoutDocument: string;
   readonly timings: DeliveryTimings;
-  /** `saveReviewSummary` 是否真的调用过（`main` 的 finally 据此决定第二段沉降） */
-  readonly summaryCalled: boolean;
   /** tips 落盘失败：`main` 跳过 session 索引与 stdout，随后以该错误退出 */
   readonly deferredFailure?: unknown;
 }
@@ -184,9 +188,7 @@ export interface SkipDeliveryInput {
   readonly skip: ReviewSkip;
   /** 原始变更文件的首个（与既有跳过上报口径一致） */
   readonly firstFile?: string;
-  readonly reporter?: DeliveryReporterPort;
-  /** `startTask` 是否成功发出（未发出 = 不补任何业务调用） */
-  readonly started: boolean;
+  readonly task?: DeliveryTaskPort;
   /** 已上报文件账本（补报会追加；跳过后进程结束，不再读取） */
   readonly reportedFiles: string[];
   readonly log: (line: string) => void;
@@ -194,7 +196,6 @@ export interface SkipDeliveryInput {
 
 export interface SkipDeliveryOutcome {
   readonly stdoutDocument: string;
-  readonly summaryCalled: boolean;
 }
 
 /**
@@ -203,14 +204,14 @@ export interface SkipDeliveryOutcome {
  */
 export async function deliverSkip(input: SkipDeliveryInput): Promise<SkipDeliveryOutcome> {
   const { log } = input;
-  const reporter = input.reporter;
-  let summaryCalled = false;
-  if (reporter !== undefined && input.started) {
+  const task = input.task;
+  if (task !== undefined && task.started) {
     if (input.firstFile !== undefined) {
       await reportFilesWithoutTips({
         label: "",
         taskId: input.identity.taskId,
-        reportFileResult: (args) => reporter.reportFileResult(args),
+        reportFileResult: (args) =>
+          task.reportFile({ filePath: args.filePath, reviewTips: args.reviewTips }),
         files: [input.firstFile],
         reportedFiles: input.reportedFiles,
         log,
@@ -220,11 +221,10 @@ export async function deliverSkip(input: SkipDeliveryInput): Promise<SkipDeliver
       input.skip.reason === "diff-too-large"
         ? DIFF_TOO_LARGE_SUMMARY_MARKDOWN
         : NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN;
-    const outcome = await reporter.saveReviewSummary({
-      taskId: input.identity.taskId,
-      markdownContent,
-    });
-    summaryCalled = true;
+    const outcome = await task.saveSummary(
+      { markdownContent },
+      { settleBefore: false },
+    );
     if (!outcome.ok) {
       log(`review-pi: MCP saveReviewSummary 失败（${outcome.reason}）\n`);
     }
@@ -236,7 +236,6 @@ export async function deliverSkip(input: SkipDeliveryInput): Promise<SkipDeliver
       skipped: input.skip.reason,
       findings: [],
     }),
-    summaryCalled,
   };
 }
 
@@ -277,7 +276,6 @@ export async function deliverReviewRun(input: DeliveryInput): Promise<DeliveryOu
   return {
     stdoutDocument,
     timings,
-    summaryCalled: summaryTiming.summaryCalled,
     ...(deferredFailure !== undefined ? { deferredFailure } : {}),
   };
 }
@@ -301,8 +299,8 @@ function announceInput(input: DeliveryInput): void {
 
 /** 覆盖补报：变更文件全集 − 已上报（ADR-0061 / ADR-0068）；失败只留痕 */
 async function reportMissingFiles(input: DeliveryInput): Promise<void> {
-  const reporter = input.mcp.reporter;
-  if (reporter === undefined || input.coverageFiles.length === 0) {
+  const task = input.mcp.task;
+  if (task === undefined || input.coverageFiles.length === 0) {
     return;
   }
   const { log } = input.ports;
@@ -311,7 +309,8 @@ async function reportMissingFiles(input: DeliveryInput): Promise<void> {
     const sent = await reportFilesWithoutTips({
       label: "",
       taskId: input.identity.taskId,
-      reportFileResult: (args) => reporter.reportFileResult(args),
+      reportFileResult: (args) =>
+        task.reportFile({ filePath: args.filePath, reviewTips: args.reviewTips }),
       files: coverage.files,
       reportedFiles: input.mcp.reportedFiles,
       exclude: coverage.reported,
@@ -367,7 +366,7 @@ async function assembleTips(input: DeliveryInput): Promise<TipsAssembly> {
 
   // 业务关闭（无 MCP 上报）时中文 tips 也必须产出：收尾补一次片级语义生成，
   // 只登记语义（不发报文）。业务开启时各片已在回调里跑过，这里零额外调用。
-  if (input.mcp.reporter === undefined && keptFindings.length > 0) {
+  if (input.mcp.task === undefined && keptFindings.length > 0) {
     const { outcome, split } = await input.ports.oneShot.generateTips({
       findings: keptFindings,
       codeByFinding,
@@ -500,14 +499,10 @@ async function persistTips(
 async function publishSummary(
   input: DeliveryInput,
   tipsDoc: ReviewTipsDocumentLike | undefined,
-): Promise<{
-  readonly summaryMs: number;
-  readonly settleMs: number;
-  readonly summaryCalled: boolean;
-}> {
-  const reporter = input.mcp.reporter;
-  if (reporter === undefined) {
-    return { summaryMs: 0, settleMs: 0, summaryCalled: false };
+): Promise<{ readonly summaryMs: number; readonly settleMs: number }> {
+  const task = input.mcp.task;
+  if (task === undefined) {
+    return { summaryMs: 0, settleMs: 0 };
   }
   const { log, clock } = input.ports;
   const { record } = input.run;
@@ -559,25 +554,20 @@ async function publishSummary(
     log(`review-pi: 检视总结降级为模板（${summaryReport.degradedReason}）\n`);
   }
 
-  // 第一段沉降（ADR-0053）：最后一条 mrReviewResult 已发完，固定等一段时间
-  // 再发总结——服务端异步处理片级结果时，前端回调可能先收到 summary。
-  const settleStartedAt = clock.now();
-  await settle(clock, log, input.mcp.settleMs, "mrReviewResult → saveReviewSummary");
-  const settleMs = clock.now() - settleStartedAt;
-
   // 模型替换留痕（ADR-0080）：只在真发生降级时追加一行；固定模板总结不追加。
   const summaryMarkdown =
     input.modelFallback === undefined
       ? summaryReport.markdown
       : `${summaryReport.markdown}\n\n${modelFallbackMarkdownLine(input.modelFallback)}`;
-  const outcome = await reporter.saveReviewSummary({
-    taskId: input.identity.taskId,
-    markdownContent: summaryMarkdown,
-  });
+  // 第一段沉降由 facade 拥有（ADR-0086）：正常路径先等，跳过路径不经过这里。
+  const outcome = await task.saveSummary(
+    { markdownContent: summaryMarkdown },
+    { settleBefore: true },
+  );
   if (!outcome.ok) {
     log(`review-pi: MCP saveReviewSummary 失败（${outcome.reason}），检视结果不受影响\n`);
   }
-  return { summaryMs, settleMs, summaryCalled: true };
+  return { summaryMs, settleMs: outcome.waitedMs };
 }
 
 /** cwd session 索引（ADR-0036 / ADR-0039 v2）：寻址信息，写失败只警告 */
@@ -671,20 +661,6 @@ function phaseLabelOf(phase: PhaseRecord["phase"]): string {
   return index >= 0 ? `phase${String(index + 1)}` : phase;
 }
 
-/** 固定沉降（ADR-0053）：`ms <= 0` 直接返回；日志文案与 `waitTaskToolSettle` 一致 */
-async function settle(
-  clock: DeliveryClock,
-  log: (line: string) => void,
-  ms: number,
-  boundary: string,
-): Promise<void> {
-  if (ms <= 0) {
-    return;
-  }
-  log(`review-pi: MCP 固定等待 ${String(ms)}ms（${boundary}）\n`);
-  await clock.sleep(ms);
-}
-
 /** 平台可见的替换说明（ADR-0080）：只在真发生降级时追加到模型生成的总结末尾 */
 function modelFallbackMarkdownLine(record: ModelFallbackRecord): string {
   return (
@@ -704,26 +680,17 @@ function reportExecDirTips(
   }
 }
 
-/** finalize 只需要的 reporter 面（业务关闭时仍可能有事件通道的 flush/close） */
-export interface DeliveryFinalizeReporterPort {
-  endTask(args: TaskIdArgs): Promise<TaskCallResult>;
-  flush(timeoutMs: number): Promise<McpReportStats>;
-  close(): Promise<void>;
-}
-
 export interface DeliveryFinalizeInput {
   readonly taskId: string;
   /** 本次 run 的输出根（mcp.json / lifecycle / trace 的落点） */
   readonly runsRoot: string;
-  readonly reporter?: DeliveryFinalizeReporterPort;
-  /** `startTask` 是否成功发出（未发出 = 不补 endTask） */
-  readonly started: boolean;
-  /** `saveReviewSummary` 是否调用过（决定第二段沉降） */
-  readonly summaryCalled: boolean;
+  /** 生命周期 facade（started / finish 由它自己记） */
+  readonly task?: DeliveryTaskPort;
+  /** 事件通道（flush / close）；与业务 tool 开关独立 */
+  readonly events?: DeliveryEventsPort;
   /** 事件通道是否配置（与业务 tool 开关独立） */
   readonly flushEnabled: boolean;
   readonly flushTimeoutMs: number;
-  readonly settleMs: number;
   /** 业务调用留痕（`taskToolsOn && size > 0` 时由 main 传入；**惰性**取文档，
    * 保证 endTask 也被写进去——与既有「endTask 之后写」的顺序一致） */
   readonly mcpLog?: { readonly document: () => McpCallLogDocument };
@@ -750,17 +717,12 @@ export async function finalizeDelivery(
 ): Promise<{ readonly settleMs: number }> {
   const { log, clock } = input;
   let settleMs = 0;
-  if (input.reporter !== undefined && input.started) {
-    // 第二段沉降（ADR-0053）：总结已发完，再固定等一段时间才发 endTask。
-    // 只在真的调过 saveReviewSummary 时等；失败路径（未走到总结）直接收尾。
-    if (input.summaryCalled) {
-      const settleStartedAt = clock.now();
-      await settle(clock, log, input.settleMs, "saveReviewSummary → endTask");
-      settleMs = clock.now() - settleStartedAt;
-    }
-    const outcome = await input.reporter.endTask({ taskId: input.taskId });
-    if (!outcome.ok) {
-      log(`review-pi: MCP endTask 失败（${outcome.reason}）\n`);
+  if (input.task !== undefined) {
+    // 第二段沉降与 endTask 由 facade 拥有（ADR-0086）；幂等。
+    const done = await input.task.finish();
+    settleMs = done.waitedMs;
+    if (!done.ok) {
+      log(`review-pi: MCP endTask 失败（${done.reason}）\n`);
     }
   }
   // 业务调用留痕落盘（mcp.json）：endTask 之后写，四个调用的最终结果都在内存里。
@@ -794,10 +756,10 @@ export async function finalizeDelivery(
       log(`review-pi: trace 留痕写入失败（${describeReportFailure(error)}），不影响检视结果\n`);
     }
   }
-  if (input.reporter !== undefined && input.flushEnabled) {
+  if (input.events !== undefined && input.flushEnabled) {
     // 收尾尽力发完；失败 / 超时都只落一行 stderr，不影响已产出的结果与退出码
     try {
-      const stats = await input.reporter.flush(input.flushTimeoutMs);
+      const stats = await input.events.flush(input.flushTimeoutMs);
       log(
         `review-pi: MCP 上报 sent ${String(stats.sent)} / failed ${String(stats.failed)} / dropped ${String(stats.dropped)}\n`,
       );
@@ -805,6 +767,6 @@ export async function finalizeDelivery(
       // 旁路：连统计都拿不到也不改变任何结果
     }
   }
-  await input.reporter?.close().catch(() => undefined);
+  await input.events?.close().catch(() => undefined);
   return { settleMs };
 }

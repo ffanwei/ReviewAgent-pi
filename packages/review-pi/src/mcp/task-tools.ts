@@ -26,26 +26,13 @@ export const MCP_TASK_TOOL_NAMES = {
  * 让回调到前端的顺序与客户端发送顺序不一致，固定间隔只给服务端留排空时间。
  * 若服务端后续支持序号 / 完成标记，应删除该间隔（见 `docs/待优化维护清单.md`）。
  */
-export const TASK_TOOL_SETTLE_MS = 5_000;
-
-/**
- * 进程测试专用覆盖（**不是配置面**）：只允许把固定间隔压到 0 或其他非负整数，
- * 避免每条启用 MCP 的进程用例多等 10 秒。生产环境不设置该变量，读取结果恒为
- * `TASK_TOOL_SETTLE_MS`。非法值（负数 / 小数 / 非数字）一律回落缺省。
- */
-export const TASK_TOOL_SETTLE_ENV = "PIAGENT_TEST_TASK_TOOL_SETTLE_MS";
-
-/** 解析生效的沉降间隔（纯函数，env 由调用方注入，便于单测）。 */
-export function resolveTaskToolSettleMs(
-  env: Readonly<Record<string, string | undefined>>,
-): number {
-  const raw = env[TASK_TOOL_SETTLE_ENV];
-  if (raw === undefined || !/^\d+$/.test(raw)) {
-    return TASK_TOOL_SETTLE_MS;
-  }
-  const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) ? parsed : TASK_TOOL_SETTLE_MS;
-}
+// 沉降常量与解析已移到 `mcp/task-lifecycle.ts`（ADR-0086）；这里保留 re-export
+// 兼容既有导入。
+export {
+  TASK_TOOL_SETTLE_MS,
+  TASK_TOOL_SETTLE_ENV,
+  resolveTaskToolSettleMs,
+} from "./task-lifecycle.js";
 
 /** `startTask` / `endTask` 参数 */
 export interface TaskIdArgs {

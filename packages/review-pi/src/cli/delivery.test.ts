@@ -13,15 +13,16 @@ import {
   deliverSkip,
   finalizeDelivery,
   type DeliveryClock,
+  type DeliveryEventsPort,
   type DeliveryInput,
   type DeliveryOneShotPort,
-  type DeliveryReporterPort,
+  type DeliveryTaskPort,
 } from "./delivery.js";
 import type { ProgressSummary } from "./progress-render.js";
 import type { SemanticTipEntry } from "./report-payload.js";
 import { DIFF_TOO_LARGE_SUMMARY_MARKDOWN } from "./review-summary.js";
 
-// 交付 module（ADR-0081）：fake ports + 临时目录锁顺序、失败语义与产物。
+// 交付 module（ADR-0081 / 0086）：fake task/events + 临时目录锁顺序、失败语义与产物。
 // 进程字节由 bin.process.test.ts 把守；这里只测 interface。
 
 const USAGE: LlmUsage = { inputTokens: 10, outputTokens: 5 };
@@ -95,27 +96,43 @@ function runResult(findings: readonly Finding[], reviewsPath: string): ReviewRun
   };
 }
 
-function fakeReporter(
-  calls: string[],
-  failing: ReadonlySet<string>,
-  onSave?: () => void,
-): DeliveryReporterPort {
+function fakeTask(options: {
+  readonly calls: string[];
+  readonly failing?: ReadonlySet<string>;
+  readonly started?: boolean;
+  readonly summaryOk?: boolean;
+  readonly onSave?: () => void;
+}): DeliveryTaskPort {
   return {
-    async reportFileResult(args) {
-      calls.push(`report:${args.filePath}`);
-      return failing.has(args.filePath) ? { ok: false, reason: "boom" } : { ok: true };
+    get started() {
+      return options.started ?? true;
     },
-    async saveReviewSummary() {
-      onSave?.();
-      calls.push("summary");
-      return { ok: true };
+    async reportFile(args) {
+      options.calls.push(`report:${args.filePath}`);
+      return (options.failing?.has(args.filePath) ?? false)
+        ? { ok: false, reason: "boom" }
+        : { ok: true };
     },
-    async endTask() {
-      calls.push("endTask");
-      return { ok: true };
+    async saveSummary(_args, saveOptions) {
+      options.onSave?.();
+      options.calls.push("summary");
+      const waitedMs = saveOptions?.settleBefore === false ? 0 : 5_000;
+      return options.summaryOk === false
+        ? { ok: false, reason: "boom", waitedMs }
+        : { ok: true, waitedMs };
     },
+    async finish() {
+      options.calls.push("finish");
+      return { ok: true, waitedMs: 5_000 };
+    },
+  };
+}
+
+function fakeEvents(calls: string[]): DeliveryEventsPort {
+  return {
     async flush() {
-      return { sent: 0, failed: 0, dropped: 0, batches: 0 };
+      calls.push("flush");
+      return { sent: 1, failed: 0, dropped: 0, batches: 1 };
     },
     async close() {
       calls.push("close");
@@ -135,27 +152,28 @@ async function makeInput(options: {
   readonly progress?: { finish(summary: ProgressSummary): void };
   readonly reviewsPath?: string;
   readonly cwd?: string;
-  readonly onSave?: () => void;
 } = {}): Promise<{
   readonly input: DeliveryInput;
   readonly dir: string;
   readonly calls: string[];
   readonly logs: string[];
-  readonly sleeps: number[];
 }> {
   const dir = await mkdtemp(join(tmpdir(), "review-delivery-"));
   dirs.push(dir);
   const calls: string[] = [];
   const logs: string[] = [];
-  const sleeps: number[] = [];
   let tick = 0;
   const clock: DeliveryClock = {
     now: () => tick++,
-    sleep: async (ms) => {
-      sleeps.push(ms);
-    },
+    sleep: async () => undefined,
   };
-  const reporter = fakeReporter(calls, options.failingFiles ?? new Set(), options.onSave);
+  const task =
+    options.businessOn === false
+      ? undefined
+      : fakeTask({
+          calls,
+          ...(options.failingFiles !== undefined ? { failing: options.failingFiles } : {}),
+        });
   const input: DeliveryInput = {
     run: runResult(options.findings ?? [], options.reviewsPath ?? join(dir, "reviews_en.json")),
     identity: { caseId: "case-1", taskId: "task-1", cwd: options.cwd ?? dir },
@@ -165,12 +183,10 @@ async function makeInput(options: {
     model: { modelId: "m", baseUrl: "https://example.test" },
     limits: { confidenceMin: 0.5, severityMin: "P3" },
     mcp: {
-      ...(options.businessOn === false ? {} : { reporter }),
-      started: true,
+      ...(task !== undefined ? { task } : {}),
       submittedFindingKeys: options.submitted ?? new Set(),
       reportedFiles: [...(options.reportedFiles ?? [])],
-      settleMs: 5000,
-      flushTimeoutMs: 1000,
+      flushTimeoutMs: 1_000,
     },
     tips: {
       semanticByMergeKey: new Map(options.semantic ?? []),
@@ -191,13 +207,13 @@ async function makeInput(options: {
       ...(options.progress !== undefined ? { progress: options.progress } : {}),
     },
   };
-  return { input, dir, calls, logs, sleeps };
+  return { input, dir, calls, logs };
 }
 
-test("正常路径：覆盖补报 → 进度收尾 → 沉降 → 总结，返回 stdout 文档与产物", async () => {
+test("正常路径：覆盖补报 → 进度收尾 → 总结，返回 stdout 文档与产物", async () => {
   const item = finding();
   const finished: ProgressSummary[] = [];
-  const { input, dir, calls, sleeps } = await makeInput({
+  const { input, dir, calls } = await makeInput({
     findings: [item],
     coverageFiles: ["src/a.ts", "src/b.ts"],
     submitted: new Set([findingMergeKey(item)]),
@@ -208,10 +224,9 @@ test("正常路径：覆盖补报 → 进度收尾 → 沉降 → 总结，返�
   const outcome = await deliverReviewRun(input);
 
   expect(calls).toEqual(["report:src/a.ts", "report:src/b.ts", "summary"]);
-  expect(sleeps).toEqual([5000]);
+  expect(outcome.timings.settleMs).toBe(5_000);
   expect(finished).toHaveLength(1);
   expect(finished[0]?.modelCalls).toBe(1);
-  expect(outcome.summaryCalled).toBe(true);
   expect(outcome.deferredFailure).toBeUndefined();
   expect(JSON.parse(outcome.stdoutDocument)).toMatchObject({ ok: true, caseId: "case-1" });
 
@@ -245,7 +260,6 @@ test("tips 落盘失败：返回 deferredFailure，总结仍发送", async () =>
   const outcome = await deliverReviewRun(input);
 
   expect(outcome.deferredFailure).toBeInstanceOf(Error);
-  expect(outcome.summaryCalled).toBe(true);
   expect(calls).toContain("summary");
   expect(logs.some((line) => line.includes("中文产物落盘失败"))).toBe(true);
 });
@@ -279,11 +293,10 @@ test("业务关闭：零 MCP 调用，仍产 tips", async () => {
     oneShot,
   });
 
-  const outcome = await deliverReviewRun(input);
+  await deliverReviewRun(input);
 
   expect(calls).toEqual([]);
   expect(tipsCalls).toBe(1);
-  expect(outcome.summaryCalled).toBe(false);
   const tips = JSON.parse(await readFile(join(dir, "reviews_tips_zh.json"), "utf8")) as unknown[];
   expect(tips).toHaveLength(1);
 });
@@ -326,22 +339,6 @@ test("覆盖补报只报差集；单文件失败只留痕不抛", async () => {
   expect(logs.some((line) => line.includes("b.ts 失败（boom）"))).toBe(true);
 });
 
-test("沉降发生在 saveReviewSummary 之前", async () => {
-  let sleptBeforeSummary = false;
-  let sleepsAtSave = -1;
-  const { input, sleeps } = await makeInput({
-    onSave: () => {
-      sleepsAtSave = sleeps.length;
-      sleptBeforeSummary = sleepsAtSave === 1;
-    },
-  });
-
-  await deliverReviewRun(input);
-
-  expect(sleptBeforeSummary).toBe(true);
-  expect(sleepsAtSave).toBe(1);
-});
-
 test("session 索引写失败：只留痕，仍返回 stdout 文档", async () => {
   const dir = await mkdtemp(join(tmpdir(), "review-delivery-nocwd-"));
   dirs.push(dir);
@@ -356,116 +353,55 @@ test("session 索引写失败：只留痕，仍返回 stdout 文档", async () =
   expect(logs.some((line) => line.includes("session 索引写入失败"))).toBe(true);
 });
 
-test("finalize：沉降 → endTask → flush → close，顺序固定", async () => {
+test("finalize：task.finish → events.flush → close，settleMs 来自 facade", async () => {
   const calls: string[] = [];
-  const sleeps: number[] = [];
-  let tick = 0;
-  const clock: DeliveryClock = {
-    now: () => tick++,
-    sleep: async (ms) => {
-      sleeps.push(ms);
-    },
-  };
   const dir = await mkdtemp(join(tmpdir(), "review-finalize-"));
   dirs.push(dir);
 
   const outcome = await finalizeDelivery({
     taskId: "task-1",
     runsRoot: dir,
-    reporter: {
-      async endTask() {
-        calls.push("endTask");
-        return { ok: true };
-      },
-      async flush() {
-        calls.push("flush");
-        return { sent: 1, failed: 0, dropped: 0, batches: 1 };
-      },
-      async close() {
-        calls.push("close");
-      },
-    },
-    started: true,
-    summaryCalled: true,
+    task: fakeTask({ calls }),
+    events: fakeEvents(calls),
     flushEnabled: true,
-    flushTimeoutMs: 1000,
-    settleMs: 5000,
+    flushTimeoutMs: 1_000,
     log: (line) => calls.push(`log:${line.trim()}`),
-    clock,
+    clock: { now: () => 0, sleep: async () => undefined },
   });
 
-  expect(sleeps).toEqual([5000]);
   expect(calls).toEqual([
-    "log:review-pi: MCP 固定等待 5000ms（saveReviewSummary → endTask）",
-    "endTask",
+    "finish",
     "flush",
     "log:review-pi: MCP 上报 sent 1 / failed 0 / dropped 0",
     "close",
   ]);
-  expect(outcome.settleMs).toBe(1);
+  expect(outcome.settleMs).toBe(5_000);
 });
 
-test("finalize：未发出 startTask 不补 endTask；flush 关闭仍 close", async () => {
+test("finalize：业务关闭仍 flush/close 事件通道", async () => {
   const calls: string[] = [];
-  const dir = await mkdtemp(join(tmpdir(), "review-finalize-skip-"));
+  const dir = await mkdtemp(join(tmpdir(), "review-finalize-events-"));
   dirs.push(dir);
 
-  const outcome = await finalizeDelivery({
+  await finalizeDelivery({
     taskId: "task-1",
     runsRoot: dir,
-    reporter: {
-      async endTask() {
-        calls.push("endTask");
-        return { ok: true };
-      },
-      async flush() {
-        calls.push("flush");
-        return { sent: 0, failed: 0, dropped: 0, batches: 0 };
-      },
-      async close() {
-        calls.push("close");
-      },
-    },
-    started: false,
-    summaryCalled: false,
-    flushEnabled: false,
-    flushTimeoutMs: 1000,
-    settleMs: 5000,
+    events: fakeEvents(calls),
+    flushEnabled: true,
+    flushTimeoutMs: 1_000,
     log: () => undefined,
     clock: { now: () => 0, sleep: async () => undefined },
   });
 
-  expect(calls).toEqual(["close"]);
-  expect(outcome.settleMs).toBe(0);
+  expect(calls).toEqual(["flush", "close"]);
 });
 
-function skipReporter(options: {
+function skipTask(options: {
   readonly calls: string[];
-  readonly summaries: string[];
-  readonly failSummary?: boolean;
-}): DeliveryReporterPort {
-  return {
-    async reportFileResult(args) {
-      options.calls.push(`report:${args.filePath}`);
-      return { ok: true };
-    },
-    async saveReviewSummary(args) {
-      options.calls.push("summary");
-      options.summaries.push(args.markdownContent);
-      return options.failSummary === true
-        ? { ok: false, reason: "boom" }
-        : { ok: true };
-    },
-    async endTask() {
-      return { ok: true };
-    },
-    async flush() {
-      return { sent: 0, failed: 0, dropped: 0, batches: 0 };
-    },
-    async close() {
-      return undefined;
-    },
-  };
+  readonly started?: boolean;
+  readonly summaryOk?: boolean;
+}): DeliveryTaskPort {
+  return fakeTask(options);
 }
 
 test("deliverSkip：业务开启时报首个文件与固定总结，返回 stdout 文档", async () => {
@@ -476,15 +412,12 @@ test("deliverSkip：业务开启时报首个文件与固定总结，返回 stdou
     identity: { caseId: "case-1", taskId: "task-1" },
     skip: { reason: "diff-too-large", message: "msg", diffLength: 100, maxChars: 10 },
     firstFile: "a.ts",
-    reporter: skipReporter({ calls, summaries }),
-    started: true,
+    task: skipTask({ calls }),
     reportedFiles: [],
     log: () => undefined,
   });
 
   expect(calls).toEqual(["report:a.ts", "summary"]);
-  expect(summaries).toEqual([DIFF_TOO_LARGE_SUMMARY_MARKDOWN]);
-  expect(outcome.summaryCalled).toBe(true);
   expect(JSON.parse(outcome.stdoutDocument)).toEqual({
     ok: true,
     caseId: "case-1",
@@ -497,13 +430,11 @@ test("deliverSkip：业务关闭时零 MCP 调用，仍产 stdout 文档", async
   const outcome = await deliverSkip({
     identity: { caseId: "case-1", taskId: "task-1" },
     skip: { reason: "no-reviewable-files", message: "msg", droppedFiles: 1, droppedChars: 5 },
-    reporter: undefined,
-    started: true,
+    task: undefined,
     reportedFiles: [],
     log: () => undefined,
   });
 
-  expect(outcome.summaryCalled).toBe(false);
   expect(JSON.parse(outcome.stdoutDocument)).toEqual({
     ok: true,
     caseId: "case-1",
@@ -514,35 +445,66 @@ test("deliverSkip：业务关闭时零 MCP 调用，仍产 stdout 文档", async
 
 test("deliverSkip：首个文件缺席时仍发固定总结", async () => {
   const calls: string[] = [];
-  const summaries: string[] = [];
 
-  const outcome = await deliverSkip({
+  await deliverSkip({
     identity: { caseId: "case-1", taskId: "task-1" },
     skip: { reason: "no-reviewable-files", message: "msg", droppedFiles: 2, droppedChars: 9 },
-    reporter: skipReporter({ calls, summaries }),
-    started: true,
+    task: skipTask({ calls }),
     reportedFiles: [],
     log: () => undefined,
   });
 
   expect(calls).toEqual(["summary"]);
-  expect(outcome.summaryCalled).toBe(true);
 });
 
-test("deliverSkip：summary 失败只留痕，summaryCalled 仍为 true", async () => {
+test("deliverSkip：startTask 未发出时零 MCP 调用", async () => {
   const calls: string[] = [];
-  const summaries: string[] = [];
-  const logs: string[] = [];
 
-  const outcome = await deliverSkip({
+  await deliverSkip({
     identity: { caseId: "case-1", taskId: "task-1" },
     skip: { reason: "diff-too-large", message: "msg", diffLength: 100, maxChars: 10 },
-    reporter: skipReporter({ calls, summaries, failSummary: true }),
-    started: true,
+    firstFile: "a.ts",
+    task: skipTask({ calls, started: false }),
+    reportedFiles: [],
+    log: () => undefined,
+  });
+
+  expect(calls).toEqual([]);
+});
+
+test("deliverSkip：summary 失败只留痕", async () => {
+  const calls: string[] = [];
+  const logs: string[] = [];
+
+  await deliverSkip({
+    identity: { caseId: "case-1", taskId: "task-1" },
+    skip: { reason: "diff-too-large", message: "msg", diffLength: 100, maxChars: 10 },
+    task: skipTask({ calls, summaryOk: false }),
     reportedFiles: [],
     log: (line) => logs.push(line),
   });
 
-  expect(outcome.summaryCalled).toBe(true);
   expect(logs.some((line) => line.includes("MCP saveReviewSummary 失败（boom）"))).toBe(true);
+});
+
+test("固定总结文案按 reason 选择", async () => {
+  const calls: string[] = [];
+  const summaries: string[] = [];
+  const task: DeliveryTaskPort = {
+    ...fakeTask({ calls }),
+    async saveSummary(args) {
+      summaries.push(args.markdownContent);
+      return { ok: true, waitedMs: 0 };
+    },
+  };
+
+  await deliverSkip({
+    identity: { caseId: "case-1", taskId: "task-1" },
+    skip: { reason: "diff-too-large", message: "msg", diffLength: 100, maxChars: 10 },
+    task,
+    reportedFiles: [],
+    log: () => undefined,
+  });
+
+  expect(summaries).toEqual([DIFF_TOO_LARGE_SUMMARY_MARKDOWN]);
 });
