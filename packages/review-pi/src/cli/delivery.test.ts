@@ -10,6 +10,7 @@ import { findingMergeKey } from "../run/findings-merge.js";
 import type { ReviewRunResult } from "../run/review-run.js";
 import {
   deliverReviewRun,
+  deliverSkip,
   finalizeDelivery,
   type DeliveryClock,
   type DeliveryInput,
@@ -18,6 +19,7 @@ import {
 } from "./delivery.js";
 import type { ProgressSummary } from "./progress-render.js";
 import type { SemanticTipEntry } from "./report-payload.js";
+import { DIFF_TOO_LARGE_SUMMARY_MARKDOWN } from "./review-summary.js";
 
 // 交付 module（ADR-0081）：fake ports + 临时目录锁顺序、失败语义与产物。
 // 进程字节由 bin.process.test.ts 把守；这里只测 interface。
@@ -435,4 +437,112 @@ test("finalize：未发出 startTask 不补 endTask；flush 关闭仍 close", as
 
   expect(calls).toEqual(["close"]);
   expect(outcome.settleMs).toBe(0);
+});
+
+function skipReporter(options: {
+  readonly calls: string[];
+  readonly summaries: string[];
+  readonly failSummary?: boolean;
+}): DeliveryReporterPort {
+  return {
+    async reportFileResult(args) {
+      options.calls.push(`report:${args.filePath}`);
+      return { ok: true };
+    },
+    async saveReviewSummary(args) {
+      options.calls.push("summary");
+      options.summaries.push(args.markdownContent);
+      return options.failSummary === true
+        ? { ok: false, reason: "boom" }
+        : { ok: true };
+    },
+    async endTask() {
+      return { ok: true };
+    },
+    async flush() {
+      return { sent: 0, failed: 0, dropped: 0, batches: 0 };
+    },
+    async close() {
+      return undefined;
+    },
+  };
+}
+
+test("deliverSkip：业务开启时报首个文件与固定总结，返回 stdout 文档", async () => {
+  const calls: string[] = [];
+  const summaries: string[] = [];
+
+  const outcome = await deliverSkip({
+    identity: { caseId: "case-1", taskId: "task-1" },
+    skip: { reason: "diff-too-large", message: "msg", diffLength: 100, maxChars: 10 },
+    firstFile: "a.ts",
+    reporter: skipReporter({ calls, summaries }),
+    started: true,
+    reportedFiles: [],
+    log: () => undefined,
+  });
+
+  expect(calls).toEqual(["report:a.ts", "summary"]);
+  expect(summaries).toEqual([DIFF_TOO_LARGE_SUMMARY_MARKDOWN]);
+  expect(outcome.summaryCalled).toBe(true);
+  expect(JSON.parse(outcome.stdoutDocument)).toEqual({
+    ok: true,
+    caseId: "case-1",
+    skipped: "diff-too-large",
+    findings: [],
+  });
+});
+
+test("deliverSkip：业务关闭时零 MCP 调用，仍产 stdout 文档", async () => {
+  const outcome = await deliverSkip({
+    identity: { caseId: "case-1", taskId: "task-1" },
+    skip: { reason: "no-reviewable-files", message: "msg", droppedFiles: 1, droppedChars: 5 },
+    reporter: undefined,
+    started: true,
+    reportedFiles: [],
+    log: () => undefined,
+  });
+
+  expect(outcome.summaryCalled).toBe(false);
+  expect(JSON.parse(outcome.stdoutDocument)).toEqual({
+    ok: true,
+    caseId: "case-1",
+    skipped: "no-reviewable-files",
+    findings: [],
+  });
+});
+
+test("deliverSkip：首个文件缺席时仍发固定总结", async () => {
+  const calls: string[] = [];
+  const summaries: string[] = [];
+
+  const outcome = await deliverSkip({
+    identity: { caseId: "case-1", taskId: "task-1" },
+    skip: { reason: "no-reviewable-files", message: "msg", droppedFiles: 2, droppedChars: 9 },
+    reporter: skipReporter({ calls, summaries }),
+    started: true,
+    reportedFiles: [],
+    log: () => undefined,
+  });
+
+  expect(calls).toEqual(["summary"]);
+  expect(outcome.summaryCalled).toBe(true);
+});
+
+test("deliverSkip：summary 失败只留痕，summaryCalled 仍为 true", async () => {
+  const calls: string[] = [];
+  const summaries: string[] = [];
+  const logs: string[] = [];
+
+  const outcome = await deliverSkip({
+    identity: { caseId: "case-1", taskId: "task-1" },
+    skip: { reason: "diff-too-large", message: "msg", diffLength: 100, maxChars: 10 },
+    reporter: skipReporter({ calls, summaries, failSummary: true }),
+    started: true,
+    reportedFiles: [],
+    log: (line) => logs.push(line),
+  });
+
+  expect(outcome.summaryCalled).toBe(true);
+  expect(logs.some((line) => line.includes("MCP saveReviewSummary 失败（boom）"))).toBe(true);
 });

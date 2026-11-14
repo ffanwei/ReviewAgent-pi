@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0082）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0083）。
 
 ## 记录纪律
 
@@ -78,6 +78,7 @@
 | [ADR-0080](0080-model-fallback-on-model-not-found.md) | `--model` 不可用时的前置探测与单边降级：`reviewer.modelFallback`（缺省 `off`）、只认 model-not-found、探针只做顾问、一次 run 一个生效模型 |
 | [ADR-0081](0081-delivery-module-boundary.md) | 交付 module：把 `runReview` 之后的收尾从 `main` 抽进 `cli/delivery.ts`；显式输入、返回值与 ports、线性顺序、三切片迁移、输入输出逐字节不变 |
 | [ADR-0082](0082-pass-assembly-context-and-descriptor.md) | pass 装配：单遍与分片共享 `ReviewRunContext` / `PassDescriptor`，`runPasses` 统一执行、回调与时序；`ReviewPassInput` 叶子不变 |
+| [ADR-0083](0083-admission-as-data-and-deliver-skip.md) | 准入结果化：`runReviewOutcome` 返回 `reviewed / skipped` 数据，`runReview` 保留抛错契约；跳过交付收口到 `deliverSkip` |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

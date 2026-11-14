@@ -68,9 +68,9 @@ import { resolveReviewModel } from "../provider/model-fallback.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
-import { runReview } from "../run/review-run.js";
 import { findingMergeKey } from "../run/findings-merge.js";
-import { listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError } from "../run/mr-input.js";
+import { listChangedFilePaths } from "../run/mr-input.js";
+import { runReviewOutcome, type ReviewRunOutcome } from "../run/review-run.js";
 import { runExportCommand } from "./export-command.js";
 import {
   ConfigError,
@@ -95,10 +95,11 @@ import { runVersionCommand } from "./version-command.js";
 import { McpCallLog } from "./mcp-call-log.js";
 import { openRunLog, type RunLog } from "./run-log.js";
 import { buildShardReportResilient, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
-import { buildReviewSummary, DIFF_TOO_LARGE_SUMMARY_MARKDOWN, NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN } from "./review-summary.js";
+import { buildReviewSummary } from "./review-summary.js";
 import { readCodeLines } from "./code-lines.js";
 import {
   deliverReviewRun,
+  deliverSkip,
   finalizeDelivery,
   type DeliveryClock,
   type DeliveryFinalizeReporterPort,
@@ -115,7 +116,6 @@ import {
   type StageSpan,
   type TaskUsagePurposeLine,
 } from "./progress-render.js";
-import { renderJsonDocument } from "./render.js";
 import {
   createOneShotUsageCollector,
   type OneShotPurposeKey,
@@ -500,9 +500,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
           : undefined;
     const startedAt = Date.now();
     stageClock.runStartedAt = startedAt;
-    let reviewed: Awaited<ReturnType<typeof runReview>>;
+    let outcome: ReviewRunOutcome;
     try {
-      reviewed = await runReview({
+      outcome = await runReviewOutcome({
         caseId: args.caseId,
         repoPath,
         diff,
@@ -540,73 +540,28 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       // 异常路径也要擦掉状态行：残影会把错误消息顶成半行
       progress?.dispose();
       stageClock.auditMs = Date.now() - startedAt;
-      // ADR-0075：diff 超 `limits.boundary.maxDiffChars` → 跳过检视，但保证平台
-      // 收到「至少一次空意见上报 + 固定总结」（有始有终，不留空中间段）。
-      if (error instanceof MrDiffTooLargeError) {
-        process.stderr.write(`review-pi: ${error.message}（跳过检视）\n`);
-        if (taskToolsOn && activeReporter !== null && startTaskSent) {
-          const firstFile = changedFiles[0];
-          if (firstFile !== undefined) {
-            await reportFilesWithoutTips({
-              label: "",
-              taskId: args.taskId,
-              reportFileResult: (args) => activeReporter.task.reportFileResult(args),
-              files: [firstFile],
-              reportedFiles,
-              log: (line) => process.stderr.write(line),
-            });
-          }
-          const outcome = await activeReporter.task.saveReviewSummary({
-            taskId: args.taskId,
-            markdownContent: DIFF_TOO_LARGE_SUMMARY_MARKDOWN,
-          });
-          summaryCallCompleted = true;
-          if (!outcome.ok) {
-            process.stderr.write(`review-pi: MCP saveReviewSummary 失败（${outcome.reason}）\n`);
-          }
-        }
-        await writeStdout(
-          renderJsonDocument({ ok: true, caseId: args.caseId, skipped: "diff-too-large", findings: [] }),
-        );
-        return 0;
-      }
-      // ADR-0078：过滤后无可检视文件 → 同样「跳过检视 + 一次空意见 + 固定总结」。
-      // 与 ADR-0075 同形：不写 audit / run（run 未开始），exit 0。
-      if (error instanceof NoReviewableFilesError) {
-        process.stderr.write(`review-pi: ${error.message}（跳过检视）\n`);
-        if (taskToolsOn && activeReporter !== null && startTaskSent) {
-          const firstFile = changedFiles[0];
-          if (firstFile !== undefined) {
-            await reportFilesWithoutTips({
-              label: "",
-              taskId: args.taskId,
-              reportFileResult: (args) => activeReporter.task.reportFileResult(args),
-              files: [firstFile],
-              reportedFiles,
-              log: (line) => process.stderr.write(line),
-            });
-          }
-          const outcome = await activeReporter.task.saveReviewSummary({
-            taskId: args.taskId,
-            markdownContent: NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN,
-          });
-          summaryCallCompleted = true;
-          if (!outcome.ok) {
-            process.stderr.write(`review-pi: MCP saveReviewSummary 失败（${outcome.reason}）\n`);
-          }
-        }
-        await writeStdout(
-          renderJsonDocument({
-            ok: true,
-            caseId: args.caseId,
-            skipped: "no-reviewable-files",
-            findings: [],
-          }),
-        );
-        return 0;
-      }
       throw error;
     }
+    // ADR-0083：预期内跳过以数据返回，交付收口到 deliverSkip。
+    // 仍保证平台收到「至少一次空意见上报 + 固定总结」（有始有终）。
+    if (outcome.kind === "skipped") {
+      progress?.dispose();
+      stageClock.auditMs = Date.now() - startedAt;
+      process.stderr.write(`review-pi: ${outcome.skip.message}（跳过检视）\n`);
+      const delivered = await deliverSkip({
+        identity: { caseId: args.caseId, taskId: args.taskId },
+        skip: outcome.skip,
+        ...(changedFiles[0] !== undefined ? { firstFile: changedFiles[0] } : {}),
+        ...(deliveryReporter !== undefined ? { reporter: deliveryReporter } : {}),
+        started: startTaskSent,
+        reportedFiles,
+        log: (line) => process.stderr.write(line),
+      });
+      summaryCallCompleted = delivered.summaryCalled;
+      await writeStdout(delivered.stdoutDocument);
+      return 0;
+    }
+    const reviewed = outcome.result;
     // 请求时间线（ADR-0076）：pass 已写过单片 / 分片文件；收尾的报文与总结
     // 属于同一次 run，续写顶层文件（追加模式，保留 pass 已写的行）。
     const { record, runId, transcriptPaths } = reviewed;

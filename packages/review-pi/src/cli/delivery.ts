@@ -23,17 +23,22 @@ import { reviewModelOf } from "../provider/pi-client.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import { formatMrFilterNotice } from "../run/mr-input.js";
-import type { ReviewRunResult } from "../run/review-run.js";
+import type { ReviewRunResult, ReviewSkip } from "../run/review-run.js";
 import { formatShardTruncationNotice } from "../run/shard-planner.js";
 import { readCodeLines } from "./code-lines.js";
 import { planCoverageReport } from "./coverage.js";
 import { writeMcpCallLog, type McpCallLogDocument } from "./mcp-call-log.js";
 import { reportFilesWithoutTips } from "./report-files.js";
 import { doneLine, type ProgressSummary } from "./progress-render.js";
-import { renderReviewOutcome } from "./render.js";
+import { renderJsonDocument, renderReviewOutcome } from "./render.js";
 import type { ShardReportRun, SemanticTipEntry } from "./report-payload.js";
 import { describeReportFailure } from "./report-failure.js";
-import type { ReviewSummaryInput, ReviewSummaryResult } from "./review-summary.js";
+import {
+  DIFF_TOO_LARGE_SUMMARY_MARKDOWN,
+  NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN,
+  type ReviewSummaryInput,
+  type ReviewSummaryResult,
+} from "./review-summary.js";
 import {
   removeExecDirTipsCopies,
   removeStaleReviewsTipsZh,
@@ -172,6 +177,67 @@ export interface DeliveryOutcome {
   readonly summaryCalled: boolean;
   /** tips 落盘失败：`main` 跳过 session 索引与 stdout，随后以该错误退出 */
   readonly deferredFailure?: unknown;
+}
+
+export interface SkipDeliveryInput {
+  readonly identity: { readonly caseId: string; readonly taskId: string };
+  readonly skip: ReviewSkip;
+  /** 原始变更文件的首个（与既有跳过上报口径一致） */
+  readonly firstFile?: string;
+  readonly reporter?: DeliveryReporterPort;
+  /** `startTask` 是否成功发出（未发出 = 不补任何业务调用） */
+  readonly started: boolean;
+  /** 已上报文件账本（补报会追加；跳过后进程结束，不再读取） */
+  readonly reportedFiles: string[];
+  readonly log: (line: string) => void;
+}
+
+export interface SkipDeliveryOutcome {
+  readonly stdoutDocument: string;
+  readonly summaryCalled: boolean;
+}
+
+/**
+ * 跳过交付（ADR-0075 / ADR-0078 / ADR-0081）：固定总结 + 首个文件空 tips +
+ * 单 JSON stdout 文档。不写 audit / run.json，不发进度事件。
+ */
+export async function deliverSkip(input: SkipDeliveryInput): Promise<SkipDeliveryOutcome> {
+  const { log } = input;
+  const reporter = input.reporter;
+  let summaryCalled = false;
+  if (reporter !== undefined && input.started) {
+    if (input.firstFile !== undefined) {
+      await reportFilesWithoutTips({
+        label: "",
+        taskId: input.identity.taskId,
+        reportFileResult: (args) => reporter.reportFileResult(args),
+        files: [input.firstFile],
+        reportedFiles: input.reportedFiles,
+        log,
+      });
+    }
+    const markdownContent =
+      input.skip.reason === "diff-too-large"
+        ? DIFF_TOO_LARGE_SUMMARY_MARKDOWN
+        : NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN;
+    const outcome = await reporter.saveReviewSummary({
+      taskId: input.identity.taskId,
+      markdownContent,
+    });
+    summaryCalled = true;
+    if (!outcome.ok) {
+      log(`review-pi: MCP saveReviewSummary 失败（${outcome.reason}）\n`);
+    }
+  }
+  return {
+    stdoutDocument: renderJsonDocument({
+      ok: true,
+      caseId: input.identity.caseId,
+      skipped: input.skip.reason,
+      findings: [],
+    }),
+    summaryCalled,
+  };
 }
 
 export async function deliverReviewRun(input: DeliveryInput): Promise<DeliveryOutcome> {

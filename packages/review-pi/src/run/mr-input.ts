@@ -547,11 +547,22 @@ export class MrDiffTooLargeError extends Error {
   }
 }
 
-export function assertDiffWithinCharLimit(diff: string, maxChars: number | null): void {
+/** 体积门判定（单一真源）：超限返回错误对象，未超限返回 undefined */
+export function diffTooLargeError(
+  diff: string,
+  maxChars: number | null,
+): MrDiffTooLargeError | undefined {
   if (maxChars === null || diff.length <= maxChars) {
-    return;
+    return undefined;
   }
-  throw new MrDiffTooLargeError(diff.length, maxChars);
+  return new MrDiffTooLargeError(diff.length, maxChars);
+}
+
+export function assertDiffWithinCharLimit(diff: string, maxChars: number | null): void {
+  const error = diffTooLargeError(diff, maxChars);
+  if (error !== undefined) {
+    throw error;
+  }
 }
 
 /**

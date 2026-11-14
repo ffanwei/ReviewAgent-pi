@@ -34,8 +34,8 @@ import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
-import { guardMrBoundary } from "./mr-boundary-guard.js";
-import { assertDiffWithinCharLimit, filterDiffForReview, listChangedFilePaths, NoReviewableFilesError, toMrFilterRecord } from "./mr-input.js";
+import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
+import { diffTooLargeError, filterDiffForReview, listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError, toMrFilterRecord } from "./mr-input.js";
 import { mergeShardFindings } from "./findings-merge.js";
 import {
   buildRunContext,
@@ -214,17 +214,49 @@ interface ReviewOutcome {
   readonly findings: readonly Finding[];
 }
 
+/** 预期内的跳过结果（ADR-0075 / ADR-0078）：数据，不是异常 */
+export type ReviewSkip =
+  | {
+      readonly reason: "diff-too-large";
+      readonly message: string;
+      readonly diffLength: number;
+      readonly maxChars: number;
+    }
+  | {
+      readonly reason: "no-reviewable-files";
+      readonly message: string;
+      readonly droppedFiles: number;
+      readonly droppedChars: number;
+    };
+
+/** 一次入口调用的结果：完成检视，或预期内跳过 */
+export type ReviewRunOutcome =
+  | { readonly kind: "reviewed"; readonly result: ReviewRunResult }
+  | { readonly kind: "skipped"; readonly skip: ReviewSkip };
+
+/** 准入通过后的执行上下文（过滤 / 体积门 / 边界 / 分片计划都只算一次） */
+interface PreparedReview {
+  readonly kind: "ready";
+  readonly startedAt: Date;
+  readonly emit: RunProgressSink;
+  readonly runtime: ReviewRuntime;
+  readonly modelId: string;
+  readonly diff: string;
+  readonly boundary: MrBoundaryDecision;
+  readonly mrFilter?: MrFilterRecord;
+  readonly shards: readonly Shard[] | null;
+  readonly shardTotal: number;
+}
+
+type PrepareReviewOutcome =
+  | PreparedReview
+  | { readonly kind: "skipped"; readonly skip: ReviewSkip };
+
 /**
- * 单案全链入口：**先发 run 起点，再跑主体，成败都补 run 终点**（ADR-0037）。
- *
- * run 起止也是进度事件的投影（ADR-0016 三条纪律原样继承）：消费方（CLI 渲染 /
- * 上报）只看见既有留痕里已有的事实。`run.end` 的 `runId` 只在成功路径出现——
- * 它由首次模型请求时刻决定（ADR-0032），在首次请求之前失败时从未存在过。
- *
- * 分片模式（ADR-0039）：外层独占一次 `run.start` / `run.end`，并带 `shards`
- * 计数；片内事件带 `shard` 标签。单片路径整组事件不带分片字段（零字节漂移）。
+ * 入口准入（ADR-0075 / ADR-0078）：过滤、体积门、边界与分片计划。
+ * 预期内的跳过**返回数据**；只有真正的异常才向外抛。
  */
-export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult> {
+function prepareReview(input: ReviewRunInput): PrepareReviewOutcome {
   const startedAt = input.startedAt ?? new Date();
   const emit = input.onProgress ?? NO_OP_PROGRESS_SINK;
   const runtime = input.runtime ?? DEFAULT_REVIEW_RUNTIME;
@@ -232,9 +264,8 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
 
   // 大 diff 第一期（内核入口唯一咽喉）：
   // 1) 预过滤噪声文件（lockfile / 生成物 / minified / 二进制），整块剔除、
-  //    绝不切 hunk；2) 过滤后再过体积门（超限直接抛错，不把注定失败的请求
-  //    发给模型）。过滤清单经审计尾键 `mrFilter` 与 stderr 一行留痕。
-  // 第二期：同一份过滤结果只算一次，分片不改写任何字节。
+  //    绝不切 hunk；2) 过滤后再过体积门（超限返回 skipped，不把注定失败的
+  //    请求发给模型）。过滤清单经审计尾键 `mrFilter` 与 stderr 一行留痕。
   const filtered = filterDiffForReview(input.diff, {
     skipTestFiles: runtime.limits.testFiles.skip,
     excludeGlobs: runtime.limits.mrFilter.excludeGlobs,
@@ -249,17 +280,58 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   // 固定总结）。输入本身解析不出文件块时保持既有边界护栏行为，不在此拦截。
   const hadFileBlocks = listChangedFilePaths(input.diff).length > 0;
   if (hadFileBlocks && listChangedFilePaths(filtered.diff).length === 0) {
-    throw new NoReviewableFilesError(filtered.dropped.length, filtered.droppedChars);
+    const error = new NoReviewableFilesError(filtered.dropped.length, filtered.droppedChars);
+    return {
+      kind: "skipped",
+      skip: {
+        reason: "no-reviewable-files",
+        message: error.message,
+        droppedFiles: filtered.dropped.length,
+        droppedChars: filtered.droppedChars,
+      },
+    };
   }
-  assertDiffWithinCharLimit(filtered.diff, runtime.limits.boundary.maxDiffChars);
+  const maxChars = runtime.limits.boundary.maxDiffChars;
+  const tooLarge = diffTooLargeError(filtered.diff, maxChars);
+  if (tooLarge !== undefined) {
+    return {
+      kind: "skipped",
+      skip: {
+        reason: "diff-too-large",
+        message: tooLarge.message,
+        diffLength: tooLarge.diffLength,
+        maxChars: tooLarge.maxChars,
+      },
+    };
+  }
+
   const diff = filtered.diff;
   const mrFilter = toMrFilterRecord(filtered);
   // MR 边界护栏（#12）：度量对象是**过滤后**的 diff。分片模式下它是整份 MR
   // 的属性，只度量 / 记账一次（每片审计不重复记）。
   const boundary = guardMrBoundary(diff, runtime.limits.boundary);
-
   const shards = planReviewShards(diff, runtime.limits.split);
-  const shardTotal = shards === null ? 1 : shards.length;
+  return {
+    kind: "ready",
+    startedAt,
+    emit,
+    runtime,
+    modelId,
+    diff,
+    boundary,
+    ...(mrFilter !== undefined ? { mrFilter } : {}),
+    shards,
+    shardTotal: shards === null ? 1 : shards.length,
+  };
+}
+
+/** 执行已准入的 run：`run.start` / `run.end` 只在这里发 */
+async function executeReview(
+  input: ReviewRunInput,
+  prepared: PreparedReview,
+): Promise<ReviewRunResult> {
+  const { startedAt, emit, runtime, modelId, diff, boundary, mrFilter, shards, shardTotal } =
+    prepared;
   emit({
     kind: "run",
     state: "start",
@@ -306,6 +378,45 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
     });
     throw error;
   }
+}
+
+/**
+ * 新入口（ADR-0083）：预期内的跳过以数据返回，CLI 不再靠 `catch` 分支。
+ * 公开的 `runReview` 保持「跳过即抛错」的旧契约，作为兼容适配器。
+ */
+export async function runReviewOutcome(input: ReviewRunInput): Promise<ReviewRunOutcome> {
+  const prepared = prepareReview(input);
+  if (prepared.kind === "skipped") {
+    return prepared;
+  }
+  return { kind: "reviewed", result: await executeReview(input, prepared) };
+}
+
+function errorFromSkip(skip: ReviewSkip): Error {
+  return skip.reason === "diff-too-large"
+    ? new MrDiffTooLargeError(skip.diffLength, skip.maxChars)
+    : new NoReviewableFilesError(skip.droppedFiles, skip.droppedChars);
+}
+
+/**
+ * 单案全链入口：**先发 run 起点，再跑主体，成败都补 run 终点**（ADR-0037）。
+ *
+ * run 起止也是进度事件的投影（ADR-0016 三条纪律原样继承）：消费方（CLI 渲染 /
+ * 上报）只看见既有留痕里已有的事实。`run.end` 的 `runId` 只在成功路径出现——
+ * 它由首次模型请求时刻决定（ADR-0032），在首次请求之前失败时从未存在过。
+ *
+ * 分片模式（ADR-0039）：外层独占一次 `run.start` / `run.end`，并带 `shards`
+ * 计数；片内事件带 `shard` 标签。单片路径整组事件不带分片字段（零字节漂移）。
+ *
+ * 本入口保持「预期内跳过即抛错」的公开契约（ADR-0075 / ADR-0078 的既有消费方）；
+ * 需要把跳过当数据处理的调用方用 `runReviewOutcome`。
+ */
+export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult> {
+  const outcome = await runReviewOutcome(input);
+  if (outcome.kind === "skipped") {
+    throw errorFromSkip(outcome.skip);
+  }
+  return outcome.result;
 }
 
 /** 规划分片：关闭 / 未超预算时返回 null（单遍路径，零变更） */
