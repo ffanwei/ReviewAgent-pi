@@ -1,16 +1,19 @@
 import { expect, test, vi } from "vitest";
-import type { Context, FetchFunction, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, FetchFunction, UserMessage } from "@earendil-works/pi-ai";
+import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { setRequestTimelineSink, type RequestTimelineEntry } from "../observability/request-timeline.js";
 import { fakeFetch } from "./fake-fetch.js";
 import {
   GATEWAY_MAX_TOKENS,
   LOCKED_EFFORT_LABEL,
+  LOCKED_REASONING_EFFORT,
   REVIEW_MODEL_ID,
   assistantText,
+  captureWire,
   maxTokensFor,
   reviewModelOf,
   reviewStreamFn,
-  runReviewTurn,
+  type WireCapture,
 } from "./pi-client.js";
 
 // pi-ai 序列化缝（内核变量面）：真 provider + 真 SDK 序列化路径 + fake 传输适配器。
@@ -30,6 +33,54 @@ const BASE_CONTEXT: Context = {
   systemPrompt: "You are the reviewer.",
   messages: [user("Review the diff.")],
 };
+
+interface TurnInput {
+  readonly context: Context;
+  readonly apiKey: string;
+  readonly modelId?: string;
+  readonly baseUrl?: string;
+  readonly maxOutputTokens?: number | null;
+  readonly maxRetries?: number;
+  readonly maxRetryDelayMs?: number;
+  readonly timeoutMs?: number;
+  readonly fetch?: FetchFunction;
+}
+
+/**
+ * 单回合 harness：直接走 provider 序列化点（原生产 `runReviewTurn` 测试入口已删，
+ * ADR-0089）。测试与生产使用同一条 `deepseekProvider().stream` 路径。
+ */
+async function runReviewTurn(
+  input: TurnInput,
+): Promise<{ readonly message: AssistantMessage; readonly wire: WireCapture }> {
+  const model = reviewModelOf(input.modelId, input.baseUrl);
+  const maxTokens = maxTokensFor(model.baseUrl, input.maxOutputTokens);
+  let wire: WireCapture | undefined;
+  const stream = deepseekProvider().stream(model, input.context, {
+    apiKey: input.apiKey,
+    ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    reasoningEffort: LOCKED_REASONING_EFFORT,
+    ...(input.maxRetries !== undefined ? { maxRetries: input.maxRetries } : {}),
+    ...(input.maxRetryDelayMs !== undefined
+      ? { maxRetryDelayMs: input.maxRetryDelayMs }
+      : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    onPayload: (payload) => {
+      wire = captureWire(payload);
+    },
+  });
+  const message = await stream.result();
+  if (message.stopReason === "error") {
+    throw new Error(
+      `review turn failed: ${message.errorMessage ?? "provider returned an error stop reason"}`,
+    );
+  }
+  if (wire === undefined) {
+    throw new Error("pi-ai did not reach the onPayload serialization point (wire capture missing)");
+  }
+  return { message, wire };
+}
 
 test("runReviewTurn：onPayload 序列化点捕获 wireBody 原文（模型 / 锁档 effort / 无 max_tokens / 无 tools）", async () => {
   const script = fakeFetch([

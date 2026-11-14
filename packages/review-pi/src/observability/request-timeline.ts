@@ -158,6 +158,196 @@ export function emitRequestTimeline(entry: RequestTimelineEntry): void {
   timelineSink?.(entry);
 }
 
+/** 进程级 requestId 分配（同一 JSONL 内唯一；agent 与 one-shot 共用） */
+let timelineRequestSeq = 0;
+
+export function nextTimelineRequestId(): number {
+  timelineRequestSeq += 1;
+  return timelineRequestSeq;
+}
+
+export interface TimelineAttemptProbe {
+  readonly attempt: number;
+  readonly sentAt: number;
+}
+
+export interface TimelineAttemptOutcome {
+  readonly headersAt?: number | null;
+  readonly status?: number | null;
+  readonly responseHeaders?: Headers;
+  readonly error?: TimelineError | null;
+}
+
+export interface TimelineFinishOutcome {
+  readonly stopReason?: string | null;
+  readonly error?: TimelineError | null;
+}
+
+/**
+ * 一次逻辑请求的 recorder（ADR-0076 / ADR-0089）：两种行（attempt / request）
+ * 与生命周期状态机只在这里；stream 与 one-shot 只做 adapter。
+ */
+export interface TimelineRecorder {
+  readonly requestId: number;
+  /** 响应体读取失败的结构化归因（重放判定用） */
+  readonly bodyError: TimelineError | null;
+  now(): number;
+  beginAttempt(): TimelineAttemptProbe;
+  endAttempt(
+    probe: TimelineAttemptProbe | undefined,
+    outcome: TimelineAttemptOutcome,
+  ): void;
+  markStreamStarted(at?: number): void;
+  markDelta(deltaChars: number): void;
+  markBytes(bytes: number): void;
+  markBodyError(error: TimelineError): void;
+  setUsage(usage: LlmUsage): void;
+  /** 发 request 行；幂等 */
+  finish(outcome?: TimelineFinishOutcome): void;
+}
+
+export interface CreateTimelineRecorderOptions {
+  /** 调用点归属（model / baseUrlHost 由 recorder 补齐） */
+  readonly scope: Omit<TimelineScope, "model" | "baseUrlHost">;
+  readonly model: string;
+  readonly baseUrl?: string;
+  /** 重放序号（ADR-0077）：0 = 首次 */
+  readonly replay?: number;
+  readonly now?: () => number;
+  /** 缺省从进程级计数器取号；同一次逻辑请求的所有 replay 共享 */
+  readonly requestId?: number;
+}
+
+export function createTimelineRecorder(
+  options: CreateTimelineRecorderOptions,
+): TimelineRecorder {
+  const now = options.now ?? Date.now;
+  const requestId = options.requestId ?? nextTimelineRequestId();
+  const replay = options.replay ?? 0;
+  const scope: TimelineScope = {
+    ...options.scope,
+    model: options.model,
+    baseUrlHost: hostOfBaseUrl(options.baseUrl),
+  };
+  let sentAt = 0;
+  let headersAt: number | null = null;
+  let attempts = 0;
+  let streamStartedAt: number | null = null;
+  let firstDeltaAt: number | null = null;
+  let lastDeltaAt: number | null = null;
+  let deltaCount = 0;
+  let deltaChars = 0;
+  let bytes: number | undefined;
+  let bodyError: TimelineError | null = null;
+  let stopReason: string | null = null;
+  let error: TimelineError | null = null;
+  let usage: LlmUsage | undefined;
+  let finished = false;
+
+  return {
+    requestId,
+    get bodyError() {
+      return bodyError;
+    },
+    now,
+    beginAttempt() {
+      attempts += 1;
+      const at = now();
+      if (sentAt === 0) {
+        sentAt = at;
+      }
+      return { attempt: attempts, sentAt: at };
+    },
+    endAttempt(probe, outcome) {
+      if (probe === undefined) {
+        return;
+      }
+      const endedAt = now();
+      if (outcome.headersAt !== undefined && outcome.headersAt !== null) {
+        headersAt = outcome.headersAt;
+      }
+      const headers =
+        outcome.responseHeaders !== undefined
+          ? pickTimelineHeaders(outcome.responseHeaders)
+          : undefined;
+      emitRequestTimeline({
+        v: 1,
+        ts: endedAt,
+        kind: "attempt",
+        runId: null,
+        replay,
+        ...scope,
+        requestId,
+        attempt: probe.attempt,
+        sentAt: probe.sentAt,
+        headersAt: outcome.headersAt ?? null,
+        status: outcome.status ?? null,
+        ...(headers !== undefined ? { headers } : {}),
+        error: outcome.error ?? null,
+        durationMs: Math.max(0, (outcome.headersAt ?? endedAt) - probe.sentAt),
+      });
+    },
+    markStreamStarted(at = now()) {
+      if (streamStartedAt === null) {
+        streamStartedAt = at;
+      }
+    },
+    markDelta(chars) {
+      const at = now();
+      if (firstDeltaAt === null) {
+        firstDeltaAt = at;
+      }
+      lastDeltaAt = at;
+      deltaCount += 1;
+      deltaChars += chars;
+    },
+    markBytes(value) {
+      bytes = (bytes ?? 0) + value;
+    },
+    markBodyError(value) {
+      bodyError = value;
+    },
+    setUsage(value) {
+      usage = value;
+    },
+    finish(outcome = {}) {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      if (outcome.stopReason !== undefined) {
+        stopReason = outcome.stopReason;
+      }
+      if (outcome.error !== undefined) {
+        error = outcome.error;
+      }
+      const endedAt = now();
+      emitRequestTimeline({
+        v: 1,
+        ts: endedAt,
+        kind: "request",
+        runId: null,
+        replay,
+        ...scope,
+        requestId,
+        sentAt: sentAt === 0 ? endedAt : sentAt,
+        headersAt,
+        streamStartedAt,
+        firstDeltaAt,
+        lastDeltaAt,
+        endedAt,
+        stopReason,
+        deltaCount,
+        deltaChars,
+        ...(bytes !== undefined ? { bytes } : {}),
+        attempts: Math.max(1, attempts),
+        error,
+        ...(usage !== undefined ? { usage } : {}),
+      });
+    },
+  };
+}
+
 export interface RequestTimelineWriter {
   readonly path: string;
   readonly sink: RequestTimelineSink;

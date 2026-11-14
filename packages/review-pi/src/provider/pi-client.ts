@@ -13,14 +13,13 @@ import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { LlmUsage, ToolSchema, WireMessage } from "../contracts/llm.js";
 import {
+  createTimelineRecorder,
   describeThrownError,
-  emitRequestTimeline,
   hasRequestTimelineSink,
-  hostOfBaseUrl,
-  pickTimelineHeaders,
+  nextTimelineRequestId,
   truncateTimelineMessage,
   type TimelineError,
-  type TimelineScope,
+  type TimelineRecorder,
   type TimelineShard,
 } from "../observability/request-timeline.js";
 import {
@@ -73,71 +72,7 @@ export interface WireCapture {
   readonly wireBody: string;
 }
 
-export interface ReviewTurnInput {
-  readonly context: Context;
-  readonly apiKey: string;
-  /**
-   * 网关 base URL 覆盖（#4）：经 model.baseUrl 展开缝注入（openai-completions
-   * 以 model.baseUrl 为 SDK baseURL），vendored pi 源码零改动。缺省官方
-   * api.deepseek.com；企业网关（配置 `reviewer.baseUrl`）需自带 /v1——SDK
-   * 只追加 /chat/completions。
-   */
-  readonly baseUrl?: string;
-  /**
-   * 模型 id 覆盖（#45 自由 id 语义）：任意非空 id 均可发。序列化画像：
-   * id 命中 deepseek 目录 → 该 id 自身画像；目录外 id → 钉住的评审模型
-   * 画像作模板（见 reviewModelOf）。缺省钉住的评审模型。
-   */
-  readonly modelId?: string;
-  /** 输出预算（ADR-0025：`reviewer.maxOutputTokens`；null/缺席 = 按接入点自动判档） */
-  readonly maxOutputTokens?: number | null;
-  /** 请求建立阶段最多重试次数（pi-ai 语义：0 = 不重试；2 = 共 3 次尝试） */
-  readonly maxRetries?: number;
-  /** 服务端 Retry-After 上限毫秒数（pi-ai `maxRetryDelayMs`） */
-  readonly maxRetryDelayMs?: number;
-  /** 单次请求（流开始前）超时毫秒数 */
-  readonly timeoutMs?: number;
-  /** 传输层注入；缺省线上 global fetch（离线测试恒注入 fake 适配器） */
-  readonly fetch?: FetchFunction;
-}
-
-export interface ReviewTurnOutcome {
-  readonly message: AssistantMessage;
-  readonly wire: WireCapture;
-}
-
 const WIRE_ROLES: readonly string[] = ["system", "user", "assistant", "tool"];
-
-export async function runReviewTurn(input: ReviewTurnInput): Promise<ReviewTurnOutcome> {
-  const model = reviewModelOf(input.modelId, input.baseUrl);
-  // 网关档显式输出预算（官方直连不发，见 maxTokensFor）
-  const maxTokens = maxTokensFor(model.baseUrl, input.maxOutputTokens);
-  let wire: WireCapture | undefined;
-  const stream = deepseekProvider().stream(model, input.context, {
-    apiKey: input.apiKey,
-    ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
-    ...(maxTokens !== undefined ? { maxTokens } : {}),
-    reasoningEffort: LOCKED_REASONING_EFFORT,
-    ...(input.maxRetries !== undefined ? { maxRetries: input.maxRetries } : {}),
-    ...(input.maxRetryDelayMs !== undefined ? { maxRetryDelayMs: input.maxRetryDelayMs } : {}),
-    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-    onPayload: (payload) => {
-      wire = captureWire(payload);
-    },
-  });
-  const message = await stream.result();
-  // pi-ai 对 provider 错误不 reject：resolve 出 stopReason "error" 的 AssistantMessage，
-  // 缝必须显式拦截（错误永不静默成一次"成功"回合）。
-  if (message.stopReason === "error") {
-    throw new Error(
-      `review turn failed: ${message.errorMessage ?? "provider returned an error stop reason"}`,
-    );
-  }
-  if (wire === undefined) {
-    throw new Error("pi-ai did not reach the onPayload serialization point (wire capture missing)");
-  }
-  return { message, wire };
-}
 
 /** assistant 回复纯文本（content text 块按 "\n" 连接；与 DSH joinTextBlocks 同口径） */
 export function assistantText(message: AssistantMessage): string {
@@ -245,8 +180,8 @@ export function reviewStreamFn(input: {
   /** 流中断重放（ADR-0077）；缺席 = 单次尝试（今天的零漂移行为） */
   readonly replay?: StreamReplayPolicy;
 }): StreamFn {
-  // 主会话 / skill 会话各自一个 StreamFn 实例 → requestId 天然按会话自增
-  let requestSeq = 0;
+  // requestId 由 request-timeline 的进程级计数器分配（ADR-0089）：同一 JSONL
+  // 内 agent 与 one-shot 不撞号。
   return (model, context, options) => {
     // model.baseUrl 由 reviewModelOf 落值（目录缺省 = 官方直连），网关档在此
     // 注入显式输出预算——两类会话共用本构造，改一处即覆盖两会话。
@@ -269,18 +204,16 @@ export function reviewStreamFn(input: {
     const typedModel = model as Model<"openai-completions">;
     const baseFetch = input.fetch ?? (globalThis.fetch as FetchFunction);
 
-    requestSeq += 1;
     const params: StreamDriveParams = {
       model: typedModel,
       context,
       providerOptions,
       replay,
       now: input.timeline?.now ?? Date.now,
-      requestId: requestSeq,
+      requestId: nextTimelineRequestId(),
       scope: input.timeline?.scope(),
       baseFetch,
     };
-
     // 零漂移：无观测器且不重放 → 原样返回 provider 流
     if (!observing && replay.attempts <= 1) {
       return deepseekProvider().stream(typedModel, context, providerOptions);
@@ -318,33 +251,28 @@ function normalizeReplayPolicy(policy: StreamReplayPolicy | undefined): StreamRe
 
 /** 单次尝试（真流式）：覆盖 `push` 旁挂时间线，事件原样转发。 */
 function driveSingleAttempt(params: StreamDriveParams): AssistantMessageEventStream {
-  const state = createTimelineState({
-    requestId: params.requestId,
-    replay: 0,
-    scope: params.scope ?? { site: "main" },
-    model: params.model.id,
-    baseUrl: params.model.baseUrl,
-    now: params.now,
-  });
+  const recorder = createRecorder(params, 0);
   const options: OpenAICompletionsOptions = {
     ...params.providerOptions,
-    fetch: wrapFetchWithTimeline(params.baseFetch, state),
+    fetch: wrapFetchWithTimeline(params.baseFetch, recorder),
   };
   let stream: AssistantMessageEventStream;
   try {
     stream = deepseekProvider().stream(params.model, params.context, options);
   } catch (error) {
     // 同步失败（如缺 key）：逻辑请求行照样要有一条，否则失败现场是空白
-    finishTimelineRequest(state, describeThrownError(error, "provider"));
+    recorder.finish({ error: describeThrownError(error, "provider") });
     throw error;
   }
   const originalPush = stream.push.bind(stream);
   stream.push = (event: AssistantMessageEvent): void => {
-    observeTimelineEvent(state, event);
+    observeTimelineEvent(recorder, event);
     originalPush(event);
   };
   return stream;
 }
+
+import { replayDelayMs, withinReplayBudget } from "./stream-replay-policy.js";
 
 /**
  * 缓冲重放（ADR-0077）：每次尝试的事件只进本地缓冲；失败则丢弃并重发，
@@ -355,19 +283,12 @@ function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream
   void (async (): Promise<void> => {
     const startedAt = params.now();
     for (let replay = 0; ; replay += 1) {
-      const state = createTimelineState({
-        requestId: params.requestId,
-        replay,
-        scope: params.scope ?? { site: "main" },
-        model: params.model.id,
-        baseUrl: params.model.baseUrl,
-        now: params.now,
-      });
+      const recorder = createRecorder(params, replay);
       const options: OpenAICompletionsOptions = {
         ...(replay === 0
           ? params.providerOptions
           : withoutProviderCallbacks(params.providerOptions)),
-        fetch: wrapFetchWithObservedBody(params.baseFetch, state),
+        fetch: wrapFetchWithObservedBody(params.baseFetch, recorder),
       };
 
       const events: AssistantMessageEvent[] = [];
@@ -384,7 +305,7 @@ function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream
         const ended = new Promise<void>((resolve) => {
           inner!.push = (event: AssistantMessageEvent): void => {
             events.push(event);
-            observeTimelineEvent(state, event);
+            observeTimelineEvent(recorder, event);
             if (event.type === "done" || event.type === "error") {
               resolve();
             }
@@ -396,7 +317,7 @@ function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream
 
       if (syncError !== null) {
         const error = describeThrownError(syncError, "provider");
-        finishTimelineRequest(state, error);
+        recorder.finish({ error });
         out.end(syntheticErrorMessage(params.model, syncError));
         return;
       }
@@ -407,7 +328,7 @@ function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream
       // 走同一条 error 事件，但 body 是正常读完的。
       const shouldReplay =
         failed &&
-        state.bodyError !== null &&
+        recorder.bodyError !== null &&
         replay + 1 < params.replay.attempts &&
         withinReplayBudget(startedAt, params.replay.budgetMs, params.now);
 
@@ -442,15 +363,6 @@ function withoutProviderCallbacks(options: OpenAICompletionsOptions): OpenAIComp
   return rest;
 }
 
-function withinReplayBudget(startedAt: number, budgetMs: number, now: () => number): boolean {
-  return budgetMs <= 0 || now() - startedAt < budgetMs;
-}
-
-function replayDelayMs(policy: StreamReplayPolicy, replay: number): number {
-  const exponential = policy.baseDelayMs * 2 ** Math.max(0, replay);
-  return Math.max(0, Math.min(exponential, policy.maxDelayMs));
-}
-
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) {
     return Promise.resolve();
@@ -483,66 +395,19 @@ function syntheticErrorMessage(
   };
 }
 
-interface TimelineState {
-  readonly requestId: number;
-  readonly replay: number;
-  readonly scope: TimelineScope;
-  readonly now: () => number;
-  sentAt: number;
-  headersAt: number | null;
-  attempts: number;
-  streamStartedAt: number | null;
-  firstDeltaAt: number | null;
-  lastDeltaAt: number | null;
-  deltaCount: number;
-  deltaChars: number;
-  /** 响应体实际收到字节数；null = 未观察 body（单次尝试路径） */
-  bytes: number | null;
-  /** body 读取失败的原始归因（流中断的结构化信号） */
-  bodyError: TimelineError | null;
-  stopReason: string | null;
-  error: TimelineError | null;
-  usage: LlmUsage | undefined;
-  finished: boolean;
-}
-
-function createTimelineState(input: {
-  readonly requestId: number;
-  readonly replay: number;
-  readonly scope: StreamTimelineScope;
-  readonly model: string;
-  readonly baseUrl: string | undefined;
-  readonly now: () => number;
-}): TimelineState {
-  return {
-    requestId: input.requestId,
-    replay: input.replay,
-    scope: {
-      ...input.scope,
-      model: input.model,
-      baseUrlHost: baseUrlHostOf(input.baseUrl),
-    },
-    now: input.now,
-    sentAt: 0,
-    headersAt: null,
-    attempts: 0,
-    streamStartedAt: null,
-    firstDeltaAt: null,
-    lastDeltaAt: null,
-    deltaCount: 0,
-    deltaChars: 0,
-    bytes: null,
-    bodyError: null,
-    stopReason: null,
-    error: null,
-    usage: undefined,
-    finished: false,
-  };
-}
-
-/** 只取 host：绝不把 path / query（可能含凭据）写进时间线 */
-function baseUrlHostOf(baseUrl: string | undefined): string {
-  return hostOfBaseUrl(baseUrl);
+/** 一次逻辑请求的 recorder（重放时每次 replay 一个，requestId 相同） */
+function createRecorder(
+  params: StreamDriveParams,
+  replay: number,
+): TimelineRecorder {
+  return createTimelineRecorder({
+    scope: params.scope ?? { site: "main" },
+    model: params.model.id,
+    ...(params.model.baseUrl !== undefined ? { baseUrl: params.model.baseUrl } : {}),
+    replay,
+    now: params.now,
+    requestId: params.requestId,
+  });
 }
 
 /**
@@ -555,23 +420,20 @@ function baseUrlHostOf(baseUrl: string | undefined): string {
  */
 function wrapFetchWithTimeline(
   underlying: FetchFunction,
-  state: TimelineState,
+  recorder: TimelineRecorder,
 ): FetchFunction {
   return async (input, init) => {
-    state.attempts += 1;
-    const attempt = state.attempts;
-    const sentAt = state.now();
-    if (state.sentAt === 0) {
-      state.sentAt = sentAt;
-    }
+    const probe = recorder.beginAttempt();
     try {
       const response = await underlying(input, init);
-      const headersAt = state.now();
-      state.headersAt = headersAt;
-      emitAttemptLine(state, attempt, sentAt, headersAt, response, null);
+      recorder.endAttempt(probe, {
+        headersAt: recorder.now(),
+        status: response.status,
+        responseHeaders: response.headers,
+      });
       return response;
     } catch (error) {
-      emitAttemptLine(state, attempt, sentAt, null, null, describeThrownError(error));
+      recorder.endAttempt(probe, { error: describeThrownError(error) });
       throw error;
     }
   };
@@ -584,65 +446,31 @@ function wrapFetchWithTimeline(
  */
 function wrapFetchWithObservedBody(
   underlying: FetchFunction,
-  state: TimelineState,
+  recorder: TimelineRecorder,
 ): FetchFunction {
   return async (input, init) => {
-    state.attempts += 1;
-    const attempt = state.attempts;
-    const sentAt = state.now();
-    if (state.sentAt === 0) {
-      state.sentAt = sentAt;
-    }
+    const probe = recorder.beginAttempt();
     let response: Response;
     try {
       response = await underlying(input, init);
     } catch (error) {
-      emitAttemptLine(state, attempt, sentAt, null, null, describeThrownError(error));
+      recorder.endAttempt(probe, { error: describeThrownError(error) });
       throw error;
     }
-    const headersAt = state.now();
-    state.headersAt = headersAt;
-    emitAttemptLine(state, attempt, sentAt, headersAt, response, null);
-    return observeResponseBody(response, state);
+    recorder.endAttempt(probe, {
+      headersAt: recorder.now(),
+      status: response.status,
+      responseHeaders: response.headers,
+    });
+    return observeResponseBody(response, recorder);
   };
 }
 
-function emitAttemptLine(
-  state: TimelineState,
-  attempt: number,
-  sentAt: number,
-  headersAt: number | null,
-  response: Response | null,
-  error: TimelineError | null,
-): void {
-  const headers = response !== null ? pickTimelineHeaders(response.headers) : undefined;
-  const endedAt = state.now();
-  emitRequestTimeline({
-    v: 1,
-    ts: endedAt,
-    kind: "attempt",
-    runId: null,
-    replay: state.replay,
-    ...state.scope,
-    requestId: state.requestId,
-    attempt,
-    sentAt,
-    headersAt,
-    status: response !== null ? response.status : null,
-    ...(headers !== undefined ? { headers } : {}),
-    error,
-    durationMs: Math.max(0, (headersAt ?? endedAt) - sentAt),
-  });
-}
-
 /** 响应体计数 + 错误捕获（回压由 `pull` 保留；不改传输语义） */
-function observeResponseBody(response: Response, state: TimelineState): Response {
+function observeResponseBody(response: Response, recorder: TimelineRecorder): Response {
   const body = response.body;
   if (body === null) {
     return response;
-  }
-  if (state.bytes === null) {
-    state.bytes = 0;
   }
   const reader = body.getReader();
   const counted = new ReadableStream<Uint8Array>({
@@ -654,11 +482,11 @@ function observeResponseBody(response: Response, state: TimelineState): Response
           return;
         }
         if (chunk.value !== undefined) {
-          state.bytes = (state.bytes ?? 0) + chunk.value.byteLength;
+          recorder.markBytes(chunk.value.byteLength);
           controller.enqueue(chunk.value);
         }
       } catch (error) {
-        state.bodyError = describeThrownError(error);
+        recorder.markBodyError(describeThrownError(error));
         controller.error(error);
       }
     },
@@ -673,41 +501,37 @@ function observeResponseBody(response: Response, state: TimelineState): Response
   });
 }
 
-function observeTimelineEvent(state: TimelineState, event: AssistantMessageEvent): void {
+function observeTimelineEvent(
+  recorder: TimelineRecorder,
+  event: AssistantMessageEvent,
+): void {
   switch (event.type) {
     case "start": {
-      state.streamStartedAt = state.now();
+      recorder.markStreamStarted();
       return;
     }
     case "text_delta":
     case "thinking_delta":
     case "toolcall_delta": {
-      const at = state.now();
-      if (state.firstDeltaAt === null) {
-        state.firstDeltaAt = at;
-      }
-      state.lastDeltaAt = at;
-      state.deltaCount += 1;
-      state.deltaChars += event.delta.length;
+      recorder.markDelta(event.delta.length);
       return;
     }
     case "done": {
-      state.stopReason = event.reason;
-      state.usage = piUsageToLlmUsage(event.message.usage);
-      finishTimelineRequest(state, null);
+      recorder.setUsage(piUsageToLlmUsage(event.message.usage));
+      recorder.finish({ stopReason: event.reason });
       return;
     }
     case "error": {
-      state.stopReason = event.reason;
-      finishTimelineRequest(
-        state,
-        event.reason === "aborted"
-          ? { kind: "timeout", message: "request aborted" }
-          : (state.bodyError ?? {
-              kind: "provider",
-              message: truncateTimelineMessage(event.error.errorMessage),
-            }),
-      );
+      recorder.finish({
+        stopReason: event.reason,
+        error:
+          event.reason === "aborted"
+            ? { kind: "timeout", message: "request aborted" }
+            : (recorder.bodyError ?? {
+                kind: "provider",
+                message: truncateTimelineMessage(event.error.errorMessage),
+              }),
+      });
       return;
     }
     default: {
@@ -715,37 +539,6 @@ function observeTimelineEvent(state: TimelineState, event: AssistantMessageEvent
     }
   }
 }
-
-function finishTimelineRequest(state: TimelineState, error: TimelineError | null): void {
-  if (state.finished) {
-    return;
-  }
-  state.finished = true;
-  const endedAt = state.now();
-  emitRequestTimeline({
-    v: 1,
-    ts: endedAt,
-    kind: "request",
-    runId: null,
-    replay: state.replay,
-    ...state.scope,
-    requestId: state.requestId,
-    sentAt: state.sentAt === 0 ? endedAt : state.sentAt,
-    headersAt: state.headersAt,
-    streamStartedAt: state.streamStartedAt,
-    firstDeltaAt: state.firstDeltaAt,
-    lastDeltaAt: state.lastDeltaAt,
-    endedAt,
-    stopReason: state.stopReason,
-    deltaCount: state.deltaCount,
-    deltaChars: state.deltaChars,
-    ...(state.bytes !== null ? { bytes: state.bytes } : {}),
-    attempts: Math.max(1, state.attempts),
-    error,
-    ...(state.usage !== undefined ? { usage: state.usage } : {}),
-  });
-}
-
 
 /** 校验并投影 onPayload payload（边界校验 fail fast；扩展字段透传不裁剪）。
  * agentLoop 路径（#6 P3a）复用同一投影作为审计 requests[] 条目来源。 */

@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0088）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0089）。
 
 ## 记录纪律
 
@@ -84,6 +84,7 @@
 | [ADR-0086](0086-mcp-task-lifecycle-facade.md) | MCP 任务生命周期 facade：start/result/summary/finish 与两段沉降收进 `mcp/task-lifecycle.ts` |
 | [ADR-0087](0087-retry-policy-single-source-and-dead-backoff.md) | Agent stream 重试策略单源（`reviewTurnStreamOptions`）；MCP 退避序列清死值 |
 | [ADR-0088](0088-run-artifact-layout-single-source.md) | run 产物布局单源（`export/run-artifacts.ts`）；单遍记录 `baseline.transcriptPath`，读者不再反推 |
+| [ADR-0089](0089-request-timeline-recorder-and-replay-policy.md) | 请求时间线 recorder：两种行与生命周期单源；replay 策略纯函数；进程级 requestId |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 
