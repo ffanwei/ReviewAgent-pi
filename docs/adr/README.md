@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0079）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0081）。
 
 ## 记录纪律
 
@@ -76,6 +76,7 @@
 | [ADR-0078](0078-review-scope-include-exclude-regex.md) | 检视范围正则：`--include` / `--exclude` 与 `limits.mrFilter.includeRegex` / `excludeRegex`（先白名单后黑名单；0 文件跳过检视仍上报） |
 | [ADR-0079](0079-version-command.md) | 版本面：`review-pi version` / `--version`（人读单行、`--json` 含 Node 与内核四包实际版本；不加载配置；日志头与 `config show` 带版本） |
 | [ADR-0080](0080-model-fallback-on-model-not-found.md) | `--model` 不可用时的前置探测与单边降级：`reviewer.modelFallback`（缺省 `off`）、只认 model-not-found、探针只做顾问、一次 run 一个生效模型 |
+| [ADR-0081](0081-delivery-module-boundary.md) | 交付 module：把 `runReview` 之后的收尾从 `main` 抽进 `cli/delivery.ts`；显式输入、返回值与 ports、线性顺序、三切片迁移、输入输出逐字节不变 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

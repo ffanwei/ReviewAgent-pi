@@ -7,6 +7,7 @@ import type { SemanticTipEntry } from "./report-payload.js";
 import {
   assembleUnifiedTips,
   countTips,
+  filterFindingsForTips,
   filterTipsDocumentByConfidence,
   filterTipsDocumentBySeverity,
   UNKNOWN_UNCOVERED_REASON,
@@ -572,4 +573,45 @@ test("filterTipsDocumentBySeverity：join 不上时用 tip 自身 severity 判",
   const filtered = filterTipsDocumentBySeverity(doc, [], "P2");
   expect(filtered.tips).toEqual([]);
   expect(filtered.dropped).toBe(1);
+});
+
+// 取数过滤（ADR-0052）：置信度先判、严重级后判；等于阈值保留。
+
+test("filterFindingsForTips：置信度先于严重级计数，等于阈值保留", () => {
+  const findings = [
+    finding({ id: "F1", confidence: 0.4, severity: "P0" }),
+    finding({ id: "F2", confidence: 0.5, severity: "P2" }),
+    finding({ id: "F3", confidence: 0.9, severity: "P3" }),
+    finding({ id: "F4", confidence: 0.9, severity: "P0" }),
+  ];
+
+  const outcome = filterFindingsForTips(findings, {
+    minConfidence: 0.5,
+    minSeverity: "P2",
+  });
+
+  expect(outcome.kept.map((item) => item.id)).toEqual(["F2", "F4"]);
+  expect(outcome.droppedByConfidence).toBe(1);
+  expect(outcome.droppedBySeverity).toBe(1);
+});
+
+test("filterFindingsForTips：阈值缺席 = 不过滤", () => {
+  const findings = [finding({ id: "F1", confidence: 0.1, severity: "P3" })];
+
+  const outcome = filterFindingsForTips(findings, {});
+
+  expect(outcome.kept).toEqual(findings);
+  expect(outcome.droppedByConfidence).toBe(0);
+  expect(outcome.droppedBySeverity).toBe(0);
+});
+
+test("filterFindingsForTips：同时低于两阈值时只记置信度", () => {
+  const outcome = filterFindingsForTips(
+    [finding({ id: "F1", confidence: 0.1, severity: "P3" })],
+    { minConfidence: 0.5, minSeverity: "P1" },
+  );
+
+  expect(outcome.kept).toEqual([]);
+  expect(outcome.droppedByConfidence).toBe(1);
+  expect(outcome.droppedBySeverity).toBe(0);
 });

@@ -41,7 +41,7 @@
 
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { calculateCost } from "@earendil-works/pi-ai";
@@ -49,11 +49,9 @@ import { calculateCost } from "@earendil-works/pi-ai";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import type { RunProgressSink } from "../contracts/progress.js";
-import type { ModelFallbackRecord, PhaseRecord } from "../contracts/run.js";
+import type { ModelFallbackRecord } from "../contracts/run.js";
 import { runDirPath } from "../experiment/run-record.js";
-import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-index.js";
-import { LifecycleCollector, writeLifecycleSessions } from "../export/lifecycle.js";
-import { writeRunTrace } from "../export/trace-export.js";
+import { LifecycleCollector } from "../export/lifecycle.js";
 import {
   createRequestTimelineWriter,
   setRequestTimelineSink,
@@ -65,7 +63,6 @@ import {
   resolveTaskToolSettleMs,
   type McpReporter,
 } from "../mcp/index.js";
-import { PHASE_ORDER } from "../loop/phases.js";
 import { formatSmokeDiagnostics, probeModelReachability, runSmokeProbes } from "../provider/gateway-probe.js";
 import { resolveReviewModel } from "../provider/model-fallback.js";
 import { reviewModelOf } from "../provider/pi-client.js";
@@ -73,8 +70,7 @@ import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { runReview } from "../run/review-run.js";
 import { findingMergeKey } from "../run/findings-merge.js";
-import { formatMrFilterNotice, listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError } from "../run/mr-input.js";
-import { formatShardTruncationNotice } from "../run/shard-planner.js";
+import { listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError } from "../run/mr-input.js";
 import { runExportCommand } from "./export-command.js";
 import {
   ConfigError,
@@ -96,40 +92,35 @@ import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from 
 import { formatReviewArgs } from "./args-echo.js";
 import { runConfigCommand } from "./config-command.js";
 import { runVersionCommand } from "./version-command.js";
-import { McpCallLog, writeMcpCallLog } from "./mcp-call-log.js";
+import { McpCallLog } from "./mcp-call-log.js";
 import { openRunLog, type RunLog } from "./run-log.js";
 import { buildShardReportResilient, type ReportLlmRuntime, type SemanticTipEntry } from "./report-payload.js";
 import { buildReviewSummary, DIFF_TOO_LARGE_SUMMARY_MARKDOWN, NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN } from "./review-summary.js";
+import { readCodeLines } from "./code-lines.js";
 import {
-  assembleUnifiedTips,
-  countTips,
-  type UnifiedTipsOutcome,
-} from "./unified-tips.js";
-import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
+  deliverReviewRun,
+  finalizeDelivery,
+  type DeliveryClock,
+  type DeliveryFinalizeReporterPort,
+  type DeliveryOneShotPort,
+  type DeliveryReporterPort,
+} from "./delivery.js";
+import { describeReportFailure } from "./report-failure.js";
+import { reportFilesWithoutTips } from "./report-files.js";
 import {
   createProgressRenderer,
-  doneLine,
   stageBreakdownLines,
   taskUsageLines,
   type ProgressRenderer,
-  type ProgressSummary,
   type StageSpan,
   type TaskUsagePurposeLine,
 } from "./progress-render.js";
-import { renderJsonDocument, renderReviewOutcome } from "./render.js";
+import { renderJsonDocument } from "./render.js";
 import {
   createOneShotUsageCollector,
   type OneShotPurposeKey,
   type OneShotUsageCollector,
 } from "./task-usage.js";
-import {
-  removeExecDirTipsCopies,
-  removeStaleReviewsTipsZh,
-  writeExecDirTipsCopies,
-  writeReviewsTipsZh,
-  type ExecDirTipsOutcome,
-} from "./reviews-tips-zh.js";
-import { removeStaleReviewsZh } from "./reviews-zh.js";
 
 /**
  * 本次 review 的运行日志（stderr 镜像 + 未捕获异常堆栈）。
@@ -358,6 +349,36 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     timeoutMs: config.limits.timeouts.oneShotMs,
     retry: retryPolicyFor(config.limits.retry, "oneShot"),
   };
+  // 交付 module 的生产 adapter（ADR-0081）：MCP 业务口 + 一次性调用口。
+  // `taskToolsOn=false` 时 reporter 缺席，交付不外发任何业务调用。
+  const deliveryReporter: DeliveryReporterPort | undefined =
+    taskToolsOn && activeReporter !== null
+      ? {
+          reportFileResult: (input) => activeReporter.task.reportFileResult(input),
+          saveReviewSummary: (input) => activeReporter.task.saveReviewSummary(input),
+          endTask: (input) => activeReporter.task.endTask(input),
+          flush: (timeoutMs) => activeReporter.flush(timeoutMs),
+          close: () => activeReporter.close(),
+        }
+      : undefined;
+  // finalize 的口与业务口分开：事件通道的 flush/close 在业务 tool 关闭时也要跑。
+  const finalizeReporter: DeliveryFinalizeReporterPort | undefined =
+    activeReporter === null
+      ? undefined
+      : {
+          endTask: (input) => activeReporter.task.endTask(input),
+          flush: (timeoutMs) => activeReporter.flush(timeoutMs),
+          close: () => activeReporter.close(),
+        };
+  const deliveryOneShot: DeliveryOneShotPort = {
+    generateTips: ({ findings, codeByFinding }) =>
+      buildShardReportResilient({ findings, codeByFinding, runtime: reportRuntime }),
+    generateSummary: (input) => buildReviewSummary({ ...input, runtime: reportRuntime }),
+  };
+  const deliveryClock: DeliveryClock = {
+    now: () => Date.now(),
+    sleep: (ms) => delay(ms),
+  };
   const reportedFiles: string[] = [];
   // 已成功上报的 finding（键 = 合并键；ADR-0057）：只有 `mrReviewResult` 调用
   // 成功、且该条 tip 真的进入报文，才登记。收尾总结据此裁剪口径——平台没收到
@@ -529,9 +550,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             await reportFilesWithoutTips({
               label: "",
               taskId: args.taskId,
-              reporter: activeReporter,
+              reportFileResult: (args) => activeReporter.task.reportFileResult(args),
               files: [firstFile],
               reportedFiles,
+              log: (line) => process.stderr.write(line),
             });
           }
           const outcome = await activeReporter.task.saveReviewSummary({
@@ -558,9 +580,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             await reportFilesWithoutTips({
               label: "",
               taskId: args.taskId,
-              reporter: activeReporter,
+              reportFileResult: (args) => activeReporter.task.reportFileResult(args),
               files: [firstFile],
               reportedFiles,
+              log: (line) => process.stderr.write(line),
             });
           }
           const outcome = await activeReporter.task.saveReviewSummary({
@@ -586,7 +609,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     }
     // 请求时间线（ADR-0076）：pass 已写过单片 / 分片文件；收尾的报文与总结
     // 属于同一次 run，续写顶层文件（追加模式，保留 pass 已写的行）。
-    const { record, runId, auditPath, reviewsPath, transcriptPaths } = reviewed;
+    const { record, runId, transcriptPaths } = reviewed;
     postPassTimeline = createRequestTimelineWriter(runDirPath(runsRoot), {
       mode: "a",
       runId,
@@ -596,437 +619,78 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     agentUsage = record.baseline.usage;
     agentCalls = reviewed.modelCalls;
     stageClock.auditMs = (stageClock.auditEndedAt ?? Date.now()) - startedAt;
-    // 无规则包 = 合法降级（ADR-0024）：照常检视，仅 stderr 提示一行
-    if ((record.baseline.audit.ruleSkill ?? []).length === 0) {
-      process.stderr.write(
-        "review-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n",
-      );
-    }
-    // 输入预过滤（大 diff 第一期）：剔了就必须可见（明细在审计 mrFilter）
-    if (reviewed.mrFilter !== undefined && reviewed.mrFilter.droppedFiles > 0) {
-      process.stderr.write(`review-pi: ${formatMrFilterNotice(reviewed.mrFilter)}\n`);
-    }
-    // 单文件超预算截取（ADR-0070）：只检视了前半部分，必须可见
-    if (reviewed.shardTruncation !== undefined) {
-      process.stderr.write(`review-pi: ${formatShardTruncationNotice(reviewed.shardTruncation)}\n`);
-    }
-    // 变更文件全覆盖（ADR-0068）：预过滤剔除的文件不进入检视，但「变更过」是事实，
-    // 平台必须在 saveReviewSummary 前拿到一条 `reviewTips: []`。补报集合 = 变更文件
-    // 全集 − 已被片级回调上报过的文件；顺序契约不变（仍是全部 mrReviewResult 先于总结）。
-    if (taskToolsOn && activeReporter !== null && changedFiles.length > 0) {
-      const reportStartedAt = Date.now();
-      try {
-        const reported = new Set(
-          reportedFiles
-            .map((file) => normalizeReportFilePath(file))
-            .filter((file): file is string => file !== null),
-        );
-        const sent = await reportFilesWithoutTips({
-          label: "",
-          taskId: args.taskId,
-          reporter: activeReporter,
-          files: changedFiles.filter((file) => !reported.has(file)),
-          reportedFiles,
-          exclude: reported,
-        });
-        if (sent > 0) {
-          process.stderr.write(
-            `review-pi: MCP mrReviewResult 已补报 ${String(sent)} 个变更文件 / 0 条意见` +
-              "（预过滤剔除或未进入检视）\n",
-          );
-        }
-      } catch (error) {
-        // 旁路纪律（ADR-0045）：补报失败只留痕，不改检视结果与退出码。
-        process.stderr.write(
-          `review-pi: MCP mrReviewResult 补报变更文件失败（${describeReportFailure(error)}）\n`,
-        );
-      } finally {
-        stageClock.reportMs += Date.now() - reportStartedAt;
-      }
-    }
-    // 收尾摘要先于呈现投影：run 已经结束，之后的数十秒翻译不该再挂「进行中」状态。
-    // 摘要与审计同源（usage / 请求 / 工具 / Ledger 命中），所以投影的调用不计入
-    // 这一行——否则「耗时」含投影而 token 不含，两个数对不上账。
-    const summary = buildSummary({
-      modelId: effectiveModelId,
-      baseUrl: endpoint.baseUrl,
-      record,
-      startedAt,
-      ledgerHits: reviewed.ledgerHitCount,
-      modelCalls: reviewed.modelCalls,
-      skillBashCalls: reviewed.skillBashCalls,
-    });
-    if (progress !== undefined) {
-      progress.finish(summary);
-    } else {
-      // 进度关闭不是「零输出」：收尾摘要恒定打印（一行，可 grep）
-      process.stderr.write(`${doneLine(summary)}\n`);
-    }
-    // 解析失败可见性（P1）：只在 phaseLog 带 parseFailure 时打印（成功 run 零输出）。
-    // 放在收尾摘要之后：进度条（TTY）已擦除，不混行；不改退出码。
-    reportPhaseParseFailures(record.baseline.audit.phaseLog);
-
-    // 控制台恒英文（ADR-0065）：stdout 呈现档就是英文真源本身，不再做任何逐字段
-    // 翻译。此前 presentation.engine 注入时会按 title / description 逐字段串行调
-    // 网关（每条 finding 2N 次），是最主要的可省成本；取消后 stdout 与审计逐字节
-    // 同一份英文 findings。中文只作为交付物产出（reviews_tips_zh.json / MCP 上报），
-    // 来源统一为片级「语义生成」——与业务开关无关。
-    //
-    // 源码行（ADR-0017）：由 CLI 按 `--repo` 抽取，服务报文 `code` 与 tips 的
-    // `code`（同一真源）；键 = merged finding id。
-    const tipsAssemblyStartedAt = Date.now();
-    // 置信度 / 严重级过滤（ADR-0052）：只作用于中文 tips 与 MCP 上报；英文 findings
-    // 与 stdout 恒全量。计数口径与审计 `tipsFilter` 一致（过滤前的 merged findings）。
-    const minConfidence = config.limits.confidence.min;
-    const minSeverity = config.limits.severity.min;
-    const keptFindings = record.baseline.findings.filter(
-      (finding) =>
-        !isConfidenceBelow(finding.confidence, minConfidence) &&
-        !isSeverityBelow(finding.severity, minSeverity),
-    );
-    const droppedByConfidence = record.baseline.findings.filter((finding) =>
-      isConfidenceBelow(finding.confidence, minConfidence),
-    ).length;
-    const droppedBySeverity = record.baseline.findings.filter((finding) =>
-      isSeverityBelow(finding.severity, minSeverity),
-    ).length;
-    const allFindingsFiltered =
-      record.baseline.findings.length > 0 && keptFindings.length === 0;
-    const codeByFinding = await readCodeLines(repoPath, record.baseline.findings);
-    // 业务关闭（无 MCP 上报）时中文 tips 也必须产出：收尾补一次片级语义生成，
-    // 只登记语义（不发报文）。这是「统一生成 = 中文唯一真源」的兜底（ADR-0065）；
-    // 业务开启时各片已在 MCP 上报回调里跑过，这里零额外调用。
-    if (!taskToolsOn && keptFindings.length > 0) {
-      const { outcome, split } = await buildShardReportResilient({
-        findings: keptFindings,
-        codeByFinding,
-        runtime: reportRuntime,
-      });
-      if (split !== undefined) {
-        process.stderr.write(
-          `review-pi: 中文 tips 语义生成失败，已拆分为 ${String(split.batches)} 批重试` +
-            `（${String(split.succeeded)} 批成功）\n`,
-        );
-      }
-      if (outcome.kind === "failed") {
-        process.stderr.write(
-          `review-pi: 中文 tips 语义生成失败（${outcome.reason}），本次不产分组意见\n`,
-        );
-        for (const finding of keptFindings) {
-          const key = findingMergeKey(finding);
-          if (!uncoveredReasonByMergeKey.has(key)) {
-            uncoveredReasonByMergeKey.set(key, `片级语义生成失败：${outcome.reason}`);
-          }
-        }
-      } else {
-        for (const [key, entry] of outcome.semanticByKey) {
-          if (!semanticByMergeKey.has(key)) {
-            semanticByMergeKey.set(key, entry);
-          }
-        }
-        for (const [key, reason] of outcome.uncoveredByKey) {
-          if (!uncoveredReasonByMergeKey.has(key)) {
-            uncoveredReasonByMergeKey.set(key, reason);
-          }
-        }
-      }
-    }
-    // 统一 tips 组装（ADR-0045 / ADR-0065）：业务开 / 关同一条路径——把语义登记
-    // 按合并键 join 回 merged findings，产 12 键文档。尽力而为：未覆盖条目逐条
-    // 留痕，但绝不回落英文引擎或改写文本。
-    const unifiedTips: UnifiedTipsOutcome = assembleUnifiedTips({
-      mergedFindings: record.baseline.findings,
-      semanticByMergeKey,
-      codeByFinding,
-      minConfidence,
-      minSeverity,
-      uncoveredReasonByMergeKey,
-    });
-    for (const missed of unifiedTips.uncovered) {
-      process.stderr.write(
-        `review-pi: 检视意见未获统一生成覆盖（${missed.label}），tips 缺席该条：${missed.reason}\n`,
-      );
-    }
-    // tips 选源（ADR-0065）：统一生成为唯一真源。
-    // - 有产出 ⇒ 落盘；
-    // - 零 findings / 全部被过滤 ⇒ 产 `[]`（不是生成失败）；
-    // - 有 finding 但零覆盖（生成失败 / 逐条被拒）⇒ 不产文件并清陈旧。
-    let tipsDoc: ReviewTipsDocumentLike | undefined;
-    if (countTips(unifiedTips.tips) > 0) {
-      tipsDoc = unifiedTips.tips;
-    } else if (record.baseline.findings.length === 0 || allFindingsFiltered) {
-      tipsDoc = [];
-    } else {
-      process.stderr.write(
-        "review-pi: 统一生成未覆盖任何意见，本次不产分组意见（不回落英文引擎）\n",
-      );
-    }
-    stageClock.tipsMs += Date.now() - tipsAssemblyStartedAt;
-
-    // 过滤留痕（零静默）：只在真的丢了条数时打一行汇总，避免无谓噪声。
-    if (droppedByConfidence > 0) {
-      process.stderr.write(
-        `review-pi: 置信度过滤丢弃 ${String(droppedByConfidence)} 条检视意见（阈值 ${String(minConfidence)}），仅影响中文 tips\n`,
-      );
-    }
-    if (droppedBySeverity > 0) {
-      process.stderr.write(
-        `review-pi: 严重级过滤丢弃 ${String(droppedBySeverity)} 条检视意见（阈值 ${minSeverity}），仅影响中文 tips 与 MCP 上报\n`,
-      );
-    }
-
-    // 中文产物只留分组意见（ADR-0022 / ADR-0065）：`reviews_zh.json` 不再是
-    // 交付物，历史遗留一律视为陈旧并清除，使「磁盘上的中文产物 = 本次 run」成立；
-    // 作用域 = `<out>/runs/`（ADR-0032：一个 `--out` 即一次 run 的输出目录）。
-    // en/session 已在内核落盘（先于本步）。
-    //
-    // 失败语义（ADR-0045 决策 2 修订）：中文产物是交付物，落盘失败仍是**运行失败**
-    // （exit 1）——但不能连累业务上报：检视已跑完，`mrReviewResult` 也发完了，
-    // 此时跳过 `saveReviewSummary` 会让平台看到「有始无终」的任务。故这里只**记下**
-    // 失败，等总结发完再抛（顺序契约 mrReviewResult → summary → endTask 不变）。
-    let tipsPersistFailure: unknown;
-    const tipsPersistStartedAt = Date.now();
-    try {
-      if (reviewsPath !== undefined) {
-        const removed = await removeStaleReviewsZh(dirname(reviewsPath));
-        if (removed !== undefined) {
-          process.stderr.write(
-            `review-pi: 本次不产 reviews_zh.json（中文产物 = reviews_tips_zh.json），已清除陈旧 ${removed}\n`,
-          );
-        }
-      }
-
-      // 分组式检视意见（ADR-0017 / ADR-0022 / ADR-0045 / ADR-0065）：**唯一**
-      // 中文落盘产物，与 en 同目录、同生命周期，但**弱耦合**——tips 形状非法 /
-      // 生成失败只缺这一份文件（stdout 恒英文照旧，exit 0）。来源 = 统一生成
-      // （12 键），业务开关不改变内容形态。
-      if (reviewsPath !== undefined) {
-        const tipsDir = dirname(reviewsPath);
-        if (tipsDoc !== undefined) {
-          await writeReviewsTipsZh(tipsDir, tipsDoc);
-          reportExecDirTips(await writeExecDirTipsCopies(tipsDoc, process.cwd()), "写入");
-        } else {
-          const removed = await removeStaleReviewsTipsZh(tipsDir);
-          if (removed !== undefined) {
-            process.stderr.write(`review-pi: 已清除陈旧 ${removed}\n`);
-          }
-          reportExecDirTips(await removeExecDirTipsCopies(process.cwd()), "清除");
-        }
-      }
-    } catch (error) {
-      tipsPersistFailure = error;
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(
-        `review-pi: 中文产物落盘失败（${message}）；仍上报检视总结与 endTask，随后以失败退出\n`,
-      );
-    }
-    stageClock.tipsMs += Date.now() - tipsPersistStartedAt;
-
-    // 检视总结上报（ADR-0045 决策 2 / ADR-0057）：中文 tips 落盘之后（发出去的
-    // 内容与 `reviews_tips_zh.json` 同源同版本）、session 索引之前（索引失败
-    // 不该影响上报时机）。顺序契约：mrReviewResult（片级，已发完）→
-    // saveReviewSummary → endTask（finally）。
-    //
-    // **口径 = 平台最终收到的意见**（ADR-0057）：信源是 `submittedFindingKeys`
-    // （每条 `mrReviewResult` 成功后登记），不是本地 findings 全量——片级生成
-    // 失败 / 上报失败 / 结构校验跳过 / 置信度过滤的条目平台都没收到，总结里
-    // 也不该出现，否则「总结条数」与「平台明细」对不上账。
-    if (taskToolsOn && activeReporter !== null) {
-      const submittedSourceIds = new Set(
-        record.baseline.findings
-          .filter((finding) => submittedFindingKeys.has(findingMergeKey(finding)))
-          .map((finding) => finding.id),
-      );
-      // stdout 恒英文（ADR-0065）：id 不再经呈现投影重映射，直接用源（聚合）id。
-      const summaryFindings = record.baseline.findings.filter((finding) =>
-        submittedSourceIds.has(finding.id),
-      );
-      // tips 侧同口径：统一 tips 的 `id` 是聚合（源）finding id，按源 id 过滤。
-      const summaryTips =
-        tipsDoc === undefined
-          ? undefined
-          : tipsDoc
-              .map((file) => ({
-                ...file,
-                reviewTips: file.reviewTips.filter(
-                  (tip) => tip.id !== undefined && submittedSourceIds.has(tip.id),
-                ),
-              }))
-              .filter((file) => file.reviewTips.length > 0);
-      const unreported = record.baseline.findings.length - summaryFindings.length;
-      if (unreported > 0) {
-        process.stderr.write(
-          `review-pi: 检视总结只覆盖已上报的 ${String(summaryFindings.length)} 条意见` +
-            `（${String(unreported)} 条未上报，未计入）\n`,
-        );
-      }
-      process.stderr.write(
-        record.baseline.findings.length === 0
-          ? "review-pi: MCP saveReviewSummary 未发现检视意见，发送固定总结（不调用模型）\n"
-          : summaryFindings.length === 0
-            ? "review-pi: MCP saveReviewSummary 无已上报的检视意见，发送固定总结（不调用模型）\n"
-            : "review-pi: MCP saveReviewSummary 生成中（检视总结）……\n",
-      );
-      const summaryStartedAt = Date.now();
-      const summaryReport = await buildReviewSummary({
-        ...(summaryTips !== undefined && summaryTips.length > 0 ? { tips: summaryTips } : {}),
-        findings: summaryFindings,
-        ...(summaryFindings.length === 0 && unreported > 0
-          ? { unreportedFindings: unreported }
+    const delivery = await deliverReviewRun({
+      run: reviewed,
+      identity: { caseId: args.caseId, taskId: args.taskId, cwd: process.cwd() },
+      paths: { tasksRoot, runsRoot },
+      repoPath,
+      coverageFiles: changedFiles,
+      model: { modelId: effectiveModelId, baseUrl: endpoint.baseUrl },
+      limits: {
+        confidenceMin: config.limits.confidence.min,
+        severityMin: config.limits.severity.min,
+      },
+      mcp: {
+        ...(deliveryReporter !== undefined ? { reporter: deliveryReporter } : {}),
+        started: startTaskSent,
+        submittedFindingKeys,
+        reportedFiles,
+        settleMs: taskToolSettleMs,
+        flushTimeoutMs: reportConfig?.flushTimeoutMs ?? 0,
+      },
+      tips: { semanticByMergeKey, uncoveredReasonByMergeKey },
+      timing: { startedAt },
+      ...(modelFallback !== undefined ? { modelFallback } : {}),
+      ports: {
+        oneShot: deliveryOneShot,
+        clock: deliveryClock,
+        log: (line) => process.stderr.write(line),
+        ...(progress !== undefined
+          ? { progress: { finish: (summary) => progress.finish(summary) } }
           : {}),
-        ...(reportedFiles.length > 0 ? { reportedFiles: [...reportedFiles] } : {}),
-        runtime: reportRuntime,
-      });
-      stageClock.summaryMs += Date.now() - summaryStartedAt;
-      if (summaryReport.degradedReason !== undefined) {
-        process.stderr.write(
-          `review-pi: 检视总结降级为模板（${summaryReport.degradedReason}）\n`,
-        );
-      }
-      // 第一段沉降（ADR-0053）：最后一条 mrReviewResult 已发完，固定等一段时间
-      // 再发总结——服务端异步处理片级结果时，前端回调可能先收到 summary。
-      const settleStartedAt = Date.now();
-      await waitTaskToolSettle(taskToolSettleMs, "mrReviewResult → saveReviewSummary");
-      stageClock.settleMs += Date.now() - settleStartedAt;
-      // 模型替换留痕（ADR-0080）：只在真发生降级时追加一行；无替换零字节漂移。
-      // 固定模板总结（无意见 / 无上报）不追加——那些场景没有用到模型。
-      const summaryMarkdown =
-        modelFallback === undefined
-          ? summaryReport.markdown
-          : `${summaryReport.markdown}\n\n${modelFallbackMarkdownLine(modelFallback)}`;
-      const outcome = await activeReporter.task.saveReviewSummary({
-        taskId: args.taskId,
-        markdownContent: summaryMarkdown,
-      });
-      summaryCallCompleted = true;
-      if (!outcome.ok) {
-        process.stderr.write(
-          `review-pi: MCP saveReviewSummary 失败（${outcome.reason}），检视结果不受影响\n`,
-        );
-      }
+      },
+    });
+    stageClock.reportMs += delivery.timings.coverageMs;
+    stageClock.tipsMs += delivery.timings.tipsMs;
+    stageClock.summaryMs += delivery.timings.summaryMs;
+    stageClock.settleMs += delivery.timings.settleMs;
+    summaryCallCompleted = delivery.summaryCalled;
+    if (delivery.deferredFailure !== undefined) {
+      throw delivery.deferredFailure;
     }
 
-    // 中文产物落盘失败（上一段记下的）：总结与 endTask 都发完了，现在才把这次
-    // 运行判失败——产物即契约，失败仍然 exit 1，只是不再吞掉业务上报。
-    if (tipsPersistFailure !== undefined) {
-      throw tipsPersistFailure;
-    }
-
-    // cwd session 索引（ADR-0036）：只记寻址信息，供 `review-pi export` 直接取用。
-    // 每次成功 run 整份覆盖；写失败只警告——导出面是便利能力，不配把检视判失败。
-    // ADR-0039：分片后一个任务有多份主转录，索引升 v2（`mains[]`）；单遍 = 长度 1。
-    const sessionRunsDir = runDirPath(runsRoot);
-    const sessionSkills = (record.baseline.audit.skillPassLog ?? [])
-      .map((entry) => entry.transcriptFile)
-      .filter((file): file is string => typeof file === "string" && file.trim().length > 0)
-      // 聚合 skillPassLog 的文件名可能是 runs 目录相对路径（分片：shards/attempt…/sNN/），
-      // 旧形态是 basename——resolve 对两者都成立。
-      .map((file) => resolve(sessionRunsDir, file));
-    try {
-      await writeSessionIndex(process.cwd(), {
-        version: SESSION_INDEX_VERSION,
-        taskId: args.taskId,
-        tasksDir: tasksRoot,
-        runId,
-        repo: repoPath,
-        updatedAt: record.completedAt,
-        mains: transcriptPaths,
-        skills: sessionSkills,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(
-        `review-pi: session 索引写入失败（${message}）；review-pi export 将读不到本次结果\n`,
-      );
-    }
-
-    await writeStdout(
-      renderReviewOutcome({
-        caseId: record.caseId,
-        runId,
-        truncated: record.baseline.audit.truncated,
-        rounds: record.baseline.rounds,
-        toolCalls: record.baseline.toolCalls,
-        findings: record.baseline.findings,
-        auditPath,
-      }),
-    );
+    await writeStdout(delivery.stdoutDocument);
     // 截断 = 完成的一种（票面退出码契约：0 + truncated=true）
     return 0;
   } finally {
-    // 任务生命周期收尾（ADR-0045 决策 2 / Q4）：有始必有终——runReview 抛错、
-    // 预检失败、正常收尾都在这里补 endTask（仅在 startTask 成功发出过时），
-    // 且**早于 flush**：endTask 是最后一个业务调用，之后远端只应再收到事件流
-    // 的收尾批次。旁路：失败只落一行 stderr。
-    if (taskToolsOn && startTaskSent && activeReporter !== null) {
-      // 第二段沉降（ADR-0053）：总结已发完，再固定等一段时间才发 endTask。
-      // 只在真的调过 saveReviewSummary 时等；失败路径（未走到总结）直接收尾。
-      if (summaryCallCompleted) {
-        const settleStartedAt = Date.now();
-        await waitTaskToolSettle(taskToolSettleMs, "saveReviewSummary → endTask");
-        stageClock.settleMs += Date.now() - settleStartedAt;
-      }
-      const outcome = await activeReporter.task.endTask({ taskId: args.taskId });
-      if (!outcome.ok) {
-        process.stderr.write(`review-pi: MCP endTask 失败（${outcome.reason}）\n`);
-      }
-    }
-    // 业务调用留痕落盘（mcp.json，与 session 转录同目录）：endTask 之后写，
-    // 四个调用的最终结果都在内存里。只在业务 tool 开启且确有调用时写；
-    // 失败只警告——留痕是排障能力，不配把检视判失败。
-    if (taskToolsOn && mcpCallLog.size > 0) {
-      try {
-        await writeMcpCallLog(runDirPath(runsRoot), mcpCallLog.document(args.taskId));
-      } catch (error) {
-        process.stderr.write(
-          `review-pi: mcp.json 写入失败（${describeReportFailure(error)}），不影响检视结果\n`,
-        );
-      }
-    }
-    // 会话生命周期留痕（ADR-0073）：endTask 之后把 startTask → 检视对话 → 外部
-    // 步骤 → endTask 拼进兼容会话。runReview 成功才写（检视失败沿用「不写
-    // session」现状）；写失败只警告——留痕是排障能力，不配把检视判失败。
-    if (lifecycleRun !== undefined) {
-      try {
-        await writeLifecycleSessions({
-          runsDir: runDirPath(runsRoot),
-          runId: lifecycleRun.runId,
-          transcriptPaths: lifecycleRun.transcriptPaths,
-          events: lifecycleCollector.snapshot(),
-          title: args.caseId,
-          finishedAt: Date.now(),
-        });
-      } catch (error) {
-        process.stderr.write(
-          `review-pi: 会话生命周期留痕写入失败（${describeReportFailure(error)}），不影响检视结果\n`,
-        );
-      }
-    }
-    // opencode-trace 留痕（ADR-0074）：run 时默认把逐请求 trace 落盘到
-    // `<runs>/opencode-trace/`，供 opencode-trace-viewer 直接 -d 读取；写失败
-    // 只警告——留痕是排障/查看能力，不配把检视判失败。
-    if (lifecycleRun !== undefined) {
-      try {
-        await writeRunTrace(runDirPath(runsRoot), lifecycleRun.transcriptPaths);
-      } catch (error) {
-        process.stderr.write(
-          `review-pi: trace 留痕写入失败（${describeReportFailure(error)}），不影响检视结果\n`,
-        );
-      }
-    }
-    if (activeReporter !== null && reportConfig !== null && reportConfig.tool !== null) {
-      // 收尾尽力发完；失败 / 超时都只落一行 stderr，不影响已产出的结果与退出码
-      // （事件通道关闭时队列恒空，这行统计没有信息量，不打印）
-      try {
-        const stats = await activeReporter.flush(reportConfig.flushTimeoutMs);
-        process.stderr.write(
-          `review-pi: MCP 上报 sent ${String(stats.sent)} / failed ${String(stats.failed)} / dropped ${String(stats.dropped)}\n`,
-        );
-      } catch {
-        // 旁路：连统计都拿不到也不改变任何结果
-      }
-    }
-    await activeReporter?.close().catch(() => undefined);
+    // 收尾（ADR-0081 第 9 步）：第二段沉降 → endTask → mcp.json → lifecycle →
+    // trace → flush → close。所有路径都走这里（含 run 前失败），顺序不变。
+    const finalized = await finalizeDelivery({
+      taskId: args.taskId,
+      runsRoot,
+      ...(finalizeReporter !== undefined ? { reporter: finalizeReporter } : {}),
+      started: startTaskSent,
+      summaryCalled: summaryCallCompleted,
+      flushEnabled: reportConfig !== null && reportConfig.tool !== null,
+      flushTimeoutMs: reportConfig?.flushTimeoutMs ?? 0,
+      settleMs: taskToolSettleMs,
+      ...(taskToolsOn && mcpCallLog.size > 0
+        ? { mcpLog: { document: () => mcpCallLog.document(args.taskId) } }
+        : {}),
+      ...(lifecycleRun !== undefined
+        ? {
+            lifecycle: {
+              runId: lifecycleRun.runId,
+              transcriptPaths: lifecycleRun.transcriptPaths,
+              events: lifecycleCollector.snapshot(),
+              title: args.caseId,
+            },
+          }
+        : {}),
+      log: (line) => process.stderr.write(line),
+      clock: deliveryClock,
+    });
+    stageClock.settleMs += finalized.settleMs;
     try {
       // 阶段账本（最后一行输出）：doneLine 只算到「审计 + 报文」，这里补齐全进程
       // 的账——总结 / 两次沉降 / 落盘 / 事件 flush 都计入总墙钟。仅在进行过
@@ -1054,54 +718,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       postPassTimeline?.close();
     }
   }
-}
-
-/**
- * 业务 tool 之间的固定沉降（ADR-0053）：`ms <= 0`（进程测试）直接返回，
- * 生产路径固定 5 s。这是临时的时间赌注，不是顺序契约；留一行 stderr 让
- * 「这次运行为什么多花了 10 秒」可解释。
- */
-async function waitTaskToolSettle(ms: number, boundary: string): Promise<void> {
-  if (ms <= 0) {
-    return;
-  }
-  process.stderr.write(`review-pi: MCP 固定等待 ${String(ms)}ms（${boundary}）\n`);
-  await delay(ms);
-}
-
-/**
- * 执行目录副本的失败留痕（ADR-0017 决策 14）：cwd 属用户目录（可能只读、可能
- * 落在系统目录），写/清失败只警告**不改退出码**——检视本体已成功，一份便捷
- * 副本不配把整次运行判失败。
- */
-function reportExecDirTips(outcome: ExecDirTipsOutcome, action: string): void {
-  for (const problem of outcome.problems) {
-    process.stderr.write(`review-pi: 执行目录副本${action}失败（${problem}）\n`);
-  }
-}
-
-/**
- * 按 `--repo` + `file:line` 抽源码行（ADR-0017：`code` 的唯一真源）。
- * `Finding.line` = MR 应用后的行号，`--repo` 正是应用后的工作树——两者对齐，
- * 所以取的是原文而不是模型复述。取不到（文件不在仓 / 行号越界 / 读失败）
- * 一律缺席 ⇒ 落盘时为空串，**绝不编**。
- */
-async function readCodeLines(
-  repoPath: string,
-  findings: readonly { readonly id: string; readonly file: string; readonly line: number }[],
-): Promise<Record<string, string>> {
-  const cache = new Map<string, readonly string[] | undefined>();
-  const codeByFinding: Record<string, string> = {};
-  for (const finding of findings) {
-    if (!cache.has(finding.file)) {
-      cache.set(finding.file, await readLinesOf(resolve(repoPath, finding.file)));
-    }
-    const line = cache.get(finding.file)?.[finding.line - 1];
-    if (line !== undefined) {
-      codeByFinding[finding.id] = line.trim();
-    }
-  }
-  return codeByFinding;
 }
 
 /**
@@ -1154,7 +770,16 @@ async function reportShardFindings(input: {
   };
   /** 本片剩余文件补空包（ADR-0061）：`attempted` 里的文件已经有过一次上报尝试。 */
   const reportRemainingFiles = async (): Promise<number> =>
-    reportFilesWithoutTips({ ...input, label, exclude: attempted, attempted });
+    reportFilesWithoutTips({
+      label,
+      taskId: input.taskId,
+      reportFileResult: (args) => input.reporter.task.reportFileResult(args),
+      files: input.files,
+      reportedFiles: input.reportedFiles,
+      exclude: attempted,
+      attempted,
+      log: (line) => process.stderr.write(line),
+    });
   try {
     // ADR-0052：置信度过滤先于报文生成——被丢弃的意见不该花一次模型调用。
     // 严重级过滤同口径（只裁中文 tips / MCP 上报，英文 findings 恒全量）。
@@ -1293,69 +918,9 @@ async function reportShardFindings(input: {
   }
 }
 
-/**
- * 对「没有检视意见」的文件逐个调用 `mrReviewResult(filePath, reviewTips: [])`。
- *
- * 路径按报文同一规范处理（反斜杠→正斜杠、拒绝对路径/`..`），非法路径跳过
- * 并留痕；`exclude` = 本片已经有过一次上报尝试的文件（ADR-0061：每文件只发
- * 一条，避免与报文重复）。`attempted` 是调用方的尝试集合，本函数把处理过的
- * 规范化路径都登记进去，供后续兜底去重。返回成功发送的文件数。
- */
-async function reportFilesWithoutTips(input: {
-  readonly label: string;
-  readonly taskId: string;
-  readonly reporter: McpReporter;
-  readonly files: readonly string[];
-  readonly reportedFiles: string[];
-  readonly exclude?: ReadonlySet<string>;
-  /** 出参：本函数处理过（含跳过）的文件路径，供调用方后续兜底去重 */
-  readonly attempted?: Set<string>;
-}): Promise<number> {
-  const seen = new Set<string>();
-  let sent = 0;
-  for (const raw of input.files) {
-    const filePath = normalizeReportFilePath(raw);
-    if (filePath === null) {
-      process.stderr.write(
-        `review-pi: MCP mrReviewResult${input.label} 跳过文件（filePath 非法：${JSON.stringify(raw)}）\n`,
-      );
-      continue;
-    }
-    if (seen.has(filePath) || input.exclude?.has(filePath) === true) {
-      continue;
-    }
-    // 注意：`exclude` 与 `attempted` 在调用方常是同一个 Set（本片尝试集合），
-    // 因此必须先过排除判断再登记，否则刚加入的路径会把自己排除掉。
-    seen.add(filePath);
-    input.attempted?.add(filePath);
-    const result = await input.reporter.task.reportFileResult({
-      taskId: input.taskId,
-      filePath,
-      reviewTips: [],
-    });
-    if (result.ok) {
-      sent += 1;
-      input.reportedFiles.push(filePath);
-    } else {
-      process.stderr.write(
-        `review-pi: MCP mrReviewResult${input.label} ${filePath} 失败（${result.reason}）\n`,
-      );
-    }
-  }
-  return sent;
-}
-
 /** 片号两位化（与分片目录名 sNN 同形） */
 function pad2(value: number): string {
   return value < 10 ? `0${String(value)}` : String(value);
-}
-
-async function readLinesOf(filePath: string): Promise<readonly string[] | undefined> {
-  try {
-    return (await readFile(filePath, "utf8")).split(/\r?\n/);
-  } catch {
-    return undefined;
-  }
 }
 
 /** 执行一次 smoke 命令：双探针 → stdout 人话报告；通过 0 / 失败诊断 1 */
@@ -1384,53 +949,9 @@ function gatewayPresentationModelId(config: ResolvedConfig, reviewModelId: strin
     : reviewModelId;
 }
 
-/**
- * 平台可见的替换说明（ADR-0080）：只在真发生降级时追加到**模型生成的**总结
- * 末尾；固定模板总结不追加（那场景没用到模型，追加会谎报）。
- */
-function modelFallbackMarkdownLine(record: ModelFallbackRecord): string {
-  return (
-    `> 模型降级说明：请求模型 \`${record.requested}\` 不可用（model not found），` +
-    `本次检视实际使用 \`${record.used}\`。`
-  );
-}
-
 /** stdout 整写（flush 后 resolve——退出前保证字节已落地） */
 function writeStdout(text: string): Promise<void> {
   return new Promise<void>((flush) => process.stdout.write(text, () => flush()));
-}
-
-/**
- * 上报不可用的 stderr 一行：只报事实（协议 / 网络 / 状态码），不回显 headers。
- * 截断到 160 字符，避免服务端把长消息灌进日志。
- */
-function describeReportFailure(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const oneLine = message.replace(/\s+/g, " ").trim();
-  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
-}
-
-/** PhaseRecord.phase → `phaseN`（1-based）；未知名称回退为原名 */
-function phaseLabelOf(phase: PhaseRecord["phase"]): string {
-  const index = PHASE_ORDER.indexOf(phase);
-  return index >= 0 ? `phase${String(index + 1)}` : phase;
-}
-
-/**
- * 阶段回复解析失败的 stderr 一行（P1）：只在 `parseFailure` 在场时输出。
- * 成功 run 零输出（零字节漂移）；失败不改退出码——它只解释「为什么候选是 0」。
- */
-function reportPhaseParseFailures(phaseLog: readonly PhaseRecord[]): void {
-  for (const entry of phaseLog) {
-    const failure = entry.parseFailure;
-    if (failure === undefined) {
-      continue;
-    }
-    const expected = failure.expected === "candidates" ? "候选" : "裁决";
-    process.stderr.write(
-      `review-pi: [r${String(entry.round)} ${phaseLabelOf(entry.phase)}] ${expected}解析失败（${failure.kind}），本轮 0 ${expected}；详见审计 phaseLog\n`,
-    );
-  }
 }
 
 /**
@@ -1451,40 +972,6 @@ function startProgress(args: ReviewCliArgs, modelId: string): ProgressRenderer |
   });
   renderer.start();
   return renderer;
-}
-
-/**
- * 收尾摘要的数值面：token / 工具数取自运行记录（与审计同源），模型调用数与
- * Ledger 命中由 run 层透传（`requests` 不进 AuditLight/RunRecord 字节，只能在
- * 返回值上取），成本用与转录同一份模型画像 + 同一个 `calculateCost`
- * （不另立公式），耗时由 CLI 自身计时。
- */
-function buildSummary(input: {
-  readonly modelId: string;
-  readonly baseUrl: string;
-  readonly record: Awaited<ReturnType<typeof runReview>>["record"];
-  readonly startedAt: number;
-  readonly ledgerHits: number;
-  readonly modelCalls: number;
-  readonly skillBashCalls: number;
-}): ProgressSummary {
-  const { record } = input;
-  const skillPassLog = record.baseline.audit.skillPassLog ?? [];
-  const skillToolCalls = skillPassLog.reduce((sum, entry) => sum + entry.toolCallCount, 0);
-  const usage = record.baseline.usage;
-  const costUsd = calculateCost(reviewModelOf(input.modelId, input.baseUrl), llmUsageToPiUsage(usage)).total;
-  return {
-    durationMs: Date.now() - input.startedAt,
-    usage,
-    costUsd,
-    modelCalls: input.modelCalls,
-    toolCalls: record.baseline.toolCalls,
-    // 主会话 = 总数 − skill 会话（skillPassLog 把 skill 的逐项工具数记账）
-    mainToolCalls: record.baseline.toolCalls - skillToolCalls,
-    skillToolCalls,
-    skillBashCalls: input.skillBashCalls,
-    ledgerHits: input.ledgerHits,
-  };
 }
 
 /** 一次性调用分项的展示顺序（`other` 只在异常路径出现，压到最后） */

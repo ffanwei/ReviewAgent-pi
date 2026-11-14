@@ -1,6 +1,7 @@
 # 0053. MCP 业务 tool 之间加固定 5 秒沉降间隔
 
 **状态**：已接受（2026-11-07，用户决策；**临时措施**，见「Consequences」与待优化清单）
+**后续修订**：[ADR-0081](0081-delivery-module-boundary.md) 把两段沉降的**实现位置**从 `cli/main.ts` 移到 `cli/delivery.ts`（第一段在 `publishSummary`，第二段在 `finalizeDelivery`）；5 秒时长、临时措施与「清账条件」不变。
 **关联**：[ADR-0045](0045-mcp-business-task-tools.md)（四个业务 tool 的生命周期与顺序契约）、[ADR-0050](0050-mcp-business-tool-retry-and-timeout.md)（业务调用重试）、[ADR-0037](0037-mcp-progress-reporting.md)（事件通道；本 ADR 不改事件面）
 **范围**：本仓 pi 线 0053。只改 CLI 编排里业务调用的**发送时机**：在 `mrReviewResult` 全部结束后、`saveReviewSummary` 之前，以及 `saveReviewSummary` 结束后、`endTask` 之前，各插入一段固定 5 秒等待。报文内容、重试策略、退出码、事件通道与产物字节全部不动。
 

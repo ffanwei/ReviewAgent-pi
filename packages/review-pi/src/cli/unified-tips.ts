@@ -1,6 +1,7 @@
 import type { Finding } from "../contracts/finding.js";
 import { findingMergeKey } from "../run/findings-merge.js";
-import { severityRankOf } from "../shared/severity-filter.js";
+import { isSeverityBelow, severityRankOf } from "../shared/severity-filter.js";
+import { isConfidenceBelow } from "../shared/tips-filter.js";
 import type { ReviewTipsDocumentLike, ReviewTipLike } from "./presentation-projection.js";
 import { LEVEL_BY_SEVERITY, type SemanticTipEntry } from "./report-payload.js";
 
@@ -103,6 +104,44 @@ export interface UnifiedTipsOutcome {
 /** tips 文档里的意见总条数（覆盖面判定：「全灭」= 有 findings 但计数为 0） */
 export function countTips(tips: ReviewTipsDocumentLike): number {
   return tips.reduce((total, file) => total + file.reviewTips.length, 0);
+}
+
+/** 中文 tips 的取数过滤结果（ADR-0052；英文 findings / stdout 恒全量） */
+export interface TipsEligibleFindings {
+  /** 过滤后保留的 findings（保持原顺序） */
+  readonly kept: readonly Finding[];
+  /** 因置信度低于阈值被丢弃的条数（先于严重级判定） */
+  readonly droppedByConfidence: number;
+  /** 因严重级低于阈值被丢弃的条数 */
+  readonly droppedBySeverity: number;
+}
+
+/**
+ * 中文 tips 的取数过滤（ADR-0052）：置信度先判、严重级后判，一条只记一次丢弃。
+ * 与 `assembleUnifiedTips` 的内部过滤同源——调用方与组装器不再各写一遍谓词。
+ */
+export function filterFindingsForTips(
+  findings: readonly Finding[],
+  options: {
+    readonly minConfidence?: number;
+    readonly minSeverity?: Finding["severity"];
+  },
+): TipsEligibleFindings {
+  const kept: Finding[] = [];
+  let droppedByConfidence = 0;
+  let droppedBySeverity = 0;
+  for (const finding of findings) {
+    if (isConfidenceBelow(finding.confidence, options.minConfidence)) {
+      droppedByConfidence += 1;
+      continue;
+    }
+    if (isSeverityBelow(finding.severity, options.minSeverity)) {
+      droppedBySeverity += 1;
+      continue;
+    }
+    kept.push(finding);
+  }
+  return { kept, droppedByConfidence, droppedBySeverity };
 }
 
 /**
@@ -263,24 +302,18 @@ function confidenceBucketDropped(bucket: string, minConfidence: number): boolean
 export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTipsOutcome {
   const groups = new Map<string, ReviewTipLike[]>();
   const uncovered: UncoveredFinding[] = [];
-  let droppedByConfidence = 0;
-  let droppedBySeverity = 0;
+  // ADR-0052：取数过滤与调用方同源（`filterFindingsForTips`），组装器与 main 不再各写谓词。
+  const eligible = filterFindingsForTips(input.mergedFindings, {
+    ...(input.minConfidence !== undefined ? { minConfidence: input.minConfidence } : {}),
+    ...(input.minSeverity !== undefined ? { minSeverity: input.minSeverity } : {}),
+  });
+  const droppedByConfidence = eligible.droppedByConfidence;
+  const droppedBySeverity = eligible.droppedBySeverity;
   // ADR-0023：同文件同 line 去重只留首条（finding 源序——merged 顺序已确定）；
   // 被去重掉的 finding 不算 uncovered（是故意丢弃，不是生成失败）。
   // ADR-0052：置信度过滤在去重前——低置信的那条不占行位，同行更高置信条目可见。
   const seenLines = new Map<string, Set<number>>();
-  for (const finding of input.mergedFindings) {
-    if (input.minConfidence !== undefined && finding.confidence < input.minConfidence) {
-      droppedByConfidence += 1;
-      continue;
-    }
-    if (
-      input.minSeverity !== undefined &&
-      severityRankOf(finding.severity) > severityRankOf(input.minSeverity)
-    ) {
-      droppedBySeverity += 1;
-      continue;
-    }
+  for (const finding of eligible.kept) {
     let lines = seenLines.get(finding.file);
     if (lines === undefined) {
       lines = new Set<number>();

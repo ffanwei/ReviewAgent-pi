@@ -53,7 +53,16 @@ test("核心包（loop/run/contracts/tools/shared/…）不 import src/mcp/**", 
   expect(offenders).toEqual([]);
 });
 
-test("组装点只有 CLI：cli/main.ts 引用 mcp 出口", () => {
-  const main = readFileSync(path.join(SRC_ROOT, "cli", "main.ts"), "utf8");
-  expect(main).toContain('from "../mcp/index.js"');
+test("组装点只有 CLI：src/** 中只有 cli/** 引用 mcp", () => {
+  const files = listTsFiles(SRC_ROOT).filter((file) => !file.endsWith(".test.ts"));
+  const importers = files.filter((file) =>
+    /\bfrom\s+["'][^"']*\/mcp\/[^"']*["']/.test(readFileSync(file, "utf8")),
+  );
+  const nonCli = importers.filter(
+    (file) => !path.relative(SRC_ROOT, file).startsWith(`cli${path.sep}`),
+  );
+  expect(nonCli).toEqual([]);
+  expect(
+    importers.some((file) => path.relative(SRC_ROOT, file).startsWith(`cli${path.sep}`)),
+  ).toBe(true);
 });

@@ -94,6 +94,11 @@ _Avoid_: 自定义 Loop（替换内核 loop 的机制，DSH 线已否；pi 线�
 服务于呈现而非检视会话的层：中文翻译投影、分组意见映射与真引擎装配（`src/presentation/`）；普通库被 CLI 调用，不进内核。ADR-0065 起 CLI 不再调用这一层（控制台恒英文、中文 tips 由片级语义生成提供），代码与发行产物保留供外部消费方使用。
 _Avoid_: 实验插件、核内呈现（语言参数化缝不存在，ADR-0010）、把 legacy 模块当成现行运行时路径
 
+**交付（Delivery）**:
+`review` 命令在 `runReview` 返回或抛出之后、进程退出之前的唯一收尾阶段：变更文件覆盖补报、中文 tips 组装与落盘、总结上报、session 索引、收尾产物（mcp.json / lifecycle / trace）与 MCP flush/close。一个 CLI 级 module（`cli/delivery.ts` 的 `deliverReviewRun`）拥有这条链的**顺序不变量**；`main` 只保留组装、stdout 写出、两套运行账本与退出码。两条「跳过检视」路径（diff 超界 / 无可检视文件）不属它。ADR-0081。
+_代码面_: `cli/delivery.ts`、`cli/delivery.test.ts`。
+_Avoid_: 编排器（暗示可配置流程）、核内收尾（交付不进内核）、把两套运行账本算进交付（账本是整次进程运行的投影）
+
 **翻译投影（Translation Projection，legacy）**:
 核外呈现工具：消费检视产出的英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关联）。检视输出恒英文——测量面冻结，语言是呈现配置而非实验自变量（ADR-0010）。**ADR-0065 起 CLI 不再调用它**：控制台 stdout 恒英文、没有 `presentation` 键；`presentation.engine` 仅保留为兼容配置键（动态 import 核外引擎的路径解析与校验行为不变）。需要中文时看 `reviews_tips_zh.json` 或 MCP 报文。legacy 行为：引擎加载/协议/超时失败时整次呈现降级英文源；ADR-0059 的单字段降级（`presentation.degradedFields` / `degradedReason`）也只存在于该模块。
 _Avoid_: 输出语言配置（暗示内核参数化缝）、双语内核（检视链整体留在已验证英文域）、把呈现引擎当作中文 tips 的生产者
