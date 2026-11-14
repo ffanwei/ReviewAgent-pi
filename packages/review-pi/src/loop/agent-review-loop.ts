@@ -1,5 +1,5 @@
 import { Agent } from "@earendil-works/pi-agent-core";
-import type { AgentMessage, AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, FetchFunction } from "@earendil-works/pi-ai";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
@@ -43,9 +43,9 @@ import {
 } from "./phases.js";
 import { createRequestProgress } from "./request-progress.js";
 import type { CandidateRepairFn } from "./candidate-repair.js";
-import { fromWireToolName, toWireToolName } from "../tools/registry.js";
-import { knownArgumentKeys, stripUnknownArguments } from "../tools/tool-arguments.js";
-import { summarizeDetailLine, withToolProgress } from "../tools/tool-progress.js";
+import { fromWireToolName } from "../tools/registry.js";
+import { buildAgentTools } from "../tools/tool-adapter.js";
+import { summarizeDetailLine } from "../tools/tool-progress.js";
 import type { ReviewToolkit } from "../tools/toolkit.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { runSkillPass, type SkillPassTranscript } from "../knowledge/skill-pass.js";
@@ -228,45 +228,39 @@ export async function runAgentReviewLoop(
     progressDetailChars: runtime.limits.micro.progressDetailChars,
   };
 
-  const agentTools: AgentTool[] = inputs.toolkit.schemas.map((schema) => {
-    const parameters = JSON.parse(schema.parametersJson) as Record<string, unknown>;
-    const knownKeys = knownArgumentKeys(parameters);
-    const tool: AgentTool = {
-      name: toWireToolName(schema.name),
-      label: schema.name,
-      description: schema.description,
-      parameters,
-      prepareArguments: (args) => stripUnknownArguments(args, knownKeys),
-      execute: async (_toolCallId, params) => {
-        const args = params as Record<string, unknown>;
-        const argumentsJson = JSON.stringify(args);
-        if (executedToolCalls >= MAX_TOOL_CALLS) {
-          phaseSkippedToolCalls += 1;
-          appendReason(truncationReasons, TRUNCATION_TOOL_BUDGET);
-          toolCallLog.push({
-            name: schema.name,
-            argumentsJson,
-            resultSummary: TOOL_BUDGET_EXHAUSTED_SUMMARY,
-          });
-          return { content: [{ type: "text", text: TOOL_BUDGET_EXHAUSTED_SUMMARY }], details: {} };
-        }
-        // 预算预约同步于检查（批内调用序即预约序）；失败不退还（防失败死循环）
-        executedToolCalls += 1;
-        try {
-          const result = await inputs.toolkit.executeTool(schema.name, args);
-          toolCallLog.push({ name: schema.name, argumentsJson, resultSummary: result });
-          return { content: [{ type: "text", text: result }], details: {} };
-        } catch (error) {
-          // t-series 真源字节：失败前缀 "Error: "（VUL4J-16/E/rep-3 实证：
-          // "Error: review.get_file: file …"——工具错误消息自带工具名前缀）
-          const summary = `Error: ${errorMessage(error)}`;
-          toolCallLog.push({ name: schema.name, argumentsJson, resultSummary: summary });
-          return { content: [{ type: "text", text: summary }], details: {} };
-        }
-      },
-    };
+  const agentTools = buildAgentTools(inputs.toolkit, {
+    beforeExecute: (call) => {
+      if (executedToolCalls >= MAX_TOOL_CALLS) {
+        phaseSkippedToolCalls += 1;
+        appendReason(truncationReasons, TRUNCATION_TOOL_BUDGET);
+        toolCallLog.push({
+          name: call.name,
+          argumentsJson: call.argumentsJson,
+          resultSummary: TOOL_BUDGET_EXHAUSTED_SUMMARY,
+        });
+        return { kind: "skip", text: TOOL_BUDGET_EXHAUSTED_SUMMARY };
+      }
+      // 预算预约同步于检查（批内调用序即预约序）；失败不退还（防失败死循环）
+      executedToolCalls += 1;
+      return { kind: "run" };
+    },
+    onResult: (call, result) => {
+      toolCallLog.push({
+        name: call.name,
+        argumentsJson: call.argumentsJson,
+        resultSummary: result,
+      });
+    },
+    onError: (call, text) => {
+      // t-series 真源字节：失败前缀 "Error: " 由适配器统一产出。
+      toolCallLog.push({
+        name: call.name,
+        argumentsJson: call.argumentsJson,
+        resultSummary: text,
+      });
+    },
     // 进度包装（ADR-0016）：名用点分审计名；成功/失败判据与 skill 会话同源
-    return withToolProgress(tool, schema.name, emitProgress, progressLimits);
+    progress: { emit: emitProgress, limits: progressLimits },
   });
 
   const streamFn: StreamFn = reviewStreamFn({
@@ -755,8 +749,4 @@ function appendReason(reasons: string[], reason: string): void {
   if (!reasons.includes(reason)) {
     reasons.push(reason);
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

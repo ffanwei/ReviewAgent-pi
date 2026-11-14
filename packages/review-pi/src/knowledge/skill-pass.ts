@@ -14,9 +14,8 @@ import {
 } from "../provider/pi-client.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
-import { fromWireToolName, toWireToolName } from "../tools/registry.js";
 import { buildSkillBashTool, SKILL_BASH_TOOL_NAME } from "../tools/skill-bash.js";
-import { knownArgumentKeys, stripUnknownArguments } from "../tools/tool-arguments.js";
+import { buildAgentTools } from "../tools/tool-adapter.js";
 import { withToolProgress } from "../tools/tool-progress.js";
 import type { ReviewToolkit } from "../tools/toolkit.js";
 import { parseCandidatesReply } from "../loop/parse.js";
@@ -117,11 +116,14 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
   };
 
   const tools: AgentTool[] = [
-    ...reviewAgentTools(options.toolkit, () => {
-      toolCallCount += 1;
-    }).map((tool) =>
-      withToolProgress(tool, fromWireToolName(tool.name), emitProgress, progressLimits),
-    ),
+    ...buildAgentTools(options.toolkit, {
+      beforeExecute: () => {
+        toolCallCount += 1;
+        return { kind: "run" };
+      },
+      // 进度包装与主 loop 同源（ADR-0016）：名用点分审计名。
+      progress: { emit: emitProgress, limits: progressLimits },
+    }),
     withToolProgress(
       countToolCalls(
         buildSkillBashTool({
@@ -429,37 +431,4 @@ function packRootOf(skill: RuleSkill): string {
     throw new Error(`internal error: skill "${skill.name}" has no loaded SKILL.md path`);
   }
   return path.dirname(skill.filePath);
-}
-
-/**
- * 七工具 → AgentTool（skill 会话版）：无审计留痕、无预算截断——只计调用数，
- * 与 loop 侧包装保持同一 wire 名、同一入参投影、同一 "Error: " 失败文本口径
- * （入参投影见 `tools/tool-arguments.ts`）。
- */
-function reviewAgentTools(
-  toolkit: ReviewToolkit,
-  onToolCall: () => void,
-): readonly AgentTool[] {
-  return toolkit.schemas.map((schema) => {
-    const parameters = JSON.parse(schema.parametersJson) as Record<string, unknown>;
-    const knownKeys = knownArgumentKeys(parameters);
-    return {
-      name: toWireToolName(schema.name),
-      label: schema.name,
-      description: schema.description,
-      parameters,
-      prepareArguments: (args) => stripUnknownArguments(args, knownKeys),
-      execute: async (_toolCallId, params) => {
-        onToolCall();
-        const args = params as Record<string, unknown>;
-        try {
-          const text = await toolkit.executeTool(schema.name, args);
-          return { content: [{ type: "text", text }], details: {} };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return { content: [{ type: "text", text: `Error: ${message}` }], details: {} };
-        }
-      },
-    } satisfies AgentTool;
-  });
 }
