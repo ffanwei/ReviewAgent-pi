@@ -43,7 +43,7 @@ export const SINGLE_ATTEMPT_POLICY: RetryPolicy = Object.freeze({
 });
 
 /** 配置面按路径取策略（路径名与 `limits.retry.*Attempts` 对应） */
-export type RetryPath = "reviewTurn" | "oneShot" | "presentation" | "smoke";
+export type RetryPath = "reviewTurn" | "oneShot" | "smoke";
 
 export function retryPolicyFor(limits: RetryLimits, path: RetryPath): RetryPolicy {
   const maxAttempts =
@@ -51,9 +51,7 @@ export function retryPolicyFor(limits: RetryLimits, path: RetryPath): RetryPolic
       ? limits.reviewTurnAttempts
       : path === "oneShot"
         ? limits.oneShotAttempts
-        : path === "presentation"
-          ? limits.presentationAttempts
-          : limits.smokeAttempts;
+        : limits.smokeAttempts;
   return {
     maxAttempts,
     baseDelayMs: limits.baseDelayMs,

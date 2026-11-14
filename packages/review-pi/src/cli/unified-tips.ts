@@ -17,7 +17,7 @@ import { LEVEL_BY_SEVERITY, type SemanticTipEntry } from "./report-payload.js";
  *   finding 原文、`severity` 四档（ADR-0052，与 `level` 同值）。
  *
  * 确定性纪律（与 ADR-0017 `buildReviewTipsDocument` 同口径，本模块是包内
- * 独立实现——根仓 `src/presentation/tips.ts` 不进包）：
+ * 独立实现（ADR-0090 后根仓 presentation 层已删除）：
  * - **置信度过滤（ADR-0052）**：`finding.confidence < limits.confidence.min`
  *   的意见在去重前丢弃（有意丢弃，不算 uncovered）；
  * - **严重级过滤**：`finding.severity` 低于 `limits.severity.min` 的意见同样

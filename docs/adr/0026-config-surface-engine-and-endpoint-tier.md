@@ -1,5 +1,7 @@
 # 0026. 配置面收口：呈现引擎路径与 `builtin` 哨兵、官方/网关判档单源、模板去 `$schema`
 
+> **后续修订（[ADR-0091](0091-retire-presentation-layer.md)，2026-11-14）**：本 ADR 收口的 `presentation.engine` 配置面（三形态 / `"builtin"` 哨兵 / 相对路径解析 / 装载期降级）已随呈现投影层整层删除；官方 / 网关判档单源（`isOfficialReviewerBaseUrl`）不受影响。
+
 **状态**：已接受（2026-10-31；ADR-0025 落地后的收口批次之一）
 **关联**：ADR-0025（用户级 JSONC 配置；本 ADR 修订其中「相对引擎路径按 cwd 绝对化」与「模板含 `$schema`」两处）、ADR-0002（官方直连 wire 字节对齐）、ADR-0010（语言钉英文 + 核外翻译）、ADR-0021（呈现模型跟随检视模型）
 **跨仓**：本 ADR 为本仓 pi 线序列 0026；DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。

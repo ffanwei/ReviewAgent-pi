@@ -9,7 +9,7 @@ import type { AuditFileContent } from "../audit/audit-writer.js";
  * 切分编排——超界 MR 处理是 DSH 线后分家决策，pi 线自立 ADR 前不实装）。
  *
  * 恒英文（ADR-0065）：stdout 呈现档就是英文真源本身，不做任何翻译，也没有
- * `presentation` 留痕键——审计、run 记录与 stdout 的 findings 逐字节同源。
+ * ——ADR-0065/0090 起 stdout 无 `presentation` 键：审计、run 记录与 stdout 的 findings 逐字节同源。
  *
  * 截断契约（票面）：诚实截断 = 完成的一种——退出码 0，truncated=true 在
  * JSON 中携带信号；呈现层不区分对待。

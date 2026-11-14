@@ -5,13 +5,12 @@
  * 做法：把 `pack:packages` 产出的 tarball 解到临时 `node_modules/`（模拟 npm 安装布局），
  * 再把仓内已安装的依赖（含内核四包 `@earendil-works/*` 这一批正常 npm 依赖）按包
  * 逐个 junction 过去（只借依赖，不借源码），然后：
- *   1. 断言 tarball 内容面（dist / bin / presentation / 许可证；不含 src）；
+ *   1. 断言 tarball 内容面（dist / bin / 许可证；不含 src）；
  *   2. `review-pi`（无子命令）—— bin 的腿表在**安装布局**下能定位全部运行时腿；
  *   3. `review-pi config init/show` —— 配置面在安装布局下可读可写；
  *   4. `review-pi version [--json]`（ADR-0079）—— 版本面可读，且四个内核包在
  *      安装布局下都能解析出版本（不是 `null`）；
- *   5. `presentation.engine = "builtin"` 在安装布局下解析到包内制品；
- *   6. tree-sitter wasm / ripgrep 二进制在安装布局下可用。
+ *   5. tree-sitter wasm / ripgrep 二进制在安装布局下可用。
  *
  * 「不联网」的准确含义（ADR-0035）：本脚本自身不发网络请求——依赖来自 `pnpm install`
  * 已经灌进 store 并落位的工作区 `node_modules`。首次安装仍需网络。
@@ -67,7 +66,6 @@ function requiredEntries(name) {
   return [
     "package/dist/cli/main.js",
     "package/bin/review-pi.js",
-    "package/presentation/engine-zh.js",
     "package/THIRD-PARTY-NOTICES.md",
   ];
 }
@@ -263,30 +261,7 @@ if (versionLine.status !== 0 || versionLine.stdout.trim() !== `review-pi ${versi
 }
 process.stdout.write("verify-pack: 安装布局下 version OK\n");
 
-// ---- 4. builtin 引擎在安装布局下的落点 ----
-const configModuleUrl = pathToFileURL(
-  join(PRIMARY_MODULE_DIR, "dist", "shared", "config.js"),
-).href;
-const probe = spawnSync(
-  process.execPath,
-  [
-    "--input-type=module",
-    "-e",
-    `import { builtinPresentationEnginePath } from ${JSON.stringify(configModuleUrl)};
-     process.stdout.write(builtinPresentationEnginePath());`,
-  ],
-  { encoding: "utf8", cwd: appDir },
-);
-if (probe.status !== 0) {
-  fail(`builtin 引擎解析失败\n${probe.stderr}`);
-}
-const enginePath = probe.stdout.trim();
-if (!existsSync(enginePath)) {
-  fail(`builtin 引擎落点不存在: ${enginePath}`);
-}
-process.stdout.write(`verify-pack: builtin 引擎 -> ${posix(enginePath)}\n`);
-
-// ---- 5. 原生/资产类依赖在安装布局下可用（tree-sitter wasm + ripgrep 二进制） ----
+// ---- 4. 原生/资产类依赖在安装布局下可用（tree-sitter wasm + ripgrep 二进制） ----
 writeFileSync(join(appDir, "Probe.java"), "class Probe { void f() {} }\n");
 const codeIntelProbe = spawnSync(
   process.execPath,

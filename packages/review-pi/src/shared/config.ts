@@ -41,46 +41,6 @@ export const MODEL_FALLBACK_MODES = ["off", "on-model-not-found"] as const;
 export type ModelFallbackMode = (typeof MODEL_FALLBACK_MODES)[number];
 
 /**
- * 制品内呈现引擎的哨兵值（`presentation.engine = "builtin"`，ADR-0026）。
- * 写一个哨兵而不是绝对路径：配置要能在机器之间、在源码树与分发包之间直接
- * 复制粘贴，制品位置由安装形态自己决定。
- */
-export const BUILTIN_ENGINE_SENTINEL = "builtin";
-
-/** 本包根（`src/shared` 与 `dist/shared` 同一相对深度） */
-const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-
-/** 制品内呈现引擎模块绝对路径（`build:presentation` 落到 `<pkg>/presentation/`） */
-export function builtinPresentationEnginePath(): string {
-  return resolve(packageRoot, "presentation", "engine-zh.js");
-}
-
-/**
- * 生效呈现引擎的绝对路径（ADR-0026）：
- * - `null` / 空白 ⇒ `null`（恒等直通，不投影）；
- * - `"builtin"` ⇒ 制品内引擎（`<pkg>/presentation/engine-zh.js`）；
- * - 绝对路径 ⇒ 原样；
- * - 相对路径 ⇒ **相对配置文件所在目录**，不是 cwd。配置文件说"引擎在这"，
- *   它就该跟着配置文件走：`review-pi` 从哪个目录启动都是同一结果。
- *
- * 只做路径解析，不校验存在性——存在性检查在装载期（main），因为缺失要降级
- * 成「未配置引擎」继续检视，而不是让配置读取失败（ADR-0026）。
- */
-export function resolvePresentationEnginePath(
-  engine: string | null | undefined,
-  configPath: string,
-): string | null {
-  const raw = engine?.trim();
-  if (raw === undefined || raw === "") {
-    return null;
-  }
-  if (raw === BUILTIN_ENGINE_SENTINEL) {
-    return builtinPresentationEnginePath();
-  }
-  return isAbsolute(raw) ? raw : resolve(dirname(resolve(configPath)), raw);
-}
-
-/**
  * base URL 的判档归一形：scheme / host 大小写不敏感、去尾斜杠；路径逐字符
  * 有意义（`/v1` 不是同一端点）。非 URL 字面按 trim + 去尾斜杠比较。
  */
@@ -125,8 +85,6 @@ export interface TimeoutLimits {
   readonly probeModelMs: number;
   readonly reviewTurnMs: number;
   readonly oneShotMs: number;
-  readonly presentationRequestMs: number;
-  readonly presentationBufferMs: number;
 }
 
 /**
@@ -136,8 +94,6 @@ export interface TimeoutLimits {
  * - Agent 内会话（主检视回合 / 规则 Skill 会话）用 `reviewTurnAttempts` +
  *   `maxRetryAfterMs` → pi-ai `maxRetries` / `maxRetryDelayMs`；
  * - 核外一次性调用（片级报文 / 收尾总结）用 `oneShotAttempts`；
- * - 内置呈现引擎逐请求用 `presentationAttempts`（外部注入引擎无法被本仓强制，
- *   该值经 `PresentationRuntime.retry` 作为契约穿参）；
  * - smoke 探针缺省**不重试**（`smokeAttempts = 1`），要重试须显式配置；
  * - **流中断重放**（ADR-0077）：`streamAttempts` 是**一次逻辑流请求的总尝试次数**
  *   （含首次），`streamReplayBudgetMs` 是重放总墙钟预算（含退避，0 = 不设上限）。
@@ -153,7 +109,6 @@ export interface RetryLimits {
   readonly maxRetryAfterMs: number;
   readonly reviewTurnAttempts: number;
   readonly oneShotAttempts: number;
-  readonly presentationAttempts: number;
   readonly smokeAttempts: number;
   /** 一次逻辑流请求的总尝试次数（含首次）；1 = 不重放，13 = 1 次首次 + 12 次重放 */
   readonly streamAttempts: number;
@@ -169,10 +124,6 @@ export interface LoopLimits {
    * 不是失败，不产生 `MAX_ROUNDS_REACHED` 截断。
    */
   readonly maxRounds: number;
-}
-
-export interface ConcurrencyLimits {
-  readonly suggestion: number;
 }
 
 /**
@@ -275,7 +226,6 @@ export interface Limits {
   readonly loop: LoopLimits;
   readonly timeouts: TimeoutLimits;
   readonly retry: RetryLimits;
-  readonly concurrency: ConcurrencyLimits;
   readonly confidence: ConfidenceLimits;
   readonly severity: SeverityLimits;
   readonly testFiles: TestFileLimits;
@@ -298,8 +248,6 @@ export const DEFAULT_LIMITS: Limits = {
     probeModelMs: 120_000,
     reviewTurnMs: 180_000,
     oneShotMs: 300_000,
-    presentationRequestMs: 90_000,
-    presentationBufferMs: 30_000,
   },
   retry: {
     maxAttempts: 3,
@@ -308,12 +256,10 @@ export const DEFAULT_LIMITS: Limits = {
     maxRetryAfterMs: 30_000,
     reviewTurnAttempts: 3,
     oneShotAttempts: 3,
-    presentationAttempts: 3,
     smokeAttempts: 1,
     streamAttempts: 13,
     streamReplayBudgetMs: 120_000,
   },
-  concurrency: { suggestion: 4 },
   confidence: { min: 0.5 },
   severity: { min: "P3" },
   testFiles: { skip: true },
@@ -368,11 +314,6 @@ export interface ModelSettings {
   readonly default: string;
   /** null = 跟随本次检视模型（ADR-0021） */
   readonly presentation: string | null;
-}
-
-export interface PresentationSettings {
-  /** 核外呈现引擎模块路径；null = 恒等直通 */
-  readonly engine: string | null;
 }
 
 /**
@@ -461,7 +402,6 @@ export interface ResolvedConfig {
   readonly version: typeof CONFIG_VERSION;
   readonly reviewer: ReviewerSettings;
   readonly model: ModelSettings;
-  readonly presentation: PresentationSettings;
   readonly codeintel: CodeIntelSettings;
   readonly limits: Limits;
   /** MCP 上报（ADR-0037）：未配置 = null */
@@ -723,13 +663,6 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
     throw new ConfigError(`${CONFIG_FILE_NAME}: model.presentation must be a non-empty model id or null`);
   }
 
-  const presentationObj = optionalObject(root.presentation, "presentation", warnings);
-  assertKnownKeys(presentationObj, PRESENTATION_KEYS, "presentation", warnings);
-  const engine = optionalString(presentationObj.engine, "presentation.engine") ?? null;
-  if (engine !== null && engine.trim() === "") {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: presentation.engine must be a non-empty path or null`);
-  }
-
   const limits = parseLimits(root.limits, warnings);
   const mcp = parseMcp(root.mcp, warnings);
   const codeintel = parseCodeIntel(root.codeintel, warnings);
@@ -738,7 +671,6 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
     version: CONFIG_VERSION,
     reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens, stripModelPrefix, modelFallback },
     model: { default: modelDefault.trim(), presentation: modelPresentation?.trim() ?? null },
-    presentation: { engine: engine?.trim() ?? null },
     codeintel,
     limits,
     mcp,
@@ -772,7 +704,6 @@ function buildDefaults({
     version: CONFIG_VERSION,
     reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null, stripModelPrefix: false, modelFallback: "off" },
     model: { default: DEFAULT_MODEL_ID, presentation: null },
-    presentation: { engine: null },
     codeintel: DEFAULT_CODEINTEL,
     limits: DEFAULT_LIMITS,
     mcp: null,
@@ -784,10 +715,9 @@ function buildDefaults({
   return { ...base, digest: digestOf(effectiveValues(base)) };
 }
 
-const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "presentation", "codeintel", "limits", "mcp"] as const;
+const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "codeintel", "limits", "mcp"] as const;
 const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens", "stripModelPrefix", "modelFallback"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
-const PRESENTATION_KEYS = ["engine"] as const;
 const CODEINTEL_KEYS = ["languages", "excludeGlobs"] as const;
 const MCP_KEYS = ["servers", "report"] as const;
 const MCP_SERVER_KEYS = ["transport", "handshake", "url", "headers", "timeoutMs"] as const;
@@ -804,7 +734,7 @@ const MCP_REPORT_KEYS = [
 const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
 const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "concurrency", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro"] as const;
 const LOOP_KEYS = ["maxRounds"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -815,8 +745,6 @@ const TIMEOUT_KEYS = [
   "probeModelMs",
   "reviewTurnMs",
   "oneShotMs",
-  "presentationRequestMs",
-  "presentationBufferMs",
 ] as const;
 const RETRY_KEYS = [
   "maxAttempts",
@@ -825,12 +753,10 @@ const RETRY_KEYS = [
   "maxRetryAfterMs",
   "reviewTurnAttempts",
   "oneShotAttempts",
-  "presentationAttempts",
   "smokeAttempts",
   "streamAttempts",
   "streamReplayBudgetMs",
 ] as const;
-const CONCURRENCY_KEYS = ["suggestion"] as const;
 const CONFIDENCE_KEYS = ["min"] as const;
 const SEVERITY_KEYS = ["min"] as const;
 const TEST_FILES_KEYS = ["skip"] as const;
@@ -890,8 +816,6 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     probeModelMs: intOr(timeoutsObj.probeModelMs, "limits.timeouts.probeModelMs", 10_000, 600_000, DEFAULT_LIMITS.timeouts.probeModelMs),
     reviewTurnMs: intOr(timeoutsObj.reviewTurnMs, "limits.timeouts.reviewTurnMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.reviewTurnMs),
     oneShotMs: intOr(timeoutsObj.oneShotMs, "limits.timeouts.oneShotMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.oneShotMs),
-    presentationRequestMs: intOr(timeoutsObj.presentationRequestMs, "limits.timeouts.presentationRequestMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.presentationRequestMs),
-    presentationBufferMs: intOr(timeoutsObj.presentationBufferMs, "limits.timeouts.presentationBufferMs", 0, 3_600_000, DEFAULT_LIMITS.timeouts.presentationBufferMs),
   };
 
   const retryObj = optionalObject(limits.retry, "limits.retry", warnings);
@@ -914,7 +838,6 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     maxRetryAfterMs: intOr(retryObj.maxRetryAfterMs, "limits.retry.maxRetryAfterMs", 0, 600_000, DEFAULT_LIMITS.retry.maxRetryAfterMs),
     reviewTurnAttempts: inheritedAttempts("reviewTurnAttempts", retryObj.reviewTurnAttempts),
     oneShotAttempts: inheritedAttempts("oneShotAttempts", retryObj.oneShotAttempts),
-    presentationAttempts: inheritedAttempts("presentationAttempts", retryObj.presentationAttempts),
     smokeAttempts: intOr(
       retryObj.smokeAttempts,
       "limits.retry.smokeAttempts",
@@ -939,11 +862,6 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     ),
   };
 
-  const concurrencyObj = optionalObject(limits.concurrency, "limits.concurrency", warnings);
-  assertKnownKeys(concurrencyObj, CONCURRENCY_KEYS, "limits.concurrency", warnings);
-  const concurrency: ConcurrencyLimits = {
-    suggestion: intOr(concurrencyObj.suggestion, "limits.concurrency.suggestion", 1, 16, DEFAULT_LIMITS.concurrency.suggestion),
-  };
 
   const confidenceObj = optionalObject(limits.confidence, "limits.confidence", warnings);
   assertKnownKeys(confidenceObj, CONFIDENCE_KEYS, "limits.confidence", warnings);
@@ -1075,7 +993,7 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
   };
 
-  return { loop, timeouts, retry, concurrency, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, archive, micro };
+  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, archive, micro };
 }
 
 // ---------------------------------------------------------------------------
@@ -1395,7 +1313,6 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     "reviewer.modelFallback": config.reviewer.modelFallback,
     "model.default": config.model.default,
     "model.presentation": config.model.presentation,
-    "presentation.engine": config.presentation.engine,
     "codeintel.languages": config.codeintel.languages,
     "codeintel.excludeGlobs": config.codeintel.excludeGlobs,
   };
@@ -1460,7 +1377,6 @@ function recordOverrides(root: Record<string, unknown>, overridden: Set<string>)
   };
   mark("reviewer", asRecordOrUndefined(root.reviewer));
   mark("model", asRecordOrUndefined(root.model));
-  mark("presentation", asRecordOrUndefined(root.presentation));
   mark("codeintel", asRecordOrUndefined(root.codeintel));
   const mcp = asRecordOrUndefined(root.mcp);
   if (mcp !== undefined) {
@@ -1791,7 +1707,6 @@ export interface ConfigTemplateOverrides {
   readonly maxOutputTokens?: number | null;
   readonly modelDefault?: string;
   readonly modelPresentation?: string | null;
-  readonly enginePath?: string | null;
 }
 
 /**
@@ -1807,15 +1722,13 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
   const modelDefault = jsonString(overrides.modelDefault ?? DEFAULT_MODEL_ID);
   const modelPresentation =
     overrides.modelPresentation === undefined ? "null" : JSON.stringify(overrides.modelPresentation);
-  const enginePath =
-    overrides.enginePath === undefined ? jsonString(BUILTIN_ENGINE_SENTINEL) : JSON.stringify(overrides.enginePath);
   // 排除 glob 直接从常量生成：模板与运行时默认值不会漂移
   const excludeGlobLines = DEFAULT_EXCLUDE_GLOBS.map((glob) => `      ${jsonString(glob)}`).join(",\n");
   return `{
   // PiAgent 运行配置（ADR-0025）。JSONC：允许注释与尾逗号。
   // 秘密（reviewer.apiKey / mcp 的 headers）只写在这里；环境变量不再被读取。
   // 配置版本：当前只支持 1，不匹配即 fail fast。
-  // 分区导航：reviewer / model / presentation（模型接入与呈现）→ codeintel（代码智能）
+  // 分区导航：reviewer / model（模型接入）→ codeintel（代码智能）
   // → mcp（外发上报，缺省整块注释）→ limits（资源与行为护栏）。
   "version": 1,
 
@@ -1840,15 +1753,8 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
   "model": {
     // 默认检视模型（--model 可覆盖）。
     "default": ${modelDefault},
-    // 报文 / 总结 / 片级语义生成模型：null = 跟随本次检视模型（ADR-0021）。
+    // 收尾总结模型（ADR-0090 后报文 / tips 零模型调用）：null = 跟随本次检视模型（ADR-0021）。
     "presentation": ${modelPresentation}
-  },
-
-  "presentation": {
-    // legacy 兼容键（ADR-0065 后 CLI 不再调用呈现引擎；控制台恒英文）。
-    // builtin = 制品自带（跟着当前安装的 review-pi 包走）；null = 不配置；
-    // 模块路径按本配置文件所在目录解析（ADR-0026）。
-    "engine": ${enginePath}
   },
 
   // 代码智能（符号 / 引用 / 调用链）启用哪些语言。检视本体读 diff，本来就不限语言；
@@ -1923,12 +1829,9 @@ ${excludeGlobLines}
       "probeModelMs": 120000,            // smoke 模型探针超时。
       "reviewTurnMs": 180000,            // 主检视回合 / 规则 Skill 会话单次请求的建立超时（流开始前的等待）。
       "oneShotMs": 300000,               // 片级报文 / 收尾总结单次请求超时。
-      "presentationRequestMs": 90000,    // legacy 呈现引擎单次请求超时（ADR-0065 后 CLI 不再调用）。
-      "presentationBufferMs": 30000      // legacy 呈现引擎整批总超时余量。
     },
     // LLM 调用重试（ADR-0051）：次数一律是「总尝试次数（含首次）」。
-    // 主检视回合 / 规则 Skill 会话走 pi-ai 的流请求重试；报文 / 总结 / 内置呈现引擎 / smoke
-    // 走本仓统一重试。只有请求建立阶段可重试——流已开始后断开会显式报错，不做整回合重放。
+    // 主检视回合 / 规则 Skill 会话走 pi-ai 的流请求重试；总结 / smoke 走本仓统一重试。只有请求建立阶段可重试——流已开始后断开会显式报错，不做整回合重放。
     // baseDelayMs / maxDelayMs 只作用于核外一次性调用；maxRetryAfterMs 同时约束服务端
     // Retry-After 与 pi-ai 的 maxRetryDelayMs。
     "retry": {
@@ -1938,7 +1841,6 @@ ${excludeGlobLines}
       "maxRetryAfterMs": 30000,          // 服务端要求等待的上限（毫秒）；0 = 不设上限。
       "reviewTurnAttempts": 3,           // 主检视回合 / 规则 Skill 会话总尝试次数。
       "oneShotAttempts": 3,              // 片级报文 / 收尾总结总尝试次数。
-      "presentationAttempts": 3,         // legacy 呈现引擎逐请求总尝试次数（ADR-0065 后 CLI 不再调用）。
       "smokeAttempts": 1,                // smoke 探针总尝试次数（缺省 1 = 不重试）。
       // 流中断重放（ADR-0077）：流已开始后断开时，缓冲当前响应并在本层重发。
       // 总尝试次数（含首次）：13 = 1 次首次 + 12 次重放；1 = 关闭重放。
@@ -1947,8 +1849,6 @@ ${excludeGlobLines}
       // 到点即停止「再发起一次」；已发出的尝试不会被打断。
       "streamReplayBudgetMs": 120000
     },
-    // legacy：呈现引擎的 suggestion 并发生成数（ADR-0065 后 CLI 不再调用）。
-    "concurrency": { "suggestion": 4 },
     // 检视意见置信度过滤（ADR-0052）：confidence 低于 min 的意见不进入中文 tips
     // （reviews_tips_zh.json 与 mrReviewResult.reviewTips）；英文 findings / stdout 不受影响。
     // 0–1，缺省 0.5（= 过滤 Low 档）；0 = 不过滤。

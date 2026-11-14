@@ -26,10 +26,6 @@ const required = [
   join(packageDir, "dist", "index.js"),
   join(packageDir, "bin", "review-pi.js"),
   join(packageDir, "bin", "lib", "cli-runtime.js"),
-  join(packageDir, "presentation", "engine-zh.js"),
-  join(packageDir, "presentation", "terminology.js"),
-  join(packageDir, "presentation", "tips.js"),
-  join(packageDir, "presentation", "translate-projection.js"),
   noticesTarget,
 ];
 

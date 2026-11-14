@@ -135,8 +135,8 @@ test("config init：写到沙箱 home 的 ~/.PiAgent/PiAgent.jsonc，JSONC 模�
   expect(snapshot.path).toBe(filePath);
   expect(snapshot.secret).toEqual({ "reviewer.apiKey": "missing" });
   expect(snapshot.values["model.default"]).toBe("deepseek-v4-flash");
-  // 模板默认开中文投影（ADR-0026 修订）：生成即 builtin，不是 null
-  expect(snapshot.values["presentation.engine"]).toBe("builtin");
+  // ADR-0091：presentation.engine 配置键已随呈现投影层退役，模板不再包含该键
+  expect(snapshot.values["presentation.engine"]).toBeUndefined();
 
   // POSIX 权限 0600（Windows 无此语义）
   if (process.platform !== "win32") {
@@ -167,12 +167,11 @@ test("config init --config <path>：相对路径按 cwd 解析，目录自动创
   expect(readFileSync(written, "utf8")).toContain('"version": 1');
 });
 
-test("config init --from-env：迁移键名回显、秘密不回显、未知键丢弃、相对引擎路径绝对化", async () => {
+test("config init --from-env：迁移键名回显、秘密不回显、未知键丢弃", async () => {
   const envLocal = [
     "REVIEWER_API_KEY=" + SENTINEL_KEY,
     "REVIEWER_URL=https://ark.example.com/api/coding/v3/",
     "REVIEWER_MAX_TOKENS=4096",
-    "REVIEW_PI_PRESENTATION_ENGINE=./engine/engine-zh.js",
     "REVIEW_PI_PRESENTATION_MODEL=deepseek-v4-flash",
     "SOME_UNKNOWN_KEY=keep-out",
     "",
@@ -187,7 +186,6 @@ test("config init --from-env：迁移键名回显、秘密不回显、未知键�
     "REVIEWER_API_KEY",
     "REVIEWER_URL",
     "REVIEWER_MAX_TOKENS",
-    "REVIEW_PI_PRESENTATION_ENGINE",
     "REVIEW_PI_PRESENTATION_MODEL",
   ]) {
     expect(result.stdout).toContain(name);
@@ -201,11 +199,10 @@ test("config init --from-env：迁移键名回显、秘密不回显、未知键�
   const written = homeConfigPath(result.home);
   const text = readFileSync(written, "utf8");
   expect(text).toContain(`"apiKey": ${JSON.stringify(SENTINEL_KEY)}`);
-  // baseUrl 尾斜杠归一；引擎相对路径按写入时 cwd 绝对化（之后换 cwd 不失效）
+  // baseUrl 尾斜杠归一
   expect(text).toContain('"baseUrl": "https://ark.example.com/api/coding/v3"');
   expect(text).toContain('"maxOutputTokens": 4096');
   expect(text).toContain('"presentation": "deepseek-v4-flash"');
-  expect(text).toContain(JSON.stringify(path.join(result.cwd, "engine", "engine-zh.js")));
 
   // 迁移产物仍可读回：key 记 set，值不回显
   const show = await runCli(["config", "show", "--config", written]);

@@ -167,13 +167,6 @@ function migrateEnvFile(filePath: string, cwd: string): MigrationResult {
     maxOutputTokens = parsedTokens;
     migrated.push(maxTokens.name);
   }
-  const engine = read(["REVIEW_PI_PRESENTATION_ENGINE"]);
-  let enginePath: string | null | undefined;
-  if (engine !== undefined) {
-    // 相对路径按**写入时的 cwd** 解析成绝对路径再写（之后换 cwd 也不失效）
-    enginePath = resolve(cwd, engine.value);
-    migrated.push(engine.name);
-  }
   const presentationModel = read(["REVIEW_PI_PRESENTATION_MODEL"]);
   if (presentationModel !== undefined) {
     migrated.push(presentationModel.name);
@@ -185,7 +178,6 @@ function migrateEnvFile(filePath: string, cwd: string): MigrationResult {
     "REVIEWER_URL",
     "DEEPSEEK_URL",
     "REVIEWER_MAX_TOKENS",
-    "REVIEW_PI_PRESENTATION_ENGINE",
     "REVIEW_PI_PRESENTATION_MODEL",
   ]);
   const discardedKeys = [...parsed.values.keys()].filter((key) => !known.has(key));
@@ -195,7 +187,6 @@ function migrateEnvFile(filePath: string, cwd: string): MigrationResult {
       ...(apiKey !== undefined ? { apiKey: apiKey.value } : {}),
       ...(baseUrl !== undefined ? { baseUrl: baseUrl.value.replace(/\/+$/, "") } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-      ...(enginePath !== undefined ? { enginePath } : {}),
       ...(presentationModel !== undefined ? { modelPresentation: presentationModel.value } : {}),
     },
     migratedKeys: migrated,

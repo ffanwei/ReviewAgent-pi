@@ -216,7 +216,6 @@ test("retryPolicyFor：按路径取次数，退避参数全局共享", () => {
     maxRetryAfterMs: 5_000,
     reviewTurnAttempts: 2,
     oneShotAttempts: 3,
-    presentationAttempts: 5,
     smokeAttempts: 1,
   };
   expect(retryPolicyFor(limits, "reviewTurn")).toEqual({
@@ -226,7 +225,6 @@ test("retryPolicyFor：按路径取次数，退避参数全局共享", () => {
     maxRetryAfterMs: 5_000,
   });
   expect(retryPolicyFor(limits, "oneShot").maxAttempts).toBe(3);
-  expect(retryPolicyFor(limits, "presentation").maxAttempts).toBe(5);
   expect(retryPolicyFor(limits, "smoke").maxAttempts).toBe(1);
 });
 

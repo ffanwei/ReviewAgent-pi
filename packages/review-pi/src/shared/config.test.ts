@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
-  BUILTIN_ENGINE_SENTINEL,
   CONFIG_VERSION,
   ConfigError,
   DEFAULT_CODEINTEL,
@@ -15,14 +14,12 @@ import {
   DEFAULT_LIMITS,
   DEFAULT_MODEL_ID,
   OFFICIAL_REVIEWER_BASE_URL,
-  builtinPresentationEnginePath,
   configSnapshot,
   isOfficialReviewerBaseUrl,
   loadConfig,
   modelIdForGateway,
   requireApiKey,
   resolveConfigPath,
-  resolvePresentationEnginePath,
   writeConfigFile,
 } from "./config.js";
 
@@ -96,7 +93,6 @@ describe("loadConfig：缺省与形状", () => {
     });
     expect(config.model).toEqual({ default: DEFAULT_MODEL_ID, presentation: null });
     expect(config.limits).toEqual(DEFAULT_LIMITS);
-    expect(config.presentation.engine).toBe(null);
   });
 
   test("最小文件：reviewer 生效、baseUrl 尾斜杠归一并记录来源", () => {
@@ -162,25 +158,16 @@ describe("loadConfig：失败策略", () => {
   test("类型错与越界都 fail fast，指出键路径", () => {
     expect(() =>
       loadConfig({ configPath: writeConfig(`{"version":1,"limits":{"concurrency":{"suggestion":"4"}}}`) }),
-    ).toThrow(/limits.concurrency.suggestion must be an integer/);
-    expect(() =>
-      loadConfig({ configPath: writeConfig(`{"version":1,"limits":{"concurrency":{"suggestion":0}}}`) }),
-    ).toThrow(/must be in 1…16 \(got 0\)/);
+    ).not.toThrow(); // ADR-0091：concurrency 分区已删，未知键只警告
     expect(() =>
       loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"timeouts":{"skillPassMs":0}}`)) }),
     ).toThrow(/skillPassMs must be in 1000…3600000/);
   });
 
-  test("0 对字数上限也非法；缓冲是唯一允许 0 的超时键", () => {
+  test("0 对字数上限也非法", () => {
     expect(() =>
       loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"micro":{"queryEchoChars":0}}`)) }),
     ).toThrow(/queryEchoChars must be in 1…10000/);
-    const buffered = loadConfig({
-      configPath: writeConfig(
-        minimalConfig(`,"limits":{"timeouts":{"presentationBufferMs":0}}`),
-      ),
-    }).config;
-    expect(buffered.limits.timeouts.presentationBufferMs).toBe(0);
   });
 
   test("未知键 = 警告继续（带最近键提示）", () => {
@@ -215,7 +202,6 @@ describe("loadConfig：失败策略", () => {
     // 三个会话路径继承 maxAttempts；smoke 保持不重试的缺省
     expect(tuned.limits.retry.reviewTurnAttempts).toBe(2);
     expect(tuned.limits.retry.oneShotAttempts).toBe(2);
-    expect(tuned.limits.retry.presentationAttempts).toBe(2);
     expect(tuned.limits.retry.smokeAttempts).toBe(1);
 
     const perPath = loadConfig({
@@ -772,31 +758,6 @@ describe("常量对齐", () => {
   });
 });
 
-describe("presentation.engine 解析（ADR-0026）", () => {
-  test("null / 空白 ⇒ null（恒等直通）", () => {
-    expect(resolvePresentationEnginePath(null, "/etc/pi/PiAgent.jsonc")).toBeNull();
-    expect(resolvePresentationEnginePath("   ", "/etc/pi/PiAgent.jsonc")).toBeNull();
-  });
-
-  test("\"builtin\" ⇒ 制品内引擎（<pkg>/presentation/engine-zh.js）", () => {
-    const resolved = resolvePresentationEnginePath(BUILTIN_ENGINE_SENTINEL, "/etc/pi/PiAgent.jsonc");
-    expect(resolved).toBe(builtinPresentationEnginePath());
-    expect(resolved?.endsWith(join("presentation", "engine-zh.js"))).toBe(true);
-  });
-
-  test("相对路径按**配置文件所在目录**解析（不是 cwd）", () => {
-    const configPath = join(tempDir(), "nested", "PiAgent.jsonc");
-    expect(resolvePresentationEnginePath("engines/zh.mjs", configPath)).toBe(
-      join(dirname(configPath), "engines", "zh.mjs"),
-    );
-  });
-
-  test("绝对路径原样透传", () => {
-    const absolute = join(tempDir(), "zh.mjs");
-    expect(resolvePresentationEnginePath(absolute, "/etc/pi/PiAgent.jsonc")).toBe(absolute);
-  });
-});
-
 describe("base URL 判档（ADR-0026 单源）", () => {
   test("官方缺省的等价写法都算官方：大小写、尾斜杠、空白", () => {
     for (const value of [
@@ -833,19 +794,14 @@ describe("configSnapshot 家目录归一化（ADR-0027）", () => {
     expect(configSnapshot(config).path).toBe(path);
   });
 
-  test("给 home：path 与绝对路径值折叠成 ~/...（POSIX 分隔符）", () => {
+  test("给 home：path 折叠成 ~/...（POSIX 分隔符）", () => {
     const home = tempDir();
     const path = join(home, ".PiAgent", "PiAgent.jsonc");
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(
-      path,
-      `{"version":1,"reviewer":{"apiKey":"sk-x"},"presentation":{"engine":${JSON.stringify(join(home, "bin", "zh.mjs"))}}}`,
-      "utf8",
-    );
+    writeFileSync(path, `{"version":1,"reviewer":{"apiKey":"sk-x"}}`, "utf8");
     const { config } = loadConfig({ configPath: path });
     const snapshot = configSnapshot(config, { home });
     expect(snapshot.path).toBe("~/.PiAgent/PiAgent.jsonc");
-    expect(snapshot.values["presentation.engine"]).toBe("~/bin/zh.mjs");
     // 秘密面纪律不变
     expect(snapshot.secret).toEqual({ "reviewer.apiKey": "set" });
     expect(JSON.stringify(snapshot)).not.toContain("sk-x");

@@ -99,18 +99,18 @@ _Avoid_: 语义生成（那是被退役的第二次调用）、翻译（候选�
 核内 Review Runtime 中代码级强制六阶段骨架的组件：只有它能推进阶段（一阶段 = 一回合），回合边界执行 Evidence Gate 与轮次调度。
 _Avoid_: 自定义 Loop（替换内核 loop 的机制，DSH 线已否；pi 线以 agent-loop 钩子实现同等骨架）、提示词纪律（骨架不是提示词约定）
 
-**核外（呈现工具链，legacy）**:
-服务于呈现而非检视会话的层：中文翻译投影、分组意见映射与真引擎装配（`src/presentation/`）；普通库被 CLI 调用，不进内核。ADR-0065 起 CLI 不再调用这一层，ADR-0090 起检视本体即中文、这一层只对英文历史产物或外部英文输入有意义；代码与发行产物保留供外部消费方使用。
-_Avoid_: 实验插件、核内呈现（语言参数化缝不存在，ADR-0010）、把 legacy 模块当成现行运行时路径
+**核外（呈现工具链，已删除）**:
+历史形态：中文翻译投影、分组意见映射与真引擎装配（`src/presentation/`）。ADR-0065 起 CLI 不再调用，ADR-0090 起检视本体即中文（翻译无对象），ADR-0091 整层删除（源码、制品、`presentation.engine` 配置键、构建腿）。历史文献按当时记录读。
+_Avoid_: 把 legacy 模块当成现行运行时路径、期望 `presentation.engine` 配置键存在（已删，装载期未知键警告）
 
 **交付（Delivery）**:
 `review` 命令在 `runReview` 返回或抛出之后、进程退出之前的唯一收尾阶段：变更文件覆盖补报、中文 tips 组装与落盘、总结上报、session 索引、收尾产物（mcp.json / lifecycle / trace）与 MCP flush/close。一个 CLI 级 module（`cli/delivery.ts` 的 `deliverReviewRun`）拥有这条链的**顺序不变量**；`main` 只保留组装、stdout 写出、两套运行账本与退出码。两条「跳过检视」路径（diff 超界 / 无可检视文件）不属它。ADR-0081。
 _代码面_: `cli/delivery.ts`、`cli/delivery.test.ts`。
 _Avoid_: 编排器（暗示可配置流程）、核内收尾（交付不进内核）、把两套运行账本算进交付（账本是整次进程运行的投影）
 
-**翻译投影（Translation Projection，legacy）**:
-核外呈现工具：消费英文文档做中文呈现，仅译自然语言字段（findings 叙述、resultSummary），结构化字段字节直通；投影自带留痕（呈现语言、术语表版本、源 finding 关连）。**ADR-0090 起检视输出即中文**（历史「恒英文 + 核外翻译」口径废止），本模块仅对英文历史产物或外部英文输入有意义。**ADR-0065 起 CLI 不再调用它**：控制台 stdout 恒英文、没有 `presentation` 键；`presentation.engine` 仅保留为兼容配置键（动态 import 核外引擎的路径解析与校验行为不变）。需要中文时看 `reviews_tips_zh.json` 或 MCP 报文。legacy 行为：引擎加载/协议/超时失败时整次呈现降级英文源；ADR-0059 的单字段降级（`presentation.degradedFields` / `degradedReason`）也只存在于该模块。
-_Avoid_: 输出语言配置（暗示内核参数化缝）、双语内核（检视链整体留在已验证英文域）、把呈现引擎当作中文 tips 的生产者
+**翻译投影（Translation Projection，已删除）**:
+历史核外呈现工具：消费英文文档做中文呈现，仅译自然语言字段，结构化字段字节直通。ADR-0010 设立（英文产出 + 核外翻译），ADR-0065 收窄（CLI 不调用），ADR-0090 失去对象（检视输出即中文），ADR-0091 删除。中文交付物 = `reviews_tips_zh.json` / MCP 报文（语义随候选产出）。
+_Avoid_: 把呈现引擎当作中文 tips 的生产者（候选才是）、在配置里找语言开关（不存在）
 
 **运行进度投影（Run Progress Projection）**:
 检视执行期的实时人读投影：把内核既有留痕（阶段推进、模型请求首尾、工具调用首尾、规则 Skill 会话首尾）写成 `stderr` 的追加事件行，TTY 下另有一行 `\r` 重画的状态行与收尾摘要行。**只投影不决策**：不改 wire 字节、不新增审计键、不改退出码，`stdout` 单 JSON 文档逐字节不变；工具参数摘要截断 80 字符、结果全文永不落地（只报行数/字符数）。开关 = **缺省打印** / `--no-progress` 关（ADR-0055，取代 ADR-0016 的 TTY 自动档；`--progress` 已移除）。**收尾总结行恒定打印**（与进度开关解耦，ADR-0030）：中文一行报耗时、token 三段（未命中输入 / 输出 / 缓存命中）、模型调用数、工具调用（主会话 + 规则 Skill 分列）、Context Ledger 命中数（重复读取返回引用、原文未重读）与成本；token / 工具数与审计同源，Ledger 命中与模型调用数只经返回值透传、不进审计字节。
@@ -233,7 +233,7 @@ _Avoid_: 离线回放（那是不调模型的冻结复跑）、评测（ADR-0024
 _Avoid_: 六包自发布（ADR-0028 已废止）、单包 bundle（丢 `source` 条件与可调试性）、源码继续 vendor 但依赖声明上游名（开发与生产静默跑不同代码）
 
 **发布面（Publish Surface）**:
-一个包 tarball 里**应当**存在的东西：`dist`、类型声明、`bin`（`review-pi`）、`presentation` 制品、`THIRD-PARTY-NOTICES.md`、`README.md`；**不应**存在 `src/**/*.ts`。`review-pi` 的 `prepack` 从仓根复制履约文本并断言发布物在位——打包确定、离线，缺产物即人话报错。
+一个包 tarball 里**应当**存在的东西：`dist`、类型声明、`bin`（`review-pi`）、`THIRD-PARTY-NOTICES.md`、`README.md`（ADR-0091 后无 `presentation` 制品）；**不应**存在 `src/**/*.ts`。`review-pi` 的 `prepack` 从仓根复制履约文本并断言发布物在位——打包确定、离线，缺产物即人话报错。
 _Avoid_: 构建产物（包含 `src` 的仓内状态）、打包脚本（那是手段）
 
 **版本面（Version Surface）**:
