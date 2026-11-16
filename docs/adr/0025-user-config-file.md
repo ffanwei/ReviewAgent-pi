@@ -10,6 +10,7 @@
 **修订（2026-10-31，实现期）**：默认文件名由 `PiAgent.json` 改为 **`PiAgent.jsonc`**——文件名与内容形态（JSONC：注释 + 尾逗号）一致，避免编辑器把注释判成非法 JSON。语义不变：内容形态、键表、校验、`config init/show` 行为与默认路径都只换了扩展名；`--config <path>` 仍接受任意路径，扩展名不参与判定。发布前改名，无存量用户文件需迁移。
 **修订（2026-10-31，实现期）**：**删除模型元数据覆盖面 `models{}`**（连同 `ModelOverride`、`reviewModelOf` 的 overrides 形参与 `ReviewRuntime.models`）。配置面只保留 `reviewer` / `model` / `presentation` / `limits` 四段。后果：目录外模型 id 一律沿用 `deepseek-v4-flash` 画像（`contextWindow` / `maxTokens` / `cost` 均按 flash），成本数字仅供参考；旧配置文件里的 `models` 键降级为 `unknown key models` 警告（不阻断）。本文 Context 第 3 条动机、Decision 3 可配清单中的「模型元数据」一条、Decision 5 的 `ReviewRuntime` 组成、Consequences 中「第三方网关元数据可补全」一条随之失效。
 **后续修订（2026-11-07）**：[ADR-0046](0046-configurable-max-rounds.md) 把 `maxRounds` 从死钉移入配置面（`limits.loop.maxRounds`，缺省 3），并规定**最后一轮强制 complete**。本文 Decision 4「5 项死钉」中的轮次一项与验收标准第 3 条（`loop.maxRounds` 告警）随之失效：死钉收窄为 4 项（`maxToolCalls` / 工具结果预算 / `temperature` / `reasoningEffort`），轮次上限可配且不再产生 `MAX_ROUNDS_REACHED` 截断。
+**后续修订（ADR-0093 阶段 1，2026-11-16）**：模型优先级链收窄为配置单源——`review` 的 `--model` 值被忽略并告警（阶段 2 删除），检视模型只取显式写出的 `model.default`；其余配置纪律（唯一文件、JSONC、键表、env 关闭）不变。
 
 ## Context
 

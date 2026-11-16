@@ -905,41 +905,40 @@ test("config 子命令：init/show + 旗标组合校验", () => {
   });
 });
 
-test("--model：自由 id 透传；缺席省键（缺省来自配置 model.default）；空白 id 拒绝", () => {
-  const free = parseCliArgs([
-    "review",
-    "--repo",
-    "r",
-    "--mr-diff",
-    "m",
-    "--taskId",
-    "t-1",
-    "--model",
-    "custom-gateway-model",
-  ]);
-  expect(free.ok && free.command === "review" && free.args.model).toBe("custom-gateway-model");
-  const absent = parseCliArgs([
-    "review",
-    "--repo",
-    "r",
-    "--mr-diff",
-    "m",
-    "--taskId",
-    "t-1",
-  ]);
-  expect(absent.ok && absent.command === "review" && "model" in absent.args).toBe(false);
-  const blank = parseCliArgs([
-    "review",
-    "--repo",
-    "r",
-    "--mr-diff",
-    "m",
-    "--taskId",
-    "t-1",
-    "--model",
-    "  ",
-  ]);
-  expect(blank).toEqual({
+test("--model（ADR-0093 阶段 1）：接受但忽略；裸旗标/空值/重复都不再是用法错误", () => {
+  const base = ["review", "--repo", "r", "--mr-diff", "m", "--taskId", "t-1"];
+  const free = parseCliArgs([...base, "--model", "custom-gateway-model"]);
+  expect(free.ok && free.command === "review" && free.args.ignoredModel).toEqual({
+    raw: "custom-gateway-model",
+  });
+  expect(free.ok && free.command === "review" && "model" in free.args).toBe(false);
+
+  const absent = parseCliArgs(base);
+  expect(absent.ok && absent.command === "review" && "ignoredModel" in absent.args).toBe(false);
+
+  // 空值 / 纯空白：传过即留痕，但不保留值
+  for (const blank of ["", "  "]) {
+    const parsed = parseCliArgs([...base, "--model", blank]);
+    expect(parsed.ok && parsed.command === "review" && parsed.args.ignoredModel).toEqual({});
+  }
+
+  // 裸旗标（后接另一个旗标 / argv 结束）：仍然接受
+  const bare = parseCliArgs([...base, "--model"]);
+  expect(bare.ok && bare.command === "review" && bare.args.ignoredModel).toEqual({});
+  const bareBeforeFlag = parseCliArgs([...base, "--model", "--config", "c.jsonc"]);
+  expect(
+    bareBeforeFlag.ok && bareBeforeFlag.command === "review" && bareBeforeFlag.args.ignoredModel,
+  ).toEqual({});
+
+  // 重复出现：首次非空值留作回显，不报 duplicate
+  const duplicate = parseCliArgs([...base, "--model", "a", "--model", "b"]);
+  expect(
+    duplicate.ok && duplicate.command === "review" && duplicate.args.ignoredModel,
+  ).toEqual({ raw: "a" });
+});
+
+test("--model（smoke）：仍是真实的探针目标，空值报用法错误", () => {
+  expect(parseCliArgs(["smoke", "--model", "  "])).toEqual({
     ok: false,
     message: 'invalid --model "  ": must be a non-empty model id (free ids accepted)',
   });

@@ -12,7 +12,6 @@
  *
  * 用法：
  *   node .agents/skills/synthetic-defect-resource-leak/scripts/run.mjs
- *   node ... --model deepseek-v4.1-flash
  *   node ... --no-rule-skill          # 不装载规则包，测纯检视
  *   node ... --dry-run --keep-temp
  */
@@ -150,7 +149,6 @@ const review = runReview({
   repoDir: fixture,
   diffPath,
   runDir,
-  model: typeof args.model === "string" ? args.model : undefined,
   ruleSkillDir: useRulePack ? RULE_PACK : undefined,
 });
 
@@ -170,7 +168,7 @@ writeJson(join(runDir, "meta.json"), {
   reviewExitCode: review.status,
   reviewDurationMs: review.durationMs,
   command: review.command,
-  model: record?.model ?? (typeof args.model === "string" ? args.model : null),
+  model: record?.model ?? null,
   tempKept: args["keep-temp"] === true,
   tempDir: args["keep-temp"] === true ? baseDir : null,
 });

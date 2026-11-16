@@ -18,7 +18,7 @@
  *   node scripts/eval/vul4j-eval.mjs --dry-run
  *   node scripts/eval/vul4j-eval.mjs --cases VUL4J-38,VUL4J-52,VUL4J-79
  *   node scripts/eval/vul4j-eval.mjs --cases-file data/vul4j/materialized-cases-10.json --dry-run
- *   node scripts/eval/vul4j-eval.mjs --cases VUL4J-38 --model deepseek-v4.1-flash
+ *   node scripts/eval/vul4j-eval.mjs --cases VUL4J-38
  *   node scripts/eval/vul4j-eval.mjs --runs-dir repo-diff-skill-result/vul4j-eval/<stamp>
  *   node scripts/eval/vul4j-eval.mjs --runs-dir <stamp> --severity-sweep
  *   node scripts/eval/vul4j-eval.mjs --runs-dir <stamp> --severity-min P1
@@ -52,7 +52,6 @@ const args = parseArgs(process.argv.slice(2));
 const CASES_PATH =
   typeof args["cases-file"] === "string" ? resolve(args["cases-file"]) : DEFAULT_CASES_PATH;
 const tolerance = readInt(args.tolerance, 5);
-const model = typeof args.model === "string" ? args.model : undefined;
 const ruleSkillDir = typeof args["rule-skill"] === "string" ? resolve(args["rule-skill"]) : undefined;
 const reuseRoot = typeof args["runs-dir"] === "string" ? resolve(args["runs-dir"]) : undefined;
 const issueMode = args.issue === true;
@@ -124,7 +123,6 @@ for (const caseData of cases) {
       diffPath,
       runDir,
       ruleSkillDir,
-      model,
       timeoutMs,
       issue: issueMode ? caseData.issueDescription : undefined,
     });
@@ -177,7 +175,7 @@ for (const row of primary.cases) {
 const metrics = primary.metrics;
 const payload = {
   generatedAt: new Date().toISOString(),
-  model: model ?? "(run.json)",
+  model: "(run.json)",
   ruleSkill: ruleSkillDir === undefined ? null : relativeToRepo(ruleSkillDir),
   issueMode,
   tolerance,

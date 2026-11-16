@@ -127,14 +127,13 @@ npm rm -g @baize/review-pi           # 卸载（嵌套依赖一并移除）
     "baseUrl": "https://api.deepseek.com",
     // 单次请求输出上限：null = 自动（官方直连不发 max_tokens；网关发 32768）。
     "maxOutputTokens": null,
-    // --model 不可用时的降级策略（ADR-0080）：off = 不探测不替换（缺省）；
-    // on-model-not-found = 只有网关明确返回 model not found 才改用 model.default。
+    // 已废弃（ADR-0093 阶段 1）：本版不生效，保留一个版本以免旧配置突然报错。
     "modelFallback": "off"
   },
   "model": {
-    // 默认检视模型（--model 可覆盖）。
+    // 检视模型唯一来源（ADR-0093 阶段 1）：必须显式给出；--model 已废弃并忽略。
     "default": "deepseek-v4-flash",
-    // 收尾总结模型（ADR-0090 后报文 / tips 零模型调用）：null = 跟随本次检视模型（ADR-0021）。
+    // 收尾总结模型（ADR-0090 后报文 / tips 零模型调用）：null = 跟随本次检视模型。
     "presentation": null
   },
   "presentation": {
@@ -200,7 +199,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 
 | 规则 | 行为 |
 |---|---|
-| 值分隔 | 必须空格分隔：`--model deepseek-v4-flash`。**不支持 `--flag=value`**（会被判 unknown flag） |
+| 值分隔 | 必须空格分隔：`--config PiAgent.jsonc`。**不支持 `--flag=value`**（会被判 unknown flag） |
 | 值形态 | 值不能以 `--` 开头（`--issue --taskId x` 报 `requires a value`，不会静默吞旗标） |
 | 重复旗标 | 非列表旗标重复出现 = `duplicate flag`；`--rule-skill-zip` / `--rule-skill` / `--skill` 例外（按出现顺序累积） |
 | 列表写法 | 列表旗标支持逗号（`a.zip,b.zip`）、连续 token（`a.zip b.zip`）或重复旗标，三种等价 |
@@ -217,7 +216,7 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 | `--issue <text>` | 文本 | 缺省空 | MR 议题描述，**原样**进入初始 user 消息；多行 / 引号由 shell 负责转义 |
 | `--taskId <id>` | 单段目录名，≤100 字符 | **必填** | 任务 id：产物落 `<tasks 根>/<id>/`（`runs/` + `audit/`）。拒绝路径分隔符 / 盘符 / 控制字符 / `<>:"\|?*` / 前导点 / 尾随点或空格 / Windows 保留名（`CON` `NUL` `COM1…`） |
 | `--tasks-dir <dir>` | 目录 | 缺省 `~/.PiAgent/tasks` | 只覆盖 tasks **根**（测试 / CI / 沙箱）；相对路径按 cwd 解析；主目录不可判定时可用它兜底 |
-| `--model <id>` | 模型 id | 缺省配置 `model.default` | 检视模型；自由 id 透传，不做别名或退役校验 |
+| `--model <id>` | 模型 id | 已废弃 | ADR-0093 阶段 1：接受但忽略并告警；检视模型只取配置 `model.default`（必须显式给出）。裸旗标 / 空值 / 重复不再报错 |
 | `--config <path>` | 文件 | 缺省 `~/.PiAgent/PiAgent.jsonc` | 替代配置文件，相对路径按 cwd 解析；**显式给出但文件不存在 = fail fast**（缺省路径缺席只提示、不报错） |
 | `--rule-skill-zip <path[,path…]>` | zip 路径（可重复） | 缺省不装载 | 规则 Skill zip；**顺序 = 执行顺序**；一个包 = 一个 skill；不自动扫描被检视仓库（ADR-0027） |
 | `--rule-skill <dir[,dir…]>` | 目录（可重复） | 缺省不装载 | 已解压规则 Skill 目录；先审计（符号链接 / 越界一律拒绝）→ 按内容哈希复制进 run 缓存 → 同一装载链路；**排在全部 zip 之后**（ADR-0018） |
@@ -372,7 +371,6 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
 
 | 参数 | 适用 | 作用 |
 |---|---|---|
-| `--model <id>` | 两个 | 覆盖检视模型（缺省取 `PiAgent.jsonc` 的 `model.default`） |
 | `--out <dir>` | 两个 | 覆盖归档目录（缺省 `repo-diff-skill-result/<skill>/<时间戳>/`） |
 | `--dry-run` | 两个 | 只构造 diff 与真值，不调用模型 |
 | `--keep-temp` | 两个 | 保留临时 fixed/defect（或 base/defect）副本，便于人工核对 |

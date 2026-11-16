@@ -42,13 +42,13 @@ function sixPhaseNoToolCorpus(): FakeReply[] {
   ];
 }
 
-const TEST_FILE_DIFF = [
-  "diff --git a/src/a.test.ts b/src/a.test.ts",
-  "--- a/src/a.test.ts",
-  "+++ b/src/a.test.ts",
+const FILTERED_DIFF = [
+  "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml",
+  "--- a/pnpm-lock.yaml",
+  "+++ b/pnpm-lock.yaml",
   "@@ -1 +1 @@",
-  "-old",
-  "+new",
+  "-lockfileVersion: 9.0",
+  "+lockfileVersion: 9.1",
   "",
 ].join("\n");
 
@@ -70,7 +70,7 @@ function baseInput(overrides: Partial<ReviewRunInput> = {}): ReviewRunInput {
 }
 
 test("过滤后无可检视文件：返回 skipped 数据，不调模型", async () => {
-  const outcome = await runReviewOutcome(baseInput({ diff: TEST_FILE_DIFF }));
+  const outcome = await runReviewOutcome(baseInput({ diff: FILTERED_DIFF }));
 
   expect(outcome.kind).toBe("skipped");
   if (outcome.kind !== "skipped") {
@@ -109,7 +109,7 @@ test("diff 超体积门：返回 skipped 数据，不调模型", async () => {
 });
 
 test("旧入口 runReview：跳过仍抛原错误（兼容契约）", async () => {
-  const noFiles = await runReview(baseInput({ diff: TEST_FILE_DIFF })).catch(
+  const noFiles = await runReview(baseInput({ diff: FILTERED_DIFF })).catch(
     (error: unknown) => error,
   );
   expect(noFiles).toBeInstanceOf(NoReviewableFilesError);

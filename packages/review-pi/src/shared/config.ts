@@ -27,7 +27,8 @@ export const CONFIG_FILE_NAME = "PiAgent.jsonc";
 export const OFFICIAL_REVIEWER_BASE_URL = "https://api.deepseek.com";
 /** 网关档缺省输出预算（官方直连不发 max_tokens；网关不发则继承请求默认值，实测 2048 会截断） */
 export const DEFAULT_GATEWAY_MAX_TOKENS = 32_768;
-/** 检视模型缺省 id（`--model` / `model.default` 都缺席时的最终回落） */
+/** 模板 / 展示用缺省 id（`config init` 模板、`config show` 无文件时的来源标记）。
+ * review 运行期**不再**回落它：配置文件必须显式写出 `model.default`（ADR-0093）。 */
 export const DEFAULT_MODEL_ID = "deepseek-v4-flash";
 
 /**
@@ -262,9 +263,9 @@ export const DEFAULT_LIMITS: Limits = {
   },
   confidence: { min: 0.5 },
   severity: { min: "P3" },
-  testFiles: { skip: true },
+  testFiles: { skip: false },
   mrFilter: {
-    excludeGlobs: ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"],
+    excludeGlobs: ["**/*.lock", "**/fixtures/**", "**/*.snap"],
     includeRegex: [],
     excludeRegex: [],
   },
@@ -303,16 +304,16 @@ export interface ReviewerSettings {
    */
   readonly stripModelPrefix: boolean;
   /**
-   * `--model` 不可用时的降级模式（ADR-0080）。缺省 `"off"`：不探测、不替换。
-   * `"on-model-not-found"` 只在网关明确返回 model not found 时改用
-   * `model.default`；一次 run 只有一个生效模型。
+   * `--model` 不可用时的降级模式（ADR-0080）。**ADR-0093 阶段 1 起已废弃**：
+   * 键仍被识别（旧配置只收一条告警），生效值恒 `"off"`，阶段 2 删除。
    */
   readonly modelFallback: ModelFallbackMode;
 }
 
 export interface ModelSettings {
+  /** 检视模型唯一来源（ADR-0093 阶段 1）：配置文件必须显式写出；`--model` 不覆盖 */
   readonly default: string;
-  /** null = 跟随本次检视模型（ADR-0021） */
+  /** null = 跟随本次检视模型（ADR-0021；ADR-0093 阶段 1 起链为 presentation → model.default） */
   readonly presentation: string | null;
 }
 
@@ -649,8 +650,15 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
     }) ?? null;
   // 模型 id 前缀剥离：缺省 false（原样直发的现行契约）；非布尔 fail fast
   const stripModelPrefix = boolOr(reviewerObj.stripModelPrefix, "reviewer.stripModelPrefix", false);
-  // 模型降级模式（ADR-0080）：缺省 off（零额外请求）；只接受枚举里的两个值
-  const modelFallback = modelFallbackOr(reviewerObj.modelFallback, "reviewer.modelFallback", "off");
+  // 模型降级（ADR-0080）在 ADR-0093 阶段 1 失效：`--model` 的值已不参与，
+  // 键本身保留到阶段 2（旧配置不突然报错），装载期只给一条废弃告警，
+  // 生效值恒 off（探测 / 替换代码路径不再被调用）。
+  if (reviewerObj.modelFallback !== undefined) {
+    warnings.push(
+      "PiAgent.jsonc: reviewer.modelFallback 已废弃（ADR-0093 阶段 1），本版不生效；阶段 2 将删除该键",
+    );
+  }
+  const modelFallback: ModelFallbackMode = "off";
 
   const modelObj = optionalObject(root.model, "model", warnings);
   assertKnownKeys(modelObj, MODEL_KEYS, "model", warnings);
@@ -1552,29 +1560,6 @@ function boolOr(value: unknown, path: string, fallback: boolean): boolean {  if 
 }
 
 /**
- * 模型降级模式（ADR-0080）：缺省用 fallback；只接受 `MODEL_FALLBACK_MODES`
- * 里的值（区分大小写），其它值 fail fast——不静默取缺省，也不把 `true` 当 on。
- */
-function modelFallbackOr(
-  value: unknown,
-  path: string,
-  fallback: ModelFallbackMode,
-): ModelFallbackMode {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim();
-    if ((MODEL_FALLBACK_MODES as readonly string[]).includes(normalized)) {
-      return normalized as ModelFallbackMode;
-    }
-  }
-  throw new ConfigError(
-    `${CONFIG_FILE_NAME}: ${path} must be one of ${MODEL_FALLBACK_MODES.join(", ")} (got ${describe(value)})`,
-  );
-}
-
-/**
  * 模型 id → 网关 wire 字段（`reviewer.stripModelPrefix` 开启时生效）：
  * 剥掉**最后一个 `/` 前的所有**（`pan/deeseek` → `deeseek`、`a/b/c` → `c`）。
  * 无斜杠原样返回；剥完为空（如 `pan/`）也原样返回——发送空 model 是更坏的
@@ -1740,20 +1725,18 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     // 单次请求输出上限：null = 自动——官方直连不发 max_tokens；网关发 ${String(DEFAULT_GATEWAY_MAX_TOKENS)}。
     "maxOutputTokens": ${maxOutputTokens},
     // 模型 id 前缀剥离：true = 发往网关的模型 id 剥掉最后一个 / 前的所有
-    // （pan/deeseek → deeseek，覆盖 --model / model.default / model.presentation）。
+    // （pan/deeseek → deeseek，覆盖 model.default / model.presentation）。
     // 缺省 false = 原样直发（OpenRouter 等网关的合法 id 本身就带斜杠）。
     "stripModelPrefix": false,
-    // --model 不可用时的降级策略（ADR-0080）：
-    // "off" = 不探测、不替换（缺省；逐字节维持旧行为，零额外请求）；
-    // "on-model-not-found" = 开跑前探测 --model，只有网关明确返回 model not found
-    //   才改用 model.default，并在 stderr / 审计 / 平台总结留痕。
+    // 已废弃（ADR-0093 阶段 1）：本版不生效，保留一个版本以免旧配置突然报错；
+    // 阶段 2 删除。检视模型一律取 model.default。
     "modelFallback": "off"
   },
 
   "model": {
-    // 默认检视模型（--model 可覆盖）。
+    // 检视模型唯一来源（ADR-0093 阶段 1）：必须显式给出；--model 已废弃并忽略。
     "default": ${modelDefault},
-    // 收尾总结模型（ADR-0090 后报文 / tips 零模型调用）：null = 跟随本次检视模型（ADR-0021）。
+    // 收尾总结模型（ADR-0090 后报文 / tips 零模型调用）：null = 跟随本次检视模型。
     "presentation": ${modelPresentation}
   },
 
@@ -1857,18 +1840,19 @@ ${excludeGlobLines}
     // （reviews_tips_zh.json 与 mrReviewResult.reviewTips）；英文 findings / stdout 不受影响。
     // 取值 P0–P3，缺省 P3（= 不过滤）；P2 = 只保留 P0/P1/P2，丢弃 P3 建议级。
     "severity": { "min": "P3" },
-    // 测试文件是否跳过检视（缺省 true = 跳过）：
+    // 测试文件是否跳过检视（缺省 false = 不跳过，ADR-0092）：
+    // false = 测试文件与生产代码同等检视；
     // true  = 检视输入阶段按文件块整块剔除测试文件（不进 diff、不产 findings、
     //         不进中文 tips / MCP 上报）；这种剔除发生在检视之前，与 severity /
     //         confidence 的输出侧过滤不同。
-    // false = 测试文件与生产代码同等检视。
-    "testFiles": { "skip": true },
-    // 按 glob 跳过检视（ADR-0069；缺省排除 Markdown / lockfile / fixtures / snapshot）：
+    "testFiles": { "skip": false },
+    // 按 glob 跳过检视（ADR-0069；缺省排除 lockfile / fixtures / snapshot，ADR-0092）：
     // 命中的文件块在检视输入阶段整块剔除（不进 diff、不产 findings、不进中文 tips /
     // MCP 意见）；它们仍是变更过的文件，收尾按 ADR-0068 补一条空 reviewTips 的
     // mrReviewResult。匹配对象是仓库相对 POSIX 路径，大小写不敏感；不含 "/" 的 glob
     // 只比文件名（*.md 与 **/*.md 等价），* / ? 不跨目录，** 跨目录。
-    // 空数组 = 不排除任何文件。例：["**/*.md", "docs/**"] 跳过全部 Markdown 与 docs 目录。
+    // 空数组 = 不排除任何文件。例：["**/*.md", "docs/**"] 跳过全部 Markdown 与 docs 目录
+    // （Markdown 不再默认排除，需要时显式配置，ADR-0092）。
     //
     // includeRegex / excludeRegex（ADR-0078）：按**正则**限定检视范围，缺省 []。
     // includeRegex 非空 = 白名单：命中者越过 testFiles / lockfile / generated /
@@ -1877,7 +1861,7 @@ ${excludeGlobLines}
     // 同类多条 = OR；CLI --include / --exclude 出现时整体替换对应维度，
     // 传空值 = 本次清空该维度。例：includeRegex ["^src/.*\\\\.ts$"]。
     "mrFilter": {
-      "excludeGlobs": ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"],
+      "excludeGlobs": ["**/*.lock", "**/fixtures/**", "**/*.snap"],
       "includeRegex": [],
       "excludeRegex": []
     },

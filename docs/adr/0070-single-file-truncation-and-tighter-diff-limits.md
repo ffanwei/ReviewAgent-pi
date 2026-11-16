@@ -3,6 +3,8 @@
 **状态**：已接受（2026-11-10，用户决策：`maxDiffChars=200000` / `maxShardChars=80000` / `maxShards=6` / 四条 `excludeGlobs` 落成缺省；单个文件超过 80k 必须「截取检视」，禁止直接报错）
 **关联**：[ADR-0039](0039-sharded-review-for-large-mrs.md)（按文件块分片；本 ADR 只改缺省值与单块超预算的处置方式）、[ADR-0064](0064-finding-scope-out-of-diff-filter.md)（另一个缺省开启的输入侧护栏）、[ADR-0069](0069-configurable-diff-exclude-globs.md)（`excludeGlobs` 机制；本 ADR 只改缺省值）、[ADR-0068](0068-report-every-changed-file-including-filtered.md)（被剔除文件仍补空检视意见）、[ADR-0052](0052-tips-four-tier-severity-and-confidence-filter.md)（输出侧过滤，与本 ADR 不同层）
 
+**后续修订**（2026-11-16）：[ADR-0092](0092-loosen-default-review-scope.md) 撤回了本 ADR 的 `excludeGlobs` 缺省中 `**/*.md` 一条（缺省改为 `["**/*.lock", "**/fixtures/**", "**/*.snap"]`），并把 `limits.testFiles.skip` 缺省改为 `false`；单文件截取、三个边界阈值与其余机制不变。
+
 **范围**：本仓 pi 线 0070。改三个缺省数字 + 一个缺省列表；把「单文件块 > `maxShardChars`」从**预检期抛错**改为**按整 hunk 截取并留痕**。hunk 字节、行号、evidence 链语义不变。
 
 ## Context

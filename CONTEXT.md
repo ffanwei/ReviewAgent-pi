@@ -161,7 +161,7 @@ _Avoid_: MR 文件（不区分形态）、patch（只指 hunk 正文）
 _Avoid_: 输入校验（过泛）、分片（那是「分片检视」的另一机制）、静默截断（违背零静默纪律）
 
 **MR 输入预过滤（Input Prefilter）**:
-内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；另有**四类规则驱动**的跳过/限范围——`limits.testFiles.skip`（测试文件）、`limits.mrFilter.excludeGlobs`（glob 列表，如 `**/*.md`，ADR-0069），以及检视范围正则 `--include` / `--exclude`（CLI）与 `limits.mrFilter.includeRegex` / `excludeRegex`（配置，ADR-0078）：include 先选白名单、exclude 再从候选剔除（exclude 优先），命中 include 的块越过全部启发式，`binary` 恒剔；同类多条 = OR，CLI 出现即整体替换配置对应维度，传空值 = 清空该维度。过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除且未配范围规则时省键，`reasons` 恒含八类键，配置了范围规则时另记 `filters` 原文）并在 stderr 报一行——剔了必有账；被剔除文件仍在收尾补报空 `mrReviewResult`（ADR-0068）。过滤后一个文件块都不剩时跳过检视（不调模型，仍上报一次空意见 + 固定总结，exit 0）。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 100 万字符，`null` = 关闭；ADR-0071）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
+内核入口在边界护栏之前对 diff 做的整块预处理：按 `diff --git` 文件块剔除 lockfile / 生成物 / minified / 二进制（绝不切 hunk）；另有**四类规则驱动**的跳过/限范围——`limits.testFiles.skip`（测试文件，缺省不跳过，ADR-0092）、`limits.mrFilter.excludeGlobs`（glob 列表，缺省 lockfile / fixtures / snapshot，Markdown 已不再默认排除，ADR-0069 / ADR-0092），以及检视范围正则 `--include` / `--exclude`（CLI）与 `limits.mrFilter.includeRegex` / `excludeRegex`（配置，ADR-0078）：include 先选白名单、exclude 再从候选剔除（exclude 优先），命中 include 的块越过全部启发式，`binary` 恒剔；同类多条 = OR，CLI 出现即整体替换配置对应维度，传空值 = 清空该维度。过滤后的 diff 才进入模型、工具与边界度量。剔除清单写审计尾键 `mrFilter`（无剔除且未配范围规则时省键，`reasons` 恒含八类键，配置了范围规则时另记 `filters` 原文）并在 stderr 报一行——剔了必有账；被剔除文件仍在收尾补报空 `mrReviewResult`（ADR-0068）。过滤后一个文件块都不剩时跳过检视（不调模型，仍上报一次空意见 + 固定总结，exit 0）。同一入口还有**输入体积门** `limits.boundary.maxDiffChars`（缺省 100 万字符，`null` = 关闭；ADR-0071）：过滤后仍超限直接报人话错误，不把注定失败的请求发给模型。
 _Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（无审计即违规）、把 range regex 说成 glob（两种方言并存，接口文案必须写明）
 
 **分片检视（Sharded Review）**:
@@ -179,7 +179,7 @@ _Avoid_: 多语言检视（检视本来就全语言）、语言包（实际是�
 _Avoid_: session、会话记录（都与 pi 内核的 `Session` 子系统撞名）、日志（过泛）
 
 **检视意见导出（Review Findings Export）**:
-一次检视的 Finding 清单落盘成的对外消费产物：`reviews_all.json` 是全部意见的真源口径（ADR-0090 起中文自然语言 + 结构化英文，恒产；原名 `reviews_en.json` 已更名），中文侧另有按文件分组的中文意见 `reviews_tips_zh.json`（有 finding 且有覆盖时**必产**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022）；控制台 stdout 与 `reviews_all.json` 同源中文、无 `presentation` 键（ADR-0065 / ADR-0090）。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027；另有隐藏的 session 索引，见「Session 索引」）。tips **只有一个生产者**（ADR-0090）：**候选阶段直接产出的 `Finding.tips` 语义块**（`review` / `suggestion` / `subcategory` 随候选十三字段契约产出，12 键 = 10 键 + `id` + `level`，只增不删）——不再有任何「第二次语义生成」模型调用；MCP 报文与 tips 是同一份语义的确定性投影。业务开 / 关同一条路径。字段口径（ADR-0052）：`severity` 四档（P0→Fatal / P1→Major / P2→Minor / P3→Suggestion，与 `level` 同值）；`confidence` 三档（≥0.7 High / ≥0.5 Medium / 其余 Low）；配置 `limits.confidence.min`（0–1，缺省 0.5）在生成前丢弃 `confidence < min` 的意见，**只作用于中文 tips**（`reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`），`reviews_all.json` / stdout 恒全量；丢弃条数与阈值记入审计 / `run.json` 的 `tipsFilter`。另配 `limits.severity.min`（`P0`–`P3`，缺省 `P3` = 不过滤）按严重级过滤同一组产物（中文 tips + MCP 上报），全部意见真源恒全量，留痕键为 `severityFilter`。测试文件由 `limits.testFiles.skip`（缺省 `true`）在**检视输入阶段**按文件块整块剔除（不进 diff，因而不产 findings / tips / MCP 上报），留痕走 `mrFilter` 的 `test` 原因；同样在输入阶段生效的还有 `limits.mrFilter.excludeGlobs`（ADR-0069，glob 列表，留痕 `mrFilter` 的 `exclude` 原因）；它们与上述输出侧过滤不同，改变的是被检视的输入集合。检视意见的位置范围由 `limits.findingScope`（ADR-0064，缺省开启，默认 hunk ±10 行）在**候选拦截链**判定：文件不在本遍 diff 或落在变更 hunk 之外的意见按 `OUT_OF_SCOPE` 丢弃，只留审计 `rejections` / `rejectionCounts`，findings / tips / MCP 三处口径一致；关闭后不再构建位置范围。
+一次检视的 Finding 清单落盘成的对外消费产物：`reviews_all.json` 是全部意见的真源口径（ADR-0090 起中文自然语言 + 结构化英文，恒产；原名 `reviews_en.json` 已更名），中文侧另有按文件分组的中文意见 `reviews_tips_zh.json`（有 finding 且有覆盖时**必产**）—两份都落在 `<tasks 根>/<taskId>/runs/`，同一次 run 覆盖重写，**不是**测量的第四个真源。`reviews_zh.json` 已停产（ADR-0022）；控制台 stdout 与 `reviews_all.json` 同源中文、无 `presentation` 键（ADR-0065 / ADR-0090）。进程 cwd 只放一份下游约定名副本 `review-result.json`（与真源逐字节相同，ADR-0027；另有隐藏的 session 索引，见「Session 索引」）。tips **只有一个生产者**（ADR-0090）：**候选阶段直接产出的 `Finding.tips` 语义块**（`review` / `suggestion` / `subcategory` 随候选十三字段契约产出，12 键 = 10 键 + `id` + `level`，只增不删）——不再有任何「第二次语义生成」模型调用；MCP 报文与 tips 是同一份语义的确定性投影。业务开 / 关同一条路径。字段口径（ADR-0052）：`severity` 四档（P0→Fatal / P1→Major / P2→Minor / P3→Suggestion，与 `level` 同值）；`confidence` 三档（≥0.7 High / ≥0.5 Medium / 其余 Low）；配置 `limits.confidence.min`（0–1，缺省 0.5）在生成前丢弃 `confidence < min` 的意见，**只作用于中文 tips**（`reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`），`reviews_all.json` / stdout 恒全量；丢弃条数与阈值记入审计 / `run.json` 的 `tipsFilter`。另配 `limits.severity.min`（`P0`–`P3`，缺省 `P3` = 不过滤）按严重级过滤同一组产物（中文 tips + MCP 上报），全部意见真源恒全量，留痕键为 `severityFilter`。测试文件由 `limits.testFiles.skip`（缺省 `false`，ADR-0092）控制：开启时在**检视输入阶段**按文件块整块剔除（不进 diff，因而不产 findings / tips / MCP 上报），留痕走 `mrFilter` 的 `test` 原因；同样在输入阶段生效的还有 `limits.mrFilter.excludeGlobs`（ADR-0069，glob 列表，留痕 `mrFilter` 的 `exclude` 原因）；它们与上述输出侧过滤不同，改变的是被检视的输入集合。检视意见的位置范围由 `limits.findingScope`（ADR-0064，缺省开启，默认 hunk ±10 行）在**候选拦截链**判定：文件不在本遍 diff 或落在变更 hunk 之外的意见按 `OUT_OF_SCOPE` 丢弃，只留审计 `rejections` / `rejectionCounts`，findings / tips / MCP 三处口径一致；关闭后不再构建位置范围。
 _Avoid_: reviews.json（单数形已废）、评论列表、检视报告（REPORT.md 是另一物）
 
 **运行落盘根（Runs Root）**:
@@ -278,12 +278,18 @@ _Avoid_: 规则包自动发现、约定目录（历史 ADR-0012/0014 的旧口�
 ### 模型接入
 
 **检视模型（reviewer）**:
-执行检视的 LLM：model id 走请求参数（CLI `--model <id>`；pi 内核线接缝见 ADR-0009），无 model 环境变量；url / key 来自用户级配置文件 `~/.PiAgent/PiAgent.jsonc`（`reviewer.baseUrl` / `reviewer.apiKey`；`--config` 可换文件，env 层已不再读取，ADR-0025）；进审计留痕（model + baseUrl，绝不记 key，ADR-0008），并在审计 `config` 快照里留全量生效值与 `digest`。自定义网关换端点/模型先跑 `review-pi smoke` 双探针自证。
-_Avoid_: 被测模型（实验自变量语义已随评测层废止）、白名单模型（准入白名单已由画像表取代）、model 走环境变量（model 走请求参数、秘密走配置文件）
+执行检视的 LLM：model id **只取用户级配置文件的 `model.default`**（必须显式给出，ADR-0093 阶段 1；`--model` 已废弃并忽略），无 model 环境变量；url / key 同来自 `~/.PiAgent/PiAgent.jsonc`（`reviewer.baseUrl` / `reviewer.apiKey`；`--config` 可换文件，env 层已不再读取，ADR-0025）；进审计留痕（model + baseUrl，绝不记 key，ADR-0008），并在审计 `config` 快照里留全量生效值与 `digest`。自定义网关换端点/模型先跑 `review-pi smoke` 双探针自证（smoke 的 `--model` 是唯一保留的探针目标覆盖）。
+_Avoid_: 被测模型（实验自变量语义已随评测层废止）、白名单模型（准入白名单已由画像表取代）、model 走环境变量（model 走配置文件、秘密也走配置文件）、`--model` 覆盖检视模型（ADR-0093 阶段 1 起已废弃）
+
+**生效模型（effective model）**:
+一次 run 真正发往网关的模型 id：`modelIdForGateway(model.default, stripModelPrefix)` 的结果。审计 / `run.json` / 参数回显 / wire 记的都是这个值；一次 run 只有一个。
+
+**展示模型（presentation model）**:
+只用于收尾总结等一次性调用的模型槽：`model.presentation` 非 `null` 时用它，否则跟随生效模型（ADR-0021；ADR-0093 阶段 1 起链为 `model.presentation` → `model.default`）。
 
 **模型降级（model fallback）**:
-`--model` 被网关明确判为 model not found 时，按部署开关改用配置文件 `model.default` 继续检视的**一次性决策**（ADR-0080）。决策发生在任何检视请求之前，事后整次 run 只有一个生效模型；替换痕迹在 stderr、审计与平台总结可见。默认关闭——它改变的是「这次检视是谁做的」这一事实，不是路由优化。
-_Avoid_: 重试（重试是同一模型再试，降级是换模型）、自动选模型（不做模型选择，只在两个已声明 id 之间二选一）
+ADR-0080 定义的「`--model` 被网关判为 model not found 时改用 `model.default`」一次性决策。**ADR-0093 阶段 1 起失效**：`--model` 的值不再参与，`reviewer.modelFallback` 键只保留装载期废弃告警、生效值恒 `off`；阶段 2 删除该键与代码。
+_Avoid_: 重试（重试是同一模型再试，降级是换模型）、自动选模型（不做模型选择）
 
 **参数画像（Provider Profile）**:
 模型 id → wire 序列化策略（thinking 字段 / completion 信封）+ usage 能力声明的查表面。pi 线**当前不按 id 分派**：恒 `deepseek` provider、恒发 `thinking{type:"enabled"}` + `reasoning_effort:"high"`（`provider/pi-client.ts` 的 `LOCKED_REASONING_EFFORT`），自由 id 只换字符串、借用 `deepseek-v4-flash` 的模型元数据；模型元数据（contextWindow / maxTokens / cost / compat）来自内核四包自带的模型目录（ADR-0035）。ADR-0008 的「按 id pattern 查画像表」在 pi 线从未接线，若要恢复多模型分派，按新功能另立项。

@@ -12,7 +12,7 @@
  *
  * 用法：
  *   node .agents/skills/real-defect-url-injection/scripts/run.mjs
- *   node ... --case VUL4J-38 --model deepseek-v4.1-flash
+ *   node ... --case VUL4J-38
  *   node ... --dry-run --keep-temp
  */
 
@@ -140,7 +140,6 @@ const review = runReview({
   repoDir: repoSource,
   diffPath,
   runDir,
-  model: typeof args.model === "string" ? args.model : undefined,
   ruleSkillDir: typeof args["rule-skill"] === "string" ? args["rule-skill"] : undefined,
 });
 
@@ -158,7 +157,7 @@ writeJson(join(runDir, "meta.json"), {
   reviewExitCode: review.status,
   reviewDurationMs: review.durationMs,
   command: review.command,
-  model: record?.model ?? (typeof args.model === "string" ? args.model : null),
+  model: record?.model ?? null,
   tempKept: args["keep-temp"] === true,
   tempDir: args["keep-temp"] === true ? fixedDir : null,
 });

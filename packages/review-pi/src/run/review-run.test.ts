@@ -208,7 +208,7 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 七工具面；产物布局与
     });
     expect(requests[index].at(-1)).toEqual({
       role: "user",
-      content: buildPhaseInstruction(index, true),
+      content: buildPhaseInstruction(index, false),
     });
   }
 }, 120_000);
@@ -944,7 +944,7 @@ test.skipIf(!existsSync(repoFixturePath("sample")))(
   300_000,
 );
 
-test("limits.testFiles.skip：默认剔除测试文件，关闭后原样保留", async () => {
+test("limits.testFiles.skip：默认包含测试文件，开启后整块剔除", async () => {
   const diff = [
     [
       "diff --git a/src/main/java/com/example/Alpha.java b/src/main/java/com/example/Alpha.java",
@@ -976,10 +976,32 @@ test("limits.testFiles.skip：默认剔除测试文件，关闭后原样保留",
     ruleSkillLoader: async () => [],
   } as const;
 
-  // 默认（skip = true）：测试文件块整块剔除，初始消息与 Phase 5 提示同步
+  // 默认（skip = false）：测试文件原样进 diff，无 mrFilter，Phase 5 提示为包含
+  const included = await runReview({
+    ...base,
+    fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
+    runsRoot: tempRunsRoot(),
+  });
+  expect(included.mrFilter).toBeUndefined();
+  const includedAudit = readAudit(included.auditPath);
+  const includedInitial = (
+    JSON.parse(includedAudit.requests[0].wireBody) as { messages: { content: string }[] }
+  ).messages[1]?.content ?? "";
+  expect(includedInitial).toContain("src/main/java/com/example/Alpha.java");
+  expect(includedInitial).toContain("AlphaTest.java");
+  const includedPhase5 = (
+    JSON.parse(includedAudit.requests[4].wireBody) as { messages: { content: string }[] }
+  ).messages.at(-1)?.content ?? "";
+  expect(includedPhase5).toContain("测试文件已按配置包含在本 diff 中");
+
+  // 开启（skip = true）：测试文件块整块剔除，初始消息与 Phase 5 提示同步
   const skipped = await runReview({
     ...base,
     fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
+    runtime: {
+      ...DEFAULT_REVIEW_RUNTIME,
+      limits: { ...DEFAULT_REVIEW_RUNTIME.limits, testFiles: { skip: true } },
+    },
     runsRoot: tempRunsRoot(),
   });
   expect(skipped.mrFilter?.reasons.test).toBe(1);
@@ -993,27 +1015,6 @@ test("limits.testFiles.skip：默认剔除测试文件，关闭后原样保留",
     JSON.parse(skippedAudit.requests[4].wireBody) as { messages: { content: string }[] }
   ).messages.at(-1)?.content ?? "";
   expect(skippedPhase5).toContain("测试文件已按配置从本 diff 中剔除");
-
-  // 关闭（skip = false）：测试文件原样进 diff，无 mrFilter，Phase 5 提示反转
-  const included = await runReview({
-    ...base,
-    fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
-    runtime: {
-      ...DEFAULT_REVIEW_RUNTIME,
-      limits: { ...DEFAULT_REVIEW_RUNTIME.limits, testFiles: { skip: false } },
-    },
-    runsRoot: tempRunsRoot(),
-  });
-  expect(included.mrFilter).toBeUndefined();
-  const includedAudit = readAudit(included.auditPath);
-  const includedInitial = (
-    JSON.parse(includedAudit.requests[0].wireBody) as { messages: { content: string }[] }
-  ).messages[1]?.content ?? "";
-  expect(includedInitial).toContain("AlphaTest.java");
-  const includedPhase5 = (
-    JSON.parse(includedAudit.requests[4].wireBody) as { messages: { content: string }[] }
-  ).messages.at(-1)?.content ?? "";
-  expect(includedPhase5).toContain("测试文件已按配置包含在本 diff 中");
 }, 120_000);
 
 test("limits.findingScope：默认只保留 diff hunk ±10 行内的意见，关闭后保留全部", async () => {

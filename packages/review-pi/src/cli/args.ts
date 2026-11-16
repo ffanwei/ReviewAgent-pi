@@ -16,13 +16,16 @@ import { checkTaskId, DEFAULT_TASKS_ROOT_LABEL } from "../shared/tasks-dir.js";
  * - 无 --language 旗标（输出语言是 DSH 线后分家决策，pi 线自立 ADR 前不实装）；
  * - smoke 只认 --model（双探针自检不跑检视，参数面自然更窄）。
  *
- * model 是实验数据（#45 语义）：自由 id 透传，缺省单源 = 配置文件 `model.default`
- * （再缺省回落钉住的评审模型，ADR-0025），无 model 环境变量。与 DSH 线 review bin 的
- * 「flash/pro 别名 + 退役 id 拒绝」口径有意分家（ADR-0008 别名面属核外
- * 实验 CLI；pi 内核 reviewModelOf 对目录外 id 一律以钉住画像透传，无别名目录）。
+ * 检视模型单源（ADR-0093 阶段 1）：只取配置文件 `model.default`（自由 id 透传，
+ * 无 model 环境变量）。`review` 仍**接受** `--model` 以兼容既有脚本，但值被忽略，
+ * 并在开跑前显式告警；`smoke` 是诊断命令，保留 `--model` 作为探针目标覆盖。
+ * 与 DSH 线 review bin 的「flash/pro 别名 + 退役 id 拒绝」口径有意分家
+ * （ADR-0008 别名面属核外实验 CLI；pi 内核 reviewModelOf 对目录外 id 一律以
+ * 钉住画像透传，无别名目录）。
  */
 
-/** review 子命令的已知旗标（未知旗标 = 用法错误；无值布尔旗标 `--strict-rule-skill` / `--no-progress` 进旗标循环前剥离） */
+/** review 子命令的已知旗标（未知旗标 = 用法错误；无值布尔旗标 `--strict-rule-skill` / `--no-progress` 进旗标循环前剥离；
+ * `--model` 不在此列——ADR-0093 阶段 1 在旗标循环前整段剥离，值被忽略） */
 const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--repo",
   "--mr-diff",
@@ -30,7 +33,6 @@ const KNOWN_REVIEW_FLAGS: readonly string[] = [
   "--issue",
   "--taskId",
   "--tasks-dir",
-  "--model",
   "--config",
   "--rule-skill-zip",
   "--rule-skill",
@@ -65,7 +67,7 @@ const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-en
 const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--path", "--trace"];
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
-export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--include <regex>]... [--exclude <regex>]... [--strict-rule-skill] [--no-progress]
+export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>（已废弃，忽略）] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--include <regex>]... [--exclude <regex>]... [--strict-rule-skill] [--no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
@@ -92,7 +94,8 @@ review 旗标：
                          Windows 保留设备名（CON / NUL / COM1…）与尾随点同样拒绝
   --tasks-dir <dir>      tasks 根目录覆盖（缺省 ${DEFAULT_TASKS_ROOT_LABEL}；测试 / CI / 沙箱用），
                          相对路径按 cwd 解析
-  --model   <id>         评审模型 id（缺省取配置文件 model.default；自由 id 透传）
+  --model   <id>         已废弃（ADR-0093 阶段 1）：接受但忽略，检视模型一律取配置
+                         model.default；每次传入都会在 stderr 显式告警
   --config  <path>       配置文件显式路径（相对路径按 cwd 解析；缺省用户级路径）
   --rule-skill-zip  <path[,path…]>  规则 Skill zip 显式路径，一次可传多个（逗号分隔，或重复旗标；
                                     顺序 = 执行顺序）。不自动扫描仓库内目录——不传就不装载规则包，ADR-0027
@@ -162,8 +165,11 @@ export interface ReviewCliArgs {
   readonly taskId: string;
   /** tasks 根目录显式覆盖（`--tasks-dir`；缺席 = `~/.PiAgent/tasks`，按 cwd 解析相对路径） */
   readonly tasksDir?: string;
-  /** 评审模型：缺省取配置 model.default（空串/空白 = 用法错误） */
-  readonly model?: string;
+  /**
+   * 传过的 `--model`（ADR-0093 阶段 1：已废弃，值被忽略）。存在即表示传过；
+   * `raw` = 首个非空传入值（裸旗标 / 空值缺席）。生效模型只取配置 `model.default`。
+   */
+  readonly ignoredModel?: { readonly raw?: string };
   /** 配置文件显式路径（`--config`）；缺席 = 用户级缺省路径 */
   readonly configPath?: string;
   /** 规则 Skill zip 显式路径列表（`--rule-skill-zip`；逗号列表或重复旗标，顺序 = 执行顺序；缺席省键） */
@@ -428,7 +434,7 @@ function parseRegexPatterns(
   return { items, invalid };
 }
 
-/** --model 校验（两子命令同口径；缺席 = 取配置 model.default） */
+/** --model 校验（**仅 smoke**：探针目标；review 的 `--model` 已废弃并忽略，见 stripIgnoredModelFlag） */
 function parseModelFlag(
   values: Map<string, string>,
 ):
@@ -593,7 +599,17 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   if (booleanFlags !== undefined && !booleanFlags.ok) {
     return { ok: false, message: booleanFlags.message };
   }
-  const flagTokens = booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.tokens : rest;
+  // `--model`（review）：ADR-0093 阶段 1 整段摘除，值不参与任何决定
+  const modelStripped =
+    command === "review" && booleanFlags !== undefined
+      ? stripIgnoredModelFlag(booleanFlags.tokens)
+      : undefined;
+  const flagTokens =
+    modelStripped !== undefined
+      ? modelStripped.tokens
+      : booleanFlags !== undefined && booleanFlags.ok
+        ? booleanFlags.tokens
+        : rest;
   const pathFilterStripped =
     command === "review" ? stripEmptyPathFilterFlags(flagTokens) : undefined;
   const afterPathFilters =
@@ -608,7 +624,11 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   if (!flags.ok) {
     return flags;
   }
-  const model = parseModelFlag(flags.values);
+  // smoke 的 `--model` 是探针目标（保留）；review 的已在上面摘除并忽略
+  const model =
+    command === "smoke"
+      ? parseModelFlag(flags.values)
+      : ({ ok: true } as const);
   if (!model.ok) {
     return model;
   }
@@ -629,7 +649,7 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   return parseReviewArgs(
     flags.values,
     flags.repeated,
-    model.model,
+    modelStripped?.ignoredModel,
     booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.strict : false,
     booleanFlags !== undefined && booleanFlags.ok ? booleanFlags.progress : undefined,
     joined !== undefined ? joined.emptyFlags : [],
@@ -741,6 +761,45 @@ function stripReviewBooleanFlags(rest: readonly string[]): {
 }
 
 /**
+ * `--model` 已废弃（ADR-0093 阶段 1）：review 面**接受但不使用**，值被忽略。
+ * 在旗标循环前整段摘除——裸旗标 / 空值 / 重复出现都不再是用法错误（值已无意义），
+ * 只把「传过」这一事实（及首个非空值）回传给调用方做可见告警（零静默）。
+ * smoke 不走这里：它的 `--model` 是探针目标，仍按原口径校验。
+ */
+function stripIgnoredModelFlag(rest: readonly string[]): {
+  readonly tokens: readonly string[];
+  readonly ignoredModel?: { readonly raw?: string };
+} {
+  const tokens: string[] = [];
+  let present = false;
+  let raw: string | undefined;
+  let index = 0;
+  while (index < rest.length) {
+    const token = rest[index];
+    if (token !== "--model") {
+      tokens.push(token as string);
+      index += 1;
+      continue;
+    }
+    present = true;
+    const next = rest[index + 1];
+    // 值位置吞旗标的判据与 parseFlags 同口径：以 -- 开头 = 没有值（裸旗标）
+    if (next !== undefined && !next.startsWith("--")) {
+      if (raw === undefined && next.trim().length > 0) {
+        raw = next;
+      }
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  return {
+    tokens,
+    ...(present ? { ignoredModel: raw !== undefined ? { raw } : {} } : {}),
+  };
+}
+
+/**
  * export 子命令（ADR-0036 / ADR-0072）：三个有值旗标 + 一个布尔旗标
  * `--native`（表示切换）。`--taskId` 与 `review` 同口径校验（单段目录名）；
  * `--path` / `--tasks-dir` 只要求非空（相对路径按 cwd 解析，交给执行层）。
@@ -841,7 +900,7 @@ function parseVersionCommand(rest: readonly string[]): ParseCliArgsResult {
 function parseReviewArgs(
   values: Map<string, string>,
   repeated: ReadonlyMap<string, readonly string[]>,
-  model: string | undefined,
+  ignoredModel: { readonly raw?: string } | undefined,
   strict: boolean,
   progress: boolean | undefined,
   emptyRuleSkillFlags: readonly string[],
@@ -924,7 +983,7 @@ function parseReviewArgs(
       issue: values.get("--issue") ?? "",
       taskId: taskId.taskId,
       ...(tasksDirRaw !== undefined ? { tasksDir: tasksDirRaw } : {}),
-      ...(model !== undefined ? { model } : {}),
+      ...(ignoredModel !== undefined ? { ignoredModel } : {}),
       ...(config.configPath !== undefined ? { configPath: config.configPath } : {}),
       ...(ruleSkillZips.items !== undefined ? { ruleSkillZips: ruleSkillZips.items } : {}),
       ...(ruleSkillDirs.items !== undefined ? { ruleSkillDirs: ruleSkillDirs.items } : {}),

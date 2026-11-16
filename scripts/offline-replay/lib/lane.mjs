@@ -31,6 +31,9 @@ export async function createLane({ runDir, label, scenario, server, index }) {
       apiKey: "offline-replay",
       baseUrl: server.baseUrl,
     },
+    // 检视模型单源（ADR-0093 阶段 1）：回放场景的模型写进配置；`--model` 已废弃
+    // 并忽略，继续用旗标会让请求体 model 与录制期分叉、trace 哈希整批失配。
+    model: { default: scenario.model },
   };
   const limits = {
     // 回放按请求哈希命中同一 interaction（ADR-0048）：失败响应重放多次仍是
@@ -64,9 +67,13 @@ export async function createLane({ runDir, label, scenario, server, index }) {
   // `bin.process.test.ts` 的进程面用例同口径：回放 lane 显式关闭。
   limits.findingScope = { enabled: false };
   // 预过滤 glob（ADR-0069）同理：回放断言的是冻结产物，`large-mr` 的期望产物里
-  // README.md 被真实检视并上报，而产品缺省已把 `**/*.md` 排除。录制期的过滤清单
-  // 属于当时的配置快照，回放 lane 必须显式固定为空数组，才能与 trace 逐字节对齐。
+  // README.md 被真实检视并上报；回放 lane 必须显式固定为空数组，才能与 trace
+  // 逐字节对齐（ADR-0092 已把 Markdown 从产品缺省里移出，这里仍按录制期配置快照固定）。
   limits.mrFilter = { excludeGlobs: [] };
+  // 测试文件跳过（ADR-0092 已把缺省改为 false）：这些 trace 录制于缺省 true 时期，
+  // Phase 5 提示与 diff 形状都按「测试文件已剔除」冻结。回放 lane 显式固定 true，
+  // 否则请求字节与录制期分叉、哈希命中率归零。
+  limits.testFiles = { skip: true };
   config.limits = limits;
   if (scenario.mcp.mode === "stub") {
     config.mcp = {
@@ -116,8 +123,6 @@ export function reviewArgs(lane, scenario) {
     lane.tasksDir,
     "--config",
     lane.configPath,
-    "--model",
-    scenario.model,
     "--no-progress",
   ];
   for (const skillDir of scenario.ruleSkills ?? []) {

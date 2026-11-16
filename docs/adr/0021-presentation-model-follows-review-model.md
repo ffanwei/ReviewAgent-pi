@@ -1,6 +1,7 @@
 # 0021. 呈现（翻译 / suggestion）模型的缺省跟随检视模型
 
 **状态**：已接受（2026-10-30；ADR-0025 修订其配置载体：`REVIEW_PI_PRESENTATION_MODEL` → 配置键 `model.presentation`）
+**后续修订（ADR-0093 阶段 1，2026-11-16）**：`--model` 不再参与检视模型解析，展示模型链由 `presentation → --model → default` 收窄为 `presentation → model.default`；`model.presentation` 键本身继续有效。
 **关联**：ADR-0010（英文产出 + 核外翻译投影）、ADR-0017（分组意见的 `suggestion` 生成）、`src/presentation/engine-zh.ts`（模型解析）、`packages/review-pi/src/cli/presentation-projection.ts`（呈现源契约）
 **跨仓**：本 ADR 为本仓 pi 线序列 0021；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 

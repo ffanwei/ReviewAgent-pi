@@ -5,6 +5,10 @@ import type { ModelProbeResult } from "./gateway-probe.js";
 /**
  * `--model` 不可用时的前置探测与单边降级（ADR-0080）。
  *
+ * TODO(ADR-0093 阶段2)：阶段 1 起 `--model` 的值已被忽略，本模块没有调用点；
+ * 阶段 2 与 `reviewer.modelFallback` 键一起删除（追踪项：维护清单 M-002）。
+ * 在此之前保留纯函数与单测，避免一次性拆除掩盖回归面。
+ *
  * 纪律（三条，缺一不可）：
  * 1. **只认一个失败分类**：`MODEL_NOT_FOUND`（404 / "model not exist" 文案）。
  *    400 在本仓语义里还覆盖「模型不支持 function calling / 画像不匹配」，

@@ -1,6 +1,7 @@
 # 0080. `--model` 不可用时的前置探测与单边降级
 
 **状态**：已接受（2026-11-13，用户决策：启动前置探测 + 默认关闭 + 只认 model-not-found + 只做 `--model → model.default` 一条边）
+**后续修订（ADR-0093 阶段 1，2026-11-16）**：`review` 的 `--model` 值已被忽略，本 ADR 的触发前提消失；`reviewer.modelFallback` 键保留但恒 `off`、装载期告警，阶段 2 随旗标一起删除。正文按当时决策保留。
 **关联**：[ADR-0025](0025-user-config-file.md)（配置是唯一来源、env 层关闭）、[ADR-0021](0021-presentation-model-follows-review-model.md)（`model.presentation` 跟随本次检视模型）、[ADR-0045](0045-mcp-business-task-tools.md)（`startTask` 早于 diff、预检失败也要有始有终）、[ADR-0051](0051-llm-call-retry-and-timeout.md)（分层重试与超时）、[ADR-0066](0066-task-total-llm-usage-line.md)（任务总 LLM usage 账本）、[ADR-0080 相关实测](../../packages/review-pi/src/provider/gateway-probe.ts)（探针的 8 类结构化诊断）
 **范围**：本仓 pi 线 0080。改 `reviewer` 配置面一个键、CLI 启动时序（新增一次可选探测）、审计与 `run.json` 一个可选键、MCP 总结一行；不改 stdout JSON 键集、不改 `smoke` 命令、不新增 CLI 旗标、不动单次请求的序列化字节。
 

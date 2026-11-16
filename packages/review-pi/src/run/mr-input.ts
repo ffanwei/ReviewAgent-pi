@@ -11,7 +11,7 @@ import { isTestFilePath } from "../shared/test-file.js";
 // 1. 预过滤：按 `diff --git` 文件块（无该头时退回 `--- ` / `+++ ` 文件头对）
 //    识别 lockfile / 生成物 / minified / 二进制块，整块剔除。**绝不切 hunk**：
 //    块即文件，hunk 行号与 evidence 链完整保留。
-//    测试文件由 `limits.testFiles.skip`（缺省 true）单独控制：开启时整块剔除，
+//    测试文件由 `limits.testFiles.skip`（缺省 false，ADR-0092）单独控制：开启时整块剔除，
 //    关闭时原样保留（reason = "test"，与其他噪声原因共用同一审计口径）。
 //    另有 `limits.mrFilter.excludeGlobs`（ADR-0069）：命中 glob 的块整块剔除
 //    （reason = "exclude"），排在全部内置原因之后。
@@ -237,7 +237,7 @@ function isGenerated(posixPath: string, basename: string): boolean {
 
 export interface FilterDiffOptions {
   /**
-   * 是否整块剔除测试文件（`limits.testFiles.skip`，缺省 true）。
+   * 是否整块剔除测试文件（`limits.testFiles.skip`，缺省 false，ADR-0092）。
    * 关闭 = 原样保留；开启 = reason = "test"。
    */
   readonly skipTestFiles?: boolean;
@@ -400,8 +400,8 @@ function matchesAnyRegex(regexes: readonly RegExp[], path: string): boolean {
  * binary > not-included > regex-exclude > 原有 lockfile > minified > generated >
  * test > exclude。
  *
- * include 命中即「保留」：显式白名单越过全部启发式（默认的 md 排除与
- * `testFiles.skip` 否则会让白名单失效）；`binary` 例外（没有可检视正文）。
+ * include 命中即「保留」：显式白名单越过全部启发式（`testFiles.skip` 与
+ * `excludeGlobs` 等否则会让白名单失效）；`binary` 例外（没有可检视正文）。
  */
 function classifyBlock(
   block: readonly string[],
@@ -460,7 +460,7 @@ export function filterDiffForReview(
   diff: string,
   options: FilterDiffOptions = {},
 ): FilteredDiff {
-  const skipTestFiles = options.skipTestFiles ?? true;
+  const skipTestFiles = options.skipTestFiles ?? false;
   const excludeGlobs = compileExcludeGlobs(options.excludeGlobs ?? []);
   const include = compilePatternSet(options.includeFilter);
   const exclude = compilePatternSet(options.excludeFilter);

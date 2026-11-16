@@ -30,10 +30,13 @@ export interface ReviewArgsEcho {
   readonly tasksDirFromFlag: boolean;
   /** 生效配置文件路径（显式 `--config` 或用户级缺省） */
   readonly configPath: string;
-  /** 生效评审模型 id（显式 `--model` 或配置 `model.default`） */
+  /** 生效评审模型 id（恒为配置 `model.default`，已按 stripModelPrefix 剥前缀） */
   readonly modelId: string;
-  /** `--model` 是否显式传入 */
-  readonly modelFromFlag: boolean;
+  /**
+   * 传过的 `--model`（ADR-0093 阶段 1：已废弃并忽略）。缺席 = 未传；
+   * `raw` = 首个非空传入值（裸旗标 / 空值缺席）。
+   */
+  readonly ignoredModel?: { readonly raw?: string };
   /** `--config` 是否显式传入 */
   readonly configFromFlag: boolean;
   /** 本次进度事件行是否实际开启（缺省打印；`--no-progress` → false） */
@@ -64,7 +67,10 @@ function regexListOf(values: readonly string[] | undefined, clearedLabel: string
 
 /** 多行回显（不含尾换行；调用方决定写入 stderr） */
 export function formatReviewArgs(args: ReviewCliArgs, echo: ReviewArgsEcho): string {
-  const modelSuffix = echo.modelFromFlag ? "" : "（缺省：配置文件 model.default）";
+  const ignoredModelValue =
+    echo.ignoredModel === undefined
+      ? "(未传)"
+      : `${echo.ignoredModel.raw !== undefined ? echo.ignoredModel.raw : "（未带值）"}（已废弃，已忽略）`;
   const configSuffix = echo.configFromFlag ? "" : "（缺省用户级路径）";
   const tasksDirSuffix = echo.tasksDirFromFlag ? "" : `（缺省：${DEFAULT_TASKS_ROOT_LABEL}）`;
   const progressSuffix = echo.progressOn ? "（缺省打印）" : "";
@@ -76,7 +82,8 @@ export function formatReviewArgs(args: ReviewCliArgs, echo: ReviewArgsEcho): str
     row("--issue", args.issue === "" ? "(未传)" : JSON.stringify(args.issue)),
     row("--taskId", echo.taskId),
     row("--tasks-dir", `${echo.tasksRoot}${tasksDirSuffix}`),
-    row("--model", `${echo.modelId}${modelSuffix}`),
+    row("--model", ignoredModelValue),
+    row("model.default", `${echo.modelId}（生效值）`),
     row("--config", `${echo.configPath}${configSuffix}`),
     row("--rule-skill-zip", listOf(args.ruleSkillZips)),
     row("--rule-skill", listOf(args.ruleSkillDirs)),

@@ -28,7 +28,6 @@ function echo(overrides: Partial<ReviewArgsEcho> = {}): ReviewArgsEcho {
     tasksDirFromFlag: false,
     configPath: "C:\\Users\\me\\.PiAgent\\PiAgent.jsonc",
     modelId: "deepseek-v4-flash",
-    modelFromFlag: false,
     configFromFlag: false,
     progressOn: true,
     ...overrides,
@@ -47,7 +46,8 @@ describe("formatReviewArgs", () => {
     expect(lines).toContain(
       row("--tasks-dir", "C:\\Users\\me\\.PiAgent\\tasks（缺省：~/.PiAgent/tasks）"),
     );
-    expect(lines).toContain(row("--model", "deepseek-v4-flash（缺省：配置文件 model.default）"));
+    expect(lines).toContain(row("--model", "(未传)"));
+    expect(lines).toContain(row("model.default", "deepseek-v4-flash（生效值）"));
     expect(lines).toContain(row("--config", "C:\\Users\\me\\.PiAgent\\PiAgent.jsonc（缺省用户级路径）"));
     expect(lines).toContain(row("--rule-skill-zip", "(未传)"));
     expect(lines).toContain(row("--rule-skill", "(未传)"));
@@ -56,8 +56,8 @@ describe("formatReviewArgs", () => {
     expect(lines).toContain(row("--exclude", "(未传)"));
     expect(lines).toContain(row("--strict-rule-skill", "未启用"));
     expect(lines).toContain(row("--no-progress", "未启用（缺省打印）"));
-    // 头部 + 15 个参数行（新增 --include / --exclude，ADR-0078）
-    expect(lines).toHaveLength(16);
+    // 头部 + 16 个参数行（新增 生效模型 行，ADR-0093）
+    expect(lines).toHaveLength(17);
   });
 
   it("JSON 形态：标签换成 --mr-json；--issue 多行转义后不破行", () => {
@@ -72,14 +72,14 @@ describe("formatReviewArgs", () => {
     );
     expect(text).toContain(row("--mr-json", "D:\\in\\files.json"));
     expect(text).toContain(row("--issue", '"第一行\\n第二行"'));
-    expect(text.split("\n")).toHaveLength(16);
+    expect(text.split("\n")).toHaveLength(17);
   });
 
-  it("显式参数：不带缺省标注，可重复旗标按传入顺序全列", () => {
+  it("显式参数：不带缺省标注，可重复旗标按传入顺序全列；--model 已废弃并忽略", () => {
     const text = formatReviewArgs(
       {
         ...BASE_ARGS,
-        model: "glm-5.3",
+        ignoredModel: { raw: "glm-5.3" },
         configPath: "cfg/team.jsonc",
         ruleSkillZips: ["a.zip", "b.zip"],
         ruleSkillDirs: ["rules"],
@@ -90,14 +90,15 @@ describe("formatReviewArgs", () => {
         progress: false,
       },
       echo({
-        modelId: "glm-5.3",
-        modelFromFlag: true,
+        modelId: "deepseek-v4-flash",
+        ignoredModel: { raw: "glm-5.3" },
         configFromFlag: true,
         tasksDirFromFlag: true,
         progressOn: false,
       }),
     );
-    expect(text.split("\n")).toContain(row("--model", "glm-5.3"));
+    expect(text.split("\n")).toContain(row("--model", "glm-5.3（已废弃，已忽略）"));
+    expect(text.split("\n")).toContain(row("model.default", "deepseek-v4-flash（生效值）"));
     expect(text.split("\n")).toContain(row("--config", "C:\\Users\\me\\.PiAgent\\PiAgent.jsonc"));
     expect(text.split("\n")).toContain(row("--tasks-dir", "C:\\Users\\me\\.PiAgent\\tasks"));
     expect(text).toContain(row("--rule-skill-zip", "a.zip, b.zip"));

@@ -31,7 +31,6 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs
 | 参数 | 说明 |
 |---|---|
 | `--case VUL4J-38` | 换一条 `materialized-cases.json` 里的案例（需已有 `.cache` 快照） |
-| `--model <id>` | 覆盖 `PiAgent.jsonc` 的 `model.default` |
 | `--out <dir>` | 覆盖归档目录（默认仓根 `repo-diff-skill-result/...`） |
 | `--rule-skill <dir>` | 额外装载规则包（默认不装，测纯检视） |
 | `--dry-run` | 只构造 diff 和真值，不调用模型 |

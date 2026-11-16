@@ -218,22 +218,22 @@ describe("测试文件跳过（limits.testFiles.skip）", () => {
   const SPEC_FILE = block("web/src/button.spec.tsx");
   const PROD_FILE = block("src/main/java/com/example/Foo.java");
 
-  test("缺省 skip=true：测试文件整块剔除，生产文件逐字节保留", () => {
+  test("缺省 skip=false：测试文件原样保留（零介入）", () => {
     const input = [PROD_FILE, TEST_FILE, SPEC_FILE].join("\n");
     const result = filterDiffForReview(input);
+    expect(result.diff).toBe(input);
+    expect(result.dropped).toEqual([]);
+    expect(result.droppedChars).toBe(0);
+  });
+
+  test("skip=true：测试文件整块剔除，生产文件逐字节保留", () => {
+    const input = [PROD_FILE, TEST_FILE, SPEC_FILE].join("\n");
+    const result = filterDiffForReview(input, { skipTestFiles: true });
     expect(result.diff).toBe(PROD_FILE);
     expect(result.dropped).toEqual([
       { path: "src/test/java/com/example/FooTest.java", reason: "test" },
       { path: "web/src/button.spec.tsx", reason: "test" },
     ]);
-  });
-
-  test("skip=false：测试文件原样保留（零介入）", () => {
-    const input = [PROD_FILE, TEST_FILE, SPEC_FILE].join("\n");
-    const result = filterDiffForReview(input, { skipTestFiles: false });
-    expect(result.diff).toBe(input);
-    expect(result.dropped).toEqual([]);
-    expect(result.droppedChars).toBe(0);
   });
 
   test("非测试目录（testdata / test-fixtures）不被误剔除", () => {
@@ -245,7 +245,9 @@ describe("测试文件跳过（limits.testFiles.skip）", () => {
   });
 
   test("审计 reasons 固定含 test 键", () => {
-    const record = toMrFilterRecord(filterDiffForReview([PROD_FILE, TEST_FILE].join("\n")));
+    const record = toMrFilterRecord(
+      filterDiffForReview([PROD_FILE, TEST_FILE].join("\n"), { skipTestFiles: true }),
+    );
     expect(record?.reasons).toEqual({
       lockfile: 0,
       generated: 0,
@@ -275,9 +277,8 @@ describe("listChangedFilePaths：过滤前的变更文件全集（ADR-0068）", 
       "pnpm-lock.yaml",
       "assets/logo.png",
     ]);
-    // 过滤后只剩生产文件，但变更全集仍是 4 个
+    // 过滤后测试文件按缺省保留，只剩生产文件 + 测试文件；变更全集仍是 4 个
     expect(filterDiffForReview(input).dropped.map((entry) => entry.path)).toEqual([
-      "src/test/java/FooTest.java",
       "pnpm-lock.yaml",
     ]);
   });

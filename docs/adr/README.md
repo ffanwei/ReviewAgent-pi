@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0091）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0093）。
 
 ## 记录纪律
 
@@ -27,6 +27,9 @@
 | ADR-0017（severity/confidence 分档） | ADR-0052 | `severity` 三档 → 四档；confidence 高/中分界 0.8 → 0.7；新增中文 tips 置信度过滤 |
 | ADR-0010（控制台呈现档经核外翻译投影） | ADR-0065 | 取消控制台翻译：stdout 恒英文、无 `presentation` 键；中文 tips 只由片级语义生成产出 |
 | ADR-0045（业务关闭时 tips 由呈现引擎产出 / 全灭回落引擎） | ADR-0065 | 统一生成成为唯一真源（业务关闭也兜底生成）；移除引擎回落 |
+| ADR-0070（`excludeGlobs` 缺省四条，含 `**/*.md`） | ADR-0092 | 缺省收紧为 lockfile / fixtures / snapshot；Markdown 与测试文件默认进入检视 |
+| ADR-0025（模型 `--model` > `model.default` 优先级链） | ADR-0093 | 检视模型只取配置 `model.default`；`--model` 阶段 1 忽略并告警、阶段 2 删除 |
+| ADR-0080（`--model` 探测与单边降级） | ADR-0093 | 触发前提消失：键阶段 1 保留告警、恒 off；阶段 2 删除 |
 
 ## 0037 起的新增决策（不逐条列全，只作导航）
 
@@ -87,6 +90,8 @@
 | [ADR-0089](0089-request-timeline-recorder-and-replay-policy.md) | 请求时间线 recorder：两种行与生命周期单源；replay 策略纯函数；进程级 requestId |
 | [ADR-0090](0090-chinese-native-review.md) | 中文原生检视：提示词 / 候选 / tips 直接中文，删除 NON_ENGLISH 门与二次语义生成；`reviews_all.json` |
 | [ADR-0091](0091-retire-presentation-layer.md) | 呈现投影层退役：`presentation` 源码 / 制品 / 配置键 / 构建腿整层删除；保留 tips 12 键类型 |
+| [ADR-0092](0092-loosen-default-review-scope.md) | 放宽缺省检视范围：测试文件不再默认跳过、Markdown 不再默认排除；回放 lane 钉住旧值 |
+| [ADR-0093](0093-single-source-review-model.md) | 检视模型单源（阶段 1）：忽略 `--model`、配置必须显式 `model.default`；降级键留告警、阶段 2 删除 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

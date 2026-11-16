@@ -31,7 +31,6 @@ node .agents/skills/synthetic-defect-resource-leak/scripts/run.mjs
 | 参数 | 说明 |
 |---|---|
 | `--fixture <dir>` | 换一个底座仓库（默认 `packages/review-pi/testdata/repos/multilang`） |
-| `--model <id>` | 覆盖 `PiAgent.jsonc` 的 `model.default` |
 | `--out <dir>` | 覆盖归档目录 |
 | `--no-rule-skill` | 不装载规则包，测纯检视 |
 | `--dry-run` | 只构造 diff 和真值，不调用模型 |

@@ -307,22 +307,22 @@ describe("loadConfig：失败策略", () => {
     }
   });
 
-  test("limits.testFiles.skip：缺省 true，可关闭且进 digest", () => {
+  test("limits.testFiles.skip：缺省 false，可开启且进 digest", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
-    expect(defaults.limits.testFiles).toEqual({ skip: true });
+    expect(defaults.limits.testFiles).toEqual({ skip: false });
 
     const tuned = loadConfig({
-      configPath: writeConfig(minimalConfig(`,"limits":{"testFiles":{"skip":false}}`)),
+      configPath: writeConfig(minimalConfig(`,"limits":{"testFiles":{"skip":true}}`)),
     }).config;
-    expect(tuned.limits.testFiles.skip).toBe(false);
+    expect(tuned.limits.testFiles.skip).toBe(true);
     expect(tuned.overridden).toContain("limits.testFiles.skip");
     expect(tuned.digest).not.toBe(defaults.digest);
 
     expect(
       loadConfig({
-        configPath: writeConfig(minimalConfig(`,"limits":{"testFiles":{"skip":true}}`)),
+        configPath: writeConfig(minimalConfig(`,"limits":{"testFiles":{"skip":false}}`)),
       }).config.limits.testFiles.skip,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("limits.testFiles.skip 非法值 = fail fast，指出键路径", () => {
@@ -333,10 +333,10 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/limits\.testFiles\.skip must be true or false/);
   });
 
-  test("limits.mrFilter.excludeGlobs：缺省排除 md/lock/fixtures/snap，可配置且进 digest", () => {
+  test("limits.mrFilter.excludeGlobs：缺省排除 lock/fixtures/snap，可配置且进 digest", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
     expect(defaults.limits.mrFilter).toEqual({
-      excludeGlobs: ["**/*.md", "**/*.lock", "**/fixtures/**", "**/*.snap"],
+      excludeGlobs: ["**/*.lock", "**/fixtures/**", "**/*.snap"],
       includeRegex: [],
       excludeRegex: [],
     });
@@ -937,25 +937,21 @@ describe("mcp 配置块（ADR-0037）", () => {
     ).toThrowError(/reviewer\.stripModelPrefix must be true or false/);
   });
 
-  test("reviewer.modelFallback：缺省 off；只接受枚举值；非法值 fail fast（不静默取缺省）", () => {
+  test("reviewer.modelFallback（ADR-0093 阶段 1）：键仍被识别但恒 off，装载期只告警", () => {
     expect(
       loadConfig({ configPath: writeConfig(minimalConfig()) }).config.reviewer.modelFallback,
     ).toBe("off");
-    const on = loadConfig({
-      configPath: writeConfig(
-        `{"version":1,"reviewer":{"apiKey":"sk-x","modelFallback":"on-model-not-found"}}`,
-      ),
-    });
-    expect(on.config.reviewer.modelFallback).toBe("on-model-not-found");
-    expect(configSnapshot(on.config).values["reviewer.modelFallback"]).toBe("on-model-not-found");
-    for (const bad of ["true", "ON-MODEL-NOT-FOUND", "on", ""]) {
-      expect(() =>
-        loadConfig({
-          configPath: writeConfig(
-            `{"version":1,"reviewer":{"apiKey":"sk-x","modelFallback":${JSON.stringify(bad)}}}`,
-          ),
-        }),
-      ).toThrowError(/reviewer\.modelFallback must be one of off, on-model-not-found/);
+    for (const value of ["on-model-not-found", "true", "", "garbage"]) {
+      const loaded = loadConfig({
+        configPath: writeConfig(
+          `{"version":1,"reviewer":{"apiKey":"sk-x","modelFallback":${JSON.stringify(value)}}}`,
+        ),
+      });
+      expect(loaded.config.reviewer.modelFallback).toBe("off");
+      expect(configSnapshot(loaded.config).values["reviewer.modelFallback"]).toBe("off");
+      expect(
+        loaded.warnings.some((warning) => warning.includes("reviewer.modelFallback 已废弃")),
+      ).toBe(true);
     }
   });
 
