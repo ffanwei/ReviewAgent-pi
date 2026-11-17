@@ -34,6 +34,12 @@ export interface PhaseRecord {
   readonly note?: string;
   /** 解析失败的可机读留痕（只在失败时出现；CLI 据此在 stderr 报一行） */
   readonly parseFailure?: PhaseParseFailure;
+  /** 同一阶段因解析失败追加的模型请求次数（缺省 = 未重试） */
+  readonly parseRetries?: number;
+  /** 经历恢复后是否解析成功（仅在发生过恢复/失败时出现） */
+  readonly parseRecovered?: boolean;
+  /** 解析恢复来源：同会话重试 / 离线 salvage / 短窗口 LLM 修复 */
+  readonly parseRecovery?: "retry" | "offline" | "short-llm";
 }
 
 /** 一次工具调用的留痕 */

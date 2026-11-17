@@ -1008,6 +1008,8 @@ test(
       { text: "ok", usage: ZERO },
       { text: "ok", usage: ZERO },
       { text: "not a JSON reply at all", usage: ZERO },
+      { text: "still not a JSON reply", usage: ZERO },
+      { text: "short repair also not JSON", usage: ZERO },
       { text: '{"verdicts":[],"complete":true}', usage: ZERO },
     ]);
     try {
