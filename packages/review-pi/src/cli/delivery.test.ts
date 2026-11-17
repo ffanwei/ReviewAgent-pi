@@ -7,6 +7,7 @@ import { afterEach, expect, test } from "vitest";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import { findingMergeKey } from "../run/findings-merge.js";
+import type { RepoSnapshotSideRecord } from "../run/repo-side.js";
 import type { ReviewRunResult } from "../run/review-run.js";
 import {
   deliverReviewRun,
@@ -157,6 +158,7 @@ async function makeInput(options: {
   readonly progress?: { finish(summary: ProgressSummary): void };
   readonly reviewsPath?: string;
   readonly cwd?: string;
+  readonly repoSnapshotSide?: RepoSnapshotSideRecord;
 } = {}): Promise<{
   readonly input: DeliveryInput;
   readonly dir: string;
@@ -180,7 +182,12 @@ async function makeInput(options: {
           ...(options.failingFiles !== undefined ? { failing: options.failingFiles } : {}),
         });
   const input: DeliveryInput = {
-    run: runResult(options.findings ?? [], options.reviewsPath ?? join(dir, "reviews_all.json")),
+    run: {
+      ...runResult(options.findings ?? [], options.reviewsPath ?? join(dir, "reviews_all.json")),
+      ...(options.repoSnapshotSide !== undefined
+        ? { repoSnapshotSide: options.repoSnapshotSide }
+        : {}),
+    },
     identity: { caseId: "case-1", taskId: "task-1", cwd: options.cwd ?? dir },
     paths: { tasksRoot: dir, runsRoot: dir },
     repoPath: dir,
@@ -243,6 +250,34 @@ test("正常路径：覆盖补报 → 进度收尾 → 总结，返回 stdout �
   };
   expect(index.taskId).toBe("task-1");
   expect(index.runId).toBe("run-1");
+});
+
+test("仓库快照侧别：base / mixed 打一行 stderr 提醒，head 静默", async () => {
+  const base = await makeInput({
+    repoSnapshotSide: {
+      side: "base",
+      headVotes: 0,
+      baseVotes: 3,
+      filesChecked: 2,
+      filesSkipped: 0,
+      filesWithoutHunks: 0,
+    },
+  });
+  await deliverReviewRun(base.input);
+  expect(base.logs.some((line) => line.includes("仓库快照") && line.includes("base"))).toBe(true);
+
+  const head = await makeInput({
+    repoSnapshotSide: {
+      side: "head",
+      headVotes: 3,
+      baseVotes: 0,
+      filesChecked: 2,
+      filesSkipped: 0,
+      filesWithoutHunks: 0,
+    },
+  });
+  await deliverReviewRun(head.input);
+  expect(head.logs.some((line) => line.includes("仓库快照"))).toBe(false);
 });
 
 test("tips 落盘失败：返回 deferredFailure，总结仍发送", async () => {

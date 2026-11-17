@@ -22,6 +22,7 @@ import { reviewModelOf } from "../provider/pi-client.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import { formatMrFilterNotice } from "../run/mr-input.js";
+import { formatRepoSnapshotSideNotice } from "../run/repo-side.js";
 import type { SettledTaskResult } from "../mcp/task-lifecycle.js";
 import type { ReviewRunResult, ReviewSkip } from "../run/review-run.js";
 import { formatShardTruncationNotice } from "../run/shard-planner.js";
@@ -287,6 +288,12 @@ function announceInput(input: DeliveryInput): void {
   }
   if (input.run.mrFilter !== undefined && input.run.mrFilter.droppedFiles > 0) {
     log(`review-pi: ${formatMrFilterNotice(input.run.mrFilter)}\n`);
+  }
+  if (input.run.repoSnapshotSide !== undefined) {
+    const notice = formatRepoSnapshotSideNotice(input.run.repoSnapshotSide);
+    if (notice !== undefined) {
+      log(`review-pi: ${notice}\n`);
+    }
   }
   if (input.run.shardTruncation !== undefined) {
     log(`review-pi: ${formatShardTruncationNotice(input.run.shardTruncation)}\n`);

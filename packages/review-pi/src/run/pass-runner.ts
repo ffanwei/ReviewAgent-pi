@@ -21,6 +21,7 @@ import type { ConfigSnapshot } from "../shared/config.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { splitDiffIntoFileBlocks } from "./mr-input.js";
+import type { RepoSnapshotSideRecord } from "./repo-side.js";
 import { runReviewPass, type ReviewPassInput, type ReviewPassResult } from "./review-pass.js";
 import type { ReviewRunInput, ReviewShardFindingsHook } from "./review-run.js";
 import { composeShardInput, type Shard } from "./shard-planner.js";
@@ -63,6 +64,8 @@ export interface ReviewRunContext {
   // run 级审计值（分片时只在聚合审计写一次）
   readonly boundary: MrBoundaryDecision;
   readonly mrFilter?: MrFilterRecord;
+  /** 仓库快照侧别（旁路观测；不进审计，只透传到 ReviewRunResult） */
+  readonly repoSnapshotSide?: RepoSnapshotSideRecord;
   readonly config?: ConfigSnapshot;
   readonly modelFallback?: ModelFallbackRecord;
   readonly tipsConfidenceMin?: number;
@@ -86,6 +89,8 @@ export interface ResolvedRunSettings {
   readonly emit: RunProgressSink;
   readonly boundary: MrBoundaryDecision;
   readonly mrFilter?: MrFilterRecord;
+  /** 仓库快照侧别（旁路观测；不进审计，只透传） */
+  readonly repoSnapshotSide?: RepoSnapshotSideRecord;
 }
 
 /**
@@ -113,6 +118,9 @@ export async function buildRunContext(
     persistRecord: input.persistRecord !== false,
     boundary: resolved.boundary,
     ...(resolved.mrFilter !== undefined ? { mrFilter: resolved.mrFilter } : {}),
+    ...(resolved.repoSnapshotSide !== undefined
+      ? { repoSnapshotSide: resolved.repoSnapshotSide }
+      : {}),
     ...(input.config !== undefined ? { config: input.config } : {}),
     ...(input.modelFallback !== undefined ? { modelFallback: input.modelFallback } : {}),
     ...(input.tipsConfidenceMin !== undefined

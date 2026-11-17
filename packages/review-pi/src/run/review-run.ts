@@ -37,6 +37,10 @@ import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { diffTooLargeError, filterDiffForReview, listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError, toMrFilterRecord } from "./mr-input.js";
+import {
+  detectRepoSnapshotSide,
+  type RepoSnapshotSideRecord,
+} from "./repo-side.js";
 import { mergeShardFindings } from "./findings-merge.js";
 import {
   buildRunContext,
@@ -205,6 +209,13 @@ export interface ReviewRunResult {
    */
   readonly shardTruncation?: readonly ShardTruncationRecord[];
   /**
+   * 仓库快照侧别判定（旁路观测，**不进审计 / RunRecord / stdout 字节**）：
+   * `head` = `--repo` 停在 diff 改后侧；`base` = 改前侧（`get_file` 会返回
+   * 改前内容）；`mixed` / `unknown` 见 `run/repo-side.ts`。CLI 只在非 head 侧
+   * 打一行 stderr 提醒，不改变退出码。
+   */
+  readonly repoSnapshotSide?: RepoSnapshotSideRecord;
+  /**
    * 阶段时间事实（ADR-0084）：只进 CLI 账本，不进审计 / run.json / 转录。
    * 单遍也返回；当前 CLI 仅在分片 run 使用。
    */
@@ -370,6 +381,12 @@ async function executeReview(
   });
 
   try {
+    // 侧别判定在首遍之前（旁路观测，永不抛错）：模型看到什么内容取决于它，
+    // 但判定本身不改请求字节、不改退出码，只进 ReviewRunResult 供 CLI 提醒。
+    const repoSnapshotSide = await detectRepoSnapshotSide({
+      repoPath: input.repoPath,
+      diff: input.diff,
+    });
     // 规则包装载在 `run.start` 之后、首遍之前：保持既有 stderr 时序。
     const context = await buildRunContext(input, {
       startedAt,
@@ -378,6 +395,7 @@ async function executeReview(
       emit,
       boundary,
       ...(mrFilter !== undefined ? { mrFilter } : {}),
+      repoSnapshotSide,
     });
     const outcome =
       shards === null
@@ -527,6 +545,9 @@ async function executeSinglePass(
       modelCalls: pass.modelCalls,
       skillBashCalls: pass.skillBashCalls,
       ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
+      ...(context.repoSnapshotSide !== undefined
+        ? { repoSnapshotSide: context.repoSnapshotSide }
+        : {}),
       timings: {
         auditStartedAt: context.startedAt.getTime(),
         auditEndedAt: timing.lastRequestEndAt,
@@ -796,6 +817,9 @@ async function aggregateShards(
       modelCalls,
       skillBashCalls,
       ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
+      ...(context.repoSnapshotSide !== undefined
+        ? { repoSnapshotSide: context.repoSnapshotSide }
+        : {}),
       ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
       timings,
     },

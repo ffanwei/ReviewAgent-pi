@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, expect, test } from "vitest";
@@ -1123,4 +1123,42 @@ test("ADR-0078：include 过滤后 0 个文件 → NoReviewableFilesError，且�
     }),
   ).rejects.toBeInstanceOf(NoReviewableFilesError);
   expect(script.requests).toHaveLength(0);
+});
+
+test("仓库快照侧别：base 侧随结果返回，且不进审计字节", async () => {
+  const repoPath = mkdtempSync(path.join(tmpdir(), "review-pi-repo-side-"));
+  tempDirs.push(repoPath);
+  mkdirSync(path.join(repoPath, "src"), { recursive: true });
+  writeFileSync(path.join(repoPath, "src", "A.java"), "class A {\n    old();\n}\n", "utf8");
+  const diff = [
+    "diff --git a/src/A.java b/src/A.java",
+    "--- a/src/A.java",
+    "+++ b/src/A.java",
+    "@@ -1,3 +1,3 @@",
+    " class A {",
+    "-    old();",
+    "+    new();",
+    " }",
+  ].join("\n");
+
+  const result = await runReview({
+    caseId: "SIDE-1",
+    repoPath,
+    diff,
+    issueDescription: "Side detection fixture.",
+    apiKey: "offline-test",
+    fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
+    runsRoot: tempRunsRoot(),
+    rep: 1,
+    ruleSkillLoader: async () => [],
+  });
+
+  expect(result.repoSnapshotSide).toMatchObject({
+    side: "base",
+    baseVotes: 1,
+    headVotes: 0,
+    filesChecked: 1,
+  });
+  // 旁路观测：不进审计 / RunRecord 字节
+  expect(readFileSync(result.auditPath, "utf8")).not.toContain("repoSnapshotSide");
 });
