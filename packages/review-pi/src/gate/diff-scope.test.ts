@@ -149,3 +149,25 @@ test("多文件：各文件的 hunk 独立生效", () => {
   expect(scope.classify(BETA, 50)).toBe("in-scope");
   expect(scope.classify("src/Other.java", 1)).toBe("file-not-in-diff");
 });
+
+test("wholeFilePaths：文件在 diff 内时整文件放行，其他文件仍按 hunk", () => {
+  const doc = "skills/foo/SKILL.md";
+  const scope = buildDiffScope(
+    diffOf(
+      fileBlock(doc, "@@ -10,2 +10,3 @@", [" keep", "+added", " keep"]),
+      fileBlock(ALPHA, "@@ -10,2 +10,3 @@", [" keep", "+added", " keep"]),
+    ),
+    0,
+    [doc],
+  );
+  expect(scope.classify(doc, 1)).toBe("in-scope");
+  expect(scope.classify(doc, 999)).toBe("in-scope");
+  expect(scope.classify(ALPHA, 1)).toBe("line-outside-hunks");
+});
+
+test("wholeFilePaths 不扩大文件集合：不在 diff 里的文件仍 range 外", () => {
+  const scope = buildDiffScope(fileBlock(ALPHA, "@@ -1,1 +1,2 @@", [" a", "+b"]), 0, [
+    "docs/README.md",
+  ]);
+  expect(scope.classify("docs/README.md", 5)).toBe("file-not-in-diff");
+});

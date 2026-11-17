@@ -314,6 +314,23 @@ export interface ModelFallbackRecord {
   readonly reason: "model-not-found";
 }
 
+/**
+ * Skill 包检视留痕：本次 diff 命中的 skill 根、命中的文档文件，以及按
+ * 「整文件放行」处理的位置门集合。无命中时整键缺席（零漂移）。
+ *
+ * 识别是确定性的：从变更文件向上找最近的 `SKILL.md` / `skill.md`；
+ * `roots` / `docFiles` / `wholeFilePaths` 均按 diff 首见序去重。
+ */
+export interface SkillReviewRecord {
+  readonly roots: readonly string[];
+  readonly docFiles: readonly string[];
+  readonly wholeFilePaths: readonly string[];
+  /** 确定性引用核对：扫描到的相对引用总数（存在 + 缺失） */
+  readonly checkedReferences?: number;
+  /** 缺失引用（`manifest:line target` 形态）；无缺失时省键 */
+  readonly missingReferences?: readonly string[];
+}
+
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
@@ -347,6 +364,8 @@ export interface RunAudit {
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** 候选拦截链阶段计数（只在有拦截时在场） */
   readonly rejectionCounts?: CandidateRejectionCounts;
+  /** Skill 包检视留痕：本次 diff 未命中任何 skill 根时省键 */
+  readonly skillReview?: SkillReviewRecord;
   /**
    * 模型替换留痕（ADR-0080）：只在真发生降级时在场；无替换整键缺席。
    * 聚合审计记一次；分片审计不重复该键（`model` 已是生效值）。

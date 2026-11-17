@@ -129,6 +129,12 @@ export interface AgentReviewLoopInputs {
    */
   readonly onProgress?: RunProgressSink;
   /**
+   * 阶段附加段（Phase 5/6 等）：返回 undefined / 纯空白 = 不追加。
+   * 只改阶段 user 消息文本，不改阶段语义、wire 工具面或 Finding schema；
+   * 与测试文件提示、skill 候选清单同序追加在基础指令之后。
+   */
+  readonly phaseBrief?: (index: number) => string | undefined;
+  /**
    * 分片标签（ADR-0076 请求时间线）：多片路径由 run 层传入，单片路径缺席。
    * 只进时间线行，不进审计 / wire 字节。
    */
@@ -797,7 +803,10 @@ ${raw}`,
     const skillBrief =
       index === VERIFICATION_PHASE_INDEX ? buildSkillCandidatesBrief(roundSkillBatches) : undefined;
     const instruction = buildPhaseInstruction(index, runtime.limits.testFiles.skip);
-    const content = skillBrief === undefined ? instruction : `${instruction}\n\n${skillBrief}`;
+    const strategyBrief = inputs.phaseBrief?.(index);
+    const content = [instruction, strategyBrief, skillBrief]
+      .filter((part): part is string => part !== undefined && part.trim().length > 0)
+      .join("\n\n");
     return {
       role: "user",
       content,

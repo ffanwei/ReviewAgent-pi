@@ -4,10 +4,11 @@ export function buildInitialUserMessage(
   caseId: string,
   issueDescription: string,
   diff: string,
+  extraSection?: string,
 ): string {
   // DSH 线语义：判空看 trim，注入看原文（前后空白保留）。
   const description = issueDescription.trim().length > 0 ? issueDescription : "(none)";
-  return [
+  const message = [
     "Merge request under review.",
     "",
     `Case ID: ${caseId}`,
@@ -19,4 +20,8 @@ export function buildInitialUserMessage(
     diff,
     "```",
   ].join("\n");
+  // 额外检视清单（skill 包等）：缺席 / 纯空白时逐字节保持原消息。
+  return extraSection === undefined || extraSection.trim().length === 0
+    ? message
+    : `${message}\n\n${extraSection}`;
 }

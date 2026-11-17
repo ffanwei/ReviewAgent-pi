@@ -111,6 +111,7 @@ function scriptedLoop(
   initial = INITIAL,
   runtime?: ReviewRuntime,
   phaseReplyRepair?: (input: { raw: string; phase: string }) => Promise<string | undefined>,
+  phaseBrief?: (index: number) => string | undefined,
 ): ScriptedRun {
   const script = fakeFetch([...replies]);
   const toolkit = buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF });
@@ -133,6 +134,7 @@ function scriptedLoop(
       fetch: script.fetch,
       runtime: singleAttempt,
       ...(phaseReplyRepair !== undefined ? { phaseReplyRepair } : {}),
+      ...(phaseBrief !== undefined ? { phaseBrief } : {}),
     });
   return { run, requestUrls: script.requests.map((request) => request.url) };
 }
@@ -149,6 +151,34 @@ test("循环常量与 DSH 线一致（工具预算 + 截断原因 + 预算耗尽
   expect(MAX_TOOL_CALLS).toBe(100);
   expect(TRUNCATION_TOOL_BUDGET).toBe("TOOL_BUDGET_EXHAUSTED");
   expect(TOOL_BUDGET_EXHAUSTED_SUMMARY).toBe("Error: tool call budget exhausted");
+});
+
+test("phaseBrief：只在 Phase 5/6 追加，其余阶段保持基础指令", async () => {
+  const replies = Array.from({ length: 6 }, (_, index) => textReply(phaseText(index), index));
+  const { run } = scriptedLoop(
+    replies,
+    INITIAL,
+    undefined,
+    undefined,
+    (index) =>
+      index === 4 ? "PHASE5-OVERRIDE" : index === 5 ? "PHASE6-OVERRIDE" : undefined,
+  );
+  const outcome = await run();
+
+  const phaseContent = (requestIndex: number): string => {
+    const body = JSON.parse(outcome.audit.requests[requestIndex]!.wireBody) as {
+      messages: { content: string }[];
+    };
+    return body.messages.at(-1)?.content ?? "";
+  };
+
+  for (const index of [0, 1, 2, 3]) {
+    expect(phaseContent(index)).toBe(PHASE_INSTRUCTIONS[index]);
+  }
+  expect(phaseContent(4).startsWith(PHASE_INSTRUCTIONS[4])).toBe(true);
+  expect(phaseContent(4)).toContain("PHASE5-OVERRIDE");
+  expect(phaseContent(5).startsWith(PHASE_INSTRUCTIONS[5])).toBe(true);
+  expect(phaseContent(5)).toContain("PHASE6-OVERRIDE");
 });
 
 test("单轮直驱 + 工具子循环：phase-2 执行 get_diff 后 recall 收尾，审计齐备", async () => {

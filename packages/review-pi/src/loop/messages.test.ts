@@ -29,3 +29,16 @@ test("issue 描述缺省时回落到 (none)", () => {
     ].join("\n"),
   );
 });
+
+test("extraSection 缺席 / 纯空白时保持原消息逐字节不变", () => {
+  const base = buildInitialUserMessage("X-1", "", "+ a\n");
+  expect(buildInitialUserMessage("X-1", "", "+ a\n", undefined)).toBe(base);
+  expect(buildInitialUserMessage("X-1", "", "+ a\n", "")).toBe(base);
+  expect(buildInitialUserMessage("X-1", "", "+ a\n", "  \n\t")).toBe(base);
+});
+
+test("extraSection 非空时追加在 diff 围栏之后", () => {
+  const message = buildInitialUserMessage("X-1", "", "+ a\n", "## Skill 包检视");
+  expect(message.endsWith("```\n\n## Skill 包检视")).toBe(true);
+  expect(message.indexOf("## Skill 包检视")).toBeGreaterThan(message.indexOf("```diff"));
+});

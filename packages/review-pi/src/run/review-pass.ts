@@ -40,6 +40,13 @@ import { buildReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
 import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
+import {
+  buildSkillPhase5Override,
+  buildSkillPhase6VerificationNote,
+  buildSkillReviewBrief,
+  detectSkillReview,
+  type SkillReviewProfile,
+} from "./skill-review.js";
 
 /**
  * 单遍检视执行（ADR-0039 实施拆分第 2 步）。
@@ -140,11 +147,62 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
   }
 }
 
-async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResult> {
+/** 审计里的引用核对事实：只记条数与被缺失项，不复制 manifest 正文 */
+function skillReviewAuditFacts(profile: SkillReviewProfile): {
+  readonly checkedReferences?: number;
+  readonly missingReferences?: readonly string[];
+} {
+  const checks = profile.roots.flatMap((root) =>
+    root.referenceCheck !== undefined ? [root.referenceCheck] : [],
+  );
+  if (checks.length === 0) {
+    return {};
+  }
+  const checkedReferences = checks.reduce(
+    (sum, check) => sum + check.verified.length + check.missing.length,
+    0,
+  );
+  const missingReferences = checks.flatMap((check) =>
+    check.missing.map((ref) => `${check.manifest}:${String(ref.line)} ${ref.target}`),
+  );
+  return {
+    checkedReferences,
+    ...(missingReferences.length > 0 ? { missingReferences } : {}),
+  };
+}
+
+async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResult> {  // Skill 包识别（确定性）：只在本次 diff 命中 skill 根时追加清单；
+  // 未命中 = undefined，初始消息、阶段消息与位置门都与全代码路径逐字节一致。
+  const skillReview = detectSkillReview(input.diff, input.repoPath);
+  const ruleSkillLoaded = input.ruleSkills.some(
+    (skill) => skill.degradedReason === undefined && skill.name.length > 0,
+  );
+  const skillBrief =
+    skillReview === undefined
+      ? undefined
+      : buildSkillReviewBrief(skillReview, { ruleSkillLoaded });
+  // Phase 5/6 覆盖：放在生成 / 核验前最后一条 user 消息末尾，覆盖编码导向。
+  const phaseBrief =
+    skillReview === undefined
+      ? undefined
+      : (index: number): string | undefined => {
+          if (index === 4) {
+            return buildSkillPhase5Override(skillReview, { ruleSkillLoaded });
+          }
+          if (index === 5) {
+            return buildSkillPhase6VerificationNote();
+          }
+          return undefined;
+        };
   const initialContextMessages = [
     {
       role: "user" as const,
-      content: buildInitialUserMessage(input.caseId, input.issueDescription, input.initialDiff),
+      content: buildInitialUserMessage(
+        input.caseId,
+        input.issueDescription,
+        input.initialDiff,
+        skillBrief,
+      ),
     },
   ];
 
@@ -170,7 +228,7 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
   // 分片模式即片内 diff；关闭时不构建 scope（候选链零介入）。
   const findingScope = input.runtime.limits.findingScope;
   const scope = findingScope.enabled
-    ? buildDiffScope(input.diff, findingScope.contextLines)
+    ? buildDiffScope(input.diff, findingScope.contextLines, skillReview?.wholeFilePaths)
     : undefined;
   const outcome = await runAgentReviewLoop({
     systemPrompt: SYSTEM_PROMPT,
@@ -185,6 +243,7 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     onProgress: input.emit,
     ...(input.shard !== undefined ? { shard: input.shard } : {}),
     ...(scope !== undefined ? { scope } : {}),
+    ...(phaseBrief !== undefined ? { phaseBrief } : {}),
     // Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
     skillPass: { skills: input.ruleSkills, toolkitFor: skillToolkitFor },
     // 有界候选修复（P1）：schema 仍非法的少数候选在 Phase 6 前至多修一次。
@@ -223,6 +282,16 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog: persisted.records } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
     ...(severityFilter !== undefined ? { severityFilter } : {}),
+    ...(skillReview !== undefined
+      ? {
+          skillReview: {
+            roots: skillReview.roots.map((root) => root.root),
+            docFiles: skillReview.docFiles,
+            wholeFilePaths: skillReview.wholeFilePaths,
+            ...skillReviewAuditFacts(skillReview),
+          },
+        }
+      : {}),
     ...(input.modelFallback !== undefined ? { modelFallback: input.modelFallback } : {}),
   };
   const auditContent = buildAuditFileContent({

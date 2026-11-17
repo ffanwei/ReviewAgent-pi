@@ -18,6 +18,7 @@ import type {
   SeverityFilterRecord,
   ShardAuditRecord,
   ShardTruncationRecord,
+  SkillReviewRecord,
   TipsFilterRecord,
   ToolCallRecord,
   WireRequest,
@@ -95,6 +96,8 @@ export interface AuditFileContent {
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** 候选拦截链阶段计数（P1）：只在有拦截时在场 */
   readonly rejectionCounts?: CandidateRejectionCounts;
+  /** Skill 包检视留痕：只在本次 diff 命中 skill 根时在场（缺省省键） */
+  readonly skillReview?: SkillReviewRecord;
   /**
    * 生效配置快照（ADR-0025）：全量非秘密生效值 + 来源 + digest；秘密只记
    * `set|missing`。只进审计文件（stdout 键集不变）。直调内核（测试/嵌入）可缺省。
@@ -174,6 +177,7 @@ export function buildAuditFileContent(args: {
     ...(args.audit.rejectionCounts !== undefined
       ? { rejectionCounts: args.audit.rejectionCounts }
       : {}),
+    ...(args.audit.skillReview !== undefined ? { skillReview: args.audit.skillReview } : {}),
     ...(args.config !== undefined ? { config: args.config } : {}),
     // 模型替换留痕（ADR-0080）：无替换整键缺席（零字节漂移）
     ...(args.audit.modelFallback !== undefined

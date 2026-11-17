@@ -34,26 +34,41 @@ interface FileScope {
 /**
  * 从统一 diff 构建位置范围。`contextLines` 非负整数（由配置层保证）；
  * 传 0 = 只保留 hunk 内。
+ *
+ * `wholeFilePaths`（可选）= 整文件放行的路径集合（skill 包的 manifest / 文档）。
+ * 文件仍须在本次 diff 里；集合只放宽行区间，不扩大文件集合。
  */
-export function buildDiffScope(diff: string, contextLines: number): DiffScope {
+export function buildDiffScope(
+  diff: string,
+  contextLines: number,
+  wholeFilePaths?: readonly string[],
+): DiffScope {
   const files = parseDiffFiles(diff, contextLines);
+  const wholeFile = new Set((wholeFilePaths ?? []).map(normalizeFindingPath));
   return {
     contextLines,
     fileCount: files.size,
-    classify: (file, line) => classifyIn(files, file, line),
+    classify: (file, line) => classifyIn(files, wholeFile, file, line),
   };
 }
 
-function classifyIn(files: ReadonlyMap<string, FileScope>, file: string, line: number): ScopeDecision {
+function classifyIn(
+  files: ReadonlyMap<string, FileScope>,
+  wholeFile: ReadonlySet<string>,
+  file: string,
+  line: number,
+): ScopeDecision {
   // 解析不出任何文件 = 这份 diff 不可定位（空 diff / 非统一 diff）：不拦截。
   if (files.size === 0) {
     return "in-scope";
   }
-  const entry = files.get(normalizeFindingPath(file));
+  const normalized = normalizeFindingPath(file);
+  const entry = files.get(normalized);
   if (entry === undefined) {
     return "file-not-in-diff";
   }
-  if (entry.unbounded) {
+  // skill 包的 manifest / 文档：整文件放行（文件已在 diff 里，行号不再收窄）。
+  if (entry.unbounded || wholeFile.has(normalized)) {
     return "in-scope";
   }
   return entry.ranges.some(([start, end]) => line >= start && line <= end) ? "in-scope" : "line-outside-hunks";
