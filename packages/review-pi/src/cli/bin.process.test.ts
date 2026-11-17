@@ -3505,13 +3505,19 @@ test(
         reviewTips: [],
       });
       expect(run.stderr).toContain("MCP mrReviewResult 已上报 1 文件 / 0 条意见");
-      // 零意见：saveReviewSummary 发固定「未发现缺陷」文案，不触发一次性模型调用
-      expect(business[2]?.args).toEqual({
-        taskId: CLI_TASK_ID,
-        markdownContent: "# 检视总结\n\n本次检视未发现缺陷。",
-      });
+      // 零意见：saveReviewSummary 发结构化模板（无速览 + 诚实说明），不触发一次性模型调用
+      const summaryArgs = business[2]?.args as {
+        readonly taskId?: unknown;
+        readonly markdownContent?: unknown;
+      };
+      expect(summaryArgs.taskId).toBe(CLI_TASK_ID);
+      const summaryMarkdown = String(summaryArgs.markdownContent);
+      expect(summaryMarkdown).toContain("## 检视总览");
+      expect(summaryMarkdown).toContain("### 意见分布");
+      expect(summaryMarkdown).toContain("本次检视未发现缺陷。");
+      expect(summaryMarkdown).not.toContain("### 高优先级意见速览");
       expect(countOneShotGatewayCalls(stub)).toBe(0);
-      expect(run.stderr).toContain("未发现检视意见，发送固定总结");
+      expect(run.stderr).toContain("未发现检视意见，发送结构化模板");
 
       // 空 tips 文档照样落盘（本次 run 的中文产物只有一个空数组）
       const tipsPath = path.join(outDir, CLI_TASK_ID, "runs", "reviews_tips_zh.json");
@@ -3560,7 +3566,7 @@ test(
         usage: ZERO,
       },
       // 有 finding（过滤只作用于中文 tips / 上报）；全部被过滤 ⇒ 没有可上报意见
-      // ⇒ 总结按 ADR-0057 走固定文案，不再调用模型
+      // ⇒ 总结按 ADR-0057 走结构化模板（诚实说明 + 不作星级评价），不再调用模型
       { text: "# 检视总结", usage: ZERO },
     ]);
     const mcp = await startMcpStub();
@@ -3599,10 +3605,16 @@ test(
         reviewTips: [],
       });
       expect(run.stderr).toContain("MCP mrReviewResult 已上报 1 文件 / 0 条意见");
-      expect(business[2]?.args).toEqual({
-        taskId: CLI_TASK_ID,
-        markdownContent: "# 检视总结\n\n本次检视未向平台上报任何检视意见。",
-      });
+      const summaryArgs = business[2]?.args as {
+        readonly taskId?: unknown;
+        readonly markdownContent?: unknown;
+      };
+      expect(summaryArgs.taskId).toBe(CLI_TASK_ID);
+      const summaryMarkdown = String(summaryArgs.markdownContent);
+      expect(summaryMarkdown).toContain("## 检视总览");
+      expect(summaryMarkdown).toContain("本次检视未向平台上报任何检视意见。");
+      expect(summaryMarkdown).not.toContain("未发现缺陷");
+      expect(summaryMarkdown).not.toContain("### 高优先级意见速览");
       // 留痕同样要能证明「文件被检视过」
       const mcpLog = JSON.parse(
         readFileSync(path.join(cliRunsDir(outDir), "mcp.json"), "utf8"),
@@ -3680,10 +3692,15 @@ test(
       expect(run.stderr).toContain("跳过单条意见");
       expect(run.stderr).toContain("已上报 1 文件 / 0 条意见");
       // ADR-0057：空包不登记 finding，总结仍按「0 条已上报」生成
-      expect(business[2]?.args).toEqual({
-        taskId: CLI_TASK_ID,
-        markdownContent: "# 检视总结\n\n本次检视未向平台上报任何检视意见。",
-      });
+      const summaryArgs = business[2]?.args as {
+        readonly taskId?: unknown;
+        readonly markdownContent?: unknown;
+      };
+      expect(summaryArgs.taskId).toBe(CLI_TASK_ID);
+      const summaryMarkdown = String(summaryArgs.markdownContent);
+      expect(summaryMarkdown).toContain("本次检视未向平台上报任何检视意见。");
+      expect(summaryMarkdown).not.toContain("未发现缺陷");
+      expect(summaryMarkdown).toContain("不作星级评价");
     } finally {
       await stub.close();
       await mcp.close();
@@ -3723,10 +3740,14 @@ test(
         "saveReviewSummary",
         "endTask",
       ]);
-      expect(business[2]?.args).toEqual({
-        taskId: CLI_TASK_ID,
-        markdownContent: "# 检视总结\n\n本次检视未发现缺陷。",
-      });
+      const summaryArgs = business[2]?.args as {
+        readonly taskId?: unknown;
+        readonly markdownContent?: unknown;
+      };
+      expect(summaryArgs.taskId).toBe(CLI_TASK_ID);
+      const summaryMarkdown = String(summaryArgs.markdownContent);
+      expect(summaryMarkdown).toContain("## 检视总览");
+      expect(summaryMarkdown).toContain("本次检视未发现缺陷。");
     } finally {
       await stub.close();
       await mcp.close();

@@ -220,11 +220,62 @@ function isUnsupportedMarker(line: string): boolean {
   );
 }
 
+/** 变更规模度量（收尾总结用：与边界度量共用同一解析器，额外报 hunk 数） */
+export interface DiffScale {
+  readonly files: number;
+  readonly hunks: number;
+  readonly changedLines: number;
+}
+
+/**
+ * 度量 diff 的变更规模（纯函数，零 IO）：
+ * - `files` = 触碰的文件数（含新增 / 删除文件）；
+ * - `hunks` = 全部 `@@ ` hunk 头数（"方法变更"的退化口径）；
+ * - `changedLines` = 新增行 + 删除行。
+ *
+ * 不可度量（同一套保守口径）返回 null，调用方渲染成 "—"。
+ */
+export function measureDiffScale(diff: string): DiffScale | null {
+  if (typeof diff !== "string" || diff.trim() === "") {
+    return null;
+  }
+  const lines = splitDiffLines(diff);
+  let files = 0;
+  let hunks = 0;
+  let changedLines = 0;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line === undefined) {
+      return null;
+    }
+    if (isGitHeaderNoise(line)) {
+      i += 1;
+      continue;
+    }
+    if (isUnsupportedMarker(line) || !line.startsWith("--- ")) {
+      return null;
+    }
+    const block = measureFileBlock(lines, i);
+    if (block === null) {
+      return null;
+    }
+    files += 1;
+    hunks += block.hunks;
+    changedLines += block.added + block.removed;
+    i = block.next;
+  }
+  if (files === 0) {
+    return null;
+  }
+  return { files, hunks, changedLines };
+}
+
 /** 度量一个 `--- `/`+++ ` 文件块（含其全部 hunk）；结构不可游走返回 null */
 function measureFileBlock(
   lines: readonly string[],
   start: number,
-): { readonly next: number; readonly added: number; readonly removed: number } | null {
+): { readonly next: number; readonly added: number; readonly removed: number; readonly hunks: number } | null {
   const plusLine = lines[start + 1];
   if (plusLine === undefined || !plusLine.startsWith("+++ ")) {
     return null;
@@ -247,7 +298,7 @@ function measureFileBlock(
     // root 同则：文件块不含任何 hunk = 解析失败
     return null;
   }
-  return { next: i, added, removed };
+  return { next: i, added, removed, hunks };
 }
 
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/;

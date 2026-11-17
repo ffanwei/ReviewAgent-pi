@@ -15,6 +15,7 @@ import {
   DOMAIN_WARNING_UNMEASURABLE,
   domainWarningFor,
   guardMrBoundary,
+  measureDiffScale,
   measureMrBoundary,
   type MrBoundaryMetrics,
 } from "./mr-boundary-guard.js";
@@ -136,6 +137,19 @@ test("度量：golden vul4j-1.diff（真实数据集 diff）——与 root 数�
     removedLines: 1,
     changedLines: 2,
   });
+});
+
+test("变更规模：与边界度量共用同一解析器，额外报 hunk 数（收尾总结口径）", () => {
+  expect(measureDiffScale(SINGLE_FILE_DIFF)).toEqual({ files: 1, hunks: 1, changedLines: 2 });
+  expect(measureDiffScale(GIT_STYLE_TWO_FILE_DIFF)).toEqual({
+    files: 2,
+    hunks: 2,
+    changedLines: 4,
+  });
+  expect(measureDiffScale(multiFileDiff(3))).toEqual({ files: 3, hunks: 3, changedLines: 6 });
+  // 不可度量 = null（调用方渲染 "—"）
+  expect(measureDiffScale("not a unified diff")).toBeNull();
+  expect(measureDiffScale("")).toBeNull();
 });
 
 test("度量：git 风格双文件（新增/删除文件 + /dev/null + mode/index 噪音行）——文件与增删各计 2", () => {

@@ -4,6 +4,10 @@
 **关联**：[ADR-0045](0045-mcp-business-task-tools.md)（业务 tool、片级报文与总结上报）、[ADR-0052](0052-tips-four-tier-severity-and-confidence-filter.md)（置信度过滤）、[ADR-0056](0056-mr-review-result-covers-files-without-tips.md)（无意见文件补空包）
 **范围**：本仓 pi 线 0057。只改 `saveReviewSummary` 的**总结口径**：输入从「本地 findings 全量」改为「`mrReviewResult` 实际成功上报的意见集合」。tips 生成、报文组装、英文真源、`reviews_tips_zh.json`、退出码均不动。
 
+> **后续修订（[ADR-0097](0097-summary-fixed-structure-and-stars.md)，2026-11-17）**：决策 3 的
+> 「两条固定文案」改为与有意见路径同一套结构化模板（零意见 / 零上报仍不调用模型；零上报
+> 仍不谎报「未发现缺陷」，且不作星级评价）。决策 1 / 2 的「已上报集合是唯一信源」不变。
+
 ## Context
 
 `saveReviewSummary` 的 Markdown 总结一直以本地聚合 findings 为输入，而平台明细来自 `mrReviewResult`。两者覆盖面并不相同：

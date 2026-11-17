@@ -21,6 +21,7 @@ import type {
 import { reviewModelOf } from "../provider/pi-client.js";
 import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { findingMergeKey } from "../run/findings-merge.js";
+import type { DiffScale } from "../run/mr-boundary-guard.js";
 import { formatMrFilterNotice } from "../run/mr-input.js";
 import { formatRepoSnapshotSideNotice } from "../run/repo-side.js";
 import type { SettledTaskResult } from "../mcp/task-lifecycle.js";
@@ -38,6 +39,7 @@ import {
   DIFF_TOO_LARGE_SUMMARY_MARKDOWN,
   NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN,
   type ReviewSummaryInput,
+  type ReviewSummaryMetrics,
   type ReviewSummaryResult,
 } from "./review-summary.js";
 import {
@@ -124,6 +126,11 @@ export interface DeliveryInput {
   readonly repoPath: string;
   /** 过滤前变更文件全集（ADR-0068：被预过滤剔除的文件也要补报空 tips） */
   readonly coverageFiles: readonly string[];
+  /**
+   * diff 变更规模（收尾总结「变更规模」行）：hunk 数 / 变更行数是方法级
+   * 统计的退化口径（`measureDiffScale`）。不可度量时 null / 缺席。
+   */
+  readonly diffScale?: DiffScale | null;
   readonly model: {
     readonly modelId: string;
     readonly baseUrl: string;
@@ -506,13 +513,21 @@ async function publishSummary(
   }
   log(
     record.baseline.findings.length === 0
-      ? "review-pi: MCP saveReviewSummary 未发现检视意见，发送固定总结（不调用模型）\n"
+      ? "review-pi: MCP saveReviewSummary 未发现检视意见，发送结构化模板（不调用模型）\n"
       : summaryFindings.length === 0
-        ? "review-pi: MCP saveReviewSummary 无已上报的检视意见，发送固定总结（不调用模型）\n"
+        ? "review-pi: MCP saveReviewSummary 无已上报的检视意见，发送结构化模板（不调用模型）\n"
         : "review-pi: MCP saveReviewSummary 生成中（检视总结）……\n",
   );
 
   const summaryStartedAt = clock.now();
+  const summaryUsage = record.baseline.usage;
+  const metrics: ReviewSummaryMetrics = {
+    changedFiles: input.diffScale?.files ?? input.coverageFiles.length,
+    changedHunks: input.diffScale?.hunks ?? null,
+    changedLines: input.diffScale?.changedLines ?? null,
+    modelCalls: input.run.modelCalls,
+    inputTokens: summaryUsage.inputTokens + (summaryUsage.cacheReadTokens ?? 0),
+  };
   const summaryReport = await input.ports.oneShot.generateSummary({
     ...(summaryTips !== undefined && summaryTips.length > 0 ? { tips: summaryTips } : {}),
     findings: summaryFindings,
@@ -520,6 +535,7 @@ async function publishSummary(
       ? { unreportedFindings: unreported }
       : {}),
     ...(input.mcp.reportedFiles.length > 0 ? { reportedFiles: [...input.mcp.reportedFiles] } : {}),
+    metrics,
   });
   const summaryMs = clock.now() - summaryStartedAt;
   if (summaryReport.degradedReason !== undefined) {

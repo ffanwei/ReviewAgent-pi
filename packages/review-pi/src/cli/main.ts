@@ -70,6 +70,7 @@ import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { findingMergeKey } from "../run/findings-merge.js";
+import { measureDiffScale } from "../run/mr-boundary-guard.js";
 import { listChangedFilePaths } from "../run/mr-input.js";
 import { runReviewOutcome, type ReviewRunOutcome } from "../run/review-run.js";
 import { runExportCommand } from "./export-command.js";
@@ -410,6 +411,9 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     // 变更文件全集（ADR-0068）：取**过滤前** diff——被预过滤剔除的文件也算变更过，
     // 收尾必须补一条空 tips 的 mrReviewResult（否则平台把「被过滤」读成「未检视」）。
     const changedFiles = listChangedFilePaths(diff);
+    // 变更规模（收尾总结用）：hunk 数 / 变更行数 = 方法级统计的退化口径。
+    // 与边界护栏共用同一解析器；不可度量的 diff 渲染成 "—"。
+    const diffScale = measureDiffScale(diff);
 
     // 运行进度投影（ADR-0055，取代 ADR-0016 的 TTY 自动档）：缺省打印事件行；
     // `--no-progress` 显式静音（批跑收日志用）。静音时仍保留收尾摘要一行
@@ -561,6 +565,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       paths: { tasksRoot, runsRoot },
       repoPath,
       coverageFiles: changedFiles,
+      diffScale,
       model: { modelId, baseUrl: endpoint.baseUrl },
       limits: {
         confidenceMin: config.limits.confidence.min,

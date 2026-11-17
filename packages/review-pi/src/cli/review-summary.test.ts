@@ -4,7 +4,11 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { Finding } from "../contracts/finding.js";
 import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
-import { buildReviewSummary, NO_REPORTED_SUMMARY_MARKDOWN } from "./review-summary.js";
+import {
+  buildReviewSummary,
+  NO_FINDING_NOTE,
+  NO_REPORTED_NOTE,
+} from "./review-summary.js";
 
 // 收尾总结（ADR-0045）：模型调用产出 Markdown；失败降级确定性模板
 // （degradedReason 留痕）——saveReviewSummary 一定有内容可发。
@@ -83,7 +87,7 @@ test("模型路径：Markdown 直传；请求 user 消息含 tips 与结构化�
   expect(bodies[0] ?? "").not.toContain("offline-test");
 });
 
-test("模型失败 → 确定性模板：非空、按文件清单、degradedReason 留痕", async () => {
+test("模型失败 → 确定性模板：非空、结构化规范、degradedReason 留痕", async () => {
   const fetch: FetchFunction = async () => new Response("boom", { status: 502 });
 
   const result = await buildReviewSummary({
@@ -93,10 +97,14 @@ test("模型失败 → 确定性模板：非空、按文件清单、degradedReas
   });
 
   expect(result.degradedReason).toContain("HTTP 502");
-  expect(result.markdown).toContain("2 条问题");
-  expect(result.markdown).toContain("src/A.java");
-  expect(result.markdown).toContain("src/B.java");
-  expect(result.markdown).toContain("Unsafe redirect");
+  expect(result.markdown).toContain("## 检视总览");
+  expect(result.markdown).toContain("### 意见分布");
+  expect(result.markdown).toContain("| major | 1 | src/A.java |");
+  expect(result.markdown).toContain("| minor | 1 | src/B.java |");
+  expect(result.markdown).toContain("### 高优先级意见速览");
+  expect(result.markdown).toContain("1. [major] src/A.java:10 — Unsafe redirect");
+  expect(result.markdown).toContain("### 星级评价");
+  expect(result.markdown).toContain("⭐⭐ — 存在 ≥1 条 major 或 fatal 意见，需整改后方可合入");
 });
 
 test("模型回空串 → 模板降级（空总结不外发）", async () => {
@@ -112,10 +120,45 @@ test("模型回空串 → 模板降级（空总结不外发）", async () => {
     fetch,
   });
   expect(result.degradedReason).toContain("empty summary");
-  expect(result.markdown).toContain("1 条问题");
+  expect(result.markdown).toContain("| major | 1 | src/A.java |");
 });
 
-test("零 finding：固定文案直出，不调用模型、不留降级痕", async () => {
+test("星级硬判据：仅 P2/P3 ⇒ ⭐⭐⭐；仅 P3 ⇒ ⭐⭐⭐⭐", async () => {
+  const fetch: FetchFunction = async () => new Response("boom", { status: 502 });
+  const onlyMinor = await buildReviewSummary({
+    findings: [finding("src/A.java", "P2"), finding("src/B.java", "P3")],
+    runtime: RUNTIME,
+    fetch,
+  });
+  expect(onlyMinor.markdown).toContain("⭐⭐⭐ — 0 条 fatal，0 条 major");
+  const onlySuggestion = await buildReviewSummary({
+    findings: [finding("src/A.java", "P3")],
+    runtime: RUNTIME,
+    fetch,
+  });
+  expect(onlySuggestion.markdown).toContain("⭐⭐⭐⭐ — 0 条 fatal / major / minor");
+});
+
+test("metrics：变更规模 / 预算使用 / 资源加载三行按权威数据渲染", async () => {
+  const fetch: FetchFunction = async () => new Response("boom", { status: 502 });
+  const result = await buildReviewSummary({
+    findings: [finding("src/A.java", "P2")],
+    metrics: {
+      changedFiles: 3,
+      changedHunks: 5,
+      changedLines: 120,
+      modelCalls: 17,
+      inputTokens: 41200,
+    },
+    runtime: RUNTIME,
+    fetch,
+  });
+  expect(result.markdown).toContain("| 变更规模 | 3 个文件 / 5 个 hunk（120 行变更） |");
+  expect(result.markdown).toContain("| 预算使用 | 17 次调用 |");
+  expect(result.markdown).toContain("| 资源加载 | 约 41,200 tokens |");
+});
+
+test("零 finding：结构化模板（无速览 / 未发现缺陷 / ⭐⭐⭐⭐），不调用模型", async () => {
   let calls = 0;
   const fetch: FetchFunction = async () => {
     calls += 1;
@@ -127,11 +170,16 @@ test("零 finding：固定文案直出，不调用模型、不留降级痕", asy
     fetch,
   });
   expect(calls).toBe(0);
-  expect(result.markdown).toBe("# 检视总结\n\n本次检视未发现缺陷。");
+  expect(result.markdown).toContain("## 检视总览");
+  expect(result.markdown).toContain("### 意见分布");
+  expect(result.markdown).toContain("| fatal | 0 | — |");
+  expect(result.markdown).toContain(NO_FINDING_NOTE);
+  expect(result.markdown).not.toContain("### 高优先级意见速览");
+  expect(result.markdown).toContain("⭐⭐⭐⭐");
   expect(result.degradedReason).toBeUndefined();
 });
 
-test("有意见但全部未上报：只陈述上报事实，不谎报「未发现缺陷」（ADR-0057）", async () => {
+test("有意见但全部未上报：结构化模板 + 诚实说明，不作星级评价（ADR-0057）", async () => {
   let calls = 0;
   const fetch: FetchFunction = async () => {
     calls += 1;
@@ -144,7 +192,10 @@ test("有意见但全部未上报：只陈述上报事实，不谎报「未发�
     fetch,
   });
   expect(calls).toBe(0);
-  expect(result.markdown).toBe(NO_REPORTED_SUMMARY_MARKDOWN);
+  expect(result.markdown).toContain("## 检视总览");
+  expect(result.markdown).toContain(NO_REPORTED_NOTE);
   expect(result.markdown).not.toContain("未发现缺陷");
+  expect(result.markdown).not.toContain("### 高优先级意见速览");
+  expect(result.markdown).toContain("不作星级评价");
   expect(result.degradedReason).toBeUndefined();
 });
