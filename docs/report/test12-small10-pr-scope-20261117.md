@@ -1,5 +1,10 @@
 # test12 小 diff 10 条：收窄检视范围 + 同根因去重（exp-tools）
 
+> **后续更新**：同根因去重已收紧（`ae8dab4`），且 v1/v2 均重新跑过 judge 修复空响应漏判。
+> 最新五方对比（含 OCR、旧 baseline、v1/v2 与消耗）见
+> [`test12-small10-versions-comparison-20261117.md`](test12-small10-versions-comparison-20261117.md)。
+> 本文保留的是第一轮（粗去重、judge 首跑）的记录与问题分析。
+
 > 数据来源：`aacr_bench_v2_test12.jsonl` 的 10 条小 diff（`test12-baseline.json` 的 `selected.small`），47 条 GT。
 > 本次运行：`exp-tools-wt` @ `1011e22`（将在 `exp-tools` 合入），`deepseek-v4.1-flash`，
 > 配置 `benchmark-exp-tools-pr.jsonc`（`findingScope.contextLines=0`、`testFiles.skip=true`、测试/文档/锁文件/生成物/配置整块剔除），
