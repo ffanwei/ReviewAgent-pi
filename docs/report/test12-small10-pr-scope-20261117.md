@@ -19,8 +19,10 @@
 
 - **precision 大幅提升，recall 下降**，B 比上一轮高 6.3pp。
 - 22 条意见**全部落在有 GT 的文件里**；上一轮有 13 条（25.5%）落在无 GT 文件。
+- 5 条丢失 GT 中：**3 条模型完全没生成，2 条（`filament`）被同根因去重误杀**。
+  反事实判分显示，被拦的 F003 可直接命中这 2 条 GT；若不拦，预计 P 0.609 / R 0.340 / **B 0.437**。
 - 与既有对照：仍低于 OCR（B 0.471）1.5pp 的差距来自 recall；比旧 review-pi baseline（B 0.406）低 1.0pp，已在噪声范围内。
-- 方向正确：先解决“报得准”，recall 是下一步要补的。
+- 方向正确：先解决“报得准”，recall 是下一步要补的；但去重规则需要先收紧。
 
 ## 2. 聚合对比（10 条小 diff，47 GT）
 
@@ -99,7 +101,9 @@ P3、测试缺失、可读性类意见基本消失，正是第 2/4 条要求的�
 
 - 共产生 **8 条拦截记录**：6 条同根因（`cline` / `filament` / `gofr` / `ragflow` 各 1，`linera` 2 条为同一候选在后续轮重复触发），2 条 Phase 6 证据裁决驳回（均 `linera`）。
 - 示例：`gofr` 的 F003（`url.PathEscape` 二次转义）与已产出的 F001（凭据二次转义）在 `mongo.go:152/156`，同类别 ±5 行内，被保留首条策略拦掉。
-- **风险**：去重按 `(文件, category, ±5 行)` 判定，不校验根因文本。`filament` 的 F001（79 行，主键 tiebreaker 丢失）与 F003（79 行，`$originalOrders[0]` 可能不存在）确实是两个不同根因，F003 被误伤。若后续 recall 仍不足，建议把去重收紧为“同文件 + 同 category + 标题/rule 相似”或仅同规则同位置。
+- **已确认误杀**：`filament` 的 F001（79 行，主键 tiebreaker 丢失）与 F003（79 行，`$originalOrders[0]` 可能不存在）是两个不同根因，F003 被误伤。对 F003 做反事实判分（把它的完整 description 直接送 judge），结果为命中 GT#2（153 行，`orders[0]` 未判空）和 GT#3（78 行，Collection 下标访问）两条。
+  也就是说，**5 条丢失 GT 里有 2 条是本轮去重造成的，不是模型没发现**。若不拦 F003：生成 23、命中 14、覆盖 16/47 → P 0.609 / R 0.340 / B 0.437。
+- 建议把去重收紧为“同文件 + 同 category + 标题/rule 高相似”或仅拦截同 rule 同位置，避免再次误杀。
 
 ### 5.4 候选拦截链
 
@@ -135,13 +139,13 @@ P3、测试缺失、可读性类意见基本消失，正是第 2/4 条要求的�
 
 | 样本 | 丢失 GT | 位置 | 是否在 hunk 内 | 原因 |
 |---|---|---:|---|---|
-| `aspnetcore@0ce67cd` | GT#3 | `SocketAddress.cs:70` | 是 | 模型未报 IPv6 scope ID 缺失（功能不完整类） |
-| `three.js@b55b9e9` | GT#3 | `WebGPUBackend.js:1327` | 是 | 模型报了同一主题的 `workgroupSize` 校验（GT#6），漏了后端 `dispatchSize` 数组长度校验 |
-| `filament@77874d0` | GT#2 | `PrepareCsvExport.php:153` | 是 | 模型在 154 行报了 `distinct` 条件化，未报 `orders[0]` 未判空 |
-| `filament@77874d0` | GT#3 | `PrepareCsvExport.php:78` | 是 | GT 为 Collection 下标访问的可读性建议，被提示词收窄压掉 |
-| `ragflow@a63caa1` | GT#3 | `extractor.py:216` | 是 | 模型未报 `list(set(...))` 顺序不确定；它报了同文件另一处闭包问题 |
+| `aspnetcore@0ce67cd` | GT#3 | `SocketAddress.cs:70` | 是 | **完全没生成**：本样本只有 1 条候选（端口截断），没有 scope ID 相关候选 |
+| `three.js@b55b9e9` | GT#3 | `WebGPUBackend.js:1327` | 是 | **完全没生成**：5 条候选里只有另一个文件（`WGSLNodeBuilder`）的 `workgroupSize` 长度校验，没有后端 `dispatchSize` 校验 |
+| `filament@77874d0` | GT#2 | `PrepareCsvExport.php:153` | 是 | **被同根因去重拦截**：F003 与 F001 同为 79 行、同类别，被 `DUPLICATE_ID` 丢弃；反事实判分 F003 命中本 GT |
+| `filament@77874d0` | GT#3 | `PrepareCsvExport.php:78` | 是 | 同上，F003 被去重拦截；反事实判分同时命中本 GT |
+| `ragflow@a63caa1` | GT#3 | `extractor.py:216` | 是 | **完全没生成**：候选只在 `entity_resolution.py` 与 `utils.py`，没有 `extractor.py` 的候选 |
 
-**5 条丢失 GT 的位置全部在 diff hunk 内**，不是 `findingScope` 拦截；全部属于“模型没有生成对应候选”，不是门禁误杀。因此 recall 的下一步应从生成侧补，而不是放宽范围门。
+**结论：3 条是完全没发现，2 条（`filament`）是同根因去重误杀。** 5 条位置全部在 diff hunk 内，没有一条是 `findingScope` / `OUT_OF_SCOPE` 拦截，也没有 `SCHEMA_INVALID` / `NO_EVIDENCE` / `VERIFICATION_FAILED` 丢候选。
 
 ## 7. 剩余 9 条未命中意见
 
@@ -170,11 +174,9 @@ P3、测试缺失、可读性类意见基本消失，正是第 2/4 条要求的�
 ## 9. 建议
 
 1. **保留当前方向**：precision 已超过 OCR 的文件内水平，B 也超过上一轮；不要回退范围门。
-2. **下一步补 recall，而不是放宽范围**：5 条丢失 GT 都在 hunk 内、都是模型没生成。可考虑：
-   - 对每个新增 hunk 做一次“逐行过一遍”的收尾提示（尤其 feature-completeness 类，如 scope ID、数组长度校验）；
-   - 把同根因去重收紧为“同位置 + 同 rule 或高相似标题”，避免 `filament` 那类误伤；
-   - 暂不引入价值过滤。
-3. **两条大 diff 待批准**：本次只跑了 10 条小 diff；大 diff 需要验证分组/分片下的范围锚定与去重是否仍然成立。
+2. **优先收紧同根因去重**：本轮 5 条 GT 损失里有 2 条由去重造成。建议改为“同文件 + 同 category + 标题或 rule 高相似（或同 rule 同位置）”，而不是仅凭 ±5 行；改完需复跑 10 条小 diff 验证，预期 B 可从 0.396 回到约 0.437。
+3. **再补生成侧 recall**：另外 3 条丢失 GT 都在 hunk 内、都是模型没生成。可考虑对每个新增 hunk 做一次“逐行过一遍”的收尾提示（尤其 feature-completeness 类，如 scope ID、数组长度校验）。
+4. **两条大 diff 待批准**：本次只跑了 10 条小 diff；大 diff 需要验证分组/分片下的范围锚定与去重是否仍然成立。
 
 ## 10. 产物
 
