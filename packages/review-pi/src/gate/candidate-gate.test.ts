@@ -253,3 +253,75 @@ test("OUT_OF_SCOPE 先于 DUPLICATE_ID：范围外的重复候选只留一条拦
   expect(out.rejections[0]?.stage).toBe("OUT_OF_SCOPE");
 });
 
+
+test("同一文件 ±5 行内的同根因候选只保留第一条", () => {
+  const second = {
+    ...VALID_CANDIDATE,
+    id: "F002",
+    line: 44,
+    title: "Same root cause, different wording",
+    description: "Another symptom of the same ternary expression.",
+  };
+  const out = applyCandidateGate({
+    candidates: [VALID_CANDIDATE, second],
+    verdicts: verdicts({
+      F001: { pass: true, reason: "" },
+      F002: { pass: true, reason: "" },
+    }),
+    emittedIds: new Set(),
+    round: 1,
+  });
+  expect(out.findings).toHaveLength(1);
+  expect(out.rejections).toHaveLength(1);
+  expect(out.rejections[0]?.stage).toBe("DUPLICATE_ID");
+  expect(out.rejections[0]?.reason).toContain("同根因");
+});
+
+test("同一文件相距较远的两条候选都保留", () => {
+  const far = { ...VALID_CANDIDATE, id: "F002", line: 120, title: "Another independent defect" };
+  const out = applyCandidateGate({
+    candidates: [VALID_CANDIDATE, far],
+    verdicts: verdicts({
+      F001: { pass: true, reason: "" },
+      F002: { pass: true, reason: "" },
+    }),
+    emittedIds: new Set(),
+    round: 1,
+  });
+  expect(out.findings.map((finding) => finding.id)).toEqual(["F001", "F002"]);
+  expect(out.rejections).toEqual([]);
+});
+
+test("同一文件相邻行但类别不同的候选都保留", () => {
+  const other = { ...VALID_CANDIDATE, id: "F002", line: 44, category: "SECURITY", title: "Independent issue" };
+  const out = applyCandidateGate({
+    candidates: [VALID_CANDIDATE, other],
+    verdicts: verdicts({
+      F001: { pass: true, reason: "" },
+      F002: { pass: true, reason: "" },
+    }),
+    emittedIds: new Set(),
+    round: 1,
+  });
+  expect(out.findings.map((finding) => finding.id)).toEqual(["F001", "F002"]);
+  expect(out.rejections).toEqual([]);
+});
+
+test("跨轮：同一文件相邻行的不同内容候选仍被同根因桶拦截", () => {
+  const first = applyCandidateGate({
+    candidates: [VALID_CANDIDATE],
+    verdicts: verdicts({ F001: { pass: true, reason: "" } }),
+    emittedIds: new Set(),
+    round: 1,
+  });
+  const second = applyCandidateGate({
+    candidates: [{ ...VALID_CANDIDATE, id: "F002", line: 44, title: "Different title" }],
+    verdicts: verdicts({ F002: { pass: true, reason: "" } }),
+    emittedIds: first.emittedIds,
+    emittedContentKeys: first.emittedContentKeys,
+    emittedRootKeys: first.emittedRootKeys,
+    round: 2,
+  });
+  expect(second.findings).toEqual([]);
+  expect(second.rejections[0]?.stage).toBe("DUPLICATE_ID");
+});

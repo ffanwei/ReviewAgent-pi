@@ -6,12 +6,18 @@
 // 跨轮去重口径（P1）：**按内容键** `(normalize(file), line, normalize(title))`
 // 判重，不按模型给的 `id`。模型每轮都可能从 F001 重新编号，id 复用不代表
 // 同一问题；只有内容相同才丢弃。
+// 同根因去重（P2）：模型常把同一处代码的同一根因拆成两条（例如三元表达式
+// 的两个分支各报一条），标题不同但位置相邻。内容键抓不到它们，因此再按
+// `(normalize(file), category, ±5 行)` 做一个确定性的同根因判重；只保留先到
+// 的一条。带 category 是为了避免把相邻但不同类别的独立缺陷一起吞掉。
 import type { Finding, FindingTips } from "../contracts/finding.js";
 import type { CandidateRejection } from "../contracts/run.js";
 import { findingContentKey } from "../finding/finding-key.js";
 import { validateFinding } from "../finding/finding-schema.js";
 import type { VerificationVerdict } from "../shared/parse.js";
 import { describeScopeRejection, type DiffScope } from "./diff-scope.js";
+
+const ROOT_CAUSE_WINDOW_LINES = 5;
 
 export interface GateInput {
   /** Deep Reasoning 阶段产出的原始候选对象 */
@@ -22,6 +28,8 @@ export interface GateInput {
   readonly emittedIds: ReadonlySet<string>;
   /** 已产出 Finding 的内容键集合（跨轮去重的真实依据；不会被本函数修改） */
   readonly emittedContentKeys?: ReadonlySet<string>;
+  /** 已产出 Finding 的同根因位置桶（跨轮去重；不会被本函数修改） */
+  readonly emittedRootKeys?: ReadonlySet<string>;
   readonly round: number;
   /**
    * 非 diff 区域过滤（`limits.findingScope`）：缺省 undefined = 不过滤
@@ -35,6 +43,7 @@ export interface GateOutput {
   readonly rejections: readonly CandidateRejection[];
   readonly emittedIds: ReadonlySet<string>;
   readonly emittedContentKeys: ReadonlySet<string>;
+  readonly emittedRootKeys: ReadonlySet<string>;
 }
 
 export function applyCandidateGate(input: GateInput): GateOutput {
@@ -42,6 +51,7 @@ export function applyCandidateGate(input: GateInput): GateOutput {
   const rejections: CandidateRejection[] = [];
   const emittedIds = new Set(input.emittedIds);
   const emittedContentKeys = new Set(input.emittedContentKeys ?? []);
+  const emittedRootKeys = new Set(input.emittedRootKeys ?? []);
   const resolvedVerdicts = resolveVerdicts(input.candidates, input.verdicts, input.round);
 
   input.candidates.forEach((candidate, index) => {
@@ -51,6 +61,7 @@ export function applyCandidateGate(input: GateInput): GateOutput {
       candidateId,
       resolvedVerdicts[index],
       emittedContentKeys,
+      emittedRootKeys,
       input.scope,
     );
     if (rejection !== undefined) {
@@ -61,9 +72,10 @@ export function applyCandidateGate(input: GateInput): GateOutput {
     findings.push(finding);
     emittedIds.add(candidateId);
     emittedContentKeys.add(findingContentKey(finding));
+    addRootCauseKey(emittedRootKeys, finding);
   });
 
-  return { findings, rejections, emittedIds, emittedContentKeys };
+  return { findings, rejections, emittedIds, emittedContentKeys, emittedRootKeys };
 }
 
 /**
@@ -108,6 +120,7 @@ function firstFailingStage(
   candidateId: string,
   verdict: VerificationVerdict | undefined,
   emittedContentKeys: ReadonlySet<string>,
+  emittedRootKeys: ReadonlySet<string>,
   scope: DiffScope | undefined,
 ): CandidateRejection | undefined {
   const schemaErrors = validateFinding(candidate);
@@ -146,7 +159,44 @@ function firstFailingStage(
       reason: "同 (file, line, title) 的意见在更早的轮次已产出",
     };
   }
+  const located = candidate as Pick<Finding, "file" | "line" | "category">;
+  if (hasRootCauseKey(emittedRootKeys, located)) {
+    return {
+      candidateId,
+      stage: "DUPLICATE_ID",
+      reason: `同一文件 ±${String(ROOT_CAUSE_WINDOW_LINES)} 行内的同根因意见已产出`,
+    };
+  }
   return undefined;
+}
+
+function normalizeRootFile(file: string): string {
+  return file.replace(/\\/g, "/").trim().replace(/^\.\//, "").toLowerCase();
+}
+
+function rootCauseKey(file: string, category: string, line: number): string {
+  return `${normalizeRootFile(file)}\u0000${category.trim().toLowerCase()}\u0000${String(line)}`;
+}
+
+/**
+ * 同根因窗口：同一文件、同一 category、行号相差不超过 ±5 行视为同一根因。
+ * category 用来区分「相邻行的另一个独立缺陷」；窗口用精确行距而不是分桶，
+ * 避免桶边界把 5 行窗口放大成 9 行。
+ */
+function addRootCauseKey(target: Set<string>, finding: Pick<Finding, "file" | "line" | "category">): void {
+  target.add(rootCauseKey(finding.file, finding.category, finding.line));
+}
+
+function hasRootCauseKey(
+  target: ReadonlySet<string>,
+  candidate: Pick<Finding, "file" | "line" | "category">,
+): boolean {
+  for (let delta = -ROOT_CAUSE_WINDOW_LINES; delta <= ROOT_CAUSE_WINDOW_LINES; delta += 1) {
+    if (target.has(rootCauseKey(candidate.file, candidate.category, candidate.line + delta))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasEvidence(candidate: unknown): boolean {

@@ -223,6 +223,7 @@ export async function runAgentReviewLoop(
   let roundComplete = false;
   let emittedIds: ReadonlySet<string> = new Set();
   let emittedContentKeys: ReadonlySet<string> = new Set();
+  let emittedRootKeys: ReadonlySet<string> = new Set();
   const candidateNormalizations: CandidateNormalizationRecord[] = [];
   const rejectionCounts: Record<RejectionStage, number> = {
     SCHEMA_INVALID: 0,
@@ -495,6 +496,7 @@ export async function runAgentReviewLoop(
       verdicts: roundVerdicts,
       emittedIds,
       emittedContentKeys,
+      emittedRootKeys,
       round,
       ...(inputs.scope !== undefined ? { scope: inputs.scope } : {}),
     });
@@ -505,6 +507,7 @@ export async function runAgentReviewLoop(
     }
     emittedIds = gate.emittedIds;
     emittedContentKeys = gate.emittedContentKeys;
+    emittedRootKeys = gate.emittedRootKeys;
     complete = roundComplete;
     if (complete) {
       return true;

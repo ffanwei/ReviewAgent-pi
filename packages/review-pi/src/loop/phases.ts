@@ -26,6 +26,7 @@ export const PHASE_INSTRUCTIONS: readonly string[] = [
 
   `Phase 5 of 6 - Deep Reasoning.
 对变更做深度推理并产出候选意见。只提出你能用具体证据支撑的候选（No Evidence, No Finding）。
+只报本次 diff 新增/修改行直接支撑、由本次变更引入或加重、且有具体失败场景的问题；finding 位置必须落在本遍 diff 的变更 hunk 内。search_code 的命中只能作为上下文，不能单独发起候选。不要报“仓库里本来存在”的问题，也不要报测试缺失、文档/注释/命名/格式类建议。
 只回一个 JSON 对象：{"candidates": [<符合 Finding 模式的对象>, ...]}
 每条候选必须满足以下清单：
 - id: 非空字符串，本轮内唯一（如 "F001"）
@@ -46,6 +47,7 @@ export const PHASE_INSTRUCTIONS: readonly string[] = [
 
   `Phase 6 of 6 - Evidence Verification.
 逐条核验候选意见的证据：每条候选所引证据是否真的支撑该结论。
+若候选不是本次变更引入或加重、位置不在本遍 diff 的变更 hunk 内、或只有 search_code 上下文而没有 diff 证据，判 pass=false。
 只回一个 JSON 对象：{"verdicts": [{"id": "<候选 id>", "pass": true | false, "reason": "<中文理由>"}, ...], "complete": true | false}
 使用候选清单里的原 id（不要重新编号）；每条候选恰好一条裁决。
 "complete" 为 true 表示评审完成、无需下一轮；false 表示需要再评审一轮。`,
