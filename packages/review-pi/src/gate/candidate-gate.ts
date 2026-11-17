@@ -8,8 +8,9 @@
 // 同一问题；只有内容相同才丢弃。
 // 同根因去重（P2）：模型常把同一处代码的同一根因拆成两条（例如三元表达式
 // 的两个分支各报一条），标题不同但位置相邻。内容键抓不到它们，因此再按
-// `(normalize(file), category, ±5 行)` 做一个确定性的同根因判重；只保留先到
-// 的一条。带 category 是为了避免把相邻但不同类别的独立缺陷一起吞掉。
+// `(normalize(file), category, ±5 行)` 定位相邻候选，并且只有**标题高相似**
+// （字符二元组 Jaccard ≥ 0.5）或 **rule 相同**时才判同一根因；只保留先到的一条。
+// 带 category 与相似度/rule 是为了避免把相邻但不同根因的独立缺陷一起吞掉。
 import type { Finding, FindingTips } from "../contracts/finding.js";
 import type { CandidateRejection } from "../contracts/run.js";
 import { findingContentKey } from "../finding/finding-key.js";
@@ -18,6 +19,7 @@ import type { VerificationVerdict } from "../shared/parse.js";
 import { describeScopeRejection, type DiffScope } from "./diff-scope.js";
 
 const ROOT_CAUSE_WINDOW_LINES = 5;
+const ROOT_CAUSE_TITLE_SIMILARITY = 0.5;
 
 export interface GateInput {
   /** Deep Reasoning 阶段产出的原始候选对象 */
@@ -159,12 +161,12 @@ function firstFailingStage(
       reason: "同 (file, line, title) 的意见在更早的轮次已产出",
     };
   }
-  const located = candidate as Pick<Finding, "file" | "line" | "category">;
+  const located = candidate as Pick<Finding, "file" | "line" | "category" | "rule" | "title">;
   if (hasRootCauseKey(emittedRootKeys, located)) {
     return {
       candidateId,
       stage: "DUPLICATE_ID",
-      reason: `同一文件 ±${String(ROOT_CAUSE_WINDOW_LINES)} 行内的同根因意见已产出`,
+      reason: `同一文件 ±${String(ROOT_CAUSE_WINDOW_LINES)} 行内、标题高度相似或 rule 相同的同根因意见已产出`,
     };
   }
   return undefined;
@@ -174,29 +176,105 @@ function normalizeRootFile(file: string): string {
   return file.replace(/\\/g, "/").trim().replace(/^\.\//, "").toLowerCase();
 }
 
-function rootCauseKey(file: string, category: string, line: number): string {
-  return `${normalizeRootFile(file)}\u0000${category.trim().toLowerCase()}\u0000${String(line)}`;
+function rootCauseKey(
+  file: string,
+  category: string,
+  line: number,
+  rule: string,
+  title: string,
+): string {
+  return [
+    normalizeRootFile(file),
+    category.trim().toLowerCase(),
+    String(line),
+    encodeURIComponent(rule.trim().toLowerCase()),
+    encodeURIComponent(title),
+  ].join("\u0000");
 }
 
 /**
- * 同根因窗口：同一文件、同一 category、行号相差不超过 ±5 行视为同一根因。
- * category 用来区分「相邻行的另一个独立缺陷」；窗口用精确行距而不是分桶，
- * 避免桶边界把 5 行窗口放大成 9 行。
+ * 同根因窗口：同一文件、同一 category、行号相差不超过 ±5 行，并且
+ * 标题高相似（字符二元组 Jaccard ≥ 0.5）或 rule 相同，才视为同一根因。
+ * 只用位置会把同位置的另一个独立缺陷一起吞掉（实测 `filament` 误杀）。
  */
-function addRootCauseKey(target: Set<string>, finding: Pick<Finding, "file" | "line" | "category">): void {
-  target.add(rootCauseKey(finding.file, finding.category, finding.line));
+function addRootCauseKey(
+  target: Set<string>,
+  finding: Pick<Finding, "file" | "line" | "category" | "rule" | "title">,
+): void {
+  target.add(
+    rootCauseKey(finding.file, finding.category, finding.line, finding.rule, finding.title),
+  );
 }
 
 function hasRootCauseKey(
   target: ReadonlySet<string>,
-  candidate: Pick<Finding, "file" | "line" | "category">,
+  candidate: Pick<Finding, "file" | "line" | "category" | "rule" | "title">,
 ): boolean {
+  const file = normalizeRootFile(candidate.file);
+  const category = candidate.category.trim().toLowerCase();
+  const rule = candidate.rule.trim().toLowerCase();
   for (let delta = -ROOT_CAUSE_WINDOW_LINES; delta <= ROOT_CAUSE_WINDOW_LINES; delta += 1) {
-    if (target.has(rootCauseKey(candidate.file, candidate.category, candidate.line + delta))) {
-      return true;
+    const linePrefix = `${file}\u0000${category}\u0000${String(candidate.line + delta)}\u0000`;
+    for (const entry of target) {
+      if (!entry.startsWith(linePrefix)) {
+        continue;
+      }
+      const rest = entry.slice(linePrefix.length);
+      const separator = rest.indexOf("\u0000");
+      if (separator < 0) {
+        continue;
+      }
+      const emittedRule = decodeURIComponent(rest.slice(0, separator));
+      const emittedTitle = decodeURIComponent(rest.slice(separator + 1));
+      if (rule.length > 0 && emittedRule === rule) {
+        return true;
+      }
+      if (titleSimilarity(candidate.title, emittedTitle) >= ROOT_CAUSE_TITLE_SIMILARITY) {
+        return true;
+      }
     }
   }
   return false;
+}
+
+/** 标题归一化：大小写、空白与标点/符号不计入相似度 */
+function normalizeTitle(title: string): string {
+  return title.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+/** 字符二元组集合；单字符标题退化为字符集合 */
+function titleBigrams(text: string): ReadonlySet<string> {
+  const chars = [...text];
+  if (chars.length <= 1) {
+    return new Set(chars);
+  }
+  const grams = new Set<string>();
+  for (let index = 0; index < chars.length - 1; index += 1) {
+    grams.add(`${chars[index] ?? ""}${chars[index + 1] ?? ""}`);
+  }
+  return grams;
+}
+
+/** 标题相似度：字符二元组 Jaccard；完全相同返回 1，空标题返回 0 */
+function titleSimilarity(left: string, right: string): number {
+  const a = normalizeTitle(left);
+  const b = normalizeTitle(right);
+  if (a.length === 0 || b.length === 0) {
+    return 0;
+  }
+  if (a === b) {
+    return 1;
+  }
+  const leftGrams = titleBigrams(a);
+  const rightGrams = titleBigrams(b);
+  let intersection = 0;
+  for (const gram of leftGrams) {
+    if (rightGrams.has(gram)) {
+      intersection += 1;
+    }
+  }
+  const union = leftGrams.size + rightGrams.size - intersection;
+  return union === 0 ? 0 : intersection / union;
 }
 
 function hasEvidence(candidate: unknown): boolean {

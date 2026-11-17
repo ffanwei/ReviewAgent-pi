@@ -307,6 +307,47 @@ test("同一文件相邻行但类别不同的候选都保留", () => {
   expect(out.rejections).toEqual([]);
 });
 
+test("同一文件相邻行、同类但 rule 与标题都不同的候选都保留", () => {
+  const other = {
+    ...VALID_CANDIDATE,
+    id: "F002",
+    line: 44,
+    title: "Missing validation for empty input",
+    rule: "ROBUSTNESS-001",
+  };
+  const out = applyCandidateGate({
+    candidates: [VALID_CANDIDATE, other],
+    verdicts: verdicts({
+      F001: { pass: true, reason: "" },
+      F002: { pass: true, reason: "" },
+    }),
+    emittedIds: new Set(),
+    round: 1,
+  });
+  expect(out.findings.map((finding) => finding.id)).toEqual(["F001", "F002"]);
+  expect(out.rejections).toEqual([]);
+});
+
+test("同一文件相邻行、标题高相似但 rule 不同仍按同根因拦截", () => {
+  const sameIssue = {
+    ...VALID_CANDIDATE,
+    id: "F002",
+    line: 44,
+    rule: "OTHER-001",
+  };
+  const out = applyCandidateGate({
+    candidates: [VALID_CANDIDATE, sameIssue],
+    verdicts: verdicts({
+      F001: { pass: true, reason: "" },
+      F002: { pass: true, reason: "" },
+    }),
+    emittedIds: new Set(),
+    round: 1,
+  });
+  expect(out.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(out.rejections[0]?.stage).toBe("DUPLICATE_ID");
+});
+
 test("跨轮：同一文件相邻行的不同内容候选仍被同根因桶拦截", () => {
   const first = applyCandidateGate({
     candidates: [VALID_CANDIDATE],
