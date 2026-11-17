@@ -57,9 +57,28 @@ test("会话首消息：内核 skill 块（真实 pack 路径）+ 宿主平台�
   expect(prompt).toContain('只有无法对应到单条规则时才用 "sample-rule"');
   expect(prompt).toContain("自然语言字段（title / description / tips 各字段）一律中文");
   expect(prompt).toContain("证据必填");
+  // 代码 MR：保持旧的代码口径（既有 trace 逐字节不变）
+  expect(prompt).toContain("再按本 skill 的规则检查变更代码");
+  expect(prompt).toContain("证据必填（符号 + 行号 + 摘录）");
+  expect(prompt).not.toContain("检查本次变更文件（代码与文档）");
   // 规则 Skill 去重软约束：硬去重仍由 category 归一 + candidate-merge 承担
   expect(prompt).toContain("不要重复主会话已报告的同一文件同一行的问题");
   expect(prompt).toContain('{"candidates": []}');
+});
+
+test("docMode：通用契约改用文档证据口径，并让位给专用 SKILL.md", () => {
+  const prompt = buildSkillPassInvocation(
+    SKILL,
+    { platform: "linux", arch: "x64" },
+    { docMode: true },
+  );
+
+  expect(prompt).toContain("检查本次变更文件（代码与文档）");
+  expect(prompt).toContain("文档用引文 + 目标文件:行 + review.get_file 的结果");
+  expect(prompt).toContain("若本 skill 的 SKILL.md 对证据、示例或严重级有更具体规定，以其为准");
+  expect(prompt).toContain("检视被检对象请用 review.* 工具");
+  expect(prompt).toContain("规则违例或文档问题");
+  expect(prompt).not.toContain("再按本 skill 的规则检查变更代码");
 });
 
 test("会话首消息缺省用当前进程平台（有平台行即可；不钉死具体 OS）", () => {

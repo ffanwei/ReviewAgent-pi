@@ -150,6 +150,11 @@ export interface SkillPassRequest {
    * 互不可见，且 skill 会话的读取不会污染主账本。
    */
   readonly toolkitFor: (seedLedgerSnapshot: readonly LedgerEntry[]) => ReviewToolkit;
+  /**
+   * 本次 diff 命中 skill / 文档：skill 会话的通用输出契约改用模态中性证据口径。
+   * 缺省 = 代码口径（既有 trace 逐字节不变）。
+   */
+  readonly docMode?: boolean;
 }
 
 export interface AgentReviewLoopOutcome {
@@ -554,6 +559,7 @@ export async function runAgentReviewLoop(
         ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
         runtime,
         onProgress: emitProgress,
+        ...(request.docMode !== undefined ? { docMode: request.docMode } : {}),
         ...(inputs.shard !== undefined ? { shard: inputs.shard } : {}),
       });
       emitProgress({

@@ -155,6 +155,18 @@ test("独立会话：复用 system prompt、种子历史原样、八工具、真
   expect(transcript.capture.firstRequestAt).toBeInstanceOf(Date);
 });
 
+test("docMode：skill 会话的通用契约改用文档证据口径", async () => {
+  const script = scriptedFetch([candidatesReply([candidate("S1", "sample-rule")])]);
+  await runSkillPass(baseOptions({ fetch: script.fetch, docMode: true }));
+
+  const body = script.bodies[0] as { messages: { role: string; content: unknown }[] };
+  const invocation = body.messages.at(-1)?.content as { type: string; text?: string }[];
+  const text = invocation.map((block) => block.text ?? "").join("");
+  expect(text).toContain("检查本次变更文件（代码与文档）");
+  expect(text).toContain("文档用引文 + 目标文件:行 + review.get_file 的结果");
+  expect(text).toContain("若本 skill 的 SKILL.md 对证据、示例或严重级有更具体规定，以其为准");
+});
+
 test("跑通 0 候选 = empty（合法，不是失败；也没有 degradedReason）", async () => {
   const script = scriptedFetch([candidatesReply([])]);
   const outcome = await runSkillPass(baseOptions({ fetch: script.fetch }));

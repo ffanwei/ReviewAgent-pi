@@ -245,7 +245,11 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     ...(scope !== undefined ? { scope } : {}),
     ...(phaseBrief !== undefined ? { phaseBrief } : {}),
     // Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
-    skillPass: { skills: input.ruleSkills, toolkitFor: skillToolkitFor },
+    skillPass: {
+      skills: input.ruleSkills,
+      toolkitFor: skillToolkitFor,
+      ...(skillReview !== undefined ? { docMode: true } : {}),
+    },
     // 有界候选修复（P1）：schema 仍非法的少数候选在 Phase 6 前至多修一次。
     // 复用核外一次性调用层（与报文同源重试 / 超时），不碰检视会话 wire 字节。
     candidateRepair: createCandidateRepair({

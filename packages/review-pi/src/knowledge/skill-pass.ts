@@ -58,6 +58,11 @@ export interface SkillPassOptions {
   readonly timeoutMs?: number;
   readonly resultBudgetChars?: number;
   /**
+   * 本次被检视的 diff 命中 skill / 文档：通用输出契约改用模态中性证据口径
+   * （文档可用引文 + 路径 + get_file），并让位给专用 SKILL.md。缺省 = 代码口径。
+   */
+  readonly docMode?: boolean;
+  /**
    * 检视运行时（ADR-0025）：skill 会话超时 / bash 超时与输出上限 / 微限 /
    * 输出预算 / 模型元数据覆盖全从这里取；缺省 = 今天的缺省行为。
    */
@@ -193,7 +198,15 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
   let session: "done" | "timeout";
   let sessionError: unknown;
   try {
-    session = await runWithTimeout(agent, buildSkillPassInvocation(skill), timeoutMs);
+    session = await runWithTimeout(
+      agent,
+      buildSkillPassInvocation(
+        skill,
+        {},
+        options.docMode !== undefined ? { docMode: options.docMode } : {},
+      ),
+      timeoutMs,
+    );
   } catch (error) {
     session = "done";
     sessionError = error;

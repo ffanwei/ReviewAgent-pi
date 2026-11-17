@@ -28,10 +28,26 @@ export interface SkillPassRuntimeInfo {
 }
 
 /** skill 会话的输出契约：压住候选拦截链的 gate 陷阱 + JSON 外壳（中文，ADR-0090） */
-function invocationContract(name: string, runtime: SkillPassRuntimeInfo): string {
+function invocationContract(
+  name: string,
+  runtime: SkillPassRuntimeInfo,
+  docMode: boolean,
+): string {
+  const opening = docMode
+    ? "上面的会话是主检视会话到 Phase 5 为止的内容。以它为上下文，按本 skill 的规则检查本次变更文件（代码与文档）。你可以调用检视工具，也可以用 `bash` 工具运行本 skill 的辅助命令（PATH 上的任意可执行文件；工作目录是本 skill 的根目录；检视被检对象请用 review.* 工具）。"
+    : "上面的会话是主检视会话到 Phase 5 为止的内容。以它为上下文，再按本 skill 的规则检查变更代码。你可以调用检视工具，也可以用 `bash` 工具运行本 skill 的辅助命令（PATH 上的任意可执行文件；工作目录是本 skill 的根目录）。";
+  const evidence = docMode
+    ? "- 证据必填：代码用符号 + 行号 + 摘录；文档用引文 + 目标文件:行 + review.get_file 的结果。没有证据的候选会被丢弃。"
+    : "- 证据必填（符号 + 行号 + 摘录）；没有证据的候选会被丢弃。";
+  const precedence = docMode
+    ? ["- 若本 skill 的 SKILL.md 对证据、示例或严重级有更具体规定，以其为准。"]
+    : [];
+  const closing = docMode
+    ? '- 若检查后没有规则违例或文档问题存活，回复 {"candidates": []}。'
+    : '- 若检查后没有规则违例存活，回复 {"candidates": []}。';
   return [
     "## 规则 Skill 检视遍（本会话）",
-    "上面的会话是主检视会话到 Phase 5 为止的内容。以它为上下文，再按本 skill 的规则检查变更代码。你可以调用检视工具，也可以用 `bash` 工具运行本 skill 的辅助命令（PATH 上的任意可执行文件；工作目录是本 skill 的根目录）。",
+    opening,
     `- ${formatHostPlatformNote(runtime.platform, runtime.arch)}`,
     "",
     "输出契约：",
@@ -39,9 +55,10 @@ function invocationContract(name: string, runtime: SkillPassRuntimeInfo): string
     `- 每条候选的 id 形如 \`${skillCandidateIdTemplate(name)}\`（不含轮次号）。`,
     `- "rule" 字段填该意见违反的本 skill rules/ 里具体规则的 frontmatter id（如 "GEN-SQL-001"）；只有无法对应到单条规则时才用 "${name}"。`,
     "- 自然语言字段（title / description / tips 各字段）一律中文；代码标识符与专有名词保留英文。",
-    "- 证据必填（符号 + 行号 + 摘录）；没有证据的候选会被丢弃。",
+    evidence,
+    ...precedence,
     "- 不要重复主会话已报告的同一文件同一行的问题。只有确实是另一个缺陷时才再次报告该位置，并在 description 里明确说明差异。",
-    '- 若检查后没有规则违例存活，回复 {"candidates": []}。',
+    closing,
   ].join("\n");
 }
 
@@ -49,10 +66,15 @@ function invocationContract(name: string, runtime: SkillPassRuntimeInfo): string
  * 构造一个 skill 会话的首条 user 消息：内核 skill 块（真实 pack 路径）+
  * 宿主平台提示 + 输出契约。植入 `description` 与 `content` 由调用方的
  * `RuleSkill` 决定；`runtime` 只用于测试注入平台（缺省当前进程）。
+ *
+ * `docMode`：本次被检视的 diff 命中 skill / 文档时置 true——通用契约改用
+ * 模态中性的证据口径，并让位给专用 SKILL.md 的具体规定；代码 MR 保持旧
+ * 字节（离线 trace 与代码侧回归零漂移）。
  */
 export function buildSkillPassInvocation(
   skill: RuleSkill,
   runtime: SkillPassRuntimeInfo = {},
+  options: { readonly docMode?: boolean } = {},
 ): string {
   const raw: Skill = {
     name: skill.name,
@@ -60,7 +82,10 @@ export function buildSkillPassInvocation(
     content: skill.content,
     filePath: skill.filePath,
   };
-  return formatSkillInvocation(raw, invocationContract(skill.name, runtime));
+  return formatSkillInvocation(
+    raw,
+    invocationContract(skill.name, runtime, options.docMode === true),
+  );
 }
 
 /** Finding 字段的固定投影顺序（与 `gate/candidate-gate.ts` 的 toFinding 对齐） */
