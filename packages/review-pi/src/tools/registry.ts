@@ -1,6 +1,6 @@
 import type { ToolSchema } from "../contracts/llm.js";
 
-// 七个 review.* 工具注册表（#6 P3a；描述中文化 ADR-0090）：
+// 八个 review.* 工具注册表（#6 P3a；描述中文化 ADR-0090）：
 // 工具名（点分 / 下划线）与参数键保持英文——它们是 wire 契约；
 // description 与参数 description 是给模型看的自然语言，改为中文。
 //
@@ -8,7 +8,7 @@ import type { ToolSchema } from "../contracts/llm.js";
 // additionalProperties；properties 子键字典序。pi 侧以字面键序构造（不用
 // 运行时排序器）达成同字节——registry.test.ts 把守字面序。
 //
-// 只读纪律：七工具全部为构造性只读（读快照、检索、拼装），无写路径——
+// 只读纪律：八工具全部为构造性只读（读快照、检索、拼装），无写路径——
 // 工具执行器（toolkit.ts）落位后由只读断言测试看守（仓库内容哈希不变）。
 
 /** 工具固定顺序（DSH 线 REVIEW_TOOL_ORDER 同序；消融面对比不因序污染） */
@@ -18,6 +18,7 @@ export const REVIEW_TOOL_ORDER = [
   "review.get_file",
   "review.find_references",
   "review.get_call_chain",
+  "review.search_code",
   "review.search_rule",
   "review.search_history",
 ] as const;
@@ -42,7 +43,7 @@ export function fromWireToolName(wireName: string): ReviewToolName {
   return dotted;
 }
 
-/** 七工具 schema（审计投影口径；每次调用返回全新数组，防调用方原地改动） */
+/** 八工具 schema（审计投影口径；每次调用返回全新数组，防调用方原地改动） */
 export function reviewToolSchemas(): readonly ToolSchema[] {
   return [
     {
@@ -135,6 +136,44 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
           },
         },
         required: ["symbol"],
+        additionalProperties: false,
+      }),
+    },
+    {
+      name: "review.search_code",
+      description:
+        "在仓库快照中按文本或正则搜索，返回命中的「文件:行号:整行内容」。默认字面匹配、不区分大小写。用于定位字符串、配置键、错误文案、日志消息等文本线索；已知符号名请优先用 review.get_symbol / review.find_references。结果有上限且不分页，命中过多时请收窄 query 或加 glob。正则使用 Rust regex 语法，不支持 lookaround 与反向引用。",
+      parametersJson: JSON.stringify({
+        type: "object",
+        properties: {
+          caseSensitive: {
+            type: "boolean",
+            description: "是否区分大小写。缺省 false（不区分）。",
+          },
+          glob: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+            description:
+              "限定搜索范围的文件 glob，支持 \"!\" 负向，例如 [\"src/**\", \"!**/*.test.ts\"]。缺省搜索整个仓库快照。",
+          },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: 200,
+            description: "最多返回的命中行数。缺省 50，上限 200。",
+          },
+          query: {
+            type: "string",
+            description: "要搜索的文本或正则。",
+          },
+          regex: {
+            type: "boolean",
+            description: "为 true 时把 query 当作正则（Rust regex 语法）。缺省 false（字面）。",
+          },
+        },
+        required: ["query"],
         additionalProperties: false,
       }),
     },

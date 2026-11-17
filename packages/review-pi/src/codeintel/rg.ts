@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { rgPath } from "@vscode/ripgrep";
 import { toRepoRelativePath } from "./fs-utils.js";
 
@@ -9,7 +10,10 @@ import { toRepoRelativePath } from "./fs-utils.js";
  * - 检索结果统一按 (file, line) 排序后返回，消除 rg 并行输出的顺序不确定性；
  * - 路径归一化为仓库相对 POSIX 路径；
  * - 退出码语义：0 = 有匹配，1 = 无匹配（不是错误），2 = 错误；
- * - 不使用 rg 的 --max-count 等静默截断开关——截断一律由上层预算层显式留痕。
+ * - 符号面（rgSearchWord / rgListFiles）不使用 rg 的 --max-count 等静默截断
+ *   开关——截断一律由上层预算层显式留痕；
+ * - 文本面（rgSearchText）是唯一例外：每文件上限用于抑制单文件噪声，工具层
+ *   必须在结果文本里显式留痕（命中数、被封顶的文件数）。
  */
 
 export interface RgMatch {
@@ -119,6 +123,93 @@ export function rgSearchWord(
   });
 }
 
+export interface RgTextSearchOptions {
+  /** 是否按正则解释 query（缺省字面匹配） */
+  readonly regex?: boolean;
+  /** 是否区分大小写（缺省不区分） */
+  readonly caseSensitive?: boolean;
+  /** 文件 glob（`!` 前缀 = 负向）；正负向会自动拆开排序 */
+  readonly globs?: readonly string[];
+  /** 排除 glob（ADR-0041；不带前导 "!"） */
+  readonly excludeGlobs?: readonly string[];
+  /** 每文件命中上限（缺省 20）；工具层必须在结果里留痕 */
+  readonly maxPerFile?: number;
+  /** 单次调用超时（毫秒），缺省 30000 */
+  readonly timeoutMs?: number;
+}
+
+/** 文本检索每文件缺省上限（与工具层常量对齐） */
+const DEFAULT_TEXT_MAX_PER_FILE = 20;
+/** 文本检索跳过的单文件大小（rg 后缀语法）：生成物/巨型数据不参与检索 */
+const TEXT_SEARCH_MAX_FILESIZE = "2M";
+
+/**
+ * 仓库快照文本检索（review.search_code 后端）。
+ *
+ * 与符号面共用 runRg / parseMatchEvent / 排序比较器；差异是三处：
+ * - `-F` 字面 / 默认 Rust regex（不使用 `-P`，不依赖 PCRE2 编译选项）；
+ * - 默认不区分大小写（显式 `caseSensitive` 才加 `--case-sensitive`）；
+ * - 每文件 `--max-count` 封顶，配合工具层的显式留痕。
+ *
+ * 输出统一按 (file, line, text) 排序，消除 rg 并行输出的顺序不确定性。
+ */
+export function rgSearchText(
+  root: string,
+  query: string,
+  options: RgTextSearchOptions = {},
+): Promise<readonly RgMatch[]> {
+  const positives: string[] = [];
+  const negatives: string[] = [];
+  for (const glob of options.globs ?? []) {
+    if (glob.startsWith("!")) {
+      negatives.push(glob);
+    } else {
+      positives.push(glob);
+    }
+  }
+  const args = [
+    "--json",
+    "--no-config",
+    "--no-ignore",
+    "--no-messages",
+    "--max-filesize",
+    TEXT_SEARCH_MAX_FILESIZE,
+    ...(options.caseSensitive === true ? ["--case-sensitive"] : ["--ignore-case"]),
+    ...(options.regex === true ? [] : ["--fixed-strings"]),
+    "--max-count",
+    String(options.maxPerFile ?? DEFAULT_TEXT_MAX_PER_FILE),
+    ...globArgs([...positives, ...negatives], options.excludeGlobs ?? []),
+    "--",
+    query,
+    ".",
+  ];
+  // cwd = root + 路径 "."：让用户 glob 走「仓库根相对」语义（`src/**` 也能命中），
+  // 避免把绝对 root 传给 rg 后 -g 只能匹配 `**/` 前缀的形态。
+  return runRg(args, options.timeoutMs ?? DEFAULT_TIMEOUT_MS, root).then((stdout) => {
+    const matches: RgMatch[] = [];
+    for (const line of stdout.split("\n")) {
+      if (line.length === 0) {
+        continue;
+      }
+      const parsed = parseMatchEvent(line);
+      if (parsed !== undefined) {
+        matches.push(parsed);
+      }
+    }
+    const normalized = matches.map((match) => ({
+      ...match,
+      file: toRepoRelativePath(
+        root,
+        path.isAbsolute(match.file) ? match.file : path.resolve(root, match.file),
+      ),
+    }));
+    normalized.sort(
+      (a, b) => compareText(a.file, b.file) || a.line - b.line || compareText(a.text, b.text),
+    );
+    return normalized;
+  });
+}
+
 interface RgMatchEvent {
   readonly type: "match";
   readonly data: {
@@ -163,9 +254,12 @@ function parseMatchEvent(line: string): RgMatch | undefined {
   };
 }
 
-function runRg(args: readonly string[], timeoutMs: number): Promise<string> {
+function runRg(args: readonly string[], timeoutMs: number, cwd?: string): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(rgPath, args, { windowsHide: true });
+    const child = spawn(rgPath, args, {
+      windowsHide: true,
+      ...(cwd !== undefined ? { cwd } : {}),
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;

@@ -85,7 +85,7 @@ function reportingCorpus() {
 /**
  * 规则 Skill 场景（ADR-0014）：主会话 Phase 5 出一条，独立 skill 会话再出一
  * 条，主会话 Phase 6 把两条候选一起裁定。工具面因此在第 6 条请求发生变化
- * （七检视工具 → 七检视工具 + bash），这正是 trace schema v2 的动机。
+ * （八检视工具 → 八检视工具 + bash），这正是 trace schema v2 的动机。
  */
 function skillSingleFindingCorpus() {
   return [

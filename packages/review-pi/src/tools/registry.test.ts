@@ -1,17 +1,17 @@
 import { expect, test } from "vitest";
 import { REVIEW_TOOL_ORDER, fromWireToolName, reviewToolSchemas, toWireToolName } from "./registry.js";
 
-// 七工具注册表：不再对 DSH 审计真源逐字节对照（ADR-0038）。
+// 八工具注册表：不再对 DSH 审计真源逐字节对照（ADR-0038）。
 //
 // 保留的性质都独立于「外部真源长什么样」：
-// - 工具面就是七个、名字唯一、顺序与 REVIEW_TOOL_ORDER 一致（审计按序投影）；
+// - 工具面就是八个、名字唯一、顺序与 REVIEW_TOOL_ORDER 一致（审计按序投影）；
 // - parametersJson 是可被模型消费的对象型 JSON Schema（canonical 键序 + 紧凑序列化，
 //   决定 wire 字节稳定，但不再与历史记录比对）；
 // - 点分名 ↔ 下划线名双向往返且无碰撞（运行期 fromWireToolName 遇到未知即抛错）。
 
-test("工具集为七个、名字唯一、与 REVIEW_TOOL_ORDER 同序", () => {
+test("工具集为八个、名字唯一、与 REVIEW_TOOL_ORDER 同序", () => {
   const schemas = reviewToolSchemas();
-  expect(schemas).toHaveLength(7);
+  expect(schemas).toHaveLength(8);
   expect(REVIEW_TOOL_ORDER).toHaveLength(schemas.length);
 
   const names = schemas.map((schema) => schema.name);

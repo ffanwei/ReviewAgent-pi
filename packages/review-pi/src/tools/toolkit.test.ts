@@ -10,7 +10,7 @@ import { repoFixturePath } from "../testing/repos.js";
 import { DEFAULT_REVIEW_RUNTIME } from "../shared/review-runtime.js";
 import { DEFAULT_CODEINTEL } from "../shared/config.js";
 
-// 七工具执行器行为测试（#6 P3a）：sample 合成仓库上验证输出形态、入参校验、
+// 八工具执行器行为测试（#6 P3a）：sample 合成仓库上验证输出形态、入参校验、
 // 预算截断、Ledger 去重与只读纪律。VUL4J-1 真源字节对齐另见
 // toolkit-vul4j1.test.ts（skipIf 快照守卫）。
 
@@ -394,7 +394,7 @@ test("Ledger 分叉态（ADR-0014）：沿用种子 id 与顺序，新登记接�
   expect(sparse.snapshot().map((entry) => entry.id)).toEqual(["ctx#007", "ctx#008"]);
 });
 
-test("executeTool：未知名为有界错误；schema 面固定七工具", async () => {
+test("executeTool：未知名为有界错误；schema 面固定八工具", async () => {
   const tk = toolkit();
   await expect(tk.executeTool("review.nope", {})).rejects.toThrow(
     /unknown tool "review.nope" \(available: review.get_diff, /,
@@ -405,6 +405,7 @@ test("executeTool：未知名为有界错误；schema 面固定七工具", async
     "review.get_file",
     "review.find_references",
     "review.get_call_chain",
+    "review.search_code",
     "review.search_rule",
     "review.search_history",
   ]);
@@ -439,7 +440,7 @@ test("runtime 穿参（ADR-0025）：micro 透出到 Toolkit，并驱动工具�
   );
 });
 
-test("只读纪律：七工具全调用后仓库内容哈希不变", async () => {
+test("只读纪律：八工具全调用后仓库内容哈希不变", async () => {
   function snapshotDirHash(root: string): string {
     const hash = createHash("sha256");
     const visit = (dir: string): void => {

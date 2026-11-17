@@ -16,13 +16,14 @@ import {
   searchHistoryTool,
   searchRuleTool,
 } from "./search-tools.js";
+import { searchCodeTool } from "./search-code.js";
 import { REVIEW_TOOL_ORDER, reviewToolSchemas } from "./registry.js";
 import type { ReviewToolHandler, ToolRunContext } from "./toolkit-types.js";
 
 /**
  * review.* 工具箱装配（#6 P3a：工具驱动形态的工具面）。
  *
- * - schema 面（Zone A）：reviewToolSchemas() 固定七工具（字节稳定）；
+ * - schema 面（Zone A）：reviewToolSchemas() 固定八工具（字节稳定）；
  * - 执行面（Zone C）：懒加载 RepoContext memoize——模型不调用工具的 run 不产生
  *   仓库读取成本；首次调用失败成为有界的工具错误（进审计 toolCallLog），不静默；
  * - Context Ledger：ledgerMode="enabled"（唯一形态）注入功能态（重复读取返回
@@ -33,7 +34,7 @@ import type { ReviewToolHandler, ToolRunContext } from "./toolkit-types.js";
  * 工具预算、审计记录）在 loop 层落位。
  */
 
-/** 七工具执行器（顺序与 REVIEW_TOOL_ORDER 对齐；装配处查重防漂移） */
+/** 八工具执行器（顺序与 REVIEW_TOOL_ORDER 对齐；装配处查重防漂移） */
 export function reviewToolHandlers(): ReadonlyMap<string, ReviewToolHandler> {
   const handlers: ReadonlyArray<[string, ReviewToolHandler]> = [
     ["review.get_diff", getDiffTool],
@@ -41,6 +42,7 @@ export function reviewToolHandlers(): ReadonlyMap<string, ReviewToolHandler> {
     ["review.get_file", getFileTool],
     ["review.find_references", findReferencesTool],
     ["review.get_call_chain", getCallChainTool],
+    ["review.search_code", searchCodeTool],
     ["review.search_rule", searchRuleTool],
     ["review.search_history", searchHistoryTool],
   ];

@@ -219,12 +219,12 @@ test("单轮直驱 + 工具子循环：phase-2 执行 get_diff 后 recall 收尾
   expect(outcome.audit.truncationReasons).toEqual([]);
 });
 
-test("Zone A 稳定：七工具面跨请求字节恒定（审计点分名 / wire 下划线名），消息前缀 append-only", async () => {
+test("Zone A 稳定：八工具面跨请求字节恒定（审计点分名 / wire 下划线名），消息前缀 append-only", async () => {
   const { run } = scriptedLoop(singleRoundScript());
   const outcome = await run();
   const requests = outcome.audit.requests;
 
-  // 审计投影：七工具、点分名、顺序与注册表一致
+  // 审计投影：八工具、点分名、顺序与注册表一致
   for (const request of requests) {
     expect(request.tools.map((tool) => tool.name)).toEqual([
       "review.get_diff",
@@ -232,6 +232,7 @@ test("Zone A 稳定：七工具面跨请求字节恒定（审计点分名 / wire
       "review.get_file",
       "review.find_references",
       "review.get_call_chain",
+      "review.search_code",
       "review.search_rule",
       "review.search_history",
     ]);
@@ -246,6 +247,7 @@ test("Zone A 稳定：七工具面跨请求字节恒定（审计点分名 / wire
     "review_get_file",
     "review_find_references",
     "review_get_call_chain",
+    "review_search_code",
     "review_search_rule",
     "review_search_history",
   ]);

@@ -10,7 +10,7 @@
 
 | 能力 | 说明 |
 |---|---|
-| 单次检视 | 一条命令一次 run：六阶段循环 + 七个 review 工具 + Context Ledger + 审计投影 |
+| 单次检视 | 一条命令一次 run：六阶段循环 + 八个 review 工具 + Context Ledger + 审计投影 |
 | 两种变更集输入 | `--mr-diff`（标准 unified diff）或 `--mr-json`（GitCode/GitLab `/pulls/:number/files` 原样 JSON：数组或 `{diffs:[…]}`；路径取 `new_path` / `filename` / `file_path` / `path`、正文取 `diff` / `patch`，`diff` 为对象时取内层 `diff.diff`） |
 | 规则 Skill | `--rule-skill-zip` / `--rule-skill <dir>` / `--skill <dir>`，一次可传多个（逗号列表或重复旗标），**只认显式输入**（不扫描被检视仓库）；`--strict-rule-skill` 把装载失败改为 fail fast。`--skill` 当前与 `--rule-skill` 同义（同一类 Skill，排在 `--rule-skill` 之后；同名 skill 由 `--skill` 覆盖）。值位置的空串 / 纯空白按未传处理 |
 | 中文建议 | 恒产 `reviews_tips_zh.json`（有意见时）：语义随候选直接产出（ADR-0090），与 MCP 上报同源；控制台 stdout 与 `reviews_all.json` 同为中文 |
@@ -331,7 +331,7 @@ node scripts/e2e-mcp/run-e2e.mjs
 仓库布局：
 
 ```
-packages/review-pi/       检视运行时 + CLI（六阶段循环、七工具、规则 Skill、审计）
+packages/review-pi/       检视运行时 + CLI（六阶段循环、八工具、规则 Skill、审计）
   src/                    运行时源码（模块划分见 src/ 下的目录）
   testdata/               离线回放 trace、夹具仓、golden 语料、large-mr e2e diff
 tests/                    根包测试（scripts/ 工具链的纯函数，如回放指标解析）

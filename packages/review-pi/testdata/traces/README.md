@@ -21,9 +21,9 @@
 | `shard-two-file.json` | 两片串行：每片六相位、跨片 findings 合并 | 同上 + `testdata/golden/two-file-shard.diff` | v2 |
 | `large-mr.json` | 大 MR：9 文件 / 1216 增加行，规则 Skill + MCP stub + 报文 + 总结（**真网关录制**） | `testdata/repos/large-mr` + `testdata/e2e/large-mr.diff` | v2 |
 
-单文件约 22–42 KB；`large-mr.json` 因检视回合的原始 SSE 较大约 3.9 MB，其余五个合计 < 150 KB。
+单文件约 24–42 KB；`large-mr.json` 因检视回合的原始 SSE 较大约 4.2 MB，其余五个合计约 157 KB。
 
-交互条数（`ADR-0065` 起有 finding 的检视恒有一次中文 tips 一次性调用）：`core-single-finding` 7（6 review + 1 oneshot）、`core-no-finding` 6、`reporting-single-finding` 8（6 + 2）、`rule-skill-single-finding` 8（7 + 1）、`shard-two-file` 13（12 review + 1 oneshot，合并后统一生成 tips）、`large-mr` 22（20 + 2，多文件分批上报）。
+交互条数（canned 场景按语料推进；`large-mr` 为真网关录制）：`core-single-finding` 6、`core-no-finding` 6、`reporting-single-finding` 7（6 review + 1 oneshot）、`rule-skill-single-finding` 7、`shard-two-file` 12、`large-mr` 19（18 review + 1 oneshot，多文件分批上报）。
 
 ## schema v2（ADR-0049）
 
@@ -38,7 +38,7 @@ v1 的 `tools` 是全 trace 共享一份；v2 改为：
 }
 ```
 
-- 主会话七只工具、规则 Skill 会话八只（多 `bash`）→ 两个 variant；`toolsRef` 指向本条用的那份。
+- 主会话八只工具、规则 Skill 会话九只（多 `bash`）→ 两个 variant；`toolsRef` 指向本条用的那份。
 - `requestNormalization` 启用时，录制与回放都先把 lane 目录替换成 `<lane>` 再算指纹。规则 Skill 的 `location="…"` 带 lane 绝对路径，不归一化就不能跨 worker / 跨运行回放。
 - v1 trace 没有该字段，继续按原样哈希；**不要手工把 v1 trace 改写成 v2**，需要新格式就重录。现存 6 条 trace 均为 v2（提示词/流程一变就按「什么时候必须重录」重录，`record` 会顺带升级格式）。
 

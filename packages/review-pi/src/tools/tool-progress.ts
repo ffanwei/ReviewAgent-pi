@@ -6,7 +6,7 @@ import { clampLine, summarizeToolArguments } from "./tool-arguments.js";
  * 工具进度包装层（ADR-0016）：给任意 `AgentTool` 套上「开始/结束」两个事件。
  *
  * 为什么共享一层：主会话（`loop/agent-review-loop`）与 skill 会话
- * （`knowledge/skill-pass`）的工具面不同（七只 / 八只），但「什么算失败」必须
+ * （`knowledge/skill-pass`）的工具面不同（八只 / 九只），但「什么算失败」必须
  * 同口径，否则同一行进度在两个会话里会写出两种结论。判据沿用本仓既有的失败
  * 约定：工具返回文本以 `Error: ` 开头即失败（预算耗尽与抓取异常都走这条），
  * 抛出的异常同样算失败并原样上抛。

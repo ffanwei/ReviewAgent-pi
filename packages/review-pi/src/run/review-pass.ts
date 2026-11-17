@@ -213,7 +213,7 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     ledgerMode: "enabled",
   });
 
-  // skill 会话的七工具 toolkit：每个 skill 按 Phase-5 ledger 快照分叉一次
+  // skill 会话的八工具 toolkit：每个 skill 按 Phase-5 ledger 快照分叉一次
   // （skill 之间互不可见；skill 读取不污染主账本）
   const skillToolkitFor = (seed: readonly LedgerEntry[]) =>
     buildReviewToolkit({

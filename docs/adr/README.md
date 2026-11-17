@@ -95,6 +95,7 @@
 | [ADR-0096](0096-phase-json-parse-retry.md) | Phase 5/6 JSON 解析失败：离线 salvage + 同会话重试 + 短窗口修复（审计可区分恢复来源） |
 | [ADR-0097](0097-summary-fixed-structure-and-stars.md) | 收尾总结固定结构（总览 / 意见分布 / 速览 / 星级）：数字与星级由代码确定性计算；零意见同模板且不评星级 |
 | [ADR-0098](0098-structural-reorg-diff-and-module-renames.md) | 模块结构重整：统一 `diff/` 解析层（块 / 宽松 / 头扫描 / 严格度量四视图）；解环（运行时依赖图无环）；`zonea`/`zoneb`/`experiment` 等目录改名；根层与构建清理 |
+| [ADR-0099](0099-tool-code-search.md) | 八工具面：新增 `review.search_code`（仓库快照文本检索；字面/正则、glob、每文件+全局上限、预算留痕、Ledger）；取代「工具面零改动」表述 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

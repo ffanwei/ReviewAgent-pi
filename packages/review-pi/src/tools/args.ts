@@ -37,6 +37,71 @@ export function optionalPositiveIntArg(
   return value;
 }
 
+/** 可选布尔参数（缺省 undefined） */
+export function optionalBooleanArg(
+  toolName: string,
+  args: Record<string, unknown>,
+  field: string,
+): boolean | undefined {
+  const value = args[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`${toolName}: argument "${field}" must be a boolean (got ${JSON.stringify(value)})`);
+  }
+  return value;
+}
+
+/** 可选字符串数组参数（缺省 undefined；空数组原样返回） */
+export function optionalStringArrayArg(
+  toolName: string,
+  args: Record<string, unknown>,
+  field: string,
+): readonly string[] | undefined {
+  const value = args[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${toolName}: argument "${field}" must be an array of strings`);
+  }
+  return value as readonly string[];
+}
+
+/**
+ * 检索 glob 校验与归一（review.search_code）。
+ *
+ * - `!` 前缀保留（负向 glob，ripgrep 语义）；
+ * - 反斜杠归一为 `/`（Windows 形态与 POSIX 等价）；
+ * - 拒绝绝对路径与 `..` 段（与 get_file 的路径逃逸纪律一致）；
+ * - 去重 + 排序：同一语义不同参数顺序必须命中同一 Ledger 条目。
+ */
+export function validateSearchGlobs(
+  toolName: string,
+  globs: readonly string[] | undefined,
+): readonly string[] {
+  if (globs === undefined) {
+    return [];
+  }
+  const normalized = new Set<string>();
+  for (const raw of globs) {
+    const negative = raw.startsWith("!");
+    const body = (negative ? raw.slice(1) : raw).replace(/\\/g, "/");
+    if (body.length === 0) {
+      throw new Error(`${toolName}: glob must not be empty`);
+    }
+    if (body.startsWith("/") || body.startsWith("//") || /^[A-Za-z]:/.test(body)) {
+      throw new Error(`${toolName}: glob must be repository-relative, got "${body}"`);
+    }
+    if (body.split("/").includes("..")) {
+      throw new Error(`${toolName}: glob must not contain "..", got "${body}"`);
+    }
+    normalized.add(`${negative ? "!" : ""}${body}`);
+  }
+  return [...normalized].sort();
+}
+
 /** 错误信息中的原文回显（有界） */
 export function boundedEcho(text: string, maxChars: number): string {
   const trimmed = text.trim();

@@ -78,13 +78,14 @@ function readAudit(auditPath: string): {
   };
 }
 
-/** 七工具 wire 名序（REVIEW_TOOL_ORDER 下划线形态） */
+/** 八工具 wire 名序（REVIEW_TOOL_ORDER 下划线形态） */
 const WIRE_TOOL_NAMES = [
   "review_get_diff",
   "review_get_symbol",
   "review_get_file",
   "review_find_references",
   "review_get_call_chain",
+  "review_search_code",
   "review_search_rule",
   "review_search_history",
 ];
@@ -95,6 +96,7 @@ const DOTTED_TOOL_NAMES = [
   "review.get_file",
   "review.find_references",
   "review.get_call_chain",
+  "review.search_code",
   "review.search_rule",
   "review.search_history",
 ];
@@ -124,7 +126,7 @@ const AUDIT_KEYS = [
   "skillPassLog",
 ];
 
-test("全链零工具：req0 = ZoneA+MR+Phase-1 + 七工具面；产物布局与审计键序", async () => {
+test("全链零工具：req0 = ZoneA+MR+Phase-1 + 八工具面；产物布局与审计键序", async () => {
   const script = fakeFetch(sixPhaseNoToolCorpus());
   const runsRoot = tempRunsRoot();
   const { record, recordPath, auditPath, runId, transcriptPath, reviewsPath } = await runReview({
@@ -178,7 +180,7 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 七工具面；产物布局与
   expect(audit.effort).toBe("default");
   expect(audit.requests).toHaveLength(6);
 
-  // req0：system + MR user + Phase-1 user，工具面为七工具（tool_choice 缺席为 pi 方言）
+  // req0：system + MR user + Phase-1 user，工具面为八工具（tool_choice 缺席为 pi 方言）
   const req0 = JSON.parse(audit.requests[0].wireBody) as {
     messages: { role: string; content: string }[];
     tools?: { function: { name: string } }[];

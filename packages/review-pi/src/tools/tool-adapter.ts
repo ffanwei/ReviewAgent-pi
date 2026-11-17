@@ -7,7 +7,7 @@ import { withToolProgress, type ToolProgressLimits } from "./tool-progress.js";
 import type { ReviewToolkit } from "./toolkit.js";
 
 /**
- * 七工具 → `AgentTool` 的唯一适配器（ADR-0085）。
+ * 八工具 → `AgentTool` 的唯一适配器（ADR-0085）。
  *
  * 这里只拥有「投影与 wire 口径」：点分名 → 下划线 wire 名、入参剥离、
  * `"Error: "` 失败文本、可选的进度包装。预算、审计与计数全部由调用方的

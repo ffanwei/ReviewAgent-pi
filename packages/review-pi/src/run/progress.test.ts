@@ -393,7 +393,7 @@ test("skill 会话的 bash 计入会话留痕、不计入指标 toolCalls（ADR-
     (event): event is Extract<RunProgressEvent, { kind: "skill"; state: "end" }> =>
       event.kind === "skill" && event.state === "end",
   );
-  // 会话留痕的 toolCallCount 只数七检视工具（ADR-0014 既有口径）；bash 不进去
+  // 会话留痕的 toolCallCount 只数八检视工具（ADR-0014 既有口径）；bash 不进去
   expect(skillEnd).toMatchObject({ skill: "sample-rule", requestCount: 2, toolCallCount: 0 });
 
   // 指标 toolCalls 也不含 bash（本 run 主会话零工具调用）

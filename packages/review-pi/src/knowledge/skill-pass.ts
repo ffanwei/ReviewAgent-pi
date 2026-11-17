@@ -31,8 +31,8 @@ import { buildSkillPassInvocation } from "./skill-pass-brief.js";
  * 首条 user 消息 = `formatSkillInvocation(skill)` + 输出契约。skill 之间、
  * skill 与主会话之间互不可见（同一快照各自分叉）。
  *
- * 工具面：七检视工具 + `bash`（八只；bash 边界见 `tools/skill-bash.ts`）。
- * 七工具跑在**按 Phase-5 ledger 快照分叉**的 toolkit 上——直接共享主实例会
+ * 工具面：八检视工具 + `bash`（九只；bash 边界见 `tools/skill-bash.ts`）。
+ * 八工具跑在**按 Phase-5 ledger 快照分叉**的 toolkit 上——直接共享主实例会
  * 让后跑的 skill 拿到它没经历过的 "Already loaded" 引用。
  *
  * 失败语义：会话异常 / provider 错误 / 解析失败 ⇒ `failed`（带
@@ -49,7 +49,7 @@ export interface SkillPassOptions {
   readonly systemPrompt: string;
   /** Phase 5 结束时的 messages 快照（原样作为会话历史） */
   readonly seedMessages: readonly AgentMessage[];
-  /** 七工具执行面（ledger 已按快照分叉） */
+  /** 八工具执行面（ledger 已按快照分叉） */
   readonly toolkit: ReviewToolkit;
   readonly apiKey: string;
   readonly baseUrl?: string;

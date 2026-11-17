@@ -26,7 +26,7 @@ import { extractChatUsage, type RawWireUsage } from "../shared/wire-usage.js";
 /**
  * 一次性模型调用缝（ADR-0045）：报文 / 总结 / 候选修复生成用的最小 chat completion。
  *
- * 不走 pi-ai 序列化缝（那是检视会话的七工具循环）也不走呈现引擎（那是可注入
+ * 不走 pi-ai 序列化缝（那是检视会话的八工具循环）也不走呈现引擎（那是可注入
  * 的核外模块）——这里是核外自有的一次性请求：system + user 两条消息、非流式、
  * 期望纯文本或 JSON 回包。与 `provider/gateway-probe.ts` 同款裸 fetch 形态
  * （OpenAI 兼容：`<baseUrl>/chat/completions`，baseUrl 需自带 `/v1`）。

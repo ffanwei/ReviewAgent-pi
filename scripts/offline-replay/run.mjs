@@ -72,6 +72,11 @@ async function record(flags) {
   try {
     lane = await createLane({ runDir, label: "record", scenario, server, index: 0 });
     run = await runCli({ lane, scenario, timeoutMs: scenario.timeoutMs });
+    if (run.status !== 0) {
+      process.stderr.write(
+        `replay:record CLI 退出码 ${String(run.status)}；stderr：\n${run.stderr}\n`,
+      );
+    }
     const mcpCalls = scenario.mcp.mode === "stub" ? server.mcpCalls() : undefined;
     if (flags.skipAssert === true) {
       process.stderr.write(

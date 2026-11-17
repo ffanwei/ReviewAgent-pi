@@ -63,7 +63,7 @@ import { completeOneShot } from "../provider/one-shot-llm.js";
 //   或下一轮 phase-1 指令；complete / 轮次上界即停；
 // - transformContext 不设（恒等透传）：消息前缀 append-only，Zone A/B/C
 //   稳定前缀由内核时序直接保证；
-// - state.tools = 七工具 AgentTool（name = wire 下划线名直达 wire function.name；
+// - state.tools = 八工具 AgentTool（name = wire 下划线名直达 wire function.name；
 //   prepareArguments 剥未知键对齐 DSH 容忍语义——pi-ai 严格校验缝的方言对冲）。
 //
 // 工具预算与审计在 execute 包装层：成功执行计数跨轮不重置（失败也计入），
@@ -89,7 +89,7 @@ export interface AgentReviewLoopInputs {
   readonly systemPrompt: string;
   /** 初始上下文消息（MR 消息等 run 级组装，由调用方决定） */
   readonly initialContextMessages: readonly LlmMessage[];
-  /** 七工具执行面（含 Ledger；唯一形态恒传 ledgerMode "enabled" 的 toolkit） */
+  /** 八工具执行面（含 Ledger；唯一形态恒传 ledgerMode "enabled" 的 toolkit） */
   readonly toolkit: ReviewToolkit;
   readonly apiKey: string;
   /** 网关 base URL 覆盖（配置 `reviewer.baseUrl`；缺省官方接入点） */
@@ -146,7 +146,7 @@ export interface SkillPassRequest {
   /** 已装载的规则 Skill（CLI 顺序；降级包不跑会话） */
   readonly skills: readonly RuleSkill[];
   /**
-   * 按 Phase-5 ledger 快照分叉七工具 toolkit。每个 skill 调用一次：skill 之间
+   * 按 Phase-5 ledger 快照分叉八工具 toolkit。每个 skill 调用一次：skill 之间
    * 互不可见，且 skill 会话的读取不会污染主账本。
    */
   readonly toolkitFor: (seedLedgerSnapshot: readonly LedgerEntry[]) => ReviewToolkit;

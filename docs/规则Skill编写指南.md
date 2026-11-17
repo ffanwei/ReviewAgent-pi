@@ -10,7 +10,7 @@ review-pi review --mr-diff change.diff --taskId t1 --rule-skill-zip my-rules.zip
  ├─ ① 输入预处理（harness 负责）        ← 不需要你做
  ├─ ② 六阶段主检视会话（harness 负责）   ← skill 会话以 Phase-5 快照为种子
  ├─ ③ 规则 Skill 会话（你的包在这里跑）  ← 每个包一个独立会话
- │     ├─ 七只 review.* 检视工具
+ │     ├─ 八只 review.* 检视工具
  │     └─ bash（跑你包里的脚本）
  ├─ ④ 候选拦截链 + 合并 + Phase 6 验证（harness 负责）
  └─ ⑤ 产物落盘 / 中文 tips / MCP 上报（harness 负责） ← 不需要你做
@@ -32,9 +32,9 @@ skill 会话是一条**独立模型会话**，它已经包含：
 
 也就是说：**MR 是什么、改了哪些文件，会话开局就知道**。你的 SKILL.md 不要重复贴 diff，直接写「怎么检视」。
 
-### 1.2 八只工具
+### 1.2 九只工具
 
-前七只与主会话完全相同（只读、面向仓库快照）：
+前八只与主会话完全相同（只读、面向仓库快照）：
 
 | 工具 | 参数 | 用途 |
 |---|---|---|
@@ -43,10 +43,11 @@ skill 会话是一条**独立模型会话**，它已经包含：
 | `review.get_file` | `path`（仓库相对 POSIX 路径）、可选 `startLine`/`endLine` | 读快照文件（可按 1-based 行区间读） |
 | `review.find_references` | `symbol` | 名字级引用查找（整词、大小写敏感；不区分重载/覆写） |
 | `review.get_call_chain` | `symbol` | 名字级调用链（hop-1/hop-2 调用方 + 被调方） |
+| `review.search_code` | `query`（必填）、可选 `regex` / `caseSensitive` / `glob` / `limit` | 仓库快照文本 / 正则检索（ripgrep 默认 Rust regex；`glob` 支持 `!` 负向） |
 | `review.search_rule` | `query`（大小写不敏感子串） | 搜项目规则库（按 run 静态配置，多数仓为空） |
 | `review.search_history` | `query` | 搜历史检视/缺陷记录（同上） |
 
-第八只是 skill 会话**专属**的：
+第九只是 skill 会话**专属**的：
 
 | 工具 | 说明 |
 |---|---|
@@ -96,7 +97,7 @@ skill 会话最后一条 assistant 回复会被解析成候选（candidates）�
 
 - ❌ **数据预处理**：不要解析/装载/过滤 diff，不要对输入做归一化——上下文里已有 diff，harness 已做过滤。
 - ❌ **意见上报**：不要尝试调用任何上报接口、写任何「平台」格式的文件。上报只发生在 harness 收尾。
-- ❌ **写被检视仓库**：七只 review 工具全部只读；`bash` 的 cwd 是**你的包根**，不是被检仓库。不要试图改仓库或产出「修复补丁」。
+- ❌ **写被检视仓库**：八只 review 工具全部只读；`bash` 的 cwd 是**你的包根**，不是被检仓库。不要试图改仓库或产出「修复补丁」。
 - ✅ **候选直接产出中文与 tips**（ADR-0090）：`title` / `description` / `tips.{review,suggestion,subcategory}` 用中文；`category` 用中文七类（可维护 / 安全 / 可靠性 / 可测试性 / 性能 / 可移植 / 可读性）；`id` / `file` / `line` / `rule` / `evidence` 里的代码摘录保持英文原样。
 - ❌ **依赖宿主环境变量 / 密钥**：bash 拿不到白名单之外的 env（网关 key、CI 变量都不可见）。脚本别设计成「需要 `SOME_TOKEN` 才能跑」。
 - ❌ **声明新的工具或改工具边界**：八只工具的 schema、超时、env 白名单是核内常量，**不读你包里的任何声明**。
@@ -197,7 +198,7 @@ description: >
 （或：直接按顺序读 rules/，每个文件很短。）
 
 ## 3. 检视方法
-怎么组合七只工具 + bash：先 get_diff 定位改动行，再 get_file/read 规则，
+怎么组合八只工具 + bash：先 get_diff 定位改动行，再 get_file/read 规则，
 find_references 查影响面…… 写成可遵循的步骤。
 
 ## 4. 证据标准
@@ -270,7 +271,7 @@ tags: [sql, injection, concatenation]
 
 **给「不报」的出口。** 每条规则都写清「什么情况看起来相关但不适用」（例如 optional 链已判空、测试代码豁免）。压误报比压漏报更能提高存活率——每个误报都会消耗 Phase 6 验证预算。
 
-**复用七工具而不是重造。** 查符号用 `review.get_symbol` / `find_references`，不要让脚本自己 grep 仓库（工具走索引且结果已预算；脚本输出也占预算但没索引）。`bash` 留给你包内的数据处理（筛规则、解析 references）。
+**复用八工具而不是重造。** 查符号用 `review.get_symbol` / `find_references`，不要让脚本自己 grep 仓库（工具走索引且结果已预算；脚本输出也占预算但没索引）；只有字面线索（配置键、错误文案、日志消息）才用 `review.search_code`。`bash` 留给你包内的数据处理（筛规则、解析 references）。
 
 **多包拆分。** 规则域差别大就拆成多个包（`--rule-skill-zip a.zip,b.zip`），每个包会话聚焦、上下文小、互不干扰。顺序 = CLI 传入顺序。
 

@@ -55,7 +55,7 @@ import {
 } from "./shard-planner.js";
 
 // 单案全链入口（ADR-0024：配置矩阵删除后只剩唯一形态）：
-// MR 初始上下文 → pi-agent-core Agent 三钩子循环（七工具 + 轮次上界 + Ledger
+// MR 初始上下文 → pi-agent-core Agent 三钩子循环（八工具 + 轮次上界 + Ledger
 // + 规则 Skill 会话）→ 审计投影落盘。
 //
 // 规则 Skill 是唯一形态（原 config F）：装载成功则用于候选阶段的规则检视；
