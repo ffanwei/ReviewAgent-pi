@@ -39,3 +39,4 @@ Default five canonical roles, label string equal to role name (`needs-triage` / 
 ### Domain docs
 
 Single-context: one `CONTEXT.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
+代码结构与逐文件职责见 `docs/开发指南-仓库结构与文件职责.md`（新增 / 改名 / 删除模块时同步更新）。

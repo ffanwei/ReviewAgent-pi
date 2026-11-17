@@ -385,6 +385,7 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
 | [`docs/运行手册-离线回放.md`](docs/运行手册-离线回放.md) | 离线回放 / 并发阶梯：命令、全部参数、场景 schema、延迟与安全阀、报告读法、未命中排障、重录流程 |
 | [`scripts/e2e-mcp/README.md`](scripts/e2e-mcp/README.md) | 大 MR e2e：夹具与 diff 生成、真实 MCP server / 展示页、`run-e2e.mjs` 参数与断言口径、产物与冻结流程 |
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表（术语唯一权威） |
+| [`docs/开发指南-仓库结构与文件职责.md`](docs/开发指南-仓库结构与文件职责.md) | 目录结构、模块分层、逐文件职责、测试布局与建议阅读顺序 |
 | [`docs/adr/`](docs/adr/) | 架构决策记录（Go / C++ 符号提取器见 ADR-0042） |
 | [`docs/agents/`](docs/agents/) | agent 协作约定（issue tracker / triage labels / domain docs） |
 | [`.agents/skills/real-defect-url-injection/SKILL.md`](.agents/skills/real-defect-url-injection/SKILL.md) | 真实缺陷回放：VUL4J-38 / CVE-2014-4172 的 diff 构造、真跑与归档 |
