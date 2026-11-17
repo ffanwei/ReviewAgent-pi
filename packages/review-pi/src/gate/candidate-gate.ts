@@ -28,6 +28,11 @@ export interface GateInput {
    * （内核直调 / 单测零漂移）；run 层按配置构建后传入。
    */
   readonly scope?: DiffScope;
+  /**
+   * 分组检视的实验阀：true = 证据核验失败不拦截候选（OCR 式 fail-open）。
+   * 缺省 false = 保持严格拦截。
+   */
+  readonly failOpenVerification?: boolean;
 }
 
 export interface GateOutput {
@@ -52,6 +57,7 @@ export function applyCandidateGate(input: GateInput): GateOutput {
       resolvedVerdicts[index],
       emittedContentKeys,
       input.scope,
+      input.failOpenVerification === true,
     );
     if (rejection !== undefined) {
       rejections.push(rejection);
@@ -109,6 +115,7 @@ function firstFailingStage(
   verdict: VerificationVerdict | undefined,
   emittedContentKeys: ReadonlySet<string>,
   scope: DiffScope | undefined,
+  failOpenVerification: boolean,
 ): CandidateRejection | undefined {
   const schemaErrors = validateFinding(candidate);
   if (schemaErrors.length > 0) {
@@ -117,16 +124,18 @@ function firstFailingStage(
   if (!hasEvidence(candidate)) {
     return { candidateId, stage: "NO_EVIDENCE", reason: "未引用证据（No Evidence, No Finding）" };
   }
-  if (verdict === undefined) {
-    return { candidateId, stage: "VERIFICATION_FAILED", reason: "没有该候选的裁决结论" };
-  }
-  if (!verdict.pass) {
-    const detail = verdict.reason.length > 0 ? `：${verdict.reason}` : "";
-    return {
-      candidateId,
-      stage: "VERIFICATION_FAILED",
-      reason: `证据裁决驳回了该候选${detail}`,
-    };
+  if (!failOpenVerification) {
+    if (verdict === undefined) {
+      return { candidateId, stage: "VERIFICATION_FAILED", reason: "没有该候选的裁决结论" };
+    }
+    if (!verdict.pass) {
+      const detail = verdict.reason.length > 0 ? `：${verdict.reason}` : "";
+      return {
+        candidateId,
+        stage: "VERIFICATION_FAILED",
+        reason: `证据裁决驳回了该候选${detail}`,
+      };
+    }
   }
   if (scope !== undefined) {
     const located = candidate as Pick<Finding, "file" | "line">;

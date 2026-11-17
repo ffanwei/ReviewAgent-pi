@@ -1,0 +1,212 @@
+{
+  "instance_id": "infiniflow__ragflow@7051234",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "b1c874698469ac999d210cd8cde59425781e4da2",
+  "head_commit": "705123406ec7cd5eb1f9be26f6c5c31357aeffc9",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T04:25:11.016619+00:00",
+  "duration_seconds": 128.05,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 7 finding(s) across 4 selected item(s).",
+    "summary": {
+      "files_reviewed": 4,
+      "comments": 7,
+      "total_tokens": 389902,
+      "input_tokens": 360915,
+      "output_tokens": 28987,
+      "cache_read_tokens": 300032,
+      "elapsed": "2m8s"
+    },
+    "tool_calls": {
+      "total": 42,
+      "by_tool": {
+        "code_comment": 4,
+        "code_search": 17,
+        "file_find": 2,
+        "file_read": 15,
+        "file_read_diff": 4
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "api/apps/api_app.py",
+        "content": "`DocumentService.get_doc_ids_by_doc_names()` returns `None` when no document name matches (see `if not doc_ids: return` in document_service.py). Previously the list comprehension always produced a list (possibly `[None]`), so callers that only pass `doc_ids` worked. Now, when `doc_names` is absent/unmatched but `doc_ids` is provided, `doc_id not in doc_ids` raises `TypeError: argument of type 'NoneType' is not iterable`, which is caught by the outer `except` and turned into a server error — breaking the doc_ids-only deletion path. Normalize to a list.",
+        "suggestion_code": "        doc_ids = DocumentService.get_doc_ids_by_doc_names(req.get(\"doc_names\", [])) or []",
+        "existing_code": "        doc_ids = DocumentService.get_doc_ids_by_doc_names(req.get(\"doc_names\", []))",
+        "start_line": 618,
+        "end_line": 618,
+        "thinking": "Peewee default autoconnect True, so lazy iteration reconnects. Fine, and consistent with existing `docinfos`.\n\nNow the main bug comment. Also consider adding: `get_by_ids` outside try means DB errors produce unhandled exception; low.\n\nLet me also verify the `docs` variable naming shadows? Not an issue.\n\nShould I flag that documents not found still `return get_data_error_result` inside the loop after some deletions — pre-existing behavior.\n\nLet me check where document_rm is also defined in sdk or other apps? Not relevant.\n\nSo final: one comment on line 618-620 about None.\n\nAlso maybe comment about `get_by_ids(doc_ids)` returning docs without tenant scoping — could allow deleting documents belonging to other tenants by name! Actually this existed before: `get_doc_id_by_doc_name` was not tenant-scoped either. So pre-existing. Skip.\n\nOne more potential issue: `doc_dic` built from `get_by_ids` — but the doc objects may be stale after remove_document; irrelevant.\n\nI'll write the comment.\n\nSuggestion code:\n```python\n        doc_ids = DocumentService.get_doc_ids_by_doc_names(req.get(\"doc_names\", [])) or []\n```\n\nComment severity high, category bug.\n\nAlso, should I comment on the fact that `get_by_ids` is called outside try/except? The original `get_by_id` was inside the try, exceptions were caught per-doc and added to errors. Now if `get_by_ids` raises (DB error), an unhandled exception escapes and Flask returns 500 rather than `server_error_response`, and other docs' errors aren't accumulated. This is a minor behavior change. I could mention but keep precision. Perhaps mention as low severity in same or separate comment. I'll include as a low-severity note? Risk of noise. I think it's legitimate but minor; I'll skip to favor precision... Actually it's a real, though small, robustness change: unauthenticated? It's within a request, Flask handles with generic 500 HTML response. Minor. I'll mention it briefly as low severity? Hmm. Guidance: favor precision over recall; style suggestions non-blocking. I'll include only the main bug plus maybe mention that doc_dic lookups use `doc_id not in doc_dic` fine.\n\nLet me double-check there's no other subtle issue: the `for doc_id in req.get(\"doc_ids\", [])` loop after the None fix — if `req.get(\"doc_ids\")` is None explicitly passed (JSON \"doc_ids\": null), then `for doc_id in None` → TypeError. Pre-existing? Previously same code existed unchanged. Yes unchanged lines, skip.\n\nFinal answer: one comment.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "api/apps/api_app.py",
+        "content": "`get_by_ids()` is called outside the `try` block, so a DB error here now escapes as an unhandled 500 instead of going through `server_error_response(e)` / the per-document `errors` accumulation as before. Consider wrapping it in the existing try/except for consistent error responses.",
+        "existing_code": "    docs = DocumentService.get_by_ids(doc_ids)",
+        "start_line": 636,
+        "end_line": 636,
+        "thinking": "Peewee default autoconnect True, so lazy iteration reconnects. Fine, and consistent with existing `docinfos`.\n\nNow the main bug comment. Also consider adding: `get_by_ids` outside try means DB errors produce unhandled exception; low.\n\nLet me also verify the `docs` variable naming shadows? Not an issue.\n\nShould I flag that documents not found still `return get_data_error_result` inside the loop after some deletions — pre-existing behavior.\n\nLet me check where document_rm is also defined in sdk or other apps? Not relevant.\n\nSo final: one comment on line 618-620 about None.\n\nAlso maybe comment about `get_by_ids(doc_ids)` returning docs without tenant scoping — could allow deleting documents belonging to other tenants by name! Actually this existed before: `get_doc_id_by_doc_name` was not tenant-scoped either. So pre-existing. Skip.\n\nOne more potential issue: `doc_dic` built from `get_by_ids` — but the doc objects may be stale after remove_document; irrelevant.\n\nI'll write the comment.\n\nSuggestion code:\n```python\n        doc_ids = DocumentService.get_doc_ids_by_doc_names(req.get(\"doc_names\", [])) or []\n```\n\nComment severity high, category bug.\n\nAlso, should I comment on the fact that `get_by_ids` is called outside try/except? The original `get_by_id` was inside the try, exceptions were caught per-doc and added to errors. Now if `get_by_ids` raises (DB error), an unhandled exception escapes and Flask returns 500 rather than `server_error_response`, and other docs' errors aren't accumulated. This is a minor behavior change. I could mention but keep precision. Perhaps mention as low severity in same or separate comment. I'll include as a low-severity note? Risk of noise. I think it's legitimate but minor; I'll skip to favor precision... Actually it's a real, though small, robustness change: unauthenticated? It's within a request, Flask handles with generic 500 HTML response. Minor. I'll mention it briefly as low severity? Hmm. Guidance: favor precision over recall; style suggestions non-blocking. I'll include only the main bug plus maybe mention that doc_dic lookups use `doc_id not in doc_dic` fine.\n\nLet me double-check there's no other subtle issue: the `for doc_id in req.get(\"doc_ids\", [])` loop after the None fix — if `req.get(\"doc_ids\")` is None explicitly passed (JSON \"doc_ids\": null), then `for doc_id in None` → TypeError. Pre-existing? Previously same code existed unchanged. Yes unchanged lines, skip.\n\nFinal answer: one comment.",
+        "category": "bug",
+        "severity": "low"
+      },
+      {
+        "path": "api/db/services/document_service.py",
+        "content": "Returning `None` when no document matches breaks the new caller: `document_rm()` in `api/apps/api_app.py` does `for doc_id in req.get(\"doc_ids\", []): if doc_id not in doc_ids`, which raises `TypeError: argument of type 'NoneType' is not iterable` and the whole request is turned into a server error instead of the intended \"Can't find doc_names or doc_ids\" response. Return an empty list instead (which also covers an empty `doc_names` input).",
+        "suggestion_code": "        doc_ids = doc_ids.dicts()\n        return [doc[\"id\"] for doc in doc_ids]",
+        "existing_code": "        doc_ids = doc_ids.dicts()\n        if not doc_ids:\n            return\n        return [doc[\"id\"] for doc in doc_ids]",
+        "start_line": 337,
+        "end_line": 340,
+        "thinking": "No strong evidence. I'll skip empty-in_ comment.\n\nNow let me finalize comments.\n\nComment 1 (document_service.py): return None when no match; caller (api/apps/api_app.py document_rm) does `for doc_id in ...: if doc_id not in doc_ids` → TypeError → 500 error instead of \"Can't find doc_names or doc_ids\". Suggest returning empty list. Severity high, category bug.\n\nComment 2 (document_service.py): no tenant/kb_id filter — allows deleting documents belonging to other tenants with the same name since endpoint authenticates only by API token and doesn't verify ownership. Severity high? Category security. Suggest filtering by tenant or at least validating in caller. I'll mark medium-high: high.\n\nComment 3 (user_canvas_version.py): performance — `count()` called twice and `user_canvas_version[i]` issues one query per index (O(n) queries); suggest fetching id list once. Also, this method name/purpose. Also note `UserCanvasVersionService.delete_by_ids` vs `cls.delete_by_ids`. Minor. I'll give one combined medium performance comment.\n\nAlso, since the whole point of the change was to avoid per-row deletes, mentioning that residual per-index queries remain is a valid improvement note. Also could mention that iteration should instead be done properly. But careful: is `user_canvas_version[i]` really a query? Peewee `ModelSelect.__getitem__` with an int returns `self.limit(1).offset(i).get()`? Actually `BaseModelSelect.__getitem__` with an int: `return self._clone().limit(1).offset(idx).get()`? Hmm, peewee's `BaseModelSelect.__getitem__(self, value)`:\n\n```python\n    def __getitem__(self, value):\n        if type(value) is slice:\n            return super(BaseModelSelect, self).__getitem__(value)\n        else:\n            return self._clone().offset(value).limit(1).get()\n```\nYes — it's a separate query per index, and `.get()` raises DoesNotExist if out of range (caught by except DoesNotExist → returns None). So one query per version beyond 20. Pre-existing but in the changed block. I'll flag as medium performance.\n\nAlso `delete_ids` var name fine.\n\nLet me write comments with exact existing_code lines from the diff (added lines only).\n\nFor comment 1&2, the added lines:\n```\n+        doc_ids = cls.model.select(*fields) \\\n+            .where(cls.model.name.in_(doc_names))\n+        doc_ids = doc_ids.dicts()\n+        if not doc_ids:\n+            return\n+        return [doc[\"id\"] for doc in doc_ids]\n```\nFor the None return, anchor on `        if not doc_ids:\\n            return` — but that appears also in get_doc_id_by_doc_name unchanged context; I need added lines only. Since the diff added `if not doc_ids:` / `return` lines within get_doc_ids_by_doc_names, using them as existing_code may match against unchanged lines earlier. Let me use the more unique combination:\n\nexisting_code:\n```\n        doc_ids = doc_ids.dicts()\n        if not doc_ids:\n            return\n        return [doc[\"id\"] for doc in doc_ids]\n```\nThat's unique to the new function. Suggestion code: return empty list.\n\nFor security: existing_code: `            .where(cls.model.name.in_(doc_names))`.\n\nFor user_canvas_version: existing_code:\n```\n                for i in range(20, user_canvas_version.count()):\n                    delete_ids.append(user_canvas_version[i].id)\n```\nSuggestion: fetch ids once.\n\nLet me write the suggestion code for comment 1:\n\n```python\n        doc_ids = doc_ids.dicts()\n        return [doc[\"id\"] for doc in doc_ids]\n```\n\nAnd mention empty-input handling? I'll note: also consider returning `[]` early when `doc_names` is empty to avoid an empty `IN ()` clause.\n\nHmm — that's a claim about empty IN. I can phrase softly: \"also returns [] for empty doc_names input\". Actually with the fix, empty doc_names → no rows → []. Fine, no extra claim needed.\n\nFor the security comment, suggestion code:\n```python\n            .where(cls.model.name.in_(doc_names))\n```\nCan't easily suggest; I'll just describe. Provide suggestion_code maybe including tenant filter requires join — leave without suggestion_code.\n\nShould I also comment on `delete_by_ids` in common_service (no empty guard)? Skip due to caller guarantee.\n\nLet me finalize.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "api/db/services/document_service.py",
+        "content": "The lookup filters only on `Document.name`, with no `tenant_id`/`kb_id` scoping. Since `document_rm()` authenticates with an API token but never checks that the resolved documents belong to that token's tenant, this bulk variant now resolves (and deletes) every document with a matching name across all tenants — whereas the previous single-name helper only hit the first match. Consider joining `Knowledgebase` and filtering on the caller's tenant (or validating ownership in the caller) before passing these ids to the delete path.",
+        "existing_code": "            .where(cls.model.name.in_(doc_names))",
+        "start_line": 336,
+        "end_line": 336,
+        "thinking": "No strong evidence. I'll skip empty-in_ comment.\n\nNow let me finalize comments.\n\nComment 1 (document_service.py): return None when no match; caller (api/apps/api_app.py document_rm) does `for doc_id in ...: if doc_id not in doc_ids` → TypeError → 500 error instead of \"Can't find doc_names or doc_ids\". Suggest returning empty list. Severity high, category bug.\n\nComment 2 (document_service.py): no tenant/kb_id filter — allows deleting documents belonging to other tenants with the same name since endpoint authenticates only by API token and doesn't verify ownership. Severity high? Category security. Suggest filtering by tenant or at least validating in caller. I'll mark medium-high: high.\n\nComment 3 (user_canvas_version.py): performance — `count()` called twice and `user_canvas_version[i]` issues one query per index (O(n) queries); suggest fetching id list once. Also, this method name/purpose. Also note `UserCanvasVersionService.delete_by_ids` vs `cls.delete_by_ids`. Minor. I'll give one combined medium performance comment.\n\nAlso, since the whole point of the change was to avoid per-row deletes, mentioning that residual per-index queries remain is a valid improvement note. Also could mention that iteration should instead be done properly. But careful: is `user_canvas_version[i]` really a query? Peewee `ModelSelect.__getitem__` with an int returns `self.limit(1).offset(i).get()`? Actually `BaseModelSelect.__getitem__` with an int: `return self._clone().limit(1).offset(idx).get()`? Hmm, peewee's `BaseModelSelect.__getitem__(self, value)`:\n\n```python\n    def __getitem__(self, value):\n        if type(value) is slice:\n            return super(BaseModelSelect, self).__getitem__(value)\n        else:\n            return self._clone().offset(value).limit(1).get()\n```\nYes — it's a separate query per index, and `.get()` raises DoesNotExist if out of range (caught by except DoesNotExist → returns None). So one query per version beyond 20. Pre-existing but in the changed block. I'll flag as medium performance.\n\nAlso `delete_ids` var name fine.\n\nLet me write comments with exact existing_code lines from the diff (added lines only).\n\nFor comment 1&2, the added lines:\n```\n+        doc_ids = cls.model.select(*fields) \\\n+            .where(cls.model.name.in_(doc_names))\n+        doc_ids = doc_ids.dicts()\n+        if not doc_ids:\n+            return\n+        return [doc[\"id\"] for doc in doc_ids]\n```\nFor the None return, anchor on `        if not doc_ids:\\n            return` — but that appears also in get_doc_id_by_doc_name unchanged context; I need added lines only. Since the diff added `if not doc_ids:` / `return` lines within get_doc_ids_by_doc_names, using them as existing_code may match against unchanged lines earlier. Let me use the more unique combination:\n\nexisting_code:\n```\n        doc_ids = doc_ids.dicts()\n        if not doc_ids:\n            return\n        return [doc[\"id\"] for doc in doc_ids]\n```\nThat's unique to the new function. Suggestion code: return empty list.\n\nFor security: existing_code: `            .where(cls.model.name.in_(doc_names))`.\n\nFor user_canvas_version: existing_code:\n```\n                for i in range(20, user_canvas_version.count()):\n                    delete_ids.append(user_canvas_version[i].id)\n```\nSuggestion: fetch ids once.\n\nLet me write the suggestion code for comment 1:\n\n```python\n        doc_ids = doc_ids.dicts()\n        return [doc[\"id\"] for doc in doc_ids]\n```\n\nAnd mention empty-input handling? I'll note: also consider returning `[]` early when `doc_names` is empty to avoid an empty `IN ()` clause.\n\nHmm — that's a claim about empty IN. I can phrase softly: \"also returns [] for empty doc_names input\". Actually with the fix, empty doc_names → no rows → []. Fine, no extra claim needed.\n\nFor the security comment, suggestion code:\n```python\n            .where(cls.model.name.in_(doc_names))\n```\nCan't easily suggest; I'll just describe. Provide suggestion_code maybe including tenant filter requires join — leave without suggestion_code.\n\nShould I also comment on `delete_by_ids` in common_service (no empty guard)? Skip due to caller guarantee.\n\nLet me finalize.",
+        "category": "security",
+        "severity": "high"
+      },
+      {
+        "path": "api/db/services/user_canvas_version.py",
+        "content": "`user_canvas_version.count()` runs a COUNT query on every loop iteration, and `user_canvas_version[i]` (integer index on a `ModelSelect`) issues a separate `LIMIT 1 OFFSET i` query per index, so trimming N old versions still costs O(N) round trips. Since the ids now only feed a batched delete, fetch them once and slice in Python.",
+        "suggestion_code": "                version_ids = [v[\"id\"] for v in user_canvas_version.select(cls.model.id).dicts()] if False else [v.id for v in user_canvas_version]\n                delete_ids = [v for v in version_ids[20:]]",
+        "existing_code": "                for i in range(20, user_canvas_version.count()):\n                    delete_ids.append(user_canvas_version[i].id)",
+        "start_line": 35,
+        "end_line": 36,
+        "thinking": "No strong evidence. I'll skip empty-in_ comment.\n\nNow let me finalize comments.\n\nComment 1 (document_service.py): return None when no match; caller (api/apps/api_app.py document_rm) does `for doc_id in ...: if doc_id not in doc_ids` → TypeError → 500 error instead of \"Can't find doc_names or doc_ids\". Suggest returning empty list. Severity high, category bug.\n\nComment 2 (document_service.py): no tenant/kb_id filter — allows deleting documents belonging to other tenants with the same name since endpoint authenticates only by API token and doesn't verify ownership. Severity high? Category security. Suggest filtering by tenant or at least validating in caller. I'll mark medium-high: high.\n\nComment 3 (user_canvas_version.py): performance — `count()` called twice and `user_canvas_version[i]` issues one query per index (O(n) queries); suggest fetching id list once. Also, this method name/purpose. Also note `UserCanvasVersionService.delete_by_ids` vs `cls.delete_by_ids`. Minor. I'll give one combined medium performance comment.\n\nAlso, since the whole point of the change was to avoid per-row deletes, mentioning that residual per-index queries remain is a valid improvement note. Also could mention that iteration should instead be done properly. But careful: is `user_canvas_version[i]` really a query? Peewee `ModelSelect.__getitem__` with an int returns `self.limit(1).offset(i).get()`? Actually `BaseModelSelect.__getitem__` with an int: `return self._clone().limit(1).offset(idx).get()`? Hmm, peewee's `BaseModelSelect.__getitem__(self, value)`:\n\n```python\n    def __getitem__(self, value):\n        if type(value) is slice:\n            return super(BaseModelSelect, self).__getitem__(value)\n        else:\n            return self._clone().offset(value).limit(1).get()\n```\nYes — it's a separate query per index, and `.get()` raises DoesNotExist if out of range (caught by except DoesNotExist → returns None). So one query per version beyond 20. Pre-existing but in the changed block. I'll flag as medium performance.\n\nAlso `delete_ids` var name fine.\n\nLet me write comments with exact existing_code lines from the diff (added lines only).\n\nFor comment 1&2, the added lines:\n```\n+        doc_ids = cls.model.select(*fields) \\\n+            .where(cls.model.name.in_(doc_names))\n+        doc_ids = doc_ids.dicts()\n+        if not doc_ids:\n+            return\n+        return [doc[\"id\"] for doc in doc_ids]\n```\nFor the None return, anchor on `        if not doc_ids:\\n            return` — but that appears also in get_doc_id_by_doc_name unchanged context; I need added lines only. Since the diff added `if not doc_ids:` / `return` lines within get_doc_ids_by_doc_names, using them as existing_code may match against unchanged lines earlier. Let me use the more unique combination:\n\nexisting_code:\n```\n        doc_ids = doc_ids.dicts()\n        if not doc_ids:\n            return\n        return [doc[\"id\"] for doc in doc_ids]\n```\nThat's unique to the new function. Suggestion code: return empty list.\n\nFor security: existing_code: `            .where(cls.model.name.in_(doc_names))`.\n\nFor user_canvas_version: existing_code:\n```\n                for i in range(20, user_canvas_version.count()):\n                    delete_ids.append(user_canvas_version[i].id)\n```\nSuggestion: fetch ids once.\n\nLet me write the suggestion code for comment 1:\n\n```python\n        doc_ids = doc_ids.dicts()\n        return [doc[\"id\"] for doc in doc_ids]\n```\n\nAnd mention empty-input handling? I'll note: also consider returning `[]` early when `doc_names` is empty to avoid an empty `IN ()` clause.\n\nHmm — that's a claim about empty IN. I can phrase softly: \"also returns [] for empty doc_names input\". Actually with the fix, empty doc_names → no rows → []. Fine, no extra claim needed.\n\nFor the security comment, suggestion code:\n```python\n            .where(cls.model.name.in_(doc_names))\n```\nCan't easily suggest; I'll just describe. Provide suggestion_code maybe including tenant filter requires join — leave without suggestion_code.\n\nShould I also comment on `delete_by_ids` in common_service (no empty guard)? Skip due to caller guarantee.\n\nLet me finalize.",
+        "category": "performance",
+        "severity": "medium"
+      },
+      {
+        "path": "api/apps/api_app.py",
+        "content": "The ids handed to `get_by_ids()` were resolved by document *name* only (`DocumentService.get_doc_ids_by_doc_names()` filters on `cls.model.name.in_(...)` with no tenant/KB restriction), and `get_by_ids()` likewise filters only on `id`. So `doc_dic` can contain documents that belong to other tenants. Since the removal loop then uses each document's own `tenant_id` (line 646) for `remove_document()`/`STORAGE_IMPL.rm()`, a caller holding any valid API key can now delete *every* document with a matching name in *every* tenant — the old per-name lookup only touched the first match, so this change materially widens a cross-tenant data-loss path. Restrict the fetched/deleted docs to the API key's tenant before adding them to `doc_dic` (preferably by joining `Knowledgebase.tenant_id` in the service query, e.g. `get_doc_ids_by_doc_names(doc_names, tenant_id)`).",
+        "suggestion_code": "    for doc in docs:\n        if DocumentService.get_tenant_id(doc.id) != tenant_id:\n            continue\n        doc_dic[doc.id] = doc",
+        "existing_code": "    for doc in docs:\n        doc_dic[doc.id] = doc",
+        "start_line": 638,
+        "end_line": 639,
+        "thinking": "The web calls a different endpoint (`/document/rm`). So this API endpoint `/document` DELETE is used by SDKs maybe.\n\nI'll decide: report the tenant-scoping issue as a security concern tied to the newly added bulk lookup line, framing it as amplified by the change (all docs with matching names across tenants are now deleted). Since the anchor line is same as confirmed finding 1, maybe use a different anchor: `docs = DocumentService.get_by_ids(doc_ids)` (also confirmed finding 2's line). Hmm, both anchors overlap.\n\nCould anchor on `doc_dic[doc.id] = doc`? The comment about tenant scoping could reasonably be attached there: \"doc_dic is built from ids resolved by name without tenant scoping, so documents belonging to other tenants can be included and deleted...\". Actually `for doc in docs:` line is a newly added line (line 638). That's a decent anchor: the loop collecting docs. I'll attach to `for doc in docs:` — the content explains that docs are fetched by id without tenant verification and the name-based lookup is global. Hmm, but the fundamental problem is at line 618. Ideas: attach to line 638 `for doc in docs:` explaining tenant filtering is missing. I think that's acceptable.\n\nActually, let me reconsider whether flagging this is wise. The finding: API key tenant A can delete tenant B's documents. Old code: also possible (single doc, whichever matched first). Given that the endpoint requires an API key of any tenant and doc names are guessable (file names), this is a genuine cross-tenant data-destruction issue. The change makes it strictly worse. I'll report as security/high but describe accurately: \"the new bulk lookup returns ids for matching names across all tenants; combined with the removal loop, a single request can now delete every document with that name in every tenant.\"\n\nLet me double-check the removal uses doc's own tenant_id: yes, line 646 sets tenant_id per doc, and `STORAGE_IMPL.rm(b, n)` uses storage address from File2Document. So full deletion of another tenant's resources. Confirmed cross-tenant delete is functional.\n\nAlso, should I check `document_service.get_doc_ids_by_doc_names` - it's not in review group, so I shouldn't comment on that file. Commenting on the call site is fine.\n\nAny other issue in the review file? Let's read lines 606-668 again — covered. Maybe also that `docs` from `get_by_ids` is lazily evaluated and the connection context... skip.\n\nOne more: `errors` accumulation: when doc not found, return early instead of continuing — unchanged.\n\nI'll write one comment. Also maybe a second minor comment: `doc_dic` construction could use a dict comprehension — no, style trivia, skip per instructions (style non-blocking, but avoid noise).\n\nLet me finalize with the security comment.\n\nActually, another thought: should I also flag that when doc_ids is large, `get_by_ids` with `in_` could exceed SQLite variable limit? Skip.\n\nWrite the comment anchored at `for doc in docs:` line with the code snippet:\n```\n    for doc in docs:\n        doc_dic[doc.id] = doc\n```\nHmm, existing_code must be newly added lines with consistent formatting. Use:\n\"    for doc in docs:\\n        doc_dic[doc.id] = doc\"\n\nContent: explain missing tenant scoping.\n\nSeverity: high? critical? It's cross-tenant deletion — I'd say high (given pre-existing partial risk). Use \"security\" category, severity \"high\".\n\nSuggestion code: filter by tenant, e.g. only delete docs whose kb belongs to the API key's tenant: \n```python\n    docs = DocumentService.get_by_ids(doc_ids)\n    doc_dic = {}\n    for doc in docs:\n        if DocumentService.get_tenant_id(doc.id) != tenant_id:\n            continue\n        doc_dic[doc.id] = doc\n```\nBut tenant_id variable... at line 615 tenant_id = objs[0].tenant_id, then reassigned inside loop. In suggestion I'd need a separate variable. Maybe suggestion: `api_tenant_id = objs[0].tenant_id` etc. Keep suggestion generic-ish but the tool expects consistent code. I could omit suggestion_code to avoid incorrect code. I'll provide a suggestion that filters inside the loop using a saved API tenant id... but at that point in the code `tenant_id` still holds the API key tenant (it's reassigned only inside the removal loop). So inside the doc_dic building loop, `tenant_id` is the API key's tenant. So:\n\n```python\n    docs = DocumentService.get_by_ids(doc_ids)\n    doc_dic = {}\n    for doc in docs:\n        if DocumentService.get_tenant_id(doc.id) != tenant_id:\n            continue\n        doc_dic[doc.id] = doc\n```\nBut then the \"Document not found!\" check catches docs of other tenants too. Acceptable suggestion. Though this adds per-doc queries again — that's fine to note. Maybe simply suggest filtering in the query instead. I'll present the loop-level filter as an option and mention query-level filter as preferred.\n\nDone. Report one comment.",
+        "category": "security",
+        "severity": "high"
+      },
+      {
+        "path": "api/db/services/user_canvas_version.py",
+        "content": "Inside a classmethod, the concrete class name is hard-coded; use `cls` so the call resolves through the actual class (consistent with the rest of the service layer and safe if this class is ever subclassed).",
+        "suggestion_code": "                cls.delete_by_ids(delete_ids)",
+        "existing_code": "                UserCanvasVersionService.delete_by_ids(delete_ids)",
+        "start_line": 38,
+        "end_line": 38,
+        "thinking": "The codebase uses `.in_` in ways that could be empty (e.g., `get_by_ids` with empty list) already, so relying on peewee's handling is established. Don't flag.\n\nSo I'll give one low-severity maintainability comment? Or none. Let me think about whether there's anything more valuable I might be missing.\n\nreview_files each:\n1. common_service.py — new `delete_by_ids`. Looks correct. Anything about `pids` being a generator? If `pids` were a generator, `in_` works. Fine.\n\n2. document_service.py — confirmed findings #1, #2. Anything else? Consider that `get_doc_ids_by_doc_names` uses `fields = [cls.model.id]` then `.dicts()` — fine.\n\nMaybe use `.tuples()` for efficiency instead of dicts — minor performance. Actually loading dicts for potentially many rows is slightly wasteful but negligible; the caller needs ids. Using `.tuples()`/`.scalars()` would be cleaner. Combined with the None-return issue, the whole block could be `return [row.id for row in ...]`. But confirmed finding #1 already targets those exact lines (doc_ids = doc_ids.dicts()...). Avoid duplicate on the same lines.\n\nHmm — but I could comment on lines 334-336 about `.dicts()` being unnecessary? Duplicate-ish; skip.\n\n3. user_canvas_version.py — confirmed #3 about count() in loop. What about `UserCanvasVersionService.delete_by_ids` hardcoding? Low.\n\nI think reporting the hardcoded class name as a low-severity maintainability comment is reasonable and precise. It's within the rules (\"Cross-file observations encouraged\"; style suggestions non-blocking).\n\nActually, wait. There might be a real issue in user_canvas_version: `delete_all_versions` uses `cls.model.select()` and indexing; but more importantly, the method name suggests deleting all versions but keeps 20 — pre-existing semantics, unchanged. Skip.\n\nAlso `delete_ids = []` then the loop; the blank line 37 has trailing spaces — trivial.\n\nI'll post the one low comment and finish. Hmm, is it worth it? The risk: reviewer thinks it's noise. The guidance says precision over recall, stay silent for minor issues... but also \"review every file\". A maintainability nit is legitimate. I'll include it, marked low.\n\nActually, let me reconsider one potentially real issue: bulk delete bypasses... does the base `DB.connection_context()` transaction commit? delete executes in autocommit; same as before. Fine.\n\nLet me finalize with the single comment.",
+        "category": "maintainability",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "API application entrypoint",
+        "files": [
+          "api/apps/api_app.py"
+        ]
+      },
+      {
+        "label": "Database service layer updates",
+        "files": [
+          "api/db/services/common_service.py",
+          "api/db/services/document_service.py",
+          "api/db/services/user_canvas_version.py"
+        ]
+      }
+    ],
+    "session_id": "83c4ba80-a7cf-4d30-b9e5-e2fff2d039b4",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "83c4ba80-a7cf-4d30-b9e5-e2fff2d039b4",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "94c70701bad97b2fba5cfbdd42b5cab5d788099da8445d19b3dad5957b3470cc"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "b1c874698469ac999d210cd8cde59425781e4da2",
+        "requested_head": "705123406ec7cd5eb1f9be26f6c5c31357aeffc9",
+        "resolved_base": "b271cc34b3e5fa24ca067d662b2b0ac4fb561c51",
+        "resolved_head": "705123406ec7cd5eb1f9be26f6c5c31357aeffc9",
+        "exact_range": "b271cc34b3e5fa24ca067d662b2b0ac4fb561c51..705123406ec7cd5eb1f9be26f6c5c31357aeffc9",
+        "source_artifact_sha256": "d2dc87365846f3fcc9a8711d49cede8fec4f8cae906aade17245383b5c3d46f6"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "411d425776f26e7c00e1841b850c8c528f0c80017ef279c020d3c2f9f0350757",
+            "path": "api/db/services/user_canvas_version.py",
+            "fingerprint": "824f619ca36f8bc6a046f3519024c2fe50fb7582ce059737be028d989621ee64"
+          },
+          {
+            "item_id": "b112b9935ace25c6c7d1a25c7cd03ecc7b1d97ac48b2ba9255790f1ecb7a0000",
+            "path": "api/db/services/common_service.py",
+            "fingerprint": "23a07ab014c0de65942161701f914c23d4d9f117959d0201aed3623a1778c2e3"
+          },
+          {
+            "item_id": "bd3d73b0205f3e251aa196391a812ef898901c9a36ea56498112f003556589ac",
+            "path": "api/db/services/document_service.py",
+            "fingerprint": "6c46eda281e60226cf0d94d25d8bc7f42670fd5304054ffa0eb92fa569656184"
+          },
+          {
+            "item_id": "c86fb6e28b274ea5ab8a2d0f60dd9f065760c8e3893f4a4c88bbd17f40d68343",
+            "path": "api/apps/api_app.py",
+            "fingerprint": "e4f97d3ff0ae8fa47259d27f629e6ac749075b6e7a92e41f0a000033ddff0541"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "411d425776f26e7c00e1841b850c8c528f0c80017ef279c020d3c2f9f0350757",
+            "path": "api/db/services/user_canvas_version.py",
+            "fingerprint": "824f619ca36f8bc6a046f3519024c2fe50fb7582ce059737be028d989621ee64"
+          },
+          {
+            "item_id": "b112b9935ace25c6c7d1a25c7cd03ecc7b1d97ac48b2ba9255790f1ecb7a0000",
+            "path": "api/db/services/common_service.py",
+            "fingerprint": "23a07ab014c0de65942161701f914c23d4d9f117959d0201aed3623a1778c2e3"
+          },
+          {
+            "item_id": "bd3d73b0205f3e251aa196391a812ef898901c9a36ea56498112f003556589ac",
+            "path": "api/db/services/document_service.py",
+            "fingerprint": "6c46eda281e60226cf0d94d25d8bc7f42670fd5304054ffa0eb92fa569656184"
+          },
+          {
+            "item_id": "c86fb6e28b274ea5ab8a2d0f60dd9f065760c8e3893f4a4c88bbd17f40d68343",
+            "path": "api/apps/api_app.py",
+            "fingerprint": "e4f97d3ff0ae8fa47259d27f629e6ac749075b6e7a92e41f0a000033ddff0541"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 127651
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

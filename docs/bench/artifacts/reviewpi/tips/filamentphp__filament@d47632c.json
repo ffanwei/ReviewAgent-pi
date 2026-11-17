@@ -1,0 +1,35 @@
+[
+  {
+    "filePath": "packages/support/src/helpers.php",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "[$field, $path] = invade($databaseConnection->getQueryGrammar())->wrapJsonFieldAndPath($column); /** @phpstan-ignore-line */",
+        "review": "[缺陷类型] 反射耦合第三方内部 API + 缺少版本兼容兜底。影响评估：Laravel 小版本升级即可能让该分支抛出异常，搜索（Table 列表页面的搜索路径）直接 500；`@phpstan-ignore-line` 使这类风险在 CI 阶段完全静默。",
+        "suggestion": "[重构思路] 1) 先用 `method_exists()` / `is_callable()` 判断能力是否存在，缺失时回退到原行为；2) 用 typecast + 结构校验避免解构错误；3) 尽量改用公开 API（`$grammar->wrap()`、`Str::before/after`）自行拼装 field 与 path，去掉反射与 `@phpstan-ignore-line`。代码示例：\n```php\n$grammar = $databaseConnection->getQueryGrammar();\n\nif (in_array($driverName, ['mysql', 'mariadb'], true) && preg_match('/^([^\\-]+)->>?(.+)$/', $column, $m)) {\n    $field = $grammar->wrap($m[1]);\n    $path = \"'$.\\\"{$m[2]}\\\"'\";\n    $column = \"json_extract({$field}, {$path})\";\n}\n```",
+        "category": "可维护",
+        "subcategory": "反射耦合内部 API",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 185,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "if (in_array($driverName, ['mysql', 'mariadb'], true) && str_contains($column, '->')) {",
+        "review": "[缺陷类型] 字符串子串匹配替代结构化解析，导致边界输入被错误改写。影响评估：`->>` 场景下搜索静默失效（返回空结果且无日志）；含 `->` 的原生表达式场景下生成非法 SQL，查询报错。",
+        "suggestion": "[重构思路] 用严格正则锚定“简单列名 + JSON 路径”的形态再做改写，并要求整列匹配（`^[A-Za-z0-9_.]+->>?…$`）；其余形态原样保留，交给后续 `lower()`/Expression 逻辑。代码示例：\n```php\nif (in_array($driverName, ['mysql', 'mariadb'], true)\n    && preg_match('/^(?<field>[A-Za-z_][A-Za-z0-9_.]*) ->> (?<path>.+)$/x', $column, $matches)) {\n    // 仅改写纯列名 + 路径的形态\n}\n```",
+        "category": "可靠性",
+        "subcategory": "字符串匹配与表达式解析",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 184,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

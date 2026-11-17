@@ -1,0 +1,152 @@
+{
+  "instance_id": "opencv__opencv@79afad9",
+  "repo": "opencv/opencv",
+  "base_commit": "868fc5c581228f8f47bf4bc3ee84427acc99226a",
+  "head_commit": "79afad939ecfaa332af0541db473fa94f8f425b6",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 504.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 13,
+  "review_output": [
+    {
+      "file": "modules/imgcodecs/src/grfmt_gif.cpp",
+      "line": 133,
+      "summary": "GIF 消隐背景的 Mat 行列被互换，非方形子帧的背景恢复失效",
+      "failure_scenario": "restore 用于在 GIF_DISPOSE_RESTORE_BACKGROUND 时把子区域恢复为背景色，其尺寸必须与后续 ROI（height 行 × width 列）一致。本次改动把 `Mat(height, width, CV_8UC4, background)` 改成 `Mat(width, height, CV_8UC4, background)`，而 cv::Mat(int rows, int cols, ...) 的第一个参数是行数，于是 restore 变成 width 行 × height 列。当 width != height 时，`restore.copyTo(Mat(lastImage, Rect(left,top,width,height)))` 因尺寸不匹配会重新分配目标 Mat，像素根本不会写回 lastImage，导致后续帧的背景区域残留上一帧内容，动画输出错误；同时与同文件第 113 行初始帧仍使用 `Mat(m_height, m_width, ...)` 的正确写法自相矛盾。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "modules/imgproc/src/color_hsv.dispatch.cpp",
+      "line": 283,
+      "summary": "sdiv/hdiv 查表改为 volatile 标志的懒初始化，破坏了原有线程安全的一次性初始化",
+      "failure_scenario": "原实现用函数内 `static UMat sdiv_data = init_sdiv_table();` 等局部静态变量，C++11 保证首次初始化线程安全。改动后改为裸数组 + `static volatile bool initialized180/initialized256` 手写守卫：(1) volatile 不是原子类型，两个线程可同时判定未初始化并并发执行 `Mat(1,256,CV_32SC1,sdiv_table).copyTo(sdiv_data)` 与 `...copyTo(hdiv_data)`，对同一 static UMat 头并发写会造成引用计数/分配状态竞争，可能崩溃或泄漏；(2) 弱内存序平台上其它线程可能先看到 `initialized == true` 而看不到 copyTo 写入的 UMat 内容，内核拿到空/半初始化的 UMat 并通过 `PtrReadOnly` 传入，内核读取空指针缓冲区导致错误结果或异常；(3) 180 与 256 两条路径共享 sdiv_data，判断条件 `!initialized180 && !initialized256` 使两个线程都认为需要初始化 sdiv_data。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+      "line": 3,
+      "summary": "JavaStreamReader 缓存 JNIEnv*，在其它线程回调 read/seek 时会使用非法 JNIEnv",
+      "failure_scenario": "JavaStreamReader 在构造时保存 JNIEnv*（JavaStreamReader::read/seek 后续全用它发起 JNI 调用），析构时再用它 DeleteGlobalRef。JNIEnv 是与线程绑定的，只在创建它的线程有效；而 IStreamReader 的 read/seek 是由 FFmpeg 的 IO 回调在解码线程调用的，只要 VideoCapture 的创建与逐帧读取不在同一线程（多线程播放/解码很常见），就会在错误线程上使用 JNIEnv，导致未定义行为、JVM 崩溃，且异常无法被 Java 侧捕获。对比 Python 侧同类实现每次调用都通过 PyGILState_Ensure/Release 获取当前线程状态，说明这里缺少等价处理。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "THREAD-AFFINITY-001"
+    },
+    {
+      "file": "modules/java/generator/gen_java.py",
+      "line": 98,
+      "summary": "新增 byte[] 类型用 GetByteArrayElements 却从不 Release，生成的 JNI 包装会泄漏并长期钉住数组",
+      "failure_scenario": "type_dict 新增的 \"byte[]\" 只给出 `jni_var` 取得数组元素指针，没有配对释放；而 gen_func 会把该 jni_var 原样写入生成的 JNI 函数体（c_prologue）。同文件 'string' 类型在同一个 jni_var 字符串里就完成了 GetStringUTFChars/ReleaseStringUTFChars 配对，可见此处的释放是被遗漏的。后果是每次经该包装调用（IStreamReader::read）都会泄漏一份数组副本/pin，且未 Release 的数组无法被 GC 移动或回收，长时间解码会持续增长内存。此外 IStreamReader::read 是纯虚函数，为其生成 JNI 包装会在未覆写时调用到纯虚实现（未定义行为）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "JNI-RESOURCE-001"
+    },
+    {
+      "file": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+      "line": 24,
+      "summary": "JavaStreamReader::read 未检查 Java 侧返回长度与挂起异常，可能静默返回错误数据",
+      "failure_scenario": "read 先 CallLongMethod 拿到 res，随后无条件用 `GetByteArrayRegion(..., size, ...)` 把整块 size 字节拷回 buffer，且整个过程没有任何 ExceptionCheck/返回值校验：若 Java 的 read 抛出异常（例如 RandomAccessFile 读取失败后用户实现抛出），CallLongMethod 返回 0 且 JVM 中留有挂起异常，之后再调用 GetByteArrayRegion/DeleteLocalRef 属于在挂起异常状态下调用 JNI，行为不确定（部分实现会直接中止）；若用户实现返回大于 size 的长度（如返回错误值），上层会认为读到了比 buffer 更多的数据，导致越界读取或解码错乱。构造时 GetMethodID 失败（m_read/m_seek 为 NULL）也被静默吞掉，挂起的 NoSuchMethodError 不会被清理。Python 侧对应实现对此有显式校验与抛错，说明这里是缺失的。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "JNI-ERRORCHECK-001"
+    },
+    {
+      "file": "modules/core/src/opencl/arithm.cl",
+      "line": 330,
+      "summary": "OCL 整型幂路径去掉了工作类型与饱和转换，溢出时结果未定义且与 CPU 不一致",
+      "failure_scenario": "原实现由主机侧传入 workT/convertToWT1/convertToDT（整数深度用 float 工作类型 + convert_*_sat），PROCESS_ELEM 为 `storedst(convertToDT(pown(srcelem1, powi)))`。改动后主机不再传这些宏，arithm.cl 走 `#ifndef workT` 分支，srcelem1/srcelem2 直接以 dstT 原始值加载且 `convertToDT` 退化为 noconvert，OP_POWN 只把 workT 重定义为 int 后写 `storedst(pown(srcelem1, srcelem2))`：pown 在 OpenCL C 里只对浮点 gentype 有定义，整型 dstT 依赖隐式转换，返回值经隐式浮点→整数转换写回目标，溢出时是未定义行为（旧实现是饱和的）。因此 8U/8S/16U/16S/32S 上的大幂次 OCL 结果会与 CPU 的 iPow（饱和）不一致，甚至在不同 GPU 驱动上表现不同。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "OPENCL-TYPE-001"
+    },
+    {
+      "file": "modules/core/perf/opencl/perf_arithm.cpp",
+      "line": 696,
+      "summary": "iPow 性能用例同时削减类型覆盖并改成不做结果校验，恰好覆盖不到被改动的内核路径",
+      "failure_scenario": "本次同时改动了 arithm.cl 的 OP_POWN 与主机侧 kernel 选项，但 iPow 用例删除了 CV_8UC3（cn==3 分支）、CV_32FC1/CV_64FC1（浮点 iPow 与 doubleSupport 分支），并继续使用 SANITY_CHECK_NOTHING，又把幂次从 3 改成 7.0（在 0..100 的数据上必然触发整型溢出）。结果是：改动涉及的 cn==3 与 double 路径不再被任何 OpenCL 用例执行，而溢出场景即便结果错了也不会被发现，回归风险被掩盖。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TEST-COVERAGE-001"
+    },
+    {
+      "file": "modules/dnn/src/tensorflow/tf_importer.cpp",
+      "line": 1691,
+      "summary": "TF/TFLite 导入器移除 StridedSlice 步长支持，既有模型将改为导入失败",
+      "failure_scenario": "TF 导入器对任何 stride != 1 现在直接抛 StsNotImplemented（且不再向 Slice 层传 steps），TFLite 导入器则整体删除 STRIDED_SLICE 的注册与 parseStridedSlice，这类算子会落到“未支持算子”错误。但 Slice 层本身仍完整支持 steps（hasSteps/neg_step_dims/tranformForNegSteps），ngraph 分支也保留了步长语义相关的判定，说明能力并未在图层移除，只是被导入器拒之门外。后果是此前可以正确导入并运行的含步长切片模型（例如 TF 的 `x[::2]`、TFLite 中带 stride 的 STRIDED_SLICE）现在直接报错，属于对外能力回退，且缺少文档说明与替代方案。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "FEATURE-REGRESSION-001"
+    },
+    {
+      "file": "modules/imgcodecs/src/grfmt_png.cpp",
+      "line": 289,
+      "summary": "移除 CgBI 与 IHDR 顺序的诊断日志，畸形 PNG 只剩静默失败",
+      "failure_scenario": "改动保留了 `if (id != id_IHDR) return false;`，因此校验行为不变，但同时删除了 `CV_LOG_ERROR` 的说明性日志和 id_CgBI 常量。此后遇到 Apple 私有 CgBI 或首块不是 IHDR 的畸形容器时，解码只是返回 false，没有任何日志，用户与维护者难以区分“不是 PNG”与“结构损坏/不支持的变体”，也丢失了定位 CgBI 文件的具体线索。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "DIAGNOSTICS-001"
+    },
+    {
+      "file": "3rdparty/openjpeg/openjp2/jp2.c",
+      "line": 2876,
+      "summary": "opj_jp2_read_header 去掉 ret 判断，失败时仍修改图像并转移 ICC profile 所有权",
+      "failure_scenario": "`ret = opj_j2k_read_header(...)` 失败时会返回 OPJ_FALSE，但改动后只要 p_image 非空仍会写入 color_space 并把 jp2->color.icc_profile_buf 赋值给 image 且把 jp2 侧置 NULL。也就是说失败路径上引入了两处副作用：对可能处于半初始化状态的图像进行写入，以及把 ICC 缓冲区的所有权单方面转移给 image。若调用方在失败后只销毁 codec（jp2）而不同时销毁 image，ICC 缓冲区将泄漏；若先销毁 image 再销毁 jp2，则原本由 jp2 负责释放的缓冲区会双重释放风险转移。另外这是 3rdparty 代码，与上游 openjpeg 的一致性需要保持。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "samples/python/tutorial_code/imgProc/match_template/match_template.py",
+      "line": 89,
+      "summary": "模板匹配示例把 shape[0]/shape[1] 互换，绘制框的高宽与模板相反",
+      "failure_scenario": "矩形的两个角是 (matchLoc[0] + 宽, matchLoc[1] + 高)，而 numpy 的 templ.shape[0] 是行数（高）、shape[1] 是列数（宽）。改动后写成 `matchLoc[0] + templ.shape[0], matchLoc[1] + templ.shape[1]`，在非方形模板上会把绘制框的宽高对调，示例可视化结果与实际匹配区域不符，而该示例正是教程代码（文档中被引用），会误导学习者。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "SAMPLE-001"
+    },
+    {
+      "file": "modules/highgui/src/window_QT.cpp",
+      "line": 1730,
+      "summary": "Qt 窗口移除 Expanding 尺寸策略，图像不再随窗口缩放",
+      "failure_scenario": "原先对 myView 的 widget 调用 `setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding)`，并让工具栏/状态栏以默认方式铺满布局；改动后删除了 size policy，并把视图改为 `Qt::AlignCenter`、工具栏与状态栏改为 `Qt::AlignLeft`。结果是在 QVBoxLayout 中视图不再获得扩展的空间（放大窗口时图像区域不增长，只能居中留下空白），工具栏也不会横向拉伸。这属于 highgui 的可见行为变更，且与 WINDOW_NORMAL/可缩放窗口的预期不符。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "GUI-BEHAVIOR-001"
+    },
+    {
+      "file": "modules/js/src/core_bindings.cpp",
+      "line": 469,
+      "summary": "JS 绑定删除 Point2fVector 与 Rect2d，属未说明的 API 破坏性变更",
+      "failure_scenario": "绑定列表删除了 `register_vector<cv::Point2f>(\"Point2fVector\")` 与 `EMSCRIPTEN_CV_RECT(double, \"Rect2d\")`，而 `Rect`/`Rect2f` 与 Point2f（Point3f 保留）仍在。JS 使用者此前能构造/传递 Point2fVector 与 Rect2d，现在这些类型在绑定层消失，会造成运行期行为变化或编译期错误，且改动没有变更说明或废弃过渡期。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "API-COMPAT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\opencv__opencv\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\opencv__opencv@79afad9.diff\n  caseId              opencv__opencv@79afad9\n  --issue             (未传)\n  --taskId            opencv__opencv@79afad9\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 5 个文件 / 10656 字符（test=5），明细见审计 mrFilter\n✓ 完成 · 耗时 327.5s · 模型调用 19 次 · token 输入 106,168（未命中） · 输出 48,514 · 缓存命中 991,872（90.3%） · 工具 36 次（主会话 36 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0312\nreview-pi: 置信度过滤丢弃 3 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 328.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 327.4s (99.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 10.2s (3.1%) | P2 3.9s (1.2%) | P3 16.4s (5.0%) | P4 189.0s (57.7%) | P5 73.3s (22.4%) | P6 34.6s (10.6%)\n[usage] 任务总计 | 模型调用 19 次（Agent 19 + 一次性 0） | token 输入 106,168（未命中） | 输出 48,514 | 缓存命中 991,872（90.3%） | $0.0312\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\opencv__opencv@79afad9\\audit\\20261115_043802_965.json",
+  "token_usage": {
+    "input_tokens": 106168,
+    "output_tokens": 48514,
+    "cache_read_input_tokens": 991872
+  }
+}

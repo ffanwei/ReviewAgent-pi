@@ -1,0 +1,153 @@
+[
+  {
+    "filePath": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty()) {",
+        "review": "[缺陷类型] 布尔条件运算符误用（应为 &&）导致的空指针解引用 + 条件恒真。影响评估：1）存量/异常数据中 systemPrompt 为 NULL 时，getAllAgents()/getAgentById() 直接抛 NullPointerException，Agent 管理页面整体不可用；2）正常情况下条件恒真，每次读取都会打印“SystemPrompt不为空”的 warn 日志并改写 systemPrompt，日志噪音与无效写入常态化。",
+        "suggestion": "[重构思路] 恢复语义等价且空安全的写法（优先用 StringUtils 或显式 &&），并顺带修复分支内 nextPrompt 计算后未回写的死代码。代码示例：`String sp = entity.getSystemPrompt(); if (sp != null && !sp.isBlank()) { String next = entity.getNextStepPrompt(); if (next != null && !next.isBlank()) { entity.setNextStepPrompt(sp + \"\\n\" + next); } log.warn(...); entity.setSystemPrompt(null); }`",
+        "category": "可靠性",
+        "subcategory": "条件运算符/空指针安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 190,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/entity/DynamicAgentEntity.java",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "private String systemPrompt = \" \";",
+        "review": "[缺陷类型] 用魔法哨兵值（单空格）代替 null 表示空。影响评估：空值判断口径分裂，前端与后端对“无 systemPrompt”的理解不一致，后续任何 `isEmpty()` 判空都会误判，属于持续的维护陷阱。",
+        "suggestion": "[重构思路] 统一用 null 表示无值，需要“非空”保障时在 DTO/DB 层用约束表达（如 `@Column(nullable = false)` + 默认空串仅在 DDL/迁移中处理），并在读取处集中做空安全判断。代码示例：`entity.setSystemPrompt(null); // 清空` 与 `String sp = entity.getSystemPrompt(); if (sp != null && !sp.isBlank()) { ... }`",
+        "category": "可维护",
+        "subcategory": "空值语义/魔法值",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 47,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "int scrollX = Math.max(0, x - page.viewportSize().width / 2);",
+        "review": "[缺陷类型] 坐标空间混用（文档坐标 vs 视口坐标）。影响评估：滚动分支一旦生效，点击必然偏离目标；对依赖坐标点击的页面（canvas、富文本、验证码）会静默点错位置，错误难以从工具返回值察觉（仍返回 “Clicked at position”）。",
+        "suggestion": "[重构思路] 二选一：①干脆不滚动，用元素 Locator 点击（最稳）；②必须滚动时先滚动再按 `x - scrollX, y - scrollY` 换算视口坐标点击，并统一约定坐标来源。代码示例：`ViewportSize vp = page.viewportSize(); int scrollX = Math.max(0, x - vp.width / 2); ... page.mouse().click(x - scrollX, y - scrollY);`",
+        "category": "可靠性",
+        "subcategory": "坐标系一致性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 49,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "int scrollY = Math.max(0, y - page.viewportSize().height / 2);",
+        "review": "[缺陷类型] 可空返回值被直接解引用且异常被统一 catch 掩盖。影响评估：一旦运行环境没有默认 viewport，move_to_and_click 全部失效，且返回信息无法定位原因，排查成本高。",
+        "suggestion": "[重构思路] 判空后降级为“不滚动、直接点击原坐标”，并把滚动失败与点击失败区分开。代码示例：`ViewportSize vp = page.viewportSize(); if (vp != null) { page.evaluate(\"(a)=>window.scrollTo({left:a[0],top:a[1],behavior:'instant'})\", new Object[]{Math.max(0,x-vp.width/2), Math.max(0,y-vp.height/2)}); }`",
+        "category": "可靠性",
+        "subcategory": "空指针安全/降级策略",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 50,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F009",
+        "code": "page.evaluate(\"(args) => {\\n\" + \"  const [x, y, id] = args;\\n\"",
+        "review": "[缺陷类型] 调试辅助代码坐标语义错误 + 副作用未清理。影响评估：debug 模式下排查用的大红点本身就指错位置，反而误导排障；异常路径残留 DOM 节点会污染后续页面内容提取。",
+        "suggestion": "[重构思路] 用 `position: 'fixed'` 保持视口坐标，并把注入/移除放进 try/finally 保证清理；更好的做法是把标记逻辑收敛到独立的 debug 工具方法。代码示例：`try { if (isDebug) injectMarker(x, y); page.mouse().click(x, y); } finally { if (isDebug) removeMarker(); }`",
+        "category": "可维护",
+        "subcategory": "调试代码/资源清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 57,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "catch (Exception e) {",
+        "review": "[缺陷类型] 异常吞没（swallowed exception）导致的不可观测性。影响评估：输入实际未生效时仍可能返回成功，agent 会在错误页面上继续执行后续步骤；线上问题只能靠复现定位。",
+        "suggestion": "[重构思路] 每级降级打 debug/warn 日志并保留首个异常作为 suppressed；区分“元素不存在/不可编辑”与“动作超时”两类错误。代码示例：`catch (PlaywrightException e) { log.warn(\"pressSequentially 失败, 降级 fill: {}\", e.getMessage()); primary = e; try { ... } catch (PlaywrightException e2) { primary.addSuppressed(e2); ... } }`",
+        "category": "可靠性",
+        "subcategory": "异常处理/可观测性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 70,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "elementLocator.pressSequentially(text, options);",
+        "review": "[缺陷类型] 固定延迟 + 未显式设置动作超时导致的长耗时与超时浪费。影响评估：长文本（表单备注、代码片段、搜索词）输入时每步多出约 30 秒，整体任务时延成倍上升，并可能触发上层 agent 的步骤超时。",
+        "suggestion": "[重构思路] 按文本长度选择策略，或把总预算作为上限，同时显式设置 timeout。代码示例：`var opts = new Locator.PressSequentiallyOptions().setDelay(100).setTimeout(Math.min(60_000, 5_000 + text.length() * 100)); if (text.length() <= 100) { locator.pressSequentially(text, opts); } else { locator.fill(text); }`",
+        "category": "性能",
+        "subcategory": "动作超时/输入策略",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 67,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "import com.microsoft.playwright.ElementHandle;",
+        "review": "[缺陷类型] 无用导入 + 与实现不一致的注释。影响评估：不影响运行，但增加后续维护者的理解成本，且可能因格式检查失败影响构建流水线。",
+        "suggestion": "[重构思路] 删除未使用导入；把降级链写成带日志的 1/2/3 顺序并在注释中写明每一级的触发条件，必要时抽成独立方法 `fillWithFallback(Locator, String)`。代码示例：`// 1) 清空后逐字符输入（拟人）；失败 2) 直接 fill；再失败 3) JS 赋值并派发 input 事件`",
+        "category": "可读性",
+        "subcategory": "死代码/注释准确性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "if (!url.startsWith(\"http://\") && !url.startsWith(\"https://\")) {",
+        "review": "[缺陷类型] 粗粒度 URL 规范化破坏合法输入。影响评估：本地开发/内网调试与 file 场景直接导航失败，且失败信息会显示被改写后的 https 地址，误导排查；属于对既有能力的回退。",
+        "suggestion": "[重构思路] 只在“看起来像主机名”时才补全，并让 http 主机、其它 scheme 原样通过。代码示例：`if (url.matches(\"^[a-zA-Z][a-zA-Z0-9+.-]*:.*\")) { /* 已有 scheme, 原样 */ } else { url = (url.startsWith(\"localhost\") || url.startsWith(\"127.0.0.1\")) ? \"http://\" + url : \"https://\" + url; }`",
+        "category": "可靠性",
+        "subcategory": "URL 规范化/兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 42,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

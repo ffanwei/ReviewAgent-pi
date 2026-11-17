@@ -1,0 +1,139 @@
+{
+  "instance_id": "cline__cline@419534c",
+  "repo": "cline/cline",
+  "base_commit": "a1bf1f95a30ca95581d9811488636aec42dd2f80",
+  "head_commit": "419534ccd4241fc11827741eb0d76ba0c9d21277",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T04:12:43.387266+00:00",
+  "duration_seconds": 79.05,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 4 finding(s) across 1 selected item(s).",
+    "summary": {
+      "files_reviewed": 1,
+      "comments": 4,
+      "total_tokens": 229573,
+      "input_tokens": 219533,
+      "output_tokens": 10040,
+      "cache_read_tokens": 183680,
+      "elapsed": "1m19s"
+    },
+    "tool_calls": {
+      "total": 23,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 9,
+        "file_read": 12
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "src/core/task/index.ts",
+        "content": "The floating `commit()` promise has no rejection handler. `CheckpointTracker.commit()` explicitly throws (`throw new Error(\"Failed to create checkpoint: ...\")`), and the inner `.then()` callback is `async`, so any failure inside it (e.g. `updateClineMessage` rejecting on disk I/O) also escapes. Since the promise is not returned/awaited, both become unhandled rejections instead of the previous behavior where the error propagated to the caller.\n\nAdditional side effect of this change: `say(\"checkpoint_created\")` is now emitted before the commit, so a failed commit leaves a checkpoint message in the chat with no `lastCheckpointHash` (a \"restore\" UI entry pointing to a non-existent commit). Consider `.catch()`-ing and recording the failure (e.g. setting `checkpointTrackerErrorMessage` / marking the message), and prefer an async wrapper with try/catch over an async `.then()` callback.",
+        "suggestion_code": "\t\t\t\tthis.checkpointTracker.commit().then(async (commitHash) => {",
+        "existing_code": "\t\t\t\tthis.checkpointTracker.commit().then(async (commitHash) => {",
+        "start_line": 1322,
+        "end_line": 1322,
+        "thinking": "No global handler in the extension. So unhandled rejection would be logged as warning/crash in extension host (Node 15+ default: unhandled rejection terminates process — in VS Code extension host, I believe it logs an error but may crash the extension host). Definitely should attach catch.\n\nLet's write comments:\n\nComment 1 (bug, high): missing `.catch()` on the floating `commit()` promise — commit() throws on failure (\"Failed to create checkpoint\"), so it becomes an unhandled rejection. Suggest `.catch(...)` logging and possibly mark checkpoint message state / set checkpointTrackerErrorMessage.\n\nComment 2 (bug, medium/high): race — locating the last `checkpoint_created` message at commit-completion time. Suggest capturing index/ts at say time.\n\nComment 3 (maintainability/style, low): prefer async IIFE with try/catch over async callback in .then — dependent on comment 1&2; maybe merge. I'll keep as one comment about the .then structure suggesting an async wrapper with try/catch, covering both. Actually to keep comments precise: comment 1 on the `this.checkpointTracker.commit().then(async (commitHash) => {` line, and comment 2 on the findLastIndex lines.\n\nLet me produce suggestion code.\n\nComment 1 existing_code:\n```\n\t\t\t\tthis.checkpointTracker.commit().then(async (commitHash) => {\n```\nActually the line begins with tabs. Suggestion code with try/catch:\n\n```\n\t\t\t\tconst checkpointMessageIndex = this.messageStateHandler.getClineMessages().length // see below\n```\nHmm, careful: suggestion code should be consistent. Let me give a combined suggestion for comment 1:\n\n```\n\t\t\t\tconst checkpointMessageIndex = this.messageStateHandler.getClineMessages().length - 1\n\t\t\t\tthis.checkpointTracker\n\t\t\t\t\t.commit()\n\t\t\t\t\t.then(async (commitHash) => {\n\t\t\t\t\t\tif (!commitHash) {\n\t\t\t\t\t\t\treturn\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif (checkpointMessageIndex !== -1) {\n\t\t\t\t\t\t\tawait this.messageStateHandler.updateClineMessage(checkpointMessageIndex, {\n\t\t\t\t\t\t\t\tlastCheckpointHash: commitHash,\n\t\t\t\t\t\t\t})\n\t\t\t\t\t\t}\n\t\t\t\t\t})\n\t\t\t\t\t.catch((error) => {\n\t\t\t\t\t\tconsole.error(\"Failed to create checkpoint commit:\", error)\n\t\t\t\t\t})\n```\nHmm, that conflates. Better: comment 1 focus on error handling, comment 2 focus on race with the index capture. Provide suggestion in one and reference in other. I'll write comment 2 suggestion capturing index before commit:\n\n```\n\t\t\t\tthis.checkpointTracker.commit().then(async (commitHash) => {\n```\ncan't reuse same line for both anchor because the tool matches consecutive lines; can I use the same existing_code twice? Probably risky. I'll anchor comment 2 at the findLastIndex lines:\n\n```\n\t\t\t\t\t\tconst lastCheckpointMessageIndex = findLastIndex(\n\t\t\t\t\t\t\tthis.messageStateHandler.getClineMessages(),\n\t\t\t\t\t\t\t(m) => m.say === \"checkpoint_created\",\n\t\t\t\t\t\t)\n```\n\nAnd suggestion: capture the index before starting the commit, and update that index.\n\nComment 1 anchored at the commit().then line — error handling.\n\nAlso maybe a third: `await this.say(\"checkpoint_created\")` now emits the checkpoint message even if commit fails, showing a \"restore checkpoint\" UI entry with no valid hash. Merge into comment 1 as consequence.\n\nWrite the comments.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "src/core/task/index.ts",
+        "content": "Race condition: the target message is resolved at commit-completion time via `findLastIndex`. Previously the commit was awaited, so the last `checkpoint_created` message was guaranteed to be the one just added. Now that commits run in the background, if another checkpoint is created while this commit is in flight, this hash will be written to the *newer* checkpoint message (and later overwritten by the newer commit's hash), leaving the original message without a hash and temporarily associating the wrong hash with the wrong checkpoint. Concurrent `git add`/`git commit` on the same shadow repo can also collide on `index.lock`.\n\nCapture the index (or message `ts`) of the message created for this specific commit before/right after `say`, and update that message instead of re-resolving \"last\".",
+        "suggestion_code": "\t\t\t\t\t\tconst lastCheckpointMessageIndex = this.messageStateHandler.getClineMessages().length - 1",
+        "existing_code": "\t\t\t\t\t\tconst lastCheckpointMessageIndex = findLastIndex(\n\t\t\t\t\t\t\tthis.messageStateHandler.getClineMessages(),\n\t\t\t\t\t\t\t(m) => m.say === \"checkpoint_created\",\n\t\t\t\t\t\t)",
+        "start_line": 1324,
+        "end_line": 1327,
+        "thinking": "No global handler in the extension. So unhandled rejection would be logged as warning/crash in extension host (Node 15+ default: unhandled rejection terminates process — in VS Code extension host, I believe it logs an error but may crash the extension host). Definitely should attach catch.\n\nLet's write comments:\n\nComment 1 (bug, high): missing `.catch()` on the floating `commit()` promise — commit() throws on failure (\"Failed to create checkpoint\"), so it becomes an unhandled rejection. Suggest `.catch(...)` logging and possibly mark checkpoint message state / set checkpointTrackerErrorMessage.\n\nComment 2 (bug, medium/high): race — locating the last `checkpoint_created` message at commit-completion time. Suggest capturing index/ts at say time.\n\nComment 3 (maintainability/style, low): prefer async IIFE with try/catch over async callback in .then — dependent on comment 1&2; maybe merge. I'll keep as one comment about the .then structure suggesting an async wrapper with try/catch, covering both. Actually to keep comments precise: comment 1 on the `this.checkpointTracker.commit().then(async (commitHash) => {` line, and comment 2 on the findLastIndex lines.\n\nLet me produce suggestion code.\n\nComment 1 existing_code:\n```\n\t\t\t\tthis.checkpointTracker.commit().then(async (commitHash) => {\n```\nActually the line begins with tabs. Suggestion code with try/catch:\n\n```\n\t\t\t\tconst checkpointMessageIndex = this.messageStateHandler.getClineMessages().length // see below\n```\nHmm, careful: suggestion code should be consistent. Let me give a combined suggestion for comment 1:\n\n```\n\t\t\t\tconst checkpointMessageIndex = this.messageStateHandler.getClineMessages().length - 1\n\t\t\t\tthis.checkpointTracker\n\t\t\t\t\t.commit()\n\t\t\t\t\t.then(async (commitHash) => {\n\t\t\t\t\t\tif (!commitHash) {\n\t\t\t\t\t\t\treturn\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif (checkpointMessageIndex !== -1) {\n\t\t\t\t\t\t\tawait this.messageStateHandler.updateClineMessage(checkpointMessageIndex, {\n\t\t\t\t\t\t\t\tlastCheckpointHash: commitHash,\n\t\t\t\t\t\t\t})\n\t\t\t\t\t\t}\n\t\t\t\t\t})\n\t\t\t\t\t.catch((error) => {\n\t\t\t\t\t\tconsole.error(\"Failed to create checkpoint commit:\", error)\n\t\t\t\t\t})\n```\nHmm, that conflates. Better: comment 1 focus on error handling, comment 2 focus on race with the index capture. Provide suggestion in one and reference in other. I'll write comment 2 suggestion capturing index before commit:\n\n```\n\t\t\t\tthis.checkpointTracker.commit().then(async (commitHash) => {\n```\ncan't reuse same line for both anchor because the tool matches consecutive lines; can I use the same existing_code twice? Probably risky. I'll anchor comment 2 at the findLastIndex lines:\n\n```\n\t\t\t\t\t\tconst lastCheckpointMessageIndex = findLastIndex(\n\t\t\t\t\t\t\tthis.messageStateHandler.getClineMessages(),\n\t\t\t\t\t\t\t(m) => m.say === \"checkpoint_created\",\n\t\t\t\t\t\t)\n```\n\nAnd suggestion: capture the index before starting the commit, and update that index.\n\nComment 1 anchored at the commit().then line — error handling.\n\nAlso maybe a third: `await this.say(\"checkpoint_created\")` now emits the checkpoint message even if commit fails, showing a \"restore checkpoint\" UI entry with no valid hash. Merge into comment 1 as consequence.\n\nWrite the comments.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "src/core/task/index.ts",
+        "content": "The `checkpoint_created` message is now emitted *before* the git commit has happened, so the chat shows a checkpoint that does not exist yet. If `commit()` later rejects or resolves with `undefined`, the message stays in the transcript with `lastCheckpointHash === undefined` forever. Clicking restore on it then silently falls through to the previous checkpoint (`Message ... has no checkpoint hash, falling back to previous checkpoint`) or reports a bare \"Failed to restore checkpoint\", and the user is given no indication that this checkpoint never materialized. Please handle the failure branch explicitly (e.g. update the message with an error state, or remove/annotate it) so the UI does not advertise a checkpoint that was never created.",
+        "existing_code": "\t\t\t\tawait this.say(\"checkpoint_created\")\n\t\t\t\tthis.checkpointTracker.commit().then(async (commitHash) => {",
+        "start_line": 1321,
+        "end_line": 1322,
+        "thinking": "So the webview doesn't use lastCheckpointHash to gate the restore button. Restore request goes to extension, which uses message.lastCheckpointHash (undefined) → falls into fallback path at line 429 which silently restores to previous checkpoint, or line 442 error. So a failed commit would result in restoring to an older checkpoint (or \"Failed to restore checkpoint\") with the user thinking they restored to the clicked checkpoint. That's a real user-visible consequence of saying \"checkpoint_created\" before the commit succeeds. Worth reporting (maybe medium).\n\nB) Concurrency of shadow git ops (out-of-order/overlapping commits; index.lock). Attach to the commit line? That would overlap with existing comments. Maybe combine A and B into one comment anchored on `await this.say(\"checkpoint_created\")`? Better to keep them separate: A anchored on say line; B — anchored... hmm the only new added lines are the comment lines, the say line, the commit().then line, and inner lines. Anchoring B on `this.checkpointTracker.commit().then(async (commitHash) => {` risks duplicating finding 1/2 position but the content differs. Reviewers usually accept. But is B solid enough? Finding 2 already says \"the target message is resolved at commit-completion time via findLastIndex. Previously the commit was awaited... if another checkpoint is created while this commit ...\". So finding 2 is about message index. My B is about the git repo operations being unserialized. Let me evaluate whether serialization concerns actually produce bugs:\n\n- Overlap between a background commit (from tool X checkpoint) and the attempt-completion commit. Both call `git add .` + `git commit` on the same repo. simple-git spawns processes. `git add .` writes index.lock; concurrent `git commit` also creates index.lock briefly. If one fails with \"Unable to create index.lock: File exists\", CheckpointTracker.commit throws → unhandled rejection (finding 1) and the checkpoint hash is lost. During the \"large repo\" scenario claimed in the comment, git add could take seconds, so overlap with an attempt_completion commit is plausible. I'd report it as medium with a suggestion to serialize commits (e.g., chain on a promise queue).\n\nAlternatively the suggestion: keep a `this.checkpointCommitPromise` and chain. That's reasonable.\n\nLet me verify ToolExecutor calls saveCheckpoint(true) and then immediately does the diff count check — the NOTE comment says they must make sure hash present. The else branch still awaits, fine. But there's a subtlety: if a background commit from the previous checkpoint is still running when saveCheckpoint(true) is called, the two commits overlap and could result in the completion commit being created before the previous checkpoint commit → HEAD ordering wrong → `getDiffCount(previousCheckpointHash, hash)` where previous is a descendant of hash → wrong diff (empty or inverted). Actually that's the concrete bug: doesLatestTaskCompletionHaveNewChanges uses previousCheckpointHash from the earlier completion message; if the earlier background commit lands after the completion commit... Well, hash ordering in git: whichever commit is created later becomes HEAD with parent = previous HEAD. If the background commit is created after the completion commit, then the background commit's parent is the completion commit, so the background checkpoint commit is a *descendant* of the completion hash. Then diff(previousCheckpointHash=some older completion, hash=completion hash) still fine. But then the display: the background checkpoint message hash points to a commit that is after the completion commit — that means \"restore\" to that checkpoint would restore files including post-completion changes. That's a wrong snapshot association. That's real.\n\nI'm fairly confident this is a genuine concern worth surfacing. But I need to be careful about not over-reporting. The finding 2 was confirmed for the message-index race; a git-op race is a related but separate matter. I'll include it concisely.\n\nAlso consider: `this.say(\"checkpoint_created\")` posts state to webview which triggers the webview to show the checkmark. And after commit resolves, updateClineMessage saves messages. Fine.\n\nAnother potential issue: In the non-blocking path, `saveClineMessagesAndUpdateHistory()` is called from the background updateClineMessage. Wait — does `this.say()` already save? Yes say → addToClineMessages → saveClineMessagesAndUpdateHistory. Fine.\n\nOne more thought: does the background commit interplay with `writeToFile` rollback / `taskState.abort`? Aborting the task while commit is in flight — the commit continues; no cancellation. Minor.\n\nLet me also check whether `AbortSignal` pattern used for cleanup elsewhere. Not needed.\n\nLet me finalize: two comments.\n\n1. `await this.say(\"checkpoint_created\")` — emit-before-commit: on commit failure/undefined the chat shows a checkpoint with no hash; restore silently falls back to a previous checkpoint (line 429) or errors, and no error is surfaced. Suggest handle failure in the .then/.catch and either surface an error message or mark/remove the message.\n\n2. `this.checkpointTracker.commit().then(...)` — no serialization of shadow-git operations: consecutive background commits and the synchronous attempt_completion commit / resetHead / getDiffSet can run concurrently against the same shadow repo, causing index.lock failures and commits created out of order (a checkpoint message's hash then points to a snapshot that includes later changes). Suggest keeping a single promise chain (e.g., `this.checkpointCommit = this.checkpointCommit.then(() => commit())`) or a mutex in CheckpointTracker.\n\nSuggestion code for #2? Hard; provide a sketch.\n\nI'll provide both comments.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "src/core/task/index.ts",
+        "content": "Checkpoint git operations are now unserialized. Nothing prevents a background commit from still being in flight when the next checkpoint is created — in particular the `saveCheckpoint(true)` path below calls `await this.checkpointTracker.commit()` without waiting for this background commit, and `resetHead`/`getDiffSet` (restore / \"see new changes\" triggered from the UI, which is now clickable while the commit runs) can also hit the same shadow repo concurrently. Two overlapping `git add .`/`git commit` calls against the same shadow repo can fail with `*.lock` contention (which then becomes an unhandled rejection) and, worse, can be committed out of order, so a checkpoint message's hash may point to a snapshot that already contains changes made after that checkpoint. Consider chaining commits through a single serialized promise (or a mutex inside `CheckpointTracker`), e.g.:\n```ts\nthis.checkpointCommit = (this.checkpointCommit ?? Promise.resolve()).then(() => this.checkpointTracker!.commit())\n```\nand awaiting the chain in the `isAttemptCompletionMessage` branch.",
+        "existing_code": "\t\t\t\tthis.checkpointTracker.commit().then(async (commitHash) => {",
+        "start_line": 1322,
+        "end_line": 1322,
+        "thinking": "So the webview doesn't use lastCheckpointHash to gate the restore button. Restore request goes to extension, which uses message.lastCheckpointHash (undefined) → falls into fallback path at line 429 which silently restores to previous checkpoint, or line 442 error. So a failed commit would result in restoring to an older checkpoint (or \"Failed to restore checkpoint\") with the user thinking they restored to the clicked checkpoint. That's a real user-visible consequence of saying \"checkpoint_created\" before the commit succeeds. Worth reporting (maybe medium).\n\nB) Concurrency of shadow git ops (out-of-order/overlapping commits; index.lock). Attach to the commit line? That would overlap with existing comments. Maybe combine A and B into one comment anchored on `await this.say(\"checkpoint_created\")`? Better to keep them separate: A anchored on say line; B — anchored... hmm the only new added lines are the comment lines, the say line, the commit().then line, and inner lines. Anchoring B on `this.checkpointTracker.commit().then(async (commitHash) => {` risks duplicating finding 1/2 position but the content differs. Reviewers usually accept. But is B solid enough? Finding 2 already says \"the target message is resolved at commit-completion time via findLastIndex. Previously the commit was awaited... if another checkpoint is created while this commit ...\". So finding 2 is about message index. My B is about the git repo operations being unserialized. Let me evaluate whether serialization concerns actually produce bugs:\n\n- Overlap between a background commit (from tool X checkpoint) and the attempt-completion commit. Both call `git add .` + `git commit` on the same repo. simple-git spawns processes. `git add .` writes index.lock; concurrent `git commit` also creates index.lock briefly. If one fails with \"Unable to create index.lock: File exists\", CheckpointTracker.commit throws → unhandled rejection (finding 1) and the checkpoint hash is lost. During the \"large repo\" scenario claimed in the comment, git add could take seconds, so overlap with an attempt_completion commit is plausible. I'd report it as medium with a suggestion to serialize commits (e.g., chain on a promise queue).\n\nAlternatively the suggestion: keep a `this.checkpointCommitPromise` and chain. That's reasonable.\n\nLet me verify ToolExecutor calls saveCheckpoint(true) and then immediately does the diff count check — the NOTE comment says they must make sure hash present. The else branch still awaits, fine. But there's a subtlety: if a background commit from the previous checkpoint is still running when saveCheckpoint(true) is called, the two commits overlap and could result in the completion commit being created before the previous checkpoint commit → HEAD ordering wrong → `getDiffCount(previousCheckpointHash, hash)` where previous is a descendant of hash → wrong diff (empty or inverted). Actually that's the concrete bug: doesLatestTaskCompletionHaveNewChanges uses previousCheckpointHash from the earlier completion message; if the earlier background commit lands after the completion commit... Well, hash ordering in git: whichever commit is created later becomes HEAD with parent = previous HEAD. If the background commit is created after the completion commit, then the background commit's parent is the completion commit, so the background checkpoint commit is a *descendant* of the completion hash. Then diff(previousCheckpointHash=some older completion, hash=completion hash) still fine. But then the display: the background checkpoint message hash points to a commit that is after the completion commit — that means \"restore\" to that checkpoint would restore files including post-completion changes. That's a wrong snapshot association. That's real.\n\nI'm fairly confident this is a genuine concern worth surfacing. But I need to be careful about not over-reporting. The finding 2 was confirmed for the message-index race; a git-op race is a related but separate matter. I'll include it concisely.\n\nAlso consider: `this.say(\"checkpoint_created\")` posts state to webview which triggers the webview to show the checkmark. And after commit resolves, updateClineMessage saves messages. Fine.\n\nAnother potential issue: In the non-blocking path, `saveClineMessagesAndUpdateHistory()` is called from the background updateClineMessage. Wait — does `this.say()` already save? Yes say → addToClineMessages → saveClineMessagesAndUpdateHistory. Fine.\n\nOne more thought: does the background commit interplay with `writeToFile` rollback / `taskState.abort`? Aborting the task while commit is in flight — the commit continues; no cancellation. Minor.\n\nLet me also check whether `AbortSignal` pattern used for cleanup elsewhere. Not needed.\n\nLet me finalize: two comments.\n\n1. `await this.say(\"checkpoint_created\")` — emit-before-commit: on commit failure/undefined the chat shows a checkpoint with no hash; restore silently falls back to a previous checkpoint (line 429) or errors, and no error is surfaced. Suggest handle failure in the .then/.catch and either surface an error message or mark/remove the message.\n\n2. `this.checkpointTracker.commit().then(...)` — no serialization of shadow-git operations: consecutive background commits and the synchronous attempt_completion commit / resetHead / getDiffSet can run concurrently against the same shadow repo, causing index.lock failures and commits created out of order (a checkpoint message's hash then points to a snapshot that includes later changes). Suggest keeping a single promise chain (e.g., `this.checkpointCommit = this.checkpointCommit.then(() => commit())`) or a mutex in CheckpointTracker.\n\nSuggestion code for #2? Hard; provide a sketch.\n\nI'll provide both comments.",
+        "category": "bug",
+        "severity": "high"
+      }
+    ],
+    "groups": [
+      {
+        "label": "src/core/task/index.ts",
+        "files": [
+          "src/core/task/index.ts"
+        ]
+      }
+    ],
+    "session_id": "dd0b3e01-a291-4cae-8aa2-fbb686a957d6",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "dd0b3e01-a291-4cae-8aa2-fbb686a957d6",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "1dabb2fdb30d67c92977a55303901c0bb5f816acebe3da06a24fbaf7a4925bb4"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "a1bf1f95a30ca95581d9811488636aec42dd2f80",
+        "requested_head": "419534ccd4241fc11827741eb0d76ba0c9d21277",
+        "resolved_base": "a1bf1f95a30ca95581d9811488636aec42dd2f80",
+        "resolved_head": "419534ccd4241fc11827741eb0d76ba0c9d21277",
+        "exact_range": "a1bf1f95a30ca95581d9811488636aec42dd2f80..419534ccd4241fc11827741eb0d76ba0c9d21277",
+        "source_artifact_sha256": "64fa9df7ed801b54f18e5fc030f27ed3d4406d72c32020ab9475df327512719e"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "9b820864d7dd385045524176f4bc8948d1312f4170ae02550b8be31dd0c22139",
+            "path": "src/core/task/index.ts",
+            "fingerprint": "737a0519df5269f149cb25bbd1615e5119a6f2607399dcc3214090bf2971aa78"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "9b820864d7dd385045524176f4bc8948d1312f4170ae02550b8be31dd0c22139",
+            "path": "src/core/task/index.ts",
+            "fingerprint": "737a0519df5269f149cb25bbd1615e5119a6f2607399dcc3214090bf2971aa78"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 78580
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

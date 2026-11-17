@@ -1,0 +1,542 @@
+{
+  "instance_id": "vllm-project__vllm@075f1b5",
+  "repo": "vllm-project/vllm",
+  "base_commit": "7a8987dac5f0ed0c798a73e8b4ec8f5e640bc63a",
+  "head_commit": "075f1b5b8015e343f25b45d36ccff571cb39739b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1615.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 52,
+  "review_output": [
+    {
+      "file": "Dockerfile.ppc64le",
+      "line": 24,
+      "summary": "ppc64le 镜像中 torchvision-cpu=0.16.2 与 torch==2.3.1 版本不配对",
+      "failure_scenario": "该镜像先用 micromamba 从 open-ce 渠道安装 torchvision-cpu=0.16.2（该版本配套的是 torch 2.1.x），随后又用 pip 强制安装 torch==2.3.1 覆盖掉 torchvision 依赖的 torch 版本，形成 torchvision/torch 跨版本组合。torchvision 的 C++ 扩展是按编译期 torch ABI 构建的，运行时若与 2.3.1 的 libtorch 不匹配，典型表现为 import torchvision 时抛 undefined symbol/找不到 torchvision::nms 算子，使依赖图像处理器的模型（如 phi3v 等多模态模型）在 ppc64le 镜像中不可用。requirements-cpu.txt 第 7 行的注释也明确写明 torchvision “must be updated alongside torch”，说明本仓库已有该同步约束，而本次改动未遵守。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "BUILD-DEP-002"
+    },
+    {
+      "file": "CMakeLists.txt",
+      "line": 302,
+      "summary": "Hopper 上 CUTLASS blockwise FP8 GEMM 路径被整体移除，仅剩 Triton 实现",
+      "failure_scenario": "本次回退删除了 csrc/quantization/cutlass_w8a8/c3x/ 下的 blockwise FP8 kernel（scaled_mm_blockwise_sm90_fp8.cu、提交 1x128/128x128 group scale 的分派分支及对应的 CUTLASS 3.x block-scaled collective builder），并把 SM90 的编译源收敛为仅 scaled_mm_c3x.cu。删除后 Python 侧 block-wise FP8 线性层只能走 Triton 实现（fp8_utils.py 的 apply_w8a8_block_fp8_linear → w8a8_block_fp8_matmul），同时 scaled_mm_entry.cu 新增的 scale 形状校验会把任何 blockwise scale 形状的调用直接 TORCH_CHECK 掉。这意味着以 block-wise FP8 量化的模型（DeepSeek-V3/R1 一类）在 H100/H200 上会失去 CUTLASS blockwise GEMM 的性能优势，回落到 Triton kernel；MR 描述为空、未说明该回退是有意为之还是附带损失，评审无法判断性能回退是否已被评估。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-REGRESSION-001"
+    },
+    {
+      "file": "CMakeLists.txt",
+      "line": 450,
+      "summary": "为 _C 追加裸库名 cuda 会产生重复且可能无法解析的 -lcuda",
+      "failure_scenario": "新增 `list(APPEND VLLM_C_LIBS cuda)` 并把 `LIBRARIES ${VLLM_C_LIBS}` 传给 define_gpu_extension_target，最终在 cmake/utils.cmake 中以 `target_link_libraries(${GPU_MOD_NAME} PRIVATE torch ${GPU_LIBRARIES})` 展开为裸库名 `cuda`，即链接器参数 `-lcuda`。而同一函数在 CUDA 分支已经链接了 `CUDA::cudart CUDA::cuda_driver`，因此该追加既重复又绕过了 CMake 的 imported target 解析：在只安装 CUDA runtime/不含驱动 stub（libcuda.so）或不把驱动库目录加入链接搜索路径的构建环境中，`-lcuda` 会直接导致链接失败（cannot find -lcuda）；反之在找到时也只是与 cuda_driver 重复链接。作为对比，仓库里对 CUTLASS 直接调用驱动 API 的问题是通过 `CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1` 宏来绕开的，并不需要额外追加裸 `cuda`。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "BUILD-LINK-001"
+    },
+    {
+      "file": "csrc/core/math.hpp",
+      "line": 1,
+      "summary": "math.hpp 丢失 #pragma once，二次包含将导致 inline 函数重定义",
+      "failure_scenario": "本次改动删除了 csrc/core/math.hpp 的 `#pragma once`，文件现在以 `#include <climits>` 起始，成为没有 include guard 的头文件，而其中定义了 `inline uint32_t next_pow_2(...)`。inline 函数允许跨 TU 多重定义，但在同一个 TU 内被重复定义是编译错误；一旦某个 .cu/.cuh 通过多条包含路径（例如直接包含 math.hpp 又被其它仍然存在的 c3x/attention 头文件间接包含）引入两次，就会出现 `redefinition of 'next_pow_2'` 的编译失败。同时该函数还从 `constexpr` 退化为普通 `inline`，丧失了常量表达式能力（当前仓库内 next_pow_2 已无其他引用，故这一退化暂无直接编译影响，但会限制后续在模板参数/静态断言中的使用）。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "MAINTAIN-HEADER-001"
+    },
+    {
+      "file": ".buildkite/run-tpu-test.sh",
+      "line": 1,
+      "summary": "TPU CI 入口脚本被去掉可执行位（100755→100644）",
+      "failure_scenario": "本次改动把 .buildkite/run-tpu-test.sh 的文件模式从 100755 改成 100644，与本次“回退 CUTLASS/删除功能”的主题无关，属于夹带的文件权限变更。该文件是 .buildkite 下 TPU 测试流水线的入口脚本，一旦流水线以 `./.buildkite/run-tpu-test.sh`（或依赖可执行位的方式）直接调用，就会因 Permission denied 而使整条 TPU CI 失败；即使当前流水线写成 `bash .buildkite/run-tpu-test.sh`，改动也已让脚本与其他可执行 CI 脚本的行为不一致，后续维护容易踩坑。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CI-PERM-001"
+    },
+    {
+      "file": ".pre-commit-config.yaml",
+      "line": 92,
+      "summary": "去掉 pass_filenames: false 后 hook 会把文件名追加给 bash -c 脚本",
+      "failure_scenario": "该 hook 的 entry 是 `bash -c 'echo \"To bypass pre-commit hooks, add --no-verify to git commit.\"'`，只用于打印提示、不处理任何文件名。删除 `pass_filenames: false` 后，pre-commit 默认会把本次提交涉及的文件名作为位置参数追加到命令行末尾；在 `bash -c <script> arg0 arg1...` 的语义下这些文件名会成为 $0/$1，虽不会改变输出，但会给 hook 注入无意义的入参、并在提交文件很多时拉长命令行。更重要的是，这一改动与本次回退主题无关，属于配置漂移，后续读者难以判断其意图。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "CONFIG-DRIFT-001"
+    },
+    {
+      "file": "benchmarks/cutlass_benchmarks/w8a8_benchmarks.py",
+      "line": 362,
+      "summary": "多处文件结尾换行被删除（No newline at end of file）",
+      "failure_scenario": "本次改动有多个文件丢失了文件末尾换行标记：w8a8_benchmarks.py 末行 `args.func(args)`、docs/source/_static/custom.js 末行 `});`，以及 csrc/core/math.hpp、csrc/cutlass_extensions/common.hpp、csrc/quantization/cutlass_w8a8/scaled_mm_c3x_sm90_{fp8,int8}_dispatch.cuh 等。缺失结尾换行会让 POSIX 工具（diff/patch/部分编辑器与 lint）产生噪声 diff，并使后续任何对该文件的修改都额外包含一行“末行换行”变更，干扰 review 与 blame。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "STYLE-EOL-001"
+    },
+    {
+      "file": "requirements-cpu.txt",
+      "line": 7,
+      "summary": "CPU 依赖中 torchvision 由固定版本改为无约束，存在与 torch 2.5.1 的 ABI 不匹配风险",
+      "failure_scenario": "本次变更把 CPU 依赖里的 `torchvision==0.20.1`（含 ppc64le 专用行）替换为不带版本号的 `torchvision`，而同一文件中 torch 仍被严格固定为 `==2.5.1+cpu`。torchvision 的 C++ 扩展与 torch 版本强绑定（0.20.1 才对应 torch 2.5.1），去掉版本约束后 pip 会解析到最新版 torchvision（其 wheel 依赖更新的 torch），安装结果可能出现 `undefined symbol` / `operator torchvision::nms does not exist` 这类导入或运行时错误，而 phi3v 的 image processor 依赖 torchvision。此外 requirements-cuda.txt 仍保留 `torchvision == 0.20.1`，CPU 与 CUDA 两条依赖路径出现不一致；原注释「this must be updated alongside torch」所表达的同步约束也随版本号一起被削弱为行尾注释，容易在下次升级 torch 时被忽略。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "DEP-001"
+    },
+    {
+      "file": "requirements-test.txt",
+      "line": 376,
+      "summary": "测试依赖锁文件中 pqdm 的 `# via` 注释被删但包本身保留，说明文件被手工编辑而非重新生成",
+      "failure_scenario": "本次变更从 tqdm 与 typing-extensions 条的依赖来源注释中删除了 `#   pqdm`，但 `pqdm==0.2.0` 自身仍保留在文件中且仍标注 `# via -r requirements-test.in`。既然 pqdm 仍被安装，它依然是 tqdm / typing-extensions 的使用方，这些 `# via` 行本应保留；这强烈提示锁文件是手工编辑而非用 uv/pip-compile 重新生成。后果是：`make check-requirements` 这类“重新编译并与仓库文件比对”的校验会失败，或下一次自动重生成时引入与本 MR 无关的 diff；同时依赖来源注释失真会降低后续排查依赖问题的可信度。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "DEP-002"
+    },
+    {
+      "file": "vllm/attention/backends/rocm_flash_attn.py",
+      "line": 349,
+      "summary": "ROCm 后端不再支持 logits soft cap，Gemma-2 等模型在 AMD 上直接初始化失败",
+      "failure_scenario": "本次变更把 ROCm 后端的 logits soft cap 处理从「透传给 CK FA 的 softcap 参数（并仅在 Triton 分支下报错并提示 VLLM_USE_TRITON_FLASH_ATTN=0 规避）」改为在任何子路径下只要 `logits_soft_cap is not None` 就抛 ValueError，同时 forward 中 `softcap=self.logits_soft_cap` 也被删除。Gemma-2 系列会通过 `Gemma2Attention` 传入 `logits_soft_cap=attn_logits_soft_cap`，因此在 ROCm 上由「可运行」变为「模型初始化即抛 ValueError」，属于用户可见的能力回退；且原先给出的后端切换规避手段（改用 CK FA）已被移除，用户没有任何 workaround。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "vllm/attention/backends/rocm_flash_attn.py",
+      "line": 532,
+      "summary": "ROCm naive attention 路径把整批 token 数当作 prefill token 数传入，prefill+decode 混合批次会触发断言失败",
+      "failure_scenario": "naive(SDPA) 分支现在调用 `self.attn_func(query, key, value, prefill_meta.seq_lens, num_tokens, ...)`，其中 `num_tokens` 是 `query.shape[0]`（prefill + decode 的总 token 数），而 `_sdpa_attention` 用它来分配输出张量并按 `seq_lens` 逐段填充；紧接着的公共代码 `assert output[:num_prefill_tokens].shape == out.shape` 在 `num_tokens != num_prefill_tokens` 时会直接断言失败，即使断言被移除也会把未初始化的尾部行写入 `output`。语义上该形参本应对应 prefill token 数（原实现在其它调用点均使用 num_prefill_tokens 语义），这里传总量属于参数错位，属于只有在混合批次下才暴露的边界缺陷。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "vllm/attention/backends/pallas.py",
+      "line": 123,
+      "summary": "Pallas(TPU) 后端丢弃 logits soft cap 支持，带 soft cap 的模型在 TPU 上彻底不可用",
+      "failure_scenario": "此前 Pallas 后端会保存 `self.logits_soft_cap` 并作为 `attn_logits_soft_cap` 透传给 `torch.ops.xla.multi_queries_paged_attention` / `torch.ops.xla.paged_attention`；本次变更删除了字段与全部透传参数，改为在构造时对非 None 的 `logits_soft_cap` 抛 NotImplementedError。由于 TPU 上 Pallas 是唯一可用后端（placeholder 后端在检测到 logits_soft_cap 时也只是提示改用 FlashInfer，而 FlashInfer 并不支持 TPU），Gemma-2 等模型在 TPU 上从「可推理」变成「无法启动」，且没有任何替代后端。这属于明确的硬件/模型组合能力回退，但未见同步的兼容矩阵或文档说明。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "COMPAT-002"
+    },
+    {
+      "file": "examples/offline_inference/vision_language.py",
+      "line": 269,
+      "summary": "minicpmv 示例把 modality 断言为 image 却保留 video/多版本注释，示例能力与注释自相矛盾",
+      "failure_scenario": "重构后 `run_minicpmv` 把 model_name 硬编码为 2.6，同时把入参断言收紧为 `modality == \"image\"`，而函数体内仍保留 “2.0 / 2.5” 的备用 model_name 与 stop_token_ids 注释，且被删除的说明里明确写着 “2.6: image, video”。结果是：示例残留多版本注释却只能跑 2.6，`modality` 形参除断言外完全未使用（死参数），用户在 `--modality video` 下只会得到一句无解释的 AssertionError，无法从代码判断是模型不支持还是示例未实现。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.62,
+      "rule": "READABILITY-001"
+    },
+    {
+      "file": "vllm/entrypoints/openai/serving_models.py",
+      "line": 206,
+      "summary": "重复加载 LoRA 的报错文案因缺少空格而拼接成 \"beenloaded.\"",
+      "failure_scenario": "本次改动删掉了报错文案第一段末尾的空格，导致相邻字符串字面量拼接后变成 \"The lora adapter 'xxx' has already beenloaded.\"。这是直接返回给 API 调用方的 InvalidUserInput 错误信息，用户可见的英文会被拼错，降低错误信息可信度。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.92,
+      "rule": "READABILITY-MSG-001"
+    },
+    {
+      "file": "vllm/entrypoints/openai/protocol.py",
+      "line": 53,
+      "summary": "OpenAIBaseModel 的非 dict 输入保护被放进缓存分支内，缓存命中后非 dict 请求体会抛未捕获异常",
+      "failure_scenario": "校验器从 mode=\"wrap\" 改为 mode=\"before\" 后，函数拿到的可能是任意原始输入（null body、已构造的 BaseModel 实例等）。但 `if not isinstance(data, dict): return data` 被放在了 `if field_names is None:` 分支内部：一旦某个子类的 field_names 已被缓存（第一次正常 dict 请求之后即会缓存），非 dict 输入会直接走到 `any(k not in field_names for k in data)`（对 None 抛 TypeError、对 BaseModel 实例按 pydantic 的 __iter__ 产出 (k, v) 元组）与 `data.keys()`（AttributeError），异常不再是 pydantic ValidationError，FastAPI 无法转成 422，只能返回 500。改动前是 wrap 模式，先执行 handler(data) 完成校验再记录日志，非 dict 输入会得到正常的校验错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "vllm/entrypoints/openai/protocol.py",
+      "line": 139,
+      "summary": "OpenAI 兼容服务的 reasoning 能力被整体移除，related 参数与响应字段不再注册，属对外契约破坏性变更",
+      "failure_scenario": "本 MR 删除 vllm/entrypoints/openai/reasoning_parsers/ 整个子包，并精简 cli_args.py（-30）、protocol.py（+7/-24）、serving_chat.py（+5/-100）。现状核对显示：cli_args.py 的 import（第 13-18 行）只引入 ChatTemplateContentFormatOption、LoRAParserAction 相关类型、ToolParserManager 与 FlexibleArgumentParser，make_arg_parser 自第 78 行起逐个注册参数但已无 reasoning 相关参数；protocol.py:139 的 ResponseFormat.type 仅剩 text/json_object/json_schema；serving_chat.py:16-23 的导入列表无 ReasoningParser。全仓库检索 reasoning_parser / ReasoningParser / reasoning_content / enable_reasoning 均为 0 引用，说明推理内容解析与相关响应字段已被完整撤除，依赖该能力的客户端会静默拿到不含推理内容的响应，依赖相应启动参数的部署脚本需同步调整启动参数。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "API-COMPAT-004"
+    },
+    {
+      "file": "vllm/entrypoints/openai/protocol.py",
+      "line": 1286,
+      "summary": "BatchRequestInput 删除按 url 区分 body 类型的校验后，批次请求可能被赋予错误的请求体类型",
+      "failure_scenario": "原实现对 body 使用 `@field_validator('body', mode='plain')` 的 check_type_for_url，依据同一行的 `url` 显式选择 ChatCompletionRequest / EmbeddingRequest / ScoreRequest 进行校验；改动后只剩 Union 智能联合校验，body 与 url 的一致性不再被约束。run_batch 仅按 `request.url` 选择 handler（chat → create_chat_completion、embeddings → create_embedding、score → create_score），随后把 `request.body` 直接交给该 handler。由于 ChatCompletionRequest.messages 与 EmbeddingRequest.input 是各自必填项，一条 url 为 /v1/chat/completions 但 body 形如 `{\"model\": ..., \"input\": ...}` 的批次行会被判为 EmbeddingRequest 并通过校验，然后在 chat handler 内访问 chat 专属字段时抛 AttributeError；run_request 内没有 try/except，异常会沿 asyncio.gather 冒出并中断整个批次任务。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "API-CONTRACT-002"
+    },
+    {
+      "file": "vllm/model_executor/layers/fused_moe/fused_moe.py",
+      "line": 301,
+      "summary": "删除小批量 EM 优化后 grid 按完整 padding 后的 token 数展开，decode 场景每层多启动大量空转 program",
+      "failure_scenario": "原实现按 `EM = min(sorted_token_ids.shape[0], A.shape[0] * top_k * config['BLOCK_SIZE_M'])` 收缩 grid，并据此传给 kernel；本次改动改为 `triton.cdiv(sorted_token_ids.shape[0], BLOCK_SIZE_M) * triton.cdiv(B.shape[1], BLOCK_SIZE_N)`，并把 `sorted_token_ids.shape[0]` 原样传入。`sorted_token_ids.shape[0] = topk_ids.numel() + num_experts * (block_size - 1)`，在专家数很大（如 256 专家、block_size=64）而 M 很小时（典型 decode 每步 batch 很小），padding 后的长度远大于有效 token 数，kernel 里 `if pid_m * BLOCK_SIZE_M >= num_tokens_post_padded: return` 只做早退，program 仍被启动。每个 MoE 层每次前向都会承担这部分额外启动/调度开销。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.65,
+      "rule": "PERF-001"
+    },
+    {
+      "file": "vllm/model_executor/layers/fused_moe/fused_moe.py",
+      "line": 436,
+      "summary": "try_get_optimal_moe_config 原地改写共享 config 字典，会污染 lru_cache 缓存与全局 override 配置",
+      "failure_scenario": "block-wise 量化时新增的两行覆写直接修改 `config` 对象本身，而 `config` 并非副本：它要么来自 `override_config` 设置的模块级全局 `_config`（get_config() 直接返回引用），要么来自被 `@functools.lru_cache` 缓存的 get_moe_configs 返回值中的嵌套 dict。因此一次 block_shape 覆写会永久改写缓存中该 (E, N, dtype) 的配置，也在退出 override_config 上下文管理器之后仍然改变了全局配置；后续同一 (E, N, dtype) 的非 block-wise 调用或另一个模型会读到被上一次 block_shape 污染后的 BLOCK_SIZE_N/BLOCK_SIZE_K，属于跨调用、跨模型的隐式状态泄漏。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "STATE-001"
+    },
+    {
+      "file": "vllm/model_executor/layers/fused_moe/fused_moe.py",
+      "line": 837,
+      "summary": "fused_moe 文档中 use_int8_w8a16 的说明被改成「使用 fp8 运算」，与实现不符",
+      "failure_scenario": "删除 use_int4_w4a16 文档条目时，use_int8_w8a16 的说明被改成「If True, use fp8 arithmetic to compute the inner products for w1 and w2」，与上一行 use_fp8_w8a8 的描述完全重复。实际语义是 int8 权重 × bf16/fp16 激活（kernel 中走 `use_int8_w8a16` 分支，B_scale 反量化后与激活做 dot），文档错误会误导调用方与后续维护者选择量化开关。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "DOC-001"
+    },
+    {
+      "file": "vllm/entrypoints/openai/api_server.py",
+      "line": 531,
+      "summary": "已废弃 /v1/rerank 接口的提示日志由 warning_once 改为 warning，每个请求都会打印一次",
+      "failure_scenario": "do_rerank_v1 是兼容旧路径的转发接口，其提示信息本质是「一次性迁移提示」。改为 logger.warning 之后每次调用都会写一条完整警告，客户端仍使用 /v1/rerank 时会在高 QPS 下产生大量重复日志、放大 IO 与日志采集成本，并淹没真正需要关注的告警。vllm/logger.py 仍提供 warning_once，说明该降级并非日志能力缺失所致。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.78,
+      "rule": "MAINTAIN-003"
+    },
+    {
+      "file": "vllm/entrypoints/openai/serving_completion.py",
+      "line": 61,
+      "summary": "create_completion 的 raw_request 被改为必填并去掉 None 判断，与 create_chat_completion 的签名不一致",
+      "failure_scenario": "本次改动把 `raw_request: Optional[Request] = None` 改成 `raw_request: Request`，并把 `trace_headers = (None if raw_request is None else await ...)` 改为无条件 `await self._get_trace_headers(raw_request.headers)`。仓库内唯一调用点 api_server.py:409 确实会传入 raw_request，因此当前不会立即报错；但同一文件族的 OpenAIServingChat.create_chat_completion 仍保留 `raw_request: Optional[Request] = None`，因为 run_batch 以单参形式调用它。两个 serving 接口因此对外契约不一致：以库方式直接调用 create_completion（不经过 HTTP 层，或沿用旧签名传 None）会立刻 TypeError，而传 chat 路径又不会。这属于与本次 MLA/reasoning 回退无关、且未在说明中体现的破坏性签名变更。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.55,
+      "rule": "MAINTAIN-004"
+    },
+    {
+      "file": "vllm/model_executor/layers/quantization/__init__.py",
+      "line": 6,
+      "summary": "整体删除 moe_wna16 量化方法，既有 W4A16/W8A16 MoE 量化权重失去加载与执行通道",
+      "failure_scenario": "本 MR 删除 vllm/model_executor/layers/quantization/moe_wna16.py 整文件（-424 行），并从 QUANTIZATION_METHODS / method_to_config 中移除 moe_wna16。由于 get_quantization_config 对不在 QUANTIZATION_METHODS 中的名字直接抛 ValueError，凡是命令行、量化配置或调用方仍指定 moe_wna16 的场景都会在引擎初始化阶段失败；同时 fused_moe 侧 int4(w4a16) 路径上的 use_int4_w4a16 / w1_zp 参数在仓库中已 0 引用，意味着 GPTQ/AWQ 的 int4 MoE 权重不再有可用的执行通道，这是既有可用模型能力的回退而非单纯的参数移除。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "vllm/model_executor/layers/quantization/__init__.py",
+      "line": 6,
+      "summary": "整体删除 moe_wna16 量化方法，既有 W4A16/W8A16 MoE 量化模型将无法加载",
+      "failure_scenario": "本 MR 删除 vllm/model_executor/layers/quantization/moe_wna16.py 整文件（-424 行），并从 QUANTIZATION_METHODS / method_to_config 中移除 moe_wna16。由于 get_quantization_config 对不在 QUANTIZATION_METHODS 中的名字直接抛 ValueError，用户脚本或 config 里仍带 moe_wna16（或依赖其对 GPTQ/AWQ MoE 权重的 override 判定）时，会在引擎初始化阶段直接失败；同时 fused_moe 侧 use_int4_w4a16 / w1_zp 等 int4(w4a16) 执行路径也一并消失（全仓库 0 引用），意味着 GPTQ/AWQ 的 int4 MoE 权重不再有任何可用执行通道，而不仅是命令行参数不可用。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "vllm/model_executor/layers/quantization/utils/fp8_utils.py",
+      "line": 54,
+      "summary": "block_quant_to_tensor_quant 已无调用点，成为死代码",
+      "failure_scenario": "fp8_utils.py 仍保留 block_quant_to_tensor_quant 的完整实现（block-wise→tensor-wise 量化转换），但本次改动移除其使用场景后全仓库已无调用点；同文件 apply_w8a8_block_fp8_linear 在 :19 断言 input_scale is None，也不再经过该转换路径。保留这段代码会误导阅读者以为 block→tensor 转换仍在主路径上，并在后续 fp8 工具重构时增加维护成本。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAIN-005"
+    },
+    {
+      "file": "vllm/model_executor/layers/quantization/utils/fp8_utils.py",
+      "line": 54,
+      "summary": "block_quant_to_tensor_quant 成为无调用点的死代码",
+      "failure_scenario": "fp8_utils.py 中 block_quant_to_tensor_quant 仍保留完整实现（约 20 行，含 block/tensor 量化转换逻辑），但本次改动删除了其唯一使用场景后，全仓库已无任何调用点。这类保留会误导后续读者以为 block-wise→tensor-wise 转换仍在主路径上，并增加后续重构时的维护成本。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAIN-003"
+    },
+    {
+      "file": "vllm/model_executor/layers/quantization/utils/fp8_utils.py",
+      "line": 323,
+      "summary": "fp8 block-wise GEMM 退回硬编码 Triton 启发式，CUTLASS sm90 block-scaling 内核与按 shape 调优表被整体移除",
+      "failure_scenario": "删除 CUTLASS 侧 blockwise sm90 fp8 内核（含 collective 层的 fp8 blockwise scaling）与 quantization/utils/configs/ 下全部 N=*/K=* 调优 JSON 后，w8a8_block_fp8_matmul 变成唯一路径且参数写死：BLOCK_SIZE_M=128（M<128 时取 next_power_of_2、下限 16）、BLOCK_SIZE_K=block_k、BLOCK_SIZE_N=block_n、GROUP_SIZE_M=8，代码里仍保留 “TODO: BLOCK_SIZE_M, BLOCK_SIZE_K, BLOCK_SIZE_N can be optimized”。该函数是 fp8.py 的 apply_w8a8_block_fp8_linear 的执行体，即 fp8 block 量化线性层（DeepSeek 类模型 attention/MLP 的主路径）在 H100/H200 上将统一走通用 Triton 内核，失去按 (M,N,K,GPU) 选核与调优参数，存在明显的吞吐回退风险。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.78,
+      "rule": "PERF-002"
+    },
+    {
+      "file": "vllm/model_executor/layers/quantization/utils/fp8_utils.py",
+      "line": 323,
+      "summary": "w8a8 block FP8 线性层放弃全部预调优配置，改为固定 BLOCK/GROUP 参数，性能明显回退",
+      "failure_scenario": "改动删除了 get_w8a8_block_fp8_configs 与整个按 N/K/device/dtype 划分的 JSON 调优配置（diff 中 N=7168,K=128 的 H100 配置对小 batch 使用 BLOCK_SIZE_M=16、num_stages=2，对 M=96 使用 BLOCK_SIZE_M=128、num_stages=5 等，且不同 device 配置不同），改为 BLOCK_SIZE_M=128（M 小时取 next_power_of_2，下限 16）、BLOCK_SIZE_N=block_n、BLOCK_SIZE_K=block_k、GROUP_SIZE_M=8，并且不再传 num_warps/num_stages，完全依赖 Triton 默认值。对 decode（小 M）与 prefill（大 M）不再区分最优 tile，H100/H200 上此前逐 shape 调优的收益丢失，长上下文、大词表模型的线性层将成为新瓶颈；同时原先“Config file not found ... Performance might be sub-optimal”的提示日志也被删除，性能回退不再有任何可观测线索。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "PERF-001"
+    },
+    {
+      "file": "vllm/model_executor/layers/quantization/utils/fp8_utils.py",
+      "line": 328,
+      "summary": "新增断言 block_k % BLOCK_SIZE_K == 0 恒为真，无法守护注释声明的约束",
+      "failure_scenario": "BLOCK_SIZE_K 在上一行被直接赋值为 block_k，随后断言 block_k % BLOCK_SIZE_K == 0 永远成立，属于自我赋值式断言，起不到任何校验作用；而注释声明的真实约束（BLOCK_SIZE_K 必须是 block_k 的整数倍、BLOCK_SIZE_N/BLOCK_SIZE_M 与 block 尺寸的关系）并未被检查。后续若有人调整 BLOCK_SIZE_K 或 block_n，该断言既不会报错也不会提示，且在 python -O 下 assert 会被整体移除，容易被误读为已有保护。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "benchmarks/kernels/benchmark_moe.py",
+      "line": 346,
+      "summary": "benchmark_moe 调用 get_default_config 少传 is_marlin，命中无调优配置分支时抛 TypeError",
+      "failure_scenario": "benchmark_moe.py 通过 `from vllm.model_executor.layers.fused_moe.fused_moe import *` 引入 get_default_config，但在 get_moe_configs 返回 None 的分支上只传了 6 个位置参数（num_tokens, num_experts, shard_intermediate_size, hidden_size, topk, dtype_str），而 fused_moe.py 中唯一的声明要求 7 个参数且 is_marlin 无默认值。由于回退后按 shape 命中的调优配置更少，该分支被触发概率显著上升，导致 MoE 调优/基准脚本在此路径上直接 TypeError 崩溃，无法产出新的调优配置。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.75,
+      "rule": "TESTTOOL-003"
+    },
+    {
+      "file": "vllm/model_executor/models/llama.py",
+      "line": 427,
+      "summary": "kv-scale 重映射下移到 for/else 分支后，ModelOpt FP8 检查点加载会抛 KeyError",
+      "failure_scenario": "本次改动把 maybe_remap_kv_scale_name 从 stacked_params_mapping 循环之前移到 for/else 的 else 分支。于是当检查点中存在形如 model.layers.N.self_attn.k_proj.k_scale / v_proj.v_scale 的 FP8 kv-scale（NVIDIA ModelOpt FP8 权重的典型命名）时，会先被 stacked_params_mapping 中的 (\".qkv_proj\", \".k_proj\", \"k\") 命中，name 被 replace 成 model.layers.N.self_attn.qkv_proj.k_scale，随后直接执行 param = params_dict[name]；该名字不是模型参数，抛出 KeyError，模型加载失败且报错信息与真实原因（kv-scale 重命名）无关。同时 weight_utils 中原本处理 modelopt 命名的分支已被删除，原先能通过的前置重映射不再存在。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "vllm/model_executor/model_loader/weight_utils.py",
+      "line": 657,
+      "summary": "删除 modelopt kv-scale 命名映射后，FP8 kv-cache 的 k/v scale 会被静默丢弃",
+      "failure_scenario": "maybe_remap_kv_scale_name 删除了针对 \".self_attn.k_proj.k_scale\" / \".self_attn.v_proj.v_scale\" 的 modelopt_scale_names 分支，统一改为 name.replace(\".k_scale\", \".attn.k_scale\")。对 modelopt 命名会得到 \".self_attn.k_proj.attn.k_scale\"，该名字必然不在 params_dict 中，函数返回 None，调用方随即 continue，只打一条 warning_once。结果是 fp8 kv-cache 的 k_scale/v_scale 保持 Attention.__init__ 中的默认值 1.0，KV cache 量化缩放错误且不会报错，表现为输出精度/一致性下降，极难定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "vllm/model_executor/models/deepseek_v2.py",
+      "line": 265,
+      "summary": "DeepseekV2 恒定走非 MLA 路径，use_mla 配置静默失效并显著增大 KV cache 占用",
+      "failure_scenario": "删除 DeepseekV2MLAAttention 及 DecoderLayer 中的 model_config.use_mla 分支后，所有 DeepSeek-V2/V3 权重都改由 DeepseekV2Attention 处理：其 self.attn 是普通 Attention，forward 中显式物化 k/v（k = torch.empty_like(q)、v 按 qk_head_dim 补零），KV cache 按 num_local_heads × qk_head_dim 存储，而不是 MLA 的 kv_lora_rank 压缩潜向量。use_mla=True 的模型（DeepSeek-V2-Lite / DeepSeek-V3 系列，以及 deepseek_vl2 选择 DeepseekV2ForCausalLM 的场景）会静默退化为物化 KV，显存占用与 attention 计算量成倍上升，长上下文下可能直接 OOM 或并发能力骤降，而日志中没有任何提示。此外 ModelConfig 的 use_mla 字段也随之移除，用户无法再通过配置感知或恢复该行为。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-002"
+    },
+    {
+      "file": "vllm/v1/core/scheduler.py",
+      "line": 303,
+      "summary": "num_common_prefix_blocks 在 running 为空时未定义即被使用，导致 UnboundLocalError",
+      "failure_scenario": "本次变更删除了 schedule() 中 `num_common_prefix_blocks = 0` 的默认初始化，该变量现在只在 `if self.running:` 分支内被赋值（第 272-276 行），却在构造 SchedulerOutput 时被无条件读取（第 303 行）。当本次调度没有任何请求进入 RUNNING 队列时（例如首个请求因空闲块不足使 allocate_slots 返回 None 后 break，或抢占后 running 被清空），会抛 UnboundLocalError，直接打断 EngineCore 的调度循环。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-UNBOUND-LOCAL"
+    },
+    {
+      "file": "vllm/v1/core/scheduler.py",
+      "line": 448,
+      "summary": "调度器注释出现明显笔误，丢失关键不变量说明",
+      "failure_scenario": "本次回退在 scheduler.py 中引入两处注释笔误：第 448 行 `# This must be called before me make the EngineCoreOutput.` 与第 205 行 `# The happens when prompt length is divisible by the block`。后者原本用于说明 chunked prefill 在整除场景下强制重算最后一个 block 的语义，笔误后语义丢失，影响后续维护者对 num_computed_tokens 回退一个 block 这一关键不变量的理解。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.9,
+      "rule": "STYLE-002"
+    },
+    {
+      "file": "vllm/v1/core/scheduler.py",
+      "line": 527,
+      "summary": "_free_request 不再回收 encoder cache，被中止的多模态请求会永久泄漏 encoder 缓存槽位",
+      "failure_scenario": "变更删除了 EncoderCacheManager.free(request)（整请求释放），只保留 free(request, input_id)，而 Scheduler._free_request 现在仅调用 kv_cache_manager.free(request)。只有某个 image 输入被消费完时 update_from_output 才会逐个 free(input_id)；因此客户端在 encoder 输出被消费前 abort、或请求在 prefill 阶段提前结束时，其 encoder 缓存条目与 num_free_slots 永不归还，长时间服务后 can_allocate 恒为 False，多模态请求再也无法调度。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "RESOURCE-LEAK-001"
+    },
+    {
+      "file": "vllm/model_executor/models/qwen.py",
+      "line": 609,
+      "summary": "img_pos 是 torch.Tensor 却用 isinstance(..., np.ndarray) 判断，占位符与图片数量校验始终失效",
+      "failure_scenario": "VisionTransformer.get_image_positions 返回 torch.Tensor 或 None，但此处用 isinstance(img_pos, np.ndarray) 做分支判断，条件恒为 False，导致『占位符数量 != 图片数量』的校验永不生效。数量不匹配时不会给出可读报错，而是落到第 627 行 `hidden_states[img_bos + 1:img_eos] = image_embeds[idx]`，触发形状/索引错误；若形状恰好兼容则产生静默的错误输出。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "vllm/model_executor/models/qwen.py",
+      "line": 622,
+      "summary": "QWenModel.forward 中重复赋值 hidden_states，彻底丢弃 inputs_embeds",
+      "failure_scenario": "forward 先在 618-621 行根据是否传入 inputs_embeds 计算 hidden_states，紧接着第 622 行又无条件执行 `hidden_states = self.wte(input_ids)`，把上一步结果整体覆盖。当 model runner 传入 inputs_embeds（多模态/外部 embedding 通路）时，外部 embedding 被静默丢弃，模型退化为纯文本 token embedding 前向，输出语义错误；若该路径下 input_ids 为 None，则直接抛 TypeError。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "vllm/model_executor/models/mllama.py",
+      "line": 850,
+      "summary": "移除 ROCM_FLASH 分支后，ROCm 上 mllama 的 cross-attention 直接抛 ValueError",
+      "failure_scenario": "原先 XFORMERS/ROCM_FLASH/TORCH_SDPA 共用 PagedAttention 写缓存实现，变更把 _Backend.ROCM_FLASH 从该分支剔除，而 ROCM_FLASH 枚举本身仍存在（本次只删除 TRITON_MLA），RocmPlatform.get_attn_backend_cls 仍会返回该后端。因此在 ROCm 上运行 Mllama 时 _attention_with_mask 会落入 else 分支抛 ValueError，交叉注意力推理不可用。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.65,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "vllm/model_executor/models/mllama.py",
+      "line": 1495,
+      "summary": "cross-attention mask 转换去掉 text-only 跳过后 zip 错位，混合 batch 触发断言崩溃",
+      "failure_scenario": "变更把遍历改为 `zip(sparse_mask, num_tiles, lengths)` 并删除了 num_tiles_idx 计数与一致性断言。但 sparse_mask 为每个序列各生成一项（text-only 序列为 []），而 num_tiles 只包含有图序列的条目（被删除代码的注释明确说明这一点）。只要 batch 中同时存在纯文本请求与多图请求（skip_attention_mask 不会短路），zip 就会把纯文本序列的 [] 与属于图像序列的 num_tiles 配对，内层 zip 为空使 ts 保持 -1，随后 `assert ts != -1` 失败；即使不失败，tile_range_for_decode 也会整体错位导致 cross-attention 使用错误 tile 区间。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "vllm/model_executor/models/minicpmv.py",
+      "line": 248,
+      "summary": "get_max_minicpmv_image_tokens 只返回 query_num，低估单图 token 上限",
+      "failure_scenario": "被删除的 get_max_image_tokens 通过 get_num_image_tokens(image_size, max_slice_num) 计入切片带来的多组 query_num token 以及 slice 边界 token；回退后注册的 max image tokens 只返回 query_num（默认 64）。该值用于 MULTIMODAL_REGISTRY 的单 item 最大 token 统计，进而参与 encoder 预算/缓存容量估算（compute_encoder_budget）。低估会使预算与缓存容量偏小，真实多切片图片更容易因 encoder 预算或缓存不足而无法被调度。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "PERF-CAPACITY-001"
+    },
+    {
+      "file": "vllm/model_executor/models/minicpmv.py",
+      "line": 259,
+      "summary": "dummy_image_for_minicpmv 直接读取 hf_config.image_size，丢失原有 448 默认值兜底",
+      "failure_scenario": "被删除的 get_default_image_sizes 使用 `getattr(self.get_hf_config(), \"image_size\", 448)` 为缺少 image_size 字段的旧配置提供兜底；回退后的 dummy 数据构造改为 `width = height = hf_config.image_size` 直接属性访问。对早期 MiniCPM-V 权重（config 未含 image_size）会在 profiling/显存预跑阶段抛 AttributeError，导致模型无法启动。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CONFIG-002"
+    },
+    {
+      "file": "vllm/model_executor/models/minicpmv.py",
+      "line": 286,
+      "summary": "input_processor_for_minicpmv 加载 image processor 时漏传 trust_remote_code 且使用 tokenizer 路径",
+      "failure_scenario": "同一文件内 input_mapper_for_minicpmv 用 `cached_get_image_processor(model_config.model, trust_remote_code=model_config.trust_remote_code)`，而 input processor 却用 `cached_get_image_processor(model_config.tokenizer)`。两处缓存 key（processor_name + trust_remote_code）不同，会重复下载/初始化 image processor；更关键的是 MiniCPM-V 的 image processor 属于 remote code，trust_remote_code 默认 False 时 get_image_processor 会抛 RuntimeError，与用户已指定的 trust_remote_code 配置相矛盾。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CONFIG-001"
+    },
+    {
+      "file": "vllm/model_executor/models/minicpmv.py",
+      "line": 316,
+      "summary": "input_processor_for_minicpmv 缺少图片数与占位符数量校验，不一致时抛 IndexError 或残留占位符",
+      "failure_scenario": "旧实现有 check_mm_inputs 显式比对 prompt 中占位符数量与实际图片数量并给出清晰报错，回退后该逻辑消失：新代码仅按 len(image_size_list) 索引 text_chunks（其长度为 tag 数+1）。图片多于占位符时抛 IndexError；图片少于占位符时会残留未展开的 `(<image>./</image>)` 文本，把与图片数量不匹配的 token 序列送入模型。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "VALIDATION-001"
+    },
+    {
+      "file": "vllm/model_executor/models/minicpmv.py",
+      "line": 346,
+      "summary": "ValueError 使用元组实参未格式化，提示中的类型名也与实际输入类型不符",
+      "failure_scenario": "`raise ValueError(\"Image input must be list of MiniCPMVImageInput, got (%s)\", data)` 把消息模板与数据作为两个独立实参传入，异常字符串会变成 tuple 形式且 `%s` 不被替换，还可能把整份图片数据打进日志。同时该文件中的输入类型实际叫 MiniCPMVRawImageInput，提示中的 MiniCPMVImageInput 并不存在，会误导排查方向。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "STYLE-001"
+    },
+    {
+      "file": "vllm/v1/metrics/stats.py",
+      "line": 15,
+      "summary": "SchedulerStats.gpu_cache_usage 以注释形式残留，既非删除也未说明恢复条件",
+      "failure_scenario": "字段被改为 \"# gpu_cache_usage: float = 0.0\" 保留在数据类中，属于注释掉的死代码：类型定义不再表达该字段，但阅读者仍需判断它是临时下线还是永久移除；同时 v1 侧已无任何 gpu_cache_usage 采集代码（源码引用为 0），字段被静默停用却没有 TODO 或 issue 链接说明恢复条件。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "DEADCODE-002"
+    },
+    {
+      "file": "vllm/v1/metrics/stats.py",
+      "line": 32,
+      "summary": "IterationStats 的 token 统计已无消费方，却仍在每轮输出处理的热循环中执行",
+      "failure_scenario": "本 MR 删除了所有消费 iteration_stats 的指标逻辑（LoggingStatLogger 与 PrometheusStatLogger 的 log() 现在只接收 scheduler_stats），IterationStats 的 num_prompt_tokens/num_generation_tokens 已无生产消费方，但 OutputProcessor.process_outputs 仍对每个 EngineCoreOutput 调用 update_from_output，做 len(output.new_token_ids) 计算、累加与 prefilling 断言。这属于纯浪费的每-token 级 CPU 开销，同时保留的统计字段会让后续维护者误以为指标仍然生效。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.72,
+      "rule": "DEADCODE-001"
+    },
+    {
+      "file": "vllm/v1/metrics/loggers.py",
+      "line": 18,
+      "summary": "log() 收窄为单参数后调用方仍保留 iteration_stats 形参与 assert，形成死参数与不一致契约",
+      "failure_scenario": "StatLoggerBase.log 已从 log(scheduler_stats, iteration_stats) 改为 log(scheduler_stats)，但 async_llm.py 的 _log_stats 仍接收 iteration_stats 并在调用处 assert 其非 None，随后只传 scheduler_stats。该参数成为永不使用的死参数，assert 又让读者误以为 iteration_stats 仍被指标消费；同时 StatLoggerBase 的抽象契约与调用方数据流不再一致，未来按旧签名新增的子类会静默忽略多余参数而不报错。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.68,
+      "rule": "API-CONSISTENCY-001"
+    },
+    {
+      "file": "vllm/v1/metrics/loggers.py",
+      "line": 38,
+      "summary": "周期日志格式串以空格结尾且缺少句读，输出行出现尾随空格",
+      "failure_scenario": "LoggingStatLogger 的格式串为 \"Running: %d reqs, Waiting: %d reqs \"，末尾多一个空格且没有句号；在删除吞吐量与 GPU KV cache 信息后，该行成为每 5 秒一次的唯一定期状态输出，尾随空格会污染日志检索与 diff 对比，缺失句读也降低可读性。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.82,
+      "rule": "STYLE-001"
+    },
+    {
+      "file": "vllm/v1/metrics/loggers.py",
+      "line": 44,
+      "summary": "v1 Prometheus 指标成批删除且无迁移说明，现有监控看板与告警将静默失去数据",
+      "failure_scenario": "PrometheusStatLogger 中被删除的指标包括 vllm:gpu_cache_usage_perc、vllm:prompt_tokens_total、vllm:generation_tokens_total、vllm:request_prompt_tokens、vllm:request_generation_tokens、vllm:time_to_first_token_seconds、vllm:time_per_output_token_seconds，只剩两个队列长度 Gauge；同时 gpu_cache_usage 采集端也被注释/下线。对使用 v1 引擎的用户而言，这些时间序列在升级后直接消失（并非变为 0），依赖吞吐/延迟直方图做容量评估与 SLA 告警的看板会静默失效，而 diff 中没有任何文档、CHANGELOG 或替代方案说明。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.58,
+      "rule": "OBSERVABILITY-001"
+    },
+    {
+      "file": "vllm/v1/metrics/loggers.py",
+      "line": 49,
+      "summary": "labelnames/labelvalues 直接使用 dict 视图对象，依赖实现细节且可被外部修改",
+      "failure_scenario": "PrometheusStatLogger 保存 self.labels = labels 后用 self.labels.keys()/values() 作为 labelnames/labelvalues 传给 prometheus_client 并 .labels(*labelvalues)。dict 视图是外部可变对象的活引用，构造函数把调用方的 dict 长期持有为成员变量：一旦该 dict 后续被修改，label 名称集合与建 Gauge 时使用的取值会脱节；同时以视图而非不可变序列传参也依赖 prometheus_client 内部的迭代实现细节。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.35,
+      "rule": "ROBUSTNESS-001"
+    },
+    {
+      "file": "vllm/worker/model_runner.py",
+      "line": 1976,
+      "summary": "CUDAGraphRunner.forward 删除 positions 判空后未以断言固化非空契约",
+      "failure_scenario": "forward 现在无条件执行 self.input_buffers[\"positions\"].copy_(positions, non_blocking=True)，而 ModelInputForGPU.input_positions 的类型声明为 Optional[torch.Tensor]，capture 阶段也是把传入的 positions 原样存入 input_buffers。当前 execute_model 只有在 decode+CUDA graph 且 input_tokens 非空时才选中 graph_runner，因此现状大概率安全；但删除判空后没有任何断言或注释表达「必须非空」的契约，一旦出现新的调用路径（注意力无关模型、特殊 batch、draft/pooling runner 变体）传入 None，就会在 decode 热路径抛 NoneType 相关异常并中断推理。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "CORRECTNESS-002"
+    }
+  ],
+  "stderr_tail": "view-rules/），照常检视\nreview-pi: 已过滤 87 个文件 / 263289 字符（test=19, exclude=68），明细见审计 mrFilter\n✓ 完成 · 耗时 1583.5s · 模型调用 172 次 · token 输入 714,345（未命中） · 输出 227,718 · 缓存命中 11,071,360（93.9%） · 工具 312 次（主会话 312 + 规则 Skill 0） · Ledger 命中 3 次（未重复读取原文） · $0.1948\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\vllm-project__vllm@075f1b...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1584.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.0%)\n[time] 阶段 | 六阶段审计 1583.4s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 13.6s (0.9%) | S1P2 3.3s (0.2%) | S1P3 9.8s (0.6%) | S1P4 136.3s (8.6%) | S1P5 59.7s (3.8%) | S1P6 13.2s (0.8%) | S2P1 7.8s (0.5%) | S2P2 3.3s (0.2%) | S2P3 5.8s (0.4%) | S2P4 187.8s (11.9%) | S2P5 31.3s (2.0%) | S2P6 10.0s (0.6%) | S3P1 8.0s (0.5%) | S3P2 3.6s (0.2%) | S3P3 8.5s (0.5%) | S3P4 131.7s (8.3%) | S3P5 46.3s (2.9%) | S3P6 17.0s (1.1%) | S4P1 32.7s (2.1%) | S4P2 4.7s (0.3%) | S4P3 13.2s (0.8%) | S4P4 63.2s (4.0%) | S4P5 57.1s (3.6%) | S4P6 14.6s (0.9%) | S4R2P1 7.2s (0.5%) | S4R2P2 5.2s (0.3%) | S4R2P3 14.9s (0.9%) | S4R2P4 33.0s (2.1%) | S4R2P5 23.3s (1.5%) | S4R2P6 16.7s (1.1%) | S5P1 20.1s (1.3%) | S5P2 2.8s (0.2%) | S5P3 30.3s (1.9%) | S5P4 55.7s (3.5%) | S5P5 63.2s (4.0%) | S5P6 12.7s (0.8%) | S6P1 10.7s (0.7%) | S6P2 4.1s (0.3%) | S6P3 9.3s (0.6%) | S6P4 163.3s (10.3%) | S6P5 28.8s (1.8%) | S6P6 11.7s (0.7%) | S7P1 3.2s (0.2%) | S7P2 4.0s (0.3%) | S7P3 5.8s (0.4%) | S7P4 73.7s (4.7%) | S7P5 31.2s (2.0%) | S7P6 13.7s (0.9%) | S7R2P1 3.9s (0.2%) | S7R2P2 2.8s (0.2%) | S7R2P3 5.6s (0.4%) | S7R2P4 14.0s (0.9%) | S7R2P5 22.0s (1.4%) | S7R2P6 7.4s (0.5%)\n[usage] 任务总计 | 模型调用 172 次（Agent 172 + 一次性 0） | token 输入 714,345（未命中） | 输出 227,718 | 缓存命中 11,071,360（93.9%） | $0.1948\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\vllm-project__vllm@075f1b5\\audit\\20261115_050909_840.json",
+  "token_usage": {
+    "input_tokens": 714345,
+    "output_tokens": 227718,
+    "cache_read_input_tokens": 11071360
+  }
+}

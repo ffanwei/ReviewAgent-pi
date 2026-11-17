@@ -1,0 +1,272 @@
+[
+  {
+    "filePath": "src/api/providers/sapaicore.ts",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (data.choices && data.choices[0].finish_reason === \"stop\") {",
+        "review": "[缺陷类型] 可选链被替换为真值判断，数组首元素访问缺少判空。影响评估：SSE 流中出现空 choices 的 chunk 时抛 TypeError，被 catch 吞掉后丢失 usage 上报并污染错误日志；仅影响 SAP AI Core 的 GPT 系模型对话。",
+        "suggestion": "[重构思路] 恢复可选链，或统一使用可读的守卫写法。代码示例：`const finishReason = data.choices?.[0]?.finish_reason; if (finishReason === \"stop\") { ... }`",
+        "category": "可靠性",
+        "subcategory": "空数组越界访问",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 449,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "console.log(\"Received GPT data:\", data)",
+        "review": "[缺陷类型] 敏感数据写入日志（调试日志残留）。影响评估：模型回复/会话内容外泄风险，并显著增加日志量；该类调试输出不应进入发布版本。",
+        "suggestion": "[重构思路] 删除调试日志；如需排障，改为受开关控制的 debug 级别日志且只输出元信息（如 chunk 长度、choices 数量）。代码示例：`if (DEBUG_SPAI_STREAM) console.debug(\"[sapaicore] chunk\", { choices: data.choices?.length, hasUsage: !!data.usage })`",
+        "category": "安全",
+        "subcategory": "调试日志泄露",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 425,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/api/providers/anthropic.ts",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "this.client = new Anthropic({",
+        "review": "[缺陷类型] 前置校验被移除 + 初始化时机前移导致错误面扩大。影响评估：缺 key / 未登录场景下报错信息不可读（英文 SDK 文案）、可能以空 key 发请求；provider 切换与任务创建路径可能直接抛异常，且配置文件已写入造成状态不一致。",
+        "suggestion": "[重构思路] 保留构造期的显式 key 校验（抛出可读错误），并把 client 构造保持在 createMessage 首次使用时惰性创建，或在 buildApiHandler 的错误处理中统一转换为用户可读提示并保证配置回滚/不落盘。代码示例：`constructor(options) { this.options = options; if (!options.apiKey) throw new Error(\"Anthropic API key is required\") }`，并在 updateApiConfigurationProto 中先 `const handler = buildApiHandler(appApiConfiguration)` 成功后再 `await updateApiConfiguration(...)`。",
+        "category": "可靠性",
+        "subcategory": "凭据校验与初始化时机",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 14,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/api/providers/vertex.ts",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "this.clientAnthropic = new AnthropicVertex({",
+        "review": "[缺陷类型] 无条件的构造期初始化 + 前置校验删除。影响评估：Vertex 上使用 Gemini 模型的用户会因不相关的 Claude 客户端初始化失败而无法使用；错误信息从明确提示退化为底层异常。",
+        "suggestion": "[重构思路] 保留按模型分支的惰性创建，或至少在构造期恢复显式校验；也可把 AnthropicVertex 的创建延后到 claude 分支内。代码示例：`private ensureAnthropicClient(): AnthropicVertex { if (!this.options.vertexProjectId) throw new Error(\"Vertex AI project ID is required\"); if (!this.options.vertexRegion) throw new Error(\"Vertex AI region is required\"); return (this.clientAnthropic ??= new AnthropicVertex({ projectId: this.options.vertexProjectId, region: this.options.vertexRegion })) }`",
+        "category": "可靠性",
+        "subcategory": "初始化时机与校验缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 24,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/utils/path.ts",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "export const isLocatedInWorkspace = async (pathToCheck: string = \"\"): Promise<boolean> => {",
+        "review": "[缺陷类型] 多根工作区语义收窄 + 边界输入缺少守卫。影响评估：多根项目下读写/命令类工具的“是否在工作区内”判定可能翻转，触发多余的审批弹窗或与预期相反的判定；空路径/无工作区场景会误判为“在工作区内”。",
+        "suggestion": "[重构思路] 恢复遍历全部 workspace 根逐个判断，并保留空值守卫；只把 getWorkspacePath 用于“展示/默认 cwd”用途。代码示例：`export const isLocatedInWorkspace = async (p = \"\"): Promise<boolean> => { if (!p) return false; const roots = (await getHostBridgeProvider().workspaceClient.getWorkspacePaths({})).paths; if (!roots.length) return false; const abs = path.resolve(roots[0], p); return roots.some((root) => isLocatedInPath(root, abs)) }`",
+        "category": "可靠性",
+        "subcategory": "工作区边界判定",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 127,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/core/controller/file/getRelativePaths.ts",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "const fileUri = vscode.Uri.parse(`${parseResponse.scheme}://${parseResponse.authority}${parseResponse.path}`)",
+        "review": "[缺陷类型] 跨进程 URI 往返 + 手工拼接导致信息丢失。影响评估：带 query/fragment 的 URI 与非常规 scheme 的 URI 相对路径计算错误（文件被丢弃或回退为绝对路径），并引入每个 URI 一次的额外 IPC 延迟。",
+        "suggestion": "[重构思路] 直接用返回的 fs_path（或让 host 侧返回 uri.toString()）构造 URI，避免手工拼接；能本地完成的解析不要走 host bridge。代码示例：`const { fsPath } = await getHostBridgeProvider().uriServiceClient.parse(...); const fileUri = vscode.Uri.file(fsPath);` 或直接保留 `vscode.Uri.parse(uriString, true)`。",
+        "category": "可靠性",
+        "subcategory": "URI 解析正确性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 28,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F007",
+        "code": "console.log(\"[DEBUG] UriServiceClient.parse:\", fileUri)",
+        "review": "[缺陷类型] 调试日志残留。影响评估：日志噪声、误导排障，且在高频路径上产生额外 I/O 开销。",
+        "suggestion": "[重构思路] 删除该行；若确需可观测性，改用统一 logger 且仅在失败分支输出。代码示例：`// 删除 console.log(\"[DEBUG] ...\")`",
+        "category": "可维护",
+        "subcategory": "调试代码残留",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 29,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/core/controller/index.ts",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "await updateGlobalState(this.context, \"apiProvider\", clineProvider)",
+        "review": "[缺陷类型] 状态未持久化导致 UI 流程卡住。影响评估：通过账号登录的新用户在认证回调后仍停留在欢迎页，属于首次使用主流程的功能回退。",
+        "suggestion": "[重构思路] 恢复登录成功后的完成标记，或让 webview 在收到 auth callback 事件时显式调用 setWelcomeViewCompleted(true)。代码示例：`await updateGlobalState(this.context, \"welcomeViewCompleted\", true)` 放入 handleAuthCallback 成功分支。",
+        "category": "可靠性",
+        "subcategory": "首次使用流程状态",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 473,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "webview-ui/src/components/mcp/configuration/tabs/marketplace/McpMarketplaceView.tsx",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "if (message.type === \"mcpDownloadDetails\") {",
+        "review": "[缺陷类型] 状态机未在成功路径复位。影响评估：成功重试后仍显示陈旧的错误提示，误导用户认为下载失败。",
+        "suggestion": "[重构思路] 在 mcpDownloadDetails 消息处理中无论成功失败都先复位错误，再按 error 设置。代码示例：`if (message.type === \"mcpDownloadDetails\") { setError(message.error ?? null) }`",
+        "category": "可靠性",
+        "subcategory": "UI 状态复位",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 64,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/core/controller/task/newTask.ts",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "import { handleFileServiceRequest } from \"../file\"",
+        "review": "[缺陷类型] 未使用导入。影响评估：可能导致 CI lint 失败，并给阅读者造成“该文件参与 file service 注册”的错误暗示。",
+        "suggestion": "[重构思路] 删除该导入，或若确实需要注册 file service 处理，则补齐实际调用并说明用途。代码示例：`// 删除 import { handleFileServiceRequest } from \"../file\"`",
+        "category": "可维护",
+        "subcategory": "未使用导入",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 4,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/hosts/host-providers.ts",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "import * as vscode from \"vscode\"",
+        "review": "[缺陷类型] 未使用导入。影响评估：lint 噪声与宿主耦合；在非 VS Code 运行时该模块被迫加载 vscode 模块。",
+        "suggestion": "[重构思路] 移除该导入。代码示例：`// 删除 import * as vscode from \"vscode\"`",
+        "category": "可维护",
+        "subcategory": "未使用导入",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 4,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/core/storage/state.ts",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "export async function updateGlobalStateBatch(context: vscode.ExtensionContext, updates: Record<string, any>) {",
+        "review": "[缺陷类型] 类型断言旁路。影响评估：批量写入的键名失去编译期保护，错误键名会静默丢失配置，且排查困难（表现为设置“保存后不生效”）。",
+        "suggestion": "[重构思路] 用映射类型约束键集合，调用处用 `satisfies` 保证完整性。代码示例：`export async function updateGlobalStateBatch(context: vscode.ExtensionContext, updates: Partial<Record<GlobalStateKey, any>>) { await Promise.all(Object.entries(updates).map(([k, v]) => context.globalState.update(k as GlobalStateKey, v))) }`",
+        "category": "可维护",
+        "subcategory": "类型断言滥用",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 32,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F013",
+        "code": "console.log(\"[PERF] getAllExtensionState: Starting state retrieval\")",
+        "review": "[缺陷类型] 诊断日志污染热路径。影响评估：日志噪声掩盖真实错误、在慢速输出通道上带来可测量的开销，并让后续维护者误以为这些耗时断言是契约。",
+        "suggestion": "[重构思路] 收敛为单一受控诊断开关（如环境变量或 outputChannel debug 级别），并去掉带具体数字承诺的文案。代码示例：`const perf = (label: string, ms: number) => process.env.CLINE_PERF_LOG && console.debug(`[PERF] ${label}: ${ms.toFixed(1)}ms`)`",
+        "category": "可维护",
+        "subcategory": "日志治理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 80,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/services/posthog/telemetry/TelemetryService.ts",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "public captureConversationTurnEvent(",
+        "review": "[缺陷类型] 遥测字段静默丢失。影响评估：用量/成本相关分析口径断裂，历史与新增数据不可比；如非有意下线，属于数据回退。",
+        "suggestion": "[重构思路] 若非有意下线，恢复 tokenUsage 形参与属性展开，并让调用方继续传入已计算好的用量。代码示例：`this.capture({ event: \"conversation_turn\", properties: { taskId, provider, model, source, timestamp, ...tokenUsage } })`",
+        "category": "可维护",
+        "subcategory": "遥测数据完整性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 292,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "package.json",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "\"version\": \"3.18.3\",",
+        "review": "[缺陷类型] 发布版本号回退。影响评估：更新通道断裂（用户无法收到新版本）、发布流水线可能因版本重复而失败。",
+        "suggestion": "[重构思路] 恢复为 3.18.4 或按下一次发布的正确版本号递增，并确保版本变更由发布流程统一管理。代码示例：`\"version\": \"3.18.4\"`",
+        "category": "可靠性",
+        "subcategory": "版本管理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 5,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

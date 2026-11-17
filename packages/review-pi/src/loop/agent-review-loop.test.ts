@@ -110,6 +110,7 @@ function scriptedLoop(
   replies: readonly FakeReply[],
   initial = INITIAL,
   runtime?: ReviewRuntime,
+  phaseReplyRepair?: (input: { raw: string; phase: string }) => Promise<string | undefined>,
 ): ScriptedRun {
   const script = fakeFetch([...replies]);
   const toolkit = buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF });
@@ -131,6 +132,7 @@ function scriptedLoop(
       apiKey: "test-key",
       fetch: script.fetch,
       runtime: singleAttempt,
+      ...(phaseReplyRepair !== undefined ? { phaseReplyRepair } : {}),
     });
   return { run, requestUrls: script.requests.map((request) => request.url) };
 }
@@ -483,25 +485,134 @@ test("规则 Skill：Phase 5 文本回合后先跑 skill 会话，Phase 6 一次
   expect(outcome.toolCalls).toBe(0);
 });
 
-test("Phase 5 解析失败：phaseLog 留 parseFailure，本轮 0 候选继续推进（不重试）", async () => {
+test("Phase 5 解析失败：重试与短窗口修复均失败，留痕后本轮 0 候选继续推进", async () => {
   const { run } = scriptedLoop([
     textReply(phaseText(0), 0),
     textReply(phaseText(1), 1),
     textReply(phaseText(2), 2),
     textReply(phaseText(3), 3),
     textReply("not a JSON reply at all", 4),
-    textReply('{"verdicts":[],"complete":true}', 5),
-  ]);
+    textReply("still not a JSON reply", 5),
+    textReply('{"verdicts":[],"complete":true}', 6),
+  ], INITIAL, undefined, async () => undefined);
   const outcome = await run();
 
   expect(outcome.rounds).toBe(1);
   expect(outcome.findings).toEqual([]);
-  // 解析失败只留痕、不重试：整轮仍是 6 次请求
-  expect(outcome.audit.requests).toHaveLength(6);
+  // 失败后追加一次重发 + 一次短窗口修复；不无限重试
+  expect(outcome.audit.requests).toHaveLength(7);
   const phase5 = outcome.audit.phaseLog[4];
   expect(phase5?.parseFailure).toEqual({ expected: "candidates", kind: "not-json" });
+  expect(phase5?.parseRetries).toBe(1);
+  expect(phase5?.parseRecovered).toBe(false);
+  expect(phase5?.parseRecovery).toBeUndefined();
   expect(phase5?.note).toContain("JSON");
   expect(outcome.audit.phaseLog[5]?.parseFailure).toBeUndefined();
+});
+
+test("Phase 5 解析失败：同会话重试成功，候选恢复且审计留痕", async () => {
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply("not a JSON reply at all", 4),
+    textReply(phaseText(4), 5),
+    textReply(phaseText(5), 6),
+  ]);
+  const outcome = await run();
+
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(outcome.audit.requests).toHaveLength(7);
+  // 回灌的是一条短提示，不重发阶段指令
+  expect(outcome.audit.requests[5]?.wireBody).toContain("上一次回复无法解析");
+  const phase5 = outcome.audit.phaseLog[4];
+  expect(phase5?.parseFailure).toBeUndefined();
+  expect(phase5?.parseRetries).toBe(1);
+  expect(phase5?.parseRecovered).toBe(true);
+  expect(phase5?.parseRecovery).toBe("retry");
+});
+
+test("Phase 5 解析失败：离线 salvage 成功，不发起重试", async () => {
+  const malformed =
+    '{"candidates":[{"id":"F001","severity":"P3","category":"MAINTAINABILITY","file":"src/main/java/Foo.java","line":10,"title":"Unused helper method","description":"uses "foo" here","evidence":["src/main/java/Foo.java:10 private void helper()"],"rule":"MAINTAINABILITY-001","confidence":0.7}]}';
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply(malformed, 4),
+    textReply(phaseText(5), 5),
+  ]);
+  const outcome = await run();
+
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(outcome.audit.requests).toHaveLength(6);
+  const phase5 = outcome.audit.phaseLog[4];
+  expect(phase5?.parseFailure).toBeUndefined();
+  expect(phase5?.parseRetries).toBeUndefined();
+  expect(phase5?.parseRecovered).toBe(true);
+  expect(phase5?.parseRecovery).toBe("offline");
+});
+
+test("Phase 5 解析失败：同会话重试失败后，短窗口修复成功", async () => {
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply("not a JSON reply at all", 4),
+    textReply("still not a JSON reply", 5),
+    textReply(phaseText(5), 6),
+  ], INITIAL, undefined, async () => phaseText(4));
+  const outcome = await run();
+
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(outcome.audit.requests).toHaveLength(7);
+  const phase5 = outcome.audit.phaseLog[4];
+  expect(phase5?.parseFailure).toBeUndefined();
+  expect(phase5?.parseRetries).toBe(1);
+  expect(phase5?.parseRecovered).toBe(true);
+  expect(phase5?.parseRecovery).toBe("short-llm");
+});
+
+test("Phase 6 解析失败：同会话重试成功，裁决生效", async () => {
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply(phaseText(4), 4),
+    textReply("not verdict JSON", 5),
+    textReply(phaseText(5), 6),
+  ]);
+  const outcome = await run();
+
+  expect(outcome.complete).toBe(true);
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(outcome.audit.requests).toHaveLength(7);
+  const phase6 = outcome.audit.phaseLog[5];
+  expect(phase6?.parseFailure).toBeUndefined();
+  expect(phase6?.parseRetries).toBe(1);
+  expect(phase6?.parseRecovered).toBe(true);
+  expect(phase6?.parseRecovery).toBe("retry");
+});
+
+test("Phase 5 截断：不追加解析重试", async () => {
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply('{"candidates":[', 4),
+    textReply('{"verdicts":[],"complete":true}', 5),
+  ]);
+  const outcome = await run();
+
+  expect(outcome.audit.requests).toHaveLength(6);
+  const phase5 = outcome.audit.phaseLog[4];
+  expect(phase5?.parseFailure).toEqual({ expected: "candidates", kind: "truncated" });
+  expect(phase5?.parseRetries).toBeUndefined();
 });
 
 test("Phase 5 宽松提取：示例对象在前、真候选在后，取真结果", async () => {

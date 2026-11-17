@@ -1,0 +1,304 @@
+{
+  "generatedAt": "2026-11-15T04:43:30.283Z",
+  "runId": "20261115_043802_965",
+  "source": "mr",
+  "caseId": "opencv__opencv@79afad9",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "modules/imgcodecs/src/grfmt_gif.cpp",
+      "line": 133,
+      "title": "GIF 消隐背景的 Mat 行列被互换，非方形子帧的背景恢复失效",
+      "description": "restore 用于在 GIF_DISPOSE_RESTORE_BACKGROUND 时把子区域恢复为背景色，其尺寸必须与后续 ROI（height 行 × width 列）一致。本次改动把 `Mat(height, width, CV_8UC4, background)` 改成 `Mat(width, height, CV_8UC4, background)`，而 cv::Mat(int rows, int cols, ...) 的第一个参数是行数，于是 restore 变成 width 行 × height 列。当 width != height 时，`restore.copyTo(Mat(lastImage, Rect(left,top,width,height)))` 因尺寸不匹配会重新分配目标 Mat，像素根本不会写回 lastImage，导致后续帧的背景区域残留上一帧内容，动画输出错误；同时与同文件第 113 行初始帧仍使用 `Mat(m_height, m_width, ...)` 的正确写法自相矛盾。",
+      "evidence": [
+        "modules/imgcodecs/src/grfmt_gif.cpp:133 — `restore = Mat(width, height, CV_8UC4, background);`，Mat 的首参为 rows",
+        "modules/imgcodecs/src/grfmt_gif.cpp:113 — 同函数初始帧仍写 `img_ = Mat(m_height, m_width, CV_8UC4, background);`（rows=height, cols=width）",
+        "modules/imgcodecs/src/grfmt_gif.cpp:214-215 — `Mat roi = Mat(lastImage, cv::Rect(left,top,width,height)); restore.copyTo(roi);` 目标为 height×width",
+        "diff hunk @@ -130,7 +130,7 @@ 将 `Mat(height, width, CV_8UC4, background)` 改为 `Mat(width, height, CV_8UC4, background)`",
+        "modules/imgcodecs/src/grfmt_gif.cpp:94-98 — left/top/width/height 来自 GIF 帧描述符，width 与 height 不要求相等"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 几何尺寸参数顺序错误（rows/cols 互换）。影响评估：任何 width != height 且使用 DISPOSE_BACKGROUND 的 GIF 动画，消隐区域不会被恢复，输出帧内容错误；单元测试若只用方形帧则无法发现。",
+        "suggestion": "[重构思路] 恢复为 (rows, cols) 顺序，或改用 `Mat(Size(width, height), CV_8UC4, background)` 明确语义。代码示例：`restore = Mat(Size(width, height), CV_8UC4, background);`",
+        "subcategory": "内存布局/尺寸参数顺序"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "modules/imgproc/src/color_hsv.dispatch.cpp",
+      "line": 283,
+      "title": "sdiv/hdiv 查表改为 volatile 标志的懒初始化，破坏了原有线程安全的一次性初始化",
+      "description": "原实现用函数内 `static UMat sdiv_data = init_sdiv_table();` 等局部静态变量，C++11 保证首次初始化线程安全。改动后改为裸数组 + `static volatile bool initialized180/initialized256` 手写守卫：(1) volatile 不是原子类型，两个线程可同时判定未初始化并并发执行 `Mat(1,256,CV_32SC1,sdiv_table).copyTo(sdiv_data)` 与 `...copyTo(hdiv_data)`，对同一 static UMat 头并发写会造成引用计数/分配状态竞争，可能崩溃或泄漏；(2) 弱内存序平台上其它线程可能先看到 `initialized == true` 而看不到 copyTo 写入的 UMat 内容，内核拿到空/半初始化的 UMat 并通过 `PtrReadOnly` 传入，内核读取空指针缓冲区导致错误结果或异常；(3) 180 与 256 两条路径共享 sdiv_data，判断条件 `!initialized180 && !initialized256` 使两个线程都认为需要初始化 sdiv_data。",
+      "evidence": [
+        "modules/imgproc/src/color_hsv.dispatch.cpp:283-284 — `static volatile bool initialized180 = false, initialized256 = false; volatile bool & initialized = hrange == 180 ? initialized180 : initialized256;`",
+        "modules/imgproc/src/color_hsv.dispatch.cpp:286-307 — `if (!initialized) { ... }` 无锁进入初始化，内部 `Mat(1, 256, CV_32SC1, sdiv_table).copyTo(sdiv_data);`（298）与 `...copyTo(hdiv_data);`（305）均写 static UMat",
+        "modules/imgproc/src/color_hsv.dispatch.cpp:294 — `if (!initialized180 && !initialized256)` 使 180/256 两条路径都会重复初始化共享的 sdiv_data",
+        "modules/imgproc/src/color_hsv.dispatch.cpp:309-311 — 使用前一帧即通过 `h.setArg(ocl::KernelArg::PtrReadOnly(sdiv_data))` 把表传给内核，仅靠 volatile 标志保证可见性",
+        "diff 中被删除的原实现：`static UMat sdiv_data = init_sdiv_table();` / `static UMat hdiv_data180 = init_hdiv_table(180);`（函数内 static，初始化线程安全）"
+      ],
+      "rule": "CONCURRENCY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 共享可变状态的竞态与不安全发布（benign initialization 被替换为手写标志）。影响评估：多线程首次调用 cvtColor(BGR2HSV) 时可能得到错误 HSV 结果、崩溃或内存损坏，且难以复现；延迟初始化本来是为避免启动期开销，现在反而引入竞态。",
+        "suggestion": "[重构思路] 回到编译器保证的 static 初始化（可用 lambda 一次性构造），或使用 std::once_flag / 原子标志 + 内存序；两张 hdiv 表与 sdiv 表各自独立初始化。代码示例：`static const UMat sdiv_data = []{ /* build */ return UMat(1,256,CV_32SC1,values); }();` 或 `static std::once_flag f180, f256; std::call_once(hrange==180 ? f180 : f256, [&]{ ... });`",
+        "subcategory": "并发初始化竞态"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+      "line": 3,
+      "title": "JavaStreamReader 缓存 JNIEnv*，在其它线程回调 read/seek 时会使用非法 JNIEnv",
+      "description": "JavaStreamReader 在构造时保存 JNIEnv*（JavaStreamReader::read/seek 后续全用它发起 JNI 调用），析构时再用它 DeleteGlobalRef。JNIEnv 是与线程绑定的，只在创建它的线程有效；而 IStreamReader 的 read/seek 是由 FFmpeg 的 IO 回调在解码线程调用的，只要 VideoCapture 的创建与逐帧读取不在同一线程（多线程播放/解码很常见），就会在错误线程上使用 JNIEnv，导致未定义行为、JVM 崩溃，且异常无法被 Java 侧捕获。对比 Python 侧同类实现每次调用都通过 PyGILState_Ensure/Release 获取当前线程状态，说明这里缺少等价处理。",
+      "evidence": [
+        "modules/videoio/misc/java/src/cpp/videoio_converters.hpp:19 — `JNIEnv* env;` 作为成员长期持有",
+        "modules/videoio/misc/java/src/cpp/videoio_converters.cpp:3-4 — 构造函数 `JavaStreamReader::JavaStreamReader(JNIEnv* _env, jobject _obj) : env(_env)`",
+        "modules/videoio/misc/java/src/cpp/videoio_converters.cpp:17-32 — read/seek 直接使用成员 env 调用 CallLongMethod/NewByteArray",
+        "modules/videoio/misc/java/src/cpp/videoio_converters.cpp:11-14 — 析构中 `env->DeleteGlobalRef(obj);` 同样依赖该 env 所在线程",
+        "modules/videoio/misc/python/pyopencv_videoio.hpp:56-57,73 — Python 侧 PythonStreamReader::read 每次调用 `PyGILState_Ensure()` / `PyGILState_Release()`，不缓存线程状态",
+        "modules/videoio/src/cap_ffmpeg_impl.hpp:1186 — FFmpeg 解码路径中调用 `IStreamReader::read` 的回调点"
+      ],
+      "rule": "THREAD-AFFINITY-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] JNI 线程亲和性违规（跨线程复用 JNIEnv*）。影响评估：跨线程使用时 JNIEnv 指针可能失效，表现为崩溃（SIGSEGV）或随机 JNI 错误，属于难以定位的原生崩溃；析构路径同样受影响。",
+        "suggestion": "[重构思路] 缓存 JavaVM*（通过 `env->GetJavaVM(&vm)`），在 read/seek/析构中调用 `vm->GetEnv` 或 `vm->AttachCurrentThread` 获取当前线程的 JNIEnv，并在需要时 Detach；全局引用释放建议放在 Java 侧可控的生命周期点。代码示例：`JavaVM* vm; env->GetJavaVM(&vm); ... JNIEnv* e = nullptr; vm->GetEnv((void**)&e, JNI_VERSION_1_6); if (!e) { vm->AttachCurrentThread(&e, nullptr); }`",
+        "subcategory": "JNI 跨线程调用"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "modules/java/generator/gen_java.py",
+      "line": 98,
+      "title": "新增 byte[] 类型用 GetByteArrayElements 却从不 Release，生成的 JNI 包装会泄漏并长期钉住数组",
+      "description": "type_dict 新增的 \"byte[]\" 只给出 `jni_var` 取得数组元素指针，没有配对释放；而 gen_func 会把该 jni_var 原样写入生成的 JNI 函数体（c_prologue）。同文件 'string' 类型在同一个 jni_var 字符串里就完成了 GetStringUTFChars/ReleaseStringUTFChars 配对，可见此处的释放是被遗漏的。后果是每次经该包装调用（IStreamReader::read）都会泄漏一份数组副本/pin，且未 Release 的数组无法被 GC 移动或回收，长时间解码会持续增长内存。此外 IStreamReader::read 是纯虚函数，为其生成 JNI 包装会在未覆写时调用到纯虚实现（未定义行为）。",
+      "evidence": [
+        "modules/java/generator/gen_java.py:93-99 — 新增 `\"byte[]\"`：`\"jni_var\": \"char* n_%(n)s = reinterpret_cast<char*>(env->GetByteArrayElements(%(n)s, NULL))\"`，无任何 Release",
+        "modules/java/generator/gen_java.py:80 — 对照 'string' 条目在 jni_var 内即 `env->ReleaseStringUTFChars(%(n)s, utf_%(n)s)`",
+        "modules/java/generator/gen_java.py:1058-1059 — `if (... \"jni_var\" in type_dict[a.ctype]): c_prologue.append(type_dict[a.ctype][\"jni_var\"] % {\"n\": a.name} + \";\")` 证明该语句进入生成的 JNI 函数",
+        "modules/java/generator/gen_java.py:1056 — cvargs 用 `jni_name`（`n_%(n)s`）把指针传给 C++ 函数",
+        "modules/videoio/misc/java/gen_dict.json:2-4 — func_arg_fix 把 `read` 的 `buffer` 参数类型改为 `byte[]`，从而启用上述 jni_var",
+        "modules/videoio/include/opencv2/videoio.hpp:730 — `CV_WRAP virtual long long read(char* buffer, long long size) = 0;` 为纯虚且被 CV_WRAP"
+      ],
+      "rule": "JNI-RESOURCE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] JNI 资源泄漏（Get*Elements 未 Release）。影响评估：每次 read 调用泄漏一份 Java 数组 pin，长视频解码内存/堆碎片持续增长；生成的包装对纯虚方法调用属于未定义行为。",
+        "suggestion": "[重构思路] 在生成的包装结束处配对释放，例如把 jni_var 扩展为“取指针 + 在 c_epilogue 释放”，或为该类型增加 release 钩子；若 Java 侧本就要覆写 read/seek，则不要对这些纯虚方法加 CV_WRAP，避免生成无意义的原生包装。代码示例：`char* n_buffer = (char*)env->GetByteArrayElements(buffer, NULL); ... env->ReleaseByteArrayElements(buffer, (jbyte*)n_buffer, JNI_ABORT);`",
+        "subcategory": "JNI 资源泄漏"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+      "line": 24,
+      "title": "JavaStreamReader::read 未检查 Java 侧返回长度与挂起异常，可能静默返回错误数据",
+      "description": "read 先 CallLongMethod 拿到 res，随后无条件用 `GetByteArrayRegion(..., size, ...)` 把整块 size 字节拷回 buffer，且整个过程没有任何 ExceptionCheck/返回值校验：若 Java 的 read 抛出异常（例如 RandomAccessFile 读取失败后用户实现抛出），CallLongMethod 返回 0 且 JVM 中留有挂起异常，之后再调用 GetByteArrayRegion/DeleteLocalRef 属于在挂起异常状态下调用 JNI，行为不确定（部分实现会直接中止）；若用户实现返回大于 size 的长度（如返回错误值），上层会认为读到了比 buffer 更多的数据，导致越界读取或解码错乱。构造时 GetMethodID 失败（m_read/m_seek 为 NULL）也被静默吞掉，挂起的 NoSuchMethodError 不会被清理。Python 侧对应实现对此有显式校验与抛错，说明这里是缺失的。",
+      "evidence": [
+        "modules/videoio/misc/java/src/cpp/videoio_converters.cpp:20-28 — `jlong res = env->CallLongMethod(obj, m_read, jBuffer, size); env->GetByteArrayRegion(jBuffer, 0, (jsize)size, ...); env->DeleteLocalRef(jBuffer); return res;` 无 ExceptionCheck、无 res 与 size 的关系校验",
+        "modules/videoio/misc/java/src/cpp/videoio_converters.cpp:12-16 — `m_read = env->GetMethodID(cls, \"read\", \"([BJ)J\");` 失败时仅返回 NULL，挂起异常未 ExceptionClear",
+        "modules/videoio/misc/java/src/cpp/videoio_converters.cpp:18-19 — `if (!m_read) return 0;` 静默降级为 0 字节",
+        "modules/videoio/misc/python/pyopencv_videoio.hpp:62-80 — Python 侧检查 `PyErr_Occurred()` 并 `CV_CheckLE(len, static_cast<size_t>(size), ...)` 后才返回",
+        "modules/videoio/src/cap_ffmpeg_impl.hpp:1186-1189 — 上层以返回值判断读成功/失败"
+      ],
+      "rule": "JNI-ERRORCHECK-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] JNI 调用错误处理缺失（未检查返回值与挂起异常）。影响评估：Java 侧异常被吞掉后转成“读到 0 字节/错误长度”，表现为视频打开失败但无有效错误信息，或解码数据错乱；挂起异常继续调用 JNI 还可能触发 VM abort。",
+        "suggestion": "[重构思路] 每次 JNI 调用后检查 `env->ExceptionCheck()` 并在必要时 `ExceptionDescribe/ExceptionClear` 后转成 C++ 异常；对返回长度做 `0 <= res <= size` 校验（参考 Python 侧的 CV_CheckLE）。代码示例：`jlong res = env->CallLongMethod(obj, m_read, jBuffer, size); if (env->ExceptionCheck()) { env->ExceptionClear(); CV_Error(cv::Error::StsError, \"Java IStreamReader::read failed\"); } CV_CheckLE(res, size, \"Stream chunk size should be <= requested size\");`",
+        "subcategory": "JNI 异常/返回值校验"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "modules/core/src/opencl/arithm.cl",
+      "line": 330,
+      "title": "OCL 整型幂路径去掉了工作类型与饱和转换，溢出时结果未定义且与 CPU 不一致",
+      "description": "原实现由主机侧传入 workT/convertToWT1/convertToDT（整数深度用 float 工作类型 + convert_*_sat），PROCESS_ELEM 为 `storedst(convertToDT(pown(srcelem1, powi)))`。改动后主机不再传这些宏，arithm.cl 走 `#ifndef workT` 分支，srcelem1/srcelem2 直接以 dstT 原始值加载且 `convertToDT` 退化为 noconvert，OP_POWN 只把 workT 重定义为 int 后写 `storedst(pown(srcelem1, srcelem2))`：pown 在 OpenCL C 里只对浮点 gentype 有定义，整型 dstT 依赖隐式转换，返回值经隐式浮点→整数转换写回目标，溢出时是未定义行为（旧实现是饱和的）。因此 8U/8S/16U/16S/32S 上的大幂次 OCL 结果会与 CPU 的 iPow（饱和）不一致，甚至在不同 GPU 驱动上表现不同。",
+      "evidence": [
+        "modules/core/src/opencl/arithm.cl:327-330 — `#elif defined OP_POWN / #undef workT / #define workT int / #define PROCESS_ELEM storedst(pown(srcelem1, srcelem2))`",
+        "modules/core/src/opencl/arithm.cl:126-154 — 未定义 workT 时 `#define workT dstT`、srcelem1/srcelem2 直接按 dstT 取值、`#define convertToDT noconvert`",
+        "modules/core/src/mathfuncs.cpp:941-944 — 新的 kernel 选项串 `-D dstT=%s -D DEPTH_dst=%d -D rowsPerWI=%d -D %s -D UNARY_OP%s` 不再传 workT/convertToWT1/convertToDT",
+        "diff 中被删除的主机侧 extra_opts 含 `-D workT=%s -D wdepth=%d -D convertToWT1=%s -D convertToDT=%s`（整数深度取 CV_32F 工作类型、convert_*_sat）",
+        "modules/core/perf/opencl/perf_arithm.cpp:705-708 — `randu(src, 0, 100)` 后对 CV_8UC1/CV_16UC1/CV_32SC1 执行 `cv::pow(src, 7.0, dst)`，100^7 远超目标类型范围",
+        "modules/core/src/mathfuncs.cpp:957-958 — 主机侧仍以 int 传入 ipower：`k.args(srcarg, dstarg, ipower)`"
+      ],
+      "rule": "OPENCL-TYPE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] GPU 内核数值类型/溢出语义变更（丢失饱和转换）。影响评估：整型 pow 的 OCL 结果在溢出时未定义，可能与 CPU 结果不一致，已知不一致会污染 OpenCL 与 CPU 双路径的一致性测试与用户结果。",
+        "suggestion": "[重构思路] 在 OP_POWN 中显式回到浮点工作类型并饱和回写，例如保留 `convertToDT`（`convert_uchar_sat` 等）或对整数类型先转 float 再 saturate 转换；同时为该路径补一个 OCL vs CPU 的一致性测试。代码示例：`#elif defined OP_POWN` + `#define PROCESS_ELEM storedst(convertToDT(pown(convert_float(srcelem1), srcelem2)))`（整数深度时由主机侧继续传 `-D convertToDT=convert_uchar_sat` 等）。",
+        "subcategory": "GPU 数值溢出语义"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可测试性",
+      "file": "modules/core/perf/opencl/perf_arithm.cpp",
+      "line": 696,
+      "title": "iPow 性能用例同时削减类型覆盖并改成不做结果校验，恰好覆盖不到被改动的内核路径",
+      "description": "本次同时改动了 arithm.cl 的 OP_POWN 与主机侧 kernel 选项，但 iPow 用例删除了 CV_8UC3（cn==3 分支）、CV_32FC1/CV_64FC1（浮点 iPow 与 doubleSupport 分支），并继续使用 SANITY_CHECK_NOTHING，又把幂次从 3 改成 7.0（在 0..100 的数据上必然触发整型溢出）。结果是：改动涉及的 cn==3 与 double 路径不再被任何 OpenCL 用例执行，而溢出场景即便结果错了也不会被发现，回归风险被掩盖。",
+      "evidence": [
+        "modules/core/perf/opencl/perf_arithm.cpp:696 — 枚举仅剩 `CV_8UC1, CV_8SC1,CV_16UC1,CV_16SC1,CV_32SC1`（删去 CV_8UC3、CV_32FC1、CV_64FC1）",
+        "modules/core/perf/opencl/perf_arithm.cpp:708 — `cv::pow(src, 7.0, dst);`（原为 `cv::pow(src, 3, dst)`）",
+        "modules/core/perf/opencl/perf_arithm.cpp:710 — `SANITY_CHECK_NOTHING();` 不校验结果",
+        "modules/core/src/opencl/arithm.cl:472-475 — `#if cn == 3` 的 srcelem2 重定义分支正是被删掉覆盖的多通道路径",
+        "modules/core/perf/opencl/perf_arithm.cpp:696 — `CV_8SC1,CV_16UC1,CV_16SC1` 之间缺少空格，与文件其它用例风格不一致"
+      ],
+      "rule": "TEST-COVERAGE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 测试覆盖退化 / 断言缺失。影响评估：OP_POWN 与 kernel 选项改动失去回归保护，多通道与 double 分支的问题只能靠用户发现；性能用例本应至少保留原有类型矩阵。",
+        "suggestion": "[重构思路] 恢复 CV_8UC3 与浮点类型覆盖；为整型幂增加一条正确性用例（OCL 与 CPU 结果对比、注意饱和语义约定），性能用例保持 SANITY_CHECK_NOTHING 但另配 accuracy 测试。代码示例：`OCL_PERF_ENUM(CV_8UC1, CV_8UC3, CV_8SC1, CV_16UC1, CV_16SC1, CV_32SC1, CV_32FC1, CV_64FC1)`",
+        "subcategory": "测试覆盖与断言"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "modules/dnn/src/tensorflow/tf_importer.cpp",
+      "line": 1691,
+      "title": "TF/TFLite 导入器移除 StridedSlice 步长支持，既有模型将改为导入失败",
+      "description": "TF 导入器对任何 stride != 1 现在直接抛 StsNotImplemented（且不再向 Slice 层传 steps），TFLite 导入器则整体删除 STRIDED_SLICE 的注册与 parseStridedSlice，这类算子会落到“未支持算子”错误。但 Slice 层本身仍完整支持 steps（hasSteps/neg_step_dims/tranformForNegSteps），ngraph 分支也保留了步长语义相关的判定，说明能力并未在图层移除，只是被导入器拒之门外。后果是此前可以正确导入并运行的含步长切片模型（例如 TF 的 `x[::2]`、TFLite 中带 stride 的 STRIDED_SLICE）现在直接报错，属于对外能力回退，且缺少文档说明与替代方案。",
+      "evidence": [
+        "modules/dnn/src/tensorflow/tf_importer.cpp:1691-1693 — `if (strides.at<int>(i) != 1) CV_Error(Error::StsNotImplemented, format(\"StridedSlice with stride %d\", ...));`",
+        "diff 中删除 `layerParams.set(\"steps\", DictValue::arrayInt((int*)strides.data, strides.total()));` 及 NHWC 下的 strides 交换",
+        "modules/dnn/src/tflite/tflite_importer.cpp — 删除 `dispatch[\"STRIDED_SLICE\"] = &TFLiteImporter::parseStridedSlice;` 与整个 parseStridedSlice 实现",
+        "modules/dnn/src/layers/slice_layer.cpp:182-198 — Slice 层仍解析 steps 并设置 hasSteps/neg_step_dims",
+        "modules/dnn/src/layers/slice_layer.cpp:250-268 — getMemoryShapes 仍按 sliceSteps 计算输出尺寸"
+      ],
+      "rule": "FEATURE-REGRESSION-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 导入能力回退（算子支持被裁剪）。影响评估：含 stride != 1 的 TF/TFLite 模型从“可导入可运行”变为“导入即抛错”，属于用户可见的破坏性变更；若确实是有意裁剪，需要 release note 与明确的错误提示。",
+        "suggestion": "[重构思路] 若 Slice 层与后端仍支持 steps，则保留传入 steps 并仅在特定后端组合下报错；若必须裁剪，请在报错信息中给出可替代的图改写方式，并保留 tflite 侧对该算子的显式“不支持”错误而不是退化为未知算子。代码示例：`if (strides.at<int>(i) != 1) CV_Error(Error::StsNotImplemented, \"StridedSlice with stride != 1 is not supported; rewrite the model with Slice + Reshape\");`",
+        "subcategory": "算子支持回退"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "modules/imgcodecs/src/grfmt_png.cpp",
+      "line": 289,
+      "title": "移除 CgBI 与 IHDR 顺序的诊断日志，畸形 PNG 只剩静默失败",
+      "description": "改动保留了 `if (id != id_IHDR) return false;`，因此校验行为不变，但同时删除了 `CV_LOG_ERROR` 的说明性日志和 id_CgBI 常量。此后遇到 Apple 私有 CgBI 或首块不是 IHDR 的畸形容器时，解码只是返回 false，没有任何日志，用户与维护者难以区分“不是 PNG”与“结构损坏/不支持的变体”，也丢失了定位 CgBI 文件的具体线索。",
+      "evidence": [
+        "modules/imgcodecs/src/grfmt_png.cpp:288-290 — 现在只有 `id = read_chunk(m_chunkIHDR); if (id != id_IHDR) return false;`",
+        "diff 删除 `const uint32_t id_CgBI = 0x43674249; // The CgBI chunk (Apple private) is not supported.`",
+        "diff 删除 `CV_LOG_ERROR(NULL, \"CgBI chunk (Apple private) found as the first chunk. IHDR is expected.\");` 与 `CV_LOG_ERROR(NULL, \"IHDR chunk shall be first. This data may be broken or malformed.\");`"
+      ],
+      "rule": "DIAGNOSTICS-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 可观测性退化（诊断信息丢失）。影响评估：不影响正常解码，但畸形/不支持的 PNG 变体排查成本上升，issue 中难以判断根因。",
+        "suggestion": "[重构思路] 保留返回 false 的快速路径，同时保留一条包含 chunk id 的日志。代码示例：`if (id != id_IHDR) { CV_LOG_ERROR(NULL, \"PNG: IHDR chunk shall be first, got 0x\" << std::hex << id); return false; }`",
+        "subcategory": "日志与诊断"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "3rdparty/openjpeg/openjp2/jp2.c",
+      "line": 2876,
+      "title": "opj_jp2_read_header 去掉 ret 判断，失败时仍修改图像并转移 ICC profile 所有权",
+      "description": "`ret = opj_j2k_read_header(...)` 失败时会返回 OPJ_FALSE，但改动后只要 p_image 非空仍会写入 color_space 并把 jp2->color.icc_profile_buf 赋值给 image 且把 jp2 侧置 NULL。也就是说失败路径上引入了两处副作用：对可能处于半初始化状态的图像进行写入，以及把 ICC 缓冲区的所有权单方面转移给 image。若调用方在失败后只销毁 codec（jp2）而不同时销毁 image，ICC 缓冲区将泄漏；若先销毁 image 再销毁 jp2，则原本由 jp2 负责释放的缓冲区会双重释放风险转移。另外这是 3rdparty 代码，与上游 openjpeg 的一致性需要保持。",
+      "evidence": [
+        "3rdparty/openjpeg/openjp2/jp2.c:2876 — `if (p_image && *p_image) {`（diff 由 `if (ret && p_image && *p_image)` 改来）",
+        "3rdparty/openjpeg/openjp2/jp2.c:2871-2874 — `ret = opj_j2k_read_header(p_stream, jp2->j2k, p_image, p_manager);` 失败时 ret 为 OPJ_FALSE",
+        "3rdparty/openjpeg/openjp2/jp2.c:2892-2896 — `(*p_image)->icc_profile_buf = jp2->color.icc_profile_buf; jp2->color.icc_profile_buf = NULL;` 发生所有权转移",
+        "3rdparty/openjpeg/openjp2/jp2.c:2898 — 函数仍然 `return ret;`，即上面副作用发生在失败路径上"
+      ],
+      "rule": "ERROR-HANDLING-001",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 失败路径副作用 / 资源所有权转移。影响评估：正常路径行为不变；失败路径可能出现 ICC 缓冲区泄漏或释放责任错位，且 3rdparty 代码偏离上游会增加后续同步成本。",
+        "suggestion": "[重构思路] 保持 `ret &&` 短路，或在失败分支提前返回，避免在失败路径上写入图像和转移所有权。代码示例：`ret = opj_j2k_read_header(...); if (!ret) return OPJ_FALSE; if (p_image && *p_image) { ... } return OPJ_TRUE;`",
+        "subcategory": "错误路径副作用"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "samples/python/tutorial_code/imgProc/match_template/match_template.py",
+      "line": 89,
+      "title": "模板匹配示例把 shape[0]/shape[1] 互换，绘制框的高宽与模板相反",
+      "description": "矩形的两个角是 (matchLoc[0] + 宽, matchLoc[1] + 高)，而 numpy 的 templ.shape[0] 是行数（高）、shape[1] 是列数（宽）。改动后写成 `matchLoc[0] + templ.shape[0], matchLoc[1] + templ.shape[1]`，在非方形模板上会把绘制框的宽高对调，示例可视化结果与实际匹配区域不符，而该示例正是教程代码（文档中被引用），会误导学习者。",
+      "evidence": [
+        "samples/python/tutorial_code/imgProc/match_template/match_template.py:89-90 — `cv.rectangle(img_display, matchLoc, (matchLoc[0] + templ.shape[0], matchLoc[1] + templ.shape[1]), ...)`",
+        "diff hunk @@ -86,8 +86,8 @@ 原为 `matchLoc[0] + templ.shape[1], matchLoc[1] + templ.shape[0]`（x 加宽度、y 加高度，正确）",
+        "同文件上方按 templ 尺寸做匹配运算，templ.shape[0] 表示高度（行数）"
+      ],
+      "rule": "SAMPLE-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 示例代码几何语义错误（行列索引互换）。影响评估：教程输出图上矩形框尺寸错误，non-square 模板下明显可见；用户照抄会写出同样的错误。",
+        "suggestion": "[重构思路] 用命名变量表达宽高，避免下标歧义。代码示例：`h, w = templ.shape[:2]` 然后 `cv.rectangle(img_display, (matchLoc[0], matchLoc[1]), (matchLoc[0] + w, matchLoc[1] + h), (0,0,0), 2)`",
+        "subcategory": "示例正确性"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "modules/highgui/src/window_QT.cpp",
+      "line": 1730,
+      "title": "Qt 窗口移除 Expanding 尺寸策略，图像不再随窗口缩放",
+      "description": "原先对 myView 的 widget 调用 `setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding)`，并让工具栏/状态栏以默认方式铺满布局；改动后删除了 size policy，并把视图改为 `Qt::AlignCenter`、工具栏与状态栏改为 `Qt::AlignLeft`。结果是在 QVBoxLayout 中视图不再获得扩展的空间（放大窗口时图像区域不增长，只能居中留下空白），工具栏也不会横向拉伸。这属于 highgui 的可见行为变更，且与 WINDOW_NORMAL/可缩放窗口的预期不符。",
+      "evidence": [
+        "modules/highgui/src/window_QT.cpp:1730 — `myGlobalLayout->addWidget(myView->getWidget(), 0, Qt::AlignCenter);`",
+        "diff 删除 `myView->getWidget()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);`",
+        "modules/highgui/src/window_QT.cpp:1728,1735 — `addWidget(myToolBar, 0, Qt::AlignLeft)` / `addWidget(myStatusBar, 0, Qt::AlignLeft)` 不再是铺满布局的默认行为",
+        "modules/highgui/src/window_QT.cpp:1692-1693 — 窗口为可缩放（resize(400,300)、setMinimumSize(1,1)），依赖视图随窗口扩展"
+      ],
+      "rule": "GUI-BEHAVIOR-001",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] GUI 布局行为回归（尺寸策略被移除）。影响评估：用户放大窗口时图像区域不再扩展，工具栏/状态栏不拉伸，观感与交互倒退；不同 Qt 平台上表现可能不一致。",
+        "suggestion": "[重构思路] 保留 Expanding 尺寸策略，仅在需要居中显示时用 alignment 而不要同时去掉 size policy；为工具栏/状态栏使用默认（不设对齐）以保持铺满。代码示例：`myView->getWidget()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding); myGlobalLayout->addWidget(myView->getWidget());`",
+        "subcategory": "GUI 布局行为"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "modules/js/src/core_bindings.cpp",
+      "line": 469,
+      "title": "JS 绑定删除 Point2fVector 与 Rect2d，属未说明的 API 破坏性变更",
+      "description": "绑定列表删除了 `register_vector<cv::Point2f>(\"Point2fVector\")` 与 `EMSCRIPTEN_CV_RECT(double, \"Rect2d\")`，而 `Rect`/`Rect2f` 与 Point2f（Point3f 保留）仍在。JS 使用者此前能构造/传递 Point2fVector 与 Rect2d，现在这些类型在绑定层消失，会造成运行期行为变化或编译期错误，且改动没有变更说明或废弃过渡期。",
+      "evidence": [
+        "modules/js/src/core_bindings.cpp:469 — 仅剩 `register_vector<cv::Point3f>(\"Point3fVector\");`，其上已无 `register_vector<cv::Point2f>(\"Point2fVector\");`",
+        "modules/js/src/core_bindings.cpp:612-613 — `EMSCRIPTEN_CV_RECT(int, \"Rect\")`、`EMSCRIPTEN_CV_RECT(float, \"Rect2f\")` 之后不再有 `EMSCRIPTEN_CV_RECT(double, \"Rect2d\")`",
+        "diff 显示两处删除伴随保留 Point3fVector 与 Rect/Rect2f，删除面不对称"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 绑定层 API 兼容性破坏。影响评估：依赖 Point2fVector/Rect2d 的 JS 应用在升级后报错；删除范围不对称（保留 Point3fVector、Rect2f）也容易让使用者困惑。",
+        "suggestion": "[重构思路] 若为有意清理，请在 release note/文档中列明并保持一个版本的过渡；若只是为了修正重复注册，应恢复 Point2fVector 与 Rect2d 的绑定。代码示例：`register_vector<cv::Point2f>(\"Point2fVector\"); EMSCRIPTEN_CV_RECT(double, \"Rect2d\")`",
+        "subcategory": "绑定 API 兼容性"
+      }
+    }
+  ]
+}

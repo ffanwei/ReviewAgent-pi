@@ -1,0 +1,495 @@
+[
+  {
+    "filePath": ".github/workflows/main.yml",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "github.ref == 'refs/heads/develop' &&",
+        "review": "[缺陷类型] CI 发布条件收窄导致 tag 版本缺失 Docker 制品。影响评估：正式版本发布后 DockerHub 上不会有对应 tag，回滚/部署与 helm chart 升级全部受影响，且由于 release job 已成功创建 GitHub Release，问题不易被立刻发现。",
+        "suggestion": "[重构思路] 让 docker job 的 ref 条件与 maven job 对齐，同时保留 develop 分支的滚动发布语义。代码示例：`if: |\n  always() &&\n  (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v')) &&\n  needs.check.result == 'success' && (...)`；并补充一个 tag 场景的 workflow_dispatch 演练验证镜像是否推送。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 386,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/codeql-analysis.old",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "on:",
+        "review": "[缺陷类型] 安全扫描工作流因文件后缀不被识别而失效。影响评估：Java/JS 代码的 CodeQL 定期与 PR 级扫描全部停止，漏洞无法在合入前暴露，且告警缺失后很难被团队察觉。",
+        "suggestion": "[重构思路] 恢复 .yml 后缀并保留新的 push 触发；若确实需要保留旧版本参考，请改名到非 workflows 目录（如 dev-tools/ 或 docs/）。代码示例：`git mv .github/workflows/codeql-analysis.old .github/workflows/codeql-analysis.yml`，并在 PR 上确认 Actions 列表出现 CodeQL 运行记录。",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 8,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/runners/pebble/functions/SecretFunction.java",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "return List.of(\"key\");",
+        "review": "[缺陷类型] Pebble 函数签名破坏性变更（参数被删除）。影响评估：存量 flow 在渲染 secret() 时抛异常导致任务失败；即使不抛异常，跨命名空间读取 secret 的行为也被静默改变，属于难以定位的运行时故障。",
+        "suggestion": "[重构思路] 若目的是收紧权限，建议保留 `namespace` 参数但仅在等于当前 namespace 时允许（或对旧用法记录 deprecation 警告），并在 CHANGELOG/迁移文档中说明；同时补充针对双参调用的回归用例。代码示例：`getArgumentNames() { return List.of(\"key\", \"namespace\"); }` + `if (namespace != null && !namespace.equals(flow.get(\"namespace\"))) throw new IllegalArgumentException(\"secret() no longer supports cross-namespace access\");`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 29,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "check-plugin-artifacts.sh",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "ARTIFACT_URL=\"${GROUP_PATH}/${ARTIFACT_ID}/${VERSION}/${ARTIFACT_ID}-${VERSION}.jar\"",
+        "review": "[缺陷类型] 参数校验移除导致的静默错误输出。影响评估：发布前用该脚本做插件可用性检查时，一旦漏传版本号会把全部插件误报为不可用，或产生大量无效 curl 请求，误导发布决策。",
+        "suggestion": "[重构思路] 在解析完参数后恢复必填校验并统一 usage；把 WORKING_DIR 也纳入参数解析。代码示例：`if [[ -z \"$VERSION\" ]]; then echo \"Missing required argument: --version\" >&2; usage; fi`，并在 case 中补 `--working-dir) WORKING_DIR=\"$2\"; shift 2;;`。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 136,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileEmptyFunction.java",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8).isBlank();",
+        "review": "[缺陷类型] 全量读取导致的堆内存放大。影响评估：对超大文件调用 fileEmpty() 会让 worker/executor 堆瞬时飙升，可能 OOM 并影响同进程其它执行；同时 isBlank 语义与“空文件”不一致，条件分支可能误判。",
+        "suggestion": "[重构思路] 只读有限字节判断是否有非空白内容，或优先用存储层的大小元数据；并明确空文件语义（建议以“无非空白字符”在文档中写清）。代码示例：`try (InputStream in = storageInterface.get(...)) { byte[] buf = new byte[8192]; int n; while ((n = in.read(buf)) != -1) { for (int i = 0; i < n; i++) { if (!Character.isWhitespace(buf[i])) return false; } } return true; }`",
+        "category": "性能",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 75,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileExistsFunction.java",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "private static final String ERROR_MESSAGE = \"The 'fileSize' function expects an argument 'path' that is a path to the internal storage URI.\";",
+        "review": "[缺陷类型] 错误文案与代码复制粘贴。影响评估：错误提示误导用户去查 fileSize/read 函数的文档；三份重复的 URI 校验实现使安全修复容易漏改（参见本 MR 中同样问题的 F006）。",
+        "suggestion": "[重构思路] 修正文案为 fileExists/fileEmpty，抽出公共基类或工具类（如 StorageFunctionSupport）承载 getUriFromThePath 与 isFileUriValid，删除无用 import。代码示例：`private static final String ERROR_MESSAGE = \"The 'fileExists' function expects an argument 'path' that is a path to the internal storage URI.\";` + `abstract class AbstractFileFunction implements Function { protected URI getUriFromThePath(...); protected boolean isFileUriValid(...); }`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 19,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F007",
+        "code": "return path.toString().startsWith(authorizedBasePath);",
+        "review": "[缺陷类型] 路径前缀白名单未规范化导致的路径穿越。影响评估：恶意或失误的 flow 表达式可能读取同一 namespace 下其他执行/flow 的内部存储文件（例如他人执行的输出文件），构成越权数据访问；是否可利用取决于 storages 实现是否对 URI 做 normalize，需要确认。",
+        "suggestion": "[重构思路] 在校验前先规范化 URI 并拒绝包含 “..” 的路径，再比较 base path；最好改由 storage 层提供“按 executionId 校验”的 API，避免各函数重复实现。代码示例：`URI normalized = path.normalize(); if (path.toString().contains(\"..\")) return false; return normalized.toString().startsWith(authorizedBasePath);`",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 97,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/services/ExecutionLogService.java",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "disposable.set(this.logQueue.receive(either -> {",
+        "review": "[缺陷类型] 资源生命周期与背压退化。影响评估：日志跟随页面的并发量会线性放大消息队列消费者数量，可能引发消费位点/延迟问题；慢客户端配合无界缓冲会导致内存持续增长；反序列化错误不再记录日志，排查困难。",
+        "suggestion": "[重构思路] 恢复“单消费者 + fanout”或使用带界的共享订阅（如 Sinks.many().multicast() / Flux.share()），并给 SSE 设置有限缓冲与超时；注销做成幂等，并在 either.isRight() 时保留 error 日志。代码示例：`if (either.isRight()) { log.error(\"Unable to deserialize log: {}\", either.getRight().getMessage()); return; }` + `Flux.create(sink -> ..., FluxSink.OverflowStrategy.DROP)` 或对 sink 增加 `sink.isCancelled()` 判断。",
+        "category": "性能",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 55,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/http/client/configurations/HttpConfiguration.java",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "@Builder(toBuilder = true)",
+        "review": "[缺陷类型] 反序列化构造器缺失。影响评估：任何在 http.Request / http.Trigger 中书写 options 配置的 flow 都会解析失败或配置丢失（如 allowFailed、followRedirects、timeout 失效），影响面广但需要一次实际 YAML 解析验证即可确认。",
+        "suggestion": "[重构思路] 保留 @Jacksonized（或显式 @JsonDeserialize(builder = HttpConfiguration.HttpConfigurationBuilder.class) + @JsonPOJOBuilder(withPrefix = \"\")），并补一个从 YAML/JSON 反序列化 options 的用例。代码示例：`@Builder(toBuilder = true) @Getter @Jacksonized public class HttpConfiguration { ... }`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 17,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/repositories/ExecutionRepositoryInterface.java",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "ArrayListTotal<Execution> find(",
+        "review": "[缺陷类型] 公共 API/DSL 破坏性删除且缺少兼容与显式报错。影响评估：外部客户端使用旧 filters 语法时可能得到“未过滤的全量数据”而非错误，属于难以察觉的行为变化；仓库外模块编译失败会阻塞下游升级。",
+        "suggestion": "[重构思路] 在控制器层检测遗留的 filters 类参数并返回 400/兼容映射到新参数；在 CHANGELOG 与 OpenAPI 中标注 breaking change 版本，并给下游模块一个迁移周期。代码示例：`@QueryValue Map<String, String> filters) { if (filters != null && !filters.isEmpty()) throw new BadRequestException(\"'filters' is no longer supported, use query/namespace/flowId/state/labels/startDate/endDate\"); }`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 60,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "jdbc/src/main/java/io/kestra/jdbc/repository/AbstractJdbcLogRepository.java",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "this.filter(select, query, namespace, flowId, triggerId, minLevel, startDate , endDate);",
+        "review": "[缺陷类型] jOOQ 条件构造结果未回接（丢失返回值导致的过滤条件静默失效）。影响评估：日志搜索接口的全部筛选参数失效，会返回超出 namespace 范围的日志、返回未按级别/时间过滤的结果，属于功能回归叠加数据可见性问题。",
+        "suggestion": "[重构思路] 把 filter 的返回值赋回 select，或让 filter 直接返回新条件；同时补一条用 namespace + minLevel 断言结果集的集成测试。代码示例：`select = this.filter(select, query, namespace, flowId, triggerId, minLevel, startDate, endDate);`",
+        "category": "可靠性",
+        "subcategory": "查询条件丢失",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 100,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/dashboard/Dashboard.vue",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "<ExecutionsDoughnut",
+        "review": "[缺陷类型] 重复渲染同一图表组件（v-if 条件写错分支）。影响评估：流程仪表盘出现两个相同环形图，布局错位、用户困惑；数据请求/绘制开销翻倍。",
+        "suggestion": "[重构思路] 明确「流程页」与「全局页」的图表组合，只保留一处 ExecutionsDoughnut；若意图是替换 NextScheduled，应写成 v-if=\"!props.flow\" 或放到同一 v-if/v-else 链中。代码示例：`<ExecutionsDoughnut v-if=\"props.flow\" :data=\"graphData\" :total=\"stats.total\" class=\"card card-1/2\" />` 并删除 L137-141 的无条件实例（或反之，只留一处）。",
+        "category": "可靠性",
+        "subcategory": "条件分支与重复渲染",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 182,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/namespace/Namespace.vue",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "<router-link :to=\"{name: 'flows/create'}\" v-if=\"canCreateFlow\">",
+        "review": "[缺陷类型] 路由参数在跳转时丢失导致上下文退化。影响评估：在 ns A 页面创建 Flow 会落到 company.team，用户需手工改 namespace，且可能触发权限/校验错误。",
+        "suggestion": "[重构思路] 恢复 query.namespace 传参，或改为命名路由 params 传入；并在 FlowCreate 中优先取 query.namespace。代码示例：`<router-link :to=\"{name: 'flows/create', query: {namespace: $route.params.id}}\" v-if=\"canCreateFlow\">`",
+        "category": "可靠性",
+        "subcategory": "路由上下文丢失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 13,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/settings/BasicSettings.vue",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "this.$i18n.locale = newlang;",
+        "review": "[缺陷类型] 动态切换 locale 但未加载语言包。影响评估：设置中切换语言后界面文案不变化（回退英文），用户以为设置未生效，需要手动刷新，属于明显功能回归。",
+        "suggestion": "[重构思路] 切换语言时先 await loadLocaleMessages(this.$i18n, newlang, additionalTranslations) 再 setI18nLanguage，并保留失败兜底（必要时回退整页刷新）。代码示例：`const lang = Utils.getLang(); await loadLocaleMessages(this.$i18n, lang, {}); setI18nLanguage(this.$i18n, lang);`",
+        "category": "可靠性",
+        "subcategory": "国际化语言包加载",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 445,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "platform/build.gradle",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "api platform('com.google.cloud:libraries-bom:26.53.0')",
+        "review": "[缺陷类型] 依赖版本无意回退（可能是分支合并/冲突解决残留）。影响评估：可能重新引入已修复漏洞或与前端新代码不兼容，且 CI 通常不会拦截版本下降。",
+        "suggestion": "[重构思路] 确认是否有意降级；若无，恢复为原版本并在 MR 描述中说明升级原因；建议在 CI 增加依赖版本不可回退的校验。代码示例：`api platform('com.google.cloud:libraries-bom:26.54.0')` / `api platform('software.amazon.awssdk:bom:2.30.16')`",
+        "category": "可维护",
+        "subcategory": "依赖版本管理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 34,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/layout/Pagination.vue",
+    "reviewTips": [
+      {
+        "id": "F019",
+        "code": ".text-total {",
+        "review": "[缺陷类型] CSS 声明顺序覆盖导致样式失效。影响评估：视觉与设计稿不一致，且留下看似生效实则无效的样式，后续维护者易误判。",
+        "suggestion": "[重构思路] 合并为一条规则，或调整顺序/提高权重；建议直接改 .total 的 color，不再引入并列类。代码示例：`.total { padding: 0 4px; font-size: var(--el-font-size-extra-small); color: var(--ks-content-primary); font-weight: normal; white-space: nowrap; }`",
+        "category": "可读性",
+        "subcategory": "样式覆盖",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 130,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/filter/composables/useFilters.ts",
+    "reviewTips": [
+      {
+        "id": "F020",
+        "code": "IS_NOT_ONE_OF: buildComparator(t(comparator(\"is_not_one_off\")), true),",
+        "review": "[缺陷类型] 国际化 key 拼写不一致。影响评估：短期内功能可用，但 key 命名规则被破坏，后续批量维护/翻译脚本容易漏改或重复生成。",
+        "suggestion": "[重构思路] 统一改为 is_not_one_of，并同步所有语言文件；如需兼容已上线 key，可保留旧 key 作为别名。代码示例：`IS_NOT_ONE_OF: buildComparator(t(comparator(\"is_not_one_of\")), true)`",
+        "category": "可维护",
+        "subcategory": "国际化 key 命名",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 37,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/translations/generate_translations.py",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "previous_version = commit.tree / input_file",
+        "review": "[缺陷类型] 工具脚本的健壮性/一致性缺陷。影响评估：翻译流水线在文件历史缺失时直接失败，重复翻译浪费调用成本，废弃文案长期残留影响翻译质量校验。",
+        "suggestion": "[重构思路] 用 `if input_file in commit.tree` 判存在，与 HEAD 比较（或允许显式指定 base ref），并保留按键集合差集清理废弃 key。代码示例：`for commit in repo.iter_commits('HEAD'):\\n    if input_file not in commit.tree: continue\\n    return json.loads((commit.tree / input_file).data_stream.read())`",
+        "category": "可维护",
+        "subcategory": "脚本健壮性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 129,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/layout/Labels.vue",
+    "reviewTips": [
+      {
+        "id": "F022",
+        "code": "return this.getLabelsFromQuery().has(key) && this.getLabelsFromQuery().get(key) === value;",
+        "review": "[缺陷类型] 失去计算属性缓存、渲染期重复计算。影响评估：单次调用开销很小，但在长列表（每行多个 label）场景会放大为 O(n·m) 的 query 解析，属于可避免的浪费。",
+        "suggestion": "[重构思路] 恢复为 computed（query 变化时自动重算，渲染期只做 Map 查找），并在 checked 内复用同一份 Map。代码示例：`computed: { labelsFromQuery() { return this.parseLabelsFromQuery(); } }, methods: { checked(key, value) { const l = this.labelsFromQuery; return l.has(key) && l.get(key) === value; } }`",
+        "category": "性能",
+        "subcategory": "渲染期重复计算",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 63,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "webserver/src/main/java/io/kestra/webserver/controllers/api/ExecutionController.java",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "public PagedResults<Execution> find(",
+        "review": "[缺陷类型] REST 查询参数契约变更且旧参数被静默忽略。影响评估：外部集成方继续使用 filters[...] 时不会收到错误，而是得到未过滤的结果集，属于难以排查的隐性行为变更（尤其时间范围过滤失效会显著放大查询开销）。",
+        "suggestion": "[重构思路] 若 filters 形式已对外发布，应在过渡期保留解析并对未知 filters[*] 参数返回 400/或被显式忽略日志；若确认未发布，则在变更说明/CHANGELOG 与 OpenAPI 文档中明确告知，并考虑对 `filters[...]` 前缀参数做兼容性报错。代码示例：`if (request.getParameters().asMap().keySet().stream().anyMatch(k -> k.startsWith(\"filters[\"))) { throw new HttpStatusException(HttpStatus.BAD_REQUEST, \"The 'filters' parameter has been removed, use flat query parameters instead\"); }`",
+        "category": "可维护",
+        "subcategory": "API 兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 187,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F024",
+        "code": "ZonedDateTime resolveAbsoluteDateTime(ZonedDateTime absoluteDateTime, Duration timeRange, ZonedDateTime now) {",
+        "review": "[缺陷类型] 复制粘贴式重复实现。影响评估：参数互斥校验（startDate 与 timeRange 互斥）与时间计算逻辑分散在两处，后续修正容易漏改，导致 executions 与 taskruns 两个接口行为不一致。",
+        "suggestion": "[重构思路] 抽回单一工具方法（如 DateUtils.resolveAbsoluteDateTime 或新的 WebUtils），两个 Controller 直接调用，单测针对工具方法即可，无需 @VisibleForTesting。代码示例：`static ZonedDateTime resolveAbsoluteDateTime(ZonedDateTime startDate, Duration timeRange, ZonedDateTime now) { if (timeRange == null) return startDate; if (startDate != null) throw new IllegalArgumentException(\"Parameters 'startDate' and 'timeRange' are mutually exclusive\"); return now.minus(timeRange.abs()); }`",
+        "category": "可维护",
+        "subcategory": "重复代码",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 226,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F025",
+        "code": "sink.complete();",
+        "review": "[缺陷类型] 条件分支缺少 return 导致的 Optional.get() 异常（NoSuchElementException）+ reactive 信号使用不当（先 complete 后 next）。影响评估：`POST /api/v1/executions/{namespace}/{id}?wait=true` 在遇到队列消息反序列化失败时会挂起并抛未捕获异常到队列轮询线程，请求方只能等超时；错误信息也无法回传，排查困难。",
+        "suggestion": "[重构思路] 右分支补齐 return，并把错误通过 future/sink 明确向上传递，避免对已终止 sink 再写入。代码示例：`if (either.isRight()) { var ex = either.getRight(); log.error(\"Unable to deserialize the execution: {}\", ex.getMessage()); future.completeExceptionally(ex); sink.error(ex); return; }`",
+        "category": "可靠性",
+        "subcategory": "控制流与异常处理",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 619,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F026",
+        "code": "Runnable receive = this.executionQueue.receive(either -> {",
+        "review": "[缺陷类型] 多消费者竞争同一阻塞队列导致的丢事件/流不终止。影响评估：并发 follow 场景下可能出现执行已结束但 UI 一直转圈（SSE 不结束）；在 Kafka 等「同 group 竞争消费」实现下问题会更严重（每个订阅者只能看到一部分消息）。",
+        "suggestion": "[重构思路] 保留（或新增一个）共享订阅者做 fanout：进程内只启动一个 execution queue 消费者，把事件按 executionId 分发到注册的 sink 集合；若确实要按请求订阅，则必须保证每个订阅者读取的是广播语义（如独立的 consumerGroup 或 queue 层提供 broadcast 能力），并在流内加心跳/超时兜底。代码示例：`public final class ExecutionStreamingService { private final Map<String, Map<String, FluxSink<Event<Execution>>>> subscribers; @PostConstruct void start() { this.queueConsumer = executionQueue.receive(either -> subscribers.getOrDefault(id, Map.of()).values().forEach(sink -> sink.next(Event.of(execution).id(isStopFollow(flow, execution) ? \"end\" : \"progress\")))); } }`",
+        "category": "可靠性",
+        "subcategory": "并发消费与事件丢失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1531,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "webserver/src/main/java/io/kestra/webserver/controllers/api/FlowController.java",
+    "reviewTips": [
+      {
+        "id": "F027",
+        "code": "import java.util.zip.ZipOutputStream;",
+        "review": "[缺陷类型] 未使用 import / 死代码。影响评估：可读性下降，可能误导评审与后续维护者认为 FlowController 已支持 zip 导入导出；若开启严格 lint 会被判定为告警。",
+        "suggestion": "[重构思路] 删除未使用的 import；若 zip 相关逻辑确实计划在本文件实现，应在同一提交中补齐使用点，避免半成品 import 残留。代码示例：`// 删除\n-import java.io.ByteArrayOutputStream;\n-import java.util.zip.ZipEntry;\n-import java.util.zip.ZipInputStream;\n-import java.util.zip.ZipOutputStream;`",
+        "category": "可维护",
+        "subcategory": "未使用 import",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 68,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "webserver/src/main/java/io/kestra/webserver/controllers/api/TaskRunController.java",
+    "reviewTips": [
+      {
+        "id": "F029",
+        "code": "import io.swagger.v3.oas.annotations.Hidden;",
+        "review": "[缺陷类型] 未使用 import。影响评估：轻微可读性问题，可能暗示作者本想隐藏某个 endpoint 却未加注解，留下歧义。",
+        "suggestion": "[重构思路] 删除该 import；若原意是隐藏 taskruns 的 search 接口，则应显式在方法上补 @Hidden 并说明原因。代码示例：`// 删除\n-import io.swagger.v3.oas.annotations.Hidden;`",
+        "category": "可维护",
+        "subcategory": "未使用 import",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 19,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/translations/en.json",
+    "reviewTips": [
+      {
+        "id": "F030",
+        "code": "\"is_not_one_off\": \"is not one of\",",
+        "review": "[缺陷类型] 翻译键命名拼写错误（一致但语义错误）。影响评估：当前无功能故障，但形成易踩坑的命名债务；一次性把代码与所有语言包统一改名为 is_not_one_of 成本低，越晚改越容易不同步并回退为展示原始 key。",
+        "suggestion": "[重构思路] 将 4 处（en/ru/zh_CN/useFilters.ts 以及其他语言包）统一改为 is_not_one_of，保持与 is_one_of 成对。代码示例：`// useFilters.ts\nIS_NOT_ONE_OF: buildComparator(t(comparator(\"is_not_one_of\")), true),\n// en.json\n\"is_not_one_of\": \"is not one of\",`",
+        "category": "可读性",
+        "subcategory": "命名规范",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1089,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/vite.config.js",
+    "reviewTips": [
+      {
+        "id": "F032",
+        "code": "manualChunks",
+        "review": "[缺陷类型] 格式噪声 / 尾随空格。影响评估：纯可读性问题，增大 diff 体积，掩盖同文件中「删除 codecov 插件」这一实质变更；若 CI 启用 trailing-whitespace 检查会直接失败。",
+        "suggestion": "[重构思路] 撤销这些纯空白改动，仅保留语义变更（删除 codecovVitePlugin 与相关 import）。代码示例：`// vite.config.js\n\"src/components/dashboard/Dashboard.vue\",\n\"src/components/dashboard/components/DashboardCreate.vue\",\n...\noutput: { manualChunks }`",
+        "category": "可读性",
+        "subcategory": "格式与空行",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 36,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

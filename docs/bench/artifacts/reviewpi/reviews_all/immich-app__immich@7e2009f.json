@@ -1,0 +1,225 @@
+{
+  "generatedAt": "2026-11-15T04:21:32.412Z",
+  "runId": "20261115_041748_042",
+  "source": "mr",
+  "caseId": "immich-app__immich@7e2009f",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "安全",
+      "file": "server/src/repositories/config.repository.ts",
+      "line": 180,
+      "title": "trustedProxies 默认值被清空并在 worker 内联，用户无法通过环境变量关闭 linklocal/uniquelocal 信任",
+      "description": "配置层把 network.trustedProxies 的默认值从 ['linklocal','uniquelocal'] 改成 []，同时在 workers/api.ts 把 'linklocal','uniquelocal' 直接写进 Express 的 trust proxy 列表。默认部署下最终信任链未变，但语义发生了两处退化：(1) 用户显式设置 IMMICH_TRUSTED_PROXIES（例如只填 '172.16.0.0/12'）时，之前会完全替换默认网段，现在 linklocal/uniquelocal 永远被信任、无法通过配置排除，削弱了「收紧代理信任」这一安全加固手段；(2) config.network.trustedProxies 不再等于实际生效的信任列表，任何依赖该配置做 IP 判定/审计/文档说明的代码都会拿到与实际行为不一致的值，排查代理与限流问题时容易被误导。",
+      "evidence": [
+        "server/src/repositories/config.repository.ts:180 — `trustedProxies: dto.IMMICH_TRUSTED_PROXIES ?? []`",
+        "server/src/workers/api.ts:35 — `app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal', ...network.trustedProxies]);`",
+        "server/src/interfaces/config.interface.ts:56 — `trustedProxies: string[]`",
+        "server/src/repositories/config.repository.spec.ts:204-208 — 默认值断言已为 `trustedProxies: []`，说明配置层语义已与运行时脱钩"
+      ],
+      "rule": "SECURITY-CONFIG-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 配置默认值迁移导致的环境变量语义变化（安全加固能力丢失 + 配置与实际行为不一致）。影响评估：默认部署无行为差异；但显式设置 IMMICH_TRUSTED_PROXIES 做收紧的部署无法再排除 linklocal/uniquelocal，且读取 config.network.trustedProxies 的代码会得到误导性值。",
+        "suggestion": "[重构思路] 让「默认值」只在一处定义：要么保留 config 层的默认网段并在 api.ts 直接展开，要么在 api.ts 计算完整列表后再写回配置对象，保证读取方看到的值等于实际生效值；如需保留内联写法，应在接口注释/文档中明确 linklocal/uniquelocal 不可关闭。代码示例：`const trustedProxies = ['loopback', 'linklocal', 'uniquelocal', ...network.trustedProxies]; app.set('trust proxy', trustedProxies);` 并同步更新 env 变量文档说明默认信任的网段。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/services/metadata.service.ts",
+      "line": 453,
+      "title": "motion 视频资产改用 getDates 后与父资产日期来源不一致，且 fileModifiedAt 取自照片的 EXIF ModifyDate",
+      "description": "motion photo 提取出的视频资产原本直接复用 asset.fileCreatedAt/asset.fileModifiedAt，现在改为调用 getDates(asset, tags)，把照片自身的 EXIF 元数据（包括 ModifyDate）套用到视频资产上。这带来两个具体风险：(1) 无 EXIF 日期时的回退值改为 min(fileCreatedAt, fileModifiedAt)（L601），而父照片在库中已存在的 fileCreatedAt 是历史值（旧逻辑用 fileCreatedAt 回退），对存量库重新跑元数据抽取时，同一实况照片的图片与视频会被赋予不同日期，时间线/按日期搜索会出现图片与视频分离；(2) dates.modifyDate 会被 EXIF ModifyDate 覆盖（L608-611），即视频资产的 fileModifiedAt 变成照片的 EXIF 修改时间，而非视频自身文件的修改时间，语义不准确也会影响基于修改时间的去重/重扫判断。此外 getDates 内部以父资产 id 输出 verbose/warn 日志，视频资产无法从日志中区分。",
+      "evidence": [
+        "server/src/services/metadata.service.ts:453 — `const dates = this.getDates(asset, tags);`",
+        "server/src/services/metadata.service.ts:458-460 — `fileCreatedAt: dates.dateTimeOriginal, fileModifiedAt: dates.modifyDate, localDateTime: dates.localDateTime`",
+        "server/src/services/metadata.service.ts:601 — `const earliestDate = asset.fileModifiedAt < asset.fileCreatedAt ? asset.fileModifiedAt : asset.fileCreatedAt;`",
+        "server/src/services/metadata.service.ts:608-611 — `let modifyDate = asset.fileModifiedAt; ... modifyDate = (exifTags.ModifyDate as ExifDateTime)?.toDate() ?? modifyDate;`",
+        "diff 中被替换的旧实现：`const createdAt = asset.fileCreatedAt ?? asset.createdAt;` 以及 `fileModifiedAt: asset.fileModifiedAt`"
+      ],
+      "rule": "CORRECTNESS-DATE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 因时间戳来源切换导致的子资产与父资产日期不一致 / 修改时间语义污染。影响评估：存量库中实况照片的图片与视频可能落在不同时间桶，排序与按日期检索异常；fileModifiedAt 不再是文件真实 mtime，影响后续判断逻辑。",
+        "suggestion": "[重构思路] 明确子资产应继承父资产的最终落库时间：视频资产直接复制父资产的 fileCreatedAt/localDateTime/fileModifiedAt；若必须使用 getDates，则显式只取 dateTimeOriginal/localDateTime，而为 fileModifiedAt 保留 asset.fileModifiedAt。代码示例：`fileCreatedAt: asset.fileCreatedAt, fileModifiedAt: asset.fileModifiedAt, localDateTime: dates.localDateTime`，并为 motion 分支补一条单元测试断言图片与视频日期一致。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "mobile/lib/services/background.service.dart",
+      "line": 375,
+      "title": "同一 AppSettingsService 被实例化两份（settingService / settingsService），命名仅差一个字母",
+      "description": "_onAssetsChanged 中新增了 `AppSettingsService settingService = AppSettingsService();`，而紧随其后仍保留了 `AppSettingsService settingsService = AppSettingsService();`。新的 settingService 传给 BackupService（L425），旧的 settingsService 仍被 _runBackup 使用（L464、L511-515 读取 backgroundBackupTotalProgress/SingleProgress 等设置）。同一无状态服务被创建两份，且变量名仅差一个字母，极易在后续修改中把两者混用（例如只更新了一处而另一处仍是旧实例），也让「哪个实例对应哪个用途」无法从命名判断。",
+      "evidence": [
+        "mobile/lib/services/background.service.dart:375-376 — `AppSettingsService settingService = AppSettingsService();` 与 `AppSettingsService settingsService = AppSettingsService();`",
+        "mobile/lib/services/background.service.dart:425 — `BackupService(apiService, settingService, ...)`",
+        "mobile/lib/services/background.service.dart:464 — `_runBackup(backupService, settingsService, selectedAlbums, excludedAlbums)`",
+        "mobile/lib/services/background.service.dart:511-515 — `_errorGracePeriodExceeded(settingsService)`、`settingsService.getSetting<bool>(AppSettingsEnum.backgroundBackupTotalProgress)`"
+      ],
+      "rule": "MAINTAINABILITY-DUP-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 重复实例化 + 近似命名导致的依赖装配歧义。影响评估：当前功能可能正常，但后续若给 AppSettingsService 增加缓存/状态，两份实例会读到不同快照；代码读者也难以判断两个变量的区别。",
+        "suggestion": "[重构思路] 只保留一个实例并复用于 BackupService 与 _runBackup；如确实需要区分用途，用语义化命名（如 backupSettings / notificationSettings）而非一个字母之差。代码示例：`final settingsService = AppSettingsService(); ... BackupService(apiService, settingsService, ...)`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可读性",
+      "file": "mobile/lib/widgets/asset_viewer/detail_panel/file_info.dart",
+      "line": 21,
+      "title": "文件信息中的分辨率输出顺序被改为「高 x 宽」，与变量语义及通行约定相反",
+      "description": "代码先取 `height` 再取 `width`，但拼接字符串时改为 `\"$height x $width\"`，导致竖图会显示成 1080 x 1920 之类的「高 x 宽」形式。分辨率在 UI 与文档中的通行约定是「宽 x 高」（web 端 detail-panel 的 getDimensions 也以 width 为主维度，orientation 翻转时才交换 width/height），因此同一资产在移动端与 web 端会显示成相反的维度顺序，用户与问题排查时容易误读长宽。",
+      "evidence": [
+        "mobile/lib/widgets/asset_viewer/detail_panel/file_info.dart:18-21 — `final height = asset.orientatedHeight ?? asset.height; final width = asset.orientatedWidth ?? asset.width; String resolution = height != null && width != null ? \"$height x $width  \" : \"\";`",
+        "web/src/lib/components/asset-viewer/detail-panel.svelte:58-65 — `getDimensions` 返回 `{ width, height }`，仅在 orientation 翻转时交换，说明 web 端以 width 为第一维度"
+      ],
+      "rule": "READABILITY-FORMAT-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 显示格式与变量语义/跨端约定不一致。影响评估：竖版资产在移动端显示的分辨率顺序错误，与 web 端表现相反，易被误认为旋转/EXIF 解析错误。",
+        "suggestion": "[重构思路] 统一按「宽 x 高」输出，并在拼接处使用具名中间变量避免顺序歧义。代码示例：`final resolution = height != null && width != null ? '${width} x $height  ' : '';`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/package.json",
+      "line": 44,
+      "title": "@nestjs/swagger 由 ^8.0.0 降级到 ^7.1.8，导致 OpenAPI 契约丢失校验元数据并触发大规模生成物改写",
+      "description": "本次把 @nestjs/swagger 从 ^8.0.0 回退到 ^7.1.8，其余 @nestjs/* 仍为 ^10（v8 时期的配套组合）。随之重新生成的 open-api/immich-openapi-specs.json 出现系统性退化：原本 `allOf: [$ref]` 的枚举字段被压平、DTO 上的 format: email/uri、pattern（如 TagCreateDto 的 color 正则）、minItems/maxItems/uniqueItems（如 CreateLibraryDto 的 importPaths、AddUsersDto 的 userIds、CreateAlbumDto 的 albumUsers）全部丢失，summary 被改写为 description。这些约束是 SDK/移动端生成代码与文档的唯一来源，丢失后 web/mobile 客户端不再做长度、唯一性、格式校验，也丢失了服务端契约文档；同时 mobile/openapi 下的模型文件被整体重写（且以「Binary files differ」呈现），说明生成链路与旧基线不一致。",
+      "evidence": [
+        "server/package.json:44 — `\"@nestjs/swagger\": \"^7.1.8\"`（diff 中由 `^8.0.0` 降级，其余 @nestjs 包仍为 ^10）",
+        "open-api/immich-openapi-specs.json:7774-7788 — AlbumUserAddDto.role 的 `{\"allOf\":[{\"$ref\":\".../AlbumUserRole\"}]}` 与 `\"default\": \"editor\"` 被移除",
+        "open-api/immich-openapi-specs.json:12353 附近 — TagCreateDto.color 的 `\"pattern\": \"^#?([0-9A-F]{3}|[0-9A-F]{4}|[0-9A-F]{6}|[0-9A-F]{8})$\"` 被删除",
+        "open-api/immich-openapi-specs.json:8771 附近 — CreateLibraryDto.importPaths 的 `\"maxItems\": 128, \"uniqueItems\": true` 被删除",
+        "open-api/immich-openapi-specs.json:9544 附近 — LoginCredentialDto.email 的 `\"format\": \"email\"` 被删除",
+        "diff 中 `mobile/openapi/README.md`、`album_user_add_dto.dart` 等以 `Binary files ... differ` 呈现，且 README 中的 API version 为 1.123.0"
+      ],
+      "rule": "DEPENDENCY-OPENAPI-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 依赖降级引起的 API 契约退化 + 生成物全量改写。影响评估：客户端失去长度/唯一性/格式校验与契约文档，接口调用错误后移为运行时 400；生成物 diff 巨大且以二进制差异呈现，后续 review 与回归定位成本显著上升，且与其余 @nestjs ^10 包的兼容性需要额外验证。",
+        "suggestion": "[重构思路] 若目的是规避 v8 的某个问题，应在 package.json 中锁定明确的修复版本并用一段注释说明原因；随后重新生成 open-api 与 mobile/openapi 并以纯文本方式提交（统一换行/编码），确保 diff 可审。代码示例：`\"@nestjs/swagger\": \"7.4.2\"` 并在 PR 描述中附上「降级前后 spec 差异对照」；若无法恢复校验元数据，需同步在 DTO 层确认 class-validator 装饰器仍在，避免把「契约文档退化」误当成「校验消失」。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "web/src/routes/(user)/people/[personId]/[[photos=photos]]/[[assetId=id]]/+page.svelte",
+      "line": 78,
+      "title": "人物页 personId 变化时的时间线重建逻辑被删除，切换人物可能仍显示上一个人的资产",
+      "description": "本次同时删除了 people 页中 `if (change) { assetStore.triggerUpdate(); }` 与 AssetStore.updateOptions 中的 `needsReinitializing = this.options.personId !== options.personId` 分支，使 updateOptions 仅剩 `if (!this.initialized) { this.setOptions(options); return; }` 的提前返回。存在这样的时间窗：`{#key person.id}` 触发 AssetGrid 重建，其 onMount 调用 `$assetStore.init()`，而 init 在 `await this.initialiazeTimeBuckets()` 之前已用旧 options（旧 personId）发起 getTimeBuckets；随后页面的 `$effect` 执行 updateOptions，此时 initialized 尚未被置为 true，于是走早退只做 setOptions 而不再重建时间桶。结果可能拉取到上一个人物的时间桶列表，需要切换到别的路由再回来才恢复。原代码的注释「Check to trigger rebuild the timeline when navigating between people from the info panel」正是指向该场景。",
+      "evidence": [
+        "web/src/routes/(user)/people/[personId]/[[photos=photos]]/[[assetId=id]]/+page.svelte:76-79 — `$effect(() => { assetStoreOptions.personId = data.person.id; handlePromiseError(assetStore.updateOptions(assetStoreOptions)); });`（原 `if (change) { assetStore.triggerUpdate(); }` 已被删除）",
+        "web/src/lib/stores/assets.store.ts:400-404 — `async updateOptions(options) { if (!this.initialized) { this.setOptions(options); return; } ... }`",
+        "web/src/lib/stores/assets.store.ts:382-398 — `initialiazeTimeBuckets()` 先用 `getTimeBuckets({...this.options})` 取桶，之后才 `this.initialized = true`",
+        "web/src/lib/components/photos-page/asset-grid.svelte:235-238 — `onMount(() => { void $assetStore.init({ bucketListener }).then(...) })`，且 init() 在已初始化时会抛 'Can only init once'"
+      ],
+      "rule": "STATE-REINIT-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 状态复用与初始化竞态（回滚了针对 personId 切换的修复）。影响评估：从详情面板在人物之间快速跳转时，时间线可能短暂或持续显示上一个人物的资产，需再次导航才能恢复；该问题难以在单测中捕获，通常表现为用户可见的「数据串台」。",
+        "suggestion": "[重构思路] 保留「选项关键字段变化必须重建」的判定：在 updateOptions 中比较 personId 等关键项，变化时即使 initialized 为 false 也要让在途初始化失效（取消/重建 signal）后再拉桶；页面侧也可改为对 store 使用 `{#key person.id}` 之外的显式重建。代码示例：`const changed = this.options.personId !== options.personId; if (!this.initialized && !changed) { this.setOptions(options); return; } this.taskManager.destroy(); this.initialized = false; this.createInitializationSignal(); this.setOptions(options); await this.initialiazeTimeBuckets();`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "安全",
+      "file": "server/Dockerfile",
+      "line": 2,
+      "title": "服务端基础镜像回退到 20241217 的旧 digest，可能丢失镜像内的依赖与安全更新",
+      "description": "dev/prod 两个基础镜像从 base-server-dev:20241224 / base-server-prod:20241224 回退到 20241217 的 digest。基础镜像承载 Node 运行时、构建工具与系统包，回退一周前的镜像会把该窗口内的操作系统/Node 补丁一并回退，且回退的 digest 与其余依赖（如降级后的 @nestjs/swagger 组合）并非同一构建基线，后续难以判断构建产物来源。若回退是配合依赖降级的临时措施，应在 PR 中记录原因与恢复计划，避免长期停留在旧镜像。",
+      "evidence": [
+        "server/Dockerfile:2 — `FROM ghcr.io/immich-app/base-server-dev:20241217@sha256:7e69fa3...`（原为 ...:20241224@sha256:6832c63...）",
+        "server/Dockerfile:45 — `FROM ghcr.io/immich-app/base-server-prod:20241217@sha256:040c83a...`（原为 ...:20241224@sha256:69da007...）"
+      ],
+      "rule": "SECURITY-BASEIMAGE-001",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 基础镜像版本回退。影响评估：可能带回已修复的系统包/Node 漏洞，且镜像基线与其他依赖版本不再对齐，增加后续升级与漏洞扫描的排查成本。",
+        "suggestion": "[重构思路] 明确回退原因（是否与 swagger 降级/Node 版本相关），在 PR 描述中记录恢复计划，并在回退版本上至少确认镜像扫描无新增高危项；恢复时一次性把 dev/prod 两个镜像与依赖升级提交到同一基线。代码示例：`FROM ghcr.io/immich-app/base-server-prod:20241224@sha256:69da007...`（配合依赖升级一起提交）。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "docs/src/pages/roadmap.tsx",
+      "line": 221,
+      "title": "roadmap 回滚后计划项标注「Planned for 2024」却排在「早期 2025 稳定版」之后，时间口径自相矛盾",
+      "description": "本次把三个计划项（Private/locked photos、Better background backups、Auto stacking）从 v1.122.0 之后的位置移动到「Immich goes stable（Planned for early 2025）」之后，同时把它们的日期标签改回 'Planned for 2024'，并删除了 releases 表中的 'v1.122.0'。结果页面会出现「稳定版计划于 2025 年初」之后紧跟「计划于 2024 年」的条目，时间顺序与用户预期相反，属于文档内容自相矛盾的可见缺陷（尽管仅是站点展示）。",
+      "evidence": [
+        "docs/src/pages/roadmap.tsx:212-236 — 'Immich goes stable' 的 `getDateLabel: () => 'Planned for early 2025'` 之后紧跟新增条目，其 `getDateLabel: () => 'Planned for 2024'`",
+        "docs/src/pages/roadmap.tsx:85 附近 — `releases` 中删除了 `'v1.122.0': new Date(2024, 11, 5)`"
+      ],
+      "rule": "DOCS-CONSISTENCY-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 文档回滚造成的时间线自相矛盾。影响评估：用户看到「2025 年初的稳定版」排在「2024 年的计划」之前，会误判功能交付顺序；如果这是有意的回滚，文档也应与当前版本口径一致。",
+        "suggestion": "[重构思路] 统一用同一时间口径：或整体恢复为 2025 的排期，或把这些计划项移回稳定版之前并按日期排序；同时确认 releases/milestones 中删除的 v1.122.0 没有留下悬空引用。代码示例：`getDateLabel: () => 'Planned for 2025'` 并保持条目按发布日期升序排列。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "mobile/lib/pages/common/gallery_viewer.page.dart",
+      "line": 130,
+      "title": "详情面板由可拖拽的 DraggableScrollableSheet 改为固定 0.75 高度，同时仍保留拖拽手柄",
+      "description": "showInfo 中的面板改为 `FractionallySizedBox(heightFactor: 0.75)`，DetailPanel/AdvancedBottomSheet 的 scrollController 参数也被移除。但 showModalBottomSheet 仍传入 `showDragHandle: true`、`enableDrag: true`、`isScrollControlled: true`：用户看到手柄会期待「上拖展开到全屏」，而现在拖拽只会关闭面板，面板也无法再通过拖动扩展到全屏，信息较多（尤其是 AdvancedBottomSheet 的 EXIF 长列表）时可视区域固定为 75%，属于可感知的交互回退。此外 `isScrollControlled: true` 与固定高度的组合也让键盘弹出时的 viewInsets 内边距与固定高度叠加，可能出现内容被挤压的情况。",
+      "evidence": [
+        "mobile/lib/pages/common/gallery_viewer.page.dart:119-143 — showModalBottomSheet 保留 `isScrollControlled: true, showDragHandle: true, enableDrag: true`，builder 返回 `FractionallySizedBox(heightFactor: 0.75, ...)`",
+        "mobile/lib/widgets/asset_viewer/advanced_bottom_sheet.dart:10 — 构造函数已无 `scrollController`，内部为 `SingleChildScrollView`（不再与可拖拽 sheet 联动）",
+        "diff 中被替换的旧实现：`DraggableScrollableSheet(minChildSize: 0.5, maxChildSize: 1, initialChildSize: 0.75, ...)`"
+      ],
+      "rule": "UX-REGRESSION-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 交互能力回退（可拖拽调整高度 → 固定高度）。影响评估：长内容（高级信息面板）在固定 75% 高度内滚动，用户无法展开查看，且拖动手柄的语义从「调整高度」变为「关闭面板」，与手柄的存在暗示不一致。",
+        "suggestion": "[重构思路] 若确实要放弃 DraggableScrollableSheet，应同时去掉 showDragHandle/enableDrag 或改为可展开的 full-screen 模式，保证手柄行为与预期一致；若保留可拖拽体验，则恢复 DraggableScrollableSheet 并把 scrollController 继续传给内部滚动视图。代码示例：`showDragHandle: false, enableDrag: true, builder: (context) => FractionallySizedBox(heightFactor: 0.75, ...)`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "web/src/lib/components/shared-components/combobox.svelte",
+      "line": 352,
+      "title": "移除 allowCreate 后空结果分支残留了「创建新选项」时代的 id/onclick 与 aria-selected 逻辑",
+      "description": "combobox 删除 allowCreate/defaultFirstOption 后，空结果分支的文本已固定为 `$t('no_results')`，但该 `<li>` 仍保留 `id={`${listboxId}-${0}`}`、`aria-selected={selectedIndex === 0}` 与 `onclick={() => closeDropdown()}`，而 index 0 在无结果时并不存在对应 option；同时 incrementSelectedIndex 在 filteredOptions 为空时仍会把 selectedIndex 置为 0。这些残留让「无结果」项看起来像一个可选中选项（aria-selected 为 true、id 与选项 id 规则相同），对读屏软件与后续维护者都具有误导性。",
+      "evidence": [
+        "web/src/lib/components/shared-components/combobox.svelte:345-357 — 空结果分支仍使用 `aria-selected={selectedIndex === 0}` 与 `id={`${listboxId}-${0}`}`、`onclick={() => closeDropdown()}`",
+        "web/src/lib/components/shared-components/combobox.svelte:129-133 — `incrementSelectedIndex` 在 `filteredOptions.length === 0` 时把 `selectedIndex` 设为 0",
+        "diff：`{allowCreate ? searchQuery : $t('no_results')}` 改为 `{$t('no_results')}`，而 allowCreate 已从 Props 中移除"
+      ],
+      "rule": "MAINTAINABILITY-DEADCODE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 删除特性后遗留的死代码与可访问性语义错误。影响评估：功能不受影响，但「无结果」项被标记为可选中项，读屏与键盘导航语义不准确；后续维护者会误以为该分支仍支持创建。",
+        "suggestion": "[重构思路] 把空结果项明确为非选项（去掉 aria-selected、onclick 与仿 option 的 id），并让 incrementSelectedIndex 在无结果时保持 selectedIndex 为 undefined。代码示例：`{#if filteredOptions.length === 0}<li class=\"px-4 py-2 text-gray-500\">{$t('no_results')}</li>{/if}`，并在 `incrementSelectedIndex` 中 `if (filteredOptions.length === 0) { selectedIndex = undefined; return; }`。",
+        "subcategory": ""
+      }
+    }
+  ]
+}

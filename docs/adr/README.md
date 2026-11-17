@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0093）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0096）。
 
 ## 记录纪律
 
@@ -92,6 +92,9 @@
 | [ADR-0091](0091-retire-presentation-layer.md) | 呈现投影层退役：`presentation` 源码 / 制品 / 配置键 / 构建腿整层删除；保留 tips 12 键类型 |
 | [ADR-0092](0092-loosen-default-review-scope.md) | 放宽缺省检视范围：测试文件不再默认跳过、Markdown 不再默认排除；回放 lane 钉住旧值 |
 | [ADR-0093](0093-single-source-review-model.md) | 检视模型单源（阶段 1）：忽略 `--model`、配置必须显式 `model.default`；降级键留告警、阶段 2 删除 |
+| [ADR-0094](0094-review-grouping-and-bounded-concurrent-passes.md) | 检视分组与有界并发 pass：LLM 语义分组、组体积/组数兜底、进程级并发 4、partial success；v1 默认关闭 |
+| [ADR-0095](0095-rule-catalog-and-heterogeneous-skill-overlay.md) | 规则目录与异构技能叠加：声明式规则统一目录、黑盒技能 union-scope/delta、内置 12 条先行、OCR pack opt-in |
+| [ADR-0096](0096-phase-json-parse-retry.md) | Phase 5/6 JSON 解析失败：离线 salvage → 同会话短提示重试 → 短窗口 LLM 修复；截断不修；恢复来源审计 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

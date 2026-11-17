@@ -1,0 +1,54 @@
+{
+  "generatedAt": "2026-11-15T05:05:31.972Z",
+  "runId": "20261115_050349_651",
+  "source": "mr",
+  "caseId": "dotnet__aspnetcore@0ce67cd",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Shared/HttpSys/NativeInterop/SocketAddress.cs",
+      "line": 40,
+      "title": "GetPort 缺少 (ushort) 回转换，端口 ≥ 32768 时返回负数",
+      "description": "sin_port / sin6_port 是 16 位网络字节序值（CsWin32 中为 ushort）。IPAddress.NetworkToHostOrder((short)value) 的返回类型是 short，这里直接 `return` 到 int 会发生符号扩展：当端口号 ≥ 32768 时结果变成负数。例如端口 50000（0xC350，网络字节序字节 0xC3、0x50）读成 ushort 为 0x50C3，NetworkToHostOrder 后为 0xC350，即 short 的 -15536，最终返回 -15536 而不是 50000。被删除的旧实现 `(_buffer[2] << 8 & 0xFF00) | (_buffer[3])` 是无符号位运算，结果始终正确，因此这是本次重构引入的行为回归。该值通过 Request.RemotePort / Request.LocalPort 直接填充 IHttpConnectionFeature（RemotePort/LocalPort 为 int 类型）对外暴露，而 Windows 默认动态端口范围为 49152–65535，全部落在受影响区间，意味着绝大多数客户端源端口都会被报告为负数，依赖端口做日志、限流、ACL/诊断的应用会得到错误数据；IPv4（第 40 行）与 IPv6（第 62 行）两处实现存在同一缺陷。",
+      "evidence": [
+        "src/Shared/HttpSys/NativeInterop/SocketAddress.cs:40 — return IPAddress.NetworkToHostOrder((short)_sockaddr.sin_port);",
+        "src/Shared/HttpSys/NativeInterop/SocketAddress.cs:62 — return IPAddress.NetworkToHostOrder((short)_sockaddr.sin6_port);",
+        "IPAddress.NetworkToHostOrder(short) 的重载返回 short（有符号 16 位），作为 int 返回时发生符号扩展，丢失 0x8000 以上的高位语义",
+        "diff 中被删除的旧实现：(_buffer[2] << 8 & 0xFF00) | (_buffer[3]) —— 无符号拼接，可正确表示 0–65535",
+        "src/Servers/HttpSys/src/RequestProcessing/Request.cs:325-327 — public int RemotePort => RemoteEndPoint.GetPort(); public int LocalPort => LocalEndPoint.GetPort();"
+      ],
+      "rule": "CORRECTNESS-BYTEORDER-001",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 网络字节序转换未按 16 位无符号语义还原（缺少 (ushort) 回转换），导致符号扩展。影响评估：端口 ≥ 32768 时 RemotePort/LocalPort 返回负值，Windows 默认动态端口段（49152–65535）全部命中的客户端源端口均被报告错误；属于相对旧实现的功能回归，影响 IHttpConnectionFeature 对外暴露的端口值及所有依赖它的日志/限流/诊断逻辑。",
+        "suggestion": "[重构思路] 保持既有标准写法：先用 NetworkToHostOrder(short) 交换字节，再显式 (ushort) 还原无符号语义后转 int；或改用 BinaryPrimitives.ReverseEndianness 以完全避免有符号中间量。代码示例：`internal override int GetPort() => (ushort)IPAddress.NetworkToHostOrder((short)_sockaddr.sin_port);`，IPv6 同理 `(ushort)IPAddress.NetworkToHostOrder((short)_sockaddr.sin6_port);`；若倾向无符号 API：`BinaryPrimitives.ReverseEndianness(_sockaddr.sin_port)`（BinaryPrimitives 有 ushort 重载，直接返回 ushort）。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/Shared/HttpSys/NativeInterop/SocketAddress.cs",
+      "line": 70,
+      "title": "IPv6 地址只取 16 字节地址，丢弃 sin6_scope_id 作用域",
+      "description": "重写后的 SocketAddressIPv6 已经持有完整的 SOCKADDR_IN6（其中包含 sin6_scope_id），但 GetIPAddress 仍只用 sin6_addr.u.Byte 的 16 字节构造 IPAddress，并保留旧的 `// TODO: Does scope id matter?` 注释。对于 link-local（fe80::/10）等需要作用域标识的地址，返回的 IPAddress.ScopeId 恒为 0，调用方据此做地址比较、回连或日志展示时无法区分不同接口上的同一地址。该行为与重构前一致，因此不是回归，但在新实现已能拿到 sin6_scope_id 的情况下是可以顺手补齐的能力缺口。",
+      "evidence": [
+        "src/Shared/HttpSys/NativeInterop/SocketAddress.cs:70 — return new IPAddress(_sockaddr.sin6_addr.u.Byte.AsReadOnlySpan()); // TODO: Does scope id matter?",
+        "src/Shared/HttpSys/NativeInterop/SocketAddress.cs:52 — private readonly SOCKADDR_IN6 _sockaddr;（结构体中自带 sin6_scope_id 字段但未被使用）",
+        "src/Servers/HttpSys/src/RequestProcessing/Request.cs:321-323 — RemoteIpAddress/LocalIpAddress 直接返回 GetIPAddress() 的结果给上层"
+      ],
+      "rule": "CORRECTNESS-IPV6-SCOPE-001",
+      "confidence": 0.35,
+      "tips": {
+        "review": "[缺陷类型] IPv6 作用域标识（scope id）丢失。影响评估：link-local 等多播/本地链路地址的 ScopeId 为 0，地址比较与回连可能失配；由于重构前行为相同，属既有局限，优先级低，仅作为可顺带改进项提示。",
+        "suggestion": "[重构思路] 构造 IPAddress 后按 sin6_scope_id 赋值 ScopeId（IPv4-mapped/非 scope 相关地址可保持不变），并替换掉 TODO 注释。代码示例：`var address = new IPAddress(_sockaddr.sin6_addr.u.Byte.AsReadOnlySpan()); return _sockaddr.sin6_scope_id != 0 ? new IPAddress(address.GetAddressBytes(), _sockaddr.sin6_scope_id) : address;`",
+        "subcategory": ""
+      }
+    }
+  ]
+}

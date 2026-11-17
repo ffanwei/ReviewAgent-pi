@@ -1,0 +1,77 @@
+{
+  "generatedAt": "2026-11-15T04:45:29.905Z",
+  "runId": "20261115_044425_372",
+  "source": "mr",
+  "caseId": "opencv__opencv@e3e45c8",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "samples/cpp/tutorial_code/objectDetection/aruco_samples_utility.hpp",
+      "line": 35,
+      "title": "格式化到 buf 的 flags 描述字符串随后从未被使用，本次安全化改动实际无效",
+      "description": "saveCameraParams 中把 flags 组合描述写入 `char buf[1024]`，但紧接着写出的是整型 `flags`（`fs << \"flags\" << flags;`），buf 之后再未被读取，因此这次 sprintf→snprintf 的加固针对的是一段死代码。结果是：一方面改动无法产生任何可观察效果，读者容易误以为文件里记录了可读的 flags 描述；另一方面若将来有人把 `fs << \"flags\" << buf;` 改成写字符串，会静默继承当前这套不完整的四位 flag 拼接逻辑（只覆盖 4 个 CALIB_* 标志）。",
+      "evidence": [
+        "samples/cpp/tutorial_code/objectDetection/aruco_samples_utility.hpp:35 — `snprintf(buf, sizeof(buf), \"flags: %s%s%s%s\", ...)` 将描述写入 buf",
+        "samples/cpp/tutorial_code/objectDetection/aruco_samples_utility.hpp:41 — `fs << \"flags\" << flags;` 写出的是 int，而非 buf 中的字符串",
+        "samples/cpp/tutorial_code/objectDetection/aruco_samples_utility.hpp:42-45 — 随后依次写出 camera_matrix / distortion_coefficients / avg_reprojection_error，buf 未被再次读取",
+        "samples/cpp/tutorial_code/objectDetection/aruco_samples_utility.hpp:25 — `char buf[1024];` 在函数内声明，仅第 26 行 strftime 与第 35 行 snprintf 写入"
+      ],
+      "rule": "DEADCODE-002",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 计算结果未被使用的死代码（写入 buf 后无读者）。影响评估：本次缓冲区安全化对该分支实际无收益，且会误导后续维护者以为 YAML 中保存了 flags 的可读描述；不造成运行时错误，但降低可维护性。",
+        "suggestion": "[重构思路] 二选一：要么删掉这段格式化逻辑（只保留整型 flags 写出），要么把它真正写进文件（`fs << \"flags\" << buf;`）并改用 std::string/cv::format 避免固定缓冲区与 %s 拼接。代码示例：`if (flags != 0) fs << \"flags\" << cv::format(\"flags: %s%s%s%s\", ...); else fs << \"flags\" << flags;`",
+        "subcategory": "死代码/无效写入"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "samples/opengl/opengl_interop.cpp",
+      "line": 242,
+      "title": "同一函数内 Linux 分支仍保留 snprintf(..., sizeof(buf)-1, ...)，与本次统一写法不一致",
+      "description": "本次把 Windows 分支的三处 `sprintf_s(buf, sizeof(buf)-1, ...)` 改为 `snprintf(buf, sizeof(buf), ...)`（第 224/229/234 行），但同一 print_info() 的 `#elif defined(__linux__)` 分支（第 242 行）仍是 `snprintf(buf, sizeof(buf)-1, ...)`。snprintf 的第二个参数本身就是缓冲区大小且保证补 '\\0'，再减 1 会白丢一个可用字节，也让同一函数出现两种风格；后续若有人照抄任一写法，容易在 `buf[256+1]` 的边界上产生困惑。",
+      "evidence": [
+        "samples/opengl/opengl_interop.cpp:224 — 改为 `snprintf(buf, sizeof(buf), \"Mode: %s OpenGL %s\", ...)`",
+        "samples/opengl/opengl_interop.cpp:229 — 改为 `snprintf(buf, sizeof(buf), \"Time, msec: %2.1f\", time)`",
+        "samples/opengl/opengl_interop.cpp:234 — 改为 `snprintf(buf, sizeof(buf), \"OpenCL device: %s\", oclDevName.c_str())`",
+        "samples/opengl/opengl_interop.cpp:242 — Linux 分支仍为 `snprintf(buf, sizeof(buf)-1, \"Time, msec: %2.1f, Mode: %s OpenGL %s, Device: %s\", ...)`",
+        "samples/opengl/opengl_interop.cpp:220 与 241 — 两处缓冲区均为 `char buf[256+1]`"
+      ],
+      "rule": "CONSISTENCY-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 同一函数内格式化调用风格不一致（缓冲区长度参数写法混用）。影响评估：无运行时风险（两种写法都保证终止），但降低可读性，并可能被后续修改照抄成错误的长度习惯。",
+        "suggestion": "[重构思路] 把 Linux 分支也统一为 `snprintf(buf, sizeof(buf), ...)`，有条件时进一步抽出公共 helper 或把 `char buf[256+1]` 换成 `std::array<char, 256>`，用 `buf.size()` 传长度。代码示例：`snprintf(buf, sizeof(buf), \"Time, msec: %2.1f, Mode: %s OpenGL %s, Device: %s\", time, m_modeStr[mode].c_str(), use_buffer() ? \"buffer\" : \"texture\", oclDevName.c_str());`",
+        "subcategory": "风格与一致性"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "modules/imgproc/include/opencv2/imgproc.hpp",
+      "line": 4852,
+      "title": "删除 putText 中关于 fontScale 负值行为的说明，但实现确实支持镜像，属文档信息回退",
+      "description": "diff 删除了 putText 文档里关于 `fontScale` 缩放语义的三段说明（scale>1 放大、0<scale<1 缩小、scale<0 镜像/反向），只留下 `@param fontScale` 一句基础描述。但实现中 `int hscale = cvRound(fontScale * static_cast<double>(XY_ONE))` 与后续 `view_x -= p.x*hscale` 表明负 fontScale 会得到负的步进，文本确实被水平镜像/反向绘制，即被删除的第三点在行为上成立。若认为“负 scale 非官方推荐用法”而不希望文档暗示支持，宜改为明确“负值/0 值行为未定义或不推荐”的说明，而不是直接删掉，否则用户只能通过阅读 drawing.cpp 的实现推断该边界行为。",
+      "evidence": [
+        "modules/imgproc/include/opencv2/imgproc.hpp:4852 区域 — 删除的三段 `- When scale > 1 ...` / `- When 0 < scale < 1 ...` / `- When scale < 0, the text is mirrored or reversed.`",
+        "modules/imgproc/include/opencv2/imgproc.hpp:4857 — 仅保留 `@param fontScale Font scale factor that is multiplied by the font-specific base size.`",
+        "modules/imgproc/src/drawing.cpp:2305 — `int hscale = cvRound(fontScale * static_cast<double>(XY_ONE)), vscale = hscale;`",
+        "modules/imgproc/src/drawing.cpp:2330 — `view_x -= p.x*hscale;`（hscale 为负时绘图方向反转，产生镜像效果）"
+      ],
+      "rule": "DOC-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 公共 API 文档被删除且未给出替代表述（文档信息回退）。影响评估：不影响运行时行为，但 putText 是高频公共接口，负/零 fontScale 的边界语义失去文档依据，用户需读实现源码才能确认。",
+        "suggestion": "[重构思路] 保留一条精炼且准确的说明，并明确非推荐取值范围，例如：`fontScale 为负数时按镜像方式绘制（非推荐用法），为 0 时不绘制文本；未定义行为不应依赖。` 若确认该行为不受支持，也可在实现中增加 `CV_Assert(fontScale > 0)` 并同步写入文档，而不是单纯删除说明。代码示例：`@note 负的 fontScale 会导致文本水平镜像绘制（非推荐用法）；请使用正值缩放。`",
+        "subcategory": "API 文档完整性"
+      }
+    }
+  ]
+}

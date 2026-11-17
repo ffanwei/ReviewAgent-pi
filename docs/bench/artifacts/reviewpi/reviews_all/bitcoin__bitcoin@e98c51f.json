@@ -1,0 +1,403 @@
+{
+  "generatedAt": "2026-11-15T05:08:37.953Z",
+  "runId": "20261115_045010_502",
+  "source": "mr",
+  "caseId": "bitcoin__bitcoin@e98c51f",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/wallet/rpc/coins.cpp",
+      "line": 483,
+      "title": "getbalances 仅在 legacy 钱包下输出 watchonly，descriptor 钱包的 watch-only 余额会静默丢失",
+      "description": "新增的 watchonly 余额对象被 `wallet.GetLegacyScriptPubKeyMan()` 与 `spk_man->HaveWatchOnly()` 双重门控，因此只有 legacy（BDB）钱包才会输出该字段。但余额计算本身对所有钱包类型都统计 watch-only：wallet/receive.cpp 的 GetBalance 对每个 CWalletTx 同时累加 ISMINE_WATCH_ONLY 的信用/未成熟额度（m_watchonly_trusted / m_watchonly_untrusted_pending / m_watchonly_immature），getbalance 的 include_watchonly 分支也直接使用这些字段。结果是：对默认的 descriptor 钱包（用 importdescriptors 导入的 watch-only 描述符、或私钥被移除后的 watch-only 钱包），getbalance 能反映 watch-only 资金，而 getbalances 完全不返回 watchonly 对象，用户与上层工具看到的总余额会与 getbalance 不一致，容易低估/漏报无法花费的资金。此外该字段的文档只写了“not present if wallet does not watch anything”，与实现的实际条件（仅 legacy）不符，进一步误导调用方。",
+      "evidence": [
+        "src/wallet/rpc/coins.cpp:482-483 — `auto spk_man = wallet.GetLegacyScriptPubKeyMan(); if (spk_man && spk_man->HaveWatchOnly()) {` 作为输出 watchonly 的唯一判据",
+        "src/wallet/receive.cpp:306-316 — `CachedTxGetAvailableCredit(wallet, wtx, ISMINE_WATCH_ONLY | reuse_filter)` 累加到 `ret.m_watchonly_trusted` / `m_watchonly_untrusted_pending` / `m_watchonly_immature`，与钱包类型无关",
+        "src/wallet/rpc/coins.cpp:204-210 — getbalance 的 `include_watchonly ? bal.m_watchonly_trusted : 0`，对 descriptor 钱包同样生效",
+        "src/wallet/rpc/coins.cpp:443 附近新增的文档：`watchonly ... (not present if wallet does not watch anything)`，未说明仅对 legacy 钱包生效"
+      ],
+      "rule": "API-CONSISTENCY-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 返回结构门控条件与实际计算条件不一致（legacy-only 门控 vs 全钱包类型计算）。影响评估：descriptor 钱包的 watch-only 资金在 getbalances 中不可见，与 getbalance/接口层统计不一致，可能误导用户与自动化脚本判断可花费余额。",
+        "suggestion": "[重构思路] 用“是否存在任何 watch-only 记录”而非“是否为 legacy 钱包”来判断是否输出该对象，可让 spk_man 逻辑保持向后兼容，同时覆盖 descriptor 钱包。代码示例：\n```cpp\nconst bool have_watchonly = (bal.m_watchonly_trusted != 0 ||\n                             bal.m_watchonly_untrusted_pending != 0 ||\n                             bal.m_watchonly_immature != 0);\nif (have_watchonly) {\n    UniValue balances_watchonly{UniValue::VOBJ};\n    balances_watchonly.pushKV(\"trusted\", ValueFromAmount(bal.m_watchonly_trusted));\n    ...\n    balances.pushKV(\"watchonly\", std::move(balances_watchonly));\n}\n```\n若刻意保持仅 legacy 行为，则必须同步修正文档并说明 descriptor 钱包应改用 getbalance/接口层字段。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/wallet/rpc/backup.cpp",
+      "line": 40,
+      "title": "EncodeDumpString 修饰符顺序异常、TIMESTAMP_MIN 未用 constexpr 且置于函数之间",
+      "description": "新增代码中有两处偏离项目惯用风格：一是 `std::string static EncodeDumpString(const std::string &str)`（backup.cpp:40），`static` 出现在返回类型与函数名之间，与同文件 `static std::string DecodeDumpString(...)`（backup.cpp:52）不一致，易被误读为返回类型的组成部分；二是 `static const int64_t TIMESTAMP_MIN = 0;`（backup.cpp:88）作为编译期常量却夹在两个函数实现之间，且未使用 `constexpr`，既不利于内联/常量折叠，也让常量与使用点（RescanWallet 默认参数）在阅读上被割裂。另外该文件内新增的多个内部辅助函数均可放入匿名命名空间以显式限制链接可见性（目前依赖 `static`，与项目部分文件使用匿名命名空间的风格不一致）。",
+      "evidence": [
+        "src/wallet/rpc/backup.cpp:40 — `std::string static EncodeDumpString(const std::string &str) {`",
+        "src/wallet/rpc/backup.cpp:52 — `static std::string DecodeDumpString(const std::string &str) {`（同类函数但修饰符顺序不同）",
+        "src/wallet/rpc/backup.cpp:88 — `static const int64_t TIMESTAMP_MIN = 0;` 位于 GetWalletAddressesForKey 与 RescanWallet 之间",
+        "src/wallet/rpc/backup.cpp:90 — `RescanWallet(..., int64_t time_begin = TIMESTAMP_MIN, ...)` 依赖该常量"
+      ],
+      "rule": "STYLE-008",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 代码风格不一致 / 常量声明方式不佳。影响评估：纯可读性与一致性成本，不影响运行时行为，但会降低代码审查与后续维护效率。",
+        "suggestion": "[重构思路] 统一为 `static std::string EncodeDumpString(...)`（或整体迁入匿名命名空间），并把常量改为文件顶部的 `constexpr int64_t TIMESTAMP_MIN{0};`（必要时加简短注释说明其为“不设下界”的哨兵值）。代码示例：\n```cpp\nnamespace {\nconstexpr int64_t TIMESTAMP_MIN{0};\n\nstd::string EncodeDumpString(const std::string& str) { ... }\nstd::string DecodeDumpString(const std::string& str) { ... }\n} // namespace\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/wallet/rpc/backup.cpp",
+      "line": 211,
+      "title": "importprivkey / importwallet 在 rescan 后未调用 ResubmitWalletTransactions，与同文件其他导入 RPC 不一致",
+      "description": "同一文件内四个“导入后 rescan”的 RPC 处理方式不一致：importaddress 与 importpubkey 在 `RescanWallet(...)` 之后都会执行 `pwallet->ResubmitWalletTransactions(/*relay=*/false, /*force=*/true)`，而 importprivkey（backup.cpp:210-212）和 importwallet（backup.cpp:625-626）只做 rescan 不做重播。rescan 期间新识别出的钱包交易若处于“已记录但未提交/未上链”的状态，缺少这一调用会导致导入私钥后这些交易不会被重新提交到网络，行为随所用 RPC 不同而变化，用户需要额外手工广播。对一个刚恢复私钥、期望尽快确认历史资金可见性的场景影响更明显。",
+      "evidence": [
+        "src/wallet/rpc/backup.cpp:210-212 — `if (fRescan) { RescanWallet(*pwallet, reserver); }`（importprivkey，无后续 ResubmitWalletTransactions）",
+        "src/wallet/rpc/backup.cpp:310-314 — `RescanWallet(*pwallet, reserver); pwallet->ResubmitWalletTransactions(/*relay=*/false, /*force=*/true);`（importaddress）",
+        "src/wallet/rpc/backup.cpp:476-480 — 同样的 rescan + ResubmitWalletTransactions 组合（importpubkey）",
+        "src/wallet/rpc/backup.cpp:625-626 — `RescanWallet(*pwallet, reserver, nTimeBegin, /*update=*/false); pwallet->MarkDirty();`（importwallet，无重播）"
+      ],
+      "rule": "API-CONSISTENCY-007",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 同一语义的 RPC 之间 rescan 后续处理不一致。影响评估：通过 importprivkey/importwallet 恢复的历史交易可能不进入重播队列，与 importaddress/importpubkey/importmulti 的行为产生差异，用户难以预期。",
+        "suggestion": "[重构思路] 把“rescan + 重播”收敛到一个公共 helper（例如扩展 RescanWallet 增加 `resubmit` 参数，或新增 `RescanAndResubmit`），四处调用点统一使用，避免再次分叉。代码示例：\n```cpp\nstatic void RescanWallet(CWallet& wallet, const WalletRescanReserver& reserver, int64_t time_begin = TIMESTAMP_MIN, bool update = true, bool resubmit = true)\n{\n    ...\n    if (resubmit) wallet.ResubmitWalletTransactions(/*relay=*/false, /*force=*/true);\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "安全",
+      "file": "src/wallet/rpc/backup.cpp",
+      "line": 733,
+      "title": "dumpwallet 以默认 umask 创建包含明文私钥的备份文件，未设置限制性权限",
+      "description": "dumpwallet 会把钱包中所有私钥（EncodeSecret 结果）连同 HD 种子派生信息以明文写入服务端文件。此处仅通过 `fs::exists` 做“不得覆盖已有文件”的检查，然后直接用 `std::ofstream::open(filepath)` 创建文件，没有任何权限收紧，文件权限完全取决于进程 umask（常见 022 时得到 0644，即本机其他用户可读）。这与该 RPC 的用途（长期保存在磁盘上的私钥备份）严重不匹配，属于敏感数据落盘的权限隐患。同时 `fs::exists` 与 `open` 之间存在 TOCTOU 窗口，且 `fs::exists` 会跟随符号链接（指向不存在目标的符号链接会让 `exists` 为 false 而被 `open` 跟随创建），削弱了代码注释中“Prevent arbitrary files from being overwritten”的防护意图。",
+      "evidence": [
+        "src/wallet/rpc/backup.cpp:728-730 — `if (fs::exists(filepath)) { throw JSONRPCError(RPC_INVALID_PARAMETER, ... \" already exists ...\") }`（检查与创建分离，且跟随符号链接）",
+        "src/wallet/rpc/backup.cpp:732-735 — `std::ofstream file; file.open(filepath);` 未调用任何 fs::permissions 设置权限",
+        "src/wallet/rpc/backup.cpp:790 前后 — `file << strprintf(\"%s %s \", EncodeSecret(key), strTime);` 写入明文私钥；:775 写入 `# extended private masterkey:`"
+      ],
+      "rule": "SECRETS-ON-DISK-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 敏感数据（明文私钥）落盘时未限制文件权限 + 检查/使用之间的 TOCTOU。影响评估：多用户主机或权限较宽松环境下，dumpwallet 产物可能被其他本地用户读取，导致私钥泄露、资金被盗。",
+        "suggestion": "[重构思路] 创建文件后立即收紧权限为仅属主可读写，并在写入失败时清理；如需更强的防覆盖保证，可在打开前用 `fs::symlink_status` 判断并配合 O_EXCL 语义。代码示例：\n```cpp\nstd::ofstream file;\nfile.open(filepath);\nif (!file.is_open()) throw JSONRPCError(RPC_INVALID_PARAMETER, \"Cannot open wallet dump file\");\nfs::permissions(filepath, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace);\n```\n并在文档中提示 dumpwallet 产物包含明文私钥，应离线保存。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/wallet/rpc/backup.cpp",
+      "line": 1239,
+      "title": "ProcessImport 用 catch(...) 把所有非 RPC 异常统一报告为 “Missing required fields”",
+      "description": "ProcessImport 的兜底 catch 分支对任意非 UniValue 异常（包括钱包锁定导致的运行时错误、数据库写入失败、std::bad_optional_access 之外的各种标准异常、内存分配失败等）一律返回 `JSONRPCError(RPC_MISC_ERROR, \"Missing required fields\")`。这会把“字段缺失”这一输入校验错误与真正的运行时故障混为一谈，用户在排查（例如钱包未解锁、BDB 写盘失败）时会被彻底误导，日志中也不会体现原始异常原因，属于明显的可诊断性缺陷。",
+      "evidence": [
+        "src/wallet/rpc/backup.cpp:1236-1240 — `} catch (...) { result.pushKV(\"success\", UniValue(false)); result.pushKV(\"error\", JSONRPCError(RPC_MISC_ERROR, \"Missing required fields\")); }`",
+        "src/wallet/rpc/backup.cpp:1195-1208 — 真正的“字段缺失/互斥”校验都通过 `throw JSONRPCError(RPC_INVALID_PARAMETER, ...)` 显式抛出，已被上面的 `catch (const UniValue&)` 分支覆盖"
+      ],
+      "rule": "DIAGNOSTICS-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 异常处理粒度过粗，错误信息掩盖真实原因。影响评估：importmulti 的运行时失败被报告为参数缺失，用户与支持人员无法定位问题，且日志缺失上下文。",
+        "suggestion": "[重构思路] 将字段校验错误与运行时异常分离：仅对参数解析失败给出“Missing required fields”，其余标准异常转成带有 `e.what()` 的 RPC 错误，并保留原有 UniValue 分支。代码示例：\n```cpp\n} catch (const UniValue& e) {\n    result.pushKV(\"success\", false);\n    result.pushKV(\"error\", e);\n} catch (const std::exception& e) {\n    result.pushKV(\"success\", false);\n    result.pushKV(\"error\", JSONRPCError(RPC_MISC_ERROR, strprintf(\"Import failed: %s\", e.what())));\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/wallet/rpc/backup.cpp",
+      "line": 1384,
+      "title": "importmulti 仅凭 watchonly 字段决定跳过解锁检查，且失败前已写入部分数据",
+      "description": "importmulti 通过扫描每个 request 的 `watchonly` 字段来决定是否需要 `EnsureWalletIsUnlocked`：只要所有请求都声明 `watchonly: true`，即使这些请求同时携带 `keys`（私钥列表）也不会检查钱包是否已解锁。对加密且已锁定的钱包，后续 ImportPrivKeys 会失败，但 ProcessImport 在此之前已执行 `wallet.MarkDirty()` 与 `ImportScripts(...)`，因此会留下“脚本/监听记录已写入、私钥未导入”的部分导入状态，最终仅返回 `\"success\": false` 与笼统错误信息；用户重试时还可能因已有监听记录而得到新的不一致状态。watch-only 标志被用来推断“不需要私钥”，与请求实际可携带私钥的语义不匹配。",
+      "evidence": [
+        "src/wallet/rpc/backup.cpp:1375-1384 — `bool is_watchonly{true}; ... if (!request.exists(\"watchonly\") || !request[\"watchonly\"].get_bool()) { is_watchonly = false; break; } if (!is_watchonly) EnsureWalletIsUnlocked(wallet);`",
+        "src/wallet/rpc/backup.cpp:1218-1224 — `wallet.MarkDirty(); if (!wallet.ImportScripts(import_data.import_scripts, timestamp)) ...; if (!wallet.ImportPrivKeys(privkey_map, timestamp)) { throw JSONRPCError(RPC_WALLET_ERROR, \"Error adding key to wallet\"); }`（先写脚本、后导私钥，无事务回滚）",
+        "src/wallet/rpc/backup.cpp:1233-1240 — 异常被捕获后仅置 `success=false`，已写入的脚本不会被回滚"
+      ],
+      "rule": "STATE-CONSISTENCY-004",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 解锁前置条件判定不充分 + 多步写入非原子。影响评估：加密钱包在锁定状态下执行带 keys 的 importmulti 会得到误导性错误并遗留部分导入状态，重试/后续导入的行为难以预测。",
+        "suggestion": "[重构思路] 解锁判定应基于“请求是否真的携带私钥/描述符私钥材料”而不是 `watchonly` 布尔值；或在 ProcessImport 内检测到 privkey_map 非空且钱包已加密但未解锁时，提前抛出明确的“wallet is locked”错误再执行任何写入。代码示例：\n```cpp\nbool needs_unlock = false;\nfor (const auto& req : requests.getValues()) {\n    if (!req.exists(\"watchonly\") || !req[\"watchonly\"].get_bool() || req.exists(\"keys\")) {\n        needs_unlock = true; break;\n    }\n}\nif (needs_unlock) EnsureWalletIsUnlocked(wallet);\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/wallet/rpc/wallet.cpp",
+      "line": 112,
+      "title": "getwalletinfo 未持 cs_KeyStore 读取 HD chain，与写入方加锁不对称",
+      "description": "hdseedid 的取值路径是 `pwallet->GetLegacyScriptPubKeyMan()` 后直接 `spk_man->GetHDChain().seed_id`。GetHDChain 在 scriptpubkeyman.h 中实现为 `const CHDChain& GetHDChain() const { return m_hd_chain; }`，直接返回内部成员引用；而 `m_hd_chain` 并未标注 GUARDED_BY(cs_KeyStore)。实际写入方（LegacyDataSPKM::LoadHDChain、LegacyScriptPubKeyMan::AddHDChain、SetHDSeed、Upgrade 中的 `m_hd_chain = ...`）全部在 cs_KeyStore 保护下修改该结构。getwalletinfo 只持有 cs_wallet 就直接读该结构，缺少线程安全注解的保护，属于潜在的数据竞争（CHDChain 含版本号、seed_id、子索引计数等多个字段，可能出现读到不一致快照），也使后续维护者难以通过静态分析发现同类问题。",
+      "evidence": [
+        "src/wallet/rpc/wallet.cpp:110-116 — `LegacyScriptPubKeyMan* spk_man = pwallet->GetLegacyScriptPubKeyMan(); if (spk_man) { CKeyID seed_id = spk_man->GetHDChain().seed_id; ... }` 外层仅有 wallet.cpp:91 的 `LOCK(pwallet->cs_wallet)`",
+        "src/wallet/scriptpubkeyman.h:296 — `CHDChain m_hd_chain;` 无 GUARDED_BY(cs_KeyStore) 注解",
+        "src/wallet/scriptpubkeyman.h:359 — `const CHDChain& GetHDChain() const { return m_hd_chain; }` 返回内部引用且不取锁",
+        "src/wallet/scriptpubkeyman.cpp:984、:990、:1000、:1253 — LoadHDChain / AddHDChain / SetHDSeed 均在 `LOCK(cs_KeyStore)` 下写 `m_hd_chain`"
+      ],
+      "rule": "LOCKING-005",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 未加锁读取受锁保护的数据 + 缺少线程安全注解。影响评估：getwalletinfo 可能读到正在被 sethdseed/键池补充/钱包升级修改的 HD chain，返回错误的 hdseedid；同时该缺口会让暴露出的引用型 getter 被更多无锁调用点复制。",
+        "suggestion": "[重构思路] 给 `m_hd_chain` 加 `GUARDED_BY(cs_KeyStore)`，并把 getter 改为返回值或要求持锁读取；在 getwalletinfo 中显式取 cs_KeyStore 后再读取（注意保持 cs_wallet → cs_KeyStore 的既有锁序）。代码示例：\n```cpp\nif (spk_man) {\n    CKeyID seed_id{WITH_LOCK(spk_man->cs_KeyStore, return spk_man->GetHDChain().seed_id)};\n    if (!seed_id.IsNull()) obj.pushKV(\"hdseedid\", seed_id.GetHex());\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "安全",
+      "file": "src/wallet/scriptpubkeyman.cpp",
+      "line": 285,
+      "title": "Encrypt 失败时未恢复已 swap 出的明文私钥，keystore 进入不一致状态",
+      "description": "LegacyScriptPubKeyMan::Encrypt 用 keys_to_encrypt.swap(mapKeys) 把全部明文密钥移出 mapKeys（以便 AddCryptedKeyInner 中的 assert(mapKeys.empty()) 成立），随后逐把加密写入 mapCryptedKeys。只要 EncryptSecret 或 AddCryptedKey 任一步失败，函数就 encrypted_batch=nullptr 后直接 return false：此时 mapKeys 已被清空且未恢复，而尚未处理的那部分明文密钥只存在于局部变量 keys_to_encrypt 中，函数返回后即被销毁。CWallet::EncryptWallet 收到 false 会继续走后续流程/报错，但内存中的 keystore 已经丢失部分私钥（既不在 mapKeys 也不在 mapCryptedKeys），在重新加载钱包前这些 key 无法签名，且已加密的密钥与持久化状态可能只写入了数据库的一部分。这是锁内对密钥材料的破坏性变更缺少失败回滚。",
+      "evidence": [
+        "src/wallet/scriptpubkeyman.cpp:284-285 — KeyMap keys_to_encrypt; keys_to_encrypt.swap(mapKeys); // Clear mapKeys so AddCryptedKeyInner will succeed.",
+        "src/wallet/scriptpubkeyman.cpp:292-299 — if (!EncryptSecret(...)) { encrypted_batch = nullptr; return false; } if (!AddCryptedKey(...)) { encrypted_batch = nullptr; return false; }",
+        "src/wallet/scriptpubkeyman.cpp:303-304（AddCryptedKeyInner）— assert(mapKeys.empty()) 依赖上面的 swap，说明该破坏性修改是刻意为之但没有回滚路径",
+        "src/wallet/wallet.cpp:895-905 — EncryptWallet 对 spk_man 相关失败直接 return false，不会重新加载钱包或重建内存 keystore"
+      ],
+      "rule": "CRYPTO-STATE-001",
+      "confidence": 0.58,
+      "tips": {
+        "review": "[缺陷类型] 加密迁移过程缺少失败回滚（内存私钥丢失/半加密状态）。影响评估：EncryptWallet 一旦中途失败，用户看到报错但钱包内存状态已损坏，可能表现为部分地址无法签名、后续 listunspent 可花费性判断错误；若此时又成功写入了部分 crypted key，重启后可能出现同一密钥既无明文也无密文对应关系的不一致。",
+        "suggestion": "[重构思路] 加密失败时把未加密的密钥原样放回 mapKeys 并返回失败（保持“全明文或全密文”的不变量），或先全部加密到临时容器、全部成功后再一次性交换到 mapCryptedKeys。代码示例：`KeyMap keys_to_encrypt; keys_to_encrypt.swap(mapKeys); std::map<CKeyID, std::pair<CPubKey, std::vector<unsigned char>>> encrypted; for (const auto& [id, key] : keys_to_encrypt) { if (!EncryptSecret(master_key, vchSecret, key.GetPubKey().GetHash(), crypted)) { mapKeys = std::move(keys_to_encrypt); encrypted_batch = nullptr; return false; } encrypted[id] = {key.GetPubKey(), crypted}; } for (auto& [id, kv] : encrypted) { if (!AddCryptedKey(kv.first, kv.second)) { mapKeys = std::move(keys_to_encrypt); encrypted_batch = nullptr; return false; } }`",
+        "subcategory": "加密流程/失败回滚"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/wallet/scriptpubkeyman.cpp",
+      "line": 344,
+      "title": "TopUpInactiveHDChain 忽略 TopUpChain 的失败返回值",
+      "description": "TopUpInactiveHDChain 在设置了 inactive chain 的 m_next_external_index/m_next_internal_index 后调用 TopUpChain(batch, chain, 0)，但对返回值不做任何检查，随后无条件 return true。TopUpChain 在钱包锁定（m_storage.IsLocked()）时会立刻返回 false 且不派生任何密钥。由于 m_next_*_index 已经在内存中被推进，调用方（MarkUnusedAddresses）会得到“补池成功”的假信号，仅当锁加上时这一轮才会真正补键；更糟的是内存中的 next 索引已经前进，后续解锁后的补池会以为这段区间无需生成，从而在 inactive chain 上留下缺口，影响旧 seed 地址的可发现性（gap limit 语义被破坏）。",
+      "evidence": [
+        "src/wallet/scriptpubkeyman.cpp:337-346 — 先修改 chain.m_next_internal_index / m_next_external_index，再 TopUpChain(batch, chain, 0); 随后 return true",
+        "src/wallet/scriptpubkeyman.cpp:1332 — TopUpChain 中 if (m_storage.IsLocked()) return false;（未派生任何密钥即返回失败）",
+        "src/wallet/scriptpubkeyman.cpp:394-396 — 调用方仅根据 TopUpInactiveHDChain 的返回值决定是否打印 “Adding inactive seed keys failed”"
+      ],
+      "rule": "ERROR-HANDLING-004",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 忽略被调函数的失败返回，并已提前推进状态。影响评估：锁定钱包场景下 inactive HD chain 的密钥缺口不会被记录为失败，可能导致旧 seed 派生地址的 look-ahead 不足，历史交易在恢复时不可见。",
+        "suggestion": "[重构思路] 检查 TopUpChain 的返回值，失败时把 m_next_*_index 恢复到调用前的值（或改为先成功补池再推进索引），并把失败向上传递。代码示例：`const int64_t prev_next = internal ? chain.m_next_internal_index : chain.m_next_external_index; if (internal) chain.m_next_internal_index = std::max(prev_next, index + 1); else chain.m_next_external_index = std::max(prev_next, index + 1); WalletBatch batch(m_storage.GetDatabase()); if (!TopUpChain(batch, chain, 0)) { if (internal) chain.m_next_internal_index = prev_next; else chain.m_next_external_index = prev_next; return false; } return true;`",
+        "subcategory": "错误传播/状态回滚"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/wallet/scriptpubkeyman.cpp",
+      "line": 1312,
+      "title": "TopUp 在 TxnBegin 之后的失败分支未 TxnAbort，可能提交部分 keypool 写入",
+      "description": "TopUp 先调用 batch.TxnBegin() 开启事务，随后主动或被动失败时（TopUpChain 返回 false，例如钱包已锁定导致 m_storage.IsLocked() 为真）直接 return false，没有调用 batch.TxnAbort()。WalletBatch 析构时会把仍处于活动状态的事务提交（构造注释明确写了“Otherwise the transaction will be committed when the object goes out of scope”），因此已经写入的 HD chain 计数器、新生成的私钥以及已插入的 pool 条目会被部分提交，而调用方（NewKeyPool/GetNewDestination/MarkUnusedAddresses）却认为补池失败。结果是内存中的 set*KeyPool/m_pool_key_to_index 与数据库中的 pool 记录不一致，后续出现 “unknown key in key pool”“keypool entry misclassified” 之类的异常，或者派生计数器超前于实际可用密钥。",
+      "evidence": [
+        "src/wallet/scriptpubkeyman.cpp:1310-1319 — if (!batch.TxnBegin()) return false; if (!TopUpChain(batch, m_hd_chain, kpSize)) { return false; } for (...) { if (!TopUpChain(...)) { return false; } }",
+        "src/wallet/scriptpubkeyman.cpp:1328-1332 — TopUpChain 的第一条业务逻辑是 if (m_storage.IsLocked()) return false;（未加密/已解锁钱包之外会被轻易命中）",
+        "src/wallet/walletdb.h:189-195 — WalletBatch 注释：多次操作可用 TxnBegin() 开启、TxnCommit() 提交，否则对象离开作用域时提交",
+        "src/wallet/scriptpubkeyman.cpp:1320 — 只有成功路径调用 batch.TxnCommit()，失败路径无 TxnAbort()"
+      ],
+      "rule": "TXN-002",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 事务未回滚（半成品写入被提交）。影响评估：keypool 与 HD chain 计数器在 DB 与内存间不一致，轻则下次补池重复派生/跳号，重则重启后钱包无法为既有 keypool 条目找到对应公钥而抛 std::runtime_error，造成地址不可用。",
+        "suggestion": "[重构思路] 所有 TxnBegin 之后的失败返回统一改成 abort，或用 RAII 守卫保证异常/提前返回时回滚；仅在真正成功时 commit。代码示例：`if (!batch.TxnBegin()) return false; auto guard = MakeGuard([&]{ if (batch.HasActiveTxn()) batch.TxnAbort(); }); if (!TopUpChain(batch, m_hd_chain, kpSize)) return false; ... if (!batch.TxnCommit()) throw ...; guard.dismiss();`",
+        "subcategory": "事务与持久化一致性"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/wallet/scriptpubkeyman.cpp",
+      "line": 1315,
+      "title": "TopUp 在未持有 cs_KeyStore 时遍历 m_inactive_hd_chains，存在数据竞争",
+      "description": "TopUp 在整体上不持有 cs_KeyStore（锁由被调用的 TopUpChain 内部获取并在每次返回时释放），却在循环中按引用遍历 m_inactive_hd_chains，并把每个 CHDChain& 交给 TopUpChain 修改。与此同时 AddInactiveHDChain（由 AddHDChain/SetHDSeed/SetupGeneration 路径调用）会在持有 cs_KeyStore 时执行 m_inactive_hd_chains[chain.seed_id] = chain，属于可能触发 rehash 的插入操作。两个线程并发时会出现无锁读与插入并发，遍历期间迭代器失效属于未定义行为，可能导致读到已释放节点或崩溃，且 TopUpInactiveHDChain 同样在锁内对同一 unordered_map 取引用，进一步放大了风险。",
+      "evidence": [
+        "src/wallet/scriptpubkeyman.cpp:1310-1319 — WalletBatch batch(...); if (!batch.TxnBegin()) return false; if (!TopUpChain(batch, m_hd_chain, kpSize)) {...} for (auto& [chain_id, chain] : m_inactive_hd_chains) { if (!TopUpChain(batch, chain, kpSize)) ... }",
+        "src/wallet/scriptpubkeyman.cpp:1328-1332 — TopUpChain 自身 LOCK(cs_KeyStore)，因此 TopUp 的 for 循环体之外并无 cs_KeyStore 保护",
+        "LegacyDataSPKM::AddInactiveHDChain 在 LOCK(cs_KeyStore) 下执行 m_inactive_hd_chains[chain.seed_id] = chain（本 MR 新增段，同一 unordered_map）",
+        "src/wallet/scriptpubkeyman.h:297 — std::unordered_map<CKeyID, CHDChain, SaltedSipHasher> m_inactive_hd_chains; 未标注 GUARDED_BY(cs_KeyStore)"
+      ],
+      "rule": "CONCURRENCY-001",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 未加锁的容器遍历与并发插入（迭代器失效 / 数据竞争）。影响评估：RPC 触发的 topup（如 getnewaddress 的自动补池、keypoolrefill）与后台的 SetHDSeed/AddHDChain 并发时可能崩溃或读到非法内存；由于 unordered_map 插入可能 rehash，遍历期间引用失效会导致更隐蔽的密钥派生错误。",
+        "suggestion": "[重构思路] 在 TopUp 里先用 cs_KeyStore 复制出需要处理的 chain 列表（或直接在持锁的临界区内完成整个遍历与派生），避免跨线程共享容器的无锁访问；同时给 m_inactive_hd_chains 补 GUARDED_BY(cs_KeyStore) 让线程分析可验证。代码示例：`std::vector<CKeyID> chain_ids; { LOCK(cs_KeyStore); for (const auto& [id, chain] : m_inactive_hd_chains) chain_ids.push_back(id); } for (const auto& id : chain_ids) { LOCK(cs_KeyStore); auto it = m_inactive_hd_chains.find(id); if (it == m_inactive_hd_chains.end()) continue; if (!TopUpChain(batch, it->second, kpSize)) return false; }`",
+        "subcategory": "并发/锁保护缺失"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/wallet/scriptpubkeyman.cpp",
+      "line": 1447,
+      "title": "GetKeyFromPool 在 reserve 失败时仍以 nIndex=-1 调用 KeepDestination",
+      "description": "GetKeyFromPool 的条件写成 `if (!ReserveKeyFromKeyPool(...) && !m_storage.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS))`：只有当“reserve 失败”且“钱包未禁用私钥”时才走现场生成新密钥的兜底分支。若 reserve 失败而钱包恰好设置了 WALLET_FLAG_DISABLE_PRIVATE_KEYS（例如纯 watch-only 的 legacy 钱包 keypool 被清空、或被并发 reserve 抢空），条件整体为 false，代码会继续执行 KeepDestination(nIndex, type)，此时 nIndex 仍是 ReserveKeyFromKeyPool 在入口设置的 -1。KeepDestination 内 `m_index_to_reserved_key.at(nIndex)` 对 -1 抛出 std::out_of_range，而该函数没有 try/catch，异常会一路冒到 RPC/钱包调用栈，导致进程崩溃；同时 batch.ErasePool(-1) 也会先对数据库做一次无效删除。",
+      "evidence": [
+        "src/wallet/scriptpubkeyman.cpp:1440-1448 — int64_t nIndex; if (!ReserveKeyFromKeyPool(nIndex, keypool, false) && !m_storage.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) { ... return true; } KeepDestination(nIndex, type);",
+        "src/wallet/scriptpubkeyman.cpp:1466-1468（ReserveKeyFromKeyPool 入口）— nIndex = -1; keypool.vchPubKey = CPubKey(); 并且 setKeyPool 为空时直接 return false",
+        "src/wallet/scriptpubkeyman.cpp:1400-1404 — KeepDestination 先 batch.ErasePool(nIndex)，再 m_index_to_reserved_key.at(nIndex)（-1 会抛 std::out_of_range）",
+        "GetKeyFromPool 的调用方 LegacyScriptPubKeyMan::GetNewDestination（本 MR 新增）在类型合法且未断言的情况下会把异常直接抛给 getnewaddress/change 地址生成路径"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 失败分支未短路导致把哨兵值 -1 当合法索引使用（未捕获异常 → 进程终止）。影响评估：watch-only legacy 钱包在 keypool 耗尽/并发取键时 getnewaddress 可能直接崩溃而非返回错误码；禁用私钥的空白钱包是本次 MR 明确支持的场景（ListCoins 的 fAllowWatchOnly 改动即为该场景），因此并非纯理论路径。",
+        "suggestion": "[重构思路] 把 reserve 失败与钱包是否禁用私钥解耦，先判断 reserve 结果，失败时按能力决定“现场生成”或返回 false，绝不在 nIndex==-1 时进入 KeepDestination。代码示例：`if (!ReserveKeyFromKeyPool(nIndex, keypool, /*fRequestedInternal=*/false)) { if (m_storage.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS) || m_storage.IsLocked()) return false; WalletBatch batch(m_storage.GetDatabase()); result = GenerateNewKey(batch, m_hd_chain, /*internal=*/false); return true; } KeepDestination(nIndex, type); result = keypool.vchPubKey;`",
+        "subcategory": "错误处理/边界条件"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/wallet/scriptpubkeyman.h",
+      "line": 338,
+      "title": "m_pool_key_to_index 缺少 GUARDED_BY(cs_KeyStore)，锁纪律无法由工具校验",
+      "description": "本次把 keypool 的三个 index 集合、m_max_keypool_index 都从 private 移到 LegacyDataSPKM 的 public 区并标注了 GUARDED_BY(cs_KeyStore)，但紧邻的 m_pool_key_to_index 没有任何线程安全注解；同时 GetAllReserveKeys() 以 const 引用形式把该 map 直接交给调用方（rpc/backup.cpp:747 的 dumpwallet）。该 map 在 MarkUnusedAddresses、ReserveKeyFromKeyPool、ReturnDestination、MarkReserveKeysAsUsed、AddKeypoolPubkeyWithDB 中都在 cs_KeyStore 保护下被修改，属于受同一把锁管理的数据。缺少注解使得 clang 线程安全分析无法发现遗漏加锁的访问点，也容易让新增代码（尤其通过 GetAllReserveKeys 拿到引用后）在锁外使用它。",
+      "evidence": [
+        "src/wallet/scriptpubkeyman.h:334-337 — setInternalKeyPool/setExternalKeyPool/set_pre_split_keypool/m_max_keypool_index 均带 GUARDED_BY(cs_KeyStore)",
+        "src/wallet/scriptpubkeyman.h:338 — std::map<CKeyID, int64_t> m_pool_key_to_index;（无注解）",
+        "src/wallet/scriptpubkeyman.h:568 — const std::map<CKeyID, int64_t>& GetAllReserveKeys() const { return m_pool_key_to_index; }（返回引用，无锁、无注解）",
+        "src/wallet/rpc/backup.cpp:745-747 — LOCK(spk_man.cs_KeyStore) 之后才调用 GetAllReserveKeys()，说明调用约定存在但未被类型系统约束"
+      ],
+      "rule": "THREAD-SAFETY-ANNOTATION-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 共享状态缺少锁注解（隐性锁纪律）。影响评估：当前使用点都手工加锁，功能上暂无 bug；但这是钱包私钥索引映射，一旦后续新增访问点漏锁，会造成 map 数据竞争（可能误判某 key 是否仍在 keypool，进而重复使用地址）。",
+        "suggestion": "[重构思路] 给 m_pool_key_to_index 补 GUARDED_BY(cs_KeyStore)，并在 GetAllReserveKeys 上加 EXCLUSIVE_LOCKS_REQUIRED(cs_KeyStore)；若确实需要在锁外读取，改为返回副本。代码示例：`std::map<CKeyID, int64_t> m_pool_key_to_index GUARDED_BY(cs_KeyStore);` / `const std::map<CKeyID, int64_t>& GetAllReserveKeys() const EXCLUSIVE_LOCKS_REQUIRED(cs_KeyStore) { AssertLockHeld(cs_KeyStore); return m_pool_key_to_index; }`",
+        "subcategory": "锁注解/共享状态"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/wallet/wallet.cpp",
+      "line": 2704,
+      "title": "ReserveDestination 用 keypool.fInternal 覆盖 internal 标志，对 descriptor 钱包恒为 false",
+      "description": "ReserveDestination::GetReservedDestination 新增了 fInternal = keypool.fInternal，但 GetReservedDestination 的 CKeyPool& 出参只有 LegacyScriptPubKeyMan 会填充；DescriptorScriptPubKeyMan::GetReservedDestination 的实现完全忽略该参数（函数体里只有 GetNewDestination(type) 与 index 赋值）。因此 descriptor 钱包调用时 keypool 是默认构造的 CKeyPool，fInternal 固定为 false，即使调用方请求 internal=true 也会把 fInternal 记为 false，并原样传给 ReturnDestination。当前 DescriptorScriptPubKeyMan::ReturnDestination 不读取 internal 参数，所以暂无功能错误，但这是一个依赖“被调方恰好忽略该参数”的隐性契约，后续若 descriptor 侧启用 internal 分支就会静默走错分支；同时它掩盖了调用方传入的 internal 语义。",
+      "evidence": [
+        "src/wallet/wallet.cpp:2697-2705 — CKeyPool keypool; ... auto op_address = m_spk_man->GetReservedDestination(type, internal, index, keypool); ... fInternal = keypool.fInternal;",
+        "src/wallet/scriptpubkeyman.cpp:2180-2186 — DescriptorScriptPubKeyMan::GetReservedDestination(..., CKeyPool& keypool) 函数体未使用 keypool",
+        "src/wallet/wallet.cpp:3468-3479 — CKeyPool 默认构造函数把 fInternal 初始化为 false",
+        "src/wallet/wallet.cpp:2718-2722 — ReturnDestination() 使用该 fInternal 调用 m_spk_man->ReturnDestination(nIndex, fInternal, address)"
+      ],
+      "rule": "MAINTAINABILITY-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 跨实现的出参契约未对齐（默认值被当作有效值使用）。影响评估：descriptor 钱包的 ReserveDestination::fInternal 恒为 false，内部/外部地址的区分逻辑被悄悄丢弃；一旦 CondDescriptor 侧或下游（如 change 地址归属统计、ReturnDestination 的分池逻辑）依赖该标志即会产生错误行为。",
+        "suggestion": "[重构思路] 只在返回成功且实现确实填充了 keypool 时才采用 keypool.fInternal，否则沿用调用方传入的 internal；更彻底的做法是让 GetReservedDestination 的返回结果携带 internal 信息，或在 DescriptorScriptPubKeyMan 中也填充 keypool.fInternal。代码示例：`fInternal = keypool.vchPubKey.IsValid() ? keypool.fInternal : internal;` 或 `CKeyPool keypool; keypool.fInternal = internal;`",
+        "subcategory": "接口契约/默认值语义"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/wallet/wallettool.cpp",
+      "line": 133,
+      "title": "新增的 -legacy 支持与 create 路径自相矛盾：legacy 分支不可达、帮助文本与行为不一致",
+      "description": "本 MR 在 WalletCreate 中新增了非 descriptor（legacy）创建分支（GetOrCreateLegacyScriptPubKeyMan + SetupGeneration），并在 ExecuteWalletToolFunc 中新增 -descriptors / -legacy 参数校验；但 create 命令仍无条件设置 `options.create_flags |= WALLET_FLAG_DESCRIPTORS` 与 `options.require_format = DatabaseFormat::SQLITE`，因此 `IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)` 恒为 true，新增的 legacy 分支在 `bitcoin-wallet create` 下永远不可达。同时 -legacy 的校验在取值为 true 时报错 “The -legacy option must be set to \\\"false\\\"”，与 bitcoin-wallet.cpp 中注册的帮助文本 “Create legacy wallet. Only for 'create'” 直接冲突：用户按帮助文本执行 `-legacy create` 必然失败，而唯一能通过的 `-legacy=0` 又不会改变任何行为。结果是新增的 legacy 代码路径既无入口也无测试覆盖，属于死代码，并给用户错误的能力预期。",
+      "evidence": [
+        "src/wallet/wallettool.cpp:36-41 — 新增 `if (!wallet_instance->IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) { auto spk_man = wallet_instance->GetOrCreateLegacyScriptPubKeyMan(); spk_man->SetupGeneration(false); }`",
+        "src/wallet/wallettool.cpp:149-150 — create 分支仍无条件执行 `options.create_flags |= WALLET_FLAG_DESCRIPTORS;` 与 `options.require_format = DatabaseFormat::SQLITE;`",
+        "src/wallet/wallettool.cpp:128-137 — `if (args.GetBoolArg(\"-legacy\", true)) { ... \"The -legacy option must be set to \\\"false\\\"\\n\" ... }`",
+        "src/bitcoin-wallet.cpp:42 — `argsman.AddArg(\"-legacy\", \"Create legacy wallet. Only for 'create'\", ...)`",
+        "src/wallet/wallettool.cpp:92 — `if (options.require_create) WalletCreate(wallet_instance.get(), options.create_flags);`（WalletCreate 只由 create 路径触发）"
+      ],
+      "rule": "MAINTAINABILITY-DEADCODE-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 选项语义与实现不一致 + 不可达的死代码。影响评估：`bitcoin-wallet -legacy create` 被直接拒绝，而恢复的 legacy 创建分支（SetupGeneration/TopUpKeyPool）永远不会执行；若后续有人依赖该分支去生成 legacy 测试钱包，会得到 descriptor 钱包而非报错，行为静默偏差。",
+        "suggestion": "[重构思路] 二选一，保持选项、帮助文本与实现一致：(a) 真正支持 legacy 创建——由参数决定 create_flags 与 require_format；(b) 若明确不支持——删除 WalletCreate 中的 legacy 分支，并把帮助文本与错误信息统一为“该工具只能创建 descriptor 钱包”。代码示例：`if (args.GetBoolArg(\"-legacy\", false)) { tfm::format(std::cerr, \"Legacy wallet creation is not supported by this tool.\\n\"); return false; }` 且 WalletCreate 内保留 `Assert(wallet_instance->IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS));`。",
+        "subcategory": "选项语义不一致与死代码"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/wallet/wallettool.cpp",
+      "line": 171,
+      "title": "dump 命令缺少 -withinternalbdb 时，对 BDB 钱包给出误导性的 migratewallet 提示",
+      "description": "dump 分支现在只有在显式传入 `-withinternalbdb` 时才把 `options.require_format` 置为 BERKELEY_RO。若用户对一个 legacy（BDB）钱包执行 `bitcoin-wallet dump` 而未带该参数，MakeDatabase 会自行检测到 BDB 文件并置 `format = BERKELEY_RO`，随后在“非 require_format 指定的 BERKELEY_RO”检查处返回错误：『The wallet appears to be a Legacy wallet, please use the wallet migration tool (migratewallet RPC)』。这条信息对离线命令行工具用户是误导：bitcoin-wallet 无法调用 RPC，正确做法是加上 `-withinternalbdb`；用户会以为必须启动节点并迁移钱包。",
+      "evidence": [
+        "src/wallet/wallettool.cpp:171-173 — `if (args.GetBoolArg(\"-withinternalbdb\", false) && IsBDBFile(BDBDataFile(path))) { options.require_format = DatabaseFormat::BERKELEY_RO; }`",
+        "src/wallet/walletdb.cpp:1439-1441 — `if (IsBDBFile(BDBDataFile(path))) { format = DatabaseFormat::BERKELEY_RO; }`",
+        "src/wallet/walletdb.cpp:1469-1473 — 未指定 require_format 的 BERKELEY_RO 直接以 “please use the wallet migration tool (migratewallet RPC)” 失败",
+        "src/bitcoin-wallet.cpp:44 — `-withinternalbdb` 的帮助文本仅说明 “when dumping a Berkeley DB wallet file”"
+      ],
+      "rule": "UX-DIAGNOSTIC-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 错误诊断信息与工具能力不匹配。影响评估：用户无法从报错推断出“加 -withinternalbdb 即可 dump”，导致 dump 旧钱包的路径实际不可发现，也可能被误判为钱包需要迁移。",
+        "suggestion": "[重构思路] 在 dump 分支前置判断并给出针对性提示，避免落入通用的 migratewallet 报错。代码示例：`if (IsBDBFile(BDBDataFile(path)) && !args.GetBoolArg(\"-withinternalbdb\", false)) { tfm::format(std::cerr, \"This is a Berkeley DB wallet; re-run with -withinternalbdb to dump it.\\n\"); return false; }`",
+        "subcategory": "误导性错误信息"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/wallet/walletdb.h",
+      "line": 206,
+      "title": "按共享原子 nUpdateCounter 取模触发 flush，存在漏触发/重复触发，且部分写路径不计入计数",
+      "description": "WriteIC/EraseIC 在自增后读取 `m_database.nUpdateCounter % 1000 == 0` 来决定是否 `m_batch->Flush()`。nUpdateCounter 是 WalletDatabase 上被所有 batch 共享的 `std::atomic<unsigned int>`，多个 batch 并发写入时，本线程自增后读到的值可能已被其他线程推进（例如自增到 1000 后另一线程先加到 1001，本线程再读到 1001），从而使本次 flush 被跳过；反之多线程也可能重复触发。更关键的是计数覆盖不完整：EraseRecords 与 EraseAddressData 直接调用 `m_batch->ErasePrefix(...)`，不经过 EraseIC，因而不递增计数，导致类注释承诺的『Every 1000 writes will automatically trigger a flush to disk』在批量删除场景下不成立，周期性落盘窗口可能被拉长。",
+      "evidence": [
+        "src/wallet/walletdb.h:202-208 — `m_database.IncrementUpdateCounter(); if (m_database.nUpdateCounter % 1000 == 0) { m_batch->Flush(); }`",
+        "src/wallet/db.h:175 — `std::atomic<unsigned int> nUpdateCounter;`（跨 batch 共享）",
+        "src/wallet/sqlite.h:166 与 src/wallet/bdb.cpp:439-442 — IncrementUpdateCounter 均为对共享计数的 `++`",
+        "src/wallet/walletdb.cpp:1382-1387 — `EraseRecords` 直接 `m_batch->ErasePrefix(...)`，未调用 EraseIC/IncrementUpdateCounter",
+        "src/wallet/walletdb.cpp:1365-1370 — `EraseAddressData` 同样绕过计数"
+      ],
+      "rule": "CONCURRENCY-ATOMIC-004",
+      "confidence": 0.42,
+      "tips": {
+        "review": "[缺陷类型] 共享计数器上的“取模触发”竞态 + 计数覆盖不完整。影响评估：只是让 1000 次写后的自动落盘时机变得不确定（漏刷或重复刷），不破坏事务原子性（BerkeleyBatch::Flush 在 activeTxn 时直接 return，SQLiteBatch::Flush 为空实现），因此影响限于持久化时机与性能抖动。",
+        "suggestion": "[重构思路] 用自增返回值（旧值）判断、或用 batch 内局部计数触发，避免读-改-读的竞态；同时让 ErasePrefix 路径也走统一计数入口。代码示例：`if (m_database.IncrementUpdateCounter() % 1000 == 0) m_batch->Flush();`（IncrementUpdateCounter 返回自增前的旧值），并让 `EraseRecords` 在成功后同样调用增量接口。",
+        "subcategory": "共享计数器竞态"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/wallet/walletdb.h",
+      "line": 331,
+      "title": "MaybeCompactWalletDB 的注释与实现不符：实现只做周期 flush，不做任何 compact",
+      "description": "新增的公开声明带注释『Compacts BDB state so that wallet.dat is self-contained (if there are changes)』，但 walletdb.cpp 中的实现只是遍历钱包，比较 nUpdateCounter 与 nLastSeen/nLastFlushed，并在 2 秒静默后调用 PeriodicFlush()；全程没有任何 Rewrite/compact 动作。该函数还被 load.cpp 每 500ms 调度一次，是热路径 API。名称与注释会让后续维护者误以为调用它能收缩 wallet.dat（BDB 日志回收），从而依赖一个不存在的语义；在 BDB 可选化、后端多样化的本次改动中，这种误导尤其容易引发错误假设。",
+      "evidence": [
+        "src/wallet/walletdb.h:330-331 — `//! Compacts BDB state so that wallet.dat is self-contained (if there are changes)` + `void MaybeCompactWalletDB(WalletContext& context);`",
+        "src/wallet/walletdb.cpp:1322-1347 — 实现体内只有 `nLastSeen`/`nLastWalletUpdate` 更新与 `dbh.PeriodicFlush()`，无 Rewrite/compact 调用",
+        "src/wallet/load.cpp:163-165 — `context.args->GetBoolArg(\"-flushwallet\", DEFAULT_FLUSHWALLET)` 为真时每 500ms 调度该函数",
+        "src/wallet/db.h:149-164 — 真正具备收缩语义的是 `Rewrite()`，实现中未被调用"
+      ],
+      "rule": "MAINTAINABILITY-NAMING-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 命名/注释与实际行为不一致（语义漂移）。影响评估：读者会误认为存在 BDB compact 行为；若将来有人据此调整调用频率或依赖它回收日志空间，将得到错误结果。",
+        "suggestion": "[重构思路] 让名称/注释反映真实行为，或补齐 compact 语义。代码示例（重命名 + 修正注释）：`//! Periodically flush wallets that were recently modified` `void MaybeFlushWallets(WalletContext& context);`；若确需 compact，则在 nLastFlushed 落后且静默足够久时调用 `dbh.Rewrite()`。",
+        "subcategory": "命名与注释语义漂移"
+      }
+    }
+  ]
+}

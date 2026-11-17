@@ -1,0 +1,52 @@
+{
+  "instance_id": "valkey-io__valkey@36f37c0",
+  "repo": "valkey-io/valkey",
+  "base_commit": "ea2e48a807e1d4a1a5a684a2a699eda1934a0c6f",
+  "head_commit": "36f37c0bafa72c091a9a3725b9a026a056130892",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 119.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/networking.c",
+      "line": 2771,
+      "summary": "snprintf 三元分支内使用逗号表达式，格式串被替换为整数/用户缓冲区指针，构成格式化字符串漏洞并可能崩溃",
+      "failure_scenario": "新增的长 query buffer 分支把三元运算符写在了 snprintf 的格式串实参位置，而每个分支内部用圆括号包了一个逗号表达式：真分支 `(\"...Redacted %zu bytes\", sdslen(c->querybuf) - c->qb_pos)` 的结果是 size_t，假分支 `(\"...%.*s...\", PROTO_DUMP_LEN / 2, c->querybuf + c->qb_pos, ..., c->querybuf + sdslen(c->querybuf) - PROTO_DUMP_LEN / 2)` 的结果是最后一个逗号操作数，即 `c->querybuf + sdslen(c->querybuf) - PROTO_DUMP_LEN / 2` 这个 char* 指针。于是：(a) 三元表达式两个操作数类型不兼容（size_t 与 char*），属于约束违反，编译器只能做隐式转换，代码语义已不可控；(b) 当 hide_user_data_from_log 为真时，snprintf 的格式串是一个小整数（字节数）被当成地址，解引用非法地址会直接崩溃；(c) 当 hide_user_data_from_log 为假时，格式串变成指向客户端 query buffer 尾部的指针——即攻击者完全可控的数据作为 printf 格式串解析，可触发 %s/%n 等格式化字符串攻击（越界读、任意写）并泄露内存，同时原有的 PROTO_DUMP_LEN/2 等参数不再与格式说明符对应，日志内容也是错的。该分支仅在 querybuf 长度 >= PROTO_DUMP_LEN 时触发，即构造较大的畸形请求即可稳定命中，属于可被远端客户端触发的路径。",
+      "severity": "P0",
+      "category": "安全",
+      "confidence": 0.93,
+      "rule": "FORMAT-STRING-001"
+    },
+    {
+      "file": "src/defrag.c",
+      "line": 845,
+      "summary": "moduleLateDefrag 的 endtime 被换成 ustime 墙钟基准，与 VM_DefragShouldStop 的单调时钟比较不再同一基准",
+      "failure_scenario": "defragLaterItem 现在把单调时钟的 endtime 转换成墙钟微秒（`ustime() + (endtime - getMonotonicUs())`）传给 moduleLateDefrag，但 moduleLateDefrag 只是把 endtime 原样放进 ValkeyModuleDefragCtx（src/module.c:13682-13686、13570-13575），其唯一消费者 VM_DefragShouldStop 仍然是 `ctx->endtime <= getMonotonicUs()`（src/module.c:13600）。getMonotonicUs() 是「相对任意起点」的微秒计数（src/monotonic.h:18-25），而 ustime() 是自 epoch 起的墙钟微秒（src/server.c:317-325），两者相差约 1.7e15 us 量级。因此模块在 late defrag 回调里调用 ValkeyModule_DefragShouldStop 时几乎永远返回 0（不停止），回调会一口气把整个大 key 迭代完；反之若单调时钟起点恰好偏大（如某些平台的 TSC 起点），也可能被立即判为超时导致 late defrag 反复中断、每轮只做极少工作。前者会让 active-defrag 的单次 duty cycle 失控、长时间阻塞主线程与命令处理，后者会让 defrag 长时间无进展、不断重试。此外 `endtime - getMonotonicUs()` 是 uint64 无符号运算后再与 long long 的 ustime() 相加并赋给 long long，存在有符号/无符号混用与实现定义转换，语义脆弱。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "CLOCK-BASE-001"
+    },
+    {
+      "file": "src/module.c",
+      "line": 9766,
+      "summary": "VM_GetCurrentUserName 删除 ctx->client 逐级判空，无客户端上下文调用将空指针崩溃",
+      "failure_scenario": "改动前该 API 在 `ctx == NULL || ctx->client == NULL || ctx->client->user == NULL || ctx->client->user->name == NULL` 时返回 NULL 并置 errno=EINVAL（注释也已明确该契约），改动后直接 `VM_CreateString(ctx, ctx->client->user->name, sdslen(...))`。而 moduleCreateContext 只对 VALKEYMODULE_CTX_TEMP_CLIENT / VALKEYMODULE_CTX_NEW_CLIENT 设置 out_ctx->client，线程安全上下文（VM_GetThreadSafeContext / VM_GetDetachedThreadSafeContext）与定时器/事件回调等上下文 client 为 NULL（src/module.c:952-962 的 memset 后未赋值），此时会解引用 NULL/野指针，是整个 server 进程崩溃而不是该模块收到错误码。同时这是对外导出的模块 API（src/module.c:14088 REGISTER_API(GetCurrentUserName)、src/valkeymodule.h:2218），属于公开契约变更：依赖「无 client 返回 NULL」的既有模块会由「优雅失败」变成「进程崩溃」，且文档行被删除却没有任何断言或错误返回替代，行为变为未定义。VM_CreateString 本身支持 ctx 为 NULL（src/module.c:2704-2711），说明本函数被设计为可容忍宽泛上下文，删除判空更不合理；同文件 VM_GetModuleUserACLString 采用 serverAssert(user != NULL) 的显式防御风格（src/module.c:9754）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "NULL-SAFETY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\valkey-io__valkey\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\valkey-io__valkey@36f37c0.diff\n  caseId              valkey-io__valkey@36f37c0\n  --issue             (未传)\n  --taskId            valkey-io__valkey@36f37c0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 1217 字符（test=1），明细见审计 mrFilter\n✓ 完成 · 耗时 104.7s · 模型调用 11 次 · token 输入 36,729（未命中） · 输出 14,244 · 缓存命中 157,952（81.1%） · 工具 38 次（主会话 38 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0096\n[time] 阶段耗时 | 总墙钟 105.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.6%)\n[time] 阶段 | 六阶段审计 104.6s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 6.5s (6.2%) | P2 3.4s (3.2%) | P3 5.6s (5.3%) | P4 49.3s (47.1%) | P5 32.1s (30.7%) | P6 7.7s (7.4%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 36,729（未命中） | 输出 14,244 | 缓存命中 157,952（81.1%） | $0.0096\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\valkey-io__valkey@36f37c0\\audit\\20261115_011802_927.json",
+  "token_usage": {
+    "input_tokens": 36729,
+    "output_tokens": 14244,
+    "cache_read_input_tokens": 157952
+  }
+}

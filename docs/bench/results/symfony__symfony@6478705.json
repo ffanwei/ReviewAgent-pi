@@ -1,0 +1,52 @@
+{
+  "instance_id": "symfony__symfony@6478705",
+  "repo": "symfony/symfony",
+  "base_commit": "e06b10c4f0088e2966c510d335531f7daed61915",
+  "head_commit": "647870557cf275de666557e552e11e9a295b9d4a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 106.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/Symfony/Component/TypeInfo/TypeFactoryTrait.php",
+      "line": 415,
+      "summary": "枚举判定重复 `\\is_object($value)`，且用 `is_subclass_of` 字符串类名替代 `instanceof`",
+      "failure_scenario": "新增分支写作 `\\is_object($value) && is_subclass_of($value::class, \\UnitEnum::class)`，而紧接着的下一个分支又重复判定 `\\is_object($value)`（line 416）。同一条件在同一 `match (true)` 内出现两次，读者需自行推断「枚举分支必须排在对象分支之前」这一隐式顺序约束；同时 `is_subclass_of($value::class, ...)` 走类名字符串解析，而此处 `$value` 必定是对象，`$value instanceof \\UnitEnum` 表达同一语义且更直接。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.72,
+      "rule": "READABILITY-002"
+    },
+    {
+      "file": "src/Symfony/Component/TypeInfo/TypeFactoryTrait.php",
+      "line": 415,
+      "summary": "定义了 `__invoke` 的枚举 case 仍会被推断为 callable，新增枚举分支不可达",
+      "failure_scenario": "`fromValue()` 在达到新增枚举分支之前，已在 line 395 用 `\\is_callable($value)` 提前返回 `Type::callable()`。PHP 允许枚举定义普通方法（包括 `__invoke`），因此同一个枚举中定义了 `__invoke` 的 case 会被推断成 `callable` 而不是 `Type::enum()`，与本次变更「枚举值应推断为枚举类型」的意图不一致，导致推断结果随枚举是否实现 `__invoke` 而漂移。当前可见测试（`TypeFactoryTest::createFromValueProvider`）只覆盖了 `DummyEnum`/`DummyBackedEnum` 这类不含 `__invoke` 的枚举，未覆盖该组合。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "src/Symfony/Component/TypeInfo/TypeFactoryTrait.php",
+      "line": 415,
+      "summary": "每个 backed enum 值的推断都会额外触发一次 `is_subclass_of` 与 `ReflectionEnum` 实例化",
+      "failure_scenario": "新增分支调用 `Type::enum($value::class)`，而 `Type::enum()` 内部会再次执行 `is_subclass_of($className, \\BackedEnum::class)`；对 backed 枚举还会 `new \\ReflectionEnum($className)` 并调用 `getBackingType()` 来推断 backing type。也就是说，`fromValue()` 对每个 backed 枚举值都会多做一次类名子类判定和一次反射对象构造，而选项信息（backing type）对同一枚举类是恒定不变的。若在批量数据推断（如递归遍历集合元素，line 434-437 会对每个元素调用 `self::fromValue()`）场景中反复调用，开销会被放大。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.4,
+      "rule": "PERFORMANCE-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\symfony__symfony\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\symfony__symfony@6478705.diff\n  caseId              symfony__symfony@6478705\n  --issue             (未传)\n  --taskId            symfony__symfony@6478705\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 810 字符（test=1），明细见审计 mrFilter\n✓ 完成 · 耗时 80.1s · 模型调用 16 次 · token 输入 23,984（未命中） · 输出 11,536 · 缓存命中 165,376（87.3%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0071\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 81.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.9%)\n[time] 阶段 | 六阶段审计 80.1s (98.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 14.5s (18.1%) | P2 2.1s (2.7%) | P3 6.0s (7.5%) | P4 25.7s (32.0%) | P5 22.9s (28.6%) | P6 8.9s (11.1%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 23,984（未命中） | 输出 11,536 | 缓存命中 165,376（87.3%） | $0.0071\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\symfony__symfony@6478705\\audit\\20261115_000835_410.json",
+  "token_usage": {
+    "input_tokens": 23984,
+    "output_tokens": 11536,
+    "cache_read_input_tokens": 165376
+  }
+}

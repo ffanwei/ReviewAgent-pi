@@ -206,6 +206,69 @@ export interface SplitLimits {
   readonly contextSummaryChars: number;
 }
 
+/**
+ * 语义分组（ADR-0094）：按文件元数据把变更文件分成检视组，每组一次
+ * rule-augmented review。v1 默认关闭；满足 ADR-0094 的五项验收门槛后才
+ * 考虑改默认。
+ */
+export interface GroupingLimits {
+  /** 是否启用分组检视；v1 默认 false */
+  readonly enabled: boolean;
+  /** 变更文件数严格大于该值时触发 */
+  readonly minFiles: number;
+  /** diff 字符数达到该值时触发（与 minFiles 取 OR） */
+  readonly minDiffChars: number;
+  /** 小 PR 跳过分组：文件数不超过该值且字符数不超过 smallPrMaxChars 时不分组 */
+  readonly smallPrMaxFiles: number;
+  /** 小 PR 跳过分组：diff 字符数不超过该值且文件数不超过 smallPrMaxFiles 时不分组 */
+  readonly smallPrMaxChars: number;
+  /** 每组最少文件数；小于该值的碎组并入相邻组 */
+  readonly minFilesPerGroup: number;
+  /** 每组最多文件数；超出按文件块继续切 */
+  readonly maxFilesPerShard: number;
+  /** 每组最大 diff 字符数；单文件块超限按整 hunk 截取 */
+  readonly maxCharsPerShard: number;
+  /** 单样本最多检视组数；超出合并相邻小组 */
+  readonly maxShards: number;
+  /** 每片最多保留 findings；0 = 不限制 */
+  readonly maxFindingsPerShard: number;
+  /** 全样本最多保留 findings；0 = 不限制 */
+  readonly maxFindingsPerRun: number;
+  /** 进程级检视组并发上限 */
+  readonly concurrency: number;
+  /** 分组 LLM 模型；null = 跟随 model.default */
+  readonly model: string | null;
+}
+
+
+/**
+ * 规则目录（ADR-0095）：内置 pack + 可选 pack + 用户声明式规则的统一配置。
+ */
+export interface RulesLimits {
+  /** 是否启用规则目录注入（ADR-0095）；v1 默认 false = 保持零漂移 */
+  readonly enabled: boolean;
+  /** 出厂内置规则包名，解析到 `rules/<name>/` */
+  readonly builtinPack: string;
+  /** 可选规则包名（如 `["ocr"]`）；空数组 = 不加载 */
+  readonly optionalPacks: readonly string[];
+  /** 每个检视组注入的规则文本上限；超出按用户 > 内置 > 其他截断 */
+  readonly maxRuleContextChars: number;
+  /** 同 id 规则冲突时，用户规则覆盖内置规则 */
+  readonly userOverrideBuiltin: boolean;
+}
+
+/**
+ * 异构技能执行面（ADR-0095）：黑盒技能包的次数与装载上限。
+ */
+export interface SkillsLimits {
+  /** 每个黑盒技能包每样本最多执行次数 */
+  readonly maxOpaqueSessionsPerSkill: number;
+  /** 每样本黑盒技能会话总数上限 */
+  readonly maxOpaqueSessionsPerSample: number;
+  /** 一次 run 最多装载的技能包数 */
+  readonly maxSkillsPerRun: number;
+}
+
 export interface ArchiveLimits {
   readonly maxArchiveBytes: number;
   readonly maxEntries: number;
@@ -234,6 +297,9 @@ export interface Limits {
   readonly findingScope: FindingScopeLimits;
   readonly boundary: BoundaryLimits;
   readonly split: SplitLimits;
+  readonly grouping: GroupingLimits;
+  readonly rules: RulesLimits;
+  readonly skills: SkillsLimits;
   readonly archive: ArchiveLimits;
   readonly micro: MicroLimits;
 }
@@ -272,6 +338,33 @@ export const DEFAULT_LIMITS: Limits = {
   findingScope: { enabled: true, contextLines: 10 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_000_000 },
   split: { enabled: true, maxShardChars: 120_000, maxShards: 12, contextSummaryChars: 8_000 },
+  grouping: {
+    enabled: false,
+    minFiles: 5,
+    minDiffChars: 51_200,
+    smallPrMaxFiles: 8,
+    smallPrMaxChars: 120_000,
+    minFilesPerGroup: 3,
+    maxFilesPerShard: 8,
+    maxCharsPerShard: 30_000,
+    maxShards: 12,
+    maxFindingsPerShard: 3,
+    maxFindingsPerRun: 30,
+    concurrency: 4,
+    model: null,
+  },
+  rules: {
+    enabled: false,
+    builtinPack: "general",
+    optionalPacks: [],
+    maxRuleContextChars: 6_000,
+    userOverrideBuiltin: true,
+  },
+  skills: {
+    maxOpaqueSessionsPerSkill: 1,
+    maxOpaqueSessionsPerSample: 3,
+    maxSkillsPerRun: 8,
+  },
   archive: {
     maxArchiveBytes: 8 * 1024 * 1024,
     maxEntries: 2_000,
@@ -742,7 +835,7 @@ const MCP_REPORT_KEYS = [
 const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
 const MCP_QUEUE_KEYS = ["maxEvents"] as const;
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "grouping", "rules", "skills", "archive", "micro"] as const;
 const LOOP_KEYS = ["maxRounds"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -772,6 +865,23 @@ const MR_FILTER_KEYS = ["excludeGlobs", "includeRegex", "excludeRegex"] as const
 const FINDING_SCOPE_KEYS = ["enabled", "contextLines"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
 const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars"] as const;
+const RULES_KEYS = ["enabled", "builtinPack", "optionalPacks", "maxRuleContextChars", "userOverrideBuiltin"] as const;
+const SKILLS_KEYS = ["maxOpaqueSessionsPerSkill", "maxOpaqueSessionsPerSample", "maxSkillsPerRun"] as const;
+const GROUPING_KEYS = [
+  "enabled",
+  "minFiles",
+  "minDiffChars",
+  "smallPrMaxFiles",
+  "smallPrMaxChars",
+  "minFilesPerGroup",
+  "maxFilesPerShard",
+  "maxCharsPerShard",
+  "maxShards",
+  "maxFindingsPerShard",
+  "maxFindingsPerRun",
+  "concurrency",
+  "model",
+] as const;
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
 const MICRO_KEYS = [
   "skillBashOutputChars",
@@ -980,6 +1090,132 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     ),
   };
 
+  const groupingObj = optionalObject(limits.grouping, "limits.grouping", warnings);
+  assertKnownKeys(groupingObj, GROUPING_KEYS, "limits.grouping", warnings);
+  const groupingModel = optionalString(groupingObj.model, "limits.grouping.model");
+  const grouping: GroupingLimits = {
+    enabled: boolOr(groupingObj.enabled, "limits.grouping.enabled", DEFAULT_LIMITS.grouping.enabled),
+    minFiles: intOr(groupingObj.minFiles, "limits.grouping.minFiles", 1, 10_000, DEFAULT_LIMITS.grouping.minFiles),
+    minDiffChars: intOr(
+      groupingObj.minDiffChars,
+      "limits.grouping.minDiffChars",
+      0,
+      100_000_000,
+      DEFAULT_LIMITS.grouping.minDiffChars,
+    ),
+    smallPrMaxFiles: intOr(
+      groupingObj.smallPrMaxFiles,
+      "limits.grouping.smallPrMaxFiles",
+      0,
+      10_000,
+      DEFAULT_LIMITS.grouping.smallPrMaxFiles,
+    ),
+    smallPrMaxChars: intOr(
+      groupingObj.smallPrMaxChars,
+      "limits.grouping.smallPrMaxChars",
+      0,
+      100_000_000,
+      DEFAULT_LIMITS.grouping.smallPrMaxChars,
+    ),
+    minFilesPerGroup: intOr(
+      groupingObj.minFilesPerGroup,
+      "limits.grouping.minFilesPerGroup",
+      1,
+      64,
+      DEFAULT_LIMITS.grouping.minFilesPerGroup,
+    ),
+    maxFilesPerShard: intOr(
+      groupingObj.maxFilesPerShard,
+      "limits.grouping.maxFilesPerShard",
+      1,
+      64,
+      DEFAULT_LIMITS.grouping.maxFilesPerShard,
+    ),
+    maxCharsPerShard: intOr(
+      groupingObj.maxCharsPerShard,
+      "limits.grouping.maxCharsPerShard",
+      1_000,
+      1_000_000,
+      DEFAULT_LIMITS.grouping.maxCharsPerShard,
+    ),
+    maxShards: intOr(groupingObj.maxShards, "limits.grouping.maxShards", 1, 64, DEFAULT_LIMITS.grouping.maxShards),
+    maxFindingsPerShard: intOr(
+      groupingObj.maxFindingsPerShard,
+      "limits.grouping.maxFindingsPerShard",
+      0,
+      1_000,
+      DEFAULT_LIMITS.grouping.maxFindingsPerShard,
+    ),
+    maxFindingsPerRun: intOr(
+      groupingObj.maxFindingsPerRun,
+      "limits.grouping.maxFindingsPerRun",
+      0,
+      10_000,
+      DEFAULT_LIMITS.grouping.maxFindingsPerRun,
+    ),
+    concurrency: intOr(
+      groupingObj.concurrency,
+      "limits.grouping.concurrency",
+      1,
+      16,
+      DEFAULT_LIMITS.grouping.concurrency,
+    ),
+    model: groupingModel !== undefined && groupingModel.trim() !== "" ? groupingModel.trim() : null,
+  };
+  if (grouping.minFilesPerGroup > grouping.maxFilesPerShard) {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: limits.grouping.minFilesPerGroup must be <= limits.grouping.maxFilesPerShard`,
+    );
+  }
+
+  const rulesObj = optionalObject(limits.rules, "limits.rules", warnings);
+  assertKnownKeys(rulesObj, RULES_KEYS, "limits.rules", warnings);
+  const rules: RulesLimits = {
+    enabled: boolOr(rulesObj.enabled, "limits.rules.enabled", DEFAULT_LIMITS.rules.enabled),
+    builtinPack:
+      optionalString(rulesObj.builtinPack, "limits.rules.builtinPack")?.trim() ||
+      DEFAULT_LIMITS.rules.builtinPack,
+    optionalPacks: parseStringList(rulesObj.optionalPacks, "limits.rules.optionalPacks", DEFAULT_LIMITS.rules.optionalPacks),
+    maxRuleContextChars: intOr(
+      rulesObj.maxRuleContextChars,
+      "limits.rules.maxRuleContextChars",
+      1_000,
+      100_000,
+      DEFAULT_LIMITS.rules.maxRuleContextChars,
+    ),
+    userOverrideBuiltin: boolOr(
+      rulesObj.userOverrideBuiltin,
+      "limits.rules.userOverrideBuiltin",
+      DEFAULT_LIMITS.rules.userOverrideBuiltin,
+    ),
+  };
+
+  const skillsObj = optionalObject(limits.skills, "limits.skills", warnings);
+  assertKnownKeys(skillsObj, SKILLS_KEYS, "limits.skills", warnings);
+  const skills: SkillsLimits = {
+    maxOpaqueSessionsPerSkill: intOr(
+      skillsObj.maxOpaqueSessionsPerSkill,
+      "limits.skills.maxOpaqueSessionsPerSkill",
+      1,
+      16,
+      DEFAULT_LIMITS.skills.maxOpaqueSessionsPerSkill,
+    ),
+    maxOpaqueSessionsPerSample: intOr(
+      skillsObj.maxOpaqueSessionsPerSample,
+      "limits.skills.maxOpaqueSessionsPerSample",
+      1,
+      64,
+      DEFAULT_LIMITS.skills.maxOpaqueSessionsPerSample,
+    ),
+    maxSkillsPerRun: intOr(
+      skillsObj.maxSkillsPerRun,
+      "limits.skills.maxSkillsPerRun",
+      1,
+      64,
+      DEFAULT_LIMITS.skills.maxSkillsPerRun,
+    ),
+  };
+
   const archiveObj = optionalObject(limits.archive, "limits.archive", warnings);
   assertKnownKeys(archiveObj, ARCHIVE_KEYS, "limits.archive", warnings);
   const archive: ArchiveLimits = {
@@ -1001,7 +1237,7 @@ function parseLimits(raw: unknown, warnings: string[]): Limits {
     progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
   };
 
-  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, archive, micro };
+  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, grouping, rules, skills, archive, micro };
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,6 +1259,34 @@ function parseExcludeGlobs(value: unknown): readonly string[] {
 }
 
 /** glob 列表解析（`codeintel.excludeGlobs` 与 `limits.mrFilter.excludeGlobs` 共用） */
+function parseStringList(
+  value: unknown,
+  label: string,
+  fallback: readonly string[],
+): readonly string[] {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (!Array.isArray(value)) {
+    throw new ConfigError(
+      `${CONFIG_FILE_NAME}: ${label} must be an array of strings (got ${describe(value)})`,
+    );
+  }
+  const items: string[] = [];
+  value.forEach((entry, index) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new ConfigError(
+        `${CONFIG_FILE_NAME}: ${label}[${String(index)}] must be a non-empty string (got ${describe(entry)})`,
+      );
+    }
+    const item = entry.trim();
+    if (!items.includes(item)) {
+      items.push(item);
+    }
+  });
+  return items;
+}
+
 function parseGlobList(
   value: unknown,
   label: string,
@@ -1890,6 +2154,37 @@ ${excludeGlobLines}
       "maxShardChars": 120000,           // 单片字符目标（约 1900–3500 变更行；峰值上下文约 8 万 tokens）。
       "maxShards": 12,                   // 片数上限（成本护栏）；1000000/120000 最坏 9 片，12 片留余量。
       "contextSummaryChars": 8000        // 每片附带的「其他文件变更摘要」字符上限（不是证据源）。
+    },
+    // 语义分组（ADR-0094）：按文件元数据把变更文件分成检视组，每组一次规则增强检视。
+    // v1 默认关闭；满足 ADR-0094 的五项验收门槛前不要改默认。
+    "grouping": {
+      "enabled": false,                  // 是否启用分组检视；false = 保持单遍/既有分片行为。
+      "minFiles": 5,                     // 变更文件数严格大于该值时触发分组。
+      "minDiffChars": 51200,             // diff 字符数达到该值时触发（与 minFiles 取 OR；50KB）。
+      "smallPrMaxFiles": 8,              // 小 PR 跳过：文件数不超过该值且字符数不超过 smallPrMaxChars 时不分组。
+      "smallPrMaxChars": 120000,         // 小 PR 跳过：diff 字符数不超过该值且文件数不超过 smallPrMaxFiles 时不分组（120KB）。
+      "minFilesPerGroup": 3,             // 每组最少文件数；1–2 个文件的碎组并入相邻组。
+      "maxFilesPerShard": 8,             // 每组最多文件数；超出按文件块继续切。
+      "maxCharsPerShard": 30000,         // 每组最大 diff 字符数；单文件块超限按整 hunk 截取。
+      "maxShards": 12,                   // 单样本最多组数；超出合并相邻小组，不丢文件。
+      "maxFindingsPerShard": 3,          // 每片最多保留 findings；0 = 不限制。
+      "maxFindingsPerRun": 30,           // 全样本最多保留 findings；0 = 不限制。
+      "concurrency": 4,                  // 进程级组并发上限；不是每样本 × 组数。
+      "model": null                      // 分组 LLM 模型；null = 跟随 model.default。
+    },
+    // 规则目录（ADR-0095）：内置 pack + 可选 pack + 用户声明式规则的统一配置。
+    "rules": {
+      "enabled": false,                  // 是否启用规则目录注入；v1 默认 false = 保持现有行为。
+      "builtinPack": "general",          // 出厂内置规则包名，解析到 rules/general/。
+      "optionalPacks": [],               // 可选规则包名（如 ["ocr"]）；空数组 = 不加载。
+      "maxRuleContextChars": 6000,       // 每个检视组注入的规则文本上限；超出按用户 > 内置 > 其他截断。
+      "userOverrideBuiltin": true        // 同 id 规则冲突时，用户规则覆盖内置规则。
+    },
+    // 异构技能执行面（ADR-0095）：黑盒技能包的次数与装载上限。
+    "skills": {
+      "maxOpaqueSessionsPerSkill": 1,    // 每个黑盒技能包每样本最多执行次数。
+      "maxOpaqueSessionsPerSample": 3,   // 每样本黑盒技能会话总数上限。
+      "maxSkillsPerRun": 8               // 一次 run 最多装载的技能包数。
     },
     // 规则包 zip 解压前的审计上限。
     "archive": {

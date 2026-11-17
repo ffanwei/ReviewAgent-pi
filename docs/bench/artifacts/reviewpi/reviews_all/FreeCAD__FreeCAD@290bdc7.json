@@ -1,0 +1,341 @@
+{
+  "generatedAt": "2026-11-15T05:48:38.327Z",
+  "runId": "20261115_053951_020",
+  "source": "mr",
+  "caseId": "FreeCAD__FreeCAD@290bdc7",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/App/PropertyStandard.cpp",
+      "line": 605,
+      "title": "getPyPathValue 新增的失败返回未被 getPathValue 处理，属性路径取值可能拿到无效 Py::Object",
+      "description": "本次改动在 PropertyEnumeration::getPyPathValue 中新增了「枚举无效时返回 false」的分支（_enum.maxValue() < 0，即 enumArray 为空时 maxValue() 返回 -1），但同类中的 PropertyEnumeration::getPathValue 仍然沿用旧的调用方式：声明一个空的 Py::Object res，调用 getPyPathValue(path, res) 后不检查 bool 返回值，直接把 res 交给 pyObjectToAny(res, false)。于是当枚举为空时，res 仍是空指针对象，pyObjectToAny 中 value.isNone()（ptr() != Py_None，判为 false）会继续执行并取 ptr() 得到 nullptr，最终把一个无效对象包装进 boost::any 返回给表达式/属性路径求值链路。对比 src/App/ObjectIdentifier.cpp:1978 的 `if (rs.resolvedProperty->getPyPathValue(*this, res))` 可见该接口约定要求调用方处理 false，只有 getPathValue 漏掉了。影响：对含空枚举的属性做 .Enum/.All 路径取值（表达式引擎、Python 侧属性路径访问）时可能得到无效对象而非报错，轻则表达式结果异常，重则在后续解引用空 PyObject 时崩溃。",
+      "evidence": [
+        "src/App/PropertyStandard.cpp:604-607 新增：`auto maxEnumValue = _enum.maxValue(); if (maxEnumValue < 0) { return false;  // The enum is invalid }`",
+        "src/App/PropertyStandard.cpp:584-588 getPathValue：`Py::Object res; getPyPathValue(path, res); return pyObjectToAny(res, false);` —— 未检查返回值",
+        "src/App/ObjectIdentifier.cpp:1978：`if (rs.resolvedProperty->getPyPathValue(*this, res))` —— 说明返回 false 是需要调用方处理的契约",
+        "src/App/Enumeration.cpp:260-267：`maxValue()` 在 `enumArray` 为空时返回 -1",
+        "src/App/Expression.cpp:449-457 pyObjectToAny：仅用 `value.isNone()` 判断后即取 `value.ptr()`"
+      ],
+      "rule": "CORRECTNESS-ENUM-001",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 新增的失败返回路径未被同一类中的调用方适配（契约变更遗漏调用点）。影响评估：空枚举属性的 .Enum/.All 路径取值会把未初始化的 Py::Object 送入 pyObjectToAny，产生无效对象/潜在空指针解引用，属于低频但难排查的求值错误。",
+        "suggestion": "[重构思路] 让 getPathValue 处理 getPyPathValue 的返回值：失败时返回空的 any（与 pyObjectToAny 对 None 的处理一致），并考虑在失败时抛出可读的 Base::ValueError 便于定位。代码示例：\n```cpp\nif (p == \".Enum\" || p == \".All\") {\n    Base::PyGILStateLocker lock;\n    Py::Object res;\n    if (!getPyPathValue(path, res)) {\n        return {};  // 或者 FC_THROWM(Base::ValueError, \"Property has no enumeration values\");\n    }\n    return pyObjectToAny(res, false);\n}\n```",
+        "subcategory": "错误返回值未处理"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "cMake/FindOCC.cmake",
+      "line": 12,
+      "title": "取消 OpenCASCADE 最低版本约束后未设置新下限，可用不支持的 OCC 版本配置成功",
+      "description": "原先是 find_package(OpenCASCADE \"7.5.1\" CONFIG QUIET)，本 MR 改为不带版本的 find_package(OpenCASCADE CONFIG QUIET)，从而支持更旧的 OCCT。但整个 FindOCC.cmake 里再没有任何版本下限校验：OCC_VERSION_STRING 只在第 70-85 行被解析出来用于打印，第 90 行的 find_package_handle_standard_args 也不带版本参数。而代码中实际提供兼容分支的最低边界是 OCCT 7.4（src/Mod/Part/App/OpenCascadeAll.h:177-179 的 `#if OCC_VERSION_HEX < 0x070400` 才补 BRepMesh.hxx、src/Mod/Import/App/StepShape.cpp:72 的 `#if OCC_VERSION_HEX < 0x070401`、以及新增的 ProgressIndicator 只覆盖 `< 0x070500`）。影响：在装有 OCCT 7.0~7.3 的机器上 CMake 配置会成功，随后在编译阶段产生大量与版本相关的模板/头文件错误，错误信息远离真正根因，显著提高用户排查成本；同时 OCC_VERSION_STRING 万一解析失败（空字符串）时，`NOT OCC_VERSION_STRING VERSION_LESS 7.5.0`（第 126 行）会静默判定为「不支持」，导致 TKRWMesh 被漏链接而出现链接期错误。",
+      "evidence": [
+        "cMake/FindOCC.cmake:12 改动：`find_package(OpenCASCADE CONFIG QUIET)`（原为 `find_package(OpenCASCADE \"7.5.1\" CONFIG QUIET)`）",
+        "cMake/FindOCC.cmake:84-90：OCC_VERSION_STRING 仅被赋值并用于 `find_package_handle_standard_args(OCC REQUIRED_VARS OCC_INCLUDE_DIR VERSION_VAR OCC_VERSION_STRING)`，无版本下限",
+        "src/Mod/Part/App/OpenCascadeAll.h:177-179 新增 `#if OCC_VERSION_HEX < 0x070400  # include <BRepMesh.hxx>  #endif`，表明兼容下限为 7.4",
+        "src/Mod/Import/App/StepShape.cpp:72 新增 `#if OCC_VERSION_HEX < 0x070401`，另一处阈值为 7.4.1",
+        "cMake/FindOCC.cmake:126-128 `if (NOT OCC_VERSION_STRING VERSION_LESS 7.5.0)` 依赖 OCC_VERSION_STRING 已正确解析"
+      ],
+      "rule": "BUILD-OCC-VERSION-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 依赖版本约束放宽后缺少新的下限校验（配置期成功、编译期失败）。影响评估：旧 OCC 环境下构建失败点被推迟且报错信息误导；版本字符串解析异常时还会静默漏链接 TKRWMesh。",
+        "suggestion": "[重构思路] 明确声明支持下限（7.4）并在配置期校验，同时在版本不可判定时给出显式警告而不是静默走旧分支。代码示例：\n```cmake\nfind_package(OpenCASCADE 7.4 CONFIG QUIET)\n...\nif (OCC_VERSION_STRING AND OCC_VERSION_STRING VERSION_LESS 7.4.0)\n    message(FATAL_ERROR \"OpenCASCADE ${OCC_VERSION_STRING} is too old, 7.4.0 or newer is required\")\nendif ()\nif (NOT OCC_VERSION_STRING)\n    message(WARNING \"Cannot determine OpenCASCADE version, assuming >= 7.5\")\nendif ()\n```",
+        "subcategory": "依赖版本约束"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/Mod/Import/App/ReaderStep.cpp",
+      "line": 70,
+      "title": "新增的进度条 Scope 不是异常安全的，Transfer 抛异常时 EndScope 被跳过",
+      "description": "三处新增的进度指示代码都是「NewScope/Show … 业务调用 … EndScope」这种裸配对写法：ReaderStep.cpp 第 69-78 行在 aReader.Transfer(hDoc) 前后、ReaderIges.cpp 与 src/Mod/Part/App/ImportStep.cpp 的对应位置同样如此。Part::ProgressIndicator 内部持有 Base::SequencerLauncher（src/Mod/Part/App/ProgressIndicator.cpp:55-58 构造时 new Base::SequencerLauncher 并 SetScale），NewScope/EndScope 必须成对调用才能让 sequencer 的作用域正确出栈。一旦 aReader.Transfer/TransferRoot 抛异常（OCC 的 Standard_Failure，或上层转为 Base::FileException），EndScope 不会执行，sequencer 作用域泄漏，后续导入/其它模块的进度显示可能出现计数错乱或进度条卡住。影响收敛在 OCC < 7.5 的构建上，但正是本次改动新增的代码路径。",
+      "evidence": [
+        "src/Mod/Import/App/ReaderStep.cpp:69-78：`#if OCC_VERSION_HEX < 0x070500 ... pi->NewScope(100, \"Reading STEP file...\"); pi->Show(); #endif aReader.Transfer(hDoc); #if ... pi->EndScope(); #endif`",
+        "src/Mod/Import/App/ReaderIges.cpp:72-80 与 src/Mod/Part/App/ImportStep.cpp:85-101 使用相同的非 RAII 配对写法",
+        "src/Mod/Part/App/ProgressIndicator.cpp:55-58 构造函数中 `myProgress(new Base::SequencerLauncher(\"\", theMaxVal))` 并 `SetScale(0, theMaxVal, 1)`，依赖作用域配对",
+        "src/Mod/Part/App/ProgressIndicator.cpp:71-78 Show() 中直接使用 `myProgress->setText/setProgress`"
+      ],
+      "rule": "RESOURCE-SCOPE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 非 RAII 的资源作用域配对，异常路径泄漏。影响评估：OCC < 7.5 下导入 STEP/IGES 失败时 sequencer 作用域未出栈，进度显示与后续操作状态可能异常。",
+        "suggestion": "[重构思路] 用小的 RAII 包装保证 EndScope 一定执行（即使抛异常），或在 catch 中补 EndScope。代码示例：\n```cpp\n#if OCC_VERSION_HEX < 0x070500\nstruct ScopeGuard {\n    Handle(Message_ProgressIndicator) pi;\n    ~ScopeGuard() { pi->EndScope(); }\n} guard {new Part::ProgressIndicator(100)};\nguard.pi->NewScope(100, \"Reading STEP file...\");\nguard.pi->Show();\naReader.WS()->MapReader()->SetProgress(guard.pi);\n#endif\naReader.Transfer(hDoc);\n```",
+        "subcategory": "异常安全与资源释放"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Doc/CONTRIBUTORS",
+      "line": 23,
+      "title": "与主题无关地删除了贡献者名单中的一行",
+      "description": "本 MR 的主题是 OCCT 版本兼容与 Python 绑定生成迁移，但同时在 src/Doc/CONTRIBUTORS 中删除了 `Benjamin Nauck (hyarion)` 一行。该改动与其它任何变更无关联，属于夹带的无关修改，会污染变更历史、干扰 blame 追溯，也容易在评审中被忽略而造成贡献者署名丢失（项目文档类文件的改动通常需要单独说明理由）。",
+      "evidence": [
+        "src/Doc/CONTRIBUTORS 删除行：`-Benjamin Nauck (hyarion)`（位于 `Benjamin Bræstrup Sayoc` 与 `Bernd Hahnebach` 之间）",
+        "该 MR 其余改动集中在 cMake/FindOCC.cmake、src/App 绑定生成、src/Mod/Import 与 src/Mod/Part 的 OCC 版本分支，与贡献者名单无关"
+      ],
+      "rule": "HYGIENE-UNRELATED-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 夹带无关改动（文档/署名）。影响评估：变更意图不清晰，署名删除若属误操作会造成贡献者记录丢失，且难以通过 blame 还原。",
+        "suggestion": "[重构思路] 从本 MR 中移除该行删除；如确需调整，另开独立提交并在提交信息中说明原因。代码示例：`git checkout HEAD~ -- src/Doc/CONTRIBUTORS`（保留原文件内容）。",
+        "subcategory": "无关改动夹带"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Mod/Part/App/ImportStep.cpp",
+      "line": 94,
+      "title": "在同一 MR 中新增多段被注释掉的调试/实验代码",
+      "description": "ImportStep.cpp 的改动除了加入 OCC 版本分支外，还新增了若干行被注释掉的调试与实验代码：第 94 行 `//aReader.PrintCheckTransfer (failsonly, IFSelect_ItemsByEntity);`，第 110-113 行附近的 `//Handle(StepData_StepModel) Model = ...`、`//Handle(XSControl_WorkSession) ws = ...`、`//Handle(XSControl_TransferReader) tr = ...`、`//ReadColors(aReader.WS(), hash_col);`、`//ReadNames(aReader.WS());`，以及第 151 行附近的 `//Base::Console().Message(\"Set color to shape\\n\");`、第 165 行附近的 `//Handle(Standard_Transient) ent = tr->EntityFromShapeResult(aShell, 3);`。这些内容与本次「兼容旧版 OCC」的目标无关，属于开发过程中的临时手段。影响：死代码会误导后续读者以为存在被禁用的功能路径，也增加了 diff 噪音与维护成本。",
+      "evidence": [
+        "src/Mod/Part/App/ImportStep.cpp:94 新增 `+    //aReader.PrintCheckTransfer (failsonly, IFSelect_ItemsByEntity);`",
+        "src/Mod/Part/App/ImportStep.cpp 新增 `+        //Handle(StepData_StepModel) Model = aReader.StepModel();` 与 `+        //ReadColors(aReader.WS(), hash_col);`、`+        //ReadNames(aReader.WS());`",
+        "src/Mod/Part/App/ImportStep.cpp 新增 `+                        //Base::Console().Message(\"Set color to shape\\n\");`",
+        "src/Mod/Part/App/ImportStep.cpp 新增 `+                //Handle(Standard_Transient) ent = tr->EntityFromShapeResult(aShell, 3);`"
+      ],
+      "rule": "READABILITY-DEADCODE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 提交中夹带被注释掉的调试代码。影响评估：降低可读性、误导后来者，且与 MR 主题无关，增大评审与回溯成本。",
+        "suggestion": "[重构思路] 删除这些注释行；如确实需要保留实验线索，放到 issue/PR 描述或跟踪任务中，而不是源码注释。代码示例：直接把 `//ReadColors(aReader.WS(), hash_col);` 等行删除，保留 `std::map<int, Quantity_Color> hash_col;` 的实际使用逻辑即可。",
+        "subcategory": "死代码与注释残留"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/App/DocumentPy.xml",
+      "line": 298,
+      "title": "新 XML 中 Attribute 的 Parameter 名称拼写错误（ToplogicalSortedObjects）",
+      "description": "新增的 src/App/DocumentPy.xml 在声明 `TopologicalSortedObjects` 属性时，Parameter 名称被写成 `ToplogicalSortedObjects`（少了一个字母 o），与 Attribute 名称及仓库中原有桩文件 src/App/Document.pyi 第 22 行的 `TopologicalSortedObjects: Final[List[DocumentObject]]` 不一致。按 src/Tools/bindings/templates/templateClassPyExport.py 的生成规则，GetSetDef 名称与 getter 回调使用 Attribute 的 Name（对应 DocumentPyImp.cpp:862 的 getTopologicalSortedObjects），而 setter 调用的是 `set@i.Parameter...`/使用 Parameter 类型（第 728-731 行）；本属性是 ReadOnly，因此当前不会产生运行期错误，但该拼写错误会污染生成产物命名、妨碍按名称检索，并且一旦该属性将来变为可写或生成器改用 Parameter 名称，就会立刻变成真实缺陷。",
+      "evidence": [
+        "src/App/DocumentPy.xml:294-299 `<Attribute Name=\"TopologicalSortedObjects\" ReadOnly=\"true\">` 与 `<Parameter Name=\"ToplogicalSortedObjects\" Type=\"List\" />` 名称不一致",
+        "src/App/Document.pyi:22 既有桩中为 `TopologicalSortedObjects: Final[List[DocumentObject]] = []`",
+        "src/App/DocumentPyImp.cpp:862 `const Py::List DocumentPy::getTopologicalSortedObjects()` 与 Attribute Name 对应",
+        "src/Tools/bindings/templates/templateClassPyExport.py:571-578 GetterSetter 使用 Attribute 的 Name；:728-731 setter 依赖 Parameter.Type"
+      ],
+      "rule": "NAMING-TYPO-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 元模型内部的命名拼写不一致（Attribute Name ≠ Parameter Name）。影响评估：当前因 ReadOnly 无运行期影响，但会降低生成代码与文档的可检索性，并在语义变化时演变为真实缺陷。",
+        "suggestion": "[重构思路] 将 Parameter Name 修正为与 Attribute Name 一致，并顺带修正其它明显不一致项（例如同文件中 `Name`/`Document` 属性用 Type=\"Object\" 表达字符串/对象时的类型标注）。代码示例：\n```xml\n<Attribute Name=\"TopologicalSortedObjects\" ReadOnly=\"true\">\n  <Documentation>\n    <UserDocu>The list of objects in this document in topological sorted order</UserDocu>\n  </Documentation>\n  <Parameter Name=\"TopologicalSortedObjects\" Type=\"List\" />\n</Attribute>\n```",
+        "subcategory": "命名拼写不一致"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/Import/App/WriterGltf.cpp",
+      "line": 49,
+      "title": "OCC < 7.5 分支下 utf8Name / name8bit 成为无用计算与未使用变量",
+      "description": "WriterGltf::write 在第 48-49 行无条件计算 `std::string utf8Name = file.filePath();` 与 `std::string name8bit = Part::encodeFilename(utf8Name);`，而这两个变量唯一的用途落在新增的 `#if OCC_VERSION_HEX >= 0x070500` 块内（第 51-64 行构造 RWGltf_CafWriter）。在 OCC < 7.5 的构建里该块整体被排除，else 分支只有 `boost::ignore_unused(hDoc);` 和 throw，两个 string 因此既未使用也不在 ignore_unused 覆盖范围内。影响：对 OCC 7.4 构建而言这是纯属无效的文件名转码开销，并且部分编译器（如 clang）会报 -Wunused-variable，在启用项目 FREECAD_WARN_ERROR 开关（src/App/CMakeLists.txt:367-369）的配置下会演变为构建失败。",
+      "evidence": [
+        "src/Mod/Import/App/WriterGltf.cpp:48-49：`std::string utf8Name = file.filePath();` / `std::string name8bit = Part::encodeFilename(utf8Name);` 位于 `#if` 之外",
+        "src/Mod/Import/App/WriterGltf.cpp:51 `#if OCC_VERSION_HEX >= 0x070500`，第 53 行才使用 `name8bit.c_str()`",
+        "src/Mod/Import/App/WriterGltf.cpp:65-68 `#else boost::ignore_unused(hDoc); throw Base::RuntimeError(\"gITF support requires OCCT 7.5.0 or later\");` —— 未覆盖上述两个局部变量",
+        "src/App/CMakeLists.txt:367-369 存在 `if (FREECAD_WARN_ERROR) target_compile_warn_error(FreeCADApp)`，说明构建可开启警告即错误"
+      ],
+      "rule": "PORTABILITY-WARN-001",
+      "confidence": 0.42,
+      "tips": {
+        "review": "[缺陷类型] 条件编译后遗留的无用计算/未使用变量。影响评估：OCC < 7.5 构建多做一次无用转码，并在启用 -Werror 的编译器/配置下存在构建失败风险（并非所有编译器都会对该类型报警）。",
+        "suggestion": "[重构思路] 把变量定义一并移入受支持的分支，保证每个编译分支都无冗余计算与未使用变量。代码示例：\n```cpp\n#if OCC_VERSION_HEX >= 0x070500\n    std::string utf8Name = file.filePath();\n    std::string name8bit = Part::encodeFilename(utf8Name);\n    TColStd_IndexedDataMapOfStringString aMetadata;\n    RWGltf_CafWriter aWriter(name8bit.c_str(), file.hasExtension(\"glb\"));\n    // ...\n#else\n    boost::ignore_unused(hDoc);\n    throw Base::RuntimeError(\"gITF support requires OCCT 7.5.0 or later\");\n#endif\n```",
+        "subcategory": "条件编译遗留变量"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/Part/App/HLRBRep/HLRBRep_PolyAlgoPyImp.cpp",
+      "line": 248,
+      "title": "新增 Angle 属性的版本阈值与其它改动不一致，且 getter 抛异常而 setter 静默忽略",
+      "description": "新增的 getAngle/setAngle 使用 `#if OCC_VERSION_HEX <= 0x070400` 判断可用性，即仅在 OCCT 恰为 7.4.0 时走实现分支；7.4.1/7.4.2 等版本会落到 else 分支，读取时直接抛 Py::RuntimeError(\"Function has been removed with OCC 7.5\")。这与同一 MR 中其它阈值风格不一致：StepShape.cpp 使用 `< 0x070401`，OpenCascadeAll.h 使用 `< 0x070400`，其余绝大多数新增分支使用 `< 0x070500`。同时两个访问器行为不对称：getAngle 在 OCC >= 7.5 抛异常，setAngle 则 `(void)arg;` 静默忽略写入，而 HLRBRep_PolyAlgoPy.xml 无条件声明了 `<Attribute Name=\"Angle\">` 且 UserDocu 为空。影响：属性在新版 OCC 上表现为「读即抛异常、写无任何效果且无提示」，`hasattr()` 语义被破坏，用户难以判断该属性究竟是否可用；同时多套版本阈值并存使后续维护者无法判断每个分支的真实边界。",
+      "evidence": [
+        "src/Mod/Part/App/HLRBRep/HLRBRep_PolyAlgoPyImp.cpp:246-253 `#if OCC_VERSION_HEX <= 0x070400` … `#else throw Py::RuntimeError(\"Function has been removed with OCC 7.5\");`",
+        "src/Mod/Part/App/HLRBRep/HLRBRep_PolyAlgoPyImp.cpp:255-262 `setAngle` 的 else 分支只有 `(void)arg;`，写入被静默忽略",
+        "src/Mod/Part/App/HLRBRep/HLRBRep_PolyAlgoPy.xml:161-166 无条件新增 `<Attribute Name=\"Angle\">`，`<UserDocu></UserDocu>` 为空",
+        "阈值不一致对照：src/Mod/Import/App/StepShape.cpp:72 `#if OCC_VERSION_HEX < 0x070401`；src/Mod/Part/App/OpenCascadeAll.h:177 `#if OCC_VERSION_HEX < 0x070400`；src/Mod/Import/App/WriterGltf.cpp:51 与 ReaderStep.cpp:69 等均为 `< 0x070500`"
+      ],
+      "rule": "API-VERSION-CONSISTENCY-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 同一 MR 内版本阈值不一致 + getter/setter 行为不对称（读抛异常、写静默忽略）。影响评估：7.4 小版本间行为分裂；新版 OCC 上属性访问语义被破坏，写入无效却无任何提示，易导致难以定位的行为差异。",
+        "suggestion": "[重构思路] 统一阈值语义（建议与其它分支对齐到 `< 0x070500`），并让 getter/setter 行为一致：要么都抛明确的异常类型，要么 getter 返回默认值、setter 抛异常；同时在 XML 的 UserDocu 中标注该属性在新版 OCCT 不可用。代码示例：\n```cpp\nPy::Float HLRBRep_PolyAlgoPy::getAngle() const\n{\n#if OCC_VERSION_HEX < 0x070500\n    return Py::Float(getHLRBRep_PolyAlgoPtr()->Angle());\n#else\n    throw Py::AttributeError(\"Angle is not available with OCCT >= 7.5\");\n#endif\n}\n```",
+        "subcategory": "版本兼容一致性"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "性能",
+      "file": "src/Mod/Part/App/TopoShapeExpansion.cpp",
+      "line": 5748,
+      "title": "布尔运算的并行阈值判断被注释掉，并行与全局 OCCT 线程开关被无条件开启",
+      "description": "makeElementBoolean 中原本的 `PartParams::getParallelRunThreshold() > 0` 条件判断被整段注释，改为对任何布尔运算都无条件执行 `mk->SetRunParallel(Standard_True)` 与 `OSD_Parallel::SetUseOcctThreads(Standard_True)`。前者使所有布尔运算（包括很小、单核更快的模型）都走多线程路径，后者是进程级全局开关，会把整个 OCCT 并行后端切到 Occt 线程实现，影响本进程内所有后续并行算法；与此同时判断条件的注释残骸与被注释的括号使代码语义不可读，`#else` 分支的注释（“我们不会构建这么老的 OCCT”）与仍保留的分支代码自相矛盾，并且用 `true` 而非 `Standard_True`。",
+      "evidence": [
+        "src/Mod/Part/App/TopoShapeExpansion.cpp:5745-5750 — `#if OCC_VERSION_HEX >= 0x070500` / `// if (PartParams::getParallelRunThreshold() > 0) {` / `mk->SetRunParallel(Standard_True);` / `OSD_Parallel::SetUseOcctThreads(Standard_True);` / `// }`",
+        "src/Mod/Part/App/TopoShapeExpansion.cpp:5751-5755 — `#else` / `// 01/22/2024 This will be an extremely rare case, since we don't build against OCCT versions this old. Removing the parameter.` / `mk->SetRunParallel(true);`",
+        "OSD_Parallel::SetUseOcctThreads 是全局（进程级）配置，而非单个算法实例的配置，因此该调用会影响所有后续调用 OSD_Parallel 的 OCCT 算法"
+      ],
+      "rule": "PARALLEL-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 并发/性能配置项被硬编码，用户可配置的并行阈值失效，同时引入进程级全局副作用。影响评估：小模型的布尔运算会额外承担线程调度开销，可能出现性能回退；全局切换 Occt 线程后端会改变其它算法的线程行为，多线程布尔运算的稳定性问题也会在全量场景暴露；注释掉的判断与自相矛盾的分支注释让后续维护者无法判断应为“始终并行”还是“按阈值并行”。",
+        "suggestion": "[重构思路] 要么完整保留阈值语义，要么彻底删除死代码并显式声明“始终并行”，不要把注释掉的判断留在生产代码里；`OSD_Parallel::SetUseOcctThreads` 这类全局开关不应在单个算法入口里随手设置，建议放在应用初始化处或由参数集中控制。代码示例：\n```cpp\n#ifdef FC_USE_OCC_PARALLEL\nif (PartParams::getParallelRunThreshold() > 0) {\n    mk->SetRunParallel(Standard_True);\n}\n#endif\n// 全局线程后端在应用启动时统一设置，而非每次布尔运算\n```",
+        "subcategory": "并行阈值配置"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "src/Mod/Part/App/TopoShape.cpp",
+      "line": 785,
+      "title": "importBrep 旧版分支用 encodeFilename 编码文件名、新版分支仍直接传原始 char*，跨版本行为不一致",
+      "description": "本次改动把 importBrep(const char*) 拆成两个版本分支：`OCC_VERSION_HEX < 0x070500` 分支使用 `encodeFilename(FileName)` 读取文件，而 `#else` 分支仍保留 `static_cast<Standard_CString>(FileName)`。同一函数在同一平台上会因链接的 OCCT 版本不同而对非 ASCII 路径表现出不同结果（Windows 下尤甚），而其它同类函数（importIges/importStep/exportStep）都统一使用 `encodeFilename(...)`，此处已成为唯一的例外；改动把两种写法并列在同一 hunk 中，使这个既有不一致更容易被继续复制。",
+      "evidence": [
+        "src/Mod/Part/App/TopoShape.cpp:778-786 — 旧分支 `BRepTools::Read(aShape,encodeFilename(FileName).c_str(),aBuilder,pi);`，`#else` 分支 `BRepTools::Read(aShape,static_cast<Standard_CString>(FileName),aBuilder);`",
+        "src/Mod/Part/App/TopoShape.cpp:721-722 与 749-750 — importIges/importStep 均通过 `aReader.ReadFile(encodeFilename(FileName).c_str())` 统一编码",
+        "src/Mod/Part/App/TopoShape.cpp:924 — exportStep 亦使用 `encodeFilename(filename).c_str()`"
+      ],
+      "rule": "PORT-007",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 同一功能在不同 OCCT 版本分支下使用了不同的文件名编码处理（既有问题，本次改动使其显式并存）。影响评估：Windows 中文/西里尔文路径下的 BREP 导入可能在新旧 OCC 上表现不同（旧版成功、新版失败或反之），排查时容易被误判为 OCC 版本 bug。",
+        "suggestion": "[重构思路] 两个分支统一走 `encodeFilename`，保持与 importIges/importStep/exportStep 一致；若新分支确实不需要编码，应加注释说明原因，避免下次再被复制成“随机选择”。代码示例：\n```cpp\nconst std::string encoded = encodeFilename(FileName);\n#if OCC_VERSION_HEX < 0x070500\n    BRepTools::Read(aShape, encoded.c_str(), aBuilder, pi);\n#else\n    BRepTools::Read(aShape, encoded.c_str(), aBuilder);\n#endif\n```",
+        "subcategory": "文件路径编码一致性"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/Part/App/TopoShape.cpp",
+      "line": 927,
+      "title": "进度作用域未用 RAII 管理，异常路径会跳过 EndScope 导致作用域不平衡",
+      "description": "新增的旧版 OCC 分支在 try 块内手工成对调用 `pi->NewScope(...)/pi->Show()` 与 `pi->EndScope()`，但两者之间都插入了会抛异常的语句：exportStep 中 `Transfer` 失败抛 Base::FileException、`Write` 失败再次抛出，importIges/importStep 中 TransferRoots 可能抛 Standard_Failure 并被 catch 转成 Base::CADKernelError。异常一旦发生，`EndScope()` 就被跳过，进度指示器的 scope 栈保持未闭合状态，而清理只能依赖 `Handle` 局部变量析构（即依赖对象销毁顺序的偶然性），且 catch 里直接抛出新异常，UI 侧进度条/Sequencer 状态可能停留在“运行中”。",
+      "evidence": [
+        "src/Mod/Part/App/TopoShape.cpp:906-911 — `Handle(Message_ProgressIndicator) pi = new ProgressIndicator(100);` 与 `pi->NewScope(100, \"Writing STEP file...\");` `pi->Show();`",
+        "src/Mod/Part/App/TopoShape.cpp:913-914 — `if (aWriter.Transfer(...) != IFSelect_RetDone) throw Base::FileException(\"Error in transferring STEP\");`（位于 NewScope 与 EndScope 之间）",
+        "src/Mod/Part/App/TopoShape.cpp:924-928 — `throw Base::FileException(\"Writing of STEP failed\");` 之后才是 `pi->EndScope();`",
+        "src/Mod/Part/App/TopoShape.cpp:724-738 与 752-765 — importIges/importStep 同样是 `NewScope` ... `pi->EndScope();` 中间夹着 `aReader.TransferRoots();`"
+      ],
+      "rule": "RESOURCE-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 手工配对的资源/作用域生命周期管理，缺失异常安全（非 RAII）。影响评估：导入/导出失败（文件损坏、磁盘满、用户取消）时进度作用域不闭合，Sequencer 与进度条状态可能残留，后续操作可能显示错误的进度或无法再弹出进度；随着 #if 分支继续增加，维护成本与漏改风险同步上升。",
+        "suggestion": "[重构思路] 用一个 RAII 小工具把 NewScope/EndScope 收敛起来（析构函数里 EndScope），并在异常路径上也能保证成对；同时删掉三处重复的 #if 样板。代码示例：\n```cpp\n#if OCC_VERSION_HEX < 0x070500\nstruct ProgressScopeGuard {\n    Handle(Message_ProgressIndicator) pi;\n    ProgressScopeGuard(const char* name) : pi(new ProgressIndicator(100)) {\n        pi->NewScope(100, name);\n        pi->Show();\n    }\n    ~ProgressScopeGuard() { pi->EndScope(); }\n};\n#endif\n```",
+        "subcategory": "异常安全与作用域生命周期"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
+      "line": 428,
+      "title": "旧版分支打开的最外层进度作用域在函数结束时从未 EndScope",
+      "description": "goCheck 的 `#if OCC_VERSION_HEX < 0x070500` 分支调用 `theProgress->NewScope(scopeName.c_str())` 打开外层作用域，但函数直到结束（`message->setText(aMessage);`）都没有对应的 `EndScope()`；相比之下 `#else` 分支使用的 `Message_ProgressScope theScope` 依靠析构自动闭合。两套分支生命周期语义不一致，旧分支的 scope 栈会一直保持打开，直到 BOPProgressIndicator 析构关闭对话框，导致外层作用域的计数/取消语义与新版分支不等价。",
+      "evidence": [
+        "src/Mod/Part/Gui/TaskCheckGeometry.cpp:425-429 — `theProgress->NewScope(scopeName.c_str());` `theProgress->Show();`",
+        "src/Mod/Part/Gui/TaskCheckGeometry.cpp:434-437 — 新分支用 `Message_ProgressScope theScope(...)` 依赖析构自动关闭",
+        "src/Mod/Part/Gui/TaskCheckGeometry.cpp:519-525 — 循环内成对 `NewScope(label.c_str())` / `EndScope()` 只关闭内层作用域",
+        "src/Mod/Part/Gui/TaskCheckGeometry.cpp:550-558 — 循环结束后直接 `model->setResults(...)` / `message->setText(aMessage);` 返回，无外层 `EndScope()`"
+      ],
+      "rule": "SCOPE-003",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 版本分支间作用域生命周期不一致（打开未关闭）。影响评估：旧版 OCCT 下最外层进度作用域悬挂，进度百分比/取消状态计算与新分支不同，且以后若在该分支加入 `UserBreak` 轮询或复用 `theProgress`，可能得到错误结果；也让两个分支难以对照维护。",
+        "suggestion": "[重构思路] 在旧分支函数出口处显式补 `theProgress->EndScope()`，或用 RAII guard（见 F002）统一管理；更好的做法是把“打开/关闭外层 scope”封装成与版本无关的小助手，避免两套分支各写一遍。代码示例：\n```cpp\n#if OCC_VERSION_HEX < 0x070500\ntheProgress->NewScope(scopeName.c_str());\ntheProgress->Show();\n#else\nMessage_ProgressRange theRange(theProgress->Start());\nMessage_ProgressScope theScope(theRange, TCollection_AsciiString(scopeName.c_str()), selection.size());\ntheScope.Show();\n#endif\n... // 末尾\n#if OCC_VERSION_HEX < 0x070500\ntheProgress->EndScope();\n#endif\n```",
+        "subcategory": "进度作用域生命周期"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
+      "line": 1447,
+      "title": "旧版 BOPProgressIndicator::Show 在 force 分支清空取消状态且从不设置任务名",
+      "description": "旧版 `Show(const Standard_Boolean theForce)` 在 `theForce == true` 时把 `steps = 0; canceled = false;` 并重置计时器与进度条范围，而在 `else` 分支才从 `GetScope(1).GetName()` 取任务名。由于所有调用点（如 `theProgress->Show();`）都使用默认参数 `Standard_True`，任务名分支实际不会被执行，界面上只显示窗口标题而不显示 “Reading/Checking XXX…” 的当前步骤；同时每次强制 Show 都会把 `canceled` 复位，`UserBreak()` 依赖的取消标记可能被清掉，用户点击取消存在被吞掉的风险（与 Part::ProgressIndicator::Show 在 force 分支设置文案、且不复位取消状态的实现也不一致）。",
+      "evidence": [
+        "src/Mod/Part/Gui/TaskCheckGeometry.cpp:1445-1464 — force 分支 `steps = 0; canceled = false; myProgress->show(); myProgress->setRange(0, 0); myProgress->setValue(0);`，`else` 分支才 `GetScope(1).GetName()` 设置 label",
+        "src/Mod/Part/Gui/TaskCheckGeometry.cpp:1491-1513 — `UserBreak()` 先判断 `if (canceled) return Standard_True;`，说明 `canceled` 是要跨调用保留的状态",
+        "src/Mod/Part/App/ProgressIndicator.cpp:66-79 — 对照实现：force 为真时用 `GetScope(1).GetName()` 设置文案，且不重置取消状态",
+        "src/Mod/Part/Gui/TaskCheckGeometry.cpp:425-429 — 调用点均为 `theProgress->Show();`（theForce 取默认值 Standard_True）"
+      ],
+      "rule": "PROGRESS-005",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 进度指示器状态机在 force 分支被重置，且任务名更新路径不可达。影响评估：旧版 OCCT 下几何检查对话框不显示当前正在检查的对象名，长耗时检查时难以判断进度；取消标记被复位后取消操作可能延迟或被忽略，用户体验与新版分支不一致。",
+        "suggestion": "[重构思路] 把“初始化/重置”与“刷新显示”分开：force 为真时只显示窗口并保留 canceled，任务名统一在 Show 内按 `GetScope(1).GetName()` 更新；取消状态只在 Reset 中清除。代码示例：\n```cpp\nStandard_Boolean BOPProgressIndicator::Show(const Standard_Boolean theForce)\n{\n    Handle(TCollection_HAsciiString) aName = GetScope(1).GetName();\n    if (!aName.IsNull()) {\n        myProgress->setLabelText(QString::fromUtf8(aName->ToCString()));\n    }\n    if (theForce) {\n        myProgress->show();\n    }\n    return Standard_True;\n}\n```",
+        "subcategory": "进度指示器状态机"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/Tools/bindings/templates/templateClassPyExport.py",
+      "line": 40,
+      "title": "getPath 由 ModuleName 改为 Namespace 并从排除列表去掉 App，会让 App 模块 .pyi 的生成/比对路径整体改名",
+      "description": "PythonExport 的 `ModuleName` 字段被删除，getPath 改用 `self.export.Namespace`，排除列表同时从 `[\"Base\", \"App\"]` 缩减为 `[\"Base\"]`。而 generateModel_Python.py 中 `Namespace` 在装饰器未指定时回退为按路径推导的模块名（src/App/x.pyi → \"App\"），且 src/App/CMakeLists.txt 中仍保留大量 `generate_from_py(...)`、仓库里也仍存在无 @export 的 .pyi（如 src/App/GeoFeature.pyi）。因此 App 模块的 .pyi 输出文件名会从 `Xxx.h / Xxx.cpp / XxxImp.cpp` 变成 `Xxx_.h / Xxx_.cpp / XxxImp_.cpp`，而 `Compare()` 会用改名后的文件与 XML 输出做 compareFiles，一旦某个 App 侧的 .pyi 没有对应的 *Py.xml 产物，compareFiles 会因 FileNotFoundError 直接让绑定生成失败；同时 Base 仍被排除、App 不再被排除，二者语义不再对称。",
+      "evidence": [
+        "src/Tools/bindings/templates/templateClassPyExport.py:39-43 — `if self.is_python and not self.export.Namespace in [\"Base\"]: ... return f\"{root}_{ext}\"`（原为 `not self.export.ModuleName in [\"Base\", \"App\"]`）",
+        "src/Tools/bindings/model/generateModel_Python.py:520 — `Namespace=export_decorator_kwargs.get(\"Namespace\", \"\") or module_name`",
+        "src/Tools/bindings/model/generateModel_Python.py:322-359 — `_get_module_from_path`：src/App/x.pyi 推导为 \"App\"，src/Mod/Foo/... 推导为 \"Foo\"",
+        "src/Tools/bindings/generate.py:60-63 — `Export.is_python = filename.endswith(\".pyi\")` 之后调用 `Export.Compare()`",
+        "src/Tools/bindings/templates/templateClassPyExport.py:90-110 — `Compare()` 用 `self.getPath(outputDir + exportName + \".cpp\")` 与 XML 输出比对，`compareFiles` 在文件不存在时 `raise FileNotFoundError`",
+        "src/App/CMakeLists.txt:83-119 — App 侧仍成对调用 `generate_from_xml(...)` 与 `generate_from_py(...)`；src/App/GeoFeature.pyi 仍存在（79 行，无 @export 装饰器）"
+      ],
+      "rule": "CODE-GEN-004",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 绑定生成器路径判定语义变更（字段替换 + 排除列表收缩），影响所有仍以 .pyi 为输入的模块。影响评估：App 模块的 .py 生成产物换名，可能与并列的 XML 产物重复生成或触发 Compare 的文件缺失异常，造成构建期报错或生成文件被静默忽略（CMake 只编译 XML 产物的名字）；迁移期 Base/App 处理不一致会增加后续排查成本。",
+        "suggestion": "[重构思路] 明确“哪一种来源决定文件名”的单一规则：若意图是“只有 Base 保持原名”，请在注释中写清并同步检查所有仍存在的 .pyi 是否都有同名 XML 产物；更稳妥的是显式传入“是否覆盖 XML 产物”的标志，而不是靠 Namespace 字符串比较。代码示例：\n```python\ndef getPath(self, path):\n    # .pyi 生成物统一加后缀，避免与 XML 生成物互相覆盖\n    if self.is_python:\n        root, ext = os.path.splitext(path)\n        return f\"{root}_{ext}\"\n    return path\n```",
+        "subcategory": "代码生成路径语义"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "src/Mod/TechDraw/App/EdgeWalker.cpp",
+      "line": 456,
+      "title": "WalkerEdge 构造函数直接写 boost edge_descriptor 的内部成员，且使用户自定义构造破坏了聚合属性",
+      "description": "为修复 Coverity 316559，WalkerEdge 新增了用户提供的默认构造函数，并在其中直接赋值 `ed.m_source = 0; ed.m_target = 0;`。`edge_t` 是 `boost::graph_traits<graph>::edge_descriptor`（即 `boost::detail::edge_desc_impl`），`m_source/m_target` 属于 Boost 内部实现细节而非公开接口，且该类型的默认构造函数已对成员做值初始化（`edge_desc_impl() : m_source(), m_target(), m_eproperty() {}`），因此这两行既依赖第三方库内部布局（Boost 版本变化即可能编译失败），在当前 Boost 版本下也没有实际初始化收益。真正被修好的只是头文件里 `v1/v2/idx` 的 `{0}` 成员初始化。此外新增用户提供的构造函数会让 WalkerEdge 不再是聚合类，后续若有人用 `WalkerEdge{v1, v2, ed, idx}` 花括号初始化就会编译失败（当前代码库中尚未出现此类写法）。",
+      "evidence": [
+        "src/Mod/TechDraw/App/EdgeWalker.h:74 — 新增 `WalkerEdge();`（用户提供的默认构造函数，破坏聚合性）",
+        "src/Mod/TechDraw/App/EdgeWalker.h:79-82 — `std::size_t v1 {0}; std::size_t v2 {0}; edge_t ed; std::size_t idx {0};`",
+        "src/Mod/TechDraw/App/EdgeWalker.cpp:453-458 — `WalkerEdge::WalkerEdge() { ed.m_source = 0; ed.m_target = 0; }`",
+        "src/Mod/TechDraw/App/EdgeWalker.h:60-61 — `using edge_t = boost::graph_traits<graph>::edge_descriptor;`（Boost 内部类型）",
+        "src/Mod/TechDraw/App/EdgeWalker.cpp:318 与 60 — 现有用法只有 `WalkerEdge we;` 默认构造，未见花括号聚合初始化"
+      ],
+      "rule": "PORT-006",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 依赖第三方库内部实现细节 + 无谓地放弃聚合类型。影响评估：升级 Boost 后 `m_source/m_target` 若改名或改为私有成员会造成编译失败；新增构造函数对未初始化成员的修复价值有限，却限制了未来的构造写法。",
+        "suggestion": "[重构思路] 移除对 Boost 内部成员的写入，改为在头文件里用值初始化保证 ed 也明确初始化，并删掉冗余的自定义构造函数（Coverity 关注的是 v1/v2/idx，用 `{0}` 已解决）。代码示例：\n```cpp\nclass TechDrawExport WalkerEdge\n{\npublic:\n    static bool weCompare(WalkerEdge i, WalkerEdge j);\n    bool isEqual(WalkerEdge w);\n    std::string dump();\n\n    std::size_t v1 {0};\n    std::size_t v2 {0};\n    edge_t ed {};      // 值初始化，不触碰 Boost 内部成员\n    std::size_t idx {0};\n};\n```",
+        "subcategory": "第三方类型内部细节依赖"
+      }
+    }
+  ]
+}

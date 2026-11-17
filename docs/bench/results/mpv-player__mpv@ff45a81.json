@@ -1,0 +1,202 @@
+{
+  "instance_id": "mpv-player__mpv@ff45a81",
+  "repo": "mpv-player/mpv",
+  "base_commit": "5ba7ee513751dd005379a06fb627303e6fe1b3dd",
+  "head_commit": "ff45a8103e3c5ec3e786b950b4852c2750de936f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 612.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 18,
+  "review_output": [
+    {
+      "file": "MPV_VERSION",
+      "line": 1,
+      "summary": "版本号与 RELEASE_NOTES 被回退到 0.39.0，与文档重组方向自相矛盾",
+      "failure_scenario": "本 MR 在把 DOCS/interface-changes 拆分为按变更单文件的（属于较新版本才引入的发布流程）同时，却把 MPV_VERSION 从 0.40.0-UNKNOWN 降为 0.39.0-UNKNOWN，并把 RELEASE_NOTES 整体替换成 0.39.0 的发布说明（含 “Release 0.39.0” 标题、`git log v0.38.0..v0.39.0` 对比链接）。这两组改动方向相反：若沿用 0.39.0 版本号，新增的 DOCS/interface-changes/*.txt 就没有任何目标版本段可挂靠；若沿用 0.40.0，则 RELEASE_NOTES/版本号是错误回退。此外替换后的 RELEASE_NOTES 正文中 “win32: fix window size restore after maximize state” 重复出现两次，说明该文件是机械回退而非经过整理。影响：发行版打包、`mpv --version` 输出、自动更新与用户可见的变更记录都会指向错误的版本，发布流程（interface-changes 合并入主文档）也会失去版本归属。",
+      "severity": "P1",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "RELEASE-001"
+    },
+    {
+      "file": "video/mp_image.c",
+      "line": 517,
+      "summary": "新增的 vflip 属性未纳入 mp_image_copy_attributes，滤镜链可能丢失翻转信息",
+      "failure_scenario": "本次新增了 `mp_image_params.vflip`（video/mp_image.h:61）并新增 autovflip 滤镜消费该字段，但 `mp_image_copy_attributes()` 逐项拷贝了 rotate、stereo3d、p_w/p_h、color、repr、light、chroma_location、crop 等属性，唯独没有拷贝 `params.vflip`。任何创建新图像并调用该函数迁移属性的滤镜（典型如 f_swscale.c:107 的 `mp_image_copy_attributes(dst, src)`，其输出映像由 `mp_image_pool_get()` 新分配，参数是全新的）都会把 vflip 清零，导致 DISPLAYMATRIX 携带的垂直翻转在滤镜链中途被静默丢弃，autovflip 之后也就不会再插入翻转滤镜，视频显示方向错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-VFLIP-001"
+    },
+    {
+      "file": "video/mp_image.c",
+      "line": 1076,
+      "summary": "repr 改为整体赋值且 mp_image_setfmt 不再初始化 alpha/bits，解码帧的 repr.alpha/bits 被清零",
+      "failure_scenario": "mp_image_setfmt 删除了对 params.repr.alpha / params.repr.bits（sample_depth、color_depth、bit_shift）的初始化，而 mp_image_from_av_frame 现在用只含 .sys/.levels 的复合字面量对整个 struct pl_color_repr 赋值，未指定的成员被零初始化。原先逐字段赋值（repr.sys=…; repr.levels=…）不会破坏 setfmt 已写入的 alpha/bits。结果：普通解码路径（无 opaque_ref 的 AVFrame）上 repr.alpha 恒为 PL_ALPHA_UNKNOWN、repr.bits 全为 0（仅当 frame 经过 mp_image_to_av_frame 留下 opaque_ref 时 1093 行才补回 alpha）。vo_gpu_next 直接把 params.repr 拷进 pl_frame（`frame->repr = par.repr`），hwdec 分支不再重算 frame->repr.bits，因此带 alpha 的素材与 p010 之类“容器位深≠有效位深”的内容会丢失 alpha/bit_shift 信息，影响 alpha 混合与抖动/去带、位深处理。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "demux/demux_lavf.c",
+      "line": 165,
+      "summary": "移除 hls 的 extension_picky 兼容 hack，可能重新触发 FFmpeg 扩展名检查导致的 HLS 打开失败",
+      "failure_scenario": "本次删除了 `struct format_hack` 的 `no_ext_picky` 字段、hls 条目上的 `.no_ext_picky = true`，以及 demux_open_lavf 中依据该字段设置 `extension_picky=0` 的整段逻辑（该段日志明确写着 “Option extension_picky=0 was set due to known FFmpeg bugs”）。这意味着 HLS 流重新回到 FFmpeg 默认的 `extension_picky` 行为：当 URL 的扩展名与探测到的格式不匹配（HLS URL 常见情形，例如无扩展名 m3u8 或 .php 结尾的直播地址）时，FFmpeg 可能拒绝打开，表现为播放失败而不是解码。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-LAVF-001"
+    },
+    {
+      "file": "demux/demux_mkv.c",
+      "line": 2203,
+      "summary": "ARIB profile 判定回退为已弃用的 FF_PROFILE_* 宏",
+      "failure_scenario": "本次把 `AV_PROFILE_ARIB_PROFILE_A/C`、`AV_PROFILE_UNKNOWN` 改回旧名 `FF_PROFILE_ARIB_PROFILE_A/C`、`FF_PROFILE_UNKNOWN`。这些 FF_PROFILE_* 宏在较新的 FFmpeg 中已被标记为弃用（推荐 AV_PROFILE_*），而 RELEASE_NOTES 中声明本版本要求 “FFmpeg 6.1 or newer”。回退后：在开启 `-Werror=deprecated-declarations` 的构建配置下会直接编译失败，在更激进的 FFmpeg 版本上（弃用宏被移除）则完全无法编译；即便能编译也会持续产生弃用警告污染构建日志。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.5,
+      "rule": "PORTABILITY-FFMPEG-001"
+    },
+    {
+      "file": "player/clipboard/clipboard-wayland.c",
+      "line": 351,
+      "summary": "剪贴板 selection offer 在 fd 挂断时不再被销毁，可能残留失效 offer 或泄漏",
+      "failure_scenario": "本次删除了 poll 循环中对 fds[2]/fds[3] 的 `POLLERR | POLLHUP | POLLNVAL` 处理（原本会调用 `destroy_offer(wl->selection_offer)` 与 `destroy_offer(wl->primary_selection_offer)`），只保留 `POLLIN` 时的 `get_selection_data()`。一旦对端关闭管道或 fd 进入错误状态，代码不再销毁对应 offer：`wl->selection_offer` / `wl->primary_selection_offer` 会指向已经失效的 fd，后续 poll/读取基于 stale 状态，`clipboard` / `clipboard/text` 属性可能返回陈旧或空数据，且 offer 关联的 fd 与对象可能不被释放（资源泄漏）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RESOURCE-001"
+    },
+    {
+      "file": "meson.build",
+      "line": 1823,
+      "summary": "mpv.com wrapper 去掉 -fno-stack-protector 但保留 -nostartfiles -nodefaultlibs，可能链接失败",
+      "failure_scenario": "Windows 控制台启动器 `mpv.com` 由 osdep/win32-console-wrapper.c 编译，链接参数仍是 `-municode -nostartfiles -nodefaultlibs`（不链接默认库），而本次把编译参数中的 `-fno-stack-protector` 删除。在默认启用栈保护的工具链（部分 MinGW/发行版 GCC 默认 `-fstack-protector-strong`）下，wrapper 会引用 `__stack_chk_fail`，但由于 `-nodefaultlibs` 且无自定义实现，链接阶段会报未定义符号，导致 Windows 构建产物缺失或构建失败。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "filters/f_output_chain.c",
+      "line": 379,
+      "summary": "新增的 VO_CAP_VFLIP 能力没有驱动声明，vflip 分支成为死代码",
+      "failure_scenario": "本次引入 `VO_CAP_VFLIP`（video/out/vo.h:210），并在 `mp_output_chain_set_vo()` 中把 `vo->driver->caps & VO_CAP_VFLIP` 写入 `stream_info.vflip`，autovflip 据此在 `info->vflip` 为真时跳过插入翻转滤镜。但检索全仓库 `VO_CAP_VFLIP` 只有这一处使用，没有任何 VO 驱动的 `struct vo_driver.caps` 声明该位。结果：`stream_info.vflip` 恒为 false，autovflip 永远不信任后端能力、总是插入 vflip 滤镜（多一次格式转换与性能开销），同时暴露出来的能力位与 `info->vflip` 判断成为无法被覆盖的死代码，后续维护者难以判断该能力是否真的可用。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-CAP-001"
+    },
+    {
+      "file": "DOCS/interface-changes.rst",
+      "line": 32,
+      "summary": "删除 0.41.0 段与 0.40.0 全部条目后，主文档留下空版本段且与单文件方案冲突",
+      "failure_scenario": "本次从 DOCS/interface-changes.rst 中删除了 `--- mpv 0.41.0 ---` 标题以及 0.40.0 段的全部条目，同时把这批条目分散写入 DOCS/interface-changes/ 下的约 50 个单文件（aspect-properties.txt、clipboard.txt、frame-step.txt 等），还删除了 commands-remember-input.txt 与 kitty-passthrough.txt。结果是主文档中 `--- mpv 0.40.0 ---` 紧随 `--- mpv 0.39.0 ---`，形成一个空的 0.40.0 段；而新增的单文件本身不带版本段标记，发布时若忘记合并就会漏记全部 0.40.0 接口变更。对后续维护者而言，既无法从主文档得知「当前待发布版本是哪个」，也无法判断这些游离条目归属哪个版本。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "DOCS-001"
+    },
+    {
+      "file": "ci/build-win32.ps1",
+      "line": 10,
+      "summary": "shaderc 克隆不再固定版本，构建变为不可复现",
+      "failure_scenario": "ci/build-win32.ps1 中下载 shaderc 的命令从 `git clone https://github.com/google/shaderc --depth 1 -b v2025.1` 改为不带 `-b` 的默认分支克隆。注释说明该目录是「Wrap shaderc 以运行 git-sync-deps 并修补不支持的 generator expression」的包装，且随后会应用本地 `p.diff` 补丁。不固定 tag 意味着每次 CI 都取上游最新提交：上游改动会让本地补丁 `p.diff` 无法应用（构建直接失败），或者悄然引入未经测试的 shaderc 版本，使 Windows 构建不可复现、失败难以归因。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CI-REPRO-001"
+    },
+    {
+      "file": "player/lua/commands.lua",
+      "line": 590,
+      "summary": "移除日志递归保护后，commands.lua 可能记录自身产生的 script-message 日志",
+      "failure_scenario": "commands.lua 的 `log-message` 处理器原本有一段带注释 “Avoid logging debug messages infinitely.” 的保护：当消息前缀为 cplayer 且内容是 `Run command: script-message-to, flags=64, args=[target=\"console\"...` 时直接 return，避免 console/commands 自身触发的命令日志再次写入日志缓冲区形成自激。本次将这段保护整体删除，同时本 MR 也移除了 mp_cmd 的 notify_event 与相关日志抑制逻辑。一旦 commands.lua 的日志写入路径再次产生同类命令日志，就会出现「日志 → 触发命令 → 再产生日志」的循环刷屏，日志缓冲区被自身消息迅速占满（缓冲区上限 100 行），用户看不到真正的 mpv 日志。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "RELIABILITY-LOG-001"
+    },
+    {
+      "file": "video/out/vo_gpu_next.c",
+      "line": 923,
+      "summary": "draw_frame 未判空 frame->current 即解引用，OSD 单独重绘时可能空指针崩溃",
+      "failure_scenario": "新增的 vflip 检查写成 `if (frame->current->params.vflip)`，无条件解引用 frame->current。但同一个函数里其它所有对 frame->current 的访问都做了判空（939、1001、1021、1044、1050 行），说明该字段允许为 NULL：vo.c 的 do_redraw 在没有 current_frame 时会构造 `struct vo_frame dummy = {0}`（current 为 NULL）并直接调 driver->draw_frame。vo_gpu-next 未声明 VO_CAP_NORETAIN/VO_CAP_UNTIMED，因此会进入这条 do_redraw 路径；当播放器处于「只有 OSD、尚无视频帧」状态（例如启动/暂停态下 OSD 触发 request_redraw）时，draw_frame 会在 923 行解引用 NULL，导致段错误。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-NULL-DEREF"
+    },
+    {
+      "file": "video/out/vo.c",
+      "line": 1082,
+      "summary": "do_redraw 提前 return 后不再清除 request_redraw，NORETAIN/UNTIMED 的 VO 可能在暂停时忙等",
+      "failure_scenario": "改版后 do_redraw 一进入就在 VO_CAP_NORETAIN/VO_CAP_UNTIMED 时 return，把原来「先 in->request_redraw = false 再返回」的行为丢掉了。vo_thread 在主循环里读取 `redraw = in->request_redraw`，为真时调用 VOCTRL_REDRAW + do_redraw 后立即 `continue`，中间没有任何等待；而清 request_redraw 的另一处（render_frame 里的 1057-1058 行）在 `in->paused || !in->current_frame || !in->hasframe ...` 时会通过 `goto done` 被跳过。于是对这两类 VO，只要在暂停/无帧状态下被 vo_redraw（例如 OSD 变化、vo_set_paused 置位）设过一次 request_redraw，该标志将永远无法清除，循环会持续以 do_redraw 空转，表现为 CPU 占满且画面不再更新。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "video/out/vo_kitty.c",
+      "line": 136,
+      "summary": "free_bufs 释放 p->cmd.start 后未清空 bstr，后续 bstr_xappend 会在已释放内存上读写",
+      "failure_scenario": "free_bufs 新增了 `talloc_free(p->cmd.start)` 以回收命令缓冲区，但没有把 `p->cmd` 重置为 `(bstr){0}`，指针变成悬空。flip_page 只执行 `p->cmd.len = 0` 就继续用同一个 bstr 追加（`bstr_xappend_asprintf(NULL, &p->cmd, ...)`）；而 bstr 实现里 resize_append 会先 `talloc_get_size(s->start)` 再 `talloc_realloc_size`/memmove，对已释放的指针调用即为 use-after-free。reconfig→free_bufs→draw_frame→flip_page 是最常见的路径（窗口缩放/PANSCAN/VOCTRL_SET_PANSCAN 都会触发 reconfig），因此可稳定复现为读写已释放内存，轻则输出损坏，重则堆破坏或 talloc 断言崩溃。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "MEMORY-UAF-001"
+    },
+    {
+      "file": "video/out/vo_kitty.c",
+      "line": 322,
+      "summary": "分块发送循环上界由 output_size-1 改为 output_size，会把 base64 结尾的 NUL 当成负载发送",
+      "failure_scenario": "p->output_size = AV_BASE64_SIZE(buffer_size) 是包含结尾 '\\0' 的缓冲区大小，av_base64_encode 写入的字符串长度是 output_size-1。旧代码用 `int output_size = p->output_size - 1;` 作为循环上界，恰好只发送有效字符；新代码改成 `for (int offset = 0; offset < p->output_size; )` 且 chunk 也按 p->output_size 计算，最后一次分块会把结尾的 NUL 字节一起写进 kitty 图形协议的 base64 负载。由于 chunk 固定为 4096（4 的倍数）而末尾多出 1 字节，最后一个数据块的长度不是 4 的倍数，终端按 base64 解码该块会失败或截断，表现为图像底部/右侧显示异常或终端报错。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "CORRECTNESS-OFF-BY-ONE"
+    },
+    {
+      "file": "video/out/vo_kitty.c",
+      "line": 402,
+      "summary": "uninit 不再删除 kitty 图像，退出后图像会残留在终端",
+      "failure_scenario": "随着 DCS 透传代码被移除，uninit 里原来用于清理的 `write_bstr_passthrough(p, KITTY_ESC_DELETE_ALL);` 被整段删除，而 KITTY_ESC_DELETE_ALL 现在只在 reconfig（188 行）中使用。结果是 mpv 退出时不再向终端发送删除图像的命令：若未启用 alt-screen，退出后上一帧图像会留在终端里覆盖已有内容，行为相对旧版本发生退化。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "BEHAVIOR-REGRESSION-001"
+    },
+    {
+      "file": "video/vdpau.c",
+      "line": 148,
+      "summary": "恢复流程删除了「恢复期间又被抢占则重试」的保护，成功路径会无条件清除 is_preempted",
+      "failure_scenario": "旧实现在 handle_preemption 入口用 atomic_exchange 清标志后重建设备，并在重建成功后检查 `if (ctx->is_preempted) return -1;`（注释明确写着 preemption_callback 可能在恢复尝试期间被调用，需要重试）。新实现不再在入口清标志，而是在 win_x11_init_vdpau_procs 成功返回后直接在 148 行把 is_preempted 置 false；若在重建过程中（vdp_device_create_x11 / output_surface_create / preemption_callback_register 期间）驱动再次触发 preemption_callback 把 is_preempted 置 true，这枚新事件会被 148 行覆盖抹掉：播放器输出“Recovered”、preemption_counter 自增，但底层设备实际已再次失效，后续 VDPAU 调用会持续失败且不再进入恢复流程。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CONCURRENCY-003"
+    },
+    {
+      "file": "video/out/vo_dmabuf_wayland.c",
+      "line": 866,
+      "summary": "dmabuf-wayland 已实现 vflip 却未声明 VO_CAP_VFLIP，导致误告警与能力位不一致",
+      "failure_scenario": "本 MR 在 dmabuf-wayland 中新增了 vflip 处理：resize 里把 `vo->params->vflip` 写进 target_params，reconfig 里用 `img->params.rotate / 90 + 4 * !!img->params.vflip` 把翻转映射成 wl_output_transform 的 flipped 变体。但驱动 caps 仍是 `VO_CAP_ROTATE90 | VO_CAP_FRAMEOWNER`，没有加上新增的 VO_CAP_VFLIP。vo.c 的 check_vo_caps 会据此在每次遇到 vflip 内容时打印“Video is flagged as vertically flipped, but the video output does not support this”，与实际行为矛盾；同时该能力位也是后续判断 VO 是否可承担翻转的唯一依据，容易让后续代码/用户误判该 VO 不支持 vflip。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CONSISTENCY-001"
+    }
+  ],
+  "stderr_tail": "bench\\evaluation\\repo\\mpv-player__mpv\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\mpv-player__mpv@ff45a81.diff\n  caseId              mpv-player__mpv@ff45a81\n  --issue             (未传)\n  --taskId            mpv-player__mpv@ff45a81\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 2 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 2 个文件 / 5978 字符（test=1, exclude=1），明细见审计 mrFilter\n✓ 完成 · 耗时 547.3s · 模型调用 43 次 · token 输入 198,722（未命中） · 输出 78,435 · 缓存命中 2,475,136（92.6%） · 工具 91 次（主会话 91 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0567\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\mpv-player__mpv@ff45a81\\r...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 548.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 547.2s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 22.4s (4.1%) | S1P2 5.2s (1.0%) | S1P3 11.0s (2.0%) | S1P4 108.2s (19.8%) | S1P5 77.0s (14.1%) | S1P6 43.0s (7.9%) | S2P1 12.9s (2.4%) | S2P2 3.9s (0.7%) | S2P3 9.6s (1.7%) | S2P4 200.2s (36.6%) | S2P5 42.8s (7.8%) | S2P6 11.1s (2.0%)\n[usage] 任务总计 | 模型调用 43 次（Agent 43 + 一次性 0） | token 输入 198,722（未命中） | 输出 78,435 | 缓存命中 2,475,136（92.6%） | $0.0567\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\mpv-player__mpv@ff45a81\\audit\\20261115_022458_578.json",
+  "token_usage": {
+    "input_tokens": 198722,
+    "output_tokens": 78435,
+    "cache_read_input_tokens": 2475136
+  }
+}

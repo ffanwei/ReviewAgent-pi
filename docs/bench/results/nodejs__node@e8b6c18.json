@@ -1,0 +1,82 @@
+{
+  "instance_id": "nodejs__node@e8b6c18",
+  "repo": "nodejs/node",
+  "base_commit": "18b9120435287eafb1865102c6c4dc6a7cff5ede",
+  "head_commit": "e8b6c183d46c41b2992c4f5cafceb7f9c6f8710d",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 584.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "tools/v8_gypfiles/abseil.gyp",
+      "line": 279,
+      "summary": "移除 win32_waiter.cc 会导致 Windows 构建出现未定义符号",
+      "failure_scenario": "abseil 静态库的 sources 中删除了 absl/synchronization/internal/win32_waiter.h 与 win32_waiter.cc，但同目录的 waiter.h 仍在第 24 行无条件 #include win32_waiter.h，并在 ABSL_INTERNAL_HAVE_WIN32_WAITER 为真时把 synchronization_internal::Waiter 别名指向 Win32Waiter；Win32Waiter::Wait/Post/Poke 的实现全部位于 win32_waiter.cc 中受 #ifdef ABSL_INTERNAL_HAVE_WIN32_WAITER 保护的代码块内，而 per_thread_sem.cc 直接通过 Waiter::GetWaiter(...)->Wait/Post/Poke 调用这些成员。因此在 Windows（_WIN32 且 _WIN32_WINNT>=VISTA）下会因缺少 Win32Waiter 成员定义而产生链接错误，Node.js 的 Windows 构建与 CI 将整体失败。",
+      "severity": "P0",
+      "category": "可移植",
+      "confidence": 0.72,
+      "rule": "BUILD-002"
+    },
+    {
+      "file": "src/node.cc",
+      "line": 1212,
+      "summary": "移除 absl 死锁检测关闭逻辑会让 V8 中的误报直接 abort 进程",
+      "failure_scenario": "本次删除了 absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore) 调用及其注释（该注释说明 V8 中存在被 absl 误判为死锁的场景，参见 node-v8#301）。在快照内的 abseil 实现中，mutex.cc 的 kDeadlockDetectionDefault 在非 TSAN 构建下取 OnDeadlockCycle::kAbort，即默认在检测到环时中止进程。移除该关停调用后，此前被抑制的误报将重新变为 abort 级错误，可能在多线程（worker_threads / crypto / 平台线程）场景中导致进程被强行终止。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "CONCURRENCY-003"
+    },
+    {
+      "file": "eslint.config.mjs",
+      "line": 52,
+      "summary": "eslint ignores 改写后丢失了 fixtures 白名单，三个目录不再被 lint",
+      "failure_scenario": "原配置使用 globalIgnores(['...','test/fixtures/*','!test/fixtures/console','!test/fixtures/v8','!test/fixtures/vm']) 并附注释「We want to lint only a few specific fixtures folders」。改写为 ignores 数组后，这三条取反白名单连同注释一起被删除，且 'test/fixtures/*' 被替换为范围更大的 'test/fixtures/**'。结果是 test/fixtures/console、test/fixtures/v8、test/fixtures/vm 中的 JS 文件不再参与 ESLint 检查，静态检查覆盖出现回退，且后续在这些 fixture 中引入的语法/规则问题不会被 CI 捕获。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.85,
+      "rule": "LINT-COVERAGE-001"
+    },
+    {
+      "file": "lib/internal/modules/typescript.js",
+      "line": 67,
+      "summary": "TypeScript 语法错误不再附带 filename:行号与代码片段，诊断信息退化",
+      "failure_scenario": "原先对 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX / ERR_INVALID_TYPESCRIPT_SYNTAX 会调用 decorateErrorWithSnippet，把 amaro 错误的 `${filename}:${startLine}${snippet}` 拼到 error.stack 前面；本次与该函数一起被删除，且 deps/amaro 版本从 0.5.0 回退到 0.4.1（src/amaro_version.h 同步回退）。而 ERR_*_TYPESCRIPT_SYNTAX 的错误格式为单参数 '%s'，只输出 error.message，因此用户看到的 TS 语法错误将丢失精确定位与代码片段，排障成本上升；execution.js 中仅把 tsError.message 前置到原始堆栈（execution.js:276、336），也不会补回位置信息。",
+      "severity": "P2",
+      "category": "可维护性",
+      "confidence": 0.6,
+      "rule": "DIAGNOSTICS-001"
+    },
+    {
+      "file": ".github/workflows/update-wpt.yml",
+      "line": 6,
+      "summary": "cron 改为每天执行但注释仍写「每周一次」，且未说明调度频率提升",
+      "failure_scenario": "schedule 的 cron 由 '0 0 * * 0'（每周日）改为 '0 0 * * *'（每天），但上方注释仍为 'Run once a week at 12:00 AM UTC on Sunday.'，注释与配置不一致；同时该工作流会对 url、urlpattern、WebCryptoAPI 三个子系统分别创建更新 PR，频率提升 7 倍会显著增加自动化 PR 与 CI 负载，diff 中没有任何说明。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.9,
+      "rule": "CONFIG-004"
+    },
+    {
+      "file": "lib/internal/process/execution.js",
+      "line": 373,
+      "summary": "eval 场景下 sourceURL 与模块 URL 使用了不同的 [evalN] 编号",
+      "failure_scenario": "parseAndEvalCommonjsTypeScript / parseAndEvalModuleTypeScript 改为把 getEvalModuleUrl() 作为 filename 传给 stripTypeScriptModuleTypes，而该函数内部会在无 source map 时向源码追加 `//# sourceURL=${filename}`；getEvalModuleUrl 每次调用都会自增 evalIndex，因此紧随其后的 evalScript(name, ...) / evalModuleEntryPoint(...) 内部再次调用 getEvalModuleUrl() 时会得到不同的编号（如 [eval1] 与 [eval2]）。这会让堆栈中显示的脚本名与真正的模块 URL 不一致，且由于 filename 参与 compile cache 键（typescript.js:185），每次 eval 的缓存键都不同，缓存不会命中。另外 parseAndEvalCommonjsTypeScript 的 name 参数已不再用于类型剥离。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.52,
+      "rule": "CONSISTENCY-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\nodejs__node\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\nodejs__node@e8b6c18.diff\n  caseId              nodejs__node@e8b6c18\n  --issue             (未传)\n  --taskId            nodejs__node@e8b6c18\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 28 个文件 / 9890366 字符（lockfile=1, generated=3, test=11, exclude=13），明细见审计 mrFilter\n✓ 完成 · 耗时 200.8s · 模型调用 22 次 · token 输入 49,007（未命中） · 输出 21,240 · 缓存命中 530,432（91.5%） · 工具 39 次（主会话 39 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0143\n[time] 阶段耗时 | 总墙钟 201.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 200.8s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 6.9s (3.4%) | P2 2.9s (1.4%) | P3 7.6s (3.8%) | P4 129.8s (64.7%) | P5 35.4s (17.6%) | P6 18.1s (9.0%)\n[usage] 任务总计 | 模型调用 22 次（Agent 22 + 一次性 0） | token 输入 49,007（未命中） | 输出 21,240 | 缓存命中 530,432（91.5%） | $0.0143\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\nodejs__node@e8b6c18\\audit\\20261115_044118_958.json",
+  "token_usage": {
+    "input_tokens": 49007,
+    "output_tokens": 21240,
+    "cache_read_input_tokens": 530432
+  }
+}

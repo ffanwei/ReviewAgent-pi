@@ -1,0 +1,298 @@
+{
+  "generatedAt": "2026-11-15T06:05:55.224Z",
+  "runId": "20261115_055519_519",
+  "source": "mr",
+  "caseId": "vllm-project__vllm@134705b",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "vllm/entrypoints/api_server.py",
+      "line": 111,
+      "title": "api_server 不再设置 app.state.engine_client，启动即触发 AttributeError",
+      "description": "本 MR 删除了 init_app 中对 app.state.engine_client 的赋值，只保留模块级全局变量 engine。但未被本 MR 修改的 vllm/entrypoints/launcher.py 中，serve_http 会无条件读取 app.state.engine_client 作为 watchdog 的引擎引用，异常处理器也会读取 request.app.state.engine_client。api_server.run_server 正是通过 serve_http 启动服务，因此 `python -m vllm.entrypoints.api_server` 在完成引擎初始化后、真正开始监听前就会抛出 AttributeError: 'State' object has no attribute 'engine_client'，该入口（以及引用 run_server 的 disagg 示例）完全不可用。",
+      "evidence": [
+        "vllm/entrypoints/api_server.py:108-115 — init_app 只赋值全局 engine（`global engine` / `engine = (llm_engine if llm_engine is not None else AsyncLLMEngine.from_engine_args(...))`），MR diff 删除了原有 `app.state.engine_client = engine`",
+        "vllm/entrypoints/launcher.py:45-46 — `watchdog_task = loop.create_task(watchdog_loop(server, app.state.engine_client))`，在 serve_http 内无条件执行",
+        "vllm/entrypoints/launcher.py:141-144 — `terminate_if_errored(server=server, engine=request.app.state.engine_client)`",
+        "vllm/entrypoints/api_server.py:129 — `shutdown_task = await serve_http(app, sock=None, ...)`，即 run_server 必经此路径；build_app 仅设置 app.root_path，未设置任何 state",
+        "vllm/entrypoints/api_server.py:62、63 — 路由实际使用模块级 `assert engine is not None` / `engine.generate(...)`，说明 state 赋值被删除后没有任何替代来源"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 状态依赖被删除但消费方未同步（属性缺失导致的 AttributeError）。影响评估：`vllm.entrypoints.api_server` 与 disagg 代理示例启动即崩溃，属于既有入口的行为破坏；由于该入口非 OpenAI 生产服务，CI 覆盖较弱，容易漏检。",
+        "suggestion": "[重构思路] 恢复 init_app 中的 state 注入，或将 launcher 对 state 的依赖改为可缺省（两者取其一，但必须保持一致）。优先恢复赋值，改动最小且与 launcher 约定一致。代码示例：`global engine\\nengine = (llm_engine if llm_engine is not None else AsyncLLMEngine.from_engine_args(engine_args, usage_context=UsageContext.API_SERVER))\\napp.state.engine_client = engine\\nreturn app`",
+        "subcategory": "属性缺失/状态初始化"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "vllm/config.py",
+      "line": 214,
+      "title": "ModelConfig 去 dataclass 化后，字段文档/CLI 帮助/取值校验三处硬编码易漂移",
+      "description": "ModelConfig 不再是 @config + @dataclass，字段声明、字段文档（迁入 class docstring 的 Args 段）与 CLI 参数（在 EngineArgs.add_cli_args 中逐个手写 add_argument，含 choices 与 help）形成三份需要人工同步的真源；同时 tokenizer_mode 由 Literal 类型退化为 str，校验逻辑改成在 _verify_tokenizer_mode 中硬编码列表。任何新增/修改模型参数都需同时改三处，遗漏时会出现 CLI 帮助与实际行为不一致、或非法取值直到运行期才被拒绝，属于长期维护成本与一致性风险。",
+      "evidence": [
+        "vllm/config.py:214 — `class ModelConfig:`，其上已无 @config 与 @dataclass 装饰器（MR 删除）",
+        "vllm/config.py:217-300+ — 字段文档改为集中在 class docstring 的 `Args:` 段，不再与字段一一绑定，get_attr_docs 的自动绑定失效",
+        "vllm/config.py:350 — `tokenizer_mode: str`（原为 TokenizerMode Literal），vllm/config.py:664-669 — `if tokenizer_mode not in [\"auto\", \"slow\", \"mistral\", \"custom\"]` 硬编码取值列表",
+        "vllm/engine/arg_utils.py — add_cli_args 中 `--tokenizer-mode` 再次硬编码 `choices=['auto', 'slow', 'mistral', 'custom']`，与上条重复",
+        "vllm/engine/arg_utils.py:280-283 — 仍在使用 get_field/get_attr_docs 反射（但已不作用于 ModelConfig），说明反射式与手写式两种风格并存"
+      ],
+      "rule": "MAINT-DUP-007",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 单一事实来源被拆散（声明/文档/校验/CLI 多处重复）。影响评估：后续新增模型参数时极易漏改，表现为 --help 缺项、非法取值后置到运行期报错、文档与实际不符；也削弱了 @config 对 Union[Literal] 的静态校验。",
+        "suggestion": "[重构思路] 用枚举/常量作单一真源并让三处引用同一常量；或恢复基于 dataclass 字段的反射式 CLI 生成。代码示例：`TOKENIZER_MODES = (\"auto\", \"slow\", \"mistral\", \"custom\")\\n# arg_utils: parser.add_argument(\"--tokenizer-mode\", choices=TOKENIZER_MODES, ...)\\n# config:   if tokenizer_mode not in TOKENIZER_MODES: raise ValueError(...)`",
+        "subcategory": "配置与 CLI 双写"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "vllm/config.py",
+      "line": 416,
+      "title": "rope_scaling/rope_theta 弃用提示对 hf_overrides 直接 json.dumps，callable 时抛 TypeError",
+      "description": "本次重构把弃用告警里的序列化目标从合并后的 hf_overrides_kw 改成了原始 hf_overrides。当用户通过 Python API 传入 callable 形式的 HfOverrides（代码中明确支持 callable 分支）并同时使用 rope_scaling 或 rope_theta 时，json.dumps(function) 会抛出 TypeError，把一条本应只是 DeprecationWarning 的路径变成构造失败；即便 hf_overrides 是 dict，告警文案也不再包含已合并进去的 rope_scaling/rope_theta，给出的迁移建议具有误导性。",
+      "evidence": [
+        "vllm/config.py:416 — `hf_overrides_str = json.dumps(hf_overrides)`（位于 `if rope_scaling is not None:` 分支内），MR diff 中该行由 `json.dumps(hf_overrides_kw)` 改来",
+        "vllm/config.py:424 — 同样地 `hf_overrides_str = json.dumps(hf_overrides)`（rope_theta 分支）",
+        "vllm/config.py:406-411 — 明确支持 callable：`if callable(hf_overrides): hf_overrides_kw = {}; hf_overrides_fn = hf_overrides`",
+        "vllm/config.py:413-415 — `hf_override = {\"rope_scaling\": rope_scaling}` 随后 `hf_overrides_kw.update(hf_override)`，说明本应序列化合并结果"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 序列化目标错误 + 未考虑 callable 输入。影响评估：使用 callable hf_overrides 且带 rope_scaling/rope_theta 的调用方在构造 ModelConfig 时直接 TypeError 崩溃；普通 dict 场景虽不崩，但告警内容缺失关键字段，误导用户迁移。",
+        "suggestion": "[重构思路] 序列化合并后的字典 hf_overrides_kw，并对 callable 场景给出可读的占位说明。代码示例：`if callable(hf_overrides):\\n    hf_overrides_str = \"<callable>\"\\nelse:\\n    hf_overrides_str = json.dumps(hf_overrides_kw)`",
+        "subcategory": "序列化/类型安全"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "benchmarks/benchmark_serving_structured_output.py",
+      "line": 126,
+      "title": "json-unique 分支删除 properties 兜底后对 schema 直接下标访问，缺键即 KeyError",
+      "description": "在 --dataset json-unique 分支中，MR 删除了 `if \"properties\" not in json_schemas[i]: json_schemas[i][\"properties\"] = {}` 的兜底，随后直接写入 json_schemas[i][\"properties\"][...]。而 schema 来自用户可配置的 --json_schema_path 文件，任何不以顶层 properties 组织的 schema（如仅含 anyOf/$defs 或 type 非 object 的 schema）都会在采样阶段抛 KeyError，使该 benchmark 场景无法运行。",
+      "evidence": [
+        "benchmarks/benchmark_serving_structured_output.py:121-132 — `for i in range(len(json_schemas)): json_schemas[i][\"properties\"][f\"__optional_field_{uuid.uuid4()}\"] = {...}`，其上已无 properties 存在性判断",
+        "benchmarks/benchmark_serving_structured_output.py:112-116 — schema 由 `args.json_schema_path` 指定的任意 JSON 文件读入，不保证含 properties",
+        "MR diff 中被删除的行：`-                if \"properties\" not in json_schemas[i]:` / `-                    json_schemas[i][\"properties\"] = {}`"
+      ],
+      "rule": "ROBUSTNESS-003",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 移除字典缺键兜底后直接下标赋值。影响评估：使用自定义 schema（或非 object 顶层 schema）跑 json-unique benchmark 时必现 KeyError，基准测试中断；属于工具脚本的可用性回退。",
+        "suggestion": "[重构思路] 恢复缺键初始化（用 setdefault 更简洁），或让脚本对不适用的 schema 显式报错并提示。代码示例：`for i, schema in enumerate(json_schemas):\\n    props = schema.setdefault(\"properties\", {})\\n    props[f\"__optional_field_{uuid.uuid4()}\"] = {\"type\": \"string\", \"description\": \"An unique optional field to avoid cached schemas\"}`",
+        "subcategory": "字典缺键访问"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "benchmarks/benchmark_serving_structured_output.py",
+      "line": 852,
+      "title": "benchmark 命令行参数改名为 --json_schema_path，破坏既有 kebab-case 约定与调用脚本",
+      "description": "该 benchmark 的其余参数（--max-concurrency、--endpoint 等）均使用 kebab-case，唯独把 --json-schema-path 改成了 --json_schema_path。这会破坏既有文档/脚本中的 `--json-schema-path` 调用（argparse 会在解析阶段直接报 unrecognized arguments，且不会给出拼写提示的兜底），也与同项目其它入口的参数命名风格不一致。",
+      "evidence": [
+        "benchmarks/benchmark_serving_structured_output.py:852 — `parser.add_argument(\"--json_schema_path\", type=str, default=None, help=\"Path to json schema.\")`（MR diff 由 `--json-schema-path` 改来）",
+        "benchmarks/benchmark_serving_structured_output.py:856-857 — 相邻参数仍为 `--max-concurrency`（kebab-case）",
+        "benchmarks/benchmark_serving_structured_output.py:112 — 内部读取 `args.json_schema_path`，与改名后的字段名耦合"
+      ],
+      "rule": "CLI-NAMING-009",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 公共 CLI 参数命名不一致/兼容性破坏。影响评估：使用旧参数名的脚本在升级后立即报 unrecognized arguments；命名风格分裂增加使用与检索成本。",
+        "suggestion": "[重构思路] 统一为 kebab-case，并可用别名保留向后兼容。代码示例：`parser.add_argument(\"--json-schema-path\", \"--json_schema_path\", dest=\"json_schema_path\", type=str, default=None, help=\"Path to json schema.\")`",
+        "subcategory": "CLI 参数命名"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "requirements/cpu.txt",
+      "line": 5,
+      "title": "torch==2.6.0+cpu 保留但删除 CPU 专用索引，裸 pip 安装无法解析",
+      "description": "requirements/cpu.txt 仍把 x86_64 的 torch 固定为本地版本 2.6.0+cpu，但 MR 删除了文件头部的 `--extra-index-url https://download.pytorch.org/whl/cpu`。PyPI 上不存在带 +cpu 本地版本号的 torch wheel，因此不依赖 Docker 环境变量（docker/Dockerfile.cpu 通过 PIP_EXTRA_INDEX_URL/UV_EXTRA_INDEX_URL 兜底）而直接执行 `pip install -r requirements/cpu.txt` 的路径会报 No matching distribution found，CPU 平台按文档的源码安装流程被破坏。",
+      "evidence": [
+        "requirements/cpu.txt:5 — `torch==2.6.0+cpu; platform_machine == \"x86_64\"`，文件全文 20 行中已不含任何 --extra-index-url",
+        "MR diff 中被删除的行：`---extra-index-url https://download.pytorch.org/whl/cpu`（位于 `# Dependencies for CPUs` 之后）",
+        "docker/Dockerfile.cpu:19、44-46 — `ARG PIP_EXTRA_INDEX_URL=\"https://download.pytorch.org/whl/cpu\"` 与 `ENV UV_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}`，说明索引信息只在镜像构建内被补偿"
+      ],
+      "rule": "DEPS-INDEX-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 带本地版本号的 torch 固定缺少对应包索引。影响评估：Docker 内构建可继续工作，但宿主/其它 CI 中直接按 requirements/cpu.txt 安装会失败；问题隐蔽，仅在使用裸 pip/uv 时暴露。",
+        "suggestion": "[重构思路] 在 requirements/cpu.txt 中恢复 CPU 索引行（与带 +cpu 的固定版本成对出现），或去掉 +cpu 后缀改为通用固定并在安装命令中显式提供索引。代码示例：`# Dependencies for CPUs\\n--extra-index-url https://download.pytorch.org/whl/cpu\\ntorch==2.6.0+cpu; platform_machine == \"x86_64\"`",
+        "subcategory": "依赖索引配置"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "requirements/cpu.txt",
+      "line": 8,
+      "title": "s390x 仍固定 torch 2.7.0.dev，与其余平台的 2.6.0 回滚不一致",
+      "description": "在把 torch 从 2.7.0 回滚到 2.6.0 的同一批改动中，requirements/cpu.txt 里 s390x 的分支仍保留 `torch==2.7.0.dev20250304`，与同文件其它平台（2.6.0/2.6.0+cpu）、CMakeLists.txt 的 TORCH_SUPPORTED_VERSION_CUDA/ROCM=2.6.0、以及 requirements/{cuda,build,test,rocm-build}.txt 均不一致。CMake 的版本检查只产生 WARNING，因此该不一致不会被构建阻断，却会让 s390x CPU 构建运行在与其它平台不同的 torch 版本上，torchaudio/torchvision 也未随之固定，属于回滚不完整留下的隐性差异。",
+      "evidence": [
+        "requirements/cpu.txt:8 — `torch==2.7.0.dev20250304; platform_machine == \"s390x\"`（与第 5-7 行的 2.6.0 系列并存）",
+        "CMakeLists.txt:49-50 — `set(TORCH_SUPPORTED_VERSION_CUDA \"2.6.0\")`、`set(TORCH_SUPPORTED_VERSION_ROCM \"2.6.0\")`",
+        "CMakeLists.txt:103-106 — 版本不匹配只 `message(WARNING ...)`，不会失败",
+        "requirements/cpu.txt:11、15 — `torchaudio`、`torchvision` 在非 ppc64le 平台未固定版本，s390x 分支亦无对应固定"
+      ],
+      "rule": "DEPS-MATRIX-008",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 多平台依赖矩阵回滚不一致。影响评估：s390x 构建的 torch 版本与 TORCH_SUPPORTED_VERSION 期望值不同（仅告警不报错），若该平台参与发布会产出与其它平台不一致的 wheel，问题在运行期才显现。",
+        "suggestion": "[重构思路] 一并回滚 s390x 分支到与主版本对应的 nightly/固定版本，并在 requirements 中显式固定 torchaudio/torchvision 以保证一致性。代码示例：`torch==2.6.0; platform_machine == \"s390x\"`（若该平台无 2.6.0 官方轮子，则添加注释说明原因并配套 CI 覆盖）",
+        "subcategory": "依赖版本矩阵"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可测试性",
+      "file": ".buildkite/test-pipeline.yaml",
+      "line": 458,
+      "title": "causal-conv1d 取消版本固定，CI 依赖不可复现且可能与 torch 2.6.0 不兼容",
+      "description": "语言模型测试步骤把 `pip install 'git+https://github.com/Dao-AILab/causal-conv1d@v1.5.0.post8'` 改为不带任何版本约束的 `pip install causal-conv1d`。该依赖正是为了跑 plamo2 相关用例而临时安装的（注释明确说明它与 pip-compile 不兼容），取消固定后每次 CI 拉取最新版；上游发布新版本时可能出现编译失败或与本次回滚后的 torch 2.6.0 不匹配，导致 Language Models Test 随机失败且难以定位，也让同一 commit 的测试结果不可复现。",
+      "evidence": [
+        ".buildkite/test-pipeline.yaml:457-458 — 注释 `# Install causal-conv1d for plamo2 models here, as it is not compatible with pip-compile.` 紧跟 `- pip install causal-conv1d`",
+        "MR diff：`-    - pip install 'git+https://github.com/Dao-AILab/causal-conv1d@v1.5.0.post8'` → `+    - pip install causal-conv1d`",
+        "MR 同时把 torch 降级到 2.6.0（requirements/test.in:26-28），CUDA 扩展类包对 torch 版本敏感"
+      ],
+      "rule": "CI-PIN-005",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] CI 中安装未固定版本的编译型依赖。影响评估：构建结果不可复现，测试失败来源与代码变更脱钩；对依赖 torch ABI 的 CUDA 扩展尤其明显。",
+        "suggestion": "[重构思路] 保持版本固定（PyPI 版本或 git tag 二选一，并注明升级时机）。代码示例：`- pip install causal-conv1d==1.5.0.post8`（或保留原 git tag 形式）",
+        "subcategory": "CI 依赖可复现性"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "examples/online_serving/chart-helm/values.yaml",
+      "line": 11,
+      "title": "chart 默认 command 改为 bfloat16 并去掉 --block-size，影响 helm CI 的 CPU 部署验证",
+      "description": "chart 的默认启动命令从 `--dtype float32 --block-size 16` 改为 `--dtype bfloat16`。该 values.yaml 正是 .github/workflows/lint-and-deploy.yaml 中 helm 安装步骤使用的配置文件，而该步骤把 image.repository 覆盖为 vllm-cpu-env（CPU 镜像、GPU 资源置 0）并以 --wait --timeout 5m0s 等待就绪，随后用 curl 校验响应。在 CPU 上把 opt-125m 切成 bfloat16 会改变是否走优化 kernel 与内存/时延特征，移除 --block-size 16 也改变了 KV cache 分块默认值，可能让这条 5 分钟超时的部署验证变得不稳定，且与改动意图（回滚 torch/CUDA）无关。",
+      "evidence": [
+        "examples/online_serving/chart-helm/values.yaml:11 — `command: [\"vllm\", \"serve\", \"/data/\", \"--served-model-name\", \"opt-125m\", \"--dtype\", \"bfloat16\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]`（MR 由 float32 + --block-size 16 改来）",
+        ".github/workflows/lint-and-deploy.yaml:69 — `helm install --wait --wait-for-jobs --timeout 5m0s ... -f examples/online_serving/chart-helm/values.yaml ... --set image.repository=\"vllm-cpu-env\"`，并 `--set-string resources.requests.nvidia\\.com/gpu=0`"
+      ],
+      "rule": "CI-VALUES-006",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 与变更目的无关的 CI 部署参数漂移。影响评估：CPU 上 bfloat16 的算子支持/性能与 float32 不同，可能使 helm --wait 超时或 curl 校验结果变化；排查时容易误判为依赖回滚导致。",
+        "suggestion": "[重构思路] 如非有意变更，恢复 float32（及 --block-size）以保持 CI 基线稳定；若确实想验证 bfloat16，另起一条独立的 CI 用例并单独调整超时。代码示例：`command: [\"vllm\", \"serve\", \"/data/\", \"--served-model-name\", \"opt-125m\", \"--dtype\", \"float32\", \"--block-size\", \"16\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]`",
+        "subcategory": "CI 部署参数"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "vllm/v1/core/sched/scheduler.py",
+      "line": 687,
+      "title": "推测解码草稿 token 不再经语法校验，结构化输出会被静默破坏",
+      "description": "本 MR 删除了 StructuredOutputGrammar.validate_tokens/rollback 抽象方法及 guidance、xgrammar 两处实现，并删除了 Scheduler 中「按 grammar 过滤 spec token」的分支。现在 update_from_output 无条件把 model_runner 返回的草稿 token 写入 request.spec_token_ids，下一步 schedule() 会直接把未经 FSM 校验的草稿 token 当作已调度输入，而 grammar.accept_tokens 的返回值早已被忽略（失败时仅 logger.error 后 return False），导致语法状态与实际生成 token 序列错位：既有 spec decoding 又使用 guided decoding 的请求可能输出不符合 JSON schema/正则的内容，且后续 bitmask 基于偏移的 FSM 状态生成，错误会持续累积。整个回退只用 TODO 注释标注，运行时没有任何拦截、告警或日志，属于静默正确性回归。",
+      "evidence": [
+        "vllm/v1/core/sched/scheduler.py:685-687 — `if spec_token_ids is not None: request.spec_token_ids = spec_token_ids[req_index]`，不再经过 grammar 校验（原实现在 use_structured_output 分支调用 metadata.grammar.validate_tokens）",
+        "vllm/v1/core/sched/scheduler.py:713-718 — `request.structured_output_request.grammar.accept_tokens(req_id, new_token_ids)` 的返回值被丢弃，仅保留 `# type: ignore[union-attr]`",
+        "vllm/v1/structured_output/backend_xgrammar.py:151-164 — accept_tokens 失败时只 `logger.error(...)` 并 `return False`，FSM 状态不会回退",
+        "vllm/v1/structured_output/backend_xgrammar.py:120-124 — `xgr.GrammarMatcher(ctx)` 不再传 max_rollback_tokens；L139 仅留 `# TODO: support max_rollback_tokens`",
+        "vllm/v1/worker/gpu_model_runner.py:995 — 新增 `# TODO: compatibility with spec decode` 后直接把 indices 传给 `xgr.apply_token_bitmask_inplace`",
+        "vllm/v1/core/sched/scheduler.py:654-669 — 仍按 num_draft_tokens/num_accepted_tokens 统计并回退 num_computed_tokens，说明 spec decode 与结构化输出仍可同时开启，配置层未拦截"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 约束解码与推测解码的状态机一致性缺陷（缺少草稿 token 的语法校验）。影响评估：开启 --speculative-config 且请求使用 guided decoding 时可能输出违反 schema/正则的 token，且无任何报错，只能靠输出内容发现问题；错误会随 accept_tokens 失败而扩散到后续步的 bitmask。",
+        "suggestion": "[重构思路] 二选一：a) 在配置校验阶段显式禁止 structured output 与 speculative decoding 同时启用（配合 TODO 说明），把静默错误变成启动期报错；b) 恢复草稿 token 的语法校验（validate_tokens + rollback），保证 FSM 与已生成 token 一致。同时把 accept_tokens 的 False 返回视为致命错误而非仅打日志。代码示例：`if vllm_config.speculative_config is not None and vllm_config.decoding_config is not None: raise ValueError(\"structured output is not yet compatible with speculative decoding\")`；或在 scheduler 中 `filtered = request.structured_output_request.grammar.validate_tokens(spec_token_ids[req_index]); request.spec_token_ids = filtered`。",
+        "subcategory": "推测解码与约束解码一致性"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "vllm/v1/metrics/loggers.py",
+      "line": 348,
+      "title": "cache_config_info 指标提前上报，num_gpu_blocks 会输出为 \"None\"",
+      "description": "cache_config 指标的上报从「engine core 就绪后调用 log_engine_initialized」改成了 PrometheusStatLogger 构造时立即调用 log_metrics_info。V1 AsyncLLM 在创建 EngineCoreClient（进而完成 READY 握手、真正分配 KV cache）之前就构造 stat logger，而 num_gpu_blocks 只在 core 进程内被写入 vllm_config.cache_config；本次变更又把 READY 消息里的 num_gpu_blocks 回填逻辑一并删除，因此前端进程的 cache_config.num_gpu_blocks 永远不会被赋值，CacheConfig.metrics_info() 用 str(value) 展开后会把 num_gpu_blocks 输出成字符串 \"None\"。结果是 vllm:cache_config_info 少了一个真实可用的容量字段，依赖它做容量监控/告警的面板会失真，且时序上指标值不再反映 profile 后的真实块数。",
+      "evidence": [
+        "vllm/v1/metrics/loggers.py:348 — `self.log_metrics_info(\"cache_config\", vllm_config.cache_config)` 被放进 PrometheusStatLogger.__init__，构造即上报",
+        "vllm/v1/engine/async_llm.py:89-94 — setup_default_loggers 在 EngineCoreClient 创建（L118-122）之前执行，此时尚未完成 READY 握手",
+        "vllm/v1/engine/core.py:70-74 — `vllm_config.cache_config.num_gpu_blocks = num_gpu_blocks` 只在 core 进程内执行",
+        "vllm/v1/engine/core_client.py:433-441 — READY 消息改为裸字节 b'READY'，前端的 `self.vllm_config.cache_config.num_gpu_blocks = message_dict['num_gpu_blocks']` 回填被删除",
+        "vllm/config.py:1377 — `num_gpu_blocks: Optional[int]` 默认 None；vllm/config.py:1408-1411 `return {key: str(value) for key, value in self.__dict__.items()}` 会把 None 变成 \"None\"",
+        "本次 diff 删除了 vllm/v1/engine/async_llm.py 中 `for stat_logger in self.stat_loggers[0]: stat_logger.log_engine_initialized()` 的就绪后上报路径"
+      ],
+      "rule": "OBSERVABILITY-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 指标上报时机与数据来源不匹配（跨进程状态未同步）。影响评估：vllm:cache_config_info 中 num_gpu_blocks 恒为 \"None\"，KV cache 容量类监控与容量规划失去数据源；属于不易被现有单测发现的静默指标回归（测试只校验指标名存在）。",
+        "suggestion": "[重构思路] 保留「就绪后上报」的语义：或在 READY 消息中继续携带 num_gpu_blocks 并在握手完成后回填 cache_config，或在握手完成后再调用一次 log_metrics_info（构造期只注册 gauge，完成后 set）。代码示例：`# core_client._wait_for_engine_startup 之后\nself.vllm_config.cache_config.num_gpu_blocks = num_gpu_blocks\nfor stat_logger in self.stat_loggers[0]:\n    if hasattr(stat_logger, \"log_metrics_info\"):\n        stat_logger.log_metrics_info(\"cache_config\", self.vllm_config.cache_config)`。",
+        "subcategory": "监控指标正确性"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "vllm/v1/metrics/loggers.py",
+      "line": 365,
+      "title": "vllm:cache_config_info 丢失 engine 标签，与同进程其它指标标签集不一致",
+      "description": "log_metrics_info 删除了 `metrics_info[\"engine\"] = self.engine_index`，并用 metrics_info.keys() 作为 labelnames；而同一 PrometheusStatLogger 里其它指标仍以 labelnames=[\"model_name\", \"engine\"] 注册（值来自构造参数 engine_index），PrometheusStatLogger 自身的 self.engine_index 属性也被删除。于是同一个进程内的指标标签集不再统一：cache_config_info 缺少 engine 标签，data_parallel_size>1 时 setup_default_loggers 会为每个 DP rank 各构造一个 logger，多个 engine 的 cache_config 会落到完全相同的标签集合上，实际只保留最后一次写入的值，按 engine 过滤/区分的能力丢失。",
+      "evidence": [
+        "vllm/v1/metrics/loggers.py:350-366 — log_metrics_info 中 `metrics_info[\"engine\"] = self.engine_index` 被删除，labelnames 直接取 `metrics_info.keys()`",
+        "vllm/v1/metrics/loggers.py:141-145 — 其它指标仍使用 `labelnames = [\"model_name\", \"engine\"]` 与 `str(engine_index)`",
+        "vllm/v1/metrics/loggers.py:133-134 — PrometheusStatLogger.__init__ 不再保存 `self.engine_index`",
+        "vllm/v1/metrics/loggers.py:491-496 — setup_default_loggers 按 engine_num 循环为每个 engine 构造 logger"
+      ],
+      "rule": "OBSERVABILITY-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 指标标签契约变更（跨引擎维度丢失）。影响评估：现有 Prometheus 查询/面板中 `vllm:cache_config_info{engine=...}` 会匹配不到数据；多 engine 部署下不同 engine 的 cache 配置无法区分。",
+        "suggestion": "[重构思路] 统一标签来源：把 engine 维度作为 log_metrics_info 的显式参数注入，或在 __init__ 中保存 engine_index 后在 metrics_info 里补回。代码示例：`metrics_info = config_obj.metrics_info()\nmetrics_info[\"engine\"] = str(self.engine_index)\nname = \"vllm:cache_config_info\"`，并在 __init__ 恢复 `self.engine_index = engine_index`。若确认要移除该标签，应在发布说明中标注为破坏性指标变更。",
+        "subcategory": "指标标签契约"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "vllm/transformers_utils/tokenizer_base.py",
+      "line": 95,
+      "title": "TokenizerBase/TokenizerGroup 的 encode 签名收窄，属未声明的公共接口破坏性变更",
+      "description": "本次变更把 truncation/max_length 从 TokenizerBase.encode 抽象方法、TokenizerGroup.encode/encode_async、MistralTokenizer.encode 以及 encode_tokens 中一并删除。TokenizerBase 是公开抽象类、TokenizerGroup.encode 是对外可调用的封装，第三方自定义 tokenizer 子类或插件若按旧签名调用 `encode(text, truncation=True, max_length=N)` 会直接 TypeError，自定义子类若仍保留旧签名虽不会报错但语义上已不匹配抽象契约。仓库内部调用点已同步（encode_tokens 的调用方均未传这两个参数，serving_score.py/llm.py 中的 truncation/max_length 是传给 HF tokenizer 的 __call__），因此不存在内部编译期错误，但这是一次没有 deprecation 过渡的公共 API 收窄，同时永久移除了 encode 层的 prompt 截断能力，需要在发布说明中明确。",
+      "evidence": [
+        "vllm/transformers_utils/tokenizer_base.py:94-96 — 抽象方法 encode 去掉 truncation/max_length 参数",
+        "vllm/transformers_utils/tokenizer_group.py:46-52 — TokenizerGroup.encode 删除 `max_length/truncation` 参数并停止透传",
+        "vllm/transformers_utils/tokenizer_group.py:57-64 — encode_async 同步删除",
+        "vllm/transformers_utils/tokenizers/mistral.py:361-363 — MistralTokenizer.encode 同步删除",
+        "vllm/transformers_utils/tokenizer.py:54-70 — encode_tokens 简化为 `tokenizer.encode(text, add_special_tokens=...)` / `tokenizer.encode(text)`",
+        "残留 truncation/max_length 调用点（vllm/entrypoints/openai/serving_score.py:66-71、L166-172；vllm/entrypoints/llm.py:1108-1110）走的是 HF tokenizer.__call__，不经 encode_tokens，故仓库内部无破坏"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 公共接口破坏性变更（参数移除无过渡期）。影响评估：外部自定义 tokenizer 实现与直接调用 TokenizerGroup.encode 的集成代码会抛 TypeError；encode 层的截断能力消失，需要改由调用方在别处截断。",
+        "suggestion": "[重构思路] 若确需移除，至少保留一层兼容：在 TokenizerGroup.encode 中接受 **kwargs 并对 truncation/max_length 发 DeprecationWarning（或显式忽略），同时用 `@deprecated` 标注一个版本周期；并在 release note / docs 中记录 API 变更。代码示例：`def encode(self, prompt: str, lora_request=None, add_special_tokens=None, **kwargs) -> List[int]:\n    if kwargs:\n        logger.warning_once(\"truncation/max_length in encode() is removed; got %s\", list(kwargs))\n    ...`。",
+        "subcategory": "公共接口兼容性"
+      }
+    }
+  ]
+}

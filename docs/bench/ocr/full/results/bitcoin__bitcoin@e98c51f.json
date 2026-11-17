@@ -1,0 +1,181 @@
+{
+  "instance_id": "bitcoin__bitcoin@e98c51f",
+  "repo": "bitcoin/bitcoin",
+  "base_commit": "663a9cabf811e2fc53102bc6da00d09fc99d1d81",
+  "head_commit": "e98c51fcce9ae3f441a416cab32a5c85756c6c64",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T05:59:24.430067+00:00",
+  "duration_seconds": 717.28,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "partial",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review partially complete: 3 finding(s); 3 of 4 selected item(s) failed.",
+    "summary": {
+      "files_reviewed": 4,
+      "comments": 3,
+      "total_tokens": 3728433,
+      "input_tokens": 3637142,
+      "output_tokens": 91291,
+      "cache_read_tokens": 3377664,
+      "elapsed": "11m57s"
+    },
+    "tool_calls": {
+      "total": 96,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 48,
+        "file_read": 46
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "src/init.cpp",
+        "content": "Splitting the value at the last '=' assumes the `<path>` part of `-proxy=unix:<path>` can never contain '='. But a unix socket is an arbitrary local file path and may legitimately contain '=', e.g. `-proxy=unix:/run/socks=abc`. Here that value is truncated to `unix:/run/socks` and `abc` is treated as a network name:\n- if `abc` is not a known network, init fails with a confusing \"Unrecognized network\" error for what used to be a valid unix path;\n- if the trailing segment happens to be a valid network name (`-proxy=unix:/run/socks=ipv4`), the proxy silently points at a different socket path than the one requested.\nNote `CheckHostPortOptions` (~line 1224) performs the same truncation for `-proxy`, so validation and the actual parse can also disagree.\nConsider detecting a unix socket path on the full value (e.g. `IsUnixSocketPath(param_value)`) before splitting off an `=<network>` suffix, and add a test for a unix socket path containing '='.",
+        "existing_code": "        const auto eq_pos{param_value.rfind('=')};\n        const std::string proxy_str{param_value.substr(0, eq_pos)}; // e.g. 127.0.0.1:9050=ipv4 -> 127.0.0.1:9050",
+        "start_line": 1599,
+        "end_line": 1600,
+        "thinking": "The docs confirm the intended behavior:\n- DNS proxy is taken from `-proxy=addr:port`, `-proxy=...=ipv4`, or `-proxy=...=ipv6` (last one if multiple). Not from `=tor` or `-onion`. This EXACTLY matches the code's `name_proxy` assignment (ipv4/ipv6 set name_proxy, tor doesn't). So the name_proxy behavior is intentional and documented. Great—no issue there. Good thing I checked.\n\nAlso note line 61-63: \"UNIX domain sockets may be used for proxy connections. Set -onion or -proxy to the local socket path with the prefix unix: (e.g. -onion=unix:/home/me/torsocket).\" Nothing about '=' in path. But it's a general statement. The doc says UNIX domain sockets may be used. It doesn't explicitly say suffix can't be used. So my unix '=' concern stands as a regression but the docs don't clarify.\n\nNow, the docs are already updated (doc/tor.md), which suggests the docs part of the PR is elsewhere. So the help text omission of \"onion\" alias—well, docs consistently say \"tor\". So \"onion\" alias is a hidden extra. Minor. Given docs consistently use \"tor\", maybe the code's acceptance of \"onion\" is an undocumented convenience. I'll skip that comment.\n\nNow, importantly, doc/tor.md line 60: \"If -proxy or -onion is specified multiple times, later occurrences override earlier ones and command line overrides the config file.\" This confirms the order semantics and that CLI overrides config. Note: `args.GetArgs(\"-proxy\")` returns settings in what order? GetSettingsList merges config then command line? If later occurrences override earlier ones in the vector, and command line overrides config, then GetArgs must return config values first, then command-line values. Good. So the loop's last-wins works correctly. \n\nBut wait—there's a subtlety: With per-network proxies, a *general* `-proxy=addr` in the config file and a per-network `-proxy=addr=ipv4` on the command line: GetArgs returns [config_general, cmd_ipv4]. Loop: general sets all, then ipv4 overrides ipv4+name. Good, command line wins for ipv4.\n\nConversely, config `-proxy=addr=ipv4` and command line `-proxy=addr2` (general): loop [config_ipv4, cmd_general]. General after → overrides all including ipv4. So command line general wins over config specific. That matches \"command line overrides config file\"? Sort of—the CLI general proxy overrides everything. Reasonable.\n\nNow, the docs mention `-proxy=addr:port=tor` explicitly. So \"tor\" is the documented name. \"onion\" alias is extra. Fine.\n\nNow, does doc/tor.md mention that the per-network suffix applies to unix paths? No. So unix paths with '=' is an edge.\n\nGiven the docs, I'm now more confident the implementation is largely intentional. The unix '=' regression remains the main finding.\n\nHmm, but wait — there's another subtlety worth checking: doc/tor.md line 63 example `-onion=unix:/home/me/torsocket`. Now with the new parsing, `-onion` doesn't have suffix_allowed, so no change for -onion. But for `-proxy=unix:/home/me/torsocket`, the parsing strips at rfind('='). No '=' in typical path. Fine.\n\nNow let me reconsider whether there's a bug with the test framework's auto-added `-bind=127.0.0.1:{tor_port}=onion` combined with the new `-bind` validation. It works.\n\nNow, one more important thing: The doc says \"UNIX domain sockets may be used for proxy connections.\" So a unix path with '=' is supported per the general statement. Good, reinforces the regression.\n\nLet me now think about whether there is a bug that's more impactful: What about `-proxy=unix:<path>` where path starts with `/` and contains a `:`? e.g. unix paths rarely contain ':'. If it did, the suffix splitting uses '=', not ':'. Fine.\n\nOK. Let me also reconsider the `-proxy` general case when the value is a unix path and `CheckHostPortOptions`—already covered.\n\nNow, I'm fairly settled on one main comment. But let me reconsider whether the review should include a comment about the *test* not covering the unix socket path with '=' (which now breaks). That's a coverage gap tied to the bug. I could add a test comment, but the code comment on init.cpp can suggest adding a test.\n\nLet me also reconsider: Is there a problem that `CheckHostPortOptions` uses `param_value.substr(0, param_value.rfind('='))` for **all** suffix_allowed args including `-bind`, and for `-bind` the suffix is validated later. Fine.\n\nActually, hold on. Let me reconsider a potential real bug in `CheckHostPortOptions` for `-proxy`: The `unix` check uses `param_value.starts_with(ADDR_PREFIX_UNIX)` (the full value, including any suffix). But `SplitHostPort` is called on `param_value_hostport` (with suffix stripped). Suppose `-proxy=unix:/path=ipv4` where path has no '=': hostport = \"unix:/path\", SplitHostPort false, unix true and full starts_with unix → ok. Good.\n\nNow suppose `-proxy=127.0.0.1:9050=ipv4`: hostport = \"127.0.0.1:9050\", SplitHostPort true → ok.\n\nFine.\n\nNow, is there a case where `param_value_hostport` is empty and SplitHostPort(\"\") returns true (valid), so an invalid `-proxy==ipv4` passes CheckHostPortOptions, then AppInitMain disables ipv4. Fine.\n\nOK.\n\nLet me now consider if the PR should reject `-proxy=0=ipv4` etc. No, that's the removal feature.\n\nAlright. Let me also reconsider whether there's an issue with `-proxy` general and the `name_proxy` when only `-proxy=...=ipv4` is given: name_proxy set → DNS via proxy. Docs confirm that's intended (\"The proxy for DNS requests is taken from ... =ipv4 ...\"). Good.\n\nNow I'm confident. Let me write the final review with the single main comment, and maybe a second comment about the help text missing the `onion` alias? Since docs consistently say \"tor\", and code accepts \"onion\", it's a hidden alias. It's minor and could be considered intentional leniency. I'll skip to avoid noise.\n\nBut wait—maybe I should double check: is `net_str == \"onion\"` actually reachable/needed? `ParseNetwork(\"onion\")` works, so users might pass `=onion`. Supporting it is nice. Not documenting is a small gap. Skip.\n\nHmm, let me reconsider whether there's a **test bug**: In \"Test passing proxy only for IPv6\", they only check ipv4 and ipv6, not name proxy. Docs say DNS uses ipv6 proxy. Could add a check but can't inspect DNS via getnetworkinfo. Fine.\n\nLet me also reconsider whether the test's `-proxy=0=cjdns` actually tests removal but note that cjdns is disabled (no `-cjdnsreachable`). So even if removal didn't work, would `getnetworkinfo` show the proxy? Let me verify: `getnetworkinfo` reports `proxy` for each network from `GetProxy(net)`. Even if cjdns not reachable, `GetProxy(NET_CJDNS)` returns whatever was set. So if the general proxy set it and removal didn't work, it'd show \"127.1.1.1:1111\" → test fails. So the test is valid. Good.\n\nBut wait: Does `getnetworkinfo` only list *reachable* networks? Let me check rpc/net.cpp. If it only lists reachable networks, cjdns wouldn't be listed and `nets[\"cjdns\"]` KeyError. But the earlier test at line 377 does `assert_equal(n6['cjdns']['reachable'], False)`, implying cjdns is listed even if not reachable. Let me verify quickly. Actually, the `networks` list in getnetworkinfo is static: `{NET_IPV4, NET_IPV6, NET_ONION, NET_I2P, NET_CJDNS}`. So cjdns always listed. Good.\n\nOK. Single comment it is. But let me reconsider whether I should also flag something in `torcontrol.h`: The new constant is placed above `DEFAULT_TOR_CONTROL_PORT` but naming/type style differs (`constexpr uint16_t DEFAULT_TOR_SOCKS_PORT{9050};` vs `constexpr int DEFAULT_TOR_CONTROL_PORT = 9051;`). Not a bug. Skip.\n\nHmm, actually, let me reconsider whether moving `DEFAULT_TOR_SOCKS_PORT` to a public header could cause an issue: It's now included in files that include torcontrol.h. But `DEFAULT_TOR_SOCKS_PORT` might shadow a local variable somewhere? Search showed only torcontrol.cpp and init.cpp. Fine.\n\nLet me now also double-check `torcontrol.cpp` doesn't define another `DEFAULT_TOR_SOCKS_PORT` elsewhere or that removing the static doesn't break `LookupNumeric` calls. It's fine.\n\nAlright. Let me also reconsider if there's a subtle issue with the test file: The new tests are inserted before \"Test passing too-long unix path\". The \"too-long unix path\" test at line 489 sets `self.nodes[1].extra_args = [f\"-proxy=unix:{'x'*1000}\"]`. Then `assert_start_raises_init_error`. But before that, at line 486 `self.stop_node(1)` was called (node ran with general proxy). Then extra_args set. Good.\n\nWait, one subtle thing: In the new tests, `self.start_node(1, extra_args=[...])` — but the previous node at line 439-440 was started and stopped. Then multiple `assert_start_raises_init_error` calls on nodes[1] which start and fail. Then start_node. Fine.\n\nNow, could there be an issue that `self.start_node(1, extra_args=[\"-proxy=127.6.6.6:6666=ipv6\"])` doesn't include `-listen=0` or similar, so the node tries to bind? The framework auto-adds `-bind` args. Fine.\n\nAlright, I'm confident. Let me produce the review with one comment. Actually, let me reconsider adding a second comment about the unix '=' also in `CheckHostPortOptions` (line 1224) as a separate location, since the fix needs to be applied in both places. But the tool inserts at one line. I'll mention both in the single comment content, but attach to line 1599. Actually, the more precise approach: comment on line 1599 (AppInitMain) for the functional misparse, and mention that `CheckHostPortOptions` at line 1224 has the same truncation so it could pass/fail inconsistently. That's enough.\n\nHmm, but wait: should I also mention that the fix must update `CheckHostPortOptions`? Yes, in the content.\n\nLet me write the comment.\n\ncontent: \"Splitting the proxy value on the last '=' assumes `<path>` in `-proxy=unix:<path>` can never contain '='. However, unix socket paths are arbitrary local file paths and may legitimately include '='. For such a path the value is truncated (e.g. `unix:/tmp/sock=abc` -> proxy `unix:/tmp/sock`, network `abc` -> 'Unrecognized network' error), and worse, if the trailing segment happens to be a valid network name (e.g. `unix:/tmp/sock=ipv4`) the proxy silently points at a different socket path. `CheckHostPortOptions` (line ~1224) truncates the same way. Consider detecting a unix socket path on the full value (IsUnixSocketPath(param_value)) before splitting off a network suffix, and covering this case in a test.\"\n\nseverity: medium, category bug.\n\nexisting_code: \n```\n        const auto eq_pos{param_value.rfind('=')};\n        const std::string proxy_str{param_value.substr(0, eq_pos)}; // e.g. 127.0.0.1:9050=ipv4 -> 127.0.0.1:9050\n```\n\nI'll not include suggestion_code (or a minimal one). Let me include no suggestion_code to avoid incorrect code.\n\nNow, should I include any other comment? Let me reconsider the test file for a real issue: Maybe the tests don't check \"cjdns\" removal properly because without `-cjdnsreachable`, the code removes NET_CJDNS from g_reachable_nets but SetProxy(NET_CJDNS) is only called if valid. The test expects \"\". Fine.\n\nHmm, let me reconsider one thing about the \"Test removing CJDNS proxy\": If the general proxy is set, cjdns_proxy is set, BUT then the `-proxy=0=cjdns` sets cjdns_proxy invalid. However, `name_proxy` remains the general proxy (set in first iteration general). And `SetNameProxy` called. Fine. And onion remains general. Test checks onion \"127.1.1.1:1111\". Good.\n\nOK, I'll finalize with the one comment. But let me reconsider: The review feels thin. Let me re-examine the diff for any other subtle bug.\n\nRe-reading the diff hunk around CheckHostPortOptions:\n```\n        for (const std::string& param_value : args.GetArgs(param_name)) {\n            const std::string param_value_hostport{\n                suffix_allowed ? param_value.substr(0, param_value.rfind('=')) : param_value};\n```\nNote: `param_value.substr(0, param_value.rfind('='))` — if no '=', rfind=npos → whole. Good.\n\nBut there's a subtle bug: For `-proxy` with a unix path that has no '=', fine. For `-proxy` with a unix path that has '=', the validation strips and then `SplitHostPort` on the truncated path. That might return false → unix check on full → starts_with unix true → ok. So validation passes. Then AppInitMain errors/misparses. Inconsistent but same root.\n\nNow, the `-onion` arg isn't suffix_allowed, but `-onion` is in the list. Good.\n\nNow consider `-bind` suffix_allowed true, `unix` false. Good.\n\nNow, is there a case where `-bind` value `0.0.0.0:8333=onion` → hostport \"0.0.0.0:8333\" valid. Good.\n\nNow, the `[[maybe_unused]]` and `unix` var. Fine.\n\nNow let me re-read the top hunk:\n```\n    const std::string proxy_doc_for_value =\n#ifdef HAVE_SOCKADDR_UN\n        \"<ip>[:<port>]|unix:<path>\";\n#else\n        \"<ip>[:<port>]\";\n#endif\n```\nThis is fine C++ (preprocessor selects initializer). Good.\n\nNow, is `proxy_doc_for_value` possibly triggering a `-Wunused-variable` if not used? It's used in AddArg. Good.\n\nNow `proxy_doc_for_unix_socket` used. Good.\n\nNow, `argsman.AddArg(\"-proxy=\" + proxy_doc_for_value + \"[=<network>]\", ...)`. Wait: hold on! This constructs the arg name as `-proxy=<ip>[:<port>]|unix:<path>[=<network>]`. In `ArgsManager::AddArg`, `arg_name = name.substr(0, name.find('='))` = \"-proxy\". Good. But there's `CheckMultipleCLIArgs` / duplicate detection via `emplace`. Only one -proxy. Good.\n\nHmm, but the old code used `ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_ELISION`. New same. Good.\n\nNow, potential issue: The placeholder contains a `|` and `[` `]`. In `GetHelpMessage`, there might be formatting that splits on '|'? Let me check GetHelpMessage. Actually, some help systems use `|` to separate alternatives; probably not parsed. Let me quickly check GetHelpMessage for any special handling of '=' or '|'.\n\nActually, ArgsManager's help output just concatenates arg_name + value placeholder. There's a possibility that `GetHelpMessage` strips the leading '=' from the value placeholder and appends. Let me not worry.\n\nNow let me reconsider the `-proxy` help: The `proxy_doc_for_value` for unix build = \"<ip>[:<port>]|unix:<path>\". Combined with \"[=<network>]\" → \"-proxy=<ip>[:<port>]|unix:<path>[=<network>]\". Good enough.\n\nOK. Now, another thought: The `-proxy` value with the `=network` suffix; the help says \"Could end in =network\". But `<network>` includes \"ipv4, ipv6, tor or cjdns\". Good.\n\nNow, let me reconsider the `-proxy` per-network handling for **I2P**. The help doesn't mention i2p. I2P uses `-i2psam`, not proxy. Good.\n\nNow let me reconsider whether the `SetProxy` for onion is properly gated by the new per-network. Yes.\n\nAlright. Let me consider if there is a bug that `-proxy` general sets `onion_proxy` but the `-onion` code at line 1657 uses `args.GetArg(\"-onion\", \"\")` (first value). Since `-onion` can't be specified multiple times meaningfully (later overrides earlier?), but GetArg returns the last? Actually GetArg returns the \"first\" or \"last\"? Hmm. Not changed by this PR.\n\nOK. I'll finalize.\n\nWait, I want to reconsider whether the `-proxy` loop's `name_proxy` being set to the *general* proxy and then potentially overwritten by ipv4/ipv6 is exactly per docs. Docs: \"The proxy for DNS requests is taken from -proxy=addr:port or -proxy=addr:port=ipv4 or -proxy=addr:port=ipv6 (last one if multiple options are given).\" So yes, the code matches: general sets name, ipv4/ipv6 set name (last wins). Good. No issue. Great.\n\nNow, one more: The code sets `name_proxy` in the general branch as well. So `-proxy=addr` (general) sets name. matches docs. Good.\n\nNow, what about ordering with `-onion`? docs say DNS not from -onion. Code doesn't set name from -onion. Good.\n\nGreat, implementation matches documentation. So the PR is well done. The only issue is the unix path '=' edge case, which the docs don't address.\n\nHmm, now I wonder: maybe the design intends that unix socket paths must come first and the suffix is only for `host:port` proxies. The docs say \"UNIX domain sockets may be used for proxy connections. Set -onion or -proxy to the local socket path with the prefix unix:\"—no mention of combining unix with network suffix. So maybe the intent is that unix proxies don't support per-network suffix. But the code would apply suffix to unix too. Anyway, the '=' in path issue is still a regression.\n\nIs it possible the PR authors considered this and decided '=' in unix paths is rare and acceptable? Possibly. But as a reviewer, flagging is reasonable.\n\nLet me also reconsider whether there's a bug regarding `-proxy` with a **unix socket path** that ends with a valid network name after '='. E.g., a user's socket at `/run/socks/ipv4`—no '=' so fine. Only paths with '=' problematic.\n\nGiven the severity, I'll mark it medium. Actually, since unix paths with '=' are uncommon, maybe low. But the silent misconfiguration (connecting to wrong socket) is bad. I'll say medium.\n\nNow, is there any other issue in the test I can flag confidently? Let me reconsider the test's `-proxy=0=cjdns` with the general `-proxy=127.1.1.1:1111`. The test asserts onion proxy is \"127.1.1.1:1111\". But does `getnetworkinfo` report onion proxy when `-listenonion`? The node binds onion via `-bind=...=onion`. Hmm, does `-bind=...=onion` set `onion_proxy`? No, it sets onion_binds. The onion_proxy comes from general -proxy. Fine.\n\nNow, wait: The node also gets auto `-bind=127.0.0.1:{tor_port}=onion`. This doesn't affect proxies. Fine.\n\nOK. Let me also reconsider whether `-proxy=127.1.1.1:1111` causes the node to not listen (since proxy disables listening by default). But the framework adds `-bind`, which... \"When using -proxy, listening is disabled by default\" but explicit -bind enables. So node listens. Fine.\n\nAlright, final: one comment. Let me also perhaps add a low-severity comment on the test file about missing coverage for the unix-socket-with-'=' case? That's redundant. I'll skip.\n\nActually, let me reconsider whether I should report the fact that `CheckHostPortOptions` now validates `-bind` and strips suffix, which could reject a valid `-bind` value that contains '='? Bind addresses are IP/host, no '='. Fine.\n\nLet me also reconsider whether adding `-bind` to the validation could break `-bind` values that are **hostnames** containing a colon? No.\n\nOK, final. Actually, let me reconsider once more the possibility of a real issue with `-bind` and IPv6 without brackets: `-bind=::1:8333=onion`? rfind('=') strips \"=onion\" → \"::1:8333\". SplitHostPort: find_last_of(':') last, fMultiColon true → else valid=true. So passes. Then line 1989 bind parsing: index = rfind('=') → network_type \"onion\", truncated \"::1:8333\", Lookup(default_bind_port_onion) → Lookup parses \"::1:8333\"? Ambiguous but pre-existing. Not this PR.\n\nAlright, final answer. Let me write the code_comment call and then task_done.\n\nActually, before finalizing, let me reconsider whether to include a comment on `src/torcontrol.h` about the textbook `static const bool DEFAULT_LISTEN_ONION = true;` (existing) vs new constant. Not new. Skip.\n\nAnd there's no issue in torcontrol.cpp.\n\nLet me reconsider whether I should verify `GetHelpMessage` handles the `|`/`[` correctly, to rule out a functional help-display bug. Let me quickly read GetHelpMessage. Actually, minor. Skip.\n\nLet me now also double check: does the `-proxy` value parse correctly when `param_value` is from a config file line like `proxy=127.0.0.1:9050=ipv4`? Yes.\n\nFinal: one comment.\n\nWait, I should double check the exact diff added line for `existing_code`. The diff:\n```\n+    for (const std::string& param_value : args.GetArgs(\"-proxy\")) {\n+        const auto eq_pos{param_value.rfind('=')};\n+        const std::string proxy_str{param_value.substr(0, eq_pos)}; // e.g. 127.0.0.1:9050=ipv4 -> 127.0.0.1:9050\n```\nI'll use the two lines. Ensure no leading '+' in existing_code, but preserve indentation (8 spaces). Good.\n\nLet me write it.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "src/init.cpp",
+        "content": "The help text advertises `tor` as the network name, but everywhere else in the codebase the canonical name is `onion`: `GetNetworkName(NET_ONION)` returns \"onion\", and `-onlynet` documents `Join(GetNetworkNames(), ...)` which lists \"onion\". In fact `ParseNetwork()` explicitly deprecates `tor` (\"Warning: net name 'tor' is deprecated ... You should use 'onion' instead\"), while the new `-proxy` parsing accepts `tor`/`onion` silently. Documenting the deprecated spelling as the primary one is inconsistent and will steer users towards the soon-to-be-removed name.",
+        "suggestion_code": "                   \"The network can be any of ipv4, ipv6, onion or cjdns (tor is accepted as an alias for onion). \" +",
+        "existing_code": "                   \"The network can be any of ipv4, ipv6, tor or cjdns. \" +",
+        "start_line": 571,
+        "end_line": 571,
+        "thinking": "I should report my findings now. Key finding: the help text advertises \"tor\" as the network name, but \"tor\" is deprecated in ParseNetwork (logs a deprecation warning) and the canonical name is \"onion\"; the new -proxy parsing silently accepts \"tor\" without warning, and the help text documents the deprecated name rather than \"onion\". This is a real documentation/consistency issue with the newly added help text (lines 570-571), which is a newly added code line.\n\nAlso the -bind duplicate validation redundancy (low maintainability).\n\nLet me report both, anchoring carefully on newly added lines.\n\nFor comment 1: existing_code must be newly added lines from the diff:\n```\n+                   \"The network can be any of ipv4, ipv6, tor or cjdns. \" +\n```\nGood.\n\nFor comment 2:\n```\n+        {\"-bind\",            false,               true},\n```\nGood.\n\nAlso, I could report the InitParameterInteraction gitignore issue... I decided to skip; but maybe worth low-severity? I have budget for comments only; but precision matters. I'll include the -bind redundancy and the \"tor\"/\"onion\" doc issue. Both are low/medium severity but factual.\n\nActually, regarding the \"tor\" naming: code accepts \"tor\" and \"onion\" without deprecation warning, while ParseNetwork explicitly deprecates \"tor\". So documenting \"tor\" as the canonical name while the codebase deprecates it is contradictory. Suggest documenting \"onion\" (with \"tor\" as alias). That's a legitimate, actionable finding.\n\nLet me write the comments.",
+        "category": "documentation",
+        "severity": "low"
+      },
+      {
+        "path": "src/init.cpp",
+        "content": "Adding `-bind` to this table makes the validation loop in `AppInitMain` (the `for (const std::string& socket_addr : args.GetArgs(\"-bind\"))` block around line 1534, which strips the `=onion` suffix and calls `SplitHostPort` with the same error message) fully redundant, since `CheckHostPortOptions()` is always called first at line 1442. Consider dropping the later loop (or consolidating) so the `-bind` parsing logic lives in one place only.",
+        "existing_code": "        {\"-bind\",            false,               true},",
+        "start_line": 1212,
+        "end_line": 1212,
+        "thinking": "I should report my findings now. Key finding: the help text advertises \"tor\" as the network name, but \"tor\" is deprecated in ParseNetwork (logs a deprecation warning) and the canonical name is \"onion\"; the new -proxy parsing silently accepts \"tor\" without warning, and the help text documents the deprecated name rather than \"onion\". This is a real documentation/consistency issue with the newly added help text (lines 570-571), which is a newly added code line.\n\nAlso the -bind duplicate validation redundancy (low maintainability).\n\nLet me report both, anchoring carefully on newly added lines.\n\nFor comment 1: existing_code must be newly added lines from the diff:\n```\n+                   \"The network can be any of ipv4, ipv6, tor or cjdns. \" +\n```\nGood.\n\nFor comment 2:\n```\n+        {\"-bind\",            false,               true},\n```\nGood.\n\nAlso, I could report the InitParameterInteraction gitignore issue... I decided to skip; but maybe worth low-severity? I have budget for comments only; but precision matters. I'll include the -bind redundancy and the \"tor\"/\"onion\" doc issue. Both are low/medium severity but factual.\n\nActually, regarding the \"tor\" naming: code accepts \"tor\" and \"onion\" without deprecation warning, while ParseNetwork explicitly deprecates \"tor\". So documenting \"tor\" as the canonical name while the codebase deprecates it is contradictory. Suggest documenting \"onion\" (with \"tor\" as alias). That's a legitimate, actionable finding.\n\nLet me write the comments.",
+        "category": "maintainability",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "Tor proxy/control initialization and functional tests",
+        "files": [
+          "src/init.cpp",
+          "src/torcontrol.cpp",
+          "src/torcontrol.h",
+          "test/functional/feature_proxy.py"
+        ]
+      }
+    ],
+    "warnings": [
+      {
+        "file": "src/init.cpp,src/torcontrol.cpp,src/torcontrol.h,test/functional/feature_proxy.py",
+        "message": "reached the maximum tool-request rounds without finishing; the grace round did not complete the task",
+        "type": "review_limit_reached"
+      }
+    ],
+    "session_id": "6d446f1c-e06a-411f-b2ed-be7835580621",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "6d446f1c-e06a-411f-b2ed-be7835580621",
+      "operation": "review",
+      "terminal_state": "partial",
+      "repository": {
+        "identity_sha256": "601a7a4037afb46591a8a9caa4457a1884ebb16ec47907d2699ac68a8b0b6b5c"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "663a9cabf811e2fc53102bc6da00d09fc99d1d81",
+        "requested_head": "e98c51fcce9ae3f441a416cab32a5c85756c6c64",
+        "resolved_base": "baa848b8d38187ce6b24a57cfadf1ea180209711",
+        "resolved_head": "e98c51fcce9ae3f441a416cab32a5c85756c6c64",
+        "exact_range": "baa848b8d38187ce6b24a57cfadf1ea180209711..e98c51fcce9ae3f441a416cab32a5c85756c6c64",
+        "source_artifact_sha256": "f962865ff78025b8fa8540e122aa9810b681c2685eefe1efe98a1a5a56ce3e06"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "3995c6ad46af915e828391e8b6008eb4887c2e884c21479cba13a7ea2333f8a1",
+            "path": "src/torcontrol.h",
+            "fingerprint": "81533f2bdf9cc1f1461eb47e1982397654680c59fdf4b29c68171c79766a1b15"
+          },
+          {
+            "item_id": "6bc2bcef07267a9af1b06e1373f5b4506722b7ac03e04bd9a39831e28752ee59",
+            "path": "src/torcontrol.cpp",
+            "fingerprint": "0ddf76d1c4a0eb76f06d6d06d8126056faf023e78fcca54032d9ef2f9bdd462a"
+          },
+          {
+            "item_id": "c3362401b14e14d3fea09b3621c90dbbac992eeee4f02651fdf28ddf49f20b3d",
+            "path": "test/functional/feature_proxy.py",
+            "fingerprint": "2737e9a38265233f007b62d3c21a1b43d483fe20caf9947acba3e0770e4c0d45"
+          },
+          {
+            "item_id": "daa3efba12847b5556d33d2d17af92f8cf13ce6e056c01b6f9f8c7d892bfe049",
+            "path": "src/init.cpp",
+            "fingerprint": "0ed38268486d524d4f7878d96061520ed85299bb66be27cccfec1ac2c0d2954f"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "daa3efba12847b5556d33d2d17af92f8cf13ce6e056c01b6f9f8c7d892bfe049",
+            "path": "src/init.cpp",
+            "fingerprint": "0ed38268486d524d4f7878d96061520ed85299bb66be27cccfec1ac2c0d2954f"
+          }
+        ],
+        "reused": [],
+        "failed": [
+          {
+            "item_id": "3995c6ad46af915e828391e8b6008eb4887c2e884c21479cba13a7ea2333f8a1",
+            "path": "src/torcontrol.h",
+            "fingerprint": "81533f2bdf9cc1f1461eb47e1982397654680c59fdf4b29c68171c79766a1b15",
+            "classification": "budget",
+            "reason": "reached the maximum tool-request rounds without finishing"
+          },
+          {
+            "item_id": "6bc2bcef07267a9af1b06e1373f5b4506722b7ac03e04bd9a39831e28752ee59",
+            "path": "src/torcontrol.cpp",
+            "fingerprint": "0ddf76d1c4a0eb76f06d6d06d8126056faf023e78fcca54032d9ef2f9bdd462a",
+            "classification": "budget",
+            "reason": "reached the maximum tool-request rounds without finishing"
+          },
+          {
+            "item_id": "c3362401b14e14d3fea09b3621c90dbbac992eeee4f02651fdf28ddf49f20b3d",
+            "path": "test/functional/feature_proxy.py",
+            "fingerprint": "2737e9a38265233f007b62d3c21a1b43d483fe20caf9947acba3e0770e4c0d45",
+            "classification": "budget",
+            "reason": "reached the maximum tool-request rounds without finishing"
+          }
+        ],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "7380f731b2b7ebee8e93835b67c027b35cd89a2ca664d0c4bffe783cd83bedac",
+            "path": "doc/tor.md",
+            "exclude_reason": "unsupported_ext"
+          }
+        ]
+      },
+      "elapsed_ms": 716771
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

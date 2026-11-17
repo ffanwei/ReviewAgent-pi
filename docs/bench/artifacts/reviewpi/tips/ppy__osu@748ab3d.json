@@ -1,0 +1,125 @@
+[
+  {
+    "filePath": "osu.Game.Rulesets.Osu/Difficulty/OsuDifficultyCalculator.cs",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "public override int Version => 20250306;",
+        "review": "[缺陷类型] 算法变更未同步难度版本号，导致缓存/重算判据失效。影响评估：按 Version 判断是否重算的链路会继续沿用旧算法的星数与 pp；版本号也失去对本次平衡性调整的标识能力，属于难以事后修复的发布性缺陷。",
+        "suggestion": "[重构思路] 在本次 MR 中把受影响的难度计算器 Version 提升到新的 yymmdd（osu! 与 taiko 各一处），保持「难度算法改动 ⇒ Version bump」的约定；pp 常量调整（catch/osu base multiplier/taiko performance）不需要 bump。代码示例：`public override int Version => 20250601; // AimEvaluator/RhythmEvaluator/SpeedEvaluator 平衡性调整`",
+        "category": "可维护",
+        "subcategory": "难度版本号与缓存失效",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 29,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "private double? calculateDeviation(OsuDifficultyAttributes attributes, double relevantCountGreat, double relevantCountOk, double relevantCountMeh, double relevantCountMiss)",
+        "review": "[缺陷类型] 死参数 / 无效计算（新增参数对结果零影响，注释与实现不一致）。影响评估：不影响数值正确性，但会造成理解偏差与后续误改；额外的最坏情况计算也带来无谓的复杂度。",
+        "suggestion": "[重构思路] 二选一：若确实要按「圆的个数」估计命中率，把 n 改成使用 objectCount（此时 relevantCountMiss 才生效），并同步更新注释；若维持原语义（仅用 great+ok 估计正态分布样本量），则删除 attributes 与 relevantCountMiss 两个形参及调用方的多余计算，保留一条说明性注释。代码示例：`// 仅用 great+ok 估计正态分布样本量，miss/meh 不计入\ndouble n = Math.Max(1, relevantCountGreat + relevantCountOk);`",
+        "category": "可维护",
+        "subcategory": "死参数与实现/注释不一致",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 410,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "if (Precision.AlmostEquals(pLowerBound, 0.0) || randomValue >= 1 || deviation > limitValue)",
+        "review": "[缺陷类型] 隐式精度阈值 + 复合守卫缺少说明（可读性/可维护性）。影响评估：不影响常规路径数值，但让退化边界变得不可见，后续调参或排障（例如某成绩 SpeedDeviation 异常）时无法从代码定位阈值来源。",
+        "suggestion": "[重构思路] 用命名常量或显式 epsilon 固化阈值，并把三个守卫拆开、逐条注释对应的数值病态。代码示例：`const double min_probability = 1e-06; // 低于此值 ErfInv 精度不足\nif (pLowerBound <= min_probability) deviation = limitValue;      // 精度不足\nelse if (randomValue >= 1) deviation = limitValue;              // sqrt(1-randomValue) 会变 NaN\nelse if (deviation > limitValue) deviation = limitValue;        // 上限钳制`",
+        "category": "可读性",
+        "subcategory": "数值阈值可读性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 442,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "if (totalSuccessfulHits > 0)",
+        "review": "[缺陷类型] 条件分支缺少 else 兜底导致的默认值语义错误（上报属性与实际 miss 数不一致）。影响评估：当前 pp 数值由 countGreat==0 的早退路径间接兜住，但属性 EffectiveMissCount=0 会误导展示与下游使用；一旦早退条件变化，miss 惩罚将静默失效。",
+        "suggestion": "[重构思路] 显式处理边界：totalHits 为 0 时保持 0，其余情况（含 totalSuccessfulHits==0）都用同一公式，避免依赖别的早退分支兜底。代码示例：`effectiveMissCount = totalHits > 0 ? Math.Max(1.0, 1000.0 / Math.Max(1, totalSuccessfulHits)) * countMiss : 0;`",
+        "category": "可靠性",
+        "subcategory": "边界条件与默认值",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 60,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "public double ConsistencyFactor { get; set; }",
+        "review": "[缺陷类型] 遗留字段/计算（消费者已删除，生产端仍在计算与暴露）。影响评估：无功能性错误，但保留无消费者的属性会让 API 语义漂移，且每次难度计算都多一次 peaks 排序统计；也无法判断是遗忘还是刻意保留。",
+        "suggestion": "[重构思路] 明确取舍：若无其他消费者，则移除 TaikoDifficultyAttributes.ConsistencyFactor 与 calculateConsistencyFactor，并从 combinedDifficultyValue 去掉 out 参数；若仍是线上契约（例如服务端需要），在属性上加 XML 注释说明用途与消费方，避免后续误删。代码示例：`// 保留时：/// <summary>供服务端 … 消费，客户端 performance 计算不再使用。</summary>`",
+        "category": "可维护",
+        "subcategory": "废弃字段与无用计算",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 150,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "strainLengthBonus = 1",
+        "review": "[缺陷类型] 魔法数字与隐式参数耦合（改写后可读性低于原 ReverseLerp 写法）。影响评估：数值等价，不影响当前结果；但上限拐点与斜率之间的耦合被隐藏，后续单独调整 0.15 或 3700 会静默改变平衡，且 1000/7.0/0.05 等阈值无来源说明。",
+        "suggestion": "[重构思路] 用具名常量表达「起算点 / 上限 / 上限对应 strains」，或用 ReverseLerp 保留原有表达力；staminaSkill 项同样命名。代码示例：`double strainsBonus = 0.15 * DifficultyCalculationUtils.ReverseLerp(staminaDifficultStrains, 1000, 1555);\ndouble staminaSkillBonus = 0.05 * DifficultyCalculationUtils.ReverseLerp(staminaSkill, 7.0, 8.0);\nstrainLengthBonus = 1 + strainsBonus + staminaSkillBonus;`",
+        "category": "可读性",
+        "subcategory": "魔法数字与隐式耦合",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 123,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyAttributes.cs",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "public double ConsistencyFactor { get; set; }",
+        "review": "[缺陷类型] 契约文档缺失（字段的客户端消费者被移除，但仍是数据库/序列化契约）。影响评估：本身不产生运行时错误，但极易诱导后续维护者误删该属性或其映射，导致读取既有 osu_difficulty_attribs 记录时抛 KeyNotFoundException。",
+        "suggestion": "[重构思路] 保留字段与映射，并在属性与 calculateConsistencyFactor 上补充说明用途：客户端 performance 已不再使用，仅作为 osu_difficulty_attribs / JSON 的历史契约保留；若确认服务端也不再需要，应在单独的重构中同时处理旧数据兼容（先用 TryGetValue 兜底再移除）。代码示例：`/// <summary>历史一致度因子，客户端 pp 已不消费，仅保留以兼容 osu_difficulty_attribs 反序列化。</summary>`",
+        "category": "可维护",
+        "subcategory": "序列化契约与误删风险",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 52,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

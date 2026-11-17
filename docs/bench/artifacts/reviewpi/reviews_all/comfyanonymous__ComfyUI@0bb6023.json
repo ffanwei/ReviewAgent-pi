@@ -1,0 +1,197 @@
+{
+  "generatedAt": "2026-11-15T02:23:48.119Z",
+  "runId": "20261115_022034_532",
+  "source": "mr",
+  "caseId": "comfyanonymous__ComfyUI@0bb6023",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "notebooks/comfyui_colab.ipynb",
+      "line": 289,
+      "title": "colab iframe cell 删除 time/socket 导入后仍在轮询端口",
+      "description": "第二个 cell 同样删除了 import time 与 import socket，仅保留 import threading，但 iframe_thread 内部依旧使用 time.sleep(0.5) 与 socket.socket(...)/sock.connect_ex(...)。执行该 cell 时线程会在 time.sleep 处抛出 NameError，output.serve_kernel_port_as_iframe 永远不会被调用，作为 localtunnel 不可用时的备选方案也一并失效。",
+      "evidence": [
+        "notebooks/comfyui_colab.ipynb:286 — 变更后该 cell 仅剩 \"import threading\"",
+        "notebooks/comfyui_colab.ipynb:289 — \"time.sleep(0.5)\"，time 未导入",
+        "notebooks/comfyui_colab.ipynb:290 — \"sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\"，socket 未导入",
+        "notebooks/comfyui_colab.ipynb:295-298 — 端口轮询成功后才执行 output.serve_kernel_port_as_iframe / serve_kernel_port_as_window",
+        "diff 中删除的两行：\"import time\"、\"import socket\""
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.88,
+      "tips": {
+        "review": "[缺陷类型] 删除导入后仍引用导致 NameError。影响评估：Colab iframe 备用方案整体失效，且因为异常发生在 daemon 线程内，cell 表面执行成功、实际没有任何 UI 输出。",
+        "suggestion": "[重构思路] 保留 socket 与 time 导入（它们在函数体内仍被使用），或把轮询逻辑改为使用标准库的惰性导入以明确依赖。代码示例：`import threading\\nimport time\\nimport socket\\n\\ndef iframe_thread(port):\\n    ...`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "ruff.toml",
+      "line": 9,
+      "title": "lint.select 从三条规则扩张为整个 F 规则族，但未附带存量违规清理与 ipynb 覆盖",
+      "description": "ruff.toml 将 lint.select 由 S307 + F401/F841/F821 改为 S307 + 整个 \"F\"（Pyflakes）规则族，命中面从 3 条扩展到 F401-F823 全家族（含 F541、F811、F601、F-string 相关问题等）。当前代码库中已存在会被新规则命中的存量代码，例如 comfy/ldm/modules/sub_quadratic_attention.py:25 的 \"from typing import List\" 与第 20/22 行 try 分支内的 List 导入重复（F811 重定义）；本次 MR 未同步清理这类存量问题，一旦 lint 作为门禁执行，整个仓库的检查结果会由“基本通过”变为大面积报错，属于典型的“收紧配置但不修存量”。另外 ruff 默认 include 仅覆盖 *.py / *.pyi，本 MR 没有配置 extend-include 覆盖 *.ipynb，因此本次真正引入运行时缺陷的 notebooks/comfyui_colab.ipynb（time/socket/subprocess/urllib 未导入）不会被 F821 捕获，说明该配置收紧对本 MR 自身的缺陷并未形成防护。",
+      "evidence": [
+        "ruff.toml:9 — 变更后为 \"F\",（变更前为 \"F401\"、\"F841\"、\"F821\" 三行）",
+        "ruff.toml:6 — 仍保留 \"S307\"",
+        "comfy/ldm/modules/sub_quadratic_attention.py:20/22 — try/except 分支内已导入 Optional, NamedTuple, List",
+        "comfy/ldm/modules/sub_quadratic_attention.py:25 — \"from typing import List\" 重复导入，属 F811 命中范围",
+        "notebooks/comfyui_colab.ipynb:244/245 仍引用未导入的 time/socket，若配置 extend-include = [\"*.ipynb\"] 即可被 F 系列捕获"
+      ],
+      "rule": "CONFIG-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 静态检查配置收紧与存量代码不匹配。影响评估：合入后 lint 结果会出现大量新增告警/CI 失败，需要额外的批量修复 MR；同时因未覆盖 notebook，本次真正的运行时缺陷（未定义名称）不会被规则拦住，收紧配置的实际收益被削弱。",
+        "suggestion": "[重构思路] 分两步推进：先单独提交存量 F 规则违规的修复，再收紧 select；同时显式声明 notebook 覆盖，使 F821 能作用于示范 notebook。代码示例：`lint.select = [\"S307\", \"F\"]\\nextend-include = [\"*.ipynb\"]\\n`，并在同一 MR 中给出 `ruff check .` 的通过结果。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "comfy_extras/nodes_clip_sdxl.py",
+      "line": 25,
+      "title": "CLIPTextEncodeSDXL 的 clip 输入从中间位置前移到首位，改变了对外暴露的输入顺序",
+      "description": "变更前去重前 \"clip\" 在 required 字典字面量里出现三次，Python 字典对重复键保留首次插入位置，因此旧 object_info 中 clip 的位置在 target_height 之后；变更后 clip 被显式放到 required 首位，node_info 向前端暴露的输入槽顺序随之改变。由于 prompt 是以输入名为键的字典（clip 为非 widget 的连线输入，不参与 widgets_values 的位置对齐），功能路径不受影响，且新顺序与 encode(self, clip, width, height, ...) 的形参顺序更一致；但仍建议确认前端节点重绘与既有工作流加载时的输入槽展示无回归。",
+      "evidence": [
+        "comfy_extras/nodes_clip_sdxl.py:25 — 变更后 \"clip\": (\"CLIP\", ) 位于 required 第一个键",
+        "comfy_extras/nodes_clip_sdxl.py:32-33 — text_g / text_l 顺延到其后，widget 相对顺序未变",
+        "comfy_extras/nodes_clip_sdxl.py:40 — encode(self, clip, width, height, crop_w, crop_h, target_width, target_height, text_g, text_l)，新顺序与形参一致",
+        "diff 中删除的两处 \"\\\"clip\\\": (\\\"CLIP\\\", )\" 重复键"
+      ],
+      "rule": "API-COMPAT-003",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 节点定义（INPUT_TYPES）顺序变更引发的接口契约变化。影响评估：去重本身是正确修复，风险主要在 UI 输入槽顺序变化与前端/旧工作流一致性，功能路径（按名传参）不受影响。",
+        "suggestion": "[重构思路] 保留去重修复，并在说明中明确这是 UI 顺序调整；如担心旧工作流视觉差异，可在发布说明中提示，或保持原插入位置只删除重复键。代码示例：`\"required\": {\"clip\": (\"CLIP\", ), \"width\": (...), ..., \"text_g\": (...), \"text_l\": (...)}`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "comfy/controlnet.py",
+      "line": 824,
+      "title": "prefix_replace 生成语句保留多余的 format 尾随逗号写法，易被误读为仍有第二个占位符",
+      "description": "该行由 \"adapter.body.{}.\".format(i, j) 改为 \"adapter.body.{}.\".format(i, )，语义上两者完全一致（单占位符会忽略多余参数），属于清理无用实参的正确改动；但保留下来的尾随逗号与相邻的 \"adapter.body.{}.resnets.{}.\" 双占位写法放在一起，会让读者误以为此处仍缺一个参数或误判为元组生成。循环中 j 仅用于上一行的 resnets 前缀，通用前缀与 j 无关，因此更清晰的写法是显式使用 f-string 把 i 的语义写明（如 body 层号到 i*2 的映射）。",
+      "evidence": [
+        "comfy/controlnet.py:823 — prefix_replace[\"adapter.body.{}.resnets.{}.\".format(i, j)] = \"body.{}.\".format(i * 2 + j)",
+        "comfy/controlnet.py:824 — prefix_replace[\"adapter.body.{}.\".format(i, )] = \"body.{}.\".format(i * 2)",
+        "comfy/utils.py:95-99 — state_dict_prefix_replace 按 replace_prefix 插入序遍历，先注册的 resnets 具体前缀优先匹配，故本次仅删参数不改变映射结果"
+      ],
+      "rule": "STYLE-002",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 格式化字符串写法可读性不足（残留尾随逗号）。影响评估：无运行时影响，但增加后续维护者误判参数个数的概率，容易在下次修改时引入真正的占位符/实参不匹配。",
+        "suggestion": "[重构思路] 改用 f-string 并把映射关系写清楚，去掉尾随逗号。代码示例：`prefix_replace[f\"adapter.body.{i}.resnets.{j}.\"] = f\"body.{i * 2 + j}.\"\\nprefix_replace[f\"adapter.body.{i}.\"] = f\"body.{i * 2}.\"`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "notebooks/comfyui_colab.ipynb",
+      "line": 244,
+      "title": "localtunnel 与 colab iframe 两个 cell 删除 time/socket/subprocess/urllib 导入后仍在引用这些模块",
+      "description": "本 MR 从 localtunnel cell（变更后仅保留 `import threading`，第 240 行）和 colab iframe cell（变更后同样仅保留 `import threading`，第 286 行）中删除了 import subprocess / time / socket / urllib.request，但两个 cell 的 iframe_thread 函数体仍在使用这些模块：localtunnel cell 第 244 行 time.sleep、第 245 行 socket.socket/socket.AF_INET/socket.SOCK_STREAM、第 252 行 urllib.request.urlopen、第 253 行 subprocess.Popen；iframe cell 第 289 行 time.sleep、第 290 行 socket.socket。这两条路径都是「自带以 `!python main.py --dont-print-server` 启动服务器」的互斥方案（localtunnel cell 第 260 行、iframe cell 第 302 行），因此用户在全新 kernel 中按文档走其中任一条路径时，daemon 线程会在第一行 time.sleep 处抛 NameError 立即退出：端口轮询与 localtunnel/iframe 启动逻辑全部不再执行，服务器虽由 `!python main.py` 启动但不会暴露访问地址，用户只能看到“卡住/没有链接”。需要说明的缓解情形是：第 186-217 行的 cloudflared cell 在第 190-194 行仍导入了这四个模块，若用户在同一 kernel 中先执行过该 cell（其导入已生效、cell 因 !python 阻塞），这些名字会残留并掩盖本缺陷；但 cloudflared cell 与另两条路径互斥（端口冲突），不能作为正常使用路径的依赖。此外 .github/workflows/test-ci.yml 第 8-15 行 paths-ignore 含 'notebooks/**'，notebook 改动不会触发任何测试，该回归只能靠人工发现。",
+      "evidence": [
+        "notebooks/comfyui_colab.ipynb:240 — 变更后 localtunnel cell 仅剩 \"import threading\"",
+        "notebooks/comfyui_colab.ipynb:244 — \"time.sleep(0.5)\"，time 在该 cell 中已无导入",
+        "notebooks/comfyui_colab.ipynb:245 — \"sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\"，socket 未导入",
+        "notebooks/comfyui_colab.ipynb:252 — \"urllib.request.urlopen('https://ipv4.icanhazip.com')\"，urllib.request 未导入",
+        "notebooks/comfyui_colab.ipynb:253 — \"p = subprocess.Popen([\\\"lt\\\", \\\"--port\\\", ...])\"，subprocess 未导入",
+        "notebooks/comfyui_colab.ipynb:286/289/290 — iframe cell 仅 \"import threading\"，随后使用 time.sleep 与 socket.socket",
+        "notebooks/comfyui_colab.ipynb:260/302 — 两个 cell 均以 \"!python main.py --dont-print-server\" 自行启动服务，属互斥路径",
+        "notebooks/comfyui_colab.ipynb:190-194 — cloudflared cell 仍导入 subprocess/threading/time/socket/urllib.request，是唯一可能残留这些名字的来源",
+        "diff 中被删除的行：\"import subprocess\"、\"import time\"、\"import socket\"、\"import urllib.request\"（共两处 cell）",
+        "​.github/workflows/test-ci.yml:8-15 — paths-ignore 包含 'notebooks/**'，notebook 改动不参与测试"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 删除导入后仍引用导致的 NameError（F821 undefined name），且异常发生在 daemon 线程内被静默吞掉。影响评估：Colab 用户走 localtunnel 或 iframe 路径时隧道/iframe 均无法建立，cell 表面执行成功、无任何明显报错，排查成本高；由于 notebooks/** 被 CI 排除、ruff check . 默认也不检查 *.ipynb，该回归在门禁中完全不可见。",
+        "suggestion": "[重构思路] 恢复实际被引用的导入，只清理真正未使用的符号；若确实要精简，可把端口轮询抽成显式依赖的标准库惰性导入，并让两个 cell 复用同一段辅助函数，避免同一份代码复制两遍后再次漂移。代码示例：`import threading\\nimport time\\nimport socket\\nimport subprocess\\nimport urllib.request\\n`，并在 ruff.toml 中增加 `extend-include = [\"*.ipynb\"]` 以便 F821 能覆盖 notebook。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "ruff.toml",
+      "line": 9,
+      "title": "lint.select 扩张为整个 F 规则族，但未同步清理存量违规，也未覆盖 *.ipynb",
+      "description": "本 MR 把 lint.select 由 S307 + F401/F841/F821 三条规则改为 S307 + 整个 \"F\"（Pyflakes）规则族，同时 .github/workflows/ruff.yml 在每次 push 与 pull_request 上执行 `ruff check .`（第 3、23 行），所以这次收紧会立刻作用于门禁。仓库中已存在会被新规则命中的存量代码：comfy/ldm/modules/sub_quadratic_attention.py 第 20/22 行在 try/except ImportError 分支内已导入 Optional, NamedTuple, List，第 25 行又无条件 `from typing import List`，属 F811（redefinition of unused name）命中面——本 MR 在同一个 hunk 里删掉了重复的 `from torch import Tensor`，却把这一处重复导入留着，一旦 CI 运行即可触发 `ruff check .` 失败，需要额外的修复 MR 才能合入其它改动。另一方面，第 7-8 行注释宣称该配置用于捕获 “syntax errors and undefined names”，但 ruff 默认 include 仅覆盖 *.py/*.pyi，配置中没有 extend-include，因此本 MR 自身引入的 notebooks/comfyui_colab.ipynb 里 time/socket/subprocess/urllib 未定义（F821）完全不会被检查拦截，配置收紧对真实缺陷没有形成防护。",
+      "evidence": [
+        "ruff.toml:9 — 变更后为 \"F\",（变更前为 \"F401\"、\"F841\"、\"F821\" 三行）",
+        "ruff.toml:7-8 — 注释声称本配置捕获 Pyflakes 的语法错误与未定义名称",
+        "ruff.toml:5-6 — lint.select 仍包含 \"S307\"，说明 select/ignore 组合本身在此仓库是生效的",
+        "​.github/workflows/ruff.yml:3 — \"on: [push, pull_request]\"",
+        "​.github/workflows/ruff.yml:19-23 — \"pip install ruff\" 后执行 \"ruff check .\"，即 lint 为强制门禁",
+        "comfy/ldm/modules/sub_quadratic_attention.py:20/22 — try 与 except ImportError 分支内均已导入 Optional, NamedTuple, List",
+        "comfy/ldm/modules/sub_quadratic_attention.py:25 — \"from typing import List\" 为无条件重复导入，落在 F811 命中范围",
+        "notebooks/comfyui_colab.ipynb:244/245/252/253 仍引用未导入的 time/socket/urllib.request/subprocess，配置无 extend-include 时 F821 不生效"
+      ],
+      "rule": "CONFIG-001",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 静态检查配置收紧与存量代码/检查范围不匹配。影响评估：合入后 `ruff check .` 很可能在既有文件上直接失败，阻塞后续所有 PR 的 CI；同时因未覆盖 *.ipynb，本次真正的运行时缺陷（未定义名称）反而逃过检查，形成“门禁变严但漏掉真正问题”的双输局面。",
+        "suggestion": "[重构思路] 把存量清理与规则收紧拆成两步，并补齐 notebook 覆盖：先跑 `ruff check . --select F --statistics` 清完存量 F 违规（至少修掉 sub_quadratic_attention.py:25 的重复 List 导入），再提交 ruff.toml 的 select 变更；同时用 extend-include 让 F821 作用于示范 notebook。代码示例：`lint.select = [\"S307\", \"F\"]\\nextend-include = [\"*.ipynb\"]\\n`，并在 MR 中附上 `ruff check .` 全部通过的输出。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "comfy_extras/nodes_clip_sdxl.py",
+      "line": 25,
+      "title": "CLIPTextEncodeSDXL 的 clip 输入前移到 required 首位，改变了向前端暴露的输入顺序",
+      "description": "变更前 \"clip\" 在 required 字典字面量中出现三次（与 text_g、text_l 同行重复），Python 字典对重复键保留首次插入位置，因此旧 object_info 中 clip 的位置在 target_height 之后；变更后 clip 被显式放到 required 首位，node_info 向前端暴露的 required 顺序随之改变。由于 prompt 是以输入名为键的字典，且 clip 是非 widget 的连线输入、不参与 widgets_values 的位置对齐（width…text_l 等 widget 的相对顺序未变），功能执行路径不受影响，新顺序还与 encode(self, clip, width, height, crop_w, crop_h, target_width, target_height, text_g, text_l) 的形参顺序更一致——去重本身是正确修复。但这一变化会让前端节点重绘时输入槽顺序与旧版本不同，建议在 MR 说明中显式标注，并确认既有 SDXL 工作流加载后连线仍落在 clip 上、无 UI 回归。",
+      "evidence": [
+        "comfy_extras/nodes_clip_sdxl.py:25 — 变更后 \"clip\": (\"CLIP\", ) 为 required 的第一个键",
+        "comfy_extras/nodes_clip_sdxl.py:26-33 — width/height/crop_w/crop_h/target_width/target_height/text_g/text_l 顺延，widget 相对顺序未变",
+        "comfy_extras/nodes_clip_sdxl.py:40 — encode(self, clip, width, height, crop_w, crop_h, target_width, target_height, text_g, text_l)，首参即 clip",
+        "diff 中被删除的两处 \"\\\"clip\\\": (\\\"CLIP\\\", )\" 重复键（原位于 text_g 与 text_l 同行）",
+        "comfy_extras/nodes_clip_sdxl.py:10 — 相邻的 CLIPTextEncodeSDXLRefiner 仍保留 \"text\": (...), \"clip\": (...) 的行内写法，顺序同样与 encode(clip, ...) 不一致"
+      ],
+      "rule": "API-COMPAT-003",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 节点 INPUT_TYPES 顺序变更带来的接口契约/UI 顺序变化。影响评估：去重修复正确、执行路径不变，风险集中在前端输入槽顺序变化与旧工作流视觉一致性，属需要确认而非确定的缺陷。",
+        "suggestion": "[重构思路] 保留去重，只在说明中记录顺序变化；若希望完全零差异，可仅删除重复键而保持 clip 的原插入位置。代码示例：`\"required\": {\"width\": (...), ..., \"target_height\": (...), \"text_g\": (...), \"clip\": (\"CLIP\", ), \"text_l\": (...)}`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "comfy/controlnet.py",
+      "line": 824,
+      "title": "prefix_replace 生成语句保留多余的 format 尾随逗号，易被误读为仍缺一个实参",
+      "description": "该行由 \"adapter.body.{}.\".format(i, j) 改为 \"adapter.body.{}.\".format(i, )，语义上两者完全一致（单占位符会忽略多余实参），删除无用参数是正确清理；comfy/utils.py 第 95-99 行的 state_dict_prefix_replace 按 replace_prefix 插入序遍历，本循环先注册 \"adapter.body.{i}.resnets.{j}.\" 再注册 \"adapter.body.{i}.\"，具体前缀先匹配，因此映射结果未变。但保留下来的尾随逗号与上一行双占位符写法相邻，容易让读者误判此处仍需第二个参数，或误以为是元组写法；j 只服务于 resnets 前缀，通用前缀与 j 无关，用 f-string 显式表达更清晰。",
+      "evidence": [
+        "comfy/controlnet.py:823 — prefix_replace[\"adapter.body.{}.resnets.{}.\".format(i, j)] = \"body.{}.\".format(i * 2 + j)",
+        "comfy/controlnet.py:824 — prefix_replace[\"adapter.body.{}.\".format(i, )] = \"body.{}.\".format(i * 2)",
+        "comfy/utils.py:95-99 — state_dict_prefix_replace 按 replace_prefix 插入序遍历并先匹配已注册前缀，故删参不改变 adapter→body 键映射"
+      ],
+      "rule": "STYLE-002",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 格式化字符串写法可读性不足（残留尾随逗号）。影响评估：无运行时影响，但增加了后续维护者误判参数个数、在修改时引入真正占位符/实参不匹配的概率。",
+        "suggestion": "[重构思路] 统一改用 f-string 并去掉尾随逗号，把 i→i*2 的映射关系写在同一缩进层更直观。代码示例：`prefix_replace[f\"adapter.body.{i}.resnets.{j}.\"] = f\"body.{i * 2 + j}.\"\\nprefix_replace[f\"adapter.body.{i}.\"] = f\"body.{i * 2}.\"`",
+        "subcategory": ""
+      }
+    }
+  ]
+}

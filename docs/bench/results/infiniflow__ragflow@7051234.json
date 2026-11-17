@@ -1,0 +1,682 @@
+{
+  "instance_id": "infiniflow__ragflow@7051234",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "b1c874698469ac999d210cd8cde59425781e4da2",
+  "head_commit": "705123406ec7cd5eb1f9be26f6c5c31357aeffc9",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1011.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 66,
+  "review_output": [
+    {
+      "file": "api/apps/api_app.py",
+      "line": 620,
+      "summary": "document_rm 对可能为 None 的返回值做成员判断，仅按 doc_ids 删除必然 500",
+      "failure_scenario": "api_app.document_rm 改为一次性批量解析 doc_names，但 DocumentService.get_doc_ids_by_doc_names 在无匹配时返回 None（而非空列表）。当调用方只传 doc_ids、不传 doc_names 时，get_doc_ids_by_doc_names([]) 一定返回 None，随后 `if doc_id not in doc_ids` 对 None 做成员判断会抛 TypeError，被外层 except 捕获后走 server_error_response 返回 500，导致 DELETE /v1/document 按 doc_ids 删除的既有用法整体失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-NULL-001"
+    },
+    {
+      "file": "api/apps/document_app.py",
+      "line": 334,
+      "summary": "删除文档时去掉 f2d 判空，File2Document 关联缺失将抛 IndexError 并返回 500",
+      "failure_scenario": "document_app.rm 把原先 `deleted_file_count = 0; if f2d: ...` 的守卫删掉，改成无条件访问 f2d[0].file_id。File2DocumentService.get_by_document_id 返回的是列表，当文档没有 file2document 关联（例如非上传路径创建、或关联已被删除）时为空列表，f2d[0] 抛 IndexError，被同函数 except 捕获后累积到 errors，接口返回 500，并且后续的 File2DocumentService.delete_by_document_id 与 STORAGE_IMPL.rm(b, n) 都不会执行，留下存储与关联残留。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-NULL-002"
+    },
+    {
+      "file": "api/apps/file_app.py",
+      "line": 260,
+      "summary": "文件管理删除单个文件时不再删除对象存储内容，产生孤儿文件",
+      "failure_scenario": "file_app.rm 的非文件夹分支删除了原有的 `STORAGE_IMPL.rm(file.parent_id, file.location)`，只保留 FileService.delete(file)，而 FileService.delete 仅执行 delete_by_id 删除数据库行，不会触碰对象存储。同一函数的文件夹分支仍在逐个调用 STORAGE_IMPL.rm，说明该行为是必要的。结果是用户删除文件后二进制对象永久驻留在存储中（磁盘持续膨胀，且敏感数据未被真正清除），并造成两条删除路径行为不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "RESOURCE-CLEANUP-001"
+    },
+    {
+      "file": "api/db/services/dialog_service.py",
+      "line": 119,
+      "summary": "chat_solo 删除 delta_ans 初始化与循环内重置，可能 UnboundLocalError 并重复发送尾段 TTS",
+      "failure_scenario": "chat_solo 的流式分支删除了 `delta_ans = \"\"` 初始化以及每次 yield 后的 `delta_ans = \"\"` 重置。若 chat_streamly 未产出任何元素，循环体不执行，循环外的 `if delta_ans:` 会引用未定义变量抛 UnboundLocalError；正常结束时 delta_ans 保留最后一次的增量值（而非被清零），末尾分支会把最后一段增量再次通过 tts() 发送，造成重复音频/重复答案片段。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "CORRECTNESS-UNBOUND-001"
+    },
+    {
+      "file": "agent/component/base.py",
+      "line": 482,
+      "summary": "get_input 去掉 component_id 的 @ 判断，split 解包可能抛 ValueError",
+      "failure_scenario": "内联后的 get_input 用 `q[\"component_id\"].split(\"@\")[0].lower().find(\"begin\") >= 0` 判定是否为 Begin 引用，随后 `cpn_id, key = q[\"component_id\"].split(\"@\")` 解包。原实现有 `\"@\" in q[\"component_id\"] and` 前置条件，保证了解包前一定含 @。现在只要某个 component_id 含子串 \"begin\" 但不含 \"@\"（例如自定义/历史画布中的节点 id），条件成立而 split 只有一个元素，解包抛出 ValueError: not enough values to unpack，整个 Agent 运行失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-UNPACK-001"
+    },
+    {
+      "file": "agent/component/keyword.py",
+      "line": 54,
+      "summary": "KeywordExtract 只取输入首行，多输入内容被静默丢弃",
+      "failure_scenario": "keyword.py 的 _run 把原来的「有 content 列则 join 全部非空行」改成固定取 `query[\"content\"][0]`。当上游传入多行内容（多个输入变量、多行文本）时，除第一行以外的内容被静默丢弃，关键词提取结果与检索 query 随之改变，属于不易察觉的行为回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "BEHAVIOR-TRUNCATE-001"
+    },
+    {
+      "file": "api/apps/sdk/dataset.py",
+      "line": 147,
+      "summary": "create 与 update 的 embedding 白名单不一致，且存在不可达校验分支",
+      "failure_scenario": "create 中内联的 valid_embedding_models 只有 2 个模型，update 中同名列表有 12 个，同一次请求在「创建」与「更新」时判定结果不同（创建会被拒的模型在更新时被放行）。此外 create 中 `if \"tenant_id\" in req`、`if \"chunk_count\" in req or \"document_count\" in req` 两处不可达，因为这些键已被前面的 dataset_readonly_fields 拦截；parser_config 校验依赖 assert，失败时抛 AssertionError 而不是返回 ARGUMENT_ERROR。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-DUP-001"
+    },
+    {
+      "file": "api/apps/sdk/dataset.py",
+      "line": 174,
+      "summary": "create 未清理别名字段就把 req 传入 save，chunk_method/embedding_model 与数据库列同时出现",
+      "failure_scenario": "重建后的 /datasets POST 用 mapped_keys 只做「新增」别名键（parser_id、embd_id），没有像 update() 那样 pop 掉客户端的 chunk_method、embedding_model。最终传入 KnowledgebaseService.save(**req) 的字典同时包含 chunk_method/embedding_model 与 parser_id/embd_id，而 Knowledgebase 模型只有 parser_id/embd_id 两个字段，CommonService.save 直接 `cls.model(**kwargs)`，未知关键字依 peewee 版本可能抛 TypeError 造成 500，至少也会引入与 update 语义不一致的脏参数。SDK 的 create_dataset 始终发送这两个键（chunk_method 默认 \"naive\"、embedding_model 默认 \"BAAI/bge-large-zh-v1.5\"），影响全部 SDK 建库调用。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-PARAM-001"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 434,
+      "summary": "subgraph 文档不再删除也不再被读取，但写入逻辑保留，形成只增不减的孤儿数据",
+      "failure_scenario": "本次把图谱重建改为从 entity/relation 文档聚合（rebuild_graph），set_graph 也仅删除 knowledge_graph_kwd=graph，不再清理 subgraph；但 graphrag/general/index.py 的 generate_subgraph 仍在每次运行中写入完整子图 JSON（knowledge_graph_kwd=subgraph），document_service.remove_document 的条件里也仍列着 subgraph。结果是每个文档都会写入一份体积可观的 subgraph 文档，却没有任何读取方，删除文档时也仅是按 source_id 走（在 Infinity 下还会因 F004/F005 而失效），长期累积造成存储膨胀与语义混乱。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "MAINTAINABILITY-ORPHAN-DATA"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 434,
+      "summary": "subgraph 文档不再被读取与清理，但写入逻辑保留，形成只增不减的孤儿数据",
+      "failure_scenario": "本次把图谱重建改为从 entity/relation 聚合（rebuild_graph），set_graph 也只删除 knowledge_graph_kwd=graph、不再清理 subgraph；但 graphrag/general/index.py 的 generate_subgraph 仍在每次运行中写入完整子图 JSON（knowledge_graph_kwd=subgraph），document_service.remove_document 的清理条件里也仍列着 subgraph。结果是每个文档都会写入一份体积可观的 subgraph 文档却无人读取，删除文档时也仅按 source_id 处理（在 Infinity 下还会因 F004/F005 失效），长期累积造成存储膨胀与数据模型语义混乱。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "MAINTAINABILITY-ORPHAN-DATA"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 569,
+      "summary": "rebuild_graph 分页终止条件使用总命中数，导致每次重建跑满 1024 次空查询",
+      "failure_scenario": "两个分页循环都用 `settings.docStoreConn.getTotal(es_res)` 判断是否继续，但 getTotal 返回的是命中总数而非本页条数（ES 取 hits.total，Infinity 取 res[1]）。只要该 KB 还有数据，tot 恒大于 0，`break` 永不触发，循环会按 `range(0, 1024*bs, bs)` 跑满 1024 次分页查询（每次 bs=256），即单次 rebuild 至少发出 2048 次检索请求，绝大多数返回空页。图谱重建会被显著拖慢，并给 doc engine 造成额外压力。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.8,
+      "rule": "PERF-PAGINATION-TERMINATION"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 575,
+      "summary": "rebuild_graph 实体遍历时断言字段为 relation，导致重建必然抛 AssertionError",
+      "failure_scenario": "rebuild_graph 的第一个分页循环以 knowledge_graph_kwd=[\"entity\"] 查询实体文档，但循环体内却断言 d[\"knowledge_graph_kwd\"] == \"relation\"。只要 KB 中存在任意一条实体文档，该断言即失败并抛出 AssertionError，整个函数中断。而 get_graph 在找不到（或无法解析）graph 文档时会调用 rebuild_graph 兜底，因此这条兜底路径从“返回重建后的图”退化为“直接抛异常”，图谱合并（merge_subgraph）与实体消解等流程将整体失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-ASSERT-MISMATCH"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 589,
+      "summary": "rebuild_graph 在关系分页为空时 return None，丢弃已构建的实体图",
+      "failure_scenario": "第二个分页循环在 getTotal 为 0 时执行 `return None` 而非 `break`，于是当 KB 只有实体、没有关系（或关系尚未写入）时，前面辛苦构建的 graph（含全部节点与 src_ids）被直接丢弃，函数返回 None。调用方 get_graph 因此认为“没有图”，merge_subgraph 会当作首次建图重新开始，导致既有实体/边信息丢失并重算 pagerank；同时该分支也绕过了 `graph.graph[\"source_id\"] = src_ids` 的赋值。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "CORRECTNESS-EARLY-RETURN"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 67,
+      "summary": "_kwd 条件改为精确匹配，与按 \"###\" 拼接存储的多值列不兼容",
+      "failure_scenario": "重构把 field_keyword 收敛为实例方法后，模块级 equivalent_condition_to_str 不再对 _kwd 字段（含 source_id、tag_kwd 等）生成 filter_fulltext 条件，而统一走 `k IN (...)` / `k='v'` 精确匹配。但 insert/update 时这些多值字段是以 \"###\".join(list) 存成一整个字符串的（source_id 显式在 field_keyword 白名单内）。因此以单个 doc_id 或单个 tag 作为条件时无法命中“docA###docB”这类值：按 source_id 删除/更新图谱行、按 tag 匹配 chunk 都会漏命中，进一步放大 F004 的数据残留问题。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "DATASTORE-CONDITION-SEMANTICS"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 556,
+      "summary": "Infinity update 丢弃 dict 形式 remove，标签删除与 source_id 摘除变成空操作",
+      "failure_scenario": "重构后的 update() 对 `k == \"remove\"` 只保留 `PAGERANK_FLD` 归零的分支，其余情形仅 `del newValue[k]`，最终以空的 newValue 调用 table_instance.update()。但仓库中仍有两类调用方传入 dict 形式的 remove：kb_app 的 rm_tags/rename_tag（`{\"remove\": {\"tag_kwd\": t}}`）与 document_service.remove_document（`{\"remove\": {\"source_id\": doc.id}}`）。在 Infinity 作为 doc engine 时这些操作全部变成 no-op：删除文档后图谱 entity/relation 文档仍保留已删文档的 source_id，标签删除/重命名也不生效，removed_kwd 与后续清理条件失真。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "DATASTORE-REMOVE-SEMANTICS"
+    },
+    {
+      "file": "rag/svr/task_executor.py",
+      "line": 274,
+      "summary": "图片上传由限流并发改为串行循环，含图文档解析显著变慢",
+      "failure_scenario": "原实现删除 minio_limiter（MAX_CONCURRENT_MINIO）并用 trio.open_nursery 并发上传每个 chunk 的图片；重构后改为对 cks 逐个 deepcopy、逐个同步 `await trio.to_thread.run_sync(STORAGE_IMPL.put...)`。对于扫描件 PDF、含大量插图的 DOCX 等“图片 chunk 很多”的文档，对象存储写入从并发（上限 10）退化为完全串行，解析总时长随图片数量线性增长，且同时删除了 MAX_CONCURRENT_MINIO 环境变量的可调性。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.75,
+      "rule": "PERF-CONCURRENCY-LOSS"
+    },
+    {
+      "file": "rag/svr/task_executor.py",
+      "line": 704,
+      "summary": "recover_pending_tasks 的 60s 等待移入 try，异常路径失去退避形成热循环",
+      "failure_scenario": "原实现把 stop_event.wait(60) 放在 finally 中，无论成功失败都会节流；重构后被移到 try 末尾，一旦 acquire 或 Redis 调用抛异常，控制流直接进入 except/finally，不再等待 60s 即开始下一轮。若 Redis 持续不可用或 requeue 持续失败，该后台线程会在无退避的情况下高频重试，并反复抢/放分布式锁，放大 Redis 压力与日志量。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "RELIABILITY-RETRY-BACKOFF"
+    },
+    {
+      "file": "rag/svr/task_executor.py",
+      "line": 704,
+      "summary": "recover_pending_tasks 等待语句移入 try，异常路径失去 60s 退避形成热循环",
+      "failure_scenario": "原实现把 `stop_event.wait(60)` 放在 finally 中，无论成功失败都会节流；重构后它被移到 try 块末尾，一旦 acquire 或 Redis 调用抛异常，控制流直接进入 except/finally，不经过 60s 等待即开始下一轮。若 Redis 持续不可用或 requeue 持续失败，该后台线程会在没有任何退避的情况下高频重试（同时反复抢/放分布式锁），放大 Redis 与日志压力。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "RELIABILITY-RETRY-BACKOFF"
+    },
+    {
+      "file": "web/src/components/chunk-method-dialog/index.tsx",
+      "line": 24,
+      "summary": "存在 `import {} from 'module';` 的空导入与残留调试日志",
+      "failure_scenario": "文件顶部出现一行从 Node 内置模块 'module' 的空导入，这在浏览器打包环境中无意义且可能触发 externalized 警告/构建配置告警；同时 onSubmit 内保留 `console.log('🚀 ~ onSubmit ~ data:', data)`。这类残留会干扰构建与日志排查，也提示该文件处于未完成状态。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "web/src/components/chunk-method-dialog/index.tsx",
+      "line": 104,
+      "summary": "表单 schema 被裁剪为两个字段，其余解析配置将在提交时被静默剥离",
+      "failure_scenario": "新的 FormSchema 只声明了 parser_config.task_page_size 与 parser_config.layout_recognize，而弹窗内仍渲染 delimiter、chunk_token_num（MaxTokenNumberFormField）、auto_keywords/auto_questions、raptor、entity_types、pages 等控件；zodResolver 默认会剥离未声明字段，因此即便修复 F009，提交上去的 parser_config 也只剩两个字段，后端会把这些配置覆盖为空/默认值（例如 chunk_token_num、delimiter、auto_keywords、raptor、entity_types 丢失），用户以为只是改了分块方法，实际其它配置被清空。同时 DynamicPageRange 与 use-default-parser-values.ts 被删除，pages 的 [from,to] 双向转换逻辑也一并消失。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "UI-SCHEMA-DATA-LOSS"
+    },
+    {
+      "file": "web/src/components/chunk-method-dialog/index.tsx",
+      "line": 156,
+      "summary": "分块方法弹窗的接收函数为空实现，点击「Save changes」不会保存任何配置",
+      "failure_scenario": "ChunkMethodDialog 的表单提交处理函数 onSubmit 只剩一行 console.log，真正调用 onOk 并关闭弹窗的两行代码被注释掉；而弹窗底部的「Save changes」按钮正是通过 form={FormId} 提交该表单。结果是用户修改 chunk method / RAPTOR / 分隔符等切分配置后点击保存没有任何请求发出、弹窗也不关闭，切分配置功能整体失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.92,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "web/src/components/chunk-method-dialog/index.tsx",
+      "line": 157,
+      "summary": "修改 chunk method 的保存流程被注释，提交后不会调用 onOk",
+      "failure_scenario": "ChunkMethodDialog 的 onSubmit 中只剩一句 console.log，原本调用 onOk 并关闭弹窗的代码被整段注释；底部按钮是 type=\"submit\" form={FormId}，因此用户在「修改 chunk method」弹窗点击 Save changes 时会触发表单提交，但既不会调用 onOk，也不会发起 setDocumentParser 请求，弹窗也不会关闭。修改文档解析方式这一核心功能处于静默失效状态（无任何错误提示）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "web/src/components/chunk-method-dialog/index.tsx",
+      "line": 158,
+      "summary": "分块方法弹窗的 onSubmit 逻辑被整体注释，点击保存不会提交任何请求",
+      "failure_scenario": "重构后 onSubmit 仅保留 console.log，`onOk?.(...)` 与 `hideModal?.()` 都被注释掉。用户在该弹窗修改分块方法/参数后点击 “Save changes”，表单校验通过便进入空实现：既不会调用上层 onChangeParserOk（进而调用 setDocumentParser 接口），也不会关闭弹窗，界面看似“无反应”。这是“修改文档解析方法”这一核心功能的行为回退，且隐藏得较深（无报错）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "UI-SUBMIT-NOOP"
+    },
+    {
+      "file": "web/src/components/chunk-method-dialog/index.tsx",
+      "line": 158,
+      "summary": "分块方法弹窗的 onSubmit 逻辑被整体注释，点击保存不发起任何请求",
+      "failure_scenario": "重构后 onSubmit 仅保留 console.log，onOk?.(...) 与 hideModal?.() 都被注释。用户在该弹窗修改分块方法/参数后点击 “Save changes”，表单校验通过即进入空实现：既不调用上层 onChangeParserOk（进而调用 setDocumentParser 接口），也不关闭弹窗，界面表现为“点了没反应”且无任何报错，属于核心功能（修改文档解析方法）的静默失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "UI-SUBMIT-NOOP"
+    },
+    {
+      "file": "web/src/components/chunk-method-dialog/index.tsx",
+      "line": 254,
+      "summary": "弹窗内文案硬编码英文且 i18n key 用错，多语言用户看到错误标签",
+      "failure_scenario": "重构把 `t('common.save')` 换成硬编码的 `Save changes`，把分块方法标签从 `t('knowledgeDetails.chunkMethod')` 改成 `t('name')`（显示为 “Name”，语义不符），并把 zod 校验 message 从 `t('common.pleaseSelect')` 改成字符串 `'namePlaceholder'`（未翻译，会直接把 key 展示给用户）。三处都属于 i18n 回退，与项目其余部分的多语言策略不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "I18N-HARDCODED-TEXT"
+    },
+    {
+      "file": "web/src/components/chunk-method-dialog/index.tsx",
+      "line": 254,
+      "summary": "弹窗文案硬编码英文且 i18n key 用错，多语言用户看到错误标签",
+      "failure_scenario": "重构把 t('common.save') 换成硬编码的 Save changes，把分块方法标签从 t('knowledgeDetails.chunkMethod') 改成 t('name')（显示为 “Name”，语义不符），并把 zod 校验 message 从 t('common.pleaseSelect') 改成字符串 'namePlaceholder'（未翻译，会把 key 直接展示给用户）。三处均属 i18n 回退，与项目其余部分的多语言策略不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "I18N-HARDCODED-TEXT"
+    },
+    {
+      "file": "sdk/python/pyproject.toml",
+      "line": 14,
+      "summary": "SDK 把测试/文档处理依赖并入运行时 dependencies，安装体积与依赖面膨胀",
+      "failure_scenario": "重构把 pytest、python-docx、python-pptx、openpyxl、pillow、reportlab、requests-toolbelt 从 `[dependency-groups] test` 迁移进 `[project] dependencies`，同时删除了 dependency-groups，optional-dependencies.test 只剩 pytest。结果是所有 ragflow-sdk 使用者在 pip install 时会额外拉取 pytest 与整套办公文档/图像处理依赖（reportlab、pillow 等体量较大且带原生扩展），与本 MR 其它位置“减少依赖”的取向相反，也提高了与宿主环境版本冲突的概率。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "PACKAGING-DEP-SCOPE"
+    },
+    {
+      "file": "sdk/python/ragflow_sdk/ragflow.py",
+      "line": 49,
+      "summary": "create_dataset 移除 pagerank 参数，属未过渡的破坏性 API 变更",
+      "failure_scenario": "新版 create_dataset 签名删除了 pagerank 参数（同时新增 language），请求体也不再携带 pagerank。已升级 0.18.0 SDK 且显式传入 pagerank=... 的调用方会直接抛 TypeError；即使改用位置参数避免报错，其原先设置的知识库 pagerank 也会静默失效（后端 create 会把未提供的键按默认值落库）。SDK 版本号未变更，行为却发生了不兼容变化。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "API-BREAKING-CHANGE"
+    },
+    {
+      "file": "rag/llm/__init__.py",
+      "line": 237,
+      "summary": "模型工厂键改名 NovitaAI → novita.ai，存量 tenant_llm 配置可能取不到模型实例",
+      "failure_scenario": "ChatModel 字典键从 \"NovitaAI\" 改为 \"novita.ai\"（前端常量与 supported_models 文档同步改名）。但实例化路径是按数据库中的 llm_factory 值做字典查表：if model_config[\"llm_factory\"] not in ChatModel: return，随后 LLMBundle 断言模型存在。已配置过 Novita 的用户其 tenant_llm.llm_factory 仍是旧值 \"NovitaAI\"，升级后会命中 not in 分支返回 None，进而在 LLMBundle 处触发 \"Can't find model for ...\" 断言失败，相关对话/检索不可用，直到用户手工重新添加模型；入库代码路径中未检索到针对该改名的数据迁移。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "MIGRATION-FACTORY-RENAME"
+    },
+    {
+      "file": "rag/llm/__init__.py",
+      "line": 237,
+      "summary": "模型工厂键改名 NovitaAI → novita.ai，存量 tenant_llm 配置将取不到模型实例",
+      "failure_scenario": "ChatModel 字典的键从 \"NovitaAI\" 改为 \"novita.ai\"（前端与 supported_models 文档同步改名）。但实例化路径是按数据库中的 llm_factory 值做字典查表：`if model_config[\"llm_factory\"] not in ChatModel: return`，随后 LLMBundle 断言模型存在。已配置过 Novita 的用户，其 tenant_llm.llm_factory 仍是旧值 \"NovitaAI\"，升级后会命中 not in 分支返回 None，进而在 LLMBundle 处触发 \"Can't find model for ...\" 断言失败，相关对话/检索功能不可用，直到用户手工重新添加模型。仓库内未检索到针对该改名的数据迁移。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "MIGRATION-FACTORY-RENAME"
+    },
+    {
+      "file": "docs/guides/models/deploy_local_llm.mdx",
+      "line": 79,
+      "summary": "Ollama 部署文档步骤编号跳号（2 之后直接是 4），且丢失 /v1 后缀的关键说明",
+      "failure_scenario": "该文档的标题编号从 “1. Deploy Ollama using Docker”、“2. Ensure Ollama is accessible” 直接跳到 “4. Add Ollama”、“5.”、“6.”、“7.”，缺少步骤 3，按序操作的读者会怀疑漏读了一节。同时原文“put the URL you found in step 2 followed by /v1，即 http://host.docker.internal:11434/v1”被替换为“Ensure that the base URL match the URL determined at step 2”，用户不再被告知需要在 base URL 后追加 /v1，容易填写成 .../11434 导致连接失败（该文档自身还保留了连接报错提示，形成误导）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.7,
+      "rule": "DOC-CONSISTENCY"
+    },
+    {
+      "file": "docs/guides/models/deploy_local_llm.mdx",
+      "line": 80,
+      "summary": "Ollama 部署文档步骤编号跳号（2 之后直接到 4），且丢失 /v1 后缀的关键说明",
+      "failure_scenario": "文档标题编号从 “1. Deploy Ollama using Docker”“2. Ensure Ollama is accessible” 直接跳到 “4. Add Ollama”，随后是 5/6/7，缺少步骤 3，按序操作的用户会怀疑漏读一节。同时原文 “put the URL you found in step 2 followed by /v1，即 http://host.docker.internal:11434/v1” 被替换为 “Ensure that the base URL match the URL determined at step 2”，用户不再被告知需在 base URL 后追加 /v1，容易只填 .../11434 导致连接失败（文中还保留了连接报错提示，形成误导）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "DOC-CONSISTENCY"
+    },
+    {
+      "file": "web/src/components/delimiter-form-field.tsx",
+      "line": 51,
+      "summary": "给 FormControl 传 defaultValue 会造成受控/非受控混用",
+      "failure_scenario": "新增的 `defaultValue={\\`\\n\\`}` 传给了 FormControl（Radix Slot，会把属性透传到子节点 DelimiterInput），而 DelimiterInput 内部已通过 react-hook-form 的 `{...field}` 传入 `value`。最终 `<Input>` 同时收到 value 与 defaultValue：React 会告警“同时提供 value 与 defaultValue”，且 defaultValue 在受控组件上不生效——因此这行改动并不能真正把默认分隔符设为换行，反而引入噪声与困惑。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "UI-CONTROLLED-UNCONTROLLED"
+    },
+    {
+      "file": "web/src/components/delimiter-form-field.tsx",
+      "line": 51,
+      "summary": "给 FormControl 传 defaultValue 造成受控/非受控混用",
+      "failure_scenario": "新增的 defaultValue={`\\n`} 传给了 FormControl（Radix Slot，会把属性透传到子节点 DelimiterInput），而 DelimiterInput 内部已通过 react-hook-form 的 {...field} 传入 value。最终 <Input> 同时收到 value 与 defaultValue：React 会告警“同时提供 value 与 defaultValue”，且 defaultValue 在受控组件上不生效——这行改动并不能真正把默认分隔符设为换行，反而引入告警与语义困惑。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "UI-CONTROLLED-UNCONTROLLED"
+    },
+    {
+      "file": "web/src/components/parse-configuration/raptor-form-fields.tsx",
+      "line": 86,
+      "summary": "把 prompt 默认值挂在 FormControl 的 defaultValue 上，无法写入 react-hook-form 表单值",
+      "failure_scenario": "FormControl 只是 Radix Slot，会把 props 透传给子元素（此处的 Textarea）。因此 defaultValue={t('promptText')} 落成原生的非受控默认值，既不会进入 react-hook-form 的 form state，也会与 {...field} 的受控 value 混用（先非受控后受控告警）。用户在开启 RAPTOR 后如果不动 prompt 输入框，提交数据里 prompt 为空，摘要提示词丢失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-009"
+    },
+    {
+      "file": "web/src/components/parse-configuration/raptor-form-fields.tsx",
+      "line": 127,
+      "summary": "RAPTOR 随机种子的「生成」按钮移除 type=\"button\"，点击会触发表单提交",
+      "failure_scenario": "该按钮用于生成随机种子（handleGenerate 仅 setValue），原先显式声明 type={'button'} 以免提交表单。移除后 Button 渲染为原生 button（未传 type 时默认 type=\"submit\"），而 RaptorFormFields 被渲染在 ChunkMethodDialog 的 <form onSubmit> 内，因此每次点击「+」生成随机种子都会触发整表提交与表单校验，产生非预期的校验报错和副作用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/use-bulk-operate-dataset.tsx",
+      "line": 12,
+      "summary": "数据集批量操作全部改为空函数，启用/禁用/解析/取消/删除均无任何效果",
+      "failure_scenario": "useBulkOperateDataset 不再接收 documents/rowSelection，也不再调用 useRunDocument、useSetDocumentStatus、useRemoveDocument，五个操作的 onClick 全部变成空函数。与此同时 dataset/index.tsx 去掉了 rowSelectionIsEmpty 判断，批量操作栏在未选中任何文件时也常驻显示。用户点击「启用」「禁用」「解析」「取消」「删除」不会有任何请求，也不会给出提示，属于既有批量管理能力的整体丢失。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "web/src/pages/files/move-dialog.tsx",
+      "line": 13,
+      "summary": "MoveDialog 使用静态 mock 目录树且不再调用 onOk，文件移动功能失效",
+      "failure_scenario": "MoveDialog 的 props 解构只剩 hideModal，onOk 被完全忽略；目录树被替换为硬编码的 `Node 1 / Node 2 / Node 2.1.1 …` 假数据，原来基于 useFetchPureFileList + AsyncTreeSelect 的懒加载真实目录树被删除；底部按钮只是 `type=\"submit\"`，既不提交表单也没有 onClick。但 files/index.tsx:131-137 仍以 onOk={onMoveFileOk} 渲染该对话框，结果是用户选中任意「Node」后点 Save changes 什么也不会发生，移动文件（含批量移动）功能整体不可用。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "REGRESSION-MOCK-001"
+    },
+    {
+      "file": "web/src/pages/files/move-dialog.tsx",
+      "line": 48,
+      "summary": "移动文件对话框使用写死的假树数据，且无法把选中的目标目录回传给移动接口",
+      "failure_scenario": "新的 SingleTreeSelect 只有内部 selectedOption 状态，没有 value/onChange 接口；MoveDialog 直接传入硬编码的 'Node 1'/'Node 2' 假树，且底部「Save changes」按钮既没有 onClick 也没有 form 归属。useHandleMoveFile 仍需 onMoveFileOk(targetFolderId) 才能发起移动，因此目标目录无从获取，移动文件功能不可用。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/index.tsx",
+      "line": 22,
+      "summary": "数据集页搜索框变成摆设：ListFilterBar 未接收 searchString/onSearchChange",
+      "failure_scenario": "新的 ListFilterBar 无条件渲染 SearchInput 并把 searchString/onSearchChange 直接透传，但数据集页调用时未传这两个属性；同时 DatasetTable 内部虽然调用了 useFetchDocumentList，却把 searchString 与 handleInputChange 注释掉了。结果搜索框可以输入但不会触发任何过滤请求。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-005"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/dataset-table.tsx",
+      "line": 105,
+      "summary": "onPaginationChange 的对象分支缺少 pageIndex + 1，会跳到上一页甚至第 0 页",
+      "failure_scenario": "currentPagination 用 `(pagination.current || 1) - 1` 把 1 基页码换算成 0 基 pageIndex，函数分支正确地写回 `nextPagination.pageIndex + 1`，但对象分支却直接写 `page: updaterOrValue.pageIndex`，少加 1。任何以对象形式更新分页的路径都会把页码算小一页（首屏则把 page 置为 0），造成翻页错位与重复/漏数据。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-006"
+    },
+    {
+      "file": "web/src/hooks/use-knowledge-request.ts",
+      "line": 117,
+      "summary": "Owner 过滤生效时未重置到第一页，深页码下过滤结果为空",
+      "failure_scenario": "新的 owner 过滤通过 setOwnerIds 触发列表请求，但 handleOwnerIdsChange 里把 `setPagination({ page: 1 })` 注释掉了（标注「这里导致重复请求」），搜索输入同理。当用户在第 N 页（N>过滤后总页数）提交过滤条件时，请求仍带 page=N，后端返回空列表，页面显示无数据且分页器 total 变小，用户只能手动翻页恢复。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "PAGINATION-002"
+    },
+    {
+      "file": "web/src/hooks/use-knowledge-request.ts",
+      "line": 117,
+      "summary": "按 owner 过滤与关键字搜索都不再重置页码，非首页过滤会出现空列表",
+      "failure_scenario": "handleOwnerIdsChange 只更新 ownerIds，把 setPagination({ page: 1 }) 注释掉并留下「这里导致重复请求」的 TODO；onInputChange 同样注释掉了页码重置。用户在第二页及以后勾选 owner 过滤或输入关键字时，请求仍带旧页码，接口返回空列表，看起来像「没有匹配的数据」；同时 TODO 注释被提交进主干。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-007"
+    },
+    {
+      "file": "web/src/locales/en.ts",
+      "line": 1253,
+      "summary": "删除 knowledgeBasesTip 仅覆盖 en/zh，其他 7 个语种与既有消费方仍在使用",
+      "failure_scenario": "本 MR 从 en.ts 与 zh.ts 中删除了 knowledgeBasesTip（以及 knowledgeBaseVars），但 web/src/components/knowledge-base-item.tsx 仍在调用 t('knowledgeBasesTip')，且 de/es/id/ja/pt-br/vi/zh-traditional 七个语种仍保留该 key。英文与中文用户将看到原始 key 或空 tooltip，语种间出现不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "I18N-001"
+    },
+    {
+      "file": "web/src/layouts/next-header.tsx",
+      "line": 80,
+      "summary": "logo 的 `w-[100] h-[100]` 缺少长度单位，Tailwind 不会生成对应样式",
+      "failure_scenario": "Tailwind 任意值语法要求带单位（如 `w-[100px]`），`w-[100] h-[100]` 是无单位的裸数字，无法生成有效 CSS，logo 会退回自然尺寸（原来是 size-10），页头布局会因 logo 尺寸变化而错位。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.75,
+      "rule": "STYLE-001"
+    },
+    {
+      "file": "web/src/layouts/next-header.tsx",
+      "line": 130,
+      "summary": "页头硬编码个人邮箱、GitHub 示例头像与版本号，且不再读取真实用户信息",
+      "failure_scenario": "重构后的 Header 移除了 useFetchUserInfo，改为写死 `yifanwu92@gmail.com`、`https://github.com/shadcn.png` 头像与 `V 0.13.0`，并在头像旁叠加一个无逻辑的「Pro」按钮。用户信息展示与实际登录用户脱钩，同时把个人邮箱等占位数据提交进仓库，存在隐私与误上线风险；版本号写死后升级也不会变化。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.85,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/parsing-status-cell.tsx",
+      "line": 80,
+      "summary": "「Set metadata」菜单项失去点击行为",
+      "failure_scenario": "本 MR 删除了 use-save-meta.ts 与 set-meta-dialog.tsx，并从 use-dataset-table-columns → ParsingStatusCell 的链路移除了 showSetMetaModal 属性；但 ParsingStatusCell 里「Set metadata」的 MenuItem 仍被渲染且没有 onClick。用户点击该项毫无反应，元数据设置入口实际失效（既没有替代 UI，也没有移除该入口）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "REGRESSION-004"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/parsing-status-cell.tsx",
+      "line": 80,
+      "summary": "「设置元数据」菜单项无点击回调，UI 保留但功能已死",
+      "failure_scenario": "ParsingStatusCell 由 DropdownMenu 改为 HoverCard 后，chunkMethod 项仍绑定了 handleShowChangeParserModal，而 setMetaData 项写成 `<MenuItem>{t('knowledgeDetails.setMetaData')}</MenuItem>`，没有 onClick，也没有保留 useSetDocumentMeta 链路（SetMetaDialog 与 useSaveMeta 均被删除）。用户仍能看到并点击「设置元数据」，但点击无任何反应。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-008"
+    },
+    {
+      "file": "web/src/components/ui/single-tree-select.tsx",
+      "line": 72,
+      "summary": "新增的 SingleTreeSelect 存在嵌套 button、调试日志与陈旧状态日志",
+      "failure_scenario": "DropdownMenuTrigger asChild 渲染的 <button> 内部又嵌套了一个 <button> 用于清空选择，HTML 规范不允许可交互元素嵌套，会导致可访问性异常与事件语义混乱；handleDelete 中还保留两处 console.log，且第二处打印的是 setState 之前的旧值，日志具有误导性。此外组件没有 value/onChange 等受控接口，复用性受限。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.83,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "web/src/components/prompt-editor/variable-picker-plugin.tsx",
+      "line": 117,
+      "summary": "变量选择器的查询过滤被删除，onQueryChange 变成空实现",
+      "failure_scenario": "原实现用 queryString 对 options 做大小写不敏感过滤并剔除空分组，且该状态由 LexicalTypeaheadMenuPlugin 的 onQueryChange 驱动。改动后 setQueryString 变成 `useCallback(() => {}, [])`，过滤用的 useMemo 被整体删除，nextOptions 直接来自全量 options。用户在编辑器里输入 `/xxx` 时列表不再收窄，仍需在全部变量中人工查找，变量多时几乎不可用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-010"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/dataset-action-cell.tsx",
+      "line": 86,
+      "summary": "下载按钮不再区分虚拟文档，文件夹类记录也会出现可用下载入口",
+      "failure_scenario": "原逻辑用 `isVirtualDocument || (<Button ...download/>)` 对虚拟文档隐藏下载按钮，改动后该判断与 DocumentType 引入一并删除，下载按钮对所有记录都渲染。虚拟文档（type === Virtual）没有实体文件，点击下载会调用下载接口并失败，用户看到的是可点击但必然报错的按钮。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-011"
+    },
+    {
+      "file": "web/src/components/ui/pagination.tsx",
+      "line": 73,
+      "summary": "分页组件把 Previous/Next 文案写死为英文，绕过了 i18n",
+      "failure_scenario": "PaginationPrevious/PaginationNext 新增了可见文本 `<span>Previous</span>` 与 `<span>Next</span>`，均为硬编码英文；项目其他位置通过 react-i18next 取文案，中文/其他语种界面会出现中英混排。同样的问题也出现在 dataset-table 的上一页/下一页按钮与 dataset 页的「Upload file」按钮上。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "I18N-002"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/use-dataset-table-columns.tsx",
+      "line": 25,
+      "summary": "表格列定义中 setCurrentRecord 形参与注释代码均未被使用",
+      "failure_scenario": "DatasetTable 通过 useDatasetTableColumns 传入 setCurrentRecord: setRecord，但列定义内部与 setCurrentRecord 相关的逻辑全部被注释，参数解构后从未使用；同时 dataset-table.tsx 解构出的 currentRecord 也未使用。这类「半接线」代码会让后续维护者误以为重命名/元数据编辑链路仍然存在。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/use-dataset-table-columns.tsx",
+      "line": 30,
+      "summary": "表格列 hook 保留未使用的 setCurrentRecord 参数与大段注释代码",
+      "failure_scenario": "类型改为 `UseChangeDocumentParserShowType & { setCurrentRecord: (record: IDocumentInfo) => void } & UseRenameDocumentShowType`，但 setCurrentRecord 只在被注释掉的 onShowRenameModal 中使用，属于未使用参数；同时文件里保留了注释掉的 onShowSetMetaModal 实现，以及被注释掉的 `// meta: { cellClassName: 'max-w-[20vw]' }`。后者不只是冗余：name 列的宽度上限约束消失，超长文件名所在的 Tooltip 触发区域不再限宽，长文件名可能撑破表格布局（truncate 依赖容器有界）。",
+      "severity": "P2",
+      "category": "可维护性",
+      "confidence": 0.68,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "web/src/pages/dataset/dataset/use-change-document-parser.ts",
+      "line": 18,
+      "summary": "onChangeParserOk 改为两参签名后与 ChunkMethodDialog 的 onOk 类型不一致",
+      "failure_scenario": "useChangeDocumentParser 的 onChangeParserOk 由 (parserConfigInfo: IChangeParserRequestBody) 改为 (parserId: string, parserConfig: IChangeParserConfigRequestBody)，但消费方 ChunkMethodDialog 的 IProps 仍是 IModalProps<{ parserId: string; parserConfig: IChangeParserConfigRequestBody }>，即期望一个对象参数。dataset-table.tsx 直接把 onChangeParserOk 传给 onOk，TS 下参数类型不兼容（string 对 {parserId;parserConfig}）；即便绕过类型检查，运行时也会把对象当成 parserId 传入，parserId 变成 [object Object]。同类调用方 add-knowledge/components/knowledge-file/hooks.ts:105 也是两参实现，说明契约变更未在组件侧同步。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "API-CONTRACT-001"
+    },
+    {
+      "file": "web/src/pages/dataset/sidebar/index.tsx",
+      "line": 18,
+      "summary": "数据集侧边栏用硬编码 mock 数据替代真实知识库配置",
+      "failure_scenario": "侧边栏原先通过 useFetchKnowledgeBaseConfiguration 展示当前知识库的真实 name / doc_num / size / create_time / avatar，并按 t() 渲染菜单文案；现在改为模块级常量 dataset（'Legal knowledge base'、'1,242 files'、'152 MB'、'12.02.2024'、'https://github.com/shadcn.png'），真实数据请求被删除。所有数据集的详情页都会显示同一个假名称与假统计信息，同时菜单文案丢失 i18n。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "REGRESSION-MOCK-002"
+    },
+    {
+      "file": "web/src/pages/home/applications.tsx",
+      "line": 77,
+      "summary": "首页应用列表渲染 12 张 mock 卡片，Segmented 切换不再过滤真实数据",
+      "failure_scenario": "Applications 组件把原本按 Segmented 值渲染 Agents（useFetchAgentList）/ ChatList（useFetchNextDialogList）真实数据的逻辑，替换为一个长度 4 的本地 mock 数组，并用 `[...Array(12)].map(...)` 循环 `applications[i % 4]` 渲染 12 张重复卡片。Segmented 的 val 状态只被 set，不再参与任何过滤，卡片按钮也没有跳转。首页「我的应用」区域从此展示假数据且交互全部失效，同时删除了 agent-list.tsx / chat-list.tsx / application-card.tsx。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "REGRESSION-MOCK-003"
+    },
+    {
+      "file": "web/src/pages/files/files-table.tsx",
+      "line": 151,
+      "summary": "SvgIcon 用扩展名直接拼图标名且无未知扩展名兜底",
+      "failure_scenario": "文件图标由 FileIcon（内建文件名/类型映射）改为 `<SvgIcon name={`file-icon/${isFolder ? 'folder' : getExtension(name)}`} width={24} />`。SvgIcon 在 @/assets/svg 下用 require.context 按 name 精确查找，未命中时 `ListItem?.value` 为 undefined，最终渲染一个 src 为空的 <img>。因此只要扩展名大小写不同、无扩展名或图标资源不存在，该行就显示空白图标（且 RequireContext 的 key 形如 `file-icon/pdf`，需与实际目录结构严格一致）。dataset 表格列存在同样写法。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "UI-FALLBACK-001"
+    },
+    {
+      "file": "web/src/pages/files/files-table.tsx",
+      "line": 273,
+      "summary": "onPaginationChange 的非函数分支未把 pageIndex 换算为 1 起算页码",
+      "failure_scenario": "onPaginationChange 的 if 分支把 tanstack 的 0 起算 pageIndex 加 1 后写入 setPagination({ page: nextPagination.pageIndex + 1 })，而 else 分支直接写 `page: updaterOrValue.pageIndex`，少加 1。任何以值形式调用 setPagination（如重置页码、恢复 URL 页码）的路径都会把页码写成 0 或比实际小 1，导致请求 page=0 或回到上一页；同一份逻辑在 dataset-table.tsx 中也存在。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "PAGINATION-001"
+    },
+    {
+      "file": "web/src/pages/datasets/datasets-pagination.tsx",
+      "line": 31,
+      "summary": "分页组件残留 console.log 与 bg-red-500 占位样式",
+      "failure_scenario": "新迁入的 datasets-pagination.tsx 在 useMemo 内保留了调试日志 `console.log('🚀 ~ pages ~ num:', num)`（每次 total/pageSize 变化都会打印），选中页码的高亮由主题变量换成了 `bg-red-500` 这一硬编码占位色。二者都是调试/占位痕迹进入主干，会污染生产控制台并让选中态在浅深色主题下都显示为红色，与设计系统不一致。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.9,
+      "rule": "CLEANUP-001"
+    },
+    {
+      "file": "web/src/pages/datasets/datasets-pagination.tsx",
+      "line": 67,
+      "summary": "分页组件在 useEffect 中触发 onChange，挂载时即回调并叠加重复请求",
+      "failure_scenario": "重构后把「翻页时回调 onChange」从各个 handler 移到了 `useEffect(() => { onChange?.(currentPage); }, [currentPage, onChange])`。该 effect 在组件挂载时就会执行一次，调用 handlePageChange(page) 进而 setPagination（写 URL），与父页面首次加载请求叠加；同时翻页语义由「用户点击」变成「currentPage 状态变化」，当外部 current prop 变化（如从 URL 恢复）→ setCurrentPage → onChange → 再写 URL，容易出现多余的一次请求/导航。此外组件内 currentPage 与外部 current 形成双状态源，二者短暂不一致时高亮页码与实际数据不符。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "HOOK-EFFECT-001"
+    },
+    {
+      "file": "web/src/pages/files/use-move-file.ts",
+      "line": 22,
+      "summary": "批量移动成功后不再清空行选择，残留选中态",
+      "failure_scenario": "useHandleMoveFile 移除了对 clearRowSelection 的依赖（原本批量移动成功后会清理选择），只留下注释 `// setSelectedRowKeys([]);`；files 页也改用裸 useState 管理 rowSelection，没有替代的清理逻辑。结果是批量移动成功后，BulkOperateBar 仍显示、rowSelection 保留旧索引，用户可能对已移动（已不在当前列表）的文件再次执行删除/移动，操作对象会错位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "STATE-002"
+    },
+    {
+      "file": "web/src/pages/files/use-bulk-operate-file.tsx",
+      "line": 24,
+      "summary": "批量操作按行索引映射选中项，分页/刷新后会命中错误文件",
+      "failure_scenario": "selectedIds 通过 `files.filter((x, idx) => indexes.some((y) => Number(y) === idx))` 用 rowSelection 的字符串键（tanstack 默认行 id 即当前页数组下标）去匹配当前 files 数组的下标。只要列表内容发生变化（翻页、搜索、排序、上传/删除后重新拉取），同一索引就会指向不同文件，导致批量删除/移动作用于非用户勾选的文件，属于潜在的数据破坏性缺陷。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "STATE-003"
+    },
+    {
+      "file": "web/src/pages/files/action-cell.tsx",
+      "line": 86,
+      "summary": "下载菜单项对文件夹也展示，文件夹可被当作文件下载",
+      "failure_scenario": "原实现是 `{isFolder || (<DropdownMenuItem onClick={onDownloadDocument}>下载</DropdownMenuItem>)}`，即仅对非文件夹渲染下载项；重构后删除了 isFolderType 与 isFolder 判断，无条件渲染下载项。文件夹行现在也有「Download」，点击会走 downloadFile 并以文件夹名作为文件名请求下载接口，得到错误或空文件。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "UI-CONDITION-001"
+    },
+    {
+      "file": "web/src/pages/flow/debug-content/index.tsx",
+      "line": 183,
+      "summary": "删除 kb 类型分支后，含知识库参数的已有 agent 调试面板取值逻辑失效",
+      "failure_scenario": "BeginQueryType.KnowledgeBases（'kb'）从枚举与 BeginQueryTypeIconMap 中被移除，DebugContent 中对应的 KnowledgeBaseItem 渲染分支被删除，同时表单值归一化逻辑里针对 kb 的 `if (item.type === 'kb') { nextValue = value.join(',') }` 也被删除。对已保存的、begin 参数类型仍为 'kb' 的 agent/flow（后端 agent/component/base.py、api_app.py 同期也有改动），调试面板的该参数将不再渲染输入控件，且数组值会走 else 分支被拼成 `url\nresult\n----` 形式，与后端期望的 kb_id 列表不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "web/src/pages/datasets/index.tsx",
+      "line": 56,
+      "summary": "多处文案从 i18n 改为硬编码英文",
+      "failure_scenario": "本次改版把若干原本走 t() 的文案替换为硬编码英文：datasets 页面标题由 t('header.knowledgeBase') 改为 \"Datasets\"、Files 页「Save changes」「Previous/Next」、link-to-dataset-dialog 的 FormLabel 由 t('common.name') 改为 \"Name\"、sidebar 菜单文案亦改为硬编码。这会让非英文界面出现中英混排，并绕过现有 locales 维护流程。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "I18N-001"
+    }
+  ],
+  "stderr_tail": "wpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 4 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 27 个文件 / 154104 字符（lockfile=1, test=7, exclude=19），明细见审计 mrFilter\n✓ 完成 · 耗时 956.4s · 模型调用 84 次 · token 输入 469,310（未命中） · 输出 141,170 · 缓存命中 6,397,824（93.2%） · 工具 236 次（主会话 236 + 规则 Skill 0） · Ledger 命中 1 次（未重复读取原文） · $0.1231\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\infiniflow__ragflow@70512...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 957.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 956.3s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 14.9s (1.6%) | S1P2 3.4s (0.4%) | S1P3 10.2s (1.1%) | S1P4 156.8s (16.4%) | S1P5 36.3s (3.8%) | S1P6 9.6s (1.0%) | S2P1 10.7s (1.1%) | S2P2 4.1s (0.4%) | S2P3 13.1s (1.4%) | S2P4 106.1s (11.1%) | S2P5 88.6s (9.3%) | S2P6 28.0s (2.9%) | S2R2P1 5.9s (0.6%) | S2R2P2 4.2s (0.4%) | S2R2P3 10.3s (1.1%) | S2R2P4 23.8s (2.5%) | S2R2P5 42.5s (4.4%) | S2R2P6 13.7s (1.4%) | S3P1 19.2s (2.0%) | S3P2 5.2s (0.5%) | S3P3 8.5s (0.9%) | S3P4 64.2s (6.7%) | S3P5 78.2s (8.2%) | S3P6 16.5s (1.7%) | S4P1 11.1s (1.2%) | S4P2 4.2s (0.4%) | S4P3 11.8s (1.2%) | S4P4 71.9s (7.5%) | S4P5 66.5s (7.0%) | S4P6 15.8s (1.6%)\n[usage] 任务总计 | 模型调用 84 次（Agent 84 + 一次性 0） | token 输入 469,310（未命中） | 输出 141,170 | 缓存命中 6,397,824（93.2%） | $0.1231\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\infiniflow__ragflow@7051234\\audit\\20261115_012215_497.json",
+  "token_usage": {
+    "input_tokens": 469310,
+    "output_tokens": 141170,
+    "cache_read_input_tokens": 6397824
+  }
+}

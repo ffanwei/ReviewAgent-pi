@@ -1,0 +1,142 @@
+{
+  "instance_id": "ollama__ollama@b6002f6",
+  "repo": "ollama/ollama",
+  "base_commit": "92b96d54efd6b49322b7cf046f9a0dc16b00cd0a",
+  "head_commit": "b6002f6b6c69370f8c18a9e6c1cafa8463273a6b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 247.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 12,
+  "review_output": [
+    {
+      "file": "server/routes.go",
+      "line": 387,
+      "summary": "harmony 分支提前 return 导致 /api/generate 响应丢失 Context 字段并留下不可达代码",
+      "failure_scenario": "GenerateHandler 的回调里，useHarmony 分支在处理完 tool_calls 名称回映射后直接 return，绕过了后面的 `sb.WriteString(cr.Content)` 与 `if cr.Done { if !req.Raw { r.Tokenize(...) ; res.Context = tokens } }`。结果是 gpt-oss 等 harmony 模型通过 /api/generate 调用时，done 响应不再包含 context（前缀 token 列表），依赖回传 context 做多轮续写的客户端会退化为每次重新编码整段 prompt；同时 sb 不再累积生成内容，410-417 行原有的 useHarmony 处理块变成永不可达的死代码。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "runner/ollamarunner/runner.go",
+      "line": 884,
+      "summary": "token 重复上限触发时在流式响应中途写入非 JSON 的 500 文本，导致上游解析失败且原始错误丢失",
+      "failure_scenario": "completion 已经开始用 json.Encoder 逐条写出 CompletionResponse 并 Flush（HTTP 200 + 分块已发送）。当 TokenParser.AddContent 因 token 重复超限返回 error 时，代码调用 http.Error 直接向同一个 w 写入纯文本并试图改成 500，这在 headers 已发送后无效，只会让响应体里混入非 JSON 行。llm/server.go 侧逐行 json.Unmarshal，会以 “error unmarshalling llm prediction response” 失败，调用方看到的是「JSON 解析错误」而不是「重复生成中止」，且 Done 统计与 done_reason 完全缺失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "parser/token_parser.go",
+      "line": 113,
+      "summary": "Drain 静默丢弃 JSON 解析失败的工具调用，错误不再回传给客户端",
+      "failure_scenario": "重构前在 server/routes.go 中，工具调用参数 json.Unmarshal 失败会向响应通道推送 `{\"error\": \"error parsing tool call: raw='...', err=...\"}`，客户端能明确知道模型产出了非法工具参数。现在该逻辑下沉到 TokenParser.Drain，解析失败直接 `return nil`，调用方（runner 的 done 事件、以及 server 层的 ToolCalls 回填）完全感知不到失败：既没有 tool_calls 也没有错误，模型这一轮输出被整体吞掉。同时 TODO 注释表明当前仅支持单个 tool call，多 tool call 场景会被丢弃。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "ERROR-HANDLING-002"
+    },
+    {
+      "file": "llama/llama.go",
+      "line": 531,
+      "summary": "NewEmbed 改为只返回最后一个 chunk 的 embedding，多 chunk 图像的视觉 token 被丢弃",
+      "failure_scenario": "原实现遍历所有 mtmd chunk，逐 chunk 取输出 embedding 并 append 到结果；重构后循环内只做 encode，并把 lastChunkSize 覆盖为最后一个 chunk 的 token 数，最终只为最后一个 chunk 分配/填充 embedding。当一张图被 mtmd 切成多个 chunk（动态分辨率/切片模型）时，前面所有 chunk 的 embedding 全部丢失，图像在上下文中的视觉表征缺失。同时 `nil == embd` 的处理从 `continue`（跳过该 chunk 继续）改为 `return nil, errors.New(...)`，行为也从「降级」变为「硬失败」，会导致图像请求整体报错。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "llm/server.go",
+      "line": 437,
+      "summary": "新引擎进程的封装类型被 OLLAMA_NEW_ESTIMATES 决定，默认关闭时新引擎 runner 被包装成 llamaServer",
+      "failure_scenario": "子进程是否使用新引擎由 `textProcessor != nil` 决定（启动参数加 --ollama-engine），但返回哪个 Go 封装类型由 `newEstimates = textProcessor != nil && envconfig.NewMemoryEstimates()` 决定。OLLAMA_NEW_ESTIMATES 默认为 false，于是「新引擎 runner + llamaServer 封装」这种组合成为默认路径：llamaServer 携带 ggml/estimate/gpus 并走 estimateGPULayers 的旧显存估算与 VRAMSize/TotalSize 统计，而实际进程由新引擎自行分配内存（ollamaServer 的 mem *ml.BackendMemory 未被使用），显存核算与实际占用不一致，可能导致调度器误判可用显存（过度加载或拒绝加载）。两个正交关注点（引擎选择 / 估算策略）被耦合到同一个判断里。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "DESIGN-COUPLING-001"
+    },
+    {
+      "file": "runner/ollamarunner/runner.go",
+      "line": 1104,
+      "summary": "allocModel 把所有 error 类型的 panic 都当作加载错误，并新增无条件 debug.PrintStack()",
+      "failure_scenario": "原实现仅当 panic 值可 As 为 ml.ErrNoMem 时才转换为 panicErr，其它 error panic 会重新 panic（保持崩溃语义）；现在任意 error panic 都被吞成 panicErr 返回，非内存错误（例如形状/维度断言失败、后端配置错误）会被上层当作普通的「加载失败」处理，可能触发重试或降级路径，掩盖真实 bug。同时新增的 `debug.PrintStack()` 无条件打印调用栈到 stderr，属于调试残留：即使最终错误被正常处理，也会在用户日志中输出无上下文关联的堆栈。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "ERROR-HANDLING-003"
+    },
+    {
+      "file": "ml/backend/ggml/ggml.go",
+      "line": 1023,
+      "summary": "Floats()/Ints() 对 CPU 张量返回直接别名 C 内存的切片，缺少拷贝且与 Bytes() 行为不一致",
+      "failure_scenario": "新增的 CPU 内存分支用 `unsafe.Slice((*float32)(C.ggml_get_data(t.t)), n)` / `(*int32)(...)` 返回直接指向 ggml 张量内存的视图，而同一文件中的 Bytes() 在同样分支使用 C.GoBytes 做了拷贝。这样 Floats()/Ints() 的返回值：1) 可被调用方写入从而静默改写张量内容；2) 生命周期不与该张量/ ctx 绑定，ctx.Close() 后即成为悬垂切片。runner 的 computeBatch 就把 `activeBatch.modelOutput.Floats()` 的结果继续传给采样与 `seq.embedding <- outputs`（可能跨 goroutine 使用到 defer activeBatch.ctx.Close() 之后），存在读到已释放内存的风险。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "MEMORY-SAFETY-001"
+    },
+    {
+      "file": "fs/ggml/ggml.go",
+      "line": 868,
+      "summary": "告警日志键名写成 \"mode\" 且消息带尾随空格",
+      "failure_scenario": "SupportsKVCacheType 中 gpt-oss 分支的 slog.Warn 使用 `\"mode\"` 作为模型架构的键（应为 `\"model\"`，与同文件其它日志一致），消息字符串末尾还多了空格，并且返回值语义也被改写为 `cacheType == \"f16\"`（空字符串不再视为支持）。日志键名错误会让按 `model` 字段检索/聚合日志的运维与测试断言失效。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "LOGGING-001"
+    },
+    {
+      "file": "parser/token_parser.go",
+      "line": 21,
+      "summary": "TokenParser.parserEngine 字段与 ParserInternals/defaultEngine 只写不读，属于死代码",
+      "failure_scenario": "ParserInternals 接口和 defaultEngine 实现仅为给 TokenParser.parserEngine 赋值而存在，而该字段在整个包内没有任何读取点：prefill 是在 NewTokenParser 构造时直接作用于 HarmonyParser 的。这层抽象没有产生任何调用价值，却要求 HarmonyParser 暴露 AddImplicitStartOrPrefill 以满足接口，增加理解与演进成本（后续要迁移 prefill 到别处时会误以为存在统一入口）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.82,
+      "rule": "DEADCODE-001"
+    },
+    {
+      "file": ".github/workflows/release.yaml",
+      "line": 107,
+      "summary": "CI 把 cuda-components 硬编码为 12/13 共用列表，CUDA 13 不再安装 crt/nvvm/nvptxcompiler",
+      "failure_scenario": "release.yaml 中 CUDA 12.8 与 CUDA 13.0 两个 matrix 条目原本各自声明 cuda-components（CUDA 13 额外包含 crt、nvvm、nvptxcompiler），现在统一替换为硬编码的四个子包 `cudart/nvcc/cublas/cublas_dev`，并通过 `_${{ matrix.cuda-version }}` 拼接。CUDA 13 少装了 nvvm/nvptxcompiler（nvcc 在 Windows 上生成 PTX/SASS 依赖它们），可能使 CUDA 13 的构建/发布流水线在编译阶段失败；test.yaml 中该 matrix 条目还整体删除了 cuda-version 键，进一步说明配置已被硬编码透传，后续新增 CUDA 版本时需要手工改脚本而非改 matrix。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.42,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "api/types.go",
+      "line": 391,
+      "summary": "EmbedRequest 删除 Dimensions 字段，/v1/embeddings 的 dimensions 参数被静默忽略",
+      "failure_scenario": "本次同时删除了 api.EmbedRequest.Dimensions、openai.EmbedRequest.Dimensions 以及 EmbedHandler 中的截断+归一化逻辑。由于 gin/encoding-json 对未知字段默认忽略，OpenAI 兼容端点收到 `\"dimensions\": 512` 时不会报错，而是返回完整维度向量，客户端按声明维度使用会得到长度不符的结果；对直接使用 ollama Go 客户端 `api.EmbedRequest` 的程序则是编译期破坏（字段消失）。这属于无提示的对外契约变更。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "llm/server.go",
+      "line": 227,
+      "summary": "kvct 为空时仍打印 \"kv cache type not supported by model\" 告警，产生误导性日志",
+      "failure_scenario": "由于 SupportsKVCacheType 不再把空字符串视为支持，两处调用点都加了 `kvct != \"\"` 前置判断，但 server.go 的 else 分支没有区分「未指定」与「不支持」：在开启 flash attention 且未设置 OLLAMA_KV_CACHE_TYPE（kvct == \"\"）的常规场景下，每次加载模型都会输出 `kv cache type not supported by model, type=\"\"` 的告警，用户会误以为配置有误。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.7,
+      "rule": "LOGGING-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\ollama__ollama@b6002f6.diff\n  caseId              ollama__ollama@b6002f6\n  --issue             (未传)\n  --taskId            ollama__ollama@b6002f6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 7 个文件 / 25128 字符（test=5, exclude=2），明细见审计 mrFilter\n✓ 完成 · 耗时 217.0s · 模型调用 22 次 · token 输入 78,640（未命中） · 输出 30,138 · 缓存命中 994,944（92.7%） · 工具 31 次（主会话 31 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0222\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 218.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 216.9s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.6s (0.3%)\n[time] 审计明细 | P1 5.2s (2.4%) | P2 3.4s (1.6%) | P3 7.6s (3.5%) | P4 112.8s (52.0%) | P5 67.1s (30.9%) | P6 20.8s (9.6%)\n[usage] 任务总计 | 模型调用 22 次（Agent 22 + 一次性 0） | token 输入 78,640（未命中） | 输出 30,138 | 缓存命中 994,944（92.7%） | $0.0222\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\ollama__ollama@b6002f6\\audit\\20261115_023434_963.json",
+  "token_usage": {
+    "input_tokens": 78640,
+    "output_tokens": 30138,
+    "cache_read_input_tokens": 994944
+  }
+}

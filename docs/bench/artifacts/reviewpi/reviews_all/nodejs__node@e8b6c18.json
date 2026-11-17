@@ -1,0 +1,145 @@
+{
+  "generatedAt": "2026-11-15T04:44:39.629Z",
+  "runId": "20261115_044118_958",
+  "source": "mr",
+  "caseId": "nodejs__node@e8b6c18",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P0",
+      "category": "可移植",
+      "file": "tools/v8_gypfiles/abseil.gyp",
+      "line": 279,
+      "title": "移除 win32_waiter.cc 会导致 Windows 构建出现未定义符号",
+      "description": "abseil 静态库的 sources 中删除了 absl/synchronization/internal/win32_waiter.h 与 win32_waiter.cc，但同目录的 waiter.h 仍在第 24 行无条件 #include win32_waiter.h，并在 ABSL_INTERNAL_HAVE_WIN32_WAITER 为真时把 synchronization_internal::Waiter 别名指向 Win32Waiter；Win32Waiter::Wait/Post/Poke 的实现全部位于 win32_waiter.cc 中受 #ifdef ABSL_INTERNAL_HAVE_WIN32_WAITER 保护的代码块内，而 per_thread_sem.cc 直接通过 Waiter::GetWaiter(...)->Wait/Post/Poke 调用这些成员。因此在 Windows（_WIN32 且 _WIN32_WINNT>=VISTA）下会因缺少 Win32Waiter 成员定义而产生链接错误，Node.js 的 Windows 构建与 CI 将整体失败。",
+      "evidence": [
+        "tools/v8_gypfiles/abseil.gyp:279 — diff 删除了 '<(ABSEIL_ROOT)/absl/synchronization/internal/win32_waiter.h' 与 'win32_waiter.cc'，但仍保留 waiter.h / waiter_base.h / waiter_base.cc",
+        "deps/v8/third_party/abseil-cpp/absl/synchronization/internal/waiter.h:24 — '#include \"absl/synchronization/internal/win32_waiter.h\"'（无条件包含）",
+        "deps/v8/third_party/abseil-cpp/absl/synchronization/internal/waiter.h:35-36,59-60 — '#elif defined(ABSL_INTERNAL_HAVE_WIN32_WAITER)' 时 'using Waiter = Win32Waiter;'",
+        "deps/v8/third_party/abseil-cpp/absl/synchronization/internal/win32_waiter.h:23-45 — _WIN32 且 _WIN32_WINNT >= _WIN32_WINNT_VISTA 时 '#define ABSL_INTERNAL_HAVE_WIN32_WAITER 1' 并声明 Win32Waiter::Wait/Post/Poke",
+        "deps/v8/third_party/abseil-cpp/absl/synchronization/internal/win32_waiter.cc:15-17 — 实现文件 '#include \"absl/synchronization/internal/win32_waiter.h\"' 后进入 '#ifdef ABSL_INTERNAL_HAVE_WIN32_WAITER'",
+        "deps/v8/third_party/abseil-cpp/absl/synchronization/internal/per_thread_sem.cc:93 — '!absl::synchronization_internal::Waiter::GetWaiter(identity)->Wait(t)'"
+      ],
+      "rule": "BUILD-002",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 构建源文件列表与头文件选择逻辑不一致，Windows 专属实现被移出编译单元。影响评估：Windows 下 abseil 静态库缺少 Win32Waiter 符号定义，链接阶段报 undefined symbol，Node.js 无法在 Windows 上构建，Windows CI 必然红。",
+        "suggestion": "[重构思路] 若本次确实要回退 abseil 相关改动，需与 deps/v8/third_party/abseil-cpp 的实际版本保持一致：仅当快照中的 waiter.h 不再引用 win32_waiter 时才可删除；否则保留这两个源文件。建议在 Windows 构建验证后再合入。代码示例：`'<(ABSEIL_ROOT)/absl/synchronization/internal/win32_waiter.h',` 与 `'<(ABSEIL_ROOT)/absl/synchronization/internal/win32_waiter.cc',` 重新加入 sources 列表。",
+        "subcategory": "跨平台构建链接一致性"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/node.cc",
+      "line": 1212,
+      "title": "移除 absl 死锁检测关闭逻辑会让 V8 中的误报直接 abort 进程",
+      "description": "本次删除了 absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore) 调用及其注释（该注释说明 V8 中存在被 absl 误判为死锁的场景，参见 node-v8#301）。在快照内的 abseil 实现中，mutex.cc 的 kDeadlockDetectionDefault 在非 TSAN 构建下取 OnDeadlockCycle::kAbort，即默认在检测到环时中止进程。移除该关停调用后，此前被抑制的误报将重新变为 abort 级错误，可能在多线程（worker_threads / crypto / 平台线程）场景中导致进程被强行终止。",
+      "evidence": [
+        "src/node.cc:1211-1217 — diff 删除了 'absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);' 及其注释 'Disable absl deadlock detection in V8 as it reports false-positive cases.' 与 'https://github.com/nodejs/node-v8/issues/301'",
+        "deps/v8/third_party/abseil-cpp/absl/synchronization/mutex.cc:86-93 — 'constexpr OnDeadlockCycle kDeadlockDetectionDefault = OnDeadlockCycle::kAbort;' 并用于初始化 synch_deadlock_detection",
+        "deps/v8/third_party/abseil-cpp/absl/synchronization/mutex.cc:789-791 — SetMutexDeadlockDetectionMode 仅通过原子变量修改该模式，删除调用即恢复默认 kAbort",
+        "deps/v8/third_party/abseil-cpp/absl/synchronization/mutex.cc:1290,1300,1310,1376,1451 — 多处依赖 synch_deadlock_detection 决定是否报告/中止死锁"
+      ],
+      "rule": "CONCURRENCY-003",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 并发基础设施的全局安全阀被移除（absl 死锁检测误报抑制）。影响评估：若误报路径再次被触发，进程会收到 ABSL 的 fatal 报告并 abort，表现为随机的 worker/crypto 场景崩溃，且难以复现定位；属于对既有行为的破坏。",
+        "suggestion": "[重构思路] 若确需移除该关停逻辑，应先确认当前 V8/abseil 组合中的误报已被上游修复，并在 PR 描述中给出 node-v8#301 的关闭依据与压力测试证据；否则保留该调用或改为按用例抑制。代码示例：`V8::Initialize(); absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);`（恢复原状）。",
+        "subcategory": "并发死锁检测误报"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可测试性",
+      "file": "eslint.config.mjs",
+      "line": 52,
+      "title": "eslint ignores 改写后丢失了 fixtures 白名单，三个目录不再被 lint",
+      "description": "原配置使用 globalIgnores(['...','test/fixtures/*','!test/fixtures/console','!test/fixtures/v8','!test/fixtures/vm']) 并附注释「We want to lint only a few specific fixtures folders」。改写为 ignores 数组后，这三条取反白名单连同注释一起被删除，且 'test/fixtures/*' 被替换为范围更大的 'test/fixtures/**'。结果是 test/fixtures/console、test/fixtures/v8、test/fixtures/vm 中的 JS 文件不再参与 ESLint 检查，静态检查覆盖出现回退，且后续在这些 fixture 中引入的语法/规则问题不会被 CI 捕获。",
+      "evidence": [
+        "eslint.config.mjs:43-53 — 新的 ignores 数组含 'test/fixtures/**'，但不再包含 '!test/fixtures/console' / '!test/fixtures/v8' / '!test/fixtures/vm'",
+        "diff 中被删除的注释：'// We want to lint only a few specific fixtures folders' 与其后的三条 '!' 取反模式",
+        "diff 中被删除的旧模式：'test/fixtures/*'（仅一层）被改为 'test/fixtures/**'（递归全部）",
+        "eslint.config.mjs:15 — 顶层仍引入 nodeCore 插件并应用于全仓库，说明 fixture 目录存在被审查的 JS 源"
+      ],
+      "rule": "LINT-COVERAGE-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 配置迁移过程中丢失了取反白名单，导致静态检查覆盖范围缩小。影响评估：test/fixtures/{console,v8,vm} 下的代码不再被 lint，违反原有「有意保留少量 fixture 参与 lint」的约定，且此类回退通常不会引起任何测试失败，容易长期漏检。",
+        "suggestion": "[重构思路] 迁移时逐条保留取反模式；注意 ESLint flat config 中必须先声明忽略目录、再用 '!' 重新纳入，且父级忽略不能把子目录整体吞掉。代码示例：`{ ignores: ['test/fixtures/**', '!test/fixtures/console/**', '!test/fixtures/v8/**', '!test/fixtures/vm/**'] }`，并保留原有解释性注释。",
+        "subcategory": "lint 覆盖范围回退"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可维护性",
+      "file": "lib/internal/modules/typescript.js",
+      "line": 67,
+      "title": "TypeScript 语法错误不再附带 filename:行号与代码片段，诊断信息退化",
+      "description": "原先对 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX / ERR_INVALID_TYPESCRIPT_SYNTAX 会调用 decorateErrorWithSnippet，把 amaro 错误的 `${filename}:${startLine}${snippet}` 拼到 error.stack 前面；本次与该函数一起被删除，且 deps/amaro 版本从 0.5.0 回退到 0.4.1（src/amaro_version.h 同步回退）。而 ERR_*_TYPESCRIPT_SYNTAX 的错误格式为单参数 '%s'，只输出 error.message，因此用户看到的 TS 语法错误将丢失精确定位与代码片段，排障成本上升；execution.js 中仅把 tsError.message 前置到原始堆栈（execution.js:276、336），也不会补回位置信息。",
+      "evidence": [
+        "lib/internal/modules/typescript.js:65-69 — 分支已改为 'throw new ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX(error.message)' / 'ERR_INVALID_TYPESCRIPT_SYNTAX(error.message)'",
+        "diff 删除的 decorateErrorWithSnippet 实现：'const errorHints = `${amaroError.filename}:${amaroError.startLine}${amaroError.snippet}`; error.stack = `${errorHints}${error.stack}`;'",
+        "lib/internal/errors.js:1850 — 'E(\\'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX\\', \\'%s\\', SyntaxError)' 表明错误本身不带位置信息",
+        "deps/amaro/package.json:3 与 src/amaro_version.h:5 — 版本由 0.5.0 回退为 0.4.1，同步放弃了提供 snippet/filename/startLine 的版本",
+        "lib/internal/process/execution.js:276,336 — 仅使用 tsError.message 拼接到原堆栈，没有位置信息补充"
+      ],
+      "rule": "DIAGNOSTICS-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 错误诊断信息能力回退（丢失文件位置与代码片段）。影响评估：`node --experimental-strip-types` 与 `--input-type=*-typescript` 用户在语法错误时只能看到一行 message，需自行定位；同时该行为变更未在 diff 中被显式说明，属隐式功能退化。",
+        "suggestion": "[重构思路] 若版本回退是必须的，请显式说明诊断能力的变化并补一条 release note；若仍希望保留定位信息，可在 Node 侧自行补齐（amaro 错误对象若提供了 line/col 就复用，否则不装饰）。代码示例：`if (error.filename && error.startLine) { err.stack = `${error.filename}:${error.startLine}\\n${err.stack}`; } throw err;`",
+        "subcategory": "错误信息可诊断性"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护性",
+      "file": ".github/workflows/update-wpt.yml",
+      "line": 6,
+      "title": "cron 改为每天执行但注释仍写「每周一次」，且未说明调度频率提升",
+      "description": "schedule 的 cron 由 '0 0 * * 0'（每周日）改为 '0 0 * * *'（每天），但上方注释仍为 'Run once a week at 12:00 AM UTC on Sunday.'，注释与配置不一致；同时该工作流会对 url、urlpattern、WebCryptoAPI 三个子系统分别创建更新 PR，频率提升 7 倍会显著增加自动化 PR 与 CI 负载，diff 中没有任何说明。",
+      "evidence": [
+        ".github/workflows/update-wpt.yml:5-6 — 注释 'Run once a week at 12:00 AM UTC on Sunday.' 与 '- cron: 0 0 * * *' 相互矛盾",
+        ".github/workflows/update-wpt.yml:26-27 — matrix 对 '[\"url\", \"urlpattern\", \"WebCryptoAPI\"]' 三个子系统并行执行更新",
+        ".github/workflows/update-wpt.yml:22 — job 仅在 nodejs/node 或手动触发时运行，说明该变更直接影响上游仓库的每日自动化行为"
+      ],
+      "rule": "CONFIG-004",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 配置与注释不一致 / 调度频率变更缺少说明。影响评估：后续维护者会依据注释误判执行频率；同时自动化 PR 与 CI 资源消耗提升到原来的 7 倍，可能造成 PR 噪音。",
+        "suggestion": "[重构思路] 让注释与 cron 保持一致，并在 PR 描述中说明频率调整的原因与预期影响；若确为临时调试，请勿合入默认分支。代码示例：`# Run once a day at 12:00 AM UTC.` + `- cron: 0 0 * * *`。",
+        "subcategory": "CI 配置与注释一致性"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "lib/internal/process/execution.js",
+      "line": 373,
+      "title": "eval 场景下 sourceURL 与模块 URL 使用了不同的 [evalN] 编号",
+      "description": "parseAndEvalCommonjsTypeScript / parseAndEvalModuleTypeScript 改为把 getEvalModuleUrl() 作为 filename 传给 stripTypeScriptModuleTypes，而该函数内部会在无 source map 时向源码追加 `//# sourceURL=${filename}`；getEvalModuleUrl 每次调用都会自增 evalIndex，因此紧随其后的 evalScript(name, ...) / evalModuleEntryPoint(...) 内部再次调用 getEvalModuleUrl() 时会得到不同的编号（如 [eval1] 与 [eval2]）。这会让堆栈中显示的脚本名与真正的模块 URL 不一致，且由于 filename 参与 compile cache 键（typescript.js:185），每次 eval 的缓存键都不同，缓存不会命中。另外 parseAndEvalCommonjsTypeScript 的 name 参数已不再用于类型剥离。",
+      "evidence": [
+        "lib/internal/process/execution.js:59-61 — 'return `${pathToFileURL(process.cwd())}/[eval${++evalIndex}]`;'（每次调用自增）",
+        "lib/internal/process/execution.js:358,373 — 'stripTypeScriptModuleTypes(source, getEvalModuleUrl())'",
+        "lib/internal/process/execution.js:76 — evalModuleEntryPoint 内部再次调用 'getEvalModuleUrl()' 作为模块 URL",
+        "lib/internal/modules/typescript.js:135-137 — 'return `${transformedCode}\\n\\n//# sourceURL=${options.filename}`;'",
+        "lib/internal/modules/typescript.js:185 — 'getCompileCacheEntry(source, filename, type)' 以 filename 为缓存键"
+      ],
+      "rule": "CONSISTENCY-002",
+      "confidence": 0.52,
+      "tips": {
+        "review": "[缺陷类型] 同一逻辑脚本被赋予两个不同的伪 URL。影响评估：TypeScript eval 报错的堆栈可能显示与模块 URL 不匹配的 [evalN] 名字，影响可调试性；compile cache 键随每次 eval 变化，缓存条目无法复用。",
+        "suggestion": "[重构思路] 在函数内先取一次 URL 并复用，同时把 name 用于 CJS 分支以保持脚本名一致。代码示例：`const url = getEvalModuleUrl(); const strippedSource = stripTypeScriptModuleTypes(source, url); evalScript(name, strippedSource, breakFirstLine, print, shouldLoadESM);`（ESM 分支把同一 url 传给 evalModuleEntryPoint）。",
+        "subcategory": "eval URL 与缓存键一致性"
+      }
+    }
+  ]
+}

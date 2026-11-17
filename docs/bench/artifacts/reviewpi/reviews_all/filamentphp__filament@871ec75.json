@@ -1,0 +1,76 @@
+{
+  "generatedAt": "2026-11-15T00:58:46.008Z",
+  "runId": "20261115_005655_410",
+  "source": "mr",
+  "caseId": "filamentphp__filament@871ec75",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php",
+      "line": 145,
+      "title": "新增的 time 分支与相邻 date/dateTime 分支结构完全重复，建议合并为类型映射",
+      "description": "getTableColumns() 中三处判断（第 138-143 行 date、第 145-150 行新增 time、第 152-158 行 datetime/timestamp）除写入的格式化方法名不同外逻辑完全相同，均为 `$columnData['<method>'] = []` 加 `$columnData['sortable'] = []`。本次改动沿用了这种 copy-paste 扩展方式，使时间类列的处理分散在三个并行 if 块中：后续若统一调整（如追加 `timeTooltip`、传递 `timezone`/`format` 参数、或改为 `$columnData['type']` 级别的映射）必须同步修改三处，容易漏改导致 date / time / datetime 三类列的生成产物行为不一致。属于可维护性隐患，不影响当前生成的代码正确性。",
+      "evidence": [
+        "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php:138-143 — `if (in_array($type['name'], ['date'])) { $columnData['date'] = []; $columnData['sortable'] = []; }`",
+        "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php:145-150 — 本次新增的 time 块与本文件 138-143 行结构完全一致，仅 `'date'`/`'time'` 与 `$columnData['date']`/`$columnData['time']` 不同",
+        "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php:152-158 — datetime/timestamp 块同样重复 `$columnData['dateTime'] = []; $columnData['sortable'] = [];`",
+        "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php:193-197 — 渲染逻辑按 `$columnData` 的键顺序输出 `->{$methodName}(...?:)`，因此三处键名只影响生成的方法名"
+      ],
+      "rule": "MAINTAINABILITY-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 重复的条件分支（copy-paste 扩展）。影响评估：对当前生成产物无功能影响；但同一类「时间列追加格式化方法 + sortable」的知识分散在 3 个 if 块中，后续调整（format/timezone/tooltip）需同步多处，漏改会造成 date/time/datetime 列生成结果不一致。",
+        "suggestion": "[重构思路] 用「类型名 → 格式化方法名」的映射一次性处理，把三种时间列收敛为单条写入逻辑。代码示例：\n```php\n$dateMethodName = match ($type['name']) {\n    'date' => 'date',\n    'time' => 'time',\n    'datetime', 'timestamp' => 'dateTime',\n    default => null,\n};\n\nif ($dateMethodName !== null) {\n    $columnData[$dateMethodName] = [];\n    $columnData['sortable'] = [];\n}\n```",
+        "subcategory": "重复分支与可扩展性"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/forms/src/Commands/FileGenerators/Concerns/CanGenerateModelForms.php",
+      "line": 152,
+      "title": "新增 time 列不会生成 default()，数据库时间默认值被丢弃",
+      "description": "本次为 `time` 类型新增了 `TimePicker` 组件（第 93 行），但 getFormComponents() 只在两处生成 `->default()`：数字类型分支（第 152-158 行）以及 `TextInput`/`Textarea` 且 `isset($type['length'])` 的分支（第 170-175 行）。`parseColumnType()` 对 time 列只返回 `['name' => 'time']`（不含 `length`），因此形如 `$table->time('opens_at')->default('09:00:00')` 的列虽然现在会生成 `TimePicker::make('opens_at')`，却不会带上 `->default('09:00:00')`，生成器产出的表单与数据库默认值不一致，开发者需要手工补齐。这属于新类型支持不完整（非回归，因为此前该列生成的是同样没有 default 的 TextInput）。",
+      "evidence": [
+        "packages/forms/src/Commands/FileGenerators/Concerns/CanGenerateModelForms.php:93 — 新增分支 `$type['name'] === 'time' => TimePicker::class`",
+        "packages/forms/src/Commands/FileGenerators/Concerns/CanGenerateModelForms.php:152-158 — `if (filled($column['default'])) { $componentData['default'] = [$this->parseDefaultExpression($column, $model)]; }` 仅出现在 integer/decimal/float/double/money 分支内",
+        "packages/forms/src/Commands/FileGenerators/Concerns/CanGenerateModelForms.php:167-175 — 另一处 default 生成要求 `in_array($componentData['type'], [TextInput::class, Textarea::class]) && isset($type['length'])`，TimePicker 与该条件不匹配",
+        "packages/support/src/Commands/Concerns/CanReadModelSchemas.php:153-156 — 返回值中的 `length` 仅对 `string`/`char`/`binary`/`bit` 计算，`time` 不含 length"
+      ],
+      "rule": "COMPLETENESS-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 新类型支持下功能不完整（默认值未映射）。影响评估：生成的表单组件缺少与数据库一致的初始值，`time` 列有默认值时开发者需手工补 `->default()`；仅在生成器输出层面有影响，不影响已有代码运行。",
+        "suggestion": "[重构思路] 把 default 的生成从「数字/字符串分支」提升为对 `DatePicker`/`TimePicker`/`DateTimePicker` 也适用的通用后处理，或至少在 time 分支内生成 `$componentData['default'] = [$this->parseDefaultExpression($column, $model)]`。代码示例：\n```php\nif (\n    filled($column['default']) &&\n    in_array($componentData['type'], [DatePicker::class, TimePicker::class, DateTimePicker::class])\n) {\n    $componentData['default'] = [$this->parseDefaultExpression($column, $model)];\n}\n```\n（注意同时补充 date/datetime 的行为，避免三类时间列表现不一致。）",
+        "subcategory": "生成器功能完整性"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "packages/forms/src/Commands/FileGenerators/Concerns/CanGenerateModelForms.php",
+      "line": 93,
+      "title": "PostgreSQL timetz 列被归并为 time 后会生成无时区配置的 TimePicker",
+      "description": "`parseColumnType()` 把 `time` 与 `timetz` 统一映射为 `'time'`（packages/support/src/Commands/Concerns/CanReadModelSchemas.php:141）。本次新增分支会让来自 `timetz` 的列也生成 `TimePicker::make(...)`，而新增代码没有为该组件生成任何 `->timezone()` / format 相关调用（TimePicker 自身仅覆写 `hasDate(): false`，时区需要显式配置）。相比之下，改动前这类列生成的是 `TextInput`，会原样保存/回填带偏移的时间字符串（如 `14:30:00+02`）。因此在 Postgres 使用 `timetz` 的项目中，生成器产出的表单可能把带偏移的时间值按本地时间格式回填并回写，丢失偏移信息，表格侧新增的 `->time()`（TextColumn 亦无 timezone 参数）也只会显示格式化后的本地时间。",
+      "evidence": [
+        "packages/support/src/Commands/Concerns/CanReadModelSchemas.php:141 — `'time', 'timetz' => 'time'`，timetz 与 time 被归并为同一类型名",
+        "packages/forms/src/Commands/FileGenerators/Concerns/CanGenerateModelForms.php:93 — 新增分支 `$type['name'] === 'time' => TimePicker::class`，该分支后续未生成任何 timezone 相关调用",
+        "packages/forms/src/Components/TimePicker.php:5-10 — `class TimePicker extends DateTimePicker` 且只覆写 `hasDate(): bool { return false; }`",
+        "packages/tables/src/Columns/Concerns/CanFormatState.php:215-221 — `time(string | Closure | null $format = null, ?string $timezone = null)`，而生成器只写入空的 `$columnData['time'] = []`，不传 timezone"
+      ],
+      "rule": "PORTABILITY-003",
+      "confidence": 0.35,
+      "tips": {
+        "review": "[缺陷类型] 类型归并导致的时区信息丢失。影响评估：仅影响使用 PostgreSQL `timetz` 列的模型；带偏移的时间值在表单回填/表格显示时可能被格式化成本地时间，偏移丢失。属于边界场景，低于常规 P2 的确定性。",
+        "suggestion": "[重构思路] 若确认需要保留偏移，可在 `parseColumnType()` 中把 `timetz` 单独区分（如 `'timetz' => 'timetz'`），并在生成器中为其生成带时区配置的组件/列；否则至少在生成器中为 time 类组件显式传入 timezone 参数。代码示例：\n```php\n// CanReadModelSchemas::parseColumnType()\n'time' => 'time',\n'timetz' => 'timetz',\n\n// 生成器中\nif ($type['name'] === 'timetz') {\n    $componentData['type'] = TimePicker::class;\n    $componentData['timezone'] = [config('app.timezone')];\n}\n```",
+        "subcategory": "时区与类型归并"
+      }
+    }
+  ]
+}

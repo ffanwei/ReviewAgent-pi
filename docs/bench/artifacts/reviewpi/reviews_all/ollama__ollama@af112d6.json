@@ -1,0 +1,225 @@
+{
+  "generatedAt": "2026-11-15T02:49:35.040Z",
+  "runId": "20261115_024659_904",
+  "source": "mr",
+  "caseId": "ollama__ollama@af112d6",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/create.go",
+      "line": 100,
+      "title": "基座模型分支未把 errFilePath 归为 400，与 adapter 分支不一致",
+      "description": "convertFromSafetensors 现在会返回包装了 errFilePath 的错误（例如 root.OpenFile 判定路径越界或路径无法创建）。adapter 分支的错误分类列表已加入 errFilePath 并返回 400，但基座模型分支（r.Files 路径）的分类列表仍只有 errNoFilesProvided/errOnlyGGUFSupported/errUnknownType，导致同一类输入错误在基座模型场景下走通用错误分支、响应中不带 status，客户端收到非 400 的模糊错误（且错误文案是路径相关），排查与重试策略都会失真。",
+      "evidence": [
+        "server/create.go:100 — 基座模型分支：for _, badReq := range []error{errNoFilesProvided, errOnlyGGUFSupported, errUnknownType}",
+        "server/create.go:118 — adapter 分支在同一列表中追加了 errFilePath",
+        "server/create.go:279 — convertFromSafetensors 返回 fmt.Errorf(\"%w: invalid path %s: %v\", errFilePath, fp, err)",
+        "server/create.go:106 — 基座模型分支兜底只发送 gin.H{\"error\": err.Error()}，未设置 status"
+      ],
+      "rule": "ERROR-HANDLING-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 新增哨兵错误的分类未在所有调用分支同步。影响评估：同样是非法路径，adapter 请求返回 400，基座模型请求返回无状态码的错误（等价 500），HTTP 语义不一致，调用方/网关无法据状态码区分客户端错误与服务端故障。",
+        "suggestion": "[重构思路] 把「应映射为 400 的哨兵错误」抽成单一包级集合（如 badRequestErrors），两条分支共用，避免今后再漏。代码示例：`var badRequestErrs = []error{errNoFilesProvided, errOnlyOneAdapterSupported, errOnlyGGUFSupported, errUnknownType, errFilePath, errNeitherFromOrFiles}` 然后用 `if err := respondError(ch, err); err != nil { return }` 统一处理。",
+        "subcategory": "错误分类不一致"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/create.go",
+      "line": 277,
+      "title": "用 root.OpenFile 校验路径时不会创建父目录，多级路径文件会被误拒",
+      "description": "validRelative 明确允许包含子目录的相对路径（只拒绝空、绝对、'.'/'..' 及穿越序列），但 convertFromSafetensors 的校验方式是 root.OpenFile(fp, O_CREATE|O_WRONLY, 0o644)：os.Root.OpenFile 不会创建中间目录，父目录不存在时返回 ENOENT，随后被包装成 errFilePath 返回。因此形如 \"dir/model.safetensors\" / \"a/b\" 这种在 validRelative 看来合法的 key，在没有预建目录的临时目录里会直接失败；而改动前 createLink 内部通过 os.MkdirAll(filepath.Dir(dst), 0o755) 会自动建目录，多级路径本来是能正常转换的，属于行为回退。此外如果 map 中同时出现 \"a\" 与 \"a/b\"，由于 map 遍历顺序随机，\"a\" 先被 createLink 换成指向 blobs 的符号链接后 \"a/b\" 会因拒绝跟随越界符号链接而随机失败，行为不确定。",
+      "evidence": [
+        "server/create.go:277 — f, err := root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644)",
+        "server/create.go:279 — 该错误被包装为 errFilePath（会被当作 400 返回）",
+        "server/create.go:161-188 — validRelative 仅拒绝空/绝对/'.'/'..'/穿越序列，未限制子目录层级",
+        "server/create.go:723 — createLink 中原有的 os.MkdirAll(filepath.Dir(dst), 0o755) 说明多级目标目录此前是自动创建的"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 用「创建文件」的副作用做路径校验，隐含依赖父目录已存在。影响评估：直接调用 /api/create 并传入多级文件名（合法相对路径）的客户端会稳定收到 400 'invalid path'，功能回退且错误信息误导为路径非法；特殊 key 组合下还会随机失败。",
+        "suggestion": "[重构思路] 校验不要依赖 O_CREATE：先按路径逐级用 root.MkdirAll/root.Mkdir 建目录后仅做 root.Lstat 判定包含性，或在 join 后用 filepath.Rel 做纯字符串包含性判断再交给 createLink。代码示例：`dst := filepath.Join(tmpDir, fp); if rel, err := filepath.Rel(tmpDir, dst); err != nil || rel == \"..\" || strings.HasPrefix(rel, \"..\"+string(filepath.Separator)) { return nil, fmt.Errorf(\"%w: invalid path %s\", errFilePath, fp) }; if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { return nil, err }`。",
+        "subcategory": "路径校验副作用"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/create.go",
+      "line": 56,
+      "title": "filepath.Clean 归一化可能让不同 key 冲突并静默丢弃文件映射",
+      "description": "CreateHandler 现在用 files[filepath.Clean(k)] = v 重建映射。validRelative 允许 \"a//b\"、\"a/b/\" 这类仅含冗余分隔符或尾部斜杠的 key，它们 Clean 后都变成 \"a/b\"；当请求中同时包含这类 key 时，后写入的条目会静默覆盖前一个 digest，导致某个文件在转换时缺失（或用了错误内容），用户只能看到下游转换失败的模糊错误，难以定位是请求里的重复路径取名导致。另外 adapter 映射（r.Adapters）没有做同样的归一化，两处语义不一致。",
+      "evidence": [
+        "server/create.go:56 — files[filepath.Clean(k)] = v",
+        "server/create.go:182-185 — validRelative 不拒绝 'a//b'、'a/b/' 等多分隔符/尾斜杠形式，因此这些 key 会进入 Clean 流程",
+        "server/create.go:50-58 — 相同归一化逻辑未应用到 r.Adapters，两处映射处理不一致"
+      ],
+      "rule": "DATA-INTEGRITY-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 归一化后写入 map 造成的 key 冲突。影响评估：合法但形式重复的 key 会让文件条目被静默覆盖，导致 safetensors 转换缺少 config/tokenizer 等必需文件而失败，或读取到非预期 blob。",
+        "suggestion": "[重构思路] 归一化时显式检测冲突并返回 400；同时对 Adapters 采用同一套归一化+校验逻辑。代码示例：`clean := filepath.Clean(k); if prev, ok := files[clean]; ok && prev != v { c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{\"error\": \"duplicate file path: \" + clean}); return }; files[clean] = v`。",
+        "subcategory": "数据覆盖/映射冲突"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "server/create.go",
+      "line": 167,
+      "title": "validRelative 只按 '/' 判断绝对路径与前缀，Windows 形态路径未覆盖",
+      "description": "validRelative 的全部判断都基于 '/'：HasPrefix(path, \"/\")、HasPrefix(path, \"./\")、HasPrefix(path, \"../\")、Contains(path, \"/../\") 等。在 Windows 上，\"\\\\foo\"、\"C:\\\\foo\"、\"\\\\\\\\?\\\\C:\\\\foo\"、\"..\\\\..\\\\x\" 这类形式不会被该函数识别为绝对路径或穿越序列，校验在这些平台上是漏的（幸好 inspect 层面还有 os.Root 兜底，所以不构成可利用漏洞，但校验语义与注释「without directory traversal components or absolute path indicators」不一致，且行为与平台相关）。",
+      "evidence": [
+        "server/create.go:167 — if strings.HasPrefix(path, \"/\")",
+        "server/create.go:172 — if strings.HasPrefix(path, \"./\") || strings.HasPrefix(path, \"../\")",
+        "server/create.go:182-183 — 使用 Contains(path, \"/../\")、HasSuffix(path, \"/..\") 等仅针对 '/' 的判断",
+        "server/create.go:159-160 — 函数注释声称会拒绝目录穿越组件与绝对路径指示符"
+      ],
+      "rule": "PORTABILITY-004",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 路径分隔符硬编码为 '/' 导致的跨平台校验不一致。影响评估：Windows 上预校验形同虚设，安全完全依赖 os.Root；同时若将来有人移除 os.Root 兜底（例如为兼容旧 Go 版本），会直接恢复路径穿越风险。",
+        "suggestion": "[重构思路] 用 filepath.IsAbs / filepath.VolumeName 与 filepath.Separator 判断，并在比较前把 '\\\\' 统一视为分隔符；或直接使用 filepath.Clean 后的结果做 \"..\" 起始判断。代码示例：`p := filepath.Clean(path); if p == \".\" || p == \"..\" || filepath.IsAbs(p) || filepath.VolumeName(p) != \"\" || p == string(filepath.Separator)+p { return fmt.Errorf(\"%w: invalid path\", errFilePath) }`。",
+        "subcategory": "跨平台路径处理"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "server/create.go",
+      "line": 281,
+      "title": "以 O_CREATE 创建空文件作为校验手段并忽略 Close 错误，语义不清",
+      "description": "convertFromSafetensors 中的校验会真的在临时目录创建（或已存在则打开）目标文件，仅为了验证路径包含性，然后立即 f.Close()。这种「为校验而写盘」的方式把校验与副作用耦合：每个文件多两次以上系统调用；若后续有人把 O_CREATE 改成 O_TRUNC/追加模式或调整顺序，会引入数据破坏风险；且 f.Close() 的错误被直接丢弃，代码意图（校验而非打开）不直观，注释也承认是「Try to open the file through the root first to validate containment」。",
+      "evidence": [
+        "server/create.go:275-281 — 注释 'Try to open the file through the root first to validate containment' 后紧跟 root.OpenFile(..., os.O_CREATE|os.O_WRONLY, 0o644) 与裸 f.Close()",
+        "server/create.go:287 — 随后 createLink 会对同一路径执行 os.Remove + os.Symlink，说明前一步创建的文件本身没有用途"
+      ],
+      "rule": "MAINTAINABILITY-005",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 校验逻辑带写盘副作用且忽略错误返回。影响评估：可读性与可维护性下降，未来修改容易演化为真实文件损坏；每个文件多一次创建/关闭开销，在大文件数模型上虽非瓶颈但无必要。",
+        "suggestion": "[重构思路] 抽出纯校验函数（基于 filepath.Rel 或 root.Lstat）承担包含性判断，写文件仍只由 createLink 负责。代码示例：`if err := validateInRoot(root, fp); err != nil { return nil, err }; if err := createLink(blobPath, filepath.Join(tmpDir, fp)); err != nil { return nil, err }`，其中 validateInRoot 仅做包含性检查，不做 O_CREATE。",
+        "subcategory": "校验与副作用耦合"
+      }
+    },
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/create.go",
+      "line": 100,
+      "title": "基座模型分支未把 errFilePath 归为 400，与 adapter 分支处理不一致",
+      "description": "convertFromSafetensors 现在会返回包装了 errFilePath 的错误（路径越界或路径无法在 root 内打开时）。本 diff 只把 errFilePath 加进了 adapter 分支的 400 分类列表，基座模型分支（r.Files 路径）的列表仍只有 errNoFilesProvided/errOnlyGGUFSupported/errUnknownType，导致同一类输入错误在基座模型场景下落入兜底分支（响应不带 status，等价 500），且错误文案是「file path must be relative: invalid path ...」，调用方无法区分客户端输入错误与服务端故障。",
+      "evidence": [
+        "server/create.go:100 — for _, badReq := range []error{errNoFilesProvided, errOnlyGGUFSupported, errUnknownType}",
+        "server/create.go:118 — adapter 分支同一列表中已追加 errFilePath",
+        "server/create.go:279 — return nil, fmt.Errorf(\"%w: invalid path %s: %v\", errFilePath, fp, err)",
+        "server/create.go:106 — 基座模型分支兜底仅发送 gin.H{\"error\": err.Error()}，未设置 status"
+      ],
+      "rule": "ERROR-HANDLING-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 新增哨兵错误只在部分调用分支完成分类。影响评估：同样的非法路径输入，adapter 请求返回 400，基座模型请求返回无状态码的错误（客户端视为 500 级故障），HTTP 语义不一致，网关与重试策略都会做出错误判断。",
+        "suggestion": "[重构思路] 把「应映射为 400 的哨兵错误」收敛为单一包级集合，两条分支共用，避免今后的新增错误再次遗漏。代码示例：`var badRequestErrs = []error{errNoFilesProvided, errOnlyOneAdapterSupported, errOnlyGGUFSupported, errUnknownType, errFilePath}`，分支内改用统一函数：`if badRequest(err) { ch <- gin.H{\"error\": err.Error(), \"status\": http.StatusBadRequest}; return }`。",
+        "subcategory": "错误分类不一致"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/create.go",
+      "line": 277,
+      "title": "用 root.OpenFile 做路径校验依赖父目录已存在，多级路径文件会被误判为非法",
+      "description": "validRelative 只拒绝空路径、绝对路径、'.'/'..' 与穿越序列，并不限制子目录层级，因此 \"dir/model.safetensors\" 这类 key 在预校验阶段是合法的。但 convertFromSafetensors 的二次校验用 root.OpenFile(fp, O_CREATE|O_WRONLY, 0o644)：os.Root.OpenFile 不会创建缺失的中间目录，父目录不存在时返回 ENOENT，该错误随即被 L279 包装成 errFilePath（400）。而改动前 createLink 内部通过 os.MkdirAll(filepath.Dir(dst), 0o755) 会自动创建子目录，多级路径原本可以正常转换，属于功能回退。另外若同一 map 同时含 \"a\" 与 \"a/b\"，由于 map 遍历顺序随机，\"a\" 先被 createLink 替换为指向 blobs 的符号链接（越出 root）后，\"a/b\" 的校验会因拒绝跟随越界符号链接而随机失败，行为不确定。",
+      "evidence": [
+        "server/create.go:277 — f, err := root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644)",
+        "server/create.go:279 — 该校验失败被包装为 errFilePath，最终以 400 返回",
+        "server/create.go:161-185 — validRelative 仅拒绝空/绝对/'.'/'..'/穿越序列，未限制子目录层级",
+        "server/create.go:723 — createLink 中原有 os.MkdirAll(filepath.Dir(dst), 0o755) 表明多级目标目录此前是自动创建的"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 以「创建文件」的副作用做路径校验，隐含依赖父目录已存在。影响评估：直接调用 /api/create 并传入合法多级文件名（如 \"sub/model.safetensors\"）的客户端会稳定收到 400 'invalid path'，既破坏既有可用行为，又给出误导性错误信息；特定 key 组合下还会随机失败。",
+        "suggestion": "[重构思路] 校验与写入解耦：先确保目录存在或改用纯字符串/root.Lstat 的包含性判断，再交给 createLink 写入；并显式处理「key 前缀互为目录」的冲突。代码示例：`dst := filepath.Join(tmpDir, fp); rel, err := filepath.Rel(tmpDir, dst); if err != nil || rel == \"..\" || strings.HasPrefix(rel, \"..\"+string(filepath.Separator)) { return nil, fmt.Errorf(\"%w: invalid path %s\", errFilePath, fp) }; if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { return nil, err }`。",
+        "subcategory": "路径校验副作用"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/create.go",
+      "line": 56,
+      "title": "filepath.Clean 归一化可能造成 key 冲突并静默丢弃文件映射",
+      "description": "CreateHandler 用 files[filepath.Clean(k)] = v 重建映射，而 validRelative 允许 \"a//b\"、\"a/b/\" 这类仅含冗余分隔符或尾部斜杠的 key。当请求中同时出现这类 key 时，Clean 后得到同一个 \"a/b\"，后写入的条目会静默覆盖先前的 digest，导致某个文件在转换阶段缺失或内容错配，最终表现为下游 ConvertModel 的模糊错误，用户难以定位到是请求里重复路径形式导致。此外同样的归一化只作用于 r.Files，r.Adapters 完全未做，映射处理语义不一致。",
+      "evidence": [
+        "server/create.go:56 — files[filepath.Clean(k)] = v",
+        "server/create.go:182-185 — validRelative 不拒绝 'a//b'、'a/b/' 等多分隔符/尾斜杠形式，这些 key 会进入 Clean 流程",
+        "server/create.go:50-58 — 归一化与校验仅作用于 r.Files，r.Adapters 未走同一逻辑"
+      ],
+      "rule": "DATA-INTEGRITY-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 归一化后写入 map 造成 key 冲突，静默覆盖数据。影响评估：合法但形式重复的 key 会让文件条目被丢弃（如缺失 config.json/tokenizer.json），造成 safetensors 转换失败或读取到非预期 blob，且缺少可诊断的错误信息。",
+        "suggestion": "[重构思路] 归一化时检测冲突并返回 400；同时把校验+归一化抽成函数，对 r.Files 与 r.Adapters 复用。代码示例：`clean := filepath.Clean(k); if prev, ok := files[clean]; ok && prev != v { c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{\"error\": \"duplicate file path: \" + clean}); return }; files[clean] = v`。",
+        "subcategory": "映射冲突与数据覆盖"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "server/create.go",
+      "line": 167,
+      "title": "validRelative 只按 '/' 判断绝对路径与前缀，Windows 形态路径未被覆盖",
+      "description": "validRelative 的全部判断都基于 '/'：HasPrefix(path, \"/\")、HasPrefix(path, \"./\")/\"../\"、Contains(path, \"/../\")、HasSuffix(path, \"/..\") 等。在 Windows 上 \"\\\\foo\"、\"C:\\\\foo\"、\"\\\\\\\\?\\\\C:\\\\foo\"、\"..\\\\..\\\\x\" 等形式不会被识别为绝对路径或穿越序列，预校验在这些平台形同虚设；虽然 convertFromSafetensors 的 os.Root 兜底仍能阻止越界写入，但函数注释声称会拒绝「absolute path indicators / directory traversal components」，实际语义与注释不符，且行为随平台而变，一旦将来移除或绕过 os.Root 兜底就会重新暴露风险。",
+      "evidence": [
+        "server/create.go:167 — if strings.HasPrefix(path, \"/\")",
+        "server/create.go:172 — if strings.HasPrefix(path, \"./\") || strings.HasPrefix(path, \"../\")",
+        "server/create.go:182-183 — strings.Contains(path, \"/../\")、strings.HasSuffix(path, \"/..\") 等判断只针对 '/'",
+        "server/create.go:159-160 — 注释声称拒绝 absolute path indicators 与 directory traversal components"
+      ],
+      "rule": "PORTABILITY-004",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 路径分隔符与盘符判断硬编码为 '/'。影响评估：Windows 上预校验无法拦截反斜杠/盘符/UNC 形式，安全完全依赖 os.Root；预校验与二次校验的判据不一致，也让后续维护者容易误判防护边界。",
+        "suggestion": "[重构思路] 统一走 filepath 语义：先 Clean，再用 filepath.IsAbs、filepath.VolumeName、filepath.Separator 判断，并把 '\\\\' 视作分隔符做 \"..\" 起始检查。代码示例：`p := filepath.Clean(path); if p == \".\" || p == \"..\" || filepath.IsAbs(p) || filepath.VolumeName(p) != \"\" || strings.HasPrefix(p, \"..\"+string(filepath.Separator)) { return fmt.Errorf(\"%w: invalid path\", errFilePath) }`。",
+        "subcategory": "跨平台路径处理"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "server/create.go",
+      "line": 281,
+      "title": "为校验而在临时目录创建空文件并忽略 Close 错误，校验与写盘副作用耦合",
+      "description": "convertFromSafetensors 的校验会真的在临时目录创建（或已存在则打开）目标文件，仅用于验证路径包含性，随后立即 f.Close() 且丢弃其错误。该空文件随即被 L287 的 createLink（内部 os.Remove + os.Symlink）覆盖，说明前一步创建的文件没有任何用途，属于「以写盘副作用做校验」。这让校验逻辑与文件写入耦合：每个文件多一次创建/关闭开销；注释也承认是「Try to open the file through the root first to validate containment」；若后续有人把 flag 改成 O_TRUNC 或调整顺序，会引入真实的数据破坏风险，且 Close 失败的静默丢弃与周边错误处理风格不一致。",
+      "evidence": [
+        "server/create.go:275-281 — 注释后紧跟 root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644) 与裸 f.Close()",
+        "server/create.go:287 — createLink 对同一目标路径执行 os.MkdirAll + os.Remove(dst) + os.Symlink，覆盖前一步创建的空文件",
+        "server/create.go:326-330 — 同一函数内其它资源都显式 defer Close，此处 Close 错误被直接丢弃"
+      ],
+      "rule": "MAINTAINABILITY-005",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 校验逻辑带写盘副作用，且资源关闭错误被忽略。影响评估：可读性与可维护性下降，防护意图不直观；未来修改 flag 或顺序时容易从「校验」演化为真实文件损坏；每个文件多做一次创建/关闭，属无必要开销。",
+        "suggestion": "[重构思路] 抽出纯校验函数（基于 filepath.Rel 或 root.Lstat）只做包含性判断，写盘职责仍只由 createLink 承担；如需保留打开语义，至少判断并返回 Close 错误。代码示例：`if err := validateInRoot(root, fp); err != nil { return nil, err }; if err := createLink(blobPath, filepath.Join(tmpDir, fp)); err != nil { return nil, err }`，其中 `func validateInRoot(root *os.Root, fp string) error { if _, err := root.Lstat(fp); err != nil && !errors.Is(err, fs.ErrNotExist) { return fmt.Errorf(\"%w: invalid path %s\", errFilePath, fp) }; return nil }`。",
+        "subcategory": "校验与副作用耦合"
+      }
+    }
+  ]
+}

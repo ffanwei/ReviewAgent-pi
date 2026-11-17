@@ -1,0 +1,253 @@
+[
+  {
+    "filePath": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "\"  - id: fail\\\\n\\\" +\\n\" +",
+        "review": "[缺陷类型] 文档示例字符串转义错误导致的 YAML 损坏。影响评估：插件文档与 UI 中的示例不可运行，用户复制后 flow 解析报错，且会误导使用者。",
+        "suggestion": "[重构思路] 恢复正确的任务行，建议改用 Java 文本块（text block）书写示例，避免手工拼接与转义。代码示例：\n```java\ncode = {\n    \"\"\"\n    id: assert\n    namespace: company.team\n\n    tasks:\n      - id: assert-conditions\n        type: io.kestra.plugin.core.execution.Assert\n        conditions:\n          - \"{{ inputs.param == 'ok' }}\"\n    \"\"\"\n}\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 53,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": ".readValue(this.conditions.getExpression(), LIST_TYPE_REFERENCE)",
+        "review": "[缺陷类型] 绕过框架渲染机制直接解析原始表达式。影响评估：模板化的 conditions 或非 JSON 字面量输入会以难以理解的解析异常失败；也失去统一的类型转换与校验。",
+        "suggestion": "[重构思路] 使用 `runContext.render(conditions).asList(String.class)`（或 `Property.asList`）让框架负责渲染与转换，并保留对解析失败的显式处理。代码示例：\n```java\nList<String> conditionList = runContext.render(this.conditions).asList(String.class);\nfor (String condition : conditionList) {\n    String rendered = runContext.render(condition);\n    ...\n}\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 89,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "runContext.logger().error(\"Assertion `{}` failed!\", s, renderer);",
+        "review": "[缺陷类型] SLF4J 占位符与参数不匹配。影响评估：日志丢失实际渲染值，断言失败难以定位根因；多余参数在部分实现下还会被当作 Throwable 候选。",
+        "suggestion": "[重构思路] 为渲染结果补一个占位符，并明确区分「原文」与「渲染值」。代码示例：\n```java\nrunContext.logger().error(\"Assertion `{}` failed, rendered to `{}`\", s, renderer);\n```",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 95,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/runners/pebble/functions/RandomIntFunction.java",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "private Integer getArgument(",
+        "review": "[缺陷类型] 公共模板函数的入参类型收窄导致兼容性破坏。影响评估：既有工作流中传入 Long 的 randomInt 调用会在运行时失败，且错误信息指向类型不匹配，用户难以自行定位。",
+        "suggestion": "[重构思路] 按 `Number` 接收并做范围校验/转换，同时保留对 String 的显式拒绝。代码示例：\n```java\nObject raw = args.get(arg);\nif (!(raw instanceof Number number)) {\n    throw new PebbleException(null, \"The 'randomInt' function expects an argument \" + arg + \" of type Number.\", lineNumber, self.getName());\n}\nreturn number.longValue();\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 33,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "\"In 'GenerateRandomNumber' upper is less than lower\",",
+        "review": "[缺陷类型] 用户可见错误文案中的函数名/拼接错误。影响评估：报错信息与实际函数名不一致，误导用户；缺空格降低可读性。",
+        "suggestion": "[重构思路] 统一使用真实函数名常量，避免硬编码字符串重复出现。代码示例：\n```java\nprivate static final String FUNCTION_NAME = \"randomInt\";\nthrow new PebbleException(null, \"The '\" + FUNCTION_NAME + \"' function expects an argument \" + arg + \" of type Integer.\", lineNumber, self.getName());\n```",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/plugin/core/execution/Count.java",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "namespaces.forEach(namespace -> flowService.checkAllowedNamespace(flowInfo.tenantId(), namespace, flowInfo.tenantId(), flowInfo.namespace()));",
+        "review": "[缺陷类型] 去 Property 化时丢失了集合元素的模板渲染。影响评估：既有使用模板化 namespaces 的工作流会静默返回空统计或抛命名空间不允许异常，且不报编译/解析错误。",
+        "suggestion": "[重构思路] 在 run() 开头一次性渲染并复用渲染结果，既恢复旧行为又避免二次渲染。代码示例：\n```java\nList<String> renderedNamespaces = namespaces == null ? null : runContext.render(namespaces);\nif (renderedNamespaces != null) {\n    renderedNamespaces.forEach(ns -> flowService.checkAllowedNamespace(flowInfo.tenantId(), ns, flowInfo.tenantId(), flowInfo.namespace()));\n}\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 138,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/plugin/core/execution/PurgeExecutions.java",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "runContext.render(namespace),",
+        "review": "[缺陷类型] 同一属性重复渲染。影响评估：多余开销；非确定性模板下 ACL 校验与清理目标可能不一致。",
+        "suggestion": "[重构思路] 顶部渲染一次，后续统一引用局部变量。代码示例：\n```java\nString renderedNamespace = runContext.render(namespace);\nif (renderedNamespace == null) {\n    flowService.checkAllowedAllNamespaces(...);\n} else if (!renderedNamespace.equals(flowInfo.namespace())) {\n    flowService.checkAllowedNamespace(flowInfo.tenantId(), renderedNamespace, ...);\n}\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 133,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "script/src/main/java/io/kestra/plugin/scripts/runner/docker/Docker.java",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "private Boolean privileged;",
+        "review": "[缺陷类型] dynamic 元数据与实际渲染行为不一致。影响评估：文档/UI 误导用户写模板；强类型字段无法承载模板，会退化为解析失败或静默使用未渲染值。",
+        "suggestion": "[重构思路] 二选一：不再支持模板就去掉 dynamic = true；需要支持模板则保留 Property<Boolean> 或改为 String 并在使用点 render 后转换。代码示例：\n```java\n@PluginProperty(dynamic = false)\nprivate Boolean privileged;\n...\nhostConfig.withPrivileged(this.getPrivileged());\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 280,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "script/src/main/java/io/kestra/plugin/scripts/exec/AbstractExecScript.java",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "protected List<String> interpreter = List.of(\"/bin/sh\", \"-c\");",
+        "review": "[缺陷类型] 动态属性退化为静态属性但未提供迁移说明与替代方案。影响评估：依赖模板设置 interpreter 的工作流静默失效，实际执行的解释器与配置不符，可能造成脚本行为异常。",
+        "suggestion": "[重构思路] 若仍允许模板，保留动态能力并在消费点渲染；若确定改为静态，需要在此类破坏性变更中给出迁移说明/校验。代码示例：\n```java\n// 保留动态能力\n@PluginProperty(dynamic = true)\nprotected List<String> interpreter = List.of(\"/bin/sh\", \"-c\");\n// 消费端\nList<String> rendered = runContext.render(this.interpreter);\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 81,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/services/FlowService.java",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "import lombok.SneakyThrows;",
+        "review": "[缺陷类型] 无用导入。影响评估：降低可读性、触发 lint 告警，并让代码审阅者误以为类中新增了可空/异常包装逻辑。",
+        "suggestion": "[重构思路] 清理未使用的 import，提交前跑一次编译器/lint 检查。代码示例：\n```java\n-import io.micronaut.core.annotation.Nullable;\n-import lombok.SneakyThrows;\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 19,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "webserver/src/main/java/io/kestra/webserver/controllers/api/FlowController.java",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "",
+        "review": "[缺陷类型] 校验能力被移除而非修复。影响评估：subflow 指向不存在的 flow 也能通过校验，错误被推迟到运行期才暴露；同时 FlowService.findById 这一公共方法被删除，外部/EE 模块若依赖会编译失败。",
+        "suggestion": "[重构思路] 若产品上仍需要该校验，用正确实现替代删除：真正检查查询结果为空时才记录 violation。代码示例：\n```java\nsubFlows.forEach(subflow -> {\n    if (findById(flow.getTenantId(), subflow.getNamespace(), subflow.getFlowId()).isEmpty()) {\n        violations.add(ManualConstraintViolation.of(\n            \"The subflow '\" + subflow.getFlowId() + \"' not found in namespace '\" + subflow.getNamespace() + \"'.\",\n            flow, Flow.class, \"flow.tasks\", flow.getNamespace()));\n    }\n});\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 429,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "{{ outputs.output_values.²}}",
+        "review": "[缺陷类型] 文档示例被误编辑为非法语法。影响评估：用户复制示例即报模板渲染错误，属于对外可见的文档缺陷。",
+        "suggestion": "[重构思路] 恢复被破坏的示例文本，必要时补充说明 taskrun_data 的来源。代码示例：\n```java\n\"      {{ outputs.output_values.values.taskrun_data }}\\n\" +\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 54,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/plugin/core/namespace/UploadFiles.java",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "private Namespace.Conflicts conflict = Namespace.Conflicts.OVERWRITE;",
+        "review": "[缺陷类型] 注解缺失与格式残留。影响评估：属性元数据不统一，文档/Schema 输出与同类属性不一致；格式残留降低可读性。",
+        "suggestion": "[重构思路] 补上静态属性注解并去掉多余空行。代码示例：\n```java\n@PluginProperty\n@Builder.Default\n@Schema(title = \"Which action to take when uploading a file that already exists.\", ...)\nprivate Namespace.Conflicts conflict = Namespace.Conflicts.OVERWRITE;\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 154,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/styles/layout/element-plus-overload.scss",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "--el-table-header-bg-color: #f5f5ff;",
+        "review": "[缺陷类型] 主题变量被硬编码色值替代。影响评估：自定义/暗色之外的主题无法继承品牌色，视觉不一致，后续主题维护成本上升。",
+        "suggestion": "[重构思路] 保留语义变量，必要时新增一个 light 主题变量并在主题文件里定义具体色值。代码示例：\n```scss\n--el-table-header-bg-color: var(--ks-background-table-header);\n\nhtml.dark & {\n    --el-table-header-bg-color: var(--ks-background-input);\n}\n```",
+        "category": "可移植",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 365,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

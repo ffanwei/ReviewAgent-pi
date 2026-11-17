@@ -1,0 +1,62 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 95.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "chrome_remote_debugging_port 允许为 None，但所有消费点都按 int 直接使用",
+      "failure_scenario": "新字段声明为 `chrome_remote_debugging_port: int | None = CHROME_DEBUG_PORT`，pydantic 因而接受显式传入 None，但 _setup_user_provided_browser 与 _setup_builtin_browser 中没有任何 None 判空或校验：URL 会被格式化成 `http://localhost:None`（httpx.InvalidURL，且第 214 行只捕获 httpx.RequestError，异常会直接冒泡），启动参数会变成 `--remote-debugging-port=None`，socket 层则会把 None 当端口传入。结果是用户只要写 `BrowserConfig(chrome_remote_debugging_port=None)` 就会得到难以理解的失败，而不是一条清晰的配置错误提示；字段也没有范围约束（如 70000 会在 socket 层抛 OverflowError）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CONFIG-VALIDATION-001"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 82,
+      "summary": "配置文档称端口仅在提供 browser_binary_path 时生效，与内置浏览器分支的实际行为不符",
+      "failure_scenario": "新增的类文档条目写的是「Chrome remote debugging port to use to when browser_binary_path is supplied」，暗示该配置只影响用户自带 Chrome 的路径；但 _setup_builtin_browser 里同样把 CHROME_DEBUGGING_ARG 加进了 Playwright 启动参数（并把端口占用检测也改成读该配置）。用户据此会误判内置浏览器不受该配置影响，或反过来以为改了端口就能改变内置浏览器的调试端口语义（内置分支在端口被占用时会直接移除该参数）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "DOC-CONSISTENCY-001"
+    },
+    {
+      "file": "browser_use/agent/service.py",
+      "line": 1225,
+      "summary": "noqa 从 ASYNC 改为 RUF006，抑制目标与项目 ruff 规则集不匹配",
+      "failure_scenario": "该行上方的注释写明「dont convert this to async! it *should* block any subsequent llm calls from running」，说明原 suppress 是针对「把阻塞调用改成异步」这类 ASYNC 规则；而 pyproject.toml 的 ruff select 为 [\"ASYNC\", \"E\", \"F\", \"FAST\", \"I\", \"PLE\"]，RUF 规则集并未启用，且 RUF006 的语义是「asyncio.create_task 返回值未被保存的悬空任务」，与本行的同步 blocking 调用无关。改动后该 noqa 变成完全不生效的死注释：既没有抑制任何被启用的规则，又让后来者以为这里已受 RUF006 约束，一旦有 ASYNC 规则命中该行，CI 的 lint 会失败且现成的抑制标记无法兜住。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.75,
+      "rule": "LINT-SUPPRESSION-001"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 220,
+      "summary": "extra_browser_args 自带 --remote-debugging-port 时会与配置端口并存，实际监听端口不确定",
+      "failure_scenario": "启动参数仍是「先拼成 set 去重、再转 list」的形式，现在把按配置端口格式化的 CHROME_DEBUGGING_ARG 与 `*self.config.extra_browser_args` 放在同一个 set 里。若用户通过 extra_browser_args 传入了另一个 `--remote-debugging-port=xxxx`（这是该字段最常见的用法之一），两者字符串不同不会被去重，Chrome 会同时收到两个调试端口参数，实际生效端口取决于 Chrome 的解析顺序；而随后的重连轮询与 connect_over_cdp 固定使用 self.config.chrome_remote_debugging_port，一旦 Chrome 生效的是另一个端口，就会出现「进程已启动但 CDP 连不上」并抛出 L261-263 那条让人误以为「需要关闭所有 Chrome」的 RuntimeError。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CONFIG-CONFLICT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 2 个文件 / 4849 字符（test=2），明细见审计 mrFilter\n✓ 完成 · 耗时 94.4s · 模型调用 12 次 · token 输入 24,770（未命中） · 输出 12,885 · 缓存命中 150,912（85.9%） · 工具 16 次（主会话 16 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0075\n[time] 阶段耗时 | 总墙钟 95.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.7%)\n[time] 阶段 | 六阶段审计 94.4s (99.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 9.0s (9.5%) | P2 3.3s (3.5%) | P3 5.7s (6.0%) | P4 41.9s (44.4%) | P5 26.2s (27.8%) | P6 8.3s (8.7%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 24,770（未命中） | 输出 12,885 | 缓存命中 150,912（85.9%） | $0.0075\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261115_004630_178.json",
+  "token_usage": {
+    "input_tokens": 24770,
+    "output_tokens": 12885,
+    "cache_read_input_tokens": 150912
+  }
+}

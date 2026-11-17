@@ -1,0 +1,82 @@
+[
+  {
+    "filePath": "src/backend/base/langflow/graph/vertex/base.py",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "async with self._lock:",
+        "review": "[缺陷类型] 不可重入 asyncio.Lock 的重复获取（自死锁）。影响评估：所有带 flow_id 的流程构建在读取顶点结果时挂起，前后端均无错误提示，只能等请求超时/手动停止；属于会让核心功能不可用的致命缺陷，必须先于合入修复。",
+        "suggestion": "[重构思路] 事务日志不属于被锁保护的临界区，不要在 _log_transaction_async 内获取 self._lock。保持 fire-and-forget 语义（原实现）或改用独立的日志专用锁（如 self._log_lock），并且不要在 get_result 持有的锁内 await 日志任务。代码示例：\n```python\ndef _log_transaction_async(self, flow_id, source, status, target=None, error=None) -> None:\n    task = asyncio.create_task(log_transaction(flow_id, source, status, target, error))\n    self.log_transaction_tasks.add(task)\n    task.add_done_callback(self.log_transaction_tasks.discard)\n```\n若确实需要在退出前 flush，则在构建结束时（而非每个 get_result）统一 await asyncio.gather(*self.log_transaction_tasks)，并且绝不持有 self._lock。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Fatal",
+        "level": "Fatal",
+        "ruleId": "",
+        "lineNum": 637,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "await asyncio.gather(*tasks)",
+        "review": "[缺陷类型] 异步旁路操作被同步化到请求关键路径。影响评估：每个顶点的结果获取叠加一次 DB 写入等待，长链条/多并发构建时整体构建时间显著变长，DB 抖动会直接表现为前端构建卡顿。",
+        "suggestion": "[重构思路] 保持 fire-and-forget：用 create_task 排队，在流程结束（或 Vertex 生命周期结束/取消）时集中 flush；若必须限制并发，用独立信号量而不是在结果路径上 gather。代码示例：\n```python\nasync def aclose(self) -> None:\n    if self.log_transaction_tasks:\n        await asyncio.gather(*self.log_transaction_tasks, return_exceptions=True)\n        self.log_transaction_tasks.clear()\n```",
+        "category": "性能",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 643,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/frontend/src/utils/buildUtils.ts",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "const errorMessages = Object.keys(buildData.data.outputs).map(",
+        "review": "[缺陷类型] 数据结构与组件契约不匹配（二维数组渲染成扁平文本）。影响评估：组件构建失败时错误详情可能被挤压成一行、无法逐条阅读，用户难以定位具体错误；类型声明与实际值不一致也会误导后续调用方。",
+        "suggestion": "[重构思路] 保留扁平化语义：需要逐条展示就用 flatMap（或 map 后再 flat()）并去掉空数组；若确实想按 output 分组展示，则同步把 ErrorAlert 的 list 类型改为 Array<string | string[]> 并在渲染处显式 join。代码示例：\n```ts\nconst errorMessages = Object.keys(buildData.data.outputs)\n  .flatMap((key) => { /* 原逻辑 */ })\n  .filter((msg): msg is string => Boolean(msg));\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 251,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "useFlowStore.getState().setIsBuilding(false);",
+        "review": "[缺陷类型] 错误分支丢失必要的状态复位与用户提示。影响评估：流程级构建失败时节点状态、聊天输入锁可能残留，界面看起来仍在构建或无法继续对话，且用户拿不到明确错误信息，只能刷新页面。",
+        "suggestion": "[重构思路] 恢复 onBuildError 调用（或抽出统一的 resetBuildState 覆盖 updateBuildStatus/setIsBuilding/setLockChat），并在 error 分支对所有类别都保证锁复位。代码示例：\n```ts\ncase \"error\": {\n  if (data.category === \"error\") useMessagesStore.getState().addMessage(data);\n  onBuildError?.(\"Error Building Flow\", [data.text]);\n  useFlowStore.getState().setIsBuilding(false);\n  buildResults.push(false);\n  return true;\n}\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 320,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "if (data.category === \"error\") {",
+        "review": "[缺陷类型] 移除防御性访问导致的潜在 TypeError。影响评估：异常事件或字段缺失时会把可控的提示失败升级为事件处理中断，错误堆栈与真实原因脱节，排障成本上升。",
+        "suggestion": "[重构思路] 恢复可选链并对非法事件快速返回。代码示例：\n```ts\ncase \"error\": {\n  useFlowStore.getState().setIsBuilding(false);\n  if (data?.category === \"error\") useMessagesStore.getState().addMessage(data);\n  buildResults.push(false);\n  return true;\n}\n```",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 321,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

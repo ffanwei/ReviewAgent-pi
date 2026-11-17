@@ -8,10 +8,14 @@ import type {
   CandidateNormalizationRecord,
   CandidateRejection,
   CandidateRejectionCounts,
+  CoveragePassRecord,
+  FindingBudgetRecord,
+  GroupingAuditRecord,
   MrBoundaryRecord,
   MrFilterRecord,
   ModelFallbackRecord,
   PhaseRecord,
+  RuleSelectionAuditRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
   RunAudit,
@@ -71,6 +75,14 @@ export interface AuditFileContent {
   readonly ruleSkill?: readonly RuleSkillAudit[];
   /** skill 会话执行留痕（round × skill） */
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
+  /** 语义分组留痕（ADR-0095） */
+  readonly grouping?: GroupingAuditRecord;
+  /** 规则选择留痕（ADR-0095） */
+  readonly ruleSelection?: RuleSelectionAuditRecord;
+  /** 分组输出预算留痕（ADR-0094） */
+  readonly findingBudget?: FindingBudgetRecord;
+  /** 零 findings 文件补充检视留痕 */
+  readonly coveragePass?: CoveragePassRecord;
   /**
    * 分片留痕（ADR-0039）：只在分片模式出现；单片路径整键缺席（零漂移）。
    * 紧接 skillPassLog，config 仍是最后一个可选尾键。
@@ -162,6 +174,10 @@ export function buildAuditFileContent(args: {
     ...(args.mrFilter !== undefined ? { mrFilter: args.mrFilter } : {}),
     ...(args.audit.ruleSkill !== undefined ? { ruleSkill: args.audit.ruleSkill } : {}),
     ...(args.audit.skillPassLog !== undefined ? { skillPassLog: args.audit.skillPassLog } : {}),
+    ...(args.audit.grouping !== undefined ? { grouping: args.audit.grouping } : {}),
+    ...(args.audit.ruleSelection !== undefined ? { ruleSelection: args.audit.ruleSelection } : {}),
+    ...(args.audit.findingBudget !== undefined ? { findingBudget: args.audit.findingBudget } : {}),
+    ...(args.audit.coveragePass !== undefined ? { coveragePass: args.audit.coveragePass } : {}),
     ...(args.audit.shards !== undefined ? { shards: args.audit.shards } : {}),
     ...(args.audit.shardTruncation !== undefined
       ? { shardTruncation: args.audit.shardTruncation }

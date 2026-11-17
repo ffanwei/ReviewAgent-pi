@@ -1,0 +1,102 @@
+{
+  "instance_id": "comfyanonymous__ComfyUI@0bb6023",
+  "repo": "comfyanonymous/ComfyUI",
+  "base_commit": "6c0377f43e7b6ed58d48ae05cff9bc45b52ef5e0",
+  "head_commit": "0bb60235132cc72daea81427107a40ba1ccb5ddf",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 206.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": "notebooks/comfyui_colab.ipynb",
+      "line": 289,
+      "summary": "colab iframe cell 删除 time/socket 导入后仍在轮询端口",
+      "failure_scenario": "第二个 cell 同样删除了 import time 与 import socket，仅保留 import threading，但 iframe_thread 内部依旧使用 time.sleep(0.5) 与 socket.socket(...)/sock.connect_ex(...)。执行该 cell 时线程会在 time.sleep 处抛出 NameError，output.serve_kernel_port_as_iframe 永远不会被调用，作为 localtunnel 不可用时的备选方案也一并失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "ruff.toml",
+      "line": 9,
+      "summary": "lint.select 从三条规则扩张为整个 F 规则族，但未附带存量违规清理与 ipynb 覆盖",
+      "failure_scenario": "ruff.toml 将 lint.select 由 S307 + F401/F841/F821 改为 S307 + 整个 \"F\"（Pyflakes）规则族，命中面从 3 条扩展到 F401-F823 全家族（含 F541、F811、F601、F-string 相关问题等）。当前代码库中已存在会被新规则命中的存量代码，例如 comfy/ldm/modules/sub_quadratic_attention.py:25 的 \"from typing import List\" 与第 20/22 行 try 分支内的 List 导入重复（F811 重定义）；本次 MR 未同步清理这类存量问题，一旦 lint 作为门禁执行，整个仓库的检查结果会由“基本通过”变为大面积报错，属于典型的“收紧配置但不修存量”。另外 ruff 默认 include 仅覆盖 *.py / *.pyi，本 MR 没有配置 extend-include 覆盖 *.ipynb，因此本次真正引入运行时缺陷的 notebooks/comfyui_colab.ipynb（time/socket/subprocess/urllib 未导入）不会被 F821 捕获，说明该配置收紧对本 MR 自身的缺陷并未形成防护。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "CONFIG-001"
+    },
+    {
+      "file": "comfy_extras/nodes_clip_sdxl.py",
+      "line": 25,
+      "summary": "CLIPTextEncodeSDXL 的 clip 输入从中间位置前移到首位，改变了对外暴露的输入顺序",
+      "failure_scenario": "变更前去重前 \"clip\" 在 required 字典字面量里出现三次，Python 字典对重复键保留首次插入位置，因此旧 object_info 中 clip 的位置在 target_height 之后；变更后 clip 被显式放到 required 首位，node_info 向前端暴露的输入槽顺序随之改变。由于 prompt 是以输入名为键的字典（clip 为非 widget 的连线输入，不参与 widgets_values 的位置对齐），功能路径不受影响，且新顺序与 encode(self, clip, width, height, ...) 的形参顺序更一致；但仍建议确认前端节点重绘与既有工作流加载时的输入槽展示无回归。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.4,
+      "rule": "API-COMPAT-003"
+    },
+    {
+      "file": "comfy/controlnet.py",
+      "line": 824,
+      "summary": "prefix_replace 生成语句保留多余的 format 尾随逗号写法，易被误读为仍有第二个占位符",
+      "failure_scenario": "该行由 \"adapter.body.{}.\".format(i, j) 改为 \"adapter.body.{}.\".format(i, )，语义上两者完全一致（单占位符会忽略多余参数），属于清理无用实参的正确改动；但保留下来的尾随逗号与相邻的 \"adapter.body.{}.resnets.{}.\" 双占位写法放在一起，会让读者误以为此处仍缺一个参数或误判为元组生成。循环中 j 仅用于上一行的 resnets 前缀，通用前缀与 j 无关，因此更清晰的写法是显式使用 f-string 把 i 的语义写明（如 body 层号到 i*2 的映射）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.5,
+      "rule": "STYLE-002"
+    },
+    {
+      "file": "notebooks/comfyui_colab.ipynb",
+      "line": 244,
+      "summary": "localtunnel 与 colab iframe 两个 cell 删除 time/socket/subprocess/urllib 导入后仍在引用这些模块",
+      "failure_scenario": "本 MR 从 localtunnel cell（变更后仅保留 `import threading`，第 240 行）和 colab iframe cell（变更后同样仅保留 `import threading`，第 286 行）中删除了 import subprocess / time / socket / urllib.request，但两个 cell 的 iframe_thread 函数体仍在使用这些模块：localtunnel cell 第 244 行 time.sleep、第 245 行 socket.socket/socket.AF_INET/socket.SOCK_STREAM、第 252 行 urllib.request.urlopen、第 253 行 subprocess.Popen；iframe cell 第 289 行 time.sleep、第 290 行 socket.socket。这两条路径都是「自带以 `!python main.py --dont-print-server` 启动服务器」的互斥方案（localtunnel cell 第 260 行、iframe cell 第 302 行），因此用户在全新 kernel 中按文档走其中任一条路径时，daemon 线程会在第一行 time.sleep 处抛 NameError 立即退出：端口轮询与 localtunnel/iframe 启动逻辑全部不再执行，服务器虽由 `!python main.py` 启动但不会暴露访问地址，用户只能看到“卡住/没有链接”。需要说明的缓解情形是：第 186-217 行的 cloudflared cell 在第 190-194 行仍导入了这四个模块，若用户在同一 kernel 中先执行过该 cell（其导入已生效、cell 因 !python 阻塞），这些名字会残留并掩盖本缺陷；但 cloudflared cell 与另两条路径互斥（端口冲突），不能作为正常使用路径的依赖。此外 .github/workflows/test-ci.yml 第 8-15 行 paths-ignore 含 'notebooks/**'，notebook 改动不会触发任何测试，该回归只能靠人工发现。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "ruff.toml",
+      "line": 9,
+      "summary": "lint.select 扩张为整个 F 规则族，但未同步清理存量违规，也未覆盖 *.ipynb",
+      "failure_scenario": "本 MR 把 lint.select 由 S307 + F401/F841/F821 三条规则改为 S307 + 整个 \"F\"（Pyflakes）规则族，同时 .github/workflows/ruff.yml 在每次 push 与 pull_request 上执行 `ruff check .`（第 3、23 行），所以这次收紧会立刻作用于门禁。仓库中已存在会被新规则命中的存量代码：comfy/ldm/modules/sub_quadratic_attention.py 第 20/22 行在 try/except ImportError 分支内已导入 Optional, NamedTuple, List，第 25 行又无条件 `from typing import List`，属 F811（redefinition of unused name）命中面——本 MR 在同一个 hunk 里删掉了重复的 `from torch import Tensor`，却把这一处重复导入留着，一旦 CI 运行即可触发 `ruff check .` 失败，需要额外的修复 MR 才能合入其它改动。另一方面，第 7-8 行注释宣称该配置用于捕获 “syntax errors and undefined names”，但 ruff 默认 include 仅覆盖 *.py/*.pyi，配置中没有 extend-include，因此本 MR 自身引入的 notebooks/comfyui_colab.ipynb 里 time/socket/subprocess/urllib 未定义（F821）完全不会被检查拦截，配置收紧对真实缺陷没有形成防护。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.68,
+      "rule": "CONFIG-001"
+    },
+    {
+      "file": "comfy_extras/nodes_clip_sdxl.py",
+      "line": 25,
+      "summary": "CLIPTextEncodeSDXL 的 clip 输入前移到 required 首位，改变了向前端暴露的输入顺序",
+      "failure_scenario": "变更前 \"clip\" 在 required 字典字面量中出现三次（与 text_g、text_l 同行重复），Python 字典对重复键保留首次插入位置，因此旧 object_info 中 clip 的位置在 target_height 之后；变更后 clip 被显式放到 required 首位，node_info 向前端暴露的 required 顺序随之改变。由于 prompt 是以输入名为键的字典，且 clip 是非 widget 的连线输入、不参与 widgets_values 的位置对齐（width…text_l 等 widget 的相对顺序未变），功能执行路径不受影响，新顺序还与 encode(self, clip, width, height, crop_w, crop_h, target_width, target_height, text_g, text_l) 的形参顺序更一致——去重本身是正确修复。但这一变化会让前端节点重绘时输入槽顺序与旧版本不同，建议在 MR 说明中显式标注，并确认既有 SDXL 工作流加载后连线仍落在 clip 上、无 UI 回归。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.4,
+      "rule": "API-COMPAT-003"
+    },
+    {
+      "file": "comfy/controlnet.py",
+      "line": 824,
+      "summary": "prefix_replace 生成语句保留多余的 format 尾随逗号，易被误读为仍缺一个实参",
+      "failure_scenario": "该行由 \"adapter.body.{}.\".format(i, j) 改为 \"adapter.body.{}.\".format(i, )，语义上两者完全一致（单占位符会忽略多余实参），删除无用参数是正确清理；comfy/utils.py 第 95-99 行的 state_dict_prefix_replace 按 replace_prefix 插入序遍历，本循环先注册 \"adapter.body.{i}.resnets.{j}.\" 再注册 \"adapter.body.{i}.\"，具体前缀先匹配，因此映射结果未变。但保留下来的尾随逗号与上一行双占位符写法相邻，容易让读者误判此处仍需第二个参数，或误以为是元组写法；j 只服务于 resnets 前缀，通用前缀与 j 无关，用 f-string 显式表达更清晰。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.45,
+      "rule": "STYLE-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\comfyanonymous__ComfyUI\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\comfyanonymous__ComfyUI@0bb6023.diff\n  caseId              comfyanonymous__ComfyUI@0bb6023\n  --issue             (未传)\n  --taskId            comfyanonymous__ComfyUI@0bb6023\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 193.7s · 模型调用 20 次 · token 输入 44,763（未命中） · 输出 26,832 · 缓存命中 443,264（90.8%） · 工具 29 次（主会话 29 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0150\nreview-pi: 置信度过滤丢弃 3 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 194.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 193.7s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 8.6s (4.5%) | P2 7.1s (3.7%) | P3 6.1s (3.1%) | P4 33.7s (17.4%) | P5 42.5s (22.0%) | P6 24.3s (12.5%) | R2P1 3.8s (1.9%) | R2P2 3.7s (1.9%) | R2P3 6.3s (3.2%) | R2P4 13.5s (7.0%) | R2P5 30.6s (15.8%) | R2P6 13.6s (7.0%)\n[usage] 任务总计 | 模型调用 20 次（Agent 20 + 一次性 0） | token 输入 44,763（未命中） | 输出 26,832 | 缓存命中 443,264（90.8%） | $0.0150\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\comfyanonymous__ComfyUI@0bb6023\\audit\\20261115_022034_532.json",
+  "token_usage": {
+    "input_tokens": 44763,
+    "output_tokens": 26832,
+    "cache_read_input_tokens": 443264
+  }
+}

@@ -1,0 +1,500 @@
+[
+  {
+    "filePath": "src/Interpreters/Context.cpp",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "UInt64 backup_threads = config.getUInt64(\"backup_threads\", settings_ref[Setting::backup_threads]);",
+        "review": "[缺陷类型] 移除参数上/下界校验后把非法值直接传给资源池构造器。[影响评估] `backup_threads: 0` 在 debug 下触发 chassert 崩溃，在 release 下使 BACKUP/RESTORE 任务永不执行（挂起）；过大值则引发线程数失控。",
+        "suggestion": "[重构思路] 在读取配置处恢复夹取逻辑（至少保证 >=1，并保留一个合理的上界），或把设置类型保留为非零类型并在 ServerSettings 中声明最小值约束。[代码示例] `UInt64 backup_threads = std::clamp<UInt64>(config.getUInt64(\"backup_threads\", settings_ref[Setting::backup_threads]), 1, 256 * getNumberOfCPUCoresToUse());`",
+        "category": "可靠性",
+        "subcategory": "资源池参数校验",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 3260,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Formats/NativeReader.cpp",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "if (index_column_it->type != type_name)",
+        "review": "[缺陷类型] 新增的严格等值校验与既有序列化侧的兼容性截断逻辑不一致。[影响评估] StripeLog/Log/Memory 等使用 Native index 的表在含 `DateTime('TZ')` 列时可能无法读取，用户表现为 INCORRECT_INDEX，属于数据可读性回归。",
+        "suggestion": "[重构思路] 索引写入端与数据流写入端使用同一份（可能被截断的）类型名，或在读取端把校验改为「类型可解析且与 header 兼容」的宽松比较（例如比较去掉参数后的基础类型或调用 `IDataType::equals`）。[代码示例] 写入端：`String index_type_name = type_name; /// 复用已被兼容性截断的 type_name`；读取端：`if (index_column_it->type != type_name && data_type_factory.get(index_column_it->type)->equals(*column.type)) throw ...`",
+        "category": "可靠性",
+        "subcategory": "格式兼容性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 237,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Disks/ObjectStorages/AzureBlobStorage/AzureObjectStorage.h",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "std::shared_ptr<const AzureBlobStorage::ContainerClient> getAzureBlobStorageClient() const override { return client.get(); }",
+        "review": "[缺陷类型] 移除只读保护开关但配置项仍被接受（无告警）。[影响评估] 依赖 `readonly: true` 保护 Azure 容器的部署可能在无感知的情况下发生写入，存在数据被误写/误删的风险；与 S3/Local 语义不一致也会误导运维。",
+        "suggestion": "[重构思路] 若确实要移除该能力，应在配置解析阶段对仍使用 `readonly` 的 Azure 磁盘抛出明确错误或至少 LOG_WARNING 提示；更稳妥的做法是保留字段与覆写。[代码示例] 保留写法：`settings->read_only = config.getBool(config_prefix + \".readonly\", false);` 与 `bool isReadOnly() const override { return settings.get()->read_only; }`；移除时提示：`if (config.has(config_prefix + \".readonly\")) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"Option 'readonly' is no longer supported for Azure object storage\");`",
+        "category": "安全",
+        "subcategory": "只读保护失效",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 101,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Core/Settings.cpp",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "DECLARE(Bool, execute_distributed_plan_locally, false, R\"(",
+        "review": "[缺陷类型] 设置改名未做兼容。[影响评估] 升级后旧名被视为未知设置（查询/配置/profile 报错）；新名去掉前缀后语义不清晰，容易与其它 exchange 相关设置混淆。",
+        "suggestion": "[重构思路] 为每个旧名注册别名或保留为 obsolete 设置（读取时映射到新名），并在 SettingsChangesHistory 中显式记录 rename；同时保留 `distributed_plan_` 前缀以避免语义歧义。[代码示例] `DECLARE(Bool, optimize_exchanges, false, ..., EXPERIMENTAL) \\` + `MAKE_OBSOLETE(M, Bool, distributed_plan_optimize_exchanges, false) \\`；历史记录：`{\"optimize_exchanges\", false, false, \"Renamed from distributed_plan_optimize_exchanges.\"}`",
+        "category": "可维护",
+        "subcategory": "设置重命名兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 6719,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "res_columns[4]->insert(min);",
+        "review": "[缺陷类型] 安全相关约束能力被整体删除且无兼容层。[影响评估] 已配置的黑名单约束不再生效（约束被静默放宽）；system.settings 少一列属于对外 schema 破坏，客户端 `SELECT disallowed_values FROM system.settings` 直接失败。",
+        "suggestion": "[重构思路] 在 CHANGELOG / 升级说明中显式声明该能力删除，并对配置中残留的 `disallowed_values` 抛出明确错误而不是静默忽略；若尚未确定废弃，应恢复字段与列，至少保留解析与校验路径。[代码示例] 解析残留配置时：`if (config.has(\"disallowed_values\")) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"'disallowed_values' constraint is no longer supported, please remove it from settings profile\");`",
+        "category": "安全",
+        "subcategory": "权限/约束能力回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 7180,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Common/NamedCollections/NamedCollections.h",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "#include <Interpreters/Context.h>",
+        "review": "[缺陷类型] 分层依赖倒置 + 头文件包含膨胀。[影响评估] 编译时间上升、模块边界模糊，后续任何 Context.h 变更都会波及整个 Common 层，容易形成循环包含。",
+        "suggestion": "[重构思路] 头文件中只保留前向声明（`Context_fwd.h` 或自建 fwd 头），把需要完整类型的实现移到 .cpp；若某处确实需要 `Context` 的成员函数，可改为在 .cpp 里 include。[代码示例] 头文件：`#include <Interpreters/Context_fwd.h>` + `void setContext(const ContextPtr &);`；实现文件：`#include <Interpreters/Context.h>`。",
+        "category": "可维护",
+        "subcategory": "头文件依赖与分层",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Core/Block.cpp",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "Block concatenateBlocks(const std::vector<Block> & blocks)",
+        "review": "[缺陷类型] 语义/实现变更未同步到所有调用点，导致冗余深拷贝。[影响评估] join/表函数路径上单块场景多做一次全量列复制，数据量大时表现为额外的 CPU 与内存峰值。",
+        "suggestion": "[重构思路] 统一约定「单块由调用方直接返回」，或让 concatenateBlocks 自身保留快路径（若担心列共享导致后续原地修改，可提供 `concatenateBlocks`（共享）与 `concatenateBlocksCopy`（深拷贝）两个版本），并逐个调用点补齐。[代码示例] `if (blocks.size() == 1) return blocks.front(); return concatenateBlocks(blocks);`",
+        "category": "性能",
+        "subcategory": "冗余数据拷贝",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 941,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Common/Exception.cpp",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "thread_frame_pointers.frame_pointers.clear();",
+        "review": "[缺陷类型] 移除关键错误兜底日志。[影响评估] 未被记录的 LOGICAL_ERROR / 数据损坏类异常将不再产生告警日志，故障排查与 Cloud 告警能力下降，属于可观测性回退。",
+        "suggestion": "[重构思路] 若该机制因递归/析构中打日志的风险而移除，应替换为更安全的兜底：例如在 catch 到重要错误码的统一入口（查询结束、后台任务顶层）显式记录并计数；至少为 `isErrorCodeImportant()` 保留实现供其它位置复用。[代码示例] `catch (const Exception & e) { if (e.code() == ErrorCodes::LOGICAL_ERROR) LOG_ERROR(getLogger(\"CriticalErrors\"), \"{}\", getExceptionMessage(e, true)); throw; }`",
+        "category": "可靠性",
+        "subcategory": "可观测性回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 263,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Parsers/ASTShowTablesQuery.cpp",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "if (!like.empty())",
+        "review": "[缺陷类型] 功能回退导致同类场景行为不一致。[影响评估] 开启 hilite 的客户端中，SHOW TABLES/COLUMNS/FUNCTIONS 与 DROP ... LIKE 不再提示未转义的 `%`/`_`，用户误用风险回升；代码层面也留下两套 LIKE 格式化实现。",
+        "suggestion": "[重构思路] 抽出统一的「输出 LIKE 模式」辅助函数（在 hilite 时高亮元字符，否则用 quote 输出），所有 AST 复用同一实现。[代码示例] `void formatLikePattern(WriteBuffer & ostr, const String & like, const FormatSettings & settings) { if (settings.hilite && highlightStringLiteralWithMetacharacters(...)) return; ostr << DB::quote << like; }`",
+        "category": "可读性",
+        "subcategory": "格式化行为不一致",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 30,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Interpreters/GinFilter.cpp",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "if (ngrams > 8)",
+        "review": "[缺陷类型] 参数校验位置与错误码语义不一致。[影响评估] DDL 场景错误码不稳定，客户端/测试按错误码断言时会失败；校验分散也增加维护成本。",
+        "suggestion": "[重构思路] 把 ngram 上界校验上移到 `ginIndexValidator` 并用 INCORRECT_QUERY，构造器仅做归一化（UNLIMITED_ROWS_PER_POSTINGS_LIST → max）。[代码示例] `if (!index.arguments.empty() && index.arguments[0].safeGet<UInt64>() > 8) throw Exception(ErrorCodes::INCORRECT_QUERY, \"First argument of GIN index (ngrams) must not be greater than 8\");`",
+        "category": "可维护",
+        "subcategory": "错误码与校验分层",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 31,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Processors/QueryPlan/ReadFromMergeTree.cpp",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "sort_description.emplace_back(sorting_columns[j], input_order_info->direction);",
+        "review": "[缺陷类型] 排序元信息丢失导致的合并顺序错误（无异常、静默出错）。影响评估：`ORDER BY (x DESC)` 排序键的表在 `optimize_read_in_order=1` 或 readByLayers 预合并场景下返回的行序错误，且 FINAL 与非 FINAL 结果不一致；下游若依赖排序（例如 merge-sorted 聚合、LIMIT 下推）可能进一步产出错误结果。",
+        "suggestion": "[重构思路] 保留 reverse_flags 参与 SortDescription 构造，或把这套逻辑抽成一个公共 helper 供三处复用，避免再次出现“部分路径忘了 reverse_flags”的情况。代码示例：`const auto reverse_flags = storage_snapshot->metadata->getSortingKeyReverseFlags(); for (size_t j = 0; j < prefix_size; ++j) sort_description.emplace_back(sorting_columns[j], (!reverse_flags.empty() && reverse_flags[j]) ? -input_order_info->direction : input_order_info->direction, 1);`",
+        "category": "可靠性",
+        "subcategory": "排序方向与元信息一致性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 863,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/IndicesDescription.cpp",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "throw Exception(ErrorCodes::INCORRECT_QUERY, \"Only literals can be skip index arguments\");",
+        "review": "[缺陷类型] 元数据解析兼容性回退。影响评估：升级后含旧式 GIN 索引的表无法加载（服务启动/ATTACH 时报 INCORRECT_QUERY，错误信息与真实原因不符），用户无法按预期得到“请重建索引”的指引；实验特性用户升级即被打断。",
+        "suggestion": "[重构思路] 保留旧格式的识别能力，在解析到 key=value 形式的 GIN 参数时抛出明确的迁移错误，而不是让它退化到通用分支的模糊报错；或在 creator 中兼容旧参数并统一给出 drop/recreate 提示。代码示例：`if (auto * f = child->as<ASTFunction>(); f && f->name == \"equals\") throw Exception(ErrorCodes::INCORRECT_QUERY, \"GIN index arguments in key=value form are no longer supported, please DROP and CREATE the index again with positional arguments (ngram_length[, max_rows_per_postings_list])\");`",
+        "category": "可靠性",
+        "subcategory": "元数据/DDL 向后兼容",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 142,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/MaterializedView/RefreshTask.cpp",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "ops.emplace_back(zkutil::makeRemoveRequest(coordination.path, -1));",
+        "review": "[缺陷类型] 分布式协调状态清理不完整（znode 泄漏 + 状态污染）。影响评估：DROP 后 Keeper 残留 coordination 子树；重建同名视图时新任务读到 paused_znode_exists=true，刷新不会自动运行，需要人工 SYSTEM START VIEW 才能恢复，且残留 root znode 中的完成时间等状态会被新任务继承。",
+        "suggestion": "[重构思路] 在 drop() 中恢复对 /paused 的删除，并检查所有 responses 的错误码，避免静默失败；更稳妥的做法是先删除子节点再删父节点。代码示例：`Coordination::Requests ops; ops.emplace_back(zkutil::makeRemoveRequest(coordination.path + \"/replicas\", -1)); ops.emplace_back(zkutil::makeRemoveRequest(coordination.path + \"/paused\", -1)); ops.emplace_back(zkutil::makeRemoveRequest(coordination.path, -1)); for (const auto & r : responses) if (r->error != Coordination::Error::ZNOTEMPTY && r->error != Coordination::Error::ZNONODE) zkutil::KeeperMultiException::check(code, ops, responses);`",
+        "category": "可靠性",
+        "subcategory": "Keeper 状态清理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 220,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/Freeze.cpp",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "for (const auto & disk: disks)",
+        "review": "[缺陷类型] 丢失对不可变磁盘的保护判断。影响评估：多磁盘/分层存储集群上 SYSTEM UNFREEZE 会因某个只读盘或 plain 对象存储盘抛异常而整体失败，已处理的磁盘留部分状态；此前行为是跳过这些盘并继续完成其余磁盘的解冻。",
+        "suggestion": "[重构思路] 恢复按磁盘能力过滤，或至少在使用前用 supportsPartitionCommand / isReadOnly / isWriteOnce 判断并记录 warning 后跳过。代码示例：`for (const auto & disk : disks) { if (disk->isReadOnly() || disk->isWriteOnce()) { LOG_INFO(log, \"Skipping read-only or write-once disk {}\", disk->getName()); continue; } ... }`",
+        "category": "可靠性",
+        "subcategory": "磁盘能力判断",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 151,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/MergeTree/KeyCondition.cpp",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "throw Exception(ErrorCodes::BAD_TYPE_OF_FIELD, \"Key expression contains comparison between inconvertible types: \"",
+        "review": "[缺陷类型] 异常语义收紧 + 宽泛 catch 掩盖根因。影响评估：此前能正常执行（只是不做主键裁剪）的 `WHERE key_col = <不可转换常量>` 类查询，升级后会直接报 BAD_TYPE_OF_FIELD；若底层抛出的是内存不足等错误，也会被误报为类型不匹配，排障困难。",
+        "suggestion": "[重构思路] 保持“索引分析失败即放弃优化”的软失败语义，用 tryConvertFieldToType 判断；确实需要报错时只捕获 Exception 并保留原始 code 与消息。代码示例：`Field converted = tryConvertFieldToType(src_value, *desired_type, src_type.get(), {}); if (converted.isNull()) return false; src_value = converted;`",
+        "category": "可靠性",
+        "subcategory": "异常处理与降级语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1993,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/MergeTree/MergeTreeIndexGin.cpp",
+    "reviewTips": [
+      {
+        "id": "F020",
+        "code": "size_t ngram_length = index.arguments.empty() ? 0 : index.arguments[0].safeGet<size_t>();",
+        "review": "[缺陷类型] 依赖外部校验的隐式类型断言。影响评估：异常路径下（旧元数据、直接调用 creator、校验被绕过）抛出的是与类型无关的通用 Field 异常，错误信息无法指导用户修正 DDL；size_t 与 UInt64 混用也降低了可读性。",
+        "suggestion": "[重构思路] 抽一个 `getGinIndexArguments(index)` helper，同时被 creator 与 validator 使用，内部统一做数量与类型检查并抛 INCORRECT_QUERY。代码示例：`static std::pair<size_t, UInt64> getGinParams(const IndexDescription & index) { if (index.arguments.size() > 2) throw Exception(ErrorCodes::INCORRECT_QUERY, ...); size_t ngram = 0; UInt64 max_rows = DEFAULT_MAX_ROWS_PER_POSTINGS_LIST; if (!index.arguments.empty()) ngram = index.arguments[0].safeGet<UInt64>(); if (index.arguments.size() == 2) max_rows = index.arguments[1].safeGet<UInt64>(); return {ngram, max_rows}; }`",
+        "category": "可靠性",
+        "subcategory": "参数解析健壮性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 763,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F021",
+        "code": "throw Exception(ErrorCodes::INCORRECT_QUERY, \"GIN index must have less than two arguments\");",
+        "review": "[缺陷类型] 错误提示文案与逻辑不符。影响评估：用户按报错理解会误以为 GIN 索引只允许一个参数，增加排障与支持成本。",
+        "suggestion": "[重构思路] 修改文案为“最多两个参数”，并顺便给出合法形式。代码示例：`throw Exception(ErrorCodes::INCORRECT_QUERY, \"GIN index must have at most two arguments: ngram_length[, max_rows_per_postings_list], but got {}\", index.arguments.size());`",
+        "category": "可读性",
+        "subcategory": "错误信息准确性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 783,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F022",
+        "code": "GinFilterParameters gin_filter_params(ngram_length, max_rows_per_postings_list); /// Just validate",
+        "review": "[缺陷类型] 输入校验范围被放宽。影响评估：用户可以创建 ngram_length=1 的 GIN 索引，索引体积与写入放大显著上升（近似字符级倒排），且缺少明确的错误提示；错误码分类与其它参数错误不一致。",
+        "suggestion": "[重构思路] 在 validator 中恢复 2..8 的显式范围校验并用 INCORRECT_QUERY，0 仍保留为“使用默认分词器”的语义。代码示例：`size_t ngram_length = index.arguments.empty() ? 0 : index.arguments[0].safeGet<UInt64>(); if (ngram_length != 0 && (ngram_length < 2 || ngram_length > 8)) throw Exception(ErrorCodes::INCORRECT_QUERY, \"GIN index argument ngram_length must be between 2 and 8, but got {}\", ngram_length);`",
+        "category": "可靠性",
+        "subcategory": "参数范围校验",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 798,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/IMessageProducer.h",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "#pragma once",
+        "review": "[缺陷类型] 重复预处理指令/编辑残留。影响评估：不影响功能，但降低头文件整洁度，review 时容易与其他真实的重复定义问题混淆。",
+        "suggestion": "[重构思路] 删除多余的一行，只保留一个 `#pragma once`。代码示例：`#pragma once\\n\\n#include <Processors/Sinks/SinkToStorage.h>\\n#include <Interpreters/Context.h>`",
+        "category": "可读性",
+        "subcategory": "头文件规范",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 3,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/MergeTree/MergeTreeDataMergerMutator.cpp",
+    "reviewTips": [
+      {
+        "id": "F024",
+        "code": "});",
+        "review": "[缺陷类型] 日志级别设置不当。影响评估：生产环境日志量放大（每轮合并选择+每次合并各一条 INFO），可能触发日志轮转与磁盘压力，也会淹没真正重要的 INFO 事件；若属于临时调试改动，合入后容易被遗忘。",
+        "suggestion": "[重构思路] 恢复为 LOG_TRACE/LOG_DEBUG；如确需在生产可见，考虑用 ProfileEvents 计数或在日志中附上合并原因并降到 DEBUG。代码示例：`LOG_TRACE(log, \"Selected {} parts from {} to {}\", parts.size(), parts.front().name, parts.back().name);`",
+        "category": "可维护",
+        "subcategory": "日志级别",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 509,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Processors/QueryPlan/ReadFromPreparedSource.h",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "#include <Interpreters/Context.h>",
+        "review": "[缺陷类型] 头文件依赖膨胀（编译期耦合）。影响评估：Context.h 是项目中最重的头之一，扩散到 Processors/Storages 的公共头会拖慢增量与全量编译，并使头文件包含顺序更脆弱；同时清理 include 的目标（减少冗余依赖）被部分抵消。",
+        "suggestion": "[重构思路] 头文件中保持 `Context_fwd.h` 或前置 `class Context; using ContextPtr = std::shared_ptr<const Context>;`，仅在确实需要完整定义的 .cpp 中包含 Context.h；若某个内联实现（如 ClientEmbedded 构造函数、DeltaLakeMetadata::create、IMessageProducer 的默认成员）需要完整类型，考虑把实现留在 .cpp。代码示例：`// header\\n#include <Interpreters/Context_fwd.h>\\nclass Context;\\nContextPtr ctx; // ok`",
+        "category": "可维护",
+        "subcategory": "编译依赖与头文件卫生",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 3,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/WindowView/StorageWindowView.cpp",
+    "reviewTips": [
+      {
+        "id": "F026",
+        "code": "String window_view_id = window_view.getStorageID().hasUUID() ? toString(window_view.getStorageID().uuid) : window_view.getStorageID().getFullNameNotQuoted();",
+        "review": "[缺陷类型] 去重语义与设置开关脱钩：同一设置在窗口视图路径被忽略，其它路径仍生效。影响评估：默认配置下窗口视图向下游物化视图写入将强制走“视图级去重”，INSERT 重试可能跳过本应重新写入的 block，表现为物化视图数据缺失；同时用户显式关闭该设置也不再能关闭此行为，行为难以预期。",
+        "suggestion": "[重构思路] 保留按设置门控的逻辑，或若确定窗口视图必须始终去重，则应在该设置/文档中明确说明窗口视图为例外，并同步移除/更新设置在 Setting 描述中的语义。代码示例：`if (local_context->getSettingsRef()[Setting::deduplicate_blocks_in_dependent_materialized_views]) { builder.addSimpleTransform(...SetViewIDTransform...); }`",
+        "category": "可靠性",
+        "subcategory": "去重与幂等语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1598,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/StorageReplicatedMergeTree.cpp",
+    "reviewTips": [
+      {
+        "id": "F027",
+        "code": "if (columns_from_zk == old_columns)",
+        "review": "[缺陷类型] 严格性提升导致容错路径丢失（并发 ALTER / attach 场景）。影响评估：副本在元数据被其它副本并发修改时可能在 `checkTableStructure` 阶段直接抛 INCOMPATIBLE_COLUMNS/表元数据不匹配异常，而不是返回 false 等待元数据版本更新，可能引发副本反复失败或需要人工干预。",
+        "suggestion": "[重构思路] 明确两种模式的语义：若仍需容忍并发 ALTER，应让 `checkEquals` 在非严格模式下记录差异并返回 bool，`checkTableStructureAttempt` 继续把该结果并入判定；若确定改为“一律严格”，请补充说明（提交说明/升级说明）并检查所有 `checkTableStructure(..., strict_check=false, ...)` 调用点是否需要改造。代码示例：`bool metadata_equal = old_metadata.checkEquals(metadata_from_zk, columns, name_for_log, context, /*strict*/ strict_check); if (columns_from_zk == old_columns && metadata_equal) return true;`",
+        "category": "可靠性",
+        "subcategory": "副本元数据一致性校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1664,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/StorageMerge.cpp",
+    "reviewTips": [
+      {
+        "id": "F028",
+        "code": "if (engine_args.size() != 2)",
+        "review": "[缺陷类型] 对外能力（engine 参数 + 写路径 + 错误码）整体移除且无兼容处置。影响评估：已存在的三参数 Merge 表在重启/attach 时会因为 engine 参数个数校验失败而无法加载；依赖写入语义的运维脚本会收到与以往不同的错误码，难以据此做针对性处理。",
+        "suggestion": "[重构思路] 在升级说明/SettingsChangesHistory 或文档中记录该能力移除；如需平滑过渡，可保留第三参数解析但在 `CREATE/ATTACH` 时给出明确的“已不支持写入”提示（或在 attach 时降级为两参数存储并 WARN），而不是仅报参数个数错误。代码示例：`if (engine_args.size() == 3) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"Merge engine no longer supports 'table_to_write'; remove the third argument\");`",
+        "category": "可靠性",
+        "subcategory": "引擎参数与写入能力变更",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1709,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/StorageKeeperMap.h",
+    "reviewTips": [
+      {
+        "id": "F030",
+        "code": "#include <Interpreters/Context.h>",
+        "review": "[缺陷类型] 头文件包含粒度过大（forward declaration 退化）。影响评估：编译时间与头文件依赖图扩大，单点修改 Context 相关头会触发更多 TU 重编；也掩盖了“哪个实现文件真正需要 Context 完整定义”的依赖关系。",
+        "suggestion": "[重构思路] 头文件继续用 `Context_fwd.h`，只在需要完整定义的 .cpp 中显式包含 `Context.h`；若某个 .cpp 之前靠删除自己的 `#include <Interpreters/Context.h>` 来清理重复包含，应确认它仍能通过自身 include 获得完整定义，而不是依赖头文件的传递包含。代码示例：`// StorageKeeperMap.h\n#include <Interpreters/Context_fwd.h>\n// StorageKeeperMap.cpp\n#include <Interpreters/Context.h>`",
+        "category": "可维护",
+        "subcategory": "头文件依赖与编译期耦合",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 3,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "utils/query-latency-analyzer/index.html",
+    "reviewTips": [
+      {
+        "id": "F031",
+        "code": "console.log(data.labels);",
+        "review": "[缺陷类型] 调试语句残留。影响评估：功能不受影响，但控制台噪声会影响该工具的可用性排查，也容易被误认为官方输出。",
+        "suggestion": "[重构思路] 删除这两行；若确实需要诊断信息，用可开关的调试标志或 `console.debug` 并集中在一处。代码示例：`const extraColumns = data.labels.filter(l => l.startsWith(\"_\")).map(l => l.substring(1));`",
+        "category": "可读性",
+        "subcategory": "遗留调试代码",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 274,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/StorageStripeLog.cpp",
+    "reviewTips": [
+      {
+        "id": "F033",
+        "code": "#include \"StorageLogSettings.h\"",
+        "review": "[缺陷类型] include 风格不一致。影响评估：功能无影响，但与仓库约定偏离，可能被 style 检查或后续 rebase 视为噪声，也削弱了本 MR 自身的“统一 include”目标。",
+        "suggestion": "[重构思路] 恢复为尖括号全路径写法。代码示例：`#include <Storages/StorageLogSettings.h>`",
+        "category": "可读性",
+        "subcategory": "代码风格/包含约定",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 30,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

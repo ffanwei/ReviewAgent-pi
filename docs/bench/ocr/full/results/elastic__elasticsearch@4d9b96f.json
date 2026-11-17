@@ -1,0 +1,150 @@
+{
+  "instance_id": "elastic__elasticsearch@4d9b96f",
+  "repo": "elastic/elasticsearch",
+  "base_commit": "ba5a9c83310ce6fbe27ff251aba00e37fad1d205",
+  "head_commit": "4d9b96f4ac1af0cb871f1d3b77169f9f1e83d194",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T06:40:21.338060+00:00",
+  "duration_seconds": 104.28,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 4 finding(s) across 2 selected item(s).",
+    "summary": {
+      "files_reviewed": 2,
+      "comments": 4,
+      "total_tokens": 307949,
+      "input_tokens": 295813,
+      "output_tokens": 12136,
+      "cache_read_tokens": 257408,
+      "elapsed": "1m44s"
+    },
+    "tool_calls": {
+      "total": 26,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 13,
+        "file_read": 11
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+        "content": "This makes file entitlements fail-open for every path whose `FileSystem` class is not the default one: both `checkFileRead` and `checkFileWrite` return early, so any plugin that obtains a `Path` belonging to a non-default filesystem (zipfs, jimfs, any directly instantiated `FileSystem`/provider implementation that does not go through the instrumented `FileSystems.newFileSystem`/`FileSystemProvider` constructor) can read and write without any entitlement check. That is a meaningful weakening of the security boundary, and the method has no documentation explaining why the bypass is safe.\n\nIf the intent is only to avoid matching paths whose separators/normalization differ, consider a narrower policy (e.g. reject non-default filesystems, or only allow known in-memory filesystems used in tests) and document the rationale on the helper. Either way, this behavior change deserves an explicit test (default-FS path still checked, non-default FS allowed/denied as intended).",
+        "suggestion_code": "    /**\n     * Paths from non-default filesystems (e.g. zipfs or in-memory test filesystems) are not checked against\n     * file entitlements because <reason>; see <test> for the intended behaviour.\n     */\n    private static boolean isPathOnDefaultFilesystem(Path path) {",
+        "existing_code": "    private static boolean isPathOnDefaultFilesystem(Path path) {",
+        "start_line": 311,
+        "end_line": 311,
+        "thinking": "Within entitlement lib, existing usages used multi-line `logger.debug(` with supplier spanning lines, so the overload exists (PolicyManager lines 314, 462). Good.\n\nNow about FileAccessTree logging: one potential problem — `checkPath` is invoked for every file operation from any non-trivial class, and building `String.join(\",\", paths)` when debug enabled iterates all read paths. That's acceptable debug behavior.\n\nIs there anything that might be an actual bug in the FileAccessTree logging? `String.join(\",\", paths)` where paths is String[] — fine.\n\nI think I'll also flag the debug log in `isParent` because it's a static helper used during startup sorting/validation and in binary-search hot path; the log text \"checking isParent [%s] for [%s]\" ambiguous arguments order... no.\n\nI'll finalize with two comments. Maybe three: add a note that only checkFileRead/checkFileWrite got the bypass, but `checkFileWithZipMode` etc. delegate. No missing coverage.\n\nWait — one more thing about the security bypass: is there anywhere paths are converted/normalized before? In checkFileRead, path used directly. Fine.\n\nDecision: post the security comment (high) and the redundancy comment (low). Consider also suggesting a test for the new behavior — the PR adds a behavior change with no test. Should I flag missing tests? The checklist has \"test\" category. A test verifying that a non-default FS path is skipped/denied would be valuable. I can mention in the security comment. Let me add a separate test comment? Better fold into security comment to avoid duplicate mounting. Actually mounting on different lines: I could add a test comment on `checkFileWrite` bypass line. Hmm; I'll fold.\n\nLet me write.",
+        "category": "security",
+        "severity": "high"
+      },
+      {
+        "path": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+        "content": "`path.getFileSystem()` is called twice; reuse the already computed `pathFileSystemClass` to avoid the redundant lookup (and to make it obvious the same value is compared and logged).",
+        "suggestion_code": "        var pathFileSystemClass = path.getFileSystem().getClass();\n        if (pathFileSystemClass != DEFAULT_FILESYSTEM_CLASS) {",
+        "existing_code": "        var pathFileSystemClass = path.getFileSystem().getClass();\n        if (path.getFileSystem().getClass() != DEFAULT_FILESYSTEM_CLASS) {",
+        "start_line": 312,
+        "end_line": 313,
+        "thinking": "Within entitlement lib, existing usages used multi-line `logger.debug(` with supplier spanning lines, so the overload exists (PolicyManager lines 314, 462). Good.\n\nNow about FileAccessTree logging: one potential problem — `checkPath` is invoked for every file operation from any non-trivial class, and building `String.join(\",\", paths)` when debug enabled iterates all read paths. That's acceptable debug behavior.\n\nIs there anything that might be an actual bug in the FileAccessTree logging? `String.join(\",\", paths)` where paths is String[] — fine.\n\nI think I'll also flag the debug log in `isParent` because it's a static helper used during startup sorting/validation and in binary-search hot path; the log text \"checking isParent [%s] for [%s]\" ambiguous arguments order... no.\n\nI'll finalize with two comments. Maybe three: add a note that only checkFileRead/checkFileWrite got the bypass, but `checkFileWithZipMode` etc. delegate. No missing coverage.\n\nWait — one more thing about the security bypass: is there anywhere paths are converted/normalized before? In checkFileRead, path used directly. Fine.\n\nDecision: post the security comment (high) and the redundancy comment (low). Consider also suggesting a test for the new behavior — the PR adds a behavior change with no test. Should I flag missing tests? The checklist has \"test\" category. A test verifying that a non-default FS path is skipped/denied would be valuable. I can mention in the security comment. Let me add a separate test comment? Better fold into security comment to avoid duplicate mounting. Actually mounting on different lines: I could add a test comment on `checkFileWrite` bypass line. Hmm; I'll fold.\n\nLet me write.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/FileAccessTree.java",
+        "content": "This looks like leftover debugging output being added to an entitlement-check hot path: `checkPath` runs on every instrumented file operation (and the lambda closure allocates even when DEBUG is off). Worse, `String.join(\",\", paths)` builds a complete string of *all* entitlement paths on every single check whenever DEBUG is enabled for this logger, which could be thousands of entries. Suggest dropping this line (or demoting it to a trace-gated, cheap message) before merging.",
+        "existing_code": "        logger.debug(() -> Strings.format(\"checking [%s] against [%s]\", path, String.join(\",\", paths)));",
+        "start_line": 206,
+        "end_line": 206,
+        "thinking": "Logger is static, fine.\n\nNow comments to report:\n\nFileAccessTree:\n- Debug logging added inside `isParent`, a hot per-check helper (and called from constructor loops). This is likely leftover debug code; it adds overhead in the entitlement check path (isParent is invoked on every canRead/canWrite). Suggest removing or using trace-level guarded logging. Actually could be flagged as performance/maintainability. Also, `String.join(\",\", paths)` joins the full paths array in `checkPath`.\n\nNotably, `isParent` is also called during policy construction (`pruneSortedPaths`, `validateExclusivePaths`), so the log would emit during startup too — not harmful.\n\nAlso potentially: debug logs reveal paths — not sensitive really.\n\nPolicyManager:\n- DEFAULT_FILESYSTEM_CLASS static field vs. comparing FS classes only (not instances): two distinct `FileSystem` instances can have same class? For zipfs, `FileSystems.newFileSystem(...)` returns class `ZipFileSystem` which is not default class, so it'd fail open. But consider a non-default FS implementation whose class is a subclass? Comparing class equality means a subclassed default FS would be treated as non-default → fail-open. Not a realistic bypass (getClass() equality is strict). Hmm, actually the fail-open finding covers this.\n\nAnother issue: the check is placed only in checkFileRead/checkFileWrite, but `isPathOnDefaultFilesystem` returns false → early return; however, `checkCreateTempFile` calls checkFileWrite(callerClass, pathLookup.tempDir()) — fine.\n\nWhat about `PathLookup`? Not relevant.\n\nAny other real issues? Consider `DEFAULT_FILESYSTEM_CLASS` initialized statically: `PathUtils.getDefaultFileSystem().getClass()`. If tests use a different default FS... no.\n\nPotential test concern: no tests added for the non-default filesystem behavior. Could flag test coverage: PR changes behavior (allow all non-default filesystems) without tests. That's a legit test comment. Hmm, checklist doesn't explicitly cover missing tests but \"test\" category exists. But since fail-open issue is already confirmed, adding a test comment may be redundant. Still, \"missing tests\" is a distinct point. I'd rather keep focus.\n\nAnother potential issue: comparing classes rather than checking the filesystem's provider. Using `path.getFileSystem() != FileSystems.getDefault()` compares instance — that would be more accurate? Actually for a path belonging to a custom FS whose class happens to be... not relevant.\n\nAnother thought: In PolicyManager, `isPathOnDefaultFilesystem` name says \"isPathOnDefaultFilesystem\" but implementation compares FS class not identity — a custom FileSystem instance created via a provider that reuses the default FS class? Not possible.\n\nHmm — one real concern: `FileSystem` classes belonging to custom providers loaded by plugins. Not relevant.\n\nAnother important consideration: What if the path's filesystem is a non-default FS but the plugin is nontrivially... fail-open already reported.\n\nAnother thing: WindowsFileSystem vs default — on Windows, FileSystems.getDefault().getClass() is WindowsFileSystem; same instance presumably. Fine.\n\nNow let's consider whether the debug log message \"File entitlement trivially allowed\" is misleading — it says \"trivially allowed\" — fine.\n\nAnother potential logic issue in FileAccessTree: `String.join(\",\", paths)` — if `paths` is very large (many paths), and debug is enabled per call... Performance note.\n\nAlso, should the logging be added at all in the hot path? Let's check how frequently checkPath is called... every file operation of every plugin. Yes, hot.\n\nAlso note: `isParent` logging in `validateExclusivePaths` is invoked during startup; harmless.\n\nI'll produce comments:\n1. FileAccessTree line 206: debug logging in the hot check path, joining the entire paths array on each call — recommend removing leftover debug logging or using trace/gating. Category performance, severity medium.\n2. FileAccessTree line 224: same for isParent (called per check and per construction iteration). Could be combined into one comment, but they're separate lines. Maybe combine both into one comment anchored on line 206, mentioning isParent too? Better to have two separate anchoring comments? To avoid redundancy, one comment on 206 mentioning both. Hmm the tool matches lines. I'll do a single comment on the checkPath line mentioning both, plus maybe separate comment on isParent. I'll do two comments since they are distinct lines, but content-wise short.\n\nAlso potential documented concern: FileAccessTree lacked logger... it has one.\n\n3. PolicyManager: isPathOnDefaultFilesystem only applied to read/write checks but FileDescriptor checks are hard-denied (neverEntitled) - fine. What about other file checks like checkCreateTempFile pathLookup.tempDir()? fine.\n\n4. PolicyManager: the logging statement inside isPathOnDefaultFilesystem uses duplicated path.getFileSystem() — already confirmed finding #2. Skip.\n\n5. Missing tests? Let me check if a test file was modified... other_changed_files is empty, so no tests. Flagging \"no tests for the new non-default filesystem behavior\" is reasonable but they said don't repeat confirmed findings; missing tests isn't confirmed. However, given behavior itself is buggy (fail-open), test comment adds less value. I'll skip or maybe include as low severity. I think I'll skip to stay concise.\n\nAny comment about DEFAULT_FILESYSTEM_CLASS being computed via PathUtils but the class already imports; fine.\n\nOne more possible issue: In FileAccessTree, `logger.debug` in `isParent` is a static method — but `PATH_ORDER`... fine.\n\nAlso, potential issue: log messages use lowercase \"checking\" — ES log style typically capitalizes. Minor style; also \"checking isParent\" leaks internals. I'll fold into the same comment.\n\nLet me also double check whether `Strings` import is needed at all / whether there's a simpler `logger.debug(\"checking [{}] against [{}]\", path, paths)`? Elasticsearch Logger (log4j wrapper) supports parameterized messages `logger.debug(String, Object...)`. Using Strings.format + supplier works but parameterized form is what the rest of the code uses? In PolicyManager, `logger.debug(() -> Strings.format(...))` is used at line 314 and 462, so consistent with existing style. Fine, no comment.\n\nNow, another consideration on line 206: could `String.join` be problematic if paths is empty? `String.join(\",\", new String[0])` returns \"\". Fine.\n\nI'll write the comments.\n\nActually, let me reconsider the isParent logging more carefully: `isParent` is called from `checkPath` too, so debug will emit for every check — and inner calls also from constructor. Yes.\n\nShould I flag it as \"leftover debug logging should be removed before merge\"? Reasonable maintainability comment. I'll include both as one or two comments.\n\nAlso, is there a risk of leaking info in logs? Paths are logged — for entitlement checks it may be useful. Not a security concern.\n\nLet me finalize.",
+        "category": "performance",
+        "severity": "medium"
+      },
+      {
+        "path": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/FileAccessTree.java",
+        "content": "Same concern here: `isParent` is a per-check hot helper (and is also called while building/validating policies), so emitting a DEBUG line for every invocation is noisy and adds overhead. Also the message text (`isParent`) leaks an internal method name rather than describing the operation. Recommend removing it or converting to a single trace-level message in `checkPath` only.",
+        "existing_code": "        logger.debug(() -> Strings.format(\"checking isParent [%s] for [%s]\", maybeParent, path));",
+        "start_line": 224,
+        "end_line": 224,
+        "thinking": "Logger is static, fine.\n\nNow comments to report:\n\nFileAccessTree:\n- Debug logging added inside `isParent`, a hot per-check helper (and called from constructor loops). This is likely leftover debug code; it adds overhead in the entitlement check path (isParent is invoked on every canRead/canWrite). Suggest removing or using trace-level guarded logging. Actually could be flagged as performance/maintainability. Also, `String.join(\",\", paths)` joins the full paths array in `checkPath`.\n\nNotably, `isParent` is also called during policy construction (`pruneSortedPaths`, `validateExclusivePaths`), so the log would emit during startup too — not harmful.\n\nAlso potentially: debug logs reveal paths — not sensitive really.\n\nPolicyManager:\n- DEFAULT_FILESYSTEM_CLASS static field vs. comparing FS classes only (not instances): two distinct `FileSystem` instances can have same class? For zipfs, `FileSystems.newFileSystem(...)` returns class `ZipFileSystem` which is not default class, so it'd fail open. But consider a non-default FS implementation whose class is a subclass? Comparing class equality means a subclassed default FS would be treated as non-default → fail-open. Not a realistic bypass (getClass() equality is strict). Hmm, actually the fail-open finding covers this.\n\nAnother issue: the check is placed only in checkFileRead/checkFileWrite, but `isPathOnDefaultFilesystem` returns false → early return; however, `checkCreateTempFile` calls checkFileWrite(callerClass, pathLookup.tempDir()) — fine.\n\nWhat about `PathLookup`? Not relevant.\n\nAny other real issues? Consider `DEFAULT_FILESYSTEM_CLASS` initialized statically: `PathUtils.getDefaultFileSystem().getClass()`. If tests use a different default FS... no.\n\nPotential test concern: no tests added for the non-default filesystem behavior. Could flag test coverage: PR changes behavior (allow all non-default filesystems) without tests. That's a legit test comment. Hmm, checklist doesn't explicitly cover missing tests but \"test\" category exists. But since fail-open issue is already confirmed, adding a test comment may be redundant. Still, \"missing tests\" is a distinct point. I'd rather keep focus.\n\nAnother potential issue: comparing classes rather than checking the filesystem's provider. Using `path.getFileSystem() != FileSystems.getDefault()` compares instance — that would be more accurate? Actually for a path belonging to a custom FS whose class happens to be... not relevant.\n\nAnother thought: In PolicyManager, `isPathOnDefaultFilesystem` name says \"isPathOnDefaultFilesystem\" but implementation compares FS class not identity — a custom FileSystem instance created via a provider that reuses the default FS class? Not possible.\n\nHmm — one real concern: `FileSystem` classes belonging to custom providers loaded by plugins. Not relevant.\n\nAnother important consideration: What if the path's filesystem is a non-default FS but the plugin is nontrivially... fail-open already reported.\n\nAnother thing: WindowsFileSystem vs default — on Windows, FileSystems.getDefault().getClass() is WindowsFileSystem; same instance presumably. Fine.\n\nNow let's consider whether the debug log message \"File entitlement trivially allowed\" is misleading — it says \"trivially allowed\" — fine.\n\nAnother potential logic issue in FileAccessTree: `String.join(\",\", paths)` — if `paths` is very large (many paths), and debug is enabled per call... Performance note.\n\nAlso, should the logging be added at all in the hot path? Let's check how frequently checkPath is called... every file operation of every plugin. Yes, hot.\n\nAlso note: `isParent` logging in `validateExclusivePaths` is invoked during startup; harmless.\n\nI'll produce comments:\n1. FileAccessTree line 206: debug logging in the hot check path, joining the entire paths array on each call — recommend removing leftover debug logging or using trace/gating. Category performance, severity medium.\n2. FileAccessTree line 224: same for isParent (called per check and per construction iteration). Could be combined into one comment, but they're separate lines. Maybe combine both into one comment anchored on line 206, mentioning isParent too? Better to have two separate anchoring comments? To avoid redundancy, one comment on 206 mentioning both. Hmm the tool matches lines. I'll do a single comment on the checkPath line mentioning both, plus maybe separate comment on isParent. I'll do two comments since they are distinct lines, but content-wise short.\n\nAlso potential documented concern: FileAccessTree lacked logger... it has one.\n\n3. PolicyManager: isPathOnDefaultFilesystem only applied to read/write checks but FileDescriptor checks are hard-denied (neverEntitled) - fine. What about other file checks like checkCreateTempFile pathLookup.tempDir()? fine.\n\n4. PolicyManager: the logging statement inside isPathOnDefaultFilesystem uses duplicated path.getFileSystem() — already confirmed finding #2. Skip.\n\n5. Missing tests? Let me check if a test file was modified... other_changed_files is empty, so no tests. Flagging \"no tests for the new non-default filesystem behavior\" is reasonable but they said don't repeat confirmed findings; missing tests isn't confirmed. However, given behavior itself is buggy (fail-open), test comment adds less value. I'll skip or maybe include as low severity. I think I'll skip to stay concise.\n\nAny comment about DEFAULT_FILESYSTEM_CLASS being computed via PathUtils but the class already imports; fine.\n\nOne more possible issue: In FileAccessTree, `logger.debug` in `isParent` is a static method — but `PATH_ORDER`... fine.\n\nAlso, potential issue: log messages use lowercase \"checking\" — ES log style typically capitalizes. Minor style; also \"checking isParent\" leaks internals. I'll fold into the same comment.\n\nLet me also double check whether `Strings` import is needed at all / whether there's a simpler `logger.debug(\"checking [{}] against [{}]\", path, paths)`? Elasticsearch Logger (log4j wrapper) supports parameterized messages `logger.debug(String, Object...)`. Using Strings.format + supplier works but parameterized form is what the rest of the code uses? In PolicyManager, `logger.debug(() -> Strings.format(...))` is used at line 314 and 462, so consistent with existing style. Fine, no comment.\n\nNow, another consideration on line 206: could `String.join` be problematic if paths is empty? `String.join(\",\", new String[0])` returns \"\". Fine.\n\nI'll write the comments.\n\nActually, let me reconsider the isParent logging more carefully: `isParent` is called from `checkPath` too, so debug will emit for every check — and inner calls also from constructor. Yes.\n\nShould I flag it as \"leftover debug logging should be removed before merge\"? Reasonable maintainability comment. I'll include both as one or two comments.\n\nAlso, is there a risk of leaking info in logs? Paths are logged — for entitlement checks it may be useful. Not a security concern.\n\nLet me finalize.",
+        "category": "performance",
+        "severity": "medium"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/FileAccessTree.java",
+          "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java"
+        ]
+      }
+    ],
+    "session_id": "e2c01345-f8cf-4379-9fa2-79efaf3c8bf2",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "e2c01345-f8cf-4379-9fa2-79efaf3c8bf2",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "bae69e6650a122584d6e6fe10360c1e66439973bd96c51005cd41d09999ac233"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "ba5a9c83310ce6fbe27ff251aba00e37fad1d205",
+        "requested_head": "4d9b96f4ac1af0cb871f1d3b77169f9f1e83d194",
+        "resolved_base": "6b27e420fed187de0add194eb32bb940688af26f",
+        "resolved_head": "4d9b96f4ac1af0cb871f1d3b77169f9f1e83d194",
+        "exact_range": "6b27e420fed187de0add194eb32bb940688af26f..4d9b96f4ac1af0cb871f1d3b77169f9f1e83d194",
+        "source_artifact_sha256": "61bb91b1b2c8bc426de10b9c72f602a5d4e553f51c6cd760cea379d3794c4065"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "3d75afdc9a7e2484ea9171b499d9ea20433d74c63002f930008821b7f2bf1736",
+            "path": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+            "fingerprint": "7c0dbc69923e79f12c45f93e5eb7b2790b188d244893d8f15aa69aef43aa00fb"
+          },
+          {
+            "item_id": "d0c4e2f3672ed1918c109b39f86b10af2b347b4a732001db7186401fb7d0dc84",
+            "path": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/FileAccessTree.java",
+            "fingerprint": "93d1085df9c84316b4da09461066b3d24e560d7ae08006efea55d1cff60337be"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "3d75afdc9a7e2484ea9171b499d9ea20433d74c63002f930008821b7f2bf1736",
+            "path": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+            "fingerprint": "7c0dbc69923e79f12c45f93e5eb7b2790b188d244893d8f15aa69aef43aa00fb"
+          },
+          {
+            "item_id": "d0c4e2f3672ed1918c109b39f86b10af2b347b4a732001db7186401fb7d0dc84",
+            "path": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/FileAccessTree.java",
+            "fingerprint": "93d1085df9c84316b4da09461066b3d24e560d7ae08006efea55d1cff60337be"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 103795
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

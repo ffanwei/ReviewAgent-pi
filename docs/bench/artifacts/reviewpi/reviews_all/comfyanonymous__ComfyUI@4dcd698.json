@@ -1,0 +1,362 @@
+{
+  "generatedAt": "2026-11-15T02:20:14.475Z",
+  "runId": "20261115_021524_556",
+  "source": "mr",
+  "caseId": "comfyanonymous__ComfyUI@4dcd698",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 403,
+      "title": "选择任意普通 LoRA 续训时 int() 解析文件名异常导致节点崩溃",
+      "description": "existing_lora 的可选值是 folder_paths.get_filename_list(\"loras\") 的全部文件，但代码无条件按自定义命名格式 \"..._{steps}_steps_...\" 解析训练步数：当文件名中不含 \"_steps_\" 时，split(\"_steps_\")[0] 返回整个文件名，再 split(\"_\")[-1] 得到的是文件名尾段（如 \"myLora.safetensors\"），int() 会抛 ValueError。任何用户从 loras 目录选择一个非本节点产出的 LoRA 都会直接失败，而 tooltip 明确说明该输入用于“append to existing”。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:403 — existing_steps = int(existing_lora.split(\"_steps_\")[0].split(\"_\")[-1])",
+        "comfy_extras/nodes_train.py:348-354 — \"existing_lora\": (folder_paths.get_filename_list(\"loras\") + [\"[None]\"], ...) 即选项来自 loras 目录全部文件",
+        "comfy_extras/nodes_train.py:402 — 注释表明该解析依赖 \"trained_lora_10_steps_20250225_203716\" 这一特定命名格式",
+        "comfy_extras/nodes_train.py:601 — SaveLoRA 仅在传了 steps 时才生成含 \"_steps_\" 的文件名"
+      ],
+      "rule": "ROBUSTNESS-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 未校验的字符串→整数转换（隐式格式假设）。影响评估：用户选择任意第三方 LoRA 作为 existing_lora 时节点直接抛 ValueError，训练无法启动；异常信息与输入字段无关联，排查成本高。",
+        "suggestion": "[重构思路] 把「步数」从文件名解析改为宽松解析 + 容错，并优先考虑将步数写入文件元数据而非依赖文件名。代码示例：\n```python\nimport re\nm = re.search(r\"_(\\d+)_steps_\", os.path.basename(existing_lora))\nexisting_steps = int(m.group(1)) if m else 0\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 431,
+      "title": "既有 LoRA 为 LoHa/LoKr/OFT/BOFT/GLoRA 时 to_train() 抛 NotImplementedError",
+      "description": "适配器循环会按 adapters 顺序逐个尝试 load，并在命中第一个匹配的实现后 break；因此选择 LoHa/LoKr/OFT/BOFT/GLoRA 类型的既有 LoRA 时会得到对应适配器实例，随后 existing_adapter.to_train() 调用的是 WeightAdapterBase.to_train 的默认实现（raise NotImplementedError）。目前只有 LoRAAdapter 实现了 to_train/create_train，续训功能对其他算法格式必然崩溃。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:418-423 — for adapter_cls in adapters: existing_adapter = adapter_cls.load(...); if existing_adapter is not None: break",
+        "comfy_extras/nodes_train.py:430-431 — if existing_adapter is not None: train_adapter = existing_adapter.to_train().to(lora_dtype)",
+        "comfy/weight_adapter/base.py:18-19 — def to_train(self): raise NotImplementedError",
+        "comfy/weight_adapter/lora.py:77-78 — 全仓仅 LoRAAdapter 实现 to_train（LoHa/LoKr/OFT/BOFT/GLoRA 均无）",
+        "comfy/weight_adapter/__init__.py:8-16 — adapters 列表包含 LoRA/LoHa/LoKr/OFT/BOFT/GLoRA"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 抽象方法在部分实现中缺失，调用点未做能力检测。影响评估：续训非 LoRA 算法权重时抛未捕获异常，节点整体失败；错误来自基类的 NotImplementedError，用户难以理解原因是“算法不支持”。",
+        "suggestion": "[重构思路] 调用前用能力检测（hasattr/覆写检查）判断，不支持时给出明确的可读错误或降级为新建 LoRA。代码示例：\n```python\nif existing_adapter is not None and type(existing_adapter).to_train is not WeightAdapterBase.to_train:\n    train_adapter = existing_adapter.to_train().to(lora_dtype)\nelse:\n    train_adapter = adapter_cls.create_train(m.weight, rank=rank, alpha=1.0).to(lora_dtype)\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 389,
+      "title": "lora_dtype 默认值 \"bf32\" 不在候选项中，string_to_torch_dtype 返回 None 导致 dtype 设置被静默忽略",
+      "description": "lora_dtype 的选项是 [\"bf16\", \"fp32\"]，默认值却写成 \"bf32\"（疑似 bf16 笔误）。node_helpers.string_to_torch_dtype 只识别 fp32/fp16/bf16，其他输入返回 None，因此默认配置下 lora_dtype 为 None：后续 train_adapter.to(None) 与 lora_sd[param].to(None) 都不做任何转换，用户以为在用 bf16 保存 LoRA，实际沿用原 dtype，且没有任何告警。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:344-346 — \"lora_dtype\": ([\"bf16\", \"fp32\"], {\"default\": \"bf32\", ...})",
+        "comfy_extras/nodes_train.py:389 — lora_dtype = node_helpers.string_to_torch_dtype(lora_dtype)",
+        "node_helpers.py:46-52 — string_to_torch_dtype 仅处理 fp32/fp16/bf16，其余情况无返回值（即 None）",
+        "comfy_extras/nodes_train.py:431,436,524-525 — 使用 lora_dtype 处均未校验是否为 None"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 枚举默认值拼写错误 + 转换函数无兜底。影响评估：默认路径下 dtype 选项完全失效，训练产物 dtype 与用户认知不符；若将来改成对 None 做显式 cast 还会直接抛异常。",
+        "suggestion": "[重构思路] 修正默认值，并让转换函数对未知取值抛错或给出明确警告，避免静默降级。代码示例：\n```python\n\"lora_dtype\": ([\"bf16\", \"fp32\"], {\"default\": \"bf16\", \"tooltip\": \"The dtype to use for lora.\"}),\n...\ndtype = node_helpers.string_to_torch_dtype(lora_dtype)\nif dtype is None:\n    raise ValueError(f\"Unsupported lora_dtype: {lora_dtype}\")\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy/weight_adapter/lora.py",
+      "line": 40,
+      "title": "alpha 为 None 时 torch.tensor(None) 抛异常，to_train 无法处理无 alpha 的常见 LoRA",
+      "description": "LoraDiff 用 torch.nn.Parameter(torch.tensor(alpha)) 保存缩放系数，但 LoRAAdapter.load 会把 comfy.lora.load_lora 传入的 alpha 原样塞进 weights[2]，而 load_lora 在文件中没有 \"{x}.alpha\" 键时传的是 None（大量 diffusers/transformers 格式 LoRA 不带 alpha）。此时 to_train() → LoraDiff(self.weights) → torch.tensor(None) 抛 \"Could not infer dtype of NoneType\"。calculate_weight 中已按 v[2] is None → alpha=1.0 处理，说明该情况是被预期的，但训练路径没有对应兜底。",
+      "evidence": [
+        "comfy/weight_adapter/lora.py:40 — self.alpha = torch.nn.Parameter(torch.tensor(alpha), requires_grad=False)",
+        "comfy/weight_adapter/lora.py:18 — mat1, mat2, alpha, mid, dora_scale, reshape = weights",
+        "comfy/weight_adapter/lora.py:77-78 — def to_train(self): return LoraDiff(self.weights)",
+        "comfy/lora.py:41-44 — alpha 默认 None，只有文件中存在 \"{x}.alpha\" 时才赋值",
+        "comfy/weight_adapter/lora.py:169-172 — calculate_weight 中已处理 v[2] is None 的分支，说明 alpha 可为 None"
+      ],
+      "rule": "CORRECTNESS-004",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 可空值未在构造路径上兜底。影响评估：对不带 alpha 的 LoRA 做续训会在构造 LoraDiff 时抛 RuntimeError，且异常信息（dtype 推断）与根因无关。",
+        "suggestion": "[重构思路] 在构造时统一缺省值，保持与 calculate_weight 的语义一致。代码示例：\n```python\nif alpha is None:\n    alpha = 1.0\nself.alpha = torch.nn.Parameter(torch.tensor(float(alpha)), requires_grad=False)\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy/weight_adapter/lora.py",
+      "line": 35,
+      "title": "locon 格式（带 mid 权重）创建 lora_mid 时把 tensor 当作 in_channels 传入",
+      "description": "当 mid 不为 None 时 layer 被选为 torch.nn.Conv1d/2d/3d，随后 self.lora_mid = layer(mid, rank, bias=False) 直接把 mid 张量当作 Conv 的 in_channels 参数（应为 int），会抛 TypeError（new() received an invalid combination of arguments）。这段代码位于 LoraDiff 构造路径上，只要续训一个带 {x}.lora_mid.weight 的 LoCon LoRA 就会触发。",
+      "evidence": [
+        "comfy/weight_adapter/lora.py:21-31 — mid 不为 None 时 layer = (Conv1d, Conv2d, Conv3d)[convdim]",
+        "comfy/weight_adapter/lora.py:34-36 — self.lora_mid = layer(mid, rank, bias=False); self.lora_mid.weight.data.copy_(mid)",
+        "comfy/weight_adapter/lora.py:47-49 — 后续 __call__ 中按 Conv 权重参与 tucker_weight_from_conv",
+        "comfy/weight_adapter/lora.py:127-130 — load 中 mid 来自 \"{x}.lora_mid.weight\"，形状为张量"
+      ],
+      "rule": "CORRECTNESS-005",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 构造函数参数类型错误（tensor 传入 int 形参）。影响评估：LoCon/LoHa-mid 类 LoRA 续训路径直接抛 TypeError，属于“部分格式可用”的功能缺口。",
+        "suggestion": "[重构思路] 从 mid 的形状推导 Conv 的 in/out channels 与 kernel_size，再构造层，并校验 copy_ 的形状一致。代码示例：\n```python\nk = mid.shape[2:]\nself.lora_mid = layer(rank, rank, kernel_size=k, bias=False)  # 形参需按 Conv 实际签名推导\nself.lora_mid.weight.data.copy_(mid)\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 414,
+      "title": "读取既有 LoRA 的 alpha 时键名多拼接了 .weight，导致旧 LoRA 的缩放系数被忽略",
+      "description": "循环中 key 已经是 \"{module}.weight\"，代码却用 f\"{key}.alpha\" 去查 alpha，得到 \"...weight.alpha\"；而 LoRA 文件中的 alpha 键是 \"{module}.alpha\"（comfy/lora.py 用 \"{}.alpha\".format(x)，x 为不含 .weight 的权重键）。因此已有适配器的 alpha 永远取不到，全部回落到 1.0，续训后 LoraDiff 的 scale=alpha/rank 与原 LoRA 的实际缩放不一致，续训结果与原权重不连续。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:411 — key = \"{}.weight\".format(n)",
+        "comfy_extras/nodes_train.py:414 — alpha = float(existing_weights.get(f\"{key}.alpha\", 1.0))",
+        "comfy/lora.py:41-45 — alpha_name = \"{}.alpha\".format(x)，x 是不带 .weight 的键",
+        "comfy/lora.py:175-186 — model_lora_keys_unet 注册的通用键是 k[:-len(\".weight\")]，进一步说明 alpha 键不含 .weight"
+      ],
+      "rule": "CORRECTNESS-006",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 键名拼接错误导致数据读取永不命中。影响评估：续训时旧 LoRA 的 alpha 被静默重置为 1.0，rank 较大时缩放偏差成倍，训练从错误的起点继续，且无任何日志提示。",
+        "suggestion": "[重构思路] 用统一的键生成函数（与 comfy/lora.py 保持一致）构造 alpha/dora_scale 键，并在命中失败时记录日志。代码示例：\n```python\nweight_key = \"{}.weight\".format(n)\nalpha = float(existing_weights.get(f\"{n}.alpha\", 1.0))\ndora_scale = existing_weights.get(f\"{n}.dora_scale\", None)\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 599,
+      "title": "SaveLoRA 硬编码相对路径 models/loras 且不建目录，保存可能失败或写错位置",
+      "description": "保存路径被硬编码为相对当前工作目录的 \"models/loras/...\"，完全绕过 folder_paths 的 loras 目录配置：1) 当用户通过 extra_model_paths 把 loras 指到其他磁盘时，文件仍写到默认相对目录，Load LoRA 节点/文件列表可能看不到；2) 当进程 CWD 不是 ComfyUI 根目录、或 models/loras 不存在时，safetensors.torch.save_file 直接抛错；3) 训练结果只存在于内存，保存失败会让整轮训练成果丢失。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:596-602 — output_file = f\"models/loras/{prefix}_{date}_lora.safetensors\"; safetensors.torch.save_file(lora, output_file)",
+        "nodes_train.py:348-349 — 读取侧使用 folder_paths.get_filename_list(\"loras\")，与写入侧路径来源不一致",
+        "folder_paths.py:228-230 — get_folder_paths(folder_name) 才是配置化目录来源",
+        "folder_paths.py:296-301 — get_full_path_or_raise 说明读取走 folder_names_and_paths"
+      ],
+      "rule": "RESOURCE-007",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 硬编码相对路径 + 缺少目录创建。影响评估：自定义模型路径场景下训练权重写到错误位置，CWD 不匹配时保存直接失败并丢失整轮训练结果。",
+        "suggestion": "[重构思路] 通过 folder_paths 解析 loras 目录，复用现有的保存路径工具，并显式创建目录。代码示例：\n```python\nfrom folder_paths import get_folder_paths, get_save_image_path\nlora_dir = get_folder_paths(\"loras\")[0]\nos.makedirs(lora_dir, exist_ok=True)\noutput_file = os.path.join(lora_dir, f\"{prefix}_{steps}_steps_{date}_lora.safetensors\")\nsafetensors.torch.save_file(lora, output_file)\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "安全",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 601,
+      "title": "SaveLoRA 的 prefix 未做文件名清洗，存在路径穿越写入风险",
+      "description": "prefix 是用户可自由填写的 STRING 输入，被直接拼进文件路径；prefix 含 \"../\" 或绝对路径片段时可把 .safetensors 写到目标目录之外。仓库内既有的图像保存路径走 get_save_image_path 做了目录/计数器与文件名约束，此处没有任何等价校验。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:571-577 — \"prefix\": (\"STRING\", {\"default\": \"trained_lora\", ...}) 直接来自用户输入",
+        "comfy_extras/nodes_train.py:599-601 — output_file = f\"models/loras/{prefix}_{date}_lora.safetensors\"",
+        "comfy_extras/nodes_train.py:602 — safetensors.torch.save_file(lora, output_file) 直接落盘",
+        "folder_paths.py:355-401 — 既有 get_save_image_path 对输出路径做了统一的目录与命名处理"
+      ],
+      "rule": "SECURITY-008",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 未净化的用户输入参与文件路径拼接（路径穿越/任意写）。影响评估：恶意或误填的 prefix 可覆盖、创建任意位置的 .safetensors 文件，破坏工作目录外数据；在共享/远程 ComfyUI 实例上风险更高。",
+        "suggestion": "[重构思路] 对 prefix 做白名单清洗，并校验最终路径仍在目标目录内。代码示例：\n```python\nprefix = re.sub(r\"[^A-Za-z0-9_.-]\", \"_\", prefix)\noutput_file = os.path.join(lora_dir, os.path.basename(f\"{prefix}_{date}_lora.safetensors\"))\nif not os.path.abspath(output_file).startswith(os.path.abspath(lora_dir) + os.sep):\n    raise ValueError(\"Invalid output path\")\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 51,
+      "title": "TrainSampler 捕获 RuntimeError 后仍执行 loss.backward()，loss 可能未绑定且真实错误被吞掉",
+      "description": "损失计算被 try/except 包裹，但 except 分支只写一条日志（且没有 return/raise），随后无条件执行 loss.backward()：一旦进入异常分支，局部变量 loss 尚未赋值，会抛 UnboundLocalError，掩盖原始错误；即使异常不是梯度相关（如形状不匹配但消息里碰巧含该子串），也会被静默忽略后崩在下一行。另外该分支只匹配错误消息文本，属于脆弱的字符串判断。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:46-51 — try: loss = self.loss_fn(denoised, latent.clone()) except RuntimeError as e: if \"does not require grad and does not have a grad_fn\" in str(e): logging.info(...)",
+        "comfy_extras/nodes_train.py:51 — loss.backward() 位于 except 之外，无条件执行",
+        "comfy_extras/nodes_train.py:52-53 — 之后还使用 loss.item()"
+      ],
+      "rule": "CORRECTNESS-009",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 异常处理分支未终止流程导致后续使用未绑定变量。影响评估：真正的原因（如模型处于 inference 模式、loss 输入形状不一致）被 UnboundLocalError 掩盖，用户只能看到二次异常，训练中断且 loss 曲线无对应记录。",
+        "suggestion": "[重构思路] 让异常分支显式失败并保留原始堆栈，用异常类型/属性而非字符串匹配来判断。代码示例：\n```python\ntry:\n    loss = self.loss_fn(denoised, latent.clone())\nexcept RuntimeError as e:\n    raise RuntimeError(\"Loss computation failed; check that the model is not in inference mode\") from e\nif not loss.requires_grad:\n    raise RuntimeError(\"Loss does not require grad; model may be loaded in inference mode\")\nloss.backward()\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 638,
+      "title": "LossGraphNode 归一化时未防除零，loss 恒定或单步训练会抛 ZeroDivisionError",
+      "description": "绘制曲线用 (l - min_loss) / (max_loss - min_loss) 做归一化，未处理 max_loss == min_loss 的情况；steps=1（节点允许的最小值）时只有一个 loss 值，分母必然为 0；训练正常收敛到 loss 不变时同样触发。此外若 loss 列表为空，min()/max() 也会抛 ValueError。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:637-638 — min_loss, max_loss = min(loss_values), max(loss_values); scaled_loss = [(l - min_loss) / (max_loss - min_loss) for l in loss_values]",
+        "comfy_extras/nodes_train.py:628 — loss_values = loss[\"loss\"]",
+        "comfy_extras/nodes_train.py:311-315 — steps 的 min 为 1，即合法输入就能触发"
+      ],
+      "rule": "CORRECTNESS-010",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 归一化除零/空集合边界未处理。影响评估：steps=1 或 loss 恒定时 Plot Loss Graph 节点直接失败，而 loss 数据在内存中已无副本，用户拿不到曲线。",
+        "suggestion": "[重构思路] 对退化区间与空数据做显式兜底。代码示例：\n```python\nif not loss_values:\n    raise ValueError(\"No loss values to plot\")\nmin_loss, max_loss = min(loss_values), max(loss_values)\nspan = max_loss - min_loss\nscaled_loss = [0.5] * len(loss_values) if span == 0 else [(l - min_loss) / span for l in loss_values]\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 147,
+      "title": "LoadImageSetNode 未注册到 NODE_CLASS_MAPPINGS，且 INPUT_IS_LIST 使 resize_method 字符串比较失效",
+      "description": "LoadImageSetNode 定义了 INPUT_TYPES/VALIDATE_INPUTS 和 INPUT_IS_LIST = True，但没有出现在文件末尾的 NODE_CLASS_MAPPINGS 中，属于不可达死代码。即使注册，INPUT_IS_LIST = True 会让 resize_method 以列表形式传入，load_and_process_images 中 resize_method == \"Stretch\"/\"Crop\"/\"None\" 等比较全部失配，尺寸不一致时既不缩放也不报错，最终 torch.cat 因形状不匹配失败。另外 VALIDATE_INPUTS 里 images[0] 在空列表时会抛 IndexError。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:125,147 — class LoadImageSetNode 且 INPUT_IS_LIST = True",
+        "comfy_extras/nodes_train.py:154-161 — VALIDATE_INPUTS 中 filenames = images[0] if isinstance(images[0], list) else images",
+        "comfy_extras/nodes_train.py:107-116 — load_and_process_images 用 resize_method == \"Stretch\"/\"Crop\"/\"Pad\"/\"None\" 做字符串比较",
+        "comfy_extras/nodes_train.py:696-702 — NODE_CLASS_MAPPINGS 仅含 TrainLoraNode/SaveLoRANode/LoraModelLoader/LoadImageSetFromFolderNode/LossGraphNode"
+      ],
+      "rule": "MAINT-011",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 未注册的死代码 + 列表输入下的类型假设错误。影响评估：该节点用户完全不可见（浪费维护成本）；一旦补注册就会因 resize_method 为 list 而出现“静默不缩放 + cat 报错”的迷惑性故障。",
+        "suggestion": "[重构思路] 要么删除该节点，要么在 load_images 中按 INPUT_IS_LIST 语义取首个元素并复用 LoadImageSetFromFolderNode 的实现。代码示例：\n```python\ndef load_images(self, input_files, resize_method):\n    files = input_files[0] if isinstance(input_files[0], list) else input_files\n    method = resize_method[0] if isinstance(resize_method, list) else resize_method\n    ...\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 382,
+      "title": "seed 未参与 batch 采样与 sigma 采样，训练不可复现",
+      "description": "节点声明 seed 用于“LoRA 初始化和噪声采样”，但 batch 索引用 torch.randperm(num_images)（全局 RNG）、每步 sigma 用 torch.rand((1,)).item()（全局 RNG），首次初始化也未使用局部 generator（LoRAAdapter.create_train 内部自建随机初始化）：代码里创建的 generator 赋值后再未被使用。因此相同 seed + 相同输入无法复现同一训练轨迹，用户无法做对照实验。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:394-395 — generator = torch.Generator(); generator.manual_seed(seed) 之后未再使用",
+        "comfy_extras/nodes_train.py:382 — indices = torch.randperm(num_images)[:batch_size] 未传 generator",
+        "comfy_extras/nodes_train.py:505-508 — sigma = mp.model.model_sampling.percent_to_sigma(torch.rand((1,)).item()) 未传 generator",
+        "comfy_extras/nodes_train.py:331-338 — seed 的 tooltip 声明用于初始化与噪声采样"
+      ],
+      "rule": "CORRECTNESS-012",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 随机源未受控（声明了可复现性但实际不可复现）。影响评估：同参数多次训练结果差异不可解释，调参与问题定位失效；同时暴露“创建后未使用”的死变量。",
+        "suggestion": "[重构思路] 统一把 generator 传入所有随机调用，并把它传给 LoRA 初始化。代码示例：\n```python\ngenerator = torch.Generator(device=\"cpu\").manual_seed(seed)\nindices = torch.randperm(num_images, generator=generator)[:batch_size]\nperc = torch.rand((1,), generator=generator).item()\nsigma = torch.tensor([mp.model.model_sampling.percent_to_sigma(perc)])\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "comfy/ldm/modules/attention.py",
+      "line": 756,
+      "title": "残差改为非原地加法后可能提升激活 dtype，且 ff_in 分支仍是原地加法",
+      "description": "把 x += n 改为 x = n + x 通常等价，但当 n 与 x 的 dtype 不同（manual_cast/fp8 等配置下 ops 计算输出 fp32，而 x 为 fp16/bf16）时，非原地加法会按类型提升规则把 x 升为 fp32：block 输出 dtype 变化会沿网络传播，增加显存并改变数值行为；原地的 x += n 会把 n 降级回 x 的 dtype。另外同一函数中 ff_in 分支（L709-713）仍是 x += x_skip，本次改造并不完整，行为不一致。",
+      "evidence": [
+        "comfy/ldm/modules/attention.py:756 — x = n + x（原为 x += n）",
+        "comfy/ldm/modules/attention.py:796,801 — x = n + x / x = x_skip + x",
+        "comfy/ldm/modules/attention.py:709-713 — ff_in 分支仍为 if self.is_res: x += x_skip（未同步修改）",
+        "comfy/ops.py:58-63 — cast_bias_weight 按 dtype 转换权重，manual_cast 下计算 dtype 可能与激活不同"
+      ],
+      "rule": "CORRECTNESS-013",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 原地→非原地运算带来的隐式类型提升（语义不完全等价）。影响评估：半精度/FP8 模型可能显存上升、数值路径改变；改造不完整还会造成同类分支行为不一致，难以推理。",
+        "suggestion": "[重构思路] 若要保留类型稳定，显式把加数转换到 x 的 dtype；并统一改造所有残差加法。代码示例：\n```python\nx = x + n.to(x.dtype)   # 或 (n + x) 后 x = x.to(org_dtype)\n...\nif self.is_res:\n    x = x + x_skip.to(x.dtype)\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "comfy/ldm/cosmos/blocks.py",
+      "line": 799,
+      "title": "cosmos 的 self.training 梯度检查点分支与训练节点实际使用的 patch() 机制脱节",
+      "description": "GeneralDITTransformerBlock.forward 新增 if self.training 才做 checkpoint，但新增的训练流程 ComfyUI 训练节点从不调用 mp.model.train()，而是用 nodes_train.py 的 patch()/unpatch() 给模块 forward 打猴补丁；两套 checkpoint 机制并存且互不感知：训练时前者大概率不生效（模型处于 eval 态时为死分支），若模型真是 training 态则会与 patch() 叠加成双重 checkpoint。另外该模块只 import torch，依赖其它模块额外导入 torch.utils.checkpoint 子模块才能访问 torch.utils.checkpoint，属于隐式依赖。",
+      "evidence": [
+        "comfy/ldm/cosmos/blocks.py:798-801 — for block in self.blocks: if self.training: x = torch.utils.checkpoint.checkpoint(block, ...)",
+        "comfy_extras/nodes_train.py:239-250 — patch(m) 通过替换 m.forward 实现 checkpointing",
+        "comfy_extras/nodes_train.py:482-484 — for m in find_all_highest_child_module_with_forward(...): patch(m)",
+        "comfy_extras/nodes_train.py 全文无 .train() 调用（仅 model.clone()/set_model_compute_dtype）",
+        "comfy/ldm/cosmos/blocks.py:16-26 — 仅 import torch，未显式 import torch.utils.checkpoint"
+      ],
+      "rule": "MAINT-014",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 两套并行的梯度检查点机制 + 隐式子模块依赖。影响评估：显存优化是否生效取决于模型 training 标志这一隐式状态，行为难以预测；双重 checkpoint 会显著拖慢训练；缺少显式 import 在不同调用顺序下可能 AttributeError。",
+        "suggestion": "[重构思路] 只保留一种机制（推荐训练节点侧显式 patch），或在训练节点里显式切换 train/eval 并让 blocks.py 不再自行判断；同时在模块顶部显式导入。代码示例：\n```python\n# cosmos/blocks.py\nimport torch.utils.checkpoint as cp\n...\n# nodes_train.py\nmp.model.train()   # 显式进入训练态\ntry: ...\nfinally: mp.model.eval()\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F011-DUP",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "comfy_extras/nodes_train.py",
+      "line": 208,
+      "title": "draw_loss_graph 为未被调用的重复实现且同样存在除零",
+      "description": "draw_loss_graph 与 LossGraphNode.plot_loss 逻辑高度重复，但没有任何调用点（plot_loss 内联实现了同样逻辑），且同样用 (l - min)/(max - min) 未防零；这类死代码会让后续修改曲线逻辑时漏改其中一份。",
+      "evidence": [
+        "comfy_extras/nodes_train.py:208-222 — def draw_loss_graph(loss_map, steps) 定义",
+        "comfy_extras/nodes_train.py:213-214 — min_loss, max_loss = min(loss_map.values()), max(loss_map.values()); scaled_loss = [(l - min_loss) / (max_loss - min_loss) ...]",
+        "comfy_extras/nodes_train.py:627-647 — LossGraphNode.plot_loss 内联实现了同一套归一化与折线绘制"
+      ],
+      "rule": "MAINT-015",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 死代码/重复实现。影响评估：两份几乎相同的绘图逻辑分别维护，修复边界问题时容易遗漏；也给阅读者造成“到底用哪个”的困惑。",
+        "suggestion": "[重构思路] 删除 draw_loss_graph，或让 plot_loss 调用一个共享的归一化+绘图辅助函数。代码示例：\n```python\ndef _scale_loss(loss_values):\n    lo, hi = min(loss_values), max(loss_values)\n    span = hi - lo\n    return [0.5] * len(loss_values) if span == 0 else [(v - lo) / span for v in loss_values]\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F012-DUP",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "comfy/weight_adapter/base.py",
+      "line": 15,
+      "title": "WeightAdapterBase.load 的抽象声明缺少 loaded_keys，与唯一调用点和全部子类签名不一致",
+      "description": "基类 load 声明为 (cls, x, lora, alpha, dora_scale)，但唯一的调用点 comfy/lora.py:54 传 5 个位置参数（含 loaded_keys），6 个实现类的签名都是 (x, lora, alpha, dora_scale, loaded_keys=None)。基类签名既不匹配调用方也不匹配实现方，作为接口契约失去参考价值，容易让新适配器作者实现出被调用点破坏的签名。",
+      "evidence": [
+        "comfy/weight_adapter/base.py:15 — def load(cls, x: str, lora: dict[str, torch.Tensor], alpha: float, dora_scale: torch.Tensor) -> Optional[\"WeightAdapterBase\"]",
+        "comfy/lora.py:54 — adapter = adapter_cls.load(x, lora, alpha, dora_scale, loaded_keys)",
+        "comfy/weight_adapter/lora.py:81-88 — def load(cls, x, lora, alpha, dora_scale, loaded_keys: set[str] = None)",
+        "comfy/weight_adapter/loha.py:17 / lokr.py:17 / oft.py:17 — 同样的五参数签名"
+      ],
+      "rule": "MAINT-016",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 抽象接口签名与实现/调用方不一致。影响评估：契约漂移会让静态检查失效，新增适配器时易写错参数；也是本次为训练功能改签名时遗留的不完整修改。",
+        "suggestion": "[重构思路] 让基类签名与调用方、子类保持一致，并统一用关键字参数调用。代码示例：\n```python\n@classmethod\ndef load(cls, x: str, lora: dict[str, torch.Tensor], alpha: float,\n         dora_scale: torch.Tensor, loaded_keys: set[str] | None = None) -> Optional[\"WeightAdapterBase\"]:\n    raise NotImplementedError\n```",
+        "subcategory": ""
+      }
+    }
+  ]
+}

@@ -1,0 +1,402 @@
+{
+  "instance_id": "ClickHouse__ClickHouse@36ea28a",
+  "repo": "ClickHouse/ClickHouse",
+  "base_commit": "3d6e0982755b235c6b55f377894ff1652a5c8f99",
+  "head_commit": "36ea28ab28fd93258143ab4312e60e2b5e244843",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 767.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 38,
+  "review_output": [
+    {
+      "file": "ci/jobs/scripts/prechecks/pr_description.py",
+      "line": 174,
+      "summary": "变更文件检测改用本地 master 且忽略失败，子模块标签可能永不添加",
+      "failure_scenario": "`Shell.get_output(\"git diff --name-only $(git merge-base HEAD master) --cached\")` 把原来的 `origin/master` 换成 `master`，同时去掉了 `strict=True`。CI 的 checkout 通常只有 `origin/master`（或浅克隆），本地 `master` 分支不存在时 `git merge-base` 失败，而 `Shell.get_output` 默认 `strict=False`，失败只返回空串，于是 `\"contrib/\" in changed_files` 恒为 False，`Labels.SUBMODULE_CHANGED` 标签再也不会被自动添加；同时 `info.store_custom_data(\"changed_files\", ...)` 被删除，原先依赖该数据的 `feature_docs.py` 也被删掉，说明这条能力整体退化。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "SHELL-CMD-002"
+    },
+    {
+      "file": "ci/jobs/scripts/prechecks/pr_description.py",
+      "line": 185,
+      "summary": "标签更新命令丢失 gh 前缀，PR 预检必然失败",
+      "failure_scenario": "check_labels 把命令拼成 `cmd = f\"pr edit {info.pr_number}\"`，随后用 `Shell.check(cmd, verbose=True, strict=True)` 执行。Shell 通过 bash 运行该字符串，`pr` 不是可执行文件，返回码非 0，在 strict 模式下抛出 RuntimeError，使 `python3 ./ci/jobs/scripts/prechecks/pr_description.py` 这个 pre_hook 失败，进而让 Config Workflow 配置 job 判定失败——所有 PR 的流水线在配置阶段即被阻断，且标签同步功能完全失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.92,
+      "rule": "SHELL-CMD-001"
+    },
+    {
+      "file": "ci/jobs/scripts/prechecks/pr_description.py",
+      "line": 193,
+      "summary": "删除标签时遍历了新增标签列表，导致新标签被立刻摘除",
+      "failure_scenario": "构造 `--remove-label` 参数时循环变量取的是 `pr_labels_to_add` 而不是 `pr_labels_to_remove`：当分类标签发生变化（既有旧分类标签需要移除、又有新分类标签需要添加）时，命令会变成 `gh pr edit N --add-label <新标签> --remove-label <新标签>`，最终新标签被移除、旧标签残留，PR 的 changelog 分类标签永远无法纠正。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "LOGIC-002"
+    },
+    {
+      "file": "ci/praktika/native_jobs.py",
+      "line": 431,
+      "summary": "Finish Workflow 无条件置为 SUCCESS，post hook 失败被吞掉",
+      "failure_scenario": "`_finish_workflow` 的返回从 `Result.create_from(results=results, stopwatch=stop_watch)` 改成 `Result.from_fs(job_name).set_status(Result.Status.SUCCESS).set_results(results)`。`create_from` 会遍历子结果，任一子结果 FAILED/ERROR 就使整体 FAILED/ERROR；而 `set_status(SUCCESS)` + `set_results`（只赋值、不重算状态）会让 `Post Checks` 中的任何失败——包括本次新写成错误形式的 merge_pr.py 命令（见另一条意见）——完全不影响 job 状态。此外 `stop_watch` 被删除，Finish Workflow job 的 duration 不再被设置。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "ci/workflows/pull_request.py",
+      "line": 17,
+      "summary": "在 pull_request.py 内重复定义 JobNames/BuildTypes，与 defs.py 取值不一致",
+      "failure_scenario": "MR 在 `ci/workflows/pull_request.py` 中新增了一份本地 `JobNames` 与 `BuildTypes`（同时把 `JobNames`、`BuildTypes` 从 `ci.workflows.defs` 的 import 中移除），但 `defs.py` 里同名类仍然存在并被 `JobConfigs`/`build_clickhouse.py` 使用。两份定义已经分叉：`defs.JobNames.STRESS = \"Stress tests\"` vs 本地 `\"Stress test\"`；`defs.JobNames.INSTALL_CHECK = \"Install check\"` vs 本地 `INSTALL_TEST = \"Install packages\"`；`defs.JobNames.ASTFUZZER = \"AST Fuzzer\"` vs 本地 `\"AST fuzzer\"`；`defs.JobNames` 已删除 `DOCKER_KEEPER` 而本地仍有。只要有人用 `defs.JobNames` 拼 `requires`/job 名去引用 PR workflow 中的 job（或反之），就会静默匹配不到；`build_clickhouse.py` 依赖 `defs.BuildTypes` 的取值做 `BUILD_TYPE_TO_CMAKE` 查表，而 job 的 `{PARAMETER}` 来自本地 `BuildTypes`，两处一旦漂移就是运行时 KeyError。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "ci/workflows/pull_request.py",
+      "line": 815,
+      "summary": "post hook 命令语法错误：环境变量赋值前缀了 cd，且 merge_pr.py 路径不可达",
+      "failure_scenario": "post_hook 被改为 `WORKFLOW_RESULT_FILE=$(pwd)/ci/tmp/workflow_status.json cd ./tests/ci & python3 ./merge_pr.py --set-ci-status`。`VAR=value cd ...` 在 POSIX shell 里对 `cd` 这类内建命令只影响该子进程自身的临时环境，并不会改变当前 shell 的工作目录；`&` 还把这条赋值+cd 丢进后台子 shell，于是前台执行的 `python3 ./merge_pr.py` 仍在仓库根目录运行，而该脚本实际位于 `tests/ci/merge_pr.py`，必然报 `No such file or directory`；同时 `WORKFLOW_RESULT_FILE` 也不会导出给 python 进程。原先的写法是 `WORKFLOW_RESULT_FILE=$(pwd)/ci/tmp/workflow_status.json python3 ./tests/ci/merge_pr.py --set-ci-status`。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "SHELL-CMD-003"
+    },
+    {
+      "file": "ci/praktika/settings.py",
+      "line": 129,
+      "summary": "_USER_DEFINED_SETTINGS 缺少逗号导致字符串隐式拼接，SECRET_GH_APP_PEM_KEY 设置失效",
+      "failure_scenario": "列表项被写成 `\"SUB_RESULT_NAMES_WITH_TESTS\" \"SECRET_GH_APP_PEM_KEY\"`，Python 会把相邻字面量隐式拼接成单个字符串 `\"SUB_RESULT_NAMES_WITH_TESTSSECRET_GH_APP_PEM_KEY\"`。结果是 `_USER_DEFINED_SETTINGS` 中既没有 `SUB_RESULT_NAMES_WITH_TESTS` 也没有 `SECRET_GH_APP_PEM_KEY` 这两个条目：`_get_settings()` 永远不会从 `ci/settings/settings.py` 读取用户自定义的 PEM key 名，`Settings.SECRET_GH_APP_PEM_KEY` 只能取默认值 `\"GH_APP_PEM_KEY\"`；`SUB_RESULT_NAMES_WITH_TESTS` 同理退回硬编码默认值。这类错误不会报错，只会在运行期表现为「配置不生效」。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.9,
+      "rule": "PY-SYNTAX-001"
+    },
+    {
+      "file": "ci/praktika/cache.py",
+      "line": 56,
+      "summary": "缓存写入丢失 if-none-match 保护与分支隔离，PR 结果可覆盖主干缓存",
+      "failure_scenario": "`push_success_record` 把 `S3.put(..., if_none_matched=if_not_exist)` 换成 `S3.copy_file_to_s3(...)`（`aws s3 cp`，永远覆盖），并删除了原来 `if_not_exist=workflow.is_event_pull_request()` 的调用参数及注释——该注释明确说明其目的「不要覆盖 push workflow 写入的记录，因为 push 只复用 push 的记录，pull_request 可复用两者」。同时 `hook_cache.py` 删除了 `if workflow.is_event_push() and record.branch != env.BRANCH: continue` 的分支一致性校验。两处保护同时移除后，PR 中产生的缓存记录会覆盖主干同名 digest 记录，push/夜间工作流可能复用来自 PR 分支的构建/测试结果，缓存正确性不再有保障。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CACHE-001"
+    },
+    {
+      "file": "ci/praktika/s3.py",
+      "line": 86,
+      "summary": "S3.put 中新增无用的 cmd 变量，text 参数被静默忽略",
+      "failure_scenario": "在 `put()` 里新增了 `cmd = f\"aws s3 cp {local_path} s3://{s3_full_path}\"` 与 `if text: cmd += \" --content-type text/plain\"`，但函数最终执行的是 `command`（`aws s3api put-object ...`），`cmd` 从未被使用。这意味着 `put(..., text=True)` 的 content-type 诉求被静默丢弃，同时留下与 `copy_file_to_s3` 重复的构建逻辑，后续维护者极易误判「put 支持 text」。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "DEADCODE-001"
+    },
+    {
+      "file": "ci/praktika/cidb.py",
+      "line": 146,
+      "summary": "CI DB 冒烟检查去掉重试，瞬时网络抖动直接判定失败",
+      "failure_scenario": "`check()` 由 `for retry in range(2)`（失败后再试一次）改为单次 `try`：任何一次请求异常或非 2xx 响应都会立刻返回 `False`，并让 `_check_db` 把「Check CI DB」标记为 FAILED，进而影响配置 job 的整体结果。原先的重试正是为了吸收 CI DB 的瞬时不可用（`timeout=Settings.CI_DB_INSERT_TIMEOUT_SEC` 默认 5s 更是放大了这种敏感性）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "RELIABILITY-001"
+    },
+    {
+      "file": "docker/server/entrypoint.sh",
+      "line": 108,
+      "summary": "删除默认用户网络限制分支，无密码容器可能对外暴露 passwordless default 用户",
+      "failure_scenario": "entrypoint 删除了 `else` 分支——该分支在未设置 `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD` 时会写入 `users.d/default-user.xml`，把 `default` 用户限制为 `::1`/`127.0.0.1`，并在注释中明确写着「User default is available only locally」。改动后，只有在设置了 USER/PASSWORD/ACCESS_MANAGEMENT 时才会写 `users.d`，否则完全不生成覆盖文件，容器沿用发行包内置的 `users.xml`（`default` 用户无密码）。若服务端监听在容器外部可达的地址上，任何能连到该容器 9000/8123 端口的客户端都可以以无密码的 `default` 用户登录。此外 `CLICKHOUSE_SKIP_USER_SETUP` 的语义也被移除，用户显式设置该变量不再有任何效果。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "ci/praktika/gh_auth.py",
+      "line": 15,
+      "summary": "GHAuth 取任意 installation 且依赖已删除的 secret，认证路径不可用且可能绑定错误安装",
+      "failure_scenario": "新合并进来的实现把 `_get_installation_id` 改成 `return installations[0][\"id\"]`，不再按 `account.login == \"ClickHouse\"` 匹配（旧实现会遍历并 `raise KeyError(\"No installations found\")`）；若该 GitHub App 被安装到多个账号下，`installations[0]` 可能是任意一个，从而给后续 `gh auth login` 签发到错误组织的 token。类上方的注释也自认「dead code with a bug in return installations[0][\"id\"]」。同时 `auth(workflow_name)` 通过 `wf[0].get_secret(Settings.SECRET_GH_APP_PEM_KEY)` 取密钥，而 `ci/workflows/defs.py` 的 `SECRETS` 已把 GH App 的两个 secret 注释掉，`Workflow.get_secret` 在找不到时会直接 `raise`，因此这条路径一旦被调用必然抛异常。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "ci/praktika/result.py",
+      "line": 280,
+      "summary": "缓存跳过结果的链接不再定位到具体 job",
+      "failure_scenario": "`Result.generate_skipped` 构造链接时删除了 `job_name=name` 参数，`Info.get_specific_report_url` 的签名也随之去掉了 `job_name`，返回 URL 里只剩下 `name_0=<workflow>`。而 `ci/praktika/json.html` 的 `navigatePath` 明确支持 `name_1`（job 级）并据此定位到二级结果 JSON，`fetch` 路径也会按 `nameParams.length > 1` 加载 job 级 `result_*.json`。结果是被缓存跳过的 job 在报告页上只能跳到 workflow 汇总页，用户需要再手动点进 job，与「直接查看被复用记录对应的 job 报告」的原始意图不符。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "UX-001"
+    },
+    {
+      "file": "src/DataTypes/DataTypeObject.cpp",
+      "line": 340,
+      "summary": "子对象子列的前缀匹配丢失 '.' 边界，兄弟路径被误纳入并产生空子路径",
+      "failure_scenario": "子对象子列的前缀由 `*sub_object_subcolumn + \".\"` 改为 `*sub_object_subcolumn`，而过滤条件只排除 `path.size() == prefix.size()`，没有校验 `path[prefix.size()] == '.'`。因此前缀 `a.b` 会匹配到同级的 `a.bc`、`a.bd` 等路径，随后 getSubPath 用 `prefix.size() + 1` 截断得到空串，使结果 Object 列的 typed/dynamic/shared data 中出现空路径名并混入兄弟键的数据。旧实现因前缀带结尾点不会命中兄弟路径，本改动是行为回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/Common/intExp.h",
+      "line": 13,
+      "summary": "intExp2 去掉负数与溢出钳制后，越界参数触发未定义行为",
+      "failure_scenario": "intExp2 变为 `return 1ULL << x;` 并标注 NO_SANITIZE_UNDEFINED，同时 Functions/intExp2.cpp 删除了 NaN 检查与 `a < 0` / `a >= 64` 的钳制。于是 `intExp2(-1)`、`intExp2(64)`、`intExp2(nan)`、`intExp2(-1.5)` 等查询从「返回 0 / UInt64 最大值 / 抛 BAD_ARGUMENTS」变成移位位数越界的未定义行为（浮点 NaN 转 int 同样 UB），实际结果依赖编译器与平台（x86 上按 x & 63 取模），属于对用户可见的静默行为变更。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "src/Backups/BackupEntryWithChecksumCalculation.cpp",
+      "line": 29,
+      "summary": "校验和计算在持有互斥锁期间执行完整文件读取",
+      "failure_scenario": "getChecksum 与 getPartialChecksum 都在 checksum_calculation_mutex 保护下调用 getReadBuffer 并读取整个文件（远端磁盘上可能是数百 MB 的网络 I/O）。同一 backup entry 的其它校验和请求在此期间全部阻塞；同时首算路径在双检锁外执行，并发时多个线程可能各自读一遍整文件。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "PERFORMANCE-008"
+    },
+    {
+      "file": "src/Backups/BackupEntryWithChecksumCalculation.cpp",
+      "line": 31,
+      "summary": "重写后的校验和计算丢失文件大小一致性校验，文件被截断或追加时不报错",
+      "failure_scenario": "新实现直接创建 ReadBuffer、`ignoreAll()` 后取哈希，不再把实际读取字节数与 `getSize()` 比对；原实现会在文件变短时抛 UNEXPECTED_END_OF_FILE、在 immutable 文件意外变长时抛 EXPECTED_END_OF_FILE。现在若文件在 getSize() 之后被修改（例如 part 被并发改写），备份会记录与实际内容不一致的 size/checksum 组合，而不是尽早失败；partial 分支在读完前缀后同样用 `ignoreAll()` 继续读剩余数据，也没有长度确认。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "RELIABILITY-004"
+    },
+    {
+      "file": "src/Disks/DiskEncrypted.h",
+      "line": 196,
+      "summary": "DiskEncrypted 删除 getStorageObjects 转发后，加密磁盘上的 remote_data_paths 会抛 NOT_IMPLEMENTED",
+      "failure_scenario": "本次删除了 DiskEncrypted::getStorageObjects / getStorageObjectsIfExist 这两个转发给 delegate 并做 wrappedPath 的 override，而 IDisk::getStorageObjects 的默认实现是直接抛 NOT_IMPLEMENTED。于是加密磁盘（例如 S3 上的 encrypted disk）不再返回真实 blob 列表，system.remote_data_paths 与 DataPartStorageOnDiskFull::getRemotePaths 等调用方会报错，属于为移除 blob 路径校验和而引入的附带功能回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-005"
+    },
+    {
+      "file": "src/Client/TestHint.cpp",
+      "line": 88,
+      "summary": "TestHint 删除 error 关键字后，使用 { error N } 的用例断言被静默忽略",
+      "failure_scenario": "command_errors 集合删除了 \"error\"，而 parse 只对 commands 与 command_errors 中的词做处理，其它 BareWord 既不进入错误列表也不抛异常。因此 `-- { error 425 }` 之类的提示不再被解析，测试期望值丢失；随后 ClientBase 会走 `if (!test_hint.hasClientErrors() && !test_hint.hasServerErrors())` 的默认分支，用例以「No error was expected but it still occurred」这种误导性信息失败，而不是提示解析错误。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TESTABILITY-006"
+    },
+    {
+      "file": "src/Functions/toStartOfIntervalAllowNegative.cpp",
+      "line": 33,
+      "summary": "decideReturnType 穷举 switch 后缺少 return 或 std::unreachable",
+      "failure_scenario": "FunctionToStartOfIntervalAllowNegative::decideReturnType（以及 FunctionToStartOfInterval::decideReturnType）在覆盖全部 IntervalKind::Kind 的 switch 之后直接闭合函数，既没有 return 也没有 `std::unreachable()`；而基类 getReturnTypeImpl 在相同位置显式调用了 `std::unreachable();`。一旦 IntervalKind 增加新的枚举值，编译期不会提示，运行期会落出非 void 函数末尾（未定义行为），从而得到垃圾 ResultType 并据此构造错误的结果类型。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-007"
+    },
+    {
+      "file": "src/DataTypes/Serializations/SerializationSubObject.cpp",
+      "line": 115,
+      "summary": "getSubPath 在两个编译单元各实现一份且签名不一致",
+      "failure_scenario": "DataTypeObject.cpp 与 SerializationSubObject.cpp 各自在匿名命名空间里实现了同名 getSubPath，且第二个重载的形参分别为 `std::string_view` 与 `const std::string_view &`。这是复制粘贴式重复代码，前缀语义（是否包含结尾点、是否 +1）分散在两处，修正 F001 描述的边界问题时极易只改一处。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-009"
+    },
+    {
+      "file": "src/Analyzer/Identifier.cpp",
+      "line": 76,
+      "summary": "IdentifierView::popLast 仍使用 assert，同文件其它三处已改为 chassert",
+      "failure_scenario": "实现下沉到 Identifier.cpp 后，Identifier::popFirst、Identifier::popLast、IdentifierView::popFirst 都使用 chassert，唯独 IdentifierView::popLast 保留了裸 assert。两者在发布构建下的保留策略不同，排查越界 pop 调用时会出现「部分路径断言、部分路径静默越界」的不一致表现。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.72,
+      "rule": "READABILITY-010"
+    },
+    {
+      "file": "src/Analyzer/examples/query_analyzer.cpp",
+      "line": 3,
+      "summary": "新增 query_analyzer 示例目标只是空 main 桩，额外增加构建产物",
+      "failure_scenario": "新增的 src/Analyzer/examples/CMakeLists.txt 注册了链接整个 dbms 库的 query_analyzer 可执行目标，但 query_analyzer.cpp 只有对 argc/argv 的 `(void)` 转换与 `return 0;`，没有任何示例价值。它既增加构建与链接开销，也让后续维护者无从判断该示例的用途。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-011"
+    },
+    {
+      "file": "src/Backups/BackupEntryFromImmutableFile.h",
+      "line": 46,
+      "summary": "重构后 mutable 缓存字段丢失 TSA_GUARDED_BY 线程安全注解",
+      "failure_scenario": "原实现带有 `mutable std::optional<UInt64> calculated_size TSA_GUARDED_BY(mutex);` 注解，重构后 file_size、checksum、file_size_adjusted、checksum_adjusted 四个可变字段全部没有 TSA_GUARDED_BY(size_and_checksum_mutex) 注解。ClickHouse 的线程安全静态分析对这些字段失效，后续若有人绕过锁访问，编译器与 CI 不会提示。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-012"
+    },
+    {
+      "file": "src/Common/ProfileEvents.cpp",
+      "line": 755,
+      "summary": "批量删除备份相关 ProfileEvents，备份可观测性明显下降",
+      "failure_scenario": "本次删除了 BackupPreparingFileInfosMicroseconds、BackupReadLocalFilesToCalculateChecksums、BackupReadLocalBytesToCalculateChecksums、BackupReadRemoteFilesToCalculateChecksums、BackupReadRemoteBytesToCalculateChecksums、BackupLockFileReads 六个指标，并移除了 BackupFileInfo.cpp 中的 timer 与 \"Building file infos for backup entries\" 日志。运维侧基于这些指标构建的备份监控会静默失效，尤其是「备份为算校验和读了多少远端字节」这一在对象存储场景下衡量成本的关键观测点。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "OBSERVABILITY-013"
+    },
+    {
+      "file": "src/Storages/NATS/NATSSource.cpp",
+      "line": 96,
+      "summary": "popConsumer 超时返回 nullptr 后仍直接调用 subscribe()，导致空指针解引用",
+      "failure_scenario": "generate() 中 `consumer = storage.popConsumer(timeout)` 之后立即无条件调用 `consumer->subscribe()`。popConsumer 在带超时的路径上通过 semaphore.tryWait 失败时会 return nullptr，因此“没有可用 consumer”这一正常超时场景会解引用空指针使查询崩溃；而原来的代码带有 `if (consumer)` 保护，本次改动删除了该保护，属于明确的行为回退。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/Storages/NATS/NATSConnection.h",
+      "line": 64,
+      "summary": "connection 裸指针成员未初始化，且连接失败后 has_connection/connection 状态不复位",
+      "failure_scenario": "`natsConnection * connection;` 没有默认初始化，而 isConnectedImpl() 以 `connection &&` 作为判空、closed() 更是无条件把该指针传给 natsConnection_IsClosed；在构造函数完成前或首次 connect 失败后读取到的可能是不确定值，属于未定义行为。同时 connectImpl() 直接以 `&connection` 作为出参，失败时既不清理旧连接也不复位 has_connection，析构函数又只按 has_connection 决定是否 Destroy，会同时造成已建立连接的泄漏（重复 connect）与状态与实际连接不一致。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "LIFETIME-002"
+    },
+    {
+      "file": "src/Storages/NATS/NATSProducer.cpp",
+      "line": 67,
+      "summary": "每轮发布都新建并 join 一个 uv_thread，且循环无退避",
+      "failure_scenario": "publish() 每次调用都 `uv_thread_create` + `uv_thread_join`，而 startProducingTaskLoop 在没有 payload 时也会反复调用 publish()/iterateEventLoop()，形成“创建线程—立即 join—再创建”的高频循环。线程创建/销毁的系统调用开销加上无 sleep 的忙等，会在写入量低时也持续消耗 CPU。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-002"
+    },
+    {
+      "file": "src/Storages/NATS/NATSProducer.cpp",
+      "line": 86,
+      "summary": "发布线程函数内抛出异常未捕获，将触发 std::terminate",
+      "failure_scenario": "publishThreadFunc 是 uv_thread 的入口函数，内部在队列 pop/push 失败时直接 `throw Exception(ErrorCodes::LOGICAL_ERROR, ...)`。异常逃出线程入口函数会调用 std::terminate，导致整个 ClickHouse 进程被终止，而不是像原实现那样在 producing task 的 try/catch 内被记录并降级。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "EXCEPTION-001"
+    },
+    {
+      "file": "src/Storages/NATS/NATSProducer.cpp",
+      "line": 94,
+      "summary": "发布失败后改用 push 而非 pushFront，消息顺序被打乱",
+      "failure_scenario": "payloads 是 ConcurrentBoundedQueue（FIFO）。原实现从队首 pop 出待发布消息、publish 失败时用 pushFront 放回队首，保证重试消息仍先于后续消息被发送；本次改为 `push(std::move(payload))`，失败的消息被追加到队尾，其后已入队的消息会先被发布，破坏同一 subject 内的消息顺序语义。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "ORDERING-001"
+    },
+    {
+      "file": "src/Processors/Transforms/WindowTransform.cpp",
+      "line": 1483,
+      "summary": "移除 first_required_row 后窗口函数不再及时释放 block，常见 frame 下整分区常驻内存",
+      "failure_scenario": "本次删除了 IWindowFunction::firstRequiredRowInFrame、updateFirstRequiredRow() 与 first_required_row，work() 中可丢弃 block 的下界退化为 `{next_output_block_number, prev_frame_start.block, current_row.block}`。对最常见的 `UNBOUNDED PRECEDING ... CURRENT ROW`，frame_start 恒为分区起点（见 prev_frame_start = partition_start 的赋值），因此 prev_frame_start.block 始终落在分区头部，整个分区的 block 都会保留在 blocks 中；原实现则对聚合函数使用 peer_group_start、对 rank/dense_rank/row_number 使用 peer_group_start 或 current_row-1，可以在同一分区内逐步释放已消费的 block。这意味着大分区（如按常量分区、低基数 PARTITION BY）上的窗口查询内存峰值显著上升，可能 OOM。",
+      "severity": "P1",
+      "category": "性能",
+      "confidence": 0.68,
+      "rule": "MEMORY-001"
+    },
+    {
+      "file": "src/Interpreters/executeQuery.cpp",
+      "line": 611,
+      "summary": "同一 query_id 重复调用 logQueryMetricLogFinish，指标被重复计数",
+      "failure_scenario": "logQueryFinish 中第 562 行已经以相同参数（context/internal/elem.client_info.current_query_id/time_now）调用过一次 logQueryMetricLogFinish，本次又在其后追加了一次完全相同的调用。结果是每次查询结束都会向 query_metric_log 写入两条记录，基于该表的查询数、耗时、内存等统计全部翻倍，监控与告警口径失真。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "METRICS-001"
+    },
+    {
+      "file": "src/Storages/NATS/NATSConnection.cpp",
+      "line": 118,
+      "summary": "重连次数由“无限”改为受 nats_max_reconnect 限制，默认 5 次后 NATS 客户端不再重连",
+      "failure_scenario": "原实现显式使用 `infinite_reconnect_count = -1` 并注释说明“reconnect is performed permanently”，本次改为把配置项 nats_max_reconnect（默认 5）传给 natsOptions_SetMaxReconnect，同时把该设置的说明从“已废弃且无效果”改为“最大重连次数”。这改变了线上的故障恢复语义：NATS 服务器短暂不可用超过 5 次重连窗口后，客户端连接进入不可恢复状态，消费者将停止收消息、生产者将 publish 失败，只能依赖上层 connectionFunc/streamingToViewsFunc 的 reconnect() 兜底，行为与升级前不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CONFIG-SEMANTICS-001"
+    },
+    {
+      "file": "src/Storages/NATS/StorageNATS.cpp",
+      "line": 241,
+      "summary": "loopingFunc 无条件重排任务且 stopLoopIfNoReaders 无任何调用点，事件循环永不停止",
+      "failure_scenario": "startLoop() 会把 loop_state 置 RUN 并激活 looping_task，loopingFunc() 执行完 startLoop() 后无条件 `activateAndSchedule()` 重新挂起自己；而唯一会把 loop_state 置回 STOP 的 stopLoopIfNoReaders()（同文件 250 行）在整个 NATS 实现中没有任何调用点（引用检索只命中声明），只有 shutdown 的 deactivateTask(looping_task, true) 才会停止。因此在有 select 结束之后、甚至完全空闲时，每张 NATS 表都会持续运行“60s 上限的 uv_run 忙循环 + 立即重排”的后台任务，持续占用消息代理调度线程。此外 read() 中加 loop_mutex 声称用于避免“select 开始时 loop 被关闭”的竞态，但由于该函数从不被调用，这套互斥保护实际上没有生效。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "RESOURCE-001"
+    },
+    {
+      "file": "src/Storages/NATS/StorageNATS.cpp",
+      "line": 468,
+      "summary": "构造期 connection 可能保持空 shared_ptr，后续 startup/read/streaming 直接解引用",
+      "failure_scenario": "connection 只在构造函数的 `for (size_t i = 0; i < num_tries; ++i)` 循环体内被赋值：当 nats_startup_connect_tries 配置为 0 时循环不执行，或 std::make_shared 抛异常且 throw_on_startup_failure 为 false 被 catch 吞掉时，connection 始终是空 shared_ptr。此后 startup() 第 468 行、streamingToViewsFunc() 第 626 行、read() 第 370 行都直接 `connection->isConnected()` / `connection->reconnect()`，会解引用空指针。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/Parsers/ParserInsertQuery.cpp",
+      "line": 187,
+      "summary": "去掉 `&& select` 判空后，SELECT 解析失败会解引用空 AST",
+      "failure_scenario": "`select_p.parse(pos, select, expected);` 的返回值被忽略，随后在 with_expression_list 分支直接用 `select->as<ASTSelectWithUnionQuery>()`。原代码以 `if (with_expression_list && select)` 保证只有在解析成功时才访问 AST；删除该判空后，只要 WITH 表达式已在 INSERT 前被解析、而后续 SELECT 部分解析失败（select 保持 nullptr），就会在这里空指针解引用，把语法错误变成进程崩溃。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "src/Parsers/ParserDataType.cpp",
+      "line": 271,
+      "summary": "JSON 类型参数判定改为大小写敏感，小写 json(...) 声明不再走对象参数解析",
+      "failure_scenario": "type_name 是用户原样书写的类型名（同文件仅用 Poco::toUpper 生成 type_name_upper 做比较），把 `boost::to_lower_copy(type_name) == \"json\"` 改成 `type_name == \"JSON\"` 后，`JSON(...)` 之外的所有写法（典型如 `json(a Int32)`）都不再进入 ObjectArgumentParser，而是退回通用类型/标识符解析分支，可能导致原本可用的建表语句报语法错误或解析出不同结构的 AST。该改动同时移除了验证大小写不敏感声明的回归检查，用户可见的兼容性会发生回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "PARSER-COMPAT-001"
+    },
+    {
+      "file": "src/Storages/MergeTree/MergeTreeBlockReadUtils.cpp",
+      "line": 306,
+      "summary": "取消“非自适应粒度必须至少读一列”的强制注入，末 granule 行数可能无法确定",
+      "failure_scenario": "原代码在 step_column_names 为空且 part 为非自适应（non-adaptive）粒度时，仍会调用 injectRequiredColumns 注入至少一列，注释明确说明原因是“没有数据就无法确定最后一个 granule 的正确大小”。本次仅以 `if (!step_column_names.empty())` 作为条件，使空 step 的 pre_columns 成为空列集。对非自适应粒度的 part，若该 prewhere/mutation step 实际不读任何列，下游 range reader 可能无法推断最后一个 granule 的行数，出现读取行数错误或异常。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-004"
+    }
+  ],
+  "stderr_tail": "lickHouse@36ea28a.diff\n  caseId              ClickHouse__ClickHouse@36ea28a\n  --issue             (未传)\n  --taskId            ClickHouse__ClickHouse@36ea28a\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 3 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 64 个文件 / 145941 字符（generated=1, test=54, exclude=9），明细见审计 mrFilter\n✓ 完成 · 耗时 733.5s · 模型调用 55 次 · token 输入 331,034（未命中） · 输出 106,924 · 缓存命中 3,854,592（92.1%） · 工具 140 次（主会话 140 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0871\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\ClickHouse__ClickHouse@36...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 734.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.1%)\n[time] 阶段 | 六阶段审计 733.5s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 11.6s (1.6%) | S1P2 5.0s (0.7%) | S1P3 9.5s (1.3%) | S1P4 131.2s (17.9%) | S1P5 82.9s (11.3%) | S1P6 16.1s (2.2%) | S2P1 10.7s (1.5%) | S2P2 3.3s (0.4%) | S2P3 12.1s (1.6%) | S2P4 144.2s (19.7%) | S2P5 84.0s (11.5%) | S2P6 13.2s (1.8%) | S3P1 19.5s (2.7%) | S3P2 3.5s (0.5%) | S3P3 14.0s (1.9%) | S3P4 72.9s (9.9%) | S3P5 87.9s (12.0%) | S3P6 11.5s (1.6%)\n[usage] 任务总计 | 模型调用 55 次（Agent 55 + 一次性 0） | token 输入 331,034（未命中） | 输出 106,924 | 缓存命中 3,854,592（92.1%） | $0.0871\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\ClickHouse__ClickHouse@36ea28a\\audit\\20261115_070146_075.json",
+  "token_usage": {
+    "input_tokens": 331034,
+    "output_tokens": 106924,
+    "cache_read_input_tokens": 3854592
+  }
+}

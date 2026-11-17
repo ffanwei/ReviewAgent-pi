@@ -1,0 +1,63 @@
+[
+  {
+    "filePath": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "$query->reorder($originalOrders[0]['column'], $originalOrders[0]['direction']);",
+        "review": "[缺陷类型] 对保留原始键的 Collection 使用数字下标访问（未定义下标 + 空值传播）。影响评估：一旦 orders 的第 0 项是被 reject 的 $qualifiedKeyName，会同时出现两处后果——Latavel 异常处理器把 Undefined array key 警告转成 ErrorException 使导出任务失败；即使未转异常，reorder(null, null) 也会清空全部排序，使分块顺序不再稳定，导出可能重复或漏行。",
+        "suggestion": "[重构思路] 不要依赖键，改用 first()/shift() 取值，或用 values() 重建连续索引；同时把「取首排序键」和「追加剩余排序」合并成一次顺序处理，避免 forget(0) 这种键相关操作。代码示例：`$originalOrders = $originalOrders->values();` / `$firstOrder = $originalOrders->shift(); if ($firstOrder) { $query->reorder($firstOrder['column'], $firstOrder['direction'] ?? 'asc'); } else { $query->reorder($qualifiedKeyName); } foreach ($originalOrders as $order) { ... }`",
+        "category": "可靠性",
+        "subcategory": "集合键与下标安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 79,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "if (! empty($originalOrders->all())) {",
+        "review": "[缺陷类型] 缺少字段存在性校验（把未经校验的数组条目直接传入 SQL 排序构建）。影响评估：orderByRaw 等无 column/direction 的排序条目被提升为首排序键后，会导致排序方向丢失或排序被整体清空，进而影响 chunk 分块的稳定性；在严格错误处理下还会伴随 Undefined array key 警告。",
+        "suggestion": "[重构思路] 复用与剩余条目相同的守卫逻辑筛选出第一个「column 与 direction 都非空」的排序条目作为首排序键，找不到时回退到主键排序。代码示例：`$firstOrder = $originalOrders->first(fn (array $order): bool => filled($order['column'] ?? null) && filled($order['direction'] ?? null)); if ($firstOrder) { $query->reorder($firstOrder['column'], $firstOrder['direction']); $originalOrders = $originalOrders->reject(fn (array $order): bool => $order === $firstOrder); } else { $query->reorder($qualifiedKeyName); }`",
+        "category": "可靠性",
+        "subcategory": "防御性校验缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 78,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "if (in_array($query->getQuery()->orders[0]['column'] ?? null, [$keyName, $qualifiedKeyName])) {",
+        "review": "[缺陷类型] 查询语义变更导致结果集不再唯一（distinct 条件化）。影响评估：含 join 的查询在按非主键列排序导出时，导出 CSV 可能出现重复数据行，且 processed_rows 与实际导出量不一致；不去重的动机应当是避免 pgsql 上 SELECT DISTINCT 与 ORDER BY 非选择列冲突，但缺少替代的保证唯一性手段。",
+        "suggestion": "[重构思路] 保留「不强制整行 distinct」的前提，但显式保证分块主键唯一：在 dispatchRecords 前对 pluck 出的主键列表 array_unique，或对非主键排序路径先按主键去重后再分块。代码示例：`fn (Collection $records) => $dispatchRecords(array_values(array_unique(Arr::pluck($records->all(), $keyName))))`；若业务要求行级唯一，则应改为 `select([$qualifiedKeyName])` + distinct 并使用不依赖非选择列的稳定排序。",
+        "category": "可靠性",
+        "subcategory": "查询去重与结果集唯一性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 153,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F004",
+        "code": "->reject(fn (array $order): bool => in_array($order['column'] ?? null, [$qualifiedKeyName]))",
+        "review": "[缺陷类型] 表达冗余与判断口径不一致。影响评估：不直接影响运行时行为，但两处同类判断口径不同且无注释，后续维护者容易在修改其中一处时破坏另一处假设。",
+        "suggestion": "[重构思路] 用直接相等比较替换单元素 in_array，并为「只剔除 qualified 主键排序以保留未限定 id 排序」补充一行注释说明意图。代码示例：`->reject(fn (array $order): bool => ($order['column'] ?? null) === $qualifiedKeyName) // 保留 orderBy('id') 形式的排序，仅剔除 qualified 主键排序`",
+        "category": "可读性",
+        "subcategory": "表达式冗余与实现一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 72,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

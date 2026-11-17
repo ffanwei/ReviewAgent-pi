@@ -1,0 +1,102 @@
+{
+  "instance_id": "gofr-dev__gofr@2c0c099",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "c2ab1eb3308afa4f29842f0a982751bf65c059d0",
+  "head_commit": "2c0c0997cad66a1ee1e47f95db6a830394157c00",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 271.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": "go.mod",
+      "line": 5,
+      "summary": "go 指令降为 1.22.7 同时新增 toolchain go1.23.4，与 CI 的 go-version '1.22' 不一致",
+      "failure_scenario": "根 go.mod 由 `go 1.22` + `toolchain go1.22.10` 改为 `go 1.22.7` + `toolchain go1.23.4`，ftp/s3 子模块也照此修改（sftp 子模块则被删除）。在 GOTOOLCHAIN=auto（默认）下，任何 go 命令都会按 toolchain 行去下载并使用 go1.23.4，即使 CI 用 setup-go 只安装了 1.22.x；这会让实际编译使用的语言版本与 CI 声明、go 指令三处不一致，并给离线/受限网络环境引入额外下载依赖（下载失败即整个构建失败）。同时 go 指令带上补丁号 1.22.7 会强制使用者至少升级到该补丁版本，对下游模块（ftp、s3 等通过 replace 依赖根模块）形成隐性版本门槛。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "go.mod",
+      "line": 7,
+      "summary": "删除 sftp 子模块 go.mod 后根模块缺少 github.com/pkg/sftp 依赖，根模块无法编译",
+      "failure_scenario": "本 MR 删除了 pkg/gofr/datasource/file/sftp/go.mod（原模块 gofr.dev/pkg/gofr/datasource/file/sftp 自带 require github.com/pkg/sftp v1.13.6、golang.org/x/crypto、github.com/kr/fs），使该目录并入根模块 gofr.dev；但根 go.mod 的 require 与 indirect 列表中都没有 github.com/pkg/sftp（也没有 github.com/kr/fs），而 sftp 包源码仍直接 import 这两个模块。Go 1.16+ 默认 -mod=readonly，因此 `go build ./...`、`go vet ./...`、根模块 lint 在干净仓库上会以 \"no required module provides package github.com/pkg/sftp\" 失败；即使本地 `go mod tidy` 能自动补上，仓库中提交的 go.mod 与源码不一致也会让任一使用 -mod=readonly 的构建/CI 直接报错。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "go.mod",
+      "line": 94,
+      "summary": "安全相关依赖被降级（golang.org/x/crypto、golang.org/x/net 等），可能回退已修复漏洞",
+      "failure_scenario": "MR 将 golang.org/x/crypto 从 v0.32.0 降到 v0.31.0、golang.org/x/net 从 v0.34.0 降到 v0.33.0，并把 go.opentelemetry.io/otel 及 sdk/metric、prometheus exporter、google.golang.org/api、protobuf、modernc.org/sqlite、cloud.google.com/go/auth 等一整批依赖回退到更早版本。x/crypto/ssh 与 x/net（HTTP/2、PROXY 协议、idna 等）是框架对外暴露的协议路径依赖（sftp 包直接使用 golang.org/x/crypto/ssh），降级会重新引入升级本意修复的问题；同时这批降级与「回退 any 现代化」无因果关系，更像是把升级提交整体 revert 时的连带结果，需要显式确认。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "SEC-DEP-001"
+    },
+    {
+      "file": ".golangci.yml",
+      "line": 97,
+      "summary": "移除 canonicalheader / use-any / usestdlibvars.time-layout 规则，静态防护能力下降",
+      "failure_scenario": "MR 在 .golangci.yml 中同时删除了 linters-settings.usestdlibvars.time-layout、revive 的 use-any 规则，以及 enable 列表中的 canonicalheader。这三个规则正是本次改动中若干「非机械」字面量修改的来源：移除后，非规范的 HTTP 头名（solr 的 content-type）、非标准的 any 用法混排（仍有大量文件保留 any）以及手写时间格式字符串都不会再被 CI 拦截，后续回归无人把关。lint 配置的回退会长期削弱仓库质量门槛，且与本次大范围回退 any 的行为互相强化。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "MAINTAIN-002"
+    },
+    {
+      "file": "pkg/gofr/http/request.go",
+      "line": 59,
+      "summary": "HTTP 头名字面量被改为非规范大小写形式",
+      "failure_scenario": "request.go 读取 Content-Type、X-Forwarded-Proto 的键被改成 \"content-type\"、\"X-forwarded-proto\"，apikey_auth.go 读取键改成 \"X-API-KEY\"，solr.go 写入 \"content-type\"。net/http 的 Header.Get/Add 内部会做 MIME 规范化，因此运行期行为不变；但源码中出现了与 HTTP 规范（Content-Type、X-Forwarded-Proto、X-API-Key）不一致的写法，会误导阅读者以为头名大小写敏感，并且与仓库其他位置（如 pkg/gofr/http/middleware 中的 Authorization 等）风格分裂，属于典型的规范性回退。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "STYLE-003"
+    },
+    {
+      "file": "pkg/gofr/logging/logger.go",
+      "line": 162,
+      "summary": "用字面量 \"15:04:05\" 取代 time.TimeOnly，同一格式串重复出现",
+      "failure_scenario": "prettyPrint 的两个分支都把 time.TimeOnly 替换为硬编码字面量 \"15:04:05\"（值相同，输出无变化）。这属于可维护性回退：丢失了标准库常量的语义命名，同一字面量在两处重复，若以后需要统一时间格式，需要同时改两处且无法被 goconst/mnd 之外的工具提示；同时它正是本 MR 删除 usestdlibvars.time-layout 规则的直接产物，体现了「配置移除 → 代码回退」的连锁反应。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "MAINTAIN-004"
+    },
+    {
+      "file": "pkg/gofr/testutil/port.go",
+      "line": 21,
+      "summary": "GetFreePort 先关闭监听再返回端口，存在端口被抢占的竞态",
+      "failure_scenario": "新增的 GetFreePort 通过 net.Listen(\"tcp\", \"localhost:0\") 让内核分配端口，随后立即 Close 并把端口号返回给调用方由其再次 Listen。在 Close 与调用方真正绑定之间存在时间窗口，其他进程（并行测试、CI 上同机其他 job）可能抢占该端口，导致测试偶发 \"address already in use\"。现有 12 处调用点（gofr_test.go、router_test.go、http_server_test.go、external_db_test.go）都在启动真实 HTTP/gRPC 服务前依赖该端口，属于典型 flaky test 来源；此外监听地址是 \"localhost:0\"，可能解析到 ::1，而服务侧若绑定 127.0.0.1 则会出现「端口空闲但目标地址被占用」的不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "TEST-INFRA-001"
+    },
+    {
+      "file": "examples/using-http-service/main.go",
+      "line": 45,
+      "summary": "any→interface{} 回退不彻底，同一文件与仓库内仍残留 any",
+      "failure_scenario": "本 MR 把绝大多数签名从 any 改为 interface{}，但同一次改动后仍留下混合写法：examples/using-http-service/main.go 的 Handler 签名保持 `(any, error)`，而紧邻的 map 字面量已改成 `map[string]interface{}`；pkg/gofr/http/responder.go 的 response 结构体中 Error/Data 已改 interface{}，但 Metadata 仍是 `map[string]any`、isNil 参数仍是 `any`；pkg/gofr/container/sql_mock.go 的 Select/ExpectSelect 中 `value any` 与 `args ...interface{}` 并存。这种半回退会让读者无法判断仓库约定，也说明本次批量替换缺少统一收尾。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "STYLE-005"
+    }
+  ],
+  "stderr_tail": "--mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\gofr-dev__gofr@2c0c099.diff\n  caseId              gofr-dev__gofr@2c0c099\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@2c0c099\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 2 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 72 个文件 / 151985 字符（lockfile=2, generated=2, test=51, exclude=17），明细见审计 mrFilter\n✓ 完成 · 耗时 262.0s · 模型调用 27 次 · token 输入 121,351（未命中） · 输出 38,543 · 缓存命中 981,376（89.0%） · 工具 48 次（主会话 48 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0305\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\gofr-dev__gofr@2c0c099\\ru...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 262.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 261.9s (99.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 12.5s (4.8%) | S1P2 6.7s (2.6%) | S1P3 9.3s (3.6%) | S1P4 42.3s (16.2%) | S1P5 48.1s (18.4%) | S1P6 20.7s (7.9%) | S2P1 18.1s (6.9%) | S2P2 4.3s (1.6%) | S2P3 9.1s (3.5%) | S2P4 44.8s (17.1%) | S2P5 33.2s (12.7%) | S2P6 12.6s (4.8%)\n[usage] 任务总计 | 模型调用 27 次（Agent 27 + 一次性 0） | token 输入 121,351（未命中） | 输出 38,543 | 缓存命中 981,376（89.0%） | $0.0305\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\gofr-dev__gofr@2c0c099\\audit\\20261115_030417_023.json",
+  "token_usage": {
+    "input_tokens": 121351,
+    "output_tokens": 38543,
+    "cache_read_input_tokens": 981376
+  }
+}

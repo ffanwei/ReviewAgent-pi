@@ -8,6 +8,7 @@ import type { RunProgressSink } from "../contracts/progress.js";
 import type {
   ModelFallbackRecord,
   MrFilterRecord,
+  RuleSelectionAuditRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
   RunAudit,
@@ -65,6 +66,10 @@ export interface ReviewPassInput {
   readonly diff: string;
   /** 初始用户消息里的 diff 文本（分片 = 片内 diff + 其他文件摘要） */
   readonly initialDiff: string;
+  /** 本遍适用的规则子集（ADR-0095）；空/缺席时消息逐字节不变 */
+  readonly ruleContext?: string;
+  /** 规则选择留痕（ADR-0095） */
+  readonly ruleSelection?: RuleSelectionAuditRecord;
   /** 规则 Skill（编排层只装载一次，各片共享） */
   readonly ruleSkills: readonly RuleSkill[];
   readonly ruleSkillAudit: readonly RuleSkillAudit[];
@@ -144,7 +149,12 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
   const initialContextMessages = [
     {
       role: "user" as const,
-      content: buildInitialUserMessage(input.caseId, input.issueDescription, input.initialDiff),
+      content: buildInitialUserMessage(
+        input.caseId,
+        input.issueDescription,
+        input.initialDiff,
+        input.ruleContext,
+      ),
     },
   ];
 
@@ -186,7 +196,11 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     ...(input.shard !== undefined ? { shard: input.shard } : {}),
     ...(scope !== undefined ? { scope } : {}),
     // Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
-    skillPass: { skills: input.ruleSkills, toolkitFor: skillToolkitFor },
+    skillPass: {
+      skills: input.ruleSkills,
+      toolkitFor: skillToolkitFor,
+      oncePerPass: input.runtime.limits.rules.enabled,
+    },
     // 有界候选修复（P1）：schema 仍非法的少数候选在 Phase 6 前至多修一次。
     // 复用核外一次性调用层（与报文同源重试 / 超时），不碰检视会话 wire 字节。
     candidateRepair: createCandidateRepair({
@@ -224,6 +238,7 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
     ...(severityFilter !== undefined ? { severityFilter } : {}),
     ...(input.modelFallback !== undefined ? { modelFallback: input.modelFallback } : {}),
+    ...(input.ruleSelection !== undefined ? { ruleSelection: input.ruleSelection } : {}),
   };
   const auditContent = buildAuditFileContent({
     runId,

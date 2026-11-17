@@ -1,0 +1,232 @@
+{
+  "generatedAt": "2026-11-15T00:11:20.597Z",
+  "runId": "20261115_000841_864",
+  "source": "mr",
+  "caseId": "alibaba__spring-ai-alibaba@4bc7305",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java",
+      "line": 190,
+      "title": "mergePrompts 判空条件写成 ||，既会 NPE 又恒为真",
+      "description": "该行把原来的 `StringUtils.isNotBlank(entity.getSystemPrompt())` 改成 `entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty()`。短路求值下：当 getSystemPrompt() 为 null 时第一个操作数为 false，随即求值第二个操作数 `entity.getSystemPrompt().trim()`，直接抛 NullPointerException；而 systemPrompt 非 null 时（实体默认值已是 \" \"）第一个操作数恒为 true，整个条件恒真，每次调用都进入合并分支并打 warn，与“仅当 systemPrompt 有内容时才合并”的原语义完全不符。由于 mergePrompts 被 mapToAgentConfig 每次读取都调用，null 场景会让 Agent 列表/详情接口整体失败。",
+      "evidence": [
+        "AgentServiceImpl.java:190 — `if (entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty()) {`",
+        "短路语义：null 时左侧为 false，右侧 `entity.getSystemPrompt().trim()` 触发 NullPointerException",
+        "DynamicAgentEntity.java:45 — 仍是 `@Column(length = 40000)`，未声明 nullable = false，数据库中的历史 NULL 行由 JPA 注入为 null，不会被字段默认值 \" \" 覆盖",
+        "AgentServiceImpl.java:153 — mapToAgentConfig 中 `entity = mergePrompts(entity, entity.getAgentName());`，而 getAllAgents()（第 71-73 行）对每个 agent 调用 mapToAgentConfig，单个 NULL 行即可让接口 500",
+        "原实现 `StringUtils.isNotBlank(null)` 返回 false 不会抛异常，且空白串也会被跳过"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.88,
+      "tips": {
+        "review": "[缺陷类型] 布尔条件运算符误用（应为 &&）导致的空指针解引用 + 条件恒真。影响评估：1）存量/异常数据中 systemPrompt 为 NULL 时，getAllAgents()/getAgentById() 直接抛 NullPointerException，Agent 管理页面整体不可用；2）正常情况下条件恒真，每次读取都会打印“SystemPrompt不为空”的 warn 日志并改写 systemPrompt，日志噪音与无效写入常态化。",
+        "suggestion": "[重构思路] 恢复语义等价且空安全的写法（优先用 StringUtils 或显式 &&），并顺带修复分支内 nextPrompt 计算后未回写的死代码。代码示例：`String sp = entity.getSystemPrompt(); if (sp != null && !sp.isBlank()) { String next = entity.getNextStepPrompt(); if (next != null && !next.isBlank()) { entity.setNextStepPrompt(sp + \"\\n\" + next); } log.warn(...); entity.setSystemPrompt(null); }`",
+        "subcategory": "条件运算符/空指针安全"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/entity/DynamicAgentEntity.java",
+      "line": 47,
+      "title": "用单空格 \" \" 作 systemPrompt 的哨兵值，掩盖了 null 语义并泄漏到接口响应",
+      "description": "实体字段默认值改为 `\" \"`，AgentServiceImpl 第 200 行同样把合并后的清空动作从 setSystemPrompt(null) 改成 setSystemPrompt(\" \")。用空格串代替 null 来表示“无值”，会让调用方无法用统一的 null/blank 判断，而且该值会被 mapToAgentConfig 直接写进 AgentConfig 返回前端，界面上出现一个“看似为空实则有值”的 prompt；同时因为 @Column 仍可空，数据库里的历史 NULL 行并不会被这个默认值覆盖，两种“空值”表示并存，正是 F001 中 NPE 与恒真同时出现的根因。",
+      "evidence": [
+        "DynamicAgentEntity.java:47 — `private String systemPrompt = \" \";`（配合第 45 行 `@Column(length = 40000)` 仍可为 NULL）",
+        "AgentServiceImpl.java:200 — `entity.setSystemPrompt(\" \");`（原为 `entity.setSystemPrompt(null);`）",
+        "AgentServiceImpl.java:157 — `config.setSystemPrompt(entity.getSystemPrompt());` 把 \" \" 原样返回给前端",
+        "JPA 由 ResultSet 赋值，DB 中的 NULL 会覆盖字段初始值 \" \"，导致内存默认值与持久化值语义不一致"
+      ],
+      "rule": "MAINTAINABILITY-002",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 用魔法哨兵值（单空格）代替 null 表示空。影响评估：空值判断口径分裂，前端与后端对“无 systemPrompt”的理解不一致，后续任何 `isEmpty()` 判空都会误判，属于持续的维护陷阱。",
+        "suggestion": "[重构思路] 统一用 null 表示无值，需要“非空”保障时在 DTO/DB 层用约束表达（如 `@Column(nullable = false)` + 默认空串仅在 DDL/迁移中处理），并在读取处集中做空安全判断。代码示例：`entity.setSystemPrompt(null); // 清空` 与 `String sp = entity.getSystemPrompt(); if (sp != null && !sp.isBlank()) { ... }`",
+        "subcategory": "空值语义/魔法值"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 49,
+      "title": "点击前按页面坐标滚动、却仍用视口坐标点击，落点整体偏移",
+      "description": "新增的滚动用 `x - viewportSize().width/2`、`y - viewportSize().height/2` 作为 window.scrollTo 的目标，即把 x/y 当成“文档绝对坐标”使用；但 x/y 的来源 get_element_position 用的是 locator.boundingBox()，Playwright 的 boundingBox 是相对主框架视口的坐标，而随后的 `page.mouse().move(x, y)` / `click(x, y)` 同样按视口坐标解释。滚动后目标元素被移动到视口 (width/2, height/2) 附近，鼠标却仍在 (x, y) 处点击，实际落点相对目标偏移了 (scrollX, scrollY)，会误触相邻链接/按钮，在浏览器智能体场景下会直接改变页面状态甚至触发不可逆操作。",
+      "evidence": [
+        "MoveToAndClickAction.java:49-50 — `int scrollX = Math.max(0, x - page.viewportSize().width / 2); int scrollY = Math.max(0, y - page.viewportSize().height / 2);`",
+        "GetElementPositionByNameAction.java:130-131 — `int x = (int) (box.x + box.width / 2); int y = (int) (box.y + box.height / 2);`，其中 box 来自 `nthLocator.boundingBox()`，即视口相对坐标",
+        "MoveToAndClickAction.java:69-70 — 滚动后仍执行 `page.mouse().move(x, y); page.mouse().click(x, y);`（Playwright mouse API 使用视口坐标）",
+        "BrowserUseTool.java:187 — 工具描述称“移动到指定的绝对位置(x,y)并点击”，与 boundingBox 的视口相对语义相互矛盾",
+        "示例：初始 scroll=0、视口高 720、目标 y=1000 时 scrollY=640，目标被移到视口 y=360，而点击仍发生在视口 y=1000"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 坐标空间混用（文档坐标 vs 视口坐标）。影响评估：滚动分支一旦生效，点击必然偏离目标；对依赖坐标点击的页面（canvas、富文本、验证码）会静默点错位置，错误难以从工具返回值察觉（仍返回 “Clicked at position”）。",
+        "suggestion": "[重构思路] 二选一：①干脆不滚动，用元素 Locator 点击（最稳）；②必须滚动时先滚动再按 `x - scrollX, y - scrollY` 换算视口坐标点击，并统一约定坐标来源。代码示例：`ViewportSize vp = page.viewportSize(); int scrollX = Math.max(0, x - vp.width / 2); ... page.mouse().click(x - scrollX, y - scrollY);`",
+        "subcategory": "坐标系一致性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 50,
+      "title": "viewportSize() 返回值直接解引用，为 null 时点击被整体跳过且错误信息误导",
+      "description": "新增代码在 try 块内两次访问 `page.viewportSize().width / .height`。Playwright 在页面/上下文未设置 viewport（如 noDefaultViewport、外部浏览器接管等场景）时 viewportSize() 返回 null，此时会在真正点击之前抛 NullPointerException，被第 79-82 行的 catch 吞掉并统一返回 “Failed to click at position”，既没有回退到“直接点击原坐标”的行为，也丢失了真实原因。变更前该动作完全不依赖 viewport 信息，这是新引入的失败路径。",
+      "evidence": [
+        "MoveToAndClickAction.java:49-50 — `x - page.viewportSize().width / 2` 与 `y - page.viewportSize().height / 2` 均未判空",
+        "MoveToAndClickAction.java:79-82 — `catch (Exception e) { log.error(\"Failed to click at position ...\"); return new ToolExecuteResult(\"Failed to click at position (\" + x + \", \" + y + \")\"); }` 把 NPE 统一转成通用失败",
+        "变更前的实现（diff 删除行）只调用 `page.mouse().move/click`，不依赖 viewportSize()，因此该失败路径是本次新增"
+      ],
+      "rule": "RELIABILITY-004",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 可空返回值被直接解引用且异常被统一 catch 掩盖。影响评估：一旦运行环境没有默认 viewport，move_to_and_click 全部失效，且返回信息无法定位原因，排查成本高。",
+        "suggestion": "[重构思路] 判空后降级为“不滚动、直接点击原坐标”，并把滚动失败与点击失败区分开。代码示例：`ViewportSize vp = page.viewportSize(); if (vp != null) { page.evaluate(\"(a)=>window.scrollTo({left:a[0],top:a[1],behavior:'instant'})\", new Object[]{Math.max(0,x-vp.width/2), Math.max(0,y-vp.height/2)}); }`",
+        "subcategory": "空指针安全/降级策略"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+      "line": 70,
+      "title": "三级降级链静默吞掉异常，输入失败原因与降级路径不可观测",
+      "description": "新的输入逻辑用 `catch (Exception e)` / `catch (Exception e2)` / `catch (Exception e3)` 三层嵌套捕获，前两层既不记录日志也不保留原始异常，最终失败只返回最后一个 e3.getMessage()；成功时无论走过哪一级降级都返回“成功输入”。结果是：元素不可见/被遮挡/只读等真实原因被丢弃，调试时无法判断是 fill 超时、pressSequentially 失败还是 JS 兜底生效，也无法从日志发现降级频率（例如某站点因只读属性导致最终 JS 赋值绕过了框架校验）。",
+      "evidence": [
+        "InputTextAction.java:70 — `catch (Exception e) {` 分支内无任何 log 调用",
+        "InputTextAction.java:76 — `catch (Exception e2) {` 同样静默忽略",
+        "InputTextAction.java:84 — 最终失败只返回 `\"输入失败: \" + e3.getMessage()`",
+        "InputTextAction.java:88 — 只要走到这里就返回 “成功输入”，无法区分正常路径与 JS 兜底路径",
+        "对比 BrowserAction.java:47-55 中同类操作会保留中断/日志语义，此处缺少可观测性"
+      ],
+      "rule": "RELIABILITY-005",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 异常吞没（swallowed exception）导致的不可观测性。影响评估：输入实际未生效时仍可能返回成功，agent 会在错误页面上继续执行后续步骤；线上问题只能靠复现定位。",
+        "suggestion": "[重构思路] 每级降级打 debug/warn 日志并保留首个异常作为 suppressed；区分“元素不存在/不可编辑”与“动作超时”两类错误。代码示例：`catch (PlaywrightException e) { log.warn(\"pressSequentially 失败, 降级 fill: {}\", e.getMessage()); primary = e; try { ... } catch (PlaywrightException e2) { primary.addSuppressed(e2); ... } }`",
+        "subcategory": "异常处理/可观测性"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "性能",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+      "line": 67,
+      "title": "固定 100ms/字符的 pressSequentially 对长文本会先耗尽默认超时再降级",
+      "description": "`PressSequentiallyOptions().setDelay(100)` 使每个字符固定等待 100ms，而未设置 timeout（Playwright 默认 action timeout 30000ms）。输入超过约 300 个字符时，单次 pressSequentially 就会因超时抛异常，随后才降级到 fill(text)。也就是说长文本输入每次都要先白等约 30 秒再刷新，工具调用被显著拖慢；同时超时异常被 F005 静默吞掉，用户只看到“耗时很久但成功”。",
+      "evidence": [
+        "InputTextAction.java:65-67 — `new com.microsoft.playwright.Locator.PressSequentiallyOptions().setDelay(100); elementLocator.pressSequentially(text, options);` 未设置 timeout",
+        "Playwright 默认 action timeout 为 30000ms，300 字符 × 100ms 即达上限",
+        "InputTextAction.java:73-74 — 超时后降级路径为 `fill(\"\")` 再 `fill(text)`，即长文本最终并非按人速输入",
+        "旧实现单个字符 delay 为 50-150ms 且无 fill 兜底（diff 删除行 `new ElementHandle.TypeOptions().setDelay(random.nextInt(100) + 50)`），新实现引入了“先超时再降级”的固定损耗"
+      ],
+      "rule": "PERFORMANCE-006",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 固定延迟 + 未显式设置动作超时导致的长耗时与超时浪费。影响评估：长文本（表单备注、代码片段、搜索词）输入时每步多出约 30 秒，整体任务时延成倍上升，并可能触发上层 agent 的步骤超时。",
+        "suggestion": "[重构思路] 按文本长度选择策略，或把总预算作为上限，同时显式设置 timeout。代码示例：`var opts = new Locator.PressSequentiallyOptions().setDelay(100).setTimeout(Math.min(60_000, 5_000 + text.length() * 100)); if (text.length() <= 100) { locator.pressSequentially(text, opts); } else { locator.fill(text); }`",
+        "subcategory": "动作超时/输入策略"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+      "line": 21,
+      "title": "残留未使用导入且降级步骤注释与实现顺序相反",
+      "description": "重写后 `ElementHandle`、`Random`、`WaitForSelectorState` 三个导入已无任何使用（旧实现中的 type/Thread.sleep 已被删除），会触发编译警告并可能被 checkstyle/spring-javaformat 检查拦截；同时“3. 尝试 fill”“4. fill 失败，尝试 pressSequentially”这两条注释与代码实际顺序不符——第一分支是先 fill 清空再 pressSequentially，第二分支才是 fill(text)，读代码时极易被注释误导。",
+      "evidence": [
+        "InputTextAction.java:19 — `import java.util.Random;`，方法体已无 Random 使用",
+        "InputTextAction.java:21 — `import com.microsoft.playwright.ElementHandle;`，全文件不再出现 ElementHandle",
+        "InputTextAction.java:24 — `import com.microsoft.playwright.options.WaitForSelectorState;` 未被使用",
+        "InputTextAction.java:61 — 注释 “3. 尝试 fill”，但紧随其后的第 63-67 行是 `fill(\"\")` + `pressSequentially`",
+        "InputTextAction.java:71 — 注释 “4. fill 失败，尝试 pressSequentially”，实际第 73-74 行是 `fill(\"\")` + `fill(text)`，与注释相反"
+      ],
+      "rule": "READABILITY-007",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 无用导入 + 与实现不一致的注释。影响评估：不影响运行，但增加后续维护者的理解成本，且可能因格式检查失败影响构建流水线。",
+        "suggestion": "[重构思路] 删除未使用导入；把降级链写成带日志的 1/2/3 顺序并在注释中写明每一级的触发条件，必要时抽成独立方法 `fillWithFallback(Locator, String)`。代码示例：`// 1) 清空后逐字符输入（拟人）；失败 2) 直接 fill；再失败 3) JS 赋值并派发 input 事件`",
+        "subcategory": "死代码/注释准确性"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+      "line": 42,
+      "title": "对所有无 scheme 的 URL 强制补 https://，破坏 http/localhost/file 等场景",
+      "description": "新增的前缀补全只判断是否以 http:// 或 https:// 开头，其余一律加 `https://`。这会把 `localhost:8080/...`、内网 http 站点改成 https 而导致 TLS 握手失败，也会把 `file:///...`、`about:blank`、`data:` 等合法 URL 变成 `https://file:///...` 这类非法地址；而变更前 URL 是原样透传给 page.navigate 的，属于行为回退风险。返回值里也直接使用了被改写后的 url，调用方无法得知实际访问地址被修改。",
+      "evidence": [
+        "NavigateAction.java:42-44 — `if (!url.startsWith(\"http://\") && !url.startsWith(\"https://\")) { url = \"https://\" + url; }`",
+        "NavigateAction.java:46 — 改写后的 url 直接传给 `page.navigate(url, ...)`",
+        "NavigateAction.java:51 — 返回 `\"Navigated to \" + url`，返回的是被改写地址而非原始入参",
+        "BrowserUseTool.java:173 — 工具描述中 navigate 仅为“访问特定URL”，未约定必须为 https，调用方（LLM）可能传入 `localhost:3000`、`file:///tmp/a.html` 等值"
+      ],
+      "rule": "RELIABILITY-008",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 粗粒度 URL 规范化破坏合法输入。影响评估：本地开发/内网调试与 file 场景直接导航失败，且失败信息会显示被改写后的 https 地址，误导排查；属于对既有能力的回退。",
+        "suggestion": "[重构思路] 只在“看起来像主机名”时才补全，并让 http 主机、其它 scheme 原样通过。代码示例：`if (url.matches(\"^[a-zA-Z][a-zA-Z0-9+.-]*:.*\")) { /* 已有 scheme, 原样 */ } else { url = (url.startsWith(\"localhost\") || url.startsWith(\"127.0.0.1\")) ? \"http://\" + url : \"https://\" + url; }`",
+        "subcategory": "URL 规范化/兼容性"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 57,
+      "title": "debug 大红点用 position:absolute 定位视口坐标，滚动后标记位置错误且污染被测页面",
+      "description": "调试标记 div 使用 `position: 'absolute'` 并以 x/y 作为 left/top，而 x/y 是视口坐标、且此前的 window.scrollTo 已改变滚动偏移，因此标记会画在文档坐标 (x, y) 处，与真实点击点相差 (scrollX, scrollY)。同时该标记被 append 到 document.body，会混入被测页面的 DOM（可能被 get_html/get_text/screenshot 等工具读到），且仅在 happy path 末尾移除——一旦点击抛异常，标记会残留在页面上。",
+      "evidence": [
+        "MoveToAndClickAction.java:57-65 — `dot.style.position = 'absolute'; dot.style.left = x + 'px'; dot.style.top = y + 'px';` 并 `document.body.appendChild(dot);`",
+        "MoveToAndClickAction.java:49-52 — 之前已执行 window.scrollTo，视口坐标需加上 scrollX/scrollY 才是文档坐标",
+        "MoveToAndClickAction.java:73-77 — 仅在正常路径末尾移除标记；第 79-82 行 catch 分支未移除",
+        "MoveToAndClickAction.java:54 — 固定 id `__move_click_marker__` 注入到页面 DOM，可能被 get_html/get_text 等动作读取"
+      ],
+      "rule": "MAINTAINABILITY-009",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 调试辅助代码坐标语义错误 + 副作用未清理。影响评估：debug 模式下排查用的大红点本身就指错位置，反而误导排障；异常路径残留 DOM 节点会污染后续页面内容提取。",
+        "suggestion": "[重构思路] 用 `position: 'fixed'` 保持视口坐标，并把注入/移除放进 try/finally 保证清理；更好的做法是把标记逻辑收敛到独立的 debug 工具方法。代码示例：`try { if (isDebug) injectMarker(x, y); page.mouse().click(x, y); } finally { if (isDebug) removeMarker(); }`",
+        "subcategory": "调试代码/资源清理"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 46,
+      "title": "Boolean 配置直接拆箱为 boolean，配置缺失时会在 try 之外抛 NPE",
+      "description": "`getManusProperties().getBrowserDebug()` 的返回类型是包装类型 Boolean，直接赋给基本类型 boolean 会隐式拆箱；该语句位于 try 块之外，一旦配置项缺失（返回 null）就会抛 NullPointerException，直接冒泡到 BrowserUseTool.run 的统一 catch，工具返回 “Browser action 'move_to_and_click' failed”。正常启动时 ConfigService 会把 @ConfigProperty 的 defaultValue 写入配置存储，因此风险主要出现在配置行被删除/初始化异常的场景，属防御性改进建议。",
+      "evidence": [
+        "MoveToAndClickAction.java:46 — `boolean isDebug = getBrowserUseTool().getManusProperties().getBrowserDebug();`，位于第 47 行 `try {` 之前",
+        "ManusProperties.java:115-122 — `public Boolean getBrowserDebug()` 返回包装类型，字段 `private volatile Boolean browserDebug;` 无初值",
+        "ConfigService.java:81-90 — initializeConfig 仅在启动时把 annotation.defaultValue() 写入配置存储，配置行缺失时 getConfigValue 返回 null，方法回退到可能为 null 的字段"
+      ],
+      "rule": "RELIABILITY-010",
+      "confidence": 0.35,
+      "tips": {
+        "review": "[缺陷类型] 包装类型隐式拆箱的空指针风险。影响评估：概率较低，但一旦触发会让整个点击动作失效，且异常发生在 try 之外、无任何业务侧日志。",
+        "suggestion": "[重构思路] 用空安全的比较或给字段设默认值，并保持同类配置读取方式一致。代码示例：`boolean isDebug = Boolean.TRUE.equals(getBrowserUseTool().getManusProperties().getBrowserDebug());`",
+        "subcategory": "拆箱空指针/防御性编程"
+      }
+    }
+  ]
+}

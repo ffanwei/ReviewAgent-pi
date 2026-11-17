@@ -1,0 +1,51 @@
+{
+  "generatedAt": "2026-11-15T02:28:19.861Z",
+  "runId": "20261115_022527_666",
+  "source": "mr",
+  "caseId": "microsoft__typescript-go@1a84d8d",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "internal/checker/checker.go",
+      "line": 10832,
+      "title": "DOM 名称启发式缺少注释与常量，难以与上游 TS 逻辑对照维护",
+      "description": "containerSeemsToBeEmptyDomElement 中的启发式规则（symbol 名为 EventTarget/Node/Element，或形如 HTML<纯字母>Element）全部以裸字符串字面量硬编码，且没有任何注释说明判定顺序、为何要求「中间段只含字母」、以及它只用于在缺少 dom 库时把 TS2339 升级为 TS2812 的兜底场景。该函数此前是 `return false // !!!` 的移植占位符，本次实现后成为诊断行为的一部分，后续对照上游 TypeScript 实现或调整启发式时缺少上下文成本较高；同时调用点 reportNonexistentProperty（checker.go:10754）依赖返回 true 时选择带 lib 提示的诊断，规则一旦被误改会静默影响用户看到的错误文案。",
+      "evidence": [
+        "internal/checker/checker.go:10832-10853 — 回调内直接比较 t.symbol.Name == \"EventTarget\" || == \"Node\" || == \"Element\"，并用 strings.HasPrefix(..., \"HTML\") && strings.HasSuffix(..., \"Element\") 硬编码",
+        "internal/checker/checker.go:10754-10758 — if c.containerSeemsToBeEmptyDomElement(containingType) { message = diagnostics.Property_0_does_not_exist_on_type_1_Try_changing_the_lib_compiler_option_to_include_dom } else { message = diagnostics.Property_0_does_not_exist_on_type_1 }",
+        "变更前该函数体为 `return false // !!!`（diff 中被替换的占位实现），说明这是移植补全而非既有逻辑，缺少历史注释积累"
+      ],
+      "rule": "MAINTAINABILITY-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 魔法值与启发式规则缺少文档化。影响评估：不改变当前行为，但提高后续维护/对照上游时的误改风险，也让审查者难以判断「中间段必须全为字母」这类条件的意图。",
+        "suggestion": "[重构思路] 为函数补一段说明性注释（用途：dom 库缺失时把属性缺失错误升级为 TS2812 的兜底启发式，并注明与上游 TypeScript 对应），把 DOM 名称前缀/后缀与 lib 文件名提为具名常量，并可把「名称是否像 DOM 元素」抽成独立的短函数便于单测与复用。代码示例：`const domElementNamePrefix = \"HTML\"; const domElementNameSuffix = \"Element\"; func isDomElementLikeName(name string) bool { ... }`",
+        "subcategory": "魔法值与注释缺失"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "internal/checker/checker.go",
+      "line": 10845,
+      "title": "中间段纯字母校验用字节切片却按 rune 遍历，单位不一致易误读",
+      "description": "校验 HTML*Element 名称中间段是否只含字母的代码写成 `for _, r := range t.symbol.Name[4 : len(t.symbol.Name)-7]`：切片边界是字节下标（4 与 len-7），循环变量却是 rune，两种单位混用会让读者怀疑边界是否可能落在多字节字符中间，甚至怀疑当名称长度不足时是否会因负下标 panic（实际由 HasPrefix(\"HTML\") 与 HasSuffix(\"Element\") 共同保证长度 ≥ 11，故当前安全）。这类写法虽有隐式前提，但缺乏显式约束说明，后续若修改前缀/后缀常量而忘记同步这里的 4 与 7，就会引入切片 panic 或判定错误。",
+      "evidence": [
+        "internal/checker/checker.go:10845-10850 — for _, r := range t.symbol.Name[4 : len(t.symbol.Name)-7] { if !('a' <= r && r <= 'z') && !('A' <= r && r <= 'Z') { isMiddleAlpha = false; break } }",
+        "internal/checker/checker.go:10840 — 进入该循环前的前置条件是 strings.HasPrefix(t.symbol.Name, \"HTML\") && strings.HasSuffix(t.symbol.Name, \"Element\")，即 len ≥ len(\"HTML\")+len(\"Element\") = 11，是 4/7 这两个魔数安全的隐含前提"
+      ],
+      "rule": "READABILITY-004",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 单位混用（字节下标 / rune 遍历）+ 裸魔数 4、7。影响评估：当前行为正确，但可读性差、脆弱，前缀/后缀常量一旦调整就会与 4/7 脱节，可能导致切片越界 panic 或漏判。",
+        "suggestion": "[重构思路] 用常量与命名切片消除魔数，并保持遍历单位一致：用 utf8/字节遍历或明确按字节判断 ASCII 字母（NAME 前缀后缀均为 ASCII，按字节判断更直观）。代码示例：`const prefix, suffix = \"HTML\", \"Element\"; mid := name[len(prefix) : len(name)-len(suffix)]; for i := 0; i < len(mid); i++ { c := mid[i]; if !('a' <= c && c <= 'z') && !('A' <= c && c <= 'Z') { return false } }`",
+        "subcategory": "表达式可读性"
+      }
+    }
+  ]
+}

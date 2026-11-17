@@ -1,0 +1,160 @@
+{
+  "instance_id": "gofr-dev__gofr@b9cdcbb",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "7f1760b083ea23ffd95fdf83467bdfa21735df81",
+  "head_commit": "b9cdcbb2b9fc78499d15d51ffbb7c861592b0efe",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T03:44:04.410233+00:00",
+  "duration_seconds": 163.14,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 3 finding(s) across 3 selected item(s).",
+    "summary": {
+      "files_reviewed": 3,
+      "comments": 3,
+      "total_tokens": 845336,
+      "input_tokens": 824927,
+      "output_tokens": 20409,
+      "cache_read_tokens": 252288,
+      "elapsed": "2m43s"
+    },
+    "tool_calls": {
+      "total": 36,
+      "by_tool": {
+        "code_comment": 1,
+        "code_search": 17,
+        "file_read": 18
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "pkg/gofr/http/responder.go",
+        "content": "`statusCode` is computed above (`getStatusCode(r.method, data, err)`) with the whole `resTypes.Response` value, and `isNil` only returns true for nil pointers, never for a struct. So a handler returning `(response.Response{Data: nil}, err)` now gets `206 Partial Content` with `{\"error\":...}` instead of the error's own status (404/500/...), and `POST` handlers returning `response.Response{Data: nil}` get `201 Created` instead of `202 Accepted`. Before this change `handler.go` unwrapped `resp.Data` before calling `Respond`, so the status was derived from the real payload. Consider normalizing the value used for status computation, e.g. in `Respond`: `statusData := data; if res, ok := data.(resTypes.Response); ok { statusData = res.Data }` and pass `statusData` to `getStatusCode` while still building the body from the full `Response`.",
+        "existing_code": "\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}",
+        "start_line": 32,
+        "end_line": 32,
+        "thinking": "Raw.Data interface{} → JSON-encodes as {\"data\": <value>} nested inside data. So `Response{Data: Raw{Data: users}}` becomes `{\"data\":{\"data\":[...]}}` — a nested wrap; previously raw array. That's clearly a regression from prior behavior. However, is it intended that Response.Data is only plain data? The docs say Response for headers + metadata. Using Raw inside Response isn't documented, but previously worked. I'll report as medium.\n\nHmm, but caution: prior to this PR, handler did `result = resp.Data` only for `response.Response` (value). So Response{Data: Raw{...}} worked. Also Response{Data: File{...}} worked (file served with custom headers!). That's actually fairly common: return a file with custom Content-Type headers... wait, File itself sets Content-Type. But custom headers (e.g., Content-Disposition) on a file download would be done with Response{Data: File{...}, Headers: {...}}. Under the new code that breaks: JSON wrapped, Content-Type becomes application/json. That's a notable regression! Content-Disposition headers are set, but body JSON. I'd report it with medium-high severity.\n\nNow, is `Response{Data: File{...}}` type assertion in handler applied? yes value Response. Then responder switch sees Response. So yes broken.\n\nOK now write comments.\n\nAlso should I flag handler.go at all? The removed line is the source of nested data intentionally. No separate issue there beyond A/B. I reviewed handler.go: nothing else.\n\nLet me write the comments.\n\nComment 1 (responder.go, Issue A):\nanchor:\n```\n\tcase resTypes.Response:\n\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\nWait, for Issue B I want anchor `\tcase resTypes.Response:`. For A, anchor the response line. Fine.\n\nContent A: \"Status code is computed before this switch using the whole `resTypes.Response` value. Since a struct is never `nil` per `isNil`, a handler returning `(response.Response{Data: nil}, err)` now yields 206 Partial Content with `{\"error\":...}` instead of the error's status (404/500), and POST handlers returning `Response{Data: nil}` get 201 instead of 202. Previously handler.go unwrapped `resp.Data` before calling Respond. Fix by normalizing the data used for status computation, e.g. in Respond: `statusData := data; if res, ok := data.(resTypes.Response); ok { statusData = res.Data }` and pass statusData to getStatusCode (keep `resp` built from the full Response).\"\n\nSuggestion code: maybe give the getStatusCode-independent snippet? Hard to place into the switch. I'll skip suggestion_code or provide one small snippet anchored to those lines? Could provide:\n\n```go\n\tcase resTypes.Response:\n\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\nNo change there. Skip suggestion_code for A.\n\nComment B (anchor `\tcase resTypes.Response:`):\nContent: Previously handler.go replaced the result with `resp.Data` before Respond, so `Response{Data: response.Raw{...}}`/`Response{Data: response.File{...}}` fell through to the Raw/File branches (raw body / file bytes with custom headers). Now this case shadows them, so a file or raw payload wrapped in Response is JSON-encoded (`{\"data\":{\"data\":...}}`, Content-Type application/json, []byte base64). Suggest checking for `resTypes.Raw`/`resTypes.File` first, or unwrapping Data and re-dispatching when it is Raw/File.\n\nComment C (anchor metadata field):\nContent: `Metadata` here is `interface{}`, so a nil `map[string]any` stored in it is a non-nil interface and `omitempty` won't drop it — responses without metadata serialize as `\"metadata\":null`, contradicting the documented `Response without Metadata` example (and the `omitempty` intent in `response.Response`). Consider typing the field as `map[string]any` or only setting it when non-nil.\n\nWait — need to verify that the actual output is metadata:null. `response` struct field Metadata interface{} = nil map boxed → non-nil → omitempty keeps the field; json.Marshal(nil map) → `null`. Yes. Test at responder_test line 59 confirms `{\"metadata\":null,\"data\":...}`. Confirmed.\n\nSeverity: A = high? Status codes wrong for error responses — I'd say high (functional regression) or medium. I'll use high since it corrupts error semantics. Hmm \"high\" for wrong status code seems right.\n\nB = medium. C = low.\n\nLet me double check the handler_test with new behavior for the \"Response with headers\" test at old side: it expects contains `{\"message\":\"Hello, World!\"}` which passes with new nested output — meaning the test wouldn't catch unnesting. Fine, not our file.\n\nNow also to consider: Should I flag that handler_test.go wasn't updated? Not in review scope.\n\nOne more possible issue: in handler.go, `resp.SetCustomHeaders(w)` is called, then Respond is invoked; for Response with error the headers still set — fine.\n\nAnother: `response.Response` is `any` Data; when `Data` is nil, the handler.go type assertion... fine.\n\nAlright, write comments. Existing code snippets must match exactly including tabs. In the diff, added lines:\n\n```\n+\tcase resTypes.Response:\n+\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\n\nI'll use tab indentation as in file (the diff shows tabs).\n\nFor comment C, existing_code: `\tMetadata interface{} \\`json:\"metadata,omitempty\"\\`` — matches line 97. Only newly added line — yes it is added.\n\nLet me produce.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "pkg/gofr/http/responder.go",
+        "content": "This case now shadows the `Raw` and `File` branches below. Previously `handler.go` replaced `result` with `resp.Data`, so `response.Response{Data: response.Raw{...}}` / `response.Response{Data: response.File{...}}` (e.g. serving a file or raw payload with custom headers) were still dispatched to the `resTypes.Raw` / `resTypes.File` branches. With the new code they are JSON-encoded instead: `{\"data\":{\"data\":...}}` with `Content-Type: application/json` and `[]byte` values base64-encoded, which silently breaks those endpoints. Suggest dispatching on `v.Data` first when it is `resTypes.Raw`/`resTypes.File` (or reusing the existing switch), and only wrapping plain data with metadata.",
+        "existing_code": "\tcase resTypes.Response:",
+        "start_line": 31,
+        "end_line": 31,
+        "thinking": "Raw.Data interface{} → JSON-encodes as {\"data\": <value>} nested inside data. So `Response{Data: Raw{Data: users}}` becomes `{\"data\":{\"data\":[...]}}` — a nested wrap; previously raw array. That's clearly a regression from prior behavior. However, is it intended that Response.Data is only plain data? The docs say Response for headers + metadata. Using Raw inside Response isn't documented, but previously worked. I'll report as medium.\n\nHmm, but caution: prior to this PR, handler did `result = resp.Data` only for `response.Response` (value). So Response{Data: Raw{...}} worked. Also Response{Data: File{...}} worked (file served with custom headers!). That's actually fairly common: return a file with custom Content-Type headers... wait, File itself sets Content-Type. But custom headers (e.g., Content-Disposition) on a file download would be done with Response{Data: File{...}, Headers: {...}}. Under the new code that breaks: JSON wrapped, Content-Type becomes application/json. That's a notable regression! Content-Disposition headers are set, but body JSON. I'd report it with medium-high severity.\n\nNow, is `Response{Data: File{...}}` type assertion in handler applied? yes value Response. Then responder switch sees Response. So yes broken.\n\nOK now write comments.\n\nAlso should I flag handler.go at all? The removed line is the source of nested data intentionally. No separate issue there beyond A/B. I reviewed handler.go: nothing else.\n\nLet me write the comments.\n\nComment 1 (responder.go, Issue A):\nanchor:\n```\n\tcase resTypes.Response:\n\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\nWait, for Issue B I want anchor `\tcase resTypes.Response:`. For A, anchor the response line. Fine.\n\nContent A: \"Status code is computed before this switch using the whole `resTypes.Response` value. Since a struct is never `nil` per `isNil`, a handler returning `(response.Response{Data: nil}, err)` now yields 206 Partial Content with `{\"error\":...}` instead of the error's status (404/500), and POST handlers returning `Response{Data: nil}` get 201 instead of 202. Previously handler.go unwrapped `resp.Data` before calling Respond. Fix by normalizing the data used for status computation, e.g. in Respond: `statusData := data; if res, ok := data.(resTypes.Response); ok { statusData = res.Data }` and pass statusData to getStatusCode (keep `resp` built from the full Response).\"\n\nSuggestion code: maybe give the getStatusCode-independent snippet? Hard to place into the switch. I'll skip suggestion_code or provide one small snippet anchored to those lines? Could provide:\n\n```go\n\tcase resTypes.Response:\n\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\nNo change there. Skip suggestion_code for A.\n\nComment B (anchor `\tcase resTypes.Response:`):\nContent: Previously handler.go replaced the result with `resp.Data` before Respond, so `Response{Data: response.Raw{...}}`/`Response{Data: response.File{...}}` fell through to the Raw/File branches (raw body / file bytes with custom headers). Now this case shadows them, so a file or raw payload wrapped in Response is JSON-encoded (`{\"data\":{\"data\":...}}`, Content-Type application/json, []byte base64). Suggest checking for `resTypes.Raw`/`resTypes.File` first, or unwrapping Data and re-dispatching when it is Raw/File.\n\nComment C (anchor metadata field):\nContent: `Metadata` here is `interface{}`, so a nil `map[string]any` stored in it is a non-nil interface and `omitempty` won't drop it — responses without metadata serialize as `\"metadata\":null`, contradicting the documented `Response without Metadata` example (and the `omitempty` intent in `response.Response`). Consider typing the field as `map[string]any` or only setting it when non-nil.\n\nWait — need to verify that the actual output is metadata:null. `response` struct field Metadata interface{} = nil map boxed → non-nil → omitempty keeps the field; json.Marshal(nil map) → `null`. Yes. Test at responder_test line 59 confirms `{\"metadata\":null,\"data\":...}`. Confirmed.\n\nSeverity: A = high? Status codes wrong for error responses — I'd say high (functional regression) or medium. I'll use high since it corrupts error semantics. Hmm \"high\" for wrong status code seems right.\n\nB = medium. C = low.\n\nLet me double check the handler_test with new behavior for the \"Response with headers\" test at old side: it expects contains `{\"message\":\"Hello, World!\"}` which passes with new nested output — meaning the test wouldn't catch unnesting. Fine, not our file.\n\nNow also to consider: Should I flag that handler_test.go wasn't updated? Not in review scope.\n\nOne more possible issue: in handler.go, `resp.SetCustomHeaders(w)` is called, then Respond is invoked; for Response with error the headers still set — fine.\n\nAnother: `response.Response` is `any` Data; when `Data` is nil, the handler.go type assertion... fine.\n\nAlright, write comments. Existing code snippets must match exactly including tabs. In the diff, added lines:\n\n```\n+\tcase resTypes.Response:\n+\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\n\nI'll use tab indentation as in file (the diff shows tabs).\n\nFor comment C, existing_code: `\tMetadata interface{} \\`json:\"metadata,omitempty\"\\`` — matches line 97. Only newly added line — yes it is added.\n\nLet me produce.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "pkg/gofr/http/responder.go",
+        "content": "Because this field is typed `interface{}`, a nil `map[string]any` assigned from `v.Metadata` becomes a non-nil interface and `omitempty` does not drop it, so responses without metadata serialize as `\"metadata\":null` (see `TestResponder` \"gofr response type without metadata\"). That contradicts the documented \"Response without Metadata\" output and the `omitempty` intent in `response.Response`. Consider declaring the field as `map[string]any` (so `omitempty` works) or only setting it when `v.Metadata` is non-nil.",
+        "existing_code": "\tMetadata interface{} `json:\"metadata,omitempty\"`",
+        "start_line": 97,
+        "end_line": 97,
+        "thinking": "Raw.Data interface{} → JSON-encodes as {\"data\": <value>} nested inside data. So `Response{Data: Raw{Data: users}}` becomes `{\"data\":{\"data\":[...]}}` — a nested wrap; previously raw array. That's clearly a regression from prior behavior. However, is it intended that Response.Data is only plain data? The docs say Response for headers + metadata. Using Raw inside Response isn't documented, but previously worked. I'll report as medium.\n\nHmm, but caution: prior to this PR, handler did `result = resp.Data` only for `response.Response` (value). So Response{Data: Raw{...}} worked. Also Response{Data: File{...}} worked (file served with custom headers!). That's actually fairly common: return a file with custom Content-Type headers... wait, File itself sets Content-Type. But custom headers (e.g., Content-Disposition) on a file download would be done with Response{Data: File{...}, Headers: {...}}. Under the new code that breaks: JSON wrapped, Content-Type becomes application/json. That's a notable regression! Content-Disposition headers are set, but body JSON. I'd report it with medium-high severity.\n\nNow, is `Response{Data: File{...}}` type assertion in handler applied? yes value Response. Then responder switch sees Response. So yes broken.\n\nOK now write comments.\n\nAlso should I flag handler.go at all? The removed line is the source of nested data intentionally. No separate issue there beyond A/B. I reviewed handler.go: nothing else.\n\nLet me write the comments.\n\nComment 1 (responder.go, Issue A):\nanchor:\n```\n\tcase resTypes.Response:\n\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\nWait, for Issue B I want anchor `\tcase resTypes.Response:`. For A, anchor the response line. Fine.\n\nContent A: \"Status code is computed before this switch using the whole `resTypes.Response` value. Since a struct is never `nil` per `isNil`, a handler returning `(response.Response{Data: nil}, err)` now yields 206 Partial Content with `{\"error\":...}` instead of the error's status (404/500), and POST handlers returning `Response{Data: nil}` get 201 instead of 202. Previously handler.go unwrapped `resp.Data` before calling Respond. Fix by normalizing the data used for status computation, e.g. in Respond: `statusData := data; if res, ok := data.(resTypes.Response); ok { statusData = res.Data }` and pass statusData to getStatusCode (keep `resp` built from the full Response).\"\n\nSuggestion code: maybe give the getStatusCode-independent snippet? Hard to place into the switch. I'll skip suggestion_code or provide one small snippet anchored to those lines? Could provide:\n\n```go\n\tcase resTypes.Response:\n\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\nNo change there. Skip suggestion_code for A.\n\nComment B (anchor `\tcase resTypes.Response:`):\nContent: Previously handler.go replaced the result with `resp.Data` before Respond, so `Response{Data: response.Raw{...}}`/`Response{Data: response.File{...}}` fell through to the Raw/File branches (raw body / file bytes with custom headers). Now this case shadows them, so a file or raw payload wrapped in Response is JSON-encoded (`{\"data\":{\"data\":...}}`, Content-Type application/json, []byte base64). Suggest checking for `resTypes.Raw`/`resTypes.File` first, or unwrapping Data and re-dispatching when it is Raw/File.\n\nComment C (anchor metadata field):\nContent: `Metadata` here is `interface{}`, so a nil `map[string]any` stored in it is a non-nil interface and `omitempty` won't drop it — responses without metadata serialize as `\"metadata\":null`, contradicting the documented `Response without Metadata` example (and the `omitempty` intent in `response.Response`). Consider typing the field as `map[string]any` or only setting it when non-nil.\n\nWait — need to verify that the actual output is metadata:null. `response` struct field Metadata interface{} = nil map boxed → non-nil → omitempty keeps the field; json.Marshal(nil map) → `null`. Yes. Test at responder_test line 59 confirms `{\"metadata\":null,\"data\":...}`. Confirmed.\n\nSeverity: A = high? Status codes wrong for error responses — I'd say high (functional regression) or medium. I'll use high since it corrupts error semantics. Hmm \"high\" for wrong status code seems right.\n\nB = medium. C = low.\n\nLet me double check the handler_test with new behavior for the \"Response with headers\" test at old side: it expects contains `{\"message\":\"Hello, World!\"}` which passes with new nested output — meaning the test wouldn't catch unnesting. Fine, not our file.\n\nNow also to consider: Should I flag that handler_test.go wasn't updated? Not in review scope.\n\nOne more possible issue: in handler.go, `resp.SetCustomHeaders(w)` is called, then Respond is invoked; for Response with error the headers still set — fine.\n\nAnother: `response.Response` is `any` Data; when `Data` is nil, the handler.go type assertion... fine.\n\nAlright, write comments. Existing code snippets must match exactly including tabs. In the diff, added lines:\n\n```\n+\tcase resTypes.Response:\n+\t\tresp = response{Data: v.Data, Metadata: v.Metadata, Error: errorObj}\n```\n\nI'll use tab indentation as in file (the diff shows tabs).\n\nFor comment C, existing_code: `\tMetadata interface{} \\`json:\"metadata,omitempty\"\\`` — matches line 97. Only newly added line — yes it is added.\n\nLet me produce.",
+        "category": "bug",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "pkg/gofr/handler.go",
+          "pkg/gofr/http/responder.go",
+          "pkg/gofr/http/response/response.go"
+        ]
+      }
+    ],
+    "session_id": "dbae263e-d957-4a40-a71e-1733df43e744",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "dbae263e-d957-4a40-a71e-1733df43e744",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "468bd1d885a4f397e313fba1ae8a9b4410f79fdb5ea83418b237e6ec7d3b243a"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "7f1760b083ea23ffd95fdf83467bdfa21735df81",
+        "requested_head": "b9cdcbb2b9fc78499d15d51ffbb7c861592b0efe",
+        "resolved_base": "567a9ca6e318ed76523533cdfc47c6199f1e5ac6",
+        "resolved_head": "b9cdcbb2b9fc78499d15d51ffbb7c861592b0efe",
+        "exact_range": "567a9ca6e318ed76523533cdfc47c6199f1e5ac6..b9cdcbb2b9fc78499d15d51ffbb7c861592b0efe",
+        "source_artifact_sha256": "cff206eb4c733ab75b300127acec746a303c2d212e1f7071064f644404453b81"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "2b59d591be375f52cf5332a5fe3dc76490b48f40d210c96e1f73cb397b47ac8d",
+            "path": "pkg/gofr/http/responder.go",
+            "fingerprint": "9d25f3a2e4de6f209bd7c498fac8e829e2e39a1151b8010f0065b0f8693455ab"
+          },
+          {
+            "item_id": "3b6ccdc0a0760f83594842387c1dfe5e31315d6623b669a8b061862b87915620",
+            "path": "pkg/gofr/handler.go",
+            "fingerprint": "beb8aedd82f15f1cdb4da9509a946144dc6de38fe24e083c1c7838230aaa9c7f"
+          },
+          {
+            "item_id": "6297e05d1366785ca7a4af04a495bebfda034c49c5aec468ca62b139c4991127",
+            "path": "pkg/gofr/http/response/response.go",
+            "fingerprint": "283713941385bc0e7cd17e7188eb9c9d47e3c9bb32ec82601b3bc1e512acab01"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "2b59d591be375f52cf5332a5fe3dc76490b48f40d210c96e1f73cb397b47ac8d",
+            "path": "pkg/gofr/http/responder.go",
+            "fingerprint": "9d25f3a2e4de6f209bd7c498fac8e829e2e39a1151b8010f0065b0f8693455ab"
+          },
+          {
+            "item_id": "3b6ccdc0a0760f83594842387c1dfe5e31315d6623b669a8b061862b87915620",
+            "path": "pkg/gofr/handler.go",
+            "fingerprint": "beb8aedd82f15f1cdb4da9509a946144dc6de38fe24e083c1c7838230aaa9c7f"
+          },
+          {
+            "item_id": "6297e05d1366785ca7a4af04a495bebfda034c49c5aec468ca62b139c4991127",
+            "path": "pkg/gofr/http/response/response.go",
+            "fingerprint": "283713941385bc0e7cd17e7188eb9c9d47e3c9bb32ec82601b3bc1e512acab01"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "02c3178ba05f6846c3d75bc66bb67ddb65e6717b93fc57c217ff026f7c7514e1",
+            "path": "docs/advanced-guide/setting-custom-response-headers/page.md",
+            "exclude_reason": "unsupported_ext"
+          },
+          {
+            "item_id": "fef55cf58443b7693d3c567c895bb85eb11e690848838b951201aaf3a3765ad7",
+            "path": "pkg/gofr/http/responder_test.go",
+            "exclude_reason": "default_path"
+          }
+        ]
+      },
+      "elapsed_ms": 162685
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

@@ -1,0 +1,72 @@
+{
+  "instance_id": "google-gemini__gemini-cli@e7ed0a4",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "7ffe8038efaa5bf263a2a933819bcd4badd37dc2",
+  "head_commit": "e7ed0a410ae510cda8b53ea20f3d758bd90a0f00",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 111.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "packages/core/src/tools/grep.ts",
+      "line": 105,
+      "summary": "GrepTool 越界校验仍用裸 startsWith，前缀同名目录可绕过",
+      "failure_scenario": "本次重构把 EditTool/LSTool/ReadFileTool/WriteFileTool/GlobTool 的路径越界校验统一改为 utils/fileUtils.ts 的 isWithinRoot，但 GrepTool 的 resolveAndValidatePath 只把 rootDirectory 换成了 config.getTargetDir()，仍保留 `targetPath.startsWith(this.config.getTargetDir())` 这种无分隔符归一的前缀比较。当 targetDir 为 /home/u/proj 时，params.path 传 '../proj-secret' 经 path.resolve 得到 /home/u/proj-secret，`startsWith('/home/u/proj')` 为 true，校验通过，search_file_content 会递归搜索并返回项目目录之外的文件内容（文件路径与匹配行都会进入 llmContent），构成路径越界读取。这与 MR 收敛校验实现的意图相悖，也说明共享函数并未真正覆盖全部工具。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.76,
+      "rule": "SECURITY-PATH-001"
+    },
+    {
+      "file": "packages/core/src/tools/read-many-files.ts",
+      "line": 310,
+      "summary": "ReadManyFilesTool 安全兜底仍是裸 startsWith，未复用共享校验",
+      "failure_scenario": "execute 中的安全兜底把 toolBaseDir 替换成 config.getTargetDir() 后，仍写作 `!absoluteFilePath.startsWith(this.config.getTargetDir())`，既没有对候选路径做 path.normalize/path.resolve，也没有复用本次引入的 isWithinRoot。glob 在 cwd 为 targetDir 时虽然多数情况返回已解析的绝对路径，但一旦绝对路径里带有 '..' 段或与 targetDir 同前缀的兄弟目录（/root 与 /root-other），该判定会把越界文件当成合法文件继续走 processSingleFileContent 读取，安全注释所声明的「glob 返回越界路径」保护并不可靠。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-PATH-002"
+    },
+    {
+      "file": "packages/core/src/utils/fileUtils.ts",
+      "line": 39,
+      "summary": "isWithinRoot 由 normalize 改为 resolve，语义变化未被说明与覆盖",
+      "failure_scenario": "共享 isWithinRoot 把两侧的 path.normalize 改为 path.resolve。normalize 只做规范化、保留相对路径的相对性；resolve 还会以 process.cwd() 为基准转成绝对路径。因此当 pathToCheck 是相对路径时，旧实现会与绝对 rootDirectory 比较而返回 false（拒绝），新实现可能解析到 cwd 下并返回 true（放行）——这是一次静默的「放宽」语义变更。当前所有调用方（edit/ls/read-file/write-file/glob）都先用 path.isAbsolute 拦截或在调用前 path.resolve，所以暂未造成越界，但该函数是安全边界判定，这种隐式放宽没有注释说明，也没有针对相对路径输入的行为约定，后续新增调用方很容易踩坑。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-PATH-NORMALIZE"
+    },
+    {
+      "file": "packages/core/src/tools/glob.ts",
+      "line": 136,
+      "summary": "targetDir 的 || fallback 为死代码，掩盖了真实取值来源",
+      "failure_scenario": "validateToolParams 中 `const targetDir = searchDirAbsolute || this.config.getTargetDir();` 的右侧分支永远不会被执行：searchDirAbsolute 由 path.resolve(...) 产生，resolve 恒返回非空字符串。本次 MR 修改了这一行（把 rootDirectory 换成 config.getTargetDir()），但保留了这段无效 fallback，会让读者误以为 searchDirAbsolute 可能为空并需要回退到根目录，增加后续阅读与修改成本。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "MAINTAINABILITY-DEAD-BRANCH"
+    },
+    {
+      "file": "packages/core/src/tools/read-many-files.ts",
+      "line": 287,
+      "summary": "删除 toolBaseDir 后同一方法内反复调用 getTargetDir()",
+      "failure_scenario": "execute 中原有的局部变量 toolBaseDir 被删掉，改为在 glob 的 cwd、fileDiscovery 的 path.relative/path.resolve、越界校验、跳过原因文案、显示路径、processSingleFileContent 参数、结果标题等处反复调用 this.config.getTargetDir()（同一方法内约 8 次）。虽然 Config.targetDir 为 readonly、每次返回值一致，语义上没有错误，但表达式变长、可读性下降，且像越界校验里 base 值前后取值写法不一致，容易在后续修改中出现「部分调用被漏改」的问题。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.5,
+      "rule": "READABILITY-LOCAL-CONST"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\google-gemini__gemini-cli@e7ed0a4.diff\n  caseId              google-gemini__gemini-cli@e7ed0a4\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@e7ed0a4\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 4 个文件 / 4046 字符（test=4），明细见审计 mrFilter\n✓ 完成 · 耗时 100.2s · 模型调用 22 次 · token 输入 48,053（未命中） · 输出 13,742 · 缓存命中 552,832（92.0%） · 工具 29 次（主会话 29 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0121\n[time] 阶段耗时 | 总墙钟 100.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.6%)\n[time] 阶段 | 六阶段审计 100.0s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.3%)\n[time] 审计明细 | P1 2.6s (2.6%) | P2 3.3s (3.3%) | P3 4.6s (4.6%) | P4 57.9s (57.9%) | P5 22.6s (22.6%) | P6 9.0s (9.0%)\n[usage] 任务总计 | 模型调用 22 次（Agent 22 + 一次性 0） | token 输入 48,053（未命中） | 输出 13,742 | 缓存命中 552,832（92.0%） | $0.0121\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\google-gemini__gemini-cli@e7ed0a4\\audit\\20261115_035621_126.json",
+  "token_usage": {
+    "input_tokens": 48053,
+    "output_tokens": 13742,
+    "cache_read_input_tokens": 552832
+  }
+}

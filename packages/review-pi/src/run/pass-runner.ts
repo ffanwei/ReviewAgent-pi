@@ -9,6 +9,7 @@ import {
   type ShardLabel,
 } from "../contracts/progress.js";
 import type {
+  GroupingAuditRecord,
   ModelFallbackRecord,
   MrFilterRecord,
   ReviewPhase,
@@ -16,6 +17,12 @@ import type {
 } from "../contracts/run.js";
 import { runDirPath } from "../experiment/run-record.js";
 import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
+import {
+  loadRuleCatalog,
+  opaqueSkillAppliesToFiles,
+  resolveRules,
+  type RuleCatalog,
+} from "../knowledge/rule-catalog.js";
 import { withRequestTimelineAppend } from "../observability/request-timeline.js";
 import type { ConfigSnapshot } from "../shared/config.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
@@ -71,6 +78,10 @@ export interface ReviewRunContext {
   // 规则包（装载一次，各遍共享）
   readonly ruleSkills: readonly RuleSkill[];
   readonly ruleSkillAudit: readonly RuleSkillAudit[];
+  /** 规则目录（ADR-0095）；缺省 = 无内置/用户声明式规则，行为不变 */
+  readonly ruleCatalog?: RuleCatalog;
+  /** 语义分组留痕（ADR-0095）；缺省 = 未启用 grouping */
+  readonly grouping?: GroupingAuditRecord;
 
   // 执行缝
   readonly startedAt: Date;
@@ -97,6 +108,22 @@ export async function buildRunContext(
   resolved: ResolvedRunSettings,
 ): Promise<ReviewRunContext> {
   const loaded = await loadRuleSkillSet(input, resolved.runtime);
+  const rules = resolved.runtime.limits.rules;
+  const ruleCatalog = rules.enabled
+    ? loadRuleCatalog({
+        builtinPack: rules.builtinPack,
+        optionalPacks: rules.optionalPacks,
+        userSkills: loaded.skills,
+      })
+    : undefined;
+  // 声明式用户规则已并入规则目录：不再为它们开独立 skill 会话（避免重复检视）。
+  // opaque skill 仍走既有 skill 会话，后续由 opaque runner 收口。
+  const mergedUserNames = new Set(ruleCatalog?.declarativeUserNames ?? []);
+  const activeRuleSkills = rules.enabled
+    ? loaded.skills
+        .filter((skill) => !mergedUserNames.has(skill.name))
+        .slice(0, resolved.runtime.limits.skills.maxSkillsPerRun)
+    : loaded.skills;
   return {
     caseId: input.caseId,
     repoPath: input.repoPath,
@@ -121,8 +148,9 @@ export async function buildRunContext(
     ...(input.tipsSeverityMin !== undefined
       ? { tipsSeverityMin: input.tipsSeverityMin }
       : {}),
-    ruleSkills: loaded.skills,
+    ruleSkills: activeRuleSkills,
     ruleSkillAudit: loaded.audit,
+    ...(ruleCatalog !== undefined ? { ruleCatalog } : {}),
     startedAt: resolved.startedAt,
     emit: resolved.emit,
     ...(input.onShardFindings !== undefined
@@ -173,9 +201,25 @@ export interface PassTiming {
 }
 
 /** 执行器注入缝（测试注入假 pass / 假时钟；缺省真实现） */
+export interface PassFailure {
+  readonly descriptor: PassDescriptor;
+  readonly message: string;
+}
+
 export interface RunPassesOptions {
   readonly runPass?: (input: ReviewPassInput) => Promise<ReviewPassResult>;
   readonly now?: () => number;
+  /**
+   * 并发执行的 pass 数（ADR-0094）。缺省 1 = 完全串行，保持旧行为；
+   * >1 时用有界 Promise 池并发，结果仍按 descriptor 顺序回填。
+   */
+  readonly concurrency?: number;
+  /**
+   * Partial success（ADR-0094）：true 时单个 pass 失败不冒泡，交由
+   * `onPassError` 留痕并继续其余 pass；缺省 false = 旧契约（失败即抛）。
+   */
+  readonly continueOnError?: boolean;
+  readonly onPassError?: (failure: PassFailure) => void;
 }
 
 /**
@@ -193,16 +237,32 @@ export async function runPasses(
 ): Promise<readonly ExecutedPass[]> {
   const runPass = options.runPass ?? runReviewPass;
   const now = options.now ?? Date.now;
-  const executed: ExecutedPass[] = [];
-  let startedAt = context.startedAt;
-  for (const [index, descriptor] of descriptors.entries()) {
+  const concurrency = Math.max(1, Math.min(options.concurrency ?? 1, 16));
+
+  const runOne = async (
+    index: number,
+    descriptor: PassDescriptor,
+    startedAt: Date,
+  ): Promise<ExecutedPass | undefined> => {
     const built = buildPass(context, descriptor, startedAt);
     const observer = observePassEmit(built.input.emit, now);
-    const pass = await runPass({ ...built.input, emit: observer.emit });
+    let pass: ReviewPassResult;
+    try {
+      pass = await runPass({ ...built.input, emit: observer.emit });
+    } catch (error) {
+      if (options.continueOnError !== true) {
+        throw error;
+      }
+      options.onPassError?.({
+        descriptor,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
     const observed = observer.finish(pass.finishedAt.getTime());
 
-    // 片级上报缝（ADR-0045）：该片 findings 定型、下一片开始前（串行 await）。
-    // 报文载荷生成是一次性模型调用，续写本片已关闭的时间线（ADR-0076）。
+    // 片级上报缝（ADR-0045）：该片 findings 定型后上报（含请求时间线续写）。
+    // 串行时下一片尚未开始；并发时各片独立续写自己的时间线。
     const reportStartedAt = now();
     await withRequestTimelineAppend(built.runDir, () =>
       notifyShardFindings(context.onShardFindings, built.label, pass.findings, built.files),
@@ -210,7 +270,7 @@ export async function runPasses(
     const callbackMs = Math.max(0, now() - reportStartedAt);
     const hasNext = index < descriptors.length - 1;
 
-    executed.push({
+    return {
       descriptor,
       pass,
       timing: {
@@ -219,10 +279,40 @@ export async function runPasses(
         reportCallbacksMs: callbackMs,
         interPassReportMs: hasNext ? callbackMs : 0,
       },
-    });
-    startedAt = pass.finishedAt;
+    };
+  };
+
+  if (concurrency <= 1) {
+    const executed: ExecutedPass[] = [];
+    let startedAt = context.startedAt;
+    for (const [index, descriptor] of descriptors.entries()) {
+      const entry = await runOne(index, descriptor, startedAt);
+      if (entry === undefined) {
+        continue;
+      }
+      executed.push(entry);
+      startedAt = entry.pass.finishedAt;
+    }
+    return executed;
   }
-  return executed;
+
+  const executed = new Array<ExecutedPass | undefined>(descriptors.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, descriptors.length) },
+    async () => {
+      while (true) {
+        const index = next;
+        next += 1;
+        if (index >= descriptors.length) {
+          return;
+        }
+        executed[index] = await runOne(index, descriptors[index] as PassDescriptor, new Date(now()));
+      }
+    },
+  );
+  await Promise.all(workers);
+  return executed.filter((entry): entry is ExecutedPass => entry !== undefined);
 }
 
 /**
@@ -318,15 +408,62 @@ export function buildPass(
       : {}),
   };
 
+  const scopeSkills = (files: readonly string[]): readonly RuleSkill[] => {
+    const catalog = context.ruleCatalog;
+    if (catalog === undefined) {
+      return context.ruleSkills;
+    }
+    const opaque = new Map(catalog.opaque.map((pack) => [pack.name, pack]));
+    return context.ruleSkills.filter((skill) => {
+      const pack = opaque.get(skill.name);
+      return pack === undefined ? true : opaqueSkillAppliesToFiles(pack, files);
+    });
+  };
+
+  const resolveForFiles = (files: readonly string[]) => {
+    if (context.ruleCatalog === undefined) {
+      return undefined;
+    }
+    const rules = context.runtime.limits.rules;
+    return resolveRules(
+      context.ruleCatalog,
+      files,
+      rules.maxRuleContextChars,
+      rules.userOverrideBuiltin,
+    );
+  };
+  const ruleText = (files: readonly string[]): string | undefined => {
+    const resolved = resolveForFiles(files);
+    return resolved === undefined || resolved.text.trim() === "" ? undefined : resolved.text;
+  };
+  const ruleSelection = (files: readonly string[]) => {
+    const resolved = resolveForFiles(files);
+    return resolved === undefined
+      ? undefined
+      : {
+          files,
+          ruleIds: resolved.rules.map((rule) => rule.id),
+          chars: resolved.chars,
+          matchedRules: resolved.matchedRules,
+          truncated: resolved.truncated,
+        };
+  };
+
   if (descriptor.kind === "single") {
     const files = splitDiffIntoFileBlocks(descriptor.diff)
       .map((block) => block.path)
       .filter((filePath) => filePath !== "");
+    const ruleContext = ruleText(files);
+    const ruleSkills = scopeSkills(files);
+    const selectedRules = ruleSelection(files);
     return {
       input: {
         ...common,
+        ruleSkills,
         diff: descriptor.diff,
         initialDiff: descriptor.diff,
+        ...(ruleContext !== undefined ? { ruleContext } : {}),
+        ...(selectedRules !== undefined ? { ruleSelection: selectedRules } : {}),
         runDir: context.runsDir,
         auditDir: context.auditRoot,
         // 单遍：run 级审计值进本遍审计
@@ -355,11 +492,17 @@ export function buildPass(
     attemptName(context.startedAt),
     dirName,
   );
+  const ruleContext = ruleText(descriptor.shard.files);
+  const ruleSkills = scopeSkills(descriptor.shard.files);
+  const selectedRules = ruleSelection(descriptor.shard.files);
   return {
     input: {
       ...common,
+      ruleSkills,
       diff: descriptor.shard.diff,
       initialDiff: composeShardInput(descriptor.shard),
+      ...(ruleContext !== undefined ? { ruleContext } : {}),
+      ...(selectedRules !== undefined ? { ruleSelection: selectedRules } : {}),
       runDir,
       auditDir: path.join(
         context.auditRoot,

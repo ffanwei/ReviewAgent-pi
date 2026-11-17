@@ -1,0 +1,77 @@
+[
+  {
+    "filePath": "server/create.go",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "for _, badReq := range []error{errNoFilesProvided, errOnlyGGUFSupported, errUnknownType} {",
+        "review": "[缺陷类型] 新增哨兵错误的分类未在所有调用分支同步。影响评估：同样是非法路径，adapter 请求返回 400，基座模型请求返回无状态码的错误（等价 500），HTTP 语义不一致，调用方/网关无法据状态码区分客户端错误与服务端故障。",
+        "suggestion": "[重构思路] 把「应映射为 400 的哨兵错误」抽成单一包级集合（如 badRequestErrors），两条分支共用，避免今后再漏。代码示例：`var badRequestErrs = []error{errNoFilesProvided, errOnlyOneAdapterSupported, errOnlyGGUFSupported, errUnknownType, errFilePath, errNeitherFromOrFiles}` 然后用 `if err := respondError(ch, err); err != nil { return }` 统一处理。",
+        "category": "可靠性",
+        "subcategory": "错误分类不一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 100,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "f, err := root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644)",
+        "review": "[缺陷类型] 用「创建文件」的副作用做路径校验，隐含依赖父目录已存在。影响评估：直接调用 /api/create 并传入多级文件名（合法相对路径）的客户端会稳定收到 400 'invalid path'，功能回退且错误信息误导为路径非法；特殊 key 组合下还会随机失败。",
+        "suggestion": "[重构思路] 校验不要依赖 O_CREATE：先按路径逐级用 root.MkdirAll/root.Mkdir 建目录后仅做 root.Lstat 判定包含性，或在 join 后用 filepath.Rel 做纯字符串包含性判断再交给 createLink。代码示例：`dst := filepath.Join(tmpDir, fp); if rel, err := filepath.Rel(tmpDir, dst); err != nil || rel == \"..\" || strings.HasPrefix(rel, \"..\"+string(filepath.Separator)) { return nil, fmt.Errorf(\"%w: invalid path %s\", errFilePath, fp) }; if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { return nil, err }`。",
+        "category": "可靠性",
+        "subcategory": "路径校验副作用",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 277,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "files[filepath.Clean(k)] = v",
+        "review": "[缺陷类型] 归一化后写入 map 造成的 key 冲突。影响评估：合法但形式重复的 key 会让文件条目被静默覆盖，导致 safetensors 转换缺少 config/tokenizer 等必需文件而失败，或读取到非预期 blob。",
+        "suggestion": "[重构思路] 归一化时显式检测冲突并返回 400；同时对 Adapters 采用同一套归一化+校验逻辑。代码示例：`clean := filepath.Clean(k); if prev, ok := files[clean]; ok && prev != v { c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{\"error\": \"duplicate file path: \" + clean}); return }; files[clean] = v`。",
+        "category": "可靠性",
+        "subcategory": "数据覆盖/映射冲突",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 56,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F004",
+        "code": "if strings.HasPrefix(path, \"/\") {",
+        "review": "[缺陷类型] 路径分隔符硬编码为 '/' 导致的跨平台校验不一致。影响评估：Windows 上预校验形同虚设，安全完全依赖 os.Root；同时若将来有人移除 os.Root 兜底（例如为兼容旧 Go 版本），会直接恢复路径穿越风险。",
+        "suggestion": "[重构思路] 用 filepath.IsAbs / filepath.VolumeName 与 filepath.Separator 判断，并在比较前把 '\\\\' 统一视为分隔符；或直接使用 filepath.Clean 后的结果做 \"..\" 起始判断。代码示例：`p := filepath.Clean(path); if p == \".\" || p == \"..\" || filepath.IsAbs(p) || filepath.VolumeName(p) != \"\" || p == string(filepath.Separator)+p { return fmt.Errorf(\"%w: invalid path\", errFilePath) }`。",
+        "category": "可移植",
+        "subcategory": "跨平台路径处理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 167,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "f.Close()",
+        "review": "[缺陷类型] 校验逻辑带写盘副作用且忽略错误返回。影响评估：可读性与可维护性下降，未来修改容易演化为真实文件损坏；每个文件多一次创建/关闭开销，在大文件数模型上虽非瓶颈但无必要。",
+        "suggestion": "[重构思路] 抽出纯校验函数（基于 filepath.Rel 或 root.Lstat）承担包含性判断，写文件仍只由 createLink 负责。代码示例：`if err := validateInRoot(root, fp); err != nil { return nil, err }; if err := createLink(blobPath, filepath.Join(tmpDir, fp)); err != nil { return nil, err }`，其中 validateInRoot 仅做包含性检查，不做 O_CREATE。",
+        "category": "可维护",
+        "subcategory": "校验与副作用耦合",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 281,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

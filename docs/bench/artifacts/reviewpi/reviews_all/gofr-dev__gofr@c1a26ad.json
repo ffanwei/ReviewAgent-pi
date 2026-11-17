@@ -1,0 +1,502 @@
+{
+  "generatedAt": "2026-11-15T03:04:07.173Z",
+  "runId": "20261115_025701_506",
+  "source": "mr",
+  "caseId": "gofr-dev__gofr@c1a26ad",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "pkg/gofr/service/basic_auth.go",
+      "line": 114,
+      "title": "populateHeaders 对 nil map 重新赋值，便捷方法丢失 Authorization 头导致 Basic 认证失效",
+      "description": "populateHeaders 以值语义接收 headers，当 headers 为 nil 时内部 `headers = make(map[string]string)` 只重建了局部变量，随后 addAuthorizationHeader 把 Authorization 写进这个局部 map；返回后调用方 GetWithHeaders/PostWithHeaders/PutWithHeaders/PatchWithHeaders/DeleteWithHeaders 仍然把自己那个仍为 nil 的 headers 传给下层 HTTP，于是所有通过便捷方法（Get/Post/Put/Patch/Delete 均以 nil 调用）发起的请求都不带 Authorization 头，Basic 认证静默退化为匿名请求，服务端返回 401。本 MR 对该文件做了 +30/-30 的重写，需重点确认该语义是否被引入。",
+      "evidence": [
+        "pkg/gofr/service/basic_auth.go:114-125 — func (ba *basicAuthProvider) populateHeaders(headers map[string]string) error，内部 `headers = make(map[string]string)` 后 addAuthorizationHeader(headers)",
+        "pkg/gofr/service/basic_auth.go:37 — headers[\"Authorization\"] = \"basic \" + encodedAuth 写入的是函数内的局部 map",
+        "pkg/gofr/service/basic_auth.go:53、:68、:82、:97、:111 — 调用 populateHeaders(headers) 后仍以原始 headers 变量调用 ba.HTTP.*WithHeaders",
+        "pkg/gofr/service/basic_auth.go:43、:58、:73、:87、:101 — Get/Post/Put/Patch/Delete 均以 nil 作为 headers 传入，必然走到 nil 分支",
+        "本 MR 中 pkg/gofr/service/basic_auth.go 的改动统计为 +30/-30，说明该函数的签名/语义在本次 MR 被改写"
+      ],
+      "rule": "AUTH-HEADER-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 值语义参数导致的 header 丢失（nil map 未被回传）。影响评估：所有使用 BasicAuthConfig 的 service 客户端在正常调用路径上都丢失 Authorization 头，鉴权全部失败，且无明显错误提示，属于难以排查的功能性缺陷。",
+        "suggestion": "[重构思路] 让 populateHeaders 返回构造好的 map 并让调用方使用返回值，或直接在调用方保证 map 非 nil 后再写入。代码示例：\n```go\nfunc (ba *basicAuthProvider) populateHeaders(headers map[string]string) (map[string]string, error) {\n    if headers == nil {\n        headers = make(map[string]string)\n    }\n    if err := ba.addAuthorizationHeader(headers); err != nil {\n        return nil, err\n    }\n    return headers, nil\n}\n// 调用方\nheaders, err := ba.populateHeaders(headers)\nif err != nil { return nil, err }\nreturn ba.HTTP.GetWithHeaders(ctx, path, queryParams, headers)\n```",
+        "subcategory": "请求头/认证信息丢失"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": ".golangci.yml",
+      "line": 34,
+      "title": "goimports.local-prefixes 指向 golangci-lint 自身仓库，且该 linter 未启用，属上游模板残留",
+      "description": ".golangci.yml 中 linters-settings.goimports.local-prefixes 被设为 github.com/golangci/golangci-lint，这是 golangci-lint 上游自身配置的残留值，本仓库模块前缀是 gofr.dev；同时 goimports 并未出现在 linters.enable（第 103-150 行只有 gci/gofmt 等），该设置永远不会生效。配合第 151-152 行仅含空格的空行、文件末尾缺少换行以及 162-163 行重复注释掉的 exclude-use-default，说明该文件是从上游示例手工拼接而来，后续调整规则时极易再次引入不一致（例如 F002 的 gomnd）。",
+      "evidence": [
+        ".golangci.yml:33-34 — goimports: local-prefixes: github.com/golangci/golangci-lint",
+        ".golangci.yml:103-150 — linters.enable 列表中不含 goimports",
+        ".golangci.yml:151-152 — 仅含空格的空行；文件末尾无换行（diff 中 \\ No newline at end of file）",
+        ".golangci.yml:162-163 — 重复的 `# exclude-use-default: false` 注释"
+      ],
+      "rule": "CONFIG-008",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 配置残留与无效设置。影响评估：无效配置会误导后续维护者认为启用了 goimports 分组校验（实际由 gci 承担），且模板拼接痕迹使配置变更缺乏可审查性，已经导致 linter 名称不一致（gomnd/mnd）。",
+        "suggestion": "[重构思路] 删除无效的 goimports 设置（或改为正确的 gofr.dev 前缀并启用），清理空行与重复注释，保证文件以换行结束。代码示例：\n```yaml\nlinters-settings:\n  gci:\n    sections: [standard, default, localmodule]\n# 删除 goimports 段（未启用该 linter）\n```",
+        "subcategory": "lint 配置残留"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可维护",
+      "file": ".golangci.yml",
+      "line": 168,
+      "title": "exclude-rules 使用已更名的 gomnd，与 linters-settings 中的 mnd 不一致，可能导致 lint 门禁报错或排除失效",
+      "description": "本文件在 linters-settings 与 linters.enable 中使用的是 `mnd`（第 36、132 行），而 issues.exclude-rules 中的测试文件排除项却写作 `gomnd`（第 168 行）。gomnd 自 golangci-lint v1.58 起已更名为 mnd，本次 CI 又固定安装 v1.64（.github/workflows/go.yml:332）。结果是二选一：配置校验把 gomnd 判为未知 linter 而报错/告警，或排除规则静默失效，使 _test.go 中的魔法数字被 mnd 报出，直接让 Lint Root Module 步骤失败。",
+      "evidence": [
+        ".golangci.yml:35-40 — linters-settings 下使用 `mnd: checks: [argument, case, condition, return]`",
+        ".golangci.yml:132 — linters.enable 中含有 `- mnd`",
+        ".golangci.yml:165-170 — issues.exclude-rules: path: _test\\.go / linters: [gomnd, dupl, goconst]",
+        ".github/workflows/go.yml:332 — go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64",
+        ".github/workflows/go.yml:341 — golangci-lint run --out-format=colored-line-number --timeout=5m（无容错，失败即门禁失败）"
+      ],
+      "rule": "CONFIG-LINT-002",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 回退到 v1 配置时残留了旧 linter 名称，配置内部自相矛盾。影响评估：CI 代码质量门禁可能整体失败，或者至少失去对测试文件 mnd 的排除，产生大量噪声告警，且无法达到本次调整规则集的预期效果。",
+        "suggestion": "[重构思路] 统一使用当前版本认可的 linter 名称，并在本地用同一版本 golangci-lint 执行一次 `golangci-lint config verify`/实际 run 验证。代码示例：\n```yaml\nissues:\n  exclude-rules:\n    - path: _test\\.go\n      linters:\n        - mnd\n        - dupl\n        - goconst\n```",
+        "subcategory": "lint 配置一致性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "安全",
+      "file": ".github/workflows/website.yml",
+      "line": 19,
+      "title": "删除 workflow/job 级 permissions，GITHUB_TOKEN 权限回落到仓库默认值，违反最小权限原则",
+      "description": "本次变更移除了 website.yml 的顶层 `permissions: contents: read` 与 dockerize job 的 `permissions: contents: read / packages: write`，同时移除 go.yml 的顶层 `permissions: contents: read`。dockerize job 明确使用 secrets.GITHUB_TOKEN 登录 ghcr.io 并执行 `push: true` 的 build-push，删除显式声明后该 token 的权限由仓库/组织默认策略决定：若默认为宽松（read-write all），则构建步骤获得了远超所需的写权限，扩大供应链攻击面；若默认为只读，则 ghcr 登录/拉取可能失败。两种结果都不可控，属于安全加固的回退。",
+      "evidence": [
+        ".github/workflows/website.yml:38-43 — Log in to the GitHub Container registry，password: ${{ secrets.GITHUB_TOKEN }}",
+        ".github/workflows/website.yml:60-66 — docker/build-push-action with push: true",
+        ".github/workflows/website.yml diff — 删除顶层 permissions: contents: read 与 dockerize job 的 permissions: contents: read / packages: write",
+        ".github/workflows/go.yml diff — 删除顶层 permissions: contents: read"
+      ],
+      "rule": "SECURITY-CI-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] CI 最小权限声明被移除。影响评估：GITHUB_TOKEN 权限不可预测，既可能授予超额写权限（提高凭证被滥用/供应链投毒的风险），也可能在默认只读的仓库上让镜像推送流程失败。",
+        "suggestion": "[重构思路] 恢复并细化最小权限：顶层统一 contents: read，仅对需要推送镜像的 job 追加 packages: write，避免全 workflow 放大权限。代码示例：\n```yaml\npermissions:\n  contents: read\njobs:\n  dockerize:\n    permissions:\n      contents: read\n      packages: write\n```",
+        "subcategory": "CI 凭证最小权限"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可维护",
+      "file": ".github/workflows/typos.yml",
+      "line": 1,
+      "title": "删除 typos 工作流与 typos.toml，拼写检查门禁彻底消失",
+      "description": "本 MR 整体删除了 .github/workflows/typos.yml（在 push 与 pull_request 上运行 crate-ci/typos）以及 typos.toml（-31 行），仓库从此没有自动拼写检查。与此同时 MR 又在大范围改动注释、错误信息与用户可见文案（例如 Grafana 面板标题 Memory Utilization→Utilisation、cassandra/errors.go 变量改名、注释 initialisation/generalisation），这些改动正是在没有拼写校验的情况下进行的，后续同类不一致与拼写错误将无法被门禁拦截。",
+      "evidence": [
+        ".github/workflows/typos.yml 全文件删除（-14 行，包含 push/pull_request 触发与 crate-ci/typos@v1.32.0）",
+        "typos.toml 整体删除（-31 行，见 MR 变更文件列表）",
+        "examples/http-server/docker/provisioning/dashboards/gofr-dashboard/dashboards.json:535 — \"Memory Utilization\" 改为 \"Memory Utilisation\"",
+        "pkg/gofr/container/mock_container.go:57、:135 — initialisation / generalisation 等拼写替换"
+      ],
+      "rule": "MAINTAINABILITY-CI-004",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 质量门禁被移除。影响评估：拼写与术语一致性回退为人工保障，而本次 MR 恰好批量修改了注释、错误信息与用户可见文案，长期会造成文档/日志/面板命名不一致，降低可检索性与专业度。",
+        "suggestion": "[重构思路] 若不愿维护独立 workflow，可把拼写检查合并进现有 lint job 或 pre-commit，保留 typos.toml 作为词表白名单。代码示例：\n```yaml\n# .github/workflows/go.yml 的 code_quality job 中追加\n- name: Typos\n  uses: crate-ci/typos@v1.32.0\n  with:\n    config: ./typos.toml\n```",
+        "subcategory": "质量门禁缺失"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "pkg/gofr/context.go",
+      "line": 33,
+      "title": "从公开类型 gofr.Context 移除内嵌 logging.ContextLogger，属破坏性 API 变更且无弃用过渡",
+      "description": "pkg/gofr/context.go 删除了 `logging.ContextLogger` 内嵌字段与相应 import，并整体删除 pkg/gofr/logging/ctx_logger.go（-66 行）。gofr.Context 是框架对使用者暴露的核心类型，移除内嵌字段会改变其方法集，下游若通过 ctx 直接调用由 ContextLogger 提升上来的日志方法，将在升级后编译失败；仓库内检索 ContextLogger 已 0 处引用，说明影响面完全落在仓库之外，而本 MR 未提供 Deprecated 标注、迁移说明或 major 版本号变化。",
+      "evidence": [
+        "pkg/gofr/context.go diff — 删除 import \"gofr.dev/pkg/gofr/logging\" 与结构体内的 `logging.ContextLogger` 字段",
+        "pkg/gofr/logging/ctx_logger.go 整文件删除（-66 行，见 MR 变更文件列表）",
+        "pkg/gofr/context.go:16-34 — 变更后的 Context 只剩 Context/Request/*container.Container/responder/Out",
+        "review_find_references(\"ContextLogger\") 在 MR 后快照中 0 处命中，说明破坏性影响仅存在于下游使用者"
+      ],
+      "rule": "API-BREAKING-005",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 公开类型方法集收缩（破坏性变更）。影响评估：下游项目升级到该版本后可能出现编译错误，且错误信息只表现为“方法不存在”，不易定位到本次回退；同时本次改动也一并带走了基于上下文的结构化日志能力。",
+        "suggestion": "[重构思路] 若确需回退，先保留一段过渡期：用 Deprecated 注释标注并转发到 Logger，在下一个 major 版本再删除；同时在 CHANGELOG/升级指南中明确说明。代码示例：\n```go\ntype Context struct {\n    // ...\n    // Deprecated: use c.Logger instead; will be removed in v2.\n    logging.ContextLogger\n}\n```",
+        "subcategory": "公开 API 兼容性"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可测试性",
+      "file": "pkg/gofr/container/mock_datasources.go",
+      "line": 278,
+      "title": "go-redis 降级后重新生成的 MockRedis 丢失多个公开 mock 方法，使用者测试会编译失败",
+      "description": "根 go.mod 将 github.com/redis/go-redis/v9 由 v9.8.0 回退到 v9.7.3，随之 mock_datasources.go 被重新生成：MockRedis 删除了 ACLCat/ACLCatArgs/ACLDelUser/ACLList/ACLSetUser/ClusterMyID/HGetDel/HGetEX/HGetEXWithArgs/HSetEX/HSetEXWithArgs/HStrLen 等方法，并新增了 TFCall/TFCallASYNC/TFCallASYNCArgs/TFCallArgs/TFunctionDelete/TFunctionList/TFunctionListArgs/TFunctionLoad/TFunctionLoadArgs。MockRedis 是 container 包对外提供的测试替身，下游测试若对这些被删方法设置 EXPECT()（或依赖 v9.8.0 才有的 ACL/HGETEX 能力）将无法编译，属于隐性破坏。",
+      "evidence": [
+        "pkg/gofr/container/mock_datasources.go diff — 删除 ACLCat、ACLCatArgs、ACLDelUser、ACLList、ACLSetUser、ClusterMyID、HGetDel、HGetEX、HGetEXWithArgs、HSetEX、HSetEXWithArgs、HStrLen 的 mock 与 recorder",
+        "pkg/gofr/container/mock_datasources.go diff — 新增 TFCall/TFCallASYNC/TFCallASYNCArgs/TFCallArgs/TFunctionDelete/TFunctionList/TFunctionListArgs/TFunctionLoad/TFunctionLoadArgs",
+        "go.mod diff — github.com/redis/go-redis/v9 v9.8.0 → v9.7.3，github.com/redis/go-redis/extra/redisotel/v9 v9.8.0 → v9.7.3",
+        "pkg/gofr/datasource/redis/redis.go:31 — Redis 结构体内嵌 *redis.Client，其方法集直接随依赖版本收缩"
+      ],
+      "rule": "TESTABILITY-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 依赖降级引起的公开测试替身 API 收缩。影响评估：使用 gofr 的 mock 容器编写 Redis 相关测试的项目在升级后会编译失败；同时依赖降级本身也可能重新引入上游已修复的缺陷。",
+        "suggestion": "[重构思路] 明确记录降级原因与影响面（CHANGELOG 中的 Breaking/Behavior 段落），并在降级前用固定版本的 mockgen 重新生成并跑通全仓测试；若只是想让 mock 兼容旧版，考虑对 ACL/HGETEX 等能力保留手写 shim。代码示例：\n```bash\n# 记录并校验 mock 生成一致性\nmockgen -source=pkg/gofr/datasource/redis/redis.go -destination=pkg/gofr/container/mock_datasources.go\ngo test ./pkg/gofr/container/... ./pkg/gofr/datasource/redis/...\n```",
+        "subcategory": "依赖降级与测试替身兼容"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "examples/grpc/grpc-client/client/health_client.go",
+      "line": 47,
+      "title": "示例生成代码回退为已弃用的 grpc.Dial、去掉 dialOptions 扩展点，并把流式调用指标硬编码进 unary 直方图",
+      "description": "gRPC 示例被回退到 gofr-cli v0.6.0 / gofr.dev v1.37.0 的模板：createGRPCConn 由 grpc.NewClient 改为 grpc.Dial（grpc-go 自 v1.63 起推荐 NewClient，Dial 已弃用），并删除了 `dialOptions ...grpc.DialOption` 参数，示例不再能演示注入 TLS 凭据、拦截器或超时；invokeRPC 删除 metricName 参数后硬编码 \"app_gRPC-Client_stats\"，使 server-streaming 的 Health.Watch 与 unary 的 Check 写入同一个 unary 直方图（原先 Watch 使用 app_gRPC-Client-Stream_stats，服务端示例也删除了 app_gRPC-Stream_stats 直方图的创建）。示例是用户接入 gRPC 的主要参考，这会让流式调用的耗时统计混入 unary 指标，并失去正确的流式观测口径。",
+      "evidence": [
+        "examples/grpc/grpc-client/client/health_client.go:47-49 — conn, err := grpc.Dial(host, grpc.WithDefaultServiceConfig(...), grpc.WithTransportCredentials(...))",
+        "examples/grpc/grpc-client/client/health_client.go:44 — func createGRPCConn(host string, serviceName string)（已无 dialOptions 参数）",
+        "examples/grpc/grpc-client/client/health_client.go:69-70 — logger.DocumentRPCLog(..., err, rpcName, \"app_gRPC-Client_stats\") 硬编码指标名",
+        "examples/grpc/grpc-client/client/health_client.go:87-91 — Watch（server-streaming）同样走 invokeRPC，指标名与 unary 相同",
+        "diff 中 examples/grpc/grpc-unary-client/client/health_client.go 原为 `grpc.NewClient(host, dialOptions...)`，且 Watch 原传 \"app_gRPC-Stream_stats\"",
+        "examples/grpc/grpc-server/server/health_gofr.go diff — 删除 app.Metrics().NewHistogram(\"app_gRPC-Stream_stats\", ...)"
+      ],
+      "rule": "EXAMPLE-QUALITY-007",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 示例/生成代码能力回退 + 可观测性口径错误。影响评估：用户照抄示例会使用已弃用 API、无法配置 TLS/拦截器，并在生产环境得到错误的流式耗时指标；同时失去流式 gRPC 示例（streaming-client/streaming-server 目录整体删除），文档与代码能力不再匹配。",
+        "suggestion": "[重构思路] 恢复 grpc.NewClient 与 dialOptions 扩展点，把指标名重新参数化，并对流式方法使用独立的 stream 直方图。代码示例：\n```go\nfunc createGRPCConn(host, serviceName string, dialOptions ...grpc.DialOption) (*grpc.ClientConn, error) {\n    opts := append([]grpc.DialOption{\n        grpc.WithDefaultServiceConfig(`{\"loadBalancingPolicy\": \"round_robin\"}`),\n        grpc.WithTransportCredentials(insecure.NewCredentials()),\n    }, dialOptions...)\n    return grpc.NewClient(host, opts...)\n}\n```",
+        "subcategory": "示例代码与指标口径"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "pkg/gofr/datasource/arangodb/go.mod",
+      "line": 3,
+      "title": "多个子模块 go directive 由 1.23.0 回退到 1.22.0，与 CI 和根模块的 Go 版本不一致",
+      "description": "本次 MR 把 arangodb、dgraph、kv-store/badger、pubsub/eventhub、pubsub/nats 等子模块的 `go 1.23.0` 降为 `go 1.22.0`，toolchain 由 go1.24.1 降为 go1.24.0；而 CI 的 code_quality job 使用 go-version: '1.24'（go.yml:326），examples/using-add-filestore 又写成 `go 1.22.7` + `toolchain go1.24.1`。go directive 决定该模块的语言版本与标准库行为（例如循环变量语义、新标准库 API 可用性），不同模块声明不一致会导致“同一份代码在不同模块下编译结果不同”，也为后续升级埋下隐患。",
+      "evidence": [
+        "pkg/gofr/datasource/arangodb/go.mod:3-4 — go 1.22.0 / toolchain go1.24.0（原 go 1.23.0 / toolchain go1.24.1）",
+        "pkg/gofr/datasource/dgraph/go.mod、pkg/gofr/datasource/kv-store/badger/go.mod、pkg/gofr/datasource/pubsub/eventhub/go.mod、pkg/gofr/datasource/pubsub/nats/go.mod — 同类回退",
+        "examples/using-add-filestore/go.mod:3-4 — go 1.22.7 紧跟 toolchain go1.24.1",
+        ".github/workflows/go.yml:326 — go-version: '1.24'（code_quality）；:373 — go-version: 1.24（linting_party）"
+      ],
+      "rule": "PORTABILITY-009",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 模块 Go 版本声明回退且不一致。影响评估：语言版本声明与 CI 实际工具链脱节，可能出现“本地 1.22 语义通过、CI 1.24 行为不同”或反之的隐蔽差异，并使子模块无法使用 1.23 起可用的语言/标准库能力。",
+        "suggestion": "[重构思路] 统一各模块 go directive 与仓库支持的 Go 版本策略（例如全部保持 1.23.0，toolchain 保持一致），并在 CI 中只用一个权威版本矩阵。代码示例：\n```go\nmodule gofr.dev/pkg/gofr/datasource/arangodb\n\ngo 1.23.0\ntoolchain go1.24.1\n```",
+        "subcategory": "模块 Go 版本声明"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "pkg/gofr/datasource/cassandra/errors.go",
+      "line": 12,
+      "title": "批量改为英式拼写，与 .golangci.yml 中 misspell 的 US locale 约定方向相反",
+      "description": "本 MR 把 errBatchNotInitialized 改为 errBatchNotInitialised、errUnmarshalling 改为 errUnmarshaling、注释改為 initialisation/generalisation，并把用户可见的 Grafana 面板标题从 \"Memory Utilization\" 改为 \"Memory Utilisation\"；但 .golangci.yml 中 misspell 的 locale 设为 US，即仓库的拼写基线是美式。两者方向冲突：要么 lint 会与这些英式拼写冲突（取决于词典收录），要么虽然通过 lint 但仓库内同时存在美式（unmarshaling）与英式（Initialised/Utilisation）两套写法，术语进一步分裂；此外修改用户可见的面板标题还可能让既有仪表盘/文档引用不一致。",
+      "evidence": [
+        ".golangci.yml:51-52 — misspell: locale: US",
+        "pkg/gofr/datasource/cassandra/errors.go:12 — errBatchNotInitialised = errors.New(\"batch not initialized\")（变量名英式、错误文案美式，同处一行即不一致）",
+        "pkg/gofr/datasource/cassandra/cassandra_batch.go:31、:50、:67 — 引用 errBatchNotInitialised",
+        "pkg/gofr/datasource/opentsdb/response.go:249-251 — errUnmarshalling 改为 errUnmarshaling（美式）",
+        "examples/http-server/docker/provisioning/dashboards/gofr-dashboard/dashboards.json:535 — \"Memory Utilization\" 改为 \"Memory Utilisation\"",
+        "pkg/gofr/container/mock_container.go:57、:135 — 注释改为 initialisation / generalisation"
+      ],
+      "rule": "STYLE-010",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 拼写本地化方向不一致。影响评估：仓库同时存在英式与美式拼写，且 lint 的 locale 约定与实际代码相反，后续维护者无法判断该遵循哪种写法；用户可见的面板标题被改写还会影响既有仪表盘/文档的一致性。",
+        "suggestion": "[重构思路] 先确定唯一基线（与 misspell locale 一致，采用美式），再统一替换；若确实要改面板标题，应在同一 PR 内同步更新引用该标题的文档与截图。代码示例：\n```go\n// 与 misspell locale: US 保持一致\nerrBatchNotInitialized = errors.New(\"batch not initialized\")\n```",
+        "subcategory": "拼写与术语一致性"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "安全",
+      "file": "go.mod",
+      "line": 24,
+      "title": "根模块成批降级依赖（go-redis、x/*、google.golang.org/api、genproto 等），缺少安全基线复核",
+      "description": "本次 MR 把根 go.mod 的多条直接/间接依赖整体回退：redis/go-redis v9.8.0→v9.7.3、golang.org/x/oauth2 v0.30.0→v0.29.0、x/sync v0.14.0→v0.13.0、x/term、x/text、google.golang.org/api v0.232.0→v0.230.0、cloud.google.com/go/auth v0.16.1→v0.16.0、x/sys v0.33.0→v0.32.0、genproto/googleapis/rpc 时间戳回退，nats 子模块同时把 nats-server v2.10.27→v2.10.21、nats.go v1.39.1→v1.37.0、klauspost/compress v1.18.0→v1.17.11、nats jwt/nkeys 回退。这些库的补丁版本通常承载安全修复，成批回退意味着可能重新引入已在旧版本修复的缺陷；MR 描述为空，未给出降级原因、安全评估或 CVE 复核结论，评审无法确认该回退是安全的。",
+      "evidence": [
+        "go.mod diff — github.com/redis/go-redis/v9 v9.8.0 → v9.7.3；redisotel/v9 同步回退",
+        "go.mod diff — golang.org/x/oauth2 v0.30.0→v0.29.0、x/sync v0.14.0→v0.13.0、x/term v0.32.0→v0.31.0、x/text v0.25.0→v0.24.0、x/sys v0.33.0→v0.32.0",
+        "go.mod diff — google.golang.org/api v0.232.0→v0.230.0、cloud.google.com/go/auth v0.16.1→v0.16.0、google.golang.org/genproto/googleapis/rpc 时间戳回退",
+        "pkg/gofr/datasource/pubsub/nats/go.mod diff — nats-server v2.10.27→v2.10.21、nats.go v1.39.1→v1.37.0、klauspost/compress v1.18.0→v1.17.11、jwt v2.7.3→v2.5.8、nkeys v0.4.10→v0.4.7",
+        "go.work.sum diff — 移除 github.com/stretchr/testify v1.9.0/go.mod 校验和并新增多条 go.mod 校验和，说明依赖图整体被重算"
+      ],
+      "rule": "SECURITY-DEPS-011",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 依赖版本回退且缺少安全基线说明。影响评估：若其中任一版本区间存在已修复的安全问题，本次回退会把它们带回主干；同时版本回退会影响下游通过 gofr 引入的间接依赖版本，使用者难以覆盖。",
+        "suggestion": "[重构思路] 在 MR 中补充降级动机（如兼容性）与安全评估结论；用工具对回退后的依赖图复核已知漏洞，并对必须回退的版本在 go.mod 中写明原因。代码示例：\n```bash\ngovulncheck ./...\n# 若确需回退，在 MR 描述中记录：回退原因、影响的 CVE 复核结果、后续恢复计划\n```",
+        "subcategory": "依赖供应链安全"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P1",
+      "category": "安全",
+      "file": "pkg/gofr/datasource/redis/redis.go",
+      "line": 76,
+      "title": "删除 Redis TLS 支持会让原本加密的连接静默降级为明文",
+      "description": "getRedisConfig 不再读取任何 REDIS_TLS_* 配置，Config.TLS 字段与 initializeCerts 被整体删除，Options 中也不再设置 TLSConfig。升级后，原本通过 REDIS_TLS_ENABLED=true 连接 TLS-only Redis 的部署会变成明文建连：要么直接连不上（错误被 Ping 捕获后只打一条 Error 日志），要么以明文传输 AUTH 密码与业务数据，且没有任何显式告警或迁移提示，属于安全性回退而非单纯的功能删除。",
+      "evidence": [
+        "pkg/gofr/datasource/redis/redis.go:76 — getRedisConfig 现在只读取 REDIS_HOST/REDIS_USER/REDIS_PASSWORD/REDIS_PORT/REDIS_DB，diff 中 REDIS_TLS_ENABLED / REDIS_TLS_CA_CERT / REDIS_TLS_CERT / REDIS_TLS_KEY 四个分支已全部删除",
+        "pkg/gofr/datasource/redis/redis.go:21-28 — Config 结构体已删除 `TLS *tls.Config` 字段（diff 中 `-\\tTLS      *tls.Config`）",
+        "diff 删除 initializeCerts(logger, caCert, tlsConfig) 以及 `tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}`、`options.TLSConfig = tlsConfig`",
+        "pkg/gofr/datasource/redis/redis.go:48 — NewClient 仍直接 `redis.NewClient(redisConfig.Options)` 建连，Options 中已无 TLSConfig",
+        "review_find_references(\"REDIS_TLS_ENABLED\") 与 review_find_references(\"initializeCerts\") 在仓库内均为 0 命中，说明 TLS 逻辑是被删除而非搬迁"
+      ],
+      "rule": "SECURITY-001",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 安全能力（传输加密）被移除导致静默降级。影响评估：依赖 TLS 的 Redis 部署在升级后要么连接失败、要么凭据与数据明文传输；配置项被忽略时无任何提示，运维难以察觉。",
+        "suggestion": "[重构思路] 若必须移除 TLS，请在 getRedisConfig 中检测到 REDIS_TLS_ENABLED=true 时返回明确错误/高危告警并在 README 记录破坏性变更；更推荐保留 TLS 分支，仅在 Options 中设置 TLSConfig。代码示例：`if c.Get(\"REDIS_TLS_ENABLED\") == \"true\" { logger.Errorf(\"REDIS_TLS_ENABLED is no longer supported; refusing plaintext connection\"); return nil }`",
+        "subcategory": "传输加密缺失"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "pkg/gofr/datasource/redis/redis.go",
+      "line": 101,
+      "title": "getRedisConfig 中对新建 Options 的三处判空恒为真，属于重构残留死代码",
+      "description": "重构后 `options := new(redis.Options)` 制造全零值，随后 `if options.Addr == \"\"`、`if options.Username == \"\"`、`if options.Password == \"\"` 三个条件永远成立，判空分支毫无意义；由于 getRedisConfig 自行构造 Options 并赋给 redisConfig.Options，外部也无法预置字段。这类代码会让读者误以为支持外部 Options 覆盖，后续维护者可能据此做出错误假设。",
+      "evidence": [
+        "pkg/gofr/datasource/redis/redis.go:99 — `options := new(redis.Options)` 生成全零值",
+        "pkg/gofr/datasource/redis/redis.go:101、105、109 — 三个 `if options.X == \"\"` 判断对零值恒为真，分支体总是执行",
+        "pkg/gofr/datasource/redis/redis.go:76-117 — getRedisConfig 自行构造 Options 并 `redisConfig.Options = options`，无任何入参或配置可预置 Addr/Username/Password"
+      ],
+      "rule": "MAINTAINABILITY-008",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 恒真判空/死分支。影响评估：不改变运行时行为，但会误导后续维护者以为存在「保留用户已配置字段」的语义，增加误改风险。",
+        "suggestion": "[重构思路] 直接赋值，去掉恒真判断。代码示例：`options := &redis.Options{ Addr: fmt.Sprintf(\"%s:%d\", redisConfig.HostName, redisConfig.Port), Username: redisConfig.Username, Password: redisConfig.Password, DB: redisConfig.DB }`",
+        "subcategory": "死代码"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "pkg/gofr/grpc.go",
+      "line": 70,
+      "title": "删除 gRPC 流式拦截器后，streaming RPC 失去 panic 恢复与可观测性",
+      "description": "grpcServer 不再持有 streamInterceptors，createServer 只注册 grpc.UnaryInterceptor，grpc/log.go 中的 StreamObservabilityInterceptor 与 wrappedServerStream 被删除，App.AddGRPCServerStreamInterceptors 这一导出的公共 API 也消失。结果是所有通过 RegisterService 注册的流式 RPC 既没有 recovery 拦截器（gRPC 自身不 recover panic），也不再产生日志、指标与 trace 上下文传播：一个流处理中的 panic 会直接击穿进程，流式调用在监控上变成盲区。",
+      "evidence": [
+        "pkg/gofr/grpc.go:18-23 — grpcServer 结构体已删除 `streamInterceptors []grpc.StreamServerInterceptor` 字段",
+        "pkg/gofr/grpc.go:68-72 — createServer 只做 `g.options = append(g.options, grpc.UnaryInterceptor(...))`，不再追加 `grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(g.streamInterceptors...))`",
+        "diff 删除 pkg/gofr/grpc/log.go 中的 StreamObservabilityInterceptor（含 logRPC 调用）与 wrappedServerStream（Context 传播）",
+        "diff 删除 `func (a *App) AddGRPCServerStreamInterceptors(...)`；review_find_references(\"AddGRPCServerStreamInterceptors\") 在仓库内 0 命中，用户侧无替代入口"
+      ],
+      "rule": "RELIABILITY-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 拦截器链缺省导致 panic 不可恢复 + 可观测性缺口。影响评估：已注册的 streaming handler 一旦 panic 将导致整个服务进程退出（gRPC 不会 recover）；流式调用不再有耗时/状态码指标与 trace 关联，排障能力下降。",
+        "suggestion": "[重构思路] 若流式是仍需支持的场景（RegisterService 未限制 ServiceDesc 的流式方法），应保留 `grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(grpc_recovery.StreamServerInterceptor(), gofr_grpc.StreamObservabilityInterceptor(...)))`；如确为主动下线，请在发布说明中标注破坏性变更，并在 RegisterService 中对含流式方法（Streams 非空）的 ServiceDesc 记录 Warning。代码示例：`g.options = append(g.options, grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(g.streamInterceptors...)))`",
+        "subcategory": "拦截器链缺失"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "pkg/gofr/logging/logger.go",
+      "line": 48,
+      "title": "日志条目不再携带 trace_id，框架日志与请求链路失去关联",
+      "description": "logEntry 删除了 TraceID 字段，extractTraceIDAndFilterArgs 被移除，ContextLogger 及 handler 中 `c.ContextLogger` 的注入一并删除。非终端（JSON）模式下所有应用日志不再带 trace_id，handler 内通过 c.Logger 输出的日志无法再与请求 trace 关联；同时 logging.ContextLogger/NewContextLogger 与 Context.ContextLogger 属于导出 API 的直接删除，下游代码会编译失败。目前只有 middleware.RequestLog 仍保留 trace_id，框架自身日志的关联链路存在不一致。",
+      "evidence": [
+        "pkg/gofr/logging/logger.go:48-53 — logEntry 结构体现为 `Level/Time/Message/GofrVersion`，已无 `TraceID string json:\"trace_id,omitempty\"`",
+        "diff 删除 pkg/gofr/logging/ctx_logger.go（ContextLogger、NewContextLogger、__trace_id__ 注入的全部实现）",
+        "diff 删除 pkg/gofr/handler.go 中 `reqLogger := logging.NewContextLogger(c, h.container.Logger)` 与 `c.ContextLogger = *reqLogger`；pkg/gofr/context.go:16-34 的 Context 结构体已无 ContextLogger 字段",
+        "diff 删除 extractTraceIDAndFilterArgs，logf 不再把 map 中的 __trace_id__ 提升到 entry.TraceID（logger.go:55-85 只剩 args 直接赋值）",
+        "pkg/gofr/http/middleware/logger.go:51-53 — RequestLog 仍保留 `trace_id`/`span_id`，与框架其他日志不一致"
+      ],
+      "rule": "OBSERVABILITY-003",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 可观测性字段丢失 + 导出 API 破坏。影响评估：生产 JSON 日志中 trace_id 消失，基于 trace_id 的日志检索与告警规则失效；引用 logging.ContextLogger 的用户代码无法编译。",
+        "suggestion": "[重构思路] 若确需收敛 API，至少保留 trace_id 注入：可在 logf 中从传入的 context 或 logEntry 上的显式字段恢复，或在 handler 中把 traceID 透传到 RequestLog/ErrorLogEntry 的既有路径并保持字段命名一致。代码示例：`type logEntry struct { ...; TraceID string `json:\"trace_id,omitempty\"` }` 并在 handler 内使用 `c.Logger.Info(&loggedEntry{TraceID: traceID, ...})`；同时在 CHANGELOG 标注 ContextLogger 移除。",
+        "subcategory": "日志上下文丢失"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "pkg/gofr/logging/logger.go",
+      "line": 77,
+      "title": "logf 中遗留 `format+\"\"` 冗余拼接与 TODO 注释",
+      "description": "同一个 diff 已经清理掉了 trace_id 相关的参数过滤逻辑，但格式化分支仍写成 `fmt.Sprintf(format+\"\", args...)` 并留下 TODO 注释。空字符串拼接不改变语义，属于无意义运算与自述式遗留标记，会持续污染日志核心路径的可读性。",
+      "evidence": [
+        "pkg/gofr/logging/logger.go:77 — `entry.Message = fmt.Sprintf(format+\"\", args...) // TODO - this is stupid. We should not need empty string.`",
+        "同 diff 已删除 extractTraceIDAndFilterArgs，`switch` 的其余分支均为 `len(args) == 1 && format == \"\"` 等直接赋值，格式分支不再需要额外处理"
+      ],
+      "rule": "MAINTAINABILITY-009",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 冗余表达式与遗留 TODO 注释。影响评估：不影响功能，但在日志最热路径上引入无谓分配，且 TODO 注释对外暴露内部不满，降低代码质量感知。",
+        "suggestion": "[重构思路] 直接使用 format，并删除 TODO。代码示例：`case format != \"\": entry.Message = fmt.Sprintf(format, args...)`",
+        "subcategory": "冗余代码"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "pkg/gofr/http_server.go",
+      "line": 45,
+      "title": "Logging 中间件被移到最内层，CORS 预检请求不再被记录",
+      "description": "newHTTPServer 改为先注册 Tracer/CORS/Metrics，再按配置注册 Logging 或 LoggingWithoutProbes。mux 的 Use 按注册顺序从外到内包裹，因此 Logging 由原来的第二层变成最内层；而 CORS 中间件对 OPTIONS 请求直接写 200 并 return，不会调用 inner。结果是所有浏览器 CORS 预检请求不再产生 RequestLog，同时 Metrics 现在位于 Logging 之外，日志中记录的耗时/状态不再覆盖这两层的行为，排障口径与改动前不一致。",
+      "evidence": [
+        "pkg/gofr/http_server.go:36-46 — 注册顺序为 `middleware.Tracer, middleware.CORS(...), middleware.Metrics(...)`，随后才 `r.Use(middleware.LoggingWithoutProbes(c.Logger))` 或 `r.Use(middleware.Logging(c.Logger))`；旧代码为 Tracer→Logging→CORS→Metrics",
+        "pkg/gofr/http/middleware/cors.go:18-21 — `if r.Method == http.MethodOptions { w.WriteHeader(http.StatusOK); return }` 短路，不调用 inner",
+        "pkg/gofr/http/router.go:52-59 — UseMiddleware/Router.Use 按注册顺序追加 mux.MiddlewareFunc，即先注册者在外层"
+      ],
+      "rule": "RELIABILITY-004",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 中间件顺序调整引发行为变更。影响评估：预检请求从日志中消失，基于日志的 CORS 问题排查与请求量统计失真；Metrics 与 Logging 的相对层级变化使日志耗时不包含 metrics 自身开销，跨版本对比数据不可比。",
+        "suggestion": "[重构思路] 保持 Logging 在 CORS/Metrics 之外（先注册 Logging，再注册 CORS/Metrics），仅把「是否记录探针」作为开关传给 loggingMiddleware，从而在保持顺序不变的前提下新增能力。代码示例：`r.Use(middleware.Tracer, logMW(c.Logger, middlewareConfigs.LogDisableProbes == \"true\"), middleware.CORS(...), middleware.Metrics(c.Metrics()))`",
+        "subcategory": "中间件顺序"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "pkg/gofr/http/responder.go",
+      "line": 30,
+      "title": "File/Template 响应现在也经过 determineResponse，File 的错误响应状态码由固定 200 变为 206/500",
+      "description": "Respond 重构后 determineResponse 提到所有类型分支之前执行，因此 resTypes.File 与 resTypes.Template 也参与状态码推导：File 分支由 `r.w.WriteHeader(http.StatusOK)` 改为 `r.w.WriteHeader(statusCode)`。当 handler 同时返回 File 与 error（File 是 struct，isNil 返回 false）时，getStatusCode 会给出 206 PartialContent，于是文件字节以 206 写出；若 File 的 Content/ContentType 均为零值，isEmptyStruct 命中后变成 500。Template 分支则计算出 statusCode 却完全不使用，属无效计算。整体行为变更未在 diff 中说明。",
+      "evidence": [
+        "pkg/gofr/http/responder.go:30 — `statusCode, errorObj := r.determineResponse(data, err)` 已上移到 switch 之前",
+        "pkg/gofr/http/responder.go:38-44 — File 分支改为 `r.w.WriteHeader(statusCode)`，旧实现固定 `http.StatusOK`",
+        "pkg/gofr/http/responder.go:115-117 — `if !isNil(data) { return http.StatusPartialContent, createErrorResponse(err) }`，File 结构体非 nil 时命中 206",
+        "pkg/gofr/http/responder.go:45-49 — Template 分支只调用 v.Render(r.w)，计算出的 statusCode 未被使用",
+        "pkg/gofr/handler.go:124-127 — faviconHandler 返回 response.File 同时返回 err，属 File+err 组合的真实调用路径"
+      ],
+      "rule": "CORRECTNESS-005",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 响应状态码推导范围扩大导致语义变更。影响评估：File+error 场景下客户端会收到 206/500 而非 200，静态资源/文件下载的错误处理语义与旧版本不一致；Template 分支产生无用计算。",
+        "suggestion": "[重构思路] 保持 File/Template 不走 determineResponse（在 switch 内单独决定状态码），或显式规定 File+err 的契约并在测试中固化。代码示例：`case resTypes.File: status := http.StatusOK; if v.Content == nil && err != nil { status = http.StatusInternalServerError }; r.w.WriteHeader(status)`，并把 determineResponse 移回非 File/Template 分支。",
+        "subcategory": "响应状态码语义"
+      }
+    },
+    {
+      "id": "F019",
+      "severity": "P2",
+      "category": "可测试性",
+      "file": "pkg/gofr/datasource/pubsub/nats/mock_jetstream.go",
+      "line": 2,
+      "title": "mock 生成源被改成不存在的 jStream 接口，且 Conn/Options 被删除，mock 与生成命令不再可复现",
+      "description": "mock 头注释与 //go:generate 指令都被改成 `jStream,Stream,Consumer,Msg,MessageBatch`，注释也写成 \"mock of jStream interface\"。但仓库内并不存在 `type jStream` 声明（只有 ConnectionManager.jStream 字段与同名方法），而 mockgen 无法为外部包 jetstream 中的未导出接口生成 mock，因此 `go generate` 会失败、生成产物与命令不再一致。同时 diff 删除了 MockJetStream 的 Conn()/Options()，而 ConnectionManager.jStream 的字段类型仍是 jetstream.JetStream，mock 被当作该接口使用，一旦上游接口要求这两个方法，mock 就不再满足接口。",
+      "evidence": [
+        "pkg/gofr/datasource/pubsub/nats/mock_jetstream.go:2 与 :6 — Source 与 mockgen 命令均为 `... jetstream jStream,Stream,Consumer,Msg,MessageBatch`",
+        "pkg/gofr/datasource/pubsub/nats/mock_jetstream.go:22 — 注释改为 `// MockJetStream is a mock of jStream interface.`，但类型名仍是 MockJetStream",
+        "pkg/gofr/datasource/pubsub/nats/connection_manager.go:12 — //go:generate 同样写成 `jStream`",
+        "pkg/gofr/datasource/pubsub/nats/connection_manager.go:16 — `jStream jetstream.JetStream`，mock 必须满足 jetstream.JetStream 接口",
+        "review_find_references(\"jStream\") 只命中 ConnectionManager.jStream 字段与方法名，仓库内不存在 `type jStream` 类型声明",
+        "diff 删除 MockJetStream.Conn() 返回 *nats.Conn 与 MockJetStream.Options() 返回 jetstream.JetStreamOptions 两个方法"
+      ],
+      "rule": "TESTABILITY-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 生成代码与生成命令/接口契约不一致。影响评估：`go generate` 因找不到 jStream 接口而失败；若上游 jetstream.JetStream 仍声明 Conn()/Options()，NewMockJetStream 将无法再作为 jetstream.JetStream 使用，nats 包相关代码与测试会编译失败。",
+        "suggestion": "[重构思路] 回退生成命令与头注释中的接口名为 `JetStream`，并重新用当前依赖版本生成（若上游已删除 Conn()/Options()，让生成器自动产出即可）；同时在 CI 中加一步「go generate 后 git diff 必须为空」的校验。代码示例：`//go:generate mockgen -destination=mock_jetstream.go -package=nats github.com/nats-io/nats.go/jetstream JetStream,Stream,Consumer,Msg,MessageBatch`",
+        "subcategory": "mock 一致性与可复现性"
+      }
+    },
+    {
+      "id": "F020",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "pkg/gofr/http/middleware/logger.go",
+      "line": 100,
+      "title": "LoggingWithoutProbes 硬编码探针路径，且跳过时连带跳过 Correlation-ID 与 panic 恢复",
+      "description": "新增的 LoggingWithoutProbes 用两个硬编码字符串判断探针路径，而同包已有 isWellKnown 前缀判断；一旦探针路径调整或出现新的 /.well-known 端点（如 swagger 相关），两处语义就会不一致。另外命中探针时直接 `inner.ServeHTTP(w, r)` 传递原始 ResponseWriter，既绕过 StatusResponseWriter 包装，也不再设置 X-Correlation-ID 响应头、不执行该中间件的 panicRecovery，行为与普通请求不对称。",
+      "evidence": [
+        "pkg/gofr/http/middleware/logger.go:100-105 — `return r.URL.Path != \"/.well-known/health\" && r.URL.Path != \"/.well-known/alive\"` 硬编码两条路径",
+        "pkg/gofr/http/middleware/validate.go:5-7 — 同包已有 `func isWellKnown(path string) bool { return strings.HasPrefix(path, \"/.well-known\") }` 未被复用",
+        "pkg/gofr/http/middleware/logger.go:111-113 — `if !shouldLog(r) { inner.ServeHTTP(w, r); return }`，绕过 StatusResponseWriter 与 :121 的 `srw.Header().Set(\"X-Correlation-ID\", traceID)`、:145-147 的 panicRecovery",
+        "pkg/gofr/swagger.go:63-68 — 还注册了 /.well-known/openapi.json、/.well-known/swagger 等端点，硬编码无法覆盖"
+      ],
+      "rule": "MAINTAINABILITY-007",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 重复且不一致的路径判定 + 请求处理路径不对称。影响评估：探针路径变化需同步修改两处；被跳过的请求缺少 Correlation-ID 响应头，且这些请求上的 panic 不经过日志中间件恢复，行为与普通请求不同，排查时易混淆。",
+        "suggestion": "[重构思路] 复用 isWellKnown 或让调用方传入 skip 判定函数；跳过「记录」而不是跳过「包装」，即始终包 StatusResponseWriter、始终设置 Correlation-ID 与注册 panicRecovery，仅在最后决定是否输出日志。代码示例：`skipLog := func(p string) bool { return isWellKnown(p) }; ... defer func(){ if !skipLog(r.URL.Path) { logger.Log(l) } }()`",
+        "subcategory": "重复判定逻辑"
+      }
+    },
+    {
+      "id": "F021",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "pkg/gofr/datasource/sql/db.go",
+      "line": 186,
+      "title": "面向用户的 Select 文档注释被改成错别字 \"should ba\"，同时删除了拼写检查 CI",
+      "description": "Select 的 godoc 由 \"data should be a point to a slice...\" 改成 \"data should ba a point...\"，这是出现在对外文档注释中的拼写错误。同一 MR 还删除了 typos.toml（locale = en-us）与 .github/workflows/typos.yml，拼写检查能力消失；同时把 normalized → normalised、errBatchNotInitialized → errBatchNotInitialised，即整体切换到英式拼写，与项目原有 en-us 约定相反，一致性下降。",
+      "evidence": [
+        "pkg/gofr/datasource/sql/db.go:186 — `// data should ba a point to a slice, struct or any type. Slice will return multiple`（原为 \"should be\"）",
+        "pkg/gofr/datasource/sql/db.go diff 中 `-// Map fields and their indexes by normalized name` → `+// Map fields and their indexes by normalised name`",
+        "pkg/gofr/datasource/scylladb/errors.go:11 与 scylladb.go:265/285/308 — errBatchNotInitialized 全量改为 errBatchNotInitialised，但错误文案仍是 \"batch not initialized\"",
+        "diff 删除 typos.toml（`[default] locale = \"en-us\"`）与 .github/workflows/typos.yml"
+      ],
+      "rule": "DOCUMENTATION-010",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 文档拼写错误 + 拼写检查缺失 + 拼写风格不一致。影响评估：godoc 会被 pkg.go.dev 展示给用户，错别字直接影响 API 文档质量；删除 typos 工作流后此类错误不再被 CI 拦截，英式/美式混用（initialised 标识符 + initialized 文案）会持续扩散。",
+        "suggestion": "[重构思路] 修正注释为 \"should be\"，并决定统一的拼写风格（与项目既有 en-us 约定一致则保留 normalized/initialized）；如需移除 typos 工作流，建议改用 golangci-lint 的 misspell 检查作为替代门禁。代码示例：`// data should be a pointer to a slice, struct or any type.`",
+        "subcategory": "文档拼写"
+      }
+    },
+    {
+      "id": "F022",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "pkg/gofr/http/middleware/config.go",
+      "line": 36,
+      "title": "LOG_DISABLE_PROBES 以字符串保存并做大小写敏感比较，配置易静默失效",
+      "description": "MiddlewareConfig.LogDisableProbes 声明为 string，GetConfigs 用 GetOrDefault 取值，http_server.go 再以 `== \"true\"` 判断。用户写成 TRUE/True/1 时开关静默不生效；与仓库中其他布尔配置使用 strconv.ParseBool 的做法不一致，也缺少配置项文档说明。",
+      "evidence": [
+        "pkg/gofr/http/middleware/config.go:12-15 — `LogDisableProbes string`",
+        "pkg/gofr/http/middleware/config.go:36 — `middlewareConfigs.LogDisableProbes = c.GetOrDefault(\"LOG_DISABLE_PROBES\", \"false\")`",
+        "pkg/gofr/http_server.go:42 — `if middlewareConfigs.LogDisableProbes == \"true\"` 大小写敏感字符串比较",
+        "pkg/gofr/container/container.go:192 — 仓库既有布尔配置使用 `strconv.ParseBool(conf.GetOrDefault(\"MQTT_MESSAGE_ORDER\", \"false\"))`"
+      ],
+      "rule": "CONFIG-011",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 布尔配置解析方式不一致。影响评估：LOG_DISABLE_PROBES=TRUE 等常见写法静默失效，用户难以定位「为什么探针日志没关掉」，配置可预期性下降。",
+        "suggestion": "[重构思路] 在 GetConfigs 中就用 strconv.ParseBool 解析为 bool 字段，并把解析错误记录日志。代码示例：`logDisableProbes, err := strconv.ParseBool(c.GetOrDefault(\"LOG_DISABLE_PROBES\", \"false\")); if err != nil { ... }` 字段类型改为 `LogDisableProbes bool`",
+        "subcategory": "配置解析"
+      }
+    }
+  ]
+}

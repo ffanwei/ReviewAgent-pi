@@ -11,6 +11,7 @@ import {
   type ReviewRunContext,
 } from "./pass-runner.js";
 import type { ReviewPassInput, ReviewPassResult } from "./review-pass.js";
+import { buildCatalog } from "../knowledge/rule-catalog.js";
 import type { Shard } from "./shard-planner.js";
 
 // pass 装配（ADR-0081 候选 2）：单遍与分片共享同一 context，差异只在
@@ -289,4 +290,108 @@ test("片级回调抛错不打断执行（旁路纪律）", async () => {
   });
 
   expect(executed).toHaveLength(1);
+});
+
+test("runPasses 并发：有界并发、结果按 descriptor 顺序回填", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const ctx = context();
+  const shards: Shard[] = [1, 2, 3, 4].map((index) => ({
+    ...SHARD,
+    index,
+    files: [`${String(index)}.ts`],
+  }));
+
+  const executed = await runPasses(
+    ctx,
+    shards.map((shard) => ({ kind: "shard" as const, shard, total: 4 })),
+    {
+      concurrency: 2,
+      runPass: async (input) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return passResult(new Date());
+      },
+    },
+  );
+
+  expect(maxActive).toBeLessThanOrEqual(2);
+  expect(maxActive).toBeGreaterThan(1);
+  expect(
+    executed.map((entry) => (entry.descriptor.kind === "shard" ? entry.descriptor.shard.index : 0)),
+  ).toEqual([1, 2, 3, 4]);
+});
+
+test("runPasses partial success：失败片回调留痕，成功片照常返回", async () => {
+  const failures: Array<{ index: number; message: string }> = [];
+  const ctx = context();
+  const shards: Shard[] = [1, 2, 3].map((index) => ({
+    ...SHARD,
+    index,
+    files: [`${String(index)}.ts`],
+  }));
+
+  const executed = await runPasses(
+    ctx,
+    shards.map((shard) => ({ kind: "shard" as const, shard, total: 3 })),
+    {
+      concurrency: 2,
+      continueOnError: true,
+      onPassError: (failure) => {
+        failures.push({
+          index: failure.descriptor.kind === "shard" ? failure.descriptor.shard.index : 0,
+          message: failure.message,
+        });
+      },
+      runPass: async (input) => {
+        if (input.shard?.index === 2) {
+          throw new Error("boom");
+        }
+        return passResult(new Date());
+      },
+    },
+  );
+
+  expect(executed.map((entry) => (entry.descriptor.kind === "shard" ? entry.descriptor.shard.index : 0))).toEqual([1, 3]);
+  expect(failures).toEqual([{ index: 2, message: "boom" }]);
+});
+
+test("buildPass 在 ruleCatalog 在场时注入 ruleContext；缺省不注入", () => {
+  const catalog = buildCatalog([
+    {
+      kind: "declarative",
+      name: "test",
+      description: "",
+      root: "",
+      rules: [
+        {
+          id: "R-1",
+          title: "Rule one",
+          languages: [],
+          globs: [],
+          tags: [],
+          text: "Do not do the bad thing.",
+          pack: "test",
+          source: "builtin",
+        },
+      ],
+    },
+  ]);
+
+  const withRules = buildPass(
+    context({ ruleCatalog: catalog }),
+    { kind: "single", diff: DIFF },
+    context().startedAt,
+  );
+  expect(withRules.input.ruleContext).toContain("R-1");
+  expect(withRules.input.ruleContext).toContain("Do not do the bad thing.");
+  expect(withRules.input.ruleSelection).toMatchObject({
+    ruleIds: ["R-1"],
+    truncated: false,
+  });
+
+  const without = buildPass(context(), { kind: "single", diff: DIFF }, context().startedAt);
+  expect(without.input.ruleContext).toBeUndefined();
 });

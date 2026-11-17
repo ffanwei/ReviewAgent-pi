@@ -1,0 +1,227 @@
+{
+  "instance_id": "comfyanonymous__ComfyUI@0bb6023",
+  "repo": "comfyanonymous/ComfyUI",
+  "base_commit": "6c0377f43e7b6ed58d48ae05cff9bc45b52ef5e0",
+  "head_commit": "0bb60235132cc72daea81427107a40ba1ccb5ddf",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T05:12:14.458622+00:00",
+  "duration_seconds": 194.83,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 2 finding(s) across 9 selected item(s).",
+    "summary": {
+      "files_reviewed": 9,
+      "comments": 2,
+      "total_tokens": 365745,
+      "input_tokens": 334902,
+      "output_tokens": 30843,
+      "cache_read_tokens": 276992,
+      "elapsed": "3m14s"
+    },
+    "tool_calls": {
+      "total": 37,
+      "by_tool": {
+        "code_comment": 1,
+        "code_search": 14,
+        "file_find": 2,
+        "file_read": 18,
+        "file_read_diff": 2
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "notebooks/comfyui_colab.ipynb",
+        "content": "This localtunnel cell still uses the removed modules a few lines below: `time.sleep(0.5)` (line 244), `socket.socket(...)` (line 245), `urllib.request.urlopen(...)` (line 252) and `subprocess.Popen(...)` (line 253). Those names now only exist if the user previously executed the cloudflared (recommended-way) cell, because that cell is the only place they are imported. Running this cell on its own — which is the documented fallback when cloudflared/localtunnel setup is used separately — will immediately raise `NameError: name 'time' is not defined`. Please keep the per-cell imports so each cell stays self-contained.",
+        "existing_code": "     \"import threading\\n\",",
+        "start_line": 240,
+        "end_line": 240,
+        "thinking": "These use `__all__`, so fine.\n\nI think the ruff.toml config is reasonable. One remaining potential concern: enabling all F rules also enables F401/F811 in `custom_nodes`? Not present in repo.\n\nAlso: ruff by default excludes? Fine.\n\nAnother potential concern in ruff.toml: does ruff.toml need `target-version`? no.\n\nI'll go with:\n1. Notebook comment (high) — imports removed but still used in the same cells → NameError.\n2. Maybe a second comment for the second cell.\n3. ruff.toml: skip or low trailing-newline. I'll include a low-severity note.\n\nActually, hold on. Let me reconsider notebook: is it possible that these cells deliberately rely on the cloudflared cell's imports, and the notebook is intended to be run top-to-bottom in Colab (\"Run all\")? Colab \"Run all\" runs every cell, and the earlier cell defines the imports globally. But the localtunnel cell is presented as an alternative that users might run after the cloudflared cell failed... If cloudflared cell failed at the `!dpkg` step, imports still executed (they're after the shell commands). Hmm, `!dpkg -i` failures don't stop Python execution in Colab. So imports would run. But if a user runs the localtunnel cell standalone (e.g., they don't want cloudflared at all), NameError.\n\nEven more: the markdown says \"Run ComfyUI with colab iframe (use only in case the previous way with localtunnel doesn't work)\" — meaning the iframe cell may be run without running the localtunnel cell, but cloudflared cell would have been run first typically.\n\nStill, this is a genuine regression in cell self-containment that makes the notebook cells fail on standalone execution. It's worth a medium/high comment. However, some might argue ruff-ish cleanups are harmless. But NameError at `time.sleep` is a hard failure. I'll report as high? I'd say \"high\" but note the conditional. Let's use severity high for notebook and medium for the iframe cell (or combine).\n\nAlso check the first cell (carry on) — the diff hunk 1: it removed `import subprocess` (was that previously used? yes `subprocess.Popen` at 206 in the cloudflared cell? no, that cell has its own imports). Hunk 1 in the task diff is the localtunnel cell (has `!npm install -g localtunnel`) removing subprocess/time/socket/urllib.request while code still uses them. Yes.\n\nNow the ruff.toml trailing newline: I'll comment low severity, suggesting adding a trailing newline. Is it worth it? It's inside the \"review each file\" requirement. I'll include it as a low-severity style note. Hmm, but risk of being seen as noise. The instructions say avoid commenting on non-functional elements such as comments/metadata unless requested. A missing EOF newline is arguably style. I'll skip it.\n\nActually, wait. Let me reconsider whether there's something else in ruff.toml worth flagging: `lint.ignore = [\"ALL\"]` yields... if ignore ALL wins, then select F has no effect. Let me verify Ruff's actual precedence to decide. Ruff documentation (docs.ruff.io/linter/#rule-selection):\n\n\"Note that the `ignore` option takes precedence over `select`. ... Ruff ... For example, ...\" Hmm. I strongly recall this statement from Ruff docs: \n\n> As such, the `ignore` option takes precedence over `select`.\n\nBut then there's the specificity note. Let me recall actual Ruff docs text (version 0.6):\n\n\"### How does Ruff determine which rules to run? Ruff ... The `select` and `ignore` options ... are resolved in the following order: ...\n1. `ignore` ... \nHmm.\n\nI remember from Ruff docs (linter.md, \"Rule selection\"):\n\n\"Ruff supports selectors of different specificity: exact codes (e.g., F401), prefixes (e.g., F), and ALL. ... When a rule is selected and ignored, the more specific selector wins. For example: \n```\n[lint]\nselect = [\"ALL\"]\nignore = [\"F401\"]\n```\ndisables F401. Conversely:\n```\n[lint]\nselect = [\"F401\"]\nignore = [\"ALL\"]\n```\nenables F401.\"\n\nHmm, actually I'm not sure the second example exists, but the specificity model does exist (\"Rules are resolved based on specificity: ALL < prefix < exact code\"). If so, `select = [\"F\"]` (prefix, specificity 2) beats `ignore = [\"ALL\"]` (specificity 1) → F enabled. And this pattern is actually documented in Ruff's FAQ as \"enabling a subset of rules\" using `ignore = [\"ALL\"]`? I believe Ruff docs mention: \"You can also use ALL with prefixes: e.g., `ignore = [\"ALL\"]` ...\" Hmm.\n\nGiven the existing config with S307 presumably worked (it's the whole point of the file), the pattern works. Fine.\n\nSo my final comments: notebook ones. I'll produce two (one for each hunk) or one? Two comments, anchored.\n\nAnchor 1: `     \"import threading\\n\",` — appears in hunk 1. But it also appears in hunk 2, so the matcher may map both comments to the same location? To make comment 2 distinct, anchor on `     \"      time.sleep(0.5)\\n\",` (only in hunk 2) — but wait, does that line exist in diff text with 5 spaces? The file content is `    \"      time.sleep(0.5)\\n\",` (4 spaces + quotes). Diff context lines add one leading space → `     \"      time.sleep(0.5)\\n\",` (5 spaces). But in the first cell of the file, line 198, the same content exists, but not in this diff.\n\nHmm, the tool says existing_code should be code lines, not including unchanged. Both my anchors are context lines in the diff, which is unavoidable here since there are no added lines. I'll do it.\n\nFor suggestion_code, I can suggest restoring imports. Since these lines are JSON strings, I'll provide the JSON-escaped form.\n\nLet me write comment 1:\ncontent: \"The imports removed from this cell (`time`, `socket`, `subprocess`, `urllib.request`) are still used further down in the same cell — `time.sleep()`, `socket.socket()`, `urllib.request.urlopen()` and `subprocess.Popen()`. They only exist if the user ran the cloudflared cell first, so running the localtunnel cell on its own (the documented fallback) now fails with `NameError`. Please restore the imports.\"\nexisting_code: `     \"import threading\\n\",`\nsuggestion: `     \"import subprocess\\n\",\\n     \"import threading\\n\",\\n     \"import time\\n\",\\n     \"import socket\\n\",\\n     \"import urllib.request\\n\",`\n\nHmm, suggestion_code formatting with escaped newlines inside JSON string could get mangled. Maybe keep suggestion simple: not provide suggestion_code, or provide as separate lines. I'll provide suggestion_code as multi-line string containing the JSON lines. Risky escaping; I'll omit suggestion_code for clarity.\n\nComment 2, anchored at `     \"      time.sleep(0.5)\\n\",`:\ncontent: \"Same issue in the colab iframe cell: `time` and `socket` were removed but are used by `time.sleep(0.5)` and `socket.socket(...)` in this cell.\"\n\nLet's produce both. Also should I mention severity: high (bug).\n\nThen call task_done.\n\nActually, maybe better to combine into one comment to avoid two similar ones. But different cells; two is fine and more precise.\n\nLet me finalize.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "notebooks/comfyui_colab.ipynb",
+        "content": "The same regression applies here: `import time` and `import socket` were removed, but this cell still calls `time.sleep(0.5)` and `socket.socket(socket.AF_INET, socket.SOCK_STREAM)`. Executing this cell without first running the cloudflared cell now fails with `NameError`. Please restore the two imports in this cell.",
+        "existing_code": "     \"      time.sleep(0.5)\\n\",",
+        "start_line": 289,
+        "end_line": 289,
+        "thinking": "These use `__all__`, so fine.\n\nI think the ruff.toml config is reasonable. One remaining potential concern: enabling all F rules also enables F401/F811 in `custom_nodes`? Not present in repo.\n\nAlso: ruff by default excludes? Fine.\n\nAnother potential concern in ruff.toml: does ruff.toml need `target-version`? no.\n\nI'll go with:\n1. Notebook comment (high) — imports removed but still used in the same cells → NameError.\n2. Maybe a second comment for the second cell.\n3. ruff.toml: skip or low trailing-newline. I'll include a low-severity note.\n\nActually, hold on. Let me reconsider notebook: is it possible that these cells deliberately rely on the cloudflared cell's imports, and the notebook is intended to be run top-to-bottom in Colab (\"Run all\")? Colab \"Run all\" runs every cell, and the earlier cell defines the imports globally. But the localtunnel cell is presented as an alternative that users might run after the cloudflared cell failed... If cloudflared cell failed at the `!dpkg` step, imports still executed (they're after the shell commands). Hmm, `!dpkg -i` failures don't stop Python execution in Colab. So imports would run. But if a user runs the localtunnel cell standalone (e.g., they don't want cloudflared at all), NameError.\n\nEven more: the markdown says \"Run ComfyUI with colab iframe (use only in case the previous way with localtunnel doesn't work)\" — meaning the iframe cell may be run without running the localtunnel cell, but cloudflared cell would have been run first typically.\n\nStill, this is a genuine regression in cell self-containment that makes the notebook cells fail on standalone execution. It's worth a medium/high comment. However, some might argue ruff-ish cleanups are harmless. But NameError at `time.sleep` is a hard failure. I'll report as high? I'd say \"high\" but note the conditional. Let's use severity high for notebook and medium for the iframe cell (or combine).\n\nAlso check the first cell (carry on) — the diff hunk 1: it removed `import subprocess` (was that previously used? yes `subprocess.Popen` at 206 in the cloudflared cell? no, that cell has its own imports). Hunk 1 in the task diff is the localtunnel cell (has `!npm install -g localtunnel`) removing subprocess/time/socket/urllib.request while code still uses them. Yes.\n\nNow the ruff.toml trailing newline: I'll comment low severity, suggesting adding a trailing newline. Is it worth it? It's inside the \"review each file\" requirement. I'll include it as a low-severity style note. Hmm, but risk of being seen as noise. The instructions say avoid commenting on non-functional elements such as comments/metadata unless requested. A missing EOF newline is arguably style. I'll skip it.\n\nActually, wait. Let me reconsider whether there's something else in ruff.toml worth flagging: `lint.ignore = [\"ALL\"]` yields... if ignore ALL wins, then select F has no effect. Let me verify Ruff's actual precedence to decide. Ruff documentation (docs.ruff.io/linter/#rule-selection):\n\n\"Note that the `ignore` option takes precedence over `select`. ... Ruff ... For example, ...\" Hmm. I strongly recall this statement from Ruff docs: \n\n> As such, the `ignore` option takes precedence over `select`.\n\nBut then there's the specificity note. Let me recall actual Ruff docs text (version 0.6):\n\n\"### How does Ruff determine which rules to run? Ruff ... The `select` and `ignore` options ... are resolved in the following order: ...\n1. `ignore` ... \nHmm.\n\nI remember from Ruff docs (linter.md, \"Rule selection\"):\n\n\"Ruff supports selectors of different specificity: exact codes (e.g., F401), prefixes (e.g., F), and ALL. ... When a rule is selected and ignored, the more specific selector wins. For example: \n```\n[lint]\nselect = [\"ALL\"]\nignore = [\"F401\"]\n```\ndisables F401. Conversely:\n```\n[lint]\nselect = [\"F401\"]\nignore = [\"ALL\"]\n```\nenables F401.\"\n\nHmm, actually I'm not sure the second example exists, but the specificity model does exist (\"Rules are resolved based on specificity: ALL < prefix < exact code\"). If so, `select = [\"F\"]` (prefix, specificity 2) beats `ignore = [\"ALL\"]` (specificity 1) → F enabled. And this pattern is actually documented in Ruff's FAQ as \"enabling a subset of rules\" using `ignore = [\"ALL\"]`? I believe Ruff docs mention: \"You can also use ALL with prefixes: e.g., `ignore = [\"ALL\"]` ...\" Hmm.\n\nGiven the existing config with S307 presumably worked (it's the whole point of the file), the pattern works. Fine.\n\nSo my final comments: notebook ones. I'll produce two (one for each hunk) or one? Two comments, anchored.\n\nAnchor 1: `     \"import threading\\n\",` — appears in hunk 1. But it also appears in hunk 2, so the matcher may map both comments to the same location? To make comment 2 distinct, anchor on `     \"      time.sleep(0.5)\\n\",` (only in hunk 2) — but wait, does that line exist in diff text with 5 spaces? The file content is `    \"      time.sleep(0.5)\\n\",` (4 spaces + quotes). Diff context lines add one leading space → `     \"      time.sleep(0.5)\\n\",` (5 spaces). But in the first cell of the file, line 198, the same content exists, but not in this diff.\n\nHmm, the tool says existing_code should be code lines, not including unchanged. Both my anchors are context lines in the diff, which is unavoidable here since there are no added lines. I'll do it.\n\nFor suggestion_code, I can suggest restoring imports. Since these lines are JSON strings, I'll provide the JSON-escaped form.\n\nLet me write comment 1:\ncontent: \"The imports removed from this cell (`time`, `socket`, `subprocess`, `urllib.request`) are still used further down in the same cell — `time.sleep()`, `socket.socket()`, `urllib.request.urlopen()` and `subprocess.Popen()`. They only exist if the user ran the cloudflared cell first, so running the localtunnel cell on its own (the documented fallback) now fails with `NameError`. Please restore the imports.\"\nexisting_code: `     \"import threading\\n\",`\nsuggestion: `     \"import subprocess\\n\",\\n     \"import threading\\n\",\\n     \"import time\\n\",\\n     \"import socket\\n\",\\n     \"import urllib.request\\n\",`\n\nHmm, suggestion_code formatting with escaped newlines inside JSON string could get mangled. Maybe keep suggestion simple: not provide suggestion_code, or provide as separate lines. I'll provide suggestion_code as multi-line string containing the JSON lines. Risky escaping; I'll omit suggestion_code for clarity.\n\nComment 2, anchored at `     \"      time.sleep(0.5)\\n\",`:\ncontent: \"Same issue in the colab iframe cell: `time` and `socket` were removed but are used by `time.sleep(0.5)` and `socket.socket(...)` in this cell.\"\n\nLet's produce both. Also should I mention severity: high (bug).\n\nThen call task_done.\n\nActually, maybe better to combine into one comment to avoid two similar ones. But different cells; two is fine and more precise.\n\nLet me finalize.",
+        "category": "bug",
+        "severity": "high"
+      }
+    ],
+    "groups": [
+      {
+        "label": "Server routes and API server",
+        "files": [
+          "api_server/routes/internal/internal_routes.py",
+          "server.py"
+        ]
+      },
+      {
+        "label": "Comfy core model, attention, and patcher",
+        "files": [
+          "comfy/controlnet.py",
+          "comfy/ldm/modules/sub_quadratic_attention.py",
+          "comfy/patcher_extension.py"
+        ]
+      },
+      {
+        "label": "CLIP SDXL nodes",
+        "files": [
+          "comfy_extras/nodes_clip_sdxl.py"
+        ]
+      },
+      {
+        "label": "Execution engine",
+        "files": [
+          "execution.py"
+        ]
+      },
+      {
+        "label": "Notebook and lint configuration",
+        "files": [
+          "notebooks/comfyui_colab.ipynb",
+          "ruff.toml"
+        ]
+      }
+    ],
+    "session_id": "4c36b18e-42e6-4b20-96fd-e0f01c0df136",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "4c36b18e-42e6-4b20-96fd-e0f01c0df136",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "5a21f0bac9225fb66f57cbb8c788ef1f25c317547ad194559d74f737a5beecad"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "6c0377f43e7b6ed58d48ae05cff9bc45b52ef5e0",
+        "requested_head": "0bb60235132cc72daea81427107a40ba1ccb5ddf",
+        "resolved_base": "2cddbf0821c0e9b74993b2e2b546af2b0d57aa2c",
+        "resolved_head": "0bb60235132cc72daea81427107a40ba1ccb5ddf",
+        "exact_range": "2cddbf0821c0e9b74993b2e2b546af2b0d57aa2c..0bb60235132cc72daea81427107a40ba1ccb5ddf",
+        "source_artifact_sha256": "4f41d80d16001913172c1a08a0efa9e17a610058fa6d0356fc7292af55077f5a"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "0091142e5b2a007cb58855f4348372980ac1b0a6bb8037b47f3b9953a6027e32",
+            "path": "api_server/routes/internal/internal_routes.py",
+            "fingerprint": "c07a81c9905bd89c71c848566ed73fa820991b9a8b9111f668af2bbafe10a819"
+          },
+          {
+            "item_id": "2723a25d2c7618428438077c6fff7fc9c2285e93d28dda051e51c2786aaeb446",
+            "path": "server.py",
+            "fingerprint": "a5c64074a167af14dd801639e920c023de342a85c82b7fd321ba2dcefdf3c5a5"
+          },
+          {
+            "item_id": "478ed18dd9b6d764425778e302704c894ac8ce7ec40eb395a0f626251d405ee0",
+            "path": "ruff.toml",
+            "fingerprint": "56f6c5e4cd5ac5310dba3c7bee33c75774a56134cfeebc3aea8df9c80ffd7ecf"
+          },
+          {
+            "item_id": "67ffe460eb5ccafc782fab55b48ff34ec26cad0a28526e2a64cb43e724bd64f9",
+            "path": "comfy/controlnet.py",
+            "fingerprint": "3973c0d7c1130d4fae8e656d778cc6ee434798d4ba974a2fb9e61a4362a54d2b"
+          },
+          {
+            "item_id": "73ba59a8da9402c0badc7f7d8b05a31b0b9a2aeabc16d99a03c22be23d6589fa",
+            "path": "notebooks/comfyui_colab.ipynb",
+            "fingerprint": "2c63187fa722d79e30d76dfad86066efd76452faa48053b2624c1f837e5db441"
+          },
+          {
+            "item_id": "8c23de8f547cf504db7f1c81d6972553555c5f288502bff2f0cb6afc0073711b",
+            "path": "comfy/ldm/modules/sub_quadratic_attention.py",
+            "fingerprint": "bcb870ad38ac7667fbec304f9f561eee08dc45047790166c275620b498e36886"
+          },
+          {
+            "item_id": "cf4c29aab6dd51585bf4f295f3636781fff4fca55343e86daaeab70cba18dc22",
+            "path": "comfy/patcher_extension.py",
+            "fingerprint": "a7e9463e5cd0ae4cd40f12e30ff0135108e29f233f0642333e772a24bfe22143"
+          },
+          {
+            "item_id": "db30c46ac47eb841093eaa7ce52f97fe0e2b3c0a8542907de94244472e05c73f",
+            "path": "comfy_extras/nodes_clip_sdxl.py",
+            "fingerprint": "f7964947c50dedb42da9a625e7680dce594ad85b863b127e1e1427fcd71fd232"
+          },
+          {
+            "item_id": "ffc453c607dda2539d662036e2600fcfd1223e102a4fb36e557c58c0f302eb58",
+            "path": "execution.py",
+            "fingerprint": "8854a17ba74849a95e5362ee678b537f52eecc3b50b069f56ddbc8de37604313"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "0091142e5b2a007cb58855f4348372980ac1b0a6bb8037b47f3b9953a6027e32",
+            "path": "api_server/routes/internal/internal_routes.py",
+            "fingerprint": "c07a81c9905bd89c71c848566ed73fa820991b9a8b9111f668af2bbafe10a819"
+          },
+          {
+            "item_id": "2723a25d2c7618428438077c6fff7fc9c2285e93d28dda051e51c2786aaeb446",
+            "path": "server.py",
+            "fingerprint": "a5c64074a167af14dd801639e920c023de342a85c82b7fd321ba2dcefdf3c5a5"
+          },
+          {
+            "item_id": "478ed18dd9b6d764425778e302704c894ac8ce7ec40eb395a0f626251d405ee0",
+            "path": "ruff.toml",
+            "fingerprint": "56f6c5e4cd5ac5310dba3c7bee33c75774a56134cfeebc3aea8df9c80ffd7ecf"
+          },
+          {
+            "item_id": "67ffe460eb5ccafc782fab55b48ff34ec26cad0a28526e2a64cb43e724bd64f9",
+            "path": "comfy/controlnet.py",
+            "fingerprint": "3973c0d7c1130d4fae8e656d778cc6ee434798d4ba974a2fb9e61a4362a54d2b"
+          },
+          {
+            "item_id": "73ba59a8da9402c0badc7f7d8b05a31b0b9a2aeabc16d99a03c22be23d6589fa",
+            "path": "notebooks/comfyui_colab.ipynb",
+            "fingerprint": "2c63187fa722d79e30d76dfad86066efd76452faa48053b2624c1f837e5db441"
+          },
+          {
+            "item_id": "8c23de8f547cf504db7f1c81d6972553555c5f288502bff2f0cb6afc0073711b",
+            "path": "comfy/ldm/modules/sub_quadratic_attention.py",
+            "fingerprint": "bcb870ad38ac7667fbec304f9f561eee08dc45047790166c275620b498e36886"
+          },
+          {
+            "item_id": "cf4c29aab6dd51585bf4f295f3636781fff4fca55343e86daaeab70cba18dc22",
+            "path": "comfy/patcher_extension.py",
+            "fingerprint": "a7e9463e5cd0ae4cd40f12e30ff0135108e29f233f0642333e772a24bfe22143"
+          },
+          {
+            "item_id": "db30c46ac47eb841093eaa7ce52f97fe0e2b3c0a8542907de94244472e05c73f",
+            "path": "comfy_extras/nodes_clip_sdxl.py",
+            "fingerprint": "f7964947c50dedb42da9a625e7680dce594ad85b863b127e1e1427fcd71fd232"
+          },
+          {
+            "item_id": "ffc453c607dda2539d662036e2600fcfd1223e102a4fb36e557c58c0f302eb58",
+            "path": "execution.py",
+            "fingerprint": "8854a17ba74849a95e5362ee678b537f52eecc3b50b069f56ddbc8de37604313"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 194387
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

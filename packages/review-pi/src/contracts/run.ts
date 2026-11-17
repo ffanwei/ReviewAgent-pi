@@ -34,6 +34,12 @@ export interface PhaseRecord {
   readonly note?: string;
   /** 解析失败的可机读留痕（只在失败时出现；CLI 据此在 stderr 报一行） */
   readonly parseFailure?: PhaseParseFailure;
+  /** 同一阶段因解析失败追加的模型请求次数（0/缺省 = 未重试） */
+  readonly parseRetries?: number;
+  /** 追加请求后是否解析成功（仅在发生过恢复时出现） */
+  readonly parseRecovered?: boolean;
+  /** 解析恢复来源：同会话重试 / 离线 salvage / 短窗口 LLM 修复 */
+  readonly parseRecovery?: "retry" | "offline" | "short-llm";
 }
 
 /** 一次工具调用的留痕 */
@@ -234,6 +240,8 @@ export interface ShardAuditRecord {
   readonly usage: LlmUsage;
   readonly rounds: number;
   readonly toolCalls: number;
+  /** Partial success（ADR-0094）：失败片的人话原因；成功片省键。 */
+  readonly error?: string;
 }
 
 /**
@@ -308,6 +316,40 @@ export interface ModelFallbackRecord {
   readonly reason: "model-not-found";
 }
 
+/** 语义分组留痕（ADR-0095）：只在 grouping 开启且真实规划时在场。 */
+export interface GroupingAuditRecord {
+  readonly source: "llm" | "path" | "fallback";
+  readonly groups: number;
+  readonly error?: string;
+  readonly usage?: LlmUsage;
+}
+
+/** 零 findings 文件补充检视留痕（分组实验）。 */
+export interface CoveragePassRecord {
+  readonly files: number;
+  readonly candidates: number;
+  readonly findings: number;
+  readonly errors: number;
+  readonly usage?: LlmUsage;
+}
+
+/** 分组输出预算留痕（ADR-0094）：记录上限与实际丢弃条数。 */
+export interface FindingBudgetRecord {
+  readonly perShard: number;
+  readonly perRun: number;
+  readonly droppedPerShard: number;
+  readonly droppedPerRun: number;
+}
+
+/** 规则选择留痕（ADR-0095）：每个 pass 实际注入的规则 id 与截断事实。 */
+export interface RuleSelectionAuditRecord {
+  readonly files: readonly string[];
+  readonly ruleIds: readonly string[];
+  readonly chars: number;
+  readonly matchedRules: number;
+  readonly truncated: boolean;
+}
+
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
@@ -323,6 +365,14 @@ export interface RunAudit {
   readonly ruleSkill?: readonly RuleSkillAudit[];
   /** skill 会话执行留痕（粒度 round × skill；恒为数组：N=0 ⇒ 空数组） */
   readonly skillPassLog?: readonly RuleSkillPassRecord[];
+  /** 语义分组留痕（ADR-0095）：只有 grouping 开启且真实规划时在场。 */
+  readonly grouping?: GroupingAuditRecord;
+  /** 规则选择留痕（ADR-0095）：只在规则目录启用且命中规则时在场。 */
+  readonly ruleSelection?: RuleSelectionAuditRecord;
+  /** 分组输出预算留痕：只在 grouping.enabled 时在场。 */
+  readonly findingBudget?: FindingBudgetRecord;
+  /** 零 findings 文件补充检视留痕：只在分组实验实际执行时在场。 */
+  readonly coveragePass?: CoveragePassRecord;
   /**
    * 分片留痕（ADR-0039）：只在分片模式出现；单片路径整键缺席（零漂移）。
    * 聚合审计里 `requests` 等正文为空数组，正文在各片审计文件里。

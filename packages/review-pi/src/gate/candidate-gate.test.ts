@@ -102,6 +102,28 @@ test("无裁决或裁决不通过被 VERIFICATION_FAILED 拦截", () => {
   expect(rejected.rejections[0]?.reason).toContain("evidence does not support the claim");
 });
 
+test("failOpenVerification：无裁决或裁决不通过仍保留候选", () => {
+  const missing = applyCandidateGate({
+    candidates: [VALID_CANDIDATE],
+    verdicts: new Map(),
+    emittedIds: new Set(),
+    round: 1,
+    failOpenVerification: true,
+  });
+  expect(missing.findings).toHaveLength(1);
+  expect(missing.rejections).toEqual([]);
+
+  const rejected = applyCandidateGate({
+    candidates: [VALID_CANDIDATE],
+    verdicts: verdicts({ F001: { pass: false, reason: "insufficient evidence" } }),
+    emittedIds: new Set(),
+    round: 1,
+    failOpenVerification: true,
+  });
+  expect(rejected.findings).toHaveLength(1);
+  expect(rejected.rejections).toEqual([]);
+});
+
 test("已产出的内容键被 DUPLICATE_ID 拦截（不按 id 判重）", () => {
   const out = applyCandidateGate({
     candidates: [VALID_CANDIDATE],

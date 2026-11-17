@@ -1,0 +1,352 @@
+{
+  "generatedAt": "2026-11-15T04:33:00.691Z",
+  "runId": "20261115_042855_568",
+  "source": "mr",
+  "caseId": "cline__cline@d0a8db8",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/api/providers/sapaicore.ts",
+      "line": 449,
+      "title": "finish_reason 判断改用非可选链，choices 为空数组时会抛 TypeError",
+      "description": "原代码使用 `data.choices?.[0]?.finish_reason === \"stop\"`，本次改为 `data.choices && data.choices[0].finish_reason === \"stop\"`。空数组 `[]` 在 JS 中为 truthy，因此 `data.choices[0]` 为 undefined，再读取 `.finish_reason` 会抛 TypeError；异常被同层 catch 捕获后只打印 \"Failed to parse GPT JSON data\"，导致该 chunk 后续解析被跳过、结束时的 usage 汇总丢失，并且日志中出现误导性的解析失败报错。",
+      "evidence": [
+        "src/api/providers/sapaicore.ts:449 — if (data.choices && data.choices[0].finish_reason === \"stop\")",
+        "src/api/providers/sapaicore.ts:427-436 — 上方分支用 data.choices.length > 0 判断，说明 choices 可能为空数组",
+        "src/api/providers/sapaicore.ts:442-447 — usage 汇总依赖该分支之后的逻辑",
+        "diff 中该行为 `- if (data.choices?.[0]?.finish_reason === \"stop\")` → `+ if (data.choices && data.choices[0].finish_reason === \"stop\")`"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 可选链被替换为真值判断，数组首元素访问缺少判空。影响评估：SSE 流中出现空 choices 的 chunk 时抛 TypeError，被 catch 吞掉后丢失 usage 上报并污染错误日志；仅影响 SAP AI Core 的 GPT 系模型对话。",
+        "suggestion": "[重构思路] 恢复可选链，或统一使用可读的守卫写法。代码示例：`const finishReason = data.choices?.[0]?.finish_reason; if (finishReason === \"stop\") { ... }`",
+        "subcategory": "空数组越界访问"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "安全",
+      "file": "src/api/providers/sapaicore.ts",
+      "line": 425,
+      "title": "流式响应被整体 console.log 输出，可能泄露用户代码与提示词",
+      "description": "新增的三处 `console.log(\"Received data:\", data)` / `console.log(\"Received GPT data:\", data)` 会把每个 SSE chunk 解析后的完整对象（含模型输出文本、疑似用户内容）写入扩展输出通道。这类日志会进入开发者工具/输出面板，可能通过日志收集或截图外泄用户源码，同时在高频流式场景下带来明显的日志与字符串化开销。",
+      "evidence": [
+        "src/api/providers/sapaicore.ts:425 — console.log(\"Received GPT data:\", data)",
+        "src/api/providers/sapaicore.ts:286 — diff 新增 console.log(\"Received data:\", data)",
+        "src/api/providers/sapaicore.ts:349 — diff 新增 console.log(\"Received data:\", data)"
+      ],
+      "rule": "SECURITY-LOG-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 敏感数据写入日志（调试日志残留）。影响评估：模型回复/会话内容外泄风险，并显著增加日志量；该类调试输出不应进入发布版本。",
+        "suggestion": "[重构思路] 删除调试日志；如需排障，改为受开关控制的 debug 级别日志且只输出元信息（如 chunk 长度、choices 数量）。代码示例：`if (DEBUG_SPAI_STREAM) console.debug(\"[sapaicore] chunk\", { choices: data.choices?.length, hasUsage: !!data.usage })`",
+        "subcategory": "调试日志泄露"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/api/providers/anthropic.ts",
+      "line": 14,
+      "title": "API key 校验被删除且 client 提前到构造函数创建，错误时机与错误信息双双退化",
+      "description": "本次在 20+ 个 provider 中删除了 ensureClient()，其中包含各自的显式校验（如 `throw new Error(\"Anthropic API key is required\")`、`\"OpenAI API key is required\"`、`\"You don't seem to be logged in to a Cline account.\"`、`\"Vertex AI project ID is required\"`），改为构造期直接 `new Anthropic({ apiKey: this.options.apiKey })`。由此产生两个后果：(1) 缺少 key 时不再给出本地化的明确提示，而是由 SDK 在构造时抛英文默认错误（如 ANTHROPIC_API_KEY/OPENAI_API_KEY 缺失），甚至被静默地用空字符串 key 构造（cline.ts 的 `apiKey: this.options.clineApiKey || \"\"`），把问题推迟到请求阶段的 401；(2) 抛错时机从 createMessage 提前到 buildApiHandler，而 buildApiHandler 被 Task 构造器（src/core/task/index.ts:256）、updateApiConfigurationProto.ts:42、updateSettings.ts:24、controller/index.ts:484/1009 等配置更新路径调用，用户仅切换 provider/模型就可能直接收到异常，而 updateApiConfigurationProto 里配置已先落盘，出现“配置已保存但 handler 未更新”的不一致状态。",
+      "evidence": [
+        "src/api/providers/anthropic.ts:12-18 — 构造函数内直接 new Anthropic({ apiKey: this.options.apiKey })，diff 删除了 if (!this.options.apiKey) throw new Error(\"Anthropic API key is required\")",
+        "src/api/providers/cline.ts — diff 删除了 if (!this.options.clineApiKey) throw new Error(\"You don't seem to be logged in to a Cline account.\")，改为 apiKey: this.options.clineApiKey || \"\"",
+        "src/api/index.ts:100-122 — buildApiHandler 仅在 thinkingBudgetTokens 分支内 try/catch，第 121 行 return createHandlerForProvider(apiProvider, options) 会把构造异常抛给调用方",
+        "src/core/task/index.ts:256 — this.api = buildApiHandler(effectiveApiConfiguration)（Task 构造器，无 try/catch）",
+        "src/core/controller/models/updateApiConfigurationProto.ts:35-43 — 先 await updateApiConfiguration(...) 落盘，再 buildApiHandler(appApiConfiguration)"
+      ],
+      "rule": "API-CONTRACT-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 前置校验被移除 + 初始化时机前移导致错误面扩大。影响评估：缺 key / 未登录场景下报错信息不可读（英文 SDK 文案）、可能以空 key 发请求；provider 切换与任务创建路径可能直接抛异常，且配置文件已写入造成状态不一致。",
+        "suggestion": "[重构思路] 保留构造期的显式 key 校验（抛出可读错误），并把 client 构造保持在 createMessage 首次使用时惰性创建，或在 buildApiHandler 的错误处理中统一转换为用户可读提示并保证配置回滚/不落盘。代码示例：`constructor(options) { this.options = options; if (!options.apiKey) throw new Error(\"Anthropic API key is required\") }`，并在 updateApiConfigurationProto 中先 `const handler = buildApiHandler(appApiConfiguration)` 成功后再 `await updateApiConfiguration(...)`。",
+        "subcategory": "凭据校验与初始化时机"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/api/providers/vertex.ts",
+      "line": 24,
+      "title": "VertexHandler 构造期同时创建 Gemini 与 Claude 客户端，Gemini 路径被 Claude 客户端构造失败连带拖垮",
+      "description": "改动前 GeminiHandler 与 AnthropicVertex 都是惰性创建：只在 `!modelId.includes(\"claude\")` 之外才会走 ensureAnthropicClient()，且该函数会先校验 vertexProjectId / vertexRegion 并给出明确错误。改动后两者都在构造函数中无条件创建，且 vertexProjectId/vertexRegion 的校验被删除，直接把可能为 undefined 的 `this.options.vertexProjectId` / `this.options.vertexRegion` 传入 AnthropicVertex。结果是：选择 Vertex 上的 Gemini 模型时也会先构造 Claude 客户端，一旦该构造因缺少 project/region 失败，Gemini 对话完全不可用；同时原本清晰的校验错误退化为 SDK/Google Auth 的底层异常。",
+      "evidence": [
+        "src/api/providers/vertex.ts:14-29 — 构造函数中同时执行 this.geminiHandler = new GeminiHandler({...options, isVertex: true}) 和 this.clientAnthropic = new AnthropicVertex({ projectId: this.options.vertexProjectId, region: this.options.vertexRegion })",
+        "diff 中删除了 ensureAnthropicClient() 内的 if (!this.options.vertexProjectId) throw new Error(\"Vertex AI project ID is required\") 与 if (!this.options.vertexRegion) throw new Error(\"Vertex AI region is required\")",
+        "src/api/providers/vertex.ts:36-40 — Gemini 模型分支只使用 this.geminiHandler，与 clientAnthropic 无依赖"
+      ],
+      "rule": "LIFECYCLE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 无条件的构造期初始化 + 前置校验删除。影响评估：Vertex 上使用 Gemini 模型的用户会因不相关的 Claude 客户端初始化失败而无法使用；错误信息从明确提示退化为底层异常。",
+        "suggestion": "[重构思路] 保留按模型分支的惰性创建，或至少在构造期恢复显式校验；也可把 AnthropicVertex 的创建延后到 claude 分支内。代码示例：`private ensureAnthropicClient(): AnthropicVertex { if (!this.options.vertexProjectId) throw new Error(\"Vertex AI project ID is required\"); if (!this.options.vertexRegion) throw new Error(\"Vertex AI region is required\"); return (this.clientAnthropic ??= new AnthropicVertex({ projectId: this.options.vertexProjectId, region: this.options.vertexRegion })) }`",
+        "subcategory": "初始化时机与校验缺失"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/utils/path.ts",
+      "line": 127,
+      "title": "isLocatedInWorkspace 改为只比对单个/当前编辑器所在工作区，多根工作区判定失真且丢失空路径保护",
+      "description": "重写后的 isLocatedInWorkspace 不再遍历所有 workspace 根，而是先用 getWorkspacePath() 取“当前活动编辑器所在工作区，否则第一个工作区”，再判断目标是否落在其中。多根（multi-root）工作区下，当用户在 A 根打开文件、而工具操作目标位于 B 根时，结果会返回 false，表现为“操作在工作区外”，导致需要额外的用户确认；且该结果随当前打开的编辑器变化而不稳定。此外旧实现 isLocatedInPath 有 `if (!dirPath || !pathToCheck) return false` 的保护，新实现没有：当无工作区（getCwd() 返回 \"\"）或 pathToCheck 为空串时，`path.resolve(\"\", \"\")` 会退化为进程 cwd，`path.relative` 结果不再是 \"..\"，从而错误地返回 true。该方法被 ToolExecutor 11 处用于 operationIsLocatedInWorkspace，直接影响工具调用的审批判定。",
+      "evidence": [
+        "src/utils/path.ts:127-143 — isLocatedInWorkspace 先 const workspacePath = await getWorkspacePath()，再用 path.relative(normalizedWorkspace, normalizedPath) 判断",
+        "src/utils/path.ts:117-125 — getWorkspacePath 使用 vscode.workspace.getWorkspaceFolder(currentFileUri)?.uri.fsPath || cwdPath，即仅取单个根",
+        "diff 中被删除的 isLocatedInPath 含保护：if (!dirPath || !pathToCheck) { return false }",
+        "src/core/task/ToolExecutor.ts:572/643/786/817/868/900/943/972/1019/1056 — operationIsLocatedInWorkspace: await isLocatedInWorkspace(...)"
+      ],
+      "rule": "PATH-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 多根工作区语义收窄 + 边界输入缺少守卫。影响评估：多根项目下读写/命令类工具的“是否在工作区内”判定可能翻转，触发多余的审批弹窗或与预期相反的判定；空路径/无工作区场景会误判为“在工作区内”。",
+        "suggestion": "[重构思路] 恢复遍历全部 workspace 根逐个判断，并保留空值守卫；只把 getWorkspacePath 用于“展示/默认 cwd”用途。代码示例：`export const isLocatedInWorkspace = async (p = \"\"): Promise<boolean> => { if (!p) return false; const roots = (await getHostBridgeProvider().workspaceClient.getWorkspacePaths({})).paths; if (!roots.length) return false; const abs = path.resolve(roots[0], p); return roots.some((root) => isLocatedInPath(root, abs)) }`",
+        "subcategory": "工作区边界判定"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/core/controller/file/getRelativePaths.ts",
+      "line": 28,
+      "title": "URI 解析改走 gRPC 后用手工字符串拼接重建，丢失 query/fragment 且破坏非层级 scheme",
+      "description": "原实现是 `vscode.Uri.parse(uriString, true)`（strict 模式），改动后先调用 host bridge 的 uriServiceClient.parse 拿到 {scheme, authority, path}，再用模板串 `${parseResponse.scheme}://${parseResponse.authority}${parseResponse.path}` 重新构造一个 URI 字符串并二次 parse。该重建过程丢弃了 query 与 fragment（例如带 `?ref=` 的 URI），并且对非层级 scheme（如 `untitled:`、`vscode-remote:` 之外的简单 scheme，authority 为空）会拼出 `scheme://path` 这类非原样 URI，导致后续 asRelativePath / fs.stat 结果不正确。此外原始 strict=true 的严格校验也不再存在，非法 URI 不再快速失败。同时每个 URI 都新增了一次跨进程 gRPC 往返（Promise.all 中并发 N 次），对批量拖拽/多选文件场景是净性能开销。",
+      "evidence": [
+        "src/core/controller/file/getRelativePaths.ts:23-28 — await getHostBridgeProvider().uriServiceClient.parse(StringRequest.create({ value: uriString })) 后用 `vscode.Uri.parse(`${parseResponse.scheme}://${parseResponse.authority}${parseResponse.path}`)` 重建",
+        "src/core/controller/file/getRelativePaths.ts:30 — vscode.workspace.asRelativePath(fileUri, false) 依赖重建后的 URI",
+        "diff 中删除的原实现为 `const fileUri = vscode.Uri.parse(uriString, true)`（strict 解析）",
+        "src/hosts/vscode/uri/parse.ts:8-18 — host 侧 parse 只回传 scheme/authority/path/query/fragment/fs_path，前端仅使用了前三个字段"
+      ],
+      "rule": "IPC-URI-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 跨进程 URI 往返 + 手工拼接导致信息丢失。影响评估：带 query/fragment 的 URI 与非常规 scheme 的 URI 相对路径计算错误（文件被丢弃或回退为绝对路径），并引入每个 URI 一次的额外 IPC 延迟。",
+        "suggestion": "[重构思路] 直接用返回的 fs_path（或让 host 侧返回 uri.toString()）构造 URI，避免手工拼接；能本地完成的解析不要走 host bridge。代码示例：`const { fsPath } = await getHostBridgeProvider().uriServiceClient.parse(...); const fileUri = vscode.Uri.file(fsPath);` 或直接保留 `vscode.Uri.parse(uriString, true)`。",
+        "subcategory": "URI 解析正确性"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/core/controller/file/getRelativePaths.ts",
+      "line": 29,
+      "title": "提交中残留 [DEBUG] 调试日志",
+      "description": "新增的 `console.log(\"[DEBUG] UriServiceClient.parse:\", fileUri)` 位于每个 URI 的处理循环内，批量转换时会按文件数量刷屏扩展输出通道，属于调试遗留代码。",
+      "evidence": [
+        "src/core/controller/file/getRelativePaths.ts:29 — console.log(\"[DEBUG] UriServiceClient.parse:\", fileUri)",
+        "该行位于 request.uris.map(async (uriString) => { ... }) 的循环体内"
+      ],
+      "rule": "STYLE-LOG-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 调试日志残留。影响评估：日志噪声、误导排障，且在高频路径上产生额外 I/O 开销。",
+        "suggestion": "[重构思路] 删除该行；若确需可观测性，改用统一 logger 且仅在失败分支输出。代码示例：`// 删除 console.log(\"[DEBUG] ...\")`",
+        "subcategory": "调试代码残留"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/core/controller/index.ts",
+      "line": 473,
+      "title": "登录成功后不再标记 welcomeViewCompleted，欢迎页可能一直不消失",
+      "description": "handleAuthCallback 中原有的 `await updateGlobalState(this.context, \"welcomeViewCompleted\", true)`（注释为“Mark welcome view as completed since user has successfully logged in”）被删除。当前欢迎页只有点击 “Let's go!” 时通过 StateServiceClient.setWelcomeViewCompleted 才会被标记完成；而“Get Started for Free”按钮（handleLogin）只发起登录，不设置该标记。因此走 OAuth 登录的用户在回调完成后 welcomeViewCompleted 仍为 false/undefined，webview 端 `setShowWelcome(!newState.welcomeViewCompleted)` 会继续展示欢迎页，用户需要额外操作才能进入主界面。",
+      "evidence": [
+        "src/core/controller/index.ts:464-488 — handleAuthCallback 内只更新 apiProvider 与 apiConfiguration，diff 中删除了 updateGlobalState(this.context, \"welcomeViewCompleted\", true)",
+        "webview-ui/src/components/welcome/WelcomeView.tsx:17-29 — handleLogin 仅调用 AccountServiceClient.accountLoginClicked，只有 handleSubmit 调用 setWelcomeViewCompleted(true)",
+        "webview-ui/src/context/ExtensionStateContext.tsx:282 — setShowWelcome(!newState.welcomeViewCompleted)",
+        "src/core/controller/state/setWelcomeViewCompleted.ts:15 — 唯一写入点为该独立 RPC"
+      ],
+      "rule": "STATE-001",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 状态未持久化导致 UI 流程卡住。影响评估：通过账号登录的新用户在认证回调后仍停留在欢迎页，属于首次使用主流程的功能回退。",
+        "suggestion": "[重构思路] 恢复登录成功后的完成标记，或让 webview 在收到 auth callback 事件时显式调用 setWelcomeViewCompleted(true)。代码示例：`await updateGlobalState(this.context, \"welcomeViewCompleted\", true)` 放入 handleAuthCallback 成功分支。",
+        "subcategory": "首次使用流程状态"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "webview-ui/src/components/mcp/configuration/tabs/marketplace/McpMarketplaceView.tsx",
+      "line": 64,
+      "title": "下载成功后不再清除上一次的下载错误提示",
+      "description": "改造后卡片只负责发起请求，错误通过 mcpDownloadDetails 消息回传：View 的 handleMessage 仅在 `message.error` 存在时 setError，成功消息里没有 error 字段，因此不会清除旧错误；同时 McpMarketplaceCard 中原有的 `setError(null)`（成功分支）已被删除，唯一清除点是 marketplace catalog 变化时的 setError(null)。结果是用户下载失败看到错误提示后再重试成功，错误提示仍留在界面上。",
+      "evidence": [
+        "webview-ui/src/components/mcp/configuration/tabs/marketplace/McpMarketplaceView.tsx:61-68 — 仅在 if (message.error) 时 setError(message.error)",
+        "webview-ui/src/components/mcp/configuration/tabs/marketplace/McpMarketplaceView.tsx:81-88 — 只有 mcpMarketplaceCatalog?.items 到达时才 setError(null)",
+        "webview-ui/src/components/mcp/configuration/tabs/marketplace/McpMarketplaceCard.tsx — diff 删除了成功分支的 setError(null) 与 setError prop",
+        "src/core/controller/mcp/downloadMcp.ts:57-61 — 成功消息只带 mcpDownloadDetails，不带 error"
+      ],
+      "rule": "UI-STATE-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 状态机未在成功路径复位。影响评估：成功重试后仍显示陈旧的错误提示，误导用户认为下载失败。",
+        "suggestion": "[重构思路] 在 mcpDownloadDetails 消息处理中无论成功失败都先复位错误，再按 error 设置。代码示例：`if (message.type === \"mcpDownloadDetails\") { setError(message.error ?? null) }`",
+        "subcategory": "UI 状态复位"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/core/controller/task/newTask.ts",
+      "line": 4,
+      "title": "新增但未使用的导入 handleFileServiceRequest",
+      "description": "本次为 newTask.ts 新增了 `import { handleFileServiceRequest } from \"../file\"`，但文件内 newTask 函数从未使用该符号。在启用 noUnusedLocals/eslint no-unused-vars 的构建下会导致 lint 失败或噪声，属于无关的遗留改动。",
+      "evidence": [
+        "src/core/controller/task/newTask.ts:4 — import { handleFileServiceRequest } from \"../file\"",
+        "src/core/controller/task/newTask.ts:12-15 — newTask 仅调用 controller.initTask(request.text, request.images, request.files) 后返回 Empty.create()，未引用该导入"
+      ],
+      "rule": "LINT-UNUSED-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 未使用导入。影响评估：可能导致 CI lint 失败，并给阅读者造成“该文件参与 file service 注册”的错误暗示。",
+        "suggestion": "[重构思路] 删除该导入，或若确实需要注册 file service 处理，则补齐实际调用并说明用途。代码示例：`// 删除 import { handleFileServiceRequest } from \"../file\"`",
+        "subcategory": "未使用导入"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/hosts/host-providers.ts",
+      "line": 4,
+      "title": "host-providers.ts 新增未使用的 vscode 导入",
+      "description": "本次为 src/hosts/host-providers.ts 添加了 `import * as vscode from \"vscode\"`，但该文件只包含 WebviewProviderCreator / HostBridgeClientProvider 的注入与读取逻辑，未使用 vscode 命名空间。该文件也会被 standalone 构建引用，多余的 vscode 导入会带来不必要的依赖耦合风险。",
+      "evidence": [
+        "src/hosts/host-providers.ts:4 — import * as vscode from \"vscode\"",
+        "src/hosts/host-providers.ts:9-37 — 全文仅使用 WebviewProvider、HostBridgeClientProvider、WebviewProviderType，未出现 vscode.* 调用"
+      ],
+      "rule": "LINT-UNUSED-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 未使用导入。影响评估：lint 噪声与宿主耦合；在非 VS Code 运行时该模块被迫加载 vscode 模块。",
+        "suggestion": "[重构思路] 移除该导入。代码示例：`// 删除 import * as vscode from \"vscode\"`",
+        "subcategory": "未使用导入"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/core/storage/state.ts",
+      "line": 32,
+      "title": "批量写入函数用宽类型 + 强制断言，绕过了 GlobalStateKey/SecretKey 的编译期校验",
+      "description": "updateGlobalStateBatch / updateSecretsBatch 接收 Record<string, any> 与 Record<string, string|undefined>，内部再 `key as GlobalStateKey`、`key as SecretKey` 强制断言。这使调用方传入任意字符串键都不会被类型系统拦截，键名拼写错误会静默写入无效 state（并且这些键将来会被 getAllExtensionState 忽略），与项目已有的强类型 state-keys 约定相违背。同时两个批量函数各自新增 PERF 日志，进一步放大了这条热路径的日志量。",
+      "evidence": [
+        "src/core/storage/state.ts:32 — export async function updateGlobalStateBatch(context, updates: Record<string, any>)",
+        "src/core/storage/state.ts:37 — context.globalState.update(key as GlobalStateKey, value)",
+        "src/core/storage/state.ts:43-48 — updateSecretsBatch 使用 Record<string, string | undefined> 并 key as SecretKey",
+        "src/core/storage/state.ts:5 — 项目本已从 ./state-keys 引入 GlobalStateKey/SecretKey 做键名约束"
+      ],
+      "rule": "TYPE-SAFETY-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 类型断言旁路。影响评估：批量写入的键名失去编译期保护，错误键名会静默丢失配置，且排查困难（表现为设置“保存后不生效”）。",
+        "suggestion": "[重构思路] 用映射类型约束键集合，调用处用 `satisfies` 保证完整性。代码示例：`export async function updateGlobalStateBatch(context: vscode.ExtensionContext, updates: Partial<Record<GlobalStateKey, any>>) { await Promise.all(Object.entries(updates).map(([k, v]) => context.globalState.update(k as GlobalStateKey, v))) }`",
+        "subcategory": "类型断言滥用"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/core/storage/state.ts",
+      "line": 80,
+      "title": "高频路径中新增大量 [PERF] console.log，且含硬编码耗时承诺",
+      "description": "getAllExtensionState（每次 postStateToWebview 都会走）、updateApiConfiguration、updateApiConfigurationProto 与前端 handleFieldChange 均被插入计时日志，一次 provider 切换会产生 10+ 行输出；同时 updateApiConfiguration 末尾日志硬编码了 \"was ~535ms, now should be <50ms\" 这类与实现强耦合的说明，容易随环境变化失准。这类日志应通过可开关的诊断通道输出，而不是以 console.log 常驻。",
+      "evidence": [
+        "src/core/storage/state.ts:80 — console.log(\"[PERF] getAllExtensionState: Starting state retrieval\")（该函数每次 postStateToWebview 都会执行）",
+        "src/core/storage/state.ts:230-233 — console.log(`[PERF] First batch (66 state reads) took: ...`) 等硬编码条目数",
+        "src/core/storage/state.ts:625-628 — console.log(`[PERF] OPTIMIZED updateApiConfiguration took: ... (was ~535ms, now should be <50ms)`)",
+        "src/core/controller/models/updateApiConfigurationProto.ts:18-47 — 6 处新增 PERF 日志",
+        "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts:21-42 — 前端每次字段变更都打印 PERF 日志"
+      ],
+      "rule": "PERF-LOG-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 诊断日志污染热路径。影响评估：日志噪声掩盖真实错误、在慢速输出通道上带来可测量的开销，并让后续维护者误以为这些耗时断言是契约。",
+        "suggestion": "[重构思路] 收敛为单一受控诊断开关（如环境变量或 outputChannel debug 级别），并去掉带具体数字承诺的文案。代码示例：`const perf = (label: string, ms: number) => process.env.CLINE_PERF_LOG && console.debug(`[PERF] ${label}: ${ms.toFixed(1)}ms`)`",
+        "subcategory": "日志治理"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/services/posthog/telemetry/TelemetryService.ts",
+      "line": 292,
+      "title": "captureConversationTurnEvent 移除 tokenUsage 参数，会话轮次遥测丢失 token 与成本数据",
+      "description": "本次不仅删除了形参 tokenUsage，还删除了事件属性里的 `...tokenUsage` 展开，Task 中的三处调用（2121、2294 等）同时去掉了 tokensIn/tokensOut/cacheWriteTokens/cacheReadTokens/totalCost 实参。这意味着 conversation_turn 事件不再携带任何用量与成本指标，服务端将无法统计单轮 token/费用，属于遥测数据维度回退；而被计算的 inputTokens/outputTokens 等变量在 Task 内仍然存在（用于 updateApiReqMsg），说明这是采集侧丢失而非计算侧不需要。",
+      "evidence": [
+        "src/services/posthog/telemetry/TelemetryService.ts:288-308 — diff 删除 @param tokenUsage 与形参 tokenUsage，并删除属性中的 ...tokenUsage",
+        "src/core/task/index.ts:2121-2127 — captureConversationTurnEvent(this.taskId, currentProviderId, this.api.getModel().id, \"assistant\", true) 不再传用量对象",
+        "src/core/task/index.ts:2068-2072 — inputTokens/outputTokens/cacheWriteTokens/cacheReadTokens/totalCost 仍然在计算，并在 2107-2118 传给 updateApiReqMsg"
+      ],
+      "rule": "TELEMETRY-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 遥测字段静默丢失。影响评估：用量/成本相关分析口径断裂，历史与新增数据不可比；如非有意下线，属于数据回退。",
+        "suggestion": "[重构思路] 若非有意下线，恢复 tokenUsage 形参与属性展开，并让调用方继续传入已计算好的用量。代码示例：`this.capture({ event: \"conversation_turn\", properties: { taskId, provider, model, source, timestamp, ...tokenUsage } })`",
+        "subcategory": "遥测数据完整性"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "package.json",
+      "line": 5,
+      "title": "版本号从 3.18.4 回退到 3.18.3，可能与已发布版本冲突",
+      "description": "本次 MR 将 version 由 3.18.4 改为 3.18.3。若 3.18.3/3.18.4 已在 Marketplace 发布，回退版本号会导致：已安装 3.18.4 的用户不会被提示升级（新包的版本低于已安装版本），后续发布也需要再次上调版本，且同一版本号重复发布会失败。该改动与本次功能改动无关联，疑似误将版本回滚一并提交。",
+      "evidence": [
+        "package.json:5 — \"version\": \"3.18.3\"（diff 中由 \"3.18.4\" 改为 \"3.18.3\"）",
+        "该文件同一 hunk 内其余改动仅为上下文（displayName/description/engines 未变）"
+      ],
+      "rule": "RELEASE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 发布版本号回退。影响评估：更新通道断裂（用户无法收到新版本）、发布流水线可能因版本重复而失败。",
+        "suggestion": "[重构思路] 恢复为 3.18.4 或按下一次发布的正确版本号递增，并确保版本变更由发布流程统一管理。代码示例：`\"version\": \"3.18.4\"`",
+        "subcategory": "版本管理"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/shared/ExtensionMessage.ts",
+      "line": 17,
+      "title": "ExtensionMessage.type 联合仍不完整，迫使调用方使用 as any 绕过类型检查",
+      "description": "本次把 type 扩展为 \"action\" | \"state\" | \"selectedImages\" | \"mcpDownloadDetails\" | \"grpc_response\"，但同时新增了大量与之无关的可选字段（ollamaModels、commits、tab、results 等），而实际仍在使用的其他消息类型（如 McpHub 发送的 \"mcpNotification\"）不在联合中，调用处只能写 `as any`。这使 ExtensionMessage 既不能约束消息类型，又携带了大量含义不明的可选字段，类型契约名存实亡。",
+      "evidence": [
+        "src/shared/ExtensionMessage.ts:17 — type: \"action\" | \"state\" | \"selectedImages\" | \"mcpDownloadDetails\" | \"grpc_response\"",
+        "src/services/mcp/McpHub.ts:387-396 — this.postMessageToWebview({ type: \"mcpNotification\", ... } as any) 说明该类型未纳入联合，需强制断言",
+        "src/shared/ExtensionMessage.ts:22-47 — 新增 ollamaModels/lmStudioModels/commits/url/isImage/endpoint/results/tab 等可选字段，与 grpc_response 语义无关"
+      ],
+      "rule": "TYPES-001",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 类型定义与实现脱节。影响评估：消息类型无法被穷尽检查，新增消息类型时容易遗漏 webview 侧处理；宽泛的可选字段降低了可读性与可维护性。",
+        "suggestion": "[重构思路] 用一个明确的联合类型枚举所有实际使用的消息 type（含 mcpNotification），并考虑改为可辨识联合（按 type 分别定义 payload），避免把所有字段堆在同一接口上。代码示例：`type ExtensionMessage = { type: \"grpc_response\"; grpc_response: GrpcResponse } | { type: \"mcpNotification\"; serverName: string; notification: unknown } | { type: \"mcpDownloadDetails\"; mcpDownloadDetails?: McpDownloadResponse; error?: string }`",
+        "subcategory": "类型契约"
+      }
+    }
+  ]
+}

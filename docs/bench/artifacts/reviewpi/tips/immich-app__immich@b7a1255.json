@@ -1,0 +1,711 @@
+[
+  {
+    "filePath": ".github/workflows/test.yml",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "runs-on: mich",
+        "review": "[缺陷类型] 测试覆盖收缩（架构维度）。影响评估：arm64 专属问题（原生模块、二进制依赖、大小写/路径差异）失去端到端拦截，风险推迟到发布阶段；同时运行时延与机器成本下降可能是有意权衡，需确认是否有其他 arm 流水线兜底。",
+        "suggestion": "[重构思路] 若目的是降本，可保留矩阵但仅对命中特定路径（如 server 依赖、ML 二进制、Dockerfile）的 PR 跑 arm 全量、其余跑抽样；至少保留一个 arm smoke job。代码示例：\n```yaml\nstrategy:\n  matrix:\n    runner: ${{ github.event_name == 'pull_request' && fromJSON('[\"mich\"]') || fromJSON('[\"mich\",\"ubuntu-24.04-arm\"]') }}\nruns-on: ${{ matrix.runner }}\n```",
+        "category": "可测试性",
+        "subcategory": "CI 测试覆盖",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 341,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/repositories/asset.repository.ts",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": ".select(withFiles)",
+        "review": "[缺陷类型] 通用查询复用导致过度取数。影响评估：全库扫库型作业的查询成本成倍增加，任务启动阶段数据库压力变大，长事务/慢查询风险上升。",
+        "suggestion": "[重构思路] 为只取 id 的场景提供轻量方法（如 getAllIds 或给 getAll 增加 select 选项），并保持流式读取。代码示例：`getAllIds(pagination, options) { return searchAssetBuilder(this.db, options).select('assets.id')... }`",
+        "category": "性能",
+        "subcategory": "查询开销",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 356,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "...Object.values(WithProperty).map((property) => ({",
+        "review": "[缺陷类型] 装饰器参数用了同名但语义不同的枚举。影响评估：六个分支的 SQL 无生成物，回归时缺少可审阅的查询快照，也降低了查询改动的可测试性。",
+        "suggestion": "[重构思路] 改为 `Object.values(WithoutProperty)`，并重新生成 queries/asset.repository.sql 后逐条审阅条件。代码示例：`@GenerateSql(...Object.values(WithoutProperty).map((property) => ({ name: property, params: [DummyValue.PAGINATION, property] })))`",
+        "category": "可维护",
+        "subcategory": "查询文档/快照缺口",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 534,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": ".where((eb) => eb.exists(eb.selectFrom('smart_search').where('assetId', '=', eb.ref('assets.id'))))",
+        "review": "[缺陷类型] 布尔条件取反丢失（`not exists` → `exists`）。影响评估：非强制重复检测选错数据集，用户看到的历史重复项不会被发现，且队列反复处理同一批已处理资产，浪费 CPU/IO。",
+        "suggestion": "[重构思路] 恢复 `not` 语义，并补一个使用 getWithout(DUPLICATE) 的仓储层测试断言生成 SQL 含 `not exists`。代码示例：`.where((eb) => eb.not((eb) => eb.exists(eb.selectFrom('smart_search').whereRef('assetId', '=', 'assets.id'))))`",
+        "category": "可靠性",
+        "subcategory": "查询条件写反",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 548,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": ".where('assets.type', '=', AssetType.VIDEO)",
+        "review": "[缺陷类型] 重写查询时遗漏过滤条件。影响评估：转码队列额外处理隐藏动态视频，浪费 GPU/CPU，且可能触发对 live photo 关联文件的重新编码。",
+        "suggestion": "[重构思路] 补齐 `assets.isVisible = true`，并为 getWithout 的各 property 分支补生成 SQL 快照测试，避免条件在重构中丢失。代码示例：`.where('assets.type', '=', AssetType.VIDEO).where('assets.isVisible', '=', true)`",
+        "category": "可靠性",
+        "subcategory": "过滤条件缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 553,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": ".orderBy('createdAt')",
+        "review": "[缺陷类型] 偏移分页缺少稳定、唯一的排序键。影响评估：同秒创建的资产（批量上传/迁移）在翻页时可能被重复入队或漏掉，导致部分资产长期缺少缩略图/元数据。",
+        "suggestion": "[重构思路] 增加唯一次级排序键（如 `assets.id`），或改用基于 (createdAt, id) 的 keyset 分页。代码示例：`.orderBy('assets.createdAt').orderBy('assets.id')`",
+        "category": "可靠性",
+        "subcategory": "分页稳定性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 598,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "return { fieldName: 'exifInfo.city', items: items as SearchExploreItemSet<string> };",
+        "review": "[缺陷类型] 用类型断言压掉编译期校验。影响评估：查询条件演进时 null 会静默流入上层 DTO，问题后移到运行时。",
+        "suggestion": "[重构思路] 保留 $narrowType 或用 map 显式过滤/校验 null 后再构造返回结构。代码示例：`.$narrowType<{ value: NotNull }>()` 或 `items: items.flatMap(({ value, data }) => (value === null ? [] : [{ value, data }]))`",
+        "category": "可维护",
+        "subcategory": "类型安全",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 813,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/services/media.service.ts",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "thumbJobs.push({ name: JobName.GENERATE_THUMBNAILS, data: { id: asset.id } });",
+        "review": "[缺陷类型] 流式处理退化为全量累积。影响评估：大库 force 生成缩略图时进程内存随资产数线性增长，可能触发 OOM 或长时间无进度；任务入队延迟到循环结束。",
+        "suggestion": "[重构思路] 恢复分批入队（或用 usePagination + queueAll 的组合），保持既有背压。代码示例：`if (thumbJobs.length >= JOBS_ASSET_PAGINATION_SIZE) { await this.jobRepository.queueAll(thumbJobs); thumbJobs = []; }`",
+        "category": "性能",
+        "subcategory": "内存与批处理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 59,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F009",
+        "code": "this.assetRepository.getAll(pagination),",
+        "review": "[缺陷类型] 复用通用查询构建器引入隐式过滤条件，改变既有作业的选取集合。影响评估：归档资产在迁移/元数据/边车等作业中被永久遗漏，存储模板迁移不完整，排查成本高且无任何日志提示。",
+        "suggestion": "[重构思路] 对需要覆盖全部资产的作业显式传 `withArchived: true`，或在 getAll 上禁止依赖默认值、要求调用方显式指定归档语义；导出作业选取条件并在测试中断言生成的 SQL。代码示例：`this.assetRepository.getAll(pagination, { withArchived: true })`",
+        "category": "可靠性",
+        "subcategory": "查询语义漂移",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 90,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/services/audit.service.ts",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "orphans.push({ ...entity, pathType: AssetPathType.THUMBNAIL, pathValue: encodedVideoPath });",
+        "review": "[缺陷类型] 枚举值复制粘贴错误导致路径类型与修复动作错配。影响评估：一键修复会写入错误的 asset_files 记录，属于数据破坏，且 UI 侧无法区分视频孤儿与缩略图孤儿。",
+        "suggestion": "[重构思路] 使用 AssetPathType.ENCODED_VIDEO，并为 encoded video 与 thumbnail 各补一条断言其修复分支的用例。代码示例：`orphans.push({ ...entity, pathType: AssetPathType.ENCODED_VIDEO, pathValue: encodedVideoPath });`",
+        "category": "可靠性",
+        "subcategory": "枚举分支错配",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 169,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F011",
+        "code": "if (peopleCount === JOBS_ASSET_PAGINATION_SIZE) {",
+        "review": "[缺陷类型] 计数变量缺少自增，配套分支成为死代码。影响评估：仅影响日志准确性，但会误导运维判断人物缩略图巡检是否执行、执行规模多大。",
+        "suggestion": "[重构思路] 在循环体内累加计数，并按需触发进度日志。代码示例：`peopleCount++; if (peopleCount % JOBS_ASSET_PAGINATION_SIZE === 0) { this.logger.log(...); }`",
+        "category": "可维护",
+        "subcategory": "计数/日志逻辑",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 192,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/repositories/job.repository.ts",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "await existingJob.remove();",
+        "review": "[缺陷类型] 删除既有竞态兜底逻辑。影响评估：相册更新时若目标 job 已开始执行，取消操作会抛异常，通知/邮件发送链路可能中断并留下未处理告警。",
+        "suggestion": "[重构思路] 保留针对已知竞态错误的忽略分支，并把其他异常仍向上抛出。代码示例：`try { await existingJob.remove(); } catch (error: any) { if (!error.message?.includes('Missing key for job')) { throw error; } }`",
+        "category": "可靠性",
+        "subcategory": "异常处理退化",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 238,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/repositories/search.repository.ts",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "await sql`reindex index clip_index`.execute(trx);",
+        "review": "[缺陷类型] 隐含前置条件（索引必须存在）未被保证。影响评估：更换 CLIP 模型导致维度变更时，配置保存失败且不在重启后自愈，用户只能手工建索引。",
+        "suggestion": "[重构思路] 以 `create index if not exists` 替代 `reindex`，或在 reindex 前检查 pg_stat_all_indexes 并在缺失时重建。代码示例：`await sql\\`create index if not exists clip_index on smart_search using hnsw (embedding vector_cosine_ops) with (ef_construction = 300, m = 16)\\`.execute(trx);`",
+        "category": "可靠性",
+        "subcategory": "迁移/索引前置条件",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 483,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/schema/migrations/1744910873969-InitialMigration.ts",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "await sql`CREATE EXTENSION IF NOT EXISTS \"vectors\";`.execute(db);",
+        "review": "[缺陷类型] 硬编码扩展名与配置抽象不一致。影响评估：使用非 pgvecto.rs 镜像部署时初始化直接失败；同时残留的 VECTOR 枚举分支成为死代码，误导后续维护者。",
+        "suggestion": "[重构思路] 要么彻底移除 VECTOR 枚举与相关分支并在启动时显式校验，要么恢复为按 vectorExtension 创建。代码示例：`await sql\\`CREATE EXTENSION IF NOT EXISTS ${sql.raw(vectorExtension)};\\`.execute(db);`",
+        "category": "可移植",
+        "subcategory": "部署可移植性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 32,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/services/smart-info.service.ts",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "if (!isPaused) {",
+        "review": "[缺陷类型] 资源（队列）状态未在异常路径回滚。影响评估：一次维度更新失败即可让智能搜索静默停摆，运维侧没有明显错误提示，只能靠人工 resume 或重启。",
+        "suggestion": "[重构思路] 用 try/finally 包裹暂停后的临界区，保证 resume 一定执行（并保留原先是暂停状态的语义）。代码示例：\n```ts\nif (!isPaused) { await this.jobRepository.pause(QueueName.SMART_SEARCH); }\ntry {\n  await this.jobRepository.waitForQueueCompletion(QueueName.SMART_SEARCH);\n  // 更新维度 / 清空 embedding\n} finally {\n  if (!isPaused) { await this.jobRepository.resume(QueueName.SMART_SEARCH); }\n}\n```",
+        "category": "可靠性",
+        "subcategory": "队列状态异常恢复",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 54,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F017",
+        "code": "await this.jobRepository.waitForQueueCompletion(QueueName.SMART_SEARCH);",
+        "review": "[缺陷类型] 锁与队列的交叉等待（死锁 / 无限忙轮询）。影响评估：管理员在智能搜索有任务在跑时修改 CLIP 模型，microservices worker 的 config.update 处理会挂住，SMART_SEARCH 队列被暂停且永不恢复，智能搜索整体失效，需重启进程才能恢复。",
+        "suggestion": "[重构思路] 1) 先暂停并等待队列空闲，再获取 CLIPDimSize 锁（把 withLock 移到 pause/wait 之后），避免持锁等待队列；2) 或将 handleEncodeClip 的 isBusy→wait 改为「读到锁被占用就直接放弃/重新入队」，不在队列活跃期间等待锁；3) 给等待加超时与退避。代码示例：\n```ts\nawait this.jobRepository.pause(QueueName.SMART_SEARCH);\nawait this.jobRepository.waitForQueueCompletion(QueueName.SMART_SEARCH);\ntry {\n  await this.databaseRepository.withLock(DatabaseLock.CLIPDimSize, async () => {\n    // 仅做维度更新 / 清空 embedding\n  });\n} finally {\n  if (!isPaused) { await this.jobRepository.resume(QueueName.SMART_SEARCH); }\n}\n```",
+        "category": "可靠性",
+        "subcategory": "分布式队列与锁死锁",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 57,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F018",
+        "code": "await this.searchRepository.deleteAllSearchEmbeddings();",
+        "review": "[缺陷类型] 移除既有自愈路径。影响评估：维度更新失败后，管理员唯一可用的「全部重新生成」入口无法修复数据库状态，智能搜索持续报错且难以排查。",
+        "suggestion": "[重构思路] 在 force 分支恢复维度校准（幂等操作，代价很低）。代码示例：\n```ts\nif (force) {\n  const { dimSize } = getCLIPModelInfo(machineLearning.clip.modelName);\n  await this.searchRepository.setDimensionSize(dimSize);\n  await this.searchRepository.deleteAllSearchEmbeddings();\n}\n```",
+        "category": "可靠性",
+        "subcategory": "状态自愈与幂等",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 84,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/services/notification.service.ts",
+    "reviewTips": [
+      {
+        "id": "F019",
+        "code": "const { emailNotifications } = getPreferences(user.email, user.metadata);",
+        "review": "[缺陷类型] 越权/失效授权下的敏感信息外发。影响评估：被移出相册的用户仍会收到相册名与缩略图邮件，属于信息泄露面；对共享相册/家庭共享场景影响更明显。",
+        "suggestion": "[重构思路] 发信前用相册成员关系复核收件人，非成员直接 SKIPPED。代码示例：\n```ts\nconst isMember = album.ownerId === recipientID || album.albumUsers.some(({ user }) => user.id === recipientID);\nif (!isMember) {\n  return JobStatus.SKIPPED;\n}\n```",
+        "category": "安全",
+        "subcategory": "越权访问与信息泄露",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 314,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/workers/api.ts",
+    "reviewTips": [
+      {
+        "id": "F020",
+        "code": "app.use(app.get(ApiService).ssr(excludePaths));",
+        "review": "[缺陷类型] HTTP 响应压缩能力缺失。影响评估：大 JSON 响应与 SSR HTML 体积成倍增长，弱网下时间线/搜索体验退化；无反向代理的用户直接受损。",
+        "suggestion": "[重构思路] 若压缩仍需保留在应用层，恢复中间件；若确认交给反向代理，请在文档中补充部署要求并确认 e2e/性能基线。代码示例：\n```ts\nimport compression from 'compression';\n...\napp.use(compression());\n```",
+        "category": "性能",
+        "subcategory": "传输性能与带宽",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 62,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/assets/thumbnail/thumbnail.svelte",
+    "reviewTips": [
+      {
+        "id": "F022",
+        "code": "const index = focusable.indexOf(focussableElement);",
+        "review": "[缺陷类型] 循环缺少终止性校验与空值保护。影响评估：极端布局或元素隐藏时按 Escape 会导致浏览器卡死（主线程死循环）或未捕获异常，属于难复现但影响严重的前端缺陷。",
+        "suggestion": "[重构思路] 先对 index 与列表长度做守卫，并显式限定最多遍历 n 次。代码示例：\n```ts\nconst focusable = getFocusable(document);\nconst index = focusable.indexOf(focussableElement);\nif (index === -1) { return; }\nfor (let step = 1; step < focusable.length; step++) {\n  const next = focusable[(index + step) % focusable.length];\n  if (!next || next.dataset.thumbnailFocusContainer !== undefined) { continue; }\n  next.focus();\n  return;\n}\n```",
+        "category": "可靠性",
+        "subcategory": "前端循环终止性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 240,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/asset-viewer/activity-viewer.svelte",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "onMount(async () => {",
+        "review": "[缺陷类型] 重复数据请求。影响评估：每次打开评论面板多一次 DB 查询与网络往返，弱网/大相册下体感延迟翻倍，也会放大服务端活动列表接口压力。",
+        "suggestion": "[重构思路] 只保留一处触发：删除 onMount 里的调用，由 $effect 统一负责（初始化时 previousAssetId 天然不等于 assetId）。代码示例：\n```ts\n$effect(() => {\n  if (assetId && previousAssetId !== assetId) {\n    previousAssetId = assetId;\n    handlePromiseError(getReactions());\n  }\n});\n```",
+        "category": "性能",
+        "subcategory": "重复请求",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 88,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F024",
+        "code": "onDeleteComment();",
+        "review": "[缺陷类型] 条件分支覆盖不全导致计数漂移。影响评估：删除他人点赞后评论数少 1，且不会自动校正（除非刷新页面重新拉取统计）。",
+        "suggestion": "[重构思路] 按 reaction 类型分发回调，将“计数变更”与“点赞状态变更”解耦。代码示例：`if (reaction.type === ReactionType.Comment) { onDeleteComment(); } else if (isLiked?.id === reaction.id) { onDeleteLike(); }`",
+        "category": "可靠性",
+        "subcategory": "计数一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 116,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/asset-viewer/face-editor/face-editor.svelte",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "bind:this={faceSelectorEl}",
+        "review": "[缺陷类型] 国际化文案回退。影响评估：所有非英文语言环境下出现英文片段，属于用户可见的体验回退，且无法通过 i18n 文件修正。",
+        "suggestion": "[重构思路] 恢复 svelte-i18n 用法，复用已有 key（若缺失则在 i18n/en.json 补充）。代码示例：\n```svelte\n<script lang=\"ts\">\n  import { t } from 'svelte-i18n';\n</script>\n<p class=\"text-center text-sm\">{$t('select_person_to_tag')}</p>\n<Button onclick={cancel} color=\"danger\">{$t('cancel')}</Button>\n```",
+        "category": "可维护",
+        "subcategory": "国际化文案",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 316,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/utils/mime-types.ts",
+    "reviewTips": [
+      {
+        "id": "F026",
+        "code": "isWebSupportedImage: (filename: string) => webSupportedImageMimeTypes.has(lookup(filename)),",
+        "review": "[缺陷类型] MIME/扩展名映射回归。影响评估：使用 APNG 头像的 OAuth 用户头像文件名缺少正确扩展名，静态文件响应可能拿不到正确 Content-Type，头像显示异常；同时集合里存在不可达项，会误导后续维护。",
+        "suggestion": "[重构思路] 1) 为多 MIME 扩展保留辅助映射或在 toExtension 中做反向查找补充；2) 兜底值改为带点的 '.jpg'；3) 删除或补齐不可达的 'image/apng'。代码示例：\n```ts\nconst extensionOverrides: Record<string, string> = {\n  'image/jpeg': '.jpg',\n  'image/apng': '.png',\n};\nconst extensionWithDot = mimeTypes.toExtension(contentType || 'image/jpeg') ?? '.jpg';\n```",
+        "category": "可靠性",
+        "subcategory": "MIME 映射回归",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 126,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/shared-components/context-menu/context-menu.svelte",
+    "reviewTips": [
+      {
+        "id": "F028",
+        "code": "left = Math.min(window.innerWidth - rect.width, x - directionWidth);",
+        "review": "[缺陷类型] 浮层定位缺少视口下界钳制（越界渲染）。影响评估：靠近视口左/上边缘触发的右键菜单与按钮菜单会被裁切，菜单项部分不可见，属于可见的 UI 回归；RTL 清理不应改变原有的越界保护。",
+        "suggestion": "[重构思路] 保留 RTL 镜像删除，但恢复下界钳制，并把常量提取命名。代码示例：`const EDGE = 8; left = Math.max(EDGE, Math.min(window.innerWidth - rect.width - EDGE, x - directionWidth)); top = Math.max(EDGE, Math.min(window.innerHeight - menuHeight - EDGE, y));`",
+        "category": "可靠性",
+        "subcategory": "浮层越界定位",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 48,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F029",
+        "code": "? 'max-h-dvh max-h-svh'",
+        "review": "[缺陷类型] 冲突的 Tailwind 工具类。影响评估：菜单高度约束不确定，移动端浏览器地址栏收起/展开时（svh 与 dvh 差异）可能出现抖动或超出视口；也让后续维护者误判真实样式。",
+        "suggestion": "[重构思路] 只保留一个语义正确的单位，把取舍固定在代码里。代码示例：`? 'max-h-svh' : 'max-h-0'`（或 `max-h-[calc(var(--dvh,100dvh)-1rem)]` 统一走 CSS 变量）。",
+        "category": "可维护",
+        "subcategory": "样式类冲突",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 69,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/shared-components/server-about-modal.svelte",
+    "reviewTips": [
+      {
+        "id": "F030",
+        "code": "title={createdAt.toLocaleString(DateTime.DATETIME_SHORT_WITH_SECONDS)}",
+        "review": "[缺陷类型] 本地化参数丢失导致日期格式与界面语言不一致。影响评估：非英文系统/非英文应用语言的用户会看到混排格式；同一页面不同组件对同一时间戳的呈现可能不一致。",
+        "suggestion": "[重构思路] 统一通过 `fromLocalDateTime`/封装好的工具函数格式化，而不是就地调用 luxon 默认 locale。代码示例：`{@const createdAt = DateTime.fromISO(item.createdAt, { locale: get(locale) })}`，或使用方法内 `createdAt.setLocale($locale).toLocaleString(...)`。",
+        "category": "可移植",
+        "subcategory": "日期本地化",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 180,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/photos-page/asset-grid.svelte",
+    "reviewTips": [
+      {
+        "id": "F031",
+        "code": "const focusNextAsset = async () => {",
+        "review": "[缺陷类型] 基于状态索引的焦点导航缺少失效兜底。影响评估：键盘用户（无障碍场景的主力路径）在资源被过滤/未加载时彻底失去导航能力；同时旧实现的 DOM 遍历总能命中可视元素，本次改为索引查找后鲁棒性下降。",
+        "suggestion": "[重构思路] 找不到当前焦点资源时回退到“首个/末个已加载资源”，并在资源列表变化（过滤、切换视图、clearMultiselect）时重置 focussedAssetId。代码示例：`const assets = assetStore.getAssets(); const index = assets.findIndex((a) => a.id === assetInteraction.focussedAssetId); if (index === -1) { assetInteraction.focussedAssetId = assets[0]?.id ?? null; return; }`",
+        "category": "可靠性",
+        "subcategory": "键盘焦点导航健壮性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 610,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/layouts/user-page-layout.svelte",
+    "reviewTips": [
+      {
+        "id": "F032",
+        "code": "<main",
+        "review": "[缺陷类型] landmark 语义误用。影响评估：使用屏幕阅读器/landmark 跳转的用户会得到错误的主内容范围；同时 `tabindex=\"-1\"` 的跳转目标把侧栏包含在内。改动目的显然是想修正“div 包裹 main”的结构，但方向反了。",
+        "suggestion": "[重构思路] 让 `<main>` 只包内容区，外层层级继续用 div（或 `<div class=\"grid ...\">`），sidebar 用 `<nav>` 与 main 并列。代码示例：`<div class=\"relative grid ...\">{#if sidebar}...<SideBar />{/if}<main tabindex=\"-1\" class=\"relative\">...</main></div>`",
+        "category": "可读性",
+        "subcategory": "HTML 语义与无障碍 landmark",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 52,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/utils/focus-util.ts",
+    "reviewTips": [
+      {
+        "id": "F033",
+        "code": "'button:not([disabled], .hidden), [href]:not(.hidden), input:not([disabled], .hidden), select:not([disabled], .hidden), textarea:not([disabled], .hidden), [tabindex]:not([tabindex=\"-1\"], .hidden)';",
+        "review": "[缺陷类型] 可聚焦元素枚举逻辑降级（可见性过滤与元素类型覆盖缺失）。影响评估：模态框/对话框内 Tab 焦点可能落到隐藏元素，键盘用户无法预期的焦点丢失。",
+        "suggestion": "[重构思路] 在 `getFocusable` 内追加可见性过滤（`offsetParent !== null` 或 `getClientRects().length > 0`），并补齐常见可聚焦元素类型；或继续使用 `tabbable` 库以保留语义。代码示例：`export const getFocusable = (container: ParentNode) => [...container.querySelectorAll<HTMLElement>(selectors)].filter((el) => !el.hasAttribute('disabled') && el.getClientRects().length > 0);`",
+        "category": "可靠性",
+        "subcategory": "键盘可访问性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/routes/(user)/albums/[albumId=id]/[[photos=photos]]/[[assetId=id]]/+page.svelte",
+    "reviewTips": [
+      {
+        "id": "F035",
+        "code": "if (data.length > 0) {",
+        "review": "[缺陷类型] 异步查询结果未清空旧状态 + 依赖被删除的 reset 生命周期钩子。影响评估：跨相册静默删除 Like 记录（数据被改），红心状态长期显示错误，属用户可见的数据一致性缺陷。",
+        "suggestion": "[重构思路] 在拉取前先复位为缺省值，且以 albumId 作为请求边界判断，避免旧响应覆盖新相册状态；或把点赞状态放回按 albumId 作用域的对象/Store 中。代码示例：`const getFavorite = async (albumId: string) => { isLiked = null; reactions = []; const data = await getActivities({ userId: $user.id, albumId, $type: ReactionType.Like, level: ReactionLevel.Album }); if (album.id !== albumId) return; isLiked = data[0] ?? null; };`",
+        "category": "可靠性",
+        "subcategory": "状态残留",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 182,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/stores/activity.store.ts",
+    "reviewTips": [
+      {
+        "id": "F036",
+        "code": "export const numberOfComments = writable<number>(0);",
+        "review": "[缺陷类型] 全局可变状态缺少生命周期复位。影响评估：相册间切换会显示上一相册的评论数，且 `isShowActivity` 的自动关闭逻辑基于脏数据，可能让已关闭活动的相册仍显示活动入口。",
+        "suggestion": "[重构思路] 由相册页在装配/销毁时显式复位计数，或改为按 albumId 作用域的 store（如 `Map<albumId, count>`），并让相册页在 `$effect` 清理函数中复位。代码示例：`$effect(() => { setNumberOfComments(0); return () => setNumberOfComments(0); });`",
+        "category": "可靠性",
+        "subcategory": "全局状态生命周期",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 3,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/routes/+layout.svelte",
+    "reviewTips": [
+      {
+        "id": "F037",
+        "code": "document.removeEventListener('change', handleChangeTheme);",
+        "review": "[缺陷类型] 事件监听注册与解绑的 EventTarget 不匹配。影响评估：监听器泄漏 + 系统主题切换时可能多重取反导致主题状态抖动。",
+        "suggestion": "[重构思路] 保存 MediaQueryList 引用（或直接在同一对象上反注册），确保 add/remove 对称。代码示例：`const media = globalThis.matchMedia('(prefers-color-scheme: dark)'); onMount(() => { media.addEventListener('change', handleChangeTheme); return () => media.removeEventListener('change', handleChangeTheme); });`",
+        "category": "可靠性",
+        "subcategory": "事件监听泄漏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 72,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F038",
+        "code": "setKey(page.params.key);",
+        "review": "[缺陷类型] SSR 场景下的模块级可变鉴权状态（cross-request state leakage）。影响评估：共享链接 key 可能泄漏到其他用户的 SSR 输出中，并导致其资源请求被错误鉴权，属安全与正确性双重风险。",
+        "suggestion": "[重构思路] 不要在模块级保存请求相关凭据：要么继续使用基于 `page` 的 `$derived`（按请求/导航求值），要么在 `hooks.server.ts`/`+layout.server.ts` 中以请求作用域传递，并在每个请求开始时显式复位（`setKey(undefined)`）。代码示例：`// +layout.svelte\n$effect(() => { setKey(isSharedLinkRoute(page.route?.id) ? page.params.key : undefined); });\n// 或在 SSR 侧：每次请求先 setKey(undefined)`",
+        "category": "安全",
+        "subcategory": "凭据泄漏",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 76,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/utils/timeline-util.ts",
+    "reviewTips": [
+      {
+        "id": "F039",
+        "code": "return date.toLocaleString({ weekday: 'long' });",
+        "review": "[缺陷类型] 国际化上下文丢失（隐式依赖 DateTime 自带 locale）。影响评估：应用语言与浏览器语言不一致的用户会看到英文/浏览器语言的日期分组标题与图片替代文本，属可见的 i18n 回退。",
+        "suggestion": "[重构思路] 不要依赖调用方“恰好”设置过 locale：在 `formatGroupTitle`/`getDateLocaleString` 内部显式使用 `get(locale)`，或在 `AssetBucket` 创建 `DateTime` 时统一带上 `{ locale: get(locale) }`，并补充“未设 locale 的 dateGroup 日期”测试。代码示例：`return date.toLocaleString({ weekday: 'long' }, { locale: get(locale) });`",
+        "category": "可移植",
+        "subcategory": "本地化上下文",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 90,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/stores/assets-store.svelte.ts",
+    "reviewTips": [
+      {
+        "id": "F040",
+        "code": "dodo: IntersectingAsset[] = $state([]);",
+        "review": "[缺陷类型] 无引用的调试残留字段。影响评估：代码噪声与误导；`$state` 字段被无谓纳入响应式系统。",
+        "suggestion": "[重构思路] 直接删除；若确实需要预留给后续布局算法，请补注释与 issue 链接。代码示例：`- dodo: IntersectingAsset[] = $state([]);`",
+        "category": "可读性",
+        "subcategory": "调试残留",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 113,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F041",
+        "code": "layout(options: CommonLayoutOptions) {",
+        "review": "[缺陷类型] 热路径上移除了惰性计算优化。影响评估：大库场景下时间线滚动/窗口尺寸变化的主线程卡顿风险上升；同时三个布局 setter 连续赋值会执行 3 次全量 refresh。",
+        "suggestion": "[重构思路] 恢复按 bucket 相交状态延迟布局，或提供批量设置入口（一次 `refreshLayout`）并对 `refreshLayout` 做节流/合并。代码示例：`setLayoutOptions({ headerHeight, rowHeight, gap }) { let changed = false; changed ||= this.#setHeaderHeight(headerHeight); changed ||= this.#setGap(gap); changed ||= this.#setRowHeight(rowHeight); if (changed) this.refreshLayout(); }`",
+        "category": "性能",
+        "subcategory": "渲染性能",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 197,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F042",
+        "code": "#headerHeight = $state(49);",
+        "review": "[缺陷类型] 魔法数值变更 + 公共类型与实现不一致 + 重复重排。影响评估：时间线顶部/分组间距可能出现像素级偏移且难以追溯原因；类型残留会误导调用方；多次全量 refresh 有性能开销。",
+        "suggestion": "[重构思路] 用命名常量并注明 49 的来源（如 `HEADER_HEIGHT = 49` 与样式中的高度保持一致）；删除或修正 `AssetStoreLayoutOptions`（应包含三个可选字段）；提供批量 setter 只 refresh 一次。代码示例：`const HEADER_HEIGHT = 49; // 与 asset-grid 头部样式高度一致\nsetLayoutOptions({ headerHeight = HEADER_HEIGHT, rowHeight = 235, gap = 12 }: AssetStoreLayoutOptions) { ... }`",
+        "category": "可维护",
+        "subcategory": "API 一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 599,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/constants.ts",
+    "reviewTips": [
+      {
+        "id": "F043",
+        "code": "{ name: 'Azerbaijani', code: 'az', loader: () => import('$i18n/az.json') },",
+        "review": "[缺陷类型] 国际化能力（双向文本）静默移除。影响评估：RTL 语言用户界面方向错误（图标/间距/对齐翻转失效），是本 MR 中最大范围的用户可见行为变更；若为有意为之，应在 MR 描述中显式声明并提供替代方案。",
+        "suggestion": "[重构思路] 若目标是统一样式书写，可保留逻辑属性（Tailwind 的 `ms/me/ps/pe/start/end` 在 LTR 下等价于 `ml/mr/pl/pr/left/right`），仅移除真正需要物理方向的用例；并为 RTL 保留基于 `dir` 的派生状态。代码示例：`// 保留 language-manager 或等价逻辑\n$effect(() => { document.body.setAttribute('dir', langs.find((l) => l.code === $lang)?.rtl ? 'rtl' : 'ltr'); });`",
+        "category": "可移植",
+        "subcategory": "双向文本支持",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 272,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/utils/album-utils.ts",
+    "reviewTips": [
+      {
+        "id": "F044",
+        "code": "columnStyle: 'text-left w-8/12 sm:w-4/12 md:w-4/12 md:w-4/12 xl:w-[30%] 2xl:w-[40%]',",
+        "review": "[缺陷类型] 无意义的重复实用类。影响评估：不影响运行时，但降低样式可读性，且提示批量替换可能引入其他未被发现的样式偏差。",
+        "suggestion": "[重构思路] 去重，并对本 MR 中所有 `ms-/me-/ps-/pe-/start-/end-` 的替换结果做一次抽查（尤其带 `rounded-s/e-full` 的复合类）。代码示例：`columnStyle: 'text-left w-8/12 sm:w-4/12 md:w-4/12 xl:w-[30%] 2xl:w-[40%]',`",
+        "category": "可读性",
+        "subcategory": "样式冗余",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 62,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/routes/admin/repair/+page.svelte",
+    "reviewTips": [
+      {
+        "id": "F046",
+        "code": "notificationController.show({",
+        "review": "[缺陷类型] 错误路径仍执行成功提示。影响评估：管理员可能误以为全部文件已校验完成并直接执行“修复”，导致漏修。",
+        "suggestion": "[重构思路] 用成功标志控制提示，出错时提示“部分校验失败、可重试”，并保留已完成部分的状态。代码示例：`let failed = false; try { ... } catch (e) { failed = true; handleError(...); } finally { checking = false; } if (!failed) { notificationController.show({ message: $t('admin.repair_matched_items', { values: { count } }), type: NotificationType.Info }); }`",
+        "category": "可靠性",
+        "subcategory": "错误提示语义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 152,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

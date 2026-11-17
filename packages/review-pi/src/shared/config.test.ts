@@ -447,6 +447,113 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/limits\.findingScope\.contextLines must be in 0…2000/);
   });
 
+  test("limits.grouping：缺省关闭、参数可配且进 digest", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.grouping).toEqual(DEFAULT_LIMITS.grouping);
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"grouping":{"enabled":true,"minFiles":6,"minDiffChars":60000,"smallPrMaxFiles":7,"smallPrMaxChars":90000,"minFilesPerGroup":4,"maxFilesPerShard":10,"maxCharsPerShard":40000,"maxShards":30,"maxFindingsPerShard":5,"maxFindingsPerRun":40,"concurrency":3,"model":"group-model"}}`,
+        ),
+      ),
+    }).config;
+    expect(tuned.limits.grouping).toEqual({
+      enabled: true,
+      minFiles: 6,
+      minDiffChars: 60_000,
+      smallPrMaxFiles: 7,
+      smallPrMaxChars: 90_000,
+      minFilesPerGroup: 4,
+      maxFilesPerShard: 10,
+      maxCharsPerShard: 40_000,
+      maxShards: 30,
+      maxFindingsPerShard: 5,
+      maxFindingsPerRun: 40,
+      concurrency: 3,
+      model: "group-model",
+    });
+    expect(tuned.overridden).toContain("limits.grouping.enabled");
+    expect(tuned.overridden).toContain("limits.grouping.model");
+    expect(tuned.digest).not.toBe(defaults.digest);
+  });
+
+  test("limits.grouping 非法值 = fail fast，指出键路径", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"grouping":{"minFiles":0}}`)),
+      }),
+    ).toThrow(/limits\.grouping\.minFiles must be in 1…10000/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"grouping":{"concurrency":0}}`)),
+      }),
+    ).toThrow(/limits\.grouping\.concurrency must be in 1…16/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"grouping":{"model":123}}`)),
+      }),
+    ).toThrow(/limits\.grouping\.model must be a string/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(`,"limits":{"grouping":{"minFilesPerGroup":9,"maxFilesPerShard":8}}`),
+        ),
+      }),
+    ).toThrow(/minFilesPerGroup must be <= limits\.grouping\.maxFilesPerShard/);
+  });
+
+  test("limits.rules / limits.skills：缺省值、可配置且进 digest", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.rules).toEqual({
+      enabled: false,
+      builtinPack: "general",
+      optionalPacks: [],
+      maxRuleContextChars: 6_000,
+      userOverrideBuiltin: true,
+    });
+    expect(defaults.limits.skills).toEqual({
+      maxOpaqueSessionsPerSkill: 1,
+      maxOpaqueSessionsPerSample: 3,
+      maxSkillsPerRun: 8,
+    });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"rules":{"enabled":true,"builtinPack":"core","optionalPacks":["ocr"],"maxRuleContextChars":8000,"userOverrideBuiltin":false},"skills":{"maxOpaqueSessionsPerSkill":2,"maxOpaqueSessionsPerSample":4,"maxSkillsPerRun":6}}`,
+        ),
+      ),
+    }).config;
+    expect(tuned.limits.rules).toEqual({
+      enabled: true,
+      builtinPack: "core",
+      optionalPacks: ["ocr"],
+      maxRuleContextChars: 8_000,
+      userOverrideBuiltin: false,
+    });
+    expect(tuned.limits.skills).toEqual({
+      maxOpaqueSessionsPerSkill: 2,
+      maxOpaqueSessionsPerSample: 4,
+      maxSkillsPerRun: 6,
+    });
+    expect(tuned.overridden).toContain("limits.rules.optionalPacks");
+    expect(tuned.digest).not.toBe(defaults.digest);
+  });
+
+  test("limits.rules / limits.skills 非法值 = fail fast", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"rules":{"maxRuleContextChars":10}}`)),
+      }),
+    ).toThrow(/limits\.rules\.maxRuleContextChars must be in 1000…100000/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"skills":{"maxSkillsPerRun":0}}`)),
+      }),
+    ).toThrow(/limits\.skills\.maxSkillsPerRun must be in 1…64/);
+  });
+
   test("limits.timeouts 新增 reviewTurnMs / oneShotMs 可配且进 digest", () => {    const { config } = loadConfig({
       configPath: writeConfig(
         minimalConfig(`,"limits":{"timeouts":{"reviewTurnMs":120000,"oneShotMs":45000}}`),

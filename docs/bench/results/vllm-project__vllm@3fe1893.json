@@ -1,0 +1,302 @@
+{
+  "instance_id": "vllm-project__vllm@3fe1893",
+  "repo": "vllm-project/vllm",
+  "base_commit": "c3bf9bad11193ee684ed6083b6692d0b5bf2bac7",
+  "head_commit": "3fe18934d7f33b98812d7402463fe171c24efc77",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1144.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 28,
+  "review_output": [
+    {
+      "file": "vllm/attention/backends/torch_sdpa.py",
+      "line": 68,
+      "summary": "swap_blocks 委托给不存在的方法，调用时将抛 AttributeError",
+      "failure_scenario": "本次把 TorchSDPABackend.swap_blocks 从「显式抛 NotImplementedError」改成调用 PagedAttention.swap_blocks，但该文件 line 21 导入的 PagedAttention 来自 vllm/attention/ops/ipex_attn.py，其中的 _PagedAttention 只定义了 get_supported_head_sizes / get_kv_cache_shape / split_kv_cache / write_to_paged_cache / forward_decode / copy_blocks，_IPEXPagedAttention 也仅覆写 split_kv_cache、write_to_paged_cache、forward_decode，两个类都没有 swap_blocks。因此改动不但没有实现 swap 能力，反而把原本语义清晰的 NotImplementedError 变成无提示的 AttributeError（'type object _PagedAttention has no attribute swap_blocks'），KV cache swap/offload 路径在 CPU（TORCH_SDPA）后端下依旧不可用且更难排查。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "API-EXISTENCE-001"
+    },
+    {
+      "file": "vllm/benchmarks/throughput.py",
+      "line": 87,
+      "summary": "对 dataclass 类型的 requests 使用下标访问，beam search 分支会抛 TypeError",
+      "failure_scenario": "SampleRequest 是普通 @dataclass（字段 prompt / prompt_len / expected_output_len / multi_modal_data / lora_request），没有实现 __getitem__，因此 requests[0][2] 会抛 TypeError: 'SampleRequest' object is not subscriptable。该行与紧随其后的 `request.expected_output_len` 语义重复却写法不一致，说明是从早期的 NamedTuple 版本回退时漏改；虽然当前 use_beam_search 被硬编码为 False，一旦有人打开 beam search 或复用该分支就会立即失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "TYPE-ATTR-001"
+    },
+    {
+      "file": "benchmarks/benchmark_throughput.py",
+      "line": 100,
+      "summary": "独立 benchmark 脚本中同一处 requests[0][2] 下标访问同样会 TypeError",
+      "failure_scenario": "benchmarks/benchmark_throughput.py 是 vllm/benchmarks/throughput.py 的对照实现，本次同样把 `requests[0].expected_output_len` 改成了 `requests[0][2]`。该脚本使用的 SampleRequest 来自本地 benchmarks/benchmark_dataset.py 中的 @dataclass（字段顺序 prompt、prompt_len、expected_output_len），没有 __getitem__，因此该行必然抛 TypeError。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "TYPE-ATTR-001"
+    },
+    {
+      "file": "benchmarks/benchmark_dataset.py",
+      "line": 356,
+      "summary": "RandomDataset 统计的 prompt_len 与实际构造出的 prompt 长度不一致，多算了 prefix_len",
+      "failure_scenario": "prompt 由 prefix_token_ids + inner_seq 组成，随后 re_encoded_sequence = tokenizer.encode(prompt)[:input_lens[i]] 会截断到 input_lens[i] 个 token（即把 prefix 部分也截掉），最终 prompt 的 token 数约为 input_lens[i]。本次把 total_input_len 改为 prefix_len + int(input_lens[i])，比真实长度多出 prefix_len；而 prompt_len 会被吞吐基准用于 max_model_len 校验（request.prompt_len + request.expected_output_len <= max_model_len）与报表统计，prefix_len 较大时会误判超长而直接 assert 失败，或让统计口径失真。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CONSISTENCY-002"
+    },
+    {
+      "file": ".buildkite/scripts/hardware_ci/run-neuron-test.sh",
+      "line": 57,
+      "summary": "容器内去掉 set -e 后 Neuron CI 会吞掉用例失败",
+      "failure_scenario": "脚本外层虽有 set -e（line 5），但真正跑测试的是 `docker run ... /bin/bash -c \"...\"` 里的命令串。本次删掉了该命令串开头的 `set -e; # Exit on first error`，而 neuron.py 与 pytest 之间用 `;` 串联，容器内 bash -c 的退出码只等于最后一条命令（2_core 目录里最后一个 pytest）的退出码。结果是 offline_inference/neuron.py 或 tests/neuron/1_core 失败、甚至 2_core 中前面若干文件失败，都不会让 CI 变红，Neuron 硬件 CI 形同只看最后一个用例。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.82,
+      "rule": "CI-SHELL-001"
+    },
+    {
+      "file": "examples/online_serving/openai_transcription_client.py",
+      "line": 40,
+      "summary": "示例改为模块级执行且删除 __main__ 守卫，import 即发起网络请求",
+      "failure_scenario": "改造后文件中直接写 `sync_openai()`（line 40）与 `asyncio.run(stream_openai_response())`（line 74），并删除了原来的 main() 与 `if __name__ == \"__main__\":` 保护。任何 import 该模块的行为（文档构建、静态检查、pytest 收集、用户 from ... import）都会立刻向 localhost:8000 发起同步/异步 HTTP 请求并在无服务时抛错，同时也会打印输出，副作用无法控制。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.78,
+      "rule": "EXAMPLES-001"
+    },
+    {
+      "file": "vllm/config.py",
+      "line": 1903,
+      "summary": "新增的 ray_only_devices 为空列表，整个 Ray-only 校验分支是死代码",
+      "failure_scenario": "ParallelConfig.__post_init__ 新增了 ray_only_devices: list[str] = [] 以及基于它的校验（world_size>1 时强制/校验 distributed_executor_backend == 'ray'，否则抛 ValueError）。由于列表常量始终为空，`current_platform.device_type in ray_only_devices` 恒为 False，整段逻辑永不生效；同时该段还引入了函数内的 `from vllm.platforms import current_platform` 局部导入。类似配置（如 cuda_device_count_stateless）在文件顶部是模块级导入，此处风格也不一致。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.8,
+      "rule": "DEADCODE-001"
+    },
+    {
+      "file": "vllm/config.py",
+      "line": 2330,
+      "summary": "DeviceConfig 类型仍允许 torch.device，但 device_type 不再取 .type，字段契约被破坏",
+      "failure_scenario": "device 的注解为 SkipValidation[Union[Device, torch.device]]（line 2288），说明外部仍可能传入 torch.device；但 __post_init__ 的 else 分支被简化为 `self.device_type = self.device`，不再区分 str 与 torch.device。一旦调用方传入 torch.device('cuda')，device_type 就会是 torch.device 对象而不是声明的 str，导致后续所有 `device_type == 'cuda'` / `in ['neuron']` 这类字符串比较静默失配（本文件 line 2333、2335 的 neuron/tpu 判断即依赖字符串比较）。建议要么在注解中彻底移除 torch.device，要么在 else 分支做类型归一。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "TYPE-CONTRACT-002"
+    },
+    {
+      "file": "csrc/moe/moe_align_sum_kernels.cu",
+      "line": 307,
+      "summary": "moe_align_block_size 改为单 block、线程数 max(num_experts,32)，大 batch 下吞吐可能明显回退",
+      "failure_scenario": "重写后的实现固定以 `<<<1, num_thread>>>` 启动（line 361/375），num_thread = max(num_experts, WARP_SIZE)，每个线程串行处理 CEILDIV(numel, blockDim.x) 个 token。相比被删除的旧实现（计数 kernel 用 1024 线程，排序用 count_and_sort_expert_tokens_kernel 以 256 线程 × 最多 65535 个 block 并行），新实现对 expert 数少（如 8/16/64）而 token 多（大 batch）的 MoE 模型只能占用 1 个 SM、每线程循环上千次，属明显的并行度退化；文件内新增的 TODO 注释也自认是为 unblock DeepSeek V3 的临时实现。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-002"
+    },
+    {
+      "file": "csrc/moe/moe_align_sum_kernels.cu",
+      "line": 339,
+      "summary": "全局显存回退路径的 token_cnts 缓冲区按 num_experts 行分配，与实际行数 max(num_experts,32)+1 不符",
+      "failure_scenario": "回退路径用 `torch::empty({(num_experts + 1) * num_experts})` 分配 token_cnts，但 kernel 以 blockDim.x 为线程数（num_thread = max(num_experts, WARP_SIZE)）写入 index(num_experts, threadIdx.x + 1, i)，即需要 num_thread+1 行。当 num_experts < 32 时 num_thread=32，写入行号可达 32，而行数只有 num_experts+1。当前由于小 num_experts 的共享内存需求必然满足、不会走到回退分支，该越界不可达，但分配尺寸与 kernel 索引用的是两个不同维度（num_experts vs num_thread），一旦以后调整回退判定阈值就会变成真实越界写。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "BOUNDS-003"
+    },
+    {
+      "file": "cmake/utils.cmake",
+      "line": 124,
+      "summary": "移除 -Werror=unused-variable 会静默放过 HIP 编译中的未使用变量",
+      "failure_scenario": "get_torch_gpu_compiler_flags 的 HIP 分支本次删除了 -Werror=unused-variable，使 ROCm 构建重新允许未使用变量通过编译。结合本次 csrc/moe 大改（例如 moe_align_block_size 中内外两处重复声明的 num_thread 等），这类告警被放宽后容易积累死变量而不被发现；如果只是为了绕过某个新引入的告警，应定点修复而非整条关闭。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.5,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "vllm/envs.py",
+      "line": 948,
+      "summary": "影响内核选择的新开关 VLLM_ENABLE_MOE_ALIGN_BLOCK_SIZE_TRITON 未计入 compute_hash 的 factors",
+      "failure_scenario": "本次让 `moe_align_block_size` 依据 `envs.VLLM_ENABLE_MOE_ALIGN_BLOCK_SIZE_TRITON` 在 Triton 内核与 CUDA sgl 内核之间切换，但 `envs.compute_hash()` 的 docstring 明确要求“影响内核/注意力后端选择的变量必须加入 factors 列表”，而 `environment_variables_to_hash`（第 948-956 行）并未包含该变量。影响：在同一缓存目录下切换该环境变量时，编译缓存哈希不变，可能复用按另一条内核路径捕获的执行图，导致调试困难或行为不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CACHE-008"
+    },
+    {
+      "file": "vllm/platforms/interface.py",
+      "line": 298,
+      "summary": "删除 Platform.set_device 后仍有调用方，Ray Compiled Graph 路径会抛 AttributeError",
+      "failure_scenario": "本次变更把 Platform.set_device 基类方法（原 interface.py 中的类方法）和 CudaPlatformBase 中的覆盖实现一起删掉，但 vllm/executor/ray_utils.py 仍以 current_platform.set_device(...) 形式调用该 API。全仓库已不存在任何 set_device 的平台侧声明（review_get_symbol(\"set_device\") 返回 0 个声明），因此 Ray Compiled Graph/SPMD 执行路径在首次设置设备时会抛出 AttributeError，直接导致 ray + compiled DAG 场景无法启动。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "API-REMOVAL-LEFTOVER-001"
+    },
+    {
+      "file": "vllm/v1/attention/backends/triton_attn.py",
+      "line": 29,
+      "summary": "Triton builder 继承 Flash builder 后开始返回 use_cascade=True，与 TritonAttentionImpl 的断言冲突",
+      "failure_scenario": "改动后 TritonAttentionMetadataBuilder 只覆盖 __init__，从 FlashAttentionMetadataBuilder 继承了 use_cascade_attention()（转调 flash_attn.py 模块级启发式函数）。而 GPUModelRunner 计算 cascade 前缀长度时调用的是 builder 的方法，一旦满足条件（common_prefix_len>=256、请求数>=8、非 alibi/sliding-window）就会令 common_prefix_len>0，build() 随之产出 use_cascade=True 的 metadata；但 TritonAttentionImpl.forward 明确 `assert attn_metadata.use_cascade is False`，于是开启 prefix caching 的 Triton 后端（本次改动后 ROCm V1 固定使用 Triton）在批量共享前缀的 prefill 场景会直接 AssertionError。改动前 Triton builder 用的是基类默认 use_cascade_attention()（恒 False）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "BACKEND-CONTRACT-002"
+    },
+    {
+      "file": "vllm/v1/attention/backends/triton_attn.py",
+      "line": 33,
+      "summary": "Triton builder 继承 Flash builder 后 full CUDA graph 支持判定失效，ROCm 打开 full_cuda_graph 直接报错",
+      "failure_scenario": "FlashAttentionMetadataBuilder.__init__ 会用 get_flash_attn_version()==3 计算 aot_schedule，并在 use_full_cuda_graph 且不具备 AOT 调度时抛 ValueError；full_cudagraph_supported 类属性也由此得出（旧 Triton builder 硬编码 True）。Triton 子类是在 super().__init__() 之后才把 aot_schedule 置 False，无法阻止父类构造期的 ValueError；而非 CUDA 平台（ROCm）get_flash_attn_version() 返回 None，故 full_cudagraph_supported 变为 False。结果是：本次改动已让 ROCm V1 只能选 Triton 后端，此时任何启用 CompilationConfig.full_cuda_graph 的配置都会报出误导性的 “requires FlashAttention 3” 或 “Full CUDAGraph not supported” 错误。此外旧的 build_for_cudagraph_capture 覆写（把 seq_lens 填 1 以避免 capture 极慢）被移除，CUDA+Triton 走 full graph 时 capture 会退化为按 max_model_len 规模执行。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CONFIG-COMPAT-003"
+    },
+    {
+      "file": "vllm/v1/attention/backends/mla/rocm_aiter_mla.py",
+      "line": 211,
+      "summary": "AITER MLA decode 在纯 decode 批次下断言 prefill 非空，会导致 AssertionError",
+      "failure_scenario": "新的 max_seqlen_qo 取值逻辑在 num_heads != 16（即 TP=1、128 heads 的常见部署）时依赖 attn_metadata.prefill；但 MLACommonMetadataBuilder.build 只在 _num_prefills > 0 时构造 prefill metadata，纯 decode 步骤中 prefill 恒为 None（spec decode/MTP 的 decode 步也是 num_prefills==0）。因此一旦走到 _forward_decode 的 else 分支就会触发 assert 失败，AITER MLA 在 decode 阶段不可用，等于破坏了该后端的核心路径。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "vllm/model_executor/models/llava.py",
+      "line": 686,
+      "summary": "去掉 len(multimodal_embeddings)!=0 判空后，空列表会进入 merge_multimodal_embeddings 并抛 RuntimeError",
+      "failure_scenario": "多模态模型的 get_multimodal_embeddings 在“本批次没有多模态输入”时返回空列表（llava/llava_next/phi3v 均如此），而 V0 兼容的 forward 分支会把该返回值原样传给 get_input_embeddings。本次把判空条件从 `multimodal_embeddings is not None and len(...) != 0` 改成只看 `is not None` 后，空列表会进入 merge_multimodal_embeddings → _merge_multimodal_embeddings → _flatten_embeddings，对空序列执行 torch.cat(()) 会抛 “torch.cat(): expected a non-empty list of Tensors”。该模式在本 MR 中被复制到约 40 个模型文件，影响面很广（纯文本请求或多模态请求的 decode 步）。V1 侧 gpu_model_runner 有 `if mm_embeds:` 保护，因此主要在仍保留的 V0 路径暴露（本 MR 仍新增 SupportsV0Only，说明 V0 仍在支持范围内）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "vllm/model_executor/models/phi3v.py",
+      "line": 672,
+      "summary": "对 MultiModalEmbeddings 做真值判断不安全，且各处判空写法不一致",
+      "failure_scenario": "MultiModalEmbeddings 允许是单个 Tensor（多模态嵌入可以是 3D Tensor），而此时 `if multimodal_embeddings:` / `if not multimodal_embeddings:` 会触发 “Boolean value of Tensor with more than one element is ambiguous” 的 RuntimeError。本 MR 在这批模型里同时引入了三种写法（`is not None`、`if not ...`、裸真值判断），既存在上述语义风险，也让后续维护者难以判断哪些位置能安全处理空列表。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONSISTENCY-004"
+    },
+    {
+      "file": "vllm/model_executor/models/qwen2_vl.py",
+      "line": 822,
+      "summary": "Qwen2-VL 硬编码 max tokens per item，忽略 max_pixels/mm_processor_kwargs 且被子类继承",
+      "failure_scenario": "新增的 get_max_tokens_per_item 直接返回 {\"image\": 16384, \"video\": 98304}，不看 _get_image_processor_kwargs 里合并进来的 mm_processor_kwargs、min_pixels/max_pixels。MultiModalProfiler.get_mm_max_tokens 一旦拿到非 None 就不再生成 dummy 输入实测，因此当用户通过 --mm-processor-kwargs 放大 max_pixels（或使用非默认图像分辨率）时，profiling 会低估多模态 token 数，进而低估 KV cache / 激活占用。此外 Qwen2_5_VLProcessingInfo 继承 Qwen2VLProcessingInfo 而未覆写该方法，Qwen2.5-VL 也复用同一组常量。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CONFIG-CONSISTENCY-005"
+    },
+    {
+      "file": "vllm/model_executor/models/qwen3.py",
+      "line": 378,
+      "summary": "删除 pooling 的 list 分支后，list 类型的 pooled 状态会让 score 线性层报 TypeError",
+      "failure_scenario": "Qwen3ForSequenceClassification.pooler 现在无条件执行 `logits, _ = self.score(hidden_states)`，但 _pooler 由 Pooler.from_config_with_defaults(pooler_config, pooling_type=LAST, ...) 构建，pooling_type 可被 pooler_config 覆盖为 ALL/STEP 等策略，而 AllPool/StepPool.extract_states 返回的是 list[torch.Tensor]（PoolerHead 也显式以 isinstance(pooled_data, list) 分支支持 list）。一旦返回 list，RowParallelLinear 前向会因入参非 Tensor 而抛 TypeError。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "vllm/model_executor/models/mamba2.py",
+      "line": 111,
+      "summary": "Mamba2 去掉 prefix 透传后，mixer 内部量化层丢失模块名前缀",
+      "failure_scenario": "Mamba2DecoderLayer 不再接收 prefix，构造 MambaMixer2 时也不再传 prefix，而 MambaMixer2 内部仍以 quant_config 构建 ColumnParallelLinear/RowParallelLinear，这些层的 prefix 会退化为默认空串。vLLM 的量化后端普遍依赖 layer prefix（模块全名）来匹配 per-module 配置/ignore 列表，空 prefix 会导致量化方法解析错误或出现“找不到层配置”的告警/报错；同时 make_layers 传入的 prefix 在 lambda 中被静默丢弃，后续排查权重命名问题会很困难。",
+      "severity": "P2",
+      "category": "可维护性",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-006"
+    },
+    {
+      "file": "vllm/platforms/rocm.py",
+      "line": 144,
+      "summary": "ROCm 自定义 paged attention 的 max_seq_len 上限从 128K 收紧到 32768",
+      "failure_scenario": "use_rocm_custom_paged_attention 的两个分支都把序列长度门槛从 128*1024 改成 32768。这意味着序列长度超过 32768 的请求将不再走 ROCm 自定义 paged attention kernel，而落到更慢的通用实现上，长上下文（32K~128K）场景吞吐/延迟会明显退化。变更未附任何说明或测试依据，属于隐式的性能行为变更。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "PERF-REGRESSION-007"
+    },
+    {
+      "file": "vllm/model_executor/models/gemma.py",
+      "line": 284,
+      "summary": "gemma 系列 normalizer buffer 改回持久化，与其上方注释的修复意图相反",
+      "failure_scenario": "三处 GemmaModel 都把 register_buffer(persistent=False) 改成默认持久化。该行紧邻的注释（引用 HF PR 29402）说明 normalizer 本就是为规避权重/buffer 语义问题而设为非持久；改回持久化后 normalizer 会出现在 state_dict 中，进而影响基于 state_dict 的保存/加载、权重比对与 sleep-mode/量化等对 buffer 集合敏感的路径，且与同级其它模型的处理方式可能不一致。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.4,
+      "rule": "MAINTAINABILITY-008"
+    },
+    {
+      "file": "vllm/multimodal/hasher.py",
+      "line": 45,
+      "summary": "ndarray 序列化统一用 tobytes()，连续数组也产生额外拷贝",
+      "failure_scenario": "原实现对 C 连续的 ndarray 使用 obj.data（memoryview，零拷贝），仅在非连续时 tobytes()；新实现一律 tobytes()，并同时删除了 memoryview 入参分支。多模态哈希会在每个数据项上执行，对大图/视频帧（几十 MB）意味着每次哈希多一次完整内存拷贝，增加 CPU 内存峰值与耗时。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.45,
+      "rule": "PERF-HASH-009"
+    },
+    {
+      "file": "vllm/worker/worker_base.py",
+      "line": 205,
+      "summary": "pin_lora 由 raise 改为 return ValueError，异常对象被当作“成功”返回",
+      "failure_scenario": "LoRANotSupportedWorkerBase.pin_lora 原本在 LoRA 不受支持的 worker 上抛出 ValueError，本次改为 `return ValueError(f\"{type(self)} does not support LoRA\")`，即返回一个异常实例而不是抛出。该方法签名声明为 `-> bool`，返回值会沿 executor_base.pin_lora（L157）→ llm_engine.pin_lora（L1838-1839）逐层向上作为布尔成功标志返回；异常实例在布尔上下文中恒为真，于是调用方会认为 LoRA 已成功 pin，而实际什么都没发生，错误被静默吞掉。同一类的 add_lora / remove_lora / list_loras 仍然 raise，行为不一致；行尾的 `# type: ignore` 还把 mypy 对“返回类型不匹配”的告警压掉了，使问题更难在 CI 暴露。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.93,
+      "rule": "CORRECTNESS-EXCEPTION-002"
+    },
+    {
+      "file": "vllm/worker/worker_base.py",
+      "line": 401,
+      "summary": "execute_model 中条件仅加括号的格式化改动无实际语义，属无关噪声",
+      "failure_scenario": "本次把 `if execute_model_req is not None and execute_model_req.spec_step_idx:` 改写为 `if (execute_model_req is not None and execute_model_req.spec_step_idx):`，仅增加了一对冗余括号，条件与语义完全不变。这类与本 MR 主题（删除废弃后端、TPU InputBatch 统一等）无关的格式变更会增加 diff 噪声与 review 成本，也容易在后续 blame 时造成误导。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "STYLE-NOISE-001"
+    },
+    {
+      "file": "vllm/worker/cpu_worker.py",
+      "line": 97,
+      "summary": "CPUCacheEngine.copy/swap 的类型标注改为 Dict，与实际调用方和下游实现（torch.Tensor）不一致",
+      "failure_scenario": "本次把 CPUCacheEngine.swap_in / swap_out 的入参标注改为 `Dict[int, int]`，copy 改为 `Dict[int, List[int]]`，但真实调用链传入的是 torch.Tensor：CPUWorker.execute_worker（cpu_worker.py:357-360）把 prepare_worker_input 中用 `torch.tensor(...).view(-1, 2)` 构造的 blocks_to_copy 直接传给 copy()，WorkerInput.blocks_to_copy 也声明为 Optional[torch.Tensor]。而 copy() 内部转交给 attn_backend.copy_blocks，CPU 默认后端 TorchSDPABackend.copy_blocks（torch_sdpa.py:71-75）→ PagedAttention.copy_blocks（paged_attn.py:249-256）→ 编译算子 ops.copy_blocks，全都要求 torch.Tensor。当前由于 Python 不做运行时类型检查，功能上仍能跑通，但标注与契约相反：一旦有人按新标注改成传字典，编译算子会直接报错；同时掩盖了 swap_in/swap_out 被 .numel() 守卫调用的真实约束。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "TYPE-CONTRACT-001"
+    },
+    {
+      "file": "vllm/v1/worker/tpu_model_runner.py",
+      "line": 45,
+      "summary": "TPU 改为复用 GPU 版 InputBatch 后，GPU 专属的 sampling_metadata 懒刷新路径在 TPU 上处于“只初始化不更新”状态",
+      "failure_scenario": "删除 tpu_input_batch.py 后，TPUModelRunner（tpu_model_runner.py:45、202-210、1361-1371）直接使用 vllm.v1.worker.gpu_input_batch.InputBatch。该类的 __init__（gpu_input_batch.py:227）会立即构造 self.sampling_metadata，且只在 GPUModelRunner._update_states（gpu_model_runner.py:534）中通过 refresh_sampling_metadata() 更新；TPU 侧从不调用该方法（引用检索显示 refresh_sampling_metadata 仅出现在 gpu_model_runner 与测试中），因此 TPU 上的 input_batch.sampling_metadata 会一直停留在初始化时的空批次状态。当前 TPU 采样走 TPUSupportedSamplingMetadata.from_input_batch（vllm/v1/sample/tpu/metadata.py:66-110），不读取该字段，所以不会立刻出错；但同一对象上存在两套“采样元数据”入口，且 TPU 那份是陈旧数据，属于易踩坑的隐性契约，未来若有人复用 input_batch.sampling_metadata 会得到错误结果，同时也让 TPU 承担了它明确想避免的 _make_sampling_metadata 调用（metadata.py:77-79 注明了该调用会在 XLA 上引发重编译）。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-COUPLING-003"
+    }
+  ],
+  "stderr_tail": "  deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 5 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 49 个文件 / 103115 字符（test=41, exclude=8），明细见审计 mrFilter\n✓ 完成 · 耗时 1105.8s · 模型调用 119 次 · token 输入 519,954（未命中） · 输出 162,224 · 缓存命中 8,028,160（93.9%） · 工具 265 次（主会话 265 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.1407\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: 置信度过滤丢弃 3 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\vllm-project__vllm@3fe189...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1106.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 1105.7s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 9.3s (0.8%) | S1P2 3.7s (0.3%) | S1P3 10.8s (1.0%) | S1P4 126.2s (11.4%) | S1P5 56.5s (5.1%) | S1P6 13.0s (1.2%) | S2P1 17.1s (1.5%) | S2P2 4.9s (0.4%) | S2P3 30.0s (2.7%) | S2P4 69.0s (6.2%) | S2P5 71.1s (6.4%) | S2P6 20.7s (1.9%) | S3P1 11.3s (1.0%) | S3P2 3.4s (0.3%) | S3P3 9.0s (0.8%) | S3P4 203.7s (18.4%) | S3P5 73.0s (6.6%) | S3P6 15.7s (1.4%) | S4P1 12.7s (1.1%) | S4P2 3.9s (0.4%) | S4P3 9.8s (0.9%) | S4P4 146.6s (13.3%) | S4P5 39.7s (3.6%) | S4P6 9.3s (0.8%) | S5P1 9.2s (0.8%) | S5P2 2.5s (0.2%) | S5P3 5.7s (0.5%) | S5P4 89.4s (8.1%) | S5P5 21.4s (1.9%) | S5P6 6.4s (0.6%)\n[usage] 任务总计 | 模型调用 119 次（Agent 119 + 一次性 0） | token 输入 519,954（未命中） | 输出 162,224 | 缓存命中 8,028,160（93.9%） | $0.1407\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\vllm-project__vllm@3fe1893\\audit\\20261115_053611_675.json",
+  "token_usage": {
+    "input_tokens": 519954,
+    "output_tokens": 162224,
+    "cache_read_input_tokens": 8028160
+  }
+}

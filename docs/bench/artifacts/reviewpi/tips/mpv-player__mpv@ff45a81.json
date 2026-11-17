@@ -1,0 +1,291 @@
+[
+  {
+    "filePath": "MPV_VERSION",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "0.39.0-UNKNOWN",
+        "review": "[缺陷类型] 发布元数据与文档流程方向冲突（版本号/发布说明被机械回退）。影响评估：`mpv --version` 与打包元数据回到 0.39.0，RELEASE_NOTES 与实际内容不符，且新增的单文件 interface-changes 无版本段归属，发布时容易漏记或错记。",
+        "suggestion": "[重构思路] 明确本 MR 的目标版本：若目标是继续 0.40.0，应恢复 MPV_VERSION 与 RELEASE_NOTES 的 0.40.0 内容，仅保留文档拆分；若确实要回退发布，应删掉 0.40.0 相关文档段落并说明回退原因。同时清理 RELEASE_NOTES 中的重复条目。代码示例：`echo '0.40.0-UNKNOWN' > MPV_VERSION` 并对 RELEASE_NOTES 做一次去重校验（如 `sort -u` 对比）。",
+        "category": "可维护",
+        "subcategory": "版本与发布元数据",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/mp_image.c",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "dst->params.rotate = src->params.rotate;",
+        "review": "[缺陷类型] 新增图像参数未加入属性拷贝白名单，属性在滤镜链中被丢弃。影响评估：带 DISPLAYMATRIX 垂直翻转的视频在存在格式转换（swscale/vf 系列）时会被显示为未翻转，即画面上下颠倒的回归；仅在无中间滤镜时正常。",
+        "suggestion": "[重构思路] 在 mp_image_copy_attributes 中与 rotate 并列补上 vflip 的拷贝，并考虑改为整体拷贝 mp_image_params 中「应当继承」的字段，避免今后新增字段时再次漏项。代码示例：`dst->params.rotate = src->params.rotate;\\n dst->params.vflip = src->params.vflip;`",
+        "category": "可靠性",
+        "subcategory": "图像参数传递",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 517,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "dst->params.repr = (struct pl_color_repr){",
+        "review": "[缺陷类型] 结构体整体赋值导致未显式初始化的字段被清零（信息丢失）。影响评估：带 alpha 的软解内容会以“alpha 未知”渲染，10bit-in-16bit 等格式丢失 bit_shift/位深信息，可能出现 alpha 混合错误、抖动与去带效果退化。",
+        "suggestion": "[重构思路] 二选一：(a) 在整体赋值时显式补上从 fmt 推导的 alpha/bits；(b) 恢复逐字段赋值，只覆盖 sys/levels，保留 setfmt 的初始化。代码示例：\n```c\nstruct pl_bit_encoding bits = dst->params.repr.bits;\nenum pl_alpha_mode alpha = dst->params.repr.alpha;\ndst->params.repr = (struct pl_color_repr){\n    .sys = pl_system_from_av(src->colorspace),\n    .levels = pl_levels_from_av(src->color_range),\n    .alpha = alpha,\n    .bits = bits,\n};\n```",
+        "category": "可靠性",
+        "subcategory": "元数据丢失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1076,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "demux/demux_lavf.c",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "{\"hls\", .no_stream = true, .clear_filepos = true},",
+        "review": "[缺陷类型] 移除已知 FFmpeg 缺陷的规避代码。影响评估：HLS/直播 URL 在扩展名与探测格式不一致时可能直接打开失败，属于用户可感知的播放回归，且只在特定 URL 下复现，容易漏测。",
+        "suggestion": "[重构思路] 若确实要移除该 hack，应确认所依赖的 FFmpeg 版本已修复 extension_picky 对 HLS 的误判，并补充针对无扩展名/非 .m3u8 结尾 HLS URL 的验证；否则保留 no_ext_picky 分支。代码示例：`{\"hls\", .no_stream = true, .clear_filepos = true, .no_ext_picky = true},` 并在 demux_open_lavf 中恢复 `av_dict_set(&dopts, \"extension_picky\", \"0\", 0)`。",
+        "category": "可靠性",
+        "subcategory": "FFmpeg 兼容规避",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 165,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "demux/demux_mkv.c",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "lav->profile = FF_PROFILE_ARIB_PROFILE_A;",
+        "review": "[缺陷类型] 使用上游已弃用（deprecated）的 FFmpeg 公开宏。影响评估：启用 -Werror 的 CI/打包构建失败，长期随 FFmpeg 弃用宏移除而彻底无法编译；属于构建可移植性退化。",
+        "suggestion": "[重构思路] 保留 AV_PROFILE_* 新名，如需兼容更老 FFmpeg，用版本宏做条件映射而不是逆向回退。代码示例：`#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(59, 0, 0)\\n#define AV_PROFILE_ARIB_PROFILE_A FF_PROFILE_ARIB_PROFILE_A\\n#endif`",
+        "category": "可移植",
+        "subcategory": "FFmpeg API 弃用",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2203,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "player/clipboard/clipboard-wayland.c",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "if (fds[2].revents & POLLIN)",
+        "review": "[缺陷类型] 删除 fd 错误/挂断事件的清理路径，导致资源与状态残留。影响评估：剪贴板源端关闭（如复制后关闭应用）时 Wayland 剪贴板后端可能保持失效 offer，脚本读取 `clipboard/text` 得到错误结果，并可能累积泄漏。",
+        "suggestion": "[重构思路] 恢复 POLLERR/POLLHUP/POLLNVAL 分支，或把错误事件与 POLLIN 合并处理：无论如何先销毁失效 offer 并重置指针。代码示例：`if (fds[2].revents & (POLLERR | POLLHUP | POLLNVAL)) { destroy_offer(wl->selection_offer); wl->selection_offer = NULL; }`",
+        "category": "可靠性",
+        "subcategory": "fd 生命周期",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 351,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "filters/f_output_chain.c",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "p->stream_info.vflip = vo ? vo->driver->caps & VO_CAP_VFLIP : false;",
+        "review": "[缺陷类型] 新增能力位无实现方，形成死分支与无效优化。影响评估：功能上不致命（仍由滤镜完成翻转），但所有 VO 都多插入一次 vflip 滤镜（额外转换/内存带宽），且读者会误以为存在原生支持 vflip 的后端。",
+        "suggestion": "[重构思路] 明确方案：要么为确实能原生处理 vflip 的驱动（如 vdpau/dmabuf 路径）补上 `caps |= VO_CAP_VFLIP`，要么先不引入该能力位、让 autovflip 无条件插入滤镜，并在注释中说明。代码示例：`static const struct vo_driver video_out_xxx = { ... .caps = VO_CAP_ROTATE90 | VO_CAP_VFLIP, ... };`",
+        "category": "可维护",
+        "subcategory": "能力位与死代码",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 379,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "DOCS/interface-changes.rst",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "",
+        "review": "[缺陷类型] 文档结构重组后遗留空版本段与缺失版本归属。影响评估：非运行时问题，但发布说明生成依赖该目录约定，容易漏记/错记 0.40.0 的接口变更，且新增/删除的单文件与 MAN 手册改动之间缺少可追溯映射。",
+        "suggestion": "[重构思路] 保持单一事实来源：若采用「每变更一文件」方案，则在 interface-changes.rst 中只保留已发布版本段，去掉空的 0.40.0 段，并在发布脚本中把 *.txt 合并进当前版本段；反之则把条目放回主文档。代码示例：发布脚本片段 `for f in DOCS/interface-changes/*.txt; do sed 's/^/    - /' \"$f\"; done >> DOCS/interface-changes.rst`",
+        "category": "可维护",
+        "subcategory": "文档与发布流程",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 32,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/build-win32.ps1",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "# Wrap shaderc to run git-sync-deps and patch unsupported generator expression",
+        "review": "[缺陷类型] CI 依赖未锁定版本。影响评估：Windows CI 可能因上游 shaderc 变更或补丁上下文变化而随机失败；即使成功，构建产物所用 shaderc 版本也不可追溯。",
+        "suggestion": "[重构思路] 恢复固定 tag（或固定 commit hash），并在注释中写明升级流程；如需跟随上游，也应使用 `--depth 1 -b <tag>` 并在依赖变动时显式更新。代码示例：`git clone https://github.com/google/shaderc --depth 1 -b v2025.1 $subprojects/shaderc_cmake`",
+        "category": "可维护",
+        "subcategory": "CI 依赖锁定",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 10,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/out/vo_gpu_next.c",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "if (frame->current->params.vflip) {",
+        "review": "[缺陷类型] 未判空的指针解引用（frame->current 可能为 dummy 帧的 NULL）。影响评估：只要进入 OSD-only 的 do_redraw 路径就会段错误，属于进程级崩溃，而非渲染异常。",
+        "suggestion": "[重构思路] 与函数内其它用法保持一致，先判空再取 vflip；必要时把该帧的 vflip 状态记录下来复用。代码示例：\n```c\nif (frame->current && frame->current->params.vflip) {\n    pl_matrix2x2 m = { .m = {{1, 0}, {0, -1}}, };\n    pars->distort_params.transform.mat = m;\n    params.distort_params = &pars->distort_params;\n}\n```",
+        "category": "可靠性",
+        "subcategory": "空指针解引用",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 923,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "video/out/vo.c",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "if (!vo->config_ok || (vo->driver->caps & VO_CAP_NORETAIN) ||",
+        "review": "[缺陷类型] 状态标志未清除导致的事件循环忙等（request_redraw 泄漏）。影响评估：声明 NORETAIN/UNTIMED 的 VO 在暂停或无帧时可能出现 100% CPU 空转并丢失重绘；即使当前树内使用者较少，这也是框架层的语义回归。",
+        "suggestion": "[重构思路] 把「标记已消费」与「是否真正重绘」分离：无论是否提前返回，都在持锁时清掉 request_redraw；或让 vo_thread 在 do_redraw 为空操作时清标志。代码示例：\n```c\nstatic void do_redraw(struct vo *vo)\n{\n    struct vo_internal *in = vo->in;\n    mp_mutex_lock(&in->lock);\n    in->request_redraw = false;\n    mp_mutex_unlock(&in->lock);\n\n    if (!vo->config_ok || (vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)))\n        return;\n    ...\n}\n```",
+        "category": "性能",
+        "subcategory": "事件循环忙等",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1082,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/out/vo_kitty.c",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "talloc_free(p->cmd.start);",
+        "review": "[缺陷类型] use-after-free / 悬空指针复用（talloc 释放后未重置 bstr）。影响评估：reconfig 后首帧输出即可能读写已释放内存，可能造成终端输出乱码、堆数据被破坏或 talloc 断言中止。",
+        "suggestion": "[重构思路] 释放后立即把 bstr 置零，保证 bstr_xappend 从「空且 start==NULL」的合法状态重新分配；也可提供一个统一的 bstr_reset 辅助函数。代码示例：\n```c\ntalloc_free(p->cmd.start);\np->cmd = (bstr){0};\n```",
+        "category": "可靠性",
+        "subcategory": "内存安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 136,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F015",
+        "code": "for (int offset = 0; offset < p->output_size; ) {",
+        "review": "[缺陷类型] off-by-one（缓冲区尺寸含终止符导致的边界错算）。影响评估：每次走非 shm 路径都会多发一个 NUL 字节并破坏最后一块的 base64 对齐，可能导致图像残缺或终端协议解析错误。",
+        "suggestion": "[重构思路] 明确区分「缓冲区大小」与「有效数据长度」，建议单独维护 data_size 变量并据此分块。代码示例：\n```c\nint data_size = p->output_size - 1; // 不含结尾 NUL\nfor (int offset = 0; offset < data_size; ) {\n    int chunk = MPMIN(4096, data_size - offset);\n    ...\n}\n```",
+        "category": "可靠性",
+        "subcategory": "边界计算",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 322,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F016",
+        "code": "static void uninit(struct vo *vo)",
+        "review": "[缺陷类型] 资源清理逻辑随重构被误删（终端图像残留）。影响评估：非 alt-screen 模式下退出后图像残留在终端，影响使用体验，与旧版本行为不一致。",
+        "suggestion": "[重构思路] 在 uninit 中恢复删除图像的调用（现在可直接用已带 ESC 结尾的常量）。代码示例：\n```c\nstatic void uninit(struct vo *vo)\n{\n    ...\n    write_bstr(KITTY_ESC_DELETE_ALL);\n    write_str(TERM_ESC_RESTORE_CURSOR);\n    terminal_set_mouse_input(false);\n    ...\n}\n```",
+        "category": "可靠性",
+        "subcategory": "资源清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 402,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/vdpau.c",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "ctx->is_preempted = false;",
+        "review": "[缺陷类型] 并发/状态机竞态：恢复期间的新抢占事件被成功路径覆盖丢失。影响评估：偶发情况下 VDPAU 设备实际不可用但状态机认为已恢复，表现为解码/显示持续报错且不再自愈，只能重启播放器。",
+        "suggestion": "[重构思路] 保留重试语义：进入恢复流程前先取走并清除标志，重建成功后再检查标志是否被重新置位，若被置位则返回失败让下一轮重试。代码示例：\n```c\nbool was_preempted = ctx->is_preempted;\nctx->is_preempted = false;\nif (win_x11_init_vdpau_procs(ctx, false) < 0) {\n    ctx->is_preempted = was_preempted;\n    ...\n    return -1;\n}\nif (ctx->is_preempted) // 恢复期间再次被抢占，重试\n    return -1;\n```",
+        "category": "可靠性",
+        "subcategory": "状态机竞态",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 148,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/out/vo_dmabuf_wayland.c",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": ".caps = VO_CAP_ROTATE90 | VO_CAP_FRAMEOWNER,",
+        "review": "[缺陷类型] 能力位声明与实际实现不一致。影响评估：对 vflip 内容会输出虚假的“不支持垂直翻转”告警，误导用户；也破坏了 VO_CAP_VFLIP 作为能力查询依据的语义。",
+        "suggestion": "[重构思路] 为实现了 vflip 的驱动补齐能力位，保持与 vo_gpu/vo_gpu_next/libmpv 一致。代码示例：\n```c\nconst struct vo_driver video_out_dmabuf_wayland = {\n    .description = \"Wayland dmabuf video output\",\n    .name = \"dmabuf-wayland\",\n    .caps = VO_CAP_ROTATE90 | VO_CAP_FRAMEOWNER | VO_CAP_VFLIP,\n    ...\n};\n```",
+        "category": "可靠性",
+        "subcategory": "能力位一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 866,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

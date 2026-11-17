@@ -1,0 +1,275 @@
+[
+  {
+    "filePath": "src/backend/base/langflow/serialization/serialization.py",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "obj[:max_length].decode(\"utf-8\", errors=\"ignore\") + \"...\"",
+        "review": "[缺陷类型] 编码边界处理错误（按字节而非字符截断）。影响评估：非 ASCII 内容（中文摘要、二进制解码文本）被截得比预期短或出现字符丢失，前端展示与长度校验会出现不可预期差异。",
+        "suggestion": "[重构思路] 先 decode 再复用字符串截断逻辑。代码示例：\n```python\ndef _serialize_bytes(obj: bytes, max_length: int | None, _) -> str:\n    return _serialize_str(obj.decode(\"utf-8\", errors=\"ignore\"), max_length, None)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 28,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F002",
+        "code": "return obj.replace(tzinfo=timezone.utc).isoformat()",
+        "review": "[缺陷类型] 时区语义错误（覆写 tzinfo 而非换算）。影响评估：任何非 UTC 的 aware datetime 序列化后代表的时间点被平移（最多 ±24h），且无任何报错提示；messages、日志、vertex build 存档中的时间会与真实发生时间不一致，排查与排序都会失真。",
+        "suggestion": "[重构思路] 区分 aware / naive：aware 用 astimezone 换算，naive 明确按 UTC 处理（或按项目约定补充说明）。代码示例：\n```python\ncase datetime():\n    if obj.tzinfo is None:\n        return obj.replace(tzinfo=timezone.utc).isoformat()\n    return obj.astimezone(timezone.utc).isoformat()\n```",
+        "category": "可靠性",
+        "subcategory": "时间与时区处理",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 37,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "serialized = obj.model_dump()",
+        "review": "[缺陷类型] 输出契约（字段可见性）变更。影响评估：API 响应、tracing 与 vertex build 存档中会新增 null 字段，体积增大且可能影响依赖“字段缺失”判断的消费者；行为差异分散在不同 pydantic 版本路径上，后续排障困难。",
+        "suggestion": "[重构思路] 统一 dump 选项并显式化策略：对外展示/落库的路径如需保持原有形状，应显式 exclude_none；同时让 v1 路径复用同一套选项。代码示例：\n```python\ndef _serialize_pydantic(obj: BaseModel, max_length, max_items, *, exclude_none: bool = True):\n    serialized = obj.model_dump(exclude_none=exclude_none)\n    return {k: serialize(v, max_length, max_items) for k, v in serialized.items()}\n```",
+        "category": "可维护",
+        "subcategory": "输出契约一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 62,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "return {k: serialize(v, max_length, max_items) for k, v in obj.items()}",
+        "review": "[缺陷类型] 序列化输出不符合 JSON 键类型约定。影响评估：包含非 str 键的数据在 API 响应或数据库 JSON 列写入时抛 TypeError/PydanticSerializationError，错误点与根因相距很远，定位成本高；旧实现（jsonable_encoder）不会出现该问题。",
+        "suggestion": "[重构思路] 在 dict 序列化时显式规范化键，并保持与 value 一致的截断策略。代码示例：\n```python\ndef _serialize_dict(obj: dict, max_length, max_items) -> dict:\n    return {\n        (k if isinstance(k, str) else str(serialize(k, None, None))): serialize(v, max_length, max_items)\n        for k, v in obj.items()\n    }\n```",
+        "category": "可靠性",
+        "subcategory": "数据契约一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 75,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "truncated.append(f\"... [truncated {len(obj) - max_items} items]\")",
+        "review": "[缺陷类型] 截断语义不一致 + 列表元素类型污染。影响评估：截断占位符以字符串形式混入原本同构的列表，消费者可能把它当成真实数据项处理；同时 tracing 日志与部分调用点（graph/schema.py:26-27、graph/vertex/vertex_types.py:482）使用默认截断，长期保存的 trace/vertex build 内容会在无提示的情况下被截短。",
+        "suggestion": "[重构思路] 需要截断时用显式参数表达，并让调用方决定是否截断；列表截断不要污染元素类型——或用专门的包装结构/返回 (items, truncated_count)，或在仅面向展示的路径保留占位符而持久化路径关闭截断。代码示例：\n```python\n# 持久化 / tracing 路径保持完整\nserialize(value, max_length=None, max_items=None)\n# 展示路径显式截断，并由调用方决定如何呈现 truncated 计数\nserialize(value, max_length=MAX_TEXT_LENGTH, max_items=MAX_ITEMS_LENGTH)\n```",
+        "category": "可靠性",
+        "subcategory": "截断语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 82,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "if primitive is not None:  # Special check for None since it's a valid primitive",
+        "review": "[缺陷类型] 分派顺序错误导致的分支不可达，截断能力静默失效。影响评估：所有经 `serialize` 的字符串不再受 MAX_TEXT_LENGTH 保护，超长 message/artifacts/logs 会原样回传并写库，可能引发响应体过大、前端渲染卡顿与数据库行膨胀；行为与测试契约不一致，属功能回归。",
+        "suggestion": "[重构思路] 不要在 primitive 短路里包含 `str`（及需要特殊处理的类型），把 `str`/`bytes` 交给 match 分支；或把 primitive 判定收窄为真正无需转换的类型，并把 `str` 的截断放在短路之前。代码示例：\n```python\ndef _serialize_primitive(obj: Any, *_) -> Any:\n    # 只放真正无需转换的类型，str/bytes 交给分派器处理\n    if obj is None or isinstance(obj, int | float | bool | complex):\n        return obj\n    return _UNHANDLED\n```\n并为 `serialize(\"a\" * (MAX_TEXT_LENGTH + 1))` 增加回归断言。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 130,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F008",
+        "code": "case object() if not isinstance(obj, type):  # Match any instance that's not a class",
+        "review": "[缺陷类型] 模式匹配分支顺序错误导致不可达代码与类型退化。影响评估：numpy 数值在序列化后变成字符串，前端/下游对 outputs、artifacts 做数值运算或类型判断时会失败或静默错误；pandas 相关路径（_serialize_dataframe/_serialize_series）返回的 DataFrame 值若为 numpy 标量也会同样被字符串化。",
+        "suggestion": "[重构思路] 把宽泛的实例兜底挪到所有具体分支之后（或直接删除，让 `case _` 承担兜底），保证 Enum/TypeVar/别名/numpy 分支可达；同时为 numpy 标量补充单元测试（仅在源码侧说明，无需改动测试文件）。代码示例：\n```python\nmatch obj:\n    case str(): ...\n    ...\n    case BaseModelV1(): ...\n    case _ if hasattr(obj, \"_name_\"):        # Enum\n        return f\"{obj.__class__.__name__}.{obj._name_}\"\n    case _ if hasattr(obj, \"dtype\"):          # numpy scalars\n        ...\n    case _ if not isinstance(obj, type):\n        return _serialize_instance(obj, max_length, max_items)\n```",
+        "category": "可靠性",
+        "subcategory": "分支可达性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 160,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F009",
+        "code": "case object() if hasattr(obj, \"_name_\"):  # Enum case",
+        "review": "[缺陷类型] 死代码 / 分支顺序错误。影响评估：可读性与可维护性下降，Enum 等类型当前按 `str(obj)` 输出（既非 `_name_` 也非其 value），一旦有人依赖后续分支的语义会得到与预期不符的结果。",
+        "suggestion": "[重构思路] 把更具体的 case（Enum、TypeVar、TypeAlias）上移到通配的 `object()` 分支之前，或删除不可达分支并注释说明统一走 `_serialize_instance`。代码示例：\n```python\nmatch obj:\n    case Enum():\n        return f\"{obj.__class__.__name__}.{obj.name}\"\n    ...\n    case object() if not isinstance(obj, type):\n        return _serialize_instance(obj, max_length, max_items)\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 162,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F010",
+        "code": "return \"[Unserializable Object]\"",
+        "review": "[缺陷类型] 异常吞没 + 失败时内容丢失。影响评估：tracing/vertex build 落库内容被整体替换成占位符字符串，且日志级别是 debug，生产环境难以发现；同时保留的 except 分支给出“错误会被处理”的错误暗示，增加维护成本。",
+        "suggestion": "[重构思路] 让失败路径保留可读内容（ToString 回退），并把异常暴露给需要感知的调用方：内部窄化捕获（只捕获已知的编码/Pydantic 错误），未知异常仍按 str(obj) 兜底；Log.serialize_message 改用语义明确的 serialize_or_str 并删除不可达 except。代码示例：\n```python\ndef serialize_message(self, value):\n    return serialize_or_str(value)\n\n# serialization.py\nexcept Exception as e:  # noqa: BLE001\n    logger.warning(f\"Cannot serialize {type(obj)!r}: {e!s}\")\n    return str(obj) if to_str else \"[Unserializable Object]\"\n```",
+        "category": "可靠性",
+        "subcategory": "异常与降级策略",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 237,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/backend/base/langflow/load/load.py",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "await asyncio.to_thread(load_dotenv, env_file, override=True)",
+        "review": "[缺陷类型] 全局可变状态副作用 + 公开 API 静默移除。影响评估：`override=True` 会覆盖调用方显式设置的环境变量，多 flow 串行加载时相互污染，可能把 A flow 的密钥用到 B flow；依赖 `replace_tweaks_with_env` 的调用方会 ImportError/AttributeError。",
+        "suggestion": "[重构思路] 仅在需要时把 env 写入局部上下文，或使用 `override=False` 并显式记录恢复了哪些键；如需保留 tweaks 替换能力，应保留旧函数并在文档中标注弃用。代码示例：\n```python\nif env_file and tweaks is not None:\n    env_vars = dotenv_values(env_file)\n    tweaks = replace_tweaks_with_env(tweaks=tweaks, env_vars=env_vars)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 53,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F012",
+        "code": "async with async_open(Path(flow).name, encoding=\"utf-8\") as f:",
+        "review": "[缺陷类型] 路径解析回归（丢失父目录）。影响评估：任何使用绝对路径或非 CWD 相对路径的 SDK/CLI 调用都会失效或读到错误文件，属高概率破坏既有行为。",
+        "suggestion": "[重构思路] 保留完整路径，若需处理 `~` 可用 `Path(flow).expanduser()`。代码示例：\n```python\nflow_path = Path(flow).expanduser()\nasync with async_open(flow_path, encoding=\"utf-8\") as f:\n    content = await f.read()\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 59,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/backend/base/langflow/components/vectorstores/astradb.py",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "build_config[\"api_endpoint\"][\"value\"] = \"\"",
+        "review": "[缺陷类型] 前端字段状态被过度重置（失去用户已选值）。影响评估：用户在 Astra DB 节点上选择/填入的 Database 可能被静默清空，配合 `d_api_endpoint` 同步清空会让后续 build 直接失败；无 token 时还会触发无效网络请求，放大界面卡顿。",
+        "suggestion": "[重构思路] 区分「需要重新拉取选项」与「需要重置已选值」两件事：仅在 token/environment 变更时重置 value，options 为空只做拉取；并恢复 token 缺失时的早退。代码示例：\n```python\nif not self.token:\n    return self.reset_build_config(build_config)\nif not dslf and (field_name in {\"token\", \"environment\"} or not build_config[\"api_endpoint\"][\"options\"]):\n    ...  # 仅刷新 options，不清空 value\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 502,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F014",
+        "code": "autodetect = self.collection_name in database.list_collection_names() and self.autodetect_collection",
+        "review": "[缺陷类型] 返回 None 的错误处理未同步到调用方，导致空值解引用与根因丢失。影响评估：构建/检索路径在配置错误时抛出无信息量的 AttributeError，排障成本上升，并可能改变上层异常分支的命中。",
+        "suggestion": "[重构思路] 要么保持 `get_database_object` 抛异常（只把异常类型/消息规范化），要么在所有消费点显式判空并抛出带根因的 ValueError。代码示例：\n```python\ndatabase = self.get_database_object(api_endpoint=self.d_api_endpoint)\nif database is None:\n    msg = \"Could not connect to Astra DB: get_database_object returned None\"\n    raise ValueError(msg)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 652,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/backend/base/langflow/custom/custom_component/component.py",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "if self.status:",
+        "review": "[缺陷类型] 重构改变了优先级顺序导致语义漂移。影响评估：多输出组件的 artifact raw 可能与本次 output 的实际结果不一致，下游日志/可视化展示错误内容，且不易复现定位。",
+        "suggestion": "[重构思路] 保留原有的单输出/多输出判定，或把 status 仅作为兜底而不是最高优先级。代码示例：\n```python\ndef _process_raw_result(self, result):\n    if len(self.outputs) == 1 and self.status:\n        return self.status\n    ...  # 其余分支与 extract_data 保持一致\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 981,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/backend/base/langflow/components/tools/duck_duck_go_search_run.py",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "MessageTextInput(",
+        "review": "[缺陷类型] 组件契约破坏性变更（名称 + 输出端口 + 输入元数据）。影响评估：老用户的 DuckDuckGo Search 节点在升级后失去连线或无法被 Agent 作为工具调用，属用户可见的兼容性回归。",
+        "suggestion": "[重构思路] 迁移时保留原组件 `name` 与输出别名，或在 release note/兼容层中做映射；同时补回 `info`、`required`、`tool_mode=True` 等输入元数据。代码示例：\n```python\ninputs = [\n    MessageTextInput(name=\"input_value\", display_name=\"Search Query\",\n                     info=\"The search query to execute with DuckDuckGo\",\n                     required=True, tool_mode=True),\n    IntInput(name=\"max_results\", display_name=\"Max Results\", value=5, advanced=True,\n             info=\"Maximum number of search results to return\"),\n]\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/backend/base/langflow/graph/utils.py",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "data=serialize(data),",
+        "review": "[缺陷类型] 序列化默认值引入的隐式数据截断。影响评估：排障时 vertex build 记录/日志不再完整，超长内容与大于 1000 项的列表被截断且难以察觉；在强类型列表里插入字符串占位还会让下游反序列化/类型校验出问题。",
+        "suggestion": "[重构思路] 落库/日志路径显式关闭截断（`max_length=None, max_items=None`），只在对外 API 响应路径使用上限；列表截断占位改为独立字段而非混入元素。代码示例：\n```python\ndata=serialize(data, max_length=None, max_items=None),\nartifacts=serialize(artifacts, max_length=None, max_items=None) if artifacts else None,\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 163,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "docs/css/custom.css",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": ".resized-image {",
+        "review": "[缺陷类型] 响应式样式回退。影响评估：移动端/窄窗口阅读文档时图片溢出、出现横向滚动条，`.resized-image` 在小屏上被裁切，影响文档可读性（不涉及功能逻辑）。",
+        "suggestion": "[重构思路] 保留全局图片约束并让 `.resized-image` 使用相对宽度 + 上限。代码示例：\n```css\n.markdown img { max-width: 100%; height: auto; display: block; margin: 1rem auto; }\n.resized-image { width: 400px; max-width: 100%; }\n```",
+        "category": "可移植",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 202,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

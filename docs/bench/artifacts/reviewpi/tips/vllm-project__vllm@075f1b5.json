@@ -1,0 +1,800 @@
+[
+  {
+    "filePath": "Dockerfile.ppc64le",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "torch==2.3.1 \\",
+        "review": "[缺陷类型] 依赖版本配对错误（torchvision 与其编译依赖的 torch 版本不一致）。影响评估：ppc64le CPU 镜像在导入 torchvision 或运行多模态模型时可能直接失败（undefined symbol / 算子不存在），且属于镜像构建期引入、运行期才暴露的问题。",
+        "suggestion": "[重构思路] 让 torchvision 与 torch 严格成对，或统一由 micromamba（open-ce 渠道）提供同批次版本，避免 pip 覆盖。代码示例：`RUN micromamba install -y -n base -c https://ftp.osuosl.org/pub/open-ce/1.11.0-p10/ -c defaults python=3.10 \"torchvision-cpu=0.16.2=pytorch_2.1.*\" rust`，并在 pip 阶段不再单独 `torch==2.3.1`，或将两者一起锁到同一对版本（例如 torch 2.1.2 + torchvision 0.16.2）。",
+        "category": "可靠性",
+        "subcategory": "依赖版本一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 24,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "set(SRCS \"csrc/quantization/cutlass_w8a8/scaled_mm_c3x.cu\")",
+        "review": "[缺陷类型] 性能路径回退（Hopper blockwise FP8 GEMM 由 CUTLASS 降级为 Triton）。影响评估：DeepSeek 系 block-wise FP8 模型在 H100/H200 上的线性层吞吐可能明显下降；由于同时删除了对应的 benchmark 用例（w8a8_benchmarks.py 移除了 blockwise 基准），回退幅度难以被持续跟踪。",
+        "suggestion": "[重构思路] 若属于有意回退，请在 MR 描述中记录动机（例如 CUTLASS 3.7 兼容性问题）、量化性能影响并在 issue 中跟踪后续恢复计划；若只是为规避编译问题，考虑保留 blockwise kernel 并用编译开关隔离。代码示例（保留可切换路径）：`if (use_cutlass_blockwise && a_scales.dim() == 2) { cutlass_scaled_mm_blockwise_sm90_fp8(...); } else { /* triton fallback */ }`，并保留 w8a8_benchmarks.py 中的 `cutlass_fp8_fp8_fp16_scaled_mm_blockwise` 基准项以便回归对比。",
+        "category": "性能",
+        "subcategory": "量化 GEMM 性能回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 302,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "list(APPEND VLLM_C_LIBS cuda)",
+        "review": "[缺陷类型] 裸库名链接（未使用 CMake imported target），且与既有 cuda_driver 链接重复。影响评估：在缺少驱动 stub 或链接路径受限的构建镜像中 configure/build 失败；成功时也引入冗余依赖，降低构建可移植性。",
+        "suggestion": "[重构思路] 删除裸 `cuda`，统一走 CMake 的 `CUDA::cuda_driver`。若确实需要显式驱动库，用 imported target 或 find_library 并加存在性判断。代码示例：`# CMakeLists.txt` 去掉 `list(APPEND VLLM_C_LIBS cuda)`；如需显式声明可在 utils.cmake 的 CUDA 分支保持 `target_link_libraries(${GPU_MOD_NAME} PRIVATE CUDA::cudart CUDA::cuda_driver)` 即可。",
+        "category": "可移植",
+        "subcategory": "构建链接配置",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 450,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "csrc/core/math.hpp",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "#include <climits>",
+        "review": "[缺陷类型] 头文件缺少 include guard（`#pragma once`）。影响评估：任何新增/既有的双路径包含都会造成编译期重定义错误，属于随构建目标组合变化而突发的脆弱点；`constexpr` 退化为 `inline` 也会损失编译期求值。",
+        "suggestion": "[重构思路] 恢复 `#pragma once` 与 `constexpr`；若确实要移除 ceil_div，只删函数本体即可，不要连头文件保护一起删。代码示例：```cpp\n#pragma once\n\n#include <climits>\n#include <iostream>\n\ninline constexpr uint32_t next_pow_2(uint32_t const num) {\n  if (num <= 1) return num;\n  return 1 << (CHAR_BIT * sizeof(num) - __builtin_clz(num - 1));\n}\n```",
+        "category": "可维护",
+        "subcategory": "头文件保护",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".buildkite/run-tpu-test.sh",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "#!/bin/bash",
+        "review": "[缺陷类型] 可执行位丢失（文件模式误改）。影响评估：若 CI 以直接执行方式调用该脚本，流水线立即失败；若以 bash 解释执行则不失败，但引入了无意义的权限漂移，不利于后续维护与本地手动执行。",
+        "suggestion": "[重构思路] 恢复可执行位，把与本次回退无关的模式变更从 MR 中剔除。代码示例：`git update-index --chmod=+x .buildkite/run-tpu-test.sh` 或 `chmod +x .buildkite/run-tpu-test.sh && git add .buildkite/run-tpu-test.sh`。",
+        "category": "可靠性",
+        "subcategory": "CI 脚本权限",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".pre-commit-config.yaml",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "verbose: true",
+        "review": "[缺陷类型] pre-commit hook 参数配置误改（pass_filenames 默认值变化）。影响评估：不改变输出结果，但会向仅做 echo 的 hook 传入无意义参数，且在文件数量大时增加命令行长度；配置意图变得不清晰。",
+        "suggestion": "[重构思路] 恢复 `pass_filenames: false`，保持 hook 只做提示的语义。代码示例：```yaml\n  - id: bypass-warning\n    entry: bash -c 'echo \"To bypass pre-commit hooks, add --no-verify to git commit.\"'\n    language: system\n    verbose: true\n    pass_filenames: false\n```",
+        "category": "可维护",
+        "subcategory": "工具链配置",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 92,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "benchmarks/cutlass_benchmarks/w8a8_benchmarks.py",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "model_parser.set_defaults(func=run_model_bench)",
+        "review": "[缺陷类型] 文件末尾缺少换行符。影响评估：纯风格问题，不改变运行行为，但会在后续每次改动时产生噪声 diff，并且部分 pre-commit 钩子（end-of-file-fixer）会反复改写这些文件。",
+        "suggestion": "[重构思路] 统一补回文件末尾换行，避免在功能回退 MR 中夹带格式噪声。代码示例：`for f in benchmarks/cutlass_benchmarks/w8a8_benchmarks.py docs/source/_static/custom.js csrc/core/math.hpp; do printf '\\n' >> \"$f\"; done`（或用 pre-commit 的 `end-of-file-fixer` 统一处理）。",
+        "category": "可读性",
+        "subcategory": "文件结尾格式",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 362,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "requirements-cpu.txt",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "torchvision; platform_machine != \"ppc64le\"  # required for the image processor of phi3v, this must be updated alongside torch",
+        "review": "[缺陷类型] 依赖版本未固定导致 ABI 不兼容 / 依赖声明不一致。影响评估：CPU 侧镜像与 CI 环境可能在重新解析依赖后装到与 torch 2.5.1 不匹配的 torchvision，phi3v 等多模态模型加载时报符号缺失错误，且故障点离变更很远、排查成本高。",
+        "suggestion": "[重构思路] 保持与 CUDA 侧一致的显式 pin，并保留「与 torch 同步升级」的注释位置。代码示例：`torchvision==0.20.1; platform_machine != \"ppc64le\"  # required for the image processor of phi3v, this must be updated alongside torch`；若 ppc64le 的 torchvision 已改由 Dockerfile.ppc64le 的 micromamba 提供，请在文件内补一行注释说明该例外，避免后续误判为遗漏。",
+        "category": "可靠性",
+        "subcategory": "依赖版本固定",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "requirements-test.txt",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "pqdm==0.2.0",
+        "review": "[缺陷类型] 自动生成的锁文件被手工编辑，元数据与实际依赖不一致。影响评估：依赖校验流水线可能报错，或后续重生成锁文件时产生噪声 diff、掩盖真实依赖变更。",
+        "suggestion": "[重构思路] 不手工删改锁文件，改为删除 requirements-test.in 中的 `vector_quantize_pytorch` / `vocos` / `torchaudio` 后重新执行锁文件生成命令，让 `# via` 注释与包集合保持一致。代码示例：`uv pip compile requirements-test.in --output-file requirements-test.txt`（或仓库既有的等价 make 目标），再把生成结果整体提交。",
+        "category": "可维护",
+        "subcategory": "依赖锁文件一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 376,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/attention/backends/rocm_flash_attn.py",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "if logits_soft_cap is not None:",
+        "review": "[缺陷类型] 后端能力回退导致特定模型家族在该硬件上不可用。影响评估：AMD 用户加载 Gemma-2 等带 soft cap 的模型会得到一条不带规避建议的 ValueError；若该回退不是有意为之，属于功能性回归。",
+        "suggestion": "[重构思路] 若确需收缩支持面，请在错误信息中显式给出可用后端与追踪 issue，并在常量的兼容矩阵/发布说明中记录；若只是回退到旧实现，请至少保留 CK FA 路径的 softcap 透传。代码示例：`if logits_soft_cap is not None: raise ValueError(\"ROCmFlashAttention does not support attention logits soft capping; use VLLM_ATTENTION_BACKEND=<xxx> instead. See <issue link>.\")`",
+        "category": "可靠性",
+        "subcategory": "后端能力回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 349,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F011",
+        "code": "num_tokens,",
+        "review": "[缺陷类型] 语义参数传错（总量 vs 分量），触发形状断言失败/写入未初始化内存。影响评估：在 NAVI/无 CK FA 的 ROCm 设备上走 SDPA 路径时，一旦出现 prefill 与 decode 混合且走该分支（例如 profiling 期的特殊输入组合），会以 AssertionError 崩溃或产出错误结果。",
+        "suggestion": "[重构思路] 显式传入 prefill token 数，并为 `_sdpa_attention` 的输出分配大小与该值保持一致，避免依赖「恰好相等」的隐含前提。代码示例：`out = self.attn_func(query, key, value, prefill_meta.seq_lens, num_prefill_tokens, self.num_heads, self.head_size, self.scale, attn_masks)`",
+        "category": "可靠性",
+        "subcategory": "参数语义错位",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 532,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/attention/backends/pallas.py",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "if logits_soft_cap is not None:",
+        "review": "[缺陷类型] 硬件后端能力回退且无替代路径。影响评估：TPU 用户无法运行 Gemma-2 类模型，错误信息仅说明「不支持」而不指引任何替代方案；若是回退，须在发布说明/兼容矩阵中体现。",
+        "suggestion": "[重构思路] 若回退是有意的，请在错误信息与文档中标注能力矩阵变化；若只是回退实现细节，可保留把 soft cap 透传给 XLA 算子的调用。代码示例：`if logits_soft_cap is not None: raise NotImplementedError(\"Attention logits soft-capping is not supported on TPU; see docs/source/features/compatibility_matrix.md\")`",
+        "category": "可靠性",
+        "subcategory": "硬件后端能力回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 123,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "examples/offline_inference/vision_language.py",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "assert modality == \"image\"",
+        "review": "[缺陷类型] 示例代码与注释/参数语义不一致（死参数 + 过期注释）。影响评估：用户阅读示例时会被残留的多版本注释误导，也无法理解为何 video 输入被拒绝，增加支持成本。",
+        "suggestion": "[重构思路] 二选一保持一致：要么删掉 modality 参数与多版本注释、明确示例仅覆盖 2.6 image；要么保留 modality 并按 modality 选择 placeholder 与断言信息。代码示例：`def run_minicpmv(question: str):  # MiniCPM-V-2.6, image only` 或 `assert modality == \"image\", \"this example only demonstrates MiniCPM-V-2.6 image input; see audio_language.py for other modalities\"`",
+        "category": "可读性",
+        "subcategory": "示例与注释一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 269,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/entrypoints/openai/serving_models.py",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "f\"The lora adapter '{request.lora_name}' has already been\"",
+        "review": "[缺陷类型] 字符串字面量隐式拼接时丢失分隔空格。影响评估：用户可见的错误信息变成 `has already beenloaded.`，属于低风险但确定的文案缺陷，且会被日志与客户端直接呈现。",
+        "suggestion": "[重构思路] 在第二段字面量开头补回空格，或改用单个 f-string 避免跨行拼接。代码示例：`message=(f\"The lora adapter '{request.lora_name}' has already been \" \"loaded.\")`",
+        "category": "可读性",
+        "subcategory": "错误信息文案",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 206,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/entrypoints/openai/protocol.py",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "if field_names is None:",
+        "review": "[缺陷类型] 前置校验器中的类型分支与缓存顺序错误。影响评估：请求路径在缓存已建立后对非对象 JSON 体（如 `null`）抛 TypeError/AttributeError，接口由 4xx 退化为 5xx；同时 extra 字段日志改为在业务校验前触发。",
+        "suggestion": "[重构思路] 把 `isinstance(data, dict)` 判断提前到函数最外层，保证任何输入路径都安全返回；字段名缓存与日志仅在 data 为 dict 时进行。代码示例：`if not isinstance(data, dict): return data\\nfield_names = cls.field_names\\nif field_names is None: ... = ...`",
+        "category": "可靠性",
+        "subcategory": "请求体校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 53,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F016",
+        "code": "type: Literal[\"text\", \"json_object\", \"json_schema\"]",
+        "review": "[缺陷类型] 对外 API/CLI 契约破坏性移除，且缺少迁移提示。影响评估：原先依赖 reasoning 解析能力与推理内容字段的客户端会得到不含推理内容的结果且无任何告警；依赖相应启动参数的部署脚本在升级时启动失败，需人工排查。",
+        "suggestion": "[重构思路] 若为有意回退，请在发布说明中标注 breaking change，并在被移除能力对应的入口（启动参数解析与响应构造处）保留可识别的提示；同时同步更新文档与示例。代码示例：在 make_arg_parser 中保留占位参数并告警 `parser.add_argument(\"--enable-reasoning\", action=\"store_true\", help=\"DEPRECATED: reasoning support was removed\")`，并在启动时 `logger.warning(\"reasoning support has been removed in this version\")`。",
+        "category": "可靠性",
+        "subcategory": "接口兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 139,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F017",
+        "code": "body: Union[ChatCompletionRequest, EmbeddingRequest, ScoreRequest]",
+        "review": "[缺陷类型] 请求体类型与端点不一致的校验缺失。影响评估：非法批次行不再在解析期得到可读的校验错误，而是以 AttributeError 形式在 serving 层炸出并中断整批任务；同时也削弱了 /v1/embeddings、/v1/score 的入参约束。",
+        "suggestion": "[重构思路] 保留按 url 分派的显式校验，或在分发前用 url 断言 body 类型。代码示例：`if request.url == \"/v1/chat/completions\" and not isinstance(request.body, ChatCompletionRequest):\\n    return make_error_request_output(request, \"body does not match url\")`",
+        "category": "可靠性",
+        "subcategory": "批处理入参校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1286,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/layers/fused_moe/fused_moe.py",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "grid = lambda META: (triton.cdiv(sorted_token_ids.shape[0], META[",
+        "review": "[缺陷类型] 热路径 kernel 启动规模膨胀（丢失小批量优化）。影响评估：小 batch decode 时每层多出成百上千个立即 return 的 program，抬高每步延迟与调度开销，长上下文/大专家数模型（DeepSeek 类 MoE）受影响最明显。",
+        "suggestion": "[重构思路] 恢复基于实际 token 数的 EM 上界，仅在 A.shape[0] 较小时收缩，并保持 grid 与传入的 EM 一致。代码示例：`EM = sorted_token_ids.shape[0]\\nif A.shape[0] < config[\"BLOCK_SIZE_M\"]:\\n    EM = min(EM, A.shape[0] * top_k * config[\"BLOCK_SIZE_M\"])`",
+        "category": "性能",
+        "subcategory": "GPU kernel 启动开销",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 301,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F019",
+        "code": "config[\"BLOCK_SIZE_N\"] = block_shape[0]",
+        "review": "[缺陷类型] 共享可变状态被就地修改（缓存/全局配置别名）。影响评估：同一进程内先后使用不同 block_shape（或 block-wise 与非 block-wise fp8）量化模型时，kernel 配置会被上一次的覆写影响，导致 block-wise kernel 的 BLOCK_SIZE 约束被破坏或性能配置错乱，且问题难以复现与定位。",
+        "suggestion": "[重构思路] 在返回前先做浅拷贝，保证不修改缓存/全局对象；覆写只作用于副本。代码示例：`config = dict(config)\\nif block_shape is not None:\\n    config[\"BLOCK_SIZE_N\"] = block_shape[0]\\n    config[\"BLOCK_SIZE_K\"] = block_shape[1]\\nreturn config`",
+        "category": "可靠性",
+        "subcategory": "共享状态污染",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 436,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F020",
+        "code": "- use_int8_w8a16 (bool): If True, use fp8 arithmetic to compute the inner",
+        "review": "[缺陷类型] 文档与实现不一致（复制粘贴残留）。影响评估：量化相关参数的语义被误述，容易导致使用者误判 int8 路径的行为，长期形成维护陷阱。",
+        "suggestion": "[重构思路] 恢复被删除的正确描述，只移除 int4 相关条目。代码示例：`- use_int8_w8a16 (bool): If True, use matmul of int8 weight and bf16/fp16 activation to compute the inner products for w1 and w2. Defaults to False.`",
+        "category": "可读性",
+        "subcategory": "文档准确性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 837,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/entrypoints/openai/api_server.py",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "logger.warning(",
+        "review": "[缺陷类型] 一次性提示被改成每次打印。影响评估：兼容接口的调用频率越高日志越膨胀，与 deprecation 提示的语义不符，增加运维噪音。",
+        "suggestion": "[重构思路] 恢复 warning_once，或在模块级用一次性标志位控制；若确需每次提示，应降级为 debug 级别。代码示例：`logger.warning_once(\"To indicate that the rerank API is not part of the standard OpenAI API, ...\")`",
+        "category": "可维护",
+        "subcategory": "日志噪音",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 531,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/entrypoints/openai/serving_completion.py",
+    "reviewTips": [
+      {
+        "id": "F022",
+        "code": "raw_request: Request,",
+        "review": "[缺陷类型] 对外方法签名不一致的破坏性变更。影响评估：外部以库方式调用 OpenAIServingCompletion.create_completion 且不传 raw_request 的代码会直接 TypeError；与 chat 接口的不一致也增加了后续维护成本。",
+        "suggestion": "[重构思路] 若确实要求 raw_request 必填，应同时统一 chat 侧的签名（并为 run_batch 提供单独入口）；否则保持 Optional 与显式判空。代码示例：`raw_request: Optional[Request] = None` + `trace_headers = await self._get_trace_headers(raw_request.headers) if raw_request else None`",
+        "category": "可维护",
+        "subcategory": "公共接口一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 61,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/layers/quantization/__init__.py",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "QUANTIZATION_METHODS: List[str] = [",
+        "review": "[缺陷类型] 量化后端能力整体回退导致既有模型无法加载（向后兼容性破坏）。影响评估：使用 moe_wna16 的启动命令/量化配置在升级后直接报 \"Invalid quantization method\" 而无法启动；GPTQ/AWQ int4 MoE 权重失去执行路径，属用户可感知的能力回退。",
+        "suggestion": "[重构思路] 若为有意回退，请在 MR 描述与发布说明中记录被移除的方法清单及推荐替代路径，并对已移除方法给出可操作的错误提示；若为误回滚，则恢复 moe_wna16 模块与 __init__.py 注册。代码示例：`if quantization == \"moe_wna16\": raise ValueError(\"moe_wna16 has been removed; use gptq_marlin/awq_marlin or compressed-tensors MoE quantization instead\")`",
+        "category": "可靠性",
+        "subcategory": "量化后端兼容性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 6,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/layers/quantization/utils/fp8_utils.py",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "def block_quant_to_tensor_quant(",
+        "review": "[缺陷类型] 死代码残留。影响评估：不引发运行时错误，但会误导读者、增加后续 fp8 工具函数重构与删除时的风险判断成本。",
+        "suggestion": "[重构思路] 确认无下游/外部调用后删除该函数；若需作为公共工具保留，则在模块文档或 __all__ 中声明用途。代码示例：删除 `def block_quant_to_tensor_quant(...)` 整段，或在需要处显式调用 `x_q, x_s = block_quant_to_tensor_quant(x_q_block, x_s, block_size)` 以恢复其存在意义。",
+        "category": "可维护",
+        "subcategory": "死代码",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 54,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F027",
+        "code": "BLOCK_SIZE_M = 128",
+        "review": "[缺陷类型] 高性能内核与调优参数表被替换为通用启发式实现导致性能回退。影响评估：fp8 block 量化模型（尤其 H100/H200 上的 DeepSeek 系列）在 prefill/大 M 场景下吞吐可能显著下降，且没有环境变量可以恢复原路径；功能正确性不受影响，但属于用户可感知的回归。",
+        "suggestion": "[重构思路] 若回退是刻意的（例如为规避内核正确性问题），请补充性能基准数据并给出恢复计划；否则应保留按 shape 查表 + CUTLASS 分支，Triton 仅作为 fallback。可先在 w8a8_block_fp8_matmul 中恢复“查表→命中调优参数，未命中→启发式”的结构，并保留配置目录。代码示例：`cfg = get_block_fp8_config(M, N, K, block_size, device_name); BLOCK_SIZE_M = cfg['BLOCK_SIZE_M'] if cfg else _default_block_m(M)`",
+        "category": "性能",
+        "subcategory": "内核选优回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 323,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F029",
+        "code": "assert block_k % BLOCK_SIZE_K == 0",
+        "review": "[缺陷类型] 无意义的恒真断言 + 注释与实现不一致。影响评估：不产生运行时错误，但会误导维护者认为参数约束已被守护；一旦有人改动 BLOCK_SIZE_K 的取值方式，错误的 tile 配置不会在任何地方被拦截。",
+        "suggestion": "[重构思路] 删除该恒真断言，或在为 BLOCK_SIZE_K 引入启发式取值后再断言真实关系；同时让注释与代码一致。代码示例：`BLOCK_SIZE_K = block_k\\nassert BLOCK_SIZE_K % block_k == 0  # 仅在 BLOCK_SIZE_K 由启发式决定时才有意义`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 328,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "benchmarks/kernels/benchmark_moe.py",
+    "reviewTips": [
+      {
+        "id": "F030",
+        "code": "config = get_default_config(num_tokens, num_experts,",
+        "review": "[缺陷类型] 调用点与函数签名不一致导致的 TypeError。影响评估：benchmark_moe.py 在缺乏预置调优配置（回退后更常见）时崩溃，工程师无法再生成 fp8/int8 MoE 的调优 JSON，间接阻碍性能回归定位与恢复；不影响线上推理路径。",
+        "suggestion": "[重构思路] 显式传全参数并避免 `import *` 带来的签名漂移；同时在该调用点补上 is_marlin 的语义值（基准脚本一般测非 marlin 内核，传 False）。代码示例：`config = get_default_config(num_tokens, num_experts, shard_intermediate_size, hidden_size, topk, dtype_str, is_marlin=False)`，并将第 13 行改为显式导入 `from vllm.model_executor.layers.fused_moe.fused_moe import (get_default_config, get_moe_configs, get_config_dtype_str, fused_experts)`",
+        "category": "可测试性",
+        "subcategory": "基准脚本接口漂移",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 346,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/models/llama.py",
+    "reviewTips": [
+      {
+        "id": "F031",
+        "code": "name = maybe_remap_kv_scale_name(name, params_dict)",
+        "review": "[缺陷类型] 权重名重映射顺序错误导致的 KeyError；同时丢失了对 ModelOpt FP8 检查点 kv-scale 命名格式的兼容。影响评估：使用 ModelOpt FP8（如 NVIDIA 发布的 *-FP8 权重）且开启 fp8 kv-cache 的 Llama 类模型在权重加载阶段直接失败，属于可用性阻断；即使未触发 KeyError，kv-scale 也会被静默丢弃。",
+        "suggestion": "[重构思路] 恢复“先重命名 kv-scale，再走 stacked 参数映射”的顺序，并把 modelopt 命名映射放回 maybe_remap_kv_scale_name；或者在 stacked 循环里对 scale 参数显式跳过，避免把 k_scale/v_scale 当成 qkv_proj 分片。代码示例：`if \"scale\" in name:\\n    name = maybe_remap_kv_scale_name(name, params_dict)\\n    if name is None:\\n        continue\\nfor param_name, weight_name, shard_id in stacked_params_mapping:\\n    ...`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 427,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/model_loader/weight_utils.py",
+    "reviewTips": [
+      {
+        "id": "F032",
+        "code": "remapped_name = name.replace(scale_name, f\".attn{scale_name}\")",
+        "review": "[缺陷类型] 兼容性回退导致的量化参数静默丢失。影响评估：ModelOpt FP8 检查点 + --kv-cache-dtype fp8 场景下精度下降，且日志只有一次 warning_once，线上很难发现；若同时存在嵌套 k_proj 命名，则可能直接触发 F001 的 KeyError。",
+        "suggestion": "[重构思路] 保留 modelopt 命名映射，或在通用替换逻辑里先把 \".{k,v}_proj.{k,v}_scale\" 归一化为 \"{k,v}_scale\" 再做一次重映射；未命中时建议以 error 级日志或直接失败暴露问题，而不是静默跳过。代码示例：`if \".self_attn.k_proj.k_scale\" in name or \".self_attn.v_proj.v_scale\" in name:\\n    remapped_name = re.sub(r\"\\\\.(k|v)_proj\\\\.(k|v)_scale$\", r\".attn.\\\\2_scale\", name)`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 657,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/models/deepseek_v2.py",
+    "reviewTips": [
+      {
+        "id": "F033",
+        "code": "self.attn = Attention(self.num_local_heads,",
+        "review": "[缺陷类型] 特性回退导致的静默降级（配置项失效）。影响评估：DeepSeek-V2/V3 类模型的 KV cache 显存需求从每 token 的 kv_lora_rank 维度回退到 num_heads×qk_head_dim，长序列与高并发场景极易 OOM；用户升级后无告警、无法从配置发现，属难以定位的行为变更。",
+        "suggestion": "[重构思路] 若 MLA 确需下线，应在模型初始化时检测到 use_mla=True 就显式报错或打印一次性 warning，说明“MLA 不受支持，已回退到标准 attention 且显存占用更高”，并在发布说明中标注；若只是暂时移除，建议保留 use_mla 分支并在不满足条件时给出明确提示。代码示例：`if getattr(config, \"use_mla\", False):\\n    logger.warning_once(\"use_mla=True but MLA path is unavailable in this build; falling back to standard attention (higher KV cache usage).\")`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 265,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/v1/core/scheduler.py",
+    "reviewTips": [
+      {
+        "id": "F034",
+        "code": "num_common_prefix_blocks=num_common_prefix_blocks,",
+        "review": "[缺陷类型] 变量初始化被删除导致 UnboundLocalError。影响评估：只要某一步调度没有请求进入 running（显存紧张、请求过长、全部被抢占等常见场景），EngineCore 即抛异常，服务中断。",
+        "suggestion": "[重构思路] 在 `if self.running:` 之前显式初始化默认值，保证所有路径都有定义。代码示例：`num_common_prefix_blocks = 0\\nif self.running:\\n    any_request = self.running[0]\\n    num_common_prefix_blocks = self.kv_cache_manager.get_num_common_prefix_blocks(any_request, len(self.running))`",
+        "category": "可靠性",
+        "subcategory": "变量初始化缺失",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 303,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F035",
+        "code": "# This must be called before me make the EngineCoreOutput.",
+        "review": "[缺陷类型] 注释笔误（回退引入）。影响评估：不影响运行，但两处注释承载引擎关键不变量（EngineCoreOutput 生成顺序、block 边界假设），错误表述会误导后续修改调度逻辑的人。",
+        "suggestion": "[重构思路] 修正文案并补全语义。代码示例：`# This happens when the prompt length is divisible by the block size and all blocks are cached.` / `# This must be called before we make the EngineCoreOutput.`",
+        "category": "可读性",
+        "subcategory": "注释笔误",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 448,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F036",
+        "code": "self.kv_cache_manager.free(request)",
+        "review": "[缺陷类型] 资源生命周期泄漏（槽位未归还）。影响评估：encoder cache 是有界长期资源，泄漏后多模态请求被永久拒绝调度（请求挂起而非报错），只能重启进程恢复。",
+        "suggestion": "[重构思路] 在 _free_request 中补充整请求释放，遍历该请求全部 cached input id 逐个 free。代码示例：`def free_all(self, request: Request) -> None:\\n    for input_id in list(self.get_cached_input_ids(request)):\\n        self.free(request, input_id)`，并在 `_free_request` 中调用 `self.encoder_cache_manager.free_all(request)`",
+        "category": "可靠性",
+        "subcategory": "缓存泄漏",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 527,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/models/qwen.py",
+    "reviewTips": [
+      {
+        "id": "F037",
+        "code": "if isinstance(",
+        "review": "[缺陷类型] 类型判断写错导致校验成为死代码。影响评估：用户少写/多写 image 占位符时错误被推迟到张量运算阶段，报错不可读；极端情况下切片区段长度与 embedding 长度不一致会造成静默错误结果。",
+        "suggestion": "[重构思路] 改为判断 torch.Tensor 并显式校验数量，同时在切片长度不匹配时报错。代码示例：`img_pos = self.visual.get_image_positions(input_ids)\\nif img_pos is not None and img_pos.shape[0] != image_embeds.shape[0]:\\n    raise ValueError(f\"Number of placeholders: {img_pos.shape[0]} does not match number of images {image_embeds.shape[0]}.\")`",
+        "category": "可靠性",
+        "subcategory": "类型判断错误",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 609,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F038",
+        "code": "hidden_states = self.wte(input_ids)",
+        "review": "[缺陷类型] 重复赋值覆盖入参（疑似回退/合并产物）。影响评估：传入 inputs_embeds 的调用方会得到错误 logits 或 NoneType 异常，且不会显式报错，属静默错误结果。",
+        "suggestion": "[重构思路] 删除多余赋值，只在未提供 inputs_embeds 时回退到 wte。代码示例：`if inputs_embeds is not None:\\n    hidden_states = inputs_embeds\\nelse:\\n    hidden_states = self.get_input_embeddings(input_ids)`",
+        "category": "可靠性",
+        "subcategory": "输入被覆盖",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 622,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/models/mllama.py",
+    "reviewTips": [
+      {
+        "id": "F039",
+        "code": "elif self.attn.backend in (_Backend.XFORMERS, _Backend.TORCH_SDPA):",
+        "review": "[缺陷类型] 平台后端支持被静默削减。影响评估：ROCm 用户加载 Llama 3.2 Vision 时在写 cross-attention KV 缓存处报错，模型完全不可用，且错误信息无法说明真实原因。",
+        "suggestion": "[重构思路] 若确实要停用 ROCM_FLASH，应在平台层提前拒绝并给出明确提示；否则恢复该分支与 XFORMERS/TORCH_SDPA 共用逻辑。代码示例：`elif self.attn.backend in (_Backend.XFORMERS, _Backend.ROCM_FLASH, _Backend.TORCH_SDPA):`",
+        "category": "可移植",
+        "subcategory": "后端兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 850,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F040",
+        "code": "for masks, tiles, length in zip(sparse_mask, num_tiles, lengths):",
+        "review": "[缺陷类型] 并行序列索引错位。影响评估：多请求并发且部分请求不带图是线上常态，会触发 AssertionError 使 EngineCore 崩溃；若未崩溃则 mask 与 kv_range_for_decode 错位，产生错误的注意力结果。",
+        "suggestion": "[重构思路] 恢复按有图序列推进 num_tiles 的索引逻辑并保留一致性断言。代码示例：`num_tiles_idx = 0\\nfor masks, length in zip(sparse_mask, lengths):\\n    if len(masks) == 0:  # text only\\n        continue\\n    tiles = num_tiles[num_tiles_idx]; num_tiles_idx += 1\\n    ...\\nassert num_tiles_idx == len(num_tiles)`",
+        "category": "可靠性",
+        "subcategory": "索引错位",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1495,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/model_executor/models/minicpmv.py",
+    "reviewTips": [
+      {
+        "id": "F041",
+        "code": "def get_max_minicpmv_image_tokens(ctx: InputContext):",
+        "review": "[缺陷类型] 容量/预算估算低估。影响评估：MiniCPM-V 单图最多 9 个切片，实际 token 数可达 query_num 的十倍量级，按 64 估算会使 encoder 预算与缓存容量偏小，表现为多模态请求被推迟调度、吞吐下降，极端配置下可能长时间无法调度。",
+        "suggestion": "[重构思路] 按最大切片数计算单图 token 上限。代码示例：`def get_max_minicpmv_image_tokens(ctx: InputContext):\\n    hf_config = ctx.get_hf_config()\\n    query_num = getattr(hf_config, \"query_num\", 64)\\n    max_slice_num = getattr(hf_config, \"max_slice_num\", 9)\\n    return query_num * (max_slice_num + 1) + 2 * (max_slice_num + 1)`",
+        "category": "可靠性",
+        "subcategory": "容量估算",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 248,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F042",
+        "code": "width = height = hf_config.image_size",
+        "review": "[缺陷类型] 兼容性兜底被移除。影响评估：旧版 MiniCPM-V 配置在启动阶段的 dummy run 直接失败，属启动阻断；即使配置齐全也失去了对缺字段配置的容错。",
+        "suggestion": "[重构思路] 恢复默认值兜底。代码示例：`image_size = getattr(hf_config, \"image_size\", 448)\\nimage = _build_image_input(ctx, image=Image.new(\"RGB\", (image_size, image_size), color=0))`",
+        "category": "可靠性",
+        "subcategory": "配置兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 259,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F043",
+        "code": "image_processor = cached_get_image_processor(model_config.tokenizer)",
+        "review": "[缺陷类型] 配置项未透传 + 加载路径不一致。影响评估：启用 trust_remote_code 的 MiniCPM-V 部署可能在输入预处理阶段即失败，或重复加载两份 image processor 造成内存与启动开销浪费。",
+        "suggestion": "[重构思路] 与 input mapper 保持一致地传入 model 路径与 trust_remote_code，共享同一缓存项。代码示例：`image_processor = cached_get_image_processor(model_config.model, trust_remote_code=model_config.trust_remote_code)`",
+        "category": "可靠性",
+        "subcategory": "配置未透传",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 286,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F044",
+        "code": "for i in range(len(image_size_list)):",
+        "review": "[缺陷类型] 入参校验缺失。影响评估：多图请求占位符写错时表现为 IndexError 或静默产出错位 prompt，且错误信息不再指向占位符数量不匹配，排查成本显著上升。",
+        "suggestion": "[重构思路] 在拆分前显式校验数量并抛出可读异常。代码示例：`if len(image_tags) != len(image_size_list):\\n    raise ValueError(f\"The prompt requires {len(image_tags)} images while you pass {len(image_size_list)}\")\\nfor i, size in enumerate(image_size_list):\\n    new_prompt_chunks += [text_chunks[i], get_placeholder(size, i)]`",
+        "category": "可靠性",
+        "subcategory": "输入校验缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 316,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F045",
+        "code": "raise ValueError(",
+        "review": "[缺陷类型] 异常构造与文案错误。影响评估：错误信息不可读并可能输出大对象；类型名错误会把使用者引向不存在的类型。",
+        "suggestion": "[重构思路] 使用 f-string 并修正类型名，只输出类型而非数据本体。代码示例：`raise ValueError(f\"Image input must be a list of MiniCPMVRawImageInput, got ({type(data)})\")`",
+        "category": "可读性",
+        "subcategory": "异常信息",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 346,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/v1/metrics/stats.py",
+    "reviewTips": [
+      {
+        "id": "F046",
+        "code": "# gpu_cache_usage: float = 0.0",
+        "review": "[缺陷类型] 注释掉而非删除的废弃字段。影响评估：注释代码不会被执行却会被持续维护性阅读，且字段的恢复条件无记录，后续接手者难以判断是临时下线还是漏改。",
+        "suggestion": "[重构思路] 直接删除该行；若确需保留占位，改为带 TODO 与 issue 编号的说明性注释。代码示例：`# TODO(#<issue>): 恢复 gpu_cache_usage 统计（依赖 kv_cache_manager 暴露使用率）`，或直接移除该行。",
+        "category": "可维护",
+        "subcategory": "废弃代码残留",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 15,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F047",
+        "code": "self.num_generation_tokens += len(output.new_token_ids)",
+        "review": "[缺陷类型] 指标逻辑删除后残留的死代码，且位于高频热路径。影响评估：batch 内每个 EngineCoreOutput 都要执行 len()、累加与断言，无任何收益；IterationStats 形似仍在统计但无人消费，误导后续开发。",
+        "suggestion": "[重构思路] 若 v1 暂不需要这些统计，应连同 update_from_output 与相关字段一并删除，让 process_outputs 的循环只做 detokenize；若要保留，请标注 TODO 并说明恢复计划。代码示例：删除 `iteration_stats = IterationStats(self.log_stats)` 与 `iteration_stats.update_from_output(...)` 调用，以及 IterationStats 中的 token 累加逻辑。",
+        "category": "性能",
+        "subcategory": "死代码残留",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 32,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/v1/metrics/loggers.py",
+    "reviewTips": [
+      {
+        "id": "F048",
+        "code": "def log(self, scheduler_stats: SchedulerStats):",
+        "review": "[缺陷类型] 接口变更后调用方签名未同步清理（死参数与过期断言）。影响评估：当前不影响运行时行为，但保留的 assert 与形参使数据流看起来仍在使用 iteration_stats，增加后续恢复指标或新增 logger 子类时的排查成本。",
+        "suggestion": "[重构思路] 让 _log_stats 只接收 scheduler_stats，并删除对应 assert 与实参；若确需保留迭代级入口，应在 StatLoggerBase 中显式定义可选钩子而非隐式传参。代码示例：`def _log_stats(self, scheduler_stats: SchedulerStats):\\n    if not self.log_stats:\\n        return\\n    for logger in self.stat_loggers:\\n        logger.log(scheduler_stats=scheduler_stats)`",
+        "category": "可维护",
+        "subcategory": "接口契约不一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 18,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F049",
+        "code": "\"Running: %d reqs, Waiting: %d reqs \",",
+        "review": "[缺陷类型] 日志格式串尾随空格与缺失标点。影响评估：日志中每 5 秒出现一条带尾随空格、句读不完整的行，影响 grep 与日志解析体验，属于低风险但长期存在的噪声。",
+        "suggestion": "[重构思路] 去掉格式串尾随空格并补句号。代码示例：`logger.info(\"Running: %d reqs, Waiting: %d reqs.\", scheduler_stats.num_running_reqs, scheduler_stats.num_waiting_reqs)`",
+        "category": "可读性",
+        "subcategory": "日志格式",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 38,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F050",
+        "code": "class PrometheusStatLogger(StatLoggerBase):",
+        "review": "[缺陷类型] 破坏性可观测性接口变更缺少发布说明。影响评估：升级后相关指标从 /metrics 输出中消失，监控与告警静默降级，问题通常上线后才暴露，定位成本高。",
+        "suggestion": "[重构思路] 若属阶段性回滚，请在 PR/CHANGELOG 或 v1 文档中明确列出被移除的指标名与替代方案；若属误删，应恢复 gpu_cache_usage 采集与对应 Gauge。代码示例：`### Removed v1 metrics\\n- vllm:gpu_cache_usage_perc（待 kv cache manager 统计恢复后重新提供）`",
+        "category": "可维护",
+        "subcategory": "可观测性兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 44,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

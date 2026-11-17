@@ -1,0 +1,142 @@
+{
+  "instance_id": "libsdl-org__SDL@1526727",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "71303b41bf89c4bb68dbe1bed12fd2ee1dc0dd41",
+  "head_commit": "15267271865f73c996719238425f1604fc2fa205",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 177.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 12,
+  "review_output": [
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 150,
+      "summary": "能力探测仅以 size > 0 为判据，未校验返回报告的内容与长度",
+      "failure_scenario": "新增分支用 ReadFeatureReport(device->dev, 0x06, data, sizeof(data)) 探测设备能力，随后仅判断 size > 0 就无条件把 sensors_supported、rumble_supported、powerstate_supported 全部置为 true。但 SDL_hid_get_feature_report 的返回值只是后端读到的字节数，既不保证返回的就是 0x06 号报告，也不保证长度符合预期布局（后面 HandleStatePacket 需要 data[14] 的电量字段和 data[15..20] 的 IMU 数据）。一旦设备实际返回的是长度不足或 ID 不同的报告，就会把一个并不具备 IMU / 电量上报能力的设备标记为支持，导致上层注册 SDL_SENSOR_GYRO/SDL_SENSOR_ACCEL、发送 SDL_JOYSTICK_CAP_RUMBLE，并持续向应用推送无效的传感器与电量数据。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-FEATURE-REPORT-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 259,
+      "summary": "白名单新增 0x04 报告后仍按旧布局解析，且缺少 size 下限校验",
+      "failure_scenario": "HandleStatePacket 现在把 data[0] == 0x04 也视为可解析的输入报告，但函数体仍按既有的 0x01/0x03 布局解析：电量取 data[14]，IMU 直接以 (ABITDO_SENSORS *)&data[15] 读取 12 字节。该函数全程没有校验 size，而 UpdateDevice 中的 data[USB_PACKET_LENGTH] 是未初始化的栈缓冲，只被 SDL_hid_read_timeout 填充 size 个字节。因此当新支持的设备（SN30 Pro BT 0x6101、Pro 2 BT 0x6006 等蓝牙型号）发出长度小于 21 字节的 0x04 报告时，电量与 IMU 会读到未初始化内存，向应用推送伪造的电量百分比与随机加速度/陀螺仪值；同时 0x04 报告的字段偏移是否与 0x01/0x03 一致也未被验证。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "RELIABILITY-REPORT-SIZE-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 115,
+      "summary": "新增的 ReadFeatureReport 与 PS5 驱动中的同名函数完全重复",
+      "failure_scenario": "本次新增的 static ReadFeatureReport（清零缓冲区、写入 report_id、调用 SDL_hid_get_feature_report）与 SDL_hidapi_ps5.c 中已有的同名 static 函数逐行等价，属于复制粘贴式重复实现。多处副本会让后续对「feature report 读取语义」的修正（例如统一失败日志、处理短读、区分 -1 与 0）需要在每个驱动中各改一遍，容易漏改并产生行为不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "MAINTAINABILITY-DUP-001"
+    },
+    {
+      "file": "src/joystick/SDL_joystick.c",
+      "line": 3181,
+      "summary": "同一组 8BitDo 新 PID 清单在多个位置重复硬编码",
+      "failure_scenario": "新增的五个 PID 需要在三处保持一致：usb_ids.h 中的宏定义、SDL_IsJoystick8BitDoController 的识别条件、以及 HIDAPI_Driver8BitDo_InitDevice 的能力探测分支。三处都是手写的长串 `||` 条件，后续再支持新型号时必须同时修改三处，任何一处遗漏都会造成「设备被识别但能力探测分支不触发」或反之的不一致行为，且这类遗漏不会被编译器发现。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-DUP-PIDLIST"
+    },
+    {
+      "file": "src/joystick/SDL_joystick.c",
+      "line": 3182,
+      "summary": "多行条件表达式缺少空格与续行对齐不一致",
+      "failure_scenario": "SDL_IsJoystick8BitDoController 中新增的条件体存在 `||product_id == USB_PRODUCT_8BITDO_SF30_Pro`（`||` 后缺空格）以及续行缩进不齐、条件太多而缺乏分组括号的问题。与文件中其它同类判定（如 SDL_IsJoystickHoriSteamController 等保持单行或规整缩进）风格不一致，降低可读性，也让后续 diff 更易产生噪声。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.9,
+      "rule": "READABILITY-FORMAT-001"
+    },
+    {
+      "file": "src/joystick/usb_ids.h",
+      "line": 63,
+      "summary": "新增 PID 宏命名不符合文件既有全大写风格，注释含义不明",
+      "failure_scenario": "usb_ids.h 中所有产品宏均使用 `USB_PRODUCT_<厂商>_<型号全大写>` 的 SCREAMING_SNAKE 风格（如 USB_PRODUCT_8BITDO_ULTIMATE2_WIRELESS 0x6012），而本次新增的宏混入了 camelCase 风格（SN30_Pro、SF30_Pro、Pro_2、Pro_2_BT），破坏了命名一致性；同时 `//B + START`、`//mode switch to D ` 等注释含义不明确（是配对按键？还是工作模式说明？），且带尾随空格，后续维护者无法据此判断这些 PID 对应的设备状态。此外新宏未添加在 8BitDo 分组内合适位置（0x6012 与其后 Amazon Luna 之间），来源与型号对应关系也缺少说明。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "READABILITY-NAMING-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 150,
+      "summary": "feature report 能力探测仅判 size > 0，未校验返回报告的长度与内容",
+      "failure_scenario": "新增分支读取 feature report 0x06 后，仅以 size > 0 为判据就把 sensors_supported、rumble_supported、powerstate_supported 三个能力标志全部置为 true。但 SDL_hid_get_feature_report 的返回值只是后端读到的字节数，既不保证返回的是 0x06 号报告，也不保证长度足以覆盖后续解析所需的字段（电量在 data[14]、IMU 在 data[15..20]）。一旦设备/后端返回一个短报告或另一号报告，就会把不具备相应能力的型号标记为支持：OpenJoystick 会注册 SDL_SENSOR_GYRO/SDL_SENSOR_ACCEL，GetJoystickCapabilities 会声明 SDL_JOYSTICK_CAP_RUMBLE，HandleStatePacket 会持续用无效数据调用 SDL_SendJoystickSensor/SDL_SendJoystickPowerInfo，应用侧看到的是恒定或乱跳的 IMU 与电量。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-FEATURE-REPORT-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 259,
+      "summary": "白名单新增 0x04 报告却未校验 size，仍按旧布局读 data[14]/data[15]",
+      "failure_scenario": "HandleStatePacket 现在接受 data[0] == 0x04 的报告，但函数体没有为 0x04 建立独立解析路径，仍按既有 0x01/0x03 布局取电量（data[14]）与 IMU（从 data[15] 开始读 12 字节）；同时函数全程不校验 size，而 UpdateDevice 中的 data[USB_PACKET_LENGTH] 是未初始化的栈缓冲，只被 SDL_hid_read_timeout 填充 size 个字节。本次变更又为 SN30 Pro BT(0x6101)、Pro 2 BT(0x6006) 等蓝牙型号置位了 powerstate_supported/sensors_supported，只要这些型号发出长度小于 21 字节的 0x04（或 0x01）报告，就会把未初始化的栈字节当作电量与 IMU 数据推送给应用。既有代码注释也提示过存在短报告（Ultimate2 v1.02 固件为 12 字节报告）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-REPORT-SIZE-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 115,
+      "summary": "新增 ReadFeatureReport 与 PS5 驱动中的同名函数逐行重复",
+      "failure_scenario": "本次在 8bitdo 驱动里新增的 static ReadFeatureReport（memset 缓冲、写入 report_id、调用 SDL_hid_get_feature_report）与 SDL_hidapi_ps5.c 中已有的 static 函数实现完全一致，属于复制粘贴式重复实现。公共头 SDL_hidapijoystick_c.h 中并未提供该 helper，因此每个需要读 feature report 的驱动都在各自复制一份，后续若要统一修正读取语义（例如区分 -1 与 0、处理短读、统一失败日志）必须逐文件修改，容易漏改并造成驱动间行为不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "MAINTAINABILITY-DUP-001"
+    },
+    {
+      "file": "src/joystick/SDL_joystick.c",
+      "line": 3181,
+      "summary": "同一组 8BitDo 新 PID 清单在识别与能力探测两处重复硬编码",
+      "failure_scenario": "新增的五个 PID 需要在 usb_ids.h 宏定义、SDL_IsJoystick8BitDoController 的识别条件、HIDAPI_Driver8BitDo_InitDevice 的能力探测分支三处保持手工同步，其中后两处都是手写的长串 `||` 条件。后续支持新型号时若只改识别条件而漏改 InitDevice 分支，会出现「设备被 8BitDo 驱动认领但 sensors/rumble/powerstate 全不启用」的静默降级；反之则会对未被识别的设备读取 feature report。这类不一致编译器无法发现。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-DUP-PIDLIST"
+    },
+    {
+      "file": "src/joystick/SDL_joystick.c",
+      "line": 3182,
+      "summary": "复合条件缺少空格、续行缩进不一致",
+      "failure_scenario": "SDL_IsJoystick8BitDoController 新增的多行条件存在 `||product_id == USB_PRODUCT_8BITDO_SF30_Pro`（`||` 后缺空格）以及续行缩进不齐的问题，8bitdo 驱动 InitDevice 中的对应条件也有 `SF30_Pro  ||`（双空格）与多一级缩进。与文件内其它判定函数的风格不一致，降低可读性，并使后续 diff 更容易产生格式噪声。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.88,
+      "rule": "READABILITY-FORMAT-001"
+    },
+    {
+      "file": "src/joystick/usb_ids.h",
+      "line": 63,
+      "summary": "新增 PID 宏混用 camelCase，与文件全大写命名风格不一致且注释含义不明",
+      "failure_scenario": "usb_ids.h 中所有产品宏均采用 `USB_PRODUCT_<厂商>_<型号全大写>` 的 SCREAMING_SNAKE 风格（如 USB_PRODUCT_8BITDO_ULTIMATE2_WIRELESS 0x6012），本次新增的宏混入 camelCase（SN30_Pro、SN30_Pro_BT、SF30_Pro、Pro_2、Pro_2_BT），破坏命名一致性，也让按大写名搜索时不易命中；同时 `//B + START`、`//mode switch to D `（含尾随空格）含义不明确——读者无法判断它指的是配对按键组合还是设备工作模式，而这两种信息的可用性直接影响是否应置位 IMU/电量能力。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "READABILITY-NAMING-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\libsdl-org__SDL@1526727.diff\n  caseId              libsdl-org__SDL@1526727\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@1526727\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 165.0s · 模型调用 26 次 · token 输入 47,494（未命中） · 输出 24,278 · 缓存命中 613,632（92.8%） · 工具 26 次（主会话 26 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0152\n[time] 阶段耗时 | 总墙钟 165.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.5s (0.3%)\n[time] 阶段 | 六阶段审计 165.0s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.4s (0.2%)\n[time] 审计明细 | P1 2.3s (1.4%) | P2 2.5s (1.5%) | P3 4.8s (2.9%) | P4 45.7s (27.7%) | P5 39.7s (24.1%) | P6 16.6s (10.1%) | R2P1 2.7s (1.6%) | R2P2 1.8s (1.1%) | R2P3 4.2s (2.5%) | R2P4 11.9s (7.2%) | R2P5 24.1s (14.6%) | R2P6 8.6s (5.2%)\n[usage] 任务总计 | 模型调用 26 次（Agent 26 + 一次性 0） | token 输入 47,494（未命中） | 输出 24,278 | 缓存命中 613,632（92.8%） | $0.0152\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\libsdl-org__SDL@1526727\\audit\\20261115_002721_579.json",
+  "token_usage": {
+    "input_tokens": 47494,
+    "output_tokens": 24278,
+    "cache_read_input_tokens": 613632
+  }
+}

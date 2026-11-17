@@ -1,0 +1,267 @@
+[
+  {
+    "filePath": "server/src/main/java/org/elasticsearch/search/sort/ScriptSortBuilder.java",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "leafScript.setScorer(scorer);",
+        "review": "[缺陷类型] 用可变实例字段在 LeafFieldComparator 之间传递状态（共享可变状态）。影响评估：当前串行语义下结果正确，但安全性完全依赖外部「不要启用并行收集」的约定；若该约定被后续改动打破，script sort 会返回错误顺序且不抛异常，属于难以定位的数据正确性问题。",
+        "suggestion": "[重构思路] 二选一：(a) 用注释+断言固化「setScorer 必须紧跟同 leaf 的 getValues」；(b) 恢复按 leaf 包装 LeafFieldComparator，把脚本实例作为 leaf 级匿名类的字段，彻底消除跨 leaf 共享。代码示例：`private LeafReaderContext lastContext; @Override protected SortedBinaryDocValues getValues(LeafReaderContext c) throws IOException { leafScript = searchScript.newInstance(new DocValuesDocReader(searchLookup, c)); lastContext = c; ... } @Override protected void setScorer(Scorable s) { assert lastContext != null : \"setScorer before getValues\"; leafScript.setScorer(s); }`",
+        "category": "可靠性",
+        "subcategory": "共享可变状态",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 306,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F002",
+        "code": "}",
+        "review": "[缺陷类型] 性能回退（并行收集能力丢失）+ 变更不可追溯。影响评估：大量使用 script sort 的场景在数据节点的收集阶段由多 slice 并行变为串行，热点查询延迟上升；发布说明不再记录该取舍，用户与后续维护者难以判断这是有意的临时回退。",
+        "suggestion": "[重构思路] 在 PR 描述/changelog 里显式记录「script sort 暂不支持并行收集」的取舍并留跟踪项；代码处加 TODO 指明恢复路径。代码示例：`// TODO parallel collection for script sorts requires per-leaf script state (see LeafFieldComparator), re-enable afterwards`",
+        "category": "性能",
+        "subcategory": "并行收集能力",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 494,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/esql-core/src/main/java/org/elasticsearch/xpack/esql/core/expression/NameId.java",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "public int hashCode() {",
+        "review": "[缺陷类型] 无谓装箱与数组分配。影响评估：单次开销很小，但在计划变换/属性查表的热路径上被反复调用，会带来额外的 GC 压力；也不利于保持「hashCode 零分配」的既有约定。",
+        "suggestion": "[重构思路] 保留零分配的 Long.hashCode 写法（若需要与其他类型保持风格一致，可显式注释说明）。代码示例：`@Override public int hashCode() { return Long.hashCode(id); }`",
+        "category": "性能",
+        "subcategory": "装箱与分配",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 36,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/data/BlockWritables.java",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "return List.of(",
+        "review": "[缺陷类型] 线格式向后兼容性依赖隐式命名契约。影响评估：一旦契约漂移，问题只在滚动升级/跨版本混跑的运行时暴露，排查成本高；同时 `BlockWritables` 是纯手工清单，新增类型时极易遗漏。",
+        "suggestion": "[重构思路] 把「名称集合 = 历史 legacy 名称集合」固化为可执行的约束（例如在 BlockWritables 上补一条断言式自检用例，或在 X-Block.java.st 生成处显式保留 legacy 名称常量并在 ENTRY 中复用），并在 BlockWritables 类注释中写明与旧线上格式兼容的原因。代码示例：`// Wire compatibility: these names must stay equal to the legacy ElementType names (\"IntBlock\", ... , \"ConstantNullBlock\") because pre-9.026 nodes read them as plain strings.` 并在 entry 中使用共享常量而不是字面量：`new NamedWriteableRegistry.Entry(Block.class, IntBlock.ENTRY_NAME, IntBlock::readFrom)`",
+        "category": "可移植",
+        "subcategory": "线格式向后兼容",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 17,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/data/DocBlock.java",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "public String getWriteableName() {",
+        "review": "[缺陷类型] 接口契约被以抛异常方式部分实现。影响评估：调用方难以区分「不可序列化」与「实现缺失」，诊断信息缺失；若将来有代码先取名称再决定是否序列化，会在预期之外失败。",
+        "suggestion": "[重构思路] 要么返回稳定的名称并在 writeTo 处统一拒绝序列化，要么抛带说明的异常（UnsupportedOperationException(\"doc blocks are not serializable\")），并让 DocBlock 与 ElementType.DOC 的语义保持一致。代码示例：`@Override public String getWriteableName() { return \"DocBlock\"; } @Override public void writeTo(StreamOutput out) throws IOException { throw new UnsupportedOperationException(\"doc blocks are not serializable\"); }`",
+        "category": "可维护",
+        "subcategory": "接口契约",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 29,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/old-lucene-versions/src/main/java/org/elasticsearch/xpack/lucene/bwc/codecs/LegacyAdaptingPerFieldPostingsFormat.java",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "* Swapping out formats can be done via the {@link #getPostingsFormat(String) method}.",
+        "review": "[缺陷类型] javadoc 内联链接书写错误（label 吞掉了方法与尾部标点）。影响评估：无功能影响，但生成的 API 文档中扩展点链接文字为 \"method\"，降低可读性并弱化了对覆写该方法的指引。",
+        "suggestion": "[重构思路] 把 \"method\" 移到标签外，仅让方法签名充当链接文本。代码示例：`* Swapping out formats can be done via the {@link #getPostingsFormat(String)} method.`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 58,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F009",
+        "code": "protected PostingsFormat getPostingsFormat(String formatName) {",
+        "review": "[缺陷类型] 抽象基类保留\"伪默认实现\"，把未实现错误推迟到运行期。影响评估：新增子类忘记覆写时，会在读取旧索引段的路径上抛 IllegalArgumentException(\"Lucene50\")，异常信息无法定位到具体类与字段；同时该默认分支实为不可达代码，误导阅读者以为存在兜底行为。",
+        "suggestion": "[重构思路] 将 getPostingsFormat 声明为 abstract，让编译器强制子类实现；若确需兜底，则应抛出带上下文的异常（例如在 FieldsReader 中包装 formatName + fieldName）。代码示例：`protected abstract PostingsFormat getPostingsFormat(String formatName);`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 79,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F010",
+        "code": "private class FieldsWriter extends FieldsConsumer {",
+        "review": "[缺陷类型] 死字段/死集合 + 只读约束的实现方式不一致。影响评估：功能性风险低（write/merge 仍会抛 IllegalStateException），但留下了永不生效的清理逻辑，易被后续维护者误以为需要在 toClose 中登记资源；两套异常语义也会让上层 catch 逻辑出现偏差。",
+        "suggestion": "[重构思路] 删除 writeState 与 toClose 及对应 import（Closeable/ArrayList/List），close() 改为空实现；或直接保留原语义在 fieldsConsumer 中立即抛出带说明的异常，并与其他 BWC postings format 统一异常类型。代码示例：`@Override public FieldsConsumer fieldsConsumer(SegmentWriteState state) throws IOException { return new FieldsWriter(state); }` + `@Override public void close() {}`，并删除未使用字段。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 83,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F011",
+        "code": "PostingsFormat format = legacyAdaptingPerFieldPostingsFormat.getPostingsFormat(formatName);",
+        "review": "[缺陷类型] 循环内重复分配临时对象。影响评估：字段数很多的段打开时会多出成百上千个短命 PostingsFormat 实例与随之而来的 GC 压力，虽不影响正确性但属于可避免的开销。",
+        "suggestion": "[重构思路] 在 codec 侧缓存 format 实例（例如把 `new BWCLucene50PostingsFormat()` 提升为字段），或在 FieldsReader 侧先算 segmentSuffix、命中 formats 缓存后就不再调用 getPostingsFormat。代码示例：`String segmentSuffix = getSuffix(formatName, suffix); PostingsFormat format = formats.get(segmentSuffix) != null ? null : getPostingsFormat(formatName);`",
+        "category": "性能",
+        "subcategory": "热路径重复分配",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 150,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/old-lucene-versions/src/main/java/org/elasticsearch/xpack/lucene/bwc/codecs/lucene50/ForUtil.java",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "import static org.apache.lucene.backward_codecs.lucene50.Lucene50PostingsFormat.BLOCK_SIZE;",
+        "review": "[缺陷类型] 同一语义常量存在多个权威来源。影响评估：BWC 读取依赖块大小在“写索引的上游格式”与“本地读取实现”之间严格一致，一旦两者分叉，表现为读取到错误的 doc 增量/位置数据或断言失败，排查非常困难，且升级 Lucene 时容易踩坑。",
+        "suggestion": "[重构思路] 统一常量来源：ForUtil、Lucene50SkipReader 也改为引用 BWCLucene50PostingsFormat.BLOCK_SIZE（或反过来让 PostingsFormat/Reader 统一引用 backward_codecs 的常量），并在该常量处加注释说明必须与 Lucene50 格式定义保持一致。代码示例：`import static org.elasticsearch.xpack.lucene.bwc.codecs.lucene50.BWCLucene50PostingsFormat.BLOCK_SIZE;`",
+        "category": "可维护",
+        "subcategory": "重复常量定义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 33,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/old-lucene-versions/src/main/java/org/elasticsearch/xpack/lucene/bwc/codecs/lucene60/Lucene60Codec.java",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "return new EmptyPostingsFormat();",
+        "review": "[缺陷类型] 错误处理被静默吞掉（unsupported format → 空实现）。影响评估：读取含未知 postings 格式的旧段时，字段词项变为不可见，搜索/聚合结果静默缺失且无任何日志或异常，问题只能靠结果对不上才能发现，排查成本极高。",
+        "suggestion": "[重构思路] 对已知可读格式做显式映射；未知格式至少记录一次 WARN 日志（带 formatName、segment 名）再降级，或在 BWC 读取场景下对完全不支持的格式抛出明确异常。代码示例：`if (\"Lucene50\".equals(formatName)) { return new BWCLucene50PostingsFormat(); } LOG.warn(\"postings format [{}] is not supported by BWC codec, postings will be invisible\", formatName); return new EmptyPostingsFormat();`",
+        "category": "可靠性",
+        "subcategory": "静默降级/错误隐藏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 66,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/ql/src/main/java/org/elasticsearch/xpack/ql/expression/NameId.java",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "return Objects.hash(id);",
+        "review": "[缺陷类型] 不必要装箱/可变参数数组分配。影响评估：NameId 参与表达式 Map/Set 的哈希，优化器与 ESQL 计划处理期间调用频繁，单次分配虽然小但属于热点路径上的稳定垃圾，且没有任何收益。",
+        "suggestion": "[重构思路] 回退为原始类型重载的哈希，或显式混洗。代码示例：`@Override public int hashCode() { return Long.hashCode(id); }`",
+        "category": "性能",
+        "subcategory": "装箱与临时数组分配",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 31,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/ql/src/main/java/org/elasticsearch/xpack/ql/plan/QueryPlan.java",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "List<Object> transformed = new ArrayList<>(c.size());",
+        "review": "[缺陷类型] 热路径上的无谓对象分配（惰性复制退化为总是复制）。影响评估：查询计划每次应用表达式变换都会为每个属性集合分配一个临时 List，复杂计划 + 多轮优化下垃圾量明显上升；同时原有“未变化返回原对象”的语义虽被保留，但成本优势丢失。",
+        "suggestion": "[重构思路] 保持按需分配：先遍历判断是否有变化（或先用引用相等快速短路），确实有变化时再复制并替换；也可用临时数组 + 只在 hasChanged 时构造 List。代码示例：`List<Object> transformed = null; int i = 0; for (Object e : c) { Object next = doTransformExpression(e, traversal); if (e.equals(next) == false) { if (transformed == null) { transformed = new ArrayList<>(c); } transformed.set(i, next); } i++; } return transformed != null ? transformed : arg;`",
+        "category": "性能",
+        "subcategory": "惰性复制退化",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 122,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/ql/src/main/java/org/elasticsearch/xpack/ql/tree/Node.java",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "List<T> transformedChildren = new ArrayList<>(children().size());",
+        "review": "[缺陷类型] 热路径上的无谓对象分配 + 注释与实现不一致。影响评估：计划树变换（transformDown/transformUp）在优化阶段对每个节点反复调用，叶子节点占多数时每次都会分配一个空 ArrayList，增加 GC 压力；注释会误导后续维护者以为此处已做过分配优化。",
+        "suggestion": "[重构思路] 恢复按需分配的写法，或先用一个 flag 判断有无变化再决定是否构造列表。代码示例：`List<T> transformed = null; for (int i = 0, s = children.size(); i < s; i++) { T child = children.get(i); T next = traversalOperation.apply(child); if (child.equals(next) == false) { if (transformed == null) { transformed = new ArrayList<>(children); } transformed.set(i, next); } } return transformed == null ? (T) this : replaceChildrenSameSize(transformed);`",
+        "category": "性能",
+        "subcategory": "惰性复制退化",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 208,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/old-lucene-versions/src/main/java/org/elasticsearch/xpack/lucene/bwc/codecs/lucene70/fst/FST.java",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "*",
+        "review": "[缺陷类型] 关键维护信息被删除（注释退化）。影响评估：BWC 模块最怕“好心同步上游”造成旧索引读不了；丢失分叉声明会显著提高这种回归的概率，问题在发布后才会暴露。",
+        "suggestion": "[重构思路] 保留上游描述，同时追加一段分叉说明与差异列表（读旧版本、不可写、与上游不保证 API 同步）。代码示例：`/** Represents an FST ... (upstream description) ... <p><b>NOTE:</b> this is an adapted fork of {@link org.apache.lucene.util.fst.FST} that only supports reading FSTs written by ancient Lucene versions; do not blindly sync with upstream. */`",
+        "category": "可读性",
+        "subcategory": "注释/文档退化",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 57,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

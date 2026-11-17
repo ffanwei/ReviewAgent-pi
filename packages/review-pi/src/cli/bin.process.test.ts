@@ -1008,6 +1008,8 @@ test(
       { text: "ok", usage: ZERO },
       { text: "ok", usage: ZERO },
       { text: "not a JSON reply at all", usage: ZERO },
+      { text: "still not a JSON reply", usage: ZERO },
+      { text: "short repair also not JSON", usage: ZERO },
       { text: '{"verdicts":[],"complete":true}', usage: ZERO },
     ]);
     try {
@@ -1030,12 +1032,19 @@ test(
 
       // 同时落审计（可机读）
       const audit = JSON.parse(readFileSync(outcome.auditPath, "utf8")) as {
-        phaseLog: { phase: string; parseFailure?: { expected: string; kind: string } }[];
+        phaseLog: {
+          phase: string;
+          parseFailure?: { expected: string; kind: string };
+          parseRetries?: number;
+          parseRecovered?: boolean;
+        }[];
       };
       expect(audit.phaseLog[4]?.parseFailure).toEqual({
         expected: "candidates",
         kind: "not-json",
       });
+      expect(audit.phaseLog[4]?.parseRetries).toBe(1);
+      expect(audit.phaseLog[4]?.parseRecovered).toBe(false);
       expectNoKeyLeak([
         { label: "stdout", text: run.stdout },
         { label: "stderr", text: run.stderr },
@@ -1616,7 +1625,7 @@ test.each(["--rule-skill", "--skill"] as const)(
       const outDir = makeTempDir("review-pi-cli-out-");
       const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
-      const skillDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      const skillDir = path.join(packageDir, "rules", "general");
 
       const run = await runBin(
         [
@@ -1689,7 +1698,7 @@ test(
       const outDir = makeTempDir("review-pi-cli-out-");
       const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
-      const baseDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      const baseDir = path.join(packageDir, "rules", "general");
       const overrideDir = path.join(makeTempDir("review-pi-rule-override-"), "general-code-review");
       mkdirSync(overrideDir, { recursive: true });
       writeFileSync(
@@ -1744,7 +1753,7 @@ test(
       const outDir = makeTempDir("review-pi-cli-out-");
       const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
-      const baseDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      const baseDir = path.join(packageDir, "rules", "general");
       const overrideDir = path.join(makeTempDir("review-pi-rule-override-"), "general-code-review");
       mkdirSync(overrideDir, { recursive: true });
       writeFileSync(
@@ -1820,7 +1829,7 @@ test(
       const outDir = makeTempDir("review-pi-cli-out-");
       const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
-      const baseDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      const baseDir = path.join(packageDir, "rules", "general");
       const extraDir = path.join(makeTempDir("review-pi-rule-extra-"), "general-code-review-extra");
       mkdirSync(extraDir, { recursive: true });
       writeFileSync(
@@ -1929,7 +1938,7 @@ test(
       const outDir = makeTempDir("review-pi-cli-out-");
       const mrFile = path.join(makeTempDir("review-pi-cli-mr-"), "VUL4J-1.diff");
       writeFileSync(mrFile, goldenFixture("vul4j-1.diff"), "utf8");
-      const skillDir = path.join(packageDir, "testdata", "rule-skills", "general-code-review");
+      const skillDir = path.join(packageDir, "rules", "general");
       // 第二个目录必须换一个 skill 名：同名 skill 会按「后装载者胜出」去重（本轮口径）
       const altDir = path.join(makeTempDir("review-pi-rule-alt-"), "general-code-review-alt");
       mkdirSync(altDir, { recursive: true });

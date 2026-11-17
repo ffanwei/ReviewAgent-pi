@@ -1,0 +1,413 @@
+{
+  "generatedAt": "2026-11-15T02:42:27.113Z",
+  "runId": "20261115_023039_654",
+  "source": "mr",
+  "caseId": "microsoft__typescript-go@892b4a3",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "internal/ls/languageservice.go",
+      "line": 17,
+      "title": "NewLanguageService 接收 ctx 却未赋给 LanguageService.ctx，字段恒为 nil",
+      "description": "LanguageService 结构体新增了 ctx 字段，构造函数也新增了 ctx 形参，但构造体只赋值 host 与 converters，ctx 被静默丢弃。任何方法一旦读取 l.ctx 都会拿到 nil context：本应随请求取消、携带 request ID 的操作失去上下文，或对 nil context 调用 Done/Err 时 panic。调用点已传入真实 ctx，说明设计意图是使用它，实现却未落地。",
+      "evidence": [
+        "internal/ls/languageservice.go:11-15 — 结构体声明 `ctx context.Context`、`host Host`、`converters *Converters`",
+        "internal/ls/languageservice.go:17-22 — `func NewLanguageService(ctx context.Context, host Host) *LanguageService { return &LanguageService{ host: host, converters: NewConverters(...) } }`，没有 `ctx: ctx`",
+        "internal/project/project.go:343 — `languageService := ls.NewLanguageService(ctx, snapshot)` 传入真实请求 ctx"
+      ],
+      "rule": "CORRECTNESS-004",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 参数被静默丢弃、字段未初始化。影响评估：后续依赖 l.ctx 的逻辑拿到 nil context，取消链断裂并可能运行时 panic，令本次重构目标失效。",
+        "suggestion": "[重构思路] 构造函数中赋值；若暂无使用者可先不引入该字段。代码示例：`return &LanguageService{ctx: ctx, host: host, converters: NewConverters(host.GetPositionEncoding(), host.GetLineMap)}`。",
+        "subcategory": "未初始化字段"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "internal/ls/languageservice.go",
+      "line": 18,
+      "title": "NewLanguageService 接收 ctx 却未保存到 l.ctx，导致引用查找使用 nil context",
+      "description": "LanguageService 新增了 ctx 字段，构造函数签名也改成 NewLanguageService(ctx, host)，但函数体只初始化 host 与 converters，从未把 ctx 赋给 l.ctx。唯一调用点 project.go:343 虽然传入了正确的请求 ctx，结果 l.ctx 恒为 nil。findallreferences.go 中三处改成 program.GetTypeChecker(l.ctx)，于是 checkerPool.GetChecker 拿到的 requestID 恒为 \"\"：getCheckerLocked 仍把 checker 标记为 inUse，但不写入 requestAssociations，导致「一个请求只能使用一个 checker」的复用保护与 GetLanguageServiceForRequest 的清理断言（isRequestCheckerInUse）全部失效，同一请求内可能从池中取到与其它代码不同的 checker 而混用不同类型对象，并且请求取消无法关联到该 checker。core.GetRequestID 新增的 ctx==nil 返回 \"\" 恰好把这个编程错误静默吞掉。",
+      "evidence": [
+        "internal/ls/languageservice.go:12 — struct LanguageService 新增字段 ctx context.Context",
+        "internal/ls/languageservice.go:17-22 — func NewLanguageService(ctx context.Context, host Host) *LanguageService 函数体只有 host: host、converters: NewConverters(...)，没有 ctx: ctx",
+        "internal/project/project.go:343 — languageService := ls.NewLanguageService(ctx, snapshot)（唯一调用点，ctx 已带 request ID）",
+        "internal/ls/findallreferences.go:533、558、620 — checker, done := program.GetTypeChecker(l.ctx)",
+        "internal/core/context.go:14-16 — GetRequestID 新增 if ctx == nil { return \"\" }",
+        "internal/project/checkerpool.go:81-82 与 107-114 — requestID 为空时 getCheckerLocked 仍 inUse[checker]=true，但不写 requestAssociations",
+        "internal/project/project.go:344-348 — cleanup 通过 core.GetRequestID(ctx) 调 isRequestCheckerInUse 做断言"
+      ],
+      "rule": "CONTEXT-LIFECYCLE-001",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 构造器忽略注入的 context，把请求级依赖静默降级为 nil。影响评估：checker 池的请求关联与清理断言失效，同一请求可能在不同调用点拿到不同 checker 并混用类型；请求取消不再与该 checker 关联；同时 core.GetRequestID 的 nil 兜底掩盖了问题，使错误更难被发现。",
+        "suggestion": "[重构思路] 在构造函数中保存 ctx；同时不要用 nil ctx 兜底掩盖编程错误，建议对必须非 nil 的 ctx 显式断言。代码示例：`func NewLanguageService(ctx context.Context, host Host) *LanguageService { if ctx == nil { panic(\"NewLanguageService requires a non-nil context\") }; return &LanguageService{ctx: ctx, host: host, converters: NewConverters(host.GetPositionEncoding(), host.GetLineMap)} }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "internal/ls/signaturehelp.go",
+      "line": 77,
+      "title": "签名帮助移除 context 判空后直接解引用，客户端省略 context 时 panic",
+      "description": "ProvideSignatureHelp 的 context 参数是 *lsproto.SignatureHelpContext（LSP 中 SignatureHelpParams.context 为可选字段，客户端可完全省略）。diff 把原来的 `context != nil && context.TriggerKind == ...` 改成了 `context.TriggerKind == ...`，GetSignatureHelpItems 内由此产生两处无条件解引用。一旦客户端不发送 context（或测试传 nil），请求路径会空指针 panic。",
+      "evidence": [
+        "internal/ls/signaturehelp.go:42 — context *lsproto.SignatureHelpContext（指针参数）",
+        "internal/ls/signaturehelp.go:77 — onlyUseSyntacticOwners := context.TriggerKind == lsproto.SignatureHelpTriggerKindTriggerCharacter（diff 原为 context != nil && ...）",
+        "internal/ls/signaturehelp.go:84 — isManuallyInvoked := context.TriggerKind == 1（diff 原为 context != nil && context.TriggerKind == lsproto.SignatureHelpTriggerKindInvoked）",
+        "internal/lsp/server.go:688 — 直接把 params.Context 透传给 ProvideSignatureHelp"
+      ],
+      "rule": "NULL-SAFETY-002",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 指针参数未判空即解引用。影响评估：textDocument/signatureHelp 请求在客户端不提供 context 时直接 panic，可能导致 language server 进程崩溃或该请求 500。",
+        "suggestion": "[重构思路] 恢复判空，并用有名字的常量替代魔法数字；nil 视为默认（Invoked 语义之外的 TriggerKindNone）。代码示例：`var triggerKind lsproto.SignatureHelpTriggerKind; if context != nil { triggerKind = context.TriggerKind }; onlyUseSyntacticOwners := triggerKind == lsproto.SignatureHelpTriggerKindTriggerCharacter; isManuallyInvoked := triggerKind == lsproto.SignatureHelpTriggerKindInvoked`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "internal/ls/signaturehelp.go",
+      "line": 84,
+      "title": "用魔法数字 1 表示 SignatureHelpTriggerKindInvoked",
+      "description": "isManuallyInvoked 由 `context.TriggerKind == lsproto.SignatureHelpTriggerKindInvoked` 改成了 `context.TriggerKind == 1`。虽然 lsp_generated.go 中该常量确实等于 1，行为暂未改变，但丢失了符号语义：一旦协议生成代码的取值或命名调整，此处会静默失配。",
+      "evidence": [
+        "internal/ls/signaturehelp.go:84 — isManuallyInvoked := context.TriggerKind == 1",
+        "internal/lsp/lsproto/lsp_generated.go:12406 — SignatureHelpTriggerKindInvoked SignatureHelpTriggerKind = 1",
+        "internal/ls/signaturehelp.go:77 — 相邻判断仍使用符号 lsproto.SignatureHelpTriggerKindTriggerCharacter，风格不一致"
+      ],
+      "rule": "READABILITY-008",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 魔法数字替代具名常量。影响评估：可读性与协议演进安全性下降，与同函数内其它判断风格不一致。",
+        "suggestion": "[重构思路] 直接使用生成常量。代码示例：`isManuallyInvoked := context.TriggerKind == lsproto.SignatureHelpTriggerKindInvoked`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "internal/ls/signaturehelp.go",
+      "line": 266,
+      "title": "*&help.ActiveParameter.Value 为冗余解引用，且未体现 Nullable 的 Null 语义",
+      "description": "从 UintegerOrNull{Uinteger **uint32} 换成 Nullable[uint32]{Value uint32; Null bool} 后，原判断 `help.ActiveParameter.Uinteger != nil && *help.ActiveParameter.Uinteger > ...` 被机械替换成 `*&help.ActiveParameter.Value > ...`。`*&` 是恒等操作，纯属噪音；同时新的 Nullable 丢掉了「是否为 null」的检查（Null 为 true 时 Value 是零值仍参与比较），语义上不再等价于原逻辑，后续维护者容易误解。",
+      "evidence": [
+        "internal/ls/signaturehelp.go:266 — if help.ActiveParameter != nil && *&help.ActiveParameter.Value > uint32(len(activeSignature.Parameters)-1)",
+        "internal/lsp/lsproto/lsp.go:16-19 — type Nullable[T any] struct { Value T; Null bool }",
+        "internal/lsp/lsproto/lsp.go:25-27 — func Null[T any]() Nullable[T] 表示 null 状态"
+      ],
+      "rule": "READABILITY-007",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 冗余解引用 + 空值语义缺失。影响评估：不影响当前输出（Null 时 Value 为 0，比较结果一致），但语义模糊，后续修改 ActiveParameter 逻辑时容易出错。",
+        "suggestion": "[重构思路] 直接访问 Value，并显式判断 Null。代码示例：`if ap := help.ActiveParameter; ap != nil && !ap.Null && ap.Value > uint32(len(activeSignature.Parameters)-1) { help.ActiveParameter = ptrTo(lsproto.ToNullable(uint32(len(activeSignature.Parameters) - 1))) }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "internal/execute/watcher.go",
+      "line": 46,
+      "title": "watch 模式下 tsconfig 场景不再初始化 CompilerHost，构建信息读取对 nil host 调用 FS() 会 panic",
+      "description": "start() 被改为仅在 configFileName == \"\" 时创建 w.host，但紧接着第 49 行就用 w.host 构造 BuildInfoReader。对 tsconfig 场景（configFileName != \"\"），host 要等到 DoCycle→hasErrorsInTsConfig 第 115 行才赋值，因此第 49 行拿到的是 nil 接口。ReadBuildInfoProgram 在配置了 incremental/composite 时 buildInfoFileName 非空，会走到 buildInfoReader.ReadBuildInfo 的 r.host.FS()，对 nil 接口调用方法直接 panic。tsc.go:189-192 表明 `tsc --watch` + tsconfig 正是这条路径，即常见的 watch 启动即崩溃。代码注释提到的 StartForTest/export_test.go 在当前仓库并不存在，说明该分支缺少对应的测试承载点。",
+      "evidence": [
+        "internal/execute/watcher.go:46-48 — if w.configFileName == \"\" { w.host = compiler.NewCompilerHost(...) }",
+        "internal/execute/watcher.go:49 — w.program = incremental.ReadBuildInfoProgram(w.options, incremental.NewBuildInfoReader(w.host))（此时 w.host 可能为 nil）",
+        "internal/execute/watcher.go:115 — w.host 只在 hasErrorsInTsConfig 内、且 configFileName != \"\" 时才被赋值",
+        "internal/incremental/incremental.go:24 — data, ok := r.host.FS().ReadFile(buildInfoFileName)（host 为 nil 接口时 panic）",
+        "internal/incremental/incremental.go:47-52 — buildInfoFileName 非空才调用 reader.ReadBuildInfo",
+        "internal/execute/tsc.go:189-192 — Watch 为 true 时 createWatcher(...) 后立即 watcher.start()",
+        "internal/execute/watcher.go:45 — 注释引用 `StartForTest` in export_test.go，但 review_find_references(\"StartForTest\") 为 0 命中、export_test.go 不存在"
+      ],
+      "rule": "RESOURCE-LIFECYCLE-003",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 字段初始化顺序错误导致 nil 依赖注入。影响评估：`tsc --watch` 且 tsconfig 开启 incremental/composite 时启动即 panic；即使未开 incremental，w.program 也恒为 nil，增量复用完全失效。",
+        "suggestion": "[重构思路] host 的创建不要依赖 configFileName 分支，先保证 host 可用再读 build info；若确需为测试注入 host，用显式 setter 或构造参数，而不是靠「条件跳过赋值」。代码示例：`if w.host == nil { w.host = compiler.NewCompilerHost(w.sys.GetCurrentDirectory(), w.sys.FS(), w.sys.DefaultLibraryPath(), nil) }; w.program = incremental.ReadBuildInfoProgram(w.options, incremental.NewBuildInfoReader(w.host))`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "internal/checker/checker.go",
+      "line": 9952,
+      "title": "把 len(typeParameters)==0 改为 typeParameters==nil 不等价，非泛型类构造签名会得到非 nil 空切片",
+      "description": "Signature.typeParameters 是 []*Type，代码中并不保证「空即 nil」。getSignatureFromDeclaration 对构造函数取 classType.AsInterfaceType().LocalTypeParameters()，而 LocalTypeParameters 在 len(allTypeParameters)!=0（非泛型类也含 this 类型，故通常非 0）时返回 slices.Clip(allTypeParameters[outer:len-1])，即非 nil 的空切片。于是把这些判断由 len(...)!=0/==0 机械替换为 != nil/== nil 后，非泛型类的构造签名会被当成「有类型参数」：assignContextualParameterTypes 会在 context 与 sig 都为非 nil 空切片时提前 return，跳过上下文参数类型赋值；isTopSignature、isSingleNonGenericCandidate、getReturnTypeOfSingleNonGenericCallSignature 等判断也会偏离 TS 原语义。",
+      "evidence": [
+        "internal/checker/types.go:896-901 — func (t *InterfaceType) LocalTypeParameters() []*Type { if len(t.allTypeParameters) == 0 { return nil }; return slices.Clip(t.allTypeParameters[t.outerTypeParameterCount : len(t.allTypeParameters)-1]) }（非泛型类得到非 nil 空切片）",
+        "internal/checker/checker.go:18959-18968 — if ast.IsConstructorDeclaration(declaration) { classType = ... }; typeParameters = classType.AsInterfaceType().LocalTypeParameters()",
+        "internal/checker/checker.go:18982-18988 — getTypeParametersFromDeclaration 对无类型参数声明返回 nil（两条路径语义不一致）",
+        "internal/checker/checker.go:9951-9954 — if context.typeParameters != nil { if sig.typeParameters != nil { return } ... }（原为 len(...) != 0）",
+        "internal/checker/relater.go:1656 — if s.typeParameters == nil && ... （isTopSignature，原为 len(s.typeParameters) == 0）",
+        "internal/checker/checker.go:9385 — localState.isSingleNonGenericCandidate = candidate.typeParameters == nil"
+      ],
+      "rule": "CORRECTNESS-NILSEMANTICS-004",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] nil 与空切片混淆导致判断语义漂移。影响评估：非泛型类构造签名会被错误归类为泛型签名，可能跳过上下文参数类型推断、改变重载/签名关系判断与相关错误信息的产生，属于类型检查结果层的隐性偏差。",
+        "suggestion": "[重构思路] 保持原有的长度语义（len(...) == 0 / != 0），或在所有构造入口统一保证「空即 nil」（例如在 LocalTypeParameters 中对空结果返回 nil）后再使用 nil 判断；二者不要混用。代码示例：`func (t *InterfaceType) LocalTypeParameters() []*Type { if len(t.allTypeParameters) <= t.outerTypeParameterCount+1 { return nil }; return slices.Clip(t.allTypeParameters[t.outerTypeParameterCount : len(t.allTypeParameters)-1]) }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "internal/fourslash/_scripts/convertFourslash.mts",
+      "line": 27,
+      "title": "生成脚本无条件读取并不存在的 manualTests.txt，一运行即 ENOENT",
+      "description": "main() 中新增了无条件的 generateHelperFile() 与 parseTypeScriptFiles(getFailingTests(), getManualTests(), ...)，而 getManualTests() 内部直接 fs.readFileSync(manualTestsPath)。当前仓库中 internal/fourslash/_scripts/manualTests.txt 并不存在（只有 makeManual.mts 在首次使用时惰性创建），因此除重新生成代码外，脚本会在读文件处抛异常中断，导致 fourslash 测试代码无法通过脚本生成。",
+      "evidence": [
+        "internal/fourslash/_scripts/convertFourslash.mts:27 — const manualTestsList = fs.readFileSync(manualTestsPath, \"utf-8\").split(\"\\n\")...",
+        "internal/fourslash/_scripts/convertFourslash.mts:44-46 — generateHelperFile(); parseTypeScriptFiles(getFailingTests(), getManualTests(), stradaFourslashPath);",
+        "review_get_file(\"internal/fourslash/_scripts/manualTests.txt\") 返回 not found，仓库快照中不存在该文件",
+        "internal/fourslash/_scripts/makeManual.mts:31-34 — 只有走 makeManual 才会惰性创建 manualTests.txt"
+      ],
+      "rule": "TOOLING-ROBUSTNESS-005",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 生成脚本对缺失输入文件无兜底。影响评估：convertFourslash 无法运行，fourslash 生成流程中断；新人按文档执行会直接失败。",
+        "suggestion": "[重构思路] 文件不存在时按空列表处理，或在仓库中提交一个空的 manualTests.txt 作为基线。代码示例：`function getManualTests(): Set<string> { if (!fs.existsSync(manualTestsPath)) return new Set(); ... }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "internal/fourslash/_scripts/makeManual.mts",
+      "line": 16,
+      "title": "makeManual 写入 manualTests.txt 的键与 convertFourslash 比对口径不一致，manual 跳过逻辑失效",
+      "description": "convertFourslash 用「测试名首字母大写」与 manualTests 集合比对（testName = test.name[0].toUpperCase() + test.name.substring(1)，例如 GoToDefinitionBuiltInTypes）；而 makeManual 直接把命令行参数 args[0] 原样作为 testName 写入 manualTests.txt，同时又把 args[0] 当作 gen 目录下的文件名使用（需要形如 xxx_test.go）。两者口径不同：写成文件名则 convertFourslash 永远匹配不上，写成首字母大写测试名则 makeManual 找不到 gen 文件。结果是 tests/manual 目录被搬走之后，下一次生成仍会重新生成同名测试，出现重复定义。",
+      "evidence": [
+        "internal/fourslash/_scripts/makeManual.mts:16-18 — const testName = args[0]; const testFileName = testName; const genTestFile = path.join(genDir, `${testFileName}`);",
+        "internal/fourslash/_scripts/makeManual.mts:36-40 — manualTests.push(testName); fs.writeFileSync(manualTestsPath, ...)",
+        "internal/fourslash/_scripts/convertFourslash.mts:70-73 — const testName = test.name[0].toUpperCase() + test.name.substring(1); if (manualTests.has(testName)) { return; }",
+        "internal/fourslash/_scripts/convertFourslash.mts:74-77 — 命中 manual 则跳过写入 gen 目录"
+      ],
+      "rule": "TOOLING-CONSISTENCY-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 两个脚本共享同一份清单却使用不同键格式。影响评估：manual 测试会在 gen 目录被重复生成，与 tests/manual 中的同名测试冲突（同 package 下重复函数声明导致编译失败），或使 manual 机制形同虚设。",
+        "suggestion": "[重构思路] 统一用「首字母大写的测试名」作为清单键，文件名单独派生出 `_test.go` 后缀。代码示例：`const testName = args[0].replace(/_test\\.go$/, \"\"); const manualKey = testName[0].toUpperCase() + testName.substring(1); ... if (!manualTests.includes(manualKey)) { manualTests.push(manualKey); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "安全",
+      "file": ".custom-gcl.yml",
+      "line": 4,
+      "title": "本 MR 大范围回退依赖与安全工具链版本，需确认是否刻意为之",
+      "description": "除业务代码外，本 MR 同时回退了多项工具链与依赖版本：golangci-lint v2.3.0→v2.0.2、github/codeql-action v3.29.4→v3.29.1、@vscode/vsce ^3.6.0→^3.3.2、esbuild ^0.25.8→^0.25.2、golang.org/x/sys v0.34.0→v0.33.0、golang.org/x/tools v0.35.0→v0.34.0、golang.org/x/mod v0.26.0→v0.25.0、go-json-experiment/json 回退到更早的伪版本。回退 lint 与 CodeQL 版本会丢失已修复的检测规则/漏洞识别能力，回退运行时依赖会重新引入已修复的上游缺陷；若这是为兼容性临时回退，应记录原因与恢复计划。",
+      "evidence": [
+        ".custom-gcl.yml:4 — version: v2.3.0 → v2.0.2",
+        ".github/workflows/codeql.yml:51、61、75 — codeql-action init/autobuild/analyze 由 4e828ff8...(# v3.29.4) 改为 39edc492...(# v3.29.1)",
+        "_extension/package.json:109-110 — @vscode/vsce ^3.6.0 → ^3.3.2、esbuild ^0.25.8 → ^0.25.2",
+        "go.mod:7、11-12 — go-json-experiment/json 伪版本回退、golang.org/x/sync v0.16.0→v0.15.0、golang.org/x/sys v0.34.0→v0.33.0",
+        "_tools/go.mod:7-8、14 — golang.org/x/mod v0.26.0→v0.25.0、golang.org/x/tools v0.35.0→v0.34.0"
+      ],
+      "rule": "SUPPLY-CHAIN-009",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 依赖/工具链版本回退（含安全扫描与静态检查工具）。影响评估：CI 的漏洞检测能力下降，构建与发布链（vsce/esbuild）使用更旧版本，可能重新暴露既有缺陷；与代码回退混在同一 MR 中也不利于审计。",
+        "suggestion": "[重构思路] 若确需回退，拆分为独立 MR 并在描述中写明回退原因（如上游回归/兼容性问题）与恢复计划；lint 与 CodeQL 版本尽量保持最新。代码示例：在 .custom-gcl.yml 中保留 `version: v2.3.0`，如需降级则在 MR 描述中附 issue 链接说明回滚条件。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "internal/parser/reparser.go",
+      "line": 168,
+      "title": "JSDoc @param {...T} 变参数不再生成 rest 参数，可变参数签名退化为单个数组参数",
+      "description": "重写后 KindJSDocParameterOrPropertyTag 分支不再检测 KindJSDocVariadicType，也不再创建 KindDotDotDotToken，只把类型直接赋给参数 Type。结果 @param {...string} args 生成 (args: string[]) 而非 (...args: string[])，调用处传入多个实参会被误报参数个数错误。",
+      "evidence": [
+        "internal/parser/reparser.go:167-171 — 仅 `parameter = p.factory.NewParameterDeclaration(nil, nil, ..., nil, nil)` 后 `parameter.AsParameterDeclaration().Type = p.reparseJSDocTypeLiteral(jsparam.TypeExpression.Type())`，dotDotDotToken 参数位置恒为 nil",
+        "diff 删除的旧逻辑：`if jsparam.TypeExpression.Type().Kind == ast.KindJSDocVariadicType { dotDotDotToken = p.factory.NewToken(ast.KindDotDotDotToken); ... paramType = p.reparseJSDocTypeLiteral(variadicType.Type) }`",
+        "submodule/conformance/callbackTagVariadicType.js 由 `export type Foo = (...args: string) => number;` 变为 `export type Foo = (args: string[]) => number;`",
+        "submodule/conformance/callbackTagVariadicType.errors.txt 的错误由 TS2370/TS2345 变为 `callbackTagVariadicType.js(9,18): error TS2554: Expected 1 arguments, but got 2.`",
+        "conformance/jsdocVariadicInOverload.{js,symbols,types} 三个基线被整体删除"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 变参数（rest parameter）语义丢失。影响评估：JSDoc 声明的可变参数函数在调用处报 TS2554，声明文件生成结果与 tsc 不一致，且相关基线被删除而非更新，掩盖了回归。",
+        "suggestion": "[重构思路] 恢复对 JSDocVariadicType 的识别并生成 dotDotDotToken，类型取内层类型。代码示例：`typ := jsparam.TypeExpression.Type(); var dots *ast.Node; if typ.Kind == ast.KindJSDocVariadicType { dots = p.factory.NewToken(ast.KindDotDotDotToken); dots.Flags = p.contextFlags | ast.NodeFlagsReparsed; typ = typ.AsJSDocVariadicType().Type }; parameter = p.factory.NewParameterDeclaration(nil, dots, name, question, p.reparseJSDocTypeLiteral(typ), nil)`。",
+        "subcategory": "AST 构造语义"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "internal/parser/reparser.go",
+      "line": 360,
+      "title": "@satisfies 分支被裁剪到仅剩 ParenthesizedExpression，变量声明/赋值/return 上的 satisfies 校验失效",
+      "description": "reparseHosted 的 KindJSDocSatisfiesTag 分支现在只处理 ParenthesizedExpression，原先覆盖 VariableStatement/VariableDeclaration/PropertyAssignment/ReturnStatement/ExpressionStatement 的分支被整体删除。最常见的 /** @satisfies {T} */ const x = {...} 不再插入 satisfies cast，多余属性、缺失属性、字面量类型不一致等诊断静默丢失，被收窄的类型也退回宽类型。",
+      "evidence": [
+        "internal/parser/reparser.go:359-369 — `case ast.KindJSDocSatisfiesTag:` 后只有 `if parent.Kind == ast.KindParenthesizedExpression { ... }`，无 else 或其它父节点分支",
+        "diff 删除的旧分支：VariableStatement 内 `declaration.AsMutable().SetInitializer(p.makeNewCast(..., false))`；`case ast.KindVariableDeclaration, ast.KindCommonJSExport, ast.KindExportAssignment, ast.KindJSExportAssignment, ast.KindPropertyDeclaration, ast.KindPropertyAssignment, ast.KindShorthandPropertyAssignment:`；`case ast.KindReturnStatement, ast.KindParenthesizedExpression:`；ExpressionStatement 内 `bin.Right = p.makeNewCast(...)`",
+        "submodule/conformance/checkJsdocSatisfiesTag12.errors.txt 被删除，submoduleAccepted 侧新 diff 为 `+<no content>`（原 5 条 TS2353/TS2741/TS8020/TS1360 全部消失）",
+        "submoduleAccepted/conformance/checkJsdocSatisfiesTag13.errors.txt.diff 新内容为 `+<no content>`，t2 = { g: oops } 不再报 TS2353",
+        "checkJsdocSatisfiesTag13.types 由 `>t1 : { f: (s: string) => string; }` 退化为 `>t1 : { f: (s: any) => any; }`"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 功能分支被裁剪导致 JSDoc @satisfies 校验失效。影响评估：用户可见诊断消失、推导类型变宽，且回归被删除错误基线的方式消化，后续难以发现。",
+        "suggestion": "[重构思路] 保留字段直接赋值，但补齐被删的父节点分支，抽出统一 helper 对 Initializer()/Expression() 插入 cast。代码示例：`if init := parent.Initializer(); init != nil { parent.AsMutable().SetInitializer(p.makeNewCast(p.factory.DeepCloneReparse(te.Type()), p.factory.DeepCloneReparse(init), false)); p.finishMutatedNode(parent) }`，并恢复 checkJsdocSatisfiesTag12/13 错误基线。",
+        "subcategory": "JSDoc 语义回归"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "internal/parser/reparser.go",
+      "line": 360,
+      "title": "@satisfies 处理分支被裁剪到仅剩 ParenthesizedExpression，变量/赋值/返回语句上的 satisfies 校验全部失效",
+      "description": "重写 reparseHosted 后，KindJSDocSatisfiesTag 分支只剩下对 ParenthesizedExpression 的处理，原先覆盖 KindVariableStatement、KindVariableDeclaration（含 CommonJSExport/ExportAssignment/PropertyDeclaration/PropertyAssignment/ShorthandPropertyAssignment）、KindReturnStatement、KindExpressionStatement 的分支全部被删除。这意味着 /** @satisfies {T} */ const x = {...} 这类最常见写法不再插入 satisfies 类型转换，对象字面量的多余属性/缺失属性/字面量类型一致性检查随之消失，属于明显的语义回归，且会静默丢失用户可见的诊断。",
+      "evidence": [
+        "internal/parser/reparser.go:359-369 — `case ast.KindJSDocSatisfiesTag:` 之后只有 `if parent.Kind == ast.KindParenthesizedExpression { ... }`，无 else 分支",
+        "diff 中被删除的旧分支：`case ast.KindVariableStatement:` 内 `declaration.AsMutable().SetInitializer(p.makeNewCast(... false /*isAssertion*/))`、`case ast.KindReturnStatement, ast.KindParenthesizedExpression:`、`case ast.KindExpressionStatement:` 内 `bin.Right = p.makeNewCast(...)`",
+        "testdata/baselines/reference/submodule/conformance/checkJsdocSatisfiesTag12.errors.txt 被整体删除，且 testdata/baselines/reference/submoduleAccepted/conformance/checkJsdocSatisfiesTag12.errors.txt.diff 新内容为 `+<no content>`，即原有 5 条错误（TS2353/TS2741/TS8020/TS1360）全部消失",
+        "testdata/baselines/reference/submodule/conformance/checkJsdocSatisfiesTag13.errors.txt 被删除，submoduleAccepted 侧新 diff 为 `+<no content>`，`const t2 = { g: \"oops\" }; // should error` 不再报 TS2353",
+        "testdata/baselines/reference/submodule/conformance/checkJsdocSatisfiesTag13.types 由 `>t1 : { f: (s: string) => string; }` 退化为 `>t1 : { f: (s: any) => any; }`"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 功能分支被裁剪导致的语义回归（JSDoc @satisfies 类型检查失效）。影响评估：写在变量声明/属性赋值/return 上的 @satisfies 不再生效，多余属性、缺失属性、字面量类型不匹配等错误不再上报，且推导类型变宽（any/string），并被基线删除掩盖。",
+        "suggestion": "[重构思路] 恢复被删除的父节点分支，用统一的 helper 对 Initializer()/Expression() 插入 satisfies cast。代码示例：`case ast.KindVariableDeclaration: if init := parent.Initializer(); init != nil { parent.AsMutable().SetInitializer(p.makeNewCast(p.factory.DeepCloneReparse(te.Type()), p.factory.DeepCloneReparse(init), false)); p.finishMutatedNode(parent) }`；同时恢复 checkJsdocSatisfiesTag12/13 的错误基线。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "internal/lsp/server.go",
+      "line": 371,
+      "title": "取消请求不再映射为 LSP RequestCancelled 错误码，而是返回 InternalError",
+      "description": "dispatchLoop 删除了 errors.Is(err, context.Canceled) 分支，被取消的请求会走 s.sendError(req.ID, err)；sendError 只有在 err 可 As 为 *lsproto.ErrorCode 时才使用自定义码，否则一律用 ErrInternalError。客户端因此收到 -32603 与 context canceled 文本，而不是协议规定的 -32800 RequestCancelled。",
+      "evidence": [
+        "internal/lsp/server.go:370-376 — 现在只有 `if errors.Is(err, io.EOF) { lspExit() } else { s.sendError(req.ID, err) }`",
+        "internal/lsp/server.go:442-446 — `code := lsproto.ErrInternalError.Code; if errCode := (*lsproto.ErrorCode)(nil); errors.As(err, &errCode) { code = errCode.Code }`，context.Canceled 不是 *lsproto.ErrorCode",
+        "internal/lsp/server.go:320-328 — cancelRequest 通过 pendingReq.cancel() 取消 requestCtx，handler 随后返回的正是 context.Canceled"
+      ],
+      "rule": "LSP-CANCEL-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 取消语义与错误码映射错误。影响评估：客户端把正常取消显示为服务端内部错误，无法按 RequestCancelled 静默处理，日志与用户体验受损。",
+        "suggestion": "[重构思路] 恢复取消分支并统一映射。代码示例：`switch { case errors.Is(err, io.EOF): lspExit(); case errors.Is(err, context.Canceled): s.sendError(req.ID, lsproto.ErrRequestCancelled); default: s.sendError(req.ID, err) }`。",
+        "subcategory": "请求取消语义"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "internal/lsp/server.go",
+      "line": 675,
+      "title": "handler 在 sendResult 前不再检查 ctx.Err()，已取消的请求仍会返回结果",
+      "description": "旧的 registerRequestHandler 在发送结果前有 if ctx.Err() != nil { return ctx.Err() }，重构后该保护消失，各 handler 只要业务函数 err == nil 就直接 sendResult。对已被 $/cancelRequest 取消的请求，服务端仍会发出 response；handleSignatureHelp 完全没有错误判断，handleHover 在 SourceFile 场景返回 (nil, nil) 也照发，可能与取消错误竞争导致客户端重复响应。",
+      "evidence": [
+        "internal/lsp/server.go:671-676 — `hover, err := languageService.ProvideHover(...)`；`if err != nil { return err }`；`s.sendResult(req.ID, hover)`，无 ctx.Err() 检查",
+        "internal/lsp/server.go:684-693 — ProvideSignatureHelp 返回值无 error，直接 `s.sendResult(req.ID, signatureHelp)`",
+        "internal/lsp/server.go:728-730、739-741 — ProvideReferences/ProvideImplementations 后直接 sendResult",
+        "diff 删除的旧保护：registerRequestHandler 内 sendResult 之前的 `if ctx.Err() != nil { return ctx.Err() }`",
+        "internal/ls/hover.go:24-27 — node.Kind == ast.KindSourceFile 时返回 (nil, nil)"
+      ],
+      "rule": "LSP-CANCEL-002",
+      "confidence": 0.76,
+      "tips": {
+        "review": "[缺陷类型] 缺少取消后的响应抑制。影响评估：客户端已放弃的请求仍收到 response，既浪费带宽又可能与取消错误竞争，导致编辑器出现重复响应/意外状态。",
+        "suggestion": "[重构思路] 在发送入口统一做取消检查，或抽出 sendResultIfNotCanceled 让所有 handler 复用。代码示例：`func (s *Server) sendResultIfNotCanceled(ctx context.Context, id *lsproto.ID, res any) { if ctx.Err() != nil { return }; s.sendResult(id, res) }`。",
+        "subcategory": "请求取消语义"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P2",
+      "category": "性能",
+      "file": "internal/lsp/server.go",
+      "line": 728,
+      "title": "find-all-references / go-to-implementation 丢失 ctx，长耗时计算无法响应取消",
+      "description": "ProvideReferences 与 ProvideImplementations 在本次重构中去掉 ctx 参数，只返回位置切片且没有 error 通道，内部直接调用 getProgramAndFile / getReferencedSymbolsForNode 做全工程符号搜索。这两个最易耗时的请求因此完全无法感知 requestCtx 取消，客户端取消后服务端仍继续占满 CPU 并最终把结果发回。",
+      "evidence": [
+        "internal/ls/findallreferences.go:399 — `func (l *LanguageService) ProvideReferences(params *lsproto.ReferenceParams) []*lsproto.Location`（无 ctx、无 error）",
+        "internal/ls/findallreferences.go:412 — `func (l *LanguageService) ProvideImplementations(params *lsproto.ImplementationParams) []*lsproto.Location`（无 ctx、无 error）",
+        "internal/lsp/server.go:728、739 — `locations := languageService.ProvideReferences(params)` / `ProvideImplementations(params)` 后直接 `s.sendResult(req.ID, locations)`",
+        "对照 internal/ls/diagnostics.go:13 仍保留 `GetDocumentDiagnostics(ctx context.Context, ...)`，说明取消链在其它入口存在、此处被断开"
+      ],
+      "rule": "PERF-CANCEL-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 取消能力缺失导致的资源浪费。影响评估：取消后的重计算继续占用 CPU/内存，大仓库上频繁触发引用查找会明显卡顿，并拖慢同一 checker pool 上的其它请求。",
+        "suggestion": "[重构思路] 恢复 ctx 并在符号搜索循环中周期性检查取消，server 侧保留取消映射。代码示例：`func (l *LanguageService) ProvideReferences(ctx context.Context, params *lsproto.ReferenceParams) ([]*lsproto.Location, error) { if err := ctx.Err(); err != nil { return nil, err }; ... }`。",
+        "subcategory": "取消传播"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "internal/lsp/server.go",
+      "line": 857,
+      "title": "handleDocumentSymbol 中把文档符号结果命名为 hover，属复制粘贴残留",
+      "description": "该 handler 由其它 handler 复制而来，局部变量仍叫 hover，并在 861 行被 sendResult 发出。命名与实际语义（document symbols）不符，读者需额外推理才能确认没有串错 handler，也降低后续改动的安全性。",
+      "evidence": [
+        "internal/lsp/server.go:857 — `hover, err := languageService.ProvideDocumentSymbols(ctx, params.TextDocument.Uri)`",
+        "internal/lsp/server.go:861 — `s.sendResult(req.ID, hover)`",
+        "internal/lsp/server.go:671 — handleHover 中同名变量 `hover, err := languageService.ProvideHover(...)`，可确认复制来源"
+      ],
+      "rule": "READABILITY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 变量命名与语义不符（复制粘贴残留）。影响评估：阅读成本上升、易误判为逻辑错误，为后续重构埋下误改风险。",
+        "suggestion": "[重构思路] 局部变量改为 symbols，与 ProvideDocumentSymbols 语义一致。代码示例：`symbols, err := languageService.ProvideDocumentSymbols(ctx, params.TextDocument.Uri); if err != nil { return err }; s.sendResult(req.ID, symbols)`。",
+        "subcategory": "命名与语义一致性"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "package.json",
+      "line": 12,
+      "title": "dprint 依赖从 ^0.50.1 降级为 ^0.50.0，与本 MR 主题无关且未说明原因",
+      "description": "本 MR 主体是 LSP 分发与 JSDoc 重解析重构，却同时把 dprint 回退一个小版本，并伴随 .dprint.jsonc 改动。版本回退会改变格式化插件行为，可能与已提交的格式化结果（尤其重新生成的 lsp_generated.go）产生新 diff，也会造成 CI 与本地开发者的格式化版本漂移。",
+      "evidence": [
+        "package.json diff — `-        \"dprint\": \"^0.50.1\",` / `+        \"dprint\": \"^0.50.0\",`",
+        "同文件 diff 新增脚本 `\"makemanual\": \"node --experimental-strip-types --no-warnings internal/fourslash/_scripts/makeManual.mts\"`",
+        "变更文件清单包含 `.dprint.jsonc (+1/-1)`，与 dprint 版本改动同时出现"
+      ],
+      "rule": "MAINTAIN-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 无关依赖版本回退。影响评估：格式化结果可能与既有代码不一致，CI 与本地工具版本漂移，产生无意义 diff 噪音。",
+        "suggestion": "[重构思路] 若为临时规避，请在 MR 描述注明原因与恢复计划；否则回退该改动或拆成独立 MR。代码示例：`\"dprint\": \"^0.50.1\",`。",
+        "subcategory": "依赖版本管理"
+      }
+    }
+  ]
+}

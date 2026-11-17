@@ -1,0 +1,836 @@
+[
+  {
+    "filePath": "authz/policy/common/src/main/java/org/keycloak/authorization/policy/provider/role/RolePolicyProvider.java",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "List<RoleModel> subjectRoles = subject.getRoleMappingsStream().toList();",
+        "review": "[缺陷类型] 角色集合来源被削弱导致的授权判定遗漏（组角色、组合角色未纳入）。影响评估：依赖组映射或组合角色获得 admin 权限的账号会突然失去对应权限，属权限判定回归；也可能反向造成策略缓存/策略查找结果不一致。",
+        "suggestion": "[重构思路] 恢复使用 RoleUtils.getDeepUserRoleMappings，或在改为流式 API 时显式补齐组角色与组合角色展开。代码示例：`Set<RoleModel> subjectRoles = RoleUtils.getDeepUserRoleMappings(subject); List<String> roleIds = subjectRoles.stream().map(RoleModel::getId).toList();`",
+        "category": "安全",
+        "subcategory": "授权策略角色查找",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 141,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "crypto/default/src/main/java/org/keycloak/crypto/hash/Argon2PasswordHashProviderFactory.java",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "private Semaphore cpuCoreSempahore;",
+        "review": "[缺陷类型] 标识符拼写错误。影响评估：不影响运行，但破坏命名一致性，后续按正确拼写检索/重命名会难以定位。",
+        "suggestion": "[重构思路] 改回正确拼写，全文件同步替换。代码示例：`private Semaphore cpuCoreSemaphore;`",
+        "category": "可读性",
+        "subcategory": "命名规范",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 33,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "type = config.get(VERSION_KEY, Argon2Parameters.DEFAULT_TYPE);",
+        "review": "[缺陷类型] 配置键误用（复制粘贴错误）。影响评估：argon2 的 type 参数被静默忽略，管理员通过 --spi-password-hash-argon2-type 设置的值不生效，且实际 type 变成 version 字符串，可能导致哈希/校验使用非预期算法变体。",
+        "suggestion": "[重构思路] 改为读取 TYPE_KEY，并补充一个覆盖 type 生效的配置解析测试。代码示例：`type = config.get(TYPE_KEY, Argon2Parameters.DEFAULT_TYPE);`",
+        "category": "可靠性",
+        "subcategory": "配置键映射错误",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 50,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": ".name(TYPE_KEY)",
+        "review": "[缺陷类型] ProviderConfigProperty 名称写错导致元数据重复/缺失。影响评估：配置项在管理界面与文档中展示错误，hashLength 不可被发现或无法被校验，属可维护性与可用性缺陷。",
+        "suggestion": "[重构思路] 恢复 HASH_LENGTH_KEY，并检查元数据项与 init() 读取的 key 一一对应。代码示例：`builder.property().name(HASH_LENGTH_KEY).type(\"int\").helpText(\"Hash length\").defaultValue(Argon2Parameters.DEFAULT_HASH_LENGTH).add();`",
+        "category": "可维护",
+        "subcategory": "Provider 配置元数据",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 92,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "federation/ldap/src/main/java/org/keycloak/storage/ldap/mappers/msad/MSADUserAccountControlStorageMapper.java",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "String userAccountControl = ldapUser.getAttributeAsString(LDAPConstants.USER_ACCOUNT_CONTROL);",
+        "review": "[缺陷类型] 被删除的空值保护导致空指针解引用。影响评估：LDAP 用户被并发删除或查询无结果时，MSAD mapper 的用户启用状态/必需动作判定会抛 NPE，表现为登录或管理操作 500。",
+        "suggestion": "[重构思路] 恢复空值保护，或在调用点判空后返回 UserAccountControl 的空实例。代码示例：`private final Function<LDAPObject, UserAccountControl> GET_USER_ACCOUNT_CONTROL = ldapUser -> ldapUser == null ? UserAccountControl.of(null) : UserAccountControl.of(ldapUser.getAttributeAsString(LDAPConstants.USER_ACCOUNT_CONTROL));`",
+        "category": "可靠性",
+        "subcategory": "空指针安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 68,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "federation/ldap/src/main/java/org/keycloak/storage/ldap/idm/store/ldap/LDAPIdentityStore.java",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "for (Map.Entry<String, Set<String>> attrEntry : ldapObject.getAttributes().entrySet()) {",
+        "review": "[缺陷类型] 只读/操作属性写回保护缺失。影响评估：非 AD 的 LDAP 目录下更新用户（改属性、改密码流程）可能因写入 pwdChangedTime 而被服务器拒绝，表现为用户更新失败。",
+        "suggestion": "[重构思路] 恢复更新场景下的只读标记，并只对非 AD 配置生效（AD 使用 pwdLastSet 且有单独处理）。代码示例：`if (!isCreate && !getConfig().isActiveDirectory()) { ldapObject.addReadOnlyAttributeName(LDAPConstants.PWD_CHANGED_TIME); }`",
+        "category": "可靠性",
+        "subcategory": "LDAP 属性写回",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 527,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/snyk-analysis.yml",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "- uses: snyk/actions/setup@master",
+        "review": "[缺陷类型] CI 依赖未固定版本（unpinned action / 可变分支引用）叠加版本降级。影响评估：构建与扫描结果不可复现，存在被上游 tag 重写或仓库接管从而在 CI 中执行任意代码的风险，并且安全扫描器降级会漏报新规则覆盖的漏洞。",
+        "suggestion": "[重构思路] 全部恢复为 commit SHA 固定引用（保留版本注释），并用 Dependabot/Renovate 管理升级；禁止 @master 之类分支引用。代码示例：`uses: snyk/actions/setup@cdb760004ba9ea4d525f2e043745dfe85bb9077e # master`、`uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # 0.31.0`",
+        "category": "安全",
+        "subcategory": "CI 供应链完整性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 29,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/actions/maven-cache/action.yml",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "mkdir -p ../../../.m2/repository",
+        "review": "[缺陷类型] Windows 平台路径与软链逻辑不完整。影响评估：Windows 构建缓存命中率下降或步骤直接报错，CI 时长与网络依赖显著增加，属可移植性/稳定性缺陷。",
+        "suggestion": "[重构思路] 恢复创建 D:\\.m2\\repository 与 $PWD 侧软链，或改用一致的路径写法并在失败时给出明确诊断；注意该步骤 shell 为 powershell，mkdir -p 的 -p 参数并不被支持。代码示例：`New-Item -ItemType Directory -Force -Path D:\\.m2\\repository | Out-Null; cmd /c mklink /d $HOME\\.m2\\repository D:\\.m2\\repository; cmd /c mklink /d $PWD\\..\\..\\..\\.m2\\repository D:\\.m2\\repository`",
+        "category": "可移植",
+        "subcategory": "Windows CI 路径",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 42,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/label.yml",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "echo \"**Label:** [$LABEL](https://github.com/$GITHUB_REPOSITORY/labels/$LABEL\" >> $GITHUB_STEP_SUMMARY",
+        "review": "[缺陷类型] Markdown 语法不完整。影响评估：Step Summary 中该行渲染异常，维护者无法直接跳转到标签页，属可读性/可用性小缺陷。",
+        "suggestion": "[重构思路] 补回右括号。代码示例：`echo \"**Label:** [$LABEL](https://github.com/$GITHUB_REPOSITORY/labels/$LABEL)\" >> $GITHUB_STEP_SUMMARY`",
+        "category": "可维护",
+        "subcategory": "CI 输出格式",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 44,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/account-ui/maven-resources-community/theme/keycloak.v3/account/messages/messages_el.properties",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "error-invalid-length=Το χαρακτηριστικό {[0}} πρέπει να έχει μήκος μεταξύ {{1}} και {{2}}.",
+        "review": "[缺陷类型] i18next 插值占位符损坏。影响评估：希腊语界面出现原始占位符文本，用户无法看到具体字段名，属用户可见的国际化回归。",
+        "suggestion": "[重构思路] 恢复为 {{0}}，并在主题校验中覆盖社区资源目录（misc/theme-verifier 已具备占位符检查能力）。代码示例：`error-invalid-length=Το χαρακτηριστικό {{0}} πρέπει να έχει μήκος μεταξύ {{1}} και {{2}}.`",
+        "category": "可维护",
+        "subcategory": "国际化资源损坏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 96,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/account-ui/maven-resources-community/theme/keycloak.v3/account/messages/messages_ja.properties",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "error-invalid-length-too-short=「{{0}}」の長さは{{1}以上でなければなりません。",
+        "review": "[缺陷类型] i18next 插值与富文本标签占位符损坏。影响评估：日语界面出现半截占位符（如 {{1}），数字与用户名无法显示，共享资源的富文本语句可能渲染异常。",
+        "suggestion": "[重构思路] 恢复花括号成对闭合，并建议为 maven-resources-community 下的 messages 增加占位符配对校验。代码示例：`error-invalid-length-too-short=「{{0}}」の長さは{{1}}以上でなければなりません。` / `resourceSharedWith_other=リソースは <0>{{username}}</0>と<1>{{other}}</1>人のユーザーと共有されています。`",
+        "category": "可维护",
+        "subcategory": "国际化资源损坏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 68,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/account-ui/maven-resources-community/theme/keycloak.v3/account/messages/messages_ru.properties",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "unknownUser=Anonymous",
+        "review": "[缺陷类型] 翻译回退与资源文件格式噪声。影响评估：俄语用户看到英文文案，文本尾部出现异常空白，降低本地化质量并可能被主题校验规则判为不规范。",
+        "suggestion": "[重构思路] 恢复俄语译文，去掉无意引入的行尾空格；\\: 转义仅在 MessageFormat 校验要求时保留，并统一处理。代码示例：`unknownUser=Анонимный`、`shareWith=Поделитесь с`",
+        "category": "可维护",
+        "subcategory": "翻译质量",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 99,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/account-ui/package.json",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "\"i18next\": \"^25.2.0\",",
+        "review": "[缺陷类型] 依赖版本回退与锁文件一致性风险。影响评估：pnpm frozen-lockfile 安装失败导致 js CI 直接红，或构建产物使用未经测试的旧版本依赖。",
+        "suggestion": "[重构思路] 明确是否要回退依赖；如需回退，请在同一 MR 中更新 pnpm-lock.yaml，并保证同一依赖在 workspace 内版本声明一致；否则恢复原有版本。代码示例：`\"i18next\": \"^25.2.1\", \"react-hook-form\": \"^7.57.0\", \"react-i18next\": \"^15.5.2\"`",
+        "category": "可维护",
+        "subcategory": "依赖版本一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 33,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "docs/documentation/server_development/topics/themes-react.adoc",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "You can set it up as described on their [website](https://react.i18next.com/).",
+        "review": "[缺陷类型] 文档标记语法错误（Markdown 混入 AsciiDoc）。影响评估：发布后的开发者文档出现不可点击的链接与多余括号，影响可读性与手册质量。",
+        "suggestion": "[重构思路] 恢复 AsciiDoc 链接语法，或使用 xref/external link 宏。代码示例：`You can set it up as described on their https://react.i18next.com/[website].`",
+        "category": "可维护",
+        "subcategory": "文档标记语法",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 44,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_ja.properties",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "manageServiceAccountUser=詳細とグループのマッピングを管理するには、ユーザー名 <1>{{link}></1> をクリックします。",
+        "review": "[缺陷类型] i18n 插值占位符语法被破坏（命名占位符拼写错误）。影响评估：日语环境下服务账号页面显示 `{{link}></1>` 等原始标记，管理员的引导链接与文案同时失效，属于可见的界面缺陷，且因为校验器只检查数字占位符而不会被 CI 发现。",
+        "suggestion": "[重构思路] 恢复为标准双花括号命名占位符，并保证占位符名与代码中 values 的键完全一致；建议在提交前用 `grep -n '{{[^}]*}[^}]' messages_*.properties` 之类的方式自查残缺占位符。代码示例：`manageServiceAccountUser=詳細とグループのマッピングを管理するには、ユーザー名 <1>{{link}}</1> をクリックします。`",
+        "category": "可靠性",
+        "subcategory": "i18n 占位符损坏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1817,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F017",
+        "code": "permissionsListIntro=スコープ名をクリックしてパーミッションのリストを編集します。すると、<1>{{realm}></1>というクライアントのパーミッションの詳細ページにリダイレクトされます。",
+        "review": "[缺陷类型] 命名占位符花括号配对错误（`{{x}>`、`{ x }}`）。影响评估：日语环境权限（Permissions）页面与资源类型说明出现裸占位符，用户无法得知实际 realm 名与资源类型，属于可见的界面回归，且同样绕过 CI 校验。",
+        "suggestion": "[重构思路] 统一恢复为 `{{realm}}` 与 `{{resourceType}}`（不带多余空格或尖括号），并核对与代码调用处的变量键一致；可在 theme-verifier 中增加命名占位符配对校验。代码示例：`permissionsListIntro=... すると、<1>{{realm}}</1> というクライアント ...`；`resourceTypeHelpText=このパーミッションで許可する{{resourceType}}を指定します。...`",
+        "category": "可靠性",
+        "subcategory": "i18n 占位符损坏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2472,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_de.properties",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "deleteConfirmUsers_other={{count} Benutzer löschen?",
+        "review": "[缺陷类型] 复数消息中的命名占位符括号缺失。影响评估：德语环境用户批量删除确认弹窗显示裸 `{{count}`，数量信息丢失，降低破坏性操作的可辨识度，属于用户可见的功能性文案缺陷。",
+        "suggestion": "[重构思路] 补回缺失的右花括号，并检查同一文件中其它 `_one`/`_other` 复数键的占位符是否完整。代码示例：`deleteConfirmUsers_other={{count}} Benutzer löschen?`",
+        "category": "可靠性",
+        "subcategory": "i18n 占位符损坏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1103,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F019",
+        "code": "updateCredentialUserLabelError=Fehler bei der Änderung der Bezeichnung: {{error}}",
+        "review": "[缺陷类型] 本地化文件尾部成批丢失键，导致回退英文。影响评估：德语环境中 SAML/客户端高级设置等页面出现英文标签，与其它已翻译字段混杂；若属导出截断，下次同步还可能继续丢失。",
+        "suggestion": "[重构思路] 与英文基线做键集合 diff，恢复被误删且仍被引用的键，并把“键集合一致性”纳入 CI 校验。代码示例：`comm -23 <(grep -o '^[^#=]*' messages_en.properties | sort) <(grep -o '^[^#=]*' messages_de.properties | sort)` 生成缺失键清单。",
+        "category": "可维护",
+        "subcategory": "本地化键缺失",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1333,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_pt_BR.properties",
+    "reviewTips": [
+      {
+        "id": "F020",
+        "code": "browserFlowHelp=Select the flow you want to use for browser authentication.",
+        "review": "[缺陷类型] 本地化翻译被英文原文覆盖（翻译回退）。影响评估：pt_BR 管理控制台出现中英混杂文案，用户体验与一致性下降；若这些改动来自同步脚本/翻译平台导出，也可能在其他语言上重复发生。",
+        "suggestion": "[重构思路] 确认这批改动是否为翻译平台导出覆盖所致；如是，应在导出前保留既有译文，或对回退条目回滚，仅保留真正新增/修正的翻译。代码示例：`browserFlowHelp=Selecione o fluxo que deseja usar para autenticação via navegador.`",
+        "category": "可维护",
+        "subcategory": "本地化翻译回退",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 131,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F021",
+        "code": "webOrigins=Permitir origens CORS. Para permitir todas as URIs de redirecionamento de origem válidas adicionar '+'. Para permitir todas as origens adicionar '*'.",
+        "review": "[缺陷类型] 消息键语义错位：把 *Help 键的正文写入了标签键。影响评估：客户端（Client）设置页的 Origins 标签变成一段冗长的 CORS 说明，破坏表单布局与可读性，管理员难以快速定位字段。",
+        "suggestion": "[重构思路] 恢复 `webOrigins` 的短标签，并把这段说明保留在 `webOriginsHelp` 键上；提交前核对每个 *Help 键的正文没有被误挪到标签键。代码示例：`webOrigins=Origens Web` 与 `webOriginsHelp=Origens CORS permitidas. Para permitir todas as origens das URIs de redirecionamento válidas adicione '+'. Para permitir todas as origens adicione '*'.`",
+        "category": "可读性",
+        "subcategory": "消息键语义错位",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 133,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F022",
+        "code": "sync-ldap-roles-to-keycloak=Sincronizar regras LDAP para o Keycloak",
+        "review": "[缺陷类型] 关键领域词（role）误译为无关词（regras/规则）。影响评估：LDAP 用户联邦配置页的操作按钮含义被扭曲，管理员可能误判同步动作的作用，属于配置类界面上的误导性文案。",
+        "suggestion": "[重构思路] 恢复为 roles 的正确译法；建议对 role/roles 建立统一术语表，避免同一批次中再次出现 papéis/regras 混用。代码示例：`sync-ldap-roles-to-keycloak=Sincronizar papéis do LDAP para o Keycloak`",
+        "category": "可读性",
+        "subcategory": "领域术语误译",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 525,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_ca.properties",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "prompts.login=login",
+        "review": "[缺陷类型] 译文被英文单词替换，导致语言混杂与大小写不规范。影响评估：ca 语言环境下登录页与提示标签显示英文 “login”，破坏本地化一致性；两个键值相同也丢失了 “提示语” 与 “动作标签” 的语义区分。",
+        "suggestion": "[重构思路] 恢复加泰罗尼亚语译文，并按 UI 场景区分大小写与词性。代码示例：`prompts.login=Inici de sessió`；`login=Inicia la sessió`",
+        "category": "可读性",
+        "subcategory": "译文语言混杂",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 79,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "misc/theme-verifier/src/main/java/org/keycloak/themeverifier/VerifyMessageProperties.java",
+    "reviewTips": [
+      {
+        "id": "F024",
+        "code": "verifyNotMessageFormatPlaceholders();",
+        "review": "[缺陷类型] 删除静态校验规则（质量门禁回退）。影响评估：i18n 花括号错误将无法在 CI 阶段发现，只能在 UI 上暴露为渲染异常文本；结合本 MR 自身对多个 messages 文件的大规模改写，回归窗口明显扩大。",
+        "suggestion": "[重构思路] 若删除是因为正则误报，应把校验改为更精确的实现（如校验 a) `{{` 与 `}}` 数量配对、b) 占位符名称匹配 `[A-Za-z0-9_.]+`），而不是整段移除；并为该校验补充最小用例。代码示例：\n```java\nprivate static final Pattern BROKEN = Pattern.compile(\"\\\\{\\\\{(?![-\\\\s]*[A-Za-z0-9_.]+\\\\s*-?\\\\}\\\\})\");\nif (BROKEN.matcher(value).find() || countOf(value, \"{{\") != countOf(value, \"}}\")) {\n    messages.add(\"Unbalanced curly braces in key '\" + key + \"': \" + value);\n}\n```",
+        "category": "可测试性",
+        "subcategory": "构建期校验缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 59,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F025",
+        "code": "private static final Pattern DOUBLE_CURLY_BRACES_START = Pattern.compile(\"\\\\{\\\\{[0-9]\");",
+        "review": "[缺陷类型] 静态校验规则覆盖不足（只处理数字占位符）。影响评估：命名占位符（{{name}}/{{count}}/{{link}}）的错误拼写可持续合入并在多语言环境下产生裸占位符文案，评审只能靠人工逐行比对。",
+        "suggestion": "[重构思路] 把校验扩展为“花括号配对 + 占位符名与英文基线一致”的检查：对每个值提取 `\\{\\{\\s*([A-Za-z0-9_.]+)\\s*}}` 与残缺模式 `\\{\\{[^}]*}?[^}]`，并与 messages_en.properties 中同名键的占位符集合比对。代码示例：`Pattern P = Pattern.compile(\"\\\\{\\\\{\\\\s*([\\\\w.]+)\\\\s*}}\");` 收集英文键占位符集合后 `if (!englishPlaceholders.equals(valuePlaceholders)) messages.add(\"Placeholder mismatch in '\" + key + \"'\");`",
+        "category": "可测试性",
+        "subcategory": "i18n 校验覆盖缺口",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 101,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/src/user-federation/shared/ExtendedHeader.tsx",
+    "reviewTips": [
+      {
+        "id": "F026",
+        "code": "removeImportedUsers();",
+        "review": "[缺陷类型] 遗漏 await 导致的异常吞没 + 重复成功提示。影响评估：远端删除失败时用户仍会看到「删除成功」提示（内部 catch 会 addError，但外层又立即 addAlert 成功），错误信息与成功信息同时出现，误导管理员；且错误处理路径不可靠。",
+        "suggestion": "[重构思路] 让 onConfirm 直接委托给已完成错误处理的 removeImportedUsers，并 await 它，删除外层重复的提示与 catch。代码示例：\n```tsx\nconst [toggleRemoveUsersDialog, RemoveUsersConfirm] = useConfirmDialog({\n  titleKey: t(\"removeImportedUsers\"),\n  messageKey: t(\"removeImportedUsersMessage\"),\n  continueButtonLabel: \"remove\",\n  onConfirm: removeImportedUsers, // 已有 try/catch/await，内部只提示一次\n});\n```",
+        "category": "可靠性",
+        "subcategory": "异步流程与错误处理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 49,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/src/components/dropdown-panel/dropdown-panel.css",
+    "reviewTips": [
+      {
+        "id": "F027",
+        "code": ".kc-dropdown-panel-content {",
+        "review": "[缺陷类型] CSS 作用域收窄导致的选择器语义变化。影响评估：系统深色偏好 + 应用浅色主题的组合下（常见于 macOS/Windows 深色系统但使用浅色 Keycloak 的控制台），下拉面板背景色与周边浅色卡片不一致，影响可读性。",
+        "suggestion": "[重构思路] 恢复父选择器作用域，确保仅在应用显式启用深色时生效；如需支持系统偏好，也应同时保留 `.pf-v5-theme-dark` 前缀。代码示例：\n```css\n@media (prefers-color-scheme: dark) {\n  .pf-v5-theme-dark .kc-dropdown-panel-content {\n    background-color: var(--pf-v5-global--BackgroundColor--300);\n  }\n}\n```",
+        "category": "可靠性",
+        "subcategory": "主题与样式作用域",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 40,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/src/realm-settings/localization/LocalizationTab.tsx",
+    "reviewTips": [
+      {
+        "id": "F028",
+        "code": "controller={{",
+        "review": "[缺陷类型] 表单校验规则回退 + 持久化非法配置。影响评估：可保存非法的 locale 集合或与 supportedLocales 不一致的 defaultLocale，属于写入 Realm 配置的持久性错误，排查成本高（需手工编辑 realm 配置修复）。",
+        "suggestion": "[重构思路] 恢复服务端可接受的取值约束（supportedLocales 必须是 allLocales 子集；defaultLocale ∈ supportedLocales），并把提示文案恢复为可选键；若确认产品要求放宽约束，至少应在 save 前做一次运行时归一化。代码示例：\n```tsx\ncontroller={{\n  defaultValue: defaultSupportedLocales,\n  rules: {\n    required: t(\"required\"),\n    validate: (value: string[]) =>\n      value.every((v) => allLocales.includes(v)) || t(\"invalidLocale\"),\n  },\n}}\n```",
+        "category": "可靠性",
+        "subcategory": "表单校验缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 101,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/src/components/users/UserDataTable.tsx",
+    "reviewTips": [
+      {
+        "id": "F029",
+        "code": "exact: false,",
+        "review": "[缺陷类型] 默认搜索语义变更（精确 → 模糊）。影响评估：管理员按完整用户名查找时可能得到多条前缀/子串匹配结果，属用户可感知的行为变化；若后端 `exact` 缺省值与前端假设不一致，前后端对同一请求的解释还会进一步分歧。",
+        "suggestion": "[重构思路] 明确产品期望的默认语义，并保证前端始终显式表达该参数，避免依赖后端缺省；若确需改为模糊匹配，应在发布说明中记录该行为变更并补充对应 e2e 断言。代码示例：\n```ts\ntype UserFilter = { exact: boolean; userAttribute: UserAttribute[] };\nconst params = { ...base, exact: activeFilters.exact ? \"true\" : \"false\" };\n```",
+        "category": "可靠性",
+        "subcategory": "搜索行为变更",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 129,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/maven-resources/theme/keycloak.v2/admin/messages/messages_en.properties",
+    "reviewTips": [
+      {
+        "id": "F030",
+        "code": "userInitiatedActionLifespanHelp=Maximum time before an action permit sent by a user (such as a forgot password e-mail) is expired. This value is recommended to be short because it is expected that the user would react to a self-created action quickly.",
+        "review": "[缺陷类型] 文案重复单词。影响评估：帮助提示直接面向管理员展示，属于低级但可见的文案错误，且会被各语言翻译同步放大。",
+        "suggestion": "[重构思路] 修正为原文案，并在文案改动上增加人工复核或拼写检查。代码示例：\n```properties\npermissionPoliciesHelp=Specifies all the policies that must be applied to the permission.\n```",
+        "category": "可读性",
+        "subcategory": "文案错误",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 88,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_ru.properties",
+    "reviewTips": [
+      {
+        "id": "F032",
+        "code": "createPolicy=Создать политику",
+        "review": "[缺陷类型] properties 转义层级错误。影响评估：帮助文案中会出现多余反斜杠（如 `Например\\: ${my_client}`），属可见的本地化质量问题；同时把示例文案中的 'Мой клиент' 改成英文 'My Client'，与俄语本地化语境不一致。",
+        "suggestion": "[重构思路] 统一只做一层必要转义（值中的冒号在 .properties 中无需转义），保留俄语示例并复核结尾标点。代码示例：\n```properties\nclientNameHelp=Задает отображаемое название клиента. Например 'Мой клиент'. Поддерживает ключи для локализованных значений. Например: ${my_client}\n```",
+        "category": "可读性",
+        "subcategory": "本地化转义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 521,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "services/src/main/java/org/keycloak/services/clientpolicy/executor/AuthenticationFlowSelectorExecutorFactory.java",
+    "reviewTips": [
+      {
+        "id": "F035",
+        "code": "AUTH_FLOW_ALIAS, \"Auth Flow Loa\", \"Insert the loa to enforce when the selected authentication flow is executed\",",
+        "review": "[缺陷类型] 配置项名称冲突（copy/paste 缺陷）导致策略参数丢失。影响评估：客户端策略 auth-flow-enforcer 的 LOA 配置无法持久化，LOA 强制逻辑永久不生效，且管理端出现两个同名输入框，运维无法察觉策略已失效；同时本 MR 删除了 public 常量 AUTH_FLOW_LOA（全仓已无引用），外部扩展若引用会编译失败。",
+        "suggestion": "[重构思路] 恢复 AUTH_FLOW_LOA 常量并作为第二个 ProviderConfigProperty 的 name，保证与执行器 Configuration 的 @JsonProperty 键一致；建议为这类枚举式配置项补一条「ProviderConfigProperty.name 必须与 Configuration @JsonProperty 一致」的单元校验。代码示例：`public static final String AUTH_FLOW_LOA = \"auth-flow-loa\";` 以及 `new ProviderConfigProperty(AUTH_FLOW_LOA, \"Auth Flow Loa\", \"...\", ProviderConfigProperty.INTEGER_TYPE, 1);`",
+        "category": "安全",
+        "subcategory": "配置项键冲突",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 43,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "services/src/main/java/org/keycloak/services/resources/admin/ClientScopeResource.java",
+    "reviewTips": [
+      {
+        "id": "F036",
+        "code": "if(protocol==null || (!protocol.equals(\"openid-connect\") && !protocol.equals(\"saml\"))) throw ErrorResponse.error(\"Unexpected protocol\",Response.Status.BAD_REQUEST);",
+        "review": "[缺陷类型] 校验逻辑由可扩展白名单退化为硬编码白名单，功能回归。影响评估：启用 OID4VC 特性时，通过 Admin REST 创建 protocol=oid4vc 的 client scope 会返回 400；自定义 LoginProtocol 扩展同样无法再创建对应 scope，属于对扩展点的破坏性变更。",
+        "suggestion": "[重构思路] 保留基于 SPI 的协议白名单，并把「UI 不可见但仍允许创建」的协议显式列入豁免集合；同时顺带修复该方法丢失的 session 参数与压缩成 `)throws{` 的排版。代码示例：`Set<String> accepted = sessionFactory.getProviderFactoriesStream(LoginProtocol.class).map(LoginProtocolFactory.class::cast).map(LoginProtocolFactory::getId).collect(Collectors.toSet()); accepted.add(OID4VCLoginProtocolFactory.PROTOCOL_ID); if (protocol == null || !accepted.contains(protocol)) throw ErrorResponse.error(\"Unexpected protocol\", Response.Status.BAD_REQUEST);`",
+        "category": "可靠性",
+        "subcategory": "协议白名单收窄",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 234,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "services/src/main/java/org/keycloak/services/resources/admin/RealmsAdminResource.java",
+    "reviewTips": [
+      {
+        "id": "F037",
+        "code": "} catch (ModelException e) {",
+        "review": "[缺陷类型] 异常分支被合并导致的 HTTP 语义回归。影响评估：realm 重名导入从 409 Conflict 变为 400 Bad Request，客户端无法区分「冲突」与「请求非法」；乐观锁/数据已被删除类的 ModelIllegalStateException 也从 500 变为 400，掩盖服务端问题且丢失日志。",
+        "suggestion": "[重构思路] 若确需简化，应按 HTTP 语义重新分层捕获：重复冲突 → 409（ErrorResponse.exists），状态非法 → 500 并记录日志，其余 ModelException → 400；若确实要统一，则同步更新 @APIResponses 与升级说明。代码示例：`} catch (ModelDuplicateException mde) { throw ErrorResponse.exists(mde.getMessage()); } catch (ModelIllegalStateException mise) { logger.error(mise.getMessage(), mise); throw ErrorResponse.error(mise.getMessage(), Response.Status.INTERNAL_SERVER_ERROR); } catch (ModelException e) { throw ErrorResponse.error(e.getMessage(), Response.Status.BAD_REQUEST); }`",
+        "category": "可靠性",
+        "subcategory": "HTTP 状态码契约",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 179,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "services/src/main/java/org/keycloak/services/DefaultKeycloakTransactionManager.java",
+    "reviewTips": [
+      {
+        "id": "F038",
+        "code": "",
+        "review": "[缺陷类型] 可观测性退化（聚合 span 丢失）。影响评估：生产环境排查事务提交失败时，无法按一次 commit 聚合查看 prepare/主事务/afterCompletion 的耗时与失败点，只剩零散的单事务 span；若 TracingProvider 实现依赖 span 的父子关系做链路串联，还会出现链路断裂。",
+        "suggestion": "[重构思路] 若性能上需要避免嵌套 lambda，可保留聚合 span 但改成显式 begin/end，或把「提交事务集合」的逻辑抽成独立方法再整体包进 trace，保证聚合 span 与单事务 span 的层次一致。代码示例：`tracing.trace(DefaultKeycloakTransactionManager.class, \"commit\", span -> { commitInternal(tracing); });` 其中 commitInternal 承载现有的 prepare/transactions/afterCompletion 逻辑。",
+        "category": "可维护",
+        "subcategory": "链路追踪覆盖",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 121,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java",
+    "reviewTips": [
+      {
+        "id": "F039",
+        "code": "throw new IllegalArgumentException(\"Node index out of bounds. Requested nodeIndex: %d, cluster size: %d\".formatted(server.clusterSize(), nodeIndex));",
+        "review": "[缺陷类型] 参数顺序错误 + 边界校验不完整。影响评估：集群用例中写错索引时得到自相矛盾的错误信息（如「Requested nodeIndex: 2, cluster size: 5」当请求 5、集群 2），负数索引则抛出与语义无关的 ArrayIndexOutOfBoundsException/NPE，增加用例调试成本。",
+        "suggestion": "[重构思路] 补齐上下界校验并使用一致的实参顺序，必要时把序号范围写进异常消息。代码示例：`if (nodeIndex < 0 || nodeIndex >= server.clusterSize()) { throw new IllegalArgumentException(\"Node index out of bounds. Requested nodeIndex: %d, cluster size: %d\".formatted(nodeIndex, server.clusterSize())); }`",
+        "category": "可测试性",
+        "subcategory": "异常信息与边界校验",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 18,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "test-framework/core/src/main/java/org/keycloak/testframework/database/AbstractContainerTestDatabase.java",
+    "reviewTips": [
+      {
+        "id": "F040",
+        "code": "return url.replace(container.getHost() + \":\" + container.getFirstMappedPort(), ip + \":\" + container.getExposedPorts().get(0));",
+        "review": "[缺陷类型] 基于字符串替换与索引取值的地址推导。影响评估：集群/容器内网场景下 JDBC URL 可能仍指向宿主机映射端口而连不上，或替换出错误端口；失败现象是容器内 server 连库超时，排查成本高。",
+        "suggestion": "[重构思路] 让各数据库子类显式提供容器内 JDBC URL（基于容器 IP + 数据库原生端口常量），或用 URI 解析后按 scheme/host/port 重建，而不是子串替换；网络选择应按容器目标网络名过滤。代码示例：`String ip = container.getContainerInfo().getNetworkSettings().getNetworks().get(networkName).getIpAddress(); URI parsed = URI.create(container.getJdbcUrl()); return new URIBuilder(parsed).setHost(ip).setPort(getInternalPort()).build().toString();`",
+        "category": "可维护",
+        "subcategory": "容器网络地址拼装",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 88,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources-community/theme/base/admin/messages/messages_ca.properties",
+    "reviewTips": [
+      {
+        "id": "F041",
+        "code": "error-invalid-multivalued-size=L’atribut {0} ha de tenir almenys {1} i com a molt {2} {2,choice,0#valors|1#valor|1<1valors}.",
+        "review": "[缺陷类型] 消息资源中的 MessageFormat/ChoiceFormat 语法破坏。影响评估：ca 语种触发多值长度校验时格式化抛 IllegalArgumentException，错误提示无法显示甚至导致页面 500，属用户可见的可靠性缺陷。",
+        "suggestion": "[重构思路] 恢复为三分段的合法 ChoiceFormat，保持与英文源串一致，只翻译子格式文本。代码示例：`error-invalid-multivalued-size=L’atribut {0} ha de tenir almenys {1} i com a molt {2} {2,choice,0#valors|1#valor|1<valors}.`",
+        "category": "可靠性",
+        "subcategory": "消息占位符/ChoiceFormat 语法",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 65,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources/theme/keycloak.v2/login/delete-credential.ftl",
+    "reviewTips": [
+      {
+        "id": "F042",
+        "code": "</form",
+        "review": "[缺陷类型] FreeMarker 模板中 HTML 标签未闭合（缺少 `>`）。影响评估：删除凭据确认页渲染异常，后续内容可能被浏览器当作标签属性吞掉，交互按钮/脚本可能失效；此类错误不会被编译期发现。",
+        "suggestion": "[重构思路] 补全闭合标签，并建议在主题构建中加入 HTML 结构校验（如 tidy/HTMLHint）或模板渲染冒烟测试。代码示例：`        </form>`",
+        "category": "可靠性",
+        "subcategory": "模板标签闭合",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 19,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources-community/theme/base/login/messages/messages_ja.properties",
+    "reviewTips": [
+      {
+        "id": "F043",
+        "code": "recovery-code-config-warning-title=これらのリカバリーコードは、このページを離れた後に再び表示されます。",
+        "review": "[缺陷类型] 译文语义反转（安全问题相关的强提示）。影响评估：用户被误导而跳过保存恢复码，等于削弱账号恢复能力，属于安全相关的可用性缺陷。",
+        "suggestion": "[重构思路] 恢复为否定语义，并与 :479 的提示保持一致；翻译同步时应将此类安全提示纳入人工复核清单。代码示例：`recovery-code-config-warning-title=これらのリカバリーコードは、このページを離れるともう表示されません`",
+        "category": "安全",
+        "subcategory": "译文语义反转",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 475,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources-community/theme/base/email/messages/messages_ru.properties",
+    "reviewTips": [
+      {
+        "id": "F044",
+        "code": "emailVerificationBody=Кто-то создал учетную запись {2} с этим E-mail. Если это были Вы, нажмите на следующую ссылку для подтверждения вашего email\\n\\n{0}\\n\\nЭта ссылка устареет через {1} минут.\\n\\nЕсли Вы не создавали учетную запись, просто проигнорируйте это письмо.",
+        "review": "[缺陷类型] 译文弃用本地化格式化占位符，改用数字+硬编码单位。影响评估：俄语复数形式错误、内容与 en 源不一致，属质量问题而非崩溃。",
+        "suggestion": "[重构思路] 保留原有的格式化占位符（emailVerification/passwordReset 用 {3}，identityProviderLink 用 {5}），不要硬编码单位。代码示例：`emailVerificationBody=... Эта ссылка устареет через {3}.`",
+        "category": "可维护",
+        "subcategory": "i18n 复数/本地化格式",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F045",
+        "code": "executeActionsBody=Администратор просит Вас обновить данные Вашей учетной записи {2}. Нажмите по следующей ссылке чтобы начать этот процесс.\\n\\n{0}\\n\\nЭта ссылка устареет через {1} минут.\\n\\nЕсли у вас есть подозрения, что администратор не мог сделать такой запрос, просто проигнорируйте это письмо.",
+        "review": "[缺陷类型] 邮件消息占位符索引/参数被误改造成信息丢失。影响评估：管理员触发的「执行动作」邮件不再说明需要做什么，用户需反复试错；时长显示失去本地化复数与单位格式。",
+        "suggestion": "[重构思路] 保持与模板参数顺序一致：恢复 {3}=requiredActionsText 与 {4}=linkExpirationFormatter 的输出；只允许翻译普通文本。代码示例：`executeActionsBody=Администратор просит Вас обновить данные Вашей учетной записи {2}, выполнив следующие действия: {3}. Нажмите по следующей ссылке, чтобы начать этот процесс.\\n\\n{0}\\n\\nЭта ссылка устареет через {4}.`",
+        "category": "可维护",
+        "subcategory": "i18n 占位符索引错用",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 11,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources/theme/base/login/password-commons.ftl",
+    "reviewTips": [
+      {
+        "id": "F046",
+        "code": "<input type=\"checkbox\" id=\"logout-sessions\" name=\"logout-sessions\" value=\"on\" checked>",
+        "review": "[缺陷类型] 未在变更说明中声明的默认值翻转（opt-in → opt-out）。影响评估：改密后其他设备被强制登出，可能造成用户在多设备/移动端被踢下线；若为有意变更应在 release notes 与升级文档说明。",
+        "suggestion": "[重构思路] 若无明确需求，恢复默认不勾选；若确需默认勾选，请在 MR 说明/升级指南中记录并补充 UI 文案。代码示例：`<@field.checkbox name=\"logout-sessions\" label=msg(\"logoutOtherSessions\") value=false />`",
+        "category": "安全",
+        "subcategory": "默认值/行为变更",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 6,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources/theme/base/account/messages/messages_en.properties",
+    "reviewTips": [
+      {
+        "id": "F047",
+        "code": "client_security-admin-console=security admin console",
+        "review": "[缺陷类型] 英文基准文案大小写不一致。影响评估：账户控制台应用名显示为小写，视觉不一致；英文基准文件被改动还会影响所有语言的回退显示。",
+        "suggestion": "[重构思路] 恢复原有 Title Case。代码示例：`client_security-admin-console=Security Admin Console`",
+        "category": "可读性",
+        "subcategory": "文案风格一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 107,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources-community/theme/base/login/messages/messages_pt_BR.properties",
+    "reviewTips": [
+      {
+        "id": "F048",
+        "code": "webauthn-error-registration=Falha ao registrar sua Chave de Segurança.",
+        "review": "[缺陷类型] 译文丢弃占位符 + 引入尾随空格。影响评估：错误提示信息量下降，不利于用户/管理员定位 WebAuthn 失败原因；尾随空格与项目「不用空格对齐」的翻译规范冲突。",
+        "suggestion": "[重构思路] 保留 `{0}` 以展示底层错误；清理行尾空格。代码示例：`webauthn-error-registration=Falha ao registrar sua Chave de Segurança.<br /> {0}`",
+        "category": "可维护",
+        "subcategory": "i18n 占位符丢失/空白",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 331,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources/theme/base/login/login-update-password.ftl",
+    "reviewTips": [
+      {
+        "id": "F049",
+        "code": "<form id=\"kc-passwd-update-form\" class=\"${properties.kcFormClass!}\" action=\"${url.loginAction}\" method=\"post\">",
+        "review": "[缺陷类型] 提交守卫被移除且同主题内不一致。影响评估：若该守卫实际生效，则失去重复提交防护；若不生效则是无意义差异并增加混淆。风险不高但属夹带改动，需要作者确认意图。",
+        "suggestion": "[重构思路] 统一策略：要么全部保留，要么全部移除并改为由模板脚本在 submit 时禁用按钮（避免依赖未定义的全局 `login`）。代码示例：`<form id=\"kc-passwd-update-form\" onsubmit=\"this.querySelectorAll('button,input[type=submit]').forEach(b=>b.disabled=true)\" ...>`",
+        "category": "可靠性",
+        "subcategory": "表单提交守卫一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "themes/src/main/resources/theme/base/login/resources/js/passkeysConditionalAuth.js",
+    "reviewTips": [
+      {
+        "id": "F050",
+        "code": "document.getElementById(\"kc-form-login\").style.display = \"block\";",
+        "review": "[缺陷类型] 共享 JS 与具体模板结构耦合，缺少空值保护。影响评估：主题被覆盖或 realm 未启用密码登录时会静默抛错，passkey 按钮/表单可能不显示，且难以排查。",
+        "suggestion": "[重构思路] 保留回调或做判空，避免在公共脚本里写死模板 id。代码示例：`const el = document.getElementById(\"kc-form-login\"); if (el) { el.style.display = \"block\"; }`",
+        "category": "可维护",
+        "subcategory": "DOM 耦合与空值保护",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 48,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

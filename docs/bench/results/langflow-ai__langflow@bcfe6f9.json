@@ -1,0 +1,202 @@
+{
+  "instance_id": "langflow-ai__langflow@bcfe6f9",
+  "repo": "langflow-ai/langflow",
+  "base_commit": "5bcf4d001f1174ed9e63b7115f10e5dbe1bcca9f",
+  "head_commit": "bcfe6f9ded091cd360b3212b6e9f5a58cbcdac5e",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 287.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 18,
+  "review_output": [
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 28,
+      "summary": "bytes 先按字节切片再 decode，截断长度与语义不一致且可能截断多字节字符",
+      "failure_scenario": "`_serialize_bytes` 用 `obj[:max_length]`（按字节）切片后再 `decode(..., errors=\"ignore\")`，但长度判定用的是字节长度 `len(obj)`；对于含中文等多字节字符的内容，截断后的字符数会明显小于 max_length，且落在字符中间时该字符被 `errors=\"ignore\"` 静默丢弃。这与 `_serialize_str` 的「按字符截断 + 追加 `...`」语义不一致，也与既有测试「先 decode 再按字符切片」的期望不符，产出的长度不可预期。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "SERIALIZATION-002"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 37,
+      "summary": "_serialize_datetime 用 replace 覆写时区，非 UTC 时间被整体平移",
+      "failure_scenario": "_serialize_datetime 通过 obj.replace(tzinfo=timezone.utc) 直接改写 tzinfo，而不是用 astimezone(timezone.utc) 做时区换算。对带 +09:00、-05:00 等偏移的 aware datetime，墙上时间被原样贴上 UTC 标签，实际时刻会偏移数小时；对 naive datetime 则未经声明就假定为 UTC。旧实现走 fastapi 的 jsonable_encoder，对 aware datetime 会保留原始偏移（isoformat 带 offset），因此这是本 MR 引入的行为变更，会影响 tracing 日志、vertex build 记录以及 API 响应中所有 datetime 字段的可信度。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "SERIALIZE-TZ-001"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 37,
+      "summary": "`_serialize_datetime` 用 replace 覆写时区，非 UTC 时间被静默改成错误时刻",
+      "failure_scenario": "`obj.replace(tzinfo=timezone.utc)` 只是把时区标签替换成 UTC，并不做时间换算。对于 tz-aware 且时区不是 UTC 的 datetime（例如来自 +08:00 的日志/数据），序列化结果会保留原墙钟时间却标记为 UTC，实际时刻偏移若干小时；对 naive datetime 的处理与旧 `serialize_field` 的 `value.isoformat()` 也不同（旧实现不附加 UTC 标签）。该函数被 `ResultDataResponse`、`log_vertex_build`、`ResultData` 等全链路复用，时间语义错误会污染 API 响应与落库时间戳。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 62,
+      "summary": "_serialize_pydantic 用 model_dump() 且未排除 None，与旧实现的 exclude_none 行为不一致",
+      "failure_scenario": "新实现统一使用 obj.model_dump() 后再递归序列化，而被替换的旧 Log.serialize_message 使用的是 value.model_dump(exclude_none=True)。这会使输出中重新出现值为 null 的字段（例如 Optional 字段未设置时），属于未在 MR 描述中声明的输出契约变更；同时 _serialize_pydantic 与非 pydantic 路径（_serialize_pydantic_v1 的 to_json / dict）存在 dump 模式差异，长期看容易形成“同一模型在不同调用点输出形状不同”的隐患。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "OUTPUT-CONTRACT-001"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 75,
+      "summary": "_serialize_dict 未把字典键转为字符串，非 str 键会残留在输出中破坏 JSON 编码",
+      "failure_scenario": "_serialize_dict 直接 `{k: serialize(v, ...) for k, v in obj.items()}`，只序列化 value、不改写 key；_serialize_pydantic（63 行）同样只处理 value。被替换的 fastapi jsonable_encoder 会对非字符串键做 str() 转换。因此当 outputs/artifacts/message 中出现 int、tuple、UUID、numpy 标量等键时（DataFrame 转 records、用户构造的 dict 都可能产生），serialize 会原样返回非 str 键，下游 orjson_dumps / Pydantic JSON 序列化会抛错或产生非标准结构，而此处并不抛异常、也不会进入 \"[Unserializable Object]\" 兜底，问题被推迟到更远的编码环节。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "SERIALIZE-KEY-001"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 82,
+      "summary": "列表截断把 \"... [truncated N items]\" 字符串插入列表，且默认截断被隐式施加到原本不截断的路径",
+      "failure_scenario": "_serialize_list_tuple 在超过 max_items 时先切片再 append 一个描述字符串，使返回列表的元素类型由同构变为异构（例如 outputs/artifacts 数组中混入 str）。下游若按元素类型做 isinstance 分支或按 schema 校验（list[OutputValue]、list[Log]）会失败或误判。另一方面 serialize 的默认参数 max_items=MAX_ITEMS_LENGTH、max_length=MAX_TEXT_LENGTH 是隐式的：tracing/schema.py 的 Log.serialize_message 现在调用 serialize(value) 未传参，于是 Log.message 中的长字符串与长列表在 20000/1000 处被静默截断，而旧的 serialize_message 不做任何截断。这是一处没有显式声明的行为变更，会丢失 trace 内容。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "SERIALIZE-TRUNC-001"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 130,
+      "summary": "字符串截断逻辑被 primitive 短路，`serialize` 对 str 永不再截断",
+      "failure_scenario": "`_serialize_dispatcher` 先用 `_serialize_primitive` 短路处理 primitive，而 `_serialize_primitive` 的 isinstance 判定里包含了 `str`，直接返回原对象；因此 `match` 中的 `case str(): return _serialize_str(...)` 成为不可达分支。结果是 `serialize(s, max_length=MAX_TEXT_LENGTH)` 对任何字符串都返回未截断原文，`ResultDataResponse` 对 results/outputs/logs/message/artifacts 的 20000 字符上限完全失效，超长文本会原样进入 API 响应与落库数据，造成响应体膨胀与内存压力；同时与仓库内既有断言（超过 MAX_TEXT_LENGTH 时期望 `text[:MAX_TEXT_LENGTH] + \"...\"`）直接冲突。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "SERIALIZATION-001"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 160,
+      "summary": "match 中 `case object() if not isinstance(obj, type)` 过早命中，Enum/TypeVar/别名/numpy 分支全部不可达",
+      "failure_scenario": "_serialize_dispatcher 的第 160 行 `case object() if not isinstance(obj, type)` 会匹配任何“非类”的实例，而它被放在 Enum（162 行）、TypeVar（164 行）、type alias/generic（166 行）以及 numpy 标量兜底（168-183 行）之前。由于 Python 的 match 按顺序取首个命中分支，这四组分支永远不会执行：枚举被交给 _serialize_instance 走 str(obj)，numpy 标量同样被 str() 化成字符串（例如 np.int64(5) → \"5\"、np.float32(0.5) → \"0.5\"），而代码注释中期望的数值/布尔/复数转换与 f\"{cls}.{name}\" 枚举表示都不会发生。结果是数值类型在 API 响应与存储记录中退化为字符串，且这段不可达代码会误导后续维护者。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "PATTERN-ORDER-001"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 162,
+      "summary": "分派器里 Enum/TypeVar/TypeAlias 三个 case 分支永久不可达",
+      "failure_scenario": "`case object() if not isinstance(obj, type)` 会匹配所有非类实例，位置排在 Enum（`obj._name_`）、TypeVar（`__name__`+`__bound__`）、TypeAlias/泛型（`__origin__`/`__parameters__`）三个分支之前，因此后三个分支永远得不到执行；同样 `case _:` 里的 numpy 分支也基本只能覆盖类对象。这会让后续维护者误以为 Enum/TypeVar 有专门处理逻辑，实际它们是先被 `_serialize_instance` 转成 `str(obj)`，行为与代码意图不符且难以排查。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 237,
+      "summary": "序列化失败被静默替换为 \"[Unserializable Object]\"，Log 的两个 except 分支已成死代码",
+      "failure_scenario": "serialize() 内部用 `except Exception` 捕获一切并在 237 行返回 \"[Unserializable Object]\"，仅以 logger.debug 记录；因此调用方无法感知失败，也无法拿到对象内容。tracing 的 Log.serialize_message 改为直接 return serialize(value) 后，原先把不可序列化对象退化为 str(value) 的保底能力丢失（检索日志里只剩占位符）；同时 _serialize_bytes 使用 errors=\"ignore\" 解码，UnicodeDecodeError 不可能抛出，而所有异常都已被 serialize 内部吞掉，PydanticSerializationError 也不会冒泡，导致 serialize_message 的 `except UnicodeDecodeError` 与 `except PydanticSerializationError` 两个分支成为不可达的死代码。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "ERROR-SWALLOW-001"
+    },
+    {
+      "file": "src/backend/base/langflow/load/load.py",
+      "line": 53,
+      "summary": "改用 `load_dotenv(override=True)` 造成进程级环境变量副作用，并静默移除 tweaks 的 env 替换能力",
+      "failure_scenario": "旧实现只把 `.env` 内容读成 dict 并用于替换 tweaks 中的字符串值，不修改 `os.environ`；新实现直接 `load_dotenv(env_file, override=True)`，会覆盖整个进程已设置的环境变量。在同一进程内加载多个 flow（服务端/批量脚本）时，前一个 flow 的 env_file 会污染后续所有 flow 及组件读取的环境变量（包括密钥类配置）；同时 `tweaks` 不再做 env 替换，`langflow.load.replace_tweaks_with_env` 也从公开 API 中删除，使用该文件/envar 约定的用户会静默失效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "SIDE-EFFECT-001"
+    },
+    {
+      "file": "src/backend/base/langflow/load/load.py",
+      "line": 59,
+      "summary": "`async_open(Path(flow).name)` 丢弃目录部分，非当前目录的 flow 文件无法加载",
+      "failure_scenario": "加载 flow 时把路径替换为 `Path(flow).name`，只保留了文件名，目录信息被丢弃。`load_flow_from_json` / `arun_flow_from_json` / `aload_flow_from_json` 都复用这段代码，因此传入 `/tmp/flows/foo.json`、`./sub/foo.json` 或任意绝对路径时，实际会在进程工作目录下打开 `foo.json`，通常直接抛 FileNotFoundError 或错误地读取同名文件；这是对外加载 API 的破坏性回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/backend/base/langflow/components/vectorstores/astradb.py",
+      "line": 502,
+      "summary": "`update_build_config` 在 options 为空时反复把 api_endpoint 值清空，且丢失 token 缺失时的早退保护",
+      "failure_scenario": "新的刷新条件为 `if not dslf and (field_name in [\"token\", \"environment\"] or not build_config[\"api_endpoint\"][\"options\"])`，并在其体内无条件执行 `build_config[\"api_endpoint\"][\"value\"] = \"\"` 与清空 `collection_name` 的 options/value。这意味着只要 `api_endpoint.options` 为空（首次渲染、拉取失败、或用户在 combobox 中手填了自定义 endpoint 而未进入 options 列表），任何字段变更都会触发一次网络拉取并把用户已选数据库名清空；原先这些重置只发生在 `first_run`/`token`/`environment` 或 token 为空的分支。同时删除了 `if not self.token ... return self.reset_build_config(build_config)` 的早退，token 为空时也会去调用 `_initialize_database_options()` 发起无效鉴权请求。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "STATE-001"
+    },
+    {
+      "file": "src/backend/base/langflow/components/vectorstores/astradb.py",
+      "line": 652,
+      "summary": "`get_database_object` 改为返回 None，但调用方仍直接解引用 database",
+      "failure_scenario": "`get_database_object` 在异常时改为 `self.log(...)` 后 `return None`，不再抛 `ValueError`。而 `build_vector_store` 紧接着执行 `self.collection_name in database.list_collection_names()` 并在 `AstraDBVectorStore(...)` 中访问 `database.api_endpoint` / `database.keyspace`；`_add_documents_to_vector_store` 中也有 `database.get_collection(...)`。一旦获取数据库对象失败（token 无效、endpoint 为空等典型场景），用户看到的将是 `'NoneType' object has no attribute 'list_collection_names'`，真正的根因（连接/鉴权失败）只留在 log 里，错误诊断能力下降，且异常类型从 ValueError 变为 AttributeError 可能绕过上层对 ValueError 的处理。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "NULLSAFETY-001"
+    },
+    {
+      "file": "src/backend/base/langflow/custom/custom_component/component.py",
+      "line": 981,
+      "summary": "`_process_raw_result` 让 `self.status` 无条件优先，多输出组件的 artifact raw 可能取到陈旧状态",
+      "failure_scenario": "重构后 `_process_raw_result` 判断顺序变为 `self.status` → `result.data` → `model_dump` → dict/Data/str；而旧实现只有在 `len(self.outputs) == 1` 时才优先使用 `self.status`，多输出时由 `extract_data(result)` 先看 `result.data`/`model_dump`。对拥有多个 output 方法的组件，若前一个 output 执行时设置了 `self.status`，后续 output 的 artifact `raw` 会取到上一次的 status 而不是当前 `result`，导致 artifact 内容错位；`_build_artifact` 随后还用 `self.status or raw` 判断 artifact 类型，可能连带 type 判定错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "src/backend/base/langflow/components/tools/duck_duck_go_search_run.py",
+      "line": 21,
+      "summary": "DuckDuckGo 组件标识与输出接口变更，已保存的 flow 将无法正确连线",
+      "failure_scenario": "组件基类从 `Component` 换成 `LCToolComponent`，并新增 `name = \"DuckDuckGoSearch\"`（此前没有 `name`，由类名派生）；outputs 从自定义的 `data`/`text` 变为基类固定的 `api_run_model`/`api_build_tool`。已保存的 flow JSON 中按旧组件名与旧输出名建立的节点/边将无法匹配，加载后表现为组件缺失或连线丢失。同时 `input_value` 丢失了 `required=True`、`info` 与 `tool_mode=True`，`max_results`/`max_snippet_length` 丢失了 `info` 说明，作为工具暴露给 Agent 的字段约定也被改变。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "src/backend/base/langflow/graph/utils.py",
+      "line": 163,
+      "summary": "`log_vertex_build` 改用带默认上限的 `serialize`，落库的调试数据被静默截断",
+      "failure_scenario": "旧 `serialize_field` 不做任何长度/条数限制，只是把对象递归转成可 JSON 结构；新 `serialize` 的默认参数为 `max_length=MAX_TEXT_LENGTH(20000)`、`max_items=MAX_ITEMS_LENGTH(1000)`，且 `serialize` 是递归传递这两个上限的。于是 vertex build 的 `data` 与 `artifacts` 在写库前就会被截断（列表尾部还会插入 `\"... [truncated N items]\"` 字符串占位），`ResultData.serialize_results` 走同一函数后也会引入同样截断。这属于落库/输出内容的静默丢失，且对 `list[Log]` 之类强类型字段插入字符串占位会破坏元素类型一致性。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "DATA-LOSS-001"
+    },
+    {
+      "file": "docs/css/custom.css",
+      "line": 202,
+      "summary": "删除 `.markdown img` 的 max-width 与移动端媒体查询，文档图片在小屏会溢出",
+      "failure_scenario": "本次删除了 `.markdown img { max-width: 100%; height: auto; ... }`、`.markdown img:not(.resized-image) { max-width: 500px }` 以及 `@media (max-width: 768px)` 中的响应式规则，`.resized-image` 也从 `width: 250px` 改为固定 `width: 400px`。文档正文中的图片因此失去全局宽度约束，宽图在窄视口会横向溢出容器；`.resized-image` 变成固定像素宽度，在小于 400px 的屏幕上同样会溢出，也不再随视口收缩。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "STYLE-001"
+    }
+  ],
+  "stderr_tail": "      D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\langflow-ai__langflow@bcfe6f9.diff\n  caseId              langflow-ai__langflow@bcfe6f9\n  --issue             (未传)\n  --taskId            langflow-ai__langflow@bcfe6f9\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 2 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 20 个文件 / 82002 字符（lockfile=1, test=8, exclude=11），明细见审计 mrFilter\nreview-pi: 已截取检视 1 个超预算文件（丢弃 1 个完整 hunk，保留 67357 字符），明细见审计 shardTruncation\n✓ 完成 · 耗时 280.6s · 模型调用 27 次 · token 输入 111,149（未命中） · 输出 41,389 · 缓存命中 700,416（86.3%） · 工具 53 次（主会话 53 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0291\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\langflow-ai__langflow@bcf...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 281.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 280.5s (99.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 13.8s (4.9%) | S1P2 3.6s (1.3%) | S1P3 9.7s (3.5%) | S1P4 51.3s (18.3%) | S1P5 61.3s (21.8%) | S1P6 11.9s (4.2%) | S2P1 9.2s (3.3%) | S2P2 4.8s (1.7%) | S2P3 5.6s (2.0%) | S2P4 15.9s (5.7%) | S2P5 72.6s (25.9%) | S2P6 20.8s (7.4%)\n[usage] 任务总计 | 模型调用 27 次（Agent 27 + 一次性 0） | token 输入 111,149（未命中） | 输出 41,389 | 缓存命中 700,416（86.3%） | $0.0291\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\langflow-ai__langflow@bcfe6f9\\audit\\20261115_015424_477.json",
+  "token_usage": {
+    "input_tokens": 111149,
+    "output_tokens": 41389,
+    "cache_read_input_tokens": 700416
+  }
+}

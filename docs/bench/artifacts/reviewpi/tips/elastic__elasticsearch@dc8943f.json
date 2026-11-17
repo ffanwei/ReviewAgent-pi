@@ -1,0 +1,130 @@
+[
+  {
+    "filePath": "x-pack/plugin/mapper-exponential-histogram/src/main/java/org/elasticsearch/xpack/exponentialhistogram/ExponentialHistogramFieldMapper.java",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "throw new DocumentParsingException(",
+        "review": "[缺陷类型] 数据格式向后不兼容的硬失败解析。影响评估：升级后对旧索引 reindex/重建、旧客户端请求都会失败，属线上可见的破坏性行为变更。",
+        "suggestion": "[重构思路] 保留 MAX_FIELD 的解析分支但丢弃该值（或仅在非空时校验不违反 min<=max），使旧文档可继续解析；如确要移除，需在 release note 标注并在解析层做一版灰度兼容。代码示例：`} else if (fieldName.equals(MAX_FIELD.getPreferredName())) { parseDoubleAllowingInfinity(subParser); // 读取后忽略，兼容旧 _source }`",
+        "category": "可靠性",
+        "subcategory": "格式向后兼容",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 327,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/otel-data/src/main/java/org/elasticsearch/xpack/oteldata/otlp/datapoint/DataPointGroupingContext.java",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "String targetIndex = \"metrics-generic.otel-default\";",
+        "review": "[缺陷类型] 路由逻辑被临时桩代码替换导致的数据混写。影响评估：不同 dataset/namespace 的指标写入同一数据流，原索引模板、ILM、按索引的访问控制与查询分流全部失效，属于难以回滚的数据布局变更。",
+        "suggestion": "[重构思路] 在替换实现落地前，至少保留基于属性的目标解析（可先只支持属性来源，不接入 receiver），并在删除 TargetIndex 的同一 PR 中补齐等价逻辑与覆盖用例；不要把硬编码索引与他人无关的重构混在同一提交。代码示例：`String targetIndex = dataPointGroupTsidBuilder.targetIndex(dataPoint) // 解析 attributes → data_stream.* → 默认 metrics-generic.otel-default`",
+        "category": "可靠性",
+        "subcategory": "数据路由",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 198,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "public void addDataPoint(DataPoint dataPoint) {",
+        "review": "[缺陷类型] 输入校验被移除导致的重复数据写入。影响评估：重复指标不再被丢弃也不再计入 ignored 统计，会产生字段重复的文档且监控指标失真。",
+        "suggestion": "[重构思路] 若校验确实要下移到 buildDataStream/文档构建阶段，请在移除前保证等价拦截与统计；否则保留 Set 去重并记录 ignored 原因。代码示例：`if (metricNames.add(dataPoint.getMetricName()) == false) { ignoredDataPointMessages.add(\"Duplicate metric name '\" + dataPoint.getMetricName() + \"'\"); return; }`",
+        "category": "可靠性",
+        "subcategory": "数据校验缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 279,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/otel-data/src/main/java/org/elasticsearch/xpack/oteldata/otlp/docbuilder/MetricDocumentBuilder.java",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "public static boolean isIgnoredAttribute(String attributeKey) {",
+        "review": "[缺陷类型] 过滤白/黑名单收窄导致字段泄漏与路由键变化。影响评估：文档多出 data_stream.* / elasticsearch.index 字段，且 _tsid 变化会造成同一时间序列分片漂移、去重失效。",
+        "suggestion": "[重构思路] 在目标索引逻辑重建前，显式保留这三个 key 的过滤（可放在本类的常量集合中），并把 _tsid 相关过滤与文档字段过滤拆成两个语义明确的方法。代码示例：`private static final Set<String> IGNORED = Set.of(MappingHints.MAPPING_HINTS, \"elasticsearch.index\", \"data_stream.dataset\", \"data_stream.namespace\"); return IGNORED.contains(attributeKey);`",
+        "category": "可靠性",
+        "subcategory": "字段过滤与路由键一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 132,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/main/java/org/elasticsearch/index/codec/vectors/DefaultIVFVectorsReader.java",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "final int bufferSize = (int) Math.min(Math.max(visitRatio * numCentroids * CENTROID_OVERSAMPLING, 1), numCentroids);",
+        "review": "[缺陷类型] 采样系数变更引起的 CPU/内存复杂度退化。影响评估：高 visit_ratio 查询（或向量数较少、自适应 visitRatio 偏大的场景）会扫描全部 centroid，查询延迟与堆占用上升，且召回收益边际递减。",
+        "suggestion": "[重构思路] 为 bufferSize 增加与 numCentroids 成比例的上界（例如不超过原 20% 采样量，或 min(numCentroids, max(visitRatio*numVectors/perCentroid, 1))），并用 JMH/召回实验验证 8.0f 的过采样倍率在各 visitRatio 区间的收益。代码示例：`int wanted = (int) Math.max(visitRatio * numCentroids * CENTROID_OVERSAMPLING, 1); int bufferSize = Math.min(Math.min(wanted, numCentroids), Math.max(numCentroids / 5, 1));`",
+        "category": "性能",
+        "subcategory": "检索性能",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 197,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "branches.json",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "{",
+        "review": "[缺陷类型] 变更范围失控（mega-MR）。影响评估：评审质量下降、问题难以归因到具体改动、无法按需回滚，且掩盖了 OTLP 路由与 max 兼容性这两处真实行为回归。",
+        "suggestion": "[重构思路] 至少拆成 4 个 MR：①直方图 max 移除（含兼容策略与 release note）；②IVF 采样策略；③otel-data 路由重构；④sanitize 迁移 + 配置文件（branches.json / muted-tests.yml）。拆分后各自附带的基准与召回数据也更容易审阅。代码示例：`git checkout -b remove-histogram-max && git cherry-pick <histogram-only commits>`",
+        "category": "可维护",
+        "subcategory": "变更范围",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "modules/ingest-common/src/main/java/org/elasticsearch/ingest/common/RerouteProcessor.java",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "private static String sanitizeDataStreamField(String s, Pattern disallowedInDataset) {",
+        "review": "[缺陷类型] 职责错位 + 命名误导。影响评估：净化规则出现第二份实现的雏形，跨模块复用时容易产生不一致的 data stream 命名。",
+        "suggestion": "[重构思路] 把参数改名为 disallowedChars，若短期内无法提供公共工具类，至少在 RerouteProcessor 内提取一个可命名清晰的 DataStreamNameSanitizer 工具类，并在注释中说明与 DataStream 命名的契约关系。代码示例：`private static String sanitizeDataStreamField(String value, Pattern disallowedChars) { ... }`",
+        "category": "可读性",
+        "subcategory": "命名与职责划分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 249,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

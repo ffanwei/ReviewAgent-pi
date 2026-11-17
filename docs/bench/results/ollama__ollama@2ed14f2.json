@@ -1,0 +1,112 @@
+{
+  "instance_id": "ollama__ollama@2ed14f2",
+  "repo": "ollama/ollama",
+  "base_commit": "4ea4d2b18952a104a47079df00ac0bfe4706f3aa",
+  "head_commit": "2ed14f2a28867c017426b41a9ff6bfc52c981a43",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 260.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 9,
+  "review_output": [
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 488,
+      "summary": "chunksums 出错时只 break，Pull 仍返回成功并把模型标记为已下载",
+      "failure_scenario": "新的 Pull 用 `for cs, err := range r.chunksums(ctx, name, l)` 迭代分块信息，但迭代器返回错误时仅在 trace 上记录后就直接 break（registry.go:486-489），错误既不进入 errgroup 也不返回给调用方。随后 `g.Wait()` 因为该层没有任何 g.Go 任务而为 nil，Pull 继续执行 manifest 落盘与 `c.Link(m.Name, md)`（registry.go:542-553）。结果是：/chunksums 端点不可用（如老版本 registry 返回 404）、解析失败或网络错误时，大层（≥ ChunkingThreshold）完全没有下载任何数据，但 Pull 却返回 nil 并在缓存中创建了指向该模型的 link，用户随后运行模型才会失败，且错误现场（真正原因）已丢失。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "ERROR-PROPAGATION-001"
+    },
+    {
+      "file": "server/internal/cache/blob/chunked.go",
+      "line": 64,
+      "summary": "分块下载路径不再校验整层 digest，内容寻址缓存可被写入与 digest 不符的数据",
+      "failure_scenario": "旧实现用 `c.Put(l.Digest, q, l.Size)` 由 checkWriter 对完整层计算 sha256 并与 manifest 中的 digest 比对。新实现改为 `chunked.Put(cs.Chunk, cs.Digest, body)`（registry.go:527），只校验服务端在 chunksums 响应里给出的**分块** digest；而 Chunker 的 `digest`/`size` 字段虽被赋值（chunked.go:36）却从未被读取，Close 也没有做任何全文件校验，因此拼接完成后没有任何环节确认整层内容的 sha256 等于 manifest 中的 l.Digest。同时 `Chunked` 仅凭 `info.Size() == size` 就返回\"已预校验\"的空 Chunker（chunked.go:29-31），即只按长度判断缓存有效性。后果是磁盘缓存中可能出现内容与其 digest 不匹配的 blob，破坏 copyNamedFile 一直维持的内容寻址不变量（cache.go:488-506 会做整文件哈希校验），并使后续按大小命中缓存（`exists`/`Chunked`）永远无法发现数据损坏。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "INTEGRITY-002"
+    },
+    {
+      "file": "fs/ggml/ggml.go",
+      "line": 606,
+      "summary": "VisionGraphSize 移除 patchSize==0 保护后可能整除零 panic",
+      "failure_scenario": "新实现用本地闭包 `kv` 读取 mllama 视觉元数据，取值失败（键缺失）或类型不是 uint32 时一律返回 0；随后直接执行 `imageSize / kv(\"patch_size\")`。当 patch_size 缺失、被存成 int32/uint64（GGUF KV 按声明类型存放，见 gguf.go:154-191，只有 uint32 才能通过类型断言）或被写成 0 时，就会触发 `runtime error: integer divide by zero`。原实现对此有显式保护：`if patchSize == 0 { slog.Warn(\"unknown patch size for vision model\"); return }`。该方法由 EstimateGPULayers 在调度模型时调用（llm/memory.go:118-119），panic 会导致服务端在加载 mllama 视觉模型时崩溃而不是优雅降级。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "fs/ggml/ggml.go",
+      "line": 586,
+      "summary": "删除 gemma3 分支并把视觉权重统计限定在 mllama，会低估 gemma3 视觉模型显存",
+      "failure_scenario": "改动把 weight 累加从\"遍历所有 v/v. 前缀层\"移进了 `case \"mllama\"` 分支内，同时删除了 `case \"gemma3\": graphSize = 4 * (imageSize*imageSize*numChannels + embeddingLength*patchSize + numPatches*numPatches*headCount)`。对 gemma3 这类视觉张量与语言模型同处一个 GGUF（KV.OllamaEngineRequired() 对 gemma3 返回 true）的模型，VisionGraphSize 现在恒返回 (0, 0)，使 EstimateGPULayers 中 projectorWeights/projectorGraph 为 0，gpuZeroOverhead 随之失真，显存估算偏小，可能导致按估算能放下却被 CUDA/Metal OOM。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "MEMORY-ESTIMATE-003"
+    },
+    {
+      "file": "server/internal/registry/server.go",
+      "line": 316,
+      "summary": "流式 /api/pull 不再发送最终 status=\"success\"，改变既有响应契约",
+      "failure_scenario": "流式分支现在只通过 pushUpdate 发送 `{digest: <模型名>, total, completed}` 聚合进度，Pull 成功结束时仅再 pushUpdate 一次就 return nil（server.go:312-329），不再像旧实现那样输出最终的 `{\"status\":\"success\"}`（以及 \"verifying layers\"/\"writing manifest\"）。同一 MR 的非流式分支却仍然以 `progressUpdateJSON{Status: \"success\"}` 作为成功终态（server.go:266），说明 success 仍是该 API 的契约终态。依赖\"收到 success 即下载完成\"的客户端（包括 CLI 的 spinner 文案与第三方客户端）将得不到完成信号，出现\"进度结束但无完成提示\"或等待终态的行为差异。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "API-CONTRACT-004"
+    },
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 216,
+      "summary": "MaxChunkSize 字段与其文档引用已删除的 DefaultMaxChunkSize，成为无效配置项",
+      "failure_scenario": "本 MR 删除了 `DefaultMaxChunkSize = 8 << 20` 常量以及 `maxChunkSize()` 方法及其唯一调用点，分块粒度改由服务端 /chunksums 决定；但 `Registry.MaxChunkSize` 字段（registry.go:216-220）仍保留，其注释链接到已不存在的 `[DefaultMaxChunkSize]`（godoc 引用失效），并且 Pull 的注释仍写着\"For layers larger then [Registry.MaxChunkSize], the layer is downloaded in chunks of the specified size\"（registry.go:430-433）。生产代码已不再读取该字段，配置它不会产生任何效果，属于误导性的死配置。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-005"
+    },
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 423,
+      "summary": "重试时 trackingReader 重复累计已读字节，进度可能超过 100%",
+      "failure_scenario": "trackingReader.Read 在每次成功读取后无条件 `r.n.Add(int64(n))`，而它包裹的响应体在分块下载失败（5xx 触发 backoff.Loop 重试）时已经被计入 progress：失败尝试读到的字节不会回滚，重试后同一 chunk 的字节被再次累加。progress 最终经 `t.update(l, progress.Load(), err)` 上报，服务端 handlePull 直接把各层 n 相加（server.go:296-301），因此单个层内多次重试会让 Completed 超过该层 Size，甚至超过 Total，进度条与 percent 计算失真。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "METRICS-006"
+    },
+    {
+      "file": "server/internal/registry/server.go",
+      "line": 280,
+      "summary": "handlePull 的 ticker 从未 Stop，每个流式 pull 请求泄漏一个定时器",
+      "failure_scenario": "流式路径用 `t := time.NewTicker(time.Hour)` 作为\"未启动\"定时器，再通过 `sync.OnceFunc` 在首次收到进度时 Reset 为 100ms；函数在所有返回路径上都没有 `t.Stop()`（对比改动前 `defer t.Stop()` 的写法）。每次 /api/pull 请求结束后该 ticker 仍挂在运行时，直到被 GC 回收，属于资源泄漏；同时 `defer t.Stop()` 的移除也降低了原实现的明确性。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "RESOURCE-007"
+    },
+    {
+      "file": "llm/memory.go",
+      "line": 222,
+      "summary": "memoryWeights 改为累加含 KV 分摊的 layerSize，日志中权重统计重复计入 KV cache",
+      "failure_scenario": "原实现只在 blk 存在时累加 `blk.Size()`（纯权重）；改动后把 `memoryWeights += layerSize` 提到 if 之外，而 layerSize 在第 143 行已包含 `kv / BlockCount()` 的 KV cache 分摊。于是 LogValue 输出的 `weights.total` 与 `repeating`（memoryWeights-memoryLayerOutput）现在混合了 KV cache 字节，而同一个 Group 里还单独报告了 `kv`，同一份显存被统计两次。该值只用于日志，不影响显存分配，但会让显存占用排障时的数字对不上。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "LOGGING-CONSISTENCY-008"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\ollama__ollama@2ed14f2.diff\n  caseId              ollama__ollama@2ed14f2\n  --issue             (未传)\n  --taskId            ollama__ollama@2ed14f2\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 3 个文件 / 6907 字符（test=2, exclude=1），明细见审计 mrFilter\n✓ 完成 · 耗时 246.0s · 模型调用 28 次 · token 输入 88,197（未命中） · 输出 33,715 · 缓存命中 1,205,888（93.2%） · 工具 38 次（主会话 38 + 规则 Skill 0） · Ledger 命中 1 次（未重复读取原文） · $0.0252\n[time] 阶段耗时 | 总墙钟 246.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 245.9s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 6.2s (2.5%) | P2 2.6s (1.0%) | P3 11.8s (4.8%) | P4 167.9s (68.3%) | P5 47.7s (19.4%) | P6 9.7s (3.9%)\n[usage] 任务总计 | 模型调用 28 次（Agent 28 + 一次性 0） | token 输入 88,197（未命中） | 输出 33,715 | 缓存命中 1,205,888（93.2%） | $0.0252\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\ollama__ollama@2ed14f2\\audit\\20261115_024242_285.json",
+  "token_usage": {
+    "input_tokens": 88197,
+    "output_tokens": 33715,
+    "cache_read_input_tokens": 1205888
+  }
+}

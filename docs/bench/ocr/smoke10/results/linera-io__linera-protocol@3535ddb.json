@@ -1,0 +1,151 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T04:04:30.163832+00:00",
+  "duration_seconds": 191.2,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 3 finding(s) across 3 selected item(s).",
+    "summary": {
+      "files_reviewed": 3,
+      "comments": 3,
+      "total_tokens": 590403,
+      "input_tokens": 565014,
+      "output_tokens": 25389,
+      "cache_read_tokens": 501504,
+      "elapsed": "3m11s"
+    },
+    "tool_calls": {
+      "total": 34,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 15,
+        "file_read": 17
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "linera-core/src/client/mod.rs",
+        "content": "The pagination stop condition relies on the server-side constant `CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` to infer whether more entries exist. This couples the client to a validator implementation detail and is fragile in two ways:\n\n1. **Version skew with a smaller page size:** if a validator caps its response at fewer entries than this constant (e.g. the constant is later tuned down, or a different node implementation uses a smaller page), the client stops early, treats the log as complete, and silently processes a truncated received log.\n2. **Unbounded loop:** termination depends entirely on the remote. A buggy/malicious validator that always returns full-size pages regardless of the requested offset makes this loop run (and `remote_log` grow) without bound. Conversely, when the log length is an exact multiple of the page size, one extra empty round-trip is always issued.\n\nSince every `ChainInfo` response already carries `count_received_log` (set in `prepare_chain_info_response`), it can be used as a deterministic bound instead.",
+        "suggestion_code": "        loop {\n            let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n            let info = remote_node.handle_chain_info_query(query).await?;\n            let count = info.count_received_log as u64;\n            let received_entries = info.requested_received_log.len() as u64;\n            offset += received_entries;\n            remote_log.extend(info.requested_received_log);\n            if received_entries == 0 || offset >= count {\n                break;\n            }\n        }",
+        "existing_code": "        loop {\n            let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n            let info = remote_node.handle_chain_info_query(query).await?;\n            let received_entries = info.requested_received_log.len();\n            offset += received_entries as u64;\n            remote_log.extend(info.requested_received_log);\n            if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n                break;\n            }\n        }",
+        "start_line": 848,
+        "end_line": 857,
+        "thinking": "Fine. Now write the comment.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "linera-core/src/chain_worker/state.rs",
+        "content": "This value is now part of the `ChainInfoQuery`/`ChainInfo` wire contract: validators truncate responses to it and clients must use the same page size to paginate correctly. Keeping it in `chain_worker::state` (a private, validator-internal module, only re-exported `pub(crate)`) makes an RPC-level constant an implementation detail and forces any out-of-crate client to hardcode `1000`. Suggest defining it in `linera-core/src/data_types.rs` next to `ChainInfoQuery::with_received_log_excluding_first_n` and documenting on `requested_received_log` that the returned log may be truncated to this many entries.",
+        "existing_code": "pub const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;",
+        "start_line": 53,
+        "end_line": 53,
+        "thinking": "Irrelevant.\n\nSo the practical conclusion: the constant being crate-private is a mild design concern. I'll issue one maintainability comment on the constant definition in state.rs suggesting to define it alongside the protocol types in `data_types.rs` (public, documented as part of the `ChainInfoQuery`/`ChainInfo` contract) so that both validators and clients (and out-of-crate clients) share a single source of truth.\n\nHmm, but careful: putting a `pub const` in data_types doesn't eliminate the fragility. It's separate.\n\nIs that enough of a finding? Let me also weigh reporting the unbounded loop. I think I should report it but framed distinctly: no cap on total pages/entries → unbounded memory & potential non-termination against misbehaving validator; also mention that `info.count_received_log` already provides the loop bound (server-provided total), which is a robust termination criterion. Risk of duplicate... The confirmed finding is about the client relying on the constant; my suggestion essentially is \"compare against count_received_log\" — that is a possible remediation of the confirmed finding, so it would be a duplicate in effect. I'll skip it and just do the constant placement one? That feels thin but honest.\n\nWait, let me look for one more thing: is there any issue with the client's `offset` being derived from `tracker` (u64) but `with_received_log_excluding_first_n` expects a u64 count, and the server converts with `usize::try_from(start)` which on 32-bit targets could fail... irrelevant.\n\nActually, hold on. Let me reconsider the state.rs change for a potential *functional* issue with pending entries and `count()`: In the chain worker, after `execute_block`/`receive` operations, the chain state has unsaved changes. `read` includes staged values. The `count()` includes staged pushes. So if a chain received certificates in this same worker request cycle... `prepare_chain_info_response` doesn't push. Fine.\n\nLet me reconsider a potential behavior issue: previously, a query with `request_received_log_excluding_first_n = Some(huge)` would return empty vec (read handles start >= end). Now end = min(start+1000, count). Same.\n\nOK. Let me also double check `LogView::read`'s behavior for `start` beyond `effective_stored_count` but within new_values: `self.new_values[(start - effective_stored_count)..(end - effective_stored_count)]` — with our clamping, end <= count, so no panic. Without our clamping, also no panic (read clamps). Good.\n\nNow let me consider one more thing worth flagging in the client: `let mut remote_log = Vec::new();` — could reserve `info.count_received_log` etc. Minor perf, skip.\n\nAlright, let me be a bit more critical about the state.rs code from a *security* angle (there's a checklist item on integer conversions): `usize::try_from(start)` handles overflow → `ArithmeticError::Overflow` mapped to WorkerError. Fine. `received_entries as u64` on the client: usize→u64 widening on 64-bit; on 32-bit it's also widening. Fine.\n\nSo final: I'll deliver one or two comments:\n1. state.rs: constant should live in `data_types.rs` as a public protocol constant (maintainability, medium/low). Also I can mention the doc on `request_received_log_excluding_first_n`/`requested_received_log` should state the truncation.\n2. state.rs: redundant `.min(count())` (low). Hmm, I might include it as it's factual: `LogView::read` already clamps.\n\nMaybe I'll merge 1 and 2? Different lines. I'd rather give 1 comment (the more meaningful one) plus maybe a client-side comment about preallocation... no.\n\nActually, let me reconsider: is there a genuine issue that the client will loop forever if the validator returns ≥ MAX entries but doesn't advance? Addressed.\n\nOne more: `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` — if a validator runs a version whose cap is *smaller* than ours (e.g., 100 later after some tuning), the client stops early and silently misses certificates → tracker stalls at a fixed point and the client never syncs the rest. That is exactly confirmed finding #1. Yes.\n\nI'll go with the two comments. Actually, keep it to one strong one + one minor? Let me decide: report comment 1 (constant placement, medium maintainability) on `pub const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;` in state.rs. And comment 2 on the `.min(chain.received_log.count())` line? It's a nit that could be considered noise. I'll include it as low severity since it's clearly factual and helps clarity (also `count()` here is called on a shared borrow... trivial).\n\nHmm, the instruction says \"Avoid commenting on correct code\". The redundant min is correct code with a redundant piece. It's a minor maintainability improvement. I'll skip it to keep signal high.\n\nActually, is there value in flagging that the truncation silently makes `ChainInfo` semantics depend on a cap without the client verifying against `count_received_log`? That is the confirmed one.\n\nLet me do one final check on client for something like: the loop ignores the returned `info.chain_id`/signature — pre-existing.\n\nDecision: one maintainability comment about the protocol constant placement/documentation, mentioning that it's part of the RPC contract (used by both the validator and the client) and currently only reachable crate-internally from a private module; suggest moving to `data_types.rs` next to `ChainInfoQuery`/`ChainInfo` and documenting the truncation.\n\nI'll also add a comment on the client loop about... hmm. Let me add one about preallocating remote_log? No.\n\nActually, maybe I should reconsider one thing in the client that IS distinct: the client requests pages serially in a loop *inside* `synchronize_received_certificates_from_validator`, which is itself invoked per validator within `communicate_with_quorum`. With a large log (millions of entries), the client now performs thousands of sequential round-trips, and the tracker only advances after the whole log is fetched, so a timeout or failure means restarting from scratch. Before the change, it was one request. So the change introduces a potential latency/completeness regression for large logs. Is that worth flagging? It's inherent to pagination. Meh.\n\nI'll finalize with the single maintainability comment plus perhaps the redundant-min one. Let me include both but keep severity low for the second. Actually the tool requires each comment to be attached to added lines. For the redundant min, the added lines are:\n\n```\n+            let end = (start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES))\n+                .min(chain.received_log.count());\n```\n\nI can attach there.\n\nLet me write them.\n\nComment 1 (state.rs, on the const line):\nContent: This value is part of the `ChainInfoQuery`/`ChainInfo` RPC contract: both validators (truncating responses) and clients (paginating) must agree on it, but it currently lives in `chain_worker::state` (a private validator-internal module) and is only re-exported `pub(crate)`. Suggest defining it in `linera-core/src/data_types.rs` next to `ChainInfoQuery::with_received_log_excluding_first_n` and documenting on `requested_received_log` that the response may be truncated to this many entries, so the contract is discoverable and sharable.\n\nCategory: maintainability, severity: medium.\n\nComment 2 (state.rs, on the end computation): `LogView::read` already clamps the end bound to `count()` and returns an empty `Vec` when `start >= end` (linera-views/src/views/log_view.rs), so the explicit `min(count())` is redundant; the explicit `end` is still needed for the cap. Suggest dropping `.min(chain.received_log.count())`. Category: maintainability, severity: low.\n\nHmm, is comment 2 valuable enough? Some might see it as noise. But it's precise and correct. I'll include it with low severity.\n\nThen call task_done.\n\nWait — I should double check my claim about read's clamping once more: lines 316-329 confirm. Yes.\n\nAlso confirm the `min` claim that `read` would return at most `count()` regardless: line 321 `.min(self.count())`. Yes.\n\nI'll write the comments now.",
+        "category": "maintainability",
+        "severity": "medium"
+      },
+      {
+        "path": "linera-core/src/chain_worker/state.rs",
+        "content": "`LogView::read` already clamps the end bound to `count()` and returns an empty `Vec` when `start >= end` (see `linera-views/src/views/log_view.rs`), so the explicit `min(chain.received_log.count())` is redundant. Only the page-size cap needs to be applied here.",
+        "suggestion_code": "            let end = start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES);",
+        "existing_code": "            let end = (start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES))\n                .min(chain.received_log.count());",
+        "start_line": 1418,
+        "end_line": 1419,
+        "thinking": "Irrelevant.\n\nSo the practical conclusion: the constant being crate-private is a mild design concern. I'll issue one maintainability comment on the constant definition in state.rs suggesting to define it alongside the protocol types in `data_types.rs` (public, documented as part of the `ChainInfoQuery`/`ChainInfo` contract) so that both validators and clients (and out-of-crate clients) share a single source of truth.\n\nHmm, but careful: putting a `pub const` in data_types doesn't eliminate the fragility. It's separate.\n\nIs that enough of a finding? Let me also weigh reporting the unbounded loop. I think I should report it but framed distinctly: no cap on total pages/entries → unbounded memory & potential non-termination against misbehaving validator; also mention that `info.count_received_log` already provides the loop bound (server-provided total), which is a robust termination criterion. Risk of duplicate... The confirmed finding is about the client relying on the constant; my suggestion essentially is \"compare against count_received_log\" — that is a possible remediation of the confirmed finding, so it would be a duplicate in effect. I'll skip it and just do the constant placement one? That feels thin but honest.\n\nWait, let me look for one more thing: is there any issue with the client's `offset` being derived from `tracker` (u64) but `with_received_log_excluding_first_n` expects a u64 count, and the server converts with `usize::try_from(start)` which on 32-bit targets could fail... irrelevant.\n\nActually, hold on. Let me reconsider the state.rs change for a potential *functional* issue with pending entries and `count()`: In the chain worker, after `execute_block`/`receive` operations, the chain state has unsaved changes. `read` includes staged values. The `count()` includes staged pushes. So if a chain received certificates in this same worker request cycle... `prepare_chain_info_response` doesn't push. Fine.\n\nLet me reconsider a potential behavior issue: previously, a query with `request_received_log_excluding_first_n = Some(huge)` would return empty vec (read handles start >= end). Now end = min(start+1000, count). Same.\n\nOK. Let me also double check `LogView::read`'s behavior for `start` beyond `effective_stored_count` but within new_values: `self.new_values[(start - effective_stored_count)..(end - effective_stored_count)]` — with our clamping, end <= count, so no panic. Without our clamping, also no panic (read clamps). Good.\n\nNow let me consider one more thing worth flagging in the client: `let mut remote_log = Vec::new();` — could reserve `info.count_received_log` etc. Minor perf, skip.\n\nAlright, let me be a bit more critical about the state.rs code from a *security* angle (there's a checklist item on integer conversions): `usize::try_from(start)` handles overflow → `ArithmeticError::Overflow` mapped to WorkerError. Fine. `received_entries as u64` on the client: usize→u64 widening on 64-bit; on 32-bit it's also widening. Fine.\n\nSo final: I'll deliver one or two comments:\n1. state.rs: constant should live in `data_types.rs` as a public protocol constant (maintainability, medium/low). Also I can mention the doc on `request_received_log_excluding_first_n`/`requested_received_log` should state the truncation.\n2. state.rs: redundant `.min(count())` (low). Hmm, I might include it as it's factual: `LogView::read` already clamps.\n\nMaybe I'll merge 1 and 2? Different lines. I'd rather give 1 comment (the more meaningful one) plus maybe a client-side comment about preallocation... no.\n\nActually, let me reconsider: is there a genuine issue that the client will loop forever if the validator returns ≥ MAX entries but doesn't advance? Addressed.\n\nOne more: `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` — if a validator runs a version whose cap is *smaller* than ours (e.g., 100 later after some tuning), the client stops early and silently misses certificates → tracker stalls at a fixed point and the client never syncs the rest. That is exactly confirmed finding #1. Yes.\n\nI'll go with the two comments. Actually, keep it to one strong one + one minor? Let me decide: report comment 1 (constant placement, medium maintainability) on `pub const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;` in state.rs. And comment 2 on the `.min(chain.received_log.count())` line? It's a nit that could be considered noise. I'll include it as low severity since it's clearly factual and helps clarity (also `count()` here is called on a shared borrow... trivial).\n\nHmm, the instruction says \"Avoid commenting on correct code\". The redundant min is correct code with a redundant piece. It's a minor maintainability improvement. I'll skip it to keep signal high.\n\nActually, is there value in flagging that the truncation silently makes `ChainInfo` semantics depend on a cap without the client verifying against `count_received_log`? That is the confirmed one.\n\nLet me do one final check on client for something like: the loop ignores the returned `info.chain_id`/signature — pre-existing.\n\nDecision: one maintainability comment about the protocol constant placement/documentation, mentioning that it's part of the RPC contract (used by both the validator and the client) and currently only reachable crate-internally from a private module; suggest moving to `data_types.rs` next to `ChainInfoQuery`/`ChainInfo` and documenting the truncation.\n\nI'll also add a comment on the client loop about... hmm. Let me add one about preallocating remote_log? No.\n\nActually, maybe I should reconsider one thing in the client that IS distinct: the client requests pages serially in a loop *inside* `synchronize_received_certificates_from_validator`, which is itself invoked per validator within `communicate_with_quorum`. With a large log (millions of entries), the client now performs thousands of sequential round-trips, and the tracker only advances after the whole log is fetched, so a timeout or failure means restarting from scratch. Before the change, it was one request. So the change introduces a potential latency/completeness regression for large logs. Is that worth flagging? It's inherent to pagination. Meh.\n\nI'll finalize with the single maintainability comment plus perhaps the redundant-min one. Let me include both but keep severity low for the second. Actually the tool requires each comment to be attached to added lines. For the redundant min, the added lines are:\n\n```\n+            let end = (start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES))\n+                .min(chain.received_log.count());\n```\n\nI can attach there.\n\nLet me write them.\n\nComment 1 (state.rs, on the const line):\nContent: This value is part of the `ChainInfoQuery`/`ChainInfo` RPC contract: both validators (truncating responses) and clients (paginating) must agree on it, but it currently lives in `chain_worker::state` (a private validator-internal module) and is only re-exported `pub(crate)`. Suggest defining it in `linera-core/src/data_types.rs` next to `ChainInfoQuery::with_received_log_excluding_first_n` and documenting on `requested_received_log` that the response may be truncated to this many entries, so the contract is discoverable and sharable.\n\nCategory: maintainability, severity: medium.\n\nComment 2 (state.rs, on the end computation): `LogView::read` already clamps the end bound to `count()` and returns an empty `Vec` when `start >= end` (linera-views/src/views/log_view.rs), so the explicit `min(count())` is redundant; the explicit `end` is still needed for the cap. Suggest dropping `.min(chain.received_log.count())`. Category: maintainability, severity: low.\n\nHmm, is comment 2 valuable enough? Some might see it as noise. But it's precise and correct. I'll include it with low severity.\n\nThen call task_done.\n\nWait — I should double check my claim about read's clamping once more: lines 316-329 confirm. Yes.\n\nAlso confirm the `min` claim that `read` would return at most `count()` regardless: line 321 `.min(self.count())`. Yes.\n\nI'll write the comments now.",
+        "category": "maintainability",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "linera-core/src/chain_worker/mod.rs",
+          "linera-core/src/chain_worker/state.rs",
+          "linera-core/src/client/mod.rs"
+        ]
+      }
+    ],
+    "session_id": "cd42f556-386b-414b-bdfc-1f353cc5232d",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "cd42f556-386b-414b-bdfc-1f353cc5232d",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "d0738fdc8850c4f919fe15d2affb0d70b9da54e6edaf9e2d8d7e1adffe1f2bfc"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "c31634e52d719fdf60694f47812e2f007022ae26",
+        "requested_head": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+        "resolved_base": "c31634e52d719fdf60694f47812e2f007022ae26",
+        "resolved_head": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+        "exact_range": "c31634e52d719fdf60694f47812e2f007022ae26..3535ddb83de7dfae5db1732a7f1535031d31380a",
+        "source_artifact_sha256": "9c79e00c534344e4566e1faca8e2235e55db40e27d1d89b80ab5cf43f11297ca"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "0e5f874c241d40e7ac78d01d33eb37d7f63dfaffeedeb22258272833b02e6708",
+            "path": "linera-core/src/chain_worker/state.rs",
+            "fingerprint": "2abc1b7287f9f89d75de7b80ea3972b33f27916edab0e3a17d15f9529874c5bf"
+          },
+          {
+            "item_id": "3fa84914fbe28cf60277b3a0d9a9e2589dad044f834abb69ae84eed6d72e7482",
+            "path": "linera-core/src/client/mod.rs",
+            "fingerprint": "3cca823ec4d8a47d164fb43b841d206cbe4e078d4fbc61fc50d968c78403ebc9"
+          },
+          {
+            "item_id": "526d7306e10a5295678e4250d586046360bdf6068920cf97e801e5852e0a22ce",
+            "path": "linera-core/src/chain_worker/mod.rs",
+            "fingerprint": "2cf4e5e271154c54220d0b0a91ab163924ec28ad6ee5132acf939fd859cc194c"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "0e5f874c241d40e7ac78d01d33eb37d7f63dfaffeedeb22258272833b02e6708",
+            "path": "linera-core/src/chain_worker/state.rs",
+            "fingerprint": "2abc1b7287f9f89d75de7b80ea3972b33f27916edab0e3a17d15f9529874c5bf"
+          },
+          {
+            "item_id": "3fa84914fbe28cf60277b3a0d9a9e2589dad044f834abb69ae84eed6d72e7482",
+            "path": "linera-core/src/client/mod.rs",
+            "fingerprint": "3cca823ec4d8a47d164fb43b841d206cbe4e078d4fbc61fc50d968c78403ebc9"
+          },
+          {
+            "item_id": "526d7306e10a5295678e4250d586046360bdf6068920cf97e801e5852e0a22ce",
+            "path": "linera-core/src/chain_worker/mod.rs",
+            "fingerprint": "2cf4e5e271154c54220d0b0a91ab163924ec28ad6ee5132acf939fd859cc194c"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 190763
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

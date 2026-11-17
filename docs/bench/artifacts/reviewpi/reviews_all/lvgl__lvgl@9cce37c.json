@@ -1,0 +1,118 @@
+{
+  "generatedAt": "2026-11-15T01:58:38.263Z",
+  "runId": "20261115_015704_561",
+  "source": "mr",
+  "caseId": "lvgl__lvgl@9cce37c",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/widgets/animimage/lv_animimage.c",
+      "line": 119,
+      "title": "新增 lv_animimg_set_src_reverse 与 lv_animimg_set_src 实现近乎完全重复",
+      "description": "两个公共 setter 的前三行（LV_ASSERT_OBJ、dsc 赋值、pic_count 赋值）逐字重复，只有 lv_anim_set_values 的起止值不同。后续若图片源字段语义变化（例如 num 越界校验、dsc 为 NULL 的处理、pic_count 类型调整），需要同时改两处，极易漏改造成正/反向行为不一致；也让「反向只是取值顺序不同」这一意图被代码重复掩盖。",
+      "evidence": [
+        "src/widgets/animimage/lv_animimage.c:110-117 — `void lv_animimg_set_src(...)` 内为 LV_ASSERT_OBJ(obj, MY_CLASS); animimg->dsc = dsc; animimg->pic_count = num; lv_anim_set_values(&animimg->anim, 0, (int32_t)num);",
+        "src/widgets/animimage/lv_animimage.c:119-126 — `lv_animimg_set_src_reverse` 内同样是 LV_ASSERT_OBJ(obj, MY_CLASS); animimg->dsc = dsc; animimg->pic_count = num; 仅 lv_anim_set_values 改为 (int32_t)num, 0",
+        "两函数均为头文件 src/widgets/animimage/lv_animimage.h:76 与 :84 暴露的公共 API，重复会长期存在"
+      ],
+      "rule": "MAINTAINABILITY-002",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 复制粘贴式重复实现（duplicated code）。影响评估：不直接影响运行时，但两处公共 API 的初始化逻辑今后必须成对修改，漏改会导致正向与反向播放行为分叉，属于典型的维护性隐患。",
+        "suggestion": "[重构思路] 抽出 static 内部函数承载公共赋值，方向只作为参数传入；公共 API 保留薄封装。代码示例：\n```c\nstatic void animimg_set_src_internal(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n    if(reverse) lv_anim_set_values(&animimg->anim, (int32_t)num, 0);\n    else lv_anim_set_values(&animimg->anim, 0, (int32_t)num);\n}\n\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    animimg_set_src_internal(obj, dsc, num, false);\n}\n\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    animimg_set_src_internal(obj, dsc, num, true);\n}\n```",
+        "subcategory": "重复代码"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/widgets/animimage/lv_animimage.h",
+      "line": 76,
+      "title": "公共 API lv_animimg_set_src 直接收窄参数且未保留弃用别名，属破坏性变更",
+      "description": "lv_animimg_set_src 的参数个数从 4 个变为 3 个，且仓库内没有任何指向旧签名的弃用包装或兼容层（全部 8 处引用均为新的 3 参形式）。所有外部工程中形如 lv_animimg_set_src(obj, dsc, num, true) 的调用都会在升级后直接编译失败，用户必须手工迁移；对于以库形式分发、被大量下游工程引用的图形库，这类无过渡期的签名修改会显著抬高升级成本。",
+      "evidence": [
+        "src/widgets/animimage/lv_animimage.h:76 — 声明由 `void lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse);` 变为三参形式",
+        "src/widgets/animimage/lv_animimage.c:110 — 定义同步移除 bool reverse 形参，原 reverse 分支被迁出为独立函数",
+        "review_find_references(\"lv_animimg_set_src\") 的 8 处命中全部为 3 参调用，仓库内不存在任何 4 参旧签名的弃用包装",
+        "examples/widgets/animimg/lv_example_animimg_1.c:17 — 示例调用同步去掉第四个实参 false"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 破坏性公共 API 变更且缺少弃用过渡。影响评估：下游用户代码编译失败，需要人工迁移；若项目有「同一大版本内保持源码兼容」的约定，则该改动违反约定。注意：由于旧参数为 bool，不做兼容层时至少能通过编译错误显式暴露，不会被静默忽略。",
+        "suggestion": "[重构思路] 若本次变更不是落在允许破坏兼容的大版本窗口内，可保留旧签名的弃用包装（内部转调新函数，并加弃用告警），在下一大版本再移除；并在迁移说明/变更日志中记录本条 breaking change 与替换方式。代码示例：\n```c\n#if LV_USE_DEPRECATED\nLV_ATTRIBUTE_DEPRECATED void lv_animimg_set_src_v4(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse);\n#endif\n/* 迁移指引：lv_animimg_set_src(o, d, n, false) -> lv_animimg_set_src(o, d, n)\n *           lv_animimg_set_src(o, d, n, true)  -> lv_animimg_set_src_reverse(o, d, n) */\n```",
+        "subcategory": "公共 API 兼容性"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/widgets/animimage/lv_animimage.h",
+      "line": 84,
+      "title": "新 API 名 set_src_reverse 与既有 set_reverse_duration/set_reverse_delay 语义易混",
+      "description": "同一头文件中已存在 lv_animimg_set_reverse_duration（117 行）与 lv_animimg_set_reverse_delay（124 行），二者描述的是「正向播放结束后再反向回放」的动画行为；而新增的 lv_animimg_set_src_reverse 描述的是图片源数组的播放顺序（从最后一帧到第一帧），两者互不相干。命名共用 reverse 一词且都以 set_ 开头，使用者很容易误以为必须搭配设置，或误认为 src_reverse 会自动启用回放（bounce）效果。",
+      "evidence": [
+        "src/widgets/animimage/lv_animimage.h:84 — 新增 `void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num);`",
+        "src/widgets/animimage/lv_animimage.h:112-117 — 既有 `lv_animimg_set_reverse_duration`，注释为 \"Make the image animation to play back to when the forward direction is ready.\"",
+        "src/widgets/animimage/lv_animimage.c:150-152 — lv_animimg_set_duration 内部同时设置 lv_anim_set_reverse_delay，说明 reverse_* 系列属于动画回放语义",
+        "docs/src/details/widgets/animimg.rst:36-37 — 文档用 \"flip playback\" 描述新函数，与头文件中 reverse 一致地含混"
+      ],
+      "rule": "NAMING-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 相近/冲突的 API 命名导致语义歧义。影响评估：不改变运行时行为，但会提高误用概率（例如用户设置了 src_reverse 却期待回放效果，或重复设置两套 reverse 造成理解与排查成本）。",
+        "suggestion": "[重构思路] 让命名指向「源顺序」而非「动画反向」，例如 lv_animimg_set_src_reversed / lv_animimg_set_src_reverse_order，并在 Doxygen 注释中显式说明与 set_reverse_duration/set_reverse_delay 的区别（前者只影响帧顺序，不改动画参数）。代码示例：\n```c\n/**\n * Set the images source and play the frames in reverse order (last -> first).\n * Note: this only changes frame order; it is unrelated to\n * lv_animimg_set_reverse_duration()/lv_animimg_set_reverse_delay().\n */\nvoid lv_animimg_set_src_reversed(lv_obj_t * obj, const void * dsc[], size_t num);\n```",
+        "subcategory": "API 命名歧义"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "docs/src/details/widgets/animimg.rst",
+      "line": 36,
+      "title": "文档仅一句话介绍反向播放，未说明语义、与 set_src 的覆盖关系且无示例",
+      "description": "新增段落只说「set the images source for flip playback」，未说明反向播放是从最后一帧播到第一帧、两函数互斥地覆盖同一组 dsc/pic_count（后调用者生效）、也未提示与 reverse_duration 的区别；同时示例目录与文档中都没有任何 lv_animimg_set_src_reverse 的实际用法。作为新增的公共 API，用户只能读实现才能确认其行为。",
+      "evidence": [
+        "docs/src/details/widgets/animimg.rst:36-37 — 仅新增两行 \"To set the images source for flip playback of animation image, use :cpp:expr:`lv_animimg_set_src_reverse(animimg, dsc[], num)`\"",
+        "docs/src/details/widgets/animimg.rst:79-84 — Example 段只 include ../../examples/widgets/animimg/index.rst，未新增反向播放示例",
+        "src/widgets/animimage/lv_animimage.c:116 与 :125 — 两函数都写 animimg->dsc / animimg->pic_count，说明二者互相覆盖，文档未说明"
+      ],
+      "rule": "DOC-002",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 新增公共 API 的文档说明不完整（缺语义、缺覆盖关系、缺示例）。影响评估：用户需阅读源码才能正确使用，容易把反向播放与动画回放（reverse_duration）混淆，间接提高误用与支持成本。",
+        "suggestion": "[重构思路] 补齐三点：1) 明确帧顺序（最后一帧 -> 第一帧）；2) 说明它只是同一组图片源的另一种排列，重复调用后者生效；3) 与 reverse_duration/reverse_delay 的区别。若条件允许，追加一个最小示例。代码示例：\n```rst\nImage sources\n-------------\n\nTo set the frames of the animation (played in the given order), use\n:cpp:expr:`lv_animimg_set_src(animimg, dsc[], num)`.\n\nTo play the same frames in reverse order (from the last frame to the first),\nuse :cpp:expr:`lv_animimg_set_src_reverse(animimg, dsc[], num)`. It sets the\nsame source array, so the last call wins. This only changes the frame order;\nfor playback (bounce) behavior use :cpp:expr:`lv_animimg_set_reverse_duration`.\n```",
+        "subcategory": "API 文档缺失"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "src/widgets/animimage/lv_animimage.c",
+      "line": 125,
+      "title": "反向入口沿用 size_t num 与 uint8_t pic_count、int32_t 动画值混用，存在宽度隐式收窄",
+      "description": "animimg->pic_count 为 uint8_t，而形参 num 为 size_t：赋值时静默截断；同一函数里又用 (int32_t)num 作为动画起止值。当 num 超过 255 时，pic_count 与动画起止值将不一致，且该行为现在被复制到两个公共入口（正/反向各一份），扩大了潜在不一致面。另外该 setter 被 LV_PROPERTY_ANIMIMAGE_SRC 属性表以 void * 方式间接调用，属性系统按 (lv_obj_t*, const void*, int32_t) 传参（见 lv_obj_property.c 的类型转换宏），与 size_t 形参宽度不一致。该问题在本次变更前已存在，本次新增函数沿用了同一模式，故仅提示。",
+      "evidence": [
+        "src/widgets/animimage/lv_animimage.c:125 — `lv_anim_set_values(&animimg->anim, (int32_t)num, 0);` 与上行 `animimg->pic_count = num;` 混用 size_t 入参",
+        "src/widgets/animimage/lv_animimage.c:200-205 — `uint8_t lv_animimg_get_src_count(...)` 返回 `animimg->pic_count`，可确认 pic_count 的宽度为 uint8_t",
+        "src/widgets/animimage/lv_animimage.c:55 — 属性表 `.setter = lv_animimg_set_src`，而 src/core/lv_obj_property.c:31 以 `((lv_property_set_##type##_integer_t)(prop->setter))(obj, value->arg1.field, value->arg2.num)` 即 int32_t 传参",
+        "src/widgets/animimage/lv_animimage.h:40 — `LV_PROPERTY_ID2(ANIMIMAGE, SRC, LV_PROPERTY_TYPE_POINTER, LV_PROPERTY_TYPE_INT, 0)` 表明该属性走「指针 + int32」双参通道"
+      ],
+      "rule": "PORTABILITY-003",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 整数宽度隐式收窄 / 函数指针间接调用参数宽度不匹配。影响评估：num ≤ 255 的常见场景无影响；num 超限时 pic_count 被截断而动画值仍是原值，index_change 的 `if(idx >= pic_count) idx = pic_count - 1` 钳制行为会与预期不符；属性间接调用路径在 64 位平台上的 size_t 高位语义未定义。",
+        "suggestion": "[重构思路] 借本次 breaking 变更统一宽度：pic_count 与 num 使用同一类型（如 uint32_t），或在函数入口显式校验后赋值；属性 setter 建议改用与 int32_t 匹配的形参或增加显式转换包装。代码示例：\n```c\nstatic void animimg_set_src_internal(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    if(num == 0) { LV_LOG_WARN(\"empty source array\"); return; }\n    animimg->dsc = dsc;\n    animimg->pic_count = (uint8_t)LV_MIN(num, (size_t)UINT8_MAX); /* 或把 pic_count 改为 uint32_t */\n    int32_t end = (int32_t)animimg->pic_count;\n    lv_anim_set_values(&animimg->anim, reverse ? end : 0, reverse ? 0 : end);\n}\n```",
+        "subcategory": "整数宽度与截断"
+      }
+    }
+  ]
+}

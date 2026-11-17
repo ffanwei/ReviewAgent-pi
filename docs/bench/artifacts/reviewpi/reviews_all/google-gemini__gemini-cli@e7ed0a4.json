@@ -1,0 +1,121 @@
+{
+  "generatedAt": "2026-11-15T03:58:01.073Z",
+  "runId": "20261115_035621_126",
+  "source": "mr",
+  "caseId": "google-gemini__gemini-cli@e7ed0a4",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "安全",
+      "file": "packages/core/src/tools/grep.ts",
+      "line": 105,
+      "title": "GrepTool 越界校验仍用裸 startsWith，前缀同名目录可绕过",
+      "description": "本次重构把 EditTool/LSTool/ReadFileTool/WriteFileTool/GlobTool 的路径越界校验统一改为 utils/fileUtils.ts 的 isWithinRoot，但 GrepTool 的 resolveAndValidatePath 只把 rootDirectory 换成了 config.getTargetDir()，仍保留 `targetPath.startsWith(this.config.getTargetDir())` 这种无分隔符归一的前缀比较。当 targetDir 为 /home/u/proj 时，params.path 传 '../proj-secret' 经 path.resolve 得到 /home/u/proj-secret，`startsWith('/home/u/proj')` 为 true，校验通过，search_file_content 会递归搜索并返回项目目录之外的文件内容（文件路径与匹配行都会进入 llmContent），构成路径越界读取。这与 MR 收敛校验实现的意图相悖，也说明共享函数并未真正覆盖全部工具。",
+      "evidence": [
+        "packages/core/src/tools/grep.ts:104-107 — `if (!targetPath.startsWith(this.config.getTargetDir()) && targetPath !== this.config.getTargetDir())`，比较前未追加 path.sep 归一",
+        "packages/core/src/utils/fileUtils.ts:44-53 — 共享实现显式构造 rootWithSeparator 后再 startsWith，正是为规避同前缀目录问题",
+        "packages/core/src/tools/edit.ts:137、ls.ts:116、read-file.ts:88、write-file.ts:106、glob.ts:132 — 这些同类校验均已切换为 isWithinRoot(params.path, this.config.getTargetDir())",
+        "packages/core/src/tools/grep.ts:98-101 — targetPath 由 path.resolve(this.config.getTargetDir(), relativePath || '.') 计算，'../xxx' 可解析到兄弟目录",
+        "packages/core/src/tools/grep.ts:149 与 178 — validateToolParams 与 execute 都只依赖该方法做安全判定"
+      ],
+      "rule": "SECURITY-PATH-001",
+      "confidence": 0.76,
+      "tips": {
+        "review": "[缺陷类型] 路径越界校验使用无分隔符归一的字符串前缀比较（prefix confusion）。影响评估：攻击面来自模型可控的 path 参数，可读取 targetDir 之外、且目录名以 targetDir 路径为前缀的兄弟目录内容（如 /home/u/proj 与 /home/u/proj-secret），属于安全边界失效；同时造成工具间校验语义不一致，后续维护容易误判已有保护。",
+        "suggestion": "[重构思路] 复用 fileUtils.isWithinRoot，让所有工具的越界判定只有一份实现；同时在方法开头取出 targetDir 局部变量，避免同一个条件里三次调用 getTargetDir()。代码示例：\n```ts\nprivate resolveAndValidatePath(relativePath?: string): string {\n  const targetDir = this.config.getTargetDir();\n  const targetPath = path.resolve(targetDir, relativePath || '.');\n  if (!isWithinRoot(targetPath, targetDir)) {\n    throw new Error(\n      `Path validation failed: Attempted path \"${relativePath || '.'}\" resolves outside the allowed root directory \"${targetDir}\".`,\n    );\n  }\n  // ...\n}\n```",
+        "subcategory": "路径越界校验"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "安全",
+      "file": "packages/core/src/tools/read-many-files.ts",
+      "line": 310,
+      "title": "ReadManyFilesTool 安全兜底仍是裸 startsWith，未复用共享校验",
+      "description": "execute 中的安全兜底把 toolBaseDir 替换成 config.getTargetDir() 后，仍写作 `!absoluteFilePath.startsWith(this.config.getTargetDir())`，既没有对候选路径做 path.normalize/path.resolve，也没有复用本次引入的 isWithinRoot。glob 在 cwd 为 targetDir 时虽然多数情况返回已解析的绝对路径，但一旦绝对路径里带有 '..' 段或与 targetDir 同前缀的兄弟目录（/root 与 /root-other），该判定会把越界文件当成合法文件继续走 processSingleFileContent 读取，安全注释所声明的「glob 返回越界路径」保护并不可靠。",
+      "evidence": [
+        "packages/core/src/tools/read-many-files.ts:308-316 — 循环内 `if (!absoluteFilePath.startsWith(this.config.getTargetDir()))` 后才跳过越界文件",
+        "packages/core/src/tools/read-many-files.ts:286-294 — glob 使用 cwd: this.config.getTargetDir()，返回 absolute 路径直接送入上述判定",
+        "packages/core/src/utils/fileUtils.ts:39-53 — 共享 isWithinRoot 会先 path.resolve 双方并补分隔符，本处两者都缺失",
+        "packages/core/src/tools/read-many-files.ts:369-372 — 通过判定的路径随即被 processSingleFileContent(filePath, this.config.getTargetDir()) 读取并拼入返回内容"
+      ],
+      "rule": "SECURITY-PATH-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 安全兜底校验不健壮（未归一 + 前缀比较）。影响评估：越界保护依赖 glob 输出形态的隐含假设，pattern 中含 '..' 或目标目录存在同前缀兄弟目录时可能读到 targetDir 之外的文件内容并回传给模型；与 MR 其他工具的统一校验不一致，也会让后续修改误以为已有覆盖。",
+        "suggestion": "[重构思路] 与 grep 保持一致，统一走 isWithinRoot，并且把 targetDir 提到方法开头只取一次。代码示例：\n```ts\nconst targetDir = this.config.getTargetDir();\n// ...\nif (!isWithinRoot(absoluteFilePath, targetDir)) {\n  skippedFiles.push({\n    path: absoluteFilePath,\n    reason: `Security: Glob library returned path outside target directory. Base: ${targetDir}, Path: ${absoluteFilePath}`,\n  });\n  continue;\n}\n```",
+        "subcategory": "路径越界校验"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "packages/core/src/utils/fileUtils.ts",
+      "line": 39,
+      "title": "isWithinRoot 由 normalize 改为 resolve，语义变化未被说明与覆盖",
+      "description": "共享 isWithinRoot 把两侧的 path.normalize 改为 path.resolve。normalize 只做规范化、保留相对路径的相对性；resolve 还会以 process.cwd() 为基准转成绝对路径。因此当 pathToCheck 是相对路径时，旧实现会与绝对 rootDirectory 比较而返回 false（拒绝），新实现可能解析到 cwd 下并返回 true（放行）——这是一次静默的「放宽」语义变更。当前所有调用方（edit/ls/read-file/write-file/glob）都先用 path.isAbsolute 拦截或在调用前 path.resolve，所以暂未造成越界，但该函数是安全边界判定，这种隐式放宽没有注释说明，也没有针对相对路径输入的行为约定，后续新增调用方很容易踩坑。",
+      "evidence": [
+        "packages/core/src/utils/fileUtils.ts:39-40 — `const normalizedPathToCheck = path.resolve(pathToCheck); const normalizedRootDirectory = path.resolve(rootDirectory);`（diff 中原为 path.normalize）",
+        "packages/core/src/tools/read-file.ts:85-88 — 调用前用 path.isAbsolute 拦截相对路径，说明调用方默认依赖「绝对路径入参」这一约定",
+        "packages/core/src/tools/glob.ts:127-132 — 调用前已将 searchDirAbsolute 做 path.resolve，属正确用法示范",
+        "packages/core/src/utils/fileUtils.ts:29-34 — JSDoc 仅写 “The absolute path to check”，未描述相对路径下的新行为"
+      ],
+      "rule": "CORRECTNESS-PATH-NORMALIZE",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 安全校验函数的语义被静默放宽（normalize → resolve）。影响评估：眼下调用方都传绝对路径，无直接漏洞；但该函数承载越界防护，语义变化缺注释与约定，未来调用方若直接透传模型给出的相对路径，会把 cwd 之内的相对路径判为合法，使防护失效且难以排查。",
+        "suggestion": "[重构思路] 在函数入口显式声明契约：非绝对路径直接返回 false（或抛错），让安全判定只对绝对路径生效，并在 JSDoc 中写明。代码示例：\n```ts\nexport function isWithinRoot(pathToCheck: string, rootDirectory: string): boolean {\n  if (!path.isAbsolute(pathToCheck) || !path.isAbsolute(rootDirectory)) {\n    return false; // 安全判定只接受绝对路径\n  }\n  const normalizedPathToCheck = path.resolve(pathToCheck);\n  const normalizedRootDirectory = path.resolve(rootDirectory);\n  // ...\n}\n```",
+        "subcategory": "路径校验语义"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/core/src/tools/glob.ts",
+      "line": 136,
+      "title": "targetDir 的 || fallback 为死代码，掩盖了真实取值来源",
+      "description": "validateToolParams 中 `const targetDir = searchDirAbsolute || this.config.getTargetDir();` 的右侧分支永远不会被执行：searchDirAbsolute 由 path.resolve(...) 产生，resolve 恒返回非空字符串。本次 MR 修改了这一行（把 rootDirectory 换成 config.getTargetDir()），但保留了这段无效 fallback，会让读者误以为 searchDirAbsolute 可能为空并需要回退到根目录，增加后续阅读与修改成本。",
+      "evidence": [
+        "packages/core/src/tools/glob.ts:127-130 — searchDirAbsolute = path.resolve(this.config.getTargetDir(), params.path || '.')，resolve 返回值恒为非空字符串",
+        "packages/core/src/tools/glob.ts:136 — `const targetDir = searchDirAbsolute || this.config.getTargetDir();`，右操作数不可达",
+        "packages/core/src/tools/glob.ts:138-143 — 后续 existsSync/statSync 使用的 targetDir 实际恒等于 searchDirAbsolute"
+      ],
+      "rule": "MAINTAINABILITY-DEAD-BRANCH",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 不可达的分支 / 死代码被本次改动一并保留。影响评估：不影响运行时行为，但损害可读性，并容易让后续维护者误判「searchDirAbsolute 可能为空」从而做出错误的空值处理，属于可维护性隐患。",
+        "suggestion": "[重构思路] 直接使用 searchDirAbsolute 并删除 fallback；若确需回退，应用显式的存在性判断而非字符串真值判断。代码示例：\n```ts\nconst searchDirAbsolute = path.resolve(\n  this.config.getTargetDir(),\n  params.path || '.',\n);\nif (!isWithinRoot(searchDirAbsolute, this.config.getTargetDir())) {\n  return `Search path (\"${searchDirAbsolute}\") resolves outside the tool's root directory.`;\n}\n// 后续直接使用 searchDirAbsolute\n```",
+        "subcategory": "死代码清理"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/core/src/tools/read-many-files.ts",
+      "line": 287,
+      "title": "删除 toolBaseDir 后同一方法内反复调用 getTargetDir()",
+      "description": "execute 中原有的局部变量 toolBaseDir 被删掉，改为在 glob 的 cwd、fileDiscovery 的 path.relative/path.resolve、越界校验、跳过原因文案、显示路径、processSingleFileContent 参数、结果标题等处反复调用 this.config.getTargetDir()（同一方法内约 8 次）。虽然 Config.targetDir 为 readonly、每次返回值一致，语义上没有错误，但表达式变长、可读性下降，且像越界校验里 base 值前后取值写法不一致，容易在后续修改中出现「部分调用被漏改」的问题。",
+      "evidence": [
+        "packages/core/src/tools/read-many-files.ts:286-294 — `cwd: this.config.getTargetDir()`",
+        "packages/core/src/tools/read-many-files.ts:296-305 — entries.map((p) => path.relative(this.config.getTargetDir(), p)) 与 .map((p) => path.resolve(this.config.getTargetDir(), p)) 各调用一次",
+        "packages/core/src/tools/read-many-files.ts:308-316 — 越界判定与 reason 文案中各调用一次",
+        "packages/core/src/tools/read-many-files.ts:342-345、369-372、406 — 显示相对路径、processSingleFileContent 入参、结果标题再各调用一次",
+        "packages/core/src/tools/read-many-files.ts:265-268 — diff 中被删除的 `const toolBaseDir = this.targetDir;` 原本承担了单点取值职责"
+      ],
+      "rule": "READABILITY-LOCAL-CONST",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 重复的属性方法调用替代了原有局部变量，降低可读性。影响评估：不改变行为（targetDir 为 readonly 且已 path.resolve），但方法体可读性变差，且跨 8 处调用使后续「统一改校验/改基准目录」的改动更容易遗漏个别调用点。",
+        "suggestion": "[重构思路] 在方法开头恢复单点取值的局部常量，用它替换方法内所有 this.config.getTargetDir()，与删除前的 toolBaseDir 等价但类型更明确。代码示例：\n```ts\nasync execute(params: ReadManyFilesParams, signal: AbortSignal): Promise<ToolResult> {\n  const targetDir = this.config.getTargetDir();\n  // ... glob({ cwd: targetDir, ... })\n  // ... path.relative(targetDir, p) / path.resolve(targetDir, p)\n}\n```",
+        "subcategory": "局部变量与重复调用"
+      }
+    }
+  ]
+}

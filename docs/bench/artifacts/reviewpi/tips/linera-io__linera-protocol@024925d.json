@@ -1,0 +1,87 @@
+[
+  {
+    "filePath": "linera-core/src/updater.rs",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if highest_key_score + remaining_votes < committee.quorum_threshold() {",
+        "review": "[缺陷类型] 分布式共识收集循环的提前退出改变了错误信息完整性（错误样本丢失 + `Trusted` 错误可能不再被识别）。影响评估：验证失败时的错误类型与文案退化，`client/mod.rs:1526` 依赖 `Trusted(InactiveChain)` 的优雅分支可能失效，排障难度上升；不会导致数据错误，但会影响失败路径的可观测性与部分控制流。",
+        "suggestion": "[重构思路] 把「不可能达到 quorum」也做成一个截止时间（或允许在 break 前把已就绪的响应尽力 drain 完），保证错误样本尽量完整；如果确实要立即退出，请在测试中固化「多验证者返回同一错误时仍返回 Trusted」的行为。代码示例：`if highest_key_score + remaining_votes < committee.quorum_threshold() { // 仍然是终止条件，但先收集已就绪的响应 end_time = Some(Instant::now()); continue; }` 或 `if highest_key_score + remaining_votes < committee.quorum_threshold() { while let Ok(Some((name, result))) = responses.next().now_or_never().flatten() { /* 记录 error_scores / value_scores */ } break 'vote_wait; }`",
+        "category": "可靠性",
+        "subcategory": "错误信息丢失与提前退出",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 174,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F002",
+        "code": "grace_period: impl Into<Option<f64>>,",
+        "review": "[缺陷类型] 新增可配置参数无实际调用方 + 默认参数静默变更（0.2→0.1）。影响评估：一方面引入无收益的 API 复杂度与类型推断可读性问题；另一方面宽限期缩半会影响 quorum 达成后额外响应的收集量，属于分布式时序行为变更，若没有对应的性能/正确性论证，潜在地缩小了收集额外投票与错误样本的窗口。",
+        "suggestion": "[重构思路] 二选一：若暂无调用方需要自定义，先不引入参数，只提交调参并说明理由；若确实要可配置，用显式 `Option<f64>` 并在 4 个调用点写出可读的 `None` 语义（如 `/* grace_period */ None`），后续通过配置注入。代码示例：`pub async fn communicate_with_quorum<...>(..., grace_period: Option<f64>) -> ...` 且调用处 `communicate_with_quorum(&nodes, committee, group_by, execute, /* grace_period */ None)`；若要禁用宽限期显式传 `Some(0.0)`。",
+        "category": "可维护",
+        "subcategory": "API 设计 / 默认参数变更",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 109,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "/// The default amount of time we wait for additional validators to contribute",
+        "review": "[缺陷类型] 行尾空白导致 rustfmt 检查不一致。影响评估：`cargo fmt -- --check` 会检测到差异，CI 格式 job 失败；功能无影响。",
+        "suggestion": "[重构思路] 提交前执行 `cargo fmt --all`，并在编辑器开启 trim trailing whitespace。代码示例：`/// The default amount of time we wait for additional validators to contribute`（去掉行尾空格）",
+        "category": "可读性",
+        "subcategory": "格式/空白字符",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 34,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/kubernetes.yml",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "",
+        "review": "[缺陷类型] 测试/CI 覆盖流失（删除了唯一的 k8s 部署 e2e 与指标校验任务）。影响评估：`helmfile.yaml`、`scylla-manager` values、`docker-compose.yml` 的回归只能靠人工验证，像本 MR 这样同时删除 scylla-manager values 覆盖的改动将无法被自动化发现部署失败。",
+        "suggestion": "[重构思路] 在 MR 描述中记录替代验证手段（本地 `helmfile apply` 记录、或其它工作流迁移），并至少保留配置层校验。代码示例：新增轻量 job `k8s-config-lint`：`uses: mamezou-tech/setup-helmfile@v1.3.0` 后执行 `helmfile -f kubernetes/linera-validator/helmfile.yaml template > /dev/null`，以及 `docker compose -f docker/docker-compose.yml config`。",
+        "category": "可测试性",
+        "subcategory": "CI 覆盖流失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "linera-core/src/node.rs",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "#[error(\"Response doesn't contain requested ceritifcates: {0:?}\")]",
+        "review": "[缺陷类型] 用户可见字符串的残留拼写错误。影响评估：仅影响日志/错误文案可读性与搜索匹配（按正确拼写 `certificates` 搜索日志会漏掉该错误），无功能影响。",
+        "suggestion": "[重构思路] 顺手修正完整单词。代码示例：`#[error(\"Response doesn't contain requested certificates: {0:?}\")]`",
+        "category": "可读性",
+        "subcategory": "错误信息拼写",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 205,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

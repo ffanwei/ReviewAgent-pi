@@ -1,0 +1,255 @@
+{
+  "instance_id": "browser-use__browser-use@aab7b3b",
+  "repo": "browser-use/browser-use",
+  "base_commit": "515b94225aa86c40dc2c20034055ab8bcc88c6ae",
+  "head_commit": "aab7b3bb54e2b15ee3b32ad7de74c91fc8b22f52",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T03:32:15.361772+00:00",
+  "duration_seconds": 204.76,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 5 finding(s) across 8 selected item(s).",
+    "summary": {
+      "files_reviewed": 8,
+      "comments": 5,
+      "total_tokens": 1100646,
+      "input_tokens": 1056115,
+      "output_tokens": 44531,
+      "cache_read_tokens": 932864,
+      "elapsed": "3m24s"
+    },
+    "tool_calls": {
+      "total": 81,
+      "by_tool": {
+        "code_comment": 3,
+        "code_search": 42,
+        "file_read": 30,
+        "file_read_diff": 6
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "pyproject.toml",
+        "content": "All runtime imports in `browser_use/*` were switched to `patchright` (browser.py, context.py, dom/service.py, controller/service.py, dolphin_service.py), so `patchright` becomes the real driver while `playwright` is now only used by examples/tests (`examples/custom-functions/action_filters.py`, `tests/test_action_filters.py`, `tests/test_browser.py`). Keeping both as runtime deps ships two copies of the driver and doubles the downloaded browsers; `playwright` should probably move to `[tool.uv] dev-dependencies`.\n\nAlso, the code imports a private patchright API (`patchright._impl._errors.TimeoutError`), which is coupled to the exact upstream playwright version. An unbounded `>=1.51.0` means a future patchright release could change/remove that module and break imports at startup — pin an upper bound aligned with the playwright version you support.",
+        "suggestion_code": "    \"patchright>=1.51.0,<1.52.0\",",
+        "existing_code": "    \"patchright>=1.51.0\",",
+        "start_line": 19,
+        "end_line": 19,
+        "thinking": "So the important issue in pyproject.toml scope: adding patchright dependency but existing setup instructions still require `playwright install chromium`; patchright requires `patchright install chromium` (its driver is separate and not registered as the playwright CLI). The browser launch now uses patchright with `channel='chrome'` — patchright requires actual Chrome installed, not chromium binary. Adding the dependency alone won't be enough; users installing via pip get patchright but no Chrome; and the documented `playwright install chromium` won't satisfy patchright's expectations. That's a real functional concern, but it's about docs not in this review group. Still, commenting on pyproject: adding patchright without removing/aligning playwright and without post-install browser setup is fair.\n\nAlso -- is `playwright` still needed? Yes, examples/tests use it, and it's now redundant as runtime dep. Since patchright is a superset/drop-in replacement, having both increases install size ~ and both download browsers.\n\nAnother concern: no upper bound/version pin compatibility between patchright and playwright. Patchright only supports exact Playwright versions? Patchright version numbers match playwright's, e.g., patchright 1.51.0 corresponds to playwright 1.51.0. They are independent packages though, so no conflict.\n\nAnother concern about patchright: at time of writing patchright does not support Firefox/WebKit? Patchright is for Chromium only (it's a stealth-patched Playwright for Chrome/Chromium). The BrowserConfig supports browser_class 'firefox' and 'webkit'. If patchright doesn't support firefox/webkit launches, using patchright for those will break. That's in browser.py though (already reviewed elsewhere? not in this group). For pyproject comment, we can note patchright is Chromium-only and browser_class firefox/webkit support may break — but comment must be mounted on pyproject lines. Hmm, comments must address code within review files. Attaching a functional concern to the dependency line is acceptable since it's about the dependency choice.\n\nAlso patchright silently drops support for python versions? Patchright requires Python >=3.9 — fine.\n\nAnother real issue: patchright is installed but not pinned to a compatible playwright version; patchright pip install includes its own driver so `playwright install` won't install patchright's browser. The README/docs still instruct playwright install — the missing \"patchright install chromium\" post-install step is a genuine break for new users. Since docs aren't in this review group, I should note it as a risk with the dependency addition.\n\nLet me verify patchright's install semantics via package metadata in repo? Not available. I'm fairly confident: Patchright is a drop-in replacement and requires `patchright install chromium` — it does not use playwright's browser cache. Indeed Patchright docs: \"patchright install chromium\". So yes.\n\nAlso note the `channel='chrome'` in browser.py requires real Chrome; patchright's chromium binary is stored separately.\n\nI'll give one or two comments:\n1. patchright added alongside playwright — redundant/ambiguous; specify upper bound / explain why both needed; if playwright is now only used by examples/tests, move to dev deps.\n2. Missing post-install browser setup: patchright needs its own `patchright install chromium`; docs/README still say `playwright install chromium`, so pip installs will fail to launch. Suggest documenting / providing install step, or add note comment in pyproject.\n\nAlso mention patchright is Chromium-only, so `browser_class` firefox/webkit configs would break — mention in the same comment maybe.\n\nI'll produce comments. Keep to 1-2, concise.\n\nFor line 19 added: `\"patchright>=1.51.0\",`\n\nComment 1 (high, maintainability/bug?): adding patchright but leaving playwright — explain and pin.\n\nComment 2 (medium): missing install instruction/post-install.\n\nLet me write suggestion codes.\n\nComment 1:\ncontent: \"patchright is now the runtime browser driver (all imports in browser_use/* were switched to patchright), but playwright is still declared as a runtime dependency. Both packages ship their own driver (~large installs and two browser downloads); if playwright is only needed by examples/tests (examples/custom-functions/action_filters.py, tests/test_action_filters.py, tests/test_browser.py), move it to dev-dependencies. Also consider an upper bound on patchright since its API tracks playwright tightly (patchright 1.51.x == playwright 1.51.x) and minor-version drift has historically broken internal imports used at `patchright._impl._errors`.\"\n\nsuggestion_code: keep both? Provide:\n```\n    \"patchright>=1.51.0,<1.52.0\",\n```\nHmm; safer to suggest a note comment. I'll provide a suggestion with pinned compatible range? Specifying `<1.52.0` might be too aggressive since project upgrades playwright. But context.py imports `patchright._impl._errors.TimeoutError` — private API, so tight pin is justified. Yet patchright didn't upgrade in step? Patchright releases follow playwright releases. I'd say `patchright==1.51.*` aligned with playwright>=1.51.0. Hmm, playwright dep remains >=1.51.0; maybe suggest aligning pins.\n\nComment 2:\ncontent: \"Adding patchright without updating the install instructions will break fresh installs: patchright keeps its browser binaries in a separate cache and has its own CLI, so `playwright install chromium` (README.md:33, docs/quickstart.mdx:38) does not provision a browser for patchright; `patchright install chromium` is required. Also note patchright only supports Chromium/Chrome, while BrowserConfig still allows browser_class 'firefox'/'webkit', which will fail at launch.\" — But this comment targets docs; still attached to dependency line. Is that acceptable? It's about the dependency addition introducing a setup requirement. I think acceptable but maybe merge into one comment to avoid noise. I'll produce two comments but second as medium.\n\nActually the \"Strict focus rules\" say comments must address code within review files — attaching to pyproject line 19 is within the review file. Fine.\n\nI'll do two comments.",
+        "category": "maintainability",
+        "severity": "medium"
+      },
+      {
+        "path": "pyproject.toml",
+        "content": "Adding `patchright` as a dependency also introduces a new install-time requirement that is not reflected anywhere: patchright keeps its browser binaries in its own cache and has its own CLI, so the documented `playwright install chromium` step (README.md:33, docs/quickstart.mdx:38) does not provision a browser for patchright — `patchright install chromium` is needed instead. Fresh `pip/uv install browser-use` followed by the documented steps will fail to launch. Please update the install instructions (or add a note here) in the same change.\n\nAdditionally, patchright only supports Chromium/Chrome, while `BrowserConfig.browser_class` still allows `'firefox'`/`'webkit'`, which will now fail at launch.",
+        "existing_code": "    \"patchright>=1.51.0\",",
+        "start_line": 19,
+        "end_line": 19,
+        "thinking": "So the important issue in pyproject.toml scope: adding patchright dependency but existing setup instructions still require `playwright install chromium`; patchright requires `patchright install chromium` (its driver is separate and not registered as the playwright CLI). The browser launch now uses patchright with `channel='chrome'` — patchright requires actual Chrome installed, not chromium binary. Adding the dependency alone won't be enough; users installing via pip get patchright but no Chrome; and the documented `playwright install chromium` won't satisfy patchright's expectations. That's a real functional concern, but it's about docs not in this review group. Still, commenting on pyproject: adding patchright without removing/aligning playwright and without post-install browser setup is fair.\n\nAlso -- is `playwright` still needed? Yes, examples/tests use it, and it's now redundant as runtime dep. Since patchright is a superset/drop-in replacement, having both increases install size ~ and both download browsers.\n\nAnother concern: no upper bound/version pin compatibility between patchright and playwright. Patchright only supports exact Playwright versions? Patchright version numbers match playwright's, e.g., patchright 1.51.0 corresponds to playwright 1.51.0. They are independent packages though, so no conflict.\n\nAnother concern about patchright: at time of writing patchright does not support Firefox/WebKit? Patchright is for Chromium only (it's a stealth-patched Playwright for Chrome/Chromium). The BrowserConfig supports browser_class 'firefox' and 'webkit'. If patchright doesn't support firefox/webkit launches, using patchright for those will break. That's in browser.py though (already reviewed elsewhere? not in this group). For pyproject comment, we can note patchright is Chromium-only and browser_class firefox/webkit support may break — but comment must be mounted on pyproject lines. Hmm, comments must address code within review files. Attaching a functional concern to the dependency line is acceptable since it's about the dependency choice.\n\nAlso patchright silently drops support for python versions? Patchright requires Python >=3.9 — fine.\n\nAnother real issue: patchright is installed but not pinned to a compatible playwright version; patchright pip install includes its own driver so `playwright install` won't install patchright's browser. The README/docs still instruct playwright install — the missing \"patchright install chromium\" post-install step is a genuine break for new users. Since docs aren't in this review group, I should note it as a risk with the dependency addition.\n\nLet me verify patchright's install semantics via package metadata in repo? Not available. I'm fairly confident: Patchright is a drop-in replacement and requires `patchright install chromium` — it does not use playwright's browser cache. Indeed Patchright docs: \"patchright install chromium\". So yes.\n\nAlso note the `channel='chrome'` in browser.py requires real Chrome; patchright's chromium binary is stored separately.\n\nI'll give one or two comments:\n1. patchright added alongside playwright — redundant/ambiguous; specify upper bound / explain why both needed; if playwright is now only used by examples/tests, move to dev deps.\n2. Missing post-install browser setup: patchright needs its own `patchright install chromium`; docs/README still say `playwright install chromium`, so pip installs will fail to launch. Suggest documenting / providing install step, or add note comment in pyproject.\n\nAlso mention patchright is Chromium-only, so `browser_class` firefox/webkit configs would break — mention in the same comment maybe.\n\nI'll produce comments. Keep to 1-2, concise.\n\nFor line 19 added: `\"patchright>=1.51.0\",`\n\nComment 1 (high, maintainability/bug?): adding patchright but leaving playwright — explain and pin.\n\nComment 2 (medium): missing install instruction/post-install.\n\nLet me write suggestion codes.\n\nComment 1:\ncontent: \"patchright is now the runtime browser driver (all imports in browser_use/* were switched to patchright), but playwright is still declared as a runtime dependency. Both packages ship their own driver (~large installs and two browser downloads); if playwright is only needed by examples/tests (examples/custom-functions/action_filters.py, tests/test_action_filters.py, tests/test_browser.py), move it to dev-dependencies. Also consider an upper bound on patchright since its API tracks playwright tightly (patchright 1.51.x == playwright 1.51.x) and minor-version drift has historically broken internal imports used at `patchright._impl._errors`.\"\n\nsuggestion_code: keep both? Provide:\n```\n    \"patchright>=1.51.0,<1.52.0\",\n```\nHmm; safer to suggest a note comment. I'll provide a suggestion with pinned compatible range? Specifying `<1.52.0` might be too aggressive since project upgrades playwright. But context.py imports `patchright._impl._errors.TimeoutError` — private API, so tight pin is justified. Yet patchright didn't upgrade in step? Patchright releases follow playwright releases. I'd say `patchright==1.51.*` aligned with playwright>=1.51.0. Hmm, playwright dep remains >=1.51.0; maybe suggest aligning pins.\n\nComment 2:\ncontent: \"Adding patchright without updating the install instructions will break fresh installs: patchright keeps its browser binaries in a separate cache and has its own CLI, so `playwright install chromium` (README.md:33, docs/quickstart.mdx:38) does not provision a browser for patchright; `patchright install chromium` is required. Also note patchright only supports Chromium/Chrome, while BrowserConfig still allows browser_class 'firefox'/'webkit', which will fail at launch.\" — But this comment targets docs; still attached to dependency line. Is that acceptable? It's about the dependency addition introducing a setup requirement. I think acceptable but maybe merge into one comment to avoid noise. I'll produce two comments but second as medium.\n\nActually the \"Strict focus rules\" say comments must address code within review files — attaching to pyproject line 19 is within the review file. Fine.\n\nI'll do two comments.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "browser_use/agent/service.py",
+        "content": "This unconditional assignment silently discards an explicit context-level setting. Since `BrowserContextConfig.disable_security` defaults to `False`, a user who configures `BrowserConfig(new_context_config=BrowserContextConfig(disable_security=True))` (without also setting the top-level `BrowserConfig.disable_security`) will have it reset to `False` here, so `_create_context` will no longer pass `bypass_csp`/`ignore_https_errors`. Merging the two flags with `or` propagates the browser-level flag without overriding the context-level one.\n\nAlso note that this mutates the caller-supplied `Browser`'s config in place (even when `browser_context` is injected and this config is unused), which is a lasting side effect on a possibly shared `Browser` instance; consider building a copy of the config for the new context instead of mutating it.",
+        "suggestion_code": "\t\tself.browser.config.new_context_config.disable_security = (\n\t\t\tself.browser.config.new_context_config.disable_security or self.browser.config.disable_security\n\t\t)",
+        "existing_code": "\t\tself.browser.config.new_context_config.disable_security = self.browser.config.disable_security",
+        "start_line": 261,
+        "end_line": 261,
+        "thinking": "Fine.\n\nOne more: the `browser_use/controller/registry/views.py` module is imported by many; patchright always installed now. Fine.\n\nLet me finalize with one comment on agent/service.py. Also consider whether to flag that `new_context_config` is a pydantic field with `validate_assignment=True` and mutating the browser's config from the Agent is arguable. I'll include the side effect in the explanation, but not create a separate comment.\n\nLet me craft the exact existing_code line from diff:\n\n`\t\tself.browser.config.new_context_config.disable_security = self.browser.config.disable_security`\n\nNote indentation is tabs. Provide as in diff (tabs). I'll copy exactly.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "browser_use/browser/browser.py",
+        "content": "`channel='chrome'` is passed unconditionally, but `channel` is a Chromium-only launch option (`browser_class` still allows `'firefox'` and `'webkit'`, whose launch will fail with an unsupported-option/unknown-channel error). It also switches the builtin-browser path from the bundled Chromium that `README.md` tells users to install (`playwright install chromium`) to a system-installed Google Chrome, so a clean install/CI container without Chrome installed can no longer launch at all, and patchright's own patched Chromium build is bypassed. Please gate this on `browser_class == 'chromium'` (and ideally make it opt-in via config) instead of hardcoding it for every browser class.",
+        "suggestion_code": "\t\t\t**({'channel': 'chrome'} if self.config.browser_class == 'chromium' else {}),",
+        "existing_code": "\t\t\tchannel='chrome',",
+        "start_line": 283,
+        "end_line": 283,
+        "thinking": "Confirmed. Now write comments.\n\nComment 1 (browser.py, line 283): `channel='chrome'` — unconditional, Chromium-only option applied to firefox/webkit; requires system Google Chrome even though docs instruct installing playwright's bundled chromium; also moves away from patchright's patched chromium build. Severity high.\n\nSuggestion code: only pass channel for chromium based on config, e.g.\n\n```python\nlaunch_kwargs = {}\nif self.config.browser_class == 'chromium' and self.config.channel:\n    launch_kwargs['channel'] = self.config.channel\n```\nBut we can't add config field. Simpler: remove `channel='chrome'` or gate it:\n\n```python\n\t\tbrowser = await browser_class.launch(\n\t\t\theadless=self.config.headless,\n\t\t\t**({'channel': 'chrome'} if self.config.browser_class == 'chromium' else {}),\n\t\t\targs=args[self.config.browser_class],\n```\nHmm, but requiring system Chrome still. I'll suggest gating by browser_class and/or a config field.\n\nComment 2 (context.py lines 413-418): headed-mode viewport regression; browser_window_size ignored; config.no_viewport now dead; record_video_size mismatch.\n\nSuggestion: \n```python\n\t\t\tkwargs = {}\n\t\t\tif self.config.no_viewport:\n\t\t\t\tkwargs['no_viewport'] = True\n\t\t\telse:\n\t\t\t\tkwargs['viewport'] = self.config.browser_window_size\n```\nWait, but headless requires viewport? If no_viewport=True in headless, previous behavior existed. Keep it simple:\n\n```python\n\t\t\tkwargs: dict = {}\n\t\t\tif self.config.no_viewport:\n\t\t\t\tkwargs['no_viewport'] = True\n\t\t\telif self.browser.config.headless:\n\t\t\t\tkwargs['viewport'] = self.config.browser_window_size\n```\n\nThat preserves default headed behavior? Actually headed default previously no_viewport=True always, and config.no_viewport default None. Hmm. The safest suggestion: pass `no_viewport=True` in headed mode explicitly (restoring old behavior), since Playwright default viewport is the regression.\n\nI'll write suggestion:\n```python\n\t\t\tkwargs = {}\n\t\t\tif self.config.no_viewport or not self.browser.config.headless:\n\t\t\t\tkwargs['no_viewport'] = True\n\t\t\telse:\n\t\t\t\tkwargs['viewport'] = self.config.browser_window_size\n```\nThat keeps headless viewport and restores headed no_viewport. Good.\n\nShould I also comment on user_agent removal/anti-detection? I'll skip due to patchright handling, or mention briefly in comment 2? No, keep clean.\n\nWhat about `disable_security` conditional expression style? Fine.\n\nAlso should I flag `user_agent: str | None = None` breaking... check examples/features/custom_user_agent.py — still works.\n\nOne more check: does any code rely on `BrowserContextConfig.user_agent` being non-None, e.g., `browser_use/browser/context.py` `_update_state`? No.\n\nAny test asserting default UA? Let's quickly check tests dir for user_agent. Already searched repo — only docs/example. Fine.\n\nI'll post the two comments.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "browser_use/browser/context.py",
+        "content": "Viewport handling is now conditional on headless mode: in headed runs neither `viewport` nor `no_viewport` is passed, so the context falls back to Playwright's default 1280x720 emulated viewport instead of the previous `no_viewport=True`. `browser_window_size` (and the `--window-size` args derived from the real screen resolution) therefore no longer affect page rendering in headed mode, which changes responsive layouts, screenshot/video dimensions (note `record_video_size` still uses `browser_window_size`, so it will no longer match the viewport), and `viewport_expansion` clipping/capture. The pre-existing `BrowserContextConfig.no_viewport` field is also left completely unused. Consider restoring `no_viewport=True` for headed mode and honoring the config field.",
+        "suggestion_code": "\t\t\tkwargs: dict = {}\n\t\t\tif self.config.no_viewport or not self.browser.config.headless:\n\t\t\t\tkwargs['no_viewport'] = True\n\t\t\telse:\n\t\t\t\tkwargs['viewport'] = self.config.browser_window_size",
+        "existing_code": "\t\t\tkwargs = {}\n\t\t\tif self.browser.config.headless:\n\t\t\t\tkwargs['viewport'] = self.config.browser_window_size\n\t\t\t\tkwargs['no_viewport'] = False",
+        "start_line": 413,
+        "end_line": 416,
+        "thinking": "Confirmed. Now write comments.\n\nComment 1 (browser.py, line 283): `channel='chrome'` — unconditional, Chromium-only option applied to firefox/webkit; requires system Google Chrome even though docs instruct installing playwright's bundled chromium; also moves away from patchright's patched chromium build. Severity high.\n\nSuggestion code: only pass channel for chromium based on config, e.g.\n\n```python\nlaunch_kwargs = {}\nif self.config.browser_class == 'chromium' and self.config.channel:\n    launch_kwargs['channel'] = self.config.channel\n```\nBut we can't add config field. Simpler: remove `channel='chrome'` or gate it:\n\n```python\n\t\tbrowser = await browser_class.launch(\n\t\t\theadless=self.config.headless,\n\t\t\t**({'channel': 'chrome'} if self.config.browser_class == 'chromium' else {}),\n\t\t\targs=args[self.config.browser_class],\n```\nHmm, but requiring system Chrome still. I'll suggest gating by browser_class and/or a config field.\n\nComment 2 (context.py lines 413-418): headed-mode viewport regression; browser_window_size ignored; config.no_viewport now dead; record_video_size mismatch.\n\nSuggestion: \n```python\n\t\t\tkwargs = {}\n\t\t\tif self.config.no_viewport:\n\t\t\t\tkwargs['no_viewport'] = True\n\t\t\telse:\n\t\t\t\tkwargs['viewport'] = self.config.browser_window_size\n```\nWait, but headless requires viewport? If no_viewport=True in headless, previous behavior existed. Keep it simple:\n\n```python\n\t\t\tkwargs: dict = {}\n\t\t\tif self.config.no_viewport:\n\t\t\t\tkwargs['no_viewport'] = True\n\t\t\telif self.browser.config.headless:\n\t\t\t\tkwargs['viewport'] = self.config.browser_window_size\n```\n\nThat preserves default headed behavior? Actually headed default previously no_viewport=True always, and config.no_viewport default None. Hmm. The safest suggestion: pass `no_viewport=True` in headed mode explicitly (restoring old behavior), since Playwright default viewport is the regression.\n\nI'll write suggestion:\n```python\n\t\t\tkwargs = {}\n\t\t\tif self.config.no_viewport or not self.browser.config.headless:\n\t\t\t\tkwargs['no_viewport'] = True\n\t\t\telse:\n\t\t\t\tkwargs['viewport'] = self.config.browser_window_size\n```\nThat keeps headless viewport and restores headed no_viewport. Good.\n\nShould I also comment on user_agent removal/anti-detection? I'll skip due to patchright handling, or mention briefly in comment 2? No, keep clean.\n\nWhat about `disable_security` conditional expression style? Fine.\n\nAlso should I flag `user_agent: str | None = None` breaking... check examples/features/custom_user_agent.py — still works.\n\nOne more check: does any code rely on `BrowserContextConfig.user_agent` being non-None, e.g., `browser_use/browser/context.py` `_update_state`? No.\n\nAny test asserting default UA? Let's quickly check tests dir for user_agent. Already searched repo — only docs/example. Fine.\n\nI'll post the two comments.",
+        "category": "bug",
+        "severity": "medium"
+      }
+    ],
+    "groups": [
+      {
+        "label": "Browser context and browser service updates",
+        "files": [
+          "browser_use/browser/browser.py",
+          "browser_use/browser/context.py",
+          "browser_use/browser/dolphin_service.py"
+        ]
+      },
+      {
+        "label": "Service modules updated for browser API changes",
+        "files": [
+          "browser_use/agent/service.py",
+          "browser_use/controller/registry/views.py",
+          "browser_use/controller/service.py",
+          "browser_use/dom/service.py"
+        ]
+      },
+      {
+        "label": "Project dependency/configuration update",
+        "files": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "session_id": "90fc63bc-556f-409d-9b6c-af3b074f9019",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "90fc63bc-556f-409d-9b6c-af3b074f9019",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "966b4fb055a2fbd87fd3283b41c816d3bf37efd7aef77080eab33af87b6d875c"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "515b94225aa86c40dc2c20034055ab8bcc88c6ae",
+        "requested_head": "aab7b3bb54e2b15ee3b32ad7de74c91fc8b22f52",
+        "resolved_base": "01abdc414b4bea9da34d10c2fb5383c870396f50",
+        "resolved_head": "aab7b3bb54e2b15ee3b32ad7de74c91fc8b22f52",
+        "exact_range": "01abdc414b4bea9da34d10c2fb5383c870396f50..aab7b3bb54e2b15ee3b32ad7de74c91fc8b22f52",
+        "source_artifact_sha256": "997125db97977164b9e41af3414c960ccc72d9574399d308e27fc811d2b339ef"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "05d06e59bfc81e20e6b4357a401987ee06c29b57b6e91c7b9472e3329d447522",
+            "path": "browser_use/controller/service.py",
+            "fingerprint": "94db9f4dbe56ff2cde12b88bb916cdbccfe9534ec14ad89393573af23a9db608"
+          },
+          {
+            "item_id": "2907f5ee76498bcd85425e43137e75d0b4e34b7203ce8c23cd7b17329057b9b0",
+            "path": "browser_use/agent/service.py",
+            "fingerprint": "19ef2da3b3e80c09dcb33bb83c005b8c84ce58d243cca8b5bdf39de7ee011181"
+          },
+          {
+            "item_id": "31c39b1318b2f9aa4ee383d01bea20411614a5ae83893e0aef8577a974cf8a59",
+            "path": "browser_use/controller/registry/views.py",
+            "fingerprint": "c6b691d57557fc158ed4ca51a2bf743697f68653df2a29120ca55f5d624d46c6"
+          },
+          {
+            "item_id": "8d66379038c6c589f11ee4a67ccf244c67186da882fe263c2a509f076a43f239",
+            "path": "browser_use/browser/browser.py",
+            "fingerprint": "24ddb0c8bfe430989844de0cd227d3a40219c49e83f98881e2dca7db3c20387c"
+          },
+          {
+            "item_id": "bc2105a458f5010ac8ea2d5e53b8bffec2335036bd6004daeb455e256e06c0d3",
+            "path": "browser_use/browser/context.py",
+            "fingerprint": "32226b05bb6afd26f639565eb597350c58639d327b4764aa1d5e6a131ce83dce"
+          },
+          {
+            "item_id": "c2c55bcd427f4ae56cb0ac1b150e31c806aaed015573ed72ed4cd364a70e0fa7",
+            "path": "browser_use/dom/service.py",
+            "fingerprint": "e063bf59c7f5fbca70c948835a626dc73afd1999fa9304d5c36dd3ca89b563ae"
+          },
+          {
+            "item_id": "d98234485565ccb9bae5c817bb2b23b3e8ad4f39c4d4a4f1fb9e826fdf3418a8",
+            "path": "browser_use/browser/dolphin_service.py",
+            "fingerprint": "b676befe3facb19d1303232f9bf1b97793bcbd8333830450fee49fbea1fc6296"
+          },
+          {
+            "item_id": "fb2abd4d06e90b893c1407380be18d7242fd798ebfe7402aba1b861febc0cefe",
+            "path": "pyproject.toml",
+            "fingerprint": "c615778e279396c77834b918b76ff67a6fac4036e632e2fb6a9a3d248b7334f8"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "05d06e59bfc81e20e6b4357a401987ee06c29b57b6e91c7b9472e3329d447522",
+            "path": "browser_use/controller/service.py",
+            "fingerprint": "94db9f4dbe56ff2cde12b88bb916cdbccfe9534ec14ad89393573af23a9db608"
+          },
+          {
+            "item_id": "2907f5ee76498bcd85425e43137e75d0b4e34b7203ce8c23cd7b17329057b9b0",
+            "path": "browser_use/agent/service.py",
+            "fingerprint": "19ef2da3b3e80c09dcb33bb83c005b8c84ce58d243cca8b5bdf39de7ee011181"
+          },
+          {
+            "item_id": "31c39b1318b2f9aa4ee383d01bea20411614a5ae83893e0aef8577a974cf8a59",
+            "path": "browser_use/controller/registry/views.py",
+            "fingerprint": "c6b691d57557fc158ed4ca51a2bf743697f68653df2a29120ca55f5d624d46c6"
+          },
+          {
+            "item_id": "8d66379038c6c589f11ee4a67ccf244c67186da882fe263c2a509f076a43f239",
+            "path": "browser_use/browser/browser.py",
+            "fingerprint": "24ddb0c8bfe430989844de0cd227d3a40219c49e83f98881e2dca7db3c20387c"
+          },
+          {
+            "item_id": "bc2105a458f5010ac8ea2d5e53b8bffec2335036bd6004daeb455e256e06c0d3",
+            "path": "browser_use/browser/context.py",
+            "fingerprint": "32226b05bb6afd26f639565eb597350c58639d327b4764aa1d5e6a131ce83dce"
+          },
+          {
+            "item_id": "c2c55bcd427f4ae56cb0ac1b150e31c806aaed015573ed72ed4cd364a70e0fa7",
+            "path": "browser_use/dom/service.py",
+            "fingerprint": "e063bf59c7f5fbca70c948835a626dc73afd1999fa9304d5c36dd3ca89b563ae"
+          },
+          {
+            "item_id": "d98234485565ccb9bae5c817bb2b23b3e8ad4f39c4d4a4f1fb9e826fdf3418a8",
+            "path": "browser_use/browser/dolphin_service.py",
+            "fingerprint": "b676befe3facb19d1303232f9bf1b97793bcbd8333830450fee49fbea1fc6296"
+          },
+          {
+            "item_id": "fb2abd4d06e90b893c1407380be18d7242fd798ebfe7402aba1b861febc0cefe",
+            "path": "pyproject.toml",
+            "fingerprint": "c615778e279396c77834b918b76ff67a6fac4036e632e2fb6a9a3d248b7334f8"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "311c6f98f2a5188ad6aa03583ad7d17ffda7ae4c7d3506918e1d076dde09f9c9",
+            "path": "tests/test_attach_chrome.py",
+            "exclude_reason": "default_path"
+          },
+          {
+            "item_id": "a85edbe35bd9fcd1b8d77c9caa2474148c1305d6a7498fa687c9a53363d6a268",
+            "path": "tests/test_full_screen.py",
+            "exclude_reason": "default_path"
+          },
+          {
+            "item_id": "ac20ac55240905755a82ab2592a3352922a54f797561ae7b476de3b5469ef46c",
+            "path": "docs/customize/agent-settings.mdx",
+            "exclude_reason": "unsupported_ext"
+          }
+        ]
+      },
+      "elapsed_ms": 204301
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

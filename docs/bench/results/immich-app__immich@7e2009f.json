@@ -1,0 +1,122 @@
+{
+  "instance_id": "immich-app__immich@7e2009f",
+  "repo": "immich-app/immich",
+  "base_commit": "4d6d5537b713ca80bb2a670fdc7be66882b12d5c",
+  "head_commit": "7e2009f038cbf3f26403af6582af3cf8ba91672f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 249.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 10,
+  "review_output": [
+    {
+      "file": "server/src/repositories/config.repository.ts",
+      "line": 180,
+      "summary": "trustedProxies 默认值被清空并在 worker 内联，用户无法通过环境变量关闭 linklocal/uniquelocal 信任",
+      "failure_scenario": "配置层把 network.trustedProxies 的默认值从 ['linklocal','uniquelocal'] 改成 []，同时在 workers/api.ts 把 'linklocal','uniquelocal' 直接写进 Express 的 trust proxy 列表。默认部署下最终信任链未变，但语义发生了两处退化：(1) 用户显式设置 IMMICH_TRUSTED_PROXIES（例如只填 '172.16.0.0/12'）时，之前会完全替换默认网段，现在 linklocal/uniquelocal 永远被信任、无法通过配置排除，削弱了「收紧代理信任」这一安全加固手段；(2) config.network.trustedProxies 不再等于实际生效的信任列表，任何依赖该配置做 IP 判定/审计/文档说明的代码都会拿到与实际行为不一致的值，排查代理与限流问题时容易被误导。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "SECURITY-CONFIG-001"
+    },
+    {
+      "file": "server/src/services/metadata.service.ts",
+      "line": 453,
+      "summary": "motion 视频资产改用 getDates 后与父资产日期来源不一致，且 fileModifiedAt 取自照片的 EXIF ModifyDate",
+      "failure_scenario": "motion photo 提取出的视频资产原本直接复用 asset.fileCreatedAt/asset.fileModifiedAt，现在改为调用 getDates(asset, tags)，把照片自身的 EXIF 元数据（包括 ModifyDate）套用到视频资产上。这带来两个具体风险：(1) 无 EXIF 日期时的回退值改为 min(fileCreatedAt, fileModifiedAt)（L601），而父照片在库中已存在的 fileCreatedAt 是历史值（旧逻辑用 fileCreatedAt 回退），对存量库重新跑元数据抽取时，同一实况照片的图片与视频会被赋予不同日期，时间线/按日期搜索会出现图片与视频分离；(2) dates.modifyDate 会被 EXIF ModifyDate 覆盖（L608-611），即视频资产的 fileModifiedAt 变成照片的 EXIF 修改时间，而非视频自身文件的修改时间，语义不准确也会影响基于修改时间的去重/重扫判断。此外 getDates 内部以父资产 id 输出 verbose/warn 日志，视频资产无法从日志中区分。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-DATE-001"
+    },
+    {
+      "file": "mobile/lib/services/background.service.dart",
+      "line": 375,
+      "summary": "同一 AppSettingsService 被实例化两份（settingService / settingsService），命名仅差一个字母",
+      "failure_scenario": "_onAssetsChanged 中新增了 `AppSettingsService settingService = AppSettingsService();`，而紧随其后仍保留了 `AppSettingsService settingsService = AppSettingsService();`。新的 settingService 传给 BackupService（L425），旧的 settingsService 仍被 _runBackup 使用（L464、L511-515 读取 backgroundBackupTotalProgress/SingleProgress 等设置）。同一无状态服务被创建两份，且变量名仅差一个字母，极易在后续修改中把两者混用（例如只更新了一处而另一处仍是旧实例），也让「哪个实例对应哪个用途」无法从命名判断。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "MAINTAINABILITY-DUP-001"
+    },
+    {
+      "file": "mobile/lib/widgets/asset_viewer/detail_panel/file_info.dart",
+      "line": 21,
+      "summary": "文件信息中的分辨率输出顺序被改为「高 x 宽」，与变量语义及通行约定相反",
+      "failure_scenario": "代码先取 `height` 再取 `width`，但拼接字符串时改为 `\"$height x $width\"`，导致竖图会显示成 1080 x 1920 之类的「高 x 宽」形式。分辨率在 UI 与文档中的通行约定是「宽 x 高」（web 端 detail-panel 的 getDimensions 也以 width 为主维度，orientation 翻转时才交换 width/height），因此同一资产在移动端与 web 端会显示成相反的维度顺序，用户与问题排查时容易误读长宽。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "READABILITY-FORMAT-001"
+    },
+    {
+      "file": "server/package.json",
+      "line": 44,
+      "summary": "@nestjs/swagger 由 ^8.0.0 降级到 ^7.1.8，导致 OpenAPI 契约丢失校验元数据并触发大规模生成物改写",
+      "failure_scenario": "本次把 @nestjs/swagger 从 ^8.0.0 回退到 ^7.1.8，其余 @nestjs/* 仍为 ^10（v8 时期的配套组合）。随之重新生成的 open-api/immich-openapi-specs.json 出现系统性退化：原本 `allOf: [$ref]` 的枚举字段被压平、DTO 上的 format: email/uri、pattern（如 TagCreateDto 的 color 正则）、minItems/maxItems/uniqueItems（如 CreateLibraryDto 的 importPaths、AddUsersDto 的 userIds、CreateAlbumDto 的 albumUsers）全部丢失，summary 被改写为 description。这些约束是 SDK/移动端生成代码与文档的唯一来源，丢失后 web/mobile 客户端不再做长度、唯一性、格式校验，也丢失了服务端契约文档；同时 mobile/openapi 下的模型文件被整体重写（且以「Binary files differ」呈现），说明生成链路与旧基线不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "DEPENDENCY-OPENAPI-001"
+    },
+    {
+      "file": "web/src/routes/(user)/people/[personId]/[[photos=photos]]/[[assetId=id]]/+page.svelte",
+      "line": 78,
+      "summary": "人物页 personId 变化时的时间线重建逻辑被删除，切换人物可能仍显示上一个人的资产",
+      "failure_scenario": "本次同时删除了 people 页中 `if (change) { assetStore.triggerUpdate(); }` 与 AssetStore.updateOptions 中的 `needsReinitializing = this.options.personId !== options.personId` 分支，使 updateOptions 仅剩 `if (!this.initialized) { this.setOptions(options); return; }` 的提前返回。存在这样的时间窗：`{#key person.id}` 触发 AssetGrid 重建，其 onMount 调用 `$assetStore.init()`，而 init 在 `await this.initialiazeTimeBuckets()` 之前已用旧 options（旧 personId）发起 getTimeBuckets；随后页面的 `$effect` 执行 updateOptions，此时 initialized 尚未被置为 true，于是走早退只做 setOptions 而不再重建时间桶。结果可能拉取到上一个人物的时间桶列表，需要切换到别的路由再回来才恢复。原代码的注释「Check to trigger rebuild the timeline when navigating between people from the info panel」正是指向该场景。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "STATE-REINIT-001"
+    },
+    {
+      "file": "server/Dockerfile",
+      "line": 2,
+      "summary": "服务端基础镜像回退到 20241217 的旧 digest，可能丢失镜像内的依赖与安全更新",
+      "failure_scenario": "dev/prod 两个基础镜像从 base-server-dev:20241224 / base-server-prod:20241224 回退到 20241217 的 digest。基础镜像承载 Node 运行时、构建工具与系统包，回退一周前的镜像会把该窗口内的操作系统/Node 补丁一并回退，且回退的 digest 与其余依赖（如降级后的 @nestjs/swagger 组合）并非同一构建基线，后续难以判断构建产物来源。若回退是配合依赖降级的临时措施，应在 PR 中记录原因与恢复计划，避免长期停留在旧镜像。",
+      "severity": "P3",
+      "category": "安全",
+      "confidence": 0.45,
+      "rule": "SECURITY-BASEIMAGE-001"
+    },
+    {
+      "file": "docs/src/pages/roadmap.tsx",
+      "line": 221,
+      "summary": "roadmap 回滚后计划项标注「Planned for 2024」却排在「早期 2025 稳定版」之后，时间口径自相矛盾",
+      "failure_scenario": "本次把三个计划项（Private/locked photos、Better background backups、Auto stacking）从 v1.122.0 之后的位置移动到「Immich goes stable（Planned for early 2025）」之后，同时把它们的日期标签改回 'Planned for 2024'，并删除了 releases 表中的 'v1.122.0'。结果页面会出现「稳定版计划于 2025 年初」之后紧跟「计划于 2024 年」的条目，时间顺序与用户预期相反，属于文档内容自相矛盾的可见缺陷（尽管仅是站点展示）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "DOCS-CONSISTENCY-001"
+    },
+    {
+      "file": "mobile/lib/pages/common/gallery_viewer.page.dart",
+      "line": 130,
+      "summary": "详情面板由可拖拽的 DraggableScrollableSheet 改为固定 0.75 高度，同时仍保留拖拽手柄",
+      "failure_scenario": "showInfo 中的面板改为 `FractionallySizedBox(heightFactor: 0.75)`，DetailPanel/AdvancedBottomSheet 的 scrollController 参数也被移除。但 showModalBottomSheet 仍传入 `showDragHandle: true`、`enableDrag: true`、`isScrollControlled: true`：用户看到手柄会期待「上拖展开到全屏」，而现在拖拽只会关闭面板，面板也无法再通过拖动扩展到全屏，信息较多（尤其是 AdvancedBottomSheet 的 EXIF 长列表）时可视区域固定为 75%，属于可感知的交互回退。此外 `isScrollControlled: true` 与固定高度的组合也让键盘弹出时的 viewInsets 内边距与固定高度叠加，可能出现内容被挤压的情况。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "UX-REGRESSION-001"
+    },
+    {
+      "file": "web/src/lib/components/shared-components/combobox.svelte",
+      "line": 352,
+      "summary": "移除 allowCreate 后空结果分支残留了「创建新选项」时代的 id/onclick 与 aria-selected 逻辑",
+      "failure_scenario": "combobox 删除 allowCreate/defaultFirstOption 后，空结果分支的文本已固定为 `$t('no_results')`，但该 `<li>` 仍保留 `id={`${listboxId}-${0}`}`、`aria-selected={selectedIndex === 0}` 与 `onclick={() => closeDropdown()}`，而 index 0 在无结果时并不存在对应 option；同时 incrementSelectedIndex 在 filteredOptions 为空时仍会把 selectedIndex 置为 0。这些残留让「无结果」项看起来像一个可选中选项（aria-selected 为 true、id 与选项 id 规则相同），对读屏软件与后续维护者都具有误导性。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-DEADCODE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\immich-app__immich\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\immich-app__immich@7e2009f.diff\n  caseId              immich-app__immich@7e2009f\n  --issue             (未传)\n  --taskId            immich-app__immich@7e2009f\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 9 个文件 / 52455 字符（lockfile=3, test=2, exclude=4），明细见审计 mrFilter\n✓ 完成 · 耗时 224.5s · 模型调用 16 次 · token 输入 72,853（未命中） · 输出 31,515 · 缓存命中 611,968（89.4%） · 工具 46 次（主会话 46 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0207\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 225.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 224.4s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 4.2s (1.9%) | P2 4.7s (2.1%) | P3 8.6s (3.8%) | P4 146.2s (65.1%) | P5 39.4s (17.5%) | P6 21.3s (9.5%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 72,853（未命中） | 输出 31,515 | 缓存命中 611,968（89.4%） | $0.0207\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\immich-app__immich@7e2009f\\audit\\20261115_041748_042.json",
+  "token_usage": {
+    "input_tokens": 72853,
+    "output_tokens": 31515,
+    "cache_read_input_tokens": 611968
+  }
+}

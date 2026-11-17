@@ -1,0 +1,184 @@
+{
+  "generatedAt": "2026-11-15T04:24:55.227Z",
+  "runId": "20261115_042226_121",
+  "source": "mr",
+  "caseId": "cline__cline@ca7f02b",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/shared/proto-conversions/state/settings-conversion.ts",
+      "line": 12,
+      "title": "proto ApiConfiguration 未同步改名 ulid，转换层引用了不存在的字段",
+      "description": "本 MR 把 ApiConfiguration 域对象的 taskId 统一改名为 ulid，并同步修改了两个转换层，但权威的 proto 契约 proto/cline/state.proto 中 ApiConfiguration 仍声明 `optional string task_id = 3;`，没有任何 ulid 字段。生成的 ProtoApiConfiguration 类型因此只含 taskId，`ProtoApiConfiguration.create({ ulid: ... })` 的对象字面量与 `protoConfig.ulid` 的属性访问都会类型不匹配，TypeScript 编译/类型检查将失败，同时反序列化方向也拿不到 ulid，任务标识在 state 配置往返中被静默丢弃。",
+      "evidence": [
+        "proto/cline/state.proto:133 — `optional string task_id = 3;`（ApiConfiguration 消息 L129-245 中无 ulid 字段）",
+        "src/shared/proto-conversions/state/settings-conversion.ts:8 — `return ProtoApiConfiguration.create({` 后 L12 `ulid: config.ulid,`",
+        "src/shared/proto-conversions/state/settings-conversion.ts:139 — `ulid: protoConfig.ulid,`",
+        "src/shared/proto-conversions/models/api-configuration-conversion.ts:332 — `ulid: config.ulid,`（返回类型标注为 ProtoApiConfiguration 的对象字面量）",
+        "MR diff 仅修改了 proto/host/diff.proto，未包含 proto/cline/state.proto 的字段改名"
+      ],
+      "rule": "PROTO-CONTRACT-001",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] proto 契约与转换代码不同步导致编译失败 / 字段静默丢失。影响评估：生成代码中不存在 ulid，`create()` 与属性读取均报类型错误，构建无法通过；即使绕过类型检查，ulid 也会在 proto 序列化时被丢弃，任务标识在 settings/state 往返中丢失。",
+        "suggestion": "[重构思路] 在 proto 契约中把 task_id 改名为 ulid（保留字段号 3 以兼容线格式），重新生成 proto 代码，并确认 webview/其它转换路径不再引用 taskId。代码示例：`message ApiConfiguration { optional string ulid = 3; // 原 task_id，保留字段号以兼容 }`，随后执行 proto 生成脚本使 `ProtoApiConfiguration` 具备 `ulid`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/api/providers/cline.ts",
+      "line": 54,
+      "title": "X-Task-ID 与 litellm_session_id 的取值由 taskId 变为 ulid，属对外可见的标识格式变更",
+      "description": "改动前 provider 选项由 `taskId: this.task.taskId` 传入（Date.now().toString() 形式的任务目录 id），现在统一换成 `ulid: this.task.ulid`（ULID 字符串）。ClineHandler 把它写入请求头 X-Task-ID，LiteLLMHandler 用它拼 litellm_session_id，这两者都是发往后端/网关的对外标识：取值格式与含义发生变化，任何按 taskId 关联任务、按 session 前缀聚合用量的后端逻辑将无法命中历史数据，且 MR 中没有任何兼容或双写说明。",
+      "evidence": [
+        "src/api/providers/cline.ts:54 — `\"X-Task-ID\": this.options.ulid || \"\",`（原为 this.options.taskId）",
+        "src/api/providers/litellm.ts:233 — `...(this.options.ulid && { litellm_session_id: `cline-${this.options.ulid}` })`",
+        "src/core/task/index.ts:219-220 — `this.taskId = Date.now().toString()` 与 `this.ulid = ulid()`，两者是不同的标识体系",
+        "src/core/controller/index.ts:241 附近 — `buildApiHandler({ ...apiConfiguration, ulid: this.task.ulid })`（原为 taskId: this.task.taskId）"
+      ],
+      "rule": "COMPAT-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 对外标识语义变更（未做兼容）。影响评估：后端按 X-Task-ID / litellm_session_id 关联任务与用量的报表会断裂或与历史数据无法 join；若后端对 X-Task-ID 有格式校验，还可能直接拒绝请求。",
+        "suggestion": "[重构思路] 明确对外契约：若只是想统一内部标识，应保留原有头部值来源（taskId）或同时下发 X-Task-ID 与 X-Cline-Task-ULID；若确实要切换为 ulid，需与后端确认并按需重命名头部（如 X-Task-ULID），避免同名头部语义悄悄改变。代码示例：`defaultHeaders: { \"X-Task-ID\": this.options.taskId ?? \"\", \"X-Task-ULID\": this.options.ulid ?? \"\" }`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/integrations/checkpoints/CheckpointTracker.ts",
+      "line": 187,
+      "title": "captureCheckpointUsage 形参改名为 ulid，但调用方仍传入 taskId，遥测属性语义错位",
+      "description": "TelemetryService.captureCheckpointUsage 的形参由 taskId 改名为 ulid，事件属性也改成 ulid，但所有调用方仍传入 taskId（时间戳字符串）。结果是同一属性名 ulid 在不同事件中承载两种不同标识：普通事件是 ULID，checkpoint 相关事件是 Date.now() 任务 id。下游按 ulid 聚合/关联会得到割裂数据，且这种错位不会被类型系统发现（都是 string）。",
+      "evidence": [
+        "src/services/posthog/telemetry/TelemetryService.ts:336-348 — 形参 `ulid: string`，properties 中写 `ulid`",
+        "src/integrations/checkpoints/CheckpointTracker.ts:187 — `telemetryService.captureCheckpointUsage(this.taskId, \"commit_created\", durationMs)`",
+        "src/integrations/checkpoints/CheckpointTracker.ts:263 / 341 / 370 — 同样传入 this.taskId",
+        "src/integrations/checkpoints/CheckpointGitOperations.ts:103 — `captureCheckpointUsage(taskId, \"shadow_git_initialized\", durationMs)`"
+      ],
+      "rule": "TELEMETRY-003",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 遥测属性语义不一致（形参改名但实参未改）。影响评估：checkpoint 事件的 ulid 字段值与其它事件不可比，按 ulid 统计 checkpoint 使用率、会话关联全部失真，且无编译期提示。",
+        "suggestion": "[重构思路] 让 CheckpointTracker/CheckpointGitOperations 持有真正的 ulid 并传入；若暂时只有 taskId，则保留独立属性名（如 task_id）避免语义污染。代码示例：`telemetryService.captureCheckpointUsage(this.ulid, \"commit_created\", durationMs)`，并在 CheckpointTracker.create 中把 ulid 一并传入构造参数。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/hosts/external/ExternalDiffviewProvider.ts",
+      "line": 80,
+      "title": "关闭全部 diff 的兜底能力被移除，外部宿主可能残留未关闭的 diff 编辑器",
+      "description": "DiffViewProvider 把 closeAllDiffViews 改为 closeDiffView，ExternalDiffViewProvider 只关闭当前 activeDiffEditorId 记录的那一个 diff。openDiffEditor 会直接覆盖 activeDiffEditorId，resetDiffView 又会把它置空，因此一旦发生“打开第二个 diff 而未关闭第一个”“open 之后 diff id 被重置”“用户手改/中断导致 id 丢失”等情况，此前靠 closeAllDiffs 兜底关闭的旧 diff 编辑器再也没有关闭入口，会在外部宿主（JetBrains/standalone 等）中累积僵尸 diff 窗口。同时 proto 注释里“未保存内容的 diff 不应被关闭”的保护性约定也被删除，而新实现端没有等价的 dirty 检查。",
+      "evidence": [
+        "src/hosts/external/ExternalDiffviewProvider.ts:80-86 — closeDiffView 在 activeDiffEditorId 为空时直接 return，否则只关闭该 id",
+        "src/hosts/external/ExternalDiffviewProvider.ts:16 — `this.activeDiffEditorId = response.diffId`（再次 open 时静默覆盖，旧 id 丢失）",
+        "src/hosts/external/ExternalDiffviewProvider.ts:88-90 — resetDiffView 直接把 activeDiffEditorId 置为 undefined",
+        "src/integrations/editor/DiffViewProvider.ts:376-392 — reset() 调用 resetDiffView()",
+        "proto/host/diff.proto:28-29 — 原 closeAllDiffs 注释 “Any diff editors with unsaved content should not be closed.” 已被删除，新 closeDiff 无对应约束"
+      ],
+      "rule": "RESOURCE-004",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 资源生命周期收窄导致编辑器泄漏。影响评估：外部宿主侧可能同时堆积多个 cline diff 视图，占用标签页且用户难以判断当前编辑状态；契约中“不关闭未保存 diff”的保护也被弱化。",
+        "suggestion": "[重构思路] 在保留按 id 关闭的同时维持兜底：HostProvider 侧除 closeDiff(diffId) 外保留一个“清理剩余 cline diff”的路径，或让 ExternalDiffViewProvider 记录所有已打开的 diffId 集合并逐个关闭；关闭前显式检查未保存状态。代码示例：`private openDiffIds = new Set<string>()`，open 时 add、close 时 delete，reset/任务结束时 `for (const id of this.openDiffIds) await HostProvider.diff.closeDiff({ diffId: id })`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/core/task/index.ts",
+      "line": 302,
+      "title": "重启历史任务时可能生成新 ulid，且不再上报 taskId，导致重启事件无法与原任务关联",
+      "description": "captureTaskRestarted 的签名从 (taskId, ulid, apiProvider) 改为 (ulid, apiProvider)，丢弃了 taskId。而历史任务的 ulid 是可选字段（`historyItem.ulid ?? ulid()`），对于没有 ulid 的旧历史记录，重启时会新生成一个 ulid 并以此上报，遥测侧既没有原始 taskId 也没有稳定的原 ulid，无法把“重启”事件与它对应的历史任务关联起来。",
+      "evidence": [
+        "src/core/task/index.ts:212 — `this.ulid = historyItem.ulid ?? ulid()`（旧历史任务会生成新 ulid）",
+        "src/core/task/index.ts:302 — `telemetryService.captureTaskRestarted(this.ulid, currentProvider)`（原签名含 taskId）",
+        "src/services/posthog/telemetry/TelemetryService.ts:196-202 — properties 只剩 `{ ulid, apiProvider }`",
+        "src/core/task/index.ts:211 — taskId 仍稳定取自 historyItem.id"
+      ],
+      "rule": "TELEMETRY-005",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 遥测事件丢失关联键。影响评估：老历史任务的重启事件变成孤立记录，任务重启率、恢复成功率等指标口径失真；对比 CREATED 事件也无法串联同一任务的生命周期。",
+        "suggestion": "[重构思路] 重启类事件应至少带上稳定的 taskId（或同时带 originalUlid），保留可关联性；若目标是精简属性，可只对非重启事件去掉 taskId。代码示例：`telemetryService.captureTaskRestarted(historyItem.id, this.ulid, currentProvider)`，并将 properties 写为 `{ taskId, ulid, apiProvider }`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/hosts/vscode/VscodeDiffViewProvider.ts",
+      "line": 174,
+      "title": "closeDiffView 名实不符：抽象语义改为按 diff 关闭，VSCode 实现仍关闭全部 cline diff 标签",
+      "description": "抽象方法已从 closeAllDiffViews 改名为 closeDiffView，文档写的是“Closes the diff editor tab or window”，ExternalDiffViewProvider 也实现了按 activeDiffEditorId 关闭；但 VscodeDiffViewProvider.closeDiffView 仍保留原逻辑，遍历并关闭所有 scheme 为 cline-diff 的 diff 标签，注释也仍是 “Close all the cline diff views.”。两个宿主行为语义不同，后续按“单个 diff”语义扩展（如多文件 diff 并存时只想关一个）会误关其它标签，且读代码的人容易被命名误导。",
+      "evidence": [
+        "src/integrations/editor/DiffViewProvider.ts:140-143 — 注释 “Closes the diff editor tab or window.” + `protected abstract closeDiffView(): Promise<void>`",
+        "src/hosts/vscode/VscodeDiffViewProvider.ts:174-189 — `// Close all the cline diff views.` 遍历 tabGroups 中所有 DIFF_VIEW_URI_SCHEME 标签并关闭",
+        "src/hosts/external/ExternalDiffviewProvider.ts:80-86 — 仅关闭 activeDiffEditorId 对应的单个 diff"
+      ],
+      "rule": "DESIGN-006",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 命名与实现语义不一致（抽象契约漂移）。影响评估：不同宿主行为不一致，后续基于新命名的功能改动容易误关用户正在查看的 diff 标签；维护者需要额外阅读实现才能判断真实行为。",
+        "suggestion": "[重构思路] 要么让 VSCode 实现也只关闭当前追踪的 diff 标签（记录 activeDiffEditor 对应的 Tab），要么保留“关闭全部”语义但改回清晰命名（如 closeDiffViews），并在抽象文档中明确各实现的行为与 dirty 保护策略。代码示例：`protected async closeDiffView(): Promise<void> { const tab = this.activeDiffEditorTab; if (tab && !tab.isDirty) { await vscode.window.tabGroups.close(tab) } }`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/services/posthog/telemetry/TelemetryService.ts",
+      "line": 377,
+      "title": "captureModelSelected 与 captureTokenUsage 在改名后已无任何调用方，成为死代码",
+      "description": "这两个方法在本 MR 中被改为只接收 ulid，但全仓库检索显示它们只有声明、没有任何调用点（0 处外部引用）。保留无人调用的公共遥测 API 会让“任务标识已统一为 ulid”的结论产生歧义，也会被后续开发者误用（例如以为链路中仍在采集 token 使用量与模型选择事件）。",
+      "evidence": [
+        "src/services/posthog/telemetry/TelemetryService.ts:377 — `public captureModelSelected(model: string, provider: string, ulid?: string)`，find_references 仅返回该声明本身",
+        "src/services/posthog/telemetry/TelemetryService.ts:263 — `public captureTokenUsage(ulid: string, tokensIn: number, tokensOut: number, model: string)`，同样仅有声明",
+        "本 MR 已删除同类无引用的 captureHistoricalTaskLoaded / captureRetryClicked，说明清理死代码是本 MR 的既定动作"
+      ],
+      "rule": "MAINTAIN-007",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 死代码残留（公共 API 无调用方）。影响评估：与同 MR 清理 captureHistoricalTaskLoaded/captureRetryClicked 的做法不一致，增加维护面并可能误导后续埋点工作。",
+        "suggestion": "[重构思路] 若确实不再使用，按同一标准删除这两个方法及其对应 EVENTS 常量；若计划保留，请补上调用点或加注释说明保留原因。代码示例：删除 `public captureModelSelected(...)` 与 `public captureTokenUsage(...)` 两个方法声明及不再被引用的事件枚举项。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "proto/host/diff.proto",
+      "line": 109,
+      "title": "OpenMultiFileDiffResponse 被改成含空白行的空消息体，产生无意义的 diff 噪声",
+      "description": "该消息原本就是空消息 `message OpenMultiFileDiffResponse {}`，本次改动只是把大括号展开成多行并插入一行只含空格的空白，既没有语义变化，也会给后续 diff/blame 增加噪声（以及潜在的格式检查告警）。",
+      "evidence": [
+        "proto/host/diff.proto:109-111 — `message OpenMultiFileDiffResponse {` + 仅含空白的行 + `}`",
+        "MR diff 中该 hunk 的旧内容为 `-message OpenMultiFileDiffResponse {}`，仅格式变化"
+      ],
+      "rule": "STYLE-008",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 无功能变化的格式噪声。影响评估：污染 diff 历史，增加后续代码评审与 blame 的干扰；若仓库开启 proto 格式化检查可能直接报错。",
+        "suggestion": "[重构思路] 回退为单行空消息体，保持与 CloseDiffResponse 等其它空消息一致。代码示例：`message OpenMultiFileDiffResponse {}`。",
+        "subcategory": ""
+      }
+    }
+  ]
+}

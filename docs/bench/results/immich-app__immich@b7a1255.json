@@ -1,0 +1,482 @@
+{
+  "instance_id": "immich-app__immich@b7a1255",
+  "repo": "immich-app/immich",
+  "base_commit": "b845184c80295603e3a02dfad84ff2755d417aff",
+  "head_commit": "b7a12558bc8e69c9c96b9a5b12f61f94689ea0e3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1272.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 46,
+  "review_output": [
+    {
+      "file": ".github/workflows/test.yml",
+      "line": 341,
+      "summary": "e2e 矩阵从双 runner 收敛为单一 mich，arm64 端到端覆盖消失",
+      "failure_scenario": "e2e-tests-server-cli 与 e2e-tests-web 原本通过 matrix.runner = [mich, ubuntu-24.04-arm] 在两种架构上并行执行，本 MR 改为固定 runs-on: mich 并删除整个 strategy.matrix。Immich 官方镜像与发布同时支持 amd64/arm64（见 docker.yml 的 platforms 配置），移除 arm 侧 e2e 后，与架构相关的回归（原生依赖、ffmpeg/ML 二进制、路径处理）不再有端到端信号，只能等发布后暴露。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "CI-COVERAGE-001"
+    },
+    {
+      "file": "server/src/repositories/asset.repository.ts",
+      "line": 356,
+      "summary": "getAll 每页都 select(withFiles)，把只需 id 的扫库作业变成全字段 + 关联聚合查询",
+      "failure_scenario": "被替换掉的 streamFor* 查询大多只 select `assets.id`（如 streamForMigrationJob、streamForVideoConversion、streamForMetadataExtraction、streamForSidecar）。新的 getAll 统一 `selectAll('assets')` 并额外 `select(withFiles)`（对每个资产执行 json_agg 子查询）。metadata/sidecar/video/migration/smart-search 这些遍历全库的作业因此每页都要物化全部资产列和 asset_files 聚合，I/O 与 CPU 成本显著上升，在大库上尤为明显。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.65,
+      "rule": "PERF-009"
+    },
+    {
+      "file": "server/src/repositories/asset.repository.ts",
+      "line": 534,
+      "summary": "getWithout 的 @GenerateSql 误用 WithProperty 枚举，导致只生成 sidecar 一份 SQL 文档",
+      "failure_scenario": "新增的 getWithout 方法上，@GenerateSql 使用 `...Object.values(WithProperty)`（该枚举只有 SIDECAR 一项），而方法参数类型是 WithoutProperty（含 thumbnail/encoded-video/exif/smart-search/duplicate/faces/sidecar 七项）。因此 SQL 生成器只为利 sidecar 生成示例，其余六个分支的查询形态没有快照可审阅，也正是这类未覆盖让 F001/F004 的条件缺失难以被发现。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.9,
+      "rule": "MAINTAINABILITY-013"
+    },
+    {
+      "file": "server/src/repositories/asset.repository.ts",
+      "line": 548,
+      "summary": "重复检测分页查询把 smart_search 存在性条件写反，选中的正是已有嵌入的资产",
+      "failure_scenario": "getWithout(WithoutProperty.DUPLICATE) 使用正向 `eb.exists(... smart_search ...)`，而它替换掉的 streamForSearchDuplicates 用的是 `eb.not(eb.exists(...))`（即「尚未生成 CLIP 嵌入」）。改动后非 force 的重复检测会把已经有 smart_search 记录的资产重新入队，而真正需要检测的资产被永久跳过，导致去重结果长期缺失且队列被重复作业占满。同时新分支缺少旧查询中 `job_status.previewAt is not null` 之外的一致性条件（旧 SQL 还要求 `duplicatesDetectedAt is null`，这部分保留了），但语义反转本身已足以造成功能错误。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/src/repositories/asset.repository.ts",
+      "line": 553,
+      "summary": "getWithout(ENCODED_VIDEO) 缺少 isVisible 过滤，会把隐藏的 live photo 动态视频纳入转码",
+      "failure_scenario": "旧 streamForVideoConversion 在非 force 分支同时要求 `assets.isVisible = true`；新的 getWithout(WithoutProperty.ENCODED_VIDEO) 只过滤 `type = VIDEO` 与 encodedVideoPath 为空，缺少 isVisible 条件。隐藏资产主要是作为 live photo 动态部分的视频，对它们执行转码会重复消耗 ffmpeg 资源，并可能改变移动端 live photo 播放所依赖的文件，属于既有行为变化。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "BEHAVIOR-005"
+    },
+    {
+      "file": "server/src/repositories/asset.repository.ts",
+      "line": 598,
+      "summary": "getWithout 分页只按 createdAt 排序，缺失唯一键导致 skip/limit 翻页可能重复或漏掉资产",
+      "failure_scenario": "getWithout 使用 `.limit(take + 1).offset(skip)` 的偏移分页，但排序只有 `.orderBy('createdAt')`。批量导入的资产 createdAt 往往完全相同，Postgres 对等值行的返回顺序不稳定，翻页时可能把同一资产返回两次、并把另一条资产永久跳过。作业型扫描（元数据、边车、视频转码、重复检测）因此可能漏处理个别资产。旧实现用 cursor 流式读取（stream()）不存在该问题。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-010"
+    },
+    {
+      "file": "server/src/repositories/asset.repository.ts",
+      "line": 813,
+      "summary": "getAssetIdByCity 用 as 类型断言替代 $narrowType，丢失 city 非空的类型保证",
+      "failure_scenario": "原实现通过 `$narrowType<{ value: NotNull }>()` 让 Kysely 把 `exif.city` 收窄为非空字符串；改动后改为 `items as SearchExploreItemSet<string>` 断言。断言绕过了编译期检查，若将来 distinctOn/where 条件变化导致 city 为 null，会把 null 静默塞进 SearchExploreItemSet<string>，在 mapExplore 阶段才可能出错。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "MAINTAINABILITY-014"
+    },
+    {
+      "file": "server/src/services/media.service.ts",
+      "line": 59,
+      "summary": "缩略图补全作业把全部待处理任务攒在一个数组里，移除了按批入队的逻辑",
+      "failure_scenario": "handleQueueGenerateThumbnails 由原先「每满 JOBS_ASSET_PAGINATION_SIZE 就 queueAll 并清空」改为把全部命中资产 push 进 `thumbJobs` 后一次性 `queueAll(thumbJobs)`，循环里只剩 `continue`。在十万级资产库上 force 重跑缩略图时，该数组会常驻内存保存全部任务对象（每项含 JobItem 结构），造成显著内存压力与长时间无入队反馈。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.8,
+      "rule": "PERF-006"
+    },
+    {
+      "file": "server/src/services/media.service.ts",
+      "line": 90,
+      "summary": "迁移与 force 扫库改用 getAll 后默认排除归档资产，归档资产的文件不再被迁移/重处理",
+      "failure_scenario": "handleQueueMigration 改为 `this.assetRepository.getAll(pagination)`，而 getAll 内部走 searchAssetBuilder，后者在入口处执行 `options.isArchived ??= options.withArchived ? undefined : false`，即默认附加 `assets.isArchived = false`。被删除的 streamForMigrationJob 只有 `where('assets.deletedAt', 'is', null)`，包含归档资产。同理 metadata/sidecar/video-conversion/duplicate 的 force 分支（getAll(pagination) 或 getAll(pagination, { isVisible: true })）也新增了归档过滤。结果是用户在界面上触发「全部重新迁移 / 全部重新提取元数据」时，归档资产的存储路径迁移与元数据补全会静默跳过，文件仍停在旧目录布局。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "BEHAVIOR-003"
+    },
+    {
+      "file": "server/src/services/audit.service.ts",
+      "line": 169,
+      "summary": "文件巡检把编码视频孤儿项标记为 THUMBNAIL，修复时会把视频路径写成缩略图记录",
+      "failure_scenario": "getFileReport 判断 encodedVideoPath 缺失时 push 的 pathType 用了 AssetPathType.THUMBNAIL，而同一函数里缩略图孤儿已经使用该类型；随后 fixItems 的 switch 分支对 AssetPathType.THUMBNAIL 执行 `assetRepository.upsertFile({ type: AssetFileType.THUMBNAIL, path: pathValue })`。因此管理员在 UI 上执行「修复」时，会把 MP4 编码视频的路径写成该资产的 THUMBNAIL 文件记录，直接污染 asset_files，并使原有的缩略图记录被覆盖，后续缩略图/视频播放都会指向错误文件。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "server/src/services/audit.service.ts",
+      "line": 192,
+      "summary": "getFileReport 中 peopleCount 从未自增，人数日志恒为 0 且分批日志永不触发",
+      "failure_scenario": "遍历人物时只在 `if (peopleCount === JOBS_ASSET_PAGINATION_SIZE)` 里读取并清零 peopleCount，但循环体内没有任何自增语句，因此该分支永远不会命中，结束日志也始终输出 `0 people`。这会让管理员依据日志判断巡检规模时得到错误信息，也是「资产/用户/人物」三段统计中唯一失效的一段。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.9,
+      "rule": "MAINTAINABILITY-015"
+    },
+    {
+      "file": "server/src/repositories/job.repository.ts",
+      "line": 238,
+      "summary": "removeJob 不再吞掉 BullMQ 的「Missing key for job」异常，可能让相册更新通知流程直接失败",
+      "failure_scenario": "新实现去掉了 try/catch 中对 `error.message?.includes('Missing key for job')` 的忽略逻辑，直接 `await existingJob.remove()`。当任务已被 worker 取走处于 active/locked 状态或刚被移除时，BullMQ 会抛出该错误，此时异常会向上冒泡并中断 notification.service.onAlbumUpdate 的后续逻辑；旧实现选择忽略以避免这种竞态。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "RELIABILITY-007"
+    },
+    {
+      "file": "server/src/repositories/search.repository.ts",
+      "line": 483,
+      "summary": "setDimensionSize 依赖 `reindex index clip_index`，索引缺失时整段事务失败且不再自动重建索引",
+      "failure_scenario": "旧实现在第二个事务里先 `drop index if exists clip_index`、改列类型后再用 vectorIndexQuery 重建索引；新实现只做 `reindex index clip_index`。一旦 clip_index 不存在（历史库索引被 drop、自动修复流程中断、或迁移未完成），REINDEX 会抛 `relation \"clip_index\" does not exist`，使 CLIP 维度变更整体回滚，智能搜索配置更新失败；另外该函数已不再根据 vectorExtension 区分索引类型。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-008"
+    },
+    {
+      "file": "server/src/schema/migrations/1744910873969-InitialMigration.ts",
+      "line": 32,
+      "summary": "初始迁移硬编码创建 \"vectors\" 扩展，与仍保留的 DatabaseExtension.VECTOR 分支产生矛盾",
+      "failure_scenario": "初始迁移把 `CREATE EXTENSION IF NOT EXISTS ${sql.raw(vectorExtension)}` 改成固定创建 `\"vectors\"`，schema/index.ts 也把 `vectors` 写进 @Extensions；但枚举 DatabaseExtension 仍保留 VECTOR，database.repository 中依旧存在 `this.vectorExtension !== DatabaseExtension.VECTORS` 之类的分支（如 reindex、shouldReindex）。若部署方仍使用 pgvector 镜像，初始建库会因找不到 `vectors` 扩展而失败，而类型系统/配置层并不会提前报错。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "PORTABILITY-011"
+    },
+    {
+      "file": "server/src/repositories/oauth.repository.ts",
+      "line": 119,
+      "summary": "OAuth 客户端认证方式不再可配置，统一传 undefined，可能改变与 IdP 的令牌端点认证行为",
+      "failure_scenario": "getClient 删除了 getTokenAuthMethod，改为向 openid-client 的 discovery 传入 `undefined` 作为 clientAuthentication，并强制 client_secret 出现在 metadata 中、把 timeout 硬编码为 30_000。原先管理员可以显式选择 None / client_secret_post / client_secret_basic；现在该选择被丢弃，只能依赖 IdP 元数据或库默认值。对元数据声明 token_endpoint_auth_method 不正确、或此前依赖 CLIENT_SECRET_POST 的 IdP，令牌交换可能失败，表现为 OAuth 登录无法完成，且在升级后无迁移提示。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "RELIABILITY-012"
+    },
+    {
+      "file": "server/src/services/smart-info.service.ts",
+      "line": 54,
+      "summary": "pause 与 resume 之间无 try/finally，异常会让 SMART_SEARCH 队列永久暂停",
+      "failure_scenario": "init 中先 pause(SMART_SEARCH)，随后执行 setDimensionSize 或 deleteAllSearchEmbeddings，最后才 resume；这两步数据库操作抛错（向量扩展维度不兼容、迁移失败、连接中断等）时会直接跳出 withLock 回调，resume 永远不会执行，队列保持暂停状态且没有任何错误恢复逻辑，智能搜索任务只会不断堆积而不再被消费。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "RESOURCE-002"
+    },
+    {
+      "file": "server/src/services/smart-info.service.ts",
+      "line": 57,
+      "summary": "init 暂停队列后等待队列空闲，与 handleEncodeClip 等待 CLIPDimSize 锁形成互等死锁",
+      "failure_scenario": "init 在持有 CLIPDimSize 锁的情况下先 pause(SMART_SEARCH)，再 waitForQueueCompletion 等待该队列没有 active job；而同一进程内正在运行的 handleEncodeClip 在 upsert 之前会检测 isBusy(CLIPDimSize) 并 await wait(CLIPDimSize)。两边互相等待：init 等 job 结束，job 等 init 释放锁，waitForQueueCompletion 的忙轮询会无限循环（且无退避，持续打 Redis/占 CPU），SMART_SEARCH 队列同时被暂停。默认单容器部署下 config.update 事件与 SMART_SEARCH 任务由同一个 microservices 进程处理、asyncLock 为进程内锁，因此该死锁在「运行中修改 CLIP 模型导致维度变化」这一本功能的目标场景下即可触发。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "server/src/services/smart-info.service.ts",
+      "line": 84,
+      "summary": "强制重建索引时不再顺带修复 CLIP 维度尺寸，失败后无法通过重跑自愈",
+      "failure_scenario": "重构前 handleQueueEncodeClip 在 force 分支同时调用 `searchRepository.setDimensionSize(dimSize)`，注释明确说明目的是「in case it failed earlier」；现在只剩 `deleteAllSearchEmbeddings()`，setDimensionSize 只保留在 init（仅在 dimSizeChange 时执行）。若某次维度更新失败而配置文件已是新模型，管理员点击「智能搜索 - 全部」重跑时不会修正数据库维度，upsert embedding 时会因向量维度不匹配持续失败，重跑无法自愈。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "server/src/services/notification.service.ts",
+      "line": 314,
+      "summary": "相册更新邮件不再校验收件人仍是相册成员，已移除成员仍会收到相册名与缩略图",
+      "failure_scenario": "重构前 handleAlbumUpdate 会先用 `album.albumUsers` 和 owner 过滤 recipientIds，只给仍是相册成员的用户发信；重构后改为按 job 数据里的 recipientID 直接 `userRepository.get(recipientID)` 并发信。由于该 job 带有 5 分钟延迟（albumUpdateEmailDelayMs = 300_000），在这段时间内被移出相册、或已被移除但仍存在的用户，依然会收到包含相册名称与相册缩略图附件的邮件；同理，任何能构造 'album.update' 事件的内部路径都可以指定任意 recipientID 触发发信，缺少收件人授权校验。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "AUTHZ-003"
+    },
+    {
+      "file": "server/src/workers/api.ts",
+      "line": 62,
+      "summary": "移除 compression 中间件后 API 与 SSR 响应不再压缩，带宽与首屏时间回退",
+      "failure_scenario": "api worker 删除了 `app.use(compression())`，且 server/package.json 中已无 compression 依赖（仓库内 compression 引用为 0）。这意味着 JSON 列表接口（搜索结果、时间线分页、people/faces 等大响应）以及 ssr 输出的 HTML 全部以未压缩形式传输。直连部署（无反向代理）或客户端未配置压缩时，响应体积可增大数倍，移动网络下首屏与滚动加载明显变慢；若这是有意把压缩交给反向代理，需要在文档/变更说明中明确。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.65,
+      "rule": "PERFORMANCE-005"
+    },
+    {
+      "file": "web/src/lib/components/assets/thumbnail/thumbnail.svelte",
+      "line": 86,
+      "summary": "focussed 的自动聚焦 effect 与 onfocus=handleFocus 形成回路，会抢走缩略图内部按钮的焦点",
+      "failure_scenario": "本次新增了 `focussed` 状态驱动的 effect（focussed 为真且 `document.activeElement !== focussableElement` 时调用容器 `focus()`），同时缩略图内部的“选择”按钮也绑定了同一个 `handleFocus`（onfocus 时会写回 focussedAssetId）。用户用键盘 Tab 或鼠标点进该按钮时：按钮获得焦点 → handleFocus 写入 focussedAssetId → 该缩略图 `focussed` 变 true → effect 比较的是容器而不是容器子节点，于是把焦点从刚聚焦的按钮抢回外层容器，第一次 Tab/点击的焦点位置被吞掉。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "FOCUS-003"
+    },
+    {
+      "file": "web/src/lib/components/assets/thumbnail/thumbnail.svelte",
+      "line": 240,
+      "summary": "Escape 焦点跳转循环缺少边界保护，index 为 -1 时会无限循环、空列表时会抛 TypeError",
+      "failure_scenario": "新的 Escape 处理用 `focusable.indexOf(focussableElement)` 得到起点 index，然后 `let i = index + 1; while (i !== index)` 逐个查找非缩略图容器。若当前元素不在 getFocusable(document) 的结果里（index === -1，例如元素被隐藏类/祖先 display:none 影响，而 getFocusable 仅按 CSS 选择器过滤、不做可见性判断），i 会从 0 递增并回绕到 0，永远无法等于 -1，keydown 回调陷入死循环、标签页卡死；若列表为空则 `focusable[0]` 为 undefined，`next.dataset` 直接抛 TypeError。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "FRONTEND-006"
+    },
+    {
+      "file": "web/src/lib/components/asset-viewer/activity-viewer.svelte",
+      "line": 88,
+      "summary": "活动面板首次打开时 onMount 与 $effect 各发一次 getActivities，重复请求",
+      "failure_scenario": "activity-viewer 在 onMount 中调用 getReactions()，同时 `$effect` 里比较 previousAssetId 与 assetId，首次渲染时 previousAssetId 为 undefined，条件成立又调用一次 getReactions()，导致每打开一次活动面板都会对 /activities 发起两次完全相同的 GET；切换到另一张图片时也会重复刷新。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.72,
+      "rule": "PERFORMANCE-007"
+    },
+    {
+      "file": "web/src/lib/components/asset-viewer/activity-viewer.svelte",
+      "line": 116,
+      "summary": "删除非评论类 reaction 时错误地将评论数 -1",
+      "failure_scenario": "`handleDeleteReaction` 中只有“删除当前用户自己的 Like”走 `onDeleteLike()`，其余所有情况（包括删除其他用户的 Like）都调用 `onDeleteComment()`，而父组件把它接到 `updateNumberOfComments(-1)`。被删除的对象不是评论时，评论计数会被错误地减一，导致 `ActivityStatus` 上显示的评论数与服务端统计（`getActivityStatistics`）长期不一致。旧实现 `ActivityManager.deleteActivity` 中仅当 `activity.type === ReactionType.Comment` 才递减 `commentCount`。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "web/src/lib/components/asset-viewer/face-editor/face-editor.svelte",
+      "line": 316,
+      "summary": "人脸编辑器文案被硬编码为英文，丢失 i18n 支持",
+      "failure_scenario": "该组件移除了 `import { t } from 'svelte-i18n'`，把原本的 `$t('select_person_to_tag')`、`$t('no_people_found')`、`$t('cancel')` 分别替换为硬编码英文 'Select a person to tag'、'No matching people found'、'Cancel'。非英文用户在人脸标注流程中会看到英文文案，与全站 i18n 行为不一致，后续也无法通过翻译文件维护。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "I18N-008"
+    },
+    {
+      "file": "server/src/utils/mime-types.ts",
+      "line": 126,
+      "summary": "合并 image 映射后丢失 image/apng 到 .png 的映射，OAuth 头像扩展名回退为无点的 jpg",
+      "failure_scenario": "原 `webSupportedImage` 中 `.png: ['image/png', 'image/apng']`，而新的 `image` 映射与 `webSupportedImageMimeTypes` 只按「扩展名 → 首个 MIME」判断。结果 toExtension('image/apng') 不再能找到 .png（返回 undefined），而 auth.service 的 syncProfilePicture 用 `?? 'jpg'` 兜底（注意没有前导点），APNG 头像会落盘为 `<uuid>jpg` 这种无扩展名文件；同时 webSupportedImageMimeTypes 中的 'image/apng' 成为永远无法命中的死条目。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "REGRESSION-009"
+    },
+    {
+      "file": "web/src/lib/components/admin-page/jobs/job-tile.svelte",
+      "line": 54,
+      "summary": "全仓把 Tailwind 逻辑方向类改为物理方向类，RTL 语言布局回退",
+      "failure_scenario": "本次变更在 web 端大面积把 `ms-/me-/ps-/pe-/start-/end-/text-start/rounded-s/rounded-e/border-s` 等逻辑方向类替换为 `ml-/mr-/pl-/pr-/left-/right/text-left/rounded-l/rounded-r`。在阿拉伯语、希伯来语等 RTL 语言下，手册方向类不会随 dir 翻转，导致内边距、图标位置、表格对齐、圆角方向全部按 LTR 呈现，界面出现镜像错误。若这是有意移除 RTL 支持，应与本次服务端/依赖变更拆分并单独说明。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "PORTABILITY-010"
+    },
+    {
+      "file": "web/src/lib/components/shared-components/context-menu/context-menu.svelte",
+      "line": 48,
+      "summary": "移除边界钳制后，上下文菜单可能被定位到视口之外",
+      "failure_scenario": "本次为清理 RTL 逻辑顺带删掉了 `Math.max(8, ...)` 的下界保护，left/top 现在只做上界收敛。当 `direction === 'left'` 且触发元素距视口左边缘不足菜单宽度时（例如侧边栏最左侧的按钮、或画布左上角的元素），`x - directionWidth` 为负值，菜单左侧部分被裁切到视口外；y 方向同理，触发点靠近顶部时 top 也可能为负。用户会看到菜单“缺一条边”或菜单项不可见/不可点击。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "UI-BOUNDS-001"
+    },
+    {
+      "file": "web/src/lib/components/shared-components/context-menu/context-menu.svelte",
+      "line": 69,
+      "summary": "同时声明 max-h-dvh 与 max-h-svh 两个互斥的最大高度工具类",
+      "failure_scenario": "`max-h-dvh` 与 `max-h-svh` 生成的都是 `max-height` 属性，最终生效值取决于 Tailwind 生成 CSS 的先后顺序（而非 class 属性中的书写顺序），属于不可预期的样式覆盖。维护者无法从代码判断实际约束是 dvh 还是 svh；后续任意一方被删除或调整顺序都会静默改变菜单最大高度。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "TAILWIND-001"
+    },
+    {
+      "file": "web/src/lib/components/shared-components/server-about-modal.svelte",
+      "line": 180,
+      "summary": "版本历史日期不再使用应用语言 locale，改用系统 locale 格式化",
+      "failure_scenario": "此处 `createdAt` 来自 `DateTime.fromISO(item.createdAt)`，未设置 locale，之前靠 `toLocaleString(..., { locale: $locale })` 强制使用应用语言。本次删除 `{ locale: $locale }` 及其 import 后，日期将按浏览器/操作系统 locale 渲染：例如应用语言为中文但系统为英文时，版本历史里出现 “Apr 3, 2025” 而非中文格式。属于界面语言与日期格式不一致的 i18n 回归（memory-viewer 里因 fromLocalDateTime 已内置 locale 不受影响）。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "I18N-001"
+    },
+    {
+      "file": "web/src/lib/components/photos-page/asset-grid.svelte",
+      "line": 610,
+      "summary": "键盘焦点切换找不到当前焦点资源时静默失效，方向键导航会卡死",
+      "failure_scenario": "新的键盘导航完全依赖 `assetInteraction.focussedAssetId` 与在已加载资源列表中的查找：`getAssets().find(...)` / `assets.findIndex(...)` 找不到时（资源被过滤、尚未加载、或 focussedAssetId 指向已不存在的资源）代码直接不更新 focussedAssetId，也没有回退（重置为 null 或取首/末个资源）。由于 `focussedAssetId` 不会被自动清理（`AssetInteraction.clearMultiselect()` 也未重置它），一旦进入这种状态，后续所有 ArrowUp/ArrowDown 都不再产生任何视觉反馈，用户只能靠鼠标恢复。另外 `focusPreviousAsset` 在 `focussedAssetId === null` 时完全没有兜底，首次按“上一个”无反应。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "A11Y-FOCUS-001"
+    },
+    {
+      "file": "web/src/lib/components/layouts/user-page-layout.svelte",
+      "line": 52,
+      "summary": "main landmark 现在把左侧导航栏一起包进去，内容区反而降级为 section",
+      "failure_scenario": "原来外层是普通 div、内容区是 `<main>`；本次把外层 div 改成 `<main tabindex=\"-1\">`、内容区 `<main>` 改成 `<section>`。结果是 `<main>` 同时包含 `<SideBar/>/<AdminSideBar/>` 与页面内容，屏幕阅读器使用“跳到主内容”时会把侧边栏也算作主内容，主内容边界的语义被破坏；而 sidebar 内部新加的 `<nav aria-label=\"primary\">` 又嵌套在 main 内，landmark 层级同样不符合常规约定。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.5,
+      "rule": "SEMANTIC-001"
+    },
+    {
+      "file": "web/src/lib/utils/focus-util.ts",
+      "line": 2,
+      "summary": "用单一 CSS 选择器替换 tabbable，丢失可见性与多种可聚焦元素判定",
+      "failure_scenario": "`getFocusable` 仅用一条选择器 + `querySelectorAll` 取代了 `tabbable`/`focusable`。新实现：1) 不再排除被 CSS 隐藏（`visibility:hidden`、祖先 `display:none`、`aria-hidden`）的元素，焦点的首尾元素可能不可见，`focusTrap` 的“最后一个元素 Tab 回第一个”会跳到看不见的控件；2) 覆盖范围收窄，缺少 `[contenteditable]`、`audio/video[controls]`、`summary`、`<a>` 无 href 但带 role 等可聚焦元素；3) `:not([disabled], .hidden)` 只识别 `.hidden` 这一种隐藏约定，而仓库中大量使用 `sm:flex`/`md:block` 等响应式显隐类。`focus-trap.ts` 直接依赖该返回值做焦点阶跃，会引发生命周期内的焦点丢失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-002"
+    },
+    {
+      "file": "web/src/lib/utils/focus-util.ts",
+      "line": 4,
+      "summary": "新的 getFocusable 不做可见性/inert 过滤，Tab 焦点可能落到不可聚焦元素上导致焦点卡住",
+      "failure_scenario": "`getFocusable` 仅用 `querySelectorAll` 按选择器收集元素，没有排除 `display:none`/`visibility:hidden`/`inert` 容器内的元素（旧实现 `getTabbable` 已随本次改动删除）。而调用方是“先 preventDefault 再 focus()”的模式：scrubber 的 Tab 处理在 `focusable[(index+1)%len]` 上直接 `focus()`，focus-trap 也取首尾元素做循环。侧边栏收起时整块是 inert（单测断言 `parent.inert === true`），这些元素仍会被收集，`focus()` 对 inert 元素是静默 no-op，于是 Tab 被 preventDefault 但焦点没有移动，键盘用户会被“卡”在时间轴把手上。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.42,
+      "rule": "FOCUS-002"
+    },
+    {
+      "file": "web/src/routes/(user)/albums/[albumId=id]/[[photos=photos]]/[[assetId=id]]/+page.svelte",
+      "line": 182,
+      "summary": "切换相册后 isLiked 不清空，点赞操作可能删掉另一个相册的 Like 记录",
+      "failure_scenario": "点赞状态由组件内 `$state` 维护，`getFavorite()` 只在查询结果非空时赋值，没有 else 分支清空；同时本次删除了原先在 `$effect` 中的 `activityManager.reset()/init(album.id)` 与 `onDestroy` 中的 `reset()`。相册页在同一路由内切换 albumId 时会复用同一个组件实例，`isLiked` 会保留上一个相册的 `ActivityResponseDto`。此时界面错误显示为“已点赞”，用户点击红心会执行 `deleteActivity({ id: isLiked.id })`，删除的是上一个相册的 Like 记录，造成跨相册的状态被静默修改，并且当前相册的点赞状态永久显示错误。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "web/src/lib/stores/activity.store.ts",
+      "line": 3,
+      "summary": "numberOfComments 是模块级全局 store 且无复位，跨相册/跨页面残留评论数",
+      "failure_scenario": "评论计数从 `activityManager` 的实例状态迁移到模块级 `writable` store，但没有任何复位逻辑：离开相册页、或切换到另一个相册时，上一个相册的评论数会保留。相册页的 `showActivityStatus` 与 `$effect`（`if (!album.isActivityEnabled && $numberOfComments === 0) isShowActivity = false;`）都直接读取该值，因此会短暂甚至长期显示错误的评论数/活动面板状态；旧实现通过 `activityManager.reset()` 将其归零。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "web/src/routes/+layout.svelte",
+      "line": 72,
+      "summary": "系统主题监听在 document 上解绑，matchMedia 监听器实际从未移除",
+      "failure_scenario": "`onMount` 把 `handleChangeTheme` 注册在 `globalThis.matchMedia('(prefers-color-scheme: dark)')` 返回的 MediaQueryList 上，但 `onDestroy` 却在 `document` 上调用 `removeEventListener('change', handleChangeTheme)`。两者不是同一 EventTarget，清理永远无效，`handleChangeTheme` 会持续被系统主题变化触发（引用整棵布局闭包），造成监听器泄漏；在开发热更新/多次挂载布局的场景下会累积多个回调并对同一 store 重复取反，出现主题来回抖动。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "LIFECYCLE-001"
+    },
+    {
+      "file": "web/src/routes/+layout.svelte",
+      "line": 76,
+      "summary": "共享链接 key 改为模块级全局变量，SSR 下可能跨请求串用并泄漏他人共享链接 key",
+      "failure_scenario": "`utils.ts` 用模块级 `let _key` 保存共享链接 key，`+layout.svelte` 在组件脚本顶层 `if (isSharedLinkRoute(page.route?.id)) setKey(page.params.key);` 中赋值。该语句在 SSR 渲染每个请求时都会执行，而 `_key` 是服务端进程内的模块单例：处理完一个共享链接请求后，`_key` 会保留该 key；随后任意普通（非共享链接）请求不会走到 `setKey`，其 SSR 渲染出的 HTML 中由 `getAssetThumbnailUrl`/`getAssetOriginalUrl`/`getAssetPlaybackUrl` 拼接的 URL 仍带有上一个请求的 `key=` 参数。后果是该 key（可访问他人共享相册的凭据）被写进其他用户的页面 HTML，并且这些带 key 的请求会以共享链接身份通过鉴权，返回错误的资源或 401。相比之下被删除的 `authManager.key` 是基于 `page` 的 `$derived`，天然按请求/导航作用域求值。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "web/src/lib/utils/timeline-util.ts",
+      "line": 90,
+      "summary": "日期分组标题/替代文本不再使用用户选择的 locale，回退到浏览器默认语言",
+      "failure_scenario": "`formatGroupTitle` 移除了所有 `{ locale: get(locale) }` 传参，改为依赖传入 `DateTime` 自带 locale。但时间线的日期分组对象是用 `DateTime.fromISO(asset.localDateTime).toUTC()` 创建的，没有设置 locale（只有 `fromLocalDateTime` 会设置），因此分组标题将使用 Luxon 的全局默认（浏览器语言），而不是用户在设置中选择的 Immich locale；`thumbnail-util.getAltText` 同样去掉了 `{ locale: get(locale) }`，屏幕阅读器读到的日期也会是浏览器语言。单元测试因显式调用 `date.setLocale(...)` 而无法暴露该回退。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.68,
+      "rule": "I18N-001"
+    },
+    {
+      "file": "web/src/lib/stores/assets-store.svelte.ts",
+      "line": 113,
+      "summary": "AssetDateGroup 中残留调试字段 dodo",
+      "failure_scenario": "`AssetDateGroup` 新增了 `dodo: IntersectingAsset[] = $state([]);`，全文件没有任何读写点，命名无语义、不像业务字段，疑似调试/试错残留。作为 `$state` 声明的响应式字段会参与代理与依赖追踪，且会误导后续维护者以为存在未完成的布局分支。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.9,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "web/src/lib/stores/assets-store.svelte.ts",
+      "line": 197,
+      "summary": "删除 deferredLayout 后所有日期分组改为急切布局，滚动/刷新成本上升",
+      "failure_scenario": "`AssetDateGroup.layout` 移除了 `if (!this.bucket.intersecting) { this.deferredLayout = true; return; }` 的延迟布局分支，`#updateIntersection` 中“bucket 首次进入相交范围时补做延迟布局”的逻辑也一并删除。现在每次 `refreshLayout()`/视口变化都会对所有 bucket（含远离视口、尚未加载的月份）的日期分组执行 `getJustifiedLayoutFromAssets` 并逐资产计算 position，属于典型的 O(全部资产) 计算，在大时间线（数万资产）上会明显增加主线程耗时与 GC 压力。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-001"
+    },
+    {
+      "file": "web/src/lib/stores/assets-store.svelte.ts",
+      "line": 599,
+      "summary": "headerHeight 默认值由 48 改为 49 且布局类型收窄为仅 rowHeight，遗留死类型与多次 refresh",
+      "failure_scenario": "`#headerHeight` 默认值从 48 改为 49，无注释说明来源（可能是为规避取整误差），但旧的 `setLayoutOptions` 默认值同样是 48，改动缺少依据；同时 `AssetStoreLayoutOptions` 被移动到类定义之前并被收窄为 `{ rowHeight: number }`，而类上仍保留 `headerHeight`/`gap`/`rowHeight` 三个 setter，类型与真实 API 不一致，且该类型在全仓已无任何引用（成为死类型）。另外三个 setter 各自调用 `refreshLayout()`，相比原 `setLayoutOptions` 的“合并一次”会重复触发全量重排。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "web/src/lib/constants.ts",
+      "line": 272,
+      "summary": "删除语言 rtl 标记并全面改用物理方向类，RTL 用户界面回退为 LTR",
+      "failure_scenario": "本次同时做了三件事：`langs` 中所有语言的 `rtl: true` 标记被删除；负责给 `document.body` 设置 `dir` 属性并广播 `language.change` 的 `language-manager` 被删除；大量组件的逻辑方向类（`ms-/me-/ps-/pe-/start-/end-/border-s-`）被替换为物理类（`ml-/mr-/pl-/pr-/left-/right-/border-l-`）。三者叠加意味着阿拉伯语、希伯来语、波斯语、乌尔都语、北库尔德语用户不再获得 RTL 布局（`dir` 属性不再被设置，间距/对齐也被硬编码为 left/right），属于对这些语言用户可见的功能回退，且以后重新启用 RTL 需要再次批量改动。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.7,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "web/src/lib/utils/album-utils.ts",
+      "line": 62,
+      "summary": "columnStyle 机械替换后出现重复的 md:w-4/12",
+      "failure_scenario": "`sortOptionsMetadata` 中 Title 列的样式由逻辑属性类替换时被改成了 `'text-left w-8/12 sm:w-4/12 md:w-4/12 md:w-4/12 xl:w-[30%] 2xl:w-[40%]'`，`md:w-4/12` 重复出现两次。虽不影响渲染结果，但说明该批量替换未做人工复核，同类文件可能存在其他替换错误（本 MR 中已出现 `roudned-s-full` → 需人工修正的案例）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "READABILITY-001"
+    },
+    {
+      "file": "web/src/lib/components/user-settings-page/app-settings.svelte",
+      "line": 104,
+      "summary": "主题开关同时使用 bind:checked 与 onToggle 修改同一状态，存在双重更新/开关失效风险",
+      "failure_scenario": "`SettingSwitch` 把 `checked` 声明为 `$bindable(false)` 并透传给 `Slider`（`bind:checked {onToggle}`），`Slider` 在 `bind:checked` 更新绑定值后又调用 `onToggle(event.target.checked)`。此处同时写了 `bind:checked={$colorTheme.system}` 与 `onToggle={handleToggleColorTheme}`，而 `handleToggleColorTheme` 又执行 `$colorTheme.system = !$colorTheme.system`。同一次点击对同一 store 造成两次写入，最终值取决于浏览器的 `click`/`change` 事件顺序：若绑定先写入、`onToggle` 后执行，则开关结果被立即取反（“跟随系统”永远无法开启）；即便顺序有利，也属于依赖事件时序的隐式契约。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "FRAMEWORK-001"
+    },
+    {
+      "file": "web/src/routes/admin/repair/+page.svelte",
+      "line": 152,
+      "summary": "校验失败后仍弹出“已匹配 N 项”成功提示",
+      "failure_scenario": "`handleCheckAll` 在 catch 中已通过 `handleError` 报错，但 `finally` 之后无条件执行 `notificationController.show({ message: $t('admin.repair_matched_items', { values: { count } }) })`。分批校验中途失败时，界面会先显示错误、再显示一条“已匹配 count 项”的信息提示，用户无法判断剩余文件是否已检查；同时 `matches` 已部分写入，需要重新全量校验才能保证一致性。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "UX-001"
+    }
+  ],
+  "stderr_tail": "ench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 5 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 35 个文件 / 331960 字符（lockfile=6, test=29），明细见审计 mrFilter\n✓ 完成 · 耗时 1234.0s · 模型调用 112 次 · token 输入 521,882（未命中） · 输出 171,911 · 缓存命中 7,414,656（93.4%） · 工具 241 次（主会话 241 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.1420\nreview-pi: 置信度过滤丢弃 5 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\immich-app__immich@b7a125...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1234.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.0%)\n[time] 阶段 | 六阶段审计 1233.9s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 12.5s (1.0%) | S1P2 4.1s (0.3%) | S1P3 11.8s (1.0%) | S1P4 89.4s (7.3%) | S1P5 64.6s (5.2%) | S1P6 19.6s (1.6%) | S2P1 9.3s (0.8%) | S2P2 4.2s (0.3%) | S2P3 9.9s (0.8%) | S2P4 48.5s (3.9%) | S2P5 107.7s (8.7%) | S2P6 23.8s (1.9%) | S3P1 11.4s (0.9%) | S3P2 4.3s (0.4%) | S3P3 16.4s (1.3%) | S3P4 203.7s (16.5%) | S3P5 45.8s (3.7%) | S3P6 25.9s (2.1%) | S4P1 11.5s (0.9%) | S4P2 5.0s (0.4%) | S4P3 10.8s (0.9%) | S4P4 187.7s (15.2%) | S4P5 56.8s (4.6%) | S4P6 14.2s (1.1%) | S5P1 14.1s (1.1%) | S5P2 4.2s (0.3%) | S5P3 12.7s (1.0%) | S5P4 129.6s (10.5%) | S5P5 55.3s (4.5%) | S5P6 18.4s (1.5%)\n[usage] 任务总计 | 模型调用 112 次（Agent 112 + 一次性 0） | token 输入 521,882（未命中） | 输出 171,911 | 缓存命中 7,414,656（93.4%） | $0.1420\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\immich-app__immich@b7a1255\\audit\\20261115_032950_536.json",
+  "token_usage": {
+    "input_tokens": 521882,
+    "output_tokens": 171911,
+    "cache_read_input_tokens": 7414656
+  }
+}

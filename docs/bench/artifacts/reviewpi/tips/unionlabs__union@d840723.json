@@ -1,0 +1,116 @@
+[
+  {
+    "filePath": "voyager/modules/consensus/ethereum/src/main.rs",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "Ok(Timestamp::from_nanos(",
+        "review": "[缺陷类型] 时间单位错配（秒 vs 纳秒），构造函数选择错误。影响评估：Ethereum 链的 `queryLatestTimestamp` 返回值比真实时间小 1e9 倍；任何以此为判据的 `WaitForTimestamp`（call.rs:238 的 `>=` 比较）永远无法满足，任务会在每秒 defer 中无限循环，表现为更新流程卡死而非显式报错。",
+        "suggestion": "[重构思路] 用与数据来源单位一致的构造函数：Ethereum 执行层时间戳为秒，应使用 `Timestamp::from_secs`；若担心内部易混用，可在 `Timestamp` 上提供显式单位入口（`from_unix_secs`/`from_unix_nanos`）并禁止跨单位直接 `from_*`，同时在 `Timestamp` 上写下「内部恒为纳秒」的文档不变式。代码示例：`Ok(Timestamp::from_secs(self.provider.get_block(...).await.unwrap().unwrap().header.timestamp))` 与 `Ok(Timestamp::from_secs(finalized_header.execution.timestamp))`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 167,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "voyager/plugins/client-update/ethereum/src/main.rs",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "constants::metric::NANOS_PER_SECOND,",
+        "review": "[缺陷类型] 死导入（unused import）。影响评估：编译告警；若 CI 以 `-D warnings` 构建则阻断流水线，且残留线索会让维护者误以为仍有手工单位换算。",
+        "suggestion": "[重构思路] 删除该导入，保留 `unionlabs::constants` 中其他仍在使用的项；或将 `NANOS_PER_SECOND` 的换算收敛进 `Timestamp::from_secs` 内部（本 MR 已如此），并顺手确认整个 workspace 无同类残留。代码示例：`use unionlabs::{ hash::{H160, H256}, ibc::core::client::height::Height, ErrorReporter };`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 28,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "voyager/modules/consensus/movement/src/main.rs",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "Ok(Timestamp::from_nanos(timestamp).try_into().unwrap())",
+        "review": "[缺陷类型] 冗余/自反类型转换。影响评估：不影响运行时行为，但把「不可能失败」包装成 `unwrap()`，降低可读性并削弱 clippy `unwrap_used` 等约束的告警价值。",
+        "suggestion": "[重构思路] 直接返回构造结果，删除 `try_into().unwrap()`；如需保持显式性，改为在 `Timestamp` 上提供 `From<u64>`（表示纳秒）并 `Ok(nanos.into())`。代码示例：`Ok(Timestamp::from_nanos(timestamp))`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 165,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "lib/voyager-core/src/lib.rs",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "Timestamp(secs * 1_000_000_000)",
+        "review": "[缺陷类型] 整数乘法溢出未处理。影响评估：debug 下 panic（模块进程崩溃），release 下回绕产生极小时间戳，可能让等待条件被错误提前满足。",
+        "suggestion": "[重构思路] 使用 `checked_mul` 并在溢出时返回错误或饱和，或在 API 设计上只暴露 `from_nanos` + 显式 `TryFrom<Duration>`；如需保持签名简洁，可用 `saturating_mul`。代码示例：`pub fn from_secs(secs: u64) -> Self { Timestamp(secs.saturating_mul(1_000_000_000)) }`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 336,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "lib/voyager-message/src/module.rs",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "// TODO: Make this return a better type than i64",
+        "review": "[缺陷类型] 过时注释与代码不一致。影响评估：不改变运行时行为，但会误导后续重构判断，属于本次改动的收尾缺失。",
+        "suggestion": "[重构思路] 删除这些已完成的 TODO；若单位语义仍需说明，改写为描述不变式的文档注释（例如「Returns the latest chain timestamp, always expressed in nanoseconds」），使 `Timestamp` 的单位约定在 trait 层显式化。代码示例：`/// Query the latest finalized timestamp of this chain. Returns a [`Timestamp`] (nanoseconds).`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 442,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "voyager/src/main.rs",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "#[cfg(not(target_os = \"linux\"))]",
+        "review": "[缺陷类型] 与主题无关的平台约束收紧。影响评估：非 Linux 目标（尤其 macOS 本地开发与 CI）无法编译 voyager，属于一旦合入即难以回退的体验变更，且混淆了 MR 的评审范围。",
+        "suggestion": "[重构思路] 将该改动拆成独立 MR 并在其中说明支持矩阵与 CI 影响；若只是想在 Windows 之外也给出提示，可用 `#[cfg(not(any(target_os = \"linux\", test)))]` 或改为运行时警告/文档说明，避免阻断本地开发构建。代码示例：`#[cfg(all(not(target_os = \"linux\"), not(test)))] compile_error!(\"...\");`",
+        "category": "可移植",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 47,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

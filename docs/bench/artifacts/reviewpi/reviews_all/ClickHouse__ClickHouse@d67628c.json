@@ -1,0 +1,31 @@
+{
+  "generatedAt": "2026-11-15T08:46:00.599Z",
+  "runId": "20261115_084010_459",
+  "source": "mr",
+  "caseId": "ClickHouse__ClickHouse@d67628c",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+      "line": 218,
+      "title": "tryAcquireBucket 中的 isHardwareError 分支不可达，且吞掉错误后用 LOGICAL_ERROR 兜底",
+      "description": "ZooKeeper::tryMulti 对非 user error 的错误码（包括硬件/超时/会话类错误）会直接抛 KeeperException，只把 ZOK 或 user error 返回给调用方。因此新加的 `if (Coordination::isHardwareError(code)) return nullptr;` 永远不会命中，是死代码；同时该分支原本想表达的“硬件错误按未获取到桶处理”的语义并未生效，真实硬件错误会以异常形式向上抛出，而兜底又统一用 LOGICAL_ERROR 报 “Unexpected error”，把网络/会话类问题误报成逻辑错误，增加现场排查难度。",
+      "evidence": [
+        "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp:215-221 — if (code == ZNODEEXISTS) return nullptr; if (Coordination::isHardwareError(code)) return nullptr; throw Exception(LOGICAL_ERROR, \"Unexpected error: {}\", code);",
+        "src/Common/ZooKeeper/ZooKeeper.cpp:811-824 — tryMulti 在 `code != ZOK && !isUserError(code)` 时直接 throw KeeperException，硬件错误不会作为返回值出现",
+        "src/Common/ZooKeeper/ZooKeeper.cpp:769-773 — 操作超时同样以 ZOPERATIONTIMEOUT 返回后由 tryMulti 抛出"
+      ],
+      "rule": "DEADCODE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 不可达分支 + 错误分类不当。影响评估：代码给人以“已处理硬件错误”的错觉，实际行为与注释/意图不符；把会话失效、超时等可恢复错误统一报成 LOGICAL_ERROR 会污染错误日志并误导值班判断。",
+        "suggestion": "[重构思路] 删除死分支，改为显式捕获 KeeperException 并按错误类型区分：可恢复的硬件/超时错误按“未获取到 bucket”返回 nullptr，其余仍抛业务异常。代码示例：\n```cpp\ntry\n{\n    code = zk_client->tryMulti(requests, responses);\n}\ncatch (const Coordination::Exception & e)\n{\n    if (Coordination::isHardwareError(e.code))\n        return nullptr;\n    throw;\n}\n```",
+        "subcategory": "死代码与错误分类"
+      }
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "instance_id": "libsdl-org__SDL@96dfef3",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "ab34ea5a2684766e510de1daf8ae44c41b6af704",
+  "head_commit": "96dfef35c4b0b89f2f8d9c2ecc4f5e3a25d3e7a0",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 184.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 5881,
+      "summary": "CycleActiveTexture 在判空之前就对新建纹理做布局转换，分配失败时空指针解引用崩溃",
+      "failure_scenario": "VULKAN_INTERNAL_CreateTexture 在 vkCreateImage 失败（5645-5648）或 BindMemoryForImage 失败（5655-5663）时返回 NULL。新增代码在 5881 无条件调用 VULKAN_INTERNAL_TextureTransitionToDefaultUsage(renderer, commandBuffer, VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED, texture)，而该函数在 2835 遍历 texture->subresourceCount 并取 &texture->subresources[i]，必然解引用 texture；真正的 if (!texture) 判空在 5887，位于其后。因此显存不足或内存绑定失败时不再干净返回，而是在录制命令阶段崩溃（SIGSEGV），且此时传入的 commandBuffer 已被部分录制，调用方无法挽回。所有经 VULKAN_INTERNAL_PrepareTextureSubresourceForWrite（5948）的写入路径（如 UploadToTexture）都会走到这里。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "NULL-DEREF-001"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10533,
+      "summary": "清理与待销毁资源处理被收窄到 presenting 分支，非 present 的提交不再回收，资源无界堆积",
+      "failure_scenario": "改动后 fence 轮询清理（10535-10546）、checkEmptyAllocations 空分配回收（10548-10567）与 VULKAN_INTERNAL_PerformPendingDestroys（10569）全部被包进 if (presenting)，而 presenting 在 10424 由 vulkanCommandBuffer->presentDataCount > 0 得出，且 present 循环里原来的 presenting = true（旧 10470 附近）已被删除。对 presentDataCount == 0 的提交（纯 compute pass、纯 UploadToTexture、无窗口/headless 场景）这三件事全部被跳过，唯一其它触发点是 VULKAN_WaitForFences(10351) 与 VULKAN_Wait(10377)，而 VULKAN_AcquireCommandBuffer 并不做任何清理（9440-9484 只做重置与 Begin）。后果是 submittedCommandBuffers 持续增长（每个还挂着 descriptorSetCache 与 inFlightFence 引用），texturesToDestroy / buffersToDestroy 中的资源（referenceCount 已为 0，10127/10138）也不会被释放，长时间运行的无窗口计算程序内存与命令缓冲数量无界增长。旧版本这段清理在每次 Submit 都执行。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RESOURCE-LIFECYCLE-001"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10451,
+      "summary": "defrag 失败只打日志，Submit 仍返回 true，且 allocation 已处于半迁移状态",
+      "failure_scenario": "10451-10454 在 VULKAN_INTERNAL_DefragmentMemory 返回 false 时仅 SDL_LogError，随后继续 EndCommandBuffer、vkQueueSubmit 并最终 return true（10577）；而旧实现把该结果作为返回值向上传递，VULKAN_SubmitAndAcquireFence（10389）依赖它判断失败。同时 DefragmentMemory 在 10612-10613 就已从 allocationsToDefrag 弹出并自减 allocationsToDefragCount，之后才可能在 10633-10637（buffer）或 10699-10703（texture）因分配失败 return false；此时循环中前面若干 usedRegion 的新资源已经创建、容器已被重指向（10677-10690 与 10762-10770）、旧资源已 VULKAN_INTERNAL_ReleaseBuffer/ReleaseTexture，却没有任何回滚，该 allocation 也已不在待 defrag 列表中，将永久停留在半迁移状态且不再有机会被重新整理。结果是失败既不可被上层感知，又留下不一致的资源映射。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "ERROR-PROPAGATION-001"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 5571,
+      "summary": "CreateTexture 新增的 transitionToDefaultLayout 把布局转换责任隐式外移，缺少注释与断言",
+      "failure_scenario": "传 false 时（5876、10694）新建纹理保持 imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED（5637），必须由调用方自行补一次 UNINITIALIZED→默认布局的 barrier；否则后续 VULKAN_INTERNAL_TextureSubresourceTransitionFromDefaultUsage（2794-2796）会用 DefaultTextureUsageMode 作为 oldLayout，与实际布局不符，触发 Vulkan 校验层 VUID 报错或渲染错误。这个契约完全隐式：参数没有注释说明「传 false 时调用方必须自己转换并 TrackTexture」，两个现有调用点写法还不一致（5876 用 VULKAN_INTERNAL_TextureTransitionToDefaultUsage，10694 用 VULKAN_INTERNAL_TextureSubresourceMemoryBarrier(UNINITIALIZED→COPY_DEST)），后续新增调用点极易漏掉转换，产生难排查的布局错误。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "API-CONTRACT-001"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10701,
+      "summary": "纹理分支的分配失败日志复用了 buffer 的文案，排障时会误判",
+      "failure_scenario": "10699-10703 是 newTexture 分配失败的分支，但日志打印的是 \"Failed to allocate defrag buffer!\"，与 10635 的 buffer 分支文案完全相同。defrag 是显存压力下才会走到的路径，日志是唯一线索；两条完全相同的文案会让维护者无法判断到底是 VkBuffer 还是 VkImage 分配失败，也无法判断失败发生在哪个 usedRegion。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "LOG-MSG-001"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10607,
+      "summary": "defragInProgress 在 Submit 前置失败时会永久停在 1，此后所有 defrag 被禁用",
+      "failure_scenario": "DefragmentMemory 一进入就置 renderer->defragInProgress = 1（10607），而复位仅发生在 VULKAN_INTERNAL_CleanCommandBuffer 的 if (commandBuffer->isDefrag) { renderer->defragInProgress = 0; }（10272-10274）。新代码把 defrag 调用点前移到 10447-10455，早于 VULKAN_INTERNAL_EndCommandBuffer（10457）与 in-flight fence 获取（10462-10466）：这两处一旦失败就直接 return false，命令缓冲既不会被 VULKAN_INTERNAL_ReleaseCommandBuffer（10395）登记进 submittedCommandBuffers，也不会被 CleanCommandBuffer 处理，于是 defragInProgress 永久为 1，10450 的 !renderer->defragInProgress 条件此后恒为假，allocationsToDefrag 再也不会被处理，碎片化持续恶化。旧实现由于 defrag 在 Submit 末尾才执行且自行提交命令缓冲，不存在这个窗口。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "STATE-MACHINE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\libsdl-org__SDL@96dfef3.diff\n  caseId              libsdl-org__SDL@96dfef3\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@96dfef3\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 163.1s · 模型调用 15 次 · token 输入 51,967（未命中） · 输出 23,881 · 缓存命中 340,736（86.8%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0149\n[time] 阶段耗时 | 总墙钟 163.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.5s (0.3%)\n[time] 阶段 | 六阶段审计 163.0s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 9.4s (5.7%) | P2 2.4s (1.5%) | P3 6.3s (3.9%) | P4 58.8s (36.1%) | P5 73.7s (45.2%) | P6 12.5s (7.7%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 51,967（未命中） | 输出 23,881 | 缓存命中 340,736（86.8%） | $0.0149\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\libsdl-org__SDL@96dfef3\\audit\\20261115_002426_054.json",
+  "token_usage": {
+    "input_tokens": 51967,
+    "output_tokens": 23881,
+    "cache_read_input_tokens": 340736
+  }
+}

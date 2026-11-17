@@ -1,0 +1,211 @@
+[
+  {
+    "filePath": "src/App/PropertyStandard.cpp",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (maxEnumValue < 0) {",
+        "review": "[缺陷类型] 新增的失败返回路径未被同一类中的调用方适配（契约变更遗漏调用点）。影响评估：空枚举属性的 .Enum/.All 路径取值会把未初始化的 Py::Object 送入 pyObjectToAny，产生无效对象/潜在空指针解引用，属于低频但难排查的求值错误。",
+        "suggestion": "[重构思路] 让 getPathValue 处理 getPyPathValue 的返回值：失败时返回空的 any（与 pyObjectToAny 对 None 的处理一致），并考虑在失败时抛出可读的 Base::ValueError 便于定位。代码示例：\n```cpp\nif (p == \".Enum\" || p == \".All\") {\n    Base::PyGILStateLocker lock;\n    Py::Object res;\n    if (!getPyPathValue(path, res)) {\n        return {};  // 或者 FC_THROWM(Base::ValueError, \"Property has no enumeration values\");\n    }\n    return pyObjectToAny(res, false);\n}\n```",
+        "category": "可靠性",
+        "subcategory": "错误返回值未处理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 605,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "cMake/FindOCC.cmake",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "find_package(OpenCASCADE CONFIG QUIET)",
+        "review": "[缺陷类型] 依赖版本约束放宽后缺少新的下限校验（配置期成功、编译期失败）。影响评估：旧 OCC 环境下构建失败点被推迟且报错信息误导；版本字符串解析异常时还会静默漏链接 TKRWMesh。",
+        "suggestion": "[重构思路] 明确声明支持下限（7.4）并在配置期校验，同时在版本不可判定时给出显式警告而不是静默走旧分支。代码示例：\n```cmake\nfind_package(OpenCASCADE 7.4 CONFIG QUIET)\n...\nif (OCC_VERSION_STRING AND OCC_VERSION_STRING VERSION_LESS 7.4.0)\n    message(FATAL_ERROR \"OpenCASCADE ${OCC_VERSION_STRING} is too old, 7.4.0 or newer is required\")\nendif ()\nif (NOT OCC_VERSION_STRING)\n    message(WARNING \"Cannot determine OpenCASCADE version, assuming >= 7.5\")\nendif ()\n```",
+        "category": "可移植",
+        "subcategory": "依赖版本约束",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Import/App/ReaderStep.cpp",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "Handle(Message_ProgressIndicator) pi = new Part::ProgressIndicator(100);",
+        "review": "[缺陷类型] 非 RAII 的资源作用域配对，异常路径泄漏。影响评估：OCC < 7.5 下导入 STEP/IGES 失败时 sequencer 作用域未出栈，进度显示与后续操作状态可能异常。",
+        "suggestion": "[重构思路] 用小的 RAII 包装保证 EndScope 一定执行（即使抛异常），或在 catch 中补 EndScope。代码示例：\n```cpp\n#if OCC_VERSION_HEX < 0x070500\nstruct ScopeGuard {\n    Handle(Message_ProgressIndicator) pi;\n    ~ScopeGuard() { pi->EndScope(); }\n} guard {new Part::ProgressIndicator(100)};\nguard.pi->NewScope(100, \"Reading STEP file...\");\nguard.pi->Show();\naReader.WS()->MapReader()->SetProgress(guard.pi);\n#endif\naReader.Transfer(hDoc);\n```",
+        "category": "可靠性",
+        "subcategory": "异常安全与资源释放",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 70,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Doc/CONTRIBUTORS",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "bgbsww",
+        "review": "[缺陷类型] 夹带无关改动（文档/署名）。影响评估：变更意图不清晰，署名删除若属误操作会造成贡献者记录丢失，且难以通过 blame 还原。",
+        "suggestion": "[重构思路] 从本 MR 中移除该行删除；如确需调整，另开独立提交并在提交信息中说明原因。代码示例：`git checkout HEAD~ -- src/Doc/CONTRIBUTORS`（保留原文件内容）。",
+        "category": "可维护",
+        "subcategory": "无关改动夹带",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 23,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Part/App/ImportStep.cpp",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "//aReader.PrintCheckTransfer (failsonly, IFSelect_ItemsByEntity);",
+        "review": "[缺陷类型] 提交中夹带被注释掉的调试代码。影响评估：降低可读性、误导后来者，且与 MR 主题无关，增大评审与回溯成本。",
+        "suggestion": "[重构思路] 删除这些注释行；如确实需要保留实验线索，放到 issue/PR 描述或跟踪任务中，而不是源码注释。代码示例：直接把 `//ReadColors(aReader.WS(), hash_col);` 等行删除，保留 `std::map<int, Quantity_Color> hash_col;` 的实际使用逻辑即可。",
+        "category": "可读性",
+        "subcategory": "死代码与注释残留",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 94,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/App/DocumentPy.xml",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "<Parameter Name=\"ToplogicalSortedObjects\" Type=\"List\" />",
+        "review": "[缺陷类型] 元模型内部的命名拼写不一致（Attribute Name ≠ Parameter Name）。影响评估：当前因 ReadOnly 无运行期影响，但会降低生成代码与文档的可检索性，并在语义变化时演变为真实缺陷。",
+        "suggestion": "[重构思路] 将 Parameter Name 修正为与 Attribute Name 一致，并顺带修正其它明显不一致项（例如同文件中 `Name`/`Document` 属性用 Type=\"Object\" 表达字符串/对象时的类型标注）。代码示例：\n```xml\n<Attribute Name=\"TopologicalSortedObjects\" ReadOnly=\"true\">\n  <Documentation>\n    <UserDocu>The list of objects in this document in topological sorted order</UserDocu>\n  </Documentation>\n  <Parameter Name=\"TopologicalSortedObjects\" Type=\"List\" />\n</Attribute>\n```",
+        "category": "可读性",
+        "subcategory": "命名拼写不一致",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 298,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Part/App/HLRBRep/HLRBRep_PolyAlgoPyImp.cpp",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "#if OCC_VERSION_HEX <= 0x070400",
+        "review": "[缺陷类型] 同一 MR 内版本阈值不一致 + getter/setter 行为不对称（读抛异常、写静默忽略）。影响评估：7.4 小版本间行为分裂；新版 OCC 上属性访问语义被破坏，写入无效却无任何提示，易导致难以定位的行为差异。",
+        "suggestion": "[重构思路] 统一阈值语义（建议与其它分支对齐到 `< 0x070500`），并让 getter/setter 行为一致：要么都抛明确的异常类型，要么 getter 返回默认值、setter 抛异常；同时在 XML 的 UserDocu 中标注该属性在新版 OCCT 不可用。代码示例：\n```cpp\nPy::Float HLRBRep_PolyAlgoPy::getAngle() const\n{\n#if OCC_VERSION_HEX < 0x070500\n    return Py::Float(getHLRBRep_PolyAlgoPtr()->Angle());\n#else\n    throw Py::AttributeError(\"Angle is not available with OCCT >= 7.5\");\n#endif\n}\n```",
+        "category": "可维护",
+        "subcategory": "版本兼容一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 248,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Part/App/TopoShapeExpansion.cpp",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "mk->SetRunParallel(Standard_True);",
+        "review": "[缺陷类型] 并发/性能配置项被硬编码，用户可配置的并行阈值失效，同时引入进程级全局副作用。影响评估：小模型的布尔运算会额外承担线程调度开销，可能出现性能回退；全局切换 Occt 线程后端会改变其它算法的线程行为，多线程布尔运算的稳定性问题也会在全量场景暴露；注释掉的判断与自相矛盾的分支注释让后续维护者无法判断应为“始终并行”还是“按阈值并行”。",
+        "suggestion": "[重构思路] 要么完整保留阈值语义，要么彻底删除死代码并显式声明“始终并行”，不要把注释掉的判断留在生产代码里；`OSD_Parallel::SetUseOcctThreads` 这类全局开关不应在单个算法入口里随手设置，建议放在应用初始化处或由参数集中控制。代码示例：\n```cpp\n#ifdef FC_USE_OCC_PARALLEL\nif (PartParams::getParallelRunThreshold() > 0) {\n    mk->SetRunParallel(Standard_True);\n}\n#endif\n// 全局线程后端在应用启动时统一设置，而非每次布尔运算\n```",
+        "category": "性能",
+        "subcategory": "并行阈值配置",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 5748,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Part/App/TopoShape.cpp",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "pi->EndScope();",
+        "review": "[缺陷类型] 手工配对的资源/作用域生命周期管理，缺失异常安全（非 RAII）。影响评估：导入/导出失败（文件损坏、磁盘满、用户取消）时进度作用域不闭合，Sequencer 与进度条状态可能残留，后续操作可能显示错误的进度或无法再弹出进度；随着 #if 分支继续增加，维护成本与漏改风险同步上升。",
+        "suggestion": "[重构思路] 用一个 RAII 小工具把 NewScope/EndScope 收敛起来（析构函数里 EndScope），并在异常路径上也能保证成对；同时删掉三处重复的 #if 样板。代码示例：\n```cpp\n#if OCC_VERSION_HEX < 0x070500\nstruct ProgressScopeGuard {\n    Handle(Message_ProgressIndicator) pi;\n    ProgressScopeGuard(const char* name) : pi(new ProgressIndicator(100)) {\n        pi->NewScope(100, name);\n        pi->Show();\n    }\n    ~ProgressScopeGuard() { pi->EndScope(); }\n};\n#endif\n```",
+        "category": "可靠性",
+        "subcategory": "异常安全与作用域生命周期",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 927,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "theProgress->NewScope(scopeName.c_str());",
+        "review": "[缺陷类型] 版本分支间作用域生命周期不一致（打开未关闭）。影响评估：旧版 OCCT 下最外层进度作用域悬挂，进度百分比/取消状态计算与新分支不同，且以后若在该分支加入 `UserBreak` 轮询或复用 `theProgress`，可能得到错误结果；也让两个分支难以对照维护。",
+        "suggestion": "[重构思路] 在旧分支函数出口处显式补 `theProgress->EndScope()`，或用 RAII guard（见 F002）统一管理；更好的做法是把“打开/关闭外层 scope”封装成与版本无关的小助手，避免两套分支各写一遍。代码示例：\n```cpp\n#if OCC_VERSION_HEX < 0x070500\ntheProgress->NewScope(scopeName.c_str());\ntheProgress->Show();\n#else\nMessage_ProgressRange theRange(theProgress->Start());\nMessage_ProgressScope theScope(theRange, TCollection_AsciiString(scopeName.c_str()), selection.size());\ntheScope.Show();\n#endif\n... // 末尾\n#if OCC_VERSION_HEX < 0x070500\ntheProgress->EndScope();\n#endif\n```",
+        "category": "可靠性",
+        "subcategory": "进度作用域生命周期",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 428,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Tools/bindings/templates/templateClassPyExport.py",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "if self.is_python and not self.export.Namespace in [\"Base\"]:",
+        "review": "[缺陷类型] 绑定生成器路径判定语义变更（字段替换 + 排除列表收缩），影响所有仍以 .pyi 为输入的模块。影响评估：App 模块的 .py 生成产物换名，可能与并列的 XML 产物重复生成或触发 Compare 的文件缺失异常，造成构建期报错或生成文件被静默忽略（CMake 只编译 XML 产物的名字）；迁移期 Base/App 处理不一致会增加后续排查成本。",
+        "suggestion": "[重构思路] 明确“哪一种来源决定文件名”的单一规则：若意图是“只有 Base 保持原名”，请在注释中写清并同步检查所有仍存在的 .pyi 是否都有同名 XML 产物；更稳妥的是显式传入“是否覆盖 XML 产物”的标志，而不是靠 Namespace 字符串比较。代码示例：\n```python\ndef getPath(self, path):\n    # .pyi 生成物统一加后缀，避免与 XML 生成物互相覆盖\n    if self.is_python:\n        root, ext = os.path.splitext(path)\n        return f\"{root}_{ext}\"\n    return path\n```",
+        "category": "可维护",
+        "subcategory": "代码生成路径语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 40,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

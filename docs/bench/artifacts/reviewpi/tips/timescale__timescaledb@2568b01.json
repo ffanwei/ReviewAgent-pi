@@ -1,0 +1,215 @@
+[
+  {
+    "filePath": "tsl/src/hypercore/hypercore_handler.c",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "return table_open(hcinfo->compressed_relid, AccessShareLock);",
+        "review": "[缺陷类型] 锁模式参数被忽略导致的锁级别降级。影响评估：压缩表的删除/更新/重写路径只持有 AccessShareLock，与并发 DDL（CREATE INDEX、ALTER TABLE 等）失去互斥，存在索引/堆不一致与数据损坏风险；同时产生未使用参数告警。",
+        "suggestion": "[重构思路] 在辅助函数中真正使用传入的 mode，并让所有调用方保持原有锁级别；若确实希望统一，请删除参数并显式说明锁策略。代码示例：`static Relation hypercore_open_compressed(Relation relation, LOCKMODE mode) { HypercoreInfo *hcinfo = RelationGetHypercoreInfo(relation); Oid relid = hcinfo->compressed_relid; return table_open(relid, mode); }`，并在 commit 信息中注明各调用点锁级别的变化。",
+        "category": "可靠性",
+        "subcategory": "锁级别与并发控制",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 109,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/chunk_api.c",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "Datum",
+        "review": "[缺陷类型] 缺少对象级 ACL 校验即以属主身份执行 DDL（权限提升）。影响评估：PUBLIC 可执行的 C 函数让任意用户以 hypertable 属主身份在任意 schema 创建关系对象，绕过 schema 权限；同时可创建未受 catalog 管理的表。",
+        "suggestion": "[重构思路] 提权前复用 check_privileges_for_creating_chunk（或更强的 owner 校验），并校验 schema_name 只能是 INTERNAL_SCHEMA_NAME 或该 hypertable 的 associated schema；对 _timescaledb_functions 内部函数考虑 REVOKE EXECUTE FROM PUBLIC。代码示例：`check_privileges_for_creating_chunk(hypertable_relid); if (strcmp(schema_name, INTERNAL_SCHEMA_NAME) != 0 && strcmp(schema_name, NameStr(ht->fd.associated_schema_name)) != 0) ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg(\"invalid chunk schema \\\"%s\\\"\", schema_name)));`",
+        "category": "安全",
+        "subcategory": "权限校验缺失",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 462,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "Assert(ht != NULL);",
+        "review": "[缺陷类型] 用户可控输入的错误处理使用 Assert 而非 ereport。影响评估：传入非 hypertable 的 regclass 时后端段错误（P0 级崩溃的触发条件），并可能留下未释放的 cache pin 与未恢复的提权状态。",
+        "suggestion": "[重构思路] 用 ereport 替换 Assert，并用 PG_TRY/PG_FINALLY 保证 sec context 与 cache 释放。代码示例：`ht = ts_hypertable_cache_get_entry(hcache, hypertable_relid, CACHE_FLAG_NONE); if (ht == NULL) ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg(\"\\\"%s\\\" is not a hypertable\", get_rel_name(hypertable_relid))));`",
+        "category": "可靠性",
+        "subcategory": "空指针安全",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 481,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F012",
+        "code": "* These values come from the pg_type table.",
+        "review": "[缺陷类型] 死代码与重复 include。影响评估：增加阅读与维护成本，易误导后续开发者；若这些宏本应被使用（例如远端 chunk 逻辑），则说明代码搬迁时漏掉了实际实现。",
+        "suggestion": "[重构思路] 删除本文件中未被引用的宏/枚举与重复 include；若确实需要保留待后续使用，请随功能代码一起提交而非提前引入。代码示例：`// 删除 FLOAT4_TYPELEN..CSTRING_ARY_TYPELEN、ESTIMATE_JSON_STR_SIZE、CHUNK_CREATE_STMT、enum Anum_chunk_relstats/Anum_chunk_colstats 等；chunk_api.h 仅保留 #include \"chunk.h\"`",
+        "category": "可维护",
+        "subcategory": "死代码清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 44,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/ts_catalog/chunk_column_stats.c",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "col_type = get_atttype(ht->main_table_relid, attno);",
+        "review": "[缺陷类型] 关系/属性号不匹配导致列类型解析错误。影响评估：列统计（min/max range）记录错误的类型与范围，依赖该 catalog 的 chunk 裁剪可能返回不完整结果；与 issue #7941 “Fix column mapping in column stats calculation” 的修复方向相反。",
+        "suggestion": "[重构思路] 保持 attno 与关系一致：既然 attno 已映射为 chunk 的列号，就应从 chunk 关系取类型。代码示例：`attno = get_attnum(ht->main_table_relid, col_name); attno = ts_map_attno(ht->main_table_relid, chunk->table_id, attno); col_type = get_atttype(chunk->table_id, attno);` 若确实需要主表类型，则应改用映射前的 ht attno。",
+        "category": "可靠性",
+        "subcategory": "属性号与类型映射",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 766,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/compression/compression_dml.c",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "continue;",
+        "review": "[缺陷类型] 状态机缺少重置导致的跨批次状态污染。影响评估：DML 解压/删除路径可能基于过期的解压行做过滤判断，导致误删压缩 segment（数据丢失）或漏删/漏解压；并发解压（TM_Deleted）场景更容易触发。",
+        "suggestion": "[重构思路] 恢复每批次起点的显式重置，或让 decompress_batch 在 compressed_datums 变化后总是重新初始化（例如引入批次版本号），并在所有 continue 路径前 reset。代码示例：`/* 每个压缩元组处理前清空上一批次状态 */ row_decompressor_reset(&decompressor); if (num_mem_scankeys && !batch_matches(...)) { stats.batches_filtered++; continue; }`",
+        "category": "可靠性",
+        "subcategory": "状态重置与批次复用",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 532,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "int num_tuples = decompress_batch(decompressor);",
+        "review": "[缺陷类型] 热点路径计算量放大（全列全行解压 + 逐行物化 slot）。影响评估：压缩表上 UPDATE/DELETE 的批次过滤成本上升，批次多、过滤选择性高的工作负载吞吐下降、内存峰值上升。",
+        "suggestion": "[重构思路] 保留整批解压的简化实现，但恢复“只解压扫描键涉及列”的能力；或在 batch_matches 中按需惰性解压/短路（命中即停止后续行处理）。代码示例：`/* 收集 scankeys 涉及的 output_index，仅初始化这些列的 iterator */ for (int i = 0; i < num_scankeys; i++) required[AttrNumberGetAttrOffset(scankeys[i].sk_attno)] = true;` 再据此过滤 decompress_batch 的列循环。",
+        "category": "性能",
+        "subcategory": "解压路径性能退化",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 593,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/with_clause_parser.c",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "PG_CATCH();",
+        "review": "[缺陷类型] 过度宽泛的错误捕获。影响评估：资源耗尽/查询取消等硬错误被吞掉并改报为参数非法，误导用户与运维；原始错误上下文丢失，排障困难。",
+        "suggestion": "[重构思路] 恢复错误类别过滤，仅对“值无法解析”类错误改写为参数错误，其余 PG_RE_THROW；并在改写前 FlushErrorState。代码示例：`int sqlerrcode = geterrcode(); if (ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_DATA_EXCEPTION && ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION) PG_RE_THROW(); FlushErrorState();`",
+        "category": "可靠性",
+        "subcategory": "错误处理与异常传播",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 168,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/partialize_finalize.c",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "CurrentMemoryContext = oldcontext;",
+        "review": "[缺陷类型] 缺少子事务保护的错误捕获与重试。影响评估：deserialize 失败后可能在未清理的资源/内存状态上继续执行，导致后端错误乃至崩溃；同时硬错误被误判为旧格式数据而触发不恰当的“修复”。",
+        "suggestion": "[重构思路] 恢复内部子事务与资源所有者保存/恢复，并按错误类别决定是否重试；重试仍失败时正常报错。代码示例：`ResourceOwner oldowner = CurrentResourceOwner; BeginInternalSubTransaction(NULL); PG_TRY(){ deserialized = FunctionCallInvoke(deser_fcinfo); ReleaseCurrentSubTransaction(); MemoryContextSwitchTo(oldcontext); CurrentResourceOwner = oldowner; } PG_CATCH(){ int code = geterrcode(); if (ERRCODE_TO_CATEGORY(code) != ERRCODE_DATA_EXCEPTION && code != ERRCODE_PROTOCOL_VIOLATION && code != ERRCODE_INTERNAL_ERROR) PG_RE_THROW(); FlushErrorState(); RollbackAndReleaseCurrentSubTransaction(); MemoryContextSwitchTo(oldcontext); CurrentResourceOwner = oldowner; }`",
+        "category": "可靠性",
+        "subcategory": "异常安全与资源清理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 279,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "sql/chunk.sql",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "CREATE OR REPLACE FUNCTION _timescaledb_functions.create_chunk_table(",
+        "review": "[缺陷类型] 安装脚本与升级脚本不一致。影响评估：升级实例缺少新函数/兼容包装，调用方在升级后运行时报 function does not exist；反向降级脚本同样缺少对应语句。",
+        "suggestion": "[重构思路] 所有对安装脚本（sql/*.sql）新增的函数都必须在 sql/updates/latest-dev.sql 与 reverse-dev.sql 中有等价语句，并加测试覆盖升级路径。代码示例：`-- sql/updates/latest-dev.sql\nCREATE OR REPLACE FUNCTION _timescaledb_functions.create_chunk_table(hypertable REGCLASS, slices JSONB, schema_name NAME, table_name NAME) RETURNS BOOL AS '@MODULE_PATHNAME@', 'ts_chunk_create_empty_table' LANGUAGE C VOLATILE;`",
+        "category": "可维护",
+        "subcategory": "升级/降级脚本一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 52,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/chunk.c",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "LockRelationOid(ht->main_table_relid, ShareUpdateExclusiveLock);",
+        "review": "[缺陷类型] 检查与加锁顺序导致的 TOCTOU 竞态。影响评估：并发调用可能创建同名表冲突（报错难懂）或生成不受 catalog 管理的孤儿表，造成磁盘空间无法回收与后续统计/裁剪不一致。",
+        "suggestion": "[重构思路] 采用与 ts_chunk_find_or_create_without_cuts 相同的“加锁后复检”模式，并对已存在同名表给出明确错误。代码示例：`LockRelationOid(ht->main_table_relid, ShareUpdateExclusiveLock); ts_hypercube_find_existing_slices(cube, &tuplock); if (chunk_collides(ht, cube) != NULL) ereport(ERROR, (errcode(ERRCODE_TS_CHUNK_COLLISION), errmsg(\"chunk table creation failed due to dimension slice collision\")));`",
+        "category": "可靠性",
+        "subcategory": "竞态与 TOCTOU",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1016,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/bgw_policy/continuous_aggregate_api.c",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg(\"config must not be NULL\")));",
+        "review": "[缺陷类型] 错误码语义降级。影响评估：用户输入错误被报告为内部错误（XX000），干扰客户端错误处理、告警与日志归因，并可能导致既有测试断言失败。",
+        "suggestion": "[重构思路] 保留原有的输入错误 SQLSTATE，或使用更贴切的 ERRCODE_NULL_VALUE_NOT_ALLOWED/ERRCODE_INVALID_PARAMETER_VALUE。代码示例：`ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg(\"config must not be NULL\")));`",
+        "category": "可维护",
+        "subcategory": "错误码语义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 264,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

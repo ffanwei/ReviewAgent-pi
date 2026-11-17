@@ -1,0 +1,204 @@
+{
+  "generatedAt": "2026-11-15T00:40:27.077Z",
+  "runId": "20261115_003841_224",
+  "source": "mr",
+  "caseId": "mrdoob__three.js@b55b9e9",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/nodes/gpgpu/ComputeNode.js",
+      "line": 233,
+      "title": "仅传 workgroupSize 数组时 count 被置为 null，可能导致计算静默不执行",
+      "description": "新版 TSL compute() 在第二个参数是数组时把 count 置为 null（L233），随后构造 ComputeNode 并触发 updateDispatchCount()：dispatchCount = Math.ceil( count / size )，当 count 为 null 时得到 0。若调用方没有同时显式传入 dispatchSize（例如通过 updateBefore 自动触发的 renderer.compute( this )，或运行在无 dispatchSize 支持的 WebGL fallback backend），后端会以 dispatchWorkgroups( 0, 1, 1 ) / drawArrays( ..., 0 ) 执行，GPU 侧什么都不做且没有任何警告或异常，用户看到的是“commit 成功但结果缓冲区全为初值”。",
+      "evidence": [
+        "src/nodes/gpgpu/ComputeNode.js:233 — `count = null;`（当第二个实参为数组时）",
+        "src/nodes/gpgpu/ComputeNode.js:137 — `this.dispatchCount = Math.ceil( count / size );`，count 为 null 时结果为 0",
+        "src/nodes/gpgpu/ComputeNode.js:98 — 构造函数末尾调用 `this.updateDispatchCount();`",
+        "src/renderers/webgpu/WebGPUBackend.js:1369 — 回退分支 `dispatchSize.x = computeNode.dispatchCount;`，即 0",
+        "src/nodes/gpgpu/ComputeNode.js:162 — `updateBefore` 中调用 `renderer.compute( this )`，不会传入 dispatchSize"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 空值传播导致的静默无效 dispatch。影响评估：compute shader 完全不执行，结果缓冲区保持初值，无报错，排查成本极高；对依赖 compute 结果的渲染管线表现为画面/数据全错。",
+        "suggestion": "[重构思路] 在使用数组形式（即放弃 count）时要求必须有 dispatchSize，否则立即报错；或在 count 缺失时抛出可读异常而不是让 dispatchCount 变成 0。\n代码示例：\n```js\nexport const compute = ( node, countOrWorkgroupSize, workgroupSize ) => {\n\n\tconst isWorkgroupForm = Array.isArray( countOrWorkgroupSize );\n\tconst count = isWorkgroupForm ? null : countOrWorkgroupSize;\n\tif ( isWorkgroupForm ) workgroupSize = countOrWorkgroupSize;\n\n\tconst computeNode = new ComputeNode( nodeObject( node ), count, workgroupSize );\n\tif ( isWorkgroupForm ) computeNode.dispatchCount = null; // 标记为“需显式 dispatchSize”\n\treturn nodeObject( computeNode );\n\n};\n```\n并在 backend/updateBefore 路径中当 dispatchCount == null 且未提供 dispatchSize 时 `throw new Error( 'compute(): dispatchSize is required when count is omitted' )`。",
+        "subcategory": "空值传播与静默失败"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/renderers/common/Renderer.js",
+      "line": 2322,
+      "title": "未初始化与 computeAsync 路径丢失 dispatchSize 参数",
+      "description": "Renderer.compute 新增 dispatchSize 参数，但在两条转发路径上都没有透传：一是 `_initialized === false` 时调用 `this.computeAsync( computeNodes )`（L2322），二是 computeAsync 内部调用 `this.compute( computeNodes )`（L2416）。因此在 renderer 尚未初始化时调用 `renderer.compute( node, [ x, y, z ] )`，用户指定的 dispatchSize 会被静默丢弃，最终走 computeNode.dispatchCount 的自动计算分支，得到与用户意图不同的 dispatch 网格。",
+      "evidence": [
+        "src/renderers/common/Renderer.js:2314 — `compute( computeNodes, dispatchSize = [ 0, 0, 0 ] )`",
+        "src/renderers/common/Renderer.js:2322 — `return this.computeAsync( computeNodes );` 未传 dispatchSize",
+        "src/renderers/common/Renderer.js:2412 — `async computeAsync( computeNodes ) {` 签名中无 dispatchSize",
+        "src/renderers/common/Renderer.js:2416 — `this.compute( computeNodes );` 未传 dispatchSize"
+      ],
+      "rule": "API-CONSISTENCY-002",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 新增参数在转发/异步路径中丢失。影响评估：初次调用（未初始化）时 compute 的 dispatch 结果与显式指定值不一致，属于“首帧/预热帧行为不同”的隐蔽差异，很难定位。",
+        "suggestion": "[重构思路] 把 dispatchSize 作为可选参数贯穿 compute → computeAsync，并在未初始化分支一并传递。\n代码示例：\n```js\ncompute( computeNodes, dispatchSize = [ 0, 0, 0 ] ) {\n\n\tif ( this._initialized === false ) {\n\n\t\tconsole.warn( '... Try using .computeAsync() instead.' );\n\t\treturn this.computeAsync( computeNodes, dispatchSize );\n\n\t}\n\t// ...\n}\n\nasync computeAsync( computeNodes, dispatchSize = [ 0, 0, 0 ] ) {\n\n\tif ( this._initialized === false ) await this.init();\n\tthis.compute( computeNodes, dispatchSize );\n\n}\n```",
+        "subcategory": "参数透传缺失"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "src/renderers/webgl-fallback/WebGLBackend.js",
+      "line": 919,
+      "title": "WebGL fallback backend 的 compute 未同步 dispatchSize，跨后端行为不一致",
+      "description": "Renderer.compute 现在会把 dispatchSize 作为第 5 个实参传给 backend.compute（Renderer.js:2393），但 WebGLBackend.compute 的签名仍是 `( computeGroup, computeNode, bindings, pipeline )`，既未声明也未使用 dispatchSize；其 dispatch 依据是 `computeNode.count`（drawArrays/drawArraysInstanced）。结果是同一份 TSL compute 代码在 WebGPU 上按 dispatchSize 派发，在 WebGL fallback 上被忽略，甚至在 count 为 null（workgroupSize-数组形式）时以 count=null 执行 draw，属于跨后端行为不一致。Backend 基类的抽象声明（src/renderers/common/Backend.js:169）也没有更新。",
+      "evidence": [
+        "src/renderers/common/Renderer.js:2393 — `backend.compute( computeNodes, computeNode, computeBindings, computePipeline, dispatchSize );`",
+        "src/renderers/webgl-fallback/WebGLBackend.js:919 — `compute( computeGroup, computeNode, bindings, pipeline ) {` 无 dispatchSize 形参",
+        "src/renderers/webgl-fallback/WebGLBackend.js:958 / 962 — `gl.drawArraysInstanced( gl.POINTS, 0, 1, computeNode.count )` / `gl.drawArrays( gl.POINTS, 0, computeNode.count )`",
+        "src/renderers/common/Backend.js:169 — `compute( /*computeGroup, computeNode, computeBindings, computePipeline*/ ) { }` 未包含 dispatchSize 文档"
+      ],
+      "rule": "PORTABILITY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 后端接口扩展不完整导致的能力不对称。影响评估：使用新 dispatchSize 特性的示例/项目在 WebGL fallback 环境下行为错误或完全不计算，且没有任何提示。",
+        "suggestion": "[重构思路] 在 Backend 基类与所有实现中统一新签名，WebGL 侧按 dispatchSize 换算为实例数（dispatchSize 各分量与 workgroupSize 相乘得总 invocation 数），或至少在不支持时显式 warn。\n代码示例：\n```js\n// Base\ncompute( /*computeGroup, computeNode, computeBindings, computePipeline, dispatchSize*/ ) { }\n\n// WebGLBackend\ncompute( computeGroup, computeNode, bindings, pipeline, dispatchSize = [ 0, 0, 0 ] ) {\n\n\tconst [ wgX, wgY, wgZ ] = computeNode.workgroupSize;\n\tconst hasExplicit = dispatchSize[ 0 ] > 0 && dispatchSize[ 1 ] > 0 && dispatchSize[ 2 ] > 0;\n\tconst count = hasExplicit ? dispatchSize[ 0 ] * dispatchSize[ 1 ] * dispatchSize[ 2 ] * wgX * wgY * wgZ : computeNode.count;\n\t// ... drawArrays( gl.POINTS, 0, count )\n}\n```",
+        "subcategory": "后端实现不一致"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/renderers/webgpu/WebGPUBackend.js",
+      "line": 1350,
+      "title": "用户显式传入的 dispatchSize 未做 maxComputeWorkgroupsPerDimension 校验",
+      "description": "自动计算分支会用 `this.device.limits.maxComputeWorkgroupsPerDimension` 对 dispatchCount 做切分/clamp（L1358-1371），但新增的显式 dispatchSize 分支直接把 x/y/z 原样交给 `passEncoderGPU.dispatchWorkgroups()`。当用户传入的分量超过设备上限时，WebGPU 会触发校验错误（运行时异常或 device lost），而这一类错误正是原有代码专门规避的。建议在显式分支同样做上限校验并给出明确错误信息。",
+      "evidence": [
+        "src/renderers/webgpu/WebGPUBackend.js:1327 — `const isValid = dispatchSize[ 0 ] > 0 && dispatchSize[ 1 ] > 0 && dispatchSize[ 2 ] > 0;` 仅校验正数，未校验上限",
+        "src/renderers/webgpu/WebGPUBackend.js:1350-1354 — `passEncoderGPU.dispatchWorkgroups( dispatchSize[ 0 ], dispatchSize[ 1 ], dispatchSize[ 2 ] );`",
+        "src/renderers/webgpu/WebGPUBackend.js:1358-1365 — 自动分支使用 `this.device.limits.maxComputeWorkgroupsPerDimension` 做 `Math.min` / `Math.ceil` 切分"
+      ],
+      "rule": "WEBGPU-LIMITS-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 设备能力上限未校验。影响评估：超限 dispatch 会引发 WebGPU validation error，可能导致 device lost 或整个 compute pass 失效，而错误来源是用户传入的数组，缺少可读提示时排查困难。",
+        "suggestion": "[重构思路] 两条分支共用同一个 clamp/校验工具，超限时抛出具名错误（或按自动分支逻辑切分 y 维）。\n代码示例：\n```js\nconst maxDim = this.device.limits.maxComputeWorkgroupsPerDimension;\nif ( isValid ) {\n\n\tif ( dispatchSize[ 0 ] > maxDim || dispatchSize[ 1 ] > maxDim || dispatchSize[ 2 ] > maxDim ) {\n\n\t\tthrow new Error( 'THREE.WebGPUBackend: dispatchSize exceeds maxComputeWorkgroupsPerDimension (' + maxDim + ').' );\n\n\t}\n\n\tpassEncoderGPU.dispatchWorkgroups( dispatchSize[ 0 ], dispatchSize[ 1 ], dispatchSize[ 2 ] );\n\n} else { /* 原逻辑 */ }\n```",
+        "subcategory": "设备上限校验"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/renderers/webgpu/nodes/WGSLNodeBuilder.js",
+      "line": 1903,
+      "title": "workgroupSize 必须为 3 元素的硬性校验使旧的 [ 64 ] 用法在构建期抛错",
+      "description": "workgroupSize 的历史默认值是 `[ 64 ]`（见 ComputeNode.js 变更前 L23/L56 的 JSDoc 与默认参数），既有用户代码很可能写成 `compute( node, count, [ 64 ] )` 或 `[ 256 ]`。本次在 WGSL 构建路径新增 `if ( workgroupSize.length !== 3 ) throw new Error( 'workgroupSize must have 3 elements' );`，会让这类调用从“可正常编译”变成运行期直接抛错，且该错误发生在 shader 构建阶段，用户很难关联到自己传入的 workgroupSize。同时 GLSLNodeBuilder.getInvocationLocalIndex 仍用 `workgroupSize.reduce(...)` 支持任意长度，两个后端校验口径不一致。",
+      "evidence": [
+        "src/renderers/webgpu/nodes/WGSLNodeBuilder.js:1903 — `if ( workgroupSize.length !== 3 ) throw new Error( 'workgroupSize must have 3 elements' );`",
+        "src/nodes/gpgpu/ComputeNode.js:23-25 — 默认值由 `[ 64 ]` 改为 `[ 64, 1, 1 ]`，说明旧形态是单元素数组",
+        "src/renderers/webgl-fallback/nodes/GLSLNodeBuilder.js:887-889 — `const size = workgroupSize.reduce( ( acc, curr ) => acc * curr, 1 );` 仍接受任意长度"
+      ],
+      "rule": "COMPAT-001",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 破坏性输入约束，缺少兼容与提示。影响评估：升级后既有 compute 用例在 WebGPU 上直接抛异常中断渲染；WebGL 路径却仍能工作，造成“只有部分设备崩溃”的难以复现问题。",
+        "suggestion": "[重构思路] 在 ComputeNode 构造函数内统一归一化 workgroupSize（补 1 到三元），把校验前移并给出带来源的可读错误；后端的校验改为“归一化后仍非法才报错”。\n代码示例：\n```js\n// ComputeNode constructor\nif ( Array.isArray( workgroupSize ) && workgroupSize.length > 0 && workgroupSize.length < 3 ) {\n\n\tworkgroupSize = [ workgroupSize[ 0 ], workgroupSize[ 1 ] ?? 1, workgroupSize[ 2 ] ?? 1 ];\n\n}\nthis.workgroupSize = workgroupSize;\n\n// WGSLNodeBuilder\nif ( workgroupSize.length !== 3 ) throw new Error( 'THREE.WGSLNodeBuilder: workgroupSize must be normalized to [ x, y, z ].' );\n```",
+        "subcategory": "向后兼容性"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/renderers/webgpu/WebGPUBackend.js",
+      "line": 1329,
+      "title": "dispatchSize 变量被复用为 computeNodeData 对象，语义漂移且 dispatchSize 字段成为陈旧数据",
+      "description": "L1329 `dispatchSize = isValid ? dispatchSize : computeNodeData;` 让 dispatchSize 在回退分支中指代 node data 对象本身；随后 L1360 只更新 `computeNodeData.dispatchSize = { x: 0, y: 1, z: 1 }` 这一引用，但 L1364-1369 写入的是 `dispatchSize.x/y/z`，即 computeNodeData 的顶层属性，导致 `computeNodeData.dispatchSize` 永远停留在 { x: 0, y: 1, z: 1 }。目前靠“同一个对象被本地变量引用”侥幸正确，但该字段已成为不会更新的死数据，且同名变量在相邻分支中一处是数组、一处是对象，后续维护极易改动出错。",
+      "evidence": [
+        "src/renderers/webgpu/WebGPUBackend.js:1329 — `dispatchSize = isValid ? dispatchSize : computeNodeData;`",
+        "src/renderers/webgpu/WebGPUBackend.js:1360 — `if ( computeNodeData.dispatchSize === undefined ) computeNodeData.dispatchSize = { x: 0, y: 1, z: 1 };`",
+        "src/renderers/webgpu/WebGPUBackend.js:1364-1369 — 写入目标是 `dispatchSize.x` / `dispatchSize.y`（即 computeNodeData 顶层属性），而非 `computeNodeData.dispatchSize.x`",
+        "src/renderers/webgpu/WebGPUBackend.js:1351-1353 — isValid 分支中 dispatchSize 是数组下标访问，与 else 分支的 `.x/.y/.z` 形态不一致"
+      ],
+      "rule": "MAINTAINABILITY-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 变量语义复用 / 字段陈旧。影响评估：当前功能正确但语义混乱，`computeNodeData.dispatchSize` 成为不更新的残留字段，一旦有人基于该字段做复用或缓存判断会读到错误值。",
+        "suggestion": "[重构思路] 用独立局部变量分别承载“用户 dispatch 尺寸数组”和“节点缓存 dispatch 对象”，删除不再被读取的 computeNodeData.dispatchSize 缓存。\n代码示例：\n```js\nconst maxDim = this.device.limits.maxComputeWorkgroupsPerDimension;\n\nif ( isValid ) {\n\n\tpassEncoderGPU.dispatchWorkgroups( dispatchSize[ 0 ], dispatchSize[ 1 ], dispatchSize[ 2 ] );\n\n} else {\n\n\tconst dispatch = computeNodeData.dispatchSize || ( computeNodeData.dispatchSize = { x: 0, y: 1, z: 1 } );\n\tif ( computeNode.dispatchCount > maxDim ) {\n\n\t\tdispatch.x = Math.min( computeNode.dispatchCount, maxDim );\n\t\tdispatch.y = Math.ceil( computeNode.dispatchCount / maxDim );\n\n\t} else {\n\n\t\tdispatch.x = computeNode.dispatchCount;\n\n\t}\n\tpassEncoderGPU.dispatchWorkgroups( dispatch.x, dispatch.y, dispatch.z );\n\n}\n```",
+        "subcategory": "变量语义与缓存退化"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/nodes/gpgpu/ComputeNode.js",
+      "line": 222,
+      "title": "JSDoc 与新签名不一致：countOrWorkgroupSize 类型、可选标记与缺失描述",
+      "description": "JSDoc 未跟上实现变化：`compute()` 的第二个参数标为 `{number} countOrWorkgroupSize` 但实现上也可传数组；`Renderer.compute` 的 `dispatchSize` 有默认值却未标为可选；ComputeNode 构造函数的 `[workgroupSize = [ 64, 1, 1 ]]` 缺少参数说明；`_getWGSLComputeCode` 的 `@param {string} workgroupSize` 已过时（现在传数组）。这些不一致会误导使用 TSL compute 的调用方。",
+      "evidence": [
+        "src/nodes/gpgpu/ComputeNode.js:222 — `@param {number} countOrWorkgroupSize - TODO.`，但 L230 `if ( Array.isArray( countOrWorkgroupSize ) )` 说明也接受数组",
+        "src/nodes/gpgpu/ComputeNode.js:23 — `@param {Array<number>} [workgroupSize = [ 64, 1, 1 ]]` 缺少说明文本，同行风格与相邻条目不一致",
+        "src/renderers/common/Renderer.js:2311 — `@param {Array<number>} dispatchSize - Array with [ x,y,z ] values for dispatch.` 未标为可选，实际默认 `[ 0, 0, 0 ]`",
+        "src/renderers/webgpu/nodes/WGSLNodeBuilder.js:2105 — `@param {string} workgroupSize - The workgroup size.` 与传入的数组不符"
+      ],
+      "rule": "DOC-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 文档与实现不一致。影响评估：three.js 的 JSDoc 会生成官方 API 文档，错误的类型声明会直接误导调用方（例如误以为第二个参数必须是 number）。",
+        "suggestion": "[重构思路] 使用联合类型标注并统一可选标记写法。\n代码示例：\n```js\n/**\n * @param {Node} node - TODO\n * @param {number|Array<number>} countOrWorkgroupSize - 计算总次数；若传入数组则视为 workgroupSize。\n * @param {Array<number>} [workgroupSize=[ 64, 1, 1 ]] - workgroup 尺寸 [ x, y, z ]。\n */\n\n/**\n * @param {Array<number>} [dispatchSize=[ 0, 0, 0 ]] - [ x, y, z ] dispatch 尺寸，全为 0 时自动计算。\n */\n\n/**\n * @param {Array<number>} workgroupSize - workgroup 尺寸 [ x, y, z ]。\n */\n```",
+        "subcategory": "注释准确性"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/renderers/webgpu/nodes/WGSLNodeBuilder.js",
+      "line": 2136,
+      "title": "生成的 WGSL 中 instanceIndex 表达式使用空格缩进而非项目 tabs 风格",
+      "description": "模板字符串内新增的 instanceIndex 多行表达式用 4 个空格续行（L2136-2137），同文件其余代码与生成的 shader 文本均使用 tab 缩进。这会使生成出的 WGSL 源码缩进混杂，在 shader 编译报错定位与 diff 复核时增加噪声。",
+      "evidence": [
+        "src/renderers/webgpu/nodes/WGSLNodeBuilder.js:2135-2137 — `instanceIndex = globalId.x` 后续两行以 4 个空格开头",
+        "同函数 L2142-2143 的 `// flow`、`${shaderData.flow}` 使用 tab 缩进"
+      ],
+      "rule": "STYLE-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 代码风格不一致。影响评估：仅影响可读性，但会污染生成 shader 的排版，且在 shader 报错行号附近难以肉眼对齐。",
+        "suggestion": "[重构思路] 统一为 tab 缩进，或将长表达式提取为局部变量拼接以保持单行简洁。\n代码示例：\n```js\n// system\ninstanceIndex = globalId.x\n\t+ globalId.y * ( ${workgroupSizeX} * numWorkgroups.x )\n\t+ globalId.z * ( ${workgroupSizeX} * numWorkgroups.x ) * ( ${workgroupSizeY} * numWorkgroups.y );\n```",
+        "subcategory": "格式与缩进"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/renderers/common/Renderer.js",
+      "line": 2393,
+      "title": "数组形式的多 computeNode 调用共用同一份 dispatchSize，语义未定义",
+      "description": "Renderer.compute 支持传入 computeNode 数组，循环中对每个 computeNode 都传入同一个 dispatchSize（L2393）。当列表中各节点的 count/workgroupSize 不同却强制使用同一 [ x, y, z ] 时，除第一个节点外都会按与自身不匹配的网格派发，且没有任何校验或文档说明。建议在文档中明确限制，或仅允许单节点时使用 dispatchSize。",
+      "evidence": [
+        "src/renderers/common/Renderer.js:2347 — `const computeList = Array.isArray( computeNodes ) ? computeNodes : [ computeNodes ];`",
+        "src/renderers/common/Renderer.js:2357-2393 — `for ( const computeNode of computeList ) { ... backend.compute( computeNodes, computeNode, computeBindings, computePipeline, dispatchSize ); }` 复用同一 dispatchSize",
+        "src/renderers/common/Renderer.js:2311 — JSDoc 未说明 dispatchSize 在多节点场景下的语义"
+      ],
+      "rule": "API-DESIGN-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] API 语义未定义/易误用。影响评估：多节点场景下会产生与用户预期不同的 dispatch 数量，属于隐蔽的正确性问题；当前唯一规避手段是调用方自行拆分为多次 compute。",
+        "suggestion": "[重构思路] 显式限制或支持按节点指定：当 computeList.length > 1 且 dispatchSize 非默认值时给出 warn，或把参数改为可选的按节点映射（如数组的数组 / 函数）。\n代码示例：\n```js\ncompute( computeNodes, dispatchSize = [ 0, 0, 0 ] ) {\n\n\tconst computeList = Array.isArray( computeNodes ) ? computeNodes : [ computeNodes ];\n\n\tif ( computeList.length > 1 && dispatchSize[ 0 ] + dispatchSize[ 1 ] + dispatchSize[ 2 ] > 0 ) {\n\n\t\tconsole.warn( 'THREE.Renderer: .compute() dispatchSize applies to every compute node in the list.' );\n\n\t}\n\t// ...\n}\n```",
+        "subcategory": "接口语义界定"
+      }
+    }
+  ]
+}

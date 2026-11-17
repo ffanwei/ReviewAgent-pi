@@ -1,0 +1,95 @@
+{
+  "generatedAt": "2026-11-15T01:00:43.650Z",
+  "runId": "20261115_005855_056",
+  "source": "mr",
+  "caseId": "filamentphp__filament@77874d0",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 79,
+      "title": "用数字下标 [0] 访问 reject/unique 后的集合，键被跳过时取到 null 使排序被清空",
+      "description": "$originalOrders 由 Collection::reject() 与 unique('column') 得到，这两个方法都基于 filter()，会保留元素原有的整数键。当 $query->getQuery()->orders 的第 0 项恰好是被 reject 掉的 $qualifiedKeyName 排序时，$originalOrders 的键从 1 开始，此时 `! empty($originalOrders->all())` 仍为 true，但 `$originalOrders[0]['column']` 是未定义下标：PHP 8 触发 Undefined array key 0 警告（Laravel 的 HandleExceptions 会把 E_WARNING 转成 ErrorException，直接让队列中的 PrepareCsvExport 失败），并且该表达式返回 null，于是 `$query->reorder(null, null)` 会把 orders 与 order bindings 全部重置为空，本次想保留的用户排序彻底丢失。之后第 158-167 行读到 baseQueryOrdersCount = 0，既不进入 chunk() 分支，也不会重新补上主键排序，导出分块排序退化为不受控状态。正确写法应使用 first()/shift() 或先 values() 重建索引。",
+      "evidence": [
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:71-73 — $originalOrders = collect($query->getQuery()->orders)->reject(...)->unique('column')，reject 与 unique 均保留原键",
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:72 — reject 条件 `in_array($order['column'] ?? null, [$qualifiedKeyName])`，说明第 0 项可能正是被剔除的 $qualifiedKeyName 排序",
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:78-80 — `if (! empty($originalOrders->all())) { $query->reorder($originalOrders[0]['column'], $originalOrders[0]['direction']); $originalOrders->forget(0); }`，非空判定通过数字下标访问",
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:158-167 — 依赖 $baseQuery->orders 的数量决定走 chunk() 还是 orderedChunkById()，排序被清空后判定失效"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 对保留原始键的 Collection 使用数字下标访问（未定义下标 + 空值传播）。影响评估：一旦 orders 的第 0 项是被 reject 的 $qualifiedKeyName，会同时出现两处后果——Latavel 异常处理器把 Undefined array key 警告转成 ErrorException 使导出任务失败；即使未转异常，reorder(null, null) 也会清空全部排序，使分块顺序不再稳定，导出可能重复或漏行。",
+        "suggestion": "[重构思路] 不要依赖键，改用 first()/shift() 取值，或用 values() 重建连续索引；同时把「取首排序键」和「追加剩余排序」合并成一次顺序处理，避免 forget(0) 这种键相关操作。代码示例：`$originalOrders = $originalOrders->values();` / `$firstOrder = $originalOrders->shift(); if ($firstOrder) { $query->reorder($firstOrder['column'], $firstOrder['direction'] ?? 'asc'); } else { $query->reorder($qualifiedKeyName); } foreach ($originalOrders as $order) { ... }`",
+        "subcategory": "集合键与下标安全"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 78,
+      "title": "被提升为首排序键的 order 未校验 column/direction，缺键时会清空或无方向地排序",
+      "description": "新代码用 $originalOrders 的第一项直接作为 reorder() 的首排序键，但只判断了集合非空，没有校验该 order 条目的 column/direction 是否存在。紧随其后的 foreach（第 85-91 行）对每条 order 都做了 `blank($order['column'] ?? null) || blank($order['direction'] ?? null)` 的防御，说明作者清楚 orders 中可能存在缺少 column/direction 的条目（例如 orderByRaw() 生成的条目只有 type/sql，没有 column 与 direction）；reject 条件用的是 `$order['column'] ?? null`，这类条目不会被剔除，反而可能成为第一项，从而把不确定的值传给 reorder()。结果是 direction 缺失时排序方向退化，column 缺失时 reorder(null, ...) 直接清空排序，与第 85-91 行对剩余条目的严格校验形成不一致。",
+      "evidence": [
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:78-80 — 仅判断 `! empty($originalOrders->all())`，随后直接使用 $originalOrders[0]['direction']，未做 `?? null` 或 blank() 校验",
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:86 — 剩余条目循环中显式守卫 `blank($order['column'] ?? null) || blank($order['direction'] ?? null)`，证明缺键条目确实可能出现",
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:72 — reject 使用 `$order['column'] ?? null`，缺 column 的条目（如 orderByRaw）不会被剔除"
+      ],
+      "rule": "ROBUSTNESS-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 缺少字段存在性校验（把未经校验的数组条目直接传入 SQL 排序构建）。影响评估：orderByRaw 等无 column/direction 的排序条目被提升为首排序键后，会导致排序方向丢失或排序被整体清空，进而影响 chunk 分块的稳定性；在严格错误处理下还会伴随 Undefined array key 警告。",
+        "suggestion": "[重构思路] 复用与剩余条目相同的守卫逻辑筛选出第一个「column 与 direction 都非空」的排序条目作为首排序键，找不到时回退到主键排序。代码示例：`$firstOrder = $originalOrders->first(fn (array $order): bool => filled($order['column'] ?? null) && filled($order['direction'] ?? null)); if ($firstOrder) { $query->reorder($firstOrder['column'], $firstOrder['direction']); $originalOrders = $originalOrders->reject(fn (array $order): bool => $order === $firstOrder); } else { $query->reorder($qualifiedKeyName); }`",
+        "subcategory": "防御性校验缺失"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 153,
+      "title": "distinct 改为条件启用后，按非主键排序分块时 join 重复行会进入导出",
+      "description": "原实现无条件执行 `$baseQuery->distinct($qualifiedKeyName)`，保证分块取到的主键集合唯一；改动后只有首排序列为 $keyName / $qualifiedKeyName 时才去重。当用户按非主键列排序（此时进入第 161-176 行的 chunk() 分支）且查询含 join（例如 relationship 聚合列、belongsToMany 过滤带来的重复行），同一主键会在结果集中出现多次，分块后重复主键被分派到不同 page 的 ExportCsv 任务，ExportCsv 用 `$query->find($this->records)` 逐页各写一份 CSV，最终导出文件里出现重复行；同时 dispatchRecords 第 114-117 行按 total_rows 截断只掩盖了计数，无法消除重复。建议在分块结果上做一次显式去重，或让 distinct 与排序列兼容。",
+      "evidence": [
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:153-155 — `if (in_array($query->getQuery()->orders[0]['column'] ?? null, [$keyName, $qualifiedKeyName])) { $baseQuery->distinct($qualifiedKeyName); }`，非主键排序时不再 distinct",
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:168-173 — 非主键排序走 `$baseQuery->chunk(...)`，直接把主键列表交给 dispatchRecords",
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:114-117 — `if (($totalRows + $recordsCount) > $this->export->total_rows) { $records = array_slice(...); }`，重复行只会被截断掩盖计数",
+        "packages/actions/src/Exports/Jobs/ExportCsv.php:89 — `foreach ($query->find($this->records) as $record)`，同一主键出现在不同 page 时会被分别写入各自 CSV"
+      ],
+      "rule": "QUERY-DISTINCT-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 查询语义变更导致结果集不再唯一（distinct 条件化）。影响评估：含 join 的查询在按非主键列排序导出时，导出 CSV 可能出现重复数据行，且 processed_rows 与实际导出量不一致；不去重的动机应当是避免 pgsql 上 SELECT DISTINCT 与 ORDER BY 非选择列冲突，但缺少替代的保证唯一性手段。",
+        "suggestion": "[重构思路] 保留「不强制整行 distinct」的前提，但显式保证分块主键唯一：在 dispatchRecords 前对 pluck 出的主键列表 array_unique，或对非主键排序路径先按主键去重后再分块。代码示例：`fn (Collection $records) => $dispatchRecords(array_values(array_unique(Arr::pluck($records->all(), $keyName))))`；若业务要求行级唯一，则应改为 `select([$qualifiedKeyName])` + distinct 并使用不依赖非选择列的稳定排序。",
+        "subcategory": "查询去重与结果集唯一性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 72,
+      "title": "单元素数组形式的 in_array 判断与同文件另一处双列判断不一致",
+      "description": "第 72 行把 reject 条件写成 `in_array($order['column'] ?? null, [$qualifiedKeyName])`，用单元素数组包一层 in_array；而本次新增的第 153 行写的是扫描 [$keyName, $qualifiedKeyName] 的双列判断。同一文件内对「排序列是否为主键列」的两处判断口径与写法都不统一，读者需要额外推断为什么 reject 只针对 qualifying 名而 distinct 判断却包含两个名字，增加了后续回归改动的风险。建议统一为直接相等比较并补充说明性注释。",
+      "evidence": [
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:72 — `->reject(fn (array $order): bool => in_array($order['column'] ?? null, [$qualifiedKeyName]))`，单元素数组",
+        "packages/actions/src/Exports/Jobs/PrepareCsvExport.php:153 — `in_array($query->getQuery()->orders[0]['column'] ?? null, [$keyName, $qualifiedKeyName])`，同一语义的双列版本"
+      ],
+      "rule": "STYLE-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 表达冗余与判断口径不一致。影响评估：不直接影响运行时行为，但两处同类判断口径不同且无注释，后续维护者容易在修改其中一处时破坏另一处假设。",
+        "suggestion": "[重构思路] 用直接相等比较替换单元素 in_array，并为「只剔除 qualified 主键排序以保留未限定 id 排序」补充一行注释说明意图。代码示例：`->reject(fn (array $order): bool => ($order['column'] ?? null) === $qualifiedKeyName) // 保留 orderBy('id') 形式的排序，仅剔除 qualified 主键排序`",
+        "subcategory": "表达式冗余与实现一致性"
+      }
+    }
+  ]
+}

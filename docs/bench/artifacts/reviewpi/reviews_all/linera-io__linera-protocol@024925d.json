@@ -1,0 +1,139 @@
+{
+  "generatedAt": "2026-11-15T00:32:18.613Z",
+  "runId": "20261115_003020_101",
+  "source": "mr",
+  "caseId": "linera-io__linera-protocol@024925d",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "linera-core/src/updater.rs",
+      "line": 174,
+      "title": "「无法达成 quorum」改为立即 break，会丢失剩余验证者响应与错误样本，可能错判 Trusted 错误",
+      "description": "原逻辑在 `highest_key_score + remaining_votes < quorum_threshold()` 时只是设置 `end_time`，让循环在宽限期内继续消费已经就绪的响应，从而把剩余验证者返回的错误累计进 `error_scores`；新代码直接 `break 'vote_wait`，循环立刻结束。后果有两点：(1) `error_scores` 可能只包含少数错误，`error_scores.is_empty()` 或样本不足以达到 `validity_threshold()`，函数只能返回 `CommunicationError::NoConsensus` 或 `Sample`，而不是更有诊断价值的 `Trusted(err)`——尤其在多个验证者返回不同错误变体（各自得分都 < validity_threshold）的场景，原本剩余节点的相同错误还能把得分推过阈值，现在该机会被抹掉；(2) 丢失 `Sample` 中的错误样本，线上排障时只能看到「proposals」而看不到任何验证者错误。注意 `client/mod.rs` 中有逻辑依赖 `CommunicationError::Trusted(NodeError::InactiveChain(id))` 做优雅处理（第1526行），一旦该错误降级为 `Sample`/`NoConsensus`，调用方将无法识别「链不活跃」这一可预期状态而直接上抛错误。",
+      "evidence": [
+        "linera-core/src/updater.rs:173-176 — 新增 `// If it becomes clear that no key can reach a quorum, break early.` 与 `if highest_key_score + remaining_votes < committee.quorum_threshold() { break 'vote_wait; }`",
+        "linera-core/src/updater.rs:166-170 — `if *entry >= committee.validity_threshold() { return Err(CommunicationError::Trusted(err)); }`，只有继续接收错误响应才可能达到该阈值",
+        "linera-core/src/updater.rs:197-208 — 循环结束后 `if error_scores.is_empty() { return Err(CommunicationError::NoConsensus(...)) }`，否则截断 4 条给 `Sample`",
+        "linera-core/src/client/mod.rs:1526 — `Err(CommunicationError::Trusted(NodeError::InactiveChain(id))) if id == chain_id => { return Ok(()); }`",
+        "diff 中删除的旧逻辑：`end_time = Some(Instant::now() + start_time.elapsed().mul_f64(GRACE_PERIOD));` 在两种条件下都会设置，循环继续消费响应"
+      ],
+      "rule": "CONCURRENCY-QUORUM-EARLY-EXIT",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 分布式共识收集循环的提前退出改变了错误信息完整性（错误样本丢失 + `Trusted` 错误可能不再被识别）。影响评估：验证失败时的错误类型与文案退化，`client/mod.rs:1526` 依赖 `Trusted(InactiveChain)` 的优雅分支可能失效，排障难度上升；不会导致数据错误，但会影响失败路径的可观测性与部分控制流。",
+        "suggestion": "[重构思路] 把「不可能达到 quorum」也做成一个截止时间（或允许在 break 前把已就绪的响应尽力 drain 完），保证错误样本尽量完整；如果确实要立即退出，请在测试中固化「多验证者返回同一错误时仍返回 Trusted」的行为。代码示例：`if highest_key_score + remaining_votes < committee.quorum_threshold() { // 仍然是终止条件，但先收集已就绪的响应 end_time = Some(Instant::now()); continue; }` 或 `if highest_key_score + remaining_votes < committee.quorum_threshold() { while let Ok(Some((name, result))) = responses.next().now_or_never().flatten() { /* 记录 error_scores / value_scores */ } break 'vote_wait; }`",
+        "subcategory": "错误信息丢失与提前退出"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "linera-core/src/updater.rs",
+      "line": 109,
+      "title": "新增 grace_period 参数为「死配置」：四处调用全传 None，且默认值从 0.2 静默改为 0.1",
+      "description": "`communicate_with_quorum` 新增 `grace_period: impl Into<Option<f64>>`，但仓库内可见的 4 个调用点全部传 `None`，因此新参数既没有被任何真实调用方使用，`None` 又等价于「使用默认值」，实际上只发生了默认宽限期从 0.2 到 0.1 的隐性行为变更（宽限期缩半，quorum 达成后聚集额外 value/错误的窗口因此减少）。此外 `impl Into<Option<f64>>` 让 `None` 的具体类型依赖类型推断（`None::<f64>`），可读性差，也不便于后续把宽限期改为可配置项（如环境变量/CLI）时复用。建议明确 API 语义：要么把参数改为 `Option<f64>` 并在文档中说明 `None` 的含义，要么在只有默认值的场景先不加参数，把 0.2→0.1 的调参作为独立、有说明的改动提交。",
+      "evidence": [
+        "linera-core/src/updater.rs:34-36 — `const DEFAULT_GRACE_PERIOD: f64 = 0.1;`（diff 中由 `const GRACE_PERIOD: f64 = 0.2;` 改名并改值）",
+        "linera-core/src/updater.rs:108-109 — 新参数 `// Grace period as a fraction of time taken to reach quorum` / `grace_period: impl Into<Option<f64>>`",
+        "linera-core/src/updater.rs:139 — `let grace_period = grace_period.into().unwrap_or(DEFAULT_GRACE_PERIOD);`",
+        "linera-core/src/client/mod.rs:1114、1150、1521、1679 — 四处调用点新增的参数实参均为裸 `None`"
+      ],
+      "rule": "API-DEAD-CONFIG",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 新增可配置参数无实际调用方 + 默认参数静默变更（0.2→0.1）。影响评估：一方面引入无收益的 API 复杂度与类型推断可读性问题；另一方面宽限期缩半会影响 quorum 达成后额外响应的收集量，属于分布式时序行为变更，若没有对应的性能/正确性论证，潜在地缩小了收集额外投票与错误样本的窗口。",
+        "suggestion": "[重构思路] 二选一：若暂无调用方需要自定义，先不引入参数，只提交调参并说明理由；若确实要可配置，用显式 `Option<f64>` 并在 4 个调用点写出可读的 `None` 语义（如 `/* grace_period */ None`），后续通过配置注入。代码示例：`pub async fn communicate_with_quorum<...>(..., grace_period: Option<f64>) -> ...` 且调用处 `communicate_with_quorum(&nodes, committee, group_by, execute, /* grace_period */ None)`；若要禁用宽限期显式传 `Some(0.0)`。",
+        "subcategory": "API 设计 / 默认参数变更"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可测试性",
+      "file": ".github/workflows/kubernetes.yml",
+      "line": 1,
+      "title": "删除唯一的 Kubernetes/kind e2e 与指标校验工作流，同时 docker/kubernetes 目录被 CI 的 paths-ignore 排除，相关改动失去回归覆盖",
+      "description": "本次删除的 `.github/workflows/kubernetes.yml` 是唯一执行 kind 集群 e2e（`cargo test -p linera-service --features scylladb,kubernetes --test linera_net_tests -- kubernetes`）以及校验 Proxy/Server/Scylla/Scylla Manager Prometheus 指标的工作流。同时主工作流 `.github/workflows/rust.yml` 在 `pull_request.paths-ignore` 中排除了 `docker/**`、`docker_scylla/**`、`configuration/**`、`kubernetes/**`，因此删除该工作流后，本 MR 改动的 `docker/docker-compose.yml`、`kubernetes/linera-validator/helmfile.yaml` 等部署配置在 CI 中几乎没有任何验证路径。若确有替代工作流承接（例如迁移到别处或改为手动 `workflow_dispatch`），请在 MR 中说明；否则建议保留一个轻量 job（至少对 helmfile/compose 做 lint/模板渲染校验）。",
+      "evidence": [
+        "被删除文件 `.github/workflows/kubernetes.yml` 中 `- name: Run e2e tests` 步骤执行 `cargo test --locked -p linera-service --features scylladb,kubernetes --test linera_net_tests -- kubernetes --nocapture`",
+        "被删除文件中的 `- name: Check Proxy metric` / `Check Server metric` / `Check Scylla metric` / `Check Scylla Manager metric` 四个 Prometheus 断言步骤",
+        "被删除文件 `on.pull_request.paths` 显式列了 `'kubernetes/**'`、`'docker/**'`、`'configuration/**'` 等路径",
+        "`.github/workflows/rust.yml:9-15` — `paths-ignore` 包含 `'docker/**'`、`'configuration/**'`、`'kubernetes/**'`，即主工作流不会因为这些路径变更而运行"
+      ],
+      "rule": "CI-COVERAGE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 测试/CI 覆盖流失（删除了唯一的 k8s 部署 e2e 与指标校验任务）。影响评估：`helmfile.yaml`、`scylla-manager` values、`docker-compose.yml` 的回归只能靠人工验证，像本 MR 这样同时删除 scylla-manager values 覆盖的改动将无法被自动化发现部署失败。",
+        "suggestion": "[重构思路] 在 MR 描述中记录替代验证手段（本地 `helmfile apply` 记录、或其它工作流迁移），并至少保留配置层校验。代码示例：新增轻量 job `k8s-config-lint`：`uses: mamezou-tech/setup-helmfile@v1.3.0` 后执行 `helmfile -f kubernetes/linera-validator/helmfile.yaml template > /dev/null`，以及 `docker compose -f docker/docker-compose.yml config`。",
+        "subcategory": "CI 覆盖流失"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "kubernetes/linera-validator/helmfile.yaml",
+      "line": 45,
+      "title": "scylla-manager release 失去 values 覆盖，回落到上游 chart 默认值，本地/kind 环境可能无法调度",
+      "description": "`scylla-manager` release 原本通过 `LINERA_HELMFILE_VALUES_SCYLLA_MANAGER`（默认 `scylla-manager.values.yaml`）提供定制值：`resources/cpu: 100m`、`controllerResources/cpu: 100m`、`scylla.developerMode: true`、单 rack 单 member、`storage.capacity: 5Gi`、`cpu: 1 / memory: 2Gi`，并固定了 `scyllaImage.tag: 5.4.3` / `agentImage.tag: 3.2.8`。本次同时删除了该 values 文件与该引用，`scylla-manager` release 现在没有任何 `values:`，将使用上游 chart 默认值（通常不是 developer mode、资源请求更大、成员/存储更多、镜像版本不同）。在 kind/开发机等资源受限环境里，这会导致 pod Pending、存储不足或 manager 使用的 Scylla 版本与 `scylla` release（仍使用 `scylla.values.yaml`）不一致，从而让 `helmfile apply` 失败或行为漂移。请确认这是有意的（例如 manager 已不再需要本地部署），或改用内联 `values:`/保留精简版文件。",
+      "evidence": [
+        "kubernetes/linera-validator/helmfile.yaml:45-51 — `- name: scylla-manager` / `version: v1.13.0` / `namespace: scylla-manager` / `chart: scylla/scylla-manager` / `timeout: 900` / `needs: [scylla-operator/scylla-operator]`，已无 `values:` 键",
+        "同文件 `scylla` release（第43-44行）与 `scylla-operator` release（第59-60行）仍保留 `values:` 覆盖，说明本文件的设计仍依赖 values 定制",
+        "被删除的 `kubernetes/linera-validator/scylla-manager.values.yaml` 内容：`resources.requests.cpu: 100m`、`controllerResources.requests.cpu: 100m`、`scylla.developerMode: true`、`datacenter: manager-dc`、单 rack `members: 1`、`storage.capacity: 5Gi`、`limits: cpu 1 / memory 2Gi`"
+      ],
+      "rule": "DEPLOY-CONFIG-002",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 部署配置回落到上游默认值（资源请求、developer mode、镜像版本、拓扑规模均变化）。影响评估：本地/kind 与 CI 环境资源不足时 `scylla-manager` 无法就绪，`scylla` release 因 `needs` 依赖被阻塞，整个 helmfile 部署超时（`timeout: 900`）；同时 manager 的 Scylla 版本与主集群不一致会增加兼容性风险。",
+        "suggestion": "[重构思路] 若仍需部署 manager，保留一个精简 values 并通过 env 覆盖引用；若有意彻底移除本地 manager（例如改用外部 manager 或已由运维环境提供），请在文档中明确并考虑从 helmfile 中移除该 release 以避免无意义部署。代码示例：`- name: scylla-manager\\n  values:\\n    - {{ env \"LINERA_HELMFILE_VALUES_SCYLLA_MANAGER\" | default \"scylla-manager.values.yaml\" }}`，或删除该 release 并在 README 说明 manager 由外部提供。",
+        "subcategory": "Helm/部署默认值漂移"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "linera-core/src/node.rs",
+      "line": 205,
+      "title": "拼写修复不完整：`ceritifcates` 仍为错误拼写",
+      "description": "本 MR 修正了同一行中的 `Reponse` → `Response`，但 `ceritifcates` 依旧拼错（应为 `certificates`），并且该字符串会通过 `#[error(...)]` 直接展示在用户/日志可见的错误信息里。同一提交内一并修掉可以避免后续再次触碰这一行。",
+      "evidence": [
+        "linera-core/src/node.rs:205 — `#[error(\"Response doesn't contain requested ceritifcates: {0:?}\")]`",
+        "diff 中该行由 `#[error(\"Reponse doesn't contain requested ceritifcates: {0:?}\")]` 修改而来，仅修了 `Reponse`"
+      ],
+      "rule": "STYLE-TYPO-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 用户可见字符串的残留拼写错误。影响评估：仅影响日志/错误文案可读性与搜索匹配（按正确拼写 `certificates` 搜索日志会漏掉该错误），无功能影响。",
+        "suggestion": "[重构思路] 顺手修正完整单词。代码示例：`#[error(\"Response doesn't contain requested certificates: {0:?}\")]`",
+        "subcategory": "错误信息拼写"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "linera-core/src/updater.rs",
+      "line": 34,
+      "title": "新增注释行含行尾空白，可能触发 CI 的 `cargo fmt -- --check` 失败",
+      "description": "新增的文档注释与行内注释中存在行尾空格（如 `contribute ` 与 `more values ` 之后），Rust 仓库的 `lint-cargo-fmt` job 执行 `cargo fmt -- --check`，rustfmt 会剔除注释行的行尾空白，因此这些行会导致格式检查出现差异、CI 报红（或迫使他人额外提交格式化修复）。建议本地跑一次 `cargo fmt` 后提交。",
+      "evidence": [
+        "linera-core/src/updater.rs:34 — `/// The default amount of time we wait for additional validators to contribute ` 行尾有空格",
+        "linera-core/src/updater.rs:178 — `// If a key reaches a quorum, wait for the grace period to collect more values ` 行尾有空格",
+        ".github/workflows/rust.yml:284-296 — `lint-cargo-fmt` job 执行 `cargo fmt -- --check`"
+      ],
+      "rule": "STYLE-FMT-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 行尾空白导致 rustfmt 检查不一致。影响评估：`cargo fmt -- --check` 会检测到差异，CI 格式 job 失败；功能无影响。",
+        "suggestion": "[重构思路] 提交前执行 `cargo fmt --all`，并在编辑器开启 trim trailing whitespace。代码示例：`/// The default amount of time we wait for additional validators to contribute`（去掉行尾空格）",
+        "subcategory": "格式/空白字符"
+      }
+    }
+  ]
+}

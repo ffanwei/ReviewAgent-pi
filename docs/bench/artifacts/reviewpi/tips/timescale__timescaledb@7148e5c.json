@@ -1,0 +1,201 @@
+[
+  {
+    "filePath": "tsl/src/bgw_policy/continuous_aggregate_api.c",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "max_batches_per_execution.value = PG_GETARG_DATUM(9);",
+        "review": "[缺陷类型] 新增 API 参数未在 C 侧接线（写路径缺失）。影响评估：refresh_newest_first 完全失效，用户显式请求 ASC（oldest-first）刷新会被静默忽略，与文档/发布说明不符；属对外承诺的功能性缺陷。",
+        "suggestion": "[重构思路] 在 policy_refresh_cagg_add 中读取 index 10 的布尔参数并透传到 add_internal，在构建 config 时写入该键；建议只在显式非默认值时写入或按现有 nullable 约定处理，便于向后兼容。代码示例：`bool refresh_newest_first = PG_ARGISNULL(10) ? true : PG_GETARG_BOOL(10); ... if (!PG_ARGISNULL(10)) ts_jsonb_add_bool(parse_state, POL_REFRESH_CONF_KEY_REFRESH_NEWEST_FIRST, refresh_newest_first);` 并补充 add/execute 两端的端到端用例。",
+        "category": "可靠性",
+        "subcategory": "API 参数未接线",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 724,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/nodes/vector_agg/plan.c",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "RangeTblEntry *rte = rt_fetch(customscan->scan.scanrelid, rtable);",
+        "review": "[缺陷类型] 移除空值/下标保护 + 放宽分支返回值，导致未初始化结构体与非法 rt_fetch。影响评估：任意包含 CustomScan 且 scanrelid 为 0（或非关系 RTE）的查询在规划期可能断言失败或段错误，属崩溃级回归；即便不崩溃也可能对不支持的子节点插入 VectorAgg 造成执行期错误。",
+        "suggestion": "[重构思路] 恢复 scanrelid>0 与 rte 有效性判断，改为“仅在成功初始化 vqi 时才返回 true”的语义，并让各分支显式返回初始化结果；同时保留对 vqi 的零初始化作为兜底。代码示例：`if (customscan->scan.scanrelid <= 0) return false; RangeTblEntry *rte = rt_fetch(customscan->scan.scanrelid, rtable); if (rte == NULL || rte->rtekind != RTE_RELATION) return false; if (ts_is_hypercore_am(ts_get_rel_am(rte->relid))) { vectoragg_plan_tam(...); return true; } if (strcmp(customscan->methods->CustomName, \"DecompressChunk\") == 0) { vectoragg_plan_decompress_chunk(...); return true; } return false;`",
+        "category": "可靠性",
+        "subcategory": "空指针/越界访问",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 500,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "return vqinfo->vector_attrs[var->varattno];",
+        "review": "[缺陷类型] 数组越界读（缺少长度信息与断言）。影响评估：极端计划（Var 属性号大于推导出的 maxattno）下越界读取堆内存，可能得到错误的向量化判定，甚至命中未映射页导致崩溃；同时丢失断言削弱了问题可发现性。",
+        "suggestion": "[重构思路] 若确实要移除 maxattno，应在 VectorQualInfo 中保留数组长度（如 `int natts`）并在 is_vector_var 中校验 `var->varattno > 0 && var->varattno < vqinfo->natts`，或改为断言 + 显式边界检查的组合。代码示例：`if (var->varattno <= 0 || var->varattno >= vqinfo->natts) return false; return vqinfo->vector_attrs[var->varattno];`",
+        "category": "可靠性",
+        "subcategory": "数组越界",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 224,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/partialize_finalize.c",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "FlushErrorState();",
+        "review": "[缺陷类型] 捕获所有错误类别并吞掉硬错误，且缺少子事务回滚。影响评估：OOM / 查询取消被伪装成“可修复的旧格式数据”，随后在不干净的状态上重试 deserialize；真实故障被掩盖、诊断困难，最坏情况是进程崩溃或数据损坏。",
+        "suggestion": "[重构思路] 恢复两段保护：(1) 用内部子事务包裹 deserialize 调用，失败时先 Abort 子事务恢复资源属主与内存上下文，再做修复重试；(2) 只对可预期的格式类错误做修复，其他错误（OOM、cancel、内部错误以外的类别）立即 PG_RE_THROW。代码示例：`BeginInternalSubTransaction(NULL); PG_TRY() { deserialized = FunctionCallInvoke(deser_fcinfo); ReleaseCurrentSubTransaction(); MemoryContextSwitchTo(oldcontext); CurrentResourceOwner = oldowner; } PG_CATCH() { if (!is_expected_error(geterrcode())) PG_RE_THROW(); FlushErrorState(); RollbackAndReleaseCurrentSubTransaction(); MemoryContextSwitchTo(oldcontext); CurrentResourceOwner = oldowner; } PG_END_TRY();`",
+        "category": "可靠性",
+        "subcategory": "错误处理与子事务",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 280,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/with_clause_parser.c",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "{",
+        "review": "[缺陷类型] 过度宽泛的错误捕获（吞掉硬错误）。影响评估：资源不足/查询取消被转换为“参数值非法”，用户与运维被误导；取消语义失效。对功能正确性影响有限，但对可诊断性与错误语义影响明显。",
+        "suggestion": "[重构思路] 恢复错误类别过滤：仅对可预期的数据/语法类错误转换为参数值非法提示，其余直接重抛；同时在新错误抛出前切回原 MemoryContext。代码示例：`PG_CATCH() { int sqlerrcode = geterrcode(); if (ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_DATA_EXCEPTION && ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION) PG_RE_THROW(); MemoryContextSwitchTo(oldcontext); FlushErrorState(); ... }`",
+        "category": "可靠性",
+        "subcategory": "错误类别过滤",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 169,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/chunk_api.c",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "SetUserIdAndSecContext(uid, sec_ctx | SECURITY_LOCAL_USERID_CHANGE);",
+        "review": "[缺陷类型] 缺少权限校验 + 以高权限身份执行调用者可控的 DDL。影响评估：低权限用户可借 hypertable owner 或扩展 owner 身份在任意 schema（含 `_timescaledb_internal`）创建表，属权限提升/命名空间污染风险；若该函数被授予 PUBLIC 执行权，风险等级更高。",
+        "suggestion": "[重构思路] 在入口处强制校验调用者对 hypertable 的权限（复用 check_privileges_for_creating_chunk 或要求 owner/相应 ACL），并对内部 schema 分支加更严格限制（例如仅当调用者是 hypertable owner 且是内部调用才允许）；同时评估是否应 REVOKE EXECUTE ... FROM PUBLIC。代码示例：`check_privileges_for_creating_chunk(hypertable_relid); if (strcmp(schema_name, INTERNAL_SCHEMA_NAME) == 0 && !has_privs_of_role(GetUserId(), ts_catalog_database_info_get()->owner_uid)) ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg(\"permission denied to create chunk table in internal schema\")));`",
+        "category": "安全",
+        "subcategory": "权限提升",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 501,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F011",
+        "code": "#define CHUNK_CREATE_STMT                                                                          \\",
+        "review": "[缺陷类型] 死代码/重复包含。影响评估：不影响运行时行为，但增加阅读与维护成本，可能是回退/复制粘贴残留，掩盖该文件真正的依赖关系。",
+        "suggestion": "[重构思路] 只保留 chunk_create_empty_table 真正需要的声明，删除所有未使用的宏与枚举；chunk_api.h 去掉重复的 `#include \"chunk.h\"`。可考虑在 CI 中用 clang-tidy（本次 MR 恰好把 clang-tidy 变成可选）或编译器 -Wunused 检查辅助发现。代码示例：删除 `#define CHUNK_CREATE_STMT ...` 至 `#define RargSubarrayForOpArray(...)` 之间的未使用定义，`chunk_api.h` 仅保留一处 chunk.h 包含。",
+        "category": "可维护",
+        "subcategory": "死代码",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 394,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/hypertable.c",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "if (GetRelationPublications(table_relid) != NIL)",
+        "review": "[缺陷类型] 回退了已修复的校验逻辑（隐式发布保护丢失）。影响评估：FOR ALL TABLES 发布中的表可再次被 metathesize 为 hypertable，后续 DROP/复制操作异常，且与本次发布说明直接矛盾，容易在版本发布后以数据/运维事故形式暴露。",
+        "suggestion": "[重构思路] 恢复对隐式发布的检查，或把“是否处于任意发布”封装成 helper 统一调用，并保证与发布说明一致；若确有需要放宽，应在代码注释与 CHANGELOG 中说明原因与替代防护。代码示例：`if (GetRelationPublications(table_relid) != NIL || GetAllTablesPublications() != NIL) ereport(ERROR, (errcode(ERRCODE_TS_OPERATION_NOT_SUPPORTED), errmsg(\"cannot create hypertable for table \\\"%s\\\" because it is part of a publication\", get_rel_name(table_relid))));`",
+        "category": "可靠性",
+        "subcategory": "逻辑回退",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1870,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/ts_catalog/chunk_column_stats.c",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "col_type = get_atttype(ht->main_table_relid, attno);",
+        "review": "[缺陷类型] 关系/属性号不匹配导致类型解析错误。影响评估：列统计计算出错误的 min/max 或直接失败，影响 chunk 级统计与查询剪枝正确性；属回退已修复缺陷。",
+        "suggestion": "[重构思路] 类型查询应与属性号所属关系保持一致，即在 chunk 上取类型；若担心 chunk 属性不存在，先校验 attno 有效再查询。代码示例：`attno = get_attnum(ht->main_table_relid, col_name); attno = ts_map_attno(ht->main_table_relid, chunk->table_id, attno); if (attno <= 0) continue; col_type = get_atttype(chunk->table_id, attno);`",
+        "category": "可靠性",
+        "subcategory": "类型映射错位",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 766,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "version.config",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "update_from_version = 2.19.1",
+        "review": "[缺陷类型] 版本升级/降级路径缺失（发布元数据被回退）。影响评估：若 2.19.2 已发布，该版本用户无法升级到 2.20，也无法从 2.20 降级到 2.19.2，属发布阻断级问题；若 2.19.2 未发布则影响有限。需与发布负责人确认 2.19.2 的发布状态。",
+        "suggestion": "[重构思路] 明确本次 MR 的版本意图：若 2.19.2 已发布，恢复 version.config 的 2.19.2 以及两个过渡脚本（并保留其在 MOD_FILES/OLD_REV_FILES 中的条目）；若尚未发布，请在 MR 描述与 CHANGELOG 中显式说明“回收 2.19.2 发布准备”，并同步调整所有引用 2.19.2 的文档/测试。代码示例：`update_from_version = 2.19.2` / `downgrade_to_version = 2.19.2` 且 `updates/2.19.1--2.19.2.sql`、`2.19.2--2.19.1.sql` 同时存在。",
+        "category": "可靠性",
+        "subcategory": "升级兼容性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "NOTICE",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "Copyright (c) 2017-2024  Timescale, Inc. All Rights Reserved.",
+        "review": "[缺陷类型] 合规/法律声明文本被意外回退。影响评估：发布包中的版权年份与实际不符，可能与公司合规审查、第三方声明一致性要求冲突；不影响运行时代码，但属于发布前必须修正的内容。",
+        "suggestion": "[重构思路] 将 NOTICE 恢复为当前的年份区间（2017-2025 / 1996-2025），并把该文件从本次回退范围中排除；建议在 CI 中增加对 NOTICE / LICENSE 等合规文件的变更提醒，避免被无关回退覆盖。",
+        "category": "可维护",
+        "subcategory": "合规文件回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 3,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

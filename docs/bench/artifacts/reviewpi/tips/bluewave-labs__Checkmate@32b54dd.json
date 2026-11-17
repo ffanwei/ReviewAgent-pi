@@ -1,0 +1,209 @@
+[
+  {
+    "filePath": "server/src/service/infrastructure/networkService.js",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (matchMethod === \"include\") ok = payload.includes(expectedValue);",
+        "review": "[缺陷类型] 响应体断言类型不匹配（对象与字符串混用）。影响评估：配置了 advanced matching 的 JSON 类 HTTP 监视器会被稳定判定为 down，产生误告警；include/regex 场景会抛 TypeError 使检查中断，Check 与 MonitorStats 缺失本次数据，进而影响 uptime 统计与状态窗口。",
+        "suggestion": "[重构思路] 先把待比较值统一归一化为字符串（或在 JSON 场景下按 jsonPath 取值），对每种 matchMethod 分别做类型判断，并把异常正则/不支持的方法降级为明确的失败原因而不是抛错。代码示例：`const candidate = typeof payload === \"string\" ? payload : JSON.stringify(payload);\\nconst matchers = { equal: (a, b) => a === b, include: (a, b) => a.includes(b), regex: (a, b) => new RegExp(b).test(a) };\\nconst fn = matchers[matchMethod ?? \"equal\"];\\nif (!fn) { httpResponse.status = false; httpResponse.message = \\`Unsupported matchMethod: \\${matchMethod}\\`; return httpResponse; }\"",
+        "category": "可靠性",
+        "subcategory": "序列化/类型不匹配",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 159,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "httpResponse.code = 500;",
+        "review": "[缺陷类型] 用合成的 500 覆盖真实状态码。影响评估：Check/事故/状态页展示的状态码与真实响应不符，误导排障；同时与 L191-194 网络错误分支的语义（code 才是真实码）不一致。",
+        "suggestion": "[重构思路] 保留原始 code，把断言失败表达在 status 与 message 上（可另加一个 assertion 字段），不要篡改观测字段。代码示例：`if (!ok) {\\n  httpResponse.status = false;\\n  httpResponse.message = \\`Expected value not matched (\\${matchMethod})\\`;\\n  httpResponse.assertion = { matchMethod, expectedValue, matched: false };\\n  return httpResponse;\\n}`",
+        "category": "可靠性",
+        "subcategory": "观测字段被覆盖",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 165,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "let ok = false;",
+        "review": "[缺陷类型] 缺失/未知枚举值未做缺省处理。影响评估：expectedValue 有值但 matchMethod 为空的监视器会被稳定判 down 并触发通知，属于误报型故障；同时该分支没有任何日志，难以定位。",
+        "suggestion": "[重构思路] 给出明确的缺省策略并记录未知取值：matchMethod 为空时回退到 \"equal\"（与前端 Select 的 `value={monitor.matchMethod || \"equal\"}` 一致），未知取值时返回带 message 的失败并 warn 日志。代码示例：`const method = matchMethod || \"equal\";\\nif (![\"equal\",\"include\",\"regex\"].includes(method)) {\\n  this.logger.warn({ message: \\`Unknown matchMethod \\${matchMethod}\\`, service: this.SERVICE_NAME, method: \"requestHttp\" });\\n}`",
+        "category": "可靠性",
+        "subcategory": "枚举缺省值缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 157,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F004",
+        "code": "if (matchMethod === \"regex\") ok = new RegExp(expectedValue).test(payload);",
+        "review": "[缺陷类型] 未校验的用户输入构造正则（ReDoS + 未捕获语法错误）。影响评估：单条错误配置即可让该监视器永久检查失败；灾难性回溯会阻塞 Node 事件循环，影响同进程内全部监视器的检查与 API 响应。",
+        "suggestion": "[重构思路] 在保存监视器时（joi 校验层）预编译并缓存正则，校验失败即拒绝保存；运行时对 test() 加 try/catch 并设置长度上限。代码示例：`let re;\\ntry { re = new RegExp(expectedValue); ok = re.test(String(payload)); }\\ncatch { httpResponse.status = false; httpResponse.message = \"Invalid regex in expectedValue\"; return httpResponse; }`",
+        "category": "安全",
+        "subcategory": "正则注入/ReDoS",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 160,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "dockerResponse.status = 404;",
+        "review": "[缺陷类型] 响应字段误用（status 与 code 混淆）+ 死赋值。影响评估：歧义场景下 Check 的 statusCode 为 undefined，事故/状态页展示缺失；同时该分支与 L293-296 的写法不一致，后续维护极易踩坑。",
+        "suggestion": "[重构思路] 与「未找到容器」分支保持同一形状，抽出构造失败响应的辅助函数，避免复制粘贴出错。代码示例：`const fail = (code, message) => ({ ...dockerResponse, code, status: false, message });\\nif (matchTypes.length > 1) return fail(404, \\`Ambiguous container match for \"\\${monitor.url}\"\\`);`",
+        "category": "可靠性",
+        "subcategory": "字段误用",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 312,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "if (matchTypes.length > 1) {",
+        "review": "[缺陷类型] 匹配策略自相矛盾（先排序后否决）。影响评估：容器名与某容器 ID 前缀重合时监视器被误判为失败并触发通知；同样的输入在不同环境下结果不可预测，难以复现排查。",
+        "suggestion": "[重构思路] 明确「优先级优先」还是「歧义即失败」：若保留优先级，则删除 L299-316 的否决分支，仅对被跳过的较低优先级匹配打 warn 日志；若要求唯一匹配，则在每一级内部检测多个候选（find → filter）并拒绝该级，而不是跨级否决。代码示例：`const byName = containers.filter(c => c.Names.some(n => n.replace(/^\\/+/, \"\").toLowerCase() === normalizedInput));\\nif (byName.length > 1) return fail(409, \"Ambiguous container name\");\\nconst target = exactIdMatch ?? byName[0] ?? partialIdMatch;`",
+        "category": "可靠性",
+        "subcategory": "匹配逻辑矛盾",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 305,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F011",
+        "code": "import { match } from \"assert\";",
+        "review": "[缺陷类型] 未使用的导入。影响评估：lint 会报 no-unused-vars（若开启）；误导读者以为断言已使用 assert；assert 在生产构建中被引入属于不必要的依赖。",
+        "suggestion": "[重构思路] 删除该行导入；若确实想用断言语义，改为内联比较并给出显式错误信息，而不是依赖 assert 抛错。代码示例：`// 删除 import { match } from \"assert\";\\nif (method === \"regex\") { ok = new RegExp(expectedValue).test(String(payload)); }`",
+        "category": "可维护",
+        "subcategory": "无用导入",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F013",
+        "code": "if (!expectedValue && !jsonPath) {",
+        "review": "[缺陷类型] 分支顺序导致校验逻辑不可达 + 提取值未参与断言。影响评估：配置了 jsonPath 的监视器失去原有校验与提示（状态码为 200 但内容不是 JSON 时不再给出明确原因）；同时期望值比较对 JSON API 只能整包匹配，功能与用户预期不符。",
+        "suggestion": "[重构思路] 把「取值」与「断言」解耦：先用 jsonPath 从 payload 提取 target（无 jsonPath 时 target = payload），再对 target 做一致化后的匹配，并保留原有的 httpNotJson/httpJsonPathError 分支。代码示例：`let target = payload;\\nif (jsonPath) {\\n  try { target = this.jmespath.search(payload, jsonPath); }\\n  catch { httpResponse.status = false; httpResponse.message = this.stringService.httpJsonPathError; return httpResponse; }\\n}\\nif (expectedValue) return this.applyAssertion(httpResponse, target, matchMethod, expectedValue);`",
+        "category": "可靠性",
+        "subcategory": "分支可达性/断言目标错误",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 152,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "} catch (err) {",
+        "review": "[缺陷类型] 数据迁移缺少版本记录与失败处理。影响评估：迁移失败静默 → 历史阈值仍为比例值，与新的百分比判定组合后引发误告警与「永不恢复」的状态；重复执行对极小残留值会再次放大；逐条 save 使启动变慢并可能因单个文档校验失败中断整批。",
+        "suggestion": "[重构思路] 增加迁移记录集合（记录已执行的 migration id）实现幂等；迁移内部使用单条 updateMany 做原子换算；失败时以 error 级别日志抛出，让 connect 显式失败或明确降级提示。代码示例：`const done = await Migration.findOne({ name: \"0001_statusWindowThreshold\" });\\nif (done) return;\\nawait Monitor.updateMany({ statusWindowThreshold: { $lt: 1 } }, [{ $set: { statusWindowThreshold: { $multiply: [\"$statusWindowThreshold\", 100] } } }]);\\nawait Migration.create({ name: \"0001_statusWindowThreshold\", appliedAt: new Date() });`",
+        "category": "可靠性",
+        "subcategory": "迁移幂等与错误处理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "client/src/Components/Table/index.jsx",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "config = {",
+        "review": "[缺陷类型] 对象类型 prop 的默认值不与传入对象合并。影响评估：事故表空态渲染空白（原为 \"No data\"），是可感知的 UI 回归；同时该默认值模式对后续所有调用方都是隐患。",
+        "suggestion": "[重构思路] 在组件内部对 config 做解构默认，或显式 merge。代码示例：`const DataTable = ({ headers = [], data = [], config = {} }) => {\\n  const { emptyView = \"No data\", tooltipContent = null, onRowClick, rowSX } = config;\\n  ...\\n}`，调用方无需重复传默认值。",
+        "category": "可靠性",
+        "subcategory": "默认值合并",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 43,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F010",
+        "code": "<Tooltip",
+        "review": "[缺陷类型] 通用组件无条件包裹浮层容器。影响评估：无 tooltip 需求的表格多出一层组件与事件绑定，长列表渲染/交互开销增加；组件的通用性下降，后续每个页面都能往里塞浮层逻辑。",
+        "suggestion": "[重构思路] 仅在 tooltipContent 存在时包裹，其余情况直接渲染 TableRow；把列/行的渲染抽成内部变量避免重复代码。代码示例：`const row = <TableRow ...>{cells}</TableRow>;\\nreturn tooltipContent ? <Tooltip key={key} ...>{row}</Tooltip> : React.cloneElement(row, { key });`",
+        "category": "性能",
+        "subcategory": "渲染开销",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 106,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "const theme = useTheme();",
+        "review": "[缺陷类型] 在循环/普通函数中调用 hook（违反 Rules of Hooks）。影响评估：当前侥幸可用，任何后续给该函数加状态类 hook 都会导致运行时崩溃；代码语义与 eslint 规则冲突，降低可维护性。",
+        "suggestion": "[重构思路] 明确渲染契约：让 tooltipContent 接收 row 并返回 React 元素，但把 theme 提升到组件层或用纯函数的方式获取主题；或者把 GetTooltip 写成真正的组件并用 JSX 调用 `<GetTooltip row={row} />`。代码示例：`// Table/index.jsx\\ntitle={typeof tooltipContent === \"function\" ? <tooltipContent row={row} /> : tooltipContent}\\n\\n// IncidentTable\\nconst TooltipContent = ({ row }) => { const theme = useTheme(); ... }`",
+        "category": "可维护",
+        "subcategory": "React Hooks 规则",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 28,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "render: (row) => `${row.monitorInterval} ms`,",
+        "review": "[缺陷类型] 缺失值未做展示降级。影响评估：队列页出现「null ms」，与同表其它列风格不一致，降低可读性并让用户怀疑数据异常。",
+        "suggestion": "[重构思路] 与相邻列保持一致，缺失时显示 \"-\"；如需更友好可格式化为秒/分钟。代码示例：`render: (row) => (row.monitorInterval ? `${row.monitorInterval} ms` : \"-\")`",
+        "category": "可读性",
+        "subcategory": "空值降级缺失",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 52,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

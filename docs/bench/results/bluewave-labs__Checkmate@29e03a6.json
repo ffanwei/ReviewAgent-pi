@@ -1,0 +1,122 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@29e03a6",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "7c369e84052aaee15a6dedf8928b5af4c869037b",
+  "head_commit": "29e03a6294edfe43b49eba20fe49099cef601d34",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 112.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 10,
+  "review_output": [
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 65,
+      "summary": "下载内容未做完整性与 key 覆盖校验，空或残缺翻译会被每日自动提交覆盖现有 locale",
+      "failure_scenario": "脚本把 POEditor 返回内容（数组需按 term/definition 过滤转换）直接整对象写入 temp/<lang>.json，随后 workflow 仅用 `[ ! -s \"$file\" ]` 和 `jq .` 判断文件非空与 JSON 语法合法，再 `cp -r temp/* src/locales/` 覆盖同名文件并自动 commit/push。若某语言导出为 0 条 term（得到 `{}`，字节数非零、JSON 合法）或大量词条 definition 缺失（forEach 中静默跳过），文件仍能通过全部校验并被提交到主干，src/locales/gb.json（178 行）/ tr.json（105 行）会被整体替换成空或大幅缩水的版本，所有界面文案回退为 key，且每日 cron 会重复放大该问题。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "DATA-INTEGRITY-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 10,
+      "summary": "workflow_dispatch 默认语言 “tr,en” 与仓库主语言 gb 不一致，手动触发会生成多余的 en.json",
+      "failure_scenario": "workflow_dispatch 的 languages 默认值为 \"tr,en\"，而同一工作流第 60 行环境变量 fallback 为 'tr,gb'，脚本自身默认值又是 'tr,en'，三处不一致。运行时 i18n 以 gb 为主语言，并把 src/locales/*.json 的文件名当作 language code 全量 glob 注册，现有目录只有 tr.json 与 gb.json（无 en.json）。因此手动触发（走 input 默认值）会下载并提交一个与 gb 内容重复的 src/locales/en.json，使应用多出一个 \"en\" 语言资源；定时触发则走 'tr,gb'，两条路径行为不同，排查时容易误判。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "CONFIG-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 10,
+      "summary": "缺少必填环境变量校验，secrets 缺失时会以字面量 undefined 调用 POEditor",
+      "failure_scenario": "API_TOKEN 与 PROJECT_ID 直接取自 process.env，脚本未做任何非空校验即塞进 URLSearchParams。URLSearchParams 会把 undefined 序列化成字符串 \"undefined\"，请求必然被 POEditor 拒绝，随后抛错并 process.exit(1)。当前工作流仅在失败时把 job 标红，没有额外通知，若 secrets 名称写错或未配置，每日 cron 会持续静默失败，翻译实际上不再更新而无从感知。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "CONFIG-002"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 65,
+      "summary": "写回缩进从 Tab 改为 2 空格，每次同步都产生整文件 diff 噪音",
+      "failure_scenario": "现有 src/locales/*.json 使用 Tab 缩进，而脚本用 fs.writeJson(..., { spaces: 2 }) 输出。即使文案内容完全没变，写回后每个文件都会因缩进差异被整体重写，workflow 再 `git add src/locales/*.json` 并提交，导致每日产生一份「全文件改动」的提交，真实翻译变更被淹没，revert 与 blame 也变得困难。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "STYLE-002"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 72,
+      "summary": "catch 中直接打印 axios error，可能把请求体中的 api_token 写入 Actions 日志",
+      "failure_scenario": "token 通过 URLSearchParams 放在请求体里（api_token=...），axios 抛出的 AxiosError 携带 config.data（即该请求体）。catch 分支把整个 error 对象交给 console.error，Node 打印时会展开 config，从而把 api_token 明文写入工作流日志。GitHub 的 secret 掩码在多数情况下能遮蔽完整 secret 值，但一旦 token 被截断、编码或与其他字符拼接（如 \"undefined\" 场景），掩码就会失效，属于不应依赖的隐式保护；同理第 38 行把完整响应体 JSON.stringify 进异常信息也会放大日志暴露面。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.55,
+      "rule": "SECURITY-LEAK-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 38,
+      "summary": "在 workflow 内动态生成 package.json 并 npm install，action 与依赖版本均未锁定",
+      "failure_scenario": "工作流每次运行都用 heredoc 现场生成 .github/scripts/package.json（axios ^1.6.0、fs-extra ^11.1.1）再 npm install，没有 lockfile，依赖树随上游发布漂移；actions/checkout@v3、actions/setup-node@v3 也使用浮动大版本 tag。同时根工程已依赖 axios ^1.7.4（package.json:31），两处版本来源不一致，脚本行为可能与仓库整体依赖策略脱节，问题难以复现。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "REPRODUCIBILITY-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "推送前未拉取远端，也未处理分支保护，定时任务可能因非快进推送失败",
+      "failure_scenario": "工作流每天在默认分支上 commit 并直接 git push，push 前没有 `git pull --rebase` 或重试逻辑。checkout 之后到 push 之间若默认分支有新的提交（这是日常情况），push 会因非快进被拒绝，整个任务失败，当天的翻译同步因此丢失；若默认分支启用了「必须通过 PR」的保护规则，则每次运行都会失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CI-RACE-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 64,
+      "summary": "language 输入未做白名单校验即拼接为输出路径，可把文件写到 temp 之外",
+      "failure_scenario": "outputPath 由 `${language}.json` 与 path.join 拼成，language 直接来自 workflow_dispatch 的 languages 输入（第 60 行注入 LANGUAGES）。虽然下游会被补上 .json 后缀，但 `../src/locales/gb` 这类值可让 path.join 归一到 src/locales/gb.json，即在「校验与复制步骤之前」直接改写仓库文件，绕过 temp 校验。利用者需具备触发工作流的权限，因此风险有限，仍应加白名单。",
+      "severity": "P3",
+      "category": "安全",
+      "confidence": 0.45,
+      "rule": "SECURITY-PATH-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 81,
+      "summary": "用 process.cwd() 下的 temp 目录做清理，本地执行会清空任意同名目录",
+      "failure_scenario": "main() 以 fs.emptyDir(path.join(process.cwd(), 'temp')) 清空目录，路径取自当前工作目录而非脚本自身位置。在 CI 中 cwd 是仓库根，恰好与 workflow 创建的 temp 一致；但开发者本地从仓库根运行脚本时，会无条件清空仓库根的 temp 目录，若该目录被用于其他用途（构建缓存、临时产物）将造成误删，且不可恢复。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "SIDE-EFFECT-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 7,
+      "summary": "计算出的 __filename 从未被使用",
+      "failure_scenario": "脚本导入 fileURLToPath 并计算 const __filename = fileURLToPath(import.meta.url)，但全文没有任何地方引用 __filename（也没有 __dirname），属于遗留代码；同时第 49-52 行注释为土耳其语、其余为英语，注释语言不统一，增加了维护成本。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "READABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\bluewave-labs__Checkmate@29e03a6.diff\n  caseId              bluewave-labs__Checkmate@29e03a6\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@29e03a6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 1807 字符（exclude=1），明细见审计 mrFilter\n✓ 完成 · 耗时 108.7s · 模型调用 13 次 · token 输入 22,295（未命中） · 输出 15,969 · 缓存命中 109,824（83.1%） · 工具 13 次（主会话 13 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0079\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 109.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 108.7s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 6.8s (6.2%) | P2 6.8s (6.3%) | P3 11.2s (10.3%) | P4 11.5s (10.6%) | P5 62.5s (57.5%) | P6 9.8s (9.0%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 22,295（未命中） | 输出 15,969 | 缓存命中 109,824（83.1%） | $0.0079\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\bluewave-labs__Checkmate@29e03a6\\audit\\20261115_002216_488.json",
+  "token_usage": {
+    "input_tokens": 22295,
+    "output_tokens": 15969,
+    "cache_read_input_tokens": 109824
+  }
+}

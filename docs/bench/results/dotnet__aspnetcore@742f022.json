@@ -1,0 +1,152 @@
+{
+  "instance_id": "dotnet__aspnetcore@742f022",
+  "repo": "dotnet/aspnetcore",
+  "base_commit": "8bb2b2067815996d9a8224ee38aa80a79f797827",
+  "head_commit": "742f022e92563bd6fb87d1c752f25fd14e1b2a43",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 363.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 13,
+  "review_output": [
+    {
+      "file": "eng/Versions.props",
+      "line": 253,
+      "summary": "roslyn 版本属性被同时移入 Automated 组却在 Manual 组残留，重复定义会覆盖自动化值",
+      "failure_scenario": "本次 MR 的意图是把 dotnet/roslyn 的四个版本属性纳入自动化管理与 CodeCheck 校验：在 `PropertyGroup Label=\"Automated\"` 中新增了 MicrosoftCodeAnalysisCommonVersion / MicrosoftCodeAnalysisExternalAccessAspNetCoreVersion / MicrosoftCodeAnalysisCSharpVersion / MicrosoftCodeAnalysisCSharpWorkspacesVersion（第 168-171 行），并把它们从 Manual 组的一处旧块删除。但 Manual 组第 253-256 行仍保留同名属性，且 Manual 组位于文件的更后面。MSBuild 属性按求值顺序后者覆盖前者，因此最终生效的是 Manual 组中的副本；而 eng/scripts/CodeCheck.ps1 只读取 `//PropertyGroup[@Label=\"Automated\"]` 节点做一致性校验，重复定义不会被发现。后果是：今后 darc 更新 Automated 副本时，实际构建仍使用 Manual 组里的旧值，且 CodeCheck 依旧通过，形成“看似自动化、实际不生效”的隐蔽版本漂移。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.82,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "src/Components/Components/src/Routing/Router.cs",
+      "line": 80,
+      "summary": "NotFoundPage 被标注为非空 Type，但运行时仍可能为 null，公开 API 契约与实际行为不符",
+      "failure_scenario": "NotFoundPage 由 `Type?` 改为非空 `Type` 并使用 `= default!` 初始化，PublicAPI.Unshipped.txt 中对应条目也随之由 `System.Type?` 改为 `System.Type!`。但它是可选的 `[Parameter]`：当应用只提供 `<NotFound>` 片段或什么都不提供（例如不使用 404 组件的应用）时，该属性在运行时依旧是 null——Router 内部第 144 行 `if (NotFoundPage != null)` 与第 397 行 `if (NotFoundPage != null)` 都在为 null 做分支，说明 null 是合法的常态。把契约标注为非空会误导使用者与静态分析器：任何按非空契约直接访问 `router.NotFoundPage.FullName` 的代码（含未来本仓库内部代码）都会在未设置该参数时抛出 NullReferenceException，且编译器不再给出 CS8602 提示；同时 `PublicAPI` 基线与 `DefaultNotFoundContent` 兜底设计自相矛盾。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "API-CONTRACT-001"
+    },
+    {
+      "file": "src/ProjectTemplates/Web.ProjectTemplates/content/ComponentsWebAssembly-CSharp/App.razor",
+      "line": 7,
+      "summary": "模板同时设置 NotFoundPage 与 NotFound，新增的 NotFound 片段永远不会渲染",
+      "failure_scenario": "模板的两个 Router 分支（第 2 行与第 16 行）都设置了 `NotFoundPage=\"typeof(Pages.NotFound)\"`，本次 MR 又为它们新增了 `<NotFound>` 片段（第 7-12 行、第 32-37 行）。Router.RenderNotFound 的优先级是先判断 NotFoundPage、再判断 NotFound、最后才走 DefaultNotFoundContent，而本 MR 恰好删除了“同时设置 NotFound 与 NotFoundPage 抛 InvalidOperationException”的互斥校验，因此两者并存时 NotFoundPage 静默胜出：新增的 `<PageTitle>Not found</PageTitle>` 与 `Sorry, there's nothing at this address.` 文案属于死代码，实际 404 页面渲染的是 Pages/NotFound.razor 的内容（`<h3>Not Found</h3>` + `Sorry, the content you are looking for does not exist.`）。同时删除 `[Obsolete]` 表明 NotFound 仍是受支持的官方写法，模板却在两者之间摇摆，会让用户误以为自定义 NotFound 片段生效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "TEMPLATE-CONSISTENCY-001"
+    },
+    {
+      "file": "src/Identity/Extensions.Core/src/PasswordHasher.cs",
+      "line": 261,
+      "summary": "新增盐长上界但未限制迭代次数，密码校验路径仍可被超大 iterCount 拖入长时间计算",
+      "failure_scenario": "本次加固只给 saltLength 增加了上界（`saltLength > MaxSaltSize` 返回 false），但同一段代码从哈希载荷中读出的 `iterCount`（第 261 行）没有做任何范围检查，就原样传给 `KeyDerivation.Pbkdf2`（第 282 行）。若存储的哈希被篡改或损坏（例如 iterCount 被写成 0x7FFFFFFF），VerifyHashedPassword 会执行数十亿次 PBKDF2 迭代，单次登录请求即可占满一个 CPU 核，形成可放大到登录接口的 CPU 型 DoS；同时 `subkeyLength`（第 273 行）也只有下界检查。既然本次改动的目标是对畸形容器做防御，仅加上盐长上界属于加固不完整，攻击面仍然敞开。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.55,
+      "rule": "SECURITY-004"
+    },
+    {
+      "file": "eng/Versions.props",
+      "line": 328,
+      "summary": "MicrosoftOpenApi 系列版本由 2.0.0 回退为 2.0.0-preview.29，属非自动化区的版本降级",
+      "failure_scenario": "MicrosoftOpenApiVersion 与 MicrosoftOpenApiYamlReaderVersion 从稳定版 2.0.0 改为 2.0.0-preview.29。按 SemVer 优先级 2.0.0-preview.29 低于 2.0.0，这是一次版本降级，且这两个属性位于 Manual（“not managed by automation”）区，不由 darc 流驱动，说明是随本次依赖更新夹带的手工修改。若仓库中 Microsoft.AspNetCore.OpenApi 相关代码已按 2.0.0 的最终 API 调整（2.0 系列在 preview 到 GA 之间发生过 API 变更），降级到 preview.29 可能导致编译失败或运行时行为回退；同时降级会让生成的包引用指向更旧的 API 表面，与已经发布/已对齐的其他依赖不自洽。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "DEPENDENCY-002"
+    },
+    {
+      "file": "src/Framework/App.Runtime/src/Microsoft.AspNetCore.App.Runtime.sfxproj",
+      "line": 100,
+      "summary": "aspnetcorev2_inprocess.pdb 的打包条件被收紧为 !BuildNative，原生构建下符号包将缺失该 pdb",
+      "failure_scenario": "inprocess 的 dll/pdb 作为 NativeRuntimeAsset 的显式包含条件由原来的 `'$(UseIisNativeAssets)' == 'true'` 改为 `'$(UseIisNativeAssets)' == 'true' AND !$(BuildNative)`，并删除了“Always explicitly include the .pdb”的注释。当 BuildNative 为 true 时，dll 由 InProcessRequestHandler.vcxproj 的 ProjectReference 以 `OutputItemType=NativeRuntimeAsset` 提供，而该 ProjectReference 只取 C++ 项目的 TargetPath（`<Targets>Build;GetTargetPath</Targets>`），并不会带出 pdb；此前正是靠这条显式包含把 pdb 补进运行时包/符号包。条件收紧后，原生构建产出的共享框架包与符号包将不再包含 aspnetcorev2_inprocess.pdb，影响 IIS in-process 场景的符号解析与故障分析。Composite sfxproj 中的同一处条件也做了相同修改。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "PACKAGING-001"
+    },
+    {
+      "file": "src/Framework/App.Runtime/src/Microsoft.AspNetCore.App.Runtime.sfxproj",
+      "line": 114,
+      "summary": "删除 System.Security.Cryptography.Pkcs.pdb 的按 RID 去重规则后，符号包可能打包错误 RID 的 pdb",
+      "failure_scenario": "_TransportPdbs 仍以 `$(PkgMicrosoft_Internal_Runtime_AspNetCore_Transport)\\**\\*.pdb` 全量收集，且 _SymbolFilesToPackage 只按文件名过滤（`$(FileNameList.Contains('%(Filename);'))`，不区分路径与 RID）。本次删除了针对 System.Security.Cryptography.Pkcs.pdb 的两条 Remove 规则（按 TargetOsName 分别移除 lib 与 runtimes/win 下的副本），而注释原本明确说明“If we get rid of our custom reference resolution here, we can let nuget handle this”。删除这两个 Remove 后，Windows 平台的符号包可能同时收入非 Windows 的 Pkcs pdb，非 Windows 平台也可能收入 Windows 专用 pdb，或产生同名重复条目，导致符号包内容错误或打包冲突。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.42,
+      "rule": "PACKAGING-002"
+    },
+    {
+      "file": "eng/Versions.props",
+      "line": 326,
+      "summary": "删除 XUnitRunnerVisualStudioVersion 属性但 MR 未同步任何引用修改，需确认无残留引用",
+      "failure_scenario": "本次从 eng/Versions.props 的 3rd party 依赖区删除了 `<XUnitRunnerVisualStudioVersion>3.1.3</XUnitRunnerVisualStudioVersion>`，但本 MR 的 diff 中没有任何与之配套的文件改动（未删除或改写引用该属性的 csproj/props）。MSBuild 对未定义属性的引用会展开为空字符串，导致 `PackageReference` 版本为空而 restore 失败，或在无意中回退到其他默认版本；而 CodeCheck.ps1 的“多余版本变量”检查（第 160-165 行）只遍历 Automated 组，不会覆盖此处。因此需要显式确认该属性确已无引用（例如由 Arcade SDK 提供），否则应恢复或在同一 MR 中清理引用。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.35,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "eng/Versions.props",
+      "line": 253,
+      "summary": "roslyn 版本属性被移入 Automated 组却在 Manual 组残留同名定义，实际生效值来自后者",
+      "failure_scenario": "本 MR 的意图是让 dotnet/roslyn 的四个固定版本属性纳入自动化管理与 CodeCheck 校验：在 `PropertyGroup Label=\"Automated\"` 中新增了 MicrosoftCodeAnalysisCommonVersion / MicrosoftCodeAnalysisExternalAccessAspNetCoreVersion / MicrosoftCodeAnalysisCSharpVersion / MicrosoftCodeAnalysisCSharpWorkspacesVersion（第 168-171 行），并删除了 Manual 组中的一处旧块。但 Manual 组第 253-256 行仍保留同名四个属性，而 Manual 组（第 200 行起）位于 Automated 组（第 68 行起）之后；MSBuild 属性按求值顺序后者覆盖前者，因此最终生效的是 Manual 副本。eng/scripts/CodeCheck.ps1 第 143 行只读取 `//PropertyGroup[@Label=\"Automated\"]` 节点做一致性校验，重复定义不会被发现。结果是“看似已自动化、实际不生效”的隐蔽版本漂移：今后 darc 更新 Automated 副本时构建仍用 Manual 旧值，且校验依旧通过。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.82,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "src/Components/Components/src/Routing/Router.cs",
+      "line": 80,
+      "summary": "NotFoundPage 被标注为非空 Type，但运行时仍可能为 null，公开 API 契约与实际行为矛盾",
+      "failure_scenario": "NotFoundPage 由 `Type?` 改为非空 `Type` 并以 `= default!` 初始化，PublicAPI.Unshipped.txt 中对应条目随之由 `System.Type?` 变为 `System.Type!`。但它是可选的 `[Parameter]`：当应用不提供 NotFoundPage（只提供 `<NotFound>` 片段或使用内置兜底内容）时，该属性运行时仍是 null——Router 内部第 144 行与第 397 行都在为 null 做分支，第 323-330 行 DefaultNotFoundContent 的注释也明确“app to supply its own NotFound content … this is just a fallback”。把契约标注为非空会误导使用者与静态分析器：任何按非空契约直接访问 `NotFoundPage.FullName` 的代码在未设置该参数时会抛 NullReferenceException，编译器却不再给 CS8602 提示，同时公开 API 基线与内部 null 分支自相矛盾。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "API-CONTRACT-001"
+    },
+    {
+      "file": "eng/Versions.props",
+      "line": 328,
+      "summary": "MicrosoftOpenApi 系列版本由 2.0.0 回退为 2.0.0-preview.29，属非自动化管理区的手工降级",
+      "failure_scenario": "MicrosoftOpenApiVersion 与 MicrosoftOpenApiYamlReaderVersion 从稳定版 2.0.0 改为 2.0.0-preview.29。按 SemVer 优先级 2.0.0-preview.29 低于 2.0.0，这是一次降级；且这两个属性位于 Manual（“not managed by automation”）区，不由 darc 流驱动，说明是随依赖回退夹带的手工修改。若 OpenApi 相关代码已按 2.0.0 的最终 API 调整（2.0 系列在 preview 到 GA 之间发生过 API 变更），降级到 preview.29 可能导致编译失败或运行时行为回退，并使包引用与他已对齐的依赖不自洽。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "DEPENDENCY-002"
+    },
+    {
+      "file": "src/Framework/App.Runtime/src/Microsoft.AspNetCore.App.Runtime.sfxproj",
+      "line": 100,
+      "summary": "aspnetcorev2_inprocess.pdb 打包条件被收紧为 !BuildNative，原生构建下符号包将缺失该 pdb",
+      "failure_scenario": "inprocess pdb 作为 NativeRuntimeAsset 的显式包含条件由原来的 `'$(UseIisNativeAssets)' == 'true'` 改为 `'$(UseIisNativeAssets)' == 'true' AND !$(BuildNative)`，同时删除了“Always explicitly include the .pdb”注释。BuildNative 为 true 时，dll 由 InProcessRequestHandler.vcxproj 的 ProjectReference 以 `OutputItemType=NativeRuntimeAsset` 提供，而该 ProjectReference 只取 C++ 项目的 TargetPath（`<Targets>Build;GetTargetPath</Targets>`），不会带出 pdb；此前正是靠这条显式包含把 pdb 补进运行时包/符号包。条件收紧后，原生构建产出的共享框架包与符号包不再包含该 pdb，影响 IIS in-process 场景的符号解析与故障分析。Composite sfxproj 中的同一处条件做了相同修改。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "PACKAGING-001"
+    },
+    {
+      "file": "src/Framework/App.Runtime/src/Microsoft.AspNetCore.App.Runtime.sfxproj",
+      "line": 114,
+      "summary": "删除 System.Security.Cryptography.Pkcs.pdb 的按 RID 去重规则后，符号包可能收录错误 RID 的 pdb",
+      "failure_scenario": "`_TransportPdbs` 仍以 `$(PkgMicrosoft_Internal_Runtime_AspNetCore_Transport)\\**\\*.pdb` 全量收集，而 `_SymbolFilesToPackage` 只按文件名过滤（`$(FileNameList.Contains('%(Filename);'))`，不含路径与 RID 维度）。本 MR 删除了针对 System.Security.Cryptography.Pkcs.pdb 的两条 Remove 规则（分别按 TargetOsName 移除 lib 与 runtimes/win 下的副本），原注释明确说明“If we get rid of our custom reference resolution here, we can let nuget handle this”——但同一文件中自定义引用解析（`_AllExternalAspNetCoreAppReferences`）仍然保留。若 transport 包仍同时含两份 Pkcs.pdb，Windows 符号包会收入非 Windows 版本，非 Windows 符号包也可能收入 Windows 专用 pdb，或产生同名重复条目。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.42,
+      "rule": "PACKAGING-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\dotnet__aspnetcore\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\dotnet__aspnetcore@742f022.diff\n  caseId              dotnet__aspnetcore@742f022\n  --issue             (未传)\n  --taskId            dotnet__aspnetcore@742f022\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 6 个文件 / 11077 字符（test=6），明细见审计 mrFilter\n✓ 完成 · 耗时 232.9s · 模型调用 20 次 · token 输入 93,155（未命中） · 输出 34,375 · 缓存命中 1,208,960（92.8%） · 工具 28 次（主会话 28 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0261\nreview-pi: 置信度过滤丢弃 3 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 233.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 232.8s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 9.6s (4.1%) | P2 8.6s (3.7%) | P3 9.2s (3.9%) | P4 79.8s (34.3%) | P5 42.6s (18.3%) | P6 18.2s (7.8%) | R2P1 7.5s (3.2%) | R2P2 3.5s (1.5%) | R2P3 6.5s (2.8%) | R2P4 11.0s (4.7%) | R2P5 28.2s (12.1%) | R2P6 8.2s (3.5%)\n[usage] 任务总计 | 模型调用 20 次（Agent 20 + 一次性 0） | token 输入 93,155（未命中） | 输出 34,375 | 缓存命中 1,208,960（92.8%） | $0.0261\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\dotnet__aspnetcore@742f022\\audit\\20261115_053105_339.json",
+  "token_usage": {
+    "input_tokens": 93155,
+    "output_tokens": 34375,
+    "cache_read_input_tokens": 1208960
+  }
+}

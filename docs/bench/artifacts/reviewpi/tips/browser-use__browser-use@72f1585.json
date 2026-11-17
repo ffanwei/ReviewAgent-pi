@@ -1,0 +1,105 @@
+[
+  {
+    "filePath": "browser_use/llm/google/chat.py",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "thinking_config_dict: types.ThinkingConfigDict = {'thinking_budget': -1}",
+        "review": "[缺陷类型] 配置参数被硬编码覆盖 + 默认值变更导致的参数语义回退（死参数）。影响评估：用户无法关闭思考，token 成本与延迟不可控；对 gemma/gemini-2.0 等模型可能直接请求失败；用户通过 config 注入的 thinking_config 被静默丢弃。",
+        "suggestion": "[重构思路] 让字段值真正参与请求构造，并保持「None 表示不下发」的语义：默认恢复为 None，需要动态思考的用户显式传 -1；仅在显式给值时才写 config，并避免覆盖用户自带的 thinking_config。代码示例：`if self.thinking_budget is not None:\n    cfg = dict(config.get('thinking_config') or {})\n    cfg.setdefault('thinking_budget', self.thinking_budget)\n    config['thinking_config'] = cfg`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 202,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "return await _make_api_call()",
+        "review": "[缺陷类型] 重试策略缺失/迁移未落实（删除手工重试但未显式配置替代方案）。影响评估：限流与 5xx 瞬时错误不再自愈，长任务失败率上升；注释与实际行为不符，误导维护者。",
+        "suggestion": "[重构思路] 二选一：(a) 显式配置 SDK 重试，例如在 http_options 中设置 retry_options/超时并在 _get_client_params 中透传；(b) 保留一层受控重试（优先复用共享的 retry 工具而非逐 provider 手写）。代码示例：`http_options = self.http_options or types.HttpOptions()\nclient = genai.Client(**client_params, http_options=http_options)`，或在 ainvoke 外层 `for attempt in range(max_retries): try: return await _make_api_call() except ModelProviderError as e: if e.status_code not in (429, 500, 502, 503, 504): raise; await asyncio.sleep(min(60, 2 ** attempt))`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 384,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "if isinstance(e, asyncio.CancelledError) or 'CancelledError' in str(type(e)):",
+        "review": "[缺陷类型] 不可达分支 / 异常体系误用。影响评估：取消信号的差异化诊断与 504 映射永不生效，错误信息误导排查方向；死代码增加维护成本。",
+        "suggestion": "[重构思路] 若要区分取消与超时，需单独用 BaseException 分支处理并原样重新抛出取消（不应包装成 504），其余错误才做状态码映射；若不需要该诊断，直接删除该分支与 asyncio 导入。代码示例：`except asyncio.CancelledError:\n    self.logger.warning(f'🕐 request cancelled: {self.model}')\n    raise\nexcept Exception as e:\n    ...`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 393,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "if 'timeout' in error_message.lower() or 'cancelled' in error_message.lower():",
+        "review": "[缺陷类型] 错误分类优先级/字符串匹配脆弱。影响评估：限流被误报为超时，上游退避与配额提示失效；同时 'DeadlineExceeded' 等真实超时反而落到 502 兜底。",
+        "suggestion": "[重构思路] 优先依据结构化属性（异常类型、error code、response.status_code）分类，字符串匹配仅作兜底；并保证限流判定优先于或独立于超时判定。代码示例：`code = getattr(e, 'code', None) or getattr(getattr(e, 'response', None), 'status_code', None)\nif code == 429: ...\nelif code in (408, 504): ...`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 392,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "status_code = 429",
+        "review": "[缺陷类型] 异常类型不统一。影响评估：基于异常类型的限流处理对 Google 失效，行为随 provider 漂移。",
+        "suggestion": "[重构思路] 在限流判定命中时抛 ModelRateLimitError，其余保持 ModelProviderError。代码示例：`if status_code == 429:\n    raise ModelRateLimitError(message=error_message, status_code=429, model=self.name) from e`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 409,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "self.logger.debug(f'Raw response text: {response.text[:200]}...')",
+        "review": "[缺陷类型] 日志中的敏感数据暴露。影响评估：DEBUG 日志或集中式日志系统可能留存页面/用户数据与模型输出。",
+        "suggestion": "[重构思路] 只记录长度、哈希或错误定位信息，必要时对原文做脱敏/截断标识后再输出。代码示例：`self.logger.debug(f'Raw response length={len(response.text or \"\")}')`",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 284,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "except Exception as e:",
+        "review": "[缺陷类型] 冗余异常处理与无效缩进（日志重复、可维护性下降）。影响评估：同一错误被记录两次，排查噪音大；大段缩进重排掩盖真实语义变更，增大评审与回溯成本。",
+        "suggestion": "[重构思路] 去掉内层 try/except，把耗时统计放在 finally 或外层统一处理；日志只在最终包装处记录一次。代码示例：`start = time.time()\ntry:\n    return await _make_api_call_inner()\nfinally:\n    self.logger.debug(f'elapsed={time.time()-start:.2f}s')`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 375,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

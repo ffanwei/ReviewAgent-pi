@@ -1,0 +1,594 @@
+{
+  "generatedAt": "2026-11-15T00:59:19.344Z",
+  "runId": "20261115_004823_650",
+  "source": "mr",
+  "caseId": "sveltejs__svelte@4bf1f91",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/scope.js",
+      "line": 100,
+      "title": "重复的 var/函数声明现在会误报 declaration_duplicate 编译错误",
+      "description": "`Scope.declare` 里删除了 `binding.declaration_kind !== 'var' && declaration_kind !== 'var'` 的豁免，改为只要 `this.declarations` 已有同名条目就调用 `e.declaration_duplicate`。但 JavaScript 允许 `var x` 与函数声明在同一作用域重复声明；更关键的是 `declare` 对 `declaration_kind === 'var'` 且 `this.#porous` 为真时会委托给父作用域（scope.js:88-96），因此像 `var x = 1; if (a) { var x = 2; }` 这类合法代码中两次 `var x` 会落到同一个函数/组件作用域并直接变成编译错误，用户升级后原本可编译的组件会构建失败。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/scope.js:98-101 — `if (this.declarations.has(node.name)) { // This also errors on var/function types, but that's arguably a good thing e.declaration_duplicate(node, node.name); }`",
+        "packages/svelte/src/compiler/phases/scope.js:88-96 — `if (declaration_kind === 'var' && this.#porous) { return this.parent.declare(node, kind, declaration_kind); }`，块级 `var` 会被提升并落到同一作用域",
+        "MR diff 中被删除的原逻辑为 `if (binding && binding.declaration_kind !== 'var' && declaration_kind !== 'var') { e.declaration_duplicate(...) }`"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 语义校验过严导致的编译期误报。影响评估：合法的 `var`/函数重复声明（含块级 `var` 提升）被判定为 `declaration_duplicate`，组件直接编译失败，属于破坏性回归。",
+        "suggestion": "[重构思路] 恢复对 `var`/函数声明的豁免，或仅在两个声明都是词法声明（let/const/class/import）时报错，并为 `var` 重复补充测试用例。代码示例：`if (this.declarations.has(node.name)) {\\n  const existing = this.declarations.get(node.name);\\n  if (existing && existing.declaration_kind !== 'var' && declaration_kind !== 'var') {\\n    e.declaration_duplicate(node, node.name);\\n  }\\n}`",
+        "subcategory": "作用域声明校验"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/1-parse/remove_typescript_nodes.js",
+      "line": 121,
+      "title": "删除 MethodDefinition 的 abstract 处理后，TS abstract 方法会残留在生成的 JS 中",
+      "description": "MR 删除了 `remove_typescript_nodes.js` 中的 `MethodDefinition` visitor（原逻辑在 `node.abstract` 为真时返回 `b.empty`）。文件中其余逻辑（通用 `_` visitor 只删除 `typeAnnotation`/`typeParameters`/`returnType`/`accessibility`，`ClassDeclaration` visitor 只移除 `declare` 类）都不会清除 abstract 成员，因此 `<script lang=\"ts\">` 中抽象类里声明的方法（无方法体）会被原样保留进后续各 phase 与 esrap 输出，产生缺少方法体的畸形类定义，导致产物语法错误或编译崩溃。",
+      "evidence": [
+        "MR diff 删除了 `MethodDefinition(node, context) { if (node.abstract) { return b.empty; } return context.next(); }`",
+        "packages/svelte/src/compiler/phases/1-parse/remove_typescript_nodes.js:20-29 — 通用 visitor 只 `delete n.typeAnnotation / typeParameters / returnType / accessibility`，未处理 `abstract`",
+        "packages/svelte/src/compiler/phases/1-parse/remove_typescript_nodes.js:114-120 — `ClassDeclaration` visitor 只在 `node.declare` 时返回 `b.empty`，不会过滤 abstract 成员"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.58,
+      "tips": {
+        "review": "[缺陷类型] 预处理器遗漏节点类型，导致非法 AST 进入代码生成。影响评估：使用 TS `abstract` 方法的组件可能生成语法非法的 JS 或直接编译报错，且问题只在 TS 场景暴露、难以定位。",
+        "suggestion": "[重构思路] 恢复对 abstract 成员的剔除（同时覆盖 `PropertyDefinition` 与 `MethodDefinition`），或在 parse 阶段显式报 `typescript_invalid_feature` 以给出可读错误。代码示例：`MethodDefinition(node, context) { if (node.abstract) return b.empty; return context.next(); }`，并为 `abstract class` 补一个编译快照测试。",
+        "subcategory": "TypeScript 语法降级"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/2-analyze/visitors/Attribute.js",
+      "line": 170,
+      "title": "事件委托提升决策依赖 `is_called`，但该标记按源码顺序才被置位，结果不确定",
+      "description": "`get_delegated_event` 新增 `!binding.is_called` 条件来决定是否可安全提升事件处理器，而 `is_called` 只在分析阶段访问到 `CallExpression`/`TaggedTemplateExpression` 的 callee 时被置为 true（scope.js:115 初始化为 false）。同一文件中若调用语句出现在 `onclick={handler}` 之后，Attribute visitor 先执行时 `is_called` 仍为 false，于是仍然提升该绑定；若调用语句在前则不提升。也就是说，同一份语义等价代码按书写顺序不同会生成不同的委托策略，属于典型的顺序依赖缺陷，后续重构极易踩坑。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/Attribute.js:170 — `if (binding !== null && binding.initial !== null && !binding.updated && !binding.is_called)`",
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/CallExpression.js:191-196 — 访问到 callee 时 `binding.is_called = true`",
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/TaggedTemplateExpression.js:15-21 — 同上",
+        "packages/svelte/src/compiler/phases/scope.js:104-118 — 创建 binding 时 `is_called: false`，create_scopes 阶段不会置位"
+      ],
+      "rule": "CORRECTNESS-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 依赖遍历顺序的隐式状态。影响评估：事件处理器是否被 hoist/委托到根节点取决于调用点在文件中的位置，生成的代码不一致，可导致难以复现的行为差异与测试不稳定。",
+        "suggestion": "[重构思路] 把 `is_called` 的收集提前到 `create_scopes` 的 phase-1 遍历中（与 `updated`/`mutated` 同批完成），保证进入 2-analyze 时标记已完整；或在分析结束后统一做一次事件委托决策。代码示例：在 `create_scopes` 的 CallExpression/TaggedTemplateExpression 分支里 `const b = scope.get(callee.name); if (b) b.is_called = true;`",
+        "subcategory": "分析阶段状态顺序依赖"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/2-analyze/visitors/Attribute.js",
+      "line": 170,
+      "title": "事件委托提升决策依赖 is_called，但该标记按源码顺序才置位，结果不确定",
+      "description": "`get_delegated_event` 新增 `!binding.is_called` 来决定事件处理器能否安全提升，而 `is_called` 只在分析阶段访问到 `CallExpression`/`TaggedTemplateExpression` 的 callee 时置 true（创建 binding 时初始化为 false，create_scopes 阶段不置位）。因此在同一文件中，若调用语句写在 `onclick={handler}` 之后，Attribute visitor 先执行时 `is_called` 仍为 false，仍会提升该绑定；写在之前则不提升。语义等价代码因书写顺序不同而生成不同的委托策略，属典型的顺序依赖缺陷。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/Attribute.js:170 — `if (binding !== null && binding.initial !== null && !binding.updated && !binding.is_called)`",
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/CallExpression.js:191-196 — 访问 callee 时 `binding.is_called = true`",
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/TaggedTemplateExpression.js:15-21 — 同上",
+        "packages/svelte/src/compiler/phases/scope.js:104-118 — 创建 binding 时 `is_called: false`，create_scopes 阶段不置位"
+      ],
+      "rule": "CORRECTNESS-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 依赖遍历顺序的隐式状态。影响评估：事件处理器是否被 hoist/委托取决于调用点在文件中的位置，生成代码不一致，可能出现难以复现的行为差异与测试不稳定。",
+        "suggestion": "[重构思路] 把 `is_called` 的收集下沉到 phase-1 的 `create_scopes` 遍历（与 `mutated`/`updated` 同批完成），保证进入 2-analyze 时标记已完整；或在分析结束后统一做一次事件委托决策。代码示例：在 create_scopes 的 CallExpression 分支里 `const b = scope.get(callee.name); if (b) b.is_called = true;`",
+        "subcategory": "分析阶段状态顺序依赖"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+      "line": 261,
+      "title": "`analyze_module` 只传入 { scope, scopes, analysis } 并用 @ts-expect-error 掩盖，state 字段缺失导致隐性语义漂移",
+      "description": "`analyze_module` 的 walk state 被裁剪为 `{ scope, scopes, analysis }`，并加上 `// @ts-expect-error TODO`。对比同一文件 596-613 / 664-681 行给 runes/legacy 两条路径构造的完整 `AnalysisState`，module 路径缺少 `function_depth`、`private_derived_state`、`instance_scope`、`reactive_statements`、`expression`、`component_slots` 等字段。其中 `function_depth` 被 visitor 以 `state.function_depth + 1` 递增时会得到 `undefined + 1 = NaN`，使所有 `function_depth > 0` 类的判断恒为 false；其余字段一旦有 visitor 无守卫访问（如 `state.private_derived_state.includes(...)`）就会抛 TypeError。类型检查被 @ts-expect-error 关闭，等于把这类问题推迟到运行时。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/2-analyze/index.js:256-265 — `walk(ast, { scope, scopes, // @ts-expect-error TODO\\n analysis }, visitors)`",
+        "packages/svelte/src/compiler/phases/2-analyze/index.js:597-613 与 665-681 — 同一 visitors 在组件路径下会收到 `function_depth`、`private_derived_state`、`instance_scope`、`reactive_statements` 等字段",
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/shared/utils.js 中的 `validate_no_const_assignment` 使用 `state.private_derived_state.includes(...)`"
+      ],
+      "rule": "TYPE-SAFETY-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 用 @ts-expect-error 掩盖不完整的 state 契约。影响评估：module 脚本的分析行为与组件路径不一致（如 function_depth 变成 NaN、未来新增字段直接抛 TypeError），且类型系统不再报警，回归风险长期潜伏。",
+        "suggestion": "[重构思路] 显式构造与分析器契约一致的 state（缺省值用 0/[]/new Map()），并去掉 @ts-expect-error；若确实需要区分 module 与 component，建议把 AnalysisState 拆成必需核心字段 + 可选 legacy 字段。代码示例：`const state = { scope, scopes, analysis, options, ast_type: 'module', parent_element: null, has_props_rune: false, component_slots: new Set(), expression: null, private_derived_state: [], function_depth: scope.function_depth, instance_scope: scope, reactive_statement: null, reactive_statements: new Map() };`",
+        "subcategory": "分析器状态契约"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+      "line": 261,
+      "title": "analyze_module 只传入 { scope, scopes, analysis } 并用 @ts-expect-error 掩盖，state 字段缺失导致隐性语义漂移",
+      "description": "`analyze_module` 的 walk state 被裁剪为 `{ scope, scopes, analysis }` 并加了 `// @ts-expect-error TODO`。对比同文件 597-613 / 665-681 行为组件构造的完整 `AnalysisState`，module 路径缺少 `function_depth`、`private_derived_state`、`instance_scope`、`reactive_statements`、`expression`、`component_slots` 等字段。其中 visitor 里 `function_depth: state.function_depth + 1` 会得到 `undefined + 1 = NaN`，使 `function_depth > 0` 一类判断恒 false；其余字段一旦被无守卫访问就会抛 TypeError。类型检查被 @ts-expect-error 关闭，等于把这类问题推迟到运行时。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/2-analyze/index.js:256-265 — `walk(ast, { scope, scopes, // @ts-expect-error TODO\\n analysis }, visitors)`",
+        "packages/svelte/src/compiler/phases/2-analyze/index.js:597-613 与 665-681 — 同一套 visitors 在组件路径下会收到 `function_depth`、`private_derived_state`、`instance_scope`、`reactive_statements` 等字段",
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/CallExpression.js:189-193 — `context.next({ ...context.state, function_depth: context.state.function_depth + 1 })`",
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/shared/utils.js — `validate_no_const_assignment` 使用 `state.private_derived_state.includes(...)`"
+      ],
+      "rule": "TYPE-SAFETY-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 用 @ts-expect-error 掩盖不完整的 state 契约。影响评估：module 脚本分析行为与组件路径不一致（function_depth 变 NaN），未来新增字段时直接抛 TypeError，且类型系统不再报警，回归风险长期潜伏。",
+        "suggestion": "[重构思路] 显式构造与分析器契约一致的 state（缺省值用 0/[]/new Map()），去掉 @ts-expect-error；若确需区分 module 与 component，把 AnalysisState 拆成必需核心字段 + 可选 legacy 字段。代码示例：`const state = { scope, scopes, analysis, options, ast_type: 'module', parent_element: null, has_props_rune: false, component_slots: new Set(), expression: null, private_derived_state: [], function_depth: scope.function_depth, instance_scope: scope, reactive_statement: null, reactive_statements: new Map() };`",
+        "subcategory": "分析器状态契约"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+      "line": 800,
+      "title": "值为 true 的 class 属性（<div class>）会再被追加一个 class 属性，生成重复属性并丢失 hash",
+      "description": "analyze 阶段注入 css hash 时，分支条件为 `if (class_attribute && class_attribute.value !== true)`，当元素本身已有 `class`（无值，AST 上 value 为 `true`）时不会走修改分支，而是落入 `else` 无条件 `node.attributes.push(create_attribute('class', ...))`，于是同一个元素上出现两个 `class` 属性。transform 的静态属性输出又会把两者都写进模板串，HTML 解析时后出现的重复属性被丢弃，导致 scoped hash 实际未生效（而 `RegularElement.js:280` 的 `name !== 'class' || value` 判断恰恰说明无值 class 是被支持的场景）。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/2-analyze/index.js:781-799 — `if (class_attribute && class_attribute.value !== true) { ... }`",
+        "packages/svelte/src/compiler/phases/2-analyze/index.js:800-811 — `} else { node.attributes.push(create_attribute('class', -1, -1, [ ...data: analysis.css.hash ... ])); }`",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/RegularElement.js:272-290 — 静态属性逐个 push 到 `context.state.template`，重复的 `class` 会同时出现在模板串中",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/RegularElement.js:280 — `if (name !== 'class' || value)` 说明 value 为 `true` 的 class 是受支持输入"
+      ],
+      "rule": "RENDER-CONSISTENCY-002",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 属性注入分支覆盖不全。影响评估：`<div class>`（无值）这类合法写法会生成重复的 `class` 属性，浏览器丢弃后者使 scoped hash 丢失，样式作用域失效；输出 HTML 也不合法。",
+        "suggestion": "[重构思路] 把 `value === true` 也纳入改写路径：把 `true` 视为空字符串，再追加 hash，而不是新增第二个属性。代码示例：`if (class_attribute) {\\n  if (class_attribute.value === true) class_attribute.value = [];\\n  // ...追加 css_text\\n} else { node.attributes.push(create_attribute('class', -1, -1, [css_text])); }`",
+        "subcategory": "class 属性注入"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js",
+      "line": 29,
+      "title": "`build_set_attributes` 新增的 `state` 形参在函数体内从未被使用",
+      "description": "函数签名新增了第八个参数 `state`（注释声明为 `ComponentClientTransformState`），但函数体自始至终只使用 `context.state`（第 41、50、64、76、83、85、89 行）。调用方还在混用不同来源：`RegularElement.js:223-232` 传 `context.state`，`SvelteElement.js` 传 `context.state` 而其余实参来自 `inner_context`。这个未使用参数会让人误以为函数依赖传入的 state，增加误改风险。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js:27-29 — `is_custom_element, state )`",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js:38-90 — 全部引用均为 `context.state`（如第 76 行 `context.state.analysis.css.hash`），无裸 `state` 引用",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/RegularElement.js:223-232 — 实参末尾为 `context.state`",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/SvelteElement.js — 其余实参使用 `inner_context`，仅最后额外传 `context.state`"
+      ],
+      "rule": "MAINTAINABILITY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 未使用形参 + 调用方上下文混用。影响评估：读代码时无法判断该函数究竟依赖哪个 state，容易在后续修改中传错上下文；同时暴露 SvelteElement 路径上 context/state 混用的潜在不一致。",
+        "suggestion": "[重构思路] 删除未使用的 `state` 形参，统一以 `context.state` 为准；若确实需要区分，则让 SvelteElement 与 RegularElement 都传同一个 `inner_context` 并改为函数内部使用 `state`。代码示例：`export function build_set_attributes(attributes, context, element, element_id, attributes_id, preserve_attribute_case, is_custom_element) { ... }`",
+        "subcategory": "函数签名与实参一致性"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js",
+      "line": 29,
+      "title": "build_set_attributes 新增的 state 形参在函数体内从未被使用",
+      "description": "函数签名新增了第八个参数 `state`（JSDoc 声明为 `ComponentClientTransformState`），但函数体自始至终只使用 `context.state`，不存在对裸 `state` 的引用。调用方还在混用不同来源：`RegularElement.js` 传 `context.state`，`SvelteElement.js` 的其余实参来自 `inner_context` 而最后额外传 `context.state`。这个未使用参数会让人误以为函数依赖传入的 state，增加后续误改风险。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js:27-29 — `is_custom_element, state )`",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js:38-90 — 全部引用均为 `context.state`（如第 76 行 `context.state.analysis.css.hash`），无裸 `state` 引用",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/RegularElement.js:223-232 — 实参末尾为 `context.state`",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/SvelteElement.js — 其余实参使用 `inner_context`，仅末尾额外传 `context.state`"
+      ],
+      "rule": "MAINTAINABILITY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 未使用形参 + 调用方上下文混用。影响评估：读代码无法判断该函数究竟依赖哪个 state，后续修改易传错上下文；也暴露 SvelteElement 路径上 context/state 混用的潜在不一致。",
+        "suggestion": "[重构思路] 删除未使用的 `state` 形参，统一以 `context.state` 为准；若确实需要区分，则让两个调用方都传同一个 context 并在函数内使用 `context.state`。代码示例：`export function build_set_attributes(attributes, context, element, element_id, attributes_id, preserve_attribute_case, is_custom_element) { ... }`",
+        "subcategory": "函数签名与实参一致性"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js",
+      "line": 76,
+      "title": "css hash 实参去掉了 element.metadata.scoped 守卫，非 scoped 的 spread 元素也会被追加 scoped class",
+      "description": "`build_set_attributes` 生成 `$.set_attributes(element, prev, next, css_hash, ...)` 时，hash 实参由 `element.metadata.scoped && hash !== '' && b.literal(hash)` 改成仅判断 `hash !== ''`；运行时 `set_attributes` 也改为 `if (css_hash !== undefined) next.class = next.class ? next.class + ' ' + css_hash : css_hash;` 无条件拼接。而 analyze 阶段新增的 hash 注入只处理 `node.metadata.scoped` 的元素。两端判定标准不一致的结果是：只要组件含被命中的 scoped 样式，任何带 `{...spread}` 的元素（即便不被任何 scoped 选择器命中）都会被追加 `svelte-xxxx` class，SSR/客户端 DOM 输出被污染，并可能与用户既有 CSS 或快照测试冲突。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js:71-80 — `context.state.analysis.css.hash !== '' && b.literal(context.state.analysis.css.hash)`（已无 `element.metadata.scoped &&`）",
+        "MR diff 中被删除的原实参：`element.metadata.scoped && context.state.analysis.css.hash !== '' && b.literal(...)`",
+        "packages/svelte/src/internal/client/dom/elements/attributes.js:290-296 — `if (css_hash !== undefined) { next.class = next.class ? next.class + ' ' + css_hash : css_hash; }`",
+        "packages/svelte/src/compiler/phases/2-analyze/index.js:758-762 — analyze 阶段仅在 `node.metadata.scoped` 时注入 hash"
+      ],
+      "rule": "RENDER-CONSISTENCY-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 编译期与运行期 scoped 判定不一致。影响评估：非 scoped 元素被注入多余 scoped class，改变 SSR/客户端 HTML 输出，可能影响用户 CSS 命中、快照测试；「哪些元素被 scoped」这一不变量变得不可推理。",
+        "suggestion": "[重构思路] 保持单一事实来源：在 transform 侧按 `element.metadata.scoped` 恢复守卫（注意 `SvelteElement` 在 client 下由 analyze 跳过、依赖运行时拼接 hash，需单独放行），或在 analyze 阶段显式标记「该元素需要运行时追加 hash」。代码示例：`const css_hash = element.metadata.scoped && context.state.analysis.css.hash !== '' ? b.literal(context.state.analysis.css.hash) : undefined;`",
+        "subcategory": "scoped CSS hash 注入"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js",
+      "line": 76,
+      "title": "传递 css hash 时移除了 `element.metadata.scoped` 守卫，非 scoped 的 spread 元素也会被加上 scoped class",
+      "description": "`build_set_attributes` 生成 `$.set_attributes(element, prev, next, css_hash, ...)` 时，hash 实参的守卫从 `element.metadata.scoped && hash !== '' && b.literal(hash)` 改成了仅判断 `hash !== ''`；运行时侧 `set_attributes` 也改为 `if (css_hash !== undefined) next.class = next.class ? next.class + ' ' + css_hash : css_hash;`（attributes.js:294-296，无条件拼接）。而 analyze 阶段新增的 hash 注入逻辑只处理 `node.metadata.scoped` 的元素（index.js:758-817）。两边判定标准不一致的结果是：只要组件含 `<style>`，任何带 `{...spread}` 的元素（即便完全不被 scoped 选择器命中）都会被追加 `svelte-xxxx` class，DOM/SSR 输出被污染，并可能与用户既有 CSS 选择器或快照测试冲突。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js:76 — `context.state.analysis.css.hash !== '' && b.literal(context.state.analysis.css.hash)`（已无 `element.metadata.scoped &&`）",
+        "MR diff 中被删除的原实参为：`element.metadata.scoped && context.state.analysis.css.hash !== '' && b.literal(...)`",
+        "packages/svelte/src/internal/client/dom/elements/attributes.js:290-296 — `if (css_hash !== undefined) { next.class = next.class ? next.class + ' ' + css_hash : css_hash; }`",
+        "packages/svelte/src/compiler/phases/2-analyze/index.js:758-762 — analyze 阶段仅在 `node.metadata.scoped` 时注入 hash"
+      ],
+      "rule": "RENDER-CONSISTENCY-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 编译期与运行期 scoped 判定不一致。影响评估：非 scoped 元素被注入多余 scoped class，改变 SSR/客户端 HTML 输出，可能影响用户 CSS 命中、快照测试与包体积；也让「哪些元素被 scoped」这一不变量变得不可推理。",
+        "suggestion": "[重构思路] 保持单一事实来源：要么在 transform 侧恢复 `element.metadata.scoped` 守卫，要么由 analyze 阶段显式标记「该元素需要由运行时追加 hash」，运行时再据此决定是否拼接。代码示例：`const css_hash = element.metadata.scoped && context.state.analysis.css.hash !== '' ? b.literal(context.state.analysis.css.hash) : undefined;`",
+        "subcategory": "scoped CSS hash 注入"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/index-client.js",
+      "line": 214,
+      "title": "公开 API `flushSync(fn)` 丢弃回调返回值，破坏了既有返回语义",
+      "description": "`index-client.js` 原先直接 `export { flushSync } from './internal/client/runtime.js'`，而该实现（runtime.js:856-890 的 `flush_sync`）会 `var result = fn?.();` 并在末尾 `return result`。现在改为在本文件内包一层 `export function flushSync(fn) { flush_sync(fn); }` 并标注 `@returns {void}`，回调返回值被丢弃。依赖 `const v = flushSync(() => compute())` 的用户代码会从拿到值变成拿到 `undefined`，属于公开 API 的行为回退。",
+      "evidence": [
+        "packages/svelte/src/index-client.js:208-216 — `/** @returns {void} */ export function flushSync(fn) { flush_sync(fn); }`",
+        "packages/svelte/src/internal/client/runtime.js:856-890 — `export function flush_sync(fn) { ... var result = fn?.(); ... return result; }`",
+        "MR diff 中被替换的旧代码为 `export { flushSync } from './internal/client/runtime.js';`"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 公开 API 返回值语义变更。影响评估：`flushSync` 的返回值被静默丢弃，调用方拿到 undefined，且不会报错，问题会在业务逻辑深处才暴露；同时 `src/index-client.js` 的 JSDoc 与 runtime 实际能力不再一致。",
+        "suggestion": "[重构思路] 让包装层透传返回值并修正 JSDoc（同时保持 `index-server.js` 的 noop 版本签名一致）。代码示例：`/** @template T @param {() => T} [fn] @returns {T | undefined} */ export function flushSync(fn) { return flush_sync(fn); }`",
+        "subcategory": "公开 API 返回值"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/index-client.js",
+      "line": 214,
+      "title": "公开 API flushSync(fn) 丢弃回调返回值，破坏既有返回语义",
+      "description": "`index-client.js` 原先直接 `export { flushSync } from './internal/client/runtime.js'`，而该实现（`flush_sync`）会 `var result = fn?.();` 并 `return result`。现在改为 `export function flushSync(fn) { flush_sync(fn); }` 并标注 `@returns {void}`，回调返回值被丢弃：依赖 `const v = flushSync(() => compute())` 的用户代码从拿到值变成拿到 undefined，且不会有任何报错，属于公开 API 的行为回退。",
+      "evidence": [
+        "packages/svelte/src/index-client.js:208-216 — `/** @returns {void} */ export function flushSync(fn) { flush_sync(fn); }`",
+        "packages/svelte/src/internal/client/runtime.js:856-890 — `export function flush_sync(fn) { ... var result = fn?.(); ... return result; }`",
+        "MR diff 中被替换的旧代码：`export { flushSync } from './internal/client/runtime.js';`"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 公开 API 返回值语义变更。影响评估：`flushSync` 返回值被静默丢弃，调用方拿到 undefined，问题在业务逻辑深处才暴露；同时 JSDoc 与 runtime 实际能力不再一致。",
+        "suggestion": "[重构思路] 让包装层透传返回值并修正 JSDoc，同时保持 `index-server.js` 的 noop 版本签名一致。代码示例：`/** @template T @param {() => T} [fn] @returns {T | undefined} */ export function flushSync(fn) { return flush_sync(fn); }`",
+        "subcategory": "公开 API 返回值"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/svelte/src/index-client.js",
+      "line": 215,
+      "title": "对外 flushSync 丢弃回调返回值，公开签名从泛型返回 T 变为 void",
+      "description": "新的 `flushSync(fn)` 直接调用 `flush_sync(fn)` 而不返回结果，公开类型声明也被改成 `flushSync(fn?: (() => void) | undefined): void`，而原先文档明确写着「Returns void if no callback is provided, otherwise returns the result of calling the callback」，类型为 `flushSync<T = void>(fn?: () => T): T`。任何依赖 `const v = flushSync(() => compute())` 的用户代码会静默变成 `undefined`，且不会报错（类型层面也会被新声明的 `() => void` 挡住或静默通过），属于无声的行为破坏。",
+      "evidence": [
+        "packages/svelte/src/index-client.js:214-216 — `export function flushSync(fn) { flush_sync(fn); }`，没有 `return`",
+        "packages/svelte/src/internal/client/runtime.js:856-885 — `flush_sync(fn)` 内部是 `var result = fn?.(); ... return result;`，返回值被上层丢弃",
+        "diff 中 types/index.d.ts 删除了 `export function flushSync<T = void>(fn?: (() => T) | undefined): T;`，改为 `export function flushSync(fn?: (() => void) | undefined): void;`（types/index.d.ts:411-414）",
+        "原注释「Returns void if no callback is provided, otherwise returns the result of calling the callback」被替换为「Synchronously flushes any pending state changes and those that result from it.」"
+      ],
+      "rule": "API-COMPAT-002",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 公共 API 返回值被静默丢弃（行为/类型双重破坏）。影响评估：已有调用方拿到 undefined，可能在后续逻辑中产生难以定位的类型错误或运行时错误；且因为不抛错，回归很难在测试外被发现。",
+        "suggestion": "[重构思路] 二选一：要么完整保留返回值语义（`return flush_sync(fn)`，类型恢复为泛型），要么明确作为破坏性变更记录 changeset 并在类型上禁用返回。代码示例：`export function flushSync(fn) { return flush_sync(fn); }` 并保留 `flushSync<T = void>(fn?: () => T): T`。",
+        "subcategory": "公共 API 兼容性"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/internal/client/dom/elements/events.js",
+      "line": 240,
+      "title": "移除 `event.target === current_target` 兜底后，disabled 元素上的程序化事件不再触发委托处理器",
+      "description": "事件传播循环中把 `(!current_target.disabled || event.target === current_target)` 简化为 `!current_target.disabled`，同时删除了原本解释该分支必要性的注释（“DOM could've been updated already by the time this is reached … the target could not have been disabled because it emits the event in the first place”）。去掉这层兜底后，只要传播路径上某个元素在事件派发期间被置为 `disabled`（例如前序 handler 同步改状态触发重渲染），或由脚本在 disabled 元素上 `dispatchEvent`，委托到根节点的事件处理器就会被整体跳过，用户事件处理器静默不执行。",
+      "evidence": [
+        "packages/svelte/src/internal/client/dom/elements/events.js:238-247 — `if (delegated !== undefined && !(/** @type {any} */ (current_target).disabled)) { ... }`",
+        "MR diff 删除的条件为 `(!(current_target).disabled || event.target === current_target)` 及其注释",
+        "packages/svelte/src/internal/client/dom/elements/transitions.js 中 `element.dispatchEvent(new CustomEvent(type))` 等脚本派发路径也会经过该委托逻辑"
+      ],
+      "rule": "EVENT-001",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 事件委托中 disabled 判定过严。影响评估：disabled 元素上由脚本派发、或在派发过程中被置为 disabled 的委托事件不再触发 handler，表现为“点击/自定义事件偶发无响应”，且没有告警，排查成本高。",
+        "suggestion": "[重构思路] 恢复兜底判断（target 自身触发的事件说明它并未被浏览器拦截），并补充注释与回归测试覆盖「handler 中同步 disable 自身」「脚本 dispatchEvent 到 disabled 元素」两种场景。代码示例：`if (delegated !== undefined && (!current_target.disabled || event.target === current_target)) { ... }`",
+        "subcategory": "事件委托"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/internal/client/dom/elements/events.js",
+      "line": 240,
+      "title": "移除 event.target === current_target 兜底后，disabled 元素上的脚本派发事件不再触发委托处理器",
+      "description": "事件传播循环把 `(!current_target.disabled || event.target === current_target)` 简化为 `!current_target.disabled`，同时删除了原本解释该分支必要性的注释。去掉这层兜底后，只要传播路径上的元素在派发期间被置为 `disabled`（例如前序 handler 同步改状态触发重渲染），或由脚本对 disabled 元素调用 `dispatchEvent`，委托到根节点的处理器就会被整体跳过，用户事件逻辑静默不执行。",
+      "evidence": [
+        "packages/svelte/src/internal/client/dom/elements/events.js:238-247 — `if (delegated !== undefined && !(/** @type {any} */ (current_target).disabled)) { ... }`",
+        "MR diff 删除的条件为 `(!(current_target).disabled || event.target === current_target)` 及其解释注释（“the target could not have been disabled because it emits the event in the first place”）",
+        "packages/svelte/src/internal/client/dom/elements/transitions.js:24 — `element.dispatchEvent(new CustomEvent(type))` 等脚本派发路径同样经过该委托逻辑"
+      ],
+      "rule": "EVENT-001",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 事件委托中 disabled 判定过严。影响评估：disabled 元素上由脚本派发、或在派发过程中被置为 disabled 的委托事件不再触发 handler，表现为「点击/自定义事件偶发无响应」且无告警，排查成本高。",
+        "suggestion": "[重构思路] 恢复兜底判断并补充注释与回归测试（覆盖「handler 中同步 disable 自身」与「脚本 dispatchEvent 到 disabled 元素」两种场景）。代码示例：`if (delegated !== undefined && (!current_target.disabled || event.target === current_target)) { ... }`",
+        "subcategory": "事件委托"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/svelte/src/compiler/types/index.d.ts",
+      "line": 282,
+      "title": "Binding['kind'] 联合类型中 'snippet' 重复声明，且 JSDoc 未同步 raw_state",
+      "description": "新增的 `Binding` 接口把 `BindingKind` 内联进 `kind` 字段，但联合类型里 `'snippet'` 出现两次（第 278 行与第 282 行末尾）；同字段的 JSDoc 只列了 11 种 kind，缺少实际存在的 `raw_state`。这不影响类型行为，但会让读者误以为漏写成员或存在遗留项，降低类型定义的可信度。",
+      "evidence": [
+        "packages/svelte/src/compiler/types/index.d.ts:269-282 — `kind: | 'normal' | ... | 'snippet' | 'store_sub' | 'legacy_reactive' | 'template' | 'snippet';`",
+        "packages/svelte/src/compiler/types/index.d.ts:256-268 — JSDoc 列表为 normal/prop/bindable_prop/rest_prop/state/derived/each/snippet/store_sub/legacy_reactive/template，缺 `raw_state`",
+        "packages/svelte/src/compiler/phases/scope.js:104-118 — 运行时 binding 的 kind 取值包含 `raw_state` 路径"
+      ],
+      "rule": "READABILITY-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 类型定义冗余与文档不一致。影响评估：不影响运行时，但会误导类型使用者与后续维护（例如误以为 `raw_state` 不是合法 kind），并降低 d.ts 作为契约的可信度。",
+        "suggestion": "[重构思路] 去掉重复的 `| 'snippet'`，并让 JSDoc 与联合成员一一对应（补上 `raw_state`）。代码示例：`kind:\\n  | 'normal' | 'prop' | 'bindable_prop' | 'rest_prop' | 'state' | 'raw_state' | 'derived' | 'each' | 'snippet' | 'store_sub' | 'legacy_reactive' | 'template';`",
+        "subcategory": "类型重复成员"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/svelte/src/compiler/types/index.d.ts",
+      "line": 282,
+      "title": "`Binding['kind']` 联合类型中 `'snippet'` 重复声明",
+      "description": "新增的 `Binding` 接口把 `BindingKind` 内联进 `kind` 字段，但联合类型里 `'snippet'` 出现了两次（第 278 行与第 282 行末尾各一次）。这不影响类型行为，但会让读者以为漏写了某个成员（例如 `raw_state` 已存在、`snippet` 重复），也容易被后续 merge 搞乱。",
+      "evidence": [
+        "packages/svelte/src/compiler/types/index.d.ts:269-282 — `kind: | 'normal' | ... | 'snippet' | 'store_sub' | 'legacy_reactive' | 'template' | 'snippet';`",
+        "同一字段的 JSDoc（256-268 行）只列出了 11 种 kind，未包含 `raw_state`"
+      ],
+      "rule": "READABILITY-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 类型定义冗余/文档不一致。影响评估：不影响运行时，但会降低类型定义可信度，且 JSDoc 与联合成员不一致会误导使用者。",
+        "suggestion": "[重构思路] 去掉重复的 `| 'snippet'`，并让 JSDoc 列表与联合成员一一对应（补上 `raw_state`）。代码示例：`kind: 'normal' | 'prop' | 'bindable_prop' | 'rest_prop' | 'state' | 'raw_state' | 'derived' | 'each' | 'snippet' | 'store_sub' | 'legacy_reactive' | 'template';`",
+        "subcategory": "类型重复成员"
+      }
+    },
+    {
+      "id": "F019",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/2-analyze/visitors/ConstTag.js",
+      "line": 27,
+      "title": "`{@const}` 不再允许直接位于 `{#key}` 内，原本可编译的模板会报 const_tag_invalid_placement",
+      "description": "`ConstTag` 的合法父节点白名单删掉了 `grand_parent?.type !== 'KeyBlock'` 分支，因此 `{#key expr}{@const x = ...}{/key}` 这类模板在分析阶段会直接命中 `e.const_tag_invalid_placement(node)`（第 31 行）而编译失败。相对 MR 之前的基线，这是对原本合法语法的收紧，用户组件会从可编译变成编译报错。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/ConstTag.js:18-32 — 白名单包含 IfBlock/SvelteFragment/Component/SvelteComponent/EachBlock/AwaitBlock/SnippetBlock/SvelteBoundary 与带 slot 属性元素，缺少 `KeyBlock`",
+        "MR diff 删除的行为 `grand_parent?.type !== 'KeyBlock' &&`",
+        "第 31 行 `e.const_tag_invalid_placement(node);` 即失败路径"
+      ],
+      "rule": "SYNTAX-COMPAT-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 合法语法被收紧导致编译错误。影响评估：依赖 `{#key}` + `{@const}` 组合的组件在本次变更后无法编译，属于源码级破坏性变更；若无迁移说明会造成升级阻塞。",
+        "suggestion": "[重构思路] 若 `KeyBlock` 内 `{@const}` 确应支持，请恢复白名单分支并补充 `{#key}` 场景的编译/运行测试；若确实要禁止，应在变更说明与错误文档中明确迁移方式。代码示例：`grand_parent?.type !== 'SnippetBlock' && grand_parent?.type !== 'SvelteBoundary' && grand_parent?.type !== 'KeyBlock' && ...`",
+        "subcategory": "模板语法兼容性"
+      }
+    },
+    {
+      "id": "F020",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/compiler/phases/2-analyze/visitors/ConstTag.js",
+      "line": 27,
+      "title": "{@const} 不再允许直接位于 {#key} 内，原本可编译的模板会报 const_tag_invalid_placement",
+      "description": "`ConstTag` 的合法父节点白名单删掉了 `grand_parent?.type !== 'KeyBlock'` 分支，因此 `{#key expr}{@const x = ...}{/key}` 会在分析阶段命中 `e.const_tag_invalid_placement(node)` 直接编译失败。相对 MR 之前的基线，这是对原本合法语法的收紧，用户组件会从可编译变为报错。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/ConstTag.js:18-32 — 白名单含 IfBlock/SvelteFragment/Component/SvelteComponent/EachBlock/AwaitBlock/SnippetBlock/SvelteBoundary 与带 slot 属性元素，缺少 `KeyBlock`",
+        "MR diff 删除的行为 `grand_parent?.type !== 'KeyBlock' &&`",
+        "packages/svelte/src/compiler/phases/2-analyze/visitors/ConstTag.js:31 — `e.const_tag_invalid_placement(node);` 即失败路径"
+      ],
+      "rule": "SYNTAX-COMPAT-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 合法语法被收紧导致编译错误。影响评估：依赖 `{#key}` + `{@const}` 组合的组件在本次变更后无法编译，属源码级破坏性变更；若无迁移说明会阻塞升级。",
+        "suggestion": "[重构思路] 若 `{#key}` 内 `{@const}` 确应支持，恢复白名单分支并补编译/运行用例；若确实要禁止，请在变更说明与错误文档中明确迁移方式。代码示例：`grand_parent?.type !== 'SvelteBoundary' && grand_parent?.type !== 'KeyBlock' && ...`",
+        "subcategory": "模板语法兼容性"
+      }
+    },
+    {
+      "id": "F021",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/svelte/src/compiler/phases/3-transform/client/visitors/EachBlock.js",
+      "line": 144,
+      "title": "each 块不再把 store_to_invalidate 传给子 state，dev 期 store 绑定校验链路被切断",
+      "description": "`EachBlock` 仍会计算 `store_to_invalidate` 并用于 `$.invalidate_store`（第 188-189 行），但 MR 删除了把它写入 `child_state` 的一行，并删除了 `ComponentClientTransformState.store_to_invalidate` 字段；同时 `validate_binding` 也不再生成 `$.mark_store_binding()` 包裹。结果是 dev 模式下「`{#each $store as ...}` 内部 `bind:` 到非响应式派生值」这一场景丢失了针对性校验/告警能力（`mark_store_binding` 仅剩 component.js:250 一处使用），且 `store_to_invalidate` 的语义被人为拆成两半，后续维护者容易误判它只服务于 invalidate。",
+      "evidence": [
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/EachBlock.js:96-107 — `let store_to_invalidate = ''; ... if (binding?.kind === 'store_sub') { store_to_invalidate = id.name; }`",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/EachBlock.js:144-147 — `const child_state = { ...context.state, transform: { ...context.state.transform } };`（已无 `store_to_invalidate`）",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/EachBlock.js:188-189 — `const invalidate_store = store_to_invalidate ? b.call('$.invalidate_store', ...) : ...`，说明该变量仍在用，不是死代码",
+        "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/utils.js 的 `validate_binding` — 现为 `b.thunk(expression.object)`，不再包裹 `$.mark_store_binding()`",
+        "packages/svelte/src/compiler/phases/3-transform/client/types.d.ts — `readonly store_to_invalidate?: string;` 被删除"
+      ],
+      "rule": "VALIDATION-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] dev 期校验能力回退 + 语义被拆分。影响评估：each 块内 store 绑定的失效场景不再有定向告警，用户只能看到笼统的 non_reactive_update 或完全没有提示；同时 `store_to_invalidate` 的双重用途被隐式削弱，易误导后续维护。",
+        "suggestion": "[重构思路] 若该校验仍需保留，恢复 `child_state.store_to_invalidate` 与 `validate_binding` 中的 `$.mark_store_binding()` 包裹；若确认废弃，请在 `store_to_invalidate` 的计算处补充注释说明它现在只用于 `$.invalidate_store`，避免读者误解。代码示例：`const child_state = { ...context.state, transform: { ...context.state.transform }, store_to_invalidate };`",
+        "subcategory": "dev 期校验与语义清晰度"
+      }
+    },
+    {
+      "id": "F022",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/internal/client/dom/elements/attributes.js",
+      "line": 403,
+      "title": "spread 移除 value/checked 时不再重置输入框的 live 状态，残留旧值",
+      "description": "`set_attributes` 在 `value == null` 的移除分支里，原逻辑会同时把 `defaultValue/defaultChecked` 与「当前值」一起回退（`input.value = input.__value = use_default ? previous : null;` / `input.checked = use_default ? previous : false;`），并以 `use_default = prev === undefined` 区分首帧。MR 后代码只做 `let prev = input.defaultValue; input.removeAttribute(name); input.defaultValue = prev;`，即仅保留 defaultValue，不再触碰 `input.value` / `input.checked`。因此当 `{...props}` 让 `value`/`checked` 变为 `null`/`undefined` 后，用户在此前输入的值仍留在 DOM 上，表单状态与被移除的属性不一致。",
+      "evidence": [
+        "packages/svelte/src/internal/client/dom/elements/attributes.js:396-414 — `if (value == null && !is_custom_element && !is_default) { ... if (name === 'value') { let prev = input.defaultValue; input.removeAttribute(name); input.defaultValue = prev; } else { let prev = input.defaultChecked; input.removeAttribute(name); input.defaultChecked = prev; } }`",
+        "MR diff 删除的行：`const use_default = prev === undefined;`、`input.value = input.__value = use_default ? previous : null;`、`input.checked = use_default ? previous : false;`",
+        "packages/svelte/src/internal/client/dom/elements/attributes.js:382-385 — 非移除路径仍会 `element.value = element.__value = value;`，说明 live value 由该分支维护"
+      ],
+      "rule": "FORM-STATE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 表单状态回退不彻底。影响评估：spread 属性移除 `value`/`checked` 后输入框保留旧值/旧勾选，受控与非受控切换时 UI 与数据不一致，且只在「先有值后移除」的动态场景出现，较难排查。",
+        "suggestion": "[重构思路] 在移除分支中除了保留 defaultValue，也按原语义重置 live 状态（区分首帧与后续更新）。代码示例：`if (name === 'value') {\\n  const previous = input.defaultValue;\\n  input.removeAttribute(name);\\n  input.defaultValue = previous;\\n  input.value = input.__value = prev === undefined ? previous : null;\\n}`",
+        "subcategory": "表单元素状态同步"
+      }
+    },
+    {
+      "id": "F023",
+      "severity": "P1",
+      "category": "可维护",
+      "file": "packages/svelte/src/version.js",
+      "line": 7,
+      "title": "包版本号被回退到 5.19.9，与本次引入的新运行时改动方向相反",
+      "description": "本次 MR 把 packages/svelte 的版本从 5.20.5 回退为 5.19.9（version.js 与 package.json 两处同时回退），但同一 MR 又引入了新的调度器与 props 实现（scheduler_mode、flush_sync、with_parent_branch 等）。版本号倒退会让发布流水线尝试重新发布一个已存在的版本而失败，使本次改动无法正常发版；同时编译产物中会写入 `v5.19.9` 版本注释，导致产物与真实代码不一致，排查线上问题时无法定位实际代码版本。",
+      "evidence": [
+        "packages/svelte/src/version.js:7 — `export const VERSION = '5.19.9';`（diff 中由 '5.20.5' 改为 '5.19.9'）",
+        "packages/svelte/package.json:5 — `\"version\": \"5.19.9\",`",
+        "diff 头部 `packages/svelte/package.json (+3/-3)` 与 `packages/svelte/src/version.js` 同步回退，说明是人为整体回退而非单点笔误",
+        "同一 MR 新增了 `flush_sync`（runtime.js:856）与 `with_parent_branch`（props.js:249）等新代码，属于新增能力，与版本倒退自相矛盾"
+      ],
+      "rule": "MAINTAINABILITY-VERSION-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 版本元数据回退（monotonic version 被破坏）。影响评估：npm 上 5.19.9 已发布，重复发布会被拒绝，release 流程中断；同时 `VERSION` 常量会进入编译产物注释，造成产物版本与源码不一致，问题定位失真。",
+        "suggestion": "[重构思路] 保持版本单调递增：若本次只是回滚某个特性，应保留当前版本号并补 changeset，由发布流程决定版本递增。代码示例：`export const VERSION = '5.20.5';`（package.json 同步保持 5.20.5），新增 `.changeset/xxx.md` 说明 `$props.id` 等回滚内容。",
+        "subcategory": "版本与发布元数据"
+      }
+    },
+    {
+      "id": "F024",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/svelte/src/internal/server/index.js",
+      "line": 202,
+      "title": "SSR spread_attributes 只追加 class 不再移除被关闭的 class 指令，输出与客户端不一致",
+      "description": "服务端 `spread_attributes` 删除了 `css_hash` 参数与 `to_class` 调用，改为把 `classes` 中为真的 key 追加到 `attrs.class` 后面。原 `to_class` 除了拼接 hash，还负责在 `class:foo={false}` 时把 `foo` 从已存在的 class 字符串中按空白边界整词移除。新实现只做「追加」，因此形如 `<div class=\"active\" class:active={false} {...rest}>` 的元素在 SSR 时会输出 `class=\"active\"`，而客户端 `set_class`/`toggle_class` 会移除该类，造成首屏标记错误与 hydration 后的样式跳变。CSS hash 通过编译期放入 `classes` 对象（`properties.unshift(css.hash: true)`）得以保留，因此该回退只丢失了「关闭类名」语义。",
+      "evidence": [
+        "packages/svelte/src/internal/server/index.js:202-212 — `if (classes) { const classlist = attrs.class ? [attrs.class] : []; for (const key in classes) { if (classes[key]) classlist.push(key); } attrs.class = classlist.join(' '); }`，只有 push 没有删除",
+        "packages/svelte/src/internal/shared/attributes.js — 原 `to_class(value, hash, directives)` 被整体删除，其中包含 `whitespace` 边界判断与 `classname.substring(...)` 删除逻辑",
+        "packages/svelte/src/compiler/phases/3-transform/server/visitors/shared/element.js:325-339 — `classes` 由 class 指令生成：`b.init(directive.name, directive.expression)`，值即指令表达式（可为 false），并 `properties.unshift(css.hash, true)`",
+        "packages/svelte/src/internal/client/dom/elements/class.js:112-120 — 客户端 `toggle_class` 在 value 为假时执行 `dom.classList.remove(class_name)`，与服务端新行为不一致"
+      ],
+      "rule": "SSR-CONSISTENCY-003",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] SSR 与客户端 class 计算不一致（丢失假值指令的移除语义）。影响评估：服务端首屏 HTML 残留本应关闭的类名，hydrate 后类名被移除会出现样式闪烁；同时快照/SSR 用例若覆盖该场景会失败。",
+        "suggestion": "[重构思路] 在服务端保留按空白边界移除的语义：先把 `attrs.class` 拆成 token 集合，`classes[key]` 为真则加入、为假则删除，再 join。代码示例：`const list = attrs.class ? String(attrs.class).split(/\\s+/).filter(Boolean) : []; for (const key in classes) { const i = list.indexOf(key); if (classes[key]) { if (i === -1) list.push(key); } else if (i !== -1) list.splice(i, 1); } attrs.class = list.join(' ');`",
+        "subcategory": "SSR 输出一致性"
+      }
+    },
+    {
+      "id": "F025",
+      "severity": "P2",
+      "category": "性能",
+      "file": "packages/svelte/src/internal/client/runtime.js",
+      "line": 198,
+      "title": "check_dirtiness 删除了 unowned derived 的重新连通逻辑，UNOWNED 标记永不解除",
+      "description": "原实现在 `is_unowned_connected && parent !== null && (parent.f & UNOWNED) === 0` 时执行 `derived.f ^= UNOWNED`，把已经接入活动 effect 的 derived 从 unowned 状态恢复为 owned；本次改动只保留了 DISCONNECTED 的清除，UNOWNED 分支被整段删除（连同 `derived`/`parent` 局部变量）。后果是：在组件外/模块作用域创建、随后在 effect 内被读取的 derived 会永久保留 UNOWNED，`update_derived` 会把它持续置为 MAYBE_DIRTY（`(derived.f & UNOWNED) !== 0 && derived.deps !== null` 时取 MAYBE_DIRTY），于是每次读取都重新遍历整条依赖链做版本比对；同时每次进入 `is_unowned_connected` 分支还会对每个依赖做 `includes` 去重后再 push，造成 reactions 数组重复增长。",
+      "evidence": [
+        "packages/svelte/src/internal/client/runtime.js:186-201 — 保留 `if (is_disconnected || is_unowned_connected) { ... }` 与 `if (is_disconnected) reaction.f ^= DISCONNECTED;`，但原本紧随其后的 `if (is_unowned_connected && parent !== null && (parent.f & UNOWNED) === 0) derived.f ^= UNOWNED;` 被删除（diff 中 -6 行）",
+        "packages/svelte/src/internal/client/runtime.js:181 — `var is_unowned_connected = is_unowned && active_effect !== null && !skip_reaction;` 仍在使用，说明 unowned 连通状态仍被计算但不再落盘",
+        "packages/svelte/src/internal/client/runtime.js:216-220 — 「Unowned signals should never be marked as clean unless…」的 CLEAN 判定依赖 UNOWNED 标记，标记永不清除则 derived 长期停留 MAYBE_DIRTY",
+        "packages/svelte/src/internal/client/reactivity/deriveds.js:169-172 — `(skip_reaction || (derived.f & UNOWNED) !== 0) && derived.deps !== null ? MAYBE_DIRTY : CLEAN`",
+        "packages/svelte/src/internal/client/reactivity/deriveds.js:43-49 — `derived()` 在 `active_effect === null` 时置 UNOWNED，即模块作用域 derived 天然 unowned"
+      ],
+      "rule": "REACTIVITY-PERF-004",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 依赖图状态未归一（UNOWNED 标记泄漏）。影响评估：常见写法（模块级 `const d = $derived(...)` 或未在 effect 内初始化的派生值）在接入组件后仍按 unowned 处理，每次读取都全量校验依赖并可能重复注册 reactions，表现为性能退化与长生命周期内存增长。",
+        "suggestion": "[重构思路] 恢复「连通即解除 UNOWNED」的归一逻辑，并在解除时顺手避免重复 push。代码示例：`if (is_unowned_connected && reaction.parent !== null && (reaction.parent.f & UNOWNED) === 0) { reaction.f ^= UNOWNED; }`",
+        "subcategory": "派生值依赖追踪"
+      }
+    },
+    {
+      "id": "F026",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "packages/svelte/src/internal/client/runtime.js",
+      "line": 327,
+      "title": "错误处理路径直接访问裸 navigator.userAgent，缺少环境守卫且每次重复计算",
+      "description": "`handle_error` 中的缩进字符判定由原先从 `dom/operations.js` 导入的 `is_firefox` 常量改为内联 `/Firefox/.test(navigator.userAgent)`。该函数是客户端错误处理路径，但 `packages/svelte/package.json` 声明 `engines.node >= 18`，而在 Node 18/20（无 jsdom、无 `navigator` 全局）中运行客户端运行时的 DEV 分支会抛出 `ReferenceError: navigator is not defined`，把用户原始错误替换成无关的引用错误，进一步遮蔽现场；另外原本一次性计算的常量变成了每次构造错误消息都做一次 UA 正则匹配。",
+      "evidence": [
+        "packages/svelte/src/internal/client/runtime.js:327 — `const indent = /Firefox/.test(navigator.userAgent) ? '  ' : '\\t';`",
+        "diff 中 `import { is_firefox } from './dom/operations.js';` 被移除，且 packages/svelte/src/internal/client/dom/operations.js 现全文已无 `is_firefox`/navigator 相关代码",
+        "packages/svelte/package.json:9-11 — `\"engines\": { \"node\": \">=18\" }`，Node 18/20 默认不提供 `navigator` 全局",
+        "packages/svelte/src/internal/client/runtime.js:290-298 — 该行位于 `if (!DEV || component_context === null || ...) { propagate_error(...); return; }` 之后，即 DEV 且带组件上下文的错误处理路径"
+      ],
+      "rule": "PORTABILITY-005",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 全局对象未做存在性判断 + 重复计算。影响评估：在非浏览器 DEV 环境（Node 测试/自定义渲染宿主）中抛出 ReferenceError 覆盖原始错误，导致排障信息丢失；浏览器中每次错误都执行一次正则，属可忽略但无必要的开销。",
+        "suggestion": "[重构思路] 保留单一、带守卫的常量并按需惰性求值，避免在错误处理路径上引入新的失败点。代码示例：`const is_firefox = typeof navigator !== 'undefined' && /Firefox/.test(navigator.userAgent);`，随后 `const indent = is_firefox ? '  ' : '\\t';`",
+        "subcategory": "宿主环境兼容"
+      }
+    },
+    {
+      "id": "F027",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "packages/svelte/src/utils.js",
+      "line": 435,
+      "title": "移除已发布的公共 rune $props.id 但未见 changeset 或迁移说明",
+      "description": "本次 MR 从 `RUNES` 白名单中删掉 `'$props.id'`，同时删除 `types/index.d.ts` 与 `ambient.d.ts` 中的 `$props.id(): string` 声明（原声明带 `@since 5.20.0`），服务端也一并删除了 `props_id`/`props_id_generator` 与 `Payload.uid`。这是对一个已发布 rune 的公共 API 移除：任何在 5.20.x 上使用 `$props.id()` 的组件在升级/回退后会从编译期（未知 rune 校验）到运行时（`props_id` 不存在）全线失败，需要明确的破坏性变更记录与迁移指引，而本 MR 未附带任何 changeset/文档更新。",
+      "evidence": [
+        "packages/svelte/src/utils.js:433-438 — RUNES 列表中 `'$props.id'` 被删除，现仅剩 `'$props'`、`'$bindable'`、`'$derived'`、`'$derived.by'`",
+        "diff：packages/svelte/types/index.d.ts 删除 `declare namespace $props { /** @since 5.20.0 */ export function id(): string; ... }`",
+        "diff：packages/svelte/src/ambient.d.ts 删除 `$props.id` 声明（+0/-9）",
+        "diff：packages/svelte/src/internal/server/index.js 删除 `props_id`、`props_id_generator`，packages/svelte/src/internal/server/types.d.ts 删除 `Payload.uid` 与 `head.css`",
+        "find_references('props_id') 返回 0 处引用，说明实现侧已清理干净，风险集中在对外契约断裂而非残留引用"
+      ],
+      "rule": "API-COMPAT-006",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 公共 API 无版本说明的破坏性移除。影响评估：使用 `$props.id()` 的应用升级后编译报错（与「未知 rune」错误混淆），依赖该 rune 的组件库无法跨版本兼容；缺少 changeset 会让 release notes 漏掉这条破坏性变更。",
+        "suggestion": "[重构思路] 若确需回滚该 rune，保留声明并标记 `@deprecated` 过渡一个版本，或在 `.changeset` 中明确标注 breaking change 与替代方案（如自行用 `crypto.randomUUID()` 生成 id）。代码示例：`.changeset/revert-props-id.md` 内写 `---\\n'svelte': minor\\n---\\n移除 \\`$props.id()\\`（5.20.0 引入），请改用自建 id 生成器`。",
+        "subcategory": "公共 API 变更管理"
+      }
+    }
+  ]
+}

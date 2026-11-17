@@ -1,0 +1,412 @@
+{
+  "instance_id": "appwrite__appwrite@710b8bd",
+  "repo": "appwrite/appwrite",
+  "base_commit": "d205ac457960f73d781547540cde1732f69076ac",
+  "head_commit": "710b8bda565c411ecb23e8b670d0ba7f45d2b3f3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1034.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 39,
+  "review_output": [
+    {
+      "file": "app/config/locale/translations/ur.json",
+      "line": 29,
+      "summary": "乌尔都语邀请邮件签名占位符被破坏为 `{{project}`",
+      "failure_scenario": "本次改动在删除 `emails.invitation.buttonText` 的同时，误改了相邻的 `emails.invitation.signature`，把原本合法的 `{{project}}` 写成 `{{project}`（丢失右花括号）。本地化引擎按 `{{key}}` 精确匹配替换，`{{project}` 不是合法占位符，不会被替换，乌尔都语用户在收到团队邀请邮件时会在签名处看到字面量 `ٹیم۔ {{project}`，而不是项目名，属于面向最终用户的输出缺陷。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "I18N-001"
+    },
+    {
+      "file": ".github/workflows/tests.yml",
+      "line": 201,
+      "summary": "E2E 测试参数改为 `--exclude=devKeys`，PHPUnit 9 无此选项导致 devKeys 排除失效或任务报错",
+      "failure_scenario": "`bin/test` 直接把命令行参数透传给 `vendor/bin/phpunit`，而仓库依赖的是 PHPUnit 9（composer.json），其分组排除选项是 `--exclude-group`，并不存在 `--exclude`。改动后 `--exclude=devKeys` 要么被 PHPUnit 视为未知选项直接中止（e2e_service_test 与 e2e_shared_mode_test 两个 job 共约 40+ 个矩阵任务全红），要么被忽略从而使 `devKeys` 分组用例回流到普通矩阵中执行（这些用例需要 abuse 相关环境，如 e2e_dev_keys job 里专门开启 `_APP_OPTIONS_ABUSE=enabled`，在普通矩阵下会失败或产生非预期副作用）。同文件第 315 行的 devKeys 专用 job 仍然使用 `--group=devKeys`，进一步说明测试分组依赖的是 PHPUnit 的 group 选项族。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "CI-TEST-001"
+    },
+    {
+      "file": "app/config/platforms.php",
+      "line": 137,
+      "summary": "SDK 版本被回退（React Native 0.10.0→0.9.1、CLI 8.1.0→8.0.0）",
+      "failure_scenario": "本次 MR 将与 `sequence`→`internalId` 改名无关的 SDK 版本号向下回退：react-native 由 0.10.0 降为 0.9.1，cli 由 8.1.0 降为 8.0.0。该文件用于向 Console/文档下发各客户端 SDK 的当前版本与下载链接，回退会让用户与前端展示旧版本号、生成指向旧版本包的链接。结合同一 MR 中 `.coderabbit.yaml` 删除 `1.8.x` 基线分支的现象，这更像分支合并/回退（stale branch）带来的副作用，而非有意的版本策略调整。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "CONFIG-002"
+    },
+    {
+      "file": ".coderabbit.yaml",
+      "line": 11,
+      "summary": "`.coderabbit.yaml` 删除 1.8.x 评审基线并移除多项评审开关",
+      "failure_scenario": "该改动移除了 `base_branches` 中的 `1.8.x`，同时删除了 `high_level_summary`、`poem`、`sequence_diagrams`、`collapse_walkthrough`、`changed_files_summary` 五个显式开关，并且文件末尾丢失换行。删除 1.8.x 会让以 1.8.x 为基线的 PR 不再进入自动评审流程；删除开关则让默认行为接管（重新开启 poem/时序图/高层摘要、关闭折叠走查），改变团队既有的评审噪音水平。与同一 MR 中 SDK 版本回退的现象一致，疑似旧分支覆盖。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CONFIG-003"
+    },
+    {
+      "file": "app/controllers/shared/api.php",
+      "line": 566,
+      "summary": "缓存 TTL 降为 30 天且不再刷新文件 mtime，缓存条目过期后无法再被重建",
+      "failure_scenario": "读取侧把 `$timestamp` 从 180 天改为 30 天，而写入侧原本在 `accessedAt` 过期时无条件 `$cache->save()`（用于刷新文件 mtime，配合 `$cache->load()` 的 TTL 判断）已被删除，只在 `$signature !== $cacheLog->getAttribute('signature')` 时才写入。由于缓存文件的 mtime 从此不再被刷新，一旦文件超过 30 天未重写，`$cache->load($key, $timestamp)` 会永久返回空；此后即使重新命中该请求，`signature` 与 `cacheLog` 中已存的值相同，仍然不会落盘，导致该 key 永久处于 cache miss（反复重新渲染/回源）。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.62,
+      "rule": "PERF-CACHE-001"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 966,
+      "summary": "`$refDomain` 被连续赋值两次，第一次赋值是无效代码",
+      "failure_scenario": "`$refDomain` 先被赋值为「已净化的 origin」，紧接着又被无条件重新赋值为三元表达式的结果，前一次赋值永远不会被使用（第一个分支恰好等于第二次赋值的 false 分支）。这会让读者误以为第一次赋值是必要的兜底逻辑，增加理解与后续维护成本。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "READABILITY-005"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 1061,
+      "summary": "未知来源拦截去掉 localhost 例外后，与新增的 $refDomain 白名单判定不一致，rule 关联的自定义域名请求会被拒",
+      "failure_scenario": "新的 `$refDomain` 计算把「已通过 `Hostname($clients)` 校验」和「rules 表中 `projectInternalId` 与本项目一致」都视为安全来源（回退到 localhost 才算不安全）；但随后 `GENERAL_UNKNOWN_ORIGIN` 的判定条件删除了 `&& \\parse_url($httpReferrerSafe, PHP_URL_HOST) === 'localhost'`，改为只看 `Origin` 校验器（仅覆盖 project/console 的 platforms 列表）。结果是：通过自定义域名（rules 中有记录、但未注册为 web platform）发起的 POST/PUT/PATCH/DELETE 请求会从「放行」变为抛出 `GENERAL_UNKNOWN_ORIGIN`，与同一函数上方刚实现的「rule 命中即安全」语义自相矛盾。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "SEC-CORS-002"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 1094,
+      "summary": "`_APP_CONSOLE_DOMAIN` 只在 HTTP init 中启用，OPTIONS/robots/humans 仍用 `_APP_DOMAIN`，且该变量未接入部署配置",
+      "failure_scenario": "`App::init()` 已把主域判断改为 `System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))`，但 `App::options()` 与 `/robots.txt`、`/humans.txt` 的主域判断仍使用 `_APP_DOMAIN`。当部署把 console 域与 API 域分离时，打到 console 域的 OPTIONS 预检与静态文件请求会进入 `router()`（被当作外部域名处理），可能导致 CORS 预检被路由到错误项目/返回错误内容；同时 `docker-compose.yml` 的 appwrite 服务环境变量清单中完全没有 `_APP_CONSOLE_DOMAIN`，自托管场景无法配置该能力。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "CONFIG-ENV-004"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 1270,
+      "summary": "error hook 无条件写入 `projectId` tag，叠加 router 不再打 tag，自定义域名下错误日志可能丢失项目归属",
+      "failure_scenario": "原来 `router()` 中会为自定义域名请求先 `$log->addTag('projectId', $project->getId())`，error hook 再用 `if (!isset($tags['projectId']))` 兜底；本次删除了 router 侧的打 tag（连同「x-appwrite-project 在自定义域名函数执行时不可用」的注释），并把 error hook 改为无条件覆盖。若错误发生在 project 资源尚未解析（`$project` 为空 Document）的路径上，`$project->getId()` 返回空字符串，会把原本已有关联的 projectId 覆盖掉，导致该条错误日志无法按项目检索。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "OBSERVABILITY-007"
+    },
+    {
+      "file": "app/views/install/compose.phtml",
+      "line": 844,
+      "summary": "安装模板把 assistant 与 executor 镜像版本回退（0.8.3→0.4.0、0.7.22→0.7.20）",
+      "failure_scenario": "本 MR 主题是 `getSequence()`→`getInternalId()` 的重命名及少量行为调整，但安装器模板同时把 `appwrite/assistant` 从 0.8.3 回退到 0.4.0、`openruntimes/executor` 从 0.7.22 回退到 0.7.20。此类版本回退与本 MR 的重构目标无关，且 executor 版本与 `general.php` 中改动过的启动命令（`cp /tmp/code.tar.gz /mnt/code/code.tar.gz && nohup helpers/start.sh ...`）和 `Executor` 资源改造存在配套关系，回退可能导致新装机器的构建/执行路径不兼容，assistant 旧版本也可能与当前 console 版本协议不匹配。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "DEP-VERSION-003"
+    },
+    {
+      "file": "app/controllers/api/storage.php",
+      "line": 990,
+      "summary": "`*InternalId` 属性与 `getInternalId()` 的严格比较存在类型不一致风险",
+      "failure_scenario": "`setTenant()` 调用处普遍去掉了 `(int)` 强转（如 `projects.php` 的 `setTenant($sharedTablesV1 ? $project->getInternalId() : null)`），暗示 `getInternalId()` 的返回类型已由 `string` 变为 `int`；而数据库中 `bucketInternalId`/`fileInternalId`/`projectInternalId`/`teamInternalId`/`userInternalId` 等均为 `VAR_STRING` 属性，`getAttribute()` 返回字符串。这些位置全部使用严格比较（`===`/`!==`），一旦类型不一致会恒为 false：资源令牌校验会恒抛 `USER_UNAUTHORIZED`，rule/installation 归属校验会恒抛 NOT_FOUND，成员归属校验会恒抛 MISMATCH。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "CORRECTNESS-TYPE-001"
+    },
+    {
+      "file": "app/controllers/api/users.php",
+      "line": 983,
+      "summary": "`/v1/users/:userId/targets` 的 queries 描述改用 `Users::ALLOWED_ATTRIBUTES`，但校验器仍是 `Targets`",
+      "failure_scenario": "该端点的参数校验器是 `new Targets()`，但为了让描述生效而把 `implode(', ', Targets::ALLOWED_ATTRIBUTES)` 改成了 `implode(', ', Users::ALLOWED_ATTRIBUTES)`。两者不一致会导致生成的 OpenAPI/SDK 文档与真实校验规则不符：文档声称可以按 users 集合的属性过滤，而实际 `Targets` 校验器会直接拒绝这些查询参数，客户端会拿到难以理解的 `GENERAL_QUERY_INVALID`。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "DOCS-CONTRACT-006"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php",
+      "line": 354,
+      "summary": "函数运行时 API endpoint 改用 _APP_CONSOLE_DOMAIN，可能指向非 API 域名",
+      "failure_scenario": "构造注入给函数运行时的 `APPWRITE_FUNCTION_API_ENDPOINT` 时，hostname 由 `_APP_DOMAIN` 改为优先取 `_APP_CONSOLE_DOMAIN`。该环境变量既未在 app/init/constants.php 中形成默认值，也不在仓库默认环境变量清单中，一旦部署中 console 域名与 API 域名不同（Cloud/多域名部署常见），函数内的 Server SDK 会把回调请求打到 console 域名，导致函数内调用 API 出现 404/401 等不可预期错误；同时该行为差异只在特定部署形态下出现，难以在自托管单域名环境复现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONFIG-DOMAIN-001"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php",
+      "line": 389,
+      "summary": "硬编码 code.tar.gz 丢失 .tar 产物兼容，部分函数执行将无法启动",
+      "failure_scenario": "本次改动删除了按 buildPath 后缀判断扩展名的逻辑（原 `$extension = str_ends_with($source, '.tar') ? 'tar' : 'tar.gz';`），改为固定 `cp /tmp/code.tar.gz /mnt/code/code.tar.gz`。当部署产物的 `buildPath` 以 `.tar` 结尾（原代码明确为这种情形保留了分支）时，executor 侧落盘的文件名是 `code.tar`，`cp /tmp/code.tar.gz` 会因文件不存在而失败，非 v2（旧 runtimeEntrypoint 路径）的函数每次执行都会启动失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-COMPAT-001"
+    },
+    {
+      "file": "app/worker.php",
+      "line": 97,
+      "summary": "setTenant 去掉 (int) 转换，租户标识类型契约变更可能跨租户或抛错",
+      "failure_scenario": "`setTenant()` 由 `(int)$project->getSequence()` 改为直接传入 `$project->getInternalId()`，去掉了显式整型转换（worker.php:97、134、156、175、190 处同样处理）。`getInternalId()` 从文档属性读出时通常是字符串，而 `setTenant()` 在 utopia-php/database 中按整型租户参与分表/过滤；一旦类型不匹配，轻则依赖 PHP 隐式转换（非数字串被转为 0），重则 TypeError 使 worker 启动失败。若被转为 0，则 shared tables 模式下所有项目会落到同一租户区间，属于跨租户数据风险。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "TYPE-CONTRACT-002"
+    },
+    {
+      "file": "app/worker.php",
+      "line": 490,
+      "summary": "SIGTERM 处理中直接 stop 并 clearAll，可能中断在途任务",
+      "failure_scenario": "新增的 SIGTERM 处理器在收到信号后先 `$worker->stop()` 再 `Timer::clearAll()`，没有等待正在消费的消息/协程完成。`Timer::clearAll()` 是进程级清空，会连带清掉连接池保活、重连等由其他组件注册的定时器；若 stop 是同步阻塞，回调内的 `Console::info`/stop 期间也不会再处理信号，一旦 stop 卡住将只能等到容器 SIGKILL，在途任务被硬中断（队列消息可能重复消费或丢失确认）。另外该处理器以闭包形式在每个 worker 的 workerStart 中注册，需确认 `Swoole\\Process::signal` 在 worker 进程内可用且 `stop()` 方法存在于当前 Server 实现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "LIFECYCLE-001"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Compute/Base.php",
+      "line": 227,
+      "summary": "删除 commit-hash 与 branch preview 域名规则创建，VCS 预览域名不再可用",
+      "failure_scenario": "本次删除了两段 rules 创建逻辑：commit 域名（`commit-<hash16>.<sitesDomain>`）与 VCS 分支预览域名（`branch-<prefix>-<hash>.<sitesDomain>`）。删除后 VCS 触发的站点部署只会创建一条随机域名规则，历史/文档中承诺的「按 commit 访问」「按分支预览」域名将不再被注册到 proxy 规则表，访问这些 URL 会 404；同时对已存在这些规则的实例，Builds worker 后续若按新逻辑更新 rules 也可能出现规则不再被刷新。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "FEATURE-REGRESSION-003"
+    },
+    {
+      "file": "src/Appwrite/Event/Database.php",
+      "line": 12,
+      "summary": "删除 getDatabase() 但保留 $database 属性与 setDatabase()，形成写孤属性",
+      "failure_scenario": "`getDatabase()` 被删除，但 `protected ?Document $database = null;` 与 `setDatabase()` 仍保留，`$database` 变成只写不读的死属性/死方法；同时任何仍调用 `Event\\Database::getDatabase()` 的代码会触发 `Call to undefined method` 致命错误（该错误在同一 MR 的 app/controllers/databases.php 大幅缩行后是否已全部清理无法在本仓库检索验证，因为 PHP 未纳入符号索引）。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "DEADCODE-001"
+    },
+    {
+      "file": "src/Appwrite/GraphQL/Types/Mapper.php",
+      "line": 229,
+      "summary": "defaultValue 直接取 $rule['default']，缺键时产生 Undefined array key 告警",
+      "failure_scenario": "`$fields[$escapedKey]['defaultValue'] = $rule['default'] ?? null;` 改为 `$rule['default']`。对于非必填但未声明 `default` 键的规则（GraphQL schema 生成处由多个配置来源拼装），PHP 8 会抛出 `Undefined array key \"default\"` 警告，在把警告升级为异常的环境或 `set_error_handler` 下会中断 schema 构建。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "NULLSAFE-002"
+    },
+    {
+      "file": "composer.json",
+      "line": 56,
+      "summary": "核心依赖 utopia-php/database 由 0.71.* 降到 0.69.*，且 domains 固定为 0.8.0",
+      "failure_scenario": "本次把 `utopia-php/database` 从 0.71.* 回退到 0.69.*、`utopia-php/migration` 从 0.10.* 回退到 0.9.*，并把 `utopia-php/domains` 从 0.8.* 收紧为精确版本 0.8.0。数据库库降级同时大规模把代码切到 `getInternalId()`/`$internalId`，两者的 API 契约必须严格对应；若 0.69.* 未包含 0.71.* 中与 internalId 相关的修复，则高分位查询、事务或迁移行为可能出现回归（尤其 V15–V22 中直接依赖内部表名与属性的 SQL）。而 `domains: 0.8.0` 的精确锁会阻塞其它依赖对 0.8.x 补丁版本的升级，可能导致后续 `composer update` 冲突或长期停留在有缺陷的补丁版本。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "DEPENDENCY-001"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+      "line": 597,
+      "summary": "函数运行时 APPWRITE_ENDPOINT 改由 _APP_CONSOLE_DOMAIN 生成",
+      "failure_scenario": "构建产物注入的 `APPWRITE_ENDPOINT` 由 `_APP_DOMAIN` 改为优先取 `_APP_CONSOLE_DOMAIN`。console 域与控制台共用同一个 `_APP_DOMAIN` 时无影响，但一旦部署把 console 拆分到独立域名（该变量的存在本身就是这种场景），函数/站点运行时 SDK 的默认 endpoint 就会指向 console 主机而非 API 主机，导致函数内 `Client.setEndpoint(process.env.APPWRITE_ENDPOINT)` 的调用被路由到错误入口（或需要额外反代规则才能工作）。endpoint 语义与控制台域名语义不应混用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONFIG-SEMANTIC-005"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+      "line": 841,
+      "summary": "SSR 检测日志截取使用了错误的标记长度常量，导致检测内容整体偏移 6 个字符",
+      "failure_scenario": "新逻辑用 `strpos($logs, '{APPWRITE_DETECTION_SEPARATOR_START}')` 定位起始标记，但截取时用 `strlen('{APPWRITE_DETECTION_SEPARATOR}')`（30 字符）而非 `strlen('{APPWRITE_DETECTION_SEPARATOR_START}')`（36 字符），偏移量少 6 个字符。于是 `$detectionLogs` 开头残留 `START}` 片段，被后续 `explode(\"\\n\")` + `trim` 当成第一行“文件路径”传给 `Rendering` 检测器，可能把探测结果判为 static/ssr 错误，甚至触发 876 行的 `Adapter mismatch` 异常使构建失败；同一文件其它位置（752、754、1231 行）均使用完整的 `_START`/`_END` 常量，可确认此处为笔误。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-OFFSET-001"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+      "line": 845,
+      "summary": "SSR 检测区块之后的构建日志被截断丢弃",
+      "failure_scenario": "新实现先把 `_END` 之后的日志追加到 `$logs`（843 行），随后又执行 `$logs = \\substr($logs, 0, $separator)`（845 行）把刚追加的内容连同检测区块一起截掉，因此检测区块之后的所有构建输出都不会出现在 `buildLogs` 中；原实现是 `$logs = $logsBefore . $logsAfter`（保留前后两段）。此外当 `_END` 缺失时 `$separatorEnd === false`，843 行退化为 `\\substr($detectionLogs, 36)`（有残留内容）、844 行退化为 `\\substr($detectionLogs, 0, 0)` 得到空串，检测逻辑被静默跳过且日志仍被截断。日志是用户排查构建失败的主要手段，属于可见的行为回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-TRUNCATE-002"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+      "line": 1033,
+      "summary": "截图完成/失败日志拼接到局部变量后未回写 deployment 即落库",
+      "failure_scenario": "截图成功与失败两个分支都将 `Screenshot capturing finished/failed` 追加到局部 `$logs`，但本次 MR 删除了这两处的 `$deployment->setAttribute('buildLogs', $logs);`，随后直接 `updateDocument()` 并用 `$deployment->getArrayCopy()` 推实时消息。结果是这两行状态日志既不会持久化也不会推送给前端，用户只能看到 853 行写入的 `Screenshot capturing started`，而 1045-1049 行失败分支还可能因为 `$logs` 未回写而完全丢失失败原因上下文。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "STATE-CONSISTENCY-003"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+      "line": 1094,
+      "summary": "rules 查询条件中 projectInternalId 被重复添加两次",
+      "failure_scenario": "functions 与 sites 两个分支的 `$queries` 在列表开头已有 `Query::equal(\"projectInternalId\", [$project->getInternalId()])`，本次修改又在列表末尾追加了一条完全相同的条件（1094 行、以及 sites 分支同样追加一条）。重复条件不会改变查询语义，但说明此次改动中很可能遗漏了原本想追加的过滤字段（如 `deploymentResourceId`），并使查询日志与后续维护更难判断真实过滤条件；对照 `Sites/Http/Sites/Update.php` 中同构查询并未重复，可见是复制粘贴残留。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "MAINTAINABILITY-DUP-004"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+      "line": 1449,
+      "summary": "GitHub 提交状态链接去掉 region 段，需确认与 console 路由一致",
+      "failure_scenario": "`$providerTargetUrl` 由 `/console/project-{region}-{projectId}/...` 改为 `/console/project-{projectId}/...`，同时删除了 `$region = $project->getAttribute('region', 'default');`。该 URL 会作为 target_url 写入 GitHub commit status，若 console 前端仍使用带 region 的路由（或反之，多 region 部署下无法定位正确区域），点击“Details”会 404 或落到错误区域。此项属对外可见行为变更，需与 console 路由改造同步发布。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.35,
+      "rule": "INTEGRATION-URL-009"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+      "line": 79,
+      "summary": "自定义域名黑名单由主域改为 console 域，可能导致 API 主域可被注册为自定义域",
+      "failure_scenario": "`$deniedDomains[] = $mainDomain;` 的取值由 `_APP_DOMAIN` 改为优先 `_APP_CONSOLE_DOMAIN`（Function/Site/Redirect 三个 Create 同样改动）。当 `_APP_CONSOLE_DOMAIN` 被设置为独立域名时，`_APP_DOMAIN`（API 主域）不再进入 `$deniedDomains`，用户可能把自己的 API 域名注册为项目自定义域名，随后 `rules` 中会出现与主域冲突的 deployment rule，造成代理层路由冲突或钓鱼/劫持面。若两变量取值相同时当前无影响，但该安全性完全依赖部署配置巧合。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.42,
+      "rule": "SECURITY-DENYLIST-006"
+    },
+    {
+      "file": "src/Appwrite/Platform/Tasks/ScheduleFunctions.php",
+      "line": 93,
+      "summary": "移除 scheduled functions 的 _APP_WORKER_REDIS_FALLBACK 分支，Redis 降级部署下调度任务改走主队列",
+      "failure_scenario": "`ScheduleBase::$publisherRedis` 字段被删除，`ScheduleFunctions` 与 `ScheduleExecutions` 中依据 `_APP_WORKER_REDIS_FALLBACK` 选择 publisher 的分支也一并被去掉，统一使用 `new Func($this->publisher)`。对于仍按旧方式配置 `_APP_WORKER_REDIS_FALLBACK=...,functions` 的部署（docker-compose 本次也删除了相关配置），定时触发的函数执行将不再投递到 Redis 备用队列，而 `bin/worker-functions` 侧的消费端若仍只监听 fallback 队列，会出现“任务已入队但无人消费”的静默丢失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "DEPLOY-COMPAT-007"
+    },
+    {
+      "file": "src/Appwrite/Platform/Tasks/ScheduleBase.php",
+      "line": 50,
+      "summary": "callback 注册写法未随本次统一改造更新，仍为 $this->action(...)",
+      "failure_scenario": "本 MR 将全仓库 `->callback($this->action(...))` 统一替换为 `->callback([$this, 'action'])`，但抽象基类 `ScheduleBase::__construct()` 仍保留旧的一等可调用写法。同一仓库内两种写法并存，说明替换并不彻底（后续若因框架版本升级必须使用数组可调用，该调度任务会先出问题），也增加了代码检索与统一 lint 的难度。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "CONSISTENCY-STYLE-008"
+    },
+    {
+      "file": "src/Appwrite/Platform/Workers/Migrations.php",
+      "line": 194,
+      "summary": "migration 实时事件不再屏蔽 credentials/options，源端凭证可能被下发给前端",
+      "failure_scenario": "`updateMigrationDocument` 原来调用 `setPayload($clonedMigrationDocument->getArrayCopy(), ['options', 'credentials'])`，把 `options` 与 `credentials` 声明为 sensitive 键，realtime 下发时会被剔除。本 MR 改为 `setPayload($migration->getArrayCopy())`，不再传 sensitive 列表，而 migration 文档的 `credentials` 在 `processMigration` 中会被填入 `projectId`/`endpoint`/`apiKey`（`generateAPIKey` 生成的动态 API Key）。由于事件订阅者为 `['console', $project->getId()]`，任何能订阅该项目 realtime 通道的客户端都可能收到含 apiKey 的 `migrations.[migrationId].update` 事件，属于凭证泄露。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.86,
+      "rule": "SEC-LEAK-001"
+    },
+    {
+      "file": "src/Appwrite/Platform/Workers/Migrations.php",
+      "line": 285,
+      "summary": "删除了源端报错即中止的守卫，源端校验失败时仍会全量执行迁移",
+      "failure_scenario": "原实现在 `$source->getErrors()` 非空时跳过 `$transfer->run(...)`，仅把状态置为 failed；本 MR 去掉了 `if (empty($source->getErrors()))` 包裹，使迁移无论源端是否已报错都会执行 transfer。由于 `processSource` 中已经调用过 `$migrationSource->report()` 收集源端错误（如版本不兼容、资源读取失败），继续执行会把部分/不完整的数据写入目标项目，产生难以回滚的脏数据，并让“源端不可用”与“传输失败”两类问题混在同一 failed 状态里。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "src/Appwrite/Platform/Workers/Migrations.php",
+      "line": 310,
+      "summary": "迁移错误信息把服务器内部文件路径与行号写入文档并对外暴露",
+      "failure_scenario": "新的错误拼装逻辑在 `$error->getPrevious()` 存在时追加 `getPrevious()->getMessage()/getFile()/getLine()`，把服务端绝对路径与内部实现细节写入 migration 文档的 `errors` 属性；同时 `Appwrite\\Utopia\\Response\\Model\\Migration::filter()`（原本把 errors 裁剪为 `code`/`message`）被整个删除，`updateMigrationDocument` 也不再从 realtime payload 中剥离 trace。结果是内部路径、堆栈相关信息会同时出现在 API 响应与 realtime 事件中，给攻击者提供侦察信息（目录结构、依赖版本定位）。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "SEC-INFO-002"
+    },
+    {
+      "file": "src/Appwrite/Platform/Workers/Migrations.php",
+      "line": 327,
+      "summary": "失败分支新增 updateMigrationDocument 与 finally 中的同类调用重复，产生双写与重复 realtime 事件",
+      "failure_scenario": "失败分支在设置 `status/stage/errors` 后新增了一次 `$this->updateMigrationDocument($migration, $projectDocument, $queueForRealtime);` 并 `return;`，但 `processMigration` 的 `finally` 块（第368行）无条件再调用一次同样的方法。结果是同一次失败会写两次 DB 并推送两次 `migrations.[migrationId].update` realtime 事件，控制台会出现重复刷新/闪烁，也放大了 F001 中的敏感字段下发问题。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.78,
+      "rule": "MAINTAIN-004"
+    },
+    {
+      "file": "app/init/resources.php",
+      "line": 883,
+      "summary": "Executor 注册丢失 _APP_EXECUTOR_HOST 的默认值，缺失该环境变量时会在 selectEndpoint 抛 TypeError",
+      "failure_scenario": "`Executor` 原本在构造器里执行 `$this->endpoint = System::getEnv('_APP_EXECUTOR_HOST', '')`，缺省为空字符串；现在改为注入 `fn (string $projectId, string $deploymentId) => System::getEnv('_APP_EXECUTOR_HOST')`，把 default 参数丢掉了。而 `Executor::selectEndpoint()` 声明 `: string`，一旦 `_APP_EXECUTOR_HOST` 未配置且 `System::getEnv` 返回非字符串（null/false），就会在函数返回处抛 `TypeError`，使所有函数执行/构建/删除运行时请求直接失败，且错误信息与“执行器未配置”的真实原因无关，难以定位。另外该闭包完全忽略两个入参，端点选择器可读性/可扩展性也受到影响。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.56,
+      "rule": "CONFIG-DEFAULT-001"
+    },
+    {
+      "file": "app/init/resources.php",
+      "line": 883,
+      "summary": "Executor 注册丢失 _APP_EXECUTOR_HOST 的默认值，缺失该环境变量时可能在 selectEndpoint 抛 TypeError",
+      "failure_scenario": "`Executor` 原本在构造器里执行 `$this->endpoint = System::getEnv('_APP_EXECUTOR_HOST', '')`，缺省为空字符串；现在改为注入 `fn (string $projectId, string $deploymentId) => System::getEnv('_APP_EXECUTOR_HOST')`，把 default 参数丢掉了。而 `Executor::selectEndpoint()` 声明 `: string`，一旦该环境变量未配置且 `System::getEnv` 返回非字符串值，就会在返回处抛 `TypeError`，使所有函数执行/构建/删除运行时请求直接失败，且异常信息与“执行器未配置”的真实原因无关。此外该闭包完全忽略两个入参，参数签名与实际用途不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONFIG-DEFAULT-001"
+    },
+    {
+      "file": "src/Executor/Executor.php",
+      "line": 198,
+      "summary": "createExecution 把必填参数放在可选参数之后，并引入隐式可空 int 参数",
+      "failure_scenario": "新签名把 `string $runtimeEntrypoint = null` 移到 `bool $logging` 之前：可选参数先于必填参数声明，PHP 8 起会产生 “Optional parameter declared before required parameter” 弃用告警，且 `$runtimeEntrypoint` 实际被隐式当作必填；同时 `int $requestTimeout = null` 由原来的 `?int $requestTimeout = null` 退化为隐式可空（PHP 8.4 起弃用，phpstan 也会报错）。当前调用方使用命名实参（见 Functions worker）才没有暴露该问题，一旦出现位置实参调用就会错位。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.68,
+      "rule": "API-SIGNATURE-002"
+    },
+    {
+      "file": "src/Appwrite/Platform/Workers/Functions.php",
+      "line": 522,
+      "summary": "启动命令硬编码 code.tar.gz，丢弃按 buildPath 后缀判断 tar/tar.gz 的兼容逻辑",
+      "failure_scenario": "原实现从 `$deployment->getAttribute('buildPath', '')` 的后缀推导扩展名（`.tar` → `tar`，否则 `tar.gz`），再拼出 `cp /tmp/code.$extension ...`；现在固定为 `cp /tmp/code.tar.gz /mnt/code/code.tar.gz`。只要存在产物为未压缩 `.tar`（或后缀为空的旧部署）的情况，`cp` 会因源文件不存在而失败，`nohup helpers/start.sh` 因缺少代码包而无法启动，进而表现为执行超时/失败，且错误信息只会体现为执行失败而非“找不到 tar 包”。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "COMPAT-BUILD-001"
+    },
+    {
+      "file": "src/Appwrite/Platform/Workers/StatsUsage.php",
+      "line": 454,
+      "summary": "logs DB 的 $tenant 仍对字符串型 internalId 做 (int) 强转，非纯数字内部 ID 会退化为 0",
+      "failure_scenario": "本 MR 把内部标识统一为 `$internalId`，并在 `Queries/Base` 中把它声明为 `Database::VAR_STRING`（而非原来的 `$sequence` 是 `VAR_INTEGER`）；`StatsUsage` 里多数位置已按字符串使用（数组键、`'$internalId' => $project->getInternalId()`），但 `prepareForLogsDB` 仍执行 `(int) $project->getInternalId()` 作为 logs DB 的 `$tenant`。一旦内部 ID 不是纯数字字符串（或未来改为 ULID/UUID），强转结果为 0，所有统计文档会被写入 tenant 0，造成多租户数据错位（数据串租户）或写入失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "DATA-TENANT-002"
+    },
+    {
+      "file": "src/Appwrite/Utopia/Database/Validator/Queries/Base.php",
+      "line": 85,
+      "summary": "$sequence 从允许属性中移除而 $internalId 只加入 Order，过滤与排序能力不对称并可能破坏既有查询",
+      "failure_scenario": "原实现把 `$sequence` 作为普通属性加入 `$attributes`，因此 `Filter` 与 `Order` 校验器都接受 `$sequence`；现在 `$sequence` 被整体移除，新增的 `$internalId` 只被追加到 `new Order([...$attributes, $internalId])`，没有加入 `Filter($attributes, ...)`。这造成两个后果：(1) 任何仍按 `$sequence` 过滤/排序的既有 API 调用会立刻被校验器拒绝（400），属于对外行为破坏；(2) 客户端可以用 `$internalId` 排序却无法过滤，能力不一致，也容易让后续开发者误以为 `$internalId` 是“可自由查询的普通属性”。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "API-VALIDATION-001"
+    }
+  ],
+  "stderr_tail": "-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 6 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 46 个文件 / 8223268 字符（lockfile=1, test=32, exclude=13），明细见审计 mrFilter\n✓ 完成 · 耗时 1030.7s · 模型调用 102 次 · token 输入 333,239（未命中） · 输出 150,593 · 缓存命中 5,804,928（94.6%） · 工具 159 次（主会话 159 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.1051\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: 置信度过滤丢弃 7 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\appwrite__appwrite@710b8b...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1032.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.1%)\n[time] 阶段 | 六阶段审计 1030.6s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 12.4s (1.2%) | S1P2 3.6s (0.3%) | S1P3 8.9s (0.9%) | S1P4 122.1s (11.9%) | S1P5 38.9s (3.8%) | S1P6 8.5s (0.8%) | S2P1 10.5s (1.0%) | S2P2 3.7s (0.4%) | S2P3 7.4s (0.7%) | S2P4 50.9s (4.9%) | S2P5 65.6s (6.4%) | S2P6 10.6s (1.0%) | S3P1 11.2s (1.1%) | S3P2 4.8s (0.5%) | S3P3 14.6s (1.4%) | S3P4 73.8s (7.2%) | S3P5 53.5s (5.2%) | S3P6 13.9s (1.4%) | S4P1 12.0s (1.2%) | S4P2 4.6s (0.4%) | S4P3 8.2s (0.8%) | S4P4 23.6s (2.3%) | S4P5 83.1s (8.1%) | S4P6 18.8s (1.8%) | S5P1 5.5s (0.5%) | S5P2 4.2s (0.4%) | S5P3 17.9s (1.7%) | S5P4 45.4s (4.4%) | S5P5 54.8s (5.3%) | S5P6 14.6s (1.4%) | S6P1 8.1s (0.8%) | S6P2 4.1s (0.4%) | S6P3 9.0s (0.9%) | S6P4 82.0s (8.0%) | S6P5 40.2s (3.9%) | S6P6 13.6s (1.3%) | S6R2P1 6.4s (0.6%) | S6R2P2 4.2s (0.4%) | S6R2P3 8.0s (0.8%) | S6R2P4 17.5s (1.7%) | S6R2P5 22.8s (2.2%) | S6R2P6 6.9s (0.7%)\n[usage] 任务总计 | 模型调用 102 次（Agent 102 + 一次性 0） | token 输入 333,239（未命中） | 输出 150,593 | 缓存命中 5,804,928（94.6%） | $0.1051\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\appwrite__appwrite@710b8bd\\audit\\20261115_000157_093.json",
+  "token_usage": {
+    "input_tokens": 333239,
+    "output_tokens": 150593,
+    "cache_read_input_tokens": 5804928
+  }
+}

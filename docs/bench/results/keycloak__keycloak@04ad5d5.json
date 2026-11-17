@@ -1,0 +1,522 @@
+{
+  "instance_id": "keycloak__keycloak@04ad5d5",
+  "repo": "keycloak/keycloak",
+  "base_commit": "ad511cbc538f1d9727d17cc423420abc50367af4",
+  "head_commit": "04ad5d530007517b60e2bf8706542556078d17f7",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1570.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 50,
+  "review_output": [
+    {
+      "file": "authz/policy/common/src/main/java/org/keycloak/authorization/policy/provider/role/RolePolicyProvider.java",
+      "line": 141,
+      "summary": "角色策略的权限查找丢失组角色与组合角色，管理员权限可能被漏判",
+      "failure_scenario": "getPermissions 原先通过 RoleUtils.getDeepUserRoleMappings(subject) 取角色，该方法会把用户直接角色、用户所属各级组（含父组，RoleUtils.addGroupRoles 递归）的角色一并汇总后展开组合角色。改为 subject.getRoleMappingsStream() 后只保留直接角色映射，既不含组成员继承的角色，也不展开 composite 角色，roleIds 变小，policyStore.findDependentPolicies 便查不到依赖这些角色的 RolePolicy，导致通过组或组合角色获得管理员权限的用户在管理控制台/REST 上被判定为无权限（权限收窄的静默回归）。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.86,
+      "rule": "AUTHZ-ROLE-001"
+    },
+    {
+      "file": "crypto/default/src/main/java/org/keycloak/crypto/hash/Argon2PasswordHashProviderFactory.java",
+      "line": 33,
+      "summary": "字段名拼写错误 cpuCoreSempahore",
+      "failure_scenario": "私有字段从 cpuCoreSemaphore 被改名为拼写错误的 cpuCoreSempahore，并在 create()/init() 三处引用。虽然不影响编译与运行（Argon2PasswordHashProvider 构造参数为 Semaphore，类型匹配），但与同项目 Argon2PasswordHashProvider 中 cpuCoreSemaphore 的命名不一致，降低可读性与可检索性。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "NAMING-001"
+    },
+    {
+      "file": "crypto/default/src/main/java/org/keycloak/crypto/hash/Argon2PasswordHashProviderFactory.java",
+      "line": 50,
+      "summary": "Argon2 的 type 配置误读 VERSION_KEY，Argon2 类型参数失效",
+      "failure_scenario": "init() 中 type = config.get(VERSION_KEY, Argon2Parameters.DEFAULT_TYPE) 使用了 version 的 key，导致 argon2 的 type 参数永远无法被正确读取：配置 type 无效，读取到的是 version 的字符串值（如 1.3）并被当作 Argon2 类型传入 Argon2PasswordHashProvider，进而影响编码/校验路径的 type 判定，可能出现哈希参数与方法不一致。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CONFIG-001"
+    },
+    {
+      "file": "crypto/default/src/main/java/org/keycloak/crypto/hash/Argon2PasswordHashProviderFactory.java",
+      "line": 92,
+      "summary": "hashLength 的配置元数据被错误命名为 TYPE_KEY，与 type 项重复",
+      "failure_scenario": "getConfigMetadata() 中第三个 provider property 的 name 从 HASH_LENGTH_KEY 改成了 TYPE_KEY，导致配置元数据里出现两个 name=type 的项（一个 string 类型列出 type 选项、一个 int 类型标注 Hash length），而 hashLength 完全没有元数据项。这会让 Admin Console / 配置文档的展示与校验错乱，用户也无法通过元数据感知 hashLength 选项。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "CONFIG-META-001"
+    },
+    {
+      "file": "federation/ldap/src/main/java/org/keycloak/storage/ldap/mappers/msad/MSADUserAccountControlStorageMapper.java",
+      "line": 68,
+      "summary": "移除 ldapUser 空值保护后，重新加载 LDAP 用户失败会抛 NullPointerException",
+      "failure_scenario": "GET_USER_ACCOUNT_CONTROL 回调删除了开头的 ldapUser == null 判断，而 getUserAccountControl 在 userAccountControl 未命中缓存值时会执行 ldapUser = ldapProvider.loadLDAPUserByUuid(realm, ldapUser.getUuid()) 并再次 apply 该回调。当 LDAP 中该用户已被删除或不可见时 loadLDAPUserByUuid 返回 null，回调随即在 ldapUser.getAttributeAsString 处抛 NPE，使 isEnabled/setEnabled/getRequiredActionsStream 等用户状态路径直接失败，而不是退化为空 UserAccountControl。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "NULL-SAFETY-001"
+    },
+    {
+      "file": "federation/ldap/src/main/java/org/keycloak/storage/ldap/idm/store/ldap/LDAPIdentityStore.java",
+      "line": 527,
+      "summary": "更新用户时不再把 pwdChangedTime 视为只读操作属性，LDAP 修改可能被拒绝",
+      "failure_scenario": "extractAttributesForSaving 中针对非创建（isCreate == false）把 LDAPConstants.PWD_CHANGED_TIME 加入 readOnlyAttributeName 的逻辑被删除。而用户检索仍会以 returning attribute 方式读取 pwdChangedTime（非 AD 场景），LDAPObject 因此携带该属性；在更新写回时，循环只会跳过 readOnlyAttrNames 中的属性，于是 pwdChangedTime 会被作为普通可修改属性提交给 LDAP。多数目录服务器把 pwdChangedTime 作为 operation attribute，禁止客户端写入，更新将报错失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "LDAP-ATTR-001"
+    },
+    {
+      "file": ".github/workflows/snyk-analysis.yml",
+      "line": 29,
+      "summary": "GitHub Actions 由固定 commit SHA 改回浮动 tag/master，削弱供应链可复现性与安全性",
+      "failure_scenario": "本次把工作流中大量 uses（actions/checkout、actions/cache、upload-artifact、download-artifact、setup-java、setup-node、codeql-action、trivy-action、setup-minikube、openshift-tools-installer、snyk/actions/setup 等）从精确 commit SHA 改回可变的 v4/v3/分支引用，其中 snyk/actions/setup@master 直接引用可变分支，风险最高；同时把 trivy-action 从 0.31.0 降到 0.30.0、actions-setup-minikube 从 v2.14.0 降到 v2.13.1。浮动引用无法保证构建可复现，tag 被移动或上游仓库被入侵时，CI 会静默执行未审计的代码，而这些作业持有 GITHUB_TOKEN、SNYK_TOKEN 等凭据及 contents:write/security-events:write 权限。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.88,
+      "rule": "SUPPLYCHAIN-001"
+    },
+    {
+      "file": ".github/actions/maven-cache/action.yml",
+      "line": 42,
+      "summary": "Windows 缓存恢复步骤删除 D: 目录创建与第二条软链，缓存可能无法生效",
+      "failure_scenario": "Windows 分支原来会 mkdir D:\\.m2\\repository 并同时创建 $HOME\\.m2\\repository 与 $PWD\\..\\..\\..\\.m2\\repository 两条指向 D: 的软链；现在只保留 mkdir ../../../.m2/repository 和一条 mklink，D:\\.m2\\repository 目标目录不再预创建，而注释仍说明缓存归档使用的是相对路径（需要 $PWD 侧的软链）。结果可能造成 mklink 因目标不存在而失败，或缓存被解压到未被 Maven 使用的路径，Windows 作业每次冷启动拉取全部依赖。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "CI-CACHE-001"
+    },
+    {
+      "file": ".github/workflows/label.yml",
+      "line": 44,
+      "summary": "Step Summary 中的 Markdown 链接缺少右括号，输出为断裂链接",
+      "failure_scenario": "写入 $GITHUB_STEP_SUMMARY 的标签行把链接闭合的 ) 删除，生成 `**Label:** [x](https://.../labels/x`，渲染后不再是可点击链接而是原样文本，破坏 PR 标签流程的可读性输出。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.9,
+      "rule": "MARKDOWN-001"
+    },
+    {
+      "file": "js/apps/account-ui/maven-resources-community/theme/keycloak.v3/account/messages/messages_el.properties",
+      "line": 96,
+      "summary": "希腊语消息占位符被破坏为 {[0}}，界面会显示原始占位符",
+      "failure_scenario": "error-invalid-length 的 {{0}} 被改成 {[0}}，i18next 无法识别该插值，希腊语用户在校验长度错误时会看到字面的 {[0}} 文本而不是字段名；同时该畸形占位符可能触发 i18n 解析告警。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.88,
+      "rule": "I18N-001"
+    },
+    {
+      "file": "js/apps/account-ui/maven-resources-community/theme/keycloak.v3/account/messages/messages_ja.properties",
+      "line": 68,
+      "summary": "日语消息中两处占位符括号被破坏，插值失效",
+      "failure_scenario": "error-invalid-length-too-short 的 {{1}} 变成 {{1}，resourceSharedWith_other 的 {{username}}/{{other}} 变成 {{username}>/{{other}>，两处都会让 i18next 无法完成插值，日语用户看到残缺占位符，且带 <0>/<1> 富文本的语句渲染可能出错。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.88,
+      "rule": "I18N-001"
+    },
+    {
+      "file": "js/apps/account-ui/maven-resources-community/theme/keycloak.v3/account/messages/messages_ru.properties",
+      "line": 99,
+      "summary": "俄语资源出现未翻译值、转义冒号与行尾空格",
+      "failure_scenario": "本次改动把 unknownUser 的值改为英文 Anonymous（原为 Анонимный，未翻译回退），把多处冒号转义为 \\:，并给 accessGrantedOn/shareWith 引入行尾空格。未翻译值会让俄语界面出现英文；多余的行尾空格在 UI 上表现为文本后空档；\\: 是否需要取决于该资源是否走 MessageFormat。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "I18N-002"
+    },
+    {
+      "file": ".github/workflows/ci.yml",
+      "line": 364,
+      "summary": "构建 JDK 作业移除 -DskipProtoLock，构建可能因 proto 锁校验失败",
+      "failure_scenario": "`Build with JDK` 步骤的 mvnw install 去掉了 -DskipProtoLock=true。该开关用于跳过 protobuf 生成文件的锁/一致性校验，去掉后该校验会重新启用，一旦仓库中的 protobuf 生成结果与当前工具链不一致，CI 会在此步骤失败（且该作业位于 build 依赖链上）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "js/apps/account-ui/package.json",
+      "line": 33,
+      "summary": "account-ui 依赖版本被下调，可能与锁文件不一致导致安装失败",
+      "failure_scenario": "i18next、react-hook-form、react-i18next、@vitejs/plugin-react-swc 的版本区间被回退（如 i18next ^25.2.1→^25.2.0、react-hook-form ^7.57.0→^7.56.4）。若 pnpm-lock.yaml 未同步回退，CI 中的 frozen-lockfile 安装会因清单与锁文件不匹配而失败；若锁文件已同步，则工作区会静默回退到较旧的依赖版本，与其他 js 包（admin-ui、ui-shared）的版本声明也可能产生分歧。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "DEPS-001"
+    },
+    {
+      "file": "docs/documentation/server_development/topics/themes-react.adoc",
+      "line": 44,
+      "summary": "AsciiDoc 文档中混入 Markdown 链接语法，渲染为纯文本",
+      "failure_scenario": "themes-react.adoc 中的外链由 AsciiDoc 的 `https://url[text]` 形式改成了 Markdown 的 `[text](url)`。AsciiDoc 不解析 Markdown 链接语法，生成站点会把整段方括号/圆括号原样输出，链接不可点击（同文件末尾两处同样被改）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "DOCS-ASCIIDOC-001"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_ja.properties",
+      "line": 1817,
+      "summary": "日语 manageServiceAccountUser 的 {{link}} 占位符被写成 {{link}>，插值失效",
+      "failure_scenario": "该键的占位符从 `{{link}}` 被改成 `{{link}>`（多了一个右尖括号），i18next 无法识别该占位符名称，服务账号页面将把 `{{link}>` 原样渲染给用户，链接文本无法替换，用户看到的是损坏的文案与失效的锚点。该键由 `<Trans i18nKey=\"manageServiceAccountUser\">` 消费，属于服务账号详情页的主要提示语。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "I18N-PLACEHOLDER-001"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_ja.properties",
+      "line": 2472,
+      "summary": "日语 permissionsListIntro 与 resourceTypeHelpText 的命名占位符被破坏",
+      "failure_scenario": "permissionsListIntro 的 `{{realm}}` 被改成 `{{realm}>`，resourceTypeHelpText 的 `{{resourceType}}` 被改成 `{ resourceType }}`（花括号数量错误且键名后带空格）。这两处都无法被 i18next 的命名插值识别，权限列表页与资源类型帮助文案会向用户直接显示未替换的占位符文本，资源类型名称完全丢失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "I18N-PLACEHOLDER-001"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_de.properties",
+      "line": 1103,
+      "summary": "德语 deleteConfirmUsers_other 的 {{count}} 被写成 {{count}，删除确认文案无法显示数量",
+      "failure_scenario": "`deleteConfirmUsers_other={{count}} Benutzer löschen?` 被改为 `{{count} Benutzer löschen?`，缺少一个右花括号。该键通过 `t(\"deleteConfirmUsers\", { ... })` 带 count 复数调用，占位符失效后确认对话框会显示 `{{count} Benutzer löschen?`，德语用户看不到待删除用户数量，也无法确认操作范围。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "I18N-PLACEHOLDER-001"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_de.properties",
+      "line": 1333,
+      "summary": "德语文件尾部成批删除仍被代码引用的键，德语界面将回退为英文",
+      "failure_scenario": "本次改动从 messages_de.properties 尾部（hunk @@ -1329,93 +1329,5 @@）删除了约 88 行，其中 singleLogoutServiceUrl、directGrant、realmName、signDocuments 等键在英文基线与 admin-ui 代码中仍在使用（`t(\"singleLogoutServiceUrl\")`、`t(\"directGrant\")`），删除后德语用户在这些界面会看到英文文案。这类成批尾部删除更像导出/合并过程中的截断，而非有意的特性下线（对照 en 只删除了 24 行特性相关键）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "I18N-KEY-002"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_pt_BR.properties",
+      "line": 131,
+      "summary": "葡萄牙语文件大量译文被回退为英文原文，本地化覆盖出现倒退",
+      "failure_scenario": "本次改动把 pt_BR 中大量已翻译条目替换回英文原文，例如 browserFlowHelp、temporaryLocked、applyToResourceTypeHelp、contextualAttributesHelp、resourcesHelp、flowTypeHelp、directGrantHelp、rolesHelp、expirationHelp、permissionName、applyPolicyHelp、otpPolicyDigitsHelp、logicHelp、clientsClientScopesHelp、admin-clearEventsHelp、permissionType、includeRepresentationHelp、emailVerifiedHelp、otpPolicyPeriodHelp 等。对 pt_BR 用户而言这些界面说明会退回英文，属于本地化完整性倒退，且与同批其它语言“补齐翻译”的方向相反。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "I18N-TRANSLATION-001"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_pt_BR.properties",
+      "line": 133,
+      "summary": "葡萄牙语 webOrigins 的标签值被替换成了整段帮助说明文本",
+      "failure_scenario": "`webOrigins` 是 Web origins 字段的短标签，diff 中却把 `webOrigins=Origens Web` 改成了 `webOrigins=Permitir origens CORS. Para permitir todas as URIs de redirecionamento ... adicionar '*'.`，即把 webOriginsHelp 的帮助段落写进了标签键。该字符串会直接作为表单字段的 label 渲染在一行内，导致客户端设置页版式错乱、字段含义被一段长文本淹没。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.72,
+      "rule": "I18N-KEY-001"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_pt_BR.properties",
+      "line": 525,
+      "summary": "葡萄牙语 sync-ldap-roles-to-keycloak 把 roles 误译为 regras（规则）",
+      "failure_scenario": "该键原值为 “Sincronizar papéis do LDAP para o Keycloak”，本次改为 “Sincronizar regras LDAP para o Keycloak”。葡萄牙语中 `regras` 意为“规则”，与角色（roles/papéis）含义完全不同，按钮标签会误导用户以为该操作同步的是规则而非角色。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.72,
+      "rule": "I18N-TRANSLATION-002"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_ca.properties",
+      "line": 79,
+      "summary": "加泰罗尼亚语 prompts.login 与 login 都被改成英文 \"login\"",
+      "failure_scenario": "`prompts.login` 由 “Inici de sessió” 改为 “login”，同一文件中 `login`（第 173 行）也由 “Inici de sessió” 改为 “login”。两处把已翻译的加泰罗尼亚语文案退化为英文小写单词，界面出现英文泄漏，且 `login` 键通常用作按钮/动作标签，小写 “login” 既不符合加泰罗尼亚语也不符合英文首字母大写惯例。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.62,
+      "rule": "I18N-TRANSLATION-001"
+    },
+    {
+      "file": "misc/theme-verifier/src/main/java/org/keycloak/themeverifier/VerifyMessageProperties.java",
+      "line": 59,
+      "summary": "theme-verifier 移除了花括号平衡校验，消息文件失去静态质量门禁",
+      "failure_scenario": "本次删除了 `verifyUnbalancedCurlyBraces()` 及支撑它的 UNBALANCED_ONE/UNBALANCED_ONE_END/UNBALANCED_TWO/UNBALANCED_TWO_START 正则与调用点，使 messages*.properties 中 `{{placeholder}}` 花括号不平衡（如 `{{name}`、`{name}}`）不再被构建期校验拦截。而同一 MR 恰好大范围改写了 messages_ru.properties / messages_en.properties（新增/删除键、修改占位符写法），缺少该校验后此类错误只能在运行时表现为界面显示出原始 `{{...}}` 文本。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "TESTABILITY-002"
+    },
+    {
+      "file": "misc/theme-verifier/src/main/java/org/keycloak/themeverifier/VerifyMessageProperties.java",
+      "line": 101,
+      "summary": "消息包校验器只识别数字占位符，无法拦截本次出现的命名占位符损坏",
+      "failure_scenario": "VerifyMessageProperties 的占位符校验正则被限定为数字（`\\{\\{[0-9]`、`[0-9]}}`、`\\{[0-9]`），因此 `{{link}>`、`{{count}`、`{{realm}>`、`{ resourceType }}` 这类命名占位符损坏全部可以通过校验。本次 MR 恰好引入了多处此类损坏，说明该门禁存在覆盖缺口；同时本 MR 对该校验类做了行级删减，进一步削弱了拦截能力。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "I18N-VERIFIER-001"
+    },
+    {
+      "file": "js/apps/admin-ui/src/user-federation/shared/ExtendedHeader.tsx",
+      "line": 49,
+      "summary": "确认框中调用 removeImportedUsers 未 await，成功提示重复且异常被吞掉",
+      "failure_scenario": "onConfirm 中直接调用 `removeImportedUsers();` 而没有 await，导致：1) 外层 try/catch 无法捕获该异步函数内部抛出的异常（catch 分支形同虚设）；2) removeImportedUsers 内部本身已经 `addAlert(t(\"removeImportedUsersSuccess\"), AlertVariant.success)`，外层又 addAlert 一次，成功时会出现两条重复的成功提示；3) 确认对话框在删除请求真正完成前就被认为已完成。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "ASYNC-001"
+    },
+    {
+      "file": "js/apps/admin-ui/src/components/dropdown-panel/dropdown-panel.css",
+      "line": 40,
+      "summary": "深色样式选择器丢失 .pf-v5-theme-dark 作用域，浅色主题下会误用深色背景",
+      "failure_scenario": "在 `@media (prefers-color-scheme: dark)` 中，选择器由 `.pf-v5-theme-dark .kc-dropdown-panel-content` 改为 `.kc-dropdown-panel-content`。原本只有应用显式启用深色类（theme.properties 中 `kcDarkModeClass=pf-v5-theme-dark`）时才应用深色背景；改动后只要操作系统偏好深色，即使 Admin UI 处于浅色主题，下拉面板内容也会被强制使用 `--pf-v5-global--BackgroundColor--300`，出现浅色页面中的深色块，形成视觉对比度缺陷。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "STYLE-002"
+    },
+    {
+      "file": "js/apps/admin-ui/src/realm-settings/localization/LocalizationTab.tsx",
+      "line": 101,
+      "summary": "supportedLocales/defaultLocale 的必填与取值校验被同时移除，非法语言配置可被保存",
+      "failure_scenario": "supportedLocales 的 `rules: { required, validate: value => value.every(v => allLocales.includes(v)) || t(\"invalidLocale\") }` 与 defaultLocale 的 `validate: value => watchSupportedLocales?.includes(value)` 全部删除，同时 messages_en.properties 中的 `invalidLocale` 文案也被删除。改动后管理员可以保存包含任意字符串的 supportedLocales，或保存一个不在 supportedLocales 列表内的 defaultLocale，这些值会直接写入 RealmRepresentation，导致登录页/账户页语言解析回退异常或显示未翻译内容。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "VALIDATION-001"
+    },
+    {
+      "file": "js/apps/admin-ui/src/components/users/UserDataTable.tsx",
+      "line": 129,
+      "summary": "用户列表 exact 搜索默认值由 true 改为 false，默认搜索语义从精确匹配变为模糊匹配",
+      "failure_scenario": "activeFilters 初始值与 clearAllFilters 中的 `exact` 均改为 false，且 loader 只有在 `activeFilters.exact` 为 true 时才把 `exact` 放进请求参数（不再是每次都显式下发）。这使得未勾选「精确搜索」时所有用户名/邮箱搜索行为从精确匹配变为包含匹配，同时 `exact` 的行为完全依赖后端缺省值（前端不再显式表达意图），搜索结果集与命中数量都会发生变化。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "BEHAVIOR-001"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources/theme/keycloak.v2/admin/messages/messages_en.properties",
+      "line": 88,
+      "summary": "permissionPoliciesHelp 文案出现重复单词 permission permission",
+      "failure_scenario": "英文文案被改为 `Specifies all the policies that must be applied to the permission permission.`，重复的 `permission permission` 会直接展示在权限详情页的帮助图标气泡中，属于用户可见的文案缺陷。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.95,
+      "rule": "TEXT-001"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources/theme/keycloak.v2/admin/messages/messages_en.properties",
+      "line": 3434,
+      "summary": "resourceTypeHelpText 的插值占位符被改为带空格的 {{ resourceType }}，与文件内既有写法不一致",
+      "failure_scenario": "该键的占位符由 `{{resourceType}}` 改为 `{{ resourceType }}`。同一批消息文件中其余插值（如 `removeUserText=Do you want to remove {{numSelected}} users?`）均不带空格，写法不一致会带来两处风险：若渲染层不做 trim，占位符将不被替换、界面直接显示 `{{ resourceType }}`；即使渲染层做了容错，也会增加后续文案维护与自动校验的歧义（同时本 MR 已移除 theme-verifier 的花括号校验）。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "I18N-002"
+    },
+    {
+      "file": "js/apps/admin-ui/maven-resources-community/theme/keycloak.v2/admin/messages/messages_ru.properties",
+      "line": 521,
+      "summary": "messages_ru 的 clientNameHelp 使用了三重转义 \\\\\\:，反斜杠会泄漏到界面文案",
+      "failure_scenario": "该值被改为 `Например\\\\\\: ${my_client}`。在 .properties 语义下 `\\\\` 先解析为单个反斜杠、`\\:` 解析为冒号，最终字符串为 `Например\\:`，即会在界面上多显示一个反斜杠；同文件其他地方使用的是单次 `\\:`（如 `clientDescriptionHelp`、`validRedirectURIs` 中的 `http\\://`），写法自相矛盾，且末尾标点处理也不一致。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.5,
+      "rule": "I18N-003"
+    },
+    {
+      "file": "js/apps/admin-ui/src/components/routable-tabs/RoutableTabs.tsx",
+      "line": 74,
+      "summary": "动态 tab 过滤依赖 eventKeys[0] 推导路径段数，缺少静态子 tab 时动态 tab 全部不渲染",
+      "failure_scenario": "新逻辑用 `const keyLength = eventKeys[0]?.split(\"/\").length` 推导「期望的路径段数」，再用 `tabPath.split(\"/\").length === keyLength` 过滤动态 tab。当某页面传入的 children 不含有效 Tab（或仅含布尔/null 子节点，filter 后 eventKeys 为空）时 keyLength 为 undefined，任何 tabPath 的分段数都不可能等于 undefined，结果所有声明式动态 tab 都会被静默丢弃；此外在 `.map` 中 `eventKeys.push(generateTabPath)` 修改了外部数组，使后续 exactMatch/nearestMatch 的结果依赖该副作用，逻辑较脆弱。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "ROUTING-002"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/LogoutEndpoint.java",
+      "line": 413,
+      "summary": "id_token_hint 指向的会话已失效时不再清理当前认证会话与 cookie",
+      "failure_scenario": "原实现在 userSession == null 时会取出当前 AuthenticationSessionModel 并调用 removeAuthenticationSession(realm, authSession, true)，注释说明目的是删除当前 root authentication session 并重启 cookie。删除后该分支只记录 SESSION_EXPIRED 事件即继续走身份 cookie 认证，浏览器中残留的 root authentication session/cookie 不会被主动清理，后续登出请求可能反复命中同一失效会话，表现为登出页重复报会话过期或需要多次尝试才能完成登出。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "LIFECYCLE-012"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/services/clientpolicy/executor/AuthenticationFlowSelectorExecutorFactory.java",
+      "line": 43,
+      "summary": "LOA 配置项误用 auth-flow-alias 作为名称，导致 LOA 强制策略失效",
+      "failure_scenario": "AUTH_FLOW_LOA_PROPERTY 的 name 参数被写成 AUTH_FLOW_ALIAS（\"auth-flow-alias\"），与前面 AUTH_FLOW_ALIAS_PROPERTY 完全重名，而执行器 Configuration 读取的是 @JsonProperty(\"auth-flow-loa\")。结果是：(1) getConfigProperties() 返回两个同名配置项，管理端表单/配置序列化会互相覆盖或丢弃其中一项；(2) 保存到客户端策略的配置里永远不会出现 \"auth-flow-loa\" 键，AuthenticationFlowSelectorExecutor.getAuthFlowLoa() 恒为 null，executeOnAuthorizationRequest 中 setAuthNote(Constants.AUTHENTICATION_FLOW_LEVEL_OF_AUTHENTICATION, ...) 分支永远不会执行。即原本用于按 ACR/LOA 强制认证等级的客户端策略控制被静默关闭，且不会报错，属于安全策略的无声降级。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.9,
+      "rule": "CONFIG-KEY-COLLISION-001"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/services/resources/admin/ClientScopeResource.java",
+      "line": 234,
+      "summary": "客户端 scope 协议白名单硬编码，oid4vc 协议的 scope 无法再创建",
+      "failure_scenario": "validateClientScopeProtocol 由「遍历 LoginProtocolFactory 收集所有已注册协议 + 额外加入 OID4VCLoginProtocolFactory.PROTOCOL_ID」改为硬编码只允许 \"openid-connect\" 与 \"saml\"。由于 OID4VC 协议刻意未注册到 LoginProtocol SPI（旧注释说明是为了不在 client 详情 UI 展示），新实现会把 protocol=\"oid4vc\" 的 client scope 创建请求直接判为 400 \"Unexpected protocol\"，并且任何通过 LoginProtocolFactory 扩展的第三方协议也被一并封杀。RepresentationToModel.createClientScope 对 protocol 无任何校验，会原样写入，说明该校验是唯一关口。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "BEHAVIOR-REGRESSION-001"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/services/resources/admin/RealmsAdminResource.java",
+      "line": 179,
+      "summary": "导入重复 realm 的 409 响应退化为 400，与 OpenAPI 文档不一致",
+      "failure_scenario": "importRealm 原有针对 ModelDuplicateException 的 `ErrorResponse.exists(...)`（409 Conflict）与针对 ModelIllegalStateException 的 500 分支被删除，只保留 `catch (ModelException e) → 400`。由于 ModelDuplicateException 与 ModelIllegalStateException 都直接 extends ModelException，异常仍会被捕获，但响应码从 409/500 变成 400，同时丢失了 `logger.error(\"Conflict detected\", mde)` 的诊断日志。该方法上的 @APIResponses 仍然声明 409 与 500，接口契约与实现出现偏差；依赖 409 判断「realm 已存在」的客户端与集成测试会失效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "API-CONTRACT-002"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/services/DefaultKeycloakTransactionManager.java",
+      "line": 121,
+      "summary": "commit 整体 span 被移除，与仍保留的单事务 span 形成不一致的追踪覆盖",
+      "failure_scenario": "commit() 不再把「prepare → transactions → afterCompletion（含失败回滚）」整体包在 tracing.trace(DefaultKeycloakTransactionManager.class, \"commit\", ...) 内，而 commitWithTracing 仍会为每个 KeycloakTransaction 打 span。结果是链路追踪中丢失了事务提交这一聚合能力：无法再从一个 commit span 下钻到其包含的全部事务提交，且原先把异常抛出放在 span 内部的路径变更后，提交阶段抛出的异常不再被聚合 span 记录（只有单个 tx span 记录），排查提交失败/回滚的链路成本上升；同时该改动没有配套的 span 名称迁移或替代聚合点。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "OBSERVABILITY-001"
+    },
+    {
+      "file": "test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java",
+      "line": 18,
+      "summary": "节点越界异常消息参数顺序颠倒，且未校验负数索引",
+      "failure_scenario": "node(int) 的边界校验只判断 nodeIndex >= clusterSize()，并抛出 `\"Requested nodeIndex: %d, cluster size: %d\".formatted(server.clusterSize(), nodeIndex)`：消息模板与实参顺序相反，实际输出会把集群大小显示成请求索引、把请求索引显示成集群大小，误导用例作者排查。同时缺少 nodeIndex < 0 校验，负数会一路传到 ClusteredKeycloakServer.getBaseUrl(index) 的 `containers[index]`，抛出 ArrayIndexOutOfBoundsException 而非可读的 IllegalArgumentException；若 start() 尚未执行，containers[index] 为 null 还会退化为 NPE。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.8,
+      "rule": "TESTFIX-001"
+    },
+    {
+      "file": "test-framework/core/src/main/java/org/keycloak/testframework/database/AbstractContainerTestDatabase.java",
+      "line": 88,
+      "summary": "internal 模式下的 JDBC URL 通过字符串替换与「第一个端口/第一张网络」推导，脆弱易错",
+      "failure_scenario": "getJdbcUrl() 的 internal 分支依赖三个隐含假设：容器只加入一张网络（`getNetworks().values().iterator().next()`）、`getExposedPorts().get(0)` 正好是数据库端口、以及 JDBC URL 中一定出现 `getHost() + \":\" + getFirstMappedPort()` 这一子串。任一条不成立（多网络（如用户自定义网络 + 默认 bridge）、多端口暴露的数据库镜像、驱动生成的 URL 用域名而非 host、或 URL 中 host:port 出现多次）都会得到错误的连接串或替换不生效，且在集群测试中表现为难以定位的数据库连接失败。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "TESTINFRA-002"
+    },
+    {
+      "file": "themes/src/main/resources-community/theme/base/admin/messages/messages_ca.properties",
+      "line": 65,
+      "summary": "加泰罗尼亚语 error-invalid-multivalued-size 的 ChoiceFormat 语法被改坏，格式化时抛 IllegalArgumentException",
+      "failure_scenario": "该行把合法的 `{2,choice,0#valors|1#valor|1<valors}` 改成 `{2,choice,0#valors|1#valor|1<1valors}`。ChoiceFormat 要求每个 `|` 分段必须包含 `#`（形如 `limit#子格式`），第三段 `1<1valors` 缺少 `#`，`ChoiceFormat.applyPattern` 会抛出 IllegalArgumentException。该 key 由 MultiValueValidator 在多值属性校验失败时产生，经 Messages/MessageFormat 渲染；因此 ca 语种用户一旦触发多值长度校验错误，错误提示渲染将抛异常（页面 500 或提示丢失）。新增的 theme-verifier 无法拦截：其 normalizeValue 会把 `{n,choice,...}` 整体替换为 \"...\"（VerifyMessageProperties.java:236-238），且 verifyProblematicBlanks 只检查 *_en.properties（同文件:205-209）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "I18N-CHOICEFORMAT-001"
+    },
+    {
+      "file": "themes/src/main/resources/theme/keycloak.v2/login/delete-credential.ftl",
+      "line": 19,
+      "summary": "delete-credential.ftl 的结束标签写成 `</form`，缺少右尖括号导致页面结构损坏",
+      "failure_scenario": "第 19 行由 `</form>` 变成 `</form`。FreeMarker 只把它当普通文本输出，浏览器解析到 `</form` 后进入 end tag 处理状态并继续吞掉后续字符直到遇到下一个 `>`，会把紧随其后的页面尾部标记当作该结束标签的属性丢弃/错乱，导致「删除凭据」页面 DOM 结构损坏（凭据删除确认表单未正确闭合）。这是用户在账户安全页删除安全密钥/OTP 时必经的确认页。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "TEMPLATE-HTML-002"
+    },
+    {
+      "file": "themes/src/main/resources-community/theme/base/login/messages/messages_ja.properties",
+      "line": 475,
+      "summary": "日语 recovery-code-config-warning-title 语义被改成相反含义，误导用户以为恢复码可再次查看",
+      "failure_scenario": "原文（diff 中被删除的行）为「これらのリカバリーコードは、このページを離れるともう表示されません」（离开本页后将不再显示），新值改为「…このページを離れた後に再び表示されます。」（离开本页后会再次显示）。语义完全反转：用户会认为恢复码日后仍可查看，从而不打印/不保存，一旦离开页面恢复码即永久不可见，可能导致账号无法登录（恢复码丢失）。同一文件:479 的 recovery-code-config-warning-message 仍要求用户「务必打印、下载或保存」，两条提示自相矛盾。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.82,
+      "rule": "I18N-SEMANTIC-003"
+    },
+    {
+      "file": "themes/src/main/resources-community/theme/base/email/messages/messages_ru.properties",
+      "line": 2,
+      "summary": "俄语多封邮件正文把已格式化的时长占位符 {3}/{5} 改成原始分钟数 {1}/{4}",
+      "failure_scenario": "email-verification.ftl、password-reset.ftl、identity-provider-link.ftl 的最后一个参数是 linkExpirationFormatter(linkExpiration)（含单位与正确的俄语复数形式），分别位于 {3}、{3}、{5}。本次统一改为 {1} 或 {4} 并硬编码「минут」：emailVerificationBody/emailVerificationBodyHtml(:2,:3) 由 {3}→{1}，identityProviderLinkBody/Html(:5,:6) 由 {5}→{4}，passwordResetBody/Html(:8,:9) 由 {3}→{1}。结果是「через 1 минут」「через 21 минут」等错误复数，且若管理员配置的有效期单位需要本地化格式化（如秒/小时）时显示失真。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "I18N-PLACEHOLDER-005"
+    },
+    {
+      "file": "themes/src/main/resources-community/theme/base/email/messages/messages_ru.properties",
+      "line": 11,
+      "summary": "俄语 executeActionsBody/executeActionsBodyHtml 删除了 {3}（需执行动作列表）并误用 {1} 作为链接有效期",
+      "failure_scenario": "邮件模板 executeActions.ftl 的调用为 msg(\"executeActionsBody\", link, linkExpiration, realmName, requiredActionsText, linkExpirationFormatter(linkExpiration))，即 {3}=需要用户执行的动作列表、{4}=已本地化的时长。本次把 {3} 整段删除、并把 {4} 改成 {1}：收件人不再被告知需要完成哪些动作（如更新密码、验证邮箱），同时时长改用原始分钟数并硬编码单位「минут」，在 1 分钟等场景出现语法错误（如「через 1 минут」）。第 12 行 executeActionsBodyHtml 同样受影响。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.78,
+      "rule": "I18N-PLACEHOLDER-004"
+    },
+    {
+      "file": "themes/src/main/resources/theme/base/login/password-commons.ftl",
+      "line": 6,
+      "summary": "logout-sessions 复选框改为默认勾选，变更了改密页默认登出其他设备的语义",
+      "failure_scenario": "base 主题把 `<input type=\"checkbox\" id=\"logout-sessions\" name=\"logout-sessions\" value=\"on\">` 改为追加 `checked`；keycloak.v2 主题 password-commons.ftl:5 同步把 `value=false` 改为 `value=true`（field.ftl:90-99 的 checkbox 宏以 `<#if value>checked</#if>` 渲染，故 value=true 即默认勾选）。这意味着用户修改密码时默认会登出所有其他设备/会话，会话失效范围被静默扩大，属于与翻译无关的行为默认值变更，且两个主题同时改动，需产品/安全确认是否为预期。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "BEHAVIOR-DEFAULT-006"
+    },
+    {
+      "file": "themes/src/main/resources/theme/base/account/messages/messages_en.properties",
+      "line": 107,
+      "summary": "英文 account 消息把 client_security-admin-console 改成全小写，与同文件其余条目风格不一致",
+      "failure_scenario": "英文基准文件（非翻译文件）中 `client_security-admin-console=Security Admin Console` 被改为 `security admin console`，而同文件 :105-106、:108-110 的 client_account/client_account-console/client_admin-cli/client_realm-management/client_broker 仍为 Title Case。该值会直接显示在账户控制台的授权应用列表中，出现大小写不一致的英文名称，且这是本文件唯一改动，疑似误改。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "I18N-STYLE-007"
+    },
+    {
+      "file": "themes/src/main/resources-community/theme/base/login/messages/messages_pt_BR.properties",
+      "line": 331,
+      "summary": "葡语 WebAuthn 错误提示删除 {0} 参数，丢失具体错误详情",
+      "failure_scenario": "webauthn-error-registration 与 webauthn-error-api-get 原来包含 `<br /> {0}` 占位符（模板会把具体 WebAuthn 错误传入），本次改为仅保留固定句子，同时 :334/:335 的 webauthn-error-auth-verification / webauthn-error-register-verification 仍保留 `<br /> {0}`，同文件内不一致。用户在使用安全密钥注册/认证失败时不再看到具体原因，排障信息丢失。另 :307 该行末尾引入了尾随空格（`…continuar. `），属无意义差异。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "I18N-PLACEHOLDER-008"
+    },
+    {
+      "file": "themes/src/main/resources/theme/base/login/login-update-password.ftl",
+      "line": 7,
+      "summary": "改密/恢复码表单删除 onsubmit 提交守卫，与 login.ftl 保留的做法不一致",
+      "failure_scenario": "login-update-password.ftl（base:7、keycloak.v2:11）与 login-recovery-authn-code-input.ftl（base:7、keycloak.v2:9）删除了 `onsubmit=\"login.disabled = true; return true;\"`，但 keycloak.v2/login/login.ftl:14 仍保留同一守卫。同一主题内提交守卫不一致，改密与恢复码表单失去「提交后禁用按钮」的意图表达（恢复码表单重复提交可能消耗多个一次性恢复码）。该改动与本次翻译同步无关，属夹带的行为修改。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "BEHAVIOR-SUBMIT-009"
+    },
+    {
+      "file": "themes/src/main/resources/theme/base/login/resources/js/passkeysConditionalAuth.js",
+      "line": 48,
+      "summary": "passkeysConditionalAuth.js 把 DOM 元素 id 硬编码进共享脚本，主题自定义模板时会取到 null",
+      "failure_scenario": "initAuthenticate 由回调式改为直接在 :11、:48、:57 调用 document.getElementById(\"kc-form-passkey-button\") / document.getElementById(\"kc-form-login\").style.display。这些 id 来自 base/login/login-passkeys-conditional-authenticate.ftl，其中 `#kc-form-login` 仅在 `<#if realm.password>` 内渲染（:72-73），`:0` 处也未做判空：一旦主题自定义或 realm 未开启密码登录（纯 passkey 场景），getElementById 返回 null，取 .style 会抛 TypeError。脚本由 base/login/login-passkeys-conditional-authenticate.ftl:128 调用，属登录路径。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-DOMID-010"
+    }
+  ],
+  "stderr_tail": "kill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 7 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 123 个文件 / 661225 字符（lockfile=1, generated=9, test=109, exclude=4），明细见审计 mrFilter\n✓ 完成 · 耗时 1411.6s · 模型调用 128 次 · token 输入 642,080（未命中） · 输出 197,883 · 缓存命中 7,738,112（92.3%） · 工具 328 次（主会话 328 + 规则 Skill 0） · Ledger 命中 1 次（未重复读取原文） · $0.1670\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: 置信度过滤丢弃 4 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\keycloak__keycloak@04ad5d...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1412.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.0%)\n[time] 阶段 | 六阶段审计 1411.4s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 8.8s (0.6%) | S1P2 4.5s (0.3%) | S1P3 9.0s (0.6%) | S1P4 52.5s (3.7%) | S1P5 77.2s (5.5%) | S1P6 22.6s (1.6%) | S2P1 6.6s (0.5%) | S2P2 7.2s (0.5%) | S2P3 8.3s (0.6%) | S2P4 85.5s (6.1%) | S2P5 55.2s (3.9%) | S2P6 17.1s (1.2%) | S3P1 11.3s (0.8%) | S3P2 4.1s (0.3%) | S3P3 10.4s (0.7%) | S3P4 77.1s (5.5%) | S3P5 50.9s (3.6%) | S3P6 20.9s (1.5%) | S4P1 18.6s (1.3%) | S4P2 4.5s (0.3%) | S4P3 10.7s (0.8%) | S4P4 116.5s (8.3%) | S4P5 57.9s (4.1%) | S4P6 16.5s (1.2%) | S5P1 8.6s (0.6%) | S5P2 4.1s (0.3%) | S5P3 8.3s (0.6%) | S5P4 152.0s (10.8%) | S5P5 41.1s (2.9%) | S5P6 13.5s (1.0%) | S6P1 12.0s (0.9%) | S6P2 3.7s (0.3%) | S6P3 8.8s (0.6%) | S6P4 141.6s (10.0%) | S6P5 34.2s (2.4%) | S6P6 6.9s (0.5%) | S7P1 12.2s (0.9%) | S7P2 7.0s (0.5%) | S7P3 10.2s (0.7%) | S7P4 123.0s (8.7%) | S7P5 53.3s (3.8%) | S7P6 16.1s (1.1%)\n[usage] 任务总计 | 模型调用 128 次（Agent 128 + 一次性 0） | token 输入 642,080（未命中） | 输出 197,883 | 缓存命中 7,738,112（92.3%） | $0.1670\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\keycloak__keycloak@04ad5d5\\audit\\20261115_041059_443.json",
+  "token_usage": {
+    "input_tokens": 642080,
+    "output_tokens": 197883,
+    "cache_read_input_tokens": 7738112
+  }
+}

@@ -1,0 +1,101 @@
+[
+  {
+    "filePath": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (size > 0) {",
+        "review": "新增分支用 ReadFeatureReport(device->dev, 0x06, data, sizeof(data)) 探测设备能力，随后仅判断 size > 0 就无条件把 sensors_supported、rumble_supported、powerstate_supported 全部置为 true。但 SDL_hid_get_feature_report 的返回值只是后端读到的字节数，既不保证返回的就是 0x06 号报告，也不保证长度符合预期布局（后面 HandleStatePacket 需要 data[14] 的电量字段和 data[15..20] 的 IMU 数据）。一旦设备实际返回的是长度不足或 ID 不同的报告，就会把一个并不具备 IMU / 电量上报能力的设备标记为支持，导致上层注册 SDL_SENSOR_GYRO/SDL_SENSOR_ACCEL、发送 SDL_JOYSTICK_CAP_RUMBLE，并持续向应用推送无效的传感器与电量数据。",
+        "suggestion": "",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 150,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "if (data[0] != 0x03 && data[0] != 0x01 && data[0] != 0x04) {",
+        "review": "[缺陷类型] 报文长度未校验导致的未初始化内存读取 / 协议布局假设。影响评估：蓝牙型号短报告时电量与 IMU 值随机跳动，应用侧表现为电量忽高忽低、陀螺仪漂移异常；若后续改用在堆上动态分配的缓冲，则可能升级为越界读。",
+        "suggestion": "[重构思路] 在解析前按报告 ID 维护最小长度并提前返回，同时为 0x04 显式建立布局（若与 0x01/0x03 不同则单独分支）。代码示例：`const int min_len = (data[0] == 0x04) ? kReport0x04MinLength : kReport0x03MinLength; if (size < min_len) { return; }`，并在 UpdateDevice 中先 `SDL_zeroa(data)` 保证尾部字节确定。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 259,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "static int ReadFeatureReport(SDL_hid_device *dev, Uint8 report_id, Uint8 *report, size_t length)",
+        "review": "[缺陷类型] 跨文件重复实现（duplicated helper）。影响评估：不影响当前功能，但增加维护成本与不一致风险，属于典型的可维护性隐患。",
+        "suggestion": "[重构思路] 把该 helper 提升到 hidapi 驱动的共享头（如 src/joystick/hidapi/SDL_hidapijoystick_c.h 声明为 static inline，或放入公共 .c）并让 ps5 与 8bitdo 共用；同时在其中统一处理失败日志。代码示例：`// SDL_hidapijoystick_c.h\\nstatic inline int HIDAPI_ReadFeatureReport(SDL_hid_device *dev, Uint8 report_id, Uint8 *report, size_t length) { SDL_memset(report, 0, length); report[0] = report_id; return SDL_hid_get_feature_report(dev, report, length); }`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 115,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/joystick/SDL_joystick.c",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "(product_id == USB_PRODUCT_8BITDO_ULTIMATE2_WIRELESS || product_id == USB_PRODUCT_8BITDO_SN30_Pro || product_id == USB_PRODUCT_8BITDO_SN30_Pro_BT ||",
+        "review": "[缺陷类型] 重复的设备 ID 清单（shotgun surgery 风险）。影响评估：新增型号时容易漏改某处，产生难以定位的「设备能连上但无 IMU/电量」类问题。",
+        "suggestion": "[重构思路] 将「需要 feature report 探测的 8BitDo 型号」抽成一个静态判定函数或表驱动数组，供 IsSupportedDevice 与 InitDevice 共用。代码示例：`static bool Is8BitDoReport0x06Device(Uint16 pid) { switch (pid) { case USB_PRODUCT_8BITDO_SN30_Pro: ... return true; default: return false; } }`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 3181,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "product_id == USB_PRODUCT_8BITDO_SF30_Pro ||product_id == USB_PRODUCT_8BITDO_Pro_2 || product_id == USB_PRODUCT_8BITDO_Pro_2_BT);",
+        "review": "[缺陷类型] 代码格式/风格不一致。影响评估：纯风格问题，不影响运行行为，但会影响可读性与后续 review 效率，SDLK 代码库通常要求按 clang-format 统一格式化。",
+        "suggestion": "[重构思路] 用仓库的格式化配置（clang-format）重排该表达式，长条件优先考虑提取局部变量或表驱动判定。代码示例：`return vendor_id == USB_VENDOR_8BITDO && (product_id == USB_PRODUCT_8BITDO_ULTIMATE2_WIRELESS || product_id == USB_PRODUCT_8BITDO_SN30_Pro || product_id == USB_PRODUCT_8BITDO_SN30_Pro_BT || product_id == USB_PRODUCT_8BITDO_SF30_Pro || product_id == USB_PRODUCT_8BITDO_Pro_2 || product_id == USB_PRODUCT_8BITDO_Pro_2_BT);`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 3182,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/joystick/usb_ids.h",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "#define USB_PRODUCT_8BITDO_SN30_Pro                       0x6001    //B + START",
+        "review": "[缺陷类型] 命名规范与注释质量。影响评估：纯风格与文档问题，但会降低宏可搜索性（大小写混用使 grep 结果不直观），也让 PID 与设备工作模式（如 B+START 配对模式、D 模式）的对应关系无法自解释。",
+        "suggestion": "[重构思路] 统一改为 SCREAMING_SNAKE，并用完整句子说明配对/模式含义。代码示例：`#define USB_PRODUCT_8BITDO_SN30_PRO     0x6001 // SN30 Pro, Bluetooth pairing (B + START)\\n#define USB_PRODUCT_8BITDO_PRO_2        0x6003 // Pro 2 in DirectInput (D) mode`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 63,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

@@ -1,0 +1,279 @@
+{
+  "generatedAt": "2026-11-15T03:17:39.622Z",
+  "runId": "20261115_030636_691",
+  "source": "mr",
+  "caseId": "google-gemini__gemini-cli@c6e6248",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/core/src/core/client.ts",
+      "line": 762,
+      "title": "压缩后的 token 复算使用 config.getModel()，'auto' 或 fallback 场景会导致 count_tokens 失败",
+      "description": "tryCompressChat 开头显式把 'auto' 替换成默认模型并做过 fallback 解析（第 660-666 行），注释也写明「Compression occurs before we choose a model, so calling count_tokens before the model is chosen would result in an error」。本次把压缩后的第二次 countTokens 从已解析的 `model` 改成 `this.config.getModel()`，当配置为 auto（DEFAULT_GEMINI_MODEL_AUTO）或当前处于 fallback 模式时，会用一个未解析、且与本次请求不一致的模型名去统计 token。结果是压缩摘要已花掉一次完整 LLM 调用，却在最后一步失败，直接返回 COMPRESSION_FAILED_TOKEN_COUNT_ERROR，上下文压缩整体失效。",
+      "evidence": [
+        "packages/core/src/core/client.ts:762 — model: this.config.getModel(),",
+        "packages/core/src/core/client.ts:656-663 — 注释说明 auto 时须用 placeholder 模型，否则 count_tokens 会报错；并做 getEffectiveModel 解析",
+        "packages/core/src/core/client.ts:682-686 — 压缩前的 countTokens 仍使用解析后的 model",
+        "packages/core/src/core/client.ts:765-773 — newTokenCount === undefined 时返回 COMPRESSION_FAILED_TOKEN_COUNT_ERROR"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 模型名解析口径不一致导致 count_tokens 调用失败。影响评估：auto/fallback 用户每次上下文压缩都在最后一步失败，压缩永不生效，长会话最终触顶上下文上限。",
+        "suggestion": "[重构思路] 复用文件开头同一套解析逻辑（auto → 默认模型、fallback → flash），最好抽成私有方法供两处调用。代码示例：`const countModel = getEffectiveModel(this.config.isInFallbackMode(), configModel === DEFAULT_GEMINI_MODEL_AUTO ? DEFAULT_GEMINI_MODEL : configModel); await this.getContentGeneratorOrFail().countTokens({ model: countModel, contents: chat.getHistory() });`",
+        "subcategory": "模型解析与 token 统计"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/core/src/tools/edit.ts",
+      "line": 256,
+      "title": "取消期间 shouldConfirmExecute 返回 false，会让被取消的编辑继续被调度执行",
+      "description": "本次删除了 shouldConfirmExecute 中 `if (abortSignal.aborted) throw error;`，改为把准备编辑阶段的任何异常吞掉并 `return false`。在 BaseDeclarativeTool 语义下 false 表示「无需用户确认」，CoreToolScheduler 会把该调用置为 ProceedAlways 并进入 scheduled，随后 attemptExecutionOfScheduledCalls 也不检查 signal 就直接置 executing 执行；而 writeTextFile 本身不接收 signal。于是用户在编辑工具校验阶段按下取消后，编辑仍可能被真实写入磁盘。同样的删除也出现在 smart-edit.ts 的两处 catch 中。",
+      "evidence": [
+        "packages/core/src/tools/edit.ts:251-257 — catch 中不再 rethrow，直接 return false",
+        "packages/core/src/core/coreToolScheduler.ts:733-740 — confirmationDetails 为假值时 setToolCallOutcome(ProceedAlways) 并置为 scheduled",
+        "packages/core/src/core/coreToolScheduler.ts:934-954 — attemptExecutionOfScheduledCalls 未检查 signal 即 setStatusInternal(callId, 'executing')",
+        "packages/core/src/tools/edit.ts:162-169 — calculateEdit 只在 ensureCorrectEdit（LLM 修正）路径上才会因 abort 抛错",
+        "packages/core/src/tools/smart-edit.ts diff @@ -490,9 +490,6 @@ 与 @@ -578,9 +575,6 @@ — 同样移除 `if (signal.aborted) throw error;`"
+      ],
+      "rule": "CANCELLATION-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 取消信号被吞掉，导致本应中止的写文件操作继续执行。影响评估：数据完整性风险——用户明确取消后文件仍被修改；同时真实错误也被降级为「无需确认」。",
+        "suggestion": "[重构思路] 恢复取消信号向上传播：abort 时 rethrow，让调度器把该调用标为 cancelled；其它错误继续返回 false/错误结果。代码示例：`catch (error) { if (abortSignal.aborted) { throw error; } const errorMsg = error instanceof Error ? error.message : String(error); console.log(`Error preparing edit: ${errorMsg}`); return false; }`",
+        "subcategory": "取消传播"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/core/coreToolScheduler.ts",
+      "line": 802,
+      "title": "调度/执行阶段的取消被记为 UNHANDLED_EXCEPTION 错误而非 cancelled",
+      "description": "两处 `if (signal.aborted) { setStatusInternal(..., 'cancelled', ...) }` 分支被删除：一处在校验（shouldConfirmExecute）抛错的 catch，一处在执行 Promise 的 catch。现在用户取消导致的中断统一变成 'error' + ToolErrorType.UNHANDLED_EXCEPTION，并通过 createErrorResponse 作为工具错误结果回传给模型。UI 侧 cancelled 映射为 ToolCallStatus.Canceled、error 映射为 Error，用户会看到「工具执行失败」；模型也会收到错误响应而非取消信号，可能再次尝试同一操作。'cancelled' 状态本身仍在（handleConfirmationResponse 中 Cancel/signal.aborted 仍置 cancelled），导致两条取消路径行为不一致。",
+      "evidence": [
+        "packages/core/src/core/coreToolScheduler.ts:801-811 — catch 内只调用 setStatusInternal(reqInfo.callId, 'error', createErrorResponse(..., ToolErrorType.UNHANDLED_EXCEPTION))",
+        "packages/core/src/core/coreToolScheduler.ts:1080-1092 — 执行失败的 catch 删除了 signal.aborted 分支",
+        "packages/core/src/core/coreToolScheduler.ts:841-846 — 确认阶段的取消仍置 'cancelled'",
+        "packages/core/src/core/coreToolScheduler.ts:450-497 — cancelled 会生成 [Operation Cancelled] 的 functionResponse",
+        "packages/cli/src/ui/hooks/useReactToolScheduler.ts:193-196 — cancelled→Canceled、error→Error 的显示映射"
+      ],
+      "rule": "CANCELLATION-002",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 取消状态被错误归类为异常错误。影响评估：取消后 UI 显示失败，模型收到错误 tool response 可能重试同一工具，产生额外的无效工具调用。",
+        "suggestion": "[重构思路] 在 catch 中优先判定 abort，命中则置 cancelled 并返回，否则再走 error 分支。代码示例：`catch (error) { if (signal.aborted) { this.setStatusInternal(callId, 'cancelled', 'Tool call cancelled by user.'); return; } this.setStatusInternal(callId, 'error', createErrorResponse(...)); }`",
+        "subcategory": "状态机一致性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/tools/mcp-tool.ts",
+      "line": 142,
+      "title": "MCP 工具执行移除 AbortSignal 后无法取消，长耗时调用会挂住",
+      "description": "DiscoveredMCPToolInvocation.execute 去掉了 signal 参数，并把「MCP callTool 与 abort 事件竞速」的实现整体删除，改为直接 await this.mcpTool.callTool(functionCalls)。MCP 工具常是长时间运行的远程操作，原先取消时可立即以 AbortError 结束等待；现在即使 signal 已 abort 也会一直阻塞到服务端返回，用户取消后进程仍挂起并占用连接。此外上层依赖 error.name === 'AbortError' 区分取消，这条路径已不再产生 AbortError。",
+      "evidence": [
+        "packages/core/src/tools/mcp-tool.ts:134-142 — `async execute(): Promise<ToolResult>` 且直接 await this.mcpTool.callTool(functionCalls)",
+        "diff 中删除的 `const rawResponseParts = await new Promise<Part[]>((resolve, reject) => { ... signal.addEventListener('abort', onAbort, ...) })`",
+        "packages/cli/src/ui/hooks/useGeminiStream.ts:823 — `else if (!isNodeError(error) || error.name !== 'AbortError')`"
+      ],
+      "rule": "CANCELLATION-003",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 可取消的异步操作失去取消能力。影响评估：取消后 CLI 仍显示在等待，无法释放 MCP 连接与交互控制权。",
+        "suggestion": "[重构思路] 保留 signal 参数与竞速逻辑（可用 Promise.race 或原生 AbortSignal 组合），abort 时以 name='AbortError' 结束。代码示例：`async execute(signal: AbortSignal): Promise<ToolResult> { const parts = await raceWithAbort(this.mcpTool.callTool(functionCalls), signal); ... }`",
+        "subcategory": "异步取消"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/core/geminiChat.ts",
+      "line": 379,
+      "title": "重试判定退化为错误消息正则匹配，丢失 400 短路且易误判",
+      "description": "shouldRetry 从基于 ApiError.status 的判断改为对 error.message 做 includes('429') 与 /5\\d{2}/ 匹配，并删除了 `if (error.status === 400) return false;`。影响：(1) 永久性 400（token 超限、参数非法等）只要消息中出现形如 500/575 的数字（例如 \"(1048575)\" 内的 575）就会被重试，按默认 maxAttempts=5、initialDelayMs=5000、maxDelayMs=30000 会额外阻塞数十秒才暴露真实错误；(2) message 中的请求 ID、token 计数、模型名都可能意外命中 '429' 或 /5\\d{2}/；(3) error 上本就有 status 字段（retry.ts 的 defaultShouldRetry 正是优先读 status），字符串匹配属能力退化。",
+      "evidence": [
+        "packages/core/src/core/geminiChat.ts:375-386 — 使用 `error.message.includes('429')` 与 `error.message.match(/5\\d{2}/)`，且不再排除 400",
+        "packages/core/src/utils/retry.ts:42-55 — defaultShouldRetry 优先使用 status 数值判断",
+        "packages/core/src/utils/retry.ts:29-34 — DEFAULT_RETRY_OPTIONS: maxAttempts 5、initialDelayMs 5000、maxDelayMs 30000",
+        "diff 中删除的 `if (error instanceof ApiError && error.message) { if (error.status === 400) return false; ... }`"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 错误分类从结构化字段退化为脆弱的字符串匹配。影响评估：永久错误被重试导致响应变慢、白耗配额，用户看到的失败时间被放大到几十秒。",
+        "suggestion": "[重构思路] 恢复基于状态码判定并保留 400 短路，字符串匹配仅作无 status 时兜底；复用 defaultShouldRetry 而非重复实现。代码示例：`shouldRetry: (error) => { const status = (error as HttpError)?.status; if (status === 400) return false; if (isSchemaDepthError(getErrorMessage(error))) return false; return defaultShouldRetry(error); }`",
+        "subcategory": "重试策略"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/utils/retry.ts",
+      "line": 86,
+      "title": "retryWithBackoff 移除入参校验与 null 过滤后会静默返回 undefined 或抛 TypeError",
+      "description": "删除 `if (options?.maxAttempts !== undefined && options.maxAttempts <= 0) throw` 与 cleanOptions（过滤 null/undefined 后再合并）后，`{...DEFAULT_RETRY_OPTIONS, ...options}` 会被显式传入的 undefined 覆盖：maxAttempts 为 undefined 时 `while (attempt < undefined)` 一次都不执行，函数静默返回 undefined（签名仍声明 Promise<T>，调用方在解构/使用时崩溃）；shouldRetry 为 undefined 时会在 `!shouldRetry(...)` 处抛 TypeError。该函数经 src/index.ts 再导出，是 @google/gemini-cli-core 的公共 API，外部调用方更容易踩到。",
+      "evidence": [
+        "packages/core/src/utils/retry.ts:73-87 — 直接 `...options` 合并，无 undefined/null 过滤",
+        "packages/core/src/utils/retry.ts:93 — `while (attempt < maxAttempts)`，maxAttempts 为 undefined 时为假，静默返回 undefined",
+        "packages/core/src/utils/retry.ts:186 — `if (attempt >= maxAttempts || !shouldRetry(error as Error))` 在 shouldRetry 为 undefined 时抛 TypeError",
+        "diff 中删除的 `if (options?.maxAttempts !== undefined && options.maxAttempts <= 0) { throw new Error('maxAttempts must be a positive number.'); }` 与 cleanOptions",
+        "packages/core/src/index.ts:45 — export * from './utils/retry.js'"
+      ],
+      "rule": "API-CONTRACT-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 公共工具函数缺少入参防御，失败模式从「明确报错」变成「静默返回 undefined」。影响评估：调用方拿到 undefined 后出现难以定位的空值异常；负/零 maxAttempts 不再被拦截。",
+        "suggestion": "[重构思路] 合并后显式兜底与校验。代码示例：`const opts = { ...DEFAULT_RETRY_OPTIONS, ...Object.fromEntries(Object.entries(options ?? {}).filter(([, v]) => v != null)) }; if (!Number.isInteger(opts.maxAttempts) || opts.maxAttempts <= 0) { throw new Error('maxAttempts must be a positive integer.'); }`",
+        "subcategory": "入参校验"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/utils/schemaValidator.ts",
+      "line": 12,
+      "title": "Ajv 恢复默认 strictSchema，第三方 MCP 工具 schema 可能在编译期抛错",
+      "description": "Ajv 实例从 `new AjvClass({ strictSchema: false })` 改为 `new AjvClass()`。被删除的注释已说明原因：JSON Schema 规范允许非标准关键字，规范行为是忽略；strictSchema 为 true 时 Ajv 会对未识别关键字/未知 format 直接抛错。SchemaValidator.validate 被 BaseDeclarativeTool.validateToolParams 用于校验所有声明式工具（包括 MCP servers/list 返回的任意 parameterSchema），compile 抛出的异常会穿透 build() 并由 buildInvocation 转成工具错误，第三方 MCP 工具整体不可用，而不是给出可读的参数校验提示。",
+      "evidence": [
+        "packages/core/src/utils/schemaValidator.ts:12 — `const ajValidator = new AjvClass();`，同时删除了 strictSchema: false 及其说明注释",
+        "packages/core/src/utils/schemaValidator.ts:32 — `ajValidator.compile(schema)` 可能抛错",
+        "packages/core/src/tools/tools.ts:412-416 — validateToolParams 直接调用 SchemaValidator.validate",
+        "packages/core/src/tools/tools.ts:404-409 — build 中直接抛出校验错误",
+        "packages/core/src/core/coreToolScheduler.ts:570-582 — buildInvocation 捕获后作为工具错误"
+      ],
+      "rule": "SCHEMA-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 校验器配置变更导致第三方 schema 兼容性回退。影响评估：含非标准关键字/自定义 format 的 MCP 工具与内置工具会在参数校验阶段直接报错，且错误信息对模型不可读。",
+        "suggestion": "[重构思路] 恢复 strictSchema: false（保留原注释说明理由），并为未知 format 注册 no-op 以提升兼容性。代码示例：`const ajValidator = new AjvClass({ strictSchema: false });`",
+        "subcategory": "校验器兼容性"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "安全",
+      "file": "packages/core/src/mcp/oauth-provider.ts",
+      "line": 681,
+      "title": "MCP OAuth 动态注册改为固定根路径 well-known，且 registrationUrl 配置被忽略",
+      "description": "本次从 MCPOAuthConfig 删除 registrationUrl 字段，metadataToOAuthConfig 也不再带出 metadata.registration_endpoint，并把手写发现逻辑替换为固定拼 `/.well-known/oauth-authorization-server`（基于 authorizationUrl 的 protocol//host）。后果：(1) 调用方或既有配置里显式提供的 registrationUrl 被静默忽略，无法为非标准注册端点的授权服务器指定端点；(2) serverUrl 只保留 host（丢掉 pathname），issuer 带路径的多租户授权服务器（RFC 8414 的 path-suffix well-known 形式）拿不到 metadata，直接抛 'Failed to fetch authorization server metadata for client registration'；(3) 相比被删除调用点的 OAuthUtils.discoverAuthorizationServerMetadata（按序尝试多个候选端点），新实现只有一次机会。",
+      "evidence": [
+        "packages/core/src/mcp/oauth-provider.ts:681-684 — 硬编码 `new URL('/.well-known/oauth-authorization-server', serverUrl)`",
+        "packages/core/src/mcp/oauth-provider.ts:690-694 — metadata 为 null 时抛出 'Failed to fetch authorization server metadata for client registration'",
+        "packages/core/src/mcp/oauth-utils.ts:133-141 — metadataToOAuthConfig 不再映射 registration_endpoint",
+        "packages/core/src/mcp/oauth-utils.ts:150-160 — discoverAuthorizationServerMetadata 本会按序尝试多个 well-known 端点",
+        "diff 中 MCPOAuthConfig 删除 `registrationUrl?: string;`"
+      ],
+      "rule": "AUTH-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] OAuth 动态客户端注册的端点发现能力退化 + 配置项被忽略。影响评估：非根路径 issuer、非标准注册端点的 MCP 服务器无法完成授权，用户只看到笼统的认证失败。",
+        "suggestion": "[重构思路] 保留 registrationUrl 作为显式覆盖，未提供时复用多端点发现逻辑。代码示例：`const meta = config.registrationUrl ? { registration_endpoint: config.registrationUrl } : await OAuthUtils.discoverAuthorizationServerMetadata(config.authorizationUrl!);`",
+        "subcategory": "OAuth 发现流程"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "性能",
+      "file": "packages/core/src/utils/llm-edit-fixer.ts",
+      "line": 141,
+      "title": "LLM 编辑自我修正失去 maxAttempts:1 限制，交互关键路径可能多等数十秒",
+      "description": "llm-edit-fixer 原先调用 generateJson 时显式传 maxAttempts: 1，本次随 GenerateJsonOptions 一起移除，于是回落到 retryWithBackoff 默认配置（maxAttempts 5、initialDelayMs 5000、maxDelayMs 30000）。该修正位于 EditTool.calculateEdit → ensureCorrectEdit 之内，即 shouldConfirmExecute 的同步关键路径：遇到 429/5xx 时会依次等待约 5s、10s、20s、30s 才失败，用户在编辑确认前长时间无反馈。该修正本身是尽力而为的辅助步骤，不值得多轮退避重试。",
+      "evidence": [
+        "packages/core/src/utils/llm-edit-fixer.ts:136-141 — generateJson 调用中已无 maxAttempts",
+        "packages/core/src/core/baseLlmClient.ts:103 — `const result = await retryWithBackoff(apiCall);` 使用默认配置",
+        "packages/core/src/utils/retry.ts:29-34 — DEFAULT_RETRY_OPTIONS: maxAttempts 5、initialDelayMs 5000、maxDelayMs 30000",
+        "packages/core/src/tools/edit.ts:162-169 — ensureCorrectEdit 在 calculateEdit 内被调用（shouldConfirmExecute 关键路径）"
+      ],
+      "rule": "PERF-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 交互关键路径上的重试次数被意外放大。影响评估：限流或服务端抖动时编辑确认最坏被推迟数十秒，并放大配额消耗。",
+        "suggestion": "[重构思路] 保留按用途区分重试预算的能力：恢复 GenerateJsonOptions.maxAttempts，或让 generateJson 默认使用更小的辅助任务重试预算。代码示例：`const result = await retryWithBackoff(apiCall, { maxAttempts: options.maxAttempts ?? DEFAULT_UTILITY_MAX_ATTEMPTS });` 并在 llm-edit-fixer 中显式传 1。",
+        "subcategory": "重试预算"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/core/src/routing/strategies/compositeStrategy.ts",
+      "line": 105,
+      "title": "compositeStrategy 去掉 Math.round 后 latencyMs 可能为浮点数",
+      "description": "finalizeDecision 原来对 latencyMs 做 Math.round 并注释「Round to ensure int for telemetry」，现在直接 `decision.metadata.latencyMs || totalLatency`。performance.now() 差值与子策略上报耗时都可能是小数毫秒，RoutingDecision.metadata.latencyMs 声明为 number 不会拦截，但会改变下游 model_routing 事件与延迟直方图的取值形态，与既有「毫秒整数」口径不一致；同时该文件原有的「优先采用子策略耗时」的说明注释也被删除，语义更隐晦。",
+      "evidence": [
+        "packages/core/src/routing/strategies/compositeStrategy.ts:94-107 — totalLatency 与 `latencyMs: decision.metadata.latencyMs || totalLatency`（无取整）",
+        "diff 中删除的 `latencyMs: Math.round(latency), // Round to ensure int for telemetry.`",
+        "packages/core/src/routing/routingStrategy.ts:20 — metadata.latencyMs: number",
+        "packages/core/src/telemetry/metrics.ts:301 — modelRoutingLatencyHistogram.record(event.routing_latency_ms, ...)"
+      ],
+      "rule": "TELEMETRY-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 数值精度约定回退。影响评估：路由耗时指标出现小数，与历史数据口径不一致，跨版本对比可能产生虚假波动；不影响功能正确性。",
+        "suggestion": "[重构思路] 保留取整与意图注释。代码示例：`const latency = decision.metadata.latencyMs || totalLatency; ... latencyMs: Math.round(latency), // 保持毫秒整数，便于遥测聚合`",
+        "subcategory": "数值精度约定"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/core/src/core/turn.ts",
+      "line": 103,
+      "title": "删除 thoughtUtils 后 parseThought 从包导出中消失，ThoughtSummary 出现重复定义",
+      "description": "utils/thoughtUtils.ts 被整体删除，src/index.ts 也移除了 `export * from './utils/thoughtUtils.js'`。ThoughtSummary 被内联到 core/turn.ts（该文件经 index.ts 再导出，故 cli 的 `import type { ThoughtSummary } from '@google/gemini-cli-core'` 仍可用），但原来公开的 parseThought(rawText) 不再存在，属于对已发布包的破坏性 API 移除；另外 a2a-server/src/types.ts 还有一份同名 ThoughtSummary 定义，解析逻辑内联为正则后，未来修改解析规则需兼顾多处。",
+      "evidence": [
+        "packages/core/src/index.ts:57 — 删除 `export * from './utils/thoughtUtils.js';`",
+        "packages/core/src/core/turn.ts:103-106 — 新的 ThoughtSummary 类型定义",
+        "packages/core/src/core/turn.ts:252-263 — 解析逻辑内联 `rawText.match(/\\*\\*(.*?)\\*\\*/s)`",
+        "packages/a2a-server/src/types.ts:67 — 另一份 `export type ThoughtSummary = {`",
+        "packages/cli/src/ui/components/LoadingIndicator.tsx:7 — 仍从 @google/gemini-cli-core 导入 ThoughtSummary"
+      ],
+      "rule": "API-SURFACE-002",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 公共工具函数被移除且类型定义重复。影响评估：依赖 parseThought 的外部代码编译失败；解析规则分散后容易行为漂移。",
+        "suggestion": "[重构思路] 保留 utils/thoughtUtils.ts 承载解析实现，turn.ts 仅调用；删除 a2a-server 的重复类型并统一从 core 引用。代码示例：`export { parseThought, type ThoughtSummary } from './utils/thoughtUtils.js'; // turn.ts: const thought = parseThought(rawText);`",
+        "subcategory": "公共 API 与类型去重"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "packages/core/package.json",
+      "line": 3,
+      "title": "包版本回退到更低的 nightly 版本，且发布脚本已删除回滚/冲突检测",
+      "description": "packages/core、packages/test-utils、packages/vscode-ide-companion 的 version 从 0.8.0-nightly.20250925.b1da8c21 回退为 0.7.0-nightly.20250918.2722473a（较早的、带具体 commit hash 的 nightly 版本号）。npm 不允许重复发布同一版本号：若该版本已存在于 registry，nightly 发布将因版本冲突被拒；而本次同时删除了 scripts/get-release-version.js 中的 detectRollbackAndGetBaseline 与 validateVersionConflicts，release-rollback.yml 工作流也被移除，这类「版本低于/等于已发布版本」的情况不再有自动检测与明确提示，问题会推迟到发布阶段才暴露。",
+      "evidence": [
+        "packages/core/package.json:3 — `\"version\": \"0.7.0-nightly.20250918.2722473a\"`",
+        "packages/test-utils/package.json:3 与 packages/vscode-ide-companion/package.json:5 — 同样的版本回退",
+        "scripts/get-release-version.js — 删除 detectRollbackAndGetBaseline/validateVersionConflicts，改为直接比对 NPM dist-tag 与最新 git tag",
+        "diff 中删除的 .github/workflows/release-rollback.yml"
+      ],
+      "rule": "RELEASE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 版本号回退 + 回滚检测能力缺失。影响评估：nightly/预发布流水线可能因版本冲突直接失败，或产出与已发布版本号重复的制品，影响发布可重复性。",
+        "suggestion": "[重构思路] 若回退仅为分支快照，请勿提交版本号变更；若必须回退，保留发布前的版本冲突与回滚基线检测。代码示例：`if (semver.lte(newVersion, highestExistingVersion)) { throw new Error(`Version conflict: ${newVersion} already exists`); }`",
+        "subcategory": "发布版本管理"
+      }
+    }
+  ]
+}

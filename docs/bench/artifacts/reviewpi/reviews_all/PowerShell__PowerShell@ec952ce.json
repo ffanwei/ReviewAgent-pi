@@ -1,0 +1,444 @@
+{
+  "generatedAt": "2026-11-15T00:16:16.696Z",
+  "runId": "20261115_000957_812",
+  "source": "mr",
+  "caseId": "PowerShell__PowerShell@ec952ce",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "安全",
+      "file": ".pipelines/templates/release-publish-pmc.yml",
+      "line": 9,
+      "title": "生产 PMC 发布改为无 Production 环境与审批门的普通 job",
+      "description": "原实现把 PMC 发布放在 EV2 部署任务里，显式声明 `ApprovalServiceEnvironment: Production` 与 `ob_release_environment: Production`，即发到生产需经环境审批。新的单 job 模板只有 `condition: succeeded()`，pool 为 `PowerShell1ES`，既不声明 Production 环境（`environment`/`ob_release_environment`），也没有任何审批 job；而调用方 PowerShell-Release-Official.yml 的 PublishPMC stage 也未补上环境或审批（对比 ReleaseDocker stage 仍保留两个 approvalJob）。结果是向 packages.microsoft.com 生产仓库的实际上线动作失去了独立审批与审计记录，只要上游 stage 成功就会直接执行。",
+      "evidence": [
+        "`.pipelines/templates/release-publish-pmc.yml:7-15` 新 job `PMCPublish`，仅 `condition: succeeded()`，无 environment/审批，pool 为 PowerShell1ES/PSMMSUbuntu20.04-Secure",
+        "diff 删除的旧实现含 `ob_release_environment: \"Production\"` 与 `task: vsrm-ev2.vss-services-ev2.adm-release-task.ExpressV2Internal@1` 的 `ApprovalServiceEnvironment: Production`",
+        "`.pipelines/PowerShell-Release-Official.yml:330-336` PublishPMC stage 只 `dependsOn: PushGitTagAndMakeDraftPublic` 并直接引用模板，未声明 variables/environment/approvalJob",
+        "`.pipelines/PowerShell-Release-Official.yml:342-355` 同一文件中 ReleaseDocker stage 仍保留 approvalJob 模板，说明审批模式在本仓库是既有约定"
+      ],
+      "rule": "SECURITY-RELEASE-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 生产发布路径缺少审批/环境门禁。影响评估：包一旦发布几乎不可回滚，误发布或跳过 `SkipPMCPublish` 的默认 false 会直接影响 PMC 线上仓库，且审计链断裂。",
+        "suggestion": "[重构思路] 为 `PublishPMC` stage 补上 `ob_release_environment: Production`（或 ADO `environment:`），并在 stage 内先放一个 `approvalJob.yml` 审批 job，让 `PMCPublish` job 依赖它。代码示例：`- stage: PublishPMC\\n  variables:\\n    ob_release_environment: Production\\n  jobs:\\n  - template: /.pipelines/templates/approvalJob.yml@self\\n    parameters: { displayName: 'Approve PMC Publish', jobName: ApprovePMC }\\n  - template: /.pipelines/templates/release-publish-pmc.yml@self\\n    parameters: { skipPublish: ${{ parameters.SkipPMCPublish }} }`（并在 pmc 模板 job 上加 `dependsOn: ApprovePMC`）。",
+        "subcategory": "发布审批与环境隔离"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": ".pipelines/templates/release-publish-pmc.yml",
+      "line": 16,
+      "title": "PMC 新模板重复声明 SDL/变量配置，未复用 release-shared.yml",
+      "description": "新的 PMC job 在 16-34 行手工重复声明了 `runCodesignValidationInjection`、`NugetSecurityAnalysisWarningLevel`、`ob_outputDirectory`、`ob_sdl_codeSignValidation_enabled`、`ob_sdl_binskim_enabled`、`ob_sdl_tsa_configFile`、`ob_sdl_credscan_suppressionsFile` 等变量，而仓库已有 `.pipelines/templates/variable/release-shared.yml` 集中维护这些 SDL 变量（含 `ob_sdl_sbom_enabled` 由参数驱动的设计）。重复声明意味着后续 SDL 策略调整需要改两处，容易产生漂移（例如该 job 未声明 `ob_sdl_codeql_compiled_enabled`、也未引入 `GitHubTokens` 等变量组）。",
+      "evidence": [
+        ".pipelines/templates/release-publish-pmc.yml:16-34 手工声明 runCodesignValidationInjection / NugetSecurityAnalysisWarningLevel / ob_outputDirectory / ob_sdl_codeSignValidation_enabled / ob_sdl_binskim_enabled / ob_sdl_tsa_configFile / ob_sdl_credscan_suppressionsFile",
+        ".pipelines/templates/variable/release-shared.yml:15-42 集中定义同名变量（ob_sdl_sbom_enabled、ob_sdl_codeSignValidation_enabled、ob_sdl_binskim_enabled、ob_sdl_tsa_configFile、ob_sdl_credscan_suppressionsFile、ob_sdl_codeql_compiled_enabled 等）",
+        ".pipelines/templates/release-publish-nuget.yml:18-21 同类 job 通过 `- template: ./variable/release-shared.yml@self` 复用集中配置"
+      ],
+      "rule": "MAINTAINABILITY-004",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 变量配置重复而非复用共享模板。影响评估：SDL 开关调整时易遗漏某条流水线，产生合规覆盖漂移，后续维护成本上升。",
+        "suggestion": "[重构思路] 用 `- template: ./variable/release-shared.yml@self` 引入共享变量，仅保留 PMC 特有的变量组。代码示例：`variables:\\n- template: ./variable/release-shared.yml@self\\n  parameters:\\n    REPOROOT: $(Build.SourcesDirectory)/PowerShell\\n    RELEASETAG: '$(ReleaseTag)'\\n- group: 'packages.microsoft.com'`。",
+        "subcategory": "流水线配置复用"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs",
+      "line": 2065,
+      "title": "ProcessCollection 不再被释放，Job 句柄依赖 GC 终结器回收",
+      "description": "原实现用 `using JobProcessCollection jobObject = new();`（其实现 IDisposable，Dispose 关闭 job 与完成端口）。重写后变为 `ProcessCollection jobObject = null;`，而新的 `ProcessCollection` 类未实现 IDisposable、也没有 Dispose 方法，构造时创建的原生 Job 句柄（包在 `SafeJobHandle` 里）只能等 GC 终结器关闭。频繁调用 `Start-Process -Wait` 的场景（如批量脚本）会持续累积未释放的 Kernel Job 句柄，直到下一次 GC，极端情况下可能命中句柄耗尽。",
+      "evidence": [
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2065 `ProcessCollection jobObject = null;`（diff 中旧代码为 `using JobProcessCollection jobObject = new();`）",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2745 `internal class ProcessCollection` 无 IDisposable 实现，全类无 Dispose 方法",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2751/2759 持有 `private readonly SafeJobHandle _jobObjectHandle;` 并在构造函数中 `new SafeJobHandle(jobObjectHandleIntPtr)`",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2103 与 2160 `jobObject = new();` / `jobObject ??= new();` 创建后无任何释放点"
+      ],
+      "rule": "RESOURCE-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 原生句柄未确定性释放。影响评估：Job 句柄泄漏直到 GC，长驻进程/批量脚本中句柄占用持续增长；也削弱了 SafeHandle 提供的确定性清理语义。",
+        "suggestion": "[重构思路] 让 `ProcessCollection` 实现 `IDisposable`（内部 `_jobObjectHandle?.Dispose()`），并在 StartProcessCommand 中恢复 `using` 或 try/finally 释放。代码示例：`internal sealed class ProcessCollection : IDisposable { public void Dispose() => _jobObjectHandle?.Dispose(); }` 与 `ProcessCollection jobObject = null; ... try { ... } finally { jobObject?.Dispose(); }`。",
+        "subcategory": "原生句柄与资源释放"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs",
+      "line": 2154,
+      "title": "UNIX 及回退分支上 Start-Process -Wait 失去 Ctrl+C 取消能力",
+      "description": "重写后 `_waithandle` 只在非 UNIX 的 `#else` 分支内创建，而 `StopProcessing()` 的唯一动作是 `_waithandle?.Set()`。在 Linux/macOS（以及非 UNIX 的 Win7 远程会话回退分支）上等待走的是同步 `process.WaitForExit()`，此时 `_waithandle` 恒为 null，Ctrl+C 触发的 StopProcessing 变成空操作，用户只能等子进程自行退出。变更前 UNIX 侧使用 `process.WaitForExitAsync(_cancellationTokenSource.Token)`，取消令牌可直接打断等待，现在该能力被移除，属于用户可感知的行为回退。",
+      "evidence": [
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2154 `#if UNIX` 分支为 `process.WaitForExit();`（diff 删除 `process.WaitForExitAsync(_cancellationTokenSource.Token).GetAwaiter().GetResult();`）",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2156 `_waithandle = new ManualResetEvent(false);` 位于 `#else`（非 UNIX）分支内",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2186 `protected override void StopProcessing() => _waithandle?.Set();`",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2170 非 UNIX 回退分支同样使用 `process.WaitForExit();`，与 _waithandle 无关联"
+      ],
+      "rule": "CONCURRENCY-002",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 取消机制仅覆盖部分平台/分支，UNIX 与回退路径不可取消。影响评估：`Start-Process -Wait` 在 Linux/macOS 上按 Ctrl+C 无效，交互与 CI 场景可能长时间挂住，是可感知的行为回退。",
+        "suggestion": "[重构思路] 保留与平台无关的取消源：UNIX 继续用 `WaitForExitAsync` + `CancellationTokenSource`，并让 `StopProcessing` 同时取消该令牌；或统一改为「停止标志 + 可超时等待」。代码示例：`#if UNIX\\n_stopCts = new CancellationTokenSource();\\nprocess.WaitForExitAsync(_stopCts.Token).GetAwaiter().GetResult();\\n#else\\n...\\n#endif`，并在 `StopProcessing()` 中同时执行 `_stopCts?.Cancel(); _waithandle?.Set();`。",
+        "subcategory": "取消与中断语义"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs",
+      "line": 2186,
+      "title": "StopProcessing 与 _waithandle 创建存在竞态，启动阶段按 Ctrl+C 会被丢弃",
+      "description": "`_waithandle` 现在是在进程已启动之后、进入 -Wait 分支时才赋值的实例字段（2156 行），而 `StopProcessing()` 只做 `_waithandle?.Set()`（2186 行）。若在进程启动/挂起恢复阶段用户按下 Ctrl+C，StopProcessing 因字段为 null 而静默无效，随后代码仍会创建事件并进入 `WaitOne()`，该次取消即丢失；新语义下再次中断只会让 Wait 提前返回，而不再像以前那样抛出取消异常。原实现中 `_cancellationTokenSource` 是字段级 `new()`，不存在这个 null 窗口。",
+      "evidence": [
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:1607 `private ManualResetEvent _waithandle = null;`（旧代码为 `private readonly CancellationTokenSource _cancellationTokenSource = new();`）",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2156 `_waithandle = new ManualResetEvent(false);` 出现在 `process.Start()`/`StartWithCreateProcess` 之后的 Wait 分支内",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2186 `protected override void StopProcessing() => _waithandle?.Set();` 对 null 静默无声",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2201-2208 `Dispose(bool)` 仅释放 _waithandle，未处理“停止请求早于句柄创建”的情形"
+      ],
+      "rule": "CONCURRENCY-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 取消信号与等待句柄初始化存在竞态（lost wakeup）。影响评估：启动阶段 Ctrl+C 无效，用户需重复打断，自动化脚本可能误以为命令已中断而继续执行后续步骤。",
+        "suggestion": "[重构思路] 先建句柄再启进程，并记录停止标志：进入 Wait 前若已置位则直接返回。代码示例：`private volatile bool _stopRequested;\\nprotected override void StopProcessing() { _stopRequested = true; _waithandle?.Set(); }\\n...\\nif (_stopRequested) { return; }\\njobObject.WaitOne(_waithandle);`（`_waithandle` 在 BeginProcessing 中创建并随 Dispose 释放）。",
+        "subcategory": "取消竞态"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs",
+      "line": 2186,
+      "title": "StopProcessing 与 _waithandle 创建存在竞态，启动阶段的 Ctrl+C 会被丢弃",
+      "description": "`_waithandle` 现在是在进程已经启动之后、进入 -Wait 分支时才赋值的实例字段；`StopProcessing()` 只做 `_waithandle?.Set()`。如果在进程启动/挂起恢复阶段（2156 行之前）用户按下 Ctrl+C，StopProcessing 会因字段为 null 而静默无效，随后代码仍会创建事件并进入 `WaitOne()`，Ctrl+C 就此丢失，只能再按一次（而第二次也只会让 WaitOne 提前返回，不再像以前那样抛出取消异常）。原实现中 `_cancellationTokenSource` 是字段级 `new()`，不存在这个 null 窗口。",
+      "evidence": [
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:1607 `private ManualResetEvent _waithandle = null;`（旧代码为 `private readonly CancellationTokenSource _cancellationTokenSource = new();`）",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2156 `_waithandle = new ManualResetEvent(false);` 在 `StartWithCreateProcess`/`process.Start()` 之后的 Wait 分支内才赋值",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2186 `protected override void StopProcessing() => _waithandle?.Set();` 对 null 静默无声",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2203-2207 Dispose 只释放 _waithandle，未覆盖 StopProcessing 的设置语义"
+      ],
+      "rule": "CONCURRENCY-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 取消信号与等待句柄的初始化存在竞态（lost wakeup）。影响评估：启动阶段按 Ctrl+C 无效，用户需要重复打断，自动化脚本可能误以为命令已中断而继续执行后续步骤。",
+        "suggestion": "[重构思路] 用“先建句柄后启进程”的顺序消除窗口：在 `BeginProcessing`/`ProcessRecord` 开头就创建 `_waithandle`（与平台无关），StopProcessing 只负责 Set；并记录一个 `_stopped` 标志，若在进入 Wait 前已 Set 则直接返回而不进入等待。代码示例：`private bool _stopRequested; protected override void StopProcessing() { _stopRequested = true; _waithandle?.Set(); }` 配合 `if (_stopRequested) return;` 后再 Wait。",
+        "subcategory": "取消竞态"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs",
+      "line": 2786,
+      "title": "QueryInformationJobObject 使用定长结构与非可变数组字段，空 Job 判断依赖失败路径",
+      "description": "`JOBOBJECT_BASIC_PROCESS_ID_LIST` 在 Win32 中是变长结构（`ProcessIdList` 为内联数组），这里把它声明为单个 `IntPtr` 字段，并用 `Marshal.SizeOf(JobList)` 作为 `cbJobObjectLength` 传入。该大小仅够容纳 NumberOfAssignedProcesses/NumberOfProcessIdsInList 等头部字段，没有任何 PID 空间：只要 Job 里还有存活进程，内核就会返回 ERROR_MORE_DATA（函数返回 false）；只有当 Job 变空时才恰好返回 true。也就是说“等待结束”完全依赖「查询失败→查询成功」这一巧合，且代码没有检查 `GetLastError`/返回值，一旦句柄无效或权限不足等其它错误发生，`emptyJobAutoEvent.Set()` 永远不会被调用，`WaitOne()` 又没有超时，`Start-Process -Wait` 会永久阻塞。",
+      "evidence": [
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2786 `dwSize = Marshal.SizeOf(JobList);`",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2787-2795 `if (NativeMethods.QueryInformationJobObject(_jobObjectHandle, JOB_OBJECT_BASIC_PROCESS_ID_LIST, ref JobList, dwSize, IntPtr.Zero)) { if (JobList.NumberOfAssignedProcess == 0) { emptyJobAutoEvent.Set(); } }`，无 else 分支、无 GetLastError 处理",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs 中 `JOBOBJECT_BASIC_PROCESS_ID_LIST` 的 `public IntPtr ProcessIdList;` 为指针而非内联数组，与内核期望的变长布局不一致",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2809-2811 `using (Timer stateTimer = new(jobObjectStatusCb, waitHandleToUse, 0, 1000)) { waitHandleToUse.WaitOne(); }` 无限期等待"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] Win32 变长结构编组不当 + 轮询错误被吞掉。影响评估：等待语义脆弱，任何一次查询异常都会让 `-Wait` 永久挂起（无超时、无日志），排障困难；每秒一次 P/Invoke 轮询也带来额外唤醒开销。",
+        "suggestion": "[重构思路] 二选一：①回到基于 IO 完成端口 / `WaitForSingleObject` 的阻塞等待（无需轮询）；②保留轮询但修正编组与错误处理——按内核建议的 `cbJobObjectLength` 传 `Marshal.SizeOf<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + sizeof(uint) * (n-1)` 的缓冲区（或改用 `JOBOBJECT_ASSOCIATE_COMPLETION_PORT`），并在返回 false 时区分 ERROR_MORE_DATA 与真实失败（记录 debug 日志、必要时 Set 事件退出）。代码示例：`if (!QueryInformationJobObject(...)) { int err = Marshal.GetLastWin32Error(); if (err != ERROR_MORE_DATA) { /* 记录并退出等待 */ } }`。",
+        "subcategory": "P/Invoke 编组与等待判定"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs",
+      "line": 2786,
+      "title": "QueryInformationJobObject 使用定长结构查询变长信息，空 Job 判断依赖失败路径",
+      "description": "`JOBOBJECT_BASIC_PROCESS_ID_LIST` 在 Win32 中是变长结构（`ProcessIdList` 为内联 PID 数组），这里却把 `ProcessIdList` 声明为单个 `IntPtr`（2879 行），再用 `Marshal.SizeOf(JobList)` 作为 `cbJobObjectLength`（2786 行）传入，缓冲区只覆盖头部字段、没有任何 PID 空间。因此只要 Job 内还有存活进程，内核会以 ERROR_MORE_DATA 返回 false；只有 Job 变空时才恰好返回 true。也就是说「等待结束」完全依赖「查询失败→查询成功」这一巧合路径，而 2787 行的 `if` 没有 else 分支、也未检查 `Marshal.GetLastWin32Error()`：一旦查询因句柄无效/权限不足等其它原因失败，`emptyJobAutoEvent.Set()` 永不执行，而 2811 行的 `WaitOne()` 无超时，`Start-Process -Wait` 会永久阻塞且没有诊断信息。",
+      "evidence": [
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2786 `dwSize = Marshal.SizeOf(JobList);`",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2859-2879 `[StructLayout(LayoutKind.Sequential)] internal struct JOBOBJECT_BASIC_PROCESS_ID_LIST`，字段为 `NumberOfAssignedProcess`(2865)、`NumberOfProcessIdsInList`(2872)、`IntPtr ProcessIdList`(2879)（指针而非内联数组）",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2787-2795 仅在 `QueryInformationJobObject(...)` 返回 true 且 `JobList.NumberOfAssignedProcess == 0` 时才 `emptyJobAutoEvent.Set()`，无 else、无 GetLastError 处理",
+        "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs:2806-2812 `using (Timer stateTimer = new(jobObjectStatusCb, waitHandleToUse, 0, 1000)) { waitHandleToUse.WaitOne(); }` 为无超时无限等待"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] Win32 变长结构编组不完整 + 轮询错误被吞掉。影响评估：等待语义脆弱，任何一次异常查询都会让 `-Wait` 永久挂起且无日志，排障困难；同时每秒一次 P/Invoke 轮询带来额外唤醒开销。",
+        "suggestion": "[重构思路] 优先回到基于完成端口/`WaitForSingleObject` 的阻塞等待；若保留轮询，则按内核要求分配变长缓冲区并区分 ERROR_MORE_DATA 与真实失败。代码示例：`int cb = Marshal.SizeOf<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + sizeof(uint) * (maxPids - 1);\\nif (!QueryInformationJobObject(...)) { int err = Marshal.GetLastWin32Error(); if (err != ERROR_MORE_DATA) { /* 记录错误并退出等待 */ } }`。",
+        "subcategory": "P/Invoke 编组与等待判定"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".pipelines/templates/release-githubtasks.yml",
+      "line": 79,
+      "title": "changelog 结束位置正则引用未定义变量 $semanticVersion，release notes 会混入历史版本",
+      "description": "新逻辑用 `$startPattern`（由 `$releaseVersion` 构造）定位起始行、用 `$endPattern` 结束。但脚本里只定义了 `$releaseVersion`（66 行），从未定义 `$semanticVersion`，因此 `-f $semanticVersion.Major, $semanticVersion.Minor, $semanticVersion.Patch` 会格式化为空串，最终 endPattern 退化为 `^## [\\.\\.*`，永远匹配不到真正的下一个版本标题；同时 `{2}*` 的 `*` 位置也写错了（本意应是 `\\]`）。结果是从本次版本标题一直到 CHANGELOG 文件末尾的全部内容都被当作 `-Description` 发布到 GitHub Release 草稿，历史版本的发布说明会被重复公开。原先基于行号切片（$headingStartLines[0] / [1]）的实现能正确截断。",
+      "evidence": [
+        ".pipelines/templates/release-githubtasks.yml:66 `$releaseVersion = '$(ReleaseTag)' -replace '^v',''`（文件中仅定义该变量）",
+        ".pipelines/templates/release-githubtasks.yml:79 `$endPattern = \"^## \\[{0}\\.{1}\\.{2}*\" -f $semanticVersion.Major, $semanticVersion.Minor, $semanticVersion.Patch`",
+        "​.pipelines/templates/release-githubtasks.yml:81-85 `if ($_ -match $startPattern) { $outputLine = $true } elseif ($_ -match $endPattern) { $outputLine = $false }` —— endPattern 不匹配时 outputLine 一直为 true",
+        "​.pipelines/templates/release-githubtasks.yml:89 `Publish-ReleaseDraft ... -Description $clContent`"
+      ],
+      "rule": "CORRECTNESS-005",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 未定义变量导致正则失效 + 字符类书写错误。影响评估：GitHub Release 说明包含全部历史版本（内容冗长且可能包含已废弃条目），每次发版都会产生错误对外文档；该任务无失败信号，问题只在人工查看 Release 时才发现。",
+        "suggestion": "[重构思路] 去掉未定义变量：结束模式应基于“下一个版本标题”，例如 `^## \\[`（任意版本开头，且不等于起始行）或直接解析标题序号做区间切片；同时在脚本开头 `Set-StrictMode -Version Latest` 让未定义变量直接报错。代码示例：`$headerPattern = '^## \\[(?<ver>[^\\]]+)\\]'\\n$lines = Get-Content $filePath\\n$idx = 0..($lines.Count-1) | Where-Object { $lines[$_] -match $headerPattern }\\n$start = ($idx | Where-Object { $lines[$_] -match \"\\[$( [regex]::Escape($releaseVersion) )\\]\" } | Select-Object -First 1)\\n$end = ($idx | Where-Object { $_ -gt $start } | Select-Object -First 1)\\n$clContent = ($lines[$start..($end-1)] -join \\\"`n\\\")`。",
+        "subcategory": "发布说明生成"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".pipelines/templates/release-githubtasks.yml",
+      "line": 79,
+      "title": "changelog 结束正则引用未定义变量 $semanticVersion，release notes 会混入全部历史版本",
+      "description": "新逻辑用 `$startPattern`（由 `$releaseVersion` 构造）定位起始行、用 `$endPattern` 结束。但脚本只定义了 `$releaseVersion`（66 行），从未定义 `$semanticVersion`，因此 79 行的 `-f $semanticVersion.Major, $semanticVersion.Minor, $semanticVersion.Patch` 会格式化为空串，endPattern 退化为 `^## [\\.\\.*`，永远匹配不到下一个版本标题；此外 `{2}*` 中的 `*` 位置也写错（本意应是 `\\]`）。结果是从本版本标题到 CHANGELOG 末尾的全部内容都被作为 `-Description` 发布到 GitHub Release 草稿，历史版本说明会被重复公开；该任务不会报错，问题只在人工查看 Release 时暴露。原实现按标题行号切片（`$headingStartLines[0]`/`[1]`）能正确截断。",
+      "evidence": [
+        ".pipelines/templates/release-githubtasks.yml:66 `$releaseVersion = '$(ReleaseTag)' -replace '^v',''`（文件中仅定义该变量）",
+        ".pipelines/templates/release-githubtasks.yml:79 `$endPattern = \"^## \\[{0}\\.{1}\\.{2}*\" -f $semanticVersion.Major, $semanticVersion.Minor, $semanticVersion.Patch",
+        ".pipelines/templates/release-githubtasks.yml:81-85 `if ($_ -match $startPattern) { $outputLine = $true } elseif ($_ -match $endPattern) { $outputLine = $false }`，endPattern 不匹配时 outputLine 恒为 true",
+        ".pipelines/templates/release-githubtasks.yml:89 `Publish-ReleaseDraft ... -Description $clContent`"
+      ],
+      "rule": "CORRECTNESS-005",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 未定义变量导致正则失效 + 字符类书写错误。影响评估：GitHub Release 说明包含所有历史版本，对外文档错误且冗长，且流水线无失败信号。",
+        "suggestion": "[重构思路] 用“标题行索引区间”替代双正则匹配，并在脚本开头开启严格模式让未定义变量直接失败。代码示例：`Set-StrictMode -Version Latest\\n$header = '^## \\[(?<ver>[^\\]]+)\\]'\\n$lines = Get-Content $filePath\\n$idx = 0..($lines.Count-1) | Where-Object { $lines[$_] -match $header }\\n$start = ($idx | Where-Object { $lines[$_] -match [regex]::Escape(\"[$releaseVersion]\") } | Select-Object -First 1)\\n$end = ($idx | Where-Object { $_ -gt $start } | Select-Object -First 1)\\n$clContent = ($lines[$start..($end-1)] -join \"`n\")`。",
+        "subcategory": "发布说明生成"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "安全",
+      "file": ".pipelines/templates/uploadToAzure.yml",
+      "line": 9,
+      "title": "上传 job 关闭 SBOM 生成，发布产物缺失软件物料清单",
+      "description": "`ob_sdl_sbom_enabled` 由 `true` 改为 `false`，upload_packages job 不再生成/上传 SBOM。该 job 产出的是要发布到 GitHub / blob 的正式产物，关闭 SBOM 会削弱供应链透明度与合规扫描能力（下游消费者与合规审计依赖该清单），且属于与本次“发布链路调整”无直接关系的范围外削弱。若只是为规避该 job 的耗时，建议改用 SDL 豁免流程而不是静默关闭。",
+      "evidence": [
+        "​.pipelines/templates/uploadToAzure.yml:8-9 `- name: ob_sdl_sbom_enabled` / `value: false`（diff 前为 `value: true`）",
+        "​.pipelines/templates/uploadToAzure.yml:2 `- job: upload_packages` 即负责把包上传并作为发布产物的 job"
+      ],
+      "rule": "SECURITY-SUPPLYCHAIN-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 供应链/合规检查被关闭。影响评估：正式发布产物缺少 SBOM，合规审计与下游依赖分析信息缺失；若被发现需回溯补数据，成本更高。",
+        "suggestion": "[重构思路] 保留 SBOM 生成；若确有性能或兼容问题，应在同一 MR 中记录原因并通过配置豁免（如 `ob_sdl_sbom_enabled` 保留 true 而在 SDL 配置里添加明确豁免项），而不是直接置 false。代码示例：`- name: ob_sdl_sbom_enabled\\n  value: true`（并在 MR 描述中说明豁免依据与审批链接）。",
+        "subcategory": "合规与供应链"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "安全",
+      "file": ".pipelines/templates/uploadToAzure.yml",
+      "line": 9,
+      "title": "上传 job 关闭 SBOM 生成，正式发布产物缺失软件物料清单",
+      "description": "`ob_sdl_sbom_enabled` 由 `true` 改为 `false`，`upload_packages` job 不再生成/上传 SBOM。该 job 产出的是要发布到 GitHub / blob 的正式产物，关闭 SBOM 会削弱供应链透明度与合规扫描能力（下游消费者与合规审计依赖该清单）。注意同一仓库的 `.pipelines/templates/variable/release-shared.yml` 仍以参数 `SBOM` 驱动该开关，说明它是被显式管理的 SDL 能力，此处单点关闭与本次“发布链路调整”无直接关系，属于范围外削弱。",
+      "evidence": [
+        "​.pipelines/templates/uploadToAzure.yml:8-9 `- name: ob_sdl_sbom_enabled` / `value: false`（diff 前为 `value: true`）",
+        "​.pipelines/templates/uploadToAzure.yml:2 `- job: upload_packages` 即负责把产物上传并作为发布产物的 job",
+        "​.pipelines/templates/variable/release-shared.yml:5-7、18-19 `SBOM` 参数（默认 false）驱动的 `ob_sdl_sbom_enabled`，表明该开关属于受管 SDL 变量"
+      ],
+      "rule": "SECURITY-SUPPLYCHAIN-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 供应链/合规检查被关闭。影响评估：正式发布产物缺少 SBOM，合规审计与下游依赖分析信息缺失，事后补齐成本更高。",
+        "suggestion": "[重构思路] 保留 SBOM 生成；若确有耗时或兼容问题，应通过 SDL 豁免流程显式记录，而不是静默置 false。代码示例：`- name: ob_sdl_sbom_enabled\\n  value: true`（并在 MR 描述中附豁免依据与审批链接）。",
+        "subcategory": "合规与供应链"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".pipelines/templates/uploadToAzure.yml",
+      "line": 244,
+      "title": "移除 '-gc' 过滤后 GC 变体包会被当作 GitHub Release 资产发布",
+      "description": "复制 GitHub Release 文件时原本排除了扩展名之外再看名字以 `-gc` 结尾/包含的变体（.NET GC 配置相关包），现只按扩展名排除 `.msix`/`.nupkg`。由于 downloads 目录是各平台包 artifact 的汇总，剔除该过滤会把原本刻意不发布的 `-gc` 文件一并复制进 `$(ob_outputDirectory)/GitHubPackages`，进而随 Release 草稿发布给所有用户，同时也会被后续生成 sha256 的步骤纳入清单，造成对外资产清单变化。",
+      "evidence": [
+        ".pipelines/templates/uploadToAzure.yml:243-245 `Get-ChildItem ... | Where-Object { $_.Extension -notin '.msix', '.nupkg' } | Copy-Item -Destination $(ob_outputDirectory)/GitHubPackages`（diff 删除了 `-and $_.Name -notmatch '-gc'`）",
+        ".pipelines/templates/release-githubtasks.yml:38-47 该目录随后用于生成 sha256 校验文件与 GitHub Release 资产"
+      ],
+      "rule": "RELEASE-ASSET-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 发布资产白名单/黑名单规则被放宽。影响评估：GitHub Release 中可能出现本不应公开的 GC 变体包，用户下载选择混乱，且校验清单与官方发布说明不一致。",
+        "suggestion": "[重构思路] 若确需发布 GC 变体，应以显式 include 列表替代隐式放行，并在文档/发布说明中同步说明；否则恢复原有排除条件。代码示例：`Where-Object { $_.Extension -notin '.msix', '.nupkg' -and $_.Name -notmatch '-gc$' }`。",
+        "subcategory": "发布资产清单"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "category": "性能",
+      "file": "src/System.Management.Automation/engine/CommandSearcher.cs",
+      "line": 1451,
+      "title": "命令路径解析热路径改为每次调用 Path.GetInvalidPathChars()，重复分配数组",
+      "description": "`PathUtils` 中缓存的 `SearchValues<char>`（`s_invalidPathChars` / `s_invalidFileNameChars`）被删除后，各处改为 `IndexOfAny(Path.GetInvalidPathChars())`。`Path.GetInvalidPathChars()` 每次调用都会返回一个新数组（先克隆内部数组），因此命令查找/模块加载路径上每次判定非法字符都会产生一次数组分配，且失去 `SearchValues` 的向量化比较；相较之下原实现是零分配的静态缓存。对于每个命令解析都执行的 `CanDoPathLookup`，属于可测量的恒常开销。",
+      "evidence": [
+        "src/System.Management.Automation/engine/CommandSearcher.cs:1451 `if (possiblePath.IndexOfAny(Path.GetInvalidPathChars()) != -1)`",
+        "src/System.Management.Automation/utils/PathUtils.cs 中被删除的 `private static readonly SearchValues<char> s_invalidPathChars = SearchValues.Create(Path.GetInvalidPathChars());` 与 `ContainsInvalidPathChars`",
+        "src/System.Management.Automation/engine/InitialSessionState.cs:2863 同类改写 `userName.IndexOfAny(System.IO.Path.GetInvalidPathChars()) > -1`",
+        "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs 中 `s_charactersRequiringQuotes` 由 `SearchValues<char>` 退化为 `char[]` + `IndexOfAny`"
+      ],
+      "rule": "PERFORMANCE-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 热路径重复分配 + 失去向量化查找。影响评估：命令查找、Tab 补全等高频路径产生额外 GC 压力，大脚本/高频补全场景下延迟与内存分配可测上升。",
+        "suggestion": "[重构思路] 若不希望依赖 `SearchValues` API，至少把字符集合提升为 `static readonly char[]`（或 `FrozenSet`/位图）缓存一次，避免每次调用 `Path.GetInvalidPathChars()` 生成新数组。代码示例：`private static readonly char[] s_invalidPathChars = Path.GetInvalidPathChars();\\nprivate static bool ContainsInvalidPathChars(string path) => path.IndexOfAny(s_invalidPathChars) != -1;` 并在 CommandSearcher/InitialSessionState/ModuleCmdletBase 中复用它。",
+        "subcategory": "热路径内存分配"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "性能",
+      "file": "src/System.Management.Automation/engine/CommandSearcher.cs",
+      "line": 1451,
+      "title": "命令路径解析热路径每次调用 Path.GetInvalidPathChars() 并失去 SearchValues 缓存",
+      "description": "`PathUtils` 中缓存的 `SearchValues<char>`（`s_invalidPathChars` / `s_invalidFileNameChars`）被删除后，各处改为 `IndexOfAny(Path.GetInvalidPathChars())`。`Path.GetInvalidPathChars()` 每次调用都会返回一个新数组，因此命令查找/模块加载路径上每次判定非法字符都会产生一次分配，且不再使用 `SearchValues` 的向量化比较。`CanDoPathLookup` 对每个命令名都会执行，属于可测量的恒常开销；补全侧 `s_charactersRequiringQuotes` 同样由 `SearchValues<char>` 退化为 `char[]` + `IndexOfAny`。",
+      "evidence": [
+        "src/System.Management.Automation/engine/CommandSearcher.cs:1451 `if (possiblePath.IndexOfAny(Path.GetInvalidPathChars()) != -1)`",
+        "src/System.Management.Automation/utils/PathUtils.cs diff 中被删除的 `private static readonly SearchValues<char> s_invalidPathChars = SearchValues.Create(Path.GetInvalidPathChars());` 及 `ContainsInvalidPathChars`",
+        "src/System.Management.Automation/engine/InitialSessionState.cs:2863 同类改写 `userName.IndexOfAny(System.IO.Path.GetInvalidPathChars()) > -1`",
+        "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs 中 `s_charactersRequiringQuotes` 由 `SearchValues<char>` 退化为 `char[]` + 多处 `IndexOfAny`"
+      ],
+      "rule": "PERFORMANCE-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 热路径重复分配 + 失去向量化查找。影响评估：命令解析与 Tab 补全等高频路径产生额外 GC 压力，大脚本/高频补全场景下延迟与分配可测上升。",
+        "suggestion": "[重构思路] 至少把字符集合缓存为静态字段，避免每次调用 `Path.GetInvalidPathChars()` 生成新数组。代码示例：`private static readonly char[] s_invalidPathChars = Path.GetInvalidPathChars();\\nprivate static bool ContainsInvalidPathChars(string path) => path.IndexOfAny(s_invalidPathChars) != -1;`，并在 CommandSearcher/InitialSessionState/ModuleCmdletBase 复用同一缓存。",
+        "subcategory": "热路径内存分配"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P2",
+      "category": "可维护",
+      "file": ".pipelines/templates/release-create-msix.yml",
+      "line": 39,
+      "title": "makeappx 改为运行时从 $(makeappUrl) 下载，依赖未声明的变量与 zip 目录结构",
+      "description": "原实现从已安装的 Windows SDK（`C:\\Program Files (x86)\\Windows Kits\\10\\makeappx.exe`）定位工具，来源确定；新实现改为 `Invoke-RestMethod -Uri '$(makeappUrl)'` 下载并解压，随后硬编码 `$exePath = \"$toolsDir\\makeappx\\makeappx.exe\"`。这带来两个未受控假设：①`makeappUrl` 必须在模板调用方的变量/变量组中存在，否则 URI 变成字面量 `$(makeappUrl)`，任务直接失败；②zip 内部必须恰好是根目录下的 `makeappx.exe`（若有嵌套目录或文件改名，`$exePath` 指向不存在的路径，后续 `& $makeappx bundle` 才报错，且错误定位在别处）。该步骤只有 `retryCountOnTaskFailure: 1`，没有回退到本地 SDK 的路径。",
+      "evidence": [
+        ".pipelines/templates/release-create-msix.yml:39 `Invoke-RestMethod -Uri '$(makeappUrl)' -OutFile \"$toolsDir\\makeappx.zip\"`",
+        "​.pipelines/templates/release-create-msix.yml:40-41 `Expand-Archive ... -DestinationPath \"$toolsDir\\makeappx\"` 后 `$exePath = \"$toolsDir\\makeappx\\makeappx.exe\"`",
+        "​.pipelines/templates/release-create-msix.yml:31-45 原 `Get-ChildItem -Recurse 'C:\\Program Files (x86)\\Windows Kits\\10\\makeappx.exe' | Where-Object { $_.DirectoryName -match 'x64' }` 的本地探测逻辑被移除",
+        "​.pipelines/templates/release-create-msix.yml:67-70 `$makeappx = '$(MakeAppxPath)'` 与 `& $makeappx bundle ...` 依赖上一步设置的变量"
+      ],
+      "rule": "MAINTAINABILITY-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 外部下载依赖 + 路径硬编码，缺少存在性校验与回退。影响评估：msixbundle 构建在下载失败/结构不匹配时中断，且失败点与真实原因相距较远（报错发生在 bundle 步骤），排查成本高。",
+        "suggestion": "[重构思路] 解压后先探测可执行文件是否存在，找不到则回退到本地 SDK 路径；并对 URL 变量做显式校验。代码示例：`if (-not (Test-Path $exePath)) { $exePath = (Get-ChildItem -Recurse $toolsDir -Filter makeappx.exe | Select-Object -First 1).FullName }\\nif (-not $exePath) { throw 'makeappx not found after download' }`。",
+        "subcategory": "外部依赖与失败路径"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P2",
+      "category": "可维护",
+      "file": ".pipelines/templates/release-create-msix.yml",
+      "line": 39,
+      "title": "makeappx 改为运行时从 $(makeappUrl) 下载，缺少变量与 zip 结构校验及回退",
+      "description": "原实现从已安装的 Windows SDK（`C:\\Program Files (x86)\\Windows Kits\\10\\makeappx.exe`）定位工具，来源确定；新实现改为 `Invoke-RestMethod -Uri '$(makeappUrl)'` 下载解压，并硬编码 `$exePath = \"$toolsDir\\makeappx\\makeappx.exe\"`。这引入两个未受控假设：①`makeappUrl` 必须存在于调用方的变量/变量组，否则 URI 成为字面量 `$(makeappUrl)`，任务直接失败；②zip 内部必须恰好是根目录下的 `makeappx.exe`，若有嵌套目录或改名，`$exePath` 指向不存在路径，报错延后到 `& $makeappx bundle` 步骤，定位困难。该步骤仅 `retryCountOnTaskFailure: 1`，未保留回退到本地 SDK 的逻辑。",
+      "evidence": [
+        ".pipelines/templates/release-create-msix.yml:39 `Invoke-RestMethod -Uri '$(makeappUrl)' -OutFile \"$toolsDir\\makeappx.zip\"`",
+        "​.pipelines/templates/release-create-msix.yml:40-41 `Expand-Archive ... -DestinationPath \"$toolsDir\\makeappx\"` 后 `$exePath = \"$toolsDir\\makeappx\\makeappx.exe\"`",
+        "​.pipelines/templates/release-create-msix.yml:31-45 原 `Get-ChildItem -Recurse 'C:\\Program Files (x86)\\Windows Kits\\10\\makeappx.exe' | Where-Object { $_.DirectoryName -match 'x64' }` 本地探测逻辑被移除",
+        "​.pipelines/templates/release-create-msix.yml:67-70 `$makeappx = '$(MakeAppxPath)'` 与 `& $makeappx bundle ...` 依赖上一步设置的变量"
+      ],
+      "rule": "MAINTAINABILITY-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 外部下载依赖 + 路径硬编码，缺少存在性校验与回退。影响评估：msixbundle 构建在下载失败或结构不匹配时中断，且报错点与真实原因相距较远，排查成本高。",
+        "suggestion": "[重构思路] 解压后探测可执行文件是否存在，找不到则回退本地 SDK 并显式校验变量。代码示例：`if (-not (Test-Path $exePath)) { $exePath = (Get-ChildItem -Recurse $toolsDir -Filter makeappx.exe | Select-Object -First 1).FullName }\\nif (-not $exePath) { throw 'makeappx not found after download' }`。",
+        "subcategory": "外部依赖与失败路径"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "tools/metadata.json",
+      "line": 7,
+      "title": "NextReleaseTag 指向的 preview.6 早于 PreviewReleaseTag 的 rc.1，版本序号倒挂",
+      "description": "本次回退后 metadata.json 中 PreviewReleaseTag 为 v7.5.0-rc.1（第 3 行），而 NextReleaseTag 却是 v7.5.0-preview.6（第 7 行）。按语义 NextReleaseTag 表示“下一个要发布的 tag”，它必须不早于（语义版本上大于）已发布的预览 tag，否则同一分支的版本流转会出现“下一个版本比当前版本旧”的自相矛盾状态：基于 NextReleaseTag 构建的产物会被打成 7.5.0-preview.6，低于已经发布的 7.5.0-rc.1，NuGet/PMC 等仓库不允许以更低版本覆盖，发布脚本会直接失败或产出无法上传的包；同时 PreviewReleaseTag 与 ReleaseTag（v7.4.6）分属 7.5.0 与 7.4.x 两条线，若下游只读取其中一个字段来推断当前发布线，会得到互相冲突的结论。",
+      "evidence": [
+        "tools/metadata.json:3 — \"PreviewReleaseTag\": \"v7.5.0-rc.1\"（本次改为 rc.1）",
+        "tools/metadata.json:7 — \"NextReleaseTag\": \"v7.5.0-preview.6\"（本次改为 preview.6，语义版本上小于 rc.1）",
+        "tools/metadata.json:5 — \"ReleaseTag\": \"v7.4.6\"，与 7.5.0 线的 PreviewReleaseTag 并存",
+        "PowerShell.Common.props:46-58 — ReleaseTag 由正则解析为 ReleaseTagVersionPart/ReleaseTagSemVersionPart，并据此生成 PSCoreFileVersion；rc 会额外 +100，说明 tag 的排列顺序直接决定产物版本",
+        "CHANGELOG/preview.md:3 — preview changelog 目前最新条目为 \"## [7.5.0-preview.5] - 2024-10-01\"，不存在 preview.6 的条目"
+      ],
+      "rule": "VERSION-METADATA-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 发布元数据自相矛盾（NextReleaseTag 与 PreviewReleaseTag 版本序倒挂、跨发布线混用）。影响评估：若 NextReleaseTag 被用于打下一个 tag，产物版本会低于已发布的 rc.1，导致包无法推送到 NuGet/PMC 或 Release 流程被打断；若仅供参考字段，也会误导后续发布者与自动化脚本。",
+        "suggestion": "[重构思路] 让 NextReleaseTag 与 PreviewReleaseTag 处于同一条发布线且严格递增；回退到 7.4.6 服务线时，应同步把 NextReleaseTag 调整为 7.5.0-rc.2 或 7.5.0（或在回退分支上改为 7.4.7 一类的下一服务版本），并补充一条一致性校验脚本在 CI 中断言 PreviewReleaseTag < NextReleaseTag。代码示例（校验片段）：`$m = Get-Content tools/metadata.json -Raw | ConvertFrom-Json; $next = [SemanticVersion]$m.NextReleaseTag; $preview = [SemanticVersion]$m.PreviewReleaseTag; if ($next -le $preview) { throw \"NextReleaseTag $next 不大于 PreviewReleaseTag $preview\" }`",
+        "subcategory": "发布版本元数据一致性"
+      }
+    },
+    {
+      "id": "F019",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "tools/cgmanifest.json",
+      "line": 68,
+      "title": "Markdig.Signed 由 0.40.0 降级为 0.39.1，Markdown 渲染行为可能回退",
+      "description": "本次把 Markdig.Signed 从 0.40.0 降到 0.39.1，与 Microsoft.PowerShell.Commands.Utility.csproj 中现存的 0.39.1 一致，因此不会造成清单与工程文件不一致；但这是一次功能库的跨小版本回退，Markdig 负责 Markdown 解析与渲染（如 ConvertFrom-Markdown / Out-ConsoleGridView 之外的 Markdown 展示路径），0.40.0 中的解析修正与渲染行为变化会随之撤销，可能出现既有 Markdown 用例的渲染结果差异。由于该降级与 metadata.json 的版本回退混在同一个 MR 中，缺少说明时难以判断是“为对齐服务分支的必然结果”还是“误提交的降级”。",
+      "evidence": [
+        "tools/cgmanifest.json:68 — \"Version\": \"0.39.1\"（diff 中由 0.40.0 改为 0.39.1）",
+        "src/Microsoft.PowerShell.Commands.Utility/Microsoft.PowerShell.Commands.Utility.csproj:11 — <PackageReference Include=\"Markdig.Signed\" Version=\"0.39.1\" />，与清单一致",
+        "src/Microsoft.PowerShell.Commands.Utility/Microsoft.PowerShell.Commands.Utility.csproj:12 — 同时依赖 Microsoft.PowerShell.MarkdownRender 7.2.1，渲染行为由两者共同决定"
+      ],
+      "rule": "DEPENDENCY-CONSISTENCY-002",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 功能依赖降级缺少说明。影响评估：Markdown 解析/渲染结果可能回退，已有转义、链接、表格等用例的输出可能与 7.5.0 版本不一致；若该降级仅为分支对齐，需避免被后续合并再次带到 7.5.0 线。",
+        "suggestion": "[重构思路] 在合并说明中标注该降级属于分支对齐（revert）而非修正，并在合并回 7.5.0 线时以 0.40.0 为准；如需保留 0.39.1，补充针对 ConvertFrom-Markdown 的回归验证。代码示例（合并回主干时恢复）：`<PackageReference Include=\"Markdig.Signed\" Version=\"0.40.0\" />` 并同步 tools/cgmanifest.json。",
+        "subcategory": "依赖版本回退"
+      }
+    },
+    {
+      "id": "F020",
+      "severity": "P2",
+      "category": "安全",
+      "file": "tools/cgmanifest.json",
+      "line": 738,
+      "title": "System.Security.Cryptography.Pkcs 等安全相关包由 9.0.1 降级为 9.0.0",
+      "description": "本次把 System.Security.Cryptography.Pkcs（第 738 行）、System.Security.Cryptography.Xml、System.Security.Cryptography.ProtectedData、System.Text.Encodings.Web（第 878 行）、System.Net.Http.WinHttpHandler、Microsoft.Bcl.AsyncInterfaces 等一批 .NET 9 服务包从 9.0.1 统一降回 9.0.0。9.0.1 是 .NET 的月度安全服务版本，降级会把该次服务更新中包含的加密/编码相关修复一并退回，等于重新暴露已在 9.0.1 修复的问题（尤其是 Pkcs、Xml 这两个与签名/证书处理直接相关的组件）；同时 cgmanifest.json 是合规扫描（Component Governance）依赖的清单，降级后扫描基线也随之回退，后续升级告警会被掩盖。若该回退是为对齐 release/7.4.x 服务分支，则需明确记录并保证 9.0.0 上不存在未修复的已知 CVE。",
+      "evidence": [
+        "tools/cgmanifest.json:738 — \"Version\": \"9.0.0\"（System.Security.Cryptography.Pkcs，diff 中由 9.0.1 改为 9.0.0）",
+        "tools/cgmanifest.json:878 — \"Version\": \"9.0.0\"（System.Text.Encodings.Web，diff 中由 9.0.1 改为 9.0.0）",
+        "diff 中 System.Security.Cryptography.Xml / System.Security.Cryptography.ProtectedData / System.Security.Permissions / System.Net.Http.WinHttpHandler / Microsoft.Bcl.AsyncInterfaces 同样由 9.0.1 降为 9.0.0",
+        "src/System.Management.Automation/System.Management.Automation.csproj:42 — <PackageReference Include=\"System.Security.Cryptography.Pkcs\" Version=\"9.0.0\" /> 与清单一致，说明降级会真实进入产物"
+      ],
+      "rule": "SECURITY-DEP-DOWNGRADE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 安全修复版本回退（dependency downgrade）。影响评估：加密/编码类组件已有的服务更新修复被撤销，构建产物重新带出已知漏洞；合规扫描基线同步回退，问题被掩盖而非解决。",
+        "suggestion": "[重构思路] 若必须回退 cgmanifest 到 9.0.0 以对齐服务分支，请在 MR/变更说明中给出降级理由与 CVE 评估结论；更稳妥的做法是只回退与分支 API 强相关的版本，把加密相关包保持在 9.0.1 或更高。代码示例（保持修复版本）：`<PackageReference Include=\"System.Security.Cryptography.Pkcs\" Version=\"9.0.1\" />` 并同步更新 tools/cgmanifest.json 中的 `\"Version\": \"9.0.1\"`。",
+        "subcategory": "依赖降级与漏洞回归"
+      }
+    }
+  ]
+}

@@ -1,0 +1,244 @@
+[
+  {
+    "filePath": "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/runners/CommandsWrapper.java",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "this.commands = Property.of(finalCommands);",
+        "review": "[缺陷类型] 同一份命令在两个层次被重复合并（幂等性缺失），且缺少“谁负责最终合并”的单一职责边界。影响评估：一旦任务侧向 CommandsWrapper 注入 interpreter/beforeCommands（新 API 的设计意图），脚本会以重复的 interpreter 参数启动而失败；即使 interpreter 为空，多命令也会被 join 成单条 argv，造成 Exec 失败或错误行为，属于执行路径上的确定性故障。",
+        "suggestion": "[重构思路] 明确唯一合并点：要么由 CommandsWrapper 合并并清空 interpreter/beforeCommands（runner 只做渲染与 internal storage 替换），要么 wrapper 只做渲染、由 runner 统一合并。建议采用前者，并在写回时把 interpreter/beforeCommands 置为 null，保证 TaskRunner.renderCommands 幂等。代码示例：`List<String> finalCommands = ScriptService.scriptCommands(renderedInterpreter, renderedBeforeCommands, renderedCommands, targetOS); this.interpreter = Property.of(List.of()); this.beforeCommands = Property.of(List.of()); this.commands = Property.of(finalCommands);` 并在 TaskRunner.renderCommands 处加注释或断言，要求 getInterpreter()/getBeforeCommands() 返回空集合。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 179,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/plugin/core/flow/ForEachItem.java",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "String value = (String) parent.get(\"taskrun\").get(\"value\");",
+        "review": "[缺陷类型] 空的 Map 解引用（移除了原有的 containsKey 防御）。影响评估：一旦父任务没有 value（仅产出 outputs）而执行上下文仍带 parent，ForEachItem 输出提取会抛 NullPointerException，任务失败并使整个循环执行失败。",
+        "suggestion": "[重构思路] 保留存在性判断，用 Optional/Map 的安全取值，缺失时退回上一层 splitTaskOutput。代码示例：`Map<String, Object> taskrun = parent == null ? null : (Map<String, Object>) parent.get(\"taskrun\"); if (taskrun != null && taskrun.get(\"value\") instanceof String value) { splitTaskOutput = (Map<String, Object>) splitTaskOutput.get(value); }`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 688,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/layout/Labels.vue",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "const labels = this.labelsFromQuery;",
+        "review": "[缺陷类型] 在计算属性返回值上做原地 mutation（副作用 + 共享可变状态）。影响评估：点击第二个标签时会连带切换第一个标签的条件，URL 中的 labels 参数与用户意图不一致；标签高亮也会随渲染顺序抖动，用户看到的选择状态与真实过滤条件不符。",
+        "suggestion": "[重构思路] link() 改为纯函数：先复制一份新的 Map 再改动。代码示例：`link(key, value) { const labels = new Map(this.labelsFromQuery); if (labels.has(key)) { labels.delete(key); } else { labels.set(key, value); } const qs = {...this.$route.query, labels: Array.from(labels, ([k, v]) => `${k}:${v}`)}; delete qs.page; return {name: this.$route.name, params: this.$route.params, query: qs}; }`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 62,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F010",
+        "code": "<span data-component=\"FILENAME_PLACEHOLDER\" v-if=\"labels\">",
+        "review": "[缺陷类型] 调试/脚手架残留与不合规默认值。影响评估：无功能影响，但会污染 DOM 与代码可读性；default 返回 undefined 会让 labelMap 计算属性在未传参时返回 undefined，依赖 v-if 兜底，若后续模板改动易引入渲染异常。",
+        "suggestion": "[重构思路] 删除占位属性，并把默认值改为 `() => ({})`。代码示例：`<span v-if=\"labels\">` 与 `labels: { type: [Object, Array], default: () => ({}) }`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/src/main/java/io/kestra/core/runners/ExecutorService.java",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "ArrayList<TaskRun> taskRuns = new ArrayList<>(execution.getTaskRunList());",
+        "review": "[缺陷类型] 移除既有空集合兜底，引入潜在 NPE。影响评估：动态任务（dynamicTaskRuns）写入路径一旦遇到 taskRunList 为 null 的执行就会抛异常，导致执行状态无法推进；该路径属于执行核心链路，即使触发概率低，排查成本也很高。",
+        "suggestion": "[重构思路] 保留兜底或在数据模型层保证非空，二者取一并保持全仓一致。代码示例：`List<TaskRun> currentTaskRuns = ListUtils.emptyOnNull(execution.getTaskRunList()); ArrayList<TaskRun> taskRuns = new ArrayList<>(currentTaskRuns); ... return taskRuns.size() > currentTaskRuns.size() ? execution.withTaskRunList(taskRuns) : null;`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 993,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "jdbc/src/main/java/io/kestra/jdbc/runner/JdbcExecutor.java",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "this.receiveCancellations.addFirst(this.executionQueue.receive(Executor.class, this::executionQueue));",
+        "review": "[缺陷类型] 并发度削减 + 配置项静默失效。影响评估：高负载部署下执行事件处理吞吐可能显著下降、队列积压增加；依赖 thread-count 扩容的用户升级后行为变化且无提示，属难以定位的容量回归。",
+        "suggestion": "[重构思路] 若削减消费者是有意为之，请同步删除/迁移该配置并在 breaking-change 说明中写明，同时提供替代的并行度开关（或保持可配置的消费者数量，默认值调整即可）。代码示例：`int numberOfThreads = threadCount != 0 ? threadCount : 1; for (int i = 0; i < numberOfThreads; i++) { this.receiveCancellations.addFirst(this.executionQueue.receive(Executor.class, this::executionQueue)); this.receiveCancellations.addFirst(this.workerTaskResultQueue.receive(Executor.class, this::workerTaskResultQueue)); }`",
+        "category": "性能",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 231,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "jdbc/src/main/java/io/kestra/jdbc/repository/AbstractJdbcRepository.java",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "default ->",
+        "review": "[缺陷类型] 公开查询接口能力收缩（向后不兼容）。影响评估：命中该分支的请求会以异常返回（可能为 5xx），影响依赖 namespace 多值过滤的自动化集成与历史链接；且与其它字段的 IN 支持形成不一致语义。",
+        "suggestion": "[重构思路] 二选一：若确实要去掉能力，请在 release note 中标注 breaking change 并返回 4xx 的明确错误信息；若只是 UI 收缩，则后端保留 IN/NOT_IN 映射，实现可与 NAMESPACE_FIELD 的 in/notIn 对齐。代码示例：`case IN -> select = select.and(NAMESPACE_FIELD.in(((Collection<?>) value).stream().map(String.class::cast).toList())); case NOT_IN -> select = select.and(NAMESPACE_FIELD.notIn(((Collection<?>) value).stream().map(String.class::cast).toList()));`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 337,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/filter/utils/helpers.ts",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "operation: \"$range\"",
+        "review": "[缺陷类型] 重构不彻底导致的类型/实现不一致。影响评估：用户在 /executions、/flows 等页面刷新后，筛选条丢失比较符显示（例如 “namespace is xxx” 变成 “namespace: xxx”），日期区间的 between 文案消失；代码层面两套字段并存，容易在后续改动中继续产生行为分歧。",
+        "suggestion": "[重构思路] 在 decodeSearchParams 中直接回填 comparator 对象（用 OPTIONS 匹配，找不到时用 {label: operation, value: operation}），彻底删除 operation 的读写；同时为日期区间定义 $between/$range 对应的 Comparator。代码示例：`const found = OPTIONS.find(o => o.key === field)?.comparators?.find(c => c.value === operation); return {label, value: [...], comparator: found ?? {label: operation, value: operation}};`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 172,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/filter/KestraFilter.vue",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "router.push({query: encodeParams(route.path, currentFilters.value, OPTIONS)});",
+        "review": "[缺陷类型] 状态同步机制被移除但新的数据来源（labels 查询参数）未被接入。影响评估：标签过滤与筛选条行为不一致，用户点选标签后再改其它筛选条件，标签条件会从 URL 消失，列表结果与用户预期不符，且难以察觉。",
+        "suggestion": "[重构思路] 恢复对 route.query 的响应式同步，并让 labels 参数进入统一的 currentFilters 模型（或在 triggerSearch 时合并保留 query.labels）。代码示例：`watch(() => route.query, (q) => { currentFilters.value = decodeParams(route.path, q, props.include, OPTIONS); }, {immediate: true}); ` 以及 `router.push({query: {...encodeParams(route.path, currentFilters.value, OPTIONS), ...(route.query.labels ? {labels: route.query.labels} : {})}})`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 666,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/layout/TopNavBar.vue",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "<h1 class=\"h5 fw-semibold m-0 d-inline-fle\">",
+        "review": "[缺陷类型] CSS 类名拼写错误。影响评估：页面标题区失去 flex 布局，标题与右侧操作区对齐错乱，属于肉眼可见的 UI 回归，且因为类名不存在不会报错，容易长期遗留。",
+        "suggestion": "[重构思路] 修正为 d-inline-flex；建议在 CI 中加入模板类名的简单校验（或使用 eslint 插件检查 bootstrap 类名拼写）。代码示例：`<h1 class=\"h5 fw-semibold m-0 d-inline-flex\">`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 11,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/translations/en.json",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "\"title\": \"Need help?\",",
+        "review": "[缺陷类型] 用户可见文案的语法/语义回归。影响评估：错误文案会出现在删除/暂停/强制运行等确认对话框和帮助提示中，降低可读性并可能引起误解；help.text 变成病句后基本传达不出“可以来 Slack 求助”的意思。",
+        "suggestion": "[重构思路] 回退这些无必要的改写，或请英文母语者/产品文档负责人统一校对；建议对 en.json 这类文案改动走单独的文档 PR 以便 review。代码示例：`\"text\": \"Ask any question in our Slack community. If you are stuck, we are happy to help you. ✋\"`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 729,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ui/src/components/executions/outputs/Wrapper.vue",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "const dragSidebar = () => {};",
+        "review": "[缺陷类型] 死交互（可见但无功能的控件）。影响评估：用户可感知的交互承诺未被兑现，降低面板可用性认知；同时保留的空函数与 TODO 会长期滞留。",
+        "suggestion": "[重构思路] 在功能未实现前先移除 slider 元素与其样式（栅格已提供固定比例布局），或以 feature flag 隐藏；实现时用 pointer events + 计算列宽。代码示例：`<!-- 暂时移除以避免死交互 -->\n<!-- <div class=\"slider\" @mousedown.prevent.stop=\"dragSidebar\" /> -->`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 206,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/workflow-test.yml",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "frontend:",
+        "review": "[缺陷类型] CI 触发范围扩大导致资源浪费。影响评估：PR 反馈时间变长、CI 分钟数与 Sonar 配额消耗上升；对大型矩阵并行执行的工作流尤其明显。若这是为规避 paths-filter 误判（例如前后端共享代码）而有意为之，建议在 PR 描述中说明。",
+        "suggestion": "[重构思路] 若需保留按需执行，使用路径过滤但把共享目录（core、gradle、.github 必需文件）纳入 backend 的匹配集合，避免误跳过后端测试。代码示例：`filters: |\n  ui:\n    - 'ui/**'\n  backend:\n    - '!{ui,.github}/**'\n    - '.github/workflows/**'`",
+        "category": "性能",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 22,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

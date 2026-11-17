@@ -1,0 +1,152 @@
+{
+  "instance_id": "kestra-io__kestra@3c2a276",
+  "repo": "kestra-io/kestra",
+  "base_commit": "a716094a9d3c3522fb40ea988b3dab2763d7519c",
+  "head_commit": "3c2a2765fcd06d7fe127e362ddc9a706d4073047",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 278.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 13,
+  "review_output": [
+    {
+      "file": "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/runners/CommandsWrapper.java",
+      "line": 179,
+      "summary": "命令在 wrapper 与 runner 侧被重复合并，interpreter/beforeCommands 可能被拼接两次",
+      "failure_scenario": "CommandsWrapper.run() 先用 ScriptService.scriptCommands 把 interpreter、beforeCommands、commands 合并成 finalCommands 并写回 this.commands，但没有清空自身持有的 interpreter/beforeCommands 字段；随后 realTaskRunner.run(taskRunnerRunContext, this, ...) 中 Process/Docker 又会调用 TaskRunner.renderCommands，后者再次把 getInterpreter()/getBeforeCommands() 与 getCommands() 平铺拼接，导致 interpreter 与 beforeCommands 被前置两次，实际执行的是被污染的 argv（例如 /bin/sh -c /bin/sh -c <script>）。另外当 interpreter 为空时，scriptCommands 会把多条命令用行分隔符合并成单个字符串元素，Process 会把它当作可执行文件路径去 exec，命令执行会失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/flow/ForEachItem.java",
+      "line": 688,
+      "summary": "移除 parent 中 taskrun 的存在性判断后可能抛 NullPointerException",
+      "failure_scenario": "extractOutput 现在只要 runContext 变量里存在 parent 就直接执行 parent.get(\"taskrun\").get(\"value\")，而 Execution.parents() 只有在父 TaskRun 的 value 非 null 时才写入 taskrun 键（仅有 outputs 的父任务不会写入）。因此当 parent 存在但缺少 taskrun 时会解引用 null，导致 ForEachItem 在提取子任务输出时抛 NPE。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "NULL-SAFETY-001"
+    },
+    {
+      "file": "ui/src/components/layout/Labels.vue",
+      "line": 62,
+      "summary": "link() 直接修改 computed 返回的 Map，导致标签链接互相污染",
+      "failure_scenario": "labelsFromQuery 是 computed，返回一个新的 Map；但 link() 在这个 Map 上执行 delete/set，模板又对每个 label 依次调用 link(key, value) 与 checked(key, value)。同一轮渲染中，前一个标签对 Map 的修改会被后一个标签的 link() 看到，生成“同时切换多个标签”的错误 URL；checked() 的判定也会随渲染顺序变化，出现标签高亮错乱。由于 computed 依赖 route.query 而非 Map 内容，修改不会被检测，状态会一直残留到下一个标签的渲染。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "UI-STATE-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/ExecutorService.java",
+      "line": 993,
+      "summary": "addDynamicTaskRun 移除 taskRunList 的 null 兜底后存在空指针风险",
+      "failure_scenario": "原实现用 ListUtils.emptyOnNull(execution.getTaskRunList()) 兜底，本次改为 new ArrayList<>(execution.getTaskRunList())，并在第 1014 行再次调用 execution.getTaskRunList().size()。Execution.taskRunList 没有 @Builder.Default，prebuild 也未初始化它，Execution.newExecution 构造的实例该字段为 null，因此一旦该路径收到 taskRunList 为 null 的执行（如刚由 newExecution 创建、尚未写入任何 task run 的执行），会直接抛 NullPointerException 并中断动态任务写入。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "NULL-SAFETY-002"
+    },
+    {
+      "file": "jdbc/src/main/java/io/kestra/jdbc/runner/JdbcExecutor.java",
+      "line": 231,
+      "summary": "执行队列改为单消费者，且 kestra.jdbc.executor.thread-count 静默失效",
+      "failure_scenario": "原先按 CPU 数（最小 2）为 executionQueue 与 workerTaskResultQueue 注册多个 receive 消费循环，本次改为各注册一次；JdbcQueue.poll 把消费循环放在线程池中的一个线程里，并在该线程内同步 forEach 消费批次消息，因此单消费者意味着执行事件与 Worker 结果只能串行处理，跨队列/跨执行无并行度。同时删除了 @Value(\"${kestra.jdbc.executor.thread-count:0}\") 字段与对应日志，已有部署对该配置的调整将被静默忽略，也无法再通过配置恢复并行度。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-CONCURRENCY-001"
+    },
+    {
+      "file": "jdbc/src/main/java/io/kestra/jdbc/repository/AbstractJdbcRepository.java",
+      "line": 337,
+      "summary": "namespace 过滤移除 $in/$notIn 支持，属破坏性的公开 API 变更",
+      "failure_scenario": "applyNamespaceCondition 删除了 IN/NOT_IN 分支，二者现在落入 default 并抛 UnsupportedOperationException。通用字段路径（同文件 301-314 行）仍然支持 IN/NOT_IN，说明这只是 namespace 的特例收缩；前端虽同步删除了 namespace 的 IN/NOT_IN 比较符，但已有的 REST 调用方、保存的过滤器或外部脚本仍可能发送 filters[namespace][$in]=a,b，升级后会直接报错而不是降级处理。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "ui/src/components/filter/utils/helpers.ts",
+      "line": 172,
+      "summary": "operation→comparator 迁移只做了一半，URL 解码出的过滤器缺少 comparator",
+      "failure_scenario": "CurrentItem 已删除 operation 字段、Label.vue 改为只读 option.comparator?.label，但 decodeSearchParams 仍然产出 operation（日期分支还写入未在任何 COMPARATORS 中定义的 \"$range\"），encodeSearchParams 仍回退读取 filter.operation。结果是搜索页从 URL 解码出的筛选条件没有 comparator 对象，筛选条不再显示比较符（含日期区间），重新编码只能走 operation 回退分支；类型定义与实现长期不一致，后续新增比较符极易漏改。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "ui/src/components/filter/KestraFilter.vue",
+      "line": 666,
+      "summary": "移除 route.query 同步后，标签过滤与筛选条不再联动并会在下一次筛选时丢失",
+      "failure_scenario": "KestraFilter 删除了对 route.query 的 watch（原来带 immediate，负责把 URL 中的过滤条件解码回 currentFilters），只在 onMounted 解码一次；而 triggerSearch 用 router.push({query: encodeParams(route.path, currentFilters.value, OPTIONS)}) 整体重建 query，encodeParams/encodeSearchParams 只产出 filters[...] 与 q，不会保留别的查询键。与此同时 Labels.vue 改为把标签写进 query.labels，因此点击标签后筛选条不会同步显示该条件，随后任意一次筛选操作都会把 labels 参数整体覆盖掉，标签过滤静默失效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "UI-STATE-003"
+    },
+    {
+      "file": "ui/src/components/layout/TopNavBar.vue",
+      "line": 11,
+      "summary": "标题 class 被误写成 d-inline-fle，Bootstrap 工具类失效",
+      "failure_scenario": "h1 的 class 从 d-inline-flex 改成了 d-inline-fle（缺字符的拼写错误），Bootstrap 中没有该类名，标题元素会退回默认的块级/内联显示方式，导致 TopNavBar 标题与插槽内容（如状态、按钮区）排版错位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "TYPO-001"
+    },
+    {
+      "file": "ui/src/components/layout/Labels.vue",
+      "line": 2,
+      "summary": "模板中残留 FILENAME_PLACEHOLDER 占位属性",
+      "failure_scenario": "重写后的模板根节点带有 data-component=\"FILENAME_PLACEHOLDER\"，这是脚手架/模板占位符遗留，不属于有效业务属性，会渲染到 DOM 中并增加后续维护者的困惑；同时 props.labels 的 default 写成 `() => {}`（返回 undefined 而非空对象），与 Object 类型默认值约定不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "CLEANUP-001"
+    },
+    {
+      "file": "ui/src/translations/en.json",
+      "line": 729,
+      "summary": "英文文案改写引入多处语法错误",
+      "failure_scenario": "en.json 中多处英文被改写成不合语法的表达，例如 help.text 变成 \"we are help to help you\"、\"error in editor\" 变成 \"An error have been found in the editor\"、\"delete confirm\" 变成 \"Are you sure to delete ...\"、\"pause title\" 中的 \"will still be process\"、\"note\" 中的 \"must be accommodate\"。这些是面向最终用户的界面文案，语法错误会直接影响产品专业度与可理解性（help.text 甚至语义不通）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "DOC-QUALITY-001"
+    },
+    {
+      "file": "ui/src/components/executions/outputs/Wrapper.vue",
+      "line": 206,
+      "summary": "分隔条仍渲染但拖拽处理是空实现",
+      "failure_scenario": "Outputs 面板改为 el-row/el-col 栅格后，旧的 leftWidth 拖拽逻辑被删除，但模板仍渲染 .slider 元素并绑定 @mousedown.prevent.stop=\"dragSidebar\"，而 dragSidebar 是带 TODO 的空函数；样式里也保留了 cursor: col-resize。用户会看到可拖拽的光标提示并尝试拖动却毫无反应，属于误导性交互。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "UI-DEADCODE-001"
+    },
+    {
+      "file": ".github/workflows/workflow-test.yml",
+      "line": 22,
+      "summary": "移除 paths-filter 后 UI-only 变更也会跑后端全套测试",
+      "failure_scenario": "file-changes 作业（dorny/paths-filter 过滤 ui/** 与 !{ui,.github}/**）以及 frontend/backend 上的 needs + if 条件被删除，两个测试套件现在无条件执行。对仅修改 ui/ 的 PR 会额外执行完整的后端构建、测试、覆盖率上传与 Sonar 扫描，CI 时长与成本显著上升；反之 .github 或文档类改动现在也会触发全量测试。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "CI-COST-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\kestra-io__kestra\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\kestra-io__kestra@3c2a276.diff\n  caseId              kestra-io__kestra@3c2a276\n  --issue             (未传)\n  --taskId            kestra-io__kestra@3c2a276\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 7 个文件 / 18589 字符（test=7），明细见审计 mrFilter\n✓ 完成 · 耗时 259.0s · 模型调用 29 次 · token 输入 93,431（未命中） · 输出 33,329 · 缓存命中 1,525,632（94.2%） · 工具 48 次（主会话 48 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0267\n[time] 阶段耗时 | 总墙钟 260.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 258.8s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.6s (0.2%)\n[time] 审计明细 | P1 6.8s (2.6%) | P2 2.5s (1.0%) | P3 8.4s (3.3%) | P4 135.9s (52.5%) | P5 85.8s (33.2%) | P6 19.3s (7.5%)\n[usage] 任务总计 | 模型调用 29 次（Agent 29 + 一次性 0） | token 输入 93,431（未命中） | 输出 33,329 | 缓存命中 1,525,632（94.2%） | $0.0267\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\kestra-io__kestra@3c2a276\\audit\\20261115_005938_417.json",
+  "token_usage": {
+    "input_tokens": 93431,
+    "output_tokens": 33329,
+    "cache_read_input_tokens": 1525632
+  }
+}

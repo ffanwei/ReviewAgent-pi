@@ -1,0 +1,124 @@
+[
+  {
+    "filePath": "pkg/gofr/datasource/mongo/mongo.go",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if parsedURL.Scheme != \"mongodb\" {",
+        "review": "[缺陷类型] 连接串方案白名单过窄导致合法配置被判为非法。影响评估：使用 mongodb+srv://（Atlas 默认形态）或其它 driver 支持方案的既有服务在升级后无法连接数据库，且仅有一条笼统的错误日志，排查成本高；属于向后不兼容的行为回退。",
+        "suggestion": "[重构思路] 要么放宽方案校验（mongodb、mongodb+srv 均允许），要么直接复用官方 driver 的 connstring 解析器做校验，避免自己维护白名单；同时 host 提取失败也不应阻断连接，可降级为日志字段。代码示例：`var allowed = map[string]bool{\"mongodb\": true, \"mongodb+srv\": true}`；`if !allowed[parsedURL.Scheme] { return \"\", errIncorrectURI }`。",
+        "category": "可靠性",
+        "subcategory": "连接串校验回归",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 172,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "u.User = url.UserPassword(url.QueryEscape(config.User), url.QueryEscape(config.Password))",
+        "review": "[缺陷类型] 手工转义 + 标准库自动转义导致的二次编码。影响评估：密码或库名包含 @ / : % 空格等字符时连接 MongoDB 认证失败或连到错误库，且错误信息仅是 ping 失败，难以定位。",
+        "suggestion": "[重构思路] 交给 net/url 统一转义：UserPassword 传原始值，Path 直接赋未转义的库名（若需严格禁止 '/' 可在赋 Path 前自行校验）；或者直接使用 driver 的 connstring 构建工具。代码示例：`u.Path = \"/\" + config.Database`；`if config.User != \"\" { u.User = url.UserPassword(config.User, config.Password) }`；随后 `return u.String(), u.Hostname(), nil`。",
+        "category": "可靠性",
+        "subcategory": "URL 转义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 156,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F007",
+        "code": "if config.User != \"\" && config.Password != \"\" {",
+        "review": "[缺陷类型] 凭据组合条件判断导致配置被静默忽略。影响评估：运维只配置了用户名而密码来源缺失时会以匿名连接，权限行为与预期不一致且无告警。",
+        "suggestion": "[重构思路] 以 User 是否非空作为判断依据（密码允许为空并显式传递），或在只配置一半时直接返回配置错误，避免静默降级。代码示例：`if config.User != \"\" { if config.Password == \"\" { return \"\", \"\", fmt.Errorf(\"%w: password is empty\", errMissingField) }; u.User = url.UserPassword(config.User, config.Password) }`。",
+        "category": "可靠性",
+        "subcategory": "凭据配置校验",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 155,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F008",
+        "code": "c.logger.Debugf(\"connecting to MongoDB at %v to database %v\", c.config.Host, c.config.Database)",
+        "review": "[缺陷类型] 日志字段选取错误 + 重复日志。影响评估：使用 URI 配置时连接日志缺失目标地址，排障困难；重复成功日志增加噪音。",
+        "suggestion": "[重构思路] 统一使用 generateMongoURI 返回的 host，并合并两条成功日志为一条。代码示例：`c.logger.Debugf(\"connecting to MongoDB at %v to database %v\", host, c.config.Database)`；删除 L127，仅保留 `c.logger.Logf(\"connected to MongoDB at %v to database %v\", host, c.config.Database)`（放在 c.Database 赋值之后）。",
+        "category": "可读性",
+        "subcategory": "日志质量",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 98,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "pkg/gofr/container/sql_mock.go",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "func (m sqlMockDB) Select(_ context.Context, _ interface{}, query string, args ...interface{}) {",
+        "review": "[缺陷类型] mock 能力被静默削弱（数据回填消失）。影响评估：下游基于 SQL mock 的测试失去验证结果映射的手段，可能长期假阳性；升级后既有测试若依赖回填数据会直接断言失败。",
+        "suggestion": "[重构思路] 若确要移除反射回填，应同步修正注释并通过显式 API 声明返回值（例如 ExpectSelect(...).WillReturnRows(...)），或至少在 Select 中记录\"value 未被填充\"的警告；并更新变更说明指导使用方改用 go-sqlmock 的 Rows 置入。代码示例：`func (m sqlMockDB) Select(_ context.Context, dest interface{}, query string, args ...interface{}) { ...; if dest != nil { m.logger.Debugf(\"Select mock does not populate %T\", dest) } }`，配合 `ExpectSelect(...).WillReturnRows(rows)`。",
+        "category": "可测试性",
+        "subcategory": "测试 mock 能力退化",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 44,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "func (m *mockSQL) ExpectSelect(_ context.Context, _ interface{}, query string, args ...interface{}) {",
+        "review": "[缺陷类型] 公开测试辅助 API 的不兼容变更。影响评估：下游项目升级后测试代码编译失败，需人工改写；由于仓库内无调用点，CI 无法提前发现。",
+        "suggestion": "[重构思路] 保留返回 *queryWithArgs 以维持链式调用兼容（ReturnsResponse 可标记 Deprecated 后逐步移除），或按语义化版本要求在主版本升级中说明；同时在包文档/CHANGELOG 中写明迁移方式。代码示例：`func (m *mockSQL) ExpectSelect(...) *queryWithArgs { ...; return &m.queryWithArgs[0] }`，`// Deprecated: mock no longer populates value; use ExpectSelect with sqlmock rows instead`。",
+        "category": "可维护",
+        "subcategory": "公开 API 兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 110,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "m.logger.Fatalf(\"Did not expect any calls for Select with query: %q\", query)",
+        "review": "[缺陷类型] 测试辅助代码用进程级终止做断言。影响评估：失败信息丢失（无用例名与堆栈）、同包其它测试被中断，CI 上表现为无解释的 exit status 1。",
+        "suggestion": "[重构思路] 让 mock 持有 *testing.T（或用 t.Errorf/t.FailNow）以标准方式报告失败；若必须 fail-fast，采用 t.Fatalf 而非 os.Exit。代码示例：`type sqlMockDB struct { ...; t *testing.T }`；`if expectedText != query { m.t.Fatalf(\"expected query: %s, actual query: %s\", expectedText, query) }`。",
+        "category": "可测试性",
+        "subcategory": "测试失败反馈",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 46,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "return &m.expectedHealthCheck[0]",
+        "review": "[缺陷类型] 返回容器内部切片元素的指针，且该切片会被重建。影响评估：非链式写法下期望值写入丢失，测试表现不稳定且难以排查。",
+        "suggestion": "[重构思路] 改为传统追加并把返回指针保持在稳定位置（末尾），消费端相应从头部消费；或返回独立分配的期望对象并在消费时查找，避免暴露内部切片元素地址。代码示例：`hc := health{}; m.expectedHealthCheck = append(m.expectedHealthCheck, hc); return &m.expectedHealthCheck[len(m.expectedHealthCheck)-1]`，消费端改为 `idx := 0; expected := m.expectedHealthCheck[idx]; m.expectedHealthCheck = m.expectedHealthCheck[idx+1:]`。",
+        "category": "可靠性",
+        "subcategory": "指针失效",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 135,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

@@ -1,0 +1,202 @@
+{
+  "instance_id": "microsoft__typescript-go@892b4a3",
+  "repo": "microsoft/typescript-go",
+  "base_commit": "a9efe52c52001ea5b49d2ae8d7b0fa32ec8339f3",
+  "head_commit": "892b4a3f6b701352047ceb019fc0683ab1146bb3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 751.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 18,
+  "review_output": [
+    {
+      "file": "internal/ls/languageservice.go",
+      "line": 17,
+      "summary": "NewLanguageService 接收 ctx 却未赋给 LanguageService.ctx，字段恒为 nil",
+      "failure_scenario": "LanguageService 结构体新增了 ctx 字段，构造函数也新增了 ctx 形参，但构造体只赋值 host 与 converters，ctx 被静默丢弃。任何方法一旦读取 l.ctx 都会拿到 nil context：本应随请求取消、携带 request ID 的操作失去上下文，或对 nil context 调用 Done/Err 时 panic。调用点已传入真实 ctx，说明设计意图是使用它，实现却未落地。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "internal/ls/languageservice.go",
+      "line": 18,
+      "summary": "NewLanguageService 接收 ctx 却未保存到 l.ctx，导致引用查找使用 nil context",
+      "failure_scenario": "LanguageService 新增了 ctx 字段，构造函数签名也改成 NewLanguageService(ctx, host)，但函数体只初始化 host 与 converters，从未把 ctx 赋给 l.ctx。唯一调用点 project.go:343 虽然传入了正确的请求 ctx，结果 l.ctx 恒为 nil。findallreferences.go 中三处改成 program.GetTypeChecker(l.ctx)，于是 checkerPool.GetChecker 拿到的 requestID 恒为 \"\"：getCheckerLocked 仍把 checker 标记为 inUse，但不写入 requestAssociations，导致「一个请求只能使用一个 checker」的复用保护与 GetLanguageServiceForRequest 的清理断言（isRequestCheckerInUse）全部失效，同一请求内可能从池中取到与其它代码不同的 checker 而混用不同类型对象，并且请求取消无法关联到该 checker。core.GetRequestID 新增的 ctx==nil 返回 \"\" 恰好把这个编程错误静默吞掉。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "CONTEXT-LIFECYCLE-001"
+    },
+    {
+      "file": "internal/ls/signaturehelp.go",
+      "line": 77,
+      "summary": "签名帮助移除 context 判空后直接解引用，客户端省略 context 时 panic",
+      "failure_scenario": "ProvideSignatureHelp 的 context 参数是 *lsproto.SignatureHelpContext（LSP 中 SignatureHelpParams.context 为可选字段，客户端可完全省略）。diff 把原来的 `context != nil && context.TriggerKind == ...` 改成了 `context.TriggerKind == ...`，GetSignatureHelpItems 内由此产生两处无条件解引用。一旦客户端不发送 context（或测试传 nil），请求路径会空指针 panic。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "NULL-SAFETY-002"
+    },
+    {
+      "file": "internal/ls/signaturehelp.go",
+      "line": 84,
+      "summary": "用魔法数字 1 表示 SignatureHelpTriggerKindInvoked",
+      "failure_scenario": "isManuallyInvoked 由 `context.TriggerKind == lsproto.SignatureHelpTriggerKindInvoked` 改成了 `context.TriggerKind == 1`。虽然 lsp_generated.go 中该常量确实等于 1，行为暂未改变，但丢失了符号语义：一旦协议生成代码的取值或命名调整，此处会静默失配。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "READABILITY-008"
+    },
+    {
+      "file": "internal/ls/signaturehelp.go",
+      "line": 266,
+      "summary": "*&help.ActiveParameter.Value 为冗余解引用，且未体现 Nullable 的 Null 语义",
+      "failure_scenario": "从 UintegerOrNull{Uinteger **uint32} 换成 Nullable[uint32]{Value uint32; Null bool} 后，原判断 `help.ActiveParameter.Uinteger != nil && *help.ActiveParameter.Uinteger > ...` 被机械替换成 `*&help.ActiveParameter.Value > ...`。`*&` 是恒等操作，纯属噪音；同时新的 Nullable 丢掉了「是否为 null」的检查（Null 为 true 时 Value 是零值仍参与比较），语义上不再等价于原逻辑，后续维护者容易误解。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.75,
+      "rule": "READABILITY-007"
+    },
+    {
+      "file": "internal/execute/watcher.go",
+      "line": 46,
+      "summary": "watch 模式下 tsconfig 场景不再初始化 CompilerHost，构建信息读取对 nil host 调用 FS() 会 panic",
+      "failure_scenario": "start() 被改为仅在 configFileName == \"\" 时创建 w.host，但紧接着第 49 行就用 w.host 构造 BuildInfoReader。对 tsconfig 场景（configFileName != \"\"），host 要等到 DoCycle→hasErrorsInTsConfig 第 115 行才赋值，因此第 49 行拿到的是 nil 接口。ReadBuildInfoProgram 在配置了 incremental/composite 时 buildInfoFileName 非空，会走到 buildInfoReader.ReadBuildInfo 的 r.host.FS()，对 nil 接口调用方法直接 panic。tsc.go:189-192 表明 `tsc --watch` + tsconfig 正是这条路径，即常见的 watch 启动即崩溃。代码注释提到的 StartForTest/export_test.go 在当前仓库并不存在，说明该分支缺少对应的测试承载点。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "RESOURCE-LIFECYCLE-003"
+    },
+    {
+      "file": "internal/checker/checker.go",
+      "line": 9952,
+      "summary": "把 len(typeParameters)==0 改为 typeParameters==nil 不等价，非泛型类构造签名会得到非 nil 空切片",
+      "failure_scenario": "Signature.typeParameters 是 []*Type，代码中并不保证「空即 nil」。getSignatureFromDeclaration 对构造函数取 classType.AsInterfaceType().LocalTypeParameters()，而 LocalTypeParameters 在 len(allTypeParameters)!=0（非泛型类也含 this 类型，故通常非 0）时返回 slices.Clip(allTypeParameters[outer:len-1])，即非 nil 的空切片。于是把这些判断由 len(...)!=0/==0 机械替换为 != nil/== nil 后，非泛型类的构造签名会被当成「有类型参数」：assignContextualParameterTypes 会在 context 与 sig 都为非 nil 空切片时提前 return，跳过上下文参数类型赋值；isTopSignature、isSingleNonGenericCandidate、getReturnTypeOfSingleNonGenericCallSignature 等判断也会偏离 TS 原语义。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-NILSEMANTICS-004"
+    },
+    {
+      "file": "internal/fourslash/_scripts/convertFourslash.mts",
+      "line": 27,
+      "summary": "生成脚本无条件读取并不存在的 manualTests.txt，一运行即 ENOENT",
+      "failure_scenario": "main() 中新增了无条件的 generateHelperFile() 与 parseTypeScriptFiles(getFailingTests(), getManualTests(), ...)，而 getManualTests() 内部直接 fs.readFileSync(manualTestsPath)。当前仓库中 internal/fourslash/_scripts/manualTests.txt 并不存在（只有 makeManual.mts 在首次使用时惰性创建），因此除重新生成代码外，脚本会在读文件处抛异常中断，导致 fourslash 测试代码无法通过脚本生成。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "TOOLING-ROBUSTNESS-005"
+    },
+    {
+      "file": "internal/fourslash/_scripts/makeManual.mts",
+      "line": 16,
+      "summary": "makeManual 写入 manualTests.txt 的键与 convertFourslash 比对口径不一致，manual 跳过逻辑失效",
+      "failure_scenario": "convertFourslash 用「测试名首字母大写」与 manualTests 集合比对（testName = test.name[0].toUpperCase() + test.name.substring(1)，例如 GoToDefinitionBuiltInTypes）；而 makeManual 直接把命令行参数 args[0] 原样作为 testName 写入 manualTests.txt，同时又把 args[0] 当作 gen 目录下的文件名使用（需要形如 xxx_test.go）。两者口径不同：写成文件名则 convertFourslash 永远匹配不上，写成首字母大写测试名则 makeManual 找不到 gen 文件。结果是 tests/manual 目录被搬走之后，下一次生成仍会重新生成同名测试，出现重复定义。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "TOOLING-CONSISTENCY-006"
+    },
+    {
+      "file": ".custom-gcl.yml",
+      "line": 4,
+      "summary": "本 MR 大范围回退依赖与安全工具链版本，需确认是否刻意为之",
+      "failure_scenario": "除业务代码外，本 MR 同时回退了多项工具链与依赖版本：golangci-lint v2.3.0→v2.0.2、github/codeql-action v3.29.4→v3.29.1、@vscode/vsce ^3.6.0→^3.3.2、esbuild ^0.25.8→^0.25.2、golang.org/x/sys v0.34.0→v0.33.0、golang.org/x/tools v0.35.0→v0.34.0、golang.org/x/mod v0.26.0→v0.25.0、go-json-experiment/json 回退到更早的伪版本。回退 lint 与 CodeQL 版本会丢失已修复的检测规则/漏洞识别能力，回退运行时依赖会重新引入已修复的上游缺陷；若这是为兼容性临时回退，应记录原因与恢复计划。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.55,
+      "rule": "SUPPLY-CHAIN-009"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 168,
+      "summary": "JSDoc @param {...T} 变参数不再生成 rest 参数，可变参数签名退化为单个数组参数",
+      "failure_scenario": "重写后 KindJSDocParameterOrPropertyTag 分支不再检测 KindJSDocVariadicType，也不再创建 KindDotDotDotToken，只把类型直接赋给参数 Type。结果 @param {...string} args 生成 (args: string[]) 而非 (...args: string[])，调用处传入多个实参会被误报参数个数错误。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 360,
+      "summary": "@satisfies 分支被裁剪到仅剩 ParenthesizedExpression，变量声明/赋值/return 上的 satisfies 校验失效",
+      "failure_scenario": "reparseHosted 的 KindJSDocSatisfiesTag 分支现在只处理 ParenthesizedExpression，原先覆盖 VariableStatement/VariableDeclaration/PropertyAssignment/ReturnStatement/ExpressionStatement 的分支被整体删除。最常见的 /** @satisfies {T} */ const x = {...} 不再插入 satisfies cast，多余属性、缺失属性、字面量类型不一致等诊断静默丢失，被收窄的类型也退回宽类型。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 360,
+      "summary": "@satisfies 处理分支被裁剪到仅剩 ParenthesizedExpression，变量/赋值/返回语句上的 satisfies 校验全部失效",
+      "failure_scenario": "重写 reparseHosted 后，KindJSDocSatisfiesTag 分支只剩下对 ParenthesizedExpression 的处理，原先覆盖 KindVariableStatement、KindVariableDeclaration（含 CommonJSExport/ExportAssignment/PropertyDeclaration/PropertyAssignment/ShorthandPropertyAssignment）、KindReturnStatement、KindExpressionStatement 的分支全部被删除。这意味着 /** @satisfies {T} */ const x = {...} 这类最常见写法不再插入 satisfies 类型转换，对象字面量的多余属性/缺失属性/字面量类型一致性检查随之消失，属于明显的语义回归，且会静默丢失用户可见的诊断。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "internal/lsp/server.go",
+      "line": 371,
+      "summary": "取消请求不再映射为 LSP RequestCancelled 错误码，而是返回 InternalError",
+      "failure_scenario": "dispatchLoop 删除了 errors.Is(err, context.Canceled) 分支，被取消的请求会走 s.sendError(req.ID, err)；sendError 只有在 err 可 As 为 *lsproto.ErrorCode 时才使用自定义码，否则一律用 ErrInternalError。客户端因此收到 -32603 与 context canceled 文本，而不是协议规定的 -32800 RequestCancelled。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "LSP-CANCEL-001"
+    },
+    {
+      "file": "internal/lsp/server.go",
+      "line": 675,
+      "summary": "handler 在 sendResult 前不再检查 ctx.Err()，已取消的请求仍会返回结果",
+      "failure_scenario": "旧的 registerRequestHandler 在发送结果前有 if ctx.Err() != nil { return ctx.Err() }，重构后该保护消失，各 handler 只要业务函数 err == nil 就直接 sendResult。对已被 $/cancelRequest 取消的请求，服务端仍会发出 response；handleSignatureHelp 完全没有错误判断，handleHover 在 SourceFile 场景返回 (nil, nil) 也照发，可能与取消错误竞争导致客户端重复响应。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.76,
+      "rule": "LSP-CANCEL-002"
+    },
+    {
+      "file": "internal/lsp/server.go",
+      "line": 728,
+      "summary": "find-all-references / go-to-implementation 丢失 ctx，长耗时计算无法响应取消",
+      "failure_scenario": "ProvideReferences 与 ProvideImplementations 在本次重构中去掉 ctx 参数，只返回位置切片且没有 error 通道，内部直接调用 getProgramAndFile / getReferencedSymbolsForNode 做全工程符号搜索。这两个最易耗时的请求因此完全无法感知 requestCtx 取消，客户端取消后服务端仍继续占满 CPU 并最终把结果发回。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "PERF-CANCEL-001"
+    },
+    {
+      "file": "internal/lsp/server.go",
+      "line": 857,
+      "summary": "handleDocumentSymbol 中把文档符号结果命名为 hover，属复制粘贴残留",
+      "failure_scenario": "该 handler 由其它 handler 复制而来，局部变量仍叫 hover，并在 861 行被 sendResult 发出。命名与实际语义（document symbols）不符，读者需额外推理才能确认没有串错 handler，也降低后续改动的安全性。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "READABILITY-001"
+    },
+    {
+      "file": "package.json",
+      "line": 12,
+      "summary": "dprint 依赖从 ^0.50.1 降级为 ^0.50.0，与本 MR 主题无关且未说明原因",
+      "failure_scenario": "本 MR 主体是 LSP 分发与 JSDoc 重解析重构，却同时把 dprint 回退一个小版本，并伴随 .dprint.jsonc 改动。版本回退会改变格式化插件行为，可能与已提交的格式化结果（尤其重新生成的 lsp_generated.go）产生新 diff，也会造成 CI 与本地开发者的格式化版本漂移。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAIN-001"
+    }
+  ],
+  "stderr_tail": " --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 3 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 769 个文件 / 2850810 字符（lockfile=3, test=766），明细见审计 mrFilter\nreview-pi: 已截取检视 1 个超预算文件（丢弃 106 个完整 hunk，保留 119726 字符），明细见审计 shardTruncation\n✓ 完成 · 耗时 707.7s · 模型调用 73 次 · token 输入 268,573（未命中） · 输出 89,461 · 缓存命中 4,259,840（94.1%） · 工具 112 次（主会话 112 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0746\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: [r2 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\microsoft__typescript-go@...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 708.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.1%)\n[time] 阶段 | 六阶段审计 707.6s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 10.0s (1.4%) | S1P2 4.0s (0.6%) | S1P3 12.1s (1.7%) | S1P4 122.9s (17.4%) | S1P5 63.5s (9.0%) | S1P6 27.0s (3.8%) | S2P1 9.7s (1.4%) | S2P2 5.8s (0.8%) | S2P3 6.7s (0.9%) | S2P4 125.1s (17.7%) | S2P5 52.8s (7.5%) | S2P6 16.0s (2.3%) | S3P1 11.9s (1.7%) | S3P2 3.2s (0.5%) | S3P3 7.3s (1.0%) | S3P4 71.5s (10.1%) | S3P5 25.1s (3.6%) | S3P6 6.1s (0.9%) | S3R2P1 4.2s (0.6%) | S3R2P2 3.2s (0.5%) | S3R2P3 6.6s (0.9%) | S3R2P4 17.7s (2.5%) | S3R2P5 9.3s (1.3%) | S3R2P6 3.3s (0.5%) | S3R3P1 3.9s (0.5%) | S3R3P2 2.8s (0.4%) | S3R3P3 4.8s (0.7%) | S3R3P4 40.6s (5.7%) | S3R3P5 19.7s (2.8%) | S3R3P6 10.5s (1.5%)\n[usage] 任务总计 | 模型调用 73 次（Agent 73 + 一次性 0） | token 输入 268,573（未命中） | 输出 89,461 | 缓存命中 4,259,840（94.1%） | $0.0746\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\microsoft__typescript-go@892b4a3\\audit\\20261115_023039_654.json",
+  "token_usage": {
+    "input_tokens": 268573,
+    "output_tokens": 89461,
+    "cache_read_input_tokens": 4259840
+  }
+}

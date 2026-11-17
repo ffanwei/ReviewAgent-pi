@@ -1,0 +1,898 @@
+[
+  {
+    "filePath": "src/Client/ConnectionParameters.cpp",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "security = enableSecureConnection(config, connection_host) ? Protocol::Secure::Enable : Protocol::Secure::Disable;",
+        "review": "[缺陷类型] TLS 自动启用条件被移除导致的连接安全降级。影响评估：--port 9440 等按端口推断 TLS 的既有用法会静默改为明文，凭据可能以明文传输；同时错误信息会变成混淆的握手失败。",
+        "suggestion": "[重构思路] 保留端口推断逻辑（或至少在未显式指定 --secure/--no-secure 且端口为 DBMS_DEFAULT_SECURE_PORT 时启用 TLS 并打印 warning），若确需移除请给出迁移与告警。代码示例：`if (connection_port && *connection_port == DBMS_DEFAULT_SECURE_PORT && !config.has(\"no-secure\")) { LOG_WARNING(...\"Port 9440 implies TLS\"...); return true; }`",
+        "category": "安全",
+        "subcategory": "传输层安全默认值",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 48,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/jobs/performance_tests.py",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "f'echo \"ATTACH DATABASE default ENGINE=Ordinary\" > {db_path}/metadata/default.sql',",
+        "review": "[缺陷类型] 变量作用域收缩导致的未定义引用。影响评估：从 configure/test 阶段续跑时 job 直接 NameError 失败，一次完整构建与数据集下载被浪费，且报错信息与真实原因无关。",
+        "suggestion": "[重构思路] 把路径常量统一收敛到 main() 顶部的局部常量或 Settings，避免在分支内定义后跨分支使用。代码示例：`perf_wd = \"/tmp/praktika/perf_wd\"; db_path = f\"{Settings.TEMP_DIR}/db0\"; coordination_dir = f\"{Settings.TEMP_DIR}/coordination0\"`",
+        "category": "可靠性",
+        "subcategory": "变量作用域与阶段续跑",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 387,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/AggregateFunctions/AggregateFunctionAny.cpp",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "this->data(place).insertResultInto(to);",
+        "review": "[缺陷类型] 空聚合状态的默认值语义变化（枚举默认项 → 数值 0）。影响评估：`SELECT any(enum_col) FROM numbers(0)` 或 anyIf 条件全不满足时输出未定义枚举值，可能在结果格式化、后续比较中抛 `Unexpected value ... for type Enum8` 或返回空字符串。",
+        "suggestion": "[重构思路] 保留 Enum 特例，或在通用层按数据类型插入默认值，并补空输入回归覆盖。代码示例：`if (this->argument_types[0]->getTypeId() == TypeIndex::Enum8 && !this->data(place).has()) { assert_cast<const DataTypeEnum8 &>(*this->argument_types[0]).insertDefaultInto(to); return; } this->data(place).insertResultInto(to);`",
+        "category": "可靠性",
+        "subcategory": "聚合函数默认值语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 133,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Coordination/Changelog.cpp",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "shutdown();",
+        "review": "[缺陷类型] 异常路径短路清理逻辑。影响评估：flush 异常时 changelog 未 shutdown，线程/句柄泄漏且数据可能未落盘，问题在析构期被 catch 吞掉，极难定位。",
+        "suggestion": "[重构思路] 保持两步独立捕获，或用作用域守卫保证 shutdown 一定执行。代码示例：`try { flush(); } catch (...) { tryLogCurrentException(__PRETTY_FUNCTION__); } try { shutdown(); } catch (...) { tryLogCurrentException(__PRETTY_FUNCTION__); }`",
+        "category": "可靠性",
+        "subcategory": "析构与资源释放",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2402,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/jobs/scripts/clickhouse_proc.py",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "def start_minio(self, test_type, log_file_path):",
+        "review": "[缺陷类型] 隐式环境变量依赖从调用方转移到镜像。影响评估：脱离 stateless-test 镜像运行 functional 测试时 minio 数据目录与 PATH 与 CI 不一致，问题难以复现。",
+        "suggestion": "[重构思路] 显式在 Python 侧传递，避免依赖镜像 ENV。代码示例：`env = os.environ.copy(); env[\"TEMP_DIR\"] = Settings.TEMP_DIR; subprocess.Popen(command, env=env, ...)`。",
+        "category": "可靠性",
+        "subcategory": "环境变量依赖",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 45,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/jobs/functional_stateless_tests.py",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "f\"for file in /tmp/praktika/etc/clickhouse-server/config.d/*.xml; do [ -f $file ] && echo Change config $file && sed -i 's|>/var/log|>{Settings.TEMP_DIR}/var/log|g; s|>/etc/|>{Settings.TEMP_DIR}/etc/|g' $(readlink -f $file); done\",",
+        "review": "[缺陷类型] 魔法字符串与配置化常量混用。影响评估：目前默认值下不报错，但设置一旦调整，部分路径静默失效（sed 不生效导致测试间数据污染/权限错误），且最后一条命令决定 stage 结果使故障点更脆弱。",
+        "suggestion": "[重构思路] 全部改用 Settings 派生变量，并让 chmod 目标跟随 ch_path。代码示例：`config_dir = f\"{Settings.TEMP_DIR}/etc/clickhouse-server\"; f\"for file in {config_dir}/config.d/*.xml; do …\"; f\"chmod +x {ch_path}/clickhouse-odbc-bridge\"`",
+        "category": "可维护",
+        "subcategory": "路径硬编码与配置一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 119,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F012",
+        "code": "f\"chmod +x /tmp/praktika/input/clickhouse-odbc-bridge\",",
+        "review": "[缺陷类型] 魔法字符串与配置化常量混用。影响评估：配置漂移后部分路径失效，sed 未生效会让 clickhouse-server 写到 /var、/etc 导致测试互相污染或权限错误，问题定位成本高。",
+        "suggestion": "[重构思路] 全部改用 Settings 常量，并用变量派生路径。代码示例：`config_dir = f\"{Settings.TEMP_DIR}/etc/clickhouse-server\"; f\"for file in {config_dir}/config.d/*.xml; ...\"; f\"chmod +x {ch_path}/clickhouse-odbc-bridge\"`",
+        "category": "可维护",
+        "subcategory": "路径硬编码与配置一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 123,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Analyzer/Resolve/QueryAnalyzer.cpp",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "{",
+        "review": "[缺陷类型] 破坏性设置移除 + 校验放松。影响评估：带旧 setting 的用户配置/查询升级后报“未知设置”；ORDER BY 非可比较类型从明确报错退化为运行期异常或结果不可预期，且无任何提示。",
+        "suggestion": "[重构思路] 若确要移除，走既有废弃流程（写入 SettingsChangesHistory 的 obsolete 段并告警），并保留 isComparable 校验。代码示例：`if (!type.isComparable()) throw Exception(ErrorCodes::ILLEGAL_COLUMN, \"Data type {} is not comparable, cannot be used in ORDER BY\", type.getName());`",
+        "category": "可维护",
+        "subcategory": "设置项兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 4175,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "programs/client/Client.cpp",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "prompt_by_server_display_name = config().getRawString(\"prompt_by_server_display_name.default\", \"{display_name} :) \");",
+        "review": "[缺陷类型] 用户可见功能被移除而缺少兼容处理。影响评估：依赖 --prompt 的脚本直接失败；使用 <prompt> 的用户配置静默失效，提示符无法定制（例如无法在提示符中嵌入 --user/database 信息）。",
+        "suggestion": "[重构思路] 至少在 Client::connect 与 ClientApplicationBase::init 中检测到旧配置时打印 deprecation 警告，或将 `<prompt>` 映射为 `prompt_by_server_display_name.default`。代码示例：`if (config().has(\"prompt\")) { LOG_WARNING(getLogger(\"Client\"), \"<prompt> is deprecated, use <prompt_by_server_display_name>\") ; prompt_by_server_display_name = config().getString(\"prompt\"); }`",
+        "category": "可维护",
+        "subcategory": "CLI/配置向后兼容",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 577,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/praktika/json.html",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "keyElement.textContent = columnSymbols[key] + ':' || key;",
+        "review": "[缺陷类型] 运算符优先级/死回退分支。影响评估：报表页面在缺符号时显示 `undefined:`，可读性下降；孤立 `files:` 标签误导用户以为有附件。",
+        "suggestion": "[重构思路] 显式取默认值。代码示例：`keyElement.textContent = (columnSymbols[key] ?? key) + ':';` 并对 links 为空时跳过按钮创建。",
+        "category": "可靠性",
+        "subcategory": "前端字符串回退",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 421,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/jobs/build_clickhouse.py",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "from praktika.result import Result, ResultTranslator",
+        "review": "[缺陷类型] 未使用导入。影响评估：代码噪音，且可能触发 ruff/flake8 F401 使 style check job 失败。",
+        "suggestion": "[重构思路] 删除未使用的符号。代码示例：`from praktika.result import Result`",
+        "category": "可维护",
+        "subcategory": "无用导入",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 4,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "docs/.htmltest.yml",
+    "reviewTips": [
+      {
+        "id": "F020",
+        "code": "CheckInternalHash: false",
+        "review": "[缺陷类型] 检查项被关闭导致回归不可见。影响评估：文档死锚点（跨页引用 #section）会在无人察觉的情况下上线。",
+        "suggestion": "[重构思路] 若因个别已知问题临时关闭，请以 IgnoreDirs/IgnoreURLs 精确豁免而不是全局关闭。代码示例：`CheckInternalHash: true` + `IgnoreURLs: [\"^.*#known-broken-anchor$\"]`",
+        "category": "可测试性",
+        "subcategory": "文档链接检查",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 5,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/praktika/yaml_generator.py",
+    "reviewTips": [
+      {
+        "id": "F022",
+        "code": ". /tmp/praktika_setup_env.sh",
+        "review": "[缺陷类型] 模板占位符与硬编码混用。影响评估：Settings 调整后生成脚本与 source 路径不一致，pipeline 生成即不可用；死参数易误导后续维护者。",
+        "suggestion": "[重构思路] 模板统一使用占位符。代码示例：`. {ENV_SETUP_SCRIPT}` 与 `| tee {RUN_LOG}`，并在 format kwargs 中继续传 RUN_LOG。",
+        "category": "可维护",
+        "subcategory": "模板与配置一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 100,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/jobs/performance_tests.sh",
+    "reviewTips": [
+      {
+        "id": "F024",
+        "code": "export CHPC_TEST_GREP=alter_select",
+        "review": "[缺陷类型] 死代码 + 调试开关残留。影响评估：评审者无法判断该脚本是否为将来的替代实现；误用会得到只跑一个测试的“性能结果”，结论误导。",
+        "suggestion": "[重构思路] 要么把脚本接入 defs.py 的 performance job 并移除 TODO 过滤与硬编码 SHA（改用参数传入），要么本次不提交该文件。代码示例：`export CHPC_TEST_GREP=${CHPC_TEST_GREP:-\"\"}`，SHA 由 `args`/环境变量提供。",
+        "category": "可维护",
+        "subcategory": "死代码与调试残留",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 6,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Functions/array/arrayAUC.cpp",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "Float64 prev_score = sorted_labels[0].score;",
+        "review": "[缺陷类型] 容器越界读（下标访问空 PODArray），由守卫条件被错误收窄引起。影响评估：`arrayROCAUC`/`arrayAUC` 在遇到空数组时行为由“返回 NaN”退化为未定义行为，Debug 下断言失败、Release 下返回脏数据，且该函数是聚合/特征计算常用函数，空数组输入在实际数据中很常见。",
+        "suggestion": "[重构思路] 把 size == 0 的提前返回恢复到模板无关的位置，按 PR/ROC 分别给出定义好的返回值。代码示例：`if (size == 0) return PR ? 0.0 : std::numeric_limits<Float64>::quiet_NaN();` 然后再对 sorted_labels[0] 取值。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 160,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F026",
+        "code": "throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH,",
+        "review": "[缺陷类型] 用户可见的接口能力回退（删除函数重载/可选参数）。影响评估：依赖 partial AUC 的查询与看板会从“返回数值”变成参数个数错误；若属无意回退需恢复，若属有意移除则必须在变更说明与文档中显式标注，并确认 `arrayAUCPR` 别名不会再被旧调用命中。",
+        "suggestion": "[重构思路] 先确认 partial AUC 是否为计划内下线；若保留，需恢复 3/4 参数分支与 total_positives/total_negatives 语义；若下线，则在 getReturnTypeImpl 中给出明确的“partial AUC 已不再支持”错误信息而非泛化的参数个数错误。代码示例：`if (!PR && number_of_arguments == 4) throw Exception(ErrorCodes::NOT_IMPLEMENTED, \"Partial AUC is not supported anymore for {}\", getName());`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 279,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Functions/FunctionsConversion.h",
+    "reviewTips": [
+      {
+        "id": "F027",
+        "code": "#pragma once",
+        "review": "[缺陷类型] 变更原子性不足（一个 MR 混合多主题、含大段删除）。影响评估：评审覆盖面下降（高风险的语义变更易被海量机械改动淹没）、无法按主题回滚、changelog 与 bisect 失效。",
+        "suggestion": "[重构思路] 拆分为独立 MR：①FunctionDocumentation 字段与分类词表迁移（纯机械）；②parseDateTime 年份范围与负秒语义调整（附 test + 文档）；③比较函数构造器精简；④CI/客户端/格式层清理。每个 MR 单独评审与回滚。代码示例：`git rebase -i` 按主题拆 commit，并在 MR 描述中列出「行为变更清单」。",
+        "category": "可维护",
+        "subcategory": "变更原子性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F028",
+        "code": "throw Exception(ErrorCodes::TYPE_MISMATCH, \"Cast to {} can be performed only from String/Map/Object/Tuple. Got: {}\", magic_enum::enum_name(to_object->getSchemaFormat()), from_type->getName());",
+        "review": "[缺陷类型] 功能能力删除导致的行为回退（类型转换路径缺失）。影响评估：对 JSON 列做参数变更的 ALTER/INSERT SELECT 会在执行期抛 TYPE_MISMATCH，已存在的 JSON 表结构演进路径被切断；错误信息只提示来源类型，用户难以定位到“JSON 参数不同所以不支持”这一真实原因。",
+        "suggestion": "[重构思路] 至少对 from_type 为 DataTypeObject 且两者仅参数不同的场景给出显式、可理解的错误（或按原实现恢复参数重写逻辑）；并在变更说明中记录该能力下线。代码示例：`if (checkAndGetDataType<DataTypeObject>(from_type.get())) throw Exception(ErrorCodes::NOT_IMPLEMENTED, \"Cannot cast between JSON types with different parameters: {} -> {}\", from_type->getName(), to_object->getName());`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 4353,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Disks/ObjectStorages/AzureBlobStorage/AzureBlobStorageCommon.cpp",
+    "reviewTips": [
+      {
+        "id": "F029",
+        "code": "}",
+        "review": "[缺陷类型] 配置项静默失效导致存储路径前缀漂移。影响评估：使用 Azure + endpoint_subpath 的部署在升级后读写路径不一致，可能出现数据不可见的假故障；由于无任何报错，只能靠人工比对 object key 发现。",
+        "suggestion": "[重构思路] 若确为计划内移除，应在检测到该配置时给出显式告警/异常；若仅是想统一实现，应保留 Azure 侧拼接逻辑或通过通用配置层统一处理。代码示例：`if (config.has(config_prefix + \".endpoint_subpath\")) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"endpoint_subpath is not supported for Azure object storage anymore\");`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 244,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Disks/ObjectStorages/MetadataStorageFromPlainRewritableObjectStorage.cpp",
+    "reviewTips": [
+      {
+        "id": "F030",
+        "code": "#if USE_AWS_S3",
+        "review": "[缺陷类型] 代码风格与死代码（空 catch 仅重抛）。影响评估：不影响运行时行为，但会干扰阅读与静态检查，且掩盖“该处只针对 S3 做特殊处理”的真实意图。",
+        "suggestion": "[重构思路] 预处理指令顶格书写，并删除仅 `throw;` 的 catch 分支，让意图更清晰。代码示例：`#if USE_AWS_S3\\n    catch (const S3Exception & e) { if (e.getS3ErrorCode() == Aws::S3::S3Errors::NO_SUCH_KEY) return; throw; }\\n#endif`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 161,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Core/SettingsChangesHistory.cpp",
+    "reviewTips": [
+      {
+        "id": "F032",
+        "code": "{\"output_format_json_pretty_print\", false, true, \"Print values in a pretty format in JSON output format by default\"},",
+        "review": "[缺陷类型] 设置项回收 + 历史记录删除带来的升级兼容性风险。影响评估：现有 users.xml profile、监控脚本、SET 语句中残留这些设置时升级即报未知设置；同时 25.1 的默认值变更历史缺失，可能影响 compatibility 回溯与文档一致性。",
+        "suggestion": "[重构思路] 在变更说明与 25.1 文档中显式列出被回收的设置名与替代方案，并确认服务启动时对 profile 中未知设置的处理方式符合预期。代码示例：在 release note 中补充 `Removed settings: allow_not_comparable_types_in_order_by, allow_not_comparable_types_in_comparison_functions, ...`。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 69,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Functions/UniqTheta/FunctionsUniqTheta.cpp",
+    "reviewTips": [
+      {
+        "id": "F033",
+        "code": ".categories{\"uniqTheta\"}",
+        "review": "[缺陷类型] 文档分类命名不一致（函数族名当分类）。影响评估：不影响运行时，但会污染按分类聚合的文档与 system.functions 展示，降低可发现性。",
+        "suggestion": "[重构思路] 采用稳定的功能域分类名（如 `Aggregate functions`/`Other`），把 uniqTheta 这类函数族信息放进描述或相关链接中。代码示例：`.categories{\"Aggregate functions\"}`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 26,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Functions/parseDateTime.cpp",
+    "reviewTips": [
+      {
+        "id": "F034",
+        "code": "constexpr Int32 minYear = 1970;",
+        "review": "[缺陷类型] 语义收窄导致的行为回退（DateTime64 可解析年份范围由 [1900,2299] 缩为 [1970,2106]）。影响评估：升级后 `SELECT parseDateTime64('1950-01-01 00:00:00')` 会抛 `CANNOT_PARSE_DATETIME: Invalid date, out of range`；使用 `parseDateTime64OrNull` 的 ETL/日志解析链路会静默产出 NULL，属于数据正确性层面的回归。",
+        "suggestion": "[重构思路] 若收窄范围是有意为之，需在 MR 描述与 `docs/en/sql-reference/functions/date-time-functions.md` 中明确声明，并补 stateless 用例覆盖 1900/2299 边界；若并非有意，应保留按 `return_type` 区分上下界的机制，让年份表按范围分段（如 1900..2299 的完整表 + 索引偏移），避免用全局常量抹掉 DateTime64 的宽范围。代码示例：`constexpr Int32 minYearOf(ReturnType t) { return t == ReturnType::DateTime ? 1970 : 1900; }` 并在 `isDateValid` 内使用 `year_ >= minYearOf(return_type)`。",
+        "category": "可靠性",
+        "subcategory": "日期时间解析范围收窄",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 65,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F035",
+        "code": "struct DateTime",
+        "review": "[缺陷类型] 命名与既有类型概念冲突（局部 shadow 语义）。影响评估：纯可读性/可维护性风险，容易在后续改动中误用；不影响当前行为（结构体位于匿名命名空间内）。",
+        "suggestion": "[重构思路] 使用能表达“解析中间状态”的名字，如 `DateTimeParseState`、`ParsedDateTime`，避免与 `ReturnType::DateTime` 和 `DataTypeDateTime` 混淆。代码示例：`template <ErrorHandling error_handling> struct DateTimeParseState { ... };`。",
+        "category": "可读性",
+        "subcategory": "命名语义混淆",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 167,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F036",
+        "code": "if (seconds_since_epoch >= time_zone_offset)",
+        "review": "[缺陷类型] 校验条件从“结果是否为负”改为“是否小于时区偏移”，并把该限制扩散到 DateTime64。影响评估：`Asia/Shanghai`、`Europe/Moscow` 等正向偏移时区下，1970-01-01 当天前若干小时的时间在 parseDateTime64 上直接抛异常；`parseDateTime64OrNull` 则静默返回 NULL，且异常文案与真实成因不符，排查成本高。",
+        "suggestion": "[重构思路] 保留“DateTime(UInt32) 不允许负秒”的语义，而让 DateTime64 允许负值；同时把偏移应用失败与结果为负区分成两个独立分支并使用准确错误码。代码示例：`if (has_time_zone_offset) { seconds_since_epoch -= time_zone_offset; if constexpr (return_type == ReturnType::DateTime) if (seconds_since_epoch < 0) RETURN_ERROR(ErrorCodes::VALUE_IS_OUT_OF_RANGE_OF_DATA_TYPE, \"Seconds since epoch is negative: {}\", seconds_since_epoch) }`。",
+        "category": "可靠性",
+        "subcategory": "边界条件与错误码误用",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 582,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F037",
+        "code": "}",
+        "review": "[缺陷类型] 缩进/空行格式错误。影响评估：降低可读性、干扰 blame 与格式化工具，无功能影响。",
+        "suggestion": "[重构思路] 恢复为 8 空格缩进的闭合花括号，删除多余空行后跑 `clang-format`。代码示例：`        }\\n\\n    private:`。",
+        "category": "可读性",
+        "subcategory": "代码格式",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 804,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Functions/array/arrayZip.cpp",
+    "reviewTips": [
+      {
+        "id": "F038",
+        "code": ".categories{\"String\"}});",
+        "review": "[缺陷类型] 文档分类值填错（数组函数被标为 String）。影响评估：system.functions.categories 与文档生成结果错误，用户按分类检索 arrayZip 时找不到，且与同批修改的 \"Array\" 命名不一致。",
+        "suggestion": "[重构思路] 改为与其他数组函数一致的 \"Array\"；建议在 CI 中对分类名做白名单校验，避免此类手写字符串错误。代码示例：`.categories{\"Array\"}`。",
+        "category": "可维护",
+        "subcategory": "文档分类错误",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 177,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Functions/readWkt.cpp",
+    "reviewTips": [
+      {
+        "id": "F039",
+        "code": ".categories{\"Unique identifiers\"}",
+        "review": "[缺陷类型] 分类值被相邻条目覆盖，造成语义错标。影响评估：system.functions 与文档中几何函数不再出现在 Geo 相关分类下，与 hilbert/morton 等函数本次被细分为 \"Hilbert coding\"/\"ZCurve\" 的方向相矛盾。",
+        "suggestion": "[重构思路] 恢复几何语义的分类（如 \"Geo\"），并让 LineString/MultiLineString/Documented Ring/Polygon 共用同一分类；避免靠复制相邻条目手改字符串。代码示例：`.categories{\"Geo\"}`。",
+        "category": "可维护",
+        "subcategory": "文档分类错误",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 162,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Functions/getClientHTTPHeader.cpp",
+    "reviewTips": [
+      {
+        "id": "F040",
+        "code": ".categories{\"Miscellaneous\"}});",
+        "review": "[缺陷类型] 元数据词表缺乏统一规范，近义分类并存。影响评估：system.functions 中同一语义分散到 2~3 个分类，文档导航与外部工具按分类聚合会漏项；后续再统一需要二次全量迁移（正是本次改动的动因）。",
+        "suggestion": "[重构思路] 先定义一份分类常量清单（如 `namespace FunctionCategories { constexpr auto Other = \"Other\"; ... }`）并在所有注册点引用，同时对旧值做一次映射表转换；hilbert/morton 这类保留单一分类（编码族）即可，不必同时挂曲线名。代码示例：`.categories{FunctionCategories::Other}`，并加静态校验脚本枚举非法分类名。",
+        "category": "可维护",
+        "subcategory": "分类词表碎片化",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 99,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Server/HTTP/authenticateUserByHTTP.cpp",
+    "reviewTips": [
+      {
+        "id": "F041",
+        "code": "session.authenticate(*current_credentials, Poco::Net::SocketAddress(forwarded_address, request.clientAddress().port()));",
+        "review": "[缺陷类型] 外部可控输入（X-Forwarded-For）未做校验即交由可能抛异常/触发解析的构造函数处理，且异常未被本层捕获。影响评估：开启 auth_use_forwarded_address 时，一个畸形请求头即可让带代理的 HTTP 认证抛异常失败；且服务器可能被动解析攻击者指定域名（可用作探测/放大）。",
+        "suggestion": "[重构思路] 在构造前先按 IP 字面量解析并显式处理失败，失败时回退到真实客户端地址，避免隐式主机名解析。代码示例：`Poco::Net::SocketAddress forwarded; if (!forwarded_address.empty() && config.getBool(\"auth_use_forwarded_address\", false)) { try { forwarded = Poco::Net::SocketAddress(forwarded_address, 0); } catch (const Poco::Exception &) { LOG_WARNING(...); } } if (!forwarded.host().isWildcard()) session.authenticate(*current_credentials, forwarded); else session.authenticate(*current_credentials, request.clientAddress());`",
+        "category": "安全",
+        "subcategory": "外部输入校验/未捕获异常",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 246,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Processors/QueryPlan/Optimizations/filterPushDown.cpp",
+    "reviewTips": [
+      {
+        "id": "F043",
+        "code": "if (auto * aggregating = typeid_cast<AggregatingStep *>(child.get()))",
+        "review": "[缺陷类型] 优化器能力回退（谓词下推范围缩小）。影响评估：分布式聚合查询可能读入并传输成倍数据，属静默的性能回退，难以被功能测试发现。",
+        "suggestion": "[重构思路] 恢复对 MergingAggregatedStep 的处理，可把“取 params / 判断 grouping sets”抽成小助手对两类 step 复用。代码示例：`if (auto * aggregating = typeid_cast<AggregatingStep *>(child.get())) { ... } else if (auto * merged = typeid_cast<MergingAggregatedStep *>(child.get())) { const auto & params = merged->getParams(); /* 同 keys 判定 */ }`",
+        "category": "性能",
+        "subcategory": "查询优化器回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 411,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Processors/Formats/IOutputFormat.cpp",
+    "reviewTips": [
+      {
+        "id": "F044",
+        "code": "void IOutputFormat::onProgress(const Progress & progress)",
+        "review": "[缺陷类型] 限流/去重逻辑缺失导致输出放大。影响评估：WithProgress 类格式与长查询的场景下输出体积与 syscall 次数成倍增长，可能拖慢查询并撑大 HTTP 响应；末尾进度丢失使客户端看到的进度不完整。",
+        "suggestion": "[重构思路] 保留一个最小间隔节流（时间戳比较）并在 finalize 时补写最后一次待写进度。代码示例：`UInt64 now = statistics.watch.elapsedNanoseconds(); if (now >= prev_progress_write_ns + min_interval_ns) { std::unique_lock lock(writing_mutex, std::try_to_lock); if (lock) { writeProgress(statistics.progress); prev_progress_write_ns = now; has_progress_update_to_write = false; } }`",
+        "category": "性能",
+        "subcategory": "输出放大/IO 开销",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 162,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Processors/Formats/Impl/JSONEachRowWithProgressRowOutputFormat.h",
+    "reviewTips": [
+      {
+        "id": "F045",
+        "code": "public:",
+        "review": "[缺陷类型] 输出格式的 wire format 兼容性破坏。影响评估：浏览器/客户端侧按 JSONEachRowWithProgress 约定解析 meta 与 exception 的程序会读不到元数据或遗漏异常信息，属于对外可见行为回退。",
+        "suggestion": "[重构思路] 若确要复用基类实现，应保留 meta 前缀与 exception 行的输出，或在文档与 CHANGELOG 中显式标注格式变更并提供开关。代码示例：`void writePrefix() override { writeCString(\"{\\\"meta\\\":[\", *ostr); /* 原逻辑 */ }`",
+        "category": "可靠性",
+        "subcategory": "输出格式兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 11,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Server/HTTPHandler.cpp",
+    "reviewTips": [
+      {
+        "id": "F048",
+        "code": "thread_trace_context->root_span.addAttribute(\"http.method\", request.getMethod());",
+        "review": "[缺陷类型] 对外 HTTP 契约/CORS 行为回退。影响评估：浏览器端 Web 客户端读不到 ClickHouse 自定义响应头，前端功能（展示 query id、服务端信息、取消查询）静默失效。",
+        "suggestion": "[重构思路] 恢复该响应头，或至少在移除前确认所有 Web 客户端不再依赖；如需可配置，放进 server 配置。代码示例：`response.add(\"Access-Control-Expose-Headers\", \"X-ClickHouse-Query-Id,X-ClickHouse-Summary,X-ClickHouse-Server-Display-Name,X-ClickHouse-Format,X-ClickHouse-Timezone\");`",
+        "category": "可靠性",
+        "subcategory": "HTTP 契约/CORS",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 723,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Interpreters/InterpreterInsertQuery.cpp",
+    "reviewTips": [
+      {
+        "id": "F049",
+        "code": "if (const auto & constraints = metadata_snapshot->getConstraints(); !constraints.empty())",
+        "review": "[缺陷类型] 数据完整性校验的发生时机由插入期迁移到建表期，未迁移历史表。影响评估：老表的非法 sign 不再被拦截，Collapsing 语义下会得到错误合并结果；表 metadata 表示变化也可能影响复制与 schema 对比。",
+        "suggestion": "[重构思路] 若确需迁移，应在读取/挂载历史表时按 setting 补建约束（或在文档与 CHANGELOG 中明确告知需要 ALTER TABLE ... ADD CONSTRAINT），并保持约束命名与旧实现一致以免 metadata 漂移。代码示例：`/// attach 时：if (settings[add_implicit_sign_column_constraint_for_collapsing_engine] && !has_check_sign_constraint) constraints.push_back(make_sign_check_constraint(merging_params.sign_column));`",
+        "category": "可靠性",
+        "subcategory": "数据完整性/升级兼容",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 408,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Functions/startsWithUTF8.cpp",
+    "reviewTips": [
+      {
+        "id": "F050",
+        "code": ".categories{\"String\"}});",
+        "review": "[缺陷类型] 枚举/分类值缺乏约束导致命名漂移。影响评估：用户按分类浏览函数时会看到被拆散的条目，文档生成结果不稳定，后续统一需要大范围改代码。",
+        "suggestion": "[重构思路] 引入集中定义的分类常量集合（如 `namespace FunctionCategories { inline constexpr std::string_view String = \"String\"; ... }`）并在 CI 里校验注册的分类名属于该集合。代码示例：`.categories{FunctionCategories::String, FunctionCategories::StringSearch}`",
+        "category": "可维护",
+        "subcategory": "分类体系一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 18,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Interpreters/InterpreterCreateQuery.cpp",
+    "reviewTips": [
+      {
+        "id": "F051",
+        "code": "/// If schema wes inferred while storage creation, add columns description to create query.",
+        "review": "[缺陷类型] 拼写/格式噪声。影响评估：不影响运行，但降低可读性并可能被拼写检查/格式检查工具拦下。",
+        "suggestion": "[重构思路] 修正拼写并让格式化工具（clang-format）统一缩进，避免手工对齐。代码示例：`/// If schema was inferred while storage creation, add columns description to create query.` 与 `rows_end_out << grid[3][2];`",
+        "category": "可读性",
+        "subcategory": "拼写与格式",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1918,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+    "reviewTips": [
+      {
+        "id": "F053",
+        "code": "else if (is_request_failed(remove_processing_id_path_idx))",
+        "review": "[缺陷类型] Keeper multi 事务的响应下标与请求列表错位（删除 check 请求后未更新索引常量）。影响评估：会话过期等正常场景被误报为 LOGICAL_ERROR 并导致查询/写入失败；下标 2 还会越界访问 responses，debug 构建下断言崩溃。",
+        "suggestion": "[重构思路] 让索引常量由 requests.size() 在 push 时即时计算，避免手写常量与请求列表脱节；同时删除已不存在的 check 分支。代码示例：`const auto remove_processing_id_idx = requests.size(); requests.push_back(zkutil::makeRemoveRequest(processing_node_id_path, processing_id_version.value())); const auto remove_processing_idx = requests.size(); requests.push_back(zkutil::makeRemoveRequest(processing_node_path, -1));`",
+        "category": "可靠性",
+        "subcategory": "Keeper 事务响应索引",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 311,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+    "reviewTips": [
+      {
+        "id": "F055",
+        "code": "request_index[CHECK_PROCESSING_ID_PATH] = 0;",
+        "review": "[缺陷类型] Keeper multi 响应索引错位 + 关键失败被静默吞掉。影响评估：processed 节点创建失败时上层误以为成功，文件状态在内存与 Keeper 间不一致，同一文件可能被重复处理并重复写入目标表；SET_PROCESSED_PATH 分支还会越界。",
+        "suggestion": "[重构思路] 用 requests.size() 记录真实下标、删除已不存在的 CHECK 分支，并把 create 节点失败一律抛错而非只记 WARNING。代码示例：`if (processing_id_version.has_value()) { request_index[REMOVE_PROCESSING_ID_PATH] = requests.size(); requests.push_back(zkutil::makeRemoveRequest(processing_node_id_path, processing_id_version.value())); request_index[REMOVE_PROCESSING_PATH] = requests.size(); requests.push_back(zkutil::makeRemoveRequest(processing_node_path, -1)); } request_index[SET_PROCESSED_PATH] = requests.size(); requests.push_back(zkutil::makeCreateRequest(processed_node_path, node_metadata.toString(), zkutil::CreateMode::Persistent));`",
+        "category": "可靠性",
+        "subcategory": "Keeper 事务响应索引",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 130,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+    "reviewTips": [
+      {
+        "id": "F057",
+        "code": "progress->processed_files += 1;",
+        "review": "[缺陷类型] 统计口径改变导致提交阈值/进度偏斜。影响评估：可能提前或延迟触发 commit（影响 Keeper 写入频率与「已处理文件数」可观测性），失败文件也被计入已处理。",
+        "suggestion": "[重构思路] 把「处理中」与「已处理」分开计数：仅在 state 置为 Processed 时增加 processed_files，必要时另增 in_flight 计数用于并发控制。代码示例：`processed_files.back().state = FileState::Processed; progress->processed_files += 1;`",
+        "category": "可靠性",
+        "subcategory": "进度与阈值计数",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 568,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F058",
+        "code": "return {};",
+        "review": "[缺陷类型] 部分读取失败被降级为可重试，且不中断事务。影响评估：目标表中出现重复行（at-least-once 语义被放大且无错误提示），对依赖精确去重的下游 MV 影响明显。",
+        "suggestion": "[重构思路] 明确区分「文件未产出任何行」与「已产出部分行」：后者应把错误向上抛出（或把 ErrorOnRead 视为不可重试并记录已插入行），保证整批提交语义一致。代码示例：`if (file_status->processed_rows == 0) { processed_files.back().state = FileState::ErrorOnRead; return {}; } throw;`",
+        "category": "可靠性",
+        "subcategory": "数据处理语义（重复写入）",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 608,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/MergeTree/MergeTreeReadPool.cpp",
+    "reviewTips": [
+      {
+        "id": "F059",
+        "code": "return createTask(per_part_infos[part_idx], std::move(ranges_to_get_from_part), previous_task);",
+        "review": "[缺陷类型] 临界区扩大（把昂贵操作放进共享互斥量）+ 移除 thread-safety 标注。影响评估：高并发读取时 mutex 争用加剧、读吞吐下降；后续改动缺少静态检查保护，易引入数据竞争。",
+        "suggestion": "[重构思路] 恢复「锁内只改状态、锁外创建任务」的结构并保留 TSA 标注。代码示例：`MergeTreeReadTaskPtr task; { const std::lock_guard lock{mutex}; ...; task = createTask(per_part_infos[part_idx], std::move(ranges_to_get_from_part), previous_task); } return task;`",
+        "category": "性能",
+        "subcategory": "锁粒度与临界区",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 155,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/MergeTree/BackgroundJobsAssignee.cpp",
+    "reviewTips": [
+      {
+        "id": "F061",
+        "code": ", sleep_settings(global_context_->getBackgroundMoveTaskSchedulingSettings())",
+        "review": "[缺陷类型] 配置项被错误绑定（不同 Task 类型共用同一套调度参数）。影响评估：merge/mutate 后台调度节奏与用户配置不符，可能表现为空转时 CPU 偏高或任务恢复延迟增大。",
+        "suggestion": "[重构思路] 恢复按 Type 选择设置，或让调用方显式传入设定好的 BackgroundTaskSchedulingSettings。代码示例：`sleep_settings(type_ == Type::DataProcessing ? global_context_->getBackgroundProcessingTaskSchedulingSettings() : global_context_->getBackgroundMoveTaskSchedulingSettings())`",
+        "category": "可靠性",
+        "subcategory": "配置绑定错误",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 15,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/System/StorageSystemDetachedTables.cpp",
+    "reviewTips": [
+      {
+        "id": "F063",
+        "code": "size_t database_idx = 0;",
+        "review": "[缺陷类型] 分页迭代状态未跨 block 保存。影响评估：system.detached_tables 结果超过一个 block 时出现重复行；缺少全局 SHOW TABLES 权限时可能用错误的数据库名做权限判定。",
+        "suggestion": "[重构思路] 把数据库索引恢复为成员（或以「当前数据库 + 迭代器」作为唯一游标），并让权限检查使用迭代器自身的 database()。代码示例：`private: size_t database_idx = 0;` 并在 fill 时使用 `detached_tables_it->database()` 做权限判定",
+        "category": "可靠性",
+        "subcategory": "分页迭代状态",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 66,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Server/PostgreSQLHandler.cpp",
+    "reviewTips": [
+      {
+        "id": "F065",
+        "code": "ss = std::make_shared<Poco::Net::SecureStreamSocket>(",
+        "review": "[缺陷类型] 安全相关的配置能力被移除且静默失效。影响评估：自定义证书/客户端校验/TLS 版本与密码套件限制不再生效，存在合规与中间人防护弱化风险；证书轮换需重启实例。",
+        "suggestion": "[重构思路] 若确需统一上下文，至少保留按 prefix 覆盖证书与验证模式的路径，或在启动时对 `<postgresql_port>ssl_*` 配置输出明确的「已废弃、不再生效」告警并更新文档。代码示例：`if (config.hasProperty(prefix + \"ssl_certificate\")) LOG_WARNING(log, \"postgresql_port ssl_* settings are deprecated and ignored\");`",
+        "category": "安全",
+        "subcategory": "TLS 配置与加固",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 212,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/ObjectStorageQueue/StorageObjectStorageQueue.cpp",
+    "reviewTips": [
+      {
+        "id": "F066",
+        "code": "auto inserted = changed_settings_set.emplace(result_setting.name).second;",
+        "review": "[缺陷类型] 设置名归一化不彻底（校验用归一化名、持久化用原始名）。影响评估：合法 ALTER 被误判为设置重复而失败；系统表中设置变更状态展示不准确。",
+        "suggestion": "[重构思路] 在 apply 前统一归一化命令中的 settings_changes 与 settings_resets，使校验、去重与持久化使用同一套名字。代码示例：`for (auto & command : commands) { for (auto & s : command.settings_changes) s.name = normalizeSetting(s.name); std::set<std::string> resets; for (const auto & s : command.settings_resets) resets.insert(normalizeSetting(s)); command.settings_resets = resets; }`",
+        "category": "可靠性",
+        "subcategory": "设置名归一化",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 770,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.h",
+    "reviewTips": [
+      {
+        "id": "F068",
+        "code": "void setProcessedImpl(bool remove_processing_nodes_only);",
+        "review": "[缺陷类型] 遗留死声明（声明与定义不匹配）。影响评估：误导后续维护者，误用后表现为链接错误，增加排查成本。",
+        "suggestion": "[重构思路] 删除该声明，只保留 override 的 setProcessedImpl()。代码示例：`private: std::pair<bool, FileStatus::State> setProcessingImpl() override; void setProcessedImpl() override;`",
+        "category": "可维护",
+        "subcategory": "死代码",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 31,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+    "reviewTips": [
+      {
+        "id": "F069",
+        "code": "else if (is_request_failed(SET_MAX_PROCESSED_PATH))",
+        "review": "[缺陷类型] Keeper multi 响应下标与请求列表错位（且缺少边界校验）。影响评估：正常的会话过期路径会触发 vector 越界访问（UB/崩溃）；重试语义丢失，可能把未在 Keeper 推进的文件当作已处理，导致重复消费。",
+        "suggestion": "[重构思路] 下标随 push 生成并在越界时抛错而非 UB；为 REMOVE_PROCESSING_ID_PATH 补上「版本变化属正常」分支，保留 SET_MAX_PROCESSED_PATH 的重试分支。代码示例：`auto is_request_failed = [&](size_t idx) { chassert(idx < responses.size()); return responses[idx]->error != Coordination::Error::ZOK; };` 并在 push 时记录 `const auto set_max_processed_idx = requests.size();`",
+        "category": "可靠性",
+        "subcategory": "Keeper 事务响应索引",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 484,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Storages/StorageReplicatedMergeTree.cpp",
+    "reviewTips": [
+      {
+        "id": "F070",
+        "code": "current_zookeeper = zookeeper;",
+        "review": "[缺陷类型] 共享 std::shared_ptr 的无锁写（数据竞争）。影响评估：极端时序下可能崩溃或读到已失效的 Keeper 会话对象，问题难以复现定位。",
+        "suggestion": "[重构思路] 保留加锁写入，并给 current_zookeeper 增加 TSA_GUARDED_BY 以固化约束。代码示例：`{ std::lock_guard lock(current_zookeeper_mutex); current_zookeeper = zookeeper; }`",
+        "category": "可靠性",
+        "subcategory": "数据竞争",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1334,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

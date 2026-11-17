@@ -1,0 +1,246 @@
+{
+  "generatedAt": "2026-11-15T00:46:21.351Z",
+  "runId": "20261115_004113_653",
+  "source": "mr",
+  "caseId": "ppy__osu@748ab3d",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "osu.Game.Rulesets.Osu/Difficulty/OsuDifficultyCalculator.cs",
+      "line": 29,
+      "title": "难度算法（star rating）已改动但 Osu/Taiko 的 DifficultyCalculator.Version 未同步 bump",
+      "description": "本次 MR 修改了 osu! 难度层（Aim.skillMultiplier 26→25.6、Speed.skillMultiplier 1.47→1.46、AimEvaluator 的 wide/acute/wiggle/velocityChange 结构与 distRatio、RhythmEvaluator 的 rhythm 比值公式、SpeedEvaluator 的 distance_multiplier 0.8→0.9）与 taiko 难度层（TaikoDifficultyCalculator 的 strainLengthBonus 公式重写），但两个 DifficultyCalculator 的 Version 仍为 20250306。Version 在基类中的语义是「用于辨别是否需要重新计算」的 yymmdd 版本号（DifficultyCalculator.cs:41-44），依赖该版本号判断难度缓存是否失效的调用方（例如服务端/后台重算，以及任何按 Version 比对持久化难度的路径）无法感知算法已变化，会继续使用按旧算法算出的 star rating 与基于其派生出的 pp；同时版本号也不再能标识本次平衡性调整，后续回溯困难。客户端内存缓存（BeatmapDifficultyCache 注释明确「not persisted between game sessions」）虽不受影响，但 Version 的意义正是跨会话/跨端重算判据，遗漏 bump 属于发布流程性缺陷。",
+      "evidence": [
+        "osu.Game.Rulesets.Osu/Difficulty/OsuDifficultyCalculator.cs:29 — `public override int Version => 20250306;`（本次 diff 未触碰）",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:36 — `public override int Version => 20250306;`（同样未变）",
+        "osu.Game/Rulesets/Difficulty/DifficultyCalculator.cs:41-44 — 注释：`A yymmdd version which is used to discern when reprocessing is required.`",
+        "diff 中 osu.Game.Rulesets.Osu/Difficulty/Skills/Aim.cs 的 `skillMultiplier => 25.6`、Skills/Speed.cs 的 `skillMultiplier => 1.46`、SpeedEvaluator.cs 的 `distance_multiplier = 0.9` 均属难度层变更",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:123-125 — strainLengthBonus 公式被重写，并通过 178 行 `staminaPeak = staminaPeaks[i] * stamina_skill_multiplier * strainLengthBonus` 影响星数",
+        "diff 中 CatchPerformanceCalculator / OsuDifficultyCalculator.performance_base_multiplier / TaikoPerformanceCalculator 属 pp 层常量，与 Version 无关，说明本条只针对难度层遗漏"
+      ],
+      "rule": "CACHE-INVALIDATION-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 算法变更未同步难度版本号，导致缓存/重算判据失效。影响评估：按 Version 判断是否重算的链路会继续沿用旧算法的星数与 pp；版本号也失去对本次平衡性调整的标识能力，属于难以事后修复的发布性缺陷。",
+        "suggestion": "[重构思路] 在本次 MR 中把受影响的难度计算器 Version 提升到新的 yymmdd（osu! 与 taiko 各一处），保持「难度算法改动 ⇒ Version bump」的约定；pp 常量调整（catch/osu base multiplier/taiko performance）不需要 bump。代码示例：`public override int Version => 20250601; // AimEvaluator/RhythmEvaluator/SpeedEvaluator 平衡性调整`",
+        "subcategory": "难度版本号与缓存失效"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs",
+      "line": 410,
+      "title": "calculateDeviation 新增的 attributes 形参未被使用，relevantCountMiss 与 objectCount 代数抵消成死参数",
+      "description": "本次重构给 calculateDeviation 新增了 OsuDifficultyAttributes attributes 与 double relevantCountMiss 两个形参，但：(1) 方法体内完全没有引用 attributes，只使用 greatHitWindow/okHitWindow/mehHitWindow 字段与 relevantCount* 形参，新增形参是纯噪音，还会误导后续维护者以为偏差估计依赖难度属性；(2) n = Math.Max(1, objectCount - relevantCountMiss - relevantCountMeh)，而 objectCount = relevantCountGreat + relevantCountOk + relevantCountMeh + relevantCountMiss，代入后 n 恒等于 Math.Max(1, great + ok)，与改动前的 `Math.Max(1, relevantCountGreat + relevantCountOk)` 完全一致——也就是说 relevantCountMiss（以及调用方 calculateSpeedDeviation 里为 worst-case 计算它的一大段代码）对结果没有任何影响。注释声称「把 miss 计入 objectCount 再做偏差校正」，与实际的代数抵消相互矛盾，容易让后续修改者基于错误心智模型改动最坏情况口径。",
+      "evidence": [
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:410 — 新签名 `private double? calculateDeviation(OsuDifficultyAttributes attributes, double relevantCountGreat, double relevantCountOk, double relevantCountMeh, double relevantCountMiss)`，方法体 411-452 行未出现 `attributes`",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:415 — `double objectCount = relevantCountGreat + relevantCountOk + relevantCountMeh + relevantCountMiss;`",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:420 — `double n = Math.Max(1, objectCount - relevantCountMiss - relevantCountMeh);`（即 Math.Max(1, great + ok)）",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:396 — 调用方为 worst-case 口径额外计算的 `relevantCountMiss = Math.Min(countMiss, speedNoteCount)` 因此不影响结果",
+        "diff 中删除的旧实现：`double n = Math.Max(1, relevantCountGreat + relevantCountOk);`"
+      ],
+      "rule": "DEAD-CODE-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 死参数 / 无效计算（新增参数对结果零影响，注释与实现不一致）。影响评估：不影响数值正确性，但会造成理解偏差与后续误改；额外的最坏情况计算也带来无谓的复杂度。",
+        "suggestion": "[重构思路] 二选一：若确实要按「圆的个数」估计命中率，把 n 改成使用 objectCount（此时 relevantCountMiss 才生效），并同步更新注释；若维持原语义（仅用 great+ok 估计正态分布样本量），则删除 attributes 与 relevantCountMiss 两个形参及调用方的多余计算，保留一条说明性注释。代码示例：`// 仅用 great+ok 估计正态分布样本量，miss/meh 不计入\ndouble n = Math.Max(1, relevantCountGreat + relevantCountOk);`",
+        "subcategory": "死参数与实现/注释不一致"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs",
+      "line": 60,
+      "title": "totalSuccessfulHits 为 0 时 effectiveMissCount 不再赋值，全 miss 分数上报的 EffectiveMissCount 为 0",
+      "description": "新实现把 effectiveMissCount 的赋值放进 `if (totalSuccessfulHits > 0)` 分支，else 分支没有兜底：全部 miss 的分数（countGreat=countOk=countMeh=0、countMiss>0）会让 effectiveMissCount 保持字段默认值 0，于是 TaikoPerformanceAttributes.EffectiveMissCount 上报为 0，与实际 miss 数不符；同时 computeDifficultyValue 中的 `Math.Pow(0.986, effectiveMissCount)` 失去 miss 惩罚。当前之所以没有造成 pp 数值错误，只是因为另一条路径凑巧兜住：countGreat==0 ⇒ computeDeviationUpperBound 返回 null ⇒ computeDifficultyValue 在 113-114 行提前 return 0。这种「靠 countGreat==0 兜底」的隐式耦合很脆弱——一旦后续允许全 ok/全 meh 的分数参与 dif 计算或调整该早退条件，miss 惩罚就会静默失效，且属性值会一路为 0 传播到展示层。",
+      "evidence": [
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:59-61 — `if (totalSuccessfulHits > 0) effectiveMissCount = Math.Max(1.0, 1000.0 / totalSuccessfulHits) * countMiss;`（无 else 分支）",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:163-165 — `totalHits => countGreat + countOk + countMeh + countMiss`、`totalSuccessfulHits => countGreat + countOk + countMeh`",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:102 — `difficultyValue *= Math.Pow(0.986, effectiveMissCount);`",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:146-147 — computeDeviationUpperBound 在 `countGreat == 0` 时返回 null，113-114 行据此提前 return 0（当前唯一的兜底）",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:86 — `EffectiveMissCount = effectiveMissCount` 会把 0 写入返回属性",
+        "diff 中删除的旧实现（无该守卫）：`effectiveMissCount = totalHits * Math.Pow((double)countMiss / totalHits, Math.Pow(taikoAttributes.ConsistencyFactor, 0.2));`"
+      ],
+      "rule": "BOUNDARY-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 条件分支缺少 else 兜底导致的默认值语义错误（上报属性与实际 miss 数不一致）。影响评估：当前 pp 数值由 countGreat==0 的早退路径间接兜住，但属性 EffectiveMissCount=0 会误导展示与下游使用；一旦早退条件变化，miss 惩罚将静默失效。",
+        "suggestion": "[重构思路] 显式处理边界：totalHits 为 0 时保持 0，其余情况（含 totalSuccessfulHits==0）都用同一公式，避免依赖别的早退分支兜底。代码示例：`effectiveMissCount = totalHits > 0 ? Math.Max(1.0, 1000.0 / Math.Max(1, totalSuccessfulHits)) * countMiss : 0;`",
+        "subcategory": "边界条件与默认值"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs",
+      "line": 150,
+      "title": "ConsistencyFactor 在 taiko performance 侧已无消费者，但仍被计算并写入 DifficultyAttributes",
+      "description": "本次重构删除了 TaikoPerformanceCalculator 中两处对 ConsistencyFactor 的使用（旧的 effectiveMissCount 幂次与 difficulty/accuracy 的 lengthBonus 都改为只依赖 totalHits），但 TaikoDifficultyCalculator 仍然通过 combinedDifficultyValue 的 out 参数计算 consistencyFactor 并写入 TaikoDifficultyAttributes（第 150 行），同时 calculateConsistencyFactor（207-225 行）仍在对全部 peaks 做一次排序与切片统计。结果是：taiko 的难度属性里保留了一份当前性能计算链路完全不消费的数据，且星数计算过程中仍付出一次额外的 peaks 排序/扫描成本。要么该字段已被遗忘、需要删掉以减少无用计算，要么它仍是服务端/其他消费者的契约，应在注释中说明其用途，否则后续维护者无法判断能否移除。",
+      "evidence": [
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:127 — `double combinedRating = combinedDifficultyValue(rhythm, reading, colour, stamina, isRelax, isConvert, out double consistencyFactor);`",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:150 — `ConsistencyFactor = consistencyFactor,` 仍写入属性",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:207-225 — calculateConsistencyFactor 仍执行排序与切片统计",
+        "diff 中被删除的消费者一：`Math.Pow(taikoAttributes.ConsistencyFactor, 0.2)`（effectiveMissCount 旧公式）",
+        "diff 中被删除的消费者二：`double totalDifficultHits = totalHits * Math.Pow(attributes.ConsistencyFactor, 0.5);`（difficulty 与 accuracy 的两处 lengthBonus）",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs 全文（1-167 行）改动后不再出现 `ConsistencyFactor` 字样"
+      ],
+      "rule": "DEAD-DATA-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 遗留字段/计算（消费者已删除，生产端仍在计算与暴露）。影响评估：无功能性错误，但保留无消费者的属性会让 API 语义漂移，且每次难度计算都多一次 peaks 排序统计；也无法判断是遗忘还是刻意保留。",
+        "suggestion": "[重构思路] 明确取舍：若无其他消费者，则移除 TaikoDifficultyAttributes.ConsistencyFactor 与 calculateConsistencyFactor，并从 combinedDifficultyValue 去掉 out 参数；若仍是线上契约（例如服务端需要），在属性上加 XML 注释说明用途与消费方，避免后续误删。代码示例：`// 保留时：/// <summary>供服务端 … 消费，客户端 performance 计算不再使用。</summary>`",
+        "subcategory": "废弃字段与无用计算"
+      }
+    },
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "osu.Game.Rulesets.Osu/Difficulty/OsuDifficultyCalculator.cs",
+      "line": 29,
+      "title": "难度算法（star rating）已改动，但 osu!/taiko 的 DifficultyCalculator.Version 未同步 bump",
+      "description": "本次 MR 修改了 osu! 难度层（Aim.skillMultiplier 26→25.6、Speed.skillMultiplier 1.47→1.46、AimEvaluator 的 wide/acute/wiggle/velocityChange 结构与 distRatio、RhythmEvaluator 的 delta 比值公式、SpeedEvaluator.distance_multiplier 0.8→0.9）与 taiko 难度层（TaikoDifficultyCalculator.strainLengthBonus 公式重写，并经 combinedDifficultyValue 的 staminaPeak 影响星数），但两个 DifficultyCalculator 的 Version 仍是 20250306。基类中 Version 的语义是 yymmdd 版本号，用于辨别是否需要重新计算（DifficultyCalculator.cs:41-44）；难度属性本身有 ToDatabaseAttributes/FromDatabaseAttributes 的 osu_difficulty_attribs 持久化映射（DifficultyAttributes.cs:80-93），即按旧算法算出的 star rating 与各子项会被长期保存。Version 不 bump 时，依赖该版本号判断「算法已变、需要重算」的链路无法感知本次平衡性调整，会继续沿用旧算法的星数与由其派生的 pp，同时版本号也失去对本次调整的标识能力，后续难以回溯。注意客户端内存缓存（BeatmapDifficultyCache 类注释声明不跨会话持久化，DifficultyCacheLookup 的键只含 BeatmapInfo/Ruleset/OrderedMods）不按 Version 失效，因此影响面限于依赖 Version 的外部/后台重算路径，这也是本条定为 P2 而非 P1 的原因。",
+      "evidence": [
+        "osu.Game.Rulesets.Osu/Difficulty/OsuDifficultyCalculator.cs:29 — `public override int Version => 20250306;`（本次 diff 未触碰该行）",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:36 — `public override int Version => 20250306;`（同样未变）",
+        "osu.Game/Rulesets/Difficulty/DifficultyCalculator.cs:41-44 — 注释：`A yymmdd version which is used to discern when reprocessing is required.`",
+        "osu.Game/Rulesets/Difficulty/DifficultyAttributes.cs:80-93 — ToDatabaseAttributes/FromDatabaseAttributes 将难度属性映射到 osu_difficulty_attribs，说明星数等结果会被持久化",
+        "diff 中 Aim.cs `skillMultiplier => 25.6`、Speed.cs `skillMultiplier => 1.46`、SpeedEvaluator.cs `distance_multiplier = 0.9`、RhythmEvaluator.cs、AimEvaluator.cs 均为难度层变更",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:123-125 与 178 — strainLengthBonus 新公式通过 `staminaPeak = staminaPeaks[i] * stamina_skill_multiplier * strainLengthBonus` 进入星数",
+        "diff 中 CatchPerformanceCalculator / OsuDifficultyCalculator.performance_base_multiplier / TaikoPerformanceCalculator 属 pp 层常量，不需 Version bump，说明本条仅针对难度层遗漏"
+      ],
+      "rule": "CACHE-INVALIDATION-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 算法变更未同步难度版本号，导致「需要重算」的判据失效。影响评估：按 Version 判断是否重算的链路会继续使用旧算法产出的星数与 pp；版本号也无法标识本次平衡性调整，属于事后难以补救的发布性缺陷。",
+        "suggestion": "[重构思路] 在同一个 MR 中把受影响的难度计算器 Version 提升到新的 yymmdd（osu! 与 taiko 各一处）；仅调整 pp 常量（catch combo 指数、osu performance_base_multiplier、taiko performance）时不需要 bump。代码示例：`public override int Version => 20250601; // AimEvaluator/RhythmEvaluator/SpeedEvaluator 平衡性调整`",
+        "subcategory": "难度版本号与缓存失效"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs",
+      "line": 410,
+      "title": "calculateDeviation 新增的 attributes 形参未被使用，relevantCountMiss 与 objectCount 代数抵消成为无效参数",
+      "description": "重构给 calculateDeviation 新增了 OsuDifficultyAttributes attributes 与 double relevantCountMiss 两个形参，但两者对结果都没有作用：(1) 方法体 411-452 行完全没有引用 attributes，只使用 greatHitWindow/okHitWindow/mehHitWindow 字段与 relevantCount* 形参，新增形参纯属噪音，还会让维护者误以为偏差估计依赖难度属性；(2) objectCount = great+ok+meh+miss，而 n = Math.Max(1, objectCount - relevantCountMiss - relevantCountMeh)，代入后 n 恒等于 Math.Max(1, great + ok)，与改动前的 `Math.Max(1, relevantCountGreat + relevantCountOk)` 完全一致，因此 relevantCountMiss（以及 calculateSpeedDeviation 中为最坏情况专门算出的 relevantCountMiss）对输出毫无影响。代码注释声称「把 miss 计入 objectCount 后做偏差校正」，与实际代数抵消相互矛盾，后续维护者若据此调整最坏情况口径会得到与预期不符的结果。",
+      "evidence": [
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:410 — 新签名 `calculateDeviation(OsuDifficultyAttributes attributes, double relevantCountGreat, double relevantCountOk, double relevantCountMeh, double relevantCountMiss)`，方法体 411-452 行未出现 `attributes`",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:415 — `double objectCount = relevantCountGreat + relevantCountOk + relevantCountMeh + relevantCountMiss;`",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:420 — `double n = Math.Max(1, objectCount - relevantCountMiss - relevantCountMeh);`（恒等于 Math.Max(1, great + ok)）",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:396 — 调用方 `relevantCountMiss = Math.Min(countMiss, speedNoteCount);` 因此不影响任何结果",
+        "diff 中被删除的旧实现：`double n = Math.Max(1, relevantCountGreat + relevantCountOk);`"
+      ],
+      "rule": "DEAD-CODE-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 死参数 / 无效计算（新增参数对结果零影响，注释与实现不一致）。影响评估：不改变数值正确性，但会形成错误的心智模型，后续改动最坏情况口径时容易踩坑，并额外增加调用方的无效计算。",
+        "suggestion": "[重构思路] 二选一：若确实想用「圆的个数」估计命中率，就把 n 改为使用 objectCount（此时 relevantCountMiss 才生效）并同步改写注释；若维持原语义（只用 great+ok 作为正态分布样本量），则删除 attributes 与 relevantCountMiss 两个形参及调用方的多余计算，并保留一句说明性注释。代码示例：`// 仅用 great+ok 估计正态分布样本量，miss/meh 不计入\n double n = Math.Max(1, relevantCountGreat + relevantCountOk);`",
+        "subcategory": "死参数与注释实现不一致"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs",
+      "line": 60,
+      "title": "totalSuccessfulHits 为 0 时 effectiveMissCount 保持默认 0，全 miss 分数上报的 EffectiveMissCount 与 miss 惩罚均失效",
+      "description": "新的 effectiveMissCount 计算被放在 `if (totalSuccessfulHits > 0)` 分支内，没有 else 兜底。全部 miss 的分数（countGreat=countOk=countMeh=0、countMiss>0）会使 effectiveMissCount 保持字段默认值 0，于是 TaikoPerformanceAttributes.EffectiveMissCount 上报为 0（与实际 miss 数不符），且 computeDifficultyValue 中的 `Math.Pow(0.986, effectiveMissCount)` 失去 miss 惩罚。当前之所以没有造成 pp 数值错误，只是因为另一条路径凑巧兜住：countGreat==0 ⇒ computeDeviationUpperBound 返回 null ⇒ computeDifficultyValue 提前 return 0。这种隐式耦合很脆弱——一旦后续调整该早退条件或允许全 non-great 分数参与难度计算，miss 惩罚就会静默失效，而错误值会一路传播到属性与展示层。",
+      "evidence": [
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:59-61 — `if (totalSuccessfulHits > 0)\n    effectiveMissCount = Math.Max(1.0, 1000.0 / totalSuccessfulHits) * countMiss;`（无 else 分支）",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:163-165 — `totalHits => countGreat + countOk + countMeh + countMiss`、`totalSuccessfulHits => countGreat + countOk + countMeh`",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:102 — `difficultyValue *= Math.Pow(0.986, effectiveMissCount);`",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:146-147 与 113-114 — countGreat==0 时 computeDeviationUpperBound 返回 null、computeDifficultyValue 提前 return 0（当前唯一兜底）",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs:86 — `EffectiveMissCount = effectiveMissCount` 会把 0 写入返回属性",
+        "diff 中被删除的旧实现无该守卫：`effectiveMissCount = totalHits * Math.Pow((double)countMiss / totalHits, Math.Pow(taikoAttributes.ConsistencyFactor, 0.2));`"
+      ],
+      "rule": "BOUNDARY-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 条件分支缺少 else 兜底导致默认值语义错误（上报属性与实际 miss 数不符，miss 惩罚与另一分支隐式耦合）。影响评估：当前 pp 数值由 countGreat==0 的早退路径间接兜住，但属性 EffectiveMissCount=0 会误导展示与下游；一旦早退条件变化，惩罚将静默失效。",
+        "suggestion": "[重构思路] 显式处理边界，不依赖其他分支兜底：totalHits 为 0 时保持 0，其余情况（含 totalSuccessfulHits==0）统一用同一公式并对分母做保护。代码示例：`effectiveMissCount = totalHits > 0 ? Math.Max(1.0, 1000.0 / Math.Max(1, totalSuccessfulHits)) * countMiss : 0;`",
+        "subcategory": "边界条件与默认值"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyAttributes.cs",
+      "line": 52,
+      "title": "ConsistencyFactor 在客户端 performance 侧已无消费者，但它仍是持久化契约，缺少「不可删除」的说明",
+      "description": "本次重构删除了 TaikoPerformanceCalculator 中两处对 ConsistencyFactor 的使用（旧的 effectiveMissCount 幂次与 difficulty/accuracy 的 lengthBonus 都改为只依赖 totalHits），而 TaikoDifficultyCalculator 仍然计算并写入该属性。关键点是：该字段并非可以随手清理的遗留物——它带有 [JsonProperty(\"consistency_factor\")]，并作为 ATTRIB_ID_CONSISTENCY_FACTOR 写入 osu_difficulty_attribs，FromDatabaseAttributes 处更是用 `values[ATTRIB_ID_CONSISTENCY_FACTOR]` 直接索引读回（无 TryGetValue 保护）。因此若后续维护者以「performance 侧已无消费者」为由删除该属性或其 ToDatabaseAttributes 映射，读取既有数据库记录时会直接抛 KeyNotFoundException。当前代码没有任何注释说明「客户端 pp 不再使用、但为避免破坏反序列化必须保留」，属于契约文档缺失。",
+      "evidence": [
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyAttributes.cs:51-52 — `[JsonProperty(\"consistency_factor\")] public double ConsistencyFactor { get; set; }`",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyAttributes.cs:66 与 78 — `yield return (ATTRIB_ID_CONSISTENCY_FACTOR, ConsistencyFactor);` 与 `ConsistencyFactor = values[ATTRIB_ID_CONSISTENCY_FACTOR];`（直接索引，键缺失即抛异常）",
+        "osu.Game/Rulesets/Difficulty/DifficultyAttributes.cs:37 — `protected const int ATTRIB_ID_CONSISTENCY_FACTOR = 49;`",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:127 与 150 — 仍计算 consistencyFactor 并写入属性",
+        "改动后的 osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs（1-167 行）不再出现 ConsistencyFactor；diff 中被删除的两处消费者为 `Math.Pow(taikoAttributes.ConsistencyFactor, 0.2)` 与 `Math.Pow(attributes.ConsistencyFactor, 0.5)`"
+      ],
+      "rule": "CONTRACT-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 契约文档缺失（字段的客户端消费者被移除，但仍是数据库/序列化契约）。影响评估：本身不产生运行时错误，但极易诱导后续维护者误删该属性或其映射，导致读取既有 osu_difficulty_attribs 记录时抛 KeyNotFoundException。",
+        "suggestion": "[重构思路] 保留字段与映射，并在属性与 calculateConsistencyFactor 上补充说明用途：客户端 performance 已不再使用，仅作为 osu_difficulty_attribs / JSON 的历史契约保留；若确认服务端也不再需要，应在单独的重构中同时处理旧数据兼容（先用 TryGetValue 兜底再移除）。代码示例：`/// <summary>历史一致度因子，客户端 pp 已不消费，仅保留以兼容 osu_difficulty_attribs 反序列化。</summary>`",
+        "subcategory": "序列化契约与误删风险"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs",
+      "line": 442,
+      "title": "退化判定改用 Precision.AlmostEquals(pLowerBound, 0.0) 未显式给出 epsilon，阈值语义不可见",
+      "description": "旧实现用显式数值阈值 `pLowerBound > 1e-06` 决定是否走真实偏差公式，否则取 limit value；新实现改为 `Precision.AlmostEquals(pLowerBound, 0.0)` 且未传 acceptableDifference，退化判定究竟在什么量级生效完全取决于 osu.Framework.Utils.Precision 的默认值，调用点读不出「多小才算 0」，排查偏差估计异常时无法从代码判断边界。同时 442 行把三个语义完全不同的守卫（精度不足、randomValue>=1 的数值病态、deviation 超过 limitValue 的上限钳制）压在同一行且无注释，读者难以分辨每个条件对应哪种数值异常（例如 deviation 由 ErfInv(pLowerBound)→0 得到 Infinity 时才需要第一项）。这不影响当前编译与常规数值，但会显著提高这段高风险数学代码的维护与调参成本。",
+      "evidence": [
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:442 — `if (Precision.AlmostEquals(pLowerBound, 0.0) || randomValue >= 1 || deviation > limitValue)`，未传第三个 epsilon 参数",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:431-434 — deviation 由 `greatHitWindow / (Math.Sqrt(2) * DifficultyCalculationUtils.ErfInv(pLowerBound))` 得出，pLowerBound→0 时趋于 Infinity，是这些守卫存在的根因",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:436-439 — `deviation *= Math.Sqrt(1 - randomValue);` 与 `double limitValue = okHitWindow / Math.Sqrt(3);`",
+        "diff 中被替换的旧实现：`if (pLowerBound > 1e-06) { … } else { deviation = okHitWindow / Math.Sqrt(3); }`（阈值显式可见）",
+        "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs:8 — 新增 `using osu.Framework.Utils;`，Precision 来自 osu.Framework，其默认 epsilon 不在本仓库快照内，评审无法核对具体数值"
+      ],
+      "rule": "NUMERIC-PRECISION-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 隐式精度阈值 + 复合守卫缺少说明（可读性/可维护性）。影响评估：不影响常规路径数值，但让退化边界变得不可见，后续调参或排障（例如某成绩 SpeedDeviation 异常）时无法从代码定位阈值来源。",
+        "suggestion": "[重构思路] 用命名常量或显式 epsilon 固化阈值，并把三个守卫拆开、逐条注释对应的数值病态。代码示例：`const double min_probability = 1e-06; // 低于此值 ErfInv 精度不足\nif (pLowerBound <= min_probability) deviation = limitValue;      // 精度不足\nelse if (randomValue >= 1) deviation = limitValue;              // sqrt(1-randomValue) 会变 NaN\nelse if (deviation > limitValue) deviation = limitValue;        // 上限钳制`",
+        "subcategory": "数值阈值可读性"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs",
+      "line": 123,
+      "title": "strainLengthBonus 新写法用魔法数 3700/1000 隐含复现旧 ReverseLerp(1000,1555)，0.15 上限与除数存在隐式耦合",
+      "description": "旧实现是 `1 + 0.15 * ReverseLerp(staminaDifficultStrains, 1000, 1555)`，ReverseLerp 内部 clamp 到 [0,1]，语义清晰：1000 起算、1555 处达到 0.15 上限。新实现改写成 `1 + Math.Min(Math.Max((staminaDifficultStrains - 1000) / 3700, 0), 0.15) + Math.Min(Math.Max((staminaSkill - 7.0) / 1.0, 0), 0.05)`：虽然数值上在 1000..1555 区间与旧式完全等价（3700 = 555 / 0.15），但两个事实被彻底掩盖——(a) 上限出现在 1555 这一点只能靠反算得出；(b) 3700 与 0.15 是耦合的，谁单独改一个都会静默改变斜率与拐点。此外常量 1000 / 3700 / 7.0 / 1.0 / 0.15 / 0.05 全部无命名、无注释，这段又直接乘进 staminaPeak 影响全量星数，后续调平衡时极易改错。",
+      "evidence": [
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:123-125 — `strainLengthBonus = 1 + Math.Min(Math.Max((staminaDifficultStrains - 1000) / 3700, 0), 0.15) + Math.Min(Math.Max((staminaSkill - 7.0) / 1.0, 0), 0.05);`",
+        "osu.Game/Rulesets/Difficulty/Utils/DifficultyCalculationUtils.cs:115-118 — `ReverseLerp(x, start, end) => Math.Clamp((x - start) / (end - start), 0.0, 1.0);`，故旧式等价于在 1000..1555 线性插值到 0.15",
+        "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs:178 — `double staminaPeak = staminaPeaks[i] * stamina_skill_multiplier * strainLengthBonus;`（该 bonus 直接进入星数）",
+        "diff 中被替换的旧实现：`strainLengthBonus = 1 + 0.15 * DifficultyCalculationUtils.ReverseLerp(staminaDifficultStrains, 1000, 1555);`",
+        "等价性数值验证：1555 处 (1555-1000)/3700 = 0.15，即除数 3700 由 555/0.15 反推而来"
+      ],
+      "rule": "READABILITY-002",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 魔法数字与隐式参数耦合（改写后可读性低于原 ReverseLerp 写法）。影响评估：数值等价，不影响当前结果；但上限拐点与斜率之间的耦合被隐藏，后续单独调整 0.15 或 3700 会静默改变平衡，且 1000/7.0/0.05 等阈值无来源说明。",
+        "suggestion": "[重构思路] 用具名常量表达「起算点 / 上限 / 上限对应 strains」，或用 ReverseLerp 保留原有表达力；staminaSkill 项同样命名。代码示例：`double strainsBonus = 0.15 * DifficultyCalculationUtils.ReverseLerp(staminaDifficultStrains, 1000, 1555);\ndouble staminaSkillBonus = 0.05 * DifficultyCalculationUtils.ReverseLerp(staminaSkill, 7.0, 8.0);\nstrainLengthBonus = 1 + strainsBonus + staminaSkillBonus;`",
+        "subcategory": "魔法数字与隐式耦合"
+      }
+    }
+  ]
+}

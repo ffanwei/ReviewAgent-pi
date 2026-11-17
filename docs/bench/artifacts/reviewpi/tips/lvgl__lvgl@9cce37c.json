@@ -1,0 +1,73 @@
+[
+  {
+    "filePath": "src/widgets/animimage/lv_animimage.c",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)",
+        "review": "[缺陷类型] 复制粘贴式重复实现（duplicated code）。影响评估：不直接影响运行时，但两处公共 API 的初始化逻辑今后必须成对修改，漏改会导致正向与反向播放行为分叉，属于典型的维护性隐患。",
+        "suggestion": "[重构思路] 抽出 static 内部函数承载公共赋值，方向只作为参数传入；公共 API 保留薄封装。代码示例：\n```c\nstatic void animimg_set_src_internal(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n    if(reverse) lv_anim_set_values(&animimg->anim, (int32_t)num, 0);\n    else lv_anim_set_values(&animimg->anim, 0, (int32_t)num);\n}\n\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    animimg_set_src_internal(obj, dsc, num, false);\n}\n\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    animimg_set_src_internal(obj, dsc, num, true);\n}\n```",
+        "category": "可维护",
+        "subcategory": "重复代码",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 119,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/widgets/animimage/lv_animimage.h",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "void lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num);",
+        "review": "[缺陷类型] 破坏性公共 API 变更且缺少弃用过渡。影响评估：下游用户代码编译失败，需要人工迁移；若项目有「同一大版本内保持源码兼容」的约定，则该改动违反约定。注意：由于旧参数为 bool，不做兼容层时至少能通过编译错误显式暴露，不会被静默忽略。",
+        "suggestion": "[重构思路] 若本次变更不是落在允许破坏兼容的大版本窗口内，可保留旧签名的弃用包装（内部转调新函数，并加弃用告警），在下一大版本再移除；并在迁移说明/变更日志中记录本条 breaking change 与替换方式。代码示例：\n```c\n#if LV_USE_DEPRECATED\nLV_ATTRIBUTE_DEPRECATED void lv_animimg_set_src_v4(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse);\n#endif\n/* 迁移指引：lv_animimg_set_src(o, d, n, false) -> lv_animimg_set_src(o, d, n)\n *           lv_animimg_set_src(o, d, n, true)  -> lv_animimg_set_src_reverse(o, d, n) */\n```",
+        "category": "可维护",
+        "subcategory": "公共 API 兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 76,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num);",
+        "review": "[缺陷类型] 相近/冲突的 API 命名导致语义歧义。影响评估：不改变运行时行为，但会提高误用概率（例如用户设置了 src_reverse 却期待回放效果，或重复设置两套 reverse 造成理解与排查成本）。",
+        "suggestion": "[重构思路] 让命名指向「源顺序」而非「动画反向」，例如 lv_animimg_set_src_reversed / lv_animimg_set_src_reverse_order，并在 Doxygen 注释中显式说明与 set_reverse_duration/set_reverse_delay 的区别（前者只影响帧顺序，不改动画参数）。代码示例：\n```c\n/**\n * Set the images source and play the frames in reverse order (last -> first).\n * Note: this only changes frame order; it is unrelated to\n * lv_animimg_set_reverse_duration()/lv_animimg_set_reverse_delay().\n */\nvoid lv_animimg_set_src_reversed(lv_obj_t * obj, const void * dsc[], size_t num);\n```",
+        "category": "可读性",
+        "subcategory": "API 命名歧义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 84,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "docs/src/details/widgets/animimg.rst",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "To set the images source for flip playback of animation image, use",
+        "review": "[缺陷类型] 新增公共 API 的文档说明不完整（缺语义、缺覆盖关系、缺示例）。影响评估：用户需阅读源码才能正确使用，容易把反向播放与动画回放（reverse_duration）混淆，间接提高误用与支持成本。",
+        "suggestion": "[重构思路] 补齐三点：1) 明确帧顺序（最后一帧 -> 第一帧）；2) 说明它只是同一组图片源的另一种排列，重复调用后者生效；3) 与 reverse_duration/reverse_delay 的区别。若条件允许，追加一个最小示例。代码示例：\n```rst\nImage sources\n-------------\n\nTo set the frames of the animation (played in the given order), use\n:cpp:expr:`lv_animimg_set_src(animimg, dsc[], num)`.\n\nTo play the same frames in reverse order (from the last frame to the first),\nuse :cpp:expr:`lv_animimg_set_src_reverse(animimg, dsc[], num)`. It sets the\nsame source array, so the last call wins. This only changes the frame order;\nfor playback (bounce) behavior use :cpp:expr:`lv_animimg_set_reverse_duration`.\n```",
+        "category": "可读性",
+        "subcategory": "API 文档缺失",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 36,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

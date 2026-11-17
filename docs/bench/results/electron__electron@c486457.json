@@ -1,0 +1,82 @@
+{
+  "instance_id": "electron__electron@c486457",
+  "repo": "electron/electron",
+  "base_commit": "9f8a629126a31224f6b1aa90d650cdc61f7568f2",
+  "head_commit": "c4864570586f4c2f019797d3b0a9c4c76e93396b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 292.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "shell/common/gin_helper/promise.cc",
+      "line": 20,
+      "summary": "Promise SettleScope 的微任务检查点从析构移到构造，Resolve/Reject 之后不再排空微任务",
+      "failure_scenario": "重构后 SettleScope 以 `ignore_browser_checkpoint=false` 构造 gin_helper::MicrotasksScope，并在浏览器进程中把唯一的检查点放在构造函数里，析构函数改成 `= default`；而旧代码是在 `~SettleScope()` 中显式执行 `context_->GetMicrotaskQueue()->PerformCheckpoint(context_->GetIsolate())`。由于 `Resolve()`/`Reject()` 都在 SettleScope 作用域内调用，旧语义是「settle 完成之后立刻排空微任务」，新语义变成「settle 之前排空一次、settle 之后不排空」，浏览器进程中由 resolve/reject 排入的 then/await 回调不再在同一次调用返回前执行，回调时序被推迟到下一个检查点。同时新实现用的是 isolate 级 `v8::MicrotasksScope::PerformCheckpoint(isolate)`，不再使用 `context->GetMicrotaskQueue()`，若该 context 持有独立微任务队列（参见 patches/v8/chore_allow_customizing_microtask_policy_per_context.patch 允许按 context 定制），检查点可能作用在错误的队列上，导致回调完全不在此处触发。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "MICROTASK-001"
+    },
+    {
+      "file": "shell/common/gin_helper/microtasks_scope.cc",
+      "line": 19,
+      "summary": "浏览器进程分支忽略 scope_type，传 kDoNotRunMicrotasks 的调用点反而会执行一次检查点",
+      "failure_scenario": "新的 MicrotasksScope 在浏览器进程只根据 `ignore_browser_checkpoint` 决定是否调用 `v8::MicrotasksScope::PerformCheckpoint(isolate)`，完全不看 `scope_type`；因此 `NodeBindings::ErrorMessageListener` 中 `MicrotasksScope(env->context(), false, v8::MicrotasksScope::kDoNotRunMicrotasks)` 会在构造时立刻跑一次完整微任务检查点，与 kDoNotRunMicrotasks「不要在此作用域运行微任务」的语义相反。旧代码在该处构造的是 `v8::MicrotasksScope(env->context(), v8::MicrotasksScope::kDoNotRunMicrotasks)`，不会运行微任务。该处的调用发生在未捕获异常的消息回调中，此时执行微任务可能重入 JS（例如触发 Promise 的 rejection handler），在错误上报路径上引入可重入与时序问题。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "MICROTASK-002"
+    },
+    {
+      "file": "shell/browser/native_window_views.cc",
+      "line": 492,
+      "summary": "Show() 改用 native_widget_private()->IsVisible()，与本类 IsVisible() 的写法不一致",
+      "failure_scenario": "`Show()` 的 modal 计数守卫由 `widget()->IsVisible()` 改成 `widget()->native_widget_private()->IsVisible()`，但同一文件 551-563 行的 `NativeWindowViews::IsVisible()`（非 Windows 分支）仍使用 `widget()->IsVisible()`，`shell/browser/ui/views/autofill_popup_view.cc:66` 也仍使用 `parent_widget_->IsVisible()`，说明 `views::Widget::IsVisible()` 在该版本仍然可用，因此本行改动不像是编译所必需；若两者语义等价，则改动与既有可见性判定（Windows 分支为 `WS_VISIBLE && !IsMinimized()`）并存会让递增/递减 modal 计数的边界难以推理——531 行 `Hide()` 的 `DecrementChildModals()` 是无守卫的，`Show()` 的守卫一旦判断口径变化就会出现计数不平衡。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CONSISTENCY-001"
+    },
+    {
+      "file": "script/release/get-url-hash.ts",
+      "line": 10,
+      "summary": "hasher 端点与环境变量重命名未附带 CI 侧同步，下载校验可能静默失败",
+      "failure_scenario": "发布脚本把 hasher 服务主机改为 `electron-artifact-hasher.azurewebsites.net`、路由改为 `/api/HashArtifact`、并把密钥环境变量由 `ELECTRON_HASHER_FUNCTION_KEY` 改为 `ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY`，但本 MR 未包含任何 CI/密钥配置变更。该处使用非空断言 `process.env.ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY!`，环境变量缺失时不会报错，只会把 `undefined` 作为 `code` 查询参数发给服务端，最终表现为 401/404 而非明确的配置错误，发布产物的哈希校验会静默失败或产出错误结果。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CONFIG-001"
+    },
+    {
+      "file": "shell/renderer/api/electron_api_spell_check_client.cc",
+      "line": 21,
+      "summary": "新增 microtasks_scope.h 的 include 但文件仍直接使用 v8::MicrotasksScope，形成间接依赖",
+      "failure_scenario": "本次在 electron_api_spell_check_client.cc 中新增了 `shell/common/gin_helper/microtasks_scope.h` 的 include，但该文件第 218 行仍直接构造 `v8::MicrotasksScope`，并未使用 gin_helper::MicrotasksScope；真正被依赖的是 microtasks_scope.h 传递引入的 `v8/include/v8-microtask-queue.h`。同类情况还有 electron_render_frame_observer.cc（81、123 行）、electron_sandboxed_renderer_client.cc（149、167 行）以及 shell/common/api/electron_bindings.cc——后者只加了 include 且整个文件中没有任何 MicrotasksScope 使用点。这会让后续调整 microtasks_scope.h 的 include 时意外破坏这些文件的编译。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "patches/v8/deps_add_v8_object_setinternalfieldfornodecore.patch",
+      "line": 6,
+      "summary": "新增的 v8 补丁自述服务于 Node.js v20.x，而 DEPS 中 node_version 为 v22.15.0",
+      "failure_scenario": "新补丁的说明文本明确写着「This is a non-ABI breaking solution added by Node.js in v20.x」，并声明这些接口「will not exist in Node.js v21.x」，但本次 DEPS 中 `node_version` 仍为 `v22.15.0`。若当前 Node 版本并不调用 `SetInternalFieldForNodeCore`，该补丁只会扩大 V8 公开头文件的 API 面（并在 v8-object.h 中留下 V8_DEPRECATED 标记与拼写为 extentions 的注释），属于长期维护负担；若当前 Node 版本确实需要，则补丁说明与 DEPS 版本信息应更新以免误导。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.4,
+      "rule": "MAINTAINABILITY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\electron__electron\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\electron__electron@c486457.diff\n  caseId              electron__electron@c486457\n  --issue             (未传)\n  --taskId            electron__electron@c486457\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 4730 字符（test=1），明细见审计 mrFilter\n✓ 完成 · 耗时 223.0s · 模型调用 12 次 · token 输入 83,679（未命中） · 输出 33,404 · 缓存命中 602,880（87.8%） · 工具 26 次（主会话 26 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0228\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 223.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 222.9s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 11.6s (5.2%) | P2 4.1s (1.8%) | P3 14.5s (6.5%) | P4 102.7s (46.1%) | P5 64.8s (29.1%) | P6 25.2s (11.3%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 83,679（未命中） | 输出 33,404 | 缓存命中 602,880（87.8%） | $0.0228\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\electron__electron@c486457\\audit\\20261115_045646_380.json",
+  "token_usage": {
+    "input_tokens": 83679,
+    "output_tokens": 33404,
+    "cache_read_input_tokens": 602880
+  }
+}

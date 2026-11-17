@@ -1,0 +1,149 @@
+[
+  {
+    "filePath": "src/draw/sw/blend/lv_draw_sw_blend_to_rgb565.c",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if(LV_RESULT_INVALID == LV_DRAW_SW_RGB565_BLEND_NORMAL_TO_RGB565(dsc)) {",
+        "review": "[缺陷类型] 加速实现与数据字节序语义不匹配（错误替换为无交换的内核）。[影响评估] NEON 构建下 RGB565_SWAPPED 图像/图标颜色错乱（R/B 互换），属于用户可见的渲染错误；由于仅在硬件加速配置下触发，常规 CI 与桌面构建无法复现。",
+        "suggestion": "[重构思路] 不要在 swapped 路径复用非 swapped 内核：要么恢复 LV_DRAW_SW_RGB565_SWAPPED_* 宏名（NEON 未定义则自动回退到 C 实现），要么在 NEON 侧新增带 byteswap 的变体（q8 载入后先 `vrev16.8`）。[代码示例] `- if(LV_RESULT_INVALID == LV_DRAW_SW_RGB565_BLEND_NORMAL_TO_RGB565(dsc)) {` / `+ if(LV_RESULT_INVALID == LV_DRAW_SW_RGB565_SWAPPED_BLEND_NORMAL_TO_RGB565(dsc)) {`，并在 lv_blend_neon.h 中补齐 `_lv_rgb565_swapped_blend_normal_to_rgb565_neon` 或在文档中明确不支持、强制走 C 回退。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 936,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/draw/sw/blend/neon/lv_blend_neon.S",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": ".arch armv7a",
+        "review": "[缺陷类型] 汇编实现与目标架构强绑定但缺少编译期守卫，且文档支持范围被静默收缩。[影响评估] 在 aarch64/ARMv8-A（含大量 Cortex-A53/A55 嵌入式 Linux 与部分 RTOS 配置）上开启 NEON 会构建失败；用户只能回退到 LV_DRAW_SW_ASM_NONE，性能退化，且错误信息来自汇编器、难以定位。",
+        "suggestion": "[重构思路] 与 helium 保持一致：在 .S 与 lv_blend_neon.h 中都加架构守卫（如 `#if defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__)`），aarch64 下自动降级为无加速并在文档/Kconfig 中说明「NEON 汇编仅支持 32 位 ARMv7」，或在 lv_conf 检查处给出明确的 `#error`。[代码示例] `#if LV_USE_DRAW_SW_ASM == LV_DRAW_SW_ASM_NEON && (defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__))` … `#endif`，并在 lv_blend_neon.h 用同名条件包裹 `#define LV_DRAW_SW_...` 系列宏，使 aarch64 自动回退到通用 C 实现。",
+        "category": "可移植",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 22,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "ldr             DST_ADDR, [r0, #4]",
+        "review": "[缺陷类型] C 与汇编共享结构体但缺少布局契约校验。[影响评估] 后续维护者改动 asm_dsc_t 时不会有任何告警，直接导致像素错位或写越界（dst_stride 取错会逐行漂移写出缓冲区），是典型的延迟爆发的内存破坏问题。",
+        "suggestion": "[重构思路] 用静态断言把布局固定下来，并把偏移/字段尺寸通过汇编可见宏导出，避免两处独立维护。[代码示例] ```c\n_Static_assert(offsetof(asm_dsc_t, dst_buf) == 4, \"asm_dsc_t layout changed\");\n_Static_assert(offsetof(asm_dsc_t, src_stride) == 24, \"asm_dsc_t layout changed\");\n_Static_assert(offsetof(asm_dsc_t, mask_stride) == 32, \"asm_dsc_t layout changed\");\n```\n或在 lv_blend_neon.h 中 `#define ASM_DSC_OFF_DST_BUF 4` 并让 .S 使用该宏。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 338,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/others/observer/lv_observer.h",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "lv_observer_t * lv_spangroup_bind_span_text(lv_obj_t * obj, lv_span_t * span, lv_subject_t * subject, const char * fmt);",
+        "review": "[缺陷类型] 条件编译守卫与实现不匹配（复制粘贴 lv_label_bind_text 守卫块）。[影响评估] 特定 lv_conf 组合下 API 不可用或链接失败；LXGL 的配置组合矩阵很大，属于典型的构建期陷阱。",
+        "suggestion": "[重构思路] 把 Span 绑定声明移入独立的 `#if LV_USE_SPAN` 块，并给 `#endif` 补上注释。[代码示例] ```c\n#if LV_USE_SPAN\n/**\n * Bind an integer, string or pointer Subject to a Span's text.\n */\nlv_observer_t * lv_spangroup_bind_span_text(lv_obj_t * obj, lv_span_t * span, lv_subject_t * subject, const char * fmt);\n#endif /*LV_USE_SPAN*/\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 562,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/draw/lv_draw_buf.h",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "void lv_draw_buf_copy(lv_draw_buf_t * dest, const lv_area_t * dest_area,",
+        "review": "[缺陷类型] 公开 API/ABI 破坏性变更（回调扩展点移除 + 类型改名）未提供兼容别名，且未保留可覆盖的拷贝钩子。[影响评估] 下游 BSP/加速器移植层升级后会编译失败（typedef 旧名）或自定义拷贝/色彩转换行为被静默丢弃，表现为图像错色或性能回退，且没有编译期提示。",
+        "suggestion": "[重构思路] 分两步走：先以别名方式保留旧名并标注 deprecated，把 copy 能力改成可选钩子（handlers 中保留 `buf_copy_cb`，为 NULL 时回落到内置 memcpy）；若确定要移除，至少在 lv_api_map_v9_x.h 中集中提供 `#define lv_draw_buf_malloc_cb_t lv_draw_buf_malloc_cb` 等别名，并在 release note/迁移文档中列出。[代码示例] ```c\n/* 兼容别名，下个主版本移除 */\ntypedef lv_draw_buf_malloc_cb lv_draw_buf_malloc_cb_t;\ntypedef lv_draw_buf_align_cb lv_draw_buf_align_cb_t;\n```\n```c\nvoid lv_draw_buf_copy(lv_draw_buf_t * dest, const lv_area_t * dest_area, const lv_draw_buf_t * src, const lv_area_t * src_area)\n{\n    if(dest->handlers && dest->handlers->buf_copy_cb) { dest->handlers->buf_copy_cb(dest, dest_area, src, src_area); return; }\n    lv_draw_buf_copy_default(dest, dest_area, src, src_area);\n}\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 204,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/draw/lv_draw_buf.c",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "LV_ASSERT_FORMAT_MSG(dest->header.cf == src->header.cf, \"Color format mismatch: %d != %d\",",
+        "review": "[缺陷类型] 公开 API 缺少入参校验，健壮性回退。[影响评估] 用户/移植层误传 NULL 时行为由「断言 + 明确日志」变成「段错误」，调试成本上升；对以 LV_ASSERT 为约定的库内其它 draw_buf API 也不一致。",
+        "suggestion": "[重构思路] 在函数入口恢复判空，保持与 lv_draw_buf_init/lv_draw_buf_clear 等同类 API 的一致风格。[代码示例] ```c\nvoid lv_draw_buf_copy(lv_draw_buf_t * dest, const lv_area_t * dest_area, const lv_draw_buf_t * src, const lv_area_t * src_area)\n{\n    LV_ASSERT_NULL(dest);\n    LV_ASSERT_NULL(src);\n    if(dest == NULL || src == NULL) return;\n    ...\n}\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 222,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "docs/src/details/main-modules/indev.rst",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "It is meant to be done in the indev ``read_cb``. This allows the future ``lv_event_t`` to eb filled with multi-touch gesture info.",
+        "review": "[缺陷类型] 文档拼写/标点/替换定义误改。[影响评估] 发布于 lvgl.io 的公开文档出现拼写错误与断句错误，降低可信度；度数符号丢失还会让 “旋转 180” 表述不完整。",
+        "suggestion": "[重构思路] 逐条回滚这些负向改动，并对文档改动单独提交以便评审；建议在 CI 中保留 sphinx 的 spelling/替换检查。[代码示例] ```rst\n-It is meant to be done in the indev ``read_cb``. This allows the future ``lv_event_t`` to eb filled with multi-touch gesture info.\n+It is meant to be done in the indev ``read_cb``. This allows the future ``lv_event_t`` to be filled with multi-touch gesture info.\n\n-and :cpp:enumerator:`LV_SPAN_MODE_BREAK` modes support :ref:`percentage units <coord_units>`.\n+and :cpp:enumerator:`LV_SPAN_MODE_BREAK` modes support :ref:`percentage units <coord_units>`\n```",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 197,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/perf_hardware_comment_pr.yml",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "uses: dawidd6/action-download-artifact@v9",
+        "review": "[缺陷类型] 第三方 CI action 版本回退，且与 MR 主题无关。[影响评估] 若为误改，硬件性能评论工作流可能失效或行为回退；这类失败通常不在 PR 检查里暴露，问题会延迟到发布流程才被发现。",
+        "suggestion": "[重构思路] 确认是否有意降级；若为误改则恢复 @v11 并单独立项处理版本升级，同时考虑用固定 commit SHA 或 dependabot 统一管理 action 版本，避免不同工作流之间版本漂移。[代码示例] ```yaml\n      - name: Download Results from PR\n-        uses: dawidd6/action-download-artifact@v9\n+        uses: dawidd6/action-download-artifact@v11\n         with:\n           workflow: perf_hardware.yml\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 26,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

@@ -26,6 +26,7 @@ const required = [
   join(packageDir, "dist", "index.js"),
   join(packageDir, "bin", "review-pi.js"),
   join(packageDir, "bin", "lib", "cli-runtime.js"),
+  join(packageDir, "rules", "general", "SKILL.md"),
   noticesTarget,
 ];
 

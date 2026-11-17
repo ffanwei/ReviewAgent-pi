@@ -1,0 +1,112 @@
+{
+  "instance_id": "gofr-dev__gofr@dc0b3e6",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "44e3eeb2786ad4d333dc1f528fb104236693d060",
+  "head_commit": "dc0b3e630423b72cb9b2f273fdc18a5c11d12984",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 143.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 9,
+  "review_output": [
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 172,
+      "summary": "URI 分支只接受 mongodb:// 方案，mongodb+srv:// 等标准连接串会被拒绝导致无法连接",
+      "failure_scenario": "generateMongoURI 在 config.URI 非空时调用 getDBHost 校验，而 getDBHost 要求 parsedURL.Scheme 严格等于 \"mongodb\"，否则返回 errIncorrectURI；Connect 收到该错误后直接 return，不再建立连接。改造前 Connect 是把 c.config.URI 原样交给 options.Client().ApplyURI，因此 MongoDB Atlas 普遍使用的 mongodb+srv://（以及 driver 支持的其它方案）在旧版本可用，本 MR 之后会稳定失败并只打印一条 \"error generating mongo URI\" 日志。这是对既有可用配置的破坏性回归，属于 P1。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "RELIABILITY-URI-SCHEME-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 156,
+      "summary": "user/password 与 database 先手工转义再交给 url.URL.String()，造成二次转义使包含特殊字符的凭据失效",
+      "failure_scenario": "构造 URI 时对用户名/密码调用了 url.QueryEscape，对 database 调用了 url.PathEscape，但随后 u.String() 会按 userinfo/Path 规则再转义一次 '%'。结果是密码中的 '@'、'/'、'%' 等会从 \"%40\" 变成 \"%2540\"，空格会被 QueryEscape 变成 '+' 且不会再被还原，driver 收到的凭据与真实凭据不一致，认证失败；database 名同理被双重转义，导致连到的库名错误。现有用例只覆盖了纯字母密码（password / mydb），因此该问题不会被测试发现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-URL-ENCODE-001"
+    },
+    {
+      "file": "pkg/gofr/container/sql_mock.go",
+      "line": 44,
+      "summary": "mock 的 Select 不再回填查询结果，使用方测试会静默拿到零值而产生假阳性",
+      "failure_scenario": "sqlMockDB.Select 的 value 参数被改为忽略（_ interface{}），原来基于 reflect 的回填逻辑与 queryWithArgs.ReturnsResponse 一并删除。这意味着使用 NewMockContainer 的测试即使调用 ExpectSelect 声明了期望数据，被传入的 dest 也不会被填充，后续断言拿到的是零值。若使用方测试依赖 mock 返回的数据（例如断言查询结果长度或字段值），测试会判断失败或更糟——在不做断言时静默通过，掩盖真实的映射缺陷；同时 Select 的文档注释仍声称\"用户需预先提供已填充的数据接口\"，与实际行为相反。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.7,
+      "rule": "TESTABILITY-MOCK-BEHAVIOR-001"
+    },
+    {
+      "file": "pkg/gofr/container/sql_mock.go",
+      "line": 110,
+      "summary": "ExpectSelect 返回类型由 *queryWithArgs 改为 void、ReturnsResponse 被删除，属破坏性公开 API 变更",
+      "failure_scenario": "ExpectSelect 是 container 包对外提供的测试辅助方法，原本返回 *queryWithArgs 以支持链式 .ReturnsResponse(...)。本次改为无返回值并删除 ReturnsResponse，使用方代码（框架外部项目）在升级后会出现编译错误：原本的 `mock.SQL.ExpectSelect(...).ReturnsResponse(x)` 无法编译。仓库内 ReturnsResponse 引用为 0，说明现有测试套件无法暴露该破坏性变更，缺少迁移说明与兼容层。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-API-BREAK-001"
+    },
+    {
+      "file": "pkg/gofr/container/sql_mock.go",
+      "line": 46,
+      "summary": "mock 断言改用 Fatal/Fatalf，断言失败会通过 logging.Fatal 直接 os.Exit 终止整个测试进程",
+      "failure_scenario": "Select/HealthCheck/Dialect 中原本使用 logger.Errorf/Error 记录不一致，现改为 Fatalf/Fatal。NewMockContainer 注入的是 logging.NewLogger(logging.DEBUG)，而 logging.logger.Fatal 在写日志后调用 os.Exit(1)。因此任何期望不匹配都会让整个 go test 进程立即退出：没有失败用例名、没有调用栈，同包其它测试不再执行，剩余未消费期望也不会被 finish 中的 require.Empty 报出，调试成本显著上升。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "TESTABILITY-FATAL-ASSERT-001"
+    },
+    {
+      "file": "pkg/gofr/container/sql_mock.go",
+      "line": 135,
+      "summary": "ExpectHealthCheck/ExpectDialect 返回指向切片元素的指针，后续 prepend 重新分配会使先前返回的指针失效",
+      "failure_scenario": "两个方法每次都新建一个长度 1 的切片，把新期望放在索引 0，再 append 到旧切片上，并返回 &m.expectedHealthCheck[0] / &m.expectedDialect[0]。这会分配新的底层数组，之前返回的指针指向旧数组；如果使用方先取指针、之后再声明第二条期望、然后才通过旧指针调用 WillReturnHealthCheck/WillReturnString，写入会落在已脱离 m.expectedHealthCheck 的副本上而静默丢失，测试拿到的是空期望值（空 status/空 dialect），产生难以定位的假失败或假通过。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-SLICE-PTR-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 155,
+      "summary": "仅当 User 与 Password 同时非空才写入 userinfo，配置了 User 但密码为空时凭据被静默丢弃",
+      "failure_scenario": "构造 URI 时使用 `config.User != \"\" && config.Password != \"\"` 作为写入 userinfo 的条件，而旧实现无论密码是否为空都会拼出 `mongodb://user:pass@host:port/db?authSource=admin`。改造后只填了 User（例如密码通过其它方式注入、或从环境变量读取失败）的场景会生成不带任何凭据、却仍带 authSource=admin 的 URI，连接要么以匿名身份成功（权限语义变化），要么在后续操作中报权限错误，且日志里没有任何提示。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-CREDENTIAL-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 98,
+      "summary": "连接日志改用 c.config.Host 而非解析出的 host，URI 场景下日志 host 为空；成功日志重复输出两次",
+      "failure_scenario": "generateMongoURI 已返回 host，但紧随其后的 Debug 日志仍打印 c.config.Host；当使用 Config.URI（Deprecated 但受支持）时 Host 字段通常为空，日志会出现 \"connecting to MongoDB at  to database xxx\"，丢失最有用的连接目标信息。另外 Connect 末尾保留了原有的两条成功日志：L120 与 L127 内容几乎相同（都是 \"connected to mongoDB ... at <host> to database <db>\"），其中一条的 %v 传入的是 c.Database 对象，重复且不必要。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "READABILITY-LOG-001"
+    },
+    {
+      "file": "go.mod",
+      "line": 39,
+      "summary": "golang.org/x/oauth2、x/term、x/sys 被回退到旧版本，缺少原因说明与配套校验",
+      "failure_scenario": "本 MR 在重构 mongo 与 sql mock 的同时，把 golang.org/x/oauth2 从 v0.25.0 回退到 v0.24.0、golang.org/x/term 从 v0.28.0 回退到 v0.27.0、间接依赖 golang.org/x/sys 从 v0.29.0 回退到 v0.28.0。依赖回退会一并丢弃这些版本中包含的缺陷/安全问题修复，且与本次改动主题无关；diff 中未同步出现 go.sum 变化，若校验和缺失会导致构建或 CI 失败，也使回退动机（解决依赖冲突？）无法追溯。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.4,
+      "rule": "MAINTAINABILITY-DEPS-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\gofr-dev__gofr@dc0b3e6.diff\n  caseId              gofr-dev__gofr@dc0b3e6\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@dc0b3e6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 3 个文件 / 13863 字符（lockfile=1, test=2），明细见审计 mrFilter\n✓ 完成 · 耗时 133.7s · 模型调用 12 次 · token 输入 46,133（未命中） · 输出 18,643 · 缓存命中 272,640（85.5%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0124\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 134.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 133.6s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 8.2s (6.1%) | P2 3.7s (2.8%) | P3 5.9s (4.4%) | P4 62.1s (46.5%) | P5 41.6s (31.1%) | P6 12.0s (9.0%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 46,133（未命中） | 输出 18,643 | 缓存命中 272,640（85.5%） | $0.0124\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\gofr-dev__gofr@dc0b3e6\\audit\\20261115_025435_214.json",
+  "token_usage": {
+    "input_tokens": 46133,
+    "output_tokens": 18643,
+    "cache_read_input_tokens": 272640
+  }
+}

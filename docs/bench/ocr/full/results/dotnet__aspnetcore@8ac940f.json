@@ -1,0 +1,119 @@
+{
+  "instance_id": "dotnet__aspnetcore@8ac940f",
+  "repo": "dotnet/aspnetcore",
+  "base_commit": "7ba02e8ac71eeba562476953d5ff6030b8eda765",
+  "head_commit": "8ac940ff581aa344ab8f859874f6d4c0ecaec6b6",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T05:49:07.916829+00:00",
+  "duration_seconds": 332.8,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 2 finding(s) across 1 selected item(s).",
+    "summary": {
+      "files_reviewed": 1,
+      "comments": 2,
+      "total_tokens": 1201933,
+      "input_tokens": 1160935,
+      "output_tokens": 40998,
+      "cache_read_tokens": 1074432,
+      "elapsed": "5m32s"
+    },
+    "tool_calls": {
+      "total": 52,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 31,
+        "file_find": 5,
+        "file_read": 14
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "src/DataProtection/DataProtection/src/KeyManagement/KeyRingBasedDataProtector.cs",
+        "content": "The rented array is only returned on the success path. `EncodingUtil.SecureUtf8Encoding` is created with `throwOnInvalidBytes: true`, so `GetByteCount`/`GetBytes` throw `EncoderFallbackException` for a purpose containing an unpaired surrogate (purposes can come from untrusted input via `CreateProtector`), and `new byte[totalPurposeLen]` can throw as well. Any of those bypasses `ArrayPool<int>.Shared.Return`, so repeated failures silently drain the shared pool. Wrap the Rent/Return pair in try/finally.",
+        "suggestion_code": "            var purposeLengthsPool = ArrayPool<int>.Shared.Rent(purposes.Length);\n            try\n            {\n                // ... existing loops ...\n            }\n            finally\n            {\n                ArrayPool<int>.Shared.Return(purposeLengthsPool);\n            }",
+        "existing_code": "            var purposeLengthsPool = ArrayPool<int>.Shared.Rent(purposes.Length);",
+        "start_line": 365,
+        "end_line": 365,
+        "thinking": "No enforcement. So unused using is only a nit; instructions say avoid reporting formatting/style. Skip.\n\nNow, another thought about a genuine correctness/perf concern: the new implementation calls `EncodingUtil.SecureUtf8Encoding.GetByteCount(purpose)` and later `GetBytes` — 2 encodes per purpose, same as before. Fine.\n\nIs there a possibility of `ArrayPool<int>` overkill but also, more importantly, `Rent` may return an array that is larger; `Return` without clearing leaves the data readable to other renters — security? The data is purpose lengths, not secrets. Skip.\n\nSo the main comment: missing try/finally. Also I could combine with \"if purposes.Length is 0 Rent returns Array.Empty\" — irrelevant.\n\nShould I also flag that `_aadTemplate` isn't assigned if the pool isn't returned... no.\n\nLet me consider whether to also flag `ArrayPool.Rent` isn't needed since purposes count is tiny — performance/micro. Skip.\n\nSecond potential comment: `Debug.Assert` only check. It's a defensive suggestion; low value but could be worthwhile given AAD correctness is critical. I'll include as low severity suggestion maybe with a runtime check suggestion? Hmm, the guidance says \"Favor precision over recall: report only defects likely to cause incorrect behavior...\". A Debug.Assert isn't a defect per se since Measure/Write are provably consistent. I'd skip it or add as low. I'll include one low-severity comment about the unchecked `totalPurposeLen` accumulation? That's also speculative — purposes come from CreateProtector chains; overflow requires ~2GB of purpose text. Not realistic. Skip.\n\nI'll report just the try/finally issue. Maybe also note the exception path leaves pooled buffer unreturned — single comment.\n\nActually, let me reconsider whether there's a real subtle bug related to `Encoding.GetByteCount(string)` vs what BinaryWriter did. BinaryWriter.Write(string) in .NET uses `_encoding.GetByteCount(value)` — hmm, actually it encodes into a temp buffer first: `int byteCount = _encoding.GetByteCount(chars, ...)` then writes length then bytes. With throwOnInvalidBytes, GetByteCount would throw for invalid data too. Consistent.\n\nAnother difference: BinaryWriter writes the length as 7-bit encoded of the *actual encoded byte count*. Same.\n\nOK. Also one thing: does the legacy code write purposes in `foreach` (IEnumerable order) — same array order. Fine.\n\nI'll add the try/finally comment. Perhaps also a comment that using `string[]` for the net10-only overload changes the constructor signature between TFMs — but all call sites pass string[], so no break. However, there's one subtle maintainability risk: if someone in future writes `new AdditionalAuthenticatedDataTemplate(someList)` it compiles on netstandard but not net10. That's a real cross-TFM hazard but it's exactly a build error, caught immediately. Low value; could mention in combination? Given guidance to avoid noise, I'll mention it briefly as low maintainability? The review plan listed it as medium. Hmm — it's a legitimate concern: the type is `internal`/private, and the API differs per TFM making future maintenance harder. But it does not cause a defect now. I think a single low-severity comment suggesting a `ReadOnlySpan<string>`/keep `IEnumerable` isn't very strong. I might skip to keep precision.\n\nActually, there is one more potentially real issue: signature difference could cause the net10 build to fail if the code compiles with a different call site in tests using InternalsVisibleTo. Let me search tests for direct construction of AdditionalAuthenticatedDataTemplate — only the source file. Fine.\n\nI'll report the try/finally. Let me craft the comment on lines 365-397.\n\nLocation matching: existing_code must be newly added lines. I'll use:\n\n```\n            var purposeLengthsPool = ArrayPool<int>.Shared.Rent(purposes.Length);\n```\nand content explains.\n\nBetter to anchor at the Rent line with suggestion showing try/finally.\n\nLet me write suggestion code:\n\n```csharp\n            var purposeLengthsPool = ArrayPool<int>.Shared.Rent(purposes.Length);\n            try\n            {\n                for (int i = 0; i < purposes.Length; i++)\n                ...\n            }\n            finally\n            {\n                ArrayPool<int>.Shared.Return(purposeLengthsPool);\n            }\n```\nThat's a big suggestion; the tool's suggestion_code should be concise. I'll put a short illustrative snippet or just describe. I'll provide minimal suggestion code showing the try/finally pattern wrapper around the loop.\n\nAlso maybe worth a second comment on the Debug.Assert runtime guard — I'll skip since it's covered by the intent of \"precision\".\n\nActually, hold on. Let me reconsider one more potential real bug: `ArrayPool<int>.Shared.Rent(purposes.Length)` and then writing `purposeLengthsPool[i]` — fine.\n\nHmm, what about thread safety: constructor runs once per protector instance; fine.\n\nWhat about the fact that `_aadTemplate` is assigned at the end and constructor exceptions propagate to KeyRingBasedDataProtector's ctor — purpose creation with invalid surrogate generates exception at protector creation; legacy also threw from BinaryWriter.Write. Consistent behavior. Fine.\n\nOne more: `Debug.Assert(index == targetArr.Length)` — this assert is before `_aadTemplate = targetArr;` — fine.\n\nOk final answer: one comment.\n\nActually, let me double check: is there a scenario where `GetByteCount` throws for purposes? Purpose strings come from user code (`CreateProtector(purpose)`) and could contain unpaired surrogates from network input. So yes plausible: a user constructing a purpose from untrusted bytes. And the thrown exception aborts protector creation before returning the pooled array. Repeated failures strip the pool. Valid.\n\nI'll report as medium severity, category bug (resource handling). Let's do it.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "src/DataProtection/DataProtection/src/KeyManagement/KeyRingBasedDataProtector.cs",
+        "content": "The hand-rolled `Measure7BitEncodedUIntLength`/`Write7BitEncodedInt` pair only produces identical bytes to the legacy `BinaryWriter.Write(string)` path if both agree exactly for every length. Existing tests (`KeyRingBasedDataProtectorTests.BuildAadFromPurposeStrings`) only use short purposes (\"purpose\", \"purpose1\", \"yet another purpose\"), so the multi-byte length-prefix path (purpose ≥ 128 UTF-8 bytes, and the 3/4/5-byte cases) is never exercised, and this NET10-only path is otherwise only reachable via an actual `Protect` call. Please add a test with a longer / multi-byte-UTF8 purpose (e.g. comparing against the `BinaryWriter`-built AAD) so a regression in the length encoding can't silently break unprotect across TFMs.",
+        "existing_code": "        private static int Measure7BitEncodedUIntLength(uint value)",
+        "start_line": 403,
+        "end_line": 403,
+        "thinking": "The tests use short purposes only (\"purpose\", \"purpose1\", \"yet another purpose\") — all under 128 bytes, so `Write7BitEncodedInt`'s multi-byte path and `Measure7BitEncodedUIntLength`'s >1-byte cases are not covered. That's a legit testing gap for the new code (the 7bit encoding logic is the new, hand-rolled part). But the comment must be placed on code in the reviewed file. I can comment on the `Write7BitEncodedInt`/`Measure7BitEncodedUIntLength` region suggesting tests with purposes ≥128 UTF-8 bytes (i.e., 2-byte and 3-byte length prefixes), since existing tests only use short purposes.\n\nHmm, \"test\" category comments are allowed in the schema. I think that's a fair, useful point.\n\nNow let me also double check the `Measure7BitEncodedUIntLength` matches `BinaryWriter.Write` for all lengths: BinaryWriter.Write(string) uses `7BitEncodedInt(byteCount)` where byteCount is the byte count and writes:\n```\nwhile (value >= 0x80) { _buffer[...] = (byte)(value | ~0x7F); value >>= 7; }\nBuffer[0] = (byte)value;\n```\nYes, identical to `Write7BitEncodedInt`.\n\nNote BinaryWriter's loop condition is `value >= 0x80` (i.e., > 0x7F), same as `uValue > 0x7Fu`. Good.\n\nSo the only remaining candidate findings:\n1. (confirmed) pool leak.\n2. Test coverage gap for multi-byte 7-bit length (medium/low, test category).\n\nIs #2 worth reporting under a \"precision over recall\" policy? Tests are part of the review checklist implicitly (test category). It's a real gap: the hand-rolled encoder's >1-byte path is unexercised. I'll report it as low/medium severity test comment.\n\nAlso consider reporting `using System.Buffers.Text;` unused... explicitly excluded (IDE0005 suppressed). Skip.\n\nAlso possible: recommend `EncodingUtil.SecureUtf8Encoding.GetBytes` could return fewer bytes; ignore.\n\nOne more: the code computes `totalPurposeLen` as `int` and allocates `new byte[totalPurposeLen]` — for purposes totaling >2GB... skip.\n\nLet me reconsider one potentially real bug I might report: `Debug.Assert(index == targetArr.Length);` after returning the pool — no.\n\nWhat about `ArrayPool<int>.Shared.Rent(purposes.Length)` returning an array larger than requested; they `Return` it correctly.\n\nOne more potential real problem: **`purposeLengthsPool` typed `int[]`, but `ArrayPool<int>.Shared.Rent` may throw if purposes.Length is 0?** No, returns Array.Empty or a min-size array. Fine.\n\nHmm, what about `Measure7BitEncodedUIntLength` being defined inside the struct — trivial.\n\nI think I'll also consider whether `_aadTemplate` in the NET10 branch is missing `Debug.Assert(existingTemplate.Length >= 20)`. No.\n\nOK. Another thought about a REAL issue: the new constructor would throw on a purpose containing an unpaired surrogate — but as I noted, the old code also threw. So no behavior change other than pool leak.\n\nActually wait — one more thing about the old code: `writer.Write(purpose)` on BinaryWriter with `EncodingUtil.SecureUtf8Encoding`, `throwOnInvalidBytes: true`. Yes throws.\n\nNow let's finalize with one comment (test gap). Should I also raise the maintainability point that the `ArrayPool` rental is unnecessary and could be avoided entirely (which also fixes the leak)? The confirmed finding is a bug about the leak; the tool said don't repeat. A separate maintainability suggestion to drop the pool is different in nature but risks duplication. I'll skip it and just do the test comment.\n\nHmm, but is a single test-gap comment sufficient value? Let me look one more time for a possible logic bug in the byte layout that tests would catch... wait, tests DO catch layout for short purposes, so a layout bug would fail CI. So test-gap comment about >127-byte purposes is meaningful.\n\nLet me double check the `Measure7BitEncodedUIntLength` correctness at boundary 2^21 etc. Max 5 bytes for values up to uint.MaxValue; purpose lengths are int so ≤ 2^31-1 requiring 5 bytes: LZC(2^31-1)=1 → 31-1=30 → 30/7=4 → 5. And Write7BitEncodedInt for value 2^31-1: uValue=0x7FFFFFFF → iterations: writes bytes while >0x7F: 0x7FFFFFFF>0x7F → write, >>7 = 0x3FFFFF >0x7F → ... count: 4 iterations then final = 5 bytes. Match. Good.\n\nLet me also confirm BitOperations.LeadingZeroCount exists for uint (System.Numerics.BitOperations.LeadingZeroCount(uint) returns int) — yes.\n\nFinal answer: one comment re: test coverage for multi-byte length prefix. Actually, let me reconsider precision: the instruction says \"report only defects that are likely to cause incorrect behavior, security vulnerabilities, resource leaks, or material performance problems.\" A missing test isn't in that list. Hmm. It says \"Favor precision over recall\". So maybe reporting only the test gap is misaligned... But then I'd report nothing at all (since the only real defect is already confirmed).\n\nGiven the confirmed findings block exists, it's fine to return without new comments. But should I find something else? Let me think about whether there's a resource/behavior issue introduced by the code that the confirmed finding doesn't cover: e.g. `ArrayPool<int>.Shared.Return(purposeLengthsPool)` — the array isn't cleared, but lengths aren't sensitive.\n\nAnother angle: **thread-safety of Debug.Assert**... no.\n\nAnother angle: `totalPurposeLen` computed from `purposes` but the new code allocates exact size; the old MemoryStream pre-allocated 0x100 and grew. Fine.\n\nAnother angle: `KeyRingBasedDataProtector` is used per-purpose chain creation; the new code allocates ArrayPool + byte[]; if `Purposes` is typically 1-3 items, the pool overhead is larger than a plain int[] allocation — a micro-optimization concern (performance). Now `Rent` from `ArrayPool<int>.Shared` has synchronization overhead (buckets) and typically per-thread stacks. For a 1-element array, `Rent(1)` will take from the shared per-core bucket — cheaper than GC allocation usually. Not material.\n\nHmm, one more real consideration: could the new code be measurably slower due to double `GetByteCount` + `GetBytes`? Same as BinaryWriter. No.\n\nI'll report the test-coverage comment as low severity in `test` category, since the hand-rolled 7-bit encoder's multi-byte path is unverified, and existing tests only use short purposes. It's actionable and precise. That seems like the best value-add.\n\nActually, before finalizing, let me double check whether there are existing tests that use a purpose longer than 127 bytes anywhere (e.g., other test files with long purposes). Search for long purpose strings in DataProtection tests is hard. Let's just check for other tests that would exercise the >127 case: search for \"new string(\" in DataProtection tests related to purpose... Probably not.\n\nI'll keep severity low.\n\nLet me craft the comment anchored to the added lines:\n\nexisting_code:\n```\n+        private static int Write7BitEncodedInt(int value, Span<byte> target)\n```\nActually existing_code should be lines from the diff without the leading '+' in content. Provide:\n\n\"        private static int Measure7BitEncodedUIntLength(uint value)\" ... Better anchor on the Write7BitEncodedInt method or the whole block. I'll anchor on:\n\n```\n            int index = 0;\n            while (uValue > 0x7Fu)\n            {\n```\nHmm that's fine but the suggestion would be about tests. Let me anchor on `        private static int Measure7BitEncodedUIntLength(uint value)`.\n\nContent: The hand-rolled 7-bit encoder and the length calc only get exercised with short purposes in existing tests (KeyRingBasedDataProtectorTests uses \"purpose\", \"purpose1\", \"yet another purpose\"), so the multi-byte length prefix path (purpose ≥ 128 UTF-8 bytes → 2/3/4/5-byte prefix) is unverified; a bug there would silently produce an AAD that differs from the legacy BinaryWriter-based layout, breaking unprotect of payloads created by older TFMs. Suggest adding a test with a long (multi-byte UTF-8) purpose/BuildAadFromPurposeStrings comparison.\n\nThat's reasonable and non-duplicative.\n\nShould I raise a second comment about `System.Buffers.Text` unused? No (excluded).\n\nFinalize.",
+        "category": "test",
+        "severity": "medium"
+      }
+    ],
+    "groups": [
+      {
+        "label": "src/DataProtection/DataProtection/src/KeyManagement/KeyRingBasedDataProtector.cs",
+        "files": [
+          "src/DataProtection/DataProtection/src/KeyManagement/KeyRingBasedDataProtector.cs"
+        ]
+      }
+    ],
+    "session_id": "43f5fa0f-6956-44d7-8cf6-f0fecf18394a",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "43f5fa0f-6956-44d7-8cf6-f0fecf18394a",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "93a031bddc8dfb211b75f275083cff07badb1229baffe0f520ea65276b2f1e34"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "7ba02e8ac71eeba562476953d5ff6030b8eda765",
+        "requested_head": "8ac940ff581aa344ab8f859874f6d4c0ecaec6b6",
+        "resolved_base": "3fe06183a8d3ef32de0d16863d232d5652b1fe9b",
+        "resolved_head": "8ac940ff581aa344ab8f859874f6d4c0ecaec6b6",
+        "exact_range": "3fe06183a8d3ef32de0d16863d232d5652b1fe9b..8ac940ff581aa344ab8f859874f6d4c0ecaec6b6",
+        "source_artifact_sha256": "f12d67ca66d6a3e9613c2e26155040f36286deaf31d17393cf60bc80b4cc9a15"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "bf38efe1fecfe4ed647920bf738a2fc19030f14e6435cc6bc4bd2d0bb396060e",
+            "path": "src/DataProtection/DataProtection/src/KeyManagement/KeyRingBasedDataProtector.cs",
+            "fingerprint": "c7c2d343df6a74f7a513c020fd9e2b319771b4efbce0911c0c0d399550232563"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "bf38efe1fecfe4ed647920bf738a2fc19030f14e6435cc6bc4bd2d0bb396060e",
+            "path": "src/DataProtection/DataProtection/src/KeyManagement/KeyRingBasedDataProtector.cs",
+            "fingerprint": "c7c2d343df6a74f7a513c020fd9e2b319771b4efbce0911c0c0d399550232563"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 332293
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

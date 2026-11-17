@@ -9,6 +9,7 @@ import {
 } from "../contracts/progress.js";
 import type {
   CandidateNormalizationRecord,
+  GroupingAuditRecord,
   ModelFallbackRecord,
   MrFilterPatternSet,
   MrFilterRecord,
@@ -36,12 +37,14 @@ import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-run
 import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
-import { diffTooLargeError, filterDiffForReview, listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError, toMrFilterRecord } from "./mr-input.js";
+import { diffTooLargeError, filterDiffForReview, listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError, splitDiffIntoFileBlocks, toMrFilterRecord } from "./mr-input.js";
 import { mergeShardFindings } from "./findings-merge.js";
+import { capFindings, renumberFindings } from "./finding-budget.js";
 import {
   buildRunContext,
   runPasses,
   type ExecutedPass,
+  type PassFailure,
   type ReviewRunContext,
 } from "./pass-runner.js";
 import {
@@ -49,6 +52,8 @@ import {
   type Shard,
   type ShardPlan,
 } from "./shard-planner.js";
+import { planGroupedShards, shouldGroupReview } from "./review-grouping.js";
+import { runCoverageReview, type CoverageFile, type CoverageReviewResult } from "./coverage-review.js";
 
 // 单案全链入口（ADR-0024：配置矩阵删除后只剩唯一形态）：
 // MR 初始上下文 → pi-agent-core Agent 三钩子循环（七工具 + 轮次上界 + Ledger
@@ -240,6 +245,8 @@ interface ReviewOutcome {
   readonly usage: LlmUsage;
   readonly truncated: boolean;
   readonly findings: readonly Finding[];
+  /** Partial success（ADR-0094）：失败片；成功片仍交付。 */
+  readonly shardFailures?: readonly PassFailure[];
 }
 
 /** 预期内的跳过结果（ADR-0075 / ADR-0078）：数据，不是异常 */
@@ -274,6 +281,7 @@ interface PreparedReview {
   readonly mrFilter?: MrFilterRecord;
   readonly shards: readonly Shard[] | null;
   readonly shardTotal: number;
+  readonly grouping?: GroupingAuditRecord;
 }
 
 type PrepareReviewOutcome =
@@ -338,7 +346,10 @@ function prepareReview(input: ReviewRunInput): PrepareReviewOutcome {
   // MR 边界护栏（#12）：度量对象是**过滤后**的 diff。分片模式下它是整份 MR
   // 的属性，只度量 / 记账一次（每片审计不重复记）。
   const boundary = guardMrBoundary(diff, runtime.limits.boundary);
-  const shards = planReviewShards(diff, runtime.limits.split);
+  // 分组启用时先不做普通分片：否则 split.maxShards 会在大 diff 上先抛错，
+  // grouping.maxShards 根本没机会生效。分组未产生多片时在 maybeGroupReview
+  // 里回退到普通分片（仍按 split 上限报错）。
+  const shards = runtime.limits.grouping.enabled ? null : planReviewShards(diff, runtime.limits.split);
   return {
     kind: "ready",
     startedAt,
@@ -358,7 +369,7 @@ async function executeReview(
   input: ReviewRunInput,
   prepared: PreparedReview,
 ): Promise<ReviewRunResult> {
-  const { startedAt, emit, runtime, modelId, diff, boundary, mrFilter, shards, shardTotal } =
+  const { startedAt, emit, runtime, modelId, diff, boundary, mrFilter, shards, shardTotal, grouping } =
     prepared;
   emit({
     kind: "run",
@@ -371,7 +382,7 @@ async function executeReview(
 
   try {
     // 规则包装载在 `run.start` 之后、首遍之前：保持既有 stderr 时序。
-    const context = await buildRunContext(input, {
+    const baseContext = await buildRunContext(input, {
       startedAt,
       runtime,
       modelId,
@@ -379,6 +390,8 @@ async function executeReview(
       boundary,
       ...(mrFilter !== undefined ? { mrFilter } : {}),
     });
+    const context =
+      grouping !== undefined ? { ...baseContext, grouping } : baseContext;
     const outcome =
       shards === null
         ? await executeSinglePass(context, diff)
@@ -393,7 +406,13 @@ async function executeReview(
       truncated: outcome.truncated,
       findings: summarizeFindings(outcome.findings),
       ...(shards !== null
-        ? { shards: { total: shardTotal, ok: shardTotal, failed: 0 } }
+        ? {
+            shards: {
+              total: shardTotal,
+              ok: shardTotal - (outcome.shardFailures?.length ?? 0),
+              failed: outcome.shardFailures?.length ?? 0,
+            },
+          }
         : {}),
     });
     return outcome.result;
@@ -413,11 +432,71 @@ async function executeReview(
  * 公开的 `runReview` 保持「跳过即抛错」的旧契约，作为兼容适配器。
  */
 export async function runReviewOutcome(input: ReviewRunInput): Promise<ReviewRunOutcome> {
-  const prepared = prepareReview(input);
-  if (prepared.kind === "skipped") {
+  const initial = prepareReview(input);
+  if (initial.kind === "skipped") {
+    return initial;
+  }
+  const prepared = await maybeGroupReview(input, initial);
+  return { kind: "reviewed", result: await executeReview(input, prepared) };
+}
+
+/**
+ * 语义分组（ADR-0094）：满足触发条件时先做 LLM 分组；失败/无模型时由
+ * planner 内部 fallback 到顶层目录分组。分组未产生多片时保持原计划。
+ */
+async function maybeGroupReview(
+  input: ReviewRunInput,
+  prepared: PreparedReview,
+): Promise<PreparedReview> {
+  const grouping = prepared.runtime.limits.grouping;
+  if (!grouping.enabled) {
     return prepared;
   }
-  return { kind: "reviewed", result: await executeReview(input, prepared) };
+  const fileCount = listChangedFilePaths(prepared.diff).length;
+  if (!shouldGroupReview(fileCount, prepared.diff.length, grouping)) {
+    return prepared;
+  }
+
+  const llm =
+    input.baseUrl !== undefined && input.apiKey !== ""
+      ? {
+          baseUrl: input.baseUrl,
+          apiKey: input.apiKey,
+          modelId: grouping.model ?? prepared.modelId,
+          fetch: input.fetch,
+          timeoutMs: prepared.runtime.limits.timeouts.oneShotMs,
+        }
+      : null;
+  const plan = await planGroupedShards(
+    prepared.diff,
+    grouping,
+    prepared.runtime.limits.split.contextSummaryChars,
+    llm,
+  );
+  const useGrouped =
+    plan.shards.length > 1 || plan.shards.some((shard) => shard.truncated.length > 0);
+  if (!useGrouped) {
+    // 分组没产生多片：回退普通分片（大 diff 仍会按 split.maxShards 报错）。
+    const fallback = prepared.shards ?? planReviewShards(prepared.diff, prepared.runtime.limits.split);
+    return fallback === prepared.shards
+      ? prepared
+      : {
+          ...prepared,
+          shards: fallback,
+          shardTotal: fallback === null ? 1 : fallback.length,
+        };
+  }
+  return {
+    ...prepared,
+    shards: plan.shards,
+    shardTotal: plan.shards.length,
+    grouping: {
+      source: plan.source,
+      groups: plan.shards.length,
+      ...(plan.error !== undefined ? { error: plan.error } : {}),
+      ...(plan.usage !== undefined ? { usage: plan.usage } : {}),
+    },
+  };
 }
 
 function errorFromSkip(skip: ReviewSkip): Error {
@@ -495,7 +574,10 @@ async function executeSinglePass(
     usage: pass.usage,
     rounds: pass.rounds,
     toolCalls: pass.toolCalls,
-    audit: pass.audit,
+    audit: {
+      ...pass.audit,
+      ...(context.grouping !== undefined ? { grouping: context.grouping } : {}),
+    },
     auditPath: pass.auditPath,
     // ADR-0088：单遍写者记录主转录路径；分片留给 shards[]。
     transcriptPath: pass.transcriptPath,
@@ -552,21 +634,94 @@ async function executeShardedPasses(
 ): Promise<ReviewOutcome> {
   const total = shards.length;
   const descriptors = shards.map((shard) => ({ kind: "shard" as const, shard, total }));
-  const executed = await runPasses(context, descriptors);
-  return aggregateShards(context, executed);
+  const grouping = context.runtime.limits.grouping;
+  const failures: PassFailure[] = [];
+  const executed = await runPasses(
+    context,
+    descriptors,
+    grouping.enabled
+      ? {
+          concurrency: grouping.concurrency,
+          continueOnError: true,
+          onPassError: (failure) => failures.push(failure),
+        }
+      : {},
+  );
+  if (executed.length === 0 && failures.length > 0) {
+    throw new Error(`全部分片失败（${String(failures.length)} 片）：${failures[0]?.message ?? ""}`);
+  }
+  const coverage =
+    context.grouping !== undefined
+      ? await runCoverageForUncovered(context, executed)
+      : undefined;
+  return aggregateShards(context, executed, failures, coverage);
+}
+
+/** 零 findings 文件的补充检视：最多取 6 个变更文件，按 diff 字符数降序。 */
+const MAX_COVERAGE_FILES = 6;
+
+async function runCoverageForUncovered(
+  context: ReviewRunContext,
+  executed: readonly ExecutedPass[],
+): Promise<CoverageReviewResult | undefined> {
+  const found = new Set(executed.flatMap((entry) => entry.pass.findings.map((finding) => finding.file)));
+  const candidates = new Map<string, { path: string; diff: string; chars: number }>();
+  for (const entry of executed) {
+    if (entry.descriptor.kind !== "shard") {
+      continue;
+    }
+    for (const block of splitDiffIntoFileBlocks(entry.descriptor.shard.diff)) {
+      if (block.path === "" || found.has(block.path) || candidates.has(block.path)) {
+        continue;
+      }
+      candidates.set(block.path, { path: block.path, diff: block.text, chars: block.chars });
+    }
+  }
+  const files: CoverageFile[] = [...candidates.values()]
+    .sort((left, right) => right.chars - left.chars)
+    .slice(0, MAX_COVERAGE_FILES)
+    .map((entry) => ({ path: entry.path, diff: entry.diff }));
+  if (files.length === 0) {
+    return undefined;
+  }
+  return runCoverageReview(context, files);
 }
 
 async function aggregateShards(
   context: ReviewRunContext,
   executed: readonly ExecutedPass[],
+  failures: readonly PassFailure[] = [],
+  coverage?: CoverageReviewResult,
 ): Promise<ReviewOutcome> {
-  const findings = mergeShardFindings(executed.map((entry) => entry.pass.findings));
+  // 分组输出预算：先按片截断，再合并（mergeShardFindings 已做跨片去重），
+  // 最后按全样本上限截断。只在 grouping.enabled 时生效，普通分片零漂移。
+  const groupingLimits = context.runtime.limits.grouping;
+  const budgetEnabled = context.grouping !== undefined;
+  const perShardLimit = budgetEnabled ? groupingLimits.maxFindingsPerShard : 0;
+  let droppedPerShard = 0;
+  const shardFindings = executed.map((entry) => {
+    const capped = capFindings(entry.pass.findings, perShardLimit);
+    droppedPerShard += capped.dropped;
+    return capped.findings;
+  });
+  if (coverage !== undefined && coverage.findings.length > 0) {
+    shardFindings.push(coverage.findings);
+  }
+  let findings = mergeShardFindings(shardFindings);
+  let droppedPerRun = 0;
+  if (budgetEnabled && groupingLimits.maxFindingsPerRun > 0) {
+    const capped = capFindings(findings, groupingLimits.maxFindingsPerRun);
+    droppedPerRun = capped.dropped;
+    if (capped.dropped > 0) {
+      findings = renumberFindings(capped.findings);
+    }
+  }
   // 单文件超预算截取留痕（ADR-0070）：片序 → 块序，无截取时为空数组
   const shardTruncation = executed.flatMap((entry) =>
     entry.descriptor.kind === "shard" ? entry.descriptor.shard.truncated : [],
   );
 
-  let usage = ZERO_USAGE;
+  let usage = coverage?.usage ?? ZERO_USAGE;
   let toolCalls = 0;
   let rounds = 0;
   let truncated = false;
@@ -679,6 +834,25 @@ async function aggregateShards(
     };
   });
 
+  const failedAudits: ShardAuditRecord[] = failures.map((failure) => {
+    const descriptor = failure.descriptor;
+    const shard = descriptor.kind === "shard" ? descriptor.shard : undefined;
+    return {
+      index: shard?.index ?? 0,
+      files: shard?.files.length ?? 0,
+      chars: shard?.chars ?? 0,
+      filePaths: shard?.files ?? [],
+      runId: "",
+      status: "failed" as const,
+      complete: false,
+      truncated: false,
+      usage: ZERO_USAGE,
+      rounds: 0,
+      toolCalls: 0,
+      error: failure.message,
+    };
+  }).sort((left, right) => left.index - right.index);
+
   const tipsFilter = summarizeTipsFilter(findings, context.tipsConfidenceMin);
   const severityFilter = summarizeSeverityFilter(findings, context.tipsSeverityMin);
   const audit: RunAudit = {
@@ -693,9 +867,31 @@ async function aggregateShards(
     truncationReasons,
     // 规则 Skill 装载审计在聚合层记一次（ADR-0039 决策 4 / 7）
     ruleSkill: context.ruleSkillAudit,
-    shards: shardAudits,
+    shards: [...shardAudits, ...failedAudits].sort((left, right) => left.index - right.index),
     ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
+    ...(context.grouping !== undefined ? { grouping: context.grouping } : {}),
+    ...(coverage !== undefined
+      ? {
+          coveragePass: {
+            files: coverage.files,
+            candidates: coverage.candidates,
+            findings: coverage.findings.length,
+            errors: coverage.errors,
+            ...(coverage.usage !== ZERO_USAGE ? { usage: coverage.usage } : {}),
+          },
+        }
+      : {}),
+    ...(budgetEnabled
+      ? {
+          findingBudget: {
+            perShard: groupingLimits.maxFindingsPerShard,
+            perRun: groupingLimits.maxFindingsPerRun,
+            droppedPerShard,
+            droppedPerRun,
+          },
+        }
+      : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
     ...(severityFilter !== undefined ? { severityFilter } : {}),
     ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
@@ -803,6 +999,7 @@ async function aggregateShards(
     usage,
     truncated,
     findings,
+    ...(failures.length > 0 ? { shardFailures: failures } : {}),
   };
 }
 

@@ -1,0 +1,173 @@
+[
+  {
+    "filePath": "server/src/repositories/config.repository.ts",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "trustedProxies: dto.IMMICH_TRUSTED_PROXIES ?? [],",
+        "review": "[缺陷类型] 配置默认值迁移导致的环境变量语义变化（安全加固能力丢失 + 配置与实际行为不一致）。影响评估：默认部署无行为差异；但显式设置 IMMICH_TRUSTED_PROXIES 做收紧的部署无法再排除 linklocal/uniquelocal，且读取 config.network.trustedProxies 的代码会得到误导性值。",
+        "suggestion": "[重构思路] 让「默认值」只在一处定义：要么保留 config 层的默认网段并在 api.ts 直接展开，要么在 api.ts 计算完整列表后再写回配置对象，保证读取方看到的值等于实际生效值；如需保留内联写法，应在接口注释/文档中明确 linklocal/uniquelocal 不可关闭。代码示例：`const trustedProxies = ['loopback', 'linklocal', 'uniquelocal', ...network.trustedProxies]; app.set('trust proxy', trustedProxies);` 并同步更新 env 变量文档说明默认信任的网段。",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 180,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/services/metadata.service.ts",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "const dates = this.getDates(asset, tags);",
+        "review": "[缺陷类型] 因时间戳来源切换导致的子资产与父资产日期不一致 / 修改时间语义污染。影响评估：存量库中实况照片的图片与视频可能落在不同时间桶，排序与按日期检索异常；fileModifiedAt 不再是文件真实 mtime，影响后续判断逻辑。",
+        "suggestion": "[重构思路] 明确子资产应继承父资产的最终落库时间：视频资产直接复制父资产的 fileCreatedAt/localDateTime/fileModifiedAt；若必须使用 getDates，则显式只取 dateTimeOriginal/localDateTime，而为 fileModifiedAt 保留 asset.fileModifiedAt。代码示例：`fileCreatedAt: asset.fileCreatedAt, fileModifiedAt: asset.fileModifiedAt, localDateTime: dates.localDateTime`，并为 motion 分支补一条单元测试断言图片与视频日期一致。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 453,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "mobile/lib/services/background.service.dart",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "AppSettingsService settingService = AppSettingsService();",
+        "review": "[缺陷类型] 重复实例化 + 近似命名导致的依赖装配歧义。影响评估：当前功能可能正常，但后续若给 AppSettingsService 增加缓存/状态，两份实例会读到不同快照；代码读者也难以判断两个变量的区别。",
+        "suggestion": "[重构思路] 只保留一个实例并复用于 BackupService 与 _runBackup；如确实需要区分用途，用语义化命名（如 backupSettings / notificationSettings）而非一个字母之差。代码示例：`final settingsService = AppSettingsService(); ... BackupService(apiService, settingsService, ...)`。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 375,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "mobile/lib/widgets/asset_viewer/detail_panel/file_info.dart",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "height != null && width != null ? \"$height x $width  \" : \"\";",
+        "review": "[缺陷类型] 显示格式与变量语义/跨端约定不一致。影响评估：竖版资产在移动端显示的分辨率顺序错误，与 web 端表现相反，易被误认为旋转/EXIF 解析错误。",
+        "suggestion": "[重构思路] 统一按「宽 x 高」输出，并在拼接处使用具名中间变量避免顺序歧义。代码示例：`final resolution = height != null && width != null ? '${width} x $height  ' : '';`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/package.json",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "\"@nestjs/swagger\": \"^7.1.8\",",
+        "review": "[缺陷类型] 依赖降级引起的 API 契约退化 + 生成物全量改写。影响评估：客户端失去长度/唯一性/格式校验与契约文档，接口调用错误后移为运行时 400；生成物 diff 巨大且以二进制差异呈现，后续 review 与回归定位成本显著上升，且与其余 @nestjs ^10 包的兼容性需要额外验证。",
+        "suggestion": "[重构思路] 若目的是规避 v8 的某个问题，应在 package.json 中锁定明确的修复版本并用一段注释说明原因；随后重新生成 open-api 与 mobile/openapi 并以纯文本方式提交（统一换行/编码），确保 diff 可审。代码示例：`\"@nestjs/swagger\": \"7.4.2\"` 并在 PR 描述中附上「降级前后 spec 差异对照」；若无法恢复校验元数据，需同步在 DTO 层确认 class-validator 装饰器仍在，避免把「契约文档退化」误当成「校验消失」。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 44,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/routes/(user)/people/[personId]/[[photos=photos]]/[[assetId=id]]/+page.svelte",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "handlePromiseError(assetStore.updateOptions(assetStoreOptions));",
+        "review": "[缺陷类型] 状态复用与初始化竞态（回滚了针对 personId 切换的修复）。影响评估：从详情面板在人物之间快速跳转时，时间线可能短暂或持续显示上一个人物的资产，需再次导航才能恢复；该问题难以在单测中捕获，通常表现为用户可见的「数据串台」。",
+        "suggestion": "[重构思路] 保留「选项关键字段变化必须重建」的判定：在 updateOptions 中比较 personId 等关键项，变化时即使 initialized 为 false 也要让在途初始化失效（取消/重建 signal）后再拉桶；页面侧也可改为对 store 使用 `{#key person.id}` 之外的显式重建。代码示例：`const changed = this.options.personId !== options.personId; if (!this.initialized && !changed) { this.setOptions(options); return; } this.taskManager.destroy(); this.initialized = false; this.createInitializationSignal(); this.setOptions(options); await this.initialiazeTimeBuckets();`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 78,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "docs/src/pages/roadmap.tsx",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "getDateLabel: () => 'Planned for 2024',",
+        "review": "[缺陷类型] 文档回滚造成的时间线自相矛盾。影响评估：用户看到「2025 年初的稳定版」排在「2024 年的计划」之前，会误判功能交付顺序；如果这是有意的回滚，文档也应与当前版本口径一致。",
+        "suggestion": "[重构思路] 统一用同一时间口径：或整体恢复为 2025 的排期，或把这些计划项移回稳定版之前并按日期排序；同时确认 releases/milestones 中删除的 v1.122.0 没有留下悬空引用。代码示例：`getDateLabel: () => 'Planned for 2025'` 并保持条目按发布日期升序排列。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 221,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "mobile/lib/pages/common/gallery_viewer.page.dart",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "return FractionallySizedBox(",
+        "review": "[缺陷类型] 交互能力回退（可拖拽调整高度 → 固定高度）。影响评估：长内容（高级信息面板）在固定 75% 高度内滚动，用户无法展开查看，且拖动手柄的语义从「调整高度」变为「关闭面板」，与手柄的存在暗示不一致。",
+        "suggestion": "[重构思路] 若确实要放弃 DraggableScrollableSheet，应同时去掉 showDragHandle/enableDrag 或改为可展开的 full-screen 模式，保证手柄行为与预期一致；若保留可拖拽体验，则恢复 DraggableScrollableSheet 并把 scrollController 继续传给内部滚动视图。代码示例：`showDragHandle: false, enableDrag: true, builder: (context) => FractionallySizedBox(heightFactor: 0.75, ...)`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 130,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/shared-components/combobox.svelte",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "id={`${listboxId}-${0}`}",
+        "review": "[缺陷类型] 删除特性后遗留的死代码与可访问性语义错误。影响评估：功能不受影响，但「无结果」项被标记为可选中项，读屏与键盘导航语义不准确；后续维护者会误以为该分支仍支持创建。",
+        "suggestion": "[重构思路] 把空结果项明确为非选项（去掉 aria-selected、onclick 与仿 option 的 id），并让 incrementSelectedIndex 在无结果时保持 selectedIndex 为 undefined。代码示例：`{#if filteredOptions.length === 0}<li class=\"px-4 py-2 text-gray-500\">{$t('no_results')}</li>{/if}`，并在 `incrementSelectedIndex` 中 `if (filteredOptions.length === 0) { selectedIndex = undefined; return; }`。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 352,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

@@ -1,0 +1,364 @@
+{
+  "instance_id": "FreeCAD__FreeCAD@699b45c",
+  "repo": "FreeCAD/FreeCAD",
+  "base_commit": "382720b82e4c6c81f7e1cdd3a33272047d7a3642",
+  "head_commit": "699b45c086f53858897aa8c688bbedaf570c644f",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T04:06:23.682885+00:00",
+  "duration_seconds": 114.34,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 6 finding(s) across 16 selected item(s).",
+    "summary": {
+      "files_reviewed": 16,
+      "comments": 6,
+      "total_tokens": 647396,
+      "input_tokens": 610625,
+      "output_tokens": 36771,
+      "cache_read_tokens": 494336,
+      "elapsed": "1m54s"
+    },
+    "tool_calls": {
+      "total": 78,
+      "by_tool": {
+        "code_comment": 6,
+        "code_search": 28,
+        "file_find": 2,
+        "file_read": 39,
+        "file_read_diff": 3
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "src/Mod/Fem/App/FemVTKTools.cpp",
+        "content": "`countScaPos` is only assigned (`= 0`) inside the `code1` (`\" -1\"`) branch, but it is also read in the `code2` (`\" -2\"`) branch at line 1555. If a continuation line is encountered before any `-1` line (malformed/truncated FRD file), the variable is read uninitialized, which is undefined behavior. Since this declaration is being touched anyway, initialize it to 0 to make the change safe.",
+        "suggestion_code": "    size_t countScaPos = 0;",
+        "existing_code": "    size_t countScaPos;",
+        "start_line": 1488,
+        "end_line": 1488,
+        "thinking": "scalarPos is std::vector<size_t>. So the change int -> size_t fixes a signed/unsigned mismatch warning — correct and appropriate.\n\nAlso, the catch change removes unused variable name — fine.\n\nAny potential issue: at line 1555, countScaPos used in code2 branch — value carried over from previous iteration; it is not incremented in code2 loop. Pre-existing logic. But now uninitialized risk if -2 comes first. Should we flag? The declaration line changed; this is arguably an existing bug. Reviewers might mention using initialization `size_t countScaPos = 0;` to avoid UB. That's a genuine improvement, and reasonably tied to changed line. Severity low/medium.\n\nLet me check the code2 loop: `for (auto it = sub.begin(); ...; it += 12)` doesn't increment countScaPos — so all continuation lines use the same countScaPos for scalar detection, which seems like a pre-existing bug. Wait, that means for node blocks spanning multiple -2 lines, all values of continuation lines are classified based on the same countScaPos. Hmm, is that really existing? Let's look at original code in old side to be sure—the diff shows only the declaration change; the loop is unchanged. So pre-existing bug not triggered by change. But wait, maybe countScaPos should be incremented there; that's a real bug in unchanged code. Rules say avoid commenting on unchanged code. Though I could mention as related. But strict focus rule says comments must address code within review files—line 1552-1555 is within file but unchanged. Ideally comments should target changed lines. The tool inserts code comment at precise line matching existing_code from diff. Since existing_code must be newly added lines only, I can only comment on the changed lines: 1488 and 1545.\n\nSo consider whether to raise the uninitialized countScaPos concern attached to line 1488. It's a legit \"declared but potentially uninitialized\" concern. Given the review checklist includes dead code/uninitialized? Actually the checklist doesn't include initialization. But a real UB risk exists. However, is it reachable? -2 lines appear only after -1 in FRD files. If a malformed file has -2 first... While countNodes loop reads until numNodes; -3 lines end block. Realistically -2 without -1 is malformed. Low severity, maybe not worth reporting. But note the change from int to size_t makes the uninitialized variable behave worse? Not really.\n\nHmm, another consideration: with int, an uninitialized negative value would pass find as not found, going to vecValues; with size_t huge value also not found. Fine.\n\nLet me double check the code2 branch uses countScaPos but never increments — could that produce mismatches? Yes, existing. Actually wait: this looks like a genuine bug that existed. Should I comment? The reviewer guidelines: \"Avoid commenting on deleted code\" and \"Focus on issues in newly added code\". The line 1555 is unchanged. I'll skip.\n\nI think the change is fine and correct. Perhaps I should just report the uninitialized variable as a low-severity note? Many reviewers would consider it noise since it's pre-existing. But the declaration line is exactly what changed, and the reviewer might suggest `size_t countScaPos = 0;` which is a clean improvement that eliminates UB risk. I'll report it as low severity, mentioning that the variable is only assigned inside the code1 branch yet read in the code2 branch.\n\nActually let me verify whether -2 can be encountered before -1 in practice to gauge. It's guarded by countNodes < info.numNodes loop; line scanning. If malformed file, countScaPos uninitialized -> UB. It's a legit, mild issue. I'll report low.\n\nAlso the catch change: removing unused parameter name — good, no issue. Exception handler silently ignores error but logs warning; fine.\n\nLet me report one comment.",
+        "category": "bug",
+        "severity": "low"
+      },
+      {
+        "path": "src/Mod/CAM/libarea/pyarea.cpp",
+        "content": "`%zu` is the standard C++11 specifier for `std::size_t` and is supported by MSVC 2015+/MinGW, so the `#elif defined(_WIN32)` special case is now unnecessary. The sibling implementation `PythonStuff.cpp` (`print_curve`, line ~82) still uses the non-standard `%Iu`, and it is compiled instead of this file when `FREECAD_USE_PYBIND11` is off (see `CMakeLists.txt`), so the underlying format-specifier problem remains there. Consider collapsing the whole `#if/#elif/#else` chain into a single `printf(\"number of vertices = %zu\\n\", nvertices);` and applying the same fix to `PythonStuff.cpp` (note the 32-bit branch currently passes a `std::size_t` to `%d`, which is a signed/unsigned mismatch).",
+        "existing_code": "    printf(\"number of vertices = %zu\\n\", nvertices);",
+        "start_line": 51,
+        "end_line": 51,
+        "thinking": "pyarea.cpp is only compiled with FREECAD_USE_PYBIND11=ON; PythonStuff.cpp otherwise. Both are alternative implementations. So the fix should probably apply to both for consistency; missing PythonStuff.cpp means MinGW build with boost-python still has `%Iu`. But %Iu on MinGW... In MinGW-w64, `%Iu` works only for msvcrt-based printf with proper definitions? Actually `%Iu` is not supported by msvcrt.dll printf; MinGW-w64's headers define `%I` as length modifier? Hmm, mingw-w64 defines __USE_MINGW_ANSI_STDIO by default for C99 and C++? For C++, `__USE_MINGW_ANSI_STDIO` is not defined by default in older versions; in newer mingw-w64 (>= 8?), it's enabled by default when `_UCRT`? Actually recent mingw-w64 enables ANSI stdio by default when targeting UCRT.\n\nAnyway, the change is fine in itself. My potential comment: the same code exists in PythonStuff.cpp (line 82) and was not updated; consider updating for consistency. Severity low, category maintainability.\n\nIs it worth commenting at all? The review target is a one-line fix. A reviewer might reasonably say \"the duplicate in PythonStuff.cpp should also be updated\". I think this is a valid, actionable comment. Also maybe mention that the whole `#if` chain is now redundant: %zu is C++11 standard and works on all supported platforms, and the 32-bit branch prints size_t with %d (type mismatch). But changing format from %d to %zu changes... Hmm, suggesting collapse. Do I want to add that? The 32-bit branch uses %d for std::size_t → signed/unsigned mismatch; technically UB but practically fine for small values. Since %zu is now used on Windows, one could simply use %zu everywhere. That's a maintainability improvement, and would also make PythonStuff.cpp consistent. I'll give one comment combining both points, low severity.\n\nLet me craft the comment anchored to line `    printf(\"number of vertices = %zu\\n\", nvertices);`.\n\nAlso consider: does the change from %Iu to %zu risk breaking on older MinGW? FreeCAD requires MinGW with UCRT or newer. I won't raise that.\n\nI'll add one comment.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "src/Gui/SoDatumLabel.cpp",
+        "content": "The cast only converts `M_PI`; the `2.0` literal is still `double`, so the product is evaluated in `double` and the result is narrowed back to `float` on `+=`. This means the conversion the patch is meant to remove (narrowing double→float, as checked by `cppcoreguidelines-narrowing-conversions` in `.clang-tidy`) still occurs. Use a `float` literal so the whole expression stays in `float`. The same applies to the two `endangle += 2. * static_cast<float>(M_PI);` occurrences in this file.",
+        "suggestion_code": "        range += 2.0f * static_cast<float>(M_PI);",
+        "existing_code": "        range += 2.0 * static_cast<float>(M_PI);",
+        "start_line": 84,
+        "end_line": 84,
+        "thinking": "All fine. So the only comment worth making is the SoDatumLabel's partial conversion: `2.0 * static_cast<float>(M_PI)` still performs double arithmetic, so it does not fully eliminate the narrowing conversion clang-tidy flags. Suggest `2.0f * static_cast<float>(M_PI)`.\n\nIs this worth reporting? It's the type of consistency thing. Medium/low severity. Given the checklist doesn't explicitly mention literal suffixes, but consistency of the change across file. I'll report it as low severity maintainability.\n\nHmm, also worth noting in SoDatumLabel: line 88 `abs(int(25.0 * range / M_PI))` — narrowing but unchanged.\n\nConsider whether there's anything about View3DInventorViewer's `fillLight->direction.setValue(-0.60f, ...)` — SbVec3f::setValue(float, float, float) — ok.\n\nAny other subtle problem? In DAGRectItem, `tempColor.setAlphaF(0.15f)` — QColor::setAlphaF takes float in Qt6; in Qt5 it takes qreal (double), so passing a float is fine either way.\n\nOne more: `DlgPreferencePackManagementImp.cpp` — removing `name` from lambda capture means `name` isn't captured but `item` still. Fine.\n\nSo single comment. Let me write it.\n\nActually, should I double check whether the alphaF change affects behavior? `0.15` double → cast to float 0.15f: alphaF 0.15 stored as 16-bit alpha; double 0.15 rounds to float 0.15; negligible.\n\nI'll make one comment on the SoDatumLabel double-literal multiplication. Provide suggestion code for line 84 and note the other two occurrences.\n\nLet's provide three comments? Or one comment mentioning all three. The code_comment tool matches per unique existing_code. `range += 2.0 * static_cast<float>(M_PI);` unique. `endangle += 2. * static_cast<float>(M_PI);` appears twice (lines 552 and 695) - matching may be ambiguous. Better to do one comment on line 84 that mentions the other two occurrences.\n\nActually provide two comments: one for range line (with suggestion), and one for endangle (noting same pattern twice). Hmm, ambiguity risk. I'll just do a single comment on the `range` line covering all three occurrences.\n\nSeverity: low.\n\nIs this valuable enough? I think yes, mildly. Alternatively I could report \"no issues\". Given the effort, a single low-severity maintainability comment is fine.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "src/Base/StackWalker.cpp",
+        "content": "All the new `%ld` specifiers are paired with `DWORD` arguments (`size`, `result` here, and later `entry.lineNumber`, `gle`, `symOptions`, `ver.dwMajorVersion/dwMinorVersion/dwBuildNumber`, `v1..v4`). `DWORD` is `unsigned long`, so `%ld` is still a signedness mismatch: it is technically UB and, unlike MSVC, clang/GCC `-Wformat` will still complain about it. Since these values are unsigned, `%lu` is the exact match and silences the diagnostics on all toolchains.",
+        "suggestion_code": "                    \"%s:%s (%p), size: %lu (result: %lu), SymType: '%s', PDB: '%s'\\n\",",
+        "existing_code": "                    \"%s:%s (%p), size: %ld (result: %ld), SymType: '%s', PDB: '%s'\\n\",",
+        "start_line": 1473,
+        "end_line": 1473,
+        "thinking": "All usages are percentages 0-100. So no precision issue. No comment needed.\n\nNow finalize: single low-severity comment on StackWalker.cpp format specifiers.\n\nActually, do I want to raise it at all? Let me weigh: it's a genuine spec mismatch; the project's CI may use clang-format/clang-tidy... Report with severity low.\n\nI'll write:\n\ncontent: \"The arguments here (`size`, `result`) are `DWORD`, i.e. `unsigned long`, so `%ld` still mismatches the signedness of the expected type. On MSVC this happens to work (same size), but it's technically UB and will still trip `-Wformat` on clang/GCC builds. Use `%lu` — same applies to the other new `%ld` specifiers in this file (`entry.lineNumber`, `gle`, `symOptions`, `ver.dw*`).\"\n\nsuggestion_code with `%lu`.\n\nHmm, is `%lu` definitely right for lineNumber etc.? Yes.\n\nOne thing: `%lu` on Windows for DWORD - well, DWORD is `unsigned long` so exact match. On MinGW-w64, `DWORD` is `unsigned long` too? In MinGW-w64, `typedef unsigned long DWORD;` Yes.\n\nLet me produce the comment.\n\nAlso should I flag the `_MSC_VER <= 1200` inconsistency? Skip.\n\nDone. Two other files have no issues. Provide comment then task_done.",
+        "category": "bug",
+        "severity": "low"
+      },
+      {
+        "path": "src/Gui/SoDatumLabel.cpp",
+        "content": "The cast here (and the identical one at line ~695 in `getLabelTextCenterArcLength`) is ineffective: `2.` is still a `double` literal, so `2. * static_cast<float>(M_PI)` is evaluated in `double` and then narrowed back to `float` by `+=`. That narrowing is exactly what this float-conversion cleanup is meant to silence, so the warning will very likely still fire. Make the literal a `float` (or cast the whole product) so the arithmetic stays in `float`.",
+        "suggestion_code": "            endangle += 2.0f * static_cast<float>(M_PI);",
+        "existing_code": "            endangle += 2. * static_cast<float>(M_PI);",
+        "start_line": 552,
+        "end_line": 552,
+        "thinking": "size is float, so fine.\n\nNow, review whole file group. Most changes are float suffix cleanups, benign. The only real issue is the redundant cast that doesn't fix narrowing, already confirmed at line 84. Lines 552 and 695 have the same pattern with an added twist: `2.` remains double.\n\nShould I also check whether the `2.0 * static_cast<float>(M_PI)` change might break something? No.\n\nLet me also consider whether `endangle += 2. * static_cast<float>(M_PI);` could be flagged as inconsistent with line 84's style (2.0 vs 2.). Not important.\n\nAny other issues? `SbVec3f centeringVec = size * SbVec3f(...)` — no change in behavior.\n\nView3DInventorViewer.cpp fillLight values — verify types. SoDirectionalLight::direction is SoSFVec3f, intensity SoSFFloat, color SoSFColor. All float. Fine.\n\nOne thing: `setAlphaF(0.15f)` — QColor::setAlphaF(float) in Qt5. In Qt6 it's float too. Fine.\n\nNow let me consider whether the confirmed finding's scope should include 552/695. I'll report them as a single comment at line 552, noting line 695, with the correct fix `2.0f * static_cast<float>(M_PI)` or better `static_cast<float>(2.0 * M_PI)`.\n\nActually, careful: For `endangle += 2. * static_cast<float>(M_PI);` where endangle is float, the compound assignment narrowing. Best fix: `endangle += 2.0f * static_cast<float>(M_PI);` or `endangle += static_cast<float>(2.0 * M_PI);`. Definitely the \"2.\" remaining as double is the issue.\n\nLet me double-check that the diff lines with `2.` are indeed newly added lines — yes: `-            endangle += 2. * M_PI;` → `+            endangle += 2. * static_cast<float>(M_PI);`.\n\nI'll provide one comment for line 552 in the earlier occurrence and mention 695. But code_comment mounts by existing_code snippet; the same snippet text `endangle += 2. * static_cast<float>(M_PI);` appears twice — matching algorithm picks the... first? Risky but fine; I'll use the line 552 snippet with surrounding unique context. Actually existing_code should only include newly added lines. The added line is `            endangle += 2. * static_cast<float>(M_PI);` (identical for both occurrences). I can only give one comment per unique snippet, likely matched to the first occurrence. I'll do one comment on that and note both locations in the content.\n\nLet me check for a possible compile issue: is `2.` as literal `double` -> any issue in a `+=` on float? No, just warning.\n\nAnything else? Maybe DlgPreferencePackManagementImp removing `name` capture: is there a subtlety that `name` was intentionally captured? No, not used. But wait — in the BUILTIN branch, `hideBuiltInPack` uses `\"##BUILT_IN##\"` hard-coded; fine.\n\nHmm, one more: In `addTreeNode`, is `name` an unused variable now in the BUILTIN branch? No, `name` is used at line 109 and 141/147.\n\nConsider potential issue: lambda captures `item` (QTreeWidgetItem*). If item deleted... unchanged behavior.\n\nLet me also verify DAGRectItem change compiles: `setAlphaF(float)` fine.\n\nI think only one comment needed. Let me also consider whether the `// NOLINT` comment addition in ViewProviderPlane is relevant — no.\n\nWait — one more consideration about View3DInventor.cpp: `float nearClippingPlane = 0.1f;` passed to `action.setRay(SbVec3f, SbVec3f, float)` — fine.\n\nAlso `SoRayPickAction::setRay` overload with float nearDistance. Fine.\n\nI'll add the one comment. Also maybe worth pointing out style inconsistency but not needed.\n\nActually, one could consider whether the SoDatumLabel issue at line 552/695 should be raised at all given the confirmed findings. The confirmed finding is about line 84 specifically. Different lines = different locations; the reviewer should still flag. I'll do it as medium severity maintainability.\n\nLet me also double check `M_PI` in `if (endangle - startangle <= M_PI)` at line 556 — comparison double vs float promotes to double, fine (unchanged code).\n\nDone. Provide comment.",
+        "category": "maintainability",
+        "severity": "medium"
+      },
+      {
+        "path": "src/Base/StackWalker.cpp",
+        "content": "`NumSymTypes` is a sentinel enumerator (== 9), not a value that `GetModuleInfo()` can legitimately return, so this branch is effectively dead code and, because it only `break`s, produces exactly the same output as before (`szSymType` stays `\"-unknown-\"`). The sibling switch at ~line 1346 handles the unknown case with a `default:` label; using the same pattern here would actually be robust against future/unexpected `SYM_TYPE` values instead of adding an unreachable case.",
+        "suggestion_code": "                    default:\n                        break;",
+        "existing_code": "                    case NumSymTypes:  // Not a real option, should never hit\n                        break;",
+        "start_line": 813,
+        "end_line": 814,
+        "thinking": "Reader.cpp change is fine.\n\nNow decide on StackWalker's dead case. I think it's worth a low-severity maintainability comment: adding `case NumSymTypes:` (a sentinel that's never a real symbol type, and there is no `default:` in this switch) is dead code; consider adding `default:` to match the second switch at ~line 1346 instead. That's a legitimate observation under \"Dead Code\" rule.\n\nHmm, but is it \"code that can never be reached\"? If Module.SymType == 9 from dbghelp, it would be reached, but per the API 9 is not a valid type. So effectively dead. I think it's reasonable to comment. But is it valuable? The reviewer's checklist explicitly asks for dead code detection. I'll report it at low severity.\n\nActually, wait. There might be a more important subtlety: the switch now lacks a `default`, so an unexpected SymType leaves szSymType \"-unknown-\", which is fine. So the added case doesn't fix anything. Comment: should use `default: break;` to be robust.\n\nLet me also verify there's no other issue in the size format changes: `%ld` with `DWORD` — confirmed finding covers. So skip.\n\nI'll add one comment for StackWalker dead case, low severity, maybe skip? Let me also reconsider whether `%ld` for `entry.lineNumber` — lineNumber is DWORD in CallstackEntry? Confirmed covers.\n\nLet me check Tools.h again for the correctness of fromPercent. Are there potential issues with static_cast<float>(value) when value is negative? roundf(-150) = -150 → -1.5. Fine.\n\nI'll produce one comment on StackWalker line 813 and perhaps nothing else. Actually maybe also skip Tools.h/Reader.cpp when fine.\n\nLet me make sure the comment anchor matches the added line exactly:\n```\n+                    case NumSymTypes:  // Not a real option, should never hit\n+                        break;\n```\nUse both lines.\n\nWrite the comment.",
+        "category": "maintainability",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "Base utilities and core tests",
+        "files": [
+          "src/Base/StackWalker.cpp",
+          "src/Base/Tools.h",
+          "tests/src/Base/Reader.cpp"
+        ]
+      },
+      {
+        "label": "GUI components and 3D view",
+        "files": [
+          "src/Gui/DAGView/DAGRectItem.cpp",
+          "src/Gui/Dialogs/DlgPreferencePackManagementImp.cpp",
+          "src/Gui/SoDatumLabel.cpp",
+          "src/Gui/View3DInventor.cpp",
+          "src/Gui/View3DInventorViewer.cpp",
+          "src/Gui/ViewProviderPlane.cpp"
+        ]
+      },
+      {
+        "label": "CAM libarea Python bindings",
+        "files": [
+          "src/Mod/CAM/libarea/pyarea.cpp"
+        ]
+      },
+      {
+        "label": "FEM VTK tools",
+        "files": [
+          "src/Mod/Fem/App/FemVTKTools.cpp"
+        ]
+      },
+      {
+        "label": "Mesh core kernel",
+        "files": [
+          "src/Mod/Mesh/App/Core/MeshKernel.cpp"
+        ]
+      },
+      {
+        "label": "Spreadsheet property sheet",
+        "files": [
+          "src/Mod/Spreadsheet/App/PropertySheet.cpp"
+        ]
+      },
+      {
+        "label": "TechDraw geometry and dimension validation",
+        "files": [
+          "src/Mod/TechDraw/App/Geometry.cpp",
+          "src/Mod/TechDraw/Gui/DimensionValidators.cpp"
+        ]
+      },
+      {
+        "label": "Part fuzzy boolean tests",
+        "files": [
+          "tests/src/Mod/Part/App/FuzzyBoolean.cpp"
+        ]
+      }
+    ],
+    "session_id": "1675ec51-84e4-48d1-8a78-d8751ce1251f",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "1675ec51-84e4-48d1-8a78-d8751ce1251f",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "9a48c14aefa93a5ad67427bc733fedb647a106f946e238e2ddc2d51f2a2f81b4"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "382720b82e4c6c81f7e1cdd3a33272047d7a3642",
+        "requested_head": "699b45c086f53858897aa8c688bbedaf570c644f",
+        "resolved_base": "53c4c2ef50870fd7a540b9511548b97a73f399b2",
+        "resolved_head": "699b45c086f53858897aa8c688bbedaf570c644f",
+        "exact_range": "53c4c2ef50870fd7a540b9511548b97a73f399b2..699b45c086f53858897aa8c688bbedaf570c644f",
+        "source_artifact_sha256": "6c89c19b6ac56a46594f529d6996ac4d72126a41d777ef6ffde1d663e5a85df4"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "14abe6b515d2a55b5e1ffd079c2adafd2a035820b7e21f330ac1137b4e31a523",
+            "path": "src/Gui/ViewProviderPlane.cpp",
+            "fingerprint": "0174eeb22b151d97b0b8c25630eea952639b88a048c4c7deb006161ce97bf137"
+          },
+          {
+            "item_id": "14c1e5b9a7dbdf1219026e7cbc009e51b86e32e124a2f511bc624c0b0690de7e",
+            "path": "src/Gui/View3DInventorViewer.cpp",
+            "fingerprint": "b8c61b31ccbbd98f5a0ea3e744bed87579762563ffd8c1f7c0fc307530d24764"
+          },
+          {
+            "item_id": "1593433d0f93e6affbbb6ec68e36a60b39f487d35be073844b17aa975f25bd5e",
+            "path": "src/Mod/CAM/libarea/pyarea.cpp",
+            "fingerprint": "a07aa24552a8ffdc1f7bff5a824142a76620ff9d6803c978b0aebd36e7d7fae9"
+          },
+          {
+            "item_id": "18107be5d4d940e7b648dbd589a25e28db6f29bb0e1059f60e0cf510f5ab1ba5",
+            "path": "src/Gui/View3DInventor.cpp",
+            "fingerprint": "c97539e53e3d9e560a7b3b53fad668798418dd28a5f032b6bd9e16583a96d2f5"
+          },
+          {
+            "item_id": "1c0c3b053a9cc6b41d67a6f3b1af4dcce82c6c7e7c773d1af3f4ebcd0afe0e85",
+            "path": "src/Mod/Fem/App/FemVTKTools.cpp",
+            "fingerprint": "253a4a6e58316b93c57829059c2e1cfa6335203ff3bb25b69e2341b82b17f7e8"
+          },
+          {
+            "item_id": "244fc3c9abaec45957fba772928f7bd8e5f5ced9a47cfa79395325a324c94f96",
+            "path": "src/Mod/Spreadsheet/App/PropertySheet.cpp",
+            "fingerprint": "3889d2e16be4801550908e7c2839083531939c4025afe8a549107815faf0f75b"
+          },
+          {
+            "item_id": "2dbfaaa5811a7b0d757d1bd84719b72f0e668197a52b7022ff28c94fc46fdad7",
+            "path": "src/Base/Tools.h",
+            "fingerprint": "8255c8f8a0563ad6bcd636abd5e026346841771982b3eaade21550743275edea"
+          },
+          {
+            "item_id": "5ceda61384cd02d0209bfbeed08b051d96ec73b56804d0c87f134ac540ddafdc",
+            "path": "src/Mod/TechDraw/Gui/DimensionValidators.cpp",
+            "fingerprint": "d264162ead7349d8e3132b2065abb908d5f3d601375431180eed416f6e4dda09"
+          },
+          {
+            "item_id": "8c114ce59cb1486c48c144d1b0bb5fb0492ee0262c8b914a109ef8cf0bce0d8b",
+            "path": "tests/src/Mod/Part/App/FuzzyBoolean.cpp",
+            "fingerprint": "a8d4df64c38f0150a48cca6457511c3c6acf1b22644e4b3768a6a587afc74cca"
+          },
+          {
+            "item_id": "8f1ab41c0dfc98bd2f43a6a4e6ac70a089615e38d0f10b0bc20909162436671a",
+            "path": "tests/src/Base/Reader.cpp",
+            "fingerprint": "46ab84f63df6a6a6c0b8d2e4a7286fdd47c6f8455bf4b1b72807f9f22e62dd7b"
+          },
+          {
+            "item_id": "c3289432818d3f0e81c7da7f8d396aaf76c9a66300a91e8ffe135d1b78d3857d",
+            "path": "src/Mod/Mesh/App/Core/MeshKernel.cpp",
+            "fingerprint": "af44def2389a96c758088689bee276c57a82413c8d794704a8a3f7d261cfeb85"
+          },
+          {
+            "item_id": "db1ea37a518214716f2cb8408c78c5396bdfce54349da950226d62fb4dda5f9d",
+            "path": "src/Gui/DAGView/DAGRectItem.cpp",
+            "fingerprint": "2e9b37bb2f9ebe9b8445dabd55ffb272b9daeb9c33ac6e6a352e28b2b1843a9b"
+          },
+          {
+            "item_id": "dfc094453e508d47394840cf07c61e56149e63cbcb1e6e6b89f880c0119196e1",
+            "path": "src/Gui/SoDatumLabel.cpp",
+            "fingerprint": "7cc50d2ab2ce2f96715df143e5e98c7a4fc7d57120e456b877a6e88712fe1096"
+          },
+          {
+            "item_id": "f6fe8dbdf5ceec89ae6688814fc9a656ec19bb3ac448dff5827d5be0ca6cfa5f",
+            "path": "src/Gui/Dialogs/DlgPreferencePackManagementImp.cpp",
+            "fingerprint": "5eeefa3be32fe193b06df6837947ab70ebd58d274fe31e9d65b22bf84c547c09"
+          },
+          {
+            "item_id": "fc922bbd53cb9b47522bbf57af3eed35af0f9355fd38fb8570ae36c461bd4ae7",
+            "path": "src/Mod/TechDraw/App/Geometry.cpp",
+            "fingerprint": "544baf1c2f6da3cb8a9e848b52e64c808672ebeb5b6c02b3be5450b92398e2bd"
+          },
+          {
+            "item_id": "ff214cdfe139ab49e0cf1fe50e0cbb5a6e0af68e9cf4d5f48735a1800abca522",
+            "path": "src/Base/StackWalker.cpp",
+            "fingerprint": "2b3941cedee88d2805054eef5c91d69be5a0f758c6c3d51a6d819132434218cc"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "14abe6b515d2a55b5e1ffd079c2adafd2a035820b7e21f330ac1137b4e31a523",
+            "path": "src/Gui/ViewProviderPlane.cpp",
+            "fingerprint": "0174eeb22b151d97b0b8c25630eea952639b88a048c4c7deb006161ce97bf137"
+          },
+          {
+            "item_id": "14c1e5b9a7dbdf1219026e7cbc009e51b86e32e124a2f511bc624c0b0690de7e",
+            "path": "src/Gui/View3DInventorViewer.cpp",
+            "fingerprint": "b8c61b31ccbbd98f5a0ea3e744bed87579762563ffd8c1f7c0fc307530d24764"
+          },
+          {
+            "item_id": "1593433d0f93e6affbbb6ec68e36a60b39f487d35be073844b17aa975f25bd5e",
+            "path": "src/Mod/CAM/libarea/pyarea.cpp",
+            "fingerprint": "a07aa24552a8ffdc1f7bff5a824142a76620ff9d6803c978b0aebd36e7d7fae9"
+          },
+          {
+            "item_id": "18107be5d4d940e7b648dbd589a25e28db6f29bb0e1059f60e0cf510f5ab1ba5",
+            "path": "src/Gui/View3DInventor.cpp",
+            "fingerprint": "c97539e53e3d9e560a7b3b53fad668798418dd28a5f032b6bd9e16583a96d2f5"
+          },
+          {
+            "item_id": "1c0c3b053a9cc6b41d67a6f3b1af4dcce82c6c7e7c773d1af3f4ebcd0afe0e85",
+            "path": "src/Mod/Fem/App/FemVTKTools.cpp",
+            "fingerprint": "253a4a6e58316b93c57829059c2e1cfa6335203ff3bb25b69e2341b82b17f7e8"
+          },
+          {
+            "item_id": "244fc3c9abaec45957fba772928f7bd8e5f5ced9a47cfa79395325a324c94f96",
+            "path": "src/Mod/Spreadsheet/App/PropertySheet.cpp",
+            "fingerprint": "3889d2e16be4801550908e7c2839083531939c4025afe8a549107815faf0f75b"
+          },
+          {
+            "item_id": "2dbfaaa5811a7b0d757d1bd84719b72f0e668197a52b7022ff28c94fc46fdad7",
+            "path": "src/Base/Tools.h",
+            "fingerprint": "8255c8f8a0563ad6bcd636abd5e026346841771982b3eaade21550743275edea"
+          },
+          {
+            "item_id": "5ceda61384cd02d0209bfbeed08b051d96ec73b56804d0c87f134ac540ddafdc",
+            "path": "src/Mod/TechDraw/Gui/DimensionValidators.cpp",
+            "fingerprint": "d264162ead7349d8e3132b2065abb908d5f3d601375431180eed416f6e4dda09"
+          },
+          {
+            "item_id": "8c114ce59cb1486c48c144d1b0bb5fb0492ee0262c8b914a109ef8cf0bce0d8b",
+            "path": "tests/src/Mod/Part/App/FuzzyBoolean.cpp",
+            "fingerprint": "a8d4df64c38f0150a48cca6457511c3c6acf1b22644e4b3768a6a587afc74cca"
+          },
+          {
+            "item_id": "8f1ab41c0dfc98bd2f43a6a4e6ac70a089615e38d0f10b0bc20909162436671a",
+            "path": "tests/src/Base/Reader.cpp",
+            "fingerprint": "46ab84f63df6a6a6c0b8d2e4a7286fdd47c6f8455bf4b1b72807f9f22e62dd7b"
+          },
+          {
+            "item_id": "c3289432818d3f0e81c7da7f8d396aaf76c9a66300a91e8ffe135d1b78d3857d",
+            "path": "src/Mod/Mesh/App/Core/MeshKernel.cpp",
+            "fingerprint": "af44def2389a96c758088689bee276c57a82413c8d794704a8a3f7d261cfeb85"
+          },
+          {
+            "item_id": "db1ea37a518214716f2cb8408c78c5396bdfce54349da950226d62fb4dda5f9d",
+            "path": "src/Gui/DAGView/DAGRectItem.cpp",
+            "fingerprint": "2e9b37bb2f9ebe9b8445dabd55ffb272b9daeb9c33ac6e6a352e28b2b1843a9b"
+          },
+          {
+            "item_id": "dfc094453e508d47394840cf07c61e56149e63cbcb1e6e6b89f880c0119196e1",
+            "path": "src/Gui/SoDatumLabel.cpp",
+            "fingerprint": "7cc50d2ab2ce2f96715df143e5e98c7a4fc7d57120e456b877a6e88712fe1096"
+          },
+          {
+            "item_id": "f6fe8dbdf5ceec89ae6688814fc9a656ec19bb3ac448dff5827d5be0ca6cfa5f",
+            "path": "src/Gui/Dialogs/DlgPreferencePackManagementImp.cpp",
+            "fingerprint": "5eeefa3be32fe193b06df6837947ab70ebd58d274fe31e9d65b22bf84c547c09"
+          },
+          {
+            "item_id": "fc922bbd53cb9b47522bbf57af3eed35af0f9355fd38fb8570ae36c461bd4ae7",
+            "path": "src/Mod/TechDraw/App/Geometry.cpp",
+            "fingerprint": "544baf1c2f6da3cb8a9e848b52e64c808672ebeb5b6c02b3be5450b92398e2bd"
+          },
+          {
+            "item_id": "ff214cdfe139ab49e0cf1fe50e0cbb5a6e0af68e9cf4d5f48735a1800abca522",
+            "path": "src/Base/StackWalker.cpp",
+            "fingerprint": "2b3941cedee88d2805054eef5c91d69be5a0f758c6c3d51a6d819132434218cc"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 113926
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

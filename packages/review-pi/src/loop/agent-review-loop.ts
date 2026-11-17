@@ -36,6 +36,7 @@ import {
   TRUNCATION_TOOL_BUDGET,
 } from "./constants.js";
 import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
+import { MAX_SALVAGE_INPUT_CHARS, salvageCandidatesReply, salvageVerificationReply } from "./json-salvage.js";
 import {
   CANDIDATES_PHASE_INDEX,
   PHASE_COUNT,
@@ -51,6 +52,7 @@ import type { ReviewToolkit } from "../tools/toolkit.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { runSkillPass, type SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
+import { completeOneShot } from "../shared/one-shot-llm.js";
 
 // agentLoop 钩子驱动循环（#6 P3a）：六阶段 + 工具子循环跑在
 // pi-agent-core Agent 上，三个预定缝承载 review 语义——
@@ -76,6 +78,12 @@ import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
 // 规则 Skill（ADR-0014）：Phase 5 文本回合收尾后、Phase 6 指令注入前，顺序跑
 // 各 skill 的独立检视会话（`knowledge/skill-pass.ts`）。skill 回合不进
 // `phaseLog`（两者并列），候选在候选门之前跨 skill 去重，Phase 6 一次裁定。
+
+/** 短窗口阶段回复修复注入缝（测试确定性；缺省走 completeOneShot）。 */
+export type PhaseReplyRepairFn = (input: {
+  readonly raw: string;
+  readonly phase: string;
+}) => Promise<string | undefined>;
 
 export interface AgentReviewLoopInputs {
   readonly systemPrompt: string;
@@ -107,6 +115,8 @@ export interface AgentReviewLoopInputs {
    * 裁决前发起至多一次模型修复。缺省 = 不修复（现有测试 / 直调零漂移）。
    */
   readonly candidateRepair?: CandidateRepairFn;
+  /** 短窗口 Phase 5/6 回复修复；缺省使用真实 one-shot 调用。 */
+  readonly phaseReplyRepair?: PhaseReplyRepairFn;
   /**
    * 非 diff 区域过滤（`limits.findingScope`）：由 run 层按本遍 diff 构建。
    * 缺省 undefined = 不过滤（内核直调 / 单测零漂移）。
@@ -134,6 +144,8 @@ export interface SkillPassRequest {
    * 互不可见，且 skill 会话的读取不会污染主账本。
    */
   readonly toolkitFor: (seedLedgerSnapshot: readonly LedgerEntry[]) => ReviewToolkit;
+  /** true = 每个 pass 只跑一轮 skill 会话（ADR-0095 规则目录开启时）；缺省 = 旧的多轮行为 */
+  readonly oncePerPass?: boolean;
 }
 
 export interface AgentReviewLoopOutcome {
@@ -170,6 +182,10 @@ export interface AgentReviewLoopOutcome {
 
 /** 深解析阶段（0-based 指令下标）：候选与裁决的解析点 */
 const VERIFICATION_PHASE_INDEX = 5;
+/** Phase 5/6 解析失败时，同一会话内最多追加一次请求（OCR 工具错误回灌模式） */
+const MAX_PHASE_PARSE_RETRIES = 1;
+/** 离线 salvage 后仍失败时，短窗口 LLM 修复的 run 级上限 */
+const MAX_SHORT_REPAIRS_PER_RUN = 2;
 
 /** 有界候选修复（P1 步骤 3）：整个 run 最多 2 次调用，单次最多 8 条候选 */
 const MAX_REPAIR_CALLS_PER_RUN = 2;
@@ -191,6 +207,8 @@ export async function runAgentReviewLoop(
   let phaseIndex = 0;
   let phaseRequestCount = 0;
   let phaseSkippedToolCalls = 0;
+  let phaseParseRetries = 0;
+  let shortRepairCalls = 0;
   let roundCandidates: readonly unknown[] = [];
   let roundVerdicts: ReadonlyMap<string, VerificationVerdict> = new Map();
   let roundComplete = false;
@@ -214,6 +232,7 @@ export async function runAgentReviewLoop(
   let skillBashCalls = 0;
   let skillLedgerHits = 0;
   let roundSkillBatches: readonly SkillCandidateBatch[] = [];
+  let skillPassRan = false;
   // 首次模型请求时刻（唯一新增内核仪器；不是逐请求/逐工具耗时）
   let firstRequestAt: Date | undefined;
   // 进度投影（ADR-0016）：只读既有留痕，缺省 sink = 空函数（零行为变化）
@@ -384,7 +403,47 @@ export async function runAgentReviewLoop(
     followUp: (message: AgentMessage) => void,
     seedMessages: readonly AgentMessage[],
   ): Promise<boolean> {
-    const parsed = parsePhaseReply(replyText);
+    let parsed = parsePhaseReply(replyText);
+    let recovery: PhaseRecord["parseRecovery"];
+    // 第 1 层：离线 salvage（0 token）。只修 JSON 语法，严格验收；有损恢复直接拒绝。
+    if (parsed.parseFailure !== undefined && parsed.parseFailure.kind !== "truncated") {
+      const salvaged = salvagePhaseReply(replyText);
+      if (salvaged !== undefined) {
+        parsed = parsePhaseReply(salvaged);
+        if (parsed.parseFailure === undefined) {
+          recovery = "offline";
+        }
+      }
+    }
+    // 第 2 层：同会话短提示重试一次；不重发阶段指令、不重跑工具检索。
+    if (
+      parsed.parseFailure !== undefined &&
+      parsed.parseFailure.kind !== "truncated" &&
+      phaseParseRetries < MAX_PHASE_PARSE_RETRIES
+    ) {
+      phaseParseRetries += 1;
+      followUp(parseRetryMessage(phaseIndex, parsed.note));
+      return false;
+    }
+    // 第 3 层：短窗口 LLM 修复（只发畸形回复 + schema，不带会话/diff）。
+    if (
+      parsed.parseFailure !== undefined &&
+      parsed.parseFailure.kind !== "truncated" &&
+      shortRepairCalls < MAX_SHORT_REPAIRS_PER_RUN &&
+      replyText.length <= MAX_SALVAGE_INPUT_CHARS
+    ) {
+      shortRepairCalls += 1;
+      const repaired = await shortRepairReply(replyText);
+      if (repaired !== undefined) {
+        parsed = parsePhaseReply(repaired);
+        if (parsed.parseFailure === undefined) {
+          recovery = "short-llm";
+        }
+      }
+    }
+    const recoverySource =
+      recovery ??
+      (phaseParseRetries > 0 && parsed.parseFailure === undefined ? "retry" : undefined);
     const notes: string[] = [];
     if (phaseSkippedToolCalls > 0) {
       notes.push(`跳过 ${String(phaseSkippedToolCalls)} 次工具调用：预算耗尽`);
@@ -398,6 +457,13 @@ export async function runAgentReviewLoop(
       requestCount: phaseRequestCount,
       ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
       ...(parsed.parseFailure !== undefined ? { parseFailure: parsed.parseFailure } : {}),
+      ...(recoverySource !== undefined || parsed.parseFailure !== undefined
+        ? {
+            ...(phaseParseRetries > 0 ? { parseRetries: phaseParseRetries } : {}),
+            parseRecovered: parsed.parseFailure === undefined,
+            ...(recoverySource !== undefined ? { parseRecovery: recoverySource } : {}),
+          }
+        : {}),
     });
 
     // Phase 5 之后、Phase 6 指令之前：顺序跑 skill 检视会话（ADR-0014）。
@@ -423,6 +489,8 @@ export async function runAgentReviewLoop(
       emittedContentKeys,
       round,
       ...(inputs.scope !== undefined ? { scope: inputs.scope } : {}),
+      // 分组实验：OCR 式 fail-open，证据核验失败不直接丢候选。
+      ...(runtime.limits.grouping.enabled ? { failOpenVerification: true } : {}),
     });
     findings.push(...gate.findings);
     rejections.push(...gate.rejections);
@@ -464,6 +532,12 @@ export async function runAgentReviewLoop(
     const request = inputs.skillPass;
     if (request === undefined) {
       return;
+    }
+    if (request.oncePerPass === true) {
+      if (skillPassRan) {
+        return;
+      }
+      skillPassRan = true;
     }
     const ledgerSnapshot = inputs.toolkit.ledger.snapshot();
     const outcomes: Awaited<ReturnType<typeof runSkillPass>>[] = [];
@@ -641,6 +715,75 @@ export async function runAgentReviewLoop(
   function resetPhaseCounters(): void {
     phaseRequestCount = 0;
     phaseSkippedToolCalls = 0;
+    phaseParseRetries = 0;
+  }
+
+  /** 解析失败回灌：只补一条短提示，阶段指令与已检索证据仍在会话里。 */
+  function parseRetryMessage(index: number, note: string | undefined): AgentMessage {
+    const format =
+      index === CANDIDATES_PHASE_INDEX
+        ? '{"candidates":[<候选对象>]}'
+        : '{"verdicts":[{"id":"…","pass":true,"reason":"…"}],"complete":true}';
+    return {
+      role: "user",
+      content: [
+        `上一次回复无法解析为本阶段要求的 JSON（${note ?? "解析失败"}）。`,
+        "请只重新输出完整 JSON，不要解释，不要 Markdown 围栏。",
+        `格式：${format}`,
+      ].join("\n"),
+      timestamp: Date.now(),
+    };
+  }
+
+  /** 离线 salvage：把修复后的候选/裁决重新拼成阶段 JSON，走同一解析链。 */
+  function salvagePhaseReply(text: string): string | undefined {
+    if (phaseIndex === CANDIDATES_PHASE_INDEX) {
+      const candidates = salvageCandidatesReply(text);
+      return candidates === undefined ? undefined : JSON.stringify({ candidates });
+    }
+    if (phaseIndex === VERIFICATION_PHASE_INDEX) {
+      const verdicts = salvageVerificationReply(text);
+      return verdicts === undefined
+        ? undefined
+        : JSON.stringify({ verdicts: verdicts.entries, complete: verdicts.complete });
+    }
+    return undefined;
+  }
+
+  /** 短窗口 LLM 修复：只带畸形回复与 schema，不带会话/diff/工具证据。 */
+  async function shortRepairReply(raw: string): Promise<string | undefined> {
+    if (inputs.phaseReplyRepair !== undefined) {
+      return inputs.phaseReplyRepair({ raw, phase: phaseNameOf(phaseIndex) });
+    }
+    const format =
+      phaseIndex === CANDIDATES_PHASE_INDEX
+        ? '{"candidates":[<候选对象>]}'
+        : '{"verdicts":[{"id":"…","pass":true,"reason":"…"}],"complete":true}';
+    const result = await completeOneShot({
+      baseUrl: model.baseUrl,
+      apiKey: inputs.apiKey,
+      modelId: model.id,
+      system:
+        "你是 JSON 语法修复器。只修复 JSON 语法错误，不改变字段值、不增删候选。" +
+        "只输出修复后的 JSON 对象，不要解释，不要 Markdown 围栏。",
+      user: `阶段：${phaseNameOf(phaseIndex)}。
+目标格式：${format}
+
+待修复回复：
+${raw}`,
+      timeoutMs: runtime.limits.timeouts.oneShotMs,
+      maxTokens: Math.min(runtime.maxOutputTokens ?? 16_000, 16_000),
+      responseFormat: "json_object",
+      purpose: "reply-repair",
+      ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
+    });
+    if (!result.ok) {
+      return undefined;
+    }
+    if (result.usage !== undefined) {
+      usage = addUsage(usage, result.usage);
+    }
+    return result.text;
   }
 
   /** 阶段推进投影（ADR-0016）：入参 0-based，事件里给 1-based 序号（含轮次） */

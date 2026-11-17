@@ -1,0 +1,188 @@
+{
+  "generatedAt": "2026-11-15T03:29:12.080Z",
+  "runId": "20261115_031927_957",
+  "source": "mr",
+  "caseId": "immich-app__immich@d38f1f5",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P3",
+      "category": "可维护",
+      "file": ".vscode/settings.json",
+      "line": 2,
+      "title": "工作区配置丢失 JSON 格式化与 organizeImports 等约定，文件末尾缺少换行",
+      "description": ".vscode/settings.json 重排后删除了 [json] 与 [jsonc] 的 defaultFormatter/tabSize 配置，以及 [javascript]/[svelte]/[typescript] 的 `editor.codeActionsOnSave`（source.organizeImports、source.removeUnusedImports）。这些是仓库统一的编辑器约定，删除后本地保存不再自动整理 import，与 CI 的 lint 规则（no-unused-vars 等）更容易产生偏差；同时文件改为无结尾换行，后续 diff 会出现噪音。",
+      "evidence": [
+        ".vscode/settings.json:2-6 — 仅保留 `[javascript]` 的 defaultFormatter/tabSize/formatOnSave，`editor.codeActionsOnSave` 被删除",
+        "diff 显示 `[json]` 与 `[jsonc]` 两个配置块被整体删除",
+        "diff 末尾 `+}` 且提示 `\\ No newline at end of file`"
+      ],
+      "rule": "STYLE-EDITORCONFIG-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 工程约定缺失。影响评估：不影响运行时，但会让未使用的 import 更容易被提交，增加 review 噪音与 lint 修复成本；无结尾换行会引起无意义的 diff。",
+        "suggestion": "[重构思路] 恢复 JSON/JSONC 格式化与 codeActionsOnSave 配置，并在文件末尾补换行。代码示例：`\"[json]\": { \"editor.defaultFormatter\": \"esbenp.prettier-vscode\", \"editor.formatOnSave\": true, \"editor.tabSize\": 2 },` 与 `\"editor.codeActionsOnSave\": { \"source.organizeImports\": \"explicit\", \"source.removeUnusedImports\": \"explicit\" }`。",
+        "subcategory": "编辑器/格式化配置"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "web/src/lib/components/memory-page/memory-viewer.svelte",
+      "line": 547,
+      "title": "移除 Luxon 的 { locale: $locale } 后日期不再跟随用户所选语言",
+      "description": "本次改动把多处 Luxon 日期格式化的显式 locale 参数删掉（memory-viewer.svelte 的 DATE_FULL、server-about-modal.svelte 的版本历史日期与 title、device-card.svelte 的 DATETIME_MED）。但 web 侧从未设置 Luxon 的默认 locale（全仓库检索 `Settings`（luxon）在 web 内 0 处引用，+layout.svelte 也未设置），因此这些日期会回落到浏览器/系统的默认语言，而不是用户在 Immich 设置里选择的界面语言。影响：界面文案是中文、日期却按浏览器 en-US 显示，或反之；对语言与系统语言不一致的用户是可见的本地化回归。",
+      "evidence": [
+        "memory-viewer.svelte:547 — `fromLocalDateTime(current.memory.assets[0].localDateTime).toLocaleString(DateTime.DATE_FULL)`，diff 中删除了 `{ locale: $locale }`",
+        "server-about-modal.svelte:180 — `createdAt.toLocaleString(DateTime.DATETIME_SHORT_WITH_SECONDS)`；185-189 — `createdAt.toLocaleString({ month: 'short', day: 'numeric', year: 'numeric' })`，两处均删除了 `{ locale: $locale }`，且 diff 同时删除 `import { locale } from '$lib/stores/preferences.store'`",
+        "检索 `Settings`（luxon 的 Settings）在 web 目录 0 处引用，仅命中 docs 与 machine-learning，说明没有全局 `Settings.defaultLocale = ...`",
+        "web/src/routes/+layout.svelte 全文（1-160 行）无任何 Luxon 默认 locale 设置；device-card.svelte 仍在 `DateTime.fromISO(..., { locale: $locale })` 中传 locale，仅 `toLocaleString(DateTime.DATETIME_MED)` 未传，属同文件内不一致"
+      ],
+      "rule": "I18N-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 本地化参数丢失导致的日期语言不一致。影响评估：非破坏性但用户可见——日期与界面语言不匹配，且在版本历史、回忆、登录设备等页面同时出现，容易被当作回归上报。",
+        "suggestion": "[重构思路] 二选一保持一致：要么恢复显式传 `locale`，要么在应用启动时统一设置 Luxon 默认 locale（如 `Settings.defaultLocale = $locale`），之后所有调用都不再传参。建议后者，可一次性消除散落的参数。代码示例：`// main.ts 或 locale effect 中\\nimport { Settings } from 'luxon';\\n$effect(() => { Settings.defaultLocale = $locale; });`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "性能",
+      "file": "web/src/service-worker/index.ts",
+      "line": 60,
+      "title": "Service Worker 对所有 thumbnail/original 响应无上限写入 CacheStorage，且 cache.put 未 await",
+      "description": "新增的 Service Worker 拦截所有匹配 `^/api/assets/[a-f0-9-]+/(original|thumbnail)` 的 GET 请求，命中缓存直接返回，未命中就 fetch 后 `cache.put(url, response.clone())` 写入 CacheStorage。这里没有容量上限、没有 LRU/过期/清理策略（仅在 SW `version` 变化时整体删除旧 cache），而 `original` 端点意味着整张原图也会被落盘缓存。用户浏览相册会让 CacheStorage 体积随图库规模线性增长，与浏览器 HTTP 缓存重复占用磁盘；在磁盘紧张的设备上可能触发配额错误。另外 `cache.put(...)` 未 await 也未 catch，put 失败（配额超限等）会变成未处理的 Promise 拒绝，且在 SW 被终止前可能来不及完成写入导致缓存静默丢失。preload 分支 `immichAsset(url)` 同样未 await/catch。",
+      "evidence": [
+        "web/src/service-worker/index.ts:7 — `const useCache = true;`，无开关/上限",
+        "web/src/service-worker/index.ts:30-32 — `if (/^\\/api\\/assets\\/[a-f0-9-]+\\/(original|thumbnail)/.test(url.pathname)) { event.respondWith(immichAsset(url)); }`，覆盖 original 原图端点",
+        "web/src/service-worker/index.ts:45-48 — 先 `cache.match(url)` 命中即返回，无陈旧/配额判断",
+        "web/src/service-worker/index.ts:59-61 — `if (response.status === 200) { cache.put(url, response.clone()); }`，put 未 await，异常不进下方的 catch",
+        "web/src/service-worker/index.ts:35-41 — 唯一的清理由 `deleteOldCaches()` 承担，只在 activate 时按 `version` 删除旧 cache，无体积/条数控制",
+        "web/src/service-worker/index.ts:85-89 — preload 分支 `immichAsset(url);` 未 await、未 catch"
+      ],
+      "rule": "PERFORMANCE-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 无界缓存 + 未处理的缓存写入 Promise。影响评估：长期使用后 CacheStorage 无界膨胀（原图也被缓存），可能导致配额失败、写盘抖动；put 的静默失败使「预加载」在真实场景中时好时坏。",
+        "suggestion": "[重构思路] 1) 只缓存 `thumbnail` 而不要缓存 `original`（或对 original 设置小容量上限）；2) 维护条数/字节上限并按 FIFO/LRU 清理；3) `await event.waitUntil(cache.put(...))` 并 catch 配额错误，避免未处理拒绝。代码示例：`event.waitUntil(cache.put(url, response.clone()).catch(() => {}));`，再配合定期 `trimCache(cache, MAX_ENTRIES)`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "web/src/service-worker/index.ts",
+      "line": 76,
+      "title": "cancel 消息按 URL 直接 abort 且无引用计数，会中断其他组件正在加载的同名图片请求",
+      "description": "Service Worker 用 `pendingLoads`（Map<string, AbortController>）按 URL 唯一存储，没有任何引用计数；收到 cancel 消息即 abort 该 URL 的 fetch 并删除条目（abort 后 catch 分支返回 `Response.error()`）。客户端侧 image-thumbnail.svelte 在组件销毁时无条件 `cancelImageUrl(url)`，photo-viewer.svelte 在 onMount 清理时 `cancelImageUrl(imageLoaderUrl)`。当同一个图片 URL 同时被两个组件使用时（例如人物页卡片与侧栏/全屏面板同时渲染同一人物缩略图、或同一资源的缩略图在列表与浮层中并存），其中一个组件卸载就会把另一个仍在挂载中的图片请求 abort 掉，导致该 <img> 触发 onerror，最终渲染 BrokenAsset（photo-viewer 中 `imageError = true` 即显示 BrokenAsset）。此外 `pendingLoads.set()` 是覆盖式写入，同一 URL 并发两次 fetch 时前一个 controller 会丢失，使 cancel 只能中断其中一个请求，行为不确定。",
+      "evidence": [
+        "web/src/service-worker/index.ts:9 — `const pendingLoads = new Map<string, AbortController>();`（按 URL 唯一键，无引用计数）",
+        "web/src/service-worker/index.ts:54 — `pendingLoads.set(url.toString(), cancelToken);`（同一 URL 并发时覆盖前一个 controller）",
+        "web/src/service-worker/index.ts:63-67 — `catch { return Response.error(); }` 与 `finally { pendingLoads.delete(url.toString()); }`，一旦被 abort，调用方拿到的是错误响应",
+        "web/src/service-worker/index.ts:76-84 — cancel 分支 `pending.abort(); pendingLoads.delete(url.toString());`，不区分是谁发起的加载",
+        "web/src/lib/components/assets/thumbnail/image-thumbnail.svelte:69-71 — `return { destroy: () => cancelImageUrl(url) };`，组件卸载即取消，无「是否仍被他人需要」的判断",
+        "web/src/lib/utils/sw-messaging.ts:3-5 — `cancelImageUrl` 仅做 `broadcast.postMessage({ type: 'cancel', url })`，不携带消费者标识",
+        "web/src/lib/components/asset-viewer/photo-viewer.svelte:168-172 — onMount 清理中 `cancelImageUrl(imageLoaderUrl)`；同文件 187-190 出错时渲染 BrokenAsset"
+      ],
+      "rule": "RESOURCE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 共享资源（同 URL 加载）被单方面取消，缺少引用计数。影响评估：偶发缩略图/大图变「裂图」，难以复现与归因；同时预加载的收益也会被误取消抵消。",
+        "suggestion": "[重构思路] 在 SW 侧对每个 URL 维护引用计数（preload/页面请求 +1，cancel -1，仅在计数归零时 abort）；或干脆去掉「基于 URL 的广播取消」，改为取消时携带 requestId/消费者 id，只 abort 自己发起的预加载。至少保证 cancel 只作用于 `type === 'preload'` 发起的加载，不影响浏览器 <img> 正常请求。代码示例：`const counts = new Map<string, number>();\\nfunction cancel(url: string) {\\n  const n = (counts.get(url) ?? 1) - 1;\\n  if (n > 0) { counts.set(url, n); return; }\\n  counts.delete(url);\\n  pendingLoads.get(url)?.abort();\\n  pendingLoads.delete(url);\\n}`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "web/src/lib/components/shared-components/context-menu/context-menu.svelte",
+      "line": 48,
+      "title": "去掉 left/top 的 Math.max(8, …) 下界钳制后，右键/更多菜单可能渲染到视口外",
+      "description": "本次改动把位置计算从 `left = Math.max(8, Math.min(innerWidth - rect.width, x - directionWidth))` 改为 `left = Math.min(innerWidth - rect.width, x - directionWidth)`，top 同样去掉了下界。当 `direction === 'left'` 且触发元素靠近视口左缘（`x - rect.width < 0`），或右键坐标位于负值/极小值时，菜单会被摆到负坐标处并溢出视口左侧/上方，用户看不到或只能看到部分菜单项。getContextMenuPositionFromEvent 直接返回元素的 boundingRect 顶点坐标（top-left/bottom-left 等），并不做任何兜底，因此该下界是唯一的保护。",
+      "evidence": [
+        "web/src/lib/components/shared-components/context-menu/context-menu.svelte:48 — `left = Math.min(window.innerWidth - rect.width, x - directionWidth);`（diff 中同时删除了外层 `Math.max(8, …)`）",
+        "web/src/lib/components/shared-components/context-menu/context-menu.svelte:49 — `top = Math.min(window.innerHeight - menuHeight, y);`，同样失去下界保护",
+        "web/src/lib/components/shared-components/context-menu/context-menu.svelte:45 — `const directionWidth = direction === 'left' ? rect.width : 0;`，direction 为 left 时会向左偏移整个菜单宽度",
+        "web/src/lib/utils/context-menu.ts:20-37 — getContextMenuPositionFromBoundingRect 直接返回 `rect.x / rect.y` 等原始坐标，无任何边界处理",
+        "web/src/lib/components/shared-components/context-menu/right-click-context-menu.svelte:38-44 与 button-context-menu 均把 align/direction 直接传给同一套定位逻辑"
+      ],
+      "rule": "UI-POSITION-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 弹出层定位缺少视口边界下限。影响评估：靠近屏幕边缘的元素打开「更多操作」菜单时菜单可能不可见/被截断，属可见可用性缺陷，且与 RTL 移除无必然关系（物理坐标下同样需要下界）。",
+        "suggestion": "[重构思路] 保留上界钳制的同时恢复下界，并抽取为一个纯函数便于测试（min/max 同时生效）。代码示例：`const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));\\nleft = clamp(x - directionWidth, 8, Math.max(8, window.innerWidth - rect.width));\\ntop = clamp(y, 8, Math.max(8, window.innerHeight - menuHeight));`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "web/src/lib/components/shared-components/context-menu/context-menu.svelte",
+      "line": 69,
+      "title": "同一元素同时挂 max-h-dvh 与 max-h-svh 两个互斥高度类",
+      "description": "`isVisible ? 'max-h-dvh max-h-svh' : 'max-h-0'` 把两个功能重叠的 max-height 工具类同时作用在同一个元素上，最终生效者取决于 Tailwind 生成 CSS 的先后顺序，阅读者无法判断意图，后续改动容易出现「改了没效果」。若意图是从 dvh 迁移到 svh，应直接替换而不是叠加。",
+      "evidence": [
+        "web/src/lib/components/shared-components/context-menu/context-menu.svelte:68-70 — `class=\"{isVisible ? 'max-h-dvh max-h-svh' : 'max-h-0'} flex flex-col transition-all …\"`",
+        "MR diff 中该行由 `? 'max-h-dvh'` 改为 `? 'max-h-dvh max-h-svh'`"
+      ],
+      "rule": "STYLE-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 冗余且互相冲突的样式类。影响评估：不影响运行时行为，但造成样式意图不明确，属于可维护性隐患。",
+        "suggestion": "[重构思路] 明确目标单位后只保留一个类。代码示例：`class=\"{isVisible ? 'max-h-svh' : 'max-h-0'} …\"`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "web/src/lib/components/shared-components/navigation-bar/navigation-bar.svelte",
+      "line": 42,
+      "title": "新的 onLogout 未捕获 logout() 异常，登出失败时无任何提示且状态残留",
+      "description": "`const onLogout = async () => { const { redirectUri } = await logout(); await handleLogout(redirectUri); }` 直接以 async 函数作为按钮 onclick 回调，没有 try/catch 也没有走项目统一的 handleError/notificationController。网络异常或后端返回非 2xx 时会产生未处理的 Promise 拒绝，用户点击「退出登录」后界面毫无变化也无错误提示，且 `handleLogout` 的 finally 清理逻辑不会被触达。",
+      "evidence": [
+        "web/src/lib/components/shared-components/navigation-bar/navigation-bar.svelte:41-44 — `const onLogout = async () => { const { redirectUri } = await logout(); await handleLogout(redirectUri); };`，无 try/catch",
+        "web/src/lib/components/shared-components/navigation-bar/navigation-bar.svelte:186 — `{#if shouldShowAccountInfoPanel} <AccountInfoPanel {onLogout} />`，该 async 函数被直接当作 click 处理器",
+        "web/src/lib/utils/auth.ts:95-109 — handleLogout 的清理（resetSavedUser/resetUserInteraction/clearCache）位于 finally，只有成功进入该函数才会执行",
+        "web/src/lib/components/shared-components/navigation-bar/account-info-panel.svelte:108 — `onclick={onLogout}`，用户唯一的登出入口"
+      ],
+      "rule": "ERROR-HANDLING-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 关键路径缺少错误处理。影响评估：登出失败时用户被静默困在已登录状态，无法自助恢复，也污染浏览器控制台。",
+        "suggestion": "[重构思路] 用 try/catch 包裹并复用统一错误处理，失败时给出可见提示。代码示例：`const onLogout = async () => {\\n  try {\\n    const { redirectUri } = await logout();\\n    await handleLogout(redirectUri);\\n  } catch (error) {\\n    handleError(error, $t('errors.unable_to_logout'));\\n  }\\n};`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "web/src/lib/components/shared-components/navigation-bar/account-info-panel.svelte",
+      "line": 34,
+      "title": "手动拼装 user 对象替代服务端返回值，易与后端字段漂移",
+      "description": "保存头像颜色后使用 `$user = { ...$user, profileImagePath: '', avatarColor: $preferences.avatar.color }` 在本地合成 user 对象。这里硬编码 `profileImagePath: ''`、且不更新 `profileChangedAt`/`updatedAt` 等由服务端维护的字段，等于在客户端复制了后端 `mapUser` 的语义；一旦后端 DTO 变化（例如未来 avatarColor 再次迁移或 profile 相关字段联动），该处会成为难以发现的漂移点。",
+      "evidence": [
+        "web/src/lib/components/shared-components/navigation-bar/account-info-panel.svelte:33-34 — `$preferences = await updateMyPreferences(...); $user = { ...$user, profileImagePath: '', avatarColor: $preferences.avatar.color };`",
+        "server/src/dtos/user.dto.ts:44-53 — `mapUser` 中 `avatarColor: getPreferences(entity.email, …).avatar.color` 与 `profileChangedAt: entity.profileChangedAt` 均由服务端计算",
+        "web/src/lib/components/shared-components/user-avatar.svelte:82 — `colorClasses[color || user.avatarColor]` 依赖 user.avatarColor，且 97 行依赖 user.profileImagePath 决定是否渲染头像图片"
+      ],
+      "rule": "MAINTAINABILITY-003",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 客户端复制服务端映射逻辑。影响评估：当前行为正确，但后续 DTO 演进时容易出现本地状态与后端不一致（如 profileChangedAt 未更新导致头像 URL 缓存键失效）。",
+        "suggestion": "[重构思路] 用服务端返回的权威数据刷新 store，例如保存成功后重新 `getMyUser()`（或让 deleteProfileImage/updateMyPreferences 的响应合并后统一映射）。代码示例：`await updateMyPreferences({ userPreferencesUpdateDto: { avatar: { color } } });\\n$preferences = await getMyPreferences();\\n$user = await getMyUser();`",
+        "subcategory": ""
+      }
+    }
+  ]
+}

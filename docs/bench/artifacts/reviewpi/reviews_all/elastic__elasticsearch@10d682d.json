@@ -1,0 +1,164 @@
+{
+  "generatedAt": "2026-11-15T07:15:40.408Z",
+  "runId": "20261115_070235_801",
+  "source": "mr",
+  "caseId": "elastic__elasticsearch@10d682d",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "server/src/main/java/org/elasticsearch/plugins/ActionPlugin.java",
+      "line": 55,
+      "title": "ActionPlugin#getActions 返回类型参数化属插件 API 变更，却没有对应 changelog 条目",
+      "description": "本 MR 把 `ActionPlugin#getActions()` 的返回类型从原始类型 `Collection<ActionHandler>` 改为 `Collection<ActionHandler<? extends ActionRequest, ? extends ActionResponse>>`，并要求所有实现方改写为 `List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>>`（近 90 个插件文件被同步修改），这对仓库外的插件开发者是需要源码适配的 API 变化；而本次新增的 changelog 只有 `docs/changelog/126376.yaml`（内容仅描述 TLS keyUsage 修复），同时删除了 `docs/changelog/126264.yaml` 与 `docs/changelog/126417.yaml` 两个既有条目，公共 API 变更在变更记录中无从体现。",
+      "evidence": [
+        "server/src/main/java/org/elasticsearch/plugins/ActionPlugin.java:55 — `default Collection<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions()`",
+        "server/src/main/java/org/elasticsearch/plugins/ActionPlugin.java:104 — `final class ActionHandler<Request extends ActionRequest, Response extends ActionResponse>`",
+        "docs/changelog/126376.yaml:1-4 — 新增条目仅描述 \"Set `keyUsage` for generated HTTP certificates and self-signed CA\"（area: TLS）",
+        "MR diff 中 `docs/changelog/126264.yaml (+0/-5)` 与 `docs/changelog/126417.yaml (+0/-5)` 被删除",
+        "x-pack/plugin/shutdown/src/main/java/org/elasticsearch/xpack/shutdown/ShutdownPlugin.java:42-52 — 实现方必须显式写出 `ActionHandler<PutShutdownNodeAction.Request, AcknowledgedResponse>` 等泛型参数"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 公共插件 API 签名变更缺少变更记录。影响评估：外部插件在升级后可能遇到编译告警/错误（需要更新 `getActions()` 覆写签名），但升级说明中查不到对应条目，且两个既有 changelog 文件被一并删除，进一步削弱可追溯性。",
+        "suggestion": "[重构思路] 为该 API 变更补一条 changelog（area 指向 plugin API/Infra），并在 PR 描述中说明 raw→参数化返回类型的源码兼容影响；确认删除 126264/126417 是否与本次变更相关，若无关应移出本 MR。代码示例：\n```yaml\npr: 126376\nsummary: Make `ActionPlugin#getActions` return a wildcard-parameterized `ActionHandler` collection\narea: Plugin\n```",
+        "subcategory": "破坏性变更未记录"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "server/src/main/java/org/elasticsearch/plugins/ActionPlugin.java",
+      "line": 55,
+      "title": "插件 SPI 签名破坏性变更缺少 changelog 与迁移说明",
+      "description": "ActionPlugin.ActionHandler 由原始类型改为带两个类型参数，且 getActions() 的返回类型从 `Collection<ActionHandler>` 变为 `Collection<ActionHandler<? extends ActionRequest, ? extends ActionResponse>>`。这是插件开发者直接实现的公开扩展点：既有第三方插件若以原始类型或旧写法覆写 getActions()，升级后将出现覆写不兼容的编译错误（返回类型不变性），属于对插件 SPI 的破坏性变更。而本次 MR 的 docs/changelog 仅新增 126376.yaml（TLS keyUsage），没有对应的 SPI/泛型迁移说明或 breaking-change 记录，插件作者无法从 release notes 感知需要修改签名。",
+      "evidence": [
+        "server/src/main/java/org/elasticsearch/plugins/ActionPlugin.java:55 返回类型由 `Collection<ActionHandler>` 改为 `Collection<ActionHandler<? extends ActionRequest, ? extends ActionResponse>>`",
+        "同文件 L104-121 ActionHandler 改为 `ActionHandler<Request extends ActionRequest, Response extends ActionResponse>`，构造函数与 getAction()/getTransportAction() 签名同步变化",
+        "MR diff 中 docs/changelog 只有新增的 126376.yaml（`summary: Set keyUsage for generated HTTP certificates and self-signed CA`），删除 126264.yaml/126417.yaml，无与该 SPI 变更相关的条目",
+        "同类调用点广泛存在（如 modules/data-streams/.../DataStreamsPlugin.java、x-pack/plugin/ccr/.../Ccr.java 的 getActions() 全部需要改签名），说明这是对外契约级变更"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 公开扩展点签名变更未记录。影响评估：第三方/内部插件升级后编译失败，且缺少可检索的迁移指引；发布说明中看不到该破坏性变更。",
+        "suggestion": "[重构思路] 在 docs/changelog 增加一条说明该 SPI 变更的条目（area: Infra/Plugins 或类似），并在 ActionPlugin 的 Javadoc 中说明从原始 ActionHandler 迁移到泛型写法的做法（用 `new ActionHandler<>(...)` 依赖推断，无需显式写类型参数）。代码示例：\n```yaml\npr: 1264xx\nsummary: Make `ActionPlugin.ActionHandler` generic in request/response types\narea: Infra/Plugins\ntype: upgrade\nissues: []\n```",
+        "subcategory": "API 兼容性与文档"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperatorFactories.java",
+      "line": 43,
+      "title": "新增的三阶段时序聚合工厂未接入生产路径，与既有 Factory 形成两份并行实现",
+      "description": "本类新增了 Initial/Intermediate/Final 三段式工厂（164 行新代码），但其 javadoc 描述的“三阶段执行”目前只被单元测试使用；生产查询规划仍走 AbstractPhysicalOperationProviders 中的旧 TimeSeriesAggregationOperator.Factory 两阶段路径，而该文件并未出现在本次改动中。结果是仓库里同时存在两套时序聚合工厂 API（TimeSeriesAggregationOperator.Factory 与 TimeSeriesAggregationOperatorFactories.*），语义、模式（INITIAL/INTERMEDIATE/FINAL vs 旧的两阶段）与 describe() 输出都不一致。影响：新代码无法被集成测试覆盖真实查询路径，容易在后续接入时才发现通道/模式不匹配；读者也难以判断哪一套是权威实现，长期维护成本上升。",
+      "evidence": [
+        "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperatorFactories.java:43 — public final class TimeSeriesAggregationOperatorFactories",
+        "review_find_references(TimeSeriesAggregationOperatorFactories) 仅命中本文件声明与 x-pack/plugin/esql/compute/src/test/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperatorTests.java:270/281/300（测试），无生产调用点",
+        "x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/planner/AbstractPhysicalOperationProviders.java:178 — 生产路径仍构造 new TimeSeriesAggregationOperator.Factory(...)",
+        "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperator.java:24-57 — 旧的 Factory record 仍然保留并可用"
+      ],
+      "rule": "MAINTAINABILITY-DEADCODE-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 新增生产代码未被生产路径引用（仅被单测驱动），形成重复实现。影响评估：新老两套工厂并存，接入时容易出现模式/通道错配，且难以通过集成层（ESQL 端到端）验证真实查询行为。",
+        "suggestion": "[重构思路] 二选一：要么在本 MR 内把 AbstractPhysicalOperationProviders.groupingPhysicalOperation 的 TimeSeriesAggregateExec 分支切到新 Initial/Intermediate/Final 工厂并删除旧 Factory；要么把新文件延后到接入提交里一起引入。代码示例：`if (aggregateExec instanceof TimeSeriesAggregateExec ts) { operatorFactory = switch (aggregatorMode) { case INITIAL -> new TimeSeriesAggregationOperatorFactories.Initial(...); case INTERMEDIATE -> new TimeSeriesAggregationOperatorFactories.Intermediate(...); ... }; }` 并在 describe() 中输出聚合器明细以与其他工厂保持一致。",
+        "subcategory": "死代码与重复实现"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperatorFactories.java",
+      "line": 148,
+      "title": "groupings 与 timeBucketChannel 在三处语义不一致，靠 channel 数值比较排除桶列",
+      "description": "Initial/Intermediate 的 groupings 组件与 Final 的 groupings 组件语义并不相同：Initial/Intermediate 里它既用于 valuesAggregatorForGroupings（按 `g.channel() != timeBucketChannel` 排除桶列）又被当作该阶段输入页的通道；Final 里它直接作为最终 hash 分组并包含时间桶。也就是说同一个类型 List<BlockHash.GroupSpec> 在不同 record 中承担了“输入通道映射 + 需要排除桶列”和“最终分组键（含桶）”两种含义，且排除逻辑完全依赖调用方传入的 timeBucketChannel 与 GroupSpec.channel 数值恰好相等。一旦调用方传入的 groupings 已包含桶 spec、但 channel 与 timeBucketChannel 不相等（例如不同阶段页布局变化），就会为桶列额外生成一个 values 聚合器，输出布局随之错位，且没有任何断言或校验能发现。",
+      "evidence": [
+        "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperatorFactories.java:48-56 / 71-79 — Initial 与 Intermediate 的 `List<BlockHash.GroupSpec> groupings` 与 `int timeBucketChannel` 并列声明",
+        "同文件 148 行 — `if (g.channel() != timeBucketChannel) {` 依赖数值比较排除桶列",
+        "同文件 117-122 — Final 的 groupings 直接传给 BlockHash.build 作为最终分组（含桶），与本文件中另一语义共用同一参数名",
+        "同文件 156-158 — 排除失败时会静默多生成一个 values 聚合器，改变输出块数量"
+      ],
+      "rule": "API-CONSISTENCY-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 同名参数在不同阶段语义不一致，依赖隐式数值约定。影响评估：接入方一旦传参不符合隐含约定就会静默产生错误的输出布局（多一列/少一列），属于难以定位的布局错位类问题。",
+        "suggestion": "[重构思路] 显式区分语义：把 Initial/Intermediate 的输入通道与“要收集 values 的分组列”拆成两个参数（例如 `List<GroupSpec> groupingInputs` 与 `List<Integer> valueChannels`），并在构建时断言通道不包含桶列、且输出块数量与聚合器数量一致。代码示例：`for (int ch : valueChannels) { asserts ch != timeBucketChannel; aggregators.add(valuesSupplier(g.elementType()).groupingAggregatorFactory(AggregatorMode.SINGLE, List.of(ch))); }`",
+        "subcategory": "参数语义不一致与隐式约定"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperatorFactories.java",
+      "line": 156,
+      "title": "valuesAggregatorForGroupings 对 FLOAT 分组类型直接抛异常且错误信息缺少上下文",
+      "description": "新增的 valuesAggregatorForGroupings 为每个非时间桶分组列创建一个 values 聚合器，但 switch 中只覆盖 BYTES_REF/DOUBLE/INT/LONG/BOOLEAN，其余类型统一 `throw new IllegalArgumentException(\"unsupported grouping type\")`。其中 FLOAT 是 ES|QL 中可以合法用于 BY 的数值类型（DOUBLE 已被支持），一旦该工厂被接入生产路径，`TS ... | STATS ... BY <float 字段>` 会在算子构造阶段直接失败；并且异常消息既不包含类型也不包含 channel，用户与开发者都无法定位是哪个分组列触发的。",
+      "evidence": [
+        "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperatorFactories.java:150-157 — switch 覆盖 BYTES_REF/DOUBLE/INT/LONG/BOOLEAN",
+        "同文件 156 行 — `case FLOAT, NULL, DOC, COMPOSITE, UNKNOWN -> throw new IllegalArgumentException(\"unsupported grouping type\");`",
+        "同文件 148 行 — 仅通过 `g.channel() != timeBucketChannel` 过滤桶列，未对元素类型做任何前置校验或降级"
+      ],
+      "rule": "ROBUSTNESS-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 不支持的类型分支直接抛异常（fail-fast 但不可用），且异常信息无上下文。影响评估：BY float 列的时间序列聚合会整体失败，属于用户可见的功能缺口；错误信息缺少类型/channel 会显著增加排障成本。",
+        "suggestion": "[重构思路] 优先补齐 FLOAT 分支（可使用 ValuesFloatAggregatorFunctionSupplier）；确实不支持的类型应在消息中带上 elementType 与 channel，并在计划阶段（而非算子构造阶段）校验报错。代码示例：`case FLOAT -> new ValuesFloatAggregatorFunctionSupplier(); ... default -> throw new IllegalArgumentException(\"unsupported grouping type [\" + g.elementType() + \"] for channel [\" + g.channel() + \"]\");`",
+        "subcategory": "类型覆盖不全与错误信息可诊断性"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperator.java",
+      "line": 59,
+      "title": "删除时序评估上下文覆写后，timeBucket 字段成为无人读取的死状态",
+      "description": "本次删除了 TimeSeriesAggregationOperator.evaluationContext(Block[]) 覆写，同时把 HashAggregationOperator.driverContext 从 protected 收窄为 private。其直接后果是 TimeSeriesAggregationOperator 中 private final Rounding.Prepared timeBucket 字段只在构造器里被赋值，类内再无任何读取点（整个类仅 70 行），Factory record 的 timeBucket 组件也因此只是被透传后丢弃。影响：保留的死字段会让后续读者误以为该类仍在做与时间桶相关的计算（旧的外推逻辑），并且保留了不必要的构造参数与依赖；同时被移除的 evaluationContext 钩子是被子类覆写的扩展点，未来若要恢复按桶边界的计算需要重新开辟入口。",
+      "evidence": [
+        "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperator.java:59 — private final Rounding.Prepared timeBucket;",
+        "同文件 61-69 行构造器仅执行 `this.timeBucket = timeBucket;`，类中再无其它读取",
+        "同文件 26-47 行 Factory.get 仍把 timeBucket 透传给构造器",
+        "本次 diff 删除了 TimeSeriesGroupingAggregatorEvaluationContext 与 TimeSeriesAggregationOperator.evaluationContext(Block[] keys) 覆写，HashAggregationOperator 的 driverContext 由 protected 改为 private"
+      ],
+      "rule": "MAINTAINABILITY-DEADCODE-002",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 遗留未使用字段/构造参数（死状态）。影响评估：误导后续维护者，增加无用依赖（Rounding），并掩盖“时序上下文能力已被移除”这一事实。",
+        "suggestion": "[重构思路] 若确认不再需要按桶边界计算，删除 timeBucket 字段与构造参数，并同步简化 Factory record；否则在类注释中显式说明保留原因。代码示例：`public TimeSeriesAggregationOperator(List<GroupingAggregator.Factory> aggregators, Supplier<BlockHash> blockHash, DriverContext driverContext) { super(aggregators, blockHash, driverContext); }`",
+        "subcategory": "死字段与扩展点收窄"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "docs/changelog/126376.yaml",
+      "line": 2,
+      "title": "MR 混合了无关变更，且 rate 结果变化缺少对应的 changelog 说明",
+      "description": "本 MR 同时包含三类互不相关的改动：(1) ESQL rate 聚合语义变更（去掉 PromQL 外推、删除 sampleCount 中间状态），会直接改变用户可见的 rate 数值；(2) 全仓库 ActionHandler 泛型化与 ActionResponse.Empty→TransportResponse.Empty 的机械替换；(3) 安全 CLI 的证书 keyUsage 缺陷修复（CertGenUtils/HttpCertificateCommand/CertificateTool 等）。而新增的唯一 changelog 是 126376.yaml，其 summary 是 TLS keyUsage 修复，另有 126264.yaml 与 126417.yaml 被删除。也就是说 rate 语义这一用户可感知的行为变化没有任何 changelog 记录（也没有 feature flag/版本开关说明）。影响：升级说明缺失会让使用者困惑于 rate 数值变化；混杂变更使回滚与定位问题变得困难。",
+      "evidence": [
+        "docs/changelog/126376.yaml:2 — summary: Set `keyUsage` for generated HTTP certificates and self-signed CA（area: TLS）",
+        "diff 中 docs/changelog/126264.yaml (+0/-5)、docs/changelog/126417.yaml (+0/-5) 被整段删除，未见与 rate 语义变更对应的新增条目",
+        "本次 diff 中 rate 结果发生变化（k8s-timeseries.csv-spec 中 2024-05-10T00:20:00 桶由 6.980660660660663 变为 10.594594594594595），说明该行为变更对外可见",
+        "同一 MR 还包含 x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java (+115/-47)、HttpCertificateCommand.java (+97/-5) 等与本主题无关的安全改动"
+      ],
+      "rule": "PROCESS-CHANGELOG-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 变更范围混杂 + 用户可见行为变更缺少 changelog。影响评估：rate 数值变化缺少升级说明，使用者难以判断是否为回归；无关变更混入增大评审与回滚风险。",
+        "suggestion": "[重构思路] 拆分提交：ESQL rate 语义变更单独一个 PR，并补 `area: ES|QL` 的 changelog（例如 summary: `Change rate() to not extrapolate across the time bucket`）；ActionHandler 泛型化作为纯机械重构单独提交；TLS keyUsage 修复保留在 126376。代码/配置示例：`type: breaking` 或 `type: upgrade` 条目 + `summary: rate() no longer extrapolates to bucket boundaries`。",
+        "subcategory": "变更范围与变更记录"
+      }
+    }
+  ]
+}

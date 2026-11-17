@@ -29,3 +29,14 @@ test("issue 描述缺省时回落到 (none)", () => {
     ].join("\n"),
   );
 });
+
+test("ruleContext 存在时插入规则块；空/空白时字节不变", () => {
+  const without = buildInitialUserMessage("X-1", "", "+ a\n");
+  expect(buildInitialUserMessage("X-1", "", "+ a\n", "")).toBe(without);
+  expect(buildInitialUserMessage("X-1", "", "+ a\n", "   ")).toBe(without);
+
+  const withRules = buildInitialUserMessage("X-1", "", "+ a\n", "<rule id=\"R1\">Body</rule>");
+  expect(withRules).toContain("Applicable review rules for this change:");
+  expect(withRules).toContain("<rule id=\"R1\">Body</rule>");
+  expect(withRules.indexOf("Applicable review rules")).toBeLessThan(withRules.indexOf("Unified diff:"));
+});

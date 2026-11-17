@@ -1,0 +1,184 @@
+{
+  "instance_id": "gofr-dev__gofr@49ab394",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "ba0316277a22f508ed645951705f53d151552916",
+  "head_commit": "49ab39432cf4892ee84569099b8065dfe45fae92",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T03:37:39.505561+00:00",
+  "duration_seconds": 383.25,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 6 finding(s) across 2 selected item(s).",
+    "summary": {
+      "files_reviewed": 2,
+      "comments": 6,
+      "total_tokens": 1196108,
+      "input_tokens": 1144090,
+      "output_tokens": 52018,
+      "cache_read_tokens": 1051136,
+      "elapsed": "6m23s"
+    },
+    "tool_calls": {
+      "total": 49,
+      "by_tool": {
+        "code_comment": 1,
+        "code_search": 26,
+        "file_find": 1,
+        "file_read": 21
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "pkg/gofr/datasource/pubsub/nats/client.go",
+        "content": "`retryConnect` runs on a background goroutine and writes `c.connManager`, `c.streamManager` and `c.subManager` (and `Close`/`Health`/`checkClient`/`Publish`/`Subscribe` read them) without any synchronization, so once the client is in the retry state every publish/subscribe/health call races with these assignments (`go test -race` will flag it). There is also a partial-initialization window: `c.connManager` is published before `streamManager`/`subManager` are set, so a concurrent `CreateTopic`/`CreateStream` can pass `checkClient` and then dereference a still-nil `c.streamManager` (panic). Guard these fields with a mutex (or an atomic pointer) and assign the connected manager last.",
+        "suggestion_code": "\t\tc.mu.Lock()\n\t\tc.streamManager = newStreamManager(js, c.logger)\n\t\tc.subManager = newSubscriptionManager(batchSize)\n\t\tc.connManager = connManager // publish last: readers must never see a connected manager without the managers above\n\t\tc.mu.Unlock()",
+        "existing_code": "\t\tc.connManager = connManager\n\n\t\tjs, err := c.connManager.jetStream()",
+        "start_line": 83,
+        "end_line": 85,
+        "thinking": "Not vendored, so I'll phrase carefully: \"nats.DefaultTimeout is 2s (the connect timeout), vs the previous 10s\".\n\nNow write comments. Ensure existing_code lines match added lines in the diff exactly (with tabs).\n\nComment 1 anchor (added lines in retryConnect):\n```\n\t\tc.connManager = connManager\n\n\t\tjs, err := c.connManager.jetStream()\n```\nIn diff these appear as:\n+\t\tc.connManager = connManager\n+\n+\t\tjs, err := c.connManager.jetStream()\n\nProvide with leading tabs: \"\\t\\tc.connManager = connManager\\n\\n\\t\\tjs, err := c.connManager.jetStream()\".\n\nComment 2 anchor: \"\\t\\tgo c.retryConnect()\" — diff line is `+\tgo c.retryConnect()` with one tab. Yes: in Connect body it's one tab: `\t\tgo c.retryConnect()`.\n\nComment 3 anchor:\n```\n\t\tjs, err := c.connManager.jetStream()\n\t\tif err != nil {\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n```\nHmm this overlaps with comment 1 anchor lines (js, err := ...). The sliding window match may conflict. Better anchor comment 3 at:\n```\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n\n\t\t\tcontinue\n```\nUnique.\n\nComment 4 anchor:\n```\n\t\t\tc.logger.Errorf(\"failed to connect to NATS server at %v: %v\", c.Config.Server, err)\n\t\t\ttime.Sleep(defaultRetryTimeout)\n```\nUnique to retryConnect (Connect's Errorf is followed by blank line). Good.\n\nComment 5 anchor: `const defaultRetryTimeout = nats.DefaultTimeout`.\n\nComment 6 anchor: `func checkClient(c *Client) error {`.\n\nNow content. Keep concise. Suggest code where useful.\n\nFor comment 1 suggestion: add a mutex around manager fields or use atomic pointer; simplest: guard assignments with a mutex and have readers take RLock. Suggest `c.mu` and note ordering (assign streamManager/subManager before connManager). I'll give a code sketch:\n\n```go\nc.mu.Lock()\nc.streamManager = newStreamManager(js, c.logger)\nc.subManager = newSubscriptionManager(batchSize)\nc.connManager = connManager // publish last so readers never see a connected manager without the rest\nc.mu.Unlock()\n```\nand readers use `c.getConnManager()` etc. That's a big refactor; maybe just describe. Provide suggestion_code minimal.\n\nFor comment 2 suggestion: add a stop channel / context cancelled in Close, and guard against spawning duplicate retry goroutines.\n\nLet me write.",
+        "category": "bug",
+        "severity": "critical"
+      },
+      {
+        "path": "pkg/gofr/datasource/pubsub/nats/client.go",
+        "content": "The retry goroutine has no cancellation and is not coordinated with `Close()`. If the app shuts down (or the process closes the datasource) while retrying, `retryConnect` keeps looping and can establish a connection after `Close` has run; that connection is then never closed (goroutine + connection leak, reconnect-after-shutdown). It also has no single-flight guard: `PubSubWrapper.Connect()` re-invokes `Client.Connect()` on health-down, so every failed attempt spawns yet another eternal loop and, eventually, another live connection. Add a stop channel/context cancelled from `Close` (and checked before/inside the loop) and ensure only one retry loop can run at a time.",
+        "suggestion_code": "\t\tc.startRetry() // single-flight; loop selects on c.done / ctx.Done()",
+        "existing_code": "\t\tgo c.retryConnect()",
+        "start_line": 52,
+        "end_line": 52,
+        "thinking": "Not vendored, so I'll phrase carefully: \"nats.DefaultTimeout is 2s (the connect timeout), vs the previous 10s\".\n\nNow write comments. Ensure existing_code lines match added lines in the diff exactly (with tabs).\n\nComment 1 anchor (added lines in retryConnect):\n```\n\t\tc.connManager = connManager\n\n\t\tjs, err := c.connManager.jetStream()\n```\nIn diff these appear as:\n+\t\tc.connManager = connManager\n+\n+\t\tjs, err := c.connManager.jetStream()\n\nProvide with leading tabs: \"\\t\\tc.connManager = connManager\\n\\n\\t\\tjs, err := c.connManager.jetStream()\".\n\nComment 2 anchor: \"\\t\\tgo c.retryConnect()\" — diff line is `+\tgo c.retryConnect()` with one tab. Yes: in Connect body it's one tab: `\t\tgo c.retryConnect()`.\n\nComment 3 anchor:\n```\n\t\tjs, err := c.connManager.jetStream()\n\t\tif err != nil {\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n```\nHmm this overlaps with comment 1 anchor lines (js, err := ...). The sliding window match may conflict. Better anchor comment 3 at:\n```\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n\n\t\t\tcontinue\n```\nUnique.\n\nComment 4 anchor:\n```\n\t\t\tc.logger.Errorf(\"failed to connect to NATS server at %v: %v\", c.Config.Server, err)\n\t\t\ttime.Sleep(defaultRetryTimeout)\n```\nUnique to retryConnect (Connect's Errorf is followed by blank line). Good.\n\nComment 5 anchor: `const defaultRetryTimeout = nats.DefaultTimeout`.\n\nComment 6 anchor: `func checkClient(c *Client) error {`.\n\nNow content. Keep concise. Suggest code where useful.\n\nFor comment 1 suggestion: add a mutex around manager fields or use atomic pointer; simplest: guard assignments with a mutex and have readers take RLock. Suggest `c.mu` and note ordering (assign streamManager/subManager before connManager). I'll give a code sketch:\n\n```go\nc.mu.Lock()\nc.streamManager = newStreamManager(js, c.logger)\nc.subManager = newSubscriptionManager(batchSize)\nc.connManager = connManager // publish last so readers never see a connected manager without the rest\nc.mu.Unlock()\n```\nand readers use `c.getConnManager()` etc. That's a big refactor; maybe just describe. Provide suggestion_code minimal.\n\nFor comment 2 suggestion: add a stop channel / context cancelled in Close, and guard against spawning duplicate retry goroutines.\n\nLet me write.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "pkg/gofr/datasource/pubsub/nats/client.go",
+        "content": "This branch cannot be reached in practice: `ConnectionManager.Connect()` already creates JetStream and only assigns `cm.jStream` on success, so the getter returns `errJetStreamNotConfigured` only if `Connect()` failed — which is handled by the branch above. If it ever did trigger, the just-opened connection is leaked (no `connManager.Close()`) while the next iteration creates a new manager. Prefer closing the manager before retrying and dropping the dead branch.",
+        "suggestion_code": "\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n\t\t\tconnManager.Close(context.Background())\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\n\t\t\tcontinue",
+        "existing_code": "\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n\n\t\t\tcontinue",
+        "start_line": 87,
+        "end_line": 90,
+        "thinking": "Not vendored, so I'll phrase carefully: \"nats.DefaultTimeout is 2s (the connect timeout), vs the previous 10s\".\n\nNow write comments. Ensure existing_code lines match added lines in the diff exactly (with tabs).\n\nComment 1 anchor (added lines in retryConnect):\n```\n\t\tc.connManager = connManager\n\n\t\tjs, err := c.connManager.jetStream()\n```\nIn diff these appear as:\n+\t\tc.connManager = connManager\n+\n+\t\tjs, err := c.connManager.jetStream()\n\nProvide with leading tabs: \"\\t\\tc.connManager = connManager\\n\\n\\t\\tjs, err := c.connManager.jetStream()\".\n\nComment 2 anchor: \"\\t\\tgo c.retryConnect()\" — diff line is `+\tgo c.retryConnect()` with one tab. Yes: in Connect body it's one tab: `\t\tgo c.retryConnect()`.\n\nComment 3 anchor:\n```\n\t\tjs, err := c.connManager.jetStream()\n\t\tif err != nil {\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n```\nHmm this overlaps with comment 1 anchor lines (js, err := ...). The sliding window match may conflict. Better anchor comment 3 at:\n```\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n\n\t\t\tcontinue\n```\nUnique.\n\nComment 4 anchor:\n```\n\t\t\tc.logger.Errorf(\"failed to connect to NATS server at %v: %v\", c.Config.Server, err)\n\t\t\ttime.Sleep(defaultRetryTimeout)\n```\nUnique to retryConnect (Connect's Errorf is followed by blank line). Good.\n\nComment 5 anchor: `const defaultRetryTimeout = nats.DefaultTimeout`.\n\nComment 6 anchor: `func checkClient(c *Client) error {`.\n\nNow content. Keep concise. Suggest code where useful.\n\nFor comment 1 suggestion: add a mutex around manager fields or use atomic pointer; simplest: guard assignments with a mutex and have readers take RLock. Suggest `c.mu` and note ordering (assign streamManager/subManager before connManager). I'll give a code sketch:\n\n```go\nc.mu.Lock()\nc.streamManager = newStreamManager(js, c.logger)\nc.subManager = newSubscriptionManager(batchSize)\nc.connManager = connManager // publish last so readers never see a connected manager without the rest\nc.mu.Unlock()\n```\nand readers use `c.getConnManager()` etc. That's a big refactor; maybe just describe. Provide suggestion_code minimal.\n\nFor comment 2 suggestion: add a stop channel / context cancelled in Close, and guard against spawning duplicate retry goroutines.\n\nLet me write.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "pkg/gofr/datasource/pubsub/nats/client.go",
+        "content": "The retry loop is unbounded, uses a fixed interval with no backoff/jitter, and logs every failure at Error level. Terminal failures (bad creds file, auth/TLS rejection, invalid server) will therefore log forever and spin a goroutine indefinitely. Also, the initial failure is reported twice (Errorf here and again in this first iteration, while `ConnectionManager.Connect` logs it at Debug), and `Connect()` now returns an error *and* starts a retry, so callers cannot tell whether the failure is fatal or will be retried. Consider backoff with a cap, and a clear contract (either return the error and let the caller retry, or retry internally and return nil).",
+        "existing_code": "\t\t\tc.logger.Errorf(\"failed to connect to NATS server at %v: %v\", c.Config.Server, err)\n\t\t\ttime.Sleep(defaultRetryTimeout)",
+        "start_line": 77,
+        "end_line": 78,
+        "thinking": "Not vendored, so I'll phrase carefully: \"nats.DefaultTimeout is 2s (the connect timeout), vs the previous 10s\".\n\nNow write comments. Ensure existing_code lines match added lines in the diff exactly (with tabs).\n\nComment 1 anchor (added lines in retryConnect):\n```\n\t\tc.connManager = connManager\n\n\t\tjs, err := c.connManager.jetStream()\n```\nIn diff these appear as:\n+\t\tc.connManager = connManager\n+\n+\t\tjs, err := c.connManager.jetStream()\n\nProvide with leading tabs: \"\\t\\tc.connManager = connManager\\n\\n\\t\\tjs, err := c.connManager.jetStream()\".\n\nComment 2 anchor: \"\\t\\tgo c.retryConnect()\" — diff line is `+\tgo c.retryConnect()` with one tab. Yes: in Connect body it's one tab: `\t\tgo c.retryConnect()`.\n\nComment 3 anchor:\n```\n\t\tjs, err := c.connManager.jetStream()\n\t\tif err != nil {\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n```\nHmm this overlaps with comment 1 anchor lines (js, err := ...). The sliding window match may conflict. Better anchor comment 3 at:\n```\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n\n\t\t\tcontinue\n```\nUnique.\n\nComment 4 anchor:\n```\n\t\t\tc.logger.Errorf(\"failed to connect to NATS server at %v: %v\", c.Config.Server, err)\n\t\t\ttime.Sleep(defaultRetryTimeout)\n```\nUnique to retryConnect (Connect's Errorf is followed by blank line). Good.\n\nComment 5 anchor: `const defaultRetryTimeout = nats.DefaultTimeout`.\n\nComment 6 anchor: `func checkClient(c *Client) error {`.\n\nNow content. Keep concise. Suggest code where useful.\n\nFor comment 1 suggestion: add a mutex around manager fields or use atomic pointer; simplest: guard assignments with a mutex and have readers take RLock. Suggest `c.mu` and note ordering (assign streamManager/subManager before connManager). I'll give a code sketch:\n\n```go\nc.mu.Lock()\nc.streamManager = newStreamManager(js, c.logger)\nc.subManager = newSubscriptionManager(batchSize)\nc.connManager = connManager // publish last so readers never see a connected manager without the rest\nc.mu.Unlock()\n```\nand readers use `c.getConnManager()` etc. That's a big refactor; maybe just describe. Provide suggestion_code minimal.\n\nFor comment 2 suggestion: add a stop channel / context cancelled in Close, and guard against spawning duplicate retry goroutines.\n\nLet me write.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "pkg/gofr/datasource/pubsub/nats/client.go",
+        "content": "`nats.DefaultTimeout` is the client connect timeout (~2s), not a retry interval. Binding the retry cadence to a third-party constant silently shortens every existing wait that uses it (previously 10s), so the not-connected paths in `Subscribe` now sleep only ~2s and the retry loop hammers the server every 2s; the value also changes if the nats library changes it. Keep an explicit package constant for the retry interval.",
+        "suggestion_code": "const defaultRetryTimeout = 10 * time.Second",
+        "existing_code": "const defaultRetryTimeout = nats.DefaultTimeout",
+        "start_line": 19,
+        "end_line": 19,
+        "thinking": "Not vendored, so I'll phrase carefully: \"nats.DefaultTimeout is 2s (the connect timeout), vs the previous 10s\".\n\nNow write comments. Ensure existing_code lines match added lines in the diff exactly (with tabs).\n\nComment 1 anchor (added lines in retryConnect):\n```\n\t\tc.connManager = connManager\n\n\t\tjs, err := c.connManager.jetStream()\n```\nIn diff these appear as:\n+\t\tc.connManager = connManager\n+\n+\t\tjs, err := c.connManager.jetStream()\n\nProvide with leading tabs: \"\\t\\tc.connManager = connManager\\n\\n\\t\\tjs, err := c.connManager.jetStream()\".\n\nComment 2 anchor: \"\\t\\tgo c.retryConnect()\" — diff line is `+\tgo c.retryConnect()` with one tab. Yes: in Connect body it's one tab: `\t\tgo c.retryConnect()`.\n\nComment 3 anchor:\n```\n\t\tjs, err := c.connManager.jetStream()\n\t\tif err != nil {\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n```\nHmm this overlaps with comment 1 anchor lines (js, err := ...). The sliding window match may conflict. Better anchor comment 3 at:\n```\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n\n\t\t\tcontinue\n```\nUnique.\n\nComment 4 anchor:\n```\n\t\t\tc.logger.Errorf(\"failed to connect to NATS server at %v: %v\", c.Config.Server, err)\n\t\t\ttime.Sleep(defaultRetryTimeout)\n```\nUnique to retryConnect (Connect's Errorf is followed by blank line). Good.\n\nComment 5 anchor: `const defaultRetryTimeout = nats.DefaultTimeout`.\n\nComment 6 anchor: `func checkClient(c *Client) error {`.\n\nNow content. Keep concise. Suggest code where useful.\n\nFor comment 1 suggestion: add a mutex around manager fields or use atomic pointer; simplest: guard assignments with a mutex and have readers take RLock. Suggest `c.mu` and note ordering (assign streamManager/subManager before connManager). I'll give a code sketch:\n\n```go\nc.mu.Lock()\nc.streamManager = newStreamManager(js, c.logger)\nc.subManager = newSubscriptionManager(batchSize)\nc.connManager = connManager // publish last so readers never see a connected manager without the rest\nc.mu.Unlock()\n```\nand readers use `c.getConnManager()` etc. That's a big refactor; maybe just describe. Provide suggestion_code minimal.\n\nFor comment 2 suggestion: add a stop channel / context cancelled in Close, and guard against spawning duplicate retry goroutines.\n\nLet me write.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "pkg/gofr/datasource/pubsub/nats/client.go",
+        "content": "`checkClient` was added to `Publish`, `Subscribe` and all stream APIs, but `SubscribeWithHandler` still dereferences `c.connManager` directly. This is now a new panic path: `Connect()` no longer assigns `c.connManager` on failure (`PubSubWrapper.Connect` only logs the error and the app keeps running), so `SubscribeWithHandler` panics on a nil interface instead of returning `errJetStreamNotConfigured` as before. Apply the same guard there.",
+        "existing_code": "func checkClient(c *Client) error {",
+        "start_line": 353,
+        "end_line": 353,
+        "thinking": "Not vendored, so I'll phrase carefully: \"nats.DefaultTimeout is 2s (the connect timeout), vs the previous 10s\".\n\nNow write comments. Ensure existing_code lines match added lines in the diff exactly (with tabs).\n\nComment 1 anchor (added lines in retryConnect):\n```\n\t\tc.connManager = connManager\n\n\t\tjs, err := c.connManager.jetStream()\n```\nIn diff these appear as:\n+\t\tc.connManager = connManager\n+\n+\t\tjs, err := c.connManager.jetStream()\n\nProvide with leading tabs: \"\\t\\tc.connManager = connManager\\n\\n\\t\\tjs, err := c.connManager.jetStream()\".\n\nComment 2 anchor: \"\\t\\tgo c.retryConnect()\" — diff line is `+\tgo c.retryConnect()` with one tab. Yes: in Connect body it's one tab: `\t\tgo c.retryConnect()`.\n\nComment 3 anchor:\n```\n\t\tjs, err := c.connManager.jetStream()\n\t\tif err != nil {\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n```\nHmm this overlaps with comment 1 anchor lines (js, err := ...). The sliding window match may conflict. Better anchor comment 3 at:\n```\n\t\t\ttime.Sleep(defaultRetryTimeout)\n\t\t\tc.logger.Debugf(\"Failed to create jStream context: %v\", err)\n\n\t\t\tcontinue\n```\nUnique.\n\nComment 4 anchor:\n```\n\t\t\tc.logger.Errorf(\"failed to connect to NATS server at %v: %v\", c.Config.Server, err)\n\t\t\ttime.Sleep(defaultRetryTimeout)\n```\nUnique to retryConnect (Connect's Errorf is followed by blank line). Good.\n\nComment 5 anchor: `const defaultRetryTimeout = nats.DefaultTimeout`.\n\nComment 6 anchor: `func checkClient(c *Client) error {`.\n\nNow content. Keep concise. Suggest code where useful.\n\nFor comment 1 suggestion: add a mutex around manager fields or use atomic pointer; simplest: guard assignments with a mutex and have readers take RLock. Suggest `c.mu` and note ordering (assign streamManager/subManager before connManager). I'll give a code sketch:\n\n```go\nc.mu.Lock()\nc.streamManager = newStreamManager(js, c.logger)\nc.subManager = newSubscriptionManager(batchSize)\nc.connManager = connManager // publish last so readers never see a connected manager without the rest\nc.mu.Unlock()\n```\nand readers use `c.getConnManager()` etc. That's a big refactor; maybe just describe. Provide suggestion_code minimal.\n\nFor comment 2 suggestion: add a stop channel / context cancelled in Close, and guard against spawning duplicate retry goroutines.\n\nLet me write.",
+        "category": "bug",
+        "severity": "medium"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "pkg/gofr/datasource/pubsub/nats/client.go",
+          "pkg/gofr/datasource/pubsub/nats/connection_manager.go"
+        ]
+      }
+    ],
+    "session_id": "4899a4b6-5c30-4889-813f-20520296c88d",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "4899a4b6-5c30-4889-813f-20520296c88d",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "468bd1d885a4f397e313fba1ae8a9b4410f79fdb5ea83418b237e6ec7d3b243a"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "ba0316277a22f508ed645951705f53d151552916",
+        "requested_head": "49ab39432cf4892ee84569099b8065dfe45fae92",
+        "resolved_base": "4d679f47e1525868cfeee249f981b18f054a1824",
+        "resolved_head": "49ab39432cf4892ee84569099b8065dfe45fae92",
+        "exact_range": "4d679f47e1525868cfeee249f981b18f054a1824..49ab39432cf4892ee84569099b8065dfe45fae92",
+        "source_artifact_sha256": "ce436363a162718ab8c5f7a703ba89c33257b7c163b753a72c5ebe3387ec3051"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "20229bfc5b46d158c4d25d55871fb29123768f69e6269b6c768c4e2c68e43eb0",
+            "path": "pkg/gofr/datasource/pubsub/nats/connection_manager.go",
+            "fingerprint": "5f5122daaa918452e415330543ba472d5fd0702a6767790b0b1eb36e99fd866b"
+          },
+          {
+            "item_id": "64cc45faddc77f63e09f83f29812ab6ce503ce9ab3f79882640473d1a3ae14be",
+            "path": "pkg/gofr/datasource/pubsub/nats/client.go",
+            "fingerprint": "3e8cb044e19077666e66067b7f4ccce01a9dc13e817f5049f86408942ce7f350"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "20229bfc5b46d158c4d25d55871fb29123768f69e6269b6c768c4e2c68e43eb0",
+            "path": "pkg/gofr/datasource/pubsub/nats/connection_manager.go",
+            "fingerprint": "5f5122daaa918452e415330543ba472d5fd0702a6767790b0b1eb36e99fd866b"
+          },
+          {
+            "item_id": "64cc45faddc77f63e09f83f29812ab6ce503ce9ab3f79882640473d1a3ae14be",
+            "path": "pkg/gofr/datasource/pubsub/nats/client.go",
+            "fingerprint": "3e8cb044e19077666e66067b7f4ccce01a9dc13e817f5049f86408942ce7f350"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "12c38bdbaa843ca9b9164211b4d785ee2a9b366b768cdd6be1b38ed00d4ebabf",
+            "path": "pkg/gofr/datasource/pubsub/nats/connection_manager_test.go",
+            "exclude_reason": "default_path"
+          },
+          {
+            "item_id": "6a445d8d4813a44cf54d3167b066af9e0963695bd9de8cff19929d2fea68afe6",
+            "path": "pkg/gofr/datasource/pubsub/nats/client_test.go",
+            "exclude_reason": "default_path"
+          }
+        ]
+      },
+      "elapsed_ms": 382726
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

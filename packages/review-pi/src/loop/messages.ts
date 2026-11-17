@@ -4,6 +4,7 @@ export function buildInitialUserMessage(
   caseId: string,
   issueDescription: string,
   diff: string,
+  ruleContext?: string,
 ): string {
   // DSH 线语义：判空看 trim，注入看原文（前后空白保留）。
   const description = issueDescription.trim().length > 0 ? issueDescription : "(none)";
@@ -13,6 +14,9 @@ export function buildInitialUserMessage(
     `Case ID: ${caseId}`,
     "Issue description:",
     description,
+    ...(ruleContext !== undefined && ruleContext.trim() !== ""
+      ? ["", "Applicable review rules for this change:", "```rules", ruleContext.trim(), "```"]
+      : []),
     "",
     "Unified diff:",
     "```diff",

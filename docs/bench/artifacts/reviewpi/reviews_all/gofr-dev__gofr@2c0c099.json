@@ -1,0 +1,187 @@
+{
+  "generatedAt": "2026-11-15T03:08:38.871Z",
+  "runId": "20261115_030417_023",
+  "source": "mr",
+  "caseId": "gofr-dev__gofr@2c0c099",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "go.mod",
+      "line": 5,
+      "title": "go 指令降为 1.22.7 同时新增 toolchain go1.23.4，与 CI 的 go-version '1.22' 不一致",
+      "description": "根 go.mod 由 `go 1.22` + `toolchain go1.22.10` 改为 `go 1.22.7` + `toolchain go1.23.4`，ftp/s3 子模块也照此修改（sftp 子模块则被删除）。在 GOTOOLCHAIN=auto（默认）下，任何 go 命令都会按 toolchain 行去下载并使用 go1.23.4，即使 CI 用 setup-go 只安装了 1.22.x；这会让实际编译使用的语言版本与 CI 声明、go 指令三处不一致，并给离线/受限网络环境引入额外下载依赖（下载失败即整个构建失败）。同时 go 指令带上补丁号 1.22.7 会强制使用者至少升级到该补丁版本，对下游模块（ftp、s3 等通过 replace 依赖根模块）形成隐性版本门槛。",
+      "evidence": [
+        "go.mod:3 `go 1.22.7`、go.mod:5 `toolchain go1.23.4`（diff 前为 `go 1.22`、`toolchain go1.22.10`）",
+        ".github/workflows/go.yml:267-269 `uses: actions/setup-go@v4` 且 `go-version: '1.22'`",
+        ".github/workflows/go.yml:293 子模块循环里执行 `go mod tidy` 与 `golangci-lint run`，均会触发 toolchain 解析",
+        "pkg/gofr/datasource/file/ftp/go.mod:3-5 与 pkg/gofr/datasource/file/s3/go.mod 同步改为 go 1.22.7 / toolchain go1.23.4"
+      ],
+      "rule": "PORTABILITY-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 工具链声明不一致（go 指令 / toolchain / CI 版本三方错位）。影响评估：构建实际使用 1.23.4 而 CI 声称 1.22，问题定位困难；离线或代理受限环境（如企业内网 CI）会因 toolchain 下载失败而构建中断；下游模块被强加 1.22.7 最低补丁版本。",
+        "suggestion": "[重构思路] 让三处保持一致：go 指令写 `go 1.22`（不带补丁号）或统一提升到 1.23.x 并同步 CI 的 go-version；toolchain 行仅在需要强制特定版本时保留，并在 CI 中显式 `GOTOOLCHAIN=local` 或让 setup-go 安装与 toolchain 相同的版本。代码示例：`go 1.22` + `toolchain go1.22.10`，CI 中 `go-version-file: go.mod`。",
+        "subcategory": "工具链与构建一致性"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "go.mod",
+      "line": 7,
+      "title": "删除 sftp 子模块 go.mod 后根模块缺少 github.com/pkg/sftp 依赖，根模块无法编译",
+      "description": "本 MR 删除了 pkg/gofr/datasource/file/sftp/go.mod（原模块 gofr.dev/pkg/gofr/datasource/file/sftp 自带 require github.com/pkg/sftp v1.13.6、golang.org/x/crypto、github.com/kr/fs），使该目录并入根模块 gofr.dev；但根 go.mod 的 require 与 indirect 列表中都没有 github.com/pkg/sftp（也没有 github.com/kr/fs），而 sftp 包源码仍直接 import 这两个模块。Go 1.16+ 默认 -mod=readonly，因此 `go build ./...`、`go vet ./...`、根模块 lint 在干净仓库上会以 \"no required module provides package github.com/pkg/sftp\" 失败；即使本地 `go mod tidy` 能自动补上，仓库中提交的 go.mod 与源码不一致也会让任一使用 -mod=readonly 的构建/CI 直接报错。",
+      "evidence": [
+        "pkg/gofr/datasource/file/sftp/fs.go:8 import \"github.com/pkg/sftp\"；:10 import \"golang.org/x/crypto/ssh\"",
+        "pkg/gofr/datasource/file/sftp/go.mod 在 diff 中被整文件删除（原内容含 require github.com/pkg/sftp v1.13.6、golang.org/x/crypto v0.32.0）",
+        "根 go.mod 第 7-48 行 require 与第 50-108 行 indirect 中均无 github.com/pkg/sftp、github.com/kr/fs",
+        "pkg/gofr/datasource/file/sftp/go.sum 在快照中已不存在（review_get_file 返回 not found），仓库根也没有 go.work",
+        "对比：pkg/gofr/datasource/file/ftp/go.mod、pkg/gofr/datasource/file/s3/go.mod 仍保留，仅被修改了 go/toolchain 指令"
+      ],
+      "rule": "BUILD-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 模块边界调整不完整：删除了子模块 go.mod，却未把该子模块的直接依赖提升为根模块 require。影响评估：根模块在 -mod=readonly（默认）下编译失败，CI 的 go mod tidy + golangci-lint 需联网重写 go.mod，本地/离线构建直接红色；发布根模块时会带上一个不自洽的依赖列表。",
+        "suggestion": "[重构思路] 二选一：方案 A（保留独立模块）恢复 pkg/gofr/datasource/file/sftp/go.mod 并在其中维持 pkg/sftp、kr/fs 依赖；方案 B（并入根模块）在根 go.mod 中显式 require github.com/pkg/sftp 与 github.com/kr/fs，并把 golang.org/x/crypto 从 indirect 提升为直接依赖，然后重新生成 go.sum。代码示例：`require ( github.com/pkg/sftp v1.13.6; github.com/kr/fs v0.1.0 )`，随后执行 `go mod tidy && go build ./...` 验证。",
+        "subcategory": "模块依赖一致性"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "安全",
+      "file": "go.mod",
+      "line": 94,
+      "title": "安全相关依赖被降级（golang.org/x/crypto、golang.org/x/net 等），可能回退已修复漏洞",
+      "description": "MR 将 golang.org/x/crypto 从 v0.32.0 降到 v0.31.0、golang.org/x/net 从 v0.34.0 降到 v0.33.0，并把 go.opentelemetry.io/otel 及 sdk/metric、prometheus exporter、google.golang.org/api、protobuf、modernc.org/sqlite、cloud.google.com/go/auth 等一整批依赖回退到更早版本。x/crypto/ssh 与 x/net（HTTP/2、PROXY 协议、idna 等）是框架对外暴露的协议路径依赖（sftp 包直接使用 golang.org/x/crypto/ssh），降级会重新引入升级本意修复的问题；同时这批降级与「回退 any 现代化」无因果关系，更像是把升级提交整体 revert 时的连带结果，需要显式确认。",
+      "evidence": [
+        "go.mod:94 `golang.org/x/crypto v0.31.0 // indirect`（diff 前为 v0.32.0）",
+        "go.mod:95 `golang.org/x/net v0.33.0 // indirect`（diff 前为 v0.34.0）",
+        "diff 中 go.opentelemetry.io/otel 1.34.0→1.33.0、otelhttp 0.59.0→0.58.0、exporters/prometheus 0.56.0→0.55.0、google.golang.org/api 0.217.0→0.216.0、google.golang.org/protobuf 1.36.3→1.36.2、modernc.org/sqlite 1.34.5→1.34.4",
+        "pkg/gofr/datasource/file/sftp/fs.go:10 直接使用 golang.org/x/crypto/ssh，属对外协议实现路径"
+      ],
+      "rule": "SEC-DEP-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 依赖版本回退（含安全敏感库）。影响评估：若被回退的补丁版本包含 CVE 修复（例如 x/crypto、x/net 的安全修复），依赖 gofr 的应用会被动继承漏洞；即使无 CVE，也会丢失上游 bug 修复。由于本 MR 主题是回退 any，这批降级是否有意为之缺乏说明。",
+        "suggestion": "[重构思路] 明确该 MR 的意图边界：仅回退 any→interface{} 的文本变更，依赖版本保持或前进；若确需降级，需在 MR 描述中给出理由并对 x/crypto、x/net 做 CVE 比对（govulncheck）。代码示例：`govulncheck ./...`，并在 go.mod 中恢复 `golang.org/x/crypto v0.32.0`、`golang.org/x/net v0.34.0` 后执行 `go mod tidy && go test ./...`。",
+        "subcategory": "依赖安全"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": ".golangci.yml",
+      "line": 97,
+      "title": "移除 canonicalheader / use-any / usestdlibvars.time-layout 规则，静态防护能力下降",
+      "description": "MR 在 .golangci.yml 中同时删除了 linters-settings.usestdlibvars.time-layout、revive 的 use-any 规则，以及 enable 列表中的 canonicalheader。这三个规则正是本次改动中若干「非机械」字面量修改的来源：移除后，非规范的 HTTP 头名（solr 的 content-type）、非标准的 any 用法混排（仍有大量文件保留 any）以及手写时间格式字符串都不会再被 CI 拦截，后续回归无人把关。lint 配置的回退会长期削弱仓库质量门槛，且与本次大范围回退 any 的行为互相强化。",
+      "evidence": [
+        ".golangci.yml:54-56（diff 删除 usestdlibvars: time-layout: true 三行）",
+        "diff 删除 revive 规则 `- name: use-any`，当前规则列表止于 .golangci.yml:88 `- name: unused-receiver`",
+        "diff 从 linters.enable 中删除 `- canonicalheader`，当前 enable 段 .golangci.yml:94-130 已无该项",
+        "linters.disable-all: true（.golangci.yml:93）意味着被移除的 linter 默认全部关闭"
+      ],
+      "rule": "MAINTAIN-002",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 质量门禁回退（lint 规则被删除）。影响评估：非规范头名、any/interface{} 混排、硬编码格式串等会重新进入主干；本次 MR 自身已产生这类残留（见 request.go、solr.go、logger.go 的改动），说明风险是即时的而非理论的。",
+        "suggestion": "[重构思路] 如确需回退 any→interface{}，应只回退 linters-settings 中与 any 相关的配置，保留 canonicalheader 与 usestdlibvars；若担心引入大量既有告警，先用 `--new-from-rev` / only-new-issues 增量启用。代码示例：`linters: enable: [..., canonicalheader]`；`linters-settings: usestdlibvars: { time-layout: true }`。",
+        "subcategory": "静态检查门禁"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "pkg/gofr/http/request.go",
+      "line": 59,
+      "title": "HTTP 头名字面量被改为非规范大小写形式",
+      "description": "request.go 读取 Content-Type、X-Forwarded-Proto 的键被改成 \"content-type\"、\"X-forwarded-proto\"，apikey_auth.go 读取键改成 \"X-API-KEY\"，solr.go 写入 \"content-type\"。net/http 的 Header.Get/Add 内部会做 MIME 规范化，因此运行期行为不变；但源码中出现了与 HTTP 规范（Content-Type、X-Forwarded-Proto、X-API-Key）不一致的写法，会误导阅读者以为头名大小写敏感，并且与仓库其他位置（如 pkg/gofr/http/middleware 中的 Authorization 等）风格分裂，属于典型的规范性回退。",
+      "evidence": [
+        "pkg/gofr/http/request.go:59 `v := r.req.Header.Get(\"content-type\")`",
+        "pkg/gofr/http/request.go:83 `proto := r.req.Header.Get(\"X-forwarded-proto\")`",
+        "pkg/gofr/http/middleware/apikey_auth.go:31 `authKey := r.Header.Get(\"X-API-KEY\")`",
+        "pkg/gofr/datasource/solr/solr.go:268 `req.Header.Add(\"content-type\", \"application/json\")`",
+        "对应 linter canonicalheader 已在 .golangci.yml 中被移除，失去自动纠偏"
+      ],
+      "rule": "STYLE-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 头名未按规范和 canonical form 书写。影响评估：功能上因 net/http 规范化而无行为差异，但降低可读性与一致性，并使后续无法依靠 canonicalheader 发现真正的头名拼写错误（如把 X-Api-Key 错写成 X-Api-Keys 这类真实 bug 将不再被告警）。",
+        "suggestion": "[重构思路] 恢复规范写法，并优先使用标准库常量而非字面量。代码示例：`v := r.req.Header.Get(\"Content-Type\")`；`proto := r.req.Header.Get(\"X-Forwarded-Proto\")`；`authKey := r.Header.Get(\"X-Api-Key\")`；solr 处 `req.Header.Set(\"Content-Type\", \"application/json\")`（Set 语义也更符合「覆盖而非追加」）。",
+        "subcategory": "HTTP 头规范"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "pkg/gofr/logging/logger.go",
+      "line": 162,
+      "title": "用字面量 \"15:04:05\" 取代 time.TimeOnly，同一格式串重复出现",
+      "description": "prettyPrint 的两个分支都把 time.TimeOnly 替换为硬编码字面量 \"15:04:05\"（值相同，输出无变化）。这属于可维护性回退：丢失了标准库常量的语义命名，同一字面量在两处重复，若以后需要统一时间格式，需要同时改两处且无法被 goconst/mnd 之外的工具提示；同时它正是本 MR 删除 usestdlibvars.time-layout 规则的直接产物，体现了「配置移除 → 代码回退」的连锁反应。",
+      "evidence": [
+        "pkg/gofr/logging/logger.go:162 `e.Time.Format(\"15:04:05\")`（原为 e.Time.Format(time.TimeOnly)）",
+        "pkg/gofr/logging/logger.go:167 同一个字面量再次出现",
+        "diff 同时删除了 .golangci.yml 中 usestdlibvars 的 time-layout: true"
+      ],
+      "rule": "MAINTAIN-004",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 标准库常量被硬编码字面量替代。影响评估：当前输出格式完全一致（time.TimeOnly 值即为 \"15:04:05\"），无功能风险；但可读性和后续统一修改成本上升，且两处重复容易漂移。",
+        "suggestion": "[重构思路] 恢复常量表达，或用包级常量集中定义。代码示例：`const timeFormat = time.TimeOnly`，两处统一改为 `e.Time.Format(timeFormat)`。",
+        "subcategory": "常量使用"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "pkg/gofr/testutil/port.go",
+      "line": 21,
+      "title": "GetFreePort 先关闭监听再返回端口，存在端口被抢占的竞态",
+      "description": "新增的 GetFreePort 通过 net.Listen(\"tcp\", \"localhost:0\") 让内核分配端口，随后立即 Close 并把端口号返回给调用方由其再次 Listen。在 Close 与调用方真正绑定之间存在时间窗口，其他进程（并行测试、CI 上同机其他 job）可能抢占该端口，导致测试偶发 \"address already in use\"。现有 12 处调用点（gofr_test.go、router_test.go、http_server_test.go、external_db_test.go）都在启动真实 HTTP/gRPC 服务前依赖该端口，属于典型 flaky test 来源；此外监听地址是 \"localhost:0\"，可能解析到 ::1，而服务侧若绑定 127.0.0.1 则会出现「端口空闲但目标地址被占用」的不一致。",
+      "evidence": [
+        "pkg/gofr/testutil/port.go:16 `listener, err := net.Listen(\"tcp\", \"localhost:0\")`",
+        "pkg/gofr/testutil/port.go:21-22 `err = listener.Close()` 之后才 `return port`（第 24 行）",
+        "pkg/gofr/testutil/port.go:43-45 一次性申请 http/metrics/grpc 三个端口，三个端口都被释放后才被使用，窗口更长",
+        "既有调用方：pkg/gofr/gofr_test.go:297/359/436/626/679/731、pkg/gofr/http/router_test.go:20/45/80、pkg/gofr/http_server_test.go:23/65、pkg/gofr/external_db_test.go:187 均以该端口作为服务监听端口"
+      ],
+      "rule": "TEST-INFRA-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 端口探测 TOCTOU 竞态（bind-then-close 模式）。影响评估：并发/CI 环境下偶发绑定失败使测试不稳定，排查成本高；一次申请三个端口进一步放大碰撞概率。",
+        "suggestion": "[重构思路] 不要把「探测后释放」当作「保留」：要么由测试自身在拿到 listener 后直接使用该 listener（或把 listener 传给服务启动），要么改为串行化 + 重试，并在失败时按端口未占用重试 N 次；同时统一绑定 127.0.0.1 与服务的监听地址族。代码示例：`func GetFreePort(t *testing.T) int { for i := 0; i < 5; i++ { l, err := net.Listen(\"tcp4\", \"127.0.0.1:0\"); require.NoError(t, err); p := l.Addr().(*net.TCPAddr).Port; _ = l.Close(); return p }; t.Fatal(\"no free port\") }`，并在服务启动失败的测试里做有限重试。",
+        "subcategory": "测试基础设施稳定性"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "examples/using-http-service/main.go",
+      "line": 45,
+      "title": "any→interface{} 回退不彻底，同一文件与仓库内仍残留 any",
+      "description": "本 MR 把绝大多数签名从 any 改为 interface{}，但同一次改动后仍留下混合写法：examples/using-http-service/main.go 的 Handler 签名保持 `(any, error)`，而紧邻的 map 字面量已改成 `map[string]interface{}`；pkg/gofr/http/responder.go 的 response 结构体中 Error/Data 已改 interface{}，但 Metadata 仍是 `map[string]any`、isNil 参数仍是 `any`；pkg/gofr/container/sql_mock.go 的 Select/ExpectSelect 中 `value any` 与 `args ...interface{}` 并存。这种半回退会让读者无法判断仓库约定，也说明本次批量替换缺少统一收尾。",
+      "evidence": [
+        "examples/using-http-service/main.go:45 `func Handler(c *gofr.Context) (any, error) {`（diff 中作为上下文保留未改）",
+        "examples/using-http-service/main.go:48 `catFacts.Get(c, \"fact\", map[string]interface{}{...})`（同一函数内已改为 interface{}）",
+        "pkg/gofr/http/responder.go:95 `Metadata map[string]any` 与第 93/97 行 `Error interface{}`、`Data interface{}` 并存",
+        "pkg/gofr/container/sql_mock.go:30 `value any` 与第 53/144 行 `args ...interface{}` 并存"
+      ],
+      "rule": "STYLE-005",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 批量重写不完整导致风格混排。影响评估：类型层面完全等价、无功能风险；但仓库同时存在 any 与 interface{} 两种写法，后续读者/工具无法形成稳定约定，代码评审时也难以判断哪一种是「正确」写法。",
+        "suggestion": "[重构思路] 明确一次性约定并机械执行：若决定回退到 interface{}，用脚本/gofmt -r 覆盖全仓（含 examples、mock 生成文件），并保留 revive use-any 关闭状态以自洽；若决定保留 any，则回滚本次全部替换。代码示例：`gofmt -r 'interface{} -> any' -l -w ./...`（反向同理），随后 `grep -rn \"interface{}\" --include=*.go | grep -v _test.go` 做残留核查。",
+        "subcategory": "风格一致性"
+      }
+    }
+  ]
+}
