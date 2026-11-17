@@ -1,6 +1,6 @@
 import type { LlmUsage } from "../contracts/llm.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
-import type { OneShotCallSample, OneShotPurpose } from "../shared/one-shot-llm.js";
+import type { OneShotCallSample, OneShotPurpose } from "../provider/one-shot-llm.js";
 
 /**
  * 一次性调用的进程级账本（只给 CLI 收尾日志用，不落盘、不进审计、不改退出码）。

@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { readUtf8Tolerant } from "../codeintel/fs-utils.js";
-import { normalizeDiffPathForRegex } from "./mr-input.js";
+import { parseUnifiedDiff } from "../diff/parse.js";
 
 /**
  * 仓库快照侧别判定（`--repo` 相对本次 diff 停在哪一侧）。
@@ -64,7 +64,7 @@ export async function detectRepoSnapshotSide(
 }
 
 async function detect(input: DetectRepoSnapshotSideInput): Promise<RepoSnapshotSideRecord> {
-  const changes = parseTextFileChanges(input.diff).slice(0, MAX_FILES);
+  const changes = parseUnifiedDiff(input.diff).files.slice(0, MAX_FILES);
   let headVotes = 0;
   let baseVotes = 0;
   let filesChecked = 0;
@@ -242,170 +242,3 @@ function splitLines(source: string): readonly string[] {
   return body.split("\n");
 }
 
-type FileKind = "added" | "deleted" | "modified";
-
-interface ParsedHunk {
-  readonly oldStart: number;
-  readonly newStart: number;
-  /** 旧侧块：context + `-` 行（原样，无前缀） */
-  readonly oldLines: string[];
-  /** 新侧块：context + `+` 行（原样，无前缀） */
-  readonly newLines: string[];
-}
-
-interface ParsedChange {
-  readonly path: string;
-  readonly kind: FileKind;
-  readonly hunks: ParsedHunk[];
-}
-
-const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
-
-/**
- * 把统一 diff 解析为「文件 → 文本 hunk」。只认 `--- `/`+++ `/`@@ ` 与 hunk
- * 体（按头部声明计数游走，消解 `--- x` 类前缀歧义）；二进制 / 仅权限 / 仅
- * 重命名没有 hunk，保留为 hunks 为空的条目（调用方计入 filesWithoutHunks）。
- */
-function parseTextFileChanges(diff: string): ParsedChange[] {
-  const changes: ParsedChange[] = [];
-  const lines = diff.split("\n");
-  let oldPath: string | undefined;
-  let newPath: string | undefined;
-  let gitHeaderPath: string | undefined;
-  let hunks: ParsedHunk[] = [];
-  let hunk: ParsedHunk | undefined;
-  let oldLeft = 0;
-  let newLeft = 0;
-
-  const finishHunk = (): void => {
-    hunk = undefined;
-    oldLeft = 0;
-    newLeft = 0;
-  };
-
-  const finishSection = (): void => {
-    finishHunk();
-    const filePath = newPath ?? oldPath ?? gitHeaderPath;
-    if (filePath !== undefined) {
-      changes.push({ path: filePath, kind: fileKind(oldPath, newPath), hunks });
-    }
-    oldPath = undefined;
-    newPath = undefined;
-    gitHeaderPath = undefined;
-    hunks = [];
-  };
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    if (line.startsWith("diff --git ")) {
-      finishSection();
-      gitHeaderPath = gitHeaderNewPath(line);
-      continue;
-    }
-    if (hunk === undefined && line.startsWith("--- ")) {
-      oldPath = headerPath(line.slice(4));
-      continue;
-    }
-    if (hunk === undefined && line.startsWith("+++ ")) {
-      newPath = headerPath(line.slice(4));
-      continue;
-    }
-    if (hunk === undefined) {
-      const header = HUNK_HEADER.exec(line);
-      if (header === null) {
-        continue;
-      }
-      hunk = {
-        oldStart: Number(header[1]),
-        newStart: Number(header[3]),
-        oldLines: [],
-        newLines: [],
-      };
-      oldLeft = header[2] === undefined ? 1 : Number(header[2]);
-      newLeft = header[4] === undefined ? 1 : Number(header[4]);
-      hunks.push(hunk);
-      continue;
-    }
-
-    if (oldLeft <= 0 && newLeft <= 0) {
-      finishHunk();
-      index -= 1; // 重新按文件头 / hunk 头处理当前行
-      continue;
-    }
-    if (line.startsWith("\\")) {
-      continue; // "\ No newline at end of file"
-    }
-    if (line === "") {
-      // 手写 diff 的空上下文行（git 会写成单个空格）
-      hunk.oldLines.push("");
-      hunk.newLines.push("");
-      oldLeft -= 1;
-      newLeft -= 1;
-      continue;
-    }
-    const prefix = line[0];
-    const content = line.slice(1);
-    if (prefix === " ") {
-      hunk.oldLines.push(content);
-      hunk.newLines.push(content);
-      oldLeft -= 1;
-      newLeft -= 1;
-      continue;
-    }
-    if (prefix === "-") {
-      hunk.oldLines.push(content);
-      oldLeft -= 1;
-      continue;
-    }
-    if (prefix === "+") {
-      hunk.newLines.push(content);
-      newLeft -= 1;
-      continue;
-    }
-    // 结构行出现在体行位置（截断 / 非法 diff）：结束本 hunk，按头部重解析
-    finishHunk();
-    index -= 1;
-  }
-  finishSection();
-  return changes;
-}
-
-function fileKind(oldPath: string | undefined, newPath: string | undefined): FileKind {
-  // 只有 diff --git 头、没有 ---/+++ 的文件块（二进制 / 仅权限）按"修改"处理
-  if (oldPath === undefined && newPath === undefined) {
-    return "modified";
-  }
-  if (oldPath === undefined) {
-    return "added";
-  }
-  if (newPath === undefined) {
-    return "deleted";
-  }
-  return "modified";
-}
-
-/** `diff --git a/x b/x` 的新侧路径（带引号路径按成对引号提取；否则按最后一个 " b/" 切） */
-function gitHeaderNewPath(line: string): string | undefined {
-  const rest = line.slice("diff --git ".length);
-  const quoted = rest.match(/"((?:[^"\\]|\\.)*)"/g);
-  const candidate =
-    quoted !== null && quoted.length >= 2
-      ? quoted[quoted.length - 1]
-      : rest.slice(rest.lastIndexOf(" b/") + 1);
-  if (candidate === undefined || candidate === "") {
-    return undefined;
-  }
-  const normalized = normalizeDiffPathForRegex(candidate);
-  return normalized === "" ? undefined : normalized;
-}
-
-/** 文件头路径：剥时间戳、解 git 引号（含八进制）、去 a/ b/ 前缀；/dev/null → undefined */
-function headerPath(raw: string): string | undefined {
-  const tab = raw.indexOf("\t");
-  const text = (tab >= 0 ? raw.slice(0, tab) : raw).trim();
-  if (text === "" || text === "/dev/null") {
-    return undefined;
-  }
-  const normalized = normalizeDiffPathForRegex(text);
-  return normalized === "" ? undefined : normalized;
-}

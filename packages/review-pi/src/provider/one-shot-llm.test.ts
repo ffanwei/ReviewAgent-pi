@@ -2,10 +2,13 @@ import { expect, test, afterEach } from "vitest";
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { RetryPolicy } from "../shared/llm-retry.js";
-import { setOneShotUsageSink, type OneShotCallSample } from "../shared/one-shot-llm.js";
-import { completeOneShot } from "./one-shot-llm.js";
+import {
+  completeOneShot,
+  setOneShotUsageSink,
+  type OneShotCallSample,
+} from "./one-shot-llm.js";
 
-// ADR-0051：CLI 自有一次性调用（片级报文 / 收尾总结）的重试与分类。
+// ADR-0051：核外一次性调用（片级报文 / 收尾总结）的重试与分类。
 // 纪律：每次尝试独立超时；只有结构化可重试信号才重放；失败收敛为 ok:false，绝不抛出。
 
 const NO_WAIT: RetryPolicy = {

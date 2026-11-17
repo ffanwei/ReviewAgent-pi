@@ -5,9 +5,49 @@ import { fileURLToPath } from "node:url";
 
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
 
-import { MCP_REPORT_EVENT_TYPES, type McpReportEventType } from "../contracts/mcp-report.js";
-import { SUPPORTED_LANGUAGE_IDS } from "../codeintel/language-support.js";
-import { DEFAULT_EXCLUDE_GLOBS } from "../codeintel/scan-defaults.js";
+import { SUPPORTED_LANGUAGE_IDS } from "../contracts/languages.js";
+import { parseMcp, type McpSettings } from "./config-mcp.js";
+import {
+  asObject,
+  asRecordOrUndefined,
+  assertKnownKeys,
+  boolOr,
+  ConfigError,
+  CONFIG_FILE_NAME,
+  describe,
+  isPlainObject,
+  normalizeBaseUrl,
+  optionalInt,
+  optionalObject,
+  optionalString,
+  parseGlobList,
+} from "./config-schema.js";
+import { DEFAULT_LIMITS, parseLimits, type Limits } from "./config-limits.js";
+import { DEFAULT_EXCLUDE_GLOBS } from "./scan-defaults.js";
+
+export { ConfigError, CONFIG_FILE_NAME, modelIdForGateway } from "./config-schema.js";
+export { DEFAULT_LIMITS } from "./config-limits.js";
+export type {
+  ArchiveLimits,
+  BoundaryLimits,
+  ConfidenceLimits,
+  FindingScopeLimits,
+  Limits,
+  LoopLimits,
+  MicroLimits,
+  MrFilterLimits,
+  RetryLimits,
+  SeverityLimits,
+  SplitLimits,
+  TestFileLimits,
+  TimeoutLimits,
+} from "./config-limits.js";
+export type {
+  McpReportBatchSettings,
+  McpReportSettings,
+  McpServerSettings,
+  McpSettings,
+} from "./config-mcp.js";
 
 /**
  * 用户级运行配置（ADR-0025）：`~/.PiAgent/PiAgent.jsonc`（JSONC）。
@@ -22,7 +62,6 @@ import { DEFAULT_EXCLUDE_GLOBS } from "../codeintel/scan-defaults.js";
 
 export const CONFIG_VERSION = 1;
 export const CONFIG_DIR_NAME = ".PiAgent";
-export const CONFIG_FILE_NAME = "PiAgent.jsonc";
 /** 官方直连 base URL（与 review-llm `DEEPSEEK_API_BASE_URL` 同值；两处刻意不互相 import） */
 export const OFFICIAL_REVIEWER_BASE_URL = "https://api.deepseek.com";
 /** 网关档缺省输出预算（官方直连不发 max_tokens；网关不发则继承请求默认值，实测 2048 会截断） */
@@ -68,227 +107,6 @@ export function isOfficialReviewerBaseUrl(baseUrl: string | null | undefined): b
   }
   return canonicalBaseUrl(raw) === canonicalBaseUrl(OFFICIAL_REVIEWER_BASE_URL);
 }
-
-/** 配置错误：带键路径的人话，供 CLI 直接打印（不落堆栈） */
-export class ConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ConfigError";
-  }
-}
-
-export interface TimeoutLimits {
-  readonly skillPassMs: number;
-  readonly skillBashMs: number;
-  readonly ruleSkillExtractMs: number;
-  readonly ripgrepMs: number;
-  readonly probeHealthMs: number;
-  readonly probeModelMs: number;
-  readonly reviewTurnMs: number;
-  readonly oneShotMs: number;
-}
-
-/**
- * LLM 调用重试（ADR-0051）：`maxAttempts` 一律是**总尝试次数（含首次）**。
- *
- * 分工：
- * - Agent 内会话（主检视回合 / 规则 Skill 会话）用 `reviewTurnAttempts` +
- *   `maxRetryAfterMs` → pi-ai `maxRetries` / `maxRetryDelayMs`；
- * - 核外一次性调用（片级报文 / 收尾总结）用 `oneShotAttempts`；
- * - smoke 探针缺省**不重试**（`smokeAttempts = 1`），要重试须显式配置；
- * - **流中断重放**（ADR-0077）：`streamAttempts` 是**一次逻辑流请求的总尝试次数**
- *   （含首次），`streamReplayBudgetMs` 是重放总墙钟预算（含退避，0 = 不设上限）。
- *   它叠在 `reviewTurnAttempts` 之上：后者管「请求建立」，前者管「流已开始后断开」。
- *
- * `baseDelayMs` / `maxDelayMs` 只作用于核外一次性调用与流中断重放；Agent 层
- * 建连重试的退避由 pi-ai 自身固定（0.5s→8s），本仓不 fork 上游、只透传次数与超时。
- */
-export interface RetryLimits {
-  readonly maxAttempts: number;
-  readonly baseDelayMs: number;
-  readonly maxDelayMs: number;
-  readonly maxRetryAfterMs: number;
-  readonly reviewTurnAttempts: number;
-  readonly oneShotAttempts: number;
-  readonly smokeAttempts: number;
-  /** 一次逻辑流请求的总尝试次数（含首次）；1 = 不重放，13 = 1 次首次 + 12 次重放 */
-  readonly streamAttempts: number;
-  /** 流中断重放的总墙钟预算（毫秒；从首次尝试发出起算、含退避）；0 = 不设上限 */
-  readonly streamReplayBudgetMs: number;
-}
-
-/** 检视循环上限（ADR-0046） */
-export interface LoopLimits {
-  /**
-   * 最大轮次（一轮 = 六阶段完整一遍）。**最后一轮强制 complete**：
-   * 模型说「还要再审」也不再开新轮，本轮产出即最终结果——轮次上限是成本线，
-   * 不是失败，不产生 `MAX_ROUNDS_REACHED` 截断。
-   */
-  readonly maxRounds: number;
-}
-
-/**
- * 中文 tips 的置信度过滤（ADR-0052）：`confidence < min` 的检视意见不进入
- * `reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`。英文 findings 不受影响。
- * 取值 0–1，缺省 0.5（= 过滤 Low 档）；`0` = 不过滤，`1` = 只保留满置信。
- */
-export interface ConfidenceLimits {
-  readonly min: number;
-}
-
-/**
- * 中文 tips / MCP 上报的严重级过滤：`severity` 低于 min 的检视意见不进入
- * `reviews_tips_zh.json` 与 `mrReviewResult.reviewTips`。英文 findings / stdout
- * / 审计 findings 不受影响。取值 P0–P3，缺省 P3（= 不过滤）。
- */
-export interface SeverityLimits {
-  readonly min: "P0" | "P1" | "P2" | "P3";
-}
-
-/**
- * 测试文件检视开关：`skip = true`（缺省）时，`run/mr-input.ts` 在检视输入阶段
- * 按文件块整块剔除测试文件；`false` 时原样保留。影响的是**检视输入本身**
- * （findings / tips / MCP 上报同时生效），与 `limits.severity` / `limits.confidence`
- * 的输出侧过滤不同。
- */
-export interface TestFileLimits {
-  readonly skip: boolean;
-}
-
-/**
- * 按 glob 跳过检视（ADR-0069）与按正则限定/排除检视范围（ADR-0078）。
- * 命中的文件块在**检视输入阶段**整块剔除，不进 diff / findings / 中文 tips /
- * MCP 意见；但它们仍是「变更过的文件」，收尾按 ADR-0068 补一条空
- * `reviewTips` 的 `mrReviewResult`。
- *
- * `excludeGlobs` 匹配对象是 diff 里的仓库相对 POSIX 路径，大小写不敏感；
- * 不含 `/` 的 glob 只比文件名（`*.md` 与 `**\/*.md` 等价）。空数组 = 不排除。
- *
- * `includeRegex` / `excludeRegex` 是正则（大小写敏感，匹配前做 git 引号归一化）；
- * `includeRegex` 非空 = 白名单（命中者越过全部启发式过滤），`excludeRegex`
- * 优先于 `includeRegex`。空数组 = 该维度不生效。CLI `--include` / `--exclude`
- * 出现时整体替换对应维度（ADR-0078）。
- */
-export interface MrFilterLimits {
-  readonly excludeGlobs: readonly string[];
-  readonly includeRegex: readonly string[];
-  readonly excludeRegex: readonly string[];
-}
-
-/**
- * 非 diff 区域过滤：`enabled = true`（缺省）时，候选拦截链只保留落在本遍
- * diff 变更 hunk 内（或距 hunk 边界不超过 `contextLines` 行）的检视意见；
- * 文件不在本遍 diff 的直接拒绝（`OUT_OF_SCOPE`）。影响 findings / tips /
- * MCP / 审计（被拒候选只留 rejectionCounts），关闭 = 保留同文件远处甚至
- * 未改动文件里的意见。
- */
-export interface FindingScopeLimits {
-  readonly enabled: boolean;
-  readonly contextLines: number;
-}
-
-export interface BoundaryLimits {
-  /** `>` 即降级；null = 该维度不设界 */
-  readonly maxFiles: number | null;
-  readonly maxDiffLines: number | null;
-  /** 过滤后的 diff 字符数上限；超限直接报错，null = 关闭该门禁 */
-  readonly maxDiffChars: number | null;
-}
-
-export interface SplitLimits {
-  /** 是否允许在过滤后 diff 超过 maxShardChars 时自动分片（ADR-0039）；false = 保持单遍旧行为 */
-  readonly enabled: boolean;
-  /** 单片字符目标（不是硬失败线；单块超过它时按整 hunk 截取，ADR-0070） */
-  readonly maxShardChars: number;
-  /** 片数上限（成本护栏）：需要更多片直接报错，由使用方拆 MR */
-  readonly maxShards: number;
-  /** 每片附带的「其他文件变更摘要」字符上限 */
-  readonly contextSummaryChars: number;
-}
-
-export interface ArchiveLimits {
-  readonly maxArchiveBytes: number;
-  readonly maxEntries: number;
-  readonly maxTotalUncompressed: number;
-  readonly maxCompressionRatio: number;
-}
-
-export interface MicroLimits {
-  readonly skillBashOutputChars: number;
-  readonly packageHeadBytes: number;
-  readonly queryEchoChars: number;
-  readonly callChainHops: number;
-  readonly toolNameChars: number;
-  readonly argumentsSummaryChars: number;
-  readonly progressDetailChars: number;
-}
-
-export interface Limits {
-  readonly loop: LoopLimits;
-  readonly timeouts: TimeoutLimits;
-  readonly retry: RetryLimits;
-  readonly confidence: ConfidenceLimits;
-  readonly severity: SeverityLimits;
-  readonly testFiles: TestFileLimits;
-  readonly mrFilter: MrFilterLimits;
-  readonly findingScope: FindingScopeLimits;
-  readonly boundary: BoundaryLimits;
-  readonly split: SplitLimits;
-  readonly archive: ArchiveLimits;
-  readonly micro: MicroLimits;
-}
-
-export const DEFAULT_LIMITS: Limits = {
-  loop: { maxRounds: 3 },
-  timeouts: {
-    skillPassMs: 1_200_000,
-    skillBashMs: 120_000,
-    ruleSkillExtractMs: 30_000,
-    ripgrepMs: 30_000,
-    probeHealthMs: 15_000,
-    probeModelMs: 120_000,
-    reviewTurnMs: 180_000,
-    oneShotMs: 300_000,
-  },
-  retry: {
-    maxAttempts: 3,
-    baseDelayMs: 500,
-    maxDelayMs: 10_000,
-    maxRetryAfterMs: 30_000,
-    reviewTurnAttempts: 3,
-    oneShotAttempts: 3,
-    smokeAttempts: 1,
-    streamAttempts: 13,
-    streamReplayBudgetMs: 120_000,
-  },
-  confidence: { min: 0.5 },
-  severity: { min: "P3" },
-  testFiles: { skip: false },
-  mrFilter: {
-    excludeGlobs: ["**/*.lock", "**/fixtures/**", "**/*.snap"],
-    includeRegex: [],
-    excludeRegex: [],
-  },
-  findingScope: { enabled: true, contextLines: 10 },
-  boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_000_000 },
-  split: { enabled: true, maxShardChars: 120_000, maxShards: 12, contextSummaryChars: 8_000 },
-  archive: {
-    maxArchiveBytes: 8 * 1024 * 1024,
-    maxEntries: 2_000,
-    maxTotalUncompressed: 64 * 1024 * 1024,
-    maxCompressionRatio: 100,
-  },
-  micro: {
-    skillBashOutputChars: 256_000,
-    packageHeadBytes: 8_192,
-    queryEchoChars: 120,
-    callChainHops: 2,
-    toolNameChars: 60,
-    argumentsSummaryChars: 80,
-    progressDetailChars: 120,
-  },
-};
-
 export interface ReviewerSettings {
   /** 秘密；缺席 = null（review/smoke 运行期 fail fast） */
   readonly apiKey: string | null;
@@ -340,64 +158,6 @@ export const DEFAULT_CODEINTEL: CodeIntelSettings = Object.freeze({
   excludeGlobs: DEFAULT_EXCLUDE_GLOBS,
 });
 
-/** MCP 服务端连接（ADR-0037：v1 只有 HTTP 传输；ADR-0037 后续修订加老式 http-sse） */
-export interface McpServerSettings {
-  /**
-   * `"http"` = Streamable HTTP（单端点 POST，响应回在 POST 上——推荐形态）；
-   * `"http-sse"` = 老式 HTTP+SSE（2024-11-05 规范：GET 长连接收 `endpoint`
-   * 事件，消息 POST 到该端点，**响应从 SSE 流回来**）。url 语义随形态：
-   * http 填消息端点；http-sse 填 **SSE 端点**（如 `…/sse`）。
-   */
-  readonly transport: "http" | "http-sse";
-  /**
-   * 握手策略（ADR-0037 后续修订）：
-   * - `"auto"`（缺省）：先试 `initialize`，服务端不认就降级为无状态直调
-   *   （每个 `tools/call` 独立 POST，与 Postman 单发同形）；
-   * - `"required"`：握手失败即视为上报不可用；
-   * - `"off"`：从不发 `initialize`，直调 `tools/call`。
-   */
-  readonly handshake: "auto" | "required" | "off";
-  readonly url: string;
-  /** 秘密：审计 / stdout / stderr / `config show` 一律只报 set | missing */
-  readonly headers: Readonly<Record<string, string>>;
-  readonly timeoutMs: number;
-}
-
-/** 上报批次与背压（数值在装载期已校验过范围） */
-export interface McpReportBatchSettings {
-  readonly maxEvents: number;
-  readonly maxDelayMs: number;
-}
-
-/** 上报策略（ADR-0037 决策 6；业务 tool 开关为 ADR-0045；`tool` 可选化为 ADR-0037 后续修订） */
-export interface McpReportSettings {
-  /** 指向 `servers` 里的名字；装载期校验存在 */
-  readonly server: string;
-  /**
-   * 单槽位接收工具（批量塞进 `events` 数组）。**可选（ADR-0045 后默认形态）**：
-   * 缺席 = 事件通道整体关闭——只调四个业务 tool，不用写占位名与
-   * `include: []`。给了才发进度事件（`include` 缺省四类）。
-   */
-  readonly tool?: string;
-  /**
-   * 业务 tool 开关（ADR-0045）：true = 调 `startTask` / `endTask` /
-   * `saveReviewSummary` / `mrReviewResult`；false = 只发进度事件。
-   * 缺省 true——老 server 没有这批 tool 时可一行关闭（省得日志一片红字）。
-   */
-  readonly task: boolean;
-  readonly include: readonly McpReportEventType[];
-  readonly batch: McpReportBatchSettings;
-  readonly queue: { readonly maxEvents: number };
-  readonly flushTimeoutMs: number;
-  /** findings 出站档位：v1 只支持 none / summary（正文永不出进程） */
-  readonly findings: "none" | "summary";
-}
-
-/** `mcp` 配置块；未配置 = null（零建连、零请求） */
-export interface McpSettings {
-  readonly servers: Readonly<Record<string, McpServerSettings>>;
-  readonly report: McpReportSettings;
-}
 
 export interface ResolvedConfig {
   readonly version: typeof CONFIG_VERSION;
@@ -727,282 +487,6 @@ const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "codeintel", "limi
 const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens", "stripModelPrefix", "modelFallback"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
 const CODEINTEL_KEYS = ["languages", "excludeGlobs"] as const;
-const MCP_KEYS = ["servers", "report"] as const;
-const MCP_SERVER_KEYS = ["transport", "handshake", "url", "headers", "timeoutMs"] as const;
-const MCP_REPORT_KEYS = [
-  "server",
-  "tool",
-  "task",
-  "include",
-  "batch",
-  "queue",
-  "flushTimeoutMs",
-  "findings",
-] as const;
-const MCP_BATCH_KEYS = ["maxEvents", "maxDelayMs"] as const;
-const MCP_QUEUE_KEYS = ["maxEvents"] as const;
-
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro"] as const;
-const LOOP_KEYS = ["maxRounds"] as const;
-const TIMEOUT_KEYS = [
-  "skillPassMs",
-  "skillBashMs",
-  "ruleSkillExtractMs",
-  "ripgrepMs",
-  "probeHealthMs",
-  "probeModelMs",
-  "reviewTurnMs",
-  "oneShotMs",
-] as const;
-const RETRY_KEYS = [
-  "maxAttempts",
-  "baseDelayMs",
-  "maxDelayMs",
-  "maxRetryAfterMs",
-  "reviewTurnAttempts",
-  "oneShotAttempts",
-  "smokeAttempts",
-  "streamAttempts",
-  "streamReplayBudgetMs",
-] as const;
-const CONFIDENCE_KEYS = ["min"] as const;
-const SEVERITY_KEYS = ["min"] as const;
-const TEST_FILES_KEYS = ["skip"] as const;
-const MR_FILTER_KEYS = ["excludeGlobs", "includeRegex", "excludeRegex"] as const;
-const FINDING_SCOPE_KEYS = ["enabled", "contextLines"] as const;
-const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
-const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars"] as const;
-const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
-const MICRO_KEYS = [
-  "skillBashOutputChars",
-  "packageHeadBytes",
-  "queryEchoChars",
-  "callChainHops",
-  "toolNameChars",
-  "argumentsSummaryChars",
-  "progressDetailChars",
-] as const;
-
-/** 已钉死的键名（配置里出现 → 警告「不会被采用」） */
-const PINNED_KEYS = new Set<string>([
-  "maxToolCalls",
-  "toolResultBudgetChars",
-  "temperature",
-  "reasoningEffort",
-  "reasoning_effort",
-  "effort",
-  "envAllowlist",
-  "skillBashEnvAllowlist",
-  "provider",
-  "api",
-  "compat",
-  "thinkingFormat",
-  "maxTokensField",
-]);
-
-function parseLimits(raw: unknown, warnings: string[]): Limits {
-  if (raw === undefined) {
-    return DEFAULT_LIMITS;
-  }
-  const limits = asObject(raw, "limits", warnings);
-  assertKnownKeys(limits, LIMITS_KEYS, "limits", warnings);
-
-  const loopObj = optionalObject(limits.loop, "limits.loop", warnings);
-  assertKnownKeys(loopObj, LOOP_KEYS, "limits.loop", warnings);
-  const loop: LoopLimits = {
-    maxRounds: intOr(loopObj.maxRounds, "limits.loop.maxRounds", 1, 20, DEFAULT_LIMITS.loop.maxRounds),
-  };
-
-  const timeoutsObj = optionalObject(limits.timeouts, "limits.timeouts", warnings);
-  assertKnownKeys(timeoutsObj, TIMEOUT_KEYS, "limits.timeouts", warnings);
-  const timeouts: TimeoutLimits = {
-    skillPassMs: intOr(timeoutsObj.skillPassMs, "limits.timeouts.skillPassMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.skillPassMs),
-    skillBashMs: intOr(timeoutsObj.skillBashMs, "limits.timeouts.skillBashMs", 1_000, 600_000, DEFAULT_LIMITS.timeouts.skillBashMs),
-    ruleSkillExtractMs: intOr(timeoutsObj.ruleSkillExtractMs, "limits.timeouts.ruleSkillExtractMs", 1_000, 600_000, DEFAULT_LIMITS.timeouts.ruleSkillExtractMs),
-    ripgrepMs: intOr(timeoutsObj.ripgrepMs, "limits.timeouts.ripgrepMs", 1_000, 600_000, DEFAULT_LIMITS.timeouts.ripgrepMs),
-    probeHealthMs: intOr(timeoutsObj.probeHealthMs, "limits.timeouts.probeHealthMs", 1_000, 120_000, DEFAULT_LIMITS.timeouts.probeHealthMs),
-    probeModelMs: intOr(timeoutsObj.probeModelMs, "limits.timeouts.probeModelMs", 10_000, 600_000, DEFAULT_LIMITS.timeouts.probeModelMs),
-    reviewTurnMs: intOr(timeoutsObj.reviewTurnMs, "limits.timeouts.reviewTurnMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.reviewTurnMs),
-    oneShotMs: intOr(timeoutsObj.oneShotMs, "limits.timeouts.oneShotMs", 1_000, 3_600_000, DEFAULT_LIMITS.timeouts.oneShotMs),
-  };
-
-  const retryObj = optionalObject(limits.retry, "limits.retry", warnings);
-  assertKnownKeys(retryObj, RETRY_KEYS, "limits.retry", warnings);
-  const maxAttempts = intOr(
-    retryObj.maxAttempts,
-    "limits.retry.maxAttempts",
-    1,
-    10,
-    DEFAULT_LIMITS.retry.maxAttempts,
-  );
-  // 路径级次数缺省继承 maxAttempts；smoke 例外（缺省 1 = 探针不重试），
-  // 只有显式 smokeAttempts 才改变探针行为。
-  const inheritedAttempts = (key: keyof RetryLimits, raw: unknown): number =>
-    intOr(raw, `limits.retry.${key}`, 1, 10, maxAttempts);
-  const retry: RetryLimits = {
-    maxAttempts,
-    baseDelayMs: intOr(retryObj.baseDelayMs, "limits.retry.baseDelayMs", 0, 60_000, DEFAULT_LIMITS.retry.baseDelayMs),
-    maxDelayMs: intOr(retryObj.maxDelayMs, "limits.retry.maxDelayMs", 0, 600_000, DEFAULT_LIMITS.retry.maxDelayMs),
-    maxRetryAfterMs: intOr(retryObj.maxRetryAfterMs, "limits.retry.maxRetryAfterMs", 0, 600_000, DEFAULT_LIMITS.retry.maxRetryAfterMs),
-    reviewTurnAttempts: inheritedAttempts("reviewTurnAttempts", retryObj.reviewTurnAttempts),
-    oneShotAttempts: inheritedAttempts("oneShotAttempts", retryObj.oneShotAttempts),
-    smokeAttempts: intOr(
-      retryObj.smokeAttempts,
-      "limits.retry.smokeAttempts",
-      1,
-      10,
-      DEFAULT_LIMITS.retry.smokeAttempts,
-    ),
-    // 流中断重放（ADR-0077）：独立于建连次数；13 = 1 次首次 + 12 次重放
-    streamAttempts: intOr(
-      retryObj.streamAttempts,
-      "limits.retry.streamAttempts",
-      1,
-      100,
-      DEFAULT_LIMITS.retry.streamAttempts,
-    ),
-    streamReplayBudgetMs: intOr(
-      retryObj.streamReplayBudgetMs,
-      "limits.retry.streamReplayBudgetMs",
-      0,
-      3_600_000,
-      DEFAULT_LIMITS.retry.streamReplayBudgetMs,
-    ),
-  };
-
-
-  const confidenceObj = optionalObject(limits.confidence, "limits.confidence", warnings);
-  assertKnownKeys(confidenceObj, CONFIDENCE_KEYS, "limits.confidence", warnings);
-  const confidence: ConfidenceLimits = {
-    min: numberOr(
-      confidenceObj.min,
-      "limits.confidence.min",
-      0,
-      1,
-      DEFAULT_LIMITS.confidence.min,
-    ),
-  };
-
-  const severityObj = optionalObject(limits.severity, "limits.severity", warnings);
-  assertKnownKeys(severityObj, SEVERITY_KEYS, "limits.severity", warnings);
-  const severity: SeverityLimits = {
-    min: severityOr(severityObj.min, "limits.severity.min", DEFAULT_LIMITS.severity.min),
-  };
-
-  const testFilesObj = optionalObject(limits.testFiles, "limits.testFiles", warnings);
-  assertKnownKeys(testFilesObj, TEST_FILES_KEYS, "limits.testFiles", warnings);
-  const testFiles: TestFileLimits = {
-    skip: boolOr(testFilesObj.skip, "limits.testFiles.skip", DEFAULT_LIMITS.testFiles.skip),
-  };
-
-  const mrFilterObj = optionalObject(limits.mrFilter, "limits.mrFilter", warnings);
-  assertKnownKeys(mrFilterObj, MR_FILTER_KEYS, "limits.mrFilter", warnings);
-  const mrFilter: MrFilterLimits = {
-    excludeGlobs: parseGlobList(
-      mrFilterObj.excludeGlobs,
-      "limits.mrFilter.excludeGlobs",
-      DEFAULT_LIMITS.mrFilter.excludeGlobs,
-    ),
-    includeRegex: parseRegexList(
-      mrFilterObj.includeRegex,
-      "limits.mrFilter.includeRegex",
-      DEFAULT_LIMITS.mrFilter.includeRegex,
-    ),
-    excludeRegex: parseRegexList(
-      mrFilterObj.excludeRegex,
-      "limits.mrFilter.excludeRegex",
-      DEFAULT_LIMITS.mrFilter.excludeRegex,
-    ),
-  };
-
-  const findingScopeObj = optionalObject(limits.findingScope, "limits.findingScope", warnings);
-  assertKnownKeys(findingScopeObj, FINDING_SCOPE_KEYS, "limits.findingScope", warnings);
-  const findingScope: FindingScopeLimits = {
-    enabled: boolOr(
-      findingScopeObj.enabled,
-      "limits.findingScope.enabled",
-      DEFAULT_LIMITS.findingScope.enabled,
-    ),
-    contextLines: intOr(
-      findingScopeObj.contextLines,
-      "limits.findingScope.contextLines",
-      0,
-      2_000,
-      DEFAULT_LIMITS.findingScope.contextLines,
-    ),
-  };
-
-  const boundaryObj = optionalObject(limits.boundary, "limits.boundary", warnings);
-  assertKnownKeys(boundaryObj, BOUNDARY_KEYS, "limits.boundary", warnings);
-  const maxFiles =
-    optionalInt(boundaryObj.maxFiles, "limits.boundary.maxFiles", {
-      min: 1,
-      max: 10_000,
-      nullable: true,
-    }) ?? DEFAULT_LIMITS.boundary.maxFiles;
-  const maxDiffLines =
-    optionalInt(boundaryObj.maxDiffLines, "limits.boundary.maxDiffLines", {
-      min: 1,
-      max: 1_000_000,
-      nullable: true,
-    }) ?? DEFAULT_LIMITS.boundary.maxDiffLines;
-  const boundary: BoundaryLimits = {
-    maxFiles: boundaryObj.maxFiles === null ? null : maxFiles,
-    maxDiffLines: boundaryObj.maxDiffLines === null ? null : maxDiffLines,
-    maxDiffChars:
-      boundaryObj.maxDiffChars === null
-        ? null
-        : (optionalInt(boundaryObj.maxDiffChars, "limits.boundary.maxDiffChars", {
-            min: 1_000,
-            max: 100_000_000,
-            nullable: true,
-          }) ?? DEFAULT_LIMITS.boundary.maxDiffChars),
-  };
-
-  const splitObj = optionalObject(limits.split, "limits.split", warnings);
-  assertKnownKeys(splitObj, SPLIT_KEYS, "limits.split", warnings);
-  const split: SplitLimits = {
-    enabled: boolOr(splitObj.enabled, "limits.split.enabled", DEFAULT_LIMITS.split.enabled),
-    maxShardChars: intOr(
-      splitObj.maxShardChars,
-      "limits.split.maxShardChars",
-      10_000,
-      100_000_000,
-      DEFAULT_LIMITS.split.maxShardChars,
-    ),
-    maxShards: intOr(splitObj.maxShards, "limits.split.maxShards", 1, 64, DEFAULT_LIMITS.split.maxShards),
-    contextSummaryChars: intOr(
-      splitObj.contextSummaryChars,
-      "limits.split.contextSummaryChars",
-      1_000,
-      64_000,
-      DEFAULT_LIMITS.split.contextSummaryChars,
-    ),
-  };
-
-  const archiveObj = optionalObject(limits.archive, "limits.archive", warnings);
-  assertKnownKeys(archiveObj, ARCHIVE_KEYS, "limits.archive", warnings);
-  const archive: ArchiveLimits = {
-    maxArchiveBytes: intOr(archiveObj.maxArchiveBytes, "limits.archive.maxArchiveBytes", 1, 1_000_000_000, DEFAULT_LIMITS.archive.maxArchiveBytes),
-    maxEntries: intOr(archiveObj.maxEntries, "limits.archive.maxEntries", 1, 100_000, DEFAULT_LIMITS.archive.maxEntries),
-    maxTotalUncompressed: intOr(archiveObj.maxTotalUncompressed, "limits.archive.maxTotalUncompressed", 1, 10_000_000_000, DEFAULT_LIMITS.archive.maxTotalUncompressed),
-    maxCompressionRatio: intOr(archiveObj.maxCompressionRatio, "limits.archive.maxCompressionRatio", 1, 10_000, DEFAULT_LIMITS.archive.maxCompressionRatio),
-  };
-
-  const microObj = optionalObject(limits.micro, "limits.micro", warnings);
-  assertKnownKeys(microObj, MICRO_KEYS, "limits.micro", warnings);
-  const micro: MicroLimits = {
-    skillBashOutputChars: intOr(microObj.skillBashOutputChars, "limits.micro.skillBashOutputChars", 1, 10_000_000, DEFAULT_LIMITS.micro.skillBashOutputChars),
-    packageHeadBytes: intOr(microObj.packageHeadBytes, "limits.micro.packageHeadBytes", 1, 1_048_576, DEFAULT_LIMITS.micro.packageHeadBytes),
-    queryEchoChars: intOr(microObj.queryEchoChars, "limits.micro.queryEchoChars", 1, 10_000, DEFAULT_LIMITS.micro.queryEchoChars),
-    callChainHops: intOr(microObj.callChainHops, "limits.micro.callChainHops", 1, 3, DEFAULT_LIMITS.micro.callChainHops),
-    toolNameChars: intOr(microObj.toolNameChars, "limits.micro.toolNameChars", 1, 10_000, DEFAULT_LIMITS.micro.toolNameChars),
-    argumentsSummaryChars: intOr(microObj.argumentsSummaryChars, "limits.micro.argumentsSummaryChars", 1, 10_000, DEFAULT_LIMITS.micro.argumentsSummaryChars),
-    progressDetailChars: intOr(microObj.progressDetailChars, "limits.micro.progressDetailChars", 1, 10_000, DEFAULT_LIMITS.micro.progressDetailChars),
-  };
-
-  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, archive, micro };
-}
 
 // ---------------------------------------------------------------------------
 // 代码智能语言开关（ADR-0040）
@@ -1020,74 +504,6 @@ function parseCodeIntel(raw: unknown, warnings: string[]): CodeIntelSettings {
 /** `codeintel.excludeGlobs`：非空字符串数组；去重保序；空数组 = 不排除 */
 function parseExcludeGlobs(value: unknown): readonly string[] {
   return parseGlobList(value, "codeintel.excludeGlobs", DEFAULT_CODEINTEL.excludeGlobs);
-}
-
-/** glob 列表解析（`codeintel.excludeGlobs` 与 `limits.mrFilter.excludeGlobs` 共用） */
-function parseGlobList(
-  value: unknown,
-  label: string,
-  fallback: readonly string[],
-): readonly string[] {
-  if (value === undefined || value === null) {
-    return fallback;
-  }
-  if (!Array.isArray(value)) {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${label} must be an array of glob patterns (got ${describe(value)})`,
-    );
-  }
-  const globs: string[] = [];
-  value.forEach((entry, index) => {
-    if (typeof entry !== "string" || entry.trim() === "") {
-      throw new ConfigError(
-        `${CONFIG_FILE_NAME}: ${label}[${String(index)}] must be a non-empty string (got ${describe(entry)})`,
-      );
-    }
-    const glob = entry.trim();
-    if (!globs.includes(glob)) {
-      globs.push(glob);
-    }
-  });
-  return globs;
-}
-
-/**
- * 正则列表解析（ADR-0078：`limits.mrFilter.includeRegex` / `excludeRegex`）。
- * 与 glob 列表的差别：**不 trim**（首尾空格可能是正则语义的一部分），
- * 但纯空白仍拒绝；逐条 `new RegExp` 试编译，装载期 fail fast；去重保序。
- */
-function parseRegexList(
-  value: unknown,
-  label: string,
-  fallback: readonly string[],
-): readonly string[] {
-  if (value === undefined || value === null) {
-    return fallback;
-  }
-  if (!Array.isArray(value)) {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${label} must be an array of regular expressions (got ${describe(value)})`,
-    );
-  }
-  const patterns: string[] = [];
-  value.forEach((entry, index) => {
-    if (typeof entry !== "string" || entry.trim() === "") {
-      throw new ConfigError(
-        `${CONFIG_FILE_NAME}: ${label}[${String(index)}] must be a non-empty string (got ${describe(entry)})`,
-      );
-    }
-    try {
-      new RegExp(entry);
-    } catch (error) {
-      throw new ConfigError(
-        `${CONFIG_FILE_NAME}: ${label}[${String(index)}] is not a valid regular expression (${error instanceof Error ? error.message : String(error)})`,
-      );
-    }
-    if (!patterns.includes(entry)) {
-      patterns.push(entry);
-    }
-  });
-  return patterns;
 }
 
 /**
@@ -1119,7 +535,7 @@ function parseLanguageSelection(
       );
     }
     const id = entry.trim().toLowerCase();
-    if (!SUPPORTED_LANGUAGE_IDS.includes(id)) {
+    if (!(SUPPORTED_LANGUAGE_IDS as readonly string[]).includes(id)) {
       warnings.push(
         `PiAgent.jsonc: codeintel.languages 里的 "${id}" 当前版本未实现，已跳过（已实现：${SUPPORTED_LANGUAGE_IDS.join(", ")}）`,
       );
@@ -1136,178 +552,6 @@ function parseLanguageSelection(
 // MCP 上报（ADR-0037）
 // ---------------------------------------------------------------------------
 
-/** 出站事件类型合法值（单一源：`contracts/mcp-report.ts`） */
-const MCP_EVENT_TYPES: ReadonlySet<string> = new Set(MCP_REPORT_EVENT_TYPES);
-
-/** 缺省上报事件集：`tool.*` / `skill.*` 频率最高、对机器流水价值最低，默认不发 */
-const DEFAULT_MCP_INCLUDE: readonly McpReportEventType[] = [
-  "run.start",
-  "run.end",
-  "phase",
-  "request.end",
-];
-
-/**
- * `mcp` 块：未配置（或只有 servers 没有 report）= null，不是错误。
- * 有 report 但配置不自洽 = ConfigError（启动期 fail fast，不进主链）。
- */
-function parseMcp(raw: unknown, warnings: string[]): McpSettings | null {
-  if (raw === undefined || raw === null) {
-    return null;
-  }
-  const mcp = asObject(raw, "mcp", warnings);
-  assertKnownKeys(mcp, MCP_KEYS, "mcp", warnings);
-  if (mcp.report === undefined || mcp.report === null) {
-    return null;
-  }
-
-  const serversObj = optionalObject(mcp.servers, "mcp.servers", warnings);
-  const servers: Record<string, McpServerSettings> = {};
-  for (const [name, entry] of Object.entries(serversObj)) {
-    if (name.trim() === "") {
-      throw new ConfigError(`${CONFIG_FILE_NAME}: mcp.servers keys must be non-empty server names`);
-    }
-    servers[name] = parseMcpServer(name, entry, warnings);
-  }
-
-  const reportObj = asObject(mcp.report, "mcp.report", warnings);
-  assertKnownKeys(reportObj, MCP_REPORT_KEYS, "mcp.report", warnings);
-  const server = requiredNonEmptyString(reportObj.server, "mcp.report.server");
-  // tool 可选（ADR-0045 后默认形态）：缺席 = 事件通道关闭，只调四个业务 tool。
-  // 给了就必须是非空字符串（空串 = 用法错误，不是「关」）。
-  const tool =
-    reportObj.tool === undefined || reportObj.tool === null
-      ? undefined
-      : requiredNonEmptyString(reportObj.tool, "mcp.report.tool");
-  if (servers[server] === undefined) {
-    const known = Object.keys(servers);
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: mcp.report.server must name a configured server (got ${JSON.stringify(server)}; ` +
-        `${known.length === 0 ? "mcp.servers is empty" : `known: ${known.join(", ")}`})`,
-    );
-  }
-  // 业务 tool 开关（ADR-0045）：缺省 true（要业务上报就真调；老 server 一行关闭）
-  const task = boolOr(reportObj.task, "mcp.report.task", true);
-  const include = parseMcpInclude(reportObj.include);
-
-  const batchObj = optionalObject(reportObj.batch, "mcp.report.batch", warnings);
-  assertKnownKeys(batchObj, MCP_BATCH_KEYS, "mcp.report.batch", warnings);
-  const batch: McpReportBatchSettings = {
-    maxEvents: intOr(batchObj.maxEvents, "mcp.report.batch.maxEvents", 1, 1_000, 50),
-    maxDelayMs: intOr(batchObj.maxDelayMs, "mcp.report.batch.maxDelayMs", 0, 600_000, 2_000),
-  };
-
-  const queueObj = optionalObject(reportObj.queue, "mcp.report.queue", warnings);
-  assertKnownKeys(queueObj, MCP_QUEUE_KEYS, "mcp.report.queue", warnings);
-  const queue = {
-    maxEvents: intOr(queueObj.maxEvents, "mcp.report.queue.maxEvents", 1, 100_000, 1_000),
-  };
-
-  const flushTimeoutMs = intOr(reportObj.flushTimeoutMs, "mcp.report.flushTimeoutMs", 0, 600_000, 5_000);
-
-  const findingsRaw = optionalString(reportObj.findings, "mcp.report.findings")?.trim() ?? "summary";
-  if (findingsRaw !== "none" && findingsRaw !== "summary") {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: mcp.report.findings must be "none" or "summary" (got ${JSON.stringify(findingsRaw)}; ` +
-        `finding 正文永不出进程，要正文请读 reviews_en.json)`,
-    );
-  }
-
-  return {
-    servers,
-    report: {
-      server,
-      ...(tool !== undefined ? { tool } : {}),
-      task,
-      include,
-      batch,
-      queue,
-      flushTimeoutMs,
-      findings: findingsRaw,
-    },
-  };
-}
-
-function parseMcpServer(name: string, raw: unknown, warnings: string[]): McpServerSettings {
-  const path = `mcp.servers.${name}`;
-  const obj = asObject(raw, path, warnings);
-  assertKnownKeys(obj, MCP_SERVER_KEYS, path, warnings);
-
-  const transport = optionalString(obj.transport, `${path}.transport`)?.trim() ?? "http";
-  if (transport !== "http" && transport !== "http-sse") {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${path}.transport must be "http" (Streamable HTTP，单端点 POST) ` +
-        `or "http-sse" (老式 HTTP+SSE，GET 长连接 + endpoint 事件；got ${JSON.stringify(transport)}；stdio 不在范围内)`,
-    );
-  }
-
-  const handshakeRaw = optionalString(obj.handshake, `${path}.handshake`)?.trim() ?? "auto";
-  if (handshakeRaw !== "auto" && handshakeRaw !== "required" && handshakeRaw !== "off") {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${path}.handshake must be "auto" ` +
-        `(握手失败降级为无状态直调，缺省), "required" ` +
-        `(握手失败即上报不可用) or "off" (从不握手，直接 tools/call；got ${JSON.stringify(handshakeRaw)})`,
-    );
-  }
-  const handshake = handshakeRaw;
-
-  const url = requiredNonEmptyString(obj.url, `${path}.url`);
-  if (!/^https?:\/\//.test(url)) {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${path}.url must start with http:// or https:// (got ${JSON.stringify(url)})`,
-    );
-  }
-
-  const headersObj = optionalObject(obj.headers, `${path}.headers`, warnings);
-  const headers: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headersObj)) {
-    if (typeof value !== "string") {
-      throw new ConfigError(`${CONFIG_FILE_NAME}: ${path}.headers.${key} must be a string`);
-    }
-    headers[key] = value;
-  }
-
-  return {
-    transport,
-    handshake,
-    url,
-    headers,
-    timeoutMs: intOr(obj.timeoutMs, `${path}.timeoutMs`, 100, 600_000, 60_000),
-  };
-}
-
-/** `include` 缺省 = 稳定默认集；未知类型 fail fast（不静默忽略拼错的类型） */
-function parseMcpInclude(raw: unknown): readonly McpReportEventType[] {
-  if (raw === undefined || raw === null) {
-    return DEFAULT_MCP_INCLUDE;
-  }
-  if (!Array.isArray(raw)) {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: mcp.report.include must be an array of event types (got ${describe(raw)})`,
-    );
-  }
-  const include: McpReportEventType[] = [];
-  raw.forEach((entry, index) => {
-    if (typeof entry !== "string" || !MCP_EVENT_TYPES.has(entry)) {
-      throw new ConfigError(
-        `${CONFIG_FILE_NAME}: mcp.report.include[${String(index)}] must be one of ` +
-          `${MCP_REPORT_EVENT_TYPES.join(", ")} (got ${JSON.stringify(entry)})`,
-      );
-    }
-    if (!include.includes(entry as McpReportEventType)) {
-      include.push(entry as McpReportEventType);
-    }
-  });
-  return include;
-}
-
-function requiredNonEmptyString(value: unknown, path: string): string {
-  const text = optionalString(value, path)?.trim();
-  if (text === undefined || text === "") {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} is required (non-empty string)`);
-  }
-  return text;
-}
 
 // ---------------------------------------------------------------------------
 // 扁平值 / 摘要
@@ -1422,173 +666,6 @@ function recordOverrides(root: Record<string, unknown>, overridden: Set<string>)
 // 基础校验工具
 // ---------------------------------------------------------------------------
 
-function asObject(value: unknown, path: string, warnings: string[]): Record<string, unknown> {
-  void warnings;
-  if (!isPlainObject(value)) {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path === "" ? "root" : path} must be an object`);
-  }
-  return value;
-}
-
-function optionalObject(value: unknown, path: string, warnings: string[]): Record<string, unknown> {
-  if (value === undefined) {
-    return {};
-  }
-  return asObject(value, path, warnings);
-}
-
-function asRecordOrUndefined(value: unknown): Record<string, unknown> | undefined {
-  return isPlainObject(value) ? value : undefined;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function assertKnownKeys(
-  obj: Record<string, unknown>,
-  allowed: readonly string[],
-  path: string,
-  warnings: string[],
-): void {
-  for (const key of Object.keys(obj)) {
-    if (allowed.includes(key)) {
-      continue;
-    }
-    const full = path === "" ? key : `${path}.${key}`;
-    if (PINNED_KEYS.has(key)) {
-      warnings.push(`PiAgent.jsonc: ${full} 已钉死（pinned），不会被采用`);
-      continue;
-    }
-    warnings.push(`PiAgent.jsonc: unknown key ${full}${nearestHint(key, allowed)}`);
-  }
-}
-
-function optionalString(value: unknown, path: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (typeof value !== "string") {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be a string (got ${typeof value})`);
-  }
-  return value;
-}
-
-function optionalInt(
-  value: unknown,
-  path: string,
-  bounds: { readonly min: number; readonly max: number; readonly nullable: boolean },
-): number | null | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (value === null) {
-    if (!bounds.nullable) {
-      throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be an integer (null is not allowed)`);
-    }
-    return null;
-  }
-  if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be an integer (got ${describe(value)})`);
-  }
-  if (value < bounds.min || value > bounds.max) {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${path} must be in ${String(bounds.min)}…${String(bounds.max)} (got ${String(value)})`,
-    );
-  }
-  return value;
-}
-
-/** 必填的「有值则校验，无值用缺省」整数 */
-function intOr(value: unknown, path: string, min: number, max: number, fallback: number): number {
-  const parsed = optionalInt(value, path, { min, max, nullable: false });
-  return parsed === undefined ? fallback : (parsed as number);
-}
-
-/**
- * 必填的「有值则校验，无值用缺省」有限小数（0–1 这类比例值；非有限数 /
- * 非数字 / 越界一律 fail fast，不把 "0.5" 当 0.5）。
- */
-function numberOr(value: unknown, path: string, min: number, max: number, fallback: number): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be a number (got ${describe(value)})`);
-  }
-  if (value < min || value > max) {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${path} must be in ${String(min)}…${String(max)} (got ${String(value)})`,
-    );
-  }
-  return value;
-}
-
-/**
- * 严重级阈值：缺省用 fallback；只接受 P0–P3（大小写不敏感，归一为大写），
- * 其它值 fail fast（不把 "P5" / 4 当合法档位）。
- */
-function severityOr(
-  value: unknown,
-  path: string,
-  fallback: "P0" | "P1" | "P2" | "P3",
-): "P0" | "P1" | "P2" | "P3" {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toUpperCase();
-    if (normalized === "P0" || normalized === "P1" || normalized === "P2" || normalized === "P3") {
-      return normalized;
-    }
-  }
-  throw new ConfigError(
-    `${CONFIG_FILE_NAME}: ${path} must be one of P0, P1, P2, P3 (got ${describe(value)})`,
-  );
-}
-
-/** 布尔开关：缺省用 fallback；出现非布尔值 fail fast（不把 "false" 当 false） */
-function boolOr(value: unknown, path: string, fallback: boolean): boolean {  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value !== "boolean") {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${path} must be true or false (got ${describe(value)})`,
-    );
-  }
-  return value;
-}
-
-/**
- * 模型 id → 网关 wire 字段（`reviewer.stripModelPrefix` 开启时生效）：
- * 剥掉**最后一个 `/` 前的所有**（`pan/deeseek` → `deeseek`、`a/b/c` → `c`）。
- * 无斜杠原样返回；剥完为空（如 `pan/`）也原样返回——发送空 model 是更坏的
- * 失败形态，宁可让网关拒原串并留痕。开关关闭 = 逐字节原样（现行契约）。
- */
-export function modelIdForGateway(rawModelId: string, stripPrefix: boolean): string {
-  if (!stripPrefix) {
-    return rawModelId;
-  }
-  const cut = rawModelId.lastIndexOf("/");
-  return cut >= 0 && cut < rawModelId.length - 1 ? rawModelId.slice(cut + 1) : rawModelId;
-}
-
-function normalizeBaseUrl(value: string, path: string): string {
-  const trimmed = value.trim();
-  if (!/^https?:\/\//.test(trimmed)) {
-    throw new ConfigError(
-      `${CONFIG_FILE_NAME}: ${path} must start with http:// or https:// (got ${JSON.stringify(value)})`,
-    );
-  }
-  return trimmed.replace(/\/+$/, "");
-}
-
-function describe(value: unknown): string {
-  if (value === null) {
-    return "null";
-  }
-  return Array.isArray(value) ? "array" : typeof value;
-}
 
 function offsetToLineColumn(text: string, offset: number): { line: number; column: number } {
   let line = 1;
@@ -1608,37 +685,6 @@ function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
-/** 编辑距离 ≤2 的最近键提示（只用于未知键，不用于禁配字段） */
-function nearestHint(key: string, allowed: readonly string[]): string {
-  let best: string | undefined;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const candidate of allowed) {
-    const distance = editDistance(key.toLowerCase(), candidate.toLowerCase());
-    if (distance < bestDistance) {
-      best = candidate;
-      bestDistance = distance;
-    }
-  }
-  return best !== undefined && bestDistance <= 2 ? ` (did you mean ${best}?)` : "";
-}
-
-function editDistance(a: string, b: string): number {
-  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
-  for (let i = 1; i <= a.length; i += 1) {
-    let diagonal = previous[0] ?? 0;
-    previous[0] = i;
-    for (let j = 1; j <= b.length; j += 1) {
-      const temp = previous[j] ?? 0;
-      previous[j] = Math.min(
-        (previous[j] ?? 0) + 1,
-        (previous[j - 1] ?? 0) + 1,
-        diagonal + (a[i - 1] === b[j - 1] ? 0 : 1),
-      );
-      diagonal = temp;
-    }
-  }
-  return previous[b.length] ?? 0;
-}
 
 function checkPermissions(path: string, platform: NodeJS.Platform, warnings: string[]): void {
   if (platform === "win32") {

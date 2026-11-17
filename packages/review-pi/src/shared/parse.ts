@@ -6,7 +6,7 @@
 // stderr 可见性使用；「不重试 / 有界推进」语义不变。
 
 import type { ModelJsonFailureKind } from "../contracts/run.js";
-import { extractModelJson } from "../shared/model-json.js";
+import { extractModelJson } from "./model-json.js";
 
 export type { ModelJsonFailureKind };
 

@@ -38,7 +38,7 @@ import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { buildReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
-import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
+import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import {
   buildSkillPhase5Override,

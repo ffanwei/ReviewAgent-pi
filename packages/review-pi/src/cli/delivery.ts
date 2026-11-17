@@ -6,7 +6,7 @@ import type { Finding } from "../contracts/finding.js";
 import type { McpReportStats } from "../contracts/mcp-report.js";
 import type { TaskCallResult } from "../contracts/mcp-task.js";
 import type { ModelFallbackRecord, PhaseRecord } from "../contracts/run.js";
-import { runDirPath } from "../experiment/run-record.js";
+import { runDirPath } from "../run/run-record.js";
 import { SESSION_INDEX_VERSION, writeSessionIndex } from "../export/session-index.js";
 import {
   writeLifecycleSessions,

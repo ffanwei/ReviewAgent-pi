@@ -35,7 +35,7 @@ import {
   TRUNCATION_MODEL_LENGTH,
   TRUNCATION_TOOL_BUDGET,
 } from "./constants.js";
-import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "./parse.js";
+import { parseCandidatesReply, parseVerificationReply, type VerificationVerdict } from "../shared/parse.js";
 import { MAX_SALVAGE_INPUT_CHARS, salvageCandidatesReply, salvageVerificationReply } from "./json-salvage.js";
 import {
   CANDIDATES_PHASE_INDEX,
@@ -43,7 +43,7 @@ import {
   PHASE_ORDER,
   buildPhaseInstruction,
 } from "./phases.js";
-import { createRequestProgress } from "./request-progress.js";
+import { createRequestProgress } from "../shared/request-progress.js";
 import type { CandidateRepairFn } from "./candidate-repair.js";
 import { fromWireToolName } from "../tools/registry.js";
 import { buildAgentTools } from "../tools/tool-adapter.js";
@@ -52,7 +52,7 @@ import type { ReviewToolkit } from "../tools/toolkit.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { runSkillPass, type SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
-import { completeOneShot } from "../shared/one-shot-llm.js";
+import { completeOneShot } from "../provider/one-shot-llm.js";
 
 // agentLoop 钩子驱动循环（#6 P3a）：六阶段 + 工具子循环跑在
 // pi-agent-core Agent 上，三个预定缝承载 review 语义——

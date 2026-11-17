@@ -1,27 +1,30 @@
 import type { Parser } from "web-tree-sitter";
-import type { CodeSymbol, SymbolExtractor } from "../zoneb/symbols.js";
+import type { CodeLanguageId } from "../contracts/languages.js";
+import type { CodeSymbol, SymbolExtractor } from "./symbols.js";
 import {
   extractJavaFile as javaExtract,
   extractJavaPackageFromHead as javaPackageFromHead,
-} from "../zoneb/extractors/java.js";
+} from "./extractors/java.js";
 import {
   extractPythonFile as pythonExtract,
   renderPythonSignature as pythonRenderSignature,
-} from "../zoneb/extractors/python.js";
+} from "./extractors/python.js";
 import {
   extractGoFile as goExtract,
   extractGoPackageFromHead as goPackageFromHead,
   renderGoSignature as goRenderSignature,
-} from "../zoneb/extractors/go.js";
+} from "./extractors/go.js";
 import {
   extractCppFile as cppExtract,
   renderCppSignature as cppRenderSignature,
-} from "../zoneb/extractors/cpp.js";
+} from "./extractors/cpp.js";
 import {
   extractTypeScriptFile as typescriptExtract,
   renderTypeScriptSignature as typescriptRenderSignature,
-} from "../zoneb/extractors/typescript.js";
-import { formatSymbolSignature as javaRenderSignature } from "../zoneb/symbols.js";
+} from "./extractors/typescript.js";
+import { formatSymbolSignature as javaRenderSignature } from "./symbols.js";
+
+export { SUPPORTED_LANGUAGE_IDS, type CodeLanguageId } from "../contracts/languages.js";
 
 /**
  * 代码智能语言注册表（ADR-0040 建立、ADR-0041 扩展为「语言能力对象」）。
@@ -30,11 +33,9 @@ import { formatSymbolSignature as javaRenderSignature } from "../zoneb/symbols.j
  * 装载期告警并跳过——宁可响一声，也不让工具静默返回空结果。
  *
  * 本模块只有元数据与纯函数 extractor/renderer：`createParser` 走动态 import，
- * 未启用的语言永不触碰 wasm；`shared/config.ts` 因此可以安全地只引用语言 id
- * 做装载期校验。
+ * 未启用的语言永不触碰 wasm。语言 id 清单在 `contracts/languages.ts`（配置装载期
+ * 只引用那份常量，不依赖本实现层）。
  */
-
-export type CodeLanguageId = "java" | "typescript" | "python" | "go" | "cpp";
 
 /** 一个语言可以有多个语法变体（.ts/.tsx；C/C++ 的 .c/.h 共用 cpp 变体） */
 export interface ParserVariant {
@@ -69,7 +70,7 @@ export interface CodeLanguage {
 /**
  * 已实现符号层的语言（顺序 = 展示顺序）。
  *
- * 新增语言的最小改动：在 `zoneb/extractors/` 补一个 extractor，然后往这里加一条。
+ * 新增语言的最小改动：在 `analysis/extractors/` 补一个 extractor，然后往这里加一条。
  * 调用方（repo-context / rg / tools）不再出现具体扩展名或 Java 假设。
  */
 export const CODE_LANGUAGES: readonly CodeLanguage[] = [
@@ -81,7 +82,7 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
         id: "java",
         globs: ["*.java"],
         createParser: async () => {
-          const module = await import("./java-parser.js");
+          const module = await import("../codeintel/java-parser.js");
           return module.getJavaParser();
         },
       },
@@ -105,7 +106,7 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
         // .js/.mjs/.cjs 用 typescript 语法解析（TS 是 JS 的超集；JSX 例外，走 tsx 变体）
         globs: ["*.ts", "*.mts", "*.cts", "*.js", "*.mjs", "*.cjs"],
         createParser: async () => {
-          const module = await import("./typescript-parser.js");
+          const module = await import("../codeintel/typescript-parser.js");
           return module.getTypeScriptParser();
         },
       },
@@ -113,7 +114,7 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
         id: "tsx",
         globs: ["*.tsx", "*.jsx"],
         createParser: async () => {
-          const module = await import("./typescript-parser.js");
+          const module = await import("../codeintel/typescript-parser.js");
           return module.getTsxParser();
         },
       },
@@ -132,7 +133,7 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
         id: "py",
         globs: ["*.py"],
         createParser: async () => {
-          const module = await import("./python-parser.js");
+          const module = await import("../codeintel/python-parser.js");
           return module.getPythonParser();
         },
       },
@@ -151,7 +152,7 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
         id: "go",
         globs: ["*.go"],
         createParser: async () => {
-          const module = await import("./go-parser.js");
+          const module = await import("../codeintel/go-parser.js");
           return module.getGoParser();
         },
       },
@@ -172,7 +173,7 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
         id: "cpp",
         globs: ["*.c", "*.h", "*.cc", "*.cpp", "*.cxx", "*.hpp", "*.hh", "*.hxx"],
         createParser: async () => {
-          const module = await import("./cpp-parser.js");
+          const module = await import("../codeintel/cpp-parser.js");
           return module.getCppParser();
         },
       },
@@ -186,10 +187,6 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
 ];
 
 // 静态引用 extractor/renderer：只含纯函数与类型（type-only），不会触碰 wasm。
-/** 装载期校验用的已实现语言 id（`codeintel.languages` 的合法条目） */
-export const SUPPORTED_LANGUAGE_IDS: readonly string[] = CODE_LANGUAGES.map(
-  (language) => language.id,
-);
 
 /**
  * 配置取值：`"auto"` = 跟随本版本已实现的解析器（升级后自动扩语言）；

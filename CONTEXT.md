@@ -28,7 +28,7 @@ _Avoid_: 上下文缓存（与前缀缓存混淆）
 _Avoid_: 系统提示词（过窄，仅指角色描述）、Immutable Prefix
 
 **Zone B**:
-同一仓库的多次检视之间字节稳定的中层上下文：repo 身份、Repo Map、Symbol Index、项目规则。
+同一仓库的多次检视之间字节稳定的中层上下文：repo 身份、Repo Map、Symbol Index、项目规则。代码实现集中在 `src/analysis/`（ADR-0098 前的目录名 `zoneb/`）。
 _Avoid_: 半稳定上下文（语义模糊）
 
 **Repo Map**:
@@ -169,7 +169,7 @@ _Avoid_: 截断（预过滤是整块剔除，不是截行）、静默丢弃（�
 _Avoid_: 切 hunk（破坏行号与证据链）、静默截断（截取必须留痕 `shardTruncation`）、并行分片（v1 串行）
 
 **代码智能语言（Code Intelligence Languages）**:
-符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前 `java` / `typescript` / `python` / `go` / `cpp`；数组 = 只启用列出语言；空数组 = 显式关闭）。注册表在 `codeintel/language-support.ts`（id / displayName / 语法变体 / 注释前缀 / extractor / 签名渲染 / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。符号模型语言无关（`CodeSymbol` + `isCallableKind` + `owner`），每语言提取在 `zoneb/extractors/<lang>.ts`；`codeintel.excludeGlobs` 排除依赖与生成物（`--no-ignore` 的确定性要求）。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`（ADR-0040、ADR-0041、ADR-0042）。
+符号 / 引用 / 调用链工具扫描的语言集合，由 `codeintel.languages` 决定（缺省 `"auto"` = 跟随本版本已实现的解析器，当前 `java` / `typescript` / `python` / `go` / `cpp`；数组 = 只启用列出语言；空数组 = 显式关闭）。语言 id 清单在 `contracts/languages.ts`，注册表在 `analysis/language-support.ts`（id / displayName / 语法变体 / 注释前缀 / extractor / 签名渲染 / 懒加载 `createParser`），未实现的条目**装载期告警并丢弃**。符号模型语言无关（`CodeSymbol` + `isCallableKind` + `owner`），每语言提取在 `analysis/extractors/<lang>.ts`；`codeintel.excludeGlobs` 排除依赖与生成物（`--no-ignore` 的确定性要求）。检视本体不限语言——该开关只影响符号级工具；0 源文件时工具返回 `no supported source files detected …`（ADR-0040、ADR-0041、ADR-0042）。
 _Avoid_: 多语言检视（检视本来就全语言）、语言包（实际是解析器注册表）
 
 ### 产物

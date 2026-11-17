@@ -21,7 +21,7 @@ export type {
   RunSnapshot,
   ExperimentSource,
   VerifierMode,
-} from "./experiment/run-record.js";
+} from "./run/run-record.js";
 export type { Finding } from "./contracts/finding.js";
 export type { ModelFallbackRecord, RunResult, ToolCallRecord } from "./contracts/run.js";
 export { resolveReviewerEndpoint, type ReviewerEndpoint } from "./provider/reviewer-endpoint.js";

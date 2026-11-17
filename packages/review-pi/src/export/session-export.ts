@@ -2,7 +2,7 @@ import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/pro
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { OPENCODE_DIR } from "./opencode-compat.js";
-import { runDirPath } from "../experiment/run-record.js";
+import { runDirPath } from "../run/run-record.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { readSessionIndex, tryReadSessionIndex, type SessionIndex } from "./session-index.js";
 

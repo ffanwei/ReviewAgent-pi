@@ -10,10 +10,10 @@ import {
   resolveLanguages,
   type CodeLanguage,
   type LanguageSelection,
-} from "../codeintel/language-support.js";
+} from "./language-support.js";
 import { readUtf8Tolerant, repoRootName, toPosixPath } from "../codeintel/fs-utils.js";
 import { rgListFiles, rgSearchWord } from "../codeintel/rg.js";
-import { DEFAULT_EXCLUDE_GLOBS } from "../codeintel/scan-defaults.js";
+import { DEFAULT_EXCLUDE_GLOBS } from "../shared/scan-defaults.js";
 import type { FileSymbolIndex } from "./symbols.js";
 
 /**

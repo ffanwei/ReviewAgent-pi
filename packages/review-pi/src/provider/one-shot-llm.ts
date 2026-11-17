@@ -10,7 +10,7 @@ import {
   type RetryAttempt,
   type RetryFailure,
   type RetryPolicy,
-} from "./llm-retry.js";
+} from "../shared/llm-retry.js";
 import {
   createTimelineRecorder,
   describeThrownError,
@@ -20,8 +20,8 @@ import {
   type TimelineRecorder,
   type TimelineSite,
 } from "../observability/request-timeline.js";
-import { extractModelJson } from "./model-json.js";
-import { extractChatUsage, type RawWireUsage } from "./wire-usage.js";
+import { extractModelJson } from "../shared/model-json.js";
+import { extractChatUsage, type RawWireUsage } from "../shared/wire-usage.js";
 
 /**
  * 一次性模型调用缝（ADR-0045）：报文 / 总结 / 候选修复生成用的最小 chat completion。

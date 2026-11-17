@@ -4,7 +4,12 @@ import type {
   MrFilterReason,
   MrFilterRecord,
 } from "../contracts/run.js";
+import { blockPathOf, fileBlockRanges, splitFileBlocks } from "../diff/blocks.js";
+import { normalizeDiffPathForRegex } from "../diff/paths.js";
 import { isTestFilePath } from "../shared/test-file.js";
+
+export type { DiffFileBlock } from "../diff/blocks.js";
+export { normalizeDiffPathForRegex } from "../diff/paths.js";
 
 // 大 diff 第一期内核入口处理（预处理过滤 + 体积门）：
 //
@@ -81,56 +86,10 @@ const GENERATED_DIR_SEGMENTS = new Set([
 /** 生成代码的固定文件名后缀（不含 `.min.`——那归 minified） */
 const GENERATED_SUFFIXES = ["_pb2.py", ".pb.go", ".g.dart", ".designer.cs", ".generated.ts", ".generated.java", ".map"];
 
-interface BlockRange {
-  readonly start: number;
-  /** 不含（下一个块起点 / 行数） */
-  readonly end: number;
-}
-
 /**
- * 按文件块切分（返回行区间）。`diff --git` 是 git 统一 diff 的块头；没有它
- * 时，只把「`--- ` + 下一行 `+++ ` + 再下一行 `@@ `」认作文件头对——hunk
- * 体里恰好以 `--- ` 开头的删除行不会因此被误判。
+ * 单个文件块（第二期分片的装箱单位）：类型与切分实现都在 `diff/blocks.ts`
+ * （与预过滤共用同一套块边界）。
  */
-function blockRanges(lines: readonly string[]): readonly BlockRange[] {
-  const gitStarts: number[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    if (lines[index]?.startsWith("diff --git ") === true) {
-      gitStarts.push(index);
-    }
-  }
-  const starts = gitStarts.length > 0 ? gitStarts : headerPairStarts(lines);
-  return starts.map((start, index) => ({ start, end: starts[index + 1] ?? lines.length }));
-}
-
-function headerPairStarts(lines: readonly string[]): readonly number[] {
-  const starts: number[] = [];
-  for (let index = 0; index + 2 < lines.length; index += 1) {
-    if (
-      lines[index]?.startsWith("--- ") === true &&
-      lines[index + 1]?.startsWith("+++ ") === true &&
-      lines[index + 2]?.startsWith("@@ ") === true
-    ) {
-      starts.push(index);
-    }
-  }
-  return starts;
-}
-
-/**
- * 单个文件块（第二期分片的装箱单位）。`text` 只含该块的行；相邻块之间用
- * `"\n"` 连接即逐字节还原输入——分片不得改动任何 hunk 字节。
- */
-export interface DiffFileBlock {
-  /** 块内新侧路径（删除文件退回旧侧；无法识别 / 文件头前置内容时为空串） */
-  readonly path: string;
-  readonly text: string;
-  readonly chars: number;
-  /** 新增行数（`+` 开头且不是 `+++` 文件头） */
-  readonly added: number;
-  /** 删除行数（`-` 开头且不是 `---` 文件头） */
-  readonly removed: number;
-}
 
 /**
  * 按文件块切分（第二期分片复用第一期同一套块边界，不另造解析器）。
@@ -140,26 +99,7 @@ export interface DiffFileBlock {
  *   保证 `blocks.map(b => b.text).join("\n") === diff`；
  * - 空输入或无法识别任何块时返回空数组（调用方按「不可切」处理）。
  */
-export function splitDiffIntoFileBlocks(diff: string): readonly DiffFileBlock[] {
-  if (diff === "") {
-    return [];
-  }
-  const lines = diff.split("\n");
-  const ranges = blockRanges(lines);
-  if (ranges.length === 0) {
-    return [];
-  }
-  const blocks: DiffFileBlock[] = [];
-  const first = ranges[0];
-  if (first !== undefined && first.start > 0) {
-    blocks.push(toDiffFileBlock(lines.slice(0, first.start), ""));
-  }
-  for (const range of ranges) {
-    const block = lines.slice(range.start, range.end);
-    blocks.push(toDiffFileBlock(block, blockPath(block)));
-  }
-  return blocks;
-}
+export { splitFileBlocks as splitDiffIntoFileBlocks } from "../diff/blocks.js";
 
 /**
  * 过滤前 diff 里的**全部**变更文件（repo 相对 POSIX 路径，按 diff 出现顺序去重）。
@@ -175,7 +115,7 @@ export function splitDiffIntoFileBlocks(diff: string): readonly DiffFileBlock[] 
 export function listChangedFilePaths(diff: string): readonly string[] {
   const seen = new Set<string>();
   const paths: string[] = [];
-  for (const block of splitDiffIntoFileBlocks(diff)) {
+  for (const block of splitFileBlocks(diff)) {
     if (block.path === "" || seen.has(block.path)) {
       continue;
     }
@@ -185,42 +125,6 @@ export function listChangedFilePaths(diff: string): readonly string[] {
   return paths;
 }
 
-function toDiffFileBlock(block: readonly string[], path: string): DiffFileBlock {
-  let added = 0;
-  let removed = 0;
-  for (const line of block) {
-    if (line.startsWith("+") && !line.startsWith("+++")) {
-      added += 1;
-    } else if (line.startsWith("-") && !line.startsWith("---")) {
-      removed += 1;
-    }
-  }
-  const text = block.join("\n");
-  return { path, text, chars: text.length, added, removed };
-}
-
-/** 块内新侧路径（删除文件退回旧侧；都没有时退回块头） */
-function blockPath(block: readonly string[]): string {
-  for (const line of block) {
-    if (line.startsWith("+++ ")) {
-      const path = line.slice(4).replace(/^b\//, "").trim();
-      if (path !== "" && path !== "/dev/null") {
-        return path;
-      }
-    }
-  }
-  for (const line of block) {
-    if (line.startsWith("--- ")) {
-      const path = line.slice(4).replace(/^a\//, "").trim();
-      if (path !== "" && path !== "/dev/null") {
-        return path;
-      }
-    }
-  }
-  const header = block[0] ?? "";
-  const matched = /^diff --git a\/(.+) b\/(.+)$/.exec(header);
-  return matched?.[2]?.trim() ?? "";
-}
 
 function isLockfile(basename: string): boolean {
   return LOCKFILE_BASENAMES.has(basename) || basename.endsWith(".lock");
@@ -317,56 +221,9 @@ function matchesExcludeGlob(posixPath: string, globs: readonly CompiledExcludeGl
 }
 
 /**
- * 检视范围正则的匹配对象归一化（ADR-0078）：
- * `--mr-diff` 里非 ASCII / 特殊字符路径会被 git 写成 C 风格引号 + 八进制
- * （`+++ "b/\344\270\255\346\226\207.md"`），而 `--mr-json` 是原样路径。
- * 只给正则层归一化——现有 glob 层（ADR-0069）行为不动。
+ * 检视范围正则的匹配对象归一化（ADR-0078）已下沉到 `diff/paths.ts`；
+ * 本文件顶部 re-export 保持旧导入路径不变。
  */
-export function normalizeDiffPathForRegex(raw: string): string {
-  let normalized = raw.trim();
-  if (normalized.length >= 2 && normalized.startsWith('"') && normalized.endsWith('"')) {
-    normalized = decodeGitQuotedPath(normalized.slice(1, -1));
-  }
-  normalized = normalized.replace(/\\/g, "/");
-  return normalized.replace(/^[ab]\//, "");
-}
-
-/** git C 风格引号内的转义解码（八进制按 UTF-8 字节还原） */
-function decodeGitQuotedPath(value: string): string {
-  const bytes: number[] = [];
-  const simple: Readonly<Record<string, number>> = {
-    t: 0x09,
-    n: 0x0a,
-    r: 0x0d,
-    f: 0x0c,
-    v: 0x0b,
-    a: 0x07,
-    b: 0x08,
-    '"': 0x22,
-    "\\": 0x5c,
-  };
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index] as string;
-    if (char !== "\\") {
-      bytes.push(...Buffer.from(char, "utf8"));
-      continue;
-    }
-    const next = value[index + 1];
-    if (next === undefined) {
-      bytes.push(0x5c);
-      break;
-    }
-    const octal = /^[0-7]{1,3}/.exec(value.slice(index + 1));
-    if (octal !== null) {
-      bytes.push(Number.parseInt(octal[0], 8));
-      index += octal[0].length;
-      continue;
-    }
-    bytes.push(simple[next] ?? next.charCodeAt(0));
-    index += 1;
-  }
-  return Buffer.from(bytes).toString("utf8");
-}
 
 interface CompiledPatternSet {
   readonly set: MrFilterPatternSet;
@@ -481,7 +338,7 @@ export function filterDiffForReview(
     return untouched;
   }
   const lines = diff.split("\n");
-  const ranges = blockRanges(lines);
+  const ranges = fileBlockRanges(lines);
   if (ranges.length === 0) {
     return untouched;
   }
@@ -490,7 +347,7 @@ export function filterDiffForReview(
   const removed = new Set<number>();
   for (const range of ranges) {
     const block = lines.slice(range.start, range.end);
-    const path = blockPath(block);
+    const path = blockPathOf(block);
     if (path === "") {
       continue;
     }

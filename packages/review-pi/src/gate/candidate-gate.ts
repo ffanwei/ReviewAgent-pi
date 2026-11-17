@@ -10,7 +10,7 @@ import type { Finding, FindingTips } from "../contracts/finding.js";
 import type { CandidateRejection } from "../contracts/run.js";
 import { findingContentKey } from "../finding/finding-key.js";
 import { validateFinding } from "../finding/finding-schema.js";
-import type { VerificationVerdict } from "../loop/parse.js";
+import type { VerificationVerdict } from "../shared/parse.js";
 import { describeScopeRejection, type DiffScope } from "./diff-scope.js";
 
 export interface GateInput {

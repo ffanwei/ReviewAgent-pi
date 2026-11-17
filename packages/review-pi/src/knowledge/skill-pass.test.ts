@@ -6,7 +6,7 @@ import { DEFAULT_REVIEW_RUNTIME } from "../shared/review-runtime.js";
 import { createInertContextLedger } from "../tools/ledger.js";
 import { reviewToolSchemas } from "../tools/registry.js";
 import type { ReviewToolkit } from "../tools/toolkit.js";
-import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
+import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import type { RuleSkill } from "./rule-skill.js";
 import { runSkillPass } from "./skill-pass.js";
 

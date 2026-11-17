@@ -32,7 +32,7 @@
  * 并列出该项**实际有哪些键**——方言再次漂移时不用猜。
  */
 
-const FIRST_HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/m;
+import { parseHunkHeader } from "../diff/hunk.js";
 
 /** 新侧路径的字段方言（按优先级；外层与嵌套层共用） */
 const PATH_KEYS = ["new_path", "filename", "file_path", "path"] as const;
@@ -114,11 +114,11 @@ function chunkOf(entry: unknown, index: number, label: string): string | undefin
     return normalized.endsWith("\n") ? normalized : `${normalized}\n`;
   }
 
-  const hunk = FIRST_HUNK.exec(normalized);
+  const hunk = firstHunkHeader(normalized);
   // 新增文件 = `@@ -0,0 `（旧侧从 0 开始且零行）；删除文件 = `+0,0 @@`。
   // 只有新侧路径时两侧路径相同，靠这两个 hunk 头把 `/dev/null` 摆到正确一侧。
-  const isNew = hunk !== null && hunk[1] === "0" && (hunk[2] ?? "1") === "0";
-  const isDeleted = hunk !== null && hunk[3] === "0" && (hunk[4] ?? "1") === "0";
+  const isNew = hunk !== null && hunk.oldStart === 0 && hunk.oldCount === 0;
+  const isDeleted = hunk !== null && hunk.newStart === 0 && hunk.newCount === 0;
 
   const lines = [`diff --git a/${path} b/${path}`];
   if (isNew) {
@@ -190,6 +190,17 @@ function bodyOf(record: Record<string, unknown>, where: string, prefix = ""): st
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 正文里的第一个 hunk 头（用于判定新增 / 删除文件的 `/dev/null` 侧） */
+function firstHunkHeader(text: string): ReturnType<typeof parseHunkHeader> {
+  for (const line of text.split("\n")) {
+    const header = parseHunkHeader(line);
+    if (header !== null) {
+      return header;
+    }
+  }
+  return null;
 }
 
 function keysOf(record: Record<string, unknown>): string {

@@ -9,9 +9,10 @@ import { expect, test } from "vitest";
 
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CORE_DIRS = [
+  "analysis",
   "audit",
   "contracts",
-  "experiment",
+  "diff",
   "export",
   "knowledge",
   "loop",
@@ -19,8 +20,6 @@ const CORE_DIRS = [
   "run",
   "shared",
   "tools",
-  "zonea",
-  "zoneb",
 ] as const;
 
 function listTsFiles(dir: string): string[] {

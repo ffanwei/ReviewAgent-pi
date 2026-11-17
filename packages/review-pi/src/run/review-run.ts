@@ -26,7 +26,7 @@ import {
   writeRunRecord,
   type RunRecord,
   type ShardRecord,
-} from "../experiment/run-record.js";
+} from "../run/run-record.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
 import { loadRuleSkills } from "../knowledge/rule-skill.js";
 import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";

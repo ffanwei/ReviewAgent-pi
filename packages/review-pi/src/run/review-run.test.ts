@@ -12,7 +12,7 @@ import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-run
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
-import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
+import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import { runReview } from "./review-run.js";
 import { NoReviewableFilesError } from "./mr-input.js";
 

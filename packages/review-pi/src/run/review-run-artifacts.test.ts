@@ -14,7 +14,7 @@ import { fakeFetch, type FakeReply } from "../provider/fake-fetch.js";
 import { goldenFixture } from "../testing/golden.js";
 import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
-import { SYSTEM_PROMPT } from "../zonea/system-prompt.js";
+import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import { runReview } from "./review-run.js";
 
 // 落盘产物（ADR-0013）：检视转录 `session-*.json`（`{ info, messages, view }`）

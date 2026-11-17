@@ -5,7 +5,7 @@ import {
   setRequestTimelineSink,
   type RequestTimelineEntry,
 } from "../observability/request-timeline.js";
-import { completeOneShot } from "./one-shot-llm.js";
+import { completeOneShot } from "../provider/one-shot-llm.js";
 
 /** 2xx 响应头已到、正文读到一半断掉（Node fetch 的 `TypeError: terminated`） */
 function brokenBodyResponse(error: unknown): Response {

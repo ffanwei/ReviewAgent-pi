@@ -1,7 +1,7 @@
 import type { ContextLedger } from "../contracts/ledger.js";
 import type { KnowledgeEntry } from "../contracts/knowledge.js";
 import type { MicroLimits } from "../shared/config.js";
-import type { RepoContext } from "../zoneb/repo-context.js";
+import type { RepoContext } from "../analysis/repo-context.js";
 
 /**
  * 工具运行时上下文与执行器形状（#6 P3a）。

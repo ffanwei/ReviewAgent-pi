@@ -1,7 +1,7 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { RetryPolicy } from "../shared/llm-retry.js";
-import { completeOneShot, extractJsonObject } from "../shared/one-shot-llm.js";
+import { completeOneShot, extractJsonObject } from "../provider/one-shot-llm.js";
 
 /**
  * 有界一次性候选修复（P1 步骤 3）：只针对**确定性归一化后仍 schema 非法**的

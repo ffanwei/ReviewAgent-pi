@@ -164,7 +164,7 @@ test("get_symbol：sample 仓库命中形态与零命中留痕", async () => {
   expect(zero).toBe('Symbol "NoSuchSymbol": 0 match(es) across 3 Java file(s)');
 });
 
-test("find_references：声明/使用点形态（与 zoneb 原语同结果）", async () => {
+test("find_references：声明/使用点形态（与 analysis 原语同结果）", async () => {
   const tk = toolkit();
   const result = await tk.executeTool("review.find_references", { symbol: "getBase" });
   expect(result.split("\n")).toEqual([

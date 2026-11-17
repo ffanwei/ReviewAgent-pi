@@ -67,7 +67,7 @@ npx review-pi review --repo . --mr-diff ./change.diff --taskId change-001
 git clone <repo> && cd ReviewAgent-pi
 corepack enable
 pnpm install                  # 装工作区依赖（内核四包从 registry 拉取）
-pnpm build:dist               # 构建 CLI dist + 呈现引擎（见「编译与打包」）
+pnpm build:dist               # 构建 CLI dist（见「编译与打包」）
 
 # C1. 仓内直接跑（不安装，也不需 npm link）
 node packages/review-pi/bin/review-pi.js review --repo <path> --mr-diff <diff> --taskId <id>
@@ -135,10 +135,6 @@ npm rm -g @baize/review-pi           # 卸载（嵌套依赖一并移除）
     "default": "deepseek-v4-flash",
     // 收尾总结模型（ADR-0090 后报文 / tips 零模型调用）：null = 跟随本次检视模型。
     "presentation": null
-  },
-  "presentation": {
-    // legacy 兼容键（ADR-0065 后不再驱动控制台翻译）：builtin = 包内引擎；null = 不配置。
-    "engine": "builtin"
   }
 }
 ```
@@ -299,20 +295,19 @@ review-pi export --taskId change-001  # 不经索引：去 tasks 根下读该任
 
 ```bash
 pnpm install                       # 工作区依赖（内核四包从 registry 拉取）
-pnpm build:dist                    # 发行全量构建：CLI dist + 呈现引擎（= build:presentation）
+pnpm build:dist                    # 发行构建：CLI dist
 pnpm pack:packages                 # 打 tarball → .artifacts/tarballs/baize-review-pi-<version>.tgz
 pnpm verify:pack                   # 安装布局冒烟（只借已装依赖，不发网络、不发布）
 ```
 
 | 命令 | 做什么 | 产物 |
 |---|---|---|
-| `pnpm --filter @baize/review-pi build` | `tsc -p tsconfig.build.json`，编译 CLI 与运行时（排除测试 / `testing` / `e2e`） | `packages/review-pi/dist/`（bin spawn 目标是 `dist/cli/main.js`） |
-| `pnpm build:presentation` | 上一步 + `tsc -p tsconfig.presentation.json` + `node scripts/copy-presentation.mjs` | `packages/review-pi/presentation/`（`.tmp-gen/presentation/*.js` 拷贝） |
-| `pnpm build:dist` | 等于 `build:presentation`，一次建齐发行面 | 以上两者 |
+| `pnpm --filter @baize/review-pi build` | 先清空 `dist/`，再 `tsc -p tsconfig.build.json`，编译 CLI 与运行时（排除测试与 `testing` 夹具） | `packages/review-pi/dist/`（bin spawn 目标是 `dist/cli/main.js`） |
+| `pnpm build:dist` | 等于上一条（当前发行面只有 CLI dist） | `packages/review-pi/dist/` |
 | `pnpm pack:packages` | 清空并重建 `.artifacts/tarballs/`，对 `@baize/review-pi` 执行 `pnpm pack`（触发 `prepack`） | `baize-review-pi-<version>.tgz` |
-| `pnpm verify:pack` | 把 tarball 装进临时布局并冒烟：产物在位、安装形态 bin 定位、`config init/show`、`builtin` 引擎、wasm / ripgrep | 通过 / 失败退出码 |
+| `pnpm verify:pack` | 把 tarball 装进临时布局并冒烟：产物在位、安装形态 bin 定位、`config init/show`、wasm / ripgrep | 通过 / 失败退出码 |
 | `pnpm publish:packages` | `build:dist` + `pnpm -r publish`（显式发布动作） | registry |
-| `pnpm test` / `pnpm --filter @baize/review-pi test` / `pnpm typecheck` | 根包测试 / 内核 + CLI 进程烟测 / 根包类型检查 | — |
+| `pnpm test` / `pnpm --filter @baize/review-pi test` / `pnpm typecheck` | 根包（`tests/`，scripts 工具链）/ 内核 + CLI 进程烟测 / 根包类型检查 | — |
 | `pnpm test:replay` / `pnpm replay:once <场景>` / `pnpm replay:record <场景>` | 离线回放全场景（零网络、零 key）/ 单场景 / 真网关重录 | `replay-runs/`（gitignored） |
 
 验证工具链（都不进产品包）：
@@ -329,16 +324,17 @@ node scripts/e2e-mcp/server.mjs --port 7317
 node scripts/e2e-mcp/run-e2e.mjs
 ```
 
-`prepack`（`scripts/prepare-package.mjs`）会把 9 个必需产物校验一遍、附上第三方声明，并把首行为 CRLF 的 bin 改成 LF；`files` 白名单只含 `dist` / `bin` / `presentation` / `THIRD-PARTY-NOTICES.md` / `README.md`，**不含 `node_modules`**。
+`prepack`（`scripts/prepare-package.mjs`）会把 5 个必需产物校验一遍、附上第三方声明，并把首行为 CRLF 的 bin 改成 LF；`files` 白名单只含 `dist` / `bin` / `THIRD-PARTY-NOTICES.md` / `README.md`，**不含 `node_modules`**。
 
 **新鲜度门**：bin 启动时检查运行时腿——内核四包是 npm 依赖（安装布局只判在位），本包 `dist` 判 mtime（源树新于产物即拒跑），拒跑消息带每腿的修复命令，**不自动重编**。改完源码必须重建。
 
 仓库布局：
 
 ```
-packages/review-pi/       检视运行时 + CLI（六阶段循环、七工具、规则 Skill、审计；ADR-0065 后 CLI 不再装配呈现投影）
+packages/review-pi/       检视运行时 + CLI（六阶段循环、七工具、规则 Skill、审计）
+  src/                    运行时源码（模块划分见 src/ 下的目录）
   testdata/               离线回放 trace、夹具仓、golden 语料、large-mr e2e diff
-src/presentation/         核外呈现层（legacy：中文翻译投影 / 分组意见映射；CLI 不再调用）
+tests/                    根包测试（scripts/ 工具链的纯函数，如回放指标解析）
 .agents/skills/           agent 技能：真实缺陷回放 / 合成缺陷注入（共享执行层在 _shared/）
 repo-diff-skill-result/   diff 检视技能的真跑归档（gitignored）
 scripts/                  构建、打包、安装面验证、离线回放与 e2e harness

@@ -19,8 +19,8 @@ import { buildSkillBashTool, SKILL_BASH_TOOL_NAME } from "../tools/skill-bash.js
 import { buildAgentTools } from "../tools/tool-adapter.js";
 import { withToolProgress } from "../tools/tool-progress.js";
 import type { ReviewToolkit } from "../tools/toolkit.js";
-import { parseCandidatesReply } from "../loop/parse.js";
-import { createRequestProgress } from "../loop/request-progress.js";
+import { parseCandidatesReply } from "../shared/parse.js";
+import { createRequestProgress } from "../shared/request-progress.js";
 import type { RuleSkill } from "./rule-skill.js";
 import { buildSkillPassInvocation } from "./skill-pass-brief.js";
 

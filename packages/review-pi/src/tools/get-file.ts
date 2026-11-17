@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { RepoContext } from "../zoneb/repo-context.js";
+import type { RepoContext } from "../analysis/repo-context.js";
 import { normalizeRepoPath, optionalPositiveIntArg, requireStringArg } from "./args.js";
 import { readThroughLedger } from "./ledger.js";
 import { applyLineBudget } from "./result-budget.js";

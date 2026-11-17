@@ -1,10 +1,10 @@
 import type { ReviewToolHandler, ToolRunContext } from "./toolkit-types.js";import { readThroughLedger } from "./ledger.js";
 import { applyLineBudget } from "./result-budget.js";
 import { requireStringArg } from "./args.js";
-import { noSourceFilesMessage } from "../codeintel/language-support.js";
-import type { CodeSymbol } from "../zoneb/symbols.js";
-import { formatSymbolSignature } from "../zoneb/symbols.js";
-import type { RepoContext } from "../zoneb/repo-context.js";
+import { noSourceFilesMessage } from "../analysis/language-support.js";
+import type { CodeSymbol } from "../analysis/symbols.js";
+import { formatSymbolSignature } from "../analysis/symbols.js";
+import type { RepoContext } from "../analysis/repo-context.js";
 
 /**
  * review.get_symbol（#6 P3a）：签名级符号检索（tree-sitter 零构建）。

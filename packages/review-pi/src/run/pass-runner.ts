@@ -14,7 +14,7 @@ import type {
   ReviewPhase,
   RuleSkillAudit,
 } from "../contracts/run.js";
-import { runDirPath } from "../experiment/run-record.js";
+import { runDirPath } from "../run/run-record.js";
 import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
 import { withRequestTimelineAppend } from "../observability/request-timeline.js";
 import type { ConfigSnapshot } from "../shared/config.js";

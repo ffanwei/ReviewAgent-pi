@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { findingContentKey } from "../finding/finding-key.js";
-import type { VerificationVerdict } from "../loop/parse.js";
+import type { VerificationVerdict } from "../shared/parse.js";
 import { applyCandidateGate } from "./candidate-gate.js";
 import { buildDiffScope } from "./diff-scope.js";
 

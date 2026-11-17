@@ -20,7 +20,7 @@ import type {
 } from "../contracts/run.js";
 
 // RunRecord 投影（测量常量面）：三级键序以 t-series 记录为地面真源
-// （src/experiment/run-record.test.ts 断言）。落盘路径：
+// （src/run/run-record.test.ts 断言）。落盘路径：
 // `<runsRoot>/runs/run.json`（ADR-0032：无 case / rep / source 目录层，
 // `caseId` 只作为数据字段保留）。
 //

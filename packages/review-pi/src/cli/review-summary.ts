@@ -1,10 +1,10 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { RetryPolicy } from "../shared/llm-retry.js";
+import { completeOneShot } from "../provider/one-shot-llm.js";
 import type { Finding } from "../contracts/finding.js";
 import { DEFAULT_GATEWAY_MAX_TOKENS } from "../shared/config.js";
 import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
-import { completeOneShot } from "./one-shot-llm.js";
 
 /** 收尾总结（与候选修复同档）的运行时：呈现档模型 / oneShot 超时与重试 */
 export interface ReportLlmRuntime {

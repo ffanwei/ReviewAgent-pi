@@ -6,7 +6,7 @@ import type { Parser } from "web-tree-sitter";
  * - 签名级：只提取种类 / 名称 / 修饰符 / 返回类型 / 参数表 / 行号，不含函数体；
  * - 确定性：遍历顺序 = AST 文档顺序（tree-sitter 确定），输入相同输出字节相同；
  * - 解析失败（ERROR 节点）：置 parseError 标记，由上层留痕，不静默丢弃；
- * - 每语言的具体提取器在 `zoneb/extractors/<language>.ts`（ADR-0041），
+ * - 每语言的具体提取器在 `analysis/extractors/<language>.ts`（ADR-0041），
  *   本文件只保留跨语言共用的模型与树操作。
  */
 
@@ -93,7 +93,7 @@ export interface FileSymbolIndex {
   readonly invocations: readonly FileInvocation[];
 }
 
-/** 单语言提取器签名（`codeintel/language-support.ts` 的注册项） */
+/** 单语言提取器签名（`analysis/language-support.ts` 的注册项） */
 export type SymbolExtractor = (parser: Parser, file: string, source: string) => FileSymbolIndex;
 
 /** 行区间 [startLine, endLine]（含端点，1-based） */

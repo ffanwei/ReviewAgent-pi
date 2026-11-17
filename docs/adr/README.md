@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0097）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0098）。
 
 ## 记录纪律
 
@@ -94,6 +94,7 @@
 | [ADR-0093](0093-single-source-review-model.md) | 检视模型单源（阶段 1）：忽略 `--model`、配置必须显式 `model.default`；降级键留告警、阶段 2 删除 |
 | [ADR-0096](0096-phase-json-parse-retry.md) | Phase 5/6 JSON 解析失败：离线 salvage + 同会话重试 + 短窗口修复（审计可区分恢复来源） |
 | [ADR-0097](0097-summary-fixed-structure-and-stars.md) | 收尾总结固定结构（总览 / 意见分布 / 速览 / 星级）：数字与星级由代码确定性计算；零意见同模板且不评星级 |
+| [ADR-0098](0098-structural-reorg-diff-and-module-renames.md) | 模块结构重整：统一 `diff/` 解析层（块 / 宽松 / 头扫描 / 严格度量四视图）；解环（运行时依赖图无环）；`zonea`/`zoneb`/`experiment` 等目录改名；根层与构建清理 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 
