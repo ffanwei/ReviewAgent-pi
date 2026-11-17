@@ -1,17 +1,13 @@
 import type { Parser } from "web-tree-sitter";
 import type { CodeLanguageId } from "../contracts/languages.js";
 import type { CodeSymbol, SymbolExtractor } from "./symbols.js";
-import {
-  extractJavaFile as javaExtract,
-  extractJavaPackageFromHead as javaPackageFromHead,
-} from "./extractors/java.js";
+import { extractJavaFile as javaExtract } from "./extractors/java.js";
 import {
   extractPythonFile as pythonExtract,
   renderPythonSignature as pythonRenderSignature,
 } from "./extractors/python.js";
 import {
   extractGoFile as goExtract,
-  extractGoPackageFromHead as goPackageFromHead,
   renderGoSignature as goRenderSignature,
 } from "./extractors/go.js";
 import {
@@ -59,8 +55,6 @@ export interface CodeLanguage {
   readonly commentLinePrefixes: readonly string[];
   /** 是否实现调用点提取（false = Call Chain 显式报「不支持」，而不是空结果） */
   readonly supportsInvocations: boolean;
-  /** 文件头部词法模块名（仅声明型语言提供；undefined = 不做整仓预读） */
-  readonly moduleNameFromHeader?: (head: string) => string;
   /** 符号 / 模块名 / 调用点提取（纯函数，AST 文档顺序） */
   readonly extract: SymbolExtractor;
   /** 签名渲染（各语言自己的形态；见 ADR-0041） */
@@ -90,10 +84,6 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
     moduleLabel: "package",
     commentLinePrefixes: ["//", "/*", "*"],
     supportsInvocations: true,
-    moduleNameFromHeader: (head) => {
-      // 动态 import 会让注册表失去同步性；这里复用 extractor 的词法纯函数
-      return javaPackageFromHead(head);
-    },
     extract: (parser, file, source) => javaExtract(parser, file, source),
     renderSignature: (symbol) => javaRenderSignature(symbol),
   },
@@ -160,7 +150,6 @@ export const CODE_LANGUAGES: readonly CodeLanguage[] = [
     moduleLabel: "package",
     commentLinePrefixes: ["//", "/*", "*"],
     supportsInvocations: true,
-    moduleNameFromHeader: (head) => goPackageFromHead(head),
     extract: (parser, file, source) => goExtract(parser, file, source),
     renderSignature: (symbol) => goRenderSignature(symbol),
   },

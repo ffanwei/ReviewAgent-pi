@@ -1,5 +1,3 @@
-import { open, readdir } from "node:fs/promises";
-import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { Parser } from "web-tree-sitter";
 import {
@@ -11,7 +9,7 @@ import {
   type CodeLanguage,
   type LanguageSelection,
 } from "./language-support.js";
-import { readUtf8Tolerant, repoRootName, toPosixPath } from "../codeintel/fs-utils.js";
+import { readUtf8Tolerant } from "../codeintel/fs-utils.js";
 import { rgListFiles, rgSearchWord } from "../codeintel/rg.js";
 import { DEFAULT_EXCLUDE_GLOBS } from "../shared/scan-defaults.js";
 import type { FileSymbolIndex } from "./symbols.js";
@@ -20,18 +18,12 @@ import type { FileSymbolIndex } from "./symbols.js";
  * 仓库快照上下文（测量常量面）：Zone B 构造的确定性读取层。
  *
  * - 文件清单来自 ripgrep（排序去重，仓库相对 POSIX 路径）；
- * - 模块名用文件头部的词法提取，且**只对声明型语言**执行（Java 的 package）；
- *   Python 的模块名由路径推导、TS 留空——都不需要为每个文件读头部；
  * - 源码读取与符号解析按需 memoize（同一文件只读/解析一次）；
  * - 解析器按「语言变体」懒加载：未启用的语言、未调用符号工具的运行都不碰 wasm。
  */
 
-const PACKAGE_HEAD_BYTES = 8192;
-
 /** 加载参数（ADR-0025：微限与 ripgrep 超时显式穿参；缺省 = 今天的值） */
 export interface LoadRepoContextOptions {
-  /** 文件头读多长（`limits.micro.packageHeadBytes`） */
-  readonly packageHeadBytes?: number;
   /** ripgrep 单次调用超时（`limits.timeouts.ripgrepMs`） */
   readonly ripgrepTimeoutMs?: number;
   /** 代码智能启用哪些语言（`codeintel.languages`，ADR-0040）；缺省 "auto" = 全部已实现语言 */
@@ -43,7 +35,6 @@ export interface LoadRepoContextOptions {
 export interface RepoContext {
   /** 绝对仓库根 */
   readonly repoPath: string;
-  readonly repoName: string;
   /** 启用的代码智能语言（空 = 显式关闭，符号级工具扫 0 个文件） */
   readonly languages: readonly CodeLanguage[];
   /** 仓库里真实存在源文件的启用语言（展示用；顺序 = 注册表顺序） */
@@ -56,10 +47,6 @@ export interface RepoContext {
   readonly languageLabel: string;
   /** 全部已启用语言的源文件（排序、仓库相对 POSIX 路径） */
   readonly sourceFiles: readonly string[];
-  /** 词法模块名（仅声明型语言；默认包为 ""） */
-  readonly moduleNameByFile: ReadonlyMap<string, string>;
-  /** 仓库根下的普通文件名（构建文件探测用） */
-  readonly rootFileNames: readonly string[];
   hasFile(file: string): boolean;
   /** 文件归属的语言（不在启用范围内 → undefined） */
   languageFor(file: string): CodeLanguage | undefined;
@@ -76,7 +63,6 @@ export async function loadRepoContext(
   repoPath: string,
   options: LoadRepoContextOptions = {},
 ): Promise<RepoContext> {
-  const packageHeadBytes = options.packageHeadBytes ?? PACKAGE_HEAD_BYTES;
   const languages = resolveLanguages(options.languages ?? "auto");
   const excludeGlobs = options.excludeGlobs ?? DEFAULT_EXCLUDE_GLOBS;
   const globs = languageGlobs(languages);
@@ -93,18 +79,6 @@ export async function loadRepoContext(
     );
   });
   const detected = detectLanguages(sourceFiles, languages);
-  const moduleNameByFile = new Map<string, string>();
-  for (const file of sourceFiles) {
-    const language = resolveFileLanguage(file, languages)?.language;
-    if (language?.moduleNameFromHeader === undefined) {
-      continue;
-    }
-    moduleNameByFile.set(
-      file,
-      await extractModuleLexically(resolvedRoot, file, packageHeadBytes, language.moduleNameFromHeader),
-    );
-  }
-  const rootFileNames = await listRootFileNames(resolvedRoot);
   const sourceCache = new Map<string, string>();
   const indexCache = new Map<string, FileSymbolIndex>();
   const parserCache = new Map<string, Promise<Parser>>();
@@ -123,15 +97,12 @@ export async function loadRepoContext(
   };
   return {
     repoPath: resolvedRoot,
-    repoName: repoRootName(resolvedRoot),
     languages,
     detectedLanguages: detected,
     languageGlobs: globs,
     excludeGlobs,
     languageLabel: languageLabel(detected),
     sourceFiles,
-    moduleNameByFile,
-    rootFileNames,
     hasFile: (file: string) => sourceFiles.includes(file),
     languageFor: (file: string) => resolveFileLanguage(file, languages)?.language,
     readSource: async (file: string) => {
@@ -169,64 +140,8 @@ export async function loadRepoContext(
   };
 }
 
-/** 文件头部词法模块名（无声明 → ""） */
-async function extractModuleLexically(
-  repoPath: string,
-  file: string,
-  headBytes: number,
-  extractFromHead: (head: string) => string,
-): Promise<string> {
-  const absPath = absoluteFile(repoPath, file);
-  let handle: FileHandle;
-  try {
-    handle = await open(absPath, "r");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`failed to read file "${absPath}": ${message}`, { cause: error });
-  }
-  try {
-    const buffer = Buffer.alloc(headBytes);
-    const { bytesRead } = await handle.read(buffer, 0, headBytes, 0);
-    const head = buffer.subarray(0, bytesRead).toString("utf8");
-    return extractFromHead(head);
-  } finally {
-    await handle.close();
-  }
-}
-
-/** 变更文件不在快照中时的路径推导包名（src/main/java 前缀剥离，否则取目录部分） */
-export function derivePackageFromPath(posixFile: string): string {
-  const knownRoots = ["src/main/java", "src/test/java"];
-  for (const root of knownRoots) {
-    if (posixFile.startsWith(`${root}/`)) {
-      return packageFromDirs(posixFile.slice(root.length + 1).split("/").slice(0, -1));
-    }
-  }
-  const segments = toPosixPath(posixFile).split("/");
-  const javaIndex = segments.lastIndexOf("java");
-  const dirs = javaIndex >= 0 ? segments.slice(javaIndex + 1, -1) : segments.slice(0, -1);
-  return packageFromDirs(dirs);
-}
-
-function packageFromDirs(dirs: readonly string[]): string {
-  return dirs.filter((segment) => segment.length > 0).join(".");
-}
-
 function absoluteFile(repoPath: string, file: string): string {
   return path.join(repoPath, ...file.split("/"));
-}
-
-async function listRootFileNames(repoPath: string): Promise<readonly string[]> {
-  try {
-    const entries = await readdir(repoPath, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name)
-      .sort();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`failed to read repository root "${repoPath}": ${message}`, { cause: error });
-  }
 }
 
 function compareText(a: string, b: string): number {

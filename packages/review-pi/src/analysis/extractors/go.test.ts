@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { getGoParser } from "../../codeintel/go-parser.js";
-import { extractGoFile, extractGoPackageFromHead, renderGoSignature } from "./go.js";
+import { extractGoFile, renderGoSignature } from "./go.js";
 import type { CodeSymbol } from "../symbols.js";
 
 // Go 符号提取器（ADR-0042）：名字级、AST 文档顺序；方法接收者记入 owner；
@@ -146,12 +146,6 @@ test("renderGoSignature：函数 / 方法接收者 / 类型别名 / 字段形态
   expect(renderGoSignature(find(index.symbols, "Counter"))).toBe("type Counter int");
   expect(renderGoSignature(find(index.symbols, "MaxName"))).toBe("const MaxName");
   expect(renderGoSignature(find(index.symbols, "Name"))).toBe("Name string");
-});
-
-test("extractGoPackageFromHead：词法包名（注释/空文件 → 空串）", () => {
-  expect(extractGoPackageFromHead('package service\n\nimport "fmt"')).toBe("service");
-  expect(extractGoPackageFromHead("// package comment\npackage pkg")).toBe("pkg");
-  expect(extractGoPackageFromHead("")).toBe("");
 });
 
 test("extractGoFile：泛型接收者与嵌入字段取基类型名（不把类型参数当类型）", async () => {

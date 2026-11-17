@@ -1,16 +1,14 @@
 import { expect, test } from "vitest";
 import { repoFixturePath } from "../testing/repos.js";
-import { derivePackageFromPath, loadRepoContext } from "./repo-context.js";
+import { loadRepoContext } from "./repo-context.js";
 
 // 仓库快照上下文（测量常量面）：Zone B 构造的确定性读取层。
-// 文件清单来自 ripgrep；模块名走文件头部词法提取（仅声明型语言；无声明 → ""）；
-// 源码读取与符号解析按需 memoize。
+// 文件清单来自 ripgrep；源码读取与符号解析按需 memoize。
 
 const SAMPLE = repoFixturePath("sample");
 
-test("loadRepoContext：清单 / 词法包名 / 根文件名 / 读取与符号索引", async () => {
+test("loadRepoContext：清单 / 语言检测 / 读取与符号索引", async () => {
   const context = await loadRepoContext(SAMPLE);
-  expect(context.repoName).toBe("sample");
   expect(context.languages.map((language) => language.id)).toEqual([
     "java",
     "typescript",
@@ -26,12 +24,6 @@ test("loadRepoContext：清单 / 词法包名 / 根文件名 / 读取与符号�
     "src/main/java/com/example/Beta.java",
     "src/main/java/com/example/Gamma.java",
   ]);
-  expect(context.moduleNameByFile.get("src/main/java/com/example/Alpha.java")).toBe("com.example");
-  expect(context.moduleNameByFile.get("src/main/java/com/example/Beta.java")).toBe("com.example");
-  // Gamma.java 无 package 声明：词法提取兜底为默认包
-  expect(context.moduleNameByFile.get("src/main/java/com/example/Gamma.java")).toBe("");
-  expect(context.rootFileNames).toContain("pom.xml");
-  expect(context.rootFileNames).toContain("README.md");
 
   expect(context.hasFile("src/main/java/com/example/Alpha.java")).toBe(true);
   expect(context.hasFile("src/main/java/com/example/Missing.java")).toBe(false);
@@ -93,9 +85,6 @@ test("loadRepoContext：多语言仓——检测语言、模块名与符号索�
     "cpp",
   ]);
   expect(context.languageLabel).toBe("TypeScript/JavaScript, Python, Go, C/C++");
-  // 只有 Go 做文件头部预读（package 子句）；TS/Python/C++ 都不需要
-  expect(context.moduleNameByFile.size).toBe(1);
-  expect(context.moduleNameByFile.get("service/cmd/main.go")).toBe("main");
   expect(context.languageFor("web/src/app.ts")?.id).toBe("typescript");
   expect(context.languageFor("web/src/view.tsx")?.id).toBe("typescript");
   expect(context.languageFor("service/pkg/util.py")?.id).toBe("python");
@@ -144,13 +133,4 @@ test("candidateFilesForName：rg 预收窄（多语言 glob 下只返回文本�
   const context = await loadRepoContext(repoFixturePath("multilang"));
   await expect(context.candidateFilesForName("renderName")).resolves.toEqual(["web/src/app.ts"]);
   await expect(context.candidateFilesForName("noSuchSymbolAnywhere")).resolves.toEqual([]);
-});
-
-test("derivePackageFromPath：src/main/java 与 src/test/java 前缀剥离，其余按目录推导", () => {
-  expect(derivePackageFromPath("src/main/java/com/example/Alpha.java")).toBe("com.example");
-  expect(derivePackageFromPath("src/test/java/org/x/Y.java")).toBe("org.x");
-  // 嵌套模块：不以 src/main/java 开头 → 取最后一个 java 段之后的目录
-  expect(derivePackageFromPath("core/src/main/java/a/b/C.java")).toBe("a.b");
-  expect(derivePackageFromPath("src/Alpha.java")).toBe("src");
-  expect(derivePackageFromPath("Alpha.java")).toBe("");
 });

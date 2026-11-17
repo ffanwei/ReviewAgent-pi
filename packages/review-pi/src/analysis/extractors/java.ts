@@ -31,10 +31,6 @@ const MODIFIER_KEYWORDS = new Set([
   "default",
 ]);
 
-/** 文件头部的 package 声明（用于廉价词法预读，避免为取包名解析整文件） */
-const JAVA_PACKAGE_PATTERN =
-  /^[ \t]*package[ \t]+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)[ \t]*;/m;
-
 /** 解析一个 Java 文件，产出签名级符号索引 */
 export function extractJavaFile(parser: Parser, file: string, source: string): FileSymbolIndex {
   const tree = parser.parse(source);
@@ -58,11 +54,6 @@ export function extractJavaFile(parser: Parser, file: string, source: string): F
     symbols,
     invocations,
   };
-}
-
-/** 文件头部词法包名（无 package 声明 → 默认包 ""） */
-export function extractJavaPackageFromHead(head: string): string {
-  return JAVA_PACKAGE_PATTERN.exec(head)?.[1] ?? "";
 }
 
 function extractPackageName(root: Node): string {

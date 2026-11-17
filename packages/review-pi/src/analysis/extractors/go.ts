@@ -12,10 +12,8 @@ import { normalizeParams } from "../symbols.js";
  * - 方法接收者记入 `owner`（Go 方法没有类型包裹节点，与 Java/TS 不同）；
  * - 调用点：call_expression（`foo()` 与 `obj.foo()` 都取被调名字）。
  *
- * 模块名 = 文件头部的 `package X`（词法预读与 AST 提取共用同一语义）。
+ * 模块名 = AST 里的 `package X` 子句。
  */
-
-const GO_PACKAGE_PATTERN = /^[ \t]*package[ \t]+([A-Za-z_]\w*)/m;
 
 export function extractGoFile(parser: Parser, file: string, source: string): FileSymbolIndex {
   const tree = parser.parse(source);
@@ -34,11 +32,6 @@ export function extractGoFile(parser: Parser, file: string, source: string): Fil
     symbols,
     invocations: extractInvocations(root),
   };
-}
-
-/** 文件头部词法包名（Go 文件必有 package 子句；缺失 → ""） */
-export function extractGoPackageFromHead(head: string): string {
-  return GO_PACKAGE_PATTERN.exec(head)?.[1] ?? "";
 }
 
 function goPackageName(root: Node): string {

@@ -156,7 +156,6 @@ export interface ArchiveLimits {
 
 export interface MicroLimits {
   readonly skillBashOutputChars: number;
-  readonly packageHeadBytes: number;
   readonly queryEchoChars: number;
   readonly callChainHops: number;
   readonly toolNameChars: number;
@@ -221,7 +220,6 @@ export const DEFAULT_LIMITS: Limits = {
   },
   micro: {
     skillBashOutputChars: 256_000,
-    packageHeadBytes: 8_192,
     queryEchoChars: 120,
     callChainHops: 2,
     toolNameChars: 60,
@@ -264,7 +262,6 @@ const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChar
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
 const MICRO_KEYS = [
   "skillBashOutputChars",
-  "packageHeadBytes",
   "queryEchoChars",
   "callChainHops",
   "toolNameChars",
@@ -466,7 +463,6 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
   assertKnownKeys(microObj, MICRO_KEYS, "limits.micro", warnings);
   const micro: MicroLimits = {
     skillBashOutputChars: intOr(microObj.skillBashOutputChars, "limits.micro.skillBashOutputChars", 1, 10_000_000, DEFAULT_LIMITS.micro.skillBashOutputChars),
-    packageHeadBytes: intOr(microObj.packageHeadBytes, "limits.micro.packageHeadBytes", 1, 1_048_576, DEFAULT_LIMITS.micro.packageHeadBytes),
     queryEchoChars: intOr(microObj.queryEchoChars, "limits.micro.queryEchoChars", 1, 10_000, DEFAULT_LIMITS.micro.queryEchoChars),
     callChainHops: intOr(microObj.callChainHops, "limits.micro.callChainHops", 1, 3, DEFAULT_LIMITS.micro.callChainHops),
     toolNameChars: intOr(microObj.toolNameChars, "limits.micro.toolNameChars", 1, 10_000, DEFAULT_LIMITS.micro.toolNameChars),
