@@ -744,7 +744,12 @@ describe("常量对齐", () => {
     const examplePath = fileURLToPath(
       new URL("../../../../PiAgent.example.jsonc", import.meta.url),
     );
-    expect(readFileSync(examplePath, "utf8")).toBe(DEFAULT_CONFIG_TEMPLATE);
+    // Windows + core.autocrlf=true 会把工作区检出成 CRLF；仓库内容仍是 LF。
+    // 比较前归一检出 EOL，不把平台检出差异当成模板内容差异。
+    const normalizeEol = (text: string): string => text.replace(/\r\n/g, "\n");
+    expect(normalizeEol(readFileSync(examplePath, "utf8"))).toBe(
+      normalizeEol(DEFAULT_CONFIG_TEMPLATE),
+    );
   });
 
   test("模板不含 $schema（ADR-0026：没有发布过的 schema，写一个 example.invalid 只是噪声；读取侧仍容忍旧文件的 $schema）", () => {
