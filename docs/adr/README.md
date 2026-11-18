@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0101）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0102）。
 
 ## 记录纪律
 
@@ -100,6 +100,7 @@
 | [ADR-0099](0099-tool-code-search.md) | 八工具面：新增 `review.search_code`（仓库快照文本检索；字面/正则、glob、每文件+全局上限、预算留痕、Ledger）；取代「工具面零改动」表述 |
 | [ADR-0100](0100-unified-summary-shape-except-diff-too-large.md) | 收尾总结形态统一：除超大 diff 外，零意见 / 零上报 / 无可检视文件都走四节模板（「未发现缺陷」+ ⭐⭐⭐⭐） |
 | [ADR-0101](0101-retry-clean-eof-stream-truncation.md) | 干净 EOF 截断（无 `finish_reason`、body 正常读完）也纳入流重放；排除 content_filter / aborted / 无 start |
+| [ADR-0102](0102-context-window-budget-and-overflow-retry.md) | 上下文窗口预算：`reviewer.contextWindow` + 发送前收窄输出；溢出 400 时减半 `max_tokens` 重试 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

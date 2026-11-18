@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import type { AssistantMessage, Context, FetchFunction, UserMessage } from "@earendil-works/pi-ai";
+import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { setRequestTimelineSink, type RequestTimelineEntry } from "../observability/request-timeline.js";
 import { fakeFetch } from "./fake-fetch.js";
@@ -603,4 +604,177 @@ test("aborted 不重放（ADR-0101 排除项）", async () => {
   expect(calls).toBe(1);
   const requests = requestLines(entries);
   expect(requests.map((entry) => entry.replay)).toEqual([0]);
+});
+
+// ADR-0102：B = 发送前按窗口收窄输出预算；A = 溢出 400 时减半重试。
+
+function maxTokensOf(init: RequestInit | undefined): number | undefined {
+  const raw = init?.body;
+  const text =
+    typeof raw === "string"
+      ? raw
+      : raw instanceof Uint8Array
+        ? new TextDecoder().decode(raw)
+        : undefined;
+  if (text === undefined) {
+    return undefined;
+  }
+  const parsed = JSON.parse(text) as { max_tokens?: number };
+  return parsed.max_tokens;
+}
+
+function overflow400(): Response {
+  return new Response(
+    JSON.stringify({
+      code: "InvalidParameter",
+      type: "invalid_request_error",
+      message:
+        "This model's maximum context length is 204800 tokens. However, you requested 32768 output tokens and your prompt contains at least 172033 input tokens, for a total of at least 204801 tokens. Please reduce the length of the input prompt or the number of requested output tokens. (parameter=input_tokens, value=172033)",
+      param: null,
+    }),
+    { status: 400, headers: { "content-type": "application/json" } },
+  );
+}
+
+test("B：配置 contextWindow 后发送前收窄 max_tokens（ADR-0102）", async () => {
+  const longContext: Context = {
+    systemPrompt: BASE_CONTEXT.systemPrompt,
+    messages: [user("x".repeat(20_000))],
+  };
+  const bodies: (number | undefined)[] = [];
+  const script = fakeFetch([
+    { text: "ok", usage: { promptTokens: 1, completionTokens: 1, cacheReadTokens: 0 } },
+  ]);
+  const fetch: FetchFunction = async (input, init) => {
+    bodies.push(maxTokensOf(init));
+    return script.fetch(input, init);
+  };
+  const streamFn = reviewStreamFn({
+    apiKey: API_KEY,
+    fetch,
+    maxOutputTokens: 32_768,
+    contextWindow: 20_000,
+  });
+  const stream = await streamFn(
+    reviewModelOf(undefined, "https://gw.example.com/v1"),
+    longContext,
+    {},
+  );
+  await stream.result();
+
+  const estimate = estimateContextTokens(longContext);
+  const estimatedInput =
+    estimate.usageTokens + Math.ceil(estimate.trailingTokens * 1.25);
+  const expected = Math.min(32_768, 20_000 - estimatedInput - 4_096);
+  expect(bodies).toEqual([expected]);
+  expect(expected).toBeLessThan(32_768);
+  expect(expected).toBeGreaterThanOrEqual(2_048);
+});
+
+test("B：输入逼近窗口时本地 fail fast，零请求（ADR-0102）", () => {
+  const hugeContext: Context = {
+    systemPrompt: BASE_CONTEXT.systemPrompt,
+    messages: [user("x".repeat(100_000))],
+  };
+  let calls = 0;
+  const streamFn = reviewStreamFn({
+    apiKey: API_KEY,
+    fetch: async () => {
+      calls += 1;
+      throw new Error("should not be called");
+    },
+    maxOutputTokens: 32_768,
+    contextWindow: 10_000,
+  });
+  expect(() =>
+    streamFn(reviewModelOf(undefined, "https://gw.example.com/v1"), hugeContext, {}),
+  ).toThrow(/context window exceeded before request/);
+  expect(calls).toBe(0);
+});
+
+test("A：溢出 400 减半 max_tokens 后重试成功（ADR-0102）", async () => {
+  const entries: RequestTimelineEntry[] = [];
+  setRequestTimelineSink((entry) => entries.push(entry));
+  const bodies: (number | undefined)[] = [];
+  const script = fakeFetch([
+    { text: "recovered", usage: { promptTokens: 3, completionTokens: 2, cacheReadTokens: 0 } },
+  ]);
+  let calls = 0;
+  const fetch: FetchFunction = async (input, init) => {
+    calls += 1;
+    bodies.push(maxTokensOf(init));
+    return calls === 1 ? overflow400() : script.fetch(input, init);
+  };
+  try {
+    const streamFn = reviewStreamFn({
+      apiKey: API_KEY,
+      fetch,
+      maxOutputTokens: 32_768,
+      timeline: { scope: () => ({ site: "main" }) },
+      replay: { attempts: 2, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 },
+    });
+    const stream = await streamFn(
+      reviewModelOf(undefined, "https://gw.example.com/v1"),
+      BASE_CONTEXT,
+      {},
+    );
+    const message = await stream.result();
+    expect(message.stopReason).toBe("stop");
+  } finally {
+    setRequestTimelineSink(null);
+  }
+
+  expect(calls).toBe(2);
+  expect(bodies).toEqual([32_768, 16_384]);
+  const requests = requestLines(entries);
+  expect(requests).toHaveLength(2);
+  expect(requests[0]?.overflowRetry).toBeUndefined();
+  expect(requests[1]?.overflowRetry).toBe(1);
+});
+
+test("A：非溢出 400 不重试（ADR-0102）", async () => {
+  let calls = 0;
+  const fetch: FetchFunction = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: { message: "invalid parameter" } }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const streamFn = reviewStreamFn({
+    apiKey: API_KEY,
+    fetch,
+    maxOutputTokens: 32_768,
+    replay: { attempts: 2, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 },
+  });
+  const stream = await streamFn(
+    reviewModelOf(undefined, "https://gw.example.com/v1"),
+    BASE_CONTEXT,
+    {},
+  );
+  const message = await stream.result();
+  expect(message.stopReason).toBe("error");
+  expect(calls).toBe(1);
+});
+
+test("A：持续溢出最多重试两次后失败（ADR-0102）", async () => {
+  let calls = 0;
+  const fetch: FetchFunction = async () => {
+    calls += 1;
+    return overflow400();
+  };
+  const streamFn = reviewStreamFn({
+    apiKey: API_KEY,
+    fetch,
+    maxOutputTokens: 32_768,
+    replay: { attempts: 2, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 },
+  });
+  const stream = await streamFn(
+    reviewModelOf(undefined, "https://gw.example.com/v1"),
+    BASE_CONTEXT,
+    {},
+  );
+  const message = await stream.result();
+  expect(message.stopReason).toBe("error");
+  expect(calls).toBe(3); // 首次 + 两次降预算重试
 });

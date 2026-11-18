@@ -299,7 +299,7 @@ export async function runAgentReviewLoop(
     apiKey: inputs.apiKey,
     ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
     maxOutputTokens: runtime.maxOutputTokens,
-    // ADR-0051 / ADR-0077：重试、超时与流中断重放的映射只在 policy factory 里。
+    ...(runtime.contextWindow !== undefined ? { contextWindow: runtime.contextWindow } : {}),
     ...reviewTurnStreamOptions(runtime),
     // ADR-0076：请求时间线作用域（阶段 / 轮次在请求发出时求值）
     timeline: {

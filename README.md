@@ -127,6 +127,8 @@ npm rm -g @baize/review-pi           # 卸载（嵌套依赖一并移除）
     "baseUrl": "https://api.deepseek.com",
     // 单次请求输出上限：null = 自动（官方直连不发 max_tokens；网关发 32768）。
     "maxOutputTokens": null,
+    // 模型真实上下文窗口（token）：null = 用内核目录画像；网关实际更小时显式设置。
+    "contextWindow": null,
     // 已废弃（ADR-0093 阶段 1）：本版不生效，保留一个版本以免旧配置突然报错。
     "modelFallback": "off"
   },

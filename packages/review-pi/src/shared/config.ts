@@ -114,6 +114,12 @@ export interface ReviewerSettings {
   /** null = 自动判档（官方直连不发 max_tokens；网关发 DEFAULT_GATEWAY_MAX_TOKENS） */
   readonly maxOutputTokens: number | null;
   /**
+   * 模型真实上下文窗口（token）。null = 使用内核模型目录画像。
+   * 目录外模型 id 会借用 `deepseek-v4-flash` 的 1,000,000，与第三方网关实际窗口
+   * 常不一致；显式设置后，发送前会把输出预算收进窗口余量（ADR-0102）。
+   */
+  readonly contextWindow: number | null;
+  /**
    * 模型 id 前缀剥离（缺省 false = 原样直发）：true 时所有发往网关的模型 id
    * （`--model` / `model.default` / `model.presentation`）剥掉**最后一个 `/` 前
    * 的所有**（`pan/deeseek` → `deeseek`）。给「平台侧传 `厂商/模型` 形态、网关
@@ -408,6 +414,13 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
       max: 1_000_000,
       nullable: true,
     }) ?? null;
+  // 模型真实上下文窗口（ADR-0102）：null = 用内核目录画像（网关可能不准）
+  const contextWindow =
+    optionalInt(reviewerObj.contextWindow, "reviewer.contextWindow", {
+      min: 1_024,
+      max: 100_000_000,
+      nullable: true,
+    }) ?? null;
   // 模型 id 前缀剥离：缺省 false（原样直发的现行契约）；非布尔 fail fast
   const stripModelPrefix = boolOr(reviewerObj.stripModelPrefix, "reviewer.stripModelPrefix", false);
   // 模型降级（ADR-0080）在 ADR-0093 阶段 1 失效：`--model` 的值已不参与，
@@ -437,7 +450,7 @@ function buildConfig({ raw, path, exists, overridden, warnings }: BuildInput): R
 
   const config: ResolvedConfig = {
     version: CONFIG_VERSION,
-    reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens, stripModelPrefix, modelFallback },
+    reviewer: { apiKey: apiKey === "" ? null : apiKey, baseUrl, maxOutputTokens, contextWindow, stripModelPrefix, modelFallback },
     model: { default: modelDefault.trim(), presentation: modelPresentation?.trim() ?? null },
     codeintel,
     limits,
@@ -470,7 +483,7 @@ function buildDefaults({
   void warnings;
   const base: ResolvedConfig = {
     version: CONFIG_VERSION,
-    reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null, stripModelPrefix: false, modelFallback: "off" },
+    reviewer: { apiKey: null, baseUrl: OFFICIAL_REVIEWER_BASE_URL, maxOutputTokens: null, contextWindow: null, stripModelPrefix: false, modelFallback: "off" },
     model: { default: DEFAULT_MODEL_ID, presentation: null },
     codeintel: DEFAULT_CODEINTEL,
     limits: DEFAULT_LIMITS,
@@ -484,7 +497,7 @@ function buildDefaults({
 }
 
 const ROOT_KEYS = ["$schema", "version", "reviewer", "model", "codeintel", "limits", "mcp"] as const;
-const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens", "stripModelPrefix", "modelFallback"] as const;
+const REVIEWER_KEYS = ["apiKey", "baseUrl", "maxOutputTokens", "contextWindow", "stripModelPrefix", "modelFallback"] as const;
 const MODEL_KEYS = ["default", "presentation"] as const;
 const CODEINTEL_KEYS = ["languages", "excludeGlobs"] as const;
 
@@ -561,6 +574,7 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
   const values: Record<string, unknown> = {
     "reviewer.baseUrl": config.reviewer.baseUrl,
     "reviewer.maxOutputTokens": config.reviewer.maxOutputTokens,
+    "reviewer.contextWindow": config.reviewer.contextWindow,
     "reviewer.stripModelPrefix": config.reviewer.stripModelPrefix,
     "reviewer.modelFallback": config.reviewer.modelFallback,
     "model.default": config.model.default,
@@ -770,6 +784,10 @@ export function configTemplate(overrides: ConfigTemplateOverrides = {}): string 
     "baseUrl": ${baseUrl},
     // 单次请求输出上限：null = 自动——官方直连不发 max_tokens；网关发 ${String(DEFAULT_GATEWAY_MAX_TOKENS)}。
     "maxOutputTokens": ${maxOutputTokens},
+    // 模型真实上下文窗口（token）：null = 使用内核模型目录画像。
+    // 目录外 id 借用 deepseek-v4-flash 的 1,000,000，可能与网关实际不符；
+    // 设置后发送前会把输出预算收进窗口余量，并在溢出 400 时降预算重试（ADR-0102）。
+    "contextWindow": null,
     // 模型 id 前缀剥离：true = 发往网关的模型 id 剥掉最后一个 / 前的所有
     // （pan/deeseek → deeseek，覆盖 model.default / model.presentation）。
     // 缺省 false = 原样直发（OpenRouter 等网关的合法 id 本身就带斜杠）。

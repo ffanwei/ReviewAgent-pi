@@ -97,6 +97,11 @@ interface TimelineBase extends TimelineScope {
    * 所有行共享 `requestId`，靠 `replay` 区分；`streamAttempts = 1` 时恒 0。
    */
   readonly replay: number;
+  /**
+   * 上下文溢出降预算重试序号（ADR-0102）：缺席 = 非该路径；1.. = 第 N 次
+   * 因 400 overflow 收窄 max_tokens 后的重发。与 `replay` 正交。
+   */
+  readonly overflowRetry?: number;
 }
 
 /** 一次 HTTP 尝试（pi-ai 内部重试唯一可见的地方） */
@@ -213,6 +218,8 @@ export interface CreateTimelineRecorderOptions {
   readonly baseUrl?: string;
   /** 重放序号（ADR-0077）：0 = 首次 */
   readonly replay?: number;
+  /** 上下文溢出降预算重试序号（ADR-0102） */
+  readonly overflowRetry?: number;
   readonly now?: () => number;
   /** 缺省从进程级计数器取号；同一次逻辑请求的所有 replay 共享 */
   readonly requestId?: number;
@@ -224,6 +231,7 @@ export function createTimelineRecorder(
   const now = options.now ?? Date.now;
   const requestId = options.requestId ?? nextTimelineRequestId();
   const replay = options.replay ?? 0;
+  const overflowRetry = options.overflowRetry;
   const scope: TimelineScope = {
     ...options.scope,
     model: options.model,
@@ -276,6 +284,7 @@ export function createTimelineRecorder(
         kind: "attempt",
         runId: null,
         replay,
+        ...(overflowRetry !== undefined ? { overflowRetry } : {}),
         ...scope,
         requestId,
         attempt: probe.attempt,
@@ -328,6 +337,7 @@ export function createTimelineRecorder(
         kind: "request",
         runId: null,
         replay,
+        ...(overflowRetry !== undefined ? { overflowRetry } : {}),
         ...scope,
         requestId,
         sentAt: sentAt === 0 ? endedAt : sentAt,

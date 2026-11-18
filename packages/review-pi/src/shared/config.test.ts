@@ -88,6 +88,7 @@ describe("loadConfig：缺省与形状", () => {
       apiKey: null,
       baseUrl: OFFICIAL_REVIEWER_BASE_URL,
       maxOutputTokens: null,
+      contextWindow: null,
       stripModelPrefix: false,
       modelFallback: "off",
     });
@@ -542,6 +543,28 @@ describe("loadConfig：边界", () => {
     const { config } = loadConfig({ configPath: path });
     expect(config.reviewer.maxOutputTokens).toBe(null);
     expect(config.reviewer.maxOutputTokens).not.toBe(DEFAULT_GATEWAY_MAX_TOKENS);
+  });
+
+  test("contextWindow：正整数生效、null 保留、越界 fail fast（ADR-0102）", () => {
+    const enabled = loadConfig({
+      configPath: writeConfig(
+        `{"version":1,"reviewer":{"apiKey":"k","contextWindow":204800}}`,
+      ),
+    });
+    expect(enabled.config.reviewer.contextWindow).toBe(204_800);
+    const explicitNull = loadConfig({
+      configPath: writeConfig(
+        `{"version":1,"reviewer":{"apiKey":"k","contextWindow":null}}`,
+      ),
+    });
+    expect(explicitNull.config.reviewer.contextWindow).toBe(null);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          `{"version":1,"reviewer":{"apiKey":"k","contextWindow":0}}`,
+        ),
+      }),
+    ).toThrow(/contextWindow/);
   });
 });
 

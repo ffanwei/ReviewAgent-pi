@@ -163,6 +163,7 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
       apiKey: options.apiKey,
       ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
       maxOutputTokens: runtime.maxOutputTokens,
+      ...(runtime.contextWindow !== undefined ? { contextWindow: runtime.contextWindow } : {}),
       // ADR-0051 / ADR-0077：skill 会话与主会话同档；外层 skillPassMs 仍是硬上限。
       ...reviewTurnStreamOptions(runtime),
       // ADR-0076：skill 会话独立 StreamFn → requestId 按本会话自增

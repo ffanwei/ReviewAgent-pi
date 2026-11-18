@@ -1,4 +1,5 @@
 import type {
+  Api,
   AssistantMessage,
   AssistantMessageEvent,
   AssistantMessageEventStream,
@@ -8,7 +9,8 @@ import type {
   OpenAICompletionsOptions,
   TextContent,
 } from "@earendil-works/pi-ai";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, isContextOverflow } from "@earendil-works/pi-ai";
+import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { LlmUsage, ToolSchema, WireMessage } from "../contracts/llm.js";
@@ -132,6 +134,61 @@ export function maxTokensFor(
   return isOfficialReviewerBaseUrl(baseUrl) ? undefined : GATEWAY_MAX_TOKENS;
 }
 
+/** 窗口判定安全余量（token）：覆盖估算误差与 provider 的隐藏开销 */
+const CONTEXT_SAFETY_TOKENS = 4_096;
+/** 收窄后的输出预算下限；低于此值说明输入本身已经逼近窗口 */
+const MIN_OUTPUT_TOKENS = 2_048;
+/**
+ * 上游估算器按 4 字符/token；ADR-0071 实测混合负载 3.2–3.9 字符/token，
+ * 对 char-based 的 trailing 部分乘保守系数（usage 锚定的前缀是精确值，不乘）。
+ */
+const TRAILING_ESTIMATE_FACTOR = 1.25;
+/** 上下文溢出 400 的降预算重试次数（独立于流重放次数，ADR-0102） */
+const MAX_CONTEXT_OVERFLOW_RETRIES = 2;
+
+interface OutputBudgetInput {
+  readonly model: Model<Api>;
+  readonly context: Context;
+  /** `maxTokensFor` 的结果；undefined = 官方直连且未配置输出预算 */
+  readonly requested: number | undefined;
+  readonly configuredWindow: number | null;
+}
+
+/**
+ * B（ADR-0102）：把输出预算压进「窗口 − 估算输入 − 安全余量」。
+ *
+ * - 窗口优先用 `reviewer.contextWindow`，否则用模型目录画像；
+ * - 输入估算 = 精确 usage 前缀 + 1.25 × 字符估算的 trailing 部分；
+ * - 余量低于 `MIN_OUTPUT_TOKENS` ⇒ 本地 fail fast（不发请求）；
+ * - 官方直连且未配置窗口时保持「不发 max_tokens」的字节纪律；
+ *   只有显式配置了窗口且默认输出预算会溢出时，才破例下发收窄值。
+ */
+function clampOutputBudgetToWindow(input: OutputBudgetInput): number | undefined {
+  const window = input.configuredWindow ?? input.model.contextWindow;
+  if (window === undefined || window <= 0) {
+    return input.requested;
+  }
+  const estimate = estimateContextTokens(input.context);
+  const estimatedInput = estimate.usageTokens + Math.ceil(estimate.trailingTokens * TRAILING_ESTIMATE_FACTOR);
+  const available = window - estimatedInput - CONTEXT_SAFETY_TOKENS;
+  if (available < MIN_OUTPUT_TOKENS) {
+    throw new Error(
+      `context window exceeded before request: estimated input ${String(estimatedInput)}` +
+        ` + safety ${String(CONTEXT_SAFETY_TOKENS)} + minimum output ${String(MIN_OUTPUT_TOKENS)}` +
+        ` > window ${String(window)}` +
+        (input.configuredWindow !== null ? " (reviewer.contextWindow)" : " (model catalog); set reviewer.contextWindow to the gateway's real window and reduce tool reads / shard size"),
+    );
+  }
+  if (input.requested !== undefined) {
+    return Math.min(input.requested, available);
+  }
+  // 官方直连：未配置窗口 = 保持原有 wire（不发 max_tokens）。
+  if (input.configuredWindow === null) {
+    return undefined;
+  }
+  return input.model.maxTokens > available ? available : undefined;
+}
+
 /**
  * 评审流函数（Agent 驱动面单源）：真 provider + 锁档 effort + 注入的传输层。
  * 主会话与 skill 会话共用同一构造，保证「同一 Zone A + 同一序列化画像」。
@@ -162,6 +219,8 @@ export function reviewStreamFn(input: {
   readonly apiKey: string;
   readonly fetch?: FetchFunction;
   readonly maxOutputTokens?: number | null;
+  /** 模型真实上下文窗口（ADR-0102）；缺席 = 用内核模型目录画像 */
+  readonly contextWindow?: number | null;
   /** 请求建立阶段最多重试次数（pi-ai 语义：0 = 不重试；2 = 共 3 次尝试） */
   readonly maxRetries?: number;
   /** 服务端 Retry-After 上限毫秒数（pi-ai `maxRetryDelayMs`） */
@@ -185,7 +244,15 @@ export function reviewStreamFn(input: {
   return (model, context, options) => {
     // model.baseUrl 由 reviewModelOf 落值（目录缺省 = 官方直连），网关档在此
     // 注入显式输出预算——两类会话共用本构造，改一处即覆盖两会话。
-    const maxTokens = maxTokensFor(model.baseUrl, input.maxOutputTokens);
+    const requestedMaxTokens = maxTokensFor(model.baseUrl, input.maxOutputTokens);
+    // B（ADR-0102）：发送前按窗口余量收窄输出预算。窗口优先取显式配置，
+    // 否则用模型目录画像（目录外 id 借用 flash 的 1M，可能不准；A 兜底）。
+    const maxTokens = clampOutputBudgetToWindow({
+      model,
+      context,
+      requested: requestedMaxTokens,
+      configuredWindow: input.contextWindow ?? null,
+    });
     const providerOptions: OpenAICompletionsOptions = {
       ...options,
       apiKey: input.apiKey,
@@ -300,17 +367,31 @@ function isTruncatedStreamEnd(
 /**
  * 缓冲重放（ADR-0077）：每次尝试的事件只进本地缓冲；失败则丢弃并重发，
  * 成功（或重放耗尽）才把该次事件原样推给消费者。
+ *
+ * A（ADR-0102）：上下文溢出 400 时，按 `maxTokens` 减半降预算重试（独立于
+ * 流重放次数）；输入本身超窗时最多试 `MAX_CONTEXT_OVERFLOW_RETRIES` 次后失败。
  */
 function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream {
   const out = createAssistantMessageEventStream();
   void (async (): Promise<void> => {
     const startedAt = params.now();
-    for (let replay = 0; ; replay += 1) {
-      const recorder = createRecorder(params, replay);
+    let replay = 0;
+    let overflowRetries = 0;
+    let maxTokens = params.providerOptions.maxTokens;
+    for (;;) {
+      const recorder = createRecorder(
+        params,
+        replay,
+        overflowRetries > 0 ? overflowRetries : undefined,
+      );
+      // 流重放必须重新走「建连 + 流」，但 onPayload / onResponse 只该在首次触发
+      // （ADR-0077）。降预算重试（A）是新的物理请求、wire 已不同，因此照常记录；
+      // 它不增加 replay，审计里体现为同 requestId 的另一条 request。
       const options: OpenAICompletionsOptions = {
         ...(replay === 0
           ? params.providerOptions
           : withoutProviderCallbacks(params.providerOptions)),
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
         fetch: wrapFetchWithObservedBody(params.baseFetch, recorder),
       };
 
@@ -347,6 +428,26 @@ function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream
 
       const failed =
         terminal !== null && terminal.type === "error" && terminal.reason !== "aborted";
+
+      // A（ADR-0102）：上下文溢出 400 先于流重放处理——把输出预算减半再发。
+      // 400 发生在 start 之前，失败尝试没有任何事件交给 agent，重试无副作用。
+      if (
+        failed &&
+        terminal !== null &&
+        terminal.type === "error" &&
+        isContextOverflow(terminal.error) &&
+        overflowRetries < MAX_CONTEXT_OVERFLOW_RETRIES &&
+        maxTokens !== undefined &&
+        withinReplayBudget(startedAt, params.replay.budgetMs, params.now)
+      ) {
+        const next = Math.max(MIN_OUTPUT_TOKENS, Math.floor(maxTokens / 2));
+        if (next < maxTokens) {
+          overflowRetries += 1;
+          maxTokens = next;
+          continue;
+        }
+      }
+
       // 两类可重放失败（ADR-0077 / ADR-0101）：
       // 1. 响应体真的读失败（bodyError 有值）——脏断流；
       // 2. 干净 EOF：流已建立（收到 start），但始终没收到 provider 的
@@ -361,6 +462,7 @@ function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream
 
       if (shouldReplay) {
         await sleep(replayDelayMs(params.replay, replay));
+        replay += 1;
         continue;
       }
 
@@ -422,16 +524,18 @@ function syntheticErrorMessage(
   };
 }
 
-/** 一次逻辑请求的 recorder（重放时每次 replay 一个，requestId 相同） */
+/** 一次逻辑请求的 recorder（重放/降预算重试每次一条，requestId 相同） */
 function createRecorder(
   params: StreamDriveParams,
   replay: number,
+  overflowRetry?: number,
 ): TimelineRecorder {
   return createTimelineRecorder({
     scope: params.scope ?? { site: "main" },
     model: params.model.id,
     ...(params.model.baseUrl !== undefined ? { baseUrl: params.model.baseUrl } : {}),
     replay,
+    ...(overflowRetry !== undefined ? { overflowRetry } : {}),
     now: params.now,
     requestId: params.requestId,
   });

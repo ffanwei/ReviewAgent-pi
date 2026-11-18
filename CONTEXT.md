@@ -292,7 +292,7 @@ ADR-0080 定义的「`--model` 被网关判为 model not found 时改用 `model.
 _Avoid_: 重试（重试是同一模型再试，降级是换模型）、自动选模型（不做模型选择）
 
 **参数画像（Provider Profile）**:
-模型 id → wire 序列化策略（thinking 字段 / completion 信封）+ usage 能力声明的查表面。pi 线**当前不按 id 分派**：恒 `deepseek` provider、恒发 `thinking{type:"enabled"}` + `reasoning_effort:"high"`（`provider/pi-client.ts` 的 `LOCKED_REASONING_EFFORT`），自由 id 只换字符串、借用 `deepseek-v4-flash` 的模型元数据；模型元数据（contextWindow / maxTokens / cost / compat）来自内核四包自带的模型目录（ADR-0035）。ADR-0008 的「按 id pattern 查画像表」在 pi 线从未接线，若要恢复多模型分派，按新功能另立项。
+模型 id → wire 序列化策略（thinking 字段 / completion 信封）+ usage 能力声明的查表面。pi 线**当前不按 id 分派**：恒 `deepseek` provider、恒发 `thinking{type:"enabled"}` + `reasoning_effort:"high"`（`provider/pi-client.ts` 的 `LOCKED_REASONING_EFFORT`），自由 id 只换字符串、借用 `deepseek-v4-flash` 的模型元数据；模型元数据（contextWindow / maxTokens / cost / compat）来自内核四包自带的模型目录（ADR-0035）。网关真实窗口可用 `reviewer.contextWindow` 显式给出；发送前按它收窄输出预算，溢出 400 时降预算重试（ADR-0102）。ADR-0008 的「按 id pattern 查画像表」在 pi 线从未接线，若要恢复多模型分派，按新功能另立项。
 _Avoid_: 画像当 endpoint 配置（「怎么说话」与「连到哪」两轴正交）、把 review-llm 的 `profileOf` 当既有实现（ADR-0035 已删该包）
 
 ### 基准
