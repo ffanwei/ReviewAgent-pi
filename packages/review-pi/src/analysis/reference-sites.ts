@@ -59,7 +59,9 @@ export async function findReferenceSites(
         { cause: error },
       );
     });
-    const path = index.parseError ? [] : symbolPathAt(index.symbols, match.line);
+    // parseError 时也尝试部分索引：至少能恢复已解析出的函数链，
+    // 比把所有引用点都标成 (top-level) 更有用；完全解析不出符号时才退化为空。
+    const path = symbolPathAt(index.symbols, match.line);
     const innermost = path.at(-1);
     sites.push({
       file: match.file,

@@ -1,14 +1,14 @@
 import type { ChangedSymbolRef } from "../analysis/changed-symbols.js";
 import { qualifiedName } from "../analysis/changed-symbols.js";
 import { languageLabel, noSourceFilesMessage, outsideIndexHint } from "../analysis/language-support.js";
-import { buildCallChainBlocks } from "../analysis/call-chain.js";
+import { buildCallChainBlocks, CALL_CHAIN_MAX_DECLARATIONS } from "../analysis/call-chain.js";
 import type { ReferenceSite } from "../analysis/reference-sites.js";
 import { enclosingLabel, findReferenceSites } from "../analysis/reference-sites.js";
 import type { RepoContext } from "../analysis/repo-context.js";
 import type { CodeSymbol } from "../analysis/symbols.js";
 import { isCallableKind, isTypeKind } from "../analysis/symbols.js";
 import type { KnowledgeEntry } from "../contracts/knowledge.js";
-import { boundedEcho, requireStringArg } from "./args.js";
+import { boundedEcho, optionalRepoPathArg, requireStringArg } from "./args.js";
 import { readThroughLedger } from "./ledger.js";
 import { applyLineBudget } from "./result-budget.js";
 import type { ReviewToolHandler } from "./toolkit-types.js";
@@ -44,11 +44,17 @@ export const findReferencesTool: ReviewToolHandler = async (args, context): Prom
 
 export const getCallChainTool: ReviewToolHandler = async (args, context): Promise<string> => {
   const name = requireStringArg("review.get_call_chain", args, "symbol");
-  return readThroughLedger(context.ledger, "symbol", `review.get_call_chain "${name}"`, async () => {
+  const file = optionalRepoPathArg("review.get_call_chain", args, "file");
+  const ledgerKey =
+    file === undefined
+      ? `review.get_call_chain "${name}"`
+      : `review.get_call_chain "${name}" in "${file}"`;
+  return readThroughLedger(context.ledger, "symbol", ledgerKey, async () => {
     const repo = await context.repo();
     return renderCallChain(repo, name, context.resultBudgetChars, {
       hops: context.micro.callChainHops,
       timeoutMs: context.ripgrepTimeoutMs,
+      ...(file !== undefined ? { file } : {}),
     });
   });
 };
@@ -121,16 +127,31 @@ async function renderCallChain(
   repo: RepoContext,
   name: string,
   budgetChars: number,
-  options: { readonly hops: number; readonly timeoutMs: number },
+  options: { readonly hops: number; readonly timeoutMs: number; readonly file?: string },
 ): Promise<string> {
-  const refs = await findMethodRefs(repo, name);
+  const refs = await findMethodRefs(repo, name, options.file);
   const hopsLabel = `up to ${String(options.hops)} hops`;
   if (repo.sourceFiles.length === 0) {
     return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${noSourceFilesMessage(repo.languages)}`;
   }
+  if (refs.length > CALL_CHAIN_MAX_DECLARATIONS) {
+    const preview = refs
+      .slice(0, 3)
+      .map((ref) => `  ${qualifiedName(ref)} - ${ref.file}:${String(ref.symbol.line)}`);
+    return [
+      `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${String(refs.length)} callable declaration(s) matched — too ambiguous for a name-level chain.`,
+      "Pass file=<repository-relative path> to narrow the declarations, or use review.find_references.",
+      ...preview,
+      `  ... ${String(refs.length - preview.length)} more declaration(s) omitted.`,
+    ].join("\n");
+  }
   const header = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${refs.length} callable declaration(s) matched`;
   if (refs.length === 0) {
-    const base = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method, function, or constructor named "${name}" found across ${repo.sourceFiles.length} ${repo.languageLabel} file(s)`;
+    const scope =
+      options.file !== undefined
+        ? `in "${options.file}"`
+        : `across ${repo.sourceFiles.length} ${repo.languageLabel} file(s)`;
+    const base = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method, function, or constructor named "${name}" found ${scope}`;
     const note = await outsideIndexNote(repo, name, options.timeoutMs);
     return note.length > 0 ? `${base}\n${note}` : base;
   }
@@ -167,20 +188,27 @@ async function searchReferenceSites(
  * 预收窄（ADR-0041）：声明必然在文本上包含该名字，先 rg 拿候选文件再解析，
  * 避免多语言仓里把每个语言的全量文件都解析一遍。
  */
-async function findMethodRefs(repo: RepoContext, name: string): Promise<readonly ChangedSymbolRef[]> {
+async function findMethodRefs(
+  repo: RepoContext,
+  name: string,
+  file?: string,
+): Promise<readonly ChangedSymbolRef[]> {
   const refs: ChangedSymbolRef[] = [];
   const candidates = await repo.candidateFilesForName(name).catch((error: unknown) => {
     throw new Error(`review.get_call_chain: ${errorMessage(error)}`, { cause: error });
   });
-  for (const file of candidates) {
-    const index = await repo.symbolIndex(file).catch((error: unknown) => {
+  for (const candidate of candidates) {
+    if (file !== undefined && candidate !== file) {
+      continue;
+    }
+    const index = await repo.symbolIndex(candidate).catch((error: unknown) => {
       // 归一为仓库相对路径消息（不泄漏绝对路径，与 get-file 的错误纪律一致）
       throw new Error(
-        `review.get_call_chain: symbol index unavailable for file "${file}" (not found or unreadable)`,
+        `review.get_call_chain: symbol index unavailable for file "${candidate}" (not found or unreadable)`,
         { cause: error },
       );
     });
-    collectCallableRefs(file, index.symbols, "", name, refs);
+    collectCallableRefs(candidate, index.symbols, "", name, refs);
   }
   return refs.sort(
     (a, b) =>

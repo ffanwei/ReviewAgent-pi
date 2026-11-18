@@ -190,6 +190,86 @@ test("get_call_chain：sample 方法链形态与零命中", async () => {
   );
 });
 
+test("get_call_chain：声明过多时返回歧义提示，file 可收窄", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "piagent-callchain-ambiguous-"));
+  try {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    for (let index = 0; index < 9; index += 1) {
+      writeFileSync(
+        join(dir, "src", `C${String(index)}.java`),
+        `package p; class C${String(index)} { void common() {} }\n`,
+        "utf8",
+      );
+    }
+    const tk = buildReviewToolkit({ repoPath: dir, diff: "", ledgerMode: "inert" });
+    const result = await tk.executeTool("review.get_call_chain", { symbol: "common" });
+    expect(result).toContain("9 callable declaration(s) matched — too ambiguous");
+    expect(result).toContain("Pass file=<repository-relative path>");
+    expect(result).toContain("more declaration(s) omitted");
+
+    const narrowed = await tk.executeTool("review.get_call_chain", {
+      symbol: "common",
+      file: "src/C0.java",
+    });
+    expect(narrowed).toContain("1 callable declaration(s) matched");
+    expect(narrowed).toContain("C0.common");
+
+    const missing = await tk.executeTool("review.get_call_chain", {
+      symbol: "common",
+      file: "src/Nope.java",
+    });
+    expect(missing).toContain('found in "src/Nope.java"');
+    await expect(
+      tk.executeTool("review.get_call_chain", { symbol: "common", file: "../C0.java" }),
+    ).rejects.toThrow(/must stay inside the repository snapshot/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("get_call_chain：caller/callee 按符号聚合，声明行不进 callers", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "piagent-callchain-group-"));
+  try {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "src", "Target.java"),
+      [
+        "package p;",
+        "class Target {",
+        "  void helper() {}",
+        "  void target() {",
+        "    helper();",
+        "    helper();",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      join(dir, "src", "Caller.java"),
+      [
+        "package p;",
+        "class Caller {",
+        "  void run(Target t) {",
+        "    t.target();",
+        "    t.target();",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const tk = buildReviewToolkit({ repoPath: dir, diff: "", ledgerMode: "inert" });
+    const result = await tk.executeTool("review.get_call_chain", { symbol: "target" });
+    expect(result).toContain("Caller.run - src/Caller.java (2 call sites:");
+    expect(result).toContain("helper - src/Target.java (2 site(s):");
+    expect(result).not.toContain("    Target.target - src/Target.java");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("search_rule/search_history：语料为空时隐藏，注入语料后按语料分别恢复", async () => {
   const tk = toolkit();
   expect(tk.schemas.map((schema) => schema.name)).not.toContain("review.search_rule");

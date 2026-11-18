@@ -26,7 +26,7 @@ export const SYSTEM_PROMPT = `你是一名资深软件工程师，在受控的�
 上下文检索按问题选工具：
 - 已知符号的定义/签名 → review_get_symbol；
 - 只需要直接引用/调用点 → review_find_references；
-- 变更改变了函数契约（返回值、异常、空值、所有权或副作用），或需要评估影响面时 → review_get_call_chain（1~2 跳调用方 + 函数体内被调方）；
+- 变更改变了函数契约（返回值、异常、空值、所有权或副作用），或需要评估影响面时 → review_get_call_chain（1~2 跳调用方 + 函数体内被调方；同名声明多时传 file）；
 - 已知路径 → review_get_file；
 - 只有字面文本线索（配置键、错误信息、日志文案），或符号工具不支持的语言 → review_search_code。
 检索结果只是证据线索，引用时仍须给出行号与代码摘录，不能只贴命中行。
