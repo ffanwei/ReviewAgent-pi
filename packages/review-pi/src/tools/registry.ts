@@ -129,10 +129,16 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.get_call_chain",
       description:
-        "围绕某方法 / 函数 / 构造器构建名称级调用链：一跳调用方、二跳调用方，以及声明体内调用的被调方。整词名称匹配、不做类型解析；不区分重载。支持 Java、TypeScript/JavaScript、Python、Go、C/C++；其他语言（如 C#、Rust、PHP）请改用 review.search_code。",
+        "围绕某方法 / 函数 / 构造器构建名称级调用链：一跳调用方、二跳调用方，以及声明体内调用的被调方。整词名称匹配、不做类型解析；不区分重载。支持 Java、TypeScript/JavaScript、Python、Go、C/C++；其他语言（如 C#、Rust、PHP）请改用 review.search_code。同名声明很多时请用 file 收窄。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
+          // properties 子键字典序：file → symbol
+          file: {
+            type: "string",
+            description:
+              "可选：限定声明的仓库相对 POSIX 路径，例如 \"src/foo.c\"；同名方法很多时用它收窄。",
+          },
           symbol: {
             type: "string",
             description: "构建调用链所用方法 / 函数 / 构造器的简单名，例如 \"sumFirst\"。",

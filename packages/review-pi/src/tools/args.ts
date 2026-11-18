@@ -53,6 +53,32 @@ export function optionalBooleanArg(
   return value;
 }
 
+/** 可选字符串参数（缺省 undefined；空白视为缺失） */
+export function optionalStringArg(
+  toolName: string,
+  args: Record<string, unknown>,
+  field: string,
+): string | undefined {
+  const value = args[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${toolName}: argument "${field}" must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+/** 可选仓库相对路径参数（缺省 undefined；拒绝绝对路径与 ".." 越界段） */
+export function optionalRepoPathArg(
+  toolName: string,
+  args: Record<string, unknown>,
+  field: string,
+): string | undefined {
+  const value = optionalStringArg(toolName, args, field);
+  return value === undefined ? undefined : normalizeRepoPath(toolName, value);
+}
+
 /** 可选字符串数组参数（缺省 undefined；空数组原样返回） */
 export function optionalStringArrayArg(
   toolName: string,

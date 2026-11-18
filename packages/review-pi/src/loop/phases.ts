@@ -23,7 +23,6 @@ export const PHASE_INSTRUCTIONS: readonly string[] = [
 
   `Phase 4 of 6 - Context Retrieval.
 检索你在上一阶段决定需要的上下文。若工具可用，可以回复工具调用来检索；否则说明当前配置下无法检索更多上下文。
-检索时按问题选工具：符号定义用 review_get_symbol，只需要直接引用用 review_find_references；需要评估影响面或上下游时用 review_get_call_chain（1~2 跳调用方与函数体内被调方）。检索结果只是线索，后续仍需补代码摘录。
 只回一个 JSON 对象：{"notes": "<现在有哪些上下文可用，或为何无法检索（中文）>"}`,
 
   `Phase 5 of 6 - Deep Reasoning.
