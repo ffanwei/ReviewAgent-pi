@@ -25,9 +25,9 @@ export interface ReportLlmRuntime {
  * 意见**（`mrReviewResult` 成功的条目）——总结必须与平台明细一致。
  *
  * 分流与降级链（产物必须有、内容允许降级）：
- * 0. **零已上报意见 ⇒ 确定性结构化模板，不调用模型**——确实无意见附
- *    「未发现缺陷」；有意见但全部没上报附「未上报任何检视意见」且不作星级
- *    评价（绝不谎报「未发现缺陷」），两者都省略意见速览节；
+ * 0. **零已上报意见 ⇒ 确定性结构化模板，不调用模型**——「确实无意见」
+ *    与「有意见但全部没上报」共用同一模板（ADR-0100），都写「未发现
+ *    缺陷」+ ⭐⭐⭐⭐ 并省略意见速览节；
  * 1. 有意见 ⇒ 模型调用（输入 = 中文 tips + findings 摘要 + 权威统计与星级）；
  * 2. 投影降级 / 无 tips ⇒ 输入退为英文 findings（Q10 决策）；
  * 3. 模型调用失败 / 超时 ⇒ **确定性模板** Markdown（同一套结构化规范），
@@ -35,20 +35,13 @@ export interface ReportLlmRuntime {
  */
 
 /**
- * 零意见与零上报的说明句（ADR-0057；渲染在「意见分布」表之后）。
- * - 确实无意见：「本次检视未发现缺陷。」
- * - 有意见但全部没上报：「本次检视未向平台上报任何检视意见。」
- *   （绝不谎报「未发现缺陷」，也不展开平台没收到的明细）。
+ * 零意见 / 零上报 / 无可检视文件共用的说明句（ADR-0100；渲染在「意见分布」
+ * 表之后）。三种「零」在平台侧不再区分，差异只留在 stdout / stderr / 审计。
  */
 export const NO_FINDING_NOTE = "本次检视未发现缺陷。";
-export const NO_REPORTED_NOTE = "本次检视未向平台上报任何检视意见。";
 
 /** diff 超 `limits.boundary.maxDiffChars` 跳过检视时的固定总结（ADR-0075，不调用模型） */
 export const DIFF_TOO_LARGE_SUMMARY_MARKDOWN = "# 检视总结\n\nDiff 超大，跳过检视。";
-
-/** 过滤后没有任何可检视文件时的固定总结（ADR-0078，不调用模型） */
-export const NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN =
-  "# 检视总结\n\n无可检视文件，跳过检视。";
 
 /**
  * 总结「检视总览」三行的运行统计（交付层组装；缺席时渲染 `—`）。
@@ -72,11 +65,6 @@ export interface ReviewSummaryInput {
   readonly tips?: ReviewTipsDocumentLike;
   /** 已成功上报的 findings（平台最终收到的意见；ADR-0057） */
   readonly findings: readonly Finding[];
-  /**
-   * 未被上报的 finding 条数（片级生成失败 / 上报失败 / 结构跳过 / 置信度
-   * 过滤）。仅在 `findings` 为空时用于区分「确实零意见」与「有意见但没上报」。
-   */
-  readonly unreportedFindings?: number;
   /** 各片已上报的文件路径（按片序拼接；供总结提及平台已收到的结果） */
   readonly reportedFiles?: readonly string[];
   /** 检视总览的运行统计（缺席时三行渲染 `—`） */
@@ -156,19 +144,24 @@ function starText(stars: 2 | 3 | 4): string {
   return "⭐".repeat(stars);
 }
 
+/**
+ * 零意见 / 零上报 / 无可检视文件共用的确定性总结（ADR-0100）：同一套四节
+ * 模板 + 「未发现缺陷」+ ⭐⭐⭐⭐，不调用模型。跳过路径的 metrics 由调用方
+ * 提供（预算使用 / 资源加载写 0）。
+ */
+export function renderZeroFindingSummary(metrics?: ReviewSummaryMetrics): string {
+  return renderStructuredSummary(
+    { findings: [], ...(metrics !== undefined ? { metrics } : {}) },
+    { includePriority: false, note: NO_FINDING_NOTE },
+  );
+}
+
 export async function buildReviewSummary(input: ReviewSummaryInput): Promise<ReviewSummaryResult> {
   // 零已上报意见：不调用模型，直接按同一套结构化规范确定性渲染。
-  // 区分两种零：确实没意见 → 「未发现缺陷」；有意见但没上报 → 只陈述上报事实
-  // （ADR-0057，绝不把「没上报」说成「没问题」），且不作星级评价。
+  // ADR-0100：无论本地确实零意见还是「有意见但全部没上报」，都走同一模板
+  //（说明句「未发现缺陷」+ ⭐⭐⭐⭐），平台侧不再区分两种零。
   if (input.findings.length === 0) {
-    const unreported = (input.unreportedFindings ?? 0) > 0;
-    return {
-      markdown: renderStructuredSummary(input, {
-        includePriority: false,
-        note: unreported ? NO_REPORTED_NOTE : NO_FINDING_NOTE,
-        ...(unreported ? { unevaluatedStars: true } : {}),
-      }),
-    };
+    return { markdown: renderZeroFindingSummary(input.metrics) };
   }
   const completion = await completeOneShot({
     baseUrl: input.runtime.baseUrl,
@@ -307,16 +300,17 @@ function scaleCell(metrics: ReviewSummaryMetrics | undefined): string {
 }
 
 interface StructuredSummaryOptions {
-  /** 零意见 / 零上报：没有意见可速览，整节省略 */
+  /** 零意见：没有意见可速览，整节省略 */
   readonly includePriority?: boolean;
-  /** 意见分布表之后的说明句（零意见 / 零上报的诚实口径） */
+  /** 意见分布表之后的说明句（零意见的固定口径） */
   readonly note?: string;
-  /** 未上报任何意见时不给星级（不能把「没上报」评成「没问题」） */
-  readonly unevaluatedStars?: boolean;
 }
 
+/** 结构化渲染只依赖已上报 findings 与总览指标，不要求完整总结输入 */
+type StructuredSummaryInput = Pick<ReviewSummaryInput, "findings" | "metrics">;
+
 function renderStructuredSummary(
-  input: ReviewSummaryInput,
+  input: StructuredSummaryInput,
   options: StructuredSummaryOptions = {},
 ): string {
   const rows = severityRows(input.findings);
@@ -358,9 +352,7 @@ function renderStructuredSummary(
     "",
     "### 星级评价",
     "",
-    options.unevaluatedStars === true
-      ? "—（未上报任何检视意见，不作星级评价）"
-      : `${starText(stars)} — ${STAR_CRITERIA[stars]}`,
+    `${starText(stars)} — ${STAR_CRITERIA[stars]}`,
   );
   return lines.join("\n");
 }

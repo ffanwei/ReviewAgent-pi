@@ -37,7 +37,7 @@ import type { SemanticTipEntry } from "./report-payload.js";
 import { describeReportFailure } from "./report-failure.js";
 import {
   DIFF_TOO_LARGE_SUMMARY_MARKDOWN,
-  NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN,
+  renderZeroFindingSummary,
   type ReviewSummaryInput,
   type ReviewSummaryMetrics,
   type ReviewSummaryResult,
@@ -192,6 +192,8 @@ export interface SkipDeliveryInput {
   readonly skip: ReviewSkip;
   /** 原始变更文件的首个（与既有跳过上报口径一致） */
   readonly firstFile?: string;
+  /** 无文件可检视路径的收尾指标（变更规模取过滤前 diff；预算 / 资源为 0） */
+  readonly metrics?: ReviewSummaryMetrics;
   readonly task?: DeliveryTaskPort;
   /** 已上报文件账本（补报会追加；跳过后进程结束，不再读取） */
   readonly reportedFiles: string[];
@@ -203,7 +205,8 @@ export interface SkipDeliveryOutcome {
 }
 
 /**
- * 跳过交付（ADR-0075 / ADR-0078 / ADR-0081）：固定总结 + 首个文件空 tips +
+ * 跳过交付（ADR-0075 / ADR-0078 / ADR-0081 / ADR-0100）：超大 diff 用固定
+ * 文案；无可检视文件与正常零意见共用四节结构化模板。另发首个文件空 tips +
  * 单 JSON stdout 文档。不写 audit / run.json，不发进度事件。
  */
 export async function deliverSkip(input: SkipDeliveryInput): Promise<SkipDeliveryOutcome> {
@@ -224,7 +227,7 @@ export async function deliverSkip(input: SkipDeliveryInput): Promise<SkipDeliver
     const markdownContent =
       input.skip.reason === "diff-too-large"
         ? DIFF_TOO_LARGE_SUMMARY_MARKDOWN
-        : NO_REVIEWABLE_FILES_SUMMARY_MARKDOWN;
+        : renderZeroFindingSummary(input.metrics);
     const outcome = await task.saveSummary(
       { markdownContent },
       { settleBefore: false },
@@ -531,9 +534,6 @@ async function publishSummary(
   const summaryReport = await input.ports.oneShot.generateSummary({
     ...(summaryTips !== undefined && summaryTips.length > 0 ? { tips: summaryTips } : {}),
     findings: summaryFindings,
-    ...(summaryFindings.length === 0 && unreported > 0
-      ? { unreportedFindings: unreported }
-      : {}),
     ...(input.mcp.reportedFiles.length > 0 ? { reportedFiles: [...input.mcp.reportedFiles] } : {}),
     metrics,
   });

@@ -2689,7 +2689,7 @@ test(
 );
 
 test(
-  "ADR-0078：全部变更文件被预过滤剔除 → 跳过检视（一次空意见 + 固定总结），exit 0",
+  "ADR-0078：全部变更文件被预过滤剔除 → 跳过检视（一次空意见 + 统一四节总结），exit 0",
   async () => {
     const stub = await startLoopbackStub(noFindingCorpus());
     const mcp = await startMcpStub();
@@ -2725,7 +2725,12 @@ test(
         filePath: "pnpm-lock.yaml",
         reviewTips: [],
       });
-      expect(business[2]?.args.markdownContent).toContain("无可检视文件");
+      // ADR-0100：无可检视文件与零意见同模板（四节 + 未发现缺陷 + 四星）
+      const skipMarkdown = String(business[2]?.args.markdownContent);
+      expect(skipMarkdown).toContain("## 检视总览");
+      expect(skipMarkdown).toContain("本次检视未发现缺陷。");
+      expect(skipMarkdown).toContain("⭐⭐⭐⭐");
+      expect(skipMarkdown).not.toContain("### 高优先级意见速览");
       expect(run.stderr).toContain("跳过检视");
       expect(stub.requests()).toHaveLength(0);
 
@@ -3566,7 +3571,7 @@ test(
         usage: ZERO,
       },
       // 有 finding（过滤只作用于中文 tips / 上报）；全部被过滤 ⇒ 没有可上报意见
-      // ⇒ 总结按 ADR-0057 走结构化模板（诚实说明 + 不作星级评价），不再调用模型
+      // ⇒ 总结按 ADR-0100 走与零意见相同的四节模板（未发现缺陷 + 四星），不再调用模型
       { text: "# 检视总结", usage: ZERO },
     ]);
     const mcp = await startMcpStub();
@@ -3612,8 +3617,9 @@ test(
       expect(summaryArgs.taskId).toBe(CLI_TASK_ID);
       const summaryMarkdown = String(summaryArgs.markdownContent);
       expect(summaryMarkdown).toContain("## 检视总览");
-      expect(summaryMarkdown).toContain("本次检视未向平台上报任何检视意见。");
-      expect(summaryMarkdown).not.toContain("未发现缺陷");
+      expect(summaryMarkdown).toContain("本次检视未发现缺陷。");
+      expect(summaryMarkdown).not.toContain("未向平台上报");
+      expect(summaryMarkdown).toContain("⭐⭐⭐⭐");
       expect(summaryMarkdown).not.toContain("### 高优先级意见速览");
       // 留痕同样要能证明「文件被检视过」
       const mcpLog = JSON.parse(
@@ -3698,9 +3704,9 @@ test(
       };
       expect(summaryArgs.taskId).toBe(CLI_TASK_ID);
       const summaryMarkdown = String(summaryArgs.markdownContent);
-      expect(summaryMarkdown).toContain("本次检视未向平台上报任何检视意见。");
-      expect(summaryMarkdown).not.toContain("未发现缺陷");
-      expect(summaryMarkdown).toContain("不作星级评价");
+      expect(summaryMarkdown).toContain("本次检视未发现缺陷。");
+      expect(summaryMarkdown).not.toContain("未向平台上报");
+      expect(summaryMarkdown).toContain("⭐⭐⭐⭐");
     } finally {
       await stub.close();
       await mcp.close();
@@ -3803,7 +3809,7 @@ test(
 );
 
 test(
-  "ADR-0078：--include 未命中任何变更文件 → 跳过检视：四工具齐全 + 固定总结 + exit 0",
+  "ADR-0078：--include 未命中任何变更文件 → 跳过检视：四工具齐全 + 统一四节总结 + exit 0",
   async () => {
     const stub = await startLoopbackStub(noFindingCorpus());
     const mcp = await startMcpStub();
@@ -3850,7 +3856,11 @@ test(
         filePath: "src/main/java/Keep.java",
         reviewTips: [],
       });
-      expect(business[2]?.args.markdownContent).toContain("无可检视文件");
+      // ADR-0100：无可检视文件也发统一四节模板
+      const skipMarkdown = String(business[2]?.args.markdownContent);
+      expect(skipMarkdown).toContain("## 检视总览");
+      expect(skipMarkdown).toContain("本次检视未发现缺陷。");
+      expect(skipMarkdown).toContain("⭐⭐⭐⭐");
       const outcome = JSON.parse(run.stdout) as { skipped?: string; findings: unknown[] };
       expect(outcome.skipped).toBe("no-reviewable-files");
       expect(outcome.findings).toEqual([]);

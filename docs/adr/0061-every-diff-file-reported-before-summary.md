@@ -58,7 +58,7 @@ ADR-0056 把「无意见文件补空包」扩到了大部分场景，但保留�
 
 空包**不登记** finding：`submittedFindingKeys` 只在 `reportFileResult` 成功且该条 tip 确实进入报文时写入。因此：
 
-- 有 finding 但只发了空包的文件，其 finding 仍计入「未上报」，总结按 ADR-0057 输出固定「本次检视未向平台上报任何检视意见」；
+- 有 finding 但只发了空包的文件，其 finding 仍计入「未上报」，总结按 ADR-0057 输出固定「本次检视未向平台上报任何检视意见」；（该总结形态已由 [ADR-0100](0100-unified-summary-shape-except-diff-too-large.md) 统一为零意见四节模板）
 - `reportedFiles` 会包含空包文件（平台确实收到了该文件的登记），但总结的 tips / findings 明细仍只覆盖真正上报的意见。
 
 ## Options（为什么不是别的）

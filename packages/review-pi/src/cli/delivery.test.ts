@@ -488,7 +488,7 @@ test("deliverSkip：summary 失败只留痕", async () => {
   expect(logs.some((line) => line.includes("MCP saveReviewSummary 失败（boom）"))).toBe(true);
 });
 
-test("固定总结文案按 reason 选择", async () => {
+test("diff-too-large 仍用固定文案", async () => {
   const calls: string[] = [];
   const summaries: string[] = [];
   const task: DeliveryTaskPort = {
@@ -508,4 +508,39 @@ test("固定总结文案按 reason 选择", async () => {
   });
 
   expect(summaries).toEqual([DIFF_TOO_LARGE_SUMMARY_MARKDOWN]);
+});
+
+test("deliverSkip：无可检视文件与零意见同模板，指标写 0（ADR-0100）", async () => {
+  const summaries: string[] = [];
+  const task: DeliveryTaskPort = {
+    ...fakeTask({ calls: [] }),
+    async saveSummary(args) {
+      summaries.push(args.markdownContent);
+      return { ok: true, waitedMs: 0 };
+    },
+  };
+
+  await deliverSkip({
+    identity: { caseId: "case-1", taskId: "task-1" },
+    skip: { reason: "no-reviewable-files", message: "msg", droppedFiles: 2, droppedChars: 9 },
+    metrics: {
+      changedFiles: 3,
+      changedHunks: 4,
+      changedLines: 20,
+      modelCalls: 0,
+      inputTokens: 0,
+    },
+    task,
+    reportedFiles: [],
+    log: () => undefined,
+  });
+
+  const markdown = summaries[0] ?? "";
+  expect(markdown).toContain("## 检视总览");
+  expect(markdown).toContain("| 变更规模 | 3 个文件 / 4 个 hunk（20 行变更） |");
+  expect(markdown).toContain("| 预算使用 | 0 次调用 |");
+  expect(markdown).toContain("| 资源加载 | 约 0 tokens |");
+  expect(markdown).toContain("本次检视未发现缺陷。");
+  expect(markdown).toContain("⭐⭐⭐⭐");
+  expect(markdown).not.toContain("### 高优先级意见速览");
 });

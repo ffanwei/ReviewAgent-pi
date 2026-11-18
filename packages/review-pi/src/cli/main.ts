@@ -487,6 +487,19 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         identity: { caseId: args.caseId, taskId: args.taskId },
         skip: outcome.skip,
         ...(changedFiles[0] !== undefined ? { firstFile: changedFiles[0] } : {}),
+        // ADR-0100：无文件可检视的总结与零意见同模板——变更规模取过滤前
+        // diff（变更文件全集口径），预算 / 资源为 0。
+        ...(outcome.skip.reason === "no-reviewable-files"
+          ? {
+              metrics: {
+                changedFiles: diffScale?.files ?? changedFiles.length,
+                changedHunks: diffScale?.hunks ?? null,
+                changedLines: diffScale?.changedLines ?? null,
+                modelCalls: 0,
+                inputTokens: 0,
+              },
+            }
+          : {}),
         ...(taskLifecycle !== undefined ? { task: taskLifecycle } : {}),
         reportedFiles,
         log: (line) => process.stderr.write(line),

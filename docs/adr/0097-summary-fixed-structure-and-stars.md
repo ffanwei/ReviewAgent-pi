@@ -4,6 +4,11 @@
 **关联**：[ADR-0045](0045-mcp-business-task-tools.md)（片级报文与收尾总结上报）、[ADR-0057](0057-summary-covers-only-reported-findings.md)（总结只覆盖已上报意见；本 ADR 修订其决策 3 的呈现形态）、[ADR-0090](0090-chinese-native-review.md)（中文原生检视）、[ADR-0046](0046-configurable-max-rounds.md)（轮次上限可配，故不引入固定调用预算分母）
 **范围**：本仓 pi 线 0097。只改 `saveReviewSummary` 的 Markdown 形态与指标来源；上报时机、已上报口径、零意见不调模型、退出码、审计 / 转录 / stdout 均不变。
 
+> **后续修订（[ADR-0100](0100-unified-summary-shape-except-diff-too-large.md)，2026-11-18）**：
+> 决策 6 的零上报文案 / 星级与决策 8 的「无可检视文件保持纯文案」被推翻——三种零
+>（确实无意见 / 有意见但没上报 / 无可检视文件）统一为同一四节模板（「未发现缺陷」+
+> ⭐⭐⭐⭐，省略速览节）；只有超大 diff 仍保留固定文案。
+
 ## Context
 
 用户于 2026-11-17 定稿平台侧总结规范：固定四节——检视总览（变更规模 / 预算使用 / 资源加载）、意见分布（fatal / major / minor / suggestion）、高优先级意见速览、星级评价（硬判据）。

@@ -4,6 +4,10 @@
 **关联**：[ADR-0069](0069-configurable-diff-exclude-globs.md)（glob 版排除，本 ADR 新增正则版并保留 glob）、[ADR-0068](0068-report-every-changed-file-including-filtered.md)（变更文件全覆盖上报）、[ADR-0075](0075-diff-too-large-skip-with-report.md)（跳过检视仍上报空意见的既有模板）、[ADR-0064](0064-finding-scope-out-of-diff-filter.md)（输出侧范围过滤；与本 ADR 的输入侧限范围不同层）、[ADR-0025](0025-user-config-file.md)（配置面）
 **范围**：本仓 pi 线 0078。只新增输入侧范围选择（白名单 + 黑名单），新增两个审计原因与 `mrFilter.filters` 留痕；其余过滤规则、输出侧过滤、findings / tips 口径不变。
 
+> **后续修订（[ADR-0100](0100-unified-summary-shape-except-diff-too-large.md)，2026-11-18）**：
+> 决策 5 的固定总结改为与零意见相同的四节结构性模板（含变更规模；预算 / 资源写 0）。
+> 跳过判定、空意见上报与 stdout `skipped` 不变。
+
 ## Context
 
 用户需要"这次只检视 `src/**` 和 `packages/*/src/**`，但去掉测试与生成目录"的能力。现有配置面只能做**排除**：

@@ -7,7 +7,6 @@ import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
 import {
   buildReviewSummary,
   NO_FINDING_NOTE,
-  NO_REPORTED_NOTE,
 } from "./review-summary.js";
 
 // 收尾总结（ADR-0045）：模型调用产出 Markdown；失败降级确定性模板
@@ -179,7 +178,7 @@ test("零 finding：结构化模板（无速览 / 未发现缺陷 / ⭐⭐⭐⭐
   expect(result.degradedReason).toBeUndefined();
 });
 
-test("有意见但全部未上报：结构化模板 + 诚实说明，不作星级评价（ADR-0057）", async () => {
+test("零已上报（含有意见但全部未上报）：与零 finding 同一模板，不调模型（ADR-0100）", async () => {
   let calls = 0;
   const fetch: FetchFunction = async () => {
     calls += 1;
@@ -187,15 +186,22 @@ test("有意见但全部未上报：结构化模板 + 诚实说明，不作星�
   };
   const result = await buildReviewSummary({
     findings: [],
-    unreportedFindings: 2,
+    metrics: {
+      changedFiles: 3,
+      changedHunks: 5,
+      changedLines: 120,
+      modelCalls: 0,
+      inputTokens: 0,
+    },
     runtime: RUNTIME,
     fetch,
   });
   expect(calls).toBe(0);
   expect(result.markdown).toContain("## 检视总览");
-  expect(result.markdown).toContain(NO_REPORTED_NOTE);
-  expect(result.markdown).not.toContain("未发现缺陷");
+  expect(result.markdown).toContain("| 预算使用 | 0 次调用 |");
+  expect(result.markdown).toContain(NO_FINDING_NOTE);
+  expect(result.markdown).not.toContain("未向平台上报");
   expect(result.markdown).not.toContain("### 高优先级意见速览");
-  expect(result.markdown).toContain("不作星级评价");
+  expect(result.markdown).toContain("⭐⭐⭐⭐");
   expect(result.degradedReason).toBeUndefined();
 });
