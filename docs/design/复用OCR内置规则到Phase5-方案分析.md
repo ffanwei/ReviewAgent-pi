@@ -245,30 +245,80 @@ Phase 5 补漏扫描（六项镜头 + 适用规则）。
 
 ### 5.4 Scope 适配器（关键）
 
-OCR 规则不能原样用。需要一层 `scope adapter`：
+#### 5.4.1 冲突的本质
 
-**保留**（与我们的范围一致）：
+OCR 规则里有大量“要求报”的条款，与本仓 `SYSTEM_PROMPT` 的“不要报”直接互斥：
 
-- 空值/边界/类型/错误路径/资源/并发/安全/性能/API 契约；
-- 重复代码、结构、死代码、简化（可维护性）；
-- 跨文件一致性、调用方影响。
+- OCR：拼写、命名、注释、`var`/`==`/`any`、测试覆盖、风格；
+- 我们：不要报测试缺失、文档/注释/命名/格式类建议。
 
-**删除或改写**（与 `SYSTEM_PROMPT` 冲突）：
+这不是措辞问题，而是**同一段上下文里有两套互斥指令**。只在规则包或系统提示里加一句
+“以系统提示为准”不够稳：模型往往跟随更具体、更靠后的规则文本；而且被删条款
+仍占用 token，审计也看不出某条 finding 是否来自本应删除的规则。
 
-- 拼写错误、命名规范、注释要求、格式/风格；
-- “测试覆盖/建议补测试”；
-- 纯风格条款（`var`/`==`/`any` 等，如果只是风格而非行为缺陷）；
-- 与具体语言工具链强绑定的建议（`gofmt`/`go vet`/Staticcheck 已覆盖的）。
+**结论：在注入前过滤，而不是注入后靠优先级压制。**
 
-**改写**：
+#### 5.4.2 三桶分类：保留 / 删除 / 改写
 
-- OCR 工具名 `file_read` / `code_search` → `review.get_file` / `review.search_code`；
-- OCR 的 `task_done` / `code_comment` 等流程词删除；
-- 规则标题加 `OCR-<lang>-<section>` id，便于审计和去重。
+不能按标题一刀切。OCR 很多“风格”条款其实能指向真实缺陷，需要改写而不是删除。
+
+| 桶 | 处理 | 例子 |
+|---|---|---|
+| **保留** | 原样保留，补 rule id | 空值/边界/类型/错误路径/资源/并发/安全/性能/API 契约；重复代码、结构、死代码、简化；跨文件一致性、调用方影响 |
+| **删除** | 从注入文本中移除 | 拼写错误、命名规范、注释要求、格式/缩进、测试覆盖/建议补测试、纯风格条款、`gofmt`/`go vet`/Staticcheck 已覆盖的建议 |
+| **改写** | 把“风格”改写成“行为风险” | `var` → 变量提升/作用域/重复声明导致的错误；`==` → 隐式类型转换导致的比较错误；`any` → 类型安全漏洞掩盖运行时错误；命名 → 重命名破坏调用方/API 契约、符号遮蔽导致用错对象；注释/文档 → 注释与代码不一致导致误用或行为错误；测试 → 变更的测试本身断言错误/逻辑错误（不是“缺测试”） |
+
+**逐文档示例**（先覆盖 benchmark 用到的 9 种语言 + 配置文档）：
+
+| 文档 | 保留 | 删除 | 改写 |
+|---|---|---|---|
+| `default.md` | Correctness / Security / Performance / Maintainability 的结构类 | Test Coverage；命名/风格问句 | “names express intent” → 仅当命名导致调用方/契约错误 |
+| `ts_js_tsx_jsx.md` | Dead Code、Duplicate Code、Hardcoding、Null Checks、React Hooks/Effect/Performance、Async 错误处理、XSS/innerHTML/eval、敏感信息、原型链 | Obvious Typos、Code Comments、`var`/`==`/`any`/嵌套三元的纯风格条款 | `var` → 提升/作用域；`==` → 隐式转换；`any` → 类型安全；命名 → API 破坏 |
+| `go.md` | Errors/Panics/API、Nil/接口/值语义、Context/Goroutine、Channel/锁、Timer/资源、集合/边界、安全边界 | “Tests and Review Scope”里的补测试建议；formatting/import ordering/naming preferences | 已基本是行为规则；保留其“不要报风格”的限定 |
+| `c.md` | malloc/free、泄漏、缓冲区溢出、安全字符串 | Obvious Typos、Naming Conventions | `strcpy` 等不安全函数 → 溢出/安全问题（原本就是行为） |
+| `rust.md` | Ownership/Lifetime、Error/Panic、Unsafe、并发、Async/取消、集合/性能、类型/API、宏、安全 | Obvious Typos | `clone()` 过多 → 性能/所有权；`unwrap/expect` → 错误路径 |
+| `python.md` | 可变默认参数、边界/空值、异常、资源、性能、并发/async | Obvious Typos；`is` vs `==` 中纯风格的部分 | `is` 比较字面量 → 正确性；`is None` vs `== None` 纯风格 → 删除 |
+| `java.md` | Logic、Performance、Thread Safety、Dead Code | Obvious Typos | 命名 → API/调用方破坏 |
+| `cpp.md` | Smart Pointer、RAII、STL、Exception Handling | Obvious Typos | `auto`/`const` → 生命周期/重载/可变性错误，而非风格 |
+| `csharp.md` | Nullability、Disposal、Async/Cancellation、LINQ、Equality、Interop/Serialization | 无（基本全是行为） | — |
+| `php.md` | Type Juggling、Arrays、Errors、Resources/Transactions、DB/ORM、Web Security、Dynamic Execution、Performance | 无（基本全是行为） | — |
+| `json/yaml/package_json/pom_xml/cargo_toml/github_workflows` | Schema/版本/依赖/CI 正确性 | 格式/缩进/命名 | 版本回退 → 兼容性/构建风险 |
+
+#### 5.4.3 实现与审计
+
+- `rules.manifest.json`：按“文档 + 小节 + bullet”记录 `action: keep|drop|rewrite`、
+  `ruleId`、`rewrite` 文案。粒度必须到 bullet，因为 `Code Quality Checks` 这种
+  小节里既有重复代码（保留）也有 `var`/`==`（改写/删除）。
+- `build-rules.ts`：解析 `####` 小节与 bullet，应用 manifest，生成过滤后的
+  `rules/*.md`；每条规则带 `OCR-<lang>-<section>-<n>` id 和来源。
+- `selector.ts`：按变更路径选规则；只加载过滤后的文本。
+- 审计：`selectedRules`、`droppedSections`、`rewrittenSections`、`scopeMode`。
+- 测试：快照断言过滤后的文本不含禁用模式（typo/拼写/命名规范/格式/测试覆盖），
+  同时断言关键行为规则仍在。
+
+#### 5.4.4 与 SYSTEM_PROMPT 的关系
+
+- **不要为了复用 OCR 规则而放宽 SYSTEM_PROMPT**。当前排除项是产品定位；
+  放宽会把风格/测试噪声带回主流程。
+- 单独修一个内部矛盾：`system-prompt.ts:67` 的 P3 仍写“风格、命名或文档类小问题”，
+  与 `:23` 的排除项冲突。建议改为“本次变更引入的轻微问题或可维护性隐患；
+  不用于纯风格、命名、文档类建议”。
+- 加一句**兜底**（不是主修复）：“规则包/规则 Skill 中与本范围冲突的条款，
+  以本范围为最高优先级。”
+- 规则包本身必须已经过滤；兜底句只防止未来规则包漏过滤。
+
+#### 5.4.5 为什么不只改 SYSTEM_PROMPT
+
+- 只加“以系统提示为准”：模型仍同时看到两套指令，行为不稳定；token 仍浪费；
+  审计无法区分 finding 来源。
+- 只把 SYSTEM_PROMPT 放宽：等于放弃当前产品范围，风格/测试噪声会进入所有
+  非 benchmark 场景；P 会下降。
+- 只改规则包、不改 SYSTEM_PROMPT：最干净——注入文本里根本没有冲突条款；
+  P3 矛盾另行修复。**推荐这条。**
 
 **原则**：规则文本服务“找缺陷”，不是“做风格审查”。保留 OCR 的具体信号
 （例如 Go 的 typed nil、Rust 的 `unsafe` 边界、Python 的可变默认参数），
-删掉与产品范围冲突的条款。
+删掉与产品范围冲突的条款；能指向行为缺陷的“风格”条款改写成行为风险。
 
 ## 6. 去重与合并
 
