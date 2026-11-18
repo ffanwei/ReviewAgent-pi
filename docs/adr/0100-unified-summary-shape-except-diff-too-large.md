@@ -4,6 +4,11 @@
 **关联**：[ADR-0097](0097-summary-fixed-structure-and-stars.md)（四节结构与星级硬判据；本 ADR 修订其决策 6 / 8）、[ADR-0057](0057-summary-covers-only-reported-findings.md)（总结只覆盖已上报意见；本 ADR 修订其决策 3 的零上报形态）、[ADR-0078](0078-review-scope-include-exclude-regex.md)（无可检视文件跳过；本 ADR 修订其决策 5 的固定总结）、[ADR-0075](0075-diff-too-large-skip-with-report.md)（超大 diff 跳过）、[ADR-0045](0045-mcp-business-task-tools.md)（收尾总结上报）
 **范围**：本仓 pi 线 0100。只改零上报 / 无可检视文件两种总结的 Markdown 形态与指标来源；「已上报集合是唯一信源」（ADR-0057 决策 1/2）、跳过判定、stdout / 退出码 / 审计 / 转录均不变；超大 diff 的固定总结也不变。
 
+> **后续修订（[ADR-0103](0103-honest-zero-summaries-and-count-only-star-criteria.md)，2026-11-18）**：
+> 决策 2 的「三种零正文完全一致」被推翻——四节结构与指标仍统一，但说明句 / 星级
+> 恢复按事实区分：零上报与无可检视文件不再写「未发现缺陷」，也不给 ⭐⭐⭐⭐。
+> 决策 1 / 4 / 5 不变。
+
 ## Context
 
 ADR-0097 落地后，收尾总结仍有两种零路径不是四节模板：

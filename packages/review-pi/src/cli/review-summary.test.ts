@@ -7,6 +7,7 @@ import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
 import {
   buildReviewSummary,
   NO_FINDING_NOTE,
+  NO_REPORTED_NOTE,
 } from "./review-summary.js";
 
 // 收尾总结（ADR-0045）：模型调用产出 Markdown；失败降级确定性模板
@@ -103,7 +104,7 @@ test("模型失败 → 确定性模板：非空、结构化规范、degradedReas
   expect(result.markdown).toContain("### 高优先级意见速览");
   expect(result.markdown).toContain("1. [major] src/A.java:10 — Unsafe redirect");
   expect(result.markdown).toContain("### 星级评价");
-  expect(result.markdown).toContain("⭐⭐ — 存在 ≥1 条 major 或 fatal 意见，需整改后方可合入");
+  expect(result.markdown).toContain("⭐⭐ — 存在 ≥1 条 major 或 fatal 意见");
 });
 
 test("模型回空串 → 模板降级（空总结不外发）", async () => {
@@ -174,11 +175,11 @@ test("零 finding：结构化模板（无速览 / 未发现缺陷 / ⭐⭐⭐⭐
   expect(result.markdown).toContain("| fatal | 0 | — |");
   expect(result.markdown).toContain(NO_FINDING_NOTE);
   expect(result.markdown).not.toContain("### 高优先级意见速览");
-  expect(result.markdown).toContain("⭐⭐⭐⭐");
+  expect(result.markdown).toContain("⭐⭐⭐⭐ — 0 条 fatal / major / minor / suggestion（未发现缺陷）");
   expect(result.degradedReason).toBeUndefined();
 });
 
-test("零已上报（含有意见但全部未上报）：与零 finding 同一模板，不调模型（ADR-0100）", async () => {
+test("零已上报（含有意见但全部未上报）：四节结构 + 诚实说明，不作星级评价（ADR-0103）", async () => {
   let calls = 0;
   const fetch: FetchFunction = async () => {
     calls += 1;
@@ -186,6 +187,7 @@ test("零已上报（含有意见但全部未上报）：与零 finding 同一�
   };
   const result = await buildReviewSummary({
     findings: [],
+    unreportedFindings: 2,
     metrics: {
       changedFiles: 3,
       changedHunks: 5,
@@ -199,9 +201,9 @@ test("零已上报（含有意见但全部未上报）：与零 finding 同一�
   expect(calls).toBe(0);
   expect(result.markdown).toContain("## 检视总览");
   expect(result.markdown).toContain("| 预算使用 | 0 次调用 |");
-  expect(result.markdown).toContain(NO_FINDING_NOTE);
-  expect(result.markdown).not.toContain("未向平台上报");
+  expect(result.markdown).toContain(NO_REPORTED_NOTE);
+  expect(result.markdown).not.toContain("未发现缺陷");
   expect(result.markdown).not.toContain("### 高优先级意见速览");
-  expect(result.markdown).toContain("⭐⭐⭐⭐");
+  expect(result.markdown).toContain("—（未上报任何检视意见，不作星级评价）");
   expect(result.degradedReason).toBeUndefined();
 });

@@ -227,7 +227,7 @@ export async function deliverSkip(input: SkipDeliveryInput): Promise<SkipDeliver
     const markdownContent =
       input.skip.reason === "diff-too-large"
         ? DIFF_TOO_LARGE_SUMMARY_MARKDOWN
-        : renderZeroFindingSummary(input.metrics);
+        : renderZeroFindingSummary(input.metrics, "no-reviewable-files");
     const outcome = await task.saveSummary(
       { markdownContent },
       { settleBefore: false },
@@ -534,6 +534,9 @@ async function publishSummary(
   const summaryReport = await input.ports.oneShot.generateSummary({
     ...(summaryTips !== undefined && summaryTips.length > 0 ? { tips: summaryTips } : {}),
     findings: summaryFindings,
+    ...(summaryFindings.length === 0 && unreported > 0
+      ? { unreportedFindings: unreported }
+      : {}),
     ...(input.mcp.reportedFiles.length > 0 ? { reportedFiles: [...input.mcp.reportedFiles] } : {}),
     metrics,
   });

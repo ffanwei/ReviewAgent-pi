@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0102）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0103）。
 
 ## 记录纪律
 
@@ -32,6 +32,7 @@
 | ADR-0080（`--model` 探测与单边降级） | ADR-0093 | 触发前提消失：键阶段 1 保留告警、恒 off；阶段 2 删除 |
 | ADR-0097（决策 6 / 8）、ADR-0057（决策 3）、ADR-0078（决策 5） | ADR-0100 | 零意见 / 零上报 / 无可检视文件的总结形态统一为四节模板 |
 | ADR-0077（决策 2：重放触发条件） | ADR-0101 | 干净 EOF 截断也重放；排除项与预算语义不变 |
+| ADR-0100（决策 2）、ADR-0097（决策 5 判据文案） | ADR-0103 | 三种零恢复诚实区分；星级判据只陈述计数 |
 
 ## 0037 起的新增决策（不逐条列全，只作导航）
 
@@ -101,6 +102,7 @@
 | [ADR-0100](0100-unified-summary-shape-except-diff-too-large.md) | 收尾总结形态统一：除超大 diff 外，零意见 / 零上报 / 无可检视文件都走四节模板（「未发现缺陷」+ ⭐⭐⭐⭐） |
 | [ADR-0101](0101-retry-clean-eof-stream-truncation.md) | 干净 EOF 截断（无 `finish_reason`、body 正常读完）也纳入流重放；排除 content_filter / aborted / 无 start |
 | [ADR-0102](0102-context-window-budget-and-overflow-retry.md) | 上下文窗口预算：`reviewer.contextWindow` + 发送前收窄输出；溢出 400 时减半 `max_tokens` 重试 |
+| [ADR-0103](0103-honest-zero-summaries-and-count-only-star-criteria.md) | 三种「零」恢复诚实区分（保留四节结构）；星级判据只陈述计数 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

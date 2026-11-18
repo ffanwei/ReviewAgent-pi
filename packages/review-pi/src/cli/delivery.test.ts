@@ -510,7 +510,7 @@ test("diff-too-large 仍用固定文案", async () => {
   expect(summaries).toEqual([DIFF_TOO_LARGE_SUMMARY_MARKDOWN]);
 });
 
-test("deliverSkip：无可检视文件与零意见同模板，指标写 0（ADR-0100）", async () => {
+test("deliverSkip：无可检视文件用四节结构，不谎报未发现缺陷（ADR-0103）", async () => {
   const summaries: string[] = [];
   const task: DeliveryTaskPort = {
     ...fakeTask({ calls: [] }),
@@ -540,7 +540,8 @@ test("deliverSkip：无可检视文件与零意见同模板，指标写 0（ADR-
   expect(markdown).toContain("| 变更规模 | 3 个文件 / 4 个 hunk（20 行变更） |");
   expect(markdown).toContain("| 预算使用 | 0 次调用 |");
   expect(markdown).toContain("| 资源加载 | 约 0 tokens |");
-  expect(markdown).toContain("本次检视未发现缺陷。");
-  expect(markdown).toContain("⭐⭐⭐⭐");
+  expect(markdown).toContain("无可检视文件，跳过检视。");
+  expect(markdown).not.toContain("未发现缺陷");
+  expect(markdown).toContain("—（未检视任何文件，不作星级评价）");
   expect(markdown).not.toContain("### 高优先级意见速览");
 });

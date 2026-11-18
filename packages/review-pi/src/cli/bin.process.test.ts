@@ -2725,11 +2725,12 @@ test(
         filePath: "pnpm-lock.yaml",
         reviewTips: [],
       });
-      // ADR-0100：无可检视文件与零意见同模板（四节 + 未发现缺陷 + 四星）
+      // ADR-0103：无可检视文件也发四节结构，但不谎报「未发现缺陷」
       const skipMarkdown = String(business[2]?.args.markdownContent);
       expect(skipMarkdown).toContain("## 检视总览");
-      expect(skipMarkdown).toContain("本次检视未发现缺陷。");
-      expect(skipMarkdown).toContain("⭐⭐⭐⭐");
+      expect(skipMarkdown).toContain("无可检视文件，跳过检视。");
+      expect(skipMarkdown).not.toContain("未发现缺陷");
+      expect(skipMarkdown).toContain("—（未检视任何文件，不作星级评价）");
       expect(skipMarkdown).not.toContain("### 高优先级意见速览");
       expect(run.stderr).toContain("跳过检视");
       expect(stub.requests()).toHaveLength(0);
@@ -3617,9 +3618,9 @@ test(
       expect(summaryArgs.taskId).toBe(CLI_TASK_ID);
       const summaryMarkdown = String(summaryArgs.markdownContent);
       expect(summaryMarkdown).toContain("## 检视总览");
-      expect(summaryMarkdown).toContain("本次检视未发现缺陷。");
-      expect(summaryMarkdown).not.toContain("未向平台上报");
-      expect(summaryMarkdown).toContain("⭐⭐⭐⭐");
+      expect(summaryMarkdown).toContain("本次检视未向平台上报任何检视意见。");
+      expect(summaryMarkdown).not.toContain("未发现缺陷");
+      expect(summaryMarkdown).toContain("不作星级评价");
       expect(summaryMarkdown).not.toContain("### 高优先级意见速览");
       // 留痕同样要能证明「文件被检视过」
       const mcpLog = JSON.parse(
@@ -3704,9 +3705,9 @@ test(
       };
       expect(summaryArgs.taskId).toBe(CLI_TASK_ID);
       const summaryMarkdown = String(summaryArgs.markdownContent);
-      expect(summaryMarkdown).toContain("本次检视未发现缺陷。");
-      expect(summaryMarkdown).not.toContain("未向平台上报");
-      expect(summaryMarkdown).toContain("⭐⭐⭐⭐");
+      expect(summaryMarkdown).toContain("本次检视未向平台上报任何检视意见。");
+      expect(summaryMarkdown).not.toContain("未发现缺陷");
+      expect(summaryMarkdown).toContain("不作星级评价");
     } finally {
       await stub.close();
       await mcp.close();
@@ -3856,11 +3857,12 @@ test(
         filePath: "src/main/java/Keep.java",
         reviewTips: [],
       });
-      // ADR-0100：无可检视文件也发统一四节模板
+      // ADR-0103：无可检视文件也发四节结构，但不谎报「未发现缺陷」
       const skipMarkdown = String(business[2]?.args.markdownContent);
       expect(skipMarkdown).toContain("## 检视总览");
-      expect(skipMarkdown).toContain("本次检视未发现缺陷。");
-      expect(skipMarkdown).toContain("⭐⭐⭐⭐");
+      expect(skipMarkdown).toContain("无可检视文件，跳过检视。");
+      expect(skipMarkdown).not.toContain("未发现缺陷");
+      expect(skipMarkdown).toContain("—（未检视任何文件，不作星级评价）");
       const outcome = JSON.parse(run.stdout) as { skipped?: string; findings: unknown[] };
       expect(outcome.skipped).toBe("no-reviewable-files");
       expect(outcome.findings).toEqual([]);

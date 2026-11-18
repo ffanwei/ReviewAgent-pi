@@ -7,6 +7,10 @@
 > **后续修订（[ADR-0100](0100-unified-summary-shape-except-diff-too-large.md)，2026-11-18）**：
 > 决策 5 的固定总结改为与零意见相同的四节结构性模板（含变更规模；预算 / 资源写 0）。
 > 跳过判定、空意见上报与 stdout `skipped` 不变。
+>
+> **再修订（[ADR-0103](0103-honest-zero-summaries-and-count-only-star-criteria.md)，2026-11-18）**：
+> 四节结构保留，但说明句恢复「无可检视文件，跳过检视。」且不作星级评价——
+> 「没检视」不再写成「未发现缺陷」。
 
 ## Context
 

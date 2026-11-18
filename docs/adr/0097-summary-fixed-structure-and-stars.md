@@ -4,6 +4,11 @@
 **关联**：[ADR-0045](0045-mcp-business-task-tools.md)（片级报文与收尾总结上报）、[ADR-0057](0057-summary-covers-only-reported-findings.md)（总结只覆盖已上报意见；本 ADR 修订其决策 3 的呈现形态）、[ADR-0090](0090-chinese-native-review.md)（中文原生检视）、[ADR-0046](0046-configurable-max-rounds.md)（轮次上限可配，故不引入固定调用预算分母）
 **范围**：本仓 pi 线 0097。只改 `saveReviewSummary` 的 Markdown 形态与指标来源；上报时机、已上报口径、零意见不调模型、退出码、审计 / 转录 / stdout 均不变。
 
+> **后续修订（[ADR-0103](0103-honest-zero-summaries-and-count-only-star-criteria.md)，2026-11-18）**：
+> 决策 5 的星级判据文案改为只陈述计数（删除「需整改后方可合入」「代码逻辑正确
+> 可合入」「代码体现防御性设计」等主观结论），并为零意见增加专用判据；
+> 2–4 星的硬判据本身不变。
+
 > **后续修订（[ADR-0100](0100-unified-summary-shape-except-diff-too-large.md)，2026-11-18）**：
 > 决策 6 的零上报文案 / 星级与决策 8 的「无可检视文件保持纯文案」被推翻——三种零
 >（确实无意见 / 有意见但没上报 / 无可检视文件）统一为同一四节模板（「未发现缺陷」+

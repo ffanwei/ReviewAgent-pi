@@ -25,20 +25,29 @@ export interface ReportLlmRuntime {
  * 意见**（`mrReviewResult` 成功的条目）——总结必须与平台明细一致。
  *
  * 分流与降级链（产物必须有、内容允许降级）：
- * 0. **零已上报意见 ⇒ 确定性结构化模板，不调用模型**——「确实无意见」
- *    与「有意见但全部没上报」共用同一模板（ADR-0100），都写「未发现
- *    缺陷」+ ⭐⭐⭐⭐ 并省略意见速览节；
+ * 0. **零已上报意见 ⇒ 确定性结构化模板，不调用模型**——三种「零」共用四节
+ *    结构与指标，但说明句 / 星级按事实区分（ADR-0103）：确实无意见给
+ *    「未发现缺陷」+ ⭐⭐⭐⭐；有意见但全部没上报、过滤后无可检视文件都
+ *    不谎报「未发现缺陷」，也不作星级评价；
  * 1. 有意见 ⇒ 模型调用（输入 = 中文 tips + findings 摘要 + 权威统计与星级）；
  * 2. 投影降级 / 无 tips ⇒ 输入退为英文 findings（Q10 决策）；
  * 3. 模型调用失败 / 超时 ⇒ **确定性模板** Markdown（同一套结构化规范），
  *    `degradedReason` 留痕——`saveReviewSummary` 一定会被调用。
  */
 
-/**
- * 零意见 / 零上报 / 无可检视文件共用的说明句（ADR-0100；渲染在「意见分布」
- * 表之后）。三种「零」在平台侧不再区分，差异只留在 stdout / stderr / 审计。
- */
+/** 确实无意见（ADR-0103） */
 export const NO_FINDING_NOTE = "本次检视未发现缺陷。";
+
+/** 本地有意见但一条都没上报成功（ADR-0103） */
+export const NO_REPORTED_NOTE = "本次检视未向平台上报任何检视意见。";
+
+/** 过滤后没有任何可检视文件（ADR-0103） */
+export const NO_REVIEWABLE_NOTE = "无可检视文件，跳过检视。";
+
+/** 零上报时的星级行：绝不把「没上报」评成「没问题」 */
+export const UNREPORTED_STAR_LINE = "—（未上报任何检视意见，不作星级评价）";
+/** 未检视任何文件时的星级行 */
+export const NOT_REVIEWED_STAR_LINE = "—（未检视任何文件，不作星级评价）";
 
 /** diff 超 `limits.boundary.maxDiffChars` 跳过检视时的固定总结（ADR-0075，不调用模型） */
 export const DIFF_TOO_LARGE_SUMMARY_MARKDOWN = "# 检视总结\n\nDiff 超大，跳过检视。";
@@ -65,6 +74,12 @@ export interface ReviewSummaryInput {
   readonly tips?: ReviewTipsDocumentLike;
   /** 已成功上报的 findings（平台最终收到的意见；ADR-0057） */
   readonly findings: readonly Finding[];
+  /**
+   * 未被上报的 finding 条数（片级生成失败 / 上报失败 / 结构跳过 / 置信度
+   * 与严重级过滤）。仅在 `findings` 为空时用于区分「确实零意见」与
+   * 「有意见但没上报」（ADR-0103）。
+   */
+  readonly unreportedFindings?: number;
   /** 各片已上报的文件路径（按片序拼接；供总结提及平台已收到的结果） */
   readonly reportedFiles?: readonly string[];
   /** 检视总览的运行统计（缺席时三行渲染 `—`） */
@@ -135,33 +150,51 @@ export function severityStars(findings: readonly Finding[]): 2 | 3 | 4 {
 }
 
 const STAR_CRITERIA: Readonly<Record<2 | 3 | 4, string>> = {
-  2: "存在 ≥1 条 major 或 fatal 意见，需整改后方可合入",
-  3: "0 条 fatal，0 条 major，仅 minor + suggestion，代码逻辑正确可合入",
-  4: "0 条 fatal / major / minor，仅 suggestion 且代码体现防御性设计",
+  2: "存在 ≥1 条 major 或 fatal 意见",
+  3: "0 条 fatal，0 条 major，仅 minor / suggestion",
+  4: "0 条 fatal / major / minor，仅 suggestion",
 };
+
+/** 零意见专用判据：不能沿用「仅 suggestion」的措辞（ADR-0103） */
+const ZERO_FINDING_CRITERION = "0 条 fatal / major / minor / suggestion（未发现缺陷）";
 
 function starText(stars: 2 | 3 | 4): string {
   return "⭐".repeat(stars);
 }
 
+export type ZeroSummaryReason = "no-findings" | "unreported" | "no-reviewable-files";
+
 /**
- * 零意见 / 零上报 / 无可检视文件共用的确定性总结（ADR-0100）：同一套四节
- * 模板 + 「未发现缺陷」+ ⭐⭐⭐⭐，不调用模型。跳过路径的 metrics 由调用方
- * 提供（预算使用 / 资源加载写 0）。
+ * 三种「零」共用四节结构与指标，但说明句 / 星级按事实区分（ADR-0103）：
+ * 只有「确实无意见」才给 ⭐⭐⭐⭐；没上报 / 没检视都不作星级评价。
  */
-export function renderZeroFindingSummary(metrics?: ReviewSummaryMetrics): string {
+export function renderZeroFindingSummary(
+  metrics?: ReviewSummaryMetrics,
+  reason: ZeroSummaryReason = "no-findings",
+): string {
+  const variant =
+    reason === "no-findings"
+      ? { note: NO_FINDING_NOTE }
+      : reason === "unreported"
+        ? { note: NO_REPORTED_NOTE, starLine: UNREPORTED_STAR_LINE }
+        : { note: NO_REVIEWABLE_NOTE, starLine: NOT_REVIEWED_STAR_LINE };
   return renderStructuredSummary(
     { findings: [], ...(metrics !== undefined ? { metrics } : {}) },
-    { includePriority: false, note: NO_FINDING_NOTE },
+    { includePriority: false, ...variant },
   );
 }
 
 export async function buildReviewSummary(input: ReviewSummaryInput): Promise<ReviewSummaryResult> {
   // 零已上报意见：不调用模型，直接按同一套结构化规范确定性渲染。
-  // ADR-0100：无论本地确实零意见还是「有意见但全部没上报」，都走同一模板
-  //（说明句「未发现缺陷」+ ⭐⭐⭐⭐），平台侧不再区分两种零。
+  // ADR-0103：结构与指标共用，但说明句 / 星级按事实区分。
   if (input.findings.length === 0) {
-    return { markdown: renderZeroFindingSummary(input.metrics) };
+    const unreported = (input.unreportedFindings ?? 0) > 0;
+    return {
+      markdown: renderZeroFindingSummary(
+        input.metrics,
+        unreported ? "unreported" : "no-findings",
+      ),
+    };
   }
   const completion = await completeOneShot({
     baseUrl: input.runtime.baseUrl,
@@ -304,6 +337,8 @@ interface StructuredSummaryOptions {
   readonly includePriority?: boolean;
   /** 意见分布表之后的说明句（零意见的固定口径） */
   readonly note?: string;
+  /** 覆盖星级行（零上报 / 未检视时写「不作星级评价」） */
+  readonly starLine?: string;
 }
 
 /** 结构化渲染只依赖已上报 findings 与总览指标，不要求完整总结输入 */
@@ -352,7 +387,10 @@ function renderStructuredSummary(
     "",
     "### 星级评价",
     "",
-    `${starText(stars)} — ${STAR_CRITERIA[stars]}`,
+    options.starLine ??
+      `${starText(stars)} — ${
+        input.findings.length === 0 ? ZERO_FINDING_CRITERION : STAR_CRITERIA[stars]
+      }`,
   );
   return lines.join("\n");
 }
