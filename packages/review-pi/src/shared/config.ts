@@ -871,12 +871,13 @@ ${excludeGlobLines}
       "reviewTurnAttempts": 3,           // 主检视回合 / 规则 Skill 会话总尝试次数。
       "oneShotAttempts": 3,              // 片级报文 / 收尾总结总尝试次数。
       "smokeAttempts": 1,                // smoke 探针总尝试次数（缺省 1 = 不重试）。
-      // 流中断重放（ADR-0077）：流已开始后断开时，缓冲当前响应并在本层重发。
-      // 总尝试次数（含首次）：13 = 1 次首次 + 12 次重放；1 = 关闭重放。
-      "streamAttempts": 13,
+      // 流中断重放（ADR-0077 / ADR-0101）：流已开始后断开或干净 EOF 截断时，
+      // 缓冲当前响应并在本层重发。
+      // 总尝试次数（含首次）：3 = 1 次首次 + 2 次重放；1 = 关闭重放。
+      "streamAttempts": 3,
       // 重放总墙钟预算（毫秒，从首次尝试发出起算、含退避）；0 = 不设上限。
       // 到点即停止「再发起一次」；已发出的尝试不会被打断。
-      "streamReplayBudgetMs": 120000
+      "streamReplayBudgetMs": 600000
     },
     // 检视意见置信度过滤（ADR-0052）：confidence 低于 min 的意见不进入中文 tips
     // （reviews_tips_zh.json 与 mrReviewResult.reviewTips）；英文 findings / stdout 不受影响。

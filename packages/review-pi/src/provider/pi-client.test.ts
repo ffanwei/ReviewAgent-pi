@@ -428,3 +428,179 @@ test("reviewStreamFn ???????????????? replay 0/1", async () => {
   // ??????? onPayload??? requests[] / requestId ???
   expect(payloadCalls).toBe(1);
 });
+
+// ADR-0101：干净 EOF（body 正常读完、但没有任何 finish_reason）也按流截断重放。
+function truncatedSseResponse(): Response {
+  const frame = `data: ${JSON.stringify({
+    id: "chatcmpl-truncated",
+    object: "chat.completion.chunk",
+    model: "deepseek-v4-flash",
+    choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }],
+  })}\n\n`;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame));
+      // 干净 EOF：没有 finish_reason、没有 [DONE]，但 body 正常结束。
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+function requestLines(entries: readonly RequestTimelineEntry[]) {
+  return entries.filter(
+    (entry): entry is Extract<RequestTimelineEntry, { kind: "request" }> => entry.kind === "request",
+  );
+}
+
+test("干净 EOF（无 finish_reason）按流截断重放（ADR-0101）", async () => {
+  const entries: RequestTimelineEntry[] = [];
+  setRequestTimelineSink((entry) => entries.push(entry));
+  const script = fakeFetch([
+    { text: "recovered", usage: { promptTokens: 3, completionTokens: 2, cacheReadTokens: 0 } },
+  ]);
+  let calls = 0;
+  let payloadCalls = 0;
+  const fetch: FetchFunction = async (input, init) => {
+    calls += 1;
+    return calls === 1 ? truncatedSseResponse() : script.fetch(input, init);
+  };
+  try {
+    const streamFn = reviewStreamFn({
+      apiKey: API_KEY,
+      fetch,
+      timeline: {
+        scope: () => ({ site: "main", round: 1, phase: "risk_classification", phaseIndex: 2 }),
+      },
+      replay: { attempts: 2, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 },
+    });
+    const stream = await streamFn(
+      reviewModelOf(undefined, "https://gw.example.com/v1"),
+      BASE_CONTEXT,
+      { onPayload: () => { payloadCalls += 1; } },
+    );
+    const message = await stream.result();
+    expect(message.stopReason).toBe("stop");
+  } finally {
+    setRequestTimelineSink(null);
+  }
+
+  expect(calls).toBe(2);
+  const requests = requestLines(entries);
+  expect(requests.map((entry) => entry.replay)).toEqual([0, 1]);
+  expect(requests[0]?.stopReason).toBe("error");
+  expect(requests[0]?.error?.kind).toBe("provider");
+  expect(requests[0]?.error?.message).toContain("Stream ended without finish_reason");
+  expect(requests[1]?.stopReason).toBe("stop");
+  expect(payloadCalls).toBe(1);
+});
+
+test("content_filter（有 finish_reason）不重放（ADR-0101 排除项）", async () => {
+  const entries: RequestTimelineEntry[] = [];
+  setRequestTimelineSink((entry) => entries.push(entry));
+  const script = fakeFetch([
+    { text: "blocked", finishReason: "content_filter", usage: { promptTokens: 3, completionTokens: 2, cacheReadTokens: 0 } },
+    { text: "unused", usage: { promptTokens: 3, completionTokens: 2, cacheReadTokens: 0 } },
+  ]);
+  try {
+    const streamFn = reviewStreamFn({
+      apiKey: API_KEY,
+      fetch: script.fetch,
+      timeline: { scope: () => ({ site: "main" }) },
+      replay: { attempts: 2, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 },
+    });
+    const stream = await streamFn(
+      reviewModelOf(undefined, "https://gw.example.com/v1"),
+      BASE_CONTEXT,
+      {},
+    );
+    const message = await stream.result();
+    expect(message.stopReason).toBe("error");
+  } finally {
+    setRequestTimelineSink(null);
+  }
+
+  expect(script.requests).toHaveLength(1);
+  const requests = requestLines(entries);
+  expect(requests.map((entry) => entry.replay)).toEqual([0]);
+  expect(requests[0]?.error?.message).toContain("content_filter");
+});
+
+test("没有 start 的失败（HTTP 4xx）不重放（ADR-0101 排除项）", async () => {
+  const entries: RequestTimelineEntry[] = [];
+  setRequestTimelineSink((entry) => entries.push(entry));
+  let calls = 0;
+  const fetch: FetchFunction = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: { message: "bad request" } }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const streamFn = reviewStreamFn({
+      apiKey: API_KEY,
+      fetch,
+      timeline: { scope: () => ({ site: "main" }) },
+      replay: { attempts: 2, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 },
+    });
+    const stream = await streamFn(
+      reviewModelOf(undefined, "https://gw.example.com/v1"),
+      BASE_CONTEXT,
+      {},
+    );
+    const message = await stream.result();
+    expect(message.stopReason).toBe("error");
+  } finally {
+    setRequestTimelineSink(null);
+  }
+
+  expect(calls).toBe(1);
+  const requests = requestLines(entries);
+  expect(requests.map((entry) => entry.replay)).toEqual([0]);
+});
+
+test("aborted 不重放（ADR-0101 排除项）", async () => {
+  const entries: RequestTimelineEntry[] = [];
+  setRequestTimelineSink((entry) => entries.push(entry));
+  const controller = new AbortController();
+  let calls = 0;
+  const fetch: FetchFunction = async () => {
+    calls += 1;
+    const frame = `data: ${JSON.stringify({
+      id: "chatcmpl-aborted",
+      object: "chat.completion.chunk",
+      model: "deepseek-v4-flash",
+      choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }],
+    })}\n\n`;
+    const stream = new ReadableStream<Uint8Array>({
+      start(inner) {
+        inner.enqueue(new TextEncoder().encode(frame));
+        controller.abort();
+        inner.close();
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  try {
+    const streamFn = reviewStreamFn({
+      apiKey: API_KEY,
+      fetch,
+      timeline: { scope: () => ({ site: "main" }) },
+      replay: { attempts: 2, budgetMs: 0, baseDelayMs: 0, maxDelayMs: 0 },
+    });
+    const stream = await streamFn(
+      reviewModelOf(undefined, "https://gw.example.com/v1"),
+      BASE_CONTEXT,
+      { signal: controller.signal },
+    );
+    const message = await stream.result();
+    expect(message.stopReason).toBe("aborted");
+  } finally {
+    setRequestTimelineSink(null);
+  }
+
+  expect(calls).toBe(1);
+  const requests = requestLines(entries);
+  expect(requests.map((entry) => entry.replay)).toEqual([0]);
+});

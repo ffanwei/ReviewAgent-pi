@@ -4,6 +4,12 @@
 **关联**：ADR-0051（LLM 调用重试与请求建立超时——本 ADR **局部替代**其决策 3 的「流中断不重试」）、ADR-0076（请求时间线：本次观测的直接产物）、ADR-0035（pi 内核四包按 npm 依赖消费，不 fork 上游）、ADR-0025（Review Runtime 显式下传）、ADR-0048（离线回放 lane）
 **范围**：本仓 pi 线 0077。只改「流已开始后断开」的处置；wire 字节、六阶段骨架、审计 / `run.json` / 转录键集、退出码均不变。
 
+> **后续修订（[ADR-0101](0101-retry-clean-eof-stream-truncation.md)，2026-11-18）**：决策 2
+> 的触发条件扩展——除「响应体读失败」外，「干净 EOF 但无 `finish_reason`」
+>（`rawStopReason === undefined` 且收到过 `start`）也重放；`content_filter` /
+> `aborted` / 无 `start` 的失败仍排除。决策 3 的缺省值同步调整为
+> `streamAttempts: 3` / `streamReplayBudgetMs: 600000`，闸门语义不变。
+
 ## Context
 
 2026-11-13 的线上失败：

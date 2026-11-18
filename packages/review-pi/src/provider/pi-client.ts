@@ -275,6 +275,29 @@ function driveSingleAttempt(params: StreamDriveParams): AssistantMessageEventStr
 import { replayDelayMs, withinReplayBudget } from "./stream-replay-policy.js";
 
 /**
+ * 干净 EOF 截断（ADR-0101）：流已建立（收到 `start`），但始终没收到 provider
+ * 的 `finish_reason`，HTTP body 却正常读到结束——`reader.read()` 返回 done，
+ * 因此 `recorder.bodyError` 为 null，ADR-0077 的旧判定不会重放。
+ *
+ * 只认结构化信号，不匹配错误文案：
+ * - `rawStopReason === undefined`：没有任何 finish_reason 到达；
+ * - `content_filter` / `network_error` 等确定性拦截会落 `rawStopReason`，排除；
+ * - 建连 / HTTP 4xx 不会推 `start`，排除（不会盲目重试确定性请求错误）。
+ */
+function isTruncatedStreamEnd(
+  terminal: AssistantMessageEvent | null,
+  events: readonly AssistantMessageEvent[],
+): boolean {
+  return (
+    terminal !== null &&
+    terminal.type === "error" &&
+    terminal.reason !== "aborted" &&
+    terminal.error.rawStopReason === undefined &&
+    events.some((event) => event.type === "start")
+  );
+}
+
+/**
  * 缓冲重放（ADR-0077）：每次尝试的事件只进本地缓冲；失败则丢弃并重发，
  * 成功（或重放耗尽）才把该次事件原样推给消费者。
  */
@@ -324,11 +347,15 @@ function driveWithReplay(params: StreamDriveParams): AssistantMessageEventStream
 
       const failed =
         terminal !== null && terminal.type === "error" && terminal.reason !== "aborted";
-      // 只有「响应体真的读失败」才重放：确定性 provider 拦截（content_filter）
-      // 走同一条 error 事件，但 body 是正常读完的。
+      // 两类可重放失败（ADR-0077 / ADR-0101）：
+      // 1. 响应体真的读失败（bodyError 有值）——脏断流；
+      // 2. 干净 EOF：流已建立（收到 start），但始终没收到 provider 的
+      //    finish_reason，HTTP body 却正常读到结束（bodyError 为 null）。
+      //    确定性 provider 拦截（content_filter / network_error）有
+      //    rawStopReason，会被排除；建连 / 4xx 没有 start，也会被排除。
       const shouldReplay =
         failed &&
-        recorder.bodyError !== null &&
+        (recorder.bodyError !== null || isTruncatedStreamEnd(terminal, events)) &&
         replay + 1 < params.replay.attempts &&
         withinReplayBudget(startedAt, params.replay.budgetMs, params.now);
 

@@ -139,7 +139,7 @@ _Avoid_: 遥测（不上传指标）、把业务调用塞进事件批量通道�
 _Avoid_: 全局重试开关（分层各有边界）、断线续传（流中断不重试）、把「重试次数」当配置口径（一律写总尝试次数）
 
 **流中断重放（Stream Replay）**:
-流已开始后响应体断开（`TypeError: terminated` 这类）时的恢复能力（ADR-0077）。做法是**缓冲本次响应的全部事件、不交付给消费者**；失败则丢弃缓冲并重发同一请求，只有成功那次的事件才交给 agent——因此失败响应里的 `toolCall` 从未执行，**重放按构造无副作用**（这正是它与 ADR-0051 拒绝的「整回合重放」的分界）。触发条件只看结构化信号：终止于 `error`、非 `aborted`、且响应体**确实读失败**（`content_filter` 这类 body 正常读完的确定性拦截不重放）。两个闸门：`limits.retry.streamAttempts`（总尝试次数含首次，缺省 13 = 1 + 12 次重放）与 `limits.retry.streamReplayBudgetMs`（总墙钟预算，缺省 120 s、含退避、0 = 不设上限），**先到者生效**；预算到点只停止「再发起一次」，已发出的尝试不被打断，故上界 = 预算 + 单次尝试时长。`onPayload` / `onResponse` 只在首次尝试触发，审计 `requests[]` 与进度计数不因重放而重复。代价：失去 token 级增量分发（当前无消费者）、响应事件全量进内存、失败尝试的 token 不计入 `usage`。
+流已开始后响应体断开（`TypeError: terminated` 这类）时的恢复能力（ADR-0077）。做法是**缓冲本次响应的全部事件、不交付给消费者**；失败则丢弃缓冲并重发同一请求，只有成功那次的事件才交给 agent——因此失败响应里的 `toolCall` 从未执行，**重放按构造无副作用**（这正是它与 ADR-0051 拒绝的「整回合重放」的分界）。触发条件只看结构化信号：终止于 `error`、非 `aborted`，且「响应体**确实读失败**」**或**「干净 EOF 截断」（收到过 `start`、但 `rawStopReason` 为空——ADR-0101）；`content_filter` 这类有 finish_reason 的确定性拦截不重放。两个闸门：`limits.retry.streamAttempts`（总尝试次数含首次，缺省 3 = 1 + 2 次重放）与 `limits.retry.streamReplayBudgetMs`（总墙钟预算，缺省 600 s、含退避、0 = 不设上限），**先到者生效**；预算到点只停止「再发起一次」，已发出的尝试不被打断，故上界 = 预算 + 单次尝试时长。`onPayload` / `onResponse` 只在首次尝试触发，审计 `requests[]` 与进度计数不因重放而重复。代价：失去 token 级增量分发（当前无消费者）、响应事件全量进内存、失败尝试的 token 不计入 `usage`。
 _代码面_: `provider/pi-client.ts`（`driveWithReplay` / `observeResponseBody` / `withoutProviderCallbacks`）。
 _Avoid_: 回合重放（修剪消息历史后重发 prompt——会重跑已执行的工具）、断线续传（不续读，是整条重发）、对确定性拦截重放（`content_filter` 不重试）
 

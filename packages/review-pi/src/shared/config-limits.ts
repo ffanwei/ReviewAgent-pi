@@ -52,7 +52,7 @@ export interface RetryLimits {
   readonly reviewTurnAttempts: number;
   readonly oneShotAttempts: number;
   readonly smokeAttempts: number;
-  /** 一次逻辑流请求的总尝试次数（含首次）；1 = 不重放，13 = 1 次首次 + 12 次重放 */
+  /** 一次逻辑流请求的总尝试次数（含首次）；1 = 不重放，3 = 1 次首次 + 2 次重放 */
   readonly streamAttempts: number;
   /** 流中断重放的总墙钟预算（毫秒；从首次尝试发出起算、含退避）；0 = 不设上限 */
   readonly streamReplayBudgetMs: number;
@@ -204,8 +204,8 @@ export const DEFAULT_LIMITS: Limits = {
     reviewTurnAttempts: 3,
     oneShotAttempts: 3,
     smokeAttempts: 1,
-    streamAttempts: 13,
-    streamReplayBudgetMs: 120_000,
+    streamAttempts: 3,
+    streamReplayBudgetMs: 600_000,
   },
   confidence: { min: 0.5 },
   severity: { min: "P3" },
