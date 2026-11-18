@@ -8,11 +8,20 @@ import {
   resolveLanguages,
   type CodeLanguage,
   type LanguageSelection,
+  type OutsideIndexMatches,
 } from "./language-support.js";
 import { readUtf8Tolerant } from "../codeintel/fs-utils.js";
 import { rgListFiles, rgSearchWord } from "../codeintel/rg.js";
 import { DEFAULT_EXCLUDE_GLOBS } from "../shared/scan-defaults.js";
 import type { FileSymbolIndex } from "./symbols.js";
+
+/**
+ * 零结果提示的全仓扫描上限。
+ *
+ * 这是 best-effort 附加信息：不能因为提示扫描把一次符号查询拖到工具超时。
+ * 超时后调用方 catch 为空提示，原零结果照常返回。
+ */
+const OUTSIDE_INDEX_SCAN_TIMEOUT_MS = 8_000;
 
 /**
  * 仓库快照上下文（测量常量面）：Zone B 构造的确定性读取层。
@@ -57,6 +66,13 @@ export interface RepoContext {
    * 符号查找/调用链先用它收窄解析面，避免多语言下把整仓都解析一遍。
    */
   candidateFilesForName(name: string, timeoutMs?: number): Promise<readonly string[]>;
+  /**
+   * 名字在“符号索引覆盖不到的文件”中的文本命中（零结果提示用）。
+   *
+   * 与 `candidateFilesForName` 相反：这里扫描全仓（仍应用 `excludeGlobs`），
+   * 再过滤掉已启用语言的文件。只在符号工具零结果时按需调用，不参与符号解析。
+   */
+  nameMatchesOutsideLanguages(name: string, timeoutMs?: number): Promise<OutsideIndexMatches>;
 }
 
 export async function loadRepoContext(
@@ -81,6 +97,7 @@ export async function loadRepoContext(
   const detected = detectLanguages(sourceFiles, languages);
   const sourceCache = new Map<string, string>();
   const indexCache = new Map<string, FileSymbolIndex>();
+  const outsideNameCache = new Map<string, Promise<OutsideIndexMatches>>();
   const parserCache = new Map<string, Promise<Parser>>();
   const parserFor = (file: string): Promise<Parser> => {
     const resolved = resolveFileLanguage(file, languages);
@@ -136,6 +153,33 @@ export async function loadRepoContext(
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       });
       return [...new Set(matches.map((match) => match.file))].sort(compareText);
+    },
+    nameMatchesOutsideLanguages: (name: string, timeoutMs?: number) => {
+      const cached = outsideNameCache.get(name);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const pending = rgSearchWord(resolvedRoot, name, {
+        allFiles: true,
+        excludeGlobs,
+        timeoutMs: Math.min(timeoutMs ?? OUTSIDE_INDEX_SCAN_TIMEOUT_MS, OUTSIDE_INDEX_SCAN_TIMEOUT_MS),
+      }).then((matches) => {
+        const files = [...new Set(matches.map((match) => match.file))]
+          .filter((file) => resolveFileLanguage(file, languages) === undefined)
+          .sort(compareText);
+        const extensions = [
+          ...new Set(
+            files
+              .map((file) => path.posix.extname(file).toLowerCase())
+              .filter((extension) => extension.length > 0),
+          ),
+        ].sort(compareText);
+        return { files, extensions };
+      });
+      // 只缓存成功结果：超时/失败不留下永久失败缓存（下一次调用仍可重试）。
+      pending.catch(() => outsideNameCache.delete(name));
+      outsideNameCache.set(name, pending);
+      return pending;
     },
   };
 }

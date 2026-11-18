@@ -134,3 +134,17 @@ test("candidateFilesForName：rg 预收窄（多语言 glob 下只返回文本�
   await expect(context.candidateFilesForName("renderName")).resolves.toEqual(["web/src/app.ts"]);
   await expect(context.candidateFilesForName("noSuchSymbolAnywhere")).resolves.toEqual([]);
 });
+
+test("nameMatchesOutsideLanguages：只报告符号索引覆盖不到的文件（零结果提示用）", async () => {
+  const context = await loadRepoContext(repoFixturePath("multilang"));
+  // 已索引语言里的命中不算“outside”
+  await expect(context.nameMatchesOutsideLanguages("renderName")).resolves.toEqual({
+    files: [],
+    extensions: [],
+  });
+  // C# 不在符号索引语言表里，但全仓文本扫描能看到
+  await expect(context.nameMatchesOutsideLanguages("UnindexedWidget")).resolves.toEqual({
+    files: ["web/src/Unindexed.cs"],
+    extensions: [".cs"],
+  });
+});

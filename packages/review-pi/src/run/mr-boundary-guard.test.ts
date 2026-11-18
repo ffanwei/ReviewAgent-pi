@@ -442,7 +442,7 @@ test("全链边界内零漂移：护栏键全缺席 + req0 消息面逐字节断
   const audit = readAudit(auditPath);
   expect("mrBoundary" in audit).toBe(false);
 
-  // 请求字节面：req0 = Zone A + MR + Phase-1 三条（E 无全仓注入），八工具面在场
+  // 请求字节面：req0 = Zone A + MR + Phase-1 三条（E 无全仓注入），可见工具面在场
   const req0 = JSON.parse(audit.requests[0].wireBody) as {
     messages: { role: string; content: string }[];
     tools?: { function: { name: string } }[];
@@ -460,8 +460,6 @@ test("全链边界内零漂移：护栏键全缺席 + req0 消息面逐字节断
     "review_find_references",
     "review_get_call_chain",
     "review_search_code",
-    "review_search_rule",
-    "review_search_history",
   ]);
   // E 恒投影 ledger 键（零工具 → 空数组）
   expect(record.baseline.audit.ledger).toEqual([]);

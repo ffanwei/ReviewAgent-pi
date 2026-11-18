@@ -111,6 +111,23 @@ test("零命中：固定文案", async () => {
   ).resolves.toBe('Search "no-such-token-xyz" (literal, case-insensitive): no matches.');
 });
 
+test("literal 零命中且含正则元字符：提示改用 regex:true", async () => {
+  const tk = toolkit();
+  const literal = await tk.executeTool("review.search_code", { query: "getBase|noSuchToken" });
+  expect(literal).toBe(
+    'Search "getBase|noSuchToken" (literal, case-insensitive): no matches. ' +
+      "Query contains regex metacharacters; literal mode does not interpret them — retry with regex:true.",
+  );
+  // 已显式 regex 时不提示；不含元字符的普通零命中也不提示
+  const regex = await tk.executeTool("review.search_code", {
+    query: "noSuchToken+",
+    regex: true,
+  });
+  expect(regex).not.toContain("retry with regex:true");
+  const plain = await tk.executeTool("review.search_code", { query: "no-such-token-xyz" });
+  expect(plain).not.toContain("retry with regex:true");
+});
+
 test("limit：截断提示显式留痕", async () => {
   const tk = toolkit();
   const result = await tk.executeTool("review.search_code", { query: "return", limit: 2 });

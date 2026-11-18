@@ -28,6 +28,11 @@ export interface RgMatch {
 export interface RgSearchOptions {
   /** 文件 glob 列表，缺省 ["*.java"]（单语言兜底；调用方通常传 RepoContext 的语言表） */
   readonly globs?: readonly string[];
+  /**
+   * 不使用语言 glob，扫描仓库内全部文本文件（仍应用 `excludeGlobs`）。
+   * 符号工具零结果时用它确认名字是否只出现在未索引语言中；提供时忽略 `globs`。
+   */
+  readonly allFiles?: boolean;
   /** 排除 glob 列表（ADR-0041）；传 `codeintel.excludeGlobs`，不带前导 "!" */
   readonly excludeGlobs?: readonly string[];
   /** 单次调用超时（毫秒），默认 30000；超时杀进程并抛错（不静默挂起） */
@@ -85,7 +90,7 @@ export function rgSearchWord(
   options: RgSearchOptions = {},
 ): Promise<readonly RgMatch[]> {
   const globs = options.globs ?? DEFAULT_GLOBS;
-  if (globs.length === 0) {
+  if (options.allFiles !== true && globs.length === 0) {
     return Promise.resolve([]);
   }
   const args = [
@@ -96,7 +101,7 @@ export function rgSearchWord(
     "--case-sensitive",
     "--fixed-strings",
     "--word-regexp",
-    ...globArgs(globs, options.excludeGlobs ?? []),
+    ...globArgs(options.allFiles === true ? [] : globs, options.excludeGlobs ?? []),
     "--",
     word,
     root,

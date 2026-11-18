@@ -7,6 +7,7 @@ import { DEFAULT_REVIEW_RUNTIME } from "../shared/review-runtime.js";
 import {
   attemptName,
   buildPass,
+  ruleSkillCacheRoot,
   runPasses,
   type ReviewRunContext,
 } from "./pass-runner.js";
@@ -289,4 +290,25 @@ test("片级回调抛错不打断执行（旁路纪律）", async () => {
   });
 
   expect(executed).toHaveLength(1);
+});
+
+test("ruleSkillCacheRoot：Windows 深路径回落到短临时根，短路径保持不变", () => {
+  const shortRoot = "C:/runs/t1";
+  expect(ruleSkillCacheRoot(shortRoot, "win32")).toBe(
+    path.join(shortRoot, ".cache", "rule-skills"),
+  );
+
+  const longRoot = "C:/" + "a".repeat(240);
+  const fallback = ruleSkillCacheRoot(longRoot, "win32");
+  expect(fallback).toContain(path.join("rp-rule-skills"));
+  expect(fallback.length).toBeLessThan(200);
+
+  // macOS/Linux 的路径上限更高，同样长度不应触发回落。
+  const longPosix = "/" + "a".repeat(400);
+  expect(ruleSkillCacheRoot(longPosix, "linux")).toBe(
+    path.join(longPosix, ".cache", "rule-skills"),
+  );
+  expect(ruleSkillCacheRoot(longPosix, "darwin")).toBe(
+    path.join(longPosix, ".cache", "rule-skills"),
+  );
 });

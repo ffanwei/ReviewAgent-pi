@@ -251,10 +251,45 @@ export function resolveFileLanguage(
  * 覆盖两种真实场景：非本语言仓库（配置支持 Java 但仓里 0 个 .java）与
  * 用户显式用 `codeintel.languages = []` 关掉代码智能。旧文案
  * "across 0 Java file(s)" 技术上诚实但看起来像故障。
+ *
+ * 末尾固定引导到 `review.search_code`：符号工具只索引已实现语言，全文检索
+ * 仍然覆盖仓库里的其他语言（C# / Rust / PHP 等）。
  */
 export function noSourceFilesMessage(languages: readonly CodeLanguage[]): string {
   const label = languageLabel(languages);
-  return label === ""
-    ? "no supported source files detected in this repository (code intelligence is disabled by codeintel.languages)"
-    : `no supported source files detected in this repository (code intelligence languages: ${label})`;
+  const reason =
+    label === ""
+      ? "no supported source files detected in this repository (code intelligence is disabled by codeintel.languages)"
+      : `no supported source files detected in this repository (code intelligence languages: ${label})`;
+  return `${reason}; use review.search_code for text search across all files`;
+}
+
+/** 符号名在“未索引文件”中的文本命中摘要（零结果提示用） */
+export interface OutsideIndexMatches {
+  /** 命中文件（仓库相对 POSIX 路径；已排除已索引语言） */
+  readonly files: readonly string[];
+  /** 命中文件扩展名（小写、含点、排序去重） */
+  readonly extensions: readonly string[];
+}
+
+/**
+ * 零结果时的补充提示：名字还出现在符号索引覆盖不到的文件里。
+ *
+ * 这一句同时解释“为什么是 0 结果”和“下一步用什么工具”，避免模型把
+ * “语言未索引”误判成“符号不存在”。
+ */
+export function outsideIndexHint(
+  name: string,
+  matches: OutsideIndexMatches,
+  supportedLabel: string,
+): string {
+  if (matches.files.length === 0) {
+    return "";
+  }
+  const extensions = matches.extensions.length > 0 ? matches.extensions.join(", ") : "unknown";
+  const examples = matches.files.slice(0, 3).join(", ");
+  const suffix = matches.files.length > 3 ? ", ..." : "";
+  const supported =
+    supportedLabel.length > 0 ? ` only indexes ${supportedLabel}` : " does not index these files";
+  return `Note: symbol lookup${supported}; "${name}" appears in ${String(matches.files.length)} file(s) outside the index (file types: ${extensions}; e.g. ${examples}${suffix}); use review.search_code to inspect them.`;
 }

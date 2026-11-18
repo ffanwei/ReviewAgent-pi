@@ -115,7 +115,11 @@ function renderSearchResult(
   const echo = boundedEcho(query, options.echoChars);
   const label = flagsLabel(flags);
   if (matches.length === 0) {
-    return `Search "${echo}" (${label}): no matches.`;
+    const hint =
+      !flags.regex && containsRegexMetacharacters(query)
+        ? " Query contains regex metacharacters; literal mode does not interpret them — retry with regex:true."
+        : "";
+    return `Search "${echo}" (${label}): no matches.${hint}`;
   }
   const shown = matches.slice(0, options.limit);
   const files = new Set(shown.map((match) => match.file)).size;
@@ -163,6 +167,19 @@ function truncateLine(text: string): string {
   return text.length <= SEARCH_CODE_LINE_MAX_CHARS
     ? text
     : `${text.slice(0, SEARCH_CODE_LINE_MAX_CHARS)}...`;
+}
+
+/**
+ * literal 零结果时判断 query 是否含正则元字符。
+ *
+ * 不含 `.`：配置键/点分名里的点是合法的字面文本，提示会变成噪声；
+ * 这里只覆盖“写了正则却忘了 regex:true”的高置信形态（`\`、`|`、分组、
+ * 字符类、量词、锚点）。
+ */
+const REGEX_METACHARACTERS = new Set(["\\", "|", "(", ")", "[", "]", "{", "}", "*", "+", "?", "^", "$"]);
+
+function containsRegexMetacharacters(query: string): boolean {
+  return [...query].some((char) => REGEX_METACHARACTERS.has(char));
 }
 
 /** 头部标志：`literal|regex, case-sensitive|case-insensitive[, glob [a, b]]` */

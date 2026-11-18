@@ -4,6 +4,9 @@ import type { ToolSchema } from "../contracts/llm.js";
 // 工具名（点分 / 下划线）与参数键保持英文——它们是 wire 契约；
 // description 与参数 description 是给模型看的自然语言，改为中文。
 //
+// 注：`search_rule` / `search_history` 只有注入非空 knowledge 语料时
+// 才会出现在 toolkit 的可见 schema 面；空语料 run 默认不暴露它们。
+//
 // canonical 键序 = DSH 线 toCanonicalJson：type → properties → required →
 // additionalProperties；properties 子键字典序。pi 侧以字面键序构造（不用
 // 运行时排序器）达成同字节——registry.test.ts 把守字面序。
@@ -70,7 +73,7 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.get_symbol",
       description:
-        "按简单名在已配置的源码语言中查找符号，返回签名级声明（种类、修饰符、返回类型、参数、行号；不含方法体）。类型命中含其成员。",
+        "按简单名在已配置的源码语言中查找符号，返回签名级声明（种类、修饰符、返回类型、参数、行号；不含方法体）。类型命中含其成员。符号索引支持 Java、TypeScript/JavaScript、Python、Go、C/C++；其他语言（如 C#、Rust、PHP）请改用 review.search_code 做文本定位。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
@@ -110,7 +113,7 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.find_references",
       description:
-        "在已配置的源码语言中查找某符号的名称级引用（整词、区分大小写；不做类型解析，重载与覆写不区分）。返回声明与使用位置及其所属符号。",
+        "在已配置的源码语言中查找某符号的名称级引用（整词、区分大小写；不做类型解析，重载与覆写不区分）。返回声明与使用位置及其所属符号。支持 Java、TypeScript/JavaScript、Python、Go、C/C++；其他语言（如 C#、Rust、PHP）请改用 review.search_code。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
@@ -126,7 +129,7 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.get_call_chain",
       description:
-        "围绕某方法 / 函数 / 构造器构建名称级调用链：一跳调用方、二跳调用方，以及声明体内调用的被调方。整词名称匹配、不做类型解析；不区分重载。",
+        "围绕某方法 / 函数 / 构造器构建名称级调用链：一跳调用方、二跳调用方，以及声明体内调用的被调方。整词名称匹配、不做类型解析；不区分重载。支持 Java、TypeScript/JavaScript、Python、Go、C/C++；其他语言（如 C#、Rust、PHP）请改用 review.search_code。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {
@@ -142,7 +145,7 @@ export function reviewToolSchemas(): readonly ToolSchema[] {
     {
       name: "review.search_code",
       description:
-        "在仓库快照中按文本或正则搜索，返回命中的「文件:行号:整行内容」。默认字面匹配、不区分大小写。用于定位字符串、配置键、错误文案、日志消息等文本线索；已知符号名请优先用 review.get_symbol / review.find_references。结果有上限且不分页，命中过多时请收窄 query 或加 glob。正则使用 Rust regex 语法，不支持 lookaround 与反向引用。",
+        "在仓库快照中按文本或正则搜索，返回命中的「文件:行号:整行内容」。默认字面匹配、不区分大小写；literal 模式不解释正则元字符，需要 `|`、分组、字符类等写法时请传 regex:true。用于定位字符串、配置键、错误文案、日志消息等文本线索；已知符号名请优先用 review.get_symbol / review.find_references，符号工具不支持的语言（如 C#、Rust、PHP）则用本工具定位。结果有上限且不分页，命中过多时请收窄 query 或加 glob。正则使用 Rust regex 语法，不支持 lookaround 与反向引用。",
       parametersJson: JSON.stringify({
         type: "object",
         properties: {

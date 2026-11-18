@@ -259,12 +259,12 @@ test("Phase 5 二次扫描：新增候选并入主候选，PhaseRecord 仍为六
   expect(outcome.audit.phaseLog[4]?.note).toContain("合并重复 1 条");
 });
 
-test("Zone A 稳定：八工具面跨请求字节恒定（审计点分名 / wire 下划线名），消息前缀 append-only", async () => {
+test("Zone A 稳定：可见工具面跨请求字节恒定（审计点分名 / wire 下划线名），消息前缀 append-only", async () => {
   const { run } = scriptedLoop(singleRoundScript());
   const outcome = await run();
   const requests = outcome.audit.requests;
 
-  // 审计投影：八工具、点分名、顺序与注册表一致
+  // 审计投影：空语料下 6 个可见工具、点分名、顺序与注册表一致
   for (const request of requests) {
     expect(request.tools.map((tool) => tool.name)).toEqual([
       "review.get_diff",
@@ -273,8 +273,6 @@ test("Zone A 稳定：八工具面跨请求字节恒定（审计点分名 / wire
       "review.find_references",
       "review.get_call_chain",
       "review.search_code",
-      "review.search_rule",
-      "review.search_history",
     ]);
   }
   // wire 体：工具名为下划线形态
@@ -288,8 +286,6 @@ test("Zone A 稳定：八工具面跨请求字节恒定（审计点分名 / wire
     "review_find_references",
     "review_get_call_chain",
     "review_search_code",
-    "review_search_rule",
-    "review_search_history",
   ]);
   // 锁档：reasoning_effort high
   expect(JSON.parse(requests[0]!.wireBody).reasoning_effort).toBe(LOCKED_REASONING_EFFORT);

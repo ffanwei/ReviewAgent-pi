@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 
 import type { FetchFunction } from "@earendil-works/pi-ai";
@@ -412,6 +414,40 @@ async function loadRuleSkillSet(
   return { skills, audit: skills.map(toRuleSkillAudit) };
 }
 
+/**
+ * 规则 Skill 的缓存根。
+ *
+ * 默认仍在 `<runsRoot>/.cache/rule-skills`（ADR-0027/0032 的目录内形态）。
+ * 但缓存目录下还会长出 `dir-<64位sha256>/scripts/...`，在 Windows 上很容易
+ * 超过 MAX_PATH 260——子进程（python/node）打开包内相对脚本时会得到
+ * ENOENT，即使文件实际存在。路径过长时回落到系统临时目录下的短根：
+ * `os.tmpdir()/rp-rule-skills/<runHash>`；内容仍由 digest 去重。
+ *
+ * 阈值按平台上限留出包内路径余量：Windows 260、macOS 1024、Linux 4096。
+ * 超过阈值才回落，正常短路径的目录布局与审计保持不变。
+ */
+const RULE_SKILL_CACHE_BUDGET: Partial<Record<NodeJS.Platform, number>> = {
+  win32: 160,
+  darwin: 800,
+  linux: 3800,
+};
+
+export function ruleSkillCacheRoot(
+  runsRoot: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const preferred = path.join(runsRoot, ".cache", "rule-skills");
+  const budget = RULE_SKILL_CACHE_BUDGET[platform] ?? 3800;
+  if (preferred.length <= budget) {
+    return preferred;
+  }
+  const runHash = createHash("sha256")
+    .update(path.resolve(runsRoot))
+    .digest("hex")
+    .slice(0, 12);
+  return path.join(os.tmpdir(), "rp-rule-skills", runHash);
+}
+
 async function ruleSkillsOf(
   input: ReviewRunInput,
   runtime: ReviewRuntime,
@@ -421,7 +457,7 @@ async function ruleSkillsOf(
     input.ruleSkillZips ?? (input.ruleSkillZip !== undefined ? [input.ruleSkillZip] : undefined);
   return loadRuleSkillsFn({
     repoPath: input.repoPath,
-    cacheRoot: path.join(input.runsRoot, ".cache", "rule-skills"),
+    cacheRoot: ruleSkillCacheRoot(input.runsRoot),
     ...(explicitZips !== undefined ? { explicitZipPaths: explicitZips } : {}),
     ...(input.ruleSkillDirs !== undefined ? { ruleSkillDirs: input.ruleSkillDirs } : {}),
     ...(input.strictRuleSkill !== undefined ? { strict: input.strictRuleSkill } : {}),

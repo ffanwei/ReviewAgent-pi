@@ -1,7 +1,7 @@
 import type { ReviewToolHandler, ToolRunContext } from "./toolkit-types.js";import { readThroughLedger } from "./ledger.js";
 import { applyLineBudget } from "./result-budget.js";
 import { requireStringArg } from "./args.js";
-import { noSourceFilesMessage } from "../analysis/language-support.js";
+import { languageLabel, noSourceFilesMessage, outsideIndexHint } from "../analysis/language-support.js";
 import type { CodeSymbol } from "../analysis/symbols.js";
 import { formatSymbolSignature } from "../analysis/symbols.js";
 import type { RepoContext } from "../analysis/repo-context.js";
@@ -78,7 +78,8 @@ async function renderSymbolLookup(name: string, context: ToolRunContext): Promis
     );
   }
   if (matchCount === 0) {
-    return header.join("\n");
+    const note = await outsideIndexNote(repo, name, context.ripgrepTimeoutMs);
+    return [...header, ...(note.length > 0 ? [note] : [])].join("\n");
   }
   const budget = applyLineBudget(
     [...header, ...lines],
@@ -124,6 +125,19 @@ function renderSymbolLines(
     `${indent}L${symbol.line} ${render(symbol)}`,
     ...symbol.members.flatMap((member) => renderSymbolLines(repo, file, member, depth + 1)),
   ];
+}
+
+/** 零结果补充：名字是否只出现在符号索引覆盖不到的语言/文件里 */
+async function outsideIndexNote(
+  repo: RepoContext,
+  name: string,
+  timeoutMs: number,
+): Promise<string> {
+  const matches = await repo.nameMatchesOutsideLanguages(name, timeoutMs).catch(() => ({
+    files: [] as const,
+    extensions: [] as const,
+  }));
+  return outsideIndexHint(name, matches, languageLabel(repo.languages));
 }
 
 function errorMessage(error: unknown): string {

@@ -6,6 +6,7 @@ import {
   languageGlobs,
   languageLabel,
   noSourceFilesMessage,
+  outsideIndexHint,
   resolveFileLanguage,
   resolveLanguages,
 } from "./language-support.js";
@@ -98,10 +99,27 @@ describe("语言注册表", () => {
 
   test("noSourceFilesMessage：区分「仓库没有该语言源码」与「配置显式关闭」", () => {
     expect(noSourceFilesMessage(resolveLanguages(["java"]))).toBe(
-      "no supported source files detected in this repository (code intelligence languages: Java)",
+      "no supported source files detected in this repository (code intelligence languages: Java); use review.search_code for text search across all files",
     );
     expect(noSourceFilesMessage([])).toBe(
-      "no supported source files detected in this repository (code intelligence is disabled by codeintel.languages)",
+      "no supported source files detected in this repository (code intelligence is disabled by codeintel.languages); use review.search_code for text search across all files",
+    );
+  });
+
+  test("outsideIndexHint：零结果时说明未索引文件并引导 search_code；空结果不输出", () => {
+    const label = "Java, TypeScript/JavaScript, Python, Go, C/C++";
+    expect(outsideIndexHint("UnindexedWidget", { files: [], extensions: [] }, label)).toBe("");
+    expect(
+      outsideIndexHint(
+        "UnindexedWidget",
+        {
+          files: ["web/src/Unindexed.cs"],
+          extensions: [".cs"],
+        },
+        label,
+      ),
+    ).toBe(
+      'Note: symbol lookup only indexes Java, TypeScript/JavaScript, Python, Go, C/C++; "UnindexedWidget" appears in 1 file(s) outside the index (file types: .cs; e.g. web/src/Unindexed.cs); use review.search_code to inspect them.',
     );
   });
 

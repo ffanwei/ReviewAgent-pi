@@ -51,6 +51,16 @@ test("rgListFiles / rgSearchWord：多 glob 一次扫描（任一匹配）", asy
   await expect(rgListFiles(SAMPLE, [])).resolves.toEqual([]);
 });
 
+test("rgSearchWord：allFiles 绕过语言 glob，用于确认未索引语言中的名字命中", async () => {
+  const MULTILANG = repoFixturePath("multilang");
+  // 默认语言 glob 下不可见
+  await expect(
+    rgSearchWord(MULTILANG, "UnindexedWidget", { globs: ["*.java", "*.ts"] }),
+  ).resolves.toEqual([]);
+  const matches = await rgSearchWord(MULTILANG, "UnindexedWidget", { allFiles: true });
+  expect(matches.map((match) => match.file)).toEqual(["web/src/Unindexed.cs"]);
+});
+
 test("rgListFiles / rgSearchWord：excludeGlobs 生效（多语言 glob 下排除依赖与生成物）", async () => {
   const MULTILANG = repoFixturePath("multilang");
   const globs = ["*.ts", "*.tsx", "*.js", "*.py"];

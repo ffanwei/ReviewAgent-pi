@@ -1,6 +1,6 @@
 import type { ChangedSymbolRef } from "../analysis/changed-symbols.js";
 import { qualifiedName } from "../analysis/changed-symbols.js";
-import { noSourceFilesMessage } from "../analysis/language-support.js";
+import { languageLabel, noSourceFilesMessage, outsideIndexHint } from "../analysis/language-support.js";
 import { buildCallChainBlocks } from "../analysis/call-chain.js";
 import type { ReferenceSite } from "../analysis/reference-sites.js";
 import { enclosingLabel, findReferenceSites } from "../analysis/reference-sites.js";
@@ -34,7 +34,11 @@ export const findReferencesTool: ReviewToolHandler = async (args, context): Prom
   return readThroughLedger(context.ledger, "symbol", `review.find_references "${name}"`, async () => {
     const repo = await context.repo();
     const sites = await searchReferenceSites("review.find_references", repo, name, context.ripgrepTimeoutMs);
-    return renderReferenceSites(repo, sites, name, context.resultBudgetChars);
+    const note =
+      sites.length === 0 && repo.sourceFiles.length > 0
+        ? await outsideIndexNote(repo, name, context.ripgrepTimeoutMs)
+        : "";
+    return renderReferenceSites(repo, sites, name, context.resultBudgetChars, note);
   });
 };
 
@@ -89,6 +93,7 @@ function renderReferenceSites(
   sites: readonly ReferenceSite[],
   name: string,
   budgetChars: number,
+  outsideNote: string,
 ): string {
   if (repo.sourceFiles.length === 0) {
     return `References to "${name}" (name-level whole-word match, no type resolution): ${noSourceFilesMessage(repo.languages)}`;
@@ -96,7 +101,7 @@ function renderReferenceSites(
   const filesWithMatches = new Set(sites.map((site) => site.file)).size;
   const header = `References to "${name}" (name-level whole-word match, no type resolution): ${sites.length} match(es) across ${filesWithMatches} file(s)`;
   if (sites.length === 0) {
-    return header;
+    return outsideNote.length > 0 ? `${header}\n${outsideNote}` : header;
   }
   const lines = sites.flatMap((site) => [
     `  ${site.file}:${site.line} [${site.isDeclaration ? "declaration" : "usage"}] ${enclosingLabel(site.enclosing)}`,
@@ -125,7 +130,9 @@ async function renderCallChain(
   }
   const header = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): ${refs.length} callable declaration(s) matched`;
   if (refs.length === 0) {
-    return `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method, function, or constructor named "${name}" found across ${repo.sourceFiles.length} ${repo.languageLabel} file(s)`;
+    const base = `Call chain for "${name}" (name-level, ${hopsLabel}, no type resolution): no method, function, or constructor named "${name}" found across ${repo.sourceFiles.length} ${repo.languageLabel} file(s)`;
+    const note = await outsideIndexNote(repo, name, options.timeoutMs);
+    return note.length > 0 ? `${base}\n${note}` : base;
   }
   const blocks = await buildCallChainBlocks(repo, refs, {
     hops: options.hops,
@@ -245,6 +252,19 @@ function renderKnowledgeSearch(input: KnowledgeSearchInput): string {
 /** 单条语料条目渲染："[id] title" + 缩进正文行（多行正文逐行缩进） */
 function renderKnowledgeEntry(entry: KnowledgeEntry): readonly string[] {
   return [`  [${entry.id}] ${entry.title}`, ...entry.text.split("\n").map((line) => `    ${line}`)];
+}
+
+/** 零结果补充：名字是否只出现在符号索引覆盖不到的语言/文件里 */
+async function outsideIndexNote(
+  repo: RepoContext,
+  name: string,
+  timeoutMs: number,
+): Promise<string> {
+  const matches = await repo.nameMatchesOutsideLanguages(name, timeoutMs).catch(() => ({
+    files: [] as const,
+    extensions: [] as const,
+  }));
+  return outsideIndexHint(name, matches, languageLabel(repo.languages));
 }
 
 function errorMessage(error: unknown): string {

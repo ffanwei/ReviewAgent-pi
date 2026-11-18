@@ -190,17 +190,26 @@ test("get_call_chain：sample 方法链形态与零命中", async () => {
   );
 });
 
-test("search_rule/search_history：空语料与命中形态", async () => {
+test("search_rule/search_history：语料为空时隐藏，注入语料后按语料分别恢复", async () => {
   const tk = toolkit();
-  // 空语料（t-series 真源形态：0 entries configured for this run）
-  await expect(tk.executeTool("review.search_rule", { query: "autoType" })).resolves.toBe(
-    'Rule search "autoType" (case-insensitive substring): rule corpus is empty (0 entries configured for this run)',
-  );
-  await expect(tk.executeTool("review.search_history", { query: "CVE-2017-18349" })).resolves.toBe(
-    'History search "CVE-2017-18349" (case-insensitive substring): history corpus is empty (0 entries configured for this run)',
+  expect(tk.schemas.map((schema) => schema.name)).not.toContain("review.search_rule");
+  expect(tk.schemas.map((schema) => schema.name)).not.toContain("review.search_history");
+
+  // 只注入规则：只恢复 search_rule；history 仍隐藏
+  const rulesOnly = buildReviewToolkit({
+    repoPath: SAMPLE,
+    diff: SAMPLE_DIFF,
+    knowledge: {
+      rules: [{ id: "R-1", title: "Null handling", text: "Check for null before dereference." }],
+    },
+  });
+  expect(rulesOnly.schemas.map((schema) => schema.name)).toContain("review.search_rule");
+  expect(rulesOnly.schemas.map((schema) => schema.name)).not.toContain("review.search_history");
+  await expect(rulesOnly.executeTool("review.search_history", { query: "npe" })).rejects.toThrow(
+    /unknown tool "review.search_history"/,
   );
 
-  // 注入语料后：命中计数 + 条目渲染 + 大小写不敏感
+  // 两份语料都注入：两个工具都恢复，命中计数 + 条目渲染 + 大小写不敏感
   const withCorpus = buildReviewToolkit({
     repoPath: SAMPLE,
     diff: SAMPLE_DIFF,
@@ -226,7 +235,7 @@ test("search_rule/search_history：空语料与命中形态", async () => {
 
 test("非本语言仓 / 显式关闭：代码智能工具给明确提示，不再静默 0 match", async () => {
   const hint = (label: string) =>
-    `no supported source files detected in this repository (${label})`;
+    `no supported source files detected in this repository (${label}); use review.search_code for text search across all files`;
 
   const dir = mkdtempSync(join(tmpdir(), "piagent-nonjava-"));
   try {
@@ -266,6 +275,24 @@ test("非本语言仓 / 显式关闭：代码智能工具给明确提示，不�
   await expect(disabled.executeTool("review.get_symbol", { symbol: "Alpha" })).resolves.toBe(
     `Symbol "Alpha": ${hint("code intelligence is disabled by codeintel.languages")}`,
   );
+});
+
+test("符号工具零结果：名字只出现在未索引语言时提示不支持并引导 search_code", async () => {
+  const tk = buildReviewToolkit({
+    repoPath: repoFixturePath("multilang"),
+    diff: "",
+    ledgerMode: "inert",
+  });
+  for (const tool of ["review.get_symbol", "review.find_references", "review.get_call_chain"]) {
+    const result = await tk.executeTool(tool, { symbol: "UnindexedWidget" });
+    expect(result).toContain("only indexes Java, TypeScript/JavaScript, Python, Go, C/C++");
+    expect(result).toContain("outside the index");
+    expect(result).toContain(".cs");
+    expect(result).toContain("review.search_code");
+  }
+  // 已索引语言里的名字不应触发该提示
+  const indexed = await tk.executeTool("review.get_symbol", { symbol: "renderName" });
+  expect(indexed).not.toContain("outside the index");
 });
 
 test("预算：默认 8000 字符；超预算行边界截断并留痕", async () => {
@@ -394,7 +421,7 @@ test("Ledger 分叉态（ADR-0014）：沿用种子 id 与顺序，新登记接�
   expect(sparse.snapshot().map((entry) => entry.id)).toEqual(["ctx#007", "ctx#008"]);
 });
 
-test("executeTool：未知名为有界错误；schema 面固定八工具", async () => {
+test("executeTool：未知名为有界错误；默认 schema 面隐藏空语料工具", async () => {
   const tk = toolkit();
   await expect(tk.executeTool("review.nope", {})).rejects.toThrow(
     /unknown tool "review.nope" \(available: review.get_diff, /,
@@ -406,9 +433,14 @@ test("executeTool：未知名为有界错误；schema 面固定八工具", async
     "review.find_references",
     "review.get_call_chain",
     "review.search_code",
-    "review.search_rule",
-    "review.search_history",
   ]);
+  // 空语料工具即使被模型直接点名也不执行
+  await expect(tk.executeTool("review.search_rule", { query: "null" })).rejects.toThrow(
+    /unknown tool "review.search_rule"/,
+  );
+  await expect(tk.executeTool("review.search_history", { query: "null" })).rejects.toThrow(
+    /unknown tool "review.search_history"/,
+  );
 });
 
 test("runtime 穿参（ADR-0025）：micro 透出到 Toolkit，并驱动工具名回显上限 / call chain 深度", async () => {
@@ -435,12 +467,12 @@ test("runtime 穿参（ADR-0025）：micro 透出到 Toolkit，并驱动工具�
     /unknown tool "revie\.\.\."/,
   );
   // query 回显按 queryEchoChars 截断
-  await expect(custom.executeTool("review.search_rule", { query: "abcdefgh" })).resolves.toContain(
-    'Rule search "abcd..."',
+  await expect(custom.executeTool("review.search_code", { query: "abcdefgh" })).resolves.toContain(
+    'Search "abcd..."',
   );
 });
 
-test("只读纪律：八工具全调用后仓库内容哈希不变", async () => {
+test("只读纪律：全部可见工具调用后仓库内容哈希不变", async () => {
   function snapshotDirHash(root: string): string {
     const hash = createHash("sha256");
     const visit = (dir: string): void => {
@@ -464,13 +496,12 @@ test("只读纪律：八工具全调用后仓库内容哈希不变", async () =>
 
   const before = snapshotDirHash(SAMPLE);
   const tk = toolkit({ ledgerMode: "enabled" });
-  // 每个工具真实执行一轮（含搜索类与 diff）
+  // 每个可见工具真实执行一轮（含搜索类与 diff）
   await tk.executeTool("review.get_diff", {});
   await tk.executeTool("review.get_symbol", { symbol: "Alpha" });
   await tk.executeTool("review.get_file", { path: "src/main/java/com/example/Beta.java" });
   await tk.executeTool("review.find_references", { symbol: "getBase" });
   await tk.executeTool("review.get_call_chain", { symbol: "getBase" });
-  await tk.executeTool("review.search_rule", { query: "null" });
-  await tk.executeTool("review.search_history", { query: "npe" });
+  await tk.executeTool("review.search_code", { query: "getBase" });
   expect(snapshotDirHash(SAMPLE)).toBe(before);
 });

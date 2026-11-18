@@ -23,18 +23,20 @@ import type { ReviewToolHandler, ToolRunContext } from "./toolkit-types.js";
 /**
  * review.* 工具箱装配（#6 P3a：工具驱动形态的工具面）。
  *
- * - schema 面（Zone A）：reviewToolSchemas() 固定八工具（字节稳定）；
+ * - schema 面（Zone A）：注册表固定 8 项；toolkit 按 `knowledge` 语料投影
+ *   可见工具（默认 6 项：空语料时隐藏 search_rule / search_history）；
  * - 执行面（Zone C）：懒加载 RepoContext memoize——模型不调用工具的 run 不产生
  *   仓库读取成本；首次调用失败成为有界的工具错误（进审计 toolCallLog），不静默；
  * - Context Ledger：ledgerMode="enabled"（唯一形态）注入功能态（重复读取返回
  *   "Already loaded: ctx#NNN" 引用），"inert" 注入惰性态（行为零变化，测试夹具用）；
- * - C3 Knowledge 语料（search_rule / search_history 数据源）静态注入，缺省空语料。
+ * - C3 Knowledge 语料（search_rule / search_history 数据源）静态注入，缺省空语料；
+ *   空语料对应的工具不进入可见 schema 面。
  *
  * 本层是纯逻辑层（与 pi-agent-core 解耦）：Agent 桥接（AgentTool 包装、
  * 工具预算、审计记录）在 loop 层落位。
  */
 
-/** 八工具执行器（顺序与 REVIEW_TOOL_ORDER 对齐；装配处查重防漂移） */
+/** 全部 review.* 执行器（顺序与 REVIEW_TOOL_ORDER 对齐；装配处查重防漂移） */
 export function reviewToolHandlers(): ReadonlyMap<string, ReviewToolHandler> {
   const handlers: ReadonlyArray<[string, ReviewToolHandler]> = [
     ["review.get_diff", getDiffTool],
@@ -98,7 +100,8 @@ export interface ReviewToolkit {
 export function buildReviewToolkit(options: ReviewToolkitOptions): ReviewToolkit {
   const runtime = options.runtime ?? DEFAULT_REVIEW_RUNTIME;
   const micro = runtime.limits.micro;
-  const schemas = reviewToolSchemas();
+  const schemas = visibleToolSchemas(options.knowledge);
+  const visibleNames = new Set(schemas.map((schema) => schema.name));
   const handlers = reviewToolHandlers();
   const repoPromise = memoizedRepo(options, runtime);
   const ledger =
@@ -119,15 +122,39 @@ export function buildReviewToolkit(options: ReviewToolkitOptions): ReviewToolkit
     ledger,
     micro,
     executeTool: async (name, args): Promise<string> => {
+      if (!visibleNames.has(name)) {
+        throw new Error(
+          `unknown tool "${boundedToolName(name, micro.toolNameChars)}" (available: ${schemas.map((entry) => entry.name).join(", ")})`,
+        );
+      }
       const handler = handlers.get(name);
       if (handler === undefined) {
         throw new Error(
-          `unknown tool "${boundedToolName(name, micro.toolNameChars)}" (available: ${schemas.map((entry) => entry.name).join(", ")})`,
+          `internal error: no executor registered for visible tool "${boundedToolName(name, micro.toolNameChars)}"`,
         );
       }
       return handler(args, context);
     },
   };
+}
+
+/**
+ * 可见工具面：C3 语料为空时不暴露对应检索工具。
+ *
+ * 生产 run 默认不注入 knowledge 语料；此时 `search_rule` / `search_history`
+ * 只会得到 "corpus is empty"，既浪费请求又污染模型对可用能力的判断。
+ * 保留注册表与执行器本身（静态注册表仍是 8 项），只在 toolkit 投影处隐藏；
+ * 需要该能力的 run 注入非空语料即可恢复。
+ */
+function visibleToolSchemas(knowledge?: KnowledgeCorpus): readonly ToolSchema[] {
+  const hidden = new Set<string>();
+  if ((knowledge?.rules?.length ?? 0) === 0) {
+    hidden.add("review.search_rule");
+  }
+  if ((knowledge?.history?.length ?? 0) === 0) {
+    hidden.add("review.search_history");
+  }
+  return reviewToolSchemas().filter((schema) => !hidden.has(schema.name));
 }
 
 /** 工具名回显上限（未知名可能来自模型幻觉，回显必须有界；上限来自 `limits.micro.toolNameChars`） */

@@ -12,11 +12,15 @@ import { runSkillPass } from "./skill-pass.js";
 
 // 单个 skill 检视会话（ADR-0014 决策 3/4/6/11）：
 // - 独立 Agent，种子 = 主会话 Phase 5 末 messages 快照；
-// - 工具面 = 八检视工具 + bash；
+// - 工具面 = 可见检视工具（空语料下 6 个）+ bash；
 // - 失败三态：ok / empty / failed（带 failureStage）；
 // - 独立转录原料（写盘在 run 层）。
 
 const PACK_ROOT = "C:\\cache\\deadbeef\\sample-rule";
+
+const VISIBLE_SCHEMAS = reviewToolSchemas().filter(
+  (schema) => schema.name !== "review.search_rule" && schema.name !== "review.search_history",
+);
 
 const SKILL: RuleSkill = {
   name: "sample-rule",
@@ -57,7 +61,7 @@ function scriptedFetch(replies: readonly FakeReply[]): {
 
 function stubToolkit(executed: string[] = []): ReviewToolkit {
   return {
-    schemas: reviewToolSchemas(),
+    schemas: VISIBLE_SCHEMAS,
     ledger: createInertContextLedger(),
     micro: DEFAULT_REVIEW_RUNTIME.limits.micro,
     executeTool: async (name) => {
@@ -100,7 +104,7 @@ function baseOptions(overrides: Partial<Parameters<typeof runSkillPass>[0]> = {}
   };
 }
 
-test("独立会话：复用 system prompt、种子历史原样、八工具、真实 pack 路径、独立转录", async () => {
+test("独立会话：复用 system prompt、种子历史原样、可见工具面、真实 pack 路径、独立转录", async () => {
   const script = scriptedFetch([candidatesReply([candidate("S1", "sample-rule")])]);
   const outcome = await runSkillPass(baseOptions({ fetch: script.fetch }));
 
@@ -121,7 +125,7 @@ test("独立会话：复用 system prompt、种子历史原样、八工具、真
   expect(text).toContain(SKILL.content);
   expect(text).toContain('"rule" 字段填该意见违反的本 skill rules/ 里具体规则的 frontmatter id');
   expect(text).toContain('只有无法对应到单条规则时才用 "sample-rule"');
-  // 工具面 = 八检视工具 + bash
+  // 工具面 = 空语料下的可见检视工具 + bash
   expect((body.tools ?? []).map((tool) => tool.function?.name)).toEqual([
     "review_get_diff",
     "review_get_symbol",
@@ -129,8 +133,6 @@ test("独立会话：复用 system prompt、种子历史原样、八工具、真
     "review_find_references",
     "review_get_call_chain",
     "review_search_code",
-    "review_search_rule",
-    "review_search_history",
     "bash",
   ]);
 
@@ -222,7 +224,7 @@ test("会话超时 = failed/session（10 min 上界可注入）", async () => {
   expect(String(outcome.record.degradedReason)).toContain("timed out");
 });
 
-test("工具回合：八工具经 executeTool 执行并回填，toolCallCount 记数", async () => {
+test("工具回合：可见工具经 executeTool 执行并回填，toolCallCount 记数", async () => {
   const executed: string[] = [];
   const script = scriptedFetch([
     {
