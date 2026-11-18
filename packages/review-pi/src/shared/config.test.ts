@@ -191,6 +191,15 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/maxRounds must be in 1…20/);
   });
 
+  test("limits.loop.phase5Sweep 可配（缺省 false）", () => {
+    const { config } = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"phase5Sweep":true}}`)),
+    });
+    expect(config.limits.loop.phase5Sweep).toBe(true);
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.loop.phase5Sweep).toBe(false);
+  });
+
   test("limits.retry：路径次数缺省继承 maxAttempts，smoke 缺省 1", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
     expect(defaults.limits.retry).toEqual(DEFAULT_LIMITS.retry);

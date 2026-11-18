@@ -221,6 +221,10 @@ export async function runAgentReviewLoop(
   let roundCandidates: readonly unknown[] = [];
   let roundVerdicts: ReadonlyMap<string, VerificationVerdict> = new Map();
   let roundComplete = false;
+  // Phase 5 六项镜头二次扫描（limits.loop.phase5Sweep）：主候选产出后再发一次
+  // 补漏请求，新增候选按 (file, line, category) 与主候选合并，主候选永不被丢弃。
+  let phase5SweepState: "idle" | "requested" | "completed" = "idle";
+  let phase5SweepCandidates: readonly unknown[] = [];
   let emittedIds: ReadonlySet<string> = new Set();
   let emittedContentKeys: ReadonlySet<string> = new Set();
   let emittedRootKeys: ReadonlySet<string> = new Set();
@@ -460,24 +464,80 @@ export async function runAgentReviewLoop(
     if (parsed.note !== undefined) {
       notes.push(parsed.note);
     }
-    phaseLog.push({
-      round,
-      phase: phaseNameOf(phaseIndex),
-      requestCount: phaseRequestCount,
-      ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
-      ...(parsed.parseFailure !== undefined ? { parseFailure: parsed.parseFailure } : {}),
-      ...(recoverySource !== undefined || parsed.parseFailure !== undefined
-        ? {
-            ...(phaseParseRetries > 0 ? { parseRetries: phaseParseRetries } : {}),
-            parseRecovered: parsed.parseFailure === undefined,
-            ...(recoverySource !== undefined ? { parseRecovery: recoverySource } : {}),
-          }
-        : {}),
-    });
+    const isSweepReply =
+      phaseIndex === CANDIDATES_PHASE_INDEX && phase5SweepState === "requested";
+    if (isSweepReply) {
+      // 二次扫描不新增 PhaseRecord：请求数与备注并入本轮的 Deep Reasoning 记录。
+      const previous = phaseLog.at(-1);
+      if (previous !== undefined) {
+        phaseLog[phaseLog.length - 1] = {
+          ...previous,
+          requestCount: phaseRequestCount,
+          ...(parsed.parseFailure !== undefined ? { parseFailure: parsed.parseFailure } : {}),
+          ...(notes.length > 0
+            ? {
+                note: [previous.note, ...notes]
+                  .filter((part): part is string => part !== undefined && part.length > 0)
+                  .join("; "),
+              }
+            : {}),
+        };
+      }
+    } else {
+      phaseLog.push({
+        round,
+        phase: phaseNameOf(phaseIndex),
+        requestCount: phaseRequestCount,
+        ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
+        ...(parsed.parseFailure !== undefined ? { parseFailure: parsed.parseFailure } : {}),
+        ...(recoverySource !== undefined || parsed.parseFailure !== undefined
+          ? {
+              ...(phaseParseRetries > 0 ? { parseRetries: phaseParseRetries } : {}),
+              parseRecovered: parsed.parseFailure === undefined,
+              ...(recoverySource !== undefined ? { parseRecovery: recoverySource } : {}),
+            }
+          : {}),
+      });
+    }
+
+    if (isSweepReply) {
+      if (parsed.parseFailure === undefined) {
+        const merged = mergeSkillCandidates({
+          primary: roundCandidates,
+          batches: [{ skill: "phase5-sweep", candidates: phase5SweepCandidates }],
+        });
+        const mergedCount = merged.mergedCounts[0] ?? 0;
+        const added = phase5SweepCandidates.length - mergedCount;
+        roundCandidates = merged.candidates;
+        phase5SweepCandidates = [];
+        phase5SweepState = "completed";
+        const previous = phaseLog.at(-1);
+        if (previous !== undefined) {
+          phaseLog[phaseLog.length - 1] = {
+            ...previous,
+            note: [
+              previous.note,
+              `六项镜头二次扫描新增 ${String(added)} 条（合并重复 ${String(mergedCount)} 条）`,
+            ]
+              .filter((part): part is string => part !== undefined && part.length > 0)
+              .join("; "),
+          };
+        }
+      } else {
+        // 扫描回复最终仍不可解析：不再卡住阶段机，按无新增继续。
+        phase5SweepCandidates = [];
+        phase5SweepState = "completed";
+      }
+    }
 
     // Phase 5 之后、Phase 6 指令之前：顺序跑 skill 检视会话（ADR-0014）。
     // 种子 = 主会话此刻的 messages 快照；每个 skill 分叉自己的 history 与 ledger。
     if (phaseIndex === CANDIDATES_PHASE_INDEX) {
+      if (runtime.limits.loop.phase5Sweep && phase5SweepState === "idle") {
+        phase5SweepState = "requested";
+        followUp(phase5SweepMessage());
+        return false;
+      }
       await runRoundSkillPasses(seedMessages);
     }
 
@@ -522,6 +582,8 @@ export async function runAgentReviewLoop(
     phaseIndex = 0;
     resetPhaseCounters();
     roundCandidates = [];
+    phase5SweepState = "idle";
+    phase5SweepCandidates = [];
     roundVerdicts = new Map();
     roundComplete = false;
     roundSkillBatches = [];
@@ -694,7 +756,11 @@ export async function runAgentReviewLoop(
       const parsed = parseCandidatesReply(replyText);
       const normalized = normalizeCandidates({ candidates: parsed.candidates, round });
       candidateNormalizations.push(...normalized.records);
-      roundCandidates = normalized.candidates;
+      if (phase5SweepState === "requested") {
+        phase5SweepCandidates = normalized.candidates;
+      } else {
+        roundCandidates = normalized.candidates;
+      }
       return {
         ...(parsed.note !== undefined ? { note: parsed.note } : {}),
         ...(parsed.failure !== undefined
@@ -823,6 +889,43 @@ ${raw}`,
       // timestamp 不进 wire，字节门不受影响）
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Phase 5 六项镜头补漏扫描（`limits.loop.phase5Sweep`）。
+   *
+   * 独立请求而不是并入主 Phase 5 指令：实测把检查项塞进同一次生成会挤掉
+   * 主候选（注意力置换）。这里只要求「新增」，已有候选原样保留。
+   */
+  function phase5SweepMessage(): AgentMessage {
+    const existing = roundCandidates
+      .map((candidate) => {
+        if (!isRecord(candidate)) {
+          return undefined;
+        }
+        const file = typeof candidate.file === "string" ? candidate.file : "";
+        const line = typeof candidate.line === "number" ? candidate.line : 0;
+        const title = typeof candidate.title === "string" ? candidate.title : "";
+        return `${file}:${String(line)} ${title}`.trim();
+      })
+      .filter((line): line is string => line !== undefined && line.length > 0)
+      .join("\n");
+    const content = [
+      "Phase 5 补漏扫描（六项缺陷镜头）。不要重复已有候选，只输出你新发现、且尚未列出的候选。",
+      existing.length > 0 ? `已有候选：\n${existing}` : "已有候选：无",
+      [
+        "对每个新增/修改 hunk 依次检查：",
+        "1. 空值/缺失键：新解引用、下标、字段访问是否可能为空或不存在；",
+        "2. 边界/off-by-one：新增的分页、循环、切片、长度计算在 0、1、整除、超限时的行为；",
+        "3. 类型/字节序/精度：新增的 cast、跨语言边界、格式化参数是否匹配；",
+        "4. 错误路径：新增的异常/返回 null/日志分支是否丢失错误信息；",
+        "5. 资源与生命周期：新增的句柄、内存、锁、连接是否所有分支都释放；",
+        "6. 顺序/并发/幂等：新增的去重、集合遍历、异步改写是否破坏顺序或幂等。",
+        "本次变更新写或重写的代码路径，即使旧代码已有 TODO 或已知缺口，也要把新实现中缺失的校验/分支视为本次引入的问题。",
+      ].join("\n"),
+      '只回一个 JSON 对象：{"candidates":[...]}；没有新增就回 {"candidates":[]}。',
+    ].join("\n\n");
+    return { role: "user", content, timestamp: Date.now() };
   }
 }
 

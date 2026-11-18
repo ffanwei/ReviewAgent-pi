@@ -847,7 +847,7 @@ ${excludeGlobLines}
     // 检视轮次（ADR-0046）：一轮 = 六阶段完整一遍（约 6 次模型请求）。
     // 最后一轮强制 complete：模型说「还要再审」也不再开新轮，本轮产出即最终结果；
     // 轮次上限是成本线，不是失败（不产生截断）。范围 1–20。
-    "loop": { "maxRounds": 3 },
+    "loop": { "maxRounds": 3, "phase5Sweep": false },
     // 各阶段超时（毫秒）。
     "timeouts": {
       "skillPassMs": 1200000,            // 单个规则 Skill 会话的总超时。

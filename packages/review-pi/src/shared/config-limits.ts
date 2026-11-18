@@ -66,6 +66,12 @@ export interface LoopLimits {
    * 不是失败，不产生 `MAX_ROUNDS_REACHED` 截断。
    */
   readonly maxRounds: number;
+  /**
+   * Phase 5 六项缺陷镜头二次扫描：开启后，主 Phase 5 候选产出后再发一次
+   * 独立补漏请求（空值/边界/类型/错误路径/资源/顺序并发），新增候选与主候选
+   * 按 (file, line, category) 合并，主候选永不被丢弃。缺省关闭。
+   */
+  readonly phase5Sweep: boolean;
 }
 
 /**
@@ -179,7 +185,7 @@ export interface Limits {
 }
 
 export const DEFAULT_LIMITS: Limits = {
-  loop: { maxRounds: 3 },
+  loop: { maxRounds: 3, phase5Sweep: false },
   timeouts: {
     skillPassMs: 1_200_000,
     skillBashMs: 120_000,
@@ -230,7 +236,7 @@ export const DEFAULT_LIMITS: Limits = {
 
 
 const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro"] as const;
-const LOOP_KEYS = ["maxRounds"] as const;
+const LOOP_KEYS = ["maxRounds", "phase5Sweep"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
   "skillBashMs",
@@ -281,6 +287,11 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
   assertKnownKeys(loopObj, LOOP_KEYS, "limits.loop", warnings);
   const loop: LoopLimits = {
     maxRounds: intOr(loopObj.maxRounds, "limits.loop.maxRounds", 1, 20, DEFAULT_LIMITS.loop.maxRounds),
+    phase5Sweep: boolOr(
+      loopObj.phase5Sweep,
+      "limits.loop.phase5Sweep",
+      DEFAULT_LIMITS.loop.phase5Sweep,
+    ),
   };
 
   const timeoutsObj = optionalObject(limits.timeouts, "limits.timeouts", warnings);

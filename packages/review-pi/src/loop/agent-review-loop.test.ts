@@ -143,7 +143,7 @@ function scriptedLoop(
 function runtimeWith(maxRounds: number): ReviewRuntime {
   return {
     ...DEFAULT_REVIEW_RUNTIME,
-    limits: { ...DEFAULT_REVIEW_RUNTIME.limits, loop: { maxRounds } },
+    limits: { ...DEFAULT_REVIEW_RUNTIME.limits, loop: { maxRounds, phase5Sweep: false } },
   };
 }
 
@@ -217,6 +217,46 @@ test("单轮直驱 + 工具子循环：phase-2 执行 get_diff 后 recall 收尾
   // 截断留痕：无
   expect(outcome.audit.truncated).toBe(false);
   expect(outcome.audit.truncationReasons).toEqual([]);
+});
+
+test("Phase 5 二次扫描：新增候选并入主候选，PhaseRecord 仍为六条", async () => {
+  const sweepCandidate = {
+    ...VALID_CANDIDATE,
+    id: "F002",
+    line: 20,
+    title: "Second independent issue",
+    rule: "MAINTAINABILITY-002",
+  };
+  const runtime: ReviewRuntime = {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      loop: { maxRounds: 3, phase5Sweep: true },
+    },
+  };
+  const replies = [
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply(`{"candidates":[${JSON.stringify(VALID_CANDIDATE)}]}`, 4),
+    textReply(
+      `{"candidates":[${JSON.stringify(VALID_CANDIDATE)},${JSON.stringify(sweepCandidate)}]}`,
+      5,
+    ),
+    textReply(
+      '{"verdicts":[{"id":"F001","pass":true,"reason":"ok"},{"id":"F002","pass":true,"reason":"ok"}],"complete":true}',
+      6,
+    ),
+  ];
+  const { run } = scriptedLoop(replies, INITIAL, runtime);
+  const outcome = await run();
+
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001", "F002"]);
+  expect(outcome.audit.phaseLog).toHaveLength(PHASE_COUNT);
+  expect(outcome.audit.phaseLog[4]?.requestCount).toBe(2);
+  expect(outcome.audit.phaseLog[4]?.note).toContain("六项镜头二次扫描新增 1 条");
+  expect(outcome.audit.phaseLog[4]?.note).toContain("合并重复 1 条");
 });
 
 test("Zone A 稳定：八工具面跨请求字节恒定（审计点分名 / wire 下划线名），消息前缀 append-only", async () => {
