@@ -15,7 +15,7 @@ import {
 } from "./unified-tips.js";
 
 // 统一 tips 组装（ADR-0045）：语义登记按合并键 join 回 merged findings，
-// 12 键（10 键 + id + level，只增不删）；(file,line) 去重沿用 ADR-0023。
+// 12 键（10 键 + id + level，只增不删）；同行不再去重（ADR-0106）。
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -150,7 +150,7 @@ test("未覆盖原因透传：片级失败 / 逐条被拒的原因按合并键�
   ]);
 });
 
-test("同文件同 line 去重只留首条（ADR-0023）；被去重者不算 uncovered", async () => {
+test("同文件同 line 不再去重：所有有语义的意见都保留（ADR-0106）", async () => {
   const merged = [
     finding({ line: 10 }),
     finding({ id: "F002", line: 10, title: "another view of the same line" }),
@@ -158,13 +158,12 @@ test("同文件同 line 去重只留首条（ADR-0023）；被去重者不算 un
   ];
   const outcome = assembleUnifiedTips({
     mergedFindings: merged,
-    // F002 无条目——它被去重丢弃，不产生 uncovered
-    semanticByMergeKey: semanticMap(merged, [entry(), undefined, entry()]),
+    semanticByMergeKey: semanticMap(merged, [entry(), entry(), entry()]),
     codeByFinding: {},
   });
   const tips = outcome.tips[0]?.reviewTips ?? [];
-  expect(tips.map((tip) => tip.lineNum)).toEqual([10, 20]);
-  expect(tips.map((tip) => tip.id)).toEqual(["F001", "F003"]);
+  expect(tips.map((tip) => tip.lineNum)).toEqual([10, 10, 20]);
+  expect(tips.map((tip) => tip.id)).toEqual(["F001", "F002", "F003"]);
   expect(outcome.uncovered).toEqual([]);
 });
 
@@ -289,7 +288,7 @@ test("minConfidence 缺席 = 不过滤（内核直调 / 单测形态）", () => 
   expect(outcome.droppedByConfidence).toBe(0);
 });
 
-test("置信度过滤先于同行去重：低置信首条不占行位", () => {
+test("置信度过滤：同行低置信条目被丢，高置信条目保留（不再有同行去重）", () => {
   const merged = [
     finding({ id: "F001", line: 10, confidence: 0.3, title: "low confidence view" }),
     finding({ id: "F002", line: 10, confidence: 0.9, title: "high confidence view" }),

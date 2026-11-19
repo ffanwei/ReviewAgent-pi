@@ -357,6 +357,8 @@ interface TipsAssembly {
   readonly droppedBySeverity: number;
   readonly minConfidence: number;
   readonly minSeverity: Finding["severity"];
+  /** MCP 开启时：tips 里存在、但平台最终没收到的意见（逐条 label；ADR-0106） */
+  readonly unreportedTips: readonly string[];
 }
 
 /**
@@ -413,7 +415,40 @@ async function assembleTips(input: DeliveryInput): Promise<TipsAssembly> {
     droppedBySeverity: eligible.droppedBySeverity,
     minConfidence,
     minSeverity,
+    unreportedTips:
+      input.mcp.task === undefined
+        ? []
+        : collectUnreportedTips(tipsDoc, record.baseline.findings, input.mcp.submittedFindingKeys),
   };
+}
+
+/**
+ * tips 与「平台实际收到」的差集（ADR-0106）：tips 是本地全量 eligible 投影，
+ * MCP 可能因 code 不可读 / 上报失败 / 覆盖补报只发空包而少收。只在 MCP 开启时
+ * 计算；逐条 label 供 stderr 留痕，**不改变 tips 内容**。
+ */
+function collectUnreportedTips(
+  tipsDoc: ReviewTipsDocumentLike | undefined,
+  findings: readonly Finding[],
+  submittedFindingKeys: ReadonlySet<string>,
+): readonly string[] {
+  if (tipsDoc === undefined) {
+    return [];
+  }
+  const findingById = new Map(findings.map((finding) => [finding.id, finding]));
+  const unreported: string[] = [];
+  for (const file of tipsDoc) {
+    for (const tip of file.reviewTips) {
+      const finding = tip.id !== undefined ? findingById.get(tip.id) : undefined;
+      if (finding === undefined) {
+        continue;
+      }
+      if (!submittedFindingKeys.has(findingMergeKey(finding))) {
+        unreported.push(`${file.filePath}:${String(tip.lineNum)} (${tip.id})`);
+      }
+    }
+  }
+  return unreported;
 }
 
 /** 过滤留痕（零静默）：只在真的丢了条数时打一行汇总 */
@@ -430,6 +465,16 @@ function logFilterDrops(input: DeliveryInput, assembly: TipsAssembly): void {
       `review-pi: 严重级过滤丢弃 ${String(assembly.droppedBySeverity)} 条检视意见` +
         `（阈值 ${String(assembly.minSeverity)}），仅影响中文 tips 与 MCP 上报\n`,
     );
+  }
+  // ADR-0106：tips 是本地全量投影，MCP 可以是它的子集；差集逐条留痕（零静默）。
+  const unreported = assembly.unreportedTips;
+  if (unreported.length > 0) {
+    log(
+      `review-pi: 平台未收到 ${String(unreported.length)} 条中文意见（tips 仍保留，逐条见下）\n`,
+    );
+    for (const label of unreported) {
+      log(`review-pi: 平台未收到（tips 仍保留）：${label}\n`);
+    }
   }
 }
 

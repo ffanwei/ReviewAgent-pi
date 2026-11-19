@@ -1,6 +1,7 @@
 # 0045. MCP 业务 tool：任务生命周期、片级结果与总结上报
 
 > **后续修订（[ADR-0090](0090-chinese-native-review.md)，2026-11-14）**：「片级报文经统一语义生成产出」的部分被取代——语义字段随候选直接产出（`Finding.tips`），报文组装变为确定性投影（零模型调用）；四 tool 顺序契约与旁路纪律不变。
+> **后续修订（[ADR-0106](0106-tips-full-projection-with-unreported-log.md)，2026-11-19）**：`reviews_tips_zh.json` 不再沿用 ADR-0023 的 `(file,line)` 去重——tips 改为全量 eligible findings 投影；code 不可读 / 上报失败的意见仍保留，平台未收到的在 stderr 逐条标记。MCP 报文与 `submittedFindingKeys` 口径不变。
 
 **状态**：已接受（2026-11-06，用户经 grilling 逐轮决策）
 **关联**：ADR-0037（MCP 上报：进度事件流——本 ADR 在其上加**业务调用**层，不改事件面）、ADR-0039（分片检视——片级回调的执行缝）、ADR-0017（分组意见 tips——「同源不同译」边界）、ADR-0010（呈现投影——总结调用的模型档）、ADR-0033（`--taskId` 任务目录）

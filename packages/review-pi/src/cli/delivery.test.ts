@@ -252,6 +252,35 @@ test("正常路径：覆盖补报 → 进度收尾 → 总结，返回 stdout �
   expect(index.runId).toBe("run-1");
 });
 
+test("平台未收到：tips 仍保留全量意见，并逐条打 stderr 标记（ADR-0106）", async () => {
+  const sent = finding({ id: "F001", line: 1 });
+  const missed = finding({ id: "F002", line: 1, title: "同一行的另一条规则意见" });
+  const { input, dir, logs } = await makeInput({
+    findings: [sent, missed],
+    submitted: new Set([findingMergeKey(sent)]),
+    semantic: new Map([
+      [findingMergeKey(sent), SEMANTIC],
+      [findingMergeKey(missed), SEMANTIC],
+    ]),
+  });
+
+  await deliverReviewRun(input);
+
+  const tips = JSON.parse(await readFile(join(dir, "reviews_tips_zh.json"), "utf8")) as {
+    readonly reviewTips: readonly { readonly id?: string }[];
+  }[];
+  expect(tips.flatMap((file) => file.reviewTips.map((tip) => tip.id))).toEqual([
+    "F001",
+    "F002",
+  ]);
+  expect(logs.some((line) => line.includes("平台未收到 1 条中文意见"))).toBe(true);
+  expect(
+    logs.some((line) =>
+      line.includes("平台未收到（tips 仍保留）：src/a.ts:1 (F002)"),
+    ),
+  ).toBe(true);
+});
+
 test("仓库快照侧别：base / mixed 打一行 stderr 提醒，head 静默", async () => {
   const base = await makeInput({
     repoSnapshotSide: {

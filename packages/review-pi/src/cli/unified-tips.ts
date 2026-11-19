@@ -19,12 +19,13 @@ import { LEVEL_BY_SEVERITY, type SemanticTipEntry } from "./report-payload.js";
  * 确定性纪律（与 ADR-0017 `buildReviewTipsDocument` 同口径，本模块是包内
  * 独立实现（ADR-0090 后根仓 presentation 层已删除）：
  * - **置信度过滤（ADR-0052）**：`finding.confidence < limits.confidence.min`
- *   的意见在去重前丢弃（有意丢弃，不算 uncovered）；
+ *   的意见在组装前丢弃（有意丢弃，不算 uncovered）；
  * - **严重级过滤**：`finding.severity` 低于 `limits.severity.min` 的意见同样
- *   在去重前丢弃；两者只作用于中文 tips / MCP 上报，英文 findings 恒全量；
- * - 同文件同 `line` 去重只留首条（ADR-0023；merged findings 已按
- *   文件→行号→严重度→title 排序，首见即确定）；
- * - 顶层数组按 finding 首见序建文件组，组内按 lineNum 升序（稳定）；
+ *   在组装前丢弃；两者只作用于中文 tips / MCP 上报，英文 findings 恒全量；
+ * - **不再按同文件同行去重（ADR-0106）**：同一行有多条 eligible 意见时全部保留
+ *   （规则意见、普通意见一视同仁）；给下游按 `(file, line)` 聚合的空间；
+ * - 顶层数组按 finding 首见序建文件组，组内按 finding 顺序（单遍 = 候选序，
+ *   分片 = merged 排序；均稳定）；
  * - `severity` / `confidence` 沿用 ADR-0017 单源映射；`source` / `ruleId`
  *   来自片级登记（聚合重编号后无法重推）。
  */
@@ -331,20 +332,9 @@ export function assembleUnifiedTips(input: AssembleUnifiedTipsInput): UnifiedTip
   });
   const droppedByConfidence = eligible.droppedByConfidence;
   const droppedBySeverity = eligible.droppedBySeverity;
-  // ADR-0023：同文件同 line 去重只留首条（finding 源序——merged 顺序已确定）；
-  // 被去重掉的 finding 不算 uncovered（是故意丢弃，不是生成失败）。
-  // ADR-0052：置信度过滤在去重前——低置信的那条不占行位，同行更高置信条目可见。
-  const seenLines = new Map<string, Set<number>>();
+  // ADR-0106：不再按 (file,line) 去重——同一行的不同判据全部保留，是否重复
+  // 交给上游候选门 / 合并层（确定性键）与下游按行聚合。
   for (const finding of eligible.kept) {
-    let lines = seenLines.get(finding.file);
-    if (lines === undefined) {
-      lines = new Set<number>();
-      seenLines.set(finding.file, lines);
-    }
-    if (lines.has(finding.line)) {
-      continue;
-    }
-    lines.add(finding.line);
     const mergeKey = findingMergeKey(finding);
     // ADR-0090：片级登记优先（source / ruleId 在片级捕获更准）；
     // 未登记（业务关闭 / 片级未跑）时直接用 Finding.tips。
