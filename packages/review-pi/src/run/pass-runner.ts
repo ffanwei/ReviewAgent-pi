@@ -326,6 +326,9 @@ export function buildPass(
     ...(context.tipsSeverityMin !== undefined
       ? { tipsSeverityMin: context.tipsSeverityMin }
       : {}),
+    ...(context.repoSnapshotSide !== undefined
+      ? { repoSnapshotSide: context.repoSnapshotSide }
+      : {}),
   };
 
   if (descriptor.kind === "single") {

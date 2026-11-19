@@ -1160,4 +1160,52 @@ test("仓库快照侧别：base 侧随结果返回，且不进审计字节", asy
   });
   // 旁路观测：不进审计 / RunRecord 字节
   expect(readFileSync(result.auditPath, "utf8")).not.toContain("repoSnapshotSide");
+  // ADR-0109：base 侧把可执行提示注入初始 user 消息
+  expect(firstUserMessage(result.auditPath)).toContain("改前（base）侧");
+  expect(firstUserMessage(result.auditPath)).toContain("新增的文件可能不存在");
 });
+
+test("仓库快照侧别：head 侧不注入模型提示（请求字节不变）", async () => {
+  const repoPath = mkdtempSync(path.join(tmpdir(), "review-pi-repo-side-head-"));
+  tempDirs.push(repoPath);
+  mkdirSync(path.join(repoPath, "src"), { recursive: true });
+  writeFileSync(path.join(repoPath, "src", "A.java"), "class A {\n    new();\n}\n", "utf8");
+  const diff = [
+    "diff --git a/src/A.java b/src/A.java",
+    "--- a/src/A.java",
+    "+++ b/src/A.java",
+    "@@ -1,3 +1,3 @@",
+    " class A {",
+    "-    old();",
+    "+    new();",
+    " }",
+  ].join("\n");
+
+  const result = await runReview({
+    caseId: "SIDE-2",
+    repoPath,
+    diff,
+    issueDescription: "Side detection fixture.",
+    apiKey: "offline-test",
+    fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
+    runsRoot: tempRunsRoot(),
+    rep: 1,
+    ruleSkillLoader: async () => [],
+  });
+
+  expect(result.repoSnapshotSide).toMatchObject({ side: "head", headVotes: 1, baseVotes: 0 });
+  expect(firstUserMessage(result.auditPath)).not.toContain("改前（base）侧");
+  expect(firstUserMessage(result.auditPath)).not.toContain("注意：本会话的 --repo");
+});
+
+/** 审计首请求的第一条 user 消息（用于侧别提示断言） */
+function firstUserMessage(auditPath: string): string {
+  const audit = JSON.parse(readFileSync(auditPath, "utf8")) as {
+    readonly requests: readonly { readonly wireBody: string }[];
+  };
+  const body = JSON.parse(audit.requests[0]!.wireBody) as {
+    readonly messages: readonly { readonly role: string; readonly content: unknown }[];
+  };
+  const user = body.messages.find((message) => message.role === "user");
+  return typeof user?.content === "string" ? user.content : JSON.stringify(user?.content);
+}

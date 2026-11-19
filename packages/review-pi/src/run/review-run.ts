@@ -211,8 +211,9 @@ export interface ReviewRunResult {
   /**
    * 仓库快照侧别判定（旁路观测，**不进审计 / RunRecord / stdout 字节**）：
    * `head` = `--repo` 停在 diff 改后侧；`base` = 改前侧（`get_file` 会返回
-   * 改前内容）；`mixed` / `unknown` 见 `run/repo-side.ts`。CLI 只在非 head 侧
-   * 打一行 stderr 提醒，不改变退出码。
+   * 改前内容）；`mixed` / `unknown` 见 `run/repo-side.ts`。CLI 在非 head 侧
+   * 打一行 stderr 提醒；base / mixed 还会把可执行提示注入初始 user 消息
+   * （ADR-0109），head / unknown 的请求字节不变。
    */
   readonly repoSnapshotSide?: RepoSnapshotSideRecord;
   /**

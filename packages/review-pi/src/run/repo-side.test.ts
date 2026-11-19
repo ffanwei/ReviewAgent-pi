@@ -6,6 +6,7 @@ import { afterEach, expect, test } from "vitest";
 
 import {
   detectRepoSnapshotSide,
+  formatRepoSnapshotModelNote,
   formatRepoSnapshotSideNotice,
 } from "./repo-side.js";
 
@@ -205,4 +206,39 @@ test("提醒文案：只有 base / mixed 出声", () => {
   } as const;
   expect(formatRepoSnapshotSideNotice({ ...silent, side: "head" })).toBeUndefined();
   expect(formatRepoSnapshotSideNotice({ ...silent, side: "unknown" })).toBeUndefined();
+});
+
+test("模型提示：base / mixed 才注入；head / unknown 保持请求字节不变", () => {
+  const base = formatRepoSnapshotModelNote({
+    side: "base",
+    headVotes: 0,
+    baseVotes: 1,
+    filesChecked: 0,
+    filesSkipped: 1,
+    filesWithoutHunks: 0,
+  });
+  expect(base).toContain("改前（base）侧");
+  expect(base).toContain("新增的文件可能不存在");
+  expect(base).toContain("无结果不代表文件或符号不存在");
+
+  const mixed = formatRepoSnapshotModelNote({
+    side: "mixed",
+    headVotes: 1,
+    baseVotes: 1,
+    filesChecked: 2,
+    filesSkipped: 0,
+    filesWithoutHunks: 0,
+  });
+  expect(mixed).toContain("侧别混杂");
+
+  const silent = {
+    headVotes: 0,
+    baseVotes: 0,
+    filesChecked: 0,
+    filesSkipped: 0,
+    filesWithoutHunks: 0,
+  } as const;
+  expect(formatRepoSnapshotModelNote({ ...silent, side: "head" })).toBeUndefined();
+  expect(formatRepoSnapshotModelNote({ ...silent, side: "unknown" })).toBeUndefined();
+  expect(formatRepoSnapshotModelNote(undefined)).toBeUndefined();
 });

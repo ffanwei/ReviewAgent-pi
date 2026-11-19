@@ -92,6 +92,23 @@ test("单遍：目录落在 run 根、无片标签、run 级审计值进入本�
   expect(built.files).toEqual(["a.ts"]);
 });
 
+test("repoSnapshotSide 原样传给单遍与分片输入（ADR-0109）", () => {
+  const side = {
+    side: "base" as const,
+    headVotes: 0,
+    baseVotes: 1,
+    filesChecked: 0,
+    filesSkipped: 1,
+    filesWithoutHunks: 0,
+  };
+  const ctx = context({ repoSnapshotSide: side });
+  const single = buildPass(ctx, { kind: "single", diff: DIFF }, ctx.startedAt);
+  const sharded = buildPass(ctx, { kind: "shard", shard: SHARD, total: 3 }, ctx.startedAt);
+
+  expect(single.input.repoSnapshotSide).toBe(side);
+  expect(sharded.input.repoSnapshotSide).toBe(side);
+});
+
 test("分片：目录在 shards/attempt-…/sNN、带片标签、run 级审计值缺席", () => {
   const ctx = context();
   const built = buildPass(ctx, { kind: "shard", shard: SHARD, total: 3 }, ctx.startedAt);

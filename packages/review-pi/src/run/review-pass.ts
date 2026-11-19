@@ -40,6 +40,7 @@ import { buildReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
 import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
+import { formatRepoSnapshotModelNote, type RepoSnapshotSideRecord } from "./repo-side.js";
 import {
   buildSkillPhase5Override,
   buildSkillPhase6VerificationNote,
@@ -101,6 +102,11 @@ export interface ReviewPassInput {
    * 检视行为；缺席 = 不写 `severityFilter` 键。
    */
   readonly tipsSeverityMin?: Finding["severity"];
+  /**
+   * 仓库快照侧别（ADR-0109）：base / mixed 时把可执行提示注入初始 user 消息；
+   * head / unknown 不注入（正常路径请求字节不变）。
+   */
+  readonly repoSnapshotSide?: RepoSnapshotSideRecord;
   /** 分片标签（ADR-0076 请求时间线）：多片才在场，单片路径缺席 */
   readonly shard?: TimelineShard;
   readonly emit: RunProgressSink;
@@ -194,6 +200,14 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
           }
           return undefined;
         };
+  // ADR-0109：只有 --repo 停在 base / mixed 侧时才追加可执行提示；head 是大多数
+  // 情况，保持初始消息逐字节不变。提示放在 extra section 末尾，模型最后看到。
+  const extraSections = [
+    skillBrief,
+    formatRepoSnapshotModelNote(input.repoSnapshotSide),
+  ].filter(
+    (section): section is string => section !== undefined && section.trim().length > 0,
+  );
   const initialContextMessages = [
     {
       role: "user" as const,
@@ -201,7 +215,7 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
         input.caseId,
         input.issueDescription,
         input.initialDiff,
-        skillBrief,
+        extraSections.length > 0 ? extraSections.join("\n\n") : undefined,
       ),
     },
   ];

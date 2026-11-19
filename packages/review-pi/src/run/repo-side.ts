@@ -9,6 +9,8 @@ import { parseUnifiedDiff } from "../diff/parse.js";
  * 为什么需要：`review.get_file` / 符号类工具读的是 `--repo` 工作树的当前内容，
  * 不对 diff 做叠加。快照停在 base 侧时，改动过的文件会被读到改前内容、diff 里
  * 的新增文件会直接读不到——而工具 schema 只写「仓库快照」，模型无从知道。
+ * 因此 base / mixed 侧会额外把可执行提示注入初始 user 消息（ADR-0109）；
+ * head（大多数情况）/ unknown 不注入，保持请求字节不变。
  *
  * 判定口径（确定性，零网络、零 git）：
  * - 只看 diff 里带文本 hunk 的文件；逐 hunk 取旧侧块（context + `-`）与新侧块
@@ -162,6 +164,35 @@ export function formatRepoSnapshotSideNotice(
     return `仓库快照侧别混杂：部分文件可能读到与 diff 不同侧的内容，请确认检出的提交（${evidence}）`;
   }
   return undefined;
+}
+
+/**
+ * 注入模型的侧别提示（ADR-0109）：只在 `base` / `mixed` 返回文本。
+ *
+ * 与 stderr 提醒分开：stderr 给人看（带票数），本函数给模型看（可执行规则）。
+ * `head`（大多数情况）与 `unknown` 返回 undefined —— 初始 user 消息逐字节
+ * 保持原样，正常路径的请求字节不受影响。
+ */
+export function formatRepoSnapshotModelNote(
+  record: RepoSnapshotSideRecord | undefined,
+): string | undefined {
+  if (record === undefined) {
+    return undefined;
+  }
+  const side =
+    record.side === "base"
+      ? "停在本次 diff 的改前（base）侧"
+      : record.side === "mixed"
+        ? "与本次 diff 的侧别混杂（部分文件可能是改前内容）"
+        : undefined;
+  if (side === undefined) {
+    return undefined;
+  }
+  return [
+    `注意：本会话的 --repo 工作树${side}。`,
+    "diff 中新增的文件可能不存在，修改文件读到的是改前内容；变更行以 diff 为准。",
+    "review.get_file / review.search_code 无结果不代表文件或符号不存在；不要仅因仓库读取失败而放弃候选。",
+  ].join("\n");
 }
 
 /** 精确行比对：`block` 必须与文件 start1（1 基）起的连续行完全一致 */
