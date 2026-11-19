@@ -28,6 +28,15 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
 node .agents/skills/synthetic-defect-resource-leak/scripts/run.mjs --dry-run
 ```
 
+### Host-facing review skill
+
+`skills/review-pi/` is the **portable Agent Skill** other coding agents install
+(`npx skills add <owner>/ReviewAgent-pi --skill review-pi`). It is neither a
+development skill nor a rule skill: it wraps the shipped `review-pi` CLI,
+turning workspace/range/commit/diff targets into a head-side snapshot + diff and
+rendering the returned findings. Design and open questions:
+`docs/design/ReviewSkill接入-方案与讨论.md`.
+
 ### Issue tracker
 
 Local Markdown: issues and specs live as files under `.scratch/<feature>/` in this repo (no CLI required). See `docs/agents/issue-tracker.md`.

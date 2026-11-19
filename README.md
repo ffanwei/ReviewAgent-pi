@@ -19,6 +19,7 @@
 | 单源配置 | 用户级 JSONC（`~/.PiAgent/PiAgent.jsonc` 或 `--config`），启动读一次成不可变快照，审计留 digest |
 | 可观测 | stdout 单 JSON 文档；stderr 诊断与默认打印的阶段投影（`--no-progress` 静音）；退出码 0（含诚实截断）/ 1 |
 | diff 检视技能 | 仓内 `.agents/skills/` 两个可复跑技能：真实缺陷回放（默认 VUL4J-38 / CVE-2014-4172）与合成缺陷注入（GEN-RES-001）；真跑模型检视后把证据归档到 `repo-diff-skill-result/`（不入库） |
+| Agent Skill 接入 | `skills/review-pi/`：可被 Claude Code / Codex / Cursor / Copilot 等 Agent Skills 宿主安装的检视 Skill；`npx skills add <owner>/ReviewAgent-pi --skill review-pi`。内含确定性准备脚本（workspace / range / commit / diff / json + 未跟踪文件）与 findings 渲染脚本 |
 | 离线回放 / 并发阶梯 | `scripts/offline-replay/`：冻结 trace → 本机回放服务替代模型网关，零网络、零 key 跑完整检视；支持规则 Skill / 分片场景、真网关录制与进程级并发档位（ADR-0048 / ADR-0049，不进产品包） |
 | 大 MR e2e（真 MCP + 前端） | `scripts/e2e-mcp/`：>1000 行 diff + 真模型 + 真 HTTP MCP server（SSE 展示页），验证 ADR-0061「summary 前每个改动文件必报」（ADR-0068 起含被预过滤剔除的文件）；同一次真实调用冻结成 `large-mr` 回放 trace |
 
@@ -90,6 +91,20 @@ review-pi smoke          # 双探针自检：网关健康 + 模型可达；通�
 ```
 
 `config init` 生成的模板需要填入 `reviewer.apiKey`（以及需要时的 `baseUrl`）后再跑 `smoke`；`config show` 只报 `set | missing`，不回显值。
+
+### 方式 D：给其它编码工具安装检视 Skill
+
+`skills/review-pi/` 是标准 Agent Skill（`SKILL.md` + 确定性准备 / 渲染脚本），
+可被 Claude Code、Codex、Cursor、Copilot 等 Agent Skills 宿主加载。CLI 仍需按
+方式 A / B / C 安装并配置。
+
+```bash
+npx skills add MustacheXb/ReviewAgent-pi --skill review-pi
+# 或把 skills/review-pi/ 整个目录复制到宿主的 skills 目录
+```
+
+安装、使用与安全边界见 [`skills/review-pi/README.md`](skills/review-pi/README.md)；
+设计与待讨论点见 [`docs/design/ReviewSkill接入-方案与讨论.md`](docs/design/ReviewSkill接入-方案与讨论.md)。
 
 ### 升级 / 卸载
 
@@ -388,6 +403,8 @@ node .agents/skills/real-defect-url-injection/scripts/run.mjs --dry-run
 | [`scripts/e2e-mcp/README.md`](scripts/e2e-mcp/README.md) | 大 MR e2e：夹具与 diff 生成、真实 MCP server / 展示页、`run-e2e.mjs` 参数与断言口径、产物与冻结流程 |
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表（术语唯一权威） |
 | [`docs/开发指南-仓库结构与文件职责.md`](docs/开发指南-仓库结构与文件职责.md) | 目录结构、模块分层、逐文件职责、测试布局与建议阅读顺序 |
+| [`docs/design/ReviewSkill接入-方案与讨论.md`](docs/design/ReviewSkill接入-方案与讨论.md) | 宿主侧 Agent Skill 的选型、实现与待讨论点 |
+| [`docs/design/三款AI代码检视工具对比-ReviewAgent-pi-OCR-CodeRabbit.md`](docs/design/三款AI代码检视工具对比-ReviewAgent-pi-OCR-CodeRabbit.md) | ReviewAgent-pi / Open Code Review / CodeRabbit 的架构、能力、成本、优劣与可借鉴项 |
 | [`docs/adr/`](docs/adr/) | 架构决策记录（Go / C++ 符号提取器见 ADR-0042） |
 | [`docs/agents/`](docs/agents/) | agent 协作约定（issue tracker / triage labels / domain docs） |
 | [`.agents/skills/real-defect-url-injection/SKILL.md`](.agents/skills/real-defect-url-injection/SKILL.md) | 真实缺陷回放：VUL4J-38 / CVE-2014-4172 的 diff 构造、真跑与归档 |
