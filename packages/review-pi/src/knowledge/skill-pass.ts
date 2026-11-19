@@ -209,6 +209,55 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
   });
 
   const timeoutMs = options.timeoutMs ?? runtime.limits.timeouts.skillPassMs;
+  const startedAt = Date.now();
+  const captureNow = (): AgentTranscriptCapture | undefined =>
+    firstRequestAt === undefined
+      ? undefined
+      : {
+          messages: [...agent.state.messages],
+          firstRequestAt,
+          model: { id: model.id, baseUrl: model.baseUrl },
+        };
+
+  const failure = (reason: string, stage: RuleSkillPassRecord["failureStage"]): SkillPassOutcome => {
+    const capture = captureNow();
+    return {
+      record: {
+        round,
+        skill: skill.name,
+        status: "failed",
+        requestCount,
+        toolCallCount,
+        candidateCount: 0,
+        mergedCount: 0,
+        degradedReason: reason,
+        ...(stage !== undefined ? { failureStage: stage } : {}),
+      },
+      candidates: [],
+      usage,
+      ledgerHitCount: options.toolkit.ledger.hitCount(),
+      bashCallCount,
+      ...(capture !== undefined
+        ? {
+            transcript: {
+              round,
+              skill: skill.name,
+              capture,
+              complete: false,
+              truncated: false,
+              seedCount: options.seedMessages.length,
+            },
+          }
+        : {}),
+    };
+  };
+
+  const providerError = (): AssistantMessage | undefined =>
+    agent.state.messages.find(
+      (message): message is AssistantMessage =>
+        message.role === "assistant" && message.stopReason === "error",
+    );
+
   let session: "done" | "timeout";
   let sessionError: unknown;
   try {
@@ -226,45 +275,6 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
     sessionError = error;
   }
 
-  const capture: AgentTranscriptCapture | undefined =
-    firstRequestAt === undefined
-      ? undefined
-      : {
-          messages: [...agent.state.messages],
-          firstRequestAt,
-          model: { id: model.id, baseUrl: model.baseUrl },
-        };
-
-  const failure = (reason: string, stage: RuleSkillPassRecord["failureStage"]): SkillPassOutcome => ({
-    record: {
-      round,
-      skill: skill.name,
-      status: "failed",
-      requestCount,
-      toolCallCount,
-      candidateCount: 0,
-      mergedCount: 0,
-      degradedReason: reason,
-      ...(stage !== undefined ? { failureStage: stage } : {}),
-    },
-    candidates: [],
-    usage,
-    ledgerHitCount: options.toolkit.ledger.hitCount(),
-    bashCallCount,
-    ...(capture !== undefined
-      ? {
-          transcript: {
-            round,
-            skill: skill.name,
-            capture,
-            complete: false,
-            truncated: false,
-            seedCount: options.seedMessages.length,
-          },
-        }
-      : {}),
-  });
-
   if (sessionError !== undefined) {
     return failure(errorMessage(sessionError), "session");
   }
@@ -273,10 +283,7 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
   }
 
   // provider 错误不 reject（pi-ai 语义）：显式扫描错误回合，错误永不静默成成功
-  const errored = agent.state.messages.find(
-    (message): message is AssistantMessage =>
-      message.role === "assistant" && message.stopReason === "error",
-  );
+  const errored = providerError();
   if (errored !== undefined) {
     return failure(
       errored.errorMessage ?? "provider returned an error stop reason",
@@ -284,11 +291,45 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
     );
   }
 
-  const reply = lastAssistantText(agent.state.messages);
-  const parsed = parseCandidatesReply(reply);
+  let reply = lastAssistantText(agent.state.messages);
+  let parsed = parseCandidatesReply(reply);
+  let retried = false;
   if (parsed.note !== undefined) {
-    return failure(parsed.note, "parse");
+    // 同一会话内追加一次严格的格式提醒再解析（ADR-0108）。总时长仍以
+    // skillPassMs 为硬上限：首轮已用尽预算就不重试。
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    if (remainingMs > 0) {
+      retried = true;
+      try {
+        session = await runWithTimeout(agent, skillParseRetryMessage(parsed.note), remainingMs);
+      } catch (error) {
+        return failure(errorMessage(error), "session");
+      }
+      if (session === "timeout") {
+        return failure(
+          `rule-skill session timed out after ${timeoutMs}ms (format retry)`,
+          "session",
+        );
+      }
+      const retryErrored = providerError();
+      if (retryErrored !== undefined) {
+        return failure(
+          retryErrored.errorMessage ?? "provider returned an error stop reason",
+          "session",
+        );
+      }
+      reply = lastAssistantText(agent.state.messages);
+      parsed = parseCandidatesReply(reply);
+    }
   }
+  if (parsed.note !== undefined) {
+    return failure(
+      retried ? `${parsed.note}（已重试 1 次）` : `${parsed.note}（剩余时间不足，未重试）`,
+      "parse",
+    );
+  }
+
+  const capture = captureNow();
 
   // 路径洁净副本（ADR-0014 验收 6：主会话请求不得含宿主绝对路径——skill
   // 会话里可以有，它的产出不行）。原始措辞留在本会话的独立转录里。
@@ -378,6 +419,19 @@ function lastAssistantText(messages: readonly AgentMessage[]): string {
     }
   }
   return "";
+}
+
+/**
+ * skill 会话解析失败后的一次性格式提醒（ADR-0108）：只在同一会话里追加，
+ * 不重发 skill 内容、不重跑工具检索；严格限定候选 JSON 外壳。
+ */
+export function skillParseRetryMessage(note: string): string {
+  return [
+    `上一次回复无法解析为规则 Skill 的候选清单（${note}）。`,
+    "请只输出一个 JSON 对象：{\"candidates\":[...]}；没有候选就输出 {\"candidates\":[]}。",
+    "不要解释，不要 Markdown 围栏，不要使用 findings / issues / violations 等其它键。",
+    "输出格式以本次检视的宿主契约为准；SKILL.md 只覆盖规则、证据与严重级。",
+  ].join("\n");
 }
 
 /** 候选引用的规则 id（首见序、去重；非字符串/空串忽略） */

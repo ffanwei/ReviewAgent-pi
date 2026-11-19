@@ -2,6 +2,7 @@
 
 **状态**：已接受（2026-11-16，用户决策：先修 JSON 问题再继续测评）
 **关联**：[ADR-0016](0016-progress-events.md)（phaseLog 审计）、[ADR-0094](0094-review-grouping-and-bounded-concurrent-passes.md)（分组/分片、partial success）、[ADR-0095](0095-rule-catalog-and-heterogeneous-skill-overlay.md)（规则目录）
+**后续修订**：[ADR-0108](0108-skill-session-parse-retry-and-contract.md)（2026-11-19）——同一套「解析失败不直接判死」的思路扩展到规则 Skill 会话：同会话追加一次严格格式提醒再解析；主 loop 的三层恢复不变。
 **范围**：本仓 pi 线 0096。只改 Phase 5 候选 / Phase 6 裁决的回复解析失败处理与审计；不改 Finding schema、不改阶段指令、不改工具面。
 
 ## Context

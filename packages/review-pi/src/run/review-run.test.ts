@@ -698,6 +698,7 @@ test("skill 会话解析失败：status=failed/parse，Phase 6 无候选清单�
     OK_REPLY,
     candidatesReply([]),
     { text: "not a JSON reply at all", usage: ZERO }, // skill 会话产出不可解析
+    { text: "still not the candidate JSON", usage: ZERO }, // ADR-0108：同会话重试仍失败
     allPassVerdicts([]),
   ]);
   const run = await runReview({

@@ -191,17 +191,47 @@ test("跑通 0 候选 = empty（合法，不是失败；也没有 degradedReason
 });
 
 test("解析失败 = failed/parse（带 degradedReason，候选为空）", async () => {
-  const script = scriptedFetch([{ text: "I could not decide.", usage: ZERO }]);
+  // 第一次失败后会在同一会话内重试一次（ADR-0108）；这里两次都不合契约。
+  const script = scriptedFetch([
+    { text: "I could not decide.", usage: ZERO },
+    { text: "still not the candidate JSON", usage: ZERO },
+  ]);
   const outcome = await runSkillPass(baseOptions({ fetch: script.fetch }));
 
   expect(outcome.record).toMatchObject({
     status: "failed",
     failureStage: "parse",
     candidateCount: 0,
+    requestCount: 2,
   });
   expect(String(outcome.record.degradedReason)).toContain("JSON");
+  expect(String(outcome.record.degradedReason)).toContain("已重试 1 次");
   expect(outcome.candidates).toEqual([]);
   expect(outcome.transcript?.complete).toBe(false);
+});
+
+test("解析失败后同会话重试成功（ADR-0108）：只追加格式提醒，不重跑检索", async () => {
+  const script = scriptedFetch([
+    { text: JSON.stringify({ findings: [] }), usage: ZERO },
+    candidatesReply([candidate("S1", "sample-rule")]),
+  ]);
+  const outcome = await runSkillPass(baseOptions({ fetch: script.fetch }));
+
+  expect(outcome.record).toMatchObject({ status: "ok", candidateCount: 1, requestCount: 2 });
+  expect(outcome.record.degradedReason).toBeUndefined();
+  expect(outcome.candidates).toHaveLength(1);
+  expect(outcome.transcript?.complete).toBe(true);
+  // 第二次请求的末条消息是重试提醒，且原有种子/工具结果仍在
+  const retryBody = script.bodies[1] as {
+    messages: { role: string; content: { type: string; text?: string }[] }[];
+  };
+  const last = retryBody.messages.at(-1);
+  expect(last?.role).toBe("user");
+  expect(last?.content.map((block) => block.text ?? "").join("")).toContain(
+    "上一次回复无法解析为规则 Skill 的候选清单",
+  );
+  const firstBody = script.bodies[0] as { messages: unknown[] };
+  expect(retryBody.messages.length).toBeGreaterThan(firstBody.messages.length);
 });
 
 test("会话异常 = failed/session（provider/fetch 抛错不穿透 run）", async () => {

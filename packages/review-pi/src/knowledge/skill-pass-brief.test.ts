@@ -51,6 +51,10 @@ test("会话首消息：内核 skill 块（真实 pack 路径）+ 宿主平台�
   expect(prompt).toContain("Host platform: Windows (win32, x64)");
   expect(prompt).toContain("prefer `python` over `python3`");
   expect(prompt).toContain('{"candidates": [<符合 Finding 模式的对象>, ...]}');
+  // ADR-0108：输出外壳以宿主契约为准；无候选也必须给空数组
+  expect(prompt).toContain("输出格式以本节契约为准");
+  expect(prompt).toContain('即使没有候选，也必须输出 {"candidates": []}');
+  expect(prompt).toContain("不要使用 findings / issues / violations 等其它键");
   expect(prompt).toContain("RULE-CHECK@sample-rule@<file>:<line>");
   expect(prompt).toContain('"rule" 字段填该意见违反的本 skill rules/ 里具体规则的 frontmatter id');
   expect(prompt).toContain('如 "GEN-SQL-001"');
