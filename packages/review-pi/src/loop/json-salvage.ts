@@ -28,6 +28,7 @@ const KNOWN_VERDICT_FIELDS = new Set(["id", "pass", "reason"]);
 
 export interface SalvagedVerification {
   readonly entries: readonly unknown[];
+  /** 与 ADR-0105 同口径：只有显式布尔 false 才续轮，缺失 / 非布尔值按 true */
   readonly complete: boolean;
 }
 
@@ -72,7 +73,9 @@ export function salvageVerificationReply(text: string): SalvagedVerification | u
     return undefined;
   }
   const record = parsed as { verdicts?: unknown; complete?: unknown };
-  if (!Array.isArray(record.verdicts) || typeof record.complete !== "boolean") {
+  // complete 不再属于 salvage 的验收字段（ADR-0105）：缺失或非布尔值按 true，
+  // 只有显式 false 才保留续轮意图；裁决条目本身仍需完整可修。
+  if (!Array.isArray(record.verdicts)) {
     return undefined;
   }
   const idCount = countIds(text);
@@ -92,7 +95,7 @@ export function salvageVerificationReply(text: string): SalvagedVerification | u
       }
     }
   }
-  return { entries: record.verdicts, complete: record.complete };
+  return { entries: record.verdicts, complete: record.complete !== false };
 }
 
 function parseRepaired(text: string, preferKey: string): unknown | undefined {

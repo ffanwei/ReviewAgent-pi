@@ -47,11 +47,14 @@ test("parseVerificationReply 提取 verdicts 与 complete 信号", () => {
   expect(out.note).toBeUndefined();
 });
 
-test("parseVerificationReply 的 complete 仅在严格 true 时为真", () => {
+test("parseVerificationReply 的 complete 仅在严格 false 时请求下一轮（ADR-0105）", () => {
   expect(parseVerificationReply('{"verdicts":[],"complete":true}').complete).toBe(true);
   expect(parseVerificationReply('{"verdicts":[],"complete":false}').complete).toBe(false);
-  expect(parseVerificationReply('{"verdicts":[]}').complete).toBe(false);
-  expect(parseVerificationReply('{"verdicts":[],"complete":"true"}').complete).toBe(false);
+  // 字段缺失 / 非布尔值：不放大成一次完整重跑，按完成处理
+  expect(parseVerificationReply('{"verdicts":[]}').complete).toBe(true);
+  expect(parseVerificationReply('{"verdicts":[],"complete":"true"}').complete).toBe(true);
+  expect(parseVerificationReply('{"verdicts":[],"complete":"false"}').complete).toBe(true);
+  expect(parseVerificationReply('{"verdicts":[],"complete":null}').complete).toBe(true);
 });
 
 test("parseVerificationReply 跳过畸形 verdict 条目并留痕", () => {
@@ -73,6 +76,10 @@ test("parseVerificationReply 容错：非 JSON / 缺 verdicts → 空裁决 + co
   expect(noVerdicts.verdicts.size).toBe(0);
   expect(noVerdicts.complete).toBe(true);
   expect(noVerdicts.note).toBeDefined();
+
+  // 结构不完整时保守：只有显式 true 才停，其余保留轮级恢复（ADR-0105）
+  expect(parseVerificationReply('{"foo":1}').complete).toBe(false);
+  expect(parseVerificationReply('{"complete":"true"}').complete).toBe(false);
 });
 
 // ---- P0：宽松提取（前后白话 / 围栏 / 示例陷阱 / 分级失败原因） ----

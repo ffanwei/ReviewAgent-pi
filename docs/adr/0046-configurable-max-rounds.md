@@ -3,6 +3,7 @@
 **状态**：已接受（2026-11-07，用户直接决策）
 **关联**：ADR-0025（用户级配置与测量常量面——本 ADR 把 `maxRounds` 从死钉移入配置面）、ADR-0006（六阶段骨架与轮次驱动）、ADR-0039（分片检视——每片独立跑本循环）、ADR-0013（转录结局 `truncated` 的语义）
 **取代**：ADR-0025 Decision 4「5 项死钉」中的 `maxRounds` 一项、验收标准第 3 条中「`loop.maxRounds` 告警」一节
+**后续修订**：[ADR-0105](0105-explicit-false-only-round-continuation.md) 收窄了本文的 `complete` 解析口径——只有显式布尔 `false` 才请求下一轮，字段缺失 / 非布尔值按完成处理；本文的 `maxRounds` 配置与「最后一轮强制 complete」不变。
 
 ## Context
 

@@ -50,12 +50,19 @@ describe("salvageVerificationReply", () => {
     expect(salvaged?.complete).toBe(true);
   });
 
-  test("缺少 complete / 条目数不足 → 拒绝", () => {
-    expect(
-      salvageVerificationReply('{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}]}'),
-    ).toBeUndefined();
-    expect(
-      salvageVerificationReply('{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}],"complete":true}'),
-    ).toBeUndefined();
+  test("缺少 complete 不再拒绝 salvage：按完成处理（ADR-0105）", () => {
+    const malformed = '{"verdicts":[{"id":"F001","pass":true,"reason":"uses "foo" here"}]}';
+    const salvaged = salvageVerificationReply(malformed);
+    expect(salvaged?.entries).toHaveLength(1);
+    expect(salvaged?.complete).toBe(true);
+  });
+
+  test("显式 false 保留续轮意图；条目数不足仍拒绝", () => {
+    const malformedFalse =
+      '{"verdicts":[{"id":"F001","pass":true,"reason":"uses "foo" here"}],"complete":false}';
+    expect(salvageVerificationReply(malformedFalse)?.complete).toBe(false);
+
+    const truncated = '{"verdicts":[{"id":"F001","pass":true,"reason":"uses "foo" here"},{"id":"F002"';
+    expect(salvageVerificationReply(truncated)).toBeUndefined();
   });
 });

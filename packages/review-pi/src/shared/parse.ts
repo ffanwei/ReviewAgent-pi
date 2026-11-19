@@ -25,7 +25,12 @@ export interface VerificationVerdict {
 
 export interface VerificationParseResult {
   readonly verdicts: ReadonlyMap<string, VerificationVerdict>;
-  /** Evidence Verification 回复的 complete 信号；解析失败按 false 处理（有界推进） */
+  /**
+   * Evidence Verification 回复的 complete 信号：**只有显式布尔 `false` 才要求再跑一轮**；
+   * 字段缺失 / 非布尔值一律按 `true`（ADR-0105）。结构不可用（连 `verdicts` 数组都没有）
+   * 或整段不可解析时仍按 `false` 处理，让已有的同阶段重试 / 短修复链有机会恢复
+   * （有界推进）。
+   */
   readonly complete: boolean;
   readonly note?: string;
   /** 解析失败的分级原因（成功时缺席） */
@@ -98,7 +103,11 @@ export function parseVerificationReply(content: string): VerificationParseResult
     note = "证据核验回复没有 verdicts 数组";
     failure = "missing-key";
   }
-  const complete = record.complete === true;
+  // 结构完整（有 verdicts 数组）时：只有显式 false 才请求下一轮；缺失 / "true" /
+  // null / 其它值都按完成处理（ADR-0105：模型漏字段不应放大成一次完整六阶段重跑）。
+  // 结构不完整（连 verdicts 数组都没有）时保守：只有显式 true 才停，其余按续轮，
+  // 保留既有的轮级恢复机会。
+  const complete = failure === undefined ? record.complete !== false : record.complete === true;
   return {
     verdicts,
     complete,

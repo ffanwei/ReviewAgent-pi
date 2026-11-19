@@ -219,6 +219,46 @@ test("单轮直驱 + 工具子循环：phase-2 执行 get_diff 后 recall 收尾
   expect(outcome.audit.truncationReasons).toEqual([]);
 });
 
+test("Phase 6 缺 complete：按完成处理，不开下一轮（ADR-0105）", async () => {
+  const replies = Array.from({ length: PHASE_COUNT }, (_, index) =>
+    textReply(
+      index === 5
+        ? '{"verdicts":[{"id":"F001","pass":true,"reason":"evidence supports"}]}'
+        : phaseText(index),
+      index,
+    ),
+  );
+  const { run } = scriptedLoop(replies);
+  const outcome = await run();
+
+  expect(outcome.rounds).toBe(1);
+  expect(outcome.complete).toBe(true);
+  expect(outcome.audit.requests).toHaveLength(PHASE_COUNT);
+  expect(outcome.findings).toHaveLength(1);
+});
+
+test("Phase 6 显式 complete:false：仍按轮次上限续轮（ADR-0105）", async () => {
+  const replies: FakeReply[] = [];
+  for (let round = 1; round <= 2; round++) {
+    for (let phaseIndex = 0; phaseIndex < PHASE_COUNT; phaseIndex++) {
+      replies.push(
+        textReply(
+          phaseIndex === 5
+            ? '{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}],"complete":false}'
+            : phaseText(phaseIndex),
+          round * 10 + phaseIndex,
+        ),
+      );
+    }
+  }
+  const { run } = scriptedLoop(replies, INITIAL, runtimeWith(2));
+  const outcome = await run();
+
+  expect(outcome.rounds).toBe(2);
+  expect(outcome.audit.requests).toHaveLength(2 * PHASE_COUNT);
+  expect(outcome.complete).toBe(true);
+});
+
 test("Phase 5 二次扫描：新增候选并入主候选，PhaseRecord 仍为六条", async () => {
   const sweepCandidate = {
     ...VALID_CANDIDATE,
