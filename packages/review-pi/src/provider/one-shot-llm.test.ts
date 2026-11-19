@@ -252,3 +252,35 @@ test("usage sink：成功调用记样本；无 usage 仍计调用；失败尝试
     purpose: "candidate-repair",
   });
 });
+
+test("finish_reason 与 reasoning_tokens：透传到结果（供截断判定与观测）", async () => {
+  const fetch: FetchFunction = async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          { message: { role: "assistant", content: "partial" }, finish_reason: "length" },
+        ],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          completion_tokens_details: { reasoning_tokens: 4 },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+  const result = await completeOneShot({ ...BASE_INPUT, fetch, purpose: "summary" });
+  expect(result).toEqual({
+    ok: true,
+    text: "partial",
+    usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 },
+    finishReason: "length",
+    reasoningTokens: 4,
+  });
+});
+
+test("回包未带 finish_reason / reasoning_tokens：结果不出现这两个键（不虚增字段）", async () => {
+  const { fetch } = scripted(() => completion("plain"));
+  const result = await completeOneShot({ ...BASE_INPUT, fetch });
+  expect(result).toEqual({ ok: true, text: "plain" });
+});

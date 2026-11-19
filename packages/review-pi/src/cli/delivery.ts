@@ -544,6 +544,13 @@ async function publishSummary(
   if (summaryReport.degradedReason !== undefined) {
     log(`review-pi: 检视总结降级为模板（${summaryReport.degradedReason}）\n`);
   }
+  // 思考仍开时的观测行（ADR 口径：只观测、不改变内容）；正文已按结构裁剪。
+  if (summaryReport.reasoningTokens !== undefined && summaryReport.reasoningTokens > 0) {
+    log(
+      `review-pi: 检视总结回包含思考 token ${String(summaryReport.reasoningTokens)}` +
+        `（仅观测，正文已按结构裁剪）\n`,
+    );
+  }
 
   // 模型替换留痕（ADR-0080）：只在真发生降级时追加一行；固定模板总结不追加。
   const summaryMarkdown =

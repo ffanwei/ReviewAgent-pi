@@ -18,6 +18,11 @@ export interface RawWireUsage {
   readonly cacheReadTokens: number;
   /** prompt_tokens_details.cache_write_tokens（OpenRouter 系；缺席 = 0，pi-ai 折算同口径） */
   readonly cacheWriteTokens?: number;
+  /**
+   * completion_tokens_details.reasoning_tokens（OpenAI 系 / vLLM 系）。
+   * 只是**观测**：它是 outputTokens 的子集，不得参与任何口径折算。
+   */
+  readonly reasoningTokens?: number;
 }
 
 /**
@@ -38,7 +43,9 @@ export function extractChatUsage(parsed: unknown): RawWireUsage | null {
     completion_tokens?: unknown;
     prompt_cache_hit_tokens?: unknown;
     cached_tokens?: unknown;
+    reasoning_tokens?: unknown;
     prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown };
+    completion_tokens_details?: { reasoning_tokens?: unknown };
   };
   const promptTokens = numberOf(usage.prompt_tokens);
   const completionTokens = numberOf(usage.completion_tokens);
@@ -51,11 +58,14 @@ export function extractChatUsage(parsed: unknown): RawWireUsage | null {
     numberOf(usage.cached_tokens) ??
     0;
   const cacheWriteTokens = numberOf(usage.prompt_tokens_details?.cache_write_tokens);
+  const reasoningTokens =
+    numberOf(usage.completion_tokens_details?.reasoning_tokens) ?? numberOf(usage.reasoning_tokens);
   return {
     promptTokens,
     completionTokens,
     cacheReadTokens,
     ...(cacheWriteTokens !== null ? { cacheWriteTokens } : {}),
+    ...(reasoningTokens !== null ? { reasoningTokens } : {}),
   };
 }
 

@@ -121,7 +121,15 @@ export function setOneShotLifecycleSink(sink: OneShotLifecycleSink | null): void
 }
 
 export type OneShotLlmResult =
-  | { readonly ok: true; readonly text: string; readonly usage?: LlmUsage }
+  | {
+      readonly ok: true;
+      readonly text: string;
+      readonly usage?: LlmUsage;
+      /** `choices[0].finish_reason`（缺席 = 回包未带；调用方据此判截断） */
+      readonly finishReason?: string;
+      /** 回包里的思考 token（观测用，已含在 outputTokens 内；缺席 = 响应未带） */
+      readonly reasoningTokens?: number;
+    }
   | { readonly ok: false; readonly reason: string; readonly status?: number };
 
 export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLlmResult> {
@@ -166,10 +174,12 @@ function emitOneShotLifecycle(
   });
 }
 
-/** 一次成功回包的文本 + 可选 usage（重试只保留最终成功的那次） */
+/** 一次成功回包的文本 + 可选 usage / 截断与思考观测（重试只保留最终成功的那次） */
 interface OneShotCompletion {
   readonly text: string;
   readonly usage?: LlmUsage;
+  readonly finishReason?: string;
+  readonly reasoningTokens?: number;
 }
 
 async function runAttempts(
@@ -189,6 +199,12 @@ function toResult(
       ok: true,
       text: outcome.value.text,
       ...(outcome.value.usage !== undefined ? { usage: outcome.value.usage } : {}),
+      ...(outcome.value.finishReason !== undefined
+        ? { finishReason: outcome.value.finishReason }
+        : {}),
+      ...(outcome.value.reasoningTokens !== undefined
+        ? { reasoningTokens: outcome.value.reasoningTokens }
+        : {}),
     };
   }
   const attemptsSuffix = outcome.attempts > 1 ? ` (after ${String(outcome.attempts)} attempts)` : "";
@@ -288,7 +304,9 @@ async function attemptOneShot(
   });
     return { ok: false, failure: malformedFailure("response has no message content text") };
   }
-  const usage = wireUsageToLlmUsage(extractChatUsage(payload));
+  const rawUsage = extractChatUsage(payload);
+  const usage = wireUsageToLlmUsage(rawUsage);
+  const finishReason = readFinishReason(payload);
   timeline?.endAttempt(probe, {
     headersAt,
     status: response.status,
@@ -297,7 +315,14 @@ async function attemptOneShot(
   emitOneShotSample(input, usage);
   return {
     ok: true,
-    value: usage === undefined ? { text } : { text, usage },
+    value: {
+      text,
+      ...(usage !== undefined ? { usage } : {}),
+      ...(finishReason !== undefined ? { finishReason } : {}),
+      ...(rawUsage?.reasoningTokens !== undefined
+        ? { reasoningTokens: rawUsage.reasoningTokens }
+        : {}),
+    },
   };
 }
 
@@ -428,6 +453,23 @@ function readContentText(payload: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * `choices[0].finish_reason`（截断判定用；缺席 = 回包未带）。
+ * 只判类型，不改语义：调用方决定 `length` 等值是否可接受。
+ */
+function readFinishReason(payload: unknown): string | undefined {
+  if (typeof payload !== "object" || payload === null) {
+    return undefined;
+  }
+  const choices = (payload as Record<string, unknown>).choices;
+  if (!Array.isArray(choices) || choices.length === 0) {
+    return undefined;
+  }
+  const choice = choices[0] as Record<string, unknown> | null;
+  const finishReason = choice?.finish_reason;
+  return typeof finishReason === "string" && finishReason !== "" ? finishReason : undefined;
 }
 
 /**

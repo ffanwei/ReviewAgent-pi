@@ -2507,7 +2507,38 @@ test(
   async () => {
     const stub = await startLoopbackStub([
       ...oneFindingCorpusForReport(),
-      { text: "# 检视总结\n\n测试桩总结。", usage: ZERO_USAGE_REPLY },
+      {
+        // 结构完整的规范总结。注意：本用例的权威 metrics 由实时 run 决定，
+        // 这里的三行「—」通常过不了内容校验 → 回落确定性模板；两种形态都含
+        // 四节结构，本用例只关心 MCP 调用顺序与总结非空。
+        text: [
+          "## 检视总览",
+          "",
+          "| 维度 | 统计 |",
+          "|------|------|",
+          "| 变更规模 | — |",
+          "| 预算使用 | — |",
+          "| 资源加载 | — |",
+          "",
+          "### 意见分布",
+          "",
+          "| severity | 数量 | 涉及文件 |",
+          "|----------|------|---------|",
+          "| fatal | 0 | — |",
+          "| major | 0 | — |",
+          "| minor | 1 | README.md |",
+          "| suggestion | 0 | — |",
+          "",
+          "### 高优先级意见速览",
+          "",
+          "无。",
+          "",
+          "### 星级评价",
+          "",
+          "⭐⭐⭐ — 0 条 fatal，0 条 major，仅 minor / suggestion",
+        ].join("\n"),
+        usage: ZERO_USAGE_REPLY,
+      },
     ]);
     const mcp = await startMcpStub();
     try {
@@ -2559,7 +2590,7 @@ test(
         reviewTips: [],
       });
       expect(business[3]?.args).toMatchObject({ taskId: CLI_TASK_ID });
-      expect(String(business[3]?.args.markdownContent)).toContain("# 检视总结");
+      expect(String(business[3]?.args.markdownContent)).toContain("## 检视总览");
       expect(business[4]?.args).toEqual({ taskId: CLI_TASK_ID });
 
       // 业务调用留痕（mcp.json）：与 session 转录同目录，四个 tool 的输入 /
