@@ -81,6 +81,11 @@ export interface ReviewToolkitOptions {
    * 一经提供即优先于 `ledgerMode`——调用方负责决定种子内容。
    */
   readonly ledger?: ContextLedger;
+  /**
+   * 规则 Skill 包根（仅 skill 会话）。注入后 `review.get_file` 在仓库读取
+   * 失败时回退到包根，`skill://` 前缀强制读包；缺省 = 主会话（零变化）。
+   */
+  readonly skillPackRoot?: string;
 }
 
 export interface ReviewToolkit {
@@ -116,6 +121,7 @@ export function buildReviewToolkit(options: ReviewToolkitOptions): ReviewToolkit
     rules: options.knowledge?.rules ?? [],
     history: options.knowledge?.history ?? [],
     ledger,
+    ...(options.skillPackRoot !== undefined ? { skillPackRoot: options.skillPackRoot } : {}),
   };
   return {
     schemas,

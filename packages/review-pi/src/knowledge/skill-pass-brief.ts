@@ -53,6 +53,7 @@ function invocationContract(
     "输出契约：",
     "- 完成后只回一个 JSON 对象：{\"candidates\": [<符合 Finding 模式的对象>, ...]}。",
     `- 每条候选的 id 形如 \`${skillCandidateIdTemplate(name)}\`（不含轮次号）。`,
+    "- 本 skill 包内的文件（SKILL.md 引用的 rules/、references/、scripts/ 等）用 review.get_file 读取：直接写包内相对路径即可（仓库里找不到时回退到包根）；也可写成 skill://<包内相对路径> 强制读包。被检视仓库的文件仍用普通相对路径。",
     `- "rule" 字段填该意见违反的本 skill rules/ 里具体规则的 frontmatter id（如 "GEN-SQL-001"）；只有无法对应到单条规则时才用 "${name}"。`,
     "- 自然语言字段（title / description / tips 各字段）一律中文；代码标识符与专有名词保留英文。",
     evidence,

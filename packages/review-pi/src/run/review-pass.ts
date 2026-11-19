@@ -214,13 +214,15 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
   });
 
   // skill 会话的八工具 toolkit：每个 skill 按 Phase-5 ledger 快照分叉一次
-  // （skill 之间互不可见；skill 读取不污染主账本）
-  const skillToolkitFor = (seed: readonly LedgerEntry[]) =>
+  // （skill 之间互不可见；skill 读取不污染主账本）。同时注入该 skill 的包根：
+  // review.get_file 在仓库缺失时回退到 SKILL.md 所在目录。
+  const skillToolkitFor = (seed: readonly LedgerEntry[], skill: RuleSkill) =>
     buildReviewToolkit({
       repoPath: input.repoPath,
       diff: input.diff,
       runtime: input.runtime,
       ledger: createContextLedger(seed),
+      ...(skill.filePath.length > 0 ? { skillPackRoot: path.dirname(skill.filePath) } : {}),
     });
 
   const repairModel = reviewModelOf(input.modelId, input.baseUrl);

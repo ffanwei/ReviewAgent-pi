@@ -147,9 +147,13 @@ export interface SkillPassRequest {
   readonly skills: readonly RuleSkill[];
   /**
    * 按 Phase-5 ledger 快照分叉八工具 toolkit。每个 skill 调用一次：skill 之间
-   * 互不可见，且 skill 会话的读取不会污染主账本。
+   * 互不可见，且 skill 会话的读取不会污染主账本。`skill` 供实现方注入
+   * `skillPackRoot`（review.get_file 的包内回退根）。
    */
-  readonly toolkitFor: (seedLedgerSnapshot: readonly LedgerEntry[]) => ReviewToolkit;
+  readonly toolkitFor: (
+    seedLedgerSnapshot: readonly LedgerEntry[],
+    skill: RuleSkill,
+  ) => ReviewToolkit;
   /**
    * 本次 diff 命中 skill / 文档：skill 会话的通用输出契约改用模态中性证据口径。
    * 缺省 = 代码口径（既有 trace 逐字节不变）。
@@ -617,7 +621,7 @@ export async function runAgentReviewLoop(
         skill,
         systemPrompt: inputs.systemPrompt,
         seedMessages,
-        toolkit: request.toolkitFor(ledgerSnapshot),
+        toolkit: request.toolkitFor(ledgerSnapshot, skill),
         apiKey: inputs.apiKey,
         ...(inputs.baseUrl !== undefined ? { baseUrl: inputs.baseUrl } : {}),
         ...(inputs.modelId !== undefined ? { modelId: inputs.modelId } : {}),

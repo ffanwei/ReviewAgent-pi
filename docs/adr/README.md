@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0106）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0107）。
 
 ## 记录纪律
 
@@ -108,6 +108,7 @@
 | [ADR-0104](0104-summary-output-sanitization-and-truncation.md) | 收尾总结输出面守门：结构与内容校验（表格 / 速览 / 星级）+ 截断（`finish_reason=length`）降级 + 思考 token 观测；不改请求字节与 thinking |
 | [ADR-0105](0105-explicit-false-only-round-continuation.md) | Phase 6 `complete` 只认显式布尔 `false` 才续轮；缺字段 / 非布尔值按完成处理；整段不可解析仍可轮级恢复 |
 | [ADR-0106](0106-tips-full-projection-with-unreported-log.md) | 取消 `reviews_tips_zh` 同行去重：tips 为全量 eligible 投影；code 不可读/上报失败仍保留；平台未收到的在 stderr 逐条标记 |
+| [ADR-0107](0107-skill-get-file-pack-fallback.md) | 规则 Skill 会话的 `review.get_file` 支持包内读取：仓库缺失回退 pack 根，`skill://` 强制读包；主会话字节不变 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

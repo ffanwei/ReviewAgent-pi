@@ -28,6 +28,12 @@ export interface ToolRunContext {
   readonly history: readonly KnowledgeEntry[];
   /** Context Ledger（run 私有；唯一形态恒为功能态，惰性态只留给测试夹具） */
   readonly ledger: ContextLedger;
+  /**
+   * 规则 Skill 会话的包根（SKILL.md 所在目录）。只在该会话注入：
+   * `review.get_file` 的仓库读取失败后回退到这里，`skill://` 前缀强制读包。
+   * 主会话缺省 = 无（行为与既有逐字节一致）。
+   */
+  readonly skillPackRoot?: string;
 }
 
 /**

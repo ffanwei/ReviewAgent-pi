@@ -15,6 +15,7 @@ import {
 import { reviewTurnStreamOptions } from "../provider/review-turn-policy.js";
 import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
+import { toWireToolName } from "../tools/registry.js";
 import { buildSkillBashTool, SKILL_BASH_TOOL_NAME } from "../tools/skill-bash.js";
 import { buildAgentTools } from "../tools/tool-adapter.js";
 import { withToolProgress } from "../tools/tool-progress.js";
@@ -130,7 +131,18 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
       },
       // 进度包装与主 loop 同源（ADR-0016）：名用点分审计名。
       progress: { emit: emitProgress, limits: progressLimits },
-    }),
+    }).map((tool) =>
+      // 只改 skill 会话的工具描述（非测量档）：让模型知道包内文件也能用
+      // review.get_file 读——相对路径仓库缺失时回退包根，skill:// 强制读包。
+      tool.name === toWireToolName("review.get_file")
+        ? {
+            ...tool,
+            description:
+              `${tool.description} 在规则 Skill 会话中，本 skill 包内的相对路径也可读取` +
+              `（仓库找不到时回退到包根）；用 skill://<包内相对路径> 可强制读包。`,
+          }
+        : tool,
+    ),
     withToolProgress(
       countToolCalls(
         buildSkillBashTool({

@@ -63,6 +63,9 @@ test("会话首消息：内核 skill 块（真实 pack 路径）+ 宿主平台�
   expect(prompt).not.toContain("检查本次变更文件（代码与文档）");
   // 规则 Skill 去重软约束：硬去重仍由 category 归一 + candidate-merge 承担
   expect(prompt).toContain("不要重复主会话已报告的同一文件同一行的问题");
+  // 包内文件读取口径（ADR-0107）：get_file 回退包根 / skill:// 强制读包
+  expect(prompt).toContain("仓库里找不到时回退到包根");
+  expect(prompt).toContain("skill://<包内相对路径> 强制读包");
   expect(prompt).toContain('{"candidates": []}');
 });
 

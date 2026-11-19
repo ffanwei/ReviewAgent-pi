@@ -135,6 +135,85 @@ test("get_file：路径逃逸与缺失文件为有界错误（不泄漏绝对路
   expect(message).not.toMatch(/[A-Za-z]:[\\/]/);
 });
 
+test("get_file：skillPackRoot 下仓库缺失时回退包根；skill:// 强制读包", async () => {
+  const pack = mkdtempSync(join(tmpdir(), "review-skill-pack-"));
+  try {
+    mkdirSync(join(pack, "rules"), { recursive: true });
+    writeFileSync(join(pack, "rules", "gen.md"), "rule-a\nrule-b\n", "utf8");
+    const tk = buildReviewToolkit({
+      repoPath: SAMPLE,
+      diff: SAMPLE_DIFF,
+      skillPackRoot: pack,
+    });
+
+    const fallback = await tk.executeTool("review.get_file", { path: "rules/gen.md" });
+    expect(fallback.split("\n")).toEqual([
+      "Skill file: rules/gen.md",
+      "Lines 1-2 of 2",
+      "1 | rule-a",
+      "2 | rule-b",
+    ]);
+
+    const forced = await tk.executeTool("review.get_file", { path: "skill://rules/gen.md" });
+    expect(forced.split("\n")[0]).toBe("Skill file: rules/gen.md");
+
+    const sliced = await tk.executeTool("review.get_file", {
+      path: "skill://rules/gen.md",
+      startLine: 2,
+      endLine: 2,
+    });
+    expect(sliced.split("\n")).toEqual(["Skill file: rules/gen.md", "Lines 2-2 of 2", "2 | rule-b"]);
+  } finally {
+    rmSync(pack, { recursive: true, force: true });
+  }
+});
+
+test("get_file：仓库与包都存在时仓库优先；无 packRoot 时 skill:// 显式报错", async () => {
+  const pack = mkdtempSync(join(tmpdir(), "review-skill-pack-"));
+  try {
+    mkdirSync(join(pack, "src/main/java/com/example"), { recursive: true });
+    writeFileSync(join(pack, "src/main/java/com/example/Alpha.java"), "PACK CONTENT\n", "utf8");
+    const tk = buildReviewToolkit({
+      repoPath: SAMPLE,
+      diff: SAMPLE_DIFF,
+      skillPackRoot: pack,
+    });
+    const repoWins = await tk.executeTool("review.get_file", {
+      path: "src/main/java/com/example/Alpha.java",
+    });
+    expect(repoWins.split("\n")[0]).toBe("File: src/main/java/com/example/Alpha.java");
+
+    const forced = await tk.executeTool("review.get_file", {
+      path: "skill://src/main/java/com/example/Alpha.java",
+    });
+    expect(forced.split("\n")[0]).toBe("Skill file: src/main/java/com/example/Alpha.java");
+    expect(forced).toContain("1 | PACK CONTENT");
+
+    await expect(
+      toolkit().executeTool("review.get_file", { path: "skill://rules/gen.md" }),
+    ).rejects.toThrow(/only available in a rule-skill session/);
+  } finally {
+    rmSync(pack, { recursive: true, force: true });
+  }
+});
+
+test("get_file：包内路径逃逸为有界错误（不泄漏 pack 绝对路径）", async () => {
+  const pack = mkdtempSync(join(tmpdir(), "review-skill-pack-"));
+  try {
+    const tk = buildReviewToolkit({ repoPath: SAMPLE, diff: SAMPLE_DIFF, skillPackRoot: pack });
+    const message = await tk
+      .executeTool("review.get_file", { path: "skill://../secret.txt" })
+      .then(
+        () => "tool unexpectedly succeeded",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+    expect(message).toMatch(/must stay inside the repository snapshot/);
+    expect(message).not.toContain(pack);
+  } finally {
+    rmSync(pack, { recursive: true, force: true });
+  }
+});
+
 test("get_file：startLine > endLine 与非法入参为显式错误", async () => {
   const tk = toolkit();
   await expect(

@@ -135,6 +135,11 @@ test("独立会话：复用 system prompt、种子历史原样、可见工具面
     "review_search_code",
     "bash",
   ]);
+  // ADR-0107：只改 skill 会话的 get_file 描述，告知可读包内文件
+  const getFileTool = (body.tools ?? []).find(
+    (tool) => tool.function?.name === "review_get_file",
+  ) as { function?: { description?: string } } | undefined;
+  expect(getFileTool?.function?.description).toContain("skill://<包内相对路径>");
 
   expect(outcome.record).toMatchObject({
     round: 1,
