@@ -186,7 +186,7 @@ export function relativeToRepo(path) {
 
 /**
  * 真实调用 review-pi。产物全部落进 runDir：
- *   runDir/result/runs/...    （reviews_en.json / run.json / 转录）
+ *   runDir/result/runs/...    （reviews_all.json（历史名 reviews_en.json）/ run.json / 转录）
  *   runDir/result/audit/...   （审计）
  *   runDir/.review-pi-session.json（cwd 索引）
  */
@@ -225,7 +225,10 @@ export function runReview({ repoDir, diffPath, runDir, ruleSkillDir, issue, task
 /** 读取一次 run 的 findings 与 RunRecord；产物缺失时给出空集而不是抛错。 */
 export function loadRunResult(runDir, taskId = "result") {
   const taskDir = join(runDir, taskId);
-  const reviewsPath = join(taskDir, "runs", "reviews_en.json");
+  // ADR-0090 起英文真源改名 reviews_all.json；reviews_en.json 仅作历史兜底。
+  const reviewsAllPath = join(taskDir, "runs", "reviews_all.json");
+  const reviewsLegacyPath = join(taskDir, "runs", "reviews_en.json");
+  const reviewsPath = existsSync(reviewsAllPath) ? reviewsAllPath : reviewsLegacyPath;
   const recordPath = join(taskDir, "runs", "run.json");
   const reviews = existsSync(reviewsPath) ? readJson(reviewsPath) : null;
   const record = existsSync(recordPath) ? readJson(recordPath) : null;

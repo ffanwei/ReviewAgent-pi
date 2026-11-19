@@ -62,7 +62,7 @@ repo-diff-skill-result/real-defect-url-injection/<YYYYMMDD-HHmmss>/
   stdout.json          # review-pi stdout（JSON 文档）
   stderr.log           # 进度 / 诊断（不含 API key）
   result/
-    runs/reviews_en.json       # 英文 findings（真源）
+    runs/reviews_all.json      # 英文 findings（真源；历史名 reviews_en.json）
     runs/reviews_tips_zh.json  # 中文建议（若配置了呈现引擎）
     runs/run.json              # RunRecord
     runs/session-*.json        # 转录

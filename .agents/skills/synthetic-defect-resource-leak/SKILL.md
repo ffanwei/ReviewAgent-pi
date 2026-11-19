@@ -75,7 +75,7 @@ repo-diff-skill-result/synthetic-defect-resource-leak/<YYYYMMDD-HHmmss>/
   stdout.json
   stderr.log
   result/
-    runs/reviews_en.json
+    runs/reviews_all.json
     runs/reviews_tips_zh.json
     runs/run.json
     runs/session-*.json
@@ -91,7 +91,7 @@ repo-diff-skill-result/synthetic-defect-resource-leak/<YYYYMMDD-HHmmss>/
 - `捕获` = 至少一条 finding 命中 `service/cmd/config.go` 的行范围，或同时命中该文件与
   `close|leak|resource|descriptor|handle|defer|file` 关键词，或引用了 `GEN-RES-001`；
 - 未捕获时先看 `run.json` 的 `truncated` 与 `audit` 里的工具调用，再判断是模型没发现还是链路没跑到；
-- `result/runs/reviews_en.json` 是英文 findings 真源；`reviews_tips_zh.json` 只是核外投影。
+- `result/runs/reviews_all.json` 是英文 findings 真源；`reviews_tips_zh.json` 只是核外投影。
 
 ## 边界
 
