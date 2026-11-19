@@ -32,7 +32,7 @@ flowchart TD
     K -->|"否"| L["直接注入 Phase 6 指令（逐字节 = E）"]
     K -->|"是"| M["快照 = 此刻 messages + ledger（见 §4）"]
     M --> N["按 CLI 顺序逐个 skill 跑独立会话（8 工具）"]
-    N --> O["候选净化（pack 路径 → &lt;rule-skill&gt;）<br/>+ 跨 skill 去重（file,line,category）"]
+    N --> O["候选净化（pack 路径 → &lt;rule-skill&gt;）<br/>+ 跨 skill 同根因合并（file/category/±5 行 + rule 或标题相似度）"]
     O --> P["存活候选并入本轮候选流"]
     P --> Q["Phase 6 指令 + 存活 skill 候选清单（§5）"]
     L --> R
@@ -205,7 +205,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    M["主候选（Phase 5）"] --> K["键集：file + line + category<br/>（主候选只占键、永不被丢弃）"]
+    M["主候选（Phase 5）"] --> K["同根因键：file + category + line±5 + rule/标题相似度<br/>（主候选只占键、永不被丢弃）"]
     S1["skill A 候选（净化后）"] --> D1{"键已存在？"}
     S2["skill B 候选（净化后）"] --> D2{"键已存在？"}
     K --> D1
@@ -245,7 +245,7 @@ Every candidate id above must appear in your verdicts array. …
 
 | 规则 | 行为 |
 |---|---|
-| 去重键 | `(file, line, category)`；不同规则/不同主张同键也视为重复，**不合并语义冲突** |
+| 去重键 | 同文件 + 同 category + 行号 ±5，且 rule 相同或标题相似度 ≥ 0.5；语义不同不合并 |
 | 主候选优先级 | 主候选先占键，skill 重复项计入该 skill 的 `mergedCount` |
 | 跨 skill 顺序 | 先出现的批次胜出（CLI 顺序）；后出现者计入 `mergedCount` |
 | schema 非法候选 | **不参与去重**（不查键、不占键），交给候选门以 `SCHEMA_INVALID` 留痕 |

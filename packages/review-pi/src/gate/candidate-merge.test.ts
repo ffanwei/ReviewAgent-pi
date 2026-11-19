@@ -1,8 +1,9 @@
 import { expect, test } from "vitest";
 import { mergeSkillCandidates } from "./candidate-merge.js";
 
-// 跨 skill 候选合并（ADR-0014 决策 9）：候选门之前按 (file, line, category)
-// 去重，CLI 顺序最先者胜出，被合并者计入 mergedCount，schema 非法者不参与。
+// 跨 skill 候选合并（ADR-0014 决策 9 / ADR-0110）：候选门之前按同根因语义
+// 去重——同文件、同 category、行号 ±5，且 rule 相同或标题相似度 ≥ 0.5；
+// CLI 顺序最先者胜出，被合并者计入 mergedCount，schema 非法者不参与。
 
 function candidate(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -33,14 +34,14 @@ test("主候选在前，skill 候选按批次顺序追加", () => {
     primary,
     batches: [
       { skill: "a", candidates: [candidate({ id: "S001", line: 7 })] },
-      { skill: "b", candidates: [candidate({ id: "S002", line: 9 })] },
+      { skill: "b", candidates: [candidate({ id: "S002", line: 60 })] },
     ],
   });
   expect(out.candidates.map((entry) => (entry as { id: string }).id)).toEqual(["F001", "S001", "S002"]);
   expect(out.mergedCounts).toEqual([0, 0]);
 });
 
-test("同 (file, line, category) 的 skill 候选被主候选合并", () => {
+test("同 (file, line, category) 且同 rule 的 skill 候选被主候选合并", () => {
   const out = mergeSkillCandidates({
     primary: [candidate()],
     batches: [{ skill: "a", candidates: [candidate({ id: "S001", title: "same spot, other words" })] }],
@@ -48,6 +49,86 @@ test("同 (file, line, category) 的 skill 候选被主候选合并", () => {
   expect(out.candidates).toHaveLength(1);
   expect((out.candidates[0] as { id: string }).id).toBe("F001");
   expect(out.mergedCounts).toEqual([1]);
+});
+
+test("同位置同 category 但 rule 不同、标题也不相似 → 两条都保留", () => {
+  const out = mergeSkillCandidates({
+    primary: [candidate()],
+    batches: [
+      {
+        skill: "a",
+        candidates: [
+          candidate({
+            id: "S001",
+            title: "Missing validation for empty input",
+            rule: "ROBUSTNESS-001",
+          }),
+        ],
+      },
+    ],
+  });
+  expect(out.candidates.map((entry) => (entry as { id: string }).id)).toEqual(["F001", "S001"]);
+  expect(out.mergedCounts).toEqual([0]);
+});
+
+test("同位置同 category、rule 不同但标题高相似 → 按同根因合并", () => {
+  const out = mergeSkillCandidates({
+    primary: [candidate()],
+    batches: [
+      {
+        skill: "a",
+        candidates: [candidate({ id: "S001", rule: "OTHER-001" })],
+      },
+    ],
+  });
+  expect(out.candidates.map((entry) => (entry as { id: string }).id)).toEqual(["F001"]);
+  expect(out.mergedCounts).toEqual([1]);
+});
+
+test("同文件同 category、行号相差 5 行内且 rule 相同 → 合并", () => {
+  const out = mergeSkillCandidates({
+    primary: [candidate()],
+    batches: [
+      {
+        skill: "a",
+        candidates: [candidate({ id: "S001", line: 47, title: "Another wording" })],
+      },
+    ],
+  });
+  expect(out.candidates.map((entry) => (entry as { id: string }).id)).toEqual(["F001"]);
+  expect(out.mergedCounts).toEqual([1]);
+});
+
+test("同文件同 category、行号相差 5 行内但语义不同 → 两条都保留", () => {
+  const out = mergeSkillCandidates({
+    primary: [candidate()],
+    batches: [
+      {
+        skill: "a",
+        candidates: [
+          candidate({
+            id: "S001",
+            line: 47,
+            title: "Missing validation for empty input",
+            rule: "ROBUSTNESS-001",
+          }),
+        ],
+      },
+    ],
+  });
+  expect(out.candidates.map((entry) => (entry as { id: string }).id)).toEqual(["F001", "S001"]);
+  expect(out.mergedCounts).toEqual([0]);
+});
+
+test("同文件同 category 但行号相差超过 5 行 → 不视为同根因", () => {
+  const out = mergeSkillCandidates({
+    primary: [candidate()],
+    batches: [
+      { skill: "a", candidates: [candidate({ id: "S001", line: 48 })] },
+    ],
+  });
+  expect(out.candidates.map((entry) => (entry as { id: string }).id)).toEqual(["F001", "S001"]);
+  expect(out.mergedCounts).toEqual([0]);
 });
 
 test("category 文案差异（大小写 / 连字符 / 语义桶）仍合并，不同桶不误合并", () => {
@@ -75,7 +156,7 @@ test("跨 skill 重复：CLI 顺序最先的批次胜出", () => {
     primary: [],
     batches: [
       { skill: "a", candidates: [candidate({ id: "S001" })] },
-      { skill: "b", candidates: [candidate({ id: "S002" }), candidate({ id: "S003", line: 43 })] },
+      { skill: "b", candidates: [candidate({ id: "S002" }), candidate({ id: "S003", line: 60 })] },
       { skill: "c", candidates: [candidate({ id: "S004" })] },
     ],
   });

@@ -1,16 +1,23 @@
-// 跨 skill 候选合并（ADR-0014 决策 9：候选门之前按 (file, line, category) 去重）。
+// 跨 skill 候选合并（ADR-0014 决策 9 / ADR-0110：候选门之前按同根因语义去重）。
 //
 // 纪律：
 // - **主候选永不被丢弃**：主会话（Phase 5）的候选流原样保留——F 的改造面只
-//   止于「追加 skill 候选」，主路径行为与无 skill 时一致；但主候选的
-//   (file, line, category) 会**占键**，skill 侧重复的那条因此被合并（计入
-//   `mergedCount`）——同一缺陷不该以两条 id 进候选门；
-// - **skill 候选按 CLI 顺序裁决**：同一去重键由最先出现的批次（以及该批次内
+//   止于「追加 skill 候选」，主路径行为与无 skill 时一致；但主候选的同根因键
+//   会**占键**，skill 侧重复的那条因此被合并（计入 `mergedCount`）。
+// - **同根因判定 = 同文件、同 category、行号 ±5，且 rule 相同或标题相似度 ≥ 0.5**
+//   （与 `finding/finding-key.ts` 的候选门跨轮去重同一口径）。同一位置但语义
+//   不同的两条都保留，交给 Phase 6 分别核验。
+// - **skill 候选按 CLI 顺序裁决**：同一根因由最先出现的批次（以及该批次内
 //   最先出现的那条）胜出，后来者计入对应批次的 `mergedCount`；
 // - **schema 非法的候选不参与去重**：既不查键也不占键——它要交给候选拦截链
-//   以 SCHEMA_INVALID 留痕（ADR-0014 决策 9）；
-// - **语义冲突不合并**：去重键只含 (file, line, category)，不同规则/不同主张
-//   落在同一行时两条都保留。
+//   以 `SCHEMA_INVALID` 留痕（ADR-0014 决策 9）；
+// - **category 先归一**：大小写 / 连字符 / 语义桶写法不同也按同一类别比较，
+//   避免同一条缺陷因分类写法不同而逃逸。
+import {
+  addRootCauseKey,
+  hasRootCauseKey,
+  type RootCauseCandidate,
+} from "../finding/finding-key.js";
 import { validateFinding } from "../finding/finding-schema.js";
 import { normalizeCategoryValue } from "./candidate-normalize.js";
 
@@ -31,36 +38,42 @@ export interface MergeSkillCandidatesInput {
 export interface MergeSkillCandidatesOutput {
   /** 合并后的候选流：主候选在前，其后是按批次顺序存活的 skill 候选 */
   readonly candidates: readonly unknown[];
-  /** 与 `batches` 一一对应的被合并条数（含「与主候选重复」而被合并的；账目闭合用） */
+  /** 与 `batches` 一一对应的被合并条数（含「与主候选同根因」而被合并的；账目闭合用） */
   readonly mergedCounts: readonly number[];
   /** 与 `batches` 一一对应的存活候选（Phase 6 候选清单只列这些） */
   readonly survivingBatches: readonly SkillCandidateBatch[];
 }
 
 /**
- * 去重键：file + line + category（file 为字符串、line 为数字、category 为字符串）。
+ * 同根因比较所需的投影；schema 非法候选返回 undefined（不参与去重、不占键）。
  *
- * `category` 必须走与候选归一入口**同一个** `normalizeCategoryValue`：调用方若
- * 绕过 `normalizeCandidates` 直接合并（或归一前后混用），大小写 / 连字符写法
- * 不同也不会漏合并（档 B 语义桶）。
+ * `category` 走与候选归一入口相同的 `normalizeCategoryValue`：调用方若绕过
+ * `normalizeCandidates` 直接合并（或归一前后混用），大小写 / 连字符 / 语义桶
+ * 写法不同也不会漏合并。
  */
-function dedupeKey(candidate: unknown): string | undefined {
+function rootCandidate(candidate: unknown): RootCauseCandidate | undefined {
   if (validateFinding(candidate).length > 0) {
     return undefined;
   }
-  const record = candidate as { file: string; line: number; category: string };
-  return `${record.file}\u0000${String(record.line)}\u0000${normalizeCategoryValue(record.category)}`;
+  const record = candidate as RootCauseCandidate;
+  return {
+    file: record.file,
+    line: record.line,
+    category: normalizeCategoryValue(record.category),
+    rule: record.rule,
+    title: record.title,
+  };
 }
 
 export function mergeSkillCandidates(input: MergeSkillCandidatesInput): MergeSkillCandidatesOutput {
   const candidates: unknown[] = [...input.primary];
-  const seen = new Set<string>();
+  const seenRootKeys = new Set<string>();
 
   // 主候选只占键、不被丢弃（主路径行为零变化）
   for (const candidate of input.primary) {
-    const key = dedupeKey(candidate);
-    if (key !== undefined) {
-      seen.add(key);
+    const located = rootCandidate(candidate);
+    if (located !== undefined) {
+      addRootCauseKey(seenRootKeys, located);
     }
   }
 
@@ -70,13 +83,13 @@ export function mergeSkillCandidates(input: MergeSkillCandidatesInput): MergeSki
     let merged = 0;
     const surviving: unknown[] = [];
     for (const candidate of batch.candidates) {
-      const key = dedupeKey(candidate);
-      if (key !== undefined && seen.has(key)) {
+      const located = rootCandidate(candidate);
+      if (located !== undefined && hasRootCauseKey(seenRootKeys, located)) {
         merged += 1;
         continue;
       }
-      if (key !== undefined) {
-        seen.add(key);
+      if (located !== undefined) {
+        addRootCauseKey(seenRootKeys, located);
       }
       surviving.push(candidate);
       candidates.push(candidate);

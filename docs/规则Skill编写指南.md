@@ -84,7 +84,7 @@ skill 会话最后一条 assistant 回复会被解析成候选（candidates）�
 | **六阶段主检视** | 变更理解 → 风险分类 → 上下文决策 → 上下文检索 → 深度推理 → 证据验证，主会话已跑完 |
 | **通用缺陷检视** | 主会话本身就产出通用 findings；你只补**你的规则特有的**问题 |
 | **候选字段校验/修复** | schema 校验、非法字段的有界修复，都在拦截链里 |
-| **去重与合并** | 同 file+line+title 跨 skill / 跨片去重 |
+| **去重与合并** | 跨 skill / 跨片按同根因语义去重（同文件 / 同 category / ±5 行 + rule 或标题相似度）；不同意见保留 |
 | **英文→中文 tips** | `reviews_tips_zh.json` 由 harness 的统一生成链产出，**你只写英文** |
 | **意见上报（MCP）** | `mrReviewResult` / `saveReviewSummary` / `endTask` 等业务上报全部由 harness 在收尾统一执行，**skill 绝不做任何上报** |
 | **产物落盘 / 审计 / 转录** | reviews_all.json、审计、session、trace 等 |

@@ -3,6 +3,7 @@
 **状态**：已接受（2026-11-19，用户决策）
 **关联**：[ADR-0023](0023-dedupe-tips-by-file-and-line.md)（本 ADR 取消其同行去重）、[ADR-0017](0017-out-of-kernel-grouped-review-tips-export.md)（tips 12 键与文件分组）、[ADR-0045](0045-mcp-business-task-tools.md)（MCP 报文与 tips 同源）、[ADR-0052](0052-tips-four-tier-severity-and-confidence-filter.md)（置信度 / 严重级过滤）、[ADR-0057](0057-summary-covers-only-reported-findings.md)（收尾总结只覆盖已上报意见）
 **范围**：只改 `reviews_tips_zh.json` 的取数与去重口径，以及 stderr 留痕。MCP 报文契约、候选门、合并层、`reviews_all.json`、收尾总结口径均不变。
+**后续修订**：[ADR-0110](0110-semantic-aware-skill-candidate-merge.md)（2026-11-19）——上层跨 skill 预合并由精确 `(file, line, category)` 改为同根因语义判定；tips 全量投影的取数口径不变，但能进入 tips 的候选集合可能因合并条件变化而变大。
 
 ## Context
 

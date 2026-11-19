@@ -11,6 +11,7 @@
 **后续修订**：[ADR-0034](0034-rule-skill-multi-input-and-name-removal.md)（2026-11-03）——决策 1 的「多包 = 重复旗标」**新增等价写法**：单个旗标值可用逗号列表传多个包（`--rule-skill-zip a.zip,b.zip`，不带引号时按各 shell 切开的形态归并）；包内多 skill 消歧用的 `--rule-skill-name` 移除，一个包就是一个 skill（包内 ≥2 个 skill 一律降级）。
 **后续修订**：[ADR-0107](0107-skill-get-file-pack-fallback.md)（2026-11-19）——skill 会话的 `review.get_file` 支持读本 skill 包内文件：普通相对路径仓库缺失时回退 pack 根，`skill://` 前缀强制读包；bash 的 cwd / 边界与主会话工具字节不变。
 **后续修订**：[ADR-0108](0108-skill-session-parse-retry-and-contract.md)（2026-11-19）——skill 会话解析失败后在同一会话内追加一次严格格式提醒再解析；输出外壳以宿主契约为准，禁止 `findings` / `issues` / `violations` 等其它键。候选合并、Phase 6 统一裁定与工具面不变。
+**后续修订**：[ADR-0110](0110-semantic-aware-skill-candidate-merge.md)（2026-11-19）——决策 9 的预合并键由精确 `(file, line, category)` 改为同根因语义判定（同文件 / 同 category / 行号 ±5，且 rule 相同或标题相似度 ≥ 0.5）；「主候选永不被丢弃、CLI 顺序先到者胜出、schema 非法不参与」不变。
 
 ## Context
 

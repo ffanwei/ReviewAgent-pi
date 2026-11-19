@@ -262,8 +262,8 @@ _Avoid_: 项目规则（Zone B 稳定中层内的规则槽位，另一落点）�
 _Avoid_: 规则执行（暗示「跑脚本」这一实现手段）、规则包装载（只指 zip / 已解压目录的装载动作）
 
 **规则合并（Rule Merge）**:
-多个规则 Skill 的产出汇入同一条候选流、共用同一套证据纪律的合并语义；按传入先后执行，合并只做并置、不做语义裁决。
-_代码面_: `mergeSkillCandidates`（`gate/candidate-merge.ts`），去重键 = `(file, line, category)`。
+多个规则 Skill 的产出汇入同一条候选流、共用同一套证据纪律的合并语义；按传入先后执行，合并按同根因语义去重（同文件 / 同 category / ±5 行 + rule 或标题相似度），但不判定谁对；语义不同的意见并置。
+_代码面_: `mergeSkillCandidates`（`gate/candidate-merge.ts`），同根因键 = `finding/finding-key.ts`。
 _Avoid_: 结果聚合、取并集（都太泛）、规则裁决（合并不判定谁对）
 
 **规则技能执行器（Rule Skill Executor）**:

@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0109）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0110）。
 
 ## 记录纪律
 
@@ -35,6 +35,7 @@
 | ADR-0100（决策 2）、ADR-0097（决策 5 判据文案） | ADR-0103 | 三种零恢复诚实区分；星级判据只陈述计数 |
 | ADR-0046（`complete` 严格 `=== true` 的解析口径） | ADR-0105 | 只有显式布尔 `false` 才续轮；缺字段/非布尔值按完成处理 |
 | ADR-0023（tips 同文件同行去重） | ADR-0106 | 取消同行去重；tips 改为全量 eligible 投影，平台未收到的逐条留痕 |
+| ADR-0014（决策 9 的 `(file, line, category)` 精确键） | ADR-0110 | skill 候选预合并改为同根因语义判定（±5 行 + rule/标题相似度） |
 
 ## 0037 起的新增决策（不逐条列全，只作导航）
 
@@ -111,6 +112,7 @@
 | [ADR-0107](0107-skill-get-file-pack-fallback.md) | 规则 Skill 会话的 `review.get_file` 支持包内读取：仓库缺失回退 pack 根，`skill://` 强制读包；主会话字节不变 |
 | [ADR-0108](0108-skill-session-parse-retry-and-contract.md) | Skill 会话解析失败同会话重试一次；输出外壳以宿主契约为准，禁止 findings/issues/violations 等其它键 |
 | [ADR-0109](0109-repo-side-model-note.md) | `--repo` 停在 base / mixed 侧时把可执行提示注入初始 user 消息；head / unknown 请求字节不变 |
+| [ADR-0110](0110-semantic-aware-skill-candidate-merge.md) | 规则 Skill 候选预合并改为同根因语义判定：同文件/同 category/±5 行 + rule 或标题相似度；不同意见不再被提前吞掉 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 
