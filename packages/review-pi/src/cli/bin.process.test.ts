@@ -1296,8 +1296,8 @@ test(
       const firstTip = (tips as { reviewTips: Record<string, unknown>[] }[])[0]?.reviewTips[0];
       expect(firstTip).toMatchObject({
         id: "F100",
-        review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
-        suggestion: "[重构思路] 无。代码示例：```无```",
+        review: "[缺陷类型] 哨兵意见。\n\n影响评估：仅测试。",
+        suggestion: "[重构思路] 无。\n\n代码示例：\n```无```",
         category: "可靠性",
         subcategory: "哨兵",
         severity: "Minor",
@@ -2320,7 +2320,8 @@ test(
         const match = /\(([0-9]+\.[0-9])%\)$/.exec(line);
         return sum + (match === null ? 0 : Number(match[1]));
       }, 0);
-      expect(stagePct).toBeLessThanOrEqual(100.1);
+      // 浮点求和会把 100.1 抬成 100.1000000000000x，放 1e-9 的表示误差。
+      expect(stagePct).toBeLessThanOrEqual(100.1 + 1e-9);
 
       // run.json：聚合记录带 shards[]，每片转录文件存在
       const runsDir = cliRunsDir(outDir);
@@ -2578,6 +2579,8 @@ test(
       expect(tips).toHaveLength(1);
       expect(tips[0]).toMatchObject({
         code: "Sample repository for Zone B tests.", // CLI 按 --repo 抽的 README.md:1
+        review: "[缺陷类型] 哨兵意见。\n\n影响评估：仅测试。",
+        suggestion: "[重构思路] 无。\n\n代码示例：\n```无```",
         category: "可靠性",
         level: "Minor", // severity P2 → Minor（Q18 四档映射）
         ruleId: null, // id 无 RULE-CHECK@ 前缀 = 非规则会话产出
@@ -2660,8 +2663,8 @@ test(
       expect(tip).toMatchObject({
         id: "F100", // 单遍路径不重编号
         code: "Sample repository for Zone B tests.",
-        review: "[缺陷类型] 哨兵意见。影响评估：仅测试。",
-        suggestion: "[重构思路] 无。代码示例：```无```",
+        review: "[缺陷类型] 哨兵意见。\n\n影响评估：仅测试。",
+        suggestion: "[重构思路] 无。\n\n代码示例：\n```无```",
         category: "可靠性",
         subcategory: "哨兵",
         severity: "Minor", // P2 → Minor（ADR-0052 四档，与 level 同值）

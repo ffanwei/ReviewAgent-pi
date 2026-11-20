@@ -73,8 +73,8 @@ test("12 键形态：10 键全保留 + id + level；severity 四档与 level 同
   expect(tip).toEqual({
     id: "F001",
     code: "redirect(target);",
-    review: "[安全] 未校验的重定向。影响评估：钓鱼跳转。",
-    suggestion: "[重构思路] 白名单校验。代码示例：```…```",
+    review: "[安全] 未校验的重定向。\n\n影响评估：钓鱼跳转。",
+    suggestion: "[重构思路] 白名单校验。\n\n代码示例：\n```…```",
     category: "安全",
     subcategory: "URL 注入",
     severity: "Major", // P1 → 四档 Major（ADR-0052）

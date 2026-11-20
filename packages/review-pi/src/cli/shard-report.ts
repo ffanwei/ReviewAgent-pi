@@ -6,6 +6,7 @@ import {
 import { findingMergeKey } from "../run/findings-merge.js";
 import { isSeverityBelow } from "../shared/severity-filter.js";
 import { isConfidenceBelow } from "../shared/tips-filter.js";
+import { formatTipReview, formatTipSuggestion } from "./tip-format.js";
 import { readCodeLines } from "./code-lines.js";
 import { buildShardReport, type SemanticTipEntry } from "./report-payload.js";
 import { describeReportFailure } from "./report-failure.js";
@@ -142,14 +143,20 @@ export async function reportShardFindings(input: {
       if (normalized !== null) {
         attempted.add(normalized);
       }
+      // ADR-0111：只在上报输出面补 Markdown 段落，不改候选与请求字节。
+      const reviewTips = file.reviewTips.map((tip) => ({
+        ...tip,
+        review: formatTipReview(tip.review),
+        suggestion: formatTipSuggestion(tip.suggestion),
+      }));
       const result = await input.reporter.task.reportFileResult({
         taskId: input.taskId,
         filePath: file.filePath,
-        reviewTips: file.reviewTips,
+        reviewTips,
       });
       if (result.ok) {
         sent += 1;
-        tips += file.reviewTips.length;
+        tips += reviewTips.length;
         input.reportedFiles.push(file.filePath);
         // 只有真的发出去的意见才进入「已上报集合」（ADR-0057）：上报失败 /
         // 结构校验跳过的条目不登记，收尾总结不会提及平台没收到的内容。

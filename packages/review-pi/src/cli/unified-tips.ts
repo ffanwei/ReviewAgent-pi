@@ -3,6 +3,7 @@ import { isReviewCategory } from "../contracts/finding.js";
 import { findingMergeKey } from "../run/findings-merge.js";
 import { isSeverityBelow, severityRankOf } from "../shared/severity-filter.js";
 import { isConfidenceBelow } from "../shared/tips-filter.js";
+import { formatTipReview, formatTipSuggestion } from "./tip-format.js";
 import type { ReviewTipsDocumentLike, ReviewTipLike } from "./presentation-projection.js";
 import { LEVEL_BY_SEVERITY, type SemanticTipEntry } from "./report-payload.js";
 
@@ -370,8 +371,8 @@ function toUnifiedTip(
   return {
     id: finding.id,
     code,
-    review: entry.review,
-    suggestion: entry.suggestion,
+    review: formatTipReview(entry.review),
+    suggestion: formatTipSuggestion(entry.suggestion),
     category: entry.category,
     subcategory: entry.subcategory,
     severity: TIP_SEVERITY_BY_CODE[finding.severity],
