@@ -291,6 +291,72 @@ test("前言 + 草稿 + 正式文档：取最后一份完整文档，思考被�
   expect(result.markdown).toContain("### 星级评价");
 });
 
+test("思考闭合标签与正式标题同一行：先剥标签再取文档", async () => {
+  const result = await buildReviewSummary({
+    findings: [finding("src/Foo.java", "P1")],
+    runtime: RUNTIME,
+    fetch: async () => modelReply(`我们根据给的权威数据撰写总结。</think>${validSummary()}`),
+  });
+
+  expect(result.degradedReason).toBeUndefined();
+  expect(result.markdown.startsWith("## 检视总览")).toBe(true);
+  expect(result.markdown).not.toContain("</think>");
+  expect(result.markdown).not.toContain("我们根据给的权威数据");
+});
+
+test("思考闭合标签单独一行：前言同样被丢弃", async () => {
+  const result = await buildReviewSummary({
+    findings: [finding("src/Foo.java", "P1")],
+    runtime: RUNTIME,
+    fetch: async () => modelReply(`我们根据给的权威数据撰写总结。\n</think>\n${validSummary()}`),
+  });
+
+  expect(result.degradedReason).toBeUndefined();
+  expect(result.markdown.startsWith("## 检视总览")).toBe(true);
+  expect(result.markdown).not.toContain("</think>");
+});
+
+test("只有思考与闭合标签、没有正式标题：仍回落确定性模板", async () => {
+  const result = await buildReviewSummary({
+    findings: [finding("src/Foo.java", "P1")],
+    runtime: RUNTIME,
+    fetch: async () => modelReply("我们根据给的权威数据，还在思考。</think>"),
+  });
+
+  expect(result.degradedReason).toContain("rejected");
+  expect(result.markdown.startsWith("## 检视总览")).toBe(true);
+  expect(result.markdown).not.toContain("</think>");
+  expect(result.markdown).not.toContain("我们根据给的权威数据");
+});
+
+test("思考草稿里带完整 ## 检视总览：闭合标签之前的内容也不得外发", async () => {
+  const result = await buildReviewSummary({
+    findings: [finding("src/Foo.java", "P1")],
+    runtime: RUNTIME,
+    fetch: async () =>
+      modelReply(`我们根据给的权威数据起草总结。\n\n${validSummary()}\n</think>`),
+  });
+
+  expect(result.degradedReason).toContain("rejected");
+  expect(result.markdown.startsWith("## 检视总览")).toBe(true);
+  expect(result.markdown).not.toContain("</think>");
+  expect(result.markdown).not.toContain("不安全重定向"); // 思考草稿里的正文
+});
+
+test("思考草稿的标题在闭合标签之前、正式文档在之后：取正式文档", async () => {
+  const result = await buildReviewSummary({
+    findings: [finding("src/Foo.java", "P1")],
+    runtime: RUNTIME,
+    fetch: async () =>
+      modelReply(`我们根据给的权威数据起草。\n\n## 检视总览\n\n草稿内容\n</think>\n${validSummary()}`),
+  });
+
+  expect(result.degradedReason).toBeUndefined();
+  expect(result.markdown.startsWith("## 检视总览")).toBe(true);
+  expect(result.markdown).not.toContain("草稿内容");
+  expect(result.markdown).toContain("不安全重定向");
+});
+
 test("整篇被代码围栏包住：剥围栏后照常通过", async () => {
   const result = await buildReviewSummary({
     findings: [finding("src/Foo.java", "P1")],

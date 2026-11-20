@@ -202,7 +202,9 @@ export function sanitizeSummaryMarkdown(
   findings: readonly Finding[],
   metrics?: ReviewSummaryMetrics,
 ): SummarySanitizeResult {
-  const lines = stripSummaryFence(text).split("\n");
+  // 网关/模型可能把思考包成 `<think>…</think>` 或只留下闭合标签；先剥掉
+  // 第一个 `## 检视总览` 之前的思考包装，再走原有的围栏/结构校验。
+  const lines = stripSummaryFence(stripLeadingReasoningWrapper(text)).split("\n");
   const required =
     findings.length > 0
       ? [
@@ -260,6 +262,28 @@ export function sanitizeSummaryMarkdown(
         ? `summary content does not match authoritative data (${contentIssue})`
         : "missing or malformed sections (## 检视总览 … ### 星级评价)",
   };
+}
+
+/**
+ * 剥掉模型回包里的思考包装：`<think>…</think>` 或「前言 …</think>」。
+ *
+ * 不能只按第一个 `## 检视总览` 定位：思考草稿里本身就可能带这个标题，
+ * 甚至是一份结构看起来完整的草稿。因此以**最后一个** `</think>` 为边界，
+ * 只保留它后面的正文；如果思考之后没有正式文档，剥完为空，交给结构校验
+ * 回落确定性模板，绝不把思考里的草稿外发。
+ *
+ * 兼容 `</think>## 检视总览` 同一行（没有换行）的形态。
+ */
+function stripLeadingReasoningWrapper(text: string): string {
+  const closeTag = /<\/think\s*>/giu;
+  let lastCloseEnd = -1;
+  for (const match of text.matchAll(closeTag)) {
+    lastCloseEnd = (match.index ?? 0) + match[0].length;
+  }
+  if (lastCloseEnd < 0) {
+    return text;
+  }
+  return text.slice(lastCloseEnd).trimStart();
 }
 
 /** 去掉整篇外层围栏（``` / ```markdown）与首尾空行；围栏只剥一层 */

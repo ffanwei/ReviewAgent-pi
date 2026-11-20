@@ -3,6 +3,7 @@
 **状态**：已接受（2026-11-19，用户决策）
 **关联**：[ADR-0097](0097-summary-fixed-structure-and-stars.md)（固定四节结构与星级）、[ADR-0100](0100-unified-summary-shape-except-diff-too-large.md)（四节模板与统一零路径）、[ADR-0103](0103-honest-zero-summaries-and-count-only-star-criteria.md)（零路径正文口径；本 ADR 不改其结论）、[ADR-0057](0057-summary-covers-only-reported-findings.md)（总结只覆盖已上报意见，是校验的输入边界）、[ADR-0045](0045-mcp-business-task-tools.md)（收尾总结走核外一次性调用）、[ADR-0051](0051-llm-call-retry-and-timeout.md)（一次性调用的重试分类）、[ADR-0066](0066-task-total-llm-usage-line.md)（观测面的边界：不改审计 / run.json）
 **范围**：本仓 pi 线 0104。只动收尾总结的**输出面**（模型回包裁剪与合法性判定）与一次性调用的回包解析；检视请求字节、thinking 字段、审计 / `run.json` / stdout 键集 / 退出码不变。总结系统提示词与 user 消息只追加「逐字复制权威表格单元格」的锚点（见决策 4），不改四节契约。
+**后续修订（2026-11-20）**：`sanitizeSummaryMarkdown` 先剥掉最后一个 `</think>` 及其之前的全部内容（思考草稿里可能自带 `## 检视总览`，不能按第一个标题定位），再走原有围栏与结构校验；修复 `</think>## 检视总览` 同行以及思考草稿带完整标题导致守门失效的形态。其余决策不变。
 
 ## Context
 
