@@ -169,6 +169,25 @@ export interface MicroLimits {
   readonly progressDetailChars: number;
 }
 
+/**
+ * 覆盖缺口补漏（F-01b）：只对账本里未覆盖的 hunk 发独立请求。
+ *
+ * - `enabled = false`（缺省）= 不补漏，行为与 F-01a 完全一致；
+ * - `maxRequests` 是每个 pass 的请求硬上限，超出保持 `not-reached(budget)`；
+ * - `maxChars` 是单个请求的 hunk 正文字符预算（文件头与提示词另计）；
+ * - `maxHunksPerRequest` 是单个请求最多携带的 hunk 数。
+ */
+export interface CoverageRepairLimits {
+  readonly enabled: boolean;
+  readonly maxRequests: number;
+  readonly maxChars: number;
+  readonly maxHunksPerRequest: number;
+}
+
+export interface CoverageLimits {
+  readonly repair: CoverageRepairLimits;
+}
+
 export interface Limits {
   readonly loop: LoopLimits;
   readonly timeouts: TimeoutLimits;
@@ -182,6 +201,7 @@ export interface Limits {
   readonly split: SplitLimits;
   readonly archive: ArchiveLimits;
   readonly micro: MicroLimits;
+  readonly coverage: CoverageLimits;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -232,10 +252,18 @@ export const DEFAULT_LIMITS: Limits = {
     argumentsSummaryChars: 80,
     progressDetailChars: 120,
   },
+  coverage: {
+    repair: {
+      enabled: false,
+      maxRequests: 8,
+      maxChars: 24_000,
+      maxHunksPerRequest: 6,
+    },
+  },
 };
 
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro", "coverage"] as const;
 const LOOP_KEYS = ["maxRounds", "phase5Sweep"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -274,6 +302,8 @@ const MICRO_KEYS = [
   "argumentsSummaryChars",
   "progressDetailChars",
 ] as const;
+const COVERAGE_KEYS = ["repair"] as const;
+const COVERAGE_REPAIR_KEYS = ["enabled", "maxRequests", "maxChars", "maxHunksPerRequest"] as const;
 
 
 export function parseLimits(raw: unknown, warnings: string[]): Limits {
@@ -482,5 +512,40 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
   };
 
 
-  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, archive, micro };
+  const coverageObj = optionalObject(limits.coverage, "limits.coverage", warnings);
+  assertKnownKeys(coverageObj, COVERAGE_KEYS, "limits.coverage", warnings);
+  const repairObj = optionalObject(coverageObj.repair, "limits.coverage.repair", warnings);
+  assertKnownKeys(repairObj, COVERAGE_REPAIR_KEYS, "limits.coverage.repair", warnings);
+  const coverage: CoverageLimits = {
+    repair: {
+      enabled: boolOr(
+        repairObj.enabled,
+        "limits.coverage.repair.enabled",
+        DEFAULT_LIMITS.coverage.repair.enabled,
+      ),
+      maxRequests: intOr(
+        repairObj.maxRequests,
+        "limits.coverage.repair.maxRequests",
+        0,
+        64,
+        DEFAULT_LIMITS.coverage.repair.maxRequests,
+      ),
+      maxChars: intOr(
+        repairObj.maxChars,
+        "limits.coverage.repair.maxChars",
+        1_000,
+        500_000,
+        DEFAULT_LIMITS.coverage.repair.maxChars,
+      ),
+      maxHunksPerRequest: intOr(
+        repairObj.maxHunksPerRequest,
+        "limits.coverage.repair.maxHunksPerRequest",
+        1,
+        50,
+        DEFAULT_LIMITS.coverage.repair.maxHunksPerRequest,
+      ),
+    },
+  };
+
+  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, archive, micro, coverage };
 }

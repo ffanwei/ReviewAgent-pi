@@ -383,6 +383,35 @@ export interface RunAudit {
    * 只在 pass 审计携带；聚合审计由各片合并。
    */
   readonly coverage?: CoverageLedger;
+  /**
+   * 覆盖缺口补漏（F-01b）：只在启用 `limits.coverage.repair.enabled` 时在场；
+   * 关闭时整键缺席（零漂移）。
+   */
+  readonly coverageRepair?: CoverageRepairAudit;
+}
+
+/**
+ * 覆盖缺口补漏的审计投影（F-01b）。
+ *
+ * - `requests` 是实际发出的补漏请求数；`failedRequests` 是调用 / 解析失败数；
+ * - `hunksSent` 是请求里携带的未覆盖 hunk 数；`hunksCovered` 是收到有效回执
+ *   （candidate 或 no-issue）的 hunk 数；
+ * - `candidates` 是回执里的候选条数；`acceptedFindings` 是通过候选门后的条数；
+ * - `rejectedCandidates` 是候选门拒绝 + 回执结构非法的条数；
+ * - `skippedByBudget` 是因 `maxRequests` / `maxChars` 未发出的缺口 hunk 数。
+ */
+export interface CoverageRepairAudit {
+  readonly enabled: boolean;
+  readonly requests: number;
+  readonly failedRequests: number;
+  readonly hunksSent: number;
+  readonly hunksCovered: number;
+  readonly noIssue: number;
+  readonly candidates: number;
+  readonly acceptedFindings: number;
+  readonly rejectedCandidates: number;
+  readonly skippedByBudget: number;
+  readonly usage: LlmUsage;
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

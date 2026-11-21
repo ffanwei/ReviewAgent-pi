@@ -14,6 +14,7 @@ import {
   type CoverageCounts,
   type CoverageExclusionReason,
   type CoverageFindingRef,
+  type CoverageHunkRef,
   type CoverageLedger,
   type CoverageLineRange,
   type ExcludedFileCoverage,
@@ -297,6 +298,60 @@ export function markNoIssue(
     ...ledger,
     files: drafts,
     counts: computeCounts(drafts, ledger.counts.outOfHunk),
+  };
+}
+
+/**
+ * 把指定缺口 hunk 收口为具体原因（F-01b：补漏请求 / 字符上限用尽）。
+ *
+ * - 只改仍为 `not-reached` 且没有具体 cause 的 hunk；candidate / no-issue
+ *   以及已有 `truncated` 等现场原因不被覆盖；
+ * - 目标文件 / hunk 必须存在于账本，否则视为调用方错误；
+ * - 不修改输入账本。
+ */
+export function markNotReached(
+  ledger: CoverageLedger,
+  targets: readonly CoverageHunkRef[],
+  cause: NotReachedCause,
+  reason?: string,
+): CoverageLedger {
+  const files = ledger.files.map((file) => ({
+    file: file.file,
+    hunks: [...file.hunks],
+  }));
+
+  for (const target of targets) {
+    const file = files.find(
+      (entry) => normalizeFile(entry.file) === normalizeFile(target.file),
+    );
+    if (file === undefined) {
+      throw new Error(`coverage: not-reached target refers to unknown file: ${target.file}`);
+    }
+    const hunkIndex = file.hunks.findIndex((hunk) => hunk.index === target.hunkIndex);
+    const hunk = hunkIndex < 0 ? undefined : file.hunks[hunkIndex];
+    if (hunk === undefined || hunkIndex < 0) {
+      throw new Error(
+        `coverage: not-reached target refers to unknown hunk ` +
+          `${String(target.hunkIndex)} of ${file.file}`,
+      );
+    }
+    if (hunk.status !== "not-reached") {
+      continue;
+    }
+    if (hunk.cause !== undefined && hunk.cause !== "no-signal") {
+      continue;
+    }
+    file.hunks[hunkIndex] = {
+      ...hunk,
+      cause,
+      ...(reason !== undefined && reason.trim() !== "" ? { reason } : {}),
+    };
+  }
+
+  return {
+    ...ledger,
+    files,
+    counts: computeCounts(files, ledger.counts.outOfHunk),
   };
 }
 

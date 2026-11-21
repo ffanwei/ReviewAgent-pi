@@ -22,8 +22,14 @@ export const NOT_REACHED_CAUSES = [
 
 export type NotReachedCause = (typeof NOT_REACHED_CAUSES)[number];
 
-/** 候选来源（同一 hunk 可被主会话 / sweep / skill 分别命中） */
-export type CandidateSource = "main" | "sweep" | "skill";
+/** 候选来源（同一 hunk 可被主会话 / sweep / skill / 补漏分别命中） */
+export type CandidateSource = "main" | "sweep" | "skill" | "repair";
+
+/** 账本内单个 hunk 的定位（file + 文件内 1-based 序号） */
+export interface CoverageHunkRef {
+  readonly file: string;
+  readonly hunkIndex: number;
+}
 
 /** diff 行区间（与 `diff/hunk.ts` 的 HunkHeader 同口径） */
 export interface CoverageLineRange {

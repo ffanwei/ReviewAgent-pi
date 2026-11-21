@@ -113,7 +113,9 @@ function formatValue(value: unknown): string {
 
 /** 来源判定：键本身或其子叶出现在 `overridden` 里 = 来自文件 */
 function sourceOf(config: ResolvedConfig, key: string): "file" | "default" {
-  return config.overridden.some((entry) => entry === key || entry.startsWith(`${key}.`))
+  return config.overridden.some(
+    (entry) => entry === key || entry.startsWith(`${key}.`) || key.startsWith(`${entry}.`),
+  )
     ? "file"
     : "default";
 }

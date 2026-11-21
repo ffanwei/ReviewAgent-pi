@@ -9,6 +9,7 @@ import {
   emptyCoverageLedger,
   formatCoverageNotice,
   markNoIssue,
+  markNotReached,
   mergeCoverageLedgers,
   truncatedRangesFromShardRecords,
 } from "./coverage-ledger.js";
@@ -531,5 +532,71 @@ describe("assertCoverageInvariant", () => {
         },
       }),
     ).toThrow(/no findingIds/);
+  });
+});
+
+describe("markNotReached（F-01b：补漏预算 / 上限收口）", () => {
+  test("只改未覆盖 hunk，candidate 不被覆盖，counts.byCause 同步", () => {
+    const ledger = backfillCandidates(
+      buildCoverageLedger(TWO_HUNKS),
+      [{ id: "F001", file: "src/a.ts", line: 1 }],
+      "repair",
+    );
+    const marked = markNotReached(
+      ledger,
+      [
+        { file: "src/a.ts", hunkIndex: 1 },
+        { file: "src/a.ts", hunkIndex: 2 },
+      ],
+      "budget",
+      "coverage repair request cap",
+    );
+    const [file] = marked.files;
+    expect(file?.hunks[0]?.status).toBe("candidate");
+    expect(file?.hunks[1]?.status).toBe("not-reached");
+    expect(file?.hunks[1]?.cause).toBe("budget");
+    expect(file?.hunks[1]?.reason).toBe("coverage repair request cap");
+    expect(marked.counts.byCause.budget).toBe(1);
+    expect(marked.counts.candidate).toBe(1);
+  });
+
+  test("已有具体 cause（truncated）不被 budget 覆盖", () => {
+    const diff = [
+      "diff --git a/src/a.ts b/src/a.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -1,1 +1,1 @@",
+      "-x",
+      "+y",
+    ].join("\n");
+    const ledger = buildCoverageLedger(diff, {
+      truncated: [
+        {
+          file: "src/a.ts",
+          index: 2,
+          old: { start: 10, count: 1 },
+          new: { start: 10, count: 1 },
+        },
+      ],
+    });
+    const marked = markNotReached(
+      ledger,
+      [{ file: "src/a.ts", hunkIndex: 2 }],
+      "budget",
+      "cap",
+    );
+    expect(marked.files[0]?.hunks[1]?.cause).toBe("truncated");
+    expect(marked.counts.byCause.truncated).toBe(1);
+    expect(marked.counts.byCause.budget).toBe(0);
+  });
+
+  test("未知文件 / hunk 抛错", () => {
+    const ledger = buildCoverageLedger(TWO_HUNKS);
+    expect(() =>
+      markNotReached(ledger, [{ file: "src/missing.ts", hunkIndex: 1 }], "budget"),
+    ).toThrow(/unknown file/);
+    expect(() =>
+      markNotReached(ledger, [{ file: "src/a.ts", hunkIndex: 9 }], "budget"),
+    ).toThrow(/unknown hunk/);
   });
 });

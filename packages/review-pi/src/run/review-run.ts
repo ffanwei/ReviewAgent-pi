@@ -44,6 +44,7 @@ import {
 } from "./repo-side.js";
 import { mergeShardFindings } from "./findings-merge.js";
 import { mergeCoverageLedgers } from "./coverage-ledger.js";
+import { mergeCoverageRepairAudits } from "./coverage-repair.js";
 import {
   buildRunContext,
   runPasses,
@@ -593,6 +594,12 @@ async function aggregateShards(
   const findings = mergeShardFindings(executed.map((entry) => entry.pass.findings));
   // 覆盖账本（F-01a）：各片账本合并；结果与片顺序无关。
   const coverage = mergeCoverageLedgers(executed.map((entry) => entry.pass.coverage));
+  // 覆盖缺口补漏（F-01b）：各片补漏审计求和；未启用时整键不写。
+  const coverageRepair = mergeCoverageRepairAudits(
+    executed.flatMap((entry) =>
+      entry.pass.audit.coverageRepair !== undefined ? [entry.pass.audit.coverageRepair] : [],
+    ),
+  );
   // 单文件超预算截取留痕（ADR-0070）：片序 → 块序，无截取时为空数组
   const shardTruncation = executed.flatMap((entry) =>
     entry.descriptor.kind === "shard" ? entry.descriptor.shard.truncated : [],
@@ -727,6 +734,7 @@ async function aggregateShards(
     ruleSkill: context.ruleSkillAudit,
     shards: shardAudits,
     coverage,
+    ...(coverageRepair.enabled ? { coverageRepair } : {}),
     ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),

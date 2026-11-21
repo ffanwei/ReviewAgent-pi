@@ -63,8 +63,18 @@
 | 阶段 | 内容 | 模型调用 |
 |---|---|---|
 | F-01a | 账本 builder、截取区间、审计键、stderr 摘要、分区恒等式测试；历史 diff 跑基线 | 0 |
-| F-01b | 缺口驱动的定向补漏（独立请求，逐 hunk 回执） | +1/批（仅缺口） |
+| F-01b | 缺口驱动的定向补漏（独立请求，逐 hunk 回执） | +1/单元（仅缺口） |
 | F-01c | 汇总策略：比例阈值、告警/失败模式、manifest/CI 对接 | 0 |
+
+### F-01b 已落地（2026-11-21）
+
+- 配置：`limits.coverage.repair { enabled, maxRequests, maxChars, maxHunksPerRequest }`，缺省关闭。
+- 纯逻辑：`run/coverage-repair.ts` 负责缺口装箱、回执解析、候选门接入与审计；
+  `coverage-ledger.markNotReached` 负责把预算未发出的缺口收口为 `not-reached(budget)`。
+- 接线：`review-pass` 在 main findings 回填后、`closeCoverage` 前执行；分片聚合求和；
+  审计尾键 `coverageRepair`；stderr 一行摘要。
+- 验证：1207 passed / 1 skipped；`typecheck` 与严格 `build` 通过。
+- A/B 配置：`C:/Users/Li/.PiAgent/benchmark-aacr-v2-f01b.jsonc`（与历史 arm2 同口径，只开补漏）。
 
 ## 验收（摘要）
 

@@ -312,6 +312,17 @@ function announceInput(input: DeliveryInput): void {
   if (input.run.coverage !== undefined) {
     log(`review-pi: ${formatCoverageNotice(input.run.coverage)}\n`);
   }
+  const repair = audit.coverageRepair;
+  if (repair !== undefined && repair.enabled) {
+    log(
+      `review-pi: 覆盖补漏 请求 ${String(repair.requests)}（失败 ${String(
+        repair.failedRequests,
+      )}）/ 覆盖 hunk ${String(repair.hunksCovered)}/${String(repair.hunksSent)} / ` +
+        `新候选 ${String(repair.acceptedFindings)} / no-issue ${String(
+          repair.noIssue,
+        )} / 预算跳过 ${String(repair.skippedByBudget)}\n`,
+    );
+  }
 }
 
 /** 覆盖补报：变更文件全集 − 已上报（ADR-0061 / ADR-0068）；失败只留痕 */

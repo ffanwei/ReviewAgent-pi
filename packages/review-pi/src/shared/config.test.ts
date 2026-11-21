@@ -1137,3 +1137,50 @@ describe("mcp 配置块（ADR-0037）", () => {
     expect(config.mcp).toBeNull();
   });
 });
+
+describe("loadConfig：limits.coverage.repair（F-01b）", () => {
+  test("缺省关闭，上限为保守值", () => {
+    const config = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(config.limits.coverage.repair).toEqual({
+      enabled: false,
+      maxRequests: 8,
+      maxChars: 24_000,
+      maxHunksPerRequest: 6,
+    });
+    expect(DEFAULT_LIMITS.coverage.repair.enabled).toBe(false);
+  });
+
+  test("可显式开启并覆盖上限", () => {
+    const config = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"coverage":{"repair":{"enabled":true,"maxRequests":2,"maxChars":5000,"maxHunksPerRequest":3}}}`,
+        ),
+      ),
+    }).config;
+    expect(config.limits.coverage.repair).toEqual({
+      enabled: true,
+      maxRequests: 2,
+      maxChars: 5_000,
+      maxHunksPerRequest: 3,
+    });
+    expect(config.overridden).toContain("limits.coverage.repair");
+  });
+
+  test("越界 fail fast", () => {
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(`,"limits":{"coverage":{"repair":{"maxRequests":65}}}`),
+        ),
+      }),
+    ).toThrow(/limits\.coverage\.repair\.maxRequests/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(`,"limits":{"coverage":{"repair":{"maxHunksPerRequest":0}}}`),
+        ),
+      }),
+    ).toThrow(/limits\.coverage\.repair\.maxHunksPerRequest/);
+  });
+});

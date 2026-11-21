@@ -309,6 +309,27 @@ OCR（`D:/Project/open-code-review` @ `d77d70b`）的做法是四层 + 一个出
 - 证据：[`f01a-iterf91-zero-model.json`](f01a-iterf91-zero-model.json)；原始 JSON 在 `.artifacts/coverage-baseline/`（gitignored）。
 - 范围：本次是零模型账本验收，不代表补漏（F-01b）的质量收益；F-01b 尚未实现。
 
+## 2026-11-21 · F-01b 缺口补漏落地
+
+- 契约：`limits.coverage.repair { enabled, maxRequests, maxChars, maxHunksPerRequest }`（缺省关闭）；`CandidateSource` 增加 `repair`；`RunAudit.coverageRepair` 与审计尾键。
+- 账本：新增 `markNotReached`，把因请求 / 字符上限未发出的缺口标 `not-reached(cause=budget)`，不覆盖 candidate / no-issue / truncated。
+- 新模块 `run/coverage-repair.ts`：
+  - 从 diff 提取文件内 hunk 正文；按文件把 `not-reached(no-signal)` 缺口装箱（整文件 / 部分、`maxHunksPerRequest` / `maxChars` / `maxRequests`）；
+  - 一次性请求逐 hunk 回执 `no-issue(reason)` 或 `candidate`；补漏候选统一重编号 `CR001…`，走现有候选门（schema / evidence / scope / 内容去重）；
+  - `no-issue` 只来自结构化回执；补漏候选按 `repair` 来源回填；
+  - 审计 `coverageRepair`：请求、失败、hunk 发送 / 覆盖、no-issue、候选 / 接受、预算跳过、usage。
+- 接线：`review-pass` 在 main findings 回填后、`closeCoverage` 前执行补漏；分片聚合求和；`delivery` 增加一行补漏摘要。
+- 缺口优先级：预算先给「整文件一条意见都没有」的缺口（历史漏报 56.8% 落在这类文件），同优先级内先小后大。
+- 零模型预算模拟（iterB10，历史 findings 回填后）：
+  - 总缺口 5,863 hunk；`maxRequests=12` 只发 121 hunk（2.1%），`24` 发 283（4.8%），`32` 发 419（7.1%），`64` 发 932（15.9%）；
+  - 补漏请求输入约 440K 字符（32 档），token 成本远小于主检视；主要成本是请求延迟；
+  - 因此 A/B 配置取 `maxRequests=32`：能覆盖多数「整文件空」缺口，又不至于把一次 10 条 run 拖成数小时。
+- 测试：新增 `coverage-repair.test.ts` 12 例、账本 `markNotReached` 3 例、config 3 例；全包 **1207 passed / 1 skipped**，`typecheck` 与严格 `build` 通过。
+- 配置：
+  - `C:/Users/Li/.PiAgent/benchmark-aacr-v2-f01b.jsonc`：与历史 arm2 完全一致，只开补漏（干净 A/B）；
+  - `benchmark-large-pr.jsonc`：大 MR 专项配置，已开补漏。
+- 未做：真实模型 A/B；下一步用 iterB10 跑 arm A（补漏关）/ arm B（补漏开），看 not-reached 下降与 P/R/B、token、墙钟。
+
 ## 下一步
 
 - 先落 F-01a：纯确定性账本 + 截取区间 + 审计键 + 恒等式测试 + 历史 diff 基线（零模型调用）。

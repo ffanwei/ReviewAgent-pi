@@ -583,6 +583,14 @@ function effectiveValues(config: ResolvedConfig): Readonly<Record<string, unknow
     "codeintel.excludeGlobs": config.codeintel.excludeGlobs,
   };
   for (const [group, entries] of Object.entries(config.limits)) {
+    if (group === "coverage") {
+      values["limits.coverage.repair.enabled"] = config.limits.coverage.repair.enabled;
+      values["limits.coverage.repair.maxRequests"] = config.limits.coverage.repair.maxRequests;
+      values["limits.coverage.repair.maxChars"] = config.limits.coverage.repair.maxChars;
+      values["limits.coverage.repair.maxHunksPerRequest"] =
+        config.limits.coverage.repair.maxHunksPerRequest;
+      continue;
+    }
     for (const [key, value] of Object.entries(entries)) {
       values[`limits.${group}.${key}`] = value;
     }
@@ -971,6 +979,18 @@ ${excludeGlobLines}
       "toolNameChars": 60,               // 未知名工具回显的字符上限。
       "argumentsSummaryChars": 80,       // 进度行里工具入参摘要的字符上限（脱敏）。
       "progressDetailChars": 120         // 进度行里失败 / 结果摘要的字符上限（只取首行）。
+    },
+    // 覆盖缺口补漏（F-01b）：只对账本里 not-reached 的 hunk 发独立一次性请求。
+    // enabled = false（缺省）时行为与 F-01a 完全一致；开启后每个 pass 最多
+    // maxRequests 个请求，单请求最多 maxHunksPerRequest 个 hunk / maxChars 字符。
+    // 因上限未发出的缺口保持 not-reached(cause=budget)。
+    "coverage": {
+      "repair": {
+        "enabled": false,
+        "maxRequests": 8,
+        "maxChars": 24000,
+        "maxHunksPerRequest": 6
+      }
     }
   }
 }

@@ -49,6 +49,7 @@ import {
   truncatedRangesFromShardRecords,
 } from "./coverage-ledger.js";
 import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
+import { repairCoverageGaps } from "./coverage-repair.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { formatRepoSnapshotModelNote, type RepoSnapshotSideRecord } from "./repo-side.js";
 import {
@@ -338,10 +339,35 @@ async function executeReviewPass(
     }),
   });
 
-  // 覆盖收口（F-01a）：finding 按新侧行号回填 candidate；其余 hunk 按本次
-  // run 的截断现场收口（输出截断 / 工具预算 / 轮次 / 正常 no-signal）。
+  // 覆盖收口（F-01a）：finding 按新侧行号回填 candidate；F-01b 启用时再对
+  // 仍未覆盖的 hunk 发独立补漏请求，补漏候选仍走同一候选门。
+  const mainCoverage = backfillCandidates(coverage, outcome.findings, "main");
+  const repairLimits = input.runtime.limits.coverage.repair;
+  const repair =
+    repairLimits.enabled
+      ? await repairCoverageGaps({
+          diff: input.diff,
+          ledger: mainCoverage,
+          findings: outcome.findings,
+          limits: repairLimits,
+          ...(scope !== undefined ? { scope } : {}),
+          llm: {
+            baseUrl: repairModel.baseUrl,
+            apiKey: input.apiKey,
+            modelId: input.modelId,
+            timeoutMs: input.runtime.limits.timeouts.oneShotMs,
+            retry: retryPolicyFor(input.runtime.limits.retry, "oneShot"),
+            ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+          },
+        })
+      : undefined;
+  const findings =
+    repair === undefined ? outcome.findings : [...outcome.findings, ...repair.findings];
+  // 补漏是一次性调用：成本记在 `coverageRepair.usage` 与 one-shot 账本，
+  // 不并入主会话 usage（避免与 one-shot 汇总重复计数）。
+  const usage = outcome.usage;
   const closedCoverage = closeCoverage(
-    backfillCandidates(coverage, outcome.findings, "main"),
+    repair?.ledger ?? mainCoverage,
     coverageCauseFor(outcome),
   );
 
@@ -361,11 +387,12 @@ async function executeReviewPass(
     records: outcome.skillPassLog,
     transcripts: outcome.skillTranscripts,
   });
-  const tipsFilter = summarizeTipsFilter(outcome.findings, input.tipsConfidenceMin);
-  const severityFilter = summarizeSeverityFilter(outcome.findings, input.tipsSeverityMin);
+  const tipsFilter = summarizeTipsFilter(findings, input.tipsConfidenceMin);
+  const severityFilter = summarizeSeverityFilter(findings, input.tipsSeverityMin);
   const audit: RunAudit = {
     ...outcome.audit,
     coverage: closedCoverage,
+    ...(repair !== undefined ? { coverageRepair: repair.audit } : {}),
     ruleSkill: input.ruleSkillAudit,
     ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog: persisted.records } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
@@ -391,8 +418,8 @@ async function executeReviewPass(
     finishedAt,
     rounds: outcome.rounds,
     toolCalls: outcome.toolCalls,
-    usage: outcome.usage,
-    findings: outcome.findings,
+    usage,
+    findings,
     audit,
     // Ledger 快照经 outcome.audit 透传（恒投影——含空数组形态）
     ...(outcome.audit.ledger !== undefined ? { ledger: outcome.audit.ledger } : {}),
@@ -426,15 +453,15 @@ async function executeReviewPass(
     modelId: input.modelId,
     finishedAt,
     runDir: input.runDir,
-    findings: outcome.findings,
+    findings,
   });
 
   return {
     runId,
     startedAt: input.startedAt,
     finishedAt,
-    findings: outcome.findings,
-    usage: outcome.usage,
+    findings,
+    usage,
     rounds: outcome.rounds,
     toolCalls: outcome.toolCalls,
     audit,

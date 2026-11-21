@@ -42,7 +42,7 @@
 
 | ID | 任务 | 对应问题 | 优先级 | 状态 | 验收（摘要） | 证据 / commit | 备注 | 讨论 |
 |---|---|---|---|---|---|---|---|---|
-| F-01 | 覆盖账本：文件 × hunk 三态（candidate / no-issue / not-reached） | P0-1、P1-11、V1/V7 | P0 | DOING | not-reached 比例可见；未覆盖 hunk 只对缺口发补漏；P/R 不回退 | — | 先定账本 schema 与审计键 | [票](issues/F-01-coverage-ledger/ticket.md) · [讨论](issues/F-01-coverage-ledger/discussion.md) |
+| F-01 | 覆盖账本：文件 × hunk 三态（candidate / no-issue / not-reached） | P0-1、P1-11、V1/V7 | P0 | DOING | not-reached 比例可见；未覆盖 hunk 只对缺口发补漏；P/R 不回退 | F-01a iterF91 零模型 91/91；F-01b 代码+单测 1207 passed | 先定账本 schema 与审计键 | [票](issues/F-01-coverage-ledger/ticket.md) · [讨论](issues/F-01-coverage-ledger/discussion.md) |
 | F-02 | 大 MR 准入与分片一致：split 启用时不再按 `maxDiffChars` 整条跳过 | P0-2、V2 | P0 | TODO | FreeCAD 类 diff 不再 skipped；片数 ≤ maxShards；截取留痕 | — | 需定“超 maxShards”失败语义 | — |
 | F-03 | 分片并行（可配 3–8） | P0-3、V2 | P0 | TODO | findings 集合与串行一致；墙钟显著下降；429 不增加 | — | 片级审计/转录路径不变 | — |
 | F-04 | 证据接地：文件/行号/引文可核对 | P0-4、V3 | P0 | TODO | 伪造行号/引文/越界文件被确定性拒绝；真证据不误杀 | — | 先做零模型硬门 | — |
@@ -101,3 +101,4 @@
 - 2026-11-21：从 `exp-group` 全量迁移 `docs/bench`（554 files / 20.5 MB，含 artifacts / ocr / results）；运行时仍依赖外部 evaluation。
 - 2026-11-21：AACR-Bench 归档从 `docs/bench` 迁到 `bench/aacr-bench-v2`；新增 `bench/README.md` 与结构指南条目。
 - 2026-11-21：F-01a iterF91 零模型验收通过（91 条；22,266 hunk；818 截取 hunk；maxShards=12 下 3 条显式失败，32 下 91/91）；证据 `issues/F-01-coverage-ledger/f01a-iterf91-zero-model.json`。
+- 2026-11-21：F-01b 缺口补漏落地（`coverage-repair.ts` + 配置 + 审计 + stderr）；全包 1206 passed / 1 skipped；待 iterB10 A/B。

@@ -8,6 +8,7 @@ import type {
   CandidateNormalizationRecord,
   CandidateRejection,
   CandidateRejectionCounts,
+  CoverageRepairAudit,
   ModelFallbackRecord,
   PhaseRecord,
   RuleSkillAudit,
@@ -56,6 +57,8 @@ export interface AuditLight {
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** 候选拦截链阶段计数（P1）：只在有拦截时在场 */
   readonly rejectionCounts?: CandidateRejectionCounts;
+  /** 覆盖缺口补漏（F-01b）：只在启用时在场 */
+  readonly coverageRepair?: CoverageRepairAudit;
 }
 
 /** RunResult 快照（audit 以轻量投影落盘） */
@@ -159,6 +162,7 @@ export function toAuditLight(audit: RunAudit): AuditLight {
       ? { candidateNormalizations: audit.candidateNormalizations }
       : {}),
     ...(audit.rejectionCounts !== undefined ? { rejectionCounts: audit.rejectionCounts } : {}),
+    ...(audit.coverageRepair !== undefined ? { coverageRepair: audit.coverageRepair } : {}),
   };
 }
 
