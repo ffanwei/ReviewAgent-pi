@@ -1,0 +1,896 @@
+{
+  "ex_info": {
+    "start_time": "2026-11-16T10:53:08.486063",
+    "results_dir": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2_smoke10\\reviewpi\\baseline-3r",
+    "reviewer": "claude",
+    "line_k": 1,
+    "limit": null,
+    "score_mode": "file_semantic",
+    "missing_instance_ids": []
+  },
+  "summary": {
+    "total_instances": 10,
+    "candidate_instances": 10,
+    "evaluated_instances": 10,
+    "missing_instances": 0,
+    "expected_notes": 46,
+    "generated_notes": 44,
+    "total_duration_seconds": 1837.9,
+    "avg_duration_seconds": 183.79,
+    "total_input_tokens": 3897430,
+    "total_output_tokens": 215764,
+    "total_tokens": 4113194,
+    "avg_input_tokens": 389743,
+    "avg_output_tokens": 21576,
+    "matched_generated_notes": 11,
+    "matched_file_semantic_notes": 12,
+    "file_semantic_match_rate": 0.25,
+    "file_semantic_recall_rate": 0.261,
+    "balanced_score": 0.255
+  },
+  "eval_res": [
+    {
+      "instance_id": "lvgl__lvgl@9cce37c",
+      "repo": "lvgl/lvgl",
+      "comments": [
+        {
+          "note": "Buffer/OOB risk from animation range: `lv_anim_set_values(..., 0, (int32_t)num)` allows `idx==num`. `index_change` only clamps `idx >= pic_count` to `pic_count - 1`, so `idx==num` becomes `num-1` (OK) **unless `num==0`**, where it becomes `-1` and then `animimg->dsc[-1]` is accessed. Also in reverse API you start from `(int32_t)num`, which will also become `-1` when `num==0` after clamping. Suggest guarding `num==0` early (set `dsc`, set `pic_count=0`, and return), and ideally use `num-1` as start/end values when `num>0` to avoid ever producing `idx==num`.\n\n```suggestion\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n\n    if(num == 0) {\n        /* No frames: avoid idx underflow in index_change */\n        return;\n    }\n\n    lv_anim_set_values(&animimg->anim, 0, (int32_t)num - 1);\n}\n\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n\n    if(num == 0) {\n        return;\n    }\n\n    lv_anim_set_values(&animimg->anim, (int32_t)num - 1, 0);\n}\n```",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "side": "right",
+          "from_line": 110,
+          "to_line": 117,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Duplicate setup logic in `lv_animimg_set_src` and `lv_animimg_set_src_reverse` functions should be refactored into a private static helper function to eliminate code duplication while maintaining API compatibility.",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "side": "right",
+          "from_line": 110,
+          "to_line": 125,
+          "file_semantic_match": true
+        },
+        {
+          "note": "**Breaking API Change - This is NOT backwards compatible**\n\nThe PR description claims to \"ensure backwards compatibility\" but this change breaks the existing API. The original function signature was:\n```c\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse);\n```\n\nRemoving the `reverse` parameter means any existing code calling this function with 4 arguments will fail to compile. This is a **breaking change**.\n\n**Suggested Fix:**\nTo maintain true backwards compatibility, you should:\n\n1. Keep the original 4-parameter function and mark it as deprecated, OR\n2. Use a macro/inline wrapper to maintain the old signature\n\nFor example:\n```c\n// New implementation\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num);\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num);\n\n// Backwards compatibility - deprecated\nstatic inline void lv_animimg_set_src_legacy(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse) {\n    if(reverse) {\n        lv_animimg_set_src_reverse(obj, dsc, num);\n    } else {\n        lv_animimg_set_src(obj, dsc, num);\n    }\n}\n```\n\nOr consider if the API design should use a single function with flags/options struct instead of two separate functions.",
+          "path": "src/widgets/animimage/lv_animimage.h",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 76,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "新增 lv_animimg_set_src_reverse 与 lv_animimg_set_src 实现近乎完全重复\n两个公共 setter 的前三行（LV_ASSERT_OBJ、dsc 赋值、pic_count 赋值）逐字重复，只有 lv_anim_set_values 的起止值不同。后续若图片源字段语义变化（例如 num 越界校验、dsc 为 NULL 的处理、pic_count 类型调整），需要同时改两处，极易漏改造成正/反向行为不一致；也让「反向只是取值顺序不同」这一意图被代码重复掩盖。",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "from_line": 119,
+          "to_line": 119,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — reference discusses buffer/OOB risk and `num==0` underflow, generated discusses code duplication between setters.\n2. Match — both identify duplicated setup logic in `lv_animimg_set_src` and `lv_animimg_set_src_reverse` and suggest refactoring/helper.\n\n[2]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "反向入口沿用 size_t num 与 uint8_t pic_count、int32_t 动画值混用，存在宽度隐式收窄\nanimimg->pic_count 为 uint8_t，而形参 num 为 size_t：赋值时静默截断；同一函数里又用 (int32_t)num 作为动画起止值。当 num 超过 255 时，pic_count 与动画起止值将不一致，且该行为现在被复制到两个公共入口（正/反向各一份），扩大了潜在不一致面。另外该 setter 被 LV_PROPERTY_ANIMIMAGE_SRC 属性表以 void * 方式间接调用，属性系统按 (lv_obj_t*, const void*, int32_t) 传参（见 lv_obj_property.c 的类型转换宏），与 size_t 形参宽度不一致。该问题在本次变更前已存在，本次新增函数沿用了同一模式，故仅提示。",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "from_line": 125,
+          "to_line": 125,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — Ref 1 discusses an OOB/underflow risk when `num==0` and suggests using `num-1`; the generated comment discusses size_t→uint8_t/int32_t truncation when `num>255`.\n2. No match — Ref 2 suggests refactoring duplicate setter logic into a helper; the generated comment only notes the type-mismatch pattern is duplicated, not that the code should be refactored.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "公共 API lv_animimg_set_src 直接收窄参数且未保留弃用别名，属破坏性变更\nlv_animimg_set_src 的参数个数从 4 个变为 3 个，且仓库内没有任何指向旧签名的弃用包装或兼容层（全部 8 处引用均为新的 3 参形式）。所有外部工程中形如 lv_animimg_set_src(obj, dsc, num, true) 的调用都会在升级后直接编译失败，用户必须手工迁移；对于以库形式分发、被大量下游工程引用的图形库，这类无过渡期的签名修改会显著抬高升级成本。",
+          "path": "src/widgets/animimage/lv_animimage.h",
+          "from_line": 76,
+          "to_line": 76,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. Match — both identify the removal of the `reverse` parameter from `lv_animimg_set_src` as a breaking API change and recommend keeping a deprecated/compatibility wrapper for the old 4-argument signature.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "新 API 名 set_src_reverse 与既有 set_reverse_duration/set_reverse_delay 语义易混\n同一头文件中已存在 lv_animimg_set_reverse_duration（117 行）与 lv_animimg_set_reverse_delay（124 行），二者描述的是「正向播放结束后再反向回放」的动画行为；而新增的 lv_animimg_set_src_reverse 描述的是图片源数组的播放顺序（从最后一帧到第一帧），两者互不相干。命名共用 reverse 一词且都以 set_ 开头，使用者很容易误以为必须搭配设置，或误认为 src_reverse 会自动启用回放（bounce）效果。",
+          "path": "src/widgets/animimage/lv_animimage.h",
+          "from_line": 84,
+          "to_line": 84,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses breaking API compatibility from removing the parameter, generated discusses naming confusion between `set_src_reverse` and existing `reverse_duration`/`reverse_delay`.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "文档仅一句话介绍反向播放，未说明语义、与 set_src 的覆盖关系且无示例\n新增段落只说「set the images source for flip playback」，未说明反向播放是从最后一帧播到第一帧、两函数互斥地覆盖同一组 dsc/pic_count（后调用者生效）、也未提示与 reverse_duration 的区别；同时示例目录与文档中都没有任何 lv_animimg_set_src_reverse 的实际用法。作为新增的公共 API，用户只能读实现才能确认其行为。",
+          "path": "docs/src/details/widgets/animimg.rst",
+          "from_line": 36,
+          "to_line": 36,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "ppy__osu@748ab3d",
+      "repo": "ppy/osu",
+      "comments": [
+        {
+          "note": "`reverseDeltaDifferenceRatio` and the later `fraction = Math.Max(prevDelta / currDelta, ...)` both divide by `Math.Min(prevDelta, currDelta)` / `currDelta` etc. If `StrainTime` can ever be 0 (or extremely close), this will produce `Infinity/NaN` and destabilise difficulty.\n\nAlso, `SmoothstepBellCurve()` is designed around `x` in ~[0,1] (mean=0.5,width=0.5). The fractional-part calculation `x - (long)x` can lose precision for large ratios and doesn’t clamp against small floating overshoots (<0 or >1). Prefer `Math.Floor` and clamp to [0,1] before passing into `SmoothstepBellCurve`.\n\nSuggested:\n- Guard: `if (prevDelta <= 0 || currDelta <= 0) return 1.0;` (or skip bonus) consistent with intended behaviour.\n- `var frac = reverse - Math.Floor(reverse); frac = Math.Clamp(frac, 0, 1);`",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/Evaluators/RhythmEvaluator.cs",
+          "side": "right",
+          "from_line": 71,
+          "to_line": 76,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Fractional part calculation uses unsafe cast to long; replace with Math.Truncate to prevent overflow for large ratio values.",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/Evaluators/RhythmEvaluator.cs",
+          "side": "right",
+          "from_line": 74,
+          "to_line": 74,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential edge case: when width == 0, this will call Smoothstep(x, 0, 0) and likely divide by zero / produce NaN depending on Smoothstep implementation. Consider guarding (e.g., return x==mean ? 1 : 0) or clamping width to a small epsilon.\n\nAlso consider behavior for negative width: current math inverts range unexpectedly; either validate width > 0 or document it.\n\n```suggestion\n        public static double SmoothstepBellCurve(double x, double mean = 0.5, double width = 0.5)\n        {\n            if (width <= 0)\n                return x == mean ? 1 : 0;\n        \n            x -= mean;\n            x = x > 0 ? (width - x) : (width + x);\n            return Smoothstep(x, 0, width);\n        }\n```",
+          "path": "osu.Game/Rulesets/Difficulty/Utils/DifficultyCalculationUtils.cs",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 81,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The ternary expression can be simplified to `Math.Abs(x)` for better readability. Both branches compute `width - Math.Abs(x)`, just written differently.",
+          "path": "osu.Game/Rulesets/Difficulty/Utils/DifficultyCalculationUtils.cs",
+          "side": "right",
+          "from_line": 78,
+          "to_line": 79,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "难度算法（star rating）已改动但 Osu/Taiko 的 DifficultyCalculator.Version 未同步 bump\n本次 MR 修改了 osu! 难度层（Aim.skillMultiplier 26→25.6、Speed.skillMultiplier 1.47→1.46、AimEvaluator 的 wide/acute/wiggle/velocityChange 结构与 distRatio、RhythmEvaluator 的 rhythm 比值公式、SpeedEvaluator 的 distance_multiplier 0.8→0.9）与 taiko 难度层（TaikoDifficultyCalculator 的 strainLengthBonus 公式重写），但两个 DifficultyCalculator 的 Version 仍为 20250306。Version 在基类中的语义是「用于辨别是否需要重新计算」的 yymmdd 版本号（DifficultyCalculator.cs:41-44），依赖该版本号判断难度缓存是否失效的调用方（例如服务端/后台重算，以及任何按 Version 比对持久化难度的路径）无法感知算法已变化，会继续使用按旧算法算出的 star rating 与基于其派生出的 pp；同时版本号也不再能标识本次平衡性调整，后续回溯困难。客户端内存缓存（BeatmapDifficultyCache 注释明确「not persisted between game sessions」）虽不受影响，但 Version 的意义正是跨会话/跨端重算判据，遗漏 bump 属于发布流程性缺陷。",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/OsuDifficultyCalculator.cs",
+          "from_line": 29,
+          "to_line": 29,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "难度算法（star rating）已改动，但 osu!/taiko 的 DifficultyCalculator.Version 未同步 bump\n本次 MR 修改了 osu! 难度层（Aim.skillMultiplier 26→25.6、Speed.skillMultiplier 1.47→1.46、AimEvaluator 的 wide/acute/wiggle/velocityChange 结构与 distRatio、RhythmEvaluator 的 delta 比值公式、SpeedEvaluator.distance_multiplier 0.8→0.9）与 taiko 难度层（TaikoDifficultyCalculator.strainLengthBonus 公式重写，并经 combinedDifficultyValue 的 staminaPeak 影响星数），但两个 DifficultyCalculator 的 Version 仍是 20250306。基类中 Version 的语义是 yymmdd 版本号，用于辨别是否需要重新计算（DifficultyCalculator.cs:41-44）；难度属性本身有 ToDatabaseAttributes/FromDatabaseAttributes 的 osu_difficulty_attribs 持久化映射（DifficultyAttributes.cs:80-93），即按旧算法算出的 star rating 与各子项会被长期保存。Version 不 bump 时，依赖该版本号判断「算法已变、需要重算」的链路无法感知本次平衡性调整，会继续沿用旧算法的星数与由其派生的 pp，同时版本号也失去对本次调整的标识能力，后续难以回溯。注意客户端内存缓存（BeatmapDifficultyCache 类注释声明不跨会话持久化，DifficultyCacheLookup 的键只含 BeatmapInfo/Ruleset/OrderedMods）不按 Version 失效，因此影响面限于依赖 Version 的外部/后台重算路径，这也是本条定为 P2 而非 P1 的原因。",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/OsuDifficultyCalculator.cs",
+          "from_line": 29,
+          "to_line": 29,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "calculateDeviation 新增的 attributes 形参未被使用，relevantCountMiss 与 objectCount 代数抵消成死参数\n本次重构给 calculateDeviation 新增了 OsuDifficultyAttributes attributes 与 double relevantCountMiss 两个形参，但：(1) 方法体内完全没有引用 attributes，只使用 greatHitWindow/okHitWindow/mehHitWindow 字段与 relevantCount* 形参，新增形参是纯噪音，还会误导后续维护者以为偏差估计依赖难度属性；(2) n = Math.Max(1, objectCount - relevantCountMiss - relevantCountMeh)，而 objectCount = relevantCountGreat + relevantCountOk + relevantCountMeh + relevantCountMiss，代入后 n 恒等于 Math.Max(1, great + ok)，与改动前的 `Math.Max(1, relevantCountGreat + relevantCountOk)` 完全一致——也就是说 relevantCountMiss（以及调用方 calculateSpeedDeviation 里为 worst-case 计算它的一大段代码）对结果没有任何影响。注释声称「把 miss 计入 objectCount 再做偏差校正」，与实际的代数抵消相互矛盾，容易让后续修改者基于错误心智模型改动最坏情况口径。",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs",
+          "from_line": 410,
+          "to_line": 410,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "calculateDeviation 新增的 attributes 形参未被使用，relevantCountMiss 与 objectCount 代数抵消成为无效参数\n重构给 calculateDeviation 新增了 OsuDifficultyAttributes attributes 与 double relevantCountMiss 两个形参，但两者对结果都没有作用：(1) 方法体 411-452 行完全没有引用 attributes，只使用 greatHitWindow/okHitWindow/mehHitWindow 字段与 relevantCount* 形参，新增形参纯属噪音，还会让维护者误以为偏差估计依赖难度属性；(2) objectCount = great+ok+meh+miss，而 n = Math.Max(1, objectCount - relevantCountMiss - relevantCountMeh)，代入后 n 恒等于 Math.Max(1, great + ok)，与改动前的 `Math.Max(1, relevantCountGreat + relevantCountOk)` 完全一致，因此 relevantCountMiss（以及 calculateSpeedDeviation 中为最坏情况专门算出的 relevantCountMiss）对输出毫无影响。代码注释声称「把 miss 计入 objectCount 后做偏差校正」，与实际代数抵消相互矛盾，后续维护者若据此调整最坏情况口径会得到与预期不符的结果。",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs",
+          "from_line": 410,
+          "to_line": 410,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "退化判定改用 Precision.AlmostEquals(pLowerBound, 0.0) 未显式给出 epsilon，阈值语义不可见\n旧实现用显式数值阈值 `pLowerBound > 1e-06` 决定是否走真实偏差公式，否则取 limit value；新实现改为 `Precision.AlmostEquals(pLowerBound, 0.0)` 且未传 acceptableDifference，退化判定究竟在什么量级生效完全取决于 osu.Framework.Utils.Precision 的默认值，调用点读不出「多小才算 0」，排查偏差估计异常时无法从代码判断边界。同时 442 行把三个语义完全不同的守卫（精度不足、randomValue>=1 的数值病态、deviation 超过 limitValue 的上限钳制）压在同一行且无注释，读者难以分辨每个条件对应哪种数值异常（例如 deviation 由 ErfInv(pLowerBound)→0 得到 Infinity 时才需要第一项）。这不影响当前编译与常规数值，但会显著提高这段高风险数学代码的维护与调参成本。",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/OsuPerformanceCalculator.cs",
+          "from_line": 442,
+          "to_line": 442,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "totalSuccessfulHits 为 0 时 effectiveMissCount 不再赋值，全 miss 分数上报的 EffectiveMissCount 为 0\n新实现把 effectiveMissCount 的赋值放进 `if (totalSuccessfulHits > 0)` 分支，else 分支没有兜底：全部 miss 的分数（countGreat=countOk=countMeh=0、countMiss>0）会让 effectiveMissCount 保持字段默认值 0，于是 TaikoPerformanceAttributes.EffectiveMissCount 上报为 0，与实际 miss 数不符；同时 computeDifficultyValue 中的 `Math.Pow(0.986, effectiveMissCount)` 失去 miss 惩罚。当前之所以没有造成 pp 数值错误，只是因为另一条路径凑巧兜住：countGreat==0 ⇒ computeDeviationUpperBound 返回 null ⇒ computeDifficultyValue 在 113-114 行提前 return 0。这种「靠 countGreat==0 兜底」的隐式耦合很脆弱——一旦后续允许全 ok/全 meh 的分数参与 dif 计算或调整该早退条件，miss 惩罚就会静默失效，且属性值会一路为 0 传播到展示层。",
+          "path": "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs",
+          "from_line": 60,
+          "to_line": 60,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "totalSuccessfulHits 为 0 时 effectiveMissCount 保持默认 0，全 miss 分数上报的 EffectiveMissCount 与 miss 惩罚均失效\n新的 effectiveMissCount 计算被放在 `if (totalSuccessfulHits > 0)` 分支内，没有 else 兜底。全部 miss 的分数（countGreat=countOk=countMeh=0、countMiss>0）会使 effectiveMissCount 保持字段默认值 0，于是 TaikoPerformanceAttributes.EffectiveMissCount 上报为 0（与实际 miss 数不符），且 computeDifficultyValue 中的 `Math.Pow(0.986, effectiveMissCount)` 失去 miss 惩罚。当前之所以没有造成 pp 数值错误，只是因为另一条路径凑巧兜住：countGreat==0 ⇒ computeDeviationUpperBound 返回 null ⇒ computeDifficultyValue 提前 return 0。这种隐式耦合很脆弱——一旦后续调整该早退条件或允许全 non-great 分数参与难度计算，miss 惩罚就会静默失效，而错误值会一路传播到属性与展示层。",
+          "path": "osu.Game.Rulesets.Taiko/Difficulty/TaikoPerformanceCalculator.cs",
+          "from_line": 60,
+          "to_line": 60,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "ConsistencyFactor 在 taiko performance 侧已无消费者，但仍被计算并写入 DifficultyAttributes\n本次重构删除了 TaikoPerformanceCalculator 中两处对 ConsistencyFactor 的使用（旧的 effectiveMissCount 幂次与 difficulty/accuracy 的 lengthBonus 都改为只依赖 totalHits），但 TaikoDifficultyCalculator 仍然通过 combinedDifficultyValue 的 out 参数计算 consistencyFactor 并写入 TaikoDifficultyAttributes（第 150 行），同时 calculateConsistencyFactor（207-225 行）仍在对全部 peaks 做一次排序与切片统计。结果是：taiko 的难度属性里保留了一份当前性能计算链路完全不消费的数据，且星数计算过程中仍付出一次额外的 peaks 排序/扫描成本。要么该字段已被遗忘、需要删掉以减少无用计算，要么它仍是服务端/其他消费者的契约，应在注释中说明其用途，否则后续维护者无法判断能否移除。",
+          "path": "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs",
+          "from_line": 150,
+          "to_line": 150,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "strainLengthBonus 新写法用魔法数 3700/1000 隐含复现旧 ReverseLerp(1000,1555)，0.15 上限与除数存在隐式耦合\n旧实现是 `1 + 0.15 * ReverseLerp(staminaDifficultStrains, 1000, 1555)`，ReverseLerp 内部 clamp 到 [0,1]，语义清晰：1000 起算、1555 处达到 0.15 上限。新实现改写成 `1 + Math.Min(Math.Max((staminaDifficultStrains - 1000) / 3700, 0), 0.15) + Math.Min(Math.Max((staminaSkill - 7.0) / 1.0, 0), 0.05)`：虽然数值上在 1000..1555 区间与旧式完全等价（3700 = 555 / 0.15），但两个事实被彻底掩盖——(a) 上限出现在 1555 这一点只能靠反算得出；(b) 3700 与 0.15 是耦合的，谁单独改一个都会静默改变斜率与拐点。此外常量 1000 / 3700 / 7.0 / 1.0 / 0.15 / 0.05 全部无命名、无注释，这段又直接乘进 staminaPeak 影响全量星数，后续调平衡时极易改错。",
+          "path": "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyCalculator.cs",
+          "from_line": 123,
+          "to_line": 123,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "ConsistencyFactor 在客户端 performance 侧已无消费者，但它仍是持久化契约，缺少「不可删除」的说明\n本次重构删除了 TaikoPerformanceCalculator 中两处对 ConsistencyFactor 的使用（旧的 effectiveMissCount 幂次与 difficulty/accuracy 的 lengthBonus 都改为只依赖 totalHits），而 TaikoDifficultyCalculator 仍然计算并写入该属性。关键点是：该字段并非可以随手清理的遗留物——它带有 [JsonProperty(\"consistency_factor\")]，并作为 ATTRIB_ID_CONSISTENCY_FACTOR 写入 osu_difficulty_attribs，FromDatabaseAttributes 处更是用 `values[ATTRIB_ID_CONSISTENCY_FACTOR]` 直接索引读回（无 TryGetValue 保护）。因此若后续维护者以「performance 侧已无消费者」为由删除该属性或其 ToDatabaseAttributes 映射，读取既有数据库记录时会直接抛 KeyNotFoundException。当前代码没有任何注释说明「客户端 pp 不再使用、但为避免破坏反序列化必须保留」，属于契约文档缺失。",
+          "path": "osu.Game.Rulesets.Taiko/Difficulty/TaikoDifficultyAttributes.cs",
+          "from_line": 52,
+          "to_line": 52,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "opencv__opencv@79afad9",
+      "repo": "opencv/opencv",
+      "comments": [
+        {
+          "note": "Memory leak: GetByteArrayElements must be paired with ReleaseByteArrayElements. The current implementation only acquires the array elements but never releases them, causing a memory leak. Similar to the string type handling on line 80, the jni_var should include the release call. Consider: \"char* n_%(n)s = reinterpret_cast<char*>(env->GetByteArrayElements(%(n)s, NULL)); ... env->ReleaseByteArrayElements(%(n)s, reinterpret_cast<jbyte*>(n_%(n)s), 0);\"",
+          "path": "modules/java/generator/gen_java.py",
+          "side": "right",
+          "from_line": 93,
+          "to_line": 99,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Behavior change: previously `type_dict.setdefault(\"Ptr_\"+name, {}).update({...})` would refresh/update an existing `Ptr_...` mapping. Now it only sets the entry when missing. If `Ptr_...` can be created earlier (e.g., multiple passes, cross-module deps, or preloaded gen_dict overrides) this can leave stale `j_type`/`j_import`/`jni_name` values and break generated code.\n\nIf the goal is to avoid overwriting user overrides, consider updating only missing keys (merge), or preserve the old `setdefault(...).update(...)` behavior.\n\n```suggestion\n        type_dict.setdefault(\"Ptr_\"+name, {}).update({\n            \"j_type\" : classinfo.jname,\n            \"jn_type\" : \"long\", \"jn_args\" : ((\"__int64\", \".getNativeObjAddr()\"),),\n            \"jni_name\" : \"*((Ptr<\"+classinfo.fullNameCPP()+\">*)%(n)s_nativeObj)\", \"jni_type\" : \"jlong\",\n            \"suffix\" : \"J\",\n            \"j_import\" : \"org.opencv.%s.%s\" % (self.module, classinfo.jname)\n        })\n```",
+          "path": "modules/java/generator/gen_java.py",
+          "side": "right",
+          "from_line": 522,
+          "to_line": 529,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The `to` function only handles `PyLong_Check(obj)` but doesn't handle `PyInt_Check(obj)`. Similar converters in this file (e.g., unsigned int, uint64_t) handle both PyInt and PyLong for Python 2 compatibility. This could cause conversion failures when the Python object is a PyInt instance.\n\n```suggestion\n    static inline bool to(PyObject* obj, long long& value, const ArgInfo& info)\n    {\n        CV_UNUSED(info);\n        if(!obj || obj == Py_None)\n            return true;\n        if(PyInt_Check(obj))\n            value = (long long)PyInt_AsLong(obj);\n        else if(PyLong_Check(obj))\n            value = PyLong_AsLongLong(obj);\n        else\n            return false;\n        return value != (long long)-1 || !PyErr_Occurred();\n    }\n```",
+          "path": "modules/python/src2/cv2_convert.hpp",
+          "side": "right",
+          "from_line": 196,
+          "to_line": 206,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Logic issue: This condition allows invalid C++ type combinations. For example:\n- 'short char', 'short short', 'short long' are not valid C++ types\n- 'long char', 'long short' are not valid C++ types\n\nValid combinations should be:\n- signed/unsigned + char/short/int/long\n- short + int\n- long + int/long\n\nConsider refining the logic to only accept valid C++ type modifier combinations.",
+          "path": "modules/python/src2/hdr_parser.py",
+          "side": "right",
+          "from_line": 193,
+          "to_line": 194,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential coverage issue: the generator/parser may output canonical spellings like `long long int`, `signed long long`, or `unsigned long long`. Adding only `\"long long\"` might not match and won’t fix the original missing-type case. Also consider whether this becomes redundant with the existing `int64_t` entry, which could lead to inconsistent mapping depending on platform/type-emission. Suggest normalizing native type strings before lookup or adding the canonical variants explicitly.\n\n```suggestion\n    # Prefer canonical spellings (or normalize the native type string upstream)\n    PrimitiveTypeNode.int_(\"long long int\"),\n    PrimitiveTypeNode.int_(\"signed long long\"),\n    PrimitiveTypeNode.int_(\"unsigned long long\"),\n```",
+          "path": "modules/python/src2/typing_stubs_generation/predefined_types.py",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 31,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Missing NULL check for GetObjectClass result. If GetObjectClass returns NULL (e.g., OutOfMemoryError), calling NewGlobalRef on NULL jclass will cause a crash. Also, if NewGlobalRef fails (returns NULL), the global ref is invalid but the destructor will still call DeleteGlobalRef on it. Consider adding proper error handling and cleanup.\n\n```suggestion\nJavaStreamReader::JavaStreamReader(JNIEnv* _env, jobject _obj) : env(_env)\n{\n    obj = env->NewGlobalRef(_obj);\n    if (!obj) return; // Handle allocation failure\n    jclass cls = env->GetObjectClass(obj);\n    if (!cls) return; // Handle allocation failure\n    m_read = env->GetMethodID(cls, \"read\", \"([BJ)J\");\n    m_seek = env->GetMethodID(cls, \"seek\", \"(JI)J\");\n}\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 3,
+          "to_line": 6,
+          "file_semantic_match": false
+        },
+        {
+          "note": "`JNIEnv*` is thread-affine; storing it as a member and using it later from another thread is undefined and can crash. Prefer storing `JavaVM*` and attaching/detaching per call (or document/enforce same-thread usage).",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 3,
+          "to_line": 5,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Potential JNI local reference leak: `GetObjectClass(obj)` returns a local ref that should be `DeleteLocalRef(cls)` after `GetMethodID` calls. In long-running/native loops this can exhaust the local ref table.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 6,
+          "to_line": 8,
+          "file_semantic_match": false
+        },
+        {
+          "note": "**Missing error handling**: The code doesn't check if `GetMethodID` succeeds. If the Java class doesn't implement the required methods correctly, `m_read` or `m_seek` will be null, which could lead to crashes.\n\n**Suggested fix**: Add error checking:\n```cpp\nif (!m_read || !m_seek) {\n    // Handle error - throw exception or log error\n}\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 7,
+          "to_line": 7,
+          "file_semantic_match": true
+        },
+        {
+          "note": "**Missing JNI exception check**: After calling `NewByteArray`, you should check for JNI exceptions. If memory allocation fails, this could throw an OutOfMemoryError that needs to be handled.\n\n**Suggested fix**:\n```cpp\njbyteArray jBuffer = env->NewByteArray(static_cast<jsize>(size));\nif (!jBuffer || env->ExceptionCheck()) {\n    if (env->ExceptionCheck()) env->ExceptionClear();\n    return 0;\n}\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 19,
+          "to_line": 19,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Size truncation risk: casting `size` (long long) to `jsize` can overflow for large values, leading to negative/incorrect allocation and memory issues. Validate `size` <= std::numeric_limits<jsize>::max() before `NewByteArray` / `GetByteArrayRegion`.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 20,
+          "to_line": 20,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Storing a thread-specific `JNIEnv*` in `JavaStreamReader` risks undefined behavior when accessed from non-creation threads. Replace with `JavaVM*` storage and use `GetEnv`/`AttachCurrentThread` for thread-safe JNI access.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.hpp",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 12,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Const correctness: The function only reads from the vector, so the parameter should be const reference to prevent unintended modifications and enable const correctness.\n\n```suggestion\njobject vector_VideoCaptureAPIs_to_List(JNIEnv* env, const std::vector<cv::VideoCaptureAPIs>& vs)\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 37,
+          "to_line": 37,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Header completeness: this header uses `std::vector` in the declaration but doesn’t include `<vector>`. Relying on transitive includes is fragile; include `<vector>` here or forward declare with `namespace std { template<class T, class Allocator> class vector; }` (including `<vector>` is preferred).\n\n```suggestion\n#include <vector>\n\njobject vector_VideoCaptureAPIs_to_List(JNIEnv* env, std::vector<cv::VideoCaptureAPIs>& vs);\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.hpp",
+          "side": "right",
+          "from_line": 23,
+          "to_line": 23,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "GIF 消隐背景的 Mat 行列被互换，非方形子帧的背景恢复失效\nrestore 用于在 GIF_DISPOSE_RESTORE_BACKGROUND 时把子区域恢复为背景色，其尺寸必须与后续 ROI（height 行 × width 列）一致。本次改动把 `Mat(height, width, CV_8UC4, background)` 改成 `Mat(width, height, CV_8UC4, background)`，而 cv::Mat(int rows, int cols, ...) 的第一个参数是行数，于是 restore 变成 width 行 × height 列。当 width != height 时，`restore.copyTo(Mat(lastImage, Rect(left,top,width,height)))` 因尺寸不匹配会重新分配目标 Mat，像素根本不会写回 lastImage，导致后续帧的背景区域残留上一帧内容，动画输出错误；同时与同文件第 113 行初始帧仍使用 `Mat(m_height, m_width, ...)` 的正确写法自相矛盾。",
+          "path": "modules/imgcodecs/src/grfmt_gif.cpp",
+          "from_line": 133,
+          "to_line": 133,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "sdiv/hdiv 查表改为 volatile 标志的懒初始化，破坏了原有线程安全的一次性初始化\n原实现用函数内 `static UMat sdiv_data = init_sdiv_table();` 等局部静态变量，C++11 保证首次初始化线程安全。改动后改为裸数组 + `static volatile bool initialized180/initialized256` 手写守卫：(1) volatile 不是原子类型，两个线程可同时判定未初始化并并发执行 `Mat(1,256,CV_32SC1,sdiv_table).copyTo(sdiv_data)` 与 `...copyTo(hdiv_data)`，对同一 static UMat 头并发写会造成引用计数/分配状态竞争，可能崩溃或泄漏；(2) 弱内存序平台上其它线程可能先看到 `initialized == true` 而看不到 copyTo 写入的 UMat 内容，内核拿到空/半初始化的 UMat 并通过 `PtrReadOnly` 传入，内核读取空指针缓冲区导致错误结果或异常；(3) 180 与 256 两条路径共享 sdiv_data，判断条件 `!initialized180 && !initialized256` 使两个线程都认为需要初始化 sdiv_data。",
+          "path": "modules/imgproc/src/color_hsv.dispatch.cpp",
+          "from_line": 283,
+          "to_line": 283,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "JavaStreamReader 缓存 JNIEnv*，在其它线程回调 read/seek 时会使用非法 JNIEnv\nJavaStreamReader 在构造时保存 JNIEnv*（JavaStreamReader::read/seek 后续全用它发起 JNI 调用），析构时再用它 DeleteGlobalRef。JNIEnv 是与线程绑定的，只在创建它的线程有效；而 IStreamReader 的 read/seek 是由 FFmpeg 的 IO 回调在解码线程调用的，只要 VideoCapture 的创建与逐帧读取不在同一线程（多线程播放/解码很常见），就会在错误线程上使用 JNIEnv，导致未定义行为、JVM 崩溃，且异常无法被 Java 侧捕获。对比 Python 侧同类实现每次调用都通过 PyGILState_Ensure/Release 获取当前线程状态，说明这里缺少等价处理。",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "from_line": 3,
+          "to_line": 3,
+          "matched_gt_indices": [
+            6
+          ],
+          "judge_reason": "1. No match — focuses on missing NULL checks for `GetObjectClass`/`NewGlobalRef`, not thread-bound `JNIEnv*` misuse.\n2. Match — same concern about `JNIEnv*` being thread-affine and unsafe when stored and used across threads.\n3. No match — discusses JNI local reference leak from `GetObjectClass`, not the invalid cross-thread `JNIEnv*`.\n4. No match — discusses missing `GetMethodID` error handling, unrelated to thread affinity.\n5. No match — discusses missing exception check after `NewByteArray`, u",
+          "hit_new_gt": true
+        },
+        {
+          "note": "JavaStreamReader::read 未检查 Java 侧返回长度与挂起异常，可能静默返回错误数据\nread 先 CallLongMethod 拿到 res，随后无条件用 `GetByteArrayRegion(..., size, ...)` 把整块 size 字节拷回 buffer，且整个过程没有任何 ExceptionCheck/返回值校验：若 Java 的 read 抛出异常（例如 RandomAccessFile 读取失败后用户实现抛出），CallLongMethod 返回 0 且 JVM 中留有挂起异常，之后再调用 GetByteArrayRegion/DeleteLocalRef 属于在挂起异常状态下调用 JNI，行为不确定（部分实现会直接中止）；若用户实现返回大于 size 的长度（如返回错误值），上层会认为读到了比 buffer 更多的数据，导致越界读取或解码错乱。构造时 GetMethodID 失败（m_read/m_seek 为 NULL）也被静默吞掉，挂起的 NoSuchMethodError 不会被清理。Python 侧对应实现对此有显式校验与抛错，说明这里是缺失的。",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "from_line": 24,
+          "to_line": 24,
+          "matched_gt_indices": [
+            8,
+            9
+          ],
+          "judge_reason": "1. No match — ref concerns NULL checks for GetObjectClass/NewGlobalRef, generated concerns read return/exception validation and GetMethodID failure.\n2. No match — ref concerns JNIEnv thread affinity, generated concerns missing JNI exception/return handling.\n3. No match — ref concerns local reference leak, generated concerns missing exception checks and unchecked return length.\n4. Match — both flag missing GetMethodID null/error handling in the constructor.\n5. Match — both flag missing JNI except",
+          "hit_new_gt": true
+        },
+        {
+          "note": "新增 byte[] 类型用 GetByteArrayElements 却从不 Release，生成的 JNI 包装会泄漏并长期钉住数组\ntype_dict 新增的 \"byte[]\" 只给出 `jni_var` 取得数组元素指针，没有配对释放；而 gen_func 会把该 jni_var 原样写入生成的 JNI 函数体（c_prologue）。同文件 'string' 类型在同一个 jni_var 字符串里就完成了 GetStringUTFChars/ReleaseStringUTFChars 配对，可见此处的释放是被遗漏的。后果是每次经该包装调用（IStreamReader::read）都会泄漏一份数组副本/pin，且未 Release 的数组无法被 GC 移动或回收，长时间解码会持续增长内存。此外 IStreamReader::read 是纯虚函数，为其生成 JNI 包装会在未覆写时调用到纯虚实现（未定义行为）。",
+          "path": "modules/java/generator/gen_java.py",
+          "from_line": 98,
+          "to_line": 98,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both identify the missing `ReleaseByteArrayElements` for the `byte[]` type, causing a leak/pin, and compare it with the paired string handling.\n2. No match — ref discusses `Ptr_...` type-dict update behavior, while the generated comment discusses JNI array release and pure-virtual behavior.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "OCL 整型幂路径去掉了工作类型与饱和转换，溢出时结果未定义且与 CPU 不一致\n原实现由主机侧传入 workT/convertToWT1/convertToDT（整数深度用 float 工作类型 + convert_*_sat），PROCESS_ELEM 为 `storedst(convertToDT(pown(srcelem1, powi)))`。改动后主机不再传这些宏，arithm.cl 走 `#ifndef workT` 分支，srcelem1/srcelem2 直接以 dstT 原始值加载且 `convertToDT` 退化为 noconvert，OP_POWN 只把 workT 重定义为 int 后写 `storedst(pown(srcelem1, srcelem2))`：pown 在 OpenCL C 里只对浮点 gentype 有定义，整型 dstT 依赖隐式转换，返回值经隐式浮点→整数转换写回目标，溢出时是未定义行为（旧实现是饱和的）。因此 8U/8S/16U/16S/32S 上的大幂次 OCL 结果会与 CPU 的 iPow（饱和）不一致，甚至在不同 GPU 驱动上表现不同。",
+          "path": "modules/core/src/opencl/arithm.cl",
+          "from_line": 330,
+          "to_line": 330,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "iPow 性能用例同时削减类型覆盖并改成不做结果校验，恰好覆盖不到被改动的内核路径\n本次同时改动了 arithm.cl 的 OP_POWN 与主机侧 kernel 选项，但 iPow 用例删除了 CV_8UC3（cn==3 分支）、CV_32FC1/CV_64FC1（浮点 iPow 与 doubleSupport 分支），并继续使用 SANITY_CHECK_NOTHING，又把幂次从 3 改成 7.0（在 0..100 的数据上必然触发整型溢出）。结果是：改动涉及的 cn==3 与 double 路径不再被任何 OpenCL 用例执行，而溢出场景即便结果错了也不会被发现，回归风险被掩盖。",
+          "path": "modules/core/perf/opencl/perf_arithm.cpp",
+          "from_line": 696,
+          "to_line": 696,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "TF/TFLite 导入器移除 StridedSlice 步长支持，既有模型将改为导入失败\nTF 导入器对任何 stride != 1 现在直接抛 StsNotImplemented（且不再向 Slice 层传 steps），TFLite 导入器则整体删除 STRIDED_SLICE 的注册与 parseStridedSlice，这类算子会落到“未支持算子”错误。但 Slice 层本身仍完整支持 steps（hasSteps/neg_step_dims/tranformForNegSteps），ngraph 分支也保留了步长语义相关的判定，说明能力并未在图层移除，只是被导入器拒之门外。后果是此前可以正确导入并运行的含步长切片模型（例如 TF 的 `x[::2]`、TFLite 中带 stride 的 STRIDED_SLICE）现在直接报错，属于对外能力回退，且缺少文档说明与替代方案。",
+          "path": "modules/dnn/src/tensorflow/tf_importer.cpp",
+          "from_line": 1691,
+          "to_line": 1691,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "移除 CgBI 与 IHDR 顺序的诊断日志，畸形 PNG 只剩静默失败\n改动保留了 `if (id != id_IHDR) return false;`，因此校验行为不变，但同时删除了 `CV_LOG_ERROR` 的说明性日志和 id_CgBI 常量。此后遇到 Apple 私有 CgBI 或首块不是 IHDR 的畸形容器时，解码只是返回 false，没有任何日志，用户与维护者难以区分“不是 PNG”与“结构损坏/不支持的变体”，也丢失了定位 CgBI 文件的具体线索。",
+          "path": "modules/imgcodecs/src/grfmt_png.cpp",
+          "from_line": 289,
+          "to_line": 289,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "opj_jp2_read_header 去掉 ret 判断，失败时仍修改图像并转移 ICC profile 所有权\n`ret = opj_j2k_read_header(...)` 失败时会返回 OPJ_FALSE，但改动后只要 p_image 非空仍会写入 color_space 并把 jp2->color.icc_profile_buf 赋值给 image 且把 jp2 侧置 NULL。也就是说失败路径上引入了两处副作用：对可能处于半初始化状态的图像进行写入，以及把 ICC 缓冲区的所有权单方面转移给 image。若调用方在失败后只销毁 codec（jp2）而不同时销毁 image，ICC 缓冲区将泄漏；若先销毁 image 再销毁 jp2，则原本由 jp2 负责释放的缓冲区会双重释放风险转移。另外这是 3rdparty 代码，与上游 openjpeg 的一致性需要保持。",
+          "path": "3rdparty/openjpeg/openjp2/jp2.c",
+          "from_line": 2876,
+          "to_line": 2876,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "模板匹配示例把 shape[0]/shape[1] 互换，绘制框的高宽与模板相反\n矩形的两个角是 (matchLoc[0] + 宽, matchLoc[1] + 高)，而 numpy 的 templ.shape[0] 是行数（高）、shape[1] 是列数（宽）。改动后写成 `matchLoc[0] + templ.shape[0], matchLoc[1] + templ.shape[1]`，在非方形模板上会把绘制框的宽高对调，示例可视化结果与实际匹配区域不符，而该示例正是教程代码（文档中被引用），会误导学习者。",
+          "path": "samples/python/tutorial_code/imgProc/match_template/match_template.py",
+          "from_line": 89,
+          "to_line": 89,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "Qt 窗口移除 Expanding 尺寸策略，图像不再随窗口缩放\n原先对 myView 的 widget 调用 `setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding)`，并让工具栏/状态栏以默认方式铺满布局；改动后删除了 size policy，并把视图改为 `Qt::AlignCenter`、工具栏与状态栏改为 `Qt::AlignLeft`。结果是在 QVBoxLayout 中视图不再获得扩展的空间（放大窗口时图像区域不增长，只能居中留下空白），工具栏也不会横向拉伸。这属于 highgui 的可见行为变更，且与 WINDOW_NORMAL/可缩放窗口的预期不符。",
+          "path": "modules/highgui/src/window_QT.cpp",
+          "from_line": 1730,
+          "to_line": 1730,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "JS 绑定删除 Point2fVector 与 Rect2d，属未说明的 API 破坏性变更\n绑定列表删除了 `register_vector<cv::Point2f>(\"Point2fVector\")` 与 `EMSCRIPTEN_CV_RECT(double, \"Rect2d\")`，而 `Rect`/`Rect2f` 与 Point2f（Point3f 保留）仍在。JS 使用者此前能构造/传递 Point2fVector 与 Rect2d，现在这些类型在绑定层消失，会造成运行期行为变化或编译期错误，且改动没有变更说明或废弃过渡期。",
+          "path": "modules/js/src/core_bindings.cpp",
+          "from_line": 469,
+          "to_line": 469,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "gofr-dev__gofr@b9cdcbb",
+      "repo": "gofr-dev/gofr",
+      "comments": [
+        {
+          "note": "The `resTypes.Response` type has a `Headers` field and a `SetCustomHeaders()` method to apply custom HTTP response headers. However, this code doesn't call `v.SetCustomHeaders(r.w)`, which means any custom headers specified in the `Response` object will be ignored. You should add `v.SetCustomHeaders(r.w)` before setting the Content-Type header to ensure custom headers are properly applied.",
+          "path": "pkg/gofr/http/responder.go",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 32,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential inconsistency in metadata handling. When v.Metadata is nil, this will result in omitting the metadata field due to json:\"metadata,omitempty\" in the response struct. However, tests expect \"metadata\":null when metadata is not provided. Consider initializing Metadata appropriately to match expected behavior.",
+          "path": "pkg/gofr/http/responder.go",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 32,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": []
+    },
+    {
+      "instance_id": "alibaba__spring-ai-alibaba@3555a95",
+      "repo": "alibaba/spring-ai-alibaba",
+      "comments": [
+        {
+          "note": "- Environment variables \"ACCESS_KEY_ID\" and \"ACCESS_KEY_SECRET\" lack service-specific prefixing and risk naming conflicts; must be prefixed with \"ALITRANSLATE_\".  \n- Replace `setPropertiesFromEnv` helper method calls with direct `System.getenv` assignments for access key fields.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "side": "right",
+          "from_line": 34,
+          "to_line": 34,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The validation logic strictly requires `sourceLanguage` and `targetLanguage` to be present, contradicting the `@JsonProperty(required = false)` annotation in the `Request` record. If these optional fields are omitted in the tool call (resulting in null values), the method will return `null` silently. \n\nConsider applying default values when these fields are missing, consistent with the property descriptions.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "side": "right",
+          "from_line": 84,
+          "to_line": 92,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "apply() 吞掉全部异常并仅记录 message，中断状态被丢弃且丢失堆栈信息\n改造后 apply() 用 catch (Exception e) 捕获所有异常，只以 logger.error(\"...:{}\", e.getMessage()) 输出一行文本后 return null。这带来三个问题：一是 response.get() 抛出的 InterruptedException 被吞掉却没有调用 Thread.currentThread().interrupt() 恢复中断标志，线程池中的中断信号会丢失，影响优雅关闭与后续任务；二是日志只打印 getMessage()，不带异常对象，getTranslatedText 抛出的 IllegalStateException 与网络异常将完全没有堆栈，线上无法定位；三是行为语义从「抛 RuntimeException」变为「返回 null」，调用方拿到 null 无法区分「入参非法」「下游返回非 200」「网络超时」三类情况，翻译工具会静默失败。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 104,
+          "to_line": 104,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated discusses exception swallowing and stack/interrupt loss in `apply()`, while reference discusses contradictory validation of optional `sourceLanguage`/`targetLanguage` fields causing silent `null`.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "sourceLanguage 声明为可选且宣称默认 zh，但反序列化缺失时 apply() 直接返回 null\nRequest record 把 sourceLanguage 标注为 @JsonProperty(required = false) 并在描述中写「default is zh」，但默认值只在单参构造器 Request(String text) 中通过 this(text, LANGUAGE_CODE_ZH, LANGUAGE_CODE_EN) 生效。作为 LLM 工具调用的参数载体，JSON 反序列化走的是三分量规范构造器，模型省略 sourceLanguage 时该分量为 null；而 apply() 新增的前置校验要求 sourceLanguage 非空白，于是返回 null，翻译静默失败。同时 targetLanguage 的默认值存在完全相同的陷阱（其描述也写「default is en」）。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 142,
+          "to_line": 142,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. Match — both identify that `sourceLanguage` and `targetLanguage` are annotated optional and describe defaults, but missing values during deserialization cause `apply()` to silently return `null`, suggesting defaults should be applied.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "删除 public 常量 LANGUAGE_CODE 并改变 Request record 的规范构造器签名属破坏性 API 变更\n本次把 public static final String LANGUAGE_CODE 删除并替换为 LANGUAGE_CODE_ZH / LANGUAGE_CODE_EN，同时 Request record 的分量由 (text, targetLanguage) 变为 (text, sourceLanguage, targetLanguage)，targetLanguage 的位置随之从第 2 个参数变为第 3 个参数。仓库内检索 LANGUAGE_CODE 的名称级引用为 0 处、AliTranslateService 仅被 AliTranslateAutoConfiguration 引用，因此本仓库编译不受影响；但该 starter 是发布到社区的 artifact，外部使用者直接调用 new Request(text, \"en\") 会编译失败，而若是先编译再升级依赖，则旧的 (String,String) 构造器已不存在、只剩 (String) 与 (String,String,String)，属于二进制不兼容；同时被 @Deprecated 化的 setAccessKeyId/setAccessKeySecret 说明作者已在考虑兼容，常量删除却未给出同等的兼容层。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 62,
+          "to_line": 62,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment concerns breaking API changes to constants and constructor signature, while reference comment concerns validation logic and default values for optional fields.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "继承 CommonToolCallProperties 后 base-url/network-timeout 可配置但实现中完全未使用\nAliTranslateProperties 改为继承 CommonToolCallProperties 后，对外暴露了 base-url、network-timeout、app-id、token 等通用属性，但 AliTranslateService 仍然在 overrideConfiguration 中硬编码 setEndpointOverride(\"mt.aliyuncs.com\")，也没有把 properties.getNetworkTimeout() 传给 ClientOverrideConfiguration；父类无参构造器还把 baseUrl 默认置为 \"/\"、networkTimeout 默认置为 10。结果是用户按 common 模块约定配置 network-timeout 或 base-url 时不会产生任何效果，属于「配置静默无效」，与同目录 BaiduTranslate/GoogleTranslate 通过 super(baseUrl) 与 RestClientTool.builder(jsonParseTool, properties) 真正消费这些属性的做法不一致。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 78,
+          "to_line": 78,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated addresses unused inherited config properties (`base-url`/`network-timeout`), while reference addresses optional `sourceLanguage`/`targetLanguage` validation causing silent null returns.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "getTranslatedText 未校验 data.getTranslated() 为空，可能构造出 Response(null)\n新的强类型解析链已经逐级校验了 statusCode、body、code、data，但最后一个环节直接 return data.getTranslated()，未校验翻译结果是否为空。当接口返回 code=200 但 translated 缺省（例如源文本为纯符号、被过滤为空、或下游降级返回空串）时，会返回 new Response(null)，工具调用方得到一个 content 为 null 的结果而不是明确的错误，后续若对该字段做字符串处理将出现 NullPointerException。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 133,
+          "to_line": 133,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — the generated comment addresses missing null validation for `data.getTranslated()`, while the reference comment addresses `sourceLanguage`/`targetLanguage` being treated as required despite `required = false`.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "access-key-id/access-key-secret 与 api-key/secret-key 双套属性映射同一字段，绑定顺序不确定\n改造后 AliTranslateProperties 同时存在继承来的 setApiKey/setSecretKey 与本地保留的 @Deprecated setAccessKeyId/setAccessKeySecret，两套 setter 写入的是同一个底层字段，因此 spring.ai.alibaba.toolcalling.alitranslate 下出现 access-key-id 与 api-key 两个等价属性名。当使用者在不同配置源中同时提供两者（例如 yaml 里写 access-key-id、环境变量里写 API_KEY），Spring Boot 的绑定顺序由属性源优先级与迭代顺序决定，最终取值不可预测，且会静默以错误凭据调用；此外 spring-boot-configuration-processor 会为同一字段生成两条元数据，IDE 提示出现重复项，用户无法判断哪个才是推荐写法。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "from_line": 50,
+          "to_line": 50,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment discusses duplicate property mappings (access-key-id/access-key-secret vs api-key/secret-key) and nondeterministic binding order, while reference comment discusses environment variable naming collisions and missing ALITRANSLATE_ prefix.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "环境变量兜底使用通用名 ACCESS_KEY_ID/ACCESS_KEY_SECRET，与同类 starter 的服务专属命名约定不一致\n构造器调用 setPropertiesFromEnv(\"ACCESS_KEY_ID\", \"ACCESS_KEY_SECRET\", null, null)，而 CommonToolCallProperties#setPropertiesFromEnv 在字段为空时直接 System.getenv 取值。ACCESS_KEY_ID / ACCESS_KEY_SECRET 是阿里云生态通用的变量名，宿主机上只要存在（例如为 aliyun CLI、OSS 或其它阿里云 SDK 配置的凭据），alitranslate 就会静默采用这套凭据发起调用，可能出现「用 A 账号凭据调用 B 账号翻译服务」的越权/串号情况，也让凭据来源难以审计。同目录已改造完成的 BaiduTranslateProperties、GoogleTranslateProperties 均使用带服务前缀的专属变量名（BAIDU_TRANSLATE_SECRET_KEY、GOOGLE_TRANSLATE_APIKEY），本模块偏离了既有约定。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "from_line": 34,
+          "to_line": 34,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both identify the same core issue: \"ACCESS_KEY_ID\"/\"ACCESS_KEY_SECRET\" lack service-specific prefixes such as \"ALITRANSLATE_\", causing naming conflicts and inconsistent conventions.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "继承的 enabled 默认 true 与 @ConditionalOnProperty 缺少 matchIfMissing 造成开关语义自相矛盾\nAliTranslateProperties 现在继承 CommonToolCallProperties，后者的 enabled 字段默认值为 true；但自动配置上的 @ConditionalOnProperty(prefix = AliTranslateProperties.PREFIX, name = \"enabled\", havingValue = \"true\") 未设置 matchIfMissing = true，判定依据是 Environment 而非已绑定的 properties bean。因此用户只配置了 api-key/secret-key 而没写 enabled=true 时，Bean 不会被创建，而配置元数据却宣称 enabled 默认为 true，排障时极易误判；同目录的 BaiduTranslateAutoConfiguration 已采用 matchIfMissing = true 的写法，本模块与之不一致。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateAutoConfiguration.java",
+          "from_line": 32,
+          "to_line": 32,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "sveltejs__svelte@44bec4c",
+      "repo": "sveltejs/svelte",
+      "comments": [
+        {
+          "note": "The `maybe_runes` condition fails to exclude components with `$:` reactive statements, risking misclassification of traditional Svelte components as runes-compatible when they lack `export let` and reserved references. This omission could trigger incorrect runic behavior fallbacks in standard components.",
+          "path": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+          "side": "right",
+          "from_line": 437,
+          "to_line": 437,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The condition in `build_expression` fails to account for `maybe_runes` state, causing breaks in existing components that operate in an intermediate mode (not explicitly legacy or runes). Update the check to include both `runes` and `maybe_runes` for backward compatibility.",
+          "path": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/utils.js",
+          "side": "right",
+          "from_line": 373,
+          "to_line": 373,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Checklist: `var` is forbidden; use `let` (since it’s reassigned) to avoid function-scoped hoisting surprises.\n\n```suggestion\n\t\tlet getter = build_getter({ ...binding.node }, state);\n```",
+          "path": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/utils.js",
+          "side": "right",
+          "from_line": 389,
+          "to_line": 389,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Adding `maybe_runes: boolean` to `ComponentAnalysis` makes this a new *required* property for all code paths that create/return `ComponentAnalysis`. If any producer doesn’t set it, TS will start failing (or consumers relying on structural typing may break). Consider making it optional (`maybe_runes?: boolean`) or defaulting it in all construction sites, and ensure naming/semantics are consistent with `runes` (e.g., tri-state could be modeled as `runes: boolean | 'maybe'` or a single enum).",
+          "path": "packages/svelte/src/compiler/phases/types.d.ts",
+          "side": "right",
+          "from_line": 54,
+          "to_line": 54,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": []
+    },
+    {
+      "instance_id": "filamentphp__filament@d47632c",
+      "repo": "filamentphp/filament",
+      "comments": [
+        {
+          "note": "The new condition for '->' JSON syntax must skip columns starting with `json_extract()` to prevent double-wrapping, as the two syntax forms are mutually exclusive and the translatable plugin already handles these columns.",
+          "path": "packages/support/src/helpers.php",
+          "side": "right",
+          "from_line": 184,
+          "to_line": 184,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential SQL correctness/safety issue: building `$column = \"json_extract({$field}{$path})\"` assumes `$path` already includes the comma and is correctly quoted/escaped, and that JSON extraction syntax matches the current connection settings (e.g., MySQL vs MariaDB variants, json type/collation). Since this string is later interpolated into `lower({$column})`, any mismatch can break queries or bypass proper identifier wrapping.\n\nSuggestion: prefer using the grammar’s JSON selector wrapping (or query builder expressions) end-to-end rather than concatenating raw SQL. If you must transform here, ensure the generated SQL includes the required `,` between field and path and that both parts are wrapped/escaped by the grammar (e.g., `json_extract({$field}, {$path})`), and consider handling nested selectors/edge cases consistently with other drivers.",
+          "path": "packages/support/src/helpers.php",
+          "side": "right",
+          "from_line": 184,
+          "to_line": 188,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "通过 invade 反射调用 Laravel 内部方法 wrapJsonFieldAndPath，且无存在性检查与降级\n新增代码用 `invade($databaseConnection->getQueryGrammar())->wrapJsonFieldAndPath($column)` 绕过公开 API 直接调用 Laravel Grammar 上的方法，并用 `/** @phpstan-ignore-line */` 掩盖静态分析告警。该写法有两个隐患：一是 packages/support/composer.json 声明支持 `illuminate/support: ^10.45|^11.0`（见 composer.json:15-17），而 `wrapJsonFieldAndPath()` 属于 Laravel 内部实现，一旦在某个受支持的版本中改签名、改可见性或新增参数，这里没有任何 `method_exists` 检查或 try/catch 降级，`invade` 会抛 ReflectionException / BadMethodCallException，导致搜索请求直接 500，而不是退化为原来的 `lower(col->path)` 行为；二是赋值 `[$field, $path] = ...` 强耦合 `[$field, $path]` 的返回结构，下方 `\"json_extract({$field}{$path})\"` 还隐式依赖 `$path` 自带前导 `, ` 分隔符与引号，这一约定未被任何注释或类型声明表达，属于未文档化的内部契约。",
+          "path": "packages/support/src/helpers.php",
+          "from_line": 185,
+          "to_line": 185,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — ref discusses preventing double-wrapping of existing `json_extract()` columns, generated discusses reflection call compatibility and path formatting assumptions.\n2. Match — both flag the unsafe assumption that `$path` already includes the comma and quoting when building `json_extract({$field}{$path})`.\n\n[2]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "以 str_contains($column, '->') 判断 JSON 列过于宽松，会误改 `->>` 与含 `->` 的原生表达式\n新分支仅用 `str_contains($column, '->')` 判断是否为 JSON 选择器，而 Laravel 的 `wrapJsonFieldAndPath()` 内部以 `explode('->', $column, 2)` 切分字段与路径。由此产生两类误判：1) 输入为 Laravel 支持的 `col->>field`（unquote 选择器）时，`->` 是 `->>` 的前缀，切分得到 path = `>field`，生成 `json_extract(`col`, '$.\">field\"')`，MySQL 会把它当作不存在的 JSON 路径返回 NULL，搜索静默不命中（无报错，难以排查）；2) 本函数在下方（184-204 行）明确允许传入原生表达式（`str($column)->contains('(')` 即返回 Expression），若调用方传入形如 `coalesce(data->'$.a', '')` 的表达式，第一次出现 `->` 处会被切开，字段变成 `coalesce(data` 并交给 `wrap()` 反引号包裹，拼出语法错误或语义错乱的 SQL。",
+          "path": "packages/support/src/helpers.php",
+          "from_line": 184,
+          "to_line": 184,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "json_extract 结果未做 json_unquote，lower() 作用在带双引号的 JSON 文本上\nMySQL/MariaDB 的 `json_extract()` 返回 JSON 值，在字符串上下文中字符串型结果会带上双引号（如 `json_extract('{\"name\":\"Foo\"}', '$.name')` 得到 `\"Foo\"` 而非 `Foo`）。因此 `lower(json_extract(...))` 得到的是 `\"foo\"`，与 `generate_search_term_expression()` 生成的裸搜索词不等价：在 LIKE 通配符包裹的场景下可能仍能命中，但对 `=` 显式比较、前缀匹配或前后空格/引号敏感的搜索会漏匹配，且与 Laravel `col->>`（unquote）语义不一致，行为随搜索实现方式漂移。",
+          "path": "packages/support/src/helpers.php",
+          "from_line": 187,
+          "to_line": 187,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — reference discusses double-wrapping `json_extract()` columns, while generated discusses missing `json_unquote()` and quoted JSON string behavior.\n2. No match — reference discusses raw SQL concatenation correctness/escaping, while generated discusses `lower()` operating on quoted JSON text due to `json_extract()`.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "驱动名判断以硬编码 in_array 实现，与函数内既有 match 风格不一致\n同一函数内其余驱动分支均使用 `match ($driverName)`（167-181 行），新增分支却用 `in_array($driverName, ['mysql', 'mariadb'], true)`，同一份驱动清单在函数中被重复表达，且 `mariadb` 分支与既有的 `pgsql`/`default` 匹配分散在不同结构里，后续新增或调整驱动支持时需要多处处同步，容易漏改。",
+          "path": "packages/support/src/helpers.php",
+          "from_line": 184,
+          "to_line": 184,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — 参考1讨论 `json_extract()` 双包裹问题，与生成评论关注的 `in_array`/`match` 风格不一致无关\n2. No match — 参考2讨论 SQL 拼接、转义和驱动兼容性问题，与生成评论关注的重复驱动清单及风格一致性无关\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "infiniflow__ragflow@a63caa1",
+      "repo": "infiniflow/ragflow",
+      "comments": [
+        {
+          "note": "Accessing `.nodes` on the result of `nx.connected_components` (which returns node sets, not graph objects) causes AttributeError; use the set of nodes directly.",
+          "path": "graphrag/entity_resolution.py",
+          "side": "right",
+          "from_line": 114,
+          "to_line": 114,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Critical bug: Lambda function captures loop variable by reference. All async tasks will use the last value of `merging_nodes` instead of their intended values. This will cause incorrect node merging behavior. Fix by using a default argument to capture the value: `lambda nodes=merging_nodes: self._merge_graph_nodes(graph, nodes, change)`\n\n```suggestion\n                nursery.start_soon(lambda nodes=merging_nodes: self._merge_graph_nodes(graph, nodes, change))\n```",
+          "path": "graphrag/entity_resolution.py",
+          "side": "right",
+          "from_line": 115,
+          "to_line": 115,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The direct access to `node1_attrs[\"source_id\"]` risks KeyError if the attribute is missing; replace with `.get(\"source_id\", [])` to safely handle absent attributes during list extension.",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 205,
+          "to_line": 205,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Type/ordering consistency: for edges you deduplicate with `list(set(...))`, which produces non-deterministic order. Elsewhere you use `sorted(set(...))` (node source_id). If downstream relies on stable ordering (e.g., tests, hashing, serialization diffs), consider using `sorted(set(...))` consistently for both `keywords` and `source_id`. Also ensure the attributes exist and are lists before calling `extend`.\n\n```suggestion\n                        if isinstance(edge0_attrs.get(\"keywords\"), list) and isinstance(edge1_attrs.get(\"keywords\"), list):\n                            edge0_attrs[\"keywords\"].extend(edge1_attrs[\"keywords\"])\n                            edge0_attrs[\"keywords\"] = sorted(set(edge0_attrs[\"keywords\"]))\n                        \n                        if isinstance(edge0_attrs.get(\"source_id\"), list) and isinstance(edge1_attrs.get(\"source_id\"), list):\n                            edge0_attrs[\"source_id\"].extend(edge1_attrs[\"source_id\"])\n                            edge0_attrs[\"source_id\"] = sorted(set(edge0_attrs[\"source_id\"]))\n```",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 216,
+          "to_line": 219,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The change replaces concurrent edge deletion (via `nursery.start_soon`) with sequential execution (via `await trio.to_thread.run_sync`), causing unnecessary performance degradation when removing multiple edges.",
+          "path": "graphrag/utils.py",
+          "side": "right",
+          "from_line": 442,
+          "to_line": 442,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Similar to prior corrections applied to node merging logic, suggest applying consistent idiom here too i.e., prefer creating new combined collection over mutating existing one e.g.: `edge0_attrs[\"keywords\"] = list(set(edge0_attrs[\"keywords\"] + edge1_attrs[\"keywords\"]))`. Improves readability & reduces mutation-related confusion.",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 216,
+          "to_line": 217,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": []
+    },
+    {
+      "instance_id": "linera-io__linera-protocol@3535ddb",
+      "repo": "linera-io/linera-protocol",
+      "comments": [
+        {
+          "note": "Consider adding validation to handle the case where `start >= chain.received_log.count()`. Currently, if start exceeds the log count, the range `start..end` could be invalid or empty. It might be better to return early with an empty result or an error to make the behavior explicit.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 1418,
+          "to_line": 1420,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The pagination loop condition might result in an extra unnecessary request when exactly CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES entries are returned. Consider using <= comparison to break when the number of received entries is less than or equal to the maximum.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 1418,
+          "to_line": 1419,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The pagination loop lacks a safeguard against infinite iteration. If entries are being added to the `received_log` faster than the client paginates through it (e.g., during concurrent writes), the condition `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` might never be met, potentially causing an infinite loop.\n\nConsider adding a maximum iteration limit or a timeout safeguard to prevent this edge case. For example:\n```rust\nlet mut iterations = 0;\nconst MAX_ITERATIONS: u32 = 1000;\nloop {\n    let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n    let info = remote_node.handle_chain_info_query(query).await?;\n    let received_entries = info.requested_received_log.len();\n    offset += received_entries as u64;\n    remote_log.extend(info.requested_received_log);\n    if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n        break;\n    }\n    iterations += 1;\n    if iterations >= MAX_ITERATIONS {\n        warn!(\"Reached maximum iterations while paginating received log for chain {:?}\", chain_id);\n        break;\n    }\n}\n```",
+          "path": "linera-core/src/client/mod.rs",
+          "side": "right",
+          "from_line": 846,
+          "to_line": 857,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The pagination loop will make an extra unnecessary query when the total number of entries is exactly a multiple of CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES (1000). For example, if there are exactly 2000 new entries, it will make 3 queries returning (1000, 1000, 0) instead of stopping after 2 queries. While this doesn't affect correctness, consider adding a check to avoid the extra query, such as tracking if we've reached the expected end or checking if the response is empty before extending the vector.",
+          "path": "linera-core/src/client/mod.rs",
+          "side": "right",
+          "from_line": 848,
+          "to_line": 857,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Making this `pub` exposes a protocol/behavior constant outside the crate. If this limit is only an internal safeguard for responses, consider `pub(crate)` to avoid accidental external coupling. If it must be public, document whether it’s a hard API guarantee and whether changing it is a breaking change.\n\n```suggestion\npub(crate) const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;\n```",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 53,
+          "to_line": 53,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "分页终止条件用本地常量推断远端页大小，页大小不一致时会静默提前结束同步\n循环以 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 判断「已取完」，但这个上限是**服务端**（validator）在自己的 state.rs 里应用的分页大小，客户端只是引用了同一个 crate 内常量。若 validator 实际页大小小于客户端的 1000（例如按 state.rs:52 的 `TODO(#4638): Revisit the number.` 下调，或客户端与 validator 二进制版本不同步），一次响应只会返回 500 条，客户端会立即 break，`remote_log` 仅覆盖 received_log 的前缀，而 `ReceivedCertificatesFromValidator` 仍按「本轮已同步」返回，导致 heights_per_chain / downloaded_heights / other_sender_chains（第 858、867-900 行）只看到部分发送链，部分跨链消息要等到下一轮同步才进入 inbox，客户端可能在不完整视图下继续推进。由于 ChainInfo 契约中没有任何 `has_more` 或总数标记（linera-core/src/data_types.rs:179-210 的 ChainInfo 只有 `requested_received_log: Vec<ChainAndHeight>`），客户端无法从响应本身区分「已到末尾」和「被截断」。",
+          "path": "linera-core/src/client/mod.rs",
+          "from_line": 854,
+          "to_line": 854,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated discusses premature termination due to server/client page size mismatch; ref discusses potential infinite loop from concurrent log growth.\n2. No match — generated discusses silent early termination on truncated pages; ref discusses an extra unnecessary query when entries are an exact multiple.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "分页后仍把所有页累积进单个 Vec，内存峰值未降低\n改动的目的之一应是避免一次把整条 received_log 传回并驻留内存，但客户端用 `remote_log` 累加所有页（第 853 行 `remote_log.extend(...)`），并且后续逻辑需要整份 remote_log（第 858 行 heights_per_chain 遍历全量、第 936 行再次遍历来自增 tracker）。对长期运行、received_log 很长的链，客户端内存占用与改动前的一次性响应处于同一量级，只是每次 RPC 的报文变小了；如果 validator 行为异常（返回远多于上限的条目），循环还会在无迭代次数/总条数上限的情况下持续累积。",
+          "path": "linera-core/src/client/mod.rs",
+          "from_line": 846,
+          "to_line": 846,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. Match — both flag the missing iteration/total-entry cap in the pagination loop, leading to unbounded accumulation/possible non-termination if the validator keeps returning full pages.\n2. No match — reference 2 discusses an unnecessary extra query when the total is an exact multiple; the generated comment does not address that.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "RPC 契约常量定义在 chain_worker 内部并经模块重导出，易导致两端只改一侧\n`CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 实际上是 client 与 validator 之间 ChainInfo RPC 的契约（决定响应最多带多少条 received_log），但它定义在 `chain_worker::state` 中，通过 `chain_worker/mod.rs` 重导出给 `client/mod.rs` 使用（client/mod.rs:72 的 `use crate::chain_worker::CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES`）。这让客户端的协议行为依赖服务端实现模块的内部常量，语义归属不清；后续按 TODO(#4638) 调整该数字时，很容易只关注服务端一侧而忽略客户端用它做分页终止判断（见 F001），使两处语义脱钩。",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "from_line": 53,
+          "to_line": 53,
+          "matched_gt_indices": [
+            4
+          ],
+          "judge_reason": "1. No match — reference discusses missing validation when `start >= count`, unrelated to constant exposure/coupling.\n2. No match — reference discusses pagination loop causing extra request, unrelated to constant ownership/visibility.\n3. Match — both raise the same concern that `CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` is exposed publicly and creates unintended cross-module/client coupling.\n\n[3]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "显式 end 夹取与 LogView::read 内部夹取重复，且隐含依赖「start>=end 返回空」\n新增的 `end = (start.saturating_add(N)).min(chain.received_log.count())` 与 `LogView::read` 自身的处理重复：read 会把 end 夹到 `self.count()`，并在 `start >= end` 时返回空 `Vec`（log_view.rs:316-329）。因此当客户端传入的 offset 大于服务端 received_log 长度（例如 tracker 来自另一验证者或状态被重建）时，当前实现恰好返回空列表而非报错；但这段安全性是由存储层 `read` 的实现细节提供的，本处代码 `read(start..end)` 中 `start > end` 的区间本身在语义上是不合法的区间，未来若改用不夹取的读法（或 `read` 语义变化）就会变成空区间/panic 风险。此外把 `end` 事件提前算出来也让人误以为 `read(start..)` 会读全量，掩盖了库本身的越界保护。",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "from_line": 1418,
+          "to_line": 1418,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag the missing explicit validation for `start >= chain.received_log.count()` and reliance on empty/invalid range behavior.\n2. No match — generated discusses `LogView::read` clamping and invalid ranges, while reference discusses pagination loop boundary.\n3. No match — reference discusses `pub` visibility of a constant, unrelated to generated comment.\n\n[1]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "cline__cline@f098af0",
+      "repo": "cline/cline",
+      "comments": [
+        {
+          "note": "Potential timer leak: If flushBuffer() is called multiple times rapidly, a new bufferStuckTimer could be created before the previous one is cleared, leading to multiple timers running simultaneously. Consider clearing any existing timer before creating a new one:\n```typescript\nif (bufferStuckTimer) {\n    clearTimeout(bufferStuckTimer)\n}\nbufferStuckTimer = setTimeout(...)\n```",
+          "path": "src/core/task/index.ts",
+          "side": "right",
+          "from_line": 1511,
+          "to_line": 1515,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Consider using a more robust timer management pattern. The current approach sets timers in multiple places without centralized cleanup. This could lead to memory leaks if timers aren't properly cleared in all execution paths.",
+          "path": "src/core/task/index.ts",
+          "side": "right",
+          "from_line": 1608,
+          "to_line": 1612,
+          "file_semantic_match": false
+        },
+        {
+          "note": "`TerminalOutputFailureReason.TIMEOUT` is likely misleading here. This branch triggers when `fullOutput` is empty after shell integration finished, which could be “no output / stream empty / parsing removed everything”, not necessarily a timeout. Consider introducing/using a more accurate reason (e.g., `EMPTY_OUTPUT` / `SHELL_INTEGRATION_EMPTY_OUTPUT`) to avoid skewing telemetry.\n\n```suggestion\n    telemetryService.captureTerminalOutputFailure(TerminalOutputFailureReason.EMPTY_OUTPUT) // or a more accurate enum value\n```",
+          "path": "src/integrations/terminal/TerminalProcess.ts",
+          "side": "right",
+          "from_line": 195,
+          "to_line": 195,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Re-exporting enums from \"./TelemetryService\" couples the public telemetry index to a runtime module. If TelemetryService has side effects (singleton init, provider wiring) or imports back from this index, this can create circular deps and unexpected load-order issues. Consider moving these enums to a dedicated types/enums file (or exporting them from TelemetryProviderFactory if appropriate) and re-export from there. Also ensure these are `export enum`/`export const enum`/`export type` as intended to avoid bundling extra runtime code.",
+          "path": "src/services/telemetry/index.ts",
+          "side": "right",
+          "from_line": 13,
+          "to_line": 17,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": []
+    }
+  ]
+}
