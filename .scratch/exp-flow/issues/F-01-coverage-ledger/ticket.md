@@ -1,0 +1,80 @@
+# F-01 覆盖账本：文件 × hunk 三态
+
+- Status: `claimed`
+- 优先级：P0
+- 分支：`exp-flow`
+- 对应问题：P0-1、P1-11、V1/V7
+- 评估依据：[检视流程合理性评估-OCR对照与历史Session证据](../../../../docs/design/检视流程合理性评估-OCR对照与历史Session证据.md) §4.4 / §5.1 / §6.3 / §7 / 附录 D.1
+- 讨论归档：[discussion.md](discussion.md)
+
+## 目标
+
+把「本次变更里每个文件的每个 hunk 是否被真正审视」变成确定性、可审计的一等产物：
+
+```jsonc
+{
+  "file": "src/foo/Bar.java",
+  "hunks": [
+    { "index": 1, "old": "40-46", "new": "40-52", "status": "candidate", "findingIds": ["F001"] },
+    { "index": 2, "old": "70-78", "new": "70-78", "status": "no-issue", "reason": "仅格式化" },
+    { "index": 3, "old": "101-120", "new": "101-121", "status": "not-reached" }
+  ]
+}
+```
+
+三态：`candidate` / `no-issue` / `not-reached`。未决不得静默成「已审」。
+
+## 不做什么
+
+- 不改主提示词、不让模型自报 `reviewedFiles` 当分母或 `no-issue` 证据。
+- 不把 F-06（默认开启 B2 补漏）混进本任务。
+- 不先做 P/R 调优；先让覆盖可见，再让缺口可补。
+- 不把 `findings` 数当作覆盖指标。
+
+## 设计草案
+
+### 分母
+
+- 用本遍 `input.diff`（分片 = 片内 diff；**不要用 `initialDiff`**，它含其他文件摘要）。
+- 复用 `diff/parse.ts` 的 `parseUnifiedDiff`（与 `gate/diff-scope.ts` 同一解析器），产出 `ParsedFileChange` + `ParsedHunk`（old/new 两侧区间）。
+- 删除文件、二进制、无 hunk 文件、被 `mrFilter` 剔除的文件进 `excluded(reason)`，不进分母。
+- ADR-0070 截取丢弃的 hunk：进分母并标 `not-reached(cause=truncated)`；需要给 `ShardTruncationRecord` 补 dropped hunk 区间。
+
+### 回填
+
+- `Finding.line` 是新侧行号，按新侧 hunk 闭区间回填 `candidate`。
+- 落在 hunk 外但同文件的候选单独计数，不改变 hunk 状态。
+- Phase 5 / Phase 5 sweep / 规则 Skill 的候选都回填同一账本，来源可记 `main | sweep | skill`。
+
+### 收口
+
+- 每个 pass 的 `finally` 调 `closeCoverage(cause)`：仍未回填的 hunk → `not-reached`。
+- `cause` 封闭枚举：`no-signal | truncated | budget | output-truncated | flow-error | round-cap`。
+- 失败路径（含上下文窗口 fail-fast / provider 错误）也要落账本；当前审计在 loop 之后投影，失败时无审计，需要旁路落盘或失败审计。
+
+### 定向补漏（F-01b）
+
+- 文件全空 → 整文件补漏；部分空 → 只带未覆盖 hunk 正文（+ 少量上下文）。
+- 结构化回执：逐 hunk `no-issue(reason)` 或 `candidate`；这是 `no-issue` 的唯一合法来源。
+- 每个 pass 设补漏请求数与字符数硬上限；超出的保持 `not-reached(cause=budget)`。
+
+## 落地阶段
+
+| 阶段 | 内容 | 模型调用 |
+|---|---|---|
+| F-01a | 账本 builder、截取区间、审计键、stderr 摘要、分区恒等式测试；历史 diff 跑基线 | 0 |
+| F-01b | 缺口驱动的定向补漏（独立请求，逐 hunk 回执） | +1/批（仅缺口） |
+| F-01c | 汇总策略：比例阈值、告警/失败模式、manifest/CI 对接 | 0 |
+
+## 验收（摘要）
+
+- 每个 changed file 至少有一个 hunk 状态；`not-reached` 比例在审计与 stderr 可见。
+- `candidate + no-issue + not-reached == hunk 总数`；分片账本并集 == 整份 diff 账本（无截取时）。
+- 未覆盖 hunk 只对缺口发补漏；补漏请求数与缺口数可对账。
+- P/R 不回退；token、墙钟、请求数一起报。
+- 同一输入 + 同一配置 → 同一分母、同一账本。
+- 提示词/工具 schema 未改时 replay 不受影响；若后续改动，先重录 trace。
+
+## 待决问题
+
+见 [discussion.md](discussion.md#未决问题)：单元大小、补漏粒度、是否引入确定性的「读过」信号、Phase 5 输出截断是否单独处理。
