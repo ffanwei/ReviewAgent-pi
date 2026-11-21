@@ -1,0 +1,84 @@
+{
+  "instance_id": "microsoft__typescript-go@b970689",
+  "repo": "microsoft/typescript-go",
+  "base_commit": "bc3195e0f2727d11a48ed9fc61f37a90c9b7deb4",
+  "head_commit": "b970689fe86e0b6ef4f5285b18343ddf16b294eb",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1012.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 120,
+      "summary": "@import 标签缺少 ImportClause 时对 nil 调用 Clone 会 panic",
+      "failure_scenario": "新逻辑无条件执行 importTag.ImportClause.Clone(&p.factory)，但 JSDocImportTag 的 ImportClause 允许为 nil：parseImportTag 直接把 tryParseImportClause 的返回值存入标签，而 tryParseImportClause 在「没有 identifier 且当前 token 不是 * 也不是 {」时明确 return nil。因此只要 JS/JSX 文件里出现形如 `/** @import \"./a\" */` 或 `/** @import */` 的残缺标签，reparseTags 就会在 nil 接收者上调用 Clone（(*Node).Clone 直接解引用 n.data），导致解析阶段 panic，tsc/tsserver 崩溃而不是给出语法错误诊断。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 123,
+      "summary": "合成 import 复用 JSDoc tag 的 ModuleSpecifier/Attributes，Parent 归属随绑定顺序漂移",
+      "failure_scenario": "reparser 只为 ImportClause 做了 Clone，却把 importTag.ModuleSpecifier 与 importTag.Attributes 原样塞进新的 JSImportDeclaration，使同一批节点同时被 JSDocImportTag（仍在 JSDoc 树中）和合成 import 声明引用。解析期 parseJSDocComment 已用 ast.SetParentInChildren(result) 把这些子节点的 Parent 指向 JSDocImportTag；此后 binder 会在绑定合成声明时改写 Parent，而 bindChildren 末尾又会为该 JSDoc 的宿主语句调用 setJSDocParents→SetParentInChildren(jsdoc) 再改回去，加上 bindEachStatementFunctionsFirst 的「先绑函数」顺序，最终 Parent 指向谁取决于 JSDoc 挂在函数声明还是普通语句上。而本 MR 同时删除了 tryGetImportFromModuleSpecifier 与 getSymbolAtLocation 中按 JSDocImportTag 兜底的分支，二者都依赖 node.Parent.Kind 是 import 声明：一旦 Parent 指回 JSDocImportTag，@import 的模块字符串在 go-to-definition / find-references / 模块名解析上会静默失效（返回 nil 而非报错），表现为「有时能跳转、有时不能」的间歇性缺陷。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "OWNERSHIP-002"
+    },
+    {
+      "file": "internal/ast/ast.go",
+      "line": 4050,
+      "summary": "UpdateImportDeclaration/Clone 未保持 KindJSImportDeclaration，任何更新都会退化为普通 import",
+      "failure_scenario": "新增的 NewJSImportDeclaration 让 ImportDeclaration 数据可以被 JS 变体 kind 复用，但同一文件的 UpdateImportDeclaration（ast.go:4054-4057）与 ImportDeclaration.Clone（ast.go:4069-4070）仍固定调用 f.NewImportDeclaration，既不读 node.Kind 也不接收 kind。于是任何经过 VisitEachChild / UpdateImportDeclaration / Clone 的 JSImportDeclaration 都会悄悄变成普通 KindImportDeclaration，紧接着 CommonJS/ESModule transformer 里按 `case ast.KindJSImportDeclaration: node = nil` 丢弃它的逻辑不再命中，而会走 visitTopLevelImportDeclaration / visitImportDeclaration 正常发射，把仅用于类型的 JSDoc @import 变成真实的 import/require；ImportElisionTransformer.isElisionBlocked 也比对 kind（parsed.Kind != node.Kind）从而不再认为「未变更」。同仓库的 JSExportAssignment 已经用 newExportOrJSExportAssignment(node.Kind, ...) 规避了这个问题，可见该处是本次新增 kind 时遗漏的一致性要求。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CONSISTENCY-003"
+    },
+    {
+      "file": "testdata/baselines/reference/submodule/conformance/importTag3.types",
+      "line": 18,
+      "summary": "@import 默认导入的类型基线由 Foo 退化为 default，说明本地别名未正确绑定",
+      "failure_scenario": "本次变更让 @import 真正参与绑定后，`/** @import Foo from \"./types\" */` 场景下 `@param { Foo }` 的类型打印从 `Foo` 变成 `default`：`f` 的签名被记为 `(foo: default) => void`，`foo` 的类型也被记为 `default`（`default` 不是合法标识符，实际是模块 default 导出符号的名字）。同时新增的 testdata/baselines/reference/submoduleAccepted/conformance/importTag3.types.diff 与 importTag16.types.diff 明确记录了这是相对 upstream 的新偏差（upstream 输出 `Foo`），说明合成 import 的默认导入绑定/别名解析没有建立正确的本地符号，而不是渲染问题。该退化会使 IDE hover/quickinfo、声明发射与相关诊断显示 `default`，并与 upstream 行为不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "internal/ls/utilities.go",
+      "line": 24,
+      "summary": "tryGetImportFromModuleSpecifier 移除 JSDocImportTag 分支导致 JSDoc import 场景回归",
+      "failure_scenario": "该 hunk 将 case 列表中的 ast.KindJSDocImportTag 替换为 ast.KindJSImportDeclaration。对于 JSDoc import tag（如 `@import {x} from \"mod\"` 或 JSDoc 中的 import 类型）的模块说明符字符串字面量，其 node.Parent.Kind 为 KindJSDocImportTag，原先会命中该分支并返回父节点；改动后不再命中，函数会落到 default 返回 undefined（或继续走其他不适用分支）。依赖此函数定位 import 声明的语言服务功能（跳转定义、重命名、组织导入、代码操作等）在 JSDoc import 场景下会失效或行为退化。同时新增的 KindJSImportDeclaration 与 JSDoc 语义并不同，不能等价替代原分支。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "修改 switch 分支集合时需保证原有合法输入类型仍被覆盖，不应以语义不同的 kind 替换已有分支而丢失原场景支持"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\microsoft__typescript-go\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\microsoft__typescript-go@b970689.diff\n  caseId              microsoft__typescript-go@b970689\n  --issue             (未传)\n  --taskId            microsoft__typescript-go@b970689\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 28 / not-reached 21（no-signal=21）\nreview-pi: 覆盖补漏 请求 28（失败 0）/ 覆盖 hunk 29/50 / 新候选 1 / no-issue 28 / 预算跳过 0 / 验证拒绝 8\n✓ 完成 · 耗时 989.7s · 模型调用 34 次 · token 输入 79,483（未命中） · 输出 52,330 · 缓存命中 2,784,768（97.2%） · 工具 73 次（主会话 73 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0336\n[time] 阶段耗时 | 总墙钟 991.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.1%)\n[time] 阶段 | 六阶段审计 380.4s (38.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 610.2s (61.5%)\n[time] 审计明细 | P1 8.1s (2.1%) | P2 4.3s (1.1%) | P3 200.8s (52.9%) | P4 114.2s (30.1%) | P5 43.6s (11.5%) | P6 8.8s (2.3%)\n[usage] 任务总计 | 模型调用 71 次（Agent 34 + 一次性 37） | token 输入 111,591（未命中） | 输出 158,946 | 缓存命中 2,796,672（96.2%） | $0.0680\n[usage] 一次性明细 | 覆盖补漏 37 次（输入 32,108 / 输出 106,616 / 缓存 11,904）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\microsoft__typescript-go@b970689\\audit\\20261121_160305_129.json",
+  "token_usage": {
+    "input_tokens": 111591,
+    "output_tokens": 158946,
+    "cache_read_input_tokens": 2796672
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 79483,
+      "output_tokens": 52330,
+      "cache_read_input_tokens": 2784768
+    },
+    "coverage_repair": {
+      "input_tokens": 32108,
+      "output_tokens": 106616,
+      "cache_read_input_tokens": 11904
+    }
+  }
+}

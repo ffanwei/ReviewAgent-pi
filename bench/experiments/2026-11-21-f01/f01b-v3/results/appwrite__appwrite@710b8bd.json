@@ -1,0 +1,104 @@
+{
+  "instance_id": "appwrite__appwrite@710b8bd",
+  "repo": "appwrite/appwrite",
+  "base_commit": "d205ac457960f73d781547540cde1732f69076ac",
+  "head_commit": "710b8bda565c411ecb23e8b670d0ba7f45d2b3f3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 482.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+      "line": 79,
+      "summary": "Proxy 规则禁止域改用 Console 域后，平台主 API 域不再受保护，可被任意项目注册为自定义域",
+      "failure_scenario": "四个 Proxy 规则创建动作（API/Function/Redirect/Site）的 `$mainDomain` 由 `_APP_DOMAIN` 改为「Console 域优先、`_APP_DOMAIN` 兜底」，并随后被 append 进 `$deniedDomains` 用于拒绝用户提交的域名。一旦部署把 `_APP_CONSOLE_DOMAIN` 与 `_APP_DOMAIN` 配成不同值（这正是本 MR 要支持的场景），真正的主 API 域（`_APP_DOMAIN`）就从禁止域名单里消失了：任何拥有 `rules.write` 权限的项目管理员都可以 `POST /v1/proxy/rules/api`，把 `domain` 设为平台自己的 API 域（如 `api.example.com`），通过 `in_array($domain, $deniedDomains)` 检查后落库为 `type=api` 的 rule，并触发 `queueForCertificates` 为该域签发证书；同一域名下的 API 流量随后会被路由到该项目（参见 `general.php:814` 的 `$mainDomain` 改动），形成平台自有域名被租户接管、证书被重复签发的安全回归。改动前该域名会被直接拒绝并返回 'This domain name is not allowed'。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.78,
+      "rule": "SECURITY-DOMAIN-DENYLIST-001"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 812,
+      "summary": "主域判定改用 Console 域后，API 主域请求也会进入 router，开启 ROUTER_PROTECTION 时整个 API 返回 403",
+      "failure_scenario": "`$mainDomain` 由 `_APP_DOMAIN` 改为「Console 域优先」，而 `$mainDomain` 的唯一用途是判断「这是不是外部域，需要走 router」。拆分 Console 域部署下（`_APP_CONSOLE_DOMAIN=console.example.com`、`_APP_DOMAIN=api.example.com`），访问 `api.example.com` 的请求不再等于 `$mainDomain`，因此全部进入 `router()`：router 先按 host 查 `rules` 集合（无匹配），随后在 `_APP_OPTIONS_ROUTER_PROTECTION === 'enabled'`（官方建议生产开启，`app/config/variables.php:65-72`）时，因为白名单只有 `localhost`/`APP_HOSTNAME_INTERNAL`/`_APP_CONSOLE_DOMAIN`，`api.example.com` 不在其中，直接抛 `GENERAL_ACCESS_FORBIDDEN`（'Router protection does not allow accessing Appwrite over this domain'）——即整站 API 在该主域上全部 403。即使插件未开启，也退化为「每个 API 请求多一次 `rules` 集合查询」的热路径性能回归；更糟的是与 F001 叠加：一旦有人为主域创建了 rule，主域请求会被路由到该项目，主域 API 被彻底接管。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "ROUTING-MAIN-DOMAIN-002"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 861,
+      "summary": "证书签发的「主域」改用 Console 域后，API 主域不再被签发自签/自动证书",
+      "failure_scenario": "`$envDomain` 由 `_APP_DOMAIN` 改为「Console 域优先」，随后作为 `$mainDomain` 与当前请求域名比对：不相等就只打印 'is not a main domain. Skipping SSL certificate generation.' 并跳过整段签发逻辑。拆分 Console 域部署下，请求落在 API 主域（`api.example.com`）时 `$mainDomain` 已是 `console.example.com`，两者永不相等，于是平台 API 主域既不会创建 `type=api` 的主域 rule，也不会入队 `queueForCertificates`（本仓库中该路径是主域证书的唯一来源），结果是 API 主域没有任何证书，HTTPS 访问失败；同时 862-864 行的 `else` 分支（回落到 rules 查询推断主域）在有 Console 域时也永远走不到。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CERT-MAIN-DOMAIN-003"
+    },
+    {
+      "file": "app/config/templates/site.php",
+      "line": 10,
+      "summary": "新增的 `_APP_CONSOLE_DOMAIN` 未登记进变量清单与 docker-compose，自动部署下静默不生效",
+      "failure_scenario": "本次改动在 14 个文件、20 余处开始读取 `_APP_CONSOLE_DOMAIN`，但该变量没有出现在 `app/config/variables.php` 的变量登记表，也不在 `docker-compose.yml`（以及 `app/views/install/compose.phtml` 生成的 compose）的 `environment:` 显式列表中；这些文件是逐项列举环境变量的（如 `- _APP_DOMAIN`），未列出的变量不会传入容器。结果是自托管用户在 `.env` 里填写 `_APP_CONSOLE_DOMAIN` 后，容器内 `System::getEnv('_APP_CONSOLE_DOMAIN', ...)` 仍取兜底值，整套「Console 独立域名」能力静默退化为原行为，且没有任何错误提示，排查成本极高。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.5,
+      "rule": "DEPLOY-ENV-WIRING-005"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/Redirect/Create.php",
+      "line": 87,
+      "summary": "改为优先取 _APP_CONSOLE_DOMAIN 后，主域 _APP_DOMAIN 在二者不同时不再被加入 deniedDomains",
+      "failure_scenario": "本处将 `$mainDomain` 的来源从 `_APP_DOMAIN` 改为以 `_APP_CONSOLE_DOMAIN` 为首选、`_APP_DOMAIN` 仅作回退。仅当 `_APP_CONSOLE_DOMAIN` 未设置时行为与原来等价；当部署中 `_APP_CONSOLE_DOMAIN` 有值且与 `_APP_DOMAIN` 不同（自托管常见）时，`$mainDomain` 会变成 Console 域，下一行 `$deniedDomains[] = $mainDomain;` 便不再把 `_APP_DOMAIN` 加入禁用域列表。原先被禁止作为重定向目标的 API/主域因此被放行，用户可创建指向主域的重定向规则，属于校验收紧被无意放松的兼容性/安全性回归。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.55,
+      "rule": "环境变量回退式替换导致原有受保护域名从禁用列表中丢失，需确认是否应同时保留旧值"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/Site/Create.php",
+      "line": 84,
+      "summary": "配置独立控制台域名后主 API 域名不再进入禁用域名列表，可能被站点占用",
+      "failure_scenario": "该行把原来的 `$mainDomain = System::getEnv('_APP_DOMAIN', '')` 改为优先取 `_APP_CONSOLE_DOMAIN`，而紧接着的 `$deniedDomains[] = $mainDomain;` 只会加入这一个值。当部署同时设置了 `_APP_CONSOLE_DOMAIN` 且其值与 `_APP_DOMAIN` 不同（这是引入该变量的典型场景）时，禁用域名列表里就只包含控制台域名，原先被拦截的 `_APP_DOMAIN`（API/主域）不再是禁用项，用户可以创建与该主域同名的站点，造成域名路由冲突与请求归属歧义；同时如果 `_APP_CONSOLE_DOMAIN` 被显式配置为空字符串，`getEnv` 会返回空串而不会回落到 `_APP_DOMAIN`，使禁用列表中只多出一个空串，主域同样失去保护。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "禁用的保留域名集合应覆盖所有实际承载 API/控制台的域名；仅以 fallback 方式二选一取值会把原本受保护的域名从校验集合中移除，导致校验覆盖面收缩。"
+    },
+    {
+      "file": "src/Appwrite/Platform/Workers/Functions.php",
+      "line": 487,
+      "summary": "函数运行时 API endpoint 改为优先取 _APP_CONSOLE_DOMAIN，与控制台域名分离时会拼出错误的 API 地址",
+      "failure_scenario": "该处 hostname 用于紧接着拼接 `$endpoint = $protocol . '://' . $hostname . \"/v1\"`，供函数运行时调用 Appwrite API 使用，语义上应指向 API 域名（原实现即使用 _APP_DOMAIN）。改为优先读取 _APP_CONSOLE_DOMAIN 后，一旦控制台域名与 API 域名不同（自托管常见的分域部署，如 console.example.com 与 api.example.com），函数容器内拿到的 API endpoint 将指向控制台主机而非 API 主机，函数内 SDK 访问 /v1 会失败或打到错误服务；只有当 _APP_CONSOLE_DOMAIN 未设置或与 API 同域时才与旧行为一致。此外若 _APP_CONSOLE_DOMAIN 在环境中被声明为空字符串，默认值不会生效，hostname 为空会拼出 `https:///v1` 这样的非法地址。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "端点/地址类配置应与目标服务对应的环境变量匹配，不能用控制台域名去拼接 API 的 /v1 路径"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\appwrite__appwrite\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\diff\\appwrite__appwrite@710b8bd.diff\n  caseId              appwrite__appwrite@710b8bd\n  --issue             (未传)\n  --taskId            appwrite__appwrite@710b8bd\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 7 / no-issue 3 / not-reached 10（no-signal=10）\nreview-pi: 覆盖补漏 请求 12（失败 0）/ 覆盖 hunk 6/16 / 新候选 3 / no-issue 3 / 预算跳过 0 / 验证拒绝 6\n✓ 完成 · 耗时 477.0s · 模型调用 13 次 · token 输入 26,455（未命中） · 输出 22,853 · 缓存命中 313,728（92.2%） · 工具 19 次（主会话 19 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0110\n[time] 阶段耗时 | 总墙钟 478.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.2%)\n[time] 阶段 | 六阶段审计 165.3s (34.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 311.9s (65.2%)\n[time] 审计明细 | P1 5.4s (3.3%) | P2 2.4s (1.4%) | P3 8.5s (5.1%) | P4 110.6s (67.0%) | P5 27.1s (16.4%) | P6 11.2s (6.8%)\n[usage] 任务总计 | 模型调用 34 次（Agent 13 + 一次性 21） | token 输入 37,561（未命中） | 输出 81,436 | 缓存命中 322,944（89.6%） | $0.0290\n[usage] 一次性明细 | 覆盖补漏 21 次（输入 11,106 / 输出 58,583 / 缓存 9,216）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\\appwrite__appwrite@710b8bd\\audit\\20261121_151850_864.json",
+  "token_usage": {
+    "input_tokens": 37561,
+    "output_tokens": 81436,
+    "cache_read_input_tokens": 322944
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 26455,
+      "output_tokens": 22853,
+      "cache_read_input_tokens": 313728
+    },
+    "coverage_repair": {
+      "input_tokens": 11106,
+      "output_tokens": 58583,
+      "cache_read_input_tokens": 9216
+    }
+  }
+}

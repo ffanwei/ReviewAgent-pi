@@ -1,0 +1,62 @@
+{
+  "instance_id": "gofr-dev__gofr@5e284ae",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "de79ab765d0d34d78a42ebdd50a21a6f26841b7f",
+  "head_commit": "5e284aec0447be34c96a252e959067c8bcd9cd4c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 244.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 73,
+      "summary": "在并发请求中改写共享的 container.Logger 造成数据竞争与 trace ID 串号",
+      "failure_scenario": "ServeHTTP 把每个请求自己的 ContextLogger 写进 h.container.Logger，但 h.container 是 *container.Container，是应用级单例并被所有请求/后台任务共用（Container 甚至匿名内嵌了 logging.Logger）。net/http 会为每个请求起独立 goroutine 并发执行 ServeHTTP，因此这里对同一接口字段的写入是无同步的并发写：轻则 trace ID 串到别的请求，重则 go test -race 失败、接口值（type+data 两字）撕裂导致偶发 panic。更严重的是，cron 任务（gofr.go:252）、Pub/Sub 订阅者（gofr.go:210、216）、优雅关闭（gofr.go:75）也在并发读 a.container.Logger，它们打出的日志会被错误地打上某个 HTTP 请求的 trace ID，把非请求类日志污染成请求日志。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 75,
+      "summary": "defer 恢复的是请求入口时的旧值，并发交错后 ContextLogger 会被永久留在 container 上",
+      "failure_scenario": "`defer func() { h.container.Logger = origLogger }()` 只在「没有其他请求插队」时才正确。两个请求交错时：A 读到 orig=base 并写入 ctxA；B 读到 orig=ctxA 并写入 ctxB；A 先结束把字段恢复成 base；B 结束时又把它恢复成 ctxA。于是进程余下的生命里 container.Logger 一直指向请求 A 的 ContextLogger，所有后续日志（包括与请求无关的 cron、服务关闭日志）都会带上 A 那个早已 End 的 span 的 trace_id；若此后又来请求，还会层层嵌套 ContextLogger（每次日志多包一层、多次分配参数 map）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 91,
+      "summary": "goroutine 内重新读取 h.container.Logger，超时路径下错误日志会丢失 trace 或串到其他请求",
+      "failure_scenario": "ServeHTTP 已经在 L72 拿到了本次请求专用的 ctxLogger，但 goroutine 与 panic 恢复处仍然在运行时通过 h.container.Logger 现取 logger（L87、L91）。当请求超时（L96-100 的 `<-c.Context.Done()` 分支先返回）或 panic 分支先返回时，ServeHTTP 的 defer 已经把 container.Logger 恢复成原 logger，而 goroutine 仍在执行并最终调用 h.logError(h.container.Logger, err)：此时要么拿到不带 trace 的原始 logger（本次变更想加的 trace 能力丢失），要么拿到另一个并发请求的 ContextLogger（把 B 请求的错误日志标成 A 的 trace_id）。此外这两次读取本身也是对共享字段的无同步读，属于 F001 竞争的一部分。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CONTEXT-001"
+    },
+    {
+      "file": "pkg/gofr/logging/logger.go",
+      "line": 256,
+      "summary": "extractTraceIDAndFilterArgs 会静默吞掉用户日志中键为 __trace_id__ 的 map 参数",
+      "failure_scenario": "新的参数过滤逻辑对每一次日志调用扫描所有参数，只要发现某个 map[string]any 含字符串键 `__trace_id__`，就把它当作框架内部元数据从参数中删除并当成 trace_id。业务代码若恰好打印包含该键的 map（例如透传/回显请求体、打印第三方返回的 JSON），这条数据会被静默丢弃，日志里只剩其它参数，且会把伪造的字符串写成日志的 trace_id；这是日志内容丢失 + 伪造链路 ID 的错误，且完全无提示。同时 `\"__trace_id__\"` 作为跨包私有协议常量散落在 ctx_logger.go 与 logger.go 两处魔法字符串里，任一侧改动就会静默失效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "LOGGING-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\diff\\gofr-dev__gofr@5e284ae.diff\n  caseId              gofr-dev__gofr@5e284ae\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@5e284ae\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 6 / not-reached 5（no-signal=5）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 6/11 / 新候选 0 / no-issue 6 / 预算跳过 0\n✓ 完成 · 耗时 242.4s · 模型调用 18 次 · token 输入 19,467（未命中） · 输出 17,180 · 缓存命中 414,976（95.5%） · 工具 26 次（主会话 26 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0087\n[time] 阶段耗时 | 总墙钟 244.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.7s (0.7%)\n[time] 阶段 | 六阶段审计 117.4s (48.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 125.1s (51.2%)\n[time] 审计明细 | P1 5.5s (4.7%) | P2 2.0s (1.7%) | P3 12.3s (10.5%) | P4 44.5s (37.9%) | P5 48.0s (40.9%) | P6 5.0s (4.3%)\n[usage] 任务总计 | 模型调用 23 次（Agent 18 + 一次性 5） | token 输入 26,482（未命中） | 输出 38,886 | 缓存命中 416,256（94.0%） | $0.0158\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 7,015 / 输出 21,706 / 缓存 1,280）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\tasks\\gofr-dev__gofr@5e284ae\\audit\\20261121_134013_397.json",
+  "token_usage": {
+    "input_tokens": 19467,
+    "output_tokens": 17180,
+    "cache_read_input_tokens": 414976
+  }
+}

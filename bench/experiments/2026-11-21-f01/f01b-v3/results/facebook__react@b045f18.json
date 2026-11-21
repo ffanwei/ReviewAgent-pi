@@ -1,0 +1,54 @@
+{
+  "instance_id": "facebook__react@b045f18",
+  "repo": "facebook/react",
+  "base_commit": "99563e91736e9de473c4865d5cb6fd9eb1a26bcb",
+  "head_commit": "b045f18e378341876ee69e729fc855cab501c3cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 466.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+      "line": 149,
+      "summary": "DevTools 用硬编码 reconciler 常量判定 Activity tag，绕过按 React 版本映射的 ReactTypeOfWork",
+      "failure_scenario": "本 MR 在 renderer.js 顶部新增 import {ActivityComponent} from 'react-reconciler/src/ReactWorkTags'，于是 getDisplayNameForFiber（第631行）与 shouldFilterFiber（第1491行）两处 case ActivityComponent 实际使用的是 DevTools 自身 reconciler 的常量 31，而不是该文件按被调试 React 版本生成的 ReactTypeOfWork 映射。这与文件的设计前提冲突：ReactTypeOfWork 存在的目的就是应对「不同 React 版本的 work tag 编号不同」（同一张表里 OffscreenComponent 是 22/23、LegacyHiddenComponent 是 23/24、ClassComponent 是 1/2），而 DevTools 会被注入到任意版本的 React 上运行。后果：当被调试版本的 tag 31 不是 Activity（未来版本插入新 tag、或第三方/实验构建）时，DevTools 会把任意 tag 为 31 的 fiber 当作 Activity 命名，并在 shouldFilterFiber 中直接返回 true 把它从组件树中静默过滤掉——用户会看到组件树缺项且没有任何报错。同时本次在 ReactTypeOfWork 五个版本分支中新增的 ActivityComponent 条目（第389/426/463/500/537行）与 backend/types.js 中 WorkTagMap 的新增必填字段都变成死代码（renderer.js 的两处解构块 549-581、902-928 均未解构 ActivityComponent），后续维护者按「表驱动」方式修改不会生效。此外这使 react-devtools-shared 首次在运行时依赖 reconciler 内部模块（此前该包对 react-reconciler 的引用全部是 import type），削弱了 DevTools 与具体 React 版本解耦的能力。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "DEVTOOLS-VERSION-MAP-001"
+    },
+    {
+      "file": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+      "line": 1491,
+      "summary": "Activity fiber 被 shouldFilterFiber 过滤，新加的 'Activity' 显示名在组件树中永远不会出现",
+      "failure_scenario": "本 MR 同时在 getDisplayNameForFiber 中为 ActivityComponent 返回 'Activity'（第631-632行），又在 shouldFilterFiber 的「不显示」分支加入 case ActivityComponent: return true（第1491行）。两处意图相互矛盾：被过滤的 fiber 不会出现在 DevTools 组件树中，因此用户永远看不到名为 Activity 的边界；再叠加内层 Offscreen fiber 同样被过滤，<Activity mode=\"hidden\"> 的子树看起来就像直接挂在父组件下，用户无法从组件树判断某段内容处于 Activity（或已隐藏）边界之内。文件上方的 NOTICE 注释也说明 shouldFilterFiber 必须与 get*ForFiber 系列方法成对维护，当前的组合使新增显示名只在 owner stack、警告等边缘路径生效，在树渲染路径上是死代码。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.42,
+      "rule": "DEVTOOLS-FILTER-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\facebook__react\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\diff\\facebook__react@b045f18.diff\n  caseId              facebook__react@b045f18\n  --issue             (未传)\n  --taskId            facebook__react@b045f18\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 21 / not-reached 6（no-signal=6）\nreview-pi: 覆盖补漏 请求 11（失败 0）/ 覆盖 hunk 21/27 / 新候选 0 / no-issue 21 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 463.5s · 模型调用 25 次 · token 输入 40,524（未命中） · 输出 38,823 · 缓存命中 1,154,176（96.6%） · 工具 40 次（主会话 40 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0198\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 465.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.4s (0.3%)\n[time] 阶段 | 六阶段审计 242.8s (52.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 220.9s (47.5%)\n[time] 审计明细 | P1 158.2s (65.3%) | P2 2.1s (0.9%) | P3 7.1s (2.9%) | P4 41.4s (17.1%) | P5 28.6s (11.8%) | P6 5.0s (2.1%)\n[usage] 任务总计 | 模型调用 37 次（Agent 25 + 一次性 12） | token 输入 44,514（未命中） | 输出 76,803 | 缓存命中 1,162,235（96.3%） | $0.0310\n[usage] 一次性明细 | 覆盖补漏 12 次（输入 3,990 / 输出 37,980 / 缓存 8,059）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\\facebook__react@b045f18\\audit\\20261121_151849_009.json",
+  "token_usage": {
+    "input_tokens": 44514,
+    "output_tokens": 76803,
+    "cache_read_input_tokens": 1162235
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 40524,
+      "output_tokens": 38823,
+      "cache_read_input_tokens": 1154176
+    },
+    "coverage_repair": {
+      "input_tokens": 3990,
+      "output_tokens": 37980,
+      "cache_read_input_tokens": 8059
+    }
+  }
+}

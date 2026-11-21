@@ -1,0 +1,84 @@
+{
+  "instance_id": "elastic__elasticsearch@10d682d",
+  "repo": "elastic/elasticsearch",
+  "base_commit": "47e352fda0567a682687fe926927cee3f631ea24",
+  "head_commit": "10d682d9aa4b1c2976e1db769ba04cb15256da9e",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 661.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+      "line": 383,
+      "summary": "新增测试用 randomSubsetOf 选 CA keyUsage，可能为空导致断言与默认值冲突而随机失败",
+      "failure_scenario": "第 383 行用 `randomSubsetOf(CertGenUtils.KEY_USAGE_MAPPINGS.keySet())` 生成 CA 的 keyUsage，该 API 明确允许返回空列表（ESTestCase.java:1693-1698 的注释与实现）。当返回空列表时，第 387 行 `terminal.addTextInput(Strings.collectionToCommaDelimitedString(caKeyUsage))` 实际压入的是一个空行；而 `HttpCertificateCommand.tryReadInput` 遇到空输入时直接返回默认值（HttpCertificateCommand.java:1173-1175），因此实际生成的 CA 证书带 keyCertSign、cRLSign 两个关键位。随后第 474 行 `assertExpectedKeyUsage(caCertKey.v1(), caKeyUsage)` 用空列表作为期望，要求全部 9 个 keyUsage 位都为 false，断言必然失败。该分支被 randomBoolean() 选中且子集为空的组合约每 10~18 次运行出现一次，会造成 CI 随机红灯（与新增的 CertGenUtilsTests.testBuildKeyUsage 使用 randomNonEmptySubsetOf 的写法不一致）。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "TEST-FLAKY-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+      "line": 339,
+      "summary": "--ca-keyusage 取值未校验，非法值抛未处理的 IllegalArgumentException，退化输入会静默生成无 keyUsage 的 CA",
+      "failure_scenario": "新增的 getCaKeyUsage 直接把 `--ca-keyusage` 的原始字符串按逗号切分返回，校验完全依赖下游 CertGenUtils.buildKeyUsage：对未知名称它抛 IllegalArgumentException（CertGenUtils.java:484）。该异常从 generateCA（CertificateTool.java:432-433）一路抛出，没有像本文件其它用户输入错误那样转成 UserException（例如 CertificateTool.java:414、849、1051），因此 `bin/elasticsearch-certutil ca --ca-keyusage keyCertSigns`（拼写错误）会让用户看到 Java 堆栈而不是用法提示，退出码也不是 USAGE。另一方面 Strings.splitStringByCommaToArray（server Strings.java:374-377）不做 trim、不丢弃空 token：输入 `--ca-keyusage \",\"` 会得到空数组，buildKeyUsage 返回 null，最终静默生成一张完全没有 keyUsage 扩展的 CA 证书，与文档声明的默认值 keyCertSign,cRLSign 相矛盾（用户以为设置了，实际什么都没设）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CLI-INPUT-VALIDATION-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+      "line": 1052,
+      "summary": "CA 的 keyUsage 只校验名称，允许生成不含 keyCertSign 的 CA，导致生成的证书链无法通过严格校验",
+      "failure_scenario": "新增的 readKeyUsage 仅用 isValidKeyUsage 检查每个 token 是否是已知名称（第 1046-1052 行），不校验语义约束。交互流程允许用户把自建 CA 的 keyUsage 改成例如 `digitalSignature`：随后 createNewCA 第 961-973 行会以 keyCertSign 缺失的位掩码生成 CA 证书，并且因为扩展被标记为 critical，严格实现（如要求签发者断言 keyCertSign 的 PKIX/TLS 校验）会拒绝这条链；而工具只在 writeCertificateAndKeyDetails 里用 certificate.verify() 校验签名（CertificateTool.java:612-626），不会发现该问题，仍然成功写出 http.p12 与示例配置，用户要到实际启动节点做 TLS 握手时才会失败。同理允许为终端实体证书选择 keyCertSign/cRLSign 等不适用的位，以及在不含 keyAgreement 时选择 encipherOnly/decipherOnly（RFC 5280 要求二者仅在置位 keyAgreement 时有意义）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.42,
+      "rule": "CERT-VALIDATION-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+      "line": 418,
+      "summary": "自动配置中 transport CA 与 transport 证书仍传 null keyUsage，与同一次变更的 HTTP 侧策略不一致",
+      "failure_scenario": "本次变更给 HTTP CA 与 HTTP 证书分别传入了 DEFAULT_CA_KEY_USAGE（第 449 行）与 DEFAULT_CERT_KEY_USAGE（第 476 行），但紧邻的 transport CA（第 409-420 行）与 transport 证书（第 424-435 行）新增的参数仍然显式传 null。结果是自动配置生成的同一节点两套 TLS 材料在 keyUsage 上策略分裂：transport CA 没有 keyCertSign、transport 证书没有任何 keyUsage，而 HTTP CA/证书有且为 critical。这既让“为生成证书补 keyUsage”的修复在 transport 侧不完整，也让后续排查/审计时两套材料行为不可预期（例如同一套校验规则对 HTTP 链通过、对 transport 链表现不同）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.4,
+      "rule": "CONSISTENCY-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+      "line": 114,
+      "summary": "CA 默认 keyUsage 常量在 CertificateTool 与 HttpCertificateCommand 中重复定义",
+      "failure_scenario": "本次变更在两个类里各自新增了一份内容完全相同的默认值：CertificateTool.java:114 与 HttpCertificateCommand.java:102 都是 `List.of(\"keyCertSign\", \"cRLSign\")`，而 AutoConfigureNode 又静态导入 HttpCertificateCommand 的常量使用。默认值一旦需要调整（例如增加 keyAgreement 或改为可选扩展），必须同时修改两处并保持文档一致，很容易漂移出“certutil ca 与 certutil http 生成不同 CA”的不一致行为；这也是新增常量散落在两个 CLI 命令类而非共享工具类中的直接后果。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.42,
+      "rule": "MAINTAINABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\elastic__elasticsearch\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\diff\\elastic__elasticsearch@10d682d.diff\n  caseId              elastic__elasticsearch@10d682d\n  --issue             (未传)\n  --taskId            elastic__elasticsearch@10d682d\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 42 / not-reached 23（no-signal=23）\nreview-pi: 覆盖补漏 请求 18（失败 0）/ 覆盖 hunk 42/65 / 新候选 0 / no-issue 42 / 预算跳过 0 / 验证拒绝 2\n✓ 完成 · 耗时 655.2s · 模型调用 21 次 · token 输入 31,946（未命中） · 输出 33,872 · 缓存命中 971,392（96.8%） · 工具 29 次（主会话 29 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0167\nreview-pi: 置信度过滤丢弃 3 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 656.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.1%)\n[time] 阶段 | 六阶段审计 228.6s (34.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 426.8s (65.0%)\n[time] 审计明细 | P1 28.1s (12.3%) | P2 1.7s (0.7%) | P3 3.8s (1.6%) | P4 132.7s (58.1%) | P5 53.7s (23.5%) | P6 8.6s (3.8%)\n[usage] 任务总计 | 模型调用 41 次（Agent 21 + 一次性 20） | token 输入 46,438（未命中） | 输出 109,466 | 缓存命中 988,925（95.5%） | $0.0399\n[usage] 一次性明细 | 覆盖补漏 20 次（输入 14,492 / 输出 75,594 / 缓存 17,533）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\\elastic__elasticsearch@10d682d\\audit\\20261121_151851_356.json",
+  "token_usage": {
+    "input_tokens": 46438,
+    "output_tokens": 109466,
+    "cache_read_input_tokens": 988925
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 31946,
+      "output_tokens": 33872,
+      "cache_read_input_tokens": 971392
+    },
+    "coverage_repair": {
+      "input_tokens": 14492,
+      "output_tokens": 75594,
+      "cache_read_input_tokens": 17533
+    }
+  }
+}

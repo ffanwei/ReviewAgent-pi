@@ -1,0 +1,84 @@
+{
+  "instance_id": "appwrite__appwrite@710b8bd",
+  "repo": "appwrite/appwrite",
+  "base_commit": "d205ac457960f73d781547540cde1732f69076ac",
+  "head_commit": "710b8bda565c411ecb23e8b670d0ba7f45d2b3f3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 398.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+      "line": 79,
+      "summary": "自定义域名黑名单不再包含 _APP_DOMAIN，API 主域名可被用户注册为代理规则并被接管",
+      "failure_scenario": "本次把 `$mainDomain` 的取值从 `_APP_DOMAIN` 换成 `_APP_CONSOLE_DOMAIN ?? _APP_DOMAIN`，随后 `$deniedDomains[] = $mainDomain`。当部署同时配置了独立的 console 域名（`_APP_CONSOLE_DOMAIN=console.example.com`、`_APP_DOMAIN=api.example.com`）时，黑名单里只剩 console 域名，`_APP_DOMAIN` 不再是禁止域名，`POST /v1/proxy/rules/api` 传入 `domain=api.example.com` 不再被 101-103 行的 `in_array` 拦下（改动前会返回 400 GENERAL_ARGUMENT_INVALID）。而 `app/controllers/general.php:812` 的同一改动又让访问 `_APP_DOMAIN` 的请求进入 `router()`（814 行 `$host !== $mainDomain`），`router()` 会按 host 在 rules 集合里查询规则（68-75 行）并代理到该规则指向的 deployment。攻击者作为普通项目成员即可创建这条规则（api.example.com 本身就解析到 Appwrite 服务器，DNS 校验容易通过），此后对该 API 域名的所有请求都会被路由到攻击者的 function/site，导致 API 域名接管、`X-Appwrite-Key`/JWT/Cookie 泄露与响应伪造。同样的改写也出现在 `Proxy/Http/Rules/Function/Create.php:84`、`Redirect/Create.php:87`、`Site/Create.php:84`，四个入口都能绕过。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.66,
+      "rule": "SEC-DOMAIN-001"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 812,
+      "summary": "独立 console 域名下 API 主域名被当作外部域名进入 router，开启 router protection 时 API 全站返回 403",
+      "failure_scenario": "812 行把跳过路由判断用的 `$mainDomain` 换成 console 域名后，`$host !== $mainDomain`（814 行）对 `_APP_DOMAIN` 恒为真：配置 `_APP_DOMAIN=api.example.com`、`_APP_CONSOLE_DOMAIN=console.example.com` 后，所有发往 api.example.com 的 `/v1` 请求都会进入 `router()`。`router()` 在 `$rule->isEmpty()` 分支中执行 `_APP_OPTIONS_ROUTER_PROTECTION` 检查（100-104 行），只放行 `localhost`、`APP_HOSTNAME_INTERNAL` 和 `System::getEnv('_APP_CONSOLE_DOMAIN', '')`，于是 api.example.com 命中 102 行抛出 `GENERAL_ACCESS_FORBIDDEN`（403）；`app/config/variables.php:66` 明确建议生产环境开启该开关，因此这是变更后生产配置的功能性中断（改动前 `_APP_DOMAIN` 与 `$mainDomain` 相同，直接跳过 router，不会触发）。即使未开启 router protection，也会退化为每次 API 请求都多一次 platform `rules` 集合查询（68-75 行）并走上函数/站点路由判定，给最热路径增加 DB 开销与误代理风险。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 861,
+      "summary": "证书与主域名 api 规则生成只对 console 域名生效，_APP_DOMAIN 被判定为“非主域名”而跳过",
+      "failure_scenario": "861 行把 `$envDomain` 换成 console 域名后，863-873 行得到的 `$mainDomain` 随之变为 console 域名；875 行 `if ($mainDomain !== $domain->get())` 对 `_APP_DOMAIN` 恒成立，进入 876 行 `Console::warning('... is not a main domain. Skipping SSL certificate generation.')`，902-924 行「创建 type=api 的规则 + 触发证书队列」的分支不再为 API 主域名执行。结果是：引入独立 console 域名的部署中，API 域名不再自动获得主域名规则与 TLS 证书（改动前 `$envDomain === _APP_DOMAIN`，主域名会命中该分支），首次访问 API 域名时证书生成被跳过，HTTPS 握手失败或长期依赖手工证书；同时主域名缺失 api 规则也使 F001 描述的规则抢占更容易发生。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php",
+      "line": 354,
+      "summary": "函数/站点运行时注入的 API endpoint 改指向 console 域名，域名分离部署下运行时调用可能失败",
+      "failure_scenario": "354-359 行把注入到运行时环境变量 `APPWRITE_FUNCTION_API_ENDPOINT` 的 host 从 `_APP_DOMAIN` 换成 `_APP_CONSOLE_DOMAIN ?? _APP_DOMAIN`。在正是本 MR 要支持的「console 域名与 API 域名分离」场景下（如 `_APP_DOMAIN=api.example.com`、`_APP_CONSOLE_DOMAIN=console.example.com`），函数内的服务端 SDK 会改为请求 `https://console.example.com/v1`，而 console 域名通常只承载控制台前端（可能位于 CDN/独立网关，不转发 `/v1` 或按前端域名做限流/CORS/TLS 策略），导致已有函数在升级后出现 404、跨域/证书错误或命中错误的限流域；这属于对外可见的运行契约变化，而函数/站点实际应访问的是 API 域名。同样写法还出现在 `app/controllers/general.php:451`（注入 `APPWRITE_FUNCTION_API_ENDPOINT`/`APPWRITE_SITE_API_ENDPOINT`）、`Functions/Workers/Builds.php:597`、`Functions/Workers/Builds.php:1444`、`Platform/Workers/Functions.php:487`，以及 `Executor.php:203` 的 host 头回退，影响面覆盖构建、执行与站点 SSR 调用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONFIG-004"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 79,
+      "summary": "同一域名回退表达式在 20 处重复硬编码，且已出现无回退的异构写法",
+      "failure_scenario": "本次改动把 `System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))` 这串表达式在 14 个文件、20 处逐字复制（general.php 独占 5 处，console.php 单行内重复两次），没有统一取值入口。这种分散写法已经在同一文件里出现口径分歧：`app/controllers/general.php:101` 仍是 `System::getEnv('_APP_CONSOLE_DOMAIN', '')`（无 `_APP_DOMAIN` 回退），与 79/265/451/812/861 行语义不同；一旦后续再调整回退顺序（例如回退到 `_APP_DOMAIN` 之外的值），极易漏改某些分支，造成同一部署里 console 域名解析不一致。另外 console.php 46-47 行对同一表达式求值两次，也增加了后续维护时需要同步修改的点。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-005"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\appwrite__appwrite\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\appwrite__appwrite@710b8bd.diff\n  caseId              appwrite__appwrite@710b8bd\n  --issue             (未传)\n  --taskId            appwrite__appwrite@710b8bd\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 7 / not-reached 8（no-signal=8）\nreview-pi: 覆盖补漏 请求 12（失败 0）/ 覆盖 hunk 7/15 / 新候选 0 / no-issue 7 / 预算跳过 0 / 验证拒绝 5\n✓ 完成 · 耗时 393.5s · 模型调用 13 次 · token 输入 25,113（未命中） · 输出 25,846 · 缓存命中 283,392（91.9%） · 工具 20 次（主会话 20 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0115\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 394.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 154.9s (39.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 238.8s (60.5%)\n[time] 审计明细 | P1 15.0s (9.7%) | P2 5.1s (3.3%) | P3 8.0s (5.2%) | P4 47.6s (30.8%) | P5 71.5s (46.3%) | P6 7.2s (4.7%)\n[usage] 任务总计 | 模型调用 30 次（Agent 13 + 一次性 17） | token 输入 31,262（未命中） | 输出 70,466 | 缓存命中 292,992（90.4%） | $0.0249\n[usage] 一次性明细 | 覆盖补漏 17 次（输入 6,149 / 输出 44,620 / 缓存 9,600）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\appwrite__appwrite@710b8bd\\audit\\20261121_161805_589.json",
+  "token_usage": {
+    "input_tokens": 31262,
+    "output_tokens": 70466,
+    "cache_read_input_tokens": 292992
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 25113,
+      "output_tokens": 25846,
+      "cache_read_input_tokens": 283392
+    },
+    "coverage_repair": {
+      "input_tokens": 6149,
+      "output_tokens": 44620,
+      "cache_read_input_tokens": 9600
+    }
+  }
+}

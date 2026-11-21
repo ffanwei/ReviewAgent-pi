@@ -1,0 +1,164 @@
+{
+  "instance_id": "openai__codex@8c952af",
+  "repo": "openai/codex",
+  "base_commit": "d6182becbe155776b159270fe4a5e88d607f0c5e",
+  "head_commit": "8c952af20fe791cc0c5d0a59089d3329968b4373",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 490.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 13,
+  "review_output": [
+    {
+      "file": "codex-rs/core/src/client_common.rs",
+      "line": 198,
+      "summary": "单元测试构造 ResponsesApiRequest 时漏填 store 字段，codex-core 测试目标无法编译",
+      "failure_scenario": "本 MR 把 ResponsesApiRequest 中 store 的语义固定为 false（client.rs:198），但只从 ResponsesApiRequest 的注释里删掉了一行说明，字段 `pub(crate) store: bool`（client_common.rs:128）仍然存在且该结构体既没有 `#[derive(Default)]` 也没有 `#[serde(default)]`。同一文件的两个单测 `serializes_text_verbosity_when_set`（client_common.rs:190-204）与 `omits_text_when_not_set`（client_common.rs:219-231）在 diff 中删除了 `store: true,` 却没有补上新的取值，结构体字面量缺少必填字段，`cargo test -p codex-core` 会以 E0063（missing field `store` in initializer）编译失败，整个 core 的测试套件（包括本 MR 修改过的 tests/suite/client.rs、prompt_caching.rs）都无法运行。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.9,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "codex-rs/protocol/src/mcp_protocol.rs",
+      "line": 373,
+      "summary": "mcp-server 测试仍用已删除的 disable_response_storage 构造 Profile，测试目标编译失败",
+      "failure_scenario": "本 MR 从 `codex_protocol::mcp_protocol::Profile`（mcp_protocol.rs:368-378）删除了 `disable_response_storage` 字段，但 `codex-rs/mcp-server/tests/suite/config.rs` 的 `get_config_toml_parses_all_fields` 仍在期望值里用 `disable_response_storage: Some(false)` 构造 `Profile`（第 114 行），并在 fixture 的 config.toml 中写入 `disable_response_storage = false`（第 54 行）。由于 `Profile` 已无该字段，`cargo test -p codex-mcp-server` 会以 E0560（struct `Profile` has no field named `disable_response_storage`）编译失败，mcp-server 的整个测试套件无法执行；同时 fixture 中残留的 TOML 键会因为 ConfigToml/ConfigProfile 未启用 deny_unknown_fields 而被静默忽略，使该断言表面仍然成立，掩盖配置项确实已失效的事实。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.88,
+      "rule": "BUILD-002"
+    },
+    {
+      "file": "codex-rs/protocol/src/models.rs",
+      "line": 51,
+      "summary": "Reasoning 的 id 被 skip_serializing 后，rollout 持久化的 reasoning 项无法反序列化，恢复会话时被静默丢弃",
+      "failure_scenario": "ResponseItem::Reasoning 的 `id: String` 新增了 `#[serde(skip_serializing)]`（models.rs:51-52），但该字段既非 Option 也没有 `#[serde(default)]`。rollout 持久化链路用同一个类型既写又读：`RolloutRecorder` 通过 `serde_json::to_string(item)` 把每个 ResponseItem 写入 ~/.codex/sessions/*.jsonl（recorder.rs:293-298、328-331），而 `is_persisted_response_item` 明确把 Reasoning 纳入持久化范围（rollout/policy.rs:7-13）；恢复会话时 `get_rollout_history` 用 `serde_json::from_value::<ResponseItem>` 读回（recorder.rs:178-198），遇到缺少 `id` 的 reasoning 行会反序列化失败，仅打印 `warn!(\"failed to parse item ...\")` 后跳过。结果是本次变更后新产生的会话在 `codex resume` 时 reasoning 项全部丢失（encrypted_content 一并丢失），历史里只剩 message/function_call，既削弱了跨轮次的推理上下文复用，也可能触发服务端对「function_call 缺少其前置 reasoning 项」的校验错误，表现为恢复后的首轮请求 400 而非本地报错，排查困难。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "SERIALIZATION-001"
+    },
+    {
+      "file": "codex-rs/exec/src/lib.rs",
+      "line": 152,
+      "summary": "OSS 模式下不再设置 disable_response_storage，可能改变请求存储行为",
+      "failure_scenario": "该 hunk 删除了 ConfigOverrides 中的 `disable_response_storage: oss.then_some(true)`，而紧邻的 `show_raw_agent_reasoning: oss.then_some(true)` 仍保留 oss 分支的显式覆盖。删除后 OSS（oss=true）场景下 disable_response_storage 退回结构体默认值（通常为 None），下游若以 `unwrap_or(false)` 之类方式消费该字段，则 OSS 请求将不再禁用服务端响应存储，行为与此前不一致；对不支持响应存储的后端可能直接导致请求失败或数据被意外留存。除非该字段已在 ConfigOverrides 结构体中同步移除（本 hunk 未体现），否则这是一处行为回退，建议显式确认删除意图或保留该覆盖。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "删除带条件的行为配置项时，需确认下游默认值与之等价，否则会引入行为回退"
+    },
+    {
+      "file": "codex-rs/core/src/config_profile.rs",
+      "line": 19,
+      "summary": "删除公有配置字段 disable_response_storage 会破坏旧配置/调用方兼容性",
+      "failure_scenario": "ConfigProfile 是配置映射结构，直接移除公有字段 disable_response_storage 后，旧 profile 中的该键不再被该结构体读取；依赖该字段构造或读取的调用方也会编译失败。hunk 未提供兼容迁移或显式拒绝处理，存在旧配置静默失效的风险。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "公有配置字段删除需评估兼容性，保留迁移/弃用路径或对旧配置显式报错，避免静默失效。"
+    },
+    {
+      "file": "codex-rs/core/src/codex.rs",
+      "line": 1598,
+      "summary": "run_turn 不再传递 disable_response_storage，可能绕过响应存储开关",
+      "failure_scenario": "Hunk 8 从 Prompt 初始化中删除了 `store: !turn_context.disable_response_storage`，而 Prompt 仍只携带 input、tools 和 base_instructions_override。若下游请求构造仍使用 Responses API 的 store 语义，`disable_response_storage=true` 将不再影响该 turn，响应可能被服务端存储，造成隐私配置失效。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.65,
+      "rule": "用户隐私/数据保留开关必须在所有请求路径中显式传递，不能因字段迁移而静默丢失。"
+    },
+    {
+      "file": "codex-rs/core/src/codex.rs",
+      "line": 1851,
+      "summary": "run_compact_task 不再传递 disable_response_storage，紧凑任务可能忽略响应存储开关",
+      "failure_scenario": "Hunk 9 从紧凑任务的 Prompt 初始化中删除了 `store: !turn_context.disable_response_storage`。这会使 compact 路径不再显式携带响应存储开关；当用户设置 `disable_response_storage=true` 时，紧凑任务仍可能按下游默认行为存储响应，导致不同任务路径的隐私行为不一致。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.65,
+      "rule": "同一隐私配置在 turn 与 compact 等所有请求路径中必须保持一致，不能只覆盖主路径。"
+    },
+    {
+      "file": "codex-rs/core/tests/suite/client.rs",
+      "line": 580,
+      "summary": "删除 store 断言后 request_body 成为未使用变量",
+      "failure_scenario": "该测试删除了对 `request_body[\"store\"]` 的唯一断言，但保留了 `let request_body = request.body_json::<serde_json::Value>().unwrap();`，之后没有任何读取。这会触发 Rust 的 unused_variables 警告；若 CI 启用 deny(warnings) 还会导致测试编译失败，同时也丢失了请求体校验。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "Rust 测试代码删除唯一使用点后应移除变量或补充等价断言，避免未使用变量和测试覆盖缺口"
+    },
+    {
+      "file": "codex-rs/core/tests/suite/client.rs",
+      "line": 661,
+      "summary": "删除 store 断言后 request_body 成为未使用变量",
+      "failure_scenario": "该测试删除了对 `request_body[\"store\"]` 的唯一断言，但保留了 `let request_body = request.body_json::<serde_json::Value>().unwrap();`，之后没有任何读取。这会触发 Rust 的 unused_variables 警告；若 CI 启用 deny(warnings) 还会导致测试编译失败，同时也丢失了请求体校验。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "Rust 测试代码删除唯一使用点后应移除变量或补充等价断言，避免未使用变量和测试覆盖缺口"
+    },
+    {
+      "file": "codex-rs/protocol/src/models.rs",
+      "line": 60,
+      "summary": "LocalShellCall 的 id 被 skip_serializing 后序列化往返丢失",
+      "failure_scenario": "新增的 #[serde(skip_serializing)] 会无条件省略 id，即使 id 为 Some。该字段注释说明它是 chat completions API 使用的标识；一旦 ResponseItem 被序列化持久化或回放，id 无法恢复，依赖该 id 关联工具调用/输出的路径会失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "Serde 的 skip_serializing 会无条件省略字段；需要序列化往返保留的 id 不应使用该属性。"
+    },
+    {
+      "file": "codex-rs/protocol/src/models.rs",
+      "line": 67,
+      "summary": "FunctionCall 的 id 被 skip_serializing 后序列化往返丢失",
+      "failure_scenario": "新增的 #[serde(skip_serializing)] 会无条件省略 FunctionCall.id，即使 id 为 Some。序列化到持久化存储或回放时 id 会变成 None，依赖该 id 关联工具调用与输出的逻辑可能无法匹配。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "Serde 的 skip_serializing 会无条件省略字段；需要序列化往返保留的 id 不应使用该属性。"
+    },
+    {
+      "file": "codex-rs/protocol/src/models.rs",
+      "line": 89,
+      "summary": "CustomToolCall 的 id 从条件跳过改为无条件跳过，Some 值也会丢失",
+      "failure_scenario": "原属性为 #[serde(default, skip_serializing_if = \"Option::is_none\")]，只在 id 为 None 时跳过序列化；改为 #[serde(skip_serializing)] 后，即使 id 为 Some 也不会出现在 JSON 中，持久化/回放会丢失该标识。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.84,
+      "rule": "将 skip_serializing_if 改为 skip_serializing 会扩大省略范围到 Some 值，可能破坏序列化往返的数据完整性。"
+    },
+    {
+      "file": "codex-rs/protocol/src/models.rs",
+      "line": 110,
+      "summary": "WebSearchCall 的 id 从条件跳过改为无条件跳过，Some 值也会丢失",
+      "failure_scenario": "原属性为 #[serde(default, skip_serializing_if = \"Option::is_none\")]，只在 id 为 None 时跳过序列化；改为 #[serde(skip_serializing)] 后，即使 id 为 Some 也不会出现在 JSON 中，持久化/回放会丢失该标识。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.84,
+      "rule": "将 skip_serializing_if 改为 skip_serializing 会扩大省略范围到 Some 值，可能破坏序列化往返的数据完整性。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\openai__codex\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\diff\\openai__codex@8c952af.diff\n  caseId              openai__codex@8c952af\n  --issue             (未传)\n  --taskId            openai__codex@8c952af\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 13 / no-issue 20 / not-reached 16（no-signal=16）\nreview-pi: 覆盖补漏 请求 14（失败 0）/ 覆盖 hunk 30/46 / 新候选 10 / no-issue 20 / 预算跳过 0\n✓ 完成 · 耗时 477.6s · 模型调用 17 次 · token 输入 19,296（未命中） · 输出 16,808 · 缓存命中 422,912（95.6%） · 工具 26 次（主会话 26 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0086\n[time] 阶段耗时 | 总墙钟 490.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 12.2s (2.5%)\n[time] 阶段 | 六阶段审计 113.9s (23.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 363.8s (74.2%)\n[time] 审计明细 | P1 7.2s (6.3%) | P2 3.5s (3.1%) | P3 5.7s (5.1%) | P4 67.1s (59.3%) | P5 23.3s (20.6%) | P6 6.4s (5.6%)\n[usage] 任务总计 | 模型调用 31 次（Agent 17 + 一次性 14） | token 输入 29,298（未命中） | 输出 78,692 | 缓存命中 428,288（93.6%） | $0.0273\n[usage] 一次性明细 | 覆盖补漏 14 次（输入 10,002 / 输出 61,884 / 缓存 5,376）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\\openai__codex@8c952af\\audit\\20261121_144752_530.json",
+  "token_usage": {
+    "input_tokens": 29298,
+    "output_tokens": 78692,
+    "cache_read_input_tokens": 428288
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 19296,
+      "output_tokens": 16808,
+      "cache_read_input_tokens": 422912
+    },
+    "coverage_repair": {
+      "input_tokens": 10002,
+      "output_tokens": 61884,
+      "cache_read_input_tokens": 5376
+    }
+  }
+}

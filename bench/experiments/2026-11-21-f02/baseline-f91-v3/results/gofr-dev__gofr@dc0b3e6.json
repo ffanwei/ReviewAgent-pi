@@ -1,0 +1,84 @@
+{
+  "instance_id": "gofr-dev__gofr@dc0b3e6",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "44e3eeb2786ad4d333dc1f528fb104236693d060",
+  "head_commit": "dc0b3e630423b72cb9b2f273fdc18a5c11d12984",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 106.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 172,
+      "summary": "getDBHost 只接受 mongodb scheme，导致 mongodb+srv:// 连接串直接连接失败",
+      "failure_scenario": "新增的 getDBHost 在 url.Parse 成功后硬性要求 parsedURL.Scheme == \"mongodb\"，否则返回 errIncorrectURI；而 generateMongoURI 在 config.URI 非空时会先调用它，一旦返回错误，Connect() 只打一条 Errorf 就 return（第 92-96 行），连接不会建立。Config.URI 依然是受支持的输入方式（文档示例就用 URI），而 MongoDB Atlas 等云托管的 SRV 连接串形式为 mongodb+srv://user:pass@cluster.example.com/?retryWrites=true，mongo-driver 的 options.Client().ApplyURI 原生支持该 scheme（依赖版本 go.mongodb.org/mongo-driver v1.15.1）。因此本次变更前可以正常连通的 SRV 配置，升级后会变成 URI 生成失败、客户端始终未连接，且由于 Connect() 无返回值，应用侧只能看到日志、真正使用 ctx.Mongo 时才出现空指针/不可用。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 156,
+      "summary": "User/Password 先 QueryEscape 再交给 url.UserPassword，造成二次转义导致认证失败",
+      "failure_scenario": "第 156 行把 url.QueryEscape 的结果传给 url.UserPassword，而 url.UserPassword 自身会对用户名/密码做 userinfo 转义，url.URL.String() 输出时还会再次转义百分号，于是密码中的特殊字符被双重编码：例如密码 p@ss 经 QueryEscape 变成 p%40ss，再被转义为 p%2540ss，最终组件端解出的密码是 p%40ss 而不是 p@ss。另外 QueryEscape 把空格编码为 '+'，而 userinfo 中 '+' 是字面量、不会被还原成空格，含空格的密码同样会被破坏。结果是用带特殊字符的凭据（安全策略通常要求）配置 mongo 时，URI 生成成功但 Ping 阶段认证失败，连接无法建立，且错误指向“认证失败”而难以定位到转义问题。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 152,
+      "summary": "Database 先 PathEscape 再经 url.URL.String 转义，库名含特殊字符时被双重编码",
+      "failure_scenario": "第 152 行构造 Path 时对数据库名调用 url.PathEscape，但 url.URL.String() 输出路径时会自行执行 encodePath 转义，百分号会被再次转义：库名 my db 先变成 /my%20db，最终输出 /my%2520db，驱动解析出的数据库名为 my%20db，与实际库名不一致，导致连接成功后读写到错误的数据库（或 authSource 校验失败）。同一函数内 user/password 也存在类似二次转义，说明转义职责被放错层级。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 155,
+      "summary": "仅配置 User 或仅配置 Password 时凭据被静默丢弃，与大写校验风格不一致",
+      "failure_scenario": "原实现在 URI 为空时会无条件把 User/Password 拼入连接串；新实现把条件收紧为 config.User != \"\" && config.Password != \"\"，只要其中一个为空就完全不写入凭据，URI 中既无 userinfo 也无告警。典型的失败场景是从环境变量注入密码但漏配/拼错变量名（Password 为空、User 有值），此时 URI 生成成功、日志显示“配置正常”，直到 Ping 阶段才以认证失败告终；同一个函数对 Host/Port/Database 缺失都返回 errMissingField，对 User/Password 半配置却静默忽略，行为不一致，排查成本高。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "VALIDATION-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 98,
+      "summary": "Debugf 仍打印 c.config.Host，使用 URI 配置时调试日志中的连接目标为空",
+      "failure_scenario": "本次变更已把后续日志统一改为使用解析出的 host（第 116、120、127 行），但第 98 行的连接起始日志仍用 c.config.Host。当用户按文档以 Config{URI: ...} 方式配置（URI 是受支持的入口，文档示例即如此）时，config.Host 为空字符串，日志会输出 “connecting to MongoDB at  to database xxx”，丢失唯一的连接目标信息；而该行本身已能拿到 generateMongoURI 返回的 host，属于本次重构遗留的不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "LOGGING-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\gofr-dev__gofr@dc0b3e6.diff\n  caseId              gofr-dev__gofr@dc0b3e6\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@dc0b3e6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 4 / not-reached 0\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 4/4 / 新候选 0 / no-issue 4 / 预算跳过 0\n✓ 完成 · 耗时 105.2s · 模型调用 9 次 · token 输入 11,522（未命中） · 输出 13,221 · 缓存命中 103,168（90.0%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0056\n[time] 阶段耗时 | 总墙钟 106.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.9%)\n[time] 阶段 | 六阶段审计 82.8s (78.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 22.4s (21.1%)\n[time] 审计明细 | P1 7.0s (8.5%) | P2 2.1s (2.5%) | P3 5.2s (6.3%) | P4 23.5s (28.4%) | P5 26.3s (31.7%) | P6 18.7s (22.5%)\n[usage] 任务总计 | 模型调用 11 次（Agent 9 + 一次性 2） | token 输入 14,329（未命中） | 输出 16,942 | 缓存命中 103,936（87.9%） | $0.0070\n[usage] 一次性明细 | 覆盖补漏 2 次（输入 2,807 / 输出 3,721 / 缓存 768）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\gofr-dev__gofr@dc0b3e6\\audit\\20261121_155800_405.json",
+  "token_usage": {
+    "input_tokens": 14329,
+    "output_tokens": 16942,
+    "cache_read_input_tokens": 103936
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 11522,
+      "output_tokens": 13221,
+      "cache_read_input_tokens": 103168
+    },
+    "coverage_repair": {
+      "input_tokens": 2807,
+      "output_tokens": 3721,
+      "cache_read_input_tokens": 768
+    }
+  }
+}

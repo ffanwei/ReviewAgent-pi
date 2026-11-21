@@ -1,0 +1,52 @@
+{
+  "instance_id": "facebook__react@b045f18",
+  "repo": "facebook/react",
+  "base_commit": "99563e91736e9de473c4865d5cb6fd9eb1a26bcb",
+  "head_commit": "b045f18e378341876ee69e729fc855cab501c3cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 276.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+      "line": 149,
+      "summary": "DevTools 后端新增对 reconciler 内部模块的运行时 import，绕过版本映射表",
+      "failure_scenario": "本次为了给 Activity 加显示名/过滤逻辑，直接从 `react-reconciler/src/ReactWorkTags` 引入了运行时常量（`:149`），而 renderer.js 中其余对 reconciler 的引用全部是编译期擦除的 `import type`（`:120`）。这带来两个后果：一是 DevTools 后端（浏览器扩展/独立包）凭空多了一个 reconciler 源码的运行时依赖，而 react-devtools-shared 并不依赖 react-reconciler，一旦 DevTools 与 reconciler 分开构建/发布，`react-reconciler/src/*` 这类多段路径无法解析，后端注入失败、DevTools 无法连接被调试页面；二是它让该文件刻意维护的「按 React 版本映射 work tag」机制失效——真实生效的常量是写死的 31，本次在各旧版本分支新增的 `ActivityComponent: -1`（`:423/:460/:497/:534`）成为死值，而 `shouldFilterFiber` 会把 tag 31 一律当作 Activity 过滤掉，将来若有 React 版本给 31 分配其它类型，那些组件会被静默从 DevTools 组件树中隐藏。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "DEPS-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+      "line": 891,
+      "summary": "Activity 把 ref 转交给子 Offscreen fiber 却从不 markRef，ref 被静默丢弃",
+      "failure_scenario": "`updateActivityComponent` 在挂载（`:891`）与更新（`:904`）两条路径上都把 `workInProgress.ref` 赋给新建的 Offscreen 子 fiber，但整个函数没有调用 `markRef`。React 只在 `markRef` 里根据 `current.ref !== workInProgress.ref` 设置 `Ref | RefStatic` 标志，而 commit 阶段仅在 `flags & Ref` 时才 `safelyAttachRef` / `safelyDetachRef`，因此 `<Activity ref={...}>` 上的 ref 既不会被调用（拿不到句柄），也不会在 ref 变更或卸载时触发清理。同类实现 `updateOffscreenComponent` 在进入逻辑前就调用 `markRef`，也就是说本次拆分之前 Activity（复用 Offscreen fiber）的 ref 是被处理的，拆分后变成了静默失效，属于行为回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/shared/ReactSymbols.js",
+      "line": 37,
+      "summary": "新增元素类型 REACT_ACTIVITY_TYPE 未在命名与组件栈工具中登记",
+      "failure_scenario": "本次把 `unstable_Activity` 从复用 `REACT_OFFSCREEN_TYPE` 改成全新的元素类型 `REACT_ACTIVITY_TYPE`（`:37`），并在 isValidElementType 中放行，但所有把元素类型映射成可读名字的共享工具都没有同步：`getComponentNameFromType` 的 symbol switch 没有该分支（对 symbol 类型最终返回 null），`describeUnknownElementTypeFrameInDEV` 与服务端 `describeComponentStackByType` 也只处理 Suspense/SuspenseList/ViewTransition。结果是 `<Activity>` 在 owner stack（captureOwnerStack）、DevTools 的 owner/组件名展示、DEV 警告的组件栈以及 SSR 组件栈中表现为无名或整帧缺失，出错时无法通过栈定位到具体的 Activity 边界，等于本次新增的类型在诊断链路里是「不可识别」的。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.58,
+      "rule": "NAMING-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\facebook__react\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\diff\\facebook__react@b045f18.diff\n  caseId              facebook__react@b045f18\n  --issue             (未传)\n  --taskId            facebook__react@b045f18\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 26（no-signal=26）\n✓ 完成 · 耗时 274.4s · 模型调用 27 次 · token 输入 32,031（未命中） · 输出 45,283 · 缓存命中 1,256,192（97.5%） · 工具 42 次（主会话 42 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0207\n[time] 阶段耗时 | 总墙钟 276.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.5s (0.5%)\n[time] 阶段 | 六阶段审计 274.3s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 206.1s (75.1%) | P2 2.6s (1.0%) | P3 5.9s (2.1%) | P4 19.3s (7.0%) | P5 34.4s (12.5%) | P6 6.0s (2.2%)\n[usage] 任务总计 | 模型调用 27 次（Agent 27 + 一次性 0） | token 输入 32,031（未命中） | 输出 45,283 | 缓存命中 1,256,192（97.5%） | $0.0207\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\tasks\\facebook__react@b045f18\\audit\\20261121_132935_327.json",
+  "token_usage": {
+    "input_tokens": 32031,
+    "output_tokens": 45283,
+    "cache_read_input_tokens": 1256192
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "instance_id": "linera-io__linera-protocol@024925d",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c4a8ac301274ccdfc8d0fc87871d557534a8405f",
+  "head_commit": "024925dfbeff5daaecdd2cd733cda2825eff1bb7",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 158.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 175,
+      "summary": "提前 break 会跳过额外的错误收集，使 Trusted 错误被降级为 Sample/NoConsensus",
+      "failure_scenario": "新增的 'vote_wait 早退分支把「已经不可能达到 quorum」从“设置 end_time 后再等一个宽限期收集响应”改成了立即 break 'vote_wait。原逻辑在该情形下仍会给其它 validator 一小段额外时间（grace period）把响应送进来，从而让同一种错误继续累积到 validity_threshold 并走 `return Err(CommunicationError::Trusted(err))`（行 166-170）；现在循环一旦判定无 quorum 可能就结束，flight 中的响应被直接丢弃，error_scores 往往只留下 1~2 条互不相同的错误，于是返回 CommunicationError::Sample（行 205-208）甚至 NoConsensus（行 197-201）。由于错误类型是上层逻辑的判据，这会使依赖 Trusted 的分支失效：例如 linera-core/src/client/mod.rs:1526 只有在 `Err(CommunicationError::Trusted(NodeError::InactiveChain(id))) if id == chain_id` 时才把“链尚未激活”当作同步成功返回 Ok(())，一旦该错误被降级为 Sample，find_received_certificates 会直接 `return Err(error.into())`，把本应静默跳过的场景变成客户端报错。触发条件：quorum_threshold 未达成且前几个响应是互不相同的错误（如 4 个等权 validator 下 quorum=3、validity=2，先收到 InactiveChain 与另一个不同错误各 1 票时，highest_key_score(0)+remaining_votes(2) < 3 立即 break）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.48,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 107,
+      "summary": "公开函数 communicate_with_quorum 新增必填参数，属破坏性签名变更且 None 语义被静默改写",
+      "failure_scenario": "communicate_with_quorum 是 pub 函数，本次在参数列表末尾新增了必填参数 grace_period: impl Into<Option<f64>>。所有既有调用点都必须显式传入该参数，否则编译失败；对于跨 crate 使用者则是源码级不兼容变更。此外该类型同时接受 f64 与 Option<f64>，调用方传入 None 时会被当作“使用默认宽限期 0.1”，而不是“不加宽限”，语义与调用方直觉可能存在偏差（文档虽写明 defaulting 到 DEFAULT_GRACE_PERIOD，但缺少显式约定的 None 语义说明）。建议将参数改为 Option<f64> 并在文档中明确 None 表示启用默认宽限期，或直接使用带默认值的构造/重载以避免破坏既有调用点。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "公开 API 增加必填参数属于破坏性变更，需评估并显式声明默认/None 语义"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\linera-io__linera-protocol@024925d.diff\n  caseId              linera-io__linera-protocol@024925d\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@024925d\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 7 / not-reached 4（no-signal=4）\nreview-pi: 覆盖补漏 请求 4（失败 0）/ 覆盖 hunk 8/12 / 新候选 1 / no-issue 7 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 156.4s · 模型调用 16 次 · token 输入 18,044（未命中） · 输出 17,104 · 缓存命中 261,760（93.6%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0080\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 157.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 108.5s (69.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 48.0s (30.5%)\n[time] 审计明细 | P1 3.2s (3.0%) | P2 2.4s (2.2%) | P3 3.4s (3.1%) | P4 85.4s (78.7%) | P5 11.2s (10.3%) | P6 2.9s (2.6%)\n[usage] 任务总计 | 模型调用 21 次（Agent 16 + 一次性 5） | token 输入 22,155（未命中） | 输出 25,430 | 缓存命中 263,424（92.2%） | $0.0110\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 4,111 / 输出 8,326 / 缓存 1,664）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\linera-io__linera-protocol@024925d\\audit\\20261121_160732_010.json",
+  "token_usage": {
+    "input_tokens": 22155,
+    "output_tokens": 25430,
+    "cache_read_input_tokens": 263424
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 18044,
+      "output_tokens": 17104,
+      "cache_read_input_tokens": 261760
+    },
+    "coverage_repair": {
+      "input_tokens": 4111,
+      "output_tokens": 8326,
+      "cache_read_input_tokens": 1664
+    }
+  }
+}

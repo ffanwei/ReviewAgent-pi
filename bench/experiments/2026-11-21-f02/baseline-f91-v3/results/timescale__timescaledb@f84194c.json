@@ -1,0 +1,74 @@
+{
+  "instance_id": "timescale__timescaledb@f84194c",
+  "repo": "timescale/timescaledb",
+  "base_commit": "09513b064bc823c5525d82c242d9affe0a308e17",
+  "head_commit": "f84194cb231ad14a2f03b5ead75e99d64826972f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 792.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "tsl/src/compression/compression.c",
+      "line": 1359,
+      "summary": "新的解压列映射没有把未匹配列置为 InvalidAttrNumber，元数据列会映射到错误的解压列，导致解压报错或写错列/越界写",
+      "failure_scenario": "build_decompress_attrmap() 直接使用 make_attrmap(outnatts) 的返回值，随后只在 strcmp 命中时才写 attrMap->attnums[i]，未命中的压缩列会保留 AttrMap 的默认（identity：attnums[i] = i+1，即一个“看起来合法”的 attnum）。压缩 chunk 中必然存在非压缩 chunk 里没有同名列的元数据列：`_ts_meta_min_N`/`_ts_meta_max_N`（orderby 列的 min/max，见 create.c 在建压缩表时显式追加）、`_ts_meta_sequence_num`；且 create.c 明确禁止用户列使用 `_ts_meta_` 前缀，因此这些列永远不可能通过名字匹配上。只有 `_ts_meta_count` 被显式 continue 跳过，其他元数据列则会被当成“已建立映射”。后果：(1) create_per_compressed_column 中 decompressed_colnum 变成非零值，随即用 AttrNumberGetAttrOffset() 去 TupleDescAttr(out_desc, offset) 取类型，当 offset >= out_desc->natts 时是对 TupleDesc 数组的越界读；(2) 若越界值恰好通过 `compressed_attr->atttypid != decompressed_type` 检查，该元数据列会被当作 segmentby 列处理，init_batch 会执行 `decompressed_datums[output_index] = compressed_datums[input_column]`，把 min/max 元数据写到任意用户列（静默数据错列），而 decompressed_datums 仅按 out_desc->natts 分配，offset 超界时是堆越界写。变更前的实现用 get_attnum() 按名字查找，未命中返回 InvalidAttrNumber，从而使元数据列走 `decompressed_column_offset = -1` 的“跳过”分支，行为不同。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-ATTRMAP-001"
+    },
+    {
+      "file": "tsl/src/compression/compression.c",
+      "line": 1437,
+      "summary": "count 元数据列缺失时 count_compressed_attindex 变成 -1，非 assert 构建下会以负下标读 compressed_datums",
+      "failure_scenario": "build_decompressor() 现在用 `AttrNumberGetAttrOffset(count_meta_attnum)` 直接计算 count 元数据列的偏移，而 count_meta_attnum 只有在 build_decompress_attrmap 按名字找到 `_ts_meta_count` 时才被赋值，缺失时保持 InvalidAttrNumber；代码仅用 Assert 保护（release 构建下 Assert 被编译掉），此时 AttrNumberGetAttrOffset(InvalidAttrNumber) 得到 -1，count_compressed_attindex = -1。decompress_batch() 中 `decompressor->compressed_datums[decompressor->count_compressed_attindex]` 随即以 -1 下标读取 compressed_datums，属于典型的堆越界读，读到的“行数”还会驱动后续按 n_batch_rows 的循环与 heap_form_tuple。变更前 count_compressed_attindex 在 create_per_compressed_column 中只在名字匹配时赋值、其余情况为 0 初始化（同样是错的但不会出现负下标），因此本次变更加重了该风险。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "CORRECTNESS-RANGE-002"
+    },
+    {
+      "file": "tsl/src/compression/compression.c",
+      "line": 957,
+      "summary": "调用已重命名的 row_compressor_flush，导致编译失败",
+      "failure_scenario": "hunk24 将原 row_compressor_flush(row_compressor, CommandId, bool) 定义替换为 HeapTuple row_compressor_build_tuple(RowCompressor *)；但本 hunk 仍调用 row_compressor_flush(row_compressor, writer, true)，该函数已不存在，且参数个数与新函数也不匹配，会直接导致编译或链接失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "函数重命名或签名的变更必须同步修改所有调用点，否则编译失败"
+    },
+    {
+      "file": "tsl/src/compression/compression.c",
+      "line": 1019,
+      "summary": "调用已重命名的 row_compressor_flush，导致编译失败",
+      "failure_scenario": "hunk24 已将 row_compressor_flush 重命名并改为 row_compressor_build_tuple(RowCompressor *)，但本 hunk 仍调用 row_compressor_flush(row_compressor, writer, changed_groups)，该函数已不存在，且新函数签名不接受 writer 和 changed_groups，编译将失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "函数重命名或签名的变更必须同步修改所有调用点，否则编译失败"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\timescale__timescaledb\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\timescale__timescaledb@f84194c.diff\n  caseId              timescale__timescaledb@f84194c\n  --issue             (未传)\n  --taskId            timescale__timescaledb@f84194c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 18 / not-reached 53（no-signal=53）\nreview-pi: 覆盖补漏 请求 15（失败 0）/ 覆盖 hunk 20/73 / 新候选 2 / no-issue 18 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 790.0s · 模型调用 23 次 · token 输入 55,009（未命中） · 输出 52,785 · 缓存命中 1,383,808（96.2%） · 工具 38 次（主会话 38 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0264\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 791.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.1%)\n[time] 阶段 | 六阶段审计 295.8s (37.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 494.7s (62.5%)\n[time] 审计明细 | P1 84.4s (28.6%) | P2 3.2s (1.1%) | P3 9.5s (3.2%) | P4 79.3s (26.8%) | P5 112.9s (38.2%) | P6 6.4s (2.2%)\n[usage] 任务总计 | 模型调用 40 次（Agent 23 + 一次性 17） | token 输入 78,718（未命中） | 输出 138,242 | 缓存命中 1,390,592（94.6%） | $0.0536\n[usage] 一次性明细 | 覆盖补漏 17 次（输入 23,709 / 输出 85,457 / 缓存 6,784）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\timescale__timescaledb@f84194c\\audit\\20261121_162140_715.json",
+  "token_usage": {
+    "input_tokens": 78718,
+    "output_tokens": 138242,
+    "cache_read_input_tokens": 1390592
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 55009,
+      "output_tokens": 52785,
+      "cache_read_input_tokens": 1383808
+    },
+    "coverage_repair": {
+      "input_tokens": 23709,
+      "output_tokens": 85457,
+      "cache_read_input_tokens": 6784
+    }
+  }
+}

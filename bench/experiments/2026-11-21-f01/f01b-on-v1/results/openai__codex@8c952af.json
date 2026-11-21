@@ -1,0 +1,42 @@
+{
+  "instance_id": "openai__codex@8c952af",
+  "repo": "openai/codex",
+  "base_commit": "d6182becbe155776b159270fe4a5e88d607f0c5e",
+  "head_commit": "8c952af20fe791cc0c5d0a59089d3329968b4373",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 304.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "codex-rs/protocol/src/models.rs",
+      "line": 45,
+      "summary": "ResponseItem 的 id 只跳过序列化却未加 default，会导致已落盘的 rollout 记录无法回读、resume 历史被静默丢弃",
+      "failure_scenario": "本次给 ResponseItem 各变体的 id 字段统一加上 `#[serde(skip_serializing)]`，但 Serialize 与 Deserialize 共用同一套 derive：跳过序列化后，写盘的 JSON 里不再有 `id` 字段；而 `Message.id: Option<String>`（第 45-46 行）、`Reasoning.id: String`（第 51-52 行）、`LocalShellCall.id`（第 60 行）、`FunctionCall.id`（第 68 行）、`CustomToolCall.id`（第 89 行）都没有 `#[serde(default)]`，反序列化缺少该字段会直接报 `missing field \\`id\\``。rollout 持久化正是用同一个 Serialize 实现写盘（recorder.rs:296 → :329），恢复时用 `serde_json::from_value::<ResponseItem>` 解析（recorder.rs:189），失败只打一条 warn 就把该行丢弃，全部丢弃后返回 InitialHistory::New。结果是本次变更之后新产生的会话在 `resume` 时历史消息、reasoning、函数调用全部丢失，且没有任何错误提示，属于静默的行为回归。此外 CustomToolCall/WebSearchCall 原本的 `#[serde(default, skip_serializing_if = \"Option::is_none\")]` 也被替换为 `skip_serializing`，进一步去掉了原有的反序列化容错。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.76,
+      "rule": "SERDE-ROUNDTRIP-001"
+    },
+    {
+      "file": "codex-rs/protocol/src/mcp_protocol.rs",
+      "line": 374,
+      "summary": "删除 Profile.disable_response_storage 后 mcp-server 测试仍构造该字段，导致测试目标无法编译",
+      "failure_scenario": "本次在 `codex_protocol::mcp_protocol::Profile` 上删除了 `disable_response_storage` 字段，但 `codex-rs/mcp-server/tests/suite/config.rs` 未同步：该文件第 107-116 行仍用 `Profile { ..., disable_response_storage: Some(false), chatgpt_base_url: ... }` 构造结构体字面量（Profile 由该文件第 10 行 `use codex_protocol::mcp_protocol::Profile;` 引入）。Rust 结构体字面量多出字段即为编译错误，`cargo test -p codex-mcp-server` 会直接构建失败，整个 mcp-server 测试套件（含 config/profile 相关用例）无法运行。同一文件中第 54 行的 config.toml 文本仍带 `disable_response_storage = false`，因 ConfigToml 未启用 `deny_unknown_fields` 而被静默忽略，进一步说明该测试文件未随生产代码更新。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.85,
+      "rule": "BUILD-COMPAT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\openai__codex\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\diff\\openai__codex@8c952af.diff\n  caseId              openai__codex@8c952af\n  --issue             (未传)\n  --taskId            openai__codex@8c952af\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 40 / not-reached 7（no-signal=7）\nreview-pi: 覆盖补漏 请求 14（失败 0）/ 覆盖 hunk 40/47 / 新候选 0 / no-issue 40 / 预算跳过 0\n✓ 完成 · 耗时 302.3s · 模型调用 14 次 · token 输入 14,142（未命中） · 输出 16,210 · 缓存命中 290,176（95.4%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0073\n[time] 阶段耗时 | 总墙钟 303.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.5s (0.5%)\n[time] 阶段 | 六阶段审计 99.3s (32.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 203.1s (66.8%)\n[time] 审计明细 | P1 5.5s (5.5%) | P2 2.6s (2.6%) | P3 6.6s (6.7%) | P4 58.5s (58.9%) | P5 22.6s (22.7%) | P6 3.5s (3.6%)\n[usage] 任务总计 | 模型调用 28 次（Agent 14 + 一次性 14） | token 输入 23,715（未命中） | 输出 51,986 | 缓存命中 293,760（92.5%） | $0.0187\n[usage] 一次性明细 | 覆盖补漏 14 次（输入 9,573 / 输出 35,776 / 缓存 3,584）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\tasks\\openai__codex@8c952af\\audit\\20261121_134013_142.json",
+  "token_usage": {
+    "input_tokens": 14142,
+    "output_tokens": 16210,
+    "cache_read_input_tokens": 290176
+  }
+}

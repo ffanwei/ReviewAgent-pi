@@ -1,0 +1,104 @@
+{
+  "instance_id": "kestra-io__kestra@0ec45f0",
+  "repo": "kestra-io/kestra",
+  "base_commit": "bfcfb2ac16dd8f198a99fef43072cb178f9a1d8e",
+  "head_commit": "0ec45f028467c99d8d1efeee6c201210d9433e6d",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 138.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileEmptyFunction.java",
+      "line": 75,
+      "summary": "fileEmpty 为判断空文件把整个文件 readAllBytes 读入内存",
+      "failure_scenario": "FileEmptyFunction 通过 `new String(inputStream.readAllBytes(), StandardCharsets.UTF_8).isBlank()` 判断文件是否为空，等价于把整个文件内容一次性读入堆内存。该函数会在任务渲染 Pebble 表达式时被调用（如 `{{ fileEmpty(outputs.download.uri) }}`），而 Kestra 内部存储里的文件经常是日志、下载产物、批量导出等大文件。对一个 1~2 GB 的产物调用 fileEmpty 会直接占用同等大小的堆内存，极易触发 OOM / 长时间 GC，甚至拖垮整个 Worker 进程，而调用方只是想确认“文件是否为空”。同模块的 FileSizeFunction 已采用 `storageInterface.getAttributes(...).getSize()` 的低成本方式，说明这条路径上有更省的实现可选。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.75,
+      "rule": "PERF-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileExistsFunction.java",
+      "line": 19,
+      "summary": "fileExists 的参数错误提示误写成 'fileSize' 函数",
+      "failure_scenario": "FileExistsFunction 的 ERROR_MESSAGE 直接从 FileSizeFunction 复制而来，文案为 \"The 'fileSize' function expects an argument 'path' ...\"。当用户在模板里写出 `{{ fileExists() }}`（漏传 path）时，抛出的 PebbleException 会把错误归因到并不存在的 'fileSize' 调用，导致用户排错方向错误（去检查 fileSize 的用法），也让错误日志中出现与实际调用不一致的函数名。同一 MR 新增的 FileEmptyFunction 复制的是 'read' 文案，两处文案都与实际函数名不符，说明复制粘贴未同步修正。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.9,
+      "rule": "READABILITY-003"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileEmptyFunction.java",
+      "line": 22,
+      "summary": "fileEmpty 的错误提示声称支持 namespace 文件，实现并不支持",
+      "failure_scenario": "FileEmptyFunction 的 ERROR_MESSAGE 复制自 ReadFileFunction，写着 \"The 'read' function expects an argument 'path' that is a path to a namespace file or an internal storage URI.\"，存在两处失实：1) 函数名是 'read' 而不是 'fileEmpty'；2) 声称 path 可以是 namespace 文件，但 getUriFromThePath 只接受 URI 实例或以 `kestra:///` 开头的字符串，普通相对路径（如 `my/file.txt`）会走到 else 分支抛 \"Unable to create the URI from the path\"。用户按提示传入 namespace 文件路径时会得到与提示完全不同的错误，属于对外契约与实现不一致。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "READABILITY-004"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileExistsFunction.java",
+      "line": 75,
+      "summary": "授权校验与 URI 解析逻辑在新函数中被第三次逐行复制",
+      "failure_scenario": "新增的 FileEmptyFunction 与 FileExistsFunction 各自带一份与 FileSizeFunction（以及 ReadFileFunction.validateFileUri）几乎逐行相同的实现：相同的 KESTRA_SCHEME/TRIGGER/NAMESPACE/ID 常量、相同的 getUriFromThePath、相同的 checkIfFileFromParentExecution、相同的 isFileUriValid 前缀判定。这段代码属于访问控制逻辑（决定模板能否读取某个执行的文件）。本次变更是把它从 2 份扩到 4 份，任何一次安全修补（例如修正前缀比较、补充 tenant/namespace 校验、处理 `..` 或编码绕过）都必须人工同步到 4 处，遗漏任意一处即在该函数上重现漏洞，这是可预见的高风险遗漏场景。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileExistsFunction.java",
+      "line": 72,
+      "summary": "fileExists 静默吞掉存储 IOException 并返回 false",
+      "failure_scenario": "FileExistsFunction 直接调用 `storageInterface.exists(...)`，而 StorageInterface.exists 的默认实现是 `try (InputStream ignored = get(...)) { return true; } catch (IOException e) { return false; }`，即把任何 IOException（瞬态网络错误、权限不足、后端 5xx 等）都转成 false。结果是：当文件确实存在但存储暂时不可达时，模板里的 `{% if not fileExists(uri) %}` 会静默走“文件不存在”分支，流程继续执行错误路径且没有任何异常或日志提示，排查极其困难；而同批新增的 fileEmpty 在同一情境下会抛 PebbleException 并让任务失败，两个姊妹函数对同一故障的表现不一致。此外 execute 中的 `catch (IOException e)` 对 exists 调用实际永远不可能命中，形成误导性的错误处理。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "core/src/test/java/io/kestra/core/runners/pebble/functions/FileEmptyFunctionTest.java",
+      "line": 51,
+      "summary": "负向用例用 Boolean.parseBoolean 断言，渲染结果非布尔时会“假通过”",
+      "failure_scenario": "shouldReturnFalseForFileWithText 中先执行 Boolean.parseBoolean(variableRenderer.render(...)) 再 assertFalse(render)。Boolean.parseBoolean 对除 \"true\"（忽略大小写）以外的一切字符串都返回 false，因此当 fileEmpty 函数返回 null、\"null\"、错误信息或空字符串时，断言仍然通过，负向用例无法区分“函数正确返回 false”和“函数输出异常/渲染结果不符合预期”这两种情况，测试失去防护能力。建议先对 render 的原始字符串做精确断言（如 assertEquals(\"false\", rendered)），或直接将渲染结果按布尔字符串严格比较，再断言布尔值。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "测试断言应与被测契约严格匹配，避免使用会吞掉异常输入的宽松解析函数做结果判定"
+    },
+    {
+      "file": "core/src/test/java/io/kestra/core/runners/pebble/functions/FileExistsFunctionTest.java",
+      "line": 68,
+      "summary": "非存在文件用例用 Boolean.parseBoolean 断言，无法区分 false 与空/null 渲染结果",
+      "failure_scenario": "shouldReturnFalseForNonExistentFile 中先调用 Boolean.parseBoolean(variableRenderer.render(...))，再 assertFalse。Boolean.parseBoolean 对 null、空串以及任何非 \"true\" 字符串都返回 false，因此如果 fileExists 因异常或回归返回 null/空字符串，该用例仍会通过，无法验证函数确实返回了 false。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "测试断言应区分预期值 false 与空值/异常输出，避免 Boolean.parseBoolean 的宽松转换掩盖回归"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\kestra-io__kestra\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\kestra-io__kestra@0ec45f0.diff\n  caseId              kestra-io__kestra@0ec45f0\n  --issue             (未传)\n  --taskId            kestra-io__kestra@0ec45f0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 3 / not-reached 0\nreview-pi: 覆盖补漏 请求 4（失败 0）/ 覆盖 hunk 5/5 / 新候选 2 / no-issue 3 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 136.9s · 模型调用 10 次 · token 输入 20,249（未命中） · 输出 13,903 · 缓存命中 182,912（90.0%） · 工具 10 次（主会话 10 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0072\n[time] 阶段耗时 | 总墙钟 137.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 79.0s (57.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 58.0s (42.1%)\n[time] 审计明细 | P1 3.2s (4.1%) | P2 3.6s (4.6%) | P3 4.0s (5.1%) | P4 31.6s (40.0%) | P5 27.7s (35.1%) | P6 8.8s (11.2%)\n[usage] 任务总计 | 模型调用 16 次（Agent 10 + 一次性 6） | token 输入 31,033（未命中） | 输出 23,944 | 缓存命中 184,704（85.6%） | $0.0116\n[usage] 一次性明细 | 覆盖补漏 6 次（输入 10,784 / 输出 10,041 / 缓存 1,792）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\kestra-io__kestra@0ec45f0\\audit\\20261121_155549_608.json",
+  "token_usage": {
+    "input_tokens": 31033,
+    "output_tokens": 23944,
+    "cache_read_input_tokens": 184704
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 20249,
+      "output_tokens": 13903,
+      "cache_read_input_tokens": 182912
+    },
+    "coverage_repair": {
+      "input_tokens": 10784,
+      "output_tokens": 10041,
+      "cache_read_input_tokens": 1792
+    }
+  }
+}

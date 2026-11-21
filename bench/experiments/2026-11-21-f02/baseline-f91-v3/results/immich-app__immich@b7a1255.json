@@ -1,0 +1,84 @@
+{
+  "instance_id": "immich-app__immich@b7a1255",
+  "repo": "immich-app/immich",
+  "base_commit": "b845184c80295603e3a02dfad84ff2755d417aff",
+  "head_commit": "b7a12558bc8e69c9c96b9a5b12f61f94689ea0e3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 213.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "server/src/services/notification.service.ts",
+      "line": 309,
+      "summary": "handleAlbumUpdate 不再校验收件人是否为相册当前成员，被移出相册的用户仍会收到含缩略图的邮件",
+      "failure_scenario": "旧实现在处理时用 `[...album.albumUsers.map((user) => user.user), owner].filter((user) => recipientIds.includes(user.id))` 把收件人收敛到「当前仍是相册成员」的集合，再用 `recipient.id` 查用户。新实现删除了这段过滤，直接 `userRepository.get(recipientID, { withDeleted: false })` 并对任何存在的用户发信：只要在 5 分钟延时窗口（albumUpdateEmailDelayMs = 300_000）内被移出相册、或已失去该相册访问权的用户，仍会收到标题为 `New media has been added to an album - <albumName>` 的邮件，且邮件正文/附件包含 `getAlbumThumbnailAttachment(album)` 生成的相册缩略图（`imageAttachments: attachment ? [attachment] : undefined`）。这是一条已经被收回权限的用户仍能获取相册名称与缩略图内容的越权信息通道。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SEC-AUTHZ-002"
+    },
+    {
+      "file": "server/src/repositories/job.repository.ts",
+      "line": 238,
+      "summary": "removeJob 移除错误兜底后，remove() 抛错会沿 emit 冒泡并中断后续收件人的通知入队",
+      "failure_scenario": "旧 removeJob 用 try/catch 包裹 `existingJob.remove()`，并把消息含 `Missing key for job` 的错误视为已删除而忽略（return），只有其他错误才重抛。新实现完全去掉 try/catch，仅在 getJob 返回空时跳过：`getJob` 与 `remove` 之间存在竞争窗口（延时任务恰好被 worker 取走转 active、或被并发请求删除），bullmq 在此时会抛 `Missing key for job` / job is locked 一类错误，异常将直接向上传播。调用链是 `AlbumService.addAssets` → `eventRepository.emit('album.update')` → `EventRepository.onEvent` 内 `await handler(...)`（无 try/catch）→ `NotificationService.onAlbumUpdate` → `removeJob`，因此异常会冒泡到已经完成资产写入的 HTTP 请求，使 addAssets 返回 500（非原子：资产已入库但接口报错），且 `for (const recipientID of allUsersExceptUs)` 循环被中断，后续收件人连任务都不会入队，导致通知静默丢失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "server/src/services/album.service.ts",
+      "line": 173,
+      "summary": "逐收件人串行 emit 使大相册的 addAssets 请求产生 3N 次串行 Redis 往返",
+      "failure_scenario": "旧实现每个相册只 emit 一次 `album.update`（1 次 getJob + 1 次 remove + 1 次 add）。新实现改为对 `allUsersExceptUs` 中每个用户串行 `await emit(...)`，而每次 emit 在 NotificationService.onAlbumUpdate 里会先 `removeJob`（getJob + remove）再 `queue`（jobId 存在时逐个走 `queue.add()`，见 queueAll 的注释「need to use add() instead of addBulk()」）。共享相册成员较多时（例如 100 人），一次 addAssets 请求会在响应路径上串行执行约 300 次 Redis 命令 + 100 次事件分发，请求延迟随成员数线性增长；且任何一次调用的异常都会中断循环（与 F002 叠加）。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-002"
+    },
+    {
+      "file": "server/src/services/notification.service.ts",
+      "line": 293,
+      "summary": "升级瞬间残留的旧格式延时任务（recipientIds）会被新 handler 以 recipientID=undefined 处理",
+      "failure_scenario": "bullmq 从 4 升级到 5、且 job data 结构由 `recipientIds: string[]` 改为 `recipientID: string` 时，Redis 中已经存在的延时/等待任务（延时窗口 5 分钟，部署切换时窗口内必然可能有存量任务）仍是旧数据结构，其 jobId 也是旧的 `albumId`。新代码在 `handleAlbumUpdate({ id, recipientID })` 中直接拿 `recipientID` 查询用户，不做任何回退或兼容判断，`userRepository.get(undefined, { withDeleted: false })` 会以无效 ID 查询（抛错导致任务 failed，或返回空后 SKIPPED），这批用户的通知邮件被静默丢弃；且旧 jobId 不会被新逻辑的 `removeJob` 命中清理。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "server/src/services/notification.service.spec.ts",
+      "line": 578,
+      "summary": "用例标题仍声称验证新增收件人合并，但断言只覆盖单收件人重新入队",
+      "failure_scenario": "该用例标题为“should add new recipients for new images if job is already queued”，但新代码未模拟已存在 job 的数据，只传入单个 recipientID: '2'，并仅断言 removeJob 被调用及重新入队同一收件人。原先通过 removeJob.mockResolvedValue 构造已有 recipientIds 并校验合并后收件人集合的逻辑已消失，导致该用例无法覆盖“为已排队任务新增收件人”的关键行为，存在回归漏测风险。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "测试用例名称与断言应覆盖同一业务场景；当业务逻辑从合并收件人数组改为单收件人 job 时，应同步重命名用例，或保留已有 job 的 mock 与合并后断言，避免关键路径漏测。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\immich-app__immich\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\immich-app__immich@b7a1255.diff\n  caseId              immich-app__immich@b7a1255\n  --issue             (未传)\n  --taskId            immich-app__immich@b7a1255\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 3149 字符（lockfile=1），明细见审计 mrFilter\nreview-pi: 覆盖账本 candidate 5 / no-issue 8 / not-reached 6（no-signal=6）\nreview-pi: 覆盖补漏 请求 8（失败 0）/ 覆盖 hunk 9/15 / 新候选 1 / no-issue 8 / 预算跳过 0 / 验证拒绝 2\n✓ 完成 · 耗时 212.3s · 模型调用 12 次 · token 输入 19,726（未命中） · 输出 13,601 · 缓存命中 180,992（90.2%） · 工具 12 次（主会话 12 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0071\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 213.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.4%)\n[time] 阶段 | 六阶段审计 83.8s (39.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 128.5s (60.3%)\n[time] 审计明细 | P1 4.6s (5.5%) | P2 3.7s (4.5%) | P3 10.4s (12.5%) | P4 36.9s (44.1%) | P5 22.0s (26.3%) | P6 5.9s (7.1%)\n[usage] 任务总计 | 模型调用 23 次（Agent 12 + 一次性 11） | token 输入 28,915（未命中） | 输出 35,700 | 缓存命中 184,448（86.4%） | $0.0146\n[usage] 一次性明细 | 覆盖补漏 11 次（输入 9,189 / 输出 22,099 / 缓存 3,456）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\immich-app__immich@b7a1255\\audit\\20261121_160702_706.json",
+  "token_usage": {
+    "input_tokens": 28915,
+    "output_tokens": 35700,
+    "cache_read_input_tokens": 184448
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 19726,
+      "output_tokens": 13601,
+      "cache_read_input_tokens": 180992
+    },
+    "coverage_repair": {
+      "input_tokens": 9189,
+      "output_tokens": 22099,
+      "cache_read_input_tokens": 3456
+    }
+  }
+}

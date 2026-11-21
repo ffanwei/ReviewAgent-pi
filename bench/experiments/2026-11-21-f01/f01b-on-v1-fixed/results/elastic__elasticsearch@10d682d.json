@@ -1,0 +1,62 @@
+{
+  "instance_id": "elastic__elasticsearch@10d682d",
+  "repo": "elastic/elasticsearch",
+  "base_commit": "47e352fda0567a682687fe926927cee3f631ea24",
+  "head_commit": "10d682d9aa4b1c2976e1db769ba04cb15256da9e",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 591.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+      "line": 383,
+      "summary": "CA keyUsage 用 randomSubsetOf 可能取到空列表，导致该校验随机失败",
+      "failure_scenario": "新增的 testGenerateMultipleCertificateWithNewCA 用 randomSubsetOf(KEY_USAGE_MAPPINGS.keySet()) 生成期望的 CA keyUsage，但 ESTestCase.randomSubsetOf(Collection) 明确“包含可能为空的列表”（如返回空列表，概率约 1/9）；此时第 387 行会通过 terminal.addTextInput(\"\") 输入空字符串，而 HttpCertificateCommand.tryReadInput 对空输入直接返回默认值 DEFAULT_CA_KEY_USAGE（keyCertSign,cRLSign），实际生成的 CA 证书带 keyCertSign/cRLSign 位；随后第 474 行 assertExpectedKeyUsage(caCertKey.v1(), caKeyUsage) 用空列表断言所有位均为 false，必然失败。该用例因此在 CI 中随机失败（约 5% 概率），会污染构建稳定性并掩盖真正的回归。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.78,
+      "rule": "TEST-FLAKY-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+      "line": 432,
+      "summary": "命令行 --ca-keyusage 传入非法值时抛出未包装的 IllegalArgumentException",
+      "failure_scenario": "新增的 --ca-keyusage 选项只做了 “逗号分隔字符串拆分”，没有像 http 交互流程那样用 isValidKeyUsage 校验名称，generateCA 直接把结果交给 CertGenUtils.buildKeyUsage；一旦用户写错名称（如大小写不一致的 keycertsign、拼写错误、或输入 “keyCertSign,,cRLSign” 产生空元素），buildKeyUsage 会抛出 IllegalArgumentException(\"Unknown keyUsage: ...\")。Command.main 对该异常走 catch (Throwable) 分支，向用户打印完整堆栈并返回 ExitCodes.CODE_ERROR，而不是像其它参数错误那样给出可读提示并返回 ExitCodes.USAGE，导致 `bin/elasticsearch-certutil ca --ca-keyusage keycertsign` 这类常见敲错场景表现为“内部错误”。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+      "line": 953,
+      "summary": "CA 的 keyUsage 未强制包含 keyCertSign，可生成无法签发证书的 CA",
+      "failure_scenario": "createNewCA 的交互提示会把 KEY_USAGE_MAPPINGS 中全部 9 个取值（digitalSignature…decipherOnly）原样列出，并直接把用户输入交给 buildKeyUsage，没有任何“CA 必须包含 keyCertSign”的校验；而本次变更又把 keyUsage 以 critical=true 写入证书。若用户在 CA 提示处只填 digitalSignature（或仅 encipherOnly 等），生成的 CA 证书带 critical 的 keyUsage 却不含 keyCertSign，此后由它签发的 http.p12 证书在 Java PKIX/浏览器链校验时会因 “key usage does not permit certificate signing” 被拒绝，整条 PKI 不可用，而工具不会给出任何警告；同理 encipherOnly/decipherOnly 在缺少 keyAgreement 时也不符合 RFC 5280 §4.2.1.3。本 MR 自带的测试也用随机子集（可能不含 keyCertSign）生成 CA，且 HttpCertificateCommandTests.verifyChain 只验签名不验 keyUsage，因此这类不可用 CA 不会被测试发现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "VALIDATION-002"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+      "line": 110,
+      "summary": "keyUsage 名称到取值的两套映射靠人工同步，新增取值时易静默失配",
+      "failure_scenario": "本次新增了 KEY_USAGE_MAPPINGS（名称 → BouncyCastle 位掩码常量）与 KEY_USAGE_BITS（名称 → 硬编码的位下标 0..8）两份平行映射，二者必须手工保持一致：前者用于真正构造证书扩展与校验输入，后者被测试用来断言生成证书的位是否正确。后续若新增/调整某个 keyUsage 只改其中一处，buildKeyUsage 仍会“正常工作”，但 assertExpectedKeyUsage 会按错误的位下标做断言（或 KEY_USAGE_BITS.size() 与实际位数不符），从而给出误导性的失败或漏检，而不是编译期报错。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "MAINTAINABILITY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\elastic__elasticsearch\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\diff\\elastic__elasticsearch@10d682d.diff\n  caseId              elastic__elasticsearch@10d682d\n  --issue             (未传)\n  --taskId            elastic__elasticsearch@10d682d\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 52 / not-reached 14（no-signal=14）\nreview-pi: 覆盖补漏 请求 18（失败 0）/ 覆盖 hunk 52/66 / 新候选 0 / no-issue 52 / 预算跳过 0\n✓ 完成 · 耗时 586.8s · 模型调用 25 次 · token 输入 37,944（未命中） · 输出 41,964 · 缓存命中 1,481,728（97.5%） · 工具 41 次（主会话 41 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0212\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 587.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.2%)\n[time] 阶段 | 六阶段审计 279.7s (47.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 307.2s (52.3%)\n[time] 审计明细 | P1 8.2s (2.9%) | P2 2.3s (0.8%) | P3 177.8s (63.6%) | P4 54.1s (19.4%) | P5 25.7s (9.2%) | P6 11.5s (4.1%)\n[usage] 任务总计 | 模型调用 43 次（Agent 25 + 一次性 18） | token 输入 49,235（未命中） | 输出 94,718 | 缓存命中 1,493,248（96.8%） | $0.0376\n[usage] 一次性明细 | 覆盖补漏 18 次（输入 11,291 / 输出 52,754 / 缓存 11,520）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\tasks\\elastic__elasticsearch@10d682d\\audit\\20261121_140211_209.json",
+  "token_usage": {
+    "input_tokens": 37944,
+    "output_tokens": 41964,
+    "cache_read_input_tokens": 1481728
+  }
+}

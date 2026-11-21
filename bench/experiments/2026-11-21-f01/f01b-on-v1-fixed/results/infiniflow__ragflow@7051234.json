@@ -1,0 +1,42 @@
+{
+  "instance_id": "infiniflow__ragflow@7051234",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "b1c874698469ac999d210cd8cde59425781e4da2",
+  "head_commit": "705123406ec7cd5eb1f9be26f6c5c31357aeffc9",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 102.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "api/db/services/document_service.py",
+      "line": 339,
+      "summary": "批量取名无匹配时返回 None，导致 document_rm 抛 TypeError 并返回 500",
+      "failure_scenario": "新增的 get_doc_ids_by_doc_names 在查询结果为空时执行无值 return（返回 None），而调用方 api/apps/api_app.py:618-621 直接把它当作列表使用：`doc_ids = DocumentService.get_doc_ids_by_doc_names(req.get(\"doc_names\", []))` 之后立即 `if doc_id not in doc_ids`。当请求只带 doc_ids 不带 doc_names（doc_names 默认 []，name in_([]) 查不到任何行）、或传入的 doc_names 全部不存在时，`doc_id not in None` 会抛 TypeError: argument of type 'NoneType' is not iterable，被 628-629 的 except 捕获后转为 server_error_response，接口直接 500。变更前该处是列表推导，结果恒为列表（[]），同样的请求可以正常按 doc_ids 删除文档，因此这是本次重构引入的接口回归：DELETE /document 只传 doc_ids 的既有调用方式全部失效。此外 doc_names 显式传 null 时 name.in_(None) 同样会进入异常分支。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-NULL-001"
+    },
+    {
+      "file": "api/db/services/document_service.py",
+      "line": 336,
+      "summary": "按文件名批量匹配未限定 kb_id/租户，删除范围扩大到其他知识库与其他租户的同名文档",
+      "failure_scenario": "新方法使用 `cls.model.name.in_(doc_names)` 在 document 全表匹配，没有按 kb_id（进而按 Knowledgebase.tenant_id）过滤；Document 模型中 name 只是普通索引字段、无唯一约束，不同功能/不同租户下完全可能同名。旧实现 get_doc_id_by_doc_name 每个名字只取一行，而新实现会把所有同名文档的 id 一并返回，document_rm 随后对每个 id 执行 `DocumentService.get_tenant_id(doc_id)` 反查所属租户并调用 remove_document 清理向量库、删除文档记录——注意这里用的是文档反查出的租户，而不是 API Token 对应的 tenant_id（api_app.py:615、646）。因此只要持有一个租户的 API Key 并传入某个常见文件名（如 report.pdf），就能连带删除其它租户/其它知识库中的同名文档，影响面由单条扩散为全部同名文档，且属于跨租户数据删除。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.75,
+      "rule": "SECURITY-TENANT-ISOLATION-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\infiniflow__ragflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\diff\\infiniflow__ragflow@7051234.diff\n  caseId              infiniflow__ragflow@7051234\n  --issue             (未传)\n  --taskId            infiniflow__ragflow@7051234\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 4 / not-reached 0\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 4/4 / 新候选 0 / no-issue 4 / 预算跳过 0\n✓ 完成 · 耗时 100.0s · 模型调用 13 次 · token 输入 10,249（未命中） · 输出 8,571 · 缓存命中 128,896（92.6%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0042\n[time] 阶段耗时 | 总墙钟 101.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.5s (1.5%)\n[time] 阶段 | 六阶段审计 58.4s (57.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 41.6s (41.0%)\n[time] 审计明细 | P1 11.3s (19.4%) | P2 3.1s (5.3%) | P3 3.4s (5.8%) | P4 15.1s (25.8%) | P5 21.6s (36.9%) | P6 4.0s (6.8%)\n[usage] 任务总计 | 模型调用 16 次（Agent 13 + 一次性 3） | token 输入 11,418（未命中） | 输出 15,276 | 缓存命中 129,920（91.9%） | $0.0062\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 1,169 / 输出 6,705 / 缓存 1,024）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\tasks\\infiniflow__ragflow@7051234\\audit\\20261121_140209_804.json",
+  "token_usage": {
+    "input_tokens": 10249,
+    "output_tokens": 8571,
+    "cache_read_input_tokens": 128896
+  }
+}

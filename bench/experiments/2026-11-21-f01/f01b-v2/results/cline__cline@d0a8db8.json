@@ -1,0 +1,84 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 162.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 623,
+      "summary": "配置持久化改为并发批量后失去顺序语义，失败时会留下「部分写入」的不一致状态",
+      "failure_scenario": "旧实现对 53 个键逐个 `await updateGlobalState` / `await storeSecret`，任一写入失败立即中断，语义上等价于「从头开始顺序应用」。新实现把 29 个 global 键、24 个 secret 键分别交给 `Promise.all`（`updateGlobalStateBatch`、`updateSecretsBatch`），两者再被外层 `Promise.all` 并发执行：一旦其中某个写入 reject，`Promise.all` 会立刻向调用方抛出，但**其余已在飞行中的写入不会被取消、也不会被回滚**，它们会在 `updateApiConfigurationProto` 的 catch 已经打日志并 `throw`、webview 已经收到失败提示之后才陆续落盘。失败场景：切换 provider 时 globalState 的 `apiProvider` 已写入成功、而 `secrets.store` 因钥匙串/存储抖动失败（或反之），用户看到「Failed to update API configuration」并重试，但磁盘上已是「provider 已切换、apiKey 仍旧值」的半应用配置；更糟的是并行写使失败点不确定，同一错误在不同机器上留下不同的残留组合，问题难以复现。此外失败的键集合现在无法从异常中得知（`Promise.all` 只暴露第一个 reject）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CONSISTENCY-002"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 32,
+      "summary": "批量接口用 `Record<string, any>` 加类型断言替代了 `GlobalStateKey` / `SecretKey` 的编译期键名校验",
+      "failure_scenario": "原 API `updateGlobalState(context, key: GlobalStateKey, value: any)`、`storeSecret(context, key: SecretKey, value?: string)` 依赖 `state-keys.ts` 中的联合类型在编译期拦住拼错或不存在的键。新增的 `updateGlobalStateBatch(context, updates: Record<string, any>)` 与 `updateSecretsBatch(context, updates: Record<string, string | undefined>)` 把键放宽为任意字符串，并在写入处用 `key as GlobalStateKey` / `key as SecretKey` 强制断言。因此 `batchedGlobalUpdates` / `batchedSecretUpdates` 里任何一个键名写错（例如把 `anthropicBaseUrl` 写成 `anthropicBaseURL`、或残留已重命名的旧键）都不会有任何编译错误或运行时报错：`globalState.update` 会安静地创建一个无人读取的孤儿键，而真正的设置项永远不更新。失败场景：后续维护者在 `batchedGlobalUpdates` 中添加/重命名一个键时拼错一个字母，单元测试不易覆盖（`getAllExtensionState` 读的是正确键），表现为「该设置项保存后不生效、重启后丢失」，且日志里只有一条正常的 `[PERF] Batched global state update took`，排查方向会被日志误导。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.78,
+      "rule": "TYPE-SAFETY-001"
+    },
+    {
+      "file": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+      "line": 22,
+      "summary": "在每次按键/拖动都会触发的高频路径上新增无开关的 `console.log` 埋点，并贯穿到扩展宿主",
+      "failure_scenario": "`handleFieldChange` 被 provider 设置页的输入框 `onChange` 与 Token 预算滑块的拖动回调直接调用（每次按键、每次滑动都会触发一次），本次在函数入口新增一条日志、在完成回调再新增一条日志；同一次调用在扩展宿主侧还会额外打印 6~8 条 `[PERF]` 日志（proto 转换、storage 更新、apiHandler 更新、状态回传、两批批量写入及其耗时、总计）。这些日志没有 debug 开关、没有按环境裁剪，直接走全局 `console.log`，结果是：用户每敲一个字符，webview 控制台与扩展宿主控制台就各刷出多条无关输出，既污染用户日志（用户上报问题时的日志被 `[PERF]` 淹没），也在设置页输入这种交互路径上引入额外字符串拼接与 IPC 无关的控制台开销。失败场景：用户在 API Key 输入框连续输入 40 个字符，将产生约 200+ 条 `[PERF]` 日志，且每条都伴随一次完整配置持久化。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "OBSERVABILITY-003"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 626,
+      "summary": "日志中硬编码「was ~535ms, now should be <50ms」的未经验证结论，会误导后续性能排查",
+      "failure_scenario": "收尾日志把「优化前 ~535ms、优化后应 <50ms」这一未经本次变更验证的结论写成运行时输出。该断言有两个问题：一是它把某次本机测量当成了常量写进日志，任何真实耗时（例如冷启动、钥匙串解锁、磁盘繁忙时的 300ms）都会和这行日志并列出现，形成自相矛盾的输出；二是它把「预期」混进了「观测」，后来者按这行日志判断优化是否生效时会被误导（既可能是「日志说应该 <50ms，所以 300ms 一定是别的环节慢」，也可能相反）。同类问题还有 `getAllExtensionState` 中写死的「66 state reads」「30 state reads」注释式日志，一旦键的数量变动就与实际不符。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.7,
+      "rule": "LOG-ACCURACY-001"
+    },
+    {
+      "file": "webview-ui/src/components/history/HistoryPreview.tsx",
+      "line": 68,
+      "summary": "为历史卡片新增 `backdropFilter: blur(8px)`，与本次「性能优化」目标相悖且属范围外视觉改动",
+      "failure_scenario": "本次为历史预览卡片和空态提示新增了 `backdropFilter: \"blur(8px)\"`。卡片本身背景是 `color-mix(... 30%, transparent)` 的半透明色，其下方是 VS Code 主题的纯色面板，因此这层模糊几乎没有可见的视觉收益；代价却是每个卡片被提升为独立合成层，背景模糊需要在滚动、以及该卡片既有的 `hover:scale-[1.02] hover:shadow-xl transition-all duration-150` 变换过程中反复重算（`transform` 动画会让 backdrop-filter 重新采样），在历史列表展开、鼠标划过卡片时增加 GPU 合成负担。该改动与 changeset 声明的「Optimizing provider switching performance with batched storage operations」没有任何关系，混在同一个 patch 里，既让性能回归难以归因，也缺少对应的 changeset 说明。失败场景：低配机器/远程 SSH 场景下展开 Recent Tasks 并移动鼠标，出现掉帧或滚动发涩，而这类卡顿会被误归因于同一 MR 的存储改动。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "PERF-RENDER-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 9 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 9/10 / 新候选 0 / no-issue 9 / 预算跳过 0\n✓ 完成 · 耗时 148.9s · 模型调用 11 次 · token 输入 13,927（未命中） · 输出 15,920 · 缓存命中 193,920（93.3%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0070\n[time] 阶段耗时 | 总墙钟 160.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 11.4s (7.1%)\n[time] 阶段 | 六阶段审计 113.1s (70.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 35.9s (22.4%)\n[time] 审计明细 | P1 10.4s (9.2%) | P2 3.7s (3.3%) | P3 4.9s (4.4%) | P4 42.3s (37.6%) | P5 42.1s (37.4%) | P6 9.2s (8.2%)\n[usage] 任务总计 | 模型调用 16 次（Agent 11 + 一次性 5） | token 输入 17,419（未命中） | 输出 21,326 | 缓存命中 195,840（91.8%） | $0.0090\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 3,492 / 输出 5,406 / 缓存 1,920）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261121_144752_497.json",
+  "token_usage": {
+    "input_tokens": 17419,
+    "output_tokens": 21326,
+    "cache_read_input_tokens": 195840
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 13927,
+      "output_tokens": 15920,
+      "cache_read_input_tokens": 193920
+    },
+    "coverage_repair": {
+      "input_tokens": 3492,
+      "output_tokens": 5406,
+      "cache_read_input_tokens": 1920
+    }
+  }
+}

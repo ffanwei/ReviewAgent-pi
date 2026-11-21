@@ -1,0 +1,124 @@
+{
+  "instance_id": "google-gemini__gemini-cli@77ea28a",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "de968877895a8ae5f0edb83a43b37fa190cc8ec9",
+  "head_commit": "77ea28a234023019ddda3f4a5f7a81b3514d3eb8",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 266.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 9,
+  "review_output": [
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 146,
+      "summary": "prompt 返回文本被 JSON.stringify 二次编码后再提交给模型",
+      "failure_scenario": "action 把 MCP 服务器返回的 prompt 文本用 JSON.stringify 包装后放进 submit_prompt.content，而 submit_prompt 的 content 会被原样当作发给 Gemini 的用户提示（slashCommandProcessor 透传 → useGeminiStream 直接作为 queryToSend）。结果是模型收到的不是多行提示词，而是带首尾双引号、换行被转义成字面 \\n、内部双引号被转义成 \\\" 的 JSON 字符串；多行 prompt 的格式与缩进全部被破坏，且用户历史里显示的也是这段带引号的文本。对照同仓库既有约定，FileCommandLoader 的 submit_prompt 直接传原始 prompt 文本，未做任何编码。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 92,
+      "summary": "必填参数校验用真值判断，空字符串参数被误判为缺失",
+      "failure_scenario": "参数收集时使用 `if (value)` 判断，空字符串会被当成“未提供”，于是 `--name=\"\"` 会走到 `arg.required` 分支返回 'Missing required argument: --name'。而同一命令的 completion 恰好把候选补全成 `--${arg.name}=\"\"`（第 170 行），用户点选补全后原样执行必然报“缺少必填参数”，形成补全与校验互相矛盾的死循环；同时非必填参数传空值也无法透传给服务器。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 135,
+      "summary": "只取 messages[0] 的 content.text，多消息与非文本内容被丢弃",
+      "failure_scenario": "MCP prompts/get 返回的 messages 是内容块数组（文本/图片/嵌入资源），本实现只读取第一条消息的 content.text：服务器返回多条消息时后续内容全部丢失；返回图片或嵌入资源时 `.text` 为 undefined，命令会直接报 'Received an empty or invalid prompt response from the server' 并把服务器已经成功返回的内容整体丢弃。另外第 127 行的 `result.error` 分支依赖于 GetPromptResult 上不存在的 error 字段，实际永远不会命中，真实错误只能靠 catch 兜底。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 28,
+      "summary": "prompt 命令名直接使用 prompt.name，无服务器命名空间导致同名命令被遮蔽",
+      "failure_scenario": "命令名直接取 `prompt.name`，既不带 serverName 前缀也不做重名检查：多个 MCP 服务器暴露同名 prompt 时会生成多个同名 SlashCommand，而命令解析用 `currentCommands.find(cmd => cmd.name === part)` 只取第一个匹配，后面的同名命令永远不可达；同时 createPromptCommands 的结果被追加在内置命令列表末尾，prompt 命名为 mcp/help/memory 等内置命令名时同样被遮蔽，用户无法调用该 prompt，且没有冲突提示。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 26,
+      "summary": "prompt 命令在命令列表加载时快照生成，鉴权/重连后新增的 prompt 不会出现",
+      "failure_scenario": "createPromptCommands 在 BuiltinCommandLoader.loadCommands 中一次性读取 getMCPServerPrompts 的全局缓存生成命令数组，而该加载器只由 slashCommandProcessor 的 useEffect([config]) 调用一次；prompts 在 connectAndDiscover 中才写入缓存。初始启动时序尚可（config.initialize 先完成发现），但通过 `/mcp auth`、`/mcp refresh` 触发的重新发现（mcpCommand → toolRegistry.discoverMcpTools）不会重建命令列表，因此：启动时连接失败/OAuth 未授权的服务器在鉴权成功后，其 prompt 仍然无法作为斜杠命令使用，必须重启 CLI。命令名与实际可调用集合不一致，用户只会看到“命令不存在”。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-005"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 80,
+      "summary": "参数解析正则不支持空格值，未加引号的值被静默截断",
+      "failure_scenario": "`--([^=]+)=(?:\"((?:\\\\.|[^\"\\\\])*)\"|([^ ]*))` 对未加引号的值只匹配到第一个空格，因此 `--query=hello world` 会得到 query='hello'，` world` 被丢弃且没有任何提示；`--key value`（空格分隔）这种常见写法完全不匹配，参数被静默忽略，必填参数则报“缺失”而让用户困惑。由于 UI 未强制引号，这是很容易踩到的输入方式。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-006"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 115,
+      "summary": "每次执行 prompt 都新建并关闭一条 MCP 连接",
+      "failure_scenario": "action 中调用 connectToMcpServer 新建 Client/transport，用完在 finally 里 close()；而 connectToMcpServer 每次都会 `new Client(...)` 并重新建立 transport（stdio 服务器意味着每次调用都重新拉起子进程，SSE/HTTP 服务器要重新握手，必要时还会触发 OAuth 流程）。对需要频繁使用的 prompt，单次调用要承担完整的进程启动/网络握手开销，可能出现数秒级延迟；同时被启动的服务器进程若初始化成本高，还会放大 CPU/内存抖动。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.55,
+      "rule": "PERF-001"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/mcpCommand.ts",
+      "line": 272,
+      "summary": "仅有 prompts 的服务器仍输出“No tools available”",
+      "failure_scenario": "新的分支链在 `serverTools.length === 0 && serverPrompts.length > 0` 时落到 `else if (serverTools.length === 0)` 分支，先打印了 Prompts 列表，紧接着又输出 '  No tools available'。对只提供 prompts 的服务器（这正是本次变更支持的新场景），输出内容自相矛盾，用户会误以为该服务器没有可用能力。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "UX-001"
+    },
+    {
+      "file": "packages/core/src/tools/mcp-client.test.ts",
+      "line": 68,
+      "summary": "discoverPrompts 的“记录日志”用例未验证日志输出",
+      "failure_scenario": "用例名称为 `should discover and log prompts`，但该用例只断言 `mockRequest` 被以 `prompts/list` 调用，没有 spy 或断言 `console.debug`，因此 discoverPrompts 是否真的记录提示词日志无法被测试捕获；后续日志行为回归会漏检。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "测试用例应验证其名称所声明的关键行为，避免只验证调用而遗漏输出断言。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\google-gemini__gemini-cli@77ea28a.diff\n  caseId              google-gemini__gemini-cli@77ea28a\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@77ea28a\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 17 / not-reached 11（no-signal=11）\nreview-pi: 覆盖补漏 请求 8（失败 0）/ 覆盖 hunk 18/29 / 新候选 1 / no-issue 17 / 预算跳过 0 / 验证拒绝 4\n✓ 完成 · 耗时 265.0s · 模型调用 21 次 · token 输入 34,281（未命中） · 输出 19,960 · 缓存命中 574,720（94.4%） · 工具 29 次（主会话 29 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0120\n[time] 阶段耗时 | 总墙钟 266.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.3%)\n[time] 阶段 | 六阶段审计 124.0s (46.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 141.3s (53.1%)\n[time] 审计明细 | P1 3.8s (3.1%) | P2 2.4s (1.9%) | P3 7.2s (5.8%) | P4 68.7s (55.5%) | P5 35.1s (28.3%) | P6 6.8s (5.5%)\n[usage] 任务总计 | 模型调用 34 次（Agent 21 + 一次性 13） | token 输入 49,418（未命中） | 输出 43,694 | 缓存命中 578,432（92.1%） | $0.0208\n[usage] 一次性明细 | 覆盖补漏 13 次（输入 15,137 / 输出 23,734 / 缓存 3,712）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\google-gemini__gemini-cli@77ea28a\\audit\\20261121_155243_493.json",
+  "token_usage": {
+    "input_tokens": 49418,
+    "output_tokens": 43694,
+    "cache_read_input_tokens": 578432
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 34281,
+      "output_tokens": 19960,
+      "cache_read_input_tokens": 574720
+    },
+    "coverage_repair": {
+      "input_tokens": 15137,
+      "output_tokens": 23734,
+      "cache_read_input_tokens": 3712
+    }
+  }
+}

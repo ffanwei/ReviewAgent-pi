@@ -1,0 +1,64 @@
+{
+  "instance_id": "facebook__react@b045f18",
+  "repo": "facebook/react",
+  "base_commit": "99563e91736e9de473c4865d5cb6fd9eb1a26bcb",
+  "head_commit": "b045f18e378341876ee69e729fc855cab501c3cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 521.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+      "line": 149,
+      "summary": "DevTools 用值导入的硬编码 tag 31 判定 Activity，新增的跨版本 WorkTagMap 项被绕过",
+      "failure_scenario": "本 MR 在 getInternalReactConstants 的 5 个版本分支中都补上了 `ActivityComponent`（新版本 31、旧版本 -1），但第 149 行以**值导入**方式从 `react-reconciler/src/ReactWorkTags` 引入常量 `ActivityComponent`，而该常量并没有加入 `ReactTypeOfWork` 的解构列表（第 545-581 行；对照组 `ViewTransitionComponent` 在第 580 行、`attach()` 内的第二份解构在第 927 行）。因此第 631 行 `getDisplayNameForFiber` 与第 1491 行 `shouldFilterFiber` 的 `case ActivityComponent` 实际恒等于硬编码的 31，对所有受支持的 React 版本（15/16/17/18/19 及未来版本）一律生效，本 MR 新增的版本映射项全部变成死代码。DevTools 后端是单一产物、要同时适配多个 React 版本，一旦某个版本的 tag 31 表示其他组件类型（该映射表本身就记录了标签会被移除或复用，如第 386 行 `YieldComponent: -1, // Removed`），DevTools 会把这些无关 fiber 误判为 'Activity'，并被 shouldFilterFiber 静默过滤，导致节点在组件树中整体消失、无法排查。此外，这是整个 DevTools 后端中唯一一处从 `react-reconciler` 值导入（第 120 行、DevToolsFiberComponentStack.js:15、profilingHooks.js:17、types.js:22 均为 `import type`），把版本无关的 DevTools 后端产物与 reconciler 源码模块耦合起来（`packages/react-devtools-shared/package.json` 的 dependencies 中并没有 react-reconciler，`scripts/jest/config.build-devtools.js:53` 只映射了单段路径 `^react-reconciler/([^/]+)$`）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+      "line": 1491,
+      "summary": "shouldFilterFiber 过滤 Activity 与本 MR 新增的 'Activity' 显示名互相矛盾，显示名分支不可达",
+      "failure_scenario": "同一处 MR 在 `getDisplayNameForFiber` 新增 `case ActivityComponent: return 'Activity'`（第 631-632 行），又在 `shouldFilterFiber` 中把 `ActivityComponent` 归入返回 true 的过滤组（第 1491 行）。DevTools 在挂载/更新组件树时先调用 `shouldFilterFiber` 决定是否创建 DevTools 实例，被过滤的 fiber 不会走 `getDisplayNameForFiber` 取名，因此新增的 'Activity' 分支对 Activity fiber 永远不会生效（只有已创建实例的 fiber 才会取名）。结果有两种可能的问题：其一，若本意是像 Suspense 那样展示 Activity 包裹层，则用户完全无法在 DevTools 中看到/选中 Activity 边界（Activity 与其内层 Offscreen 都被过滤，子树被“上提”到父节点），无法排查哪段 UI 被 Activity 包裹；其二，若本意是透明容器，则第 631-632 行是死代码，后续维护者会据 'Activity' 显示名误以为该节点可见。两种意图至少有一处与实现不符，需要在合入前明确。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.45,
+      "rule": "CONSISTENCY-003"
+    },
+    {
+      "file": "packages/react-server/src/ReactFizzServer.js",
+      "line": 2265,
+      "summary": "Activity 类型复用 renderOffscreen，未区分 props 语义可能丢失 Activity 专属行为",
+      "failure_scenario": "新增 `case REACT_ACTIVITY_TYPE:` 直接落入 `case REACT_OFFSCREEN_TYPE` 分支，调用同一个 renderOffscreen(request, task, keyPath, props)。若 Activity 元素的 props 结构与 Offscreen 不同（例如缺少 mode 字段，或使用不同的可见性/延迟语义），此处的统一处理会把 Activity 当作 Offscreen 渲染，导致下游 renderOffscreen 读取到 undefined 的 mode 等字段，进而出现渲染错误或行为与客户端不一致。需要确认 renderOffscreen 内部对 Activity 类型有显式分支处理或 props 完全同构，否则应在此处做类型透传或参数适配。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "switch 分支合并需保证被合并类型在 callee 内部语义等价"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\facebook__react\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\diff\\facebook__react@b045f18.diff\n  caseId              facebook__react@b045f18\n  --issue             (未传)\n  --taskId            facebook__react@b045f18\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 19 / not-reached 7（no-signal=7）\nreview-pi: 覆盖补漏 请求 11（失败 0）/ 覆盖 hunk 20/27 / 新候选 1 / no-issue 19 / 预算跳过 0\n✓ 完成 · 耗时 507.7s · 模型调用 29 次 · token 输入 38,624（未命中） · 输出 52,718 · 缓存命中 1,523,072（97.5%） · 工具 44 次（主会话 44 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0244\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 520.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 12.1s (2.3%)\n[time] 阶段 | 六阶段审计 335.6s (64.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 172.3s (33.1%)\n[time] 审计明细 | P1 55.2s (16.5%) | P2 2.6s (0.8%) | P3 6.1s (1.8%) | P4 250.6s (74.8%) | P5 12.9s (3.9%) | P6 7.4s (2.2%)\n[usage] 任务总计 | 模型调用 40 次（Agent 29 + 一次性 11） | token 输入 44,983（未命中） | 输出 81,715 | 缓存命中 1,527,296（97.1%） | $0.0335\n[usage] 一次性明细 | 覆盖补漏 11 次（输入 6,359 / 输出 28,997 / 缓存 4,224）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\\facebook__react@b045f18\\audit\\20261121_144752_507.json",
+  "token_usage": {
+    "input_tokens": 44983,
+    "output_tokens": 81715,
+    "cache_read_input_tokens": 1527296
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 38624,
+      "output_tokens": 52718,
+      "cache_read_input_tokens": 1523072
+    },
+    "coverage_repair": {
+      "input_tokens": 6359,
+      "output_tokens": 28997,
+      "cache_read_input_tokens": 4224
+    }
+  }
+}

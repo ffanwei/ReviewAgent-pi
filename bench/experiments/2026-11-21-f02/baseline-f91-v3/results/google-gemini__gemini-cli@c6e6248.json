@@ -1,0 +1,74 @@
+{
+  "instance_id": "google-gemini__gemini-cli@c6e6248",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "809b933d8150c29154062e4d596cd916258022fc",
+  "head_commit": "c6e624883852318b71baa2a060c933bb5de591ef",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 104.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "integration-tests/extensions-install.test.ts",
+      "line": 34,
+      "summary": "新增集成测试未隔离 HOME，直接读写开发者真实扩展目录",
+      "failure_scenario": "该用例通过 CLI 执行 extensions install/uninstall，而扩展的安装目录与启用状态都固定在用户主目录下（ExtensionStorage.getUserExtensionsDir() → os.homedir()/.gemini/extensions），集成测试框架（globalSetup）并没有重定向 HOME。由此带来三个具体后果：1) 第 28 行的兜底 uninstall 会把开发者/CI 机器上真实存在、恰好同名的 \"test-extension\" 扩展删掉；2) 用例在第 34 行之后任意断言失败或超时（vitest 配置 retry: 2、fileParallelism: true）时，不会有 try/finally 回收，真实 home 目录里会遗留 ~/.gemini/extensions/test-extension 与用户级启用记录；3) 由于 fileParallelism 为 true（minThreads 8），该用例与其它共享同一 home 目录的集成测试并发执行，会互相观察到对方的扩展状态，产生与代码无关的抖动。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.78,
+      "rule": "TEST-ISOLATION-001"
+    },
+    {
+      "file": "integration-tests/test-helper.ts",
+      "line": 347,
+      "summary": "新增 runCommand 复制了 run() 的进程处理逻辑但行为不一致",
+      "failure_scenario": "runCommand 与既有 run()（第 178-307 行）在 spawn/收集 stdout/stderr/close 回调这段逻辑上几乎逐行重复，但有意或无意地丢掉了三处既有行为：1) `--output-format json` 时不再抑制 stderr（run() 第 288-297 行），而这里无条件把 stderr 拼进返回值，任何用 runCommand 跑 JSON 输出的调用方 JSON.parse 都会失败；2) 缺少 podman 场景的 telemetry 输出过滤（第 253-286 行）；3) 未提供 options.stdin 时不主动 `child.stdin.end()`（run() 第 223-228 行默认关闭），子进程若读取 stdin（如 extensions install 的 consent 提示，见 extension.ts:360-373 的 readline）就会一直阻塞到 vitest 的 300s 超时。两份实现后续必须同步维护，任意一侧修复都不会自动传导到另一侧。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-DUP-001"
+    },
+    {
+      "file": "integration-tests/extensions-install.test.ts",
+      "line": 29,
+      "summary": "空 catch 静默吞掉 uninstall 失败，掩盖真实缺陷并放大后续报错",
+      "failure_scenario": "第 27-31 行用 try/catch 加空块包住第一次 uninstall，本意是容忍“扩展本来就没安装”，但它同时吞掉了 uninstall 的所有真实失败（如 home 目录权限问题、扩展目录损坏、process.exit(1) 的其它错误）。结果是：一旦 uninstall 因真实原因失败，后续 install 会以 `Extension \"test-extension\" is already installed. Please uninstall it first.`（extension.ts:446-448）失败，测试报出的错误信息会误导排查方向；同时 uninstall 命令本身的回归也无法被这套集成测试发现。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.62,
+      "rule": "TEST-ERROR-HANDLING-002"
+    },
+    {
+      "file": "integration-tests/extensions-install.test.ts",
+      "line": 52,
+      "summary": "cleanup 之后无条件 rmSync 会覆盖 KEEP_OUTPUT 的保留行为",
+      "failure_scenario": "TestRig.cleanup() 只在未设置 KEEP_OUTPUT 时才删除 testDir（test-helper.ts:371-383），globalSetup 的 teardown 同样尊重 KEEP_OUTPUT（globalSetup.ts:84-88），目的就是在失败时保留现场。但本用例在 `await rig.cleanup()` 之后又无条件执行 `rmSync(rig.testDir!, { recursive: true, force: true })`，使 KEEP_OUTPUT=true 时目录仍被删除，调试信息（含 gemini-extension.json、telemetry.log、CLI 输出目录）全部丢失；同时这也是对同一路径的重复删除，与实际需要清理的 home 下扩展目录并不对应。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.66,
+      "rule": "TEST-CLEANUP-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\google-gemini__gemini-cli@c6e6248.diff\n  caseId              google-gemini__gemini-cli@c6e6248\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@c6e6248\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 102.5s · 模型调用 19 次 · token 输入 26,322（未命中） · 输出 16,884 · 缓存命中 404,992（93.9%） · 工具 27 次（主会话 27 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0095\n[time] 阶段耗时 | 总墙钟 104.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.5s (1.4%)\n[time] 阶段 | 六阶段审计 102.4s (98.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 7.1s (6.9%) | P2 1.9s (1.8%) | P3 4.3s (4.2%) | P4 45.8s (44.7%) | P5 38.7s (37.8%) | P6 4.6s (4.5%)\n[usage] 任务总计 | 模型调用 19 次（Agent 19 + 一次性 0） | token 输入 26,322（未命中） | 输出 16,884 | 缓存命中 404,992（93.9%） | $0.0095\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\google-gemini__gemini-cli@c6e6248\\audit\\20261121_155059_415.json",
+  "token_usage": {
+    "input_tokens": 26322,
+    "output_tokens": 16884,
+    "cache_read_input_tokens": 404992
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 26322,
+      "output_tokens": 16884,
+      "cache_read_input_tokens": 404992
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

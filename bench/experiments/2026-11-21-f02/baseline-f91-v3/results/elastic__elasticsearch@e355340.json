@@ -1,0 +1,44 @@
+{
+  "instance_id": "elastic__elasticsearch@e355340",
+  "repo": "elastic/elasticsearch",
+  "base_commit": "fdfe63eb372a01b91a5b43eb5555c52731a69687",
+  "head_commit": "e355340162f24705db5e48ea2cf0a867490ae001",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 401.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 1,
+  "review_output": [
+    {
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotsService.java",
+      "line": 1593,
+      "summary": "shutdown 拒绝路径在正在关闭的集群服务上发起集群状态更新，异常会逸出到 submit 调用方",
+      "failure_scenario": "新增的 onRejection 在 `EsRejectedExecutionException#isExecutorShutdown()` 成立时直接调用 handleFinalizationFailure，而 handleFinalizationFailure 对非 NotMaster 类异常会走 `removeFailedSnapshotFromClusterState` → `submitUnbatchedTask`（2425-2427 `clusterService.submitUnbatchedStateUpdateTask`）发起一次集群状态更新。该路径只在 executor 已经 shutdown 时进入，此时节点通常正在关闭，MasterService 可能同样已停止接受任务，提交会抛出 EsRejectedExecutionException（或触发 MasterService 内部断言）。\n更关键的是调用线程与异常传播：onRejection 是由 EsThreadPoolExecutor.execute 在**调用方线程**同步调用的（EsThreadPoolExecutor.java:83-86），且该处不会重抛原拒绝异常，因此 handleFinalizationFailure 内部抛出的任何异常都会穿过 onRejection、穿过 execute，最终从 finalizeSnapshotEntry 抛到 endSnapshot 的调用方（集群状态 applier 或 runNextQueuedOperation），可能中断该次集群状态处理；同时该次 finalization 的 endingSnapshots / repo loop 状态只剩“提交一个可能永远不被执行的集群状态任务”这一条清理途径，若该任务被丢弃则内存状态泄漏（`assertAllListenersResolved` 会断言 currentlyFinalizing / endingSnapshots 非空）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "ERROR-HANDLING-SHUTDOWN-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\elastic__elasticsearch\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\elastic__elasticsearch@e355340.diff\n  caseId              elastic__elasticsearch@e355340\n  --issue             (未传)\n  --taskId            elastic__elasticsearch@e355340\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 3 / not-reached 6（no-signal=6）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 3/9 / 新候选 0 / no-issue 3 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 397.2s · 模型调用 31 次 · token 输入 43,617（未命中） · 输出 54,742 · 缓存命中 1,501,184（97.2%） · 工具 49 次（主会话 49 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0256\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 398.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 318.5s (80.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 78.9s (19.8%)\n[time] 审计明细 | P1 18.2s (5.7%) | P2 2.1s (0.6%) | P3 4.9s (1.6%) | P4 259.2s (81.4%) | P5 23.4s (7.3%) | P6 10.7s (3.4%)\n[usage] 任务总计 | 模型调用 34 次（Agent 31 + 一次性 3） | token 输入 48,222（未命中） | 输出 68,974 | 缓存命中 1,502,080（96.9%） | $0.0303\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 4,605 / 输出 14,232 / 缓存 896）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\elastic__elasticsearch@e355340\\audit\\20261121_163847_824.json",
+  "token_usage": {
+    "input_tokens": 48222,
+    "output_tokens": 68974,
+    "cache_read_input_tokens": 1502080
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 43617,
+      "output_tokens": 54742,
+      "cache_read_input_tokens": 1501184
+    },
+    "coverage_repair": {
+      "input_tokens": 4605,
+      "output_tokens": 14232,
+      "cache_read_input_tokens": 896
+    }
+  }
+}

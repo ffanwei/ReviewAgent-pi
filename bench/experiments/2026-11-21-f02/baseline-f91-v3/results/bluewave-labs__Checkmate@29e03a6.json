@@ -1,0 +1,94 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@29e03a6",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "7c369e84052aaee15a6dedf8928b5af4c869037b",
+  "head_commit": "29e03a6294edfe43b49eba20fe49099cef601d34",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 99.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "workflow 未声明 permissions: contents: write，最后的 git push 会被只读 GITHUB_TOKEN 拒绝",
+      "failure_scenario": "该 job 使用 secrets.GITHUB_TOKEN 检出代码，并在末尾执行 git push 把翻译产物推回主线；但整个 workflow 文件没有任何 permissions 声明。在 Actions 默认令牌权限为只读（restricted）的仓库配置下，push 会因 403 / \"Permission denied\" 失败，导致这个每日定时同步任务从第一次运行起就无法完成其唯一目的；即使仓库默认是 read/write，该行为也依赖仓库级设置而非文件内的显式声明，属于不可靠的隐式依赖。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CI-PERMISSION-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 83,
+      "summary": "校验只判“非空且是合法 JSON”，空对象导出会整体覆盖 src/locales 造成翻译键丢失",
+      "failure_scenario": "验证步骤只检查文件存在且非空（`[ ! -s \"$file\" ]`）以及能被 jq 解析；而 `{}` 恰好非空且是合法 JSON，会通过校验。随后 `cp -r temp/* src/locales/` 以整体覆盖方式写回。若 POEditor 某个语言没有译文/导出结果为空对象，或导出键集与仓库手工维护的键集不一致（例如 gb.json 中的 `networkError`、`ms`、`responseTime` 等键在当前 tr.json 里就并非一一对应），默认语言 gb.json 会被替换成一个缺少键的文件。由于 `src/Utils/i18n.js` 用 `import.meta.glob(\"../locales/*.json\")` 全量加载且 `fallbackLng: \"gb\"`，缺失键会直接导致界面显示原始 i18n key，属于每日定时自动触发的静默破坏。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "DATA-OVERWRITE-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 72,
+      "summary": "异常分支 console.error 打印完整 axios error，会把含 api_token 的请求体与导出 URL 写进 Actions 日志",
+      "failure_scenario": "api_token 与 project id 被放进 `URLSearchParams` 作为 POST body，令牌同时也体现在 axios 请求配置中。当请求失败时，catch 分支执行 `console.error('An error occurred while downloading translations:', error)`，Node 打印 Error 对象时会连带输出其可枚举属性（axios 错误的 `config`、`request` 等），其中 `config.data` 即 `api_token=...&id=...&language=...`，另外 POEditor 返回的临时导出 URL 也可能随响应体被打印。虽然 GitHub 会对已注册 secret 的字面值做掩码，但一旦令牌被包装/拼接后出现（或使用非 secret 来源的 token），掩码并不能提供可靠保障；导出 URL 与项目结构信息则完全不受掩码保护。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.45,
+      "rule": "SECRET-LEAK-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 10,
+      "summary": "手动触发默认语言 \"tr,en\" 与定时任务的 'tr,gb' 及 README 描述三处不一致，手动运行会新增无人维护的 en.json",
+      "failure_scenario": "workflow_dispatch 的 `languages` 默认值是 \"tr,en\"，而下载步骤的兜底值是 'tr,gb'，README 又声明“未指定语言时默认下载 tr 和 gb”。由于 `github.event.inputs.languages` 在手动触发下取默认值 \"tr,en\"，手动运行与定时运行会产出不同的语言集合：手动运行会额外生成 `src/locales/en.json`（经 `cp -r temp/* src/locales/` 写入并被提交），而项目主语言是 `gb`，且 `LanguageSelector` 依据 `i18n.options.resources` 生成语言列表，界面上会多出无人维护的 `en` 选项；定时运行则不会。同一功能两套默认值还会让排障者难以判断实际生效语言。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "CONFIG-CONSISTENCY-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 12,
+      "summary": "LANGUAGES 仅按逗号切分，未 trim/过滤空项，带空格或尾随逗号的输入会让整批下载失败",
+      "failure_scenario": "`(process.env.LANGUAGES || 'tr,en').split(',')` 未做 `trim()` 与空值过滤。用户按提示输入 \"tr, en\"（逗号后带空格，这是最常见的手写方式）时，第二个元素是 `\" en\"`，该值被直接作为 `language` 参数请求 POEditor，导出会以非 success 状态返回并抛出错误，随后 `process.exit(1)` 终止脚本——即使前一个语言已经成功下载，整次流水线也会失败并且不会提交任何译文。尾随逗号（`\"tr,en,\"`）会额外产生空字符串项，同理导致失败。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "INPUT-PARSING-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 28,
+      "summary": "两个 axios 请求均未设置 timeout 与重试，外部服务挂起或瞬时失败会拖死/中断整条流水线",
+      "failure_scenario": "`axios.post` 获取导出 URL 与 `axios.get` 下载文件都没有设置 `timeout` 与重试策略。axios 默认无超时，若 POEditor API 或导出的对象存储连接被半开（典型的网络黑洞），该步骤会一直挂起直到 GitHub Actions 的 job 默认上限（最长 6 小时）被强杀，每天一次的定时任务因此被长时间占用；反之，任何一次瞬时 5xx/429 都会走到 catch → `process.exit(1)`，本次已成功下载的语言结果一并作废、不会被提交，同步的成功率完全依赖外网稳定性。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "NET-RESILIENCE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\bluewave-labs__Checkmate@29e03a6.diff\n  caseId              bluewave-labs__Checkmate@29e03a6\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@29e03a6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 1 / not-reached 0\nreview-pi: 覆盖补漏 请求 1（失败 0）/ 覆盖 hunk 1/1 / 新候选 0 / no-issue 1 / 预算跳过 0\n✓ 完成 · 耗时 97.5s · 模型调用 15 次 · token 输入 13,027（未命中） · 输出 16,186 · 缓存命中 219,264（94.4%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0070\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 98.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.9%)\n[time] 阶段 | 六阶段审计 94.8s (96.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 2.7s (2.8%)\n[time] 审计明细 | P1 3.2s (3.4%) | P2 3.3s (3.4%) | P3 23.0s (24.3%) | P4 12.6s (13.3%) | P5 43.2s (45.6%) | P6 9.4s (10.0%)\n[usage] 任务总计 | 模型调用 16 次（Agent 15 + 一次性 1） | token 输入 13,744（未命中） | 输出 16,554 | 缓存命中 219,648（94.1%） | $0.0072\n[usage] 一次性明细 | 覆盖补漏 1 次（输入 717 / 输出 368 / 缓存 384）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\bluewave-labs__Checkmate@29e03a6\\audit\\20261121_161222_853.json",
+  "token_usage": {
+    "input_tokens": 13744,
+    "output_tokens": 16554,
+    "cache_read_input_tokens": 219648
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 13027,
+      "output_tokens": 16186,
+      "cache_read_input_tokens": 219264
+    },
+    "coverage_repair": {
+      "input_tokens": 717,
+      "output_tokens": 368,
+      "cache_read_input_tokens": 384
+    }
+  }
+}

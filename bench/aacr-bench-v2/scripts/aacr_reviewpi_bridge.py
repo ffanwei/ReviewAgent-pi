@@ -152,8 +152,16 @@ def ensure_repo(repo_dir: Path, instance: ReviewInstance) -> Path:
 
 
 def make_diff(repo: Path, instance: ReviewInstance, diff_path: Path) -> str:
+    # PR range semantics: base_commit is the target-branch tip recorded in the
+    # dataset, not the fork point. Diffing base..head directly folds unrelated
+    # target-branch changes into the review scope. Resolve the merge-base first
+    # (same as `git diff base...head` and the other reviewers).
+    base = git(repo, "merge-base", instance.base_commit, instance.head_commit, timeout=1800)
+    resolved_base = instance.base_commit
+    if base.returncode == 0 and base.stdout.strip():
+        resolved_base = base.stdout.strip()
     result = git(repo, "diff", "--no-color", "--unified=3",
-                 instance.base_commit, instance.head_commit, timeout=1800)
+                 resolved_base, instance.head_commit, timeout=1800)
     if result.returncode != 0:
         raise RuntimeError(f"git diff failed: {result.stderr.strip()[-800:]}")
     diff_path.parent.mkdir(parents=True, exist_ok=True)
@@ -230,15 +238,37 @@ def read_usage(tasks_root: Path, task_id: str) -> Dict[str, Any]:
     except (json.JSONDecodeError, OSError):
         return {}
     usage = audit.get("usage") or {}
-    return {
+    repair_usage = (audit.get("coverageRepair") or {}).get("usage") or {}
+
+    def total(key: str) -> int:
+        # audit.usage 只含 Agent 内调用（ADR-0066）；补漏是 run 内独立 one-shot，
+        # 单独记在 coverageRepair.usage。基准的 token 口径必须把两者相加，
+        # 否则会低估启用补漏时的真实成本。
+        return (usage.get(key, 0) or 0) + (repair_usage.get(key, 0) or 0)
+
+    payload: Dict[str, Any] = {
         "model": audit.get("model"),
         "audit_path": str(files[0]),
         "token_usage": {
-            "input_tokens": usage.get("inputTokens", 0) or 0,
-            "output_tokens": usage.get("outputTokens", 0) or 0,
-            "cache_read_input_tokens": usage.get("cacheReadTokens", 0) or 0,
+            "input_tokens": total("inputTokens"),
+            "output_tokens": total("outputTokens"),
+            "cache_read_input_tokens": total("cacheReadTokens"),
         },
     }
+    if repair_usage:
+        payload["token_usage_breakdown"] = {
+            "agent": {
+                "input_tokens": usage.get("inputTokens", 0) or 0,
+                "output_tokens": usage.get("outputTokens", 0) or 0,
+                "cache_read_input_tokens": usage.get("cacheReadTokens", 0) or 0,
+            },
+            "coverage_repair": {
+                "input_tokens": repair_usage.get("inputTokens", 0) or 0,
+                "output_tokens": repair_usage.get("outputTokens", 0) or 0,
+                "cache_read_input_tokens": repair_usage.get("cacheReadTokens", 0) or 0,
+            },
+        }
+    return payload
 
 
 def write_result(path: Path, payload: Dict[str, Any]) -> None:
@@ -254,6 +284,7 @@ def review_instance(
     results_dir: Path,
     review_pi_bin: Path,
     config_path: Optional[Path],
+    rule_skills: List[Path],
     node: str,
     timeout_seconds: int,
     force: bool,
@@ -300,6 +331,8 @@ def review_instance(
                        "--no-progress"]
             if config_path is not None:
                 command.extend(["--config", str(config_path)])
+            for skill in rule_skills:
+                command.extend(["--rule-skill", str(skill)])
             env = os.environ.copy()
             env.setdefault("NO_COLOR", "1")
             env.setdefault("GIT_TERMINAL_PROMPT", "0")
@@ -378,6 +411,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         default=Path(os.environ.get("REVIEW_PI_BIN", DEFAULT_REVIEW_PI_BIN)))
     parser.add_argument("--config", type=Path, default=None,
                         help="review-pi 配置（缺省用 ~/.PiAgent/PiAgent.jsonc）")
+    parser.add_argument("--rule-skill", action="append", type=Path, default=[],
+                        help="传给 review-pi 的 --rule-skill 目录；可重复")
     parser.add_argument("--node", default="node")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--only", default=None, help="逗号分隔的 instance_id 或 repo")
@@ -395,6 +430,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args.review_pi_bin = args.review_pi_bin.resolve()
     if args.config is not None:
         args.config = args.config.resolve()
+    args.rule_skill = [p.resolve() for p in args.rule_skill]
 
     instances = load_instances(args.dataset, args.limit)
     if args.only:
@@ -433,6 +469,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 results_dir=args.results_dir,
                 review_pi_bin=args.review_pi_bin,
                 config_path=args.config,
+                rule_skills=args.rule_skill,
                 node=args.node,
                 timeout_seconds=args.timeout_minutes * 60,
                 force=args.force,

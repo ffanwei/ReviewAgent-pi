@@ -1,0 +1,82 @@
+{
+  "instance_id": "openai__codex@8c952af",
+  "repo": "openai/codex",
+  "base_commit": "d6182becbe155776b159270fe4a5e88d607f0c5e",
+  "head_commit": "8c952af20fe791cc0c5d0a59089d3329968b4373",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 307.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "codex-rs/protocol/src/models.rs",
+      "line": 51,
+      "summary": "Reasoning.id 加 skip_serializing 破坏 rollout 持久化的 serde 往返，resume 时静默丢弃全部 reasoning 项",
+      "failure_scenario": "本次给 ResponseItem::Reasoning 的 id 字段新增 #[serde(skip_serializing)]，但该字段是必填的 String（不是 Option，也没有 #[serde(default)]）。而 ResponseItem 同时是会话 rollout 的持久化格式：rollout 用 serde_json::to_string 写出每个 item，恢复会话时再用 serde_json::from_value::<ResponseItem> 读回。写入端现在会省略 id，读回端因缺少必填字段 id 而反序列化失败，代码只打一条 warn 就把该 item 丢弃。失败场景：使用 gpt-5/o3 等支持 reasoning 的模型跑一轮对话后执行 resume，rollout 中的 reasoning item 全部无法解析被丢弃；由于本 MR 同时把 store 固定为 false，后续请求必须靠回放 reasoning（含 encrypted_content）来延续上下文，reasoning 历史丢失会直接削弱多轮连续性，并产生持续的 warn 日志。Message 的 id 因为是 Option 不受影响，问题集中在 id 为必填类型的 Reasoning 变体。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.74,
+      "rule": "SERDE-ROUNDTRIP-001"
+    },
+    {
+      "file": "codex-rs/protocol/src/mcp_protocol.rs",
+      "line": 373,
+      "summary": "删除 Profile.disable_response_storage 后，mcp-server 集成测试仍以字面量构造该字段导致编译失败",
+      "failure_scenario": "本次从 codex_protocol::mcp_protocol::Profile 中删除了 disable_response_storage 字段，但 codex-rs/mcp-server/tests/suite/config.rs 的 get_config_toml_parses_all_fields 仍用完整结构体字面量（未使用 ..Default::default()）构造 Profile 并赋值 disable_response_storage: Some(false)。失败场景：执行 cargo test -p codex-mcp-server（或 workspace 级测试）时直接编译失败（E0560 struct Profile has no field named disable_response_storage），整个测试目标无法运行；同一文件的 TOML 也仍写入该键，属于同一处遗漏。MR 同步更新了 core/config.rs、config_profile.rs、exec、tui、codex_message_processor.rs、codex_tool_config.rs 的引用，唯独漏掉这个测试文件。",
+      "severity": "P1",
+      "category": "可维护",
+      "confidence": 0.86,
+      "rule": "BUILD-CROSS-CRATE-001"
+    },
+    {
+      "file": "codex-rs/core/src/client_common.rs",
+      "line": 198,
+      "summary": "测试构造 ResponsesApiRequest 时遗漏 store 字段",
+      "failure_scenario": "Hunk 2 中 ResponsesApiRequest 仍保留 `pub(crate) store: bool,` 字段，但本 hunk 从测试构造体中删除了 `store: true,`，使结构体字面量缺少该字段初始化；在未使用 `..` 省略字段的构造方式下会导致测试代码编译失败。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.8,
+      "rule": "Rust 结构体字面量必须为所有未被 `..` 省略的字段提供初始值，测试代码也不能遗漏仍存在的字段。"
+    },
+    {
+      "file": "codex-rs/core/src/client_common.rs",
+      "line": 227,
+      "summary": "另一处测试构造 ResponsesApiRequest 时遗漏 store 字段",
+      "failure_scenario": "与前一测试构造相同，ResponsesApiRequest 仍声明 `store` 字段，但本 hunk 删除了 `store: true,` 初始化，导致该测试结构体字面量缺少必填字段，可能编译失败。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.8,
+      "rule": "Rust 结构体字面量必须为所有未被 `..` 省略的字段提供初始值，测试代码也不能遗漏仍存在的字段。"
+    },
+    {
+      "file": "codex-rs/core/tests/suite/client.rs",
+      "line": 580,
+      "summary": "删除 store 断言后 request_body 成为未使用变量",
+      "failure_scenario": "该测试移除 store 断言后仍保留 request_body 的解析绑定，但 hunk 显示后续没有读取该变量，Rust 会触发 unused_variables 警告；若测试目标启用 deny(warnings)，还会导致编译失败。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "避免未使用变量，测试代码也应保持零警告。"
+    },
+    {
+      "file": "codex-rs/core/tests/suite/client.rs",
+      "line": 661,
+      "summary": "删除 store 断言后 request_body 成为未使用变量",
+      "failure_scenario": "该测试移除 store 断言后仍保留 request_body 的解析绑定，但 hunk 显示后续没有读取该变量，Rust 会触发 unused_variables 警告；若测试目标启用 deny(warnings)，还会导致编译失败。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "避免未使用变量，测试代码也应保持零警告。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\openai__codex\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\diff\\openai__codex@8c952af.diff\n  caseId              openai__codex@8c952af\n  --issue             (未传)\n  --taskId            openai__codex@8c952af\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 6 / no-issue 38 / not-reached 5（no-signal=5）\nreview-pi: 覆盖补漏 请求 14（失败 0）/ 覆盖 hunk 42/47 / 新候选 4 / no-issue 38 / 预算跳过 0\n✓ 完成 · 耗时 304.9s · 模型调用 17 次 · token 输入 30,161（未命中） · 输出 21,513 · 缓存命中 531,456（94.6%） · 工具 27 次（主会话 27 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0117\n[time] 阶段耗时 | 总墙钟 306.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.5s (0.5%)\n[time] 阶段 | 六阶段审计 123.9s (40.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 181.0s (59.1%)\n[time] 审计明细 | P1 4.2s (3.4%) | P2 2.7s (2.2%) | P3 6.0s (4.9%) | P4 77.3s (62.4%) | P5 29.8s (24.0%) | P6 3.9s (3.1%)\n[usage] 任务总计 | 模型调用 32 次（Agent 17 + 一次性 15） | token 输入 34,830（未命中） | 输出 55,041 | 缓存命中 541,565（94.0%） | $0.0218\n[usage] 一次性明细 | 解析修复 1 次（输入 1,624 / 输出 2,395 / 缓存 0） | 覆盖补漏 14 次（输入 3,045 / 输出 31,133 / 缓存 10,109）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\tasks\\openai__codex@8c952af\\audit\\20261121_140209_845.json",
+  "token_usage": {
+    "input_tokens": 30161,
+    "output_tokens": 21513,
+    "cache_read_input_tokens": 531456
+  }
+}

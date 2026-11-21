@@ -1,0 +1,74 @@
+{
+  "instance_id": "infiniflow__ragflow@7051234",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "b1c874698469ac999d210cd8cde59425781e4da2",
+  "head_commit": "705123406ec7cd5eb1f9be26f6c5c31357aeffc9",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 179.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "api/apps/api_app.py",
+      "line": 618,
+      "summary": "get_doc_ids_by_doc_names 无命中返回 None，导致仅用 doc_ids 删除文档时抛 TypeError 并返回 500",
+      "failure_scenario": "新增的 DocumentService.get_doc_ids_by_doc_names 在查询无结果时用裸 `return` 返回 None（不是空列表），而 document_rm 紧接着在 619-620 行对 doc_ids 做 `if doc_id not in doc_ids` 的成员判断。只要 req 中 doc_names 缺省/为空、或传入的名称一个都匹配不上，同时请求携带了 doc_ids，`in None` 就会抛 TypeError: argument of type 'NoneType' is not iterable；该异常被 628-629 行的 `except Exception` 捕获后走 server_error_response，DELETE /document 接口从原来的正常删除退化为 500，且本次请求的 doc_ids 完全不会被删除。原实现 `[DocumentService.get_doc_id_by_doc_name(...) for ...]` 始终返回 list（未命中时元素为 None），不会触发该异常，因此这是本次变更引入的行为破坏。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "CORRECTNESS-NULL-001"
+    },
+    {
+      "file": "api/db/services/document_service.py",
+      "line": 336,
+      "summary": "按 name 批量查询返回全部同名文档 ID，删除范围从“每个名称一条”扩大为“跨知识库/租户的全部同名文档”",
+      "failure_scenario": "旧实现 get_doc_id_by_doc_name 对每个名称只取首条命中（`return doc_id[0][\"id\"]`），新实现 get_doc_ids_by_doc_names 用 `name.in_(doc_names)` 并返回所有命中的 id 列表。Document.name 在模型中是非唯一、可为空且带索引的普通字段，表上只有 kb_id、没有 tenant_id，因此同一文件名在不同知识库甚至不同租户下会存在多条记录。document_rm 拿到这批 id 后逐个调用 get_tenant_id(doc_id) 并 remove_document，全程未与请求 token 对应的 objs[0].tenant_id 做归属校验，于是持有一个租户 API Key 的调用方只要提交一个常见文件名，就能把其他租户/知识库中的同名文档（及其 File、File2Document 记录和存储对象）一并删除，删除范围与越权面相比旧实现被显著放大。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "SEC-TENANT-SCOPE-001"
+    },
+    {
+      "file": "api/apps/api_app.py",
+      "line": 618,
+      "summary": "不存在的 doc_name 被静默丢弃，DELETE /document 对部分失败返回成功",
+      "failure_scenario": "旧实现会把未命中的名称保留为 None 元素放进 doc_ids，循环内 DocumentService.get_by_id(None) 返回 (False, None)，从而走 \"Document not found!\" 的错误返回，调用方能感知名称有误；新实现通过 `name.in_(doc_names)` 只取命中项，未命中的名称直接从结果中消失，调用方既收不到 \"Document not found!\" 也收不到任何提示，接口在删掉其余命中文档后返回 data=True。这会让“文件名拼写错误/文档已删除/无删除权限”等场景表现为全部成功，批量删除的下游系统无法感知部分未执行。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "ERROR-SEMANTICS-002"
+    },
+    {
+      "file": "api/apps/api_app.py",
+      "line": 638,
+      "summary": "批量取文档后未对返回值为空做保护，空值/异常返回会使删除接口 500",
+      "failure_scenario": "新逻辑把逐个 DocumentService.get_by_id 的失败分支替换为预先批量查询 get_by_ids，然后直接 `for doc in docs` 建索引。批量查询若返回 None（本模块其他同类辅助方法在无命中时即返回 None，见已有 F001 的同类问题）会在此处抛 TypeError，接口返回 500，而不是原本期望的 message=\"Document not found!\" 业务错误；同时原有逐个查询的失败判定被移除，只剩 `doc_id not in doc_dic` 的字典判断，无法区分「批量查询失败」与「文档确实不存在」两种情形。建议在 `docs = DocumentService.get_by_ids(doc_ids)` 之后增加 `docs = docs or []` 或显式判空并返回业务错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "外部/服务层返回值在使用前需做空值与失败判定，避免未处理异常上抛为 500"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\infiniflow__ragflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\diff\\infiniflow__ragflow@7051234.diff\n  caseId              infiniflow__ragflow@7051234\n  --issue             (未传)\n  --taskId            infiniflow__ragflow@7051234\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 2 / not-reached 0\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 3/3 / 新候选 1 / no-issue 2 / 预算跳过 0\n✓ 完成 · 耗时 166.7s · 模型调用 11 次 · token 输入 10,328（未命中） · 输出 13,594 · 缓存命中 121,472（92.2%） · 工具 17 次（主会话 17 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0056\n[time] 阶段耗时 | 总墙钟 178.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 12.2s (6.8%)\n[time] 阶段 | 六阶段审计 100.9s (56.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 65.8s (36.8%)\n[time] 审计明细 | P1 6.8s (6.7%) | P2 7.3s (7.3%) | P3 5.0s (5.0%) | P4 37.8s (37.6%) | P5 38.5s (38.2%) | P6 5.3s (5.2%)\n[usage] 任务总计 | 模型调用 14 次（Agent 11 + 一次性 3） | token 输入 12,175（未命中） | 输出 24,117 | 缓存命中 122,240（90.9%） | $0.0088\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 1,847 / 输出 10,523 / 缓存 768）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\\infiniflow__ragflow@7051234\\audit\\20261121_144752_491.json",
+  "token_usage": {
+    "input_tokens": 12175,
+    "output_tokens": 24117,
+    "cache_read_input_tokens": 122240
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 10328,
+      "output_tokens": 13594,
+      "cache_read_input_tokens": 121472
+    },
+    "coverage_repair": {
+      "input_tokens": 1847,
+      "output_tokens": 10523,
+      "cache_read_input_tokens": 768
+    }
+  }
+}

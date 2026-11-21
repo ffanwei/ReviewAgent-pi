@@ -1,0 +1,64 @@
+{
+  "instance_id": "gofr-dev__gofr@2c0c099",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "c2ab1eb3308afa4f29842f0a982751bf65c059d0",
+  "head_commit": "2c0c0997cad66a1ee1e47f95db6a830394157c00",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 634.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "examples/http-server/main_test.go",
+      "line": 157,
+      "summary": "TestRedisHandler 把 MetricsPort 当作 REDIS_PORT，字段取用错误",
+      "failure_scenario": "改造时把 `REDIS_PORT` 从字面量 `2001` 换成了 `strconv.Itoa(configs.MetricsPort)`，但这里需要的是 Redis 服务端口，取 `MetricsPort` 属于复制粘贴误用。当前因为第 158 行 `rc.Client = redisClient` 用 redismock 替换了真实客户端，该端口不会被真正拨号，所以测试暂时不会失败；但一旦去掉 mock 或复用这段配置，Redis 客户端就会去连 metrics 服务器端口，产生误导性连接错误；同时 `NewServerConfigs` 返回的 `GRPCPort/HTTPPort` 语义也被混用，削弱了本次重构「host 与端口单一来源」的价值。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "MAINTAIN-001"
+    },
+    {
+      "file": "examples/using-cron-jobs/main_test.go",
+      "line": 4,
+      "summary": "重复导入 gofr.dev/pkg/gofr/testutil 导致编译失败",
+      "failure_scenario": "改动在 import 块首行新增了 \"gofr.dev/pkg/gofr/testutil\"，但同文件 import 块末尾原本就已有 \"gofr.dev/pkg/gofr/testutil\"（新侧第 9 行未删除）。同一文件中同一包被 import 两次会触发 Go 编译错误（imported and not used / 标识符重复声明），该示例包无法构建、测试无法运行。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "同一 Go 文件中 import 同一包两次属于编译错误，应保持单次导入并统一导入分组"
+    },
+    {
+      "file": "pkg/gofr/context_test.go",
+      "line": 100,
+      "summary": "改为依赖 go app.Run() 后台启动后立即 Dial，缺少就绪等待，存在连接被拒的竞态",
+      "failure_scenario": "改动删除了 httptest.NewServer(app.httpServer.router)（其构造函数返回时监听已就绪），改为通过 configs.HTTPPort 直接连接真实端口。但服务端由第 98 行的 `go app.Run()` 异步启动，`app.Run()` 在 goroutine 中完成监听绑定之前，紧接着第 100-103 行就执行 websocket.DefaultDialer.Dial(wsURL, nil)，中间没有任何等待/重试/就绪信号。若 goroutine 调度滞后或端口绑定尚未完成，Dial 会以 connection refused 失败，导致该测试随机失败（flaky）。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "异步启动的服务端在客户端发起连接前必须完成就绪同步（等待监听、轮询重试或使用同步构造的测试服务器），否则测试存在竞态"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\gofr-dev__gofr@2c0c099.diff\n  caseId              gofr-dev__gofr@2c0c099\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@2c0c099\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 5788 字符（lockfile=1），明细见审计 mrFilter\nreview-pi: 覆盖账本 candidate 3 / no-issue 64 / not-reached 18（no-signal=18）\nreview-pi: 覆盖补漏 请求 27（失败 0）/ 覆盖 hunk 66/84 / 新候选 2 / no-issue 64 / 预算跳过 0 / 验证拒绝 4\n✓ 完成 · 耗时 632.4s · 模型调用 32 次 · token 输入 38,026（未命中） · 输出 29,586 · 缓存命中 1,196,288（96.9%） · 工具 51 次（主会话 51 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0170\n[time] 阶段耗时 | 总墙钟 633.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.1%)\n[time] 阶段 | 六阶段审计 168.1s (26.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 464.6s (73.3%)\n[time] 审计明细 | P1 46.7s (27.8%) | P2 3.1s (1.9%) | P3 7.2s (4.3%) | P4 71.5s (42.6%) | P5 30.4s (18.1%) | P6 8.8s (5.3%)\n[usage] 任务总计 | 模型调用 65 次（Agent 32 + 一次性 33） | token 输入 65,109（未命中） | 输出 113,203 | 缓存命中 1,207,424（94.9%） | $0.0442\n[usage] 一次性明细 | 覆盖补漏 33 次（输入 27,083 / 输出 83,617 / 缓存 11,136）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\gofr-dev__gofr@2c0c099\\audit\\20261121_160240_851.json",
+  "token_usage": {
+    "input_tokens": 65109,
+    "output_tokens": 113203,
+    "cache_read_input_tokens": 1207424
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 38026,
+      "output_tokens": 29586,
+      "cache_read_input_tokens": 1196288
+    },
+    "coverage_repair": {
+      "input_tokens": 27083,
+      "output_tokens": 83617,
+      "cache_read_input_tokens": 11136
+    }
+  }
+}

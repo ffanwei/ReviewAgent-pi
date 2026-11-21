@@ -1,0 +1,82 @@
+{
+  "instance_id": "lvgl__lvgl@e526b2a",
+  "repo": "lvgl/lvgl",
+  "base_commit": "244b3b996e0b331468cf5967c937029535af569c",
+  "head_commit": "e526b2a1faa4672eeb3610b466ecc25b1abb220b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 185.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "src/widgets/span/lv_span.c",
+      "line": 216,
+      "summary": "lv_span_set_text_fmt 覆盖旧文本指针，导致每次更新泄漏上一份动态文本",
+      "failure_scenario": "新增的 lv_span_set_text_fmt 在把新格式化文本写入 span 前，释放条件写反成 `span->txt == NULL && span->static_flag`：当 span->txt 为 NULL 时 lv_free(NULL) 是空操作，因此真正需要释放的“非 static 的动态缓冲”永远不会被释放，第 220-221 行直接把旧指针覆盖掉。因为 span 文本绑定（lv_spangroup_bind_span_text -> span_text_observer_cb）在每次 Subject 变化时都会走到 lv_spangroup_set_span_text_fmt（同样写反，第 274-276 行），一个持续更新的数值 Subject 会让内存单调增长，在 MCU 上很快耗尽堆。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "RESOURCE-LEAK-001"
+    },
+    {
+      "file": "src/others/observer/lv_observer.h",
+      "line": 548,
+      "summary": "lv_spangroup_bind_span_text 的声明守卫用 LV_USE_LABEL，与定义的 LV_USE_SPAN 不一致",
+      "failure_scenario": "头文件中新接口被 `#if LV_USE_LABEL` 包裹，而 lv_observer.c 中的定义在 `#if LV_USE_SPAN` 内，两者是彼此独立的配置项（LV_USE_SPAN 不依赖 LV_USE_LABEL）。在 LV_USE_SPAN=1 且 LV_USE_LABEL=0 的合法配置下，lv_xml_spangroup_parser.c（只受 LV_USE_XML 保护）调用 lv_spangroup_bind_span_text 时看不到声明，会产生隐式声明（C99/-Werror 下编译失败、C++ 下硬错误），而 lv_observer.c 中的全局符号也无任何声明可达。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "CONFIG-GUARD-001"
+    },
+    {
+      "file": "src/others/xml/parsers/lv_xml_obj_parser.c",
+      "line": 905,
+      "summary": "解析 grid dsc array 时去 const 并原地切割 XML 属性值字符串",
+      "failure_scenario": "新增的 style_grid_column_dsc_array / style_grid_row_dsc_array 解析把 `const char * value` 强转为 `char *` 交给 lv_xml_split_str，而该函数会向缓冲区写入 '\\0'。属性值可能直接来自调用方传入的 `const char ** attrs`（lv_xml_create 的公开入参，示例与测试里普遍用字符串字面量数组），写入只读段会造成未定义行为/崩溃；即便缓冲区可写，被截断后该属性值只剩第一个 token，后续任何再次使用同一字符串的路径都会拿到错误内容（“1 fr(1) fr(2)” 变成 “1”）。此外 dsc_array 的 lv_malloc 返回值未判空即被写入。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "MEMORY-SAFETY-002"
+    },
+    {
+      "file": "src/layouts/grid/lv_grid.c",
+      "line": 194,
+      "summary": "grid_update 因 calc 失败提前返回时泄漏已分配的行/列数组",
+      "failure_scenario": "新增的 `if(res != LV_RESULT_OK) return;` 在 calc 失败时直接返回，但 calc 内部可能已经完成部分分配：calc_rows 成功会分配 c->y / c->h，随后 calc_cols 因找不到列描述符返回 LV_RESULT_INVALID，此时这两个缓冲既没有被 calc_free 释放，也没有被保存到任何地方，直接泄漏。该场景（容器有行模板但自身与父级都没有列模板）会在每次布局更新时重复触发，泄漏随布局次数线性增长。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RESOURCE-LEAK-002"
+    },
+    {
+      "file": "xmls/lv_textarea.xml",
+      "line": 9,
+      "summary": "XML 属性改名为 placeholder_text，但解析器仍只识别 placeholder",
+      "failure_scenario": "本次把 lv_textarea 的 XML 属性由 placeholder 改名为 placeholder_text，却没有同步修改 lv_xml_textarea_parser.c 中的匹配字符串（仍是 \"placeholder\"）。XML 声明的属性与运行时解析器不再一致：按新声明书写 `<lv_textarea placeholder_text=\"...\"/>` 时该属性不会命中任何分支，被静默忽略（该 apply 循环没有未知属性告警），而旧的 placeholder 写法又与声明的 API 不符，用户与代码生成工具都会得到“属性无效”的行为。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "API-CONTRACT-003"
+    },
+    {
+      "file": "src/others/observer/lv_observer.c",
+      "line": 836,
+      "summary": "lv_spangroup_bind_span_text 未判空即解引用 observer，失败时还泄漏 user_data",
+      "failure_scenario": "lv_subject_add_observer_obj 在链表节点分配失败（LV_ASSERT_MALLOC 关闭的发布构建）时会返回 NULL。新代码随后无条件执行 `observer->auto_free_user_data = 1;`，会造成 NULL 解引用崩溃；同时已分配的 bind_element_string_t 也没有释放路径，形成泄漏。既有 lv_label_bind_text 是直接 return observer，不 deref，因此这是本次新引入的解引用风险。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\lvgl__lvgl\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\diff\\lvgl__lvgl@e526b2a.diff\n  caseId              lvgl__lvgl@e526b2a\n  --issue             (未传)\n  --taskId            lvgl__lvgl@e526b2a\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 6 / no-issue 0 / not-reached 61（no-signal=61）\n✓ 完成 · 耗时 180.6s · 模型调用 21 次 · token 输入 31,530（未命中） · 输出 29,413 · 缓存命中 1,025,664（97.0%） · 工具 44 次（主会话 44 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0155\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 181.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.6%)\n[time] 阶段 | 六阶段审计 180.5s (99.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 3.5s (1.9%) | P2 3.0s (1.7%) | P3 8.2s (4.6%) | P4 109.8s (60.8%) | P5 49.9s (27.6%) | P6 6.0s (3.3%)\n[usage] 任务总计 | 模型调用 21 次（Agent 21 + 一次性 0） | token 输入 31,530（未命中） | 输出 29,413 | 缓存命中 1,025,664（97.0%） | $0.0155\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\tasks\\lvgl__lvgl@e526b2a\\audit\\20261121_132937_339.json",
+  "token_usage": {
+    "input_tokens": 31530,
+    "output_tokens": 29413,
+    "cache_read_input_tokens": 1025664
+  }
+}

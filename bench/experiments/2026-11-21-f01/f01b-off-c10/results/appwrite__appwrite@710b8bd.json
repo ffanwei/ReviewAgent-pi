@@ -1,0 +1,82 @@
+{
+  "instance_id": "appwrite__appwrite@710b8bd",
+  "repo": "appwrite/appwrite",
+  "base_commit": "d205ac457960f73d781547540cde1732f69076ac",
+  "head_commit": "710b8bda565c411ecb23e8b670d0ba7f45d2b3f3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 161.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+      "line": 79,
+      "summary": "代理规则域名黑名单由 API 主域名改为 console 域名，API 主域名可被注册为项目自定义域名",
+      "failure_scenario": "该黑名单原本包含平台主域名，用于阻止项目把平台自身域名注册为自定义代理域名。改成 `_APP_CONSOLE_DOMAIN`（回退 `_APP_DOMAIN`）后，一旦部署同时设置了两者且值不同（这正是本次变更要支持的场景），`_APP_DOMAIN` 就不再进入 `$deniedDomains`。攻击者或任意项目管理员提交 `domain=<平台 API 域名>` 时，`in_array($domain, $deniedDomains)` 不再命中，`rules` 文档被创建，随后 `router()` 会按 host 命中该 rule，把平台自己的 API 域名流量路由到该项目，造成域名抢占/流量劫持；同时还会为该域名排队签发证书。`.env:18` 的 `_APP_CUSTOM_DOMAIN_DENY_LIST` 默认为空，无法兜底。同样的替换也出现在 Function/Redirect/Site 三个 Create.php 中，影响面覆盖 API、函数、站点与重定向四种规则类型。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.78,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 812,
+      "summary": "路由主域名判定改用 console 域名，导致 API 主域名请求被误送入 router 并被 router protection 拦截",
+      "failure_scenario": "`$mainDomain` 用于判断当前 host 是否为「主域名」，只有非主域名才进入 `router()` 做代理逻辑。本次只把主 `App::init()` 的这处改成 `_APP_CONSOLE_DOMAIN`，而 `App::options()`（1094 行）、`/robots.txt`（1400 行）、`/humans.txt`（1432 行）仍取 `_APP_DOMAIN`。当 `_APP_DOMAIN=api.example.com`、`_APP_CONSOLE_DOMAIN=console.example.com` 时，对 `api.example.com` 的正常 API 请求会因 `$host !== $mainDomain` 而进入 `router()`：`api.example.com` 通常没有对应 rules 文档，`router()` 走到 101 行的 router protection 判定，`$host` 既不等于 `localhost`/`APP_HOSTNAME_INTERNAL`，也不等于 `_APP_CONSOLE_DOMAIN`，于是抛出 `GENERAL_ACCESS_FORBIDDEN`，整个 API 域名在开启 `_APP_OPTIONS_ROUTER_PROTECTION`（docker-compose 中已默认暴露该变量）时直接 403；即使未开启，也会为每个请求额外做一次 rules 查询，并与 1094 行 OPTIONS 预检的判定不一致（预检不走 router、实际请求走 router），造成 CORS 行为前后矛盾。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-013"
+    },
+    {
+      "file": "app/controllers/general.php",
+      "line": 861,
+      "summary": "SSL 证书主域名判定改用 console 域名，与 Certificates worker 的 getMainDomain 冲突导致证书签发失败",
+      "failure_scenario": "`$envDomain` 参与「当前 host 是否主域名」的判定，决定是否跳过证书生成（不是主域名会 warning 并跳过）。本次把它改为 console 域名，而真正签发证书的 `Certificates` worker 的 `getMainDomain()` 仍返回 `_APP_DOMAIN`。当两个变量不同时，两处对「主域名」的判断相反：对 `console.example.com` 的请求会被 general.php 认为是主域名并排队签发证书，但 worker 里 `$isMainDomain` 为 false，从而走进非主域名分支，强制要求该域名满足 `_APP_DOMAIN_TARGET_CNAME`/A/AAAA 的 DNS 校验；平台自有 console 域名通常不指向这些目标记录，于是抛 `Failed to verify domain DNS records.`，证书永远签发失败并在维护周期里反复重试、给安全邮箱发告警邮件。反向地，对真正的 `_APP_DOMAIN` 请求，general.php 会判定「不是主域名」而跳过证书生成，主域名的证书不再被补发/续签。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-021"
+    },
+    {
+      "file": "app/config/templates/site.php",
+      "line": 10,
+      "summary": "新增的 _APP_CONSOLE_DOMAIN 未登记到变量清单与 docker-compose，自托管部署下该值不会传入容器",
+      "failure_scenario": "本次在十余处引入 `_APP_CONSOLE_DOMAIN`，但该变量既未加入 `app/config/variables.php` 的环境变量声明，也未加入 `docker-compose.yml` 各服务的 `environment` 白名单，`.env` 中同样没有它。docker-compose 里各服务是显式逐项列出变量的（appwrite 服务 118 行只列 `_APP_DOMAIN`，executor/worker 服务同样如此），未列出的变量不会注入容器。结果是：运维即使按新语义在 `.env` 里配置 `_APP_CONSOLE_DOMAIN`，`appwrite`、`executor`、`appwrite-worker-*` 容器里取到的仍然是空值，全部退回到 `_APP_DOMAIN`，本次改动在标准自托管部署上静默失效，且不同容器（例如 executor 与 appwrite）若通过其它方式注入不同值还会出现行为分叉。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "CONFIG-005"
+    },
+    {
+      "file": "src/Executor/Executor.php",
+      "line": 203,
+      "summary": "执行请求缺失 Host 头时的兜底值改为 console 域名，事件/定时触发执行收到错误的 Host",
+      "failure_scenario": "`createExecution` 在调用方未提供 `host` 头时用它构造运行时的 Host。`Platform/Workers/Functions.php` 组装 `$headers` 时只写 `x-appwrite-*` 系列头（400-407 行），从不设置 `host`，因此事件/定时触发的执行会走到这个兜底分支。改成 `_APP_CONSOLE_DOMAIN` 后，这类执行在函数运行时看到的 Host 由 API 域名变成 console 域名：依赖 Host 生成绝对 URL、重定向 Location、cookie domain、CSRF/Origin 校验的框架（如 SSR 站点模板、Next.js/Remix 的 server actions）会生成指向 console 站点的地址；同时写入 execution 文档的 `requestHeaders` 与真实入口域名不一致，排障与回放都会失真。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-031"
+    },
+    {
+      "file": "src/Appwrite/Vcs/Comment.php",
+      "line": 90,
+      "summary": "console 域名只在部分入口切换，邮件模板链接仍固定使用 _APP_DOMAIN",
+      "failure_scenario": "本次把 VCS 评论深链、错误页、站点模板等 console 链接生成改用 `_APP_CONSOLE_DOMAIN`，但同类「指向 console 前端」的链接在邮件与消息路径上仍是 `_APP_DOMAIN`。配置独立 console 域名后，同一套产品会产出两种 host：VCS 评论/错误页跳转到 console 域名，而邀请、密码重置、Magic URL 等邮件里的 `{{host}}/console/...` 仍指向 `_APP_DOMAIN`。若 `_APP_DOMAIN` 已不再服务 console 前端（正是引入独立 console 域名的动机），用户点击邮件链接会落到错误站点或 404，且后续如需再次迁移必须重新排查所有散落的 env 读取点。",
+      "severity": "P2",
+      "category": "可维护性",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-017"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\appwrite__appwrite\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\diff\\appwrite__appwrite@710b8bd.diff\n  caseId              appwrite__appwrite@710b8bd\n  --issue             (未传)\n  --taskId            appwrite__appwrite@710b8bd\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 6 / no-issue 0 / not-reached 14（no-signal=14）\n✓ 完成 · 耗时 154.4s · 模型调用 20 次 · token 输入 41,586（未命中） · 输出 22,243 · 缓存命中 628,736（93.8%） · 工具 35 次（主会话 35 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0138\n[time] 阶段耗时 | 总墙钟 155.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.5%)\n[time] 阶段 | 六阶段审计 154.4s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.2%)\n[time] 审计明细 | P1 6.6s (4.3%) | P2 3.2s (2.1%) | P3 5.7s (3.7%) | P4 99.9s (64.9%) | P5 32.2s (20.9%) | P6 6.4s (4.1%)\n[usage] 任务总计 | 模型调用 20 次（Agent 20 + 一次性 0） | token 输入 41,586（未命中） | 输出 22,243 | 缓存命中 628,736（93.8%） | $0.0138\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-off-c10-20261121\\.reviewpi\\tasks\\appwrite__appwrite@710b8bd\\audit\\20261121_132938_898.json",
+  "token_usage": {
+    "input_tokens": 41586,
+    "output_tokens": 22243,
+    "cache_read_input_tokens": 628736
+  }
+}

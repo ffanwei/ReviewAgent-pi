@@ -1,0 +1,84 @@
+{
+  "instance_id": "google-gemini__gemini-cli@0fa1bd7",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "5a05fb0dd002481343aaab7736a871904bb07c6f",
+  "head_commit": "0fa1bd7ac417366f321ed2554caeaef550321959",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 224.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 58,
+      "summary": "写回改为「只合并不删除」，导致 mcp remove 等删除操作无法落盘",
+      "failure_scenario": "新的写盘流程用 applyUpdates 把内存中的 settings 深合并进已存在的文件，但整个函数只有赋值、没有任何 delete（`const result = current` 原地合并，L76 仅 `result[key] = value`）。因此内存里被删掉的键会继续留在 settings.json 中：`gemini mcp remove <name>` 执行 `delete mcpServers[name]` 后调用 `setValue('mcpServers', mcpServers)`，磁盘上被删的 server 仍然存在，命令却打印「removed」；同一根因也让 `gemini mcp add` 覆盖已存在 server（例如 stdio 换成 http）时旧的 `command`/`args` 键残留，以及 extension.ts 中从 disabled 列表移除项后磁盘残留。旧实现是全量 `JSON.stringify(settingsToSave)` 覆写，删除可以生效，本次改动属于行为回退。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "WRITE-MERGE-001"
+    },
+    {
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 115,
+      "summary": "还原 env var 时不校验 resolvedValue，用户写入的字面量被静默改回 $VAR",
+      "failure_scenario": "restoreEnvVarsRecursive 的判定条件只有「路径命中映射 + 当前值是 string」，就把值替换成 originalValue；EnvVarMapping.resolvedValue 在还原阶段从未被读取。后果是：只要某路径曾被 env var 解析过，之后对该路径的任何字符串改写都会被静默回退。典型场景：settings.json 中 `mcpServers.context7.headers.API_KEY` 原为 `$API_KEY`，用户通过 `gemini mcp add ... --header API_KEY=literal-key` 重新配置该 server 后，add.ts 会把字面量 `literal-key` 写进内存对象，但保存时又被改回 `$API_KEY`，命令仍打印「MCP server ... updated」，用户显式提供的凭据实际未落盘；若之后环境变量不存在，该配置直接失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 152,
+      "summary": "环境变量追踪正则锚定整串，嵌入式引用（Bearer $TOKEN / ${BASE_URL}/api）的明文仍会落盘",
+      "failure_scenario": "解析侧 resolveEnvVarsInString 使用非锚定全局正则，会把字符串中任意位置的 `$VAR`/`${VAR}` 替换成明文；但新增的 trackEnvVarMappings 只在「整个字符串恰好等于 `$VAR`」时才登记映射（`/^\\$(?:(\\w+)|{([^}]+)})$/`）。于是 `\"Authorization\": \"Bearer $TOKEN\"`、`\"url\": \"${BASE_URL}/api\"`、`\"command\": \"$HOME/bin/x\"` 这类常见写法在保存时不会命中 envVarMap，restoreEnvVarReferences 无映射可还原，resolved 的明文凭据被 stringify 写回 settings.json —— 本次改动声称修复的「env var 泄漏」在这些形态下依然存在，且用户会误以为已被保护。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.7,
+      "rule": "SECURITY-ENV-001"
+    },
+    {
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 39,
+      "summary": "文件解析失败时静默 return，用户修改被丢弃且调用方仍报告成功",
+      "failure_scenario": "updateSettingsFilePreservingFormat 在 comment-json 解析失败时只打印两条 console.error 就 `return`，既不备份也不落盘；而 saveSettings 把该调用包在 try/catch 里且 setValue 无返回值，因此写入失败完全静默。旧实现是全量覆写，遇到无法解析的历史文件时会直接写入规范化的 settings 内容（等于顺手修复）；现在同样场景下：磁盘文件被外部进程/编辑器写坏、或含 comment-json 解析不了的内容时，用户在 CLI 里做的改动（如 `gemini mcp remove`）会被丢弃，命令仍然打印「removed/updated」，下次启动发现配置没变。测试用例 `should handle corrupted JSON files gracefully` 正是把「文件保持不变、不抛错」固化为期望行为，掩盖了调用方无法感知失败的问题。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "packages/cli/src/utils/commentJson.test.ts",
+      "line": 236,
+      "summary": "console.error spy 未在 finally 中恢复，断言失败会污染后续测试",
+      "failure_scenario": "该测试在末尾才调用 consoleSpy.mockRestore()。若第 225-234 行任一 expect 失败，恢复语句不会执行，console.error 会保持被 mock 状态，影响后续测试或测试套件的错误输出，导致失败原因被掩盖、测试间产生隐式依赖。建议将 mockRestore 放入 try/finally，或在 afterEach 中统一恢复。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.75,
+      "rule": "测试中创建的 spy/mock 必须在断言失败时也能恢复，避免跨测试污染。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\google-gemini__gemini-cli@0fa1bd7.diff\n  caseId              google-gemini__gemini-cli@0fa1bd7\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@0fa1bd7\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 3964 字符（lockfile=1），明细见审计 mrFilter\nreview-pi: 覆盖账本 candidate 2 / no-issue 5 / not-reached 5（no-signal=5）\nreview-pi: 覆盖补漏 请求 4（失败 0）/ 覆盖 hunk 6/11 / 新候选 1 / no-issue 5 / 预算跳过 0 / 验证拒绝 2\n✓ 完成 · 耗时 222.7s · 模型调用 14 次 · token 输入 24,619（未命中） · 输出 21,941 · 缓存命中 292,480（92.2%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0104\n[time] 阶段耗时 | 总墙钟 223.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 128.2s (57.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 94.8s (42.4%)\n[time] 审计明细 | P1 4.2s (3.3%) | P2 2.6s (2.0%) | P3 30.1s (23.5%) | P4 50.5s (39.4%) | P5 33.0s (25.8%) | P6 7.8s (6.1%)\n[usage] 任务总计 | 模型调用 21 次（Agent 14 + 一次性 7） | token 输入 37,455（未命中） | 输出 39,631 | 缓存命中 294,400（88.7%） | $0.0172\n[usage] 一次性明细 | 覆盖补漏 7 次（输入 12,836 / 输出 17,690 / 缓存 1,920）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\google-gemini__gemini-cli@0fa1bd7\\audit\\20261121_155710_207.json",
+  "token_usage": {
+    "input_tokens": 37455,
+    "output_tokens": 39631,
+    "cache_read_input_tokens": 294400
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 24619,
+      "output_tokens": 21941,
+      "cache_read_input_tokens": 292480
+    },
+    "coverage_repair": {
+      "input_tokens": 12836,
+      "output_tokens": 17690,
+      "cache_read_input_tokens": 1920
+    }
+  }
+}

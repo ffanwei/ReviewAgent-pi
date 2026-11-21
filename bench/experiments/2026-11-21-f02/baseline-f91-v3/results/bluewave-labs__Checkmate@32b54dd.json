@@ -1,0 +1,104 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@32b54dd",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "05dd5f7de27ae7f2139714f0bc577484642e2c77",
+  "head_commit": "32b54ddf11ea27b8ed85d2139fe38e0dcb7f3d43",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 323.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 159,
+      "summary": "JSON 响应下 include/regex 匹配对非字符串 payload 调用会抛 TypeError 导致检查任务失败",
+      "failure_scenario": "本次新增的 expectedValue 匹配直接对 payload 调用 String.prototype.includes 与 RegExp.test，但 payload 在 content-type 为 application/json 时是 JSON.parse 后的对象（网络层 137 行）。对象没有 includes，会抛出 TypeError；该错误不是 HTTPError/RequestError，不会被 190 行的分支兜住，而是设置 err.service/err.method 后重新抛出，最终由 SuperSimpleQueueHelper.getMonitorJob 的 catch 记录 warn 并 rethrow，调度器把该 job 判为失败、不落库这次 check、监控状态也不再更新。影响所有配置了 expectedValue + matchMethod=include（以及 regex 对对象做 test 时隐式转成 \"[object Object]\"）的 JSON 接口监控。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 164,
+      "summary": "matchMethod 为空或未知时 expectedValue 匹配恒失败，存量监控被误判为宕机",
+      "failure_scenario": "新增逻辑用三个并列 if 设置 ok，但初始值为 false，且没有任何 else/默认分支：当 monitor.matchMethod 为 \"\"（Monitor 模型 enum 显式允许空字符串，历史数据与 bulk import 的 CSV 列可能为空）或未设置时，即使响应内容与 expectedValue 完全一致，ok 也保持 false，于是走失败分支，把 code 强制改成 500、status 置为 false。由于此前 expectedValue 只被写进日志、并不参与判定，这次改动会让所有「配置了 expectedValue 但 matchMethod 为空」的监控立刻变为长期宕机；同时失败时把真实 HTTP 状态码覆盖为 500，checks 记录、通知与前端展示都会显示错误的 500。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 312,
+      "summary": "容器匹配歧义分支把 status 赋成 404 后又覆盖为 false，且从未设置 code",
+      "failure_scenario": "歧义分支先执行 `dockerResponse.status = 404;`，下一行立即被 `dockerResponse.status = false;` 覆盖，而 404 应该写到 code 上：该分支返回的响应因此既没有 code 也没有 responseTime。对照上方「未找到容器」分支（293-295 行显式设置 code=404），歧义场景下写入 checks 的 statusCode 为 undefined，前端与通知无法区分「容器不存在(404)」和「匹配有歧义」，且明显是复制粘贴写错属性，属于本次新增代码引入的缺陷。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+      "line": 13,
+      "summary": "迁移失败被静默吞掉，runMigrations 也不检查返回值，旧阈值 0.6 会继续参与百分比比较",
+      "failure_scenario": "migrateStatusWindowThreshold 用 try/catch 包住全部逻辑，出错时只 console.error 并 return false；migration/index.js 的 runMigrations 直接 `await migrateStatusWindowThreshold();` 忽略返回值，MongoDB.connect 也是 await 之后继续启动。于是任何一次写库失败（例如某条 monitor.save() 校验失败、连接抖动）都会让迁移半途而废且服务照常启动：已迁移的监控阈值变成 60，未迁移的仍是 0.6，而 statusService 用百分比 failureRate（0-100）与该字段比较，0.6 意味着「只要出现一次失败就判定宕机」，造成监控状态在迁移失败后长期误报，且没有任何日志通道告警。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "MIGRATION-001"
+    },
+    {
+      "file": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+      "line": 239,
+      "summary": "传入只含 tooltipContent 的 config 会丢失 DataTable 的默认空态文案",
+      "failure_scenario": "DataTable 的默认 config（含 emptyView: \"No data\"、onRowClick）只在调用方完全不传 config 时才生效；IncidentTable 改为传 `config={{ tooltipContent: GetTooltip }}` 后，config.emptyView 变为 undefined。当筛选条件命中 0 条 check（checksCount 已定义、checks 为空数组）时，空态分支渲染 `{config.emptyView}` 得到空白单元格，原先展示的 \"No data\" 文案消失，用户看到一张无任何提示的空表。此前该组件以 `<Table headers data />` 调用，走的是默认 config，属于本次改动引入的回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "UI-REGRESSION-001"
+    },
+    {
+      "file": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+      "line": 28,
+      "summary": "GetTooltip 作为普通函数在渲染期调用 useTheme，违反 Hooks 规则且调用次数随行数变化",
+      "failure_scenario": "GetTooltip 不是组件，而是通过 `config.tooltipContent(row)` 在 DataTable 的渲染过程中被逐行同步调用，函数内部却调用了 useTheme()（一个依赖 context/debugValue 的 hook）。这既违反 react-hooks/rules-of-hooks（hook 出现在普通函数/回调中，会触发 lint 报错），又使 hook 的实际调用次数随数据行数变化、且挂在了 DataTable 的渲染周期而非 IncidentTable 上；一旦上游调整 Table 渲染顺序或行数变化（例如切换分页、筛选），行为将不可预期。正确做法是让 tooltip 内容成为真正的 React 组件，由 DataTable 作为元素渲染。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "REACT-HOOKS-001"
+    },
+    {
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 1,
+      "summary": "新增未使用的 assert.match 导入属于无效依赖残留",
+      "failure_scenario": "本次在文件首行新增 `import { match } from \"assert\";`，但整个文件中没有任何地方使用 match：搜索请求只命中该导入行。这说明预期通过 assert.match 实现的正则匹配没有落地（实际用 `new RegExp(...).test(...)` 实现），残留的导入既无作用，也会误导后续维护者以为匹配逻辑走了 Node assert，增加阅读与静态检查噪声。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "MAINTAINABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\bluewave-labs__Checkmate@32b54dd.diff\n  caseId              bluewave-labs__Checkmate@32b54dd\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@32b54dd\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 39471 字符（lockfile=1），明细见审计 mrFilter\nreview-pi: 覆盖账本 candidate 6 / no-issue 9 / not-reached 11（no-signal=11）\nreview-pi: 覆盖补漏 请求 14（失败 0）/ 覆盖 hunk 9/20 / 新候选 0 / no-issue 9 / 预算跳过 0 / 验证拒绝 4\n✓ 完成 · 耗时 321.8s · 模型调用 14 次 · token 输入 38,543（未命中） · 输出 21,631 · 缓存命中 432,768（91.8%） · 工具 30 次（主会话 30 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0127\n[time] 阶段耗时 | 总墙钟 322.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.2%)\n[time] 阶段 | 六阶段审计 134.5s (41.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 187.4s (58.1%)\n[time] 审计明细 | P1 4.5s (3.3%) | P2 2.1s (1.6%) | P3 8.8s (6.6%) | P4 75.7s (56.4%) | P5 37.8s (28.1%) | P6 5.4s (4.0%)\n[usage] 任务总计 | 模型调用 32 次（Agent 14 + 一次性 18） | token 输入 49,059（未命中） | 输出 52,554 | 缓存命中 438,656（89.9%） | $0.0228\n[usage] 一次性明细 | 覆盖补漏 18 次（输入 10,516 / 输出 30,923 / 缓存 5,888）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\bluewave-labs__Checkmate@32b54dd\\audit\\20261121_160659_379.json",
+  "token_usage": {
+    "input_tokens": 49059,
+    "output_tokens": 52554,
+    "cache_read_input_tokens": 438656
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 38543,
+      "output_tokens": 21631,
+      "cache_read_input_tokens": 432768
+    },
+    "coverage_repair": {
+      "input_tokens": 10516,
+      "output_tokens": 30923,
+      "cache_read_input_tokens": 5888
+    }
+  }
+}

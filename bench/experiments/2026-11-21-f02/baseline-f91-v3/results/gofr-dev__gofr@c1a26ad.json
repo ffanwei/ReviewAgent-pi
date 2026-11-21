@@ -1,0 +1,84 @@
+{
+  "instance_id": "gofr-dev__gofr@c1a26ad",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "d0300073f685bb1154f7437f3172799d31bfddbe",
+  "head_commit": "c1a26ade6db7da96622c9bdca7674ef7094c122f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 173.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "pkg/gofr/http_server.go",
+      "line": 43,
+      "summary": "中间件注册顺序被重排，Logging 从第二位移到最内层，CORS 短路的 OPTIONS 预检请求不再被记录",
+      "failure_scenario": "变更前注册顺序是 Tracer → Logging → CORS → Metrics，而本 MR 改为先 r.Use(Tracer, CORS, Metrics) 再 r.Use(Logging/LoggingWithoutProbes)，Logging 由最外层之一变成最内层。Router 内嵌 gorilla/mux，Use 按注册顺序追加、先注册者位于外层，因此 CORS 在 Logging 之外先执行；而 cors.go 对 OPTIONS 请求直接写 200 并 return、不调用 inner，导致所有跨域预检请求完全绕过 Logging，不再有请求日志（此前这些请求会被记录）。同时 Logging 内置的 panicRecovery 也不再覆盖 CORS/Metrics 中发生的 panic，属于与本需求无关的副作用式行为变更。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "MIDDLEWARE-ORDER-001"
+    },
+    {
+      "file": "pkg/gofr/http/middleware/logger.go",
+      "line": 112,
+      "summary": "探针跳过日志的早退分支同时跳过了 panic 兜底与 X-Correlation-ID 设置",
+      "failure_scenario": "loggingMiddleware 在 !shouldLog(r) 时直接 inner.ServeHTTP(w, r) 并 return，早于 StatusResponseWriter 包装、X-Correlation-ID 头写入以及 defer 中的 panicRecovery。开启 LOG_DISABLE_PROBES=true 后，探针路径（/.well-known/health、/.well-known/alive）上 handler 之外的 panic（如 responder 序列化、WebSocket 升级等非 handler goroutine 环节）不再被该中间件 recover，只能由 net/http 默认处理：连接被关闭、探针端拿不到 500 响应体，Metrics 侧记录到的状态码为 0；同时探针响应也失去 X-Correlation-ID，观测链路中断。日志开关本应只影响日志输出，不应改变错误处理与响应头语义。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "MIDDLEWARE-SKIP-001"
+    },
+    {
+      "file": "pkg/gofr/http_server.go",
+      "line": 42,
+      "summary": "LOG_DISABLE_PROBES 用 == \"true\" 精确比较，大小写或 1/TRUE 等写法会被静默忽略",
+      "failure_scenario": "配置读取侧 GetOrDefault 只返回原始字符串，不做任何归一化，而这里用 middlewareConfigs.LogDisableProbes == \"true\" 做大小写敏感的精确比较。用户按常见习惯写成 LOG_DISABLE_PROBES=TRUE、True 或 1 时，配置被视为未开启，探针日志继续输出且没有任何告警，属于难以发现的配置失效。仓库对同类布尔配置已有 strconv.ParseBool 的处理先例。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONFIG-BOOL-001"
+    },
+    {
+      "file": "pkg/gofr/http/middleware/config.go",
+      "line": 17,
+      "summary": "导出函数 GetConfigs 的返回类型由 map[string]string 改为 MiddlewareConfig，属对外不兼容变更",
+      "failure_scenario": "middleware.GetConfigs 是 gofr 公开包中的导出函数，返回类型从 map[string]string 改成新增的 MiddlewareConfig 结构体，凡是外部代码直接调用 GetConfigs 并按 map 使用返回值（取值、range、作为参数传给自定义中间件）的都会编译失败；同一次变更还新增了导出类型 MiddlewareConfig，但未提供兼容层或过渡说明。仓库内唯一调用点 factory.go:41 已同步更新，说明该变更是有意的，但缺少对使用方的兼容处理与迁移路径。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "pkg/gofr/http/middleware/config_test.go",
+      "line": 39,
+      "summary": "新增测试用例断言失败消息沿用旧用例，失败时误导排障",
+      "failure_scenario": "新增的 TestLogDisableProbesConfig（第 32 行）只断言 LOG_DISABLE_PROBES 为 \"true\"，但其 assert.Equal 的失败消息仍为 \"TestGetConfigs Failed!\"。一旦该断言失败，输出会指向错误的用例（TestGetConfigs），误导排障方向。此外首个用例在第 17 行把 LOG_DISABLE_PROBES 设为 \"false\"，但新用例只覆盖了 \"true\"，设置为 \"false\" 的分支并未被断言验证，属于测试覆盖盲区。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "测试断言失败消息应与所属用例语义一致，避免复用其它用例的提示文案"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\gofr-dev__gofr@c1a26ad.diff\n  caseId              gofr-dev__gofr@c1a26ad\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@c1a26ad\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 13 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 6（失败 0）/ 覆盖 hunk 14/16 / 新候选 1 / no-issue 13 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 171.9s · 模型调用 14 次 · token 输入 19,537（未命中） · 输出 15,061 · 缓存命中 249,088（92.7%） · 工具 20 次（主会话 20 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0076\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 172.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.5%)\n[time] 阶段 | 六阶段审计 101.2s (58.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 70.8s (41.0%)\n[time] 审计明细 | P1 4.8s (4.8%) | P2 3.2s (3.2%) | P3 6.1s (6.1%) | P4 47.6s (47.1%) | P5 30.6s (30.3%) | P6 8.7s (8.6%)\n[usage] 任务总计 | 模型调用 22 次（Agent 14 + 一次性 8） | token 输入 28,049（未命中） | 输出 27,583 | 缓存命中 251,648（90.0%） | $0.0124\n[usage] 一次性明细 | 覆盖补漏 8 次（输入 8,512 / 输出 12,522 / 缓存 2,560）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\gofr-dev__gofr@c1a26ad\\audit\\20261121_155947_187.json",
+  "token_usage": {
+    "input_tokens": 28049,
+    "output_tokens": 27583,
+    "cache_read_input_tokens": 251648
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 19537,
+      "output_tokens": 15061,
+      "cache_read_input_tokens": 249088
+    },
+    "coverage_repair": {
+      "input_tokens": 8512,
+      "output_tokens": 12522,
+      "cache_read_input_tokens": 2560
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "instance_id": "mpv-player__mpv@ff45a81",
+  "repo": "mpv-player/mpv",
+  "base_commit": "5ba7ee513751dd005379a06fb627303e6fe1b3dd",
+  "head_commit": "ff45a8103e3c5ec3e786b950b4852c2750de936f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 564.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "video/out/vo_gpu_next.c",
+      "line": 923,
+      "summary": "gpu-next 重绘帧时对 frame->current 空指针解引用导致崩溃",
+      "failure_scenario": "新增的 vflip 判断 `if (frame->current->params.vflip)` 在 draw_frame 入口处直接解引用 frame->current，但 VO 层在重绘（redraw）时会传入 current 为 NULL 的帧：video/out/vo.c:1089-1102 的 do_redraw() 在没有保留帧时构造 `struct vo_frame dummy = {0}` 并调用 vo->driver->draw_frame；reconfig 后（vo.c:626-628 把 in->current_frame 置 NULL）以及首帧到达前都会出现这种状态。此时 gpu-next 在 draw_frame 一开始就解引用空指针，进程直接段错误退出。触发场景常见：暂停时窗口被遮挡/重新曝光（VO_EVENT_EXPOSE 置 request_redraw）、切换暂停状态（vo.c:1222-1224 在丢帧时置 request_redraw）、或刚开始播放尚未送出首帧时请求重绘。",
+      "severity": "P0",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "NULLPTR-001"
+    },
+    {
+      "file": "video/out/vo_dmabuf_wayland.c",
+      "line": 713,
+      "summary": "dmabuf-wayland 把 vflip 映射成 Wayland 的水平翻转，画面被左右镜像而非上下翻转",
+      "failure_scenario": "Wayland 的 buffer transform 中 4（WL_OUTPUT_TRANSFORM_FLIPPED）表示“绕垂直轴翻转”，即水平（左右）镜像；垂直（上下）翻转等价于“旋转 180° 后再水平镜像”（FLIPPED_180=6）。本次改动直接用 `img->params.rotate / 90 + 4 * !!img->params.vflip`，只在序号上加了 4，没有同时补偿 180°，而 mp_image.h 的约定是“先垂直翻转再旋转”。因此 rotate=0 且存在 vflip 时变换被设为 4（水平镜像），画面左右颠倒而不是上下颠倒；rotate=90/270 时同样得到轴向错误的镜像。该行是 dmabuf-wayland 上 vflip 的唯一实现路径（该 VO 只接受 DRMPRIME/VAAPI 硬件帧，见 vo_dmabuf_wayland.c:667-675），所以带垂直翻转显示矩阵的视频（典型为手机竖拍）在此后端会呈现错误画面。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "RENDER-001"
+    },
+    {
+      "file": "video/out/vo_dmabuf_wayland.c",
+      "line": 544,
+      "summary": "dmabuf-wayland 实现了 vflip 但未声明 VO_CAP_VFLIP，导致回退滤镜插不进去并误报警告",
+      "failure_scenario": "本次为 dmabuf-wayland 增加了 vflip 处理（resize 复制 target_params->vflip、reconfig 设置 buffer transform），但 video_out_dmabuf_wayland 的 caps 仍是 `VO_CAP_ROTATE90 | VO_CAP_FRAMEOWNER`，没有 VO_CAP_VFLIP。于是 mp_output_chain_set_vo 把 stream_info.vflip 置为 false，autovflip 把该 VO 当成不支持 vflip，尝试插入 lavfi vflip 滤镜；但此 VO 只接受 IMGFMT_DRMPRIME/IMGFMT_VAAPI，mp_sws_supports_input() 对这两种格式返回 false，于是每遇见新的 vflip/格式组合都打印 “Video vflip with this format not supported”，帧仍带 vflip=1 传下去；同时 vo.c 的 check_vo_caps 又因“params.vflip 为真但 VO 无该能力位”打印 “the video output does not support this”。实现与能力声明不一致，日志自相矛盾，且当前正确行为依赖“回退失败”这一副作用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CAPS-001"
+    },
+    {
+      "file": "video/mp_image.h",
+      "line": 61,
+      "summary": "新增的 mp_image_params.vflip 未纳入 mp_image_params_equal，仅 vflip 变化的格式变更会被忽略",
+      "failure_scenario": "本次给 mp_image_params 增加了影响渲染结果的 vflip 字段，但 mp_image_params_equal()（video/mp_image.c:834-845）仍逐字段比较 imgfmt/hw_subfmt/w/h/p_w/p_h/force_window/color/repr/light/chroma_location/rotate/stereo3d/crop，没有加入 vflip。该函数是整条链“参数是否变化”的判据：f_output_chain.c:102-126 用它决定是否更新 public.input_params/output_params 与置位 reconfig_happened，f_decoder_wrapper.c:847 用它决定是否把新 params 往前传，vf_gpu.c:129 用它决定是否重建滤镜，screenshot.c:440 / image_writer.c:613 用它决定是否复用已有图像。因此当仅 vflip 变化（例如播放列表前后两个片段/切换文件时像素格式与分辨率相同，只有显示矩阵不同）时，上游会认为“格式没变”：chain 不置位 reconfig_happened、output_params 不更新，VO 与后续滤镜继续沿用旧的翻转状态，出现“本该翻转的视频未翻转（或反之）”的残留状态。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "STATE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\mpv-player__mpv\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\mpv-player__mpv@ff45a81.diff\n  caseId              mpv-player__mpv@ff45a81\n  --issue             (未传)\n  --taskId            mpv-player__mpv@ff45a81\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 8 / not-reached 6（no-signal=6）\nreview-pi: 覆盖补漏 请求 12（失败 0）/ 覆盖 hunk 8/14 / 新候选 0 / no-issue 8 / 预算跳过 0\n✓ 完成 · 耗时 562.8s · 模型调用 34 次 · token 输入 53,593（未命中） · 输出 51,093 · 缓存命中 1,508,864（96.6%） · 工具 52 次（主会话 52 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0260\n[time] 阶段耗时 | 总墙钟 564.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 303.5s (53.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 259.8s (46.1%)\n[time] 审计明细 | P1 95.6s (31.5%) | P2 2.1s (0.7%) | P3 6.8s (2.2%) | P4 111.2s (36.7%) | P5 79.8s (26.3%) | P6 7.9s (2.6%)\n[usage] 任务总计 | 模型调用 46 次（Agent 34 + 一次性 12） | token 输入 60,047（未命中） | 输出 96,754 | 缓存命中 1,513,472（96.2%） | $0.0397\n[usage] 一次性明细 | 覆盖补漏 12 次（输入 6,454 / 输出 45,661 / 缓存 4,608）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\mpv-player__mpv@ff45a81\\audit\\20261121_162558_203.json",
+  "token_usage": {
+    "input_tokens": 60047,
+    "output_tokens": 96754,
+    "cache_read_input_tokens": 1513472
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 53593,
+      "output_tokens": 51093,
+      "cache_read_input_tokens": 1508864
+    },
+    "coverage_repair": {
+      "input_tokens": 6454,
+      "output_tokens": 45661,
+      "cache_read_input_tokens": 4608
+    }
+  }
+}

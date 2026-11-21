@@ -1,0 +1,164 @@
+{
+  "instance_id": "lvgl__lvgl@e526b2a",
+  "repo": "lvgl/lvgl",
+  "base_commit": "244b3b996e0b331468cf5967c937029535af569c",
+  "head_commit": "e526b2a1faa4672eeb3610b466ecc25b1abb220b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 622.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 13,
+  "review_output": [
+    {
+      "file": "src/others/xml/parsers/lv_xml_obj_parser.c",
+      "line": 903,
+      "summary": "grid dsc 数组按空格数分配，末尾写入 LV_GRID_TEMPLATE_LAST 时堆越界写",
+      "failure_scenario": "新增的 `style_grid_column_dsc_array` / `style_grid_row_dsc_array` 解析用「空格个数 + 1」作为元素个数分配数组：N 个 token 之间只有 N-1 个空格，因此分配到的元素个数正好等于 token 数 N，而循环会写入下标 0..N-1 共 N 个元素，第 920 行还要额外写入终止符 `dsc_array[N]`，越过分配边界一个 int32_t。也就是说只要 XML 里写了任意一个 grid 模板属性（即使只有一列 `\"1\"`，0 个空格时分配 1 个元素仍写 2 个），就会在每次解析时发生一次 4 字节的堆越界写，可能破坏 lv_malloc 元数据导致后续 lv_free/lv_realloc 崩溃或随机内存损坏，且属于隐藏性极强的问题（不一定立即表现）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "MEM-BOUNDS-001"
+    },
+    {
+      "file": "src/others/xml/lv_xml_style.c",
+      "line": 293,
+      "summary": "<style> 中 grid dsc 数组同样少分配一个元素，终止符写出界",
+      "failure_scenario": "`lv_xml_style_register` 里新增的 grid dsc 数组解析复制了与 F001 相同的实现，同样是「空格数 + 1」的容量：N 个 token 只分配 N 个 int32_t，却要写入 N 个元素加一个 `LV_GRID_TEMPLATE_LAST` 终止符，第 309 行必然越界写 4 字节。失败场景：在全局或组件 `<style>` 中声明 `grid_column_dsc_array`，每次 XML 注册样式都会破坏堆内存；此函数在启动期执行，破坏的是后续所有 lv_malloc 依赖的堆元数据。另外这份实现与 lv_xml_obj_parser.c 中的同名逻辑完全重复，修复时需要同步。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "MEM-BOUNDS-002"
+    },
+    {
+      "file": "src/widgets/span/lv_span.c",
+      "line": 216,
+      "summary": "lv_span_set_text_fmt 的释放条件写反，每次更新泄漏旧文本",
+      "failure_scenario": "新增的 `lv_span_set_text_fmt`（以及 `lv_spangroup_set_span_text_fmt`，第 274 行同样的代码）用 `if(span->txt == NULL && span->static_flag) lv_free(span->txt);` 来释放旧文本，条件与同文件既有约定完全相反：`lv_span_set_text_static`（第 237 行）和 `lv_spangroup_delete_span`（第 150 行）都用 `span->txt && span->static_flag == 0` 判断「当前文本是堆分配的」。按现在的写法，`slot->txt == NULL` 时 lv_free(NULL) 是空操作，而真正需要释放的「已有堆分配文本」永远不会被释放，随后第 221 行直接把指针覆盖成新分配的内存。失败场景：`lv_spangroup_bind_span_text` 的观察者回调在每次 subject 变更时都会走到 `lv_spangroup_set_span_text_fmt`，因此每次数据更新都会泄漏上一次的文本长度，长时间刷新（如每秒更新的数值/温度绑定）会导致内存持续增长直至耗尽。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "MEM-LEAK-001"
+    },
+    {
+      "file": "src/others/observer/lv_observer.h",
+      "line": 548,
+      "summary": "lv_spangroup_bind_span_text 的声明用 LV_USE_LABEL 守卫，与实现的 LV_USE_SPAN 不一致",
+      "failure_scenario": "`lv_observer.h` 中新增的 `lv_spangroup_bind_span_text` 声明被放在 `#if LV_USE_LABEL ... #endif` 之间，而 `lv_observer.c` 中的实现（第 792-840 行）和其回调都在 `#if LV_USE_SPAN` 下。lv_conf_template.h 中 `LV_USE_SPAN` 并没有标注依赖 `lv_label`（对比 ROLLER/SLIDER 都有 `Requires: lv_label` 注释），因此 `LV_USE_SPAN=1 && LV_USE_LABEL=0` 是合法配置：此时 `.c` 里有函数定义却没有原型，`src/others/xml/parsers/lv_xml_spangroup_parser.c` 调用该函数会得到隐式声明（C99 起为错误/C++ 直接编译失败）；反过来 `LV_USE_LABEL=1 && LV_USE_SPAN=0` 时只有声明没有定义，用户调用即链接失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "BUILD-GUARD-001"
+    },
+    {
+      "file": "src/others/xml/lv_xml_style.c",
+      "line": 284,
+      "summary": "<style> 分支用带 style_ 前缀的名字比较，声明式样式中的 grid dsc 属性永远不生效",
+      "failure_scenario": "`lv_xml_style_register` 中所有既有分支都通过宏 `SET_STYLE_IF(prop, value)` 展开为 `lv_streq(name, #prop)`，即比较的属性名不带 `style_` 前缀（如 `grid_cell_y_align`、`radius`）；而新增分支却比较 `\"style_grid_column_dsc_array\"` / `\"style_grid_row_dsc_array\"`。因此在 `<style>` 元素里按该函数一贯的命名习惯写 `grid_column_dsc_array=\"...\"` 时，条件永不成立，会落入第 319-321 行的 `\"%s style property is not supported\"` 警告分支，声明式样式的 grid 模板完全无效；写成 `style_grid_column_dsc_array` 才能命中，但与其他属性的命名规则相矛盾且不被 XML schema 承认。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "CONSISTENCY-002"
+    },
+    {
+      "file": "src/others/xml/parsers/lv_xml_obj_parser.c",
+      "line": 905,
+      "summary": "把 const 属性值强转后原地切分，会破坏共享属性字符串甚至写只读内存",
+      "failure_scenario": "新增代码把 `const char * value` 强转为 `char *` 后交给 `lv_xml_split_str`，而该函数会把分隔符原地改为 `'\\0'`。`value` 并不保证可写：当属性值来自 `#const` 常量或组件参数替换时，它指向的是被多个实例共享的字符串，首个实例切分后该字符串被截断成只有第一个 token，后续实例（或同一属性在别处的复用）再解析网格模板时只会得到第一列；更糟的是通过 `lv_xml_create()` 以 `const char * attrs[]` 传入字面量（如测试中常见的 `{\"style_grid_column_dsc_array\", \"1 fr(1)\", NULL}`）时，写入会落在只读段并触发段错误。同仓库其它需要切分的解析器（buttonmatrix、component）都是先拷贝到本地缓冲区再切分，说明此处属于疏忽。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "MEM-WRITE-002"
+    },
+    {
+      "file": "src/others/xml/parsers/lv_xml_tabview_parser.c",
+      "line": 100,
+      "summary": "tab_button 缺少 index 属性时 lv_xml_atoi(NULL) 空指针解引用",
+      "failure_scenario": "新增的 `lv_xml_tabview_tab_button_create` 先取 `index` 属性再直接 `lv_xml_atoi(index_str)`，但 `lv_xml_get_value_of` 在属性不存在时返回 NULL，而 `lv_xml_atoi` 内部第一行就解引用指针（`const char * s = *str;` 后立即 `while(*s == ' ')`）。失败场景：视图里写 `<lv_tabview-tab_button/>`（index 只是 schema 中声明的 arg，XML 里漏写很常见）时，解析阶段即发生空指针解引用崩溃，而不是给出告警。同目录其它解析器对可选参数都做了 `if(x)` 判空，例如 label 解析器取 `bind_text-fmt` 后才使用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "NULL-001"
+    },
+    {
+      "file": "src/layouts/grid/lv_grid.c",
+      "line": 194,
+      "summary": "grid_update 提前返回会跳过 SIZE_CONTENT 容器的尺寸重算与 LAYOUT_CHANGED 事件",
+      "failure_scenario": "`calc()` 在容器当前没有子对象时会把 `calc_out` 清零并返回 `LV_RESULT_INVALID`，新增的 `if(res != LV_RESULT_OK) return;` 让这种情况下函数直接返回，从而跳过了后面本来会执行的 `lv_obj_refr_size(cont)`（当宽/高为 `LV_SIZE_CONTENT` 时）以及 `lv_obj_send_event(cont, LV_EVENT_LAYOUT_CHANGED, NULL)`。失败场景：删除 grid 容器的最后一个子对象时，布局被标记为脏并进入 grid_update，但容器不会再重算 content 尺寸，仍保持删除前的宽高，界面出现残留空白；依赖 `LV_EVENT_LAYOUT_CHANGED` 的代码（如 tabview 的 `cont_scroll_end_event_cb`、滚动条更新等）也收不到通知。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "LAYOUT-001"
+    },
+    {
+      "file": "src/others/observer/lv_observer.c",
+      "line": 832,
+      "summary": "span 绑定把 span 裸指针存入 observer，删除 span 后回调会产生悬垂指针写",
+      "failure_scenario": "`lv_spangroup_bind_span_text` 把 span 指针放进 `bind_element_string_t.element`，observer 只绑定在 spangroup 对象上，span 本身的生命周期无人跟踪。而 `lv_spangroup_delete_span()` 会直接从链表摘除并 `lv_free(span)`，此路径不会注销 observer。失败场景：先 `lv_spangroup_bind_span_text(spangroup, span, &subject, NULL)`，再调用 `lv_spangroup_delete_span(spangroup, span)` 移除该 span，随后任意 `lv_subject_set_*()` 触发 `span_text_observer_cb`，回调会把 `user_data->element` 当作有效 span 传给 `lv_spangroup_set_span_text_fmt`，向已释放的内存写入 `txt`/`static_flag`（use-after-free），可导致堆破坏或崩溃。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "LIFETIME-002"
+    },
+    {
+      "file": "xmls/lv_textarea.xml",
+      "line": 9,
+      "summary": "textarea 的 schema 属性改名为 placeholder_text，但解析器仍只识别 placeholder",
+      "failure_scenario": "本 MR 把 `xmls/lv_textarea.xml` 中的 `<prop name=\"placeholder\">` 改成了 `placeholder_text`，而 `lv_xml_textarea_apply` 仍然只匹配 `\"placeholder\"`。两处不一致导致：按新 schema 写 `<lv_textarea placeholder_text=\"Type here\"/>` 时占位符被静默忽略（既不生效也不告警），而 XML 校验器/编辑器却会拒绝实际起作用的 `placeholder` 属性。这是一个由本次改名引入、可由用户直接触发的功能性回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CONSISTENCY-003"
+    },
+    {
+      "file": "docs/src/details/auxiliary-modules/observer/observer.rst",
+      "line": 581,
+      "summary": "新增 Scale Section 文档存在英文撇号与主谓一致错误",
+      "failure_scenario": "新增的文档段落里，\"as the Scale Section's are not interactive\" 中复数名词 Section 不应使用所有格撇号（应为 Sections），否则读者会误以为指“Section 的”；紧接的 \"It support only integer subjects.\" 主语为第三人称单数，谓语应为 supports。这类错误会被直接发布到官方文档页面，影响文档可读性与专业度，且属于本次新增行引入。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "英文技术文档中复数名词不使用撇号表示复数；一般现在时第三人称单数主语需与谓语保持数的一致"
+    },
+    {
+      "file": "src/widgets/span/lv_span.c",
+      "line": 271,
+      "summary": "lv_spangroup_set_span_text_fmt 的旧文本释放条件写反，更新时泄漏内存",
+      "failure_scenario": "条件 if(span->txt == NULL && span->static_flag) 只在 txt 为空时成立，lv_free(span->txt) 实际释放 NULL，不会释放旧的非静态文本；随后 span->txt 被覆盖为新分配的 text，导致每次调用该格式化接口都会泄漏旧文本。应在旧文本存在且非 static 时才释放。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "动态分配内存的所有权与释放条件必须匹配：覆盖指针前应释放仍由本对象拥有的旧缓冲区"
+    },
+    {
+      "file": "src/others/observer/lv_observer.c",
+      "line": 920,
+      "summary": "scale section 绑定接口未校验 section 空指针，回调会解引用 NULL",
+      "failure_scenario": "lv_scale_bind_section_min_value / lv_scale_bind_section_max_value 只对 subject 和 obj 做了 LV_ASSERT_NULL，却没有对 section 做任何校验，而是直接把 section 作为 user_data 传给 lv_subject_add_observer_obj。之后 subject 值变化时，scale_section_min_value_observer_cb / scale_section_max_value_observer_cb 会把该 user_data 当作 lv_scale_section_t * 直接传给 lv_scale_set_section_min_value / lv_scale_set_section_max_value，一旦调用方传入 NULL section（或传入已失效的 section），就会在回调中解引用空指针/野指针导致崩溃，且崩溃点远离绑定调用点，难以定位。同一 hunk 内两个接口对 subject、obj 都做了断言，唯独漏掉 section，属于明显的不一致与输入校验缺口。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "对外 bind 接口应将所有指针入参纳入空值校验（LV_ASSERT_NULL 或显式判空返回），避免 NULL 被存入 observer 的 user_data 后在异步回调中被解引用。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\lvgl__lvgl\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\lvgl__lvgl@e526b2a.diff\n  caseId              lvgl__lvgl@e526b2a\n  --issue             (未传)\n  --taskId            lvgl__lvgl@e526b2a\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 11 / no-issue 43 / not-reached 13（no-signal=12 budget=1）\nreview-pi: 覆盖补漏 请求 32（失败 0）/ 覆盖 hunk 46/58 / 新候选 3 / no-issue 43 / 预算跳过 1 / 验证拒绝 5\n✓ 完成 · 耗时 619.5s · 模型调用 24 次 · token 输入 38,016（未命中） · 输出 38,204 · 缓存命中 1,268,480（97.1%） · 工具 56 次（主会话 56 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0196\n[time] 阶段耗时 | 总墙钟 620.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.1%)\n[time] 阶段 | 六阶段审计 210.3s (33.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 409.3s (66.0%)\n[time] 审计明细 | P1 6.0s (2.8%) | P2 4.7s (2.2%) | P3 11.6s (5.5%) | P4 132.4s (63.0%) | P5 47.2s (22.5%) | P6 8.3s (3.9%)\n[usage] 任务总计 | 模型调用 64 次（Agent 24 + 一次性 40） | token 输入 54,677（未命中） | 输出 109,951 | 缓存命中 1,295,103（95.9%） | $0.0421\n[usage] 一次性明细 | 覆盖补漏 40 次（输入 16,661 / 输出 71,747 / 缓存 26,623）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\lvgl__lvgl@e526b2a\\audit\\20261121_161724_936.json",
+  "token_usage": {
+    "input_tokens": 54677,
+    "output_tokens": 109951,
+    "cache_read_input_tokens": 1295103
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 38016,
+      "output_tokens": 38204,
+      "cache_read_input_tokens": 1268480
+    },
+    "coverage_repair": {
+      "input_tokens": 16661,
+      "output_tokens": 71747,
+      "cache_read_input_tokens": 26623
+    }
+  }
+}

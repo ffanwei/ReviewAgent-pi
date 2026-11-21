@@ -1,0 +1,64 @@
+{
+  "instance_id": "immich-app__immich@5f47591",
+  "repo": "immich-app/immich",
+  "base_commit": "584e5894bfd4fe356e790fa9781ccee4e5224874",
+  "head_commit": "5f4759196534661bd332085514878d0efbb7ce84",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 724.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "server/src/services/person.service.ts",
+      "line": 553,
+      "summary": "缩略图任务失败日志插值整个 person 对象，丢失 id 信息",
+      "failure_scenario": "Hunk 7 在 person 或其 face/asset 缺失时，把 person 整个对象插值进日志模板：`person ${person} has no face asset`。模板字符串对对象调用 toString，实际输出为 `[object Object]`，无法定位是哪个 person 出的问题；原实现是 `person ${person?.id}`，能打印实体 id。同一函数下方第 568 行对 asset 使用的是可读的 `asset.originalPath`，风格也不一致。该分支正是失败排查路径，日志可读性下降会直接影响问题定位。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.62,
+      "rule": "日志中应输出可定位的实体标识（如 id / path），禁止直接插值实体对象"
+    },
+    {
+      "file": "server/src/services/person.service.ts",
+      "line": 634,
+      "summary": "update 初始含 id 使 Object.keys 判空恒真，无字段变更也会写库",
+      "failure_scenario": "Hunk 8 把 update 从 `const update: Partial<PersonEntity> = {}` 改成 `{ id: primaryPerson.id }`，因此第633行的 `if (Object.keys(update).length > 0)` 永远为真，原本“没有任何字段需要合并就跳过更新”的保护失效。在合并循环中，即使 primaryPerson 的名称/出生日期等字段都无需修改，也会对每个 mergePerson 执行一次无实际字段变更的 update 写库；若仓储 update 会刷新 updatedAt 或触发事件/缓存失效，还会引入无意义的数据变更与额外 IO。该判空条件已成为死代码，说明改动时未同步调整守卫逻辑。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "循环内的写库操作应保持有效的前置条件，避免恒真判断导致无效写入"
+    },
+    {
+      "file": "server/src/repositories/person.repository.ts",
+      "line": 112,
+      "summary": "delete 签名改为 string[] 后 @GenerateSql 的参数样例仍是实体对象数组",
+      "failure_scenario": "本次改动把 `delete(entities: PersonEntity[])` 改成 `delete(ids: string[])`，但方法上的 `@GenerateSql({ params: [[{ id: DummyValue.UUID }]] })` 没有同步更新。该注解的 params 会作为调用该方法的实参用来生成 SQL 快照，现在会把 `[{ id: '...' }]` 这样的对象数组当作 ids 传入，生成 `where person.id in (<对象值>)` 的异常 SQL 参数，导致 SQL 生成/快照校验与预期不符（数组长度判断仍会通过，不会走空数组提前 return 分支，因此问题不会被掩盖）。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "修改方法签名的同时必须同步更新用于生成 SQL 的示例参数，避免生成/快照与真实类型不一致"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\immich-app__immich\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\immich-app__immich@5f47591.diff\n  caseId              immich-app__immich@5f47591\n  --issue             (未传)\n  --taskId            immich-app__immich@5f47591\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 3 个文件 / 12759 字符（exclude=3），明细见审计 mrFilter\nreview-pi: 覆盖账本 candidate 3 / no-issue 44 / not-reached 32（no-signal=32）\nreview-pi: 覆盖补漏 请求 20（失败 0）/ 覆盖 hunk 47/79 / 新候选 3 / no-issue 44 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 721.6s · 模型调用 29 次 · token 输入 29,494（未命中） · 输出 33,416 · 缓存命中 1,420,544（98.0%） · 工具 37 次（主会话 37 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0175\n[time] 阶段耗时 | 总墙钟 723.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (0.2%)\n[time] 阶段 | 六阶段审计 205.9s (28.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 516.1s (71.3%)\n[time] 审计明细 | P1 7.1s (3.5%) | P2 3.3s (1.6%) | P3 8.9s (4.3%) | P4 158.2s (76.9%) | P5 21.4s (10.4%) | P6 7.0s (3.4%)\n[usage] 任务总计 | 模型调用 51 次（Agent 29 + 一次性 22） | token 输入 56,252（未命中） | 输出 122,019 | 缓存命中 1,428,480（96.2%） | $0.0460\n[usage] 一次性明细 | 覆盖补漏 22 次（输入 26,758 / 输出 88,603 / 缓存 7,936）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\immich-app__immich@5f47591\\audit\\20261121_155059_800.json",
+  "token_usage": {
+    "input_tokens": 56252,
+    "output_tokens": 122019,
+    "cache_read_input_tokens": 1428480
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 29494,
+      "output_tokens": 33416,
+      "cache_read_input_tokens": 1420544
+    },
+    "coverage_repair": {
+      "input_tokens": 26758,
+      "output_tokens": 88603,
+      "cache_read_input_tokens": 7936
+    }
+  }
+}

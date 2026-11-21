@@ -1,0 +1,74 @@
+{
+  "instance_id": "kestra-io__kestra@3c2a276",
+  "repo": "kestra-io/kestra",
+  "base_commit": "a716094a9d3c3522fb40ea988b3dab2763d7519c",
+  "head_commit": "3c2a2765fcd06d7fe127e362ddc9a706d4073047",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 291.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/runners/CommandsWrapper.java",
+      "line": 179,
+      "summary": "interpreter/beforeCommands 被 CommandsWrapper 与 TaskRunner 各拼接一次，导致命令重复前置、脚本不执行",
+      "failure_scenario": "CommandsWrapper.run() 先用 ScriptService.scriptCommands 把 interpreter、beforeCommands、commands 组合成 finalCommands 并写回 this.commands，但并没有清空 this.interpreter / this.beforeCommands 字段；随后第 185 行仍以同一个对象调用 realTaskRunner.run(taskRunnerRunContext, this, ...)，而 TaskRunner.renderCommands 会再取一次 getInterpreter()/getBeforeCommands() 并前置拼接。结果 interpreter 与 beforeCommands 各出现两次：例如 interpreter=[\"/bin/sh\",\"-c\"]、beforeCommands=[\"set -e\"]、commands=[\"echo hi\"] 时，容器/进程收到 [\"/bin/sh\",\"-c\",\"set -e\",\"/bin/sh\",\"-c\",\"set -e\\necho hi\"]，/bin/sh -c 只把 \"set -e\" 当作脚本，echo hi 变成位置参数，真实脚本被静默跳过而任务可能仍以退出码 0 结束。这正是本次变更新引入的能力（TaskCommands 新增 getInterpreter/getBeforeCommands 且 CommandsWrapper 新增对应字段）在启用后立刻会踩到的失败路径。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/models/tasks/runners/TaskRunner.java",
+      "line": 139,
+      "summary": "renderCommands 把 beforeCommands 扁平化为独立 argv，与 scriptCommands 的脚本拼接语义冲突",
+      "failure_scenario": "新增的 TaskRunner.renderCommands 用 Stream.of(renderedInterpreter, renderedBeforeCommands, renderedCommands).flatMap(Collection::stream) 把三段列表首尾相接，而 ScriptService.scriptCommands 的既定语义是把 beforeCommands 与 commands 用行分隔符 join 成“一个”脚本参数再前置 interpreter。一旦 TaskCommands 同时提供 interpreter 与 beforeCommands（本次变更新增的契约），扁平结果在 shell 语义下会错位：interpreter=[\"/bin/sh\",\"-c\"]、beforeCommands=[\"set -e\"]、commands=[\"echo hi\"] 生成 [\"/bin/sh\",\"-c\",\"set -e\",\"echo hi\"]，sh 只执行 \"set -e\"，\"echo hi\" 成为 $0，脚本主体丢失；同一份 TaskCommands 经 CommandsWrapper.run（走 scriptCommands）与经 runner（走扁平拼接）会得到两种不同命令形态，行为随调用路径变化。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "script/src/main/java/io/kestra/plugin/scripts/runner/docker/Docker.java",
+      "line": 431,
+      "summary": "Docker 每次 run 对同一批命令渲染两次，内部存储文件被重复下载且日志与实际执行命令不一致",
+      "failure_scenario": "configure() 第 783 行已经把 this.renderCommands(runContext, taskCommands) 的结果写入 withCmd，run() 第 431 行又调用一次 renderCommands 只为拼 debug 日志。渲染不是纯函数：ScriptService.replaceInternalStorage 对每个 kestra:// 命中都会执行 saveOnLocalStorage → runContext.workingDir().createTempFile() 并 runContext.storage().getFile(...) 复制文件。因此当 commands 中仍含内部存储 URI（TaskRunner 被直接调用、或 property 尚未由 CommandsWrapper 预渲染的场景）时，同一份输入文件会被下载两次、产生两个不同的临时文件；并且当 runner 是 RemoteRunnerInterface 时命令中使用的是相对路径，两次渲染得到的相对路径不同，debug 日志里打印的命令与实际 withCmd 执行的命令并不一致，排查问题时会被误导。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/models/tasks/runners/TaskCommands.java",
+      "line": 29,
+      "summary": "公共接口方法返回类型由 List<String> 改为 Property<List<String>> 并新增两个抽象方法，破坏实现方与插件兼容性",
+      "failure_scenario": "TaskCommands 是任务运行器（runner）公共接口，原先 `List<String> getCommands();` 为直接返回字符串列表的抽象方法；本次改为返回 `Property<List<String>>`，并同时新增 `getInterpreter()`、`getBeforeCommands()` 两个抽象方法。该接口的所有既有实现类（包括第三方 runner 插件）都必须同步修改签名并实现新增方法，否则编译失败；已编译的插件在运行时也会因方法描述符不匹配抛出 AbstractMethodError / NoSuchMethodError。若未同步提供默认实现（default method）或兼容适配层，将造成明显的行为与二进制不兼容。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "公共接口（被外部插件实现的 SPI）修改方法签名或新增无默认实现的抽象方法，应评估二进制与源码兼容性，必要时提供 default 方法或版本过渡机制"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\kestra-io__kestra\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\kestra-io__kestra@3c2a276.diff\n  caseId              kestra-io__kestra@3c2a276\n  --issue             (未传)\n  --taskId            kestra-io__kestra@3c2a276\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 17 / not-reached 15（no-signal=15）\nreview-pi: 覆盖补漏 请求 10（失败 0）/ 覆盖 hunk 18/33 / 新候选 1 / no-issue 17 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 288.6s · 模型调用 16 次 · token 输入 21,377（未命中） · 输出 17,756 · 缓存命中 380,672（94.7%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0090\n[time] 阶段耗时 | 总墙钟 290.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.7s (0.6%)\n[time] 阶段 | 六阶段审计 120.7s (41.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 168.1s (57.9%)\n[time] 审计明细 | P1 3.1s (2.6%) | P2 4.4s (3.7%) | P3 4.9s (4.0%) | P4 70.6s (58.5%) | P5 32.1s (26.6%) | P6 5.5s (4.5%)\n[usage] 任务总计 | 模型调用 28 次（Agent 16 + 一次性 12） | token 输入 31,859（未命中） | 输出 46,448 | 缓存命中 384,768（92.4%） | $0.0185\n[usage] 一次性明细 | 覆盖补漏 12 次（输入 10,482 / 输出 28,692 / 缓存 4,096）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\kestra-io__kestra@3c2a276\\audit\\20261121_155059_753.json",
+  "token_usage": {
+    "input_tokens": 31859,
+    "output_tokens": 46448,
+    "cache_read_input_tokens": 384768
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 21377,
+      "output_tokens": 17756,
+      "cache_read_input_tokens": 380672
+    },
+    "coverage_repair": {
+      "input_tokens": 10482,
+      "output_tokens": 28692,
+      "cache_read_input_tokens": 4096
+    }
+  }
+}

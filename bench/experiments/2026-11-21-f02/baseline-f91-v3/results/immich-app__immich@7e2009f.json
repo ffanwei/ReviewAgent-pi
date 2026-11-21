@@ -1,0 +1,64 @@
+{
+  "instance_id": "immich-app__immich@7e2009f",
+  "repo": "immich-app/immich",
+  "base_commit": "4d6d5537b713ca80bb2a670fdc7be66882b12d5c",
+  "head_commit": "7e2009f038cbf3f26403af6582af3cf8ba91672f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 98.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "server/src/services/metadata.service.ts",
+      "line": 601,
+      "summary": "回退取 fileModifiedAt/fileCreatedAt 最小值且无合理性校验，错误偏早的时间戳会被固化且再次提取无法自愈",
+      "failure_scenario": "新的回退逻辑在 EXIF 缺失日期时直接取 `min(fileModifiedAt, fileCreatedAt)`，但对这两个时间戳没有任何合理性校验。上传路径把客户端传来的 `dto.fileCreatedAt` / `dto.fileModifiedAt` 直接入库（asset-media.service.ts:402-403），因此来自压缩包解压、损坏文件系统、或客户端 bug 的 1970-01-01 / 1970 前的纪元时间戳完全可能进入数据库。一旦选中这个偏早的值，它会被 handleMetadataExtraction 写回 `assets.fileCreatedAt`（约 218-223 行），而下次（含 force 全量）重新提取时又是一次新的 `min(已固化的错误 fileCreatedAt, fileModifiedAt)`，结果仍然是那个错误值，资产时间无法通过“重新提取元数据”自愈，会在时间轴中被排到几十年前并且需要人工逐条修改。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-DATE-001"
+    },
+    {
+      "file": "server/src/services/metadata.service.ts",
+      "line": 459,
+      "summary": "motion 视频的 fileModifiedAt 改用父图片 EXIF ModifyDate，与父资产及文件真实 mtime 不一致",
+      "failure_scenario": "applyMotionPhotos 创建隐藏的 motion 视频资产时，原先 `fileModifiedAt: asset.fileModifiedAt` 改为 `fileModifiedAt: dates.modifyDate`，而 getDates 里的 `modifyDate` 优先取父图片 EXIF 的 `ModifyDate`（第 608-610 行）。这带来两点偏差：一是 EXIF ModifyDate 通常是编辑软件写入的时间戳且常常不带时区，经 ExifDateTime.toDate() 解释后可能与真实瞬时相差一个时区偏移；二是同一个 live photo 的两个资产（主图与隐藏视频）从此可能在 `fileModifiedAt` 上不一致，而主资产的 fileModifiedAt 并不会被这次提取修改。fileModifiedAt 会通过 asset-response.dto 暴露给客户端，也是库同步判断“文件是否被修改”的依据，出现不一致会让同一组资产的时间信息互相矛盾，且未来若用该字段做增量同步会产生误判。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONSISTENCY-DATE-002"
+    },
+    {
+      "file": "server/src/services/metadata.service.ts",
+      "line": 453,
+      "summary": "同一次提取中重复调用 getDates，导致重复解析 EXIF 与重复告警日志",
+      "failure_scenario": "handleMetadataExtraction 已在第 164 行调用 getDates 得到全部日期，applyMotionPhotos 内部又对同一 asset、同一份 exifTags 再次调用 getDates。getDates 不是纯查表：它会输出 `has no time zone information` 与新增的 `No valid date found in exif tags ...` 告警（第 586、597-599 行），因此每个缺少日期或时区的 motion photo 在同一次任务中会打印两遍相同告警，掩盖真实问题并增加日志噪音；同时两份结果之间没有任何共享契约，后续若有人只修改其中一处（例如再次调整回退策略）就会让主资产与 motion 资产的日期推导出现分叉。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-DUP-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\immich-app__immich\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\immich-app__immich@7e2009f.diff\n  caseId              immich-app__immich@7e2009f\n  --issue             (未传)\n  --taskId            immich-app__immich@7e2009f\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 928 字符（lockfile=1），明细见审计 mrFilter\nreview-pi: 覆盖账本 candidate 2 / no-issue 1 / not-reached 0\nreview-pi: 覆盖补漏 请求 1（失败 0）/ 覆盖 hunk 1/1 / 新候选 0 / no-issue 1 / 预算跳过 0\n✓ 完成 · 耗时 97.0s · 模型调用 12 次 · token 输入 16,220（未命中） · 输出 14,906 · 缓存命中 147,072（90.1%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0069\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 97.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.8%)\n[time] 阶段 | 六阶段审计 91.2s (93.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 5.9s (6.0%)\n[time] 审计明细 | P1 2.0s (2.2%) | P2 1.9s (2.1%) | P3 2.3s (2.5%) | P4 67.4s (73.9%) | P5 12.7s (13.9%) | P6 4.9s (5.3%)\n[usage] 任务总计 | 模型调用 13 次（Agent 12 + 一次性 1） | token 输入 17,154（未命中） | 输出 15,880 | 缓存命中 147,456（89.6%） | $0.0073\n[usage] 一次性明细 | 覆盖补漏 1 次（输入 934 / 输出 974 / 缓存 384）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\immich-app__immich@7e2009f\\audit\\20261121_161622_375.json",
+  "token_usage": {
+    "input_tokens": 17154,
+    "output_tokens": 15880,
+    "cache_read_input_tokens": 147456
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 16220,
+      "output_tokens": 14906,
+      "cache_read_input_tokens": 147072
+    },
+    "coverage_repair": {
+      "input_tokens": 934,
+      "output_tokens": 974,
+      "cache_read_input_tokens": 384
+    }
+  }
+}

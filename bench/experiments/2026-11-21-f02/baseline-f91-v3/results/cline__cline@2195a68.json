@@ -1,0 +1,64 @@
+{
+  "instance_id": "cline__cline@2195a68",
+  "repo": "cline/cline",
+  "base_commit": "398bc87a64800e021966868243be2f09be72e73c",
+  "head_commit": "2195a689b787a963bdacc35d348f4590c30a2692",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 90.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/extension.ts",
+      "line": 318,
+      "summary": "state 不匹配时用户关闭确认弹窗（undefined）仍继续存储 token，校验实质失效",
+      "failure_scenario": "新增的分支只在 `userConfirmation === \"Cancel\"` 时 return。`vscode.window.showWarningMessage` 是非模态提示，用户按 Esc 或直接关闭提示时返回 `undefined`（按钮被忽略/关闭时 VSCode 也会返回 undefined），条件不成立，代码继续执行到第 324-326 行的 `handleAuthCallback(token, provider)`，用未通过 state 校验的 idToken 完成登录并把 apiProvider 切到 cline。也就是说：任何形如 `vscode://saoudrizwan.claude-dev/auth?idToken=<任意token>&state=<任意值>` 的链接（网页、聊天消息、README 均可构造）只要用户不主动点 Cancel，就会在没有显式同意的情况下完成登录；而变更前的实现是 state 不匹配即 `showErrorMessage` 并 return，属明确的安全回退。此外提示文案 `Store token returned from ${uri.path}` 中 uri.path 恒为 \"/auth\"，且没有说明这是来自未知来源的登录请求，用户无从做出知情判断。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.85,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "src/services/auth/AuthService.ts",
+      "line": 33,
+      "summary": "nonce 变为进程生命周期内固定不变且永不复位，state 失去一次性语义",
+      "failure_scenario": "`_authNonce` 从“每次 createAuthRequest 时生成、校验成功后由 resetAuthNonce 清零”的一次性 nonce，改为字段初始化时生成的 `readonly` 常量，并且删除了 `resetAuthNonce`、`validateAuthState` 也不再清零（`return state === this.authService.authNonce`）。结果是：同一 VSCode 会话内所有登录请求复用同一个 state；登出后（handleDeauth 只重置 _user/_authenticated）nonce 依然不变；一次登录成功后也未失效。因此任何曾泄漏过 state 的地方（浏览器历史、日志、Referer、被记录的授权链接）在整个会话期内都可重放，且多个并发/先后发起的登录无法区分来源，配合 extesion.ts 的软校验等于 state 防护名存实亡。`private readonly` 也让后续想复位 nonce 的代码无法合法实现。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.72,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "src/core/controller/index.ts",
+      "line": 459,
+      "summary": "validateAuthState 简化后不再清除 nonce，且允许 null 与非空 nonce 相等时通过",
+      "failure_scenario": "原实现校验成功后调用 this.authService.resetAuthNonce() 清除 nonce，并显式用 !state 拒绝空 state；新实现直接返回 state === this.authService.authNonce，存在两个行为退化：1) 校验成功后 nonce 未被清除，同一个 state/nonce 可被重复使用，削弱 OAuth 回调的防重放/CSRF 保护；2) 当 authNonce 尚未初始化（null/undefined）且传入 state 为 null 时，state === authNonce 会返回 true，绕过了原来的 !state 空值拒绝逻辑，使无效回调被判定为通过。建议恢复成功后 resetAuthNonce()，并保留显式空值判断（如 if (!state || state !== this.authService.authNonce) return false）。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.75,
+      "rule": "认证回调的 state/nonce 校验必须一次性使用并在校验后失效，且需显式拒绝空值，避免重放与空值绕过。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\cline__cline@2195a68.diff\n  caseId              cline__cline@2195a68\n  --issue             (未传)\n  --taskId            cline__cline@2195a68\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 1/3 / 新候选 1 / no-issue 0 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 89.0s · 模型调用 9 次 · token 输入 11,217（未命中） · 输出 6,801 · 缓存命中 75,008（87.0%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0037\n[time] 阶段耗时 | 总墙钟 89.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.8%)\n[time] 阶段 | 六阶段审计 44.9s (50.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 44.1s (49.1%)\n[time] 审计明细 | P1 2.2s (4.9%) | P2 1.6s (3.5%) | P3 2.8s (6.3%) | P4 18.9s (42.2%) | P5 16.0s (35.6%) | P6 3.4s (7.5%)\n[usage] 任务总计 | 模型调用 13 次（Agent 9 + 一次性 4） | token 输入 14,803（未命中） | 输出 14,547 | 缓存命中 76,032（83.7%） | $0.0064\n[usage] 一次性明细 | 覆盖补漏 4 次（输入 3,586 / 输出 7,746 / 缓存 1,024）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\cline__cline@2195a68\\audit\\20261121_160601_555.json",
+  "token_usage": {
+    "input_tokens": 14803,
+    "output_tokens": 14547,
+    "cache_read_input_tokens": 76032
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 11217,
+      "output_tokens": 6801,
+      "cache_read_input_tokens": 75008
+    },
+    "coverage_repair": {
+      "input_tokens": 3586,
+      "output_tokens": 7746,
+      "cache_read_input_tokens": 1024
+    }
+  }
+}

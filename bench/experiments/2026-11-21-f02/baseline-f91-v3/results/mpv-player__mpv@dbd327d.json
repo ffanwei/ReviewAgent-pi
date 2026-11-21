@@ -1,0 +1,84 @@
+{
+  "instance_id": "mpv-player__mpv@dbd327d",
+  "repo": "mpv-player/mpv",
+  "base_commit": "30869ddb904f800ad1b858ac99c5fb81690f0cb7",
+  "head_commit": "dbd327d36fd0dc80ebd6e5517c102a92e31a0836",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 291.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "misc/random.c",
+      "line": 92,
+      "summary": "mp_rand_in_range32 只用 mp_assert 校验 min<max，release 构建下 min==max 会陷入无限循环",
+      "failure_scenario": "新增的 mp_rand_in_range32 用 `mp_assert(min < max)` 作为唯一的前置校验，而 mp_assert 在 NDEBUG（release）构建中展开为空操作、条件根本不求值。一旦调用方传入 min == max，range = max - min = 0，mp_round_next_power_of_2(0) 返回 1，于是 mask = 0，`ret = mp_rand_next(s) & 0` 恒为 0，退出条件 `while (ret >= range)` 变成 `while (0 >= 0)` 永真，函数进入死循环：进程静默卡死且没有任何日志或断言信息。本次 playlist_shuffle 的调用点（n 到 num_entries）暂时不会触发，但这个函数是本次新增并写入 public 头文件 misc/random.h 的通用区间取值 API，任何后续调用方（例如洗牌子区间、空/单元素区间、或 min/max 由变量计算得出）一旦传入相等边界，在 debug 构建下崩溃、在 release 构建下挂死，行为不一致且难以定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "RELIABILITY-ASSERT-001"
+    },
+    {
+      "file": "misc/random.c",
+      "line": 84,
+      "summary": "mp_rand_next_double 在改为状态参数后已无任何调用方，成为遗留 API",
+      "failure_scenario": "本次 diff 把 playlist_shuffle 中唯一一处 `mp_rand_next_double()` 调用改成了 `mp_rand_in_range32(&s, ...)`，同时把 mp_rand_next_double 的签名改成接收 `struct mp_rand_state *`，但改完之后该函数在全仓库已无调用方，却仍保留在 misc/random.h 的公共接口中。留下的后果是：接口语义（返回 [0.0, 1.0) 的 double、会推进状态）与新的 mp_rand_in_range32 重叠，维护者/后续调用者难以判断该用哪一个；一旦有人误用 mp_rand_next_double 自行乘以长度取整（正是本次修掉的旧写法，存在取整偏差风险），就可能重新引入已修复的问题。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-DEADAPI-001"
+    },
+    {
+      "file": "common/playlist.c",
+      "line": 173,
+      "summary": "播放列表洗牌使用固定随机种子 0，导致同长度播放列表每次洗牌结果相同",
+      "failure_scenario": "新增的局部 RNG 用固定常量 0 初始化，后续循环仅依赖该局部状态。对于 num_entries 相同的播放列表，每次调用 playlist_shuffle 都会产生完全一致的排列，洗牌失去随机性。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "随机洗牌应使用不可预测或至少每次变化的随机种子，不能固定为常量。"
+    },
+    {
+      "file": "misc/io_utils.c",
+      "line": 43,
+      "summary": "mkostemps 用常量种子 0 初始化随机状态，导致临时文件名可预测且跨调用重复",
+      "failure_scenario": "新增的 `struct mp_rand_state s = mp_rand_seed(0);` 在每次 mp_mkostemps 调用时都用固定常量 0 重置随机状态，随后循环内用 `mp_rand_next(&s)` 生成文件名后缀。改动前使用全局 `mp_rand_next()`，全局状态会在多次调用间持续推进；改动后每次调用都从同一状态起步，导致同一进程内所有 mp_mkostemps 调用生成完全相同的第一候选名并走完全相同的序列。这使得临时文件名（模板 + \"%06zx\"）对外可预测：若文件名用于对安全敏感的临时文件（如 /tmp 下），攻击者可预创建同名文件/符号链接干扰，并造成跨调用的命名碰撞与额外重试。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "伪随机数种子不应为固定常量，尤其当生成结果用于文件名等可能受外部干扰的场景；应使用时间/pid/系统熵或至少避免每次调用重置为同一常量"
+    },
+    {
+      "file": "misc/random.h",
+      "line": 36,
+      "summary": "mp_rand_seed 返回值可被静默丢弃，状态可能未初始化",
+      "failure_scenario": "mp_rand_seed 从 void 改为返回 struct mp_rand_state，但 C 允许调用方忽略返回值；若调用方写成 mp_rand_seed(seed); 而不接收返回值，随后把未初始化的 state 传给 mp_rand_next/mp_rand_next_double，会产生未定义行为。头文件未使用 warn_unused_result 等机制强制接收返回值，也未改为就地初始化接口。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "初始化接口必须强制调用方接收或就地写入状态，避免未初始化状态被使用"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\mpv-player__mpv\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\mpv-player__mpv@dbd327d.diff\n  caseId              mpv-player__mpv@dbd327d\n  --issue             (未传)\n  --taskId            mpv-player__mpv@dbd327d\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 3（no-signal=3）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 3/6 / 新候选 3 / no-issue 0 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 289.9s · 模型调用 14 次 · token 输入 17,168（未命中） · 输出 25,516 · 缓存命中 291,584（94.4%） · 工具 26 次（主会话 26 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0104\n[time] 阶段耗时 | 总墙钟 290.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.3%)\n[time] 阶段 | 六阶段审计 145.3s (50.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 144.7s (49.8%)\n[time] 审计明细 | P1 61.4s (42.3%) | P2 3.7s (2.5%) | P3 12.6s (8.7%) | P4 30.9s (21.3%) | P5 31.2s (21.5%) | P6 5.4s (3.7%)\n[usage] 任务总计 | 模型调用 23 次（Agent 14 + 一次性 9） | token 输入 23,601（未命中） | 输出 50,921 | 缓存命中 294,016（92.6%） | $0.0184\n[usage] 一次性明细 | 覆盖补漏 9 次（输入 6,433 / 输出 25,405 / 缓存 2,432）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\mpv-player__mpv@dbd327d\\audit\\20261121_161158_605.json",
+  "token_usage": {
+    "input_tokens": 23601,
+    "output_tokens": 50921,
+    "cache_read_input_tokens": 294016
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 17168,
+      "output_tokens": 25516,
+      "cache_read_input_tokens": 291584
+    },
+    "coverage_repair": {
+      "input_tokens": 6433,
+      "output_tokens": 25405,
+      "cache_read_input_tokens": 2432
+    }
+  }
+}

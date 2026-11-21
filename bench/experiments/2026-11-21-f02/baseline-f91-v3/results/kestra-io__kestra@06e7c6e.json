@@ -1,0 +1,94 @@
+{
+  "instance_id": "kestra-io__kestra@06e7c6e",
+  "repo": "kestra-io/kestra",
+  "base_commit": "01a77aff0422884ed7b18ba8d00a0495d0bab88e",
+  "head_commit": "06e7c6e48e22420da5bb0bf3188bc00f73974c9a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 185.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 89,
+      "summary": "conditions 未渲染即做 JSON 反序列化，列表整体来自变量时任务直接抛解析异常",
+      "failure_scenario": "Assert.run 直接对 `this.conditions.getExpression()`（原始、未渲染的表达式文本）执行 Jackson `readValue`，绕过了 Property 的标准渲染管线。JVM 内 Property 的约定是“在使用时先渲染再转换”（Property.as/asList 均先 `runContext.render(property.expression)`）。因此只要用户把整个条件列表用模板提供，例如 `conditions: \"{{ inputs.cond_list }}\"` 或通过插件默认值/变量注入给出列表表达式，expression 的内容就是字面量 `{{ inputs.cond_list }}` 而不是 JSON 数组，`MAPPER.readValue` 会抛出 `JsonProcessingException: Unrecognized token '{'`，任务以难以理解的底层解析错误失败，而不是执行断言。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 94,
+      "summary": "断言结果用精确字符串匹配判定且未 trim，`false\\n` 会被判定为通过从而静默放过失败断言",
+      "failure_scenario": "判定逻辑是 `TruthUtils.isFalsy(renderer)`，而 isFalsy 是 `FALSE_VALUES.contains(condition)` 的精确匹配，FALSE_VALUES 为 `[\"false\", \"0\", \"-0\", \"\"]`。当条件以 YAML 块标量书写（`- |` / `- >`，长表达式最常见的写法）时，渲染结果带尾部换行（如 `\"false\\n\"`），或条件字符串前后带空格时，isFalsy 返回 false，于是该条件被计入 success，`failed` 保持 0，任务返回成功。断言任务本身的职责是“失败即拦截”，这种静默通过与功能目的直接相反，会让数据质量门禁形同虚设。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 95,
+      "summary": "日志占位符只有 1 个却传入 2 个参数，断言实际渲染值永远不会出现在日志中",
+      "failure_scenario": "`logger().error(\"Assertion `{}` failed!\", s, renderer)` 的消息模板只有 1 个 `{}`，却传了 `s` 与 `renderer` 两个参数。SLF4J 按占位符数量替换，多出的 `renderer` 参数会被忽略（非 Throwable），因此日志里只打印条件原文，最关键的“实际渲染结果”被丢弃；运维排查失败断言时无法知道条件求值成了什么。若日后调整为把第二个参数当 throwable 处理，语义也会被误读。",
+      "severity": "P2",
+      "category": "可维护性",
+      "confidence": 0.72,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/models/property/Property.java",
+      "line": 40,
+      "summary": "为让新插件读取原始表达式，将 getExpression 从包私有提升为 public，扩大了核心模型的 API 表面",
+      "failure_scenario": "原来 `String getExpression()` 是包私有且注释声明“used only by the serializer”，本次删除该方法并在字段上加 Lombok `@Getter`，使 `getExpression()` 成为对所有插件可见的公开 API（引用检索确认其仅被 PropertySerializer 与新插件 Assert 使用）。这等于把“未渲染的原始 expression”固化成公开契约，任何插件此后都可以绕过 `runContext.render(property)` 的渲染与类型转换直接读原文，一旦后续需要调整 expression 的内部表示（例如缓存渲染结果、改为结构化存储），将面临跨插件破坏性变更。",
+      "severity": "P2",
+      "category": "可维护性",
+      "confidence": 0.66,
+      "rule": "API-DESIGN-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+      "line": 54,
+      "summary": "OutputValues 文档示例被改成不存在的属性 `{{ outputs.output_values.²}}`，示例已不可用",
+      "failure_scenario": "该 `@Example` 是插件文档与 UI 中直接展示、供用户复制运行的完整流程示例。本次把原本正确的 `{{ outputs.output_values.values.taskrun_data }}` 改成了 `{{ outputs.output_values.²}}`——属性名 `²` 不可能存在，示例执行时只会渲染出空值/报错，且与紧随其后的 `values.execution_data` 行风格不一致，明显是误改；同时该改动与本次引入 Assert 插件的目标无关。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "DOC-EXAMPLE-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 53,
+      "summary": "Assert 的 @Example 中残留字面量 `\\n\" +`，展示的流程 YAML 不是合法流程",
+      "failure_scenario": "示例字符串第 53 行为 `\"  - id: fail\\\\n\\\" +\\n\"`，编译后的文本内容是 `  - id: fail\\n\" +`（反斜杠、引号与加号为字面量），拼接后文档里展示的 tasks 段变成 `- id: fail\\n\" +`，随后才是 `type:`。用户复制该示例会得到 id 含非法字符的流程，且示例文本本身带有源码残留，无法作为可运行示例。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.7,
+      "rule": "DOC-EXAMPLE-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\kestra-io__kestra\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\kestra-io__kestra@06e7c6e.diff\n  caseId              kestra-io__kestra@06e7c6e\n  --issue             (未传)\n  --taskId            kestra-io__kestra@06e7c6e\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 2 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 4（失败 0）/ 覆盖 hunk 2/4 / 新候选 0 / no-issue 2 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 183.5s · 模型调用 10 次 · token 输入 14,998（未命中） · 输出 16,488 · 缓存命中 149,760（90.9%） · 工具 12 次（主会话 12 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0071\n[time] 阶段耗时 | 总墙钟 184.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.4%)\n[time] 阶段 | 六阶段审计 106.0s (57.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 77.6s (42.1%)\n[time] 审计明细 | P1 7.5s (7.1%) | P2 1.6s (1.5%) | P3 4.9s (4.6%) | P4 59.8s (56.5%) | P5 27.1s (25.6%) | P6 5.0s (4.7%)\n[usage] 任务总计 | 模型调用 15 次（Agent 10 + 一次性 5） | token 输入 18,601（未命中） | 输出 29,804 | 缓存命中 151,424（89.1%） | $0.0114\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 3,603 / 输出 13,316 / 缓存 1,664）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\kestra-io__kestra@06e7c6e\\audit\\20261121_155808_314.json",
+  "token_usage": {
+    "input_tokens": 18601,
+    "output_tokens": 29804,
+    "cache_read_input_tokens": 151424
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 14998,
+      "output_tokens": 16488,
+      "cache_read_input_tokens": 149760
+    },
+    "coverage_repair": {
+      "input_tokens": 3603,
+      "output_tokens": 13316,
+      "cache_read_input_tokens": 1664
+    }
+  }
+}

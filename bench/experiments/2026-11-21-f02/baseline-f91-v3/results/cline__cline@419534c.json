@@ -1,0 +1,74 @@
+{
+  "instance_id": "cline__cline@419534c",
+  "repo": "cline/cline",
+  "base_commit": "a1bf1f95a30ca95581d9811488636aec42dd2f80",
+  "head_commit": "419534ccd4241fc11827741eb0d76ba0c9d21277",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 65.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1322,
+      "summary": "checkpoint commit 改为 fire-and-forget 后缺少 catch，失败会变成未处理的 Promise rejection",
+      "failure_scenario": "改动把 `await this.checkpointTracker.commit()` 改成 `this.checkpointTracker.commit().then(...)`，但没有附加 `.catch()`。CheckpointTracker.commit 在失败路径上是直接 `throw new Error(...)` 而不是返回 undefined，因此任何 git 失败（shadow git 路径不可用、`git add` 失败、commit 失败、大仓库超时等）都会产生一个无人处理的 Promise rejection：既不进入原调用方的 try/catch（ToolExecutor.executeTool / Task.executeCommandTool 的错误处理链），也不会写入 `checkpointTrackerErrorMessage` 或通过 `say(\"error\")` 提示用户，任务会带着一条永远没有 hash 的 `checkpoint_created` 消息继续跑。相比改动前 `await` 让错误向上传播并被 `handleError` 呈现，这是错误可观测性的退化，并可能在扩展宿主中触发 unhandledRejection 日志/告警。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "ASYNC-UNHANDLED-REJECTION"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1324,
+      "summary": "异步回填使用「最后一条 checkpoint_created」定位消息，连续检查点时会写错 hash",
+      "failure_scenario": "回调里用 `findLastIndex(messages, m => m.say === \"checkpoint_created\")` 定位要写入 hash 的消息，但这条消息在 commit 完成前就已经发出，期间完全可能有新的 `checkpoint_created` 消息产生（saveCheckpoint 被 ToolExecutor.askApproval、executeTool 中多处、Task.executeCommandTool 的 userFeedback 分支等频繁调用，且这些调用方都是 `await this.saveCheckpoint()` 后立刻继续流程）。一旦出现第二次检查点，`findLastIndex` 返回的是第二条消息的下标：先完成的回调会把 A 的 hash 写到 B 的消息上，后完成的回调再把 B 的 hash 覆盖上去（若两个 commit 乱序返回，则更旧的 hash 会覆盖更新的 hash）。结果是某个检查点消息永久没有 hash、而另一条消息挂着错误（过旧）的 hash，「还原到此检查点 / 查看这里的变更」会跳到错误的工作区状态。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "ASYNC-RACE-001"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1321,
+      "summary": "checkpoint_created 消息改为无条件发送，commit 返回空值时留下无 hash 的检查点",
+      "failure_scenario": "改动前只有 `commitHash` 为真值时才 `await this.say(\"checkpoint_created\")`；改动后 `await this.say(\"checkpoint_created\")` 先无条件执行，再由回调决定是否回填 hash。CheckpointTracker.commit 返回的是 `(result.commit || \"\").replace(/^HEAD\\s+/, \"\")`，在 `git commit` 输出为空等情况下会返回空字符串（falsy），此时回调 `if (commitHash)` 不成立，聊天中会保留一条没有任何 hash 的 `checkpoint_created` 消息，UI 表现为「已创建检查点」但还原/查看变更按钮不可用，且不影响后续 1294-1297 行的去重判断之外的状态一致性，用户无法判断该检查点是否有效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "STATE-CONSISTENCY-002"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1329,
+      "summary": "后台回调在任务中止或消息被重置后仍按下标写回，可能抛错或覆盖新状态",
+      "failure_scenario": "回调在 commit 完成后才执行 `updateClineMessage(index, ...)`，但中间可能发生任务中止、切换到别的任务、或用户从历史恢复导致 `overwriteClineMessages` 重置消息数组。此时先前算出的下标可能已指向完全不同的消息（把旧 hash 写到新消息上），或越界使 `updateClineMessage` 抛出 `Invalid message index`，而该异常发生在没有 catch 的 then 回调里又变成未处理拒绝；同时 `updateClineMessage` 会立即 `saveClineMessagesAndUpdateHistory()` 覆盖写盘，可能与重置后的持久化并发。Task.abortTask 清理了 terminalManager/browserSession 等资源，却没有任何等待或取消后台 commit 的逻辑。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "LIFECYCLE-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\cline__cline@419534c.diff\n  caseId              cline__cline@419534c\n  --issue             (未传)\n  --taskId            cline__cline@419534c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 63.3s · 模型调用 14 次 · token 输入 15,404（未命中） · 输出 9,025 · 缓存命中 160,768（91.3%） · 工具 16 次（主会话 16 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0051\n[time] 阶段耗时 | 总墙钟 64.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (1.2%)\n[time] 阶段 | 六阶段审计 63.3s (98.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.2%)\n[time] 审计明细 | P1 6.5s (10.3%) | P2 3.4s (5.4%) | P3 7.6s (12.1%) | P4 20.3s (32.0%) | P5 21.4s (33.9%) | P6 4.0s (6.4%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 15,404（未命中） | 输出 9,025 | 缓存命中 160,768（91.3%） | $0.0051\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\cline__cline@419534c\\audit\\20261121_160215_388.json",
+  "token_usage": {
+    "input_tokens": 15404,
+    "output_tokens": 9025,
+    "cache_read_input_tokens": 160768
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 15404,
+      "output_tokens": 9025,
+      "cache_read_input_tokens": 160768
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

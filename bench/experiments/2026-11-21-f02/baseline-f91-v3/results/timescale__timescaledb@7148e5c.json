@@ -1,0 +1,54 @@
+{
+  "instance_id": "timescale__timescaledb@7148e5c",
+  "repo": "timescale/timescaledb",
+  "base_commit": "d0fe7370082dbc57d391d5168705909809bd880f",
+  "head_commit": "7148e5c7d90c9da819a8ca77b79664fac300ca60",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 207.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "sql/policy_api.sql",
+      "line": 94,
+      "summary": "新增参数 refresh_newest_first 在 C 侧从未被读取，策略 API 参数为静默 no-op",
+      "failure_scenario": "sql 层给 add_continuous_aggregate_policy 增加了第 11 个参数 refresh_newest_first（BOOL = true），但对应的 C 函数 policy_refresh_cagg_add 只解析到第 10 个参数（index 9 = max_batches_per_execution），既没有读取 index 10，policy_refresh_cagg_add_internal 也没有对应形参，构建 job config 的 JSONB 时同样没有写入 refresh_newest_first 键。因此用户显式传入 refresh_newest_first => false 时该值被完全丢弃，job config 中不存在该键，policy_refresh_cagg_get_refresh_newest_first 读取时 found=false 回退为 true，策略依旧按「最新优先」刷新。失败场景：本次测试新增的调用 add_continuous_aggregate_policy('conditions_by_day', ..., buckets_per_batch => 5, refresh_newest_first => false) 执行成功且不报错，但 jobs 视图的 config 中看不到 refresh_newest_first，实际刷新顺序仍为 DESC——API 承诺与行为不一致，用户无法通过对外接口关闭 newest-first。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.87,
+      "rule": "API-PARAM-WIRING-001"
+    },
+    {
+      "file": "tsl/src/continuous_aggs/refresh.c",
+      "line": 1145,
+      "summary": "批次排序改为 ASC 后未同步调整依赖行序的 NULL 边界对齐，开放窗口被错误扩张",
+      "failure_scenario": "切分函数把原先固定的 ORDER BY refresh_start DESC 改成按 refresh_newest_first 拼接 DESC/ASC，但后续构造 batch 列表时的 NULL 边界对齐逻辑仍隐含假设「第 0 行是最新批次、最后一行是最旧批次」：i == 0 且 original_refresh_window->end_isnull 时把该行 end 置为 NOEND/end_isnull=true，i == SPI_processed-1 且 start_isnull 时把末行 start 置为 NOBEGIN/start_isnull=true。当 refresh_newest_first = false 时行序反转为最旧在前，于是最旧的那一批被判为「覆盖窗口末端」而扩张到 +∞，最新那一批被判为「覆盖窗口起点」而扩张到 −∞。失败场景：即本次测试新增的调用（start_offset => INTERVAL '15 days', end_offset => NULL, buckets_per_batch => 5, refresh_newest_first => false）——第一条批次被 refresh 为 [最旧批次起点, +∞)，一次性覆盖整段待刷新数据，其余批次随后重复刷新重叠区间；若同时设置 max_batches_per_execution => 1，截断语义完全失效（单批就把全窗口刷完），既违背分批初衷也造成大量重复计算。start_offset => NULL 且 end_offset 固定时对称地出现 [−∞, 最新批次终点] 的越界刷新。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\timescale__timescaledb\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\timescale__timescaledb@7148e5c.diff\n  caseId              timescale__timescaledb@7148e5c\n  --issue             (未传)\n  --taskId            timescale__timescaledb@7148e5c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 17 / not-reached 0\nreview-pi: 覆盖补漏 请求 13（失败 0）/ 覆盖 hunk 17/17 / 新候选 0 / no-issue 17 / 预算跳过 0\n✓ 完成 · 耗时 204.1s · 模型调用 12 次 · token 输入 24,721（未命中） · 输出 15,833 · 缓存命中 230,144（90.3%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0085\n[time] 阶段耗时 | 总墙钟 206.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.8s (0.9%)\n[time] 阶段 | 六阶段审计 95.8s (46.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 108.3s (52.6%)\n[time] 审计明细 | P1 6.2s (6.5%) | P2 2.9s (3.0%) | P3 11.4s (11.9%) | P4 45.8s (47.9%) | P5 25.5s (26.6%) | P6 3.9s (4.1%)\n[usage] 任务总计 | 模型调用 25 次（Agent 12 + 一次性 13） | token 输入 31,140（未命中） | 输出 33,888 | 缓存命中 235,136（88.3%） | $0.0145\n[usage] 一次性明细 | 覆盖补漏 13 次（输入 6,419 / 输出 18,055 / 缓存 4,992）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\timescale__timescaledb@7148e5c\\audit\\20261121_163454_927.json",
+  "token_usage": {
+    "input_tokens": 31140,
+    "output_tokens": 33888,
+    "cache_read_input_tokens": 235136
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 24721,
+      "output_tokens": 15833,
+      "cache_read_input_tokens": 230144
+    },
+    "coverage_repair": {
+      "input_tokens": 6419,
+      "output_tokens": 18055,
+      "cache_read_input_tokens": 4992
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "instance_id": "filamentphp__filament@77874d0",
+  "repo": "filamentphp/filament",
+  "base_commit": "753ceeac007a0d0aa4423971b01d651288720873",
+  "head_commit": "77874d0c3782a257101c3fb578144a6950f3dc9c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 140.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 79,
+      "summary": "pgsql 分支用 $originalOrders[0] 直接下标访问，键 0 或 column/direction 缺失时抛错导致导出任务失败",
+      "failure_scenario": "第 71-73 行先对 orders 做 reject()/unique('column')，两者都保留原数组键：一旦首个 order 就是被剔除的 qualified 主键，剩余元素的键从 1 开始，集合非空但不存在索引 0。第 78 行的 `! empty($originalOrders->all())` 只判断非空、不判断键 0 是否存在，第 79 行随即读取 `$originalOrders[0]['column']` 与 `['direction']`，在 PHP 8 下产生 “Undefined array key 0”（以及 orderByRaw 形态下 “Undefined array key \"column\"”）告警，Laravel 错误处理器会将其转为 ErrorException，pgsql 导出任务直接异常终止。触发路径真实存在：表默认排序写入 qualified 主键（CanSortRecords.php:124），而 CanExportRecords.php:111→116 在表排序之后又执行 `$exporter::modifyQuery($query)` 追加自定义 orderBy，于是 orders = [users.id, 自定义列]，键 0 被剔除、键 1 保留。同一文件中紧随其后的 foreach（第 85-88 行）正是因为 order 元素可能缺少 column/direction 才用 `blank($order['column'] ?? null) || blank($order['direction'] ?? null)` 做保护，第 79 行的直接下标访问与之一致性缺失。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 79,
+      "summary": "pgsql 上不再用主键作为首个排序键，offset 分页在排序值重复时可能重复或漏导记录",
+      "failure_scenario": "改动前 pgsql 分支固定执行 `$query->reorder($qualifiedKeyName)`，使 ORDER BY 以唯一主键开头，再追加用户排序；改动后首个排序键变成用户排序列，主键这一唯一性 tiebreaker 只在其恰好是首项时才会出现（第 79-83 行）。第 161-176 行的分页决策在 `baseQueryOrdersCount === 1 且首列不是主键` 时走 `$baseQuery->chunk($this->chunkSize, ...)`，chunk() 依赖 limit/offset；当用户按 name、created_at 等非唯一列排序时，同值行的相对顺序在两次查询之间不稳定，PostgreSQL 不保证稳定的等价顺序，导致同一行可能在相邻页重复出现、另一行被跳过，最终导出的 CSV 出现重复或缺行，且 `processed_rows`/`total_rows` 统计与实际业务行数不一致（ExportCsv.php:104-116）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "QUERY-ORDER-001"
+    },
+    {
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 153,
+      "summary": "distinct 改为条件执行后，带 join 的导出自定义排序会导出重复记录",
+      "failure_scenario": "改动前 `$baseQuery->distinct($qualifiedKeyName)` 对所有驱动、所有排序无条件生效；改动后仅当 `$query->getQuery()->orders[0]['column']` 是 $keyName/$qualifiedKeyName 时才添加 distinct，即用户按任意非主键列排序（Filament 表格点击排序即可触发）时不再去重。导出查询可被 `->modifyQueryUsing()`（CanExportRecords.php:123-128）或 `Exporter::modifyQuery()` 注入 join 以过滤/关联数据，此时同一主键会因 join 产生多行；这类多行原本被 distinct 收拢，现在会原样进入导出 CSV，出现同一记录重复导出，并让 `processed_rows` 超过 `total_rows`（CanExportRecords.php:132 用 `$query->count()` 计算 total_rows，而 ExportCsv.php:104-116 会按实际行数累加）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "QUERY-DISTINCT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\filamentphp__filament\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\filamentphp__filament@77874d0.diff\n  caseId              filamentphp__filament@77874d0\n  --issue             (未传)\n  --taskId            filamentphp__filament@77874d0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 137.8s · 模型调用 17 次 · token 输入 16,571（未命中） · 输出 23,255 · 缓存命中 277,888（94.4%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0096\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 138.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.6%)\n[time] 阶段 | 六阶段审计 137.7s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 4.5s (3.3%) | P2 2.3s (1.7%) | P3 10.5s (7.6%) | P4 87.6s (63.7%) | P5 27.8s (20.2%) | P6 4.9s (3.6%)\n[usage] 任务总计 | 模型调用 17 次（Agent 17 + 一次性 0） | token 输入 16,571（未命中） | 输出 23,255 | 缓存命中 277,888（94.4%） | $0.0096\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\filamentphp__filament@77874d0\\audit\\20261121_161051_753.json",
+  "token_usage": {
+    "input_tokens": 16571,
+    "output_tokens": 23255,
+    "cache_read_input_tokens": 277888
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 16571,
+      "output_tokens": 23255,
+      "cache_read_input_tokens": 277888
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

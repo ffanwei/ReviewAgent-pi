@@ -1,0 +1,62 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 113.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 623,
+      "summary": "把所有配置写入并发成 73 个并行操作，任一失败会留下不可预测的半写入状态",
+      "failure_scenario": "updateApiConfiguration 原来逐个 await 49 次 globalState 写入，随后再逐个 await 24 次 secret 写入；现在合并为 `Promise.all([updateGlobalStateBatch(...), updateSecretsBatch(...)])`，一次性并发发出 49+24 个存储操作，且 global 状态与 secret 两组写入彼此交错。后果是：1) Promise.all 在任一写入 reject 时立刻整体失败，但其余 72 个写入已经发出并可能成功，调用方无法知道哪些 key 已持久化；2) 由于 global 与 secret 并行，失败时可能出现「apiProvider/apiModelId 已切到新 provider，但对应 apiKey 未写入」的组合（updateApiConfigurationProto 的 catch 只记日志并 rethrow，没有任何补偿），用户在当前会话看起来切换成功（buildApiHandler 用的是内存中的 appApiConfiguration），重启后新 provider 缺密钥、请求直接鉴权失败；3) 原实现的失败点与已持久化范围是确定性的（前缀已写、后缀未写），便于排查和重试，并发后这一确定性丢失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 32,
+      "summary": "批量写入以 Record<string,any> + key 断言替代 GlobalStateKey 白名单，拼错或漏写 key 不再被编译器发现",
+      "failure_scenario": "原实现每个 key 都通过 `updateGlobalState(context, \"apiProvider\", apiProvider)` 显式传入，key 受 GlobalStateKey 联合类型约束，且 49 条写入语句在评审中一目了然。改为匿名对象字面量 + `updateGlobalStateBatch(context, updates: Record<string, any>)` + `key as GlobalStateKey` 断言后：1) key 拼写错误（例如写成 `vscodeLmModelSelector`）不再有编译错误，运行时会向 globalState 写入一个不在白名单里的垃圾 key，而真正的设置项从未持久化——用户表现为「改了没生效、重启后回退」，且无任何报错；2) 对象字面量没有声明完整清单类型，后续有人删掉/忘记补一个 key 时编译也通过，配置会静默不再持久化；3) `Record<string, any>` 同时抹掉了 value 侧的类型约束（如 openAiHeaders 应为对象、reasoningEffort 的枚举）。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "TYPE-SAFETY-003"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 626,
+      "summary": "生产热路径遗留 [PERF] 调试日志，并写入未经验证的硬编码耗时基线",
+      "failure_scenario": "本次变更在四个新增/修改位置插入大量 console.log 计时（updateApiConfiguration、getAllExtensionState、updateApiConfigurationProto、前端 handleFieldChange）。其中两处是真正的用户热路径：handleFieldChange 在设置页每次字段变更（含输入框逐字符输入）都会打 2 条日志，getAllExtensionState 每次状态刷新都会打 5 条日志；updateApiConfiguration 还会输出 `(was ~535ms, now should be <50ms)` 这种未附任何测量来源的硬编码数字。这些日志会污染扩展输出面板、干扰用户上报日志中的真实错误，而那句虚假基线会让后续排查者误以为已达成某个性能目标。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-004"
+    },
+    {
+      "file": "webview-ui/src/components/history/HistoryPreview.tsx",
+      "line": 68,
+      "summary": "为历史任务卡片新增 backdrop-filter 模糊，与同元素的 transform/阴影动画叠加放大 webview 合成开销",
+      "failure_scenario": "新增的 `backdropFilter: \"blur(8px)\"` 作用在被 `slice(0, 3)` 渲染的每个历史任务卡片上，以及「No recent tasks」空态容器上。这类元素本身还挂着 `transition-all duration-150`、`hover:scale-[1.02]`、`hover:shadow-xl` 与 hover 渐变遮罩层，backdrop-filter 会为每个卡片强制创建独立合成层并在每帧对背后内容做实时模糊，与 transform/阴影动画同时运行时由 GPU 逐帧重算，在 VS Code webview（Electron）中容易造成滚动/悬停卡顿；空态容器的背景本身是半透明色块，模糊几乎无视觉收益却仍有合成成本。该改动还与本 MR 声明的「provider 切换性能优化」无关，属于范围外的性能风险改动。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.45,
+      "rule": "PERF-005"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 9 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 9/11 / 新候选 0 / no-issue 9 / 预算跳过 0\n✓ 完成 · 耗时 109.3s · 模型调用 9 次 · token 输入 9,931（未命中） · 输出 11,525 · 缓存命中 129,408（92.9%） · 工具 6 次（主会话 6 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0050\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 110.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.9%)\n[time] 阶段 | 六阶段审计 71.2s (64.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 38.2s (34.6%)\n[time] 审计明细 | P1 2.7s (3.8%) | P2 2.5s (3.5%) | P3 3.1s (4.4%) | P4 37.5s (52.7%) | P5 20.5s (28.8%) | P6 4.7s (6.7%)\n[usage] 任务总计 | 模型调用 14 次（Agent 9 + 一次性 5） | token 输入 13,337（未命中） | 输出 17,317 | 缓存命中 130,688（90.7%） | $0.0071\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 3,406 / 输出 5,792 / 缓存 1,280）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-20261121\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261121_134014_571.json",
+  "token_usage": {
+    "input_tokens": 9931,
+    "output_tokens": 11525,
+    "cache_read_input_tokens": 129408
+  }
+}

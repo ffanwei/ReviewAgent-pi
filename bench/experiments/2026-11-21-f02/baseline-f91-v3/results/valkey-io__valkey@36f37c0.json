@@ -1,0 +1,44 @@
+{
+  "instance_id": "valkey-io__valkey@36f37c0",
+  "repo": "valkey-io/valkey",
+  "base_commit": "ea2e48a807e1d4a1a5a684a2a699eda1934a0c6f",
+  "head_commit": "36f37c0bafa72c091a9a3725b9a026a056130892",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 38.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 1,
+  "review_output": [
+    {
+      "file": "src/networking.c",
+      "line": 2771,
+      "summary": "snprintf 中用三元+逗号表达式拼接格式串，导致把整数当 const char* 解引用而崩溃",
+      "failure_scenario": "新增的 else-if 分支把两个「格式串 + 变参」序列写成带括号的逗号表达式，再作为三元运算符的两个分支传给 snprintf。C 中 `(a, b)` 的求值结果是 b，因此 `(\"Query buffer during protocol error: [hide_user_data_from_log]Redacted %zu bytes\", sdslen(c->querybuf) - c->qb_pos)` 整体类型是 size_t（值 ≈ 剩余字节数），另一个分支 `(\"... '%.*s' (... more %zu bytes ...) '%.*s'\", PROTO_DUMP_LEN / 2, ...)` 整体类型是 int（值恒为 64）。于是 snprintf 的第三个参数（格式串指针）实际收到 64 这样的极小整数，snprintf 会把它当地址去读取格式串，造成非法内存访问：服务端在协议错误路径上崩溃（远程 DoS），或在极端情况下打出乱码日志。触发条件为协议错误且 c->querybuf 非空、剩余长度 >= PROTO_DUMP_LEN(128)，此时外层 `server.verbosity <= LL_VERBOSE || c->flag.primary` 为真即可命中：默认 loglevel 为 LL_NOTICE（2 > LL_VERBOSE 1），因此普通客户端需把 loglevel 调到 debug/verbose 时触发，而 primary 连接（主从复制链路、或带 primary 标志的连接）在默认配置下也会命中——即一条畸形请求即可让服务端进程崩溃。该缺陷与 hide_user_data_from_log 的取值无关（两个分支都是逗号表达式，均退化），属于本次变更新引入且必现的实现错误；同时 `-Wformat-security`/`-Werror` 场景下也可能直接构建失败。",
+      "severity": "P0",
+      "category": "可靠性",
+      "confidence": 0.93,
+      "rule": "CORRECTNESS-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\valkey-io__valkey\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\valkey-io__valkey@36f37c0.diff\n  caseId              valkey-io__valkey@36f37c0\n  --issue             (未传)\n  --taskId            valkey-io__valkey@36f37c0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 37.6s · 模型调用 9 次 · token 输入 5,930（未命中） · 输出 5,909 · 缓存命中 61,568（91.2%） · 工具 8 次（主会话 8 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0027\n[time] 阶段耗时 | 总墙钟 38.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (1.6%)\n[time] 阶段 | 六阶段审计 37.6s (98.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.2%)\n[time] 审计明细 | P1 3.4s (9.1%) | P2 2.8s (7.5%) | P3 2.5s (6.8%) | P4 9.7s (25.7%) | P5 16.9s (45.0%) | P6 2.2s (5.9%)\n[usage] 任务总计 | 模型调用 9 次（Agent 9 + 一次性 0） | token 输入 5,930（未命中） | 输出 5,909 | 缓存命中 61,568（91.2%） | $0.0027\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\valkey-io__valkey@36f37c0\\audit\\20261121_162319_559.json",
+  "token_usage": {
+    "input_tokens": 5930,
+    "output_tokens": 5909,
+    "cache_read_input_tokens": 61568
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 5930,
+      "output_tokens": 5909,
+      "cache_read_input_tokens": 61568
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "instance_id": "immich-app__immich@91b3b6a",
+  "repo": "immich-app/immich",
+  "base_commit": "10e569cc1c563ece2eb7e2581cef943829a72440",
+  "head_commit": "91b3b6aebd3a02a4ac158b21ce469138df893178",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 345.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "server/src/services/asset.service.ts",
+      "line": 191,
+      "summary": "离线资产排队删除时把 deleteOnDisk=false 传给 live photo 子任务，导致在线 motion 文件永久残留",
+      "failure_scenario": "handleAssetDeletionCheck 把 deleteOnDisk 由常量 true 改为 !asset.isOffline 后，handleAssetDeletion 中「离线则不删盘」的规则已经由 willDelete（253-263 行）按被删资产自身的 isOffline 重新判定，父资产自己的 originalPath/sidecar 与 deleteOnDisk 取值无关；因此这次改动对父资产无实际作用，唯一的实际效果是第 245 行把 deleteOnDisk=false 传播给 livePhotoVideoId 对应的子资产任务。当图片资产因「文件已不在 import path 内或命中 exclusionPattern」被标记为 isOffline，而同组 motion 视频资产仍在线（文件存在、Immich 仍负责该文件）时，定时清理（ASSET_DELETION_CHECK）会以 deleteOnDisk=false 处理该 motion，于是子资产的 willDelete 为 false，其 originalPath 永远不会被删除，磁盘上留下孤儿文件；同一份 motion 在「清空回收站 / force 删除」路径下（trash.service.ts:62 固定传 true）仍会被删除，两条删除入口行为不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RESOURCE-LIFECYCLE-001"
+    },
+    {
+      "file": "e2e/src/api/specs/asset.e2e-spec.ts",
+      "line": 809,
+      "summary": "新增 e2e 用例用全局回收站统计断言 total=0，会被同文件前序用例残留的 trash 资产击穿",
+      "failure_scenario": "新用例先把自己创建的资产 trash 掉、再 force 删除，然后用 getAssetStatistics({isTrashed:true}) 断言全账号回收站总数为 0。但同一 describe('DELETE /assets') 内前一个用例 'should move an asset to the trash'（770-784 行）同样用 admin 创建并 trash 了一个资产，此后从不清空回收站，整个文件也没有任何 /trash/empty 调用；统计接口在 isTrashed 条件下的过滤是 deletedAt is not null 且 status=TRASHED，该残留资产完全满足条件，因此 after.total 实际为 1，断言必然失败（或在测试顺序变化时随机失败）。修复本身与这个计数无关，应改为针对该资产自身状态的断言。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.62,
+      "rule": "TEST-ASSERT-ISOLATION-001"
+    },
+    {
+      "file": "e2e/src/api/specs/trash.e2e-spec.ts",
+      "line": 110,
+      "summary": "唯一覆盖“清空回收站不得删除离线资产文件”的用例被改为 it.skip，行为失去测试保护",
+      "failure_scenario": "该 hunk 新增了 it.skip('should not delete offline assets from disk')，把原本活跃的磁盘安全断言整体搬进被跳过的用例中；同时 hunk 1 把原活跃用例改名为 'should remove offline assets' 并删除了其结尾对 existsSync(offline.png) 与 /trash/empty 的断言。结果是“清空回收站时离线资产文件必须保留在磁盘上”这一删盘安全行为在整套 e2e 中完全没有任何实际执行的断言覆盖，回归时不会被发现。此外被跳过的用例体内重复调用了 createImageFile、scan 以及 request(app).post('/trash/empty') 等步骤（新增块已包含一次 /trash/empty 与 getAssetStatistics，随后上下文仍保留 existsSync 之后的原有清空逻辑），长期属于不会执行的死代码，一旦有人取消 skip 很可能因重复操作而语义混乱。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.62,
+      "rule": "关键安全行为（清空回收站不得删除离线资产文件）不应通过 it.skip 静默失去测试覆盖"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\immich-app__immich\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\immich-app__immich@91b3b6a.diff\n  caseId              immich-app__immich@91b3b6a\n  --issue             (未传)\n  --taskId            immich-app__immich@91b3b6a\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 14 / not-reached 9（no-signal=9）\nreview-pi: 覆盖补漏 请求 7（失败 0）/ 覆盖 hunk 15/24 / 新候选 1 / no-issue 14 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 342.6s · 模型调用 24 次 · token 输入 34,252（未命中） · 输出 29,834 · 缓存命中 723,712（95.5%） · 工具 32 次（主会话 32 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0152\n[time] 阶段耗时 | 总墙钟 343.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.3%)\n[time] 阶段 | 六阶段审计 179.3s (52.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 163.4s (47.6%)\n[time] 审计明细 | P1 6.6s (3.7%) | P2 2.0s (1.1%) | P3 3.9s (2.2%) | P4 132.0s (73.6%) | P5 21.3s (11.9%) | P6 13.5s (7.5%)\n[usage] 任务总计 | 模型调用 33 次（Agent 24 + 一次性 9） | token 输入 45,877（未命中） | 输出 58,834 | 缓存命中 726,656（94.1%） | $0.0249\n[usage] 一次性明细 | 覆盖补漏 9 次（输入 11,625 / 输出 29,000 / 缓存 2,944）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\immich-app__immich@91b3b6a\\audit\\20261121_161037_166.json",
+  "token_usage": {
+    "input_tokens": 45877,
+    "output_tokens": 58834,
+    "cache_read_input_tokens": 726656
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 34252,
+      "output_tokens": 29834,
+      "cache_read_input_tokens": 723712
+    },
+    "coverage_repair": {
+      "input_tokens": 11625,
+      "output_tokens": 29000,
+      "cache_read_input_tokens": 2944
+    }
+  }
+}

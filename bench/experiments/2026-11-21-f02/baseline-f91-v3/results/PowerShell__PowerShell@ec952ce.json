@@ -1,0 +1,54 @@
+{
+  "instance_id": "PowerShell__PowerShell@ec952ce",
+  "repo": "PowerShell/PowerShell",
+  "base_commit": "2259f56c0786574cbde8624d031e778028352372",
+  "head_commit": "ec952ce3b70c87885ed756ffca2bec128f07c51b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 116.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs",
+      "line": 476,
+      "summary": "嵌套模块过滤缺少场景限定，会在模块作用域内误删真实的模块名补全项",
+      "failure_scenario": "新增条件只判断 `loadedModulesOnly && curModule?.NestedModules.Count > 0`，其中 curModule 取的是 `context.ExecutionContext.EngineSessionState.Module`，完全没有限定“当前是 PSReadLine 交互式场景”。可 EngineSessionState.Module 在任意模块作用域内执行的代码中都不为 null：例如模块内调用 `TabExpansion2`、模块内 `Register-ArgumentCompleter` 为 `Import-Module -Name`/`Remove-Module -Name` 注册的补全器、以及 `#requires -Modules` 的模块名补全（CompletionCompleters.cs:3114、3427、5984、6038 都走这条路径）。这些场景下，属于该模块的嵌套模块会被整体从候选中剔除，而它们同样是 ModuleTable 中已加载、可 `Get-Module` 到的真实模块——ModuleCmdletBase.cs:6976 的 `targetSessionState.Module?.AddNestedModule(module)` 表明在模块作用域内导入的任何模块都会成为外层模块的 NestedModules。结果是用户在模块上下文中补全 `Import-Module -Name <Tab>` / `Remove-Module -Name <Tab>` 时，本应出现的模块凭空消失，且没有任何提示。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "BEHAVIOR-REGRESSION-002"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs",
+      "line": 478,
+      "summary": "嵌套模块集合使用默认引用相等比较，实例不一致时过滤会静默失效",
+      "failure_scenario": "`new(curModule.NestedModules)` 构造的 HashSet<PSModuleInfo> 使用 PSModuleInfo 的默认相等性，而 PSModuleInfo 并未重写 Equals/GetHashCode，等于按引用比较。NestedModules 中并不保证总是 ModuleTable 里的同一实例：ModuleCmdletBase.cs:2868 会 `manifestInfo.AddNestedModule(fakeNestedModuleInfo)`、3170 会 `newManifestInfo.AddNestedModule(nm)`，PSModuleInfo.cs:1452-1457 的 Clone 也会复制嵌套模块引用。一旦补全结果里的 PSModuleInfo 与 NestedModules 中的不是同一对象，`Contains` 静默返回 false，过滤完全失效且没有任何可观测信号，本次修复的目标 bug 会以同样的方式重现而难以定位；仓库已有的 PSModuleInfoComparer（PSModuleInfo.cs:1603-1648，RemoveModuleCommand.cs:125 在使用）提供按 Name+Guid+Version 的值比较，恰好适合这里。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.35,
+      "rule": "ROBUSTNESS-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\PowerShell__PowerShell\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\PowerShell__PowerShell@ec952ce.diff\n  caseId              PowerShell__PowerShell@ec952ce\n  --issue             (未传)\n  --taskId            PowerShell__PowerShell@ec952ce\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 1（失败 0）/ 覆盖 hunk 0/1 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 114.7s · 模型调用 17 次 · token 输入 18,757（未命中） · 输出 17,165 · 缓存命中 274,944（93.6%） · 工具 29 次（主会话 29 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0082\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 115.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.6%)\n[time] 阶段 | 六阶段审计 109.9s (95.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 4.9s (4.3%)\n[time] 审计明细 | P1 7.4s (6.8%) | P2 1.4s (1.2%) | P3 3.0s (2.8%) | P4 81.4s (74.1%) | P5 12.9s (11.7%) | P6 3.7s (3.4%)\n[usage] 任务总计 | 模型调用 18 次（Agent 17 + 一次性 1） | token 输入 19,180（未命中） | 输出 17,874 | 缓存命中 275,456（93.5%） | $0.0085\n[usage] 一次性明细 | 覆盖补漏 1 次（输入 423 / 输出 709 / 缓存 512）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\PowerShell__PowerShell@ec952ce\\audit\\20261121_162519_822.json",
+  "token_usage": {
+    "input_tokens": 19180,
+    "output_tokens": 17874,
+    "cache_read_input_tokens": 275456
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 18757,
+      "output_tokens": 17165,
+      "cache_read_input_tokens": 274944
+    },
+    "coverage_repair": {
+      "input_tokens": 423,
+      "output_tokens": 709,
+      "cache_read_input_tokens": 512
+    }
+  }
+}

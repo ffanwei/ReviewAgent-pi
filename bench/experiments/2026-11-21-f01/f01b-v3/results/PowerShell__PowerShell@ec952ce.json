@@ -1,0 +1,54 @@
+{
+  "instance_id": "PowerShell__PowerShell@ec952ce",
+  "repo": "PowerShell/PowerShell",
+  "base_commit": "2259f56c0786574cbde8624d031e778028352372",
+  "head_commit": "ec952ce3b70c87885ed756ffca2bec128f07c51b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 141.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs",
+      "line": 478,
+      "summary": "用默认比较器构造 HashSet<PSModuleInfo>，嵌套模块过滤可能因引用不相等而静默失效",
+      "failure_scenario": "新增代码把 `curModule.NestedModules` 塞进 `HashSet<PSModuleInfo>`，随后用 `nestedModulesToFilterOut.Contains(moduleInfo)` 判断是否跳过。`PSModuleInfo` 是 sealed 类且未重写 `Equals`/`GetHashCode`，HashSet 因此退化为**引用相等**判定；而 `Get-Module` 返回的实例来自 `EngineSessionState.ModuleTable`/`TopLevelSessionState.ModuleTable`，`NestedModules` 里的元素却可能不是同一批对象——`LoadModuleManifest` 在 `!needToAnalyzeScriptModules` 分支会通过 `CreateFakeModuleObject` 用 `new PSModuleInfo(moduleSpec.Name, Context, null)` 造出只带 Name/Guid/Version 的合成对象放入 `NestedModules`。一旦两者不是同一实例，`Contains` 恒为 false，本次要修复的“PSReadLine 嵌套模块出现在补全结果中”问题在该场景下依然复现，且没有任何报错或日志，属于难以察觉的静默失效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-EQUALITY-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs",
+      "line": 476,
+      "summary": "嵌套模块过滤对所有来源模块生效，会误删第三方/用户模块自身的嵌套模块补全",
+      "failure_scenario": "过滤条件只判断“引擎 SessionState 关联的模块是否存在嵌套模块”，并没有把范围限定为 PSReadLine（注释给出的动机），因此任何在模块 SessionState 中被触发的补全都会把该模块的嵌套模块从结果里剔除。典型场景：模块通过 `Register-ArgumentCompleter` 注册的脚本块在其模块 SessionState 中执行，若其中调用 `TabExpansion2`（嵌套补全的常见写法），则在该模块上下文里补全 `Get-Module`/`Remove-Module -Name`/`Get-Command -Module`/`#Requires -Modules` 时，该模块自身合法的嵌套模块名会静默消失；`loadedModulesOnly: true` 的所有调用点（CompletionCompleters.cs:3114、5984、6038、2304）都受影响。这与原本只想隐藏 PSReadLine 内部实现模块的目标不一致，属于过度过滤。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-SCOPE-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\PowerShell__PowerShell\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\diff\\PowerShell__PowerShell@ec952ce.diff\n  caseId              PowerShell__PowerShell@ec952ce\n  --issue             (未传)\n  --taskId            PowerShell__PowerShell@ec952ce\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 1（失败 0）/ 覆盖 hunk 0/1 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 139.0s · 模型调用 22 次 · token 输入 17,793（未命中） · 输出 20,280 · 缓存命中 460,416（96.3%） · 工具 33 次（主会话 33 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0095\n[time] 阶段耗时 | 总墙钟 140.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.5s (1.0%)\n[time] 阶段 | 六阶段审计 134.1s (95.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 5.1s (3.6%)\n[time] 审计明细 | P1 11.7s (8.7%) | P2 2.0s (1.5%) | P3 3.9s (2.9%) | P4 86.1s (64.3%) | P5 25.3s (18.9%) | P6 5.0s (3.7%)\n[usage] 任务总计 | 模型调用 23 次（Agent 22 + 一次性 1） | token 输入 18,351（未命中） | 输出 20,982 | 缓存命中 460,800（96.2%） | $0.0097\n[usage] 一次性明细 | 覆盖补漏 1 次（输入 558 / 输出 702 / 缓存 384）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\\PowerShell__PowerShell@ec952ce\\audit\\20261121_151848_676.json",
+  "token_usage": {
+    "input_tokens": 18351,
+    "output_tokens": 20982,
+    "cache_read_input_tokens": 460800
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 17793,
+      "output_tokens": 20280,
+      "cache_read_input_tokens": 460416
+    },
+    "coverage_repair": {
+      "input_tokens": 558,
+      "output_tokens": 702,
+      "cache_read_input_tokens": 384
+    }
+  }
+}

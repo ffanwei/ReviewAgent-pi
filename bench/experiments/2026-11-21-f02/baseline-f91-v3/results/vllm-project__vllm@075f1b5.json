@@ -1,0 +1,54 @@
+{
+  "instance_id": "vllm-project__vllm@075f1b5",
+  "repo": "vllm-project/vllm",
+  "base_commit": "7a8987dac5f0ed0c798a73e8b4ec8f5e640bc63a",
+  "head_commit": "075f1b5b8015e343f25b45d36ccff571cb39739b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 282.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "vllm/v1/core/kv_cache_manager.py",
+      "line": 438,
+      "summary": "_untouch 回滚时把块按正序追加到空闲队列尾部，破坏空闲队列的驱逐顺序不变式",
+      "failure_scenario": "新增的失败回滚路径 _untouch 对 blocks 逐个 decr_ref()，当 ref_cnt 归零时调用 self.free_block_queue.append(block)，即按传入顺序（前缀块在前、链尾块在后）追加到队列尾部。而 FreeKVCacheBlockQueue 的顺序约定要求同一次释放的块链必须逆序归还，使「哈希 token 更多（链尾）的块更靠近队首、优先被驱逐」——free() 正是先 reversed(blocks) 再 append 才满足该约定。当 allocate_slots 因空闲块不足返回 None 时（内存压力下 WAITING 路径会反复触发），被回滚的共享前缀块被排到队尾，其后继块反而更靠前，于是前缀块先于后继块被驱逐：缓存中残留的哈希链断裂，cached_block_hash_to_block 里留下大量不可达的后继块条目，前缀缓存命中率与有效缓存容量下降。现有 test_prefill_not_enough_free_blocks_with_computed_blocks 只断言 ref_cnt 复原为 {1}/{0}，未校验空闲队列顺序，因此该回归不会被测出。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "CACHE-INVARIANT-001"
+    },
+    {
+      "file": "vllm/v1/core/kv_cache_manager.py",
+      "line": 142,
+      "summary": "合并后的 allocate_slots 对 num_tokens==0 抛 ValueError，与旧 append_slots 在 decode 路径的空操作语义不一致",
+      "failure_scenario": "重构把 append_slots 合并进 allocate_slots 后，原 allocate_slots 里的 `if num_tokens == 0: raise ValueError(...)` 现在同时作用于 decode 路径；而被删除的 append_slots 对 num_tokens==0 是合法的空操作（直接 cdiv 后算出 num_new_blocks<=0 并返回 []）。本 MR 的测试改动恰好暴露了这个契约收紧：test_preallocate_blocks 中原本无条件的「Assume all computed」一步在 num_preallocate_tokens=0 时会算出 num_tokens=0，因此不得不新增 `if num_preallocated_blocks > 0:` 才能避免抛异常。当前 scheduler 两个调用点都靠 assert num_new_tokens > 0 兜底，但「追加 0 个槽位」在语义上（已预分配足够块、lookahead 为 0、块边界对齐）是合法输入，一旦后续 speculative decoding 或新的调度路径传入 0，就会在最热的调度路径上抛 ValueError 打断调度，而不是安全返回空列表。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.45,
+      "rule": "API-CONTRACT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\vllm-project__vllm\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\vllm-project__vllm@075f1b5.diff\n  caseId              vllm-project__vllm@075f1b5\n  --issue             (未传)\n  --taskId            vllm-project__vllm@075f1b5\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 1 / not-reached 9（no-signal=9）\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 1/10 / 新候选 0 / no-issue 1 / 预算跳过 0\n✓ 完成 · 耗时 279.4s · 模型调用 11 次 · token 输入 22,206（未命中） · 输出 30,431 · 缓存命中 251,904（91.9%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0123\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 280.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.3%)\n[time] 阶段 | 六阶段审计 188.2s (67.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 91.3s (32.5%)\n[time] 审计明细 | P1 5.2s (2.8%) | P2 3.1s (1.7%) | P3 7.0s (3.7%) | P4 135.6s (72.1%) | P5 31.0s (16.5%) | P6 6.3s (3.3%)\n[usage] 任务总计 | 模型调用 14 次（Agent 11 + 一次性 3） | token 输入 25,938（未命中） | 输出 48,103 | 缓存命中 253,056（90.7%） | $0.0178\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 3,732 / 输出 17,672 / 缓存 1,152）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\vllm-project__vllm@075f1b5\\audit\\20261121_160007_540.json",
+  "token_usage": {
+    "input_tokens": 25938,
+    "output_tokens": 48103,
+    "cache_read_input_tokens": 253056
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 22206,
+      "output_tokens": 30431,
+      "cache_read_input_tokens": 251904
+    },
+    "coverage_repair": {
+      "input_tokens": 3732,
+      "output_tokens": 17672,
+      "cache_read_input_tokens": 1152
+    }
+  }
+}

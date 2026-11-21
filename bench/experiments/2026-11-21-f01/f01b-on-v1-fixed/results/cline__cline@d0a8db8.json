@@ -1,0 +1,72 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 136.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 623,
+      "summary": "并发批量写入丢失失败原子性与顺序保证，失败后无法定位具体键且其余写入仍在继续",
+      "failure_scenario": "原实现按固定顺序逐条 await 写入 global state 与 secret，任一键失败即在该点中断；新实现改为 updateGlobalStateBatch / updateSecretsBatch 内部各自 Promise.all，再在 623 行用 Promise.all 让 global 与 secret 两组并发执行。结果是：1) 失败不再中断其它写入——某个 secret（如 sapAiCoreClientSecret）写入失败时 Promise.all 立刻 reject，但另外 70 余个 update 已经发出并可能成功落地，最终落盘的是“半新半旧”的配置；2) 错误对象只包含第一个失败的 reason，调用方（updateApiConfigurationProto.ts:57-60）只能记录 “Failed to update API configuration”，无法知道哪个键失败，用户重试也没有可操作信息；3) global state 与 secret 之间、键与键之间的先后顺序不再确定，例如 apiProvider 已落盘而对应 apiKey 尚未落盘时，紧接着的 getApiConfiguration / getAllExtensionState 可能读到 provider 与密钥不匹配的组合，表现为切换到新 provider 后立刻发起请求却用旧密钥鉴权失败或读到空密钥。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-BATCH-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 32,
+      "summary": "批量写函数用 Record<string, any> + as GlobalStateKey 强转，绕过键名的编译期校验",
+      "failure_scenario": "GlobalStateKey 与 SecretKey 在 src/core/storage/state-keys.ts 中是字符串字面量联合类型，原实现 updateGlobalState(context, \"apiProvider\", ...) 依靠字面量参数获得编译期校验。新实现把键名变成对象属性名并统一以 Record<string, any> / Record<string, string | undefined> 接收，再在 state.ts:37 / state.ts:48 用 `key as GlobalStateKey`、`key as SecretKey` 强转把校验完全抹掉：一旦后续重命名 state-keys.ts 中的键（例如把 claudeCodePath 改为其它名字，或新增 provider 时把 requestTimeoutMs 写成 requestTimeout），这里不会产生任何 TypeScript 报错，而是静默写入一个再也不会被 getAllExtensionState 读取的孤立键，用户表现为“设置保存成功、但重启后配置丢失/不生效”，排查成本很高。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-TYPES-001"
+    },
+    {
+      "file": "webview-ui/src/components/history/HistoryPreview.tsx",
+      "line": 68,
+      "summary": "为历史任务条目新增 backdropFilter: blur(8px)，与 hover 缩放/过渡叠加后增加 webview 合成开销",
+      "failure_scenario": "本次在“Recent Tasks”条目容器与“No recent tasks”空态容器上各加了 backdropFilter: blur(8px)。条目容器同时带有 hover:scale-[1.02]、transition-all、半透明 color-mix 背景与绝对定位渐变覆盖层（HistoryPreview.tsx:63、72-78），backdrop-filter 会使浏览器在每次滚动与 hover 缩放动画帧时对背板重新采样并做 8px 模糊，属于典型的滚动路径高开销样式；在一个以“优化 provider 切换性能”为主题、changeset 只声明存储批量化的 MR 中引入该改动，既缺少说明，也与 MR 的性能目标方向相反（历史预览展开时会同时存在 3 个模糊层）。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.42,
+      "rule": "PERFORMANCE-RENDER-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 626,
+      "summary": "高频路径遗留 [PERF] 调试日志与硬编码性能断言，污染输出且会误导判断",
+      "failure_scenario": "变更在 provider 切换的完整链路上留下了大量 [PERF] console.log：updateApiConfigurationProto 每次调用打印 5-6 行，updateApiConfiguration 打印 3 行，getAllExtensionState 打印 6 行，updateGlobalStateBatch/updateSecretsBatch 各打印 2 行，前端 handleFieldChange 还打印 2 行。而 handleFieldChange 是逐次输入触发（如 AnthropicProvider.tsx:40 的 apiKey onChange），用户输入一个密钥就会触发数十条日志进入扩展输出面板与 webview 控制台，真实错误信息被稀释。此外 626 行的日志把未经验证的基线硬编码为 “was ~535ms, now should be <50ms”，一旦实测达不到会在后续排障时构成错误前提；错误路径的日志也被改成带 [PERF] 前缀，按原文案检索日志的既有习惯会失效。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-LOGGING-001"
+    },
+    {
+      "file": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+      "line": 22,
+      "summary": "通用字段变更处理中遗留调试性能埋点与 console.log",
+      "failure_scenario": "handleFieldChange 是所有字段变更的通用入口（输入框每次改动都会触发），此处新增的 performance.now() 与 console.log 属于临时调试/性能探针代码，被直接保留在生产 webview 中：一方面会在高频输入路径上产生额外日志噪音与少量开销，另一方面日志文案硬编码为 \"Provider switch\"，与实际语义（任意字段变更）不符，容易在后续排障时造成误导。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "生产前端代码不应保留调试用 console 输出与临时性能埋点；若需性能观测应通过统一日志开关/条件编译控制，或在上线前移除。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 9 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 10/11 / 新候选 1 / no-issue 9 / 预算跳过 0\n✓ 完成 · 耗时 132.9s · 模型调用 12 次 · token 输入 12,239（未命中） · 输出 14,432 · 缓存命中 210,688（94.5%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0063\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 134.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.8%)\n[time] 阶段 | 六阶段审计 94.4s (70.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 38.6s (28.8%)\n[time] 审计明细 | P1 4.1s (4.3%) | P2 2.6s (2.8%) | P3 5.0s (5.3%) | P4 52.0s (55.1%) | P5 25.9s (27.4%) | P6 4.9s (5.2%)\n[usage] 任务总计 | 模型调用 17 次（Agent 12 + 一次性 5） | token 输入 14,490（未命中） | 输出 20,425 | 缓存命中 213,120（93.6%） | $0.0083\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 2,251 / 输出 5,993 / 缓存 2,432）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-on-c10-fixed-20261121\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261121_140211_156.json",
+  "token_usage": {
+    "input_tokens": 12239,
+    "output_tokens": 14432,
+    "cache_read_input_tokens": 210688
+  }
+}

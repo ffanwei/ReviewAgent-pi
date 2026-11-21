@@ -1,0 +1,62 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 71.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 32,
+      "summary": "批量写 helper 用 Record<string, any> 加 as 强转绕过了 GlobalStateKey/SecretKey 类型约束",
+      "failure_scenario": "updateGlobalStateBatch 的形参是 `updates: Record<string, any>`，内部 37 行用 `key as GlobalStateKey` 把任意 string 强转成合法键；updateSecretsBatch 同理（43 行 `Record<string, string | undefined>`、48 行 `key as SecretKey`）。而仓库原有的 updateGlobalState（23 行）签名是 `key: GlobalStateKey`，靠字面量联合类型在编译期拦截拼错的键名。失败场景：调用方在 539-592 行构造 batchedGlobalUpdates 时把某个键写错（如 `sapAiCoreModelId` 写成 `sapAICoreModelId`，或 `claudeCodePath` 拼错），TypeScript 不再报错，会静默写入一个从未被 getGlobalState 读取的新键，同时真正的键保持旧值——诊断上表现为“某个 provider 设置保存后不生效”，且现有单元测试与类型检查都发现不了。同理 43/48 行把任何字符串当作 SecretKey 写入，拼写错误会新建一个孤儿密钥并泄露到磁盘。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "TYPE-SAFETY-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 37,
+      "summary": "用 Promise.all 并发写入配置时，单个失败会留下半更新的 API 配置",
+      "failure_scenario": "新增的 updateGlobalStateBatch 在 37 行对整个键集合执行 `Promise.all(...)`，任意一个 key 写入 reject 时 Promise.all 会立即抛出，但其余已发起的写入不会被回滚也不会被等待，updateApiConfiguration（623 行）再以 `Promise.all([updateGlobalStateBatch, updateSecretsBatch])` 并发提交两组写入。失败场景：用户在设置面板切换 provider，若某个 secret 写入失败（例如 SecretStorage 抛错/配额写满），updateSecretsBatch 已经执行到一半——部分 key 被 storeSecret 更新、部分值为 undefined 的 key 已被 60 行 `context.secrets.delete(key)` 删除，而 updateApiConfigurationProto 的 catch（updateApiConfigurationProto.ts:57-60）只打印日志后 rethrow。结果是 webview 收到“更新失败”的错误提示，但扩展侧持久化状态已被部分改写（新 provider 模型、旧 provider 残留密钥混合），下次启动时读到不一致配置，且无法通过重试收敛。另外需要指出：`Promise.all` 并不是真正的批量 API，Memento/SecretStorage 每次 update 仍各自持久化一次，这里只是把串行写改成了无并发上限的并行写，并不减少持久化次数。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 80,
+      "summary": "[PERF] 计时埋点以裸 console.log 常驻生产路径，每次状态刷新刷出十余行日志",
+      "failure_scenario": "本次在 getAllExtensionState 中新增了 79-80、230-231、233-234、237、301-302、304、341-342、344 等处的 `console.log(\"[PERF] ...\")`，并在 updateApiConfigurationProto.ts 与前端 useApiConfigurationHandlers.ts 中同样散落多条。getAllExtensionState 属于热路径（每次 postStateToWebview / 状态刷新都会调用），一次调用就产生约 10 行 `[PERF]` 输出；同时 updateApiConfiguration 里还保留了 `console.log(\\`[PERF] OPTIMIZED updateApiConfiguration took: ... (was ~535ms, now should be <50ms)\\`)` 这类一次性调试文案，以及写死的 `First batch (66 state reads)`、`Second batch (30 state reads)` 计数（后续增删字段即失真）。失败场景：用户开启扩展输出面板排查真实问题时，日志被高频 PERF 行淹没，关键错误难以定位；且这些日志无法通过日志级别关闭，属于永久性调试残留。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "LOGGING-001"
+    },
+    {
+      "file": "webview-ui/src/components/history/HistoryPreview.tsx",
+      "line": 68,
+      "summary": "为历史预览卡片新增 backdropFilter: blur(8px)，与本次性能优化目标相悖且增加合成开销",
+      "failure_scenario": "本次在两个静态容器上新增了 `backdropFilter: \"blur(8px)\"`：68 行历史任务卡片（元素本身还带 `transition-all duration-150 ease-out hover:scale-[1.02] hover:shadow-xl`，见 63 行 className）与 156 行“No recent tasks”空态卡片。backdrop-filter 会为每个元素强制建立独立的合成层并对其背后已绘制内容做实时模糊采样；当卡片处于 hover 缩放/阴影过渡动画时，模糊层需逐帧重算，在低配机器或同时渲染多张卡片时会带来额外的 GPU 绘制开销与掉帧，这与本 MR“优化性能”的变更意图方向相反。此外该样式改动与 provider 切换性能优化无任何关联，混在同一 patch 中会扩大回归面（视觉基线/截图对比测试可能变化）。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.42,
+      "rule": "PERF-UI-001"
+    }
+  ],
+  "stderr_tail": "ct\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f02-check-cline-shard-20261122\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f02-check-cline-shard-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f02-check.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 1 片（单片上限 10000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已截取检视 1 个超预算文件（丢弃 1 个完整 hunk，保留 4355 字符），明细见审计 shardTruncation\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 11（no-signal=10 truncated=1）\n✓ 完成 · 耗时 69.7s · 模型调用 8 次 · token 输入 12,259（未命中） · 输出 11,346 · 缓存命中 87,424（87.7%） · 工具 8 次（主会话 8 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0051\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f02-check-cline-shard-20261122\\.reviewpi\\tasks\\cline...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 70.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.9%)\n[time] 阶段 | 六阶段审计 69.7s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | S1P1 3.5s (5.0%) | S1P2 4.8s (6.9%) | S1P3 3.5s (5.1%) | S1P4 27.5s (39.4%) | S1P5 25.9s (37.2%) | S1P6 4.4s (6.4%)\n[usage] 任务总计 | 模型调用 8 次（Agent 8 + 一次性 0） | token 输入 12,259（未命中） | 输出 11,346 | 缓存命中 87,424（87.7%） | $0.0051\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f02-check-cline-shard-20261122\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261121_173429_072.json",
+  "token_usage": {
+    "input_tokens": 12259,
+    "output_tokens": 11346,
+    "cache_read_input_tokens": 87424
+  }
+}

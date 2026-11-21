@@ -1,0 +1,104 @@
+{
+  "instance_id": "keycloak__keycloak@04ad5d5",
+  "repo": "keycloak/keycloak",
+  "base_commit": "ad511cbc538f1d9727d17cc423420abc50367af4",
+  "head_commit": "04ad5d530007517b60e2bf8706542556078d17f7",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 368.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+      "line": 89,
+      "summary": "构造器即时推导工程目录失败时静默回退到远端 latest 镜像或抛 NPE",
+      "failure_scenario": "4 参构造器把镜像解析从 run() 提前到实例化时，并用 `BuildToolHelper.getProjectDir(Paths.get(\"\")).getParent().getParent()` 推导 quarkus 模块目录，且以 failIfDockerFileMissing=false 调用 createImage。该推导假设当前工作目录恰为 `quarkus/tests/junit5`：若 getProjectDir 返回 null（工作目录无 Maven 构建文件，如 IDE/仓库根目录/命令行直接跑 junit 时），`.getParent().getParent()` 直接 NullPointerException；若推导出的目录不是 quarkus 模块，则 `container/Dockerfile` 不存在，createImage 会静默返回 `RemoteDockerImage(quay.io/keycloak/keycloak)`，于是 DistributionType.DOCKER 的测试会在无任何提示下验证远端 latest 镜像而不是本地构建的分发包，测试结论失真。同一推导在 ClusteredKeycloakServer.defaultImage 中又额外 `resolve(\"quarkus\")`，两处对目录层级的假设不一致，任一处漂移都会以“测试通过但验证对象错误”的方式暴露。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-PATH-001"
+    },
+    {
+      "file": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+      "line": 341,
+      "summary": "getMappedPort 未判空，容器未启动或已停止时抛 NullPointerException",
+      "failure_scenario": "新增的 getMappedPort 直接解引用 keycloakContainer，而该字段在构造后为 null，并在 stop() 的 finally 与 run() 的异常分支中被置回 null。新增调用方 ClusteredKeycloakServer.getBaseUrl(index)/getManagementBaseUrl(index) 直接用它拼接 URL，因此只要在容器启动前（如注入/配置阶段提前取 URL）或 stop() 之后（收尾阶段读取节点 URL、请求校验）调用，就会抛出无任何上下文信息的 NullPointerException，而不是提示“容器尚未启动”。集群模式下节点启动失败会走 run() 的 catch 分支把 keycloakContainer 置 null，此后测试若继续访问该节点或共享的 loadBalancer，NPE 会掩盖真实的启动失败原因。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "NULL-SAFETY-002"
+    },
+    {
+      "file": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+      "line": 51,
+      "summary": "defaultImage 对 getResource(\".\")/getProjectDir 结果不判空，路径推导失败即 NPE",
+      "failure_scenario": "defaultImage() 用 `getResource(\".\")` 取得 classpath 目录后链式调用 `BuildToolHelper.getProjectDir(classPathDir).getParent().getParent().resolve(\"quarkus\")`。这里没有任何判空：classpath 不是目录（打包成 jar/自定义 ClassLoader）时 getResource(\".\") 返回 null，`.toURI()` 立即 NPE；getProjectDir 找不到 Maven 构建文件时返回 null，`.getParent()` 同样 NPE。此外推导依赖“测试模块恰位于 <root>/<X>/<module> 且 quarkus 模块名为 quarkus”这一硬编码层级，模块移动（例如把 clustering 测试放到 tests/clustering/sub 层级）后会解析到不存在的目录，进而以 `Docker file %s not found` 的误导性异常结束，而该异常无法提示真正原因是目录推导失配。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "NULL-SAFETY-003"
+    },
+    {
+      "file": "tests/base/pom.xml",
+      "line": 146,
+      "summary": "mixed-cluster profile 只切换 kc.test.server，未联动 kc.test.database.internal，节点会拿到宿主视角的 db-url",
+      "failure_scenario": "新增的 mixed-cluster profile 只设置 `kc.test.server=cluster`。ClusteredKeycloakServerSupplier.requiresDatabase() 恒为 true，因此集群模式必然注入容器化数据库；但容器内 Keycloak 能连上数据库的前提是 db-url 被改写为容器网络地址，而该改写只在 `kc.test.database.internal=true` 时生效（默认 false）。单独启用 `-Pmixed-cluster` 并选择 postgres/mysql 等容器数据库时，节点的 `--db-url` 仍是 `getHost()+getFirstMappedPort()`（测试 JVM 视角的 localhost:映射端口），在容器内部无法连接 → 节点启动失败并撞上 120s 启动超时。对照本 MR 自带的 tests/clustering/keycloak-test.properties 同时设置了 `kc.test.database.internal=true`，说明该联动是必需的，但 profile 未跟随。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONFIG-COUPLING-004"
+    },
+    {
+      "file": "test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java",
+      "line": 18,
+      "summary": "LoadBalancer.node 越界校验不完整且异常消息参数顺序颠倒",
+      "failure_scenario": "node(int) 只校验上界，负索引会直接落到 `server.getBaseUrl(-1)`，触发 ClusteredKeycloakServer 中对数组的负下标访问（ArrayIndexOutOfBoundsException），且不会有任何“索引非法”的语义化提示。同时异常消息模板是 `Requested nodeIndex: %d, cluster size: %d`，但 formatted 的实参顺序是 (clusterSize, nodeIndex)，导致越界时打印的“请求索引”其实是集群大小、“集群大小”其实是请求索引，误导排查（例如请求 node(5) 在 2 节点集群上会打印 Requested nodeIndex: 2, cluster size: 5）。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "DIAGNOSTICS-005"
+    },
+    {
+      "file": "tests/base/pom.xml",
+      "line": 94,
+      "summary": "clustering 依赖硬编码 999.0.0-SNAPSHOT 版本，绕过刚新增的 BOM 管理",
+      "failure_scenario": "本 MR 已在 test-framework/bom/pom.xml 中为该 artifact 增加了 dependencyManagement 条目（带 `<scope>test</scope>`），但 tests/base 又显式写了 `<version>999.0.0-SNAPSHOT</version>`。同一文件内相邻的 keycloak-test-framework-* 依赖均不写版本（统一由 BOM 管理），此处硬编码会使版本升级时必须逐处手工修改，且 BOM 中声明的 test 作用域在此完全不生效（依赖以默认 compile 作用域进入所有 tests/base 子模块的编译/运行 classpath）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-BOM-006"
+    },
+    {
+      "file": "tests/clustering/src/test/java/org/keycloak/tests/compatibility/MixedVersionClusterTest.java",
+      "line": 40,
+      "summary": "集群测试仅打印 URL 并固定 sleep 60 秒，无任何断言，且非集群模式下是失败而非跳过",
+      "failure_scenario": "testUrls 的全部行为是打印两个节点的 base URL 并阻塞 1 分钟，没有任何断言，因此节点是否真正组成集群、混合版本是否互通都不会被校验，测试恒为绿灯却把 2 个 Keycloak 容器与数据库容器额外占用一分钟，直接拉长 CI 时长。此外方法内注释声明“非集群模式下应跳过”，但 `@InjectLoadBalancer` 的注入发生在 beforeEach 阶段，LoadBalancerSupplier 在服务器不是 ClusteredKeycloakServer 时会直接抛 IllegalStateException，assumption 根本执行不到，因此在默认（非 cluster）kc.test.server 下运行该测试是失败而不是跳过。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TESTABILITY-007"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\keycloak__keycloak\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\keycloak__keycloak@04ad5d5.diff\n  caseId              keycloak__keycloak@04ad5d5\n  --issue             (未传)\n  --taskId            keycloak__keycloak@04ad5d5\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 7 / no-issue 16 / not-reached 7（no-signal=7）\nreview-pi: 覆盖补漏 请求 16（失败 0）/ 覆盖 hunk 16/23 / 新候选 0 / no-issue 16 / 预算跳过 0 / 验证拒绝 6\n✓ 完成 · 耗时 366.2s · 模型调用 20 次 · token 输入 41,398（未命中） · 输出 37,317 · 缓存命中 778,240（94.9%） · 工具 38 次（主会话 38 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0184\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 367.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 219.6s (59.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 146.7s (40.0%)\n[time] 审计明细 | P1 14.3s (6.5%) | P2 4.2s (1.9%) | P3 7.6s (3.5%) | P4 103.8s (47.3%) | P5 72.7s (33.1%) | P6 16.8s (7.7%)\n[usage] 任务总计 | 模型调用 42 次（Agent 20 + 一次性 22） | token 输入 58,511（未命中） | 输出 61,749 | 缓存命中 785,408（93.1%） | $0.0277\n[usage] 一次性明细 | 覆盖补漏 22 次（输入 17,113 / 输出 24,432 / 缓存 7,168）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\keycloak__keycloak@04ad5d5\\audit\\20261121_162026_961.json",
+  "token_usage": {
+    "input_tokens": 58511,
+    "output_tokens": 61749,
+    "cache_read_input_tokens": 785408
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 41398,
+      "output_tokens": 37317,
+      "cache_read_input_tokens": 778240
+    },
+    "coverage_repair": {
+      "input_tokens": 17113,
+      "output_tokens": 24432,
+      "cache_read_input_tokens": 7168
+    }
+  }
+}

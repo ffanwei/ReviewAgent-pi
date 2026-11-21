@@ -1,0 +1,74 @@
+{
+  "instance_id": "elastic__elasticsearch@4d9b96f",
+  "repo": "elastic/elasticsearch",
+  "base_commit": "ba5a9c83310ce6fbe27ff251aba00e37fad1d205",
+  "head_commit": "4d9b96f4ac1af0cb871f1d3b77169f9f1e83d194",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 288.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+      "line": 313,
+      "summary": "非默认 FileSystem 的路径一律放行文件读写检查，可被委托型 FileSystemProvider 绕过",
+      "failure_scenario": "新增的 isPathOnDefaultFilesystem 只把 path.getFileSystem().getClass() 与默认文件系统类做比较，只要不是同一个类就直接返回 false，checkFileRead/checkFileWrite 随即在方法最前面 return，跳过 isTriviallyAllowed、entitlements.canRead/canWrite 与 notEntitled，即真正的鉴权主体被完全绕过。这个“只要不是默认 FileSystem 就无条件放行”的默认值把安全判定交给了调用方所用的 FileSystem 实现类：任何自定义 FileSystemProvider（无论是包装真实文件系统的委托实现，还是 zipfs 这类绑定真实文件的实现）上的路径都可读写。具体失败场景：插件先用 FileSystems.newFileSystem(<任意 zip 路径>) 打开一个 zip 文件系统（该入口只做 checkChangeJVMGlobalState，不校验该路径的读授权），再通过该 provider 的 newInputStream 或直接读取条目内容；这些调用被插桩后转调 checkFileRead，但因 path.getFileSystem().getClass() != DEFAULT_FILESYSTEM_CLASS 而提前返回，插件因此在没有任何 file 读授权的情况下获得了本来不允许读取的文件内容，写操作同理。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-FAIL-OPEN-001"
+    },
+    {
+      "file": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+      "line": 65,
+      "summary": "把默认可变文件系统类缓存为 static final 常量，测试中判定基准可能过期导致检查静默失效",
+      "failure_scenario": "DEFAULT_FILESYSTEM_CLASS 在 PolicyManager 类初始化时取值，而 org.elasticsearch.core.PathUtils.getDefaultFileSystem() 返回的是 `static volatile FileSystem DEFAULT`，注释明确写着“can be changed by tests”：test/framework 的 PathUtilsForTesting.installMock 会在 ESTestCase 的 @BeforeClass 中替换它、@AfterClass 中还原，DiskUsageIntegTestCase 等也按用例安装包装型 FileSystem。因此该常量的正确性依赖“PolicyManager 的 clinit 恰好发生在测试替换之后”这一隐含时序：若 PolicyManager 先于 mock 安装完成初始化，则测试中由 PathUtils.get()/PathLookup 产生的路径属于 mock 文件系统，其类与缓存的常量不同，checkFileRead/checkFileWrite 会对这些路径全部提前 return，文件权限检查在测试里被静默跳过（fail-open），而 java.io.File 重载走 file.toPath()（真实默认文件系统）仍会正常检查，两条调用路径在同一测试内行为不一致，使 entitlement 相关用例既可能假通过（无法验证拒绝路径）也可能假失败。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "TESTABILITY-STALE-CONSTANT-001"
+    },
+    {
+      "file": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/FileAccessTree.java",
+      "line": 206,
+      "summary": "文件访问热路径新增 debug 日志会拼接待检查路径的全部授权路径数组",
+      "failure_scenario": "checkPath 在每次 canRead/canWrite 入口新增的 debug 日志把整个 readPaths/writePaths 数组用 String.join(\",\", paths) 拼成一个字符串，而不是只输出命中相关的一两条；isParent 中的日志同样会在每次前缀比较时格式化两个路径。pruneSortedPaths 与 validateExclusivePaths 在构造/校验阶段会以 O(n) 次调用 isParent，因此一个拥有数百条文件授权路径的模块在开启 debug 日志（诊断或测试排查时常见）后，每次文件检查都会产生大段字符串构造与巨型日志行，既增加开销又淹没真正有用的信息，反而降低可诊断性。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "PERFORMANCE-HOTPATH-LOG-001"
+    },
+    {
+      "file": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+      "line": 312,
+      "summary": "isPathOnDefaultFilesystem 内重复调用 path.getFileSystem()，局部变量与判定条件不一致",
+      "failure_scenario": "方法先取 `var pathFileSystemClass = path.getFileSystem().getClass()`，随后条件里又重新调用一次 `path.getFileSystem().getClass()` 做比较，局部变量只用于日志。这在每次文件检查（热路径）上多做一次 getFileSystem() 调用，也带来维护风险：日后若有人修改判定条件（例如改成比较 FileSystem 实例或 provider），极易只改其中一处，出现日志内容与实际判定不一致的“日志撒谎”问题。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.5,
+      "rule": "READABILITY-DUPLICATE-CALL-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\elastic__elasticsearch\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\elastic__elasticsearch@4d9b96f.diff\n  caseId              elastic__elasticsearch@4d9b96f\n  --issue             (未传)\n  --taskId            elastic__elasticsearch@4d9b96f\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 3 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 3/4 / 新候选 0 / no-issue 3 / 预算跳过 0\n✓ 完成 · 耗时 281.7s · 模型调用 16 次 · token 输入 19,788（未命中） · 输出 16,407 · 缓存命中 275,584（93.3%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0081\n[time] 阶段耗时 | 总墙钟 282.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 267.2s (94.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 14.6s (5.2%)\n[time] 审计明细 | P1 6.3s (2.4%) | P2 1.7s (0.6%) | P3 3.4s (1.3%) | P4 226.9s (84.9%) | P5 25.0s (9.4%) | P6 3.8s (1.4%)\n[usage] 任务总计 | 模型调用 18 次（Agent 16 + 一次性 2） | token 输入 20,970（未命中） | 输出 18,597 | 缓存命中 276,352（92.9%） | $0.0089\n[usage] 一次性明细 | 覆盖补漏 2 次（输入 1,182 / 输出 2,190 / 缓存 768）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\elastic__elasticsearch@4d9b96f\\audit\\20261121_163402_477.json",
+  "token_usage": {
+    "input_tokens": 20970,
+    "output_tokens": 18597,
+    "cache_read_input_tokens": 276352
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 19788,
+      "output_tokens": 16407,
+      "cache_read_input_tokens": 275584
+    },
+    "coverage_repair": {
+      "input_tokens": 1182,
+      "output_tokens": 2190,
+      "cache_read_input_tokens": 768
+    }
+  }
+}

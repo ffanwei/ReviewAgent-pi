@@ -1,0 +1,84 @@
+{
+  "instance_id": "unionlabs__union@d840723",
+  "repo": "unionlabs/union",
+  "base_commit": "efab2bedc6beb4e1bb01906cba9e0dabd3072f13",
+  "head_commit": "d840723278f1d4cecc02ac540385725a1c54ca84",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 301.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "voyager/modules/consensus/ethereum/src/main.rs",
+      "line": 167,
+      "summary": "ethereum 共识模块把秒级区块时间戳用 from_nanos 包装，与 WaitForTimestamp 的目标值单位不一致",
+      "failure_scenario": "新的 `Timestamp` 类型把单位语义写进了 API，但此处把 EVM 区块的秒级时间戳（`execution.timestamp` / `header.timestamp`）当作纳秒包装成 `Timestamp`，得到约 1.7e9 的纳秒值；而本 MR 中 client-update/ethereum 插件用 `Timestamp::from_secs` 生成同一条链上的等待目标值（约 1.7e18）。二者都是 `Timestamp` 类型，`Call::WaitForTimestamp` 中的 `chain_timestamp >= timestamp` 比较因此永远不成立，ethereum 链相关的 client update 会进入 `defer(now()+1)` 的无限等待循环，客户端永远得不到更新。同一 MR 内对同一物理量分别使用 from_nanos/from_secs，说明此处单位转换写错。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "UNIT-002"
+    },
+    {
+      "file": "voyager/modules/consensus/movement/src/main.rs",
+      "line": 165,
+      "summary": "movement(aptos) 的 block_timestamp 是微秒却被 from_nanos 包装，时间戳偏小 1000 倍",
+      "failure_scenario": "改动把 `block.inner().block_timestamp.0` 交给 `Timestamp::from_nanos` 包装，从而在类型层面声明该值是纳秒。但同仓库对同一 aptos 字段的既有用法（hubble/src/indexer/aptos/block_handle.rs:32-36 `OffsetDateTime::from_unix_timestamp_nanos(block_timestamp * 1000)`）表明它为微秒。因此返回的时间戳比真实值小 1000 倍，任何按纳秒目标值比较的 `WaitForTimestamp`（目标值由 `Timestamp::from_secs` 生成，量级 1e18）都不可能被满足，movement 链相关的客户端更新会持续重试。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "UNIT-002"
+    },
+    {
+      "file": "voyager/plugins/client-update/ethereum/src/main.rs",
+      "line": 539,
+      "summary": "改用 Timestamp::from_secs 后 NANOS_PER_SECOND 导入变为未使用",
+      "failure_scenario": "本次改动把 `... * NANOS_PER_SECOND as i64` 的换算替换为 `Timestamp::from_secs(...)`，但文件顶部第 28 行的 `use unionlabs::constants::metric::NANOS_PER_SECOND;` 未同步删除。全仓搜索确认该常量在此文件已无其它使用点，编译会产生 unused_imports 警告；若后续 CI 打开 `-D warnings` 会直接失败，也会干扰后续真正的告警信号。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAIN-001"
+    },
+    {
+      "file": "voyager/modules/consensus/cometbls/src/main.rs",
+      "line": 168,
+      "summary": "包装成 Timestamp 后残留的 try_into().expect() 是无意义的恒不失败转换",
+      "failure_scenario": "原来的 `u64 -> i64` 转换需要 `try_into().expect(\"should be fine\")`，但现在 `Timestamp::from_nanos(...)` 已经是 `Timestamp`，而 `RpcResult<Timestamp>` 的目标类型也是 `Timestamp`，该 `try_into()` 只能走 `impl<T, U> TryFrom<U> for T where U: Into<T>` 的 Infallible 分支，`expect` 永远不可能触发。它会让读者误以为存在可能失败的转换，掩盖真实的失败点。同一模式在本次改动中重复出现在 tendermint/movement/ethereum/state-movement 四处。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "READABILITY-003"
+    },
+    {
+      "file": "lib/voyager-core/src/lib.rs",
+      "line": 336,
+      "summary": "Timestamp::from_secs 中 secs * 1_000_000_000 存在整数溢出风险",
+      "failure_scenario": "from_secs 直接用 u64 秒数乘以 1_000_000_000 构造纳秒。当入参秒数超过约 18_446_744_073 秒（u64::MAX / 1e9）时，乘法会在 debug 下 panic、在 release 下静默回绕，得到一个完全错误的纳秒值，且函数返回 Self 无任何错误通道，调用方无法察觉。该构造函数是 pub，属于对外的通用时间转换入口，输入未做边界校验。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "整数乘法需防溢出：对外 API 接收无约束的 u64 并与常量相乘时应使用 checked_mul / saturating_mul 或校验上界，避免 debug panic 与 release 回绕导致的静默数据错误。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\unionlabs__union\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\unionlabs__union@d840723.diff\n  caseId              unionlabs__union@d840723\n  --issue             (未传)\n  --taskId            unionlabs__union@d840723\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 24 / not-reached 7（no-signal=7）\nreview-pi: 覆盖补漏 请求 15（失败 0）/ 覆盖 hunk 25/32 / 新候选 1 / no-issue 24 / 预算跳过 0 / 验证拒绝 5\n✓ 完成 · 耗时 297.4s · 模型调用 15 次 · token 输入 14,200（未命中） · 输出 18,812 · 缓存命中 329,344（95.9%） · 工具 24 次（主会话 24 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0082\n[time] 阶段耗时 | 总墙钟 298.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.3%)\n[time] 阶段 | 六阶段审计 113.0s (37.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 184.4s (61.8%)\n[time] 审计明细 | P1 9.4s (8.3%) | P2 2.4s (2.2%) | P3 6.9s (6.1%) | P4 71.9s (63.6%) | P5 12.8s (11.4%) | P6 9.6s (8.5%)\n[usage] 任务总计 | 模型调用 36 次（Agent 15 + 一次性 21） | token 输入 29,176（未命中） | 输出 49,348 | 缓存命中 335,872（92.0%） | $0.0188\n[usage] 一次性明细 | 覆盖补漏 21 次（输入 14,976 / 输出 30,536 / 缓存 6,528）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\unionlabs__union@d840723\\audit\\20261121_155100_904.json",
+  "token_usage": {
+    "input_tokens": 29176,
+    "output_tokens": 49348,
+    "cache_read_input_tokens": 335872
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 14200,
+      "output_tokens": 18812,
+      "cache_read_input_tokens": 329344
+    },
+    "coverage_repair": {
+      "input_tokens": 14976,
+      "output_tokens": 30536,
+      "cache_read_input_tokens": 6528
+    }
+  }
+}

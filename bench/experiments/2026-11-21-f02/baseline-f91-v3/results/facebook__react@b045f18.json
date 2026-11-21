@@ -1,0 +1,54 @@
+{
+  "instance_id": "facebook__react@b045f18",
+  "repo": "facebook/react",
+  "base_commit": "99563e91736e9de473c4865d5cb6fd9eb1a26bcb",
+  "head_commit": "b045f18e378341876ee69e729fc855cab501c3cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 486.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+      "line": 631,
+      "summary": "DevTools 用编译期常量比较 Activity tag，新增的按版本 tag 映射条目全部失效",
+      "failure_scenario": "renderer.js 的设计前提是：DevTools 后端只构建一次、却注入到运行 16.4.3~19 canary 各种 React 版本的页面里，因此所有 tag 都必须取自 getInternalReactConstants 按 version 算出的 ReactTypeOfWork，并用 -1 表示“该版本没有这个 tag”。本次新增的两个 case 直接使用 149 行从 react-reconciler/src/ReactWorkTags 静态导入的常量 31，而 554-581 行从 ReactTypeOfWork 解构出的常量列表中并没有 ActivityComponent，于是 631 行 getDisplayNameForFiber 与 1491 行 shouldFilterFiber 比较的是构建期常量而不是当前页面 React 版本的真实 tag 号；本 MR 在 19.x 分支（386-389 行）和四个旧版本分支新增的 `ActivityComponent: 31 / -1` 条目因此从未被读取，成了死代码。失败场景：该文件已经记录了 tag 号会随版本变动（`YieldComponent: -1, // Removed`、`Throw: 29`、`ViewTransitionComponent: 30`）。一旦页面 React 版本里 31 不是 Activity（Activity 被重编号，或 31 被别的 tag 占用），DevTools 会把那个 fiber 显示成 'Activity'，更严重的是 shouldFilterFiber 返回 true 把它从组件树里静默过滤掉，用户看到节点凭空消失；反之真正的 Activity fiber 在该版本也不会被识别。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "VERSION-COMPAT-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+      "line": 891,
+      "summary": "把 Activity 的 ref 搬到 Offscreen 子 fiber 后 ref 永远不会被赋值，反而会在 commit 阶段被 detach",
+      "failure_scenario": "updateActivityComponent 在 891 行（挂载）与 904 行（更新）把 Activity fiber 的 ref 复制到承载子节点的 Offscreen fiber 上，看起来是要让 `<Activity ref={...}>` 的 ref 生效。但 Offscreen 的 commit 逻辑（ReactFiberCommitWork.js:751-758）只在 `memoizedProps.mode === 'manual'` 时 safelyAttachRef，其它 mode 一律 safelyDetachRef；而 Activity 的 mode（'visible' / 'hidden'）在 880-883 行被原样透传成 Offscreen 子 fiber 的 props.mode，因此必然落进 detach 分支：对象 ref 被置 `ref.current = null`，函数 ref 被以 `null` 调用一次（ReactFiberCommitEffects.js:981-1007），却从未收到实例。Activity fiber 自身也没有 markRef，commitLayoutEffectOnFiber 的 default 分支（ReactFiberCommitWork.js:775-782）不处理 Ref，无兜底 attach。失败场景：`const r = React.createRef(); <Activity mode=\"visible\" ref={r}>x</Activity>` 渲染后 `r.current` 恒为 null；使用函数 ref 时用户会在挂载阶段收到一次 `ref(null)` 并被登记为 refCleanup，之后再也拿不到实例，形成“只 detach 不 attach”的半截 ref 生命周期。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-REF-002"
+    }
+  ],
+  "stderr_tail": "\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\facebook__react\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\facebook__react@b045f18.diff\n  caseId              facebook__react@b045f18\n  --issue             (未传)\n  --taskId            facebook__react@b045f18\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 20 / not-reached 7（no-signal=7）\nreview-pi: 覆盖补漏 请求 12（失败 0）/ 覆盖 hunk 20/27 / 新候选 0 / no-issue 20 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 484.5s · 模型调用 30 次 · token 输入 30,426（未命中） · 输出 47,581 · 缓存命中 1,380,480（97.8%） · 工具 43 次（主会话 43 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0214\nreview-pi: [r1 phase6] 裁决解析失败（truncated），本轮 0 裁决；详见审计 phaseLog\n[time] 阶段耗时 | 总墙钟 485.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.2%)\n[time] 阶段 | 六阶段审计 278.2s (57.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 206.5s (42.5%)\n[time] 审计明细 | P1 30.9s (11.1%) | P2 2.1s (0.8%) | P3 6.9s (2.5%) | P4 189.3s (68.1%) | P5 14.9s (5.4%) | P6 3.3s (1.2%) | R2P1 2.5s (0.9%) | R2P2 1.6s (0.6%) | R2P3 3.4s (1.2%) | R2P4 11.2s (4.0%) | R2P5 8.2s (3.0%) | R2P6 3.5s (1.3%)\n[usage] 任务总计 | 模型调用 43 次（Agent 30 + 一次性 13） | token 输入 34,474（未命中） | 输出 82,994 | 缓存命中 1,388,283（97.6%） | $0.0320\n[usage] 一次性明细 | 覆盖补漏 13 次（输入 4,048 / 输出 35,413 / 缓存 7,803）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\facebook__react@b045f18\\audit\\20261121_161917_905.json",
+  "token_usage": {
+    "input_tokens": 34474,
+    "output_tokens": 82994,
+    "cache_read_input_tokens": 1388283
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 30426,
+      "output_tokens": 47581,
+      "cache_read_input_tokens": 1380480
+    },
+    "coverage_repair": {
+      "input_tokens": 4048,
+      "output_tokens": 35413,
+      "cache_read_input_tokens": 7803
+    }
+  }
+}

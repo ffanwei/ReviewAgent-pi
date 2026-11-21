@@ -1,0 +1,94 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 175.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "root.OpenFile(O_CREATE) 会拒绝带子目录的合法相对路径，并误报为“file path must be relative”",
+      "failure_scenario": "os.Root.OpenFile 与 os.OpenFile 语义相同：O_CREATE 只创建末级文件，不会创建缺失的中间目录。因此 files 中任何形如 \"dir/model.safetensors\"、\"a//b\"、\"a/b/\"（Clean 后仍含子目录）的 key 都会因父目录不存在返回 ENOENT，被第 279 行无差别包装成 errFilePath，最终以 400 \"file path must be relative\" 拒绝一个本身合法的相对路径。而新加的 validRelative 明确把 \"dir/file.txt\"、\"a//b\"、\"a/b/\" 视为合法（create_test.go 的 validPaths），原有的 createLink 也会用 os.MkdirAll 主动创建子目录，说明子目录路径此前是受支持路径；现在两层校验的合法集合出现分叉，第三方 API 客户端按目录结构提交 safetensors 时会被误拒，且错误文案完全误导（真实原因是目录不存在）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-PATH-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 52,
+      "summary": "CreateHandler 的 validRelative 收紧过度，与 convertFromSafetensors 的接受集合矛盾并拒绝既有可用请求",
+      "failure_scenario": "validRelative 不仅拒绝真正越界的 \"../x\"，还拒绝 \"a/./b\"、\"a/../b\"、\"./x\" 这类在临时根内完全无害的规范路径（第 172-174、182-185 行）。但同一 MR 中 convertFromSafetensors 依赖 filepath.Clean + os.Root，其测试明确断言 \"./model.safetensors\" 与 \"nested/../model.safetensors\" 是合法输入（create_test.go:94-101、105-110）。结果是：同一个 key 传给 convertFromSafetensors 成功，经 /api/create 则被 400 拒绝；而这两类路径此前是被接受的（Clean 后落到根内），直接调用 HTTP API 的客户端（如 Python/JS 客户端按目录遍历生成 key）会从可用变为报错。两层校验语义不一致本身也让调用方无法预期契约。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "CONTRACT-PATH-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "filepath.Clean 归一化后 map key 可能冲突并静默丢弃文件",
+      "failure_scenario": "第 56 行用 Clean 后的路径作为新 map 的 key，但 validRelative 同时放行 \"a/b\" 与 \"a//b\"、\"a/b/\" 等等价写法。若请求里同时出现两个不同 digest 的等价 key，后写入者会覆盖前者，被覆盖的层不会出现在最终模型里，也不产生任何错误提示，用户会拿到一个静默缺层的模型。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-MAP-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 167,
+      "summary": "validRelative 只识别 '/' 分隔符，Windows 绝对路径与反斜杠穿越可通过校验",
+      "failure_scenario": "validRelative 的全部判断都基于 \"/\"：HasPrefix \"/\"、\"/../\"、\"/./\"。在 Windows 上 \"C:\\\\Users\\\\x\\\\model.safetensors\"、\"\\\\\\\\server\\\\share\\\\x\" 以及 \"..\\\\..\\\\evil.txt\" 都不会命中任何分支，函数返回 nil，与函数注释声称的「拒绝任何绝对路径指示符和目录穿越组件」不符。虽然 convertFromSafetensors 里 os.Root 会兜底拦截，但该校验函数被当作通用防线（CreateHandler 直接用它返回 400），一旦后续有分支把 key 直接用于文件系统操作（GGUF 分支当前不使用 key，属于巧合而非保证），就会出现平台相关的绕行；测试也只覆盖 '/' 形式。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "PORTABILITY-PATH-004"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "adapter 分支新增 errFilePath 白名单，但 base 模型分支与 r.Adapters 的校验未同步",
+      "failure_scenario": "本次在 adapter 的错误白名单里加入 errFilePath，却没有同步 base 模型分支第 100 行的白名单，也没有在 CreateHandler 对 r.Adapters 做 validRelative 校验。结果同一类路径错误在两条分支上表现不同：base 模型路径由 safetensors 校验抛出的 errFilePath 走第 106 行 gin.H{\"error\": ...}（无 status），adapter 路径走 400 chunk；而 adapter 的 key 完全绕过 create.go:50-58 的前置校验，只能依赖 convertFromSafetensors 内部的 os.Root 兜底。这让 /api/create 的错误契约随 from/files/adapters 组合变化，后续若新增使用 key 作为路径的分支（如 GGUF 相关处理）容易留下未校验入口。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-ERROR-005"
+    },
+    {
+      "file": "server/create_test.go",
+      "line": 18,
+      "summary": "测试未强制隔离 OLLAMA_MODELS，环境变量已设置时会写入真实模型目录",
+      "failure_scenario": "第 18 行 `t.Setenv(\"OLLAMA_MODELS\", cmp.Or(os.Getenv(\"OLLAMA_MODELS\"), t.TempDir()))` 中 cmp.Or 会优先取外部已有的 OLLAMA_MODELS，只有在其为空时才使用 t.TempDir()。这与第 17 行注释 “Store test data in the temp directory” 的意图相反：当开发者或 CI 环境已导出 OLLAMA_MODELS 时，第 22 行 `NewLayer(...)` 生成的 blob（以及后续 convertFromSafetensors 产生的模型文件）会写入真实的模型目录，造成测试非隔离、可能污染用户真实模型库，并使测试结果依赖该目录中已存在的内容（缓存/残留可能掩盖或改变行为）。测试应无条件使用临时目录。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "测试应保持环境隔离，不得因外部环境变量而写入真实/持久化目录"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 2 / not-reached 0\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 3/3 / 新候选 1 / no-issue 2 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 174.3s · 模型调用 26 次 · token 输入 20,902（未命中） · 输出 20,916 · 缓存命中 514,688（96.1%） · 工具 35 次（主会话 35 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0102\n[time] 阶段耗时 | 总墙钟 175.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 129.5s (73.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 44.9s (25.6%)\n[time] 审计明细 | P1 4.8s (3.7%) | P2 2.3s (1.8%) | P3 4.1s (3.2%) | P4 75.0s (58.0%) | P5 24.8s (19.2%) | P6 18.4s (14.2%)\n[usage] 任务总计 | 模型调用 29 次（Agent 26 + 一次性 3） | token 输入 26,418（未命中） | 输出 29,906 | 缓存命中 515,584（95.1%） | $0.0135\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 5,516 / 输出 8,990 / 缓存 896）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261121_161159_223.json",
+  "token_usage": {
+    "input_tokens": 26418,
+    "output_tokens": 29906,
+    "cache_read_input_tokens": 515584
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 20902,
+      "output_tokens": 20916,
+      "cache_read_input_tokens": 514688
+    },
+    "coverage_repair": {
+      "input_tokens": 5516,
+      "output_tokens": 8990,
+      "cache_read_input_tokens": 896
+    }
+  }
+}

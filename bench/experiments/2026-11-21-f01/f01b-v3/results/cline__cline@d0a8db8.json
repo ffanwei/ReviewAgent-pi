@@ -1,0 +1,104 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 188.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 32,
+      "summary": "批量写入 helper 用 Record<string, any> 抹掉了存储键的编译期校验",
+      "failure_scenario": "新增的 updateGlobalStateBatch 参数为 Record<string, any>，内部再以 key as GlobalStateKey 强转；updateSecretsBatch 同理用 Record<string, string | undefined> + key as SecretKey。这使调用点 state.ts:539-620 拼装的对象完全脱离 GlobalStateKey / SecretKey 联合类型的约束：一方面对象全部使用 ES6 简写属性名，把持久化键名隐式绑定到本地变量名上，任何人重命名解构变量（例如把解构出的 apiModelId 改名为 modelId）都会静默改变实际写入的存储键名；另一方面后续新增字段时若把 secret 字段误放进 batchedGlobalUpdates（或反之），编译器不会报错，敏感值会被写入 globalState（明文 settings.json）而非 SecretStorage。原先 47 次 updateGlobalState(context, \"apiProvider\", apiProvider) 的第二个参数是字面量，键名错误在编译期即可发现，这是本次变更引入的类型安全回退。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "TYPE-SAFETY-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 623,
+      "summary": "并发批量写入使失败时持久化状态变成不确定子集，且写入在函数返回后仍可能继续落地",
+      "failure_scenario": "原实现是 47 次串行 await：任何一次写入抛错时，已写内容是一个确定的前缀，函数立即停止，不会再有后续写入。改为 Promise.all([updateGlobalStateBatch(...), updateSecretsBatch(...)]) 后，约 53 次 globalState 写与 24 次 secrets 写（store 或 delete，见 storeSecret 的 falsy 分支）全部同时发起，且 globalState 与 SecretStorage 之间不再有任何顺序保证。具体失败场景：切换到 Bedrock provider 时某一次 context.secrets.store 因系统密钥串异常而 reject，Promise.all 立刻以第一个错误返回，但其余几十个写入已在进行中并在 updateApiConfiguration 返回后才陆续落盘；调用方 updateApiConfigurationProto 的 catch 记录日志后直接 rethrow，因此 controller.task.api = buildApiHandler(...) 与 controller.postStateToWebview() 都被跳过（updateApiConfigurationProto.ts:40-51），最终磁盘上是新旧混合的配置（例如新的 apiProvider 已持久化、部分密钥仍是旧值），而内存中的 handler 与 webview 仍是旧配置，用户看到“保存失败”但重启后又变成半新半旧的状态，难以排查。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 80,
+      "summary": "getAllExtensionState 这条高频路径被塞入 8 条 [PERF] console.log，每次状态推送都会刷屏",
+      "failure_scenario": "getAllExtensionState 被 25 处引用，其中 src/core/controller/index.ts:835 位于 getStateToPostToWebview，而 postStateToWebview() 在 src/** 有 40+ 调用点（含 src/core/task/index.ts:793/853 等任务执行过程中的状态推送）。本次在函数首尾与每个阶段插入 startTime/firstBatchStart/firstBatchEnd/workspaceStart/workspaceEnd/secondBatchStart/secondBatchEnd/processingStart/processingEnd/totalTime 共 8 条 console.log，意味着任务运行期间每推送一次状态就产生 8 行日志与相应字符串插值。此外日志文案把读取条数写死为“First batch (66 state reads)”“Second batch (30 state reads)”，后续增删字段即失效。在一个以“提升性能”为目标的 MR 中把调试埋点留在最热的读取路径上，与目标相悖，也让真正的告警淹没在噪声里。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.65,
+      "rule": "PERF-003"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 626,
+      "summary": "完成日志写死了“was ~535ms, now should be <50ms”这类未经测量的断言",
+      "failure_scenario": "updateApiConfiguration 结尾输出的日志把优化前的基线（~535ms）和优化后的预期（<50ms）硬编码进文案。该数字来自单次本地测量，既没有 benchmark 支撑，也不会随机器、provider 数量或 VSCode 版本变化，而 updateApiConfiguration 的实现已不存在“535ms”这一基线可对照。后续任何人看到这条日志都会把 50ms 当作验收标准，一旦某台机器打印出 120ms 就会误判为回归；同时这类绝对化断言也掩盖了本次改动主要是把写入并发化、底层 I/O 是否真的并行并无测量证据这一事实。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-004"
+    },
+    {
+      "file": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+      "line": 22,
+      "summary": "handleFieldChange 每次字段变更都打印“Starting provider switch”，输入框逐字符触发",
+      "failure_scenario": "handleFieldChange 在 webview-ui 设置页有 40+ 处 onChange 调用点，其中多处是输入框的 onChange（如 AnthropicProvider.tsx 的 apiKey/anthropicBaseUrl、BedrockProvider.tsx 的 awsProfile/awsAccessKey），每敲一个字符就会触发一次，并已经伴随一次 updateApiConfigurationProto 请求。本次在函数入口新增 console.log(`[PERF] Frontend: Starting provider switch for field ${field}`)，在 .then/.catch 中再各加一条，于是逐字符输入会在 webview DevTools 里产生成对的“Starting provider switch for field apiKey / Provider switch completed in Xms”日志，而这类字段变更并不是 provider 切换（真正切换是 apiProvider 字段），日志语义与实际行为不符，会干扰定位真正的 provider 切换耗时。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.55,
+      "rule": "PERF-005"
+    },
+    {
+      "file": "webview-ui/src/components/history/HistoryPreview.tsx",
+      "line": 68,
+      "summary": "历史卡片新增 backdrop-filter 与其 hover 缩放动画叠加，且与本 MR 主题无关",
+      "failure_scenario": "HistoryPreview 的任务卡片本身已有半透明 backgroundColor、border、overflow-hidden、absolute inset-0 的渐变覆盖层，以及 hover:scale-[1.02] + transition-all 的缩放过渡。本次给卡片补上 backdropFilter: \"blur(8px)\"，等于让每个卡片在鼠标移入缩放动画的每一帧都重新采样并模糊背后的 webview 内容，为每张卡片额外创建合成层；在 remote / Web 版 VS Code 或 GPU 合成被禁用的环境中 backdrop-filter 不受支持，卡片会退化为纯半透明色块直接透出背景，与原设计意图不一致。这段样式改动与“provider 切换性能优化”这一 MR 主题无关，属未声明的范围蔓延，评审与回滚成本增加。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "PORTABILITY-006"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 461,
+      "summary": "updateApiConfiguration 入口无条件输出 PERF 日志，污染扩展日志",
+      "failure_scenario": "updateApiConfiguration 每次被调用都会直接执行 console.log(\"[PERF] updateApiConfiguration: Starting OPTIMIZED storage updates\")，该日志未受调试开关或环境判断控制，会在生产环境持续污染扩展输出；它与此前已报的 getAllExtensionState 日志刷屏属于不同函数路径，不是重复问题。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.66,
+      "rule": "生产代码中的性能调试日志应受显式调试开关控制，或直接移除，避免在正常调用路径中无条件输出。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 6 / no-issue 5 / not-reached 3（no-signal=3）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 6/9 / 新候选 1 / no-issue 5 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 185.0s · 模型调用 12 次 · token 输入 16,461（未命中） · 输出 22,058 · 缓存命中 259,456（94.0%） · 工具 16 次（主会话 16 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0092\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 186.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.6%)\n[time] 阶段 | 六阶段审计 123.5s (66.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 61.6s (33.1%)\n[time] 审计明细 | P1 5.0s (4.1%) | P2 2.8s (2.2%) | P3 6.9s (5.6%) | P4 53.5s (43.4%) | P5 48.1s (39.0%) | P6 7.1s (5.8%)\n[usage] 任务总计 | 模型调用 18 次（Agent 12 + 一次性 6） | token 输入 20,308（未命中） | 输出 31,889 | 缓存命中 262,272（92.8%） | $0.0125\n[usage] 一次性明细 | 覆盖补漏 6 次（输入 3,847 / 输出 9,831 / 缓存 2,816）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v3-c10-20261121\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261121_151849_455.json",
+  "token_usage": {
+    "input_tokens": 20308,
+    "output_tokens": 31889,
+    "cache_read_input_tokens": 262272
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 16461,
+      "output_tokens": 22058,
+      "cache_read_input_tokens": 259456
+    },
+    "coverage_repair": {
+      "input_tokens": 3847,
+      "output_tokens": 9831,
+      "cache_read_input_tokens": 2816
+    }
+  }
+}

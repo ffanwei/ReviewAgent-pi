@@ -1,0 +1,54 @@
+{
+  "instance_id": "elastic__elasticsearch@dc8943f",
+  "repo": "elastic/elasticsearch",
+  "base_commit": "3c264cff967750ff7cb581defa42b0d69bb31fc6",
+  "head_commit": "dc8943ff2d735c9cd71adef644378ca2850db34f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 198.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "server/src/main/java/org/elasticsearch/index/codec/vectors/DefaultIVFVectorsReader.java",
+      "line": 197,
+      "summary": "层级 centroid 缓冲上限由固定 20% 放宽为可等于全部 centroid，visitRatio≥0.125 时每次查询退化为全量 centroid 打分",
+      "failure_scenario": "新公式 bufferSize = min(max(visitRatio * numCentroids * 8, 1), numCentroids) 的上界是 numCentroids，而旧实现固定为 numCentroids * 0.2。当 visitRatio ≥ 1/8 时（例如用户通过 index_options.default_visit_percentage 设置 12.5%~100%，该值被校验为 0.0~100.0 并原样除以 100 传入），bufferSize 直接等于 numCentroids，第 216-236 行的填充循环 `while (parentsQueue.size() > 0 && neighborQueue.size() < bufferSize)` 会展开全部父节点并对全部子 centroid 打分后才结束，层级剪枝完全失效：以 1M 向量/段（约 2604 个 centroid、默认 16 子/父）为例，旧实现只需为约 520 个子 centroid 与约 33 个父 centroid 打分，新实现则要为 2604 个子 centroid 与 163 个父 centroid 打分，单查询 centroid 打分开销放大约 5 倍；同时 NeighborQueue/LongHeap 以 numCentroids 为初始容量分配 long 数组（约 8*numCentroids 字节，每查询分配），内存占用也从 20% 放大到 100%。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.58,
+      "rule": "PERF-002"
+    },
+    {
+      "file": "server/src/main/java/org/elasticsearch/index/codec/vectors/DefaultIVFVectorsReader.java",
+      "line": 197,
+      "summary": "动态启发式下层级 centroid 缓冲可能小到个位数，缓冲耗尽后候选顺序退化为按父节点顺序，过滤查询召回下降",
+      "failure_scenario": "动态分支的 visitRatio = round(log10(numVectors)^2 * k) / numVectors 是「向量比例」，把它乘 numCentroids * 8 得到的 bufferSize 在向量数较大时会远小于旧实现固定的 20%：以 1M 向量/段、k=10 为例，visitRatio≈0.00036，numCentroids≈2604，bufferSize≈7，而旧实现为 520。IVFVectorsReader.search 的过滤分支（acceptDocs != null 时 `while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < k))`）以及 minCompetitiveSimilarity 为 NEGATIVE_INFINITY 时的主循环，都可能消费远超 bufferSize 个 posting list；而迭代器在缓冲耗尽后，由 updateQueue() 先取 currentParentQueue（同一父节点的剩余子 centroid）再展开下一个父节点，本质上退化为按父节点分数顺序的 DFS，而不是按 centroid 分数全局最优。缓冲从 520 缩到 7 后，「前若干名之外」的候选质量明显变差，低选择率过滤查询与 max-score 类收集器场景的召回会下降，且下降幅度随 bufferSize 变小（大段、小 k）而放大。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RECALL-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\elastic__elasticsearch\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\elastic__elasticsearch@dc8943f.diff\n  caseId              elastic__elasticsearch@dc8943f\n  --issue             (未传)\n  --taskId            elastic__elasticsearch@dc8943f\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 4 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 4/5 / 新候选 0 / no-issue 4 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 191.3s · 模型调用 18 次 · token 输入 20,250（未命中） · 输出 21,875 · 缓存命中 345,472（94.5%） · 工具 19 次（主会话 19 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0099\n[time] 阶段耗时 | 总墙钟 192.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 160.3s (83.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 31.1s (16.2%)\n[time] 审计明细 | P1 21.8s (13.6%) | P2 2.9s (1.8%) | P3 5.2s (3.3%) | P4 94.7s (59.1%) | P5 31.2s (19.5%) | P6 4.5s (2.8%)\n[usage] 任务总计 | 模型调用 21 次（Agent 18 + 一次性 3） | token 输入 22,859（未命中） | 输出 26,877 | 缓存命中 346,368（93.8%） | $0.0117\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 2,609 / 输出 5,002 / 缓存 896）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\elastic__elasticsearch@dc8943f\\audit\\20261121_163043_761.json",
+  "token_usage": {
+    "input_tokens": 22859,
+    "output_tokens": 26877,
+    "cache_read_input_tokens": 346368
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 20250,
+      "output_tokens": 21875,
+      "cache_read_input_tokens": 345472
+    },
+    "coverage_repair": {
+      "input_tokens": 2609,
+      "output_tokens": 5002,
+      "cache_read_input_tokens": 896
+    }
+  }
+}

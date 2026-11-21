@@ -1,0 +1,84 @@
+{
+  "instance_id": "infiniflow__ragflow@f189316",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "8362ab405c35d260dd2328dc207aefcf30778f66",
+  "head_commit": "f189316eae1c199a5891f7a8bc47d53bb1b5c818",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 180.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 580,
+      "summary": "remove 为字符串时未从 newValue 中移除 \"remove\" 键，最终被当作列名写入 Infinity",
+      "failure_scenario": "新的 remove 分支只在 `else`（v 为 dict）里执行 `del newValue[k]`，字符串分支把默认值写回 `newValue[v]` 后没有删除原来的 `\"remove\"` 键。循环结束后仍会执行 `table_instance.update(filter, newValue)`，此时 newValue 里同时包含 `pagerank_fea` 和 `remove` 两个键，Infinity 会把 `remove` 当成表列去更新，导致更新语句执行失败（列不存在）。该路径对应“把知识库 pagerank 关闭并重置”的操作，用户侧会看到接口报错，且 pagerank 不会被重置。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 577,
+      "summary": "`ty.lower().find(\"cha\")` 判断被写反，非字符列会把默认值改成空字符串",
+      "failure_scenario": "`str.find` 返回的是下标：类型名以 `cha` 开头时返回 0（假），不含 `cha` 时返回 -1（真）。因此 `if ty.lower().find(\"cha\"):` 的真实分支与注释意图完全相反——integer/float 列会进入该分支并把 falsy 的默认值替换成 `\"\"`，而 varchar 列反而不会把 None 默认值兜底成 `\"\"`。以 `conf/infinity_mapping.json` 的 `pagerank_fea`（integer，default 0）为例，重置 pagerank 时会构造出 `newValue[\"pagerank_fea\"] = \"\"`，向整数列写入空字符串，更新报错或写入非法值；varchar 列默认值为 None 时则会把 None 写回表。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 78,
+      "summary": "keyword 字段条件由精确 IN/等值改为 filter_fulltext，删除/更新命中范围被放大",
+      "failure_scenario": "新分支把 `source_id` 及所有 `*_kwd`（除 docnm_kwd、knowledge_graph_kwd）字段的条件从 `k IN (...)` / `k='v'` 改为 `filter_fulltext('k', 'v')` 的 or 组合。`filter_fulltext` 是全文索引匹配（按 analyzer 分词后命中即真），而 `conf/infinity_mapping.json` 中这些列使用 `whitespace-#` 分词，因此多词取值会退化成“任一分词命中即匹配”。`equivalent_condition_to_str` 同时被 `search`(343)、`update`(554)、`delete`(624) 复用，过滤条件会直接决定被删除/被改写的行集合。典型失败场景：`set_graph` 删除被合并节点时以 `{\"entity_kwd\": sorted(change.removed_nodes)}` 为条件（graphrag/utils.py:436），删除实体 “Apple” 会因分词命中而同时匹配到实体 “Apple Inc” 的文档，造成图谱中无关实体被删；relation 的 from/to 条件（graphrag/utils.py:441）同理。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "DATA-CONSISTENCY-001"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 578,
+      "summary": "entity_kwd 为空列表时 `[0]` 抛 IndexError，使整个图谱重建失败",
+      "failure_scenario": "`getFields` 对 keyword 列的分词处理是 `[kwd for kwd in v.split(\"###\") if kwd]`（infinity_conn.py:662），当列值为空字符串时返回空列表。新代码仅判断 `isinstance(..., list)` 就直接取 `[0]`，空列表会抛 IndexError；relation 分支的 `from_entity_kwd` / `to_entity_kwd`（597-598 行）同理。旧实现直接把原值作为 key（空串也会被当作一个节点），不会中断；现在异常会冒出 `rebuild_graph`，被 `get_graph` 调用方 `merge_subgraph`（graphrag/general/index.py:207）直接抛出，导致该知识库的图谱合并/查询整体失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.42,
+      "rule": "CORRECTNESS-005"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 591,
+      "summary": "remove 分支把命中行整表拉入 DataFrame 并按值分组逐条 update，存在全表物化与 N 次往返",
+      "failure_scenario": "新的 remove 实现先 `table_instance.output(col_to_remove + ['id']).filter(filter).to_df()`，把条件命中的所有行（条件里 `kb_id` 会被 `equivalent_condition_to_str` 跳过，只剩 keyword 全文条件，命中面通常是整库分块）完整物化成 pandas DataFrame，再按 `(列, 新列表值)` 分组，对每组单独发一条 `table_instance.update(...)`。标签数量多、分块多时，会同时出现内存放大与“分组数 = RTT 数”的串行更新，删除/重命名标签接口耗时随数据量线性甚至更差增长；同时每次 update 还额外执行一次 `show_columns()` 元数据查询（552 行）。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "PERFORMANCE-006"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\infiniflow__ragflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\infiniflow__ragflow@f189316.diff\n  caseId              infiniflow__ragflow@f189316\n  --issue             (未传)\n  --taskId            infiniflow__ragflow@f189316\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 4 / not-reached 3（no-signal=3）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 4/7 / 新候选 0 / no-issue 4 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 178.3s · 模型调用 14 次 · token 输入 21,426（未命中） · 输出 20,915 · 缓存命中 256,256（92.3%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0096\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 179.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.5%)\n[time] 阶段 | 六阶段审计 142.1s (79.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 36.3s (20.3%)\n[time] 审计明细 | P1 7.7s (5.4%) | P2 3.7s (2.6%) | P3 4.4s (3.1%) | P4 66.2s (46.6%) | P5 47.7s (33.6%) | P6 12.4s (8.7%)\n[usage] 任务总计 | 模型调用 17 次（Agent 14 + 一次性 3） | token 输入 25,140（未命中） | 输出 27,378 | 缓存命中 257,152（91.1%） | $0.0119\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 3,714 / 输出 6,463 / 缓存 896）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\infiniflow__ragflow@f189316\\audit\\20261121_155435_358.json",
+  "token_usage": {
+    "input_tokens": 25140,
+    "output_tokens": 27378,
+    "cache_read_input_tokens": 257152
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 21426,
+      "output_tokens": 20915,
+      "cache_read_input_tokens": 256256
+    },
+    "coverage_repair": {
+      "input_tokens": 3714,
+      "output_tokens": 6463,
+      "cache_read_input_tokens": 896
+    }
+  }
+}

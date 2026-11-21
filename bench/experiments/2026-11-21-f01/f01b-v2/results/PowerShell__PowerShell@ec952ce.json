@@ -1,0 +1,64 @@
+{
+  "instance_id": "PowerShell__PowerShell@ec952ce",
+  "repo": "PowerShell/PowerShell",
+  "base_commit": "2259f56c0786574cbde8624d031e778028352372",
+  "head_commit": "ec952ce3b70c87885ed756ffca2bec128f07c51b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 199.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs",
+      "line": 478,
+      "summary": "嵌套模块过滤使用默认引用相等比较，过滤可能静默失效",
+      "failure_scenario": "新增的过滤集合通过 `new(curModule.NestedModules)` 构造且未指定 IEqualityComparer，而 PSModuleInfo 本身没有覆写 Equals/GetHashCode（仓库中为此专门提供了 internal PSModuleInfoComparer，RemoveModuleCommand 构造 HashSet<PSModuleInfo> 时即显式传入）。因此 nestedModulesToFilterOut.Contains(moduleInfo) 实际是引用相等判断：只有当 Get-Module 返回的对象与 EngineSessionState.Module.NestedModules 中的对象是同一个实例时才会被过滤。一旦实例不同（例如完成命令枚举到的模块表条目与 SessionState.Module 持有的嵌套模块条目来自不同来源或副本，PSModuleInfo.cs:1454 的 clone 也会带上一份嵌套模块副本），过滤就退化为恒为 false 的判断，本次要修的“补全结果中出现 PSReadLine 嵌套模块”问题会无声复现，且没有任何日志或断言提示。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-EQUALITY-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs",
+      "line": 496,
+      "summary": "过滤范围覆盖运行期导入的模块，会把合法已加载模块从补全中剔除",
+      "failure_scenario": "PSModuleInfo.NestedModules 的语义比新增注释描述的“清单声明的嵌套模块”宽得多：ModuleCmdletBase.AddModuleToModuleTables 每次加载模块都会执行 targetSessionState.Module?.AddNestedModule(module)，ImportModuleMembers 也会把被导入模块加入当前模块的 NestedModules。因此当 EngineSessionState.Module 非空时（交互式下通常是 PSReadLine 的 SessionState，用户模块/脚本块内触发补全时则是该模块），过滤会连带把这些“运行期导入”的模块一并从 loadedModulesOnly 的补全结果中剔除。失败场景：会话状态所属模块内执行过 `Import-Module InternalHelper`（或 PSReadLine 自身导入过某模块）后，用户在该上下文用 `Get-Module In<Tab>` / `Remove-Module In<Tab>` 补全时，Get-Module 实际返回的 InternalHelper 不再出现在候选中；CompleteModule 的第二遍 -ListAvailable 只按 ToolTip 去重，对不在 PSModulePath 上的模块无法补回，导致补全结果与命令实际可接受的模块名不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.38,
+      "rule": "BEHAVIOR-OVERFILTER-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/CommandCompletion/CompletionCompleters.cs",
+      "line": 476,
+      "summary": "嵌套模块过滤只覆盖一层，多级嵌套仍会漏出",
+      "failure_scenario": "过滤集合直接取 curModule.NestedModules，而 NestedModules 只是当前模块的直接子模块列表；嵌套模块自身若还声明了子模块（例如清单 A 的 NestedModules 指向清单 B，B 再嵌套 C），C 只出现在 B.NestedModules 中，不会被放入 A 的集合。此时 Get-Module 仍会把 C 作为已加载模块返回并进入补全结果，因此本次修复对多级嵌套场景不完整，用户仍会看到预期应被过滤的噪音项。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.3,
+      "rule": "BEHAVIOR-NESTED-LEVEL-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\PowerShell__PowerShell\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\diff\\PowerShell__PowerShell@ec952ce.diff\n  caseId              PowerShell__PowerShell@ec952ce\n  --issue             (未传)\n  --taskId            PowerShell__PowerShell@ec952ce\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 186.0s · 模型调用 30 次 · token 输入 28,171（未命中） · 输出 29,854 · 缓存命中 705,408（96.2%） · 工具 38 次（主会话 38 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0143\nreview-pi: 置信度过滤丢弃 3 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 198.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 12.0s (6.0%)\n[time] 阶段 | 六阶段审计 185.9s (93.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.5s (0.2%)\n[time] 审计明细 | P1 26.8s (14.4%) | P2 1.8s (1.0%) | P3 4.0s (2.1%) | P4 98.8s (53.2%) | P5 50.1s (27.0%) | P6 4.2s (2.3%)\n[usage] 任务总计 | 模型调用 31 次（Agent 30 + 一次性 1） | token 输入 30,268（未命中） | 输出 36,052 | 缓存命中 705,408（95.9%） | $0.0163\n[usage] 一次性明细 | 解析修复 1 次（输入 2,097 / 输出 6,198 / 缓存 0）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterB10\\reviewpi\\f01b-v2-c10-20261121\\.reviewpi\\tasks\\PowerShell__PowerShell@ec952ce\\audit\\20261121_144752_469.json",
+  "token_usage": {
+    "input_tokens": 28171,
+    "output_tokens": 29854,
+    "cache_read_input_tokens": 705408
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 28171,
+      "output_tokens": 29854,
+      "cache_read_input_tokens": 705408
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

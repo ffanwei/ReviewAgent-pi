@@ -1,0 +1,84 @@
+{
+  "instance_id": "gofr-dev__gofr@5e284ae",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "de79ab765d0d34d78a42ebdd50a21a6f26841b7f",
+  "head_commit": "5e284aec0447be34c96a252e959067c8bcd9cd4c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 270.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 73,
+      "summary": "请求内直接改写共享的 container.Logger，造成数据竞争与 logger 永久泄漏",
+      "failure_scenario": "ServeHTTP 在每次请求时把共享的 h.container.Logger 替换为请求作用域的 ContextLogger，并在 defer 中恢复原值。但 h.container 是所有路由 handler 共用的同一个 *container.Container 实例，该字段会被并发请求同时读写：一方面产生 Go 数据竞争（interface 值写入非原子，可能出现类型/数据字撕裂），另一方面交错执行时恢复逻辑会把“本应只属于某个请求”的 ContextLogger 永久留在 container 上。具体失败场景：请求 A 保存 base 后置 L_A；请求 B 保存 L_A 后置 L_B；A 先 defer 恢复为 base；B 再 defer 恢复为 L_A——此后 container.Logger 永远是绑定已结束请求 ctx 的 ContextLogger，所有后续日志（包括非请求上下文日志、后台任务日志）都会输出同一个过期 trace_id，且永久多一层包装。go test -race 下并发压测即可复现。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 91,
+      "summary": "handler goroutine 内读取共享 h.container.Logger，超时后日志丢失或串到其他请求的 trace",
+      "failure_scenario": "handler goroutine 打日志时不是使用请求开始时构造的 ctxLogger，而是重新读取 h.container.Logger。由于 select 在 c.Context.Done()（REQUEST_TIMEOUT 到期）时会立刻返回并触发 defer 恢复原 logger，而 handler goroutine 仍在继续执行，此时 h.logError/panicRecoveryHandler 读到的可能是已恢复的原始 logger（日志丢失 trace_id，本次变更目的落空），也可能是随后另一个并发请求安装的 ContextLogger（日志被打上不属于自己的 trace_id）。同时这次读取与 F001 中的写入构成数据竞争。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "LIFECYCLE-002"
+    },
+    {
+      "file": "pkg/gofr/logging/logger.go",
+      "line": 256,
+      "summary": "以固定键 __trace_id__ 从任意日志参数中提取 trace，用户数据被静默丢弃且可被伪造",
+      "failure_scenario": "extractTraceIDAndFilterArgs 把任意一个 map[string]any 参数里键为 __trace_id__ 的字符串当成框架元数据，并从日志参数中整条剔除，且对每次日志调用无差别生效。失败场景一：业务代码把外部输入的结构化数据（如反序列化后的请求体 map）直接打日志，只要其中恰好存在 __trace_id__ 键，整条 map 会被日志丢掉，关键调试信息静默消失。失败场景二：攻击者可在请求体/消息体中携带 {\"__trace_id__\": \"<任意值>\"}，若业务将其作为 map 记录，则框架会把外部可控值写成日志的 trace_id 字段，污染/伪造链路关联。日志参数属于用户数据，不宜作为框架控制信息通道。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "LOG-FORGERY-001"
+    },
+    {
+      "file": "pkg/gofr/logging/ctx_logger.go",
+      "line": 31,
+      "summary": "withTraceInfo 对传入的 args 切片直接 append，可能污染调用方底层数组",
+      "failure_scenario": "withTraceInfo(args ...any) 内部使用 append(args, map{...}) 返回新切片。由于 Go 变参在调用方以 slice... 形式传参时不会复制底层数组，若传入的 args 还有剩余容量（len < cap），append 会直接写入该数组的第 len 个位置，从而修改调用方持有的 put 背后数据。这样会破坏调用方原切片、造成数据错乱，若该切片被并发复用还会引发数据竞争。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "不要对可能由调用方持有且仍有剩余容量的可变切片直接 append，如需追加应先复制；append 的副作用会写入共享底层数组"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 46,
+      "summary": "ErrorLogEntry 移除 TraceID 字段后错误日志丢失 trace_id，破坏日志可关联性与既有 JSON 契约",
+      "failure_scenario": "该 hunk 同时做了三处删除：ErrorLogEntry 结构体的 TraceID 字段、PrettyPrint 中对 el.TraceID 的输出、以及 ServeHTTP 中 traceID := trace.SpanFromContext(...) 的取值。结果是 logError 产生的错误日志（JSON 序列化与 PrettyPrint 两条路径）都不再携带任何 trace/span 标识，无法与请求链路关联；同时原来带 trace_id,omitempty 的 JSON 输出对下游日志采集/检索是既有契约，字段直接消失会造成依赖该字段的告警与检索规则静默失效。注意本 hunk 只是把 traceID 删除，并未看到替代方案（例如在 logger 上注入 span context 或改由 logger 自动补 trace 字段）在 hunk 内体现，故行为变化缺少等价补偿。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "日志/审计输出字段属于对外可观测契约，删除关联标识（trace_id）且无等价替代会破坏问题定位与下游日志检索规则"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\gofr-dev__gofr@5e284ae.diff\n  caseId              gofr-dev__gofr@5e284ae\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@5e284ae\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 6 / not-reached 3（no-signal=3）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 8/11 / 新候选 2 / no-issue 6 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 269.2s · 模型调用 18 次 · token 输入 15,201（未命中） · 输出 15,260 · 缓存命中 370,688（96.1%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0074\n[time] 阶段耗时 | 总墙钟 270.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.3%)\n[time] 阶段 | 六阶段审计 92.9s (34.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 176.5s (65.3%)\n[time] 审计明细 | P1 2.2s (2.4%) | P2 2.2s (2.3%) | P3 5.4s (5.8%) | P4 46.4s (50.0%) | P5 32.9s (35.4%) | P6 3.7s (4.0%)\n[usage] 任务总计 | 模型调用 25 次（Agent 18 + 一次性 7） | token 输入 21,704（未命中） | 输出 45,664 | 缓存命中 376,576（94.6%） | $0.0169\n[usage] 一次性明细 | 覆盖补漏 7 次（输入 6,503 / 输出 30,404 / 缓存 5,888）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\gofr-dev__gofr@5e284ae\\audit\\20261121_161314_945.json",
+  "token_usage": {
+    "input_tokens": 21704,
+    "output_tokens": 45664,
+    "cache_read_input_tokens": 376576
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 15201,
+      "output_tokens": 15260,
+      "cache_read_input_tokens": 370688
+    },
+    "coverage_repair": {
+      "input_tokens": 6503,
+      "output_tokens": 30404,
+      "cache_read_input_tokens": 5888
+    }
+  }
+}

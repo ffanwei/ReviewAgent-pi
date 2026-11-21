@@ -1,0 +1,84 @@
+{
+  "instance_id": "gofr-dev__gofr@49ab394",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "ba0316277a22f508ed645951705f53d151552916",
+  "head_commit": "49ab39432cf4892ee84569099b8065dfe45fae92",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 263.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "pkg/gofr/datasource/pubsub/nats/client.go",
+      "line": 83,
+      "summary": "retryConnect goroutine 无锁写入 connManager/streamManager/subManager，与业务方法并发读写形成数据竞争",
+      "failure_scenario": "新增的 retryConnect 在后台 goroutine 中反复重建并覆盖 Client 的 connManager、streamManager、subManager 三个字段，但 Client 只有 subMutex 保护 subscriptions，这三个字段完全没有同步。与此同时 Publish/checkClient/Health 等会在请求 goroutine 中并发读取 c.connManager，SubscribeWithHandler 读取 c.connManager/jetStream。后台一旦连接成功，写入与读取会并发发生：`-race` 下必然报告 data race；无 -race 时也可能读到撕裂的接口值（type 已写入而 data 指针为 nil），导致调用「有效类型 + nil 指针」的方法直接 panic，或在 Publish 中把请求打到刚被替换、尚未初始化的 ConnectionManager 上。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/pubsub/nats/client.go",
+      "line": 362,
+      "summary": "checkClient 只校验 connManager 是否连接，未校验 streamManager/subManager，半初始化状态下会 nil 接口调用 panic",
+      "failure_scenario": "新增的 checkClient 只判断 c 与 c.connManager 非 nil、connManager.isConnected() 为 true，就放行后续调用。但 streamManager 与 subManager 的赋值发生在 c.connManager 赋值之后（Connect 中 57 行与 64-65 行；retryConnect 中 83 行与 93-94 行）。存在两条稳定的半初始化路径：1) Client.Connect 中 connManager.Connect() 成功但 c.connManager.jetStream() 返回 errJetStreamNotConfigured（client.go:59-62），此时 connManager 已连接、streamManager 永远为 nil，且不会启动 retryConnect；2) retryConnect 中 83 行赋值后到 93 行赋值之间的窗口。这两种状态下 CreateTopic/DeleteTopic/CreateStream/DeleteStream/CreateOrUpdateStream 都会先通过 checkClient，然后执行 c.streamManager.CreateStream(...) 对 nil 接口调用方法，直接 panic，使整个服务崩溃而不是返回可处理的错误。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "pkg/gofr/datasource/pubsub/nats/client.go",
+      "line": 72,
+      "summary": "retryConnect 无退出条件，Client.Close 无法停止重连 goroutine，关闭后仍持续建连并泄漏连接",
+      "failure_scenario": "retryConnect 是一个没有 context 也没有停止信号的 `for {}` 循环，只有连接成功才 break；失败分支 `time.Sleep(defaultRetryTimeout); continue` 会永久重试。而 Client.Close 只关闭 subManager 与当前 connManager，没有任何字段/channel 通知该 goroutine 退出。因此应用优雅关闭（或测试结束）后，该 goroutine 会继续每 nats.DefaultTimeout（2s）拨一次 NATS 服务器：一方面永久泄漏一个 goroutine 与持续的无效连接尝试（日志刷屏、CPU/网络噪音）；另一方面如果在 Close 返回之后重连成功，会把新的 connManager 写入已关闭的 Client 并留下一条永不关闭的 TCP 连接，形成连接与资源泄漏。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "RESOURCE-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/pubsub/nats/client.go",
+      "line": 52,
+      "summary": "Connect 失败无条件启动重试 goroutine，重复调用会并行启动多个重连循环",
+      "failure_scenario": "Client.Connect 每次连接失败都会无条件 `go c.retryConnect()`，但没有任何「已有重试 goroutine 正在运行」的标记或互斥。PubSubWrapper.Connect（pubsub_wrapper.go:47-57）在 connManager == nil（即首次连接失败后）时会被再次调用（例如容器初始化/健康检查触发的重复连接），从而再次进入 Client.Connect 并启动第二个 retryConnect。多个重试循环会并发建立多份 NATS 连接、相互覆盖 c.connManager/streamManager/subManager，先成功的那条连接被后写者覆盖后永远不会 Close，既放大 F001 的竞态，也造成连接与 goroutine 累积泄漏。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "pkg/gofr/datasource/pubsub/nats/client_test.go",
+      "line": 906,
+      "summary": "TestClient_retryConnect 同步调用无限循环方法且重试用例无断言，测试既慢又验证不到行为",
+      "failure_scenario": "新增的 TestClient_retryConnect 直接同步调用 `client.retryConnect()`（905 行），而该方法是阻塞式循环：用例 2、3 都会先真实等待 nats.DefaultTimeout（2s）后才有下一次尝试，随后固定再 `time.Sleep(500 * time.Millisecond)`；用例 1 的 `time.Sleep(500ms)` 在阻塞调用返回后完全多余。同时只有用例 1 设置了 connSuccess=true，用例 2（successful connection after retries）与用例 3 虽然注释写「Retry succeeds」，却没有任何断言，重试逻辑即使退化为永久失败（只要 mock 调用被消费）测试仍会通过；三个用例还共用同一组 mock 与 `MaxTimes(1)` 期望，任一用例的调用次数变化都会让后面的用例莫名失败。结果是测试集被无谓拖慢数秒，却不能可靠地回归「失败后重连成功」这一核心行为。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TEST-QUALITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\gofr-dev__gofr@49ab394.diff\n  caseId              gofr-dev__gofr@49ab394\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@49ab394\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 12 / not-reached 14（no-signal=14）\nreview-pi: 覆盖补漏 请求 6（失败 0）/ 覆盖 hunk 12/26 / 新候选 0 / no-issue 12 / 预算跳过 0 / 验证拒绝 2\n✓ 完成 · 耗时 260.9s · 模型调用 10 次 · token 输入 16,542（未命中） · 输出 16,467 · 缓存命中 231,296（93.3%） · 工具 12 次（主会话 12 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0076\n[time] 阶段耗时 | 总墙钟 262.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (0.6%)\n[time] 阶段 | 六阶段审计 106.1s (40.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 154.9s (59.0%)\n[time] 审计明细 | P1 5.5s (5.2%) | P2 2.0s (1.9%) | P3 5.8s (5.5%) | P4 37.4s (35.3%) | P5 46.0s (43.5%) | P6 9.1s (8.6%)\n[usage] 任务总计 | 模型调用 18 次（Agent 10 + 一次性 8） | token 输入 28,610（未命中） | 输出 43,071 | 缓存命中 234,112（89.1%） | $0.0167\n[usage] 一次性明细 | 覆盖补漏 8 次（输入 12,068 / 输出 26,604 / 缓存 2,816）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\gofr-dev__gofr@49ab394\\audit\\20261121_155059_573.json",
+  "token_usage": {
+    "input_tokens": 28610,
+    "output_tokens": 43071,
+    "cache_read_input_tokens": 234112
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 16542,
+      "output_tokens": 16467,
+      "cache_read_input_tokens": 231296
+    },
+    "coverage_repair": {
+      "input_tokens": 12068,
+      "output_tokens": 26604,
+      "cache_read_input_tokens": 2816
+    }
+  }
+}

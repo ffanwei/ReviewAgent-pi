@@ -1,0 +1,84 @@
+{
+  "instance_id": "google-gemini__gemini-cli@d64b61e",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "6e4236bf7681b2a2cba5630a8dd0a0d5a200a0df",
+  "head_commit": "d64b61ef89f01ecdc0e095a995d47522245a0065",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 287.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "packages/cli/src/commands/extensions/disable.ts",
+      "line": 50,
+      "summary": "scope 校验放行全部 SettingScope 取值，但 handler 只识别 workspace，其余被静默降级为 User",
+      "failure_scenario": "新的 `.check` 用 `Object.values(SettingScope)` 做白名单，因此 `--scope=user`、`--scope=workspace`、`--scope=system`、`--scope=systemdefaults` 全部通过校验；但 handler 只判断 `args.scope?.toLowerCase() === 'workspace'`，其余一律走 `disableExtension(args.name, SettingScope.User)`。重构前 `choices: [SettingScope.User, SettingScope.Workspace]` 会让 `--scope=system` 直接报错退出；现在 `gemini extensions disable foo --scope=system` 会被静默当成用户级禁用（写 `~/*` 规则），用户以为只影响 system 层配置，实际把扩展在 home 目录下全部禁用。同时 `disableExtension` 内部对 System/SystemDefaults 的显式拒绝分支（extension.ts:709-711）也被绕过，不再有任何提示。enable.ts 第 52-68 行存在完全相同的问题。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "VALIDATION-001"
+    },
+    {
+      "file": "packages/cli/src/config/extensions/extensionEnablement.ts",
+      "line": 132,
+      "summary": "isEnabled 只归一化查询路径、不归一化配置中的旧规则，Windows 旧规则将永久失效",
+      "failure_scenario": "isEnabled 现在用 `ensureLeadingAndTrailingSlash(currentPath)` 把待测路径统一成反斜杠转正斜杠、且补上结尾 `/` 的形式，再交给 `Override.asRegex()` 匹配；但 `Override.fromFileRule()` 读取配置文件中的规则时既不做反斜杠归一化，也不补结尾斜杠。旧版本写入的规则是 `${scopePath}*` 原样拼接（scopePath 来自 `os.homedir()` / `process.cwd()`），在 Windows 上形如 `C:\\\\Users\\\\me*`；新逻辑下它被解析成 `^C:\\\\Users\\\\me(.*)?$`，而待测路径已变成 `C:/Users/me/proj/`，斜杠方向不匹配，规则永不命中。结果是升级后用户此前「禁用」的扩展在 Windows 上被静默重新启用；同理，历史上非 glob 的规则 `/path/to/dir`（无结尾斜杠）也被补斜杠后的 `/path/to/dir/` 判为不匹配。也就是说本次格式迁移只做了写入侧的归一化，缺少读取侧的兼容。",
+      "severity": "P1",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "packages/cli/src/config/extensions/extensionEnablement.ts",
+      "line": 179,
+      "summary": "父级 enable 会剪掉子目录更具体的 disable 规则，静默丢失用户越权意图",
+      "failure_scenario": "enable() 的过滤条件在 `override.includeSubdirs` 为 true 时会删除所有 `isChildOf(override)` 的既有规则，且不区分被删规则的 `isDisable` 方向。生产调用链 `enableExtension`/`disableExtension` 恒传 `includeSubdirs=true`（extension.ts:717、732），因此每次 `gemini extensions enable foo --scope=workspace` 都会把该目录下更具体的 disable 规则一并清除。具体失败场景：在 `/proj` 执行 enable（写入 `/proj/*`）→ 进入 `/proj/secret` 执行 disable（写入 `!/proj/secret/*`，因最后一条匹配优先而生效）→ 再回到 `/proj` 重复执行 enable，`!/proj/secret/*` 被 `isChildOf` 剪掉，`/proj/secret` 下的扩展被重新启用；旧实现仅删除「同一路径的冲突规则」，`!/proj/secret/*` 会被保留。删除后该意图不可恢复，用户需要重新配置。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "STATE-CONSISTENCY-001"
+    },
+    {
+      "file": "docs/extension.md",
+      "line": 45,
+      "summary": "文档前后语义矛盾：用户级禁用即“到处禁用”，却又称顶层禁用后可在工作区级启用",
+      "failure_scenario": "同一段落中，第39行仍保留“disable at the user level, so it will be disabled everywhere”，说明用户级禁用会让扩展在所有工作区都不可用；而本次新增/改写的第43-45行却称“You can also enable an extension for a specific workspace using --scope=workspace ... This is useful if you have an extension disabled at the top-level and only enabled in specific places.”，即顶层禁用后可在特定工作区单独启用。两者直接冲突：若用户级禁用等于到处禁用，则工作区级启用不应生效。旧文本原本正是明确说明“if an extension is disabled at the user-level, enabling it at the workspace level will not do anything”，本次把这条约束删除并替换为相反描述，但保留的禁用说明未同步修改，导致文档自相矛盾，读者无法判断 enable --scope=workspace 在用户级禁用后是否真正生效。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "文档一致性：同一主题的说明不得相互矛盾，行为约束变更需同步更新已有关联描述"
+    },
+    {
+      "file": "packages/cli/src/commands/extensions/disable.ts",
+      "line": 26,
+      "summary": "成功提示直接回显未归一化的 args.scope，可能与实际生效 scope 不一致甚至显示 undefined",
+      "failure_scenario": "handler 内部已把 scope 归一化：仅当 args.scope?.toLowerCase() === 'workspace' 时按 SettingScope.Workspace 处理，其余（含大小写变体如 'WorkSpace'、空串、未知值、以及省略 scope）一律按 SettingScope.User 处理。但第 26 行的成功日志仍使用原始 args.scope 插值。由于 scope 现在被声明为可选 string（第 15 行 scope?: string），调用方不传 scope 时日志会输出 'successfully disabled for scope \"undefined\"'；传 'WORKSPACE' 时日志显示 'WORKSPACE' 而非实际生效的 Workspace；传任何未知值时日志会显示该未知值，而实际生效的是 User。用户看到的确认信息与实际写入配置的 scope 不一致，会误导用户以为禁用作用域正确，排障时也容易误判。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "输出给用户的确认信息应来自规范化后的实际生效值，而非原始未校验输入，避免提示与实际行为不一致"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\google-gemini__gemini-cli@d64b61e.diff\n  caseId              google-gemini__gemini-cli@d64b61e\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@d64b61e\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 0 / not-reached 9（no-signal=9）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 2/11 / 新候选 2 / no-issue 0 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 284.9s · 模型调用 10 次 · token 输入 17,787（未命中） · 输出 21,383 · 缓存命中 200,448（91.8%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0090\n[time] 阶段耗时 | 总墙钟 286.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.1s (0.4%)\n[time] 阶段 | 六阶段审计 136.0s (47.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 148.9s (52.1%)\n[time] 审计明细 | P1 19.0s (14.0%) | P2 2.6s (1.9%) | P3 3.7s (2.7%) | P4 70.5s (51.9%) | P5 32.1s (23.6%) | P6 8.1s (5.9%)\n[usage] 任务总计 | 模型调用 17 次（Agent 10 + 一次性 7） | token 输入 27,932（未命中） | 输出 49,767 | 缓存命中 202,624（87.9%） | $0.0184\n[usage] 一次性明细 | 覆盖补漏 7 次（输入 10,145 / 输出 28,384 / 缓存 2,176）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\google-gemini__gemini-cli@d64b61e\\audit\\20261121_160056_011.json",
+  "token_usage": {
+    "input_tokens": 27932,
+    "output_tokens": 49767,
+    "cache_read_input_tokens": 202624
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 17787,
+      "output_tokens": 21383,
+      "cache_read_input_tokens": 200448
+    },
+    "coverage_repair": {
+      "input_tokens": 10145,
+      "output_tokens": 28384,
+      "cache_read_input_tokens": 2176
+    }
+  }
+}

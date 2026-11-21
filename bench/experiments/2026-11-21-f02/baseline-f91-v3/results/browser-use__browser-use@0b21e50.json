@@ -1,0 +1,64 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 213.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "新增 chrome_remote_debugging_port 类型允许 None，但下游端口拼接与 socket 检查无法处理 None",
+      "failure_scenario": "新字段声明为 `int | None`，意味着调用方可以合法地显式传入 `None`（例如想“不占用固定调试端口”）。但所有使用点都把它当作确定整数：内置浏览器路径直接用 `socket.connect_ex(('localhost', <port>))` 做端口占用检测，端口为 None 时 socket 会抛 `TypeError: 'NoneType' object cannot be interpreted as an integer`，直接导致默认的 `_setup_builtin_browser` 建连失败；用户提供的浏览器路径则把它拼进 URL（`http://localhost:None/json/version`）与 `--remote-debugging-port=None` 参数，前者会抛 httpx 的非法 URL 异常，而该异常不属于 `except httpx.RequestError`，会一路冒泡成浏览器初始化失败，后者则让 Chrome 命令行非法。该字段是本 MR 新增的对外配置契约，因此这是本次变更引入的新失败路径。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "CONFIG-VALIDATION-001"
+    },
+    {
+      "file": "tests/test_browser.py",
+      "line": 180,
+      "summary": "新测试 monkeypatch 的是 requests.get，但被测代码用 httpx，mock 失效导致用例依赖真实网络并可能空跑",
+      "failure_scenario": "新增用例想用 `DummyResponse(status_code=200)` 模拟 `http://localhost:9223/json/version` 的探测结果，但 `_setup_user_provided_browser` 走的是 `httpx.AsyncClient().get(...)`，patch `requests.get` 对 httpx 完全无效。实际执行时第一次探测是真实 TCP 连接（连接被拒 → ConnectError 被吞掉），随后进入 239-249 行的 10 次重试循环，每次真实请求 + `await asyncio.sleep(1)`，用例被拉长到 10 秒以上；更严重的是如果宿主机上恰好有进程监听 9223（例如上一次失败运行残留的 Chrome），代码会在 204 行直接走“复用已有浏览器”分支提前返回，189-192 行对 `--remote-debugging-port=9223` 的断言根本不会执行，用例在完全没有验证启动参数的情况下通过。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "TEST-MOCK-002"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 236,
+      "summary": "Chrome 启动成功后若 CDP 连接失败，新拉起的子进程不会被回收，并可能被下一次运行误复用",
+      "failure_scenario": "改成 `create_subprocess_exec` 后启动路径才真正生效（旧实现取 coroutine 的 pid 会先失败），于是出现这条新的失败路径：229-236 行已成功拉起 Chrome 并记录 `self._chrome_subprocess`，而 251-263 行的 `connect_over_cdp` 一旦超时（例如浏览器被 profile 锁、端口被占用、参数非法导致 Chrome 立即退出），代码只是 `raise RuntimeError` 并提示“关闭所有已存在的 Chrome 实例”，既没有 kill 刚拉起的子进程，也没有清空 `self._chrome_subprocess`。要等到调用方显式执行 close()（352-359 行）才会回收；若调用方直接放弃该 Browser 实例，就会留下一个占用自定义调试端口的孤儿 Chrome，而下一次运行会在 200-213 行把它当成“已存在的浏览器”直接复用，状态无法复位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RESOURCE-LEAK-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-f01b.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 8 / not-reached 4（no-signal=4）\nreview-pi: 覆盖补漏 请求 6（失败 0）/ 覆盖 hunk 8/12 / 新候选 0 / no-issue 8 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 209.4s · 模型调用 13 次 · token 输入 14,920（未命中） · 输出 19,734 · 缓存命中 265,088（94.7%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0084\n[time] 阶段耗时 | 总墙钟 210.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.6%)\n[time] 阶段 | 六阶段审计 116.3s (55.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 93.2s (44.3%)\n[time] 审计明细 | P1 6.2s (5.3%) | P2 2.8s (2.4%) | P3 5.3s (4.6%) | P4 71.9s (61.9%) | P5 25.4s (21.8%) | P6 4.6s (4.0%)\n[usage] 任务总计 | 模型调用 20 次（Agent 13 + 一次性 7） | token 输入 19,591（未命中） | 输出 35,531 | 缓存命中 267,648（93.2%） | $0.0134\n[usage] 一次性明细 | 覆盖补漏 7 次（输入 4,671 / 输出 15,797 / 缓存 2,560）\n",
+  "model": "deepseek-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\baseline-f91-v3-20261121\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261121_155100_714.json",
+  "token_usage": {
+    "input_tokens": 19591,
+    "output_tokens": 35531,
+    "cache_read_input_tokens": 267648
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 14920,
+      "output_tokens": 19734,
+      "cache_read_input_tokens": 265088
+    },
+    "coverage_repair": {
+      "input_tokens": 4671,
+      "output_tokens": 15797,
+      "cache_read_input_tokens": 2560
+    }
+  }
+}
