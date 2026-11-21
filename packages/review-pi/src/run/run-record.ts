@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Finding } from "../contracts/finding.js";
+import type { CoverageSummary } from "../contracts/coverage.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import type {
@@ -19,6 +20,7 @@ import type {
   TipsFilterRecord,
   ToolCallRecord,
 } from "../contracts/run.js";
+import { summarizeCoverage } from "./coverage-ledger.js";
 
 // RunRecord 投影（测量常量面）：三级键序以 t-series 记录为地面真源
 // （src/run/run-record.test.ts 断言）。落盘路径：
@@ -59,6 +61,8 @@ export interface AuditLight {
   readonly rejectionCounts?: CandidateRejectionCounts;
   /** 覆盖缺口补漏（F-01b）：只在启用时在场 */
   readonly coverageRepair?: CoverageRepairAudit;
+  /** 覆盖账本 JSON 汇总（F-01c）：只在 pass 携带 coverage 时在场 */
+  readonly coverageSummary?: CoverageSummary;
 }
 
 /** RunResult 快照（audit 以轻量投影落盘） */
@@ -163,6 +167,7 @@ export function toAuditLight(audit: RunAudit): AuditLight {
       : {}),
     ...(audit.rejectionCounts !== undefined ? { rejectionCounts: audit.rejectionCounts } : {}),
     ...(audit.coverageRepair !== undefined ? { coverageRepair: audit.coverageRepair } : {}),
+    ...(audit.coverage !== undefined ? { coverageSummary: summarizeCoverage(audit.coverage) } : {}),
   };
 }
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import type { CacheBreakRecord, RunAudit, RunResult } from "../contracts/run.js";
+import { buildCoverageLedger } from "./coverage-ledger.js";
 import {
   buildRunRecord,
   runRecordPath,
@@ -94,6 +95,23 @@ describe("toAuditLight", () => {
     });
     expect(Object.keys(withBreaks)).toContain("cacheBreaks");
     expect(withBreaks.cacheBreaks).toHaveLength(1);
+  });
+
+  test("coverage → coverageSummary（F-01c：JSON 汇总不复制逐 hunk 明细）", () => {
+    const coverage = buildCoverageLedger(
+      ["diff --git a/src/a.ts b/src/a.ts", "--- a/src/a.ts", "+++ b/src/a.ts", "@@ -1,1 +1,1 @@", "-old", "+new"].join(
+        "\n",
+      ),
+    );
+    const light = toAuditLight({ ...AUDIT, coverage });
+    expect(light.coverageSummary).toMatchObject({
+      hunks: 1,
+      candidate: 0,
+      noIssue: 0,
+      notReached: 1,
+      notReachedRatio: 1,
+    });
+    expect("coverage" in light).toBe(false);
   });
 });
 

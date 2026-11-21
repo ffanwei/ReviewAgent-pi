@@ -339,26 +339,30 @@ function prepareReview(input: ReviewRunInput): PrepareReviewOutcome {
       },
     };
   }
-  const maxChars = runtime.limits.boundary.maxDiffChars;
-  const tooLarge = diffTooLargeError(filtered.diff, maxChars);
-  if (tooLarge !== undefined) {
-    return {
-      kind: "skipped",
-      skip: {
-        reason: "diff-too-large",
-        message: tooLarge.message,
-        diffLength: tooLarge.diffLength,
-        maxChars: tooLarge.maxChars,
-      },
-    };
-  }
-
   const diff = filtered.diff;
+  // F-02：分片优先于体积门。`split.enabled=true` 且 diff 需要分片时，
+  // `maxDiffChars` 不再整条跳过；片数超过 `maxShards` 由 planShards 显式抛错
+  // （在发任何模型请求之前）。只有单遍路径仍按 `maxDiffChars` 拦截。
+  const shards = planReviewShards(diff, runtime.limits.split);
+  if (shards === null) {
+    const maxChars = runtime.limits.boundary.maxDiffChars;
+    const tooLarge = diffTooLargeError(diff, maxChars);
+    if (tooLarge !== undefined) {
+      return {
+        kind: "skipped",
+        skip: {
+          reason: "diff-too-large",
+          message: tooLarge.message,
+          diffLength: tooLarge.diffLength,
+          maxChars: tooLarge.maxChars,
+        },
+      };
+    }
+  }
   const mrFilter = toMrFilterRecord(filtered);
   // MR 边界护栏（#12）：度量对象是**过滤后**的 diff。分片模式下它是整份 MR
   // 的属性，只度量 / 记账一次（每片审计不重复记）。
   const boundary = guardMrBoundary(diff, runtime.limits.boundary);
-  const shards = planReviewShards(diff, runtime.limits.split);
   return {
     kind: "ready",
     startedAt,

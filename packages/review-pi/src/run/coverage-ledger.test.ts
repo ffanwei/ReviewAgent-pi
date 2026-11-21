@@ -11,6 +11,7 @@ import {
   markNoIssue,
   markNotReached,
   mergeCoverageLedgers,
+  summarizeCoverage,
   truncatedRangesFromShardRecords,
 } from "./coverage-ledger.js";
 
@@ -598,5 +599,20 @@ describe("markNotReached（F-01b：补漏预算 / 上限收口）", () => {
     expect(() =>
       markNotReached(ledger, [{ file: "src/a.ts", hunkIndex: 9 }], "budget"),
     ).toThrow(/unknown hunk/);
+  });
+
+  test("summarizeCoverage：计数 + 比例，纯 JSON 汇总", () => {
+    const ledger = buildCoverageLedger(TWO_HUNKS);
+    const summary = summarizeCoverage(ledger);
+    expect(summary).toMatchObject({
+      hunks: 2,
+      candidate: 0,
+      noIssue: 0,
+      notReached: 2,
+      candidateRatio: 0,
+      noIssueRatio: 0,
+      notReachedRatio: 1,
+    });
+    expect(summary.byCause["no-signal"]).toBe(2);
   });
 });

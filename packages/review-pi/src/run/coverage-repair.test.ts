@@ -48,11 +48,38 @@ const DIFF = [
 /** 单文件版本：执行器测试只关心一个补漏请求 */
 const DIFF_A = DIFF.split("diff --git a/src/b.ts")[0]!.trimEnd();
 
+/** 文档 + 源码：验证预算优先给代码文件（v2） */
+const DIFF_CODE_AND_DOC = [
+  "diff --git a/docs/readme.md b/docs/readme.md",
+  "--- a/docs/readme.md",
+  "+++ b/docs/readme.md",
+  "@@ -1,1 +1,1 @@",
+  "-old",
+  "+new",
+  "diff --git a/src/a.ts b/src/a.ts",
+  "--- a/src/a.ts",
+  "+++ b/src/a.ts",
+  "@@ -1,2 +1,3 @@",
+  " const a = 1;",
+  "+const b = 2;",
+  " ctx",
+].join("\n");
+
 function completion(content: string): Response {
   return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content } }] }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+}
+
+/** 生成请求与验证请求共用 completeOneShot；用 system prompt 区分 */
+function isVerifierCall(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as { messages?: { content?: string }[] };
+    return (parsed.messages?.[0]?.content ?? "").includes("证伪");
+  } catch {
+    return false;
+  }
 }
 
 function llm(fetch: FetchFunction) {
@@ -175,10 +202,22 @@ describe("extractDiffHunks / planCoverageRepairUnits", () => {
     expect(plan.units[0]?.file).toBe("src/b.ts");
     expect(plan.units[0]?.wholeFile).toBe(true);
   });
+
+  test("同类缺口优先给源码，文档/资源后置（v2）", () => {
+    const ledger = buildCoverageLedger(DIFF_CODE_AND_DOC);
+    const plan = planCoverageRepairUnits({
+      diff: DIFF_CODE_AND_DOC,
+      ledger,
+      limits: { ...LIMITS, maxRequests: 1 },
+    });
+    expect(plan.units).toHaveLength(1);
+    expect(plan.units[0]?.file).toBe("src/a.ts");
+    expect(plan.skipped.map((target) => target.file)).toEqual(["docs/readme.md"]);
+  });
 });
 
 describe("parseCoverageRepairReply", () => {
-  test("解析 no-issue / candidate；未知 hunk 与越界候选计 invalid", () => {
+  test("解析 no-issue / candidate；candidate 不要求 hunk，未知 hunk 与越界候选计 invalid", () => {
     const ledger = buildCoverageLedger(DIFF);
     const plan = planCoverageRepairUnits({
       diff: DIFF,
@@ -190,11 +229,14 @@ describe("parseCoverageRepairReply", () => {
     const parsed = parseCoverageRepairReply(
       JSON.stringify({
         receipts: [
-          { kind: "no-issue", hunk: 1, reason: "仅新增常量" },
-          { kind: "candidate", hunk: 2, candidate: candidate(11) },
+          { kind: "no-issue", hunk: 1, reason: "仅新增常量", evidence: ["+const b = 2;"] },
+          // 线上模型按提示词示例输出 candidate，不带 hunk；应按 line 落点归属。
+          { kind: "candidate", candidate: candidate(11) },
           { kind: "no-issue", hunk: 99, reason: "不在本次单元" },
           { kind: "candidate", hunk: 2, candidate: candidate(99) },
           { kind: "no-issue", hunk: 1, reason: " " },
+          // v2：no-issue 只给 reason、不给 evidence 不再算有效回执。
+          { kind: "no-issue", hunk: 2, reason: "没有发现问题" },
         ],
       }),
       unit!,
@@ -203,7 +245,7 @@ describe("parseCoverageRepairReply", () => {
     expect(parsed.noIssue[0]?.hunkIndex).toBe(1);
     expect(parsed.candidates).toHaveLength(1);
     expect(parsed.coveredHunks).toHaveLength(2);
-    expect(parsed.invalid).toBe(3);
+    expect(parsed.invalid).toBe(4);
   });
 
   test("非 JSON / 缺 receipts → invalid=1", () => {
@@ -217,15 +259,21 @@ describe("parseCoverageRepairReply", () => {
 });
 
 describe("repairCoverageGaps", () => {
-  test("no-issue + candidate 回填账本；候选走候选门；审计计数", async () => {
+  test("no-issue + candidate 回填账本；候选走独立验证与候选门；审计计数", async () => {
     const ledger = buildCoverageLedger(DIFF_A);
     const bodies: string[] = [];
     const fetch: FetchFunction = async (_url, init) => {
-      bodies.push(String(init?.body ?? ""));
+      const body = String(init?.body ?? "");
+      bodies.push(body);
+      if (isVerifierCall(body)) {
+        return completion(
+          JSON.stringify({ verdicts: [{ id: "CR001", pass: true, reason: "证据成立" }] }),
+        );
+      }
       return completion(
         JSON.stringify({
           receipts: [
-            { kind: "no-issue", hunk: 1, reason: "仅新增常量，无副作用" },
+            { kind: "no-issue", hunk: 1, reason: "仅新增常量，无副作用", evidence: ["+const b = 2;"] },
             { kind: "candidate", hunk: 2, candidate: candidate(11) },
           ],
         }),
@@ -255,8 +303,9 @@ describe("repairCoverageGaps", () => {
       hunksCovered: 2,
       noIssue: 1,
       acceptedFindings: 1,
+      verification: { requests: 1, failedRequests: 0, accepted: 1, rejected: 0, unverified: 0 },
     });
-    expect(bodies).toHaveLength(1);
+    expect(bodies).toHaveLength(2);
     const body = JSON.parse(bodies[0] ?? "{}") as {
       response_format?: { type?: string };
       messages?: { content?: string }[];
@@ -264,6 +313,63 @@ describe("repairCoverageGaps", () => {
     expect(body.response_format).toEqual({ type: "json_object" });
     expect(body.messages?.[0]?.content ?? "").not.toContain("sk-coverage-sentinel");
     expect(body.messages?.[1]?.content ?? "").toContain("### Hunk 1");
+    expect(JSON.parse(bodies[1] ?? "{}").messages?.[0]?.content ?? "").toContain("证伪");
+  });
+
+  test("独立验证拒绝的候选不进 findings；hunk 保持未覆盖", async () => {
+    const ledger = buildCoverageLedger(DIFF_A);
+    const fetch: FetchFunction = async (_url, init) => {
+      const body = String(init?.body ?? "");
+      if (isVerifierCall(body)) {
+        return completion(
+          JSON.stringify({ verdicts: [{ id: "CR001", pass: false, reason: "证据不在 hunk" }] }),
+        );
+      }
+      return completion(
+        JSON.stringify({ receipts: [{ kind: "candidate", candidate: candidate(11) }] }),
+      );
+    };
+    const result = await repairCoverageGaps({
+      diff: DIFF_A,
+      ledger,
+      findings: [],
+      limits: { ...LIMITS, maxRequests: 10 },
+      llm: llm(fetch),
+    });
+    expect(result.findings).toHaveLength(0);
+    expect(result.audit.acceptedFindings).toBe(0);
+    expect(result.audit.rejectedCandidates).toBe(1);
+    expect(result.audit.verification).toMatchObject({ accepted: 0, rejected: 1, unverified: 0 });
+    const a = result.ledger.files.find((file) => file.file === "src/a.ts");
+    expect(a?.hunks[1]?.status).toBe("not-reached");
+  });
+
+  test("验证器请求失败 → fail-open，候选保留并计 unverified", async () => {
+    const ledger = buildCoverageLedger(DIFF_A);
+    const fetch: FetchFunction = async (_url, init) => {
+      const body = String(init?.body ?? "");
+      if (isVerifierCall(body)) {
+        return new Response("boom", { status: 500 });
+      }
+      return completion(
+        JSON.stringify({ receipts: [{ kind: "candidate", candidate: candidate(11) }] }),
+      );
+    };
+    const result = await repairCoverageGaps({
+      diff: DIFF_A,
+      ledger,
+      findings: [],
+      limits: { ...LIMITS, maxRequests: 10 },
+      llm: llm(fetch),
+    });
+    expect(result.findings).toHaveLength(1);
+    expect(result.audit.verification).toMatchObject({
+      requests: 1,
+      failedRequests: 1,
+      accepted: 0,
+      rejected: 0,
+      unverified: 1,
+    });
   });
 
   test("候选与已有意见重复 → 候选门拒绝，hunk 保持未覆盖", async () => {
@@ -280,12 +386,19 @@ describe("repairCoverageGaps", () => {
       rule: "NULL_SAFETY",
       confidence: 0.8,
     };
-    const fetch: FetchFunction = async () =>
-      completion(
+    const fetch: FetchFunction = async (_url, init) => {
+      const body = String(init?.body ?? "");
+      if (isVerifierCall(body)) {
+        return completion(
+          JSON.stringify({ verdicts: [{ id: "CR001", pass: true, reason: "证据成立" }] }),
+        );
+      }
+      return completion(
         JSON.stringify({
           receipts: [{ kind: "candidate", hunk: 2, candidate: candidate(11) }],
         }),
       );
+    };
     const result = await repairCoverageGaps({
       diff: DIFF_A,
       ledger,
@@ -318,7 +431,13 @@ describe("repairCoverageGaps", () => {
   test("超过 maxRequests 的缺口标 not-reached(budget)", async () => {
     const ledger = buildCoverageLedger(DIFF_A);
     const fetch: FetchFunction = async () =>
-      completion(JSON.stringify({ receipts: [{ kind: "no-issue", hunk: 1, reason: "无问题" }] }));
+      completion(
+        JSON.stringify({
+          receipts: [
+            { kind: "no-issue", hunk: 1, reason: "仅新增常量", evidence: ["+const b = 2;"] },
+          ],
+        }),
+      );
     const result = await repairCoverageGaps({
       diff: DIFF_A,
       ledger,

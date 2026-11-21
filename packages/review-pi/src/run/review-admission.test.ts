@@ -108,6 +108,62 @@ test("diff 超体积门：返回 skipped 数据，不调模型", async () => {
   }
 });
 
+/** 构造 F-02 用例：多个文件块，每块都超过 maxShardChars */
+function largeDiff(fileCount: number): string {
+  const blocks: string[] = [];
+  for (let file = 0; file < fileCount; file += 1) {
+    const added = Array.from({ length: 80 }, (_, index) => `+const value${String(index)} = ${String(index)};`);
+    blocks.push(
+      [
+        `diff --git a/src/file${String(file)}.ts b/src/file${String(file)}.ts`,
+        `--- a/src/file${String(file)}.ts`,
+        `+++ b/src/file${String(file)}.ts`,
+        "@@ -1,1 +1,81 @@",
+        "-const old = 0;",
+        ...added,
+      ].join("\n"),
+    );
+  }
+  return blocks.join("\n");
+}
+
+test("F-02：split 开启时超 maxDiffChars 仍进入分片，不再整条跳过", async () => {
+  const runtime: ReviewRuntime = {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      boundary: { ...DEFAULT_REVIEW_RUNTIME.limits.boundary, maxDiffChars: 10 },
+      split: { enabled: true, maxShardChars: 200, maxShards: 4, contextSummaryChars: 1_000 },
+    },
+  };
+  const outcome = await runReviewOutcome(
+    baseInput({
+      diff: largeDiff(2),
+      runtime,
+      fetch: fakeFetch([...sixPhaseNoToolCorpus(), ...sixPhaseNoToolCorpus()]).fetch,
+    }),
+  );
+  expect(outcome.kind).toBe("reviewed");
+  if (outcome.kind !== "reviewed") {
+    throw new Error("expected reviewed");
+  }
+  expect(outcome.result.record.shards?.length).toBeGreaterThanOrEqual(2);
+});
+
+test("F-02：片数超 maxShards 显式失败，且在模型请求之前", async () => {
+  const runtime: ReviewRuntime = {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      boundary: { ...DEFAULT_REVIEW_RUNTIME.limits.boundary, maxDiffChars: 10 },
+      split: { enabled: true, maxShardChars: 200, maxShards: 2, contextSummaryChars: 1_000 },
+    },
+  };
+  await expect(
+    runReviewOutcome(baseInput({ diff: largeDiff(3), runtime })),
+  ).rejects.toThrow(/超过上限.*maxShards/);
+});
+
 test("旧入口 runReview：跳过仍抛原错误（兼容契约）", async () => {
   const noFiles = await runReview(baseInput({ diff: FILTERED_DIFF })).catch(
     (error: unknown) => error,

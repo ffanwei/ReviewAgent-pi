@@ -32,6 +32,7 @@ import type { RetryPolicy } from "../shared/llm-retry.js";
 import type { VerificationVerdict } from "../shared/parse.js";
 import type { CoverageRepairLimits } from "../shared/config-limits.js";
 import { backfillCandidates, markNoIssue, markNotReached } from "./coverage-ledger.js";
+import { verifyRepairCandidates, type PendingRepairCandidate } from "./coverage-repair-verify.js";
 
 /** 补漏调用所需的接入点（由 run 层从配置解析后传入） */
 export interface CoverageRepairLlm {
@@ -93,12 +94,17 @@ const EXISTING_FINDINGS_LIMIT = 20;
 const REPAIR_SYSTEM_PROMPT = [
   "你负责对代码检视后仍未覆盖的 diff hunk 做定向补漏。",
   "只根据给出的 hunk 正文判断，不读仓库、不调用工具、不推测未给出的文件。",
-  "对每个 hunk 只能二选一：",
+  "目标：宁可多报一个可验证的真实缺陷，也不要把有行为变化的 hunk 轻率判成 no-issue。",
+  "对每个 hunk 只能二选一；拿不准就省略该 hunk 的回执，保持未覆盖：",
   "1) 发现真实缺陷：输出 candidate（与主检视相同的字段 schema）；",
-  "2) 确认真实没有问题：输出 no-issue，并给出非空中文 reason。",
-  "不确定的 hunk 不要输出回执；不要把没看懂的 hunk 标成 no-issue。",
+  "2) 确认 hunk 确实安全：输出 no-issue，并给出非空中文 reason + evidence。",
+  "no-issue 的硬条件（缺一不可）：",
+  "- hunk 是纯格式 / 注释 / 重命名 / 等价重构，或你能正面证明所有新增路径都安全；",
+  "- evidence 至少一条，必须引用 hunk 里的真实代码或行号；",
+  "- “没看出问题”“与改动无关”都不是理由；无法正面证明时不要输出 no-issue。",
+  "优先检查：空值 / 边界 / 错误处理 / 资源释放 / 并发 / 权限 / 输入校验 / 类型转换 / 兼容性 / 数据一致性。",
   "只输出一个 JSON 对象，不附带其他文本：",
-  '{"receipts":[{"kind":"no-issue","hunk":1,"reason":"…"},{"kind":"candidate","candidate":{"id":"F9001","severity":"P1","category":"可靠性","file":"…","line":123,"title":"…","description":"…","evidence":["…"],"rule":"…","confidence":0.8,"tips":{"review":"…","suggestion":"…","subcategory":"…"}}}]}',
+  '{"receipts":[{"kind":"no-issue","hunk":1,"reason":"纯格式化，行为不变","evidence":["仅调整缩进，无 token 变化"]},{"kind":"candidate","candidate":{"id":"F9001","severity":"P1","category":"可靠性","file":"…","line":123,"title":"…","description":"…","evidence":["…"],"rule":"…","confidence":0.8,"tips":{"review":"…","suggestion":"…","subcategory":"…"}}}]}',
   "候选字段规则：",
   "- id：本次请求内唯一，建议 CR001 开始；",
   "- severity：P0 / P1 / P2 / P3 之一；",
@@ -220,10 +226,15 @@ export function planCoverageRepairUnits(input: {
   }
 
   // 预算优先给「整文件一条意见都没有」的缺口：历史漏报中 56.8% 落在这种文件。
-  // 同优先级内先小后大（用更少请求覆盖更多文件），最后按路径保证确定性。
+  // 同优先级内先代码文件、再头文件、最后文档/资源（v2：避免预算被 .rst/.xml 吃掉）；
+  // 再按 hunk 数从小到大（用更少请求覆盖更多文件），最后按路径保证确定性。
   const ordered = [...units].sort((left, right) => {
     if (left.wholeFile !== right.wholeFile) {
       return left.wholeFile ? -1 : 1;
+    }
+    const rank = filePriority(left.file) - filePriority(right.file);
+    if (rank !== 0) {
+      return rank;
     }
     if (left.hunks.length !== right.hunks.length) {
       return left.hunks.length - right.hunks.length;
@@ -240,6 +251,8 @@ export function planCoverageRepairUnits(input: {
 export interface ParsedCoverageRepair {
   readonly noIssue: readonly NoIssueClaim[];
   readonly candidates: readonly unknown[];
+  /** 与 `candidates` 等长：每条候选落在哪个缺口 hunk（验证器需要） */
+  readonly candidateHunks: readonly number[];
   readonly coveredHunks: readonly CoverageHunkRef[];
   readonly invalid: number;
 }
@@ -254,16 +267,17 @@ export function parseCoverageRepairReply(
 ): ParsedCoverageRepair {
   const parsed = extractJsonObject(text, { preferKey: "receipts" });
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { noIssue: [], candidates: [], coveredHunks: [], invalid: 1 };
+    return { noIssue: [], candidates: [], candidateHunks: [], coveredHunks: [], invalid: 1 };
   }
   const receipts = (parsed as { receipts?: unknown }).receipts;
   if (!Array.isArray(receipts)) {
-    return { noIssue: [], candidates: [], coveredHunks: [], invalid: 1 };
+    return { noIssue: [], candidates: [], candidateHunks: [], coveredHunks: [], invalid: 1 };
   }
 
   const hunks = new Map(unit.hunks.map((hunk) => [hunk.index, hunk]));
   const noIssue: NoIssueClaim[] = [];
   const candidates: unknown[] = [];
+  const candidateHunks: number[] = [];
   const covered = new Map<number, CoverageHunkRef>();
   let invalid = 0;
 
@@ -273,14 +287,28 @@ export function parseCoverageRepairReply(
       continue;
     }
     const record = receipt as Record<string, unknown>;
-    const hunkIndex = record.hunk;
-    if (typeof hunkIndex !== "number" || !Number.isInteger(hunkIndex) || !hunks.has(hunkIndex)) {
-      invalid += 1;
-      continue;
-    }
     if (record.kind === "no-issue") {
+      const hunkIndex = record.hunk;
+      if (
+        typeof hunkIndex !== "number" ||
+        !Number.isInteger(hunkIndex) ||
+        !hunks.has(hunkIndex)
+      ) {
+        invalid += 1;
+        continue;
+      }
       const reason = record.reason;
       if (typeof reason !== "string" || reason.trim() === "") {
+        invalid += 1;
+        continue;
+      }
+      // no-issue 必须有正面证据（F-01b v2）：只给 reason 的“没看出问题”不算数。
+      const evidence = record.evidence;
+      if (
+        !Array.isArray(evidence) ||
+        evidence.length === 0 ||
+        evidence.some((item) => typeof item !== "string" || item.trim() === "")
+      ) {
         invalid += 1;
         continue;
       }
@@ -289,6 +317,8 @@ export function parseCoverageRepairReply(
       continue;
     }
     if (record.kind === "candidate") {
+      // candidate 回执不要求 hunk 字段：以 candidate.line 落在哪个缺口 hunk
+      // 为准（提示词示例也只在 no-issue 回执里要求 hunk）。
       const candidate = record.candidate;
       const target = candidateTargetHunk(candidate, unit);
       if (target === undefined) {
@@ -296,13 +326,14 @@ export function parseCoverageRepairReply(
         continue;
       }
       candidates.push(candidate);
+      candidateHunks.push(target.index);
       covered.set(target.index, { file: unit.file, hunkIndex: target.index });
       continue;
     }
     invalid += 1;
   }
 
-  return { noIssue, candidates, coveredHunks: [...covered.values()], invalid };
+  return { noIssue, candidates, candidateHunks, coveredHunks: [...covered.values()], invalid };
 }
 
 function candidateTargetHunk(
@@ -344,6 +375,7 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
   let usage: LlmUsage = ZERO_USAGE;
   const claims: NoIssueClaim[] = [];
   const rawCandidates: unknown[] = [];
+  const candidateContexts: { unit: CoverageRepairUnit; hunkIndex: number }[] = [];
   let requests = 0;
   let failedRequests = 0;
   let hunksSent = 0;
@@ -375,7 +407,13 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
     const parsed = parseCoverageRepairReply(completion.text, unit);
     invalid += parsed.invalid;
     claims.push(...parsed.noIssue);
-    rawCandidates.push(...parsed.candidates);
+    parsed.candidates.forEach((candidate, index) => {
+      rawCandidates.push(candidate);
+      candidateContexts.push({
+        unit,
+        hunkIndex: parsed.candidateHunks[index] ?? unit.hunks[0]?.index ?? 0,
+      });
+    });
   }
 
   const normalized = normalizeCandidates({
@@ -390,13 +428,28 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
       ? { ...candidate, id: `CR${String(index + 1).padStart(3, "0")}` }
       : candidate,
   );
-  const verdicts = new Map<string, VerificationVerdict>();
-  for (const candidate of candidates) {
-    const id = readId(candidate);
-    if (id !== undefined) {
-      verdicts.set(id, { pass: true, reason: "coverage-repair receipt" });
+  // v3：补漏候选不再伪造 pass 裁决；交给独立验证器逐条证伪。
+  const pending: PendingRepairCandidate[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    const context = candidateContexts[index];
+    if (isRecord(candidate) && context !== undefined) {
+      pending.push({ unit: context.unit, candidate });
     }
   }
+  const verification =
+    pending.length > 0
+      ? await verifyRepairCandidates({
+          candidates: pending,
+          llm: input.llm,
+          ...(input.llm.maxTokens !== undefined ? { maxTokens: input.llm.maxTokens } : {}),
+        })
+      : undefined;
+  if (verification !== undefined) {
+    usage = addUsage(usage, verification.usage);
+  }
+  const verdicts: ReadonlyMap<string, VerificationVerdict> =
+    verification?.verdicts ?? new Map<string, VerificationVerdict>();
   const emittedIds = new Set(input.findings.map((finding) => finding.id));
   const emittedContentKeys = new Set(input.findings.map((finding) => findingContentKey(finding)));
   const emittedRootKeys = new Set<string>();
@@ -451,6 +504,18 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
       rejectedCandidates: rawCandidates.length - findings.length + invalid,
       skippedByBudget: plan.skipped.length,
       usage,
+      ...(verification !== undefined
+        ? {
+            verification: {
+              requests: verification.requests,
+              failedRequests: verification.failedRequests,
+              accepted: verification.accepted,
+              rejected: verification.rejected,
+              unverified: verification.unverified,
+              usage: verification.usage,
+            },
+          }
+        : {}),
     },
   };
 }
@@ -516,16 +581,52 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readId(candidate: unknown): string | undefined {
-  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
-    return undefined;
-  }
-  const id = (candidate as { id?: unknown }).id;
-  return typeof id === "string" && id.length > 0 ? id : undefined;
-}
-
 function normalizePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+}
+
+const SOURCE_EXTENSIONS = new Set([
+  ".c",
+  ".cc",
+  ".cpp",
+  ".cxx",
+  ".cs",
+  ".go",
+  ".java",
+  ".js",
+  ".jsx",
+  ".kt",
+  ".kts",
+  ".m",
+  ".mm",
+  ".php",
+  ".py",
+  ".rb",
+  ".rs",
+  ".scala",
+  ".sh",
+  ".swift",
+  ".ts",
+  ".tsx",
+  ".vue",
+]);
+const HEADER_EXTENSIONS = new Set([".h", ".hh", ".hpp", ".hxx", ".inl"]);
+
+/** 补漏预算优先级：0=源码，1=头文件/未知，2=文档/资源 */
+function filePriority(file: string): number {
+  const base = file.replace(/\\/g, "/").split("/").pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  if (dot < 0) {
+    return 1;
+  }
+  const extension = base.slice(dot).toLowerCase();
+  if (SOURCE_EXTENSIONS.has(extension)) {
+    return 0;
+  }
+  if (HEADER_EXTENSIONS.has(extension)) {
+    return 1;
+  }
+  return 2;
 }
 
 /** 分片聚合：补漏审计按片求和；任一片启用即 `enabled=true` */
@@ -546,6 +647,13 @@ export function mergeCoverageRepairAudits(
   let rejectedCandidates = 0;
   let skippedByBudget = 0;
   let enabled = false;
+  let verifierUsage: LlmUsage = ZERO_USAGE;
+  let verifierRequests = 0;
+  let verifierFailedRequests = 0;
+  let verifierAccepted = 0;
+  let verifierRejected = 0;
+  let verifierUnverified = 0;
+  let hasVerification = false;
   for (const audit of audits) {
     enabled = enabled || audit.enabled;
     requests += audit.requests;
@@ -558,6 +666,15 @@ export function mergeCoverageRepairAudits(
     rejectedCandidates += audit.rejectedCandidates;
     skippedByBudget += audit.skippedByBudget;
     usage = addUsage(usage, audit.usage);
+    if (audit.verification !== undefined) {
+      hasVerification = true;
+      verifierRequests += audit.verification.requests;
+      verifierFailedRequests += audit.verification.failedRequests;
+      verifierAccepted += audit.verification.accepted;
+      verifierRejected += audit.verification.rejected;
+      verifierUnverified += audit.verification.unverified;
+      verifierUsage = addUsage(verifierUsage, audit.verification.usage);
+    }
   }
   return {
     enabled,
@@ -571,5 +688,17 @@ export function mergeCoverageRepairAudits(
     rejectedCandidates,
     skippedByBudget,
     usage,
+    ...(hasVerification
+      ? {
+          verification: {
+            requests: verifierRequests,
+            failedRequests: verifierFailedRequests,
+            accepted: verifierAccepted,
+            rejected: verifierRejected,
+            unverified: verifierUnverified,
+            usage: verifierUsage,
+          },
+        }
+      : {}),
   };
 }

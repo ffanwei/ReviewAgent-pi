@@ -391,6 +391,21 @@ export interface RunAudit {
 }
 
 /**
+ * 补漏候选的独立验证（v3）：在候选门之前再做一次证伪判断。
+ * - `accepted` / `rejected` 是验证器给出 pass / reject 的候选数；
+ * - 验证请求失败时 fail-open，候选保留并计入 `unverified`，`failedRequests` 留痕；
+ * - `usage` 是验证器自身的 one-shot 用量。
+ */
+export interface CoverageRepairVerificationAudit {
+  readonly requests: number;
+  readonly failedRequests: number;
+  readonly accepted: number;
+  readonly rejected: number;
+  readonly unverified: number;
+  readonly usage: LlmUsage;
+}
+
+/**
  * 覆盖缺口补漏的审计投影（F-01b）。
  *
  * - `requests` 是实际发出的补漏请求数；`failedRequests` 是调用 / 解析失败数；
@@ -398,7 +413,10 @@ export interface RunAudit {
  *   （candidate 或 no-issue）的 hunk 数；
  * - `candidates` 是回执里的候选条数；`acceptedFindings` 是通过候选门后的条数；
  * - `rejectedCandidates` 是候选门拒绝 + 回执结构非法的条数；
- * - `skippedByBudget` 是因 `maxRequests` / `maxChars` 未发出的缺口 hunk 数。
+ * - `skippedByBudget` 是因 `maxRequests` / `maxChars` 未发出的缺口 hunk 数；
+ * - `usage` 是补漏相关 one-shot 的总用量（生成 + 验证）。审计根 `usage`
+ *   只含 Agent 内调用（ADR-0066），任何“本次运行 token 总量”的汇总都必须
+ *   把两者相加；验证器用量同时记在 `verification.usage` 作为分项。
  */
 export interface CoverageRepairAudit {
   readonly enabled: boolean;
@@ -412,6 +430,8 @@ export interface CoverageRepairAudit {
   readonly rejectedCandidates: number;
   readonly skippedByBudget: number;
   readonly usage: LlmUsage;
+  /** v3 独立证伪门；只在真有补漏候选并执行验证时在场 */
+  readonly verification?: CoverageRepairVerificationAudit;
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

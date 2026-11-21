@@ -314,13 +314,17 @@ function announceInput(input: DeliveryInput): void {
   }
   const repair = audit.coverageRepair;
   if (repair !== undefined && repair.enabled) {
+    const verification =
+      repair.verification !== undefined
+        ? ` / 验证拒绝 ${String(repair.verification.rejected)}`
+        : "";
     log(
       `review-pi: 覆盖补漏 请求 ${String(repair.requests)}（失败 ${String(
         repair.failedRequests,
       )}）/ 覆盖 hunk ${String(repair.hunksCovered)}/${String(repair.hunksSent)} / ` +
         `新候选 ${String(repair.acceptedFindings)} / no-issue ${String(
           repair.noIssue,
-        )} / 预算跳过 ${String(repair.skippedByBudget)}\n`,
+        )} / 预算跳过 ${String(repair.skippedByBudget)}${verification}\n`,
     );
   }
 }

@@ -80,6 +80,16 @@ export interface CoverageCounts {
   readonly byCause: Readonly<Record<NotReachedCause, number>>;
 }
 
+/** 覆盖账本的 JSON 汇总（F-01c）：run.json 只放比例，不复制逐 hunk 明细 */
+export interface CoverageSummary extends CoverageCounts {
+  /** candidate / hunks；hunks=0 时记 0 */
+  readonly candidateRatio: number;
+  /** no-issue / hunks；hunks=0 时记 0 */
+  readonly noIssueRatio: number;
+  /** not-reached / hunks；hunks=0 时记 0 */
+  readonly notReachedRatio: number;
+}
+
 export interface CoverageLedger {
   /** 按文件路径排序，保证分片聚合与并行顺序无关 */
   readonly files: readonly FileCoverage[];

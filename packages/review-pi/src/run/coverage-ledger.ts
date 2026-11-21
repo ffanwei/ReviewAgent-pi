@@ -17,6 +17,7 @@ import {
   type CoverageHunkRef,
   type CoverageLedger,
   type CoverageLineRange,
+  type CoverageSummary,
   type ExcludedFileCoverage,
   type FileCoverage,
   type HunkCoverage,
@@ -647,6 +648,18 @@ function lineInRange(line: number, range: CoverageLineRange): boolean {
     return line === Math.max(1, range.start);
   }
   return line >= range.start && line <= range.start + range.count - 1;
+}
+
+/** 覆盖账本 → JSON 汇总（F-01c）：比例按 hunk 总数算；不复制逐 hunk 明细 */
+export function summarizeCoverage(ledger: CoverageLedger): CoverageSummary {
+  const counts = ledger.counts;
+  const denominator = counts.hunks > 0 ? counts.hunks : 1;
+  return {
+    ...counts,
+    candidateRatio: counts.hunks > 0 ? counts.candidate / denominator : 0,
+    noIssueRatio: counts.hunks > 0 ? counts.noIssue / denominator : 0,
+    notReachedRatio: counts.hunks > 0 ? counts.notReached / denominator : 0,
+  };
 }
 
 function computeCounts(
