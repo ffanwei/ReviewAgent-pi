@@ -34,7 +34,7 @@ python run_config.py --config iterB5 --run-id after-change --review-config C:/Us
 python run_config.py --config iterM20 --run-id after-change --skip-review
 ```
 
-- 数据集：`docs/bench/configs/<config>.jsonl`
-- 基线：`docs/bench/metrics/configs/<config>-baseline.json`
+- 数据集：`bench/aacr-bench-v2/configs/<config>.jsonl`
+- 基线：`bench/aacr-bench-v2/metrics/configs/<config>-baseline.json`
 - 结果目录：`results/<config>/reviewpi/<run_id>/`
 - 只改输出侧时不需要重跑 review-pi：用 `offline_tune.py` 复用已有检视+judge，零模型调用。

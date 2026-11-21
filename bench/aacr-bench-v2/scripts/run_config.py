@@ -1,4 +1,4 @@
-"""按配置名跑 review-pi + judge 的便捷入口，复用 docs/bench/configs 与 metrics/configs。
+"""按配置名跑 review-pi + judge 的便捷入口，复用 bench/aacr-bench-v2/configs 与 metrics/configs。
 
 用法：
     python run_config.py --list
@@ -7,8 +7,8 @@
     python run_config.py --config iterM20 --run-id after-change --skip-review   # 只重评已有结果
 
 实际执行的是 run_smoke.py，并自动传入：
-  --dataset  docs/bench/configs/<config>.jsonl
-  --baseline docs/bench/metrics/configs/<config>-baseline.json
+  --dataset  bench/aacr-bench-v2/configs/<config>.jsonl
+  --baseline bench/aacr-bench-v2/metrics/configs/<config>-baseline.json
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DOCS = Path("D:/Project/ReviewAgent-pi/docs/bench")
+DOCS = Path("D:/Project/ReviewAgent-pi/bench/aacr-bench-v2")
 CONFIGS = DOCS / "configs"
 BASELINES = DOCS / "metrics/configs"
 SMOKE_RUNNER = Path(__file__).resolve().parent / "run_smoke.py"

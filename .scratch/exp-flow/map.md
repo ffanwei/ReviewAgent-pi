@@ -99,3 +99,4 @@
 - 2026-11-21：pass + 审计接线落地（`coverage` 尾键、分片聚合、失败旁路 `coverage.json`）；全包 1187 passed / 1 skipped。
 - 2026-11-21：stderr 覆盖摘要、失败旁路测试、零模型基线脚本（`scripts/coverage-baseline.mjs`）；全包 1189 passed / 1 skipped。
 - 2026-11-21：从 `exp-group` 全量迁移 `docs/bench`（554 files / 20.5 MB，含 artifacts / ocr / results）；运行时仍依赖外部 evaluation。
+- 2026-11-21：AACR-Bench 归档从 `docs/bench` 迁到 `bench/aacr-bench-v2`；新增 `bench/README.md` 与结构指南条目。

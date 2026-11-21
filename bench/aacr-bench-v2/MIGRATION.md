@@ -1,4 +1,8 @@
-# docs/bench 迁移说明
+# AACR-Bench v2 归档迁移说明
+
+> 2026-11-21：本目录先迁入 `docs/bench/`，同日再迁到顶层 `bench/aacr-bench-v2/`。
+> 下文保留第一次迁移的原始记录；`git show exp-group:docs/bench/...` 里的 `docs/bench`
+> 是 exp-group 的历史路径，不是本仓当前路径。
 
 ## 来源
 
@@ -27,7 +31,7 @@
 
 ## 未迁移
 
-无（`docs/bench/` 已全量迁入）。`data/aacr-bench/` 是另一份本地数据集，仍在 `.gitignore` 中。
+无（归档已全量迁入 `bench/aacr-bench-v2/`）。`data/aacr-bench/` 是另一份本地数据集，仍在 `.gitignore` 中。
 
 ## 运行时依赖（重要）
 
@@ -41,7 +45,7 @@ D:/Project/bench/aacr-bench/evaluation
 
 - `repo_utils.py` / `schema.py` / `pipeline` / `converters`
 - `.venv`、`benchmark/` 原始数据、`results/` 输出
-- `aacr_reviewpi_bridge.py` 会 `sys.path.insert(EVAL_DIR)` 后 import `repo_utils` / `schema`；在 `docs/bench/scripts` 直接运行会缺模块。
+- `aacr_reviewpi_bridge.py` 会 `sys.path.insert(EVAL_DIR)` 后 import `repo_utils` / `schema`；在 `bench/aacr-bench-v2/scripts` 直接运行会缺模块。
 - `run_smoke.py` / `run_config.py` 的 `EVAL` / 数据路径按 evaluation 根目录布局计算；本仓路径不满足。
 
 ## 推荐用法
@@ -49,6 +53,7 @@ D:/Project/bench/aacr-bench/evaluation
 ### 只读参考 / 取脚本
 
 ```bash
+# exp-group 中的历史路径
 git show exp-group:docs/bench/README.md
 git show exp-group:docs/bench/scripts/aacr_reviewpi_bridge.py
 ```

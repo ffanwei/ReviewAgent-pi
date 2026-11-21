@@ -385,7 +385,7 @@ python run_config.py --config iterB5 --run-id after-change \
 ## 10. 文件索引
 
 ```
-docs/bench/
+bench/aacr-bench-v2/
 ├── README.md                          # 本文件
 ├── data/
 │   ├── aacr_bench_v2.jsonl            # 151 条标准样本

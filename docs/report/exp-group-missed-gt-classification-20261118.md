@@ -286,5 +286,5 @@ Maintainability 18（12.6%）、Security 6（4.2%）。
 - 分类矩阵：`docs/report/exp-group-missed-gt-classification-20261118.csv`
 - 归档指标：`D:/Project/bench/aacr-bench/evaluation/results/aacr_bench_v2/reviewpi/arm2/metrics_claude_20261116_102219.json`
 - OCR 指标：`D:/Project/bench/aacr-bench/evaluation/results/aacr_bench_v2/ocr/ocr-full-v41flash/metrics_ocr_20261116_161311.json`
-- 原始样本：`docs/bench/data/raw_positive_samples.json`（151 PR / 944 评论）
+- 原始样本：`bench/aacr-bench-v2/data/raw_positive_samples.json`（151 PR / 944 评论）
 - 分类明细（678 条去重 GT 的标签）保留在本次任务临时目录，未入库。

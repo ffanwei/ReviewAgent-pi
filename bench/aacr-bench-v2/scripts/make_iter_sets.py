@@ -18,9 +18,9 @@
   iterF91  = 91 条交集全量
 
 产物：
-  docs/bench/configs/<set>.jsonl
-  docs/bench/metrics/configs/<set>-baseline.json
-  docs/bench/metrics/configs/summary.{json,md}
+  bench/aacr-bench-v2/configs/<set>.jsonl
+  bench/aacr-bench-v2/metrics/configs/<set>-baseline.json
+  bench/aacr-bench-v2/metrics/configs/summary.{json,md}
 """
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ RP_RESULTS = EVAL / "results/aacr_bench_v2/reviewpi/arm2"
 OCR_RESULTS = EVAL / "results/aacr_bench_v2/ocr/ocr-full-v41flash"
 DIFFS = RP_RESULTS / ".reviewpi/diff"
 
-OUT_CONFIGS = Path("D:/Project/ReviewAgent-pi/docs/bench/configs")
-OUT_METRICS = Path("D:/Project/ReviewAgent-pi/docs/bench/metrics/configs")
+OUT_CONFIGS = Path("D:/Project/ReviewAgent-pi/bench/aacr-bench-v2/configs")
+OUT_METRICS = Path("D:/Project/ReviewAgent-pi/bench/aacr-bench-v2/metrics/configs")
 SMALL_MAX = 50_000
 
 

@@ -291,6 +291,14 @@ OCR（`D:/Project/open-code-review` @ `d77d70b`）的做法是四层 + 一个出
 - 验证：14 个 Python 脚本 `py_compile` 通过；JSONL 逐行可解析（smoke10=10 / iter20=20 / iterS10=10）。
 - 细节与用法见 `docs/bench/MIGRATION.md`。
 
+## 2026-11-21 · 归档路径迁到 `bench/aacr-bench-v2`
+
+- `docs/bench` 与 `docs/` 的文档语义不符（554 文件 / 22MB，约 40× `docs/report`），且包含约 15MB 逐样本运行产物。
+- 已 `git mv docs/bench bench/aacr-bench-v2`，内部结构不变；新增 `bench/README.md` 作为归档索引与约定。
+- 同步更新引用：`bench/aacr-bench-v2/{README,configs/README,MIGRATION}.md`、`scripts/make_iter_sets.py`、`scripts/run_config.py`、`ocr/full/non-target-analysis.json`、`docs/report/exp-group-missed-gt-classification-20261118.md`。
+- 历史讨论中的 `docs/bench` 保留为当时路径；`git show exp-group:docs/bench/...` 也保留为 exp-group 历史路径。上文「细节与用法见 `docs/bench/MIGRATION.md`」现指向 `bench/aacr-bench-v2/MIGRATION.md`。
+- 未处理：`artifacts/` + `results/` + `ocr/**/results/` 约 15.2MB 仍入库；是否转出 git / Git LFS 待单独决定。
+
 ## 下一步
 
 - 先落 F-01a：纯确定性账本 + 截取区间 + 审计键 + 恒等式测试 + 历史 diff 基线（零模型调用）。
