@@ -43,12 +43,17 @@ Local Markdown: issues and specs live as files under `.scratch/<feature>/` in th
 
 ### Branch task tracker
 
-每个进行中的实验分支在 `.scratch/<branch>/map.md` 维护任务总表，详情票在
-`.scratch/<branch>/issues/NN-*.md`。当用户询问“当前任务状态 / 进度 / TODO /
-下一步”时，先按当前分支（`git branch --show-current`）读取对应 `map.md`，
-按任务 ID、状态、验收证据与 commit 回答；不要凭记忆推断，也不要把一个分支的
-清单套到另一个分支。状态只有 `TODO / DOING / BLOCKED / DONE / DROPPED`；
-`DONE` 必须有验收证据。若当前分支没有 `map.md`，明确说“没有跟踪清单”，不要猜。
+每个进行中的实验分支在 `.scratch/<branch>/map.md` 维护任务总表；每个任务一个目录
+`.scratch/<branch>/issues/<task-id>/`，其中 `ticket.md` 是详情票，`discussion.md`
+是讨论归档（按 `YYYY-MM-DD · 主题` 分段追加，只增不改历史结论；结论变化写新日期段）。
+`map.md` 的任务行必须有指向对应 `discussion.md` 的跳转链接（没有则写 `—`），
+后续每次讨论都要先归档到该文件，再更新链接。
+
+当用户询问“当前任务状态 / 进度 / TODO / 下一步”时，先按当前分支
+（`git branch --show-current`）读取对应 `map.md`，按任务 ID、状态、验收证据与
+commit 回答；不要凭记忆推断，也不要把一个分支的清单套到另一个分支。状态只有
+`TODO / DOING / BLOCKED / DONE / DROPPED`；`DONE` 必须有验收证据。若当前分支
+没有 `map.md`，明确说“没有跟踪清单”，不要猜。
 
 ### Triage labels
 
