@@ -255,6 +255,9 @@ test("单块超预算不再报错：按整 hunk 截取后照常检视（单片�
   expect(record?.hunks).toBe(2);
   expect(record?.keptHunks).toBe(1);
   expect(record?.droppedHunks).toBe(1);
+  expect(record?.dropped).toEqual([
+    { index: 2, old: { start: 100, count: 2 }, new: { start: 100, count: 2 } },
+  ]);
   expect(record?.keptChars).toBe(keptPrefix.length);
   expect(record?.originalChars).toBe(diff.length);
 

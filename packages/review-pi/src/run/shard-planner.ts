@@ -1,4 +1,6 @@
+import type { DroppedHunkRange } from "../contracts/coverage.js";
 import type { ShardTruncationRecord } from "../contracts/run.js";
+import { parseHunkHeader } from "../diff/hunk.js";
 import type { DiffFileBlock } from "./mr-input.js";
 import { splitDiffIntoFileBlocks } from "./mr-input.js";
 
@@ -67,8 +69,15 @@ export function planShards(diff: string, limits: ShardLimits): ShardPlan {
     return { shards: [], blockCount: 0, chars: diff.length };
   }
 
-  // 逐块预检：超预算的块只保留文件头 + 前缀完整 hunk（从不切 hunk 体）
-  const prepared = blocks.map((block) => prepareBlock(block, limits.maxShardChars));
+  // 逐块预检：超预算的块只保留文件头 + 前缀完整 hunk（从不切 hunk 体）。
+  // hunk 序号按文件累计：同一路径出现多个 diff 块时，截取留痕仍指向文件内
+  // 原始 1-based 序号，覆盖账本可直接接回 kept hunk 之后。
+  const hunkOffsets = new Map<string, number>();
+  const prepared = blocks.map((block) => {
+    const offset = hunkOffsets.get(block.path) ?? 0;
+    hunkOffsets.set(block.path, offset + countHunks(block.text));
+    return prepareBlock(block, limits.maxShardChars, offset);
+  });
   const packing = prepared.map((entry) => entry.block);
 
   // 片 = 连续块区间 [start, end)
@@ -143,17 +152,12 @@ interface PreparedBlock {
  *
  * 没有 hunk 的块（二进制 / 纯头部）无法安全截取，原样保留、不产生留痕。
  */
-function prepareBlock(block: DiffFileBlock, maxChars: number): PreparedBlock {
+function prepareBlock(block: DiffFileBlock, maxChars: number, hunkOffset: number): PreparedBlock {
   if (block.chars <= maxChars) {
     return { block };
   }
   const lines = block.text.split("\n");
-  const hunkStarts: number[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    if (lines[index]?.startsWith("@@ ") === true) {
-      hunkStarts.push(index);
-    }
-  }
+  const hunkStarts = hunkStartIndexes(lines);
   if (hunkStarts.length === 0) {
     return { block };
   }
@@ -191,6 +195,28 @@ function prepareBlock(block: DiffFileBlock, maxChars: number): PreparedBlock {
   }
   const keptHunks = hunkStarts.filter((lineIndex) => lineIndex < cut).length;
   const keptChars = cum[cut] ?? block.chars;
+  // 被丢弃 hunk 的区间 + 文件内原始序号（供覆盖账本接回分母）。
+  // diff 前置块（path = ""）不是文件，不产生区间；计数仍保留在 droppedHunks。
+  const dropped: DroppedHunkRange[] = [];
+  if (block.path !== "") {
+    for (let index = 0; index < hunkStarts.length; index += 1) {
+      const lineIndex = hunkStarts[index];
+      if (lineIndex === undefined || lineIndex < cut) {
+        continue;
+      }
+      const header = parseHunkHeader(lines[lineIndex] ?? "");
+      if (header === null) {
+        throw new Error(
+          `internal: malformed hunk header while truncating ${block.path}`,
+        );
+      }
+      dropped.push({
+        index: hunkOffset + index + 1,
+        old: { start: header.oldStart, count: header.oldCount },
+        new: { start: header.newStart, count: header.newCount },
+      });
+    }
+  }
 
   return {
     block: {
@@ -207,6 +233,7 @@ function prepareBlock(block: DiffFileBlock, maxChars: number): PreparedBlock {
       hunks: hunkStarts.length,
       keptHunks,
       droppedHunks: hunkStarts.length - keptHunks,
+      dropped,
       droppedAdded,
       droppedRemoved,
     },
@@ -285,6 +312,22 @@ function buildOtherFilesSummary(
 
 function summaryFooter(rest: number): string {
   return `- …(还有 ${String(rest)} 个文件未列出)`;
+}
+
+/** 块内所有 `@@ ` hunk 头的行下标 */
+function hunkStartIndexes(lines: readonly string[]): number[] {
+  const starts: number[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index]?.startsWith("@@ ") === true) {
+      starts.push(index);
+    }
+  }
+  return starts;
+}
+
+/** 块内 hunk 总数（含后续可能被截取丢弃的） */
+function countHunks(text: string): number {
+  return hunkStartIndexes(text.split("\n")).length;
 }
 
 function assertLimits(limits: ShardLimits): void {

@@ -95,3 +95,4 @@
 - 2026-11-21：创建 `exp-flow` 跟踪清单；从评估文档 Appendix D 导入 P0/P1/P2 任务。
 - 2026-11-21：改为「每任务一个目录」（`ticket.md` + `discussion.md`）；归档 F-01 讨论并在任务表新增「讨论」跳转列。
 - 2026-11-21：F-01 开工；F-01a 账本骨架落地（`contracts/coverage.ts` + `run/coverage-ledger.ts` + 23 单测，未接线）。
+- 2026-11-21：截取区间 producer 落地（`ShardTruncationRecord.dropped` + 文件内累计序号；15 个 shard-planner 用例），待接线。

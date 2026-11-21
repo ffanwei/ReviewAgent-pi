@@ -84,14 +84,17 @@ export interface CoverageLedger {
 }
 
 /**
- * ADR-0070 截取丢弃的 hunk。
+ * 被丢弃的完整 hunk（ADR-0070）。
  * `index` = 该文件原始 hunk 序（1-based），用于把丢弃区间接回 kept hunk 之后。
  */
-export interface TruncatedHunkRange {
-  readonly file: string;
+export interface DroppedHunkRange {
   readonly index: number;
   readonly old: CoverageLineRange;
   readonly new: CoverageLineRange;
+}
+
+export interface TruncatedHunkRange extends DroppedHunkRange {
+  readonly file: string;
 }
 
 export interface BuildCoverageOptions {

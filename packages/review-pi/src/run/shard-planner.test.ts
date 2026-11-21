@@ -77,6 +77,11 @@ describe("planShards：按文件块贪心装箱（绝不切 hunk）", () => {
       hunks: 5,
       keptHunks: 2,
       droppedHunks: 3,
+      dropped: [
+        { index: 3, old: { start: 21, count: 2 }, new: { start: 21, count: 2 } },
+        { index: 4, old: { start: 31, count: 2 }, new: { start: 31, count: 2 } },
+        { index: 5, old: { start: 41, count: 2 }, new: { start: 41, count: 2 } },
+      ],
       droppedAdded: 3,
       droppedRemoved: 3,
     });
@@ -92,6 +97,27 @@ describe("planShards：按文件块贪心装箱（绝不切 hunk）", () => {
     expect(record.keptChars).toBeGreaterThan(100);
     expect(shard.diff).toContain("+new line 0");
     expect(shard.diff).not.toContain("+new line 1");
+  });
+
+  test("同一文件多个 diff 块：截取序号按文件累计", () => {
+    const first = hunksBlock("src/Same.java", 2, 200);
+    const second = hunksBlock("src/Same.java", 2, 200);
+    const input = [first, second].join("\n");
+    const lines = first.split("\n");
+    const hunkStarts = lines
+      .map((line, index) => (line.startsWith("@@ ") ? index : -1))
+      .filter((index) => index >= 0);
+    const budget = lines.slice(0, hunkStarts[1] ?? lines.length).join("\n").length;
+
+    const plan = planShards(input, { ...LIMITS, maxShardChars: budget });
+    const records = plan.shards.flatMap((shard) => shard.truncated);
+    expect(records).toHaveLength(2);
+    expect(records[0]?.dropped).toEqual([
+      { index: 2, old: { start: 11, count: 2 }, new: { start: 11, count: 2 } },
+    ]);
+    expect(records[1]?.dropped).toEqual([
+      { index: 4, old: { start: 11, count: 2 }, new: { start: 11, count: 2 } },
+    ]);
   });
 
   test("无 hunk 的块（二进制 / 纯头部）无法安全截取：原样保留、不留痕", () => {
@@ -111,6 +137,7 @@ describe("planShards：按文件块贪心装箱（绝不切 hunk）", () => {
           hunks: 10,
           keptHunks: 7,
           droppedHunks: 3,
+          dropped: [],
           droppedAdded: 20,
           droppedRemoved: 5,
         },
@@ -121,6 +148,7 @@ describe("planShards：按文件块贪心装箱（绝不切 hunk）", () => {
           hunks: 4,
           keptHunks: 3,
           droppedHunks: 1,
+          dropped: [],
           droppedAdded: 8,
           droppedRemoved: 2,
         },

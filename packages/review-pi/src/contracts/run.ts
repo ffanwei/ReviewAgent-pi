@@ -1,6 +1,7 @@
 // run 级留痕契约（测量常量面：审计投影的形状与 DSH 线一致，
 // 冻结 analyze 脚本据此消费 pi RunRecord）。随模块落地逐步补齐。
 
+import type { DroppedHunkRange } from "./coverage.js";
 import type { Finding } from "./finding.js";
 import type { LedgerEntry } from "./ledger.js";
 import type { LlmUsage, ToolSchema, WireMessage } from "./llm.js";
@@ -262,6 +263,12 @@ export interface ShardTruncationRecord {
   readonly keptHunks: number;
   /** 丢弃的完整 hunk 数（= hunks - keptHunks） */
   readonly droppedHunks: number;
+  /**
+   * 被丢弃 hunk 的区间与文件内 1-based 序号（ADR-0070）。
+   * 覆盖账本据此把丢弃区间接回分母并标 `not-reached(truncated)`；
+   * diff 前置块（path = ""）不产生区间。
+   */
+  readonly dropped: readonly DroppedHunkRange[];
   /** 被丢弃 hunk 里的新增行数 */
   readonly droppedAdded: number;
   /** 被丢弃 hunk 里的删除行数 */

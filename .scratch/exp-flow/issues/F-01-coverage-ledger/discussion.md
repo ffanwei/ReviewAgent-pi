@@ -228,6 +228,21 @@ OCR（`D:/Project/open-code-review` @ `d77d70b`）的做法是四层 + 一个出
 - 未接线：pass / 审计 / stderr / 截取区间 producer 仍待 F-01a 后续 commit；当前不改变任何运行时字节，replay 不受影响。
 - 文档：`docs/开发指南-仓库结构与文件职责.md` 的 `run/` 表已补 `coverage-ledger.ts`。
 
+## 2026-11-21 · 截取区间 producer 落地（未提交）
+
+- `contracts/coverage.ts`：拆出 `DroppedHunkRange`（index + old/new 区间），`TruncatedHunkRange extends DroppedHunkRange` 并带 `file`。
+- `contracts/run.ts`：`ShardTruncationRecord` 新增 `dropped: readonly DroppedHunkRange[]`。
+- `run/shard-planner.ts`：
+  - `prepareBlock` 解析被丢弃的 `@@` 头，记录区间与**文件内 1-based 序号**；
+  - `planShards` 按文件累计 hunk 偏移，同一路径多个 diff 块时序号不重置；
+  - 所有 hunk 都以 `@@ ` 行计数，未截取的块也推进偏移；
+  - diff 前置块（path = ""）不产生区间，只保留计数。
+- 测试：
+  - `shard-planner.test.ts` 15 个用例（新增同文件多块序号累计）；
+  - `sharded-review.test.ts` 断言 `dropped` 区间；
+  - 全包 `1186 passed / 1 skipped`；`typecheck` 与严格 `build` 通过。
+- 未接线：`ShardTruncationRecord[] → TruncatedHunkRange[]` 的映射与 pass / 审计接线仍待下一步。
+
 ## 下一步
 
 - 先落 F-01a：纯确定性账本 + 截取区间 + 审计键 + 恒等式测试 + 历史 diff 基线（零模型调用）。
