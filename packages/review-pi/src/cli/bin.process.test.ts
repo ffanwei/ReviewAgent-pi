@@ -2308,6 +2308,7 @@ test(
       expect(run.stderr).toContain("review-pi: 分片检视 2 片（单片上限 10000 字符）");
       expect(run.stderr).toContain("[s1/2] ▶ phase 1/6 Change Understanding (round 1)");
       expect(run.stderr).toContain("[s2/2] ▶ phase 1/6 Change Understanding (round 1)");
+      expect(run.stderr).toContain("review-pi: 覆盖账本 candidate");
       expect(run.stderr).not.toContain("\r");
 
       // ADR-0084：分片账本的 stages 百分比之和不超过 100%（auditMs 不再与

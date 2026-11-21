@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { FetchFunction } from "@earendil-works/pi-ai";
 import { buildAuditFileContent, writeAuditFile } from "../audit/audit-writer.js";
+import type { CoverageLedger } from "../contracts/coverage.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import {
@@ -209,6 +210,11 @@ export interface ReviewRunResult {
    * 与审计尾键 `shardTruncation` 同源（同一投影，不另算）。
    */
   readonly shardTruncation?: readonly ShardTruncationRecord[];
+  /**
+   * 覆盖账本（F-01a）：单遍与分片聚合都携带；CLI 据此在 stderr 报一行。
+   * 与审计尾键 `coverage` 同源（同一投影，不另算）。
+   */
+  readonly coverage?: CoverageLedger;
   /**
    * 仓库快照侧别判定（旁路观测，**不进审计 / RunRecord / stdout 字节**）：
    * `head` = `--repo` 停在 diff 改后侧；`base` = 改前侧（`get_file` 会返回
@@ -550,6 +556,7 @@ async function executeSinglePass(
       ...(context.repoSnapshotSide !== undefined
         ? { repoSnapshotSide: context.repoSnapshotSide }
         : {}),
+      coverage: pass.coverage,
       timings: {
         auditStartedAt: context.startedAt.getTime(),
         auditEndedAt: timing.lastRequestEndAt,
@@ -826,6 +833,7 @@ async function aggregateShards(
         ? { repoSnapshotSide: context.repoSnapshotSide }
         : {}),
       ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
+      coverage,
       timings,
     },
     runId: aggRunId,

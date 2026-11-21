@@ -27,6 +27,7 @@ import { formatRepoSnapshotSideNotice } from "../run/repo-side.js";
 import type { SettledTaskResult } from "../mcp/task-lifecycle.js";
 import type { ReviewRunResult, ReviewSkip } from "../run/review-run.js";
 import { formatShardTruncationNotice } from "../run/shard-planner.js";
+import { formatCoverageNotice } from "../run/coverage-ledger.js";
 import { readCodeLines } from "./code-lines.js";
 import { planCoverageReport } from "./coverage.js";
 import { writeMcpCallLog, type McpCallLogDocument } from "./mcp-call-log.js";
@@ -307,6 +308,9 @@ function announceInput(input: DeliveryInput): void {
   }
   if (input.run.shardTruncation !== undefined) {
     log(`review-pi: ${formatShardTruncationNotice(input.run.shardTruncation)}\n`);
+  }
+  if (input.run.coverage !== undefined) {
+    log(`review-pi: ${formatCoverageNotice(input.run.coverage)}\n`);
   }
 }
 

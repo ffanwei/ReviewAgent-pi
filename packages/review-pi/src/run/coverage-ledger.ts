@@ -149,6 +149,24 @@ export function buildCoverageLedger(
 }
 
 /**
+ * stderr 一行摘要（可 grep）：三态计数 + 非零 cause + hunk 外候选。
+ * 纯格式化，不改变账本。
+ */
+export function formatCoverageNotice(coverage: CoverageLedger): string {
+  const { counts } = coverage;
+  const causes = NOT_REACHED_CAUSES.filter((cause) => counts.byCause[cause] > 0)
+    .map((cause) => `${cause}=${String(counts.byCause[cause])}`)
+    .join(" ");
+  const causeSuffix = causes === "" ? "" : `（${causes}）`;
+  const outSuffix =
+    counts.outOfHunk > 0 ? `，hunk 外候选 ${String(counts.outOfHunk)}` : "";
+  return (
+    `覆盖账本 candidate ${String(counts.candidate)} / no-issue ${String(counts.noIssue)} / ` +
+    `not-reached ${String(counts.notReached)}${causeSuffix}${outSuffix}`
+  );
+}
+
+/**
  * 把 `shardTruncation` 审计记录展开成账本需要的截取区间。
  * diff 前置块（path = ""）不是文件，跳过；其计数仍留在 `droppedHunks`。
  */

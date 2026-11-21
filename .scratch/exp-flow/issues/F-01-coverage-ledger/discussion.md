@@ -266,6 +266,23 @@ OCR（`D:/Project/open-code-review` @ `d77d70b`）的做法是四层 + 一个出
 - 已知边界：同一文件多个 diff 块若被分到不同 shard，各片账本会重复文件路径并在聚合时抛错；正常 git diff 一文件一块，暂不处理。
 - 未做：stderr 覆盖摘要；失败旁路的自动化测试。
 
+## 2026-11-21 · stderr / 失败旁路 / 基线脚本（未提交）
+
+- stderr：`formatCoverageNotice` + CLI `announceInput` 输出一行
+  `review-pi: 覆盖账本 candidate X / no-issue Y / not-reached Z（cause…）`；
+  单遍与分片聚合各一次。
+- 失败旁路：`review-run.test.ts` 新增 `content_filter` 用例，断言
+  `<runsRoot>/runs/coverage.json` 存在，且 `notReached=1 / flow-error=1`。
+- 零模型基线脚本：`scripts/coverage-baseline.mjs`，root 脚本 `coverage:baseline`。
+  - `--diff <file>`（可重复）/ `--dir <dir>` / `--limit N` / `--shard-chars N` / `--json`
+  - 只读 diff + `planShards` + 账本，不读配置、不发请求
+  - 输出 files / hunks / excluded / truncated / not-reached / shards
+- 实测：
+  - `vul4j-1.diff`：1 file / 1 hunk / 1 shard；
+  - `data/clean-mr/diffs` 前 3 个：11 files / 32 hunks / 3 shards；
+  - `large-mr.diff --shard-chars 1000`：9 files / 11 hunks / 9 shards / 截取 2 hunk。
+- 验证：全包 `1189 passed / 1 skipped`；`typecheck` 与严格 `build` 通过。
+
 ## 下一步
 
 - 先落 F-01a：纯确定性账本 + 截取区间 + 审计键 + 恒等式测试 + 历史 diff 基线（零模型调用）。

@@ -7,6 +7,7 @@ import {
   buildCoverageLedger,
   closeCoverage,
   emptyCoverageLedger,
+  formatCoverageNotice,
   markNoIssue,
   mergeCoverageLedgers,
   truncatedRangesFromShardRecords,
@@ -210,6 +211,25 @@ describe("buildCoverageLedger", () => {
     const second = buildCoverageLedger(TWO_HUNKS);
     expect(first).toEqual(second);
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+});
+
+describe("formatCoverageNotice", () => {
+  test("三态计数 + 非零 cause + hunk 外候选", () => {
+    const base = buildCoverageLedger(TWO_HUNKS);
+    const updated = backfillCandidates(
+      base,
+      [
+        { id: "F001", file: "src/a.ts", line: 1 },
+        { id: "F002", file: "src/a.ts", line: 99 },
+      ],
+      "main",
+    );
+    const closed = closeCoverage(updated, "flow-error");
+
+    expect(formatCoverageNotice(closed)).toBe(
+      "覆盖账本 candidate 1 / no-issue 0 / not-reached 1（flow-error=1），hunk 外候选 1",
+    );
   });
 });
 

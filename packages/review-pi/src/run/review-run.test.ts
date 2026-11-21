@@ -1224,3 +1224,33 @@ function firstUserMessage(auditPath: string): string {
   const user = body.messages.find((message) => message.role === "user");
   return typeof user?.content === "string" ? user.content : JSON.stringify(user?.content);
 }
+
+test("失败路径：coverage.json 旁路落盘，未覆盖 hunk 标 flow-error", async () => {
+  const runsRoot = tempRunsRoot();
+  const script = fakeFetch([
+    { text: "blocked", finishReason: "content_filter", usage: ZERO },
+  ]);
+
+  await expect(
+    runReview({
+      caseId: "VUL4J-1",
+      repoPath: repoFixturePath("sample"),
+      diff: goldenFixture("vul4j-1.diff"),
+      issueDescription: VUL4J_1_ISSUE,
+      apiKey: "offline-test",
+      fetch: script.fetch,
+      runsRoot,
+      rep: 1,
+      ruleSkillLoader: async () => [],
+    }),
+  ).rejects.toThrow(/检视回合失败/);
+
+  const coveragePath = path.join(runsRoot, "runs", "coverage.json");
+  expect(existsSync(coveragePath)).toBe(true);
+  const coverage = JSON.parse(readFileSync(coveragePath, "utf8")) as {
+    counts: { hunks: number; notReached: number; byCause: Record<string, number> };
+  };
+  expect(coverage.counts.hunks).toBe(1);
+  expect(coverage.counts.notReached).toBe(1);
+  expect(coverage.counts.byCause["flow-error"]).toBe(1);
+});
