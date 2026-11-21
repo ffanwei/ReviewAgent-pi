@@ -47,6 +47,15 @@ node scripts/e2e-mcp/run-e2e.mjs
 
 Local Markdown: issues and specs live as files under `.scratch/<feature>/` in this repo (no CLI required). See `docs/agents/issue-tracker.md`.
 
+### Branch task tracker
+
+每个进行中的实验分支在 `.scratch/<branch>/map.md` 维护任务总表，详情票在
+`.scratch/<branch>/issues/NN-*.md`。当用户询问“当前任务状态 / 进度 / TODO /
+下一步”时，先按当前分支（`git branch --show-current`）读取对应 `map.md`，
+按任务 ID、状态、验收证据与 commit 回答；不要凭记忆推断，也不要把一个分支的
+清单套到另一个分支。状态只有 `TODO / DOING / BLOCKED / DONE / DROPPED`；
+`DONE` 必须有验收证据。若当前分支没有 `map.md`，明确说“没有跟踪清单”，不要猜。
+
 ### Triage labels
 
 Default five canonical roles, label string equal to role name (`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`). See `docs/agents/triage-labels.md`.
