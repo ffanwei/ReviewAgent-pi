@@ -1,0 +1,183 @@
+{
+  "generatedAt": "2026-11-15T08:49:36.415Z",
+  "runId": "20261115_084416_618",
+  "source": "mr",
+  "caseId": "elastic__elasticsearch@4d9b96f",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+      "line": 420,
+      "title": "暂停分支在必然为 null 的 indexShardSnapshotStatus 上调用 updateStatusDescription 引发 NPE",
+      "description": "pauseShardSnapshotsForNodeRemoval 在循环开头用 `IndexShardSnapshotStatus indexShardSnapshotStatus = localShardSnapshots.get(shardId);`（L398）缓存本地状态，而在 L419-422 新增的 Supplier 中对该变量调用 `updateStatusDescription(...)`。但使用该 Supplier 的分支恰是 L410-411 判断 `localShardSnapshotStatus == null`（同一 localShardSnapshots、同一 shardId）的分支，其语义是“本地根本没有该 shard 的状态对象，无需更新”（相邻同类分支因此都写成 `() -> null`），因此 indexShardSnapshotStatus 在此分支必为 null，通知回调执行时必然抛 NullPointerException。由于回调经 ActionListener.runBefore 包装，异常会被 RunBeforeActionListener 转成 delegate.onFailure（或 addSuppressed），于是 master 通知即使成功也会打印 “failed to update snapshot state to [PAUSED_FOR_NODE_REMOVAL]” 的 warn 日志，掩盖真实失败；在节点摘除关机路径上产生误导性告警。",
+      "evidence": [
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:398 — `IndexShardSnapshotStatus indexShardSnapshotStatus = localShardSnapshots.get(shardId);`",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:410-411 — `final var localShardSnapshotStatus = localShardSnapshots.get(shardId); if (localShardSnapshotStatus == null) {`",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:419-422 — `() -> { indexShardSnapshotStatus.updateStatusDescription(\"finished: master notification attempt complete\"); return null; }`",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:335 — 同类分支已改用 `() -> null`（notifyUnsuccessfulSnapshotShard 的 ABORTED 路径）",
+        "server/src/main/java/org/elasticsearch/action/ActionListenerImplementations.java:329-337 — RunBeforeActionListener.onResponse 捕获 runBefore 异常后调用 super.onFailure(ex)"
+      ],
+      "rule": "CORRECTNESS-NPE-LAZY-CALLBACK",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 在惰性回调中解引用必然为 null 的局部变量（空指针解引用）。\n影响评估：每次在“master 已调度但本节点无本地 shard 状态”的暂停流程中都会抛 NPE，通知成功被记录成失败 warn，污染关机/节点摘除的诊断信息；异常还会在 onFailure 路径上作为 suppressed 附加到原有异常，增加排障噪声。",
+        "suggestion": "[重构思路] 该分支本就没有本地状态对象可更新，与 GL-307/ABORTED 分支保持一致改为空动作；若确实需要更新状态，应在 lambda 内基于 map 重新查找并判空，而不是复用循环外的缓存值。\n代码示例：\n```java\nnotifyUnsuccessfulSnapshotShard(\n    entry.snapshot(),\n    shardId,\n    ShardState.PAUSED_FOR_NODE_REMOVAL,\n    \"paused\",\n    masterShardSnapshotStatus.generation(),\n    () -> null   // 本地没有状态对象，无需更新 statusDescription\n);\n```\n同时删除 L398 的 `indexShardSnapshotStatus` 局部变量，避免与 L410 的 `localShardSnapshotStatus` 重复查找。",
+        "subcategory": "空指针安全"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "安全",
+      "file": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+      "line": 328,
+      "title": "以 FileSystem 实现类判断放行，非默认 FileSystem 的路径完全绕过 file entitlement 校验",
+      "description": "checkFileRead/checkFileWrite 新增了 `isPathOnDefaultFilesystem(path) == false` 就立即 return 的逻辑，判断依据仅是 `path.getFileSystem().getClass() != DEFAULT_FILESYSTEM_CLASS`。这意味着任何通过非默认 FileSystemProvider 获得的 Path 都不再经过 requestingClass / isTriviallyAllowed / fileAccess.canRead(|canWrite) 检查。file entitlement 的安全模型建立在“所有路径访问都要经过权限树”之上，而以文件系统实现类作为放行条件，等于把绕过面交给“能否拿到一个非默认 FS 的 Path”——插件可通过 `FileSystems.newFileSystem(...)` 或注册自定义 FileSystemProvider 获得这类 Path，并在其实现内部完成真实 I/O，从而使 file entitlement 形同虚设。当前实现也没有对放行做 info 级别审计，仅在 debug 下记录。",
+      "evidence": [
+        "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java:328-330 — `if (isPathOnDefaultFilesystem(path) == false) { return; }`",
+        "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java:357-359 — checkFileWrite 中同样的提前 return",
+        "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java:311-325 — 仅比较 `path.getFileSystem().getClass() != DEFAULT_FILESYSTEM_CLASS`，并以 logger.debug 记录",
+        "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java:336-348 — 被跳过的是 entitlements.fileAccess().canRead(path) 校验与 notEntitled 上报"
+      ],
+      "rule": "SECURITY-ENTITLEMENT-BYPASS",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 权限校验被宽泛条件绕过（security bypass 风险）。\n影响评估：任何持有非默认 FileSystem 路径的插件代码可绕过 file entitlement 的读写限制；由于放行条件与“是否真的访问本地磁盘”无关，审计上也无法追溯放行了哪些敏感路径。",
+        "suggestion": "[重构思路] 明确放行范围并留痕：把写死的“类不同即放行”收窄为显式的 allowlist（例如仅放行测试用内存 FS），其它非默认 FS 走拒绝或至少 info 级审计日志；同时把判断结果与路径来源一并记录，便于安全审计。\n代码示例：\n```java\nprivate boolean isTriviallyAllowedFilesystem(Path path) {\n    var fsClass = path.getFileSystem().getClass();\n    if (fsClass == DEFAULT_FILESYSTEM_CLASS) {\n        return false;\n    }\n    // 只放行明确登记过的内存文件系统，其它非默认 FS 仍走权限树校验\n    if (ALLOWED_TEST_FILESYSTEMS.contains(fsClass.getName())) {\n        return true;\n    }\n    logger.info(\"file entitlement check skipped for non-default filesystem [{}] on path [{}]\", fsClass.getName(), path);\n    return false;\n}\n```",
+        "subcategory": "权限校验绕过"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/main/java/org/elasticsearch/common/settings/Settings.java",
+      "line": 308,
+      "title": "getGlobValues 从 getAsList 改为 get，列表值与逗号分隔值会被解析成单个非法路径",
+      "description": "旧实现 `settingNames.map(this::getAsList).flatMap(List::stream)` 对每个匹配到的设置取列表值并逐个展开，因而天然支持 `a,b` 形式的逗号分隔值以及 List 值。新实现改为 `.map(k -> k + suffix).map(subSettings::get)`，而 Settings.get 最终走 `toString(Object o) -> o.toString()`：当匹配到的设置是 List（例如 `putList` 或数组形式配置）时，返回的是 `\"[/a, /b]\"` 这样的字面量字符串，而不是两个路径；逗号分隔的字符串也不再拆分。这些结果会继续被 FilesEntitlement 的 `result.map(pathLookup.configDir()::resolve)` 解析成不存在的路径，导致 file entitlement 静默少授权（或授权到畸形路径），行为相对旧实现发生退化。",
+      "evidence": [
+        "server/src/main/java/org/elasticsearch/common/settings/Settings.java:308 — `return subSettings.names().stream().map(k -> k + suffix).map(subSettings::get).filter(Objects::nonNull);`",
+        "server/src/main/java/org/elasticsearch/common/settings/Settings.java:1574-1576 — `private static String toString(Object o) { return o == null ? null : o.toString(); }`（get 对 List 值返回 \"[a, b]\"）",
+        "server/src/main/java/org/elasticsearch/common/settings/Settings.java:461-479 — 被替换掉的 getAsList 支持 List 值展开与 commaDelimited 拆分",
+        "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/entitlements/FilesEntitlement.java:245 — 解析结果被直接 `map(pathLookup.configDir()::resolve)`"
+      ],
+      "rule": "CORRECTNESS-SETTINGS-VALUE-SHAPE",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 取值接口从“列表语义”换成“标量语义”，丢失多值展开。\n影响评估：glob 形式的 path_setting 若命中列表值或逗号分隔值，会解析出 `[/a, /b]` 之类的畸形路径，entitlement 静默失效，问题只能在运行期以权限不足的形式暴露。",
+        "suggestion": "[重构思路] 保持列表语义：在子设置上取列表值并展开；若确实要禁止多值，就在策略校验阶段显式拒绝并给出错误信息，而不是静默产生畸形路径。\n代码示例：\n```java\nSettings subSettings = getByPrefix(prefix);\nreturn subSettings.names().stream()\n    .flatMap(k -> subSettings.getAsList(k + suffix).stream())\n    .filter(Objects::nonNull);\n```",
+        "subcategory": "多值设置解析"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/entitlements/FilesEntitlement.java",
+      "line": 236,
+      "title": "以 contains(\"*\") 分派 glob 解析，与 getGlobValues 要求的 \".*.\" 格式不一致，策略可在启动期抛 IllegalArgumentException",
+      "description": "FilesEntitlement 用 `setting.contains(\"*\")` 判断是否走 settingGlobResolver，而 Settings.getGlobValues 只在模式包含 `\".*.\"` 时才工作，否则直接 `throw new IllegalArgumentException(\"Pattern [\" + settingGlob + \"] does not contain a glob [*]\")`。两者判定口径不同：`path_setting: \"foo.*\"`、`\"*.path\"`、`\"*\"` 之类写法会通过 contains 判定进入 glob 分支，然后在解析时抛 IllegalArgumentException。FilesEntitlement.build 对 path_setting 只校验 basedir_if_relative/ignore_url 的组合（L393-398），并不校验 glob 形式，因此这类策略错误会延迟到 FileAccessTree 构建/路径解析阶段才以未包装的 IllegalArgumentException 抛出，不再是显式的 PolicyValidationException。",
+      "evidence": [
+        "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/entitlements/FilesEntitlement.java:236-241 — `if (setting.contains(\"*\")) { result = pathLookup.settingGlobResolver().apply(setting); } else { ... }`",
+        "server/src/main/java/org/elasticsearch/common/settings/Settings.java:301-304 — `int globIndex = settingGlob.indexOf(\".*.\"); if (globIndex == -1) { throw new IllegalArgumentException(...); }`",
+        "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/entitlements/FilesEntitlement.java:393-398 — path_setting 分支未校验 glob 形式"
+      ],
+      "rule": "API-CONTRACT-MISMATCH",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 调用方判定条件与被调方契约不一致，导致运行期非受检异常。\n影响评估：策略文件里一个写法不严谨的 glob 会让节点在启动/策略构建阶段抛 IllegalArgumentException 而非可读的 PolicyValidationException，错误定位困难。",
+        "suggestion": "[重构思路] 统一 glob 判定口径：在 FilesEntitlement.build 阶段按同一规则（包含 `.*.`）校验 path_setting，或在 Settings 侧支持后缀/通配位置更宽松的匹配；把契约错误提前成 PolicyValidationException。\n代码示例：\n```java\n// FilesEntitlement.build\nif (pathSetting.contains(\"*\") && pathSetting.contains(\".*.\") == false) {\n    throw new PolicyValidationException(\"invalid 'path_setting' glob [\" + pathSetting + \"], expected form 'prefix.*.suffix'\");\n}\n\n// resolveRelativePaths\nif (setting.contains(\".*.\")) {\n    result = pathLookup.settingGlobResolver().apply(setting);\n} else {\n    String path = pathLookup.settingResolver().apply(setting);\n    result = path == null ? Stream.of() : Stream.of(path);\n}\n```",
+        "subcategory": "接口契约不一致"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+      "line": 442,
+      "title": "master 通知结果不再写入 statusDescription，成功与失败的状态描述完全一致，诊断信息丢失",
+      "description": "本次改动把 postMasterNotificationAction 从 Consumer<String>（参数为 “successfully sent ...” / “exception trying to send ...” 等具体结果）改成 Supplier<Void>，并在所有调用点写入固定文案 \"finished: master notification attempt complete\"，同时删除了原来把通知结果与“prior status description”拼接的逻辑（含 maxStatusAppend=1000 的截断保护）。结果是：无论 master 通知成功、抛异常还是“新 master 需要被重新通知”的场景，状态描述完全相同，只能依赖 logger.warn 判断失败；而原来注释明确说明这些文案用于“看清信息是否到达了前一个/当前 master”。对快照/关机类分布式问题而言，这属于可观测性回退。",
+      "evidence": [
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:439-443 — `Supplier<Void> postMasterNotificationAction = () -> { snapshotStatus.updateStatusDescription(\"finished: master notification attempt complete\"); return null; };`",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:791-798 — onResponse/onFailure 不再把结果字符串传给 postMasterNotificationAction，只保留 trace/warn 日志",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:802-805 — `postMasterNotificationAction.get()` 的返回值被丢弃"
+      ],
+      "rule": "OBSERVABILITY-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 状态描述语义扁平化导致可观测性回退。\n影响评估：同一快照 shard 的成功/失败/重试通知在 statusDescription 上不可区分，运维与 IT 断言都只能依赖固定字符串，定位“通知是否到达 master”的成本显著上升。",
+        "suggestion": "[重构思路] 保留结果信息：回调仍接收结果字符串（或在 Supplier 内部读取通知结果），把成功/失败/重试与旧的 statusDescription 一起写入，同时保留长度截断，避免描述无限增长。\n代码示例：\n```java\nprivate static final int MAX_STATUS_APPEND = 1000;\n\nConsumer<String> postMasterNotificationAction = outcome -> snapshotStatus.updateStatusDescription(\n    \"master notification attempt complete: \" + truncate(outcome, MAX_STATUS_APPEND)\n);\n```",
+        "subcategory": "日志与状态可观测性"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/main/java/org/elasticsearch/transport/TransportHandshaker.java",
+      "line": 229,
+      "title": "删除 bestKnownVersion 回退后，远端更旧且版本号未知的兼容节点会被直接拒绝握手",
+      "description": "ensureCompatibleVersion 现在只在两条路径上放行：远端不旧于我，或远端版本 isKnown()。一旦远端 transport version 可兼容（>= MINIMUM_COMPATIBLE）却不在本地 ALL_VERSIONS_MAP 中（例如通过 VersionExtension 扩展的版本、snapshot/自定义构建、或跨大版本的向后场景），就会落到 L236-247 抛 IllegalStateException，握手失败、连接被拒。旧实现会退回到 bestKnownVersion（≤ 远端版本且双方都认识），仅打印 warn 继续协商。这属于行为收紧：正常情况下 isKnown 恒成立，但一旦出现未知但兼容的版本号，集群连通性会被硬性切断，而不再有降级路径。",
+      "evidence": [
+        "server/src/main/java/org/elasticsearch/transport/TransportHandshaker.java:223-234 — `if (TransportVersion.isCompatible(...)) { if (remoteTransportVersion.onOrAfter(localTransportVersion)) { return; } if (remoteTransportVersion.isKnown()) { return; } }`",
+        "server/src/main/java/org/elasticsearch/transport/TransportHandshaker.java:236-247 — 落到这里即 `logger.warn(message); throw new IllegalStateException(message);`",
+        "server/src/main/java/org/elasticsearch/TransportVersion.java:125-127 — isKnown() 基于 ALL_VERSIONS_MAP，扩展版本由 VersionExtension 加载（L176-186），并非所有线上版本号都已知",
+        "server/src/main/java/org/elasticsearch/TransportVersion.java:88-90 — 协商结果改为依赖 min(id) 推导"
+      ],
+      "rule": "PROTOCOL-NEGOTIATION-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 移除兼容性降级路径（行为收紧）。\n影响评估：如果线上出现未知但被判定兼容的 transport version（扩展版本/特殊构建），握手会直接失败并抛 IllegalStateException，表现为节点无法加入集群，且只能通过堆栈而非 warn 日志定位。",
+        "suggestion": "[重构思路] 若确定要拒绝未知旧版本，请把失败原因写清楚并自测混合版本场景；否则保留“已知的、<= 远端的版本”这一降级分支，仅在完全无可用版本时才失败。\n代码示例：\n```java\nif (remoteTransportVersion.isKnown()) {\n    return;\n}\n// 无法确定远端协议版本：如果本地不存在任何 <= 远端的已知版本，则必须失败\nif (TransportVersion.getAllVersions().stream().noneMatch(v -> v.onOrBefore(remoteTransportVersion))) {\n    throw new IllegalStateException(message);\n}\nlogger.warn(\"negotiating unknown remote transport version [{}] from [{}], fallback to a known older version\", remoteTransportVersion, releaseVersion);\n```",
+        "subcategory": "版本协商兼容性"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+      "line": 804,
+      "title": "postMasterNotificationAction 用 Supplier<Void> 表达“无返回值的回调”，所有调用点只能写 () -> null",
+      "description": "postMasterNotificationAction 的全部用途是“通知完成后执行一个副作用”，却声明为 Supplier<Void>：所有调用点都写成 `() -> null`（L335、L419-422、L694、L711、L725 附近），执行处 `postMasterNotificationAction.get()` 丢弃返回值。这既无法表达“可能抛出受检异常”的真实需求，也让调用者需要构造无意义的返回值，属于误导性的类型选择，后续维护者容易误以为该回调有返回值参与状态流转。",
+      "evidence": [
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:787 — 参数声明为 `Supplier<Void> postMasterNotificationAction`",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:804 — `postMasterNotificationAction.get();` 返回值被忽略",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:335 — 调用点写成 `() -> null`",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:742、763 — notifySuccessfulSnapshotShard / notifyUnsuccessfulSnapshotShard 同样传播 Supplier<Void>"
+      ],
+      "rule": "MAINTAINABILITY-API-SHAPE",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] API 类型选择不当（Supplier<Void> 反模式）。\n影响评估：6 个调用点被迫写 `() -> null`，可读性下降；类型签名无法表达“可能抛异常”，异常只能以非受检方式抛出。",
+        "suggestion": "[重构思路] 改用 CheckedRunnable<?>（ActionListener.runBefore 已接受该类型），并在 runBefore 包装处直接传入，省去 Supplier 与 get() 的包装。\n代码示例：\n```java\nprivate void sendSnapshotShardUpdate(\n    final Snapshot snapshot,\n    final ShardId shardId,\n    final ShardSnapshotStatus status,\n    CheckedRunnable<?> postMasterNotificationAction\n) {\n    ...\n    var listener = ActionListener.runBefore(updateResultListener, () -> {\n        snapshotShutdownProgressTracker.releaseRequestSentToMaster(snapshot, shardId);\n        postMasterNotificationAction.run();\n    });\n}\n// 调用点\nnotifyUnsuccessfulSnapshotShard(..., () -> {});\n```",
+        "subcategory": "API 类型设计"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+      "line": 239,
+      "title": "关机进度日志不再输出 SnapshotId，多快照并发时无法区分状态归属",
+      "description": "logIndexShardSnapshotStatuses 的日志从 `\"SnapshotId %s, ShardId %s, shard snapshot status: %s\"` 简化为 `\"ShardId %s, %s\"`，丢掉了 SnapshotId（以及 “shard snapshot status:” 的语义提示）。该方法在关机进度上报期间会遍历 shardSnapshots 的全部快照与 shard 输出多行日志，去掉 SnapshotId 后，同一 shardId 可能在多个快照中同时存在，日志无法判断某行属于哪个快照，排障时需要额外交叉比对。",
+      "evidence": [
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:237-241 — `for (var snapshotStatuses : shardSnapshots.values()) { ... callerLogger.info(Strings.format(\"ShardId %s, %s\", shardSnapshot.getKey(), shardSnapshot.getValue())); }`",
+        "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java:84-86 — shardSnapshots 为 `Map<Snapshot, Map<ShardId, IndexShardSnapshotStatus>>`，同一 shardId 可存在于多个 Snapshot 之下"
+      ],
+      "rule": "OBSERVABILITY-002",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 日志信息缺失导致可诊断性下降。\n影响评估：关机期间多快照并发时，进度日志无法区分快照归属，需要依赖其它日志推断，延长故障定位时间。",
+        "suggestion": "[重构思路] 保留快照维度信息，或改为遍历 entrySet 保留 Snapshot 上下文；格式统一为结构化键值形式便于检索。\n代码示例：\n```java\nfor (var snapshotEntry : shardSnapshots.entrySet()) {\n    for (var shardSnapshot : snapshotEntry.getValue().entrySet()) {\n        callerLogger.info(\n            Strings.format(\"SnapshotId %s, ShardId %s, shard snapshot status: %s\",\n                snapshotEntry.getKey().getSnapshotId(), shardSnapshot.getKey(), shardSnapshot.getValue())\n        );\n    }\n}\n```",
+        "subcategory": "日志信息完整性"
+      }
+    }
+  ]
+}

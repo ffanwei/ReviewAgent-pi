@@ -1,0 +1,97 @@
+[
+  {
+    "filePath": "shell/common/gin_helper/promise.cc",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "microtasks_scope_{context_, false, v8::MicrotasksScope::kRunMicrotasks},",
+        "review": "[缺陷类型] 微任务检查点时机与目标队列错位（行为回归）。影响评估：主进程中被 Promise 包装的所有 Electron API（如 `shell.openPath`、`webContents.printToPDF` 等返回 Promise 的接口）在 resolve/reject 后不再立即执行 JS 的 `then`/`await` 续体，回调被推迟到后续检查点；在存在 context 级 MicrotaskQueue 的场景下，isolate 级 PerformCheckpoint 还可能排空错误的队列，造成回调长时间不触发或不触发。",
+        "suggestion": "[重构思路] 让浏览器进程的检查点时机与旧行为对齐（settle 之后执行），并始终使用 context 自己的 MicrotaskQueue。可把检查点放回 MicrotasksScope 析构，或在 SettleScope 内保留显式调用。代码示例：`MicrotasksScope::MicrotasksScope(v8::Local<v8::Context> c, bool ignore, v8::MicrotasksScope::Type t) : isolate_(c->GetIsolate()), queue_(c->GetMicrotaskQueue()), ignore_(ignore) { if (electron::IsBrowserProcess()) { if (t == v8::MicrotasksScope::kRunMicrotasks && !ignore_) queue_->PerformCheckpoint(isolate_); } else { v8_microtasks_scope_.emplace(isolate_, queue_, t); } }`；或在 `PromiseBase::SettleScope` 析构中恢复 `context_.GetMicrotaskQueue()->PerformCheckpoint(isolate())`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 20,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "shell/common/gin_helper/microtasks_scope.cc",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "v8::MicrotasksScope::PerformCheckpoint(isolate);",
+        "review": "[缺陷类型] 作用域类型语义丢失（kDoNotRunMicrotasks 被当作 kRunMicrotasks 处理）。影响评估：未捕获异常的上报回调中会重入 V8 运行微任务，可能触发用户 Promise 回调，打乱错误处理时序，甚至在上报过程中抛出新的 JS 异常。",
+        "suggestion": "[重构思路] 浏览器分支也要尊重 scope_type，或为「明确不想跑微任务」的调用点显式跳过检查点，并把参数改名为能表达真实语义的名字。代码示例：`if (electron::IsBrowserProcess()) { if (!ignore_browser_checkpoint && scope_type == v8::MicrotasksScope::kRunMicrotasks) v8::MicrotasksScope::PerformCheckpoint(isolate); } else { v8_microtasks_scope_.emplace(isolate, microtask_queue, scope_type); }`；调用点改为 `gin_helper::MicrotasksScope microtasks_scope(env->context(), /*ignore_browser_checkpoint=*/true, v8::MicrotasksScope::kDoNotRunMicrotasks);`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 19,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "shell/browser/native_window_views.cc",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "!widget()->native_widget_private()->IsVisible())",
+        "review": "[缺陷类型] 同类可见性判断两种写法并存，改动动机不明。影响评估：若 `native_widget_private()->IsVisible()` 与 `Widget::IsVisible()` 在隐藏/最小化/父窗口不可见时判定不同，`Show()` 的 modal 计数可能重复递增或漏递增，进而影响父窗口的 modal 状态与关闭行为；同时后续维护者难以判断应以哪种写法为准。",
+        "suggestion": "[重构思路] 统一走 `NativeWindowViews::IsVisible()`（其 Windows 分支已显式规避 ::IsWindowVisible 的父窗口传染问题），或在改动处加注释说明为何必须绕过 Widget 层。代码示例：`if (is_modal() && NativeWindow::parent() && !IsVisible()) static_cast<NativeWindowViews*>(parent())->IncrementChildModals();`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 492,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "script/release/get-url-hash.ts",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "code: process.env.ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY!,",
+        "review": "[缺陷类型] 外部服务端点/密钥名称变更与部署侧不同步（配置漂移）。影响评估：发布流水线中 `getUrlHash` 调用会因密钥缺失或路由变更而失败，且错误信息不指向根因；若上层未严格校验返回值，可能把未校验的产物继续发布。",
+        "suggestion": "[重构思路] 在脚本中显式校验环境变量并在缺失时快速失败，使配置问题在流水线早期暴露。代码示例：`const key = process.env.ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY; if (!key) throw new Error('ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY is not set'); ... const options = { code: key, targetUrl, algorithm };`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 10,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "shell/renderer/api/electron_api_spell_check_client.cc",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "#include \"shell/common/gin_helper/microtasks_scope.h\"",
+        "review": "[缺陷类型] 间接依赖 / 无用 include（IWYU 违规）。影响评估：文件对 v8-microtask-queue.h 的依赖被隐藏在 gin_helper 头文件里，未来任何对该头 include 的收敛都会造成这些文件编译失败；同时多余的 include 增加构建耦合。",
+        "suggestion": "[重构思路] 二选一：要么把迁移做完（改用 gin_helper::MicrotasksScope），要么直接 include 真正需要的头。代码示例：`#include \"v8/include/v8-microtask-queue.h\"  // for v8::MicrotasksScope`；并删除 electron_bindings.cc 中未使用的 microtasks_scope.h include。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

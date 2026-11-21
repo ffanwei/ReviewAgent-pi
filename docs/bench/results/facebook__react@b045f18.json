@@ -1,0 +1,292 @@
+{
+  "instance_id": "facebook__react@b045f18",
+  "repo": "facebook/react",
+  "base_commit": "99563e91736e9de473c4865d5cb6fd9eb1a26bcb",
+  "head_commit": "b045f18e378341876ee69e729fc855cab501c3cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1296.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 27,
+  "review_output": [
+    {
+      "file": ".github/workflows/compiler_typescript.yml",
+      "line": 99,
+      "summary": "compiler workspace 测试在 Linux 上被全部跳过，CI 实际不再运行这些测试",
+      "failure_scenario": "test job 固定 `runs-on: ubuntu-latest`，因此 `runner.os` 恒为 'Linux'。该 job 的两个测试步骤条件互斥且都依赖 runner.os：第一步 `runner.os == 'Linux' && matrix.workspace_name == 'react-forgive'`（xvfb-run），第二步被改成 `runner.os != 'Linux' && matrix.workspace_name != 'react-forgive'`。结果是除 react-forgive 外的所有 workspace（babel-plugin-react-compiler、react-compiler-runtime、snap、healthcheck 等）在该 workflow 中既不跑 xvfb-run 分支，也不跑普通 test 分支，测试被静默跳过后 job 仍然显示成功，破坏了本次 MR 对构建链（tsup → esbuild）改造的回归防线。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.93,
+      "rule": "CI-001"
+    },
+    {
+      "file": "compiler/packages/babel-plugin-react-compiler/src/Entrypoint/Reanimated.ts",
+      "line": 7,
+      "summary": "移除 `typeof require === 'undefined'` 守卫后，无 require 的运行时会重新抛出错误导致插件崩溃",
+      "failure_scenario": "`hasModule` 现在直接调用 `require.resolve(name)`，而 catch 块只把 `code === 'MODULE_NOT_FOUND'` 视为「模块不存在」返回 false，其它错误一律 `throw error`。在不存在 `require` 的运行环境中（ESM 宿主、或在浏览器/打包器里运行编译器，例如 playground 场景），访问 `require.resolve` 会抛出 ReferenceError（`error.code` 为 undefined）或 TypeError，从而不被捕获而向上抛出，使整个 Babel 插件失败，而不是像移除前那样安全地返回 false。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "PORTABILITY-002"
+    },
+    {
+      "file": "compiler/packages/babel-plugin-react-compiler/src/HIR/Environment.ts",
+      "line": 288,
+      "summary": "`numRequiredArgs` 去掉 `min(1)` 校验后，配置为 0 会让 InferEffectDependencies 解引用 `args[0]` 崩溃",
+      "failure_scenario": "schema 由 `z.number().min(1, 'numRequiredArgs must be > 0')` 放宽为 `z.number()`，但同文件文档仍声明「numRequiredArgs must always be greater than 0」。下游 `inferEffectDependencies` 的判定是 `autodepFnLoads.get(calleeId) === value.args.length && value.args[0].kind === 'Identifier'`：当配置为 0 且源码中确实出现无参调用（`useSpecialEffect()`）时，长度比较成立，随后 `value.args[0]` 为 undefined，读取 `.kind` 抛 TypeError，成为编译器内部 crash（而非可读的配置错误）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CONFIG-002"
+    },
+    {
+      "file": "compiler/packages/babel-plugin-react-compiler/src/Inference/InferReferenceEffects.ts",
+      "line": 878,
+      "summary": "数组字面量统一改用单个 Capture effect，丢失了 spread 可变迭代器的 ConditionallyMutate 特例",
+      "failure_scenario": "ArrayExpression 分支由「逐元素分发 effect」改为单条 continuation（`effect: {kind: Effect.Capture}` + `lvalueEffect: Effect.Store`），initialize continuation 会对 `eachInstructionOperand(instr)` 的每个操作数施加同一 effect；而 `eachInstructionValueOperand` 在 ArrayExpression 分支对 `Spread` 元素同样 yield `element.place`。因此 `[...iter]` 中可变迭代器（generator/自定义 iterator）现在与数组元素一样被当作 Capture，而此前的实现是 `isArrayType(element.place) ? Effect.Capture : Effect.ConditionallyMutate`。由于 `reference()` 对 Mutable 值的 Capture 只保留 Capture 且不产生 freeze action（第 486-497 行），展开迭代器所隐含的「消费/修改」语义不再被建模，存在把被消耗的可变迭代器视为未被修改、进而错误地参与记忆化/复用推理的风险（原实现中 `call-spread-argument-mutable-iterator` 场景正是为此保留）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "EFFECT-INFER-001"
+    },
+    {
+      "file": "compiler/packages/babel-plugin-react-compiler/src/Entrypoint/Program.ts",
+      "line": 422,
+      "summary": "retry 条件收窄为仅 enableFire，叠加删除 ValidateNoUntransformedReferences 后 inferEffectDependencies 失败会静默放过",
+      "failure_scenario": "重试入口由原来的「非记忆化特性开启即重试」（`enableFire || inferEffectDependencies != null`）收窄为仅 `environment.enableFire`；同时 `Entrypoint/ValidateNoUntransformedReferences.ts` 整份删除，`BabelPlugin` 中不再对未转换的 `fire(...)` / `useEffect(...)` 引用做兜底报错。而 `InferEffectDependencies` 自身仍保留明显的能力缺口（`// TODO: Handle method calls`，且 ImportNamespace 形式的自动依赖推断已被移除）。组合后：配置了 `inferEffectDependencies` 的用户遇到推断失败时既不会走 minimal 重试，也不会得到任何诊断，effect 依赖数组不生成且编译被视为成功，问题被静默隐藏，与原先「This will break your build!」的显式失败语义不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "COMPILER-FEATURE-002"
+    },
+    {
+      "file": "compiler/packages/babel-plugin-react-compiler/src/Entrypoint/Program.ts",
+      "line": 1146,
+      "summary": "gating 下函数被提前引用时改为抛 Invariant 错误，并整文件放弃编译",
+      "failure_scenario": "`insertAdditionalFunctionDeclaration` 与 `referencedBeforeDeclared` 机制被删除后，提前引用不再通过「声明 + 包装函数」的方式自动重写，而是由 `checkFunctionReferencedBeforeDeclarationAtTopLevel` 以 `ErrorSeverity.Invariant` 报错。由于 `isCritical()` 对 Invariant 返回 true，`handleError` 在 `panicThreshold === 'critical_errors'` 时直接 `throw`，把此前可正常编译的文件变成构建失败；即使 panicThreshold 设为不抛错，`compileProgram` 也在应用 `compiledFns` 之前 `return`，导致同一文件中其它合法组件/钩子的优化全部被静默丢弃（没有任何提示）。此外报错后未从 `fnNames`/`fnIds` 中移除该名字，同一函数的多次提前引用会产生重复的 error detail。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CODEGEN-003"
+    },
+    {
+      "file": "compiler/packages/eslint-plugin-react-compiler/src/index.ts",
+      "line": 10,
+      "summary": "ESLint 插件入口改为 `module.exports` 并删除 `meta` 导出，公共 API 与 flat config 元信息丢失",
+      "failure_scenario": "入口由具名 ESM 导出（`export {configs, rules, meta}`）改为直接 `module.exports = {rules, configs}`，`meta: {name: 'eslint-plugin-react-compiler'}` 被删除。这既改变了包对外暴露的接口形态（原先可 `import {rules, meta}` 的消费方会失败），也丢失了 ESLint 在 flat config 下用于插件身份标识/诊断输出所需的 `meta.name`；对比同 MR 中 `packages/eslint-plugin-react-hooks/src/index.ts` 仍保留 `meta` 与具名导出，两插件风格不一致，后续维护容易再次踩坑。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "API-001"
+    },
+    {
+      "file": ".github/workflows/runtime_build_and_test.yml",
+      "line": 163,
+      "summary": "cache key 去掉 `-v5` 版本前缀并把 `runtime-and-compiler-node_modules` 合并为 `runtime-node_modules`，失去缓存代数隔离",
+      "failure_scenario": "多处 `actions/cache` 的 key 由 `*-node_modules-v5-${{ runner.arch }}-${{ runner.os }}-${{ hashFiles(...) }}` 改为去掉 `-v5`；同时 runtime_build_and_test.yml 中原先独立的 `runtime-and-compiler-node_modules-...` key 被改为与其它 job 相同的 `runtime-node_modules-...`。`-v5` 这类前缀是缓存的手动代数标记：当构建链发生变化（本次正是 tsup → esbuild、依赖增删）而 yarn.lock 哈希因某种原因未变（例如仅改 scripts、或锁定文件未重新生成）时，可以靠它强制失效；合并 key 后，安装依赖集合不同的 job 共用同一 key 与同一 `**/node_modules` 路径，一旦后续再引入差异化安装，会互相命中错误缓存且难以定位。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "CI-002"
+    },
+    {
+      "file": "compiler/scripts/release/shared/build-packages.js",
+      "line": 7,
+      "summary": "发布构建去掉 --dts 后，多数 compiler 包不再产出 .d.ts",
+      "failure_scenario": "发布脚本把 `yarn workspace ${pkgName} run build --dts` 改成 `run build`，同时各包由 tsup 改为自研 esbuild 脚本。新脚本中只有 react-compiler-runtime 通过 npm-dts 的 Generator 生成 `dist/index.d.ts`，babel-plugin-react-compiler 与 eslint-plugin-react-compiler 只做 esbuild 打包，没有任何 d.ts 生成步骤；而这两个包的 package.json 只有 `main: dist/index.js`、没有 types/typings 字段，TypeScript 消费方会直接失去类型定义（回退为 any 或 TS7016）。原 tsup CLI 的 --dts 会在发布时覆盖配置里的 `dts: false` 生成声明文件，因此这是发布产物能力的回退。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "BUILD-ARTIFACT-001"
+    },
+    {
+      "file": "packages/react-client/src/ReactFlightClient.js",
+      "line": 1115,
+      "summary": "客户端不再注册从服务端收到的 Server Reference，回传服务端会直接抛错",
+      "failure_scenario": "loadServerReference 的两条返回路径（无 bound 时 `return requireModule(serverReference)`，有 bound 时 `resolvedValue.bind.apply(...)`）都不再调用 `registerBoundServerReference`，同时该函数已从 ReactFlightReplyClient 的导出中删除。而客户端把函数回传给服务端依赖 ReactFlightReplyClient.processReply 里的 `knownServerReferences.get(value)`：查不到就落入临时引用分支，最终抛出「Client Functions cannot be passed directly to Server Functions. Only Functions passed from the Server can be passed back again.」——该错误文案明确承诺「从服务端传下来的函数可以回传」，与新行为互相矛盾。典型受影响场景：从服务端 props 收到一个 Server Action 后，再把它作为参数传给另一个 Server Action（或绑定后再用）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "FLIGHT-REFS-001"
+    },
+    {
+      "file": "packages/eslint-plugin-react-hooks/tsconfig.json",
+      "line": 14,
+      "summary": "typecheck 的 include 收缩为 src，测试文件不再被类型检查",
+      "failure_scenario": "tsconfig.json 的 include 从 `[\"src/**/*.ts\", \"__tests__/**/*.ts\"]` 变为 `[\"src/**/*.ts\"]`，而该包 `yarn typecheck` 仍是 `tsc --noEmit`。结果是被删除的 react-compiler 规则之外的测试文件从此脱离类型检查：测试里对规则 API（Rule.RuleModule、RuleTester 配置、fixer 输出类型）的误用不会在 CI 的 typecheck 阶段被拦住，只能在运行期暴露。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.65,
+      "rule": "TEST-TYPES-001"
+    },
+    {
+      "file": "compiler/packages/make-read-only-util/scripts/build.js",
+      "line": 26,
+      "summary": "make-read-only-util 构建输出格式由 cjs 改为 esm，与其余包不一致",
+      "failure_scenario": "被删除的 tsup.config.ts 中该包为 `format: 'cjs'`、`target: 'es2015'`，迁移到 esbuild 脚本后变成 `format: 'esm'`、`target: 'es6'`；而同批迁移的另三个包（babel-plugin-react-compiler、eslint-plugin-react-compiler、react-compiler-healthcheck）仍是 `format: 'cjs'`。该包 package.json 没有 main/module 字段，也没有使用方（仓库内检索 make-read-only-util 无引用），因此当前不会立刻出错，但产物模块类型在无人说明的情况下被改变，后续若有消费方按 CJS require 该 dist 产物会立刻失败，属于容易被忽略的隐性不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "BUILD-CONSISTENCY-001"
+    },
+    {
+      "file": "packages/react-dom-bindings/src/client/ReactFiberConfigDOM.js",
+      "line": 1395,
+      "summary": "View Transition 结束时不再清理 ::view-transition 动画，Safari 下可能阻塞后续过渡",
+      "failure_scenario": "startViewTransition 的收尾逻辑被简化成 `transition.finished.then(...)`，只重置 `__reactViewTransition` 并调用 passiveCallback；被删除的代码里原本在 finished 回调中调用 `cancelAllViewTransitionAnimations(documentElement)`，该函数的注释明确写着「In Safari, we need to manually cancel all manually start animations or it'll block or interfer with future transitions.」。同时 `.finally(...)` 被改成 `.then(...)`，一旦 finished 以 rejected 结束，连 `__reactViewTransition` 的重置和 passiveCallback 都不会执行。手势路径只保留了 `blockingAnim.cancel()`，普通 transitions 路径则完全没有动画清理。在已删除该注释所述问题的浏览器上，残留的 ::view-transition 动画会妨碍后续过渡正常开始。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "VIEWTRANSITION-001"
+    },
+    {
+      "file": "compiler/packages/react-compiler-healthcheck/src/config.ts",
+      "line": 2,
+      "summary": "不兼容库名单改为 mobx，造成漏检与误报",
+      "failure_scenario": "knownIncompatibleLibraries 由 ['mobx-react', 'mobx-react-lite', '@risingstack/react-easy-state'] 改为 ['mobx', '@risingstack/react-easy-state']。libraryCompat 检查是对 package.json 的 dependencies 做精确 key 匹配（Object.hasOwn），因此：只在 dependencies 里声明 mobx-react / mobx-react-lite（未直接声明 mobx）的项目不再被识别为不兼容；反过来，只把 mobx 当作非 React 状态库使用的项目会被报告为「Found the following incompatible libraries」，产生误报。healthcheck 的输出直接面向用户，误报会削弱工具可信度。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "TOOL-CONFIG-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberApplyGesture.js",
+      "line": 19,
+      "summary": "手势提交的三个核心实现被替换为 TODO 空桩，useSwipeTransition 在 experimental 构建中静默失效",
+      "failure_scenario": "ReactFiberApplyGesture.js 由约 1139 行的实际实现收缩为 42 行桩文件：insertDestinationClones 的函数体只有 `// TODO`，applyDepartureTransitions 只调用 cancelRootViewTransitionName，startGestureAnimations 只调用 restoreRootViewTransitionName。但调用链并未随之下线——ReactFiberWorkLoop 在 `enableSwipeTransition && isGestureRender(lanes)` 时仍会走到 commitGestureOnRoot，并继续调用 insertDestinationClones 与 startGestureTransition。而 enableSwipeTransition 在 OSS 仍为 __EXPERIMENTAL__（experimental/canary 构建为 true），fixtures/view-transition 等使用者会真实触发该路径。结果是手势渲染会启动一个 View Transition，却既不插入目标端 clone 也不执行任何动画，滑动手势的视觉预览完全消失，且不会抛出任何错误或警告，属于对外实验 API 的静默行为回退，排查成本高。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "BEHAVIOR-REGRESSION-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberApplyGesture.js",
+      "line": 23,
+      "summary": "手势 View Transition 三个入口已退化为 TODO 空实现，但调用链仍在执行，导致该路径静默失效",
+      "failure_scenario": "本次删除把 ReactFiberApplyGesture.js 从约 1160 行裁剪为 42 行，insertDestinationClones / applyDepartureTransitions / startGestureAnimations 三个导出函数体只剩 `// TODO`。但 ReactFiberWorkLoop.commitGestureOnRoot 仍然按原顺序调用 insertDestinationClones(root, finishedWork)（L3890）、随后 startGestureTransition(...)（L3901），并在 flushGestureMutations 中调用 applyDepartureTransitions（L3924），flushGestureAnimations 中调用 startGestureAnimations。结果是：不再插入任何克隆（“旧”快照缺失）、不再做 pair 查找与 onShare/onEnter 调度，仅剩 cancelRootViewTransitionName / restoreRootViewTransitionName 的根名取消与还原；原先根克隆时用于提示的 didWarnForRootClone 警告也随代码一起被删除，因此该路径从“实现不完整”变为“完全无效果且无任何提示”。另外三个函数签名中的 finishedWork 参数已完全未被使用（root 仅在另外两个函数中使用），会触发 no-unused-vars(args: after-used) 类 lint 告警。影响：在实验性 useSwipeTransition 场景下，用户手势过渡从“可动画”变为“无动画且无报错”，且回归很难被现有断言发现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberApplyGesture.js",
+      "line": 23,
+      "summary": "手势 View Transition 三个入口被退化为 TODO 空实现，但调用链仍在执行，该路径静默失效",
+      "failure_scenario": "本次变更把 ReactFiberApplyGesture.js 从约 1160 行裁剪为 42 行：insertDestinationClones、applyDepartureTransitions、startGestureAnimations 的函数体都只剩 `// TODO`（applyDepartureTransitions 仅保留 cancelRootViewTransitionName，startGestureAnimations 仅保留 restoreRootViewTransitionName）。但 ReactFiberWorkLoop.commitGestureOnRoot 仍按原顺序执行 insertDestinationClones(root, finishedWork)（L3890）→ startGestureTransition(...)（L3901），flushGestureMutations 仍调用 applyDepartureTransitions（L3924）。结果是手势渲染不再插入任何“旧状态”克隆、不再做 pair 查找与 onShare/onEnter 调度，只剩根 view-transition-name 的取消与还原；原本在根克隆时提示的 didWarnForRootClone 一次性警告也随实现一起被删除，因此该路径从“实现不完整”变成“完全无效果且无任何提示”。此外 insertDestinationClones 的 root/finishedWork、applyDepartureTransitions 与 startGestureAnimations 的 finishedWork 参数已完全未使用，会触发 args: after-used 一类未使用参数告警。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberCommitViewTransitions.js",
+      "line": 328,
+      "summary": "配对逻辑中的变量名被写成 oldinstance（小写 i），与同处的 newInstance 不一致",
+      "failure_scenario": "commitDeletedPairViewTransitions 把原来的 `const oldInstance: ViewTransitionState = child.stateNode` 改成了 `const oldinstance`，紧邻的 `const newInstance: ViewTransitionState = pair` 仍是驼峰命名，同一行 `newInstance.paired = oldinstance` 中两种写法并列，读起来像拼写错误；commitExitViewTransitions 中也做了同样改动。这类命名会导致按 oldInstance 检索时漏掉该变量，降低后续维护配对逻辑的可读性与可重构性，也与仓库普遍使用的 camelCase 约定不符。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "NAMING-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberCommitViewTransitions.js",
+      "line": 534,
+      "summary": "拆分出的 restoreEnterViewTransitions 与 restoreExitViewTransitions 函数体完全相同，属重复代码",
+      "failure_scenario": "本次把原来的 restoreEnterOrExitViewTransitions 拆成两个导出函数，但两者除了参数名（placement / deletion）之外逐行一致：都先 `instance.paired = null`，再 restoreViewTransitionOnHostInstances(...child, false)，再 restorePairedViewTransitions(...)；递归分支同样只是把参数名换成子 fiber。这种“拆分但未分化”的重复实现会让后续任何修复都必须改两处，容易漏改；而从命名上看不出的差异化语义（enter / exit 的还原策略）目前并未体现。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberCommitViewTransitions.js",
+      "line": 584,
+      "summary": "oldName 被下沉到 while 循环内部逐节点重复计算，而非每个 ViewTransition 只算一次",
+      "failure_scenario": "cancelViewTransitionHostInstances 与 measureViewTransitionHostInstances 改为接收 currentViewTransition，并在遍历每个 HostComponent 时调用 `getViewTransitionName(currentViewTransition.memoizedProps, currentViewTransition.stateNode)` 取“旧名字”。改造前这一步是在导出包装函数入口计算一次、以 oldName 参数传入，取值相同但计算次数从“每个 ViewTransition 一次”变成“每个 host 实例一次”；对于包含大量子节点的 ViewTransition 边界，这是 commit 遍历热路径上的重复属性读取与函数调用，同时把“取边界旧名字”的语义散进了各分支，削弱可读性。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.55,
+      "rule": "PERF-003"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberCommitWork.js",
+      "line": 293,
+      "summary": "View Transition 重置被移入条件执行的 before-mutation 阶段，可能残留陈旧标志并误启动过渡",
+      "failure_scenario": "resetShouldStartViewTransition() 从 commitRoot 移到了 commitBeforeMutationEffects 内部（ReactFiberCommitWork.js:293），而 commitBeforeMutationEffects 只有在 (subtreeFlags|flags) 与 BeforeMutationMask|MutationMask 有交集时才被调用（ReactFiberWorkLoop.js:3461-3485）。当某次 commit 只包含 layout/passive 副作用、没有任何 host mutation 标志时，该阶段被整体跳过，模块级 shouldStartViewTransition 会保留上一次 commit 中被 applyViewTransitionToHostInstances/commitEnterViewTransitions 置为 true 的值（ReactFiberCommitViewTransitions.js:95），随后 commitRoot 在 ReactFiberWorkLoop.js:3487 无条件读取 willStartViewTransition = shouldStartViewTransition，从而对一次没有任何 DOM 变化的 commit 也调用 startViewTransition。影响：多余的整页交叉淡入（视觉抖动），且 mutation/layout/passive 的 flush 会被推迟到浏览器的 view transition 回调（异步执行），改变了原来同步 flush 的行为，还可能让依赖同步副作用顺序的代码出现时序问题。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-VT-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+      "line": 891,
+      "summary": "新增的 ActivityComponent 未调用 markRef，ref 下移到 Offscreen 后只会被 detach 而不会 attach",
+      "failure_scenario": "updateActivityComponent 把 workInProgress.ref 直接赋给内部的 Offscreen 子 fiber（891 行 mount 路径、904 行 update 路径），但没有像 updateOffscreenComponent 那样调用 markRef(current, workInProgress)（对照 ReactFiberBeginWork.js:656）。该内部 Offscreen fiber 在 layout 阶段走的是 ReactFiberCommitWork.js:751-758 的 OffscreenComponent 分支：只有 props.mode === 'manual' 时才 safelyAttachRef，否则执行 safelyDetachRef。Activity 透传的 mode 取自使用方的 <Activity mode=...>，不会是 'manual'，因此当 <Activity ref={...}> 首次挂载或 ref 发生变化（Offscreen 子 fiber 的 markRef 因 ref 与 current 不同而置上 Ref 标志）时，走的是 detach 路径：callback ref 会被以 null 调用，ref 对象被写成 null，用户永远拿不到内部实例。影响：Activity 的 ref（代码显式把 ref 下移，说明是打算支持的）行为错误，且是静默失败，没有任何警告。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-ACTIVITY-001"
+    },
+    {
+      "file": "packages/react/src/jsx/ReactJSXElement.js",
+      "line": 1049,
+      "summary": "临时覆盖全局 getCurrentStack 未用 try/finally 恢复，且该兼容分支在当前所有构建中不可达",
+      "failure_scenario": "validateExplicitKey 为了给 key 警告补上组件栈，直接改写 ReactSharedInternals.getCurrentStack（1049 行），并在 console.error 之后（1064 行附近）才恢复原值，没有放在 try/finally 中。如果 console.error 被用户代码、测试桩或 DevTools 替换并抛出异常，全局 getCurrentStack 会永久停留在该闭包上，导致后续所有告警/错误的组件栈被错误拼接（污染整进程的调试输出）。此外 enableOwnerStacks 在 shared/ReactFeatureFlags.js 以及 native-fb、native-oss、test-renderer、test-renderer.native-fb、www 等所有 fork 中均已硬编码为 true，而本函数在 1017-1020 行就 return，因此这段恢复出来的旧兼容逻辑在任何现有构建组合下都不可执行，既无法被测试覆盖，也增加了阅读与维护成本。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-GLOBAL-HOOK-001"
+    },
+    {
+      "file": "packages/shared/ReactFeatureFlags.js",
+      "line": 196,
+      "summary": "enableMoveBefore 由 __EXPERIMENTAL__ 改为 false，与本次 owner stacks 主题无关，疑似误提交",
+      "failure_scenario": "本 MR 的主线是翻转 enableOwnerStacks 并清理废弃实验特性，但同时把 enableMoveBefore 从 __EXPERIMENTAL__ 改成了 false（www fork 本来就一直是 false）。这会让 experimental 构建从 moveBefore() 回退到 insertBefore()，节点移动不再保留 DOM 内部状态（例如 iframe 重载、video 播放中断、输入框失焦/光标丢失、CSS 动画重启），属于用户可感知的行为回退。如果这是有意为之，应在 MR 描述中说明原因并配套测试；如果是本地调试遗留，则应还原。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "FLAG-REGRESSION-001"
+    },
+    {
+      "file": "packages/shared/forks/ReactFeatureFlags.www.js",
+      "line": 45,
+      "summary": "新增注释「Can remove these two」指向不明，与下方单个 export 不对应",
+      "failure_scenario": "本次在 ReactFeatureFlags.www.js 中新增了 `// Can remove these two` 注释，但其后只有一个 `export const enableOwnerStacks = true;`。读者无法从注释判断「these two」指哪两个 flag（最可能是 enableOwnerStacks 与相隔 22 行、同样被固化的 enableComponentPerformanceTrack，但两者之间夹着大量无关 flag）。这类「遗留清理提示」注释如果指向不明，后续清理者会误删或漏删，反而增加维护成本。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "READABILITY-001"
+    },
+    {
+      "file": "packages/shared/forks/ReactFeatureFlags.www.js",
+      "line": 68,
+      "summary": "enableComponentPerformanceTrack 在 www 由 __VARIANT__ 直接固化为 false，既无注释说明也让大量分支失去 www 侧覆盖",
+      "failure_scenario": "本 MR 从 ReactFeatureFlags.www-dynamic.js 删除 `export const enableComponentPerformanceTrack = __VARIANT__;`，转而在 ReactFeatureFlags.www.js 中新增无注释的 `export const enableComponentPerformanceTrack = false;`。这与本文件里其它「固化为 true 并保留 __VARIANT__ 跑测」的处理方式相反：scripts/jest/setupTests.www.js 只把 disableInputAttributeSyncing、enableOwnerStacks、disableClientCache 加入 __VARIANT__ 列表，该 flag 未加入。结果是 www 构建中 ReactFlightClient、ReactFiberCommitWork、ReactFiberWorkLoop、ReactFiberRootScheduler、ReactFiberAsyncAction 等 98 处 `enableProfilerTimer && enableComponentPerformanceTrack` 分支全部成为不可达代码，且 www 变体测试不再覆盖 true 分支（只有 OSS experimental 覆盖）。同时 shared/ReactFeatureFlags.js 中该 flag 带有完整用途注释，而 www 的固化处没有任何说明，读者无法判断这是「特性未就绪、暂时关闭」还是「永久关闭」，后续清理缺少依据。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "packages/shared/isValidElementType.js",
+      "line": 54,
+      "summary": "一边把 isValidElementType 标注为「待删除」，一边新增 Activity 判定分支，意图自相矛盾",
+      "failure_scenario": "本 MR 将该函数的 TODO 注释从「Delete this now that owner stacks shipped」改为「Delete this when enableOwnerStacks ships」，同时又在函数体中新增了 `type === REACT_ACTIVITY_TYPE` 判定。注释表达的是「即将删除」，代码却在扩展它的白名单，且 `unstable_Activity` 已在 packages/react/src/ReactClient.js 无条件导出，说明这个已废弃的校验函数需要长期跟随新类型维护。两者叠加会让维护者误判该函数的生命周期：要么尽快删除、要么明确列出必须保留的维护要求。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "CONSISTENCY-002"
+    }
+  ],
+  "stderr_tail": "gent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 5 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 208 个文件 / 840431 字符（lockfile=7, test=190, exclude=11），明细见审计 mrFilter\n✓ 完成 · 耗时 1266.9s · 模型调用 119 次 · token 输入 490,513（未命中） · 输出 176,180 · 缓存命中 7,224,576（93.6%） · 工具 227 次（主会话 227 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.1382\nreview-pi: 置信度过滤丢弃 6 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\facebook__react@b045f18\\r...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1267.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.0%)\n[time] 阶段 | 六阶段审计 1266.7s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 11.1s (0.9%) | S1P2 3.5s (0.3%) | S1P3 14.6s (1.2%) | S1P4 141.3s (11.2%) | S1P5 53.3s (4.2%) | S1P6 21.2s (1.7%) | S2P1 10.8s (0.9%) | S2P2 4.9s (0.4%) | S2P3 9.0s (0.7%) | S2P4 151.1s (11.9%) | S2P5 61.0s (4.8%) | S2P6 13.7s (1.1%) | S3P1 9.8s (0.8%) | S3P2 3.0s (0.2%) | S3P3 21.9s (1.7%) | S3P4 93.7s (7.4%) | S3P5 49.5s (3.9%) | S3P6 6.1s (0.5%) | S3R2P1 6.1s (0.5%) | S3R2P2 2.9s (0.2%) | S3R2P3 8.4s (0.7%) | S3R2P4 44.0s (3.5%) | S3R2P5 11.2s (0.9%) | S3R2P6 7.4s (0.6%) | S4P1 17.9s (1.4%) | S4P2 3.1s (0.2%) | S4P3 13.4s (1.1%) | S4P4 180.8s (14.3%) | S4P5 19.6s (1.5%) | S4P6 17.1s (1.4%) | S5P1 19.8s (1.6%) | S5P2 4.8s (0.4%) | S5P3 10.7s (0.8%) | S5P4 86.9s (6.9%) | S5P5 116.6s (9.2%) | S5P6 15.8s (1.2%)\n[usage] 任务总计 | 模型调用 119 次（Agent 119 + 一次性 0） | token 输入 490,513（未命中） | 输出 176,180 | 缓存命中 7,224,576（93.6%） | $0.1382\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\facebook__react@b045f18\\audit\\20261115_002008_023.json",
+  "token_usage": {
+    "input_tokens": 490513,
+    "output_tokens": 176180,
+    "cache_read_input_tokens": 7224576
+  }
+}

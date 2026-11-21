@@ -1,0 +1,34 @@
+{
+  "generatedAt": "2026-11-15T00:19:38.486Z",
+  "runId": "20261115_001832_913",
+  "source": "mr",
+  "caseId": "astral-sh__uv@61b521f",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "crates/uv/Cargo.toml",
+      "line": 126,
+      "title": "新增的 wiremock dev-dependency 在可见改动中没有使用点，需确认其确有测试引用",
+      "description": "本 MR 的可见改动仅为在 crates/uv 的 [dev-dependencies] 增加 `wiremock = { workspace = true }`（第 126 行），diff 中没有任何非测试代码引用 `wiremock` 符号；测试文件按配置被剔除，因此无法从 diff 直接确认使用点。若该依赖最终没有任何测试目标引用，则成为无用依赖：一是会无谓扩大 `cargo test -p uv` 的依赖图（Cargo.lock:6665-6682 显示 wiremock 0.6.3 带入 hyper、deadpool、assert-json-diff 等十余个包），二是仓库已启用 cargo-shear 检查（crates/uv/Cargo.toml:132-136 的 [package.metadata.cargo-shear] ignored 列表只包含 flate2 与 uv-performance-memory-allocator），未使用的依赖可能被 CI 的依赖清理检查报告。注意：Cargo.lock 已同步落地（Cargo.lock:4664 在 `name = \"uv\"` 的 dependencies 中出现 \"wiremock\"），说明 lockfile 侧不存在遗漏。",
+      "evidence": [
+        "crates/uv/Cargo.toml:126 — `wiremock = { workspace = true }` 新增于 [dev-dependencies]（第 109 行起），diff 中无任何 Rust 源文件引用",
+        "crates/uv/Cargo.toml:132-136 — [package.metadata.cargo-shear] ignored = [\"flate2\", \"uv-performance-memory-allocator\"]，未包含 wiremock",
+        "Cargo.lock:4664 — `name = \"uv\"` 包的 dependencies 列表包含 \"wiremock\"，lockfile 已与 Cargo.toml 同步",
+        "Cargo.lock:6661-6682 — wiremock 0.6.3 的依赖包含 hyper、hyper-util、deadpool、assert-json-diff、tokio 等",
+        "Cargo.lock:4694 — uv-auth 的依赖中亦包含 \"wiremock\"，说明该 mock 库已在仓库测试中使用",
+        "根 Cargo.toml:187 — workspace 级已声明 `wiremock = { version = \"0.6.2\" }`，故 `workspace = true` 写法与仓库约定一致"
+      ],
+      "rule": "DEPENDENCY-001",
+      "confidence": 0.35,
+      "tips": {
+        "review": "[缺陷类型] 可能的无用 dev-dependency（缺少可见使用点）。影响评估：仅在测试目标生效，不影响发布产物与运行时行为；主要代价是测试构建图增大与 cargo-shear 类检查失败风险，属可维护性隐患而非功能缺陷。同时需注意：本 MR 的测试文件已被评审配置剔除，若使用点位于 crates/uv/tests 等测试路径，则该意见不成立。",
+        "suggestion": "[重构思路] 合入前确认依赖确有引用：在测试中实际构造 mock 服务端（`MockServer::start` + `Mock::given(...).respond_with(...)`）；若最终只被某个更小的 crate（如 uv-auth、uv-client）的测试使用，则不应加在顶层 `uv` crate 上，而应下沉到实际使用的 crate。\n代码示例：\n```rust\nuse wiremock::{Mock, MockServer, ResponseTemplate};\nuse wiremock::matchers::{method, path};\n\nlet server = MockServer::start().await;\nMock::given(method(\"GET\"))\n    .and(path(\"/simple/\"))\n    .respond_with(ResponseTemplate::new(200).set_body_string(\"<html></html>\"))\n    .mount(&server)\n    .await;\n```",
+        "subcategory": "依赖声明与使用一致性"
+      }
+    }
+  ]
+}

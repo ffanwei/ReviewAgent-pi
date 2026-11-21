@@ -1,0 +1,144 @@
+[
+  {
+    "filePath": "go.mod",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "toolchain go1.23.4",
+        "review": "[缺陷类型] 工具链声明不一致（go 指令 / toolchain / CI 版本三方错位）。影响评估：构建实际使用 1.23.4 而 CI 声称 1.22，问题定位困难；离线或代理受限环境（如企业内网 CI）会因 toolchain 下载失败而构建中断；下游模块被强加 1.22.7 最低补丁版本。",
+        "suggestion": "[重构思路] 让三处保持一致：go 指令写 `go 1.22`（不带补丁号）或统一提升到 1.23.x 并同步 CI 的 go-version；toolchain 行仅在需要强制特定版本时保留，并在 CI 中显式 `GOTOOLCHAIN=local` 或让 setup-go 安装与 toolchain 相同的版本。代码示例：`go 1.22` + `toolchain go1.22.10`，CI 中 `go-version-file: go.mod`。",
+        "category": "可移植",
+        "subcategory": "工具链与构建一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 5,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F002",
+        "code": "require (",
+        "review": "[缺陷类型] 模块边界调整不完整：删除了子模块 go.mod，却未把该子模块的直接依赖提升为根模块 require。影响评估：根模块在 -mod=readonly（默认）下编译失败，CI 的 go mod tidy + golangci-lint 需联网重写 go.mod，本地/离线构建直接红色；发布根模块时会带上一个不自洽的依赖列表。",
+        "suggestion": "[重构思路] 二选一：方案 A（保留独立模块）恢复 pkg/gofr/datasource/file/sftp/go.mod 并在其中维持 pkg/sftp、kr/fs 依赖；方案 B（并入根模块）在根 go.mod 中显式 require github.com/pkg/sftp 与 github.com/kr/fs，并把 golang.org/x/crypto 从 indirect 提升为直接依赖，然后重新生成 go.sum。代码示例：`require ( github.com/pkg/sftp v1.13.6; github.com/kr/fs v0.1.0 )`，随后执行 `go mod tidy && go build ./...` 验证。",
+        "category": "可靠性",
+        "subcategory": "模块依赖一致性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "golang.org/x/crypto v0.31.0 // indirect",
+        "review": "[缺陷类型] 依赖版本回退（含安全敏感库）。影响评估：若被回退的补丁版本包含 CVE 修复（例如 x/crypto、x/net 的安全修复），依赖 gofr 的应用会被动继承漏洞；即使无 CVE，也会丢失上游 bug 修复。由于本 MR 主题是回退 any，这批降级是否有意为之缺乏说明。",
+        "suggestion": "[重构思路] 明确该 MR 的意图边界：仅回退 any→interface{} 的文本变更，依赖版本保持或前进；若确需降级，需在 MR 描述中给出理由并对 x/crypto、x/net 做 CVE 比对（govulncheck）。代码示例：`govulncheck ./...`，并在 go.mod 中恢复 `golang.org/x/crypto v0.32.0`、`golang.org/x/net v0.34.0` 后执行 `go mod tidy && go test ./...`。",
+        "category": "安全",
+        "subcategory": "依赖安全",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 94,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".golangci.yml",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "- copyloopvar",
+        "review": "[缺陷类型] 质量门禁回退（lint 规则被删除）。影响评估：非规范头名、any/interface{} 混排、硬编码格式串等会重新进入主干；本次 MR 自身已产生这类残留（见 request.go、solr.go、logger.go 的改动），说明风险是即时的而非理论的。",
+        "suggestion": "[重构思路] 如确需回退 any→interface{}，应只回退 linters-settings 中与 any 相关的配置，保留 canonicalheader 与 usestdlibvars；若担心引入大量既有告警，先用 `--new-from-rev` / only-new-issues 增量启用。代码示例：`linters: enable: [..., canonicalheader]`；`linters-settings: usestdlibvars: { time-layout: true }`。",
+        "category": "可维护",
+        "subcategory": "静态检查门禁",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 97,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "pkg/gofr/http/request.go",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "v := r.req.Header.Get(\"content-type\")",
+        "review": "[缺陷类型] 头名未按规范和 canonical form 书写。影响评估：功能上因 net/http 规范化而无行为差异，但降低可读性与一致性，并使后续无法依靠 canonicalheader 发现真正的头名拼写错误（如把 X-Api-Key 错写成 X-Api-Keys 这类真实 bug 将不再被告警）。",
+        "suggestion": "[重构思路] 恢复规范写法，并优先使用标准库常量而非字面量。代码示例：`v := r.req.Header.Get(\"Content-Type\")`；`proto := r.req.Header.Get(\"X-Forwarded-Proto\")`；`authKey := r.Header.Get(\"X-Api-Key\")`；solr 处 `req.Header.Set(\"Content-Type\", \"application/json\")`（Set 语义也更符合「覆盖而非追加」）。",
+        "category": "可读性",
+        "subcategory": "HTTP 头规范",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 59,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "pkg/gofr/logging/logger.go",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "e.Time.Format(\"15:04:05\"))",
+        "review": "[缺陷类型] 标准库常量被硬编码字面量替代。影响评估：当前输出格式完全一致（time.TimeOnly 值即为 \"15:04:05\"），无功能风险；但可读性和后续统一修改成本上升，且两处重复容易漂移。",
+        "suggestion": "[重构思路] 恢复常量表达，或用包级常量集中定义。代码示例：`const timeFormat = time.TimeOnly`，两处统一改为 `e.Time.Format(timeFormat)`。",
+        "category": "可维护",
+        "subcategory": "常量使用",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 162,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "pkg/gofr/testutil/port.go",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "err = listener.Close()",
+        "review": "[缺陷类型] 端口探测 TOCTOU 竞态（bind-then-close 模式）。影响评估：并发/CI 环境下偶发绑定失败使测试不稳定，排查成本高；一次申请三个端口进一步放大碰撞概率。",
+        "suggestion": "[重构思路] 不要把「探测后释放」当作「保留」：要么由测试自身在拿到 listener 后直接使用该 listener（或把 listener 传给服务启动），要么改为串行化 + 重试，并在失败时按端口未占用重试 N 次；同时统一绑定 127.0.0.1 与服务的监听地址族。代码示例：`func GetFreePort(t *testing.T) int { for i := 0; i < 5; i++ { l, err := net.Listen(\"tcp4\", \"127.0.0.1:0\"); require.NoError(t, err); p := l.Addr().(*net.TCPAddr).Port; _ = l.Close(); return p }; t.Fatal(\"no free port\") }`，并在服务启动失败的测试里做有限重试。",
+        "category": "可靠性",
+        "subcategory": "测试基础设施稳定性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "examples/using-http-service/main.go",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "",
+        "review": "[缺陷类型] 批量重写不完整导致风格混排。影响评估：类型层面完全等价、无功能风险；但仓库同时存在 any 与 interface{} 两种写法，后续读者/工具无法形成稳定约定，代码评审时也难以判断哪一种是「正确」写法。",
+        "suggestion": "[重构思路] 明确一次性约定并机械执行：若决定回退到 interface{}，用脚本/gofmt -r 覆盖全仓（含 examples、mock 生成文件），并保留 revive use-any 关闭状态以自洽；若决定保留 any，则回滚本次全部替换。代码示例：`gofmt -r 'interface{} -> any' -l -w ./...`（反向同理），随后 `grep -rn \"interface{}\" --include=*.go | grep -v _test.go` 做残留核查。",
+        "category": "可读性",
+        "subcategory": "风格一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 45,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

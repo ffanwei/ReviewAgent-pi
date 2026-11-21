@@ -1,0 +1,207 @@
+{
+  "instance_id": "keycloak__keycloak@805c204",
+  "repo": "keycloak/keycloak",
+  "base_commit": "8521b9952a989d0dac17697278610b053c613528",
+  "head_commit": "805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T05:55:10.791416+00:00",
+  "duration_seconds": 197.59,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 3 finding(s) across 4 selected item(s).",
+    "summary": {
+      "files_reviewed": 4,
+      "comments": 3,
+      "total_tokens": 705016,
+      "input_tokens": 678467,
+      "output_tokens": 26549,
+      "cache_read_tokens": 615936,
+      "elapsed": "3m17s"
+    },
+    "tool_calls": {
+      "total": 66,
+      "by_tool": {
+        "code_comment": 1,
+        "code_search": 23,
+        "file_find": 13,
+        "file_read": 26,
+        "file_read_diff": 3
+      },
+      "failure": 2,
+      "failure_by_tool": {
+        "file_read": 2
+      },
+      "failure_details": [
+        {
+          "tool_call_number": 20,
+          "tool_name": "file_read",
+          "file_path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Context.java,docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Guide.java,docs/maven-plugin/src/main/java/org/keycloak/guides/maven/GuideParser.java",
+          "arguments": "{\"file_path\": \"docs/guides/securing-apps/pinned-guides\"}",
+          "error": "file \"docs/guides/securing-apps/pinned-guides\" not found: git show 805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9:docs/guides/securing-apps/pinned-guides: exit status 128: fatal: path 'docs/guides/securing-apps/pinned-guides' does not exist in '805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9'\n"
+        },
+        {
+          "tool_call_number": 57,
+          "tool_name": "file_read",
+          "file_path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Context.java,docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Guide.java,docs/maven-plugin/src/main/java/org/keycloak/guides/maven/GuideParser.java",
+          "arguments": "{\"file_path\": \"docs/guides/securing-apps/pinned-guides\"}",
+          "error": "file \"docs/guides/securing-apps/pinned-guides\" not found: git show 805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9:docs/guides/securing-apps/pinned-guides: exit status 128: fatal: path 'docs/guides/securing-apps/pinned-guides' does not exist in '805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9'\n"
+        }
+      ]
+    },
+    "comments": [
+      {
+        "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/GuideParser.java",
+        "content": "Missing `break;` after `case \"priority\"` causes an unintended fall-through into `case \"tileVisible\"`. Every guide that declares a `priority` will additionally get `tileVisible` set to the result of `Boolean.parseBoolean(null)`, i.e. `false` (and an explicitly declared `tileVisible=\"true\"` gets overwritten when the attribute order puts `priority` last). This silently corrupts the parsed guide metadata consumed by `Context`.",
+        "suggestion_code": "                case \"priority\":\n                    guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")));\n                    break;",
+        "existing_code": "                case \"priority\":\n                    guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")));",
+        "start_line": 79,
+        "end_line": 80,
+        "thinking": "securing-apps/pinned-guides does not exist in the repo but assembly includes it — pre-existing? Not part of this diff.\n\nNow, focus: issues in review files.\n\n1. GuideParser: missing `break;` after `case \"priority\"` → falls through into `case \"tileVisible\"` and sets tileVisible to false for every guide that declares a priority. Report as bug/high.\n\n2. GuideParser: `tileVisible` only reads `valueString` group; an unquoted value like `tileVisible=true` is parsed as false. Suggested: use valueString != null ? Boolean.parseBoolean(valueString) : Boolean.parseBoolean(valueInt)... Actually `[\\d]*` doesn't match \"true\", so valueInt would be empty string; so need to handle. Perhaps suggest the pattern allow unquoted true/false. This is more of a robustness thing. Given the docs use quoted values, is it worth reporting? The pattern explicitly allows numbers unquoted for all keys, so a user writing `tileVisible=true` gets silently false and then likely a build error (\"Invisible tiles should be pinned or have an explicit priority\") which is confusing. I think it's a legitimate medium issue but maybe low value. I'll include as medium with a suggestion to make the regex stricter or handle null.\n\nHmm, careful about too many comments. Priority: missing break (definite), typo in exception message (low), and maybe tileVisible unquoted (medium). Also potentially: Context \"Guide is pinned, but has a priority specified\" — but what if a guide is in pinned-guides and file has tileVisible false — fine.\n\n3. Context: `guidePriorities` — the error at line 55 would also fire for a guide file that parses to null (not a guide) even though the file exists; minor misleading message. Skip.\n\n4. Another possible issue: `Objects.equals(guide.getTileVisible(), Boolean.FALSE) && guide.getPriority() == Integer.MAX_VALUE` — after this check, a pinned guide whose pinned priority is MAX_VALUE? no.\n\nWait — there's a subtle ordering issue in Context: the tileVisible check happens inside the loop after pinning, correct.\n\n5. Another issue: `guidePriorities.remove(guide.getId())` inside the loop — need removal to detect stale entries, correct.\n\nHmm, but what about the case where the same guide id appears in pinned-guides but the file was parsed and priority set... fine.\n\n6. What about `Integer.MAX_VALUE` sentinel conflicting with a real priority? `priority=2147483647`... edge case, skip.\n\n7. Guide.setPriority no validation. Skip.\n\n8. Guide.java: `private Boolean tileVisible;` fine.\n\nNow let me also consider whether the new Context behavior of throwing exceptions is appropriate — a RuntimeException for build config errors is fine (Maven plugin). Use of plain RuntimeException in a Maven plugin is stylistically debatable (MojoExecutionException), but pre-existing pattern? There were no exceptions before. Minor style, skip.\n\nAlso: The new \"Guide is pinned, but has a priority specified\" check uses `f.getName()` in the message; the exception is fine.\n\nOne more thought about the GuideParser regex modification: `(?<key>priority|title|summary|tileVisible)` — but what about `previewDiscussionLink`? not relevant.\n\nWait, there's another potential issue with the fall-through: after `case \"tileVisible\"` there's no `break;` either, but it's the last case, so fine (though it falls out of the switch).\n\nLet me write the comments.\n\nComment 1 (GuideParser line 80-82): missing break → fall-through. Existing code lines:\n```\n+                case \"priority\":\n+                    guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")));\n+                case \"tileVisible\":\n+                    guide.setTileVisible(Boolean.parseBoolean(attributeMatcher.group(\"valueString\")));\n```\nI'll anchor on `                    guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")));` with suggestion adding break.\n\nComment 2 (GuideParser tileVisible parse): anchor on `                    guide.setTileVisible(Boolean.parseBoolean(attributeMatcher.group(\"valueString\")));` — but that's the same line used in comment 1's window? Comment 1 anchored on the setPriority line, comment 2 on setTileVisible line. They are adjacent; distinct lines so windows may overlap but should be fine. Hmm, could cause both comments mounted at nearly the same place. Maybe merge into one comment to avoid noise: mention both issues in one comment on the priority case. But then suggestion code covers both. I'll do two separate comments to be clear; actually risk of duplicate anchor confusion. I'll do one comment for the fall-through (main) and one for the unquoted-value parse.\n\nActually let's reconsider the unquoted parse: is it worth reporting? Suppose someone writes `tileVisible=true`. The regex match: at \"tileVisible=\" ... after `=` alternation tries quoted string (fails), then `[\\d]*` matches zero digits → overall match \"tileVisible=\" with valueString null. parseBoolean(null) = false. So the guide tile would be hidden when the author asked to show it, and if no priority is given, build fails with a confusing message. This is a real (if latent) hazard. I'll report as low/medium.\n\nComment 3 (Context line 56): typo \"do no longer exist\" → \"no longer exist\"/\"do not exist any more\". Low severity, style/documentation? Category \"style\" or \"maintainability\". Checklist mentions exception message spelling errors. Use category \"style\", severity low.\n\nShould I also flag that `Objects.equals(guide.getTileVisible(), Boolean.FALSE)` could be `Boolean.FALSE.equals(...)`? Style, skip.\n\nAny other real issue? Let me think about the new semantic default: `Guide.priority = Integer.MAX_VALUE` while the freemarker macro default remains `priority=999`. In the generated output, guides not pinned won't be passed `priority` and rendering uses the asciidoc macro default 999. Since the Java priority is only used for sorting, this is fine (previous default 999 was also for sorting to put them after named ones? previously priority default 999 and pinned get 1..N; now MAX). Consistent behavior. OK.\n\nBut wait — there's a subtle issue with the sorting: guides with priority MAX_VALUE sorted last, and `o1.getTitle().compareTo(o2.getTitle())` — getTitle could be null? If a guide's import element doesn't have a title attribute... pre-existing.\n\nAnother one: In Context, `guidePriorities` is now mutated via remove — but what if the same guide id corresponds to... fine.\n\nOne more possible bug: pinned guides are matched by `guide.getId()` derived from the filename with `.replaceAll(\".adoc\", \"\")` — regex; for a filename like \"deploy.adoc\", replaceAll(\".adoc\",\"\") gives \"deploy\"? The regex \".adoc\" would match \".adoc\" — but for a filename containing \"xadoc\"? e.g. \"foo-xadoc.adoc\" → replaceAll replaces both \"xadoc\"? Regex \".adoc\" matches any char followed by \"adoc\" → \"xadoc\" (x + adoc) → \"foo-\" and then \".adoc\" → \"foo\". Pre-existing, skip.\n\nSo final comments: 3.\n\nLet me double-check the recommended fix for parsing tileVisible with the pattern: The cleanest suggestion is to pass the tileVisible value through a helper that handles the case where valueString is null (unquoted). But `[\\d]*` won't match `true`, so parse would fail. Suggest:\n```java\ncase \"tileVisible\":\n    String value = attributeMatcher.group(\"valueString\");\n    if (value == null) {\n        throw new RuntimeException(\"tileVisible must be quoted as \\\"true\\\" or \\\"false\\\"\");\n    }\n    guide.setTileVisible(Boolean.parseBoolean(value));\n    break;\n```\nHmm, maybe simpler: only match quoted strings for tileVisible by separating patterns. I'll suggest validating null. Keep it concise.\n\nActually, potential double-comment anchoring: comment 1 anchor on setPriority line, comment 2 anchor on setTileVisible line. The tool matches consecutive lines in the diff; both anchors are newly added lines. Fine. But the suggestion_code for comment 1 would add \"break;\" — and comment 2 suggestion modifies the setTileVisible line. If both are applied, they'd combine. Slight conflict risk but acceptable. Maybe better: put the break in comment 1's suggestion, and comment 2 just describes without suggestion_code (to avoid conflicting edits). I'll omit suggestion_code for comment 2, or provide a combined suggestion in comment 1 and a description-only comment 2. Let's do: comment 1 with suggestion including break; comment 2 with descriptive suggestion text but no suggestion_code... Actually the schema allows omitting suggestion_code. I'll include a small snippet in content instead.\n\nHmm, maybe I should merge comments 1 and 2? They're related (same switch case block). Merging keeps it clean and avoids overlapping anchors. But the two issues are distinct. I'll keep separate for clarity — the tool handles individual comments.\n\nLet me write.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/GuideParser.java",
+        "content": "`GUIDE_ELEMENT_PATTERN` only fills `valueString` when the value is quoted; an unquoted `tileVisible=true` (which the pattern accepts, because `[\\d]*` can match the empty string) produces `valueString == null`, and `Boolean.parseBoolean(null)` returns `false`. So an author asking for a visible tile silently gets `false`, which then either hides the tile or triggers a misleading \"Invisible tiles should be pinned...\" build failure. Consider rejecting a null `valueString` for `tileVisible` (or restricting the pattern so `tileVisible` only matches quoted `true`/`false`).",
+        "existing_code": "                    guide.setTileVisible(Boolean.parseBoolean(attributeMatcher.group(\"valueString\")));",
+        "start_line": 82,
+        "end_line": 82,
+        "thinking": "securing-apps/pinned-guides does not exist in the repo but assembly includes it — pre-existing? Not part of this diff.\n\nNow, focus: issues in review files.\n\n1. GuideParser: missing `break;` after `case \"priority\"` → falls through into `case \"tileVisible\"` and sets tileVisible to false for every guide that declares a priority. Report as bug/high.\n\n2. GuideParser: `tileVisible` only reads `valueString` group; an unquoted value like `tileVisible=true` is parsed as false. Suggested: use valueString != null ? Boolean.parseBoolean(valueString) : Boolean.parseBoolean(valueInt)... Actually `[\\d]*` doesn't match \"true\", so valueInt would be empty string; so need to handle. Perhaps suggest the pattern allow unquoted true/false. This is more of a robustness thing. Given the docs use quoted values, is it worth reporting? The pattern explicitly allows numbers unquoted for all keys, so a user writing `tileVisible=true` gets silently false and then likely a build error (\"Invisible tiles should be pinned or have an explicit priority\") which is confusing. I think it's a legitimate medium issue but maybe low value. I'll include as medium with a suggestion to make the regex stricter or handle null.\n\nHmm, careful about too many comments. Priority: missing break (definite), typo in exception message (low), and maybe tileVisible unquoted (medium). Also potentially: Context \"Guide is pinned, but has a priority specified\" — but what if a guide is in pinned-guides and file has tileVisible false — fine.\n\n3. Context: `guidePriorities` — the error at line 55 would also fire for a guide file that parses to null (not a guide) even though the file exists; minor misleading message. Skip.\n\n4. Another possible issue: `Objects.equals(guide.getTileVisible(), Boolean.FALSE) && guide.getPriority() == Integer.MAX_VALUE` — after this check, a pinned guide whose pinned priority is MAX_VALUE? no.\n\nWait — there's a subtle ordering issue in Context: the tileVisible check happens inside the loop after pinning, correct.\n\n5. Another issue: `guidePriorities.remove(guide.getId())` inside the loop — need removal to detect stale entries, correct.\n\nHmm, but what about the case where the same guide id appears in pinned-guides but the file was parsed and priority set... fine.\n\n6. What about `Integer.MAX_VALUE` sentinel conflicting with a real priority? `priority=2147483647`... edge case, skip.\n\n7. Guide.setPriority no validation. Skip.\n\n8. Guide.java: `private Boolean tileVisible;` fine.\n\nNow let me also consider whether the new Context behavior of throwing exceptions is appropriate — a RuntimeException for build config errors is fine (Maven plugin). Use of plain RuntimeException in a Maven plugin is stylistically debatable (MojoExecutionException), but pre-existing pattern? There were no exceptions before. Minor style, skip.\n\nAlso: The new \"Guide is pinned, but has a priority specified\" check uses `f.getName()` in the message; the exception is fine.\n\nOne more thought about the GuideParser regex modification: `(?<key>priority|title|summary|tileVisible)` — but what about `previewDiscussionLink`? not relevant.\n\nWait, there's another potential issue with the fall-through: after `case \"tileVisible\"` there's no `break;` either, but it's the last case, so fine (though it falls out of the switch).\n\nLet me write the comments.\n\nComment 1 (GuideParser line 80-82): missing break → fall-through. Existing code lines:\n```\n+                case \"priority\":\n+                    guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")));\n+                case \"tileVisible\":\n+                    guide.setTileVisible(Boolean.parseBoolean(attributeMatcher.group(\"valueString\")));\n```\nI'll anchor on `                    guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")));` with suggestion adding break.\n\nComment 2 (GuideParser tileVisible parse): anchor on `                    guide.setTileVisible(Boolean.parseBoolean(attributeMatcher.group(\"valueString\")));` — but that's the same line used in comment 1's window? Comment 1 anchored on the setPriority line, comment 2 on setTileVisible line. They are adjacent; distinct lines so windows may overlap but should be fine. Hmm, could cause both comments mounted at nearly the same place. Maybe merge into one comment to avoid noise: mention both issues in one comment on the priority case. But then suggestion code covers both. I'll do two separate comments to be clear; actually risk of duplicate anchor confusion. I'll do one comment for the fall-through (main) and one for the unquoted-value parse.\n\nActually let's reconsider the unquoted parse: is it worth reporting? Suppose someone writes `tileVisible=true`. The regex match: at \"tileVisible=\" ... after `=` alternation tries quoted string (fails), then `[\\d]*` matches zero digits → overall match \"tileVisible=\" with valueString null. parseBoolean(null) = false. So the guide tile would be hidden when the author asked to show it, and if no priority is given, build fails with a confusing message. This is a real (if latent) hazard. I'll report as low/medium.\n\nComment 3 (Context line 56): typo \"do no longer exist\" → \"no longer exist\"/\"do not exist any more\". Low severity, style/documentation? Category \"style\" or \"maintainability\". Checklist mentions exception message spelling errors. Use category \"style\", severity low.\n\nShould I also flag that `Objects.equals(guide.getTileVisible(), Boolean.FALSE)` could be `Boolean.FALSE.equals(...)`? Style, skip.\n\nAny other real issue? Let me think about the new semantic default: `Guide.priority = Integer.MAX_VALUE` while the freemarker macro default remains `priority=999`. In the generated output, guides not pinned won't be passed `priority` and rendering uses the asciidoc macro default 999. Since the Java priority is only used for sorting, this is fine (previous default 999 was also for sorting to put them after named ones? previously priority default 999 and pinned get 1..N; now MAX). Consistent behavior. OK.\n\nBut wait — there's a subtle issue with the sorting: guides with priority MAX_VALUE sorted last, and `o1.getTitle().compareTo(o2.getTitle())` — getTitle could be null? If a guide's import element doesn't have a title attribute... pre-existing.\n\nAnother one: In Context, `guidePriorities` is now mutated via remove — but what if the same guide id corresponds to... fine.\n\nOne more possible bug: pinned guides are matched by `guide.getId()` derived from the filename with `.replaceAll(\".adoc\", \"\")` — regex; for a filename like \"deploy.adoc\", replaceAll(\".adoc\",\"\") gives \"deploy\"? The regex \".adoc\" would match \".adoc\" — but for a filename containing \"xadoc\"? e.g. \"foo-xadoc.adoc\" → replaceAll replaces both \"xadoc\"? Regex \".adoc\" matches any char followed by \"adoc\" → \"xadoc\" (x + adoc) → \"foo-\" and then \".adoc\" → \"foo\". Pre-existing, skip.\n\nSo final comments: 3.\n\nLet me double-check the recommended fix for parsing tileVisible with the pattern: The cleanest suggestion is to pass the tileVisible value through a helper that handles the case where valueString is null (unquoted). But `[\\d]*` won't match `true`, so parse would fail. Suggest:\n```java\ncase \"tileVisible\":\n    String value = attributeMatcher.group(\"valueString\");\n    if (value == null) {\n        throw new RuntimeException(\"tileVisible must be quoted as \\\"true\\\" or \\\"false\\\"\");\n    }\n    guide.setTileVisible(Boolean.parseBoolean(value));\n    break;\n```\nHmm, maybe simpler: only match quoted strings for tileVisible by separating patterns. I'll suggest validating null. Keep it concise.\n\nActually, potential double-comment anchoring: comment 1 anchor on setPriority line, comment 2 anchor on setTileVisible line. The tool matches consecutive lines in the diff; both anchors are newly added lines. Fine. But the suggestion_code for comment 1 would add \"break;\" — and comment 2 suggestion modifies the setTileVisible line. If both are applied, they'd combine. Slight conflict risk but acceptable. Maybe better: put the break in comment 1's suggestion, and comment 2 just describes without suggestion_code (to avoid conflicting edits). I'll omit suggestion_code for comment 2, or provide a combined suggestion in comment 1 and a description-only comment 2. Let's do: comment 1 with suggestion including break; comment 2 with descriptive suggestion text but no suggestion_code... Actually the schema allows omitting suggestion_code. I'll include a small snippet in content instead.\n\nHmm, maybe I should merge comments 1 and 2? They're related (same switch case block). Merging keeps it clean and avoids overlapping anchors. But the two issues are distinct. I'll keep separate for clarity — the tool handles individual comments.\n\nLet me write.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Context.java",
+        "content": "Grammar/spelling error in the exception message: \"contained files that do no longer exist\" should read \"contained files that no longer exist\" (or \"that do not exist anymore\").",
+        "suggestion_code": "            throw new RuntimeException(\"File pinned-guides contained files that no longer exist or are mis-spelled: \" + guidePriorities.keySet());",
+        "existing_code": "            throw new RuntimeException(\"File pinned-guides contained files that do no longer exist or are mis-spelled: \" + guidePriorities.keySet());",
+        "start_line": 56,
+        "end_line": 56,
+        "thinking": "securing-apps/pinned-guides does not exist in the repo but assembly includes it — pre-existing? Not part of this diff.\n\nNow, focus: issues in review files.\n\n1. GuideParser: missing `break;` after `case \"priority\"` → falls through into `case \"tileVisible\"` and sets tileVisible to false for every guide that declares a priority. Report as bug/high.\n\n2. GuideParser: `tileVisible` only reads `valueString` group; an unquoted value like `tileVisible=true` is parsed as false. Suggested: use valueString != null ? Boolean.parseBoolean(valueString) : Boolean.parseBoolean(valueInt)... Actually `[\\d]*` doesn't match \"true\", so valueInt would be empty string; so need to handle. Perhaps suggest the pattern allow unquoted true/false. This is more of a robustness thing. Given the docs use quoted values, is it worth reporting? The pattern explicitly allows numbers unquoted for all keys, so a user writing `tileVisible=true` gets silently false and then likely a build error (\"Invisible tiles should be pinned or have an explicit priority\") which is confusing. I think it's a legitimate medium issue but maybe low value. I'll include as medium with a suggestion to make the regex stricter or handle null.\n\nHmm, careful about too many comments. Priority: missing break (definite), typo in exception message (low), and maybe tileVisible unquoted (medium). Also potentially: Context \"Guide is pinned, but has a priority specified\" — but what if a guide is in pinned-guides and file has tileVisible false — fine.\n\n3. Context: `guidePriorities` — the error at line 55 would also fire for a guide file that parses to null (not a guide) even though the file exists; minor misleading message. Skip.\n\n4. Another possible issue: `Objects.equals(guide.getTileVisible(), Boolean.FALSE) && guide.getPriority() == Integer.MAX_VALUE` — after this check, a pinned guide whose pinned priority is MAX_VALUE? no.\n\nWait — there's a subtle ordering issue in Context: the tileVisible check happens inside the loop after pinning, correct.\n\n5. Another issue: `guidePriorities.remove(guide.getId())` inside the loop — need removal to detect stale entries, correct.\n\nHmm, but what about the case where the same guide id appears in pinned-guides but the file was parsed and priority set... fine.\n\n6. What about `Integer.MAX_VALUE` sentinel conflicting with a real priority? `priority=2147483647`... edge case, skip.\n\n7. Guide.setPriority no validation. Skip.\n\n8. Guide.java: `private Boolean tileVisible;` fine.\n\nNow let me also consider whether the new Context behavior of throwing exceptions is appropriate — a RuntimeException for build config errors is fine (Maven plugin). Use of plain RuntimeException in a Maven plugin is stylistically debatable (MojoExecutionException), but pre-existing pattern? There were no exceptions before. Minor style, skip.\n\nAlso: The new \"Guide is pinned, but has a priority specified\" check uses `f.getName()` in the message; the exception is fine.\n\nOne more thought about the GuideParser regex modification: `(?<key>priority|title|summary|tileVisible)` — but what about `previewDiscussionLink`? not relevant.\n\nWait, there's another potential issue with the fall-through: after `case \"tileVisible\"` there's no `break;` either, but it's the last case, so fine (though it falls out of the switch).\n\nLet me write the comments.\n\nComment 1 (GuideParser line 80-82): missing break → fall-through. Existing code lines:\n```\n+                case \"priority\":\n+                    guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")));\n+                case \"tileVisible\":\n+                    guide.setTileVisible(Boolean.parseBoolean(attributeMatcher.group(\"valueString\")));\n```\nI'll anchor on `                    guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")));` with suggestion adding break.\n\nComment 2 (GuideParser tileVisible parse): anchor on `                    guide.setTileVisible(Boolean.parseBoolean(attributeMatcher.group(\"valueString\")));` — but that's the same line used in comment 1's window? Comment 1 anchored on the setPriority line, comment 2 on setTileVisible line. They are adjacent; distinct lines so windows may overlap but should be fine. Hmm, could cause both comments mounted at nearly the same place. Maybe merge into one comment to avoid noise: mention both issues in one comment on the priority case. But then suggestion code covers both. I'll do two separate comments to be clear; actually risk of duplicate anchor confusion. I'll do one comment for the fall-through (main) and one for the unquoted-value parse.\n\nActually let's reconsider the unquoted parse: is it worth reporting? Suppose someone writes `tileVisible=true`. The regex match: at \"tileVisible=\" ... after `=` alternation tries quoted string (fails), then `[\\d]*` matches zero digits → overall match \"tileVisible=\" with valueString null. parseBoolean(null) = false. So the guide tile would be hidden when the author asked to show it, and if no priority is given, build fails with a confusing message. This is a real (if latent) hazard. I'll report as low/medium.\n\nComment 3 (Context line 56): typo \"do no longer exist\" → \"no longer exist\"/\"do not exist any more\". Low severity, style/documentation? Category \"style\" or \"maintainability\". Checklist mentions exception message spelling errors. Use category \"style\", severity low.\n\nShould I also flag that `Objects.equals(guide.getTileVisible(), Boolean.FALSE)` could be `Boolean.FALSE.equals(...)`? Style, skip.\n\nAny other real issue? Let me think about the new semantic default: `Guide.priority = Integer.MAX_VALUE` while the freemarker macro default remains `priority=999`. In the generated output, guides not pinned won't be passed `priority` and rendering uses the asciidoc macro default 999. Since the Java priority is only used for sorting, this is fine (previous default 999 was also for sorting to put them after named ones? previously priority default 999 and pinned get 1..N; now MAX). Consistent behavior. OK.\n\nBut wait — there's a subtle issue with the sorting: guides with priority MAX_VALUE sorted last, and `o1.getTitle().compareTo(o2.getTitle())` — getTitle could be null? If a guide's import element doesn't have a title attribute... pre-existing.\n\nAnother one: In Context, `guidePriorities` is now mutated via remove — but what if the same guide id corresponds to... fine.\n\nOne more possible bug: pinned guides are matched by `guide.getId()` derived from the filename with `.replaceAll(\".adoc\", \"\")` — regex; for a filename like \"deploy.adoc\", replaceAll(\".adoc\",\"\") gives \"deploy\"? The regex \".adoc\" would match \".adoc\" — but for a filename containing \"xadoc\"? e.g. \"foo-xadoc.adoc\" → replaceAll replaces both \"xadoc\"? Regex \".adoc\" matches any char followed by \"adoc\" → \"xadoc\" (x + adoc) → \"foo-\" and then \".adoc\" → \"foo\". Pre-existing, skip.\n\nSo final comments: 3.\n\nLet me double-check the recommended fix for parsing tileVisible with the pattern: The cleanest suggestion is to pass the tileVisible value through a helper that handles the case where valueString is null (unquoted). But `[\\d]*` won't match `true`, so parse would fail. Suggest:\n```java\ncase \"tileVisible\":\n    String value = attributeMatcher.group(\"valueString\");\n    if (value == null) {\n        throw new RuntimeException(\"tileVisible must be quoted as \\\"true\\\" or \\\"false\\\"\");\n    }\n    guide.setTileVisible(Boolean.parseBoolean(value));\n    break;\n```\nHmm, maybe simpler: only match quoted strings for tileVisible by separating patterns. I'll suggest validating null. Keep it concise.\n\nActually, potential double-comment anchoring: comment 1 anchor on setPriority line, comment 2 anchor on setTileVisible line. The tool matches consecutive lines in the diff; both anchors are newly added lines. Fine. But the suggestion_code for comment 1 would add \"break;\" — and comment 2 suggestion modifies the setTileVisible line. If both are applied, they'd combine. Slight conflict risk but acceptable. Maybe better: put the break in comment 1's suggestion, and comment 2 just describes without suggestion_code (to avoid conflicting edits). I'll omit suggestion_code for comment 2, or provide a combined suggestion in comment 1 and a description-only comment 2. Let's do: comment 1 with suggestion including break; comment 2 with descriptive suggestion text but no suggestion_code... Actually the schema allows omitting suggestion_code. I'll include a small snippet in content instead.\n\nHmm, maybe I should merge comments 1 and 2? They're related (same switch case block). Merging keeps it clean and avoids overlapping anchors. But the two issues are distinct. I'll keep separate for clarity — the tool handles individual comments.\n\nLet me write.",
+        "category": "style",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "Maven plugin guide parsing and context handling",
+        "files": [
+          "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Context.java",
+          "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Guide.java",
+          "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/GuideParser.java"
+        ]
+      },
+      {
+        "label": "High-availability pinned guides documentation",
+        "files": [
+          "docs/guides/high-availability/pinned-guides"
+        ]
+      }
+    ],
+    "session_id": "ab143e49-80c3-4302-a088-e34217753765",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "ab143e49-80c3-4302-a088-e34217753765",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "09ec7b5c3a0dd5f86824a69e1816d07ec543e3540bc08a2aab1474162cc98cdc"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "8521b9952a989d0dac17697278610b053c613528",
+        "requested_head": "805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9",
+        "resolved_base": "b3b30a8620dcce0b0d5caee429d07789afbad147",
+        "resolved_head": "805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9",
+        "exact_range": "b3b30a8620dcce0b0d5caee429d07789afbad147..805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9",
+        "source_artifact_sha256": "f12a4f3b5a250c5aea475ee5ce72eed0669897ac474c39fe1350b9feaa3739b0"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "0752868effe39e497b75f1249fbb767f14204cf00b2a003554dca710f46f58e5",
+            "path": "docs/guides/high-availability/pinned-guides",
+            "fingerprint": "611e311f29d4924f999aaecc5e3665d4ef4df2dece654ee70ae254c148c39ce8"
+          },
+          {
+            "item_id": "37085b3ac4432bedcfa1cdc504ad9918aa552619d651dfbfcb4a273093b1691d",
+            "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Context.java",
+            "fingerprint": "70a1788e4bc8d09046f02ead582d563af94e94cc1a97256a4ec75acc5c94a2d3"
+          },
+          {
+            "item_id": "671b13a1ee169086c0e8bed1d37c5b135aa6bbb1b7f0854c02c893f12c7d7dbb",
+            "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/GuideParser.java",
+            "fingerprint": "59b8994c9c760061e5f3b4948f421286ffb8a1824ff2f7e18c3cc8b297ed235e"
+          },
+          {
+            "item_id": "fd827b15c4560b836cbc2504ff6bb4f4cd2aa99e42ca40731f0339755ab8b592",
+            "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Guide.java",
+            "fingerprint": "214145cbd824b896e6a7b203078d58d4db590124d28153d00f6ee763e95f6ee2"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "0752868effe39e497b75f1249fbb767f14204cf00b2a003554dca710f46f58e5",
+            "path": "docs/guides/high-availability/pinned-guides",
+            "fingerprint": "611e311f29d4924f999aaecc5e3665d4ef4df2dece654ee70ae254c148c39ce8"
+          },
+          {
+            "item_id": "37085b3ac4432bedcfa1cdc504ad9918aa552619d651dfbfcb4a273093b1691d",
+            "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Context.java",
+            "fingerprint": "70a1788e4bc8d09046f02ead582d563af94e94cc1a97256a4ec75acc5c94a2d3"
+          },
+          {
+            "item_id": "671b13a1ee169086c0e8bed1d37c5b135aa6bbb1b7f0854c02c893f12c7d7dbb",
+            "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/GuideParser.java",
+            "fingerprint": "59b8994c9c760061e5f3b4948f421286ffb8a1824ff2f7e18c3cc8b297ed235e"
+          },
+          {
+            "item_id": "fd827b15c4560b836cbc2504ff6bb4f4cd2aa99e42ca40731f0339755ab8b592",
+            "path": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/Guide.java",
+            "fingerprint": "214145cbd824b896e6a7b203078d58d4db590124d28153d00f6ee763e95f6ee2"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "5ff5a9311699950efc88f7ee741a9dbb86097aa1bf9f802eec6423c576c550c7",
+            "path": "docs/guides/operator/realm-import.adoc",
+            "exclude_reason": "unsupported_ext"
+          },
+          {
+            "item_id": "755248cc0d2197e534dc94d1e7d940646e21bbec25d5a0de902ff8da4f0a1357",
+            "path": "docs/guides/server/vault.adoc",
+            "exclude_reason": "unsupported_ext"
+          },
+          {
+            "item_id": "bfd993b0049da367e18a46838f32991a3f59dad6c3ad1102bc556a399e520092",
+            "path": "docs/guides/operator/installation.adoc",
+            "exclude_reason": "unsupported_ext"
+          },
+          {
+            "item_id": "e36ab01321c84bef81053cb1b173a62b6fa973819f961faf519647dd3731f4a1",
+            "path": "docs/guides/operator/basic-deployment.adoc",
+            "exclude_reason": "unsupported_ext"
+          }
+        ]
+      },
+      "elapsed_ms": 197164
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n[ocr]   ✘ file_read failed: file \"docs/guides/securing-apps/pinned-guides\" not found: git show 805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9:docs/guides/securing-apps/pinned-guides: exit status 128: fatal: path 'docs/guides/securing-apps/pinned-guides' does not exist in '805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9'\n\n[ocr]   ✘ file_read failed: file \"docs/guides/securing-apps/pinned-guides\" not found: git show 805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9:docs/guides/securing-apps/pinned-guides: exit status 128: fatal: path 'docs/guides/securing-apps/pinned-guides' does not exist in '805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9'\n\n"
+}

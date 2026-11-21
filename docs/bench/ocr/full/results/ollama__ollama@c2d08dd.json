@@ -1,0 +1,145 @@
+{
+  "instance_id": "ollama__ollama@c2d08dd",
+  "repo": "ollama/ollama",
+  "base_commit": "f53f4198c36d0a943de598ad91a20baa9481c5c5",
+  "head_commit": "c2d08dd67a9bcf15e52a2f15b1fad888afffcd32",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T04:07:35.613384+00:00",
+  "duration_seconds": 164.72,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 2 finding(s) across 2 selected item(s).",
+    "summary": {
+      "files_reviewed": 2,
+      "comments": 2,
+      "total_tokens": 629018,
+      "input_tokens": 606613,
+      "output_tokens": 22405,
+      "cache_read_tokens": 551808,
+      "elapsed": "2m44s"
+    },
+    "tool_calls": {
+      "total": 38,
+      "by_tool": {
+        "code_comment": 1,
+        "code_search": 19,
+        "file_read": 18
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "envconfig/config.go",
+        "content": "`ctxLength` is a `uint`, so `ctxLength <= 0` is always equivalent to `ctxLength == 0` (negative input never reaches here: `Uint` uses `strconv.ParseUint` and falls back to the default on \"-1\"). The warning message is therefore misleading — it says \"less than 0\" when the concrete cause is a zero value. Also note the default `2048` is duplicated here and in the `Uint(\"OLLAMA_CONTEXT_LENGTH\", 2048)` call in the `ContextLength` var, so the two can drift; consider a single named constant.",
+        "suggestion_code": "\tif ctxLength == 0 {\n\t\tslog.Warn(\"context length must be greater than 0, using default\", \"context_length\", ctxLength, \"default\", 2048)",
+        "existing_code": "\tif ctxLength <= 0 {\n\t\tslog.Warn(\"context length is less than 0, using default\", \"context_length\", ctxLength, \"default\", 2048)",
+        "start_line": 191,
+        "end_line": 192,
+        "thinking": "`server/routes.go:68` calls api.DefaultOptions() per request in `ScheduleRunner` likely. So ContextLength() reads env and validates each call — fine, no logging unless 0.\n\nWait, more importantly: `runner/llamarunner/runner.go:607` uses `api.DefaultOptions()` to fill defaults for missing options inside the runner subprocess. That now honors OLLAMA_CONTEXT_LENGTH — consistent since env inherited.\n\nHmm, but there's a real concern: if OLLAMA_CONTEXT_LENGTH is set, the option merge logic might treat env default as \"user specified\" and... not really an issue.\n\nAnother thought: What about the case where OLLAMA_CONTEXT_LENGTH default 2048 interacts with server's env var documentation and also `llm/memory.go` max(NumCtx,2048)? If env sets 4096, memory estimation uses 4096 — fine.\n\nSo my conclusion: report the `<= 0` / misleading log message issue (low-medium). Possibly report the missing upper bound / int narrowing (low). I'll report both but keep them precise, with #2 worded carefully about 32-bit platforms and suggesting an upper bound.\n\nActually let me reconsider #2's validity more: `CheckContextLength` is exported and also would be the natural place to bound. The api conversion `int(...)` is the narrowing. The checklist explicitly lists \"Integer conversion ... narrowing ... turn negative input into huge size. Consider architecture-dependent int width.\" This is exactly the case. I'll report it as low severity on api/types.go line.\n\nAlso consider whether there's a documented environment variable section (docs/*.md) that should be updated — not in review group; skip.\n\nLet me write the comments.\n\nComment 1 on envconfig/config.go:\nexisting_code: `\\tif ctxLength <= 0 {` — need exact new added lines. The diff added:\n```\n+func CheckContextLength(ctxLength uint) uint {\n+\tif ctxLength <= 0 {\n+\t\tslog.Warn(\"context length is less than 0, using default\", \"context_length\", ctxLength, \"default\", 2048)\n+\t\treturn 2048\n+\t}\n+\treturn ctxLength\n+}\n```\nI'll target the two lines:\n```\n\tif ctxLength <= 0 {\n\t\tslog.Warn(\"context length is less than 0, using default\", \"context_length\", ctxLength, \"default\", 2048)\n```\nActually existing_code must be consecutive lines from diff. Use:\n\"\tif ctxLength <= 0 {\\n\t\tslog.Warn(\\\"context length is less than 0, using default\\\", \\\"context_length\\\", ctxLength, \\\"default\\\", 2048)\"\n\nSuggestion: `if ctxLength == 0 {` and message \"context length must be greater than 0, using default\".\n\nComment 2 on api/types.go:\nexisting_code: `\t\t\tNumCtx:    int(envconfig.ContextLength()),`\nContent: uint→int narrowing; on 32-bit int width, values > math.MaxInt32 wrap negative; suggest bounding in CheckContextLength (e.g. reject > math.MaxInt32 or a sane max) and/or clamp. Provide suggestion? Perhaps suggest validating upper bound in envconfig and no code change here. I'll give suggestion_code as nothing? Optional. Maybe suggest:\n\n```\n\t\t\tNumCtx:    int(envconfig.ContextLength()),\n```\nNo change; just a note. I'll omit suggestion_code for #2.\n\nHmm, but should I include #2 at all given recall concerns? It's a legitimate boundary issue but requires 32-bit platform + absurd value. I'd include at low severity. Given \"A false positive costs reviewer trust\", is wrap-negative truly a false positive? It's real but low impact; sched clamps NumCtx < 4 to 4. I'll keep it low severity and mention the practical impact honestly. Actually, careful: if I claim it causes negative context, the reviewer may check and find sched clamps. Let me describe accurately: negative NumCtx would flow into option handling (clamped to 4 in sched), silently ignoring the requested size. Hmm, this weakens the finding to \"misconfiguration leads to silent wrong behavior\". Maybe just make it about the log/warning consistency? Let me reconsider: Maybe a better defensive point is that envconfig should reject values that don't fit int, since api converts with int(). I'll keep it, low severity, brief.\n\nAny other findings? The `ContextLength` var placement in the bool block and using an inline func instead of `Uint` — style. Skip.\n\nDuplicate default constant 2048 — mention in comment 1 as part of suggestion? I'll mention within comment 1 content briefly.\n\nLet's finalize.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "api/types.go",
+        "content": "`ContextLength()` returns a `uint` parsed from a user-supplied value (up to uint64/uint max), and this converts it to `int` without an upper-bound check. On platforms where `int` is 32-bit, a value above `math.MaxInt32` wraps to a negative `NumCtx`, which then silently degrades (e.g. `server/sched.go` clamps `NumCtx < 4` to 4) instead of reporting the bad setting. Suggest bounding the value in `CheckContextLength` (e.g. reject values that do not fit in `int`) and returning the default with a warning, so the conversion here is always safe.",
+        "existing_code": "\t\t\tNumCtx:    int(envconfig.ContextLength()),",
+        "start_line": 614,
+        "end_line": 614,
+        "thinking": "`server/routes.go:68` calls api.DefaultOptions() per request in `ScheduleRunner` likely. So ContextLength() reads env and validates each call — fine, no logging unless 0.\n\nWait, more importantly: `runner/llamarunner/runner.go:607` uses `api.DefaultOptions()` to fill defaults for missing options inside the runner subprocess. That now honors OLLAMA_CONTEXT_LENGTH — consistent since env inherited.\n\nHmm, but there's a real concern: if OLLAMA_CONTEXT_LENGTH is set, the option merge logic might treat env default as \"user specified\" and... not really an issue.\n\nAnother thought: What about the case where OLLAMA_CONTEXT_LENGTH default 2048 interacts with server's env var documentation and also `llm/memory.go` max(NumCtx,2048)? If env sets 4096, memory estimation uses 4096 — fine.\n\nSo my conclusion: report the `<= 0` / misleading log message issue (low-medium). Possibly report the missing upper bound / int narrowing (low). I'll report both but keep them precise, with #2 worded carefully about 32-bit platforms and suggesting an upper bound.\n\nActually let me reconsider #2's validity more: `CheckContextLength` is exported and also would be the natural place to bound. The api conversion `int(...)` is the narrowing. The checklist explicitly lists \"Integer conversion ... narrowing ... turn negative input into huge size. Consider architecture-dependent int width.\" This is exactly the case. I'll report it as low severity on api/types.go line.\n\nAlso consider whether there's a documented environment variable section (docs/*.md) that should be updated — not in review group; skip.\n\nLet me write the comments.\n\nComment 1 on envconfig/config.go:\nexisting_code: `\\tif ctxLength <= 0 {` — need exact new added lines. The diff added:\n```\n+func CheckContextLength(ctxLength uint) uint {\n+\tif ctxLength <= 0 {\n+\t\tslog.Warn(\"context length is less than 0, using default\", \"context_length\", ctxLength, \"default\", 2048)\n+\t\treturn 2048\n+\t}\n+\treturn ctxLength\n+}\n```\nI'll target the two lines:\n```\n\tif ctxLength <= 0 {\n\t\tslog.Warn(\"context length is less than 0, using default\", \"context_length\", ctxLength, \"default\", 2048)\n```\nActually existing_code must be consecutive lines from diff. Use:\n\"\tif ctxLength <= 0 {\\n\t\tslog.Warn(\\\"context length is less than 0, using default\\\", \\\"context_length\\\", ctxLength, \\\"default\\\", 2048)\"\n\nSuggestion: `if ctxLength == 0 {` and message \"context length must be greater than 0, using default\".\n\nComment 2 on api/types.go:\nexisting_code: `\t\t\tNumCtx:    int(envconfig.ContextLength()),`\nContent: uint→int narrowing; on 32-bit int width, values > math.MaxInt32 wrap negative; suggest bounding in CheckContextLength (e.g. reject > math.MaxInt32 or a sane max) and/or clamp. Provide suggestion? Perhaps suggest validating upper bound in envconfig and no code change here. I'll give suggestion_code as nothing? Optional. Maybe suggest:\n\n```\n\t\t\tNumCtx:    int(envconfig.ContextLength()),\n```\nNo change; just a note. I'll omit suggestion_code for #2.\n\nHmm, but should I include #2 at all given recall concerns? It's a legitimate boundary issue but requires 32-bit platform + absurd value. I'd include at low severity. Given \"A false positive costs reviewer trust\", is wrap-negative truly a false positive? It's real but low impact; sched clamps NumCtx < 4 to 4. I'll keep it low severity and mention the practical impact honestly. Actually, careful: if I claim it causes negative context, the reviewer may check and find sched clamps. Let me describe accurately: negative NumCtx would flow into option handling (clamped to 4 in sched), silently ignoring the requested size. Hmm, this weakens the finding to \"misconfiguration leads to silent wrong behavior\". Maybe just make it about the log/warning consistency? Let me reconsider: Maybe a better defensive point is that envconfig should reject values that don't fit int, since api converts with int(). I'll keep it, low severity, brief.\n\nAny other findings? The `ContextLength` var placement in the bool block and using an inline func instead of `Uint` — style. Skip.\n\nDuplicate default constant 2048 — mention in comment 1 as part of suggestion? I'll mention within comment 1 content briefly.\n\nLet's finalize.",
+        "category": "bug",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "api/types.go",
+          "envconfig/config.go"
+        ]
+      }
+    ],
+    "session_id": "09cfd9dd-08d8-4206-838b-abfdac8df6f4",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "09cfd9dd-08d8-4206-838b-abfdac8df6f4",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "954b1a135d24fa74b001b128b54ddc0e438450e58e6d296bfbd4e8924bd296cd"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "f53f4198c36d0a943de598ad91a20baa9481c5c5",
+        "requested_head": "c2d08dd67a9bcf15e52a2f15b1fad888afffcd32",
+        "resolved_base": "ed443a03930a10bec6182c55091f0880baa1e620",
+        "resolved_head": "c2d08dd67a9bcf15e52a2f15b1fad888afffcd32",
+        "exact_range": "ed443a03930a10bec6182c55091f0880baa1e620..c2d08dd67a9bcf15e52a2f15b1fad888afffcd32",
+        "source_artifact_sha256": "47f70eab9b2bde7038964303543128baf19ef1dd0622023c1f603e0fe5556fab"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "49f67811e2630c46fb77d8cc723042d11d7204eb15007d493b5f4e6a79193dd1",
+            "path": "api/types.go",
+            "fingerprint": "0c21f3af2e205b169bce0ae1e8a2ddb34dfe6e9edf322e5edc049599476c6cb2"
+          },
+          {
+            "item_id": "57ac0b30b31a335acb8fe6f5fefae220593f04dd34894cc27bb3a55abc202ebf",
+            "path": "envconfig/config.go",
+            "fingerprint": "329a69da6287b7fbf334e1ec5c745723bca6b16667e828b0616f6ae41c19c7ac"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "49f67811e2630c46fb77d8cc723042d11d7204eb15007d493b5f4e6a79193dd1",
+            "path": "api/types.go",
+            "fingerprint": "0c21f3af2e205b169bce0ae1e8a2ddb34dfe6e9edf322e5edc049599476c6cb2"
+          },
+          {
+            "item_id": "57ac0b30b31a335acb8fe6f5fefae220593f04dd34894cc27bb3a55abc202ebf",
+            "path": "envconfig/config.go",
+            "fingerprint": "329a69da6287b7fbf334e1ec5c745723bca6b16667e828b0616f6ae41c19c7ac"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "06c8e632199778f4eb36e86e60762e825222960b8ed85f1176782d325ac934a0",
+            "path": "envconfig/config_test.go",
+            "exclude_reason": "default_path"
+          },
+          {
+            "item_id": "5ddd3a027b78c889e57e587ed5615b7226a0911c9ef444c2740e859f55337d73",
+            "path": "api/types_test.go",
+            "exclude_reason": "default_path"
+          },
+          {
+            "item_id": "6da959f77715971706b03b998c9f7ce514c7f11ba7b608dece800dae36505ced",
+            "path": "llm/memory_test.go",
+            "exclude_reason": "default_path"
+          }
+        ]
+      },
+      "elapsed_ms": 164319
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

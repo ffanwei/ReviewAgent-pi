@@ -1,0 +1,768 @@
+{
+  "generatedAt": "2026-11-15T07:35:35.743Z",
+  "runId": "20261115_071921_589",
+  "source": "mr",
+  "caseId": "ClickHouse__ClickHouse@f9987c8",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "安全",
+      "file": "base/poco/NetSSL_OpenSSL/src/SecureSocketImpl.cpp",
+      "line": 489,
+      "title": "peerCertificate 新增的校验抛错与既有校验路径重复，且错误码来源不正确",
+      "description": "peerCertificate 现在在返回证书前检查 `SSL_get_verify_result`，失败时抛 CertificateValidationException，但：1) 证书校验/主机名校验原本由 verifyPeerCertificate()/verifyPeerCertificateImpl() 在握手后完成，并在失败时使用 `Utility::convertCertificateError(certErr)` 生成可读错误，新增路径改用 `Utility::getLastError()`（读取 OpenSSL 错误队列），在 verify_result 非 OK 但错误队列为空时会产出空或无关的错误文本；2) 这把一个原本的只读访问器变成了会抛异常的接口（且 `SSL_get_peer_certificate` 是 OpenSSL 3 中 `SSL_get1_peer_certificate` 的 deprecated 别名，同文件 442 行仍使用新名），调用方只是取证书展示/上报时会意外中断。",
+      "evidence": [
+        "base/poco/NetSSL_OpenSSL/src/SecureSocketImpl.cpp:485-491 — `pCert = ::SSL_get_peer_certificate(_pSSL); if (X509_V_OK != SSL_get_verify_result(_pSSL)) throw CertificateValidationException(\"SecureSocketImpl::peerCertificate(): \" \"Certificate verification error \" + Utility::getLastError());`",
+        "base/poco/NetSSL_OpenSSL/src/SecureSocketImpl.cpp:426-430 — 既有校验路径使用 `Utility::convertCertificateError(certErr)` 生成说明文字",
+        "base/poco/NetSSL_OpenSSL/src/SecureSocketImpl.cpp:442 — 同文件仍使用新 API `SSL_get1_peer_certificate(_pSSL)`，与新代码中的 deprecated 名称不一致",
+        "diff 中被替换的旧实现：`if (_pSSL) return SSL_get1_peer_certificate(_pSSL); else return 0;`（不抛异常）"
+      ],
+      "rule": "TLS-001",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 安全相关错误处理重复实现且错误码来源不当，同时改变了访问器的异常契约。影响评估：证书校验失败时可能抛出内容为空的 CertificateValidationException，掩盖真实原因；调用方（例如取对端证书做展示/监控的代码）在错误场景下从「拿到证书或 nullptr」变为「抛异常」，可能中断请求处理。",
+        "suggestion": "[重构思路] 校验失败应由 verifyPeerCertificate() 一处负责并统一使用 convertCertificateError(X509_verify_cert_error_string) 生成信息；peerCertificate 保持为纯访问器（返回证书或 nullptr），如需暴露校验状态请另设接口。代码示例：`X509* pCert = SSL_get1_peer_certificate(_pSSL); if (!pCert) return nullptr; long err = SSL_get_verify_result(_pSSL); if (err != X509_V_OK) { X509_free(pCert); throw CertificateValidationException(\"Unacceptable certificate\", Utility::convertCertificateError(err)); } return pCert;`。",
+        "subcategory": "TLS 证书校验与错误信息"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Interpreters/Context.cpp",
+      "line": 3260,
+      "title": "backup_threads/restore_threads 去掉上下界夹取后允许为 0，会让备份/恢复线程池无法工作",
+      "description": "原实现用 `std::min(max_threads_max_value, std::max(Poco::UInt64{1}, config.getUInt64(\"backup_threads\", 16)))` 保证线程数至少为 1 且不超过 256 倍 CPU 核数；本次改为 `config.getUInt64(\"backup_threads\", settings_ref[Setting::backup_threads])`，同时 ServerSettings 把这两个设置的声明类型从 NonZeroUInt64 改成 UInt64，任何上下界都不再存在。而 BackupsWorker 用 `max_threads = num_backup_threads`（BackupsWorker.cpp:232）和 `max_threads = num_restore_threads`（:248）直接构造 ThreadPool，并在 :255 处 `chassert(max_threads != 0)`。配置 `backup_threads: 0` 在 debug 构建会断言失败，在 release 构建会创建 0 线程的 ThreadPool 使备份/恢复任务永远得不到调度（客户端表现为 BACKUP/RESTORE 挂起）；配置超大值时又会创建超出预期的线程数。",
+      "evidence": [
+        "src/Interpreters/Context.cpp:3260 — `UInt64 backup_threads = config.getUInt64(\"backup_threads\", settings_ref[Setting::backup_threads]);`（旧代码为 std::min(max_threads_max_value, std::max(1, ...))）",
+        "src/Core/ServerSettings.cpp:142 — `DECLARE(NonZeroUInt64, backup_threads, 16, ...)` 改为 `DECLARE(UInt64, backup_threads, 16, ...)`；:144 restore_threads 同理",
+        "src/Backups/BackupsWorker.cpp:232 — `max_threads = num_backup_threads;`；:248 — `max_threads = num_restore_threads;`",
+        "src/Backups/BackupsWorker.cpp:255 — `chassert(max_threads != 0);`",
+        "src/Backups/BackupsWorker.cpp:258 — `std::make_unique<ThreadPool>(..., max_threads, max_free_threads, queue_size)`"
+      ],
+      "rule": "RESOURCE-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 移除参数上/下界校验后把非法值直接传给资源池构造器。[影响评估] `backup_threads: 0` 在 debug 下触发 chassert 崩溃，在 release 下使 BACKUP/RESTORE 任务永不执行（挂起）；过大值则引发线程数失控。",
+        "suggestion": "[重构思路] 在读取配置处恢复夹取逻辑（至少保证 >=1，并保留一个合理的上界），或把设置类型保留为非零类型并在 ServerSettings 中声明最小值约束。[代码示例] `UInt64 backup_threads = std::clamp<UInt64>(config.getUInt64(\"backup_threads\", settings_ref[Setting::backup_threads]), 1, 256 * getNumberOfCPUCoresToUse());`",
+        "subcategory": "资源池参数校验"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Formats/NativeReader.cpp",
+      "line": 237,
+      "title": "新增索引列类型字符串比对，与 NativeWriter 对 DateTime 类型名的截断逻辑冲突，可能让带时区的 DateTime 列读取直接失败",
+      "description": "NativeReader 在 use_index 时新增 `index_column_it->type != type_name` 校验并抛 INCORRECT_INDEX（旧代码只比较列名，并明确注释「不能按字符串比较数据类型，兼容类型可能参数不同」）。但索引中保存的类型是 NativeWriter.cpp:207 的 `column.type->getName()`（完整名，例如 `DateTime('UTC')`），而写入数据流时 NativeWriter.cpp:157-161 会在 `client_revision < DBMS_MIN_REVISION_WITH_TIME_ZONE_PARAMETER_IN_DATETIME_DATA_TYPE` 时把类型名截断成 `DateTime`。StorageStripeLog 写入（StorageStripeLog.cpp:204）和读取（StorageStripeLog.cpp:173 `block_in.emplace(*data_in, 0, index_begin, index_end)`）都使用 client_revision=0，因此 `DateTime('UTC')` 列的数据流类型串为 `DateTime`、索引类型串为 `DateTime('UTC')`，两者必然不等，读取时会抛 INCORRECT_INDEX，把合法数据判为「corrupted index or data」。同类使用 index 的路径（StorageMemory 备份、StorageSet/StorageJoin 等）也走同一比较。",
+      "evidence": [
+        "src/Formats/NativeReader.cpp:237-238 — `if (index_column_it->type != type_name) throw Exception(ErrorCodes::INCORRECT_INDEX, \"Index points to column with wrong type...\")`",
+        "src/Formats/NativeWriter.cpp:157-161 — `if (client_revision < DBMS_MIN_REVISION_WITH_TIME_ZONE_PARAMETER_IN_DATETIME_DATA_TYPE && startsWith(type_name, \"DateTime(\")) type_name = \"DateTime\";`",
+        "src/Formats/NativeWriter.cpp:207 — `index_block.columns[i].type = column.type->getName();`（未截断）",
+        "src/Storages/StorageStripeLog.cpp:204 — `block_out = std::make_unique<NativeWriter>(*data_out, 0, metadata_snapshot->getSampleBlock(), std::nullopt, false, &storage.indices, initial_data_size);`",
+        "src/Storages/StorageStripeLog.cpp:173 — `block_in.emplace(*data_in, 0, index_begin, index_end);`（client_revision=0，走 use_index 路径）",
+        "src/Formats/NativeReader.cpp:74-78 — 索引类型同时被用于构造 header"
+      ],
+      "rule": "COMPAT-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 新增的严格等值校验与既有序列化侧的兼容性截断逻辑不一致。[影响评估] StripeLog/Log/Memory 等使用 Native index 的表在含 `DateTime('TZ')` 列时可能无法读取，用户表现为 INCORRECT_INDEX，属于数据可读性回归。",
+        "suggestion": "[重构思路] 索引写入端与数据流写入端使用同一份（可能被截断的）类型名，或在读取端把校验改为「类型可解析且与 header 兼容」的宽松比较（例如比较去掉参数后的基础类型或调用 `IDataType::equals`）。[代码示例] 写入端：`String index_type_name = type_name; /// 复用已被兼容性截断的 type_name`；读取端：`if (index_column_it->type != type_name && data_type_factory.get(index_column_it->type)->equals(*column.type)) throw ...`",
+        "subcategory": "格式兼容性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P1",
+      "category": "安全",
+      "file": "src/Disks/ObjectStorages/AzureBlobStorage/AzureObjectStorage.h",
+      "line": 101,
+      "title": "Azure 对象存储移除 read_only 配置与 isReadOnly() 覆写，配置的 readonly 会被静默忽略",
+      "description": "本次改动删除了 `RequestSettings::read_only` 字段、`getRequestSettings` 中 `settings->read_only = config.getBool(config_prefix + \".readonly\", false);` 的赋值，以及 `AzureObjectStorage::isReadOnly()` 覆写。删除覆写后回落到基类默认实现 `IObjectStorage::isReadOnly() { return false; }`，于是用户在 Azure 磁盘配置里写的 `readonly: true` 不再有任何效果：上层（DiskObjectStorage::isReadOnly、StorageObjectStorage 的写入检查）会认为该磁盘可写，对本来声明为只读的对象存储发起写/删除操作。对比之下 S3（S3ObjectStorage.h:156）与 Local（ObjectStorageFactory.cpp:363-364、LocalObjectStorage.h:41）仍保留 `readonly` 语义，Azure 行为出现不一致，且属于「静默降级」——用户无从得知只读保护已失效。",
+      "evidence": [
+        "src/Disks/ObjectStorages/AzureBlobStorage/AzureBlobStorageCommon.cpp:442 附近删除了 `settings->read_only = config.getBool(config_prefix + \".readonly\", false);`",
+        "src/Disks/ObjectStorages/AzureBlobStorage/AzureBlobStorageCommon.h:52 附近删除了 `bool read_only = false;` 字段",
+        "src/Disks/ObjectStorages/AzureBlobStorage/AzureObjectStorage.h:103 附近删除了 `bool isReadOnly() const override { return settings.get()->read_only; }`",
+        "src/Disks/ObjectStorages/IObjectStorage.h:249 — `virtual bool isReadOnly() const { return false; }`（默认返回 false）",
+        "src/Disks/ObjectStorages/S3/S3ObjectStorage.h:156 — S3 仍为 `bool isReadOnly() const override { return s3_settings.get()->read_only; }`",
+        "src/Disks/ObjectStorages/ObjectStorageFactory.cpp:363-364 — Local 仍解析 `readonly` 配置"
+      ],
+      "rule": "SECURITY-003",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 移除只读保护开关但配置项仍被接受（无告警）。[影响评估] 依赖 `readonly: true` 保护 Azure 容器的部署可能在无感知的情况下发生写入，存在数据被误写/误删的风险；与 S3/Local 语义不一致也会误导运维。",
+        "suggestion": "[重构思路] 若确实要移除该能力，应在配置解析阶段对仍使用 `readonly` 的 Azure 磁盘抛出明确错误或至少 LOG_WARNING 提示；更稳妥的做法是保留字段与覆写。[代码示例] 保留写法：`settings->read_only = config.getBool(config_prefix + \".readonly\", false);` 与 `bool isReadOnly() const override { return settings.get()->read_only; }`；移除时提示：`if (config.has(config_prefix + \".readonly\")) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"Option 'readonly' is no longer supported for Azure object storage\");`",
+        "subcategory": "只读保护失效"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/Core/Settings.cpp",
+      "line": 6719,
+      "title": "distributed_plan_* 系列设置被重命名且未提供旧名兼容，升级后旧设置名会变成未知设置",
+      "description": "`distributed_plan_execute_locally`→`execute_distributed_plan_locally`、`distributed_plan_default_shuffle_join_bucket_count`→`default_shuffle_join_bucket_count`、`distributed_plan_default_reader_bucket_count`→`default_reader_bucket_count`、`distributed_plan_optimize_exchanges`→`optimize_exchanges`、`distributed_plan_force_exchange_kind`→`force_exchange_kind`，并且在 SettingsChangesHistory 中直接把旧名替换成新名，没有看到任何旧名别名（registerAlias / 旧名保留为 obsolete 设置）。重命名后的名字还失去了 `distributed_plan_` 前缀，语义可发现性下降（`optimize_exchanges`、`default_reader_bucket_count` 过于泛化）。用户配置、profile、测试脚本中已有的旧设置名会在升级后直接报未知设置，属于静默的兼容性破坏。",
+      "evidence": [
+        "src/Core/Settings.cpp:6719-6732 — `DECLARE(Bool, distributed_plan_execute_locally, false, ...)` 改为 `DECLARE(Bool, execute_distributed_plan_locally, false, ...)`；`distributed_plan_default_shuffle_join_bucket_count`/`distributed_plan_default_reader_bucket_count` 改为 `default_shuffle_join_bucket_count`/`default_reader_bucket_count`",
+        "src/Core/Settings.cpp:6728-6734 — `distributed_plan_optimize_exchanges`（默认 true）改为 `optimize_exchanges`（默认 false，tier 由 0 改为 EXPERIMENTAL）；`distributed_plan_force_exchange_kind` 改为 `force_exchange_kind`",
+        "src/Core/SettingsChangesHistory.cpp:95-99 — 历史记录中的键名同步被替换为新名，未保留旧名条目",
+        "src/Core/SettingsChangesHistory.cpp:100 — `{\"optimize_exchanges\", 0, 0, \"New experimental setting.\"}` 为 Bool 设置却记录整型默认值 0"
+      ],
+      "rule": "COMPAT-008",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 设置改名未做兼容。[影响评估] 升级后旧名被视为未知设置（查询/配置/profile 报错）；新名去掉前缀后语义不清晰，容易与其它 exchange 相关设置混淆。",
+        "suggestion": "[重构思路] 为每个旧名注册别名或保留为 obsolete 设置（读取时映射到新名），并在 SettingsChangesHistory 中显式记录 rename；同时保留 `distributed_plan_` 前缀以避免语义歧义。[代码示例] `DECLARE(Bool, optimize_exchanges, false, ..., EXPERIMENTAL) \\` + `MAKE_OBSOLETE(M, Bool, distributed_plan_optimize_exchanges, false) \\`；历史记录：`{\"optimize_exchanges\", false, false, \"Renamed from distributed_plan_optimize_exchanges.\"}`",
+        "subcategory": "设置重命名兼容性"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "安全",
+      "file": "src/Core/Settings.cpp",
+      "line": 7180,
+      "title": "删除 disallowed_values 约束能力并移除 system.settings 的一列，既有配置中的取值黑名单不再生效",
+      "description": "本 MR 从 SettingsConstraints::set/get、SettingsProfileElement、ASTSettingsProfileElement、UsersConfigAccessStorage 等处删除了 disallowed_values 支持，并把 system.settings 的 dump 列下标整体前移（`res_columns[6]` 由 disallowed_values 改为 readonly，后续 type/default/alias_for/is_obsolete/tier 依次前移一位）。两处改动本身与 StorageSystemSettings.cpp 的 12 列定义是自洽的，但对用户可见的后果是：(1) system.settings.disallowed_values 列消失，所有依赖该列的查询/看板会报未知列；(2) 管理员曾在 settings profile 或 users.xml 里配置的「禁止取值」约束不再被强制执行，且没有任何提示或迁移说明，等同于安全约束被静默放宽。",
+      "evidence": [
+        "src/Core/Settings.cpp:7168-7185 删除 `std::vector<Field> disallowed_values;`、`disallowed_array` 构造以及 `res_columns[6]->insert(disallowed_array)`，并把 writability/type/default/is_obsolete/tier 由 7..12 前移到 6..11",
+        "src/Storages/System/StorageSystemSettings.cpp:20-46 — 当前列定义为 name,value,changed,description,min,max,readonly,type,default,alias_for,is_obsolete,tier（无 disallowed_values）",
+        "src/Parsers/Access/ASTSettingsProfileElement.h 删除了 `std::vector<Field> disallowed_values;` 字段",
+        "src/Access/SettingsConstraints.h:74-76 — set()/get() 签名已不含 disallowed_values 参数",
+        "MR 未展示的 src/Access/UsersConfigAccessStorage.cpp (+0/-13)、src/Access/SettingsProfileElement.cpp (+1/-10) 同步删除解析/合并逻辑"
+      ],
+      "rule": "SECURITY-004",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 安全相关约束能力被整体删除且无兼容层。[影响评估] 已配置的黑名单约束不再生效（约束被静默放宽）；system.settings 少一列属于对外 schema 破坏，客户端 `SELECT disallowed_values FROM system.settings` 直接失败。",
+        "suggestion": "[重构思路] 在 CHANGELOG / 升级说明中显式声明该能力删除，并对配置中残留的 `disallowed_values` 抛出明确错误而不是静默忽略；若尚未确定废弃，应恢复字段与列，至少保留解析与校验路径。[代码示例] 解析残留配置时：`if (config.has(\"disallowed_values\")) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"'disallowed_values' constraint is no longer supported, please remove it from settings profile\");`",
+        "subcategory": "权限/约束能力回退"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/Common/NamedCollections/NamedCollections.h",
+      "line": 2,
+      "title": "Common 层头文件改为包含 Interpreters/Context.h，破坏了目录分层并放大编译耦合",
+      "description": "本次 include 整理并不是单向「减少依赖」：多个位于 src/Common 的头文件把 `Context_fwd.h` 换成了完整的 `<Interpreters/Context.h>`（NamedCollections.h、ProgressIndication.h、ReplicasReconnector.h、computeMaxTableNameLength.h），同时 NamedCollectionsMetadataStorage.h 删掉了自身对 Context_fwd 的包含。结果是底层的 Common 组件反向依赖上层 Interpreters 模块的巨型头文件，既违反 ClickHouse 的分层约定，也显著增加编译单元体积，并提高出现循环包含的风险（Interpreters/Context.h 本身会间接包含大量 Common 头文件）。",
+      "evidence": [
+        "src/Common/NamedCollections/NamedCollections.h:2 — `#include <Interpreters/Context.h>`（新增，位于 `#include <Common/NamedCollections/NamedCollections_fwd.h>` 之前）",
+        "src/Common/ProgressIndication.h:4 — `#include <Interpreters/Context_fwd.h>` 改为 `#include <Interpreters/Context.h>`",
+        "src/Common/ReplicasReconnector.h:4 — `#include <Interpreters/Context_fwd.h>` 改为 `#include <Interpreters/Context.h>`",
+        "src/Common/computeMaxTableNameLength.h:4 — `#include <Interpreters/Context_fwd.h>` 改为 `#include <Interpreters/Context.h>`",
+        "src/Common/NamedCollections/NamedCollectionsMetadataStorage.h — 删除了 `#include <Interpreters/Context_fwd.h>`"
+      ],
+      "rule": "MAINTAINABILITY-005",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 分层依赖倒置 + 头文件包含膨胀。[影响评估] 编译时间上升、模块边界模糊，后续任何 Context.h 变更都会波及整个 Common 层，容易形成循环包含。",
+        "suggestion": "[重构思路] 头文件中只保留前向声明（`Context_fwd.h` 或自建 fwd 头），把需要完整类型的实现移到 .cpp；若某处确实需要 `Context` 的成员函数，可改为在 .cpp 里 include。[代码示例] 头文件：`#include <Interpreters/Context_fwd.h>` + `void setContext(const ContextPtr &);`；实现文件：`#include <Interpreters/Context.h>`。",
+        "subcategory": "头文件依赖与分层"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "性能",
+      "file": "src/Core/Block.cpp",
+      "line": 941,
+      "title": "concatenateBlocks 去掉单块短路后，未补快路径的调用点会产生整块深拷贝",
+      "description": "`concatenateBlocks` 删除了 `if (blocks.size() == 1) return blocks[0];`，函数体变成「cloneEmpty + 逐列 insertRangeFrom」——即使只有一个输入块，也会把每列数据完整复制一遍并重新分配内存（之前是共享同一批列）。本 MR 只在 GraceHashJoin.cpp:67/74/743 与 SortedBlocksWriter.cpp:392 补了单块快路径，但 ConcurrentHashJoin.cpp:308、JoinUtils.cpp:619、TableFunctionExplain.cpp:173、TableFunctionFormat.cpp:133（以及 gtest）仍直接调用 concatenateBlocks。这些路径在「结果恰好只有一个块」时（非常常见）会额外复制一次全部数据，造成 CPU 与峰值内存上升。",
+      "evidence": [
+        "src/Core/Block.cpp:941-965 — 删除单块短路后为 `Block out = blocks[0].cloneEmpty(); ... columns[i]->insertRangeFrom(tmp_column, 0, block.rows());`",
+        "src/Interpreters/GraceHashJoin.cpp:67-76、:743-751 与 src/Interpreters/SortedBlocksWriter.cpp:392-395 新增了 `blocks.size() == 1` 快路径",
+        "src/Interpreters/ConcurrentHashJoin.cpp:308 — `block = concatenateBlocks(res);`（无快路径）",
+        "src/Interpreters/JoinUtils.cpp:619 — `result.emplace_back(concatenateBlocks(scattered_blocks[i]));`（无快路径）",
+        "src/TableFunctions/TableFunctionExplain.cpp:173 与 src/TableFunctions/TableFunctionFormat.cpp:133 — `return concatenateBlocks(blocks);`（无快路径）"
+      ],
+      "rule": "PERFORMANCE-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 语义/实现变更未同步到所有调用点，导致冗余深拷贝。[影响评估] join/表函数路径上单块场景多做一次全量列复制，数据量大时表现为额外的 CPU 与内存峰值。",
+        "suggestion": "[重构思路] 统一约定「单块由调用方直接返回」，或让 concatenateBlocks 自身保留快路径（若担心列共享导致后续原地修改，可提供 `concatenateBlocks`（共享）与 `concatenateBlocksCopy`（深拷贝）两个版本），并逐个调用点补齐。[代码示例] `if (blocks.size() == 1) return blocks.front(); return concatenateBlocks(blocks);`",
+        "subcategory": "冗余数据拷贝"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Common/Exception.cpp",
+      "line": 263,
+      "title": "移除 Exception 析构中的强制关键错误日志与 markAsLogged 机制，重要错误可观测性回退",
+      "description": "本次删除了 `Exception::isErrorCodeImportant()`、自定义 `~Exception()`（对未被记录且错误码为 LOGICAL_ERROR / POTENTIALLY_BROKEN_DATA_PART 的异常强制写 ForcedCriticalErrorsLogger）以及 `tryLogCurrentExceptionImpl` 末尾的 `throw;` + `markAsLogged()` 标记逻辑，并连带删除 `logged` 成员。删除后逻辑自洽（无残留引用），但能力上确有回退：此前「重要错误被吞掉、从未被任何 logger 记录」的路径会留下强制日志（Cloud 侧依赖它做告警），现在这类异常可能完全静默；POTENTIALLY_BROKEN_DATA_PART 的错误码声明也一并从 Exception.cpp 移除。",
+      "evidence": [
+        "src/Common/Exception.cpp:266-282 删除 `bool Exception::isErrorCodeImportant() const` 与自定义 `Exception::~Exception()`（内部 `LOG_ERROR(getLogger(\"ForcedCriticalErrorsLogger\"), ...)`）",
+        "src/Common/Exception.cpp:293-303 删除 `tryLogCurrentExceptionImpl` 末尾的 `throw; / e.markAsLogged();` 段",
+        "src/Common/Exception.h:169-178 删除 `markAsLogged()`、`isErrorCodeImportant()` 与 `std::shared_ptr<std::atomic<bool>> logged`",
+        "src/Common/Exception.cpp:40 删除 `extern const int POTENTIALLY_BROKEN_DATA_PART;` 声明"
+      ],
+      "rule": "OBSERVABILITY-007",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 移除关键错误兜底日志。[影响评估] 未被记录的 LOGICAL_ERROR / 数据损坏类异常将不再产生告警日志，故障排查与 Cloud 告警能力下降，属于可观测性回退。",
+        "suggestion": "[重构思路] 若该机制因递归/析构中打日志的风险而移除，应替换为更安全的兜底：例如在 catch 到重要错误码的统一入口（查询结束、后台任务顶层）显式记录并计数；至少为 `isErrorCodeImportant()` 保留实现供其它位置复用。[代码示例] `catch (const Exception & e) { if (e.code() == ErrorCodes::LOGICAL_ERROR) LOG_ERROR(getLogger(\"CriticalErrors\"), \"{}\", getExceptionMessage(e, true)); throw; }`",
+        "subcategory": "可观测性回退"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Parsers/ASTShowTablesQuery.cpp",
+      "line": 30,
+      "title": "SHOW ... LIKE 的元字符高亮能力被移除，与保留的 highlightStringLiteralWithMetacharacters 形成能力不一致",
+      "description": "原先 ASTShowTablesQuery/ASTShowColumnsQuery/ASTShowFunctionsQuery/ASTDropQuery 在 `settings.hilite` 为真时会调用 `highlightStringWithMetacharacters(quoteString(like), ostr, \"%_\")`，把未转义的 `%`/`_` 以彩色标出；本次统一改成 `DB::quote << like`，高亮逻辑被删除，而 ASTFunction.cpp 中新加的静态函数 `highlightStringLiteralWithMetacharacters` 仍保留同样的高亮实现（说明该 UX 能力并未废弃）。结果是同一份格式化代码里，函数调用侧的 LIKE 模式仍有高亮、而 SHOW/DROP 语句的 LIKE 模式不再高亮，用户行为不一致。",
+      "evidence": [
+        "src/Parsers/ASTShowTablesQuery.cpp:29-36 — `formatLike` 改为 `... << DB::quote << like;`，删除 `if (settings.hilite) highlightStringWithMetacharacters(quoteString(like), ostr, \"%_\");`",
+        "src/Parsers/ASTShowColumnsQuery.cpp:31-36 — 同样改为 `<< DB::quote << like;`",
+        "src/Parsers/ASTShowFunctionsQuery.cpp:19-21 — 同样改为 `<< DB::quote << like;`",
+        "src/Parsers/ASTDropQuery.cpp:111-115 — 同样改为 `<< DB::quote << like;`",
+        "src/Parsers/ASTFunction.cpp:204-252 — 新增静态 `highlightStringLiteralWithMetacharacters`，仍实现同样的元字符高亮"
+      ],
+      "rule": "CONSISTENCY-009",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 功能回退导致同类场景行为不一致。[影响评估] 开启 hilite 的客户端中，SHOW TABLES/COLUMNS/FUNCTIONS 与 DROP ... LIKE 不再提示未转义的 `%`/`_`，用户误用风险回升；代码层面也留下两套 LIKE 格式化实现。",
+        "suggestion": "[重构思路] 抽出统一的「输出 LIKE 模式」辅助函数（在 hilite 时高亮元字符，否则用 quote 输出），所有 AST 复用同一实现。[代码示例] `void formatLikePattern(WriteBuffer & ostr, const String & like, const FormatSettings & settings) { if (settings.hilite && highlightStringLiteralWithMetacharacters(...)) return; ostr << DB::quote << like; }`",
+        "subcategory": "格式化行为不一致"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Interpreters/GinFilter.cpp",
+      "line": 31,
+      "title": "GIN 索引 ngram 上界校验放在参数构造器里，错误码与校验位置与 ginIndexValidator 不一致",
+      "description": "`GinFilterParameters` 构造函数新增 `if (ngrams > 8) throw Exception(ErrorCodes::BAD_ARGUMENTS, ...)`，而 `ginIndexValidator`（MergeTreeIndexGin.cpp:779-823）对同样属于索引参数的 `max_rows_per_postings_list` 使用 INCORRECT_QUERY，并且自身不校验 ngram 上界，只在末尾通过构造 GinFilterParameters 间接触发。这样 `CREATE TABLE ... INDEX ... TYPE gin(9)` 会得到 BAD_ARGUMENTS（语义上表示函数/方法入参错误）而不是 INCORRECT_QUERY（DDL 参数错误），与 CREATE 阶段其它参数校验不一致，也会让按错误码分支的客户端误判；同时校验逻辑分散在「底层参数结构」里，`ginIndexValidator` 的注释 `/// Just validate` 变成隐式副作用。",
+      "evidence": [
+        "src/Interpreters/GinFilter.cpp:24-33 — `GinFilterParameters::GinFilterParameters(size_t ngrams_, ...)` 内 `if (ngrams > 8) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"The size of full-text index filter cannot be greater than 8\");`",
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:782-794 — 对 max_rows_per_postings_list 使用 ErrorCodes::INCORRECT_QUERY 校验",
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:796-798 — `GinFilterParameters gin_filter_params(ngram_length, max_rows_per_postings_list); /// Just validate` 依赖构造器副作用完成校验",
+        "src/Functions/tokens.cpp:86-87 — 同类 ngram 上限在函数层用 BAD_ARGUMENTS 校验（可作为区分 DDL/函数的参照）"
+      ],
+      "rule": "ERRORCODE-010",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 参数校验位置与错误码语义不一致。[影响评估] DDL 场景错误码不稳定，客户端/测试按错误码断言时会失败；校验分散也增加维护成本。",
+        "suggestion": "[重构思路] 把 ngram 上界校验上移到 `ginIndexValidator` 并用 INCORRECT_QUERY，构造器仅做归一化（UNLIMITED_ROWS_PER_POSTINGS_LIST → max）。[代码示例] `if (!index.arguments.empty() && index.arguments[0].safeGet<UInt64>() > 8) throw Exception(ErrorCodes::INCORRECT_QUERY, \"First argument of GIN index (ngrams) must not be greater than 8\");`",
+        "subcategory": "错误码与校验分层"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Interpreters/IInterpreterUnionOrSelectQuery.h",
+      "line": 16,
+      "title": "把带 Context::createCopy 的构造函数与 setContext 内联进头文件，进一步加重头文件依赖",
+      "description": "`IInterpreterUnionOrSelectQuery(const ASTPtr &, const ContextPtr &, const SelectQueryOptions &)` 的实现从 .cpp 移到头文件并内联（内部调用 `Context::createCopy`），`ValuesBlockInputFormat::setContext` 也做同样处理，两处头文件同时把 `Context_fwd.h` 换成 `Interpreters/Context.h`。这使得所有包含这些头文件的翻译单元都强制依赖完整的 Context 定义并参与内联展开，与本次 MR 其它「减少 Context.h 依赖」的改动方向相反，属于单点编译成本与耦合的增加。",
+      "evidence": [
+        "src/Interpreters/IInterpreterUnionOrSelectQuery.h:16-19 — `IInterpreterUnionOrSelectQuery(const ASTPtr & query_ptr_, const ContextPtr & context_, const SelectQueryOptions & options_) : IInterpreterUnionOrSelectQuery(query_ptr_, Context::createCopy(context_), options_) {}`",
+        "src/Interpreters/IInterpreterUnionOrSelectQuery.h:3 — `#include <Interpreters/Context_fwd.h>` 改为 `#include <Interpreters/Context.h>`",
+        "src/Processors/Formats/Impl/ValuesBlockInputFormat.h:39 — `void setContext(const ContextPtr & context_) { context = Context::createCopy(context_); }`",
+        "src/Processors/Formats/Impl/ValuesBlockInputFormat.h:4 — `Context_fwd.h` 改为 `Context.h`"
+      ],
+      "rule": "MAINTAINABILITY-011",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 实现内联化带来的编译期耦合。[影响评估] 编译时间与头文件依赖面扩大，后续修改 Context 相关签名会触发更大范围重编译；与 MR 整体的 include 精简目标自相矛盾。",
+        "suggestion": "[重构思路] 保持声明在头、实现留在 .cpp；若必须内联，至少在头文件里只依赖前向声明并用一个私有的委托构造函数在 .cpp 中定义。[代码示例] 头文件：`IInterpreterUnionOrSelectQuery(const ASTPtr &, const ContextPtr &, const SelectQueryOptions &);`；cpp：`IInterpreterUnionOrSelectQuery::IInterpreterUnionOrSelectQuery(const ASTPtr & q, const ContextPtr & c, const SelectQueryOptions & o) : IInterpreterUnionOrSelectQuery(q, Context::createCopy(c), o) {}`",
+        "subcategory": "头文件包含治理"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Processors/QueryPlan/ReadFromMergeTree.cpp",
+      "line": 863,
+      "title": "读取路径丢弃 sorting key 的 reverse_flags，DESC 列的合并排序方向错误",
+      "description": "排序键中带 DESC 的列由 KeyDescription::reverse_flags 记录（`x DESC` → {1}），写入 part 时 MergeTreeDataWriter 会据此生成 -1 方向排序，因此 part 内数据是按逐列混合方向物理有序的。本 MR 在 readByLayers、getSortDescriptionForOutputHeader、spreadMarkRangesAmongStreamsWithOrder 三处不再读取 reverse_flags，统一用整体 direction 构造 SortDescription，MergingSortedTransform 会按错误的逐列方向合并数据流，对 `ORDER BY (x DESC)` 排序键的表在 optimize_read_in_order / 预合并路径下静默返回错误顺序；同文件的 FINAL 路径仍保留 reverse_flags 处理，行为不一致。",
+      "evidence": [
+        "src/Processors/QueryPlan/ReadFromMergeTree.cpp:862-863 — `for (size_t j = 0; j < input_order_info->used_prefix_of_sorting_key_size; ++j) sort_description.emplace_back(sorting_columns[j], input_order_info->direction);` 已不再参考 reverse_flags",
+        "src/Processors/QueryPlan/ReadFromMergeTree.cpp:283-284 — getSortDescriptionForOutputHeader 同样只使用整体 sort_direction",
+        "src/Processors/QueryPlan/ReadFromMergeTree.cpp:1270-1271 — spreadMarkRangesAmongStreamsWithOrder 对整个 key 前缀使用同一 direction",
+        "src/Processors/QueryPlan/ReadFromMergeTree.cpp:1545-1560 — 同文件 FINAL 路径仍按 `reverse_flags[i]` 生成 -1 方向，逻辑前后不一致",
+        "src/Storages/KeyDescription.cpp:134-142 — reverse_flags 由 `result.reverse_flags.emplace_back(elem->direction < 0);` 填充",
+        "src/Storages/MergeTree/MergeTreeDataWriter.cpp:560-572 — 写 part 时按 reverse_flags 决定逐列排序方向，说明 part 内有序方向是混合的",
+        "src/Interpreters/MutationsInterpreter.cpp:1522 — 其它读取路径仍在调用 getSortingKeyReverseFlags"
+      ],
+      "rule": "CORRECTNESS-ORDERING-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 排序元信息丢失导致的合并顺序错误（无异常、静默出错）。影响评估：`ORDER BY (x DESC)` 排序键的表在 `optimize_read_in_order=1` 或 readByLayers 预合并场景下返回的行序错误，且 FINAL 与非 FINAL 结果不一致；下游若依赖排序（例如 merge-sorted 聚合、LIMIT 下推）可能进一步产出错误结果。",
+        "suggestion": "[重构思路] 保留 reverse_flags 参与 SortDescription 构造，或把这套逻辑抽成一个公共 helper 供三处复用，避免再次出现“部分路径忘了 reverse_flags”的情况。代码示例：`const auto reverse_flags = storage_snapshot->metadata->getSortingKeyReverseFlags(); for (size_t j = 0; j < prefix_size; ++j) sort_description.emplace_back(sorting_columns[j], (!reverse_flags.empty() && reverse_flags[j]) ? -input_order_info->direction : input_order_info->direction, 1);`",
+        "subcategory": "排序方向与元信息一致性"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/IndicesDescription.cpp",
+      "line": 142,
+      "title": "删除 key=value 形式的 GIN 参数解析，历史 gin/full_text/inverted 索引建表无法再加载",
+      "description": "旧实现对 gin/inverted/full_text 三种索引类型调用 parseGinIndexArgumentsFromAST，把 `tokenizer = 'split'` 这类 equals 参数解析成 FieldVector；本 MR 删除了该函数及其调用，于是这类参数会落入通用分支：child 既不是 ASTLiteral 也不是 ASTIdentifier，直接抛 \"Only literals can be skip index arguments\"。由于旧版 ginIndexValidator 要求 `tokenizer` 必填，历史上创建的 gin/full_text/inverted 索引必然带该参数，含此类索引的表在重启加载/ATTACH 时会以这条难以理解的错误失败，与 MergeTreeIndices.cpp 仍以旧名注册 creator/validator 的兼容意图、以及 MergeTreeIndexGin.cpp 中“旧索引请 drop 后重建”的提示相冲突。",
+      "evidence": [
+        "src/Storages/IndicesDescription.cpp:130-144 — 参数解析只剩 ASTLiteral / ASTIdentifier 两个分支，其余抛 \"Only literals can be skip index arguments\"",
+        "本 MR 删除了 IndicesDescription.cpp 中的 parseGinIndexArgumentFromAST / parseGinIndexArgumentsFromAST 及 `is_gin_index` 分支",
+        "src/Storages/MergeTree/MergeTreeIndices.cpp:150-161 — 仍以 full_text/inverted 旧名注册 ginIndexCreator/ginIndexValidator，用于“transition period”兼容旧表",
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:730-739 — createIndexGranule 仍保留“Indexes of type 'inverted' and 'full_text' are no longer supported. Please drop and recreate the index as type 'gin'”的迁移提示",
+        "旧 ginIndexValidator 中 `getOption<String>(options, ARGUMENT_TOKENIZER)` 缺失即抛错，说明历史 gin/full_text 索引的参数里必然存在 tokenizer 键值对"
+      ],
+      "rule": "COMPAT-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 元数据解析兼容性回退。影响评估：升级后含旧式 GIN 索引的表无法加载（服务启动/ATTACH 时报 INCORRECT_QUERY，错误信息与真实原因不符），用户无法按预期得到“请重建索引”的指引；实验特性用户升级即被打断。",
+        "suggestion": "[重构思路] 保留旧格式的识别能力，在解析到 key=value 形式的 GIN 参数时抛出明确的迁移错误，而不是让它退化到通用分支的模糊报错；或在 creator 中兼容旧参数并统一给出 drop/recreate 提示。代码示例：`if (auto * f = child->as<ASTFunction>(); f && f->name == \"equals\") throw Exception(ErrorCodes::INCORRECT_QUERY, \"GIN index arguments in key=value form are no longer supported, please DROP and CREATE the index again with positional arguments (ngram_length[, max_rows_per_postings_list])\");`",
+        "subcategory": "元数据/DDL 向后兼容"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/MaterializedView/RefreshTask.cpp",
+      "line": 220,
+      "title": "drop() 不再删除 /paused 子节点，DROP 后 coordination znode 残留并使重建的视图永久暂停",
+      "description": "/paused 节点在 restore-from-backup（构造函数）与 stopReplicated 中都会被创建，readZnodesIfNeeded 读取它并置 paused_znode_exists。本 MR 从 drop() 的多事务中删除了对 `coordination.path + \"/paused\"` 的删除操作，只保留删除 /replicas 与 coordination.path；由于父节点仍有 /paused 子节点，删除 coordination.path 会返回 ZNOTEMPTY，而代码只检查 responses[0] 的错误码，异常被静默吞掉。结果是 DROP 后 Keeper 中残留 coordination 子树；同名 REFRESHABLE MV 重建后读到残留的 /paused 与旧 root znode，刷新任务会一直处于暂停状态。",
+      "evidence": [
+        "src/Storages/MaterializedView/RefreshTask.cpp:116-117 — restore 场景创建 `coordination.path + \"/paused\"` 子节点",
+        "src/Storages/MaterializedView/RefreshTask.cpp:317-326 — stopReplicated 同样创建 /paused 节点",
+        "src/Storages/MaterializedView/RefreshTask.cpp:217-224 — drop() 的 ops 只剩删除 /replicas 与 coordination.path，且 `if (responses[0]->error != ZNOTEMPTY && responses[0]->error != ZNONODE)` 只检查第一个响应，第二个响应（coordination.path 的 ZNOTEMPTY）被忽略",
+        "src/Storages/MaterializedView/RefreshTask.cpp:917-931 — readZnodesIfNeeded 读取 /paused 并设置 `coordination.paused_znode_exists`"
+      ],
+      "rule": "RESOURCE-CLEANUP-001",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 分布式协调状态清理不完整（znode 泄漏 + 状态污染）。影响评估：DROP 后 Keeper 残留 coordination 子树；重建同名视图时新任务读到 paused_znode_exists=true，刷新不会自动运行，需要人工 SYSTEM START VIEW 才能恢复，且残留 root znode 中的完成时间等状态会被新任务继承。",
+        "suggestion": "[重构思路] 在 drop() 中恢复对 /paused 的删除，并检查所有 responses 的错误码，避免静默失败；更稳妥的做法是先删除子节点再删父节点。代码示例：`Coordination::Requests ops; ops.emplace_back(zkutil::makeRemoveRequest(coordination.path + \"/replicas\", -1)); ops.emplace_back(zkutil::makeRemoveRequest(coordination.path + \"/paused\", -1)); ops.emplace_back(zkutil::makeRemoveRequest(coordination.path, -1)); for (const auto & r : responses) if (r->error != Coordination::Error::ZNOTEMPTY && r->error != Coordination::Error::ZNONODE) zkutil::KeeperMultiException::check(code, ops, responses);`",
+        "subcategory": "Keeper 状态清理"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/Freeze.cpp",
+      "line": 151,
+      "title": "SYSTEM UNFREEZE 不再跳过只读/WriteOnce 磁盘，遇到此类磁盘会整体失败",
+      "description": "原实现对 `disk->isReadOnly() || disk->isWriteOnce()` 的磁盘直接 continue，本 MR 删除了该过滤，改为对所有磁盘执行 existsDirectory/iterateDirectory，并在末尾对每个磁盘调用 disk->removeRecursive(backup_path)。只读盘与 plain object storage（PlainObjectStorage::isWriteOnce() 恒为 true）不具备删除能力，仓库其它删除路径都会先跳过这类磁盘。现在只要集群里配置了一个只读盘或 plain 对象存储盘，SYSTEM UNFREEZE 就会在遍历到该盘时抛异常中断，整个 unfreeze 命令失败（此前是安静跳过）。",
+      "evidence": [
+        "src/Storages/Freeze.cpp:140-151 — 组装 Disks 后直接 `for (const auto & disk: disks)`，删除了原先的 `if (disk->isReadOnly() || disk->isWriteOnce()) continue;`",
+        "src/Storages/Freeze.cpp:178-182 — 每个磁盘随后都会执行 `disk->removeRecursive(backup_path)`",
+        "src/Disks/IDisk.h:443-448 — isReadOnly()/isWriteOnce() 是磁盘可变性标识",
+        "src/Disks/ObjectStorages/PlainObjectStorage.h:25 — `bool isWriteOnce() const override { return true; }`",
+        "src/Storages/MergeTree/MergeTreeData.cpp:415、6862 与 src/Storages/IStorage.cpp:358 — 其它删除/写操作前都会显式跳过只读或 WriteOnce 磁盘"
+      ],
+      "rule": "RESOURCE-IMMUTABLE-DISK-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 丢失对不可变磁盘的保护判断。影响评估：多磁盘/分层存储集群上 SYSTEM UNFREEZE 会因某个只读盘或 plain 对象存储盘抛异常而整体失败，已处理的磁盘留部分状态；此前行为是跳过这些盘并继续完成其余磁盘的解冻。",
+        "suggestion": "[重构思路] 恢复按磁盘能力过滤，或至少在使用前用 supportsPartitionCommand / isReadOnly / isWriteOnce 判断并记录 warning 后跳过。代码示例：`for (const auto & disk : disks) { if (disk->isReadOnly() || disk->isWriteOnce()) { LOG_INFO(log, \"Skipping read-only or write-once disk {}\", disk->getName()); continue; } ... }`",
+        "subcategory": "磁盘能力判断"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/MergeTree/KeyCondition.cpp",
+      "line": 1993,
+      "title": "castValueToType 把“无法转换常量”从跳过索引裁剪变成直接抛 BAD_TYPE_OF_FIELD",
+      "description": "原实现用 tryConvertFieldToType，转换失败返回空 Field 后 `return false`，即该原子不参与索引分析、查询照常执行。新的 castValueToType 用 catch(...) 包裹 convertFieldToType 并重新抛 BAD_TYPE_OF_FIELD，把原本“降级为不使用索引”的软失败路径变成了让整条查询失败的硬错误；同时 catch(...) 也会把 bad_alloc 等非类型类异常统一包装成 BAD_TYPE_OF_FIELD，掩盖真实原因。同一函数中 :2242-2248 的 String 常量分支仍保留非抛异常的 convertFieldToType + isNull 判断，两处策略不一致。",
+      "evidence": [
+        "src/Storages/MergeTree/KeyCondition.cpp:1985-1996 — castValueToType 用 `try { src_value = convertFieldToType(...); } catch (...) { throw Exception(ErrorCodes::BAD_TYPE_OF_FIELD, ...); }`",
+        "src/Storages/MergeTree/KeyCondition.cpp:2255-2262 — 该 helper 仅在 `!const_type->equals(*common_type)` 分支被调用，替换了原先的 tryConvertFieldToType + `return false`",
+        "src/Interpreters/convertFieldToType.cpp:684-694 — tryConvertFieldToType 的实现就是 catch(...) 返回空 Field，说明旧语义是软失败",
+        "src/Storages/MergeTree/KeyCondition.cpp:2242-2248 — 相邻的 String 分支仍使用非抛异常的 convertFieldToType 并在结果为 Null 时 `return false`"
+      ],
+      "rule": "ERROR-HANDLING-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 异常语义收紧 + 宽泛 catch 掩盖根因。影响评估：此前能正常执行（只是不做主键裁剪）的 `WHERE key_col = <不可转换常量>` 类查询，升级后会直接报 BAD_TYPE_OF_FIELD；若底层抛出的是内存不足等错误，也会被误报为类型不匹配，排障困难。",
+        "suggestion": "[重构思路] 保持“索引分析失败即放弃优化”的软失败语义，用 tryConvertFieldToType 判断；确实需要报错时只捕获 Exception 并保留原始 code 与消息。代码示例：`Field converted = tryConvertFieldToType(src_value, *desired_type, src_type.get(), {}); if (converted.isNull()) return false; src_value = converted;`",
+        "subcategory": "异常处理与降级语义"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/MergeTree/KeyCondition.cpp",
+      "line": 2917,
+      "title": "matchesExactContinuousRange 放宽接受单调函数链，可能把非精确范围当成精确范围使用",
+      "description": "新逻辑对含 monotonic_functions_chain 的 RPN 元素只要求 hasInformationAboutMonotonicity() 且 `getMonotonicityForRange(*types.front(), field, field).is_always_monotonic` 为真，就用默认构造的 Null Field 作为左右端点去探测单调性。该函数的注释说明其用途是判断条件是否为“主键上的一个连续范围”，从而允许“无需额外读取的更高效查找”，即调用方会据此跳过额外过滤；而像 toStartOfDay 这类单调但非单射的函数，其值域上的连续区间并不等价于原列上的精确范围，将其视为精确范围会漏掉必要的二次过滤。此外在可见快照中该函数只有声明与定义、检索不到任何调用方，本次放宽既无法被现有使用路径验证，也缺少测试覆盖。",
+      "evidence": [
+        "src/Storages/MergeTree/KeyCondition.cpp:2904-2922 — `const Field field{};` 作为 getMonotonicityForRange 的左右端点，仅要求 is_always_monotonic",
+        "src/Storages/MergeTree/KeyCondition.cpp:2924-2938 — 对带单调函数链的 rpn 元素只做 is_always_monotonic_chain 检查即放行",
+        "src/Storages/MergeTree/KeyCondition.cpp:2899-2901 — 函数注释：\"Returns whether the condition is one continuous range of the primary key ... This allows to use a more efficient lookup with no extra reads\"",
+        "本 MR 删除的旧代码为 `if (hasMonotonicFunctionsChain()) return false;`，即此前明确排除函数链场景",
+        "review_find_references(\"matchesExactContinuousRange\") 仅命中 KeyCondition.h:164 声明与 KeyCondition.cpp:2902 定义，未发现调用方"
+      ],
+      "rule": "CORRECTNESS-EXACT-RANGE-001",
+      "confidence": 0.42,
+      "tips": {
+        "review": "[缺陷类型] 精确性假设被放宽且缺少可验证的使用路径。影响评估：一旦有调用方以“无需额外过滤”为前提使用该判定，单调但非单射的函数链会导致结果集缺少必要的回表过滤，产生静默的多返回行；当前仓库内找不到调用方，风险处于潜伏状态，难以通过现有测试发现。",
+        "suggestion": "[重构思路] 仅在函数链可逆（可精确映射回原列区间）时允许通过，或明确要求单射/线性单调；同时用真实区间而非默认构造的 Null Field 探测单调性，并补充针对 toStartOfDay / intDiv 等非单射函数的用例。代码示例：`if (!elem.monotonic_functions_chain.empty() && (!is_always_monotonic_chain(elem.monotonic_functions_chain) || !is_injective_chain(elem.monotonic_functions_chain))) return false;`",
+        "subcategory": "索引裁剪精确性"
+      }
+    },
+    {
+      "id": "F019",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/LiveView/StorageLiveView.cpp",
+      "line": 440,
+      "title": "LiveView 无条件注入去重令牌，默认配置下的写入去重语义被改变",
+      "description": "原实现只有在 `deduplicate_blocks_in_dependent_materialized_views` 为真时才追加 SetViewIDTransform 与 SetViewBlockNumberTransform；该设置默认值为 false。本 MR 去掉了这个开关，恒定注入 view id 与 block number 令牌。这意味着默认配置下 live view 的刷新写入现在也会参与基于 view id + block number 的去重，重复刷新产生的相同 block 可能被当成重复数据丢弃，而用户已无法通过该设置关闭此行为（该设置仍被其它写入路径使用）。",
+      "evidence": [
+        "src/Storages/LiveView/StorageLiveView.cpp:437-445 — 无条件 addSimpleTransform(SetViewIDTransform) 与 SetViewBlockNumberTransform",
+        "本 MR 删除了 `bool disable_deduplication_for_children = !local_context->getSettingsRef()[Setting::deduplicate_blocks_in_dependent_materialized_views];` 及其 if 分支",
+        "src/Core/Settings.cpp:4137 — `DECLARE(Bool, deduplicate_blocks_in_dependent_materialized_views, false, ...)`，即默认关闭",
+        "src/Interpreters/InsertDependenciesBuilder.cpp:679、767、1202 与 src/Server/TCPHandler.cpp:1184 — 该设置仍在其它写入路径生效，说明其开关语义仍然有效，仅 LiveView 路径不再遵循"
+      ],
+      "rule": "SEMANTICS-DEDUP-001",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 默认行为变更且失去开关。影响评估：默认配置下 live view 写入目标表的去重行为改变，重复刷新/重放可能被静默丢弃，与其它物化视图路径（受同一设置控制）行为不一致，用户无法配置回退。",
+        "suggestion": "[重构思路] 若确实希望 live view 恒去重，应在 PR 说明与设置文档中同步声明该行为变更，并考虑弃用/改名相关设置；否则保留原有条件判断。代码示例：`if (local_context->getSettingsRef()[Setting::deduplicate_blocks_in_dependent_materialized_views]) { builder.addSimpleTransform(...SetViewIDTransform...); builder.addSimpleTransform(...SetViewBlockNumberTransform...); }`",
+        "subcategory": "去重语义变更"
+      }
+    },
+    {
+      "id": "F020",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/Storages/MergeTree/MergeTreeIndexGin.cpp",
+      "line": 763,
+      "title": "ginIndexCreator 直接用 safeGet 读取参数类型，缺少与 validator 一致的类型保护",
+      "description": "creator 里 `index.arguments[0].safeGet<size_t>()` / `index.arguments[1].safeGet<UInt64>()` 无条件按 UInt64 取值，而参数合法性只在 ginIndexValidator 中检查，validator 由 MergeTreeIndexFactory::validate 调用。若加载到旧格式参数（String 或标识符，如 `TYPE gin(default)`）等未经校验的路径进入 creator，safeGet 会抛出通用的 Field 访问异常，而不是清晰的 INCORRECT_QUERY；同时 size_t 与校验用的 Field::Types::UInt64 是两种不同的类型判断方式，写法不统一。",
+      "evidence": [
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:761-765 — `size_t ngram_length = index.arguments.empty() ? 0 : index.arguments[0].safeGet<size_t>(); UInt64 max_rows = index.arguments.size() < 2 ? DEFAULT_MAX_ROWS_PER_POSTINGS_LIST : index.arguments[1].safeGet<UInt64>();`",
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:785-793 — 类型检查只存在于 ginIndexValidator 中",
+        "src/Storages/MergeTree/MergeTreeIndices.cpp:96-119 — 校验通过独立的 validate(index, attach) 入口执行，creator 不感知校验结果",
+        "src/Storages/IndicesDescription.cpp:138-140 — `TYPE gin(default)` 形式的标识符参数会被当成 String 存入 arguments"
+      ],
+      "rule": "VALIDATION-DEFENSE-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 依赖外部校验的隐式类型断言。影响评估：异常路径下（旧元数据、直接调用 creator、校验被绕过）抛出的是与类型无关的通用 Field 异常，错误信息无法指导用户修正 DDL；size_t 与 UInt64 混用也降低了可读性。",
+        "suggestion": "[重构思路] 抽一个 `getGinIndexArguments(index)` helper，同时被 creator 与 validator 使用，内部统一做数量与类型检查并抛 INCORRECT_QUERY。代码示例：`static std::pair<size_t, UInt64> getGinParams(const IndexDescription & index) { if (index.arguments.size() > 2) throw Exception(ErrorCodes::INCORRECT_QUERY, ...); size_t ngram = 0; UInt64 max_rows = DEFAULT_MAX_ROWS_PER_POSTINGS_LIST; if (!index.arguments.empty()) ngram = index.arguments[0].safeGet<UInt64>(); if (index.arguments.size() == 2) max_rows = index.arguments[1].safeGet<UInt64>(); return {ngram, max_rows}; }`",
+        "subcategory": "参数解析健壮性"
+      }
+    },
+    {
+      "id": "F021",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Storages/MergeTree/MergeTreeIndexGin.cpp",
+      "line": 783,
+      "title": "GIN 参数个数校验的错误信息与实际条件相反",
+      "description": "校验条件是 `index.arguments.size() > 2` 时抛错，但消息写成 \"GIN index must have less than two arguments\"。实际含义应是“最多两个参数”（大于两个才报错），当前措辞会误导用户以为只能有一个参数，且与后续“第一/第二个参数”的校验逻辑自相矛盾。",
+      "evidence": [
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:782-783 — `if (index.arguments.size() > 2) throw Exception(ErrorCodes::INCORRECT_QUERY, \"GIN index must have less than two arguments\");`",
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:785-794 — 紧接着校验 arguments[0] 与 arguments[1]，说明允许两个参数"
+      ],
+      "rule": "MSG-CLARITY-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 错误提示文案与逻辑不符。影响评估：用户按报错理解会误以为 GIN 索引只允许一个参数，增加排障与支持成本。",
+        "suggestion": "[重构思路] 修改文案为“最多两个参数”，并顺便给出合法形式。代码示例：`throw Exception(ErrorCodes::INCORRECT_QUERY, \"GIN index must have at most two arguments: ngram_length[, max_rows_per_postings_list], but got {}\", index.arguments.size());`",
+        "subcategory": "错误信息准确性"
+      }
+    },
+    {
+      "id": "F022",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/Storages/MergeTree/MergeTreeIndexGin.cpp",
+      "line": 798,
+      "title": "GIN 索引丢失 ngram_length 下界校验（原为 2..8）",
+      "description": "旧 ginIndexValidator 显式校验 ngram_size 必须落在 [2, 8]，本 MR 删除了该校验，新代码只依赖 GinFilterParameters 构造函数拒绝 ngrams > 8，因此 `TYPE gin(1)` 会被接受并创建字符级 1-gram 索引（倒排项数量与索引体积急剧膨胀）。此外该上界错误码变成 BAD_ARGUMENTS，而其它参数错误是 INCORRECT_QUERY，错误分类不一致。",
+      "evidence": [
+        "本 MR 删除了旧校验 `if (ngram_size < 2 || ngram_size > 8) throw Exception(ErrorCodes::INCORRECT_QUERY, ...)`",
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:796-798 — 现在只把 ngram_length 传给 GinFilterParameters 做“Just validate”",
+        "src/Interpreters/GinFilter.cpp:31-32 — GinFilterParameters 仅拒绝 `ngrams > 8`（抛 BAD_ARGUMENTS），未校验下界",
+        "src/Storages/MergeTree/MergeTreeIndexGin.cpp:763-775 — creator 对 ngram_length 为 1 的情况直接构造 NgramTokenExtractor(1)"
+      ],
+      "rule": "VALIDATION-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 输入校验范围被放宽。影响评估：用户可以创建 ngram_length=1 的 GIN 索引，索引体积与写入放大显著上升（近似字符级倒排），且缺少明确的错误提示；错误码分类与其它参数错误不一致。",
+        "suggestion": "[重构思路] 在 validator 中恢复 2..8 的显式范围校验并用 INCORRECT_QUERY，0 仍保留为“使用默认分词器”的语义。代码示例：`size_t ngram_length = index.arguments.empty() ? 0 : index.arguments[0].safeGet<UInt64>(); if (ngram_length != 0 && (ngram_length < 2 || ngram_length > 8)) throw Exception(ErrorCodes::INCORRECT_QUERY, \"GIN index argument ngram_length must be between 2 and 8, but got {}\", ngram_length);`",
+        "subcategory": "参数范围校验"
+      }
+    },
+    {
+      "id": "F023",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Storages/IMessageProducer.h",
+      "line": 3,
+      "title": "头文件出现重复的 #pragma once",
+      "description": "该头文件本来就以 `#pragma once` 开头，本 MR 在其下方又插入了一个 `#pragma once`，形成重复保护指令。虽然不影响编译结果，但属于明显的编辑残留，容易被后续维护者误解为有意为之或掩盖其它定义问题。",
+      "evidence": [
+        "src/Storages/IMessageProducer.h:1-3 — 修改后为 `#pragma once` / 空行 / `#pragma once`",
+        "本 MR diff 显示 `+#pragma once` 与 `+#include <Interpreters/Context.h>` 之间保留了原有的 `#pragma once`"
+      ],
+      "rule": "STYLE-HEADER-001",
+      "confidence": 0.92,
+      "tips": {
+        "review": "[缺陷类型] 重复预处理指令/编辑残留。影响评估：不影响功能，但降低头文件整洁度，review 时容易与其他真实的重复定义问题混淆。",
+        "suggestion": "[重构思路] 删除多余的一行，只保留一个 `#pragma once`。代码示例：`#pragma once\\n\\n#include <Processors/Sinks/SinkToStorage.h>\\n#include <Interpreters/Context.h>`",
+        "subcategory": "头文件规范"
+      }
+    },
+    {
+      "id": "F024",
+      "severity": "P3",
+      "category": "可维护性",
+      "file": "src/Storages/MergeTree/MergeTreeDataMergerMutator.cpp",
+      "line": 509,
+      "title": "合并选择与合并完成的日志由 TRACE 提升到 INFO，日志量显著增加",
+      "description": "`Selected {} parts from {} to {}` 与 `Merged {} parts: [{}, {}] -> {}` 两条日志从 LOG_TRACE 改为 LOG_INFO。前者在每次 merge 选择（含被跳过的尝试）时都会打印，后者每次合并完成打印一次。在大表高并发合并的实例上，这会显著增加服务器日志体积与磁盘 IO，且这些信息本就属于调试级别。",
+      "evidence": [
+        "src/Storages/MergeTree/MergeTreeDataMergerMutator.cpp:509 — `LOG_INFO(log, \"Selected {} parts from {} to {}\", parts.size(), parts.front().name, parts.back().name);`",
+        "src/Storages/MergeTree/MergeTreeDataMergerMutator.cpp:649 — `LOG_INFO(log, \"Merged {} parts: [{}, {}] -> {}\", ...)`（原为 LOG_TRACE）"
+      ],
+      "rule": "LOGGING-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 日志级别设置不当。影响评估：生产环境日志量放大（每轮合并选择+每次合并各一条 INFO），可能触发日志轮转与磁盘压力，也会淹没真正重要的 INFO 事件；若属于临时调试改动，合入后容易被遗忘。",
+        "suggestion": "[重构思路] 恢复为 LOG_TRACE/LOG_DEBUG；如确需在生产可见，考虑用 ProfileEvents 计数或在日志中附上合并原因并降到 DEBUG。代码示例：`LOG_TRACE(log, \"Selected {} parts from {} to {}\", parts.size(), parts.front().name, parts.back().name);`",
+        "subcategory": "日志级别"
+      }
+    },
+    {
+      "id": "F025",
+      "severity": "P3",
+      "category": "可维护性",
+      "file": "src/Processors/QueryPlan/ReadFromPreparedSource.h",
+      "line": 3,
+      "title": "多个公共头文件把 Context_fwd.h 换成重量级 Context.h，破坏前向声明约定",
+      "description": "本 MR 把一批被广泛包含的头文件（ReadFromPreparedSource.h、IMessageProducer.h、MessageQueueSink.h、StorageHive.h、IMergeTreeDataPartInfoForReader.h、HDFSCommon.h、ReadBufferFromHDFS.h 等）中的 `Interpreters/Context_fwd.h` 替换为完整的 `Interpreters/Context.h`，同时在其他 cpp 里删除 Context.h。这些头文件位于 Processors/Storages 主链路，被大量 TU 间接包含，会把 Context 的完整依赖（Settings/IStorage 等）扩散到整个编译图，增加编译时间并提高循环包含/头文件顺序敏感的风险；这与项目一贯使用 `_fwd` 头做前向声明的做法相反。",
+      "evidence": [
+        "src/Processors/QueryPlan/ReadFromPreparedSource.h:3 — `-#include <Interpreters/Context_fwd.h>` `+#include <Interpreters/Context.h>`",
+        "src/Storages/IMessageProducer.h:6、src/Storages/MessageQueueSink.h:6、src/Storages/Hive/StorageHive.h:10、src/Storages/MergeTree/IMergeTreeDataPartInfoForReader.h:2、src/Storages/ObjectStorage/HDFS/HDFSCommon.h:13 — 同样由 _fwd 换成完整 Context.h",
+        "src/Processors/QueryPlan/IQueryPlanStep.h:6 与 src/Processors/Sources/MongoDBSource.h:7 — 新增 `#include <Interpreters/Context.h>`",
+        "作为对照，本 MR 在 src/Storages/ObjectStorage/StorageObjectStorageCluster.h 中反而新增了 `class Context;` 前向声明，说明前向声明仍是该代码库的既定做法"
+      ],
+      "rule": "MAINTAINABILITY-INCLUDES-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 头文件依赖膨胀（编译期耦合）。影响评估：Context.h 是项目中最重的头之一，扩散到 Processors/Storages 的公共头会拖慢增量与全量编译，并使头文件包含顺序更脆弱；同时清理 include 的目标（减少冗余依赖）被部分抵消。",
+        "suggestion": "[重构思路] 头文件中保持 `Context_fwd.h` 或前置 `class Context; using ContextPtr = std::shared_ptr<const Context>;`，仅在确实需要完整定义的 .cpp 中包含 Context.h；若某个内联实现（如 ClientEmbedded 构造函数、DeltaLakeMetadata::create、IMessageProducer 的默认成员）需要完整类型，考虑把实现留在 .cpp。代码示例：`// header\\n#include <Interpreters/Context_fwd.h>\\nclass Context;\\nContextPtr ctx; // ok`",
+        "subcategory": "编译依赖与头文件卫生"
+      }
+    },
+    {
+      "id": "F026",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/WindowView/StorageWindowView.cpp",
+      "line": 1598,
+      "title": "窗口视图无条件设置 DeduplicationToken，忽略了仍存在的 deduplicate_blocks_in_dependent_materialized_views 开关",
+      "description": "变更前只有当 `deduplicate_blocks_in_dependent_materialized_views` 为真时才向 pipeline 添加 `SetViewIDTransform`/`SetViewBlockNumberTransform`（`disable_deduplication_for_children = !setting`），现在改为无条件添加。但该设置在 `src/Core/Settings.cpp:4137` 仍然存在且默认 false，其它写入路径（`InsertDependenciesBuilder.cpp:679`、`StorageLiveView.cpp:440`）依旧按该设置门控。结果是窗口视图依赖的物化视图在默认配置下也会带上视图级去重令牌，重试写入时可能被判定为重复而丢弃，属于默认去重语义的变化，且与其它视图类型行为不一致。",
+      "evidence": [
+        "src/Storages/WindowView/StorageWindowView.cpp:1598-1606 —— 新增代码无条件 addSimpleTransform(SetViewIDTransform) 与 addSimpleTransform(SetViewBlockNumberTransform)",
+        "diff 中被删除的前置判断：`bool disable_deduplication_for_children = !local_context->getSettingsRef()[Setting::deduplicate_blocks_in_dependent_materialized_views]; if (!disable_deduplication_for_children) { ... }`",
+        "src/Core/Settings.cpp:4137 —— `DECLARE(Bool, deduplicate_blocks_in_dependent_materialized_views, false, ...)` 该设置仍存在，默认 false",
+        "src/Interpreters/InsertDependenciesBuilder.cpp:679-682 —— 通用路径仍是 `if (context->getSettingsRef()[Setting::deduplicate_blocks_in_dependent_materialized_views]) pipeline.addTransform(std::make_shared<DeduplicationToken::SetViewIDTransform>(...))`",
+        "src/Storages/LiveView/StorageLiveView.cpp:440 —— LiveView 路径同样按设置构造 SetViewIDTransform"
+      ],
+      "rule": "RELIABILITY-DEDUP-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 去重语义与设置开关脱钩：同一设置在窗口视图路径被忽略，其它路径仍生效。影响评估：默认配置下窗口视图向下游物化视图写入将强制走“视图级去重”，INSERT 重试可能跳过本应重新写入的 block，表现为物化视图数据缺失；同时用户显式关闭该设置也不再能关闭此行为，行为难以预期。",
+        "suggestion": "[重构思路] 保留按设置门控的逻辑，或若确定窗口视图必须始终去重，则应在该设置/文档中明确说明窗口视图为例外，并同步移除/更新设置在 Setting 描述中的语义。代码示例：`if (local_context->getSettingsRef()[Setting::deduplicate_blocks_in_dependent_materialized_views]) { builder.addSimpleTransform(...SetViewIDTransform...); }`",
+        "subcategory": "去重与幂等语义"
+      }
+    },
+    {
+      "id": "F027",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/StorageReplicatedMergeTree.cpp",
+      "line": 1664,
+      "title": "表结构校验不再考虑 metadata 差异，且 checkEquals 改为无条件抛异常，非严格模式容错路径消失",
+      "description": "`checkTableStructureAttempt` 原来把 `checkEquals(..., /*check_index_granularity*/ true, strict_check, log)` 的布尔结果参与判定（`columns_from_zk == old_columns && is_metadata_equal`），非严格模式（`strict_check == false`，典型场景是副本在并发 ALTER 过程中重新校验）可以返回 false 让上层重试/容忍；现在该返回值被丢弃，判定只看列是否相同，而新的 4 参 `checkEquals` 在所有差异分支都直接 `throwTableMetadataMismatch`。这使 sorting key / TTL / skip index / projection / index_granularity_bytes 等差异从“返回 false 交给调用方处理”变成“直接抛异常”，副本在元数据并发变更时更可能直接失败而非走容错分支。",
+      "evidence": [
+        "src/Storages/StorageReplicatedMergeTree.cpp:1655 —— `old_metadata.checkEquals(metadata_from_zk, metadata_snapshot->getColumns(), getStorageID().getNameForLogs(), getContext());`（diff 删除了 `/*check_index_granularity*/ true, strict_check, log.load()` 三个实参）",
+        "src/Storages/StorageReplicatedMergeTree.cpp:1664 —— 条件由 `columns_from_zk == old_columns && is_metadata_equal` 改为 `columns_from_zk == old_columns`",
+        "src/Storages/StorageReplicatedMergeTree.cpp:1667-1672 —— `if (!strict_check && metadata_stat.version != 0)` 的容错分支现在只覆盖列不一致，metadata 差异已在 1655 行抛出",
+        "src/Storages/MergeTree/ReplicatedMergeTreeTableMetadata.h:82-86 —— 新签名 `void checkEquals(const ReplicatedMergeTreeTableMetadata &, const ColumnsDescription &, const std::string &, ContextPtr) const;` 已无 strict/log 参数",
+        "src/Storages/MergeTree/ReplicatedMergeTreeTableMetadata.cpp:342-384 —— 所有差异分支均为 `throwTableMetadataMismatch(...)`（sampling/sorting key/TTL/skip indices/projections/constraints/index granularity bytes）"
+      ],
+      "rule": "RELIABILITY-REPLICA-002",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 严格性提升导致容错路径丢失（并发 ALTER / attach 场景）。影响评估：副本在元数据被其它副本并发修改时可能在 `checkTableStructure` 阶段直接抛 INCOMPATIBLE_COLUMNS/表元数据不匹配异常，而不是返回 false 等待元数据版本更新，可能引发副本反复失败或需要人工干预。",
+        "suggestion": "[重构思路] 明确两种模式的语义：若仍需容忍并发 ALTER，应让 `checkEquals` 在非严格模式下记录差异并返回 bool，`checkTableStructureAttempt` 继续把该结果并入判定；若确定改为“一律严格”，请补充说明（提交说明/升级说明）并检查所有 `checkTableStructure(..., strict_check=false, ...)` 调用点是否需要改造。代码示例：`bool metadata_equal = old_metadata.checkEquals(metadata_from_zk, columns, name_for_log, context, /*strict*/ strict_check); if (columns_from_zk == old_columns && metadata_equal) return true;`",
+        "subcategory": "副本元数据一致性校验"
+      }
+    },
+    {
+      "id": "F028",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Storages/StorageMerge.cpp",
+      "line": 1709,
+      "title": "Merge 引擎移除第三个 engine 参数与写能力，缺少向后兼容与升级说明",
+      "description": "`registerStorageMerge` 现在要求 `engine_args.size() != 2` 即抛 `NUMBER_OF_ARGUMENTS_DOESNT_MATCH`，同时删除了 `StorageMerge::write()`/`setTableToWrite`/`table_to_write`，Merge 引擎不再可写（回落到 `IStorage::write` 的默认 NOT_IMPLEMENTED 行为）。此前用 `ENGINE = Merge(db, 'regexp', 'table_to_write')` 建表的实例在升级后重新加载表定义会直接因参数个数不符而失败，`INSERT INTO` 该表的报错也从原来的 `TABLE_IS_READ_ONLY`/`ACCESS_DENIED`/`UNKNOWN_TABLE` 变为通用的“write 不支持”，属于用户可见的兼容性变化。",
+      "evidence": [
+        "src/Storages/StorageMerge.cpp:1709-1712 —— `if (engine_args.size() != 2) throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, \"Storage Merge requires exactly 2 parameters - name of source database and regexp for table names.\")`",
+        "src/Storages/StorageMerge.h:26-42 —— 两个构造函数均已移除 `table_to_write_`/`table_to_write_auto_` 形参；diff 中 `SinkToStoragePtr write(...) override` 声明被删除",
+        "diff 中 `StorageMerge::write` 实现整段删除，其中包含 `throw Exception(ErrorCodes::ACCESS_DENIED, ...)`、`ErrorCodes::UNKNOWN_TABLE`、`ErrorCodes::TABLE_IS_READ_ONLY` 三类明确错误码",
+        "docs/en/engines/table-engines/special/merge.md:14 —— 文档明确写 “Writing to a table is not supported”，说明该写能力从未在文档中承诺"
+      ],
+      "rule": "COMPAT-API-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 对外能力（engine 参数 + 写路径 + 错误码）整体移除且无兼容处置。影响评估：已存在的三参数 Merge 表在重启/attach 时会因为 engine 参数个数校验失败而无法加载；依赖写入语义的运维脚本会收到与以往不同的错误码，难以据此做针对性处理。",
+        "suggestion": "[重构思路] 在升级说明/SettingsChangesHistory 或文档中记录该能力移除；如需平滑过渡，可保留第三参数解析但在 `CREATE/ATTACH` 时给出明确的“已不支持写入”提示（或在 attach 时降级为两参数存储并 WARN），而不是仅报参数个数错误。代码示例：`if (engine_args.size() == 3) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"Merge engine no longer supports 'table_to_write'; remove the third argument\");`",
+        "subcategory": "引擎参数与写入能力变更"
+      }
+    },
+    {
+      "id": "F029",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Access/SettingsConstraints.h",
+      "line": 74,
+      "title": "设置档案的 disallowed_values 约束能力被整体移除，缺少配置/DDL 兼容处理",
+      "description": "本次变更从 `SettingsConstraints::set/get`、`SettingsProfileElement`、`UsersConfigAccessStorage` 解析以及 `system.settings`/`system.merge_tree_settings` 的 `disallowed_values` 列中整体删除了 disallowed values 约束。仓库中已无 `disallowed_values` 标识符残留（引用数为 0），但既有 `users.xml`/settings profile 中若仍声明 `disallowed_values`，其限制将不再被表达（或被当作未知字段处理），依赖该约束做设置白名单/黑名单的环境会静默失去限制，同时 `system.settings` 的列集合发生变化会影响读取该列的外部 SQL/监控。",
+      "evidence": [
+        "src/Access/SettingsConstraints.h:74-76 —— `set(...)`/`get(...)` 形参只剩 `min_value, max_value, writability`，已无 disallowed values",
+        "diff 中 `src/Access/UsersConfigAccessStorage.cpp`（+0/-13）、`src/Access/SettingsProfileElement.h`（+2/-3）、`src/Access/SettingsProfileElement.cpp`（+1/-10）、`src/Parsers/Access/ASTSettingsProfileElement.h`（+0/-1）均删除了 disallowed values 相关代码",
+        "src/Storages/System/StorageSystemSettings.cpp:16-48 —— 列定义中已无 `disallowed_values`，列集合到 `tier` 为止",
+        "src/Storages/System/StorageSystemMergeTreeSettings.cpp 同样删除了 `{\"disallowed_values\", std::make_shared<DataTypeArray>(std::make_shared<DataTypeString>()), \"List of disallowed values\"}` 一行",
+        "review_find_references(\"disallowed_values\") 返回 0 处引用"
+      ],
+      "rule": "COMPAT-ACCESS-004",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 访问控制约束能力删除，遗留配置项未做显式处理。影响评估：原有依赖 `disallowed_values` 限制用户可设置值的部署，在升级后该限制不再生效且不易被察觉（无报错、无告警），存在权限收紧失效的风险；同时 `SELECT disallowed_values FROM system.settings` 会因列不存在而失败。",
+        "suggestion": "[重构思路] 若该特性确认要下线：在升级说明/SettingsChangesHistory 中明确列出，并在解析 `users.xml` 与 `ALTER ... SETTINGS` 时对 `disallowed_values` 给出显式错误或 WARNING，避免静默失效；若只是重构，请保留该字段与列。代码示例：`if (config.has(element + \".disallowed_values\")) throw Exception(ErrorCodes::BAD_ARGUMENTS, \"disallowed_values is no longer supported, use min/max/readonly instead\");`",
+        "subcategory": "访问控制兼容性"
+      }
+    },
+    {
+      "id": "F030",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Storages/StorageKeeperMap.h",
+      "line": 3,
+      "title": "仅在头文件使用 ContextPtr 的类型改为包含完整 Context.h，加重头文件耦合与编译依赖",
+      "description": "`StorageKeeperMap.h`、`StorageObjectStorageQueue.h`、`StoragePostgreSQL.h`、`StorageTableFunction.h` 等头文件把轻量的 `Interpreters/Context_fwd.h` 换成了完整的 `Interpreters/Context.h`，但这些头里的 `ContextPtr` 仅用于形参/成员声明，并不在头内解引用 `Context`（`StorageKeeperMap.h:29-37`、`StorageObjectStorageQueue.h:26-36` 均如此）。这与本 MR 整体的“收敛 include”目标相反：头文件被迫依赖完整的 Context 定义，任何包含这些头的 TU 都要付额外的解析/编译成本，并把 Context 的内部依赖扩散到更大范围。",
+      "evidence": [
+        "src/Storages/StorageKeeperMap.h:3 —— `#include <Interpreters/Context.h>`（diff 由 `Context_fwd.h` 改为 `Context.h`）",
+        "src/Storages/StorageKeeperMap.h:30-37 —— 构造函数仅使用 `ContextPtr context_`，未在头内使用 Context 成员",
+        "src/Storages/ObjectStorageQueue/StorageObjectStorageQueue.h:11 —— `#include <Interpreters/Context.h>`（diff 由 `Context_fwd.h` 改为 `Context.h`），第 33 行仅为 `ContextPtr context_` 形参",
+        "diff 中 `src/Storages/StoragePostgreSQL.h`、`src/Storages/StorageTableFunction.h` 同样做了 `Context_fwd.h` → `Context.h` 替换"
+      ],
+      "rule": "MAINTAIN-INCLUDE-005",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 头文件包含粒度过大（forward declaration 退化）。影响评估：编译时间与头文件依赖图扩大，单点修改 Context 相关头会触发更多 TU 重编；也掩盖了“哪个实现文件真正需要 Context 完整定义”的依赖关系。",
+        "suggestion": "[重构思路] 头文件继续用 `Context_fwd.h`，只在需要完整定义的 .cpp 中显式包含 `Context.h`；若某个 .cpp 之前靠删除自己的 `#include <Interpreters/Context.h>` 来清理重复包含，应确认它仍能通过自身 include 获得完整定义，而不是依赖头文件的传递包含。代码示例：`// StorageKeeperMap.h\n#include <Interpreters/Context_fwd.h>\n// StorageKeeperMap.cpp\n#include <Interpreters/Context.h>`",
+        "subcategory": "头文件依赖与编译期耦合"
+      }
+    },
+    {
+      "id": "F031",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "utils/query-latency-analyzer/index.html",
+      "line": 274,
+      "title": "新增的 console.log 调试输出遗留在页面脚本中",
+      "description": "`renderTable` 中新增了两处 `console.log(data.labels)` 与 `console.log(extraColumns)`，每次渲染表格都会把完整 labels 数组与派生列名打印到浏览器控制台。这是调试残留：既污染控制台、在 labels 较多时产生可观输出，也暴露出工具作者无意保留的调试路径。",
+      "evidence": [
+        "utils/query-latency-analyzer/index.html:274 —— `console.log(data.labels);`（本 MR 新增行）",
+        "utils/query-latency-analyzer/index.html:276 —— `console.log(extraColumns);`（本 MR 新增行）",
+        "utils/query-latency-analyzer/index.html:263-311 —— 上述两行位于 `renderTable()` 的每次调用路径上"
+      ],
+      "rule": "READABILITY-DEBUG-006",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 调试语句残留。影响评估：功能不受影响，但控制台噪声会影响该工具的可用性排查，也容易被误认为官方输出。",
+        "suggestion": "[重构思路] 删除这两行；若确实需要诊断信息，用可开关的调试标志或 `console.debug` 并集中在一处。代码示例：`const extraColumns = data.labels.filter(l => l.startsWith(\"_\")).map(l => l.substring(1));`",
+        "subcategory": "遗留调试代码"
+      }
+    },
+    {
+      "id": "F032",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "utils/query-latency-analyzer/index.html",
+      "line": 316,
+      "title": "移除 handleData 与模块导出后，工具丢失零均值列过滤/标签排序能力且外部引用无法再使用",
+      "description": "本次把 `handleData`（内部调用 `processData` → 过滤全零均值 label → 按全局均值排序 → `orderLabels`）整体删除，改为直接 `processData(data)` 后渲染；同时删除了 `js/data-processing.js` 末尾的 `module.exports` 与 `window.processData/window.generateTestData/...` 导出块。结果：(1) 全零均值列重新出现在表格里、列顺序不再按均值排序，属于该工具既有能力的回退；(2) 除 `index.html` 通过全局函数名调用外，任何以模块方式（Node `require` 或显式 `window.processData`）使用这些函数的调用方都会失效。",
+      "evidence": [
+        "diff 中 `function handleData(raw_data)` 整段删除，其中包含 `nonZeroMeanPredicate` 过滤、`computeGlobalAverages`、`orderLabels` 排序逻辑",
+        "diff 中 `js/data-processing.js` 末尾整段删除：`module.exports = { processData, generateTestData, orderLabels, computeGlobalAverages, filterData }` 与 `window.processData = processData; window.generateTestData = generateTestData; ...`",
+        "utils/query-latency-analyzer/index.html:315-317 —— 现在直接 `const data = processData(raw_data); renderTable(data);`",
+        "review_find_references(\"orderLabels\") 返回 0 处，review_find_references(\"handleData\") 返回 0 处（删除已彻底）",
+        "utils/query-latency-analyzer/js/data-processing.js 当前共 129 行，末尾停止于 `generateTestData`，无导出语句"
+      ],
+      "rule": "MAINTAIN-REGRESSION-007",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 工具功能回退 + 公开（导出）接口删除。影响评估：分析结果可读性下降（大量恒为 0 的列占据矩阵格子、列顺序随机）；若有脚本/测试以模块方式复用 `processData`/`orderLabels`，将直接报未定义。",
+        "suggestion": "[重构思路] 若回退是刻意为之，请在提交说明中记录理由；否则恢复过滤与排序（可保留在 `processData` 之后的一个轻量步骤），并保留 `module.exports`/`window` 导出以免破坏既有调用方。代码示例：`const data = processData(raw_data); renderTable(filterAndOrderLabels(data));`",
+        "subcategory": "脚本能力回退与导出缺失"
+      }
+    },
+    {
+      "id": "F033",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Storages/StorageStripeLog.cpp",
+      "line": 30,
+      "title": "项目内头文件改用引号式 include，与仓库统一的尖括号路径风格不一致",
+      "description": "`#include <Storages/StorageLogSettings.h>` 被改成 `#include \"StorageLogSettings.h\"`。ClickHouse 源码统一使用以仓库根为基准的尖括号路径（如相邻的 `<Storages/StorageFactory.h>`、`<Storages/StorageStripeLog.h>`），引号式相对包含会破坏这一约定，降低可读性并使该 include 对文件位置变化更敏感（与同文件其它 include 风格不一致）。",
+      "evidence": [
+        "diff hunk `@@ -23,9 +24,10 @@` 中：`-#include <Storages/StorageLogSettings.h>` 改为 `+#include \"StorageLogSettings.h\"`",
+        "src/Storages/StorageStripeLog.cpp:28-29 —— 相邻 include 仍为 `#include <Storages/StorageFactory.h>`、`#include <Storages/StorageStripeLog.h>`",
+        "同一 hunk 新增 `#include <Parsers/ASTLiteral.h>`、`#include <sys/stat.h>`，未采用引号式风格"
+      ],
+      "rule": "STYLE-INCLUDE-008",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] include 风格不一致。影响评估：功能无影响，但与仓库约定偏离，可能被 style 检查或后续 rebase 视为噪声，也削弱了本 MR 自身的“统一 include”目标。",
+        "suggestion": "[重构思路] 恢复为尖括号全路径写法。代码示例：`#include <Storages/StorageLogSettings.h>`",
+        "subcategory": "代码风格/包含约定"
+      }
+    },
+    {
+      "id": "F034",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "utils/list-versions/version_date.tsv",
+      "line": 1,
+      "title": "版本日期映射表删除了 v25.4.5.24-stable 一行，疑似误删",
+      "description": "`utils/list-versions/version_date.tsv` 是“版本号 → 发布日期”的映射表，本次删除 `v25.4.5.24-stable\\t2025-05-20` 一行，使该 stable 版本在映射中缺失。若该文件被发版/回移脚本用于查版本日期或生成 changelog，缺失行会导致查询失败或生成结果不正确；此类表通常只追加不删除，混在 include 清理 MR 中更像是误删。",
+      "evidence": [
+        "diff hunk `@@ -1,4 +1,3 @@` 中删除 `-v25.4.5.24-stable\\t2025-05-20`",
+        "变更后文件首行为 `v25.4.4.25-stable\\t2025-05-15`（utils/list-versions/version_date.tsv:1）",
+        "该文件位于 utils/list-versions/ 目录，内容为 \"版本号<TAB>日期\" 的完整映射序列"
+      ],
+      "rule": "MAINTAIN-DATA-009",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 静态版本映射数据被删行。影响评估：若发版脚本按版本号查日期，25.4.5.24 将查不到；也可能导致版本列表与官方发布记录不一致。",
+        "suggestion": "[重构思路] 若无明确理由，恢复该行；若该 stable 版本被撤回，请在提交说明中注明原因并确认无脚本依赖该条目。代码示例：`v25.4.5.24-stable\\t2025-05-20`",
+        "subcategory": "版本元数据完整性"
+      }
+    }
+  ]
+}

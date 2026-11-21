@@ -1,0 +1,290 @@
+{
+  "generatedAt": "2026-11-15T01:03:57.145Z",
+  "runId": "20261115_005938_417",
+  "source": "mr",
+  "caseId": "kestra-io__kestra@3c2a276",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/runners/CommandsWrapper.java",
+      "line": 179,
+      "title": "命令在 wrapper 与 runner 侧被重复合并，interpreter/beforeCommands 可能被拼接两次",
+      "description": "CommandsWrapper.run() 先用 ScriptService.scriptCommands 把 interpreter、beforeCommands、commands 合并成 finalCommands 并写回 this.commands，但没有清空自身持有的 interpreter/beforeCommands 字段；随后 realTaskRunner.run(taskRunnerRunContext, this, ...) 中 Process/Docker 又会调用 TaskRunner.renderCommands，后者再次把 getInterpreter()/getBeforeCommands() 与 getCommands() 平铺拼接，导致 interpreter 与 beforeCommands 被前置两次，实际执行的是被污染的 argv（例如 /bin/sh -c /bin/sh -c <script>）。另外当 interpreter 为空时，scriptCommands 会把多条命令用行分隔符合并成单个字符串元素，Process 会把它当作可执行文件路径去 exec，命令执行会失败。",
+      "evidence": [
+        "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/runners/CommandsWrapper.java:169-179 — 渲染 interpreter/beforeCommands/commands 后调用 ScriptService.scriptCommands 并 this.commands = Property.of(finalCommands)",
+        "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/runners/CommandsWrapper.java:46-53 — interpreter 与 beforeCommands 字段在合并后仍未置空",
+        "core/src/main/java/io/kestra/core/models/tasks/runners/TaskRunner.java:134-141 — renderCommands 再次 Stream.of(renderedInterpreter, renderedBeforeCommands, renderedCommands).flatMap(...)",
+        "core/src/main/java/io/kestra/plugin/core/runner/Process.java:140-142 — processBuilder.command(this.renderCommands(runContext, taskCommands))",
+        "core/src/main/java/io/kestra/core/models/tasks/runners/ScriptService.java:161-173 — scriptCommands 将 beforeCommands+commands 用 lineSeparator 合并为单个参数"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 同一份命令在两个层次被重复合并（幂等性缺失），且缺少“谁负责最终合并”的单一职责边界。影响评估：一旦任务侧向 CommandsWrapper 注入 interpreter/beforeCommands（新 API 的设计意图），脚本会以重复的 interpreter 参数启动而失败；即使 interpreter 为空，多命令也会被 join 成单条 argv，造成 Exec 失败或错误行为，属于执行路径上的确定性故障。",
+        "suggestion": "[重构思路] 明确唯一合并点：要么由 CommandsWrapper 合并并清空 interpreter/beforeCommands（runner 只做渲染与 internal storage 替换），要么 wrapper 只做渲染、由 runner 统一合并。建议采用前者，并在写回时把 interpreter/beforeCommands 置为 null，保证 TaskRunner.renderCommands 幂等。代码示例：`List<String> finalCommands = ScriptService.scriptCommands(renderedInterpreter, renderedBeforeCommands, renderedCommands, targetOS); this.interpreter = Property.of(List.of()); this.beforeCommands = Property.of(List.of()); this.commands = Property.of(finalCommands);` 并在 TaskRunner.renderCommands 处加注释或断言，要求 getInterpreter()/getBeforeCommands() 返回空集合。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "core/src/main/java/io/kestra/plugin/core/flow/ForEachItem.java",
+      "line": 688,
+      "title": "移除 parent 中 taskrun 的存在性判断后可能抛 NullPointerException",
+      "description": "extractOutput 现在只要 runContext 变量里存在 parent 就直接执行 parent.get(\"taskrun\").get(\"value\")，而 Execution.parents() 只有在父 TaskRun 的 value 非 null 时才写入 taskrun 键（仅有 outputs 的父任务不会写入）。因此当 parent 存在但缺少 taskrun 时会解引用 null，导致 ForEachItem 在提取子任务输出时抛 NPE。",
+      "evidence": [
+        "core/src/main/java/io/kestra/plugin/core/flow/ForEachItem.java:685-689 — parent.get(\"taskrun\").get(\"value\") 直接解引用",
+        "core/src/main/java/io/kestra/core/models/executions/Execution.java:873-875 — 仅当 childTaskRun.getValue() != null 时才 current.put(\"taskrun\", ...)",
+        "core/src/main/java/io/kestra/core/models/executions/Execution.java:877-883 — 只有 outputs 的父任务也会被加入 parent 列表，此时无 taskrun 键"
+      ],
+      "rule": "NULL-SAFETY-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 空的 Map 解引用（移除了原有的 containsKey 防御）。影响评估：一旦父任务没有 value（仅产出 outputs）而执行上下文仍带 parent，ForEachItem 输出提取会抛 NullPointerException，任务失败并使整个循环执行失败。",
+        "suggestion": "[重构思路] 保留存在性判断，用 Optional/Map 的安全取值，缺失时退回上一层 splitTaskOutput。代码示例：`Map<String, Object> taskrun = parent == null ? null : (Map<String, Object>) parent.get(\"taskrun\"); if (taskrun != null && taskrun.get(\"value\") instanceof String value) { splitTaskOutput = (Map<String, Object>) splitTaskOutput.get(value); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "ui/src/components/layout/Labels.vue",
+      "line": 62,
+      "title": "link() 直接修改 computed 返回的 Map，导致标签链接互相污染",
+      "description": "labelsFromQuery 是 computed，返回一个新的 Map；但 link() 在这个 Map 上执行 delete/set，模板又对每个 label 依次调用 link(key, value) 与 checked(key, value)。同一轮渲染中，前一个标签对 Map 的修改会被后一个标签的 link() 看到，生成“同时切换多个标签”的错误 URL；checked() 的判定也会随渲染顺序变化，出现标签高亮错乱。由于 computed 依赖 route.query 而非 Map 内容，修改不会被检测，状态会一直残留到下一个标签的渲染。",
+      "evidence": [
+        "ui/src/components/layout/Labels.vue:38-55 — labelsFromQuery 为 computed，每次依赖变化返回新 Map",
+        "ui/src/components/layout/Labels.vue:61-68 — link() 对 this.labelsFromQuery 执行 labels.delete(key)/labels.set(key, value)",
+        "ui/src/components/layout/Labels.vue:8 — 模板 v-for 中对每个 label 调用 :to=\"link(key, value)\"",
+        "ui/src/components/layout/Labels.vue:58-60 — checked() 复用同一个 labelsFromQuery"
+      ],
+      "rule": "UI-STATE-002",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 在计算属性返回值上做原地 mutation（副作用 + 共享可变状态）。影响评估：点击第二个标签时会连带切换第一个标签的条件，URL 中的 labels 参数与用户意图不一致；标签高亮也会随渲染顺序抖动，用户看到的选择状态与真实过滤条件不符。",
+        "suggestion": "[重构思路] link() 改为纯函数：先复制一份新的 Map 再改动。代码示例：`link(key, value) { const labels = new Map(this.labelsFromQuery); if (labels.has(key)) { labels.delete(key); } else { labels.set(key, value); } const qs = {...this.$route.query, labels: Array.from(labels, ([k, v]) => `${k}:${v}`)}; delete qs.page; return {name: this.$route.name, params: this.$route.params, query: qs}; }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "core/src/main/java/io/kestra/core/runners/ExecutorService.java",
+      "line": 993,
+      "title": "addDynamicTaskRun 移除 taskRunList 的 null 兜底后存在空指针风险",
+      "description": "原实现用 ListUtils.emptyOnNull(execution.getTaskRunList()) 兜底，本次改为 new ArrayList<>(execution.getTaskRunList())，并在第 1014 行再次调用 execution.getTaskRunList().size()。Execution.taskRunList 没有 @Builder.Default，prebuild 也未初始化它，Execution.newExecution 构造的实例该字段为 null，因此一旦该路径收到 taskRunList 为 null 的执行（如刚由 newExecution 创建、尚未写入任何 task run 的执行），会直接抛 NullPointerException 并中断动态任务写入。",
+      "evidence": [
+        "core/src/main/java/io/kestra/core/runners/ExecutorService.java:993 — new ArrayList<>(execution.getTaskRunList())",
+        "core/src/main/java/io/kestra/core/runners/ExecutorService.java:1014 — taskRuns.size() > execution.getTaskRunList().size() 再次解引用",
+        "core/src/main/java/io/kestra/core/models/executions/Execution.java:71-72 — taskRunList 无 @Builder.Default",
+        "core/src/main/java/io/kestra/core/models/executions/Execution.java:134-146,166-174 — newExecution/prebuild 均未初始化 taskRunList"
+      ],
+      "rule": "NULL-SAFETY-002",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 移除既有空集合兜底，引入潜在 NPE。影响评估：动态任务（dynamicTaskRuns）写入路径一旦遇到 taskRunList 为 null 的执行就会抛异常，导致执行状态无法推进；该路径属于执行核心链路，即使触发概率低，排查成本也很高。",
+        "suggestion": "[重构思路] 保留兜底或在数据模型层保证非空，二者取一并保持全仓一致。代码示例：`List<TaskRun> currentTaskRuns = ListUtils.emptyOnNull(execution.getTaskRunList()); ArrayList<TaskRun> taskRuns = new ArrayList<>(currentTaskRuns); ... return taskRuns.size() > currentTaskRuns.size() ? execution.withTaskRunList(taskRuns) : null;`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "性能",
+      "file": "jdbc/src/main/java/io/kestra/jdbc/runner/JdbcExecutor.java",
+      "line": 231,
+      "title": "执行队列改为单消费者，且 kestra.jdbc.executor.thread-count 静默失效",
+      "description": "原先按 CPU 数（最小 2）为 executionQueue 与 workerTaskResultQueue 注册多个 receive 消费循环，本次改为各注册一次；JdbcQueue.poll 把消费循环放在线程池中的一个线程里，并在该线程内同步 forEach 消费批次消息，因此单消费者意味着执行事件与 Worker 结果只能串行处理，跨队列/跨执行无并行度。同时删除了 @Value(\"${kestra.jdbc.executor.thread-count:0}\") 字段与对应日志，已有部署对该配置的调整将被静默忽略，也无法再通过配置恢复并行度。",
+      "evidence": [
+        "jdbc/src/main/java/io/kestra/jdbc/runner/JdbcExecutor.java:231-232 — executionQueue/workerTaskResultQueue 各只注册一次 receive",
+        "jdbc/src/main/java/io/kestra/jdbc/runner/JdbcQueue.java:387-413 — poll() 将消费循环提交到线程池，单个循环顺序拉取",
+        "jdbc/src/main/java/io/kestra/jdbc/runner/JdbcQueue.java:429-432 — send() 在消费循环线程内 forEach 同步调用 consumer",
+        "本次 diff 删除 JdbcExecutor 中的 @Value(\"${kestra.jdbc.executor.thread-count:0}\") 与 numberOfThreads 循环"
+      ],
+      "rule": "PERF-CONCURRENCY-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 并发度削减 + 配置项静默失效。影响评估：高负载部署下执行事件处理吞吐可能显著下降、队列积压增加；依赖 thread-count 扩容的用户升级后行为变化且无提示，属难以定位的容量回归。",
+        "suggestion": "[重构思路] 若削减消费者是有意为之，请同步删除/迁移该配置并在 breaking-change 说明中写明，同时提供替代的并行度开关（或保持可配置的消费者数量，默认值调整即可）。代码示例：`int numberOfThreads = threadCount != 0 ? threadCount : 1; for (int i = 0; i < numberOfThreads; i++) { this.receiveCancellations.addFirst(this.executionQueue.receive(Executor.class, this::executionQueue)); this.receiveCancellations.addFirst(this.workerTaskResultQueue.receive(Executor.class, this::workerTaskResultQueue)); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "jdbc/src/main/java/io/kestra/jdbc/repository/AbstractJdbcRepository.java",
+      "line": 337,
+      "title": "namespace 过滤移除 $in/$notIn 支持，属破坏性的公开 API 变更",
+      "description": "applyNamespaceCondition 删除了 IN/NOT_IN 分支，二者现在落入 default 并抛 UnsupportedOperationException。通用字段路径（同文件 301-314 行）仍然支持 IN/NOT_IN，说明这只是 namespace 的特例收缩；前端虽同步删除了 namespace 的 IN/NOT_IN 比较符，但已有的 REST 调用方、保存的过滤器或外部脚本仍可能发送 filters[namespace][$in]=a,b，升级后会直接报错而不是降级处理。",
+      "evidence": [
+        "jdbc/src/main/java/io/kestra/jdbc/repository/AbstractJdbcRepository.java:337-338 — default 分支抛 UnsupportedOperationException(\"Unsupported operation '%s' for field 'namespace'.\")",
+        "jdbc/src/main/java/io/kestra/jdbc/repository/AbstractJdbcRepository.java:301-314 — 通用字段仍支持 IN/NOT_IN，行为不一致",
+        "ui/src/components/filter/composables/useFilters.ts:50 — namespace 的 comparators 同步移除了 IN/NOT_IN"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 公开查询接口能力收缩（向后不兼容）。影响评估：命中该分支的请求会以异常返回（可能为 5xx），影响依赖 namespace 多值过滤的自动化集成与历史链接；且与其它字段的 IN 支持形成不一致语义。",
+        "suggestion": "[重构思路] 二选一：若确实要去掉能力，请在 release note 中标注 breaking change 并返回 4xx 的明确错误信息；若只是 UI 收缩，则后端保留 IN/NOT_IN 映射，实现可与 NAMESPACE_FIELD 的 in/notIn 对齐。代码示例：`case IN -> select = select.and(NAMESPACE_FIELD.in(((Collection<?>) value).stream().map(String.class::cast).toList())); case NOT_IN -> select = select.and(NAMESPACE_FIELD.notIn(((Collection<?>) value).stream().map(String.class::cast).toList()));`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "ui/src/components/filter/utils/helpers.ts",
+      "line": 172,
+      "title": "operation→comparator 迁移只做了一半，URL 解码出的过滤器缺少 comparator",
+      "description": "CurrentItem 已删除 operation 字段、Label.vue 改为只读 option.comparator?.label，但 decodeSearchParams 仍然产出 operation（日期分支还写入未在任何 COMPARATORS 中定义的 \"$range\"），encodeSearchParams 仍回退读取 filter.operation。结果是搜索页从 URL 解码出的筛选条件没有 comparator 对象，筛选条不再显示比较符（含日期区间），重新编码只能走 operation 回退分支；类型定义与实现长期不一致，后续新增比较符极易漏改。",
+      "evidence": [
+        "ui/src/components/filter/utils/types.ts:24-29 — CurrentItem 已不含 operation 字段",
+        "ui/src/components/filter/components/Label.vue:24 — comparator = props.option?.comparator?.label",
+        "ui/src/components/filter/utils/helpers.ts:154,160,172 — decodeSearchParams 仍返回 operation，日期分支写 operation: \"$range\"",
+        "ui/src/components/filter/utils/helpers.ts:126 — encodeSearchParams 仍读 filter.comparator?.value || ... filter.operation",
+        "ui/src/components/filter/composables/useFilters.ts:39 — COMPARATORS 只有 $between，没有 $range"
+      ],
+      "rule": "MAINTAINABILITY-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 重构不彻底导致的类型/实现不一致。影响评估：用户在 /executions、/flows 等页面刷新后，筛选条丢失比较符显示（例如 “namespace is xxx” 变成 “namespace: xxx”），日期区间的 between 文案消失；代码层面两套字段并存，容易在后续改动中继续产生行为分歧。",
+        "suggestion": "[重构思路] 在 decodeSearchParams 中直接回填 comparator 对象（用 OPTIONS 匹配，找不到时用 {label: operation, value: operation}），彻底删除 operation 的读写；同时为日期区间定义 $between/$range 对应的 Comparator。代码示例：`const found = OPTIONS.find(o => o.key === field)?.comparators?.find(c => c.value === operation); return {label, value: [...], comparator: found ?? {label: operation, value: operation}};`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "ui/src/components/filter/KestraFilter.vue",
+      "line": 666,
+      "title": "移除 route.query 同步后，标签过滤与筛选条不再联动并会在下一次筛选时丢失",
+      "description": "KestraFilter 删除了对 route.query 的 watch（原来带 immediate，负责把 URL 中的过滤条件解码回 currentFilters），只在 onMounted 解码一次；而 triggerSearch 用 router.push({query: encodeParams(route.path, currentFilters.value, OPTIONS)}) 整体重建 query，encodeParams/encodeSearchParams 只产出 filters[...] 与 q，不会保留别的查询键。与此同时 Labels.vue 改为把标签写进 query.labels，因此点击标签后筛选条不会同步显示该条件，随后任意一次筛选操作都会把 labels 参数整体覆盖掉，标签过滤静默失效。",
+      "evidence": [
+        "ui/src/components/filter/KestraFilter.vue:671-699 — 仅在 onMounted 中调用 decodeParams 初始化 currentFilters（本次 diff 删除了 watch(() => route.query, ...)）",
+        "ui/src/components/filter/KestraFilter.vue:663-667 — triggerSearch 用 encodeParams(...) 的返回值整体替换 query",
+        "ui/src/components/filter/utils/helpers.ts:105-141 — encodeSearchParams 只生成 filters[...] 与 q 键",
+        "ui/src/components/layout/Labels.vue:70-77 — 标签点击改为写入 query.labels"
+      ],
+      "rule": "UI-STATE-003",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 状态同步机制被移除但新的数据来源（labels 查询参数）未被接入。影响评估：标签过滤与筛选条行为不一致，用户点选标签后再改其它筛选条件，标签条件会从 URL 消失，列表结果与用户预期不符，且难以察觉。",
+        "suggestion": "[重构思路] 恢复对 route.query 的响应式同步，并让 labels 参数进入统一的 currentFilters 模型（或在 triggerSearch 时合并保留 query.labels）。代码示例：`watch(() => route.query, (q) => { currentFilters.value = decodeParams(route.path, q, props.include, OPTIONS); }, {immediate: true}); ` 以及 `router.push({query: {...encodeParams(route.path, currentFilters.value, OPTIONS), ...(route.query.labels ? {labels: route.query.labels} : {})}})`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "ui/src/components/layout/TopNavBar.vue",
+      "line": 11,
+      "title": "标题 class 被误写成 d-inline-fle，Bootstrap 工具类失效",
+      "description": "h1 的 class 从 d-inline-flex 改成了 d-inline-fle（缺字符的拼写错误），Bootstrap 中没有该类名，标题元素会退回默认的块级/内联显示方式，导致 TopNavBar 标题与插槽内容（如状态、按钮区）排版错位。",
+      "evidence": [
+        "ui/src/components/layout/TopNavBar.vue:11 — <h1 class=\"h5 fw-semibold m-0 d-inline-fle\">",
+        "本次 diff：- d-inline-flex / + d-inline-fle"
+      ],
+      "rule": "TYPO-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] CSS 类名拼写错误。影响评估：页面标题区失去 flex 布局，标题与右侧操作区对齐错乱，属于肉眼可见的 UI 回归，且因为类名不存在不会报错，容易长期遗留。",
+        "suggestion": "[重构思路] 修正为 d-inline-flex；建议在 CI 中加入模板类名的简单校验（或使用 eslint 插件检查 bootstrap 类名拼写）。代码示例：`<h1 class=\"h5 fw-semibold m-0 d-inline-flex\">`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "ui/src/components/layout/Labels.vue",
+      "line": 2,
+      "title": "模板中残留 FILENAME_PLACEHOLDER 占位属性",
+      "description": "重写后的模板根节点带有 data-component=\"FILENAME_PLACEHOLDER\"，这是脚手架/模板占位符遗留，不属于有效业务属性，会渲染到 DOM 中并增加后续维护者的困惑；同时 props.labels 的 default 写成 `() => {}`（返回 undefined 而非空对象），与 Object 类型默认值约定不一致。",
+      "evidence": [
+        "ui/src/components/layout/Labels.vue:2 — <span data-component=\"FILENAME_PLACEHOLDER\" v-if=\"labels\">",
+        "ui/src/components/layout/Labels.vue:19-22 — labels: { type: Object, default: () => {} }"
+      ],
+      "rule": "CLEANUP-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 调试/脚手架残留与不合规默认值。影响评估：无功能影响，但会污染 DOM 与代码可读性；default 返回 undefined 会让 labelMap 计算属性在未传参时返回 undefined，依赖 v-if 兜底，若后续模板改动易引入渲染异常。",
+        "suggestion": "[重构思路] 删除占位属性，并把默认值改为 `() => ({})`。代码示例：`<span v-if=\"labels\">` 与 `labels: { type: [Object, Array], default: () => ({}) }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "ui/src/translations/en.json",
+      "line": 729,
+      "title": "英文文案改写引入多处语法错误",
+      "description": "en.json 中多处英文被改写成不合语法的表达，例如 help.text 变成 \"we are help to help you\"、\"error in editor\" 变成 \"An error have been found in the editor\"、\"delete confirm\" 变成 \"Are you sure to delete ...\"、\"pause title\" 中的 \"will still be process\"、\"note\" 中的 \"must be accommodate\"。这些是面向最终用户的界面文案，语法错误会直接影响产品专业度与可理解性（help.text 甚至语义不通）。",
+      "evidence": [
+        "ui/src/translations/en.json:729 — \"text\": \"Ask any question in our Slack community. If you are stuck, we are help to help you. ✋\"",
+        "本次 diff：- \"An error has been found in the editor\" / + \"An error have been found in the editor\"",
+        "本次 diff：- \"Are you sure you want to delete <code>{name}</code>?\" / + \"Are you sure to delete <code>{name}</code>?\"",
+        "本次 diff：- \"currently running tasks will still be processed\" / + \"will still be process\"、- \"the command must be accommodated\" / + \"must be accommodate\""
+      ],
+      "rule": "DOC-QUALITY-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 用户可见文案的语法/语义回归。影响评估：错误文案会出现在删除/暂停/强制运行等确认对话框和帮助提示中，降低可读性并可能引起误解；help.text 变成病句后基本传达不出“可以来 Slack 求助”的意思。",
+        "suggestion": "[重构思路] 回退这些无必要的改写，或请英文母语者/产品文档负责人统一校对；建议对 en.json 这类文案改动走单独的文档 PR 以便 review。代码示例：`\"text\": \"Ask any question in our Slack community. If you are stuck, we are happy to help you. ✋\"`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "ui/src/components/executions/outputs/Wrapper.vue",
+      "line": 206,
+      "title": "分隔条仍渲染但拖拽处理是空实现",
+      "description": "Outputs 面板改为 el-row/el-col 栅格后，旧的 leftWidth 拖拽逻辑被删除，但模板仍渲染 .slider 元素并绑定 @mousedown.prevent.stop=\"dragSidebar\"，而 dragSidebar 是带 TODO 的空函数；样式里也保留了 cursor: col-resize。用户会看到可拖拽的光标提示并尝试拖动却毫无反应，属于误导性交互。",
+      "evidence": [
+        "ui/src/components/executions/outputs/Wrapper.vue:67 — <div @mousedown.prevent.stop=\"dragSidebar\" class=\"slider\" />",
+        "ui/src/components/executions/outputs/Wrapper.vue:205-206 — // TODO: To be implemented properly / const dragSidebar = () => {};",
+        "ui/src/components/executions/outputs/Wrapper.vue:524-535 — .slider 仍定义 cursor: col-resize 与 hover 效果"
+      ],
+      "rule": "UI-DEADCODE-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 死交互（可见但无功能的控件）。影响评估：用户可感知的交互承诺未被兑现，降低面板可用性认知；同时保留的空函数与 TODO 会长期滞留。",
+        "suggestion": "[重构思路] 在功能未实现前先移除 slider 元素与其样式（栅格已提供固定比例布局），或以 feature flag 隐藏；实现时用 pointer events + 计算列宽。代码示例：`<!-- 暂时移除以避免死交互 -->\n<!-- <div class=\"slider\" @mousedown.prevent.stop=\"dragSidebar\" /> -->`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "性能",
+      "file": ".github/workflows/workflow-test.yml",
+      "line": 22,
+      "title": "移除 paths-filter 后 UI-only 变更也会跑后端全套测试",
+      "description": "file-changes 作业（dorny/paths-filter 过滤 ui/** 与 !{ui,.github}/**）以及 frontend/backend 上的 needs + if 条件被删除，两个测试套件现在无条件执行。对仅修改 ui/ 的 PR 会额外执行完整的后端构建、测试、覆盖率上传与 Sonar 扫描，CI 时长与成本显著上升；反之 .github 或文档类改动现在也会触发全量测试。",
+      "evidence": [
+        ".github/workflows/workflow-test.yml:22-35 — frontend/backend 作业已无 needs 与 if 条件",
+        "本次 diff 删除了 file-changes 作业及其 dorny/paths-filter 过滤器配置 ui: 'ui/**'、backend: '!{ui,.github}/**'",
+        "本次 diff 删除了 frontend 的 needs: [file-changes] 与 if: \"needs.file-changes.outputs.ui == 'true'\""
+      ],
+      "rule": "CI-COST-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] CI 触发范围扩大导致资源浪费。影响评估：PR 反馈时间变长、CI 分钟数与 Sonar 配额消耗上升；对大型矩阵并行执行的工作流尤其明显。若这是为规避 paths-filter 误判（例如前后端共享代码）而有意为之，建议在 PR 描述中说明。",
+        "suggestion": "[重构思路] 若需保留按需执行，使用路径过滤但把共享目录（core、gradle、.github 必需文件）纳入 backend 的匹配集合，避免误跳过后端测试。代码示例：`filters: |\n  ui:\n    - 'ui/**'\n  backend:\n    - '!{ui,.github}/**'\n    - '.github/workflows/**'`",
+        "subcategory": ""
+      }
+    }
+  ]
+}

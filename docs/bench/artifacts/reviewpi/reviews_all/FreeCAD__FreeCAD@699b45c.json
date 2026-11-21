@@ -1,0 +1,1263 @@
+{
+  "generatedAt": "2026-11-15T06:29:08.345Z",
+  "runId": "20261115_060240_930",
+  "source": "mr",
+  "caseId": "FreeCAD__FreeCAD@699b45c",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "安全",
+      "file": "src/App/ElementMap.cpp",
+      "line": 261,
+      "title": "元素映射反序列化删除了 MapCount / typeCount 上限校验，损坏工程文件可触发超大内存分配",
+      "description": "ElementMap::restore 中原本对 MapCount 的 practicalMaximum（1GB 子映射向量）校验和 typeCount 的 maxTypeCount(1000) 校验被删除，现在只保留 count == 0 的兜底。这两个值直接来自 .FCStd 文件内容，随后被用于 childMaps.reserve(count - 1) 与 for (int i = 0; i < typeCount; ++i) 循环。恶意或损坏的文件可以把 count 设为接近 INT_MAX，使 reserve 一次性申请数十 GB 内存并抛出 std::bad_alloc（不是 Base::Exception，不会被 restore 的 catch 捕获），导致进程崩溃；typeCount 无上限时则进入超长解析循环。",
+      "evidence": [
+        "src/App/ElementMap.cpp:261 — `if (!(stream >> tmp >> count) || tmp != \"MapCount\" || count == 0) {`（原实现还包含 `count > practicalMaximum` 判断）",
+        "src/App/ElementMap.cpp:264 — `childMaps.reserve(count - 1);`，count 直接来自文件",
+        "src/App/ElementMap.cpp:285 — `if (!(stream >> tmp >> index >> id >> typeCount) || tmp != \"ElementMap\") {`（原实现随后校验 `typeCount < 0 || typeCount > maxTypeCount`）",
+        "src/App/ElementMap.cpp:305 — `for (int i = 0; i < typeCount; ++i) {`",
+        "diff 中被删除的行：`constexpr int practicalMaximum {1 << 30 / sizeof(ElementMapPtr)};` 与 `constexpr int maxTypeCount(1000); ... FC_THROWM(Base::RuntimeError, \"Bad type count in element map, ignoring map\");`"
+      ],
+      "rule": "SEC-INPUT-VALIDATION-002",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 反序列化输入缺少数量上限校验（不受信任的反序列化数据）。影响评估：打开第三方/损坏的工程文件时可因超大 reserve 触发 bad_alloc 崩溃（拒绝服务），或长时间解析卡死界面，属于安全与可用性双重风险。",
+        "suggestion": "[重构思路] 恢复按「元素大小 × 数量」计算的内存上限校验，并在计算时使用无符号安全比较，避免负数/溢出绕过。代码示例：`constexpr std::size_t oneGb = (1ULL << 30) / sizeof(ElementMapPtr); if (count <= 0 || static_cast<std::size_t>(count) > oneGb) { FC_THROWM(Base::RuntimeError, \"Invalid element map child count\"); }`；对 typeCount 同样保留 `typeCount < 0 || typeCount > maxTypeCount` 判断。",
+        "subcategory": "反序列化输入校验"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "安全",
+      "file": "src/App/ComplexGeoData.cpp",
+      "line": 589,
+      "title": "restoreStream 删除 1GB 上限保护后，sCount 直接用于 reserve，可导致 OOM 崩溃",
+      "description": "restoreStream 中原本有 `oneGbOfInts` 上限校验，用于在 sCount（每个元素对应的 string id 数量）异常时提前抛出 RuntimeError。该保护被删除后，sCount 直接参与 `sids.reserve(static_cast<int>(sCount))`：由于先转成 int 再隐式转回 size_type，当 sCount 超过 INT_MAX 时会变成负数并回绕为极大的无符号值，reserve 立刻申请天文数字内存并抛出 std::bad_alloc，而外层的 catch 只捕获 Base::Exception，异常会逃逸出 restoreStream 导致进程终止。",
+      "evidence": [
+        "src/App/ComplexGeoData.cpp:585 — `if (!(stream >> value >> key >> sCount)) {`，sCount 完全来自文件内容",
+        "src/App/ComplexGeoData.cpp:589 — `sids.reserve(static_cast<int>(sCount));`（先窄化为 int 再加宽为 size_type）",
+        "src/App/ComplexGeoData.cpp:590 — `for (std::size_t j = 0; j < sCount; ++j) {`",
+        "src/App/ComplexGeoData.cpp:620 — `catch (Base::Exception& e) {`，不捕获 std::bad_alloc / std::length_error",
+        "diff 中删除的代码：`constexpr std::size_t oneGbOfInts {(1 << 30) / sizeof(int)}; if (sCount > oneGbOfInts) { FC_THROWM(..., \"Failed to restore element map (>1GB) \" ...); }`"
+      ],
+      "rule": "SEC-INPUT-VALIDATION-001",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 删除内存上限校验 + 有符号/无符号窄化转换。影响评估：恶意或损坏的 FCStd 文件在反序列化元素映射时可直接触发 std::bad_alloc 崩溃或超长循环，构成拒绝服务；异常类型不在捕获范围内，错误也不会被转为可恢复的加载失败。",
+        "suggestion": "[重构思路] 恢复上限校验，并且用 size_t 全程计算、避免 static_cast<int>；同时把 catch 范围扩展为 std::exception。代码示例：`constexpr std::size_t maxSids = (1ULL << 30) / sizeof(void*); if (sCount > maxSids) { FC_THROWM(Base::RuntimeError, \"Failed to restore element map (>1GB) \" << _persistenceName); } sids.reserve(sCount);`",
+        "subcategory": "反序列化输入校验"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/App/ComplexGeoData.cpp",
+      "line": 656,
+      "title": "RestoreDocFile 用 atoi 解析计数并直接赋给 std::size_t，负数回绕且溢出行为未定义",
+      "description": "原实现使用 `atoll` 解析后显式校验 `count < 0 || count > std::numeric_limits<int>::max()` 才继续，现在改为 `std::size_t count = atoi(marker.c_str());`：atoi 对超出 int 范围的字符串是未定义行为，负值（如 \"-1\"）会被直接转换为 SIZE_MAX 传入 restoreStream。虽然 restoreStream 随后读取流会失败并走异常分支，但此时错误被静默转为 _restoreFailed 并丢弃整个元素映射，调用方拿不到任何加载失败的信号，表现为「工程能打开但拓扑命名丢失」。",
+      "evidence": [
+        "src/App/ComplexGeoData.cpp:656 — `std::size_t count = atoi(marker.c_str());`",
+        "src/App/ComplexGeoData.cpp:657 — `restoreStream(reader, count);`",
+        "src/App/ComplexGeoData.cpp:620-624 — catch 分支把异常吞掉并置 `_restoreFailed = true; _elementMap.reset();`",
+        "diff 中删除的代码：`auto count = atoll(marker.c_str()); if (count < 0 || count > std::numeric_limits<int>::max()) { FC_THROWM(Base::RuntimeError, \"Failed to restore element map \" << _persistenceName); }`"
+      ],
+      "rule": "CORRECTNESS-INT-PARSE-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 未校验的字符串转整数 + 有符号到无符号隐式转换。影响评估：损坏/恶意文件下的计数解析结果不可预期，元素映射被静默丢弃，用户看到的是拓扑命名错乱而非明确的加载错误，问题难以定位。",
+        "suggestion": "[重构思路] 用 std::from_chars 或 stoll 解析并显式校验范围与负值，解析失败向上抛错。代码示例：`long long parsed = 0; try { parsed = std::stoll(marker); } catch (...) { FC_THROWM(Base::RuntimeError, \"Invalid element map count\"); } if (parsed < 0 || parsed > std::numeric_limits<int>::max()) { FC_THROWM(Base::RuntimeError, \"Failed to restore element map \" << _persistenceName); } restoreStream(reader, static_cast<std::size_t>(parsed));`",
+        "subcategory": "字符串转整数安全"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/App/GeoFeature.cpp",
+      "line": 226,
+      "title": "hasMissingElement 在 return 之后残留整段不可达代码，说明回退未清理干净",
+      "description": "GeoFeature::hasMissingElement 现在第一行即 `return Data::hasMissingElement(subname);`，其后 226-233 行（判空、strrchr 查找 '.'、检查 '?' 前缀）全部不可达。这不仅让阅读者误以为存在两套实现，还会在开启 -Wunreachable-code（CI 已默认开启 clazy 检查）时产生告警；若后续有人误删上面那行 return，行为会从 Data::hasMissingElement 切换到这套旧实现，语义并不等价。",
+      "evidence": [
+        "src/App/GeoFeature.cpp:225 — `return Data::hasMissingElement(subname);`",
+        "src/App/GeoFeature.cpp:226-233 — `if (!subname) { return false; } auto dot = strrchr(subname, '.'); ... return dot[1] == '?';` 全部位于 return 之后",
+        "src/App/ElementNamingUtils.cpp:100 — `bool Data::hasMissingElement(const char* subname)` 为实际生效的实现"
+      ],
+      "rule": "MAINTAINABILITY-DEADCODE-001",
+      "confidence": 0.92,
+      "tips": {
+        "review": "[缺陷类型] return 后的不可达代码（死代码）。影响评估：误导维护者，掩盖真实实现；与 clazy/编译器告警策略冲突，且一旦误删 return 会静默切换到语义不同的旧实现，引入难以察觉的拓扑命名回归。",
+        "suggestion": "[重构思路] 删除整段不可达逻辑，仅保留转调。代码示例：`bool GeoFeature::hasMissingElement(const char* subname) { return Data::hasMissingElement(subname); }`",
+        "subcategory": "死代码"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Base/Type.cpp",
+      "line": 61,
+      "title": "Type::createInstance / getName / getParent 去掉边界检查后直接索引 typedata",
+      "description": "重构后 createInstance 与 canInstantiate 直接写 `typedata[index]->instMethod`，getName/getParent 直接写 `typedata[index]->name/.parent`；此前这些入口会先 assert `typedata.size() > index` 并在 isBad 或越界时返回 nullptr。由于 Type 的默认 index 为 0 而 typedata 只有在 Type::init() 之后才有第 0 项，任何在类型系统初始化前使用 Type 的静态初始化路径都会变成对空 vector 的解引用（未定义行为），而不是可诊断的断言失败；越界的 Type（例如通过 fromKey 传入异常 key）同样会读到 vector 之外。",
+      "evidence": [
+        "src/Base/Type.cpp:61 — `instantiationMethod method = typedata[index]->instMethod;`",
+        "src/Base/Type.cpp:67 — `instantiationMethod method = typedata[index]->instMethod;`",
+        "src/Base/Type.cpp:104-110 — `getName` / `getParent` 直接 `return typedata[index]->...`，原有 assert 被删除",
+        "src/Base/Type.h:137 — `unsigned int index {0};`（默认值即 BadType 索引，typedata 为空时即越界）",
+        "diff 中删除的代码：`assert(typedata.size() >= 1 && \"Type::init() must be called before creating instances\"); assert(typedata.size() > index ...); if (isBad() || typedata.size() <= index) { return nullptr; }`"
+      ],
+      "rule": "RELIABILITY-BOUNDS-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 删除内部边界检查导致的潜在越界访问。影响评估：在错误的使用顺序（类型系统未初始化、或构造出的非法 Type）下从「可断言的编程错误」退化为 UB/崩溃，问题现场难以定位；静态初始化顺序问题在插件/工作台加载时尤其容易触发。",
+        "suggestion": "[重构思路] 保留轻量的边界兜底（不必恢复 assert 的措辞），对 BadType/越界统一返回安全默认值。代码示例：`const auto method = index < typedata.size() ? typedata[index]->instMethod : nullptr; return method ? (*method)() : nullptr;`；`getName()` 中 `return index < typedata.size() ? typedata[index]->name.c_str() : \"\";`",
+        "subcategory": "容器越界防护"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "src/Base/Type.cpp",
+      "line": 106,
+      "title": "FC_LOGLOADMODULE 分支引用不存在的变量 Mod，开启该宏即编译失败",
+      "description": "importModule 中局部变量名为小写 `mod`（第 90 行），但被 `#ifdef FC_LOGLOADMODULE` 包裹的日志语句使用的是大写的 `Mod.c_str()`。本次改动只把这行的 typeName 改名为 TypeName，并未修正 `Mod`，因此只要定义 FC_LOGLOADMODULE 就会因未声明标识符而编译失败；由于该分支默认不参与编译，问题会被长期隐藏。",
+      "evidence": [
+        "src/Base/Type.cpp:90 — `const std::string mod = getModuleName(TypeName);`",
+        "src/Base/Type.cpp:105-107 — `#ifdef FC_LOGLOADMODULE Console().Log(\"Act: Module %s loaded through class %s \\n\", Mod.c_str(), TypeName); #endif`",
+        "diff 中被修改的行：`-    Console().Log(\"Act: Module %s loaded through class %s \\n\", Mod.c_str(), typeName);` → `+ ... Mod.c_str(), TypeName);`"
+      ],
+      "rule": "PORTABILITY-CONDCOMPILE-001",
+      "confidence": 0.88,
+      "tips": {
+        "review": "[缺陷类型] 条件编译分支中的未声明标识符。影响评估：任何启用 FC_LOGLOADMODULE 的调试构建都无法编译；平时 CI 不覆盖该宏，缺陷会持续存在并影响开发者排查模块加载问题。",
+        "suggestion": "[重构思路] 修正变量名，并考虑把日志语句移出条件编译或用统一日志宏，避免长期失修的 #ifdef 分支。代码示例：`#ifdef FC_LOGLOADMODULE\\n    Console().Log(\"Act: Module %s loaded through class %s \\n\", mod.c_str(), TypeName);\\n#endif`",
+        "subcategory": "条件编译一致性"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/App/Application.cpp",
+      "line": 1163,
+      "title": "去掉 .c_str() 截断后 Conda 注入的空字符重新进入资源/库/帮助目录路径",
+      "description": "getResourceDir / getLibraryDir / getHelpDir 原本通过 `std::string(RESOURCEDIR).c_str()` 二次构造，把宏值中可能存在的 NUL 字符截断（issue #6892 的修复）。本次改回 `auto path = std::string(RESOURCEDIR);`，但注释仍写着 “Conda may inject null characters => remove them”，即注释与实现已矛盾：在 Conda 打包环境下路径会带有尾部 NUL，后续 `path += PATHSEP` 与 `QDir(QString::fromStdString(path))` 得到的字符串包含 NUL，导致 isAbsolute()/exists 判断与目录解析异常，进而影响图标、翻译、库加载。",
+      "evidence": [
+        "src/App/Application.cpp:1163 — `auto path = std::string(RESOURCEDIR);`（上一行注释仍为 “#6892: Conda may inject null characters => remove them”）",
+        "src/App/Application.cpp:1178 — getLibraryDir 同样的改动 `auto path = std::string(LIBRARYDIR);`",
+        "src/App/Application.cpp:1192 — getHelpDir 同样的改动 `auto path = std::string(DOCDIR);`",
+        "diff 中被替换的行：`std::string path = std::string(RESOURCEDIR).c_str();`"
+      ],
+      "rule": "CORRECTNESS-REGRESSION-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 回退了针对特定打包环境的缺陷修复（空字符截断）。影响评估：Conda 构建下资源目录、库目录解析可能含嵌入 NUL，导致 QDir 判断与路径拼接失效，表现为找不到图标/翻译或插件加载失败；同时遗留的注释与实现矛盾，会误导后续维护者。",
+        "suggestion": "[重构思路] 保留截断语义但写得更明确，避免依赖 c_str() 的隐式副作用。代码示例：`std::string raw(RESOURCEDIR); std::string path(raw.c_str()); // 截断 Conda 可能注入的尾部 NUL`；或封装 `stripAfterNul(std::string_view)` 工具函数并在三处复用。",
+        "subcategory": "环境相关回归"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Gui/SoDatumLabel.cpp",
+      "line": 1449,
+      "title": "textMargin 计算丢掉 std::abs，range 为负时标注文字偏移方向错误",
+      "description": "drawAngle 中原本是 `std::min(0.2F * std::abs(range), this->imgWidth / (2 * r))`，改为 `std::min(0.2F*range, this->imgWidth/(2*r))` 后丢失了绝对值。startangle/range 由 atan2 差值构成，在角度跨越 ±π 或 endangle < startangle 的路径下 range 可为负，此时 textMargin 为负值，随后仅两行就被用于 `glDrawArc(p0, r, startangle+range/2.-textMargin)` 和 `+textMargin`，会把文字缺口画在错误一侧，表现为角度标注文字与圆弧重叠或缺口方向反转。",
+      "evidence": [
+        "src/Gui/SoDatumLabel.cpp:1449 — `double textMargin = std::min(0.2F*range,  this->imgWidth/(2*r));`",
+        "src/Gui/SoDatumLabel.cpp:1454 — `glDrawArc(p0, r, startangle, startangle+range/2.-textMargin);`",
+        "src/Gui/SoDatumLabel.cpp:1455 — `glDrawArc(p0, r, startangle+range/2.+textMargin, endangle);`",
+        "diff 中被替换的行：`double textMargin = std::min(0.2F * std::abs(range), this->imgWidth / (2 * r));`"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 数值计算丢失绝对值导致符号错误。影响评估：特定角度方向下的角度标注（drawAngle）渲染异常，文字与弧线间隙消失或反向，且不会崩溃、难以通过自动化测试发现，属于视觉正确性回归。",
+        "suggestion": "[重构思路] 恢复 std::abs，并显式用浮点字面量统一类型，避免 float/double 混用。代码示例：`const double textMargin = std::min(0.2 * std::abs(range), static_cast<double>(this->imgWidth) / (2.0 * r));`",
+        "subcategory": "数值计算正确性"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P1",
+      "category": "可移植",
+      "file": "src/Base/CMakeLists.txt",
+      "line": 12,
+      "title": "target_include_directories(PUBLIC SYSTEM) 改为目录级 include_directories，丢失对下游 target 的头文件接口",
+      "description": "src/Base、src/App、src/Gui 三处都把 `target_include_directories(<target> SYSTEM PUBLIC/PRIVATE ...)` 换成了目录级的 `include_directories(SYSTEM ...)`，同时把 `link_directories` 取代 `target_link_directories(FreeCADGui PUBLIC ...)`。目录级命令只对当前目录及其子目录内、且在其之后创建的 target 生效，不再通过 PUBLIC 接口传递给链接 FreeCADBase/FreeCADApp/FreeCADGui 的其他目录下 target；同时失去按 target 关闭这些第三方头文件告警的作用（SYSTEM 修饰随 target 属性丢失）。这会让依赖传递性头文件的 Mod target 在编译期找不到 Boost/Python3/PYCXX/XercesC/Coin 头文件，或重新引入海量第三方告警（配合 FREECAD_WARN_ERROR 会直接失败）。",
+      "evidence": [
+        "src/Base/CMakeLists.txt:12-20 — `include_directories( SYSTEM ${Boost_INCLUDE_DIRS} ${PYCXX_INCLUDE_DIR} ${Python3_INCLUDE_DIRS} ${XercesC_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIR} ${PYCXX_INCLUDE_DIR} ${ZIPIOS_INCLUDES} )`（原为 `target_include_directories(FreeCADBase SYSTEM PUBLIC ...)`）",
+        "src/Base/CMakeLists.txt:19 — `${PYCXX_INCLUDE_DIR}` 在同一列表中重复出现两次",
+        "src/Gui/CMakeLists.txt diff — `target_include_directories(FreeCADGui SYSTEM PUBLIC ...)` 改为 `include_directories(SYSTEM ...)`，且 `target_link_directories(FreeCADGui PUBLIC ${COIN3D_LIB_DIRS})` 改为 `link_directories(${COIN3D_LIB_DIRS})`",
+        "src/App/CMakeLists.txt diff — 同样新增目录级 `include_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${PYCXX_INCLUDE_DIR} ${Python3_INCLUDE_DIRS} ${XercesC_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIR} ${ZIPIOS_INCLUDES})`"
+      ],
+      "rule": "PORTABILITY-CMAKE-002",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] CMake 依赖接口（usage requirements）被目录级命令替代。影响评估：跨目录 target 不再自动继承所需头文件路径与 SYSTEM 抑制属性，可能出现找不到头文件或告警洪水（FREECAD_WARN_ERROR 下直接构建失败），且增量构建在不同目录顺序下表现不一致，问题在特定平台/子集构建时才暴露。",
+        "suggestion": "[重构思路] 保留 target 作用域的 `target_include_directories`/`target_link_directories`，仅在确实需要对整目录生效时使用目录级命令；如需兼容旧写法，可用 INTERFACE 目标集中承载依赖。代码示例：`target_include_directories(FreeCADBase SYSTEM PUBLIC ${Boost_INCLUDE_DIRS} ${PYCXX_INCLUDE_DIR} ${Python3_INCLUDE_DIRS} ${XercesC_INCLUDE_DIRS} ${ZLIB_INCLUDE} ${ZIPIOS_INCLUDES})`（并去掉重复的 ${PYCXX_INCLUDE_DIR}）。",
+        "subcategory": "构建系统依赖传播"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "src/App/CMakeLists.txt",
+      "line": 343,
+      "title": "add_library(FreeCADApp) 被移到 ADD_MSVC_PRECOMPILED_HEADER 之后，MSVC/PCH 构建可能失败",
+      "description": "原本在文件首行创建 FreeCADApp target，现在改为先执行 `ADD_MSVC_PRECOMPILED_HEADER(FreeCADApp PreCompiled.h PreCompiled.cpp FreeCADApp_CPP_SRCS)`，再在文件末尾 `add_library(FreeCADApp SHARED ${FreeCADApp_SRCS})`。一旦该宏内部对 FreeCADApp 调用 target_* 命令（设置 PCH 源、编译选项等），此时 target 尚不存在，CMake 配置阶段就会报错；即使宏只操作变量列表，PCH 相关的 target 属性也无法附着到后创建的 target 上，导致 FREECAD_USE_PCH=ON 的 MSVC 构建失去预编译头或直接失败。src/Base/CMakeLists.txt 存在同样的顺序调整。",
+      "evidence": [
+        "src/App/CMakeLists.txt:343 — `ADD_MSVC_PRECOMPILED_HEADER(FreeCADApp PreCompiled.h PreCompiled.cpp FreeCADApp_CPP_SRCS)` 位于 `add_library(FreeCADApp ...)` 之前",
+        "src/App/CMakeLists.txt diff — 文件首行 `-add_library(FreeCADApp SHARED)` 被删除，改为末尾 `+add_library(FreeCADApp SHARED ${FreeCADApp_SRCS})`",
+        "src/Base/CMakeLists.txt diff — 同样删除首行 `-add_library(FreeCADBase SHARED)`，改为在 `ADD_MSVC_PRECOMPILED_HEADER(FreeCADBase ...)` 之后 `+add_library(FreeCADBase SHARED ${FreeCADBase_SRCS})`"
+      ],
+      "rule": "PORTABILITY-CMAKE-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] target 创建顺序与其配置命令顺序倒置。影响评估：在 MSVC + FREECAD_USE_PCH=ON 的组合下配置或编译失败，或静默失去预编译头导致构建时间大幅上升；由于 Windows 构建覆盖不如 Linux 频繁，问题可能到发布前才暴露。",
+        "suggestion": "[重构思路] 恢复「先创建 target、再配置」的顺序，用 add_library(<target> SHARED) 占位后通过 target_sources 追加源码，既保留可读性也保证顺序安全。代码示例：`add_library(FreeCADApp SHARED)`（文件开头）… `if(FREECAD_USE_PCH) ADD_MSVC_PRECOMPILED_HEADER(FreeCADApp PreCompiled.h PreCompiled.cpp FreeCADApp_CPP_SRCS) endif()` … `target_sources(FreeCADApp PRIVATE ${FreeCADApp_SRCS})`",
+        "subcategory": "CMake target 生命周期"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "cMake/FreeCAD_Helpers/SetupPython.cmake",
+      "line": 10,
+      "title": "删除 PYTHON_* 向后兼容变量，但构建脚本仍在引用 PYTHON_LIBRARY",
+      "description": "SetupPython.cmake 中整段 PYTHON_EXECUTABLE / PYTHON_LIBRARIES / PYTHON_INCLUDE_DIRS / PYTHON_VERSION_* 的兼容赋值被删除（注释指向 PR #19635 的兼容需求），但 PrintFinalReport.cmake 仍保留 `value(PYTHON_LIBRARY)` 输出项，说明构建体系内仍有 PYTHON_* 命名的使用点。删除后这些变量为空：要么最终报告中 Python 库信息缺失、掩盖真实配置，要么其他仍引用 PYTHON_INCLUDE_DIRS/PYTHON_EXECUTABLE 的脚本（含第三方/工作台 CMake）静默拿到空值，表现为头文件找不到或脚本用错解释器。",
+      "evidence": [
+        "cMake/FreeCAD_Helpers/SetupPython.cmake:1-10 — 宏内只剩 find_package(Python3) 与版本检查，兼容赋值块被删除（diff 中被删除的 `set(PYTHON_EXECUTABLE ${Python3_EXECUTABLE})` 等 9 行）",
+        "cMake/FreeCAD_Helpers/PrintFinalReport.cmake:89 — 仍保留 `value(PYTHON_LIBRARY)`（同一文件中上下文可见 `value(Python3_EXECUTABLE)` 与新加入的 `value(FREECAD_USE_PYBIND11)`）",
+        "cMake/FreeCAD_Helpers/SetupPython.cmake:4 — `find_package(Python3 COMPONENTS Interpreter Development REQUIRED)` 只提供 Python3_* 变量"
+      ],
+      "rule": "PORTABILITY-CMAKE-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 删除兼容变量但未同步清理/迁移所有引用点。影响评估：构建报告信息缺失掩盖配置问题；仍依赖 PYTHON_INCLUDE_DIRS 等旧名的脚本会拿到空变量，在部分平台表现为找不到 Python.h 或链接失败，且错误信息不指向根因。",
+        "suggestion": "[重构思路] 先全仓库排查 PYTHON_* 的剩余引用，统一迁移到 Python3_* 后再删除兼容层；在删除当次同步更新 PrintFinalReport 的条目。代码示例：`# 迁移后\\nvalue(Python3_LIBRARY)`，并在过渡期保留 `set(PYTHON_INCLUDE_DIRS ${Python3_INCLUDE_DIRS})` 并加 deprecation 注释。",
+        "subcategory": "构建变量兼容性"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "package/ubuntu/install-apt-packages.sh",
+      "line": 18,
+      "title": "Ubuntu 依赖列表新增 libboost-python-dev 同时移除 python3-pybind11，与项目已弃用 boost-python 的方向冲突",
+      "description": "同一 MR 在 UseLibPack3.cmake 中删除了「已完全移除 boost-python 支持、必须使用 pybind11」的提示，并只把 pybind11 需求降级为可选 option(FREECAD_USE_PYBIND11 OFF)；与此同时 Ubuntu 打包脚本移除了 python3-pybind11 而新增 libboost-python-dev。若构建仍需要 pybind11（如启用 BUILD_FLAT_MESH 或 CAM 的 pybind11 模块），删包会导致 CI/打包机器配置失败；而 libboost-python-dev 在 pybind11 路线下是不必要依赖（且引入与系统 Python ABI 绑定的旧式绑定库）。两处改动方向不一致，容易造成 Linux 构建与 Windows LibPack 构建能力不对等。",
+      "evidence": [
+        "package/ubuntu/install-apt-packages.sh:18 — 新增 `  libboost-python-dev`",
+        "package/ubuntu/install-apt-packages.sh diff — 删除 `  python3-pybind11`（原第 60 行附近）",
+        "cMake/UseLibPack3.cmake diff — 删除注释 `# We have completely removed support for boost-python and require pybind11, which requires LibPack 3.1 or later` 及对应 FATAL_ERROR",
+        "cMake/FreeCAD_Helpers/SetupPybind11.cmake:5 — 新增 `option(FREECAD_USE_PYBIND11 \"Use pybind11\" OFF)`，同时 InitializeFreeCADBuildOptions.cmake 删除 `if (BUILD_CAM OR BUILD_FLAT_MESH) set(FREECAD_USE_PYBIND11 ON) endif()`"
+      ],
+      "rule": "PORTABILITY-DEPS-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 构建/打包依赖与项目实际绑定方案不一致。影响评估：Linux 打包或 CI 环境可能缺少 pybind11 而无法构建包含 pybind11 模块的 target；反过来多装 boost-python 会引入与系统 Python 版本强耦合的库，增加打包体积与 ABI 兼容风险。",
+        "suggestion": "[重构思路] 让依赖清单与 CMake 的 feature 开关保持一致：若保留 pybind11 路线则恢复 python3-pybind11 并移除 libboost-python-dev；若确实回退到 boost-python 则需同步修改 SetupPybind11/MeshPart 等 CMake 逻辑，并在文档中说明默认绑定方案。代码示例：`packages=( ... python3-pybind11 ... )` 或明确注释 `# boost-python 已不再使用，pybind11 为唯一绑定方案`。",
+        "subcategory": "打包依赖一致性"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Gui/CommandStd.cpp",
+      "line": 345,
+      "title": "多个 QMessageBox 去掉父窗口后失去正确的模态归属与居中行为",
+      "description": "本 MR 把多处 `QMessageBox box(Gui::getMainWindow())` / `QMessageBox(parentWidget())` 改为无父构造：CommandStd.cpp（安全模式重启确认）、DlgPreferencesImp.cpp（重启提示）、TaskDialog.cpp（关闭确认）、Placement.cpp（选点错误提示）、DlgMacroExecuteImp.cpp（引导提示）。无父窗口的模态对话框在多数平台上不再以主窗口为模态父级，可能出现对话框出现在主窗口之后、跑到其它屏幕、或被其它窗口遮挡；同时 DlgPreferencesImp 处删除的注释「current window likely already closed, cant parent to it」表明父窗口有效性曾是刻意处理过的细节，直接去掉会丢失该语义。",
+      "evidence": [
+        "src/Gui/CommandStd.cpp:345 — `QMessageBox restartBox;`（原 `QMessageBox restartBox(Gui::getMainWindow());`）",
+        "src/Gui/Dialogs/DlgPreferencesImp.cpp:762 — `QMessageBox restartBox;`（原 `QMessageBox restartBox(parentWidget()); // current window likely already closed...`）",
+        "src/Gui/TaskView/TaskDialog.cpp:99 — `QMessageBox msgBox;`（原 `QMessageBox msgBox(Gui::getMainWindow());`，并删除了 `#include <Gui/MainWindow.h>`）",
+        "src/Gui/Placement.cpp:711 — `QMessageBox msgBox;`（原 `QMessageBox msgBox(this);`）"
+      ],
+      "rule": "UX-DIALOG-PARENT-001",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 模态对话框丢失父窗口（窗口生命周期/焦点管理）。影响评估：用户可能看不到确认对话框而被误认为程序无响应，或在多显示器/平铺窗口管理下出现焦点错乱；属于跨平台可见性回归，难以被自动化测试覆盖。",
+        "suggestion": "[重构思路] 优先使用仍然有效的窗口作为父级，例如 `Gui::getMainWindow()`（必要时先判空）或 `QApplication::activeWindow()`；确实无父窗口时显式设置窗口标志以保证置顶模态。代码示例：`QMessageBox box(Gui::getMainWindow()); box.setWindowModality(Qt::ApplicationModal);`",
+        "subcategory": "对话框生命周期"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Gui/Command.h",
+      "line": 422,
+      "title": "新增的 Command::updateAll 全仓库无调用点，属回退残留的死代码",
+      "description": "本 MR 在 Command 中新增了 public static 的 `updateAll(std::list<Gui::Document*> cList)` 并在 Command.cpp 中给出实现，但全仓库检索显示除声明与定义外没有任何调用点。新增无调用的公开 API 会扩大维护面，且其参数按值传递 std::list 的写法与现有 `updateActive()` 行为重叠，容易让调用方误以为它是标准入口。",
+      "evidence": [
+        "src/Gui/Command.h:422 — `static void updateAll(std::list<Gui::Document*> cList);`",
+        "src/Gui/Command.cpp:857 — `void Command::updateAll(std::list<Gui::Document*> cList)`",
+        "review_find_references(\"updateAll\") 结果：仅 2 处（声明 + 定义），无任何调用点",
+        "src/Gui/Command.cpp:840 — 已有 `void Command::updateActive()` 承担类似职责"
+      ],
+      "rule": "MAINTAINABILITY-DEADCODE-002",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 无调用点的公开 API（死代码）。影响评估：增加 API 表面积与维护成本，误导后续开发者使用未经验证的入口；若将来启用，按值传递 std::list 还会产生不必要的容器拷贝。",
+        "suggestion": "[重构思路] 若无使用计划则直接移除；若确需保留，改为按 const 引用接收并补充文档与调用点。代码示例：`static void updateAll(const std::list<Gui::Document*>& docs);` 或删除该声明与实现。",
+        "subcategory": "无用 API"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/3rdParty/salomesmesh/CMakeLists.txt",
+      "line": 148,
+      "title": "salomesmesh 构建脚本被加入大量注释掉的旧代码与新注释噪音",
+      "description": "本次改动在 salomesmesh/CMakeLists.txt 中保留了大量被注释掉的替代实现（Boost/OCC 查找、各 Driver 的 SET_TARGET_PROPERTIES、MEFISTO2 的 MSVC/GLOB 分支等），并有 `#if (MSVC)` 这类在 CMake 中实为注释的伪条件。这些内容既不参与构建也不带说明，读者极易误以为存在条件分支；同时 MEFISTO2 的源文件列表看起来被包在 `#if (MSVC)` / `#else` 之间，实际却是无条件执行，语义与视觉呈现完全不符。",
+      "evidence": [
+        "src/3rdParty/salomesmesh/CMakeLists.txt:148 起 — 新增 `#SET(CMAKE_BUILD_TYPE \"Release\")`、`#FIND_PACKAGE(Boost REQUIRED)`、`#INCLUDE_DIRECTORIES(${OCC_INCLUDE_PATH})` 等成组注释",
+        "src/3rdParty/salomesmesh/CMakeLists.txt:344 附近 — `#if (MSVC)` … `set(MEFISTO2_source_files ...)` … `#else(MSVC)`（分支内容全部被注释）… `#endif(MSVC)`，在 CMake 中这些行都是注释，`set(...)` 仍无条件执行",
+        "src/3rdParty/salomesmesh/CMakeLists.txt:436 附近 — 新增 `IF(NOT NETGEN_VERSION_C LESS NETGEN_VERSION_62_2004)` / `ELSEIF(NOT NETGEN_VERSION_C LESS NETGEN_VERSION_62)` 与同行注释 `# Standard std=c++1y could work as ell`"
+      ],
+      "rule": "MAINTAINABILITY-DEADCODE-003",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 注释掉的死代码与伪条件编译造成的可读性陷阱。影响评估：维护者难以判断哪段配置真正生效，后续修改容易误入注释块或误判 MEFISTO2/NETGEN 的条件逻辑；也为后续真正的条件判断（如 NETGEN 版本分支）埋下误改风险。",
+        "suggestion": "[重构思路] 删除被注释的旧实现（历史可从版本库追溯），对确实需要的条件逻辑使用真实的 CMake if/elseif 并保留简要说明；NETGEN 版本分支应确认 NETGEN_VERSION_C 一定被定义，避免两个分支都不命中。代码示例：`if(NETGEN_VERSION_C VERSION_GREATER_EQUAL 6.2.2004)\\n    set_target_properties(NETGENPlugin PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)\\nendif()`",
+        "subcategory": "构建脚本可读性"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Mod/CAM/Path/Post/UtilsArguments.py",
+      "line": 169,
+      "title": "移除 --chipbreaking_amount/--command_space/--comment_symbol 会使既有后处理参数直接报错中断",
+      "description": "本次删除了共享参数 --chipbreaking_amount、--command_space、--comment_symbol 的 add_argument，但 process_shared_arguments 使用的是 parser.parse_args（第 616 行），argparse 遇到未知参数会调用 parser.error() 并抛出 SystemExit(2)，而第 727 行的异常处理只捕获 (ArithmeticError, LookupError)，无法拦截。因此任何已保存 PostProcessorArgs（Job 的 PostProcessorArgs 属性、Preferences 的默认参数、宏/脚本）中含这三个参数之一时，导出 G-code 会直接失败而不是回退到默认值。与此同时 init_shared_values 仍保留 values[\"CHIPBREAKING_AMOUNT\"]（333 行）、values[\"COMMAND_SPACE\"]（338 行）、values[\"COMMENT_SYMBOL\"]（343 行），说明只是移除了可配置入口，属于对用户可见 CLI/API 的破坏性变更且缺少迁移处理。",
+      "evidence": [
+        "src/Mod/CAM/Path/Post/UtilsArguments.py:616 — args = parser.parse_args(shlex.split(argstring))",
+        "src/Mod/CAM/Path/Post/UtilsArguments.py:727 — except (ArithmeticError, LookupError): 未包含 argparse 的退出/参数错误",
+        "diff 中删除了 shared.add_argument(\"--chipbreaking_amount\")、shared.add_argument(\"--command_space\")、shared.add_argument(\"--comment_symbol\")",
+        "src/Mod/CAM/Path/Post/UtilsArguments.py:333/338/343 — values[\"CHIPBREAKING_AMOUNT\"]/[\"COMMAND_SPACE\"]/[\"COMMENT_SYMBOL\"] 仍保留默认值"
+      ],
+      "rule": "COMPAT-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 破坏性的参数移除且错误处理不覆盖。影响评估：使用过这三个参数（尤其是 --chipbreaking_amount、--command_space，此前是文档化参数）的既有 Job 在重新导出时抛 SystemExit，GUI 下表现为导出失败、无 G-code 输出。",
+        "suggestion": "[重构思路] 二选一：(a) 保留参数并在 process_shared_arguments 中把它们当作已废弃项接受（help=argparse.SUPPRESS，处理时忽略并打印 deprecation 警告）；(b) 显式移除但在 parse 前过滤掉未知参数，并扩展异常处理。代码示例：`args, unknown = parser.parse_known_args(shlex.split(argstring)); for u in unknown: FreeCAD.Console.PrintWarning(f'ignored argument {u}\\n')`，同时把 727 行改为 `except (ArithmeticError, LookupError, SystemExit)`。",
+        "subcategory": "命令行/API 兼容性"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/CAM/Path/Post/UtilsParse.py",
+      "line": 86,
+      "title": "注释命令额外拼接 COMMAND_SPACE 导致所有后处理器输出格式静默变化",
+      "description": "format_command_line 内部已经用 values[\"COMMAND_SPACE\"].join(command_line)（第 504 行）连接各字段，本次又在 check_for_drill_translate（85-90）、check_for_suppressed_commands（152-154）、check_for_tool_change（191-193）三处把 COMMAND_SPACE 再拼在首尾，经 create_comment 的 f\"({comment_string})\"（200-204）包裹后，被注释掉的命令由 \"(M6 T1)\" 变成 \"( M6 T1 )\"；对 COMMENT_SYMBOL 不是 \"(\" 的后处理器则会生成 \"; M6 T1 \" 这类带首尾空格的注释。这三处是 refactored 后处理器共用的代码路径，因此该格式变化不是单个 post 的调整，而是所有 refactored 后处理器（mach3_mach4、linuxcnc、centroid 等）输出的统一变化，属于未在 MR 描述中说明的跨模块行为变更；同时新增的 COMMAND_SPACE 与既有 join 逻辑重复，语义上把“命令字段分隔符”和“注释内填充”两种职责混在同一个 value 上。",
+      "evidence": [
+        "src/Mod/CAM/Path/Post/UtilsParse.py:504 — return values[\"COMMAND_SPACE\"].join(command_line)",
+        "src/Mod/CAM/Path/Post/UtilsParse.py:85-90 — create_comment(values, values[\"COMMAND_SPACE\"] + format_command_line(...) + values[\"COMMAND_SPACE\"])",
+        "src/Mod/CAM/Path/Post/UtilsParse.py:200-204 — if values[\"COMMENT_SYMBOL\"] == \"(\": return f\"({comment_string})\"",
+        "src/Mod/CAM/Path/Post/UtilsParse.py:152-154、191-193 — check_for_suppressed_commands / check_for_tool_change 同样的拼接"
+      ],
+      "rule": "OUTPUT-FORMAT-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 共享代码路径的输出格式变更。影响评估：所有 refactored 后处理器的注释行内容发生变化；依赖固定格式做解析（例如下游脚本回读注释、bCNC 块头解析、用户 diff 校验）的场景会受影响，且部分后处理器的既有期望输出未随之更新。",
+        "suggestion": "[重构思路] 若目的是与旧版 grbl_post 的 \"( M6 T1 )\" 外观对齐，应把填充逻辑收敛到一个地方（例如新增 format_comment_command(values, command_line) 辅助函数），并在各 post 中通过显式开关控制，避免直接改共用函数默认行为。代码示例：`def format_comment(values, cmd_line):\\n    body = format_command_line(values, cmd_line)\\n    pad = values.get(\"COMMENT_PADDING\", \"\")\\n    return create_comment(values, pad + body + pad)`。",
+        "subcategory": "输出格式回归"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Gui/Widgets.cpp",
+      "line": 705,
+      "title": "ColorButton 的 dirty 缓存未覆盖 setDrawFrame/图标尺寸/主题变化，会显示过期颜色块",
+      "description": "新增的 dirty 标志只在 setColor（657 行）和 setPackedColor（680 行）中置位，而 drawFrame 是导出为 Q_PROPERTY 的属性（Widgets.h:231），可以被样式表（qproperty-drawFrame）在运行期修改，setDrawFrame（703-706）却没有置 dirty；此外图标内容在 paintEvent 中用 palette().button().color() 作为底色（756 行）并在建图标时固定使用 iconSize()（754 行），因此主题切换（深色/浅色样式表）、palette 变化以及外部 setIconSize 都不会触发图标重建。结果：按钮上的色块边框与底色与当前 drawFrame/主题/尺寸不一致，且这种不一致会一直保留到下一次 setColor 被调用。",
+      "evidence": [
+        "src/Gui/Widgets.cpp:625 — 新增 bool dirty{true};",
+        "src/Gui/Widgets.cpp:703-706 — void ColorButton::setDrawFrame(bool ok) { d->drawFrame = ok; } 未设置 dirty",
+        "src/Gui/Widgets.h:231 — Q_PROPERTY( bool drawFrame READ drawFrame WRITE setDrawFrame )",
+        "src/Gui/Widgets.cpp:753-756 — if (d->dirty) { QSize isize = iconSize(); ... pix.fill(palette().button().color()); }"
+      ],
+      "rule": "CACHE-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 缓存失效条件不完整。影响评估：切换深浅色主题或通过样式表设置 drawFrame 后，颜色按钮仍显示旧底色/旧边框；由于 update() 不会被触发，界面表现为“颜色不刷新”，属可见的 UI 回归。",
+        "suggestion": "[重构思路] 把所有影响图标外观的入口统一置脏，并在 palette/主题变化时失效缓存（可重写 changeEvent 监听 QEvent::PaletteChange/StyleChange，或重写 resizeEvent 处理 iconSize 变化）。代码示例：`void ColorButton::setDrawFrame(bool ok) { if (d->drawFrame == ok) return; d->drawFrame = ok; d->dirty = true; update(); }\\nvoid ColorButton::changeEvent(QEvent* e) { if (e->type() == QEvent::PaletteChange || e->type() == QEvent::StyleChange) { d->dirty = true; update(); } QPushButton::changeEvent(e); }`。",
+        "subcategory": "缓存失效"
+      }
+    },
+    {
+      "id": "F019",
+      "severity": "P2",
+      "category": "性能",
+      "file": "src/Gui/Widgets.cpp",
+      "line": 770,
+      "title": "在 paintEvent 内 setIcon 触发额外重绘，且 QPixmap 未设置 devicePixelRatio 导致高 DPI 下色块模糊",
+      "description": "新的 paintEvent 在绘制过程中调用 setIcon(QIcon(pix))（770 行），setIcon 会调用 update() 请求再次重绘，属于在 paint 事件处理中修改控件状态并引发额外一轮绘制；更实际的问题是 QPixmap pix(isize)（755 行）以逻辑像素创建且未调用 setDevicePixelRatio，在 HiDPI 屏上会被 Qt 放大显示，颜色块与边框出现模糊/锯齿（旧实现直接用 QPainter 在控件上绘制，天然按设备像素比渲染）；同时 pix.fill(palette().button().color())（756 行）把按钮底色烘进图标，会覆盖样式表绘制的渐变/背景，使按钮外观在 QSS 主题下不一致。",
+      "evidence": [
+        "src/Gui/Widgets.cpp:754-756 — QSize isize = iconSize(); QPixmap pix(isize); pix.fill(palette().button().color());",
+        "src/Gui/Widgets.cpp:770 — setIcon(QIcon(pix)); 位于 paintEvent 内",
+        "src/Gui/Widgets.cpp:639-640 — 构造时 setIconSize(QSize(2*e, e)) 以逻辑像素确定图标尺寸",
+        "diff 中旧实现为 `QPainter painter(this); painter.drawRect(colorRect);`（按控件实际 DPR 绘制）"
+      ],
+      "rule": "PERF-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 绘制路径中的状态修改 + 位图缩放。影响评估：每次颜色变化会多触发一轮完整重绘；200%/300% 缩放下色块边缘发虚，颜色块尺寸与边框粗细在不同 DPI 下不一致。",
+        "suggestion": "[重构思路] 用 devicePixelRatioF 创建位图并设置 DPR，且把 setIcon 移出 paintEvent（在 setColor/setDrawFrame 等 setter 中重建图标，paintEvent 只负责绘制）。代码示例：`qreal dpr = devicePixelRatioF(); QPixmap pix(isize * dpr); pix.setDevicePixelRatio(dpr); pix.fill(Qt::transparent); ... d->icon = QIcon(pix); setIcon(d->icon);`。",
+        "subcategory": "绘制与高分屏适配"
+      }
+    },
+    {
+      "id": "F020",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/BIM/ArchSpace.py",
+      "line": 595,
+      "title": "Space 文本占位符改为固定白名单，$Width 等既有自定义属性占位符静默失效",
+      "description": "新的替换逻辑只处理 $area/$label/$tag/$floor/$walls/$ceiling/$longname/$description（594-607 行），原先基于 PropertiesList 与 re.findall(r\"\\$\\w+\") 的“任意属性名占位符”替换（含 Units 量的 UserString、对象的 Label/Name 回退）被整体删除。既有 Arch Space 对象里使用 $Width、$Height、$SpaceType 等占位符的文本模板将不再被替换，而是原样显示字面量，属于未提供迁移路径的功能回退；同时替换顺序调整为先 $area 后 $label，若 Label 或计数文本中含 \"$area\"/\"$tag\" 之类字样会被二次替换，产生非预期结果。",
+      "evidence": [
+        "src/Mod/BIM/ArchSpace.py:594-607 — 仅保留 t.replace(\"$area\"/\"$label\"/\"$tag\"/\"$floor\"/\"$walls\"/\"$ceiling\"/\"$longname\"/\"$description\")",
+        "diff 删除了 `props = vobj.Object.PropertiesList; lower_props = [...]; for rtag in re.findall(r\"\\$\\w+\", t): ... t = t.replace(rtag, str(value))` 以及 `import re`",
+        "diff 中 addProperty 的工具提示同步删除了 “or any other propery name preceded with $”"
+      ],
+      "rule": "BEHAVIOR-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 功能收窄且无迁移说明。影响评估：BIM 用户在 Space 文本中使用 $其他属性 的既有文档升级后显示原始占位符字符串（如 \"$Width\"），且不会报错，用户难以定位原因。",
+        "suggestion": "[重构思路] 保留通用替换作为兜底（在固定占位符之后执行），或至少在检测到未解析的 \"$xxx\" 时打印一次性警告；同时把替换改为单次扫描+回调以避免顺序导致的二次替换。代码示例：`t = re.sub(r\"\\$(\\w+)\", lambda m: resolve_placeholder(vobj, m.group(1), m.group(0)), t)`。",
+        "subcategory": "功能回退"
+      }
+    },
+    {
+      "id": "F021",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+      "line": 654,
+      "title": "删除 onlySolids 类型白名单后，无 Placement 的对象会走到未判空的 pPlc 解引用",
+      "description": "被删除的过滤块原本把 onlySolids 模式下的可拖拽对象限制为 App::Part / Part::Feature / App::Link，这三类都提供 Placement。现在只要 canDragObjectIn3d(part) 通过，任意类型对象都会进入后续逻辑：651-652 行用 dynamic_cast<App::PropertyPlacement*>(part->getPropertyByName(\"Placement\")) 取得 pPlc，654 行直接 pPlc->getValue() 而未判空。对于没有 Placement 属性的对象（如 App::DocumentObjectGroup、Spreadsheet::Sheet、App::TextDocument 等组/文档类对象），pPlc 为 nullptr，拖拽/3D 视图选择路径会在此处崩溃。",
+      "evidence": [
+        "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp:651-654 — auto* pPlc = dynamic_cast<App::PropertyPlacement*>(part->getPropertyByName(\"Placement\")); MovingObject movingObj(part, pPlc->getValue(), ...) 未判空",
+        "diff 删除了 `if (onlySolids && !(obj->isDerivedFrom<App::Part>() || obj->isDerivedFrom<Part::Feature>() || obj->isDerivedFrom<App::Link>())) { continue; }`",
+        "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp:634 — onlySolids 现仅用于子元素（subNames.back() != \"\"）过滤"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 过滤收紧被移除后暴露空指针解引用。影响评估：在装配中拖拽/预选无 Placement 的对象时可能直接崩溃（而不是被忽略），属于线上可见的稳定性风险。",
+        "suggestion": "[重构思路] 恢复部分类型限制或在使用前判空并跳过。代码示例：`auto* pPlc = dynamic_cast<App::PropertyPlacement*>(part->getPropertyByName(\"Placement\")); if (!pPlc) { continue; }`，若确实需要放开类型限制，应同时补充 `part->getPropertyByName(\"Placement\")` 为空时的降级逻辑。",
+        "subcategory": "空指针安全"
+      }
+    },
+    {
+      "id": "F022",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/CAM/Path/Main/Gui/JobDlg.py",
+      "line": 78,
+      "title": "用 msgbox.exec_() == 1 判断“不再提示”按钮，导致该选项基本永远不会生效",
+      "description": "重写后的启动作业警告改用了自定义按钮（addButton(..., AcceptRole) 与 addButton(..., ActionRole)，73-77 行），随后用 `if msgbox.exec_() == 1:`（78 行）判断用户是否点了“Don't Show This Anymore”。QMessageBox.exec_() 返回的是被点击按钮对应的 StandardButton 值，对通过 addButton(text, role) 添加的非标准按钮返回 NoButton(0)，因此该条件几乎不可能成立，“不再提示”不会被写入参数，用户每次新建 Job 都会被重复弹窗。改动前的实现用 `msgbox.clickedButton() == dont_show_again_button` 比较，语义正确。",
+      "evidence": [
+        "src/Mod/CAM/Path/Main/Gui/JobDlg.py:73-77 — msgbox.addButton(translate(\"CAM_Job\", \"Ok\"), QtGui.QMessageBox.AcceptRole) 与 addButton(..., QtGui.QMessageBox.ActionRole)",
+        "src/Mod/CAM/Path/Main/Gui/JobDlg.py:78 — if msgbox.exec_() == 1:",
+        "src/Mod/CAM/Path/Preferences.py:276-277 — suppressVelocity() 读取 WarningSuppressVelocity，说明该布尔值就是抑制开关",
+        "diff 中被删除的实现使用 `msgbox.clickedButton() == dont_show_again_button` 判断"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 控件返回值判断错误。影响评估：用户点击“Don't Show This Anymore”后偏好未写入，警告在每次创建 CAM Job 时重复弹出；同时 81 行改用硬编码字符串 \"WarningSuppressVelocity\"，绕过了 Path.Preferences.WarningSuppressVelocity 常量，后续改名会静默失配。",
+        "suggestion": "[重构思路] 保留按钮引用并用 clickedButton() 比较，同时复用 Preferences 常量。代码示例：`dont_show = msgbox.addButton(translate(\"CAM_Job\", \"Don't show this warning again\"), QtGui.QMessageBox.ActionRole); msgbox.exec_(); if msgbox.clickedButton() is dont_show: Path.Preferences.preferences().SetBool(Path.Preferences.WarningSuppressVelocity, True)`。",
+        "subcategory": "Qt 返回值误用"
+      }
+    },
+    {
+      "id": "F023",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/BIM/Resources/ui/dialogClassification.ui",
+      "line": 4,
+      "title": "dialogClassification.ui 把 <class> 与 connection receiver 改为 Dialog，与顶层 widget 名称不一致",
+      "description": "该文件的顶层 widget 名称仍是 bimDialogClassification（第 5 行 name=\"bimDialogClassification\"），但 <class> 被改为 Dialog，且 connections 中 accepted()/rejected() 的 receiver 由 bimDialogClassification 改为 Dialog。若该 .ui 在运行期通过 PySide/QUiLoader 加载，receiver 需要能解析到具体控件（通常按 objectName 或与顶层类名匹配），receiver 名与 objectName 不一致时连接解析可能失败，表现为对话框的确定/取消按钮不再触发 accept()/reject()（按钮无效）。此外同一 hunk 还删除了原有的 normaloff 值（. → 空）并新增了重复的 <zorder> 条目（groupMaterials、groupClasses 各出现两次），属于 Designer 重新保存产生的噪声。",
+      "evidence": [
+        "src/Mod/BIM/Resources/ui/dialogClassification.ui:4 — <class>Dialog</class>（原为 bimDialogClassification）",
+        "src/Mod/BIM/Resources/ui/dialogClassification.ui:5 — <widget class=\"QDialog\" name=\"bimDialogClassification\">",
+        "diff：<receiver>bimDialogClassification</receiver> 改为 <receiver>Dialog</receiver>（rejected() 连接），并新增 accepted() 连接同样指向 Dialog",
+        "diff：新增 <zorder>groupMaterials</zorder> 与 <zorder>groupClasses</zorder> 各两次"
+      ],
+      "rule": "UI-CONN-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] .ui 元信息与连接接收者不一致。影响评估：若运行期加载按 objectName 解析 receiver，OK/Cancel 将失效（对话框无法关闭或数据不提交），属于功能性回归；同时重复 zorder 与空的 normaloff 属无意义 diff 噪声。",
+        "suggestion": "[重构思路] 保持 <class> 与顶层 name 一致，receiver 使用顶层 widget 的 objectName，并清理重复 zorder/空 iconset。代码示例：`<class>bimDialogClassification</class> ... <receiver>bimDialogClassification</receiver><slot>reject()</slot>`；确认 accept/reject 连接在该对话框代码（Python 侧）中其实是显式 connect 的，则直接删除这些 connections。",
+        "subcategory": "Qt Designer 文件一致性"
+      }
+    },
+    {
+      "id": "F024",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/CAM/CMakeLists.txt",
+      "line": 171,
+      "title": "删除已发布的 snapmaker 后处理器，使用该 post 的既有 Job 无法再导出",
+      "description": "本次从 PathPythonPostScripts_SRCS 中移除 Path/Post/scripts/snapmaker_post.py（同时该文件被整体删除），并把 snapmaker 从后处理器工厂可见的脚本集合中去掉。对于已有文档中 PostProcessor 指向 \"snapmaker\"（或其派生名）的 CAM Job，PostProcessorFactory 将找不到该后处理器，导出时会报错或回退到默认后处理器，产生与用户预期不同的 G-code；MR 未提供弃用说明、重命名或替代实现。",
+      "evidence": [
+        "src/Mod/CAM/CMakeLists.txt:171 区域 — 从 PathPythonPostScripts_SRCS 删除 Path/Post/scripts/snapmaker_post.py",
+        "diff：src/Mod/CAM/Path/Post/scripts/snapmaker_post.py 整个文件被删除（642 行）",
+        "diff：src/Mod/CAM/TestCAMApp.py 删除 `from CAMTests.TestSnapmakerPost import TestSnapmakerPost` 及对应引用"
+      ],
+      "rule": "COMPAT-003",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 已发布后处理器被移除。影响评估：Snapmaker 机器用户升级后其 Job 无法再产出 G-code，且没有替代 post 指引；若这是对误合入代码的回退，应明确记录并确认没有用户已依赖。",
+        "suggestion": "[重构思路] 若必须移除，先在 post 目录保留一个明确报错的占位脚本（提示已迁移/已移除并指向替代方案），或在 MR 描述中给出兼容性说明与迁移步骤；若为回退，建议同时保留 PostProcessorBlacklist 拉黑而不是物理删除文件。",
+        "subcategory": "功能移除兼容性"
+      }
+    },
+    {
+      "id": "F025",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/CAM/Tools/Library/Default.fctl",
+      "line": 20,
+      "title": "删除 30/45/90 度 V-Bit 刀库文件并重排编号、放大 60 度 V-Bit 刀尖直径，影响既有刀具与刀路",
+      "description": "本次删除了 30degree_Vbit.fctb、45degree_Vbit.fctb、90degree_Vbit.fctb，并把 Default.fctl 中剩余刀具的 nr 从 5,7,6,9,10,11,12 重排为 5,6,7,8,9。引用被删 .fctb 的用户自定义刀库或文档中的 ToolBit 路径将解析失败；同时 Default.fctl 里的编号变化会改变按 nr 引用刀具的既有行为。另外 60degree_Vbit.fctb 的 TipDiameter 由 0.1000 mm 改为 1.0000 mm，刀尖直径放大 10 倍会直接改变基于该刀具的 V-carve/雕刻刀路几何与仿真结果，而 MR 中没有任何说明。",
+      "evidence": [
+        "src/Mod/CAM/Tools/Library/Default.fctl:20 区域 — 删除 \"path\": \"30degree_Vbit.fctb\"/\"45degree_Vbit.fctb\"/\"90degree_Vbit.fctb\" 条目并把 nr 重排为 5..9",
+        "diff：src/Mod/CAM/Tools/Bit/30degree_Vbit.fctb、45degree_Vbit.fctb、90degree_Vbit.fctb 文件被删除",
+        "src/Mod/CAM/Tools/Bit/60degree_Vbit.fctb — \"TipDiameter\": \"0.1000 mm\" 改为 \"1.0000 mm\""
+      ],
+      "rule": "DATA-COMPAT-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 内置资源删除 + 参数语义变化。影响评估：升级后引用旧 .fctb 的用户刀库/文档打开时报缺失；使用 60 度 V-Bit 的既有加工操作刀路与仿真会因刀尖直径变化而改变（切削深度/残料计算不同），可能造成实际加工偏差。",
+        "suggestion": "[重构思路] 若确需精简默认刀库，可以保留文件但从默认库移除（避免破坏引用），并在 CHANGELOG 中说明；TipDiameter 的修正应作为独立改动并附实验/文献依据，避免与清理类改动混在同一提交。代码示例：保留 `60degree_Vbit.fctb` 的 TipDiameter 变更单独成 PR，并在描述中说明对既有刀路的影响。",
+        "subcategory": "资源与数据兼容性"
+      }
+    },
+    {
+      "id": "F026",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Mod/BIM/importers/importSH3DHelper.py",
+      "line": 200,
+      "title": "多处英文文案与注释被改成错误拼写，降低可读性并破坏既有翻译匹配",
+      "description": "本 MR 夹带了大量把正确拼写改成错误拼写的改动：importSH3DHelper.py 的 \"Transaction failed\"→\"Transactino failed\"、\"Committing\"→\"Commiting\"、\"completely been constructed\"→\"completly been constructued\"、\"through\"→\"throuh\"、\"offsetted\"→\"offseted\"、\"reference\"→\"referene\"，exportIFC.py 的 \"more than\"→\"more thna\"，UtilsParse.py 的 \"parameters\"→\"paramters\"，以及 .ui 中的 \"of\"→\"fo\"、\"without\"→\"witout\"、\"Default\"→\"Defautl\"、\"document\"→\"docment\"。这些字符串多数是用户可见文案或日志/注释，既降低可读性，也会使 .ts 翻译条目的 source 文本失配（译文回退为英文原文或报 lupdate 变更），且与本次功能目的无关，增加了 review 噪声。",
+      "evidence": [
+        "src/Mod/BIM/importers/importSH3DHelper.py:200 — _err(f\"Transactino failed but DEBUG_GEOMETRY is set. Commiting transaction anyway.\")",
+        "src/Mod/BIM/importers/exportIFC.py:2533 — \"Cannot create more thna one axis\"",
+        "src/Mod/BIM/Resources/ui/dialogImport.ui:129 — \"Preload all materials fo the file.\"",
+        "src/Mod/BIM/Resources/ui/dialogProjectManager.ui:114/117/637/717 — \"docment\"、\"witout\"、\"Defautl\"、\"values fo this form\"",
+        "src/Mod/CAM/Path/Post/UtilsParse.py:288 — \"paramters\""
+      ],
+      "rule": "TYPO-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 误提交的拼写回退。影响评估：用户可见的提示/工具提示出现拼写错误，翻译文件（.ts）中的 source 不再匹配，译文失效；同时这些与主题无关的改动掩盖了真正的行为变更，增加评审风险。",
+        "suggestion": "[重构思路] 回滚这些纯文案改动（或改回正确拼写后单独提交），并在提交前用工具检查：`git diff -U0 | grep -nE '^\\+.*\\b(fo|thna|witout|Defautl|docment|paramters|referene|Transactino)\\b'`。",
+        "subcategory": "文案拼写"
+      }
+    },
+    {
+      "id": "F027",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/BIM/Resources/ui/dialogIfcElements.ui",
+      "line": 9,
+      "title": "UI 文件被 Designer 重存导致尺寸与文案大小写变化等噪声改动",
+      "description": "dialogIfcElements.ui 的窗口宽度由 800 改为 574，并把 \"Change type to:\"/\"Change material to:\" 改成小写开头的 \"change type to:\"/\"change material to:\"，同文件与 dialogClassification.ui 的 iconset 还把 <normaloff>.</normaloff> 清成 <normaloff/>。这些改动会让对话框实际显示尺寸变小、文案风格与其它界面不一致，且与本次 MR 的功能目标无关，属于无意的编辑器重存噪声。",
+      "evidence": [
+        "src/Mod/BIM/Resources/ui/dialogIfcElements.ui:9 — <width>800</width> 改为 <width>574</width>",
+        "src/Mod/BIM/Resources/ui/dialogIfcElements.ui:103/110 — \"Change type to:\" 改为 \"change type to:\"，\"Change material to:\" 改为 \"change material to:\"",
+        "src/Mod/BIM/Resources/ui/dialogIfcElements.ui:51/61 — <normaloff>.</normaloff>.</iconset> 改为 <normaloff/>"
+      ],
+      "rule": "UI-NOISE-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 无关的 UI 尺寸/文案改动。影响评估：对话框默认宽度变化可能造成列布局拥挤或文本截断；大写开头的标签被改成小写，界面文案风格不一致；同时这些 diff 会干扰后续对 UI 的真实变更审查。",
+        "suggestion": "[重构思路] 回滚这些与功能无关的 .ui 改动；若确实需要调整宽度，请单独提交并附截图说明。代码示例：`git checkout -- src/Mod/BIM/Resources/ui/dialogIfcElements.ui`（仅保留经过确认的功能性 UI 改动）。",
+        "subcategory": "UI 噪声"
+      }
+    },
+    {
+      "id": "F028",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Gui/Tree.cpp",
+      "line": 104,
+      "title": "Tree.cpp 多处仅新增行尾空格，属无意义的空白噪声",
+      "description": "Tree.cpp 中有 5 处改动只是在行尾追加空格（getHideInternalNames() 之后、trimColumnSize 初始化之后、QLineEdit::sizeHint() 之后、#else 之后），没有任何语义变化；这类改动会被 git blame 记录、干扰后续 diff 阅读，并可能在启用 trailing whitespace 检查的 CI 上产生告警。",
+      "evidence": [
+        "src/Gui/Tree.cpp:104 — return TreeParams::getHideInternalNames() （行尾多一个空格）",
+        "src/Gui/Tree.cpp:491 — bool trimColumnSize = isOnlyNameColumnDisplayed(); （行尾空格）",
+        "src/Gui/Tree.cpp:553 — QSize size = QLineEdit::sizeHint(); （行尾空格）",
+        "src/Gui/Tree.cpp:2911 — #else （行尾空格）"
+      ],
+      "rule": "STYLE-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 空白字符噪声。影响评估：无功能影响，但污染 blame、增加冲突概率，并可能触发 CI 的空白检查。",
+        "suggestion": "[重构思路] 撤销这些纯空白改动，或在提交前统一运行格式化/去尾随空格。代码示例：`git diff --check` / `sed -i 's/[ \\t]*$//' src/Gui/Tree.cpp`。",
+        "subcategory": "空白噪声"
+      }
+    },
+    {
+      "id": "F029",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Gui/TextEdit.h",
+      "line": 142,
+      "title": "移除 PythonTextEditor 的 public 槽 prepend 属于公开接口变更，未留弃用说明",
+      "description": "PythonTextEditor 是 GuiExport 导出的类，原 prepend 位于 public Q_SLOTS 段（可被 QMetaObject::invokeMethod 或 Python 侧通过 PySide 以信号/槽方式调用），本次直接从 TextEdit.h 删除该槽并在 TextEdit.cpp 中移除实现。仓库内未发现残留调用（现有 prepend 引用均为 QString/QList 的同名成员调用，PythonEditor::onComment/onUncomment 用 QTextCursor 自行实现），因此不会造成编译失败，但对第三方 Python 代码或外部插件来说这是一个静默的 ABI/API 变化。",
+      "evidence": [
+        "src/Gui/TextEdit.h:142 — 现仅剩 protected: void keyPressEvent(QKeyEvent*) override;，public Q_SLOTS: void prepend(const QString&) 被删除",
+        "src/Gui/TextEdit.cpp:490-582 — PythonTextEditor 现仅保留构造/析构与 keyPressEvent 实现",
+        "src/Gui/PythonEditor.cpp:239-285 — onComment/onUncomment 使用 QTextCursor 逐块插入/删除 '#'，不依赖 prepend"
+      ],
+      "rule": "API-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 公开槽移除。影响评估：仓内无调用，编译不受影响；外部通过 QMetaObject/invokeMethod 或 Python 侧调用 prepend 的插件会静默失效。",
+        "suggestion": "[重构思路] 若确认无外部使用，至少在 MR 描述/CHANGELOG 记录该接口移除；若不确定，保留方法但标记 deprecated 一个发布周期。代码示例：`/** @deprecated Use onComment() */ public Q_SLOTS: void prepend(const QString& str);` 并在实现中打印一次 deprecation 警告。",
+        "subcategory": "公开接口变更"
+      }
+    },
+    {
+      "id": "F030",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Mod/Draft/draftguitools/gui_edit.py",
+      "line": 422,
+      "title": "Edit 模式改用不存在的 Gui.Selection.GetSelection()，Delete 删除点功能被 AttributeError 打断",
+      "description": "改动把 `Gui.Selection.getSelection()` 写成 `Gui.Selection.GetSelection()`。Gui.Selection 的 Python 方法表只注册了小写开头的 `getSelection`，全仓也不存在名为 `GetSelection` 的符号，因此该行在求值条件时即抛 AttributeError，`self.delPoint(event)` 永不执行，Draft 编辑模式下 Delete 键删除顶点失效，并且每次按键都会刷出异常堆栈。另外 `getSelection()` 返回 list，`is None` 恒为 False，即使方法名正确也无法进入删除分支。",
+      "evidence": [
+        "src/Mod/Draft/draftguitools/gui_edit.py:422 — `if key == 65535 and Gui.Selection.GetSelection() is None:`",
+        "src/Gui/Selection/Selection.cpp:1805 — 方法表仅注册 {\"getSelection\", (PyCFunction) SelectionSingleton::sGetSelection, METH_VARARGS, ...}",
+        "全仓符号检索 `GetSelection` 命中 0 处；同模块 src/Mod/Draft/draftguitools/gui_fillets.py:63 使用的是 `Gui.Selection.getSelection()`",
+        "src/Gui/Selection/Selection.cpp:1806 — 文档字符串 `getSelection(...) -> list`，返回值不可能是 None"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.88,
+      "tips": {
+        "review": "[缺陷类型] 调用不存在的 Python API（方法名大小写错误）+ 恒假判空。影响评估：Draft Edit 模式下 Delete 键删除点功能静默失效，并在 SoEvent 回调中反复抛 AttributeError。",
+        "suggestion": "[重构思路] 恢复正确的小写方法名，并把判空改为对空列表取反。代码示例：\n```python\nif key == 65535 and not Gui.Selection.getSelection():\n    self.delPoint(event)\n```",
+        "subcategory": "Python API 误用"
+      }
+    },
+    {
+      "id": "F031",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Mod/Draft/draftguitools/gui_snapper.py",
+      "line": 494,
+      "title": "删除 winner_not_near 空值守卫后，仅存在 passive 吸附点时对 None 取下标抛 TypeError",
+      "description": "原判断为 `if winner_not_near is None or shortest_not_near == shortest_all:`，本次去掉了前半段空值检查。`winner_not_near`/`shortest_not_near` 只在 `snap[1] != \"passive\"` 时赋值；当本轮候选吸附点全是 passive（例如只启用 Near 吸附，或对网格/点云/面只投影出 Near 点），`winner_not_near` 仍是 None、`shortest_not_near` 保持初始 1e18，而 `shortest_all` 是有限的最近距离，两者不等，于是进入 else 分支执行 `winner_not_near[0]`，对 None 下标抛 TypeError，吸附流程中断。",
+      "evidence": [
+        "src/Mod/Draft/draftguitools/gui_snapper.py:478-479 — `shortest_all = shortest_not_near = 1000000000000000000` 与 `winner_all = winner_not_near = None`",
+        "src/Mod/Draft/draftguitools/gui_snapper.py:486-489 — 仅 `snap[1] != \"passive\"` 时才更新 shortest_not_near / winner_not_near",
+        "src/Mod/Draft/draftguitools/gui_snapper.py:494-499 — 修改为 `if shortest_not_near == shortest_all:` … `view.getPointOnScreen(winner_not_near[0])`",
+        "src/Mod/Draft/draftguitools/gui_snapper.py:795、807、815 — snapToNear / snapToNearFace / snapToNearUnprojected 均返回类型为 \"passive\" 的条目"
+      ],
+      "rule": "NULLSAFETY-002",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 移除既有空值守卫导致 None 下标访问。影响评估：只启用 Near 吸附或对象仅产生 passive 吸附点时，鼠标移动即抛 TypeError，交互式吸附/绘图失效，属于对既有行为的破坏。",
+        "suggestion": "[重构思路] 恢复空值短路判断，或直接以 winner_not_near 是否存在作为分支条件。代码示例：\n```python\nif winner_not_near is None or shortest_not_near == shortest_all:\n    winner = winner_all\nelse:\n    ...\n```",
+        "subcategory": "空值安全"
+      }
+    },
+    {
+      "id": "F032",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/Measure/Gui/QuickMeasure.cpp",
+      "line": 136,
+      "title": "QuickMeasure 取消 Part::Datum 排除，基准面/基准轴重新参与快速测量",
+      "description": "原实现明确注释“only measure shapes. Exclude datums that derive from Part::Feature”，并用 `!obj->isDerivedFrom<Part::Datum>()` 把基准几何排除；本次删除该条件并移除 `DatumFeature.h` 的 include。基准平面/轴/点将被当作普通形状参与测量，给出无实际工程意义的结果，属未在变更说明中交代的行为回归。",
+      "evidence": [
+        "src/Mod/Measure/Gui/QuickMeasure.cpp:135-136 — 注释改为 `// only measure shapes`，条件变为 `if (obj && obj->isDerivedFrom<Part::Feature>())`",
+        "diff 中同时删除 `#include <Mod/Part/App/DatumFeature.h>`",
+        "被删除的原条件片段：`&& !obj->isDerivedFrom<Part::Datum>()`"
+      ],
+      "rule": "BEHAVIOR-003",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 既有过滤条件被移除导致的行为回归。影响评估：对基准几何执行快速测量会得到误导性数值，破坏“仅测量实体形状”的既有约定。",
+        "suggestion": "[重构思路] 恢复 Datum 排除；若确需支持基准测量，应作为独立特性评估并补充用例。代码示例：\n```cpp\n// only measure shapes, exclude datums deriving from Part::Feature\nif (obj && obj->isDerivedFrom<Part::Feature>() && !obj->isDerivedFrom<Part::Datum>()) {\n    return true;\n}\n```",
+        "subcategory": "行为回归"
+      }
+    },
+    {
+      "id": "F033",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/Measure/Gui/QuickMeasure.cpp",
+      "line": 137,
+      "title": "QuickMeasure 取消 Part::Datum 排除，基准面/基准轴重新参与快速测量",
+      "description": "原实现注释明确“only measure shapes. Exclude datums that derive from Part::Feature”，并通过 `!obj->isDerivedFrom<Part::Datum>()` 把基准几何排除在可测对象之外；本次删除该条件并移除 `Part/App/DatumFeature.h` 的 include。基准平面/基准轴/基准点将被当作普通形状参与测量，给出无实际工程意义的结果，属未在变更说明中交代的行为回归。",
+      "evidence": [
+        "src/Mod/Measure/Gui/QuickMeasure.cpp:136-137 — 注释改为 `// only measure shapes`，条件变为 `if (obj && obj->isDerivedFrom<Part::Feature>())`",
+        "diff 中同时删除 `#include <Mod/Part/App/DatumFeature.h>`",
+        "diff 中被删除的原条件片段：`&& !obj->isDerivedFrom<Part::Datum>()`"
+      ],
+      "rule": "BEHAVIOR-003",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 既有过滤条件被移除导致的行为回归。影响评估：对基准几何执行快速测量会得到误导性数值，破坏“仅测量实体形状”的既有约定。",
+        "suggestion": "[重构思路] 恢复 Datum 排除；若确需支持基准测量，应作为独立特性评估并补充用例。代码示例：\n```cpp\n// only measure shapes, exclude datums deriving from Part::Feature\nif (obj && obj->isDerivedFrom<Part::Feature>() && !obj->isDerivedFrom<Part::Datum>()) {\n    return true;\n}\n```",
+        "subcategory": "行为回归"
+      }
+    },
+    {
+      "id": "F034",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/CAM/Path/Post/scripts/snapmaker_post.py",
+      "line": 1,
+      "title": "整文件删除 snapmaker 后处理器，已有 CAM 作业将无法出后处理",
+      "description": "该脚本被整体删除（-642 行）。FreeCAD 的 Job 以字符串属性保存所选后处理器名称，后处理器脚本通过 scripts 目录扫描发现，删除后历史文档中 `PostProcessor = \"snapmaker_post\"` 的作业在出后处理时会因脚本不存在而失败；仓库中已无任何 snapmaker_post 的替代实现或迁移入口，也没有弃用提示。该功能删减与本次“构建系统/绑定回移”的目的无关。",
+      "evidence": [
+        "diff：`src/Mod/CAM/Path/Post/scripts/snapmaker_post.py (+0/-642)` 显示整文件删除",
+        "全仓符号检索 `snapmaker_post` 命中 0 处，说明删除后不存在替代脚本或名称映射",
+        "后处理器由 src/Mod/CAM/Path/Post/scripts 目录扫描发现（脚本名即 Job 中保存的 PostProcessor 值）"
+      ],
+      "rule": "SCOPE-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 用户可见功能被静默删除（后处理器）。影响评估：升级后相关既有作业无法生成刀路，用户无从得知原因。",
+        "suggestion": "[重构思路] 若为有意删除，请拆分为独立 MR 并在 Release Notes/迁移说明中声明替代后处理器；否则恢复脚本。代码示例：\n```\n# 恢复：src/Mod/CAM/Path/Post/scripts/snapmaker_post.py\n# 或提供映射：snapmaker_post -> 推荐的通用后处理器\n```",
+        "subcategory": "功能删减与向后兼容"
+      }
+    },
+    {
+      "id": "F035",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "src/Mod/Measure/Gui/Resources/translations/Measure_es-ES.ts",
+      "line": 1,
+      "title": "删除 Measure_es-ES.ts 导致 Measure 模块西班牙语界面回退英文",
+      "description": "整个 Measure_es-ES.ts（-186 行）被删除。Measure/Gui/CMakeLists.txt 用通配 `Resources/translations/*_*.ts` 收集翻译，构建不会失败，但 es-ES 用户在 Measure 工作台将看到英文原文，属用户可见的本地化回归，且与本 MR 的构建/绑定回移主题无关，疑似误删。",
+      "evidence": [
+        "diff：`src/Mod/Measure/Gui/Resources/translations/Measure_es-ES.ts` 标记 `deleted file mode 100644`，删除 186 行（含 Gui::TaskMeasure、MeasureGui::QuickMeasure、StdCmdMeasure 等上下文翻译）",
+        "src/Mod/Measure/Gui/CMakeLists.txt:36 — `qt_find_and_add_translation(QM_SRCS \"Resources/translations/*_*.ts\" ...)` 依赖该目录下 .ts 文件存在"
+      ],
+      "rule": "I18N-005",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 翻译资源整文件删除。影响评估：es-ES 用户 Measure 界面出现英文/西语混杂，且构建不报错，CI 难以发现。",
+        "suggestion": "[重构思路] 恢复该 .ts 文件；如需下线某 locale，请走独立本地化变更并说明，同时在 CI 增加翻译文件存在性检查。代码示例：\n```\ngit checkout <base-commit> -- src/Mod/Measure/Gui/Resources/translations/Measure_es-ES.ts\n```",
+        "subcategory": "本地化资源丢失"
+      }
+    },
+    {
+      "id": "F036",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/Measure/Gui/CMakeLists.txt",
+      "line": 20,
+      "title": "link_directories(${OCC_LIBRARY_DIR}) 在同一文件重复出现两次",
+      "description": "新增 include_directories(SYSTEM ...) 区块后，Measure/Gui/CMakeLists.txt 连续出现两条完全相同的 `link_directories(${OCC_LIBRARY_DIR})`（第 18、20 行）。不影响构建结果，但说明批量补丁是逐文件粘贴的，同类冗余或漏加在其他模块也可能存在。",
+      "evidence": [
+        "src/Mod/Measure/Gui/CMakeLists.txt:18 — `link_directories(${OCC_LIBRARY_DIR})`",
+        "src/Mod/Measure/Gui/CMakeLists.txt:20 — 再次 `link_directories(${OCC_LIBRARY_DIR})`"
+      ],
+      "rule": "BUILD-006",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 构建脚本重复语句。影响评估：无功能影响，但增加维护噪音，掩盖真正的依赖声明。",
+        "suggestion": "[重构思路] 删除重复行，并考虑用统一宏集中声明各模块的外部依赖目录，避免逐模块复制。代码示例：\n```cmake\ninclude_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${OCC_INCLUDE_DIR} ...)\nlink_directories(${OCC_LIBRARY_DIR})  # 仅保留一次\n```",
+        "subcategory": "构建脚本冗余"
+      }
+    },
+    {
+      "id": "F037",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/CAM/libarea/pyarea.cpp",
+      "line": 51,
+      "title": "size_t 格式符修复未同步到新增的 PythonStuff.cpp，两套绑定实现出现分叉",
+      "description": "本 MR 把 pyarea.cpp 的 `%Iu` 改为标准 `%zu`，但同 MR 新增的 PythonStuff.cpp（Boost.Python 绑定，内容基本是 pyarea.cpp 的镜像）中 print_curve 仍使用 `#elif defined(_WIN32) printf(\"number of vertices = %Iu\\n\", nvertices);`。同一函数存在两份不一致实现，后续修复容易只改一边；`%Iu` 还是 MSVC 专有扩展，与本次改用标准格式符的方向矛盾。",
+      "evidence": [
+        "src/Mod/CAM/libarea/pyarea.cpp:51 — 改为 `printf(\"number of vertices = %zu\\n\", nvertices);`",
+        "src/Mod/CAM/libarea/PythonStuff.cpp 新增的 print_curve 中仍为 `#elif defined(_WIN32)` + `printf(\"number of vertices = %Iu\\n\", nvertices);`",
+        "两处实现都保留 `SIZEOF_SIZE_T == 4` 分支里 `%d` 与 `std::size_t` 不匹配的同一隐患"
+      ],
+      "rule": "DUPLICATE-007",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 重复实现未同步修复（copy-paste 分叉）。影响评估：pybind11 与 Boost.Python 两种构建配置下同一缺陷表现不一致，Boost 分支仍保留非标准格式符。",
+        "suggestion": "[重构思路] 把与绑定框架无关的实现（print_curve/print_area 等）抽到公共头文件供两处共用，或至少同步改为 `%zu`。代码示例：\n```cpp\nprintf(\"number of vertices = %zu\\n\", nvertices);  // Windows 分支也统一用 %zu\n```",
+        "subcategory": "重复实现分叉"
+      }
+    },
+    {
+      "id": "F038",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/CAM/libarea/PythonStuff.h",
+      "line": 8,
+      "title": "PythonStuff.h 中 PythonInit/PythonFinish/Message 仅有声明，全仓无定义与调用",
+      "description": "新增头文件声明了 `void PythonInit();`、`void PythonFinish();` 与 `extern void Message(const char*);`，但全仓检索只有此处声明，没有任何定义或调用点。这是被移植过来的历史残留，会误导维护者以为存在模块初始化/终结钩子（实际初始化由 `BOOST_PYTHON_MODULE(area)` 完成），一旦被调用即成链接错误。",
+      "evidence": [
+        "src/Mod/CAM/libarea/PythonStuff.h:6 — `extern void Message(const char*);`",
+        "src/Mod/CAM/libarea/PythonStuff.h:8-9 — `void PythonInit();` / `void PythonFinish();`",
+        "符号检索 `PythonInit` 仅 1 处命中：`src/Mod/CAM/libarea/PythonStuff.h:8 [declaration]`，无定义、无调用"
+      ],
+      "rule": "DEADCODE-008",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 死声明/残留接口。影响评估：不影响编译，但会让人误判模块初始化路径，未来调用即触发未定义符号链接错误。",
+        "suggestion": "[重构思路] 删除未使用声明，仅保留真正的对外契约。代码示例：\n```cpp\n// PythonStuff.h\n#pragma once\n// 模块初始化由 BOOST_PYTHON_MODULE(area) 完成，无需额外钩子\n```",
+        "subcategory": "无用声明"
+      }
+    },
+    {
+      "id": "F039",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Mod/Draft/draftobjects/patharray.py",
+      "line": 682,
+      "title": "注释中的 length 被改回拼写错误的 lenth（两处）",
+      "description": "patharray.py 中原本正确的 `# Available length will be ...` 被改成 `# Available lenth will be ...`（两处），属明显的拼写回退，与本 MR 中其他“回移旧代码”的痕迹一致，会给阅读者带来噪音，并降低代码库质量基线。",
+      "evidence": [
+        "src/Mod/Draft/draftobjects/patharray.py:682 — `# Available lenth will be non-uniformly divided in proportions from SpacingPattern:`",
+        "src/Mod/Draft/draftobjects/patharray.py:689 — `# Available lenght will be evenly divided (the original spacing method):`",
+        "diff 中被删除的对应行为 `# Available length will be ...`"
+      ],
+      "rule": "STYLE-009",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 拼写错误回退。影响评估：仅影响可读性，但两处连续错误提示分支可能整体回退了此前的清理提交。",
+        "suggestion": "[重构思路] 恢复正确拼写。代码示例：\n```python\n# Available length will be non-uniformly divided in proportions from SpacingPattern:\n# Available length will be evenly divided (the original spacing method):\n```",
+        "subcategory": "注释拼写"
+      }
+    },
+    {
+      "id": "F040",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "src/Mod/MeshPart/App/CMakeLists.txt",
+      "line": 122,
+      "title": "flatmesh 的 Boost 分支构建条件比 libarea 更窄，LibPack≥3.1.0 时静默不构建并给出误导提示",
+      "description": "libarea 的 Boost 分支条件是 `NOT FREECAD_LIBPACK_USE OR FREECAD_LIBPACK_CHECKFILE_CLBUNDLER OR FREECAD_LIBPACK_CHECKFILE_VERSION`，而 MeshPart 这里多加了 `AND FREECAD_LIBPACK_VERSION VERSION_LESS \"3.1.0\"`。当使用 LibPack 3.1.0+ 且未启用 pybind11 时，flatmesh 目标根本不会被创建且没有任何 warning；而 Python 侧仍会 `import flatmesh`，失败后打印 “flatmesh needs pybind11 as build dependency”，与真实原因不符。",
+      "evidence": [
+        "src/Mod/MeshPart/App/CMakeLists.txt:122-123 — `if(NOT FREECAD_LIBPACK_USE OR FREECAD_LIBPACK_CHECKFILE_CLBUNDLER OR (FREECAD_LIBPACK_CHECKFILE_VERSION AND FREECAD_LIBPACK_VERSION VERSION_LESS \"3.1.0\"))`",
+        "src/Mod/CAM/libarea/CMakeLists.txt:27 — `if(NOT FREECAD_LIBPACK_USE OR FREECAD_LIBPACK_CHECKFILE_CLBUNDLER OR FREECAD_LIBPACK_CHECKFILE_VERSION)`（无版本上限）",
+        "src/Mod/MeshPart/Gui/MeshFlatteningCommand.py:127-133 — `import flatmesh` 失败后 `App.Console.PrintLog(\"flatmesh needs pybind11 as build dependency\\n\")`"
+      ],
+      "rule": "BUILD-010",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 构建条件不一致导致目标静默缺失。影响评估：特定 LibPack 组合下扁平化命令不可用，错误提示却指向 pybind11，排障成本高。",
+        "suggestion": "[重构思路] 与 libarea 对齐条件，跳过构建时显式 message(WARNING)，并修正 Python 侧提示。代码示例：\n```cmake\nif(NOT FREECAD_LIBPACK_USE OR FREECAD_LIBPACK_CHECKFILE_CLBUNDLER OR FREECAD_LIBPACK_CHECKFILE_VERSION)\n    # 与 libarea 保持一致\nelse()\n    message(WARNING \"flatmesh is not built: Boost.Python backend unavailable\")\nendif()\n```",
+        "subcategory": "构建条件不一致"
+      }
+    },
+    {
+      "id": "F041",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/Mod/Part/App/CMakeLists.txt",
+      "line": 12,
+      "title": "把 target_include_directories/target_link_directories(PUBLIC) 回退为全局目录声明，丢失目标级依赖传播",
+      "description": "Part 等模块原先通过 `target_include_directories(Part SYSTEM PUBLIC ${OCC_INCLUDE_DIR})` 与 `target_link_directories(Part PUBLIC ${OCC_LIBRARY_DIR})` 把 OCC 头文件与库目录声明为目标的使用要求，链接 Part 的下游目标会自动继承；本次改为全局 `include_directories(SYSTEM ...)` 与 `link_directories(${OCC_LIBRARY_DIR})`，依赖不再随目标传播，正确性取决于每个下游模块是否手工补写同样目录（本 MR 确实在大量模块里逐个补写，且已出现重复行）。任何遗漏的模块或未来新增模块都会因找不到 OCC/Python/PyCXX 头文件而构建失败，全局 link_directories 还会影响链接搜索顺序。",
+      "evidence": [
+        "src/Mod/Part/App/CMakeLists.txt:12-22 — 新增全局 `include_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${OCC_INCLUDE_DIR} ...)`，替换原 `target_include_directories(Part SYSTEM PUBLIC ${OCC_INCLUDE_DIR})`",
+        "src/Mod/Part/App/CMakeLists.txt:24 — 新增 `link_directories(${OCC_LIBRARY_DIR})`，替换原 `target_link_directories(Part PUBLIC ${OCC_LIBRARY_DIR})`",
+        "src/Mod/MeshPart/App/CMakeLists.txt — 同样把 `target_include_directories(MeshPart SYSTEM PUBLIC/PRIVATE ...)` 与 `target_link_directories(MeshPart PUBLIC ${SMESH_LIB_PATH})` 改为全局 include_directories/link_directories",
+        "src/Mod/Measure/Gui/CMakeLists.txt:18、20 — 手工补写 link_directories 时已出现重复语句，说明逐模块补写易出错"
+      ],
+      "rule": "BUILD-011",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 构建依赖接口从目标级 PUBLIC 退化为目录级全局声明。影响评估：下游必须逐个重复声明外部依赖目录，遗漏即构建失败；全局 link_directories 会改变链接搜索顺序，可能导致链接到非预期库版本；缺失依赖时也难以定位责任目标。",
+        "suggestion": "[重构思路] 保留 target_include_directories/target_link_directories 的 PUBLIC/PRIVATE 语义；若需兼容旧 CMake，可写统一封装函数集中处理，避免逐模块粘贴。代码示例：\n```cmake\ntarget_include_directories(Part SYSTEM PUBLIC ${OCC_INCLUDE_DIR})\ntarget_link_directories(Part PUBLIC ${OCC_LIBRARY_DIR})\n# 下游只需 target_link_libraries(xxx Part) 即可继承\n```",
+        "subcategory": "CMake 依赖传播"
+      }
+    },
+    {
+      "id": "F042",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/Mod/Part/App/CMakeLists.txt",
+      "line": 12,
+      "title": "把 target_include_directories/target_link_directories(PUBLIC) 回退为全局目录声明，丢失目标级依赖接口",
+      "description": "Part 等模块原先把 OCC 头文件目录与库目录通过 `target_include_directories(Part SYSTEM PUBLIC ...)`、`target_link_directories(Part PUBLIC ...)` 声明为 PUBLIC 使用要求，链接 Part 的下游目标会自动继承；本次改为全局 `include_directories(SYSTEM ...)` 与 `link_directories(${OCC_LIBRARY_DIR})`，依赖声明不再随目标传播，正确性取决于每个下游模块是否手工补写同样目录（本 MR 确实在大量模块里逐个人工补写，如 Measure/Gui 还出现了重复行）。任何遗漏的模块或未来新增的模块都会因找不到 OCC/Python/PyCXX 头文件而构建失败，且全局 link_directories 会影响链接搜索顺序。",
+      "evidence": [
+        "src/Mod/Part/App/CMakeLists.txt:12-20 — 新增全局 `include_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${OCC_INCLUDE_DIR} ...)`，替换原来的 `target_include_directories(Part SYSTEM PUBLIC ${OCC_INCLUDE_DIR})`",
+        "src/Mod/Part/App/CMakeLists.txt:22 — 新增 `link_directories(${OCC_LIBRARY_DIR})`，替换原来的 `target_link_directories(Part PUBLIC ${OCC_LIBRARY_DIR})`",
+        "src/Mod/MeshPart/App/CMakeLists.txt — 同样由 `target_include_directories(MeshPart SYSTEM PUBLIC/PRIVATE ...)` + `target_link_directories(MeshPart PUBLIC ${SMESH_LIB_PATH})` 改为全局 include_directories/link_directories",
+        "src/Mod/Measure/Gui/CMakeLists.txt:18、20 — 手工补写 link_directories 时已出现重复语句，说明逐模块补写容易出错"
+      ],
+      "rule": "BUILD-011",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 构建依赖接口从目标级 PUBLIC 退化为目录级全局声明。[影响评估] 下游模块必须逐个重复声明外部依赖目录，遗漏即构建失败；全局 link_directories 还会改变链接搜索顺序，导致不同环境下链接到非预期库版本；相比原写法也更难定位缺失依赖的责任目标。",
+        "suggestion": "[重构思路] 保留 target_include_directories/target_link_directories 的 PUBLIC/PRIVATE 语义；若确需兼容旧 CMake，可写一个统一的封装函数（如 freecad_target_dependencies(target)）集中处理，避免逐模块粘贴。代码示例：\n```cmake\ntarget_include_directories(Part SYSTEM PUBLIC ${OCC_INCLUDE_DIR})\ntarget_link_directories(Part PUBLIC ${OCC_LIBRARY_DIR})\n# 下游只需 target_link_libraries(xxx Part) 即自动继承\n```",
+        "subcategory": "CMake 依赖传播"
+      }
+    },
+    {
+      "id": "F043",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/Sketcher/App/planegcs/Constraints.h",
+      "line": 231,
+      "title": "约束求解器计数成员 numpoints 由 size_t 退化为 double",
+      "description": "ConstraintCenterOfGravity 的计数成员 `numpoints` 被从 `std::size_t` 改成 `double`。该成员在实现中被赋值为 `pvec.size() - 1`、作为 size_t 循环的上界、并与 `weights.size()` 做 assert 比较，全部是整数语义。改成浮点后引入多处隐式整型/浮点转换：pvec.size() 转 double 会丢失无符号整数语义（size()==0 时 size_t 下溢后转成约 1.8e19 的 double），循环边界与断言变成混合类型比较，在启用 -Wconversion/-Wfloat-conversion 且 FREECAD_WARN_ERROR 的构建里可能直接失败；同时与同类 ConstraintPointOnBSpline::numpoints（仍为 size_t）不一致，后续维护极易误用。",
+      "evidence": [
+        "src/Mod/Sketcher/App/planegcs/Constraints.h:231 — `double numpoints;`（本 MR 由 `std::size_t numpoints;` 改为 double）",
+        "src/Mod/Sketcher/App/planegcs/Constraints.cpp:237 — `numpoints = pvec.size() - 1;`，size_t 结果隐式转换为 double",
+        "src/Mod/Sketcher/App/planegcs/Constraints.cpp:239 — `assert(weights.size() == numpoints);`，size_t 与 double 比较",
+        "src/Mod/Sketcher/App/planegcs/Constraints.cpp:257 与:271 — `for (size_t i = 0; i < numpoints; ++i)`，以 size_t 与 double 作为循环条件",
+        "src/Mod/Sketcher/App/planegcs/Constraints.h:355 — 同类成员 `size_t numpoints;`（ConstraintPointOnBSpline）未被改动，形成不一致"
+      ],
+      "rule": "TYPE-002",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 计数类型由无符号整型退化为浮点，产生隐式转换与语义丢失。影响评估：当前样本量下数值结果通常不变，但断言/循环边界变成混合类型比较，开启 -Werror 的构建可能报错；类型不一致会让后续维护者误判该成员可参与浮点运算。",
+        "suggestion": "[重构思路] 恢复为 `std::size_t`，并在赋值处显式保持整数语义；若担心 pvec.size() < 1，先做断言再赋值。代码示例：`assert(pvec.size() > 1); numpoints = pvec.size() - 1;`（成员声明为 `std::size_t numpoints;`）",
+        "subcategory": "整数/浮点类型混用"
+      }
+    },
+    {
+      "id": "F044",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
+      "line": 77,
+      "title": "改为 getDocument()->recomputeFeature 后丢失空文档保护",
+      "description": "原调用 `obj->recomputeFeature()` 走的是 DocumentObject::recomputeFeature，其中先取 `doc = getDocument()` 并判空，文档为空时安全返回 `isValid()`。本 MR 改成 `obj->getDocument()->recomputeFeature(obj)`，直接解引用 getDocument() 的返回值，一旦对象未附着到文档（任务面板在文档关闭/对象脱离文档期间回调）就会空指针解引用崩溃；同样的改动也出现在 TaskAttacher::onCheckFlip。语义上没有其他收益（两者在文档非空时等价）。",
+      "evidence": [
+        "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp:77 — `obj->getDocument()->recomputeFeature (obj);`（原为 `obj->recomputeFeature();`）",
+        "src/App/DocumentObject.cpp:204-211 — `DocumentObject::recomputeFeature(bool) { Document* doc = this->getDocument(); if (doc) { return doc->recomputeFeature(this, recursive); } return isValid(); }`，即原调用自带判空",
+        "src/App/Document.cpp:3394 — `bool Document::recomputeFeature(DocumentObject* Feat, bool recursive)`，需要非空的 Feat 及其文档",
+        "diff 中 TaskAttacher.cpp:679 — `ViewProvider->getObject()->getDocument()->recomputeFeature(ViewProvider->getObject());` 为同一模式"
+      ],
+      "rule": "NULLPTR-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 直接解引用可空的 getDocument() 返回值。影响评估：文档/对象生命周期边界（例如任务面板仍打开时文档被关闭、对象被移出文档）会触发空指针解引用，导致 GUI 崩溃；属低频但难复现的崩溃点。",
+        "suggestion": "[重构思路] 统一通过对象的成员函数重算，或在使用前显式判空。代码示例：`if (auto* doc = obj->getDocument()) { doc->recomputeFeature(obj); }` 或直接保留 `obj->recomputeFeature();`",
+        "subcategory": "空指针安全"
+      }
+    },
+    {
+      "id": "F045",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 531,
+      "title": "finishFeature 由 static 改为外部链接且分支注释错位",
+      "description": "`finishFeature` 原本是具有内部链接的 `static` 自由函数（仅本翻译单元使用，仓库内 6 处调用全部在 Command.cpp 内，且没有头文件声明）。去掉 `static` 后它在全局命名空间中以通用名字获得外部链接，任何其他翻译单元出现同名函数都会在链接期产生 ODR 冲突/符号重定义，且不会给出编译期告警；同时 `// insert into the same body as the given previous one` 这行注释被搬到了 `else` 分支上，注释描述的正是 `prevSolidFeature` 非空的分支，与代码语义相反，会误导后续维护者。",
+      "evidence": [
+        "src/Mod/PartDesign/Gui/Command.cpp:531 — `void finishFeature(const Gui::Command* cmd, App::DocumentObject *Feat, ...)`（本 MR 由 `static void finishFeature(...)` 改为外部链接）",
+        "src/Mod/PartDesign/Gui/Command.cpp:540 — `} else { // insert into the same body as the given previous one`，该注释应位于 `if (prevSolidFeature)` 分支",
+        "符号检索 finishFeature 仅命中 src/Mod/PartDesign/Gui/Command.cpp 内部（531、1053、1721、1993、2279、2298、2363），无头文件声明"
+      ],
+      "rule": "LINKAGE-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 不必要的链接性放宽 + 注释与分支语义相反。影响评估：短期不影响功能，但引入全局符号污染风险（未来新增同名辅助函数即链接失败或行为串扰），并降低代码可读性。",
+        "suggestion": "[重构思路] 恢复内部链接，并把注释移回正确分支。代码示例：`static void finishFeature(const Gui::Command* cmd, App::DocumentObject* Feat, ...)`；`if (prevSolidFeature) { // insert into the same body as the given previous one ... } else { ... }`",
+        "subcategory": "链接性与注释准确性"
+      }
+    },
+    {
+      "id": "F046",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/Points/App/CMakeLists.txt",
+      "line": 10,
+      "title": "target_include_directories 回退为目录级全局 include_directories(SYSTEM)",
+      "description": "Points 原先用 `target_include_directories(Points SYSTEM PUBLIC ...)` 把 Eigen 等第三方头声明为目标的 usage requirement，本 MR 改成目录级的 `include_directories(SYSTEM ...)` 并塞入一长串 Boost/OCC/Python/XercesC/ZIPIOS/ZLIB 路径：(1) 这些路径不再是 Points 的 PUBLIC 接口声明，与 Points 链接的下游目标必须各自手工重复声明（同批 diff 中 PointsGui/CMakeLists.txt 就不得不重复一份），极易遗漏导致下游构建失败；(2) 目录级 include 会作用到该目录内所有目标，扩大 SYSTEM 头屏蔽警告的范围，隐藏真实告警。同批 diff 中 PartDesign、ReverseEngineering、Robot、Sandbox、Sketcher、CAM、Fem 等模块也被批量改成同一模式并新增了全局 `link_directories(${OCC_LIBRARY_DIR})`，属于系统性的构建配置退化。",
+      "evidence": [
+        "src/Mod/Points/App/CMakeLists.txt:10-21 — 新增 `include_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR} ...)`",
+        "diff 中被删除的写法：`target_include_directories(Points SYSTEM PUBLIC ${EIGEN3_INCLUDE_DIR} ${CMAKE_BINARY_DIR}/src/3rdParty/libE57Format ${CMAKE_SOURCE_DIR}/src/3rdParty/libE57Format/include)`",
+        "src/Mod/Points/Gui/CMakeLists.txt 新增了一份重复的 SYSTEM include 列表（EIGEN3、Boost、Python…），正是 PUBLIC usage requirement 丢失后的补偿",
+        "src/Mod/Points/App/CMakeLists.txt:73 — 新增/保留目录级 `link_directories(${CMAKE_BINARY_DIR}/src/3rdParty/libE57Format)`"
+      ],
+      "rule": "CMAKE-003",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 构建依赖声明从目标级退化为目录级。影响评估：依赖关系不再随目标传播，下游需重复声明，易产生「本地能编、下游编不过」的不可见耦合；SYSTEM 头被放大到整个目录，会掩盖第三方头引发的真实告警。",
+        "suggestion": "[重构思路] 保留目标级声明并显式标注 SYSTEM/PUBLIC；链接目录改用目标属性。代码示例：`target_include_directories(Points SYSTEM PUBLIC ${EIGEN3_INCLUDE_DIR} ${CMAKE_BINARY_DIR}/src/3rdParty/libE57Format ${CMAKE_SOURCE_DIR}/src/3rdParty/libE57Format/include)`，链接侧用 `target_link_directories(Points PRIVATE ...)` 或直接用绝对库路径。",
+        "subcategory": "构建依赖声明"
+      }
+    },
+    {
+      "id": "F047",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/PartDesign/App/CMakeLists.txt",
+      "line": 18,
+      "title": "新增的 SYSTEM include 列表中 ${QT_INCLUDE_DIR} 重复出现",
+      "description": "同一个 `include_directories(SYSTEM ...)` 块中 `${QT_INCLUDE_DIR}` 被写了两次（第 12 行与第 18 行），属于明显的复制粘贴残留。虽然 CMake 会去重不至于出错，但暴露了该清单是机械拼装而来，后续维护者难以判断哪个才是有效路径；同类批量改动中还混入了对 App 层目标的 GUI 依赖（QT/OCC/COIN），进一步模糊了 App 与 Gui 的依赖边界。",
+      "evidence": [
+        "src/Mod/PartDesign/App/CMakeLists.txt:12 — `    ${QT_INCLUDE_DIR}`",
+        "src/Mod/PartDesign/App/CMakeLists.txt:18 — `    ${QT_INCLUDE_DIR}`（同块内重复）",
+        "同批 diff 中 src/Mod/PartDesign/Gui/CMakeLists.txt 也新增了整份 SYSTEM include 列表与 `link_directories(${OCC_LIBRARY_DIR})`"
+      ],
+      "rule": "CMAKE-004",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 构建脚本重复项与无谓依赖。影响评估：功能上无害，但降低可读性，且 App 层引入 QT 等 GUI 依赖会削弱模块分层、增加无 GUI 构建的排查成本。",
+        "suggestion": "[重构思路] 去重并只保留该目标真正需要的第三方头；App 层若确有 QtCore 依赖，应写成 `target_include_directories(<target> SYSTEM PUBLIC ${QtCore_INCLUDE_DIRS})`。代码示例：删除第 18 行重复项，列表保持 `Boost / OCC / ZIPIOS / ZLIB / PYCXX / Python3 / XercesC` 去重后的集合。",
+        "subcategory": "构建脚本整洁性"
+      }
+    },
+    {
+      "id": "F048",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Mod/Sketcher/App/SketchObject.cpp",
+      "line": 327,
+      "title": "新增注释掉的代码与拼写退化污染核心源文件",
+      "description": "本 MR 在 SketchObject.cpp 中新增了多处被注释掉的实现代码（buildShape 中的 `// Shape.setValue(solvedSketch.toShape());`、isExternalAllowed/isCarbonCopyAllowed 中的 `// App::DocumentObject *support = ...`、getSymmetric 中的 `/*double df= geosymaoe->getFocal();*/`、projectShape 中整段注释掉的 RgNLine 分支、port_reversedExternalArcs 中重复一行的 `// Part::Geometry* g = ...`），同时把既有注释中的拼写改错（middle → middel、adjust → ajust），还引入了 `int cntToBeAffected = 0;//==cntSuccess+cntFail` 这类无意义尾注与行尾多余空格。这些内容既没有说明「为什么注释」也没有 TODO/issue 关联，属于典型的调试残留，会干扰后续维护者对有效逻辑的判断。",
+      "evidence": [
+        "src/Mod/Sketcher/App/SketchObject.cpp:327 — 新增 `// Shape.setValue(solvedSketch.toShape());`（buildShape 首行，紧邻真实实现）",
+        "src/Mod/Sketcher/App/SketchObject.cpp:8353 — 注释被改为 `// We project the middel point of the original curve ...`（拼写错误）",
+        "src/Mod/Sketcher/App/SketchObject.cpp:8781 — 注释被改为 `// ajust the parameter range to get the correct arc`",
+        "src/Mod/Sketcher/App/SketchObject.cpp:11228 — `int cntToBeAffected = 0;//==cntSuccess+cntFail`",
+        "diff 中 4524、5249、9079-9086 也新增了成对的注释掉的代码块"
+      ],
+      "rule": "READABILITY-002",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 注释掉的死代码 + 拼写回归 + 无意义尾注。影响评估：不改变运行时行为，但显著降低可读性；被注释掉的核心语句（如 Shape 赋值、GCPnts 投影分支）会让后续维护者误以为存在待启用逻辑，增加误改风险。",
+        "suggestion": "[重构思路] 删除注释掉的调试代码；确需保留意图时用 TODO + issue 编号并说明原因；修回拼写错误。代码示例：直接删除 `// Shape.setValue(solvedSketch.toShape());`；如需保留说明：`// NOTE: use toShape() with element mapping, see #16630`。",
+        "subcategory": "死代码与文档质量"
+      }
+    },
+    {
+      "id": "F049",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/PartDesign/Gui/ViewProvider.cpp",
+      "line": 104,
+      "title": "QMessageBox 统一移除父窗口，弹窗失去归属窗口",
+      "description": "本 MR 在十余处把 `QMessageBox msgBox(Gui::getMainWindow());` 改成无父对象的 `QMessageBox msgBox;`，并删除了对应的 `<Gui/MainWindow.h>` 包含。无父窗口的模态对话框不会绑定到主窗口：在 MDI 多窗口场景下可能不居中于主窗口、被其它窗口遮挡、或在主窗口关闭后仍残留在任务栏，与 FreeCAD 其余代码（如 src/Gui/Application.cpp 中仍统一以 getMainWindow() 作为父窗口）不一致。",
+      "evidence": [
+        "src/Mod/PartDesign/Gui/ViewProvider.cpp:104 — `QMessageBox msgBox;`（原 `QMessageBox msgBox(Gui::getMainWindow());`，同 diff 删除了 `#include <Gui/MainWindow.h>`）",
+        "同一模式在 PartDesign/Gui/Command.cpp（prepareProfileBased、FeaturePick 分支）、TaskDatumParameters.cpp、TaskShapeBinder 相关 ViewProvider、Points/Gui/Command.cpp:115 等十余处出现",
+        "src/Gui/Application.cpp:853、:993、:1011 等处仍以 `getMainWindow()` 作为 QMessageBox 的父窗口，风格不一致"
+      ],
+      "rule": "UI-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] Qt 对话框缺少父窗口。影响评估：影响窗口层级与模态归属，多显示器/多文档场景下弹窗可能出现在主窗口之外或被遮挡，属于低危但用户可感知的 UX 退化。",
+        "suggestion": "[重构思路] 恢复以主窗口为父；若为解除对 Gui/MainWindow.h 的依赖而改动，可改为按当前活动视图取父窗口。代码示例：`QMessageBox msgBox(Gui::getMainWindow());` 或 `QMessageBox msgBox(qobject_cast<QWidget*>(parent()));`",
+        "subcategory": "Qt 窗口层级"
+      }
+    },
+    {
+      "id": "F050",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/Mod/Sketcher/App/GeoList.cpp",
+      "line": 343,
+      "title": "顶点反向索引返回负值：std::distance 参数顺序颠倒",
+      "description": "`getVertexIdFromGeoElementId` 在找到元素后返回 `std::distance(found, VertexId2GeoElementId.begin())`，起点与终点颠倒，结果是被查元素下标的相反数（含 0 时恒为 ≤0），而不是其顶点 ID。本次改动重写了该语句块（把 ranges 版本改成 std::find 并拆成 found 变量），但未修正这一行。当前仓库内没有 C++ 调用者（仅显式模板实例化），所以尚未暴露；一旦被调用方使用就会得到负索引，进而越界访问 `VertexId2GeoElementId[vertexId]`（同文件第 329 行的正向映射）。",
+      "evidence": [
+        "src/Mod/Sketcher/App/GeoList.cpp:343 — `return std::distance(found, VertexId2GeoElementId.begin());`（应为 `std::distance(VertexId2GeoElementId.begin(), found)`）",
+        "src/Mod/Sketcher/App/GeoList.cpp:339-342 — 本 MR 重写的查找语句：`auto found = std::find(VertexId2GeoElementId.begin(), VertexId2GeoElementId.end(), geoelementId); if (found != VertexId2GeoElementId.end())`",
+        "src/Mod/Sketcher/App/GeoList.cpp:329 — 正向映射 `return VertexId2GeoElementId[vertexId];`，说明索引必须为非负下标",
+        "符号检索 getVertexIdFromGeoElementId 仅命中 GeoList.cpp:333、:418 与 GeoList.h:206，当前无 C++ 调用点"
+      ],
+      "rule": "ITER-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 迭代器距离计算方向错误（既有缺陷，本 MR 重写同一语句块但未修正）。影响评估：返回值符号错误，调用方会把 -index 当作顶点 ID，导致查表越界或匹配错误；因暂无调用者，当前风险为潜在缺陷。",
+        "suggestion": "[重构思路] 修正参数顺序，或直接改用 `std::distance` 的惯用写法并断言非负。代码示例：`return static_cast<int>(std::distance(VertexId2GeoElementId.begin(), found));`",
+        "subcategory": "迭代器/索引计算"
+      }
+    },
+    {
+      "id": "F051",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/Mod/Start/Gui/FileCardView.cpp",
+      "line": 64,
+      "title": "heightForWidth 去掉了 cardsPerRow 的最小值保护，可能除零并产生负值高度",
+      "description": "原实现为 `std::max(1, static_cast<int>(width / (cardSize.width() + m_cardSpacing)))`，保证每行至少一张卡片；改动后直接 `static_cast<int>(width / cardSize.width())`。当视图宽度小于单张卡片宽度（Start 页面被放进窄面板/窗口被拉窄、或布局初始化阶段传入 width 很小）时 `cardsPerRow` 为 0，随后第 66 行 `numCards / static_cast<double>(cardsPerRow)` 触发浮点除零得到 inf，再 `static_cast<int>(inf)` 属未定义行为，`numRows` 可能变成极大值或 INT_MIN，`neededHeight` 随之溢出，最终向布局层返回荒谬高度（滚动区域异常、布局错乱甚至崩溃）。此外 `cardSize.width()` 来自 delegate 的 sizeHint，空模型时 `model->index(0,0)` 是无效索引，其返回值不可依赖。同时 `constexpr int extra = 4; // avoid tiny scrollbars` 余量也被删除，去掉了为规避细微滚动条而留的 4px 缓冲，在非整数缩放/取整误差下会重新出现“细滚动条”。",
+      "evidence": [
+        "src/Mod/Start/Gui/FileCardView.cpp:64 — `int cardsPerRow = static_cast<int>(width / cardSize.width());`（diff 中由 `std::max(1, static_cast<int>(width / (cardSize.width() + m_cardSpacing)))` 改来，`std::max` 保护被删除）",
+        "src/Mod/Start/Gui/FileCardView.cpp:65-66 — `int numRows = static_cast<int>(ceil(static_cast<double>(numCards) / static_cast<double>(cardsPerRow)));`，cardsPerRow 为 0 时发生除零",
+        "src/Mod/Start/Gui/FileCardView.cpp:63 — `cardSize = delegate->sizeHint(QStyleOptionViewItem(), model->index(0, 0));`，空模型时 index(0,0) 无效",
+        "diff 删除行：`constexpr int extra = 4;  // avoid tiny scrollbars` 及其在返回值中的 `+ extra`"
+      ],
+      "rule": "CORRECTNESS-DIV-ZERO-001",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 整数/浮点除零 + 未定义行为（UB），以及布局高度计算缺少下界保护。影响评估：在窗口较窄或布局初始化早期调用 `heightForWidth` 时可能得到 inf/INT_MIN 高度，表现为 Start 页卡片区高度异常、滚动条错乱，严重时进程崩溃；这是相对改动前明确存在的保护被移除后的回归。",
+        "suggestion": "[重构思路] 恢复“至少一行一张卡片”的下界，并显式处理 width/cardSize 非法的情况；同时恢复滚动条余量。代码示例：\n```cpp\nint cardWidth = std::max(1, cardSize.width());\nint cardsPerRow = std::max(1, width / (cardWidth + m_cardSpacing));\nconstexpr int extra = 4;  // avoid tiny scrollbars\nint numRows = (numCards + cardsPerRow - 1) / cardsPerRow;\nreturn numRows * cardSize.height() + m_cardSpacing * (numRows - 1) + 2 * m_cardSpacing + extra;\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F052",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/Start/Gui/FileCardView.cpp",
+      "line": 64,
+      "title": "布局宽度计算与 sizeHint 的口径不一致（是否计入 m_cardSpacing）",
+      "description": "`heightForWidth` 用 `cardSize.width()` 作为单卡宽度做除法（未计入 `m_cardSpacing`），而同一文件的 `sizeHint()` 第 82 行使用的是 `(cardSize.width() + m_cardSpacing) * numCards + m_cardSpacing`，并且 `setSpacing(m_cardSpacing)` 也在视图上设置了间距。两处对“一张卡片占多少横向空间”的定义不同，会导致高度估算与实际排布行数不一致，进而出现多算/少算一行、末尾出现不必要的垂直滚动条。",
+      "evidence": [
+        "src/Mod/Start/Gui/FileCardView.cpp:64 — `width / cardSize.width()`（未加 m_cardSpacing）",
+        "src/Mod/Start/Gui/FileCardView.cpp:82 — `(cardSize.width() + m_cardSpacing) * numCards + m_cardSpacing`",
+        "src/Mod/Start/Gui/FileCardView.cpp:52 — `setSpacing(m_cardSpacing);`"
+      ],
+      "rule": "CONSISTENCY-004",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 同一布局度量在两处采用不同公式，导致尺寸计算不自洽。影响评估：卡片区高度与实际内容高度不符，表现为滚动条闪烁或底部空白过多，属体验/可维护性问题。",
+        "suggestion": "[重构思路] 抽出统一的“单卡占位宽度”辅助函数（`cardSize.width() + m_cardSpacing`），heightForWidth 与 sizeHint 共用。代码示例：\n```cpp\nconst int slotWidth = cardSize.width() + m_cardSpacing;\nint cardsPerRow = std::max(1, width / slotWidth);\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F053",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/Sketcher/Gui/DrawSketchDefaultHandler.h",
+      "line": 494,
+      "title": "交换 generateAutoConstraints 与 beforeCreateAutoConstraints 顺序后，widget 强制约束不再参与冲突诊断",
+      "description": "`beforeCreateAutoConstraints()` 在 `DrawSketchControllableHandler` 中的实现是 `toolWidgetManager.addConstraints()`，即把 widget（屏幕参数）强制约束写入 sketch；调整后它在 `generateAutoConstraints()` 之后执行。而 `generateAutoConstraints()` 内部会调用 `removeRedundantAutoConstraints()` → `diagnoseAdditionalConstraints(AutoConstraints)`，该诊断是“把 autoconstraints 当作附加约束、与 sketch 当前已有约束一起求解”。原顺序下 widget 约束已先进入 sketch，因此“autoconstraint 与 widget 约束冲突”能被诊断并处理；新顺序下诊断时 sketch 里还没有 widget 约束，这类冲突无法被发现，随后 `createAutoConstraints()` 仍会把 autoconstraints 加上，最终 sketch 里留下真实冲突（而此时 `getLastHasConflicts()` 的检查点已经过去，新加的 THROWM 守卫也拦不到）。",
+      "evidence": [
+        "src/Mod/Sketcher/Gui/DrawSketchDefaultHandler.h:493-499 — 新顺序：`generateAutoConstraints();` 在前，`beforeCreateAutoConstraints();` 在后",
+        "src/Mod/Sketcher/Gui/DrawSketchControllableHandler.h:145-148 — `void beforeCreateAutoConstraints() override { toolWidgetManager.addConstraints(); }`",
+        "src/Mod/Sketcher/Gui/DrawSketchHandlerLine.h:163-166 — 注释 “Ensure temporary autoconstraints do not generate a redundancy ... particularly important for adding widget mandated constraints”，说明诊断时机与 widget 约束的先后关系有语义",
+        "src/Mod/Sketcher/Gui/DrawSketchDefaultHandler.h:957, 993 — 诊断与冲突检查都基于 `sketchobject->diagnoseAdditionalConstraints(autoConstraints)` 与 `getLastHasConflicts()` 的当时状态"
+      ],
+      "rule": "STATE-ORDER-003",
+      "confidence": 0.42,
+      "tips": {
+        "review": "[缺陷类型] 执行顺序调整导致校验覆盖范围缩小（诊断时缺少 widget 约束这一输入）。影响评估：autoconstraint 与 widget 参数约束相互冲突时不再被拦截，可能生成带冲突的 sketch；若同时依赖新的 THROWM 守卫，则守卫在此路径上无效。需确认此顺序调整是否有意（若有意，应在 widget 约束添加后补一次冲突检查）。",
+        "suggestion": "[重构思路] 要么保持“先加 widget 约束再诊断 autoconstraint”的原顺序，要么在 `createAutoConstraints()` 之前（即 widget 约束已写入后）追加一次 `diagnoseWithAutoConstraints()` 风格的最终校验。代码示例：\n```cpp\ngenerateAutoConstraints();\nbeforeCreateAutoConstraints();   // widget 约束入 sketch\n// 末尾再做一次整体校验\nif (getSketchObject()->getLastHasConflicts()) {\n    Base::Console().Error(\"Conflicting constraints after autoconstraints.\\n\");\n}\ncreateAutoConstraints();\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F054",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/Mod/Sketcher/Gui/DrawSketchDefaultHandler.h",
+      "line": 993,
+      "title": "autoconstraint 冲突由“剔除冲突项继续创建”改为直接抛错，导致几何建成但无任何自动约束",
+      "description": "`removeRedundantAutoConstraints()` 中原本会在 `getLastHasConflicts()` 为真时，按 `conflictingIndex - lastsketchconstraintindex - 1` 定位并删除越界的 `AutoConstraints` 元素，使创建流程继续；改动后改为 `THROWM(Base::RuntimeError, \"Autoconstraints cause conflicting constraints - Please report!\")`。该函数被 10 个 DSH handler（Line/Arc/Rectangle/Polygon/Slot/Ellipse/Circle/ArcSlot/BSpline 等）在 `generateAutoConstraints()` 中调用，而 `generateAutoConstraints()` 位于 `finish()` 的 try 块内且 `beforeCreateAutoConstraints()`、`createAutoConstraints()` 排在其后。因此一旦命中冲突：几何已创建、但 autoconstraints 与 widget 强制约束全部不再添加，用户只看到一条 “Please report!” 错误。对历史上真实出现过的场景（注释中引用的 issue #17722：OVP 生成的约束与 autoconstraints 冲突）而言，这是从“能用但少几个约束”退化为“每次操作都报错且无自动约束”的行为变更。",
+      "evidence": [
+        "src/Mod/Sketcher/Gui/DrawSketchDefaultHandler.h:993-998 — 新的 `if (sketchobject->getLastHasConflicts()) { THROWM(Base::RuntimeError, ... \"Autoconstraints cause conflicting constraints - Please report!\") }`",
+        "src/Mod/Sketcher/Gui/DrawSketchDefaultHandler.h:493-499 — `generateAutoConstraints(); beforeCreateAutoConstraints(); createAutoConstraints();` 三步在同一 try 块内，异常会跳过后续两步",
+        "src/Mod/Sketcher/Gui/DrawSketchHandlerLine.h:166 — handler 在 `generateAutoConstraints()` 内调用 `removeRedundantAutoConstraints()`；同类调用见 DrawSketchHandlerArc.h:292、DrawSketchHandlerRectangle.h:512",
+        "src/Mod/Sketcher/Gui/DrawSketchDefaultHandler.h:501-506 — `catch (const Base::RuntimeError& e) { Base::Console().Error(e.what()); }`，异常只被记录日志"
+      ],
+      "rule": "BEHAVIOR-CONTRACT-002",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 容错路径被替换为异常终止，异常发生在“几何已落盘”之后，造成部分完成状态。影响评估：命中冲突时用户丢失全部自动约束与 widget 面板约束（如长度/角度），且每次绘制都报错；同时 sketch 处于“有几何无约束”的中间态，后续 DoF 与约束数量与用户预期不符。",
+        "suggestion": "[重构思路] 保留抛错用于真正的内部错误，但在此之前先尝试安全降级：把冲突定位逻辑改为按约束类型/新增约束标识筛选（而不是用 `lastsketchconstraintindex` 做下标算术），仅剔除导致冲突的 autoconstraints，并在无法安全剔除时才抛错。代码示例：\n```cpp\nif (sketchobject->getLastHasConflicts()) {\n    Base::Console().Warning(\"Autoconstraints cause conflicts. Skipping autoconstraints.\\n\");\n    AutoConstraints.clear();  // 至少让 widget 约束仍能添加\n    return;\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F055",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/TechDraw/Gui/PATPathMaker.h",
+      "line": 64,
+      "title": "新增成员 m_geomhatch 未被任何代码使用（死代码）",
+      "description": "为 PATPathMaker 新增了私有成员 `QPainterPath m_geomhatch;  //crosshatch fill lines`，但在 PATPathMaker.cpp 的构造函数初始化列表与所有成员函数中都没有对它的读写（本次 diff 同时删除了 `m_pen()` 的显式初始化，说明是在整理该类状态，`m_geomhatch` 很可能是残留/误加的成员）。同时 `setLineWidth` 由“同时更新 m_lineWidth 与 m_pen 宽度”改为只更新 `m_lineWidth`，语义已变化，建议在头文件注释中说明 pen 宽度改由 `setPen()` 负责，避免后续调用者误解。",
+      "evidence": [
+        "src/Mod/TechDraw/Gui/PATPathMaker.h:64 — `QPainterPath m_geomhatch;                  //crosshatch fill lines`",
+        "src/Mod/TechDraw/Gui/PATPathMaker.cpp 全文（1-268 行）未出现 `m_geomhatch` 的任何使用",
+        "src/Mod/TechDraw/Gui/PATPathMaker.h:43 — `void setLineWidth(double width) {  m_lineWidth = width; }` 不再同步 `m_pen.setWidthF(width)`",
+        "src/Mod/TechDraw/Gui/QGIFace.cpp:252-254 — 调用 `setLineWidth(...)` 后紧跟 `setPen(setGeomPen())`，`setGeomPen()` 内 `result.setWidthF(...)` 设置宽度"
+      ],
+      "rule": "DEADCODE-005",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 新增未使用成员（死代码）+ 接口语义静默变化。影响评估：不会直接引发运行错误，但会误导后续维护者认为该类缓存了 hatch 路径状态；`setLineWidth` 语义变化若被新调用方依赖（仅设宽度不设 pen），会出现线宽不生效的隐性问题。",
+        "suggestion": "[重构思路] 若 `m_geomhatch` 无用则删除；若确需缓存则补上读写点。并在 `setLineWidth` 注释中明确“仅影响虚线缩放，笔宽由 setPen 负责”。代码示例：\n```cpp\n//! Sets the geometric line width used for dash pattern scaling.\n//! The QPen (and thus rendered width) must be set via setPen().\nvoid setLineWidth(double width) { m_lineWidth = width; }\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F056",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/Mod/Sketcher/Gui/CommandCreateGeo.cpp",
+      "line": 815,
+      "title": "注释被改成拼写错误的 “rectange”",
+      "description": "本次 MR 在进行 pre-select/preselection 等拼写统一的同一批改动中，把原本正确的一行注释 `// Rounded rectangle ===...` 改成了 `// Rounded rectange ===...`，引入了一个新的拼写错误，且为无效改动（diff 中仅此一行被修改）。",
+      "evidence": [
+        "src/Mod/Sketcher/Gui/CommandCreateGeo.cpp:815 — `// Rounded rectange ================================================================`",
+        "diff 对应删除行 —— `// Rounded rectangle ===============================================================`"
+      ],
+      "rule": "STYLE-SPELLING-006",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 注释拼写回归（typo）。影响评估：无功能影响，但会降低代码可读性，并在后续全局拼写检查中产生噪音。",
+        "suggestion": "[重构思路] 恢复正确拼写。代码示例：`// Rounded rectangle ===============================================================`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F057",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
+      "line": 2983,
+      "title": "QMessageBox 去掉父窗口后不再与主窗口关联",
+      "description": "`QMessageBox msgBox(Gui::getMainWindow());` 改为 `QMessageBox msgBox;`，父对象丢失。该对话框在 sketch 编辑模式下的 `setEdit()` 路径中弹出，是用户需要立即回答的模态询问。无父窗口时弹窗会作为独立顶层窗口出现，不再自动居中于主窗口、可能被主窗口遮挡或出现在错误的屏幕上；同时主窗口关闭时也不会被自动销毁。同类改动还出现在 TechDraw 的 `CmdTechDrawView::activated`（`src/Mod/TechDraw/Gui/Command.cpp:427`）与 `DlgTemplateField ui;`（`src/Mod/TechDraw/Gui/CommandExtensionDims.cpp`），建议一并复核。",
+      "evidence": [
+        "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp:2982-2988 — `if (dlg && !sketchDlg) { QMessageBox msgBox; ... int ret = msgBox.exec();`",
+        "diff 删除行 —— `QMessageBox msgBox(Gui::getMainWindow());`",
+        "src/Mod/TechDraw/Gui/Command.cpp:427 — 同类改动 `QMessageBox msgBox;`"
+      ],
+      "rule": "UI-PARENTING-007",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 顶层窗口父对象丢失。影响评估：模态提示框位置不再跟随主窗口，多显示器/小屏幕环境下可能出现在可视区域之外，用户会误以为命令无响应；属体验与生命周期管理问题（本改动与 MR 中其它机械替换无关，看起来是顺手改动）。",
+        "suggestion": "[重构思路] 恢复父窗口，或显式居中到主窗口。代码示例：\n```cpp\nQMessageBox msgBox(Gui::getMainWindow());\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F058",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/Mod/Sketcher/Gui/CMakeLists.txt",
+      "line": 20,
+      "title": "各 Mod 重复追加 include/link 目录，且使用 link_directories 这类目录级全局设置",
+      "description": "本 MR 在 Sketcher/Spreadsheet/Start/Surface/TechDraw/CAM 等数十个 `CMakeLists.txt` 中重复追加 `include_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${OCC_INCLUDE_DIR} ...)` 与 `link_directories(${OCC_LIBRARY_DIR})`。这些依赖目录若已在顶层/`SetupXxx.cmake` 中统一导入，则属重复声明，后续版本升级时极易出现“部分目录更新、部分遗留”的不一致；而 `link_directories()` 是目录级全局设置、作用域隐式扩散到后续 target，与 FreeCAD 现有多数模块使用的 target 级 `target_include_directories`/`target_link_libraries` 风格不一致。需确认这是为修复特定构建失败而加的临时措施，还是应上移到公共 cmake helper。",
+      "evidence": [
+        "src/Mod/Sketcher/Gui/CMakeLists.txt:8-19 — 新增 `include_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${OCC_INCLUDE_DIR} ${COIN3D_INCLUDE_DIRS} ${PYCXX_INCLUDE_DIR} ${Python3_INCLUDE_DIRS} ...)`",
+        "src/Mod/Sketcher/Gui/CMakeLists.txt:20 — `link_directories(${OCC_LIBRARY_DIR})`",
+        "src/Mod/TechDraw/App/CMakeLists.txt 与 src/Mod/TechDraw/Gui/CMakeLists.txt 也各自新增 `link_directories(${OCC_LIBRARY_DIR})`（同 MR diff）",
+        "src/Mod/Spreadsheet/App/CMakeLists.txt、src/Mod/Spreadsheet/Gui/CMakeLists.txt、src/Mod/Start/App/CMakeLists.txt、src/Mod/Surface/App/CMakeLists.txt 等以不同子集重复同类声明"
+      ],
+      "rule": "BUILD-CMAKE-008",
+      "confidence": 0.35,
+      "tips": {
+        "review": "[缺陷类型] 构建脚本重复配置 + 不推荐的目录级 link_directories。影响评估：不改变运行时行为，但增加后续依赖升级的维护成本，且 `link_directories` 的隐式作用域可能让子目录 unintentionally 链接到错误版本的同名库。",
+        "suggestion": "[重构思路] 把公共依赖的 include/link 目录统一放到 `cMake/` 下的 helper（如 `SetupOpenCASCADE.cmake`）用 `target_link_libraries(<target> PRIVATE ...)` + imported target 表达，各 Mod 只声明自身额外依赖。代码示例：\n```cmake\ntarget_link_libraries(SketcherGui PRIVATE OCCT::TKernel Boost::headers Python3::Python)\n```",
+        "subcategory": ""
+      }
+    }
+  ]
+}

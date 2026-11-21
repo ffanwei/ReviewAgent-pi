@@ -1,0 +1,122 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 166.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 10,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 100,
+      "summary": "基座模型分支未把 errFilePath 归为 400，与 adapter 分支不一致",
+      "failure_scenario": "convertFromSafetensors 现在会返回包装了 errFilePath 的错误（例如 root.OpenFile 判定路径越界或路径无法创建）。adapter 分支的错误分类列表已加入 errFilePath 并返回 400，但基座模型分支（r.Files 路径）的分类列表仍只有 errNoFilesProvided/errOnlyGGUFSupported/errUnknownType，导致同一类输入错误在基座模型场景下走通用错误分支、响应中不带 status，客户端收到非 400 的模糊错误（且错误文案是路径相关），排查与重试策略都会失真。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "用 root.OpenFile 校验路径时不会创建父目录，多级路径文件会被误拒",
+      "failure_scenario": "validRelative 明确允许包含子目录的相对路径（只拒绝空、绝对、'.'/'..' 及穿越序列），但 convertFromSafetensors 的校验方式是 root.OpenFile(fp, O_CREATE|O_WRONLY, 0o644)：os.Root.OpenFile 不会创建中间目录，父目录不存在时返回 ENOENT，随后被包装成 errFilePath 返回。因此形如 \"dir/model.safetensors\" / \"a/b\" 这种在 validRelative 看来合法的 key，在没有预建目录的临时目录里会直接失败；而改动前 createLink 内部通过 os.MkdirAll(filepath.Dir(dst), 0o755) 会自动建目录，多级路径本来是能正常转换的，属于行为回退。此外如果 map 中同时出现 \"a\" 与 \"a/b\"，由于 map 遍历顺序随机，\"a\" 先被 createLink 换成指向 blobs 的符号链接后 \"a/b\" 会因拒绝跟随越界符号链接而随机失败，行为不确定。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "filepath.Clean 归一化可能让不同 key 冲突并静默丢弃文件映射",
+      "failure_scenario": "CreateHandler 现在用 files[filepath.Clean(k)] = v 重建映射。validRelative 允许 \"a//b\"、\"a/b/\" 这类仅含冗余分隔符或尾部斜杠的 key，它们 Clean 后都变成 \"a/b\"；当请求中同时包含这类 key 时，后写入的条目会静默覆盖前一个 digest，导致某个文件在转换时缺失（或用了错误内容），用户只能看到下游转换失败的模糊错误，难以定位是请求里的重复路径取名导致。另外 adapter 映射（r.Adapters）没有做同样的归一化，两处语义不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "DATA-INTEGRITY-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 167,
+      "summary": "validRelative 只按 '/' 判断绝对路径与前缀，Windows 形态路径未覆盖",
+      "failure_scenario": "validRelative 的全部判断都基于 '/'：HasPrefix(path, \"/\")、HasPrefix(path, \"./\")、HasPrefix(path, \"../\")、Contains(path, \"/../\") 等。在 Windows 上，\"\\\\foo\"、\"C:\\\\foo\"、\"\\\\\\\\?\\\\C:\\\\foo\"、\"..\\\\..\\\\x\" 这类形式不会被该函数识别为绝对路径或穿越序列，校验在这些平台上是漏的（幸好 inspect 层面还有 os.Root 兜底，所以不构成可利用漏洞，但校验语义与注释「without directory traversal components or absolute path indicators」不一致，且行为与平台相关）。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.5,
+      "rule": "PORTABILITY-004"
+    },
+    {
+      "file": "server/create.go",
+      "line": 281,
+      "summary": "以 O_CREATE 创建空文件作为校验手段并忽略 Close 错误，语义不清",
+      "failure_scenario": "convertFromSafetensors 中的校验会真的在临时目录创建（或已存在则打开）目标文件，仅为了验证路径包含性，然后立即 f.Close()。这种「为校验而写盘」的方式把校验与副作用耦合：每个文件多两次以上系统调用；若后续有人把 O_CREATE 改成 O_TRUNC/追加模式或调整顺序，会引入数据破坏风险；且 f.Close() 的错误被直接丢弃，代码意图（校验而非打开）不直观，注释也承认是「Try to open the file through the root first to validate containment」。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-005"
+    },
+    {
+      "file": "server/create.go",
+      "line": 100,
+      "summary": "基座模型分支未把 errFilePath 归为 400，与 adapter 分支处理不一致",
+      "failure_scenario": "convertFromSafetensors 现在会返回包装了 errFilePath 的错误（路径越界或路径无法在 root 内打开时）。本 diff 只把 errFilePath 加进了 adapter 分支的 400 分类列表，基座模型分支（r.Files 路径）的列表仍只有 errNoFilesProvided/errOnlyGGUFSupported/errUnknownType，导致同一类输入错误在基座模型场景下落入兜底分支（响应不带 status，等价 500），且错误文案是「file path must be relative: invalid path ...」，调用方无法区分客户端输入错误与服务端故障。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "用 root.OpenFile 做路径校验依赖父目录已存在，多级路径文件会被误判为非法",
+      "failure_scenario": "validRelative 只拒绝空路径、绝对路径、'.'/'..' 与穿越序列，并不限制子目录层级，因此 \"dir/model.safetensors\" 这类 key 在预校验阶段是合法的。但 convertFromSafetensors 的二次校验用 root.OpenFile(fp, O_CREATE|O_WRONLY, 0o644)：os.Root.OpenFile 不会创建缺失的中间目录，父目录不存在时返回 ENOENT，该错误随即被 L279 包装成 errFilePath（400）。而改动前 createLink 内部通过 os.MkdirAll(filepath.Dir(dst), 0o755) 会自动创建子目录，多级路径原本可以正常转换，属于功能回退。另外若同一 map 同时含 \"a\" 与 \"a/b\"，由于 map 遍历顺序随机，\"a\" 先被 createLink 替换为指向 blobs 的符号链接（越出 root）后，\"a/b\" 的校验会因拒绝跟随越界符号链接而随机失败，行为不确定。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "filepath.Clean 归一化可能造成 key 冲突并静默丢弃文件映射",
+      "failure_scenario": "CreateHandler 用 files[filepath.Clean(k)] = v 重建映射，而 validRelative 允许 \"a//b\"、\"a/b/\" 这类仅含冗余分隔符或尾部斜杠的 key。当请求中同时出现这类 key 时，Clean 后得到同一个 \"a/b\"，后写入的条目会静默覆盖先前的 digest，导致某个文件在转换阶段缺失或内容错配，最终表现为下游 ConvertModel 的模糊错误，用户难以定位到是请求里重复路径形式导致。此外同样的归一化只作用于 r.Files，r.Adapters 完全未做，映射处理语义不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "DATA-INTEGRITY-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 167,
+      "summary": "validRelative 只按 '/' 判断绝对路径与前缀，Windows 形态路径未被覆盖",
+      "failure_scenario": "validRelative 的全部判断都基于 '/'：HasPrefix(path, \"/\")、HasPrefix(path, \"./\")/\"../\"、Contains(path, \"/../\")、HasSuffix(path, \"/..\") 等。在 Windows 上 \"\\\\foo\"、\"C:\\\\foo\"、\"\\\\\\\\?\\\\C:\\\\foo\"、\"..\\\\..\\\\x\" 等形式不会被识别为绝对路径或穿越序列，预校验在这些平台形同虚设；虽然 convertFromSafetensors 的 os.Root 兜底仍能阻止越界写入，但函数注释声称会拒绝「absolute path indicators / directory traversal components」，实际语义与注释不符，且行为随平台而变，一旦将来移除或绕过 os.Root 兜底就会重新暴露风险。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.5,
+      "rule": "PORTABILITY-004"
+    },
+    {
+      "file": "server/create.go",
+      "line": 281,
+      "summary": "为校验而在临时目录创建空文件并忽略 Close 错误，校验与写盘副作用耦合",
+      "failure_scenario": "convertFromSafetensors 的校验会真的在临时目录创建（或已存在则打开）目标文件，仅用于验证路径包含性，随后立即 f.Close() 且丢弃其错误。该空文件随即被 L287 的 createLink（内部 os.Remove + os.Symlink）覆盖，说明前一步创建的文件没有任何用途，属于「以写盘副作用做校验」。这让校验逻辑与文件写入耦合：每个文件多一次创建/关闭开销；注释也承认是「Try to open the file through the root first to validate containment」；若后续有人把 flag 改成 O_TRUNC 或调整顺序，会引入真实的数据破坏风险，且 Close 失败的静默丢弃与周边错误处理风格不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-005"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 4988 字符（test=1），明细见审计 mrFilter\n✓ 完成 · 耗时 155.3s · 模型调用 28 次 · token 输入 44,882（未命中） · 输出 20,936 · 缓存命中 646,272（93.5%） · 工具 33 次（主会话 33 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0140\n[time] 阶段耗时 | 总墙钟 156.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 155.2s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 2.7s (1.7%) | P2 2.6s (1.7%) | P3 4.2s (2.7%) | P4 68.1s (43.9%) | P5 21.4s (13.8%) | P6 10.0s (6.4%) | R2P1 3.0s (2.0%) | R2P2 2.3s (1.5%) | R2P3 3.7s (2.4%) | R2P4 13.4s (8.7%) | R2P5 17.1s (11.0%) | R2P6 6.7s (4.3%)\n[usage] 任务总计 | 模型调用 28 次（Agent 28 + 一次性 0） | token 输入 44,882（未命中） | 输出 20,936 | 缓存命中 646,272（93.5%） | $0.0140\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261115_024659_904.json",
+  "token_usage": {
+    "input_tokens": 44882,
+    "output_tokens": 20936,
+    "cache_read_input_tokens": 646272
+  }
+}

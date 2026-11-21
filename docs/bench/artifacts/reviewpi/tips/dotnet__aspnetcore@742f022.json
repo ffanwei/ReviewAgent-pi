@@ -1,0 +1,111 @@
+[
+  {
+    "filePath": "eng/Versions.props",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "<MicrosoftCodeAnalysisExternalAccessAspNetCoreVersion>4.13.0-3.24613.7</MicrosoftCodeAnalysisExternalAccessAspNetCoreVersion>",
+        "review": "[缺陷类型] 属性重复定义导致的自动化失效与版本漂移。影响评估：darc 更新 roslyn 依赖后，构建实际仍取 Manual 组旧值，CodeCheck 无法告警；后续升级 roslyn 时会出现“改了版本号却不生效”的疑难问题，source-build 一致性也可能被破坏。",
+        "suggestion": "[重构思路] 删除 Manual 组第 253-256 行的四个重复定义，只保留 Automated 组一份；若这些包确实不由 darc 自动更新，则保留 Manual 组一处并在 Automated 组移除，避免两处并存。同时可给 CodeCheck.ps1 增加“同一属性在 Manual 组重复定义即报错”的检查。代码示例：`<!-- 删除 eng/Versions.props:253-256 --> <!-- <MicrosoftCodeAnalysisExternalAccessAspNetCoreVersion>4.13.0-3.24613.7</...> -->`",
+        "category": "可维护",
+        "subcategory": "配置重复定义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 253,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "<MicrosoftOpenApiVersion>2.0.0-preview.29</MicrosoftOpenApiVersion>",
+        "review": "[缺陷类型] 依赖版本降级（稳定版回退到预发布版），且发生在非自动化管理区。影响评估：可能引入 OpenApi 组件编译/行为回退，或与其他依赖的 API 表面不自洽；由于不在 darc 流内，后续版本修复也不会自动回来。",
+        "suggestion": "[重构思路] 若降级是必需的（例如需要 preview.29 特有的修复），请在 MR 说明中给出原因并在 eng/Versions.props 加注释；否则恢复为 2.0.0。代码示例：`<MicrosoftOpenApiVersion>2.0.0</MicrosoftOpenApiVersion> <MicrosoftOpenApiYamlReaderVersion>2.0.0</MicrosoftOpenApiYamlReaderVersion>`",
+        "category": "可靠性",
+        "subcategory": "依赖版本回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 328,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Components/Components/src/Routing/Router.cs",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "public Type NotFoundPage { get; set; } = default!;",
+        "review": "[缺陷类型] 可空性标注与运行时实际可空不一致（nullable 契约错误）。影响评估：使用方按非空契约取值会触发 NullReferenceException，且编译器不再预警；同时 PublicAPI 基线与内部 null 分支互相矛盾，后续维护容易被误导。",
+        "suggestion": "[重构思路] 二选一：保持 `Type?` 并继续用 null 表示“未配置 NotFoundPage”（推荐，改动最小且与 RenderNotFound 的三级兜底一致），或真正改为必需参数并在 SetParametersAsync 中对未设置的情况抛明确异常、同时删除 RenderNotFound 的 null 分支。代码示例：`public Type? NotFoundPage { get; set; }` 并把 PublicAPI.Unshipped.txt 第 4 行改回 `Router.NotFoundPage.get -> System.Type?`",
+        "category": "可靠性",
+        "subcategory": "可空契约一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 80,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/ProjectTemplates/Web.ProjectTemplates/content/ComponentsWebAssembly-CSharp/App.razor",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "<NotFound>",
+        "review": "[缺陷类型] 模板内容与组件优先级规则冲突，产生死代码与文案不一致。影响评估：新建 Blazor WebAssembly 应用的 404 页面显示的是 Pages/NotFound.razor 的旧文案，模板中新增的 NotFound 内容开发者改不动也看不到，容易引发困惑与重复工单；也让“NotFound 已不再弃用”的 API 方向在模板中表达不一致。",
+        "suggestion": "[重构思路] 明确单一 404 策略：若坚持使用 NotFoundPage，则从模板中删除新增的 `<NotFound>` 块，只保留 Pages/NotFound.razor；若希望模板演示 NotFound 片段，则去掉 Router 上的 `NotFoundPage` 属性。若确实需要同时支持两种场景，应在 Router 中对“同时设置”给出显式提示（日志或异常），而不是静默丢弃。代码示例：`<Router AppAssembly=\"@typeof(App).Assembly\"> <Found Context=\"routeData\">…</Found> <NotFound><PageTitle>Not found</PageTitle><LayoutView Layout=\"@typeof(MainLayout)\"><p role=\"alert\">Sorry, there's nothing at this address.</p></LayoutView></NotFound> </Router>`",
+        "category": "可靠性",
+        "subcategory": "模板与组件契约一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Identity/Extensions.Core/src/PasswordHasher.cs",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "iterCount = (int)ReadNetworkByteOrder(hashedPassword, 5);",
+        "review": "[缺陷类型] 不可信数据驱动的无界计算量（加固不完整 / CPU DoS）。影响评估：篡改或损坏的密码哈希可让登录校验长时间占用 CPU；与本次已修复的盐长问题属同一类缺陷，仅修一半会给人已经安全的错觉。",
+        "suggestion": "[重构思路] 与 MaxSaltSize 同样方式为 iterCount 与 subkeyLength 设定合理上界（例如 iterCount 上限取当前推荐值的若干倍、subkeyLength 上限 64 字节），越界直接返回 false；如需保持向前兼容，可仅对明显离谱的值拒绝。代码示例：`const int MaxIterCount = 1_000_000;` … `if (iterCount < 1 || iterCount > MaxIterCount) { return false; }`",
+        "category": "安全",
+        "subcategory": "不可信输入边界校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 261,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Framework/App.Runtime/src/Microsoft.AspNetCore.App.Runtime.sfxproj",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "<NativeRuntimeAsset Condition=\" '$(UseIisNativeAssets)' == 'true' AND !$(BuildNative) \"",
+        "review": "[缺陷类型] 打包条件收紧导致符号文件缺失。影响评估：以 -BuildNative 构建的官方/内部产物中，IIS in-process 宿主 pdb 不再进入符号包，崩溃栈与故障排查缺少符号；若该 pdb 已由其它节点提供则属冗余删除，需明确确认。",
+        "suggestion": "[重构思路] 保留“Always explicitly include the .pdb”的显式包含（不追加 !$(BuildNative) 条件），或为 BuildNative=true 分支补充从 `$(ArtifactsBinDir)InProcessRequestHandler\\...` 收集 pdb 的对应项；并用产物校验（`dotnet nuget verify` 或包内容断言）确认符号包中仍含该 pdb。代码示例：`<NativeRuntimeAsset Condition=\" '$(UseIisNativeAssets)' == 'true' \" Include=\"$(ArtifactsBinDir)InProcessRequestHandler\\$(NativePlatform)\\$(Configuration)\\aspnetcorev2_inprocess.pdb\" />`",
+        "category": "可靠性",
+        "subcategory": "符号包打包条件",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 100,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

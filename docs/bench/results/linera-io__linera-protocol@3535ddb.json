@@ -1,0 +1,62 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 121.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件用本地常量推断远端页大小，页大小不一致时会静默提前结束同步",
+      "failure_scenario": "循环以 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 判断「已取完」，但这个上限是**服务端**（validator）在自己的 state.rs 里应用的分页大小，客户端只是引用了同一个 crate 内常量。若 validator 实际页大小小于客户端的 1000（例如按 state.rs:52 的 `TODO(#4638): Revisit the number.` 下调，或客户端与 validator 二进制版本不同步），一次响应只会返回 500 条，客户端会立即 break，`remote_log` 仅覆盖 received_log 的前缀，而 `ReceivedCertificatesFromValidator` 仍按「本轮已同步」返回，导致 heights_per_chain / downloaded_heights / other_sender_chains（第 858、867-900 行）只看到部分发送链，部分跨链消息要等到下一轮同步才进入 inbox，客户端可能在不完整视图下继续推进。由于 ChainInfo 契约中没有任何 `has_more` 或总数标记（linera-core/src/data_types.rs:179-210 的 ChainInfo 只有 `requested_received_log: Vec<ChainAndHeight>`），客户端无法从响应本身区分「已到末尾」和「被截断」。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-PAGINATION-001"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 846,
+      "summary": "分页后仍把所有页累积进单个 Vec，内存峰值未降低",
+      "failure_scenario": "改动的目的之一应是避免一次把整条 received_log 传回并驻留内存，但客户端用 `remote_log` 累加所有页（第 853 行 `remote_log.extend(...)`），并且后续逻辑需要整份 remote_log（第 858 行 heights_per_chain 遍历全量、第 936 行再次遍历来自增 tracker）。对长期运行、received_log 很长的链，客户端内存占用与改动前的一次性响应处于同一量级，只是每次 RPC 的报文变小了；如果 validator 行为异常（返回远多于上限的条目），循环还会在无迭代次数/总条数上限的情况下持续累积。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "PERFORMANCE-MEMORY-002"
+    },
+    {
+      "file": "linera-core/src/chain_worker/state.rs",
+      "line": 53,
+      "summary": "RPC 契约常量定义在 chain_worker 内部并经模块重导出，易导致两端只改一侧",
+      "failure_scenario": "`CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 实际上是 client 与 validator 之间 ChainInfo RPC 的契约（决定响应最多带多少条 received_log），但它定义在 `chain_worker::state` 中，通过 `chain_worker/mod.rs` 重导出给 `client/mod.rs` 使用（client/mod.rs:72 的 `use crate::chain_worker::CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES`）。这让客户端的协议行为依赖服务端实现模块的内部常量，语义归属不清；后续按 TODO(#4638) 调整该数字时，很容易只关注服务端一侧而忽略客户端用它做分页终止判断（见 F001），使两处语义脱钩。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-COUPLING-003"
+    },
+    {
+      "file": "linera-core/src/chain_worker/state.rs",
+      "line": 1418,
+      "summary": "显式 end 夹取与 LogView::read 内部夹取重复，且隐含依赖「start>=end 返回空」",
+      "failure_scenario": "新增的 `end = (start.saturating_add(N)).min(chain.received_log.count())` 与 `LogView::read` 自身的处理重复：read 会把 end 夹到 `self.count()`，并在 `start >= end` 时返回空 `Vec`（log_view.rs:316-329）。因此当客户端传入的 offset 大于服务端 received_log 长度（例如 tracker 来自另一验证者或状态被重建）时，当前实现恰好返回空列表而非报错；但这段安全性是由存储层 `read` 的实现细节提供的，本处代码 `read(start..end)` 中 `start > end` 的区间本身在语义上是不合法的区间，未来若改用不夹取的读法（或 `read` 语义变化）就会变成空区间/panic 风险。此外把 `end` 事件提前算出来也让人误以为 `read(start..)` 会读全量，掩盖了库本身的越界保护。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-RANGE-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 111.3s · 模型调用 13 次 · token 输入 28,141（未命中） · 输出 15,283 · 缓存命中 141,824（83.4%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0086\n[time] 阶段耗时 | 总墙钟 111.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.5s (0.5%)\n[time] 阶段 | 六阶段审计 111.2s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 3.5s (3.2%) | P2 6.6s (5.9%) | P3 5.4s (4.8%) | P4 58.7s (52.8%) | P5 21.8s (19.6%) | P6 15.2s (13.7%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 28,141（未命中） | 输出 15,283 | 缓存命中 141,824（83.4%） | $0.0086\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261115_003228_978.json",
+  "token_usage": {
+    "input_tokens": 28141,
+    "output_tokens": 15283,
+    "cache_read_input_tokens": 141824
+  }
+}

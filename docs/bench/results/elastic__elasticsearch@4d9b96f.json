@@ -1,0 +1,102 @@
+{
+  "instance_id": "elastic__elasticsearch@4d9b96f",
+  "repo": "elastic/elasticsearch",
+  "base_commit": "ba5a9c83310ce6fbe27ff251aba00e37fad1d205",
+  "head_commit": "4d9b96f4ac1af0cb871f1d3b77169f9f1e83d194",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1123.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+      "line": 420,
+      "summary": "暂停分支在必然为 null 的 indexShardSnapshotStatus 上调用 updateStatusDescription 引发 NPE",
+      "failure_scenario": "pauseShardSnapshotsForNodeRemoval 在循环开头用 `IndexShardSnapshotStatus indexShardSnapshotStatus = localShardSnapshots.get(shardId);`（L398）缓存本地状态，而在 L419-422 新增的 Supplier 中对该变量调用 `updateStatusDescription(...)`。但使用该 Supplier 的分支恰是 L410-411 判断 `localShardSnapshotStatus == null`（同一 localShardSnapshots、同一 shardId）的分支，其语义是“本地根本没有该 shard 的状态对象，无需更新”（相邻同类分支因此都写成 `() -> null`），因此 indexShardSnapshotStatus 在此分支必为 null，通知回调执行时必然抛 NullPointerException。由于回调经 ActionListener.runBefore 包装，异常会被 RunBeforeActionListener 转成 delegate.onFailure（或 addSuppressed），于是 master 通知即使成功也会打印 “failed to update snapshot state to [PAUSED_FOR_NODE_REMOVAL]” 的 warn 日志，掩盖真实失败；在节点摘除关机路径上产生误导性告警。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-NPE-LAZY-CALLBACK"
+    },
+    {
+      "file": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+      "line": 328,
+      "summary": "以 FileSystem 实现类判断放行，非默认 FileSystem 的路径完全绕过 file entitlement 校验",
+      "failure_scenario": "checkFileRead/checkFileWrite 新增了 `isPathOnDefaultFilesystem(path) == false` 就立即 return 的逻辑，判断依据仅是 `path.getFileSystem().getClass() != DEFAULT_FILESYSTEM_CLASS`。这意味着任何通过非默认 FileSystemProvider 获得的 Path 都不再经过 requestingClass / isTriviallyAllowed / fileAccess.canRead(|canWrite) 检查。file entitlement 的安全模型建立在“所有路径访问都要经过权限树”之上，而以文件系统实现类作为放行条件，等于把绕过面交给“能否拿到一个非默认 FS 的 Path”——插件可通过 `FileSystems.newFileSystem(...)` 或注册自定义 FileSystemProvider 获得这类 Path，并在其实现内部完成真实 I/O，从而使 file entitlement 形同虚设。当前实现也没有对放行做 info 级别审计，仅在 debug 下记录。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.55,
+      "rule": "SECURITY-ENTITLEMENT-BYPASS"
+    },
+    {
+      "file": "server/src/main/java/org/elasticsearch/common/settings/Settings.java",
+      "line": 308,
+      "summary": "getGlobValues 从 getAsList 改为 get，列表值与逗号分隔值会被解析成单个非法路径",
+      "failure_scenario": "旧实现 `settingNames.map(this::getAsList).flatMap(List::stream)` 对每个匹配到的设置取列表值并逐个展开，因而天然支持 `a,b` 形式的逗号分隔值以及 List 值。新实现改为 `.map(k -> k + suffix).map(subSettings::get)`，而 Settings.get 最终走 `toString(Object o) -> o.toString()`：当匹配到的设置是 List（例如 `putList` 或数组形式配置）时，返回的是 `\"[/a, /b]\"` 这样的字面量字符串，而不是两个路径；逗号分隔的字符串也不再拆分。这些结果会继续被 FilesEntitlement 的 `result.map(pathLookup.configDir()::resolve)` 解析成不存在的路径，导致 file entitlement 静默少授权（或授权到畸形路径），行为相对旧实现发生退化。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-SETTINGS-VALUE-SHAPE"
+    },
+    {
+      "file": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/entitlements/FilesEntitlement.java",
+      "line": 236,
+      "summary": "以 contains(\"*\") 分派 glob 解析，与 getGlobValues 要求的 \".*.\" 格式不一致，策略可在启动期抛 IllegalArgumentException",
+      "failure_scenario": "FilesEntitlement 用 `setting.contains(\"*\")` 判断是否走 settingGlobResolver，而 Settings.getGlobValues 只在模式包含 `\".*.\"` 时才工作，否则直接 `throw new IllegalArgumentException(\"Pattern [\" + settingGlob + \"] does not contain a glob [*]\")`。两者判定口径不同：`path_setting: \"foo.*\"`、`\"*.path\"`、`\"*\"` 之类写法会通过 contains 判定进入 glob 分支，然后在解析时抛 IllegalArgumentException。FilesEntitlement.build 对 path_setting 只校验 basedir_if_relative/ignore_url 的组合（L393-398），并不校验 glob 形式，因此这类策略错误会延迟到 FileAccessTree 构建/路径解析阶段才以未包装的 IllegalArgumentException 抛出，不再是显式的 PolicyValidationException。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "API-CONTRACT-MISMATCH"
+    },
+    {
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+      "line": 442,
+      "summary": "master 通知结果不再写入 statusDescription，成功与失败的状态描述完全一致，诊断信息丢失",
+      "failure_scenario": "本次改动把 postMasterNotificationAction 从 Consumer<String>（参数为 “successfully sent ...” / “exception trying to send ...” 等具体结果）改成 Supplier<Void>，并在所有调用点写入固定文案 \"finished: master notification attempt complete\"，同时删除了原来把通知结果与“prior status description”拼接的逻辑（含 maxStatusAppend=1000 的截断保护）。结果是：无论 master 通知成功、抛异常还是“新 master 需要被重新通知”的场景，状态描述完全相同，只能依赖 logger.warn 判断失败；而原来注释明确说明这些文案用于“看清信息是否到达了前一个/当前 master”。对快照/关机类分布式问题而言，这属于可观测性回退。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "OBSERVABILITY-001"
+    },
+    {
+      "file": "server/src/main/java/org/elasticsearch/transport/TransportHandshaker.java",
+      "line": 229,
+      "summary": "删除 bestKnownVersion 回退后，远端更旧且版本号未知的兼容节点会被直接拒绝握手",
+      "failure_scenario": "ensureCompatibleVersion 现在只在两条路径上放行：远端不旧于我，或远端版本 isKnown()。一旦远端 transport version 可兼容（>= MINIMUM_COMPATIBLE）却不在本地 ALL_VERSIONS_MAP 中（例如通过 VersionExtension 扩展的版本、snapshot/自定义构建、或跨大版本的向后场景），就会落到 L236-247 抛 IllegalStateException，握手失败、连接被拒。旧实现会退回到 bestKnownVersion（≤ 远端版本且双方都认识），仅打印 warn 继续协商。这属于行为收紧：正常情况下 isKnown 恒成立，但一旦出现未知但兼容的版本号，集群连通性会被硬性切断，而不再有降级路径。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "PROTOCOL-NEGOTIATION-001"
+    },
+    {
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+      "line": 804,
+      "summary": "postMasterNotificationAction 用 Supplier<Void> 表达“无返回值的回调”，所有调用点只能写 () -> null",
+      "failure_scenario": "postMasterNotificationAction 的全部用途是“通知完成后执行一个副作用”，却声明为 Supplier<Void>：所有调用点都写成 `() -> null`（L335、L419-422、L694、L711、L725 附近），执行处 `postMasterNotificationAction.get()` 丢弃返回值。这既无法表达“可能抛出受检异常”的真实需求，也让调用者需要构造无意义的返回值，属于误导性的类型选择，后续维护者容易误以为该回调有返回值参与状态流转。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-API-SHAPE"
+    },
+    {
+      "file": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+      "line": 239,
+      "summary": "关机进度日志不再输出 SnapshotId，多快照并发时无法区分状态归属",
+      "failure_scenario": "logIndexShardSnapshotStatuses 的日志从 `\"SnapshotId %s, ShardId %s, shard snapshot status: %s\"` 简化为 `\"ShardId %s, %s\"`，丢掉了 SnapshotId（以及 “shard snapshot status:” 的语义提示）。该方法在关机进度上报期间会遍历 shardSnapshots 的全部快照与 shard 输出多行日志，去掉 SnapshotId 后，同一 shardId 可能在多个快照中同时存在，日志无法判断某行属于哪个快照，排障时需要额外交叉比对。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "OBSERVABILITY-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\elastic__elasticsearch\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\elastic__elasticsearch@4d9b96f.diff\n  caseId              elastic__elasticsearch@4d9b96f\n  --issue             (未传)\n  --taskId            elastic__elasticsearch@4d9b96f\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 7 个文件 / 22570 字符（test=7），明细见审计 mrFilter\n✓ 完成 · 耗时 320.0s · 模型调用 19 次 · token 输入 75,518（未命中） · 输出 31,017 · 缓存命中 704,000（90.3%） · 工具 48 次（主会话 48 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0212\n[time] 阶段耗时 | 总墙钟 320.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 319.9s (99.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.4s (0.1%)\n[time] 审计明细 | P1 11.6s (3.6%) | P2 3.5s (1.1%) | P3 10.4s (3.3%) | P4 214.4s (67.0%) | P5 57.1s (17.9%) | P6 22.9s (7.2%)\n[usage] 任务总计 | 模型调用 19 次（Agent 19 + 一次性 0） | token 输入 75,518（未命中） | 输出 31,017 | 缓存命中 704,000（90.3%） | $0.0212\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\elastic__elasticsearch@4d9b96f\\audit\\20261115_084416_618.json",
+  "token_usage": {
+    "input_tokens": 75518,
+    "output_tokens": 31017,
+    "cache_read_input_tokens": 704000
+  }
+}

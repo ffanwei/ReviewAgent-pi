@@ -1,0 +1,147 @@
+{
+  "generatedAt": "2026-11-15T00:27:08.991Z",
+  "runId": "20261115_002426_054",
+  "source": "mr",
+  "caseId": "libsdl-org__SDL@96dfef3",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 5881,
+      "title": "CycleActiveTexture 在判空之前就对新建纹理做布局转换，分配失败时空指针解引用崩溃",
+      "description": "VULKAN_INTERNAL_CreateTexture 在 vkCreateImage 失败（5645-5648）或 BindMemoryForImage 失败（5655-5663）时返回 NULL。新增代码在 5881 无条件调用 VULKAN_INTERNAL_TextureTransitionToDefaultUsage(renderer, commandBuffer, VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED, texture)，而该函数在 2835 遍历 texture->subresourceCount 并取 &texture->subresources[i]，必然解引用 texture；真正的 if (!texture) 判空在 5887，位于其后。因此显存不足或内存绑定失败时不再干净返回，而是在录制命令阶段崩溃（SIGSEGV），且此时传入的 commandBuffer 已被部分录制，调用方无法挽回。所有经 VULKAN_INTERNAL_PrepareTextureSubresourceForWrite（5948）的写入路径（如 UploadToTexture）都会走到这里。",
+      "evidence": [
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:5876-5879 — texture = VULKAN_INTERNAL_CreateTexture(renderer, false, &container->header.info)",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:5881-5885 — VULKAN_INTERNAL_TextureTransitionToDefaultUsage(renderer, commandBuffer, VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED, texture) 出现在判空之前",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:5887-5889 — if (!texture) { return; } 位于布局转换之后",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:2835-2841 — VULKAN_INTERNAL_TextureTransitionToDefaultUsage 遍历 texture->subresourceCount 并取 &texture->subresources[i]，未判空",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:5645-5648 / 5655-5663 — CreateTexture 的失败路径 CHECK_VULKAN_ERROR_AND_RETURN(..., NULL) / SET_STRING_ERROR_AND_RETURN(..., NULL)"
+      ],
+      "rule": "NULL-DEREF-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 错误路径上的空指针解引用（NULL pointer dereference）。影响评估：CreateTexture 返回 NULL（OOM、vkCreateImage 失败、BindMemoryForImage 失败）时进程直接崩溃，把原本可优雅上报的分配失败变成硬崩溃；且崩溃发生在用户命令缓冲录制中途，动态纹理循环（container->canBeCycled）场景下最容易被触发。",
+        "suggestion": "[重构思路] 把判空提前到任何使用 texture 之前，判空失败时按原语义直接返回（不修改 container->activeTexture），让上层沿用现有的错误处理路径。代码示例：`texture = VULKAN_INTERNAL_CreateTexture(renderer, false, &container->header.info);\\nif (texture == NULL) {\\n    return;\\n}\\nVULKAN_INTERNAL_TextureTransitionToDefaultUsage(renderer, commandBuffer, VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED, texture);`",
+        "subcategory": "空指针安全"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10533,
+      "title": "清理与待销毁资源处理被收窄到 presenting 分支，非 present 的提交不再回收，资源无界堆积",
+      "description": "改动后 fence 轮询清理（10535-10546）、checkEmptyAllocations 空分配回收（10548-10567）与 VULKAN_INTERNAL_PerformPendingDestroys（10569）全部被包进 if (presenting)，而 presenting 在 10424 由 vulkanCommandBuffer->presentDataCount > 0 得出，且 present 循环里原来的 presenting = true（旧 10470 附近）已被删除。对 presentDataCount == 0 的提交（纯 compute pass、纯 UploadToTexture、无窗口/headless 场景）这三件事全部被跳过，唯一其它触发点是 VULKAN_WaitForFences(10351) 与 VULKAN_Wait(10377)，而 VULKAN_AcquireCommandBuffer 并不做任何清理（9440-9484 只做重置与 Begin）。后果是 submittedCommandBuffers 持续增长（每个还挂着 descriptorSetCache 与 inFlightFence 引用），texturesToDestroy / buffersToDestroy 中的资源（referenceCount 已为 0，10127/10138）也不会被释放，长时间运行的无窗口计算程序内存与命令缓冲数量无界增长。旧版本这段清理在每次 Submit 都执行。",
+      "evidence": [
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10424 — bool presenting = vulkanCommandBuffer->presentDataCount > 0;",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10494 — present 循环中原来的 presenting = true; 已被删除，presenting 此后不再被更新",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10533-10570 — if (presenting) { …CleanCommandBuffer 轮询…; checkEmptyAllocations 回收…; VULKAN_INTERNAL_PerformPendingDestroys(renderer); }",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10351 与 10377 — PerformPendingDestroys 仅在 VULKAN_WaitForFences / VULKAN_Wait 中另外被调用",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:9440-9484 — VULKAN_AcquireCommandBuffer 不执行任何 CleanCommandBuffer / PerformPendingDestroys",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10127 / 10138 — 待销毁资源只有在 referenceCount == 0 时才真正 Destroy，其入口依赖 PerformPendingDestroys 被调用"
+      ],
+      "rule": "RESOURCE-LIFECYCLE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 资源回收时机被条件收窄导致的延迟释放 / 无界增长。影响评估：presenting 渲染循环（每帧 present）不受影响，但纯计算、纯上传、headless 场景下提交的命令缓冲与待销毁资源永不回收，内存和句柄数随运行时间线性增长，最终 OOM 或撞上 submittedCommandBufferCapacity 反复 realloc；SDL_GPU 后端之间行为也会不一致。",
+        "suggestion": "[重构思路] 把「清理由谁触发」与「是否 present」解耦：至少保证 fence 已完成命令缓冲的清理与 PerformPendingDestroys 在每次 Submit 都执行（它们本身开销很低），只在确实需要限流时用一个与 present 无关的计数/阈值（例如每 N 次提交）来节流 checkEmptyAllocations。代码示例：`// 总是清理已完成的命令缓冲\\nfor (Sint32 i = renderer->submittedCommandBufferCount - 1; i >= 0; i -= 1) { … }\\nVULKAN_INTERNAL_PerformPendingDestroys(renderer);\\nif (renderer->checkEmptyAllocations) { … }`",
+        "subcategory": "资源回收时机"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10451,
+      "title": "defrag 失败只打日志，Submit 仍返回 true，且 allocation 已处于半迁移状态",
+      "description": "10451-10454 在 VULKAN_INTERNAL_DefragmentMemory 返回 false 时仅 SDL_LogError，随后继续 EndCommandBuffer、vkQueueSubmit 并最终 return true（10577）；而旧实现把该结果作为返回值向上传递，VULKAN_SubmitAndAcquireFence（10389）依赖它判断失败。同时 DefragmentMemory 在 10612-10613 就已从 allocationsToDefrag 弹出并自减 allocationsToDefragCount，之后才可能在 10633-10637（buffer）或 10699-10703（texture）因分配失败 return false；此时循环中前面若干 usedRegion 的新资源已经创建、容器已被重指向（10677-10690 与 10762-10770）、旧资源已 VULKAN_INTERNAL_ReleaseBuffer/ReleaseTexture，却没有任何回滚，该 allocation 也已不在待 defrag 列表中，将永久停留在半迁移状态且不再有机会被重新整理。结果是失败既不可被上层感知，又留下不一致的资源映射。",
+      "evidence": [
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10447-10455 — if (!VULKAN_INTERNAL_DefragmentMemory(renderer, vulkanCommandBuffer)) { SDL_LogError(...\"Failed to defragment memory, likely OOM!\"); } 之后继续提交",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10577 — 函数末尾 return true;（旧的 result 变量与 return result 已被移除）",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10389-10391 — VULKAN_SubmitAndAcquireFence 依赖 VULKAN_Submit 的返回值决定是否返回 NULL",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10612-10613 — allocation 取自已弹出的 allocationsToDefrag[count-1] 并立即 self-decrement，早于任何可能失败的操作",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10633-10637 / 10699-10703 — 循环中分配失败时 return false，此前已完成的 usedRegion 迁移未回滚",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10677-10690 / 10762-10770 — 容器已重指向 newBuffer/newTexture，旧资源已 Release"
+      ],
+      "rule": "ERROR-PROPAGATION-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 错误被吞掉 + 失败路径上的状态不一致（non-atomic failure）。影响评估：显存紧张（正是最需要 defrag 的时刻）时 defrag 很可能失败，日志之外上层完全无感，被半迁移的 allocation 其后续资源分配行为难以预测；同时 allocationsToDefrag 中的 allocation 被丢掉，后续再也不会重试，碎片化会持续恶化。",
+        "suggestion": "[重构思路] 两条路选一条：(a) 把失败透传上去，让 Submit 返回 false 并让调用方感知；(b) 让 defrag 具备事务性——先在临时列表里完成所有新资源分配，全部成功后再统一重指向容器并弹出 allocation，任一步失败则回滚并把 allocation 放回 allocationsToDefrag 末尾。代码示例：`VulkanMemoryAllocation *allocation = renderer->allocationsToDefrag[renderer->allocationsToDefragCount - 1];\\n/* 先做所有分配并校验，成功后再 migrate 与 decrement */\\nif (!ok) { SDL_LogError(...); renderer->defragInProgress = 0; return false; }`",
+        "subcategory": "错误处理与状态回滚"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 5571,
+      "title": "CreateTexture 新增的 transitionToDefaultLayout 把布局转换责任隐式外移，缺少注释与断言",
+      "description": "传 false 时（5876、10694）新建纹理保持 imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED（5637），必须由调用方自行补一次 UNINITIALIZED→默认布局的 barrier；否则后续 VULKAN_INTERNAL_TextureSubresourceTransitionFromDefaultUsage（2794-2796）会用 DefaultTextureUsageMode 作为 oldLayout，与实际布局不符，触发 Vulkan 校验层 VUID 报错或渲染错误。这个契约完全隐式：参数没有注释说明「传 false 时调用方必须自己转换并 TrackTexture」，两个现有调用点写法还不一致（5876 用 VULKAN_INTERNAL_TextureTransitionToDefaultUsage，10694 用 VULKAN_INTERNAL_TextureSubresourceMemoryBarrier(UNINITIALIZED→COPY_DEST)），后续新增调用点极易漏掉转换，产生难排查的布局错误。",
+      "evidence": [
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:5569-5572 — 签名新增 bool transitionToDefaultLayout，无任何注释说明其契约",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:5637 — imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:5797-5812 — 仅在 transitionToDefaultLayout 为真时才执行 UNINITIALIZED→默认布局转换并 VULKAN_INTERNAL_TrackTexture",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:5876-5885 与 10694-10722 — 两个 false 调用点各自用不同写法补转换，且后者额外 TrackTexture",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:2794-2796 — TransitionFromDefaultUsage 假设源布局就是默认布局，不会容忍 UNDEFINED"
+      ],
+      "rule": "API-CONTRACT-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 隐式 API 契约 / 布局状态机职责不清。影响评估：当前调用点是对的，但这是典型的「下一个人一定踩」的坑；一旦遗漏，症状是校验层报 layout mismatch 或画面错误，排查成本高，且不会在编译期暴露。",
+        "suggestion": "[重构思路] 用命名表达契约并加防御：把参数改名（如 deferInitialLayoutTransition）并在头注释写明「false 时调用方负责 UNINITIALIZED→默认布局转换且必须 TrackTexture」；或者在 debug 构建下断言/记录纹理的布局状态字段，在首次以非默认布局使用时校验。代码示例：`/* transitionToDefaultLayout == false 时，调用方必须在同一 commandBuffer 上\\n * 执行 UNINITIALIZED -> DefaultUsageMode 的屏障并 TrackTexture(texture)。 */\\nstatic VulkanTexture *VULKAN_INTERNAL_CreateTexture(VulkanRenderer *renderer, bool transitionToDefaultLayout, const SDL_GPUTextureCreateInfo *createinfo);`",
+        "subcategory": "接口契约与注释"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10701,
+      "title": "纹理分支的分配失败日志复用了 buffer 的文案，排障时会误判",
+      "description": "10699-10703 是 newTexture 分配失败的分支，但日志打印的是 \"Failed to allocate defrag buffer!\"，与 10635 的 buffer 分支文案完全相同。defrag 是显存压力下才会走到的路径，日志是唯一线索；两条完全相同的文案会让维护者无法判断到底是 VkBuffer 还是 VkImage 分配失败，也无法判断失败发生在哪个 usedRegion。",
+      "evidence": [
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10699-10703 — if (newTexture == NULL) { … SDL_LogError(SDL_LOG_CATEGORY_GPU, \"%s\", \"Failed to allocate defrag buffer!\"); return false; }",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10633-10637 — buffer 分支使用完全相同的日志文案"
+      ],
+      "rule": "LOG-MSG-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 复制粘贴导致的日志文案错误。影响评估：不影响功能，但在 OOM 排查时会误导定位方向（以为 buffer 分配失败，实际是 texture），延长问题定位时间。",
+        "suggestion": "[重构思路] 分别使用准确文案，并带上可定位的信息（类型与尺寸）。代码示例：`SDL_LogError(SDL_LOG_CATEGORY_GPU, \"Failed to allocate defrag texture (%ux%u, %d levels)!\", info.width, info.height, info.num_levels);` 与 buffer 分支的 `\"Failed to allocate defrag buffer (%u bytes)!\", currentRegion->vulkanBuffer->size`",
+        "subcategory": "日志与错误信息"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10607,
+      "title": "defragInProgress 在 Submit 前置失败时会永久停在 1，此后所有 defrag 被禁用",
+      "description": "DefragmentMemory 一进入就置 renderer->defragInProgress = 1（10607），而复位仅发生在 VULKAN_INTERNAL_CleanCommandBuffer 的 if (commandBuffer->isDefrag) { renderer->defragInProgress = 0; }（10272-10274）。新代码把 defrag 调用点前移到 10447-10455，早于 VULKAN_INTERNAL_EndCommandBuffer（10457）与 in-flight fence 获取（10462-10466）：这两处一旦失败就直接 return false，命令缓冲既不会被 VULKAN_INTERNAL_ReleaseCommandBuffer（10395）登记进 submittedCommandBuffers，也不会被 CleanCommandBuffer 处理，于是 defragInProgress 永久为 1，10450 的 !renderer->defragInProgress 条件此后恒为假，allocationsToDefrag 再也不会被处理，碎片化持续恶化。旧实现由于 defrag 在 Submit 末尾才执行且自行提交命令缓冲，不存在这个窗口。",
+      "evidence": [
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10607-10608 — renderer->defragInProgress = 1; commandBuffer->isDefrag = 1; 在函数入口无条件设置",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10272-10274 — 唯一复位点：if (commandBuffer->isDefrag) { renderer->defragInProgress = 0; }（位于 CleanCommandBuffer 内）",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10447-10455 — defrag 现被前移到 EndCommandBuffer 之前执行",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10457-10460 / 10462-10466 — EndCommandBuffer 失败或 fence 获取失败时直接 return false，未 ReleaseCommandBuffer",
+        "src/gpu/vulkan/SDL_gpu_vulkan.c:10450 — 后续所有 defrag 都以 !renderer->defragInProgress 为前提"
+      ],
+      "rule": "STATE-MACHINE-001",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 状态标志复位路径覆盖不全（sticky flag）。影响评估：一次 Submit 前置失败（fence 池耗尽、EndCommandBuffer 出错）就会让本应在 OOM 时救场的 defrag 永久失效，属于「越出问题越无法自愈」的失败模式，且现场几乎不会发现（只是日志里 defrag 再不出现）。",
+        "suggestion": "[重构思路] 让 defragInProgress 的生命周期与 defrag 是否真正提交绑定：把置 1 的时机推迟到确认命令缓冲会被提交之后，或补充所有提前 return 路径上的复位。更稳妥的做法是把它做成「当前是否有 in-flight defrag 命令缓冲」的计数，由 Release/Clean 成对维护。代码示例：`if (!VULKAN_INTERNAL_EndCommandBuffer(renderer, vulkanCommandBuffer)) {\\n    if (vulkanCommandBuffer->isDefrag) { renderer->defragInProgress = 0; }\\n    SDL_UnlockMutex(renderer->submitLock);\\n    return false;\\n}`",
+        "subcategory": "状态标志与生命周期"
+      }
+    }
+  ]
+}

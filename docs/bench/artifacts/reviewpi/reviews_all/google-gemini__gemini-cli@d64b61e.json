@@ -1,0 +1,911 @@
+{
+  "generatedAt": "2026-11-15T03:56:09.809Z",
+  "runId": "20261115_034147_757",
+  "source": "mr",
+  "caseId": "google-gemini__gemini-cli@d64b61e",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/cli/src/config/extensions/github.ts",
+      "line": 115,
+      "title": "git 类型扩展更新检查改用 installMetadata.source 建仓，丢失本地安装路径导致恒返回 ERROR",
+      "description": "checkForExtensionUpdate 现在只接收 ExtensionInstallMetadata，并用 simpleGit(installMetadata.source) 打开仓库，但 source 是远端地址（如 https://github.com/org/repo），本地克隆目录信息（旧实现的 extension.path）已完全丢失。其后的 getRemotes/refs.fetch、listRemote、revparse(['HEAD']) 都在错误目录上执行，抛出的异常被 catch 吞掉并返回 ExtensionUpdateState.ERROR。影响：git 类型扩展的更新检查恒为 ERROR，`gemini extensions update --all`、`/extensions update` 以及 AppContainer 启动时的批量检查对这类扩展全部失效，用户无法获知或升级通过 git 安装的扩展。",
+      "evidence": [
+        "packages/cli/src/config/extensions/github.ts:115 — `const git = simpleGit(installMetadata.source);`（重构前为 `simpleGit(extension.path)`）",
+        "packages/cli/src/config/extensions/github.ts:116-125 — 在该实例上 `getRemotes(true)` 并读取 `remotes[0].refs.fetch`",
+        "packages/cli/src/config/extensions/github.ts:130-141 — `listRemote([remotes[0].name, refToCheck])` 与 `revparse(['HEAD'])` 仍在该目录执行，用于比较 remoteHash/localHash",
+        "packages/core/src/config/config.ts:123-126 — `interface ExtensionInstallMetadata { source: string; type: 'git' | 'local' | 'link' | 'github-release'; ref: string }`，不含安装路径",
+        "packages/cli/src/config/extension.ts:765-784 — 调用方 `checkForAllExtensionUpdates` 只传 `extension.installMetadata`，全程没有 extension.path"
+      ],
+      "rule": "CORRECTNESS-EXT-UPDATE-001",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 重构时丢失必要的隐式上下文（本地安装路径），把「扩展对象」改成「安装元数据」后无法再定位本地仓库目录。影响评估：git 类型扩展的更新检测 100% 走 ERROR 分支，UI 不显示可更新，单名/批量更新均失效；失败被 catch 静默处理，只输出一行 console.error，用户难以察觉。",
+        "suggestion": "[重构思路] 让更新检查同时拿到安装目录：保留接收 GeminiCLIExtension 的旧签名，或给 checkForExtensionUpdate 增加 extensionPath 参数。代码示例：`export async function checkForExtensionUpdate(installMetadata: ExtensionInstallMetadata, extensionPath: string): Promise<ExtensionUpdateState> { ... const git = simpleGit(extensionPath); ... }`，调用处改为 `checkForExtensionUpdate(extension.installMetadata, extension.path)`。",
+        "subcategory": "扩展更新检查"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/cli/src/config/extensions/github.ts",
+      "line": 115,
+      "title": "git 类型扩展的更新检查改用 installMetadata.source 建仓，丢失本地安装路径导致永远失败",
+      "description": "checkForExtensionUpdate 现在只接收 ExtensionInstallMetadata，并用 simpleGit(installMetadata.source) 打开仓库，但 source 是远端地址（如 https://github.com/org/repo），本地克隆目录信息（旧实现中的 extension.path）已完全丢失。后续的 getRemotes/refs.fetch、listRemote、revparse(['HEAD']) 都在错误目录上执行，异常会被 catch 吞掉并返回 ExtensionUpdateState.ERROR。影响：所有 git 类型扩展的更新检查恒为 ERROR，`gemini extensions update --all` 与 `/extensions update` 对 git 扩展、以及 AppContainer 启动时的批量检查全部失效，用户无法获知或升级 git 安装的扩展。",
+      "evidence": [
+        "packages/cli/src/config/extensions/github.ts:115 — `const git = simpleGit(installMetadata.source);`（旧实现为 `simpleGit(extension.path)`）",
+        "packages/cli/src/config/extensions/github.ts:116-121 — 在该实例上 `getRemotes(true)` 并读取 `remotes[0].refs.fetch`",
+        "packages/cli/src/config/extensions/github.ts:130-141 — `listRemote([remotes[0].name, refToCheck])` 与 `revparse(['HEAD'])` 仍在该目录执行，用以比较 remoteHash/localHash",
+        "packages/core/src/config/config.ts:123-126 — `interface ExtensionInstallMetadata { source: string; type: 'git' | 'local' | 'link' | 'github-release'; ref: string }`，不含安装路径",
+        "packages/cli/src/config/extension.ts:779 — 调用方 `await checkForExtensionUpdate(extension.installMetadata)` 只传元数据"
+      ],
+      "rule": "CORRECTNESS-EXT-UPDATE-001",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 重构时丢失必要的隐式上下文（本地安装路径），把「扩展对象」改成「安装元数据」后无法再定位仓库目录。影响评估：git 类型扩展的更新检测 100% 走 ERROR 分支，UI 中不显示可更新，`/extensions update` 对这类扩展名存实亡；且失败被 catch 静默处理，只打一行 console.error，用户难以察觉。",
+        "suggestion": "[重构思路] 让更新检查同时拿到安装目录：保留 `checkForExtensionUpdate(installMetadata, extensionPath)`，或直接保留接收 GeminiCLIExtension 的旧签名，元数据只作为其中一个字段。代码示例：`export async function checkForExtensionUpdate(installMetadata: ExtensionInstallMetadata, extensionPath: string): Promise<ExtensionUpdateState> { ... const git = simpleGit(extensionPath); ... }`，调用处改为 `checkForExtensionUpdate(extension.installMetadata, extension.path)`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P1",
+      "category": "安全",
+      "file": "packages/cli/src/config/config.ts",
+      "line": 564,
+      "title": "CLI 不再向 Config 注入 policyEngineConfig，settings 中的工具许可/MCP 信任/autoAccept 策略全部失效",
+      "description": "config/policy.ts 中的 createPolicyEngineConfig 被删除，loadCliConfig 构造 Config 时不再传 policyEngineConfig，而 core 仍用 `new PolicyEngine(params.policyEngineConfig)` 构建消息总线上的策略引擎。PolicyEngine 在无配置时 rules 为空、defaultDecision 为 ASK_USER，于是原本由 settings 派生出的规则（tools.allowed 的 ALLOW、mcp.allowed / mcpServers[].trust 的 ALLOW、tools.autoAccept 的只读工具 ALLOW、AUTO_EDIT 时 EditTool 的 ALLOW）整体消失。影响：这些用户配置项成为静默无效的死配置，交互式会话行为发生变化（本该自动放行的工具改为逐次询问），策略层对工具调用的唯一判定来源变成固定默认值。",
+      "evidence": [
+        "packages/cli/src/config/config.ts:564-577 — `return new Config({...})` 中已无 `policyEngineConfig`，只剩 `allowedTools` / `excludeTools` 等直连字段",
+        "packages/core/src/config/config.ts:429-430 — `this.policyEngine = new PolicyEngine(params.policyEngineConfig); this.messageBus = new MessageBus(this.policyEngine);`",
+        "packages/core/src/config/config.ts:247 — `policyEngineConfig?: PolicyEngineConfig;` 为可选，不传即为 undefined",
+        "packages/core/src/policy/policy-engine.ts:48-54 — 构造默认值 `rules = config.rules ?? []`、`defaultDecision = ASK_USER`",
+        "packages/core/src/confirmation-bus/message-bus.ts:46 — `const decision = this.policyEngine.check(message.toolCall);` 每次工具调用都依赖该引擎",
+        "被删除的 packages/cli/src/config/policy.ts 曾把 settings.tools.allowed / settings.mcp.allowed / settings.mcpServers[].trust / settings.tools.autoAccept / ApprovalMode.AUTO_EDIT 转成 ALLOW 规则并设置优先级"
+      ],
+      "rule": "SECURITY-POLICY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 权限/策略配置链路被截断（配置读取方还在，注入方被删除）。影响评估：tools.allowed、mcp.allowed、mcpServers[].trust、tools.autoAccept、AUTO_EDIT 的自动放行语义全部丢失，属安全策略面的行为回归；同时 core 侧仍保留 policyEngineConfig 入口，形成「有开关但无人接线」的隐性死代码。",
+        "suggestion": "[重构思路] 若策略引擎在本版本仍生效，应先迁移规则构造到 core（或保留 CLI 侧注入）再删除旧文件；确认要下线该能力时，需同步删除 core 的 `ConfigParameters.policyEngineConfig`、MessageBus 的策略依赖，并在文档中说明 settings 相关字段的替代方案。代码示例：`const policyEngineConfig = createPolicyEngineConfig(settings, approvalMode); return new Config({ ...policyEngineConfig 保持不变... });`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P1",
+      "category": "安全",
+      "file": "packages/cli/src/config/config.ts",
+      "line": 564,
+      "title": "CLI 不再注入 policyEngineConfig，settings 中的工具许可/MCP 信任/autoAccept 策略整体失效",
+      "description": "config/policy.ts 中的 createPolicyEngineConfig 被删除，loadCliConfig 构造 Config 时不再传 policyEngineConfig，而 core 仍用 `new PolicyEngine(params.policyEngineConfig)` 构建消息总线上的策略引擎。由于 PolicyEngineConfig 的 rules/defaultDecision/nonInteractive 全为可选，未注入时 rules 为空、defaultDecision 为 ASK_USER。MessageBus 每次工具确认请求都依赖该引擎，于是原本由 settings 派生的规则（tools.allowed 的 ALLOW、mcp.allowed 与 mcpServers[].trust 的 ALLOW、tools.autoAccept 的只读工具 ALLOW、AUTO_EDIT 时 EditTool 的 ALLOW）全部消失。影响：这些用户配置项成为静默无效的死配置，交互式会话行为回归为逐次询问；策略层对工具调用的唯一来源退化为固定默认值，“显式允许/信任”的安全语义不再生效。",
+      "evidence": [
+        "packages/cli/src/config/config.ts:564-577 — `return new Config({...})` 中已无 `policyEngineConfig`，仅保留 `allowedTools`（576）与 `excludeTools`（577）等直连字段",
+        "packages/core/src/config/config.ts:247 — `policyEngineConfig?: PolicyEngineConfig;` 为可选，不传即 undefined；429-430 — `this.policyEngine = new PolicyEngine(params.policyEngineConfig); this.messageBus = new MessageBus(this.policyEngine);`",
+        "packages/core/src/policy/types.ts:38-55 — PolicyEngineConfig 的 rules/defaultDecision/nonInteractive 全部可选",
+        "packages/core/src/policy/policy-engine.ts:48-54 — 无配置时 `rules = []`、`defaultDecision = ASK_USER`",
+        "packages/core/src/confirmation-bus/message-bus.ts:45-70 — 每个 TOOL_CONFIRMATION_REQUEST 都执行 `this.policyEngine.check(message.toolCall)`，ALLOW 直接确认、DENY 拒绝、ASK_USER 透传 UI",
+        "被删除的 packages/cli/src/config/policy.ts 曾把 settings.tools.allowed / settings.mcp.allowed / settings.mcpServers[].trust / settings.tools.autoAccept / ApprovalMode.AUTO_EDIT 转成带优先级的 ALLOW 规则"
+      ],
+      "rule": "SECURITY-POLICY-001",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 权限/策略配置链路被截断（core 侧读取入口仍在，CLI 侧注入被删除）。影响评估：tools.allowed、mcp.allowed、mcpServers[].trust、tools.autoAccept、AUTO_EDIT 的自动放行语义丢失，属安全策略面的行为回归；同时留下「有开关但无人接线」的隐性死代码，用户配置无法自证生效。",
+        "suggestion": "[重构思路] 若本版本仍需策略引擎，应先迁移规则构造（core 或 cli）再删除旧文件；若确定下线该能力，需同步删除 core 的 `ConfigParameters.policyEngineConfig` 与 MessageBus 的策略依赖，并给出 settings 相关字段的替代说明。代码示例：`const policyEngineConfig = createPolicyEngineConfig(settings, approvalMode); return new Config({ ..., policyEngineConfig, excludeTools, ... });`",
+        "subcategory": "权限策略注入缺失"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P1",
+      "category": "安全",
+      "file": "packages/cli/src/config/config.ts",
+      "line": 564,
+      "title": "CLI 不再注入 policyEngineConfig，settings 中的显式允许/信任/autoAccept 放行规则整体失效",
+      "description": "config/policy.ts 中的 createPolicyEngineConfig 被删除，loadCliConfig 构造 Config 时不再传 policyEngineConfig，而 core 仍用 `new PolicyEngine(params.policyEngineConfig)` 构建消息总线上的策略引擎。由于 PolicyEngineConfig 的 rules/defaultDecision/nonInteractive 全为可选，未注入时 rules 为空、defaultDecision 为 ASK_USER。MessageBus 每次工具确认请求都依赖该引擎，于是原本由 settings 派生的 ALLOW 规则（tools.allowed、mcp.allowed、mcpServers[].trust、tools.autoAccept 的只读工具放行、AUTO_EDIT 时 EditTool 放行）全部消失。注意 tools.exclude 仍通过 Config.createToolRegistry 与 shell-utils 的 checkCommandPermissions 生效，因此失效的是「显式允许/信任」这一类规则。影响：这些配置项成为静默无效的死配置，交互式会话从自动放行退化为逐次询问，策略层对工具调用的唯一来源变成固定默认值。",
+      "evidence": [
+        "packages/cli/src/config/config.ts:564-577 — `return new Config({...})` 中已无 `policyEngineConfig`，仅保留 `allowedTools`（576）与 `excludeTools`（577）等直连字段",
+        "packages/core/src/config/config.ts:247 — `policyEngineConfig?: PolicyEngineConfig;` 为可选，不传即 undefined；429-430 — `this.policyEngine = new PolicyEngine(params.policyEngineConfig); this.messageBus = new MessageBus(this.policyEngine);`",
+        "packages/core/src/policy/types.ts:38-55 — PolicyEngineConfig 的 rules/defaultDecision/nonInteractive 全部可选",
+        "packages/core/src/policy/policy-engine.ts:48-54 — 无配置时 `rules = []`、`defaultDecision = ASK_USER`",
+        "packages/core/src/confirmation-bus/message-bus.ts:45-70 — 每个 TOOL_CONFIRMATION_REQUEST 都执行 `this.policyEngine.check(message.toolCall)`，ALLOW 直接确认、DENY 拒绝、ASK_USER 透传 UI",
+        "packages/core/src/config/config.ts:988-1003 与 packages/core/src/utils/shell-utils.ts:334-351 — tools.exclude 另有生效路径，故本缺陷范围仅限「显式允许/信任」类规则",
+        "被删除的 packages/cli/src/config/policy.ts 曾把 settings.tools.allowed / settings.mcp.allowed / settings.mcpServers[].trust / settings.tools.autoAccept / ApprovalMode.AUTO_EDIT 转成带优先级的 ALLOW 规则"
+      ],
+      "rule": "SECURITY-POLICY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 权限/策略配置链路被截断（core 侧读取入口仍在，CLI 侧注入被删除）。影响评估：tools.allowed、mcp.allowed、mcpServers[].trust、tools.autoAccept、AUTO_EDIT 的自动放行语义丢失，属安全策略面的行为回归；同时留下「有开关但无人接线」的隐性死代码。",
+        "suggestion": "[重构思路] 若本版本仍需策略引擎，应先迁移规则构造（core 或 cli）再删除旧文件；若确定下线该能力，需同步删除 core 的 `ConfigParameters.policyEngineConfig` 与 MessageBus 的策略依赖，并给出 settings 相关字段的替代说明。代码示例：`const policyEngineConfig = createPolicyEngineConfig(settings, approvalMode); return new Config({ ..., policyEngineConfig, excludeTools, ... });`",
+        "subcategory": "权限策略注入缺失"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-1-create-pr.yml",
+      "line": 70,
+      "title": "Create Patch for Preview 步骤缺少 if 条件，channel=stable 时会重复创建两个补丁 PR",
+      "description": "「Create Patch for Stable」带 `if: github.event.inputs.channel == 'stable'`，而新增的「Create Patch for Preview」没有任何条件判断，且其 run 命令透传的是 `--channel=${{ github.event.inputs.channel }}`（不是固定的 preview）。因此当 channel=stable 时两个步骤都会执行，对同一 commit 连续运行两次 create-patch-pr.js，生成两份相同的 cherry-pick PR（或第二次因分支/PR 已存在而报错使 workflow 失败）；而 channel=preview 时只执行第二步，逻辑上正确。影响：所有 stable 补丁发布路径都会产生重复 PR 或直接失败。",
+      "evidence": [
+        ".github/workflows/release-patch-1-create-pr.yml:64-68 — `Create Patch for Stable` 带 `if: \"github.event.inputs.channel == 'stable'\"`，run 为 `--channel=stable`",
+        ".github/workflows/release-patch-1-create-pr.yml:70-73 — `Create Patch for Preview` 无 `if:`，run 为 `--channel=${{ github.event.inputs.channel }}`",
+        ".github/workflows/release-patch-1-create-pr.yml:10-16 — inputs.channel 为 choice，仅 stable/preview 两值"
+      ],
+      "rule": "CI-RELEASE-002",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 条件分支缺省（新增 step 未加对称的 if 守卫）。影响评估：stable 补丁流程重复触发脚本，产生重复 cherry-pick PR 或在第二次执行时失败，并把 workflow 标红，进而影响「Create Issue on Failure」链路。",
+        "suggestion": "[重构思路] 第二步补上与第一步对称的条件，并把 channel 写死以消除歧义。代码示例：`- name: 'Create Patch for Preview'\\n  if: \"github.event.inputs.channel == 'preview'\"\\n  run: 'node scripts/create-patch-pr.js --commit=${{ github.event.inputs.commit }} --channel=preview --dry-run=${{ github.event.inputs.dry_run }}'`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-1-create-pr.yml",
+      "line": 70,
+      "title": "Create Patch for Preview 步骤缺少 if 条件，channel=stable 时会重复执行补丁脚本",
+      "description": "「Create Patch for Stable」带 `if: github.event.inputs.channel == 'stable'`，而新增的「Create Patch for Preview」没有任何条件判断，且其 run 透传的是 `--channel=${{ github.event.inputs.channel }}`（并非固定的 preview）。因此 channel=stable 时两个步骤都会执行，对同一 commit 连续运行两次 create-patch-pr.js：第二次会在已存在同名 `hotfix/<tag>/cherry-pick-<sha>` 分支时执行 `git checkout -b` / `gh pr create` 而失败。影响：所有 stable 补丁发布路径要么产生重复 cherry-pick PR，要么在第二步报错把 workflow 标红。",
+      "evidence": [
+        ".github/workflows/release-patch-1-create-pr.yml:64-68 — `Create Patch for Stable` 带 `if: \"github.event.inputs.channel == 'stable'\"`，run 为 `--channel=stable`",
+        ".github/workflows/release-patch-1-create-pr.yml:70-73 — `Create Patch for Preview` 无 `if:`，run 为 `--channel=${{ github.event.inputs.channel }}`",
+        ".github/workflows/release-patch-1-create-pr.yml:10-16 — inputs.channel 为 choice，仅 stable/preview 两个值",
+        "scripts/create-patch-pr.js:48-74 — 脚本会创建 `release/${latestTag}` 与 `hotfix/${latestTag}/cherry-pick-${sha}` 分支并 push，重复执行同名分支操作会失败",
+        "scripts/create-patch-pr.js:76-86 — 随后执行 `gh pr create --base ... --head ${hotfixBranch}`，重复执行会撞上已存在的 PR"
+      ],
+      "rule": "CI-RELEASE-002",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 新增 step 缺少与兄弟 step 对称的条件守卫，导致幂等性被破坏。影响评估：stable 补丁流程重复触发脚本，产生重复 PR 或第二次执行失败，并把 workflow 标红，进而触发 release-failure 的 issue 流程。",
+        "suggestion": "[重构思路] 补上与第一步对称的条件，并把 channel 写死以消除歧义。代码示例：`- name: 'Create Patch for Preview'\\n  if: \"github.event.inputs.channel == 'preview'\"\\n  run: 'node scripts/create-patch-pr.js --commit=${{ github.event.inputs.commit }} --channel=preview --dry-run=${{ github.event.inputs.dry_run }}'`",
+        "subcategory": "发布流程条件控制"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-2-trigger.yml",
+      "line": 42,
+      "title": "脚本内插值 `${{ github.event.inputs.dry_run }}` 在 pull_request 事件下渲染为空，生成非法 JS 使触发步骤失败",
+      "description": "actions/github-script 的 script 是先做表达式替换、再交给 Node 解析。`body = ${{ github.event.inputs.dry_run }} ? '[DRY RUN]' : '';` 虽写在 else（workflow_dispatch）分支内，但表达式在解析前就被替换：pull_request 事件没有 inputs，替换结果为空串，脚本变成 `body =  ? '[DRY RUN]' : '';`，解析即 SyntaxError，整个步骤失败，尾部的 createWorkflowDispatch 不会执行。而该 job 的主路径正是 hotfix PR 合并后的 pull_request 触发。影响：合并 hotfix PR 后补丁发布链路完全不触发，且失败表现为脚本语法错误，排查成本高。",
+      "evidence": [
+        ".github/workflows/release-patch-2-trigger.yml:42 — `body = ${{ github.event.inputs.dry_run }} ? '[DRY RUN]' : '';`，位于 :41 的 `else { // workflow_dispatch` 分支内",
+        ".github/workflows/release-patch-2-trigger.yml:38-44 — 分支内混用运行时 JS 与构建期 `${{ }}` 插值",
+        ".github/workflows/release-patch-2-trigger.yml:26 — job 的 if 以 `github.event.pull_request.merged == true && startsWith(github.head_ref, 'hotfix/')` 为主路径",
+        ".github/workflows/release-patch-2-trigger.yml:54-63 — 真正的 `github.rest.actions.createWorkflowDispatch` 位于脚本尾部，语法错误时不会执行",
+        "scripts/create-patch-pr.js:82-84 — PR body 中确实会写入 `**[DRY RUN]**`，说明该 dry-run 识别逻辑本身有用，问题仅在于插值方式"
+      ],
+      "rule": "CI-SCRIPT-EXPR-INJECT-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] GitHub 表达式插值污染脚本字面量（空值注入导致语法错误）。影响评估：hotfix 合并后的自动补丁发布被完全阻断，属发布链路硬性故障，且报错信息指向 JS 语法而非配置问题。",
+        "suggestion": "[重构思路] 不要在 JS 表达式位置直接插值事件输入，改为读取字符串或 context.payload。代码示例：`if (context.eventName === 'pull_request') { body = context.payload.pull_request.body ?? ''; headRef = context.payload.pull_request.head.ref; } else { const dryRun = context.payload.inputs?.dry_run === 'true'; body = dryRun ? '[DRY RUN]' : ''; headRef = context.payload.inputs?.ref ?? ''; }`",
+        "subcategory": "workflow 内联脚本"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-2-trigger.yml",
+      "line": 42,
+      "title": "脚本内插值 `${{ github.event.inputs.dry_run }}` 在 pull_request 事件下渲染为空，生成非法 JS 导致触发步骤失败",
+      "description": "actions/github-script 的 script 是先用表达式替换再交给 Node 解析。`body = ${{ github.event.inputs.dry_run }} ? '[DRY RUN]' : '';` 这一行虽然写在 else（workflow_dispatch）分支里，但表达式在解析前就已被替换：pull_request 事件没有 inputs，替换结果为空串，生成的脚本变成 `body =  ? '[DRY RUN]' : '';`，解析即 SyntaxError。而该 job 的主要触发路径正是 hotfix PR 合并（if 中的 `github.event_name == 'pull_request' && ... startsWith(github.head_ref, 'hotfix/')`），此时整个 github-script 步骤必然失败，createWorkflowDispatch 不会执行。影响：合并 hotfix PR 后补丁发布链路完全不触发，且失败原因表现为脚本语法错误，排查成本高。",
+      "evidence": [
+        ".github/workflows/release-patch-2-trigger.yml:42 — `body = ${{ github.event.inputs.dry_run }} ? '[DRY RUN]' : '';` 位于 `else { // workflow_dispatch` 分支（:41）",
+        ".github/workflows/release-patch-2-trigger.yml:38-44 — 分支内混用了运行时 JS 与构建期 `${{ }}` 插值",
+        ".github/workflows/release-patch-2-trigger.yml:26 — job 的 if 以 `github.event.pull_request.merged == true && startsWith(github.head_ref, 'hotfix/')` 为主路径",
+        ".github/workflows/release-patch-2-trigger.yml:54-63 — 真正的 `github.rest.actions.createWorkflowDispatch` 调用在脚本尾部，语法错误时不会执行"
+      ],
+      "rule": "CI-SCRIPT-EXPR-INJECT-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] GitHub 表达式插值污染脚本字面量（空值注入导致语法错误）。影响评估：hotfix 合并后的自动补丁发布被完全阻断，属于发布链路的硬性故障。",
+        "suggestion": "[重构思路] 不要把事件输入直接插入 JS 表达式，改为字符串插值后显式比较，或用 `context.eventName` 分支内部读取 `context.payload.inputs`。代码示例：`if (context.eventName === 'pull_request') { body = context.payload.pull_request.body ?? ''; headRef = context.payload.pull_request.head.ref; } else { const dryRun = context.payload.inputs?.dry_run === 'true'; body = dryRun ? '[DRY RUN]' : ''; headRef = context.payload.inputs?.ref ?? ''; }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-2-trigger.yml",
+      "line": 48,
+      "title": "内联迁移丢失显式渠道段解析与非法渠道校验，channel 可能被误判为 stable",
+      "description": "被删除的 patch-trigger.js 会先按 `hotfix/<version>/<stable|preview>/cherry-pick-xxx` 解析出显式渠道段（parts.length>=4 且 parts[2] 为 stable/preview），否则回退到按版本名推断，并对 channel 做 'stable'/'preview' 合法性校验后抛错。迁移后的内联脚本只保留 `version.includes('preview') ? 'preview' : 'stable'`，显式渠道段被忽略，非法渠道也不再校验。对形如 hotfix/v0.5.3/preview/cherry-pick-abc 的分支会以 stable 渠道发布（把预览版补丁发到 latest 标签），且任何拼写错误都会静默回退为 stable。同时原脚本向原始 PR 回帖“Patch Release Started”的反馈能力也随之消失。",
+      "evidence": [
+        "`.github/workflows/release-patch-2-trigger.yml:47-48` — `const version = headRef.split('/')[1]; const channel = version.includes('preview') ? 'preview' : 'stable';`",
+        "被删除的 `scripts/releasing/patch-trigger.js` — `if (parts.length >= 4 && (parts[2] === 'stable' || parts[2] === 'preview')) { channel = parts[2]; }` 及随后的 `if (channel !== 'stable' && channel !== 'preview') throw new Error(...)`",
+        "被删除脚本中 `const commentBody = `🚀 **Patch Release Started!** ...` 的 PR 回帖逻辑在迁移后的 workflow 中无对应实现"
+      ],
+      "rule": "BEHAVIOR-PARITY-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 脚本迁移时行为不等价（渠道解析/校验、用户反馈丢失）。影响评估：preview 补丁可能被错误发布到 stable 的 npm tag `latest`，属于发布渠道错配；渠道拼写错误不再中断流程，问题会被静默放大。",
+        "suggestion": "[重构思路] 在内联脚本中复刻原有解析与校验：优先取 `headRef.split('/')[2]` 的显式渠道，缺失时再按版本名推断，非 stable/preview 直接 `core.setFailed`；如仍需通知，追加一次 `github.rest.issues.createComment`。代码示例：`const parts = headRef.split('/'); const channel = parts.length >= 4 && ['stable','preview'].includes(parts[2]) ? parts[2] : (version.includes('preview') ? 'preview' : 'stable'); if (!['stable','preview'].includes(channel)) core.setFailed(...)`",
+        "subcategory": "迁移行为不等价"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-2-trigger.yml",
+      "line": 58,
+      "title": "补丁发布 workflow dispatch 的 ref 被写死为特性分支 'mk-patch-releases'，触发必然失败",
+      "description": "release-patch-2-trigger.yml 把原本调用 scripts/releasing/patch-trigger.js 的逻辑改为内联 actions/github-script，但 createWorkflowDispatch 的 ref 被写死为 'mk-patch-releases'，而不是 release-patch-3-release.yml 所在的默认分支 'main'。热修 PR 合并后（或手动 workflow_dispatch）该调用会去一个并不存在的分支上查找目标 workflow，GitHub 将返回 404/Not Found，补丁发布链路在第 2 步就中断，且不会真正触发发布。同 MR 内的 release-patch-from-comment.yml 使用的是 ref: 'main'，被删除的 patch-trigger.js 原本也是以 '--ref', 'main' 派发，可见这是迁移时的手误。",
+      "evidence": [
+        "`.github/workflows/release-patch-2-trigger.yml:58` — `ref: 'mk-patch-releases',`",
+        "同 MR 的 `.github/workflows/release-patch-from-comment.yml:42` — `ref: 'main',`",
+        "被删除的 `scripts/releasing/patch-trigger.js` 中 args 为 `['workflow','run',workflowId,'--ref','main', ...]`",
+        "`.github/workflows/release-patch-2-trigger.yml:54-64` — `createWorkflowDispatch({ ..., workflow_id, ref, inputs })`"
+      ],
+      "rule": "RELEASE-WORKFLOW-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 迁移脚本到内联 github-script 时硬编码了错误的分支 ref。影响评估：热修合并后自动触发的补丁发布在 workflow dispatch 阶段失败（404），发布被静默卡住，需要人工介入才能发现。",
+        "suggestion": "[重构思路] 把 ref 改回默认分支（或直接用 `context.ref`/`github.ref_name`，手动触发时使用 `context.payload.ref`），避免硬编码分支名。代码示例：`github.rest.actions.createWorkflowDispatch({ owner: context.repo.owner, repo: context.repo.repo, workflow_id, ref: 'main', inputs: { ... } })`",
+        "subcategory": "CI 触发引用错误"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-3-release.yml",
+      "line": 77,
+      "title": "previous-tag 被设为当前 RELEASE_TAG 自身，且版本号直接取输入值，发布 notes 区间与 tag 规范失真",
+      "description": "原实现用 scripts/get-release-version.js 计算 releaseVersion/releaseTag/previousReleaseTag，并额外做一次重算以检测并发发布；现在 RELEASE_TAG 与 RELEASE_VERSION 都直接等于 github.event.inputs.version，而传给 publish-release 的 previous-tag 又取自 RELEASE_TAG，使 `gh release create --notes-start-tag` 的起始 tag 与新 tag 相同。同时上游 release-patch-2-trigger 的 version 来自 `headRef.split('/')[1]`（如 1.2.3，无 v 前缀），tag 命名规范与历史 tag 不一致。影响：自动生成的 release notes 区间为空或命令直接报错；并发的 patch 发布不再被检测，可能发布出重复/错误版本号。",
+      "evidence": [
+        ".github/workflows/release-patch-3-release.yml:54-56 — `echo \"RELEASE_TAG=${{ github.event.inputs.version }}\"`、`RELEASE_VERSION=...version`、`NPM_TAG=${{ github.event.inputs.type }}`",
+        ".github/workflows/release-patch-3-release.yml:77 — `previous-tag: '${{ steps.patch_version.outputs.RELEASE_TAG }}'` 与 :71 的 `release-tag` 取值完全相同",
+        ".github/actions/publish-release/action.yml:149-151 — 调用 `gh release create ... --notes-start-tag \"${{ inputs.previous-tag }}\" --generate-notes`",
+        ".github/workflows/release-patch-2-trigger.yml:47-49 — `const version = headRef.split('/')[1]`（无 v 前缀）后作为 inputs.version 传入",
+        "同 hunk 中被删除的 'Verify Version Consistency' 步骤原本用于检测并发 patch 发布导致的版本变化"
+      ],
+      "rule": "RELEASE-VERSION-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 发布元数据计算被替换为直接透传输入，previous-tag 语义错误 + 并发保护缺失。影响评估：release notes 生成异常（空区间或 gh 报错），tag/version 命名脱离既有规范；两个 patch 发布并发时不再安全失败。",
+        "suggestion": "[重构思路] 恢复基于 npm/git 的版本计算（get-release-version.js 或等价实现）以得到 previousReleaseTag 与规范化 version/tag；确定性校验可保留为独立步骤。代码示例：`PREV=$(node scripts/get-release-version.js --type=patch --patch-from=\"${{ github.event.inputs.type }}\" | jq -r .previousReleaseTag); echo \"PREVIOUS_TAG=${PREV}\" >> \"${GITHUB_OUTPUT}\"` 并把 `previous-tag` 指向该输出。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-3-release.yml",
+      "line": 77,
+      "title": "previous-tag 被设为当前 RELEASE_TAG 自身，且版本号直接透传输入，发布 notes 与 tag 规范失真",
+      "description": "原实现用 scripts/get-release-version.js 计算 releaseVersion/releaseTag/previousReleaseTag，并重算一次以检测并发发布；现在 RELEASE_TAG 与 RELEASE_VERSION 都直接等于 github.event.inputs.version，而传给 publish-release 的 previous-tag 又取自 RELEASE_TAG，使 `gh release create --notes-start-tag` 的起始 tag 与新 tag 相同。同时上游 release-patch-2-trigger 的 version 来自 `headRef.split('/')[1]`（如 1.2.3，无 v 前缀），与 release-manual.yml:6-9 声明的「必须带 v 前缀」约定不一致。影响：自动生成的 release notes 区间为空或命令报错；并发 patch 发布不再被检测，可能产出重复/错误版本号。",
+      "evidence": [
+        ".github/workflows/release-patch-3-release.yml:54-56 — `echo \"RELEASE_TAG=${{ github.event.inputs.version }}\"`、`RELEASE_VERSION=${{ github.event.inputs.version }}`、`NPM_TAG=${{ github.event.inputs.type }}`",
+        ".github/workflows/release-patch-3-release.yml:71 与 :77 — `release-tag` 与 `previous-tag` 均取自 `steps.patch_version.outputs.RELEASE_TAG`，两者相同",
+        ".github/actions/publish-release/action.yml:146-151 — `gh release create \"${{ inputs.release-tag }}\" ... --notes-start-tag \"${{ inputs.previous-tag }}\" --generate-notes`（--notes-start-tag 在第 150 行）",
+        ".github/workflows/release-patch-2-trigger.yml:47-49 — `const version = headRef.split('/')[1]`，随后作为 inputs.version 传入",
+        ".github/workflows/release-manual.yml:6-9 — manual 发布的 version 描述明确要求带 \"v\" 前缀，与 patch 链路透传的无前缀版本形成对比",
+        "同 hunk 中被删除的 'Verify Version Consistency' 步骤原本用于检测并发 patch 发布造成的版本变化"
+      ],
+      "rule": "RELEASE-VERSION-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 发布元数据计算被替换为直接透传输入：previous-tag 语义错误 + 并发保护缺失 + 版本格式不统一。影响评估：release notes 生成异常（空区间或 gh 报错）、tag 命名脱离既有 v 前缀规范；两个 patch 发布并发时不再安全失败。",
+        "suggestion": "[重构思路] 恢复基于 git/npm 的版本计算得到规范的 version/tag 与 previousReleaseTag，并发校验可作为独立步骤保留。代码示例：`PREV=$(node scripts/get-release-version.js --type=patch --patch-from=\"${{ github.event.inputs.type }}\" | jq -r .previousReleaseTag); echo \"PREVIOUS_TAG=${PREV}\" >> \"${GITHUB_OUTPUT}\"`，再把 `previous-tag` 指向该输出。",
+        "subcategory": "发布版本与元数据"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-3-release.yml",
+      "line": 87,
+      "title": "失败通知步骤用单引号包裹变量，RELEASE_TAG 与命令替换不会展开",
+      "description": "补丁发布失败通知步骤中，`gh issue create --title '...${RELEASE_TAG} on $(date ...)'` 与 `--body '... ${DETAILS_URL}'` 都使用了单引号。bash 中单引号内不做变量替换与命令替换，最终提交的 issue 标题会是字面量 `Patch Release Failed for ${RELEASE_TAG} on $(date +'%Y-%m-%d')`，正文中的 `${DETAILS_URL}` 也不会展开。该步骤是本 MR 中 release-patch-3-release.yml（+9/-139）保留的发布兜底路径，一旦发布失败，通知内容会缺失版本号与运行链接，值班人员无法直接定位失败的 run。",
+      "evidence": [
+        "`.github/workflows/release-patch-3-release.yml:87` — `--title 'Patch Release Failed for ${RELEASE_TAG} on $(date +'%Y-%m-%d')'`",
+        "`.github/workflows/release-patch-3-release.yml:88` — `--body 'The patch-release workflow failed. See the full run for details: ${DETAILS_URL}'`",
+        "`.github/workflows/release-patch-3-release.yml:79-84` — 该步骤环境变量仅设置了 `RELEASE_TAG`、`DETAILS_URL`，需由 shell 展开"
+      ],
+      "rule": "SHELL-QUOTING-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] Shell 引号使用错误导致变量不展开。影响评估：发布失败时创建的 issue 标题/正文为字面量占位符，缺失版本与 run 链接，降低发布故障的可运维性。",
+        "suggestion": "[重构思路] 改用双引号包裹需要展开的内容，并对标题中的 date 单独用 `$(date +%F)`；或直接使用 GitHub 表达式注入。代码示例：`gh issue create --title \"Patch Release Failed for ${RELEASE_TAG} on $(date +%F)\" --body \"The patch-release workflow failed. See the full run for details: ${DETAILS_URL}\"`",
+        "subcategory": "Shell 变量展开"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/ci.yml",
+      "line": 407,
+      "title": "package_docker 的 if 条件在 push/merge_group 下恒为假，主分支镜像永不被推送且失败也会推送",
+      "description": "新增的 package_docker 使用 `if: always() && (github.event.pull_request.head.repo.full_name == github.repository)`。ci.yml 同时由 push（main、release/**）和 merge_group 触发，这些事件下 `github.event.pull_request` 为 null，条件恒为假，因此合并到 main 后不会构建/推送镜像；反之在内部 PR 上条件为真，且 `always()` 使其不依赖 lint/test 结果、也没有 needs，即使测试全红仍会把镜像推到 GHCR（tag 由 `github.ref_name` 去掉 /merge 得到，形如 PR 编号）。影响：镜像发布时机与预期相反——该出镜像的场景不出、不该出的场景出，且可能发布出未经测试的镜像。",
+      "evidence": [
+        ".github/workflows/ci.yml:398-407 — `package_docker`：`runs-on: 'self-hosted'`、`if: ${{ always() && (github.event.pull_request.head.repo.full_name == github.repository) }}`",
+        ".github/workflows/ci.yml:4-11 — 触发包含 `push: branches: ['main', 'release/**']` 与 `merge_group`",
+        ".github/workflows/ci.yml:398-419 — 该 job 无 `needs`，因此与 lint/test 并行且不受其结果约束",
+        ".github/actions/push-docker/action.yml:46-60 — 使用 `input.ref-name` 去掉 `/merge` 作为镜像 tag，并 `push: true`"
+      ],
+      "rule": "CI-CONDITION-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 事件条件与事件类型不匹配（只在 PR 场景成立的表达式被用于通用 workflow）。影响评估：main 分支缺少镜像产物；同时内部 PR 会在 always() 下推送未通过测试的镜像，污染 GHCR 标签。",
+        "suggestion": "[重构思路] 明确「何时推送镜像」：主线推送时才推送，PR 只构建不推送。代码示例：`if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}`，并加 `needs: ['lint', 'test']`；PR 场景改用 `push: false` 的独立构建 job。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "packages/cli/src/config/extension.ts",
+      "line": 642,
+      "title": "updateExtensionByName 找不到扩展时抛异常，批量更新在第一处失败即中止",
+      "description": "新实现把「未找到」从原地的 addItem 提示 + continue 改为 `throw new Error(...)`，link 类型也会先置 UP_TO_DATE 再抛错。extensionsCommand 的 for 循环没有逐项 try/catch，因此 `/extensions update a b c` 中任一名字拼错或为 link 安装，后续名字都不会被处理，用户只看到一条英文原始异常文本，而不是原来的「Extension X not found.」并继续处理剩余的扩展。",
+      "evidence": [
+        "packages/cli/src/config/extension.ts:639-648 — `if (!extension) { throw new Error(\\`Extension \"${extensionName}\" not found. Run gemini extensions list to see available extensions.\\`); } return await updateExtension(...)`",
+        "packages/cli/src/config/extension.ts:663-666 — link 类型先 `setExtensionUpdateState(ExtensionUpdateState.UP_TO_DATE);` 再 `throw new Error('Extension is linked so does not need to be updated')`",
+        "packages/cli/src/ui/commands/extensionsCommand.ts:58-71 — for 循环内直接 `updateInfos.push(await updateExtensionByName(...))`，无单项容错",
+        "本 MR diff 原实现：`if (!extension) { context.ui.addItem({ type: MessageType.ERROR, text: \\`Extension ${name} not found.\\` }, Date.now()); continue; }`"
+      ],
+      "rule": "ERROR-HANDLING-009",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 批量操作缺少逐项错误隔离。影响评估：多扩展更新时一个无效名字会阻断其余扩展，用户体验与原来的「跳过并继续」语义不一致。",
+        "suggestion": "[重构思路] 在循环内对每个名字分别 try/catch，收集失败项后统一汇总输出；保留「未找到就提示并继续」的语义。代码示例：`for (const name of names) { try { updateInfos.push(await updateExtensionByName(name, ...)); } catch (e) { failures.push(\\`${name}: ${getErrorMessage(e)}\\`); } }`",
+        "subcategory": "错误处理与批量操作"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/config/extension.ts",
+      "line": 650,
+      "title": "按名更新不再先检查是否有更新，且丢失 UPDATING 并发保护，每次都会卸载重装",
+      "description": "updateExtensionByName 直接调用 updateExtension，而 updateExtension 无条件执行 copyExtension → uninstallExtension → installExtension，只在事后用 originalVersion/updatedVersion 比较来决定打印「already up to date」。旧实现（已删除的 config/extensions/update.ts）在 CLI 侧先 checkForExtensionUpdate，非 UPDATE_AVAILABLE 就直接返回，并在 updateExtension 开头用 `if (currentState === UPDATING) return undefined;` 阻止重复更新。影响：`gemini extensions update <name>` 与 `/extensions update <name>` 在已是最新版本时仍会走完整的卸载-重装（含网络下载），耗时且把用户暴露在下载/安装失败后的回滚路径上；当同一扩展被并发触发（--all 与单名更新）时也不再互斥，可能出现同一扩展被同时卸载两次。",
+      "evidence": [
+        "packages/cli/src/config/extension.ts:633-648 — `updateExtensionByName` 未做任何更新可用性判断，直接 `return await updateExtension(extension, cwd, setExtensionUpdateState)`",
+        "packages/cli/src/config/extension.ts:650-702 — updateExtension 开头只有 installMetadata.type 与 'link' 检查，随后立即 `setExtensionUpdateState(UPDATING)`、`copyExtension`、`uninstallExtension`、`installExtension`",
+        "packages/cli/src/commands/extensions/update.ts:64-73 — 仅在更新完成后比较 originalVersion/updatedVersion 才输出「already up to date」",
+        "被删除的 packages/cli/src/config/extensions/update.ts 中曾有两处保护：CLI 侧 `if (updateState !== ExtensionUpdateState.UPDATE_AVAILABLE) { ... return; }` 与 updateExtension 内 `if (currentState === ExtensionUpdateState.UPDATING) return undefined;`",
+        "packages/cli/src/config/extension.ts:743-757 — updateAllUpdatableExtensions 仍按 extensionsState 过滤，说明「先判断再更新」的语义在批量路径保留、单名路径丢失"
+      ],
+      "rule": "CORRECTNESS-EXT-UPDATE-002",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 重构合并两份实现时丢失前置守卫（更新可用性判断、并发状态互斥）。影响评估：无谓的网络下载与安装操作、失败回滚概率上升；并发调用下同一扩展可能被重复卸载，用户侧表现为「更新成功但版本没变」或临时缺扩展。",
+        "suggestion": "[重构思路] 把「检查是否可更新」内聚进 updateExtension 本身：先 checkForExtensionUpdate，非 UPDATE_AVAILABLE 直接返回信息；同时恢复 UPDATING 状态的并发守卫。代码示例：`const state = await checkForExtensionUpdate(installMetadata, extension.path); if (state !== ExtensionUpdateState.UPDATE_AVAILABLE) { setExtensionUpdateState(state); return { name: extension.name, originalVersion: extension.version, updatedVersion: extension.version }; }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/commands/extensions/enable.ts",
+      "line": 19,
+      "title": "--scope 校验放行了 System/SystemDefaults，但 handler 只识别 workspace，其余静默降级为 User",
+      "description": "enable/disable 命令把 yargs 的 `choices: [SettingScope.User, SettingScope.Workspace]` 换成了用 `Object.values(SettingScope)` 的自定义 check，而 SettingScope 实际有四个成员（User/Workspace/System/SystemDefaults）。校验因此会放行 `--scope system`、`--scope systemdefaults`，但 handleEnable/handleDisable 只判断 `args.scope?.toLowerCase() === 'workspace'`，其它一律走 `SettingScope.User` 分支。影响：用户以为在系统级禁用了扩展，实际写入的是用户级 override 并打印「successfully disabled for scope \"system\"」，作用域被静默篡改；同时与 enableExtension/disableExtension 显式拒绝 System 的约定相矛盾（本应报错）。",
+      "evidence": [
+        "packages/cli/src/commands/extensions/enable.ts:52-68 — `.check()` 用 `Object.values(SettingScope).map(s => s.toLowerCase()).includes(argv.scope.toLowerCase())` 作为放行条件",
+        "packages/cli/src/config/settings.ts:150-154 — `enum SettingScope { User, Workspace, System, SystemDefaults }`",
+        "packages/cli/src/commands/extensions/enable.ts:17-23 — `if (args.scope?.toLowerCase() === 'workspace') { enableExtension(..., Workspace) } else { enableExtension(..., User) }`",
+        "packages/cli/src/config/extension.ts:709-711、725-727 — enableExtension/disableExtension 对 `SettingScope.System` 与 `SystemDefaults` 抛 `System and SystemDefaults scopes are not supported.`",
+        "packages/cli/src/commands/extensions/disable.ts 中 handleDisable 使用同样的 workspace/else→User 逻辑，且日志直接打印原始 args.scope"
+      ],
+      "rule": "INPUT-VALIDATION-002",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 校验范围与处理分支不一致导致静默降级。影响评估：作用域写入错误位置，用户看到的提示与实际生效范围不符；属于静默的数据写入偏差，难以自查。",
+        "suggestion": "[重构思路] 让校验与归一化共用同一份「受支持作用域」列表，并对不支持的值显式报错，而不是 else 兜底。代码示例：`const SUPPORTED = ['user', 'workspace'] as const; const scope = (args.scope ?? 'user').toLowerCase(); if (!SUPPORTED.includes(scope)) throw new Error(`Unsupported scope: ${args.scope}. Use one of ${SUPPORTED.join(', ')}.`); enableExtension(args.name, scope === 'workspace' ? SettingScope.Workspace : SettingScope.User);`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F019",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/config/extensions/extensionEnablement.ts",
+      "line": 102,
+      "title": "globToRegex 的 `*` 语义变更后，无尾斜杠的旧规则会退化为前缀匹配，且 fromFileRule/fromInput 规范化不一致",
+      "description": "新的 `*` 转换把 `(\\/?)` 作为可捕获前缀组：当规则以 `/` 结尾（如 `/home/u/*`）时得到 `^/home/u/(/.*)?$`，语义正确；但当 baseRule 不以 `/` 结尾时（旧版本 enable 写入的 `/home/u*`），该组匹配空，正则退化为 `^/home/u(.*)?$`，会匹配 `/home/user-evil/` 这类仅前缀相同的目录。同时 Override.fromInput 会调用 ensureLeadingAndTrailingSlash，而 Override.fromFileRule 不调用，导致 enable() 的 conflictsWith/isEqualTo/isChildOf 去重判定与实际 isEnabled 匹配使用不同形态的规则串，旧配置规则清理不掉、反复累积。影响：扩展启用/禁用范围可能超出预期目录（安全相关的信任边界模糊），且 extension-enablement.json 中规则会持续堆积难以人工维护。",
+      "evidence": [
+        "packages/cli/src/config/extensions/extensionEnablement.ts:99-105 — `.replace(/(\\/?)\\*/g, '($1.*)?')` 使以 `/` 结尾的 base 得到 `(/.*)?`，否则得到不受限的 `(.*)?`",
+        "packages/cli/src/config/extensions/extensionEnablement.ts:25-30 — `fromInput` 调用 `ensureLeadingAndTrailingSlash(baseRule)`",
+        "packages/cli/src/config/extensions/extensionEnablement.ts:32-40 — `fromFileRule` 只剥掉末尾 `*`，不做首尾斜杠规范化",
+        "packages/cli/src/config/extensions/extensionEnablement.ts:170-181 — enable() 依赖 `conflictsWith`/`isEqualTo`/`isChildOf` 清理旧规则，比较的是 baseRule 字符串",
+        "packages/cli/src/config/extensions/extensionEnablement.ts:124-137 — isEnabled 对 currentPath 做 `ensureLeadingAndTrailingSlash` 后逐条 matchesPath，最后匹配者胜"
+      ],
+      "rule": "GLOB-MATCH-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 规则表达式的规范化前置不一致 + 通配符语义放宽。影响评估：目录匹配可能越界（`/a` 规则命中 `/a-suffix`），破坏「哪些目录启用该扩展」的信任边界；旧规则无法被新逻辑去重，配置逐步膨胀。",
+        "suggestion": "[重构思路] 在 Override 内部统一规范化（两类构造器都走 ensureLeadingAndTrailingSlash），并把 `*` 明确定义为「仅匹配子路径」：`globToRegex` 中把 `*` 替换为 `(/.*)?` 并要求 baseRule 必有尾斜杠；对历史配置做一次性迁移（读取时规范化并回写）。代码示例：`static fromFileRule(r: string): Override { const isDisable = r.startsWith('!'); let base = isDisable ? r.slice(1) : r; const includeSubdirs = base.endsWith('*'); base = ensureLeadingAndTrailingSlash(includeSubdirs ? base.slice(0, -1) : base); return new Override(base, isDisable, includeSubdirs); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F020",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/config/extensions/extensionEnablement.ts",
+      "line": 102,
+      "title": "globToRegex 的 `*` 语义变更后，无尾斜杠的旧规则退化为前缀匹配，且 fromFileRule/fromInput 规范化不一致",
+      "description": "新的 `*` 转换把 `(\\/?)` 作为可捕获前缀组：规则以 `/` 结尾（如 `/home/u/*`）时得到 `^/home/u/(/.*)?$`，语义正确；但 baseRule 不以 `/` 结尾时（旧版本 enable 写入的 `/home/u*`），该组匹配空，正则退化为 `^/home/u(.*)?$`，会命中 `/home/user-evil/` 这类仅前缀相同的目录。同时 Override.fromInput 会调用 ensureLeadingAndTrailingSlash，而 Override.fromFileRule 不调用，导致 enable() 的 conflictsWith/isEqualTo/isChildOf 去重判定与实际 isEnabled 匹配使用不同形态的规则串，旧规则清理不掉、反复累积。影响：扩展启用/禁用范围可能超出预期目录（信任边界模糊），且 extension-enablement.json 中规则持续堆积，难以人工维护。",
+      "evidence": [
+        "packages/cli/src/config/extensions/extensionEnablement.ts:99-105 — `.replace(/(\\/?)\\*/g, '($1.*)?')`：base 以 `/` 结尾得 `(/.*)?`，否则得不受限的 `(.*)?`",
+        "packages/cli/src/config/extensions/extensionEnablement.ts:25-30 — `fromInput` 调用 `ensureLeadingAndTrailingSlash(baseRule)`",
+        "packages/cli/src/config/extensions/extensionEnablement.ts:32-40 — `fromFileRule` 只剥掉末尾 `*`，不做首尾斜杠规范化",
+        "packages/cli/src/config/extensions/extensionEnablement.ts:170-181 — enable() 依赖 `conflictsWith`/`isEqualTo`/`isChildOf` 清理旧规则，比较的是 baseRule 字符串",
+        "packages/cli/src/config/extensions/extensionEnablement.ts:124-137 — isEnabled 对 currentPath 做 `ensureLeadingAndTrailingSlash` 后逐条 matchesPath，最后匹配者胜",
+        "packages/cli/src/config/extension.ts:717、732 — disableExtension/enableExtension 固定以 `includeSubdirs=true` 与 `os.homedir()`/cwd 作为 scopePath 调用 manager"
+      ],
+      "rule": "GLOB-MATCH-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 规则文本规范化前置不一致 + 通配符语义放宽。影响评估：目录匹配可能越界（`/a` 规则命中 `/a-suffix`），破坏「哪些目录启用该扩展」的信任边界；旧规则无法被新逻辑去重，配置逐步膨胀。",
+        "suggestion": "[重构思路] 在 Override 内部统一规范化（两类构造器都走 ensureLeadingAndTrailingSlash），并把 `*` 明确限定为「仅匹配子路径」；对历史配置在读取时规范化并回写。代码示例：`static fromFileRule(r: string): Override { const isDisable = r.startsWith('!'); let base = isDisable ? r.slice(1) : r; const includeSubdirs = base.endsWith('*'); base = ensureLeadingAndTrailingSlash(includeSubdirs ? base.slice(0, -1) : base); return new Override(base, isDisable, includeSubdirs); }`",
+        "subcategory": "路径匹配与配置规范化"
+      }
+    },
+    {
+      "id": "F021",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/e2e.yml",
+      "line": 34,
+      "title": "E2E 矩阵纳入 macOS/Windows 后取消 continue-on-error 与 Windows 性能调优，且每个 job 重建项目",
+      "description": "重构把 build + e2e_linux + e2e_slow_platforms + e2e_windows 合并为单一 e2e-test 矩阵，新增 macos-latest 与 gemini-cli-windows-16-core，但被删除的 slow/windows job 原本带 `continue-on-error: true`，并包含 Windows Defender 排除、npm config 性能项、`NODE_OPTIONS=--max-old-space-size=32768` 等调优；同时 artifact 上传/下载被删除，改为每个矩阵 job 自行 `npm ci` + `npm run build`，workflow 级 `concurrency` 也被移除。影响：Windows/macOS 上原本易超时或 OOM 的 E2E 现在直接成为阻塞性失败（不再是非阻塞信号），每个 PR 要重复执行多次完整安装与构建，且同一 PR 连续推送会并行跑多套 E2E，显著推高 CI 时间与成本。",
+      "evidence": [
+        ".github/workflows/e2e.yml:31-45 — matrix 新增 `macos-latest` 与 `gemini-cli-windows-16-core`，仅通过 exclude 去掉 docker sandbox 组合",
+        ".github/workflows/e2e.yml:18-29 — 新的 `e2e-test` job 无 `continue-on-error`",
+        ".github/workflows/e2e.yml:64-70 — 每个 job 自行 `npm ci`、`npm run build`（原 build 产物上传/下载步骤已删除）",
+        "diff 中被删除的 e2e_slow_platforms/e2e_windows 含 `continue-on-error: true`、`Configure Windows Defender exclusions`、`Configure npm for Windows performance`、`NODE_OPTIONS: '--max-old-space-size=32768 --max-semi-space-size=256'`",
+        ".github/workflows/e2e.yml:1-16 — workflow 顶层已无 `concurrency` 配置"
+      ],
+      "rule": "CI-MATRIX-001",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 合并 job 时丢失容错开关与环境调优，同时取消构建产物复用。影响评估：慢平台测试从「非阻塞」变为「阻塞」，PR 反馈更易因平台抖动变红；CI 计算成本按矩阵规模放大数倍。",
+        "suggestion": "[重构思路] 用 matrix 变量驱动容错与 Windows 专有步骤，并恢复构建产物复用或至少开启 npm 缓存。代码示例：`continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}`，Windows 组合保留 `Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE` 与 `NODE_OPTIONS` 内存参数。",
+        "subcategory": "CI 稳定性与成本"
+      }
+    },
+    {
+      "id": "F022",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/e2e.yml",
+      "line": 34,
+      "title": "E2E 矩阵纳入 macOS/Windows 后取消了 continue-on-error 与 Windows 性能调优，且每个 job 重建项目",
+      "description": "重构把 build + e2e_linux + e2e_slow_platforms + e2e_windows 合并为单一 e2e-test 矩阵，新增 macos-latest 与 gemini-cli-windows-16-core，但被删掉的 slow/windows job 原本带 `continue-on-error: true`，并包含 Windows Defender 排除、npm config 性能项、`NODE_OPTIONS=--max-old-space-size=32768` 等调优；同时 artifact 上传/下载被删除，改为每个矩阵 job 自行 `npm ci` + `npm run build`，workflow 级 `concurrency` 也被移除。影响：Windows/macOS 上原本容易超时或 OOM 的 E2E 现在直接成为阻塞性失败（不再是非阻塞信号），每个 PR 要重复执行多达 6 次完整安装与构建，且同一 PR 连续推送会并行跑多套 E2E，显著推高 CI 时间与成本。",
+      "evidence": [
+        ".github/workflows/e2e.yml:31-45 — matrix 新增 `macos-latest` 与 `gemini-cli-windows-16-core`，仅通过 exclude 去掉 docker sandbox 组合",
+        ".github/workflows/e2e.yml:18-29 — 新的 `e2e-test` job 无 `continue-on-error`",
+        ".github/workflows/e2e.yml:59-70 — 每个 job 自行 `npm ci`、`npm run build`（原 build 产物上传/下载步骤已删除）",
+        "diff 中被删除的 e2e_slow_platforms/e2e_windows 含 `continue-on-error: true`、`Configure Windows Defender exclusions`、`Configure npm for Windows performance`、`NODE_OPTIONS: '--max-old-space-size=32768 --max-semi-space-size=256'`",
+        ".github/workflows/e2e.yml:1-16 — workflow 顶层已无 `concurrency` 配置"
+      ],
+      "rule": "CI-MATRIX-001",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 合并 job 时丢失容错开关与环境调优，同时取消构建产物复用。影响评估：慢平台测试从「非阻塞」变成「阻塞」，PR 反馈更容易因平台抖动而变红；CI 计算成本按矩阵规模放大数倍。",
+        "suggestion": "[重构思路] 保留慢平台的容错与调优（用 matrix 变量驱动 `continue-on-error` 与 Windows 专有步骤），并恢复 build 产物复用或至少对慢平台做 npm 缓存。代码示例：`continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}`，并在 windows 组合上保留 `Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE` 与 `NODE_OPTIONS` 内存参数。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F023",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-from-comment.yml",
+      "line": 51,
+      "title": "失败评论条件过宽，任意 issue_comment 都会在该 PR 上留下「/patch 失败」评论；job 还丢失了 actions: write 权限",
+      "description": "重构把「Comment on Failure」的条件从 `startsWith(github.event.comment.body, '/patch') && STATE != 'MERGED'` 简化为仅 `STATE != 'MERGED'`。而 pr_status 步骤只在 `steps.slash_command.outputs.dispatched == 'true'` 时才运行，非 /patch 评论时该输出为空，条件 `'' != 'MERGED'` 成立，于是任何一条普通评论都会触发失败评论刷屏。同时 job 级 `permissions: actions: write` 与 github-script 的 `github-token` 都被删除，dispatch 步骤使用的是工作流默认 token，若仓库默认只读则会 403。另外 `JSON.parse('${{ steps.slash_command.outputs.command-arguments }}')` 假定该输出是 JSON 对象，若为普通参数字符串（如 `stable`）会直接抛错。影响：普通 PR 评论被机器人刷屏；补丁触发在只读默认权限下静默失败。",
+      "evidence": [
+        ".github/workflows/release-patch-from-comment.yml:50-51 — `if: \"steps.pr_status.outputs.STATE != 'MERGED'\"`，已无 `startsWith(github.event.comment.body, '/patch')`",
+        ".github/workflows/release-patch-from-comment.yml:22-24 — `pr_status` 仅在 `dispatched == 'true'` 时运行，被跳过时 outputs 为空",
+        ".github/workflows/release-patch-from-comment.yml:7-10 — job 已无 `permissions:`（原为 `contents/pull-requests/actions: write`）",
+        ".github/workflows/release-patch-from-comment.yml:34-38 — github-script 步骤未传 `github-token`，直接调用 `github.rest.actions.createWorkflowDispatch`",
+        ".github/workflows/release-patch-from-comment.yml:37 — `const args = JSON.parse('${{ steps.slash_command.outputs.command-arguments }}');`"
+      ],
+      "rule": "CI-CONDITION-002",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 守卫条件被过度简化 + 权限声明丢失 + 输入格式假设未验证。影响评估：非 /patch 评论触发错误的失败回复（噪音污染 PR），真正的 dispatch 可能因权限不足失败，验收路径不可靠。",
+        "suggestion": "[重构思路] 恢复「仅处理 /patch 且已 dispatch」的联合条件，补回最小权限，并对 arguments 做容错解析。代码示例：`if: ${{ steps.slash_command.outputs.dispatched == 'true' && steps.pr_status.outputs.STATE != 'MERGED' }}`；job 级补 `permissions: { actions: write, contents: read, pull-requests: write }`；脚本中改为 `const raw = '${{ steps.slash_command.outputs.command-arguments }}'; const args = (() => { try { return JSON.parse(raw); } catch { return { channel: raw.trim() || 'stable', dry_run: 'false' }; } })();`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F024",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": ".github/workflows/release-patch-from-comment.yml",
+      "line": 51,
+      "title": "失败评论条件过宽，任意 issue_comment 都会留下「/patch 失败」评论；job 还丢失了 actions: write 权限",
+      "description": "重构把「Comment on Failure」的条件从 `startsWith(github.event.comment.body, '/patch') && STATE != 'MERGED'` 简化为仅 `STATE != 'MERGED'`。而 pr_status 仅在 `steps.slash_command.outputs.dispatched == 'true'` 时运行，非 /patch 评论时该输出为空，条件 `'' != 'MERGED'` 成立，于是任何一条普通评论都会触发失败评论刷屏。同时 job 级 `permissions: actions: write` 与 github-script 的 `github-token` 都被删除，dispatch 步骤使用工作流默认 token，若仓库默认只读则 createWorkflowDispatch 会 403。另外 `JSON.parse('${{ steps.slash_command.outputs.command-arguments }}')` 假定该输出为 JSON 对象，若为普通参数字符串（如 `stable`）会直接抛错且随后 `args.channel` 为 undefined。影响：普通 PR 评论被机器人刷屏；补丁触发可能在只读默认权限下静默失败。",
+      "evidence": [
+        ".github/workflows/release-patch-from-comment.yml:50-51 — `if: \"steps.pr_status.outputs.STATE != 'MERGED'\"`，已无 `startsWith(github.event.comment.body, '/patch')`",
+        ".github/workflows/release-patch-from-comment.yml:22-24 — `pr_status` 仅在 `dispatched == 'true'` 时运行，被跳过时 outputs 为空",
+        ".github/workflows/release-patch-from-comment.yml:7-10 — job 已无 `permissions:`（原为 contents/pull-requests/actions: write）",
+        ".github/workflows/release-patch-from-comment.yml:34-38 — github-script 未传 `github-token`，直接调用 `github.rest.actions.createWorkflowDispatch`",
+        ".github/workflows/release-patch-from-comment.yml:37、45-46 — `JSON.parse('${{ steps.slash_command.outputs.command-arguments }}')` 后直接使用 `args.channel`/`args.dry_run`",
+        "scripts/create-patch-pr.js:21-26 — 下游 workflow 的 channel 是必填且只能是 stable/preview，一旦 args.channel 为 undefined，dispatch 的 inputs 将无效"
+      ],
+      "rule": "CI-CONDITION-002",
+      "confidence": 0.76,
+      "tips": {
+        "review": "[缺陷类型] 守卫条件被过度简化 + 权限声明丢失 + 输入格式假设未验证。影响评估：非 /patch 评论触发错误的失败回复（污染 PR）、真正的 dispatch 可能因权限不足失败、参数字符串非 JSON 时直接抛错，三条路径都使该入口不可靠。",
+        "suggestion": "[重构思路] 恢复「已 dispatch 且未合并」的联合条件，补回最小权限，并对 arguments 做容错解析。代码示例：`if: ${{ steps.slash_command.outputs.dispatched == 'true' && steps.pr_status.outputs.STATE != 'MERGED' }}`；job 级补 `permissions: { actions: write, contents: read, pull-requests: write }`；脚本内改为 `const raw = '${{ steps.slash_command.outputs.command-arguments }}'; const args = (() => { try { return JSON.parse(raw); } catch { return { channel: raw.trim() || 'stable', dry_run: 'false' }; } })();`",
+        "subcategory": "评论触发流程"
+      }
+    },
+    {
+      "id": "F025",
+      "severity": "P3",
+      "category": "可维护",
+      "file": ".github/actions/publish-release/action.yml",
+      "line": 151,
+      "title": "发布结束后不再清理 release 分支，长期会残留大量 release/* 分支",
+      "description": "publish-release 复合 action 末尾删除了「🧹 Clean up release branch」步骤（`git push origin --delete \"${{ steps.release_branch.outputs.BRANCH_NAME }}\"`），而 release-patch-1/3 链路也没有其它清理位置（scripts/create-patch-pr.js 只负责创建 release/<tag> 分支）。影响：每次补丁发布都会在 origin 留下一个 release/<version> 分支，需要人工清理；这些分支还会持续命中 ci.yml/e2e.yml 中 `branches: release/**` 的 pull_request 触发条件，产生额外的工作流噪音。",
+      "evidence": [
+        ".github/actions/publish-release/action.yml:139-151 — 文件以「🎉 Create GitHub Release」步骤（含 :146-151 的 `gh release create ... --target \"${{ steps.release_branch.outputs.BRANCH_NAME }}\"`）结束，其后没有任何删除分支的步骤",
+        ".github/actions/publish-release/action.yml:148 — `steps.release_branch.outputs.BRANCH_NAME` 仍被 `--target` 消费，说明该输出本身仍需保留，只是清理动作缺失",
+        "scripts/create-patch-pr.js:43-60 — 脚本会在缺失时创建并推送 `release/${latestTag}` 分支，从不负责删除",
+        ".github/workflows/ci.yml:8-11 与 .github/workflows/e2e.yml:8-11 — pull_request 触发包含 `release/**`，残留分支会参与匹配"
+      ],
+      "rule": "MAINTAINABILITY-BRANCH-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 清理逻辑被移除但未提供替代（仓库卫生/资源残留）。影响评估：release/* 分支长期累积；由于 CI 对 release/** 分支有匹配规则，残留分支可能带来额外的触发与维护负担。",
+        "suggestion": "[重构思路] 若担心 dry-run 或失败时误删，可把清理做成成功路径上的独立可选步骤（`success() && inputs.dry-run == 'false'` + `continue-on-error: true`），或在发布流水线末尾统一清理。代码示例：`- name: 'Clean up release branch'\\n  if: ${{ success() && inputs.dry-run == 'false' }}\\n  continue-on-error: true\\n  shell: bash\\n  run: git push origin --delete \"${{ steps.release_branch.outputs.BRANCH_NAME }}\"`",
+        "subcategory": "发布分支清理"
+      }
+    },
+    {
+      "id": "F026",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/commands/extensionsCommand.ts",
+      "line": 58,
+      "title": "批量按名更新时单个扩展不存在会中断后续更新",
+      "description": "updateAction 在 names 分支中顺序 `await updateExtensionByName(...)`，而 updateExtensionByName 在找不到扩展时会直接 throw（旧实现是打印 not found 后 return，不抛异常）。由于循环整体包裹在一个 try 中，任一名字无效会跳到 catch，后续名字都不再更新，只输出一条错误信息。影响：`/extensions update a b` 在 a 拼写错误或未安装时，b 不会被更新，用户看到的是单条错误而误以为全部失败。",
+      "evidence": [
+        "packages/cli/src/ui/commands/extensionsCommand.ts:57-71 — names 分支循环 `updateInfos.push(await updateExtensionByName(name, ...))`，未逐个 try/catch",
+        "packages/cli/src/config/extension.ts:639-646 — 找不到扩展时 `throw new Error('Extension \"...\" not found. Run gemini extensions list ...')`",
+        "packages/cli/src/ui/commands/extensionsCommand.ts:46-… — 整个更新逻辑位于单个 try 块内，异常直接进入 catch 分支",
+        "被删除的 packages/cli/src/commands/extensions/update.ts 旧实现曾 `console.log('Extension \"...\" not found.'); return;` 而不抛错"
+      ],
+      "rule": "ERROR-HANDLING-003",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 逐个处理循环中缺少局部错误隔离。影响评估：一个无效名称导致同批次其它扩展的更新被跳过，且用户只能看到单个错误提示，容易误判整体失败原因。",
+        "suggestion": "[重构思路] 对每个扩展单独 try/catch 并汇总结果。代码示例：`for (const name of names) { try { updateInfos.push(await updateExtensionByName(name, dir, extensions, onState)); } catch (e) { context.ui.addItem({ type: MessageType.ERROR, text: getErrorMessage(e) }, Date.now()); } }`",
+        "subcategory": "批量操作错误隔离"
+      }
+    },
+    {
+      "id": "F027",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/commands/extensionsCommand.ts",
+      "line": 65,
+      "title": "扩展更新状态改为非函数式 setState 后，批量/并发更新互相覆盖导致状态丢失",
+      "description": "`setExtensionsUpdateState` 由 `Dispatch<SetStateAction<Map>>` 降级为 `(updateState: Map) => void`，调用方只能读取渲染期快照再整体覆盖：extensionsCommand 用 `new Map(context.ui.extensionsUpdateState)`，updateAllUpdatableExtensions 用 `new Map(extensionsState)` 且在 Promise.all 中并发执行。多个扩展同时更新时，后写入的 map 不包含前一个扩展的新状态，UI 中先完成的那项会退回旧值（例如一直停在 UPDATING 或 CHECKING），用户无法判断更新结果。",
+      "evidence": [
+        "packages/cli/src/ui/commands/extensionsCommand.ts:65-67 — `const newState = new Map(context.ui.extensionsUpdateState); newState.set(name, updateState); context.ui.setExtensionsUpdateState(newState);`",
+        "packages/cli/src/config/extension.ts:743-757 — `Promise.all(extensions.filter(...).map((extension) => updateExtension(extension, cwd, (updateState) => { const newState = new Map(extensionsState); newState.set(extension.name, updateState); setExtensionsUpdateState(newState); })))`",
+        "packages/cli/src/ui/commands/types.ts:66-68 — `setExtensionsUpdateState: (updateState: Map<string, ExtensionUpdateState>) => void;`（原为 Dispatch<SetStateAction<...>>）",
+        "packages/cli/src/ui/components/views/ExtensionsList.tsx:26 — `const state = extensionsUpdateState.get(ext.name);` 列表直接依赖该 map 渲染状态"
+      ],
+      "rule": "STATE-005",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 非函数式状态更新造成并发覆盖（stale closure）。影响评估：`/extensions update a b` 与 `/extensions update --all` 时部分扩展状态不会到达最终态，UI 展示与实际不一致。",
+        "suggestion": "[重构思路] 保留函数式更新语义，或在 core 侧把本轮所有状态聚合成一个 Map 后一次写入。代码示例：`type SetExtensionsUpdateState = (updater: (prev: Map<string, ExtensionUpdateState>) => Map<string, ExtensionUpdateState>) => void;` 调用侧 `context.ui.setExtensionsUpdateState((prev) => new Map(prev).set(name, updateState));`",
+        "subcategory": "React 状态更新"
+      }
+    },
+    {
+      "id": "F028",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "third_party/get-ripgrep/package.json",
+      "line": 2,
+      "title": "third_party/get-ripgrep 已迁出 workspaces 且无导入方，目录与依赖声明成为仓库内的死代码",
+      "description": "core 现已改用 `@joshua.litt/get-ripgrep`（packages/core/package.json:27 新增 `^0.0.2`，ripGrep.ts:11 引入 downloadRipGrep），本 MR 同时把 `third_party/get-ripgrep` 从根 package.json 的 workspaces 移除并删除 esbuild 的 `get-ripgrep` alias。但该目录仍保留 package.json（name 为 `@lvce-editor/ripgrep`、main 指向 src/index.js、postinstall 指向 src/postinstall.js）以及一批仅它使用的依赖声明（execa/got/extract-zip/fs-extra/tempy/xdg-basedir 等），而全仓已无任何代码导入该包（对 rgPath/get-ripgrep 的引用只剩 @joshua.litt 作用域与 core 自身）。影响：仓库中残留无法被构建、无引用、也不会再被 postinstall 使用的 vendored 代码，后续维护者容易误以为它仍是构建链路的一部分；同时本 MR 删除了 `.gitignore` 里的 `third_party/*/coverage/`，暗示该目录本应整体移除。",
+      "evidence": [
+        "packages/core/src/tools/ripGrep.ts:11 — `import { downloadRipGrep } from '@joshua.litt/get-ripgrep';`",
+        "packages/core/package.json:27 — 新增依赖 `\"@joshua.litt/get-ripgrep\": \"^0.0.2\"`",
+        "third_party/get-ripgrep/package.json:2、5、13 — name 为 `@lvce-editor/ripgrep`、`\"main\": \"src/index.js\"`、`\"postinstall\": \"node ./src/postinstall.js\"`",
+        "third_party/get-ripgrep/src/index.js:12-17 — 仅导出 `rgPath`，全仓无导入方",
+        "根 package.json 的 workspaces 中 `third_party/get-ripgrep` 成员被删除，esbuild.config.js 中的 `'get-ripgrep'` alias 也被删除",
+        ".gitignore 中 `third_party/*/coverage/` 被删除"
+      ],
+      "rule": "MAINTAINABILITY-DEAD-CODE-001",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 迁移后遗留的 vendored 死代码与冗余依赖声明。影响评估：增加仓库体积与理解成本，误导后续排障（例如以为 ripgrep 仍由本地 postinstall 下载）；同时第三方代码仍在仓库中却脱离构建与忽略规则管理。",
+        "suggestion": "[重构思路] 若已完全切到 @joshua.litt/get-ripgrep，应删除整个 third_party/get-ripgrep 目录（含 package.json 与 src），并在变更说明中记录下载行为变化；若暂时保留，需在目录内加 README 标注「已不再被构建引用」。代码示例：`git rm -r third_party/get-ripgrep`，并保留 `.gitignore` 中对其它 third_party 的忽略规则。",
+        "subcategory": "死代码与依赖清理"
+      }
+    },
+    {
+      "id": "F029",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "third_party/get-ripgrep/package.json",
+      "line": 13,
+      "title": "package.json 声明的 postinstall 与 typings 目标文件在仓库中不存在",
+      "description": "回退到上游 @lvce-editor/ripgrep 结构时，package.json 新增了 `\"postinstall\": \"node ./src/postinstall.js\"` 和 `\"typings\": \"src/index.d.ts\"`，但这两个文件并未随本 MR 加入仓库：diff 中 src 目录只新增了 index.js，tsconfig.json 与 index.ts 被删除，工具读取 src/postinstall.js、src/index.d.ts 均返回不存在。结果是任何人 clone 后在该目录执行 npm install（或该包被作为依赖安装）都会因 postinstall 找不到模块而安装失败；TypeScript 消费方也拿不到类型声明。",
+      "evidence": [
+        "`third_party/get-ripgrep/package.json:13` — `\"postinstall\": \"node ./src/postinstall.js\"`",
+        "`third_party/get-ripgrep/package.json:6` — `\"typings\": \"src/index.d.ts\"`",
+        "读取 `third_party/get-ripgrep/src/postinstall.js` 结果：file cannot be read (not found)",
+        "读取 `third_party/get-ripgrep/src/index.d.ts` 结果：file cannot be read (not found)",
+        "本 MR diff 的 third_party/get-ripgrep 部分仅新增 `src/index.js`，同时删除 `src/index.ts` 与 `tsconfig.json`"
+      ],
+      "rule": "PKG-METADATA-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] package.json 元数据指向不存在的文件（安装脚本与类型声明）。影响评估：该目录下 npm install 会因 postinstall 缺失而失败；类型声明缺失导致 TS 消费方退化为 any 并报 TS7016。",
+        "suggestion": "[重构思路] 要么补齐 `src/postinstall.js`（内容为调用 `downloadRipGrep()`）与 `src/index.d.ts`（声明 `rgPath: string`、`downloadRipGrep` 等导出），要么删除 package.json 中的 postinstall/typings 字段，保持声明与文件树一致。代码示例：`echo \"\" > src/index.d.ts` 仅为占位，建议改为真实声明 `export declare const rgPath: string;`",
+        "subcategory": "包元数据一致性"
+      }
+    },
+    {
+      "id": "F030",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/hooks/shellCommandProcessor.ts",
+      "line": 165,
+      "title": "node-pty 且关闭配色时 shell 输出被反复整屏追加，界面出现重复堆叠文本",
+      "description": "本 MR 把「是否 PTY」的判别换成了类型判别：只要 event.chunk 与 cumulativeStdout 都是 string 就执行 append。但同一 MR 在 core 侧把 PTY 的非配色分支改成返回整屏可见文本字符串（getVisibleText），而 showColor 默认 false，于是每次 render 都把整屏快照追加到 cumulativeStdout，待显示内容线性膨胀并出现重复叠屏；同时原先 PTY 分支设置的 shouldUpdate=true 也被丢掉，刷新退化为 1s 节流。",
+      "evidence": [
+        "packages/cli/src/ui/hooks/shellCommandProcessor.ts:161-169 — `if (typeof event.chunk === 'string' && typeof cumulativeStdout === 'string') { cumulativeStdout += event.chunk; } else { cumulativeStdout = event.chunk; shouldUpdate = true; }`",
+        "packages/core/src/services/shellExecutionService.ts:88-97 — 新增 getVisibleText() 返回 string：`return lines.join('\\n').trimEnd();`",
+        "packages/core/src/services/shellExecutionService.ts:407-422 — `const newOutput = shellExecutionConfig.showColor ? serializeTerminalToObject(...) : getVisibleText(headlessTerminal)`，每次 render 都把整屏快照作为 event.chunk 发出",
+        "packages/core/src/config/config.ts:412 — `showColor: params.shellExecutionConfig?.showColor ?? false`（默认关闭配色）",
+        "packages/core/src/tools/shell.ts:153 — ShellTool 对 data 事件一律 `cumulativeOutput = event.chunk`（替换语义），证明 PTY 快照不可累加"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 全量快照与增量分片语义混淆，导致输出重复累积。影响评估：启用 node-pty 的用户在 `!` shell 模式下会看到重复堆叠的整屏输出，命令输出越长越严重；同时失去即时刷新。",
+        "suggestion": "[重构思路] 让 ShellOutputEvent 显式携带「全量/增量」语义，而不是用类型猜测。代码示例：`onOutputEvent({ type: 'data', chunk: newOutput, isFullScreen: true })`，消费端 `if (event.isFullScreen) { cumulativeStdout = event.chunk; shouldUpdate = true; } else if (typeof event.chunk === 'string' && typeof cumulativeStdout === 'string') { cumulativeStdout += event.chunk; }`",
+        "subcategory": "流式输出累积语义"
+      }
+    },
+    {
+      "id": "F031",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "packages/cli/src/ui/hooks/shellCommandProcessor.ts",
+      "line": 226,
+      "title": "遗留调试 console.log 直接写 stdout，会污染 Ink 渲染画面",
+      "description": "`console.log(terminalHeight, terminalWidth);` 仍留在 shell 执行路径中。这两个参数在本 MR 中已从 shellExecutionConfig 移除（L144-148），现在只剩这行日志在用；在 Ink 全屏 UI 里直接写 stdout 会破坏布局、把内容打到渲染区之外，并且每次执行 shell 命令都会输出一次。core 侧还留有同源的注释调试代码 `// console.log(newOutput)`。",
+      "evidence": [
+        "packages/cli/src/ui/hooks/shellCommandProcessor.ts:226 — `console.log(terminalHeight, terminalWidth);`",
+        "packages/cli/src/ui/hooks/shellCommandProcessor.ts:144-148 — shellExecutionConfig 已不再包含 terminalWidth/terminalHeight（本 MR 删除这两项）",
+        "packages/core/src/services/shellExecutionService.ts:414 — `// console.log(newOutput)` 注释掉的调试语句"
+      ],
+      "rule": "MAINTAINABILITY-007",
+      "confidence": 0.88,
+      "tips": {
+        "review": "[缺陷类型] 调试残留代码进入主路径。影响评估：破坏 TUI 布局与输出可读性，可能干扰对渲染问题的排查，也可能在脚本化/JSON 输出场景污染 stdout。",
+        "suggestion": "[重构思路] 删除该 console.log 与注释代码；若确需诊断，走已有的 onDebugMessage/logger 通道（受 debug 开关控制）。代码示例：`if (config.getDebugMode()) { onDebugMessage(\\`terminal ${terminalWidth}x${terminalHeight}\\`); }`",
+        "subcategory": "调试残留"
+      }
+    },
+    {
+      "id": "F032",
+      "severity": "P1",
+      "category": "安全",
+      "file": "packages/core/src/policy/policy-engine.ts",
+      "line": 21,
+      "title": "移除 toolName 的 `serverName__*` 通配匹配后，既有 MCP 通配策略规则静默失效",
+      "description": "ruleMatches 现在只做 `toolCall.name !== rule.toolName` 的全等比较，原先处理 `serverName__*` 前缀通配的分支被删除，仓库内未找到任何替代实现（cli 侧 policy 配置模块也在本 MR 删除）。若用户的 policyEngineConfig 中存在以 `serverName__*` 编写的 DENY/ALLOW 规则，该规则将永远匹配不到任何工具，直接退化为 defaultDecision：本想拒绝某 MCP server 全部工具的场景变成放行/询问，反向配置则会被误拒；且没有任何告警或迁移提示。",
+      "evidence": [
+        "packages/core/src/policy/policy-engine.ts:21 — `if (rule.toolName && toolCall.name !== rule.toolName) { return false; }`",
+        "本 MR 删除片段（同函数内）：`if (rule.toolName.endsWith('__*')) { const prefix = rule.toolName.slice(0, -3); if (!toolCall.name || !toolCall.name.startsWith(prefix + '__')) { return false; } }`",
+        "packages/core/src/policy/policy-engine.ts:59-75 — 无规则命中时返回 `this.defaultDecision`（构造默认 ASK_USER）",
+        "packages/core/src/index.ts — 移除 `export * from './policy/policy-engine.js'` 与 './policy/types.js'，未见新增通配匹配实现；review_find_references('PolicyEngine') 显示仅 core 内部与 core 测试使用"
+      ],
+      "rule": "SECURITY-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 授权规则匹配能力被删除导致策略静默失效（安全边界变化）。影响评估：依赖通配规则限制 MCP 工具的部署在升级后失去限制，工具调用退化为默认决策，属于安全回归且难以被用户察觉。",
+        "suggestion": "[重构思路] 保留通配能力（或提供显式的前缀匹配字段），并对旧格式规则保持兼容；若确实要下线，至少输出一次性告警。代码示例：`const wildcard = rule.toolName.endsWith('__*'); const ok = wildcard ? toolCall.name?.startsWith(rule.toolName.slice(0, -3) + '__') : toolCall.name === rule.toolName; if (!ok) return false;`",
+        "subcategory": "授权规则匹配"
+      }
+    },
+    {
+      "id": "F033",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/AppContainer.tsx",
+      "line": 871,
+      "title": "anyDialogOpen 提前 return 使 Ctrl+C/Ctrl+D 等全局快捷键在对话框打开时全部失效",
+      "description": "新增的 anyDialogOpen 守卫被放在 handleGlobalKeypress 最前部，命中即 return；而 Ctrl+C（QUIT，含 cancelOngoingRequest）、Ctrl+D（EXIT）、SHOW_MORE_LINES、TOGGLE_SHELL_INPUT_FOCUS 的处理都在其后的 else-if 链中。变更前 QUIT/EXIT 分支位于函数最前，即使对话框打开也能取消进行中的请求并两次 Ctrl+C 退出。现在流式响应期间只要打开了主题/设置/编辑器/信任/隐私提示之一，按键就无法取消请求或退出，终端表现类似卡死。",
+      "evidence": [
+        "packages/cli/src/ui/AppContainer.tsx:864-873 — `const anyDialogOpen = isThemeDialogOpen || isAuthDialogOpen || isEditorDialogOpen || isSettingsDialogOpen || isFolderTrustDialogOpen || showPrivacyNotice; if (anyDialogOpen) { return; }`",
+        "packages/cli/src/ui/AppContainer.tsx:897-906 — `else if (keyMatchers[Command.QUIT](key)) { ... } else if (keyMatchers[Command.EXIT](key)) { ... }` 均位于该守卫之后",
+        "本 MR diff — 原实现中 `if (keyMatchers[Command.QUIT](key)) {...} else if (keyMatchers[Command.EXIT](key)) {...}` 位于 keypress 处理函数前部（在 dialog 判断之前），本次被整体下移",
+        "packages/cli/src/ui/AppContainer.tsx:898-900 — 只有进入 QUIT 分支才会执行 `cancelOngoingRequest?.()`"
+      ],
+      "rule": "BEHAVIOR-004",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 全局中断类快捷键被前置守卫吞掉（交互行为回归）。影响评估：请求进行中打开任一对话框后无法取消请求、无法退出，用户只能先按 Esc 关闭对话框，属于明显的可用性退化。",
+        "suggestion": "[重构思路] 只把非中断类快捷键放在守卫之后，中断/退出语义的按键保持前置。代码示例：`if (keyMatchers[Command.QUIT](key)) { if (!ctrlCPressedOnce) cancelOngoingRequest?.(); handleExit(...); return; } if (keyMatchers[Command.EXIT](key)) { ... return; } if (anyDialogOpen) return;`",
+        "subcategory": "键位分发顺序"
+      }
+    },
+    {
+      "id": "F034",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/cli/src/ui/AppContainer.tsx",
+      "line": 1199,
+      "title": "扩展自动更新与「有更新可用」提示被静默移除，且保留的 autoUpdate 元数据被忽略",
+      "description": "删除 useExtensionUpdates 后，新的 useEffect 只是调用 checkForAllExtensionUpdates 写入状态 map：原先「有更新可用 → addItem 提示用户执行 /extensions update X」以及「installMetadata.autoUpdate === true → 自动更新并输出成功消息」两条行为都不再生效；同时 ExtensionInstallMetadata 的 autoUpdate 字段被删除，用户本地安装元数据里已有的 autoUpdate:true 会被静默忽略，没有任何迁移或告警。",
+      "evidence": [
+        "本 MR 删除 `packages/cli/src/ui/hooks/useExtensionUpdates.ts`（其中含 `if (extension.installMetadata?.autoUpdate) { updateExtension(...) }` 与 `addItem({ type: MessageType.INFO, text: \\`Extension ${extension.name} has an update available, run \"/extensions update ${extension.name}\" ...\\` })`）",
+        "packages/cli/src/ui/AppContainer.tsx:1199-1202 — `const extensions = config.getExtensions(); useEffect(() => { checkForAllExtensionUpdates(extensions, setExtensionsUpdateState); }, [extensions, setExtensionsUpdateState]);`（只写状态，无提示/自动更新）",
+        "packages/core/src/config/config.ts ExtensionInstallMetadata 中的 `autoUpdate?: boolean;` 在本 MR 被删除（diff hunk `@@ -124,7 +124,6 @@ export interface ExtensionInstallMetadata`）",
+        "packages/cli/src/config/extension.ts:765-784 — checkForAllExtensionUpdates 仅返回并 set 状态 map"
+      ],
+      "rule": "BEHAVIOR-012",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 既有用户可见行为被静默移除（缺乏迁移说明）。影响评估：曾经开启 autoUpdate 的用户在升级后不再自动获得扩展更新，也不会再收到更新可用提示，只能主动查看 /extensions list，容易长期停留在旧版本。",
+        "suggestion": "[重构思路] 若是有意下线，请在 CHANGELOG/文档中明确说明并清理残留的元数据写入逻辑；若需保留，应在状态变为 UPDATE_AVAILABLE 时补回一次提示（或按配置自动更新）。代码示例：`const state = await checkForAllExtensionUpdates(...); for (const ext of extensions) { if (state.get(ext.name) === ExtensionUpdateState.UPDATE_AVAILABLE) addItem({ type: MessageType.INFO, text: \\`Extension ${ext.name} has an update available...\\` }, Date.now()); }`",
+        "subcategory": "功能下线与迁移"
+      }
+    },
+    {
+      "id": "F035",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/nonInteractiveCli.ts",
+      "line": 55,
+      "title": "非交互模式不再解析 slash 命令，`-p '/custom'` 会被原样发给模型",
+      "description": "`nonInteractiveCliCommands.ts`（其 handleSlashCommand 负责用 FileCommandLoader 加载自定义命令、把 submit_prompt 结果作为 prompt，并对不支持的结果抛 FatalInputError）与依赖的 `nonInteractiveUi.ts` 被整文件删除；重写后的 runNonInteractive 只调用 handleAtCommand，随后直接进入 sendMessageStream 循环，全文已无任何 slash 命令解析入口，仓库其它文件的 handleSlashCommand 均为交互式路径。结果是脚本/CI 中 `gemini -p \"/<自定义命令> 参数\"` 过去会被展开成 prompt，现在会作为字面量文本发给模型，行为静默改变且不报错。",
+      "evidence": [
+        "本 MR 删除 `packages/cli/src/nonInteractiveCliCommands.ts`（含 `export const handleSlashCommand`、`CommandService.create([new FileCommandLoader(config)], ...)`、`parseSlashCommand`、`FatalInputError` 分支）",
+        "本 MR 删除 `packages/cli/src/ui/noninteractive/nonInteractiveUi.ts`（唯一用途是为非交互场景提供 no-op CommandContext）",
+        "packages/cli/src/nonInteractiveCli.ts:55-70 — 仅 `handleAtCommand(...)`，随后 `currentMessages = [{ role: 'user', parts: processedQuery as Part[] }]` 直接进入请求循环",
+        "review_find_references('handleSlashCommand') — 引用仅剩 ui/hooks/slashCommandProcessor.ts、AppContainer.tsx、useGeminiStream.ts 等交互式路径"
+      ],
+      "rule": "REGRESSION-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 功能回归（非交互模式下自定义 slash 命令展开能力丢失）。影响评估：依赖 `-p` + 自定义命令的自动化脚本会静默改变行为，输出内容与预期完全不同，且没有任何错误提示。",
+        "suggestion": "[重构思路] 若为有意下线，请在 CHANGELOG/帮助文本中显式声明并从文档移除相关用法；否则在 runNonInteractive 入口先尝试解析 slash 命令（命中则用其 submit_prompt 结果替换 input），未命中再走现有流程。代码示例：`const slashResult = await tryHandleSlashCommand(input, abortController, config, settings); const effectiveInput = slashResult ? partListUnionToString(slashResult) : input;`",
+        "subcategory": "功能回归"
+      }
+    },
+    {
+      "id": "F036",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/core/client.ts",
+      "line": 704,
+      "title": "压缩切分点可推进到历史末尾，导致整段会话历史被一次性压缩",
+      "description": "findIndexAfterFraction 之后用一个 while 跳过 model 消息与 functionResponse，直到遇到 user 文本消息或到达 length。若目标比例之后的内容全是 model/tool 结果（工具调用密集的会话很常见），compressBeforeIndex 会等于 curatedHistory.length，于是 historyToKeep 为空，压缩后新历史只剩「summary + ack 固定回复」，最近的用户意图与工具结果全部丢失。旧实现显式避免这种情况（注释「Can't compress everything so just compress at last splitpoint」），新实现没有等价保护。",
+      "evidence": [
+        "packages/core/src/core/client.ts:704-710 — `while (compressBeforeIndex < curatedHistory.length && (curatedHistory[compressBeforeIndex]?.role === 'model' || isFunctionResponse(curatedHistory[compressBeforeIndex]))) { compressBeforeIndex++; }`",
+        "packages/core/src/core/client.ts:712-713 — `const historyToCompress = curatedHistory.slice(0, compressBeforeIndex); const historyToKeep = curatedHistory.slice(compressBeforeIndex);`",
+        "packages/core/src/core/client.ts:739-749 — 新历史为 `[{role:'user',...summary}, {role:'model',...'Got it.'}, ...historyToKeep]`，historyToKeep 为空时仅剩两条",
+        "本 MR 删除的 `findCompressSplitPoint` 末尾注释：`// Can't compress everything so just compress at last splitpoint.` + `return lastSplitPoint;`"
+      ],
+      "rule": "CORRECTNESS-008",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 边界条件缺失导致过度压缩。影响评估：工具输出密集的长会话在压缩后失去全部近因上下文，模型可能重复已完成的工作或产生与当前任务脱节的回复。",
+        "suggestion": "[重构思路] 给 compressBeforeIndex 增加上界（至少保留最后一轮 user/model），或在 historyToKeep 为空时回退到上一处 user 文本切分点。代码示例：`if (historyToKeep.length === 0) { compressBeforeIndex = findLastNonToolUserIndex(curatedHistory); }`",
+        "subcategory": "上下文压缩切分"
+      }
+    },
+    {
+      "id": "F037",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "scripts/create-patch-pr.js",
+      "line": 66,
+      "title": "发布脚本简化后丢失 hotfix 分支已存在检查与 cherry-pick 冲突处理，重跑即失败",
+      "description": "新脚本只对 release 分支做了 branchExists 判断（L52），hotfix 分支直接用 `git checkout -b`（L66），分支已存在时命令失败；`git cherry-pick`（L70）没有冲突分支处理，冲突时 execSync 抛错并经 main().catch 退出，PR 不会被创建。被删除的 scripts/releasing/create-patch-pr.js 对这两处都有处理（复用已存在分支/已开 PR、冲突时带标记提交并生成 [CONFLICTS] PR 并给出人工解决说明）。",
+      "evidence": [
+        "scripts/create-patch-pr.js:66 — `run(\\`git checkout -b ${hotfixBranch} origin/${releaseBranch}\\`, dryRun);`，此前只判断了 releaseBranch 是否存在（L52）",
+        "scripts/create-patch-pr.js:70 — `run(\\`git cherry-pick ${commit}\\`, dryRun);` 之后直接 push 并 `gh pr create`，无冲突检测",
+        "被删除文件 diff：`if (branchExists(hotfixBranch)) { ... gh pr list --head ${hotfixBranch} ... }` 与 `const conflictFiles = status.split('\\n').filter((line) => line.startsWith('UU ') || ...)`、`prTitle = ... [CONFLICTS]`"
+      ],
+      "rule": "TOOLING-010",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 自动化脚本幂等性与异常路径缺失。影响评估：同一 commit 被重复触发 patch、或 cherry-pick 冲突时会直接失败退出，release 流程中断并可能留下半成品远端分支，需要人工清理。",
+        "suggestion": "[重构思路] 恢复幂等与冲突处理：先检测 hotfix 分支/PR 并复用；cherry-pick 失败时读取 `git status --porcelain` 判断冲突，带冲突标记提交并在 PR 标题/正文标注 [CONFLICTS] 交人工处理。代码示例：`if (branchExists(hotfixBranch)) { return reportExisting(hotfixBranch); }`",
+        "subcategory": "发布脚本健壮性"
+      }
+    },
+    {
+      "id": "F038",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/cli/src/ui/components/messages/ToolMessage.tsx",
+      "line": 93,
+      "title": "移除 shell 工具的“(ctrl+f to focus)”提示，交互发现性下降",
+      "description": "`isThisShellFocusable` 及其提示文本被删除，现在只在已聚焦时显示 `[Focused]`。但 Ctrl+F 切换 shell 输入焦点的能力仍然保留（AppContainer 的 TOGGLE_SHELL_INPUT_FOCUS 分支），功能未删、可发现路径却被移除，用户很难知道可以对运行中的 shell 命令输入内容（例如 sudo 密码、交互式程序输入）。",
+      "evidence": [
+        "packages/cli/src/ui/components/messages/ToolMessage.tsx:93-97 — 仅剩 `{isThisShellFocused && (<Box marginLeft={1}><Text color={theme.text.accent}>[Focused]</Text></Box>)}`",
+        "本 MR diff 删除：`const isThisShellFocusable = (name === SHELL_COMMAND_NAME || name === 'Shell') && status === ToolCallStatus.Executing && config?.getShouldUseNodePtyShell();` 与 `{isThisShellFocused ? '(Focused)' : '(ctrl+f to focus)'}`",
+        "packages/cli/src/ui/AppContainer.tsx:912-916 — `keyMatchers[Command.TOGGLE_SHELL_INPUT_FOCUS](key)` 仍在 `activePtyId || shellFocused` 时切换焦点"
+      ],
+      "rule": "UX-011",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 功能提示缺失导致的可用性退化。影响评估：交互式 shell 的输入能力（Ctrl+F）变成隐藏功能，用户遇到需要输入密码/交互的程序时可能误以为无法操作。",
+        "suggestion": "[重构思路] 在可聚焦且未聚焦时用弱化颜色显示简短提示，仅在已聚焦时高亮。代码示例：`{isFocusable && (<Text color={isThisShellFocused ? theme.text.accent : theme.text.secondary}>{isThisShellFocused ? '[Focused]' : '(ctrl+f to focus)'}</Text>)}`",
+        "subcategory": "UI 可发现性"
+      }
+    },
+    {
+      "id": "F039",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "third_party/get-ripgrep/src/downloadRipGrep.js",
+      "line": 26,
+      "title": "残留调试输出 console.log({ VERSION })",
+      "description": "模块顶层新增了 `console.log({ VERSION })`，属于调试残留。该模块会被 postinstall / 运行时下载路径导入，任何使用方（包括 CLI 启动、npm install）都会在标准输出看到 `{ VERSION: 'v13.0.0-10' }`，污染脚本与 CLI 的输出，也容易在排查真实问题时造成干扰。",
+      "evidence": [
+        "`third_party/get-ripgrep/src/downloadRipGrep.js:26` — `console.log({ VERSION })`",
+        "同文件第 114 行已有规范的 `console.info(...)` 缓存提示，说明此处属于额外调试输出"
+      ],
+      "rule": "DEBUG-LOG-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 提交了调试日志。影响评估：安装与运行期的标准输出被噪声污染，可能影响依赖 stdout 解析的脚本或用户可见的 CLI 输出。",
+        "suggestion": "[重构思路] 删除该行；若确需记录版本，改用与其他位置一致的 `console.info` 并仅在调试模式下输出。代码示例：`if (process.env.DEBUG) { console.info(`Using ripgrep ${VERSION}`) }`",
+        "subcategory": "调试代码残留"
+      }
+    },
+    {
+      "id": "F040",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "third_party/get-ripgrep/src/downloadRipGrep.js",
+      "line": 107,
+      "title": "vendored 包的 downloadRipGrep 接口被改为无参并写死 bin 目录，与仓库内消费方契约脱节",
+      "description": "改造后 `downloadRipGrep` 不再接受 overrideBinPath，固定把二进制解压到 `BIN_PATH = join(__dirname, '../bin')`；同时新增的 `src/index.js` 只导出 `rgPath`，不再导出 `downloadRipGrep`。但仓库内唯一消费方 packages/core/src/tools/ripGrep.ts 仍从 '@joshua.litt/get-ripgrep' 导入 `downloadRipGrep` 并以 `downloadRipGrep(Storage.getGlobalBinDir())` 传入全局 bin 目录，随后到 `Storage.getGlobalBinDir()/rg` 查找可执行文件。若该 vendored 目录仍是该 npm 包的源码来源，则下载位置语义被破坏（rg 落到 package 目录下的 bin，而调用方去全局 bin 目录找），且 `import { downloadRipGrep }` 会因缺少导出而失败；若已不再是来源，则该目录与真实依赖实现分叉，后续维护者会被误导。",
+      "evidence": [
+        "`third_party/get-ripgrep/src/downloadRipGrep.js:107` — `export const downloadRipGrep = async () => {`（无参数）",
+        "`third_party/get-ripgrep/src/downloadRipGrep.js:27` — `const BIN_PATH = join(__dirname, '../bin')`，第 117/119 行 `untarGz(downloadPath, BIN_PATH)` / `unzip(downloadPath, BIN_PATH)`",
+        "`third_party/get-ripgrep/src/index.js:12` — 仅 `export const rgPath = ...`，无 downloadRipGrep 导出",
+        "`packages/core/src/tools/ripGrep.ts:11` — `import { downloadRipGrep } from '@joshua.litt/get-ripgrep';`",
+        "`packages/core/src/tools/ripGrep.ts:35` — `await downloadRipGrep(Storage.getGlobalBinDir());`，第 23-25 行以 `Storage.getGlobalBinDir()/rg` 作为执行路径"
+      ],
+      "rule": "API-CONTRACT-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 被 vendored 的第三方包导出签名变更，与消费方调用契约不一致。影响评估：若此目录参与打包/发布，ripgrep 会被解压到错误位置且调用方找不到 rg，Grep 工具不可用；否则形成与真实依赖脱节的并行实现，后续修 bug 会改错地方。",
+        "suggestion": "[重构思路] 明确该目录的定位：若仍作为 @joshua.litt/get-ripgrep 的源码，则保留 `overrideBinPath` 形参并在 index.js 中同时导出 downloadRipGrep 与 rgPath；若已改用上游 npm 包，则删除该 vendored 目录并在 packages/core 中统一改为使用上游 API，避免两处实现分叉。代码示例：`export const downloadRipGrep = async (overrideBinPath) => { ... const binPath = overrideBinPath ?? BIN_PATH; }` + `export { downloadRipGrep } from './downloadRipGrep.js'`",
+        "subcategory": "导出契约不一致"
+      }
+    }
+  ]
+}

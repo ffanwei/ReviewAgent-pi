@@ -2,7 +2,7 @@
 
 > 运行日期：2026-11-15（评审）/ 2026-11-16（judge）
 > 本目录保存本次评测的数据、结果、指标、排除样本分析与对比材料；所有指标均来自已跑完的产物，不包含未完成任务。
-> 迁移说明：本目录是 `exp-group` 的归档副本，不是自包含评测环境；未迁移 `artifacts/` / `ocr/` / `results/`，运行依赖见 [MIGRATION.md](MIGRATION.md)。
+> 迁移说明：本目录是 `exp-group` 的全量归档副本（含 artifacts / ocr / results），不是自包含评测环境；运行依赖见 [MIGRATION.md](MIGRATION.md)。
 
 ## 1. 摘要
 

@@ -1,0 +1,224 @@
+[
+  {
+    "filePath": ".pipelines/templates/release-publish-pmc.yml",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "condition: succeeded()",
+        "review": "[缺陷类型] 生产发布路径缺少审批/环境门禁。影响评估：包一旦发布几乎不可回滚，误发布或跳过 `SkipPMCPublish` 的默认 false 会直接影响 PMC 线上仓库，且审计链断裂。",
+        "suggestion": "[重构思路] 为 `PublishPMC` stage 补上 `ob_release_environment: Production`（或 ADO `environment:`），并在 stage 内先放一个 `approvalJob.yml` 审批 job，让 `PMCPublish` job 依赖它。代码示例：`- stage: PublishPMC\\n  variables:\\n    ob_release_environment: Production\\n  jobs:\\n  - template: /.pipelines/templates/approvalJob.yml@self\\n    parameters: { displayName: 'Approve PMC Publish', jobName: ApprovePMC }\\n  - template: /.pipelines/templates/release-publish-pmc.yml@self\\n    parameters: { skipPublish: ${{ parameters.SkipPMCPublish }} }`（并在 pmc 模板 job 上加 `dependsOn: ApprovePMC`）。",
+        "category": "安全",
+        "subcategory": "发布审批与环境隔离",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 9,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "variables:",
+        "review": "[缺陷类型] 变量配置重复而非复用共享模板。影响评估：SDL 开关调整时易遗漏某条流水线，产生合规覆盖漂移，后续维护成本上升。",
+        "suggestion": "[重构思路] 用 `- template: ./variable/release-shared.yml@self` 引入共享变量，仅保留 PMC 特有的变量组。代码示例：`variables:\\n- template: ./variable/release-shared.yml@self\\n  parameters:\\n    REPOROOT: $(Build.SourcesDirectory)/PowerShell\\n    RELEASETAG: '$(ReleaseTag)'\\n- group: 'packages.microsoft.com'`。",
+        "category": "可维护",
+        "subcategory": "流水线配置复用",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 16,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Microsoft.PowerShell.Commands.Management/commands/management/Process.cs",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "ProcessCollection jobObject = null;",
+        "review": "[缺陷类型] 原生句柄未确定性释放。影响评估：Job 句柄泄漏直到 GC，长驻进程/批量脚本中句柄占用持续增长；也削弱了 SafeHandle 提供的确定性清理语义。",
+        "suggestion": "[重构思路] 让 `ProcessCollection` 实现 `IDisposable`（内部 `_jobObjectHandle?.Dispose()`），并在 StartProcessCommand 中恢复 `using` 或 try/finally 释放。代码示例：`internal sealed class ProcessCollection : IDisposable { public void Dispose() => _jobObjectHandle?.Dispose(); }` 与 `ProcessCollection jobObject = null; ... try { ... } finally { jobObject?.Dispose(); }`。",
+        "category": "可靠性",
+        "subcategory": "原生句柄与资源释放",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2065,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "process.WaitForExit();",
+        "review": "[缺陷类型] 取消机制仅覆盖部分平台/分支，UNIX 与回退路径不可取消。影响评估：`Start-Process -Wait` 在 Linux/macOS 上按 Ctrl+C 无效，交互与 CI 场景可能长时间挂住，是可感知的行为回退。",
+        "suggestion": "[重构思路] 保留与平台无关的取消源：UNIX 继续用 `WaitForExitAsync` + `CancellationTokenSource`，并让 `StopProcessing` 同时取消该令牌；或统一改为「停止标志 + 可超时等待」。代码示例：`#if UNIX\\n_stopCts = new CancellationTokenSource();\\nprocess.WaitForExitAsync(_stopCts.Token).GetAwaiter().GetResult();\\n#else\\n...\\n#endif`，并在 `StopProcessing()` 中同时执行 `_stopCts?.Cancel(); _waithandle?.Set();`。",
+        "category": "可靠性",
+        "subcategory": "取消与中断语义",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 2154,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "protected override void StopProcessing() => _waithandle?.Set();",
+        "review": "[缺陷类型] 取消信号与等待句柄初始化存在竞态（lost wakeup）。影响评估：启动阶段 Ctrl+C 无效，用户需重复打断，自动化脚本可能误以为命令已中断而继续执行后续步骤。",
+        "suggestion": "[重构思路] 先建句柄再启进程，并记录停止标志：进入 Wait 前若已置位则直接返回。代码示例：`private volatile bool _stopRequested;\\nprotected override void StopProcessing() { _stopRequested = true; _waithandle?.Set(); }\\n...\\nif (_stopRequested) { return; }\\njobObject.WaitOne(_waithandle);`（`_waithandle` 在 BeginProcessing 中创建并随 Dispose 释放）。",
+        "category": "可靠性",
+        "subcategory": "取消竞态",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2186,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "dwSize = Marshal.SizeOf(JobList);",
+        "review": "[缺陷类型] Win32 变长结构编组不当 + 轮询错误被吞掉。影响评估：等待语义脆弱，任何一次查询异常都会让 `-Wait` 永久挂起（无超时、无日志），排障困难；每秒一次 P/Invoke 轮询也带来额外唤醒开销。",
+        "suggestion": "[重构思路] 二选一：①回到基于 IO 完成端口 / `WaitForSingleObject` 的阻塞等待（无需轮询）；②保留轮询但修正编组与错误处理——按内核建议的 `cbJobObjectLength` 传 `Marshal.SizeOf<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + sizeof(uint) * (n-1)` 的缓冲区（或改用 `JOBOBJECT_ASSOCIATE_COMPLETION_PORT`），并在返回 false 时区分 ERROR_MORE_DATA 与真实失败（记录 debug 日志、必要时 Set 事件退出）。代码示例：`if (!QueryInformationJobObject(...)) { int err = Marshal.GetLastWin32Error(); if (err != ERROR_MORE_DATA) { /* 记录并退出等待 */ } }`。",
+        "category": "可靠性",
+        "subcategory": "P/Invoke 编组与等待判定",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2786,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".pipelines/templates/release-githubtasks.yml",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "$endPattern = \"^## \\[{0}\\.{1}\\.{2}*\" -f $semanticVersion.Major, $semanticVersion.Minor, $semanticVersion.Patch",
+        "review": "[缺陷类型] 未定义变量导致正则失效 + 字符类书写错误。影响评估：GitHub Release 说明包含全部历史版本（内容冗长且可能包含已废弃条目），每次发版都会产生错误对外文档；该任务无失败信号，问题只在人工查看 Release 时才发现。",
+        "suggestion": "[重构思路] 去掉未定义变量：结束模式应基于“下一个版本标题”，例如 `^## \\[`（任意版本开头，且不等于起始行）或直接解析标题序号做区间切片；同时在脚本开头 `Set-StrictMode -Version Latest` 让未定义变量直接报错。代码示例：`$headerPattern = '^## \\[(?<ver>[^\\]]+)\\]'\\n$lines = Get-Content $filePath\\n$idx = 0..($lines.Count-1) | Where-Object { $lines[$_] -match $headerPattern }\\n$start = ($idx | Where-Object { $lines[$_] -match \"\\[$( [regex]::Escape($releaseVersion) )\\]\" } | Select-Object -First 1)\\n$end = ($idx | Where-Object { $_ -gt $start } | Select-Object -First 1)\\n$clContent = ($lines[$start..($end-1)] -join \\\"`n\\\")`。",
+        "category": "可靠性",
+        "subcategory": "发布说明生成",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 79,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".pipelines/templates/uploadToAzure.yml",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "value: false",
+        "review": "[缺陷类型] 供应链/合规检查被关闭。影响评估：正式发布产物缺少 SBOM，合规审计与下游依赖分析信息缺失；若被发现需回溯补数据，成本更高。",
+        "suggestion": "[重构思路] 保留 SBOM 生成；若确有性能或兼容问题，应在同一 MR 中记录原因并通过配置豁免（如 `ob_sdl_sbom_enabled` 保留 true 而在 SDL 配置里添加明确豁免项），而不是直接置 false。代码示例：`- name: ob_sdl_sbom_enabled\\n  value: true`（并在 MR 描述中说明豁免依据与审批链接）。",
+        "category": "安全",
+        "subcategory": "合规与供应链",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 9,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F013",
+        "code": "Where-Object { $_.Extension -notin '.msix', '.nupkg' } |",
+        "review": "[缺陷类型] 发布资产白名单/黑名单规则被放宽。影响评估：GitHub Release 中可能出现本不应公开的 GC 变体包，用户下载选择混乱，且校验清单与官方发布说明不一致。",
+        "suggestion": "[重构思路] 若确需发布 GC 变体，应以显式 include 列表替代隐式放行，并在文档/发布说明中同步说明；否则恢复原有排除条件。代码示例：`Where-Object { $_.Extension -notin '.msix', '.nupkg' -and $_.Name -notmatch '-gc$' }`。",
+        "category": "可靠性",
+        "subcategory": "发布资产清单",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 244,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/System.Management.Automation/engine/CommandSearcher.cs",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "if (possiblePath.IndexOfAny(Path.GetInvalidPathChars()) != -1)",
+        "review": "[缺陷类型] 热路径重复分配 + 失去向量化查找。影响评估：命令查找、Tab 补全等高频路径产生额外 GC 压力，大脚本/高频补全场景下延迟与内存分配可测上升。",
+        "suggestion": "[重构思路] 若不希望依赖 `SearchValues` API，至少把字符集合提升为 `static readonly char[]`（或 `FrozenSet`/位图）缓存一次，避免每次调用 `Path.GetInvalidPathChars()` 生成新数组。代码示例：`private static readonly char[] s_invalidPathChars = Path.GetInvalidPathChars();\\nprivate static bool ContainsInvalidPathChars(string path) => path.IndexOfAny(s_invalidPathChars) != -1;` 并在 CommandSearcher/InitialSessionState/ModuleCmdletBase 中复用它。",
+        "category": "性能",
+        "subcategory": "热路径内存分配",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1451,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".pipelines/templates/release-create-msix.yml",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "Invoke-RestMethod -Uri '$(makeappUrl)' -OutFile \"$toolsDir\\makeappx.zip\"",
+        "review": "[缺陷类型] 外部下载依赖 + 路径硬编码，缺少存在性校验与回退。影响评估：msixbundle 构建在下载失败/结构不匹配时中断，且失败点与真实原因相距较远（报错发生在 bundle 步骤），排查成本高。",
+        "suggestion": "[重构思路] 解压后先探测可执行文件是否存在，找不到则回退到本地 SDK 路径；并对 URL 变量做显式校验。代码示例：`if (-not (Test-Path $exePath)) { $exePath = (Get-ChildItem -Recurse $toolsDir -Filter makeappx.exe | Select-Object -First 1).FullName }\\nif (-not $exePath) { throw 'makeappx not found after download' }`。",
+        "category": "可维护",
+        "subcategory": "外部依赖与失败路径",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 39,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "tools/metadata.json",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "\"NextReleaseTag\": \"v7.5.0-preview.6\",",
+        "review": "[缺陷类型] 发布元数据自相矛盾（NextReleaseTag 与 PreviewReleaseTag 版本序倒挂、跨发布线混用）。影响评估：若 NextReleaseTag 被用于打下一个 tag，产物版本会低于已发布的 rc.1，导致包无法推送到 NuGet/PMC 或 Release 流程被打断；若仅供参考字段，也会误导后续发布者与自动化脚本。",
+        "suggestion": "[重构思路] 让 NextReleaseTag 与 PreviewReleaseTag 处于同一条发布线且严格递增；回退到 7.4.6 服务线时，应同步把 NextReleaseTag 调整为 7.5.0-rc.2 或 7.5.0（或在回退分支上改为 7.4.7 一类的下一服务版本），并补充一条一致性校验脚本在 CI 中断言 PreviewReleaseTag < NextReleaseTag。代码示例（校验片段）：`$m = Get-Content tools/metadata.json -Raw | ConvertFrom-Json; $next = [SemanticVersion]$m.NextReleaseTag; $preview = [SemanticVersion]$m.PreviewReleaseTag; if ($next -le $preview) { throw \"NextReleaseTag $next 不大于 PreviewReleaseTag $preview\" }`",
+        "category": "可维护",
+        "subcategory": "发布版本元数据一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "tools/cgmanifest.json",
+    "reviewTips": [
+      {
+        "id": "F020",
+        "code": "\"Version\": \"9.0.0\"",
+        "review": "[缺陷类型] 安全修复版本回退（dependency downgrade）。影响评估：加密/编码类组件已有的服务更新修复被撤销，构建产物重新带出已知漏洞；合规扫描基线同步回退，问题被掩盖而非解决。",
+        "suggestion": "[重构思路] 若必须回退 cgmanifest 到 9.0.0 以对齐服务分支，请在 MR/变更说明中给出降级理由与 CVE 评估结论；更稳妥的做法是只回退与分支 API 强相关的版本，把加密相关包保持在 9.0.1 或更高。代码示例（保持修复版本）：`<PackageReference Include=\"System.Security.Cryptography.Pkcs\" Version=\"9.0.1\" />` 并同步更新 tools/cgmanifest.json 中的 `\"Version\": \"9.0.1\"`。",
+        "category": "安全",
+        "subcategory": "依赖降级与漏洞回归",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 738,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

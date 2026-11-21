@@ -1,0 +1,411 @@
+{
+  "generatedAt": "2026-11-16T01:31:37.872Z",
+  "runId": "20261116_012631_699",
+  "source": "mr",
+  "caseId": "mudler__LocalAI@e466450",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "core/http/endpoints/openai/completion.go",
+      "line": 189,
+      "title": "非流式 /v1/completions 的 usage token 计数被清零",
+      "description": "本次重构把循环内的 `totalTokenUsage.Prompt += tokenUsage.Prompt` 与 `totalTokenUsage.Completion += tokenUsage.Completion` 替换成了 Timing 字段累加，但最终构造响应时仍然读取 `totalTokenUsage.Prompt/Completion`。由于 `totalTokenUsage` 初始化为零值后再没有任何地方对这两个字段赋值，所有非流式 completions 响应的 `usage.prompt_tokens`、`usage.completion_tokens`、`usage.total_tokens` 将恒为 0，破坏计费、限流与客户端 token 统计。",
+      "evidence": [
+        "core/http/endpoints/openai/completion.go:163 — `totalTokenUsage := backend.TokenUsage{}`，此后 Prompt/Completion 无任何赋值",
+        "core/http/endpoints/openai/completion.go:183-184 — 循环内仅累加 `TimingTokenGeneration` 与 `TimingPromptProcessing`（原 P2 阶段的 Prompt/Completion 累加已被删除）",
+        "core/http/endpoints/openai/completion.go:188-192 — `usage := schema.OpenAIUsage{PromptTokens: totalTokenUsage.Prompt, CompletionTokens: totalTokenUsage.Completion, TotalTokens: totalTokenUsage.Prompt + totalTokenUsage.Completion}`",
+        "对照 core/http/endpoints/openai/edit.go:66-70 — 同一模式在 edit 端点仍保留 `totalTokenUsage.Prompt += tokenUsage.Prompt` 与 `totalTokenUsage.Completion += tokenUsage.Completion`，证明此处是遗漏而非新语义"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.93,
+      "tips": {
+        "review": "[缺陷类型] 回归性字段丢失（累加逻辑被误删）。影响评估：`POST /v1/completions`（含 `/v1/engines/:model/completions`）的非流式响应恒返回 `prompt_tokens=0`/`completion_tokens=0`，依赖 usage 计费或做配额统计的客户端数据全部失真，且不会有任何报错提示。",
+        "suggestion": "[重构思路] 恢复 Prompt/Completion 累加，与 edit.go 保持一致；可顺手把 usage 组装抽成小函数避免四个分支各自拼装。代码示例：`totalTokenUsage.Prompt += tokenUsage.Prompt` / `totalTokenUsage.Completion += tokenUsage.Completion` 放在 `result = append(result, r...)` 之前。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "core/backend/options.go",
+      "line": 143,
+      "title": "audio_path 迁到 tts.vall-e 后，coqui/openvoice 的声音克隆配置静默失效",
+      "description": "`TTSConfig.AudioPath` 被删除并替换为 `VallE` 子结构（yaml 键变为 `tts.vall-e.audio_path`），`grpcModelOpts` 也只读取 `c.VallE.AudioPath`。但 coqui 与 openvoice 后端仍然从 `request.AudioPath` 取 speaker/cloned voice 路径，因此现存使用 `tts.audio_path` 的 coqui/openvoice 模型配置将不再下发 AudioPath，后端拿到空字符串后既不报错也不做克隆，只是安静地退化为默认音色。",
+      "evidence": [
+        "core/config/backend_config.go:19-26 — `TTSConfig` 中 `AudioPath string \\`yaml:\"audio_path\"\\`` 被替换为 `VallE VallE \\`yaml:\"vall-e\"\\``",
+        "core/config/backend_config.go:85-87 — `VallE.AudioPath string \\`yaml:\"audio_path\"\\``，即配置键变为 `tts.vall-e.audio_path`",
+        "core/backend/options.go:143 — `AudioPath: c.VallE.AudioPath`，不再回退到旧的 `TTSConfig.AudioPath`",
+        "backend/python/coqui/backend.py:52-56 与 backend/python/openvoice/backend.py:65-74 — 两个后端仍依赖 `request.AudioPath` 来做 speaker_wav / ToneColorConverter 克隆"
+      ],
+      "rule": "CONFIG-COMPAT-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 配置结构不兼容迁移（破坏性变更且无向后兼容读入）。影响评估：升级后 coqui/openvoice 的克隆音色静默失效，用户只听到默认音色，排查成本高；gallery/文档中的既有 `tts.audio_path` 写法同时失效。",
+        "suggestion": "[重构思路] 增加兼容读入：`VallE.AudioPath` 为空时回退到旧字段（可将旧字段保留为 deprecated），并在加载配置时打印一次 warning 提示迁移；或把 AudioPath 抽为 TTS 通用的 `audio_path` 并让 vall-e-x 单独使用其扩展字段。代码示例：`if c.VallE.AudioPath != \"\" { opts.AudioPath = c.VallE.AudioPath } else if c.TTSConfig.LegacyAudioPath != \"\" { opts.AudioPath = c.TTSConfig.LegacyAudioPath; log.Warn().Msg(\"tts.audio_path is deprecated, use tts.vall-e.audio_path\") }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "backend/cpp/llama/grpc-server.cpp",
+      "line": 521,
+      "title": "新增的 validate_model_chat_template 从未被调用，chat template 回退逻辑不生效",
+      "description": "本次在 `llama_server_context` 上新增了 `validate_model_chat_template`，用于在模型自带 chat template 不受支持时回退到 chatml（通过把 `sparams.chat_template` 设为 `<|im_start|>`）。但全仓库检索显示该函数只有声明、没有任何调用点，因此这段保护逻辑永远不会执行，属于死代码；同时 `std::vector<char> buf(1)` 只给 1 字节缓冲，即使被调用也无法反映真实所需长度。",
+      "evidence": [
+        "backend/cpp/llama/grpc-server.cpp:521-529 — 函数声明与实现（`int res = llama_chat_apply_template(model, nullptr, chat, 1, true, buf.data(), buf.size());`）",
+        "review_find_references(validate_model_chat_template) 仅返回 1 处命中：grpc-server.cpp:521 [declaration]，无调用点",
+        "同一函数内 `std::vector<char> buf(1)` 与后续写满判断不匹配"
+      ],
+      "rule": "DEADCODE-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 死代码 / 逻辑未接入。影响评估：注释与日志宣称的“回退到 chatml”行为实际不存在，模型 chat template 不受支持时仍会静默产出劣质响应；后续维护者会误以为已有保护。",
+        "suggestion": "[重构思路] 要么在 load/initialize 流程中真正调用（例如在 `loadModel` 成功后对 `params` 调用），要么删除；若接入，应先按 `llama_chat_apply_template` 返回的所需长度分配缓冲。代码示例：`int n = llama_chat_apply_template(model, nullptr, chat, 1, true, nullptr, 0); std::vector<char> buf(n > 0 ? n : 0);`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "backend/cpp/llama/grpc-server.cpp",
+      "line": 729,
+      "title": "ignore_eos 的 logit bias 随后被 clear() 清空，且移除 has_eos_token 守卫后可能写入无效 token id",
+      "description": "本 MR 把 `ignore_eos` 分支的 `&& has_eos_token` 守卫去掉，直接 `push_back({llama_token_eos(model), -INFINITY})`。但在同一函数稍后（769 行）`slot->sparams.logit_bias.clear()` 会无条件清空该数组，因此这行 push 实际不产生任何效果，`ignore_eos` 仍然无效；同时当模型词表中没有 EOS（`llama_token_eos` 返回 `LLAMA_TOKEN_NULL`）时会把 -1 作为 token id 放进 bias 列表。",
+      "evidence": [
+        "backend/cpp/llama/grpc-server.cpp:728-730 — `if (json_value(data, \"ignore_eos\", false)) { slot->sparams.logit_bias.push_back({llama_token_eos(model), -INFINITY}); }`",
+        "backend/cpp/llama/grpc-server.cpp:769 — 同一函数内随后执行 `slot->sparams.logit_bias.clear();`（diff 中还在此处新增了一个空行）",
+        "MR diff 中被删除的 `has_eos_token = llama_vocab_eos(vocab) != LLAMA_TOKEN_NULL;` 与条件 `if (json_value(data, \"ignore_eos\", false) && has_eos_token)`"
+      ],
+      "rule": "CORRECTNESS-014",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 失效逻辑 + 缺失边界守卫。影响评估：`ignore_eos` 参数对上层完全不生效（行为与文档不符），后续若调整 clear() 顺序则会向 sampler 传入 -1 造成越界读取风险。",
+        "suggestion": "[重构思路] 把 ignore_eos 的 bias 注入移到 `logit_bias.clear()` 之后，并恢复 EOS 有效性判断。代码示例：`slot->sparams.logit_bias.clear(); if (json_value(data, \"ignore_eos\", false)) { const llama_token eos = llama_token_eos(model); if (eos != LLAMA_TOKEN_NULL) { slot->sparams.logit_bias.push_back({eos, -INFINITY}); } }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "backend/cpp/llama/grpc-server.cpp",
+      "line": 1133,
+      "title": "迁移 llama.cpp API 时丢失 EOG 判断，多 EOG token 模型无法正常停止",
+      "description": "上游 llama.cpp 将 `llama_vocab_is_eog` 改为（等价地）通过 model 取 vocab 调用，但本次改写直接删掉了 `|| llama_vocab_is_eog(...)` 这个分支，只保留 `result.tok == llama_token_eos(model)`。对于使用 `<|eot_id|>`、`<|im_end|>` 等非 EOS 结束符的 chat 模型，生成不会再被判定为停止，只能一直跑到 `n_predict` 上限，导致响应尾部出现多余的模板标记、延迟与 token 浪费。",
+      "evidence": [
+        "backend/cpp/llama/grpc-server.cpp:1133 — 现在是 `if (result.tok == llama_token_eos(model))`，单一条件",
+        "MR diff 中被删除的旧行为：`if (result.tok == llama_vocab_eos(vocab) || llama_vocab_is_eog(vocab, result.tok))`",
+        "同文件 516 行 `add_bos_token = llama_add_bos_token(model);` 说明本次仅做了 API 签名迁移，is_eog 未被等价替换"
+      ],
+      "rule": "LLAMA-API-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 迁移遗漏导致停止条件弱化。影响评估：所有以专用 EOG token 收尾的 instruct 模型（Llama-3 系、Qwen 系等）会生成到上限，既影响响应质量也放大显存/时间开销。",
+        "suggestion": "[重构思路] 按新 API 恢复 EOG 判定：从 model 取 vocab 后调用 `llama_vocab_is_eog`，并与 EOS 判断合并。代码示例：`const llama_vocab * vocab = llama_model_get_vocab(model); if (result.tok == llama_token_eos(model) || llama_vocab_is_eog(vocab, result.tok)) { slot.stopped_eos = true; slot.has_next_token = false; }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "Makefile",
+      "line": 309,
+      "title": "stablediffusion-ggml 构建改用根 CMAKE_ARGS 后丢失 BUILD_SHARED_LIBS=OFF 与 CUDA 编译开关",
+      "description": "新的根 Makefile 规则直接在 `sources/stablediffusion-ggml.cpp` 内执行 `cmake $(CMAKE_ARGS) ..`，而被删除的 `backend/go/image/stablediffusion-ggml/Makefile` 原本会自行追加 `-DBUILD_SHARED_LIBS=OFF`，并在 `BUILD_TYPE=cublas` 时追加 `-DGGML_CUDA=ON`、`sycl` 时 source oneAPI 环境。根 Makefile 的 cublas 分支只 `export GGML_CUDA=1`（环境变量，不是 CMake 选项）并通过 CGO_LDFLAGS 链接 cublas，因此 sd-ggml 后端在 cublas 镜像中很可能退化为 CPU 构建，同时共享库默认值改变会让 `gosd.go` 的静态链接（`-lggml -lggml-base -lggml-cpu`）面临链接失败风险。",
+      "evidence": [
+        "Makefile:305-310 — 新规则 `cd sources/stablediffusion-ggml.cpp && mkdir -p build && cd build && cmake $(CMAKE_ARGS) .. && cmake --build . --config Release`",
+        "Makefile:41-43 — `export BUILD_TYPE?=` / `export CMAKE_ARGS?=`；Makefile:92-167 中与 stablediffusion 相关的只有 `-DGGML_NATIVE=OFF`、`-DGGML_METAL=OFF`、`-DGGML_VULKAN=1`、`-DGGML_HIP=ON`，cublas 分支（138-142）仅 `export GGML_CUDA=1`",
+        "被删除的旧逻辑（diff 中 backend/go/image/stablediffusion-ggml/Makefile）：`CMAKE_ARGS+=-DBUILD_SHARED_LIBS=OFF`、`ifeq ($(BUILD_TYPE),cublas) CMAKE_ARGS+=-DGGML_CUDA=ON`、`sycl` 时 `bash -c \"source $(ONEAPI_VARS); ... cmake ...\"`",
+        "backend/go/image/stablediffusion-ggml/Makefile:16-18 — 现在只做 `cp .../build/libstable-diffusion.a ./libsd.a` 并 `ar rcs` 合并 gosd.o，不再生成合并的 libggmlall.a"
+      ],
+      "rule": "BUILD-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 构建参数丢失（GPU 后端退化 / 静态链接假设被破坏）。影响评估：cublas 镜像中 SD 图片生成可能无 GPU 加速（性能骤降且难以察觉）；若上游默认开启 BUILD_SHARED_LIBS，则静态 gRPC 二进制链接失败，镜像构建中断。",
+        "suggestion": "[重构思路] 在根 Makefile 里显式补齐 sd-ggml 需要的选项，而不是依赖环境变量；建议单独维护 `SD_CMAKE_ARGS` 并 append 到 `CMAKE_ARGS`。代码示例：`SD_CMAKE_ARGS?=-DBUILD_SHARED_LIBS=OFF`，cublas 分支追加 `SD_CMAKE_ARGS+=-DGGML_CUDA=ON`，规则内改为 `cmake $(CMAKE_ARGS) $(SD_CMAKE_ARGS) ..`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "backend/python/diffusers/backend.py",
+      "line": 287,
+      "title": "移除 SanaPipeline 分支后，SanaPipeline 配置会导致 self.pipe 未赋值即被使用",
+      "description": "本次删除了 `elif request.PipelineType == \"SanaPipeline\"` 分支及对应 import，但没有任何兜底：当模型配置仍声明 `pipeline: SanaPipeline` 时，所有 if/elif 都不命中，`self.pipe` 不会被赋值，随后代码在 `self.pipe.scheduler` / `self.pipe.tokenizer` 处直接触发 `AttributeError`，最终以 500 形式暴露给用户，而不是明确提示“不支持的 pipeline”。",
+      "evidence": [
+        "backend/python/diffusers/backend.py:238-277 — 分支链覆盖 StableDiffusion3Pipeline / FluxPipeline / FluxTransformer2DModel，无 else 兜底",
+        "backend/python/diffusers/backend.py:287 — `self.pipe.scheduler = get_scheduler(request.SchedulerType, self.pipe.scheduler.config)` 直接解引用 self.pipe",
+        "MR diff 中被删除的分支：`elif request.PipelineType == \"SanaPipeline\": self.pipe = SanaPipeline.from_pretrained(...)` 及对应 import 移除",
+        "review_find_references(SanaPipeline) 已无任何仓库引用，说明是能力移除但缺少显式报错"
+      ],
+      "rule": "ROBUST-006",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 能力移除缺少显式失败路径。影响评估：用户升级后使用旧配置会得到 `'BackendServicer' object has no attribute 'pipe'` 这类无信息量的 500 错误，难以定位到 pipeline 不受支持。",
+        "suggestion": "[重构思路] 在分支链末尾补 else 返回明确错误，并在 LoadModel 入口对 pipeline 名称做白名单校验。代码示例：`else: return backend_pb2.Result(success=False, message=f\"unsupported pipeline: {request.PipelineType}\")`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "backend/python/vall-e-x/backend.py",
+      "line": 96,
+      "title": "clonedVoice 仅在 LoadModel 成功路径中初始化，TTS 读取时可能 AttributeError",
+      "description": "`self.clonedVoice` 的赋值位于 `LoadModel` 的 try 块内且排在 `preload_models()` 之后。若 `preload_models()` 抛异常、或服务在未成功调用 LoadModel 的情况下收到 TTS 请求，`BackendServicer` 上不存在该属性，`TTS` 中的 `if self.clonedVoice:` 会抛 `AttributeError`，被外层 try 转成 “Unexpected …” 错误返回，掩盖真实原因。",
+      "evidence": [
+        "backend/python/vall-e-x/backend.py:57-58 — `preload_models()` 之后才执行 `self.clonedVoice = False`",
+        "backend/python/vall-e-x/backend.py:96 — `if self.clonedVoice:` 无 hasattr/getattr 保护",
+        "backend/python/vall-e-x/backend.py:73-74 — 异常时仅 return Result(success=False)，不会设置 clonedVoice"
+      ],
+      "rule": "STATE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 实例状态未初始化。影响评估：LoadModel 失败后的首个 TTS 请求会报误导性错误；若 gRPC 多 worker/重试场景在未加载时直接调用 TTS，也会落入同一分支。",
+        "suggestion": "[重构思路] 在 `__init__` 中初始化全部状态字段，LoadModel 只做状态更新。代码示例：`def __init__(self): self.clonedVoice = False; self.model = \"\"`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "安全",
+      "file": ".github/workflows/secscan.yaml",
+      "line": 21,
+      "title": "gosec 扫描器版本被回退，安全检测能力下降",
+      "description": "静态安全扫描动作由 `securego/gosec@v2.22.0` 回退为 `v2.21.4`，属于安全工具链的降级。回退会丢失新版本中新增/修正的规则与误报收敛，且 diff 中没有任何说明性注释解释回退原因，容易被后续同步时再次误改。",
+      "evidence": [
+        ".github/workflows/secscan.yaml:21 — `uses: securego/gosec@v2.21.4`",
+        "MR diff 中被替换的上一个版本为 `uses: securego/gosec@v2.22.0`"
+      ],
+      "rule": "SEC-TOOLCHAIN-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 安全工具版本回退。影响评估：CI 的 SAST 覆盖下降，新规则能发现的问题可能漏检；若回退是为了规避误报，缺少说明会让后续维护者无法判断意图。",
+        "suggestion": "[重构思路] 若为临时规避，请在 workflow 中写清回退原因与恢复条件（或引用 issue），并尽量通过 gosec 的 `-exclude`/规则配置关闭误报而非整体降版本。代码示例：`uses: securego/gosec@v2.22.0  # pinned: e.g. see #<issue>，禁止降级`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "core/cli/run.go",
+      "line": 74,
+      "title": "新增 CLI 选项的 help 文案仍是 TODO 占位",
+      "description": "`MachineTag` 选项的 `help` 字段直接写成 `TODO: write a help string`，而该选项会决定所有 API 响应头 `LocalAI-Machine-Tag` 的取值，属于需要向用户解释语义的对外接口。当前文案会被 `local-ai run --help` 原样输出。",
+      "evidence": [
+        "core/cli/run.go:74 — `MachineTag string \\`env:\"LOCALAI_MACHINE_TAG\" help:\"TODO: write a help string\"\\``",
+        "core/config/application_config.go:100-108 — 该值缺省回落到 `os.Hostname()`，并在多处端点写入响应头"
+      ],
+      "rule": "DOCS-004",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 对外文档占位符遗留。影响评估：用户无法从 `--help` 得知该参数用途、默认值（主机名）以及它会被写入响应头，属于会直接暴露给使用者的瑕疵。",
+        "suggestion": "[重构思路] 补全 help 文案并说明默认值来源。代码示例：`help:\"Tag identifying this machine in API responses (header LocalAI-Machine-Tag). Defaults to the hostname\"`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "core/cli/run.go",
+      "line": 74,
+      "title": "新增环境变量 LOCALAI_MACHINE_TAG 的 help 文案仍是 TODO 占位",
+      "description": "本次新增了对外暴露的配置项 MachineTag（会写入所有 API 响应头），但其 CLI 定义的环境变量帮助文案仍是 \"TODO: write a help string\"。对用户而言这是一个可见的新配置项，缺少说明会导致用户不知道它的作用、默认值为空时会回退成主机名（application_config.go:102-105 的行为），属于需要补齐的文档性缺口。",
+      "evidence": [
+        "core/cli/run.go:74 — MachineTag string `env:\"LOCALAI_MACHINE_TAG\" help:\"TODO: write a help string\"`",
+        "core/config/application_config.go:100-108 — WithMachineTag 在 tag 为空时回退为 os.Hostname()",
+        "core/http/endpoints/openai/list.go:17 等 20+ 处 c.Set(\"LocalAI-Machine-Tag\", appConfig.MachineTag) 会将该值返回给客户端"
+      ],
+      "rule": "READABILITY-CLI-HELP",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 用户可见配置项缺少帮助文案。影响评估：用户无法从 `local-ai run --help` 得知该环境变量的语义与默认行为（空值时使用 hostname），增加误配置与排查成本。",
+        "suggestion": "[重构思路] 补齐 help 文案并说明默认值回退规则。代码示例：`MachineTag string `env:\"LOCALAI_MACHINE_TAG\" help:\"Identifier returned in the LocalAI-Machine-Tag response header (defaults to the hostname)\"``",
+        "subcategory": "配置文档"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "core/http/endpoints/openai/chat.go",
+      "line": 174,
+      "title": "LocalAI-Machine-Tag 头在十余个端点重复注入，建议收敛为中间件",
+      "description": "为输出机器标签，本次在 chat/completion/edit/embeddings/files/image/inference/list/transcription/assistant/tts/vad/rerank 等处逐一手写 `c.Set(\"LocalAI-Machine-Tag\", appConfig.MachineTag)`，其中 chat.go 内还在同一请求上设置了两次（处理器入口与 SSE 分支）。同一字符串与同一取值逻辑散布在 15+ 处，后续任何改名或条件化都会漏改。",
+      "evidence": [
+        "core/http/endpoints/openai/chat.go:174 — `c.Set(\"LocalAI-Machine-Tag\", startupOptions.MachineTag)`",
+        "core/http/endpoints/openai/chat.go:327 附近（SSE 分支）再次 `c.Set(\"LocalAI-Machine-Tag\", startupOptions.MachineTag)`，同一请求重复设置",
+        "core/http/endpoints/openai/list.go:17、core/http/endpoints/localai/tts.go、core/http/endpoints/localai/vad.go、core/http/endpoints/jina/rerank.go、core/http/endpoints/openai/assistant.go（多处）出现相同的一行调用",
+        "core/http/routes/openai.go 中所有路由都由 `RegisterOpenAIRoutes` 统一注册，具备集中注入的条件"
+      ],
+      "rule": "MAINTAIN-007",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 横切逻辑分散重复（Copy-Paste 式注入）。影响评估：新增/重命名端点时极易漏加或写错头名，且 chat.go 的重复设置说明当前做法已开始出现不一致。",
+        "suggestion": "[重构思路] 在路由注册处用 Fiber 中间件统一设置，端点内删除这些行。代码示例：`app.Use(func(c *fiber.Ctx) error { c.Set(\"LocalAI-Machine-Tag\", application.ApplicationConfig().MachineTag); return c.Next() })`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "core/http/endpoints/openai/chat.go",
+      "line": 330,
+      "title": "同一 handler 内重复设置 LocalAI-Machine-Tag 响应头",
+      "description": "ChatEndpoint 返回的 handler 在入口处（第 174 行）已经设置过 LocalAI-Machine-Tag，流式分支（第 330 行）又重复设置一次。虽然对最终响应无功能影响，但会让人误以为两处取值可能不同（一处用 startupOptions.MachineTag），增加后续维护时的理解成本，与其它 endpoint（如 edit.go:28、embeddings.go:26 均只设置一次）风格不一致。",
+      "evidence": [
+        "core/http/endpoints/openai/chat.go:174 — c.Set(\"LocalAI-Machine-Tag\", startupOptions.MachineTag)",
+        "core/http/endpoints/openai/chat.go:330 — 流式分支再次 c.Set(\"LocalAI-Machine-Tag\", startupOptions.MachineTag)",
+        "core/http/endpoints/openai/edit.go:28、embeddings.go:26 各仅设置一次"
+      ],
+      "rule": "READABILITY-DUPLICATE-SET",
+      "confidence": 0.63,
+      "tips": {
+        "review": "[缺陷类型] 冗余的响应头设置。影响评估：无运行时风险，但重复代码在后续修改 MachineTag 取值来源时容易漏改一处，造成不同分支返回不同头值。",
+        "suggestion": "[重构思路] 保留 handler 入口处的一次设置，删除流式分支内的重复调用；若希望统一，可把设置抽成中间件。代码示例：`return func(c *fiber.Ctx) error {\\n  c.Set(\"LocalAI-Machine-Tag\", startupOptions.MachineTag)\\n  // 流式分支内不再重复设置\\n}`",
+        "subcategory": "重复代码"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "core/config/application_config.go",
+      "line": 103,
+      "title": "WithMachineTag 忽略 os.Hostname 错误，可能写入空响应头",
+      "description": "缺省 MachineTag 时调用 `os.Hostname()` 但丢弃了 error，一旦获取主机名失败（容器/受限环境），`tag` 保持空字符串，`MachineTag` 为空，随后各端点会用 `c.Set(\"LocalAI-Machine-Tag\", \"\")` 写入一个值为空的响应头，既无法用于识别节点，也不利于排障。",
+      "evidence": [
+        "core/config/application_config.go:102-105 — `if tag == \"\" { hostname, _ := os.Hostname(); tag = hostname }`，error 被丢弃",
+        "core/http/endpoints/openai/chat.go:174 等位置无条件 `c.Set(\"LocalAI-Machine-Tag\", …)`"
+      ],
+      "rule": "ROBUST-011",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 错误被吞掉 + 空值下发。影响评估：在无法取到 hostname 的环境里，标签头为空字符串，客户端/网关按节点做路由或统计时拿到无效值且无任何日志线索。",
+        "suggestion": "[重构思路] 记录错误并提供稳定兜底值，仅在值非空时设置头。代码示例：`hostname, err := os.Hostname(); if err != nil { log.Warn().Err(err).Msg(\"cannot determine hostname for MachineTag\"); hostname = \"unknown\" }; o.MachineTag = hostname`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "docs/data/version.json",
+      "line": 3,
+      "title": "发布版本元数据被从 v2.25.0 回退为 v2.24.2",
+      "description": "本 MR 的功能改动（LocalAI-Machine-Tag、可选 timing usage）属于向前演进，但同一 MR 却把 docs/data/version.json 的版本号从 v2.25.0 改回 v2.24.2，等同于把仓库宣称的版本倒退回旧版本。该文件通常被文档站与发布流程消费，回退会导致文档/镜像/安装脚本读取到的版本与实际代码不一致，也会让基于版本号的升级提示与变更日志指向错误版本，且这类“顺带回退”在后续提交中极易被忽略而长期留在主干。",
+      "evidence": [
+        "docs/data/version.json:3 — \"version\": \"v2.25.0\" 被改为 \"version\": \"v2.24.2\"",
+        "同一 MR 其余改动为新增功能：core/http/endpoints/openai/edit.go:28 新增 c.Set(\"LocalAI-Machine-Tag\", appConfig.MachineTag)，core/schema/openai.go:27-28 新增 timing 字段"
+      ],
+      "rule": "MAINTAINABILITY-RELEASE-METADATA",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 版本元数据被意外回退（疑似合并/回滚残留）。影响评估：文档站与发布流水线读取到旧版本号，用户与自动化工具得到错误的版本信息；主干版本线混乱，需要额外一次提交修正。",
+        "suggestion": "[重构思路] 撤销对该文件的改动，保持版本号单调递增；若确实需要回退发布，应在独立的 release 提交中变更并同步 CHANGELOG 与镜像 tag。代码示例：`{\\n  \"version\": \"v2.25.0\"\\n}`",
+        "subcategory": "发布元数据一致性"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "pkg/downloader/uri.go",
+      "line": 270,
+      "title": "下载器移除 Range 断点续传，中断后必须从零重下并丢弃已下载数据",
+      "description": "重构后 DownloadFile 改为 http.Get + removePartialFile + os.Create 的全量下载：删除了 checkSeverSupportsRangeHeader 与 calculateHashForPartialFile，不再设置 Range 请求头，也不再以 O_APPEND 复用 .partial 文件，而是每次先删除 .partial 再新建。由于 DownloadFile 是模型/资产下载的唯一入口（gallery 安装模型、backend_config_loader 预加载、dependencies_manager、startup 预装均调用它），下载几十 GB 的 GGUF 模型时一旦连接中断或进程重启，之前已传输的全部字节都会被丢弃并从头重传，既浪费带宽也显著拉长了失败重试的恢复时间；对弱网/CI 环境属于明显的可靠性回退。",
+      "evidence": [
+        "pkg/downloader/uri.go:270 — 重构后直接 http.Get(url)，此前的 req.Header.Set(\"Range\", fmt.Sprintf(\"bytes=%d-\", startPos)) 逻辑被删除",
+        "pkg/downloader/uri.go:290 — 每次下载前 removePartialFile(tmpFilePath) 删除已有 .partial，pkg/downloader/uri.go:296 用 os.Create 新建空文件（原先为 os.OpenFile(tmpFilePath, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)）",
+        "diff 中 checkSeverSupportsRangeHeader 与 calculateHashForPartialFile 两个函数被整体删除",
+        "调用方：core/gallery/models.go:129、core/config/backend_config_loader.go:267/278/295、core/dependencies_manager/manager.go:41、pkg/startup/model_preload.go:69/100 全部经由此实现下载大文件"
+      ],
+      "rule": "RELIABILITY-DOWNLOAD-RESUME",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 大文件下载能力回退（断点续传被移除）。影响评估：模型下载中断后进度归零，弱网下反复失败；用户重启服务会丢掉已下载的数十 GB 数据，重试成本与失败率上升。",
+        "suggestion": "[重构思路] 保留全量下载的简洁实现，但恢复续传：先 Stat 目标 .partial，若存在且服务端支持 Range 则从已有偏移继续写；否则删除后重建。校验时对完整文件重算 SHA（calculateSHA 已存在）。代码示例：`start := int64(0)\\nif fi, err := os.Stat(tmp); err == nil { start = fi.Size() }\\nreq, _ := http.NewRequest(\"GET\", url, nil)\\nif start > 0 { req.Header.Set(\"Range\", fmt.Sprintf(\"bytes=%d-\", start)) }\\nout, _ := os.OpenFile(tmp, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)`",
+        "subcategory": "大文件下载与重试"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P2",
+      "category": "安全",
+      "file": "go.mod",
+      "line": 15,
+      "title": "go.mod 大面积依赖降级，可能重新引入已修复的安全问题与 API 不兼容",
+      "description": "该 MR 把大量直接与间接依赖统一降到旧版本，包括 golang.org/x/crypto 0.31.0→0.28.0、golang.org/x/net 0.33.0→0.30.0、libp2p 0.38.1→0.36.2、quic-go 0.48.2→0.46.0、grpc 1.67.1→1.65.0、protobuf 1.36.1→1.35.1、otel 1.31.0→1.28.0 等。这些仓库（尤其 x/crypto、x/net、quic-go、libp2p）的版本升级通常包含安全修复与协议兼容性修正，整体降级会让 LocalAI 重新暴露在这些版本区间内已修复的问题下；同时混合降级（例如 otel/sdk/metric 仍为 1.28.0 而 metric 从 1.31.0 降级、grpc 与 genproto 版本组合变化）容易引发编译期 API 缺失或运行时行为不一致。MR 描述中没有任何说明为何必须回退这些依赖。",
+      "evidence": [
+        "go.mod:15 — github.com/cncf/xds/go v0.0.0-20240723142845-024c85f92f20 → v0.0.0-20240423153145-555b57ec207b",
+        "go.mod 中 github.com/libp2p/go-libp2p v0.38.1 → v0.36.2、github.com/quic-go/quic-go v0.48.2 → v0.46.0、google.golang.org/grpc v1.67.1 → v1.65.0",
+        "go.mod 中 golang.org/x/crypto v0.31.0 → v0.28.0、golang.org/x/net v0.33.0 → v0.30.0、go.opentelemetry.io/otel v1.31.0 → v1.28.0"
+      ],
+      "rule": "SECURITY-DEPENDENCY-DOWNGRADE",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 依赖版本回退（含安全敏感库）。影响评估：重新引入旧版本已知漏洞（网络栈、TLS/密码学、HTTP 解析），并使 go.mod 与 go.sum、CI 缓存、容器镜像中的依赖不一致；后续任何依赖升级都会产生大范围冲突。",
+        "suggestion": "[重构思路] 如果降级只是为了修复某个具体编译/运行问题，应在 MR 描述中给出原因并把回退范围限制到单个模块（go mod edit -require=module@version + go mod tidy）；否则应撤销该文件的改动，保持版本单调上升。代码示例：`go get github.com/mudler/go-libp2p@v0.38.1 google.golang.org/grpc@v1.67.1 && go mod tidy`",
+        "subcategory": "第三方依赖版本管理"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "pkg/model/loader.go",
+      "line": 57,
+      "title": "模型扫描不再跳过 .pt/.onnx，非 GGUF 权重会被当作可用模型暴露",
+      "description": "knownModelsNameSuffixToSkip 中移除了 \".pt\" 与 \".onnx\"，而该列表唯一的消费点是 ListFilesInModelPath，其输出会被 core/services/list_models.go 直接拼进 /v1/models 的 loose model 列表。结果是 models 目录中的 .pt/.onnx 文件（transformers/diffusers 等后端的辅助权重或与配置文件同名的分片）会作为“模型名”返回给客户端，客户端拿这些名字发起推理时才会在加载阶段失败；同时 /v1/models 的可用模型集合被噪声污染。改动只在 diff 中删除了两行后缀，没有任何配套逻辑说明 .pt/.onnx 需要被当作独立模型列出。",
+      "evidence": [
+        "pkg/model/loader.go:50-64 — knownModelsNameSuffixToSkip 现包含 .tmpl/.keep/.yaml/.yml/.json/.txt/.md/.MD/.DS_Store/./.safetensors/.partial/.tar.gz，原有 \".pt\" 与 \".onnx\" 两项被删除",
+        "pkg/model/loader.go:85-89 — 该列表仅被 ListFilesInModelPath 用于过滤文件名",
+        "core/services/list_models.go:38-47 — ListFilesInModelPath 的结果在未被配置引用时（SKIP_IF_CONFIGURED）直接追加进 /v1/models 的 data"
+      ],
+      "rule": "RELIABILITY-MODEL-DISCOVERY",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 模型发现范围被放宽导致列表噪声与延迟失败。影响评估：/v1/models 返回无法直接加载的条目，客户端做模型选择/自动路由时会命中不可用模型；.safetensors 仍被跳过却放开 .pt/.onnx，语义也不一致。",
+        "suggestion": "[重构思路] 若目标是支持 onnx/pt 后端，应把“可列出的模型”定义收敛到配置文件 + 白名单扩展（如 .gguf/.bin/.onnx），而不是把这两个后缀从 skip 列表中删掉；必要时补一条单元测试覆盖 .pt/.onnx 的期望行为。代码示例：`var knownModelSuffixes = []string{\".gguf\", \".bin\", \".onnx\"}\\nfunc isModelFile(name string) bool { for _, s := range knownModelSuffixes { if strings.HasSuffix(name, s) { return true } }; return false }`",
+        "subcategory": "模型文件识别"
+      }
+    },
+    {
+      "id": "F019",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "gallery/index.yaml",
+      "line": 1,
+      "title": "功能类 MR 中夹带大量 gallery 条目与后端文件删除，变更范围不可分割",
+      "description": "在新增响应头与可选 timing usage 的功能 MR 中，同时删除了 gallery/index.yaml 中十余个模型条目（phi-4 系列、falcon3/llama3.3/qwen2.5 衍生模型等），并整体删除 gallery/phi-4-chat.yaml 与 gallery/phi-4-chat-fcall.yaml，此外其它 shard 还包含 kokoro 后端整目录删除、vall-e-x 后端新增、Dockerfile/Makefile/CI 变更与版本回退、依赖降级。把“新增功能”“模型下架”“后端替换”“依赖回退”混合在同一提交里，使任何一项都无法单独 review/回滚，也让故障定位与二分排查变得困难；对按名称从 gallery 安装这些模型的用户而言，升级后 gallery 安装入口会直接失效。",
+      "evidence": [
+        "gallery/index.yaml 首行起删除 `- &phi4` 锚点及其下 3 个 `- !!merge <<: *phi4` 条目，并删除 *falcon3/*llama33/*llama32/*qwen25/*gemma/*phi-3 下的多个条目（如 nightwing3-10b-v0.1、70b-l3.3-cirrus-x1、sky-t1-32b-preview、phi-3.5-moe-instruct）",
+        "gallery/phi-4-chat-fcall.yaml 与 gallery/phi-4-chat.yaml 以 deleted file mode 整体删除（共 57 行配置模板）",
+        "同一 MR 还包含 docs/data/version.json 版本回退与 go.mod 依赖降级"
+      ],
+      "rule": "MAINTAINABILITY-CHANGE-SCOPE",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 变更范围过大、关注点混杂。影响评估：gallery 条目下架属于产品或授权决策，与响应头/usage 功能无耦合；混在一起提交会掩盖真正的功能改动，回滚任一改动都需要手术式拆分，历史 blame 与 changelog 也更难读。",
+        "suggestion": "[重构思路] 拆分为独立 MR：① 功能（Machine-Tag 响应头 + 可选 timing usage）；② gallery 清理（在描述中给出下架清单与理由）；③ 依赖/版本调整（说明升降原因）。代码示例：`git checkout main -- gallery/ docs/data/version.json go.mod go.sum && git commit -m \"feat(openai): expose machine tag header and optional usage timings\"`",
+        "subcategory": "提交粒度与变更范围"
+      }
+    }
+  ]
+}

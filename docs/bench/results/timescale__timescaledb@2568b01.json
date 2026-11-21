@@ -1,0 +1,152 @@
+{
+  "instance_id": "timescale__timescaledb@2568b01",
+  "repo": "timescale/timescaledb",
+  "base_commit": "17fb43d888dbe3b328da6b08b310bc83d3167d39",
+  "head_commit": "2568b018719e25f262255626c474a461da38fc21",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 291.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 13,
+  "review_output": [
+    {
+      "file": "tsl/src/hypercore/hypercore_handler.c",
+      "line": 109,
+      "summary": "hypercore_open_compressed 丢弃传入的锁模式，写路径仅以 AccessShareLock 打开压缩表",
+      "failure_scenario": "新引入的辅助函数 hypercore_open_compressed(Relation relation, LOCKMODE mode) 完全忽略 mode 参数，固定以 AccessShareLock 调用 table_open。而调用方在删除/更新压缩数据时会传入更强的锁：hypercore_index_delete_tuples:1550 与 hypercore_tuple_delete:1857、hypercore_decompress_update_segment:1939 传 RowExclusiveLock，hypercore_tuple_lock:2025 传 RowShareLock，compress_and_swap_heap:2172 传 AccessExclusiveLock。结果是这些写路径（table_tuple_delete、index_delete_tuples、tuple_lock）实际只持有 AccessShareLock，与 PostgreSQL 要求的锁级别不符：并发的 CREATE INDEX（ShareLock）、LOCK TABLE IN SHARE MODE、ALTER TABLE 等操作不会与本会话互斥，可能与本会话对压缩表的删除/重写并发进行，导致索引与堆不一致或数据损坏；compress_and_swap_heap 的重写流程也因此在 AccessShareLock 下读取旧压缩表。此外 mode 成为未使用参数，在开启 -Wunused-parameter/-Werror 的构建下会直接编译失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CONCURRENCY-LOCK-001"
+    },
+    {
+      "file": "tsl/src/chunk_api.c",
+      "line": 462,
+      "summary": "新增 chunk_create_empty_table 缺少权限校验，任何用户都能以 hypertable owner 身份在任意 schema 建表",
+      "failure_scenario": "chunk_create_empty_table 是随本 MR 一起重新暴露给 SQL 的函数（sql/chunk.sql:52-57 定义为 _timescaledb_functions.create_chunk_table，默认 GRANT EXECUTE TO PUBLIC）。与同文件既有的 chunk_create（第 360 行调用 check_privileges_for_creating_chunk 校验 hypertable 的 INSERT 权限）不同，新函数在 GetUserIdAndSecContext/SetUserIdAndSecContext 提权到 catalog owner 或 hypertable owner 之前没有任何 ACL 校验，也没有校验 schema_name 是否为内建 schema 或该 hypertable 允许的 chunk schema。低权限用户可以传入任意 hypertable 的 regclass（甚至自己没有任何权限的对象）以及任意的 schema_name/table_name，使函数以表属主身份在其 schema 下创建表并执行 AT_DropInherit，构成越权建表/权限提升。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.72,
+      "rule": "SECURITY-ACL-001"
+    },
+    {
+      "file": "tsl/src/chunk_api.c",
+      "line": 481,
+      "summary": "chunk_create_empty_table 用 Assert 校验 hypertable 查找结果，release 构建下会空指针解引用",
+      "failure_scenario": "ts_hypertable_cache_get_entry 在传入的 regclass 不是 hypertable 时返回 NULL，此处只写了 Assert(ht != NULL)。Assert 在关闭 ASSERTIONS 的正式构建（CMakeLists.txt 中 ASSERTIONS 默认 OFF）中会被编译为空，随后第 487 行 strcmp 分支与 ht->main_table_relid 立即解引用 NULL，导致后端崩溃（server crash）。该函数由 SQL 直接暴露，用户（或误用者）传入普通表即可触发。另外函数在错误路径上不会 ts_cache_release(hcache)，也不会恢复 SetUserIdAndSecContext（无 PG_TRY/PG_CATCH 保护），一旦 ts_chunk_create_only_table 抛错（如 ERRCODE_TS_CHUNK_COLLISION），提权状态与 cache pin 只能依赖事务回滚清理。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/ts_catalog/chunk_column_stats.c",
+      "line": 766,
+      "summary": "列统计计算把 chunk 的 attno 用于 hypertable 查类型，列类型取错",
+      "failure_scenario": "ts_chunk_column_stats_calculate 先用 get_attnum(ht->main_table_relid, col_name) 得到 hypertable 的 attno，再用 ts_map_attno(ht, chunk->table_id, attno) 把它映射成 chunk 的 attno，随后却调用 get_atttype(ht->main_table_relid, attno) —— 即把 chunk 的 attno 当成 hypertable 的列号使用。ts_map_attno 的实现是按列名把 src_rel 的 attno 映射到 dst_rel 的 attno（src/utils.c:1583-1601），两者只有在列顺序完全一致时才相同。当 hypertable 存在被删除列、或 chunk 表与主表列序不一致时，取到的 col_type 会是另一列的类型；若 chunk 的 attno 超过主表属性数则 get_atttype 返回 InvalidOid/触发错误。随后 col_type 被用于 ts_chunk_get_minmax 与 ts_time_value_to_internal，会得到错误的 min/max 范围，使基于 chunk_column_stats 的裁剪（skip scan/range 裁剪）漏掉数据或返回错误结果。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "tsl/src/compression/compression_dml.c",
+      "line": 532,
+      "summary": "decompress_batches_scan 不再每批次重置解压器，部分 continue 路径会复用上一批次的解压结果",
+      "failure_scenario": "diff 删除了 while 循环开头无条件的 row_decompressor_reset(&decompressor)，改为只在 !batch_matches 的分支（第 510 行）以及 row_decompressor_decompress_row_to_table 内部重置。但 decompress_batch 在 decompressor->unprocessed_tuples 非 0 时直接返回早退（compression.c:1402-1403），不会为新读到的压缩元组重建 iterator 与 decompressed_slots；而 delete_compressed_tuple 不重置（compression_dml.c:1325-1340）。因此 TM_Deleted 且非 xact snapshot 的 continue 路径（528-533）以及 delete_only 的 continue 路径（542-545）在下一次循环时会以上一批次的 decompressed_slots 参与 slot_keys_test 过滤：可能把不满足谓词的压缩批次/segment 判为命中并删除（数据丢失），或把应命中的批次判为不命中而跳过。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "tsl/src/compression/compression_dml.c",
+      "line": 593,
+      "summary": "batch_matches 改为整批全量解压，并移除了只解压所需列的优化",
+      "failure_scenario": "新的 batch_matches 直接调用 decompress_batch，而 decompress_batch 会为该批次（最多 GLOBAL_MAX_ROWS_PER_COMPRESSION 行）的全部压缩列建立 iterator、逐行全量解压、heap_form_tuple 并填满 decompressed_slots；旧实现通过 decompress_batch_next_row + init_batch(attnos) 只解压 mem_scankeys 涉及的列，并在找到命中行后立即返回。同时 diff 删除了 init_batch 中“只初始化指定列”的过滤逻辑，使所有调用 decompress_batch 的路径都失去该优化。对 UPDATE/DELETE 的批次过滤来说，这是从“按需解压若干列”变为“整批全列解压并物化 slot”，在大量批次被过滤掉的场景会显著增加 CPU 与内存开销。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.66,
+      "rule": "PERFORMANCE-001"
+    },
+    {
+      "file": "src/with_clause_parser.c",
+      "line": 168,
+      "summary": "with-clause 参数解析回退为捕获所有错误，OOM/取消等硬错误被改写为参数非法",
+      "failure_scenario": "parse_arg 的 PG_CATCH 块现在不再按 ERRCODE_TO_CATEGORY 过滤，也没有 FlushErrorState。任何在 OidInputFunctionCall 中抛出的错误（包括 ERRCODE_OUT_OF_MEMORY 等资源类错误、查询取消、以及类型输入函数内部真正异常）都会被统一改写成 ERRCODE_INVALID_PARAMETER_VALUE 的“invalid value for ...”，掩盖真实原因并可能把可恢复的资源错误变成误导性的语法错误；同时缺少 FlushErrorState 使错误状态处理不规范。该行为与 issue #7893/#7903“Don't capture hard errors in with-clause parser”的修复方向相反。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-ERRHANDLING-001"
+    },
+    {
+      "file": "tsl/src/partialize_finalize.c",
+      "line": 279,
+      "summary": "inner_agg_deserialize 去掉子事务与资源所有者恢复后，捕获错误再重试不再安全",
+      "failure_scenario": "修复路径现在直接在 PG_CATCH 中把 CurrentMemoryContext 赋值为 oldcontext、FlushErrorState 后用补齐的 bytea 再次调用 deserialize，但已经删除了 BeginInternalSubTransaction/ReleaseCurrentSubTransaction、CurrentResourceOwner 恢复以及 sqlerrcode 过滤。PostgreSQL 中在无子事务保护的情况下捕获任意用户定义函数（这里是对 numeric/用户聚合的 deserialize 函数，可能通过 FunctionCallInvoke 触发任意代码）的错误是不安全的：失败时已获取的 buffer pin、lock、快照引用、cached plan 等资源不会被回滚释放，CurrentResourceOwner 也可能与 CurrentMemoryContext 不一致，随后的重试会在半清理状态上继续执行，可能出现 “‘当前事务已中止’”、“资源所有者仍持有” 或内存损坏类错误；同时 OOM/中断等硬错误也会被吞掉并进入“修复”分支。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RELIABILITY-ERRHANDLING-002"
+    },
+    {
+      "file": "sql/chunk.sql",
+      "line": 52,
+      "summary": "新增 SQL 函数只出现在安装脚本，latest-dev.sql 被清空导致升级实例缺少该函数",
+      "failure_scenario": "本 MR 在 sql/chunk.sql 中新增 _timescaledb_functions.create_chunk_table(...)，并在 sql/compat.sql 中新增 _timescaledb_internal 兼容包装，但 sql/updates/latest-dev.sql 的内容（原本包含 create_chunk_table 的 DROP/CREATE 语句）被整体删除，文件变为空；同时 version.config 的 update_from_version 回退为 2.19.1。结果是：全新安装会拥有这两个函数，而由 2.19.1 升级到 2.20.0-dev 的实例不会通过更新脚本获得它们，安装与升级后的对象集不一致，依赖 create_chunk_table 的调用方在升级实例上会遇到 “function does not exist”，并且 sql/compat.sql 中的弃用包装永远不会被升级用户拿到。建议在 latest-dev.sql 中补齐相应 CREATE OR REPLACE 语句（或明确说明这两个对象在 2.19.1 已存在）。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-MIGRATION-001"
+    },
+    {
+      "file": "src/chunk.c",
+      "line": 1016,
+      "summary": "ts_chunk_create_only_table 的碰撞检查在加锁前完成且锁后不复检，与既有创建路径不一致",
+      "failure_scenario": "ts_chunk_create_only_table 先 chunk_collides(ht, cube) 判定无碰撞，然后才 LockRelationOid(ht->main_table_relid, ShareUpdateExclusiveLock)，加锁后直接创建表，没有再复检碰撞（第 1018 行只做 ts_hypercube_find_existing_slices）。而标准路径 ts_chunk_find_or_create_without_cuts 的写法是先见检查、加锁后再次 chunk_collides 复检，注释明确说 “Check again after lock”。由于本函数不写 chunk 元数据，chunk_collides 也永远看不到它创建的表，因此并发场景下两个会话可以同时通过碰撞检查：若 table_name 相同则第二个会话在 DefineRelation 时报 relation already exists（错误信息与语义都不友好），若 table_name 不同则会创建出覆盖同一时间范围、且不受 catalog 管理的表，后续 drop_chunk/retention 无法回收，形成孤儿表。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONCURRENCY-RACE-001"
+    },
+    {
+      "file": "src/hypertable.c",
+      "line": 1870,
+      "summary": "建 hypertable 的 publication 校验只保留显式发布，隐式（FOR ALL TABLES）发布不再拦截",
+      "failure_scenario": "ts_hypertable_create_from_info 现在只检查 GetRelationPublications(table_relid)，删掉了 GetAllTablesPublications() 条件（diff 中 `- if (GetRelationPublications(table_relid) != NIL || GetAllTablesPublications() != NIL)`）。这意味着当实例存在 FOR ALL TABLES 发布的 publication 时，任何表都可以被转换为 hypertable，而这些表在 publication 侧无法被正常 drop（即 issue #7928 报告的问题）。同时本 MR 新增的 .unreleased/pr_7911 文本仍在宣称 “Don't create hypertable for published tables” 与 “published tables don't get dropped when they have a hypertable”，与代码实际拦截范围不一致，容易让发布说明与实际行为不符。若这是有意回退 #7928，建议在 PR 说明与 changelog 中明确标注。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "RELIABILITY-REGRESSION-001"
+    },
+    {
+      "file": "tsl/src/chunk_api.c",
+      "line": 44,
+      "summary": "chunk_api.c 残留大量未使用的宏、枚举与重复 include",
+      "failure_scenario": "本次新增代码引入了与 chunk_create_empty_table 无关的大量声明：FLOAT4_TYPELEN/FLOAT4_TYPEBYVAL/FLOAT4_TYPEALIGN/CSTRING_* /INT4_*/OID_*/CSTRING_ARY_TYPELEN 类型元数据宏、ESTIMATE_JSON_STR_SIZE、CREATE_CHUNK_FUNCTION_NAME/CREATE_CHUNK_NUM_ARGS/CHUNK_CREATE_STMT、enum Anum_chunk_relstats、enum Anum_chunk_colstats、STRINGS_PER_TYPE_OID/STRINGS_PER_OP_OID、enum StringArrayTypeIdx、enum OpArrayTypeIdx、LargSubarrayForOpArray/RargSubarrayForOpArray。这些符号在本文件中均无任何使用（chunk_create_empty_table 只用到 get_hypercube_from_slices 与 ts_chunk_create_only_table），属于移植/回退过程中遗留的死代码，会误导后续维护者以为存在远端 chunk/relstats 相关逻辑。另外 tsl/src/chunk_api.h 同时 include 了 \"chunk.h\" 与 <chunk.h>，属于重复包含。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-DEADCODE-001"
+    },
+    {
+      "file": "tsl/src/bgw_policy/continuous_aggregate_api.c",
+      "line": 264,
+      "summary": "策略 check 函数把用户输入错误改报为 ERRCODE_INTERNAL_ERROR",
+      "failure_scenario": "policy_refresh_cagg_check、policy_reorder_check、policy_retention_check 在 config 为 NULL 时，错误码由 ERRCODE_NULL_VALUE_NOT_ALLOWED 改为 ERRCODE_INTERNAL_ERROR。ERRCODE_INTERNAL_ERROR（XX000）语义是“扩展内部不应发生的错误”，而这里是由用户/后台作业传入配置导致的输入错误；改动会把客户端可预期的参数错误伪装成内部故障，影响客户端与监控的错误分类，也可能破坏依赖 SQLSTATE 的既有测试与告警规则。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-ERRCODE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\timescale__timescaledb\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\timescale__timescaledb@2568b01.diff\n  caseId              timescale__timescaledb@2568b01\n  --issue             (未传)\n  --taskId            timescale__timescaledb@2568b01\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 37 个文件 / 134632 字符（test=35, exclude=2），明细见审计 mrFilter\n✓ 完成 · 耗时 271.8s · 模型调用 19 次 · token 输入 105,592（未命中） · 输出 39,118 · 缓存命中 1,081,984（91.1%） · 工具 42 次（主会话 42 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0288\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 272.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 271.7s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.4s (0.1%)\n[time] 审计明细 | P1 11.7s (4.3%) | P2 4.3s (1.6%) | P3 15.8s (5.8%) | P4 113.0s (41.6%) | P5 105.6s (38.9%) | P6 21.4s (7.9%)\n[usage] 任务总计 | 模型调用 19 次（Agent 19 + 一次性 0） | token 输入 105,592（未命中） | 输出 39,118 | 缓存命中 1,081,984（91.1%） | $0.0288\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\timescale__timescaledb@2568b01\\audit\\20261115_010255_730.json",
+  "token_usage": {
+    "input_tokens": 105592,
+    "output_tokens": 39118,
+    "cache_read_input_tokens": 1081984
+  }
+}

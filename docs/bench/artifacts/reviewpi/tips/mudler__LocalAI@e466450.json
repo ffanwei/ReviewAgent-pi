@@ -1,0 +1,419 @@
+[
+  {
+    "filePath": "core/http/endpoints/openai/completion.go",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "totalTokenUsage.TimingTokenGeneration += tokenUsage.TimingTokenGeneration",
+        "review": "[缺陷类型] 重构时误删累加语句，导致汇总值恒为初始零值。影响评估：所有非流式 /v1/completions 调用方的 usage 统计与计费均为 0，属对外可见的 API 行为回归；该缺陷不会报错，只会在下游账单/监控里静默体现。",
+        "suggestion": "[重构思路] 恢复 Prompt/Completion 累加，并考虑把 4 个字段的累加收敛到一个 TokenUsage 的 Add 方法里，避免以后再出现“只加一半”的情况。代码示例：\n```go\ntotalTokenUsage.Prompt += tokenUsage.Prompt\ntotalTokenUsage.Completion += tokenUsage.Completion\ntotalTokenUsage.TimingPromptProcessing += tokenUsage.TimingPromptProcessing\ntotalTokenUsage.TimingTokenGeneration += tokenUsage.TimingTokenGeneration\n```",
+        "category": "可靠性",
+        "subcategory": "用量统计丢失",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 183,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "backend/cpp/llama/grpc-server.cpp",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "void validate_model_chat_template(server_params & sparams) {",
+        "review": "[缺陷类型] 死代码 / 未接入调用链的新逻辑。影响评估：模板不兼容的模型不会得到预期回退，排障时容易误判为已修复；后续维护者可能重复实现同一逻辑。",
+        "suggestion": "[重构思路] 在 load_model 成功后、initialize/启动 slot 之前调用它（例如 `validate_model_chat_template(params);`），并补一条覆盖“模板不支持”场景的用例；若确实不需要该回退，则删除函数避免误导。代码示例：\n```cpp\nadd_bos_token = llama_add_bos_token(model);\nvalidate_model_chat_template(params);\nreturn true;\n```",
+        "category": "可维护",
+        "subcategory": "死代码/未接入逻辑",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 521,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "if (result.tok == llama_token_eos(model))",
+        "review": "[缺陷类型] 停止条件退化（只覆盖 EOS，未覆盖全部 EOG）。影响评估：常见 chat 模型会在结束标记后继续生成，导致响应内容污染、延迟与 token 消耗上升，属对外可见的行为回归。",
+        "suggestion": "[重构思路] 用升级后 API 的等价能力恢复 EOG 判定，例如通过模型的 vocab 获取词表后调用 `llama_vocab_is_eog(llama_model_get_vocab(model), result.tok)`，或使用当前版本提供的等价 EOG 判断函数；也可在采样层对 EOG 直接返回终止。代码示例：\n```cpp\nconst llama_vocab * vocab = llama_model_get_vocab(model);\nif (result.tok == llama_vocab_eos(vocab) || llama_vocab_is_eog(vocab, result.tok)) {\n    slot.stopped_eos = true;\n    slot.has_next_token = false;\n}\n```",
+        "category": "可靠性",
+        "subcategory": "生成终止条件",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1133,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "Makefile",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "cmake $(CMAKE_ARGS) .. && \\",
+        "review": "[缺陷类型] 构建参数搬迁后能力丢失（GPU 加速开关与共享/静态库约束）。影响评估：CUDA/ROCm 镜像里 stablediffusion-ggml 回退到 CPU，出图速度大幅下降；若上游默认改为共享库，`cp build/libstable-diffusion.a` 还会直接构建失败。",
+        "suggestion": "[重构思路] 在顶层 Makefile 的新目标里根据 BUILD_TYPE 重新派生 cmake 参数（或显式传 `-DBUILD_SHARED_LIBS=OFF`），保持与原 backend Makefile 等价的能力。代码示例：\n```make\nifeq ($(BUILD_TYPE),cublas)\n  SD_CMAKE_ARGS+=-DGGML_CUDA=ON\nelse ifeq ($(BUILD_TYPE),openblas)\n  SD_CMAKE_ARGS+=-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS\nendif\nsources/stablediffusion-ggml.cpp/build/libstable-diffusion.a: sources/stablediffusion-ggml.cpp\n\tcd sources/stablediffusion-ggml.cpp && mkdir -p build && cd build && \\\n\tcmake $(CMAKE_ARGS) -DBUILD_SHARED_LIBS=OFF $(SD_CMAKE_ARGS) .. && cmake --build . --config Release\n```",
+        "category": "性能",
+        "subcategory": "构建能力回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 309,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/config/backend_config.go",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "VallE VallE `yaml:\"vall-e\"`",
+        "review": "[缺陷类型] 配置结构破坏性变更且缺少兼容层。影响评估：已有模型的 `tts.audio_path` 直接失效，声音克隆无声地退化为默认音色，用户很难定位原因（无日志、无校验错误）。",
+        "suggestion": "[重构思路] 保留旧字段做向后兼容（优先 vall-e.audio_path，回退 audio_path），或在加载后显式迁移并 warn，同时在文档/gallery 中同步字段名。代码示例：\n```go\ntype TTSConfig struct {\n    Voice     string `yaml:\"voice\"`\n    AudioPath string `yaml:\"audio_path\"` // deprecated, use vall-e.audio_path\n    VallE     VallE  `yaml:\"vall-e\"`\n}\n\nfunc (t TTSConfig) EffectiveAudioPath() string {\n    if t.VallE.AudioPath != \"\" { return t.VallE.AudioPath }\n    return t.AudioPath\n}\n```",
+        "category": "可靠性",
+        "subcategory": "配置向后兼容",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 25,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/config/application_config.go",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "func WithMachineTag(tag string) AppOption {",
+        "review": "[缺陷类型] 默认配置下的主机名泄露（信息暴露）。影响评估：暴露节点身份与部署拓扑线索；对多租户/公网可达的 LocalAI 实例是可被动的指纹信息，且客户端无法通过配置关掉该响应头。",
+        "suggestion": "[重构思路] 默认不要回退到主机名：未显式配置时不发送该头；同时提供关闭开关（或仅在开启 telemetry 时发送），避免默认泄露基础设施信息。代码示例：\n```go\nif tag := appConfig.MachineTag; tag != \"\" {\n    c.Set(\"LocalAI-Machine-Tag\", tag)\n}\n```\n并在 WithMachineTag 中去掉 os.Hostname() 回退（或改为显式传值）。",
+        "category": "安全",
+        "subcategory": "信息泄露",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 100,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "hostname, _ := os.Hostname()",
+        "review": "[缺陷类型] 默认开启的响应头信息泄露（主机名）。影响评估：多租户或对外暴露的实例会向所有客户端暴露机器命名/拓扑线索；空串主机名还会产生无意义的空响应头。",
+        "suggestion": "[重构思路] 默认不设置该头（或默认置空），仅在用户通过 CLI/env 显式配置时才回写；同时处理 Hostname 错误，并把逐端点重复设置改为统一中间件。代码示例：\n```go\n// route middleware\napp.Use(func(c *fiber.Ctx) error {\n    if appConfig.MachineTag != \"\" {\n        c.Set(\"LocalAI-Machine-Tag\", appConfig.MachineTag)\n    }\n    return c.Next()\n})\n```",
+        "category": "安全",
+        "subcategory": "信息暴露",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 103,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/secscan.yaml",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "uses: securego/gosec@v2.21.4",
+        "review": "[缺陷类型] 安全工具版本回退。影响评估：SAST 覆盖率与已知误报修复丢失，安全回归可能被漏报；版本回退若无说明，后续会被反复来回改动。",
+        "suggestion": "[重构思路] 若无明确理由（如 v2.22.0 存在阻塞性缺陷），恢复 v2.22.0 或升级到最新稳定版；若确需回退，请在 MR 描述或 workflow 注释中记录原因与解除条件。代码示例：\n```yaml\n      - name: Run Gosec Security Scanner\n        if: ${{ github.actor != 'dependabot[bot]' }}\n        uses: securego/gosec@v2.22.0\n```",
+        "category": "安全",
+        "subcategory": "安全工具版本",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "backend/python/vall-e-x/install.sh",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "git clone https://github.com/Plachtaa/VALL-E-X.git ${MY_DIR}/source",
+        "review": "[缺陷类型] 脚本非幂等 + 隐式依赖 cwd。影响评估：本地/CI 二次构建直接失败；从其他目录调用时把无关 Python 文件塞进运行时目录，可能被后端加载成错误的模块。",
+        "suggestion": "[重构思路] clone 前判断目录是否存在（或先清理），拷贝使用绝对路径 $MY_DIR。代码示例：\n```bash\nif [ ! -d \"${MY_DIR}/source/.git\" ]; then\n    git clone --depth 1 https://github.com/Plachtaa/VALL-E-X.git \"${MY_DIR}/source\"\nfi\npushd \"${MY_DIR}/source\" && git fetch --depth 1 origin ${VALL_E_X_VERSION} && git checkout ${VALL_E_X_VERSION} && popd\ncp -v ${MY_DIR}/*.py \"${MY_DIR}/source/\"\n```",
+        "category": "可靠性",
+        "subcategory": "构建脚本幂等性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 18,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F010",
+        "code": "uv pip install ${BUILD_ISOLATION_FLAG} --requirement ${MY_DIR}/source/requirements.txt",
+        "review": "[缺陷类型] 依赖安装顺序导致的版本覆盖（GPU 轮子被上游清单覆盖）。影响评估：GPU 镜像里 VALL-E-X 可能在 CPU 上运行，表现为 RTF 极差且无显式报错，排查成本高。",
+        "suggestion": "[重构思路] 把上游清单作为“仅补齐缺失依赖”的来源而非覆盖源，例如安装上游依赖时加 `--no-deps` 后自行安装必需项，或用 constraints 文件锁定 torch/torchaudio 版本。代码示例：\n```bash\n# 先安装上游依赖（不拉取其依赖），再用我们固定的版本补齐\nuv pip install ${BUILD_ISOLATION_FLAG} --no-deps --requirement ${MY_DIR}/source/requirements.txt\ninstallRequirements\n```",
+        "category": "可靠性",
+        "subcategory": "依赖版本覆盖",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 20,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/image.yml",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "#  parallel-builds:",
+        "review": "[缺陷类型] 用注释方式下线 CI 作业（配置漂移 + 发布产物缺失）。影响评估：arm64 L4T 镜像不再产出（或发布流程在别处失败），且注释块与真实配置不一致，误导后续修改。",
+        "suggestion": "[重构思路] 若需临时下线，使用 `if: false` 或 workflow 级开关（如 `vars.ENABLE_L4T`）保留可运行配置；若确定不再需要则直接删除注释块，并通过 git 历史回溯。代码示例：\n```yaml\n  gh-runner:\n    if: ${{ vars.ENABLE_L4T == 'true' }}\n    uses: ./.github/workflows/image_build.yml\n```",
+        "category": "可维护",
+        "subcategory": "CI 配置可维护性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 365,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "backend/python/diffusers/backend.py",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "if CLIPSKIP and request.CLIPSkip != 0:",
+        "review": "[缺陷类型] 移除功能分支但未提供显式失败路径。影响评估：旧配置得到的是 AttributeError 而非可读错误，用户难以定位到“该 pipeline 已不再支持”。",
+        "suggestion": "[重构思路] 为未知/已移除的 pipeline_type 增加显式校验与错误信息，并保留 Sana 分支或在文档中声明移除。代码示例：\n```python\nelse:\n    return backend_pb2.Result(\n        success=False,\n        message=f\"Unsupported PipelineType: {request.PipelineType}\")\n```",
+        "category": "可维护",
+        "subcategory": "错误处理可读性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 279,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/cli/run.go",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "MachineTag                         string   `env:\"LOCALAI_MACHINE_TAG\" help:\"TODO: write a help string\"`",
+        "review": "[缺陷类型] 用户可见文档残留占位符。影响评估：`--help` 输出暴露 TODO，用户无法得知该参数含义与默认行为（hostname）。",
+        "suggestion": "[重构思路] 补全 help 并归类到合适的 group，同时在文本中说明缺省值来源。代码示例：\n```go\nMachineTag string `env:\"LOCALAI_MACHINE_TAG\" help:\"Tag identifying this machine, returned in the LocalAI-Machine-Tag response header (defaults to the hostname)\" group:\"api\"`\n```",
+        "category": "可读性",
+        "subcategory": "CLI 帮助文本",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 74,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/http/endpoints/openai/chat.go",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "c.Set(\"LocalAI-Machine-Tag\", startupOptions.MachineTag)",
+        "review": "[缺陷类型] 横切关注点重复实现（DRY）。影响评估：遗漏即导致行为不一致；后续修改（例如改为 opt-in 或改名）需要改动十余处文件。",
+        "suggestion": "[重构思路] 在路由注册处使用一个 Fiber 中间件统一注入该头，删除各端点内的重复调用。代码示例：\n```go\nfunc MachineTagMiddleware(appConfig *config.ApplicationConfig) fiber.Handler {\n    return func(c *fiber.Ctx) error {\n        if appConfig.MachineTag != \"\" {\n            c.Set(\"LocalAI-Machine-Tag\", appConfig.MachineTag)\n        }\n        return c.Next()\n    }\n}\n```",
+        "category": "可维护",
+        "subcategory": "横切逻辑重复",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 174,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "docs/data/version.json",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "\"version\": \"v2.24.2\"",
+        "review": "[缺陷类型] 发布元数据回退（版本号倒退）。影响评估：文档与安装文档会展示错误的版本；若确为分支基线落后，说明整条分支缺少目标分支的提交，合并后会静默撤销 master 上的功能与依赖升级，属高影响的一致性问题。",
+        "suggestion": "[重构思路] 确认本 MR 是否应从当前 master 重新 rebase；版本号这类与本次功能无关的文件应保持与目标分支一致，只在正式发版时由发布流程更新。代码示例：`git rebase origin/master` 后确认 `docs/data/version.json` 恢复为 `{\"version\": \"v2.25.0\"}` 不再出现在 diff 中。",
+        "category": "可维护",
+        "subcategory": "版本元数据回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "go.mod",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "github.com/libp2p/go-libp2p v0.36.2",
+        "review": "[缺陷类型] 依赖版本整体回退（非功能所需）。影响评估：可能丢失上游安全与稳定性修复，P2P/OTel 行为与目标分支不一致，且与 go.sum、CI 镜像缓存不匹配时会出现构建失败或运行时差异；一旦合并将影响所有下游构建。",
+        "suggestion": "[重构思路] 与本次功能无关的依赖变更应全部移出本 MR：在最新 master 上重新拉分支，仅保留 MachineTag / extra usage 相关改动；如确需降级某个库（例如因 edgevpn 与 libp2p 版本不兼容），单独提 MR 并说明原因与兼容性验证结果。代码示例：`git checkout origin/master -- go.mod go.sum` 然后 `go mod tidy`，确认 `git diff go.mod` 只包含本次功能必需的依赖变化。",
+        "category": "可靠性",
+        "subcategory": "依赖版本回退",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 38,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "pkg/downloader/uri.go",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "resp, err := http.Get(url)",
+        "review": "[缺陷类型] 大文件下载断点续传能力回退。影响评估：模型文件通常 1–40GB，中断后全量重下会显著拉长启动与安装时间、放大带宽成本，弱网环境下可能长期无法完成安装。",
+        "suggestion": "[重构思路] 若确需简化实现，至少保留「存在 .partial 时优先尝试 Range 续传、失败再全量重下」的降级路径，并保留对不支持 Range 服务端的识别；否则请在 MR 描述中明确这是有意的功能移除并说明替代方案。代码示例：\n```go\nreq, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)\nif fi, statErr := os.Stat(tmpFilePath); statErr == nil && fi.Size() > 0 {\n    req.Header.Set(\"Range\", fmt.Sprintf(\"bytes=%d-\", fi.Size()))\n}\nresp, err := http.DefaultClient.Do(req)\n```",
+        "category": "性能",
+        "subcategory": "大文件下载续传",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 270,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "gallery/index.yaml",
+    "reviewTips": [
+      {
+        "id": "F019",
+        "code": "- &falcon3",
+        "review": "[缺陷类型] 模型目录/配置回退。影响评估：依赖这些名字的部署脚本、文档、前端一键安装会 404 或报「model not found」；若属无意回退，合并后 master 的 gallery 内容会减少，用户侧能力静默消失。",
+        "suggestion": "[重构思路] 与本次功能无关的 gallery 变更应从 MR 中剔除；若确要下线模型，改为单独 MR，并在 docs 与 changelog 中注明弃用与替代项，必要时保留一段时间以兼容旧脚本。代码示例：`git checkout origin/master -- gallery/index.yaml gallery/phi-4-chat.yaml gallery/phi-4-chat-fcall.yaml`，再确认 `git diff --stat gallery/` 为空。",
+        "category": "可维护",
+        "subcategory": "模型目录内容回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F020",
+        "code": "Sometimes, the brightest gems are found in the darkest places. For it is in the shadows where we learn to really see the light.",
+        "review": "[缺陷类型] 无意义格式化改动 + 块标量缩进不一致隐患。影响评估：当前渲染无影响，但会污染 blame，并为后续追加内容埋下缩进截断风险。",
+        "suggestion": "[重构思路] 从 MR 中剔除该行改动，保持与文件内其它条目一致的 4 空格缩进。代码示例：\n```yaml\n  description: |\n    Sometimes, the brightest gems are found in the darkest places. ...\n```",
+        "category": "可读性",
+        "subcategory": "YAML 格式",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 5759,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "pkg/model/loader.go",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "\".md\",",
+        "review": "[缺陷类型] 模型文件过滤规则变更导致列表污染。影响评估：/v1/models 与前端 gallery 会列出不可用的 .pt/.onnx 文件；客户端或编排层若按列表逐个预热模型，会触发加载失败与资源浪费。",
+        "suggestion": "[重构思路] 若目标只是支持 pytorch/onnx 后端，请在列表侧按后端类型白名单化处理，而不是放开全局跳过规则；先从 MR 中除去该无关改动。代码示例：\n```go\nvar knownModelsNameSuffixToSkip = []string{\n    \".tmpl\", \".keep\", \".yaml\", \".yml\", \".json\", \".txt\",\n    \".md\", \".MD\", \".DS_Store\", \".\", \".safetensors\", \".partial\", \".tar.gz\",\n    \".pt\", \".onnx\", // 权重附带文件，不作为可选模型列出\n}\n```",
+        "category": "可靠性",
+        "subcategory": "模型文件过滤规则",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 57,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "core/http/endpoints/openai/edit.go",
+    "reviewTips": [
+      {
+        "id": "F022",
+        "code": "extraUsage := c.Get(\"LocalAI-Extra-Usage\", \"\") != \"\"",
+        "review": "[缺陷类型] 布尔型请求头解析过宽。影响评估：网关批量注入该头时无法对单个请求关闭；语义不明确也会造成文档与实现的偏差，属于可维护性/可预期性问题。",
+        "suggestion": "[重构思路] 用显式布尔解析，并把逻辑抽成公共 helper 供各端点复用，避免多处复制。代码示例：\n```go\nfunc extraUsageEnabled(c *fiber.Ctx) bool {\n    v := strings.TrimSpace(c.Get(\"LocalAI-Extra-Usage\"))\n    b, err := strconv.ParseBool(v)\n    return err == nil && b\n}\n```",
+        "category": "可维护",
+        "subcategory": "请求头语义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 31,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "swagger/docs.go",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "\"schema.OpenAIUsage\": {",
+        "review": "[缺陷类型] API 文档滞后于结构体变更。影响评估：对外文档缺字段，代码生成型客户端无法读取计时信息；也让审阅者难以从文档确认该字段的 opt-in 语义。",
+        "suggestion": "[重构思路] 重新生成 swagger 产物（make swagger / swag init），并确认新字段进入 docs.go；若字段需要说明，在结构体上加注释说明仅 LocalAI-Extra-Usage 开启时返回。代码示例：`// @Description 仅在请求头 LocalAI-Extra-Usage 开启时返回` 后执行 `swag init -g core/http/app.go`。",
+        "category": "可维护",
+        "subcategory": "接口文档同步",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1746,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "core/schema/openai.go",
+    "reviewTips": [
+      {
+        "id": "F024",
+        "code": "// Extra timing data, disabled by default as is't not a part of OpenAI specification",
+        "review": "[缺陷类型] 注释拼写/表述错误。影响评估：仅影响可读性，但该注释承载了字段语义说明，容易被误解为「字段本身默认关闭」。",
+        "suggestion": "[重构思路] 修正拼写并补充关闭机制说明。代码示例：\n```go\n// Extra timing data — not part of the OpenAI specification.\n// Only populated when the request enables it via the LocalAI-Extra-Usage header.\n```",
+        "category": "可读性",
+        "subcategory": "注释质量",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 26,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

@@ -1,0 +1,102 @@
+{
+  "instance_id": "immich-app__immich@d38f1f5",
+  "repo": "immich-app/immich",
+  "base_commit": "c664d99a348999d16cda45a8dd57db436b8f9fba",
+  "head_commit": "d38f1f55f42d600d05058e70d6ccee9679623591",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 649.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": ".vscode/settings.json",
+      "line": 2,
+      "summary": "工作区配置丢失 JSON 格式化与 organizeImports 等约定，文件末尾缺少换行",
+      "failure_scenario": ".vscode/settings.json 重排后删除了 [json] 与 [jsonc] 的 defaultFormatter/tabSize 配置，以及 [javascript]/[svelte]/[typescript] 的 `editor.codeActionsOnSave`（source.organizeImports、source.removeUnusedImports）。这些是仓库统一的编辑器约定，删除后本地保存不再自动整理 import，与 CI 的 lint 规则（no-unused-vars 等）更容易产生偏差；同时文件改为无结尾换行，后续 diff 会出现噪音。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "STYLE-EDITORCONFIG-001"
+    },
+    {
+      "file": "web/src/lib/components/memory-page/memory-viewer.svelte",
+      "line": 547,
+      "summary": "移除 Luxon 的 { locale: $locale } 后日期不再跟随用户所选语言",
+      "failure_scenario": "本次改动把多处 Luxon 日期格式化的显式 locale 参数删掉（memory-viewer.svelte 的 DATE_FULL、server-about-modal.svelte 的版本历史日期与 title、device-card.svelte 的 DATETIME_MED）。但 web 侧从未设置 Luxon 的默认 locale（全仓库检索 `Settings`（luxon）在 web 内 0 处引用，+layout.svelte 也未设置），因此这些日期会回落到浏览器/系统的默认语言，而不是用户在 Immich 设置里选择的界面语言。影响：界面文案是中文、日期却按浏览器 en-US 显示，或反之；对语言与系统语言不一致的用户是可见的本地化回归。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.62,
+      "rule": "I18N-001"
+    },
+    {
+      "file": "web/src/service-worker/index.ts",
+      "line": 60,
+      "summary": "Service Worker 对所有 thumbnail/original 响应无上限写入 CacheStorage，且 cache.put 未 await",
+      "failure_scenario": "新增的 Service Worker 拦截所有匹配 `^/api/assets/[a-f0-9-]+/(original|thumbnail)` 的 GET 请求，命中缓存直接返回，未命中就 fetch 后 `cache.put(url, response.clone())` 写入 CacheStorage。这里没有容量上限、没有 LRU/过期/清理策略（仅在 SW `version` 变化时整体删除旧 cache），而 `original` 端点意味着整张原图也会被落盘缓存。用户浏览相册会让 CacheStorage 体积随图库规模线性增长，与浏览器 HTTP 缓存重复占用磁盘；在磁盘紧张的设备上可能触发配额错误。另外 `cache.put(...)` 未 await 也未 catch，put 失败（配额超限等）会变成未处理的 Promise 拒绝，且在 SW 被终止前可能来不及完成写入导致缓存静默丢失。preload 分支 `immichAsset(url)` 同样未 await/catch。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERFORMANCE-002"
+    },
+    {
+      "file": "web/src/service-worker/index.ts",
+      "line": 76,
+      "summary": "cancel 消息按 URL 直接 abort 且无引用计数，会中断其他组件正在加载的同名图片请求",
+      "failure_scenario": "Service Worker 用 `pendingLoads`（Map<string, AbortController>）按 URL 唯一存储，没有任何引用计数；收到 cancel 消息即 abort 该 URL 的 fetch 并删除条目（abort 后 catch 分支返回 `Response.error()`）。客户端侧 image-thumbnail.svelte 在组件销毁时无条件 `cancelImageUrl(url)`，photo-viewer.svelte 在 onMount 清理时 `cancelImageUrl(imageLoaderUrl)`。当同一个图片 URL 同时被两个组件使用时（例如人物页卡片与侧栏/全屏面板同时渲染同一人物缩略图、或同一资源的缩略图在列表与浮层中并存），其中一个组件卸载就会把另一个仍在挂载中的图片请求 abort 掉，导致该 <img> 触发 onerror，最终渲染 BrokenAsset（photo-viewer 中 `imageError = true` 即显示 BrokenAsset）。此外 `pendingLoads.set()` 是覆盖式写入，同一 URL 并发两次 fetch 时前一个 controller 会丢失，使 cancel 只能中断其中一个请求，行为不确定。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RESOURCE-001"
+    },
+    {
+      "file": "web/src/lib/components/shared-components/context-menu/context-menu.svelte",
+      "line": 48,
+      "summary": "去掉 left/top 的 Math.max(8, …) 下界钳制后，右键/更多菜单可能渲染到视口外",
+      "failure_scenario": "本次改动把位置计算从 `left = Math.max(8, Math.min(innerWidth - rect.width, x - directionWidth))` 改为 `left = Math.min(innerWidth - rect.width, x - directionWidth)`，top 同样去掉了下界。当 `direction === 'left'` 且触发元素靠近视口左缘（`x - rect.width < 0`），或右键坐标位于负值/极小值时，菜单会被摆到负坐标处并溢出视口左侧/上方，用户看不到或只能看到部分菜单项。getContextMenuPositionFromEvent 直接返回元素的 boundingRect 顶点坐标（top-left/bottom-left 等），并不做任何兜底，因此该下界是唯一的保护。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "UI-POSITION-001"
+    },
+    {
+      "file": "web/src/lib/components/shared-components/context-menu/context-menu.svelte",
+      "line": 69,
+      "summary": "同一元素同时挂 max-h-dvh 与 max-h-svh 两个互斥高度类",
+      "failure_scenario": "`isVisible ? 'max-h-dvh max-h-svh' : 'max-h-0'` 把两个功能重叠的 max-height 工具类同时作用在同一个元素上，最终生效者取决于 Tailwind 生成 CSS 的先后顺序，阅读者无法判断意图，后续改动容易出现「改了没效果」。若意图是从 dvh 迁移到 svh，应直接替换而不是叠加。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "STYLE-001"
+    },
+    {
+      "file": "web/src/lib/components/shared-components/navigation-bar/navigation-bar.svelte",
+      "line": 42,
+      "summary": "新的 onLogout 未捕获 logout() 异常，登出失败时无任何提示且状态残留",
+      "failure_scenario": "`const onLogout = async () => { const { redirectUri } = await logout(); await handleLogout(redirectUri); }` 直接以 async 函数作为按钮 onclick 回调，没有 try/catch 也没有走项目统一的 handleError/notificationController。网络异常或后端返回非 2xx 时会产生未处理的 Promise 拒绝，用户点击「退出登录」后界面毫无变化也无错误提示，且 `handleLogout` 的 finally 清理逻辑不会被触达。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "web/src/lib/components/shared-components/navigation-bar/account-info-panel.svelte",
+      "line": 34,
+      "summary": "手动拼装 user 对象替代服务端返回值，易与后端字段漂移",
+      "failure_scenario": "保存头像颜色后使用 `$user = { ...$user, profileImagePath: '', avatarColor: $preferences.avatar.color }` 在本地合成 user 对象。这里硬编码 `profileImagePath: ''`、且不更新 `profileChangedAt`/`updatedAt` 等由服务端维护的字段，等于在客户端复制了后端 `mapUser` 的语义；一旦后端 DTO 变化（例如未来 avatarColor 再次迁移或 profile 相关字段联动），该处会成为难以发现的漂移点。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "MAINTAINABILITY-003"
+    }
+  ],
+  "stderr_tail": "mmich-app__immich@d38f1f5\n  --issue             (未传)\n  --taskId            immich-app__immich@d38f1f5\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 3 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 19 个文件 / 99407 字符（lockfile=5, test=12, exclude=2），明细见审计 mrFilter\n✓ 完成 · 耗时 584.3s · 模型调用 40 次 · token 输入 242,906（未命中） · 输出 78,874 · 缓存命中 1,937,152（88.9%） · 工具 96 次（主会话 96 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0615\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\immich-app__immich@d38f1f...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 584.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 584.2s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 15.9s (2.7%) | S1P2 3.5s (0.6%) | S1P3 9.0s (1.5%) | S1P4 97.9s (16.8%) | S1P5 55.9s (9.6%) | S1P6 18.4s (3.2%) | S2P1 5.9s (1.0%) | S2P2 7.9s (1.3%) | S2P3 10.1s (1.7%) | S2P4 114.9s (19.7%) | S2P5 35.8s (6.1%) | S2P6 12.8s (2.2%) | S3P1 21.3s (3.6%) | S3P2 3.4s (0.6%) | S3P3 9.9s (1.7%) | S3P4 93.5s (16.0%) | S3P5 53.2s (9.1%) | S3P6 15.0s (2.6%)\n[usage] 任务总计 | 模型调用 40 次（Agent 40 + 一次性 0） | token 输入 242,906（未命中） | 输出 78,874 | 缓存命中 1,937,152（88.9%） | $0.0615\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\immich-app__immich@d38f1f5\\audit\\20261115_031927_957.json",
+  "token_usage": {
+    "input_tokens": 242906,
+    "output_tokens": 78874,
+    "cache_read_input_tokens": 1937152
+  }
+}

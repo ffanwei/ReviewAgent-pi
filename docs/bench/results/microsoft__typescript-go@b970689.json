@@ -1,0 +1,322 @@
+{
+  "instance_id": "microsoft__typescript-go@b970689",
+  "repo": "microsoft/typescript-go",
+  "base_commit": "bc3195e0f2727d11a48ed9fc61f37a90c9b7deb4",
+  "head_commit": "b970689fe86e0b6ef4f5285b18343ddf16b294eb",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1408.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 30,
+  "review_output": [
+    {
+      "file": "internal/tsoptions/parsinghelpers.go",
+      "line": 143,
+      "summary": "tsconfig 中 emitDeclarationOnly 等多个选项已无解析分支，将被静默忽略",
+      "failure_scenario": "`ParseCompilerOptions` 的 switch 中删除了 `emitDeclarationOnly`、`downlevelIteration`、`noErrorTruncation`、`allowImportingTsExtensions`、`rewriteRelativeImportExtensions` 等分支，但 `internal/tsoptions/declscompiler.go:147` 仍声明 `Name: \"emitDeclarationOnly\"`，`internal/core/compileroptions.go` 中的 `AllowImportingTsExtensions`(16)、`EmitDeclarationOnly`(28)、`DownlevelIteration`(31)、`NoErrorTruncation`(66) 字段也都还在，且 tsoptions 包内已不存在任何对这些字段的赋值点。结果是用户 tsconfig 中写这些选项不再报错也不再生效：`emitDeclarationOnly: true` 仍会产出 JS、`downlevelIteration` 失效导致 ES5 目标的迭代降级输出错误、`noErrorTruncation` 失效、`allowImportingTsExtensions`/`rewriteRelativeImportExtensions` 被忽略。MR 内新增的基线直接印证了这一点：`testdata/baselines/reference/submodule/compiler/declFileEmitDeclarationOnly.js` 由原来的 `.d.ts` 输出变为输出 `helloworld.js`，`declarationEmitCastReusesTypeNode*`、`declFileEmitDeclarationOnlyError1` 等基线中 `.d.ts` 段落整段消失。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "TSOPTIONS-MISSING-KEY"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 120,
+      "summary": "JSDoc @import 无 import clause 时 `ImportClause.Clone` 会触发 nil 解引用崩溃",
+      "failure_scenario": "`reparseTags` 新增的 `KindJSDocImportTag` 分支直接调用 `importTag.ImportClause.Clone(&p.factory)` 并对结果执行 `AsImportClause().IsTypeOnly = true`，但 `JSDocImportTag.ImportClause` 并无非空保证：`internal/parser/jsdoc.go:855-871 parseImportTag` 通过 `tryParseImportClause` 构造，而 `tryParseImportClause`（parser.go:2195-2205）在既无标识符、下个 token 也不是 `*` 或 `{` 时直接 `return nil`（例如 `/** @import \"mod\" */` 这类仅模块说明符的写法）。此时对 nil 指针调用 `Clone` 会在解析阶段 panic，使本应是语法诊断的输入变成解析器崩溃。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-NIL-DEREF"
+    },
+    {
+      "file": "internal/parser/parser.go",
+      "line": 362,
+      "summary": "finishSourceFile 提前清空 identifiers/jsdocCache，导致顶层 await 重解析后的 SourceFile 丢失标识符表与 JSDoc 缓存",
+      "failure_scenario": "`parseSourceFileWorker` 会先调用一次 `finishSourceFile(result)`（parser.go:329），若 `possibleAwaitSpans` 非空则调用 `reparseTopLevelAwait` 生成一个**全新**的 SourceFile（parser.go:467 直接 `p.factory.NewSourceFile(...)`，未经 `copyFrom`）并再次调用 `finishSourceFile`（parser.go:335）。本次变更在 `finishSourceFile` 内 `result.SetJSDocCache(p.jsdocCache)`（360 行）与 `result.Identifiers = p.identifiers`（356 行）之后立刻把 `p.jsdocCache`、`p.identifiers` 置为 nil（361-362 行），于是第二次调用只能把 nil 写回新 SourceFile：`Identifiers` 为空导致 `printer/utilities.go:671 IsFileLevelUniqueName` 认为文件内无任何标识符（生成临时名可能与用户标识符冲突），`JSDocCache()` 为空导致 `checker/checker.go:2292 checkJSDocNodes` 遍历空 map、整份文件的 JSDoc 检查被跳过。变更前这两项会在第二次 finishSourceFile 时被原样复用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-STATE-RESET"
+    },
+    {
+      "file": "internal/ast/ast.go",
+      "line": 4056,
+      "summary": "UpdateImportDeclaration/Clone 不保留 KindJSImportDeclaration，重写后节点退化为普通 import",
+      "failure_scenario": "新增的 `NewJSImportDeclaration` 走 `newImportOrJSImportDeclaration(KindJSImportDeclaration, ...)`，但对应的 `UpdateImportDeclaration`（ast.go:4054-4059）在节点发生变化时固定调用 `f.NewImportDeclaration(...)`，`ImportDeclaration.Clone`（ast.go:4069-4071）同样固定走 `NewImportDeclaration`，仓库内不存在 `UpdateJSImportDeclaration`。而 `UpdateImportDeclaration` 被 `importelision.go:41`、`typeeraser.go:269`、`esmodule.go:108` 与 `ImportDeclaration.VisitEachChild`（ast.go:4066）调用。一旦这些路径对 `KindJSImportDeclaration` 节点发生更新（例如 import elision 中 `ImportClause` 未被 elide 而需要重建声明），节点种类会被悄悄降级为 `KindImportDeclaration`，此后 commonjs/esmodule transformer 里「`case ast.KindJSImportDeclaration: node = nil`」的抑制逻辑不再命中，JSDoc `@import` 声明会被当作真正的运行时 import 参与输出。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "AST-KIND-PRESERVATION"
+    },
+    {
+      "file": "internal/core/compileroptions.go",
+      "line": 62,
+      "summary": "CompilerOptions 的 JSON tag 改为 moduleDetectionKind，与选项名 moduleDetection 及对外序列化契约不一致",
+      "failure_scenario": "选项声明与解析入口仍以 `moduleDetection` 为名（declscompiler.go:1186、parsinghelpers.go:256），诊断文案也指引用户设置 `'moduleDetection'`，但结构体字段的 JSON tag 被改成 `moduleDetectionKind`。该结构体会被 `internal/api/proto.go` 的 `ConfigFileResponse.Options`、`ProjectResponse.CompilerOptions` 直接序列化给客户端，也被 `cmd/tsgo` 的 `--showConfig` 直接 encode。影响：对外载荷与 showConfig 输出出现用户不认识的键名 `moduleDetectionKind`，与 tsconfig/CLI 的选项拼写脱节，客户端按选项名取值会落空；同一概念在仓库中出现两种拼写，后续易再次被误改。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "API-001"
+    },
+    {
+      "file": "internal/core/compileroptions.go",
+      "line": 62,
+      "summary": "ModuleDetection 的 json tag 被改为 moduleDetectionKind，与实际 tsconfig 键名 moduleDetection 不一致",
+      "failure_scenario": "`core.CompilerOptions.ModuleDetection` 的 json tag 现为 `json:\"moduleDetectionKind,omitzero\"`，而 tsconfig 中的真实选项名与解析分支是 `moduleDetection`（parsinghelpers.go:256 `case \"moduleDetection\"`）。该 tag 决定 `CompilerOptions` 的 JSON 序列化键，MR 中 `config/tsconfigParsing/parses tsconfig with compilerOptions...` 基线由 `\"moduleDetection\": 1` 变为 `\"moduleDetectionKind\": 1` 即为直接体现。由于序列化出的键不是合法 tsconfig 选项，任何「导出配置再回读」的路径（如 `--showConfig` 输出、走 JSON 的 API/缓存）都会在回读时被当作未知选项丢弃，造成配置丢弃或诊断噪音。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "NAMING-JSON-TAG"
+    },
+    {
+      "file": "cmd/tsgo/main.go",
+      "line": 133,
+      "summary": "新增 tsc 子命令后仍保留一套重复的手写编译/报告流程",
+      "failure_scenario": "main.go 现在先按子命令分发：`tsc` 走 execute.CommandLine、`lsp`/`api` 走各自入口；但未匹配子命令时仍回落到旧的 parseArgs + 手写编译流程（自行 parse/check/emit、自带 printDiagnostics/printMessageChain/统计表）。这两套路径对同一份诊断使用不同的格式化实现（main.go 的 printDiagnostics 与 internal/execute/outputs.go 的 createDiagnosticReporter），后续修复输出格式或 pretty 语义时需要同时改两处，容易产生行为漂移。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-DUP-004"
+    },
+    {
+      "file": "cmd/tsgo/main.go",
+      "line": 227,
+      "summary": "noEmitOnError 被解析却从未生效，出错时仍写出产物",
+      "failure_scenario": "main.go 与 tsc.go 的 emit 决策都只看 NoEmit/ListFilesOnly，从不检查 NoEmitOnError 与已收集的诊断；Program.Emit 内部也只做 BindSourceFiles + getSourceFilesToEmit，同样不看诊断。而在全仓库范围内 NoEmitOnError 只出现在 core 的字段声明、tsoptions 的解析赋值和两处 testutil 基线代码里。用户显式设置 noEmitOnError 后，有类型错误时 tsgo 仍会把 JS 写到 outDir，与 tsc 语义相反，可能让 CI 继续发布本不该生成的损坏产物。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "cmd/tsgo/main.go",
+      "line": 227,
+      "summary": "noEmitOnError 被解析却未被任何 emit 路径使用，出错时仍写出产物",
+      "failure_scenario": "main.go 与 tsc.go 的 emit 决策都只看 NoEmit/ListFilesOnly，从不检查 NoEmitOnError 与已收集的诊断；而在全仓库范围内 NoEmitOnError 只出现在 core 的字段声明、tsoptions 的解析赋值和两处 testutil 基线代码里，internal/compiler 与 internal/execute 的 emit 路径没有任何引用。用户显式设置 noEmitOnError 后，有类型错误时 tsgo 仍会把 JS 写到 outDir，与 tsc 语义相反，可能让 CI 继续发布本不该生成的损坏产物。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "cmd/tsgo/main.go",
+      "line": 227,
+      "summary": "noEmitOnError 选项被解析却从未生效，出错时仍会写出产物",
+      "failure_scenario": "main.go 的编译主流程只用 NoEmit 判断是否执行 program.Emit(compiler.EmitOptions{})，完全没有检查 NoEmitOnError 与已收集到的诊断；而在全仓库范围内检索 NoEmitOnError 只命中 core.CompilerOptions 的字段声明、tsoptions 的解析赋值和 testutil 基线代码，编译器与 execute 的 emit 路径没有任何使用点。结果是用户在 tsconfig 或命令行设置 noEmitOnError 后，有诊断（如类型错误）时 tsgo 仍会把 .js 文件写到 outDir，与 tsc 语义相反，可能让 CI/发布流程产出并发布本不该生成的损坏产物。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "cmd/tsgo/main.go",
+      "line": 318,
+      "summary": "identifierCount 辅助函数已成死代码，与 Program.IdentifierCount 重复",
+      "failure_scenario": "main.go 中保留的 `func identifierCount(p *compiler.Program) int` 在整个仓库中只有声明、没有任何调用点；统计输出已经改用 `program.IdentifierCount()`（program.go:463 提供了等价实现）。两份逻辑并存容易出现口径漂移，也让后续维护者误以为仍有调用方。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "internal/execute/watch.go",
+      "line": 16,
+      "summary": "watch 间隔直接解引用 Interval 指针，watchOptions 未设置 interval 时会 panic",
+      "failure_scenario": "watch 模式启动时只判断 ParsedConfig.WatchOptions 是否为 nil，随后立即执行 `*w.options.ParsedConfig.WatchOptions.Interval`。而 core.WatchOptions.Interval 的类型是 *int，只有在解析到 \"watchInterval\" 键时才会被赋值（ParseWatchOptions 的其余分支只写 FileKind/DirectoryKind/SyncWatchDir/ExcludeDir/ExcludeFiles）。因此只要用户提供了 watchOptions 内容却没有给出间隔（例如只写 \"watchFile\": \"useFsEvents\"），Interval 仍为 nil，`tsc --watch` 启动即触发空指针解引用崩溃，而不是回退到默认 1000ms。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RESOURCE-002"
+    },
+    {
+      "file": "internal/execute/watch.go",
+      "line": 16,
+      "summary": "watch 间隔直接解引用 Interval 指针，未指定 --watchInterval 时同样会 panic",
+      "failure_scenario": "ParseCommandLine 恒以 `&watchOptionsParser{&core.WatchOptions{}}` 构造 watchOptions，因此 ParsedConfig.WatchOptions 永远非 nil；而 Interval 是 *int，只有解析到 watchInterval 选项时才被赋值。watch.go 只判断 WatchOptions != nil 就执行 `*...Interval`，所以一旦 F001 的 ConfigFile 崩溃被修复，`tsc a.ts -w`（不带 --watchInterval）会在此处再次 panic，而不是回退到默认 1000ms。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RESOURCE-002"
+    },
+    {
+      "file": "internal/execute/watch.go",
+      "line": 30,
+      "summary": "watch 每个轮询周期都无条件重建整个 Program，未变化时也全量重解析",
+      "failure_scenario": "doCycle 在调用 hasBeenModified 判断是否有文件变化之前，就已经用 NewProgramFromParsedCommandLine 重新创建了 Program。也就是说无论文件是否修改，每个轮询周期（默认 1000ms）都会完整重读并重解析全部源文件，再丢弃结果；对中大型项目会持续占用 CPU/IO，并使 hasBeenModified 的「变化检测」失去性能意义（只能省下 emit，省不下解析）。当前 start() 是 `for { doCycle(); time.Sleep(interval) }` 的无退出条件循环，该开销会无限持续。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.58,
+      "rule": "PERFORMANCE-001"
+    },
+    {
+      "file": "internal/execute/watch.go",
+      "line": 30,
+      "summary": "watch 每轮无条件重建整个 Program，文件未变化也全量重解析",
+      "failure_scenario": "doCycle 在调用 hasBeenModified 判断是否有变化之前，就已经用 NewProgramFromParsedCommandLine 重新创建了 Program，于是无论文件是否修改，每个轮询周期（默认 1000ms）都会完整重读并重解析全部源文件，再丢弃结果。hasBeenModified 的变化检测只能省下 emit，省不下解析；配合 start() 的 `for {}` 无退出循环，大项目下会持续占用 CPU 与磁盘 IO。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.55,
+      "rule": "PERFORMANCE-001"
+    },
+    {
+      "file": "internal/execute/watcher.go",
+      "line": 28,
+      "summary": "无配置文件时启用 watch 会解引用 nil 的 ConfigFile 直接 panic",
+      "failure_scenario": "tsc.go 在「没有 tsconfig 但显式给出文件」的分支调用 createWatcher(sys, commandLine, ...)，而这个 commandLine 来自 tsoptions.ParseCommandLine，其 ConfigFile 被显式置为 nil。createWatcher 一进来就访问 configParseResult.ConfigFile.SourceFile.FileName()，因此在没有任何 nil 保护的情况下，`tsc a.ts -w` 这类常见用法会在 watch 启动阶段就崩溃，既无法进入轮询，也不会输出可读的错误信息。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "internal/execute/watcher.go",
+      "line": 46,
+      "summary": "watch 每轮重解析 tsconfig 时传入空 CompilerOptions，命令行覆盖项会被丢弃",
+      "failure_scenario": "hasErrorsInTsConfig 每个周期都会重新调用 getParsedCommandLineOfConfigFile，但第二个参数固定传 `&core.CompilerOptions{}`，而不是当前生效的选项。非 watch 路径下命令行覆盖（如 --strict、--outDir、--noEmit 等）会通过现有选项与配置文件合并生效；进入 watch 后，第一轮之后的重新解析只保留 tsconfig 内容，命令行覆盖被静默丢弃，导致同一进程内前后两轮编译使用不同的编译选项，诊断结果与产物都可能突然改变。文件内注释「need to check that this merges compileroptions correctly」也印证此处合并语义尚未确定。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "BEHAVIOR-003"
+    },
+    {
+      "file": "internal/execute/watcher.go",
+      "line": 46,
+      "summary": "watch 重解析 tsconfig 时传入空 CompilerOptions，命令行覆盖项会被丢弃",
+      "failure_scenario": "非 watch 路径在解析配置时把命令行选项作为 existingOptions 传入（tsc.go:95），而 watch 的周期性重解析固定传 &core.CompilerOptions{}。于是 --strict、--outDir 等命令行覆盖在进入 watch 后的第一轮重解析就丢失，同一进程前后两轮编译使用不同选项，诊断与产物可能突然变化；文件内「need to check that this merges compileroptions correctly」的注释也说明合并语义尚未落定。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "internal/tsoptions/tsconfigparsing.go",
+      "line": 1178,
+      "summary": "tsconfig 中的 watchOptions 完全未被解析，watch 间隔与 watchFile 等配置静默失效",
+      "failure_scenario": "tsconfig 解析构造 ParsedOptions 时只填了 CompilerOptions/FileNames/ProjectReferences，没有给 WatchOptions 赋值；全仓库对 WatchOptions 的赋值只发生在 ParseCommandLine 一处。于是通过 -p 或自动发现 tsconfig 进入 watch 时，ParsedConfig.WatchOptions 恒为 nil，watch.go 中覆盖间隔的分支永远不执行（间隔固定 1000ms），watchFile/watchDirectory/excludeDirectories 等设置也一并被忽略；又因为顶层未知属性不报错，用户只会看到「设置了却没生效」。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "BEHAVIOR-004"
+    },
+    {
+      "file": "internal/tsoptions/tsconfigparsing.go",
+      "line": 1178,
+      "summary": "tsconfig 中的 watchOptions 没有任何解析入口，watch 间隔与 watchFile 等配置静默失效",
+      "failure_scenario": "tsconfig 解析构造 ParsedOptions 时只填 CompilerOptions/FileNames/ProjectReferences，没有给 WatchOptions 赋值；watch 选项的声明表 optionsForWatch 只被 diagnostics 与 namemap 使用，而由它生成的 WatchNameMap 仅出现在 ParseCommandLine 的 parseStrings 中。结果是：通过 -p 或自动发现 tsconfig 进入 watch 时 ParsedConfig.WatchOptions 恒为 nil，watch.go 覆盖间隔的分支永不执行（固定 1000ms），watchFile/watchDirectory/excludeDirectories 等设置一并被忽略，且不会报未知选项错误，用户只会看到「设置了却没生效」。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "BEHAVIOR-004"
+    },
+    {
+      "file": "internal/execute/tsc.go",
+      "line": 104,
+      "summary": "--showConfig 在 tsc 子命令路径直接返回 NotImplemented，既有可用功能退化为退出码 5 且无输出",
+      "failure_scenario": "tsc 执行链路里，无论是否解析到配置文件，只要 `ShowConfig` 为真就 `return ExitStatusNotImplemented, nil`，既不打印最终配置也不走成功退出；而 cmd/tsgo/main.go:190-198 的旧入口在同样选项下会 encode `compilerOptions` 并 `return 0`。影响：`tsgo tsc --showConfig` 由「打印配置 + 退出码 0」退化为「无输出 + 退出码 5」，破坏脚本/CI 对 `tsc --showConfig` 的既有依赖，且同一产品的两个入口行为不一致，用户难以判断是缺陷还是未实现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CLI-001"
+    },
+    {
+      "file": "internal/execute/tsc.go",
+      "line": 211,
+      "summary": "ListFilesOnly.IsFalse() 误用使「默认配置下不收集全局诊断」",
+      "failure_scenario": "该分支的本意是「只有在 listFilesOnly 为真时才跳过全局诊断」，但写法是 options.ListFilesOnly.IsFalse()。Tristate.IsFalse() 只在显式 TSFalse 时为真，默认 unknown 时返回 false，于是 program.GetGlobalDiagnostics() 在默认配置下根本不会被调用，「Cannot find global type 'Array'」「Cannot find global type 'Promise'」这类全局诊断全部缺失，编译仍可能返回 ExitStatusSuccess，用户拿到的是「通过但运行即错」的结果。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "internal/execute/tsc.go",
+      "line": 211,
+      "summary": "ListFilesOnly.IsFalse() 误用导致默认配置下全局诊断不被收集",
+      "failure_scenario": "该分支本意是「只在 listFilesOnly 为真时跳过全局诊断」，但写法是 options.ListFilesOnly.IsFalse()。Tristate.IsFalse() 只在显式 TSFalse 时为真，默认 unknown 时返回 false，于是 program.GetGlobalDiagnostics() 在默认配置下根本不会被调用，「Cannot find global type 'Array'」「Cannot find global type 'Promise'」这类全局诊断全部缺失，编译仍可能返回 ExitStatusSuccess，用户拿到「通过但运行即错」的结果。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "internal/packagejson/cache.go",
+      "line": 21,
+      "summary": "typesVersions 版本路径逻辑缺少单元测试，回归只能靠语料基线被动发现",
+      "failure_scenario": "`GetVersionPaths`/`VersionPaths.GetPaths` 是全仓唯一实现 typesVersions 语义的代码，但引用面显示它只被 resolver 调用一次、没有任何单测覆盖（internal/packagejson 下不存在针对它的测试文件）。因此本 MR 中「合法 range 被跳过」「nil 接收者写入」这两个缺陷都没有被快速失败拦住，只能通过大规模 conformance 基线的间接差异（typesVersions.* 解析路径回退、新增 TS2322/TS2307）事后暴露，定位成本高且容易与噪声格式变更混在一起。影响：该高价值解析逻辑的后续改动缺乏回归护栏。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "TESTABILITY-001"
+    },
+    {
+      "file": "internal/packagejson/cache.go",
+      "line": 42,
+      "summary": "typesVersions 版本范围判定条件写反，导致整条 typesVersions 映射被跳过",
+      "failure_scenario": "GetVersionPaths 用 `keyRange, ok := semver.TryParseVersionRange(key)` 解析 package.json 的 typesVersions 键，但随后 `if ok { ...; continue }` 把「解析成功」当成「非法 semver range」直接跳过。于是所有合法范围（如 \"*\"、\">=3.1.0-0\"）都不会被采纳，`p.versionPaths` 保持零值、`Exists()` 恒为 false，resolver 里唯一的 typesVersions 分支（internal/module/resolver.go:862-873）永不生效；同时解析失败的非法键反而会走到 `keyRange.Test(&typeScriptVersion)`，而零值 VersionRange 的 alternatives 为空、按 testDisjunction 的空析取视为 \"*\" 恒真，于是非法键会被当成「匹配所有版本」。影响：依赖 typesVersions 的包会被解析到默认入口而不是版本化入口，产生错误类型、错误诊断（甚至新增 TS2307/TS2322），属用户可见的行为回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "internal/packagejson/cache.go",
+      "line": 42,
+      "summary": "typesVersions 版本范围判定条件写反，整条 typesVersions 映射被跳过",
+      "failure_scenario": "GetVersionPaths 用 `keyRange, ok := semver.TryParseVersionRange(key)` 解析 package.json 的 typesVersions 键，随后 `if ok { ...; continue }` 把「解析成功」当成「非法 semver range」跳过。结果所有合法范围（\"*\"、\">=3.1.0-0\" 等）都不会被采纳，`p.versionPaths` 保持零值、`Exists()` 恒为 false，resolver 中唯一的 typesVersions 分支永不生效；而解析失败的非法键反而会走到 `keyRange.Test(&typeScriptVersion)`，零值 VersionRange 的空析取被视为 \"*\" 恒真，于是非法键被当成「匹配所有版本」。影响：依赖 typesVersions 的第三方包被解析到默认入口而非版本化入口，产生错误的类型与诊断（新增 TS2307/TS2322），属用户可见的解析回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "internal/packagejson/cache.go",
+      "line": 99,
+      "summary": "GetPaths 向 nil 的 v.paths 写入，命中 typesVersions 时触发空指针崩溃",
+      "failure_scenario": "`GetPaths` 在 84-86 行已确认 `v.paths == nil` 后，构造局部 `paths := collections.NewOrderedMapWithSizeHint[...]`，但循环体里写的是 `v.paths.Set(key, slice)`，而 `paths` 只在 101 行被赋回 `v.paths` 并返回。`OrderedMap.Set` 首行即读 `m.mp`，对 nil 接收者会直接 panic。影响：只要 versionPaths 命中（例如 typesVersions 键无法被 semver 解析时，零值 VersionRange 按空析取恒真），解析任意模块都会崩溃，第三方 package.json 即可触发编译器进程崩溃（而非诊断）；同时即使不崩溃，非字符串数组元素被 `continue` 跳过后 slice 中残留空串，也会产生错误的候选路径。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "internal/execute/outputs.go",
+      "line": 32,
+      "summary": "默认 pretty 判定两处相反，导致诊断退化为纯文本而错误摘要仍输出 ANSI 转义码",
+      "failure_scenario": "`createDiagnosticReporter` 以 `pretty.IsFalseOrUnknown()` 作为「非彩色」条件，即未显式开启 pretty 时按纯文本输出；而同文件 `shouldBePretty` 对 nil/unknown 返回 true，`createReportErrorSummary` 又依赖它，于是未指定 `--pretty` 时「诊断行纯文本 + 错误摘要带颜色」同时出现。影响：同一份终端输出混用两种格式，颜色转义码会残留在非彩色流（例如被重定向/被 CI 日志采集）中，输出可读性与可机读性都受损，也让基线出现难以解释的格式抖动。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "OUTPUT-001"
+    },
+    {
+      "file": "internal/execute/outputs.go",
+      "line": 32,
+      "summary": "默认 pretty 判定两处相反，诊断退化为纯文本而错误摘要仍带 ANSI 转义码",
+      "failure_scenario": "`createDiagnosticReporter` 用 `pretty.IsFalseOrUnknown()` 作为「非彩色」条件，未显式开启 pretty 时即输出纯文本；而同文件 `shouldBePretty` 对 nil/unknown 返回 true，`createReportErrorSummary` 依赖它，于是未指定 `--pretty` 时出现「诊断行纯文本 + 错误摘要带颜色」的混合格式。影响：同一份输出混用两种格式，ANSI 转义码会残留到非 TTY/日志采集场景，输出可读性与可机读性受损，也让基线出现大量难以归因的格式抖动。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "OUTPUT-001"
+    },
+    {
+      "file": "internal/checker/printer.go",
+      "line": 38,
+      "summary": "默认导入别名在类型显示中输出内部符号名 default",
+      "failure_scenario": "`symbolToString` 对合法标识符直接返回 `s.Name`，而默认导出符号的名字是内部名 `\"default\"`（ast/symbol.go:50），打印侧未见对默认导出别名回退到别名/声明名的处理。于是通过 `import Foo from \"./types\"` 与 `@import Foo from ...` 引入的类型在诊断与类型显示中呈现为 `default`。影响：`--printTypes`、类型基线与错误信息里出现 `(foo: default) => void` 这类不可读输出，用户无法据此定位真实类型名，也削弱了类型显示作为调试手段的价值。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.45,
+      "rule": "PRINT-001"
+    }
+  ],
+  "stderr_tail": "er\n✓ 完成 · 耗时 1369.5s · 模型调用 153 次 · token 输入 546,232（未命中） · 输出 178,931 · 缓存命中 11,963,392（95.6%） · 工具 235 次（主会话 235 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.1601\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\microsoft__typescript-go@...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1370.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.0%)\n[time] 阶段 | 六阶段审计 1369.5s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 4.4s (0.3%) | S1P2 4.3s (0.3%) | S1P3 7.3s (0.5%) | S1P4 116.6s (8.5%) | S1P5 71.2s (5.2%) | S1P6 18.3s (1.3%) | S2P1 10.5s (0.8%) | S2P2 4.4s (0.3%) | S2P3 8.5s (0.6%) | S2P4 169.9s (12.4%) | S2P5 41.2s (3.0%) | S2P6 22.3s (1.6%) | S3P1 9.5s (0.7%) | S3P2 3.6s (0.3%) | S3P3 12.7s (0.9%) | S3P4 67.7s (4.9%) | S3P5 134.9s (9.9%) | S3P6 14.7s (1.1%) | S3R2P1 10.2s (0.7%) | S3R2P2 4.8s (0.3%) | S3R2P3 12.2s (0.9%) | S3R2P4 53.0s (3.9%) | S3R2P5 35.5s (2.6%) | S3R2P6 15.6s (1.1%) | S3R3P1 6.2s (0.5%) | S3R3P2 3.8s (0.3%) | S3R3P3 9.0s (0.7%) | S3R3P4 21.4s (1.6%) | S3R3P5 22.6s (1.7%) | S3R3P6 10.9s (0.8%) | S4P1 14.1s (1.0%) | S4P2 4.0s (0.3%) | S4P3 7.9s (0.6%) | S4P4 125.8s (9.2%) | S4P5 25.4s (1.9%) | S4P6 7.0s (0.5%) | S4R2P1 6.8s (0.5%) | S4R2P2 4.9s (0.4%) | S4R2P3 6.2s (0.5%) | S4R2P4 18.8s (1.4%) | S4R2P5 30.0s (2.2%) | S4R2P6 13.9s (1.0%) | S4R3P1 5.9s (0.4%) | S4R3P2 4.2s (0.3%) | S4R3P3 6.0s (0.4%) | S4R3P4 13.7s (1.0%) | S4R3P5 24.9s (1.8%) | S4R3P6 7.4s (0.5%) | S5P1 17.8s (1.3%) | S5P2 2.8s (0.2%) | S5P3 5.2s (0.4%) | S5P4 59.5s (4.3%) | S5P5 21.9s (1.6%) | S5P6 7.3s (0.5%)\n[usage] 任务总计 | 模型调用 153 次（Agent 153 + 一次性 0） | token 输入 546,232（未命中） | 输出 178,931 | 缓存命中 11,963,392（95.6%） | $0.1601\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\microsoft__typescript-go@b970689\\audit\\20261115_024306_795.json",
+  "token_usage": {
+    "input_tokens": 546232,
+    "output_tokens": 178931,
+    "cache_read_input_tokens": 11963392
+  }
+}

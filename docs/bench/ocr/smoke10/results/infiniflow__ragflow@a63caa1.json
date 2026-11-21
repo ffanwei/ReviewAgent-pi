@@ -1,0 +1,140 @@
+{
+  "instance_id": "infiniflow__ragflow@a63caa1",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "0a42e5777eb966b26aaf8f2a7d593ae99a4aa87a",
+  "head_commit": "a63caa1087852ada98964678be26b7c4d8363af6",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T04:02:28.925687+00:00",
+  "duration_seconds": 125.31,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 2 finding(s) across 3 selected item(s).",
+    "summary": {
+      "files_reviewed": 3,
+      "comments": 2,
+      "total_tokens": 335805,
+      "input_tokens": 318621,
+      "output_tokens": 17184,
+      "cache_read_tokens": 274944,
+      "elapsed": "2m5s"
+    },
+    "tool_calls": {
+      "total": 23,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 5,
+        "file_read": 16
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "graphrag/utils.py",
+        "content": "The `await` inside the `trio.open_nursery()` block makes every delete run strictly sequentially — the nursery no longer buys any concurrency, so N removed edges cost N sequential thread hops + ES round-trips (this can be thousands for a large graph change). Also the line is indented with 5 spaces instead of 4, which is valid but inconsistent with the rest of the file.\n\nIf parallelism is the intent (as in the node/edge chunk loops below), pass `to_thread.run_sync` itself to `start_soon` and pre-bind the per-iteration conds dict, so the loop variables are captured eagerly rather than through a late-bound lambda; otherwise drop the nursery entirely.",
+        "suggestion_code": "        async with trio.open_nursery() as nursery:\n            for from_node, to_node in change.removed_edges:\n                conds = {\"knowledge_graph_kwd\": [\"relation\"], \"from_entity_kwd\": from_node, \"to_entity_kwd\": to_node}\n                nursery.start_soon(trio.to_thread.run_sync, settings.docStoreConn.delete, conds, search.index_name(tenant_id), kb_id)",
+        "existing_code": "                 await trio.to_thread.run_sync(lambda: settings.docStoreConn.delete({\"knowledge_graph_kwd\": [\"relation\"], \"from_entity_kwd\": from_node, \"to_entity_kwd\": to_node}, search.index_name(tenant_id), kb_id))",
+        "start_line": 442,
+        "end_line": 442,
+        "thinking": "functools is not imported. I'll suggest removing the nursery (simplest) or use `functools.partial` with an import. I'll keep the suggestion simple: keep nursery but fix indentation, or drop the nursery if serial is intended. I'll write the comment focusing on: nursery yields no parallelism now, blocking thread hop per iteration serially; if serial is intended, drop the `async with trio.open_nursery()`; if parallel is intended, use `nursery.start_soon(trio.to_thread.run_sync, partial(...))` (mind that the lambda captures loop variables lazily, so pre-bind).\n\nLet me craft two comments:\n1. utils.py line 442 — nursery + await serialization (performance/maintainability, medium).\n2. utils.py line 442 — indentation off by one (style, low). Maybe combine into one comment to avoid duplicates on the same line. The tool mounts comments per existing_code; two comments on same line may conflict. I'll combine: mention indentation in the same comment? Better separate categories can't combine. I'll make one comment about nursery serialization (medium) and mention indentation briefly in it. Actually indentation is a separate nit; I could include in the same content text. Let's do one combined comment with severity medium, category performance, and mention the indentation nit inside.\n\nHmm, but the code_comment suggestion_code: I'd suggest:\n\n```python\n    if change.removed_edges:\n        index_name = search.index_name(tenant_id)\n        for from_node, to_node in change.removed_edges:\n            conds = {\"knowledge_graph_kwd\": [\"relation\"], \"from_entity_kwd\": from_node, \"to_entity_kwd\": to_node}\n            await trio.to_thread.run_sync(settings.docStoreConn.delete, conds, index_name, kb_id)\n```\nWait, `to_thread.run_sync(fn, *args)` accepts args — yes, `trio.to_thread.run_sync(sync_fn, *args)`. So we can pass `settings.docStoreConn.delete` and the args directly instead of wrapping in lambda. Nice simplification: no closure. That's a good suggestion.\n\nActually with `to_thread.run_sync(sync_fn, *args)`, the args are passed eagerly — so for the parallel version `nursery.start_soon(trio.to_thread.run_sync, settings.docStoreConn.delete, conds, index_name, kb_id)` also works with the conds dict precomputed per iteration (no lambda closure issue). \n\nSo my suggestion: \n```python\n    if change.removed_edges:\n        index_name = search.index_name(tenant_id)\n        async with trio.open_nursery() as nursery:\n            for from_node, to_node in change.removed_edges:\n                conds = {\"knowledge_graph_kwd\": [\"relation\"], \"from_entity_kwd\": from_node, \"to_entity_kwd\": to_node}\n                nursery.start_soon(trio.to_thread.run_sync, settings.docStoreConn.delete, conds, index_name, kb_id)\n```\nThis restores parallelism and removes the lambda closure risk. Good.\n\nWait — is `start_soon(trio.to_thread.run_sync, fn, *args)` valid? `to_thread.run_sync(sync_fn, *args, abandon_on_cancel=False, thread_name=...)`. Passing positional args fine.\n\nAlso consider whether the awaited-in-nursery is actually a bug: no. Perf only. Fine, medium.\n\nAlso should I check `settings.docStoreConn.delete` is thread-safe / conn is shared? Already used in other places with to_thread. Fine.\n\nNow for extractor.py: any real defect in the new lines? Consider `edge0_attrs[\"keywords\"] = list(set(edge0_attrs[\"keywords\"]))` when edge1_attrs[\"keywords\"] is a string rather than list (from extraction, keywords are strings per `handle_single_relationship_extraction` → edge_keywords = clean_str(...) — a string!). But `graph_merge` does `edge[\"keywords\"] += attr[\"keywords\"]` which for strings would concatenate. Hmm, then `.extend` on a string → AttributeError. Was the old code `.extend` too → same AttributeError. Pre-existing. But wait, `_merge_edges` uses `flat_uniq_list(edges_data, \"keywords\")` → list. Then tidy_graph sets keywords=[] if missing. And graph_merge concatenation string+string → str. Hmm, so is edge keywords guaranteed list? In `graph_merge`, edge[\"keywords\"] += attr[\"keywords\"]: if both are strings → concatenation → string; if lists → list. Given `rel[\"keywords\"]` from extraction is a string (clean_str), graph_merge would produce str keywords. Then `_merge_graph_nodes` on that graph would raise AttributeError on `.extend`. This is a pre-existing risk, not introduced by this diff (old code also called `.extend`). Also `_merge_graph_nodes` on edges: same as before. So not new. Skip? Precision: it's pre-existing; the diff changed the surrounding lines. I could note that keywords may be str if it comes from extraction path... but the changed code isn't introducing it. The old code had identical `.extend` call. So no new defect. Skip.\n\nActually hold on: old code for nodes did `node0_attrs[attr]` for \"keywords\" → KeyError for nodes without keywords. New code fixed. Good.\n\nIs the ordering difference (nodes use `sorted(set())`, edges use `list(set())`) worth flagging? Non-deterministic ordering for edges; graph data gets JSON-serialized and hashed for chunk ids? `chunk_id` uses content_with_weight of subgraph... The graph chunk id uses get_uuid, not hash. Determinism not critical. Skip.\n\nAny issue with the removal of keyword merge for nodes meaning node keywords from node1 lost? Nodes don't have keywords. Fine.\n\nSo final: one comment on utils.py. Also maybe comment on entity_resolution nondeterminism? Skip.\n\nLet me finalize one comment.\n\nexisting_code must be newly added lines only: `                 await trio.to_thread.run_sync(lambda: settings.docStoreConn.delete({\"knowledge_graph_kwd\": [\"relation\"], \"from_entity_kwd\": from_node, \"to_entity_kwd\": to_node}, search.index_name(tenant_id), kb_id))` — must match exactly with the leading extra space as in diff.\n\nI'll provide suggestion_code matching proper style.",
+        "category": "performance",
+        "severity": "medium"
+      },
+      {
+        "path": "graphrag/entity_resolution.py",
+        "content": "`merging_nodes` is a loop-local variable, but the value that actually reaches the merge is the one captured by the `lambda` on the next line (unchanged line: `nursery.start_soon(lambda: self._merge_graph_nodes(graph, merging_nodes, change))`). `start_soon` only schedules the task — it does not run the body until the parent task yields, and this loop never awaits. Consequently every scheduled lambda sees the closure cell's final value, i.e. the nodes of the **last** connected component: with N > 1 components the earlier components are never merged and the last one is merged N times (duplicated `change.removed_nodes`/`removed_edges` entries, repeated LLM summarization and `remove_node` on already-removed nodes). Bind the value at scheduling time, e.g. `nursery.start_soon(self._merge_graph_nodes, graph, merging_nodes, change)` (trio passes the extra args) or `lambda nodes=merging_nodes: ...`.\n\nSecondary point: `sub_connect_graph` is a `set`, so `list(...)` order is hash-dependent and `_merge_graph_nodes` merges into `nodes[0]` — which entity name survives varies between runs. `sorted(sub_connect_graph)` would make the result deterministic.",
+        "existing_code": "                merging_nodes = list(sub_connect_graph)",
+        "start_line": 114,
+        "end_line": 114,
+        "thinking": "Also note widespread closure-in-loop bugs at lines 99, 118, 128 (pre-existing, unchanged). Not in my scope.\n\nSo node source_id is a list from flat_uniq_list. Good.\n\nSo the only new bug to report is in entity_resolution.py.\n\nWait — also worth checking `entity_resolution.py` line 113-115: after the change, `list(sub_connect_graph)` where sub_connect_graph is a set. Fine. But is there a subtlety: `nx.connected_components` for empty graph yields nothing → skip.\n\nAnother consideration: `_merge_graph_nodes` is async method; passing lambda works but trio may complain about `start_soon` with a non-async function? As analyzed, trio's spawn_impl calls async_fn(*args) and checks coroutine. Let me verify trio version behavior — in modern trio (0.22+), `start_soon` calls `self._nursery.start_soon`? Actually `Nursery.start_soon(async_fn, *args, name=None)` → `self._check_nursery_closed()`; `coro = async_fn(*args)` is done inside `Runner.spawn_impl`: \n```python\ndef spawn_impl(self, async_fn, args, nursery, name, *, system_task=False):\n    coro = context.run(async_fn, *args)\n    self.task_tree._add_child(task, ...)\n```\nand then `if not isinstance(coro, collections.abc.Coroutine): raise TypeError(...)`. So lambda returning coroutine works fine.\n\nHmm, but newer Trio (0.27?) added deprecation? I recall trio 0.28 changed `start_soon` to accept any async callable and to call the function lazily... Actually there was a change to pass `name` and to support `functools.partial`. It still calls the function within task spawn. Fine.\n\nAlso note: closure capture for `change` and `graph` — same objects, fine.\n\nSo the key issue: `merging_nodes` closure.\n\nLet me also verify the second issue (determinism) — is it worth reporting? `list(set)` ordering changes survivor. I'll fold it in as a secondary suggestion within the same comment (low risk).\n\nNow, one more careful look at extractor.py's new node-merge code: it no longer merges `keywords`, but is there anything else previously in that loop's list? Only those two. Fine.\n\nHmm, but consider a possible loss: since old code intentionally handled keywords for nodes, maybe nodes can have keywords in some code path — e.g., from stored graph in ES created by an older version. In that case node0 keeps its keywords and node1's are dropped. Minor data loss; not a bug worth blocking. But wait — the more important behavior: if nodes DO have \"keywords\", the new code silently drops them from merged node. Given tidy_graph only requires description+source_id for nodes, and nothing else creates node keywords, I'll skip.\n\nLet me check that `set_graph`/`graph_node_to_chunk` uses meta[\"source_id\"] — fine with list.\n\nNow also check: after merging nodes in entity_resolution, change.removed_nodes/added_updated_nodes... `_merge_graph_nodes` adds pending. Fine.\n\nLet me also double check whether `sorted(set(...))` for edge source_id/keywords being lists — `list(set(...))` on keywords with non-hashable items? keywords are strings. Fine.\n\nSo only one comment. But also, should I check `graphrag/utils.py` for something else in the changed line beyond confirmed? The confirmed finding covers await-in-nursery and indentation. Nothing more.\n\nLet me write the comment for entity_resolution.py.\n\nContent: \"The lambda passed to `start_soon` closes over `merging_nodes` by reference. `start_soon` only schedules the task; the loop finishes before any task runs, so every task sees the *last* component's nodes — all components after the first end up merging the same node set N times (and with `change` bookkeeping duplicated), or the loop's real components are never merged. Pass the value explicitly, and make the survivor deterministic by sorting the set instead of relying on set iteration order.\"\n\nSuggestion code (only for the added line):\n```\n                merging_nodes = list(sub_connect_graph)\n```\nHmm, suggestion must accompany. I'll provide suggestion_code spanning the fix but the matching existing_code should be the added line only. Maybe suggestion_code:\n\n```\n                merging_nodes = sorted(sub_connect_graph)\n```\nand explain the start_soon fix in content. Wait, does the tool mount the suggestion at the located line? Probably replaces located lines with suggestion_code. If I provide only the sorted line, it drops the lambda? No — it replaces only matched lines, I think. To be safe, I'll omit suggestion_code and describe fix in content.\n\nActually, providing suggestion_code for part of the fix may degrade. I'll omit.\n\nSeverity: high. Category: bug.",
+        "category": "bug",
+        "severity": "high"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "graphrag/entity_resolution.py",
+          "graphrag/general/extractor.py",
+          "graphrag/utils.py"
+        ]
+      }
+    ],
+    "session_id": "67295604-677c-4cb5-97e8-eb0910684826",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "67295604-677c-4cb5-97e8-eb0910684826",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "94c70701bad97b2fba5cfbdd42b5cab5d788099da8445d19b3dad5957b3470cc"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "0a42e5777eb966b26aaf8f2a7d593ae99a4aa87a",
+        "requested_head": "a63caa1087852ada98964678be26b7c4d8363af6",
+        "resolved_base": "e2b66628f4728aeda0c1db5aa8e75d5d6729f3db",
+        "resolved_head": "a63caa1087852ada98964678be26b7c4d8363af6",
+        "exact_range": "e2b66628f4728aeda0c1db5aa8e75d5d6729f3db..a63caa1087852ada98964678be26b7c4d8363af6",
+        "source_artifact_sha256": "21d0b464275a4557c8866d068140c534c1ad792e7236d6b07d96a72577eefcce"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "894137a98087017cb690b1a928cd953b3372fda0e8f6409440c6826093fe39d8",
+            "path": "graphrag/utils.py",
+            "fingerprint": "6f902cf8285d6ba9a1346b69aa7eded73d23f34ef737f148e46899651dbb086b"
+          },
+          {
+            "item_id": "939ca268e4a29163727a876facb45e83cd9319d4cc88f6d3a2173749b893e376",
+            "path": "graphrag/entity_resolution.py",
+            "fingerprint": "6b755fbc7642239067104739b9417c1ce14637f7e8b4e93eb8cb8be1fac7f39b"
+          },
+          {
+            "item_id": "e9eb7038eda4d33b05e9ed9575c863da8144505d64468c4ab736ed4ed18cd0d8",
+            "path": "graphrag/general/extractor.py",
+            "fingerprint": "79299e7a6cc5183b100ec8a073ae1896a398e14063783a161afb39be0c08a586"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "894137a98087017cb690b1a928cd953b3372fda0e8f6409440c6826093fe39d8",
+            "path": "graphrag/utils.py",
+            "fingerprint": "6f902cf8285d6ba9a1346b69aa7eded73d23f34ef737f148e46899651dbb086b"
+          },
+          {
+            "item_id": "939ca268e4a29163727a876facb45e83cd9319d4cc88f6d3a2173749b893e376",
+            "path": "graphrag/entity_resolution.py",
+            "fingerprint": "6b755fbc7642239067104739b9417c1ce14637f7e8b4e93eb8cb8be1fac7f39b"
+          },
+          {
+            "item_id": "e9eb7038eda4d33b05e9ed9575c863da8144505d64468c4ab736ed4ed18cd0d8",
+            "path": "graphrag/general/extractor.py",
+            "fingerprint": "79299e7a6cc5183b100ec8a073ae1896a398e14063783a161afb39be0c08a586"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 124876
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

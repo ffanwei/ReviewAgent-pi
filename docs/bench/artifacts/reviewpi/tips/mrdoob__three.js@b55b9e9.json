@@ -1,0 +1,153 @@
+[
+  {
+    "filePath": "src/nodes/gpgpu/ComputeNode.js",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "count = null;",
+        "review": "[缺陷类型] 空值传播导致的静默无效 dispatch。影响评估：compute shader 完全不执行，结果缓冲区保持初值，无报错，排查成本极高；对依赖 compute 结果的渲染管线表现为画面/数据全错。",
+        "suggestion": "[重构思路] 在使用数组形式（即放弃 count）时要求必须有 dispatchSize，否则立即报错；或在 count 缺失时抛出可读异常而不是让 dispatchCount 变成 0。\n代码示例：\n```js\nexport const compute = ( node, countOrWorkgroupSize, workgroupSize ) => {\n\n\tconst isWorkgroupForm = Array.isArray( countOrWorkgroupSize );\n\tconst count = isWorkgroupForm ? null : countOrWorkgroupSize;\n\tif ( isWorkgroupForm ) workgroupSize = countOrWorkgroupSize;\n\n\tconst computeNode = new ComputeNode( nodeObject( node ), count, workgroupSize );\n\tif ( isWorkgroupForm ) computeNode.dispatchCount = null; // 标记为“需显式 dispatchSize”\n\treturn nodeObject( computeNode );\n\n};\n```\n并在 backend/updateBefore 路径中当 dispatchCount == null 且未提供 dispatchSize 时 `throw new Error( 'compute(): dispatchSize is required when count is omitted' )`。",
+        "category": "可靠性",
+        "subcategory": "空值传播与静默失败",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 233,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F007",
+        "code": "* @param {number} countOrWorkgroupSize - TODO.",
+        "review": "[缺陷类型] 文档与实现不一致。影响评估：three.js 的 JSDoc 会生成官方 API 文档，错误的类型声明会直接误导调用方（例如误以为第二个参数必须是 number）。",
+        "suggestion": "[重构思路] 使用联合类型标注并统一可选标记写法。\n代码示例：\n```js\n/**\n * @param {Node} node - TODO\n * @param {number|Array<number>} countOrWorkgroupSize - 计算总次数；若传入数组则视为 workgroupSize。\n * @param {Array<number>} [workgroupSize=[ 64, 1, 1 ]] - workgroup 尺寸 [ x, y, z ]。\n */\n\n/**\n * @param {Array<number>} [dispatchSize=[ 0, 0, 0 ]] - [ x, y, z ] dispatch 尺寸，全为 0 时自动计算。\n */\n\n/**\n * @param {Array<number>} workgroupSize - workgroup 尺寸 [ x, y, z ]。\n */\n```",
+        "category": "可读性",
+        "subcategory": "注释准确性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 222,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/renderers/common/Renderer.js",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "return this.computeAsync( computeNodes );",
+        "review": "[缺陷类型] 新增参数在转发/异步路径中丢失。影响评估：初次调用（未初始化）时 compute 的 dispatch 结果与显式指定值不一致，属于“首帧/预热帧行为不同”的隐蔽差异，很难定位。",
+        "suggestion": "[重构思路] 把 dispatchSize 作为可选参数贯穿 compute → computeAsync，并在未初始化分支一并传递。\n代码示例：\n```js\ncompute( computeNodes, dispatchSize = [ 0, 0, 0 ] ) {\n\n\tif ( this._initialized === false ) {\n\n\t\tconsole.warn( '... Try using .computeAsync() instead.' );\n\t\treturn this.computeAsync( computeNodes, dispatchSize );\n\n\t}\n\t// ...\n}\n\nasync computeAsync( computeNodes, dispatchSize = [ 0, 0, 0 ] ) {\n\n\tif ( this._initialized === false ) await this.init();\n\tthis.compute( computeNodes, dispatchSize );\n\n}\n```",
+        "category": "可靠性",
+        "subcategory": "参数透传缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2322,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F009",
+        "code": "backend.compute( computeNodes, computeNode, computeBindings, computePipeline, dispatchSize );",
+        "review": "[缺陷类型] API 语义未定义/易误用。影响评估：多节点场景下会产生与用户预期不同的 dispatch 数量，属于隐蔽的正确性问题；当前唯一规避手段是调用方自行拆分为多次 compute。",
+        "suggestion": "[重构思路] 显式限制或支持按节点指定：当 computeList.length > 1 且 dispatchSize 非默认值时给出 warn，或把参数改为可选的按节点映射（如数组的数组 / 函数）。\n代码示例：\n```js\ncompute( computeNodes, dispatchSize = [ 0, 0, 0 ] ) {\n\n\tconst computeList = Array.isArray( computeNodes ) ? computeNodes : [ computeNodes ];\n\n\tif ( computeList.length > 1 && dispatchSize[ 0 ] + dispatchSize[ 1 ] + dispatchSize[ 2 ] > 0 ) {\n\n\t\tconsole.warn( 'THREE.Renderer: .compute() dispatchSize applies to every compute node in the list.' );\n\n\t}\n\t// ...\n}\n```",
+        "category": "可维护",
+        "subcategory": "接口语义界定",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2393,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/renderers/webgl-fallback/WebGLBackend.js",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "compute( computeGroup, computeNode, bindings, pipeline ) {",
+        "review": "[缺陷类型] 后端接口扩展不完整导致的能力不对称。影响评估：使用新 dispatchSize 特性的示例/项目在 WebGL fallback 环境下行为错误或完全不计算，且没有任何提示。",
+        "suggestion": "[重构思路] 在 Backend 基类与所有实现中统一新签名，WebGL 侧按 dispatchSize 换算为实例数（dispatchSize 各分量与 workgroupSize 相乘得总 invocation 数），或至少在不支持时显式 warn。\n代码示例：\n```js\n// Base\ncompute( /*computeGroup, computeNode, computeBindings, computePipeline, dispatchSize*/ ) { }\n\n// WebGLBackend\ncompute( computeGroup, computeNode, bindings, pipeline, dispatchSize = [ 0, 0, 0 ] ) {\n\n\tconst [ wgX, wgY, wgZ ] = computeNode.workgroupSize;\n\tconst hasExplicit = dispatchSize[ 0 ] > 0 && dispatchSize[ 1 ] > 0 && dispatchSize[ 2 ] > 0;\n\tconst count = hasExplicit ? dispatchSize[ 0 ] * dispatchSize[ 1 ] * dispatchSize[ 2 ] * wgX * wgY * wgZ : computeNode.count;\n\t// ... drawArrays( gl.POINTS, 0, count )\n}\n```",
+        "category": "可移植",
+        "subcategory": "后端实现不一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 919,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/renderers/webgpu/WebGPUBackend.js",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "passEncoderGPU.dispatchWorkgroups(",
+        "review": "[缺陷类型] 设备能力上限未校验。影响评估：超限 dispatch 会引发 WebGPU validation error，可能导致 device lost 或整个 compute pass 失效，而错误来源是用户传入的数组，缺少可读提示时排查困难。",
+        "suggestion": "[重构思路] 两条分支共用同一个 clamp/校验工具，超限时抛出具名错误（或按自动分支逻辑切分 y 维）。\n代码示例：\n```js\nconst maxDim = this.device.limits.maxComputeWorkgroupsPerDimension;\nif ( isValid ) {\n\n\tif ( dispatchSize[ 0 ] > maxDim || dispatchSize[ 1 ] > maxDim || dispatchSize[ 2 ] > maxDim ) {\n\n\t\tthrow new Error( 'THREE.WebGPUBackend: dispatchSize exceeds maxComputeWorkgroupsPerDimension (' + maxDim + ').' );\n\n\t}\n\n\tpassEncoderGPU.dispatchWorkgroups( dispatchSize[ 0 ], dispatchSize[ 1 ], dispatchSize[ 2 ] );\n\n} else { /* 原逻辑 */ }\n```",
+        "category": "可靠性",
+        "subcategory": "设备上限校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1350,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "dispatchSize = isValid ? dispatchSize : computeNodeData;",
+        "review": "[缺陷类型] 变量语义复用 / 字段陈旧。影响评估：当前功能正确但语义混乱，`computeNodeData.dispatchSize` 成为不更新的残留字段，一旦有人基于该字段做复用或缓存判断会读到错误值。",
+        "suggestion": "[重构思路] 用独立局部变量分别承载“用户 dispatch 尺寸数组”和“节点缓存 dispatch 对象”，删除不再被读取的 computeNodeData.dispatchSize 缓存。\n代码示例：\n```js\nconst maxDim = this.device.limits.maxComputeWorkgroupsPerDimension;\n\nif ( isValid ) {\n\n\tpassEncoderGPU.dispatchWorkgroups( dispatchSize[ 0 ], dispatchSize[ 1 ], dispatchSize[ 2 ] );\n\n} else {\n\n\tconst dispatch = computeNodeData.dispatchSize || ( computeNodeData.dispatchSize = { x: 0, y: 1, z: 1 } );\n\tif ( computeNode.dispatchCount > maxDim ) {\n\n\t\tdispatch.x = Math.min( computeNode.dispatchCount, maxDim );\n\t\tdispatch.y = Math.ceil( computeNode.dispatchCount / maxDim );\n\n\t} else {\n\n\t\tdispatch.x = computeNode.dispatchCount;\n\n\t}\n\tpassEncoderGPU.dispatchWorkgroups( dispatch.x, dispatch.y, dispatch.z );\n\n}\n```",
+        "category": "可维护",
+        "subcategory": "变量语义与缓存退化",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1329,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/renderers/webgpu/nodes/WGSLNodeBuilder.js",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "if ( workgroupSize.length !== 3 ) throw new Error( 'workgroupSize must have 3 elements' );",
+        "review": "[缺陷类型] 破坏性输入约束，缺少兼容与提示。影响评估：升级后既有 compute 用例在 WebGPU 上直接抛异常中断渲染；WebGL 路径却仍能工作，造成“只有部分设备崩溃”的难以复现问题。",
+        "suggestion": "[重构思路] 在 ComputeNode 构造函数内统一归一化 workgroupSize（补 1 到三元），把校验前移并给出带来源的可读错误；后端的校验改为“归一化后仍非法才报错”。\n代码示例：\n```js\n// ComputeNode constructor\nif ( Array.isArray( workgroupSize ) && workgroupSize.length > 0 && workgroupSize.length < 3 ) {\n\n\tworkgroupSize = [ workgroupSize[ 0 ], workgroupSize[ 1 ] ?? 1, workgroupSize[ 2 ] ?? 1 ];\n\n}\nthis.workgroupSize = workgroupSize;\n\n// WGSLNodeBuilder\nif ( workgroupSize.length !== 3 ) throw new Error( 'THREE.WGSLNodeBuilder: workgroupSize must be normalized to [ x, y, z ].' );\n```",
+        "category": "可靠性",
+        "subcategory": "向后兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1903,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F008",
+        "code": "+ globalId.y * (${workgroupSizeX} * numWorkgroups.x)",
+        "review": "[缺陷类型] 代码风格不一致。影响评估：仅影响可读性，但会污染生成 shader 的排版，且在 shader 报错行号附近难以肉眼对齐。",
+        "suggestion": "[重构思路] 统一为 tab 缩进，或将长表达式提取为局部变量拼接以保持单行简洁。\n代码示例：\n```js\n// system\ninstanceIndex = globalId.x\n\t+ globalId.y * ( ${workgroupSizeX} * numWorkgroups.x )\n\t+ globalId.z * ( ${workgroupSizeX} * numWorkgroups.x ) * ( ${workgroupSizeY} * numWorkgroups.y );\n```",
+        "category": "可读性",
+        "subcategory": "格式与缩进",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2136,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

@@ -1,0 +1,139 @@
+[
+  {
+    "filePath": "server/src/main/java/org/elasticsearch/snapshots/SnapshotShardsService.java",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "indexShardSnapshotStatus.updateStatusDescription(\"finished: master notification attempt complete\");",
+        "review": "[缺陷类型] 在惰性回调中解引用必然为 null 的局部变量（空指针解引用）。\n影响评估：每次在“master 已调度但本节点无本地 shard 状态”的暂停流程中都会抛 NPE，通知成功被记录成失败 warn，污染关机/节点摘除的诊断信息；异常还会在 onFailure 路径上作为 suppressed 附加到原有异常，增加排障噪声。",
+        "suggestion": "[重构思路] 该分支本就没有本地状态对象可更新，与 GL-307/ABORTED 分支保持一致改为空动作；若确实需要更新状态，应在 lambda 内基于 map 重新查找并判空，而不是复用循环外的缓存值。\n代码示例：\n```java\nnotifyUnsuccessfulSnapshotShard(\n    entry.snapshot(),\n    shardId,\n    ShardState.PAUSED_FOR_NODE_REMOVAL,\n    \"paused\",\n    masterShardSnapshotStatus.generation(),\n    () -> null   // 本地没有状态对象，无需更新 statusDescription\n);\n```\n同时删除 L398 的 `indexShardSnapshotStatus` 局部变量，避免与 L410 的 `localShardSnapshotStatus` 重复查找。",
+        "category": "可靠性",
+        "subcategory": "空指针安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 420,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "};",
+        "review": "[缺陷类型] 状态描述语义扁平化导致可观测性回退。\n影响评估：同一快照 shard 的成功/失败/重试通知在 statusDescription 上不可区分，运维与 IT 断言都只能依赖固定字符串，定位“通知是否到达 master”的成本显著上升。",
+        "suggestion": "[重构思路] 保留结果信息：回调仍接收结果字符串（或在 Supplier 内部读取通知结果），把成功/失败/重试与旧的 statusDescription 一起写入，同时保留长度截断，避免描述无限增长。\n代码示例：\n```java\nprivate static final int MAX_STATUS_APPEND = 1000;\n\nConsumer<String> postMasterNotificationAction = outcome -> snapshotStatus.updateStatusDescription(\n    \"master notification attempt complete: \" + truncate(outcome, MAX_STATUS_APPEND)\n);\n```",
+        "category": "可维护",
+        "subcategory": "日志与状态可观测性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 442,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "postMasterNotificationAction.get();",
+        "review": "[缺陷类型] API 类型选择不当（Supplier<Void> 反模式）。\n影响评估：6 个调用点被迫写 `() -> null`，可读性下降；类型签名无法表达“可能抛异常”，异常只能以非受检方式抛出。",
+        "suggestion": "[重构思路] 改用 CheckedRunnable<?>（ActionListener.runBefore 已接受该类型），并在 runBefore 包装处直接传入，省去 Supplier 与 get() 的包装。\n代码示例：\n```java\nprivate void sendSnapshotShardUpdate(\n    final Snapshot snapshot,\n    final ShardId shardId,\n    final ShardSnapshotStatus status,\n    CheckedRunnable<?> postMasterNotificationAction\n) {\n    ...\n    var listener = ActionListener.runBefore(updateResultListener, () -> {\n        snapshotShutdownProgressTracker.releaseRequestSentToMaster(snapshot, shardId);\n        postMasterNotificationAction.run();\n    });\n}\n// 调用点\nnotifyUnsuccessfulSnapshotShard(..., () -> {});\n```",
+        "category": "可维护",
+        "subcategory": "API 类型设计",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 804,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F008",
+        "code": "private void logIndexShardSnapshotStatuses(Logger callerLogger) {",
+        "review": "[缺陷类型] 日志信息缺失导致可诊断性下降。\n影响评估：关机期间多快照并发时，进度日志无法区分快照归属，需要依赖其它日志推断，延长故障定位时间。",
+        "suggestion": "[重构思路] 保留快照维度信息，或改为遍历 entrySet 保留 Snapshot 上下文；格式统一为结构化键值形式便于检索。\n代码示例：\n```java\nfor (var snapshotEntry : shardSnapshots.entrySet()) {\n    for (var shardSnapshot : snapshotEntry.getValue().entrySet()) {\n        callerLogger.info(\n            Strings.format(\"SnapshotId %s, ShardId %s, shard snapshot status: %s\",\n                snapshotEntry.getKey().getSnapshotId(), shardSnapshot.getKey(), shardSnapshot.getValue())\n        );\n    }\n}\n```",
+        "category": "可维护",
+        "subcategory": "日志信息完整性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 239,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/PolicyManager.java",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "if (isPathOnDefaultFilesystem(path) == false) {",
+        "review": "[缺陷类型] 权限校验被宽泛条件绕过（security bypass 风险）。\n影响评估：任何持有非默认 FileSystem 路径的插件代码可绕过 file entitlement 的读写限制；由于放行条件与“是否真的访问本地磁盘”无关，审计上也无法追溯放行了哪些敏感路径。",
+        "suggestion": "[重构思路] 明确放行范围并留痕：把写死的“类不同即放行”收窄为显式的 allowlist（例如仅放行测试用内存 FS），其它非默认 FS 走拒绝或至少 info 级审计日志；同时把判断结果与路径来源一并记录，便于安全审计。\n代码示例：\n```java\nprivate boolean isTriviallyAllowedFilesystem(Path path) {\n    var fsClass = path.getFileSystem().getClass();\n    if (fsClass == DEFAULT_FILESYSTEM_CLASS) {\n        return false;\n    }\n    // 只放行明确登记过的内存文件系统，其它非默认 FS 仍走权限树校验\n    if (ALLOWED_TEST_FILESYSTEMS.contains(fsClass.getName())) {\n        return true;\n    }\n    logger.info(\"file entitlement check skipped for non-default filesystem [{}] on path [{}]\", fsClass.getName(), path);\n    return false;\n}\n```",
+        "category": "安全",
+        "subcategory": "权限校验绕过",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 328,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/main/java/org/elasticsearch/common/settings/Settings.java",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "return subSettings.names().stream().map(k -> k + suffix).map(subSettings::get).filter(Objects::nonNull);",
+        "review": "[缺陷类型] 取值接口从“列表语义”换成“标量语义”，丢失多值展开。\n影响评估：glob 形式的 path_setting 若命中列表值或逗号分隔值，会解析出 `[/a, /b]` 之类的畸形路径，entitlement 静默失效，问题只能在运行期以权限不足的形式暴露。",
+        "suggestion": "[重构思路] 保持列表语义：在子设置上取列表值并展开；若确实要禁止多值，就在策略校验阶段显式拒绝并给出错误信息，而不是静默产生畸形路径。\n代码示例：\n```java\nSettings subSettings = getByPrefix(prefix);\nreturn subSettings.names().stream()\n    .flatMap(k -> subSettings.getAsList(k + suffix).stream())\n    .filter(Objects::nonNull);\n```",
+        "category": "可靠性",
+        "subcategory": "多值设置解析",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 308,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "libs/entitlement/src/main/java/org/elasticsearch/entitlement/runtime/policy/entitlements/FilesEntitlement.java",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "if (setting.contains(\"*\")) {",
+        "review": "[缺陷类型] 调用方判定条件与被调方契约不一致，导致运行期非受检异常。\n影响评估：策略文件里一个写法不严谨的 glob 会让节点在启动/策略构建阶段抛 IllegalArgumentException 而非可读的 PolicyValidationException，错误定位困难。",
+        "suggestion": "[重构思路] 统一 glob 判定口径：在 FilesEntitlement.build 阶段按同一规则（包含 `.*.`）校验 path_setting，或在 Settings 侧支持后缀/通配位置更宽松的匹配；把契约错误提前成 PolicyValidationException。\n代码示例：\n```java\n// FilesEntitlement.build\nif (pathSetting.contains(\"*\") && pathSetting.contains(\".*.\") == false) {\n    throw new PolicyValidationException(\"invalid 'path_setting' glob [\" + pathSetting + \"], expected form 'prefix.*.suffix'\");\n}\n\n// resolveRelativePaths\nif (setting.contains(\".*.\")) {\n    result = pathLookup.settingGlobResolver().apply(setting);\n} else {\n    String path = pathLookup.settingResolver().apply(setting);\n    result = path == null ? Stream.of() : Stream.of(path);\n}\n```",
+        "category": "可靠性",
+        "subcategory": "接口契约不一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 236,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/src/main/java/org/elasticsearch/transport/TransportHandshaker.java",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "if (remoteTransportVersion.isKnown()) {",
+        "review": "[缺陷类型] 移除兼容性降级路径（行为收紧）。\n影响评估：如果线上出现未知但被判定兼容的 transport version（扩展版本/特殊构建），握手会直接失败并抛 IllegalStateException，表现为节点无法加入集群，且只能通过堆栈而非 warn 日志定位。",
+        "suggestion": "[重构思路] 若确定要拒绝未知旧版本，请把失败原因写清楚并自测混合版本场景；否则保留“已知的、<= 远端的版本”这一降级分支，仅在完全无可用版本时才失败。\n代码示例：\n```java\nif (remoteTransportVersion.isKnown()) {\n    return;\n}\n// 无法确定远端协议版本：如果本地不存在任何 <= 远端的已知版本，则必须失败\nif (TransportVersion.getAllVersions().stream().noneMatch(v -> v.onOrBefore(remoteTransportVersion))) {\n    throw new IllegalStateException(message);\n}\nlogger.warn(\"negotiating unknown remote transport version [{}] from [{}], fallback to a known older version\", remoteTransportVersion, releaseVersion);\n```",
+        "category": "可靠性",
+        "subcategory": "版本协商兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 229,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

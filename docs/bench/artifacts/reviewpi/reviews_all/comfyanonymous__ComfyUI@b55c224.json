@@ -1,0 +1,123 @@
+{
+  "generatedAt": "2026-11-15T02:15:09.175Z",
+  "runId": "20261115_021315_609",
+  "source": "mr",
+  "caseId": "comfyanonymous__ComfyUI@b55c224",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "comfy/clip_model.py",
+      "line": 108,
+      "title": "DirectML 分支的 causal_mask 未初始化，上三角携带内存垃圾值",
+      "description": "DirectML 分支调用 `torch.empty(...).triu_(1)` 直接构造 causal_mask，而 `torch.empty` 返回未初始化内存、`triu_(1)` 只把主对角线及以下清零、保留严格上三角（即未来 token 位置）。因此该分支下所有未来 token 的注意力偏置是未初始化的任意值，而非必需的 `-inf`/`-finfo.max`。这些值随后在同一 forward 内被 `mask += causal_mask` 或直接作为 mask 送入 `CLIPEncoder`，最终在 `attention_basic` 中 `sim.add_(mask)` 后做 `softmax`：正值会造成未来 token 泄漏（双向注意力，破坏因果性、文本编码结果错误），NaN/huge 值会污染整个 CLIP 文本编码输出，表现为出图全黑/NaN 或与 CUDA 后端结果明显不一致。原实现统一使用 `fill_(-torch.finfo(x.dtype).max).triu_(1)`，不存在该问题，属本次改动在 DirectML 分支引入的确定性缺陷。",
+      "evidence": [
+        "comfy/clip_model.py:107-108 — `if comfy.model_management.is_directml_enabled(): causal_mask = torch.empty(x.shape[1], x.shape[1], dtype=x.dtype, device=x.device).triu_(1)`（无任何 fill_ 调用）",
+        "comfy/clip_model.py:110 — 非 DirectML 分支为 `torch.empty(...).fill_(float(\"-inf\")).triu_(1)`，两分支的填充行为不一致",
+        "comfy/clip_model.py:112-115 — `if mask is not None: mask += causal_mask else: mask = causal_mask`，未初始化的上三角值会直接进入注意力掩码",
+        "comfy/ldm/modules/attention.py:145-148 — `sim.add_(mask)` 后紧接 `sim = sim.softmax(dim=-1)`，掩码中的垃圾值/NaN 会直接影响 softmax 结果",
+        "torch 语义：`torch.empty` 不初始化内存；`torch.triu_(1)` 仅把主对角线及以下置 0，保留严格上三角"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.88,
+      "tips": {
+        "review": "[缺陷类型] 使用 `torch.empty` 后未初始化即参与计算（uninitialized memory read）。影响评估：DirectML 后端下 CLIP 文本编码的因果掩码上三角为随机值，导致注意力越界到未来 token 或输出 NaN，生成结果错误且与其它后端不一致；这是本次改动为修复 DirectML 而新增的分支本身的缺陷。",
+        "suggestion": "[重构思路] 两个分支都应显式填充同一个下界值，仅让「填充值本身」按后端能力分支，避免出现「只做 triu_ 不填充」的路径；若 DirectML 不支持 `-inf`，退化为 `-torch.finfo(x.dtype).max`。代码示例：\n```python\nif comfy.model_management.is_directml_enabled():\n    neg = -torch.finfo(x.dtype).max\nelse:\n    neg = float(\"-inf\")\ncausal_mask = torch.full((x.shape[1], x.shape[1]), neg, dtype=x.dtype, device=x.device).triu_(1)\n```",
+        "subcategory": "未初始化内存参与计算"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "nodes.py",
+      "line": 1067,
+      "title": "删除既有 attention_mask 的扩展分支后，multiply/strength==1.0 路径的掩码尺寸与序列长度不匹配",
+      "description": "原代码在 `\"attention_mask\" in keys` 时就进入掩码处理块，即使 `strength_type == \"multiply\"` 或 `strength == 1.0`（即不施加 attn_bias），也会把已有掩码从 `n_txt` 扩展到 `n_txt + n`（n 为 style token 数），使掩码与 `torch.cat((txt, cond), dim=1)` 后的序列长度一致；原注释明确说明这是必须的。改动后条件收窄为 `strength_type == \"attn_bias\" and strength != 1.0`，于是：当用户组合使用了已有的 `attention_mask`（例如链式接两个 StyleModelApply、或上游节点写入 `attention_mask`/`attention_mask_img_shape`）且 strength_type 为 `multiply` 或 strength 为 1.0 时，`keys[\"attention_mask\"]` 仍是旧的 `n_txt` 尺度掩码，而 txt 已追加 n 个 style token。下游 `Flux.extra_conds` 会按 `attention_mask_img_shape` 上采样并使用该掩码，`attention_basic` 中掩码被 reshape/expand 后 `sim.add_(mask)` 会因最后一维与服务端 token 数不一致抛形状不匹配错误，或在 expand 规则可广播的情况下静默错位，导致风格迁移结果错误。",
+      "evidence": [
+        "nodes.py:1067 — 条件由 `if \"attention_mask\" in keys or (strength_type == \"attn_bias\" and strength != 1.0):` 收窄为 `if strength_type == \"attn_bias\" and strength != 1.0:`",
+        "diff 中被删除的注释：`# even if the strength is 1.0 (i.e, no change), if there's already a mask, we have to add to it`",
+        "nodes.py:1087-1096 — 只有在进入该块时才创建 `new_mask` 尺寸 `n_txt + n + n_ref` 并写回 `keys[\"attention_mask\"]`",
+        "nodes.py:1072-1073 — `mask_ref_size = keys.get(\"attention_mask_img_shape\", (1, 1))`，证明该 key 由上游/链式节点写入，存在既有掩码场景",
+        "nodes.py:1099 — `torch.cat((txt, cond), dim=1)` 无条件把序列从 n_txt 扩展到 n_txt + n",
+        "comfy/model_base.py:807-815 — `Flux.extra_conds` 读取 `attention_mask` 与 `attention_mask_img_shape` 并上采样后传出",
+        "comfy/ldm/modules/attention.py:144-145 — `mask.reshape(...).expand(b, heads, -1, -1)` 后 `sim.add_(mask)`，掩码最后一维必须等于 key 序列长度"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 条件收窄导致的掩码与序列长度不一致（状态/数据结构不变量被破坏）。影响评估：带既有 attention_mask 的 conditioning 在 multiply 或 strength=1.0 时可能直接抛 shape mismatch 运行时错误，使工作流在升级后失败；即使在可广播的情况下也会让掩码错位、风格强度作用到错误 token。",
+        "suggestion": "[重构思路] 把「是否需要写 attn_bias」与「是否需要扩展既有掩码」拆成两个判断：既有掩码始终扩展，仅 attn_bias 值按 strength 计算。代码示例：\n```python\nhas_mask = \"attention_mask\" in keys\nif has_mask or (strength_type == \"attn_bias\" and strength != 1.0):\n    ...\n    target = new_mask[:, :n_txt, n_txt:n_txt + n]\n    if strength_type == \"attn_bias\" and strength != 1.0:\n        target[:] = attn_bias\n    keys[\"attention_mask\"] = new_mask.to(txt.device)\n    keys[\"attention_mask_img_shape\"] = mask_ref_size\n```",
+        "subcategory": "掩码与序列长度不一致"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "comfy/cli_args.py",
+      "line": 182,
+      "title": "直接移除 --enable-compress-response-body 且不保留别名，既有启动脚本会启动失败",
+      "description": "本次把公开命令行选项 `--enable-compress-response-body` 直接改名为 `--disable-compres-response-body`，仓库内已无任何对旧名/旧属性的引用，也没有 `deprecated` 别名或迁移提示。由于 `comfy/cli_args.py` 在模块导入期执行 `args = parser.parse_args()`，任何仍在启动脚本、Dockerfile、CI 或第三方发行版中传入旧选项 `--enable-compress-response-body` 的用户会在导入阶段直接 `SystemExit(2)`（unrecognized arguments），ComfyUI 无法启动；这属于对既有外部接口的破坏性变更，且没有过渡期与文档说明。同时默认行为被反转（压缩从「需显式开启」变为「默认开启」），对依赖响应体原始大小的客户端也是隐式行为变更。",
+      "evidence": [
+        "comfy/cli_args.py:182 — `parser.add_argument(\"--disable-compres-response-body\", action=\"store_true\", ...)` 取代了原 `--enable-compress-response-body`",
+        "comfy/cli_args.py:184-187 — `if comfy.options.args_parsing: args = parser.parse_args()`，未知参数会在此处直接 SystemExit",
+        "review_find_references(\"enable_compress_response_body\") 返回 0 处引用，说明旧参数名与旧属性均未保留兼容入口",
+        "server.py:168 — `middlewares = [cache_control, compress_body]`，压缩已默认生效，默认行为与旧版相反"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 破坏性的 CLI 接口变更（沿用旧参数的启动脚本直接解析失败）。影响评估：升级后带旧参数的启动脚本、容器镜像与打包发行版会启动失败；默认压缩行为反转也会让客户端收到 gzip 响应体。",
+        "suggestion": "[重构思路] 保留旧选项作为 `deprecated` 别名并映射到同一 `dest`，或按语义保留两个互斥开关；同时在 help 文本中标注废弃与迁移方式。代码示例：\n```python\nparser.add_argument(\"--disable-compress-response-body\", action=\"store_true\", help=\"Disable compressing response body.\")\n# 兼容旧参数，仅忽略并提示\nparser.add_argument(\"--enable-compress-response-body\", action=\"store_true\", help=argparse.SUPPRESS,\n                    dest=\"_legacy_enable_compress_response_body\",\n                    default=False)  # 在 parse 后打印 deprecation warning\n```",
+        "subcategory": "命令行接口兼容性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "comfy/cli_args.py",
+      "line": 182,
+      "title": "新选项名 compres 拼写错误，将长期固化为对外接口",
+      "description": "新增长选项拼写为 `--disable-compres-response-body`（缺一个 s），对应的 dest 属性也变成 `args.disable_compres_response_body`（server.py:60 同样使用了这个错误拼写）。命令行选项一旦发布即成为对外契约，拼写错误后续修正将再一次造成破坏性重命名，成本远高于当前修正；同时对检索/文档也造成困扰（正确拼写 `--disable-compress-response-body` 无法命中）。",
+      "evidence": [
+        "comfy/cli_args.py:182 — `\"--disable-compres-response-body\"`，正确拼写应为 `compress`",
+        "server.py:60 — `if args.disable_compres_response_body:`，错误拼写已扩散到业务代码",
+        "同文件旧选项拼写为 `--enable-compress-response-body`（compress 正确），命名风格前后不一致"
+      ],
+      "rule": "NAMING-001",
+      "confidence": 0.88,
+      "tips": {
+        "review": "[缺陷类型] 对外接口命名拼写错误。影响评估：发布后难以更正，后续修正会再次触发命令行参数重命名；文档与检索体验受损。",
+        "suggestion": "[重构思路] 在合入前更正为 `--disable-compress-response-body` / `args.disable_compress_response_body`，并同步修改 server.py 的读取处。代码示例：\n```python\nparser.add_argument(\"--disable-compress-response-body\", action=\"store_true\", help=\"Disable compressing response body.\")\n# server.py\nif args.disable_compress_response_body:\n    return response\n```",
+        "subcategory": "命名拼写"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "comfy/model_management.py",
+      "line": 993,
+      "title": "is_directml_enabled() 冗余 global 声明，且与既有直接读全局标志的写法并存",
+      "description": "新增的 `is_directml_enabled()` 在只读场景下仍写了 `global directml_enabled`（只读不需要 global 声明），函数体等价于 `return bool(directml_enabled)`，可读性上引入了不必要的仪式性代码。更重要的是，仓库中已经存在直接读取该模块级标志的调用（latent_preview.py:16 `if comfy.model_management.directml_enabled:`），本次新增访问器后形成两种并存风格，后续无法通过单一入口 grep 全部 DirectML 判断点，增加了「新增 DirectML 分支时漏掉某个判断点」的维护风险。",
+      "evidence": [
+        "comfy/model_management.py:993-998 — `def is_directml_enabled(): global directml_enabled; if directml_enabled: return True; return False`",
+        "comfy/model_management.py:62 — `directml_enabled = False` 为模块级标志，只读取不需要 global 声明",
+        "latent_preview.py:16 — `if comfy.model_management.directml_enabled:` 仍直接访问全局标志，未改用新访问器",
+        "review_find_references(\"directml_enabled\") 显示 8 处其它位置（model_management.py:114/132/811/841/877/932/1013/1071）全部直接读全局"
+      ],
+      "rule": "MAINTAINABILITY-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 访问器冗余且与既有访问方式并存（两种风格）。影响评估：不影响运行时行为，但增加后续维护 DirectML 分支时的遗漏概率，降低代码一致性。",
+        "suggestion": "[重构思路] 简化访问器实现，并在本 MR 内顺带把 latent_preview.py 等直接读取点统一改为调用访问器（或直接用模块属性，二者择一）。代码示例：\n```python\ndef is_directml_enabled():\n    return directml_enabled\n```\n并把 `if comfy.model_management.directml_enabled:` 改为 `if comfy.model_management.is_directml_enabled():`。",
+        "subcategory": "一致性/冗余代码"
+      }
+    }
+  ]
+}

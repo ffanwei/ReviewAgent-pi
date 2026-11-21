@@ -1,0 +1,78 @@
+[
+  {
+    "filePath": "comfy/clip_model.py",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "causal_mask = torch.empty(x.shape[1], x.shape[1], dtype=x.dtype, device=x.device).triu_(1)",
+        "review": "[缺陷类型] 使用 `torch.empty` 后未初始化即参与计算（uninitialized memory read）。影响评估：DirectML 后端下 CLIP 文本编码的因果掩码上三角为随机值，导致注意力越界到未来 token 或输出 NaN，生成结果错误且与其它后端不一致；这是本次改动为修复 DirectML 而新增的分支本身的缺陷。",
+        "suggestion": "[重构思路] 两个分支都应显式填充同一个下界值，仅让「填充值本身」按后端能力分支，避免出现「只做 triu_ 不填充」的路径；若 DirectML 不支持 `-inf`，退化为 `-torch.finfo(x.dtype).max`。代码示例：\n```python\nif comfy.model_management.is_directml_enabled():\n    neg = -torch.finfo(x.dtype).max\nelse:\n    neg = float(\"-inf\")\ncausal_mask = torch.full((x.shape[1], x.shape[1]), neg, dtype=x.dtype, device=x.device).triu_(1)\n```",
+        "category": "可靠性",
+        "subcategory": "未初始化内存参与计算",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 108,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "nodes.py",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "if strength_type == \"attn_bias\" and strength != 1.0:",
+        "review": "[缺陷类型] 条件收窄导致的掩码与序列长度不一致（状态/数据结构不变量被破坏）。影响评估：带既有 attention_mask 的 conditioning 在 multiply 或 strength=1.0 时可能直接抛 shape mismatch 运行时错误，使工作流在升级后失败；即使在可广播的情况下也会让掩码错位、风格强度作用到错误 token。",
+        "suggestion": "[重构思路] 把「是否需要写 attn_bias」与「是否需要扩展既有掩码」拆成两个判断：既有掩码始终扩展，仅 attn_bias 值按 strength 计算。代码示例：\n```python\nhas_mask = \"attention_mask\" in keys\nif has_mask or (strength_type == \"attn_bias\" and strength != 1.0):\n    ...\n    target = new_mask[:, :n_txt, n_txt:n_txt + n]\n    if strength_type == \"attn_bias\" and strength != 1.0:\n        target[:] = attn_bias\n    keys[\"attention_mask\"] = new_mask.to(txt.device)\n    keys[\"attention_mask_img_shape\"] = mask_ref_size\n```",
+        "category": "可靠性",
+        "subcategory": "掩码与序列长度不一致",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1067,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "comfy/cli_args.py",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "parser.add_argument(\"--disable-compres-response-body\", action=\"store_true\", help=\"Disable compressing response body.\")",
+        "review": "[缺陷类型] 破坏性的 CLI 接口变更（沿用旧参数的启动脚本直接解析失败）。影响评估：升级后带旧参数的启动脚本、容器镜像与打包发行版会启动失败；默认压缩行为反转也会让客户端收到 gzip 响应体。",
+        "suggestion": "[重构思路] 保留旧选项作为 `deprecated` 别名并映射到同一 `dest`，或按语义保留两个互斥开关；同时在 help 文本中标注废弃与迁移方式。代码示例：\n```python\nparser.add_argument(\"--disable-compress-response-body\", action=\"store_true\", help=\"Disable compressing response body.\")\n# 兼容旧参数，仅忽略并提示\nparser.add_argument(\"--enable-compress-response-body\", action=\"store_true\", help=argparse.SUPPRESS,\n                    dest=\"_legacy_enable_compress_response_body\",\n                    default=False)  # 在 parse 后打印 deprecation warning\n```",
+        "category": "可维护",
+        "subcategory": "命令行接口兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 182,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "comfy/model_management.py",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "def is_directml_enabled():",
+        "review": "[缺陷类型] 访问器冗余且与既有访问方式并存（两种风格）。影响评估：不影响运行时行为，但增加后续维护 DirectML 分支时的遗漏概率，降低代码一致性。",
+        "suggestion": "[重构思路] 简化访问器实现，并在本 MR 内顺带把 latent_preview.py 等直接读取点统一改为调用访问器（或直接用模块属性，二者择一）。代码示例：\n```python\ndef is_directml_enabled():\n    return directml_enabled\n```\n并把 `if comfy.model_management.directml_enabled:` 改为 `if comfy.model_management.is_directml_enabled():`。",
+        "category": "可维护",
+        "subcategory": "一致性/冗余代码",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 993,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

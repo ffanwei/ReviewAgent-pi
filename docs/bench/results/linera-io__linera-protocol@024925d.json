@@ -1,0 +1,82 @@
+{
+  "instance_id": "linera-io__linera-protocol@024925d",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c4a8ac301274ccdfc8d0fc87871d557534a8405f",
+  "head_commit": "024925dfbeff5daaecdd2cd733cda2825eff1bb7",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 132.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 174,
+      "summary": "「无法达成 quorum」改为立即 break，会丢失剩余验证者响应与错误样本，可能错判 Trusted 错误",
+      "failure_scenario": "原逻辑在 `highest_key_score + remaining_votes < quorum_threshold()` 时只是设置 `end_time`，让循环在宽限期内继续消费已经就绪的响应，从而把剩余验证者返回的错误累计进 `error_scores`；新代码直接 `break 'vote_wait`，循环立刻结束。后果有两点：(1) `error_scores` 可能只包含少数错误，`error_scores.is_empty()` 或样本不足以达到 `validity_threshold()`，函数只能返回 `CommunicationError::NoConsensus` 或 `Sample`，而不是更有诊断价值的 `Trusted(err)`——尤其在多个验证者返回不同错误变体（各自得分都 < validity_threshold）的场景，原本剩余节点的相同错误还能把得分推过阈值，现在该机会被抹掉；(2) 丢失 `Sample` 中的错误样本，线上排障时只能看到「proposals」而看不到任何验证者错误。注意 `client/mod.rs` 中有逻辑依赖 `CommunicationError::Trusted(NodeError::InactiveChain(id))` 做优雅处理（第1526行），一旦该错误降级为 `Sample`/`NoConsensus`，调用方将无法识别「链不活跃」这一可预期状态而直接上抛错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONCURRENCY-QUORUM-EARLY-EXIT"
+    },
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 109,
+      "summary": "新增 grace_period 参数为「死配置」：四处调用全传 None，且默认值从 0.2 静默改为 0.1",
+      "failure_scenario": "`communicate_with_quorum` 新增 `grace_period: impl Into<Option<f64>>`，但仓库内可见的 4 个调用点全部传 `None`，因此新参数既没有被任何真实调用方使用，`None` 又等价于「使用默认值」，实际上只发生了默认宽限期从 0.2 到 0.1 的隐性行为变更（宽限期缩半，quorum 达成后聚集额外 value/错误的窗口因此减少）。此外 `impl Into<Option<f64>>` 让 `None` 的具体类型依赖类型推断（`None::<f64>`），可读性差，也不便于后续把宽限期改为可配置项（如环境变量/CLI）时复用。建议明确 API 语义：要么把参数改为 `Option<f64>` 并在文档中说明 `None` 的含义，要么在只有默认值的场景先不加参数，把 0.2→0.1 的调参作为独立、有说明的改动提交。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "API-DEAD-CONFIG"
+    },
+    {
+      "file": ".github/workflows/kubernetes.yml",
+      "line": 1,
+      "summary": "删除唯一的 Kubernetes/kind e2e 与指标校验工作流，同时 docker/kubernetes 目录被 CI 的 paths-ignore 排除，相关改动失去回归覆盖",
+      "failure_scenario": "本次删除的 `.github/workflows/kubernetes.yml` 是唯一执行 kind 集群 e2e（`cargo test -p linera-service --features scylladb,kubernetes --test linera_net_tests -- kubernetes`）以及校验 Proxy/Server/Scylla/Scylla Manager Prometheus 指标的工作流。同时主工作流 `.github/workflows/rust.yml` 在 `pull_request.paths-ignore` 中排除了 `docker/**`、`docker_scylla/**`、`configuration/**`、`kubernetes/**`，因此删除该工作流后，本 MR 改动的 `docker/docker-compose.yml`、`kubernetes/linera-validator/helmfile.yaml` 等部署配置在 CI 中几乎没有任何验证路径。若确有替代工作流承接（例如迁移到别处或改为手动 `workflow_dispatch`），请在 MR 中说明；否则建议保留一个轻量 job（至少对 helmfile/compose 做 lint/模板渲染校验）。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.5,
+      "rule": "CI-COVERAGE-001"
+    },
+    {
+      "file": "kubernetes/linera-validator/helmfile.yaml",
+      "line": 45,
+      "summary": "scylla-manager release 失去 values 覆盖，回落到上游 chart 默认值，本地/kind 环境可能无法调度",
+      "failure_scenario": "`scylla-manager` release 原本通过 `LINERA_HELMFILE_VALUES_SCYLLA_MANAGER`（默认 `scylla-manager.values.yaml`）提供定制值：`resources/cpu: 100m`、`controllerResources/cpu: 100m`、`scylla.developerMode: true`、单 rack 单 member、`storage.capacity: 5Gi`、`cpu: 1 / memory: 2Gi`，并固定了 `scyllaImage.tag: 5.4.3` / `agentImage.tag: 3.2.8`。本次同时删除了该 values 文件与该引用，`scylla-manager` release 现在没有任何 `values:`，将使用上游 chart 默认值（通常不是 developer mode、资源请求更大、成员/存储更多、镜像版本不同）。在 kind/开发机等资源受限环境里，这会导致 pod Pending、存储不足或 manager 使用的 Scylla 版本与 `scylla` release（仍使用 `scylla.values.yaml`）不一致，从而让 `helmfile apply` 失败或行为漂移。请确认这是有意的（例如 manager 已不再需要本地部署），或改用内联 `values:`/保留精简版文件。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "DEPLOY-CONFIG-002"
+    },
+    {
+      "file": "linera-core/src/node.rs",
+      "line": 205,
+      "summary": "拼写修复不完整：`ceritifcates` 仍为错误拼写",
+      "failure_scenario": "本 MR 修正了同一行中的 `Reponse` → `Response`，但 `ceritifcates` 依旧拼错（应为 `certificates`），并且该字符串会通过 `#[error(...)]` 直接展示在用户/日志可见的错误信息里。同一提交内一并修掉可以避免后续再次触碰这一行。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.9,
+      "rule": "STYLE-TYPO-001"
+    },
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 34,
+      "summary": "新增注释行含行尾空白，可能触发 CI 的 `cargo fmt -- --check` 失败",
+      "failure_scenario": "新增的文档注释与行内注释中存在行尾空格（如 `contribute ` 与 `more values ` 之后），Rust 仓库的 `lint-cargo-fmt` job 执行 `cargo fmt -- --check`，rustfmt 会剔除注释行的行尾空白，因此这些行会导致格式检查出现差异、CI 报红（或迫使他人额外提交格式化修复）。建议本地跑一次 `cargo fmt` 后提交。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "STYLE-FMT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\linera-io__linera-protocol@024925d.diff\n  caseId              linera-io__linera-protocol@024925d\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@024925d\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 118.7s · 模型调用 12 次 · token 输入 30,056（未命中） · 输出 17,012 · 缓存命中 163,584（84.5%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0094\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 119.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.6%)\n[time] 阶段 | 六阶段审计 118.7s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 6.1s (5.2%) | P2 3.1s (2.6%) | P3 6.0s (5.0%) | P4 20.9s (17.6%) | P5 65.0s (54.8%) | P6 17.6s (14.8%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 30,056（未命中） | 输出 17,012 | 缓存命中 163,584（84.5%） | $0.0094\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\linera-io__linera-protocol@024925d\\audit\\20261115_003020_101.json",
+  "token_usage": {
+    "input_tokens": 30056,
+    "output_tokens": 17012,
+    "cache_read_input_tokens": 163584
+  }
+}

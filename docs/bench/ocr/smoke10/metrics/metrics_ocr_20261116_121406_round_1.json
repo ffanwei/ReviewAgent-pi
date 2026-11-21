@@ -1,0 +1,944 @@
+{
+  "ex_info": {
+    "start_time": "2026-11-16T12:14:06.903894",
+    "results_dir": "results\\aacr_bench_v2_smoke10\\ocr\\ocr-smoke10",
+    "reviewer": "ocr",
+    "line_k": 1,
+    "limit": null,
+    "score_mode": "file_semantic",
+    "missing_instance_ids": []
+  },
+  "summary": {
+    "total_instances": 10,
+    "candidate_instances": 10,
+    "evaluated_instances": 10,
+    "missing_instances": 0,
+    "expected_notes": 46,
+    "generated_notes": 49,
+    "total_duration_seconds": 2419.24,
+    "avg_duration_seconds": 241.92,
+    "total_input_tokens": 18865177,
+    "total_output_tokens": 504530,
+    "total_tokens": 19369707,
+    "avg_input_tokens": 1886518,
+    "avg_output_tokens": 50453,
+    "matched_generated_notes": 11,
+    "matched_file_semantic_notes": 12,
+    "file_semantic_match_rate": 0.224,
+    "file_semantic_recall_rate": 0.261,
+    "balanced_score": 0.241
+  },
+  "eval_res": [
+    {
+      "instance_id": "lvgl__lvgl@9cce37c",
+      "repo": "lvgl/lvgl",
+      "comments": [
+        {
+          "note": "Buffer/OOB risk from animation range: `lv_anim_set_values(..., 0, (int32_t)num)` allows `idx==num`. `index_change` only clamps `idx >= pic_count` to `pic_count - 1`, so `idx==num` becomes `num-1` (OK) **unless `num==0`**, where it becomes `-1` and then `animimg->dsc[-1]` is accessed. Also in reverse API you start from `(int32_t)num`, which will also become `-1` when `num==0` after clamping. Suggest guarding `num==0` early (set `dsc`, set `pic_count=0`, and return), and ideally use `num-1` as start/end values when `num>0` to avoid ever producing `idx==num`.\n\n```suggestion\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n\n    if(num == 0) {\n        /* No frames: avoid idx underflow in index_change */\n        return;\n    }\n\n    lv_anim_set_values(&animimg->anim, 0, (int32_t)num - 1);\n}\n\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n\n    if(num == 0) {\n        return;\n    }\n\n    lv_anim_set_values(&animimg->anim, (int32_t)num - 1, 0);\n}\n```",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "side": "right",
+          "from_line": 110,
+          "to_line": 117,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Duplicate setup logic in `lv_animimg_set_src` and `lv_animimg_set_src_reverse` functions should be refactored into a private static helper function to eliminate code duplication while maintaining API compatibility.",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "side": "right",
+          "from_line": 110,
+          "to_line": 125,
+          "file_semantic_match": true
+        },
+        {
+          "note": "**Breaking API Change - This is NOT backwards compatible**\n\nThe PR description claims to \"ensure backwards compatibility\" but this change breaks the existing API. The original function signature was:\n```c\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse);\n```\n\nRemoving the `reverse` parameter means any existing code calling this function with 4 arguments will fail to compile. This is a **breaking change**.\n\n**Suggested Fix:**\nTo maintain true backwards compatibility, you should:\n\n1. Keep the original 4-parameter function and mark it as deprecated, OR\n2. Use a macro/inline wrapper to maintain the old signature\n\nFor example:\n```c\n// New implementation\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num);\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num);\n\n// Backwards compatibility - deprecated\nstatic inline void lv_animimg_set_src_legacy(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse) {\n    if(reverse) {\n        lv_animimg_set_src_reverse(obj, dsc, num);\n    } else {\n        lv_animimg_set_src(obj, dsc, num);\n    }\n}\n```\n\nOr consider if the API design should use a single function with flags/options struct instead of two separate functions.",
+          "path": "src/widgets/animimage/lv_animimage.h",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 76,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "The new test only asserts that `animimg` (created in `setUp()` and already covered by `test_animimg_successful_create`) is not NULL, so it does not actually verify the behavior introduced by splitting `lv_animimg_set_src` into a forward and a reverse variant. Since the whole point of the change is the start/end animation range, assert the stored source information and the reversed animation range, e.g. via `lv_animimg_get_anim()`. The same weakness applies to the forward test `test_animimg_set_src`, which should check `start_value == 0` / `end_value == num`.",
+          "path": "tests/src/test_cases/widgets/test_animimg.c",
+          "from_line": 53,
+          "to_line": 58,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`lv_animimg_set_src_reverse()` duplicates the source/count assignment of `lv_animimg_set_src()` line by line; the only difference is the animation value range. Any future change to source handling (e.g. caching the first frame, validating `num`, resetting the image) would have to be replicated in both places and can easily drift. Reuse `lv_animimg_set_src()` and only override the value range.",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "from_line": 119,
+          "to_line": 126,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — ref discusses buffer/OOB risk from `num==0`/animation range, generated discusses code duplication between the two setter functions\n2. Match — both identify the duplicated setup logic in `lv_animimg_set_src` and `lv_animimg_set_src_reverse` and suggest refactoring/reuse\n\n[2]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "The new name overloads an existing concept in this widget's API: `lv_animimg_set_reverse_duration()` / `lv_animimg_set_reverse_delay()` already use \"reverse\" to mean *ping-pong playback* (play back after the forward pass). `lv_animimg_set_src_reverse()` on the other hand only inverts the *frame order*. A user reading the API can easily assume it enables playback reversal. Please make the distinction explicit in the doc (and note that `lv_animimg_set_src()` resets the direction back to forward, so calling it after this function silently discards the reversed order).",
+          "path": "src/widgets/animimage/lv_animimage.h",
+          "from_line": 79,
+          "to_line": 79,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — the generated comment discusses naming ambiguity and documentation of reverse semantics, while the reference comment discusses the breaking API signature change.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "ppy__osu@748ab3d",
+      "repo": "ppy/osu",
+      "comments": [
+        {
+          "note": "`reverseDeltaDifferenceRatio` and the later `fraction = Math.Max(prevDelta / currDelta, ...)` both divide by `Math.Min(prevDelta, currDelta)` / `currDelta` etc. If `StrainTime` can ever be 0 (or extremely close), this will produce `Infinity/NaN` and destabilise difficulty.\n\nAlso, `SmoothstepBellCurve()` is designed around `x` in ~[0,1] (mean=0.5,width=0.5). The fractional-part calculation `x - (long)x` can lose precision for large ratios and doesn’t clamp against small floating overshoots (<0 or >1). Prefer `Math.Floor` and clamp to [0,1] before passing into `SmoothstepBellCurve`.\n\nSuggested:\n- Guard: `if (prevDelta <= 0 || currDelta <= 0) return 1.0;` (or skip bonus) consistent with intended behaviour.\n- `var frac = reverse - Math.Floor(reverse); frac = Math.Clamp(frac, 0, 1);`",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/Evaluators/RhythmEvaluator.cs",
+          "side": "right",
+          "from_line": 71,
+          "to_line": 76,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Fractional part calculation uses unsafe cast to long; replace with Math.Truncate to prevent overflow for large ratio values.",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/Evaluators/RhythmEvaluator.cs",
+          "side": "right",
+          "from_line": 74,
+          "to_line": 74,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential edge case: when width == 0, this will call Smoothstep(x, 0, 0) and likely divide by zero / produce NaN depending on Smoothstep implementation. Consider guarding (e.g., return x==mean ? 1 : 0) or clamping width to a small epsilon.\n\nAlso consider behavior for negative width: current math inverts range unexpectedly; either validate width > 0 or document it.\n\n```suggestion\n        public static double SmoothstepBellCurve(double x, double mean = 0.5, double width = 0.5)\n        {\n            if (width <= 0)\n                return x == mean ? 1 : 0;\n        \n            x -= mean;\n            x = x > 0 ? (width - x) : (width + x);\n            return Smoothstep(x, 0, width);\n        }\n```",
+          "path": "osu.Game/Rulesets/Difficulty/Utils/DifficultyCalculationUtils.cs",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 81,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The ternary expression can be simplified to `Math.Abs(x)` for better readability. Both branches compute `width - Math.Abs(x)`, just written differently.",
+          "path": "osu.Game/Rulesets/Difficulty/Utils/DifficultyCalculationUtils.cs",
+          "side": "right",
+          "from_line": 78,
+          "to_line": 79,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": []
+    },
+    {
+      "instance_id": "opencv__opencv@79afad9",
+      "repo": "opencv/opencv",
+      "comments": [
+        {
+          "note": "Memory leak: GetByteArrayElements must be paired with ReleaseByteArrayElements. The current implementation only acquires the array elements but never releases them, causing a memory leak. Similar to the string type handling on line 80, the jni_var should include the release call. Consider: \"char* n_%(n)s = reinterpret_cast<char*>(env->GetByteArrayElements(%(n)s, NULL)); ... env->ReleaseByteArrayElements(%(n)s, reinterpret_cast<jbyte*>(n_%(n)s), 0);\"",
+          "path": "modules/java/generator/gen_java.py",
+          "side": "right",
+          "from_line": 93,
+          "to_line": 99,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Behavior change: previously `type_dict.setdefault(\"Ptr_\"+name, {}).update({...})` would refresh/update an existing `Ptr_...` mapping. Now it only sets the entry when missing. If `Ptr_...` can be created earlier (e.g., multiple passes, cross-module deps, or preloaded gen_dict overrides) this can leave stale `j_type`/`j_import`/`jni_name` values and break generated code.\n\nIf the goal is to avoid overwriting user overrides, consider updating only missing keys (merge), or preserve the old `setdefault(...).update(...)` behavior.\n\n```suggestion\n        type_dict.setdefault(\"Ptr_\"+name, {}).update({\n            \"j_type\" : classinfo.jname,\n            \"jn_type\" : \"long\", \"jn_args\" : ((\"__int64\", \".getNativeObjAddr()\"),),\n            \"jni_name\" : \"*((Ptr<\"+classinfo.fullNameCPP()+\">*)%(n)s_nativeObj)\", \"jni_type\" : \"jlong\",\n            \"suffix\" : \"J\",\n            \"j_import\" : \"org.opencv.%s.%s\" % (self.module, classinfo.jname)\n        })\n```",
+          "path": "modules/java/generator/gen_java.py",
+          "side": "right",
+          "from_line": 522,
+          "to_line": 529,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The `to` function only handles `PyLong_Check(obj)` but doesn't handle `PyInt_Check(obj)`. Similar converters in this file (e.g., unsigned int, uint64_t) handle both PyInt and PyLong for Python 2 compatibility. This could cause conversion failures when the Python object is a PyInt instance.\n\n```suggestion\n    static inline bool to(PyObject* obj, long long& value, const ArgInfo& info)\n    {\n        CV_UNUSED(info);\n        if(!obj || obj == Py_None)\n            return true;\n        if(PyInt_Check(obj))\n            value = (long long)PyInt_AsLong(obj);\n        else if(PyLong_Check(obj))\n            value = PyLong_AsLongLong(obj);\n        else\n            return false;\n        return value != (long long)-1 || !PyErr_Occurred();\n    }\n```",
+          "path": "modules/python/src2/cv2_convert.hpp",
+          "side": "right",
+          "from_line": 196,
+          "to_line": 206,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Logic issue: This condition allows invalid C++ type combinations. For example:\n- 'short char', 'short short', 'short long' are not valid C++ types\n- 'long char', 'long short' are not valid C++ types\n\nValid combinations should be:\n- signed/unsigned + char/short/int/long\n- short + int\n- long + int/long\n\nConsider refining the logic to only accept valid C++ type modifier combinations.",
+          "path": "modules/python/src2/hdr_parser.py",
+          "side": "right",
+          "from_line": 193,
+          "to_line": 194,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential coverage issue: the generator/parser may output canonical spellings like `long long int`, `signed long long`, or `unsigned long long`. Adding only `\"long long\"` might not match and won’t fix the original missing-type case. Also consider whether this becomes redundant with the existing `int64_t` entry, which could lead to inconsistent mapping depending on platform/type-emission. Suggest normalizing native type strings before lookup or adding the canonical variants explicitly.\n\n```suggestion\n    # Prefer canonical spellings (or normalize the native type string upstream)\n    PrimitiveTypeNode.int_(\"long long int\"),\n    PrimitiveTypeNode.int_(\"signed long long\"),\n    PrimitiveTypeNode.int_(\"unsigned long long\"),\n```",
+          "path": "modules/python/src2/typing_stubs_generation/predefined_types.py",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 31,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Missing NULL check for GetObjectClass result. If GetObjectClass returns NULL (e.g., OutOfMemoryError), calling NewGlobalRef on NULL jclass will cause a crash. Also, if NewGlobalRef fails (returns NULL), the global ref is invalid but the destructor will still call DeleteGlobalRef on it. Consider adding proper error handling and cleanup.\n\n```suggestion\nJavaStreamReader::JavaStreamReader(JNIEnv* _env, jobject _obj) : env(_env)\n{\n    obj = env->NewGlobalRef(_obj);\n    if (!obj) return; // Handle allocation failure\n    jclass cls = env->GetObjectClass(obj);\n    if (!cls) return; // Handle allocation failure\n    m_read = env->GetMethodID(cls, \"read\", \"([BJ)J\");\n    m_seek = env->GetMethodID(cls, \"seek\", \"(JI)J\");\n}\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 3,
+          "to_line": 6,
+          "file_semantic_match": false
+        },
+        {
+          "note": "`JNIEnv*` is thread-affine; storing it as a member and using it later from another thread is undefined and can crash. Prefer storing `JavaVM*` and attaching/detaching per call (or document/enforce same-thread usage).",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 3,
+          "to_line": 5,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential JNI local reference leak: `GetObjectClass(obj)` returns a local ref that should be `DeleteLocalRef(cls)` after `GetMethodID` calls. In long-running/native loops this can exhaust the local ref table.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 6,
+          "to_line": 8,
+          "file_semantic_match": false
+        },
+        {
+          "note": "**Missing error handling**: The code doesn't check if `GetMethodID` succeeds. If the Java class doesn't implement the required methods correctly, `m_read` or `m_seek` will be null, which could lead to crashes.\n\n**Suggested fix**: Add error checking:\n```cpp\nif (!m_read || !m_seek) {\n    // Handle error - throw exception or log error\n}\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 7,
+          "to_line": 7,
+          "file_semantic_match": false
+        },
+        {
+          "note": "**Missing JNI exception check**: After calling `NewByteArray`, you should check for JNI exceptions. If memory allocation fails, this could throw an OutOfMemoryError that needs to be handled.\n\n**Suggested fix**:\n```cpp\njbyteArray jBuffer = env->NewByteArray(static_cast<jsize>(size));\nif (!jBuffer || env->ExceptionCheck()) {\n    if (env->ExceptionCheck()) env->ExceptionClear();\n    return 0;\n}\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 19,
+          "to_line": 19,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Size truncation risk: casting `size` (long long) to `jsize` can overflow for large values, leading to negative/incorrect allocation and memory issues. Validate `size` <= std::numeric_limits<jsize>::max() before `NewByteArray` / `GetByteArrayRegion`.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 20,
+          "to_line": 20,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Storing a thread-specific `JNIEnv*` in `JavaStreamReader` risks undefined behavior when accessed from non-creation threads. Replace with `JavaVM*` storage and use `GetEnv`/`AttachCurrentThread` for thread-safe JNI access.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.hpp",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 12,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Const correctness: The function only reads from the vector, so the parameter should be const reference to prevent unintended modifications and enable const correctness.\n\n```suggestion\njobject vector_VideoCaptureAPIs_to_List(JNIEnv* env, const std::vector<cv::VideoCaptureAPIs>& vs)\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "side": "right",
+          "from_line": 37,
+          "to_line": 37,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Header completeness: this header uses `std::vector` in the declaration but doesn’t include `<vector>`. Relying on transitive includes is fragile; include `<vector>` here or forward declare with `namespace std { template<class T, class Allocator> class vector; }` (including `<vector>` is preferred).\n\n```suggestion\n#include <vector>\n\njobject vector_VideoCaptureAPIs_to_List(JNIEnv* env, std::vector<cv::VideoCaptureAPIs>& vs);\n```",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.hpp",
+          "side": "right",
+          "from_line": 23,
+          "to_line": 23,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "This `to()` intentionally mirrors the legacy `unsigned int`/`uint64_t` converters, but for `long long` it only applies on platforms where `int64` is a different type (e.g. LP64 Linux). There the `int64` converter does **not** apply, so the same `long long` parameter behaves differently than on Windows/32-bit:\n\n- Python `bool` is accepted here (`PyLong_Check(True)` is true and `PyLong_AsLongLong` → 1), while the `int64` converter rejects bool via `isBool()`.\n- NumPy integer scalars are rejected here (`PyLong_Check(np.int64(5))` is false), while the `int64` converter accepts them via `PyArray_IsIntegerScalar()`.\n\nAs a result `reader.seek(np.int64(100), 0)` would fail on Linux but work on Windows. Better to reuse the `int64` semantics (both `failmsg`/`isBool`/`PyArray_IsIntegerScalar` are available here) so the type behaves identically on all platforms.",
+          "path": "modules/python/src2/cv2_convert.hpp",
+          "from_line": 198,
+          "to_line": 205,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — Reference discusses missing Python 2 `PyInt_Check` handling, while Generated discusses platform-dependent inconsistency with `bool` and NumPy integer scalar handling relative to the `int64` converter.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "With this branch, `unsigned char` / `signed char` are now merged into a single `arg_type`, but the pointer handling above (`if prev_w == \"char\" and not isarray: arg_type = arg_type[:-len(\"char\")] + \"c_string\"`) still assumes `arg_type` is exactly `char`. For example `unsigned char* buf` is now parsed as type `\"unsigned c_string\"` (instead of the previous accidental `\"unsigned\"`), which is not a valid C++/binding type and would break code generation for any header using `unsigned char*`/`signed char*`. Consider restricting the `c_string` substitution to the plain `char` case, e.g.:\n\n```python\nif w == \"*\":\n    if prev_w == \"char\" and not isarray:\n        if arg_type == \"char\":\n            arg_type = \"c_string\"\n        else:\n            arg_type += \"*\"   # keep qualifier, e.g. \"unsigned char*\"\n```",
+          "path": "modules/python/src2/hdr_parser.py",
+          "from_line": 193,
+          "to_line": 194,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`GetByteArrayElements` must be paired with `ReleaseByteArrayElements`, but the generator only emits this declaration into `c_prologue` and never releases the array (unlike `string`, whose `jni_var` releases inside the same statement because `std::string` makes a copy). Every JNI call with a `byte[]` argument therefore pins/copies the Java array and leaks the buffer. Worse, since `buffer` is an output buffer here, anything the wrapped C++ function writes into `n_buffer` is never committed back to the Java array (that requires `ReleaseByteArrayElements(..., 0)`). Please add release/commit support, or use `GetByteArrayRegion` for pure inputs and `SetByteArrayRegion` for outputs.",
+          "path": "modules/java/generator/gen_java.py",
+          "from_line": 98,
+          "to_line": 98,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag the missing `ReleaseByteArrayElements` pairing with `GetByteArrayElements`, causing a leak.\n2. No match — ref discusses `Ptr_...` dict update behavior, unrelated to JNI byte array release/copy concerns.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "The copy-back length uses the requested `size` instead of the number of bytes actually produced by the Java `read` (`res`). For a partial read (the normal case for a stream) the tail of the caller's buffer gets overwritten with the zero-filled remainder of `jBuffer`, and when `res <= 0` (EOF/error) the whole buffer is still overwritten with zeros. Copy only the valid range, e.g. `jsize n = static_cast<jsize>(res > 0 && res <= size ? res : 0);` and skip the copy when `n == 0`.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "from_line": 24,
+          "to_line": 24,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses missing NULL checks for `GetObjectClass`/`NewGlobalRef`, generated discusses copy-back length using `size` instead of `res`.\n2. No match — ref discusses JNIEnv thread affinity, generated discusses partial-read buffer overwrite.\n3. No match — ref discusses a JNI local reference leak, generated discusses copying only valid bytes from `read`.\n4. No match — ref discusses missing `GetMethodID` error handling, generated discusses incorrect `GetByteArrayRegion` copy length.\n",
+          "hit_new_gt": false
+        },
+        {
+          "note": "None of the JNI calls here check for a pending exception. If the Java `read` implementation throws (e.g. an unchecked exception), `CallLongMethod` leaves the exception pending and returns an undefined value; `GetByteArrayRegion` is then called with a pending exception, which is not one of the JNI functions allowed in that state (undefined behavior), and the garbage return value is reported as the number of bytes read. Add an `ExceptionCheck()`/`ExceptionOccurred()` guard after the call and either clear/translate the error (e.g. throw a C++ exception like the Python bridge does) instead of silently returning 0. Same applies to `seek`.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "from_line": 23,
+          "to_line": 23,
+          "matched_gt_indices": [
+            9
+          ],
+          "judge_reason": "1. No match — generated addresses pending JNI exceptions after Java read/seek, while ref addresses NULL checks for `GetObjectClass`/`NewGlobalRef`.\n2. No match — ref discusses `JNIEnv*` thread affinity, generated discusses JNI exception checks.\n3. No match — ref discusses a local reference leak, generated discusses pending exceptions.\n4. No match — ref discusses missing `GetMethodID` null checks, generated discusses JNI pending exceptions after method calls.\n5. Match — both flag missing JNI exce",
+          "hit_new_gt": true
+        },
+        {
+          "note": "`FindClass` returns a local reference that is only valid until the current native call returns. Caching it in a function-static and reusing it on subsequent calls is undefined behavior (the class may be unloaded). Note that `ARRAYLIST` already wraps `FindClass` in `NewGlobalRef`; apply the same pattern here, e.g. `static jclass jInteger = static_cast<jclass>(env->NewGlobalRef(env->FindClass(\"java/lang/Integer\")));`.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "from_line": 43,
+          "to_line": 43,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref concerns missing NULL checks; generated concerns caching a local `FindClass` reference across calls.\n2. No match — ref concerns JNIEnv thread affinity; generated concerns JNI local reference lifetime in a static cache.\n3. No match — both involve JNI local references, but ref is about leaking `GetObjectClass` locals, while generated is about invalid static caching of `FindClass`.\n4. No match — ref concerns missing `GetMethodID` error handling; generated concerns JNI local refere",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`read()` is on a hot path: the FFmpeg backend invokes it for every ~4 KB chunk of the stream, and here a fresh Java `byte[]` is allocated on each call before the data is copied back to `buffer` (two full memory copies plus per-call allocation/GC pressure). Consider keeping a reusable `jbyteArray` member in `JavaStreamReader` that is (re)allocated only when the requested `size` grows, or use a direct `ByteBuffer` to avoid the copy-back entirely.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+          "from_line": 20,
+          "to_line": 20,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — Generated discusses per-call allocation/copy performance, while ref discusses missing NULL checks for `GetObjectClass`/`NewGlobalRef`.\n2. No match — Generated does not mention `JNIEnv*` thread affinity.\n3. No match — Generated does not discuss local reference leaks.\n4. No match — Generated does not discuss missing `GetMethodID` error handling.\n5. No match — Both involve `NewByteArray`, but generated targets allocation/copy overhead, while ref targets JNI exception checking after al",
+          "hit_new_gt": false
+        },
+        {
+          "note": "A `JNIEnv*` is thread-local and only valid for the duration of the native call in which it was obtained. Storing it as a member and reusing it later in `read`, `seek` and especially `~JavaStreamReader()` is undefined behavior if the object is used or destroyed on another thread. This is a realistic scenario: `VideoCapture` is destroyed from Java's `finalize()` (finalizer thread), which will run this destructor and call `env->DeleteGlobalRef(obj)` through a stale env. Store the `JavaVM*` (obtained via `GetJavaVM` in the constructor) and call `GetEnv`/`AttachCurrentThread` before each JNI call instead of caching `JNIEnv*`.",
+          "path": "modules/videoio/misc/java/src/cpp/videoio_converters.hpp",
+          "from_line": 18,
+          "to_line": 18,
+          "matched_gt_indices": [
+            11
+          ],
+          "judge_reason": "1. Match — both flag storing a thread-local `JNIEnv*` as a member and recommend using `JavaVM*` with `GetEnv`/`AttachCurrentThread`.\n2. No match — reference discusses a missing `<vector>` include, unrelated to `JNIEnv*` lifetime or threading.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "The `jni_var` template hard-codes the C++ parameter name `source` instead of using the `%(n)s` placeholder that the generator fills with the actual wrapped parameter name (this is the only placeholder gen_java.py provides when expanding `jni_var`, see `type_dict[a.ctype][\"jni_var\"] % {\"n\": a.name}`). It happens to work today only because both `VideoCapture(const Ptr<IStreamReader>& source, ...)` and `VideoCapture::open(const Ptr<IStreamReader>& source, ...)` name their argument `source`; renaming that parameter in the header (or wrapping another API taking a `Ptr<IStreamReader>`) will silently generate code that references an undeclared identifier and the Java bindings will stop compiling. Use the placeholder so the generated prologue tracks the header.",
+          "path": "modules/videoio/misc/java/gen_dict.json",
+          "from_line": 11,
+          "to_line": 11,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "gofr-dev__gofr@b9cdcbb",
+      "repo": "gofr-dev/gofr",
+      "comments": [
+        {
+          "note": "The `resTypes.Response` type has a `Headers` field and a `SetCustomHeaders()` method to apply custom HTTP response headers. However, this code doesn't call `v.SetCustomHeaders(r.w)`, which means any custom headers specified in the `Response` object will be ignored. You should add `v.SetCustomHeaders(r.w)` before setting the Content-Type header to ensure custom headers are properly applied.",
+          "path": "pkg/gofr/http/responder.go",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 32,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential inconsistency in metadata handling. When v.Metadata is nil, this will result in omitting the metadata field due to json:\"metadata,omitempty\" in the response struct. However, tests expect \"metadata\":null when metadata is not provided. Consider initializing Metadata appropriately to match expected behavior.",
+          "path": "pkg/gofr/http/responder.go",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 32,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "Since `handler.ServeHTTP` no longer unwraps `response.Response` into `resp.Data`, `getStatusCode` now receives the non-nil wrapper struct instead of the payload. This changes the status code for wrapped nil payloads:\n- handler returns `response.Response{Headers: ...}, err` (nil `Data`): previously the status code came from `err` (e.g. 404/500), now `isNil(data)` is false in `getStatusCode`, so it returns `207 Partial Content`.\n- POST handler returns `response.Response{Data: nil}`: previously `202 Accepted`, now `201 Created`.\n\nUnwrapping the payload for status computation preserves the previous contract while keeping the metadata in the body.",
+          "path": "pkg/gofr/http/responder.go",
+          "from_line": 31,
+          "to_line": 32,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses custom headers not being applied, generated discusses status code changes for wrapped nil payloads.\n2. No match — ref discusses metadata field omission vs null, generated discusses status code computation from response wrapper.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`Metadata` is typed `interface{}`, so assigning a nil `map[string]any` (the common `response.Response{Data: ...}` case) stores a non-nil, typed-nil value in the interface. `json:\"metadata,omitempty\"` therefore does not omit it and clients receive `\"metadata\":null` on every such response (this is also what the new responder test asserts), contradicting the documented behavior in `docs/advanced-guide/setting-custom-response-headers/page.md` (\"If no metadata is provided, the response only includes the data field\"). Typing the field as a map makes `omitempty` behave as intended.",
+          "path": "pkg/gofr/http/responder.go",
+          "from_line": 97,
+          "to_line": 97,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "This new case shadows the `resTypes.Raw` / `resTypes.File` dispatch for wrapped payloads. Before this change `handler.ServeHTTP` unwrapped `resp.Data` and then `Respond` switched on the inner value, so `response.Response{Data: response.Raw{...}, Headers: ...}` was written as raw bytes and `response.Response{Data: response.File{...}, Headers: ...}` was written with the file's content type. Now the outer `Response` matches first, so such payloads are JSON-encoded inside the envelope (`[]byte` becomes base64, file bytes are JSON, `Content-Type` is forced to `application/json`), silently breaking the documented custom-header use case for raw/file responses. Consider unwrapping the wrapper before the switch (capture `v.Metadata`/`errorObj`, then dispatch `v.Data` through the existing `Raw`/`File`/default cases) instead of handling it as a dedicated case.",
+          "path": "pkg/gofr/http/responder.go",
+          "from_line": 31,
+          "to_line": 32,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "alibaba__spring-ai-alibaba@3555a95",
+      "repo": "alibaba/spring-ai-alibaba",
+      "comments": [
+        {
+          "note": "- Environment variables \"ACCESS_KEY_ID\" and \"ACCESS_KEY_SECRET\" lack service-specific prefixing and risk naming conflicts; must be prefixed with \"ALITRANSLATE_\".  \n- Replace `setPropertiesFromEnv` helper method calls with direct `System.getenv` assignments for access key fields.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "side": "right",
+          "from_line": 34,
+          "to_line": 34,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The validation logic strictly requires `sourceLanguage` and `targetLanguage` to be present, contradicting the `@JsonProperty(required = false)` annotation in the `Request` record. If these optional fields are omitted in the tool call (resulting in null values), the method will return `null` silently. \n\nConsider applying default values when these fields are missing, consistent with the property descriptions.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "side": "right",
+          "from_line": 84,
+          "to_line": 92,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "`sourceLanguage` became a hard requirement here, but the documented default (\"default is zh\") never reaches this method. Tool arguments are deserialized by Jackson into the record's canonical constructor, so a call omitting `sourceLanguage` produces `sourceLanguage == null`; the convenience `Request(String text)` constructor (which injects `LANGUAGE_CODE_ZH`) is only used for direct Java construction. The result is a silent `null` response for the very request shape the schema advertises as defaulted. Prefer falling back to `LANGUAGE_CODE_ZH` (or `\"auto\"`) instead of rejecting the request.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 84,
+          "to_line": 85,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. Match — both flag that optional/defaulted fields are treated as required, causing silent `null` responses and suggest applying defaults instead.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "This `catch (Exception e)` also swallows `InterruptedException` from `response.get()` without restoring the interrupt flag, and it discards the throwable (`e.getMessage()` on an `ExecutionException` drops the underlying SDK error and the whole stack trace), so the new `IllegalStateException` validations from `getTranslatedText` become undiagnosable. Handle interruption explicitly and log the exception object.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 104,
+          "to_line": 107,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated concerns swallowed exceptions and interrupt handling, reference concerns optional field validation and silent null return.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "Renaming the public constant `LANGUAGE_CODE` to `LANGUAGE_CODE_ZH` (together with adding a `sourceLanguage` component to `Request`, which changes its canonical constructor arity) is a source/binary-incompatible change for downstream users of this starter. Consider keeping a deprecated alias to soften the break.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 62,
+          "to_line": 62,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment concerns source/binary compatibility from renaming a constant and changing the `Request` constructor, while the reference comment concerns optional field validation and null handling.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "The environment fallbacks use bare `ACCESS_KEY_ID` / `ACCESS_KEY_SECRET`. These are generic names that can be populated by unrelated tooling/credentials on the same machine, and they do not follow Alibaba Cloud's official `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` convention. Other starters in this module prefix env vars with the tool name (e.g. `BAIDU_MAP_API_KEY`, `GOOGLE_TRANSLATE_APIKEY`), so consider using a prefixed name (e.g. `ALITRANSLATE_ACCESS_KEY_ID`) or the official Alibaba Cloud variable names.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "from_line": 34,
+          "to_line": 34,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag that the bare `ACCESS_KEY_ID`/`ACCESS_KEY_SECRET` env vars risk naming conflicts and should use a service-specific prefix like `ALITRANSLATE_`.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "Deprecation is applied only to the setters while the corresponding getters (`getAccessKeyId()` / `getAccessKeySecret()`) remain non-deprecated. IDE completion will still promote the legacy accessor pair as first-class API even though the javadoc says to use `getApiKey()` / `getSecretKey()`. Consider marking the getters `@Deprecated` as well so the migration guidance is consistent.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "from_line": 37,
+          "to_line": 39,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses environment variable naming conflicts, generated discusses missing `@Deprecated` on getters for API consistency.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "sveltejs__svelte@44bec4c",
+      "repo": "sveltejs/svelte",
+      "comments": [
+        {
+          "note": "The `maybe_runes` condition fails to exclude components with `$:` reactive statements, risking misclassification of traditional Svelte components as runes-compatible when they lack `export let` and reserved references. This omission could trigger incorrect runic behavior fallbacks in standard components.",
+          "path": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+          "side": "right",
+          "from_line": 437,
+          "to_line": 437,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The condition in `build_expression` fails to account for `maybe_runes` state, causing breaks in existing components that operate in an intermediate mode (not explicitly legacy or runes). Update the check to include both `runes` and `maybe_runes` for backward compatibility.",
+          "path": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/utils.js",
+          "side": "right",
+          "from_line": 373,
+          "to_line": 373,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Checklist: `var` is forbidden; use `let` (since it’s reassigned) to avoid function-scoped hoisting surprises.\n\n```suggestion\n\t\tlet getter = build_getter({ ...binding.node }, state);\n```",
+          "path": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/utils.js",
+          "side": "right",
+          "from_line": 389,
+          "to_line": 389,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Adding `maybe_runes: boolean` to `ComponentAnalysis` makes this a new *required* property for all code paths that create/return `ComponentAnalysis`. If any producer doesn’t set it, TS will start failing (or consumers relying on structural typing may break). Consider making it optional (`maybe_runes?: boolean`) or defaulting it in all construction sites, and ensure naming/semantics are consistent with `runes` (e.g., tri-state could be modeled as `runes: boolean | 'maybe'` or a single enum).",
+          "path": "packages/svelte/src/compiler/phases/types.d.ts",
+          "side": "right",
+          "from_line": 54,
+          "to_line": 54,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "Minor style issue: the repo consistently uses single quotes in import paths (the sibling samples do too), and this new file is missing a trailing newline (`.editorconfig` sets `insert_final_newline = true`; Svelte test fixtures are excluded from Prettier, so nothing auto-fixes it). Enabling \"Insert Final Newline\" in the editor would avoid the `\\ No newline at end of file` marker here.",
+          "path": "packages/svelte/tests/runtime-runes/samples/legacy-runes-ambiguous-export-const/main.svelte",
+          "from_line": 2,
+          "to_line": 2,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "This fixture does not actually exercise the new `maybe_runes` fallback it is named after. `common_setup` in `tests/runtime-legacy/shared.ts` always sets `runes` last in the compile options (`runes` from `runtime_suite(true)` in `tests/runtime-runes/test.ts`), so `main.svelte` is compiled with `options.runes === true`, which makes `runes === true` and `maybe_runes === false` in `analyze_component`. As a result the assertion `'1'` passes both with and without the analyzer change, and there is currently no test covering the new positive branch (only `-explicit-false` covers the negative one). Since both runtime suites force an explicit `runes` value, consider adding a compiler/snapshot sample that compiles the component with no `runes` option (e.g. under `tests/snapshot/samples/...`) so the ambiguous path is actually compiled and asserted.",
+          "path": "packages/svelte/tests/runtime-runes/samples/legacy-runes-ambiguous/_config.js",
+          "from_line": 4,
+          "to_line": 5,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "This sample never exercises the code path it is meant to protect. The `runtime-runes` suite calls `runtime_suite(true)` and `common_setup` in `packages/svelte/tests/runtime-legacy/shared.ts` passes `runes` **after** `...config.compileOptions`, so every sample here is compiled with `runes: true`. The new `analysis.maybe_runes` flag can only be `true` when the compiler's `runes` option is left unset (`options.runes === undefined`) and the component is not in runes mode — so with `runes: true` this component is just a normal runes component and the legacy fallback is never reached.\n\nConsequently the assertion passes identically before/after the change (even if the `export let` detection in `2-analyze/index.js` were deleted), i.e. the test cannot detect a regression. Since both runtime suites force the flag (`runtime-legacy` forces `false`, which also disables `maybe_runes`), this needs a suite that compiles without the `runes` option (e.g. a `packages/svelte/tests/snapshot` sample or a direct compile assertion looking at the generated output) to actually cover the new behavior.",
+          "path": "packages/svelte/tests/runtime-runes/samples/legacy-runes-ambiguous-export-let/_config.js",
+          "from_line": 4,
+          "to_line": 5,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "The expected value is inconsistent with what this fixture is supposed to cover. `main.svelte` exports a reassignable local via `export { x }`, which `2-analyze/index.js` (lines 536-542) turns into a `bindable_prop` (a legacy prop), so `maybe_runes` is `false` for this component. In a genuine legacy compile the template call is therefore wrapped in `$.untrack` (`3-transform/.../shared/utils.js`, final `b.call('$.untrack', ...)`), so the `count` read inside `get()` is not tracked and `<p>` stays `0` after the click — i.e. the same behavior asserted by `legacy-runes-ambiguous-explicit-false`.\n\nAs written this assertion is byte-identical to the `legacy-runes-ambiguous-export-const` sample, so it only passes because the suite compiles everything with `runes: true`; once the fixture actually runs in legacy mode it will fail, and the sample will still not distinguish the export-`let` branch. Either assert the legacy result (`0`, ideally also asserting the initial value before the click) or change the sample so it truly exercises the intended branch.",
+          "path": "packages/svelte/tests/runtime-runes/samples/legacy-runes-ambiguous-export-let/_config.js",
+          "from_line": 12,
+          "to_line": 12,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "Two gaps in this fixture:\n1. `{x}` is rendered but never asserted anywhere in `_config.js`, so the value of the exported `let` is not checked at all.\n2. The only assertion (`<p>{get()}</p>` becoming `1` after the click) holds regardless of the compiled mode: `get()` is invoked inside the template effect and therefore subscribes to the external `$state` on its own. It cannot distinguish the \"`export { x }` on a `let` keeps legacy behavior\" rule this sample is named for.\n\nConsider asserting the initial markup (e.g. `42` and `0`) and adding a check that is mode-specific (e.g. that the exported `x` is not exposed as a runes-style accessor), which will also make the coverage problem described in `_config.js` visible.",
+          "path": "packages/svelte/tests/runtime-runes/samples/legacy-runes-ambiguous-export-let/main.svelte",
+          "from_line": 4,
+          "to_line": 6,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "This sample runs under the `runtime-runes` suite, whose `common_setup` always passes `runes: true` to the compiler (`packages/svelte/tests/runtime-legacy/shared.ts`, line 161, applied after `...config.compileOptions`). With an explicit `runes: true`, `analyze_component` computes `runes = true` and the new `maybe_runes` fallback added in this PR is never reached (`maybe_runes` requires `!runes` and `options.runes === undefined`). The component would therefore be compiled in runes mode anyway and these assertions (`p` becomes `1`) would pass even with the compiler change reverted, so this test provides no regression coverage for the `export const` case.\n\nTo actually cover the fallback the component must be compiled without an explicit `runes` option (the harness currently forces it, so a config/suite that leaves it undefined is needed). It would also be worth asserting `p?.innerHTML === '0'` before the click, so the test proves reactivity after the update instead of only proving the initial render.",
+          "path": "packages/svelte/tests/runtime-runes/samples/legacy-runes-ambiguous-export-const/_config.js",
+          "from_line": 5,
+          "to_line": 6,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "Naming: this file is a small shared-state helper module, but `test.svelte.js` reads like the test itself and collides conceptually with the `test` suite helper imported in `_config.js`. Sibling samples name these modules by intent (`utils.js` in `ambiguous-source`, `state.svelte.js`, `theme.svelte.js`, etc.). Consider renaming to something like `state.svelte.js` (and updating the import in `main.svelte`) for clarity.",
+          "path": "packages/svelte/tests/runtime-runes/samples/legacy-runes-ambiguous-export-const/test.svelte.js",
+          "from_line": 1,
+          "to_line": 1,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "This export check does not match the actual legacy prop detection. Later in this function any exported non-`const` variable declaration becomes a `bindable_prop` (lines ~514–528), and the specifier branch explicitly accepts `var` as well as `let` (`binding.declaration_kind === 'var' || binding.declaration_kind === 'let'`, ~line 540). Here only `let` is matched, so a legacy component containing `export var x = 1` (or `var x; export { x }`) still gets `maybe_runes: true`, producing runic-style expression transforms while the component actually uses legacy prop bindings — exactly the mix this condition is meant to prevent. Consider using the same rule here (e.g. `kind !== 'const'` for the declaration and `declaration_kind !== 'const'` for specifiers), or extract a shared helper used by both places.",
+          "path": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+          "from_line": 445,
+          "to_line": 447,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment concerns `export var`/specifier handling in the `maybe_runes` check, while reference comment concerns `$:` reactive statements causing misclassification.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`maybe_runes` can only be true when `options.runes` is undefined (auto-detect), but no runtime test currently exercises that: `runtime-runes` always passes `runes: true` and `runtime-legacy` always passes `runes: false` (see `runtime_suite(true|false)` in tests/runtime-legacy/shared.ts), and `<svelte:options runes={false}>` also results in `options.runes === false`. So the new branch is unreachable in the test suites, and regressions here would go unnoticed. Please add a test that compiles a component without an explicit `runes` option (e.g. a dedicated sample/suite) so the fallback behaviour is actually covered.",
+          "path": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+          "from_line": 437,
+          "to_line": 438,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment is about missing test coverage for the auto-detect `maybe_runes` branch, while reference comment is about the condition logic failing to exclude `$:` reactive components.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "filamentphp__filament@d47632c",
+      "repo": "filamentphp/filament",
+      "comments": [
+        {
+          "note": "The new condition for '->' JSON syntax must skip columns starting with `json_extract()` to prevent double-wrapping, as the two syntax forms are mutually exclusive and the translatable plugin already handles these columns.",
+          "path": "packages/support/src/helpers.php",
+          "side": "right",
+          "from_line": 184,
+          "to_line": 184,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential SQL correctness/safety issue: building `$column = \"json_extract({$field}{$path})\"` assumes `$path` already includes the comma and is correctly quoted/escaped, and that JSON extraction syntax matches the current connection settings (e.g., MySQL vs MariaDB variants, json type/collation). Since this string is later interpolated into `lower({$column})`, any mismatch can break queries or bypass proper identifier wrapping.\n\nSuggestion: prefer using the grammar’s JSON selector wrapping (or query builder expressions) end-to-end rather than concatenating raw SQL. If you must transform here, ensure the generated SQL includes the required `,` between field and path and that both parts are wrapped/escaped by the grammar (e.g., `json_extract({$field}, {$path})`), and consider handling nested selectors/edge cases consistently with other drivers.",
+          "path": "packages/support/src/helpers.php",
+          "side": "right",
+          "from_line": 184,
+          "to_line": 188,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "Two problems with this block:\n\n1. **Placement — the fix only covers the forced case-insensitive path.** When a project configures `search_collation` but does not force case-insensitivity (the usual MySQL/MariaDB setup, since the collation already handles casing), `$isSearchForcedCaseInsensitive` is `false` for a `data->name` column (see the `json_extract(` heuristic above) and this block is skipped. The function then returns `data->name collate utf8mb4_unicode_ci` as an `Expression`; because it is an `Expression`, Laravel never applies its JSON-selector wrapping, and MySQL/MariaDB require the right-hand side of `->` to be a string literal — so the generated `... where data->name collate ... like ?` is invalid SQL. Moving this conversion above `if ($isSearchForcedCaseInsensitive)` (so it also runs for the collation-only path) resolves both cases.\n\n2. **`str_contains($column, '->')` also matches raw expressions.** The rest of this function explicitly anticipates raw-expression strings (the `json_extract(` heuristic and the `'('` check below). A value such as `col->>'$.path'` or `json_unquote(col->'$.path')` contains `->`, so `wrapJsonFieldAndPath()` will split it at the first `->` and produce a malformed `json_extract(...)` instead of leaving the expression untouched. Consider narrowing the guard, e.g. skipping values containing `(`, whitespace, or `->>`.",
+          "path": "packages/support/src/helpers.php",
+          "from_line": 184,
+          "to_line": 184,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`JSON_EXTRACT()` in MySQL/MariaDB returns JSON-encoded values: a string is returned with its surrounding double quotes and with escaped sequences (e.g. `\"`, `\\n`, `\\uXXXX`). Laravel's own JSON selector handling (`Grammar::wrapJsonSelector()`, used when the raw `col->path` string is passed to `where()`) wraps this in `json_unquote(...)` for exactly this reason, and the default `json_extract(` detection above already relies on that behaviour. Building the expression with a bare `json_extract()` therefore makes forced case-insensitive JSON searches semantically different from non-forced ones: values containing quotes/backslashes/newlines won't match, and a search term containing `\"` can produce false positives. Consider unquoting (or simply delegating to the grammar's `wrapJsonSelector()`), e.g. `$column = \"json_unquote(json_extract({$field}{$path}))\";`.",
+          "path": "packages/support/src/helpers.php",
+          "from_line": 187,
+          "to_line": 187,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "infiniflow__ragflow@a63caa1",
+      "repo": "infiniflow/ragflow",
+      "comments": [
+        {
+          "note": "Accessing `.nodes` on the result of `nx.connected_components` (which returns node sets, not graph objects) causes AttributeError; use the set of nodes directly.",
+          "path": "graphrag/entity_resolution.py",
+          "side": "right",
+          "from_line": 114,
+          "to_line": 114,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Critical bug: Lambda function captures loop variable by reference. All async tasks will use the last value of `merging_nodes` instead of their intended values. This will cause incorrect node merging behavior. Fix by using a default argument to capture the value: `lambda nodes=merging_nodes: self._merge_graph_nodes(graph, nodes, change)`\n\n```suggestion\n                nursery.start_soon(lambda nodes=merging_nodes: self._merge_graph_nodes(graph, nodes, change))\n```",
+          "path": "graphrag/entity_resolution.py",
+          "side": "right",
+          "from_line": 115,
+          "to_line": 115,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The direct access to `node1_attrs[\"source_id\"]` risks KeyError if the attribute is missing; replace with `.get(\"source_id\", [])` to safely handle absent attributes during list extension.",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 205,
+          "to_line": 205,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Type/ordering consistency: for edges you deduplicate with `list(set(...))`, which produces non-deterministic order. Elsewhere you use `sorted(set(...))` (node source_id). If downstream relies on stable ordering (e.g., tests, hashing, serialization diffs), consider using `sorted(set(...))` consistently for both `keywords` and `source_id`. Also ensure the attributes exist and are lists before calling `extend`.\n\n```suggestion\n                        if isinstance(edge0_attrs.get(\"keywords\"), list) and isinstance(edge1_attrs.get(\"keywords\"), list):\n                            edge0_attrs[\"keywords\"].extend(edge1_attrs[\"keywords\"])\n                            edge0_attrs[\"keywords\"] = sorted(set(edge0_attrs[\"keywords\"]))\n                        \n                        if isinstance(edge0_attrs.get(\"source_id\"), list) and isinstance(edge1_attrs.get(\"source_id\"), list):\n                            edge0_attrs[\"source_id\"].extend(edge1_attrs[\"source_id\"])\n                            edge0_attrs[\"source_id\"] = sorted(set(edge0_attrs[\"source_id\"]))\n```",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 216,
+          "to_line": 219,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The change replaces concurrent edge deletion (via `nursery.start_soon`) with sequential execution (via `await trio.to_thread.run_sync`), causing unnecessary performance degradation when removing multiple edges.",
+          "path": "graphrag/utils.py",
+          "side": "right",
+          "from_line": 442,
+          "to_line": 442,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Similar to prior corrections applied to node merging logic, suggest applying consistent idiom here too i.e., prefer creating new combined collection over mutating existing one e.g.: `edge0_attrs[\"keywords\"] = list(set(edge0_attrs[\"keywords\"] + edge1_attrs[\"keywords\"]))`. Improves readability & reduces mutation-related confusion.",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 216,
+          "to_line": 217,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "The `await` inside the `trio.open_nursery()` block makes every delete run strictly sequentially — the nursery no longer buys any concurrency, so N removed edges cost N sequential thread hops + ES round-trips (this can be thousands for a large graph change). Also the line is indented with 5 spaces instead of 4, which is valid but inconsistent with the rest of the file.\n\nIf parallelism is the intent (as in the node/edge chunk loops below), pass `to_thread.run_sync` itself to `start_soon` and pre-bind the per-iteration conds dict, so the loop variables are captured eagerly rather than through a late-bound lambda; otherwise drop the nursery entirely.",
+          "path": "graphrag/utils.py",
+          "from_line": 442,
+          "to_line": 442,
+          "matched_gt_indices": [
+            4
+          ],
+          "judge_reason": "1. Match — both flag the sequential execution replacing concurrent edge deletion, causing performance degradation when removing multiple edges.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "`merging_nodes` is a loop-local variable, but the value that actually reaches the merge is the one captured by the `lambda` on the next line (unchanged line: `nursery.start_soon(lambda: self._merge_graph_nodes(graph, merging_nodes, change))`). `start_soon` only schedules the task — it does not run the body until the parent task yields, and this loop never awaits. Consequently every scheduled lambda sees the closure cell's final value, i.e. the nodes of the **last** connected component: with N > 1 components the earlier components are never merged and the last one is merged N times (duplicated `change.removed_nodes`/`removed_edges` entries, repeated LLM summarization and `remove_node` on already-removed nodes). Bind the value at scheduling time, e.g. `nursery.start_soon(self._merge_graph_nodes, graph, merging_nodes, change)` (trio passes the extra args) or `lambda nodes=merging_nodes: ...`.\n\nSecondary point: `sub_connect_graph` is a `set`, so `list(...)` order is hash-dependent and `_merge_graph_nodes` merges into `nodes[0]` — which entity name survives varies between runs. `sorted(sub_connect_graph)` would make the result deterministic.",
+          "path": "graphrag/entity_resolution.py",
+          "from_line": 114,
+          "to_line": 114,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — generated discusses lambda late-binding of `merging_nodes`, while ref 1 discusses incorrectly accessing `.nodes` on connected-component sets.\n2. Match — both identify the same critical closure capture bug where all scheduled tasks use the final `merging_nodes` value, and both suggest binding via a default argument.\n\n[2]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "linera-io__linera-protocol@3535ddb",
+      "repo": "linera-io/linera-protocol",
+      "comments": [
+        {
+          "note": "Consider adding validation to handle the case where `start >= chain.received_log.count()`. Currently, if start exceeds the log count, the range `start..end` could be invalid or empty. It might be better to return early with an empty result or an error to make the behavior explicit.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 1418,
+          "to_line": 1420,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The pagination loop condition might result in an extra unnecessary request when exactly CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES entries are returned. Consider using <= comparison to break when the number of received entries is less than or equal to the maximum.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 1418,
+          "to_line": 1419,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The pagination loop lacks a safeguard against infinite iteration. If entries are being added to the `received_log` faster than the client paginates through it (e.g., during concurrent writes), the condition `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` might never be met, potentially causing an infinite loop.\n\nConsider adding a maximum iteration limit or a timeout safeguard to prevent this edge case. For example:\n```rust\nlet mut iterations = 0;\nconst MAX_ITERATIONS: u32 = 1000;\nloop {\n    let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n    let info = remote_node.handle_chain_info_query(query).await?;\n    let received_entries = info.requested_received_log.len();\n    offset += received_entries as u64;\n    remote_log.extend(info.requested_received_log);\n    if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n        break;\n    }\n    iterations += 1;\n    if iterations >= MAX_ITERATIONS {\n        warn!(\"Reached maximum iterations while paginating received log for chain {:?}\", chain_id);\n        break;\n    }\n}\n```",
+          "path": "linera-core/src/client/mod.rs",
+          "side": "right",
+          "from_line": 846,
+          "to_line": 857,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The pagination loop will make an extra unnecessary query when the total number of entries is exactly a multiple of CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES (1000). For example, if there are exactly 2000 new entries, it will make 3 queries returning (1000, 1000, 0) instead of stopping after 2 queries. While this doesn't affect correctness, consider adding a check to avoid the extra query, such as tracking if we've reached the expected end or checking if the response is empty before extending the vector.",
+          "path": "linera-core/src/client/mod.rs",
+          "side": "right",
+          "from_line": 848,
+          "to_line": 857,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Making this `pub` exposes a protocol/behavior constant outside the crate. If this limit is only an internal safeguard for responses, consider `pub(crate)` to avoid accidental external coupling. If it must be public, document whether it’s a hard API guarantee and whether changing it is a breaking change.\n\n```suggestion\npub(crate) const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;\n```",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 53,
+          "to_line": 53,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "The pagination stop condition relies on the server-side constant `CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` to infer whether more entries exist. This couples the client to a validator implementation detail and is fragile in two ways:\n\n1. **Version skew with a smaller page size:** if a validator caps its response at fewer entries than this constant (e.g. the constant is later tuned down, or a different node implementation uses a smaller page), the client stops early, treats the log as complete, and silently processes a truncated received log.\n2. **Unbounded loop:** termination depends entirely on the remote. A buggy/malicious validator that always returns full-size pages regardless of the requested offset makes this loop run (and `remote_log` grow) without bound. Conversely, when the log length is an exact multiple of the page size, one extra empty round-trip is always issued.\n\nSince every `ChainInfo` response already carries `count_received_log` (set in `prepare_chain_info_response`), it can be used as a deterministic bound instead.",
+          "path": "linera-core/src/client/mod.rs",
+          "from_line": 848,
+          "to_line": 857,
+          "matched_gt_indices": [
+            2,
+            3
+          ],
+          "judge_reason": "1. Match — both flag the risk of an unbounded/infinite pagination loop and suggest adding a safeguard or limit.\n2. Match — both note the extra unnecessary empty query when the received log length is an exact multiple of the page size.\n\n[1, 2]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "This value is now part of the `ChainInfoQuery`/`ChainInfo` wire contract: validators truncate responses to it and clients must use the same page size to paginate correctly. Keeping it in `chain_worker::state` (a private, validator-internal module, only re-exported `pub(crate)`) makes an RPC-level constant an implementation detail and forces any out-of-crate client to hardcode `1000`. Suggest defining it in `linera-core/src/data_types.rs` next to `ChainInfoQuery::with_received_log_excluding_first_n` and documenting on `requested_received_log` that the returned log may be truncated to this many entries.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "from_line": 53,
+          "to_line": 53,
+          "matched_gt_indices": [
+            4
+          ],
+          "judge_reason": "1. No match — reference 1 discusses input validation for `start >= count`, not the visibility/API placement of the constant.\n2. No match — reference 2 discusses a potential off-by-one/extra pagination request, not the constant’s exposure or documentation.\n3. Match — both concern whether `CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` is part of the public/protocol API and whether its contract should be documented or kept internal.\n\n[3]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "`LogView::read` already clamps the end bound to `count()` and returns an empty `Vec` when `start >= end` (see `linera-views/src/views/log_view.rs`), so the explicit `min(chain.received_log.count())` is redundant. Only the page-size cap needs to be applied here.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "from_line": 1418,
+          "to_line": 1419,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref1 suggests adding explicit validation for `start >= count`, while the generated comment says `LogView::read` already handles that case and the `min` is redundant.\n2. No match — ref2 discusses an extra pagination request when exactly the maximum entries are returned; the generated comment does not address loop termination.\n3. No match — ref3 discusses the visibility of the constant; the generated comment discusses log range clamping.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "cline__cline@f098af0",
+      "repo": "cline/cline",
+      "comments": [
+        {
+          "note": "Potential timer leak: If flushBuffer() is called multiple times rapidly, a new bufferStuckTimer could be created before the previous one is cleared, leading to multiple timers running simultaneously. Consider clearing any existing timer before creating a new one:\n```typescript\nif (bufferStuckTimer) {\n    clearTimeout(bufferStuckTimer)\n}\nbufferStuckTimer = setTimeout(...)\n```",
+          "path": "src/core/task/index.ts",
+          "side": "right",
+          "from_line": 1511,
+          "to_line": 1515,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Consider using a more robust timer management pattern. The current approach sets timers in multiple places without centralized cleanup. This could lead to memory leaks if timers aren't properly cleared in all execution paths.",
+          "path": "src/core/task/index.ts",
+          "side": "right",
+          "from_line": 1608,
+          "to_line": 1612,
+          "file_semantic_match": false
+        },
+        {
+          "note": "`TerminalOutputFailureReason.TIMEOUT` is likely misleading here. This branch triggers when `fullOutput` is empty after shell integration finished, which could be “no output / stream empty / parsing removed everything”, not necessarily a timeout. Consider introducing/using a more accurate reason (e.g., `EMPTY_OUTPUT` / `SHELL_INTEGRATION_EMPTY_OUTPUT`) to avoid skewing telemetry.\n\n```suggestion\n    telemetryService.captureTerminalOutputFailure(TerminalOutputFailureReason.EMPTY_OUTPUT) // or a more accurate enum value\n```",
+          "path": "src/integrations/terminal/TerminalProcess.ts",
+          "side": "right",
+          "from_line": 195,
+          "to_line": 195,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Re-exporting enums from \"./TelemetryService\" couples the public telemetry index to a runtime module. If TelemetryService has side effects (singleton init, provider wiring) or imports back from this index, this can create circular deps and unexpected load-order issues. Consider moving these enums to a dedicated types/enums file (or exporting them from TelemetryProviderFactory if appropriate) and re-export from there. Also ensure these are `export enum`/`export const enum`/`export type` as intended to avoid bundling extra runtime code.",
+          "path": "src/services/telemetry/index.ts",
+          "side": "right",
+          "from_line": 13,
+          "to_line": 17,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "`method` is typed as a free-form `string` while the JSDoc restricts it to `\"shell_integration\" | \"clipboard\" | \"none\"`. This allows arbitrary/typo'd values to leak into telemetry, making aggregation unreliable, and the docs can silently drift from the actual call sites. The rest of this file already uses narrow literal unions for such domains (e.g. `source: \"user\" | \"assistant\"` in `captureConversationTurnEvent`); please use the same pattern here.",
+          "path": "src/services/telemetry/TelemetryService.ts",
+          "from_line": 959,
+          "to_line": 959,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "All four new terminal capture methods emit `task.*` events but none of them accept a task identifier, unlike every other task-scoped capture method in this file (`captureTaskCreated`, `captureToolUsage`, `captureTaskInitialization`, etc. all take `ulid`). As a result these events can't be correlated back to a task/session, which is exactly what would be needed to investigate a hang or repeated fallback. The call sites in `src/core/task/index.ts` already have `this.ulid` available, so the identifier should be threaded through all four methods.",
+          "path": "src/services/telemetry/TelemetryService.ts",
+          "from_line": 999,
+          "to_line": 999,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`CLIPBOARD_FAILED` has no emission site: in `src/integrations/terminal/TerminalProcess.ts` the clipboard fallback failure path is reported as `captureTerminalExecution(false, \"none\")` instead of `captureTerminalOutputFailure(TerminalOutputFailureReason.CLIPBOARD_FAILED)`. Any analytics query filtering on `reason = \"clipboard_failed\"` will therefore always return zero. Either wire this reason into the fallback-failure branch or drop the enum member.",
+          "path": "src/services/telemetry/TelemetryService.ts",
+          "from_line": 27,
+          "to_line": 27,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`MANUAL_PASTE` and `CANCELLED` are never emitted anywhere. In particular the `else` branch (and the non-`yesButtonClicked` response) in `flushBuffer` in `src/core/task/index.ts` represents the cancel path but records no `CANCELLED` intervention, so the intervention telemetry will only ever contain `PROCESS_WHILE_RUNNING`. Consider emitting `CANCELLED` on that branch (and either implementing or removing `MANUAL_PASTE`) so the taxonomy matches reality.",
+          "path": "src/services/telemetry/TelemetryService.ts",
+          "from_line": 35,
+          "to_line": 36,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`returnCurrentTerminalContents()` already calls `getLatestTerminalOutput()` internally (line 30), so this second call re-runs the expensive select-all/copy/restore-clipboard flow. More importantly, unlike the call inside `returnCurrentTerminalContents` (which is wrapped in try/catch), this one is unguarded: `getLatestTerminalOutput()` awaits `vscode.commands.executeCommand(...)`/clipboard reads and can reject, which would escape `run()` before `this.emit(\"completed\")`/`this.emit(\"continue\")` are reached and leave the task hanging. Better to have `returnCurrentTerminalContents()` return the snapshot and reuse it here.",
+          "path": "src/integrations/terminal/TerminalProcess.ts",
+          "from_line": 196,
+          "to_line": 198,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment discusses a redundant/unguarded `getLatestTerminalOutput()` call, while the reference discusses misleading `TerminalOutputFailureReason.TIMEOUT` semantics.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`fullOutput.trim()` being empty only means the command produced no stdout through shell integration (very common for commands like `cd`, `mkdir`, `git add`, `export`), it does not imply a timeout occurred. Overloading `TerminalOutputFailureReason.TIMEOUT` here produces misleading failure telemetry for perfectly normal silent commands. Consider a dedicated reason such as `EMPTY_OUTPUT`/`SHELL_INTEGRATION_NO_OUTPUT` instead.",
+          "path": "src/integrations/terminal/TerminalProcess.ts",
+          "from_line": 195,
+          "to_line": 195,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. Match — both identify that `TIMEOUT` is misleading for empty `fullOutput` after shell integration and suggest a dedicated `EMPTY_OUTPUT`/shell-integration-specific reason.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "Same issue as the shell-integration branch: `returnCurrentTerminalContents()` already fetched the snapshot, so calling `getLatestTerminalOutput()` again is redundant. This second call is also not wrapped in try/catch, so a rejection from the terminal/clipboard commands would propagate out of `run()` and skip the `this.emit(\"completed\")`/`this.emit(\"continue\")` emissions below. Return the snapshot from `returnCurrentTerminalContents()` and reuse it (or guard the call).",
+          "path": "src/integrations/terminal/TerminalProcess.ts",
+          "from_line": 228,
+          "to_line": 229,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — Generated discusses a redundant second `getLatestTerminalOutput()` call and missing try/catch, while Reference 1 discusses using a misleading timeout failure reason for empty output.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`getLatestTerminalOutput()` returns the whole visible terminal buffer, not the output of the command that just ran, so a non-empty snapshot does not mean the command's output was captured. In practice the buffer almost always still contains output from previously executed commands, so commands that legitimately produce no output (`cd`, `mkdir`, `git add`, `export`) will be recorded as `success: true`. Consider not inferring command success from a generic buffer snapshot (e.g. compare the snapshot before/after the command, or record `captureMethod` + a separate `fallbackAttempted` flag instead of a success boolean).",
+          "path": "src/integrations/terminal/TerminalProcess.ts",
+          "from_line": 197,
+          "to_line": 198,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "The capture method is passed as a free-form string (`\"shell_integration\"`, `\"clipboard\"`, `\"none\"`) and repeated in four call sites, while every other new terminal telemetry parameter uses a dedicated enum. A typo here would silently create a new telemetry dimension, so it would be better to introduce (in the telemetry service) a shared type such as `TerminalOutputMethod = \"shell_integration\" | \"clipboard\" | \"none\"` (or an enum) and use it here.",
+          "path": "src/integrations/terminal/TerminalProcess.ts",
+          "from_line": 206,
+          "to_line": 206,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — both concern telemetry data quality, but the generated comment asks for a typed union/enum for free-form capture method strings, while the reference comment asks for a more accurate failure reason enum value.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "This `catch` handles *all* errors from `this.ask(...)`, but `ask()` also throws expected control-flow errors such as `\"Current ask promise was ignored\"` (when a newer message supersedes this ask) and `\"Cline instance aborted\"`. Those are not stream timeouts, so reporting `STREAM_TIMEOUT` here will emit false-positive hang telemetry. Consider checking the error and only capturing when it actually indicates a timeout (or use a distinct stage).",
+          "path": "src/core/task/index.ts",
+          "from_line": 1531,
+          "to_line": 1533,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated concerns false-positive STREAM_TIMEOUT from catch-all error handling, while reference concerns duplicate bufferStuckTimer creation/leak.\n2. No match — generated concerns error classification for telemetry, while reference concerns centralized timer cleanup/memory leaks.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`flushBuffer` sets this timer right before `await this.ask(\"command_output\", chunk)`, and `ask()` blocks in a `pWaitFor` loop until the user responds in the webview. Therefore a 30s timer here primarily measures user response latency, not an actual buffer hang — normal user inactivity will trigger `BUFFER_STUCK` false positives. Consider only measuring the truly-stuck condition (e.g., `chunkEnroute` remaining true without a pending user prompt) or excluding time spent awaiting user input.",
+          "path": "src/core/task/index.ts",
+          "from_line": 1511,
+          "to_line": 1513,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — the generated comment discusses false positives from timer measuring user response latency, while this reference discusses multiple timers leaking due to not clearing an existing timer.\n2. No match — the generated comment focuses on the semantic condition being timed, while this reference focuses on centralized timer cleanup and memory leaks.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "This timer is a pure wall-clock deadline, so any command that legitimately runs longer than 60s (dev servers, `npm install`, builds, test suites) will emit a `WAITING_FOR_COMPLETION` \"hang\" event even though the process is healthy and still producing output. That makes the metric dominated by false positives. Consider treating it as a *no-progress* timeout: start/reset the timer on every `line` event instead of fixed-time from command start.",
+          "path": "src/core/task/index.ts",
+          "from_line": 1578,
+          "to_line": 1583,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — discusses potential timer leak from multiple `bufferStuckTimer` instances, while the generated comment discusses false-positive hang detection for long-running commands.\n2. No match — discusses centralized timer cleanup and memory leaks, while the generated comment discusses changing the timer to a no-progress timeout reset on output.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "The new timers are only cleared on the happy path: `process` is a `TerminalProcessResultPromise` that `TerminalManager.runCommand()` rejects on the process `error` event, and this method can also be abandoned when the task is aborted. In those cases `completionTimer` (and `bufferStuckTimer`) stay armed, so a bogus `WAITING_FOR_COMPLETION`/`BUFFER_STUCK` hang is reported for a command that actually failed/was aborted, and a 60s timer is leaked. Please clear the timers in a `finally` block around `await process`.",
+          "path": "src/core/task/index.ts",
+          "from_line": 1606,
+          "to_line": 1612,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — Reference 1 discusses a timer leak from rapid repeated `flushBuffer()` calls creating concurrent `bufferStuckTimer`s, whereas the generated comment is about timers not being cleared when the process rejects or is aborted.\n2. Match — both concern timers not being cleared on all execution paths, risking",
+          "hit_new_gt": false
+        }
+      ]
+    }
+  ]
+}

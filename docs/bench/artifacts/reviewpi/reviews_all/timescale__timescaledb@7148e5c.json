@@ -1,0 +1,276 @@
+{
+  "generatedAt": "2026-11-15T01:17:47.898Z",
+  "runId": "20261115_011317_142",
+  "source": "mr",
+  "caseId": "timescale__timescaledb@7148e5c",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "tsl/src/bgw_policy/continuous_aggregate_api.c",
+      "line": 724,
+      "title": "新增的 refresh_newest_first 参数未被 C 函数读取，策略配置永远不生效",
+      "description": "SQL 侧 add_continuous_aggregate_policy 已增加第 11 个参数 refresh_newest_first，但 C 函数 policy_refresh_cagg_add 只读取 0..9 号参数（止于 max_batches_per_execution），policy_refresh_cagg_add_internal 构建 config JSON 时也只写入 include_tiered_data / buckets_per_batch / max_batches_per_execution。因此用户传入 refresh_newest_first => false 会被静默丢弃，JSON 中永远没有该键，作业执行时 policy_refresh_cagg_get_refresh_newest_first 因 found=false 恒返回默认值 true，刷新顺序仍为 newest-first：新选项对所有用户都是空操作，且没有任何报错或提示。",
+      "evidence": [
+        "tsl/src/bgw_policy/continuous_aggregate_api.c:724 — `max_batches_per_execution.value = PG_GETARG_DATUM(9);` 是该函数读取的最后一个参数，之后直接调用 policy_refresh_cagg_add_internal，未见 PG_GETARG_* (10)",
+        "tsl/src/bgw_policy/continuous_aggregate_api.c:660-663 — add_internal 只 `ts_jsonb_add_int32(parse_state, POL_REFRESH_CONF_KEY_MAX_BATCHES_PER_EXECUTION, ...)`，没有写入 POL_REFRESH_CONF_KEY_REFRESH_NEWEST_FIRST",
+        "tsl/src/bgw_policy/continuous_aggregate_api.c:171-181 — `policy_refresh_cagg_get_refresh_newest_first` 在 `!found` 时 `res = true`，把“未配置”与“显式设为 true”混为一谈",
+        "sql/policy_api.sql:94 — SQL 端已声明 `refresh_newest_first BOOL = true`；sql/updates/latest-dev.sql:26 同样新增该参数",
+        "tsl/src/bgw_policy/policies_v2.h:25 — 已定义 POL_REFRESH_CONF_KEY_REFRESH_NEWEST_FIRST，但仓库中除该 getter 外没有写入方"
+      ],
+      "rule": "FEATURE-NOOP-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 新增 API 参数未在 C 侧接线（写路径缺失）。影响评估：refresh_newest_first 完全失效，用户显式请求 ASC（oldest-first）刷新会被静默忽略，与文档/发布说明不符；属对外承诺的功能性缺陷。",
+        "suggestion": "[重构思路] 在 policy_refresh_cagg_add 中读取 index 10 的布尔参数并透传到 add_internal，在构建 config 时写入该键；建议只在显式非默认值时写入或按现有 nullable 约定处理，便于向后兼容。代码示例：`bool refresh_newest_first = PG_ARGISNULL(10) ? true : PG_GETARG_BOOL(10); ... if (!PG_ARGISNULL(10)) ts_jsonb_add_bool(parse_state, POL_REFRESH_CONF_KEY_REFRESH_NEWEST_FIRST, refresh_newest_first);` 并补充 add/execute 两端的端到端用例。",
+        "subcategory": "API 参数未接线"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "tsl/src/nodes/vector_agg/plan.c",
+      "line": 500,
+      "title": "vectoragg_plan_possible 无条件 rt_fetch(scanrelid) 且对任意 CustomScan 返回 true，可能越界或使用未初始化 VectorQualInfo",
+      "description": "改动删除了原有的 `customscan->scan.scanrelid > 0` 与 `rte &&` 保护，任何进入该函数的 CustomScan 都会直接执行 rt_fetch(customscan->scan.scanrelid, rtable) 并用 rte->relid 调用 ts_get_rel_am()。ChunkAppend 等 CustomScan 节点的 scanrelid 常为 0，此时 rt_fetch(0) 会取到非法下标（Assert 环境下触发断言，Release 环境下越界访问）；若 rte 不是 RTE_RELATION，relid 为 0 时 ts_get_rel_am 也会在系统缓存查找中失败。更关键的是函数末尾无条件 `return true`：当节点既不是 hypercore 表扫描也不是 DecompressChunk 时，vqi 完全未被填充，而调用方 try_insert_vector_agg_node 已删除 `MemSet(&vqi, 0, sizeof(VectorQualInfo));`，vqi 成为未初始化栈变量，后续 is_vector_var 会按垃圾指针 vqi->vector_attrs[varattno] 取值，导致规划阶段崩溃或对不支持的节点错误地插入 VectorAgg。",
+      "evidence": [
+        "tsl/src/nodes/vector_agg/plan.c:499-507 — `RangeTblEntry *rte = rt_fetch(customscan->scan.scanrelid, rtable);` 无 scanrelid>0 判断，两个分支都不命中时仍 `return true`",
+        "diff 中被删除的保护：原 `if (customscan->scan.scanrelid > 0) { RangeTblEntry *rte = rt_fetch(...); if (rte && ts_is_hypercore_am(...)) {...} }`",
+        "tsl/src/nodes/vector_agg/plan.c:598-605 — `VectorQualInfo vqi;` 之后直接调用 vectoragg_plan_possible，原先的 MemSet 已删除",
+        "tsl/src/nodes/vector_agg/plan.c:207-224 — is_vector_var 直接返回 `vqinfo->vector_attrs[var->varattno]`，无空指针判断",
+        "tsl/src/nodes/vector_agg/plan_tam.c:19-20 — vectoragg_plan_tam 内部再次 rt_fetch(scanrelid, rtable) 并 table_open(rte->relid)，同样依赖 scanrelid 有效"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 移除空值/下标保护 + 放宽分支返回值，导致未初始化结构体与非法 rt_fetch。影响评估：任意包含 CustomScan 且 scanrelid 为 0（或非关系 RTE）的查询在规划期可能断言失败或段错误，属崩溃级回归；即便不崩溃也可能对不支持的子节点插入 VectorAgg 造成执行期错误。",
+        "suggestion": "[重构思路] 恢复 scanrelid>0 与 rte 有效性判断，改为“仅在成功初始化 vqi 时才返回 true”的语义，并让各分支显式返回初始化结果；同时保留对 vqi 的零初始化作为兜底。代码示例：`if (customscan->scan.scanrelid <= 0) return false; RangeTblEntry *rte = rt_fetch(customscan->scan.scanrelid, rtable); if (rte == NULL || rte->rtekind != RTE_RELATION) return false; if (ts_is_hypercore_am(ts_get_rel_am(rte->relid))) { vectoragg_plan_tam(...); return true; } if (strcmp(customscan->methods->CustomName, \"DecompressChunk\") == 0) { vectoragg_plan_decompress_chunk(...); return true; } return false;`",
+        "subcategory": "空指针/越界访问"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "tsl/src/nodes/vector_agg/plan.c",
+      "line": 224,
+      "title": "is_vector_var 丢失 vector_attrs 空判断与属性号上界保护",
+      "description": "原实现为 `return vqinfo->vector_attrs && vqinfo->vector_attrs[var->varattno];`，并且带 `Assert(var->varattno <= vqinfo->maxattno)` 断言；现在既无空指针判断也无上界校验，同时 VectorQualInfo 的 maxattno 字段被整体删除，数组长度信息不再随结构体传递。DecompressChunk 路径的 vector_attrs 长度是按 decompression_map 推导出的 maxattno+1（plan_decompress_chunk.c:114），一旦聚合 targetlist 中 Var 的属性号超出该长度（例如 Var 指向未出现在 decompression map 中的列），就会发生堆越界读，读到垃圾布尔值后错误地判定该列可否向量化，进而产生错误的向量化执行计划。",
+      "evidence": [
+        "tsl/src/nodes/vector_agg/plan.c:224 — `return vqinfo->vector_attrs[var->varattno];`（diff 删除 `vqinfo->vector_attrs &&` 与 `Assert(var->varattno <= vqinfo->maxattno);`）",
+        "tsl/src/nodes/vector_agg/vector_quals.h:25-35 — VectorQualInfo 中 maxattno 字段及其注释“数组长度为 maxattno + 1”“Max attribute number found in arrays above”被删除",
+        "tsl/src/nodes/vector_agg/plan_decompress_chunk.c:95-115 — 数组按 decompression_map 推导的 maxattno 分配 `palloc0(sizeof(bool) * (maxattno + 1))`",
+        "tsl/src/nodes/vector_agg/plan_tam.c:25-26 — TAM 路径按 hinfo->num_columns + 1 分配，同样无显式长度校验"
+      ],
+      "rule": "MEMORY-SAFETY-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 数组越界读（缺少长度信息与断言）。影响评估：极端计划（Var 属性号大于推导出的 maxattno）下越界读取堆内存，可能得到错误的向量化判定，甚至命中未映射页导致崩溃；同时丢失断言削弱了问题可发现性。",
+        "suggestion": "[重构思路] 若确实要移除 maxattno，应在 VectorQualInfo 中保留数组长度（如 `int natts`）并在 is_vector_var 中校验 `var->varattno > 0 && var->varattno < vqinfo->natts`，或改为断言 + 显式边界检查的组合。代码示例：`if (var->varattno <= 0 || var->varattno >= vqinfo->natts) return false; return vqinfo->vector_attrs[var->varattno];`",
+        "subcategory": "数组越界"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "tsl/src/partialize_finalize.c",
+      "line": 280,
+      "title": "反序列化失败不再回滚内部子事务，硬错误被吞掉后继续重试",
+      "description": "inner_agg_deserialize 的 PG_CATCH 现在只剩 `CurrentMemoryContext = oldcontext; FlushErrorState();`，原先把 deserialize 调用包在 BeginInternalSubTransaction / RollbackAndReleaseCurrentSubTransaction 中并只对 Data Exception、Protocol Violation、Internal Error 三类错误走修复、其余错误 PG_RE_THROW 的逻辑被整体删除。后果是：任何错误（包括 OOM、statement_timeout/query cancel、其他意外错误）都会被当成“旧格式 partial state”处理——先 FlushErrorState 清掉错误，再用 repalloc 扩容同一块 bytea 并再次调用 deserialize。第一次调用已经失败，却没有任何子事务回滚来清理其分配的内存上下文、资源属主、已获取的锁/快照，之后在可能已损坏的状态上继续执行，可能在 continuous aggregate 刷新路径上产生难以定位的崩溃或状态不一致。",
+      "evidence": [
+        "tsl/src/partialize_finalize.c:277-287 — PG_CATCH 内只有 `CurrentMemoryContext = oldcontext; FlushErrorState();` 与重试调用，无错误类别判断",
+        "diff 删除的代码：`const int sqlerrcode = geterrcode(); if (ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_DATA_EXCEPTION && sqlerrcode != ERRCODE_PROTOCOL_VIOLATION && sqlerrcode != ERRCODE_INTERNAL_ERROR) PG_RE_THROW();`",
+        "diff 删除的代码：`BeginInternalSubTransaction(NULL);` / `ReleaseCurrentSubTransaction();` / `RollbackAndReleaseCurrentSubTransaction();` 以及 `ResourceOwner oldowner = CurrentResourceOwner;` 的恢复",
+        "tsl/src/partialize_finalize.c:206-219 — 修复路径使用 `repalloc(serialized_partial, desired_length + VARHDRSZ)` 原地扩容后再 memset"
+      ],
+      "rule": "ERROR-HANDLING-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 捕获所有错误类别并吞掉硬错误，且缺少子事务回滚。影响评估：OOM / 查询取消被伪装成“可修复的旧格式数据”，随后在不干净的状态上重试 deserialize；真实故障被掩盖、诊断困难，最坏情况是进程崩溃或数据损坏。",
+        "suggestion": "[重构思路] 恢复两段保护：(1) 用内部子事务包裹 deserialize 调用，失败时先 Abort 子事务恢复资源属主与内存上下文，再做修复重试；(2) 只对可预期的格式类错误做修复，其他错误（OOM、cancel、内部错误以外的类别）立即 PG_RE_THROW。代码示例：`BeginInternalSubTransaction(NULL); PG_TRY() { deserialized = FunctionCallInvoke(deser_fcinfo); ReleaseCurrentSubTransaction(); MemoryContextSwitchTo(oldcontext); CurrentResourceOwner = oldowner; } PG_CATCH() { if (!is_expected_error(geterrcode())) PG_RE_THROW(); FlushErrorState(); RollbackAndReleaseCurrentSubTransaction(); MemoryContextSwitchTo(oldcontext); CurrentResourceOwner = oldowner; } PG_END_TRY();`",
+        "subcategory": "错误处理与子事务"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/with_clause_parser.c",
+      "line": 169,
+      "title": "with-clause 解析重新吞掉所有错误类别，硬错误被伪装成参数值非法",
+      "description": "parse_arg 的 PG_CATCH 现在对输入函数抛出的任何 ERROR 都执行 FlushErrorState 并统一上报 `invalid value for <ns>.<name> '<value>'`。原先“只处理 Data Exception 与 Syntax Error/Access Rule Violation 两个类别，其余（如资源不足类）直接 PG_RE_THROW”的判断被删除，于是 OOM、query cancel/statement_timeout 等硬错误会被吞掉，并继续在 ErrorContext 中执行 SearchSysCache1（内存分配）构造新的 ERROR。用户看到的是“参数值非法”而非真实原因，超时/取消语义被破坏，也会给问题定位带来误导。",
+      "evidence": [
+        "src/with_clause_parser.c:164-189 — `PG_TRY() { val = OidInputFunctionCall(...); } PG_CATCH() { ... FlushErrorState 等价路径：直接 SearchSysCache1 + ereport(ERROR, ERRCODE_INVALID_PARAMETER_VALUE) }`，无 geterrcode()/ERRCODE_TO_CATEGORY 判断",
+        "diff 删除的代码：`if (ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_DATA_EXCEPTION && ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION) { PG_RE_THROW(); }`",
+        "src/with_clause_parser.c:171 — catch 分支中 `SearchSysCache1(TYPEOID, ...)` 会新分配内存，此时仍处于错误上下文"
+      ],
+      "rule": "ERROR-HANDLING-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 过度宽泛的错误捕获（吞掉硬错误）。影响评估：资源不足/查询取消被转换为“参数值非法”，用户与运维被误导；取消语义失效。对功能正确性影响有限，但对可诊断性与错误语义影响明显。",
+        "suggestion": "[重构思路] 恢复错误类别过滤：仅对可预期的数据/语法类错误转换为参数值非法提示，其余直接重抛；同时在新错误抛出前切回原 MemoryContext。代码示例：`PG_CATCH() { int sqlerrcode = geterrcode(); if (ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_DATA_EXCEPTION && ERRCODE_TO_CATEGORY(sqlerrcode) != ERRCODE_SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION) PG_RE_THROW(); MemoryContextSwitchTo(oldcontext); FlushErrorState(); ... }`",
+        "subcategory": "错误类别过滤"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P1",
+      "category": "安全",
+      "file": "tsl/src/chunk_api.c",
+      "line": 501,
+      "title": "新增 chunk_create_empty_table 缺少权限校验，并可按调用者指定 schema 以 owner 身份建表",
+      "description": "新的 SQL 入口 `_timescaledb_functions.create_chunk_table(hypertable regclass, slices jsonb, schema_name name, table_name name)` 直接映射到 chunk_create_empty_table。与同文件既有的 chunk_create 不同，该函数完全没有调用 check_privileges_for_creating_chunk（即不校验调用者对 hypertable 的 ACL_INSERT），却根据调用者传入的 schema_name 决定执行身份：当 schema_name 等于 `_timescaledb_internal` 时切换为 catalog owner，否则切换为 hypertable owner，并以 SECURITY_LOCAL_USERID_CHANGE 建表。结果是任何能执行该函数的用户都能以他人（含扩展 owner）身份在任意 schema 中创建表名为自己指定的关系，可被用于在内部 schema 中抢占/占用内部对象名或越权写入他人 schema，构成权限提升面。",
+      "evidence": [
+        "tsl/src/chunk_api.c:462-514 — chunk_create_empty_table 全程无 ACL 检查，仅 GETARG 后直接切换用户身份并建表",
+        "tsl/src/chunk_api.c:301-313 与 :360 — 既有 chunk_create 通过 check_privileges_for_creating_chunk(hypertable_relid) 校验 ACL_INSERT，新函数缺少同等校验",
+        "tsl/src/chunk_api.c:487-501 — `if (strcmp(schema_name, INTERNAL_SCHEMA_NAME) == 0) uid = ts_catalog_database_info_get()->owner_uid; ... SetUserIdAndSecContext(uid, sec_ctx | SECURITY_LOCAL_USERID_CHANGE);`",
+        "sql/chunk.sql:52-57 — 对外暴露 `_timescaledb_functions.create_chunk_table(...)`，sql/compat.sql 又提供 `_timescaledb_internal.create_chunk_table` 的 PL/pgSQL 包装（SECURITY INVOKER），两者均未附带额外权限限制",
+        "src/chunk.c:990-1028 — ts_chunk_create_only_table 只做 chunk 冲突检查与加锁，建表时不区分调用者身份"
+      ],
+      "rule": "SECURITY-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 缺少权限校验 + 以高权限身份执行调用者可控的 DDL。影响评估：低权限用户可借 hypertable owner 或扩展 owner 身份在任意 schema（含 `_timescaledb_internal`）创建表，属权限提升/命名空间污染风险；若该函数被授予 PUBLIC 执行权，风险等级更高。",
+        "suggestion": "[重构思路] 在入口处强制校验调用者对 hypertable 的权限（复用 check_privileges_for_creating_chunk 或要求 owner/相应 ACL），并对内部 schema 分支加更严格限制（例如仅当调用者是 hypertable owner 且是内部调用才允许）；同时评估是否应 REVOKE EXECUTE ... FROM PUBLIC。代码示例：`check_privileges_for_creating_chunk(hypertable_relid); if (strcmp(schema_name, INTERNAL_SCHEMA_NAME) == 0 && !has_privs_of_role(GetUserId(), ts_catalog_database_info_get()->owner_uid)) ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg(\"permission denied to create chunk table in internal schema\")));`",
+        "subcategory": "权限提升"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/hypertable.c",
+      "line": 1870,
+      "title": "移除 FOR ALL TABLES 发布校验，隐式发布的表可再次被转换为 hypertable",
+      "description": "发布校验由 `GetRelationPublications(table_relid) != NIL || GetAllTablesPublications() != NIL` 收窄为只判断显式发布，仓库内已无任何 GetAllTablesPublications 调用。于是处于 `FOR ALL TABLES` 发布中的表可以成功转换为 hypertable，重新引入此前修复的问题：隐式发布的表在成为 hypertable 后无法正常 DROP/参与逻辑复制，用户侧表现为“表删不掉”的运维故障。更需注意的是，本 MR 新增的 .unreleased/pr_7911 明确写着 “Don't create hypertable for published tables”，代码行为与发布说明互相矛盾，说明该行改动很可能是回退提交误带入。",
+      "evidence": [
+        "src/hypertable.c:1867-1877 — 注释仍为 “Check that the table is not part of any publication”，但条件只剩 `if (GetRelationPublications(table_relid) != NIL)`",
+        "diff 中被删除的部分：`|| GetAllTablesPublications() != NIL`",
+        "review_find_references(GetAllTablesPublications) 返回 0 处引用，说明隐式发布保护在仓库内已完全不存在",
+        "`.unreleased/pr_7911` 新增内容：“Fixes: #7911 Don't create hypertable for published tables” 与本行改动冲突；同时本 MR 删除了 .unreleased/pr_7928（Don't create hypertable for implicitly published tables）"
+      ],
+      "rule": "REGRESSION-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 回退了已修复的校验逻辑（隐式发布保护丢失）。影响评估：FOR ALL TABLES 发布中的表可再次被 metathesize 为 hypertable，后续 DROP/复制操作异常，且与本次发布说明直接矛盾，容易在版本发布后以数据/运维事故形式暴露。",
+        "suggestion": "[重构思路] 恢复对隐式发布的检查，或把“是否处于任意发布”封装成 helper 统一调用，并保证与发布说明一致；若确有需要放宽，应在代码注释与 CHANGELOG 中说明原因与替代防护。代码示例：`if (GetRelationPublications(table_relid) != NIL || GetAllTablesPublications() != NIL) ereport(ERROR, (errcode(ERRCODE_TS_OPERATION_NOT_SUPPORTED), errmsg(\"cannot create hypertable for table \\\"%s\\\" because it is part of a publication\", get_rel_name(table_relid))));`",
+        "subcategory": "逻辑回退"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/ts_catalog/chunk_column_stats.c",
+      "line": 766,
+      "title": "列统计用 hypertable 关系按 chunk 属性号取类型，映射错位时得到错误列类型",
+      "description": "attno 已通过 ts_map_attno(ht->main_table_relid, chunk->table_id, attno) 映射为 chunk 上的属性号，但紧接着的类型查询却写成 get_atttype(ht->main_table_relid, attno)，即在 hypertable 关系上用 chunk 的属性号取类型。当 hypertable 与 chunk 的属性号不一致（这正是需要 ts_map_attno 的原因）时，会取到错误列的类型或 InvalidOid，随后 ts_chunk_get_minmax 以错误类型解释 min/max 数值，写入错误的 chunk 列统计，进而影响基于列统计的 chunk 跳过/剪枝。",
+      "evidence": [
+        "src/ts_catalog/chunk_column_stats.c:763-766 — 注释“map to the chunk”后 `attno = ts_map_attno(ht->main_table_relid, chunk->table_id, attno);` 紧接着 `col_type = get_atttype(ht->main_table_relid, attno);`",
+        "src/ts_catalog/chunk_column_stats.c:769 — `ts_chunk_get_minmax(chunk->table_id, col_type, attno, \"column range\", minmax)` 直接使用该 col_type 解析 chunk 上的值",
+        "diff 中被改掉的原实现：`col_type = get_atttype(chunk->table_id, attno);`（对应 .unreleased/pr_7941 “Fix column mapping in column stats calculation”，本 MR 删除了该发布说明）"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 关系/属性号不匹配导致类型解析错误。影响评估：列统计计算出错误的 min/max 或直接失败，影响 chunk 级统计与查询剪枝正确性；属回退已修复缺陷。",
+        "suggestion": "[重构思路] 类型查询应与属性号所属关系保持一致，即在 chunk 上取类型；若担心 chunk 属性不存在，先校验 attno 有效再查询。代码示例：`attno = get_attnum(ht->main_table_relid, col_name); attno = ts_map_attno(ht->main_table_relid, chunk->table_id, attno); if (attno <= 0) continue; col_type = get_atttype(chunk->table_id, attno);`",
+        "subcategory": "类型映射错位"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "version.config",
+      "line": 2,
+      "title": "移除 2.19.2 的升级/降级路径，2.19.2 用户可能无法 ALTER EXTENSION UPDATE",
+      "description": "update_from_version 与 downgrade_to_version 由 2.19.2 回退为 2.19.1，同时 sql/CMakeLists.txt 的 MOD_FILES 与 OLD_REV_FILES 删除了 updates/2.19.1--2.19.2.sql 与 2.19.2--2.19.1.sql（这两个文件本身也被删除）。按 sql/CMakeLists.txt 的脚本生成逻辑，最终会产出以 2.19.1 为起点的更新脚本，而不再有任何以 2.19.2 结尾或起始的过渡文件。如果 2.19.2 已经对外发布，停留在 2.19.2 的实例既找不到 2.19.2 → 2.20.0 的升级路径，也无法降级到 2.19.2，升级会被“没有可用更新路径”阻塞；这看起来是回退提交误删了版本发布准备内容。",
+      "evidence": [
+        "version.config:2-3 — `update_from_version = 2.19.1`、`downgrade_to_version = 2.19.1`（diff 前为 2.19.2）",
+        "sql/CMakeLists.txt:42-43 — MOD_FILES 末尾只剩 `updates/2.19.0--2.19.1.sql`，删除了 `updates/2.19.1--2.19.2.sql`",
+        "sql/CMakeLists.txt:80-83 — OLD_REV_FILES 删除了 `2.19.2--2.19.1.sql`",
+        "diff 中 sql/updates/2.19.1--2.19.2.sql 与 sql/updates/2.19.2--2.19.1.sql 均被删除",
+        "sql/CMakeLists.txt:234-298 — 更新脚本按 UPDATE_FROM_VERSION 与 MOD_FILES 链式拼接生成，缺失 2.19.2 过渡文件即意味着不存在以 2.19.2 为起点的脚本"
+      ],
+      "rule": "UPGRADE-PATH-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 版本升级/降级路径缺失（发布元数据被回退）。影响评估：若 2.19.2 已发布，该版本用户无法升级到 2.20，也无法从 2.20 降级到 2.19.2，属发布阻断级问题；若 2.19.2 未发布则影响有限。需与发布负责人确认 2.19.2 的发布状态。",
+        "suggestion": "[重构思路] 明确本次 MR 的版本意图：若 2.19.2 已发布，恢复 version.config 的 2.19.2 以及两个过渡脚本（并保留其在 MOD_FILES/OLD_REV_FILES 中的条目）；若尚未发布，请在 MR 描述与 CHANGELOG 中显式说明“回收 2.19.2 发布准备”，并同步调整所有引用 2.19.2 的文档/测试。代码示例：`update_from_version = 2.19.2` / `downgrade_to_version = 2.19.2` 且 `updates/2.19.1--2.19.2.sql`、`2.19.2--2.19.1.sql` 同时存在。",
+        "subcategory": "升级兼容性"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "NOTICE",
+      "line": 3,
+      "title": "NOTICE 版权年份被回退（2025→2024、2025→2022）",
+      "description": "Timescale 版权行由 2017-2025 回退为 2017-2024，PostgreSQL 部分由 1996-2025 回退为 1996-2022。本 MR 的功能性改动（回退错误处理、chunk API、cagg 策略选项等）与版权年份无关，这看起来是回退/合并过程顺带把旧版 NOTICE 内容带了回来。该文件会随发布产物分发，年份回退会与仓库其他文件中的版权声明（多个源文件头部引用 NOTICE）以及实际发布年份不一致，属合规文本回退。",
+      "evidence": [
+        "NOTICE:3 — `Copyright (c) 2017-2024  Timescale, Inc. All Rights Reserved.`（diff 前为 2017-2025）",
+        "NOTICE:35 — `Portions Copyright (c) 1996-2022, The PostgreSQL Global Development Group`（diff 前为 1996-2025）",
+        "大量源文件头部依赖该声明，如 sql/chunk.sql:2 “Please see the included NOTICE for copyright information”",
+        "本 MR 的功能性改动（错误处理、chunk_api、policy_api 等）与版权年份无关联，说明该变更非有意"
+      ],
+      "rule": "COMPLIANCE-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 合规/法律声明文本被意外回退。影响评估：发布包中的版权年份与实际不符，可能与公司合规审查、第三方声明一致性要求冲突；不影响运行时代码，但属于发布前必须修正的内容。",
+        "suggestion": "[重构思路] 将 NOTICE 恢复为当前的年份区间（2017-2025 / 1996-2025），并把该文件从本次回退范围中排除；建议在 CI 中增加对 NOTICE / LICENSE 等合规文件的变更提醒，避免被无关回退覆盖。",
+        "subcategory": "合规文件回退"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "tsl/src/chunk_api.c",
+      "line": 394,
+      "title": "新增大量未被引用的宏、枚举与重复头文件包含",
+      "description": "本 MR 在 tsl/src/chunk_api.c 顶部与文件末尾新增了 FLOAT4/INT4/OID/CSTRING 的 TYPELEN/TYPEBYVAL/TYPEALIGN 宏、CREATE_CHUNK_FUNCTION_NAME/CREATE_CHUNK_NUM_ARGS/CHUNK_CREATE_STMT、ESTIMATE_JSON_STR_SIZE、STRINGS_PER_TYPE_OID/STRINGS_PER_OP_OID、Anum_chunk_relstats/Anum_chunk_colstats/StringArrayTypeIdx/OpArrayTypeIdx 以及 LargSubarrayForOpArray/RargSubarrayForOpArray，但符号检索显示它们各自只有定义处一处引用（无任何使用点），属死代码；同时 chunk_api.h 出现了 `#include <chunk.h>` 与新增的 `#include \"chunk.h\"` 重复包含。这些残留会误导后续维护者以为存在关联逻辑，并增加编译期噪声。",
+      "evidence": [
+        "tsl/src/chunk_api.c:394 — `#define CHUNK_CREATE_STMT ...`；review_find_references(CHUNK_CREATE_STMT) 仅返回该定义处 1 条",
+        "tsl/src/chunk_api.c:399 — `enum Anum_chunk_relstats`；review_find_references(Anum_chunk_relstats) 仅返回声明处 1 条",
+        "tsl/src/chunk_api.c:46 — `#define FLOAT4_TYPELEN sizeof(float4)`；review_find_references(FLOAT4_TYPELEN) 仅返回定义处 1 条，同理 ESTIMATE_JSON_STR_SIZE、STRINGS_PER_*、Anum_chunk_colstats 等均无使用",
+        "tsl/src/chunk_api.h:10-11 — 同时存在 `#include \"chunk.h\"`（新增）与 `#include <chunk.h>`"
+      ],
+      "rule": "MAINTAINABILITY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 死代码/重复包含。影响评估：不影响运行时行为，但增加阅读与维护成本，可能是回退/复制粘贴残留，掩盖该文件真正的依赖关系。",
+        "suggestion": "[重构思路] 只保留 chunk_create_empty_table 真正需要的声明，删除所有未使用的宏与枚举；chunk_api.h 去掉重复的 `#include \"chunk.h\"`。可考虑在 CI 中用 clang-tidy（本次 MR 恰好把 clang-tidy 变成可选）或编译器 -Wunused 检查辅助发现。代码示例：删除 `#define CHUNK_CREATE_STMT ...` 至 `#define RargSubarrayForOpArray(...)` 之间的未使用定义，`chunk_api.h` 仅保留一处 chunk.h 包含。",
+        "subcategory": "死代码"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "安全",
+      "file": "tsl/src/compression/compression_storage.c",
+      "line": 142,
+      "title": "压缩表创建提前恢复用户身份，后续 ALTER TABLE 改以调用者身份执行",
+      "description": "ts_catalog_restore_user(&sec_ctx) 由函数末尾前移到 NewRelationCreateToastTable 之后，导致 modify_compressed_toast_table_storage、set_statistics_on_compressed_chunk、set_toast_tuple_target_on_chunk 这三处对压缩表的 DDL（AT_SetRelOptions / 统计目标设置）在恢复为调用者身份后执行，而压缩表的 owner 是 hypertable 的 owner。若触发压缩的会话不是 hypertable owner（例如由其他具备 INSERT 权限的用户触发 chunk 压缩，或作业以不同角色运行），这些 ALTER TABLE 会因表所有权不足而报 permission denied，使压缩在原本可成功的场景下失败。若该重排是为修复别的问题（例如 reloptions 记录归属），需要显式说明并补充非 owner 场景的验证。",
+      "evidence": [
+        "tsl/src/compression/compression_storage.c:130-148 — `ts_catalog_database_info_become_owner(...)` 后定义关系，随后 `ts_catalog_restore_user(&sec_ctx);` 提前到 142 行，再执行 modify_compressed_toast_table_storage / set_statistics_on_compressed_chunk / set_toast_tuple_target_on_chunk",
+        "tsl/src/compression/compression_storage.c:153-170 — set_toast_tuple_target_on_chunk 使用 AlterTableInternal 对压缩表执行 ALTER TABLE（受表所有权约束）",
+        "tsl/src/compression/compression_storage.c:172-175 — set_statistics_on_compressed_chunk 以 ShareUpdateExclusiveLock 打开压缩表并修改统计参数",
+        "diff 前顺序：上述三处调用在 ts_catalog_restore_user(&sec_ctx) 之前，即处于 catalog owner 身份下执行"
+      ],
+      "rule": "SECURITY-002",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 安全上下文（执行身份）变更导致 DDL 权限语义变化。影响评估：非 hypertable owner 触发压缩时可能 permission denied，压缩功能对部分用户回归；反之若重排是为了让 reloptions 归属正确，也需要确认 owner 场景无副作用。属需作者确认意图的边界问题。",
+        "suggestion": "[重构思路] 明确这三处 DDL 应以谁的身份执行：若与既有行为一致，应把 ts_catalog_restore_user 移回函数末尾（或在索引创建前恢复）；若确实需要以调用者身份执行，建议在调用点显式记录原因注释，并补充“非 owner 用户触发压缩”的回归用例。代码示例：`ts_catalog_restore_user(&sec_ctx); /* 提前恢复：reloptions 需记录为调用者 */` 或恢复为 `... set_toast_tuple_target_on_chunk(...); ts_catalog_restore_user(&sec_ctx);`",
+        "subcategory": "执行身份切换"
+      }
+    }
+  ]
+}

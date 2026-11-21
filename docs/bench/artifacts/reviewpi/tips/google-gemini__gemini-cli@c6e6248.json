@@ -1,0 +1,230 @@
+[
+  {
+    "filePath": "packages/core/src/core/client.ts",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "model: this.config.getModel(),",
+        "review": "[缺陷类型] 模型名解析口径不一致导致 count_tokens 调用失败。影响评估：auto/fallback 用户每次上下文压缩都在最后一步失败，压缩永不生效，长会话最终触顶上下文上限。",
+        "suggestion": "[重构思路] 复用文件开头同一套解析逻辑（auto → 默认模型、fallback → flash），最好抽成私有方法供两处调用。代码示例：`const countModel = getEffectiveModel(this.config.isInFallbackMode(), configModel === DEFAULT_GEMINI_MODEL_AUTO ? DEFAULT_GEMINI_MODEL : configModel); await this.getContentGeneratorOrFail().countTokens({ model: countModel, contents: chat.getHistory() });`",
+        "category": "可靠性",
+        "subcategory": "模型解析与 token 统计",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 762,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/tools/edit.ts",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "return false;",
+        "review": "[缺陷类型] 取消信号被吞掉，导致本应中止的写文件操作继续执行。影响评估：数据完整性风险——用户明确取消后文件仍被修改；同时真实错误也被降级为「无需确认」。",
+        "suggestion": "[重构思路] 恢复取消信号向上传播：abort 时 rethrow，让调度器把该调用标为 cancelled；其它错误继续返回 false/错误结果。代码示例：`catch (error) { if (abortSignal.aborted) { throw error; } const errorMsg = error instanceof Error ? error.message : String(error); console.log(`Error preparing edit: ${errorMsg}`); return false; }`",
+        "category": "可靠性",
+        "subcategory": "取消传播",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 256,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/core/coreToolScheduler.ts",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "this.setStatusInternal(",
+        "review": "[缺陷类型] 取消状态被错误归类为异常错误。影响评估：取消后 UI 显示失败，模型收到错误 tool response 可能重试同一工具，产生额外的无效工具调用。",
+        "suggestion": "[重构思路] 在 catch 中优先判定 abort，命中则置 cancelled 并返回，否则再走 error 分支。代码示例：`catch (error) { if (signal.aborted) { this.setStatusInternal(callId, 'cancelled', 'Tool call cancelled by user.'); return; } this.setStatusInternal(callId, 'error', createErrorResponse(...)); }`",
+        "category": "可靠性",
+        "subcategory": "状态机一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 802,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/tools/mcp-tool.ts",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "const rawResponseParts = await this.mcpTool.callTool(functionCalls);",
+        "review": "[缺陷类型] 可取消的异步操作失去取消能力。影响评估：取消后 CLI 仍显示在等待，无法释放 MCP 连接与交互控制权。",
+        "suggestion": "[重构思路] 保留 signal 参数与竞速逻辑（可用 Promise.race 或原生 AbortSignal 组合），abort 时以 name='AbortError' 结束。代码示例：`async execute(signal: AbortSignal): Promise<ToolResult> { const parts = await raceWithAbort(this.mcpTool.callTool(functionCalls), signal); ... }`",
+        "category": "可靠性",
+        "subcategory": "异步取消",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 142,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/core/geminiChat.ts",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "if (error.message.includes('429')) return true;",
+        "review": "[缺陷类型] 错误分类从结构化字段退化为脆弱的字符串匹配。影响评估：永久错误被重试导致响应变慢、白耗配额，用户看到的失败时间被放大到几十秒。",
+        "suggestion": "[重构思路] 恢复基于状态码判定并保留 400 短路，字符串匹配仅作无 status 时兜底；复用 defaultShouldRetry 而非重复实现。代码示例：`shouldRetry: (error) => { const status = (error as HttpError)?.status; if (status === 400) return false; if (isSchemaDepthError(getErrorMessage(error))) return false; return defaultShouldRetry(error); }`",
+        "category": "可靠性",
+        "subcategory": "重试策略",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 379,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/utils/retry.ts",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "...options,",
+        "review": "[缺陷类型] 公共工具函数缺少入参防御，失败模式从「明确报错」变成「静默返回 undefined」。影响评估：调用方拿到 undefined 后出现难以定位的空值异常；负/零 maxAttempts 不再被拦截。",
+        "suggestion": "[重构思路] 合并后显式兜底与校验。代码示例：`const opts = { ...DEFAULT_RETRY_OPTIONS, ...Object.fromEntries(Object.entries(options ?? {}).filter(([, v]) => v != null)) }; if (!Number.isInteger(opts.maxAttempts) || opts.maxAttempts <= 0) { throw new Error('maxAttempts must be a positive integer.'); }`",
+        "category": "可靠性",
+        "subcategory": "入参校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 86,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/utils/schemaValidator.ts",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "const ajValidator = new AjvClass();",
+        "review": "[缺陷类型] 校验器配置变更导致第三方 schema 兼容性回退。影响评估：含非标准关键字/自定义 format 的 MCP 工具与内置工具会在参数校验阶段直接报错，且错误信息对模型不可读。",
+        "suggestion": "[重构思路] 恢复 strictSchema: false（保留原注释说明理由），并为未知 format 注册 no-op 以提升兼容性。代码示例：`const ajValidator = new AjvClass({ strictSchema: false });`",
+        "category": "可靠性",
+        "subcategory": "校验器兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/mcp/oauth-provider.ts",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "const authServerMetadataUrl = new URL(",
+        "review": "[缺陷类型] OAuth 动态客户端注册的端点发现能力退化 + 配置项被忽略。影响评估：非根路径 issuer、非标准注册端点的 MCP 服务器无法完成授权，用户只看到笼统的认证失败。",
+        "suggestion": "[重构思路] 保留 registrationUrl 作为显式覆盖，未提供时复用多端点发现逻辑。代码示例：`const meta = config.registrationUrl ? { registration_endpoint: config.registrationUrl } : await OAuthUtils.discoverAuthorizationServerMetadata(config.authorizationUrl!);`",
+        "category": "安全",
+        "subcategory": "OAuth 发现流程",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 681,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/utils/llm-edit-fixer.ts",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "model: DEFAULT_GEMINI_FLASH_MODEL,",
+        "review": "[缺陷类型] 交互关键路径上的重试次数被意外放大。影响评估：限流或服务端抖动时编辑确认最坏被推迟数十秒，并放大配额消耗。",
+        "suggestion": "[重构思路] 保留按用途区分重试预算的能力：恢复 GenerateJsonOptions.maxAttempts，或让 generateJson 默认使用更小的辅助任务重试预算。代码示例：`const result = await retryWithBackoff(apiCall, { maxAttempts: options.maxAttempts ?? DEFAULT_UTILITY_MAX_ATTEMPTS });` 并在 llm-edit-fixer 中显式传 1。",
+        "category": "性能",
+        "subcategory": "重试预算",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 141,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/routing/strategies/compositeStrategy.ts",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "latencyMs: decision.metadata.latencyMs || totalLatency,",
+        "review": "[缺陷类型] 数值精度约定回退。影响评估：路由耗时指标出现小数，与历史数据口径不一致，跨版本对比可能产生虚假波动；不影响功能正确性。",
+        "suggestion": "[重构思路] 保留取整与意图注释。代码示例：`const latency = decision.metadata.latencyMs || totalLatency; ... latencyMs: Math.round(latency), // 保持毫秒整数，便于遥测聚合`",
+        "category": "可读性",
+        "subcategory": "数值精度约定",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 105,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/core/turn.ts",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "export type ThoughtSummary = {",
+        "review": "[缺陷类型] 公共工具函数被移除且类型定义重复。影响评估：依赖 parseThought 的外部代码编译失败；解析规则分散后容易行为漂移。",
+        "suggestion": "[重构思路] 保留 utils/thoughtUtils.ts 承载解析实现，turn.ts 仅调用；删除 a2a-server 的重复类型并统一从 core 引用。代码示例：`export { parseThought, type ThoughtSummary } from './utils/thoughtUtils.js'; // turn.ts: const thought = parseThought(rawText);`",
+        "category": "可维护",
+        "subcategory": "公共 API 与类型去重",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 103,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/package.json",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "\"version\": \"0.7.0-nightly.20250918.2722473a\",",
+        "review": "[缺陷类型] 版本号回退 + 回滚检测能力缺失。影响评估：nightly/预发布流水线可能因版本冲突直接失败，或产出与已发布版本号重复的制品，影响发布可重复性。",
+        "suggestion": "[重构思路] 若回退仅为分支快照，请勿提交版本号变更；若必须回退，保留发布前的版本冲突与回滚基线检测。代码示例：`if (semver.lte(newVersion, highestExistingVersion)) { throw new Error(`Version conflict: ${newVersion} already exists`); }`",
+        "category": "可移植",
+        "subcategory": "发布版本管理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 3,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

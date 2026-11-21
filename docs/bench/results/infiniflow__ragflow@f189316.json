@@ -1,0 +1,142 @@
+{
+  "instance_id": "infiniflow__ragflow@f189316",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "8362ab405c35d260dd2328dc207aefcf30778f66",
+  "head_commit": "f189316eae1c199a5891f7a8bc47d53bb1b5c818",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 174.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 12,
+  "review_output": [
+    {
+      "file": "rag/svr/task_executor.py",
+      "line": 672,
+      "summary": "删除 recover_pending_tasks 与信号处理后，宕机 worker 的 pending 消息将永久滞留",
+      "failure_scenario": "本次改动移除了 recover_pending_tasks 线程、stop_event 以及 SIGINT/SIGTERM 的 signal_handler，主循环改为 `while True`。改动前：另一个 worker 会通过 RedisDistributedLock 扫描各队列的 xpending_range，把属于已不在 \"TASKEXE\" 集合中的 consumer 的 pending 消息 requeue，从而在进程被强杀/崩溃后重新投递；同时 signal_handler 保证收到 SIGTERM 时能有序退出。改动后 handle_task 依赖 collect() 取消息、结束时 redis_msg.ack()（rag/svr/task_executor.py:618），一旦进程在 ack 前被杀（发布重启、OOM、节点驱逐都是常态），该消息只会停留在 PEL 中，不再有任何代码把它重新入队；由于 report_status 也不再清理僵尸 consumer（见 F002），队列会长期表现为 pending>0、lag=0 的\"卡死\"状态，用户侧表现为文档解析任务永远停留在进行中。注意 rag/utils/redis_conn.py:282 附近的 get_pending_msg/requeue_msg 也一并被删除且全仓已无其它引用（find_references 返回 0 条），说明该能力是净删除而非迁移。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "RELIABILITY-001"
+    },
+    {
+      "file": "rag/svr/task_executor.py",
+      "line": 623,
+      "summary": "TASKEXE 集合只增不减，僵尸 consumer 与心跳数据永久残留",
+      "failure_scenario": "report_status 仍执行 `REDIS_CONN.sadd(\"TASKEXE\", CONSUMER_NAME)` 把自身注册进消费者集合，但负责回收的代码被整体删除：改动前在持有 `clean_task_executor` 分布式锁时，会遍历 TASKEXE，用 zcount(consumer, now-120, now+10) 判断心跳是否过期，并 `srem` + `delete(consumer_name)`。改动后既没有 srem 也没有 delete（`RedisDB.delete` 方法本身也被删除，rag/utils/redis_conn.py 中原 L301 的 delete 已不存在），而每个 consumer 的心跳 zset（`zadd(CONSUMER_NAME, heartbeat, ...)`）在其进程消失后不会再被清理。结果是：Redis 中 TASKEXE 集合与每 worker 的心跳 zset 随重启次数单调增长；任何基于 TASKEXE 判断\"哪些 worker 存活\"的消费方（包括若将来恢复 F001 的恢复逻辑）都会看到幽灵 consumer，造成状态展示错误与内存泄漏。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-002"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 580,
+      "summary": "remove 为字符串时未从 newValue 删除 \"remove\" 键，Infinity update 会带上不存在的列",
+      "failure_scenario": "在 InfinityConnection.update 中，`remove` 的字符串分支只做了 `ty, de = clmns[v]` 并写回 `newValue[v] = de`，但没有删除 `newValue[\"remove\"]`；只有 dict 分支在 L584 执行了 `del newValue[k]`。改动前的代码是 `del newValue[k]` 之后再按需写回 `newValue[v] = 0`，因此不会把 \"remove\" 作为列名传给存储层。改动后 L609 的 `table_instance.update(filter, newValue)` 会携带 `{\"remove\": \"pagerank_fea\", \"pagerank_fea\": <default>}`，即向不存在名为 remove 的列写入数据，Infinity 侧会报列不存在/更新失败，进而让调用方 `api/apps/kb_app.py:122`（用户把 pagerank 改回 0 时执行 `update({\"exists\": PAGERANK_FLD}, {\"remove\": PAGERANK_FLD}, ...)`）抛异常、接口 500，且 pagerank 无法归零（检索排序权重残留）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 72,
+      "summary": "keyword 字段条件由 IN 改为 filter_fulltext，delete/update 的过滤精确性下降",
+      "failure_scenario": "equivalent_condition_to_str 对 `field_keyword(k)` 为真的字段（source_id、tag_kwd、entity_kwd、from_entity_kwd、to_entity_kwd 等）不再生成 `k IN ('a','b')`，而生成 `filter_fulltext('k','a') or filter_fulltext('k','b')`。filter_fulltext 面向全文索引，其匹配基于分词/子串而非等值，因此用于过滤时可能命中包含该 token 的其它取值（例如标签 \"ai\" 命中的 \"ai-2024\"，或实体名包含相同词的情况）。该函数同时为 update 与 delete 生成 filter：graphrag/utils.py:436 删除 removed_nodes（`{\"entity_kwd\": sorted(change.removed_nodes)}`）、:441 删除 edges（from/to_entity_kwd）、api/apps/kb_app.py:262 先按 `{\"tag_kwd\": t, \"kb_id\": [kb_id]}` 过滤再移除标签、api/db/services/document_service.py:107 按 `{\"remove\": {\"source_id\": doc.id}}` 维护反向索引。一旦过滤条件放宽，删除/更新会作用到超出目标的文档上，属于数据一致性风险。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONSISTENCY-001"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 84,
+      "summary": "keyword 标量值拼入 filter_fulltext 时未做单引号转义",
+      "failure_scenario": "list 分支对每个元素执行了 `item = item.replace(\"'\",\"''\")`（L76-77）再拼入 SQL 片段，但标量分支直接 `cond.append(f\"filter_fulltext('{k}', '{v}')\")`，没有对 v 做同样的转义，也没有做类型检查。当条件值来自用户输入（例如标签名、实体名，见 api/apps/kb_app.py:262 的 `tag_kwd` 过滤）且包含单引号时，会破坏 filter 字符串结构：轻则 Infinity 解析失败返回错误，重则闭合引号后注入额外条件，使 delete/update 的过滤范围被扩大。与 list 分支的处理不一致，说明是遗漏而非有意设计。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 576,
+      "summary": "remove 分支直接下标访问 clmns，列缺失时抛 KeyError",
+      "failure_scenario": "update 新增的 `ty, de = clmns[v]` 假设 newValue[\"remove\"] 指定的列一定存在于表结构快照中。但 clmns 只在 `if table_instance:` 为真时填充（L550-553，代码本身承认 table_instance 可能为空），且 Infinity 表结构由首次插入的文档决定，历史知识库表可能没有 pagerank_fea 等后加列；一旦列名缺失（或大小写不一致），`clmns[v]` 会抛 KeyError，异常直接冒泡到 api/apps/kb_app.py:122 的调用点，接口 500 且 kb 更新事务后续步骤被跳过。改动前该路径是 `if v in [PAGERANK_FLD]: newValue[v] = 0`，不依赖表结构，不存在此异常面。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 595,
+      "summary": "数组元素移除逻辑未处理旧值为 None 或非列表的情况",
+      "failure_scenario": "removeValue 分支先用 `getFields(row_to_opt, col_to_remove)` 取旧值，再执行 `if remove_v in old_v[k]: new_v = old_v[k].copy()`。但 InfinityConnection.getFields 对未在返回 DataFrame 中出现的列会显式填 None（L676-677 `for column in none_columns: res2[column] = None`），而 keyword 列的解析依赖 `v.split(\"###\")`（L662），若列为空值/非字符串同样会异常。因此当目标列的旧值缺失时，`remove_v in None` 会抛 TypeError，使 rm_tags / rename_tag 类接口 500；即使命中，`old_v[k].copy()` 也隐含“一定是 list”的假设，缺少防御。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "rag/utils/s3_conn.py",
+      "line": 58,
+      "summary": "未配置 prefix_path 时对象键改为 bucket/fnm，升级后既有文件读取失败",
+      "failure_scenario": "use_prefix_path 装饰器新增 else 分支，把对象键从 `fnm` 改为 `{bucket}/{fnm}`。该装饰器同时作用于 put/rm/get/obj_exist/get_presigned_url（s3_conn.py:118/135/143/157/169），因此对既有部署（S3 配置中未设置 prefix_path、直接使用默认 bucket 的常见场景）而言：升级前已上传的对象仍位于 `fnm`，升级后所有读取、删除、预签名 URL 都去取 `bucket/fnm`，get/obj_exist 会得到 404，表现为历史文档无法预览/下载、解析任务重新读取源文件失败；而 put 会写入新路径，rm 删除的也是新路径，旧对象成为永远无法回收的孤儿数据。这属于无迁移脚本的存储布局变更，破坏向后兼容。此外同文件 health() 仍旧只拼 prefix_path（L104 `fnm = f\"{self.prefix_path}/{fnm}\" if self.prefix_path else fnm`），与新的键规则不一致，健康检查写入的探测对象和真实业务对象不在同一命名空间。",
+      "severity": "P1",
+      "category": "可移植",
+      "confidence": 0.7,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 426,
+      "summary": "get_graph 在图谱文档不存在时改为全量 rebuild，放大每次调用开销",
+      "failure_scenario": "改动前 `if res.total == 0: return None`，即没有图谱文档时直接返回；改动后改为 `if not res.total == 0:` 包裹解析，total 为 0 时直接落到 `rebuild_graph(tenant_id, kb_id)`。rebuild_graph 会以 bs=256 分页扫描两个循环（`range(0, 1024*bs, bs)`，即最多 2×262144 条 entity/relation 记录）重建整图。get_graph 的唯一调用方是 graphrag/general/index.py:207 的 merge_subgraph，也就是说每次对尚无图谱的知识库执行图谱合并，都会先做一次全量扫描后才继续，且 rebuild 结果不会被持久化（set_graph 才写回），下一次调用会重复全量扫描。对大知识库这是显著的延迟与 doc store 压力，并且与\"无图谱就快速返回\"的原始意图相反。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.58,
+      "rule": "PERFORMANCE-001"
+    },
+    {
+      "file": "pyproject.toml",
+      "line": 126,
+      "summary": "移除 mcp 依赖但未同步 uv.lock，镜像构建的锁文件校验可能失败",
+      "failure_scenario": "本次从 pyproject.toml 的 dependencies 中删掉了 `mcp>=1.6.0`，Dockerfile 中仍 `COPY pyproject.toml uv.lock ./` 并使用锁文件安装依赖，但 diff 中没有 uv.lock 的相应变更。uv 会校验 lock 与 pyproject 的一致性，若构建使用 `uv sync --frozen`/`--locked` 语义则在依赖集合变化后直接失败；即便不失败，锁文件里残留的 mcp 及其传递依赖仍会被安装，本次\"彻底移除 MCP\"的目标（Dockerfile 不再 COPY mcp 目录、compose 移除端口、入口脚本移除参数）就没有真正落到运行时依赖层面。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAIN-001"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 568,
+      "summary": "以注释掉的 getTotal 调用替代判空，并用 assert 做数据校验",
+      "failure_scenario": "rebuild_graph 的两段循环把原来的 `tot = settings.docStoreConn.getTotal(es_res)` 注释成 `# tot = ...` 后改用 `len(es_res) == 0` 提前跳出，注释代码直接留在实现里，后续维护者难以判断是否有意为之（尤其是 getTotal 在 Infinity 后端优于 len，因为它能返回总数而不依赖返回行数）。同时循环内使用 `assert d[\"knowledge_graph_kwd\"] == \"entity\" / \"relation\"` 校验存储层返回，assert 在 `python -O` 下会被移除，且其异常路径会让整个 rebuild 失败而不是跳过脏数据。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAIN-002"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 45,
+      "summary": "模块级 field_keyword 函数体缩进 8 空格，与文件风格不一致",
+      "failure_scenario": "field_keyword 从类方法提升为模块级函数时，函数体沿用了方法内的 8 空格缩进（注释与 if 语句均缩进 8 格），与文件中其它顶层函数（如 equivalent_condition_to_str 的 4 空格）不一致。Python 语法上合法，但会误导读者以为存在嵌套层级，也会触发布局类 lint 告警；同时该函数被 equivalent_condition_to_str、insert、update、getFields 多处调用，是核心判定逻辑，值得同时在函数上方补充为什么排除 docnm_kwd/knowledge_graph_kwd 的说明。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.75,
+      "rule": "STYLE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\infiniflow__ragflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\infiniflow__ragflow@f189316.diff\n  caseId              infiniflow__ragflow@f189316\n  --issue             (未传)\n  --taskId            infiniflow__ragflow@f189316\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 2 个文件 / 15834 字符（lockfile=1, exclude=1），明细见审计 mrFilter\n✓ 完成 · 耗时 165.6s · 模型调用 12 次 · token 输入 54,002（未命中） · 输出 23,594 · 缓存命中 292,864（84.4%） · 工具 28 次（主会话 28 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0150\n[time] 阶段耗时 | 总墙钟 166.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.5s (0.3%)\n[time] 阶段 | 六阶段审计 165.5s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 7.6s (4.6%) | P2 4.7s (2.9%) | P3 6.8s (4.1%) | P4 62.0s (37.5%) | P5 72.2s (43.7%) | P6 12.1s (7.3%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 54,002（未命中） | 输出 23,594 | 缓存命中 292,864（84.4%） | $0.0150\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\infiniflow__ragflow@f189316\\audit\\20261115_014037_183.json",
+  "token_usage": {
+    "input_tokens": 54002,
+    "output_tokens": 23594,
+    "cache_read_input_tokens": 292864
+  }
+}

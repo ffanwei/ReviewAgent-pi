@@ -1,0 +1,357 @@
+[
+  {
+    "filePath": ".github/workflows/compiler_typescript.yml",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if: runner.os != 'Linux' && matrix.workspace_name != 'react-forgive'",
+        "review": "[缺陷类型] CI 条件互斥导致测试步骤永不执行（逻辑死区）。影响评估：除 react-forgive 外的所有 compiler workspace 单测在 CI 中完全失效，tsup→esbuild 构建替换、HIR/推断逻辑删改等变更失去自动化验证，回归只能在本地暴露。",
+        "suggestion": "[重构思路] 让第二步覆盖所有非 react-forgive 的 workspace（Linux 上同样需要跑），或改为在第一步之外使用「非（Linux 且 forgive）」的否定条件。代码示例：\n```yaml\n      - run: xvfb-run -a yarn workspace ${{ matrix.workspace_name }} test\n        if: runner.os == 'Linux' && matrix.workspace_name == 'react-forgive'\n      - run: yarn workspace ${{ matrix.workspace_name }} test\n        if: matrix.workspace_name != 'react-forgive'\n```\n若确实只想在非 Linux 上跑普通分支，则 test job 需要引入 OS matrix（如 `runs-on: ${{ matrix.os }}`），否则该步骤无意义、应直接删除以免误导。",
+        "category": "可测试性",
+        "subcategory": "CI 测试覆盖",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 99,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "compiler/packages/babel-plugin-react-compiler/src/Entrypoint/Reanimated.ts",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "return !!require.resolve(name);",
+        "review": "[缺陷类型] 环境能力探测缺少运行时守卫，异常路径由「安全降级」变为「向上抛出」。影响评估：在非 CJS 运行时（ESM/浏览器/某些打包器环境）调用 `pipelineUsesReanimatedPlugin` 时插件直接抛错，整份文件编译中断。",
+        "suggestion": "[重构思路] 恢复能力守卫，并把「require 不可用」与「模块不存在」区分开来；也可用 try/catch 包裹并显式识别 ReferenceError/TypeError。代码示例：\n```ts\nfunction hasModule(name: string): boolean {\n  if (typeof require === 'undefined' || typeof require.resolve !== 'function') {\n    return false;\n  }\n  try {\n    return !!require.resolve(name);\n  } catch (error: any) {\n    if (error?.code === 'MODULE_NOT_FOUND' && error.message.indexOf(name) !== -1) {\n      return false;\n    }\n    return false;\n  }\n}\n```\n并补充一个「无 require 环境」的单测覆盖降级路径。",
+        "category": "可靠性",
+        "subcategory": "运行时环境兼容",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "compiler/packages/babel-plugin-react-compiler/src/HIR/Environment.ts",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "numRequiredArgs: z.number(),",
+        "review": "[缺陷类型] 配置校验放宽未同步下游防御，出现不可达假设。影响评估：非法（或被误写为 0）的配置不会在解析期报 InvalidConfig，而是在编译任意匹配调用时抛 TypeError，报错信息与定位都很差，且难以判断是配置问题。",
+        "suggestion": "[重构思路] 恢复上界校验（配置错误应在 parse 阶段以 InvalidConfig 报出），同时在下游对 `args.length > 0` 做显式保护。代码示例：\n```ts\nnumRequiredArgs: z.number().min(1, 'numRequiredArgs must be > 0'),\n// 下游：\n} else if (\n  value.kind === 'CallExpression' &&\n  value.args.length > 0 &&\n  autodepFnLoads.get(value.callee.identifier.id) === value.args.length &&\n  value.args[0].kind === 'Identifier'\n) {\n```",
+        "category": "可靠性",
+        "subcategory": "配置校验一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 288,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "compiler/packages/babel-plugin-react-compiler/src/Inference/InferReferenceEffects.ts",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "effect: {kind: Effect.Capture, reason: ValueReason.Other},",
+        "review": "[缺陷类型] effect 推断精度回退（可变迭代器展开被误建模为不可变别名）。影响评估：`[...mutableIterator]` 之类写法的可变性范围不再被扩展到展开点，可能产生过度记忆化或错误的 frozen 假设；同时会让依赖 `ConditionallyMutate` 的既有 fixtures 期望失效。",
+        "suggestion": "[重构思路] 保留 ArrayExpression 的通用 continuation，但在 compute 操作数 effect 时对 Spread 元素做类型判别；或显式在 ArrayExpression 分支内先处理 Spread、再对剩余元素走 Capture。代码示例：\n```ts\ncase 'ArrayExpression': {\n  // spread 的可变迭代器必须按 ConditionallyMutate 建模\n  for (const element of instrValue.elements) {\n    if (element.kind === 'Spread') {\n      state.referenceAndRecordEffects(\n        freezeActions,\n        element.place,\n        isArrayType(element.place) ? Effect.Capture : Effect.ConditionallyMutate,\n        ValueReason.Other,\n      );\n    }\n  }\n  // 其余元素仍走统一的 Capture continuation\n  continuation = {...};\n}\n```",
+        "category": "可靠性",
+        "subcategory": "effect 推断精度",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 878,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "compiler/packages/babel-plugin-react-compiler/src/Entrypoint/Program.ts",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "if (compileResult.kind === 'error' && environment.enableFire) {",
+        "review": "[缺陷类型] 特性开关与兜底校验同时缺失，失败路径从「显式报错」变为「静默无操作」。影响评估：启用 inferEffectDependencies 的项目在遇到不支持的调用形式时无法察觉依赖未被注入，排查成本高；且无法再通过重试路径拿到部分转换结果。",
+        "suggestion": "[重构思路] 若确定要下线该能力，应同时下线/废弃 `inferEffectDependencies` 配置（在 `parsePluginOptions` 中对非 null 值抛 InvalidConfig）；若保留，需要恢复重试条件与未转换引用校验。代码示例：\n```ts\n// 保留特性时的重试条件\nif (\n  compileResult.kind === 'error' &&\n  (environment.enableFire || environment.inferEffectDependencies != null)\n) { /* retry with MINIMAL_RETRY_CONFIG */ }\n\n// 或显式下线\nif (parsedOptions.inferEffectDependencies != null) {\n  CompilerError.throwInvalidConfig({\n    reason: 'inferEffectDependencies is no longer supported',\n    loc: null,\n  });\n}\n```",
+        "category": "可靠性",
+        "subcategory": "特性开关与错误兜底",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 422,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "if (scope === null) {",
+        "review": "[缺陷类型] 编译期行为变更 + 失败粒度不当（整文件级放弃优化）。影响评估：1) 之前能编译的 gating 代码（如 `export default React.memo(Foo); function Foo() {}`）现在可能直接构建失败；2) 非 panic 模式下整文件所有已编译函数被丢弃，用户无法感知优化消失；3) 重复引用产生重复诊断，噪音大。",
+        "suggestion": "[重构思路] 明确失败策略：要么恢复自动重写保证向后兼容，要么让错误只影响出错的那个函数（继续 transform 其它 compiledFns）并给出一次可读诊断；同时在报错后清理 `fnNames` 以避免重复 detail。代码示例：\n```ts\nif (scope === null) {\n  if (fnIds.has(id.node)) { /* already reported */ }\n  errors.pushErrorDetail(new CompilerErrorDetail({/* ... */}));\n  fnNames.delete(fn.name);\n  fnIds.delete(fn);\n}\n// 调用方：仅跳过出错的函数，其余仍应用 compiledFns\nfor (const result of compiledFns) { /* replaceWith ... */ }\n```",
+        "category": "可靠性",
+        "subcategory": "错误处理与失败粒度",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1146,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "compiler/packages/eslint-plugin-react-compiler/src/index.ts",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "module.exports = {",
+        "review": "[缺陷类型] 公共导出面收缩 + 元信息缺失。影响评估：以 ESM 具名导入方式使用本插件的代码会破坏；flat config 场景下缺少 `meta.name` 可能导致插件标识/报错前缀不完整；两个同族插件导出风格不一致增加维护成本。",
+        "suggestion": "[重构思路] 保持构建产物为 CJS 的同时不要丢失元信息，并让两个插件风格对齐；如确需去掉 ESM 具名导出，应在 README/CHANGELOG 中标注破坏性变更。代码示例：\n```ts\nconst meta = {name: 'eslint-plugin-react-compiler'};\nconst rules = {'react-compiler': ReactCompilerRule};\nconst configs = {recommended: {plugins: {'react-compiler': {rules}}, rules: {'react-compiler/react-compiler': 'error'}}};\nmodule.exports = {meta, rules, configs};\n```",
+        "category": "可维护",
+        "subcategory": "公共 API 兼容性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 10,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "compiler/scripts/release/shared/build-packages.js",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "const command = `NODE_ENV=production yarn workspace ${pkgName} run build`;",
+        "review": "[缺陷类型] 发布产物缺失类型声明文件（构建配置迁移导致的产物回退）。影响评估：babel-plugin-react-compiler 是供 Babel/Next.js 用户直接引用的包，eslint-plugin-react-compiler 也是对外发布的 ESLint 插件，升级到该版本后 TS 用户会得到 TS7016「Could not find a declaration file」或退化为 any，属于对外可感知的质量回退；且只有在正式发布时才暴露，单测难以发现。",
+        "suggestion": "[重构思路] 在需要类型的包的 build 脚本中复用 react-compiler-runtime 的 npm-dts Generator 方案（非 watch 分支执行），或在 release 流程中对这些包单独调用 tsc --emitDeclarationOnly，并在 package.json 显式声明 typings 以便校验。代码示例：\n```js\n// scripts/build.js 非 watch 分支\nawait esbuild.build({sourcemap: true, minify: false, ...config});\nawait new Generator({entry: 'src/index.ts', output: 'dist/index.d.ts'}).generate();\n```\n并在 package.json 加 `\"typings\": \"dist/index.d.ts\"`，CI 中对 dist/index.d.ts 做存在性断言。",
+        "category": "可维护",
+        "subcategory": "发布产物缺失类型声明",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/react-client/src/ReactFlightClient.js",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "return (requireModule(serverReference): any);",
+        "review": "[缺陷类型] 双向引用注册被移除导致回传能力失效（行为回退）。影响评估：Flight/Server Actions 场景下「接收并转发 action」的模式在运行期直接抛错，错误信息由 React 自己抛出且难以归因到 MR；因为错误只在客户端 → 服务端序列化时才出现，静态检查与快照测试都不易覆盖。",
+        "suggestion": "[重构思路] 恢复在 loadServerReference 的两条返回路径上登记引用：无 bound 时用 `registerServerReference(proxy, {id, bound: null}, encodeFormAction)`，有 bound 时登记最终 bound 函数；若不希望恢复 originalBind 字段，可复用新的 registerServerReference(proxy, {id, bound}) 形态。代码示例：\n```js\nif (!metaData.bound) {\n  const resolvedValue = (requireModule(serverReference): any);\n  registerServerReference(resolvedValue, {id: metaData.id, bound: null}, response._encodeFormAction);\n  return resolvedValue;\n}\n```\n并补一条「把服务端传来的 action 再作为参数传回服务端」的回归用例。",
+        "category": "可靠性",
+        "subcategory": "Server Action 引用注册缺失",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1115,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/eslint-plugin-react-hooks/tsconfig.json",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "\"include\": [\"src/**/*.ts\"]",
+        "review": "[缺陷类型] 类型检查覆盖范围回退。影响评估：ESLint 规则实现与 RuleTester 类型约束较强，测试文件的类型错误在本仓库里通常只有 typecheck 能发现；覆盖面缩小会让后续改动在无声中累积类型缺陷，且不易被察觉。",
+        "suggestion": "[重构思路] 若目的是避免跨包 paths 依赖，可保留测试目录在 include 中，仅移除 babel-plugin-react-compiler 的 paths 映射；或为测试单独提供一个 tsconfig.test.json 并在 typecheck 脚本中串行执行。代码示例：\n```json\n{\"include\": [\"src/**/*.ts\", \"__tests__/**/*.ts\"]}\n```\n```json\n// package.json\n\"typecheck\": \"tsc --noEmit && tsc -p tsconfig.test.json --noEmit\"\n```",
+        "category": "可测试性",
+        "subcategory": "类型检查覆盖范围",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 14,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "compiler/packages/make-read-only-util/scripts/build.js",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "format: 'esm',",
+        "review": "[缺陷类型] 构建配置迁移中的格式漂移（cjs → esm）。影响评估：目前该包无消费方，风险暂不显现；一旦有人按 package.json main 或相对路径 require dist/index.js，会在 Node 下抛 ERR_REQUIRE_ESM，且很难联想到是构建脚本迁移引入的。",
+        "suggestion": "[重构思路] 与其它包保持一致改回 cjs（或明确在 package.json 加 \"type\": \"module\" 与 main/module 字段），并在 PR 说明中记录本次格式变更的意图。代码示例：\n```js\nconst config = {\n  entryPoints: [path.join(__dirname, '../src/makeReadOnly.ts')],\n  outfile: path.join(__dirname, '../dist/index.js'),\n  bundle: true,\n  format: 'cjs',\n  platform: 'browser',\n  target: 'es2015',\n```",
+        "category": "可维护",
+        "subcategory": "构建配置不一致",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 26,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/react-reconciler/src/ReactFiberApplyGesture.js",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "export function insertDestinationClones(",
+        "review": "[缺陷类型] 功能被替换为空实现（no-op 桩）但特性开关与调用链未同步关闭，导致实验 API 静默失效。影响评估：experimental/canary 构建中 useSwipeTransition 的手势预览与动画完全不再生效，用户侧表现为「滑动无反应」；由于既不报错也不告警，问题只能靠手工对比发现，容易在发布后才暴露。若本次是有意分阶段回退实现，需要显式把开关关掉或补上运行时告警，否则等同于悄悄破坏既有行为。",
+        "suggestion": "[重构思路] 二选一：(1) 若本轮只是重构中继状态，先在 shared/ReactFeatureFlags.js 把 enableSwipeTransition 置为 false（或从 __EXPERIMENTAL__ 改为 false），并去掉 fixtures 中的用法；(2) 若必须保持开关为 true，则在桩函数中加入 dev 期告警，明确告知能力暂不可用。代码示例：`export function insertDestinationClones(root: FiberRoot, finishedWork: Fiber): void {\\n  if (__DEV__) {\\n    console.error('useSwipeTransition is temporarily unsupported: gesture mutations are a no-op.');\\n  }\\n}`",
+        "category": "可靠性",
+        "subcategory": "功能空实现/静默失效",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 19,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F016",
+        "code": "// TODO",
+        "review": "[缺陷类型] 功能被裁剪为 no-op 桩，但调用方未同步下线条与告警。影响评估：手势过渡路径不再产生任何视觉过渡与配对事件，且不再有任何 DEV 提示，属于静默行为退化；同时残留未使用参数会触发 lint 告警。",
+        "suggestion": "[重构思路] 要么在 commitGestureOnRoot 层面直接短路该特性（并在 DEV 打印一次性说明），要么在桩函数中显式 warnOnce 并保留参数使用契约。代码示例：`export function insertDestinationClones(root: FiberRoot, finishedWork: Fiber): void { if (__DEV__) { warnOnce('useSwipeTransition() clone insertion is not implemented yet; the gesture will not animate.'); } }`，并在 WorkLoop 中把 flushGestureMutations/flushGestureAnimations 的调用改为在特性关闭时直接跳到收尾逻辑。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 23,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/react-reconciler/src/ReactFiberCommitViewTransitions.js",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "const oldinstance: ViewTransitionState = child.stateNode;",
+        "review": "[缺陷类型] 标识符命名不一致/疑似拼写错误。影响评估：不影响运行时，但干扰按名检索与后续重构，且让读者怀疑是笔误。",
+        "suggestion": "[重构思路] 统一改回 oldInstance，并与 newInstance 对齐。代码示例：`const oldInstance: ViewTransitionState = child.stateNode; const newInstance: ViewTransitionState = pair; newInstance.paired = oldInstance;`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 328,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F019",
+        "code": "export function restoreExitViewTransitions(deletion: Fiber): void {",
+        "review": "[缺陷类型] 复制粘贴式重复实现。影响评估：修复需同步改两处，易产生行为漂移；调用方也难以从命名区分两者差异。",
+        "suggestion": "[重构思路] 保留一个共用实现，两个导出函数作为语义化包装，等 enter/exit 真正分化时再 fork。代码示例：`function restoreViewTransitions(fiber: Fiber): void { /* 共用实现 */ }\\nexport const restoreEnterViewTransitions = restoreViewTransitions;\\nexport const restoreExitViewTransitions = restoreViewTransitions;`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 534,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F020",
+        "code": "const oldName = getViewTransitionName(",
+        "review": "[缺陷类型] 循环内重复计算不变值。影响评估：HostComponent 数量多时产生额外函数调用与 fiber 字段读取，属于 commit 阶段热路径上可避免的开销；边界旧名语义被打散也更易在后续改动中写错。",
+        "suggestion": "[重构思路] 在函数入口计算一次 oldName（或由调用方传入），循环内复用。代码示例：`function cancelViewTransitionHostInstances(currentViewTransition, child, stopAtNestedViewTransitions) { const oldName = getViewTransitionName(currentViewTransition.memoizedProps, currentViewTransition.stateNode); while (child !== null) { if (child.tag === HostComponent) { viewTransitionCancelableChildren.push(child.stateNode, oldName, child.memoizedProps); } ... } }`",
+        "category": "性能",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 584,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/react-reconciler/src/ReactFiberCommitWork.js",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "resetShouldStartViewTransition();",
+        "review": "[缺陷类型] 状态重置时机错误导致跨 commit 的状态泄漏（stale flag）。\n影响评估：仅影响 enableViewTransition（当前为 __EXPERIMENTAL__）构建；一旦命中，会对无 DOM 变化的 commit 启动一次真实的 document.startViewTransition（ReactFiberConfigDOM.js:1328），使副作用 flush 变为异步并产生多余动画。触发条件为「VT commit 之后紧跟一次只含 Passive/Layout 副作用的 commit」，在使用 useEffect 更新非 DOM 状态的场景下相当常见。",
+        "suggestion": "[重构思路] 把重置放回 commitRoot 中无条件的入口位置（或紧邻读取点之前/之后），保证每次 commit 都清零，而不是依赖某个可能被跳过的子阶段；若要保留在当前阶段内，也应在 commitRoot 的 if 块之外执行。\n代码示例：`// ReactFiberWorkLoop.js commitRoot 内，if (subtreeHasBeforeMutationEffects || ...) 之前\\nresetShouldStartViewTransition();\\n...\\nif (subtreeHasBeforeMutationEffects || rootHasBeforeMutationEffect) {\\n  commitBeforeMutationEffects(root, finishedWork, lanes);\\n}\\nlet willStartViewTransition = shouldStartViewTransition;`",
+        "category": "可靠性",
+        "subcategory": "跨 commit 状态重置时机",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 293,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/react/src/jsx/ReactJSXElement.js",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "ReactSharedInternals.getCurrentStack = function () {",
+        "review": "[缺陷类型] 全局可变钩子（ReactSharedInternals.getCurrentStack）的临时改写缺少异常安全恢复；同时保留了在大规模 flag 翻转后不可达的兼容代码。\n影响评估：异常路径下会长期污染组件栈输出，影响所有后续告警的可读性；不可达分支则扩大维护面并给人“两种栈模式仍并存”的错觉。",
+        "suggestion": "[重构思路] ①用 try/finally 包裹全局钩子的覆盖与恢复（ReactFiberErrorLogger.js:49-72 已有正确写法可直接参照）；②既然 enableOwnerStacks 已全线为 true，可删除 !enableOwnerStacks 的兼容分支，或明确标注 `// TODO: delete once enableOwnerStacks ships` 并配套删除条件，避免死代码长期滞留。\n代码示例：`const prev = ReactSharedInternals.getCurrentStack;\\nReactSharedInternals.getCurrentStack = () => stack;\\ntry {\\n  console.error(...);\\n} finally {\\n  ReactSharedInternals.getCurrentStack = prev;\\n}`",
+        "category": "可维护",
+        "subcategory": "全局状态异常安全",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1049,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/shared/forks/ReactFeatureFlags.www.js",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "// Can remove these two",
+        "review": "[缺陷类型] 指向不明的遗留清理注释。影响评估：不影响运行时行为，但会让后续 flag 清理者无法确定清理范围，属于典型的「注释债」；本次 MR 恰好是以 flag 收敛为主题，留下歧义注释会削弱可维护性。",
+        "suggestion": "[重构思路] 要么把注释改成明确的清单式表述并把两个 flag 相邻放置，要么直接删除注释、由后续 PR 的 TODO 统一跟踪。代码示例：`// TODO: enableOwnerStacks 与 enableComponentPerformanceTrack 已固化，待内部调用方迁移后一并删除\\nexport const enableOwnerStacks = true;\\n...\\nexport const enableComponentPerformanceTrack = false;`",
+        "category": "可读性",
+        "subcategory": "误导性注释",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 45,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F026",
+        "code": "export const enableComponentPerformanceTrack = false;",
+        "review": "[缺陷类型] 特性开关收敛方向缺少说明且未保留变体覆盖。影响评估：www 侧组件性能追踪（Performance 面板中的组件轨道）被永久关闭，相关 98 处分支退化为死代码；由于 setupTests.www.js 未把它加入 __VARIANT__，www 的 --variant=true 运行也不再走 true 分支，未来若要重新打开，缺少测试保护，回归风险高。",
+        "suggestion": "[重构思路] 若只是暂时关闭，请补注释说明原因与恢复条件，并按既有约定在 setupTests.www.js 中把它加入 __VARIANT__ 列表以保持代码存活；若确定永久关闭，则应同步删除 react-reconciler / react-client 中的相关分支，避免留下大片不可达代码。代码示例：`// 暂时关闭：组件性能轨道尚未在 www 达标，恢复前请先修复 Timeline 回归\\nexport const enableComponentPerformanceTrack = false;`，并在 setupTests.www.js 增加 `actual.enableComponentPerformanceTrack = __VARIANT__;`",
+        "category": "可维护",
+        "subcategory": "开关固化缺乏说明",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 68,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

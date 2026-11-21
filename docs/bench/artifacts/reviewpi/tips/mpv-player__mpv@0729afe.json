@@ -1,0 +1,234 @@
+[
+  {
+    "filePath": "osdep/language-posix.c",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "ret[nb++] = talloc_strndup(ret, langList, len);",
+        "review": "[缺陷类型] 输入归一化缺失导致下游匹配失配。影响评估：绝大多数 Linux 用户环境是 `ll_CC.encoding` 形式，OS 语言自动选字幕/音轨功能整体失效，属无提示的行为回归。",
+        "suggestion": "[重构思路] 恢复 `_`→`-` 归一化，或把归一化下沉到 mp_match_lang 内部统一处理，避免各平台实现不一致。代码示例：`char *lang = talloc_strndup(ret, langList, len); for (size_t i = 0; i < len; i++) if (lang[i] == '_') lang[i] = '-'; ret[nb++] = lang;`",
+        "category": "可靠性",
+        "subcategory": "输入归一化缺失",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 42,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "stream/stream_dvdnav.c",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "return STREAM_UNSUPPORTED;",
+        "review": "[缺陷类型] 资源泄漏 + 外部状态未回滚（重构错误清理路径时漏掉分支）。影响评估：打开 DVD 失败后 dvdnav 句柄与 filename 内存泄漏，光驱速度保持被修改值，反复重试会累积泄漏。",
+        "suggestion": "[重构思路] 保留单一出口，或用 cleanup helper 在每个 return 前调用；最稳妥是恢复 goto err 汇合到 stream_dvdnav_close。代码示例：`if (dvdnav_title_play(priv->dvdnav, p->track + 1) != DVDNAV_STATUS_OK) { MP_FATAL(...); stream_dvdnav_close(stream); return STREAM_UNSUPPORTED; }`",
+        "category": "可靠性",
+        "subcategory": "错误路径资源泄漏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 634,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "stream/stream_bluray.c",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "return STREAM_ERROR;",
+        "review": "[缺陷类型] 错误路径资源泄漏（清理策略改造遗漏分支）。影响评估：以 bdnav:// 打开时 BLURAY 句柄泄漏，光驱/文件句柄被长期占用，重复尝试持续累积。",
+        "suggestion": "[重构思路] 统一所有 open 失败出口的清理动作，避免“有的分支 destruct、有的分支裸 return”。代码示例：`if (b->use_nav) { MP_FATAL(s, \"BluRay menu support has been removed.\\n\"); destruct(b); b->bd = NULL; return STREAM_ERROR; }`",
+        "category": "可靠性",
+        "subcategory": "错误路径资源泄漏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 445,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "*(double *)arg = BD_TIME_TO_MP(ti->duration);",
+        "review": "[缺陷类型] 内存泄漏（所有权约定在部分调用点被误改）。影响评估：每次查询标题长度/播放列表都泄漏一份标题信息结构，BD 导航过程中重复调用会让内存持续增长。",
+        "suggestion": "[重构思路] 保持与其它调用点一致的所有权处理：要么继续释放，要么统一改为复用 b->title_info；不要只改部分调用点。代码示例：`BLURAY_TITLE_INFO *ti = bd_get_title_info(b->bd, title, 0); if (!ti) return STREAM_UNSUPPORTED; *(double *)arg = BD_TIME_TO_MP(ti->duration); bd_free_title_info(ti); return STREAM_OK;`",
+        "category": "可靠性",
+        "subcategory": "内存泄漏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 276,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "stream/stream_cdda.c",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "int64_t sector = p->cd->disc_toc[track].dwStartSector;",
+        "review": "[缺陷类型] 时间/偏移基准不一致。影响评估：使用 --cdda-span-a 从中间轨道起播时，章节时间戳错误，章节切换与进度定位偏移；默认播放不受影响，故定位为 P2。",
+        "suggestion": "[重构思路] 所有对外位置/时间都必须相对 start_sector，保持与 seek()/get_size() 一致。代码示例：`int64_t sector = p->cd->disc_toc[track].dwStartSector - p->start_sector; int64_t pos = sector * CDIO_CD_FRAMESIZE_RAW;`",
+        "category": "可靠性",
+        "subcategory": "偏移基准错误",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 228,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "video/out/vo_gpu_next.c",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "pars->params.dither_params = NULL;",
+        "review": "[缺陷类型] 状态残留（重置逻辑被合并后覆盖不全）。影响评估：运行时切换 --dither 算法后渲染结果与选项不一致，且问题难以复现定位。",
+        "suggestion": "[重构思路] 在 switch 之前无条件重置两个字段，或为每个 case 写完整赋值，避免依赖上次调用的残留。代码示例：`pars->params.dither_params = NULL; pars->params.error_diffusion = NULL; switch (opts->dither_algo) { case DITHER_NONE: break; case DITHER_ERROR_DIFFUSION: pars->params.error_diffusion = pl_find_error_diffusion_kernel(opts->error_diffusion); /* fallthrough */ ... }`",
+        "category": "可靠性",
+        "subcategory": "状态残留",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2304,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/out/android_common.c",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "assert(vo->opts->WinID != 0 && vo->opts->WinID != -1);",
+        "review": "[缺陷类型] 对外部输入校验误用断言。影响评估：Android 上 surface 未就绪时进程 abort 或把非法 jobject 传给 JNI，崩溃点远离根因，也无法回退到其它 VO。",
+        "suggestion": "[重构思路] 保留可恢复的错误处理，assert 只用于内部不变式。代码示例：`if (vo->opts->WinID == 0 || vo->opts->WinID == -1) { MP_FATAL(ctx, \"Missing surface pointer\\n\"); goto fail; }`",
+        "category": "可靠性",
+        "subcategory": "断言误用",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 47,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "DOCS/man/input.rst",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "sub-properties - they may change radically in the feature.",
+        "review": "[缺陷类型] 文档拼写/语义错误。影响评估：用户可见文档出现明显错误，降低文档可信度，且易被本地化翻译继承。",
+        "suggestion": "[重构思路] 修正为 future，并在文档改动时做拼写检查。代码示例：`sub-properties - they may change radically in the future.`",
+        "category": "可读性",
+        "subcategory": "文档拼写错误",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 3886,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F009",
+        "code": "supports the ``zwlr_data_control_manager_v1`` protocol.",
+        "review": "[缺陷类型] 文档与实现不一致。影响评估：用户按文档排查 clipboard/wayland 问题时得到错误结论，下游打包者也可能把它当成契约。",
+        "suggestion": "[重构思路] 文档以实际实现的协议为准，恢复 ext-data-control-v1。代码示例：`supports the ``ext-data-control-v1`` protocol.`",
+        "category": "可读性",
+        "subcategory": "文档与实现不一致",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 4022,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F010",
+        "code": "Inconsistencies between options and properties",
+        "review": "[缺陷类型] 有效文档被误删。影响评估：属性仍可用却无文档，用户和脚本作者难以发现，维护者也容易误判为死代码。",
+        "suggestion": "[重构思路] 若保留该属性则恢复文档；若计划移除，应同时改代码并给出兼容说明。代码示例：` ``clock``\\n\\n    The current local time in hour:minutes format.`",
+        "category": "可读性",
+        "subcategory": "文档遗漏",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 4030,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "meson.options",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "option('cdda', type: 'feature', value: 'disabled', description: 'cdda support (libcdio)')",
+        "review": "[缺陷类型] 默认构建配置的行为变更（静默功能裁剪）。影响评估：升级后 CD/DVD 功能消失且无运行时提示，用户难以判断是构建配置问题；打包产线行为随上游默认值漂移。",
+        "suggestion": "[重构思路] 若确实要默认关闭，应同步更新构建/选项文档并给出显著变更记录；否则保持 auto 由依赖探测决定。代码示例：`option('cdda', type: 'feature', value: 'auto', description: 'cdda support (libcdio)')`",
+        "category": "可维护",
+        "subcategory": "构建默认值变更",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 14,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "player/command.c",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "for (int i = 0; i < mpctx->num_option_callbacks; i++) {",
+        "review": "[缺陷类型] 队列在遍历期间被修改（重入）。影响评估：同一批内回调的执行次数/顺序不确定，选项变更的副作用可能在半应用状态下执行；若某个处理反复触发同类变更，循环还可能持续增长。",
+        "suggestion": "[重构思路] 遍历前快照队列（把数组整体摘下后处理），执行期间新产生的变更留到下一轮。代码示例：`int n = mpctx->num_option_callbacks; struct mp_option_callback *list = mpctx->option_callbacks; mpctx->option_callbacks = NULL; mpctx->num_option_callbacks = 0; for (int i = 0; i < n; i++) { ... } talloc_free(list);`",
+        "category": "可靠性",
+        "subcategory": "重入与队列一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 7729,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "demux/cue.c",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "case CUE_TRACK: {",
+        "review": "[缺陷类型] 输入校验被移除导致数据集合扩大。影响评估：带数据轨的 CUE 会生成无法播放的轨道与错误章节，默认选轨可能落到数据轨上。",
+        "suggestion": "[重构思路] 若目的是支持非 AUDIO 轨，应显式解析 TRACK 模式并把模式带到下游，而不是无条件接受；否则恢复过滤。代码示例：`if (bstr_find0(param, \"AUDIO\") == -1) { MP_VERBOSE(demuxer, \"Skipping non-audio track\\n\"); break; }`",
+        "category": "可靠性",
+        "subcategory": "输入校验缺失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 216,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

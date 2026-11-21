@@ -1,0 +1,92 @@
+{
+  "instance_id": "openai__codex@8c952af",
+  "repo": "openai/codex",
+  "base_commit": "d6182becbe155776b159270fe4a5e88d607f0c5e",
+  "head_commit": "8c952af20fe791cc0c5d0a59089d3329968b4373",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 235.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "codex-rs/core/src/client_common.rs",
+      "line": 198,
+      "summary": "测试中的 ResponsesApiRequest 字面量缺少已保留的 store 字段，导致测试目标编译失败",
+      "failure_scenario": "本次变更只在 `ResponsesApiRequest` 上删除了 `store` 字段的文档注释，字段本体 `pub(crate) store: bool` 仍然存在（client_common.rs:128）；但同一文件的测试 `serializes_text_verbosity_when_set` 与 `omits_text_when_not_set` 中的结构体字面量却删掉了 `store: true`。Rust 结构体字面量必须给全部字段赋值，这会触发 E0063（missing field `store`），使 `cargo test -p codex-core` / `cargo clippy --all-targets` 直接编译失败，CI 变红，并且这两个序列化测试（校验 `text.verbosity` 序列化行为）也随之失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "codex-rs/tui/src/history_cell.rs",
+      "line": 477,
+      "summary": "命令错误输出的换行结果全部套用分支前缀，缺少对首个换行片段的判断",
+      "failure_scenario": "`command_display_lines` 在渲染非零退出码的输出时，用 `i == 0 && !branch_consumed` 决定是否加 `  └ ` 前缀，但这里的 `i` 只是源行序号，没有判断当前是否是该源行的第一个换行片段（旧实现由 `prefix_lines(body_lines, \"  └ \", \"    \")` 保证只有整体第一行加前缀）。结果是：当第一行错误输出被 `textwrap` 折成多行时，**每一个**折行片段都会带上 `  └ `，终端上出现多个分支符号，与命令多行渲染分支（history_cell.rs:453 使用 `i == 0 && j == 0`）的正确写法不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.83,
+      "rule": "RENDER-002"
+    },
+    {
+      "file": "codex-rs/tui/src/insert_history.rs",
+      "line": 296,
+      "summary": "新换行实现禁用 break_words，导致 scrollback 行数估算偏小并破坏滚动区域",
+      "failure_scenario": "新 `word_wrap_line` 使用 `.break_words(false)`（旧 `wrapping::word_wrap_lines_borrowed` 基于 `RtOptions::new` 默认 `break_words: true`），因此当内容包含超长不可断词（URL、长路径、无空格日志）时，单个输出行仍会超出 `area.width`。而 `insert_history_lines_to_writer` 直接以 `wrapped.len()` 作为将要打印/滚动的终端行数（insert_history.rs:47-52），实际终端会把超宽行硬换行成多行，导致 `scroll_amount`、`cursor_top` 与后续 `MoveTo` 计算全部偏小，scrollback 内容错位或覆盖 TUI 视口。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "RENDER-003"
+    },
+    {
+      "file": "codex-rs/tui/src/history_cell.rs",
+      "line": 454,
+      "summary": "用 l[4..] 剥离缩进依赖 textwrap 必然输出 4 字节前缀，空首行会 panic",
+      "failure_scenario": "多行命令渲染分支用 `l[4..].to_string()` 去掉 `TwOptions::initial_indent(\"    \")` 添加的 4 个空格，此写法假设 `textwrap::wrap` 的**首个**片段一定以该缩进开头且长度 ≥ 4。若命令文本以换行开头（`cmd_display.lines()` 的第一个元素为空字符串，例如脚本首行为空行），`wrap(\"\")` 返回的片段为空串，`l[4..]` 会触发字符串切片越界 panic（byte index 4 out of bounds），直接使 TUI 崩溃。旧实现通过 `slice_line_spans` 按 span 区间切片，不存在该假设。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "codex-rs/tui/src/tui.rs",
+      "line": 315,
+      "summary": "Ctrl+V 图片粘贴上移到事件流后，overlay 打开时仍同步调用外部剪贴板命令且结果被丢弃",
+      "failure_scenario": "Ctrl+V 的处理从 `chatwidget.handle_key_event` 移到了 `tui.rs` 的事件流中，会在所有上下文中先同步执行 `paste_image_to_temp_png()`（通常会 spawn 外部剪贴板工具，耗时可达数百毫秒）。但 overlay 打开时 `app.rs` 把 `TuiEvent` 交给 overlay 处理，而 `StaticOverlay::handle_event` 的 `_ => Ok(())` 分支会静默丢弃 `TuiEvent::AttachImage`。因此在翻页/回溯界面按 Ctrl+V 会阻塞事件循环却没有任何可见效果；此外该同步调用位于异步事件流任务内，会推迟 `Draw` 事件造成输入卡顿。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.55,
+      "rule": "PERF-006"
+    },
+    {
+      "file": "codex-rs/core/src/config.rs",
+      "line": 416,
+      "summary": "删除 disable_response_storage 配置项但未做迁移提示，旧配置被静默忽略",
+      "failure_scenario": "`ConfigToml` 使用 `#[derive(Deserialize, ...)]` 且未启用 `deny_unknown_fields`，因此用户 `config.toml` 中残留的 `disable_response_storage = true/false` 会被静默忽略，不会报错也不会告警；而该字段原先对 OpenAI ZDR 客户是必填语义项。用户升级后既看不到“配置已废弃”的提示，也无法理解 `store` 语义已变为恒 false，排查请求行为变化时缺少线索。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "CONFIG-007"
+    },
+    {
+      "file": "codex-rs/tui/src/bottom_pane/textarea.rs",
+      "line": 845,
+      "summary": "删除公共 wrap_ranges 后把 unsafe 指针算术与其 +1 哨兵内联复制到 TextArea",
+      "failure_scenario": "`crate::wrapping::wrap_ranges` 被删除后，其实现被逐行复制进 `TextArea::wrapped_lines`，包括 `unsafe { slice.as_ptr().offset_from(self.text.as_ptr()) }` 与 `end + trailing_spaces + 1` 的越界哨兵约定（由 `render_lines` 的 `r.end - 1` 消费）。unsafe 代码与哨兵约定现在分散在业务代码中且没有注释说明，任何复用方（例如新的折行调用点）都必须知道 `end` 可能等于 `text.len() + 1`，否则容易在 `&self.text[range]` 处 panic；同时 `Cow::Owned(_) => unreachable!()` 在将来更换 `textwrap` 选项（如启用会改写文本的 `WordSplitter`）时会直接崩溃。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAIN-008"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\openai__codex\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\openai__codex@8c952af.diff\n  caseId              openai__codex@8c952af\n  --issue             (未传)\n  --taskId            openai__codex@8c952af\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 7 个文件 / 12545 字符（test=2, exclude=5），明细见审计 mrFilter\n✓ 完成 · 耗时 222.9s · 模型调用 15 次 · token 输入 73,655（未命中） · 输出 31,324 · 缓存命中 604,800（89.1%） · 工具 28 次（主会话 28 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0208\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 235.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 12.3s (5.2%)\n[time] 阶段 | 六阶段审计 222.8s (94.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 9.1s (4.1%) | P2 8.8s (4.0%) | P3 10.9s (4.9%) | P4 123.9s (55.6%) | P5 44.6s (20.0%) | P6 25.5s (11.4%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 73,655（未命中） | 输出 31,324 | 缓存命中 604,800（89.1%） | $0.0208\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\openai__codex@8c952af\\audit\\20261116_012631_699.json",
+  "token_usage": {
+    "input_tokens": 73655,
+    "output_tokens": 31324,
+    "cache_read_input_tokens": 604800
+  }
+}

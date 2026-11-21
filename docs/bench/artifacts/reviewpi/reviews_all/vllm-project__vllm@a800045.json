@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-11-15T06:07:50.716Z",
+  "runId": "20261115_060615_674",
+  "source": "mr",
+  "caseId": "vllm-project__vllm@a800045",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "benchmarks/benchmark_throughput.py",
+      "line": 336,
+      "title": "AIMODataset 动态输出长度上限 32000 与 run_vllm 的 max_model_len 断言冲突，长解答样例会使基准直接中断",
+      "description": "AIMODataset.sample 在未提供 --output-len 时按每条 `solution` 的 token 数动态设置 expected_output_len，其合法性过滤只要求总长度不超过 32000（max_prompt_len=2048, max_total_len=32000）。而 throughput 中 AIMODataset 被 validate_args 限制只能用 backend=vllm，最终走 run_vllm，那里在模型加载完成后用断言 `max_model_len >= prompt_len + expected_output_len` 校验全部请求。AIMO 的解答是长链数学推理，32000 的过滤阈值远高于常见模型 max_model_len（如 4096/8192），因此只要采样到一条长解答，基准就会在昂贵的模型加载之后以 AssertionError 直接退出，而不是跳过该样例或提示使用 --output-len。",
+      "evidence": [
+        "benchmarks/benchmark_dataset.py:788 — `output_len = completion_len if dynamic_output else output_len`（output_len 缺省时按 solution 长度动态取值）",
+        "benchmarks/benchmark_dataset.py:790-793 — 过滤条件为 `is_valid_sequence(prompt_len, completion_len, max_prompt_len=2048, max_total_len=32000)`",
+        "benchmarks/benchmark_throughput.py:479-480 — AIMODataset 断言后端必须为 \"vllm\"",
+        "benchmarks/benchmark_throughput.py:41-46 — run_vllm 中 `assert llm.llm_engine.model_config.max_model_len >= (request.prompt_len + request.expected_output_len)`，位于 LLM 初始化之后",
+        "benchmarks/benchmark_throughput.py:553-557 — `--output-len` 帮助说明为 Overrides the output length from the dataset，即默认走数据集动态长度"
+      ],
+      "rule": "RELIABILITY-005",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 采样约束与运行期容量约束不一致导致的运行中断。影响评估：用户以默认参数跑 AIMO 基准时可能在模型加载后收到与数据集无关的 AssertionError，重试/换 seed 才偶然成功，浪费时间和显存；现有断言信息未提示 --output-len 这一解法。因为依赖具体模型上下文长度与数据分布，定为 P2。",
+        "suggestion": "[重构思路] 在分派到 AIMODataset 时要么显式要求/建议传入 --output-len，要么在 validate_args 或断言信息中给出可执行的指引；也可对超长样例做跳过统计。代码示例：\n```python\nelif args.dataset_path in AIMODataset.SUPPORTED_DATASET_PATHS:\n    dataset_cls = AIMODataset\n    if args.output_len is None:\n        warnings.warn(\n            \"AIMODataset solutions can be very long; consider passing \"\n            \"--output-len to avoid exceeding model max_model_len\",\n            stacklevel=2)\n```",
+        "subcategory": "资源约束一致性"
+      }
+    }
+  ]
+}

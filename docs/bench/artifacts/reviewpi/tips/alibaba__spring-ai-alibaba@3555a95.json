@@ -1,0 +1,129 @@
+[
+  {
+    "filePath": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "catch (Exception e) {",
+        "review": "[缺陷类型] 异常吞噬 + 中断标志丢失 + 日志缺少堆栈 + 错误语义由抛异常退化为返回 null。影响评估：InterruptedException 被吞后线程中断状态不复位，可能造成线程池关闭阻塞；线上故障仅有单行 message，无法定位代码路径；翻译失败与参数错误对调用方不可区分，工具调用会静默产出空结果。",
+        "suggestion": "[重构思路] 分类型处理：中断异常单独捕获并恢复中断标志；其余异常保留异常对象记录完整堆栈；对外表现上保持可判别的错误语义（返回携带错误信息的 Response 或抛出受控的业务异常）。代码示例：`catch (InterruptedException e) { Thread.currentThread().interrupt(); logger.error(\"alitranslate invoke interrupted\", e); return null; } catch (Exception e) { logger.error(\"Failed to invoke alitranslate\", e); return null; }`",
+        "category": "可靠性",
+        "subcategory": "异常处理与中断恢复",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 104,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "value = \"sourceLanguage\") @JsonPropertyDescription(\"Source language of the text, default is zh\") String sourceLanguage,",
+        "review": "[缺陷类型] 声明为可选并承诺默认值，但实际反序列化路径不填默认值，导致静默失败。影响评估：模型按 JSON Schema 理解 sourceLanguage 可省略，一旦省略即得到 null 结果，表现为工具「不返回任何翻译」，且与 F001 的返回 null 叠加后无从排查。",
+        "suggestion": "[重构思路] 在 apply() 或紧凑构造器中统一兜底默认值，使默认语义与 JSON Schema 描述一致；不要依赖只在 Java 侧生效的便利构造器。代码示例：`public Request { sourceLanguage = StringUtils.hasText(sourceLanguage) ? sourceLanguage : LANGUAGE_CODE_ZH; targetLanguage = StringUtils.hasText(targetLanguage) ? targetLanguage : LANGUAGE_CODE_EN; }`，或在校验处 `String src = StringUtils.hasText(request.sourceLanguage) ? request.sourceLanguage : LANGUAGE_CODE_ZH;`",
+        "category": "可靠性",
+        "subcategory": "参数默认值与契约不一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 142,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "public static final String LANGUAGE_CODE_ZH = \"zh\";",
+        "review": "[缺陷类型] 公开常量删除与 record 规范构造器签名变更造成的源码/二进制不兼容。影响评估：升级该 starter 版本的外部项目将编译失败或运行时 NoSuchMethodError；调用方若仍按 (text, targetLanguage) 传参，positional 顺序变化还会被编译器以类型相同而放过（两参版本已删除，风险主要体现为编译错误与语义误解）。",
+        "suggestion": "[重构思路] 如需保持兼容，可保留 LANGUAGE_CODE 作为 LANGUAGE_CODE_ZH 的 @Deprecated 别名，并为 Request 保留旧的两参构造器转发到新逻辑；若确认允许破坏性变更，则应在 CHANGELOG/迁移说明中显式标注，避免使用者无感升级。代码示例：`@Deprecated public static final String LANGUAGE_CODE = LANGUAGE_CODE_ZH;` 与 `@Deprecated public Request(String text, String targetLanguage) { this(text, LANGUAGE_CODE_ZH, targetLanguage); }`",
+        "category": "可维护",
+        "subcategory": "公开 API 兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 62,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": ".overrideConfiguration(ClientOverrideConfiguration.create().setEndpointOverride(\"mt.aliyuncs.com\"))",
+        "review": "[缺陷类型] 暴露但未消费的配置项（dead configuration）。影响评估：使用方按新继承的通用属性配置超时/端点时无任何效果，排障时会误判为 SDK 行为异常；属性语义在同一 common 体系内不一致，增加维护成本。",
+        "suggestion": "[重构思路] 二选一：要么把 base-url/network-timeout 真正接入 AsyncClient（endpoint 与 ClientOverrideConfiguration 的超时设置），要么不要暴露这些无意义的继承字段（改为组合而非继承）。代码示例：`ClientOverrideConfiguration cfg = ClientOverrideConfiguration.create().setEndpointOverride(StringUtils.hasText(properties.getBaseUrl()) ? properties.getBaseUrl() : \"mt.aliyuncs.com\"); if (properties.getNetworkTimeout() != null) { cfg.setConnectTimeout(Duration.ofMinutes(properties.getNetworkTimeout())); }`",
+        "category": "可维护",
+        "subcategory": "配置项未被实现消费",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 78,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "return data.getTranslated();",
+        "review": "[缺陷类型] 解析链末端缺少结果非空校验。影响评估：返回 Response(null) 使下游收到 null 字段，可能在消费端触发 NullPointerException，或让模型把 null 当作合法翻译结果。",
+        "suggestion": "[重构思路] 与前面几级保持一致，对 translated 也做非空白校验并抛出明确的 IllegalStateException（或返回空字符串兜底）。代码示例：`String translated = data.getTranslated(); if (!StringUtils.hasText(translated)) { throw new IllegalStateException(\"Failed to invoke alitranslate, caused translated text is empty.\"); } return translated;`",
+        "category": "可靠性",
+        "subcategory": "返回值空值安全",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 133,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "public void setAccessKeyId(String accessKeyId) {",
+        "review": "[缺陷类型] 同一配置字段的多属性名别名，导致绑定不确定与元数据重复。影响评估：多配置源混用时凭据可能取自非预期来源，表现为鉴权失败且难以复现；配置元数据重复降低可用性。",
+        "suggestion": "[重构思路] 只保留一套官方属性名（api-key/secret-key），在迁移说明中告知旧键改名；若必须兼容旧键，则在文档中明确不再推荐并保证只在单一属性源生效，避免两套键并存。代码示例：`// 仅保留 getter 兼容读取，移除别名 setter\\n@Deprecated public String getAccessKeyId() { return getApiKey(); }`",
+        "category": "可维护",
+        "subcategory": "配置属性命名冲突",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 50,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "this.setPropertiesFromEnv(\"ACCESS_KEY_ID\", \"ACCESS_KEY_SECRET\", null, null);",
+        "review": "[缺陷类型] 通用环境变量名导致的凭据串用/来源不明。影响评估：共享宿主机上可能以非预期账号身份调用付费翻译接口，产生跨账号计费与权限问题，且难以从日志判断凭据来源。",
+        "suggestion": "[重构思路] 改用带模块前缀的专属变量名（如 ALITRANSLATE_ACCESS_KEY_ID / ALITRANSLATE_ACCESS_KEY_SECRET），把通用名作为次选兜底并在文档中显式说明优先级。代码示例：`this.setPropertiesFromEnv(\"ALITRANSLATE_ACCESS_KEY_ID\", \"ALITRANSLATE_ACCESS_KEY_SECRET\", null, null);`",
+        "category": "安全",
+        "subcategory": "凭据来源与配置隔离",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 34,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateAutoConfiguration.java",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "@ConditionalOnProperty(prefix = AliTranslateProperties.PREFIX, name = \"enabled\", havingValue = \"true\")",
+        "review": "[缺陷类型] 自动配置开关的默认值与属性默认值不一致。影响评估：仅配置凭据（符合 common 体系 enabled 默认 true 的直觉）的用户会得不到 Bean，需额外排查为何翻译工具未注册；与同类 starter 行为不一致也增加维护心智负担。",
+        "suggestion": "[重构思路] 与其他已完成 common 化改造的 starter 对齐，显式声明 matchIfMissing 语义，并在迁移说明中写明行为变化。代码示例：`@ConditionalOnProperty(prefix = AliTranslateProperties.PREFIX, name = \"enabled\", havingValue = \"true\", matchIfMissing = true)`",
+        "category": "可维护",
+        "subcategory": "自动配置开关语义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 32,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

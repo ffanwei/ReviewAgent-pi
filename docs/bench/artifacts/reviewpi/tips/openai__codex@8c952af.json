@@ -1,0 +1,116 @@
+[
+  {
+    "filePath": "codex-rs/core/src/client_common.rs",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "stream: true,",
+        "review": "[缺陷类型] 结构体字面量字段缺失导致编译错误（E0063）。影响评估：`codex-core` 的 test/clippy 目标无法编译，CI 失败；两个用于守护 `text.verbosity` 序列化的测试不再执行，序列化回归失去保护。",
+        "suggestion": "[重构思路] 二选一：要么在测试字面量补回 `store: false,`；要么既然 `store` 已恒为 false，直接把该字段从 `ResponsesApiRequest` 中删除（同时删除 client.rs 中的赋值），让“永不存储”成为结构上的不变式。代码示例：`let req = ResponsesApiRequest { model: \"gpt-5\", instructions: \"i\", input: &input, tools: &tools, tool_choice: \"auto\", parallel_tool_calls: false, reasoning: None, store: false, stream: true, include: vec![], prompt_cache_key: None, text: None };`",
+        "category": "可靠性",
+        "subcategory": "编译期字段缺失",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 198,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "codex-rs/tui/src/history_cell.rs",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "if i == 0 && !branch_consumed {",
+        "review": "[缺陷类型] 换行后前缀重复渲染。影响评估：命令失败时错误输出首行折成多行即出现多个 `└`，界面错乱，用户难以区分输出行与分支结构。",
+        "suggestion": "[重构思路] 复用与命令折行一致的 `(i, j)` 双重判定，或引入一个 `branch_consumed` 之外的“首行已用掉”标志。代码示例：`for (i, line) in out.lines().enumerate() { for (j, l) in textwrap::wrap(line, opts).into_iter().enumerate() { let prefix = if i == 0 && j == 0 && !branch_consumed { \"  └ \".dim() } else { \"    \".dim() }; lines.push(Line::from(vec![prefix, l.to_string().dim()])); } }`",
+        "category": "可靠性",
+        "subcategory": "渲染前缀错位",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 477,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "codex-rs/tui/src/insert_history.rs",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": ".break_words(false)",
+        "review": "[缺陷类型] 换行宽度上限失效导致终端行数统计错误。影响评估：插入历史时滚动行数不足，scrollback 出现错行/覆盖，且该函数是 TUI 与终端交互的底层路径，影响面较广。",
+        "suggestion": "[重构思路] 需要保证“每个返回行宽 ≤ width”，因此在 insert_history 场景应允许断词，或对超宽片段再次按 width 硬切分。代码示例：`let opts = TwOptions::new(width).break_words(true).word_splitter(WordSplitter::NoHyphenation);` 或保留 `break_words(false)` 但在 `word_wrap_lines` 返回前对 `line.width() > w` 的片段按字符边界强制切分。",
+        "category": "可靠性",
+        "subcategory": "换行与终端行数一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 296,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "codex-rs/tui/src/tui.rs",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "match paste_image_to_temp_png() {",
+        "review": "[缺陷类型] 无效且阻塞的副作用调用。影响评估：overlay 场景按下 Ctrl+V 造成输入延迟且行为静默丢失；同步 spawn 外部进程也使事件循环短暂阻塞，拖慢重绘。",
+        "suggestion": "[重构思路] 把图片粘贴下移到 ChatWidget 侧处理（或先判断当前是否有可接收图片的输入区），并用异步任务/`spawn_blocking` 执行剪贴板读取后再投递 `AttachImage` 事件，避免阻塞事件流。代码示例：`Event::Key(k) if is_ctrl_v(&k) => { let tx = paste_tx.clone(); tokio::task::spawn_blocking(move || { if let Ok((path, info)) = paste_image_to_temp_png() { let _ = tx.send(TuiEvent::AttachImage { path, width: info.width, height: info.height, format_label: info.encoded_format.label() }); } }); }`",
+        "category": "性能",
+        "subcategory": "事件循环阻塞",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 315,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "codex-rs/core/src/config.rs",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "// Removed: disable_response_storage. Responses are never stored.",
+        "review": "[缺陷类型] 配置项静默废弃。影响评估：ZDR 相关用户的既有配置失效且无提示，行为变化不可观测，增加支持成本。",
+        "suggestion": "[重构思路] 保留字段但标记 deprecated，在加载时输出一次 `tracing::warn!`；或在 CHANGELOG/文档中明确说明该项已废弃。代码示例：`if cfg.disable_response_storage.is_some() { tracing::warn!(\"disable_response_storage is deprecated and ignored; responses are never stored\"); }`",
+        "category": "可维护",
+        "subcategory": "配置兼容性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 416,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "codex-rs/tui/src/bottom_pane/textarea.rs",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "unsafe { slice.as_ptr().offset_from(self.text.as_ptr()) as usize };",
+        "review": "[缺陷类型] unsafe 逻辑内联复制、隐式约定缺乏封装。影响评估：可读性与可维护性下降，后续改动容易忽略哨兵约定导致切片 panic；unsafe 代码缺少安全前提说明也难以审计。",
+        "suggestion": "[重构思路] 把字节区间计算抽成一个带文档的安全函数（例如 `fn wrapped_ranges(text: &str, width: usize) -> Vec<Range<usize>>`），在函数文档中写明 `end` 允许等于 `text.len() + 1` 的哨兵约定，并让 TextArea 只调用它；同时用 `textwrap::wrap` 的 `Cow` 分支返回 `Result` 或在 `Owned` 时退化为按字符切分，避免 `unreachable!()`。代码示例：`/// 返回半开区间，最后一项 end 可能为 text.len()+1（哨兵）。fn wrapped_ranges(text: &str, width: usize) -> Vec<Range<usize>> { ... }`",
+        "category": "可维护",
+        "subcategory": "unsafe 代码封装",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 845,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

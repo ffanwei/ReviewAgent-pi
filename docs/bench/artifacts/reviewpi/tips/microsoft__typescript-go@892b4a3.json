@@ -1,0 +1,290 @@
+[
+  {
+    "filePath": "internal/ls/languageservice.go",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "func NewLanguageService(ctx context.Context, host Host) *LanguageService {",
+        "review": "[缺陷类型] 参数被静默丢弃、字段未初始化。影响评估：后续依赖 l.ctx 的逻辑拿到 nil context，取消链断裂并可能运行时 panic，令本次重构目标失效。",
+        "suggestion": "[重构思路] 构造函数中赋值；若暂无使用者可先不引入该字段。代码示例：`return &LanguageService{ctx: ctx, host: host, converters: NewConverters(host.GetPositionEncoding(), host.GetLineMap)}`。",
+        "category": "可靠性",
+        "subcategory": "未初始化字段",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 17,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "return &LanguageService{",
+        "review": "[缺陷类型] 构造器忽略注入的 context，把请求级依赖静默降级为 nil。影响评估：checker 池的请求关联与清理断言失效，同一请求可能在不同调用点拿到不同 checker 并混用类型；请求取消不再与该 checker 关联；同时 core.GetRequestID 的 nil 兜底掩盖了问题，使错误更难被发现。",
+        "suggestion": "[重构思路] 在构造函数中保存 ctx；同时不要用 nil ctx 兜底掩盖编程错误，建议对必须非 nil 的 ctx 显式断言。代码示例：`func NewLanguageService(ctx context.Context, host Host) *LanguageService { if ctx == nil { panic(\"NewLanguageService requires a non-nil context\") }; return &LanguageService{ctx: ctx, host: host, converters: NewConverters(host.GetPositionEncoding(), host.GetLineMap)} }`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 18,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/ls/signaturehelp.go",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "onlyUseSyntacticOwners := context.TriggerKind == lsproto.SignatureHelpTriggerKindTriggerCharacter",
+        "review": "[缺陷类型] 指针参数未判空即解引用。影响评估：textDocument/signatureHelp 请求在客户端不提供 context 时直接 panic，可能导致 language server 进程崩溃或该请求 500。",
+        "suggestion": "[重构思路] 恢复判空，并用有名字的常量替代魔法数字；nil 视为默认（Invoked 语义之外的 TriggerKindNone）。代码示例：`var triggerKind lsproto.SignatureHelpTriggerKind; if context != nil { triggerKind = context.TriggerKind }; onlyUseSyntacticOwners := triggerKind == lsproto.SignatureHelpTriggerKindTriggerCharacter; isManuallyInvoked := triggerKind == lsproto.SignatureHelpTriggerKindInvoked`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 77,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "isManuallyInvoked := context.TriggerKind == 1",
+        "review": "[缺陷类型] 魔法数字替代具名常量。影响评估：可读性与协议演进安全性下降，与同函数内其它判断风格不一致。",
+        "suggestion": "[重构思路] 直接使用生成常量。代码示例：`isManuallyInvoked := context.TriggerKind == lsproto.SignatureHelpTriggerKindInvoked`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 84,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "if help.ActiveParameter != nil && *&help.ActiveParameter.Value > uint32(len(activeSignature.Parameters)-1) {",
+        "review": "[缺陷类型] 冗余解引用 + 空值语义缺失。影响评估：不影响当前输出（Null 时 Value 为 0，比较结果一致），但语义模糊，后续修改 ActiveParameter 逻辑时容易出错。",
+        "suggestion": "[重构思路] 直接访问 Value，并显式判断 Null。代码示例：`if ap := help.ActiveParameter; ap != nil && !ap.Null && ap.Value > uint32(len(activeSignature.Parameters)-1) { help.ActiveParameter = ptrTo(lsproto.ToNullable(uint32(len(activeSignature.Parameters) - 1))) }`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 266,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/execute/watcher.go",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "if w.configFileName == \"\" {",
+        "review": "[缺陷类型] 字段初始化顺序错误导致 nil 依赖注入。影响评估：`tsc --watch` 且 tsconfig 开启 incremental/composite 时启动即 panic；即使未开 incremental，w.program 也恒为 nil，增量复用完全失效。",
+        "suggestion": "[重构思路] host 的创建不要依赖 configFileName 分支，先保证 host 可用再读 build info；若确需为测试注入 host，用显式 setter 或构造参数，而不是靠「条件跳过赋值」。代码示例：`if w.host == nil { w.host = compiler.NewCompilerHost(w.sys.GetCurrentDirectory(), w.sys.FS(), w.sys.DefaultLibraryPath(), nil) }; w.program = incremental.ReadBuildInfoProgram(w.options, incremental.NewBuildInfoReader(w.host))`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 46,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/checker/checker.go",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "if context.typeParameters != nil {",
+        "review": "[缺陷类型] nil 与空切片混淆导致判断语义漂移。影响评估：非泛型类构造签名会被错误归类为泛型签名，可能跳过上下文参数类型推断、改变重载/签名关系判断与相关错误信息的产生，属于类型检查结果层的隐性偏差。",
+        "suggestion": "[重构思路] 保持原有的长度语义（len(...) == 0 / != 0），或在所有构造入口统一保证「空即 nil」（例如在 LocalTypeParameters 中对空结果返回 nil）后再使用 nil 判断；二者不要混用。代码示例：`func (t *InterfaceType) LocalTypeParameters() []*Type { if len(t.allTypeParameters) <= t.outerTypeParameterCount+1 { return nil }; return slices.Clip(t.allTypeParameters[t.outerTypeParameterCount : len(t.allTypeParameters)-1]) }`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 9952,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/fourslash/_scripts/convertFourslash.mts",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "const manualTestsList = fs.readFileSync(manualTestsPath, \"utf-8\").split(\"\\n\").map(line => line.trim()).filter(line => line.length > 0);",
+        "review": "[缺陷类型] 生成脚本对缺失输入文件无兜底。影响评估：convertFourslash 无法运行，fourslash 生成流程中断；新人按文档执行会直接失败。",
+        "suggestion": "[重构思路] 文件不存在时按空列表处理，或在仓库中提交一个空的 manualTests.txt 作为基线。代码示例：`function getManualTests(): Set<string> { if (!fs.existsSync(manualTestsPath)) return new Set(); ... }`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 27,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/fourslash/_scripts/makeManual.mts",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "const testName = args[0];",
+        "review": "[缺陷类型] 两个脚本共享同一份清单却使用不同键格式。影响评估：manual 测试会在 gen 目录被重复生成，与 tests/manual 中的同名测试冲突（同 package 下重复函数声明导致编译失败），或使 manual 机制形同虚设。",
+        "suggestion": "[重构思路] 统一用「首字母大写的测试名」作为清单键，文件名单独派生出 `_test.go` 后缀。代码示例：`const testName = args[0].replace(/_test\\.go$/, \"\"); const manualKey = testName[0].toUpperCase() + testName.substring(1); ... if (!manualTests.includes(manualKey)) { manualTests.push(manualKey); }`",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 16,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".custom-gcl.yml",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "",
+        "review": "[缺陷类型] 依赖/工具链版本回退（含安全扫描与静态检查工具）。影响评估：CI 的漏洞检测能力下降，构建与发布链（vsce/esbuild）使用更旧版本，可能重新暴露既有缺陷；与代码回退混在同一 MR 中也不利于审计。",
+        "suggestion": "[重构思路] 若确需回退，拆分为独立 MR 并在描述中写明回退原因（如上游回归/兼容性问题）与恢复计划；lint 与 CodeQL 版本尽量保持最新。代码示例：在 .custom-gcl.yml 中保留 `version: v2.3.0`，如需降级则在 MR 描述中附 issue 链接说明回滚条件。",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 4,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/parser/reparser.go",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "parameter = p.factory.NewParameterDeclaration(nil, nil, p.factory.DeepCloneReparse(jsparam.Name()), p.makeQuestionIfOptional(jsparam), nil, nil)",
+        "review": "[缺陷类型] 变参数（rest parameter）语义丢失。影响评估：JSDoc 声明的可变参数函数在调用处报 TS2554，声明文件生成结果与 tsc 不一致，且相关基线被删除而非更新，掩盖了回归。",
+        "suggestion": "[重构思路] 恢复对 JSDocVariadicType 的识别并生成 dotDotDotToken，类型取内层类型。代码示例：`typ := jsparam.TypeExpression.Type(); var dots *ast.Node; if typ.Kind == ast.KindJSDocVariadicType { dots = p.factory.NewToken(ast.KindDotDotDotToken); dots.Flags = p.contextFlags | ast.NodeFlagsReparsed; typ = typ.AsJSDocVariadicType().Type }; parameter = p.factory.NewParameterDeclaration(nil, dots, name, question, p.reparseJSDocTypeLiteral(typ), nil)`。",
+        "category": "可靠性",
+        "subcategory": "AST 构造语义",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 168,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F012",
+        "code": "if parent.Kind == ast.KindParenthesizedExpression {",
+        "review": "[缺陷类型] 功能分支被裁剪导致 JSDoc @satisfies 校验失效。影响评估：用户可见诊断消失、推导类型变宽，且回归被删除错误基线的方式消化，后续难以发现。",
+        "suggestion": "[重构思路] 保留字段直接赋值，但补齐被删的父节点分支，抽出统一 helper 对 Initializer()/Expression() 插入 cast。代码示例：`if init := parent.Initializer(); init != nil { parent.AsMutable().SetInitializer(p.makeNewCast(p.factory.DeepCloneReparse(te.Type()), p.factory.DeepCloneReparse(init), false)); p.finishMutatedNode(parent) }`，并恢复 checkJsdocSatisfiesTag12/13 错误基线。",
+        "category": "可靠性",
+        "subcategory": "JSDoc 语义回归",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 360,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/lsp/server.go",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "if errors.Is(err, io.EOF) {",
+        "review": "[缺陷类型] 取消语义与错误码映射错误。影响评估：客户端把正常取消显示为服务端内部错误，无法按 RequestCancelled 静默处理，日志与用户体验受损。",
+        "suggestion": "[重构思路] 恢复取消分支并统一映射。代码示例：`switch { case errors.Is(err, io.EOF): lspExit(); case errors.Is(err, context.Canceled): s.sendError(req.ID, lsproto.ErrRequestCancelled); default: s.sendError(req.ID, err) }`。",
+        "category": "可靠性",
+        "subcategory": "请求取消语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 371,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F015",
+        "code": "s.sendResult(req.ID, hover)",
+        "review": "[缺陷类型] 缺少取消后的响应抑制。影响评估：客户端已放弃的请求仍收到 response，既浪费带宽又可能与取消错误竞争，导致编辑器出现重复响应/意外状态。",
+        "suggestion": "[重构思路] 在发送入口统一做取消检查，或抽出 sendResultIfNotCanceled 让所有 handler 复用。代码示例：`func (s *Server) sendResultIfNotCanceled(ctx context.Context, id *lsproto.ID, res any) { if ctx.Err() != nil { return }; s.sendResult(id, res) }`。",
+        "category": "可靠性",
+        "subcategory": "请求取消语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 675,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F016",
+        "code": "locations := languageService.ProvideReferences(params)",
+        "review": "[缺陷类型] 取消能力缺失导致的资源浪费。影响评估：取消后的重计算继续占用 CPU/内存，大仓库上频繁触发引用查找会明显卡顿，并拖慢同一 checker pool 上的其它请求。",
+        "suggestion": "[重构思路] 恢复 ctx 并在符号搜索循环中周期性检查取消，server 侧保留取消映射。代码示例：`func (l *LanguageService) ProvideReferences(ctx context.Context, params *lsproto.ReferenceParams) ([]*lsproto.Location, error) { if err := ctx.Err(); err != nil { return nil, err }; ... }`。",
+        "category": "性能",
+        "subcategory": "取消传播",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 728,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F017",
+        "code": "hover, err := languageService.ProvideDocumentSymbols(ctx, params.TextDocument.Uri)",
+        "review": "[缺陷类型] 变量命名与语义不符（复制粘贴残留）。影响评估：阅读成本上升、易误判为逻辑错误，为后续重构埋下误改风险。",
+        "suggestion": "[重构思路] 局部变量改为 symbols，与 ProvideDocumentSymbols 语义一致。代码示例：`symbols, err := languageService.ProvideDocumentSymbols(ctx, params.TextDocument.Uri); if err != nil { return err }; s.sendResult(req.ID, symbols)`。",
+        "category": "可读性",
+        "subcategory": "命名与语义一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 857,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "package.json",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "\"dprint\": \"^0.50.0\",",
+        "review": "[缺陷类型] 无关依赖版本回退。影响评估：格式化结果可能与既有代码不一致，CI 与本地工具版本漂移，产生无意义 diff 噪音。",
+        "suggestion": "[重构思路] 若为临时规避，请在 MR 描述注明原因与恢复计划；否则回退该改动或拆成独立 MR。代码示例：`\"dprint\": \"^0.50.1\",`。",
+        "category": "可维护",
+        "subcategory": "依赖版本管理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

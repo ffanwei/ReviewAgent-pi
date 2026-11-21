@@ -1,0 +1,289 @@
+{
+  "generatedAt": "2026-11-15T00:22:12.244Z",
+  "runId": "20261115_001909_200",
+  "source": "mr",
+  "caseId": "bluewave-labs__Checkmate@32b54dd",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 159,
+      "title": "expectedValue 断言直接把 JSON 对象 payload 当字符串比较，引发误报 down 与 TypeError 抛出",
+      "description": "requestHttp 里 payload 在 content-type 为 application/json 时是 JSON.parse 后的对象（L135-140），而新增的断言代码直接使用字符串语义：matchMethod===\"equal\" 时 `payload === expectedValue` 对对象恒定 false；matchMethod===\"include\" 时 `payload.includes(...)` 对对象抛 TypeError；matchMethod===\"regex\" 时 `new RegExp(...).test(payload)` 会把对象转成 \"[object Object]\" 再匹配。前者会让所有配置了「equal 期望值」的 JSON 接口被判定为 down（L165-167 置 status=false），后者抛出的 TypeError 不是 HTTPError/RequestError，会在 L200-202 被重新抛出，导致该监视器本次检查直接失败、状态与 Check 记录都不落库。此前这段逻辑只写日志、不影响 status，本次改动把隐藏问题变成了对用户可见的误报。",
+      "evidence": [
+        "server/src/service/infrastructure/networkService.js:135-140 — content-type 含 application/json 时 payload = JSON.parse(response.body)，payload 为对象",
+        "server/src/service/infrastructure/networkService.js:158 — `if (matchMethod === \"equal\") ok = payload === expectedValue;` 对象与字符串严格比较恒为 false",
+        "server/src/service/infrastructure/networkService.js:159 — `if (matchMethod === \"include\") ok = payload.includes(expectedValue);` 对象无 includes 方法",
+        "server/src/service/infrastructure/networkService.js:164-168 — ok 为 false 时 `httpResponse.code = 500; httpResponse.status = false;`",
+        "server/src/service/infrastructure/networkService.js:190-202 — 仅 err.name 为 HTTPError/RequestError 才转成响应，其余错误在 L200-202 重新 throw"
+      ],
+      "rule": "CORRECTNESS-HTTP-ASSERT-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 响应体断言类型不匹配（对象与字符串混用）。影响评估：配置了 advanced matching 的 JSON 类 HTTP 监视器会被稳定判定为 down，产生误告警；include/regex 场景会抛 TypeError 使检查中断，Check 与 MonitorStats 缺失本次数据，进而影响 uptime 统计与状态窗口。",
+        "suggestion": "[重构思路] 先把待比较值统一归一化为字符串（或在 JSON 场景下按 jsonPath 取值），对每种 matchMethod 分别做类型判断，并把异常正则/不支持的方法降级为明确的失败原因而不是抛错。代码示例：`const candidate = typeof payload === \"string\" ? payload : JSON.stringify(payload);\\nconst matchers = { equal: (a, b) => a === b, include: (a, b) => a.includes(b), regex: (a, b) => new RegExp(b).test(a) };\\nconst fn = matchers[matchMethod ?? \"equal\"];\\nif (!fn) { httpResponse.status = false; httpResponse.message = \\`Unsupported matchMethod: \\${matchMethod}\\`; return httpResponse; }\"",
+        "subcategory": "序列化/类型不匹配"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 165,
+      "title": "断言失败时把 code 改写为 500，掩盖真实 HTTP 状态码",
+      "description": "期望值不匹配时新增代码把 `httpResponse.code` 覆盖成 500，但此时服务端实际返回的是 200 等正常状态码，code 会被 statusService.buildCheck 映射为 Check.statusCode（statusService.js:229 statusCode: code）并在事故表、状态页中展示（IncidentTable 的 statusCode 列）。结果用户看到的是「500 内部错误」，无法区分是目标服务真的 500 还是内容断言不匹配，排障信息被破坏。",
+      "evidence": [
+        "server/src/service/infrastructure/networkService.js:165 — `httpResponse.code = 500;` 覆盖了 L145 `httpResponse.code = response.statusCode;`",
+        "server/src/service/infrastructure/statusService.js:229 — `statusCode: code` 直接落库为 Check.statusCode",
+        "client/src/Pages/Incidents/Components/IncidentTable/index.jsx:191-193 — 事故表以 row.statusCode 渲染 HttpStatusLabel"
+      ],
+      "rule": "OBSERVABILITY-STATUS-CODE-001",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 用合成的 500 覆盖真实状态码。影响评估：Check/事故/状态页展示的状态码与真实响应不符，误导排障；同时与 L191-194 网络错误分支的语义（code 才是真实码）不一致。",
+        "suggestion": "[重构思路] 保留原始 code，把断言失败表达在 status 与 message 上（可另加一个 assertion 字段），不要篡改观测字段。代码示例：`if (!ok) {\\n  httpResponse.status = false;\\n  httpResponse.message = \\`Expected value not matched (\\${matchMethod})\\`;\\n  httpResponse.assertion = { matchMethod, expectedValue, matched: false };\\n  return httpResponse;\\n}`",
+        "subcategory": "观测字段被覆盖"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 157,
+      "title": "matchMethod 为空或未知取值时断言恒定失败，监视器会永久判定为 down",
+      "description": "`let ok = false;` 只有 matchMethod 精确等于 equal/include/regex 之一才可能被置 true，其他取值（空串、null、未知字符串）会让 ok 保持 false，直接走 L164-168 的失败分支。而 matchMethod 在 schema 与校验层都被允许为空：Monitor.js 的 enum 含 \"\"，server/src/validation/joi.js 与 client/src/Validation/validation.js 都是 `allow(null, \"\")`；客户端在关闭 advanced matching 时才清空，但历史数据或直接调用 API 创建的、只填了 expectedValue 的记录会落到这个分支，导致「只要有一次检查就永远 down」。",
+      "evidence": [
+        "server/src/service/infrastructure/networkService.js:157-160 — ok 初始为 false，仅三个 if 分支可置 true",
+        "server/src/db/models/Monitor.js:58-61 — matchMethod enum 为 [\"equal\", \"include\", \"regex\", \"\"]，非必填",
+        "server/src/validation/joi.js:197 — `matchMethod: joi.string().allow(null, \"\")`",
+        "client/src/Validation/validation.js:225 — `matchMethod: joi.string().allow(null, \"\")`"
+      ],
+      "rule": "CORRECTNESS-HTTP-ASSERT-002",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 缺失/未知枚举值未做缺省处理。影响评估：expectedValue 有值但 matchMethod 为空的监视器会被稳定判 down 并触发通知，属于误报型故障；同时该分支没有任何日志，难以定位。",
+        "suggestion": "[重构思路] 给出明确的缺省策略并记录未知取值：matchMethod 为空时回退到 \"equal\"（与前端 Select 的 `value={monitor.matchMethod || \"equal\"}` 一致），未知取值时返回带 message 的失败并 warn 日志。代码示例：`const method = matchMethod || \"equal\";\\nif (![\"equal\",\"include\",\"regex\"].includes(method)) {\\n  this.logger.warn({ message: \\`Unknown matchMethod \\${matchMethod}\\`, service: this.SERVICE_NAME, method: \"requestHttp\" });\\n}`",
+        "subcategory": "枚举缺省值缺失"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "安全",
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 160,
+      "title": "用用户可控字符串直接构造 RegExp，非法正则抛错且存在 ReDoS 风险",
+      "description": "matchMethod===\"regex\" 时直接 `new RegExp(expectedValue)`，expectedValue 来自用户在监视器表单/API 中填写的内容，既未做语法校验也未做长度/回溯限制。非法正则（如 `(`）会抛 SyntaxError，被 L190 的 catch 捕获后因 name 不是 HTTPError/RequestError 而重新抛出，使该监视器每次检查都失败；恶意或写错的正则（如嵌套量词）可在事件循环上造成长时间回溯，阻塞同一进程内所有监视器的调度。",
+      "evidence": [
+        "server/src/service/infrastructure/networkService.js:160 — `if (matchMethod === \"regex\") ok = new RegExp(expectedValue).test(payload);`",
+        "server/src/service/infrastructure/networkService.js:190-202 — SyntaxError 不在 HTTPError/RequestError 白名单内，被重新 throw",
+        "server/src/validation/joi.js:174 — `expectedValue: joi.string().allow(\"\")` 未对正则语法做校验"
+      ],
+      "rule": "SECURITY-REGEX-INJECTION-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 未校验的用户输入构造正则（ReDoS + 未捕获语法错误）。影响评估：单条错误配置即可让该监视器永久检查失败；灾难性回溯会阻塞 Node 事件循环，影响同进程内全部监视器的检查与 API 响应。",
+        "suggestion": "[重构思路] 在保存监视器时（joi 校验层）预编译并缓存正则，校验失败即拒绝保存；运行时对 test() 加 try/catch 并设置长度上限。代码示例：`let re;\\ntry { re = new RegExp(expectedValue); ok = re.test(String(payload)); }\\ncatch { httpResponse.status = false; httpResponse.message = \"Invalid regex in expectedValue\"; return httpResponse; }`",
+        "subcategory": "正则注入/ReDoS"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 312,
+      "title": "docker 歧义分支把 404 赋给了 status 字段，code 缺失",
+      "description": "新增的「歧义匹配」分支里写的是 `dockerResponse.status = 404;` 紧接着又被 `dockerResponse.status = false;` 覆盖，看起来本意是 `dockerResponse.code = 404`。实际结果是：返回对象没有 code（被 buildCheck 落库为 statusCode: undefined），而 status 虽是 false 但第一行的 404 是完全无效的死赋值。若日后有人删掉后面那行 status=false，status 会变成数字 404（truthy），监视器将被判定为 up，属于高危的字段错用。",
+      "evidence": [
+        "server/src/service/infrastructure/networkService.js:293-296 — 「未找到容器」分支正确写法为 `dockerResponse.code = 404; dockerResponse.status = false;`",
+        "server/src/service/infrastructure/networkService.js:312-314 — `dockerResponse.status = 404;` 紧跟 `dockerResponse.status = false;`，code 未被赋值",
+        "server/src/service/infrastructure/statusService.js:229 — `statusCode: code`，undefined 会写入 Check.statusCode"
+      ],
+      "rule": "CORRECTNESS-FIELD-MISUSE-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 响应字段误用（status 与 code 混淆）+ 死赋值。影响评估：歧义场景下 Check 的 statusCode 为 undefined，事故/状态页展示缺失；同时该分支与 L293-296 的写法不一致，后续维护极易踩坑。",
+        "suggestion": "[重构思路] 与「未找到容器」分支保持同一形状，抽出构造失败响应的辅助函数，避免复制粘贴出错。代码示例：`const fail = (code, message) => ({ ...dockerResponse, code, status: false, message });\\nif (matchTypes.length > 1) return fail(404, \\`Ambiguous container match for \"\\${monitor.url}\"\\`);`",
+        "subcategory": "字段误用"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 305,
+      "title": "容器匹配优先级被歧义判定否定，同时命中精确名称与部分 ID 时直接报错",
+      "description": "L266-282 的注释声明按「全 ID 精确 → 容器名精确 → ID 前缀」的优先级选出一个容器（`exactIdMatch || exactNameMatch || partialIdMatch`），但 L300-316 又在匹配类型多于一种时直接返回失败，把刚算出的优先级结论丢掉。由于部分 ID 匹配用的是 `startsWith`，当容器名本身是十六进制字符串（如 `deadbeef`、`abc123`）时会同时命中「精确名称」和另一个容器的「ID 前缀」，于是本应正常命中的监视器被判为歧义/失败，属于误报 down。此外纯十六进制名称还会被 partialIdMatch 命中到无关容器，匹配语义并不唯一。",
+      "evidence": [
+        "server/src/service/infrastructure/networkService.js:279 — `containers.find((c) => c.Id.toLowerCase().startsWith(normalizedInput))` 对任意十六进制前缀都会命中",
+        "server/src/service/infrastructure/networkService.js:282 — `let targetContainer = exactIdMatch || exactNameMatch || partialIdMatch;` 已确定优先级",
+        "server/src/service/infrastructure/networkService.js:300-316 — matchTypes.length > 1 时直接返回 status=false 的失败响应，与上面的优先级策略矛盾"
+      ],
+      "rule": "CORRECTNESS-DOCKER-MATCH-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 匹配策略自相矛盾（先排序后否决）。影响评估：容器名与某容器 ID 前缀重合时监视器被误判为失败并触发通知；同样的输入在不同环境下结果不可预测，难以复现排查。",
+        "suggestion": "[重构思路] 明确「优先级优先」还是「歧义即失败」：若保留优先级，则删除 L299-316 的否决分支，仅对被跳过的较低优先级匹配打 warn 日志；若要求唯一匹配，则在每一级内部检测多个候选（find → filter）并拒绝该级，而不是跨级否决。代码示例：`const byName = containers.filter(c => c.Names.some(n => n.replace(/^\\/+/, \"\").toLowerCase() === normalizedInput));\\nif (byName.length > 1) return fail(409, \"Ambiguous container name\");\\nconst target = exactIdMatch ?? byName[0] ?? partialIdMatch;`",
+        "subcategory": "匹配逻辑矛盾"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+      "line": 12,
+      "title": "迁移在每次启动时无版本记录地重复执行，失败被吞掉且调用方不检查返回值",
+      "description": "runMigrations 在 MongoDB.connect 成功后无条件调用（MongoDB.js:69），而 0001 迁移没有任何已执行版本/迁移记录表，只能靠 `statusWindowThreshold: { $lt: 1 }` 的过滤条件获得部分幂等；任何小于 0.01 的残留值（例如 0.006）会在下一次启动时再被乘 100。更关键的是迁移内部 catch 后只 `console.error` 并 return false，migration/index.js:4 与 MongoDB.connect 都不检查返回值，于是迁移失败完全静默：未被换算的历史文档仍保存 0.6，而 statusService 现在按百分比比较（failureRate >= 0.6 即判 down，`< 0.6` 才恢复），这类监视器会在单次失败时立刻 down、且几乎无法恢复，产生错误告警。此外迁移用逐条 `monitor.save()` 而非一次 updateMany，量级大时启动会被拉长，并会触发 MonitorSchema 的 pre(\"save\") 钩子与全量文档校验（任一历史文档不满足 schema 时整段迁移中断）。",
+      "evidence": [
+        "server/src/db/mongo/MongoDB.js:69 — connect 成功后 `await runMigrations();`，每次进程启动都执行",
+        "server/src/db/mongo/migration/index.js:4 — `await migrateStatusWindowThreshold();`，无返回值判断",
+        "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:12-15 — catch 内仅 `console.error` 并 `return false`",
+        "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:4-7 — 以 `$lt: 1` 作为唯一幂等依据，逐条 `monitor.save()`",
+        "server/src/service/infrastructure/statusService.js:153-163 — failureRate 为百分比，与未迁移的 0.6 阈值组合会导致立即 down、几乎无法恢复"
+      ],
+      "rule": "MIGRATION-IDEMPOTENCY-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 数据迁移缺少版本记录与失败处理。影响评估：迁移失败静默 → 历史阈值仍为比例值，与新的百分比判定组合后引发误告警与「永不恢复」的状态；重复执行对极小残留值会再次放大；逐条 save 使启动变慢并可能因单个文档校验失败中断整批。",
+        "suggestion": "[重构思路] 增加迁移记录集合（记录已执行的 migration id）实现幂等；迁移内部使用单条 updateMany 做原子换算；失败时以 error 级别日志抛出，让 connect 显式失败或明确降级提示。代码示例：`const done = await Migration.findOne({ name: \"0001_statusWindowThreshold\" });\\nif (done) return;\\nawait Monitor.updateMany({ statusWindowThreshold: { $lt: 1 } }, [{ $set: { statusWindowThreshold: { $multiply: [\"$statusWindowThreshold\", 100] } } }]);\\nawait Migration.create({ name: \"0001_statusWindowThreshold\", appliedAt: new Date() });`",
+        "subcategory": "迁移幂等与错误处理"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "client/src/Components/Table/index.jsx",
+      "line": 43,
+      "title": "DataTable 的 config 默认值不与会话传入合并，IncidentTable 因此丢失 emptyView",
+      "description": "DataTable 的默认 config 是函数参数的默认值对象，只有调用方完全不传 config 时才生效，传入的对象不会与默认值做合并。IncidentTable 原来不传 config，空数据时走 `config.emptyView`（\"No data\"，L99）；本次改为 `config={{ tooltipContent: GetTooltip }}` 后，config.emptyView 变 undefined，事故列表在 0 条数据时该单元格渲染为空白，用户看不到「无数据」提示。同一处 onRowClick 的默认空函数也随之丢失，未来若有调用方依赖默认行为会直接报错。",
+      "evidence": [
+        "client/src/Components/Table/index.jsx:43-47 — config 默认值为 `{ emptyView: \"No data\", tooltipContent: null, onRowClick: () => {} }`，仅在整个 config 缺省时生效",
+        "client/src/Components/Table/index.jsx:93-101 — 空数据分支渲染 `{config.emptyView}`",
+        "client/src/Pages/Incidents/Components/IncidentTable/index.jsx:236-240 — 改为传 `config={{ tooltipContent: GetTooltip }}`，未包含 emptyView",
+        "client/src/Pages/Incidents/Components/IncidentTable/index.jsx:230-232 — 说明事故列表存在 0 条数据的正常路径"
+      ],
+      "rule": "COMPONENT-DEFAULT-PROPS-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 对象类型 prop 的默认值不与传入对象合并。影响评估：事故表空态渲染空白（原为 \"No data\"），是可感知的 UI 回归；同时该默认值模式对后续所有调用方都是隐患。",
+        "suggestion": "[重构思路] 在组件内部对 config 做解构默认，或显式 merge。代码示例：`const DataTable = ({ headers = [], data = [], config = {} }) => {\\n  const { emptyView = \"No data\", tooltipContent = null, onRowClick, rowSX } = config;\\n  ...\\n}`，调用方无需重复传默认值。",
+        "subcategory": "默认值合并"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+      "line": 28,
+      "title": "GetTooltip 内含 hook 却被当作普通函数在每行渲染中调用",
+      "description": "GetTooltip 在函数体首行调用 useTheme()（L28），属于 hook 调用；但它在 DataTable 的渲染过程中被 `config.tooltipContent(row)`（Table/index.jsx:113）当作普通函数逐行调用。这违反 Rules of Hooks：hook 调用发生在 data.map 的循环体内，调用次数随行数变化。当前仅因为 useTheme 底层是 useContext（不占用 hook 槽位）才侥幸不报错，一旦 GetTooltip 里加入 useState/useMemo 等按槽位记录的 hook，行数变化时就会触发 \"Rendered more hooks than during the previous render\" 崩溃；同时这种「看起来是组件、实际当函数」的写法极易误导后续维护者。",
+      "evidence": [
+        "client/src/Pages/Incidents/Components/IncidentTable/index.jsx:27-28 — `const GetTooltip = (row) => { const theme = useTheme();`",
+        "client/src/Components/Table/index.jsx:111-115 — `title={typeof config.tooltipContent === \"function\" ? config.tooltipContent(row) : config.tooltipContent}` 在 map 内逐行调用",
+        "client/src/Components/Table/index.jsx:103-105 — 调用点位于 `data.map((row) => {` 循环体内"
+      ],
+      "rule": "REACT-HOOKS-RULES-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 在循环/普通函数中调用 hook（违反 Rules of Hooks）。影响评估：当前侥幸可用，任何后续给该函数加状态类 hook 都会导致运行时崩溃；代码语义与 eslint 规则冲突，降低可维护性。",
+        "suggestion": "[重构思路] 明确渲染契约：让 tooltipContent 接收 row 并返回 React 元素，但把 theme 提升到组件层或用纯函数的方式获取主题；或者把 GetTooltip 写成真正的组件并用 JSX 调用 `<GetTooltip row={row} />`。代码示例：`// Table/index.jsx\\ntitle={typeof tooltipContent === \"function\" ? <tooltipContent row={row} /> : tooltipContent}\\n\\n// IncidentTable\\nconst TooltipContent = ({ row }) => { const theme = useTheme(); ... }`",
+        "subcategory": "React Hooks 规则"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "性能",
+      "file": "client/src/Components/Table/index.jsx",
+      "line": 106,
+      "title": "所有 DataTable 使用者都被无条件包一层 Tooltip，即使没有 tooltip 内容",
+      "description": "改动把每个 TableRow 无条件包进 Tooltip 并配置了 followCursor、enterDelay、slotProps.popper.modifiers 等，而没有 tooltipContent 的表格（如 JobTable，只传 onRowClick/rowSX）同样会创建 Tooltip 组件实例并附带 popper 修饰器配置。这些表格每行多一层组件与事件处理器，长列表（如队列 JobTable）渲染成本上升，且通用组件被具体页面的浮层需求污染。",
+      "evidence": [
+        "client/src/Components/Table/index.jsx:106-135 — Tooltip 包裹 TableRow，未按 tooltipContent 是否存在做条件分支",
+        "client/src/Pages/Logs/Queue/components/JobTable/index.jsx:105-121 — JobTable 调用 DataTable 时 config 只有 onRowClick 与 rowSX，没有 tooltipContent",
+        "client/src/Components/Table/index.jsx:45 — 默认 tooltipContent 为 null，此时 Tooltip 的 title 为 null"
+      ],
+      "rule": "PERF-OVERWRAP-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 通用组件无条件包裹浮层容器。影响评估：无 tooltip 需求的表格多出一层组件与事件绑定，长列表渲染/交互开销增加；组件的通用性下降，后续每个页面都能往里塞浮层逻辑。",
+        "suggestion": "[重构思路] 仅在 tooltipContent 存在时包裹，其余情况直接渲染 TableRow；把列/行的渲染抽成内部变量避免重复代码。代码示例：`const row = <TableRow ...>{cells}</TableRow>;\\nreturn tooltipContent ? <Tooltip key={key} ...>{row}</Tooltip> : React.cloneElement(row, { key });`",
+        "subcategory": "渲染开销"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 1,
+      "title": "新增的 `import { match } from \"assert\"` 未被使用，并引入了 Node 内建 assert 模块",
+      "description": "文件顶部新增了 `import { match } from \"assert\"`，但整个 requestHttp 的断言逻辑都在 L156-169 内联实现，`match` 从未被引用。这是一行无效导入：既增加阅读噪音（容易让人误以为断言用了 assert.match），也把 Node 的 assert 模块拉进业务代码，若后续有人误用 assert.match 会在生产环境抛 AssertionError 中断检查。",
+      "evidence": [
+        "server/src/service/infrastructure/networkService.js:1 — `import { match } from \"assert\";`",
+        "server/src/service/infrastructure/networkService.js:156-169 — 断言逻辑使用字符串比较与 `new RegExp(...)`，未出现 match 标识符"
+      ],
+      "rule": "MAINTAINABILITY-UNUSED-IMPORT-001",
+      "confidence": 0.92,
+      "tips": {
+        "review": "[缺陷类型] 未使用的导入。影响评估：lint 会报 no-unused-vars（若开启）；误导读者以为断言已使用 assert；assert 在生产构建中被引入属于不必要的依赖。",
+        "suggestion": "[重构思路] 删除该行导入；若确实想用断言语义，改为内联比较并给出显式错误信息，而不是依赖 assert 抛错。代码示例：`// 删除 import { match } from \"assert\";\\nif (method === \"regex\") { ok = new RegExp(expectedValue).test(String(payload)); }`",
+        "subcategory": "无用导入"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+      "line": 52,
+      "title": "interval 列在 monitorInterval 缺失时渲染为 \"null ms\"",
+      "description": "新增列直接拼接 `${row.monitorInterval} ms`，而后端 getJobs 用 `job?.data?.interval || null` 取值（SuperSimpleQueue.js:144），历史 job 的 data 中若没有 interval 或值缺失会返回 null，界面就会出现「null ms」这样的脏文案。同文件其它列（lastRunAt、lockedAt）都用 `|| \"-\"` 处理缺失值，此处不一致。",
+      "evidence": [
+        "client/src/Pages/Logs/Queue/components/JobTable/index.jsx:52 — `render: (row) => `${row.monitorInterval} ms``",
+        "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js:144 — `monitorInterval: job?.data?.interval || null`",
+        "client/src/Pages/Logs/Queue/components/JobTable/index.jsx:77 — 同文件缺失值写法为 `row.lastRunAt || \"-\"`"
+      ],
+      "rule": "UX-NULL-FALLBACK-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 缺失值未做展示降级。影响评估：队列页出现「null ms」，与同表其它列风格不一致，降低可读性并让用户怀疑数据异常。",
+        "suggestion": "[重构思路] 与相邻列保持一致，缺失时显示 \"-\"；如需更友好可格式化为秒/分钟。代码示例：`render: (row) => (row.monitorInterval ? `${row.monitorInterval} ms` : \"-\")`",
+        "subcategory": "空值降级缺失"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "server/src/service/infrastructure/networkService.js",
+      "line": 152,
+      "title": "配置了 expectedValue 时 jsonPath 校验被完全跳过，且期望值从未作用在 JSON 路径提取值上",
+      "description": "新增的提前返回条件使流程在 expectedValue 存在时只走断言分支：`if (expectedValue) { ... return; }` 的每条路径都 return，于是 L171-188 的 jsonPath 校验（非 JSON 响应提示 httpNotJson、路径不合法提示 httpJsonPathError）变成不可达代码；反过来 jmespath.search 的返回值也从未参与期望值比较（L182 结果被丢弃）。结果是：同时配置 jsonPath 与 expectedValue 的监视器，既不再校验 JSON 路径有效性，也无法按路径取值做断言，只能对整包 payload 做字符串匹配，语义与 UI 上「JSON Path + 期望值」的提示不符。",
+      "evidence": [
+        "server/src/service/infrastructure/networkService.js:152 — `if (!expectedValue && !jsonPath) { return httpResponse; }`",
+        "server/src/service/infrastructure/networkService.js:156-169 — expectedValue 分支所有路径均 return，使后续 jsonPath 块不可达",
+        "server/src/service/infrastructure/networkService.js:181-187 — `this.jmespath.search(payload, jsonPath);` 返回值被丢弃，仅用于 try/catch 校验",
+        "client/src/Pages/Uptime/Create/index.jsx:711-745 — 高级匹配表单同时提供 matchMethod/expectedValue 与 jsonPath 输入"
+      ],
+      "rule": "CORRECTNESS-JSONPATH-001",
+      "confidence": 0.63,
+      "tips": {
+        "review": "[缺陷类型] 分支顺序导致校验逻辑不可达 + 提取值未参与断言。影响评估：配置了 jsonPath 的监视器失去原有校验与提示（状态码为 200 但内容不是 JSON 时不再给出明确原因）；同时期望值比较对 JSON API 只能整包匹配，功能与用户预期不符。",
+        "suggestion": "[重构思路] 把「取值」与「断言」解耦：先用 jsonPath 从 payload 提取 target（无 jsonPath 时 target = payload），再对 target 做一致化后的匹配，并保留原有的 httpNotJson/httpJsonPathError 分支。代码示例：`let target = payload;\\nif (jsonPath) {\\n  try { target = this.jmespath.search(payload, jsonPath); }\\n  catch { httpResponse.status = false; httpResponse.message = this.stringService.httpJsonPathError; return httpResponse; }\\n}\\nif (expectedValue) return this.applyAssertion(httpResponse, target, matchMethod, expectedValue);`",
+        "subcategory": "分支可达性/断言目标错误"
+      }
+    }
+  ]
+}

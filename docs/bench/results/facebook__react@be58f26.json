@@ -1,0 +1,52 @@
+{
+  "instance_id": "facebook__react@be58f26",
+  "repo": "facebook/react",
+  "base_commit": "88b976740467f9dfabae03c79a8eff9033c35050",
+  "head_commit": "be58f26f9a6e579d8df36d901a59249d9ac1393f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 227.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js",
+      "line": 697,
+      "summary": "resetResumableState 不再把 instructions 重置为 NothingSent，postpone 重放会继承陈旧的指令位",
+      "failure_scenario": "resetResumableState 的语义被注释明确限定为“This currently assumes nothing was flushed”，即调用后 resumableState 必须回到“什么都没 flush”的状态。本次删除 `resumableState.instructions = NothingSent;` 后，instructions 的位标记不再被清除。而 instructions 中至少两个位是在 render 阶段而非 flush 阶段就被置位的：injectFormReplayingRuntime（1974 行 `resumableState.instructions |= SentFormReplayingRuntime`，由 1209/2117 行的 pushStartButton / pushStartForm 在渲染带 action 的 form/button 时调用）以及 pushCompletedShellIdAttribute（5013 行 `|= SentCompletedShellId`）。因此当 root 被 postpone 或 preamble 未就绪时，ReactFizzServer.getPostponedState（ReactFizzServer.js:5533）调用 resetResumableState 时这些位可能已经是 1，而同一个 resumableState 会被放进 PostponedState 并由 resumeRequest（ReactFizzServer.js:599-611）直接复用。恢复渲染后：(1) injectFormReplayingRuntime 的 `(instructions & SentFormReplayingRuntime) === NothingSent` 判定为假，表单 replay 运行时脚本不再写入 bootstrapChunks，恢复出来的 form action 无法被 Fiber 接管/重放；(2) writeCompletedSegmentInstruction / writeCompletedBoundaryInstruction（4450-4459、4551-4559）会走 partial 分支，只输出 `$RS(` / `$RC(` 而缺少函数定义，客户端抛 ReferenceError，被恢复的 segment 无法 reveal；(3) pushCompletedShellIdAttribute 提前返回会导致补发的 bootstrap script 缺少 id=\"«R»\"，`rel=\"expect\" blocking=render` 无法解除，页面可能长时间白屏。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "SSR-RESUMABLE-STATE-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberHooks.js",
+      "line": 3264,
+      "summary": "memoizedState 只有单个 hook 时会重建 hook 链表并丢弃既有 queue，移除 alternate 兜底后该中间态无保底处理",
+      "failure_scenario": "ensureFormComponentIsStateful 的提前返回条件由 `existingStateHook !== null` 收紧为 `existingStateHook !== null && existingStateHook.next !== null`。当 form fiber 的 memoizedState 非空但 next 为 null（被删除注释所称的 broken intermediate state：formFiber 是 workInProgress 时可能出现的半成品状态）时，函数不再复用它，而是新建 stateHook + resetStateHook 并把两者写到 formFiber 与 alternate 的 memoizedState 上（3321-3325）。新建的两个 queue 以 NoPendingHostTransition / initialResetState 初始化（3275-3316），原先挂在旧 queue 上的 pending 更新（例如正在进行中的 host transition 状态）会被孤立，而这些 lane 仍留在 fiber.lanes 上，可能出现 pending 状态无法提交、useFormStatus 显示的 pending 与实际不符。同时 requestFormReset 里原本 `stateHook.next === null` 时回退到 `(formFiber.alternate: any).memoizedState` 的兜底被删除，改为直接用 `(stateHook.next: any)` 作为 resetStateHook——一旦上述不变量在其它路径被破坏（例如旧代码所防护的场景再次出现），就会对 null queue 调用 dispatchSetStateInternal 而抛错。删除该兜底与本 MR 未附带任何针对该中间态的测试或说明，风险难以被回归测试捕获。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-STATE-002"
+    },
+    {
+      "file": "packages/react-devtools-shared/src/hydration.js",
+      "line": 400,
+      "summary": "DevTools 删除 Error 类型后 Error 的 message/stack/cause 不再可展开，且唯一的验证载体被一并删除",
+      "failure_scenario": "删除 getDataType 中的 isError 判定与 'error' DataType 后，Error 实例不再命中 'error' 分支，而是经 utils.js 的 isPlainObject 判定落入 'class_instance'。class_instance 分支只遍历 getAllEnumerableKeys(data)（hydration.js:420-431），而被删代码的注释明确指出 “name, message, stack and cause are not enumerable yet still interesting”，因此这些非枚举属性不再被序列化：DevTools 中展开 Error 只能看到可枚举的自定义字段，message/stack/cause 无法查看，RSC/Next.js 常用的 `digest` 字段若为自定义可枚举属性仍可见但语义上的 Error 结构化展示完全丢失（formatDataForPreview 也回落到 default 分支的 String(data)，仅剩一行预览）。同一 MR 还删除了 react-devtools-shell 中 error / errorWithCause / errorWithDigest / domexception 四个演示用例与 DigestError 类，等于移除后没有任何示例或测试承载该行为，属于无说明、无覆盖的产品行为退化。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "REGRESSION-DEVTOOLS-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\facebook__react\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\facebook__react@be58f26.diff\n  caseId              facebook__react@be58f26\n  --issue             (未传)\n  --taskId            facebook__react@be58f26\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 2 个文件 / 2786 字符（test=2），明细见审计 mrFilter\n✓ 完成 · 耗时 209.6s · 模型调用 20 次 · token 输入 60,889（未命中） · 输出 27,593 · 缓存命中 620,032（91.1%） · 工具 37 次（主会话 37 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0180\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 210.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 209.5s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 39.9s (19.1%) | P2 3.6s (1.7%) | P3 9.9s (4.7%) | P4 104.7s (50.0%) | P5 40.8s (19.5%) | P6 10.6s (5.1%)\n[usage] 任务总计 | 模型调用 20 次（Agent 20 + 一次性 0） | token 输入 60,889（未命中） | 输出 27,593 | 缓存命中 620,032（91.1%） | $0.0180\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\facebook__react@be58f26\\audit\\20261115_004132_750.json",
+  "token_usage": {
+    "input_tokens": 60889,
+    "output_tokens": 27593,
+    "cache_read_input_tokens": 620032
+  }
+}

@@ -1,0 +1,310 @@
+[
+  {
+    "filePath": "packages/svelte/src/compiler/phases/scope.js",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "e.declaration_duplicate(node, node.name);",
+        "review": "[缺陷类型] 语义校验过严导致的编译期误报。影响评估：合法的 `var`/函数重复声明（含块级 `var` 提升）被判定为 `declaration_duplicate`，组件直接编译失败，属于破坏性回归。",
+        "suggestion": "[重构思路] 恢复对 `var`/函数声明的豁免，或仅在两个声明都是词法声明（let/const/class/import）时报错，并为 `var` 重复补充测试用例。代码示例：`if (this.declarations.has(node.name)) {\\n  const existing = this.declarations.get(node.name);\\n  if (existing && existing.declaration_kind !== 'var' && declaration_kind !== 'var') {\\n    e.declaration_duplicate(node, node.name);\\n  }\\n}`",
+        "category": "可靠性",
+        "subcategory": "作用域声明校验",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 100,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/compiler/phases/1-parse/remove_typescript_nodes.js",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "VariableDeclaration(node, context) {",
+        "review": "[缺陷类型] 预处理器遗漏节点类型，导致非法 AST 进入代码生成。影响评估：使用 TS `abstract` 方法的组件可能生成语法非法的 JS 或直接编译报错，且问题只在 TS 场景暴露、难以定位。",
+        "suggestion": "[重构思路] 恢复对 abstract 成员的剔除（同时覆盖 `PropertyDefinition` 与 `MethodDefinition`），或在 parse 阶段显式报 `typescript_invalid_feature` 以给出可读错误。代码示例：`MethodDefinition(node, context) { if (node.abstract) return b.empty; return context.next(); }`，并为 `abstract class` 补一个编译快照测试。",
+        "category": "可靠性",
+        "subcategory": "TypeScript 语法降级",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 121,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/compiler/phases/2-analyze/visitors/Attribute.js",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "if (binding !== null && binding.initial !== null && !binding.updated && !binding.is_called) {",
+        "review": "[缺陷类型] 依赖遍历顺序的隐式状态。影响评估：事件处理器是否被 hoist/委托到根节点取决于调用点在文件中的位置，生成的代码不一致，可导致难以复现的行为差异与测试不稳定。",
+        "suggestion": "[重构思路] 把 `is_called` 的收集提前到 `create_scopes` 的 phase-1 遍历中（与 `updated`/`mutated` 同批完成），保证进入 2-analyze 时标记已完整；或在分析结束后统一做一次事件委托决策。代码示例：在 `create_scopes` 的 CallExpression/TaggedTemplateExpression 分支里 `const b = scope.get(callee.name); if (b) b.is_called = true;`",
+        "category": "可靠性",
+        "subcategory": "分析阶段状态顺序依赖",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 170,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "// @ts-expect-error TODO",
+        "review": "[缺陷类型] 用 @ts-expect-error 掩盖不完整的 state 契约。影响评估：module 脚本的分析行为与组件路径不一致（如 function_depth 变成 NaN、未来新增字段直接抛 TypeError），且类型系统不再报警，回归风险长期潜伏。",
+        "suggestion": "[重构思路] 显式构造与分析器契约一致的 state（缺省值用 0/[]/new Map()），并去掉 @ts-expect-error；若确实需要区分 module 与 component，建议把 AnalysisState 拆成必需核心字段 + 可选 legacy 字段。代码示例：`const state = { scope, scopes, analysis, options, ast_type: 'module', parent_element: null, has_props_rune: false, component_slots: new Set(), expression: null, private_derived_state: [], function_depth: scope.function_depth, instance_scope: scope, reactive_statement: null, reactive_statements: new Map() };`",
+        "category": "可靠性",
+        "subcategory": "分析器状态契约",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 261,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/element.js",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "state",
+        "review": "[缺陷类型] 未使用形参 + 调用方上下文混用。影响评估：读代码时无法判断该函数究竟依赖哪个 state，容易在后续修改中传错上下文；同时暴露 SvelteElement 路径上 context/state 混用的潜在不一致。",
+        "suggestion": "[重构思路] 删除未使用的 `state` 形参，统一以 `context.state` 为准；若确实需要区分，则让 SvelteElement 与 RegularElement 都传同一个 `inner_context` 并改为函数内部使用 `state`。代码示例：`export function build_set_attributes(attributes, context, element, element_id, attributes_id, preserve_attribute_case, is_custom_element) { ... }`",
+        "category": "可维护",
+        "subcategory": "函数签名与实参一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 29,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F010",
+        "code": "context.state.analysis.css.hash !== '' && b.literal(context.state.analysis.css.hash),",
+        "review": "[缺陷类型] 编译期与运行期 scoped 判定不一致。影响评估：非 scoped 元素被注入多余 scoped class，改变 SSR/客户端 HTML 输出，可能影响用户 CSS 命中、快照测试；「哪些元素被 scoped」这一不变量变得不可推理。",
+        "suggestion": "[重构思路] 保持单一事实来源：在 transform 侧按 `element.metadata.scoped` 恢复守卫（注意 `SvelteElement` 在 client 下由 analyze 跳过、依赖运行时拼接 hash，需单独放行），或在 analyze 阶段显式标记「该元素需要运行时追加 hash」。代码示例：`const css_hash = element.metadata.scoped && context.state.analysis.css.hash !== '' ? b.literal(context.state.analysis.css.hash) : undefined;`",
+        "category": "可靠性",
+        "subcategory": "scoped CSS hash 注入",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 76,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/index-client.js",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "export function flushSync(fn) {",
+        "review": "[缺陷类型] 公开 API 返回值语义变更。影响评估：`flushSync` 的返回值被静默丢弃，调用方拿到 undefined，且不会报错，问题会在业务逻辑深处才暴露；同时 `src/index-client.js` 的 JSDoc 与 runtime 实际能力不再一致。",
+        "suggestion": "[重构思路] 让包装层透传返回值并修正 JSDoc（同时保持 `index-server.js` 的 noop 版本签名一致）。代码示例：`/** @template T @param {() => T} [fn] @returns {T | undefined} */ export function flushSync(fn) { return flush_sync(fn); }`",
+        "category": "可靠性",
+        "subcategory": "公开 API 返回值",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 214,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F014",
+        "code": "flush_sync(fn);",
+        "review": "[缺陷类型] 公共 API 返回值被静默丢弃（行为/类型双重破坏）。影响评估：已有调用方拿到 undefined，可能在后续逻辑中产生难以定位的类型错误或运行时错误；且因为不抛错，回归很难在测试外被发现。",
+        "suggestion": "[重构思路] 二选一：要么完整保留返回值语义（`return flush_sync(fn)`，类型恢复为泛型），要么明确作为破坏性变更记录 changeset 并在类型上禁用返回。代码示例：`export function flushSync(fn) { return flush_sync(fn); }` 并保留 `flushSync<T = void>(fn?: () => T): T`。",
+        "category": "可靠性",
+        "subcategory": "公共 API 兼容性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 215,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/compiler/types/index.d.ts",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "| 'snippet';",
+        "review": "[缺陷类型] 类型定义冗余与文档不一致。影响评估：不影响运行时，但会误导类型使用者与后续维护（例如误以为 `raw_state` 不是合法 kind），并降低 d.ts 作为契约的可信度。",
+        "suggestion": "[重构思路] 去掉重复的 `| 'snippet'`，并让 JSDoc 与联合成员一一对应（补上 `raw_state`）。代码示例：`kind:\\n  | 'normal' | 'prop' | 'bindable_prop' | 'rest_prop' | 'state' | 'raw_state' | 'derived' | 'each' | 'snippet' | 'store_sub' | 'legacy_reactive' | 'template';`",
+        "category": "可读性",
+        "subcategory": "类型重复成员",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 282,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/compiler/phases/2-analyze/visitors/ConstTag.js",
+    "reviewTips": [
+      {
+        "id": "F019",
+        "code": "grand_parent?.type !== 'SvelteBoundary' &&",
+        "review": "[缺陷类型] 合法语法被收紧导致编译错误。影响评估：依赖 `{#key}` + `{@const}` 组合的组件在本次变更后无法编译，属于源码级破坏性变更；若无迁移说明会造成升级阻塞。",
+        "suggestion": "[重构思路] 若 `KeyBlock` 内 `{@const}` 确应支持，请恢复白名单分支并补充 `{#key}` 场景的编译/运行测试；若确实要禁止，应在变更说明与错误文档中明确迁移方式。代码示例：`grand_parent?.type !== 'SnippetBlock' && grand_parent?.type !== 'SvelteBoundary' && grand_parent?.type !== 'KeyBlock' && ...`",
+        "category": "可靠性",
+        "subcategory": "模板语法兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 27,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/compiler/phases/3-transform/client/visitors/EachBlock.js",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "const child_state = {",
+        "review": "[缺陷类型] dev 期校验能力回退 + 语义被拆分。影响评估：each 块内 store 绑定的失效场景不再有定向告警，用户只能看到笼统的 non_reactive_update 或完全没有提示；同时 `store_to_invalidate` 的双重用途被隐式削弱，易误导后续维护。",
+        "suggestion": "[重构思路] 若该校验仍需保留，恢复 `child_state.store_to_invalidate` 与 `validate_binding` 中的 `$.mark_store_binding()` 包裹；若确认废弃，请在 `store_to_invalidate` 的计算处补充注释说明它现在只用于 `$.invalidate_store`，避免读者误解。代码示例：`const child_state = { ...context.state, transform: { ...context.state.transform }, store_to_invalidate };`",
+        "category": "可维护",
+        "subcategory": "dev 期校验与语义清晰度",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 144,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/internal/client/dom/elements/attributes.js",
+    "reviewTips": [
+      {
+        "id": "F022",
+        "code": "if (name === 'value') {",
+        "review": "[缺陷类型] 表单状态回退不彻底。影响评估：spread 属性移除 `value`/`checked` 后输入框保留旧值/旧勾选，受控与非受控切换时 UI 与数据不一致，且只在「先有值后移除」的动态场景出现，较难排查。",
+        "suggestion": "[重构思路] 在移除分支中除了保留 defaultValue，也按原语义重置 live 状态（区分首帧与后续更新）。代码示例：`if (name === 'value') {\\n  const previous = input.defaultValue;\\n  input.removeAttribute(name);\\n  input.defaultValue = previous;\\n  input.value = input.__value = prev === undefined ? previous : null;\\n}`",
+        "category": "可靠性",
+        "subcategory": "表单元素状态同步",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 403,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/version.js",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "export const VERSION = '5.19.9';",
+        "review": "[缺陷类型] 版本元数据回退（monotonic version 被破坏）。影响评估：npm 上 5.19.9 已发布，重复发布会被拒绝，release 流程中断；同时 `VERSION` 常量会进入编译产物注释，造成产物版本与源码不一致，问题定位失真。",
+        "suggestion": "[重构思路] 保持版本单调递增：若本次只是回滚某个特性，应保留当前版本号并补 changeset，由发布流程决定版本递增。代码示例：`export const VERSION = '5.20.5';`（package.json 同步保持 5.20.5），新增 `.changeset/xxx.md` 说明 `$props.id` 等回滚内容。",
+        "category": "可维护",
+        "subcategory": "版本与发布元数据",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/internal/server/index.js",
+    "reviewTips": [
+      {
+        "id": "F024",
+        "code": "if (classes) {",
+        "review": "[缺陷类型] SSR 与客户端 class 计算不一致（丢失假值指令的移除语义）。影响评估：服务端首屏 HTML 残留本应关闭的类名，hydrate 后类名被移除会出现样式闪烁；同时快照/SSR 用例若覆盖该场景会失败。",
+        "suggestion": "[重构思路] 在服务端保留按空白边界移除的语义：先把 `attrs.class` 拆成 token 集合，`classes[key]` 为真则加入、为假则删除，再 join。代码示例：`const list = attrs.class ? String(attrs.class).split(/\\s+/).filter(Boolean) : []; for (const key in classes) { const i = list.indexOf(key); if (classes[key]) { if (i === -1) list.push(key); } else if (i !== -1) list.splice(i, 1); } attrs.class = list.join(' ');`",
+        "category": "可靠性",
+        "subcategory": "SSR 输出一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 202,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/internal/client/runtime.js",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "if (is_disconnected) {",
+        "review": "[缺陷类型] 依赖图状态未归一（UNOWNED 标记泄漏）。影响评估：常见写法（模块级 `const d = $derived(...)` 或未在 effect 内初始化的派生值）在接入组件后仍按 unowned 处理，每次读取都全量校验依赖并可能重复注册 reactions，表现为性能退化与长生命周期内存增长。",
+        "suggestion": "[重构思路] 恢复「连通即解除 UNOWNED」的归一逻辑，并在解除时顺手避免重复 push。代码示例：`if (is_unowned_connected && reaction.parent !== null && (reaction.parent.f & UNOWNED) === 0) { reaction.f ^= UNOWNED; }`",
+        "category": "性能",
+        "subcategory": "派生值依赖追踪",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 198,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F026",
+        "code": "const indent = /Firefox/.test(navigator.userAgent) ? '  ' : '\\t';",
+        "review": "[缺陷类型] 全局对象未做存在性判断 + 重复计算。影响评估：在非浏览器 DEV 环境（Node 测试/自定义渲染宿主）中抛出 ReferenceError 覆盖原始错误，导致排障信息丢失；浏览器中每次错误都执行一次正则，属可忽略但无必要的开销。",
+        "suggestion": "[重构思路] 保留单一、带守卫的常量并按需惰性求值，避免在错误处理路径上引入新的失败点。代码示例：`const is_firefox = typeof navigator !== 'undefined' && /Firefox/.test(navigator.userAgent);`，随后 `const indent = is_firefox ? '  ' : '\\t';`",
+        "category": "可移植",
+        "subcategory": "宿主环境兼容",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 327,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/svelte/src/utils.js",
+    "reviewTips": [
+      {
+        "id": "F027",
+        "code": "'$props',",
+        "review": "[缺陷类型] 公共 API 无版本说明的破坏性移除。影响评估：使用 `$props.id()` 的应用升级后编译报错（与「未知 rune」错误混淆），依赖该 rune 的组件库无法跨版本兼容；缺少 changeset 会让 release notes 漏掉这条破坏性变更。",
+        "suggestion": "[重构思路] 若确需回滚该 rune，保留声明并标记 `@deprecated` 过渡一个版本，或在 `.changeset` 中明确标注 breaking change 与替代方案（如自行用 `crypto.randomUUID()` 生成 id）。代码示例：`.changeset/revert-props-id.md` 内写 `---\\n'svelte': minor\\n---\\n移除 \\`$props.id()\\`（5.20.0 引入），请改用自建 id 生成器`。",
+        "category": "可维护",
+        "subcategory": "公共 API 变更管理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 435,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

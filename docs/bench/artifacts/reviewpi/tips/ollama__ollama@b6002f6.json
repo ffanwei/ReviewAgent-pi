@@ -1,0 +1,196 @@
+[
+  {
+    "filePath": "server/routes.go",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "return",
+        "review": "[缺陷类型] 控制流提前返回导致的既有功能丢失（Context 字段不再填充）＋残留不可达分支。影响评估：harmony 模型（gpt-oss 系列）在 /api/generate 下丢失 context，多轮对话/续写语义改变；不可达代码会误导后续维护者，并在下次改动时产生歧义。",
+        "suggestion": "[重构思路] 让 harmony 分支只负责「解析/改写 res 字段」，把「累积 sb + done 时 Tokenize 填 Context」的逻辑放在统一出口之前；再删除 410-417 行重复块。代码示例：\n```go\nif useHarmony {\n    for i, tool := range res.ToolCalls {\n        res.ToolCalls[i].Function.Name = functionNameMap.OriginalFromConverted(tool.Function.Name)\n    }\n} else if thinkingState != nil {\n    thinking, content := thinkingState.AddContent(cr.Content)\n    res.Thinking, res.Response = thinking, content\n}\n\nif _, err := sb.WriteString(cr.Content); err != nil { ch <- gin.H{\"error\": err.Error()} }\nif cr.Done && !req.Raw { /* Tokenize 填 res.Context */ }\nif res.Response != \"\" || res.Thinking != \"\" || len(res.ToolCalls) > 0 || res.Done { ch <- res }\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 387,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "runner/ollamarunner/runner.go",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "http.Error(w, err.Error(), http.StatusInternalServerError)",
+        "review": "[缺陷类型] 已在流式响应中写入后仍使用 http.Error 改变状态码；错误通道与数据通道混用。影响评估：客户端/上层看到的错误信息失真（JSON 解析错误），/api 层无法给出准确的 done_reason 与统计信息，且服务端日志出现误导性 500。",
+        "suggestion": "[重构思路] 流式接口统一只用 JSON 事件表达错误：新增一个带 error 字段的完成响应（或复用 Done + DoneReason）后再关闭流，不调用 http.Error。代码示例：\n```go\ncontent, thinking, err = tokenParser.AddContent(content)\nif err != nil {\n    _ = json.NewEncoder(w).Encode(&llm.CompletionResponse{Done: true, DoneReason: llm.DoneReasonStop})\n    flusher.Flush()\n    close(seq.quit)\n    return\n}\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 884,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "debug.PrintStack()",
+        "review": "[缺陷类型] panic 恢复范围过宽 + 调试输出残留。影响评估：非内存类的程序缺陷被转换为可恢复错误，掩盖真实故障并可能进入不必要的重试/降级；用户日志被无控制地注入堆栈，影响可运维性。",
+        "suggestion": "[重构思路] 保留按错误类型区分的恢复策略，堆栈打印改为受日志级别（如 logutil.Trace 或 env 开关）控制。代码示例：\n```go\ndefer func() {\n    if r := recover(); r != nil {\n        if err, ok := r.(error); ok && errors.As(err, new(ml.ErrNoMem)) {\n            panicErr = err\n            return\n        }\n        slog.Error(\"model allocation panic\", \"error\", r) // 需要堆栈时再 debug.PrintStack()\n        panic(r)\n    }\n}()\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1104,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "parser/token_parser.go",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "if err := json.Unmarshal([]byte(toolContent), &args); err != nil {",
+        "review": "[缺陷类型] 错误被静默吞掉（error swallowing）。影响评估：模型输出非法工具参数时用户得到「既无内容也无工具调用」的空响应，问题难以定位；多工具调用场景直接丢失后续调用。",
+        "suggestion": "[重构思路] 让 Drain 返回 ([]api.ToolCall, error)，由上层把错误转成显式错误事件。代码示例：\n```go\nfunc (p *TokenParser) Drain() ([]api.ToolCall, error) {\n    toolName, toolContent := p.toolParser.Drain()\n    if toolName == nil { return nil, nil }\n    var args api.ToolCallFunctionArguments\n    if err := json.Unmarshal([]byte(toolContent), &args); err != nil {\n        return nil, fmt.Errorf(\"error parsing tool call: raw=%q: %w\", toolContent, err)\n    }\n    ...\n}\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 113,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F009",
+        "code": "parserEngine   ParserInternals",
+        "review": "[缺陷类型] 未被使用的字段与接口（过度抽象）。影响评估：增加阅读负担、误导后续扩展方向；golangci-lint/staticcheck 的 unused 检查对结构体字段不生效，容易长期沉淀。",
+        "suggestion": "[重构思路] 删除 parserEngine 字段、ParserInternals 接口与 defaultEngine；若希望保留统一入口，则在 AddContent 路径中真正使用 p.parserEngine，而不是构造期一次性调用。代码示例：\n```go\ntype TokenParser struct {\n    messageHandler MessageHandler\n    toolParser     ToolParser\n    lastToken      string\n    ...\n}\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "llama/llama.go",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "embed := make([][]float32, lastChunkSize)",
+        "review": "[缺陷类型] 循环重构导致的数据截断（多 chunk 结果被覆盖）＋错误处理从降级变为硬失败。影响评估：多 chunk 图像（高分辨率/切片视觉模型）在 compatibility runner 下的视觉理解明显退化或报错，属于难以察觉的语义回归。",
+        "suggestion": "[重构思路] 保留「先 encode 全部 chunk，再累加全部输出」的语义；若确实只支持最后一个 chunk，应在循环前显式断言 `nChunks == 1` 并给出明确的错误，避免静默截断。代码示例：\n```go\nif nChunks != 1 { return nil, fmt.Errorf(\"multi-chunk images not supported: %d chunks\", nChunks) }\n// 或恢复累加：embed = append(embed, chunkEmbed...)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 531,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "llm/server.go",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "if newEstimates {",
+        "review": "[缺陷类型] 两个独立开关被耦合为一个布尔量，导致封装类型与实际运行的引擎不一致。影响评估：默认配置下新引擎模型的显存估算/统计走旧路径，可能出现 OOM 或调度拒绝；排查时日志与实际行为不符。",
+        "suggestion": "[重构思路] 用两个独立变量表达：`useNewEngine := textProcessor != nil`、`useNewEstimates := envconfig.NewMemoryEstimates()`；封装类型选择与内存估算策略分别由各自变量决定，并在启动日志中同时打印两者。代码示例：\n```go\nuseNewEngine := textProcessor != nil\nuseNewEstimates := useNewEngine && envconfig.NewMemoryEstimates()\n...\nif useNewEngine { return &ollamaServer{llmServer: s}, nil }\nreturn &llamaServer{llmServer: s, ggml: f}, nil\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 437,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F012",
+        "code": "slog.Warn(\"kv cache type not supported by model\", \"type\", kvct)",
+        "review": "[缺陷类型] 日志在正常路径上误报。影响评估：默认配置下每次加载都会出现无意义的告警，降低日志信噪比，掩盖真正的 kv cache 类型不兼容问题。",
+        "suggestion": "[重构思路] 区分三种情况：未指定（不打日志）、指定但不支持（Warn）、指定且支持（设置）。代码示例：\n```go\nswitch {\ncase kvct == \"\":\n    // 未指定，使用默认 f16\ncase f.SupportsKVCacheType(kvct):\n    loadRequest.KvCacheType = kvct\ndefault:\n    slog.Warn(\"kv cache type not supported by model\", \"type\", kvct)\n}\n```",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 227,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "ml/backend/ggml/ggml.go",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "data = unsafe.Slice((*float32)(bts), C.ggml_nelements(t.t))",
+        "review": "[缺陷类型] unsafe 别名（无拷贝）返回内部内存，所有权语义不明确。影响评估：调用方若原地修改（如归一化）会破坏张量数据；ctx 关闭后持有该切片将读到已释放内存，产生难以复现的数据错乱或崩溃。",
+        "suggestion": "[重构思路] 统一语义：对外暴露的取值接口一律拷贝（与 Bytes 一致），确需零拷贝时另提供名称明确的 `View*`/`Unsafe*` 方法并在文档中标注生命周期约束。代码示例：\n```go\n} else if bts := C.ggml_get_data(t.t); bts != nil {\n    n := int(C.ggml_nelements(t.t))\n    data = make([]float32, n)\n    copy(data, unsafe.Slice((*float32)(bts), n))\n}\n```",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1023,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "fs/ggml/ggml.go",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "// gpt-oss uses attention with sinks which does not support quantized cache types",
+        "review": "[缺陷类型] 日志字段名拼写错误 + 消息格式瑕疵。影响评估：日志检索/告警规则失效，排查 kv cache 相关问题时定位困难；被删除的空串提前返回让函数契约变得隐晦，易被后续调用者误用。",
+        "suggestion": "[重构思路] 修正键名为 `model`、去掉尾随空格，并在函数文档中明确「空字符串代表未指定，由调用方处理」或恢复 `cacheType == \"\" || cacheType == \"f16\"` 的早返回。代码示例：\n```go\nif cacheType == \"f16\" {\n    return true\n}\nif arch := ...; slices.Contains([]string{\"gptoss\", \"gpt-oss\"}, arch) {\n    slog.Warn(\"model only supports non-quantized cache types\", \"model\", arch)\n    return false\n}\n```",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 868,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "api/types.go",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "Truncate *bool `json:\"truncate,omitempty\"`",
+        "review": "[缺陷类型] 公共 API 字段静默移除（破坏性变更且无错误提示）。影响评估：OpenAI 兼容调用方按 dimensions 期望的向量长度不再成立，可能导致下游向量检索维度不匹配；Go 客户端升级后编译失败。",
+        "suggestion": "[重构思路] 若不打算支持该参数，至少在 OpenAI 兼容层显式拒绝 `dimensions`（返回 400 并说明不支持）；若只是暂时下线，保留字段并返回明确错误。代码示例：\n```go\ntype EmbedRequest struct {\n    Input      any    `json:\"input\"`\n    Model      string `json:\"model\"`\n    Dimensions int    `json:\"dimensions,omitempty\"`\n}\n...\nif req.Dimensions > 0 { c.AbortWithStatusJSON(http.StatusBadRequest, NewError(..., \"dimensions is not supported\")); return }\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 391,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

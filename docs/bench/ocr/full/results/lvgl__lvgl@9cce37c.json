@@ -1,0 +1,186 @@
+{
+  "instance_id": "lvgl__lvgl@9cce37c",
+  "repo": "lvgl/lvgl",
+  "base_commit": "344ba9fe99b487f7f5164900679d56acf2d8bff2",
+  "head_commit": "9cce37c219f95701fecc44f74595aa9c6effbdba",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T05:19:34.241274+00:00",
+  "duration_seconds": 100.98,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 4 finding(s) across 4 selected item(s).",
+    "summary": {
+      "files_reviewed": 4,
+      "comments": 4,
+      "total_tokens": 432909,
+      "input_tokens": 414412,
+      "output_tokens": 18497,
+      "cache_read_tokens": 355456,
+      "elapsed": "1m41s"
+    },
+    "tool_calls": {
+      "total": 42,
+      "by_tool": {
+        "code_comment": 3,
+        "code_search": 14,
+        "file_find": 2,
+        "file_read": 19,
+        "file_read_diff": 4
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "tests/src/test_cases/widgets/test_animimg.c",
+        "content": "The new `test_animimg_set_src_reverse` only asserts that `animimg` is non-NULL, which is already guaranteed by `setUp()`. It therefore passes even if `lv_animimg_set_src_reverse` is broken (e.g. if it were implemented identically to `lv_animimg_set_src`), so the reverse behavior of the newly split API is effectively untested. Assert the observable state instead (source pointer/count), and ideally the reversed animation direction.",
+        "suggestion_code": "    lv_animimg_set_src_reverse(animimg, (const void **) anim_imgs, 3);\n\n    TEST_ASSERT_EQUAL_PTR(anim_imgs, lv_animimg_get_src(animimg));\n    TEST_ASSERT_EQUAL_UINT8(3, lv_animimg_get_src_count(animimg));",
+        "existing_code": "    lv_animimg_set_src_reverse(animimg, (const void **) anim_imgs, 3);\n\n    TEST_ASSERT_NOT_NULL(animimg);",
+        "start_line": 55,
+        "end_line": 57,
+        "thinking": "Now let me finalize comments. Both review files are pretty simple. Realistic issue: the reverse test is not meaningful. Example file fine.\n\nAdditional idea: `test_animimg_set_src_reverse` added to the declaration list but `test_animimg_get_src` and `test_animimg_property` not; not new.\n\nAnother potential issue: the test file doesn't test the reverse behavior and thus wouldn't catch regression. Also could add assertion for `lv_animimg_get_src_count`.\n\nShould I also note the example file's cast? It's pre-existing code style; changing it isn't part of the change (only removed arg). Skip.\n\nAlso there might be an issue: the removed `test_animimg_get_src` declaration? No.\n\nI'll comment once on the reverse test weakness (medium/low). Is it worth it? The user checklist says focus on issues; test quality is a legit category. Let me provide suggestion code:\n\n```c\nvoid test_animimg_set_src_reverse(void)\n{\n    lv_animimg_set_src_reverse(animimg, (const void **) anim_imgs, 3);\n\n    TEST_ASSERT_EQUAL_PTR(anim_imgs, lv_animimg_get_src(animimg));\n    TEST_ASSERT_EQUAL_UINT8(3, lv_animimg_get_src_count(animimg));\n}\n```\n\nNote TEST_ASSERT_EQUAL_PTR signature in unity is (expected, actual) but order doesn't matter for failure message only; existing tests pass (actual, expected) inconsistently. I'll use TEST_ASSERT_EQUAL_PTR(anim_imgs, lv_animimg_get_src(animimg)).\n\nHmm, but is this too weak of a finding? Maybe also comment that test_animimg_set_src_reverse should validate animation direction. But direction is internal; could assert via the private struct. Keep simple.\n\nI'll also consider whether test file's new function declaration needs `test_animimg_get_src` declaration since the runner...? no.\n\nLet me produce one comment.",
+        "category": "test",
+        "severity": "medium"
+      },
+      {
+        "path": "src/widgets/animimage/lv_animimage.c",
+        "content": "`lv_animimg_set_src_reverse()` duplicates the whole body of `lv_animimg_set_src()` (same dsc/pic_count assignment), only differing in the animation range. Any future fix in the setter (e.g. bounds check on `num`, updating the currently displayed frame) would have to be applied twice and can easily be forgotten. Suggest delegating to `lv_animimg_set_src()` and only overriding the animation values.",
+        "suggestion_code": "void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    lv_animimg_set_src(obj, dsc, num);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    lv_anim_set_values(&animimg->anim, (int32_t)num, 0);\n}",
+        "existing_code": "void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n    lv_anim_set_values(&animimg->anim, (int32_t)num, 0);\n}",
+        "start_line": 119,
+        "end_line": 126,
+        "thinking": "Version 9.3.0 dev. The reverse param was added in 9.3 dev presumably; restoring 3-arg form. Fine.\n\nLet me verify git history isn't available. Fine.\n\nNow, is there any real functional issue? Consider `lv_animimg_set_src_reverse` leaving `reverse` state — no state.\n\nAnother consideration: `lv_animimg_set_src_reverse` should maybe also `lv_anim_set_playback...`? no.\n\nOne more: In `index_change`, with reverse animation (num→0), the last animation value is 0, so final frame is index 0 = first image. Forward direction ends at idx=num clamped to num-1. Fine.\n\nBut there's a subtle asymmetry/bug: forward animation's end value should be num-1, not num, to avoid a stuttering last frame (the extra clamped step at the end uses up time). Pre-existing though; and lv_animimg_set_src is modified code — actually the line `lv_anim_set_values(&animimg->anim, 0, (int32_t)num);` is newly added in the diff (it replaced the if/else). So commenting on it is in scope-ish. But it's pre-existing behavior being preserved. I'd avoid.\n\nHmm, but wait: there may be an actual inconsistency: `lv_animimg_set_src` uses `(int32_t)num` while `pic_count` is `int8_t`. Not new.\n\nI think the strongest actionable comment is the code duplication. Let's also check whether there's an `lv_animimg_get_src` getter needing a reverse variant — no.\n\nAdditionally: docs conventions in the header — other header docs use \"pointer to a series images\"; consistent.\n\nAlso, should the new function be in the same \"reverse\" grouping with set_reverse_duration? Not.\n\nIs there a chance the reverse semantics got lost in the property setter? Actual issue: LV_PROPERTY_ANIMIMAGE_SRC setter now calls lv_animimg_set_src which resets values to forward. If a user set reverse via the new API and then a binding sets the src property, the direction resets silently. That's inherent.\n\nAnother possibility: is `lv_animimg_set_src_reverse` missing from `src/widgets/animimage/lv_animimage.h` API list used by e.g. MicroPython bindings generator? Let's check if there's a json/xml binding list mentioning lv_animimg_set_src.\n\nSearch whole repo already covered — only docs, example, src, tests. Fine.\n\nSo final comments: \n1. Maintainability: duplicate implementation — delegate to lv_animimg_set_src.\n2. Documentation: clarify doc for set_src_reverse (grammar + note that it's a direction setting and must be applied before start / that calling set_src resets to forward).\n\nMaybe also mention backward-compat/breaking change? I could add a low comment noting the breaking signature change for users who already migrated to the 4-arg form, suggesting documenting in the changelog. Hmm, risky as noise. The docs were updated so maintainers are aware. I'll skip or include as low? I'll skip.\n\nActually, let me reconsider whether there's a more substantive problem: the \"reverse\" option previously could be toggled dynamically by calling set_src again with reverse=true, which also reset dsc. Now equivalent. Fine.\n\nOne more consideration in the header: the new function appears after set_src but the docs block for it is placed inside \"Setter functions\" — fine.\n\nLet me also double check whether set_src_reverse should also handle `lv_animimg_set_src` being called after animation start (restart). Nope.\n\nLet me provide the two comments. For the duplication comment, use existing_code = the three added lines in the reverse function.\n\nSuggestion code:\n```c\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    lv_animimg_set_src(obj, dsc, num);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    lv_anim_set_values(&animimg->anim, (int32_t)num, 0);\n}\n```\nBut existing_code must be newly added lines consecutive. The added lines are:\n```\n+void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n+{\n+    LV_ASSERT_OBJ(obj, MY_CLASS);\n+    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n+    animimg->dsc = dsc;\n+    animimg->pic_count = num;\n+    lv_anim_set_values(&animimg->anim, (int32_t)num, 0);\n+}\n```\nI'll use those.\n\nFor header doc: existing_code = ` *  Set the images source for flip playback of animation image.` — this is an added line. Also note double space after `*`.\n\nAlso maybe mention the missing \"@note Call before lv_animimg_start()\"? It doesn't need to be before start actually (it can be called any time to switch direction). I'll just suggest clearer wording.\n\nI'll write comments now.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "src/widgets/animimage/lv_animimage.h",
+        "content": "The description is grammatically unclear and does not explain the actual effect: it sets the sources *and* makes the animation run from the last image to the first. It would also help to document the relationship with `lv_animimg_set_src()` (calling it later resets the direction to forward) so users know the two calls are mutually exclusive. Also note the stray double space after `*`.",
+        "suggestion_code": "/**\n * Set the image animation images source and play the animation in reverse\n * (from the last image to the first). Calling `lv_animimg_set_src` later\n * resets the direction to forward.\n * @param obj       pointer to an animation image object\n * @param dsc       pointer to a series images\n * @param num       images' number\n */",
+        "existing_code": "/**\n *  Set the images source for flip playback of animation image.\n * @param obj       pointer to an animation image object\n * @param dsc       pointer to a series images\n * @param num       images' number\n */",
+        "start_line": 78,
+        "end_line": 83,
+        "thinking": "Version 9.3.0 dev. The reverse param was added in 9.3 dev presumably; restoring 3-arg form. Fine.\n\nLet me verify git history isn't available. Fine.\n\nNow, is there any real functional issue? Consider `lv_animimg_set_src_reverse` leaving `reverse` state — no state.\n\nAnother consideration: `lv_animimg_set_src_reverse` should maybe also `lv_anim_set_playback...`? no.\n\nOne more: In `index_change`, with reverse animation (num→0), the last animation value is 0, so final frame is index 0 = first image. Forward direction ends at idx=num clamped to num-1. Fine.\n\nBut there's a subtle asymmetry/bug: forward animation's end value should be num-1, not num, to avoid a stuttering last frame (the extra clamped step at the end uses up time). Pre-existing though; and lv_animimg_set_src is modified code — actually the line `lv_anim_set_values(&animimg->anim, 0, (int32_t)num);` is newly added in the diff (it replaced the if/else). So commenting on it is in scope-ish. But it's pre-existing behavior being preserved. I'd avoid.\n\nHmm, but wait: there may be an actual inconsistency: `lv_animimg_set_src` uses `(int32_t)num` while `pic_count` is `int8_t`. Not new.\n\nI think the strongest actionable comment is the code duplication. Let's also check whether there's an `lv_animimg_get_src` getter needing a reverse variant — no.\n\nAdditionally: docs conventions in the header — other header docs use \"pointer to a series images\"; consistent.\n\nAlso, should the new function be in the same \"reverse\" grouping with set_reverse_duration? Not.\n\nIs there a chance the reverse semantics got lost in the property setter? Actual issue: LV_PROPERTY_ANIMIMAGE_SRC setter now calls lv_animimg_set_src which resets values to forward. If a user set reverse via the new API and then a binding sets the src property, the direction resets silently. That's inherent.\n\nAnother possibility: is `lv_animimg_set_src_reverse` missing from `src/widgets/animimage/lv_animimage.h` API list used by e.g. MicroPython bindings generator? Let's check if there's a json/xml binding list mentioning lv_animimg_set_src.\n\nSearch whole repo already covered — only docs, example, src, tests. Fine.\n\nSo final comments: \n1. Maintainability: duplicate implementation — delegate to lv_animimg_set_src.\n2. Documentation: clarify doc for set_src_reverse (grammar + note that it's a direction setting and must be applied before start / that calling set_src resets to forward).\n\nMaybe also mention backward-compat/breaking change? I could add a low comment noting the breaking signature change for users who already migrated to the 4-arg form, suggesting documenting in the changelog. Hmm, risky as noise. The docs were updated so maintainers are aware. I'll skip or include as low? I'll skip.\n\nActually, let me reconsider whether there's a more substantive problem: the \"reverse\" option previously could be toggled dynamically by calling set_src again with reverse=true, which also reset dsc. Now equivalent. Fine.\n\nOne more consideration in the header: the new function appears after set_src but the docs block for it is placed inside \"Setter functions\" — fine.\n\nLet me also double check whether set_src_reverse should also handle `lv_animimg_set_src` being called after animation start (restart). Nope.\n\nLet me provide the two comments. For the duplication comment, use existing_code = the three added lines in the reverse function.\n\nSuggestion code:\n```c\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    lv_animimg_set_src(obj, dsc, num);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    lv_anim_set_values(&animimg->anim, (int32_t)num, 0);\n}\n```\nBut existing_code must be newly added lines consecutive. The added lines are:\n```\n+void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n+{\n+    LV_ASSERT_OBJ(obj, MY_CLASS);\n+    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n+    animimg->dsc = dsc;\n+    animimg->pic_count = num;\n+    lv_anim_set_values(&animimg->anim, (int32_t)num, 0);\n+}\n```\nI'll use those.\n\nFor header doc: existing_code = ` *  Set the images source for flip playback of animation image.` — this is an added line. Also note double space after `*`.\n\nAlso maybe mention the missing \"@note Call before lv_animimg_start()\"? It doesn't need to be before start actually (it can be called any time to switch direction). I'll just suggest clearer wording.\n\nI'll write comments now.",
+        "category": "documentation",
+        "severity": "low"
+      },
+      {
+        "path": "src/widgets/animimage/lv_animimage.h",
+        "content": "The only thing that makes this API distinct from `lv_animimg_set_src()` is the direction of the anim values (`num -> 0`), yet the accompanying test only asserts that the object pointer is non-NULL, which is always true. A regression in the direction (e.g. accidentally keeping `0 -> num`) would therefore pass the tests silently. Consider adding a behavioural assertion, e.g. start the animation and check that the first displayed source is the last entry of `dsc`.",
+        "existing_code": "void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num);",
+        "start_line": 84,
+        "end_line": 84,
+        "thinking": "Docs updated in another commit (not in this PR? maybe docs were already updated earlier). Fine.\n\nLet's check docs rst around line 30-40 to see if docs describe behavior, maybe the docs already document `reverse` param? Not needed.\n\nNow, is there a concern the reverse animation doesn't actually start from the last image because `lv_anim_set_values(num, 0)` where start value equals pic_count is out of bounds? Consider `index_change` is invoked with idx values through the animation. In lv_anim, on start, `lv_anim_start` sets `a->current_value`... Let me check lv_anim_start: in v9, `lv_anim_start()` computes and applies the start value if `early_apply` is true (default true?). Let me check `lv_anim_set_early_apply` default in lv_anim_init. If early apply default true, at t=0 value = num → clamped → index num-1. Good.\n\nHowever there's a subtle thing: with reverse direction the last image (index num-1) is displayed at start AND at halfway? Values: from num to 0 over duration. index = round(value)? The exec cb receives int32_t computed via `lv_map`: value = start + (end-start)*t/duration, so first tick maybe num-1 or num. index num and num-1 both clamp to num-1 → index num-1 gets shown during two frame intervals (a bit longer). Minor.\n\nI think there's one more real potential issue: `lv_animimg_set_src_reverse` doesn't reset the \"reverse\" flag of anim; not relevant.\n\nGiven the confirmed findings already cover the two main issues, I need to decide whether to report anything else. Let me consider the header: both functions lack `@note` about precedence — covered by confirmed finding 2 (relationship with set_src). \n\nWhat about `@param num images' number` — plural issue; minor, part of docs.\n\nI think I could report the test-coverage gap. But is it truly valuable? The checklist for .c doesn't include test coverage; for .h it does. Reporting test coverage on .h line for the new function declaration: \"No test verifies reverse direction behavior\" — tests only assert non-null. I'd attach it on .h.\n\nHmm, however, review guidelines say avoid commenting on things already correct/unchanged. New function's behavior untested is a valid concern given tests were updated to only assert non-null.\n\nActually wait — the test `test_animimg_set_src_reverse` only asserts `TEST_ASSERT_NOT_NULL(animimg)` which is meaningless (animimg is non-null regardless). That's a real weak test, but it's in the test file, outside review group. I can mention it as a note attached to the .c function: \"consider adding a behavioural test\". I'll do it as low severity.\n\nHmm, does the tool allow comments on .h with test category. Yes.\n\nAlso consider: is there a real issue where `lv_animimg_set_src_reverse` and `lv_animimg_set_src` both leave the currently displayed image unchanged; so calling set_src_reverse on an already started animation with different source count could index out of range? Not really—index is derived each tick.\n\nLet me look at git to see if these API changes also require update in e.g. `src/others/...` or bindings. Already searched all repo for lv_animimg_set_src; nothing else.\n\nI'll also double check that the reverse variant, being declared before `lv_animimg_start`, has comments consistent with \"Setter functions\" section — yes.\n\nOne more: consider `lv_animimg_set_src_reverse` naming vs existing `lv_animimg_set_reverse_duration` — consistent enough.\n\nDecision: report one low-severity test coverage note. Also possibly a maintainability note about... no, duplication already covered.\n\nActually, let me reconsider potential real bug: the reverse direction using values (num, 0) combined with `lv_anim_set_reverse_delay` in set_duration. `lv_animimg_set_duration` sets `lv_anim_set_reverse_delay(&animimg->anim, duration)` — pre-existing oddity.\n\nAnother consideration: Does `lv_anim` skip the start value when `duration == 0`? not relevant.\n\nI'll finalize with the single test-coverage comment. Maybe also worth flagging that `lv_animimg_set_src_reverse` should be reachable via the property system? No.\n\nActually — one more genuine issue: `pic_count` is `int8_t`; passing size_t num > 127 truncates, and with the reverse start value `(int32_t)num` the anim starts from the untruncated num while index_change clamps to truncated pic_count. This could cause the first frame to be wrong. But again pre-existing pattern and probably out of scope (num > 127 unlikely). Skip.\n\nLet me write the comment on the .h line? Or .c? For test coverage, I'll attach to the .h declaration of `lv_animimg_set_src_reverse`. Provide existing_code matching newly added line in .h: `void lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num);`.\n\nHmm, but is this suggestion likely appreciated? Yes, reasonable: the test added only asserts non-null; there is no coverage verifying animation direction, so a regression (e.g., wrong order of values) would go unnoticed. Low severity.\n\nLet me also consider whether the removal of the `reverse` argument from `lv_animimg_set_src` leaves the property setter broken for SRC direction resetting—no.\n\nI'll submit one comment.",
+        "category": "test",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "Anim image widget API and implementation",
+        "files": [
+          "src/widgets/animimage/lv_animimage.c",
+          "src/widgets/animimage/lv_animimage.h"
+        ]
+      },
+      {
+        "label": "Anim image example and tests",
+        "files": [
+          "examples/widgets/animimg/lv_example_animimg_1.c",
+          "tests/src/test_cases/widgets/test_animimg.c"
+        ]
+      }
+    ],
+    "session_id": "77e673aa-7ff1-42ff-9095-a6af39451725",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "77e673aa-7ff1-42ff-9095-a6af39451725",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "3714d7cb3e59595ea618530f295cac79beb1278d4b084c91a58ef877c25de3f2"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "344ba9fe99b487f7f5164900679d56acf2d8bff2",
+        "requested_head": "9cce37c219f95701fecc44f74595aa9c6effbdba",
+        "resolved_base": "344ba9fe99b487f7f5164900679d56acf2d8bff2",
+        "resolved_head": "9cce37c219f95701fecc44f74595aa9c6effbdba",
+        "exact_range": "344ba9fe99b487f7f5164900679d56acf2d8bff2..9cce37c219f95701fecc44f74595aa9c6effbdba",
+        "source_artifact_sha256": "b9277fab142e894cc7ea02fd39deb8108a853f04aef4b36c161affad6997611e"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "09f8385bc28a8a7f1d5b5b45d4521e050822c3f412e79160eff2e4ca76c6fb26",
+            "path": "examples/widgets/animimg/lv_example_animimg_1.c",
+            "fingerprint": "77b2aeee3b2a9103ffdcada4aae4cc5f8478c98c106ce89cbc2318e5f247f753"
+          },
+          {
+            "item_id": "432b4959a55e92eedc6b7740bb974b58f3e2eb00f54e5f5247ec41eae79cc5e6",
+            "path": "src/widgets/animimage/lv_animimage.c",
+            "fingerprint": "99f35f6cbc6d5bf7ca24ab36290121850898b69c3edfeef4bf25c7bb9237e2fd"
+          },
+          {
+            "item_id": "600c25dc9dd80edaf5252a23c7e713c8273afb3eca0549f23736dff427ff663a",
+            "path": "src/widgets/animimage/lv_animimage.h",
+            "fingerprint": "a2abfc558646f9187f8d416ee4953478d1170190a15fc35816e07e938bcba809"
+          },
+          {
+            "item_id": "feacb450a65f2e2a55fe7f9cac0a6a18a94c37d565141f2f8f0a180e412b712a",
+            "path": "tests/src/test_cases/widgets/test_animimg.c",
+            "fingerprint": "08858dcdf4ae19711c75e190304521816601f32b91cca8b7f0922bd4f36234fe"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "09f8385bc28a8a7f1d5b5b45d4521e050822c3f412e79160eff2e4ca76c6fb26",
+            "path": "examples/widgets/animimg/lv_example_animimg_1.c",
+            "fingerprint": "77b2aeee3b2a9103ffdcada4aae4cc5f8478c98c106ce89cbc2318e5f247f753"
+          },
+          {
+            "item_id": "432b4959a55e92eedc6b7740bb974b58f3e2eb00f54e5f5247ec41eae79cc5e6",
+            "path": "src/widgets/animimage/lv_animimage.c",
+            "fingerprint": "99f35f6cbc6d5bf7ca24ab36290121850898b69c3edfeef4bf25c7bb9237e2fd"
+          },
+          {
+            "item_id": "600c25dc9dd80edaf5252a23c7e713c8273afb3eca0549f23736dff427ff663a",
+            "path": "src/widgets/animimage/lv_animimage.h",
+            "fingerprint": "a2abfc558646f9187f8d416ee4953478d1170190a15fc35816e07e938bcba809"
+          },
+          {
+            "item_id": "feacb450a65f2e2a55fe7f9cac0a6a18a94c37d565141f2f8f0a180e412b712a",
+            "path": "tests/src/test_cases/widgets/test_animimg.c",
+            "fingerprint": "08858dcdf4ae19711c75e190304521816601f32b91cca8b7f0922bd4f36234fe"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "63125c474f38505de16e0e00a6d42a9e66c25eb2f7ebad1bb0bceadfdd3a0536",
+            "path": "docs/src/details/widgets/animimg.rst",
+            "exclude_reason": "unsupported_ext"
+          }
+        ]
+      },
+      "elapsed_ms": 100523
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

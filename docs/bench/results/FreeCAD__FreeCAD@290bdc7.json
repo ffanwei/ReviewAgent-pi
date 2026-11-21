@@ -1,0 +1,172 @@
+{
+  "instance_id": "FreeCAD__FreeCAD@290bdc7",
+  "repo": "FreeCAD/FreeCAD",
+  "base_commit": "16968aa3ee1bc7f2caf4ce592d13066aa8755a80",
+  "head_commit": "290bdc79d1ad92669431458a62205d694522586e",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 633.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 15,
+  "review_output": [
+    {
+      "file": "src/App/PropertyStandard.cpp",
+      "line": 605,
+      "summary": "getPyPathValue 新增的失败返回未被 getPathValue 处理，属性路径取值可能拿到无效 Py::Object",
+      "failure_scenario": "本次改动在 PropertyEnumeration::getPyPathValue 中新增了「枚举无效时返回 false」的分支（_enum.maxValue() < 0，即 enumArray 为空时 maxValue() 返回 -1），但同类中的 PropertyEnumeration::getPathValue 仍然沿用旧的调用方式：声明一个空的 Py::Object res，调用 getPyPathValue(path, res) 后不检查 bool 返回值，直接把 res 交给 pyObjectToAny(res, false)。于是当枚举为空时，res 仍是空指针对象，pyObjectToAny 中 value.isNone()（ptr() != Py_None，判为 false）会继续执行并取 ptr() 得到 nullptr，最终把一个无效对象包装进 boost::any 返回给表达式/属性路径求值链路。对比 src/App/ObjectIdentifier.cpp:1978 的 `if (rs.resolvedProperty->getPyPathValue(*this, res))` 可见该接口约定要求调用方处理 false，只有 getPathValue 漏掉了。影响：对含空枚举的属性做 .Enum/.All 路径取值（表达式引擎、Python 侧属性路径访问）时可能得到无效对象而非报错，轻则表达式结果异常，重则在后续解引用空 PyObject 时崩溃。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "CORRECTNESS-ENUM-001"
+    },
+    {
+      "file": "cMake/FindOCC.cmake",
+      "line": 12,
+      "summary": "取消 OpenCASCADE 最低版本约束后未设置新下限，可用不支持的 OCC 版本配置成功",
+      "failure_scenario": "原先是 find_package(OpenCASCADE \"7.5.1\" CONFIG QUIET)，本 MR 改为不带版本的 find_package(OpenCASCADE CONFIG QUIET)，从而支持更旧的 OCCT。但整个 FindOCC.cmake 里再没有任何版本下限校验：OCC_VERSION_STRING 只在第 70-85 行被解析出来用于打印，第 90 行的 find_package_handle_standard_args 也不带版本参数。而代码中实际提供兼容分支的最低边界是 OCCT 7.4（src/Mod/Part/App/OpenCascadeAll.h:177-179 的 `#if OCC_VERSION_HEX < 0x070400` 才补 BRepMesh.hxx、src/Mod/Import/App/StepShape.cpp:72 的 `#if OCC_VERSION_HEX < 0x070401`、以及新增的 ProgressIndicator 只覆盖 `< 0x070500`）。影响：在装有 OCCT 7.0~7.3 的机器上 CMake 配置会成功，随后在编译阶段产生大量与版本相关的模板/头文件错误，错误信息远离真正根因，显著提高用户排查成本；同时 OCC_VERSION_STRING 万一解析失败（空字符串）时，`NOT OCC_VERSION_STRING VERSION_LESS 7.5.0`（第 126 行）会静默判定为「不支持」，导致 TKRWMesh 被漏链接而出现链接期错误。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "BUILD-OCC-VERSION-001"
+    },
+    {
+      "file": "src/Mod/Import/App/ReaderStep.cpp",
+      "line": 70,
+      "summary": "新增的进度条 Scope 不是异常安全的，Transfer 抛异常时 EndScope 被跳过",
+      "failure_scenario": "三处新增的进度指示代码都是「NewScope/Show … 业务调用 … EndScope」这种裸配对写法：ReaderStep.cpp 第 69-78 行在 aReader.Transfer(hDoc) 前后、ReaderIges.cpp 与 src/Mod/Part/App/ImportStep.cpp 的对应位置同样如此。Part::ProgressIndicator 内部持有 Base::SequencerLauncher（src/Mod/Part/App/ProgressIndicator.cpp:55-58 构造时 new Base::SequencerLauncher 并 SetScale），NewScope/EndScope 必须成对调用才能让 sequencer 的作用域正确出栈。一旦 aReader.Transfer/TransferRoot 抛异常（OCC 的 Standard_Failure，或上层转为 Base::FileException），EndScope 不会执行，sequencer 作用域泄漏，后续导入/其它模块的进度显示可能出现计数错乱或进度条卡住。影响收敛在 OCC < 7.5 的构建上，但正是本次改动新增的代码路径。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RESOURCE-SCOPE-001"
+    },
+    {
+      "file": "src/Doc/CONTRIBUTORS",
+      "line": 23,
+      "summary": "与主题无关地删除了贡献者名单中的一行",
+      "failure_scenario": "本 MR 的主题是 OCCT 版本兼容与 Python 绑定生成迁移，但同时在 src/Doc/CONTRIBUTORS 中删除了 `Benjamin Nauck (hyarion)` 一行。该改动与其它任何变更无关联，属于夹带的无关修改，会污染变更历史、干扰 blame 追溯，也容易在评审中被忽略而造成贡献者署名丢失（项目文档类文件的改动通常需要单独说明理由）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "HYGIENE-UNRELATED-001"
+    },
+    {
+      "file": "src/Mod/Part/App/ImportStep.cpp",
+      "line": 94,
+      "summary": "在同一 MR 中新增多段被注释掉的调试/实验代码",
+      "failure_scenario": "ImportStep.cpp 的改动除了加入 OCC 版本分支外，还新增了若干行被注释掉的调试与实验代码：第 94 行 `//aReader.PrintCheckTransfer (failsonly, IFSelect_ItemsByEntity);`，第 110-113 行附近的 `//Handle(StepData_StepModel) Model = ...`、`//Handle(XSControl_WorkSession) ws = ...`、`//Handle(XSControl_TransferReader) tr = ...`、`//ReadColors(aReader.WS(), hash_col);`、`//ReadNames(aReader.WS());`，以及第 151 行附近的 `//Base::Console().Message(\"Set color to shape\\n\");`、第 165 行附近的 `//Handle(Standard_Transient) ent = tr->EntityFromShapeResult(aShell, 3);`。这些内容与本次「兼容旧版 OCC」的目标无关，属于开发过程中的临时手段。影响：死代码会误导后续读者以为存在被禁用的功能路径，也增加了 diff 噪音与维护成本。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "READABILITY-DEADCODE-001"
+    },
+    {
+      "file": "src/App/DocumentPy.xml",
+      "line": 298,
+      "summary": "新 XML 中 Attribute 的 Parameter 名称拼写错误（ToplogicalSortedObjects）",
+      "failure_scenario": "新增的 src/App/DocumentPy.xml 在声明 `TopologicalSortedObjects` 属性时，Parameter 名称被写成 `ToplogicalSortedObjects`（少了一个字母 o），与 Attribute 名称及仓库中原有桩文件 src/App/Document.pyi 第 22 行的 `TopologicalSortedObjects: Final[List[DocumentObject]]` 不一致。按 src/Tools/bindings/templates/templateClassPyExport.py 的生成规则，GetSetDef 名称与 getter 回调使用 Attribute 的 Name（对应 DocumentPyImp.cpp:862 的 getTopologicalSortedObjects），而 setter 调用的是 `set@i.Parameter...`/使用 Parameter 类型（第 728-731 行）；本属性是 ReadOnly，因此当前不会产生运行期错误，但该拼写错误会污染生成产物命名、妨碍按名称检索，并且一旦该属性将来变为可写或生成器改用 Parameter 名称，就会立刻变成真实缺陷。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "NAMING-TYPO-001"
+    },
+    {
+      "file": "src/Mod/Import/App/WriterGltf.cpp",
+      "line": 49,
+      "summary": "OCC < 7.5 分支下 utf8Name / name8bit 成为无用计算与未使用变量",
+      "failure_scenario": "WriterGltf::write 在第 48-49 行无条件计算 `std::string utf8Name = file.filePath();` 与 `std::string name8bit = Part::encodeFilename(utf8Name);`，而这两个变量唯一的用途落在新增的 `#if OCC_VERSION_HEX >= 0x070500` 块内（第 51-64 行构造 RWGltf_CafWriter）。在 OCC < 7.5 的构建里该块整体被排除，else 分支只有 `boost::ignore_unused(hDoc);` 和 throw，两个 string 因此既未使用也不在 ignore_unused 覆盖范围内。影响：对 OCC 7.4 构建而言这是纯属无效的文件名转码开销，并且部分编译器（如 clang）会报 -Wunused-variable，在启用项目 FREECAD_WARN_ERROR 开关（src/App/CMakeLists.txt:367-369）的配置下会演变为构建失败。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.42,
+      "rule": "PORTABILITY-WARN-001"
+    },
+    {
+      "file": "src/Mod/Part/App/HLRBRep/HLRBRep_PolyAlgoPyImp.cpp",
+      "line": 248,
+      "summary": "新增 Angle 属性的版本阈值与其它改动不一致，且 getter 抛异常而 setter 静默忽略",
+      "failure_scenario": "新增的 getAngle/setAngle 使用 `#if OCC_VERSION_HEX <= 0x070400` 判断可用性，即仅在 OCCT 恰为 7.4.0 时走实现分支；7.4.1/7.4.2 等版本会落到 else 分支，读取时直接抛 Py::RuntimeError(\"Function has been removed with OCC 7.5\")。这与同一 MR 中其它阈值风格不一致：StepShape.cpp 使用 `< 0x070401`，OpenCascadeAll.h 使用 `< 0x070400`，其余绝大多数新增分支使用 `< 0x070500`。同时两个访问器行为不对称：getAngle 在 OCC >= 7.5 抛异常，setAngle 则 `(void)arg;` 静默忽略写入，而 HLRBRep_PolyAlgoPy.xml 无条件声明了 `<Attribute Name=\"Angle\">` 且 UserDocu 为空。影响：属性在新版 OCC 上表现为「读即抛异常、写无任何效果且无提示」，`hasattr()` 语义被破坏，用户难以判断该属性究竟是否可用；同时多套版本阈值并存使后续维护者无法判断每个分支的真实边界。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "API-VERSION-CONSISTENCY-001"
+    },
+    {
+      "file": "src/Mod/Part/App/TopoShapeExpansion.cpp",
+      "line": 5748,
+      "summary": "布尔运算的并行阈值判断被注释掉，并行与全局 OCCT 线程开关被无条件开启",
+      "failure_scenario": "makeElementBoolean 中原本的 `PartParams::getParallelRunThreshold() > 0` 条件判断被整段注释，改为对任何布尔运算都无条件执行 `mk->SetRunParallel(Standard_True)` 与 `OSD_Parallel::SetUseOcctThreads(Standard_True)`。前者使所有布尔运算（包括很小、单核更快的模型）都走多线程路径，后者是进程级全局开关，会把整个 OCCT 并行后端切到 Occt 线程实现，影响本进程内所有后续并行算法；与此同时判断条件的注释残骸与被注释的括号使代码语义不可读，`#else` 分支的注释（“我们不会构建这么老的 OCCT”）与仍保留的分支代码自相矛盾，并且用 `true` 而非 `Standard_True`。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PARALLEL-001"
+    },
+    {
+      "file": "src/Mod/Part/App/TopoShape.cpp",
+      "line": 785,
+      "summary": "importBrep 旧版分支用 encodeFilename 编码文件名、新版分支仍直接传原始 char*，跨版本行为不一致",
+      "failure_scenario": "本次改动把 importBrep(const char*) 拆成两个版本分支：`OCC_VERSION_HEX < 0x070500` 分支使用 `encodeFilename(FileName)` 读取文件，而 `#else` 分支仍保留 `static_cast<Standard_CString>(FileName)`。同一函数在同一平台上会因链接的 OCCT 版本不同而对非 ASCII 路径表现出不同结果（Windows 下尤甚），而其它同类函数（importIges/importStep/exportStep）都统一使用 `encodeFilename(...)`，此处已成为唯一的例外；改动把两种写法并列在同一 hunk 中，使这个既有不一致更容易被继续复制。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.4,
+      "rule": "PORT-007"
+    },
+    {
+      "file": "src/Mod/Part/App/TopoShape.cpp",
+      "line": 927,
+      "summary": "进度作用域未用 RAII 管理，异常路径会跳过 EndScope 导致作用域不平衡",
+      "failure_scenario": "新增的旧版 OCC 分支在 try 块内手工成对调用 `pi->NewScope(...)/pi->Show()` 与 `pi->EndScope()`，但两者之间都插入了会抛异常的语句：exportStep 中 `Transfer` 失败抛 Base::FileException、`Write` 失败再次抛出，importIges/importStep 中 TransferRoots 可能抛 Standard_Failure 并被 catch 转成 Base::CADKernelError。异常一旦发生，`EndScope()` 就被跳过，进度指示器的 scope 栈保持未闭合状态，而清理只能依赖 `Handle` 局部变量析构（即依赖对象销毁顺序的偶然性），且 catch 里直接抛出新异常，UI 侧进度条/Sequencer 状态可能停留在“运行中”。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RESOURCE-002"
+    },
+    {
+      "file": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
+      "line": 428,
+      "summary": "旧版分支打开的最外层进度作用域在函数结束时从未 EndScope",
+      "failure_scenario": "goCheck 的 `#if OCC_VERSION_HEX < 0x070500` 分支调用 `theProgress->NewScope(scopeName.c_str())` 打开外层作用域，但函数直到结束（`message->setText(aMessage);`）都没有对应的 `EndScope()`；相比之下 `#else` 分支使用的 `Message_ProgressScope theScope` 依靠析构自动闭合。两套分支生命周期语义不一致，旧分支的 scope 栈会一直保持打开，直到 BOPProgressIndicator 析构关闭对话框，导致外层作用域的计数/取消语义与新版分支不等价。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "SCOPE-003"
+    },
+    {
+      "file": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
+      "line": 1447,
+      "summary": "旧版 BOPProgressIndicator::Show 在 force 分支清空取消状态且从不设置任务名",
+      "failure_scenario": "旧版 `Show(const Standard_Boolean theForce)` 在 `theForce == true` 时把 `steps = 0; canceled = false;` 并重置计时器与进度条范围，而在 `else` 分支才从 `GetScope(1).GetName()` 取任务名。由于所有调用点（如 `theProgress->Show();`）都使用默认参数 `Standard_True`，任务名分支实际不会被执行，界面上只显示窗口标题而不显示 “Reading/Checking XXX…” 的当前步骤；同时每次强制 Show 都会把 `canceled` 复位，`UserBreak()` 依赖的取消标记可能被清掉，用户点击取消存在被吞掉的风险（与 Part::ProgressIndicator::Show 在 force 分支设置文案、且不复位取消状态的实现也不一致）。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "PROGRESS-005"
+    },
+    {
+      "file": "src/Tools/bindings/templates/templateClassPyExport.py",
+      "line": 40,
+      "summary": "getPath 由 ModuleName 改为 Namespace 并从排除列表去掉 App，会让 App 模块 .pyi 的生成/比对路径整体改名",
+      "failure_scenario": "PythonExport 的 `ModuleName` 字段被删除，getPath 改用 `self.export.Namespace`，排除列表同时从 `[\"Base\", \"App\"]` 缩减为 `[\"Base\"]`。而 generateModel_Python.py 中 `Namespace` 在装饰器未指定时回退为按路径推导的模块名（src/App/x.pyi → \"App\"），且 src/App/CMakeLists.txt 中仍保留大量 `generate_from_py(...)`、仓库里也仍存在无 @export 的 .pyi（如 src/App/GeoFeature.pyi）。因此 App 模块的 .pyi 输出文件名会从 `Xxx.h / Xxx.cpp / XxxImp.cpp` 变成 `Xxx_.h / Xxx_.cpp / XxxImp_.cpp`，而 `Compare()` 会用改名后的文件与 XML 输出做 compareFiles，一旦某个 App 侧的 .pyi 没有对应的 *Py.xml 产物，compareFiles 会因 FileNotFoundError 直接让绑定生成失败；同时 Base 仍被排除、App 不再被排除，二者语义不再对称。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CODE-GEN-004"
+    },
+    {
+      "file": "src/Mod/TechDraw/App/EdgeWalker.cpp",
+      "line": 456,
+      "summary": "WalkerEdge 构造函数直接写 boost edge_descriptor 的内部成员，且使用户自定义构造破坏了聚合属性",
+      "failure_scenario": "为修复 Coverity 316559，WalkerEdge 新增了用户提供的默认构造函数，并在其中直接赋值 `ed.m_source = 0; ed.m_target = 0;`。`edge_t` 是 `boost::graph_traits<graph>::edge_descriptor`（即 `boost::detail::edge_desc_impl`），`m_source/m_target` 属于 Boost 内部实现细节而非公开接口，且该类型的默认构造函数已对成员做值初始化（`edge_desc_impl() : m_source(), m_target(), m_eproperty() {}`），因此这两行既依赖第三方库内部布局（Boost 版本变化即可能编译失败），在当前 Boost 版本下也没有实际初始化收益。真正被修好的只是头文件里 `v1/v2/idx` 的 `{0}` 成员初始化。此外新增用户提供的构造函数会让 WalkerEdge 不再是聚合类，后续若有人用 `WalkerEdge{v1, v2, ed, idx}` 花括号初始化就会编译失败（当前代码库中尚未出现此类写法）。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "PORT-006"
+    }
+  ],
+  "stderr_tail": "2\\reviewpi\\arm2\\.reviewpi\\diff\\FreeCAD__FreeCAD@290bdc7.diff\n  caseId              FreeCAD__FreeCAD@290bdc7\n  --issue             (未传)\n  --taskId            FreeCAD__FreeCAD@290bdc7\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 2 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 2548 字符（test=1），明细见审计 mrFilter\n✓ 完成 · 耗时 527.5s · 模型调用 50 次 · token 输入 191,879（未命中） · 输出 76,106 · 缓存命中 3,036,416（94.1%） · 工具 84 次（主会话 84 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0567\nreview-pi: 置信度过滤丢弃 4 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\FreeCAD__FreeCAD@290bdc7\\...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 528.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 527.4s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 8.1s (1.5%) | S1P2 4.2s (0.8%) | S1P3 7.5s (1.4%) | S1P4 138.1s (26.2%) | S1P5 59.3s (11.3%) | S1P6 23.8s (4.5%) | S1R2P1 5.3s (1.0%) | S1R2P2 3.3s (0.6%) | S1R2P3 4.6s (0.9%) | S1R2P4 12.9s (2.4%) | S1R2P5 29.2s (5.5%) | S1R2P6 13.7s (2.6%) | S2P1 11.3s (2.1%) | S2P2 4.8s (0.9%) | S2P3 9.1s (1.7%) | S2P4 122.9s (23.3%) | S2P5 51.2s (9.7%) | S2P6 18.0s (3.4%)\n[usage] 任务总计 | 模型调用 50 次（Agent 50 + 一次性 0） | token 输入 191,879（未命中） | 输出 76,106 | 缓存命中 3,036,416（94.1%） | $0.0567\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\FreeCAD__FreeCAD@290bdc7\\audit\\20261115_053951_020.json",
+  "token_usage": {
+    "input_tokens": 191879,
+    "output_tokens": 76106,
+    "cache_read_input_tokens": 3036416
+  }
+}

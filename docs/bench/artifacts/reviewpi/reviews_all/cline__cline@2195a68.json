@@ -1,0 +1,142 @@
+{
+  "generatedAt": "2026-11-15T04:34:56.042Z",
+  "runId": "20261115_043306_005",
+  "source": "mr",
+  "caseId": "cline__cline@2195a68",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "安全",
+      "file": "src/services/auth/AuthService.ts",
+      "line": 33,
+      "title": "auth nonce 改为构造期一次性生成且永不轮换，state 参数退化为可无限重放的静态值",
+      "description": "原实现中 _authNonce 初始为 null，每次 createAuthRequest 都重新用 crypto.randomBytes(32) 生成，并在校验通过后调用 resetAuthNonce() 清零；改动后 _authNonce 改为 `private readonly _authNonce = crypto.randomBytes(32).toString(\"hex\")`，在 AuthService 单例构造时生成一次，此后整个扩展进程生命周期（跨多次登录、登出、多次 createAuthRequest）都复用同一个值，且 resetAuthNonce 已被删除。state 参数的唯一作用就是让外部构造的 auth 回调 URL 无法被重放/伪造；nonce 变成固定值后，任何曾观察到一个合法回调 URL 的一方（日志、截图、恶意页面、共享剪贴板）都可以长期构造 `vscode://saoudrizwan.claude-dev/auth?idToken=<攻击者 token>&state=<固定 nonce>` 让受害者扩展登录到攻击者账号（会话固定/账号混淆），或反向把受害者 token 注入到其它通道。配合 extension.ts 中 state 不匹配已降级为提示确认，state 校验实际上不再提供 CSRF/重放防护。",
+      "evidence": [
+        "src/services/auth/AuthService.ts:33 — `private readonly _authNonce = crypto.randomBytes(32).toString(\"hex\")`（构造期生成、readonly）",
+        "src/services/auth/AuthService.ts:173-194 — createAuthRequest 内 `authUrl.searchParams.set(\"state\", this._authNonce)`，不再像旧代码那样每次请求前 `this._authNonce = crypto.randomBytes(32).toString(\"hex\")`",
+        "diff 中删除了 resetAuthNonce() 方法（原注释：Reset the auth nonce to null ... after a successful authentication），review_find_references(\"resetAuthNonce\") 返回 0 处引用",
+        "src/services/auth/AuthService.ts:113-125 — AuthService 为单例（getInstance），nonce 与扩展进程同生命周期",
+        "src/core/controller/index.ts:460-462 — validateAuthState 不再清零 nonce，直接 `return state === this.authService.authNonce`"
+      ],
+      "rule": "SEC-AUTH-STATE-001",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 认证 state/nonce 生命周期失当：从「每次请求随机 + 用后失效」退化为「进程内固定」。影响评估：state 失去 CSRF 与重放防护能力，攻击者可构造一次性的深链接并长期复用，诱导用户以攻击者账号登录（或反之），属于认证边界的安全回归；且该削弱被 extension.ts 中『不匹配仅提示确认』进一步放大。",
+        "suggestion": "[重构思路] 保留每次授权请求生成新 nonce + 校验成功后立即失效的语义；用一个非 readonly 字段或 Set 保存「当前有效的 nonce」，并支持多个并发登录请求，校验为一次性消费。\n代码示例：\n```ts\nprivate _pendingNonces = new Set<string>()\n\nasync createAuthRequest(): Promise<String> {\n  const nonce = crypto.randomBytes(32).toString(\"hex\")\n  this._pendingNonces.add(nonce)\n  // ... authUrl.searchParams.set(\"state\", nonce)\n}\n\nconsumeAuthState(state: string | null): boolean {\n  if (!state || !this._pendingNonces.has(state)) return false\n  this._pendingNonces.delete(state) // 一次性使用\n  return true\n}\n```",
+        "subcategory": "认证 state/nonce 被重放"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "安全",
+      "file": "src/extension.ts",
+      "line": 318,
+      "title": "state 不匹配的警告弹窗未设为 modal，用户忽略或按 Esc 关闭时仍会接受回调 token",
+      "description": "新逻辑用 `showWarningMessage` 让用户在不匹配时确认，但仅当返回值为字面量 \"Cancel\" 时才中止（`if (userConfirmation === \"Cancel\")`）。vscode.window.showWarningMessage 默认是非模态通知，用户按 Esc、点击关闭按钮或让通知自动消失时返回 undefined，此时条件不成立，代码继续执行 `if (token) await visibleWebview?.controller.handleAuthCallback(token, provider)`，把未经确认的、state 不匹配的 token 静默写入扩展（登录成功并切换 apiProvider 为 cline）。也就是说「默认路径 = 接受」，与「默认应当拒绝」的安全默认相反，用户只要忽略一个不显眼的通知就完成了原本应被拒绝的认证。",
+      "evidence": [
+        "src/extension.ts:312-322 — `if (authService.authNonce !== state) { const userConfirmation = await vscode.window.showWarningMessage(..., \"Store\", \"Cancel\"); if (userConfirmation === \"Cancel\") { ... return } }`",
+        "src/extension.ts:313-317 — 调用 showWarningMessage 时未传入 `{ modal: true }`，返回值可能为 undefined",
+        "src/extension.ts:324-327 — 未 return 时继续 `await visibleWebview?.controller.handleAuthCallback(token, provider)`，controller 内会设置 apiProvider 为 cline 并持久化登录态（src/core/controller/index.ts:464-484）"
+      ],
+      "rule": "SEC-AUTH-CONFIRM-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 安全默认值错误：非模态确认框的「未响应」被当作同意。影响评估：state 不匹配本应是异常路径，现在只要用户不主动点 Cancel（Esc、忽略、通知超时）就会完成登录，等于把原本的硬性拒绝改成了软确认并默认放行，可被社会工程或静默钓鱼利用。",
+        "suggestion": "[重构思路] 改为显式的 allow-list 判断：只有明确的肯定回答才继续，其余（含 undefined）一律中止；并使用 modal 确认框提高可见性。\n代码示例：\n```ts\nif (authService.consumeAuthState(state) === false) {\n  const choice = await vscode.window.showWarningMessage(\n    \"Auth callback state mismatch. Only continue if you initiated this sign-in.\",\n    { modal: true },\n    \"Continue\",\n  )\n  if (choice !== \"Continue\") {\n    console.log(\"Auth callback rejected: state mismatch\")\n    return\n  }\n}\n```",
+        "subcategory": "用户确认默认放行"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "安全",
+      "file": "src/extension.ts",
+      "line": 314,
+      "title": "state 不匹配的提示文案使用 uri.path 且按钮语义不明确，用户无法做出知情确认",
+      "description": "提示文本为模板字符串 `` `Store token returned from ${uri.path}` ``，而该分支只会在 path 为 \"/auth\" 时进入（switch (path) 的 case \"/auth\"），因此 `${uri.path}` 恒为 \"/auth\"，不包含任何可用于判断的信息（不含 provider、不含 token 来源域、不含账号）。按钮文案 \"Store\"/\"Cancel\" 也没有说明「Store 会把 token 写入本机并自动登录」。在 state 不匹配这种高风险场景下，用户无法判断该回调是否为自己发起，更可能凭直觉点 \"Store\"，把本已弱化的确认机制变成形式化流程。",
+      "evidence": [
+        "src/extension.ts:296-302 — 该分支由 `case \"/auth\":` 进入，`const path = uri.path` 即 \"/auth\"",
+        "src/extension.ts:313-317 — `showWarningMessage(\\`Store token returned from ${uri.path}\\`, \"Store\", \"Cancel\")`，未包含 provider/token 来源等信息",
+        "src/extension.ts:302 — 上下文已取到 `provider = query.get(\"provider\")`，但提示文案未使用"
+      ],
+      "rule": "SEC-UX-CONSENT-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 安全确认提示信息不足（可读性/知情同意缺失）。影响评估：用户在无法判断来源的情况下被迫选择一个含糊的按钮，实际上不会阅读也不会理解风险，确认机制形同虚设，且字符串插值成静态 \" /auth\" 还容易让人误以为已展示来源。",
+        "suggestion": "[重构思路] 让提示携带可判断的信息（provider、目标账号、来源主机），并把按钮文案写成动作后果；对来源不可识别时给出更强的警告。\n代码示例：\n```ts\nconst userConfirmation = await vscode.window.showWarningMessage(\n  `Sign in to Cline using a token from ${provider ?? \"unknown\"} received on the auth callback ` +\n    `that did not match this window's request. Only continue if you started this sign-in.`,\n  { modal: true },\n  \"Store token and sign in\",\n)\n```",
+        "subcategory": "安全提示信息不足"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/shared/api.ts",
+      "line": 733,
+      "title": "移除 gemini-2.5-pro 的 thinkingConfig.maxBudget 但模型仍在 thinking 支持列表中，滑块上限回退到 52428 超出模型实际限值",
+      "description": "本次改动删除了 geminiModels / vertexModels 中 gemini-2.5-pro 的 `thinkingConfig: { maxBudget: 32767 }`，但 GeminiProvider.tsx 的 SUPPORTED_THINKING_MODELS 仍包含 \"gemini-2.5-pro\"，VertexProvider.tsx 同样保留。ThinkingBudgetSlider 在 maxBudget 为 undefined 时会回退到 `Math.floor(maxTokens * 0.8)`，而 gemini 分支的 maxTokens 取自 geminiModels[geminiDefaultModelId].maxTokens = 65536，于是滑块最大值从 32767 变成 52428；src/api/providers/gemini.ts 在 createMessage 中直接使用 options.thinkingBudgetTokens（L104 计算出的 maxBudget 完全没有被使用、也没有任何 clamp），超限的 thinkingBudget 会原样发送给 Gemini/Vertex，导致请求被服务端拒绝（400/参数超限），用户以为调高预算能提升推理效果却得到一个失败请求。",
+      "evidence": [
+        "src/shared/api.ts:726-748 — geminiModels[\"gemini-2.5-pro\"] 条目现无 thinkingConfig（diff 中删除了 maxBudget: 32767）；vertexModels 同名条目同样删除",
+        "webview-ui/src/components/settings/providers/GeminiProvider.tsx:12 — SUPPORTED_THINKING_MODELS 仍为 [\"gemini-2.5-pro\", \"gemini-2.5-flash\"]；VertexProvider.tsx:21-27 仍包含 \"gemini-2.5-pro\"",
+        "webview-ui/src/components/settings/ThinkingBudgetSlider.tsx:103-108 — maxBudget 未提供时 `return Math.floor(maxTokens * MAX_PERCENTAGE)`，MAX_PERCENTAGE = 0.8",
+        "webview-ui/src/components/settings/ThinkingBudgetSlider.tsx:94-100 — gemini 分支 maxTokens 取 geminiModels[geminiDefaultModelId].maxTokens（65536）",
+        "src/api/providers/gemini.ts:104 — `const maxBudget = info.thinkingConfig?.maxBudget ?? 0` 之后未被使用；L116-121 仅按 thinkingBudget > 0 直接设置 thinkingConfig.thinkingBudget"
+      ],
+      "rule": "CONFIG-THINKING-BUDGET-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 前端能力声明与模型配置不同步导致的上限失控。影响评估：用户可把 thinking budget 设到模型真实上限之外，请求在运行期直接报错；同时移除配置的理由（如果是该模型不支持 thinking）与保留 SUPPORTED_THINKING_MODELS 的声明相互矛盾，两种意图必然有一个是错的。",
+        "suggestion": "[重构思路] 二者取其一：若模型仍支持 thinking，就在 api.ts 里保留一个显式 maxBudget（与后端真实限值一致）；若不支持，就从两个 Provider 的 SUPPORTED_THINKING_MODELS 中移除并清理已保存的 thinkingBudgetTokens。服务端侧建议在用之前按 info.thinkingConfig.maxBudget 做一次 clamp。\n代码示例：\n```ts\n// src/api/providers/gemini.ts\nconst maxBudget = info.thinkingConfig?.maxBudget\nconst thinkingBudget = Math.min(this.options.thinkingBudgetTokens ?? 0, maxBudget ?? 0)\nif (thinkingBudget > 0) {\n  requestConfig.thinkingConfig = { thinkingBudget, includeThoughts: true }\n}\n```",
+        "subcategory": "模型能力配置不一致"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/shared/api.ts",
+      "line": 749,
+      "title": "删除 gemini-2.5-flash-lite-preview-06-17 模型条目但无迁移，已保存该 modelId 的用户会静默回退到 gemini-2.5-pro 并按高价计费",
+      "description": "本次从 geminiModels 与 vertexModels 中直接删除了 \"gemini-2.5-flash-lite-preview-06-17\" 条目，但没有任何迁移或校验逻辑处理已持久化在用户配置里的 apiModelId。GeminiHandler.getModel() 在 `modelId in geminiModels` 为 false 时静默回退到 geminiDefaultModelId（\"gemini-2.5-pro\"）；webview 侧 normalizeApiConfiguration 的 getProviderData 同样回退到默认模型。结果是：选择过该预览模型的用户界面显示的是 gemini-2.5-pro，实际请求也发给 gemini-2.5-pro，而计费从 0.1/0.4（每百万 token）跳到 2.5/15，且存储配置中的 apiModelId 仍是已不存在的模型名，用户完全没有收到任何提示。",
+      "evidence": [
+        "src/shared/api.ts:748-749 — geminiModels 中 gemini-2.5-pro 条目结束后直接是 \"gemini-2.5-flash\"，被删除的 \"gemini-2.5-flash-lite-preview-06-17\" 位置已无迁移逻辑",
+        "src/api/providers/gemini.ts:353-363 — `if (modelId && modelId in geminiModels) {...} return { id: geminiDefaultModelId, info: geminiModels[geminiDefaultModelId] }`，未知 id 静默回退",
+        "src/shared/api.ts:724 — `export const geminiDefaultModelId: GeminiModelId = \"gemini-2.5-pro\"`（回退目标为高价模型）",
+        "webview-ui/src/components/settings/utils/providerUtils.ts:66-72 — getProviderData 对未知 modelId 同样回退到 defaultId",
+        "review_find_references(\"gemini-2.5-flash-lite-preview-06-17\") 现返回 0 处引用，说明没有任何迁移/提示代码"
+      ],
+      "rule": "CONFIG-MODEL-MIGRATION-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 配置项删除缺少兼容迁移，运行时静默降级。影响评估：既有用户模型被悄悄替换为更贵的模型，账单与 UI 显示不一致；由于默认模型是 pro，成本放大约 25 倍（input 0.1→2.5），属于用户可感知的成本事故。",
+        "suggestion": "[重构思路] 在 provider 解析配置处对「已下线模型 id」做显式映射/告警（要么映射到同名后继模型如 gemini-2.5-flash，要么提示用户重新选择），并在 getModel/normalizeApiConfiguration 回退时记录日志或上报遥测，避免静默切换。\n代码示例：\n```ts\nexport const deprecatedModelAliases: Record<string, GeminiModelId> = {\n  \"gemini-2.5-flash-lite-preview-06-17\": \"gemini-2.5-flash\",\n}\n\ngetModel() {\n  const id = this.options.apiModelId\n  const resolved = (id && deprecatedModelAliases[id]) || id\n  if (resolved && resolved in geminiModels) return { id: resolved as GeminiModelId, info: geminiModels[resolved] }\n  console.warn(`Unknown gemini model \"${id}\", falling back to ${geminiDefaultModelId}`)\n  return { id: geminiDefaultModelId, info: geminiModels[geminiDefaultModelId] }\n}\n```",
+        "subcategory": "已删除模型的配置迁移"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/core/controller/index.ts",
+      "line": 460,
+      "title": "validateAuthState 简化为一行比较后已无调用点，方法名仍暗示校验职责，易被误认为 state 校验仍在使用",
+      "description": "改动后 Controller.validateAuthState 变成 `return state === this.authService.authNonce`，既不再判空（null 情况靠 === 偶然兜住），也不再消耗 nonce。review_find_references(\"validateAuthState\") 显示全仓库只有该方法声明本身、没有任何调用方，而 extension.ts 中另有一份重复的 state 比较逻辑（`if (authService.authNonce !== state)`）。两份并存的比较实现都不做一次性消费，后续维护者很容易误以为 validateAuthState 仍在校验路径上，从而漏掉真正的安全修复点或只修复其中一处。",
+      "evidence": [
+        "src/core/controller/index.ts:459-462 — `public async validateAuthState(state: string | null): Promise<boolean> { return state === this.authService.authNonce }`",
+        "review_find_references(\"validateAuthState\") 仅返回 1 处（src/core/controller/index.ts:460 声明），无调用点",
+        "src/extension.ts:312 — 另行内联实现同一比较 `if (authService.authNonce !== state)`，两处逻辑重复"
+      ],
+      "rule": "MAINTAIN-DEADCODE-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 无调用点的重复校验逻辑（死代码 + 语义误导）。影响评估：state 校验逻辑分布在两处且语义不一致（一处返回 boolean、一处弹窗确认），修改时极易遗漏其中一处，也让「谁真正负责校验」变得不可判读。",
+        "suggestion": "[重构思路] 把校验下沉到 AuthService 并提供单一入口（如 consumeAuthState(state): boolean），Controller 与 extension.ts 都调用它；若确认 Controller 侧不再需要该方法，则删除而不是简化，避免留下看似仍在生效的安全检查。\n代码示例：\n```ts\n// AuthService\nconsumeAuthState(state: string | null): boolean {\n  if (!state || !this._pendingNonces.has(state)) return false\n  this._pendingNonces.delete(state)\n  return true\n}\n\n// Controller\npublic validateAuthState(state: string | null): Promise<boolean> {\n  return this.authService.consumeAuthState(state)\n}\n```",
+        "subcategory": "重复与死代码"
+      }
+    }
+  ]
+}

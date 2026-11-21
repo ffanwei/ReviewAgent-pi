@@ -1,0 +1,102 @@
+{
+  "instance_id": "lvgl__lvgl@e526b2a",
+  "repo": "lvgl/lvgl",
+  "base_commit": "244b3b996e0b331468cf5967c937029535af569c",
+  "head_commit": "e526b2a1faa4672eeb3610b466ecc25b1abb220b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 798.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": "src/draw/sw/blend/lv_draw_sw_blend_to_rgb565.c",
+      "line": 936,
+      "summary": "RGB565_SWAPPED 源图在 NEON 构建下改用非 swapped 实现，颜色通道会颠倒",
+      "failure_scenario": "rgb565_swapped_image_blend 处理的是字节序被交换的 RGB565 源（LV_COLOR_FORMAT_RGB565_SWAPPED），其 C 回退分支必须先用 lv_draw_sw_rgb565_swap / lv_color_swap_16 交换字节再混合。本 MR 把该函数内 4 个调用点从专门的 LV_DRAW_SW_RGB565_SWAPPED_BLEND_NORMAL_TO_RGB565* 改为通用的 LV_DRAW_SW_RGB565_BLEND_NORMAL_TO_RGB565*；新 lv_blend_neon.h 把这组宏映射到 lv_rgb565_blend_normal_to_rgb565_neon（按原生 RGB565 解释源像素、不做字节交换）并总是返回 LV_RESULT_OK，导致 936/947/958/970 行包裹的交换回退代码在 NEON 构建下永远不执行。结果是：开启 LV_USE_DRAW_SW_ASM=LV_DRAW_SW_ASM_NEON 时，所有以 RGB565_SWAPPED 格式提供的图像（含透明度/掩码变体）渲染出的红蓝通道被互换。非 NEON 构建因宏未定义仍走 C 回退，因此该缺陷只在 NEON 目标上出现，普通 CI 难以发现。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-COLOR-001"
+    },
+    {
+      "file": "src/draw/sw/blend/neon/lv_blend_neon.S",
+      "line": 22,
+      "summary": "新 NEON 汇编硬编码 .arch armv7a，64 位 ARM 上开启 NEON 将无法汇编",
+      "failure_scenario": "旧的 NEON 实现是 C intrinsics，可在 32 位与 64 位 ARM 上编译；新的 lv_blend_neon.S 使用 `.arch armv7a`、`.fpu neon`、`.thumb_func` 与 r0-r11 等 AArch32 专有寄存器/指令，只能被 32 位 ARMv7-A/R 汇编器接受。然而该文件没有任何架构守卫：lv_blend_neon.h:19 仅以 `#if LV_USE_DRAW_SW_ASM == LV_DRAW_SW_ASM_NEON` 控制，而构建系统按 `file(GLOB_RECURSE SOURCES src/*.c src/*.S)` 无差别收集源文件，因此用户在 aarch64/ARMv8-A 上保持原有的 `LV_USE_DRAW_SW_ASM=LV_DRAW_SW_ASM_NEON` 配置升级后会在汇编阶段直接失败。同一 MR 又删除了 docs/src/details/integration/chip/arm.rst 中「32 位与 64 位 ARM 架构均受支持」及「Armv8 起 64 位 ARM 强制具备 Neon」的说明，文档与实现的支持范围收缩未被显式声明。对比之下，helium 汇编在 lv_blend_helium.S:18 用 `&& defined(__ARM_FEATURE_MVE) && __ARM_FEATURE_MVE` 做了架构守卫。",
+      "severity": "P1",
+      "category": "可移植",
+      "confidence": 0.72,
+      "rule": "PORTABILITY-ARCH-001"
+    },
+    {
+      "file": "src/draw/sw/blend/neon/lv_blend_neon.S",
+      "line": 338,
+      "summary": "汇编用硬编码偏移读取 asm_dsc_t，C 结构体变动不会报错而会静默取错字段",
+      "failure_scenario": "NEON 汇编的 init 宏用固定偏移 #4/#8/#12/#16/#20/#24/#28/#32 与 `vld1.8 {OPA[]}, [r0]` 直接解析 C 结构体 asm_dsc_t（opa, dst_buf, dst_w, dst_h, dst_stride, src_buf, src_stride, mask_buf, mask_stride）。C 侧构造该结构体时使用指定初始化器（如 lv_blend_neon.h:474-483），字段的顺序/新增/类型变化（例如把 opa 改为 uint8_t、在中间插入新字段、调整指针字段顺序）都不会产生任何编译告警：汇编会把 dst_w 当成 dst_h、把指针低 4 字节当作指针等，最终出现 stride 计算错误、越界写显存等难以定位的内存破坏。当前代码也没有 offsetof 静态断言或让汇编共享偏移宏的机制。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "ABI-LAYOUT-001"
+    },
+    {
+      "file": "src/others/observer/lv_observer.h",
+      "line": 562,
+      "summary": "lv_spangroup_bind_span_text 声明被 LV_USE_LABEL 守卫，与实现的 LV_USE_SPAN 守卫不一致",
+      "failure_scenario": "新增的 Span 文本绑定 API 在头文件中被放在 `#if LV_USE_LABEL` 块内（与 lv_label_bind_text 同一个块），而其实现 span_text_observer_cb 及 lv_spangroup_bind_span_text 定义在 lv_observer.c 的 `#if LV_USE_SPAN` 块中。这造成两个方向的不一致：(1) LV_USE_SPAN=1 且 LV_USE_LABEL=0 时，函数有定义但头文件不声明，用户无法正确调用（编译器报隐式声明/警告，C99 之后为错误）；(2) LV_USE_LABEL=1 且 LV_USE_SPAN=0 时，头文件声明了函数却没有实现，调用即链接失败。该 API 同时被文档 observer.rst 与 XML 侧 spangroup 解析推广为可用能力，用户很容易踩到。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "CONFIG-GUARD-001"
+    },
+    {
+      "file": "src/draw/lv_draw_buf.h",
+      "line": 204,
+      "summary": "lv_draw_buf_copy 取消 handlers 回调并批量重命名公开 typedef，破坏性变更缺少兼容层",
+      "failure_scenario": "本 MR 把 lv_draw_buf_copy 从上层的 handlers 分发（dest->handlers->buf_copy_cb）改为 lv_draw_buf.c 内的固定 lv_memcpy 实现，同时删除 lv_draw_buf_handlers_t 的 buf_copy_cb 字段与 lv_draw_buf_copy_cb_t 类型，并把另外 4 个公开 typedef 改名（lv_draw_buf_malloc_cb_t→lv_draw_buf_malloc_cb、lv_draw_buf_free_cb_t→lv_draw_buf_free_cb、lv_draw_buf_align_cb_t→lv_draw_buf_align_cb、lv_draw_buf_cache_operation_cb_t→lv_draw_buf_cache_operation_cb、lv_draw_buf_width_to_stride_cb_t→lv_draw_buf_width_to_stride）。旧头注释明确写着「Overwriting dest->handlers->buf_copy_cb can resolve this limitation」，说明存在依赖该钩子做色彩格式转换/GPU·DMA 拷贝的下游实现；改动后这些自定义会被静默忽略（不再是编译错误而是行为变化）。同一 MR 还删除了 src/lv_api_map_v9_3.h 并移除 lvgl.h 中的 include，却没有在新的 api map 中补充旧 typedef 名别名，因此下游驱动的兼容层也缺失。仓库内部引用已全部更新（旧名 0 处引用、lv_draw_buf_handlers_init 仅 lv_draw_buf.c:61 与 lv_ffmpeg.c:348 两处且已按 6 参数修改），所以风险集中在外部的自定义 draw_buf handlers / 移植层。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.68,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "src/draw/lv_draw_buf.c",
+      "line": 222,
+      "summary": "新的 lv_draw_buf_copy 丢失入参判空断言，公开 API 误用将由断言退化为空指针崩溃",
+      "failure_scenario": "改造前的 lv_draw_buf_copy 在入口处依次断言 dest、dest->handlers、dest->handlers->buf_copy_cb、src 非空；新的公开实现移除了全部判空，第 222 行直接解引用 dest->header.cf 与 src->header.cf。仓库内现有调用点（lv_refr.c:731/733、lv_image_decoder.c:262、lv_nuttv_fbdev.c:263、lv_canvas.c:290）目前都传入有效指针，且 lv_image_decoder.c:246 已提前判 decoded 非 NULL，因此暂不会触发；但这是对外公开的函数，移植层/用户代码传错指针时会得到难以定位的空指针解引用，而不是 LVGL 惯用的断言提示。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "DEFENSIVE-001"
+    },
+    {
+      "file": "docs/src/details/main-modules/indev.rst",
+      "line": 197,
+      "summary": "文档清理夹带多处笔误与断句错误，部分内容反而比修改前更差",
+      "failure_scenario": "本 MR 对 rst 做了大量措辞/标点清理，但其中若干处是负向改动：(1) indev.rst 把 “to be filled” 改成 “to eb filled”，引入拼写错误；(2) 同文件把 “navigate (focus)” 改成 “navigate(focus)”，中文/英文排版中括号前应有空格；(3) tabview.rst 删除了句末句号，使下一行 “When tabs are on the top…” 与前句连成一句；(4) spangroup.rst 把句号提前，产生 “...percentage units <coord_units>. as well.” 的破碎句子；(5) scale.rst 删除了文件头的 `.. |deg| unicode:: U+000B0` 替换定义，同时把 “rotated 180\\ |deg|” 改成 “rotated 180”，度数符号彻底丢失。这类改动会直接发布到用户文档站，属于可读性/文案质量回退。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "DOCS-TYPO-001"
+    },
+    {
+      "file": ".github/workflows/perf_hardware_comment_pr.yml",
+      "line": 26,
+      "summary": "CI 依赖被从 action-download-artifact v11 回退到 v9，疑似误带的回退",
+      "failure_scenario": "该文件唯一的改动是把 dawidd6/action-download-artifact 从 v11 降级为 v9。本次 MR 的主题是 NEON 渲染重构 + 文档/API 清理，看不出与该 action 版本相关的需求，因此更像是在处理长生命周期分支时误把版本回退了。降级会重新引入旧版本的实现差异（运行时环境、artifact 名称匹配与分页、token 权限处理等），并可能与 perf_hardware.yml 上传产物的约定不再匹配，导致 PR 评论工作流静默失败或取不到 HW 性能结果。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CI-DEPS-001"
+    }
+  ],
+  "stderr_tail": "              lvgl__lvgl@e526b2a\n  --issue             (未传)\n  --taskId            lvgl__lvgl@e526b2a\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 3 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 2 个文件 / 2558 字符（test=2），明细见审计 mrFilter\n✓ 完成 · 耗时 744.7s · 模型调用 68 次 · token 输入 369,347（未命中） · 输出 106,127 · 缓存命中 5,155,584（93.3%） · 工具 154 次（主会话 154 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0959\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\lvgl__lvgl@e526b2a\\runs\\s...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 745.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 744.5s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 13.3s (1.8%) | S1P2 4.3s (0.6%) | S1P3 8.9s (1.2%) | S1P4 135.7s (18.2%) | S1P5 86.6s (11.6%) | S1P6 15.6s (2.1%) | S2P1 18.0s (2.4%) | S2P2 3.3s (0.4%) | S2P3 11.5s (1.5%) | S2P4 91.5s (12.3%) | S2P5 79.1s (10.6%) | S2P6 11.5s (1.5%) | S3P1 9.7s (1.3%) | S3P2 4.4s (0.6%) | S3P3 11.9s (1.6%) | S3P4 154.2s (20.7%) | S3P5 69.1s (9.3%) | S3P6 15.6s (2.1%)\n[usage] 任务总计 | 模型调用 68 次（Agent 68 + 一次性 0） | token 输入 369,347（未命中） | 输出 106,127 | 缓存命中 5,155,584（93.3%） | $0.0959\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\lvgl__lvgl@e526b2a\\audit\\20261115_015932_303.json",
+  "token_usage": {
+    "input_tokens": 369347,
+    "output_tokens": 106127,
+    "cache_read_input_tokens": 5155584
+  }
+}

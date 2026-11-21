@@ -1,0 +1,182 @@
+[
+  {
+    "filePath": "tsl/src/compression/compression.c",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "void",
+        "review": "[缺陷类型] static 与外部链接混用导致的编译失败（C 约束违反）。\n影响评估：tsl 模块整体编译不过，CI 构建阶段即失败；即使编译器宽松处理，也会让一个纯内部辅助函数无谓地成为导出符号。",
+        "suggestion": "[重构思路] 该函数只被 row_compressor_process_ordered_slot 调用（compression.c:1024），应保持内部链接：把 L1084 恢复为 `static void`。若确实要对外暴露，则必须同步删除 L129 的 static 前置声明并在 compression.h 中声明。\n代码示例：\n```c\n/* compression.c:1084 */\nstatic void\nrow_compressor_append_row(RowCompressor *row_compressor, TupleTableSlot *row)\n{\n\t...\n}\n```",
+        "category": "可靠性",
+        "subcategory": "链接属性冲突（编译失败）",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1084,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "get_attnum(settings->fd.compress_relid, NameStr(attr->attname));",
+        "review": "[缺陷类型] 属性号解析源与实际写入目标不一致（重构后抽象泄漏）。\n影响评估：压缩列与目标 compressed 关系列布局一旦不同步，会以 -1 索引 TupleDescAttr 造成越界读/随机崩溃，而不是给出明确报错；同时也削弱了本次“用 TupleDesc 取代 Relation”的重构价值。",
+        "suggestion": "[重构思路] 完全基于传入的 TupleDesc 解析属性号（用 tupdesc 按名字查 attnum），或在拿到 compressed_colnum 后立刻校验 `AttributeNumberIsValid`，不合法则 ereport 明确错误。\n代码示例：\n```c\nAttrNumber compressed_colnum = get_attnum_rel(out_desc, NameStr(attr->attname));\nif (!AttributeNumberIsValid(compressed_colnum))\n\telog(ERROR, \"column \\\"%s\\\" not found in columnstore table\",\n\t\t NameStr(attr->attname));\n```",
+        "category": "可靠性",
+        "subcategory": "属性映射与越界风险",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 781,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "if (header.compression_algorithm == COMPRESSION_ALGORITHM_NULL)",
+        "review": "[缺陷类型] 序列化/反序列化语义不对称，NULL 压缩块被降级为 SQL NULL。\n影响评估：二进制 COPY、逻辑复制或跨版本恢复后，全 NULL 列的语义可能从“压缩块全 NULL”变为“列使用默认值”，对带 DEFAULT 的列会产生数据差异；null_compressed_recv 成为死代码也增加了后续维护困惑。",
+        "suggestion": "[重构思路] 若确定改为“全 NULL 列直接存 SQL NULL”，需保证 send/recv 与压缩侧一致（压缩侧也不再写 dummy block，或 send 对 NULL 算法不写字节），并在变更日志中明确该格式变化及降级兼容性；否则恢复 null_compressed_recv 返回 dummy block 的行为。\n代码示例：\n```c\n/* 若统一为 SQL NULL 语义：压缩侧不再产生 dummy block */\ncompressed_data = compressor->finish(compressor);\nrow_compressor->compressed_is_null[compressed_col] = compressed_data == NULL;\n```",
+        "category": "可靠性",
+        "subcategory": "序列化语义不对称",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2106,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/sort_transform.c",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "transformed = sort_transform_ec(root, last_pk->pk_eclass);",
+        "review": "[缺陷类型] 计划器 pathkey/等价类一致性保护被移除。\n影响评估：在多 hypertable join、且按 time_bucket(等式 join 变量) 分组/排序时，可能重新触发间歇性 `could not find pathkey item to sort` 计划错误；属于难以稳定复现的用户可见故障。",
+        "suggestion": "[重构思路] 若回退是有意的（例如该修复引发了别的问题），请在 MR 说明与变更日志中记录原因并保留对应回归测试；否则应恢复该判断，把校验下沉到 sort_transform_ec 的入口，使所有调用点都受保护。\n代码示例：\n```c\nIndex desired_ec_relid = rel->relid;\nif (rel->reloptkind == RELOPT_OTHER_MEMBER_REL)\n\tdesired_ec_relid = root->append_rel_array[rel->relid]->parent_relid;\nif (!bms_is_member(desired_ec_relid, last_pk->pk_eclass->ec_relids))\n\treturn NIL;\n```",
+        "category": "可靠性",
+        "subcategory": "计划器状态一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 421,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/apt-packages.yaml",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "| grep update_from_version | sed -e 's!update_from_version = !!')",
+        "review": "[缺陷类型] CI 脚本读取了不存在的配置键，导致取到空版本号。\n影响评估：apt/rpm 夜间降级测试无法验证 `ALTER EXTENSION ... UPDATE TO <prev>` 路径，失败原因被伪装成 SQL 报错，噪声大且可能漏掉真实降级缺陷。",
+        "suggestion": "[重构思路] 与 version.config 保持一致：改用 `downgrade_to_version`（或显式在 version.config 中增加 update_from_version 并同步 CMake 解析），并在取值后加非空断言，让错误立即、明确地暴露。\n代码示例：\n```yaml\nprev_version=$(wget --quiet -O - https://raw.githubusercontent.com/timescale/timescaledb/${{ steps.versions.outputs.version }}/version.config \\\n  | grep '^downgrade_to_version = ' | sed -e 's!^downgrade_to_version = !!')\nif [ -z \"${prev_version}\" ]; then echo \"could not determine downgrade_to_version\"; exit 1; fi\n```",
+        "category": "可靠性",
+        "subcategory": "CI 配置键不匹配",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 94,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "endif()",
+        "review": "[缺陷类型] 构建期版本变量解析缺少校验与回退。\n影响评估：配置文件笔误或旧分支缺少 downgrade_to_version 时会静默生成错误版本号的 SQL 升级/降级脚本，可能发布出无法安装或无法回退的扩展包。",
+        "suggestion": "[重构思路] 给 DOWNGRADE_TO_VERSION 增加回退到 PREVIOUS_VERSION 的分支，并恢复缺失即失败的断言；同时去掉 downgrade 块里对 PREVIOUS_VERSION 的死赋值，避免三个语义不同的变量互相污染。\n代码示例：\n```cmake\nif(NOT DOWNGRADE_TO_VERSION)\n  set(DOWNGRADE_TO_VERSION ${PREVIOUS_VERSION})\nendif()\nif(NOT PREVIOUS_VERSION OR NOT DOWNGRADE_TO_VERSION)\n  message(FATAL_ERROR \"Could not determine previous/downgrade version from version.config\")\nendif()\n```",
+        "category": "可靠性",
+        "subcategory": "构建配置解析",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 118,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/utils.h",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "#define TS_PREVENT_IN_TRANSACTION_BLOCK(toplevel) PreventInTransactionBlock(toplevel, TS_FUNCNAME())",
+        "review": "[缺陷类型] 死代码残留 + 隐含语义退化。\n影响评估：不影响当前行为，但会误导后续开发者以为该宏仍具备“重置 ProcessUtility 上下文”的保护能力。",
+        "suggestion": "[重构思路] 要么彻底删除该宏（连同只剩 ts_process_utility_context_reset 的调用约定一起梳理），要么保留原语义并在宏内显式 `#include <access/xact.h>`；若打算长期以 `toplevel` 入参形式使用，请在宏旁注释各调用点必须传入的值来源。\n代码示例：\n```c\n/* 删除未使用的宏 */\n-#define TS_PREVENT_IN_TRANSACTION_BLOCK(toplevel) PreventInTransactionBlock(toplevel, TS_FUNCNAME())\n```",
+        "category": "可维护",
+        "subcategory": "死代码与隐含语义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 106,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/compression/api.c",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "ereport(ts_guc_enable_compression_ratio_warnings &&",
+        "review": "[缺陷类型] 日志条件求值下沉到 ereport 参数中，造成无条件消息构造。\n影响评估：仅在压缩路径引入少量固定开销（每 chunk 数次系统目录名查找 + 格式化），不影响正确性；但属于可以避免的热路径浪费。",
+        "suggestion": "[重构思路] 保留外层 if 判断，只在确实需要输出时才构造消息；若希望保留 DEBUG1 可诊断性，可把条件拆成 `if (guc && ratio < threshold) ereport(WARNING, ...) else if (message_level_is_interesting(DEBUG1) && ratio < threshold) ereport(DEBUG1, ...)`。\n代码示例：\n```c\nif (compression_ratio < POOR_COMPRESSION_THRESHOLD &&\n\t(ts_guc_enable_compression_ratio_warnings || message_level_is_interesting(DEBUG1)))\n\tereport(ts_guc_enable_compression_ratio_warnings ? WARNING : DEBUG1, ...);\n```",
+        "category": "性能",
+        "subcategory": "热路径日志开销",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 547,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".unreleased/pr_7874",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "Implements: #7874 Support for SkipScan for distinct aggregates over the same column",
+        "review": "[缺陷类型] 文件缺失行尾换行。\n影响评估：不影响功能，但可能在 CHANGELOG 聚合或 pre-commit 检查中产生噪声。",
+        "suggestion": "[重构思路] 为三个文件补上行尾换行，并在仓库中引入 end-of-file-fixer 之类的 pre-commit 钩子做统一校验。\n代码示例：\n```bash\nprintf 'Implements: #7874 Support for SkipScan for distinct aggregates over the same column\\n' > .unreleased/pr_7874\n```",
+        "category": "可读性",
+        "subcategory": "文件格式规范",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "tsl/src/compression/compression.h",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "AttrMap *attrmap;",
+        "review": "[缺陷类型] 头文件不自洽 + 内部符号过度导出。\n影响评估：当前可通过传递包含编译通过，但重构或头文件顺序调整时会突然编译失败；导出内部辅助函数会让调用方误以为它们是稳定接口。",
+        "suggestion": "[重构思路] 在 compression.h 中显式 `#include <access/attmap.h>`；把 row_compressor_build_tuple / row_compressor_clear_batch 改为文件内 static（它们只在 compression.c 使用），或为其补充外部调用场景说明。\n代码示例：\n```c\n#include <postgres.h>\n#include <access/attmap.h>\n#include <access/attnum.h>\n```",
+        "category": "可维护",
+        "subcategory": "头文件自洽性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 154,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

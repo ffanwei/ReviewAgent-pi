@@ -1,0 +1,106 @@
+[
+  {
+    "filePath": "server/src/main/java/org/elasticsearch/plugins/ActionPlugin.java",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "default Collection<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {",
+        "review": "[缺陷类型] 公开扩展点签名变更未记录。影响评估：第三方/内部插件升级后编译失败，且缺少可检索的迁移指引；发布说明中看不到该破坏性变更。",
+        "suggestion": "[重构思路] 在 docs/changelog 增加一条说明该 SPI 变更的条目（area: Infra/Plugins 或类似），并在 ActionPlugin 的 Javadoc 中说明从原始 ActionHandler 迁移到泛型写法的做法（用 `new ActionHandler<>(...)` 依赖推断，无需显式写类型参数）。代码示例：\n```yaml\npr: 1264xx\nsummary: Make `ActionPlugin.ActionHandler` generic in request/response types\narea: Infra/Plugins\ntype: upgrade\nissues: []\n```",
+        "category": "可维护",
+        "subcategory": "API 兼容性与文档",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 55,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperatorFactories.java",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "public final class TimeSeriesAggregationOperatorFactories {",
+        "review": "[缺陷类型] 新增生产代码未被生产路径引用（仅被单测驱动），形成重复实现。影响评估：新老两套工厂并存，接入时容易出现模式/通道错配，且难以通过集成层（ESQL 端到端）验证真实查询行为。",
+        "suggestion": "[重构思路] 二选一：要么在本 MR 内把 AbstractPhysicalOperationProviders.groupingPhysicalOperation 的 TimeSeriesAggregateExec 分支切到新 Initial/Intermediate/Final 工厂并删除旧 Factory；要么把新文件延后到接入提交里一起引入。代码示例：`if (aggregateExec instanceof TimeSeriesAggregateExec ts) { operatorFactory = switch (aggregatorMode) { case INITIAL -> new TimeSeriesAggregationOperatorFactories.Initial(...); case INTERMEDIATE -> new TimeSeriesAggregationOperatorFactories.Intermediate(...); ... }; }` 并在 describe() 中输出聚合器明细以与其他工厂保持一致。",
+        "category": "可维护",
+        "subcategory": "死代码与重复实现",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 43,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "if (g.channel() != timeBucketChannel) {",
+        "review": "[缺陷类型] 同名参数在不同阶段语义不一致，依赖隐式数值约定。影响评估：接入方一旦传参不符合隐含约定就会静默产生错误的输出布局（多一列/少一列），属于难以定位的布局错位类问题。",
+        "suggestion": "[重构思路] 显式区分语义：把 Initial/Intermediate 的输入通道与“要收集 values 的分组列”拆成两个参数（例如 `List<GroupSpec> groupingInputs` 与 `List<Integer> valueChannels`），并在构建时断言通道不包含桶列、且输出块数量与聚合器数量一致。代码示例：`for (int ch : valueChannels) { asserts ch != timeBucketChannel; aggregators.add(valuesSupplier(g.elementType()).groupingAggregatorFactory(AggregatorMode.SINGLE, List.of(ch))); }`",
+        "category": "可维护",
+        "subcategory": "参数语义不一致与隐式约定",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 148,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "case FLOAT, NULL, DOC, COMPOSITE, UNKNOWN -> throw new IllegalArgumentException(\"unsupported grouping type\");",
+        "review": "[缺陷类型] 不支持的类型分支直接抛异常（fail-fast 但不可用），且异常信息无上下文。影响评估：BY float 列的时间序列聚合会整体失败，属于用户可见的功能缺口；错误信息缺少类型/channel 会显著增加排障成本。",
+        "suggestion": "[重构思路] 优先补齐 FLOAT 分支（可使用 ValuesFloatAggregatorFunctionSupplier）；确实不支持的类型应在消息中带上 elementType 与 channel，并在计划阶段（而非算子构造阶段）校验报错。代码示例：`case FLOAT -> new ValuesFloatAggregatorFunctionSupplier(); ... default -> throw new IllegalArgumentException(\"unsupported grouping type [\" + g.elementType() + \"] for channel [\" + g.channel() + \"]\");`",
+        "category": "可靠性",
+        "subcategory": "类型覆盖不全与错误信息可诊断性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 156,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "x-pack/plugin/esql/compute/src/main/java/org/elasticsearch/compute/operator/TimeSeriesAggregationOperator.java",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "private final Rounding.Prepared timeBucket;",
+        "review": "[缺陷类型] 遗留未使用字段/构造参数（死状态）。影响评估：误导后续维护者，增加无用依赖（Rounding），并掩盖“时序上下文能力已被移除”这一事实。",
+        "suggestion": "[重构思路] 若确认不再需要按桶边界计算，删除 timeBucket 字段与构造参数，并同步简化 Factory record；否则在类注释中显式说明保留原因。代码示例：`public TimeSeriesAggregationOperator(List<GroupingAggregator.Factory> aggregators, Supplier<BlockHash> blockHash, DriverContext driverContext) { super(aggregators, blockHash, driverContext); }`",
+        "category": "可维护",
+        "subcategory": "死字段与扩展点收窄",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 59,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "docs/changelog/126376.yaml",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "summary: Set `keyUsage` for generated HTTP certificates and self-signed CA",
+        "review": "[缺陷类型] 变更范围混杂 + 用户可见行为变更缺少 changelog。影响评估：rate 数值变化缺少升级说明，使用者难以判断是否为回归；无关变更混入增大评审与回滚风险。",
+        "suggestion": "[重构思路] 拆分提交：ESQL rate 语义变更单独一个 PR，并补 `area: ES|QL` 的 changelog（例如 summary: `Change rate() to not extrapolate across the time bucket`）；ActionHandler 泛型化作为纯机械重构单独提交；TLS keyUsage 修复保留在 126376。代码/配置示例：`type: breaking` 或 `type: upgrade` 条目 + `summary: rate() no longer extrapolates to bucket boundaries`。",
+        "category": "可维护",
+        "subcategory": "变更范围与变更记录",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

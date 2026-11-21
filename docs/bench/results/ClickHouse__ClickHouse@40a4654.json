@@ -1,0 +1,722 @@
+{
+  "instance_id": "ClickHouse__ClickHouse@40a4654",
+  "repo": "ClickHouse/ClickHouse",
+  "base_commit": "83afa5c6704737ed4afc5a178f96bf49c39e5e4c",
+  "head_commit": "40a4654d7b114f1d42f48680d57007ae80897cd1",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1484.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 70,
+  "review_output": [
+    {
+      "file": "src/Client/ConnectionParameters.cpp",
+      "line": 48,
+      "summary": "删除按 9440 端口自动启用 TLS 后，--port 9440 会静默退化为明文连接",
+      "failure_scenario": "重写 enableSecureConnection 时去掉了 `connection_port` 参数以及原来的 `if (connection_port && connection_port.value() == DBMS_DEFAULT_SECURE_PORT) return true;` 分支，security 现在只由 `secure`/`no-secure` 配置项和 `*.clickhouse.cloud`/`*.clickhouse-staging.com` 域名决定。结果是用户执行 `clickhouse-client --host h --port 9440`（未显式加 --secure）时不再自动启用 TLS：连接要么因对端要求 TLS 而失败，要么在服务端同时开放明文端口的情况下把密码等凭据以明文发出，属于安全降级且没有任何提示。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "SECURITY-TLS-001"
+    },
+    {
+      "file": "src/Client/ConnectionParameters.cpp",
+      "line": 48,
+      "summary": "移除按 9440 端口自动启用 TLS 的逻辑后，--port 9440 会静默退化为明文连接",
+      "failure_scenario": "enableSecureConnection 被重写：去掉了 connection_port 参数与 `if (connection_port && connection_port.value() == DBMS_DEFAULT_SECURE_PORT) return true;` 分支，security 现在只由 secure/no-secure 配置项以及 *.clickhouse.cloud / *.clickhouse-staging.com 域名后缀决定。结果是用户执行 `clickhouse-client --host h --port 9440`（未显式加 --secure）时不再自动启用 TLS：连接要么因对端要求 TLS 而握手失败，要么在服务端同时开放明文端口的情况下把密码等凭据以明文发出，属于无提示的安全降级。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "SECURITY-TLS-001"
+    },
+    {
+      "file": "ci/jobs/performance_tests.py",
+      "line": 387,
+      "summary": "db_path 被下沉到 DOWNLOAD_DATASETS 分支内，从 configure 等阶段续跑会抛 NameError",
+      "failure_scenario": "原本模块级的 `db_path = f\"{perf_wd}/db0/\"` 被删除，新代码只在 `if res and JobStages.DOWNLOAD_DATASETS in stages:` 块内（第 347 行）赋值，而 CONFIGURE 块的 commands（第 387-393 行，以及后续 `cp -al {db_path} {perf_left}/db` 等）仍引用 db_path。使用 `--param configure`/`--param test` 从中间阶段续跑（JobStages 支持把任意 stage 提前，见第 266-272 行）时 DOWNLOAD_DATASETS 不在 stages 中，db_path 未定义，构造命令列表时即抛 NameError，整个性能对比 job 直接崩溃。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "ci/jobs/performance_tests.py",
+      "line": 387,
+      "summary": "db_path 被下沉到 DOWNLOAD_DATASETS 分支内，从 configure 阶段续跑会抛 NameError",
+      "failure_scenario": "把模块级 `db_path = f\"{perf_wd}/db0/\"` 删除后，新代码只在 `if res and JobStages.DOWNLOAD_DATASETS in stages:` 块内第 347 行赋值 `db_path = \"/tmp/praktika/db0/\"`，而 CONFIGURE 块（第 387-393 行、以及后续 `cp -al {db_path} ...`）仍引用 db_path。当使用 `--param configure` / `--param test` 等「从中间阶段续跑」（JobStages 的既有能力，见第 61-67 行 stage 重排）跳过 DOWNLOAD_DATASETS 时，db_path 未定义，命令构造阶段即抛 NameError，整个性能对比 job 崩溃。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/AggregateFunctions/AggregateFunctionAny.cpp",
+      "line": 133,
+      "summary": "删除 any/anyLast 的 Enum 空状态默认值特例后，空输入可能产出非法枚举值",
+      "failure_scenario": "原实现对 Enum 参数且聚合状态为空（无任何行，或 anyIf 条件全不满足）时走 `type_enum8->insertDefaultInto(to)` / `type_enum16->insertDefaultInto(to)`，并带有 LOGICAL_ERROR 兜底；现在统一改为 `this->data(place).insertResultInto(to)`。Enum8/Enum16 不在 FOR_SINGLE_VALUE_NUMERIC_TYPES 列表内，因此使用 SingleValueDataGeneric，其 insertResultInto 在 `!has()` 时执行 `to.insertDefault()`，对 Enum 的底层 ColumnVector 插入数值 0，而不是数据类型声明的默认枚举项。对于 `Enum8('a'=1,'b'=2)` 这类不含 0 的枚举，结果列会包含未定义值，格式化/转换时可能报错或输出空串，属于行为回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/AggregateFunctions/AggregateFunctionAny.cpp",
+      "line": 133,
+      "summary": "删除 any/anyLast 的 Enum 空状态默认值特例，空输入时可能产出非法枚举值",
+      "failure_scenario": "原实现对 Enum 参数且聚合状态为空（无任何行 / anyIf 全为 false）时，走 `type_enum8->insertDefaultInto(to)` 等分支插入枚举类型的默认值；现在统一改为 `this->data(place).insertResultInto(to)`。Enum 类型不在 FOR_SINGLE_VALUE_NUMERIC_TYPES 列表内，因此走 SingleValueDataGeneric；其 insertResultInto 在 `!has()` 时执行 `to.insertDefault()`，对 Enum8/Enum16 的底层 ColumnVector 插入的是数值 0，而不是数据类型声明的默认枚举项。对于 `Enum8('a'=1,'b'=2)` 这类不含 0 的枚举，结果列会包含一个未定义的值，格式化/比较时可能报错或输出空字符串，属于对既有行为的回归；同时被删除的 LOGICAL_ERROR 兜底也一并消失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/Coordination/Changelog.cpp",
+      "line": 2402,
+      "summary": "析构函数中 flush 与 shutdown 合入同一 try，flush 抛异常将跳过 shutdown",
+      "failure_scenario": "重构把原本两个独立的 try/catch 合并为一个：`try { flush(); shutdown(); } catch (...) { tryLogCurrentException(...); }`。原先 flush() 失败会被记录后继续执行 shutdown()；现在一旦 flush() 抛异常，shutdown() 不再执行——append_completion_thread 不会被 join、current_writer 不 finalize、entry_storage 不关闭。由于发生在析构函数中异常无法外传，表现为静默的资源泄漏与未落盘，可能在进程退出或 Keeper 重启路径上导致文件句柄泄漏、日志丢失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-RESOURCE-001"
+    },
+    {
+      "file": "src/Coordination/Changelog.cpp",
+      "line": 2402,
+      "summary": "析构函数中 flush 与 shutdown 合入同一个 try，flush 抛异常将跳过 shutdown",
+      "failure_scenario": "重构把原本两个独立 try 块合并为一个：`try { flush(); shutdown(); } catch (...) { tryLogCurrentException(...); }`。原先 `flush()` 失败会被记录后继续执行 `shutdown()`；现在一旦 flush 抛异常，shutdown() 不再执行，文件 buffer 未正确 finalize、entry_storage 不关闭、后台线程（append_completion_thread 等）也不会被收尾。由于这里运行在析构函数中，异常无法向外传播，结果是资源未释放/数据未落盘的静默泄漏，可能表现为测试中的文件句柄泄漏或进程退出期间卡住。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-RESOURCE-001"
+    },
+    {
+      "file": "ci/jobs/scripts/clickhouse_proc.py",
+      "line": 45,
+      "summary": "start_minio 不再导出 TEMP_DIR，setup_minio.sh 依赖该环境变量定位工作目录",
+      "failure_scenario": "本次删除了 `start_minio` 中的 `os.environ[\"TEMP_DIR\"] = ...`，改为完全依赖镜像里的 `ENV TEMP_DIR=/tmp/praktika`（ci/docker/stateless-test/Dockerfile）。但 setup_minio.sh 的目录切换逻辑是 `if [ -d \"$TEMP_DIR\" ]; then cd \"$TEMP_DIR\"; PATH=\"/:.:$PATH\"; fi`。在非 docker 本地运行（Runner.generate_local_run_environment / --no-docker）或任何未设置 TEMP_DIR 的环境下，该分支被跳过：minio_data 落在仓库根目录、`/:.:$PATH` 也不会被注入，minio 的启动方式与 CI 不一致，容易出现“CI 通过、本地失败”的隐性差异。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CI-ENV-001"
+    },
+    {
+      "file": "ci/jobs/scripts/clickhouse_proc.py",
+      "line": 45,
+      "summary": "start_minio 不再导出 TEMP_DIR，setup_minio.sh 的工作目录切换依赖该环境变量",
+      "failure_scenario": "本次删除了 start_minio 里的 `os.environ[\"TEMP_DIR\"] = ...`，改为完全依赖镜像中的 `ENV TEMP_DIR=\"/tmp/praktika\"`（ci/docker/stateless-test/Dockerfile）。但 setup_minio.sh 的核心逻辑是 `if [ -d \"$TEMP_DIR\" ]; then TEST_DIR=$(readlink -f $TEST_DIR); cd \"$TEMP_DIR\"; PATH=\"/:.:$PATH\"; fi`。在非 docker 本地运行（Runner.generate_local_run_environment / --no-docker）或任何未设置 TEMP_DIR 的镜像中，该分支被跳过：minio_data 落在仓库根目录、`/:.:$PATH` 不会被注入，导致本地与 CI 的 minio 行为不一致，问题难以复现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CI-ENV-001"
+    },
+    {
+      "file": "ci/jobs/functional_stateless_tests.py",
+      "line": 119,
+      "summary": "同一命令列表中混用硬编码 /tmp/praktika 与 Settings.TEMP_DIR，配置化后路径会错位",
+      "failure_scenario": "改造把多数路径改为 {Settings.TEMP_DIR}，但同一份 commands 列表里仍保留写死的 /tmp/praktika：第 102 行日志清理、第 119-121 行 sed 循环的 glob、第 123 行 `chmod +x /tmp/praktika/input/clickhouse-odbc-bridge`（应等价于 Settings.INPUT_DIR 下的文件）。当前 ci/settings/settings.py 未覆盖 TEMP_DIR/OUTPUT_DIR/INPUT_DIR，所以暂时与默认值一致；但 TEMP_DIR/OUTPUT_DIR/INPUT_DIR 都在 _USER_DEFINED_SETTINGS 中可被覆盖，一旦覆盖就会写盘与 sed 目标错位（配置不被改写，服务端仍指向 /var、/etc）。此外 Result.from_commands_run 逐条执行且以最后一条命令的退出码决定 stage 结果，第 123 行的 chmod 恰是列表最后一项，硬编码路径失效会直接让整段 Install 阶段失败。functional_stateful_tests.py:87、102-104、119 与 build_clickhouse.py:197 有同类写死路径。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAIN-002"
+    },
+    {
+      "file": "ci/jobs/functional_stateless_tests.py",
+      "line": 123,
+      "summary": "同一命令列表中混用硬编码 /tmp/praktika 与 Settings.TEMP_DIR/ch_path，覆盖配置后路径错位",
+      "failure_scenario": "本次改造把多数路径改为 `{Settings.TEMP_DIR}`，但同一个 commands 列表里仍保留写死的 `/tmp/praktika/...`：第 102 行日志清理、第 119-121 行 sed 循环的 glob、第 123 行 `chmod +x /tmp/praktika/input/clickhouse-odbc-bridge`。而 `Settings.TEMP_DIR` 属于 _USER_DEFINED_SETTINGS（可由 ci/settings/*.py 覆盖），`ch_path` 也是命令行参数（默认 Settings.INPUT_DIR）。一旦 TEMP_DIR 被覆盖或显式传 `--ch-path`，sed 循环将遍历不存在的目录（配置不再被改写，服务端仍指向 /var、/etc），chmod 目标文件也不存在（`chmod` 失败会让该 stage 失败）。functional_stateful_tests.py:102-104、build_clickhouse.py:197 存在同类写死路径。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAIN-002"
+    },
+    {
+      "file": "src/Analyzer/Resolve/QueryAnalyzer.cpp",
+      "line": 4175,
+      "summary": "删除 allow_not_comparable_types_in_order_by 及其校验，未走 obsolete setting 过渡",
+      "failure_scenario": "本 MR 同时从 Settings.cpp 删除 allow_not_comparable_types_in_order_by（以及 allow_not_comparable_types_in_comparison_functions、min_external_sort_block_bytes、allow_experimental_kusto/prql_dialect 等），并在 validateSortingKeyType 中只剩 `if (allow_suspicious_types_in_order_by) return;` 早退、彻底移除 `!type.isComparable()` 校验。影响两层：(1) 用户配置/查询中显式设置这些 setting 会变成未知 setting，升级即报错；(2) 原本在分析阶段明确报错的非可比较类型（Object/JSON/AggregateFunction）进入 ORDER BY 后不再被拦截，异常被推迟到执行期或静默产生无意义排序结果。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "COMPAT-SETTINGS-001"
+    },
+    {
+      "file": "src/Analyzer/Resolve/QueryAnalyzer.cpp",
+      "line": 4175,
+      "summary": "删除 allow_not_comparable_types_in_order_by 设置及其校验，未提供废弃过渡",
+      "failure_scenario": "本 MR 同时从 Settings.cpp 删除 `allow_not_comparable_types_in_order_by`（以及 allow_not_comparable_types_in_comparison_functions、min_external_sort_block_bytes、allow_experimental_kusto/prql_dialect 等），并在 validateSortingKeyType 中执行早退 `if (allow_suspicious_types_in_order_by) return;` 后彻底移除 `!type.isComparable()` 校验。影响有两层：(1) 用户配置/查询里显式设置这些 setting 会变成未知 setting，升级即报错；(2) 原本在分析阶段明确报错的非可比较类型（Object/JSON/AggregateFunction）进入 ORDER BY 后不再被拦截，问题被推迟到执行期或静默产生无意义排序结果。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "COMPAT-SETTINGS-001"
+    },
+    {
+      "file": "programs/client/Client.cpp",
+      "line": 577,
+      "summary": "移除 --prompt 与连接级 <prompt> 后旧配置被静默忽略，无告警",
+      "failure_scenario": "本次把 prompt 统一收敛为仅来自 `prompt_by_server_display_name`：ClientApplicationBase 删除了 `(\"prompt\", po::value<std::string>(), ...)` 选项与对应的 `getClientConfiguration().setString(\"prompt\", ...)`；Client::parseConnectionsCredentials 删除了 `prefix + \".prompt\"` 到全局 `prompt` 的搬运；LocalServer 也不再读取 `prompt`。这带来两个问题：(1) 使用 `clickhouse-client --prompt 'xx> '` 的脚本/用户会直接报未知参数；(2) 在 client.xml / connections_credentials 里配置 `<prompt>` 的用户不会得到任何错误或警告，自定义提示符被静默丢弃，退回默认 `{display_name} :) `。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "COMPAT-CLI-001"
+    },
+    {
+      "file": "ci/praktika/json.html",
+      "line": 421,
+      "summary": "`columnSymbols[key] + ':' || key` 的 `||` 回退永不生效，符号缺失时渲染 undefined",
+      "failure_scenario": "把 `//keyElement.textContent = ... ; keyElement.textContent = ''` 改回赋值后，写法为 `columnSymbols[key] + ':' || key`。由于字符串拼接结果恒为 truthy（键不存在时也是 `\"undefined:\"`），`|| key` 分支是死代码：缺失符号时会显示 `undefined:` 而不是回退到 key 名，`status`/`start_time`/`duration` 三处同理。此外第 684 行附近对 `addFileButtonToStatus` 的调用去掉了 `nameParams.length > 1` 守卫，当 links 为空数组时会留下一个孤立的 `files:` 标签。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "FRONTEND-BUG-001"
+    },
+    {
+      "file": "ci/praktika/json.html",
+      "line": 421,
+      "summary": "`columnSymbols[key] + ':' || key` 的 || 回退永不生效，符号缺失时渲染 undefined",
+      "failure_scenario": "恢复为赋值后写成 `columnSymbols[key] + ':' || key`。字符串拼接结果恒为 truthy（键缺失时是 \"undefined:\"），`|| key` 是死代码，缺失符号会显示 `undefined:` 而不是回退到键名；status/start_time/duration 三处同型。另外第 684 行的 `addFileButtonToStatus('files', targetData.links)` 去掉了 `nameParams.length > 1` 守卫，而该函数只在 `links == null` 时提前返回，links 为空数组时会先 append 一个 `files:` 标签再因 length===0 不渲染任何链接，留下孤立标签。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "FRONTEND-BUG-001"
+    },
+    {
+      "file": "ci/jobs/build_clickhouse.py",
+      "line": 4,
+      "summary": "新增的 ResultTranslator import 在文件中未被使用",
+      "failure_scenario": "`from praktika.result import Result, ResultTranslator` 引入了 ResultTranslator，但 build_clickhouse.py 全文未使用它（单元测试阶段只调用 Result.from_gtest_run）。属于无用 import，若 CI 的 Python 静态检查启用 F401 会导致 style check 失败，也会误导读者以为该文件做了 gtest 结果转换。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAIN-001"
+    },
+    {
+      "file": "ci/jobs/build_clickhouse.py",
+      "line": 4,
+      "summary": "新增的 ResultTranslator import 未被使用",
+      "failure_scenario": "`from praktika.result import Result, ResultTranslator` 引入了 ResultTranslator，但整个 build_clickhouse.py 中并未使用它（ResultTranslator 仅在 ci/praktika/result.py 的 from_gtest_run 内部使用）。这属于无用 import，若 CI 启用了 ruff/flake8 的 F401 规则会导致 style check 失败。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAIN-001"
+    },
+    {
+      "file": "docs/.htmltest.yml",
+      "line": 5,
+      "summary": "关闭 CheckInternalHash 后文档内部锚点失效将不再被发现",
+      "failure_scenario": "把 `CheckInternalHash: true` 改为 false，htmltest 不再校验页面内 `#anchor` 是否真实存在。结合同文件 `CheckInternal: false`，文档站将只做极弱的链接检查，重构标题、删除章节导致的死锚点无法在 CI 暴露，属于测试覆盖度回退。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TESTING-DOCS-001"
+    },
+    {
+      "file": "docs/.htmltest.yml",
+      "line": 5,
+      "summary": "关闭 CheckInternalHash 后，文档内部锚点失效将不再被检查发现",
+      "failure_scenario": "把 `CheckInternalHash: true` 改为 false，htmltest 不再校验页内 `#anchor` 是否真实存在。结合同文件已关闭的 `CheckExternal: false` 与 `CheckInternal: false`，文档站几乎只剩最弱级别的链接检查：重命名/删除标题导致的死锚点（跨页引用 #section）无法在 CI 暴露，属于测试覆盖度回退。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TESTING-DOCS-001"
+    },
+    {
+      "file": "ci/praktika/yaml_generator.py",
+      "line": 100,
+      "summary": "模板中硬编码 /tmp/praktika_setup_env.sh 与 /tmp/praktika/praktika_run.log，RUN_LOG 占位符变成死参数",
+      "failure_scenario": "TEMPLATE_JOB_0 里生成脚本用 `{ENV_SETUP_SCRIPT}`（来自 Settings），但 Run 步骤却写死 `. /tmp/praktika_setup_env.sh` 与 `tee /tmp/praktika/praktika_run.log`；同时 generate() 仍传 `RUN_LOG=Settings.RUN_LOG` 给模板，而模板已不再使用 `{RUN_LOG}`。一旦 Settings.ENV_SETUP_SCRIPT/TEMP_DIR 被调整（TEMP_DIR 属于用户可覆盖设置），write 与 source 的路径就会不一致，source 失败会让整个 job 在第一步就挂掉。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAIN-003"
+    },
+    {
+      "file": "ci/praktika/yaml_generator.py",
+      "line": 100,
+      "summary": "模板中硬编码 /tmp/praktika_setup_env.sh 与 /tmp/praktika/praktika_run.log，RUN_LOG 占位符成为死参数",
+      "failure_scenario": "TEMPLATE_JOB_0 生成脚本用 `{ENV_SETUP_SCRIPT}`（来自 Settings.ENV_SETUP_SCRIPT），但 Run 步骤写死 `. /tmp/praktika_setup_env.sh` 与 `tee /tmp/praktika/praktika_run.log`；同时 generate() 仍传 `RUN_LOG=Settings.RUN_LOG`，而模板已不再包含 {RUN_LOG}。一旦 ENV_SETUP_SCRIPT/TEMP_DIR 被调整，生成与 source 的路径就会不一致，source 失败会让 job 在第一步失败；死参数也会误导后续维护者。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAIN-003"
+    },
+    {
+      "file": "ci/jobs/performance_tests.sh",
+      "line": 6,
+      "summary": "新增的 performance_tests.sh 未被任何工作流引用，且默认用 TODO 过滤器把测试集缩到 alter_select",
+      "failure_scenario": "新增的 215 行 shell 脚本没有被 ci/workflows/defs.py 的任何 Job.command 引用（性能 job 仍执行 `python3 ./ci/jobs/performance_tests.py`），属于仓库中的死代码；同时脚本第 6 行保留了调试用的 `export CHPC_TEST_GREP=alter_select`（`# TODO TEST:` 之上），若被人直接使用会只跑单个 alter_select 用例；脚本内还有硬编码 commit（`.../$version_major.$version_minor/020d843058ae211c43285852e5f4f0e0e9cc1eb6/package_aarch64/clickhouse`）与大量注释掉的逻辑，后续难以判断哪些是真实意图。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "MAINTAIN-004"
+    },
+    {
+      "file": "src/Functions/array/arrayAUC.cpp",
+      "line": 160,
+      "summary": "arrayROCAUC 处理空数组时越界读取 sorted_labels[0]",
+      "failure_scenario": "重写后的 apply() 只在 PR 分支对 size == 0 做了提前返回（`if (PR && size == 0) return 0.0;`），而在 ROC 分支（PR == false）直接执行 `Float64 prev_score = sorted_labels[0].score;` 以及后续的 `sorted_labels[0].score` 访问。当某个数组元素为空数组（例如 `arrayROCAUC([], [])` 或表中存在空数组行）时，sorted_labels 为空，索引 0 属于越界访问：Debug 构建会命中 PODArray 的下标断言，Release 构建读取未初始化内存，使本应返回 NaN 的调用变为随机结果甚至崩溃。原实现被删除的守卫是 `if (size == 0) return is_pr ? 0.0 : std::numeric_limits<Float64>::quiet_NaN();`，对两个模板分支都做了保护，本次重写把该守卫收窄成仅 PR 生效，属于明显的回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.87,
+      "rule": "CORRECTNESS-OOB-001"
+    },
+    {
+      "file": "src/Functions/array/arrayAUC.cpp",
+      "line": 279,
+      "summary": "arrayAUCPR/arrayROCAUC 静默移除 partial AUC（arr_partial_offsets）参数",
+      "failure_scenario": "重写把 arrayAUCPR 的入参收紧为固定 2 个（`getNumberOfArguments()` 返回 `PR ? 2 : 0`、`isVariadic()` 返回 `PR ? false : true`），arrayROCAUC 也从“2~4 个参数”收紧为“2~3 个参数”，同时删除了 apply()/vector() 中传入 higher_partitions_tp/fp、total_positives/negatives 的参数与相关计算。结果是此前合法的 `arrayAUCPR(scores, labels, arr_partial_offsets)` 与 `arrayROCAUC(scores, labels, scale, arr_partial_offsets)` 调用现在会直接抛 NUMBER_OF_ARGUMENTS_DOESNT_MATCH，partial AUC 能力被整体删除。别名 `arrayPRAUC`/`arrayAUC` 仍然存在，用户侧很难察觉该能力已缺失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "API-COMPAT-002"
+    },
+    {
+      "file": "src/Functions/FunctionsConversion.h",
+      "line": 1,
+      "summary": "MR 把文档分类迁移、parseDateTime 语义变更与 100+ 个无关文件混在一处，难以评审与回滚",
+      "failure_scenario": "本次提交同时包含：函数文档 `category→categories` 全量迁移、parseDateTime 年份范围/负秒校验语义变更、比较函数构造器签名精简，以及大量与上述目标无关的改动（CI/praktika、clients、Formats、Cache、Server 等，且多处是整段删除，如 FunctionsConversion.h -581、clickbench.py -182、PostgreSQLHandler.cpp -89、PrettyBlockOutputFormat.cpp -198）。这种非原子提交使评审无法聚焦、出现问题时无法按主题回滚，也让 parseDateTime 的行为变更更容易被误认为“格式化改动”而漏看。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "PROCESS-001"
+    },
+    {
+      "file": "src/Functions/FunctionsConversion.h",
+      "line": 4353,
+      "summary": "删除 Object→Object 转换后 JSON 到 JSON 的 CAST 直接报 TYPE_MISMATCH",
+      "failure_scenario": "本次删除了 createObjectToObjectWrapper 以及配套的 convertNestedObjectType / getSharedDataWithConvertedNestedObjectTypes / getDynamicColumnWithConvertedNestedObjectTypes 等整套辅助函数，createObjectWrapper 中不再有 `isObject(from_type)` 分支，落到末尾的抛出分支。于是 `CAST(json AS JSON(max_dynamic_paths=...))`、`INSERT INTO t SELECT json_with_other_params`、以及 `ALTER TABLE ... MODIFY COLUMN json JSON(...)` 这类 JSON→JSON（参数不同）的转换会从“可用”变为 TYPE_MISMATCH 异常。代码里仍保留 `/// TODO: support CAST between JSON types with different parameters`，说明这是一个已知缺口而非完成态；对已存在不同 max_dynamic_paths/max_dynamic_types 的 JSON 表做 schema 变更或跨表搬运数据将直接失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "API-COMPAT-003"
+    },
+    {
+      "file": "src/Disks/ObjectStorages/AzureBlobStorage/AzureBlobStorageCommon.cpp",
+      "line": 244,
+      "summary": "Azure endpoint_subpath 配置被静默忽略，可能导致路径前缀变化",
+      "failure_scenario": "processEndpoint 中删除了 `if (config.has(config_prefix + \".endpoint_subpath\")) { prefix = fs::path(prefix) / endpoint_subpath; }` 这段处理，同时删除了 `namespace fs = std::filesystem;`。但同一仓库的 S3 路径仍然支持 endpoint_subpath（ObjectStorageFactory.cpp 的 getS3URI 仍读取并拼接该配置），因此同一份 endpoint_subpath 语义在 Azure 上被单方面取消，且代码不会对残留的配置项报错或告警。对于在磁盘配置里使用 `endpoint_subpath` 的 Azure 用户，prefix 会静默变化：新写入对象的 key 前缀与历史数据不一致，表现为“旧数据看不到/新数据写到别处”，排查成本很高。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "CONFIG-COMPAT-004"
+    },
+    {
+      "file": "src/Disks/ObjectStorages/MetadataStorageFromPlainRewritableObjectStorage.cpp",
+      "line": 161,
+      "summary": "预处理器指令缩进异常且保留无效的 catch(...) { throw; }",
+      "failure_scenario": "删除 Azure 相关代码后，`#if USE_AWS_S3` 被改成了带前导空格的 `    #if USE_AWS_S3` / `    #endif`，与文件内其它预处理指令风格不一致，易在后续 clang-format/风格检查或人工阅读中产生混淆；同时 `catch (...)` 分支内只有 `throw;`，是删除 Azure 捕获分支后遗留的空转发 catch，等于冗余代码。这两处不改变语义，但降低了异常处理逻辑的可读性，也容易让后续维护者误以为还有兜底处理。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "STYLE-005"
+    },
+    {
+      "file": "src/DataTypes/DataTypeNothing.h",
+      "line": 30,
+      "summary": "DataTypeNothing 移除 isComparable 覆写，使 Array(Nothing)/Nullable(Nothing) 变为不可比较类型",
+      "failure_scenario": "DataTypeNothing 不再覆盖 `isComparable()`，从而继承 IDataType 的默认实现返回 false。由于 DataTypeArray::isComparable 直接委托给嵌套类型（`nested->isComparable()`），Array(Nothing) 随之变为不可比较；而 KeyDescription 与 minmax 索引校验仍以 `isComparable()` 为准抛 DATA_TYPE_CANNOT_BE_USED_IN_KEY。Nothing 用于表示未知类型的 NULL（Nullable(Nothing)）与空数组（Array(Nothing)），这类表达式此前可通过可比较性校验，现在会在排序键/索引创建路径上被拒绝，出现“同一查询改动前后错误信息不同”的语义漂移。建议确认这一收紧是预期行为并在变更说明中记录。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "CONSISTENCY-006"
+    },
+    {
+      "file": "src/Core/SettingsChangesHistory.cpp",
+      "line": 69,
+      "summary": "25.1 段落的设置变更历史被批量删除，升级兼容性语义需要确认",
+      "failure_scenario": "本次从 25.1 的 settings_changes_history 中删除了 allow_not_comparable_types_in_order_by、allow_not_comparable_types_in_comparison_functions、min_external_sort_block_bytes、output_format_pretty_multiline_fields、output_format_pretty_fallback_to_vertical*、allow_experimental_kusto_dialect、allow_experimental_prql_dialect 等条目，并同步删除了 enableAllExperimentalSettings 中的 setSetting 与 FormatFactory/FormatSettings 中的读取逻辑；检索确认这些设置名在仓库中已无任何引用（声明也已随之删除）。删除本身是一致的，但会带来两个需要确认的点：(1) 用户 profile/查询模板中若仍写有这些设置，升级后会变成 unknown setting 而报错；(2) 25.1 中记录的“默认值变化”历史被抹除后，基于 compatibility 设置回溯旧默认值的语义与 25.1 正式发布记录不再一致。建议在变更说明中明确这是一次设置项回收，并核对 25.1 release notes/文档是否需要同步删改。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CONFIG-COMPAT-007"
+    },
+    {
+      "file": "src/Functions/UniqTheta/FunctionsUniqTheta.cpp",
+      "line": 26,
+      "summary": "uniqTheta 系列函数的 categories 使用函数族名而非功能分类，分类体系不一致",
+      "failure_scenario": "本次把 FunctionDocumentation 的 category 统一改成 categories 集合，并把多个函数的分类做了重命名（URLs→URL、Type Conversion→Conversion、Random Numbers→Random、Maps→Map 等）。但 uniqThetaIntersect/uniqThetaUnion/uniqThetaNot 三个函数被改成 `uniqTheta`，用函数族名当作分类，与其它函数“按功能域分类”的约定不一致；同一批函数此前标注为 Other。这会让按分类聚合的文档/系统表输出（categoriesAsString）出现粒度不一的分类项，后续检索与文档生成的可维护性下降。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "DOC-CONSISTENCY-008"
+    },
+    {
+      "file": "src/Functions/parseDateTime.cpp",
+      "line": 65,
+      "summary": "parseDateTime64 的可解析年份范围被收窄为 1970–2106，早于 1970 的合法输入变为报错",
+      "failure_scenario": "本次重构删除了 ParsedValue 上按返回类型区分的年份上下界（DateTime64 原为 [1900, 2299]，DateTime 为 [1970, 2106]），改为全局 minYear=1970 / maxYear=2106，并删除了 cumulativeYearDaysBefore1970 表。结果是 parseDateTime64/parseDateTime64OrZero/parseDateTime64OrNull/parseDateTime64InJodaSyntax* 六个仍以 ReturnType::DateTime64 注册的函数，对 1900–1969 与 2107–2299 区间的输入由“正常解析”变为抛出 CANNOT_PARSE_DATETIME 或被 OrZero/OrNull 吞成 0/NULL，属于用户可见的行为回退（DateTime64 类型本身与文档支持的正是 1900-01-01 ~ 2299-12-31），且未见配套的文档/期望结果更新。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/Functions/parseDateTime.cpp",
+      "line": 167,
+      "summary": "解析状态结构体改名为 DateTime，与 ReturnType::DateTime / DataTypeDateTime 概念混淆",
+      "failure_scenario": "重构把 `ParsedValue<error_handling, return_type>` 改名为 `DateTime<error_handling>`，但同一文件中 `ReturnType::DateTime` 表示“返回 UInt32 的 DateTime 类型”，`DataTypeDateTime` 表示真实数据类型，而新结构体表示“解析中间状态（含 year/month/week/scale/time_zone_offset 等）”。同一编译单元里 `DateTime` 一词承担三种语义，且该名字与 ClickHouse 的日期时间类型概念高度重合，后续维护者极易把它误当成结果类型或数据类型使用（例如误以为可传给需要 DataTypePtr 的位置）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "NAMING-001"
+    },
+    {
+      "file": "src/Functions/parseDateTime.cpp",
+      "line": 582,
+      "summary": "buildDateTime 的负秒校验改为对所有返回类型生效，1970 年初 + 正向时区偏移的合法输入被误判为负秒",
+      "failure_scenario": "重构把原来只在 `if constexpr (return_type == ReturnType::DateTime)` 下生效的负秒校验，改成无条件的 `if (seconds_since_epoch >= time_zone_offset) 相减 else 报错`。这带来两个问题：(1) DateTime64 本应支持负的 epoch 秒数（1900 年以来），现在任何“减去时区偏移后小于 0”的时刻都直接报 VALUE_IS_OUT_OF_RANGE_OF_DATA_TYPE，例如 `parseDateTime64('1970-01-01 00:00:00', 'Asia/Shanghai')`（秒数 0、偏移 +28800）必然失败；(2) 报错文案固定为 \"Seconds since epoch is negative\"，而实际 seconds_since_epoch 可能为 0 或正数，误导性与错误码（VALUE_IS_OUT_OF_RANGE_OF_DATA_TYPE）也不匹配真实原因（未指定时区时的时区偏移应用失败）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/Functions/parseDateTime.cpp",
+      "line": 804,
+      "summary": "executeImpl2 结尾的花括号缩进错乱并留下多余空行",
+      "failure_scenario": "重构后 executeImpl2 方法体的收尾花括号被多缩进了 4 个空格（从 8 空格变成 12 空格），并且其后连续出现两个维护性空行。这不仅与文件其余部分的缩进风格冲突、易让后续读者误判作用域边界（看起来像嵌套块未闭合），也会被风格检查/格式化工具反复改回，产生无意义的 diff 噪音。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.86,
+      "rule": "STYLE-001"
+    },
+    {
+      "file": "src/Functions/array/arrayZip.cpp",
+      "line": 177,
+      "summary": "arrayZip 的文档分类被错误地设为 \"String\"",
+      "failure_scenario": "arrayZip 是把多个数组按元素组合成 tuple 数组的数组函数，基线分类为 \"Arrays\"，本次迁移时被改成 `{\"String\"}`（两个注册点都是如此），与同 MR 内其他数组函数统一使用的 \"Array\" 不一致。分类字段会通过 `categoriesAsString()` 暴露到 system.functions 并用于文档导航/外部 SQL 编辑器元数据，错误归类会让 arrayZip 出现在字符串函数目录下，属于文档元数据回归。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.88,
+      "rule": "DOC-001"
+    },
+    {
+      "file": "src/Functions/readWkt.cpp",
+      "line": 162,
+      "summary": "readWKTMultiLineString 的分类由 \"Geo - Polygons\" 改成 \"Unique identifiers\"，丢失 Geo 归类",
+      "failure_scenario": "同一文件内 LineString 与 MultiLineString 两个 WKT 解析函数现在都标为 \"Unique identifiers\"（LineString 在基线中即为该值），而 MultiLineString 在基线中是 \"Geo - Polygons\"，本次迁移把它覆盖成了 \"Unique identifiers\"。WKT/几何解析函数与唯一标识符无关，这一改动使 Geo 类函数在分类维度上缺失，看起来是复制粘贴相邻条目的结果。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.82,
+      "rule": "DOC-002"
+    },
+    {
+      "file": "src/Functions/getClientHTTPHeader.cpp",
+      "line": 99,
+      "summary": "分类命名体系不统一：Other / OtherFunctions / Miscellaneous / ConversionFunctions 在同一次迁移中并存",
+      "failure_scenario": "本次把 `category` 改成集合 `categories` 本应顺带收敛分类词表，但实际结果是新增了多套近义/风格不一致的名字：普通杂项函数仍用 \"Other\"（formatQuery 系列、getSetting、currentQueryID、dynamicElement、nested 等），另一批改用 \"OtherFunctions\"（formatReadableDecimalSize、getSubcolumn、parseReadableSize*），getClientHTTPHeader 又单独用了 \"Miscellaneous\"；castOrDefault 使用了偏向代码标识符风格的 \"ConversionFunctions\"；hilbert 同时挂 \"Hilbert coding\" + \"Hilbert Curve\" 两个近义标签（编码方式与曲线名重复），而 morton 挂 \"ZCurve\" + \"Morton coding\"，命名风格互不一致。由于 categories 是字符串开放式集合、且直接序列化进 system.functions 与文档，词表碎片化后无法按分类稳定聚合，后续清理成本更高。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "src/Server/HTTP/authenticateUserByHTTP.cpp",
+      "line": 246,
+      "summary": "X-Forwarded-For 非法值不再被容错，HTTP 认证路径可能抛未捕获异常并可被诱导做 DNS 解析",
+      "failure_scenario": "ClientInfo::getLastForwardedFor 由返回 std::optional<Poco::Net::SocketAddress> 改为直接返回原始字符串后，authenticateUserByHTTP 改用 Poco::Net::SocketAddress(forwarded_address, request.clientAddress().port()) 自行构造地址。该两参数构造函数对 \"unknown\"、\"1.2.3.4:8080\"、未加方括号的 IPv6 等非法值会抛 Poco::InvalidArgumentException，而此处 try 的 catch 只覆盖 Authentication::Require<BasicCredentials> 与 Authentication::Require<GSSAcceptorContext>，异常会逃逸出认证流程，使请求以内部错误结束（原实现会在 try/catch 中把解析失败退化为 SocketAddress{last, 0} 并继续认证）。同时两参数构造会对非数字主机名做地址解析，攻击者可伪造该头让服务器解析任意域名。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-INPUT-001"
+    },
+    {
+      "file": "src/Processors/QueryPlan/ReadFromRemote.cpp",
+      "line": 163,
+      "summary": "去掉 ASTSelectQuery 类型守卫与 EXPLAIN 解包后，非 SELECT AST 会直接抛类型转换异常",
+      "failure_scenario": "addLazyPipe 与 addPipe 现在无条件执行 shard.query->as<ASTSelectQuery &>()，而原实现用 `if (const auto * ast_select = shard.query->as<ASTSelectQuery>())` 做了保护（非 SELECT 时仅保持 add_totals=false），并提供了 getSelectQuery() 先剥离 ASTExplainQuery。ASTExplainQuery::getExplainedQuery 目前仍被 InterpreterExplainQuery、QueryFuzzer、InterpreterSetQuery 等 25 处使用，说明“EXPLAIN 包裹 SELECT”的 AST 形态依然存在；一旦该形态的查询走到 stage == Complete 的远端读路径，as<ASTSelectQuery &>() 会抛 Bad cast 异常使查询失败，而不是像原来那样安全跳过 totals 处理。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-CAST-002"
+    },
+    {
+      "file": "src/Processors/QueryPlan/Optimizations/filterPushDown.cpp",
+      "line": 411,
+      "summary": "移除 MergingAggregatedStep 处理后，经过 MergingAggregated 的计划不再下推过滤条件",
+      "failure_scenario": "tryPushDownFilter 现在只对 AggregatingStep 做分组键与 grouping sets 判断并下推过滤，原先同时处理 MergingAggregatedStep 的分支被整体删除，并且 MergingAggregatedStep 上的 isGroupingSets()/getGroupingSetsParamsList() 访问器也随之删除。分布式/并行聚合计划中 Filter 直接位于 MergingAggregated 之上的常见形态将失去谓词下推：过滤只能在合并聚合之后执行，远端读取与网络传输的行数显著增加，grouping sets 场景也更难提前裁剪数据。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.55,
+      "rule": "PERF-PUSHDOWN-003"
+    },
+    {
+      "file": "src/Processors/Formats/IOutputFormat.cpp",
+      "line": 162,
+      "summary": "取消进度写出的频率节流与空进度跳过，进度行写出量被放大",
+      "failure_scenario": "onProgress 现在只要抢到 writing_mutex 就立即 writeProgress，删除了 progress_write_frequency_us / prev_progress_write_ns 的频率限制，同时 JSONEachRowWithProgress::writeProgress 中的 `if (value.empty()) return;` 早退也被删除（Progress::empty() 一并移除）。结果是查询的每次进度回调（按 block 触发）都会产生一行 {\"progress\":...} 输出与一次 WriteBuffer 写入：高吞吐查询会向客户端/HTTP 响应写出海量进度行，增大 CPU 与网络开销并加重客户端解析负担。另外 finalizeUnlocked 不再冲刷 has_progress_update_to_write，最后一条被置位的进度可能丢失。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-IO-004"
+    },
+    {
+      "file": "src/Processors/Formats/Impl/JSONEachRowWithProgressRowOutputFormat.h",
+      "line": 11,
+      "summary": "JSONEachRowWithProgress 失去 meta/exception 专用输出，改变了既有输出契约",
+      "failure_scenario": "删除 writePrefix/writeSuffix/finalizeImpl 以及 supportTotals()/supportExtremes()/setRowsBeforeLimit()/setRowsBeforeAggregation() 覆写后，该格式不再输出首行 {\"meta\":[{name,type},...]}，异常改由基类 JSONEachRow 的 writeSuffix 输出，rows_before_limit_at_least / rows_before_aggregation 也不再作为独立 JSON 行写出，totals/extremes 的特殊行同样不再支持。依赖 meta 行判定列名与类型的客户端（以及按行解析 totals/extremes 的下游工具）会解析失败或行为改变。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "COMPAT-FORMAT-005"
+    },
+    {
+      "file": "src/Interpreters/Cache/Metadata.cpp",
+      "line": 1028,
+      "summary": "shrink 到 downloaded_size 时丢弃 boundary alignment 对齐，破坏缓存段对齐约定",
+      "failure_scenario": "原 FileSegment::shrinkFileSegmentToDownloadedSize 会把结果大小向上取整到 cache->getBoundaryAlignment()（FileCacheUtils::roundUpToMultiple），并在 downloaded_size 不等于对齐后大小时保持 PARTIALLY_DOWNLOADED 状态；新的 LockedKey::shrinkFileSegmentToDownloadedSize 直接以 downloaded_size 为大小新建 DOWNLOADED 段，完全不考虑对齐。boundary_alignment 仍被 getSizeForBackgroundDownloadUnlocked 使用，说明对齐仍是缓存的不变式之一；段大小不再对齐会让后续段的 offset（left = offset + downloaded_size）也不再对齐，可能使 O_DIRECT 读取失败或退化为普通读。此外，原本“downloaded_size == range().size() 时静默返回”的行为被改为抛 LOGICAL_ERROR，release 构建下会把以往的无害情况变成查询失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CACHE-ALIGN-006"
+    },
+    {
+      "file": "src/Parsers/ASTAlterQuery.cpp",
+      "line": 75,
+      "summary": "statistics 类 ALTER 命令格式化不再强制加括号，可能生成无法重新解析的语句",
+      "failure_scenario": "删除 needToFormatWithParentheses() 后，ADD_STATISTICS / DROP_STATISTICS / MATERIALIZE_STATISTICS / MODIFY_STATISTICS 只有在全局 format_alter_commands_with_parentheses 为真时才会加括号。被删函数的注释明确写着“When the alter command is about statistics, the Parentheses is necessary to avoid ambiguity”，说明该括号是消除 `ALTER TABLE t ADD STATISTICS ...` 歧义所必需的。若不加括号，formatQuery / SHOW CREATE / 复制日志等经由 AST 格式化的输出可能无法被 ParserAlterQuery 重新解析（round-trip 失败）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "PARSER-ROUNDTRIP-008"
+    },
+    {
+      "file": "src/Server/HTTPHandler.cpp",
+      "line": 723,
+      "summary": "删除 Access-Control-Expose-Headers 使浏览器端无法读取 X-ClickHouse-* 响应头",
+      "failure_scenario": "HTTPHandler 不再为响应添加 Access-Control-Expose-Headers: X-ClickHouse-Query-Id,X-ClickHouse-Summary,X-ClickHouse-Server-Display-Name,X-ClickHouse-Format,X-ClickHouse-Timezone。跨域请求下浏览器只暴露 CORS 安全列表内的响应头，前端 JS 读取 query id、summary、format、timezone 等将得到 null，依赖这些头部做取消查询/统计展示的 Web 客户端（包括同 MR 中一并修改的 programs/server/play.html）功能回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "COMPAT-CORS-009"
+    },
+    {
+      "file": "src/Interpreters/InterpreterInsertQuery.cpp",
+      "line": 408,
+      "summary": "Collapsing 引擎的插入期 sign 校验被移除，升级前的历史表不再校验 sign 值",
+      "failure_scenario": "插入路径不再为 Collapsing/VersionedCollapsing 表构造 _implicit_sign_column_constraint，改为在建表/挂载时把名为 check_sign_column 的 CHECK 约束固化进 metadata.constraints。由于该 setting（add_implicit_sign_column_constraint_for_collapsing_engine）默认 false 且约束在升级前从未持久化，升级前已存在的表在 INSERT 时不再校验 sign ∈ {-1, 1}，非法 sign 值可被写入并使 Collapsing 合并结果错误（数据正确性）；同时新建表的约束名与持久化表示与旧表不同（SHOW CREATE/metadata 不一致），在复制表或 schema 比较场景下产生差异。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "DATA-CONSTRAINT-010"
+    },
+    {
+      "file": "src/Functions/startsWithUTF8.cpp",
+      "line": 18,
+      "summary": "函数分类命名不统一且无校验，导致 system.functions 分类体系漂移",
+      "failure_scenario": "FunctionDocumentation::Categories 是 std::set<std::string>，不存在任何分类白名单或常量表校验，因此本 MR 在各注册点写入了彼此不一致的分类名：\"String\" 与仍保留的 \"Strings\"、\"DateTime\" 与 \"Dates and Times\"、以及新造的 \"Snowflake ID\"、\"String encoding\"、\"Constant\"、\"Miscellaneous\"。同一分类概念出现多种拼写会让按 category 过滤 system.functions、生成文档目录以及外部工具（SQL 编辑器）分类展示出现分裂与重复条目，长期难以收敛。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-TAXONOMY-011"
+    },
+    {
+      "file": "src/Interpreters/InterpreterCreateQuery.cpp",
+      "line": 1918,
+      "summary": "本 MR 引入多处拼写错误与异常缩进/空格的格式噪声",
+      "failure_scenario": "本次改动在若干位置引入了明显的拼写与格式问题：注释 \"If schema wes inferred\"（原为 was）、HTTPHandler.h 中 \"forwards data if an overflow is occur\"、FileSegment.cpp 注释 \"PARRTIALLY_DOWNLOADED_NO_CONTINUATION\"（原为 PARTIALLY）、buildPushingToViewsChain 参数列表结尾多余的 \" )\"、PrettyBlockOutputFormat 中 `rows_end_out        <<` 的对齐缩进异常。这些不改变逻辑，但增加阅读与后续 grep 的成本，也会在格式检查/评审中产生噪声。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "STYLE-TYPO-012"
+    },
+    {
+      "file": "src/Processors/Formats/Impl/PrettyBlockOutputFormat.cpp",
+      "line": 64,
+      "summary": "宽度计算使用硬编码 prefix=2，忽略 row_number_width 与 Space 样式差异，pretty 输出可能错位",
+      "failure_scenario": "calculateWidths 把 prefix 固定为 2，而改动前为 row_number_width + (style == Style::Space ? 1 : 2)。row_number_width 仍在第 52 行计算并用于 left_blank 与行号输出，因此开启 pretty.row_numbers（或使用 Space 样式、值中含制表符）时，宽度估算与实际缩进不一致，UTF8::computeWidth 的 tab 对齐参数与实际列位置脱节，输出表格边框可能错位。另外 widths[i] 由 resize_fill 改为 resize（值初始化为 0），只有在 calculateWidths 与 writeChunk 使用完全相同的跳过条件时才正确，形成隐式耦合。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.45,
+      "rule": "FORMAT-WIDTH-013"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+      "line": 311,
+      "summary": "resetProcessing 中 Keeper 响应索引与请求列表错位，正常失败被误判为 LOGICAL_ERROR",
+      "failure_scenario": "resetProcessing 原先依赖 makeCheckRequest 校验 processing_id 版本，本次删除了该 check 请求，只保留两个 remove 请求，但三处下标常量（check=0 / remove_id=1 / remove_processing=2）未同步修正，导致 responses 与语义错位：responses[0] 实际是「带版本 remove processing_id」，responses[1] 实际是「remove 临时 processing 节点」，而 remove_processing_path_idx=2 已经没有任何对应请求。后果是：当删除临时 processing 节点失败（注释明确说明这在 Keeper 会话过期时是正常情况）时，代码走进 remove_processing_id_path_idx 分支并把 unexpected_error 置为 true，抛出 LOGICAL_ERROR，使本应只记录日志的正常路径变成查询失败；同时 is_request_failed(2) 会对 size()==2 的 responses 越界访问，chassert 在 debug 构建下会直接断言失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "ZK-TXN-INDEX-001"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+      "line": 311,
+      "summary": "resetProcessing 的 Keeper 响应下标与请求列表错位，会话过期等正常失败被误判为 LOGICAL_ERROR",
+      "failure_scenario": "resetProcessing 原先依赖 makeCheckRequest 校验 processing_id 版本，本次删除了该 check 请求，只保留两个 remove 请求，但三处下标常量（check=0 / remove_id=1 / remove_processing=2）未同步修正，导致 responses 与语义整体错位：responses[0] 实际是「带版本 remove processing_id」，responses[1] 实际是「remove 临时 processing 节点」，而 remove_processing_path_idx=2 已无对应请求。后果是：当删除临时 processing 节点失败（代码注释明确说明这在 Keeper 会话过期时是正常情况）时，流程走入 remove_processing_id_path_idx 分支将 unexpected_error 置为 true 并抛出 LOGICAL_ERROR，把本应只记日志的场景变成查询/写入失败；同时 is_request_failed(2) 会越界访问 size()==2 的 responses，debug 构建下 chassert 断言失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "ZK-TXN-INDEX-001"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+      "line": 130,
+      "summary": "Unordered setProcessedImpl 删除 check 请求后 request_index 整体后移，创建 processed 节点失败被当作正常情况吞掉",
+      "failure_scenario": "本次删除了 setProcessedImpl 中 processing_id 的 makeCheckRequest，但 request_index 仍按旧顺序赋值：实际请求为 [0]=remove processing_id、[1]=remove processing、[2]=create processed 节点，而映射写成 CHECK=0、REMOVE_PROCESSING_ID=1、REMOVE_PROCESSING_PATH=2、SET_PROCESSED_PATH=3。由此产生两类错误：(1) 当 create processed 节点失败（如 ZNODEEXISTS 或其它非硬件错误）时，is_request_failed(REMOVE_PROCESSING_PATH) 命中的其实是下标 2 的 create 请求，被判定为「Failed to remove processing path」这一正常分支，仅 LOG_WARNING 后正常返回，setProcessed() 仍视为成功、file_status 被置为 Processed，而 Keeper 中该文件并未标记为 processed，后续会被再次拉取处理，造成同一文件重复消费/重复写入；(2) SET_PROCESSED_PATH=3 超出 responses 长度（3 个请求，下标 0..2），一旦走到该分支会触发 chassert 或 release 下越界读。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "ZK-TXN-INDEX-002"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+      "line": 130,
+      "summary": "setProcessedImpl 删除 check 请求后 request_index 映射整体后移，创建 processed 节点失败被当作正常情况吞掉",
+      "failure_scenario": "本次删除了 setProcessedImpl 中 processing_id 的 makeCheckRequest，但 request_index 仍按旧顺序赋值：实际请求为 [0]=remove processing_id、[1]=remove processing、[2]=create processed 节点，而映射表写成 CHECK=0、REMOVE_PROCESSING_ID=1、REMOVE_PROCESSING_PATH=2、SET_PROCESSED_PATH=3。由此产生两类错误：(1) 当 create processed 节点失败（例如节点已存在 ZNODEEXISTS 或其它非硬件错误）时，is_request_failed(REMOVE_PROCESSING_PATH) 命中的其实是下标 2 的 create 请求，于是被判定为「Failed to remove processing path」这一正常分支，仅 LOG_WARNING 后正常返回，setProcessed() 仍然返回成功、file_status 被置为 Processed，而 Keeper 中该文件并未被标记为 processed，后续会被再次拉取处理，造成同一文件被重复消费/重复写入。(2) SET_PROCESSED_PATH=3 超出 responses 长度（3 个请求，下标 0..2），一旦走到该分支会触发 chassert 越界断言或 release 下越界读。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "ZK-TXN-INDEX-002"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+      "line": 568,
+      "summary": "progress->processed_files 提前到文件开始读取时自增，提交阈值与进度统计被提前计数",
+      "failure_scenario": "processed_files 计数从「文件成功读完」移到「文件开始读取」处自增，而 generateImpl 中基于 progress->processed_files 的 max_processed_files_before_commit 等提交阈值判断仍按「刚读完一个文件」时机做等值比较；同时 ProcessingProgress 会被多线程共享（streamToViews 中 processing_threads_num 个 source 共用同一个 processing_progress），提前自增会让计数包含尚未处理完成的文件。任何在读取过程中失败（ErrorOnRead/Cancelled）的文件也已计入 processed_files，使「已处理文件数」偏大，阈值判断与对外进度统计都不再准确。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "PROGRESS-COUNT-001"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+      "line": 608,
+      "summary": "文件读到一半失败改为 return {} 使查询成功结束，重试该文件会重复写入已插入的行",
+      "failure_scenario": "旧逻辑在 reader->pull 抛异常且 file_status->processed_rows 非 0 时会重新抛出异常，从而让整个插入失败并进入 commit(false) 路径；新逻辑无论是否已产出数据都只把状态置为 ErrorOnRead 并 return {}，于是 generate() 认为数据流正常结束并调用 commit(true)，而该文件在 commit 中按 ErrorOnRead 分支以 reduce_retry_count=true 被标为「可重试」。问题在于此前已经返回给上层的 chunk 已被写入目标表，文件却仍被重试，后续重新完整读取该文件时会把已经插入的行再次插入，产生静默重复数据；同时查询本身返回成功，用户无法感知。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "DATA-DUP-001"
+    },
+    {
+      "file": "src/Storages/MergeTree/MergeTreeReadPool.cpp",
+      "line": 155,
+      "summary": "createTask 被移入 mutex 临界区，任务创建成为串行瓶颈并移除 TSA 保护",
+      "failure_scenario": "getTask 取消了原有的内层作用域锁，整个函数体（含末尾的 createTask）都在 mutex 保护下执行，而原代码专门用注释说明「createTask() is costly and not needed guarded by mutex」。createTask 实际会执行 get_part_name、getExtras() 并在需要时调用 MergeTreeReadTask::createReaders 创建列读取器与读缓冲（确属昂贵操作），在高并发读线程下会把所有线程的取任务串行化，形成锁竞争热点、降低读吞吐。同时头文件中 backoff_state/threads_tasks/remaining_thread_tasks 的 TSA_GUARDED_BY(mutex) 标注被删除，fillPerThreadInfo 也在无锁状态下修改这些容器（当前仅构造函数调用），丢失了编译期线程安全检查。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.75,
+      "rule": "PERF-LOCK-001"
+    },
+    {
+      "file": "src/Storages/MergeTree/MergeTreeReadPool.cpp",
+      "line": 155,
+      "summary": "createTask 被移入 mutex 临界区，读取任务创建成为串行瓶颈并移除 TSA 保护",
+      "failure_scenario": "getTask 取消了原有的内层作用域锁，整个函数体（含末尾的 createTask）都在 mutex 保护下执行，而原代码专门用注释说明「createTask() is costly and not needed guarded by mutex」。createTask 会构造 MergeTreeReadTask、创建读取器与列读取对象，属于读路径上的昂贵操作；在并发读线程数较高时，所有线程的取任务将被该全局 mutex 串行化，容易形成锁竞争热点。同时头文件中 backoff_state/threads_tasks/remaining_thread_tasks 的 TSA_GUARDED_BY(mutex) 标注被删除，fillPerThreadInfo 也在无锁状态下修改这些容器（当前仅由构造函数调用），未来若在运行期复用将无编译期保护。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "PERF-LOCK-001"
+    },
+    {
+      "file": "src/Storages/MergeTree/BackgroundJobsAssignee.cpp",
+      "line": 15,
+      "summary": "DataProcessing 类 assignee 改为固定使用 move 任务的调度参数",
+      "failure_scenario": "BackgroundJobsAssignee 删除了按 Type 选择调度参数的 getSettings()，构造函数统一使用 global_context_->getBackgroundMoveTaskSchedulingSettings()。但该类同时用于 Type::DataProcessing（在 threadFunc 中调用 data.scheduleDataProcessingJob）与 Type::Moving，两者的空转退避参数（thread_sleep_seconds_if_nothing_to_do、task_sleep_seconds_when_no_work_* 等）本应分别取自 background_schedule_pool 与 background_move_pool 配置。改动后数据处理类 assignee 的后台轮询/退避节奏被 move pool 的参数覆盖，用户配置的 background_schedule_pool 调度参数对 merge/mutate 任务不再生效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CONFIG-BEHAVIOR-001"
+    },
+    {
+      "file": "src/Storages/MergeTree/BackgroundJobsAssignee.cpp",
+      "line": 15,
+      "summary": "DataProcessing 类 assignee 改为固定使用 move 任务的调度参数，processing 侧配置失效",
+      "failure_scenario": "BackgroundJobsAssignee 删除了按 Type 选择调度参数的 getSettings()，构造函数统一使用 global_context_->getBackgroundMoveTaskSchedulingSettings()。但该类同时服务于 Type::DataProcessing（threadFunc 中调用 data.scheduleDataProcessingJob）与 Type::Moving。两套参数读取的是不同配置键：processing 侧为 background_processing_pool_thread_sleep_seconds* / background_processing_pool_task_sleep_seconds_when_no_work_*，move 侧为 background_move_processing_pool_*。改动后数据处理类 assignee 的轮询与空转退避节奏由 move pool 参数决定，用户对 background_processing_pool_* 的调整不再生效。附带证据：getBackgroundProcessingTaskSchedulingSettings() 当前已无任何调用点，沦为死代码。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CONFIG-BEHAVIOR-001"
+    },
+    {
+      "file": "src/Storages/System/StorageSystemDetachedTables.cpp",
+      "line": 66,
+      "summary": "database_idx 改为局部变量后每个 block 从第一个数据库重扫，跨 block 时重复输出并错用访问检查库名",
+      "failure_scenario": "database_idx 由成员变量改为 generate() 内的局部变量，每次生成新 block 都从 0 重新遍历数据库，而 detached_tables_it 仍是跨 block 保留的成员迭代器。当结果行数超过 max_block_size 需要第二个 block 时：第二次调用把 database_name 重置为 databases[0]，但 detached_tables_it 可能仍停在其它数据库且处于 valid 状态（第79行仅在迭代器失效时重建），内层循环继续消费旧数据库的迭代器，而第89行权限检查用的是被重置的 database_name（与迭代器实际所属数据库不一致）；待该迭代器耗尽后，外层又从 databases[0]、databases[1] 重新遍历并为其重建迭代器，导致已经输出过的数据库的 detached 表被再次输出。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "PAGINATION-STATE-001"
+    },
+    {
+      "file": "src/Storages/System/StorageSystemDetachedTables.cpp",
+      "line": 66,
+      "summary": "database_idx 改为局部变量后每个 block 从第一个数据库重扫，跨 block 时重复输出行并错用访问检查库名",
+      "failure_scenario": "database_idx 由成员变量改为 generate() 内的局部变量，每次生成新 block 都从 0 重新开始遍历数据库，而 detached_tables_it 仍是跨 block 保留的成员迭代器。当结果行数超过 max_block_size 需要第二个 block 时：第二次调用会把 database_name 重置为 databases[0]，但 detached_tables_it 可能仍停在其它数据库上处于 valid 状态（第79行只在迭代器失效时重建），于是内层循环继续消费旧数据库的迭代器，而第89行的权限检查用的是被重置的 database_name（与迭代器实际所属数据库不一致）；待该迭代器耗尽后，外层又从 databases[0]、databases[1] 重新遍历并为它们重建迭代器，导致已经输出过的数据库的 detached 表被再次输出（结果重复）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "PAGINATION-STATE-001"
+    },
+    {
+      "file": "src/Server/PostgreSQLHandler.cpp",
+      "line": 212,
+      "summary": "PostgreSQL 端口固定使用默认 SSL 上下文，postgresql_port 下 ssl_* 配置被静默忽略",
+      "failure_scenario": "本次删除了 PostgreSQLHandler 中读取<postgresql_port>前缀下 ssl_certificate/ssl_private_key/ssl_ca_cert/ssl_verification_mode/ssl_cipher_list/ssl_disable_protocols 等配置并构建自定义 Poco::Net::Context 的全部逻辑（含 CertificateReloader 证书热加载与 disableProtocols/preferServerCiphers 等加固项），makeSecureConnectionSSL 改为固定传 defaultServerContext()。影响：(1) 为该端口单独配置证书/私钥/CA 的部署在升级后仍能建立连接，但会使用全局默认证书，导致客户端证书校验失败或链路降级；(2) ssl_verification_mode、ssl_disable_protocols、ssl_cipher_list 等安全加固配置不再生效，且没有任何告警或废弃提示，配置被静默忽略；(3) 证书热加载能力丢失，轮换证书需要重启。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "TLS-CONFIG-001"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/StorageObjectStorageQueue.cpp",
+      "line": 770,
+      "summary": "ALTER 仅在局部副本剥离 s3queue_ 前缀，导致新旧设置名混用并误报「Setting is duplicated」",
+      "failure_scenario": "删除 normalizeSetting/normalizeAlterCommands 后，前缀归一化只作用于临时对象 result_setting，写回 metadata 的仍是原始带前缀的 name（new_metadata.settings_changes）。由此产生两个问题：(1) 与旧设置比较时（第735-741行，以及 checkAlterIsPossible 第660-664行）仍按原始名称做等值匹配，因此 buckets 与 s3queue_buckets 被视为两个不同设置：对已有 buckets 的表执行 `ALTER ... MODIFY SETTING s3queue_buckets = N` 时，new_settings 会同时包含 buckets 与 s3queue_buckets，随后按归一化名去重（第770-772行）命中重复并抛 BAD_ARGUMENTS「Setting s3queue_buckets is duplicated」，而此前对命令名归一化后可正常修改；(2) 带前缀的设置被持久化进表元数据，与 system.s3queue_settings 中按非前缀名比对 is_changed 的逻辑不一致，设置变更状态可能显示为未修改。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "SETTINGS-NORMALIZE-001"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/StorageObjectStorageQueue.cpp",
+      "line": 770,
+      "summary": "ALTER 时仅对局部副本剥离 s3queue_ 前缀，导致新旧设置名混用并误报「Setting is duplicated」",
+      "failure_scenario": "删除 normalizeSetting/normalizeAlterCommands 后，前缀归一化只在检查时对临时对象 result_setting 做，写回 metadata 的仍是原始带前缀的 name（new_metadata.settings_changes）。这带来两个问题：(1) 与旧设置比较时（第737-741行、以及 checkAlterIsPossible 第660-664行）仍按原始名称做等值匹配，因此「buckets」与「s3queue_buckets」被视为两个不同设置：对已有 buckets 的表执行 `ALTER ... MODIFY SETTING s3queue_buckets = N` 时，new_settings 会同时包含 buckets 与 s3queue_buckets，随后按归一化名去重（第770-772行）命中重复并抛出 BAD_ARGUMENTS「Setting s3queue_buckets is duplicated」，而此前通过对命令名归一化可以正常修改；(2) 带前缀的设置被持久化进表元数据，与 system.s3queue_settings 中按非前缀名比对 is_changed 的逻辑（ObjectStorageQueueSettings.cpp:92-97）不一致，设置变更状态可能显示为未修改。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "SETTINGS-NORMALIZE-001"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.h",
+      "line": 31,
+      "summary": "头文件遗留无定义的 setProcessedImpl(bool) 声明",
+      "failure_scenario": "resetProcessingImpl 被删除后，Unordered 实现不再需要 remove_processing_nodes_only 变体，.cpp 中对应的 `setProcessedImpl(bool remove_processing_nodes_only)` 定义已被删除，但头文件里仍保留该私有成员函数声明。该声明既无定义也无调用点，属于死代码，容易让后续维护者误以为仍存在该重载并据此修改调用方式（一旦调用会产生链接错误）。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.8,
+      "rule": "DEAD-DECL-001"
+    },
+    {
+      "file": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+      "line": 484,
+      "summary": "Ordered setProcessedImpl 下标 1 从不检查导致 responses[3] 越界，且「更新 processed 节点失败则重试」分支变为不可达",
+      "failure_scenario": "setProcessedRequests 实际只产生 3 个请求（[0]=set 或 create max processed 节点，[1]=remove processing_id，[2]=remove processing），但 setProcessedImpl 的 RequestType 仍是 CHECK_PROCESSING_ID_PATH=0、REMOVE_PROCESSING_ID_PATH=1、REMOVE_PROCESSING_PATH=2、SET_MAX_PROCESSED_PATH=3，分派逻辑只检查下标 0、2、3，从不检查下标 1。因此当「带版本 remove processing_id」失败（会话过期时 ZBADVERSION 属正常情况）时，前两个分支都不命中，流程会走到 is_request_failed(SET_MAX_PROCESSED_PATH) 即 responses[3]，对长度为 3 的 responses 越界访问；该 lambda（第459行）没有 chassert 保护，release 构建下是未定义行为，可能崩溃或按垃圾数据分支。同时原设计「更新 max processed 节点失败 → LOG_TRACE + continue 重试」的分支变成不可达，而真正的 set/create 失败（下标 0）会被错认为「Version of processing id node changed」仅记 WARNING 后返回，使文件在内存中标记为 Processed、Keeper 中 max processed 未推进，重启后同一文件会被再次处理。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "ZK-TXN-INDEX-003"
+    },
+    {
+      "file": "src/Storages/StorageReplicatedMergeTree.cpp",
+      "line": 1334,
+      "summary": "drop() 中无锁写 current_zookeeper，与后台重建会话线程存在数据竞争",
+      "failure_scenario": "drop() 中把 `current_zookeeper = zookeeper;` 的 std::lock_guard(current_zookeeper_mutex) 去掉，直接对 shared_ptr 成员赋值。头文件注明该 mutex 的作用是「To recreate the session in the background thread」，即后台线程会在持锁状态下重建/替换 current_zookeeper；对 shared_ptr 的非原子赋值与并发访问构成数据竞争（未定义行为，可能读到撕裂指针或错误的引用计数）。该路径虽假定表已 shutdown（第1330-1332行注释与 getZooKeeperIfTableShutDown 调用），但成员缺少 TSA_GUARDED_BY 标注，一旦该时序假设被破坏将无法被静态检查发现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RACE-001"
+    }
+  ],
+  "stderr_tail": "de           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 5 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 179 个文件 / 505271 字符（test=139, exclude=40），明细见审计 mrFilter\n✓ 完成 · 耗时 1439.8s · 模型调用 109 次 · token 输入 536,885（未命中） · 输出 194,425 · 缓存命中 7,747,584（93.5%） · 工具 199 次（主会话 199 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.1513\nreview-pi: 置信度过滤丢弃 5 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\ClickHouse__ClickHouse@40...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1440.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.0%)\n[time] 阶段 | 六阶段审计 1439.6s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.0%)\n[time] 审计明细 | S1P1 13.3s (0.9%) | S1P2 4.5s (0.3%) | S1P3 10.6s (0.7%) | S1P4 136.2s (9.5%) | S1P5 66.9s (4.6%) | S1P6 23.0s (1.6%) | S1R2P1 7.0s (0.5%) | S1R2P2 4.7s (0.3%) | S1R2P3 8.1s (0.6%) | S1R2P4 25.7s (1.8%) | S1R2P5 39.7s (2.8%) | S1R2P6 18.1s (1.3%) | S2P1 11.4s (0.8%) | S2P2 7.1s (0.5%) | S2P3 13.8s (1.0%) | S2P4 80.7s (5.6%) | S2P5 75.2s (5.2%) | S2P6 16.4s (1.1%) | S3P1 15.1s (1.0%) | S3P2 5.5s (0.4%) | S3P3 13.9s (1.0%) | S3P4 74.3s (5.2%) | S3P5 65.6s (4.6%) | S3P6 22.1s (1.5%) | S4P1 21.7s (1.5%) | S4P2 4.6s (0.3%) | S4P3 11.9s (0.8%) | S4P4 116.6s (8.1%) | S4P5 100.0s (6.9%) | S4P6 31.2s (2.2%) | S5P1 14.3s (1.0%) | S5P2 7.4s (0.5%) | S5P3 11.9s (0.8%) | S5P4 165.0s (11.5%) | S5P5 62.6s (4.3%) | S5P6 18.6s (1.3%) | S5R2P1 7.4s (0.5%) | S5R2P2 5.4s (0.4%) | S5R2P3 8.7s (0.6%) | S5R2P4 38.6s (2.7%) | S5R2P5 39.6s (2.8%) | S5R2P6 14.6s (1.0%)\n[usage] 任务总计 | 模型调用 109 次（Agent 109 + 一次性 0） | token 输入 536,885（未命中） | 输出 194,425 | 缓存命中 7,747,584（93.5%） | $0.1513\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\ClickHouse__ClickHouse@40a4654\\audit\\20261115_073620_822.json",
+  "token_usage": {
+    "input_tokens": 536885,
+    "output_tokens": 194425,
+    "cache_read_input_tokens": 7747584
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "instance_id": "dotnet__aspnetcore@0ce67cd",
+  "repo": "dotnet/aspnetcore",
+  "base_commit": "f83c97fa0b91f83bd20511d1abf235dc48b596e2",
+  "head_commit": "0ce67cdee87e9fee014ba95c11e8e36b8913041c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 303.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/Shared/HttpSys/NativeInterop/SocketAddress.cs",
+      "line": 40,
+      "summary": "GetPort 缺少 (ushort) 回转换，端口 ≥ 32768 时返回负数",
+      "failure_scenario": "sin_port / sin6_port 是 16 位网络字节序值（CsWin32 中为 ushort）。IPAddress.NetworkToHostOrder((short)value) 的返回类型是 short，这里直接 `return` 到 int 会发生符号扩展：当端口号 ≥ 32768 时结果变成负数。例如端口 50000（0xC350，网络字节序字节 0xC3、0x50）读成 ushort 为 0x50C3，NetworkToHostOrder 后为 0xC350，即 short 的 -15536，最终返回 -15536 而不是 50000。被删除的旧实现 `(_buffer[2] << 8 & 0xFF00) | (_buffer[3])` 是无符号位运算，结果始终正确，因此这是本次重构引入的行为回归。该值通过 Request.RemotePort / Request.LocalPort 直接填充 IHttpConnectionFeature（RemotePort/LocalPort 为 int 类型）对外暴露，而 Windows 默认动态端口范围为 49152–65535，全部落在受影响区间，意味着绝大多数客户端源端口都会被报告为负数，依赖端口做日志、限流、ACL/诊断的应用会得到错误数据；IPv4（第 40 行）与 IPv6（第 62 行）两处实现存在同一缺陷。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "CORRECTNESS-BYTEORDER-001"
+    },
+    {
+      "file": "src/Shared/HttpSys/NativeInterop/SocketAddress.cs",
+      "line": 70,
+      "summary": "IPv6 地址只取 16 字节地址，丢弃 sin6_scope_id 作用域",
+      "failure_scenario": "重写后的 SocketAddressIPv6 已经持有完整的 SOCKADDR_IN6（其中包含 sin6_scope_id），但 GetIPAddress 仍只用 sin6_addr.u.Byte 的 16 字节构造 IPAddress，并保留旧的 `// TODO: Does scope id matter?` 注释。对于 link-local（fe80::/10）等需要作用域标识的地址，返回的 IPAddress.ScopeId 恒为 0，调用方据此做地址比较、回连或日志展示时无法区分不同接口上的同一地址。该行为与重构前一致，因此不是回归，但在新实现已能拿到 sin6_scope_id 的情况下是可以顺手补齐的能力缺口。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.35,
+      "rule": "CORRECTNESS-IPV6-SCOPE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\dotnet__aspnetcore\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\dotnet__aspnetcore@0ce67cd.diff\n  caseId              dotnet__aspnetcore@0ce67cd\n  --issue             (未传)\n  --taskId            dotnet__aspnetcore@0ce67cd\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 382 字符（test=1），明细见审计 mrFilter\n✓ 完成 · 耗时 102.5s · 模型调用 12 次 · token 输入 28,913（未命中） · 输出 14,098 · 缓存命中 144,512（83.3%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0084\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 103.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.6%)\n[time] 阶段 | 六阶段审计 102.5s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 6.3s (6.2%) | P2 3.3s (3.2%) | P3 7.9s (7.7%) | P4 63.7s (62.2%) | P5 16.0s (15.6%) | P6 5.2s (5.1%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 28,913（未命中） | 输出 14,098 | 缓存命中 144,512（83.3%） | $0.0084\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\dotnet__aspnetcore@0ce67cd\\audit\\20261115_050349_651.json",
+  "token_usage": {
+    "input_tokens": 28913,
+    "output_tokens": 14098,
+    "cache_read_input_tokens": 144512
+  }
+}

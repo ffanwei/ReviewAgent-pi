@@ -1,0 +1,52 @@
+{
+  "instance_id": "filamentphp__filament@871ec75",
+  "repo": "filamentphp/filament",
+  "base_commit": "e4a7ecf0e65574522eb9fbe70b7339f41de0bbe2",
+  "head_commit": "871ec75815e1f92da141e9aef80f287f7779dfe7",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 140.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php",
+      "line": 145,
+      "summary": "新增的 time 分支与相邻 date/dateTime 分支结构完全重复，建议合并为类型映射",
+      "failure_scenario": "getTableColumns() 中三处判断（第 138-143 行 date、第 145-150 行新增 time、第 152-158 行 datetime/timestamp）除写入的格式化方法名不同外逻辑完全相同，均为 `$columnData['<method>'] = []` 加 `$columnData['sortable'] = []`。本次改动沿用了这种 copy-paste 扩展方式，使时间类列的处理分散在三个并行 if 块中：后续若统一调整（如追加 `timeTooltip`、传递 `timezone`/`format` 参数、或改为 `$columnData['type']` 级别的映射）必须同步修改三处，容易漏改导致 date / time / datetime 三类列的生成产物行为不一致。属于可维护性隐患，不影响当前生成的代码正确性。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "packages/forms/src/Commands/FileGenerators/Concerns/CanGenerateModelForms.php",
+      "line": 152,
+      "summary": "新增 time 列不会生成 default()，数据库时间默认值被丢弃",
+      "failure_scenario": "本次为 `time` 类型新增了 `TimePicker` 组件（第 93 行），但 getFormComponents() 只在两处生成 `->default()`：数字类型分支（第 152-158 行）以及 `TextInput`/`Textarea` 且 `isset($type['length'])` 的分支（第 170-175 行）。`parseColumnType()` 对 time 列只返回 `['name' => 'time']`（不含 `length`），因此形如 `$table->time('opens_at')->default('09:00:00')` 的列虽然现在会生成 `TimePicker::make('opens_at')`，却不会带上 `->default('09:00:00')`，生成器产出的表单与数据库默认值不一致，开发者需要手工补齐。这属于新类型支持不完整（非回归，因为此前该列生成的是同样没有 default 的 TextInput）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "COMPLETENESS-001"
+    },
+    {
+      "file": "packages/forms/src/Commands/FileGenerators/Concerns/CanGenerateModelForms.php",
+      "line": 93,
+      "summary": "PostgreSQL timetz 列被归并为 time 后会生成无时区配置的 TimePicker",
+      "failure_scenario": "`parseColumnType()` 把 `time` 与 `timetz` 统一映射为 `'time'`（packages/support/src/Commands/Concerns/CanReadModelSchemas.php:141）。本次新增分支会让来自 `timetz` 的列也生成 `TimePicker::make(...)`，而新增代码没有为该组件生成任何 `->timezone()` / format 相关调用（TimePicker 自身仅覆写 `hasDate(): false`，时区需要显式配置）。相比之下，改动前这类列生成的是 `TextInput`，会原样保存/回填带偏移的时间字符串（如 `14:30:00+02`）。因此在 Postgres 使用 `timetz` 的项目中，生成器产出的表单可能把带偏移的时间值按本地时间格式回填并回写，丢失偏移信息，表格侧新增的 `->time()`（TextColumn 亦无 timezone 参数）也只会显示格式化后的本地时间。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.35,
+      "rule": "PORTABILITY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\filamentphp__filament\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\filamentphp__filament@871ec75.diff\n  caseId              filamentphp__filament@871ec75\n  --issue             (未传)\n  --taskId            filamentphp__filament@871ec75\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 110.7s · 模型调用 21 次 · token 输入 30,851（未命中） · 输出 15,272 · 缓存命中 281,216（90.1%） · 工具 29 次（主会话 29 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0094\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 111.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 110.7s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 19.3s (17.4%) | P2 2.5s (2.3%) | P3 6.6s (5.9%) | P4 29.0s (26.2%) | P5 46.5s (42.0%) | P6 6.8s (6.2%)\n[usage] 任务总计 | 模型调用 21 次（Agent 21 + 一次性 0） | token 输入 30,851（未命中） | 输出 15,272 | 缓存命中 281,216（90.1%） | $0.0094\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\filamentphp__filament@871ec75\\audit\\20261115_005655_410.json",
+  "token_usage": {
+    "input_tokens": 30851,
+    "output_tokens": 15272,
+    "cache_read_input_tokens": 281216
+  }
+}

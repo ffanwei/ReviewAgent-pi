@@ -1,0 +1,183 @@
+{
+  "generatedAt": "2026-11-15T01:40:27.993Z",
+  "runId": "20261115_013821_514",
+  "source": "mr",
+  "caseId": "infiniflow__ragflow@2d06022",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 21,
+      "title": "从 '@/locales/config' 导入并不存在的 languageOptions，语言下拉必然失效",
+      "description": "embed-modal/index.tsx 第 21 行 `import { languageOptions } from '@/locales/config';`，但 web/src/locales/config.ts 全文 68 行只导出了 translationTable 与默认 i18n 实例（以及从 './until' 导入的 flattenObject/createTranslationTable），没有任何名为 languageOptions 的导出；全仓库对该标识符的检索也只有本文件第 21 行的导入与第 91 行的 options={languageOptions} 两处使用、零处声明。结果是：若构建配置启用类型检查会直接报 “Module has no exported member 'languageOptions'” 导致前端构建失败；若走 babel/esbuild 不校验类型，则该导入在运行时为 undefined，Select 的 options 为空，新增的 locale 选项功能完全不可用。",
+      "evidence": [
+        "web/src/components/api-service/embed-modal/index.tsx:21 — import { languageOptions } from '@/locales/config';",
+        "web/src/locales/config.ts:1-68 — 仅 import i18n/LanguageDetector/initReactI18next 与各语言包、flattenObject、createTranslationTable，导出 translationTable 与 default i18n，无 languageOptions",
+        "web/src/components/api-service/embed-modal/index.tsx:91 — options={languageOptions}",
+        "review_find_references('languageOptions') 仅返回 embed-modal/index.tsx:21 与 :91 两处 usage，无任何 declaration"
+      ],
+      "rule": "I18N-EXPORT-001",
+      "confidence": 0.87,
+      "tips": {
+        "review": "[缺陷类型] 引用了不存在模块导出（缺失声明 / 未定义导入）。影响评估：类型检查下前端构建失败；即使构建通过，语言下拉也拿不到任何选项，新增的 locale 参数配置能力完全失效。",
+        "suggestion": "[重构思路] 若语言列表应来自现有语言包清单，则在 locales/config.ts 中显式导出一个语言选项常量（label 用语言名、value 用 i18next 支持的 locale code），再由组件引用；若确无该常量则应改用仓库中已有的等价配置。代码示例：`// web/src/locales/config.ts\\nexport const languageOptions = [ { label: 'English', value: 'en' }, { label: 'Vietnamese', value: 'vi' }, { label: 'zh', value: 'zh' }, { label: 'zh-TRADITIONAL', value: 'zh-TRADITIONAL' }, { label: 'ja', value: 'ja' }, { label: 'pt-BR', value: 'pt-BR' } ];`，并保证 value 与 supportedLngs 一致。",
+        "subcategory": "未定义导入/缺失导出"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 81,
+      "title": "新增的 avatarHidden / locale 词条在语言包中不存在，界面会直接显示 key",
+      "description": "第 81 行 `t('avatarHidden')` 与第 87 行 `t('locale')` 使用了 chat 命名空间的新词条，但全仓库对 avatarHidden 的检索只有本文件这一处使用，没有任何语言包（en.ts、zh.ts、vi.ts 等）定义该键。i18n 初始化时 fallbackLng: 'en'（locales/config.ts:62），而 en.ts 中同样没有该键，因此回退也拿不到译文，react-i18next 会把原样的 'avatarHidden' 渲染成表单项标签。由于本 MR 同时新增了这两个 UI 标签，属于随特性引入的缺失资源。",
+      "evidence": [
+        "web/src/components/api-service/embed-modal/index.tsx:81 — <Form.Item label={t('avatarHidden')}>",
+        "web/src/components/api-service/embed-modal/index.tsx:87 — <Form.Item label={t('locale')}>",
+        "review_find_references('avatarHidden') 仅 1 处匹配：embed-modal/index.tsx:81 [usage]，无 locale 定义",
+        "web/src/locales/config.ts:62 — fallbackLng: 'en'，回退目标语言包中亦无该键"
+      ],
+      "rule": "I18N-KEY-002",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 新增 UI 文案未登记到语言资源。影响评估：嵌入弹窗的选项标签显示为原始 key（如 avatarHidden），全部语言的用户都会看到未翻译的占位文本，属可见的界面缺陷。",
+        "suggestion": "[重构思路] 在 en.ts 与 zh.ts 的 chat 命名空间补齐 avatarHidden、locale 两个键（其余语言按需补充或依赖 en 回退），并保证 key 与调用处命名一致；建议加一条校验脚本，扫描 t('...') 用到的键是否都在 en.ts 中存在。代码示例：`// web/src/locales/en.ts（chat 段）\\navatarHidden: 'Hide avatar',\\nlocale: 'Locale',` / `// web/src/locales/zh.ts（chat 段）\\navatarHidden: '隐藏头像',\\nlocale: '语言',`",
+        "subcategory": "i18n 词条缺失"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 48,
+      "title": "visibleAvatar 状态名与其实际含义相反，勾选后写入的是隐藏头像参数",
+      "description": "组件内状态名为 visibleAvatar（第 42 行），但第 47-48 行在其为 true 时追加 `&visible_avatar=1`；而分享页 web/src/pages/chat/shared-hooks.ts:30-32 把 visibleAvatar 解析为 `参数存在 ? 参数 !== '1' : true`，即 visible_avatar=1 表示“不显示头像”。于是“勾选 checkbox → visibleAvatar=true → 头像反而被隐藏”，状态名与语义相反，只是恰好配合 label t('avatarHidden') 才看起来正确，后续维护极易写出取反错误。",
+      "evidence": [
+        "web/src/components/api-service/embed-modal/index.tsx:42 — const [visibleAvatar, setVisibleAvatar] = useState(false);",
+        "web/src/components/api-service/embed-modal/index.tsx:47-48 — if (visibleAvatar) { src += '&visible_avatar=1'; }",
+        "web/src/pages/chat/shared-hooks.ts:30-32 — visibleAvatar: searchParams.get('visible_avatar') ? searchParams.get('visible_avatar') !== '1' : true"
+      ],
+      "rule": "NAMING-003",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 状态命名与业务语义相反（布尔变量取反）。影响评估：当前功能表现正确，但语义歧义会让后续改动把 visible_avatar 取值写反，导致头像显示/隐藏行为翻转，且问题难以从代码字面发现。",
+        "suggestion": "[重构思路] 将状态按 UI 语义命名为 avatarHidden，或在拼接 URL 时显式取反并加注释，保持“界面语义 ↔ URL 语义”映射单向清晰。代码示例：`const [avatarHidden, setAvatarHidden] = useState(false);\\nif (avatarHidden) src += '&visible_avatar=1'; // visible_avatar=1 表示隐藏头像`",
+        "subcategory": "命名与语义一致性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 87,
+      "title": "Form.Item 被放在 Form 之外使用，表单上下文缺失",
+      "description": "第 79-95 行把两个 Form.Item 直接放进 <Flex vertical>，整个组件（第 116-148 行的 Modal）中并没有任何 <Form> 包裹，Form 只是作为组件被导入（第 10 行）而未使用。antd 的 Form.Item 依赖 Form 上下文来承载 label 布局、name 绑定与校验，脱离 Form 使用时 label 与控件的排版/宽度由内部 fallback 逻辑决定，也拿不到 Form 提供的 layout 配置，属于误用表单组件。",
+      "evidence": [
+        "web/src/components/api-service/embed-modal/index.tsx:79-95 — <Flex vertical className={styles.optionContainer}> 内直接包含 <Form.Item label={t('avatarHidden')}> 与 <Form.Item label={t('locale')}>",
+        "web/src/components/api-service/embed-modal/index.tsx:116-148 — Modal 内部未出现 <Form> 包裹，Form 仅在第 10 行作为导入存在"
+      ],
+      "rule": "UI-FORM-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 组件契约误用（Form.Item 脱离 Form 上下文）。影响评估：选项区 label 与控件的对齐/宽度依赖 antd 的 fallback 行为，换 antd 版本或换 layout 时容易错位；若后续给 Item 加 name 做校验则完全无效。",
+        "suggestion": "[重构思路] 二选一：用 <Form layout=\"horizontal\"> 包裹整个选项区，使其成为受控表单；或既然只是标签 + 控件，改用普通 div/Form.Item 之外的排版组件。代码示例：`<Form layout=\"vertical\" className={styles.optionContainer}>\\n  <Form.Item label={t('avatarHidden')}>...</Form.Item>\\n  <Form.Item label={t('locale')}>...</Form.Item>\\n</Form>`",
+        "subcategory": "组件用法不当"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 80,
+      "title": "新增选项区文案硬编码英文，未走 i18n",
+      "description": "第 80 行 `<h2>Option</h2>` 与第 89 行 `placeholder=\"Select a locale\"` 都是硬编码英文字符串，而同一组件的其它文案（fullScreenTitle、fullScreenDescription、comingSoon 等）全部通过 t() 获取。在中文/越南语等界面下，选项区会突兀地出现英文，与产品既有的多语言约定不一致。",
+      "evidence": [
+        "web/src/components/api-service/embed-modal/index.tsx:80 — <h2>Option</h2>",
+        "web/src/components/api-service/embed-modal/index.tsx:89 — placeholder=\"Select a locale\"",
+        "web/src/components/api-service/embed-modal/index.tsx:72-76 — 同一 items 内其它文案均使用 t('fullScreenTitle') / t('fullScreenDescription')"
+      ],
+      "rule": "I18N-HARDCODE-005",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 界面文案硬编码。影响评估：非英文界面出现混合语言，且后续改文案需要改代码而非语言包，影响可移植性与一致性。",
+        "suggestion": "[重构思路] 把 'Option'、'Select a locale' 也登记为 chat 命名空间词条并用 t() 渲染。代码示例：`<h2>{t('option')}</h2>` / `<Select placeholder={t('selectLocale')} ... />`，并在 en.ts/zh.ts 中补 option、selectLocale。",
+        "subcategory": "硬编码文案"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "web/src/locales/vi.ts",
+      "line": 473,
+      "title": "删除的越南语词条仍有活跃调用方，越南语界面将回退为英文",
+      "description": "本 MR 从 vi.ts 的 chat 与 knowledgeDetails/knowledgeConfiguration 段删除了 useKnowledgeGraph、useKnowledgeGraphTip、keyword、keywordTip、languageTip、setMetaData、metaData、pleaseInputJson、documentMetaTips、deleteDocumentConfirmContent、tagCloud、useGraphRag 等词条，但对应功能仍在使用：web/src/components/use-knowledge-graph-item.tsx:14/36 调用 t('chat.useKnowledgeGraph')，web/src/pages/add-knowledge/components/knowledge-file/set-meta-modal/index.tsx:70 调用 t('knowledgeDetails.documentMetaTips')，parsing-action-cell/index.tsx:45 调用 t('deleteDocumentConfirmContent')，且这些键在 en.ts:521 / zh.ts:521 / en.ts:176 / en.ts:196 等处仍然存在。删除后 fallbackLng('en') 会兜底为英文，等于越南语本地化覆盖被静默削掉，其余语言包与 vi.ts 的键集合也会持续漂移。",
+      "evidence": [
+        "web/src/locales/vi.ts diff 删除了 knowledgeDetails 段的 knowledgeGraph/setMetaData/pleaseInputJson/metaData/deleteDocumentConfirmContent/documentMetaTips 以及 chat 段的 useKnowledgeGraph/useKnowledgeGraphTip/keyword/keywordTip/languageTip",
+        "web/src/components/use-knowledge-graph-item.tsx:14 — label={t('chat.useKnowledgeGraph')}（第 36 行同样调用）",
+        "web/src/pages/add-knowledge/components/knowledge-file/set-meta-modal/index.tsx:70 — t('knowledgeDetails.documentMetaTips')",
+        "web/src/pages/add-knowledge/components/knowledge-file/parsing-action-cell/index.tsx:45 — t('deleteDocumentConfirmContent')",
+        "web/src/locales/en.ts:521 / web/src/locales/zh.ts:521 仍保留 useKnowledgeGraph 定义"
+      ],
+      "rule": "I18N-RESOURCE-006",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 本地化资源被删除但仍有引用（语言包键集合不一致）。影响评估：不产生运行时错误，但越南语用户看到英文/中文兜底文案，本地化回归；后续同步翻译时容易再次遗漏。",
+        "suggestion": "[重构思路] 只删除那些在所有语言包与代码中都已无引用的键；对仍被引用的键保留并补全译文。建议在 CI 加一个脚本，比较各语言包与 en.ts 的扁平化键集合，输出缺失/多余键的差异报告。代码示例：`// 保留 vi.ts 中仍被引用的键\\nuseKnowledgeGraph: 'Sử dụng đồ thị tri thức',\\nuseKnowledgeGraphTip: 'Nó sẽ truy xuất ...',`",
+        "subcategory": "语言包资源一致性"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "web/src/hooks/llm-hooks.tsx",
+      "line": 98,
+      "title": "图片理解下拉改用统一分组后丢失 tags 兼容匹配，仅以 tags 标注的模型会从选项消失",
+      "description": "被删除的 groupImage2TextOptions 采用 `x.model_type.includes('image2text') || (x.tags && x.tags.includes('IMAGE2TEXT'))` 的双条件匹配（本次 diff 中被删代码即为此逻辑），而新的 groupOptionsByModelType 只判断 `x.model_type.includes(modelType)`（第 61-93 行，第 98 行接入 Image2text）。这说明历史上确实存在“model_type 是 chat、仅靠 tags 的 IMAGE2TEXT 标记才能出现在图片理解下拉”的模型（本 MR 修改前的 gpt-4o / gpt-4o-mini 就是这种形态）。若其他 factory（如自定义/兼容 OpenAI 的接入方）仍采用 tags 标注方式，则这些模型将从图片理解模型下拉中彻底消失，进而导致系统设置里的 img2txt_id 无法选择这些模型。",
+      "evidence": [
+        "web/src/hooks/llm-hooks.tsx:98 — [LlmModelType.Image2text]: groupOptionsByModelType(LlmModelType.Image2text)",
+        "web/src/hooks/llm-hooks.tsx:61-93 — groupOptionsByModelType 仅按 x.model_type.includes(modelType) && x.available 过滤，无 tags 兜底",
+        "diff 中被删除的 groupImage2TextOptions 使用 (x.model_type.includes(modelType) || (x.tags && x.tags.includes('IMAGE2TEXT'))) && x.available",
+        "conf/llm_factories.json diff：gpt-4o / gpt-4o-mini 变更前正是 model_type=chat、tags 含 IMAGE2TEXT 的形态",
+        "web/src/interfaces/database/llm.ts:11 — IThirdOAIModel.tags 字段仍然存在"
+      ],
+      "rule": "LOGIC-EQUIV-007",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 重构后筛选条件收窄（行为不等价）。影响评估：仅以 tags 声明 IMAGE2TEXT 的模型会从图片理解下拉中消失，用户无法在系统模型中为其设置 img2txt_id；本 MR 只修正了 OpenAI factory 的两个条目，其余 factory 的行为不确定。",
+        "suggestion": "[重构思路] 给 groupOptionsByModelType 增加可选的 tags 兜底参数，或先确认 conf/llm_factories.json 与用户自建模型是否全部以 model_type=image2text 声明，再决定是否可安全移除兼容逻辑；若要移除，请在 MR 说明中列出已核对的 factory 清单。代码示例：`const groupOptionsByModelType = (modelType: LlmModelType, extraTag?: string) => {\\n  const match = (x: IThirdOAIModel) =>\\n    x.model_type.includes(modelType) || (!!extraTag && !!x.tags?.includes(extraTag));\\n  ...\\n};` 并调用 `groupOptionsByModelType(LlmModelType.Image2text, 'IMAGE2TEXT')`。",
+        "subcategory": "重构前后行为不等价"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "agent/component/rewrite.py",
+      "line": 48,
+      "title": "else 分支的三引号结尾残留 12 个空格，向 prompt 注入带缩进的空白行",
+      "description": "重写后第 45-48 行的 else 分支写作 `prompt += \"\"\"\\n    - Text generated MUST be in the same language of the original user's question.\\n            \"\"\"`，闭合三引号前的 12 个空格会作为内容进入字符串，在语言约束行后追加一整行仅含空白的文本；第 49 行紧接着再 `prompt += f\"\"\"...`，于是最终 prompt 中第 2、3 条约束与第 1 条缩进也不一致（第 44 行带 4 空格、第 50/51 行带 4 空格但通过不同拼接片段）。虽然不影响语义，但让逐字比对 prompt 的调试与后续维护变困难。",
+      "evidence": [
+        "agent/component/rewrite.py:46-48 — prompt += \"\"\"\\n    - Text generated MUST be in the same language of the original user's question.\\n            \"\"\"",
+        "agent/component/rewrite.py:43-44 — if language: prompt += f\"\"\"\\n    - Text generated MUST be in {language}\"\"\"（结尾无换行，行尾格式与 else 分支不一致）",
+        "agent/component/rewrite.py:49-51 — 随后再次 prompt += f\"\"\"... 拼接后两条约束"
+      ],
+      "rule": "PROMPT-FORMAT-008",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 字符串字面量中残留空白字符 / 拼接格式不一致。影响评估：prompt 内多出仅含空白的行，模型输入不干净，日志与 prompt 对比时产生无意义差异；无功能性错误。",
+        "suggestion": "[重构思路] 用列表收集约束行再统一 join，避免多段三引号拼接带来的空白与缩进问题。代码示例：`rules = ['- Text generated MUST be in %s' % language if language else \"- Text generated MUST be in the same language of the original user's question.\", \"- If the user's latest question is complete, don't do anything, just return the original question.\", \"- DON'T generate anything except a refined question.\"]\\nprompt = '%s\\n%s\\n' % (base, '\\n'.join('    ' + r for r in rules))`",
+        "subcategory": "字符串拼接与空白污染"
+      }
+    }
+  ]
+}

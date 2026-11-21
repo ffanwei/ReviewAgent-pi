@@ -1,0 +1,989 @@
+[
+  {
+    "filePath": "src/App/ElementMap.cpp",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (!(stream >> tmp >> count) || tmp != \"MapCount\" || count == 0) {",
+        "review": "[缺陷类型] 反序列化输入缺少数量上限校验（不受信任的反序列化数据）。影响评估：打开第三方/损坏的工程文件时可因超大 reserve 触发 bad_alloc 崩溃（拒绝服务），或长时间解析卡死界面，属于安全与可用性双重风险。",
+        "suggestion": "[重构思路] 恢复按「元素大小 × 数量」计算的内存上限校验，并在计算时使用无符号安全比较，避免负数/溢出绕过。代码示例：`constexpr std::size_t oneGb = (1ULL << 30) / sizeof(ElementMapPtr); if (count <= 0 || static_cast<std::size_t>(count) > oneGb) { FC_THROWM(Base::RuntimeError, \"Invalid element map child count\"); }`；对 typeCount 同样保留 `typeCount < 0 || typeCount > maxTypeCount` 判断。",
+        "category": "安全",
+        "subcategory": "反序列化输入校验",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 261,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/App/ComplexGeoData.cpp",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "sids.reserve(static_cast<int>(sCount));",
+        "review": "[缺陷类型] 删除内存上限校验 + 有符号/无符号窄化转换。影响评估：恶意或损坏的 FCStd 文件在反序列化元素映射时可直接触发 std::bad_alloc 崩溃或超长循环，构成拒绝服务；异常类型不在捕获范围内，错误也不会被转为可恢复的加载失败。",
+        "suggestion": "[重构思路] 恢复上限校验，并且用 size_t 全程计算、避免 static_cast<int>；同时把 catch 范围扩展为 std::exception。代码示例：`constexpr std::size_t maxSids = (1ULL << 30) / sizeof(void*); if (sCount > maxSids) { FC_THROWM(Base::RuntimeError, \"Failed to restore element map (>1GB) \" << _persistenceName); } sids.reserve(sCount);`",
+        "category": "安全",
+        "subcategory": "反序列化输入校验",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 589,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "std::size_t count = atoi(marker.c_str());",
+        "review": "[缺陷类型] 未校验的字符串转整数 + 有符号到无符号隐式转换。影响评估：损坏/恶意文件下的计数解析结果不可预期，元素映射被静默丢弃，用户看到的是拓扑命名错乱而非明确的加载错误，问题难以定位。",
+        "suggestion": "[重构思路] 用 std::from_chars 或 stoll 解析并显式校验范围与负值，解析失败向上抛错。代码示例：`long long parsed = 0; try { parsed = std::stoll(marker); } catch (...) { FC_THROWM(Base::RuntimeError, \"Invalid element map count\"); } if (parsed < 0 || parsed > std::numeric_limits<int>::max()) { FC_THROWM(Base::RuntimeError, \"Failed to restore element map \" << _persistenceName); } restoreStream(reader, static_cast<std::size_t>(parsed));`",
+        "category": "可靠性",
+        "subcategory": "字符串转整数安全",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 656,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/App/GeoFeature.cpp",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "if (!subname) {",
+        "review": "[缺陷类型] return 后的不可达代码（死代码）。影响评估：误导维护者，掩盖真实实现；与 clazy/编译器告警策略冲突，且一旦误删 return 会静默切换到语义不同的旧实现，引入难以察觉的拓扑命名回归。",
+        "suggestion": "[重构思路] 删除整段不可达逻辑，仅保留转调。代码示例：`bool GeoFeature::hasMissingElement(const char* subname) { return Data::hasMissingElement(subname); }`",
+        "category": "可维护",
+        "subcategory": "死代码",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 226,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Base/Type.cpp",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "instantiationMethod method = typedata[index]->instMethod;",
+        "review": "[缺陷类型] 删除内部边界检查导致的潜在越界访问。影响评估：在错误的使用顺序（类型系统未初始化、或构造出的非法 Type）下从「可断言的编程错误」退化为 UB/崩溃，问题现场难以定位；静态初始化顺序问题在插件/工作台加载时尤其容易触发。",
+        "suggestion": "[重构思路] 保留轻量的边界兜底（不必恢复 assert 的措辞），对 BadType/越界统一返回安全默认值。代码示例：`const auto method = index < typedata.size() ? typedata[index]->instMethod : nullptr; return method ? (*method)() : nullptr;`；`getName()` 中 `return index < typedata.size() ? typedata[index]->name.c_str() : \"\";`",
+        "category": "可靠性",
+        "subcategory": "容器越界防护",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 61,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "Console().Log(\"Act: Module %s loaded through class %s \\n\", Mod.c_str(), TypeName);",
+        "review": "[缺陷类型] 条件编译分支中的未声明标识符。影响评估：任何启用 FC_LOGLOADMODULE 的调试构建都无法编译；平时 CI 不覆盖该宏，缺陷会持续存在并影响开发者排查模块加载问题。",
+        "suggestion": "[重构思路] 修正变量名，并考虑把日志语句移出条件编译或用统一日志宏，避免长期失修的 #ifdef 分支。代码示例：`#ifdef FC_LOGLOADMODULE\\n    Console().Log(\"Act: Module %s loaded through class %s \\n\", mod.c_str(), TypeName);\\n#endif`",
+        "category": "可移植",
+        "subcategory": "条件编译一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 106,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/App/Application.cpp",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "auto path = std::string(RESOURCEDIR);",
+        "review": "[缺陷类型] 回退了针对特定打包环境的缺陷修复（空字符截断）。影响评估：Conda 构建下资源目录、库目录解析可能含嵌入 NUL，导致 QDir 判断与路径拼接失效，表现为找不到图标/翻译或插件加载失败；同时遗留的注释与实现矛盾，会误导后续维护者。",
+        "suggestion": "[重构思路] 保留截断语义但写得更明确，避免依赖 c_str() 的隐式副作用。代码示例：`std::string raw(RESOURCEDIR); std::string path(raw.c_str()); // 截断 Conda 可能注入的尾部 NUL`；或封装 `stripAfterNul(std::string_view)` 工具函数并在三处复用。",
+        "category": "可靠性",
+        "subcategory": "环境相关回归",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1163,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Gui/SoDatumLabel.cpp",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "double textMargin = std::min(0.2F*range,  this->imgWidth/(2*r));",
+        "review": "[缺陷类型] 数值计算丢失绝对值导致符号错误。影响评估：特定角度方向下的角度标注（drawAngle）渲染异常，文字与弧线间隙消失或反向，且不会崩溃、难以通过自动化测试发现，属于视觉正确性回归。",
+        "suggestion": "[重构思路] 恢复 std::abs，并显式用浮点字面量统一类型，避免 float/double 混用。代码示例：`const double textMargin = std::min(0.2 * std::abs(range), static_cast<double>(this->imgWidth) / (2.0 * r));`",
+        "category": "可靠性",
+        "subcategory": "数值计算正确性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1449,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Base/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "${CMAKE_CURRENT_SOURCE_DIR}",
+        "review": "[缺陷类型] CMake 依赖接口（usage requirements）被目录级命令替代。影响评估：跨目录 target 不再自动继承所需头文件路径与 SYSTEM 抑制属性，可能出现找不到头文件或告警洪水（FREECAD_WARN_ERROR 下直接构建失败），且增量构建在不同目录顺序下表现不一致，问题在特定平台/子集构建时才暴露。",
+        "suggestion": "[重构思路] 保留 target 作用域的 `target_include_directories`/`target_link_directories`，仅在确实需要对整目录生效时使用目录级命令；如需兼容旧写法，可用 INTERFACE 目标集中承载依赖。代码示例：`target_include_directories(FreeCADBase SYSTEM PUBLIC ${Boost_INCLUDE_DIRS} ${PYCXX_INCLUDE_DIR} ${Python3_INCLUDE_DIRS} ${XercesC_INCLUDE_DIRS} ${ZLIB_INCLUDE} ${ZIPIOS_INCLUDES})`（并去掉重复的 ${PYCXX_INCLUDE_DIR}）。",
+        "category": "可移植",
+        "subcategory": "构建系统依赖传播",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/App/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "endif(FREECAD_USE_PCH)",
+        "review": "[缺陷类型] target 创建顺序与其配置命令顺序倒置。影响评估：在 MSVC + FREECAD_USE_PCH=ON 的组合下配置或编译失败，或静默失去预编译头导致构建时间大幅上升；由于 Windows 构建覆盖不如 Linux 频繁，问题可能到发布前才暴露。",
+        "suggestion": "[重构思路] 恢复「先创建 target、再配置」的顺序，用 add_library(<target> SHARED) 占位后通过 target_sources 追加源码，既保留可读性也保证顺序安全。代码示例：`add_library(FreeCADApp SHARED)`（文件开头）… `if(FREECAD_USE_PCH) ADD_MSVC_PRECOMPILED_HEADER(FreeCADApp PreCompiled.h PreCompiled.cpp FreeCADApp_CPP_SRCS) endif()` … `target_sources(FreeCADApp PRIVATE ${FreeCADApp_SRCS})`",
+        "category": "可移植",
+        "subcategory": "CMake target 生命周期",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 343,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "cMake/FreeCAD_Helpers/SetupPython.cmake",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "endmacro(SetupPython)",
+        "review": "[缺陷类型] 删除兼容变量但未同步清理/迁移所有引用点。影响评估：构建报告信息缺失掩盖配置问题；仍依赖 PYTHON_INCLUDE_DIRS 等旧名的脚本会拿到空变量，在部分平台表现为找不到 Python.h 或链接失败，且错误信息不指向根因。",
+        "suggestion": "[重构思路] 先全仓库排查 PYTHON_* 的剩余引用，统一迁移到 Python3_* 后再删除兼容层；在删除当次同步更新 PrintFinalReport 的条目。代码示例：`# 迁移后\\nvalue(Python3_LIBRARY)`，并在过渡期保留 `set(PYTHON_INCLUDE_DIRS ${Python3_INCLUDE_DIRS})` 并加 deprecation 注释。",
+        "category": "可移植",
+        "subcategory": "构建变量兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 10,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "package/ubuntu/install-apt-packages.sh",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "libboost-python-dev",
+        "review": "[缺陷类型] 构建/打包依赖与项目实际绑定方案不一致。影响评估：Linux 打包或 CI 环境可能缺少 pybind11 而无法构建包含 pybind11 模块的 target；反过来多装 boost-python 会引入与系统 Python 版本强耦合的库，增加打包体积与 ABI 兼容风险。",
+        "suggestion": "[重构思路] 让依赖清单与 CMake 的 feature 开关保持一致：若保留 pybind11 路线则恢复 python3-pybind11 并移除 libboost-python-dev；若确实回退到 boost-python 则需同步修改 SetupPybind11/MeshPart 等 CMake 逻辑，并在文档中说明默认绑定方案。代码示例：`packages=( ... python3-pybind11 ... )` 或明确注释 `# boost-python 已不再使用，pybind11 为唯一绑定方案`。",
+        "category": "可移植",
+        "subcategory": "打包依赖一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 18,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Gui/CommandStd.cpp",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "",
+        "review": "[缺陷类型] 模态对话框丢失父窗口（窗口生命周期/焦点管理）。影响评估：用户可能看不到确认对话框而被误认为程序无响应，或在多显示器/平铺窗口管理下出现焦点错乱；属于跨平台可见性回归，难以被自动化测试覆盖。",
+        "suggestion": "[重构思路] 优先使用仍然有效的窗口作为父级，例如 `Gui::getMainWindow()`（必要时先判空）或 `QApplication::activeWindow()`；确实无父窗口时显式设置窗口标志以保证置顶模态。代码示例：`QMessageBox box(Gui::getMainWindow()); box.setWindowModality(Qt::ApplicationModal);`",
+        "category": "可靠性",
+        "subcategory": "对话框生命周期",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 345,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Gui/Command.h",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "static void updateAll(std::list<Gui::Document*> cList);",
+        "review": "[缺陷类型] 无调用点的公开 API（死代码）。影响评估：增加 API 表面积与维护成本，误导后续开发者使用未经验证的入口；若将来启用，按值传递 std::list 还会产生不必要的容器拷贝。",
+        "suggestion": "[重构思路] 若无使用计划则直接移除；若确需保留，改为按 const 引用接收并补充文档与调用点。代码示例：`static void updateAll(const std::list<Gui::Document*>& docs);` 或删除该声明与实现。",
+        "category": "可维护",
+        "subcategory": "无用 API",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 422,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/3rdParty/salomesmesh/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "",
+        "review": "[缺陷类型] 注释掉的死代码与伪条件编译造成的可读性陷阱。影响评估：维护者难以判断哪段配置真正生效，后续修改容易误入注释块或误判 MEFISTO2/NETGEN 的条件逻辑；也为后续真正的条件判断（如 NETGEN 版本分支）埋下误改风险。",
+        "suggestion": "[重构思路] 删除被注释的旧实现（历史可从版本库追溯），对确实需要的条件逻辑使用真实的 CMake if/elseif 并保留简要说明；NETGEN 版本分支应确认 NETGEN_VERSION_C 一定被定义，避免两个分支都不命中。代码示例：`if(NETGEN_VERSION_C VERSION_GREATER_EQUAL 6.2.2004)\\n    set_target_properties(NETGENPlugin PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)\\nendif()`",
+        "category": "可维护",
+        "subcategory": "构建脚本可读性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 148,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/CAM/Path/Post/UtilsArguments.py",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": ")",
+        "review": "[缺陷类型] 破坏性的参数移除且错误处理不覆盖。影响评估：使用过这三个参数（尤其是 --chipbreaking_amount、--command_space，此前是文档化参数）的既有 Job 在重新导出时抛 SystemExit，GUI 下表现为导出失败、无 G-code 输出。",
+        "suggestion": "[重构思路] 二选一：(a) 保留参数并在 process_shared_arguments 中把它们当作已废弃项接受（help=argparse.SUPPRESS，处理时忽略并打印 deprecation 警告）；(b) 显式移除但在 parse 前过滤掉未知参数，并扩展异常处理。代码示例：`args, unknown = parser.parse_known_args(shlex.split(argstring)); for u in unknown: FreeCAD.Console.PrintWarning(f'ignored argument {u}\\n')`，同时把 727 行改为 `except (ArithmeticError, LookupError, SystemExit)`。",
+        "category": "可靠性",
+        "subcategory": "命令行/API 兼容性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 169,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/CAM/Path/Post/UtilsParse.py",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "values,",
+        "review": "[缺陷类型] 共享代码路径的输出格式变更。影响评估：所有 refactored 后处理器的注释行内容发生变化；依赖固定格式做解析（例如下游脚本回读注释、bCNC 块头解析、用户 diff 校验）的场景会受影响，且部分后处理器的既有期望输出未随之更新。",
+        "suggestion": "[重构思路] 若目的是与旧版 grbl_post 的 \"( M6 T1 )\" 外观对齐，应把填充逻辑收敛到一个地方（例如新增 format_comment_command(values, command_line) 辅助函数），并在各 post 中通过显式开关控制，避免直接改共用函数默认行为。代码示例：`def format_comment(values, cmd_line):\\n    body = format_command_line(values, cmd_line)\\n    pad = values.get(\"COMMENT_PADDING\", \"\")\\n    return create_comment(values, pad + body + pad)`。",
+        "category": "可靠性",
+        "subcategory": "输出格式回归",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 86,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Gui/Widgets.cpp",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "d->drawFrame = ok;",
+        "review": "[缺陷类型] 缓存失效条件不完整。影响评估：切换深浅色主题或通过样式表设置 drawFrame 后，颜色按钮仍显示旧底色/旧边框；由于 update() 不会被触发，界面表现为“颜色不刷新”，属可见的 UI 回归。",
+        "suggestion": "[重构思路] 把所有影响图标外观的入口统一置脏，并在 palette/主题变化时失效缓存（可重写 changeEvent 监听 QEvent::PaletteChange/StyleChange，或重写 resizeEvent 处理 iconSize 变化）。代码示例：`void ColorButton::setDrawFrame(bool ok) { if (d->drawFrame == ok) return; d->drawFrame = ok; d->dirty = true; update(); }\\nvoid ColorButton::changeEvent(QEvent* e) { if (e->type() == QEvent::PaletteChange || e->type() == QEvent::StyleChange) { d->dirty = true; update(); } QPushButton::changeEvent(e); }`。",
+        "category": "可靠性",
+        "subcategory": "缓存失效",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 705,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F019",
+        "code": "setIcon(QIcon(pix));",
+        "review": "[缺陷类型] 绘制路径中的状态修改 + 位图缩放。影响评估：每次颜色变化会多触发一轮完整重绘；200%/300% 缩放下色块边缘发虚，颜色块尺寸与边框粗细在不同 DPI 下不一致。",
+        "suggestion": "[重构思路] 用 devicePixelRatioF 创建位图并设置 DPR，且把 setIcon 移出 paintEvent（在 setColor/setDrawFrame 等 setter 中重建图标，paintEvent 只负责绘制）。代码示例：`qreal dpr = devicePixelRatioF(); QPixmap pix(isize * dpr); pix.setDevicePixelRatio(dpr); pix.fill(Qt::transparent); ... d->icon = QIcon(pix); setIcon(d->icon);`。",
+        "category": "性能",
+        "subcategory": "绘制与高分屏适配",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 770,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/BIM/ArchSpace.py",
+    "reviewTips": [
+      {
+        "id": "F020",
+        "code": "t = t.replace(\"$label\",vobj.Object.Label)",
+        "review": "[缺陷类型] 功能收窄且无迁移说明。影响评估：BIM 用户在 Space 文本中使用 $其他属性 的既有文档升级后显示原始占位符字符串（如 \"$Width\"），且不会报错，用户难以定位原因。",
+        "suggestion": "[重构思路] 保留通用替换作为兜底（在固定占位符之后执行），或至少在检测到未解析的 \"$xxx\" 时打印一次性警告；同时把替换改为单次扫描+回调以避免顺序导致的二次替换。代码示例：`t = re.sub(r\"\\$(\\w+)\", lambda m: resolve_placeholder(vobj, m.group(1), m.group(0)), t)`。",
+        "category": "可靠性",
+        "subcategory": "功能回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 595,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "MovingObject movingObj(part, pPlc->getValue(), selRoot, subNamesStr);",
+        "review": "[缺陷类型] 过滤收紧被移除后暴露空指针解引用。影响评估：在装配中拖拽/预选无 Placement 的对象时可能直接崩溃（而不是被忽略），属于线上可见的稳定性风险。",
+        "suggestion": "[重构思路] 恢复部分类型限制或在使用前判空并跳过。代码示例：`auto* pPlc = dynamic_cast<App::PropertyPlacement*>(part->getPropertyByName(\"Placement\")); if (!pPlc) { continue; }`，若确实需要放开类型限制，应同时补充 `part->getPropertyByName(\"Placement\")` 为空时的降级逻辑。",
+        "category": "可靠性",
+        "subcategory": "空指针安全",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 654,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/CAM/Path/Main/Gui/JobDlg.py",
+    "reviewTips": [
+      {
+        "id": "F022",
+        "code": "if msgbox.exec_() == 1:",
+        "review": "[缺陷类型] 控件返回值判断错误。影响评估：用户点击“Don't Show This Anymore”后偏好未写入，警告在每次创建 CAM Job 时重复弹出；同时 81 行改用硬编码字符串 \"WarningSuppressVelocity\"，绕过了 Path.Preferences.WarningSuppressVelocity 常量，后续改名会静默失配。",
+        "suggestion": "[重构思路] 保留按钮引用并用 clickedButton() 比较，同时复用 Preferences 常量。代码示例：`dont_show = msgbox.addButton(translate(\"CAM_Job\", \"Don't show this warning again\"), QtGui.QMessageBox.ActionRole); msgbox.exec_(); if msgbox.clickedButton() is dont_show: Path.Preferences.preferences().SetBool(Path.Preferences.WarningSuppressVelocity, True)`。",
+        "category": "可靠性",
+        "subcategory": "Qt 返回值误用",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 78,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/BIM/Resources/ui/dialogClassification.ui",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "<widget class=\"QDialog\" name=\"bimDialogClassification\">",
+        "review": "[缺陷类型] .ui 元信息与连接接收者不一致。影响评估：若运行期加载按 objectName 解析 receiver，OK/Cancel 将失效（对话框无法关闭或数据不提交），属于功能性回归；同时重复 zorder 与空的 normaloff 属无意义 diff 噪声。",
+        "suggestion": "[重构思路] 保持 <class> 与顶层 name 一致，receiver 使用顶层 widget 的 objectName，并清理重复 zorder/空 iconset。代码示例：`<class>bimDialogClassification</class> ... <receiver>bimDialogClassification</receiver><slot>reject()</slot>`；确认 accept/reject 连接在该对话框代码（Python 侧）中其实是显式 connect 的，则直接删除这些 connections。",
+        "category": "可靠性",
+        "subcategory": "Qt Designer 文件一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 4,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/CAM/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F024",
+        "code": "Path/Post/scripts/rrf_post.py",
+        "review": "[缺陷类型] 已发布后处理器被移除。影响评估：Snapmaker 机器用户升级后其 Job 无法再产出 G-code，且没有替代 post 指引；若这是对误合入代码的回退，应明确记录并确认没有用户已依赖。",
+        "suggestion": "[重构思路] 若必须移除，先在 post 目录保留一个明确报错的占位脚本（提示已迁移/已移除并指向替代方案），或在 MR 描述中给出兼容性说明与迁移步骤；若为回退，建议同时保留 PostProcessorBlacklist 拉黑而不是物理删除文件。",
+        "category": "可靠性",
+        "subcategory": "功能移除兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 171,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/CAM/Tools/Library/Default.fctl",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "\"nr\": 5,",
+        "review": "[缺陷类型] 内置资源删除 + 参数语义变化。影响评估：升级后引用旧 .fctb 的用户刀库/文档打开时报缺失；使用 60 度 V-Bit 的既有加工操作刀路与仿真会因刀尖直径变化而改变（切削深度/残料计算不同），可能造成实际加工偏差。",
+        "suggestion": "[重构思路] 若确需精简默认刀库，可以保留文件但从默认库移除（避免破坏引用），并在 CHANGELOG 中说明；TipDiameter 的修正应作为独立改动并附实验/文献依据，避免与清理类改动混在同一提交。代码示例：保留 `60degree_Vbit.fctb` 的 TipDiameter 变更单独成 PR，并在描述中说明对既有刀路的影响。",
+        "category": "可靠性",
+        "subcategory": "资源与数据兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 20,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/BIM/importers/importSH3DHelper.py",
+    "reviewTips": [
+      {
+        "id": "F026",
+        "code": "_err(f\"Transactino failed but DEBUG_GEOMETRY is set. Commiting transaction anyway.\")",
+        "review": "[缺陷类型] 误提交的拼写回退。影响评估：用户可见的提示/工具提示出现拼写错误，翻译文件（.ts）中的 source 不再匹配，译文失效；同时这些与主题无关的改动掩盖了真正的行为变更，增加评审风险。",
+        "suggestion": "[重构思路] 回滚这些纯文案改动（或改回正确拼写后单独提交），并在提交前用工具检查：`git diff -U0 | grep -nE '^\\+.*\\b(fo|thna|witout|Defautl|docment|paramters|referene|Transactino)\\b'`。",
+        "category": "可读性",
+        "subcategory": "文案拼写",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 200,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/BIM/Resources/ui/dialogIfcElements.ui",
+    "reviewTips": [
+      {
+        "id": "F027",
+        "code": "<width>574</width>",
+        "review": "[缺陷类型] 无关的 UI 尺寸/文案改动。影响评估：对话框默认宽度变化可能造成列布局拥挤或文本截断；大写开头的标签被改成小写，界面文案风格不一致；同时这些 diff 会干扰后续对 UI 的真实变更审查。",
+        "suggestion": "[重构思路] 回滚这些与功能无关的 .ui 改动；若确实需要调整宽度，请单独提交并附截图说明。代码示例：`git checkout -- src/Mod/BIM/Resources/ui/dialogIfcElements.ui`（仅保留经过确认的功能性 UI 改动）。",
+        "category": "可维护",
+        "subcategory": "UI 噪声",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 9,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Gui/Tree.cpp",
+    "reviewTips": [
+      {
+        "id": "F028",
+        "code": "return TreeParams::getHideInternalNames()",
+        "review": "[缺陷类型] 空白字符噪声。影响评估：无功能影响，但污染 blame、增加冲突概率，并可能触发 CI 的空白检查。",
+        "suggestion": "[重构思路] 撤销这些纯空白改动，或在提交前统一运行格式化/去尾随空格。代码示例：`git diff --check` / `sed -i 's/[ \\t]*$//' src/Gui/Tree.cpp`。",
+        "category": "可读性",
+        "subcategory": "空白噪声",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 104,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Gui/TextEdit.h",
+    "reviewTips": [
+      {
+        "id": "F029",
+        "code": "protected:",
+        "review": "[缺陷类型] 公开槽移除。影响评估：仓内无调用，编译不受影响；外部通过 QMetaObject/invokeMethod 或 Python 侧调用 prepend 的插件会静默失效。",
+        "suggestion": "[重构思路] 若确认无外部使用，至少在 MR 描述/CHANGELOG 记录该接口移除；若不确定，保留方法但标记 deprecated 一个发布周期。代码示例：`/** @deprecated Use onComment() */ public Q_SLOTS: void prepend(const QString& str);` 并在实现中打印一次 deprecation 警告。",
+        "category": "可维护",
+        "subcategory": "公开接口变更",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 142,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Draft/draftguitools/gui_edit.py",
+    "reviewTips": [
+      {
+        "id": "F030",
+        "code": "if key == 65535 and Gui.Selection.GetSelection() is None: # BUG: delete key activate Std::Delete command at the same time!",
+        "review": "[缺陷类型] 调用不存在的 Python API（方法名大小写错误）+ 恒假判空。影响评估：Draft Edit 模式下 Delete 键删除点功能静默失效，并在 SoEvent 回调中反复抛 AttributeError。",
+        "suggestion": "[重构思路] 恢复正确的小写方法名，并把判空改为对空列表取反。代码示例：\n```python\nif key == 65535 and not Gui.Selection.getSelection():\n    self.delPoint(event)\n```",
+        "category": "可靠性",
+        "subcategory": "Python API 误用",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 422,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Draft/draftguitools/gui_snapper.py",
+    "reviewTips": [
+      {
+        "id": "F031",
+        "code": "if shortest_not_near == shortest_all:",
+        "review": "[缺陷类型] 移除既有空值守卫导致 None 下标访问。影响评估：只启用 Near 吸附或对象仅产生 passive 吸附点时，鼠标移动即抛 TypeError，交互式吸附/绘图失效，属于对既有行为的破坏。",
+        "suggestion": "[重构思路] 恢复空值短路判断，或直接以 winner_not_near 是否存在作为分支条件。代码示例：\n```python\nif winner_not_near is None or shortest_not_near == shortest_all:\n    winner = winner_all\nelse:\n    ...\n```",
+        "category": "可靠性",
+        "subcategory": "空值安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 494,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Measure/Gui/QuickMeasure.cpp",
+    "reviewTips": [
+      {
+        "id": "F032",
+        "code": "// only measure shapes",
+        "review": "[缺陷类型] 既有过滤条件被移除导致的行为回归。影响评估：对基准几何执行快速测量会得到误导性数值，破坏“仅测量实体形状”的既有约定。",
+        "suggestion": "[重构思路] 恢复 Datum 排除；若确需支持基准测量，应作为独立特性评估并补充用例。代码示例：\n```cpp\n// only measure shapes, exclude datums deriving from Part::Feature\nif (obj && obj->isDerivedFrom<Part::Feature>() && !obj->isDerivedFrom<Part::Datum>()) {\n    return true;\n}\n```",
+        "category": "可靠性",
+        "subcategory": "行为回归",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 136,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F033",
+        "code": "if (obj && obj->isDerivedFrom<Part::Feature>()) {",
+        "review": "[缺陷类型] 既有过滤条件被移除导致的行为回归。影响评估：对基准几何执行快速测量会得到误导性数值，破坏“仅测量实体形状”的既有约定。",
+        "suggestion": "[重构思路] 恢复 Datum 排除；若确需支持基准测量，应作为独立特性评估并补充用例。代码示例：\n```cpp\n// only measure shapes, exclude datums deriving from Part::Feature\nif (obj && obj->isDerivedFrom<Part::Feature>() && !obj->isDerivedFrom<Part::Datum>()) {\n    return true;\n}\n```",
+        "category": "可靠性",
+        "subcategory": "行为回归",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 137,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/CAM/Path/Post/scripts/snapmaker_post.py",
+    "reviewTips": [
+      {
+        "id": "F034",
+        "code": "",
+        "review": "[缺陷类型] 用户可见功能被静默删除（后处理器）。影响评估：升级后相关既有作业无法生成刀路，用户无从得知原因。",
+        "suggestion": "[重构思路] 若为有意删除，请拆分为独立 MR 并在 Release Notes/迁移说明中声明替代后处理器；否则恢复脚本。代码示例：\n```\n# 恢复：src/Mod/CAM/Path/Post/scripts/snapmaker_post.py\n# 或提供映射：snapmaker_post -> 推荐的通用后处理器\n```",
+        "category": "可靠性",
+        "subcategory": "功能删减与向后兼容",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Measure/Gui/Resources/translations/Measure_es-ES.ts",
+    "reviewTips": [
+      {
+        "id": "F035",
+        "code": "",
+        "review": "[缺陷类型] 翻译资源整文件删除。影响评估：es-ES 用户 Measure 界面出现英文/西语混杂，且构建不报错，CI 难以发现。",
+        "suggestion": "[重构思路] 恢复该 .ts 文件；如需下线某 locale，请走独立本地化变更并说明，同时在 CI 增加翻译文件存在性检查。代码示例：\n```\ngit checkout <base-commit> -- src/Mod/Measure/Gui/Resources/translations/Measure_es-ES.ts\n```",
+        "category": "可移植",
+        "subcategory": "本地化资源丢失",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Measure/Gui/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F036",
+        "code": "link_directories(${OCC_LIBRARY_DIR})",
+        "review": "[缺陷类型] 构建脚本重复语句。影响评估：无功能影响，但增加维护噪音，掩盖真正的依赖声明。",
+        "suggestion": "[重构思路] 删除重复行，并考虑用统一宏集中声明各模块的外部依赖目录，避免逐模块复制。代码示例：\n```cmake\ninclude_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${OCC_INCLUDE_DIR} ...)\nlink_directories(${OCC_LIBRARY_DIR})  # 仅保留一次\n```",
+        "category": "可维护",
+        "subcategory": "构建脚本冗余",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 20,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/CAM/libarea/pyarea.cpp",
+    "reviewTips": [
+      {
+        "id": "F037",
+        "code": "printf(\"number of vertices = %zu\\n\", nvertices);",
+        "review": "[缺陷类型] 重复实现未同步修复（copy-paste 分叉）。影响评估：pybind11 与 Boost.Python 两种构建配置下同一缺陷表现不一致，Boost 分支仍保留非标准格式符。",
+        "suggestion": "[重构思路] 把与绑定框架无关的实现（print_curve/print_area 等）抽到公共头文件供两处共用，或至少同步改为 `%zu`。代码示例：\n```cpp\nprintf(\"number of vertices = %zu\\n\", nvertices);  // Windows 分支也统一用 %zu\n```",
+        "category": "可维护",
+        "subcategory": "重复实现分叉",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 51,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/CAM/libarea/PythonStuff.h",
+    "reviewTips": [
+      {
+        "id": "F038",
+        "code": "void PythonInit();",
+        "review": "[缺陷类型] 死声明/残留接口。影响评估：不影响编译，但会让人误判模块初始化路径，未来调用即触发未定义符号链接错误。",
+        "suggestion": "[重构思路] 删除未使用声明，仅保留真正的对外契约。代码示例：\n```cpp\n// PythonStuff.h\n#pragma once\n// 模块初始化由 BOOST_PYTHON_MODULE(area) 完成，无需额外钩子\n```",
+        "category": "可维护",
+        "subcategory": "无用声明",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 8,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Draft/draftobjects/patharray.py",
+    "reviewTips": [
+      {
+        "id": "F039",
+        "code": "# Available lenth will be non-uniformly divided in proportions from SpacingPattern:",
+        "review": "[缺陷类型] 拼写错误回退。影响评估：仅影响可读性，但两处连续错误提示分支可能整体回退了此前的清理提交。",
+        "suggestion": "[重构思路] 恢复正确拼写。代码示例：\n```python\n# Available length will be non-uniformly divided in proportions from SpacingPattern:\n# Available length will be evenly divided (the original spacing method):\n```",
+        "category": "可读性",
+        "subcategory": "注释拼写",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 682,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/MeshPart/App/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F040",
+        "code": "if(NOT FREECAD_LIBPACK_USE OR FREECAD_LIBPACK_CHECKFILE_CLBUNDLER OR",
+        "review": "[缺陷类型] 构建条件不一致导致目标静默缺失。影响评估：特定 LibPack 组合下扁平化命令不可用，错误提示却指向 pybind11，排障成本高。",
+        "suggestion": "[重构思路] 与 libarea 对齐条件，跳过构建时显式 message(WARNING)，并修正 Python 侧提示。代码示例：\n```cmake\nif(NOT FREECAD_LIBPACK_USE OR FREECAD_LIBPACK_CHECKFILE_CLBUNDLER OR FREECAD_LIBPACK_CHECKFILE_VERSION)\n    # 与 libarea 保持一致\nelse()\n    message(WARNING \"flatmesh is not built: Boost.Python backend unavailable\")\nendif()\n```",
+        "category": "可移植",
+        "subcategory": "构建条件不一致",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 122,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Part/App/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F041",
+        "code": "include_directories(",
+        "review": "[缺陷类型] 构建依赖接口从目标级 PUBLIC 退化为目录级全局声明。影响评估：下游必须逐个重复声明外部依赖目录，遗漏即构建失败；全局 link_directories 会改变链接搜索顺序，可能导致链接到非预期库版本；缺失依赖时也难以定位责任目标。",
+        "suggestion": "[重构思路] 保留 target_include_directories/target_link_directories 的 PUBLIC/PRIVATE 语义；若需兼容旧 CMake，可写统一封装函数集中处理，避免逐模块粘贴。代码示例：\n```cmake\ntarget_include_directories(Part SYSTEM PUBLIC ${OCC_INCLUDE_DIR})\ntarget_link_directories(Part PUBLIC ${OCC_LIBRARY_DIR})\n# 下游只需 target_link_libraries(xxx Part) 即可继承\n```",
+        "category": "可维护",
+        "subcategory": "CMake 依赖传播",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Sketcher/App/planegcs/Constraints.h",
+    "reviewTips": [
+      {
+        "id": "F043",
+        "code": "double numpoints;",
+        "review": "[缺陷类型] 计数类型由无符号整型退化为浮点，产生隐式转换与语义丢失。影响评估：当前样本量下数值结果通常不变，但断言/循环边界变成混合类型比较，开启 -Werror 的构建可能报错；类型不一致会让后续维护者误判该成员可参与浮点运算。",
+        "suggestion": "[重构思路] 恢复为 `std::size_t`，并在赋值处显式保持整数语义；若担心 pvec.size() < 1，先做断言再赋值。代码示例：`assert(pvec.size() > 1); numpoints = pvec.size() - 1;`（成员声明为 `std::size_t numpoints;`）",
+        "category": "可靠性",
+        "subcategory": "整数/浮点类型混用",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 231,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
+    "reviewTips": [
+      {
+        "id": "F044",
+        "code": "}",
+        "review": "[缺陷类型] 直接解引用可空的 getDocument() 返回值。影响评估：文档/对象生命周期边界（例如任务面板仍打开时文档被关闭、对象被移出文档）会触发空指针解引用，导致 GUI 崩溃；属低频但难复现的崩溃点。",
+        "suggestion": "[重构思路] 统一通过对象的成员函数重算，或在使用前显式判空。代码示例：`if (auto* doc = obj->getDocument()) { doc->recomputeFeature(obj); }` 或直接保留 `obj->recomputeFeature();`",
+        "category": "可靠性",
+        "subcategory": "空指针安全",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 77,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/PartDesign/Gui/Command.cpp",
+    "reviewTips": [
+      {
+        "id": "F045",
+        "code": "void finishFeature(const Gui::Command* cmd, App::DocumentObject *Feat,",
+        "review": "[缺陷类型] 不必要的链接性放宽 + 注释与分支语义相反。影响评估：短期不影响功能，但引入全局符号污染风险（未来新增同名辅助函数即链接失败或行为串扰），并降低代码可读性。",
+        "suggestion": "[重构思路] 恢复内部链接，并把注释移回正确分支。代码示例：`static void finishFeature(const Gui::Command* cmd, App::DocumentObject* Feat, ...)`；`if (prevSolidFeature) { // insert into the same body as the given previous one ... } else { ... }`",
+        "category": "可维护",
+        "subcategory": "链接性与注释准确性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 531,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Points/App/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F046",
+        "code": "include_directories(",
+        "review": "[缺陷类型] 构建依赖声明从目标级退化为目录级。影响评估：依赖关系不再随目标传播，下游需重复声明，易产生「本地能编、下游编不过」的不可见耦合；SYSTEM 头被放大到整个目录，会掩盖第三方头引发的真实告警。",
+        "suggestion": "[重构思路] 保留目标级声明并显式标注 SYSTEM/PUBLIC；链接目录改用目标属性。代码示例：`target_include_directories(Points SYSTEM PUBLIC ${EIGEN3_INCLUDE_DIR} ${CMAKE_BINARY_DIR}/src/3rdParty/libE57Format ${CMAKE_SOURCE_DIR}/src/3rdParty/libE57Format/include)`，链接侧用 `target_link_directories(Points PRIVATE ...)` 或直接用绝对库路径。",
+        "category": "可维护",
+        "subcategory": "构建依赖声明",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 10,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/PartDesign/App/CMakeLists.txt",
+    "reviewTips": [
+      {
+        "id": "F047",
+        "code": "${QT_INCLUDE_DIR}",
+        "review": "[缺陷类型] 构建脚本重复项与无谓依赖。影响评估：功能上无害，但降低可读性，且 App 层引入 QT 等 GUI 依赖会削弱模块分层、增加无 GUI 构建的排查成本。",
+        "suggestion": "[重构思路] 去重并只保留该目标真正需要的第三方头；App 层若确有 QtCore 依赖，应写成 `target_include_directories(<target> SYSTEM PUBLIC ${QtCore_INCLUDE_DIRS})`。代码示例：删除第 18 行重复项，列表保持 `Boost / OCC / ZIPIOS / ZLIB / PYCXX / Python3 / XercesC` 去重后的集合。",
+        "category": "可维护",
+        "subcategory": "构建脚本整洁性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 18,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Sketcher/App/SketchObject.cpp",
+    "reviewTips": [
+      {
+        "id": "F048",
+        "code": "// Shape.setValue(solvedSketch.toShape());",
+        "review": "[缺陷类型] 注释掉的死代码 + 拼写回归 + 无意义尾注。影响评估：不改变运行时行为，但显著降低可读性；被注释掉的核心语句（如 Shape 赋值、GCPnts 投影分支）会让后续维护者误以为存在待启用逻辑，增加误改风险。",
+        "suggestion": "[重构思路] 删除注释掉的调试代码；确需保留意图时用 TODO + issue 编号并说明原因；修回拼写错误。代码示例：直接删除 `// Shape.setValue(solvedSketch.toShape());`；如需保留说明：`// NOTE: use toShape() with element mapping, see #16630`。",
+        "category": "可读性",
+        "subcategory": "死代码与文档质量",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 327,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/PartDesign/Gui/ViewProvider.cpp",
+    "reviewTips": [
+      {
+        "id": "F049",
+        "code": "QMessageBox msgBox;",
+        "review": "[缺陷类型] Qt 对话框缺少父窗口。影响评估：影响窗口层级与模态归属，多显示器/多文档场景下弹窗可能出现在主窗口之外或被遮挡，属于低危但用户可感知的 UX 退化。",
+        "suggestion": "[重构思路] 恢复以主窗口为父；若为解除对 Gui/MainWindow.h 的依赖而改动，可改为按当前活动视图取父窗口。代码示例：`QMessageBox msgBox(Gui::getMainWindow());` 或 `QMessageBox msgBox(qobject_cast<QWidget*>(parent()));`",
+        "category": "可维护",
+        "subcategory": "Qt 窗口层级",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 104,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Sketcher/App/GeoList.cpp",
+    "reviewTips": [
+      {
+        "id": "F050",
+        "code": "return std::distance(found, VertexId2GeoElementId.begin());",
+        "review": "[缺陷类型] 迭代器距离计算方向错误（既有缺陷，本 MR 重写同一语句块但未修正）。影响评估：返回值符号错误，调用方会把 -index 当作顶点 ID，导致查表越界或匹配错误；因暂无调用者，当前风险为潜在缺陷。",
+        "suggestion": "[重构思路] 修正参数顺序，或直接改用 `std::distance` 的惯用写法并断言非负。代码示例：`return static_cast<int>(std::distance(VertexId2GeoElementId.begin(), found));`",
+        "category": "可靠性",
+        "subcategory": "迭代器/索引计算",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 343,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Start/Gui/FileCardView.cpp",
+    "reviewTips": [
+      {
+        "id": "F051",
+        "code": "int cardsPerRow = static_cast<int>(width / cardSize.width());",
+        "review": "[缺陷类型] 整数/浮点除零 + 未定义行为（UB），以及布局高度计算缺少下界保护。影响评估：在窗口较窄或布局初始化早期调用 `heightForWidth` 时可能得到 inf/INT_MIN 高度，表现为 Start 页卡片区高度异常、滚动条错乱，严重时进程崩溃；这是相对改动前明确存在的保护被移除后的回归。",
+        "suggestion": "[重构思路] 恢复“至少一行一张卡片”的下界，并显式处理 width/cardSize 非法的情况；同时恢复滚动条余量。代码示例：\n```cpp\nint cardWidth = std::max(1, cardSize.width());\nint cardsPerRow = std::max(1, width / (cardWidth + m_cardSpacing));\nconstexpr int extra = 4;  // avoid tiny scrollbars\nint numRows = (numCards + cardsPerRow - 1) / cardsPerRow;\nreturn numRows * cardSize.height() + m_cardSpacing * (numRows - 1) + 2 * m_cardSpacing + extra;\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 64,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Sketcher/Gui/DrawSketchDefaultHandler.h",
+    "reviewTips": [
+      {
+        "id": "F054",
+        "code": "if (sketchobject->getLastHasConflicts()) {",
+        "review": "[缺陷类型] 容错路径被替换为异常终止，异常发生在“几何已落盘”之后，造成部分完成状态。影响评估：命中冲突时用户丢失全部自动约束与 widget 面板约束（如长度/角度），且每次绘制都报错；同时 sketch 处于“有几何无约束”的中间态，后续 DoF 与约束数量与用户预期不符。",
+        "suggestion": "[重构思路] 保留抛错用于真正的内部错误，但在此之前先尝试安全降级：把冲突定位逻辑改为按约束类型/新增约束标识筛选（而不是用 `lastsketchconstraintindex` 做下标算术），仅剔除导致冲突的 autoconstraints，并在无法安全剔除时才抛错。代码示例：\n```cpp\nif (sketchobject->getLastHasConflicts()) {\n    Base::Console().Warning(\"Autoconstraints cause conflicts. Skipping autoconstraints.\\n\");\n    AutoConstraints.clear();  // 至少让 widget 约束仍能添加\n    return;\n}\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 993,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/TechDraw/Gui/PATPathMaker.h",
+    "reviewTips": [
+      {
+        "id": "F055",
+        "code": "QPainterPath m_geomhatch;                  //crosshatch fill lines",
+        "review": "[缺陷类型] 新增未使用成员（死代码）+ 接口语义静默变化。影响评估：不会直接引发运行错误，但会误导后续维护者认为该类缓存了 hatch 路径状态；`setLineWidth` 语义变化若被新调用方依赖（仅设宽度不设 pen），会出现线宽不生效的隐性问题。",
+        "suggestion": "[重构思路] 若 `m_geomhatch` 无用则删除；若确需缓存则补上读写点。并在 `setLineWidth` 注释中明确“仅影响虚线缩放，笔宽由 setPen 负责”。代码示例：\n```cpp\n//! Sets the geometric line width used for dash pattern scaling.\n//! The QPen (and thus rendered width) must be set via setPen().\nvoid setLineWidth(double width) { m_lineWidth = width; }\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 64,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Mod/Sketcher/Gui/CommandCreateGeo.cpp",
+    "reviewTips": [
+      {
+        "id": "F056",
+        "code": "// Rounded rectange ================================================================",
+        "review": "[缺陷类型] 注释拼写回归（typo）。影响评估：无功能影响，但会降低代码可读性，并在后续全局拼写检查中产生噪音。",
+        "suggestion": "[重构思路] 恢复正确拼写。代码示例：`// Rounded rectangle ===============================================================`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 815,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

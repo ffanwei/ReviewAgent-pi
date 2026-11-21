@@ -283,6 +283,14 @@ OCR（`D:/Project/open-code-review` @ `d77d70b`）的做法是四层 + 一个出
   - `large-mr.diff --shard-chars 1000`：9 files / 11 hunks / 9 shards / 截取 2 hunk。
 - 验证：全包 `1189 passed / 1 skipped`；`typecheck` 与严格 `build` 通过。
 
+## 2026-11-21 · AACR-Bench 归档迁移
+
+- 从 `exp-group` @ `c72fbc8` **全量迁入** `docs/bench/`（554 files / 20.5 MB）：`README` / `MIGRATION` / `MANIFEST`、`scripts/`（14）、`data/`（9）、`configs/`（10）、`metrics/`（27）、`artifacts/`（217）、`ocr/`（121）、`results/`（151）、`comparison/`（2）。
+- **运行时仍依赖外部 evaluation**：`D:/Project/bench/aacr-bench/evaluation` 提供 `repo_utils.py` / `schema.py` / `pipeline` / `converters` / `.venv`；桥接脚本 `sys.path.insert` 后 import 这些模块，直接在 `docs/bench/scripts` 跑会缺模块。
+- **测试数据只有样本元数据**：JSONL 字段为 `instance_id, repo, base_commit, head_commit, reference_comments`，**不含 diff**；diff 由桥接脚本运行时从仓库 clone 后生成。因此不能直接喂给 `scripts/coverage-baseline.mjs`。
+- 验证：14 个 Python 脚本 `py_compile` 通过；JSONL 逐行可解析（smoke10=10 / iter20=20 / iterS10=10）。
+- 细节与用法见 `docs/bench/MIGRATION.md`。
+
 ## 下一步
 
 - 先落 F-01a：纯确定性账本 + 截取区间 + 审计键 + 恒等式测试 + 历史 diff 基线（零模型调用）。

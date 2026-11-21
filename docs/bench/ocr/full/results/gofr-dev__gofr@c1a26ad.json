@@ -1,0 +1,193 @@
+{
+  "instance_id": "gofr-dev__gofr@c1a26ad",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "d0300073f685bb1154f7437f3172799d31bfddbe",
+  "head_commit": "c1a26ade6db7da96622c9bdca7674ef7094c122f",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T03:49:03.932668+00:00",
+  "duration_seconds": 416.25,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 5 finding(s) across 3 selected item(s).",
+    "summary": {
+      "files_reviewed": 3,
+      "comments": 5,
+      "total_tokens": 5905323,
+      "input_tokens": 5862072,
+      "output_tokens": 43251,
+      "cache_read_tokens": 694016,
+      "elapsed": "6m56s"
+    },
+    "tool_calls": {
+      "total": 76,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 35,
+        "file_find": 3,
+        "file_read": 36
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "pkg/gofr/http/middleware/logger.go",
+        "content": "Skipping the log emission also skips everything else `Logging` used to do for these requests: the deferred `panicRecovery` and the `X-Correlation-ID` response header. With `LOG_DISABLE_PROBES=true`, a panic inside the health/alive handler is no longer converted into the JSON 500 response (the connection is aborted by `net/http` instead), and probe responses lose the correlation header. Since only the log entry is meant to be suppressed, keep the recovery on this path.",
+        "suggestion_code": "\t\t\tif !shouldLog(r) {\n\t\t\t\tdefer func() {\n\t\t\t\t\tpanicRecovery(recover(), w, logger)\n\t\t\t\t}()\n\n\t\t\t\tinner.ServeHTTP(w, r)\n\t\t\t\treturn\n\t\t\t}",
+        "existing_code": "\t\t\tif !shouldLog(r) {\n\t\t\t\tinner.ServeHTTP(w, r)\n\t\t\t\treturn\n\t\t\t}",
+        "start_line": 111,
+        "end_line": 114,
+        "thinking": "No UseMiddleware used externally. Fine.\n\nNow write comments.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "pkg/gofr/http/middleware/logger.go",
+        "content": "The probe paths are hardcoded here while being registered separately in `pkg/gofr/factory.go` (`/.well-known/health`, `/.well-known/alive`). If those routes are ever renamed/moved, this filter silently stops matching and probes start getting logged again. Consider exporting/sharing constants for the well-known probe paths instead of duplicating the literals.",
+        "existing_code": "\t\treturn r.URL.Path != \"/.well-known/health\" && r.URL.Path != \"/.well-known/alive\"",
+        "start_line": 103,
+        "end_line": 103,
+        "thinking": "No UseMiddleware used externally. Fine.\n\nNow write comments.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "pkg/gofr/http_server.go",
+        "content": "Middleware order changed here: `Logging` used to run right after `Tracer`, but is now registered after `CORS` and `Metrics`, i.e. it became the innermost middleware. Requests terminated by `CORS` (OPTIONS) or by outer middleware are no longer logged, and the metrics histogram now includes the logging overhead. If this reordering is not required for the `LoggingWithoutProbes` branch, consider keeping the original position (only swap the logging middleware variant) to avoid an unintended behavioral change.",
+        "existing_code": "\t\tmiddleware.CORS(middlewareConfigs.CorsHeaders, r.RegisteredRoutes),",
+        "start_line": 38,
+        "end_line": 38,
+        "thinking": "No UseMiddleware used externally. Fine.\n\nNow write comments.",
+        "category": "bug",
+        "severity": "low"
+      },
+      {
+        "path": "pkg/gofr/http_server.go",
+        "content": "Treating the config as a raw string means only the exact literal `true` enables the feature; `TRUE`, `True` or `1` are silently treated as disabled, which is an easy misconfiguration to miss. Consider parsing it once (`strconv.ParseBool`, as done for `MQTT_MESSAGE_ORDER`) and storing a `bool` in `MiddlewareConfig` so the type encodes the intent.",
+        "suggestion_code": "\tif middlewareConfigs.LogDisableProbes {",
+        "existing_code": "\tif middlewareConfigs.LogDisableProbes == \"true\" {",
+        "start_line": 42,
+        "end_line": 42,
+        "thinking": "No UseMiddleware used externally. Fine.\n\nNow write comments.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "pkg/gofr/http/middleware/config.go",
+        "content": "`GetConfigs` is exported and its return type changed from `map[string]string` to `MiddlewareConfig`. Since `gofr.dev` is consumed as a library, any downstream code that calls `middleware.GetConfigs(...)` (e.g. to build its own server/round-tripper with CORS headers) will stop compiling on upgrade, and indexing the old map (`cfg[\"Access-Control-Allow-Origin\"]`) no longer works. If this package is part of the public API surface, consider keeping the old signature (returning `CorsHeaders`) or providing a deprecated compatibility shim/accessor so this is a non-breaking addition; otherwise note the breaking change in the release notes.",
+        "existing_code": "func GetConfigs(c config.Config) MiddlewareConfig {",
+        "start_line": 17,
+        "end_line": 17,
+        "thinking": "The skip path bypass issue is already confirmed (finding 1).\n\nNow — anything else? `getIPAddress`: uses leftmost X-Forwarded-For, forgeable. That's pre-existing unchanged code — not in diff (deleted lines? No, unchanged). Not report.\n\n`panicRecovery` nil-logger: unchanged code. Not report.\n\nSo my additional finding candidates:\n1. Exported `GetConfigs` return type break — LOW maintainability.\n2. `CorsHeaders` naming — style, skip.\n3. Missing type doc comment — linter, skip.\n\nAnything about the struct field being a map exposed by value — no.\n\nHmm, another consideration: `MiddlewareConfig` struct with unexported... no.\n\nWhat about the fact that returning a struct by value with `map[string]string` is fine.\n\nIs there another real functional issue? Consider: `LOG_DISABLE_PROBES` config is now read in `GetConfigs` which is only invoked for HTTP server creation. Fine.\n\nConsider `LoggingWithoutProbes` predicate comment \"Skip logging for health check endpoints\" — the function returns false for probes. Fine.\n\nI'll report the exported API break as a LOW/MEDIUM maintainability comment on config.go line 17. Actually, is it valuable? The repo is a framework used by many apps; `middleware.GetConfigs` is exported and could be used by apps that construct their own server with CORS config. Changing signature breaks them. Reasonable to note. I'll mark it low severity (non-blocking).\n\nWait — but the confirmed findings list already includes 4 findings, and the instructions say continue reviewing and report other real issues. The API break was considered but deferred multiple times; I'll include it now as LOW.\n\nLet me place comment on `func GetConfigs(c config.Config) MiddlewareConfig {`.\n\nAlso should I comment on `CorsHeaders` field being a mutable map returned by value so callers can mutate shared state? Not an issue.\n\nOne more: the `MiddlewareConfig` fields are exported and mutable; `GetConfigs` returns value copy but sharing map. Not issue.\n\nAnything else with http_server.go? The middleware ordering is confirmed. Perhaps also: `Logging` registration moved after `Metrics`, so Metrics' StatusResponseWriter wraps logging's... Actually order: Tracer outermost, then CORS, then Metrics, then Logging. Logging is innermost, so metrics records logging's status? Wait, Metrics wraps Logging's writer; Metrics wraps with its own StatusResponseWriter, then calls logging which wraps that with another StatusResponseWriter. Status codes propagate properly. Fine.\n\nHmm, but one subtle issue: with Metrics outside Logging, the metrics middleware's response time includes logging overhead — trivial.\n\nWhat about `X-Correlation-ID` header set by logging now being inside CORS? CORS sets headers before logging — CORS sets headers on w before handler call, so no conflict. But if CORS short-circuits OPTIONS, the correlation ID no longer set (covered by finding 3).\n\nOK. Let me finalize with one comment: the exported API break. Actually, do I risk it being seen as noise? The user's checklist says \"Treat correctness and security findings as blocking; style-only suggestions are non-blocking.\" API compatibility is maintainability. I think it's acceptable and it was repeatedly flagged as a pending decision. I'll include it at low severity.\n\nAlso consider: maybe worth flagging that `Logging` and `LoggingWithoutProbes` both exported but the skip behavior is implemented via a predicate; alternatively could be combined. Not needed.\n\nLet me write the comment.",
+        "category": "maintainability",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "pkg/gofr/http/middleware/config.go",
+          "pkg/gofr/http/middleware/logger.go",
+          "pkg/gofr/http_server.go"
+        ]
+      }
+    ],
+    "session_id": "5e543568-52a1-4fc5-8c46-b452e81f17c4",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "5e543568-52a1-4fc5-8c46-b452e81f17c4",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "468bd1d885a4f397e313fba1ae8a9b4410f79fdb5ea83418b237e6ec7d3b243a"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "d0300073f685bb1154f7437f3172799d31bfddbe",
+        "requested_head": "c1a26ade6db7da96622c9bdca7674ef7094c122f",
+        "resolved_base": "717443dc91dbf04169789d41bd4998a6ac858a14",
+        "resolved_head": "c1a26ade6db7da96622c9bdca7674ef7094c122f",
+        "exact_range": "717443dc91dbf04169789d41bd4998a6ac858a14..c1a26ade6db7da96622c9bdca7674ef7094c122f",
+        "source_artifact_sha256": "17a3c0b7f1715d98b424aa4bae8e030e334ad516c37a3ce19c4d5289f47e5e0a"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "56493be3f151ab53d945f8f108ac382453cf353aba9779ac141722e45e234f7d",
+            "path": "pkg/gofr/http/middleware/logger.go",
+            "fingerprint": "5a0a3420cc4f253803dbefea14127de25eb1c4fa82b45c0027f2a4cc34bf9707"
+          },
+          {
+            "item_id": "61eafa232481f22815891f093970e5348f41d1d18a36ca0b013342d726a81642",
+            "path": "pkg/gofr/http/middleware/config.go",
+            "fingerprint": "a01356f0e45631953cca279ef4376300f8f8759c7a89987c8712fb515617d3e9"
+          },
+          {
+            "item_id": "851ad15a4fc572ff4c36580a63366fa53cbb9873e1ed3b141d6f58804c655349",
+            "path": "pkg/gofr/http_server.go",
+            "fingerprint": "2975cb503721d255796af13eb807a42106377a45e0e8d90e6b3416402d96ecb1"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "56493be3f151ab53d945f8f108ac382453cf353aba9779ac141722e45e234f7d",
+            "path": "pkg/gofr/http/middleware/logger.go",
+            "fingerprint": "5a0a3420cc4f253803dbefea14127de25eb1c4fa82b45c0027f2a4cc34bf9707"
+          },
+          {
+            "item_id": "61eafa232481f22815891f093970e5348f41d1d18a36ca0b013342d726a81642",
+            "path": "pkg/gofr/http/middleware/config.go",
+            "fingerprint": "a01356f0e45631953cca279ef4376300f8f8759c7a89987c8712fb515617d3e9"
+          },
+          {
+            "item_id": "851ad15a4fc572ff4c36580a63366fa53cbb9873e1ed3b141d6f58804c655349",
+            "path": "pkg/gofr/http_server.go",
+            "fingerprint": "2975cb503721d255796af13eb807a42106377a45e0e8d90e6b3416402d96ecb1"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "68280de9e54418d3b96c05d35861ee43a1b47c96f15a5f47cab0b25879f6d793",
+            "path": "pkg/gofr/http/middleware/config_test.go",
+            "exclude_reason": "default_path"
+          },
+          {
+            "item_id": "8a3cc3e6512f3490db85fb0913c903ea8225c29fc6d44c6c933635b03add4604",
+            "path": "pkg/gofr/http/middleware/logger_test.go",
+            "exclude_reason": "default_path"
+          },
+          {
+            "item_id": "b83ddc1b3d29237f58ba3bf410654be1140c7fd5eec60d23b7ba902d5950b9b5",
+            "path": "docs/references/configs/page.md",
+            "exclude_reason": "unsupported_ext"
+          },
+          {
+            "item_id": "fc99c05047b2bdf515f63194f2df5b1d6413e94017d0a8789b81855f5081b787",
+            "path": "go.work.sum",
+            "exclude_reason": "unsupported_ext"
+          }
+        ]
+      },
+      "elapsed_ms": 415612
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

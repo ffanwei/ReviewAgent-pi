@@ -1,0 +1,195 @@
+[
+  {
+    "filePath": "rag/svr/task_executor.py",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "async with trio.open_nursery() as nursery:",
+        "review": "[缺陷类型] 分布式队列 pending 消息的故障恢复能力被整体移除。影响评估：任一 task executor 异常退出（滚动发布、OOM、节点回收）都会让正在处理的消息永久滞留于 PEL，对应文档的解析任务卡死且无自愈路径；配合信号处理器的删除，正常停止也不再是优雅停机，更容易产生未 ack 消息。",
+        "suggestion": "[重构思路] 如果目的是减少后台线程，可把恢复逻辑改为提交到现有 trio nursery 中的协程（不再额外起 threading.Thread），或改由 api/ragflow_server.py 侧的周期任务统一扫描 XPENDING 并 XCLAIM/XADD 重投；同时保留 SIGTERM 处理器，在退出前 `stop_event.set()` 并等待在途任务 ack。代码示例：`async def recover_pending_tasks():\\n    while True:\\n        async with ...:\\n            for q in get_svr_queue_names():\\n                for msg in REDIS_CONN.get_pending_msg(q, SVR_CONSUMER_GROUP_NAME):\\n                    if msg['consumer'] not in live_consumers:\\n                        REDIS_CONN.requeue_msg(q, SVR_CONSUMER_GROUP_NAME, msg['message_id'])\\n        await trio.sleep(60)`，并在 main 中 `nursery.start_soon(recover_pending_tasks)`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 672,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "REDIS_CONN.sadd(\"TASKEXE\", CONSUMER_NAME)",
+        "review": "[缺陷类型] 分布式注册表缺少回收（unregister/GC）。影响评估：Redis 中出现大量过期 consumer 名称与心跳数据，worker 数量随重启累积；依赖 TASKEXE 判断存活的逻辑会误判，且与 F001 叠加后无人再清理过期 worker。",
+        "suggestion": "[重构思路] 如需精简清理逻辑，至少保留\"按心跳超时剔除\"的最小实现，并同时清理集合成员与心跳 key；把 WORKER_HEARTBEAT_TIMEOUT 恢复为可配置项。代码示例：`for c in REDIS_CONN.smembers(\"TASKEXE\"):\\n    if c != CONSUMER_NAME and REDIS_CONN.zcount(c, now.timestamp()-WORKER_HEARTBEAT_TIMEOUT, now.timestamp()+10) == 0:\\n        REDIS_CONN.srem(\"TASKEXE\", c); REDIS_CONN.delete(c)`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 623,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "rag/utils/infinity_conn.py",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "newValue[v] = de",
+        "review": "[缺陷类型] 更新字典中残留控制键（\"remove\"）被当作列名下发。影响评估：Infinity 后端在 pagerank 归零路径上更新失败，接口返回错误且权重残留；若 Infinity 忽略未知列则会静默失效，问题更难发现。",
+        "suggestion": "[重构思路] 两个分支都先把控制键从 newValue 中移除，再决定写回什么值；并把控制键解析提到循环外，避免边遍历边改字典。代码示例：`elif k == \"remove\":\\n    del newValue[k]\\n    if isinstance(v, str):\\n        ty, de = clmns[v]\\n        newValue[v] = de if de is not None else 0\\n    else:\\n        removeValue.update(v)`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 580,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "if field_keyword(k):",
+        "review": "[缺陷类型] 等值过滤被替换为全文过滤，语义由“精确匹配”弱化为“包含匹配”。影响评估：删除图谱实体/关系、移除标签、维护 source_id 反向索引等写操作可能命中非目标行，造成误删或元数据串味；同时每个值一次 filter_fulltext 调用，长列表（如 removed_nodes）会生成很长的 OR 表达式，带来额外的查询开销。",
+        "suggestion": "[重构思路] 若目的是兼容 Infinity 对 keyword 列的检索方式，建议显式区分“等值过滤”与“全文检索”两条路径：写操作（update/delete）继续用 `col IN (...)` 或 `col = 'v'` 保证精确性，仅在 retrieval 场景使用 filter_fulltext；若必须使用 filter_fulltext，请在规则库/单测中固化为精确匹配并加注释说明依据。代码示例：`if field_keyword(k):\\n    if isinstance(v, list):\\n        cond.append(f\"{k} IN ({', '.join(repr(i) for i in v)})\")\\n    else:\\n        cond.append(f\"{k}='{v}'\")`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 72,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "cond.append(f\"filter_fulltext('{k}', '{v}')\")",
+        "review": "[缺陷类型] 过滤表达式拼接未转义（注入/语法错误）。影响评估：含单引号的标签或实体名会导致更新/删除请求失败或过滤条件被篡改，波及按条件执行的批量 delete/update。",
+        "suggestion": "[重构思路] 统一在拼装前对字符串值做转义并集中到一个 helper，或改用参数化/官方 filter builder 构造条件。代码示例：`def _quote(s): return \"'\" + str(s).replace(\"'\", \"''\") + \"'\"\\n...\\ncond.append(f\"filter_fulltext({_quote(k)}, {_quote(v)})\")`。",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 84,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "ty, de = clmns[v]",
+        "review": "[缺陷类型] 表结构快照缺失导致的 KeyError。影响评估：老知识库把 pagerank 归零或移除标签时抛异常，接口返回 500，且 update 之后的所有列更新全部失效。",
+        "suggestion": "[重构思路] 使用 `clmns.get(v)` 并在缺失时回退到默认值/跳过，而不是直接下标；同时把 remove 解析失败降级为 warning。代码示例：`meta = clmns.get(v)\\nif meta is None:\\n    logger.warning(f\"remove field {v} not in schema of {table_name}, skipped\")\\n    newValue.pop(k, None)\\n    continue\\nty, de = meta`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 576,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "if remove_v in old_v[k]:",
+        "review": "[缺陷类型] 空值/类型未防御导致的 TypeError。影响评估：并发或历史数据存在空 tag_kwd/source_id 时，标签移除与重命名接口报 500，操作部分生效导致数据状态不一致。",
+        "suggestion": "[重构思路] 先做类型与空值归一化再判断成员关系。代码示例：`vals = old_v.get(k) or []\\nif not isinstance(vals, list):\\n    vals = [vals]\\nif remove_v in vals:\\n    new_v = [x for x in vals if x != remove_v]`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 595,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F012",
+        "code": "def field_keyword(field_name: str):",
+        "review": "[缺陷类型] 缩进风格不一致。影响评估：纯可读性问题，不影响运行，但会干扰后续维护者判断代码层级，也可能被 lint 阻断。",
+        "suggestion": "[重构思路] 改为 4 空格缩进，并补充注释说明排除原因。代码示例：`def field_keyword(field_name: str):\\n    # source_id 与 *_kwd（docnm_kwd/knowledge_graph_kwd 除外）在 Infinity 中以 \"###\" 拼接存储\\n    if field_name == \"source_id\" or (field_name.endswith(\"_kwd\") and field_name not in (\"docnm_kwd\", \"knowledge_graph_kwd\")):\\n        return True\\n    return False`。",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 45,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "rag/utils/s3_conn.py",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "fnm = f\"{bucket}/{fnm}\"",
+        "review": "[缺陷类型] 存储对象键（Key）布局变更缺少向后兼容与迁移。影响评估：未配置 prefix_path 的既有部署升级后读不到历史文件（下载/预览/重新解析失败），且旧对象无法被 rm 清理，形成存储与检索状态割裂。",
+        "suggestion": "[重构思路] 保持读取侧向后兼容（先按新键取，404 再回退旧键）并补齐迁移脚本/说明；health() 复用同一套键构造逻辑，避免两处规则分叉。代码示例：`def _key(self, bucket, fnm):\\n    base = f\"{self.prefix_path}/{bucket}\" if self.prefix_path else bucket\\n    return f\"{base}/{fnm}\"\\n# get():\\ntry: return self._get(new_key)\\nexcept ClientError as e:\\n    if e.response['Error']['Code'] == '404': return self._get(fnm)`。",
+        "category": "可移植",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 58,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "graphrag/utils.py",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "result = await rebuild_graph(tenant_id, kb_id)",
+        "review": "[缺陷类型] 缺失路径上的昂贵回退逻辑。影响评估：首次建图/无图知识库每次合并都要全量扫描实体与关系表，CPU/IO 与延迟随数据量线性放大，且结果不缓存导致重复付出。",
+        "suggestion": "[重构思路] 让 rebuild 只在确有 entity 记录时才执行，或在 rebuild 成功后调用 set_graph 持久化结果；也可把 total==0 的快速返回保留，仅在解析失败时回退 rebuild。代码示例：`if res.total == 0:\\n    return None\\n...\\nresult = await rebuild_graph(tenant_id, kb_id)\\nif result is not None:\\n    await set_graph(tenant_id, kb_id, embd_mdl, result, ...)  # 或至少缓存`。",
+        "category": "性能",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 426,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F011",
+        "code": "# tot = settings.docStoreConn.getTotal(es_res)",
+        "review": "[缺陷类型] 注释残留 + 以 assert 承担运行时校验。影响评估：可读性下降，判空依据由 total 改为“本页取回条数”后对分页实现细节产生隐式依赖；一旦后端返回含异常记录，rebuild 直接抛 AssertionError 而非跳过。",
+        "suggestion": "[重构思路] 删除注释代码并显式说明判空依据，把 assert 换成带日志的 continue。代码示例：`if not es_res:  # 本页无数据，说明已到末页\\n    break\\n...\\nif d.get(\"knowledge_graph_kwd\") != \"entity\":\\n    logger.warning(f\"unexpected kwd for {id}, skipped\")\\n    continue`。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 568,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "pyproject.toml",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "\"trio>=0.29.0\",",
+        "review": "[缺陷类型] 依赖清单与锁文件不同步。影响评估：镜像构建可能因锁校验失败而中断，或继续把 mcp 及其依赖打进镜像，与本次移除 MCP 的意图不符。",
+        "suggestion": "[重构思路] 在提交中包含 `uv lock` 生成的 uv.lock 变更（并确认 lock 中不再出现 name = \"mcp\"），CI 增加 `uv lock --check` 门禁。代码示例：`uv lock && git add uv.lock && uv sync --frozen --no-dev`。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 126,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

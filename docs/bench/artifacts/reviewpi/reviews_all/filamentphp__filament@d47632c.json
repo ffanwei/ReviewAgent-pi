@@ -1,0 +1,96 @@
+{
+  "generatedAt": "2026-11-15T01:02:36.778Z",
+  "runId": "20261115_010048_641",
+  "source": "mr",
+  "caseId": "filamentphp__filament@d47632c",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "packages/support/src/helpers.php",
+      "line": 185,
+      "title": "通过 invade 反射调用 Laravel 内部方法 wrapJsonFieldAndPath，且无存在性检查与降级",
+      "description": "新增代码用 `invade($databaseConnection->getQueryGrammar())->wrapJsonFieldAndPath($column)` 绕过公开 API 直接调用 Laravel Grammar 上的方法，并用 `/** @phpstan-ignore-line */` 掩盖静态分析告警。该写法有两个隐患：一是 packages/support/composer.json 声明支持 `illuminate/support: ^10.45|^11.0`（见 composer.json:15-17），而 `wrapJsonFieldAndPath()` 属于 Laravel 内部实现，一旦在某个受支持的版本中改签名、改可见性或新增参数，这里没有任何 `method_exists` 检查或 try/catch 降级，`invade` 会抛 ReflectionException / BadMethodCallException，导致搜索请求直接 500，而不是退化为原来的 `lower(col->path)` 行为；二是赋值 `[$field, $path] = ...` 强耦合 `[$field, $path]` 的返回结构，下方 `\"json_extract({$field}{$path})\"` 还隐式依赖 `$path` 自带前导 `, ` 分隔符与引号，这一约定未被任何注释或类型声明表达，属于未文档化的内部契约。",
+      "evidence": [
+        "packages/support/src/helpers.php:185 — `[$field, $path] = invade($databaseConnection->getQueryGrammar())->wrapJsonFieldAndPath($column); /** @phpstan-ignore-line */`",
+        "packages/support/src/helpers.php:187 — `$column = \"json_extract({$field}{$path})\";`（依赖 $path 自带前导的 \", \" 与引号）",
+        "packages/support/composer.json:15-17 — 声明支持 illuminate/contracts、illuminate/support、illuminate/view 的 ^10.45|^11.0 两个大版本",
+        "packages/support/composer.json:22 — spatie/invade ^1.0|^2.0，说明反射能力本身可用，但此处是对外部内部实现做反射"
+      ],
+      "rule": "MAINTAINABILITY-REFLECTION-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 反射耦合第三方内部 API + 缺少版本兼容兜底。影响评估：Laravel 小版本升级即可能让该分支抛出异常，搜索（Table 列表页面的搜索路径）直接 500；`@phpstan-ignore-line` 使这类风险在 CI 阶段完全静默。",
+        "suggestion": "[重构思路] 1) 先用 `method_exists()` / `is_callable()` 判断能力是否存在，缺失时回退到原行为；2) 用 typecast + 结构校验避免解构错误；3) 尽量改用公开 API（`$grammar->wrap()`、`Str::before/after`）自行拼装 field 与 path，去掉反射与 `@phpstan-ignore-line`。代码示例：\n```php\n$grammar = $databaseConnection->getQueryGrammar();\n\nif (in_array($driverName, ['mysql', 'mariadb'], true) && preg_match('/^([^\\-]+)->>?(.+)$/', $column, $m)) {\n    $field = $grammar->wrap($m[1]);\n    $path = \"'$.\\\"{$m[2]}\\\"'\";\n    $column = \"json_extract({$field}, {$path})\";\n}\n```",
+        "subcategory": "反射耦合内部 API"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/support/src/helpers.php",
+      "line": 184,
+      "title": "以 str_contains($column, '->') 判断 JSON 列过于宽松，会误改 `->>` 与含 `->` 的原生表达式",
+      "description": "新分支仅用 `str_contains($column, '->')` 判断是否为 JSON 选择器，而 Laravel 的 `wrapJsonFieldAndPath()` 内部以 `explode('->', $column, 2)` 切分字段与路径。由此产生两类误判：1) 输入为 Laravel 支持的 `col->>field`（unquote 选择器）时，`->` 是 `->>` 的前缀，切分得到 path = `>field`，生成 `json_extract(`col`, '$.\">field\"')`，MySQL 会把它当作不存在的 JSON 路径返回 NULL，搜索静默不命中（无报错，难以排查）；2) 本函数在下方（184-204 行）明确允许传入原生表达式（`str($column)->contains('(')` 即返回 Expression），若调用方传入形如 `coalesce(data->'$.a', '')` 的表达式，第一次出现 `->` 处会被切开，字段变成 `coalesce(data` 并交给 `wrap()` 反引号包裹，拼出语法错误或语义错乱的 SQL。",
+      "evidence": [
+        "packages/support/src/helpers.php:184 — `if (in_array($driverName, ['mysql', 'mariadb'], true) && str_contains($column, '->')) {`（子串匹配，未区分 `->` 与 `->>`）",
+        "packages/support/src/helpers.php:185 — 交由 `wrapJsonFieldAndPath($column)` 处理，该方法按 `->` 首次出现处切分字段与路径",
+        "packages/support/src/helpers.php:187 — `json_extract({$field}{$path})` 直接拼接，无进一步校验",
+        "packages/support/src/helpers.php:199-204 — 函数自身通过 `str($column)->contains('(')` 承认列名可能是原生表达式，说明表达式形态属于该函数的输入契约"
+      ],
+      "rule": "SQL-EXPRESSION-002",
+      "confidence": 0.58,
+      "tips": {
+        "review": "[缺陷类型] 字符串子串匹配替代结构化解析，导致边界输入被错误改写。影响评估：`->>` 场景下搜索静默失效（返回空结果且无日志）；含 `->` 的原生表达式场景下生成非法 SQL，查询报错。",
+        "suggestion": "[重构思路] 用严格正则锚定“简单列名 + JSON 路径”的形态再做改写，并要求整列匹配（`^[A-Za-z0-9_.]+->>?…$`）；其余形态原样保留，交给后续 `lower()`/Expression 逻辑。代码示例：\n```php\nif (in_array($driverName, ['mysql', 'mariadb'], true)\n    && preg_match('/^(?<field>[A-Za-z_][A-Za-z0-9_.]*) ->> (?<path>.+)$/x', $column, $matches)) {\n    // 仅改写纯列名 + 路径的形态\n}\n```",
+        "subcategory": "字符串匹配与表达式解析"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/support/src/helpers.php",
+      "line": 187,
+      "title": "json_extract 结果未做 json_unquote，lower() 作用在带双引号的 JSON 文本上",
+      "description": "MySQL/MariaDB 的 `json_extract()` 返回 JSON 值，在字符串上下文中字符串型结果会带上双引号（如 `json_extract('{\"name\":\"Foo\"}', '$.name')` 得到 `\"Foo\"` 而非 `Foo`）。因此 `lower(json_extract(...))` 得到的是 `\"foo\"`，与 `generate_search_term_expression()` 生成的裸搜索词不等价：在 LIKE 通配符包裹的场景下可能仍能命中，但对 `=` 显式比较、前缀匹配或前后空格/引号敏感的搜索会漏匹配，且与 Laravel `col->>`（unquote）语义不一致，行为随搜索实现方式漂移。",
+      "evidence": [
+        "packages/support/src/helpers.php:187 — 生成 `json_extract({$field}{$path})`，未包裹 `json_unquote()`",
+        "packages/support/src/helpers.php:190 — 随后 `$column = \"lower({$column})\";` 直接对该 JSON 值做 lower",
+        "packages/support/src/helpers.php:214-226 — `generate_search_term_expression()` 返回的是 `Str::lower($search)` 的裸字符串，与上面的 JSON 文本形态不对称"
+      ],
+      "rule": "SQL-JSON-004",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] JSON 提取结果未去引号，两侧比较基准不一致。影响评估：JSON 列的大小写不敏感搜索可能漏命中，尤其在非 `%term%` 形式的比较中；结果依赖 MySQL/MariaDB 版本对 JSON 值的字符串化行为。",
+        "suggestion": "[重构思路] 对需要参与字符串比较的 JSON 提取结果显式 unquote，使 `lower()` 作用在裸字符串上；同时沉淀为可复用的表达式生成片段并补充跨驱动断言。代码示例：\n```php\n$column = \"json_unquote(json_extract({$field}{$path}))\";\n// …随后\n$column = \"lower({$column})\";\n```",
+        "subcategory": "JSON 值与字符串比较"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/support/src/helpers.php",
+      "line": 184,
+      "title": "驱动名判断以硬编码 in_array 实现，与函数内既有 match 风格不一致",
+      "description": "同一函数内其余驱动分支均使用 `match ($driverName)`（167-181 行），新增分支却用 `in_array($driverName, ['mysql', 'mariadb'], true)`，同一份驱动清单在函数中被重复表达，且 `mariadb` 分支与既有的 `pgsql`/`default` 匹配分散在不同结构里，后续新增或调整驱动支持时需要多处处同步，容易漏改。",
+      "evidence": [
+        "packages/support/src/helpers.php:167-181 — 三处 `match ($driverName)` 分支（pgsql/default）",
+        "packages/support/src/helpers.php:184 — `in_array($driverName, ['mysql', 'mariadb'], true)` 内联硬编码驱动清单",
+        "packages/support/src/helpers.php:173-176 — `match ($driverName) { 'pgsql' => \"{$column}::text\", default => $column }` 与新增分支风格不一致"
+      ],
+      "rule": "STYLE-DRIVER-BRANCH-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 分支表达方式不一致导致的维护性隐患。影响评估：不引起功能错误，但新增驱动支持时易出现遗漏，且在 6 行改动内引入第二种风格会降低函数可读性。",
+        "suggestion": "[重构思路] 统一为 `match`／抽取常量或私有谓词方法（如 `supportsJsonPathColumn($driverName)`），把驱动清单集中一处维护。代码示例：\n```php\n$isJsonCapableDriver = match ($driverName) {\n    'mysql', 'mariadb' => true,\n    default => false,\n};\n```",
+        "subcategory": "驱动分支表达一致性"
+      }
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+[
+  {
+    "filePath": "packages/core/src/tools/grep.ts",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "!targetPath.startsWith(this.config.getTargetDir()) &&",
+        "review": "[缺陷类型] 路径越界校验使用无分隔符归一的字符串前缀比较（prefix confusion）。影响评估：攻击面来自模型可控的 path 参数，可读取 targetDir 之外、且目录名以 targetDir 路径为前缀的兄弟目录内容（如 /home/u/proj 与 /home/u/proj-secret），属于安全边界失效；同时造成工具间校验语义不一致，后续维护容易误判已有保护。",
+        "suggestion": "[重构思路] 复用 fileUtils.isWithinRoot，让所有工具的越界判定只有一份实现；同时在方法开头取出 targetDir 局部变量，避免同一个条件里三次调用 getTargetDir()。代码示例：\n```ts\nprivate resolveAndValidatePath(relativePath?: string): string {\n  const targetDir = this.config.getTargetDir();\n  const targetPath = path.resolve(targetDir, relativePath || '.');\n  if (!isWithinRoot(targetPath, targetDir)) {\n    throw new Error(\n      `Path validation failed: Attempted path \"${relativePath || '.'}\" resolves outside the allowed root directory \"${targetDir}\".`,\n    );\n  }\n  // ...\n}\n```",
+        "category": "安全",
+        "subcategory": "路径越界校验",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 105,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/tools/read-many-files.ts",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "if (!absoluteFilePath.startsWith(this.config.getTargetDir())) {",
+        "review": "[缺陷类型] 安全兜底校验不健壮（未归一 + 前缀比较）。影响评估：越界保护依赖 glob 输出形态的隐含假设，pattern 中含 '..' 或目标目录存在同前缀兄弟目录时可能读到 targetDir 之外的文件内容并回传给模型；与 MR 其他工具的统一校验不一致，也会让后续修改误以为已有覆盖。",
+        "suggestion": "[重构思路] 与 grep 保持一致，统一走 isWithinRoot，并且把 targetDir 提到方法开头只取一次。代码示例：\n```ts\nconst targetDir = this.config.getTargetDir();\n// ...\nif (!isWithinRoot(absoluteFilePath, targetDir)) {\n  skippedFiles.push({\n    path: absoluteFilePath,\n    reason: `Security: Glob library returned path outside target directory. Base: ${targetDir}, Path: ${absoluteFilePath}`,\n  });\n  continue;\n}\n```",
+        "category": "安全",
+        "subcategory": "路径越界校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 310,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "cwd: this.config.getTargetDir(),",
+        "review": "[缺陷类型] 重复的属性方法调用替代了原有局部变量，降低可读性。影响评估：不改变行为（targetDir 为 readonly 且已 path.resolve），但方法体可读性变差，且跨 8 处调用使后续「统一改校验/改基准目录」的改动更容易遗漏个别调用点。",
+        "suggestion": "[重构思路] 在方法开头恢复单点取值的局部常量，用它替换方法内所有 this.config.getTargetDir()，与删除前的 toolBaseDir 等价但类型更明确。代码示例：\n```ts\nasync execute(params: ReadManyFilesParams, signal: AbortSignal): Promise<ToolResult> {\n  const targetDir = this.config.getTargetDir();\n  // ... glob({ cwd: targetDir, ... })\n  // ... path.relative(targetDir, p) / path.resolve(targetDir, p)\n}\n```",
+        "category": "可读性",
+        "subcategory": "局部变量与重复调用",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 287,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/utils/fileUtils.ts",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "const normalizedPathToCheck = path.resolve(pathToCheck);",
+        "review": "[缺陷类型] 安全校验函数的语义被静默放宽（normalize → resolve）。影响评估：眼下调用方都传绝对路径，无直接漏洞；但该函数承载越界防护，语义变化缺注释与约定，未来调用方若直接透传模型给出的相对路径，会把 cwd 之内的相对路径判为合法，使防护失效且难以排查。",
+        "suggestion": "[重构思路] 在函数入口显式声明契约：非绝对路径直接返回 false（或抛错），让安全判定只对绝对路径生效，并在 JSDoc 中写明。代码示例：\n```ts\nexport function isWithinRoot(pathToCheck: string, rootDirectory: string): boolean {\n  if (!path.isAbsolute(pathToCheck) || !path.isAbsolute(rootDirectory)) {\n    return false; // 安全判定只接受绝对路径\n  }\n  const normalizedPathToCheck = path.resolve(pathToCheck);\n  const normalizedRootDirectory = path.resolve(rootDirectory);\n  // ...\n}\n```",
+        "category": "可靠性",
+        "subcategory": "路径校验语义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 39,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/tools/glob.ts",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "const targetDir = searchDirAbsolute || this.config.getTargetDir();",
+        "review": "[缺陷类型] 不可达的分支 / 死代码被本次改动一并保留。影响评估：不影响运行时行为，但损害可读性，并容易让后续维护者误判「searchDirAbsolute 可能为空」从而做出错误的空值处理，属于可维护性隐患。",
+        "suggestion": "[重构思路] 直接使用 searchDirAbsolute 并删除 fallback；若确需回退，应用显式的存在性判断而非字符串真值判断。代码示例：\n```ts\nconst searchDirAbsolute = path.resolve(\n  this.config.getTargetDir(),\n  params.path || '.',\n);\nif (!isWithinRoot(searchDirAbsolute, this.config.getTargetDir())) {\n  return `Search path (\"${searchDirAbsolute}\") resolves outside the tool's root directory.`;\n}\n// 后续直接使用 searchDirAbsolute\n```",
+        "category": "可维护",
+        "subcategory": "死代码清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 136,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

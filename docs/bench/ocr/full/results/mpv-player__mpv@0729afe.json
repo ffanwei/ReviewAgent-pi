@@ -1,0 +1,225 @@
+{
+  "instance_id": "mpv-player__mpv@0729afe",
+  "repo": "mpv-player/mpv",
+  "base_commit": "5809d4d1bc54c3a3a32b38c7cf8a6ed90e91f7db",
+  "head_commit": "0729afe8d7067f0e4d69000309ec6f3e24ac3926",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T05:30:45.683962+00:00",
+  "duration_seconds": 382.22,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "partial",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review partially complete: 6 finding(s); 2 of 5 selected item(s) failed.",
+    "summary": {
+      "files_reviewed": 5,
+      "comments": 6,
+      "total_tokens": 4898579,
+      "input_tokens": 4808956,
+      "output_tokens": 89623,
+      "cache_read_tokens": 4464896,
+      "elapsed": "6m22s"
+    },
+    "tool_calls": {
+      "total": 126,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 65,
+        "file_read": 57,
+        "file_read_diff": 2
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "player/main.c",
+        "content": "This patch only keeps the IPC part of the initial option update synchronous. The `mp_option_change_callback(mpctx, NULL, UPDATE_OPTS_MASK, false)` call above now merely enqueues the callback, and nothing drains the queue until `run_playloop()`/`mp_idle()` runs. Consequently all initialization-time handlers (e.g. `UPDATE_BUILTIN_SCRIPTS` -> `mp_load_builtin_scripts()`, `UPDATE_TERM` -> `mp_update_logging()` for non-preparsed options such as `--msg-time`/`--msg-module`, `UPDATE_SUB_EXTS`, `UPDATE_CLIPBOARD`, `UPDATE_PRIORITY`) are no longer applied during `mp_initialize()`: they are applied after `mp_load_scripts()` and after the first file has already been opened and `MPV_EVENT_FILE_LOADED` was sent, and they are not applied at all on the early `return` paths below (help / nothing to play). Consider draining the queued init update once here (before `mp_load_scripts()`) so the previous initialization order is preserved.",
+        "suggestion_code": "    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);\n\n    // Apply the UPDATE_OPTS_MASK update queued in mp_initialize() now, instead\n    // of leaving it to the first playloop iteration.\n    mp_option_run_callbacks(mpctx);",
+        "existing_code": "    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);",
+        "start_line": 415,
+        "end_line": 415,
+        "thinking": "I should submit my findings now. The strongest finding anchored in the review files: main.c — init option-update handlers are now deferred; the patch handles IPC init explicitly but the rest of the init update (UPDATE_BUILTIN_SCRIPTS, UPDATE_TERM for non-preparsed log options like --msg-time/--msg-module, UPDATE_SUB_EXTS, UPDATE_CLIPBOARD, UPDATE_PRIORITY) no longer runs during mp_initialize; they're delayed until the first playloop/idle iteration (after the first file has been opened and MPV_EVENT_FILE_LOADED, user scripts loaded), and never run at all on early-return paths. Suggest calling mp_option_run_callbacks(mpctx) after queuing the initial update in mp_initialize.\n\nAlso maybe a playloop comment: mp_option_run_callbacks only runs at the end of run_playloop/mp_idle; any option callback that requests a stop (e.g. edition change → PT_CURRENT_ENTRY) or that is queued right before the loop exits is not applied; hmm weak.\n\nI'll also add a low-severity note on core.h about documenting the array ownership (probably skip, it's a comment thing). Better to also mention the coalescing dedup only being done in command.c — out of scope.\n\nMaybe I can add one more defensible comment on playloop.c: since option callbacks can run arbitrary handlers which may invalidate playback state (uninit/reinit chains, stop_play), calling them in the tail of the playloop means `handle_chapter_change`/`handle_force_window` run afterwards on possibly-invalidated state... Actually in run_playloop, mp_option_run_callbacks is placed *before* handle_chapter_change and handle_force_window; an option callback like UPDATE_VO/UPDATE_VD can uninit/reinit chains and queue seeks — then handle_force_window(mpctx, false) runs. Probably fine.\n\nAlternatively, a more solid playloop observation: the callbacks are not run in all execution paths: `run_playloop` returns early at `if (mpctx->stop_play) return;` and the playloop `while (!mpctx->stop_play) run_playloop(mpctx)` exits, so callbacks queued during the last iteration (e.g., by a script setting an option right before quitting/EOF) are discarded — that's minor.\n\nI'll report two comments: main.c (medium/high) and a low/medium on playloop.c about callbacks queued while the loop is exiting / only drained at the very end of the iteration — actually let me make the playloop comment about relying on the deferred execution for the initial update: no.\n\nLet me craft the main.c comment well, and one additional comment about the init-order for builtin scripts specifically (same comment). Maybe split into two comments on main.c? Both anchor on the same line; merging is better.\n\nI'll do a single main.c comment plus a low-severity core.h comment about missing comment/ownership? The rules discourage commenting on comments. Skip core.h.\n\nPerhaps I can add a playloop.c comment: in `mp_idle`, `mp_option_run_callbacks` runs before `handle_command_updates`, whereas in `run_playloop` it runs after `mp_wait_events`; but a real issue: if `mp_process_input` returns false because the player should quit... check signature: `bool mp_process_input(struct MPContext *mpctx)` returns false when quit requested, and the caller ignores it (pre-existing). Not our concern.\n\nI'll keep it to the main.c finding; maybe also note in playloop.c that the init update entry is only executed once the playloop starts, which combined with main.c is the same issue. To have a per-file pass, I could comment on playloop.c that option updates are drained only at the end of the iteration after mp_process_input, so callbacks queued during the *last* iteration before the loop exits (EOF/quit) are never applied — e.g., a script's `set` command immediately followed by quit. Weak but plausible; low severity. I'll include it as low.\n\nLet me write the comments with anchors:\n\nmain.c existing_code: `+    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);`\nSuggestion: add `mp_option_run_callbacks(mpctx);`? But note that the init callback was queued earlier at line 387, before mp_load_scripts. Best suggestion: call it in mp_initialize right after the queued initial update, e.g.:\n\n```c\n    // Run all update handlers.\n    mp_option_change_callback(mpctx, NULL, UPDATE_OPTS_MASK, false);\n    mp_option_run_callbacks(mpctx);\n```\nBut the anchor line is the ipc init; suggestion code there could be:\n\n```c\n    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);\n```\nno change... Hmm. I'll provide suggestion_code anchored: \n```\n    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);\n\n    // Apply the initial UPDATE_OPTS_MASK update queued in mp_initialize()\n    // now, instead of leaving it to the first playloop iteration.\n    mp_option_run_callbacks(mpctx);\n```\nWait, but calling it here (line 415) is before mp_load_scripts — that restores old ordering for builtin scripts (which ran at line 387 in old code) — good enough, though slightly later than before. Actually placing the drain right at line 415 after IPC init means handlers run before mp_load_scripts (line 425), matching old order. That works and is a reasonable suggestion.\n\nplayloop.c anchor: `+    mp_option_run_callbacks(mpctx);` — two occurrences; the first one in run_playloop. I'll anchor the second (mp_idle) maybe. I'll do one comment for playloop.c at the run_playloop line.\n\nContent for playloop.c: `mp_option_run_callbacks()` is only invoked at the tail of the loop; queued updates are discarded if the loop exits in the same iteration (e.g. a command that sets an option and then quits, or EOF handling), and they are also not applied while the initial hook (main) is pending. Suggest draining before stopping/at a guaranteed point. Low severity.\n\nActually a cleaner criticism: callbacks are drained only *after* all the per-iteration work; an option callback may set `mpctx->stop_play` (edition change, UPDATE_DVB_PROG) and then `handle_chapter_change`/`handle_force_window` execute afterwards. Eh.\n\nI'll submit both comments.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "player/playloop.c",
+        "content": "Updates are drained only at the very tail of the iteration. If the loop exits in the meantime (e.g. `stop_play` set late in the iteration, EOF/quit), any queued updates are discarded and never applied. Since callbacks can also carry side effects users expect to happen (option handlers doing seeks/reinits), it would be safer to drain them at a point that is guaranteed to run, or at least also before leaving the playloop.",
+        "existing_code": "    mp_option_run_callbacks(mpctx);\n\n    handle_chapter_change(mpctx);",
+        "start_line": 1292,
+        "end_line": 1294,
+        "thinking": "I should submit my findings now. The strongest finding anchored in the review files: main.c — init option-update handlers are now deferred; the patch handles IPC init explicitly but the rest of the init update (UPDATE_BUILTIN_SCRIPTS, UPDATE_TERM for non-preparsed log options like --msg-time/--msg-module, UPDATE_SUB_EXTS, UPDATE_CLIPBOARD, UPDATE_PRIORITY) no longer runs during mp_initialize; they're delayed until the first playloop/idle iteration (after the first file has been opened and MPV_EVENT_FILE_LOADED, user scripts loaded), and never run at all on early-return paths. Suggest calling mp_option_run_callbacks(mpctx) after queuing the initial update in mp_initialize.\n\nAlso maybe a playloop comment: mp_option_run_callbacks only runs at the end of run_playloop/mp_idle; any option callback that requests a stop (e.g. edition change → PT_CURRENT_ENTRY) or that is queued right before the loop exits is not applied; hmm weak.\n\nI'll also add a low-severity note on core.h about documenting the array ownership (probably skip, it's a comment thing). Better to also mention the coalescing dedup only being done in command.c — out of scope.\n\nMaybe I can add one more defensible comment on playloop.c: since option callbacks can run arbitrary handlers which may invalidate playback state (uninit/reinit chains, stop_play), calling them in the tail of the playloop means `handle_chapter_change`/`handle_force_window` run afterwards on possibly-invalidated state... Actually in run_playloop, mp_option_run_callbacks is placed *before* handle_chapter_change and handle_force_window; an option callback like UPDATE_VO/UPDATE_VD can uninit/reinit chains and queue seeks — then handle_force_window(mpctx, false) runs. Probably fine.\n\nAlternatively, a more solid playloop observation: the callbacks are not run in all execution paths: `run_playloop` returns early at `if (mpctx->stop_play) return;` and the playloop `while (!mpctx->stop_play) run_playloop(mpctx)` exits, so callbacks queued during the last iteration (e.g., by a script setting an option right before quitting/EOF) are discarded — that's minor.\n\nI'll report two comments: main.c (medium/high) and a low/medium on playloop.c about callbacks queued while the loop is exiting / only drained at the very end of the iteration — actually let me make the playloop comment about relying on the deferred execution for the initial update: no.\n\nLet me craft the main.c comment well, and one additional comment about the init-order for builtin scripts specifically (same comment). Maybe split into two comments on main.c? Both anchor on the same line; merging is better.\n\nI'll do a single main.c comment plus a low-severity core.h comment about missing comment/ownership? The rules discourage commenting on comments. Skip core.h.\n\nPerhaps I can add a playloop.c comment: in `mp_idle`, `mp_option_run_callbacks` runs before `handle_command_updates`, whereas in `run_playloop` it runs after `mp_wait_events`; but a real issue: if `mp_process_input` returns false because the player should quit... check signature: `bool mp_process_input(struct MPContext *mpctx)` returns false when quit requested, and the caller ignores it (pre-existing). Not our concern.\n\nI'll keep it to the main.c finding; maybe also note in playloop.c that the init update entry is only executed once the playloop starts, which combined with main.c is the same issue. To have a per-file pass, I could comment on playloop.c that option updates are drained only at the end of the iteration after mp_process_input, so callbacks queued during the *last* iteration before the loop exits (EOF/quit) are never applied — e.g., a script's `set` command immediately followed by quit. Weak but plausible; low severity. I'll include it as low.\n\nLet me write the comments with anchors:\n\nmain.c existing_code: `+    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);`\nSuggestion: add `mp_option_run_callbacks(mpctx);`? But note that the init callback was queued earlier at line 387, before mp_load_scripts. Best suggestion: call it in mp_initialize right after the queued initial update, e.g.:\n\n```c\n    // Run all update handlers.\n    mp_option_change_callback(mpctx, NULL, UPDATE_OPTS_MASK, false);\n    mp_option_run_callbacks(mpctx);\n```\nBut the anchor line is the ipc init; suggestion code there could be:\n\n```c\n    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);\n```\nno change... Hmm. I'll provide suggestion_code anchored: \n```\n    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);\n\n    // Apply the initial UPDATE_OPTS_MASK update queued in mp_initialize()\n    // now, instead of leaving it to the first playloop iteration.\n    mp_option_run_callbacks(mpctx);\n```\nWait, but calling it here (line 415) is before mp_load_scripts — that restores old ordering for builtin scripts (which ran at line 387 in old code) — good enough, though slightly later than before. Actually placing the drain right at line 415 after IPC init means handlers run before mp_load_scripts (line 425), matching old order. That works and is a reasonable suggestion.\n\nplayloop.c anchor: `+    mp_option_run_callbacks(mpctx);` — two occurrences; the first one in run_playloop. I'll anchor the second (mp_idle) maybe. I'll do one comment for playloop.c at the run_playloop line.\n\nContent for playloop.c: `mp_option_run_callbacks()` is only invoked at the tail of the loop; queued updates are discarded if the loop exits in the same iteration (e.g. a command that sets an option and then quits, or EOF handling), and they are also not applied while the initial hook (main) is pending. Suggest draining before stopping/at a guaranteed point. Low severity.\n\nActually a cleaner criticism: callbacks are drained only *after* all the per-iteration work; an option callback may set `mpctx->stop_play` (edition change, UPDATE_DVB_PROG) and then `handle_chapter_change`/`handle_force_window` execute afterwards. Eh.\n\nI'll submit both comments.",
+        "category": "bug",
+        "severity": "low"
+      },
+      {
+        "path": "player/command.c",
+        "content": "Deferring the startup `UPDATE_OPTS_MASK` callback (queued at `mp_initialize()` time) to the first `run_playloop()`/`mp_idle()` changes semantics for this block: at init time `mpctx->video_out` was still NULL, so it was skipped; by the time the queued callback is drained the VO and video chain are already initialized, so every playback start will now run `uninit_video_out()` + `handle_force_window()` + `reinit_video_chain()` and issue an extra `queue_seek()`. This is a behavioral regression (extra VO re-init/seek on start) that comes from deferring the init-time handlers. Consider draining the startup callbacks (or at least skipping the UPDATE_VO/UPDATE_VD/UPDATE_AD work for the synthetic init entry, e.g. by keeping the old `init` marker) before the VO chain is created.",
+        "existing_code": "        if (flags & UPDATE_VO && mpctx->video_out) {",
+        "start_line": 7783,
+        "end_line": 7783,
+        "thinking": "I need to submit findings now. Let me pick the strongest, defensible issues.\n\nKey findings I'm fairly confident about:\n\n1. Deferring the startup `UPDATE_OPTS_MASK` callback to the first playloop means handlers that previously ran at init (before the VO/video chain existed) now run after the VO is initialized. In particular `flags & UPDATE_VO && mpctx->video_out` will now be true on the first drain, causing an unnecessary full VO/video-chain reinit and a `queue_seek` at the start of every playback (previously skipped because video_out was NULL at init time). That's a real behavior regression. I'll report on the UPDATE_VO block in command.c (line 7783) or on the queueing.\n\n2. The flags-based coalescing can drop a pending callback from a different option that shares the same update flags; works only because opt_ptr-handled options happen to have flags==0. Report as medium.\n\n3. Startup options are only drained in the playloop; paths that never reach the playloop (e.g. `--frames=0` → goto terminate_playback, `handle_help_options` early return) never apply the startup handlers (UPDATE_TERM logging/terminal setup, UPDATE_BUILTIN_SCRIPTS, UPDATE_INPUT, UPDATE_CLIPBOARD, UPDATE_SCREENSAVER, UPDATE_PRIORITY, UPDATE_SUB_EXTS). Report as medium on the queue append / or on the change_callback deferral.\n\n4. `mp_update_subtitle_exts` deferral leaves the global `sub_exts` pointing at freed memory after `sub-auto-exts` changes (UAF window now up to a full playloop iteration) and unset at startup until the first drain. Could report as medium. Maybe combine with 1/3? I'd rather keep it separate but brief.\n\n5. Reset to 0 unconditionally + loop mutation: report low/medium.\n\nI'll give 3-4 comments max. Let me place them with exact code lines from the diff (added lines).\n\nFor comment 1: existing_code `        if (flags & UPDATE_VO && mpctx->video_out) {` — that line is in the diff as added (`+        if (flags & UPDATE_VO && mpctx->video_out) {`). Good.\n\nFor comment 2: existing_code `        if (flags && flags == mpctx->option_callbacks[i].flags)` — added line with 8 spaces indentation. In the diff: `+        if (flags && flags == mpctx->option_callbacks[i].flags)`. Good.\n\nFor comment 3: existing_code `    mpctx->num_option_callbacks = 0;` — added. Good.\n\nFor comment 4 (subtitle exts UAF): existing_code `        if (flags & UPDATE_SUB_EXTS)` / `            mp_update_subtitle_exts(mpctx->opts);`. Use the two lines.\n\nLet me write concise, objective comments.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "player/command.c",
+        "content": "Coalescing by update-flags alone discards a pending entry that may belong to a *different* option sharing the same flags (many options use `UPDATE_OSD`, `UPDATE_IMGPAR`, `UPDATE_AUDIO`, `UPDATE_VO`, ...). The dropped entry's `opt_ptr`-specific handler will never run. This happens to be harmless only because every option with an `opt_ptr == &opts->...` check below currently has `flags == 0`, i.e. it relies on an implicit, undocumented invariant. Any future option that gets an UPDATE_* flag and needs option-specific handling will be silently ignored. Consider coalescing only same-option entries (`opt_ptr`/`co`), or preserving the dropped entry's `co` when the flags match.",
+        "existing_code": "        if (flags && flags == mpctx->option_callbacks[i].flags)",
+        "start_line": 7709,
+        "end_line": 7709,
+        "thinking": "I need to submit findings now. Let me pick the strongest, defensible issues.\n\nKey findings I'm fairly confident about:\n\n1. Deferring the startup `UPDATE_OPTS_MASK` callback to the first playloop means handlers that previously ran at init (before the VO/video chain existed) now run after the VO is initialized. In particular `flags & UPDATE_VO && mpctx->video_out` will now be true on the first drain, causing an unnecessary full VO/video-chain reinit and a `queue_seek` at the start of every playback (previously skipped because video_out was NULL at init time). That's a real behavior regression. I'll report on the UPDATE_VO block in command.c (line 7783) or on the queueing.\n\n2. The flags-based coalescing can drop a pending callback from a different option that shares the same update flags; works only because opt_ptr-handled options happen to have flags==0. Report as medium.\n\n3. Startup options are only drained in the playloop; paths that never reach the playloop (e.g. `--frames=0` → goto terminate_playback, `handle_help_options` early return) never apply the startup handlers (UPDATE_TERM logging/terminal setup, UPDATE_BUILTIN_SCRIPTS, UPDATE_INPUT, UPDATE_CLIPBOARD, UPDATE_SCREENSAVER, UPDATE_PRIORITY, UPDATE_SUB_EXTS). Report as medium on the queue append / or on the change_callback deferral.\n\n4. `mp_update_subtitle_exts` deferral leaves the global `sub_exts` pointing at freed memory after `sub-auto-exts` changes (UAF window now up to a full playloop iteration) and unset at startup until the first drain. Could report as medium. Maybe combine with 1/3? I'd rather keep it separate but brief.\n\n5. Reset to 0 unconditionally + loop mutation: report low/medium.\n\nI'll give 3-4 comments max. Let me place them with exact code lines from the diff (added lines).\n\nFor comment 1: existing_code `        if (flags & UPDATE_VO && mpctx->video_out) {` — that line is in the diff as added (`+        if (flags & UPDATE_VO && mpctx->video_out) {`). Good.\n\nFor comment 2: existing_code `        if (flags && flags == mpctx->option_callbacks[i].flags)` — added line with 8 spaces indentation. In the diff: `+        if (flags && flags == mpctx->option_callbacks[i].flags)`. Good.\n\nFor comment 3: existing_code `    mpctx->num_option_callbacks = 0;` — added. Good.\n\nFor comment 4 (subtitle exts UAF): existing_code `        if (flags & UPDATE_SUB_EXTS)` / `            mp_update_subtitle_exts(mpctx->opts);`. Use the two lines.\n\nLet me write concise, objective comments.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "player/command.c",
+        "content": "Deferring `mp_update_subtitle_exts()` widens a use-after-free window: when `sub-auto-exts` is set, the old string list in `opts->sub_auto_exts` is freed immediately by `copy_str_list()`, while the global `sub_exts` (set here) keeps pointing at it until this callback runs (possibly a full playloop iteration later, and never at all on paths that do not reach the playloop). `mp_might_be_subtitle_file()` (used from the input/drag-drop path) dereferences `sub_exts` in the meantime. Additionally, the startup entry is now only drained in the first playloop iteration, so `sub_exts` is left at its initial NULL until then. Consider updating `sub_exts` synchronously where the option value is written.",
+        "existing_code": "        if (flags & UPDATE_SUB_EXTS)\n            mp_update_subtitle_exts(mpctx->opts);",
+        "start_line": 7775,
+        "end_line": 7776,
+        "thinking": "I need to submit findings now. Let me pick the strongest, defensible issues.\n\nKey findings I'm fairly confident about:\n\n1. Deferring the startup `UPDATE_OPTS_MASK` callback to the first playloop means handlers that previously ran at init (before the VO/video chain existed) now run after the VO is initialized. In particular `flags & UPDATE_VO && mpctx->video_out` will now be true on the first drain, causing an unnecessary full VO/video-chain reinit and a `queue_seek` at the start of every playback (previously skipped because video_out was NULL at init time). That's a real behavior regression. I'll report on the UPDATE_VO block in command.c (line 7783) or on the queueing.\n\n2. The flags-based coalescing can drop a pending callback from a different option that shares the same update flags; works only because opt_ptr-handled options happen to have flags==0. Report as medium.\n\n3. Startup options are only drained in the playloop; paths that never reach the playloop (e.g. `--frames=0` → goto terminate_playback, `handle_help_options` early return) never apply the startup handlers (UPDATE_TERM logging/terminal setup, UPDATE_BUILTIN_SCRIPTS, UPDATE_INPUT, UPDATE_CLIPBOARD, UPDATE_SCREENSAVER, UPDATE_PRIORITY, UPDATE_SUB_EXTS). Report as medium on the queue append / or on the change_callback deferral.\n\n4. `mp_update_subtitle_exts` deferral leaves the global `sub_exts` pointing at freed memory after `sub-auto-exts` changes (UAF window now up to a full playloop iteration) and unset at startup until the first drain. Could report as medium. Maybe combine with 1/3? I'd rather keep it separate but brief.\n\n5. Reset to 0 unconditionally + loop mutation: report low/medium.\n\nI'll give 3-4 comments max. Let me place them with exact code lines from the diff (added lines).\n\nFor comment 1: existing_code `        if (flags & UPDATE_VO && mpctx->video_out) {` — that line is in the diff as added (`+        if (flags & UPDATE_VO && mpctx->video_out) {`). Good.\n\nFor comment 2: existing_code `        if (flags && flags == mpctx->option_callbacks[i].flags)` — added line with 8 spaces indentation. In the diff: `+        if (flags && flags == mpctx->option_callbacks[i].flags)`. Good.\n\nFor comment 3: existing_code `    mpctx->num_option_callbacks = 0;` — added. Good.\n\nFor comment 4 (subtitle exts UAF): existing_code `        if (flags & UPDATE_SUB_EXTS)` / `            mp_update_subtitle_exts(mpctx->opts);`. Use the two lines.\n\nLet me write concise, objective comments.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "player/command.c",
+        "content": "The queue is cleared unconditionally after the loop, and the loop bound (`mpctx->num_option_callbacks`) is re-evaluated on every iteration. If any handler enqueues a new callback (e.g. via `m_config_set_option_raw()`/`force_self_notify_change_opt()`, which call this callback synchronously with `self_update=false`) while `mp_option_run_callbacks()` is iterating, the enqueue path rewrites/moves array slots (possibly to an index already processed), and any such entry that ends up behind the cursor is silently discarded by this reset. Either snapshot the count before iterating and leave newly queued entries for the next iteration, or deferring them explicitly, instead of zeroing the whole array.",
+        "existing_code": "    mpctx->num_option_callbacks = 0;",
+        "start_line": 7946,
+        "end_line": 7946,
+        "thinking": "I need to submit findings now. Let me pick the strongest, defensible issues.\n\nKey findings I'm fairly confident about:\n\n1. Deferring the startup `UPDATE_OPTS_MASK` callback to the first playloop means handlers that previously ran at init (before the VO/video chain existed) now run after the VO is initialized. In particular `flags & UPDATE_VO && mpctx->video_out` will now be true on the first drain, causing an unnecessary full VO/video-chain reinit and a `queue_seek` at the start of every playback (previously skipped because video_out was NULL at init time). That's a real behavior regression. I'll report on the UPDATE_VO block in command.c (line 7783) or on the queueing.\n\n2. The flags-based coalescing can drop a pending callback from a different option that shares the same update flags; works only because opt_ptr-handled options happen to have flags==0. Report as medium.\n\n3. Startup options are only drained in the playloop; paths that never reach the playloop (e.g. `--frames=0` → goto terminate_playback, `handle_help_options` early return) never apply the startup handlers (UPDATE_TERM logging/terminal setup, UPDATE_BUILTIN_SCRIPTS, UPDATE_INPUT, UPDATE_CLIPBOARD, UPDATE_SCREENSAVER, UPDATE_PRIORITY, UPDATE_SUB_EXTS). Report as medium on the queue append / or on the change_callback deferral.\n\n4. `mp_update_subtitle_exts` deferral leaves the global `sub_exts` pointing at freed memory after `sub-auto-exts` changes (UAF window now up to a full playloop iteration) and unset at startup until the first drain. Could report as medium. Maybe combine with 1/3? I'd rather keep it separate but brief.\n\n5. Reset to 0 unconditionally + loop mutation: report low/medium.\n\nI'll give 3-4 comments max. Let me place them with exact code lines from the diff (added lines).\n\nFor comment 1: existing_code `        if (flags & UPDATE_VO && mpctx->video_out) {` — that line is in the diff as added (`+        if (flags & UPDATE_VO && mpctx->video_out) {`). Good.\n\nFor comment 2: existing_code `        if (flags && flags == mpctx->option_callbacks[i].flags)` — added line with 8 spaces indentation. In the diff: `+        if (flags && flags == mpctx->option_callbacks[i].flags)`. Good.\n\nFor comment 3: existing_code `    mpctx->num_option_callbacks = 0;` — added. Good.\n\nFor comment 4 (subtitle exts UAF): existing_code `        if (flags & UPDATE_SUB_EXTS)` / `            mp_update_subtitle_exts(mpctx->opts);`. Use the two lines.\n\nLet me write concise, objective comments.",
+        "category": "bug",
+        "severity": "medium"
+      }
+    ],
+    "groups": [
+      {
+        "label": "Player command implementation and interface",
+        "files": [
+          "player/command.c",
+          "player/command.h"
+        ]
+      },
+      {
+        "label": "Player core/main/playloop wiring for commands",
+        "files": [
+          "player/core.h",
+          "player/main.c",
+          "player/playloop.c"
+        ]
+      }
+    ],
+    "warnings": [
+      {
+        "file": "player/core.h,player/main.c,player/playloop.c",
+        "message": "reached the maximum tool-request rounds without finishing; the grace round did not complete the task",
+        "type": "review_limit_reached"
+      },
+      {
+        "file": "player/command.c,player/command.h",
+        "message": "reached the maximum tool-request rounds without finishing; the grace round did not complete the task",
+        "type": "review_limit_reached"
+      }
+    ],
+    "session_id": "64aea3f0-2287-4930-8f39-def89056c4df",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "64aea3f0-2287-4930-8f39-def89056c4df",
+      "operation": "review",
+      "terminal_state": "partial",
+      "repository": {
+        "identity_sha256": "068869a2e65f7a62903e62d4fb517285ac65fe3fd95b32c0a75178901bc61fd6"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "5809d4d1bc54c3a3a32b38c7cf8a6ed90e91f7db",
+        "requested_head": "0729afe8d7067f0e4d69000309ec6f3e24ac3926",
+        "resolved_base": "e4b64fba9c5c6ca97189f32c056d05c2b47cebd6",
+        "resolved_head": "0729afe8d7067f0e4d69000309ec6f3e24ac3926",
+        "exact_range": "e4b64fba9c5c6ca97189f32c056d05c2b47cebd6..0729afe8d7067f0e4d69000309ec6f3e24ac3926",
+        "source_artifact_sha256": "8ad8a9bd1eb625ca9e79f70cf1a2ee5bc360abd08d0c6041e3cdc43012aff754"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "604bfb43f0d9eab749b4191d807e3a25ace1da8b5095bc0be72145b2a5ae0573",
+            "path": "player/command.h",
+            "fingerprint": "a5c33e5ff0822bc84a0383a3ef0cb3b2fcdf06b0966663e0cc1c5c01423e97d0"
+          },
+          {
+            "item_id": "9f83060f6425897ba1aa0b0be8ae27cfa08b447b76a4408dafbf0b69ebb9691f",
+            "path": "player/main.c",
+            "fingerprint": "2d894830e25c193ee723efa55d92c7166dc0eb70c33de59339e83f63f246b4b7"
+          },
+          {
+            "item_id": "f048ee340e9cf65451ca3a0f5cab754786c1ef2e37d77a628fd4706fbf23bc28",
+            "path": "player/core.h",
+            "fingerprint": "a163a824bc725a6a4a7fad3e8e94d2b8d2fb55e2881480a468cdbcc3f897a798"
+          },
+          {
+            "item_id": "f907f9591550ab194968a51c004347950c32643e968d6d702730068c9e635591",
+            "path": "player/command.c",
+            "fingerprint": "4c230a4142046bcf568f609b4e800e1201a72d4d07d876683041279221649529"
+          },
+          {
+            "item_id": "fd64cbfe8b01d571f42d175274552a2d2e23f250e46b8058c7019771b2534d94",
+            "path": "player/playloop.c",
+            "fingerprint": "321b257f40e1dd0b47084bbd47d454cf233263e66708be85fe94387e87b9a6d0"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "9f83060f6425897ba1aa0b0be8ae27cfa08b447b76a4408dafbf0b69ebb9691f",
+            "path": "player/main.c",
+            "fingerprint": "2d894830e25c193ee723efa55d92c7166dc0eb70c33de59339e83f63f246b4b7"
+          },
+          {
+            "item_id": "f907f9591550ab194968a51c004347950c32643e968d6d702730068c9e635591",
+            "path": "player/command.c",
+            "fingerprint": "4c230a4142046bcf568f609b4e800e1201a72d4d07d876683041279221649529"
+          },
+          {
+            "item_id": "fd64cbfe8b01d571f42d175274552a2d2e23f250e46b8058c7019771b2534d94",
+            "path": "player/playloop.c",
+            "fingerprint": "321b257f40e1dd0b47084bbd47d454cf233263e66708be85fe94387e87b9a6d0"
+          }
+        ],
+        "reused": [],
+        "failed": [
+          {
+            "item_id": "604bfb43f0d9eab749b4191d807e3a25ace1da8b5095bc0be72145b2a5ae0573",
+            "path": "player/command.h",
+            "fingerprint": "a5c33e5ff0822bc84a0383a3ef0cb3b2fcdf06b0966663e0cc1c5c01423e97d0",
+            "classification": "budget",
+            "reason": "reached the maximum tool-request rounds without finishing"
+          },
+          {
+            "item_id": "f048ee340e9cf65451ca3a0f5cab754786c1ef2e37d77a628fd4706fbf23bc28",
+            "path": "player/core.h",
+            "fingerprint": "a163a824bc725a6a4a7fad3e8e94d2b8d2fb55e2881480a468cdbcc3f897a798",
+            "classification": "budget",
+            "reason": "reached the maximum tool-request rounds without finishing"
+          }
+        ],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 381825
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

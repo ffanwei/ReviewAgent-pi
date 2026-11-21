@@ -1,0 +1,162 @@
+{
+  "instance_id": "browser-use__browser-use@aab7b3b",
+  "repo": "browser-use/browser-use",
+  "base_commit": "515b94225aa86c40dc2c20034055ab8bcc88c6ae",
+  "head_commit": "aab7b3bb54e2b15ee3b32ad7de74c91fc8b22f52",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 374.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 14,
+  "review_output": [
+    {
+      "file": "browser_use/controller/service.py",
+      "line": 177,
+      "summary": "click_element_by_selector / click_element_by_xpath 找不到元素时隐式返回 None，被当成成功",
+      "failure_scenario": "两个新增动作在 `element_node` 为假值时没有 else 分支也没有兜底 return，函数隐式返回 None。`Controller.act` 对 None 的处理是 `return ActionResult()`（无 error、无 extracted_content），因此「元素未找到、什么都没点」会被上报成一次成功动作，模型会基于错误的成功反馈继续推理，任务很容易跑偏。同一 MR 中的 `click_element_by_text` 明确写了 `else: return ActionResult(error=...)`，说明此处属于遗漏。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "RETURN-VALUE-006"
+    },
+    {
+      "file": "browser_use/controller/service.py",
+      "line": 269,
+      "summary": "save_pdf 把 emulate_media 的 media 改为位置参数，会抛 TypeError",
+      "failure_scenario": "本次变更把 `page.emulate_media(media='screen')` 改成了 `page.emulate_media('screen')`。Playwright（以及 patchright 这一分支）的 Python 绑定中 `Page.emulate_media` 的参数是关键字唯一参数（`async def emulate_media(self, *, media=None, color_scheme=None, ...)`），位置传参会抛 TypeError。save_pdf 内部没有 try/except，异常会直接冒泡到 Controller.act 的 `raise e`，使既有的 PDF 保存动作整体失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "API-USAGE-002"
+    },
+    {
+      "file": "browser_use/controller/service.py",
+      "line": 352,
+      "summary": "save_html_to_file 使用 datetime.now() 会抛 AttributeError，新增动作必然失败",
+      "failure_scenario": "文件顶部导入的是模块 `import datetime`，而新增动作里直接调用 `datetime.now()`；模块对象没有 now 属性，运行到生成文件名处即抛 AttributeError。异常被外层 `except Exception` 捕获后返回 `ActionResult(error=...)`，因此该 action 100% 失败，模型只会看到模糊的失败信息并可能反复重试同一动作，白白消耗步数与 token。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "browser_use/utils.py",
+      "line": 320,
+      "summary": "check_env_variables 对环境变量缺失时的 None 调用 .strip() 会抛 AttributeError",
+      "failure_scenario": "由 `os.getenv(key, '').strip()` 改成 `os.getenv(key).strip()` 后，当某个必需环境变量未设置时 `os.getenv` 返回 None，`None.strip()` 直接抛 AttributeError。该函数在 Agent 构造时用于校验模型所需 API Key（如 ChatOpenAI 需要 OPENAI_API_KEY），原本会给出明确的 `ValueError('Environment variables not set')`，现在变成类型错误，用户无法从报错信息判断真正原因。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "browser_use/agent/service.py",
+      "line": 86,
+      "summary": "AgentHookFunc 类型改为同步返回 None，但调用处仍 await，同步 hook 会抛 TypeError",
+      "failure_scenario": "`AgentHookFunc` 由 `Callable[['Agent'], Awaitable[None]]` 改成 `Callable[['Agent'], None]`，类型上允许用户传入普通同步函数；但 `run()` 中仍然对 hook 执行 `await on_step_start(self)` / `await on_step_end(self)`。用户按新类型注解传入同步回调时，`await None` 会抛 TypeError，在每一步循环处使整次运行中断。类型签名与实现不一致，也会让类型检查器无法发现该错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "TYPE-005"
+    },
+    {
+      "file": "browser_use/agent/service.py",
+      "line": 261,
+      "summary": "Agent 无条件用 BrowserConfig.disable_security 覆盖 new_context_config，静默丢弃用户显式配置",
+      "failure_scenario": "构造函数中把 `self.browser.config.disable_security` 直接赋值给 `self.browser.config.new_context_config.disable_security`。由于 BrowserConfig.disable_security 默认为 False，用户若按浏览器上下文的推荐方式仅在 `BrowserContextConfig` 中设置 `disable_security=True`（跨域 iframe 支持依赖该开关），该设置会在构造 Agent 时被强制改回 False，页面里跨域 iframe 的元素将不再可交互，且没有任何告警。该赋值还发生在用户传入自定义 browser/browser_context 的场景下，属于对调用方对象的隐式修改。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CONFIG-004"
+    },
+    {
+      "file": "browser_use/agent/memory/service.py",
+      "line": 49,
+      "summary": "memory 默认配置删掉了 embedder/llm，且 enable_memory 默认改为 True，默认路径依赖 mem0 内置（OpenAI）实现",
+      "failure_scenario": "原先 `_get_default_config` 显式给出 vector_store(faiss) + langchain llm + huggingface `all-MiniLM-L6-v2` 本地 embedder；现在默认值只剩 `{'vector_store': {'provider': 'faiss'}}`，embedder 与 llm 完全交给 mem0 的内部默认值（mem0 默认 embedder 为 OpenAI text-embedding-3-small、默认 llm 为 OpenAI 模型）。同时 Agent 的 `enable_memory` 默认值由 False 改为 True，意味着所有用户的默认执行路径都会构造 Memory，非 OpenAI 用户可能因缺少 OPENAI_API_KEY 在构造/首次调用时失败，或默认把对话内容发往 OpenAI 并产生额外 embedding + LLM 费用；此外本地 HuggingFace embedder 被移除也让离线场景不可用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONFIG-007"
+    },
+    {
+      "file": "browser_use/browser/context.py",
+      "line": 414,
+      "summary": "非 headless 模式不再传 no_viewport/viewport，browser_window_size 配置被忽略",
+      "failure_scenario": "创建上下文时改为按条件组装 kwargs：只有 `self.browser.config.headless` 为真才设置 `viewport` 与 `no_viewport=False`。原实现无论是否 headless 都传 `no_viewport=True`（使用真实窗口尺寸）。现在 headed 模式下两个参数都不传，Playwright 会退回默认固定视口（1280x720），`BrowserContextConfig.browser_window_size` 只在 record_video_size 里被使用，配置项对实际渲染窗口不再生效；截图尺寸与高亮坐标、录制视频尺寸可能不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "VIEWPORT-009"
+    },
+    {
+      "file": "browser_use/dom/buildDomTree.js",
+      "line": 331,
+      "summary": "highlightElement 的 finally 调用 popTiming('highlighting') 但没有对应的 pushTiming",
+      "failure_scenario": "`popTiming` 的实现是 `TIMING_STACK[type].pop()` 后与 `performance.now()` 相减；`highlightElement` 函数体内从未调用 `pushTiming('highlighting')`，空栈 pop 返回 undefined，导致 duration 恒为 NaN。该计时数据不会抛错，但会让调试/性能统计失真，且掩盖真正想采集的高亮耗时。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "PERF-TIMING-013"
+    },
+    {
+      "file": "browser_use/dom/buildDomTree.js",
+      "line": 926,
+      "summary": "交互元素不再做父级去重且 isInViewport 恒为 true，高亮索引与 selector map 规模激增",
+      "failure_scenario": "buildDomTree 删除了 `isElementDistinctInteraction`、`handleHighlighting` 与 `isParentHighlighted` 传递逻辑，只要 isVisible + isTopElement + isInteractive 就无条件 `nodeData.isInViewport = true` 并分配 `highlightIndex`。结果是嵌套交互结构（如 `<a>` 内嵌 `<button>`/`<span role=button>`）会同时拿到索引，且 `is_in_viewport` 字段不再反映真实可见性；元素索引数量、selector map 规模与送入 LLM 的 element 文本都会显著膨胀，`isInExpandedViewport`（L738）则变成无调用点的死代码。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "DOM-INDEX-010"
+    },
+    {
+      "file": "browser_use/dom/views.py",
+      "line": 149,
+      "summary": "clickable_elements_to_string 无属性时输出 `<button Submit/>` 缺少 `>`，且丢弃层级缩进",
+      "failure_scenario": "新版拼接逻辑为 `line = f'[{idx}]<{tag} '`，仅在 `attributes_str` 非空时才补 `>{text}`，否则直接拼接文本再接 `/>`。因此没有纳入属性的元素会输出成 `[3]<button Submit/>` 这类缺少 `>` 的畸形标记；同时 `process_node` 的 depth 参数不再参与格式化，文本节点也被直接平铺，DOM 层级信息完全丢失。这会降低 LLM 对页面结构的理解质量（element 序列是主要决策输入）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "PROMPT-FORMAT-011"
+    },
+    {
+      "file": "browser_use/agent/prompts.py",
+      "line": 67,
+      "summary": "AgentMessagePrompt 使用可变默认参数 include_attributes=[]",
+      "failure_scenario": "`include_attributes` 由 `list[str] | None = None` + `or []` 改为 `list[str] = []`，属于 Python 可变默认参数反模式：默认列表在函数定义期创建并被所有实例共享，一旦任何路径对其执行原地修改（append/remove），会污染后续所有实例。当前代码只读取该列表，但签名已不再防御。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "PY-DEFAULT-012"
+    },
+    {
+      "file": "browser_use/dom/service.py",
+      "line": 156,
+      "summary": "每次解析 DOM 后强制执行 gc.collect()，增加每步状态采集延迟",
+      "failure_scenario": "在 `_parse_node` 完成后新增 `gc.collect()` 全量垃圾回收。状态采集在每一步（以及 multi_act 中每个带 index 的后续动作前）都会执行，全量 GC 会遍历所有代的对象，在 DOM 树较大时带来明显且不可预测的停顿；同时 DOM 树的循环引用（parent/children）本身会导致对象长期存活，单次 collect 收益有限。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.55,
+      "rule": "PERF-GC-014"
+    },
+    {
+      "file": "browser_use/controller/views.py",
+      "line": 35,
+      "summary": "ClickElementByTextAction.element_type 声明为 Optional 但无默认值，实际是必填字段",
+      "failure_scenario": "Pydantic v2 中 `Optional[str]` 只表示允许 None，并不隐式提供默认值，因此 `element_type` 是必填字段。模型在调用 `click_element_by_text` 时必须显式提供 element_type（哪怕为 null），否则参数校验失败；这与同文件其他动作里 `xpath: Optional[str] = None` 的写法不一致，也会提高工具调用失败率。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "SCHEMA-015"
+    }
+  ],
+  "stderr_tail": "iff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\browser-use__browser-use@aab7b3b.diff\n  caseId              browser-use__browser-use@aab7b3b\n  --issue             (未传)\n  --taskId            browser-use__browser-use@aab7b3b\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 2 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 8 个文件 / 31955 字符（test=6, exclude=2），明细见审计 mrFilter\n✓ 完成 · 耗时 369.0s · 模型调用 51 次 · token 输入 179,110（未命中） · 输出 52,634 · 缓存命中 2,633,984（93.6%） · 工具 99 次（主会话 99 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0472\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\browser-use__browser-use@...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 369.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 368.8s (99.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | S1P1 10.6s (2.9%) | S1P2 3.9s (1.1%) | S1P3 7.6s (2.0%) | S1P4 79.6s (21.6%) | S1P5 63.3s (17.2%) | S1P6 16.8s (4.6%) | S2P1 10.0s (2.7%) | S2P2 2.8s (0.8%) | S2P3 6.9s (1.9%) | S2P4 110.7s (30.0%) | S2P5 41.0s (11.1%) | S2P6 15.4s (4.2%)\n[usage] 任务总计 | 模型调用 51 次（Agent 51 + 一次性 0） | token 输入 179,110（未命中） | 输出 52,634 | 缓存命中 2,633,984（93.6%） | $0.0472\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\browser-use__browser-use@aab7b3b\\audit\\20261115_004809_721.json",
+  "token_usage": {
+    "input_tokens": 179110,
+    "output_tokens": 52634,
+    "cache_read_input_tokens": 2633984
+  }
+}

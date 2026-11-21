@@ -1,0 +1,182 @@
+{
+  "instance_id": "kestra-io__kestra@06e7c6e",
+  "repo": "kestra-io/kestra",
+  "base_commit": "01a77aff0422884ed7b18ba8d00a0495d0bab88e",
+  "head_commit": "06e7c6e48e22420da5bb0bf3188bc00f73974c9a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 263.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 16,
+  "review_output": [
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 53,
+      "summary": "Assert 的 @Plugin 示例 YAML 被写坏，文档示例无法直接运行",
+      "failure_scenario": "新增任务的官方示例中，任务行被写成了 `\"  - id: fail\\\\n\\\" +\\n\"`，这段字符串会把字面量 `- id: fail\\n\" +` 输出到示例 YAML 里，生成的任务行既不是合法的 YAML 结构也不符合 Kestra 的 task 定义，用户从文档复制示例会直接解析失败。示例还会通过插件文档/JSON Schema 的 examples 暴露给 UI，属于对外可见的文档缺陷。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.9,
+      "rule": "DOC-EXAMPLE-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 89,
+      "summary": "Assert 直接用 getExpression() 手写 JSON 解析 conditions，绕过标准渲染链路",
+      "failure_scenario": "`conditions` 声明为 `Property<List<String>>`，但运行时通过 `MAPPER.readValue(this.conditions.getExpression(), LIST_TYPE_REFERENCE)` 读取原始 expression。`Property` 的 expression 是未经渲染的原始 YAML/JSON 文本：一旦用户把整个属性写成模板（例如 `conditions: \"{{ inputs.conditions }}\"`）或写成不以 `[` 开头的字符串，这里会直接抛 Jackson 的 `JsonProcessingException`（且不是 `IllegalVariableEvaluationException`，不会被下方 catch 捕获），报错信息对用户不可读；同时该写法绕过了 `Property` 的渲染/类型转换与缓存机制，与框架内其他 `Property<List<String>>` 的用法不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "RENDER-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 95,
+      "summary": "Assert 失败日志的占位符与参数数量不匹配，渲染值不会出现在日志里",
+      "failure_scenario": "`runContext.logger().error(\"Assertion `{}` failed!\", s, renderer)` 只有一个占位符却传了两个参数，SLF4J 会把多余的 `renderer` 当作可抛出对象候选处理（不是 Throwable 时被丢弃），因此断言失败时日志中拿不到实际渲染结果，排查断言语义问题（例如模板渲染成 `\"false \"` 或空串）时缺少关键信息。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.7,
+      "rule": "LOGGING-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/RandomIntFunction.java",
+      "line": 33,
+      "summary": "randomInt 参数类型由 Long 收窄为 Integer，Long 实参会直接抛异常",
+      "failure_scenario": "`getArgument` 的返回类型与校验从 `Long` 改为 `Integer`，运行时用 `args.get(arg) instanceof Integer` 硬校验。凡是传入 `Long` 的调用（例如来自 Long 类型任务输出、超过 int 范围的数字、由其他函数/JSON 解析产生的 Long 值）现在都会抛 `The 'GenerateRandomNumber' function expects an argument ... with type Integer.`，而此前是可用的，属于模板函数的向后不兼容变更。同时类型判断应基于 `Number` 而不是具体包装类，否则同类问题会反复出现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "COMPAT-003"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/RandomIntFunction.java",
+      "line": 21,
+      "summary": "randomInt 的报错文案把函数名写成 GenerateRandomNumber，且缺少空格",
+      "failure_scenario": "函数注册名是 `randomInt`（Extension.java:153），但新文案写成 `'GenerateRandomNumber'`，用户按报错提示去搜索或修正模板时找不到对应函数；另外 `\"expects an argument \" + arg + \"with type Integer.\"` 缺少空格，拼出 `lowerwith`。这类文案属于用户可见的错误信息，会直接影响排障效率。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "TEXT-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Count.java",
+      "line": 138,
+      "summary": "Count 的 namespaces 不再渲染，模板值被原样用于权限校验与查询",
+      "failure_scenario": "改动前 `namespaces` 是 `Property<List<String>>`，运行时会 `runContext.render(this.namespaces).asList(String.class)`；改动后字段变为 `List<String>` 且直接使用原值：138 行把它传给 `flowService.checkAllowedNamespace(...)`，147 行传给 `executionRepository.executionCounts(...)`。若用户在列表元素里写了模板（例如 `namespaces: [\"{{ inputs.namespace }}\"]`，此前是支持的），现在会以字面量 `\"{{ inputs.namespace }}\"` 去校验命名空间并查询统计，结果静默为空或直接因不允许的命名空间报错，而不是按预期统计目标命名空间。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RENDER-003"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/PurgeExecutions.java",
+      "line": 133,
+      "summary": "PurgeExecutions 对 namespace 重复 render 三次，权限判定与实际清理可能基于不同取值",
+      "failure_scenario": "123-124 行为了与 `flowInfo.namespace()` 比较并做 ACL 校验各调用一次 `runContext.render(namespace)`，133 行又把 `runContext.render(namespace)` 传给 `executionService.purge`。同一属性被渲染多次：一是重复的渲染开销；二是对含 `randomInt()`/`now()` 等非确定性函数的模板，校验用的命名空间与实际被清理的命名空间可能不同，属于难以排查的隐患。建议渲染一次存为局部变量。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "MAINTAIN-004"
+    },
+    {
+      "file": "script/src/main/java/io/kestra/plugin/scripts/runner/docker/Docker.java",
+      "line": 280,
+      "summary": "privileged 声明为 dynamic = true 但既是强类型 Boolean 又未渲染，dynamic 标记失实",
+      "failure_scenario": "`privileged` 从 `Property<Boolean>` 改成 `Boolean` 却仍标注 `@PluginProperty(dynamic = true)`：一方面文档/JSON Schema 会把它标为支持动态渲染，另一方面运行时是 `hostConfig.withPrivileged(this.getPrivileged())`，完全没有 render；此外 `Boolean` 字段在 flow 解析阶段由 Jackson 反序列化，写入 `\"{{ inputs.privileged }}\"` 这种模板会直接解析失败。结果是标记与实现互相矛盾：用户以为可以写模板，实际要么解析报错，要么拿到未渲染的值。同样的模式出现在 DockerOptions.privileged。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "SCHEMA-005"
+    },
+    {
+      "file": "script/src/main/java/io/kestra/plugin/scripts/exec/AbstractExecScript.java",
+      "line": 81,
+      "summary": "interpreter 去 Property 化并移除 dynamic，模板化解释器配置将失效",
+      "failure_scenario": "`interpreter` 原为 `@PluginProperty(dynamic = true) Property<List<String>>`，现改为 `@PluginProperty` + `List<String>`，且 `commands(RunContext)` 中并没有对 interpreter 做任何 render（`ScriptService.scriptCommands(List<String> interpreter, ...)` 只接收已就绪的列表）。因此用户此前可以用 `interpreter: \"{{ inputs.interpreter }}\"` 之类方式动态指定解释器，现在该值会以原样字符串/无法转换的形式传给执行层，导致脚本用错误的解释器启动或直接报错，而 flow 在创建阶段不会给出任何提示。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "COMPAT-006"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/services/FlowService.java",
+      "line": 19,
+      "summary": "FlowService 新增了未使用的 Nullable / SneakyThrows 导入",
+      "failure_scenario": "本次改动只为删除方法，却在 import 区新增了 `io.micronaut.core.annotation.Nullable`（第 16 行）与 `lombok.SneakyThrows`（第 19 行），而这两个符号在 FlowService 全文（1-440 行）中都没有任何使用点。无用导入会污染 diff、干扰后续维护者对类依赖的判断，并可能触发静态检查告警。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "CLEANUP-001"
+    },
+    {
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/FlowController.java",
+      "line": 429,
+      "summary": "删除 checkValidSubflows 后 subflow 存在性校验完全消失且无替代实现",
+      "failure_scenario": "`flowService.checkValidSubflows(flowParsed)` 在 FlowController 的 update 路径（429 行附近）与 validate 路径（592 行附近）被直接删掉，`FlowService.checkValidSubflows` 与 `FlowService.findById` 也一并删除，全仓已无任何引用，也没有引入替代校验。结果是引用不存在 namespace/flowId 的 Subflow 任务在 flow 校验阶段不再报错。需要说明：被删除的旧实现本身有缺陷（对每个 subflow 无条件 add violation，而不判断 findById 是否为空），删除等于「放弃校验」而非「修复校验」，属于需要显式确认的产品行为变更，建议在 MR 中记录决策或补上正确实现。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "VALIDATION-007"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/docs/JsonSchemaGenerator.java",
+      "line": 270,
+      "summary": "删除 TYPES_RESOLVED_AS_STRING 分支会改变 Property<Duration/LocalTime/...> 的 schema 生成结果",
+      "failure_scenario": "被删除的 `isAssignableFromResolvedAsString` 分支原本让 `Property<LocalDate/LocalTime/Duration/...>` 只取内部类型参数（配合时间类型的 string 格式化处理）；删除后这些类型落入 else 分支，返回 `[内部类型, String]` 两个候选。本次迁移并未清除所有此类字段——例如 `Task.timeout` 仍是 `Property<Duration>`，其生成的 JSON Schema/UI 表单类型会从单一时间类型变为「时间类型 + String 联合」，属于随本次改动附带、但未被显式说明的文档/Schema 行为变化。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "SCHEMA-008"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+      "line": 54,
+      "summary": "OutputValues 的文档示例被改成非法表达式 `{{ outputs.output_values.²}}`",
+      "failure_scenario": "示例中的 `{{ outputs.output_values.values.taskrun_data }}` 被替换成了 `{{ outputs.output_values.²}}`，这不是合法的 Pebble 表达式，也不是有效的属性访问路径。该示例会出现在插件文档与 UI 中，用户照抄后模板渲染直接失败；从上下文看下一行仍保留 `outputs.output_values.values.execution_data`，可确认这是一次误编辑而非有意简化。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.9,
+      "rule": "DOC-EXAMPLE-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/namespace/UploadFiles.java",
+      "line": 154,
+      "summary": "UploadFiles.conflict 漏加 @PluginProperty，且注解与字段之间夹了空行",
+      "failure_scenario": "其他属性都补上了 `@PluginProperty(...)`，唯独 `conflict` 只有 `@Builder.Default`，并且 `@Builder.Default` 与 `@Schema` 之间还留了一个空行（148-150 行）。缺少注解会让插件属性的元数据（如 schema 中的 `$dynamic`、生成文档时的属性归类）与其他属性不一致；夹空行则是明显的编辑残留，影响可读性。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "STYLE-002"
+    },
+    {
+      "file": "ui/src/styles/layout/element-plus-overload.scss",
+      "line": 365,
+      "summary": "表格表头背景改为硬编码色值 #f5f5ff，脱离主题变量体系",
+      "failure_scenario": "`--el-table-header-bg-color` 从 `var(--ks-background-table-header)` 改成硬编码 `#f5f5ff`，仅在 `html.dark` 下用变量覆盖 `--el-table-header-bg-color: var(--ks-background-input)`。这意味着浅色主题、以及用户自定义主题/品牌色时，表头颜色不再跟随主题变量，与其他组件（仍使用 `--ks-*` 变量）出现视觉不一致，后续调整主题需要回到此处改魔法值。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "THEME-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+      "line": 13,
+      "summary": "isFalsy 采用精确字符串匹配，Assert 对 'False'、含空白等取值会静默判为通过",
+      "failure_scenario": "`isFalsy` 仅在值精确等于 `\"false\"`、`\"0\"`、`\"-0\"`、`\"\"` 时返回 true，`null` 也返回 false。Assert 用它决定断言失败与否，因此像 `{{ someBoolean }}` 在特定渲染/字符串化路径下产出 `\"False\"`、`\"false \"`（含尾部空白）或 `\"null\"` 时，断言会被判为成功而不报错——断言工具静默通过比显式失败更危险。新增方法时建议同时明确这些边界并写入 Schema 描述。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "SEMANTIC-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\kestra-io__kestra\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\kestra-io__kestra@06e7c6e.diff\n  caseId              kestra-io__kestra@06e7c6e\n  --issue             (未传)\n  --taskId            kestra-io__kestra@06e7c6e\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 8 个文件 / 20276 字符（test=8），明细见审计 mrFilter\n✓ 完成 · 耗时 254.7s · 模型调用 19 次 · token 输入 83,360（未命中） · 输出 34,537 · 缓存命中 817,920（90.8%） · 工具 40 次（主会话 40 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0236\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 255.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 254.6s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 11.0s (4.3%) | P2 3.9s (1.5%) | P3 10.0s (3.9%) | P4 141.7s (55.7%) | P5 64.8s (25.5%) | P6 23.1s (9.1%)\n[usage] 任务总计 | 模型调用 19 次（Agent 19 + 一次性 0） | token 输入 83,360（未命中） | 输出 34,537 | 缓存命中 817,920（90.8%） | $0.0236\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\kestra-io__kestra@06e7c6e\\audit\\20261115_011705_956.json",
+  "token_usage": {
+    "input_tokens": 83360,
+    "output_tokens": 34537,
+    "cache_read_input_tokens": 817920
+  }
+}

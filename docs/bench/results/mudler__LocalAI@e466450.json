@@ -1,0 +1,262 @@
+{
+  "instance_id": "mudler__LocalAI@e466450",
+  "repo": "mudler/LocalAI",
+  "base_commit": "78533d7230bdb5e352e325c15d0d53f38428b08e",
+  "head_commit": "e466450c007539a2b1e4d2951c6756ff004a2b52",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 369.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 24,
+  "review_output": [
+    {
+      "file": "core/http/endpoints/openai/completion.go",
+      "line": 183,
+      "summary": "非流式 /v1/completions 丢失 prompt/completion token 累计，usage 恒为 0",
+      "failure_scenario": "本次重构在遍历 config.PromptStrings 的循环里把 `totalTokenUsage.Prompt += tokenUsage.Prompt` 与 `totalTokenUsage.Completion += tokenUsage.Completion` 两行替换成了计时字段的累加，只保留了 Timing 的累加。ComputeChoices 每次调用都新建并返回自己那份 TokenUsage（inference.go:45-56），因此调用方必须自行跨 prompt 汇总。结果是非流式 completion 响应里 prompt_tokens/completion_tokens/total_tokens 全为 0，计费与用量统计完全失真，且与流式路径（chat.go/completion.go 的 process 内 usage 取自单次回调）表现不一致。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "backend/cpp/llama/grpc-server.cpp",
+      "line": 521,
+      "summary": "validate_model_chat_template 定义后从未被调用，chat 模板回退逻辑不生效",
+      "failure_scenario": "新增的 validate_model_chat_template(server_params&) 意图是：当模型自带 chat template 不被 llama_chat_apply_template 支持时，记录错误并回退到 chatml（设置 sparams.chat_template = \"<|im_start|>\"）。但全仓检索显示该函数只有声明、没有任何调用点，因此这段回退逻辑完全是死代码：不支持模板的模型依旧会走原来的失败路径，同时留下了“以为已经兜底”的误导性维护陷阱。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "backend/cpp/llama/grpc-server.cpp",
+      "line": 1133,
+      "summary": "停止判定去掉 llama_vocab_is_eog，非 EOS 的 EOG token 不再终止生成",
+      "failure_scenario": "原实现是 `result.tok == llama_vocab_eos(vocab) || llama_vocab_is_eog(vocab, result.tok)`，本次升级 llama.cpp 后改为只判断 `result.tok == llama_token_eos(model)`，llama_vocab_is_eog 分支被整行删除（全仓已无任何引用）。对于 Llama-3 系（<|eot_id|>）、Qwen（<|im_end|>）等 EOG 与 EOS 不是同一个 token 的模型，模型输出结束标记后不会被识别为停止，会继续生成直到 n_predict 上限或命中 stop 字符串，造成响应尾部出现多余内容、耗时与 token 计费明显偏高。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "Makefile",
+      "line": 309,
+      "summary": "stablediffusion-ggml 构建丢失 BUILD_TYPE 派生的 CUDA/BLAS 开关与静态库约束",
+      "failure_scenario": "原 backend/go/image/stablediffusion-ggml/Makefile 会把 BUILD_TYPE 翻译成 cmake 参数（cublas→-DGGML_CUDA=ON、openblas→-DGGML_BLAS=ON、hipblas/clblas/sycl 等）并强制 -DBUILD_SHARED_LIBS=OFF（原注释明确写明“Disable Shared libs as we are linking on static gRPC and we can't mix shared and static”）。本次把这些逻辑全部删除，顶层 Makefile 改成直接 `cmake $(CMAKE_ARGS) ..`，而顶层 Makefile 第 43 行 `export CMAKE_ARGS?=` 默认为空、Docker 构建只传 BUILD_TYPE 不传 CMAKE_ARGS。结果是所有镜像（含 cublas/hipblas）都以纯 CPU 方式编译 ggml，图像生成在 GPU 镜像上退化为 CPU 计算，性能显著下降；同时静态库假设不再被显式保证，`libsd.a` 目标里 `cp .../build/libstable-diffusion.a` 的产物路径依赖于上游默认值。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.62,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "core/config/backend_config.go",
+      "line": 25,
+      "summary": "TTSConfig.AudioPath 被改成嵌套 vall-e.audio_path，既有 tts.audio_path 配置静默失效",
+      "failure_scenario": "TTSConfig 原本有 `AudioPath string yaml:\"audio_path\"`，本次改为只保留 `Voice` 与 `VallE VallE yaml:\"vall-e\"`（VallE.AudioPath 的 yaml key 仍是 audio_path，但层级变为 tts.vall-e.audio_path）。而 core/backend/options.go:143 现在只把 `c.VallE.AudioPath` 传给 gRPC 的 AudioPath，coqui、openvoice（仍是默认镜像里启用的后端）的 backend.py 都依赖 request.AudioPath 做声音克隆。所有现存使用 `tts: audio_path:` 的模型 YAML 在升级后既不会报错也不会生效：yaml.v3 默认忽略未知字段，AudioPath 变成空串，coqui/openvoice 静默退化为默认音色。属无提示的破坏性配置变更。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CONFIG-COMPAT-001"
+    },
+    {
+      "file": "core/config/application_config.go",
+      "line": 100,
+      "summary": "MachineTag 缺省回退为 os.Hostname() 并被写入所有端点的响应头，默认泄露主机名",
+      "failure_scenario": "WithMachineTag 在未显式设置 LOCALAI_MACHINE_TAG 时会回退为 `os.Hostname()`，而本 MR 又在 Chat/Completion/Edit/Embeddings/Files/Image/Transcription/ListModels 等所有端点无条件执行 `c.Set(\"LocalAI-Machine-Tag\", appConfig.MachineTag)`。这意味着默认配置下任何客户端（包括未授权的对外暴露实例）都能从响应头读到节点主机名——在容器/私有云部署中主机名常包含容器 ID、服务名或环境标识，属于基础设施信息泄露，可用于资产识别与横向移动前的信息收集；此外该头没有任何开关可关闭。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.58,
+      "rule": "SECURITY-INFO-DISCLOSURE-001"
+    },
+    {
+      "file": "core/config/application_config.go",
+      "line": 103,
+      "summary": "MachineTag 默认取主机名并被无条件写入所有响应头，主机名对外泄露",
+      "failure_scenario": "WithMachineTag 在未显式配置时用 os.Hostname() 兜底，同时本次在 chat、completion、assistants、files、tts、vad、jina rerank 等十余个端点里都无条件 `c.Set(\"LocalAI-Machine-Tag\", appConfig.MachineTag)`。这意味着默认部署下每个响应都会把内网主机名返回给任意客户端，泄露基础设施命名信息；而同一 MR 中的计时用量字段是 opt-in（需 `LocalAI-Extra-Usage` 请求头），两者策略不一致。另外 `hostname, _ := os.Hostname()` 忽略错误，取不到时会把空串写进响应头。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": ".github/workflows/secscan.yaml",
+      "line": 21,
+      "summary": "gosec 从 v2.22.0 回退到 v2.21.4，安全扫描能力被降级",
+      "failure_scenario": "本 MR 将 CI 安全扫描动作 securego/gosec 由 v2.22.0 改为 v2.21.4，属向下回退版本。gosec 的规则集随版本增加而扩充，回退会丢失 v2.22.0 新增/修复的规则与误报修复，使本次（以及后续）代码变更在 SAST 层面覆盖变弱；从 diff 看这既不是 dependabot 的升级也不是必要的功能性修改，容易被误当作依赖同步而遗漏。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.75,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "backend/python/vall-e-x/install.sh",
+      "line": 18,
+      "summary": "install.sh 的 git clone 非幂等且 `cp ./*py` 依赖当前工作目录",
+      "failure_scenario": "install.sh 使用 `git clone ... ${MY_DIR}/source` 且脚本带 set -e：源目录已存在时 clone 会以“destination path already exists”失败并中断整个构建（重复执行 `make -C backend/python/vall-e-x`、或在已含 source 的工作区二次构建时必然触发）。同一脚本末尾的 `cp -v ./*py ${MY_DIR}/source/` 使用的是相对当前目录的通配，只有从 backend/python/vall-e-x 目录执行才正确，从仓库根执行会把根目录的 *.py 拷进 source。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "BUILD-003"
+    },
+    {
+      "file": "backend/python/vall-e-x/install.sh",
+      "line": 20,
+      "summary": "install.sh 用上游 VALL-E-X requirements.txt 覆盖已固定的 torch/torchaudio，GPU 变体可能被降级",
+      "failure_scenario": "install.sh 先调用 installRequirements（按 libbackend.sh 的顺序安装 requirements.txt、requirements-${BUILD_TYPE}.txt、requirements-${BUILD_PROFILE}.txt、requirements-cpu.txt，其中 requirements-cublas11/hipblas/intel 分别固定了 torch+cu118 / +rocm6.0 / +xpu 轮子），随后又执行 `uv pip install --requirement ${MY_DIR}/source/requirements.txt` 安装上游仓库的依赖清单。上游清单自带 torch/torchaudio 约束，在 uv 的解析下会覆盖先前按变体安装的 GPU 轮子（或被解析为 CPU 版），导致 cublas/hipblas/intel 镜像里实际运行 CPU 版 torch，推理性能大幅下降甚至 CUDA 不可用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "BUILD-002"
+    },
+    {
+      "file": ".github/workflows/image.yml",
+      "line": 365,
+      "summary": "整块注释掉 gh-runner（并改名 parallel-builds），arm64 L4T 镜像不再构建且留下大段注释",
+      "failure_scenario": "原 job `gh-runner` 负责构建 `latest-nvidia-l4t-arm64-core`（runs-on: ubuntu-24.04-arm），本次把整块 YAML 注释掉并且把 job 名改成 `parallel-builds`，同时把 runs-on 改成 self-hosted。效果是该 arm64 镜像从 CI 中静默消失，且注释中保留了一份会与真实 workflow 逐渐漂移的“影子配置”（例如注释里仍是 self-hosted，而原 job 是 ubuntu-24.04-arm），后续维护者很难判断哪一个才是有效配置。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "CI-001"
+    },
+    {
+      "file": "backend/python/diffusers/backend.py",
+      "line": 279,
+      "summary": "移除 SanaPipeline 分支后无显式报错，旧配置会落到 self.pipe 未定义处",
+      "failure_scenario": "LoadModel 用 if/elif 链按 request.PipelineType 构造 self.pipe。删除 SanaPipeline 分支后，任何仍配置 `pipeline_type: SanaPipeline` 的模型都不会命中任何分支，随后第 287 行 `self.pipe.scheduler` 会抛 AttributeError（被外层捕获后变成含义不明的 “Unexpected AttributeError”），而不是明确的“不支持的 pipeline_type”。既有的 Sana 用户无法从错误信息判断是后端移除了支持。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "core/cli/run.go",
+      "line": 74,
+      "summary": "新增 CLI 参数 MachineTag 的帮助文本仍是占位符 TODO",
+      "failure_scenario": "RunCMD 新增的 MachineTag 字段 help 为 \"TODO: write a help string\"，而 `local-ai run --help` 会直接把这个占位符展示给用户，同时该字段缺少 group 归类、也不是没有 env 默认值说明，与其他字段（如 LoadToMemory 的 help/group）风格不一致。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.9,
+      "rule": "STYLE-001"
+    },
+    {
+      "file": "core/cli/run.go",
+      "line": 74,
+      "summary": "新增的 MachineTag CLI/env 选项没有帮助文案",
+      "failure_scenario": "新增的 MachineTag 选项 help 仍为占位符 \"TODO: write a help string\"。由于该选项是本次「LocalAI-Machine-Tag 响应头」功能的唯一入口（env LOCALAI_MACHINE_TAG，且未设置时会回退到主机名），用户无法从 `--help` 得知其作用、默认行为（回退主机名）与安全含义。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "DOC-CLI-001"
+    },
+    {
+      "file": "core/http/endpoints/openai/chat.go",
+      "line": 174,
+      "summary": "MachineTag 响应头在十余个端点中逐一手写设置，应改为统一中间件",
+      "failure_scenario": "同一个 `c.Set(\"LocalAI-Machine-Tag\", ...)` 被逐个复制到 chat、completion、assistants（创建/列举/删除/获取/文件若干）、files、embeddings、image、inference、transcription、tts、vad、jina rerank 等端点；chat.go 内部还设置了两次（第 174 行与流式分支内）。任何新增端点都必须记得手工添加，否则该头在部分路由上缺失，形成不一致的对外行为。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "docs/data/version.json",
+      "line": 2,
+      "summary": "文档版本号被从 v2.25.0 回退为 v2.24.2，疑似分支基线落后导致的无意回退",
+      "failure_scenario": "MR 的主体改动是新增 LocalAI-Machine-Tag 响应头与 extra usage 计时字段，与版本号无关，但 docs/data/version.json 中的 version 由 v2.25.0 改成了 v2.24.2。这样文档站点/发布产物会对外声明一个更旧的版本号，同时说明本分支基线落后于目标分支——同一 diff 中还伴随 go.mod 依赖下调、gallery 大量条目删除、phi-4 配置删除等回退痕迹，二者很可能是同一次错误 rebase/分支创建的产物，会连带撤销 master 上已有的改动。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "CONSISTENCY-REVERT-001"
+    },
+    {
+      "file": "go.mod",
+      "line": 38,
+      "summary": "go.mod 大范围下调依赖版本，可能引入行为回归并丢失上游安全修复",
+      "failure_scenario": "本 MR 把大量直接/间接依赖整体降级：libp2p 0.38.1→0.36.2、edgevpn 0.29.0→0.28.4、go.opentelemetry.io/otel 1.31.0→1.28.0、google.golang.org/grpc 1.67.1→1.65.0、protobuf 1.36.1→1.35.1、testify 1.10.0→1.9.0、prometheus/client_golang 1.20.5→1.20.0、quic-go 0.48.2→0.46.0、golang.org/x/net 0.33.0→0.30.0、golang.org/x/crypto 0.31.0→0.28.0 等，并新增/删除了一批间接依赖（如移除 labstack/echo、urfave/cli 等）。这些改动与本次「Machine-Tag 响应头 + extra usage 计时」功能无关，属于对既有运行时的整体回退：可能丢失上游安全补丁（golang.org/x/net、x/crypto、grpc 均有历史 CVE 修复），也可能与 go.sum 或其它模块的版本约束冲突，导致构建结果与目标分支不一致（P2P/edgevpn、otel 指标链路属受影响面）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "DEPENDENCY-REGRESSION-001"
+    },
+    {
+      "file": "pkg/downloader/uri.go",
+      "line": 270,
+      "summary": "删除了 HTTP 断点续传能力，模型下载中断后只能全量重下",
+      "failure_scenario": "改动删除了 calculateHashForPartialFile 与 checkSeverSupportsRangeHeader，并把原先「基于 .partial 文件 + Range 请求头续传」的逻辑替换为 http.Get 直接下载，且在开写之前无条件调用 removePartialFile(tmpFilePath) 丢弃已存在的 .partial 文件（L287-293）。后果是：几 GB 的 GGUF/模型文件在网络抖动或进程重启后无法续传，之前的下载进度被主动删除，必须从 0 重新下载，浪费带宽与时间；对通过 gallery 自动下载模型的部署（服务启动即下载）影响尤其明显。同时 HEAD 预检被移除，服务端不支持 Range 的行为差异不再被识别。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.8,
+      "rule": "RESUME-DOWNLOAD-001"
+    },
+    {
+      "file": "gallery/index.yaml",
+      "line": 2,
+      "summary": "gallery 索引删除 15+ 个模型条目并删除 phi-4 配置文件，已发布的模型安装入口失效",
+      "failure_scenario": "index.yaml 顶部的 phi-4 系列（phi-4、LocalAI-functioncall-phi-4-v0.1/v0.2/v0.3）及其 `&phi4` 锚点被整体删除，同时删除了 nightwing3-10b-v0.1、70b-l3.3-cirrus-x1、negative_llama_70b、negative-anubis-70b-v1、l3.3-ms-nevoria-70b、minithinky-v2-1b、finemath-llama-3b、14b-qwen2.5-freya-x1、huatuogpt-o1-7b、chuluun-qwen2.5-72b、qwq-32b-preview-ideawhiz、rombos-qwen2.5-writer-32b、sky-t1-32b-preview、qwen2.5-72b-rp-ink、steiner-32b-preview、qwerus-7b、lb-reranker-0.5b、uwu-7b-instruct、drt-o1-14b、vikhr-qwen-2.5-1.5b、gwq-9b-preview2、phi-3.5-moe-instruct 等条目，并删除了 gallery/phi-4-chat.yaml 与 gallery/phi-4-chat-fcall.yaml。这些是用户侧 `models install <name>` / 前端 gallery 的直接入口，删除后已发布的模型名无法再安装，属于对外可见的能力回退；且 anchor 与其引用条目一起删除，虽然当前 YAML 仍可解析（无悬挂 `*phi4` 引用），但索引规模与目标分支不一致。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "CATALOG-REGRESSION-001"
+    },
+    {
+      "file": "gallery/index.yaml",
+      "line": 5759,
+      "summary": "nera_noctis-12b 的 description 块标量被多加一个空格，属无意义改动",
+      "failure_scenario": "该条目 description 使用块标量 `|`，首行缩进由 4 空格改为 5 空格，文本内容完全未变：YAML 块标量的缩进由首个非空行决定，多出的空格在解析后被剥离，因此渲染结果无差异，只会在 diff 中制造噪声；若后续再往同一条目追加行并沿用 4 空格缩进，会因缩进小于首行而提前结束块标量，导致 description 被静默截断。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.7,
+      "rule": "STYLE-YAML-001"
+    },
+    {
+      "file": "pkg/model/loader.go",
+      "line": 57,
+      "summary": "从跳过后缀列表中移除 \".pt\" 与 \".onnx\"，这两类权重文件会被当成可选模型列出",
+      "failure_scenario": "knownModelsNameSuffixToSkip 中删除了 \".pt\" 与 \".onnx\"，而该列表唯一的消费方 ListFilesInModelPath 以 `strings.HasSuffix(file.Name(), skip)` 决定是否跳过文件。列表结果会经 services.ListModels → ListModelsEndpoint（/v1/models）暴露。移除后，模型目录里常见的 tokenizer/checkpoint 类文件（如 *.pt（PyTorch 权重、transformers 中间产物）与 *.onnx（ONNX 权重））会被当作「散落模型文件」出现在 /v1/models 中，导致：模型列表噪声、客户端按名字请求到实际不可加载的权重、以及前端展示大量无效条目。若这是为支持 ONNX/PyTorch 后端而有意为之，需要在服务层增加格式识别，而不是简单取消跳过。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "MODEL-LIST-001"
+    },
+    {
+      "file": "core/http/endpoints/openai/edit.go",
+      "line": 31,
+      "summary": "extra usage 开关仅判断请求头非空，\"false\"/\"0\" 也会开启额外字段",
+      "failure_scenario": "`extraUsage := c.Get(\"LocalAI-Extra-Usage\", \"\") != \"\"` 把任意非空取值都视为开启，因此客户端传 `LocalAI-Extra-Usage: false` 或 `0` 时仍会返回 timing_prompt_processing/timing_token_generation。这既有违 opt-in 头的直觉语义（布尔开关应可显式关闭），也让「关闭」只能靠删除整个头来表达，容易在代理/网关统一注入头时无法按需关闭。相同写法在 completion.go:71 等处复制，需统一处理。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "API-SEMANTICS-001"
+    },
+    {
+      "file": "swagger/docs.go",
+      "line": 1746,
+      "summary": "schema.OpenAIUsage 新增字段未同步到 swagger 定义",
+      "failure_scenario": "OpenAIUsage 新增了 timing_prompt_processing 与 timing_token_generation，但 swagger/docs.go 中 `schema.OpenAIUsage` 的定义仍只有 completion_tokens / prompt_tokens / total_tokens。由于该结构体是 /v1/chat/completions、/v1/completions、/v1/edits 的共享响应体，生成的 API 文档会遗漏新增字段，使用生成式客户端（openapi codegen）的下游拿不到这两个字段，与实现产生偏差。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "DOC-SYNC-001"
+    },
+    {
+      "file": "core/schema/openai.go",
+      "line": 26,
+      "summary": "新增字段注释存在拼写错误 \"as is't not\"",
+      "failure_scenario": "注释 `// Extra timing data, disabled by default as is't not a part of OpenAI specification` 中 \"is't\" 应为 \"it's\"，且该注释是本 MR 唯一解释新增字段行为的地方，拼写错误会降低可读性，也不利于后续维护者理解「默认关闭」的含义（默认关闭实际由 omitempty + opt-in 头共同实现）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "STYLE-COMMENT-001"
+    }
+  ],
+  "stderr_tail": "            D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\mudler__LocalAI\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\mudler__LocalAI@e466450.diff\n  caseId              mudler__LocalAI@e466450\n  --issue             (未传)\n  --taskId            mudler__LocalAI@e466450\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 2 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 4 个文件 / 51028 字符（lockfile=1, test=1, exclude=2），明细见审计 mrFilter\n✓ 完成 · 耗时 368.3s · 模型调用 33 次 · token 输入 113,048（未命中） · 输出 51,839 · 缓存命中 2,018,048（94.7%） · 工具 80 次（主会话 80 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0360\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\mudler__LocalAI@e466450\\r...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 369.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 368.2s (99.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 15.9s (4.3%) | S1P2 4.9s (1.3%) | S1P3 15.2s (4.1%) | S1P4 120.1s (32.6%) | S1P5 54.7s (14.9%) | S1P6 18.1s (4.9%) | S2P1 7.2s (2.0%) | S2P2 4.4s (1.2%) | S2P3 7.4s (2.0%) | S2P4 48.2s (13.1%) | S2P5 59.4s (16.1%) | S2P6 12.4s (3.4%)\n[usage] 任务总计 | 模型调用 33 次（Agent 33 + 一次性 0） | token 输入 113,048（未命中） | 输出 51,839 | 缓存命中 2,018,048（94.7%） | $0.0360\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\mudler__LocalAI@e466450\\audit\\20261115_000201_219.json",
+  "token_usage": {
+    "input_tokens": 113048,
+    "output_tokens": 51839,
+    "cache_read_input_tokens": 2018048
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "instance_id": "mpv-player__mpv@0b0330f",
+  "repo": "mpv-player/mpv",
+  "base_commit": "5ba7ee513751dd005379a06fb627303e6fe1b3dd",
+  "head_commit": "0b0330fa9d5d70c78f36e1010a3b826fa7046387",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 606.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 14,
+  "review_output": [
+    {
+      "file": "MPV_VERSION",
+      "line": 1,
+      "summary": "版本号与 RELEASE_NOTES 被回退到 0.39.0，与仓库中仍在开发的变更互相矛盾",
+      "failure_scenario": "本次变更把 MPV_VERSION 从 0.40.0-UNKNOWN 回退成 0.39.0-UNKNOWN，并把 RELEASE_NOTES 整体改写成 0.39.0 的说明（对比链接也改成 v0.38.0..v0.39.0），但同一 MR 又新增了 40 多个 DOCS/interface-changes/*.txt 片段来描述当前开发树中的新接口（clipboard 属性、--clipboard-monitor、commands.lua 拆分、--load-commands 等），而这些特性的实现仍然在代码里（player/clipboard/ 仍然存在）。三者组合后，`mpv --version` 会报告错误的版本号，用户从 0.39.0 升级时无法从发布说明或 interface-changes 中获知实际存在的接口变化，属于发布元数据与代码事实脱节的明显缺陷。",
+      "severity": "P1",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "DOC-RELEASE-001"
+    },
+    {
+      "file": "demux/demux_lavf.c",
+      "line": 165,
+      "summary": "删除 hls 的 extension_picky 兼容开关，可能恢复已知 FFmpeg 缺陷导致的 HLS 打开失败",
+      "failure_scenario": "原实现为 hls 设置了 format_hack.no_ext_picky，并在 demux_open_lavf 中于用户未显式设置时注入 `extension_picky=0`，注释明确说明这是 workaround `known FFmpeg bugs`。本次变更同时删除了字段、该 hls 表项上的标记以及整段注入逻辑。此后在启用了 extension_picky 的新版 FFmpeg 上，HLS 流仍会按扩展名严格校验，之前被规避的打开/探测失败会重新出现，而 mpv 用户侧没有任何可用的规避手段（该选项被静默移除）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-FFMPEG-003"
+    },
+    {
+      "file": "demux/demux_mpv.c",
+      "line": 33,
+      "summary": "mpv:// 协议路径不再做 URL 反转义，含转义字符的文件名会被原样打开",
+      "failure_scenario": "open_mpv 直接调用 playlist_append_file(demuxer->playlist, s->path)，而此前会先对 s->path 执行 mp_url_unescape_inplace。mpv:// 形式的 URL 中空格、非 ASCII、`#`、`?` 等字符通常以 %XX 编码传递，删除反转义后这些路径会以字面 `%20` 之类的形式进入打开流程，导致文件找不到或路径被截断；仓库中其余使用方（stream_file.c、stream_libarchive.c）仍保留反转义，行为出现不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RELIABILITY-URL-004"
+    },
+    {
+      "file": "player/clipboard/clipboard-wayland.c",
+      "line": 351,
+      "summary": "删除 selection offer fd 的错误/挂断处理，事件循环可能空转占满 CPU",
+      "failure_scenario": "dispatch 中 poll 了 selection_offer->fd 与 primary_selection_offer->fd，但删除 POLLERR|POLLHUP|POLLNVAL 分支后，只剩 POLLIN 分支会调用 get_selection_data 并最终 destroy_offer 关闭 fd。当 offer 的读端出现 POLLERR/POLLHUP 而没有 POLLIN 时，没有任何分支清除该 fd，poll 会立即再次返回同一事件，clipboard_wayland_run 的 while 循环遂变成忙等，导致剪贴板线程占满一个 CPU 核心且 offer 长期不释放。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.48,
+      "rule": "RELIABILITY-POLL-005"
+    },
+    {
+      "file": "ci/build-win32.ps1",
+      "line": 2,
+      "summary": "移除 $PSNativeCommandUseErrorActionPreference 后原生命令失败不再中断 CI",
+      "failure_scenario": "脚本首行设置了 `$ErrorActionPreference = \"Stop\"`，但该变量只对 PowerShell cmdlet 生效；原生可执行文件（git、meson、ninja 等）的退出码需要通过 $PSNativeCommandUseErrorActionPreference 才能按错误处理。删除该设置后，git clone / meson setup / ninja 等命令即便以非 0 退出也可能继续执行后续步骤，使构建失败被掩盖或在后续步骤以更晦涩的方式报错。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "CI-ERRHANDLING-007"
+    },
+    {
+      "file": "ci/build-win32.ps1",
+      "line": 11,
+      "summary": "shaderc 克隆不再固定版本，本地补丁可能打不上导致 Windows CI 构建失败",
+      "failure_scenario": "脚本在克隆 shaderc 后会写入并结合 p.diff 补丁来「patch unsupported generator expression」。原来通过 `-b v2025.1` 固定了补丁所针对的版本，本次去掉该参数后改为跟随默认分支，补丁的上下文行随时可能不匹配，从而让 Windows 构建在无关联改动的情况下随机失败；同时构建结果也不再可复现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CI-REPRO-006"
+    },
+    {
+      "file": "demux/demux_mkv.c",
+      "line": 2212,
+      "summary": "ARIB 字幕 profile 回退为已废弃的 FF_PROFILE_* 宏，与仓库其他位置的 AV_PROFILE_* 混用",
+      "failure_scenario": "该文件把 `AV_PROFILE_ARIB_PROFILE_A/C` 与 `AV_PROFILE_UNKNOWN` 改回 `FF_PROFILE_*`。仓库中其他文件（如 audio/decode/ad_spdif.c）已统一使用新的 AV_PROFILE_* 命名，本次回退使 demux_mkv.c 成为唯一的旧宏使用者。FF_PROFILE_* 在较新 FFmpeg 中已被标记废弃，一旦项目提升最低 FFmpeg 版本或上游完成移除，这里会先出现废弃告警、继而编译失败。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "PORTABILITY-FFMPEG-008"
+    },
+    {
+      "file": "player/lua/select.lua",
+      "line": 233,
+      "summary": "删除 default_item 的 -1 守卫后章节菜单可能索引 0 导致空列表或 Lua 报错",
+      "failure_scenario": "原代码 `default_item > -1 and default_item + 1` 会在 `chapter` 为 -1 时把 default_item 置为 false（表示无默认项）；改成 `default_item + 1` 后该场景变成 0。Lua 中 0 是真值，console.lua 的 `if line == '' and default_item then selected_match = default_item` 会把 selected_match 置为 0，而 `get_matches_to_print` 对 `selected_match == 0` 直接 `return {}`，于是章节选择菜单打开后一个条目都不显示；同时 `submit()` 里 `matches[selected_match].index` 在 selected_match 为 0 时对 nil 取字段，会抛出 Lua 运行时错误。`chapter` 允许为 -1（`min = -1`，`get_current_chapter` 注释为 before first chapter），因此该路径可达。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "video/out/vo.c",
+      "line": 1079,
+      "summary": "do_redraw 提前返回不再清除 request_redraw，NORETAIN/UNTIMED VO 可能陷入无休眠重绘忙循环",
+      "failure_scenario": "改动把 `VO_CAP_NORETAIN`/`VO_CAP_UNTIMED` 的判断移到加锁之前，使这类 VO 不再执行 `in->request_redraw = false`。vo_thread 每轮在 `redraw = in->request_redraw` 为真时执行 `VOCTRL_REDRAW` + `do_redraw()` 后直接 `continue`，而 `render_frame` 只在真正绘制的分支（非 dropped、走到绘制后的清理）清除该标志，暂停/无帧时走的 `goto done` 路径并不清除。于是一旦核心侧调用过 `vo_redraw()`（OSD 更新、暂停等），request_redraw 将永久为真，VO 线程以 `wait_until = now + 1s > now` 的条件持续 `continue` 而不进入 `wait_vo`，造成 100% CPU 的空转并高频重复 VOCTRL_REDRAW。",
+      "severity": "P1",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-001"
+    },
+    {
+      "file": "video/out/vo_kitty.c",
+      "line": 322,
+      "summary": "分块发送边界改用 output_size 会多发 base64 的 NUL 终止字节",
+      "failure_scenario": "`p->output_size = AV_BASE64_SIZE(p->buffer_size)` 已包含 NUL 终止符的 1 字节，`av_base64_encode(p->output, p->output_size, ...)` 只写入 output_size-1 个可见字符。改动把循环边界从 `p->output_size - 1` 改成 `p->output_size`，导致最后一帧每个图像会多发送 1 个 0x00 字节进入 kitty 图形协议的数据段（并且 `offset + chunk < p->output_size` 的 m 标志计算也把该字节计入长度），终端可能把它当作非法 base64 字符而丢弃整帧或打印异常内容；同时原先用于结尾补 `m=0` 的兜底分支也被删除。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "PROTOCOL-001"
+    },
+    {
+      "file": "video/mp_image.c",
+      "line": 1076,
+      "summary": "repr.alpha/repr.bits 不再由 mp_image_setfmt 派生，AVFrame 回转时会被整体覆盖丢失",
+      "failure_scenario": "`mp_image_setfmt` 删除了 `params.repr.alpha`（对 `MP_IMGFLAG_ALPHA` 格式设为 `PL_ALPHA_INDEPENDENT`）与 `params.repr.bits`（sample_depth/color_depth/bit_shift）的初始化；而 `mp_image_from_av_frame` 现在用结构体字面量整体赋值 `dst->params.repr`，只保留 sys/levels，随后仅在 `src->opaque_ref` 存在时补回 `repr.alpha`。也就是说：凡是不带 opaque_ref 的帧（例如直接来自解码器/滤镜的 AVFrame）`repr.alpha` 变成 0（`PL_ALPHA_UNKNOWN`），带 alpha 的格式失去「独立 alpha」语义；`repr.bits` 在整条 mpv 内部路径上恒为 0，MP_IMGFLAG_ALPHA/pad（如 p010 类 MSB 对齐）信息不再随 mp_image 传播。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "video/out/wayland_common.c",
+      "line": 3501,
+      "summary": "opaque region 尺寸不再除以 scaling_factor，与 window geometry 的换算不一致",
+      "failure_scenario": "`prepare_resize` 仍按 `mp_rect_w(wl->geometry) / wl->scaling_factor` 计算并提交 surface-local 的窗口几何，而 `vo_wayland_set_opaque_region` 改为直接使用未换算的 `mp_rect_w(wl->geometry)`/`mp_rect_h(wl->geometry)`。两处都需要 surface-local 坐标，因此 HiDPI（`scaling_factor` > 1）下 opaque region 会比实际 surface 大若干倍，可能导致合成器对透明/不透明区域判断错误、黑边或多余的整窗重绘。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "PLATFORM-001"
+    },
+    {
+      "file": "video/vdpau.c",
+      "line": 83,
+      "summary": "is_preempted 改为非原子 bool 后仍在无锁路径读取，存在数据竞争",
+      "failure_scenario": "`is_preempted` 由 `atomic_bool` 改为普通 `bool`，写入点（`preemption_callback`、`handle_preemption`）都在 `preempt_lock` 内，但 `win_x11_init_vdpau_procs` 中的 `if (ctx->is_preempted)` 读取没有任何同步；而创建路径调用 `win_x11_init_vdpau_procs` 时并未持有 `preempt_lock`，此时 VDPAU 驱动可能在其它线程回调 `preemption_callback` 写入该字段。这是典型的 C 数据竞争（未定义行为），并且 `handle_preemption` 在 `win_x11_init_vdpau_procs` 内部还可能触发重入回调，仅靠 `MP_MUTEX_RECURSIVE` 才能成立，语义较为脆弱。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "player/lua/ytdl_hook.lua",
+      "line": 827,
+      "summary": "add_single_video 不再重置 chapter_list，失败重试路径可能累积重复章节",
+      "failure_scenario": "删除 `chapter_list = {}` 之后，章节只在 `on_preloaded` hook 中应用并清空。但 `on_load` / `on_load_fail` 都可能再次触发 `run_ytdl_hook`，并在 `self_redirecting_url && #json.entries == 1` 或「probably a video」分支再次调用 `add_single_video`；如果上一次处理没有走到 `on_preloaded`（例如加载失败、或新的 URL 由 hook 重新解析），旧条目的章节仍留在文件级 `chapter_list` 里，随后被 `table.insert` 继续追加，最终写入的 chapter-list 会出现重复/陈旧章节。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "STATE-001"
+    }
+  ],
+  "stderr_tail": "h\\evaluation\\repo\\mpv-player__mpv\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\mpv-player__mpv@0b0330f.diff\n  caseId              mpv-player__mpv@0b0330f\n  --issue             (未传)\n  --taskId            mpv-player__mpv@0b0330f\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 2 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 3 个文件 / 11618 字符（test=2, exclude=1），明细见审计 mrFilter\n✓ 完成 · 耗时 561.7s · 模型调用 47 次 · token 输入 214,334（未命中） · 输出 81,680 · 缓存命中 2,956,416（93.2%） · 工具 116 次（主会话 116 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0612\nreview-pi: 置信度过滤丢弃 4 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\mpv-player__mpv@0b0330f\\r...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 562.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 561.5s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 13.4s (2.4%) | S1P2 5.8s (1.0%) | S1P3 12.3s (2.2%) | S1P4 170.2s (30.3%) | S1P5 62.8s (11.2%) | S1P6 28.6s (5.1%) | S2P1 20.1s (3.6%) | S2P2 3.1s (0.5%) | S2P3 11.8s (2.1%) | S2P4 172.2s (30.7%) | S2P5 45.1s (8.0%) | S2P6 16.0s (2.9%)\n[usage] 任务总计 | 模型调用 47 次（Agent 47 + 一次性 0） | token 输入 214,334（未命中） | 输出 81,680 | 缓存命中 2,956,416（93.2%） | $0.0612\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\mpv-player__mpv@0b0330f\\audit\\20261115_021431_285.json",
+  "token_usage": {
+    "input_tokens": 214334,
+    "output_tokens": 81680,
+    "cache_read_input_tokens": 2956416
+  }
+}

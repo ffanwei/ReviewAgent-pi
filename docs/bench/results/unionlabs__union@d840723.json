@@ -1,0 +1,82 @@
+{
+  "instance_id": "unionlabs__union@d840723",
+  "repo": "unionlabs/union",
+  "base_commit": "efab2bedc6beb4e1bb01906cba9e0dabd3072f13",
+  "head_commit": "d840723278f1d4cecc02ac540385725a1c54ca84",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 241.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "voyager/modules/consensus/ethereum/src/main.rs",
+      "line": 167,
+      "summary": "Ethereum 链的 queryLatestTimestamp 把「秒」当作「纳秒」包装成 Timestamp，导致单位相差 1e9",
+      "failure_scenario": "本次改动在 Ethereum consensus 模块中用 `Timestamp::from_nanos(...)` 包装 `finalized_header.execution.timestamp` 与 `provider.get_block(...).header.timestamp`，但这两个值都是 Ethereum 规范中的 Unix 秒级时间戳，而非纳秒。仓库内同源的 bootstrap 模块明确把该值乘以 1e9 才得到纳秒：`let timestamp = bootstrap.header.execution.timestamp * 1_000_000_000;`（注释「Normalize to nanos in order to be compliant with cosmos」）。因此该 RPC 返回的 `Timestamp` 实际表示的是秒，与 `Timestamp` 的纳秒语义以及 `client-update/ethereum` 插件侧 `Timestamp::from_secs(...)` 的纳秒请求相差 1e9 倍；`lib/voyager-message/src/call.rs:238` 的 `chain_timestamp >= timestamp` 比较会永远为假，`WaitForTimestamp` 会每秒 defer 一次形成无限等待（此前类型为 i64 时同样存在该单位错配，本 MR 以「类型化时间戳」为目标却在新代码中固化了错误的构造函数，失去了修复时机并让错配更隐蔽）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "UNIT-001"
+    },
+    {
+      "file": "voyager/plugins/client-update/ethereum/src/main.rs",
+      "line": 28,
+      "summary": "移除手工纳秒换算后 NANOS_PER_SECOND 导入成为未使用导入",
+      "failure_scenario": "该文件原先用 `i64::try_from(...).expect(...) * NANOS_PER_SECOND as i64` 把秒换算成纳秒，本次改为 `Timestamp::from_secs(...)` 后 `NANOS_PER_SECOND` 在 main.rs 中已无任何使用点（通读全文件仅第 28 行的 import 出现该标识符）。这会引入 `unused_imports` 告警，在启用 `-D warnings` 的构建（如 Nix/CI）下会直接导致编译失败，也会给后续读者留下「此处仍在手工换算」的误导。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.68,
+      "rule": "MAINTAIN-002"
+    },
+    {
+      "file": "voyager/modules/consensus/movement/src/main.rs",
+      "line": 165,
+      "summary": "对 Timestamp 做自反 try_into().unwrap() 属于无意义转换，误导读者以为存在可失败转换",
+      "failure_scenario": "多处把 `Timestamp::from_nanos(...)` 的结果再 `try_into().unwrap()/expect(\"should be fine\")` 一次（旧代码是从 u64/i64 转 i64 的残留）。由于 `Timestamp` 与自身之间通过 `From<T> for T` 的 blanket impl 存在 `TryFrom`，该转换必然成功、`Error = Infallible`，只是纯噪声；但 `unwrap()`/`expect()` 的写法会让人误以为存在溢出或范围校验，掩盖了真正的风险点（例如单位错误），也保留了不必要的 panic 语法糖。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "READABILITY-003"
+    },
+    {
+      "file": "lib/voyager-core/src/lib.rs",
+      "line": 336,
+      "summary": "Timestamp::from_secs 使用未检查的乘法，溢出时 debug panic / release 回绕",
+      "failure_scenario": "`from_secs` 直接执行 `Timestamp(secs * 1_000_000_000)`。输入来自链上/外部数据（例如 client-update 插件中的 `genesis.genesis_time + last_update_signature_slot * spec.seconds_per_slot + spec.seconds_per_slot`，以及各模块的链上时间戳），一旦上游给出异常大值，debug 构建会因整数溢出 panic，release 构建会静默回绕成一个远小于预期的时间戳，使 `WaitForTimestamp` 立即（错误地）判定通过。该类型作为公共基础类型，应该在构造处把溢出显式化。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "ROBUST-004"
+    },
+    {
+      "file": "lib/voyager-message/src/module.rs",
+      "line": 442,
+      "summary": "返回类型已改为 Timestamp，但「Make this return a better type than i64」的 TODO 仍保留",
+      "failure_scenario": "本次把 `query_latest_timestamp` 的返回类型从 `RpcResult<i64>` 改成 `RpcResult<Timestamp>`，但同一位置上方仍留着 `// TODO: Make this return a better type than i64`；同类过时注释还散落在 rpc.rs、consensus/movement 与 state/movement 中。这些注释与代码直接矛盾，会让后续维护者误以为该接口仍返回裸 i64，也让「是否已修完」无法从注释判断。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.9,
+      "rule": "MAINTAIN-005"
+    },
+    {
+      "file": "voyager/src/main.rs",
+      "line": 47,
+      "summary": "compile_error 的平台条件从 windows 扩大到所有非 Linux 系统，属与时间戳改造无关的行为变更",
+      "failure_scenario": "本次把 `#[cfg(windows)] compile_error!(...)` 改成 `#[cfg(not(target_os = \"linux\"))] compile_error!(...)`，把「不支持平台」的编译期断言从 Windows 扩展到 macOS、BSD 等所有非 Linux 目标。这与 MR 的时间戳类型化目标无关，却会让 macOS 开发者与 macOS CI runner 上的 `cargo check/build` 直接失败；若团队确实只支持 Linux，应作为独立的、显式记录的决策变更，而不是夹带在时间戳重构里。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "PORTABILITY-006"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\unionlabs__union\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\unionlabs__union@d840723.diff\n  caseId              unionlabs__union@d840723\n  --issue             (未传)\n  --taskId            unionlabs__union@d840723\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 197.0s · 模型调用 17 次 · token 输入 68,696（未命中） · 输出 28,610 · 缓存命中 547,584（88.9%） · 工具 39 次（主会话 39 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0192\n[time] 阶段耗时 | 总墙钟 197.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 196.9s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 10.4s (5.3%) | P2 4.2s (2.1%) | P3 8.7s (4.4%) | P4 123.7s (62.8%) | P5 31.3s (15.9%) | P6 18.5s (9.4%)\n[usage] 任务总计 | 模型调用 17 次（Agent 17 + 一次性 0） | token 输入 68,696（未命中） | 输出 28,610 | 缓存命中 547,584（88.9%） | $0.0192\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\unionlabs__union@d840723\\audit\\20261115_000452_195.json",
+  "token_usage": {
+    "input_tokens": 68696,
+    "output_tokens": 28610,
+    "cache_read_input_tokens": 547584
+  }
+}

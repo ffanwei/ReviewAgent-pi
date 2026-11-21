@@ -1,0 +1,153 @@
+[
+  {
+    "filePath": "server/internal/client/ollama/registry.go",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "break",
+        "review": "[缺陷类型] 错误被吞导致的\"假成功\"（silent failure）。影响评估：大模型下载在 chunksums 不可用/出错时会以成功返回并写入模型 link，缓存进入不一致状态；用户后续 load 失败，日志中没有可定位的根因，重试语义也被破坏。",
+        "suggestion": "[重构思路] 把层的下载错误提升为 Pull 的返回值：收集每层的错误（或用 errgroup 的 ctx 取消），在 g.Wait 之后、写 manifest 与 Link 之前统一检查。代码示例：\n```go\nvar mu sync.Mutex\nvar layerErrs []error\nerr := func() error { // 在迭代器错误分支内\n    mu.Lock()\n    layerErrs = append(layerErrs, fmt.Errorf(\"layer %s: %w\", l.Digest, err))\n    mu.Unlock()\n    return nil\n}\nif err != nil { ... }\nif err := g.Wait(); err != nil { return err }\nif err := errors.Join(layerErrs...); err != nil { return err }\n```",
+        "category": "可靠性",
+        "subcategory": "错误传播",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 488,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "// MaxChunkSize is the maximum size of a chunk to download. If zero,",
+        "review": "[缺陷类型] 死配置与失效文档引用。影响评估：使用者按注释设置 MaxChunkSize 却毫无效果，排查下载性能问题时被误导；`[DefaultMaxChunkSize]` 链接指向不存在的符号，godoc 渲染为普通文本。",
+        "suggestion": "[重构思路] 删除 MaxChunkSize 字段并同步修正 Pull 的注释；若确需保留限流能力，应在新的 chunked 路径中真正使用它。代码示例：\n```go\n// ChunkingThreshold 是单个请求下载层的最大尺寸；\n// 超过该阈值的层通过 /chunksums 给出的分块信息下载。\nChunkingThreshold int64\n```",
+        "category": "可维护",
+        "subcategory": "死代码/文档一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 216,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F007",
+        "code": "r.n.Add(int64(n))",
+        "review": "[缺陷类型] 进度计量重复计数。影响评估：出现网络抖动/5xx 时进度条回跳或超过 100%，服务端与 CLI 显示的总量不可信；排查\"下载卡住\"问题时数据误导。",
+        "suggestion": "[重构思路] 按 chunk 维度记录已完成字节，或以\"本层已成功写入的 chunk 总大小\"作为进度来源，重试时不重复累加。代码示例：\n```go\nvar done atomic.Int64 // 已成功写入的字节\n// chunk 成功后再累加\nif err := chunked.Put(cs.Chunk, cs.Digest, body); err != nil { return err }\ndone.Add(cs.Chunk.Size())\nt.update(l, done.Load(), nil)\n```",
+        "category": "可靠性",
+        "subcategory": "进度统计准确性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 423,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/internal/cache/blob/chunked.go",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "func (c *Chunker) Close() error {",
+        "review": "[缺陷类型] 内容完整性校验缺失（digest 校验降级）。影响评估：大层下载后不再验证与 manifest digest 一致，恶意/异常 registry 或中间缓存可写入内容错误的权重；由于 fnmatch 只在长度上命中缓存，损坏的 blob 会被长期复用，表现为模型加载后才报错且难以定位。",
+        "suggestion": "[重构思路] 在 Chunker 上累积整层哈希，Close 时与 Chunker.digest 比对；并让\"预校验\"分支也做一次廉价的存在性/哈希确认（或显式注明仅长度校验并保留 digest 校验兜底）。代码示例：\n```go\ntype Chunker struct {\n    digest Digest\n    size   int64\n    f      *os.File\n    h      hash.Hash // 全层 sha256\n}\nfunc (c *Chunker) Close() error {\n    if c.f == nil { return nil }\n    if err := c.f.Close(); err != nil { return err }\n    if c.h != nil && !bytes.Equal(c.h.Sum(nil), c.digest.sum[:]) {\n        return fmt.Errorf(\"chunked blob %s: digest mismatch\", c.digest)\n    }\n    return nil\n}\n```",
+        "category": "安全",
+        "subcategory": "数据完整性校验",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 64,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "fs/ggml/ggml.go",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "numPatches := (imageSize / kv(\"patch_size\")) * (imageSize / kv(\"patch_size\"))",
+        "review": "[缺陷类型] 未校验除数为零的整数除法。影响评估：任何 patch_size 缺失或类型不为 uint32 的 mllama GGUF 都会让调度路径 panic，服务端进程崩溃；旧代码在同样的输入下只是告警并返回 0。",
+        "suggestion": "[重构思路] 恢复显式校验，把 0 视为\"元数据不完整\"并安全返回。代码示例：\n```go\npatchSize := kv(\"patch_size\")\nif patchSize == 0 || imageSize == 0 {\n    slog.Warn(\"unknown vision metadata\", \"arch\", llm.KV().Architecture(), \"patch_size\", patchSize)\n    return weights, 0\n}\nnumPatches := (imageSize / patchSize) * (imageSize / patchSize)\n```",
+        "category": "可靠性",
+        "subcategory": "除零/边界校验",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 606,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "switch llm.KV().Architecture() {",
+        "review": "[缺陷类型] 显存估算退化（功能回归）。影响评估：gemma3 多模态模型加载时的 vision 权重与计算图开销不再计入估算，GPU 层数分配可能过量，运行时 OOM；日志中的 projector 统计也会消失，影响问题定位。",
+        "suggestion": "[重构思路] 保留 gemma3 分支（或在注释中说明为何安全移除并同步删除相关支持），并把 weights 统计移回架构无关的位置。代码示例：\n```go\nfor _, layer := range llm.Tensors().GroupLayers()[\"v\"] {\n    weights += layer.Size()\n}\nswitch llm.KV().Architecture() {\ncase \"mllama\":\n    // ...\ncase \"gemma3\":\n    graphSize = 4 * (imageSize*imageSize*numChannels + embeddingLength*patchSize + numPatches*numPatches*headCount)\n}\n```",
+        "category": "可靠性",
+        "subcategory": "显存/内存估算",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 586,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "server/internal/registry/server.go",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "case err := <-done:",
+        "review": "[缺陷类型] 流式接口契约变更（缺少终态事件）。影响评估：客户端无法区分\"仍在下载\"与\"已完成\"，跨版本客户端（老 CLI / 第三方 SDK）会出现无完成提示或逻辑挂起；同一接口两条分支对终态的约定不一致，后续维护易踩坑。",
+        "suggestion": "[重构思路] 在成功路径显式发送终态，保持与非流式分支一致；如需移除 verifying/writing manifest 等中间状态，至少保留 success。代码示例：\n```go\ncase err := <-done:\n    pushUpdate()\n    if err != nil {\n        enc.Encode(progressUpdateJSON{Status: errStatus})\n    } else {\n        enc.Encode(progressUpdateJSON{Status: \"success\"})\n    }\n    maybeFlush()\n    return nil\n```",
+        "category": "可靠性",
+        "subcategory": "接口契约兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 316,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F008",
+        "code": "t := time.NewTicker(time.Hour) // \"unstarted\" timer",
+        "review": "[缺陷类型] 定时器/资源未释放。影响评估：高频 pull 场景下累积未停止的 ticker，占用运行时定时器堆与内存；依赖 GC 回收在旧版本 Go 上并不可靠。",
+        "suggestion": "[重构思路] 创建后立即 defer Stop。代码示例：\n```go\nt := time.NewTicker(time.Hour) // \"unstarted\" timer\ndefer t.Stop()\n```",
+        "category": "可靠性",
+        "subcategory": "资源生命周期",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 280,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "llm/memory.go",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "memoryWeights += layerSize",
+        "review": "[缺陷类型] 统计口径不一致/重复计数（仅日志）。影响评估：`weights.total`、`weights.repeating` 与实际权重体积不符且与 `kv` 项重叠，排查显存占用（例如判断是否 weight 还是 KV cache 占主导）时得出错误结论。",
+        "suggestion": "[重构思路] 让 memoryWeights 只统计权重体积，把 KV 分摊单独累计；或在注释中明确该字段口径并调整字段命名。代码示例：\n```go\nvar kvPerLayer := kv / f.KV().BlockCount()\nif blk, ok := layers[fmt.Sprintf(\"blk.%d\", i)]; ok {\n    layerSize = blk.Size()\n}\nmemoryWeights += layerSize // 仅权重\nlayerSize += kvPerLayer     // 分配用大小\n```",
+        "category": "可维护",
+        "subcategory": "日志与指标口径",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 222,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

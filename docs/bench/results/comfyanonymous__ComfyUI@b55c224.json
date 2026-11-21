@@ -1,0 +1,72 @@
+{
+  "instance_id": "comfyanonymous__ComfyUI@b55c224",
+  "repo": "comfyanonymous/ComfyUI",
+  "base_commit": "832e3f5ca3c357e527fdf811502357bd2798425e",
+  "head_commit": "b55c2247654476fbc744e572ba7a834fd9378745",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 128.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "comfy/clip_model.py",
+      "line": 108,
+      "summary": "DirectML 分支的 causal_mask 未初始化，上三角携带内存垃圾值",
+      "failure_scenario": "DirectML 分支调用 `torch.empty(...).triu_(1)` 直接构造 causal_mask，而 `torch.empty` 返回未初始化内存、`triu_(1)` 只把主对角线及以下清零、保留严格上三角（即未来 token 位置）。因此该分支下所有未来 token 的注意力偏置是未初始化的任意值，而非必需的 `-inf`/`-finfo.max`。这些值随后在同一 forward 内被 `mask += causal_mask` 或直接作为 mask 送入 `CLIPEncoder`，最终在 `attention_basic` 中 `sim.add_(mask)` 后做 `softmax`：正值会造成未来 token 泄漏（双向注意力，破坏因果性、文本编码结果错误），NaN/huge 值会污染整个 CLIP 文本编码输出，表现为出图全黑/NaN 或与 CUDA 后端结果明显不一致。原实现统一使用 `fill_(-torch.finfo(x.dtype).max).triu_(1)`，不存在该问题，属本次改动在 DirectML 分支引入的确定性缺陷。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "nodes.py",
+      "line": 1067,
+      "summary": "删除既有 attention_mask 的扩展分支后，multiply/strength==1.0 路径的掩码尺寸与序列长度不匹配",
+      "failure_scenario": "原代码在 `\"attention_mask\" in keys` 时就进入掩码处理块，即使 `strength_type == \"multiply\"` 或 `strength == 1.0`（即不施加 attn_bias），也会把已有掩码从 `n_txt` 扩展到 `n_txt + n`（n 为 style token 数），使掩码与 `torch.cat((txt, cond), dim=1)` 后的序列长度一致；原注释明确说明这是必须的。改动后条件收窄为 `strength_type == \"attn_bias\" and strength != 1.0`，于是：当用户组合使用了已有的 `attention_mask`（例如链式接两个 StyleModelApply、或上游节点写入 `attention_mask`/`attention_mask_img_shape`）且 strength_type 为 `multiply` 或 strength 为 1.0 时，`keys[\"attention_mask\"]` 仍是旧的 `n_txt` 尺度掩码，而 txt 已追加 n 个 style token。下游 `Flux.extra_conds` 会按 `attention_mask_img_shape` 上采样并使用该掩码，`attention_basic` 中掩码被 reshape/expand 后 `sim.add_(mask)` 会因最后一维与服务端 token 数不一致抛形状不匹配错误，或在 expand 规则可广播的情况下静默错位，导致风格迁移结果错误。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "comfy/cli_args.py",
+      "line": 182,
+      "summary": "直接移除 --enable-compress-response-body 且不保留别名，既有启动脚本会启动失败",
+      "failure_scenario": "本次把公开命令行选项 `--enable-compress-response-body` 直接改名为 `--disable-compres-response-body`，仓库内已无任何对旧名/旧属性的引用，也没有 `deprecated` 别名或迁移提示。由于 `comfy/cli_args.py` 在模块导入期执行 `args = parser.parse_args()`，任何仍在启动脚本、Dockerfile、CI 或第三方发行版中传入旧选项 `--enable-compress-response-body` 的用户会在导入阶段直接 `SystemExit(2)`（unrecognized arguments），ComfyUI 无法启动；这属于对既有外部接口的破坏性变更，且没有过渡期与文档说明。同时默认行为被反转（压缩从「需显式开启」变为「默认开启」），对依赖响应体原始大小的客户端也是隐式行为变更。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "comfy/cli_args.py",
+      "line": 182,
+      "summary": "新选项名 compres 拼写错误，将长期固化为对外接口",
+      "failure_scenario": "新增长选项拼写为 `--disable-compres-response-body`（缺一个 s），对应的 dest 属性也变成 `args.disable_compres_response_body`（server.py:60 同样使用了这个错误拼写）。命令行选项一旦发布即成为对外契约，拼写错误后续修正将再一次造成破坏性重命名，成本远高于当前修正；同时对检索/文档也造成困扰（正确拼写 `--disable-compress-response-body` 无法命中）。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.88,
+      "rule": "NAMING-001"
+    },
+    {
+      "file": "comfy/model_management.py",
+      "line": 993,
+      "summary": "is_directml_enabled() 冗余 global 声明，且与既有直接读全局标志的写法并存",
+      "failure_scenario": "新增的 `is_directml_enabled()` 在只读场景下仍写了 `global directml_enabled`（只读不需要 global 声明），函数体等价于 `return bool(directml_enabled)`，可读性上引入了不必要的仪式性代码。更重要的是，仓库中已经存在直接读取该模块级标志的调用（latent_preview.py:16 `if comfy.model_management.directml_enabled:`），本次新增访问器后形成两种并存风格，后续无法通过单一入口 grep 全部 DirectML 判断点，增加了「新增 DirectML 分支时漏掉某个判断点」的维护风险。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\comfyanonymous__ComfyUI\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\comfyanonymous__ComfyUI@b55c224.diff\n  caseId              comfyanonymous__ComfyUI@b55c224\n  --issue             (未传)\n  --taskId            comfyanonymous__ComfyUI@b55c224\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 113.7s · 模型调用 11 次 · token 输入 31,006（未命中） · 输出 15,466 · 缓存命中 134,912（81.3%） · 工具 23 次（主会话 23 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0090\n[time] 阶段耗时 | 总墙钟 114.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.6%)\n[time] 阶段 | 六阶段审计 113.7s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 12.7s (11.2%) | P2 3.2s (2.8%) | P3 5.4s (4.8%) | P4 31.9s (28.0%) | P5 44.1s (38.8%) | P6 16.4s (14.4%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 31,006（未命中） | 输出 15,466 | 缓存命中 134,912（81.3%） | $0.0090\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\comfyanonymous__ComfyUI@b55c224\\audit\\20261115_021315_609.json",
+  "token_usage": {
+    "input_tokens": 31006,
+    "output_tokens": 15466,
+    "cache_read_input_tokens": 134912
+  }
+}

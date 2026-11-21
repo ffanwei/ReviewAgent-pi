@@ -1,0 +1,546 @@
+[
+  {
+    "filePath": "packages/cli/src/config/extensions/github.ts",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "const git = simpleGit(installMetadata.source);",
+        "review": "[缺陷类型] 重构时丢失必要的隐式上下文（本地安装路径），把「扩展对象」改成「安装元数据」后无法再定位本地仓库目录。影响评估：git 类型扩展的更新检测 100% 走 ERROR 分支，UI 不显示可更新，单名/批量更新均失效；失败被 catch 静默处理，只输出一行 console.error，用户难以察觉。",
+        "suggestion": "[重构思路] 让更新检查同时拿到安装目录：保留接收 GeminiCLIExtension 的旧签名，或给 checkForExtensionUpdate 增加 extensionPath 参数。代码示例：`export async function checkForExtensionUpdate(installMetadata: ExtensionInstallMetadata, extensionPath: string): Promise<ExtensionUpdateState> { ... const git = simpleGit(extensionPath); ... }`，调用处改为 `checkForExtensionUpdate(extension.installMetadata, extension.path)`。",
+        "category": "可靠性",
+        "subcategory": "扩展更新检查",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 115,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/config/config.ts",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "return new Config({",
+        "review": "[缺陷类型] 权限/策略配置链路被截断（配置读取方还在，注入方被删除）。影响评估：tools.allowed、mcp.allowed、mcpServers[].trust、tools.autoAccept、AUTO_EDIT 的自动放行语义全部丢失，属安全策略面的行为回归；同时 core 侧仍保留 policyEngineConfig 入口，形成「有开关但无人接线」的隐性死代码。",
+        "suggestion": "[重构思路] 若策略引擎在本版本仍生效，应先迁移规则构造到 core（或保留 CLI 侧注入）再删除旧文件；确认要下线该能力时，需同步删除 core 的 `ConfigParameters.policyEngineConfig`、MessageBus 的策略依赖，并在文档中说明 settings 相关字段的替代方案。代码示例：`const policyEngineConfig = createPolicyEngineConfig(settings, approvalMode); return new Config({ ...policyEngineConfig 保持不变... });`",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 564,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/release-patch-1-create-pr.yml",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "- name: 'Create Patch for Preview'",
+        "review": "[缺陷类型] 条件分支缺省（新增 step 未加对称的 if 守卫）。影响评估：stable 补丁流程重复触发脚本，产生重复 cherry-pick PR 或在第二次执行时失败，并把 workflow 标红，进而影响「Create Issue on Failure」链路。",
+        "suggestion": "[重构思路] 第二步补上与第一步对称的条件，并把 channel 写死以消除歧义。代码示例：`- name: 'Create Patch for Preview'\\n  if: \"github.event.inputs.channel == 'preview'\"\\n  run: 'node scripts/create-patch-pr.js --commit=${{ github.event.inputs.commit }} --channel=preview --dry-run=${{ github.event.inputs.dry_run }}'`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 70,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/release-patch-2-trigger.yml",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "body = ${{ github.event.inputs.dry_run }} ? '[DRY RUN]' : '';",
+        "review": "[缺陷类型] GitHub 表达式插值污染脚本字面量（空值注入导致语法错误）。影响评估：hotfix 合并后的自动补丁发布被完全阻断，属发布链路硬性故障，且报错信息指向 JS 语法而非配置问题。",
+        "suggestion": "[重构思路] 不要在 JS 表达式位置直接插值事件输入，改为读取字符串或 context.payload。代码示例：`if (context.eventName === 'pull_request') { body = context.payload.pull_request.body ?? ''; headRef = context.payload.pull_request.head.ref; } else { const dryRun = context.payload.inputs?.dry_run === 'true'; body = dryRun ? '[DRY RUN]' : ''; headRef = context.payload.inputs?.ref ?? ''; }`",
+        "category": "可靠性",
+        "subcategory": "workflow 内联脚本",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 42,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F010",
+        "code": "const channel = version.includes('preview') ? 'preview' : 'stable';",
+        "review": "[缺陷类型] 脚本迁移时行为不等价（渠道解析/校验、用户反馈丢失）。影响评估：preview 补丁可能被错误发布到 stable 的 npm tag `latest`，属于发布渠道错配；渠道拼写错误不再中断流程，问题会被静默放大。",
+        "suggestion": "[重构思路] 在内联脚本中复刻原有解析与校验：优先取 `headRef.split('/')[2]` 的显式渠道，缺失时再按版本名推断，非 stable/preview 直接 `core.setFailed`；如仍需通知，追加一次 `github.rest.issues.createComment`。代码示例：`const parts = headRef.split('/'); const channel = parts.length >= 4 && ['stable','preview'].includes(parts[2]) ? parts[2] : (version.includes('preview') ? 'preview' : 'stable'); if (!['stable','preview'].includes(channel)) core.setFailed(...)`",
+        "category": "可靠性",
+        "subcategory": "迁移行为不等价",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 48,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F011",
+        "code": "ref: 'mk-patch-releases',",
+        "review": "[缺陷类型] 迁移脚本到内联 github-script 时硬编码了错误的分支 ref。影响评估：热修合并后自动触发的补丁发布在 workflow dispatch 阶段失败（404），发布被静默卡住，需要人工介入才能发现。",
+        "suggestion": "[重构思路] 把 ref 改回默认分支（或直接用 `context.ref`/`github.ref_name`，手动触发时使用 `context.payload.ref`），避免硬编码分支名。代码示例：`github.rest.actions.createWorkflowDispatch({ owner: context.repo.owner, repo: context.repo.repo, workflow_id, ref: 'main', inputs: { ... } })`",
+        "category": "可靠性",
+        "subcategory": "CI 触发引用错误",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 58,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/release-patch-3-release.yml",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "previous-tag: '${{ steps.patch_version.outputs.RELEASE_TAG }}'",
+        "review": "[缺陷类型] 发布元数据计算被替换为直接透传输入，previous-tag 语义错误 + 并发保护缺失。影响评估：release notes 生成异常（空区间或 gh 报错），tag/version 命名脱离既有规范；两个 patch 发布并发时不再安全失败。",
+        "suggestion": "[重构思路] 恢复基于 npm/git 的版本计算（get-release-version.js 或等价实现）以得到 previousReleaseTag 与规范化 version/tag；确定性校验可保留为独立步骤。代码示例：`PREV=$(node scripts/get-release-version.js --type=patch --patch-from=\"${{ github.event.inputs.type }}\" | jq -r .previousReleaseTag); echo \"PREVIOUS_TAG=${PREV}\" >> \"${GITHUB_OUTPUT}\"` 并把 `previous-tag` 指向该输出。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 77,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F014",
+        "code": "--title 'Patch Release Failed for ${RELEASE_TAG} on $(date +'%Y-%m-%d')' \\",
+        "review": "[缺陷类型] Shell 引号使用错误导致变量不展开。影响评估：发布失败时创建的 issue 标题/正文为字面量占位符，缺失版本与 run 链接，降低发布故障的可运维性。",
+        "suggestion": "[重构思路] 改用双引号包裹需要展开的内容，并对标题中的 date 单独用 `$(date +%F)`；或直接使用 GitHub 表达式注入。代码示例：`gh issue create --title \"Patch Release Failed for ${RELEASE_TAG} on $(date +%F)\" --body \"The patch-release workflow failed. See the full run for details: ${DETAILS_URL}\"`",
+        "category": "可靠性",
+        "subcategory": "Shell 变量展开",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 87,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/ci.yml",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "${{ always() && (github.event.pull_request.head.repo.full_name == github.repository) }}",
+        "review": "[缺陷类型] 事件条件与事件类型不匹配（只在 PR 场景成立的表达式被用于通用 workflow）。影响评估：main 分支缺少镜像产物；同时内部 PR 会在 always() 下推送未通过测试的镜像，污染 GHCR 标签。",
+        "suggestion": "[重构思路] 明确「何时推送镜像」：主线推送时才推送，PR 只构建不推送。代码示例：`if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}`，并加 `needs: ['lint', 'test']`；PR 场景改用 `push: false` 的独立构建 job。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 407,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/config/extension.ts",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "if (!extension) {",
+        "review": "[缺陷类型] 批量操作缺少逐项错误隔离。影响评估：多扩展更新时一个无效名字会阻断其余扩展，用户体验与原来的「跳过并继续」语义不一致。",
+        "suggestion": "[重构思路] 在循环内对每个名字分别 try/catch，收集失败项后统一汇总输出；保留「未找到就提示并继续」的语义。代码示例：`for (const name of names) { try { updateInfos.push(await updateExtensionByName(name, ...)); } catch (e) { failures.push(\\`${name}: ${getErrorMessage(e)}\\`); } }`",
+        "category": "可靠性",
+        "subcategory": "错误处理与批量操作",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 642,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F017",
+        "code": "export async function updateExtension(",
+        "review": "[缺陷类型] 重构合并两份实现时丢失前置守卫（更新可用性判断、并发状态互斥）。影响评估：无谓的网络下载与安装操作、失败回滚概率上升；并发调用下同一扩展可能被重复卸载，用户侧表现为「更新成功但版本没变」或临时缺扩展。",
+        "suggestion": "[重构思路] 把「检查是否可更新」内聚进 updateExtension 本身：先 checkForExtensionUpdate，非 UPDATE_AVAILABLE 直接返回信息；同时恢复 UPDATING 状态的并发守卫。代码示例：`const state = await checkForExtensionUpdate(installMetadata, extension.path); if (state !== ExtensionUpdateState.UPDATE_AVAILABLE) { setExtensionUpdateState(state); return { name: extension.name, originalVersion: extension.version, updatedVersion: extension.version }; }`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 650,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/commands/extensions/enable.ts",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "if (args.scope?.toLowerCase() === 'workspace') {",
+        "review": "[缺陷类型] 校验范围与处理分支不一致导致静默降级。影响评估：作用域写入错误位置，用户看到的提示与实际生效范围不符；属于静默的数据写入偏差，难以自查。",
+        "suggestion": "[重构思路] 让校验与归一化共用同一份「受支持作用域」列表，并对不支持的值显式报错，而不是 else 兜底。代码示例：`const SUPPORTED = ['user', 'workspace'] as const; const scope = (args.scope ?? 'user').toLowerCase(); if (!SUPPORTED.includes(scope)) throw new Error(`Unsupported scope: ${args.scope}. Use one of ${SUPPORTED.join(', ')}.`); enableExtension(args.name, scope === 'workspace' ? SettingScope.Workspace : SettingScope.User);`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 19,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/config/extensions/extensionEnablement.ts",
+    "reviewTips": [
+      {
+        "id": "F019",
+        "code": ".replace(/(\\/?)\\*/g, '($1.*)?'); // Convert * to optional group",
+        "review": "[缺陷类型] 规则表达式的规范化前置不一致 + 通配符语义放宽。影响评估：目录匹配可能越界（`/a` 规则命中 `/a-suffix`），破坏「哪些目录启用该扩展」的信任边界；旧规则无法被新逻辑去重，配置逐步膨胀。",
+        "suggestion": "[重构思路] 在 Override 内部统一规范化（两类构造器都走 ensureLeadingAndTrailingSlash），并把 `*` 明确定义为「仅匹配子路径」：`globToRegex` 中把 `*` 替换为 `(/.*)?` 并要求 baseRule 必有尾斜杠；对历史配置做一次性迁移（读取时规范化并回写）。代码示例：`static fromFileRule(r: string): Override { const isDisable = r.startsWith('!'); let base = isDisable ? r.slice(1) : r; const includeSubdirs = base.endsWith('*'); base = ensureLeadingAndTrailingSlash(includeSubdirs ? base.slice(0, -1) : base); return new Override(base, isDisable, includeSubdirs); }`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 102,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/e2e.yml",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "- 'gemini-cli-windows-16-core'",
+        "review": "[缺陷类型] 合并 job 时丢失容错开关与环境调优，同时取消构建产物复用。影响评估：慢平台测试从「非阻塞」变为「阻塞」，PR 反馈更易因平台抖动变红；CI 计算成本按矩阵规模放大数倍。",
+        "suggestion": "[重构思路] 用 matrix 变量驱动容错与 Windows 专有步骤，并恢复构建产物复用或至少开启 npm 缓存。代码示例：`continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}`，Windows 组合保留 `Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE` 与 `NODE_OPTIONS` 内存参数。",
+        "category": "可靠性",
+        "subcategory": "CI 稳定性与成本",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 34,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/release-patch-from-comment.yml",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "if: \"steps.pr_status.outputs.STATE != 'MERGED'\"",
+        "review": "[缺陷类型] 守卫条件被过度简化 + 权限声明丢失 + 输入格式假设未验证。影响评估：非 /patch 评论触发错误的失败回复（噪音污染 PR），真正的 dispatch 可能因权限不足失败，验收路径不可靠。",
+        "suggestion": "[重构思路] 恢复「仅处理 /patch 且已 dispatch」的联合条件，补回最小权限，并对 arguments 做容错解析。代码示例：`if: ${{ steps.slash_command.outputs.dispatched == 'true' && steps.pr_status.outputs.STATE != 'MERGED' }}`；job 级补 `permissions: { actions: write, contents: read, pull-requests: write }`；脚本中改为 `const raw = '${{ steps.slash_command.outputs.command-arguments }}'; const args = (() => { try { return JSON.parse(raw); } catch { return { channel: raw.trim() || 'stable', dry_run: 'false' }; } })();`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 51,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/actions/publish-release/action.yml",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "--generate-notes",
+        "review": "[缺陷类型] 清理逻辑被移除但未提供替代（仓库卫生/资源残留）。影响评估：release/* 分支长期累积；由于 CI 对 release/** 分支有匹配规则，残留分支可能带来额外的触发与维护负担。",
+        "suggestion": "[重构思路] 若担心 dry-run 或失败时误删，可把清理做成成功路径上的独立可选步骤（`success() && inputs.dry-run == 'false'` + `continue-on-error: true`），或在发布流水线末尾统一清理。代码示例：`- name: 'Clean up release branch'\\n  if: ${{ success() && inputs.dry-run == 'false' }}\\n  continue-on-error: true\\n  shell: bash\\n  run: git push origin --delete \"${{ steps.release_branch.outputs.BRANCH_NAME }}\"`",
+        "category": "可维护",
+        "subcategory": "发布分支清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 151,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/commands/extensionsCommand.ts",
+    "reviewTips": [
+      {
+        "id": "F026",
+        "code": "for (const name of names) {",
+        "review": "[缺陷类型] 逐个处理循环中缺少局部错误隔离。影响评估：一个无效名称导致同批次其它扩展的更新被跳过，且用户只能看到单个错误提示，容易误判整体失败原因。",
+        "suggestion": "[重构思路] 对每个扩展单独 try/catch 并汇总结果。代码示例：`for (const name of names) { try { updateInfos.push(await updateExtensionByName(name, dir, extensions, onState)); } catch (e) { context.ui.addItem({ type: MessageType.ERROR, text: getErrorMessage(e) }, Date.now()); } }`",
+        "category": "可靠性",
+        "subcategory": "批量操作错误隔离",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 58,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F027",
+        "code": "const newState = new Map(context.ui.extensionsUpdateState);",
+        "review": "[缺陷类型] 非函数式状态更新造成并发覆盖（stale closure）。影响评估：`/extensions update a b` 与 `/extensions update --all` 时部分扩展状态不会到达最终态，UI 展示与实际不一致。",
+        "suggestion": "[重构思路] 保留函数式更新语义，或在 core 侧把本轮所有状态聚合成一个 Map 后一次写入。代码示例：`type SetExtensionsUpdateState = (updater: (prev: Map<string, ExtensionUpdateState>) => Map<string, ExtensionUpdateState>) => void;` 调用侧 `context.ui.setExtensionsUpdateState((prev) => new Map(prev).set(name, updateState));`",
+        "category": "可靠性",
+        "subcategory": "React 状态更新",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 65,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "third_party/get-ripgrep/package.json",
+    "reviewTips": [
+      {
+        "id": "F028",
+        "code": "\"name\": \"@lvce-editor/ripgrep\",",
+        "review": "[缺陷类型] 迁移后遗留的 vendored 死代码与冗余依赖声明。影响评估：增加仓库体积与理解成本，误导后续排障（例如以为 ripgrep 仍由本地 postinstall 下载）；同时第三方代码仍在仓库中却脱离构建与忽略规则管理。",
+        "suggestion": "[重构思路] 若已完全切到 @joshua.litt/get-ripgrep，应删除整个 third_party/get-ripgrep 目录（含 package.json 与 src），并在变更说明中记录下载行为变化；若暂时保留，需在目录内加 README 标注「已不再被构建引用」。代码示例：`git rm -r third_party/get-ripgrep`，并保留 `.gitignore` 中对其它 third_party 的忽略规则。",
+        "category": "可维护",
+        "subcategory": "死代码与依赖清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F029",
+        "code": "\"postinstall\": \"node ./src/postinstall.js\",",
+        "review": "[缺陷类型] package.json 元数据指向不存在的文件（安装脚本与类型声明）。影响评估：该目录下 npm install 会因 postinstall 缺失而失败；类型声明缺失导致 TS 消费方退化为 any 并报 TS7016。",
+        "suggestion": "[重构思路] 要么补齐 `src/postinstall.js`（内容为调用 `downloadRipGrep()`）与 `src/index.d.ts`（声明 `rgPath: string`、`downloadRipGrep` 等导出），要么删除 package.json 中的 postinstall/typings 字段，保持声明与文件树一致。代码示例：`echo \"\" > src/index.d.ts` 仅为占位，建议改为真实声明 `export declare const rgPath: string;`",
+        "category": "可维护",
+        "subcategory": "包元数据一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 13,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/hooks/shellCommandProcessor.ts",
+    "reviewTips": [
+      {
+        "id": "F030",
+        "code": "cumulativeStdout += event.chunk;",
+        "review": "[缺陷类型] 全量快照与增量分片语义混淆，导致输出重复累积。影响评估：启用 node-pty 的用户在 `!` shell 模式下会看到重复堆叠的整屏输出，命令输出越长越严重；同时失去即时刷新。",
+        "suggestion": "[重构思路] 让 ShellOutputEvent 显式携带「全量/增量」语义，而不是用类型猜测。代码示例：`onOutputEvent({ type: 'data', chunk: newOutput, isFullScreen: true })`，消费端 `if (event.isFullScreen) { cumulativeStdout = event.chunk; shouldUpdate = true; } else if (typeof event.chunk === 'string' && typeof cumulativeStdout === 'string') { cumulativeStdout += event.chunk; }`",
+        "category": "可靠性",
+        "subcategory": "流式输出累积语义",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 165,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F031",
+        "code": "console.log(terminalHeight, terminalWidth);",
+        "review": "[缺陷类型] 调试残留代码进入主路径。影响评估：破坏 TUI 布局与输出可读性，可能干扰对渲染问题的排查，也可能在脚本化/JSON 输出场景污染 stdout。",
+        "suggestion": "[重构思路] 删除该 console.log 与注释代码；若确需诊断，走已有的 onDebugMessage/logger 通道（受 debug 开关控制）。代码示例：`if (config.getDebugMode()) { onDebugMessage(\\`terminal ${terminalWidth}x${terminalHeight}\\`); }`",
+        "category": "可维护",
+        "subcategory": "调试残留",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 226,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/policy/policy-engine.ts",
+    "reviewTips": [
+      {
+        "id": "F032",
+        "code": "if (rule.toolName && toolCall.name !== rule.toolName) {",
+        "review": "[缺陷类型] 授权规则匹配能力被删除导致策略静默失效（安全边界变化）。影响评估：依赖通配规则限制 MCP 工具的部署在升级后失去限制，工具调用退化为默认决策，属于安全回归且难以被用户察觉。",
+        "suggestion": "[重构思路] 保留通配能力（或提供显式的前缀匹配字段），并对旧格式规则保持兼容；若确实要下线，至少输出一次性告警。代码示例：`const wildcard = rule.toolName.endsWith('__*'); const ok = wildcard ? toolCall.name?.startsWith(rule.toolName.slice(0, -3) + '__') : toolCall.name === rule.toolName; if (!ok) return false;`",
+        "category": "安全",
+        "subcategory": "授权规则匹配",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/AppContainer.tsx",
+    "reviewTips": [
+      {
+        "id": "F033",
+        "code": "if (anyDialogOpen) {",
+        "review": "[缺陷类型] 全局中断类快捷键被前置守卫吞掉（交互行为回归）。影响评估：请求进行中打开任一对话框后无法取消请求、无法退出，用户只能先按 Esc 关闭对话框，属于明显的可用性退化。",
+        "suggestion": "[重构思路] 只把非中断类快捷键放在守卫之后，中断/退出语义的按键保持前置。代码示例：`if (keyMatchers[Command.QUIT](key)) { if (!ctrlCPressedOnce) cancelOngoingRequest?.(); handleExit(...); return; } if (keyMatchers[Command.EXIT](key)) { ... return; } if (anyDialogOpen) return;`",
+        "category": "可靠性",
+        "subcategory": "键位分发顺序",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 871,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F034",
+        "code": "const extensions = config.getExtensions();",
+        "review": "[缺陷类型] 既有用户可见行为被静默移除（缺乏迁移说明）。影响评估：曾经开启 autoUpdate 的用户在升级后不再自动获得扩展更新，也不会再收到更新可用提示，只能主动查看 /extensions list，容易长期停留在旧版本。",
+        "suggestion": "[重构思路] 若是有意下线，请在 CHANGELOG/文档中明确说明并清理残留的元数据写入逻辑；若需保留，应在状态变为 UPDATE_AVAILABLE 时补回一次提示（或按配置自动更新）。代码示例：`const state = await checkForAllExtensionUpdates(...); for (const ext of extensions) { if (state.get(ext.name) === ExtensionUpdateState.UPDATE_AVAILABLE) addItem({ type: MessageType.INFO, text: \\`Extension ${ext.name} has an update available...\\` }, Date.now()); }`",
+        "category": "可维护",
+        "subcategory": "功能下线与迁移",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1199,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/nonInteractiveCli.ts",
+    "reviewTips": [
+      {
+        "id": "F035",
+        "code": "const { processedQuery, shouldProceed } = await handleAtCommand({",
+        "review": "[缺陷类型] 功能回归（非交互模式下自定义 slash 命令展开能力丢失）。影响评估：依赖 `-p` + 自定义命令的自动化脚本会静默改变行为，输出内容与预期完全不同，且没有任何错误提示。",
+        "suggestion": "[重构思路] 若为有意下线，请在 CHANGELOG/帮助文本中显式声明并从文档移除相关用法；否则在 runNonInteractive 入口先尝试解析 slash 命令（命中则用其 submit_prompt 结果替换 input），未命中再走现有流程。代码示例：`const slashResult = await tryHandleSlashCommand(input, abortController, config, settings); const effectiveInput = slashResult ? partListUnionToString(slashResult) : input;`",
+        "category": "可靠性",
+        "subcategory": "功能回归",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 55,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/core/client.ts",
+    "reviewTips": [
+      {
+        "id": "F036",
+        "code": "while (",
+        "review": "[缺陷类型] 边界条件缺失导致过度压缩。影响评估：工具输出密集的长会话在压缩后失去全部近因上下文，模型可能重复已完成的工作或产生与当前任务脱节的回复。",
+        "suggestion": "[重构思路] 给 compressBeforeIndex 增加上界（至少保留最后一轮 user/model），或在 historyToKeep 为空时回退到上一处 user 文本切分点。代码示例：`if (historyToKeep.length === 0) { compressBeforeIndex = findLastNonToolUserIndex(curatedHistory); }`",
+        "category": "可靠性",
+        "subcategory": "上下文压缩切分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 704,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "scripts/create-patch-pr.js",
+    "reviewTips": [
+      {
+        "id": "F037",
+        "code": "run(`git checkout -b ${hotfixBranch} origin/${releaseBranch}`, dryRun);",
+        "review": "[缺陷类型] 自动化脚本幂等性与异常路径缺失。影响评估：同一 commit 被重复触发 patch、或 cherry-pick 冲突时会直接失败退出，release 流程中断并可能留下半成品远端分支，需要人工清理。",
+        "suggestion": "[重构思路] 恢复幂等与冲突处理：先检测 hotfix 分支/PR 并复用；cherry-pick 失败时读取 `git status --porcelain` 判断冲突，带冲突标记提交并在 PR 标题/正文标注 [CONFLICTS] 交人工处理。代码示例：`if (branchExists(hotfixBranch)) { return reportExisting(hotfixBranch); }`",
+        "category": "可维护",
+        "subcategory": "发布脚本健壮性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 66,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/components/messages/ToolMessage.tsx",
+    "reviewTips": [
+      {
+        "id": "F038",
+        "code": "{isThisShellFocused && (",
+        "review": "[缺陷类型] 功能提示缺失导致的可用性退化。影响评估：交互式 shell 的输入能力（Ctrl+F）变成隐藏功能，用户遇到需要输入密码/交互的程序时可能误以为无法操作。",
+        "suggestion": "[重构思路] 在可聚焦且未聚焦时用弱化颜色显示简短提示，仅在已聚焦时高亮。代码示例：`{isFocusable && (<Text color={isThisShellFocused ? theme.text.accent : theme.text.secondary}>{isThisShellFocused ? '[Focused]' : '(ctrl+f to focus)'}</Text>)}`",
+        "category": "可读性",
+        "subcategory": "UI 可发现性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 93,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "third_party/get-ripgrep/src/downloadRipGrep.js",
+    "reviewTips": [
+      {
+        "id": "F039",
+        "code": "console.log({ VERSION })",
+        "review": "[缺陷类型] 提交了调试日志。影响评估：安装与运行期的标准输出被噪声污染，可能影响依赖 stdout 解析的脚本或用户可见的 CLI 输出。",
+        "suggestion": "[重构思路] 删除该行；若确需记录版本，改用与其他位置一致的 `console.info` 并仅在调试模式下输出。代码示例：`if (process.env.DEBUG) { console.info(`Using ripgrep ${VERSION}`) }`",
+        "category": "可读性",
+        "subcategory": "调试代码残留",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 26,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F040",
+        "code": "export const downloadRipGrep = async () => {",
+        "review": "[缺陷类型] 被 vendored 的第三方包导出签名变更，与消费方调用契约不一致。影响评估：若此目录参与打包/发布，ripgrep 会被解压到错误位置且调用方找不到 rg，Grep 工具不可用；否则形成与真实依赖脱节的并行实现，后续修 bug 会改错地方。",
+        "suggestion": "[重构思路] 明确该目录的定位：若仍作为 @joshua.litt/get-ripgrep 的源码，则保留 `overrideBinPath` 形参并在 index.js 中同时导出 downloadRipGrep 与 rgPath；若已改用上游 npm 包，则删除该 vendored 目录并在 packages/core 中统一改为使用上游 API，避免两处实现分叉。代码示例：`export const downloadRipGrep = async (overrideBinPath) => { ... const binPath = overrideBinPath ?? BIN_PATH; }` + `export { downloadRipGrep } from './downloadRipGrep.js'`",
+        "category": "可靠性",
+        "subcategory": "导出契约不一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 107,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

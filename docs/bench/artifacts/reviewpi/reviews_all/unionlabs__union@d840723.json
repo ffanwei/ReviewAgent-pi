@@ -1,0 +1,140 @@
+{
+  "generatedAt": "2026-11-15T00:08:08.980Z",
+  "runId": "20261115_000452_195",
+  "source": "mr",
+  "caseId": "unionlabs__union@d840723",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "voyager/modules/consensus/ethereum/src/main.rs",
+      "line": 167,
+      "title": "Ethereum 链的 queryLatestTimestamp 把「秒」当作「纳秒」包装成 Timestamp，导致单位相差 1e9",
+      "description": "本次改动在 Ethereum consensus 模块中用 `Timestamp::from_nanos(...)` 包装 `finalized_header.execution.timestamp` 与 `provider.get_block(...).header.timestamp`，但这两个值都是 Ethereum 规范中的 Unix 秒级时间戳，而非纳秒。仓库内同源的 bootstrap 模块明确把该值乘以 1e9 才得到纳秒：`let timestamp = bootstrap.header.execution.timestamp * 1_000_000_000;`（注释「Normalize to nanos in order to be compliant with cosmos」）。因此该 RPC 返回的 `Timestamp` 实际表示的是秒，与 `Timestamp` 的纳秒语义以及 `client-update/ethereum` 插件侧 `Timestamp::from_secs(...)` 的纳秒请求相差 1e9 倍；`lib/voyager-message/src/call.rs:238` 的 `chain_timestamp >= timestamp` 比较会永远为假，`WaitForTimestamp` 会每秒 defer 一次形成无限等待（此前类型为 i64 时同样存在该单位错配，本 MR 以「类型化时间戳」为目标却在新代码中固化了错误的构造函数，失去了修复时机并让错配更隐蔽）。",
+      "evidence": [
+        "voyager/modules/consensus/ethereum/src/main.rs:167 — `Ok(Timestamp::from_nanos(self.beacon_api_client...finalized_header.execution.timestamp, ))`",
+        "voyager/modules/consensus/ethereum/src/main.rs:182-195 — 非 finalized 分支同样 `Timestamp::from_nanos(... .header.timestamp.try_into().unwrap())`",
+        "lib/beacon-api-types/src/execution_payload_header.rs:29 — `pub timestamp: u64,`（字段注释与 lib.rs:23-24 指向 ethereum/consensus-specs#executionpayloadheader，即 Unix 秒）",
+        "voyager/modules/client-bootstrap/ethereum/src/main.rs:242-243 — `// Normalize to nanos in order to be compliant with cosmos` / `let timestamp = bootstrap.header.execution.timestamp * 1_000_000_000;`",
+        "lib/ethereum-light-client-types/src/consensus_state.rs:10-11 — `/// Timestamp of the block, *normalized to nanoseconds* ... pub timestamp: u64`",
+        "voyager/plugins/client-update/ethereum/src/main.rs:539-542 — 请求侧改为 `Timestamp::from_secs(genesis.genesis_time + (last_update_signature_slot * spec.seconds_per_slot) + spec.seconds_per_slot)`，即纳秒",
+        "lib/voyager-message/src/call.rs:238 — `if chain_timestamp >= timestamp {`"
+      ],
+      "rule": "UNIT-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 时间单位错配（秒 vs 纳秒），构造函数选择错误。影响评估：Ethereum 链的 `queryLatestTimestamp` 返回值比真实时间小 1e9 倍；任何以此为判据的 `WaitForTimestamp`（call.rs:238 的 `>=` 比较）永远无法满足，任务会在每秒 defer 中无限循环，表现为更新流程卡死而非显式报错。",
+        "suggestion": "[重构思路] 用与数据来源单位一致的构造函数：Ethereum 执行层时间戳为秒，应使用 `Timestamp::from_secs`；若担心内部易混用，可在 `Timestamp` 上提供显式单位入口（`from_unix_secs`/`from_unix_nanos`）并禁止跨单位直接 `from_*`，同时在 `Timestamp` 上写下「内部恒为纳秒」的文档不变式。代码示例：`Ok(Timestamp::from_secs(self.provider.get_block(...).await.unwrap().unwrap().header.timestamp))` 与 `Ok(Timestamp::from_secs(finalized_header.execution.timestamp))`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "voyager/plugins/client-update/ethereum/src/main.rs",
+      "line": 28,
+      "title": "移除手工纳秒换算后 NANOS_PER_SECOND 导入成为未使用导入",
+      "description": "该文件原先用 `i64::try_from(...).expect(...) * NANOS_PER_SECOND as i64` 把秒换算成纳秒，本次改为 `Timestamp::from_secs(...)` 后 `NANOS_PER_SECOND` 在 main.rs 中已无任何使用点（通读全文件仅第 28 行的 import 出现该标识符）。这会引入 `unused_imports` 告警，在启用 `-D warnings` 的构建（如 Nix/CI）下会直接导致编译失败，也会给后续读者留下「此处仍在手工换算」的误导。",
+      "evidence": [
+        "voyager/plugins/client-update/ethereum/src/main.rs:28 — `constants::metric::NANOS_PER_SECOND,`",
+        "voyager/plugins/client-update/ethereum/src/main.rs:539-542 — 原 `i64::try_from(...)` `* NANOS_PER_SECOND as i64` 已被替换为 `Timestamp::from_secs(...)`",
+        "通读该文件 1-648 行，`NANOS_PER_SECOND` 仅在 import 处出现一次"
+      ],
+      "rule": "MAINTAIN-002",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 死导入（unused import）。影响评估：编译告警；若 CI 以 `-D warnings` 构建则阻断流水线，且残留线索会让维护者误以为仍有手工单位换算。",
+        "suggestion": "[重构思路] 删除该导入，保留 `unionlabs::constants` 中其他仍在使用的项；或将 `NANOS_PER_SECOND` 的换算收敛进 `Timestamp::from_secs` 内部（本 MR 已如此），并顺手确认整个 workspace 无同类残留。代码示例：`use unionlabs::{ hash::{H160, H256}, ibc::core::client::height::Height, ErrorReporter };`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "voyager/modules/consensus/movement/src/main.rs",
+      "line": 165,
+      "title": "对 Timestamp 做自反 try_into().unwrap() 属于无意义转换，误导读者以为存在可失败转换",
+      "description": "多处把 `Timestamp::from_nanos(...)` 的结果再 `try_into().unwrap()/expect(\"should be fine\")` 一次（旧代码是从 u64/i64 转 i64 的残留）。由于 `Timestamp` 与自身之间通过 `From<T> for T` 的 blanket impl 存在 `TryFrom`，该转换必然成功、`Error = Infallible`，只是纯噪声；但 `unwrap()`/`expect()` 的写法会让人误以为存在溢出或范围校验，掩盖了真正的风险点（例如单位错误），也保留了不必要的 panic 语法糖。",
+      "evidence": [
+        "voyager/modules/consensus/movement/src/main.rs:165 — `Ok(Timestamp::from_nanos(timestamp).try_into().unwrap())`",
+        "voyager/modules/state/movement/src/main.rs:148 — `Ok(Timestamp::from_nanos(timestamp).try_into().unwrap())`",
+        "voyager/modules/consensus/ethereum/src/main.rs:179-180、193-194 — `Timestamp::from_nanos(...).try_into().unwrap()`",
+        "voyager/modules/consensus/cometbls/src/main.rs:168-171 与 voyager/modules/consensus/tendermint/src/main.rs:161-164 — `Timestamp::from_nanos(...).try_into().expect(\"should be fine\")`"
+      ],
+      "rule": "READABILITY-003",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 冗余/自反类型转换。影响评估：不影响运行时行为，但把「不可能失败」包装成 `unwrap()`，降低可读性并削弱 clippy `unwrap_used` 等约束的告警价值。",
+        "suggestion": "[重构思路] 直接返回构造结果，删除 `try_into().unwrap()`；如需保持显式性，改为在 `Timestamp` 上提供 `From<u64>`（表示纳秒）并 `Ok(nanos.into())`。代码示例：`Ok(Timestamp::from_nanos(timestamp))`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "lib/voyager-core/src/lib.rs",
+      "line": 336,
+      "title": "Timestamp::from_secs 使用未检查的乘法，溢出时 debug panic / release 回绕",
+      "description": "`from_secs` 直接执行 `Timestamp(secs * 1_000_000_000)`。输入来自链上/外部数据（例如 client-update 插件中的 `genesis.genesis_time + last_update_signature_slot * spec.seconds_per_slot + spec.seconds_per_slot`，以及各模块的链上时间戳），一旦上游给出异常大值，debug 构建会因整数溢出 panic，release 构建会静默回绕成一个远小于预期的时间戳，使 `WaitForTimestamp` 立即（错误地）判定通过。该类型作为公共基础类型，应该在构造处把溢出显式化。",
+      "evidence": [
+        "lib/voyager-core/src/lib.rs:335-337 — `pub fn from_secs(secs: u64) -> Self { Timestamp(secs * 1_000_000_000) }`",
+        "voyager/plugins/client-update/ethereum/src/main.rs:539-542 — 传入值由 `genesis.genesis_time + (last_update_signature_slot * spec.seconds_per_slot) + spec.seconds_per_slot` 计算，均为链上/外部数据"
+      ],
+      "rule": "ROBUST-004",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 整数乘法溢出未处理。影响评估：debug 下 panic（模块进程崩溃），release 下回绕产生极小时间戳，可能让等待条件被错误提前满足。",
+        "suggestion": "[重构思路] 使用 `checked_mul` 并在溢出时返回错误或饱和，或在 API 设计上只暴露 `from_nanos` + 显式 `TryFrom<Duration>`；如需保持签名简洁，可用 `saturating_mul`。代码示例：`pub fn from_secs(secs: u64) -> Self { Timestamp(secs.saturating_mul(1_000_000_000)) }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "lib/voyager-message/src/module.rs",
+      "line": 442,
+      "title": "返回类型已改为 Timestamp，但「Make this return a better type than i64」的 TODO 仍保留",
+      "description": "本次把 `query_latest_timestamp` 的返回类型从 `RpcResult<i64>` 改成 `RpcResult<Timestamp>`，但同一位置上方仍留着 `// TODO: Make this return a better type than i64`；同类过时注释还散落在 rpc.rs、consensus/movement 与 state/movement 中。这些注释与代码直接矛盾，会让后续维护者误以为该接口仍返回裸 i64，也让「是否已修完」无法从注释判断。",
+      "evidence": [
+        "lib/voyager-message/src/module.rs:442-443 — `// TODO: Make this return a better type than i64` 紧邻 `async fn query_latest_timestamp(&self, finalized: bool) -> RpcResult<Timestamp>;`",
+        "lib/voyager-message/src/rpc.rs — `// TODO: Make this return a better type than i64` 未随 `-> RpcResult<Timestamp>` 一并删除",
+        "voyager/modules/consensus/movement/src/main.rs:147 — 同样残留 `// TODO: Make this return a better type than i64`",
+        "voyager/modules/state/movement/src/main.rs:133 — 同样残留 `// TODO: Make this return a better type than i64`"
+      ],
+      "rule": "MAINTAIN-005",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 过时注释与代码不一致。影响评估：不改变运行时行为，但会误导后续重构判断，属于本次改动的收尾缺失。",
+        "suggestion": "[重构思路] 删除这些已完成的 TODO；若单位语义仍需说明，改写为描述不变式的文档注释（例如「Returns the latest chain timestamp, always expressed in nanoseconds」），使 `Timestamp` 的单位约定在 trait 层显式化。代码示例：`/// Query the latest finalized timestamp of this chain. Returns a [`Timestamp`] (nanoseconds).`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "voyager/src/main.rs",
+      "line": 47,
+      "title": "compile_error 的平台条件从 windows 扩大到所有非 Linux 系统，属与时间戳改造无关的行为变更",
+      "description": "本次把 `#[cfg(windows)] compile_error!(...)` 改成 `#[cfg(not(target_os = \"linux\"))] compile_error!(...)`，把「不支持平台」的编译期断言从 Windows 扩展到 macOS、BSD 等所有非 Linux 目标。这与 MR 的时间戳类型化目标无关，却会让 macOS 开发者与 macOS CI runner 上的 `cargo check/build` 直接失败；若团队确实只支持 Linux，应作为独立的、显式记录的决策变更，而不是夹带在时间戳重构里。",
+      "evidence": [
+        "voyager/src/main.rs:47-51 — `#[cfg(not(target_os = \"linux\"))] compile_error!(\"voyager interacts directly with subprocesses and has not been tested on non-linux operating systems.\");`",
+        "同 diff 中其余改动均围绕 `Timestamp` 类型（voyager-core / voyager-message / voyager/modules/*），与该平台断言无关"
+      ],
+      "rule": "PORTABILITY-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 与主题无关的平台约束收紧。影响评估：非 Linux 目标（尤其 macOS 本地开发与 CI）无法编译 voyager，属于一旦合入即难以回退的体验变更，且混淆了 MR 的评审范围。",
+        "suggestion": "[重构思路] 将该改动拆成独立 MR 并在其中说明支持矩阵与 CI 影响；若只是想在 Windows 之外也给出提示，可用 `#[cfg(not(any(target_os = \"linux\", test)))]` 或改为运行时警告/文档说明，避免阻断本地开发构建。代码示例：`#[cfg(all(not(target_os = \"linux\"), not(test)))] compile_error!(\"...\");`",
+        "subcategory": ""
+      }
+    }
+  ]
+}

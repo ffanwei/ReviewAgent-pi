@@ -1,0 +1,312 @@
+{
+  "generatedAt": "2026-11-15T00:54:18.478Z",
+  "runId": "20261115_004809_721",
+  "source": "mr",
+  "caseId": "browser-use__browser-use@aab7b3b",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/controller/service.py",
+      "line": 177,
+      "title": "click_element_by_selector / click_element_by_xpath 找不到元素时隐式返回 None，被当成成功",
+      "description": "两个新增动作在 `element_node` 为假值时没有 else 分支也没有兜底 return，函数隐式返回 None。`Controller.act` 对 None 的处理是 `return ActionResult()`（无 error、无 extracted_content），因此「元素未找到、什么都没点」会被上报成一次成功动作，模型会基于错误的成功反馈继续推理，任务很容易跑偏。同一 MR 中的 `click_element_by_text` 明确写了 `else: return ActionResult(error=...)`，说明此处属于遗漏。",
+      "evidence": [
+        "browser_use/controller/service.py:176-192 — `element_node = await browser.get_locate_element_by_css_selector(...)`；`if element_node:` 分支内所有路径都 return，`if` 不成立时函数直接结束",
+        "browser_use/controller/service.py:197-213 — click_element_by_xpath 同样的结构",
+        "browser_use/controller/service.py:235-236 — click_element_by_text 有 `else: return ActionResult(error=f\"No element found for text '{params.text}'\")` 作为对照",
+        "browser_use/controller/service.py:899-900 — `elif result is None: return ActionResult()`（隐式 None 被吞成空成功结果）"
+      ],
+      "rule": "RETURN-VALUE-006",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 缺少失败分支导致隐式返回 None，并被上层转换成「成功但无内容」。影响评估：动作实际未执行却反馈成功，误导 LLM 的后续决策，调试时日志里只有找不到元素的 warning 而无失败结果。",
+        "suggestion": "[重构思路] 补全 else 分支，返回明确错误。代码示例：`else:\\n\\treturn ActionResult(error=f\"No element found for selector '{params.css_selector}'\")`",
+        "subcategory": "返回值完整性"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "browser_use/controller/service.py",
+      "line": 269,
+      "title": "save_pdf 把 emulate_media 的 media 改为位置参数，会抛 TypeError",
+      "description": "本次变更把 `page.emulate_media(media='screen')` 改成了 `page.emulate_media('screen')`。Playwright（以及 patchright 这一分支）的 Python 绑定中 `Page.emulate_media` 的参数是关键字唯一参数（`async def emulate_media(self, *, media=None, color_scheme=None, ...)`），位置传参会抛 TypeError。save_pdf 内部没有 try/except，异常会直接冒泡到 Controller.act 的 `raise e`，使既有的 PDF 保存动作整体失效。",
+      "evidence": [
+        "diff：`- await page.emulate_media(media='screen')` 改为 `+ await page.emulate_media('screen')`",
+        "browser_use/controller/service.py:269 — `await page.emulate_media('screen')`，为全仓唯一调用点",
+        "browser_use/controller/service.py:263-273 — save_pdf 内无异常处理，异常会经 Controller.act（L904-905 `except Exception as e: raise e`）直接抛出"
+      ],
+      "rule": "API-USAGE-002",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 关键字唯一参数被改为位置参数。影响评估：既有 save_pdf 动作由可用变为必抛 TypeError，属于对既有功能的回归破坏。",
+        "suggestion": "[重构思路] 恢复关键字调用；如确实要缩短写法，也应保留参数名以保证可读性与兼容性。代码示例：`await page.emulate_media(media='screen')`",
+        "subcategory": "外部 API 调用兼容性"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "browser_use/controller/service.py",
+      "line": 352,
+      "title": "save_html_to_file 使用 datetime.now() 会抛 AttributeError，新增动作必然失败",
+      "description": "文件顶部导入的是模块 `import datetime`，而新增动作里直接调用 `datetime.now()`；模块对象没有 now 属性，运行到生成文件名处即抛 AttributeError。异常被外层 `except Exception` 捕获后返回 `ActionResult(error=...)`，因此该 action 100% 失败，模型只会看到模糊的失败信息并可能反复重试同一动作，白白消耗步数与 token。",
+      "evidence": [
+        "browser_use/controller/service.py:2 — `import datetime`（导入模块，而非 `from datetime import datetime`）",
+        "browser_use/controller/service.py:352 — `timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')`",
+        "browser_use/controller/service.py:363-366 — 该异常被 `except Exception as e` 捕获并转成 `ActionResult(error=error_msg)`"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 模块/类名误用导致的 AttributeError（`datetime` 模块被当作 `datetime` 类调用）。影响评估：新增的 HTML 保存动作完全不可用，且失败原因被吞进 ActionResult.error，排查成本高。",
+        "suggestion": "[重构思路] 改为 `from datetime import datetime` 后调用 `datetime.now()`，或保留模块导入并使用 `datetime.datetime.now()`；同时建议在文件内复用统一的 slug 生成函数。代码示例：`from datetime import datetime\\n...\\ntimestamp = datetime.now().strftime('%Y%m%d_%H%M%S')`",
+        "subcategory": "API 误用"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/utils.py",
+      "line": 320,
+      "title": "check_env_variables 对环境变量缺失时的 None 调用 .strip() 会抛 AttributeError",
+      "description": "由 `os.getenv(key, '').strip()` 改成 `os.getenv(key).strip()` 后，当某个必需环境变量未设置时 `os.getenv` 返回 None，`None.strip()` 直接抛 AttributeError。该函数在 Agent 构造时用于校验模型所需 API Key（如 ChatOpenAI 需要 OPENAI_API_KEY），原本会给出明确的 `ValueError('Environment variables not set')`，现在变成类型错误，用户无法从报错信息判断真正原因。",
+      "evidence": [
+        "browser_use/utils.py:320 — `return any_or_all(os.getenv(key).strip() for key in keys)`",
+        "diff：`- return any_or_all(os.getenv(key, '').strip() for key in keys)`",
+        "browser_use/agent/service.py:207-209 — `if llm_api_env_vars and not check_env_variables(llm_api_env_vars): ... raise ValueError('Environment variables not set')`（该明确报错已无法到达）"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 缺失默认值导致的 NoneType 属性访问。影响评估：环境变量缺失这一最常见配置错误会被 AttributeError 掩盖，报错可读性显著下降。",
+        "suggestion": "[重构思路] 保留空串默认值，或显式判空。代码示例：`return any_or_all((os.getenv(key) or '').strip() for key in keys)`",
+        "subcategory": "环境变量校验"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/agent/service.py",
+      "line": 86,
+      "title": "AgentHookFunc 类型改为同步返回 None，但调用处仍 await，同步 hook 会抛 TypeError",
+      "description": "`AgentHookFunc` 由 `Callable[['Agent'], Awaitable[None]]` 改成 `Callable[['Agent'], None]`，类型上允许用户传入普通同步函数；但 `run()` 中仍然对 hook 执行 `await on_step_start(self)` / `await on_step_end(self)`。用户按新类型注解传入同步回调时，`await None` 会抛 TypeError，在每一步循环处使整次运行中断。类型签名与实现不一致，也会让类型检查器无法发现该错误。",
+      "evidence": [
+        "browser_use/agent/service.py:86 — `AgentHookFunc = Callable[['Agent'], None]`",
+        "browser_use/agent/service.py:803 — `await on_step_start(self)`",
+        "browser_use/agent/service.py:809 — `await on_step_end(self)`",
+        "diff：`- AgentHookFunc = Callable[['Agent'], Awaitable[None]]`"
+      ],
+      "rule": "TYPE-005",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 类型别名与运行时调用方式不一致（同步签名 / 异步调用）。影响评估：按类型注解编程的用户会得到 `TypeError: object NoneType can't be used in 'await' expression`，且静态检查不会告警。",
+        "suggestion": "[重构思路] 二选一：恢复 `Awaitable[None]`；或保持宽松类型但在调用处兼容同步返回值。代码示例：`result = on_step_start(self)\\nif inspect.isawaitable(result):\\n\\tawait result`",
+        "subcategory": "类型契约一致性"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/agent/service.py",
+      "line": 261,
+      "title": "Agent 无条件用 BrowserConfig.disable_security 覆盖 new_context_config，静默丢弃用户显式配置",
+      "description": "构造函数中把 `self.browser.config.disable_security` 直接赋值给 `self.browser.config.new_context_config.disable_security`。由于 BrowserConfig.disable_security 默认为 False，用户若按浏览器上下文的推荐方式仅在 `BrowserContextConfig` 中设置 `disable_security=True`（跨域 iframe 支持依赖该开关），该设置会在构造 Agent 时被强制改回 False，页面里跨域 iframe 的元素将不再可交互，且没有任何告警。该赋值还发生在用户传入自定义 browser/browser_context 的场景下，属于对调用方对象的隐式修改。",
+      "evidence": [
+        "browser_use/agent/service.py:261 — `self.browser.config.new_context_config.disable_security = self.browser.config.disable_security`",
+        "browser_use/browser/browser.py:98 — `disable_security: bool = False`",
+        "browser_use/browser/context.py:144 — `disable_security: bool = False  # disable_security=True is dangerous ...`（context 级别另有同名开关）",
+        "browser_use/browser/context.py:423 — `**({'bypass_csp': True, 'ignore_https_errors': True} if self.config.disable_security else {})`，实际生效的是 context 级配置"
+      ],
+      "rule": "CONFIG-004",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 单向覆盖式配置同步，缺少「仅在用户未指定时继承」的判断。影响评估：用户显式配置被静默回滚，跨域 iframe 场景下元素定位失败，且问题难以定位。",
+        "suggestion": "[重构思路] 仅在 context 配置未被显式设置（None 语义）时继承 browser 级配置，或用 `model_fields_set` 判断用户是否显式传入。代码示例：`if 'disable_security' not in self.browser.config.new_context_config.model_fields_set:\\n\\tself.browser.config.new_context_config.disable_security = self.browser.config.disable_security`",
+        "subcategory": "配置继承"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/agent/memory/service.py",
+      "line": 49,
+      "title": "memory 默认配置删掉了 embedder/llm，且 enable_memory 默认改为 True，默认路径依赖 mem0 内置（OpenAI）实现",
+      "description": "原先 `_get_default_config` 显式给出 vector_store(faiss) + langchain llm + huggingface `all-MiniLM-L6-v2` 本地 embedder；现在默认值只剩 `{'vector_store': {'provider': 'faiss'}}`，embedder 与 llm 完全交给 mem0 的内部默认值（mem0 默认 embedder 为 OpenAI text-embedding-3-small、默认 llm 为 OpenAI 模型）。同时 Agent 的 `enable_memory` 默认值由 False 改为 True，意味着所有用户的默认执行路径都会构造 Memory，非 OpenAI 用户可能因缺少 OPENAI_API_KEY 在构造/首次调用时失败，或默认把对话内容发往 OpenAI 并产生额外 embedding + LLM 费用；此外本地 HuggingFace embedder 被移除也让离线场景不可用。",
+      "evidence": [
+        "diff：删除 `DEFAULT_VECTOR_STORE` 与 `DEFAULT_EMBEDDER = {'provider': 'huggingface', 'config': {'model': 'all-MiniLM-L6-v2'}}` 及整个 `_get_default_config(llm)`",
+        "browser_use/agent/memory/service.py:49 — `self._memory_config = self.settings.config or {'vector_store': {'provider': 'faiss'}}`",
+        "browser_use/agent/memory/service.py:50 — `self.mem0 = Mem0Memory.from_config(config_dict=self._memory_config)`（缺少 embedder/llm 时使用 mem0 默认）",
+        "browser_use/agent/service.py:148 — `enable_memory: bool = True`（原为 False）",
+        "browser_use/agent/service.py:241-253 — `if self.settings.enable_memory: ... Memory(...)`"
+      ],
+      "rule": "CONFIG-007",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 默认配置语义收缩 + 默认开关翻转，导致默认路径引入外部依赖与数据外发。影响评估：非 OpenAI 项目可能直接构造失败；默认行为改变影响所有使用者；对话内容默认流向第三方 embedding 服务存在合规/隐私风险。具体失败形态取决于 mem0ai==0.1.81 的默认 config（该库源码不在本仓库快照内，需实际验证）。",
+        "suggestion": "[重构思路] 保留显式默认 embedder（或要求在未配置 embedder 时抛出清晰错误），并保持 `enable_memory` 默认关闭或明确在文档中声明默认开启的影响。代码示例：`DEFAULT_MEMORY_CONFIG = {'vector_store': {'provider': 'faiss'}, 'embedder': {'provider': 'huggingface', 'config': {'model': 'all-MiniLM-L6-v2'}}}`",
+        "subcategory": "默认配置收缩"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/browser/context.py",
+      "line": 414,
+      "title": "非 headless 模式不再传 no_viewport/viewport，browser_window_size 配置被忽略",
+      "description": "创建上下文时改为按条件组装 kwargs：只有 `self.browser.config.headless` 为真才设置 `viewport` 与 `no_viewport=False`。原实现无论是否 headless 都传 `no_viewport=True`（使用真实窗口尺寸）。现在 headed 模式下两个参数都不传，Playwright 会退回默认固定视口（1280x720），`BrowserContextConfig.browser_window_size` 只在 record_video_size 里被使用，配置项对实际渲染窗口不再生效；截图尺寸与高亮坐标、录制视频尺寸可能不一致。",
+      "evidence": [
+        "browser_use/browser/context.py:413-418 — `kwargs = {}` / `if self.browser.config.headless:` 才设置 `kwargs['viewport']` 与 `kwargs['no_viewport'] = False`",
+        "browser_use/browser/context.py:420-425 — `context = await browser.new_context(**kwargs, ...)`，headless=False 时既无 viewport 也无 no_viewport",
+        "diff：删除 `no_viewport=True` 与 `user_agent=self.config.user_agent` 的无条件传参",
+        "browser_use/browser/context.py:146 — `browser_window_size` 默认仍是 {'width': 1280, 'height': 1100}，仅用于 record_video_size"
+      ],
+      "rule": "VIEWPORT-009",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 条件分支遗漏导致的配置项失效。影响评估：headed 模式下窗口尺寸配置静默失效，页面按 1280x720 渲染，可能影响依赖视口大小的可见性判定与高亮坐标，属于行为回归。",
+        "suggestion": "[重构思路] 两个模式都显式处理视口：headed 用 `no_viewport=True` 跟随真实窗口，headless 用配置尺寸。代码示例：`if self.browser.config.headless:\\n\\tkwargs['viewport'] = self.config.browser_window_size\\n\\tkwargs['no_viewport'] = False\\nelse:\\n\\tkwargs['no_viewport'] = True`",
+        "subcategory": "视口配置"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "browser_use/dom/buildDomTree.js",
+      "line": 331,
+      "title": "highlightElement 的 finally 调用 popTiming('highlighting') 但没有对应的 pushTiming",
+      "description": "`popTiming` 的实现是 `TIMING_STACK[type].pop()` 后与 `performance.now()` 相减；`highlightElement` 函数体内从未调用 `pushTiming('highlighting')`，空栈 pop 返回 undefined，导致 duration 恒为 NaN。该计时数据不会抛错，但会让调试/性能统计失真，且掩盖真正想采集的高亮耗时。",
+      "evidence": [
+        "browser_use/dom/buildDomTree.js:330-332 — `} finally { popTiming('highlighting'); }`",
+        "browser_use/dom/buildDomTree.js:25-29 — `function popTiming(type) { const start = TIMING_STACK[type].pop(); const duration = performance.now() - start; return duration; }`",
+        "browser_use/dom/buildDomTree.js:20-23 — `pushTiming` 存在，但 highlightElement（L193-333）内无任何 `pushTiming('highlighting')` 调用"
+      ],
+      "rule": "PERF-TIMING-013",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 计时栈 push/pop 不配对。影响评估：debugMode 下的高亮耗时统计恒为 NaN，性能分析数据不可用；虽不影响功能，但会让后续排障得到错误结论。",
+        "suggestion": "[重构思路] 在函数入口成对调用。代码示例：`function highlightElement(element, index, parentIframe = null) { if (!element) return index; pushTiming('highlighting'); try { ... } finally { popTiming('highlighting'); } }`",
+        "subcategory": "性能计时一致性"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "性能",
+      "file": "browser_use/dom/buildDomTree.js",
+      "line": 926,
+      "title": "交互元素不再做父级去重且 isInViewport 恒为 true，高亮索引与 selector map 规模激增",
+      "description": "buildDomTree 删除了 `isElementDistinctInteraction`、`handleHighlighting` 与 `isParentHighlighted` 传递逻辑，只要 isVisible + isTopElement + isInteractive 就无条件 `nodeData.isInViewport = true` 并分配 `highlightIndex`。结果是嵌套交互结构（如 `<a>` 内嵌 `<button>`/`<span role=button>`）会同时拿到索引，且 `is_in_viewport` 字段不再反映真实可见性；元素索引数量、selector map 规模与送入 LLM 的 element 文本都会显著膨胀，`isInExpandedViewport`（L738）则变成无调用点的死代码。",
+      "evidence": [
+        "browser_use/dom/buildDomTree.js:924-937 — `nodeData.isInteractive = isInteractiveElement(node); if (nodeData.isInteractive) { nodeData.isInViewport = true; nodeData.highlightIndex = highlightIndex++; ... }`",
+        "diff：删除 `isElementDistinctInteraction`、`handleHighlighting`、`buildDomTree(node, parentIframe, isParentHighlighted)` 以及 `passHighlightStatusToChild`",
+        "browser_use/dom/buildDomTree.js:738-752 — `isInExpandedViewport` 保留但已无调用点",
+        "browser_use/browser/context.py:157 — 默认 `viewport_expansion` 由 0 提升到 500，进一步扩大进入索引的元素集合"
+      ],
+      "rule": "DOM-INDEX-010",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 索引去重逻辑移除 + 视口标记硬编码。影响评估：每步 token 消耗上升、索引与真实可见区域脱钩，模型可能选择不可见元素；同时索引变化噪声增大，也会影响 multi_act 中基于 branch_path_hash 的元素变更检测。",
+        "suggestion": "[重构思路] 恢复父级去重（同一交互链只保留一个可点击索引），并把 isInViewport 改为基于 `isInExpandedViewport(node, viewportExpansion)` 计算。代码示例：`nodeData.isInViewport = isInExpandedViewport(node, viewportExpansion); if (nodeData.isInViewport) { nodeData.highlightIndex = highlightIndex++; }`",
+        "subcategory": "DOM 索引生成"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/dom/views.py",
+      "line": 149,
+      "title": "clickable_elements_to_string 无属性时输出 `<button Submit/>` 缺少 `>`，且丢弃层级缩进",
+      "description": "新版拼接逻辑为 `line = f'[{idx}]<{tag} '`，仅在 `attributes_str` 非空时才补 `>{text}`，否则直接拼接文本再接 `/>`。因此没有纳入属性的元素会输出成 `[3]<button Submit/>` 这类缺少 `>` 的畸形标记；同时 `process_node` 的 depth 参数不再参与格式化，文本节点也被直接平铺，DOM 层级信息完全丢失。这会降低 LLM 对页面结构的理解质量（element 序列是主要决策输入）。",
+      "evidence": [
+        "browser_use/dom/views.py:144-152 — `line = f'[{node.highlight_index}]<{node.tag_name} '`；`if attributes_str: line += f'>{text}'`；`else: line += f'{text}'`；`line += '/>'`",
+        "browser_use/dom/views.py:157 — `process_node(child, depth + 1)` 传入 depth 但函数内不再使用 depth 生成缩进",
+        "browser_use/dom/views.py:161-162 — 文本节点由 `parent.is_visible and parent.is_top_element` 判定改为仅 `node.is_visible`，并直接 `formatted_text.append(f'{node.text}')`"
+      ],
+      "rule": "PROMPT-FORMAT-011",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 文本表示拼接缺陷（标签未闭合）与结构信息丢失。影响评估：畸形标记会让模型误判元素边界与文本归属，扁平输出削弱嵌套语义，可能降低元素选择的准确率。",
+        "suggestion": "[重构思路] 统一走一条分支拼接，并保留 depth 缩进。代码示例：`line = f'{\"\\\\t\" * depth}[{node.highlight_index}]<{node.tag_name}'; if attributes_str: line += f' {attributes_str}'; line += f'>{text}</{node.tag_name}>' if text else ' />'`",
+        "subcategory": "LLM 输入格式"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "browser_use/agent/prompts.py",
+      "line": 67,
+      "title": "AgentMessagePrompt 使用可变默认参数 include_attributes=[]",
+      "description": "`include_attributes` 由 `list[str] | None = None` + `or []` 改为 `list[str] = []`，属于 Python 可变默认参数反模式：默认列表在函数定义期创建并被所有实例共享，一旦任何路径对其执行原地修改（append/remove），会污染后续所有实例。当前代码只读取该列表，但签名已不再防御。",
+      "evidence": [
+        "browser_use/agent/prompts.py:67 — `include_attributes: list[str] = [],`",
+        "browser_use/agent/prompts.py:72 — `self.include_attributes = include_attributes`（直接保存引用）",
+        "diff：`- include_attributes: list[str] | None = None` 与 `- self.include_attributes = include_attributes or []`",
+        "browser_use/agent/prompts.py:76 — 该列表被传给 `clickable_elements_to_string(include_attributes=...)`"
+      ],
+      "rule": "PY-DEFAULT-012",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 可变默认参数（mutable default argument）。影响评估：当前只读故未立即出错，但为后续原地修改埋下跨实例共享状态的隐患，且类型上不再允许表达「未指定」。",
+        "suggestion": "[重构思路] 恢复 `None` 默认值并在体内归一化。代码示例：`def __init__(self, state, result=None, include_attributes: list[str] | None = None, step_info=None): ... self.include_attributes = include_attributes or []`",
+        "subcategory": "Python 反模式"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "性能",
+      "file": "browser_use/dom/service.py",
+      "line": 156,
+      "title": "每次解析 DOM 后强制执行 gc.collect()，增加每步状态采集延迟",
+      "description": "在 `_parse_node` 完成后新增 `gc.collect()` 全量垃圾回收。状态采集在每一步（以及 multi_act 中每个带 index 的后续动作前）都会执行，全量 GC 会遍历所有代的对象，在 DOM 树较大时带来明显且不可预测的停顿；同时 DOM 树的循环引用（parent/children）本身会导致对象长期存活，单次 collect 收益有限。",
+      "evidence": [
+        "browser_use/dom/service.py:156 — `gc.collect()`（紧随 `del node_map` / `del js_node_map` / `del js_root_id` 之后）",
+        "browser_use/browser/context.py:831-835 — `get_state()` → `_update_state()`，每步都会触发 DOM 构建",
+        "browser_use/agent/service.py:871 — multi_act 中对每个带 index 的后续动作也会再次 `get_state()`"
+      ],
+      "rule": "PERF-GC-014",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 热路径上的强制全量 GC。影响评估：每步增加一次全堆扫描开销，长任务下延迟累积；若确实存在内存增长，应定位循环引用而不是靠每步全量回收。",
+        "suggestion": "[重构思路] 移除热路径的全量 `gc.collect()`；如需控制内存，改为在任务结束或阈值触发时收集，并考虑用 weakref 打破 parent 循环引用。代码示例：`# 移除热路径 gc.collect()\\n# 在 Agent.close()/任务结束时统一 gc.collect()`",
+        "subcategory": "热路径开销"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "browser_use/controller/views.py",
+      "line": 35,
+      "title": "ClickElementByTextAction.element_type 声明为 Optional 但无默认值，实际是必填字段",
+      "description": "Pydantic v2 中 `Optional[str]` 只表示允许 None，并不隐式提供默认值，因此 `element_type` 是必填字段。模型在调用 `click_element_by_text` 时必须显式提供 element_type（哪怕为 null），否则参数校验失败；这与同文件其他动作里 `xpath: Optional[str] = None` 的写法不一致，也会提高工具调用失败率。",
+      "evidence": [
+        "browser_use/controller/views.py:33-36 — `class ClickElementByTextAction(BaseModel): text: str; element_type: Optional[str]; nth: int = 0`",
+        "browser_use/controller/views.py:20-22 — 对照：`class ClickElementAction(BaseModel): index: int; xpath: Optional[str] = None`（有默认值）",
+        "browser_use/controller/service.py:218-220 — `browser.get_locate_element_by_text(text=..., nth=..., element_type=params.element_type)`，被调方签名本身已允许 `element_type: Optional[str] = None`"
+      ],
+      "rule": "SCHEMA-015",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] Pydantic v2 必填/可选语义混淆。影响评估：LLM 未提供 element_type 时工具调用直接校验失败，产生无谓的重试与步数浪费。",
+        "suggestion": "[重构思路] 补默认值使其真正可选。代码示例：`element_type: Optional[str] = None`",
+        "subcategory": "参数模型定义"
+      }
+    }
+  ]
+}

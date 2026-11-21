@@ -1,0 +1,145 @@
+{
+  "generatedAt": "2026-11-15T05:00:29.230Z",
+  "runId": "20261115_045646_380",
+  "source": "mr",
+  "caseId": "electron__electron@c486457",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "shell/common/gin_helper/promise.cc",
+      "line": 20,
+      "title": "Promise SettleScope 的微任务检查点从析构移到构造，Resolve/Reject 之后不再排空微任务",
+      "description": "重构后 SettleScope 以 `ignore_browser_checkpoint=false` 构造 gin_helper::MicrotasksScope，并在浏览器进程中把唯一的检查点放在构造函数里，析构函数改成 `= default`；而旧代码是在 `~SettleScope()` 中显式执行 `context_->GetMicrotaskQueue()->PerformCheckpoint(context_->GetIsolate())`。由于 `Resolve()`/`Reject()` 都在 SettleScope 作用域内调用，旧语义是「settle 完成之后立刻排空微任务」，新语义变成「settle 之前排空一次、settle 之后不排空」，浏览器进程中由 resolve/reject 排入的 then/await 回调不再在同一次调用返回前执行，回调时序被推迟到下一个检查点。同时新实现用的是 isolate 级 `v8::MicrotasksScope::PerformCheckpoint(isolate)`，不再使用 `context->GetMicrotaskQueue()`，若该 context 持有独立微任务队列（参见 patches/v8/chore_allow_customizing_microtask_policy_per_context.patch 允许按 context 定制），检查点可能作用在错误的队列上，导致回调完全不在此处触发。",
+      "evidence": [
+        "shell/common/gin_helper/promise.cc:17-23 — `microtasks_scope_{context_, false, v8::MicrotasksScope::kRunMicrotasks}`，且 `PromiseBase::SettleScope::~SettleScope() = default;`",
+        "本次 diff 删除的旧实现：`PromiseBase::SettleScope::~SettleScope() { if (electron::IsBrowserProcess()) { context_->GetMicrotaskQueue()->PerformCheckpoint(context_->GetIsolate()); } }`",
+        "shell/common/gin_helper/microtasks_scope.cc:16-20 — 浏览器进程分支只有构造期 `v8::MicrotasksScope::PerformCheckpoint(isolate)`，未使用 `microtask_queue`，析构期无任何动作",
+        "shell/common/gin_helper/promise.h:110-114 — `Promise<RT>::Resolve` 在 `SettleScope settle_scope{*this};` 作用域内调用 `GetInner()->Resolve(settle_scope.context_, ...)`",
+        "shell/common/gin_helper/promise.cc:53-68 与 119-122 — Reject / RejectWithErrorMessage / Promise<void>::Resolve 同样在 SettleScope 内完成 settle"
+      ],
+      "rule": "MICROTASK-001",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 微任务检查点时机与目标队列错位（行为回归）。影响评估：主进程中被 Promise 包装的所有 Electron API（如 `shell.openPath`、`webContents.printToPDF` 等返回 Promise 的接口）在 resolve/reject 后不再立即执行 JS 的 `then`/`await` 续体，回调被推迟到后续检查点；在存在 context 级 MicrotaskQueue 的场景下，isolate 级 PerformCheckpoint 还可能排空错误的队列，造成回调长时间不触发或不触发。",
+        "suggestion": "[重构思路] 让浏览器进程的检查点时机与旧行为对齐（settle 之后执行），并始终使用 context 自己的 MicrotaskQueue。可把检查点放回 MicrotasksScope 析构，或在 SettleScope 内保留显式调用。代码示例：`MicrotasksScope::MicrotasksScope(v8::Local<v8::Context> c, bool ignore, v8::MicrotasksScope::Type t) : isolate_(c->GetIsolate()), queue_(c->GetMicrotaskQueue()), ignore_(ignore) { if (electron::IsBrowserProcess()) { if (t == v8::MicrotasksScope::kRunMicrotasks && !ignore_) queue_->PerformCheckpoint(isolate_); } else { v8_microtasks_scope_.emplace(isolate_, queue_, t); } }`；或在 `PromiseBase::SettleScope` 析构中恢复 `context_.GetMicrotaskQueue()->PerformCheckpoint(isolate())`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "shell/common/gin_helper/microtasks_scope.cc",
+      "line": 19,
+      "title": "浏览器进程分支忽略 scope_type，传 kDoNotRunMicrotasks 的调用点反而会执行一次检查点",
+      "description": "新的 MicrotasksScope 在浏览器进程只根据 `ignore_browser_checkpoint` 决定是否调用 `v8::MicrotasksScope::PerformCheckpoint(isolate)`，完全不看 `scope_type`；因此 `NodeBindings::ErrorMessageListener` 中 `MicrotasksScope(env->context(), false, v8::MicrotasksScope::kDoNotRunMicrotasks)` 会在构造时立刻跑一次完整微任务检查点，与 kDoNotRunMicrotasks「不要在此作用域运行微任务」的语义相反。旧代码在该处构造的是 `v8::MicrotasksScope(env->context(), v8::MicrotasksScope::kDoNotRunMicrotasks)`，不会运行微任务。该处的调用发生在未捕获异常的消息回调中，此时执行微任务可能重入 JS（例如触发 Promise 的 rejection handler），在错误上报路径上引入可重入与时序问题。",
+      "evidence": [
+        "shell/common/gin_helper/microtasks_scope.cc:18-20 — `if (electron::IsBrowserProcess()) { if (!ignore_browser_checkpoint) v8::MicrotasksScope::PerformCheckpoint(isolate); }`，未检查 scope_type",
+        "shell/common/node_bindings.cc:319-320 — `gin_helper::MicrotasksScope microtasks_scope(env->context(), false, v8::MicrotasksScope::kDoNotRunMicrotasks);`",
+        "本次 diff 替换掉的旧代码：`v8::MicrotasksScope microtasks_scope(env->context(), v8::MicrotasksScope::kDoNotRunMicrotasks);`",
+        "shell/common/gin_helper/microtasks_scope.h:15-16 — 类注释只写「In the browser process runs v8::MicrotasksScope::PerformCheckpoint / In the render process creates a v8::MicrotasksScope」，未说明 scope_type 在浏览器进程被忽略"
+      ],
+      "rule": "MICROTASK-002",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 作用域类型语义丢失（kDoNotRunMicrotasks 被当作 kRunMicrotasks 处理）。影响评估：未捕获异常的上报回调中会重入 V8 运行微任务，可能触发用户 Promise 回调，打乱错误处理时序，甚至在上报过程中抛出新的 JS 异常。",
+        "suggestion": "[重构思路] 浏览器分支也要尊重 scope_type，或为「明确不想跑微任务」的调用点显式跳过检查点，并把参数改名为能表达真实语义的名字。代码示例：`if (electron::IsBrowserProcess()) { if (!ignore_browser_checkpoint && scope_type == v8::MicrotasksScope::kRunMicrotasks) v8::MicrotasksScope::PerformCheckpoint(isolate); } else { v8_microtasks_scope_.emplace(isolate, microtask_queue, scope_type); }`；调用点改为 `gin_helper::MicrotasksScope microtasks_scope(env->context(), /*ignore_browser_checkpoint=*/true, v8::MicrotasksScope::kDoNotRunMicrotasks);`。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "shell/browser/native_window_views.cc",
+      "line": 492,
+      "title": "Show() 改用 native_widget_private()->IsVisible()，与本类 IsVisible() 的写法不一致",
+      "description": "`Show()` 的 modal 计数守卫由 `widget()->IsVisible()` 改成 `widget()->native_widget_private()->IsVisible()`，但同一文件 551-563 行的 `NativeWindowViews::IsVisible()`（非 Windows 分支）仍使用 `widget()->IsVisible()`，`shell/browser/ui/views/autofill_popup_view.cc:66` 也仍使用 `parent_widget_->IsVisible()`，说明 `views::Widget::IsVisible()` 在该版本仍然可用，因此本行改动不像是编译所必需；若两者语义等价，则改动与既有可见性判定（Windows 分支为 `WS_VISIBLE && !IsMinimized()`）并存会让递增/递减 modal 计数的边界难以推理——531 行 `Hide()` 的 `DecrementChildModals()` 是无守卫的，`Show()` 的守卫一旦判断口径变化就会出现计数不平衡。",
+      "evidence": [
+        "shell/browser/native_window_views.cc:490-493 — `if (is_modal() && NativeWindow::parent() && !widget()->native_widget_private()->IsVisible()) ... IncrementChildModals();`",
+        "shell/browser/native_window_views.cc:551-563 — `NativeWindowViews::IsVisible()` 非 Windows 分支仍 `return widget()->IsVisible();`",
+        "shell/browser/native_window_views.cc:529-531 — `Hide()` 中 `if (is_modal() && NativeWindow::parent()) ...DecrementChildModals();` 无可见性守卫",
+        "shell/browser/ui/views/autofill_popup_view.cc:66 — `bool visible = parent_widget_->IsVisible();` 仍使用 Widget::IsVisible()",
+        "shell/browser/native_window_views.cc:46 — 本文件原本已 `#include \"ui/views/widget/native_widget_private.h\"`（本次只在 native_window_views_win.cc:22 新增该 include）"
+      ],
+      "rule": "CONSISTENCY-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 同类可见性判断两种写法并存，改动动机不明。影响评估：若 `native_widget_private()->IsVisible()` 与 `Widget::IsVisible()` 在隐藏/最小化/父窗口不可见时判定不同，`Show()` 的 modal 计数可能重复递增或漏递增，进而影响父窗口的 modal 状态与关闭行为；同时后续维护者难以判断应以哪种写法为准。",
+        "suggestion": "[重构思路] 统一走 `NativeWindowViews::IsVisible()`（其 Windows 分支已显式规避 ::IsWindowVisible 的父窗口传染问题），或在改动处加注释说明为何必须绕过 Widget 层。代码示例：`if (is_modal() && NativeWindow::parent() && !IsVisible()) static_cast<NativeWindowViews*>(parent())->IncrementChildModals();`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "script/release/get-url-hash.ts",
+      "line": 10,
+      "title": "hasher 端点与环境变量重命名未附带 CI 侧同步，下载校验可能静默失败",
+      "description": "发布脚本把 hasher 服务主机改为 `electron-artifact-hasher.azurewebsites.net`、路由改为 `/api/HashArtifact`、并把密钥环境变量由 `ELECTRON_HASHER_FUNCTION_KEY` 改为 `ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY`，但本 MR 未包含任何 CI/密钥配置变更。该处使用非空断言 `process.env.ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY!`，环境变量缺失时不会报错，只会把 `undefined` 作为 `code` 查询参数发给服务端，最终表现为 401/404 而非明确的配置错误，发布产物的哈希校验会静默失败或产出错误结果。",
+      "evidence": [
+        "script/release/get-url-hash.ts:5 — `const HASHER_FUNCTION_HOST = 'electron-artifact-hasher.azurewebsites.net';`（原值 electron-hasher.azurewebsites.net）",
+        "script/release/get-url-hash.ts:6 — `const HASHER_FUNCTION_ROUTE = '/api/HashArtifact';`（原值 /api/hashRemoteAsset）",
+        "script/release/get-url-hash.ts:10 — `code: process.env.ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY!,` 使用非空断言，未做存在性校验",
+        "本 MR diff 中不含 CI 配置、密钥或 release workflow 的对应修改"
+      ],
+      "rule": "CONFIG-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 外部服务端点/密钥名称变更与部署侧不同步（配置漂移）。影响评估：发布流水线中 `getUrlHash` 调用会因密钥缺失或路由变更而失败，且错误信息不指向根因；若上层未严格校验返回值，可能把未校验的产物继续发布。",
+        "suggestion": "[重构思路] 在脚本中显式校验环境变量并在缺失时快速失败，使配置问题在流水线早期暴露。代码示例：`const key = process.env.ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY; if (!key) throw new Error('ELECTRON_ARTIFACT_HASHER_FUNCTION_KEY is not set'); ... const options = { code: key, targetUrl, algorithm };`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "shell/renderer/api/electron_api_spell_check_client.cc",
+      "line": 21,
+      "title": "新增 microtasks_scope.h 的 include 但文件仍直接使用 v8::MicrotasksScope，形成间接依赖",
+      "description": "本次在 electron_api_spell_check_client.cc 中新增了 `shell/common/gin_helper/microtasks_scope.h` 的 include，但该文件第 218 行仍直接构造 `v8::MicrotasksScope`，并未使用 gin_helper::MicrotasksScope；真正被依赖的是 microtasks_scope.h 传递引入的 `v8/include/v8-microtask-queue.h`。同类情况还有 electron_render_frame_observer.cc（81、123 行）、electron_sandboxed_renderer_client.cc（149、167 行）以及 shell/common/api/electron_bindings.cc——后者只加了 include 且整个文件中没有任何 MicrotasksScope 使用点。这会让后续调整 microtasks_scope.h 的 include 时意外破坏这些文件的编译。",
+      "evidence": [
+        "shell/renderer/api/electron_api_spell_check_client.cc:21 — 新增 `#include \"shell/common/gin_helper/microtasks_scope.h\"`",
+        "shell/renderer/api/electron_api_spell_check_client.cc:218-219 — `v8::MicrotasksScope microtasks_scope(context, v8::MicrotasksScope::kDoNotRunMicrotasks);` 仍使用裸 V8 类型",
+        "shell/renderer/electron_render_frame_observer.cc:81、123 与 shell/renderer/electron_sandboxed_renderer_client.cc:149、167 — 同类模式：只加 include，仍直接用 v8::MicrotasksScope",
+        "shell/common/api/electron_bindings.cc 在第 25 行附近新增该 include，但全仓 MicrotasksScope 引用列表中该文件无任何使用点",
+        "shell/common/gin_helper/callback.h 与 shell/common/gin_helper/function_template.h 本次已删除 `v8/include/v8-microtask-queue.h` 的直接 include"
+      ],
+      "rule": "MAINTAINABILITY-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 间接依赖 / 无用 include（IWYU 违规）。影响评估：文件对 v8-microtask-queue.h 的依赖被隐藏在 gin_helper 头文件里，未来任何对该头 include 的收敛都会造成这些文件编译失败；同时多余的 include 增加构建耦合。",
+        "suggestion": "[重构思路] 二选一：要么把迁移做完（改用 gin_helper::MicrotasksScope），要么直接 include 真正需要的头。代码示例：`#include \"v8/include/v8-microtask-queue.h\"  // for v8::MicrotasksScope`；并删除 electron_bindings.cc 中未使用的 microtasks_scope.h include。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "patches/v8/deps_add_v8_object_setinternalfieldfornodecore.patch",
+      "line": 6,
+      "title": "新增的 v8 补丁自述服务于 Node.js v20.x，而 DEPS 中 node_version 为 v22.15.0",
+      "description": "新补丁的说明文本明确写着「This is a non-ABI breaking solution added by Node.js in v20.x」，并声明这些接口「will not exist in Node.js v21.x」，但本次 DEPS 中 `node_version` 仍为 `v22.15.0`。若当前 Node 版本并不调用 `SetInternalFieldForNodeCore`，该补丁只会扩大 V8 公开头文件的 API 面（并在 v8-object.h 中留下 V8_DEPRECATED 标记与拼写为 extentions 的注释），属于长期维护负担；若当前 Node 版本确实需要，则补丁说明与 DEPS 版本信息应更新以免误导。",
+      "evidence": [
+        "patches/v8/deps_add_v8_object_setinternalfieldfornodecore.patch:6 — `This is a non-ABI breaking solution added by Node.js in v20.x for:`",
+        "patches/v8/deps_add_v8_object_setinternalfieldfornodecore.patch:35-36 — `They do not exist in V8 upstream and will not exist in Node.js v21.x.`",
+        "DEPS:7-8 — `'node_version': 'v22.15.0',`",
+        "patches/v8/.patches — 新增 `deps_add_v8_object_setinternalfieldfornodecore.patch` 到应用列表"
+      ],
+      "rule": "MAINTAINABILITY-003",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 补丁与依赖版本信息不一致（可能需要清理或更新说明）。影响评估：补丁长期滞留在应用的 patch 列表中会增加每次 V8 roll 的 rebase 成本；补丁说明若与实际情况不符，会让后续维护者误判是否可移除。",
+        "suggestion": "[重构思路] 核对当前 node_version 是否真的调用 `SetInternalFieldForNodeCore`：若不需要则从 patches/v8/.patches 与目录中移除；若需要则更新补丁说明（改为面向当前 Node 版本）并保留 V8_DEPRECATED 提示。代码示例（更新补丁头）：`Subject: deps: add v8::Object::SetInternalFieldForNodeCore()\\n\\nRequired by Node.js v22.x in Electron to keep the internal-field API stable.`",
+        "subcategory": ""
+      }
+    }
+  ]
+}

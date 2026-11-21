@@ -1,0 +1,158 @@
+{
+  "generatedAt": "2026-11-16T01:30:12.657Z",
+  "runId": "20261116_012631_699",
+  "source": "mr",
+  "caseId": "openai__codex@8c952af",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "codex-rs/core/src/client_common.rs",
+      "line": 198,
+      "title": "测试中的 ResponsesApiRequest 字面量缺少已保留的 store 字段，导致测试目标编译失败",
+      "description": "本次变更只在 `ResponsesApiRequest` 上删除了 `store` 字段的文档注释，字段本体 `pub(crate) store: bool` 仍然存在（client_common.rs:128）；但同一文件的测试 `serializes_text_verbosity_when_set` 与 `omits_text_when_not_set` 中的结构体字面量却删掉了 `store: true`。Rust 结构体字面量必须给全部字段赋值，这会触发 E0063（missing field `store`），使 `cargo test -p codex-core` / `cargo clippy --all-targets` 直接编译失败，CI 变红，并且这两个序列化测试（校验 `text.verbosity` 序列化行为）也随之失效。",
+      "evidence": [
+        "codex-rs/core/src/client_common.rs:128 — `pub(crate) store: bool,`（diff 只删除了它上面的 `/// true when using the Responses API.` 注释，字段保留）",
+        "codex-rs/core/src/client_common.rs:190-204 — 测试字面量：`reasoning: None,` 之后直接是 `stream: true,`，缺少 `store` 字段",
+        "codex-rs/core/src/client_common.rs:219-231 — 第二个测试字面量同样在 `reasoning: None,` 之后缺少 `store` 字段",
+        "diff 中 client.rs:198 仍以 `store: false` 构造该结构体，证明字段并未真正移除"
+      ],
+      "rule": "BUILD-001",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 结构体字面量字段缺失导致编译错误（E0063）。影响评估：`codex-core` 的 test/clippy 目标无法编译，CI 失败；两个用于守护 `text.verbosity` 序列化的测试不再执行，序列化回归失去保护。",
+        "suggestion": "[重构思路] 二选一：要么在测试字面量补回 `store: false,`；要么既然 `store` 已恒为 false，直接把该字段从 `ResponsesApiRequest` 中删除（同时删除 client.rs 中的赋值），让“永不存储”成为结构上的不变式。代码示例：`let req = ResponsesApiRequest { model: \"gpt-5\", instructions: \"i\", input: &input, tools: &tools, tool_choice: \"auto\", parallel_tool_calls: false, reasoning: None, store: false, stream: true, include: vec![], prompt_cache_key: None, text: None };`",
+        "subcategory": "编译期字段缺失"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "codex-rs/tui/src/history_cell.rs",
+      "line": 477,
+      "title": "命令错误输出的换行结果全部套用分支前缀，缺少对首个换行片段的判断",
+      "description": "`command_display_lines` 在渲染非零退出码的输出时，用 `i == 0 && !branch_consumed` 决定是否加 `  └ ` 前缀，但这里的 `i` 只是源行序号，没有判断当前是否是该源行的第一个换行片段（旧实现由 `prefix_lines(body_lines, \"  └ \", \"    \")` 保证只有整体第一行加前缀）。结果是：当第一行错误输出被 `textwrap` 折成多行时，**每一个**折行片段都会带上 `  └ `，终端上出现多个分支符号，与命令多行渲染分支（history_cell.rs:453 使用 `i == 0 && j == 0`）的正确写法不一致。",
+      "evidence": [
+        "codex-rs/tui/src/history_cell.rs:469-485 — `for (i, line) in out.lines().enumerate()` 内 `wrapped.into_iter().map(|l| Line::from(vec![if i == 0 && !branch_consumed { \"  └ \".dim() } else { \"    \".dim() }, ...]))`，条件中没有片段序号 `j`",
+        "codex-rs/tui/src/history_cell.rs:452-458 — 同一函数内命令折行处使用 `i == 0 && j == 0`，可对照证明输出分支缺少 `j` 判断",
+        "diff 中删除的旧实现 `lines.extend(prefix_lines(body_lines, \"  └ \".dim(), \"    \".into()));` 只会给第一行加前缀"
+      ],
+      "rule": "RENDER-002",
+      "confidence": 0.83,
+      "tips": {
+        "review": "[缺陷类型] 换行后前缀重复渲染。影响评估：命令失败时错误输出首行折成多行即出现多个 `└`，界面错乱，用户难以区分输出行与分支结构。",
+        "suggestion": "[重构思路] 复用与命令折行一致的 `(i, j)` 双重判定，或引入一个 `branch_consumed` 之外的“首行已用掉”标志。代码示例：`for (i, line) in out.lines().enumerate() { for (j, l) in textwrap::wrap(line, opts).into_iter().enumerate() { let prefix = if i == 0 && j == 0 && !branch_consumed { \"  └ \".dim() } else { \"    \".dim() }; lines.push(Line::from(vec![prefix, l.to_string().dim()])); } }`",
+        "subcategory": "渲染前缀错位"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "codex-rs/tui/src/insert_history.rs",
+      "line": 296,
+      "title": "新换行实现禁用 break_words，导致 scrollback 行数估算偏小并破坏滚动区域",
+      "description": "新 `word_wrap_line` 使用 `.break_words(false)`（旧 `wrapping::word_wrap_lines_borrowed` 基于 `RtOptions::new` 默认 `break_words: true`），因此当内容包含超长不可断词（URL、长路径、无空格日志）时，单个输出行仍会超出 `area.width`。而 `insert_history_lines_to_writer` 直接以 `wrapped.len()` 作为将要打印/滚动的终端行数（insert_history.rs:47-52），实际终端会把超宽行硬换行成多行，导致 `scroll_amount`、`cursor_top` 与后续 `MoveTo` 计算全部偏小，scrollback 内容错位或覆盖 TUI 视口。",
+      "evidence": [
+        "codex-rs/tui/src/insert_history.rs:295-297 — `let opts = TwOptions::new(width).break_words(false).word_splitter(WordSplitter::NoHyphenation);`",
+        "codex-rs/tui/src/insert_history.rs:47-52 — `let wrapped = word_wrap_lines(&lines, area.width.max(1)); let wrapped_lines = wrapped.len() as u16; ... let scroll_amount = wrapped_lines.min(...)`",
+        "diff 删除的 `word_wrap_lines_borrowed` 使用 `RtOptions::new(width)`，其 `break_words` 默认为 `true`（被删除的 wrapping.rs 中 `RtOptions::new` 里 `break_words: true`）"
+      ],
+      "rule": "RENDER-003",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 换行宽度上限失效导致终端行数统计错误。影响评估：插入历史时滚动行数不足，scrollback 出现错行/覆盖，且该函数是 TUI 与终端交互的底层路径，影响面较广。",
+        "suggestion": "[重构思路] 需要保证“每个返回行宽 ≤ width”，因此在 insert_history 场景应允许断词，或对超宽片段再次按 width 硬切分。代码示例：`let opts = TwOptions::new(width).break_words(true).word_splitter(WordSplitter::NoHyphenation);` 或保留 `break_words(false)` 但在 `word_wrap_lines` 返回前对 `line.width() > w` 的片段按字符边界强制切分。",
+        "subcategory": "换行与终端行数一致性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "codex-rs/tui/src/history_cell.rs",
+      "line": 454,
+      "title": "用 l[4..] 剥离缩进依赖 textwrap 必然输出 4 字节前缀，空首行会 panic",
+      "description": "多行命令渲染分支用 `l[4..].to_string()` 去掉 `TwOptions::initial_indent(\"    \")` 添加的 4 个空格，此写法假设 `textwrap::wrap` 的**首个**片段一定以该缩进开头且长度 ≥ 4。若命令文本以换行开头（`cmd_display.lines()` 的第一个元素为空字符串，例如脚本首行为空行），`wrap(\"\")` 返回的片段为空串，`l[4..]` 会触发字符串切片越界 panic（byte index 4 out of bounds），直接使 TUI 崩溃。旧实现通过 `slice_line_spans` 按 span 区间切片，不存在该假设。",
+      "evidence": [
+        "codex-rs/tui/src/history_cell.rs:444-458 — `for (i, line) in cmd_display.lines().enumerate() { let wrapped = textwrap::wrap(line, TwOptions::new(width as usize).initial_indent(\"    \")...); ... if i == 0 && j == 0 { vec![\"  └ \".dim(), l[4..].to_string().into()].into() }`",
+        "codex-rs/tui/src/history_cell.rs:420 — `let cmd_display = strip_bash_lc_and_escape(&call.command);` 其结果不做非空/首行非空校验即交给 `lines()`",
+        "diff 删除的 `wrapping::word_wrap_line` 通过 `slice_line_spans` 与 `initial_indent` 的 span 拼接实现缩进，不做字节下标切片"
+      ],
+      "rule": "CORRECTNESS-004",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 字符串按字节索引切片的越界风险。影响评估：一旦命令脚本首个字符为换行，渲染阶段 panic 导致 TUI 进程崩溃；即使不崩溃，依赖“缩进一定存在”的假设也很脆弱，后续改缩进宽度即会静默截错内容。",
+        "suggestion": "[重构思路] 不要对 textwrap 输出做固定字节偏移，改为把缩进当作前缀 span 处理：以 `initial_indent(\"\")` 折行，再用 `vec![\"  └ \".dim()]` 或 `\"    \"` 作为独立 span 前置。代码示例：`let wrapped = textwrap::wrap(line, TwOptions::new((width as usize).saturating_sub(4)).word_splitter(WordSplitter::NoHyphenation)); for (j, l) in wrapped.iter().enumerate() { let prefix = if i == 0 && j == 0 { \"  └ \" } else { \"    \" }; lines.push(Line::from(vec![prefix.dim(), l.to_string().into()])); }`",
+        "subcategory": "字符串切片越界"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "性能",
+      "file": "codex-rs/tui/src/tui.rs",
+      "line": 315,
+      "title": "Ctrl+V 图片粘贴上移到事件流后，overlay 打开时仍同步调用外部剪贴板命令且结果被丢弃",
+      "description": "Ctrl+V 的处理从 `chatwidget.handle_key_event` 移到了 `tui.rs` 的事件流中，会在所有上下文中先同步执行 `paste_image_to_temp_png()`（通常会 spawn 外部剪贴板工具，耗时可达数百毫秒）。但 overlay 打开时 `app.rs` 把 `TuiEvent` 交给 overlay 处理，而 `StaticOverlay::handle_event` 的 `_ => Ok(())` 分支会静默丢弃 `TuiEvent::AttachImage`。因此在翻页/回溯界面按 Ctrl+V 会阻塞事件循环却没有任何可见效果；此外该同步调用位于异步事件流任务内，会推迟 `Draw` 事件造成输入卡顿。",
+      "evidence": [
+        "codex-rs/tui/src/tui.rs:308-329 — 事件流中匹配 Ctrl+V 后直接 `match paste_image_to_temp_png() { ... }`，无 overlay/焦点判断且为同步调用",
+        "codex-rs/tui/src/app.rs:186-194 — `TuiEvent::AttachImage` 仅在 `self.overlay` 为 None 的分支处理",
+        "codex-rs/tui/src/pager_overlay.rs:497-523 — `StaticOverlay::handle_event` 对 `TuiEvent` 使用 `_ => Ok(())`，`AttachImage` 被丢弃"
+      ],
+      "rule": "PERF-006",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 无效且阻塞的副作用调用。影响评估：overlay 场景按下 Ctrl+V 造成输入延迟且行为静默丢失；同步 spawn 外部进程也使事件循环短暂阻塞，拖慢重绘。",
+        "suggestion": "[重构思路] 把图片粘贴下移到 ChatWidget 侧处理（或先判断当前是否有可接收图片的输入区），并用异步任务/`spawn_blocking` 执行剪贴板读取后再投递 `AttachImage` 事件，避免阻塞事件流。代码示例：`Event::Key(k) if is_ctrl_v(&k) => { let tx = paste_tx.clone(); tokio::task::spawn_blocking(move || { if let Ok((path, info)) = paste_image_to_temp_png() { let _ = tx.send(TuiEvent::AttachImage { path, width: info.width, height: info.height, format_label: info.encoded_format.label() }); } }); }`",
+        "subcategory": "事件循环阻塞"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "codex-rs/core/src/config.rs",
+      "line": 416,
+      "title": "删除 disable_response_storage 配置项但未做迁移提示，旧配置被静默忽略",
+      "description": "`ConfigToml` 使用 `#[derive(Deserialize, ...)]` 且未启用 `deny_unknown_fields`，因此用户 `config.toml` 中残留的 `disable_response_storage = true/false` 会被静默忽略，不会报错也不会告警；而该字段原先对 OpenAI ZDR 客户是必填语义项。用户升级后既看不到“配置已废弃”的提示，也无法理解 `store` 语义已变为恒 false，排查请求行为变化时缺少线索。",
+      "evidence": [
+        "codex-rs/core/src/config.rs:390-419 — `#[derive(Deserialize, Debug, Clone, Default)] pub struct ConfigToml` 无 `deny_unknown_fields`，第 416 行仅留注释 `// Removed: disable_response_storage. Responses are never stored.`",
+        "codex-rs/core/src/config.rs:792 附近 — 原 `disable_response_storage: config_profile.disable_response_storage.or(cfg.disable_response_storage)...` 合并逻辑被整体删除",
+        "codex-rs/core/src/client.rs:198 — `store: false` 恒置，配置层面已无任何可调开关"
+      ],
+      "rule": "CONFIG-007",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 配置项静默废弃。影响评估：ZDR 相关用户的既有配置失效且无提示，行为变化不可观测，增加支持成本。",
+        "suggestion": "[重构思路] 保留字段但标记 deprecated，在加载时输出一次 `tracing::warn!`；或在 CHANGELOG/文档中明确说明该项已废弃。代码示例：`if cfg.disable_response_storage.is_some() { tracing::warn!(\"disable_response_storage is deprecated and ignored; responses are never stored\"); }`",
+        "subcategory": "配置兼容性"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "codex-rs/tui/src/bottom_pane/textarea.rs",
+      "line": 845,
+      "title": "删除公共 wrap_ranges 后把 unsafe 指针算术与其 +1 哨兵内联复制到 TextArea",
+      "description": "`crate::wrapping::wrap_ranges` 被删除后，其实现被逐行复制进 `TextArea::wrapped_lines`，包括 `unsafe { slice.as_ptr().offset_from(self.text.as_ptr()) }` 与 `end + trailing_spaces + 1` 的越界哨兵约定（由 `render_lines` 的 `r.end - 1` 消费）。unsafe 代码与哨兵约定现在分散在业务代码中且没有注释说明，任何复用方（例如新的折行调用点）都必须知道 `end` 可能等于 `text.len() + 1`，否则容易在 `&self.text[range]` 处 panic；同时 `Cow::Owned(_) => unreachable!()` 在将来更换 `textwrap` 选项（如启用会改写文本的 `WordSplitter`）时会直接崩溃。",
+      "evidence": [
+        "codex-rs/tui/src/bottom_pane/textarea.rs:835-853 — 内联 `let start = unsafe { slice.as_ptr().offset_from(self.text.as_ptr()) as usize };` 与 `lines.push(start..end + trailing_spaces + 1);`，且 `std::borrow::Cow::Owned(_) => unreachable!()`",
+        "codex-rs/tui/src/bottom_pane/textarea.rs:928 — 消费方 `let line_range = r.start..r.end - 1;` 依赖上述 `+1` 哨兵",
+        "diff 中被删除的 `wrapping.rs` 里 `wrap_ranges` 使用 `panic!(\"wrap_ranges: unexpected owned string\")` 且是集中封装的共享函数"
+      ],
+      "rule": "MAINTAIN-008",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] unsafe 逻辑内联复制、隐式约定缺乏封装。影响评估：可读性与可维护性下降，后续改动容易忽略哨兵约定导致切片 panic；unsafe 代码缺少安全前提说明也难以审计。",
+        "suggestion": "[重构思路] 把字节区间计算抽成一个带文档的安全函数（例如 `fn wrapped_ranges(text: &str, width: usize) -> Vec<Range<usize>>`），在函数文档中写明 `end` 允许等于 `text.len() + 1` 的哨兵约定，并让 TextArea 只调用它；同时用 `textwrap::wrap` 的 `Cow` 分支返回 `Result` 或在 `Owned` 时退化为按字符切分，避免 `unreachable!()`。代码示例：`/// 返回半开区间，最后一项 end 可能为 text.len()+1（哨兵）。fn wrapped_ranges(text: &str, width: usize) -> Vec<Range<usize>> { ... }`",
+        "subcategory": "unsafe 代码封装"
+      }
+    }
+  ]
+}

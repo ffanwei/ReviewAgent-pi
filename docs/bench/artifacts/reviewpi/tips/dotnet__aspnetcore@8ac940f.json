@@ -1,0 +1,405 @@
+[
+  {
+    "filePath": "eng/common/core-templates/steps/source-build.yml",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "portableBuildArgs='/p:PortabelBuild=${{ parameters.platform.portableBuild }}'",
+        "review": "[缺陷类型] MSBuild 全局属性名拼写错误（PortableBuild → PortabelBuild），属于静默失效类缺陷。影响评估：所有复用该模板并设置 `platform.portableBuild` 的 source-build leg 会丢参数；由于 PortableBuild 在仓库内默认为 true，显式传 false 的场景会得到与预期相反的构建结果，且构建不会失败、日志中也不易发现，属于难以定位的构建正确性问题。",
+        "suggestion": "[重构思路] 修正拼写；如担心后续再出现属性名漂移，可在模板注释中标注该属性必须在 eng/Common.props 中有对应定义，或在构建脚本里对未知的 `/p:` 属性做白名单校验。代码示例：`portableBuildArgs='/p:PortableBuild=${{ parameters.platform.portableBuild }}'`",
+        "category": "可靠性",
+        "subcategory": "构建参数名拼写错误",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 81,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "eng/Build.props",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "<ItemGroup Condition=\"'$(TargetRuntimeIdentifier)' == 'linux-x64' OR '$(TargetRuntimeIdentifier)' == 'linux-arm64'\">",
+        "review": "[缺陷类型] 项目包含条件与实际项目能力不一致（arm64 被纳入但项目只支持 x64）。影响评估：未来若为 arm64 增加 deb leg（或本地/内部构建使用该组合）会直接构建失败，或被静默产出一个架构名缺失的错误包；排查时需要深入 Debian.targets 才能发现根因。",
+        "suggestion": "[重构思路] 让包含条件与项目能力一致：Debian 项目仅在 linux-x64 下加入；若确需 arm64 支持，先在 Deb 打包脚本与 DebianPackageArch 中补齐 arm64（arm64 → arm64）映射，并去掉 Directory.Build.targets 中仅 x64 的限制。代码示例：`<InstallerProject Condition=\" '$(LinuxInstallerType)' == 'deb' and '$(TargetRuntimeIdentifier)' == 'linux-x64' \" Include=\"$(RepoRoot)src\\Installers\\Debian\\**\\*.*proj\" />`",
+        "category": "可靠性",
+        "subcategory": "构建平台/架构条件不匹配",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 282,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "Directory.Build.props",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "<IsStableBuild>false</IsStableBuild>",
+        "review": "[缺陷类型] 覆盖式属性赋值（缺少空值守卫）+ 求值顺序不明确。影响评估：正式版（stable）构建中若发布基础设施依赖 IsStableBuild 决定发布位置或预发布标记，可因这里被置为 false 而发布到错误的位置或带上错误的版本后缀，且只在最终的 stable 发布时才暴露。",
+        "suggestion": "[重构思路] 只在未设置时给出默认值，并把该赋值的注释指向实际生效来源；必要时把这段逻辑移到 Arcade Sdk.props 导入之后。代码示例：`<IsStableBuild Condition=\"'$(IsStableBuild)' == ''\">false</IsStableBuild>` 与 `<IsStableBuild Condition=\"'$(IsStableBuild)' == '' and '$(DotNetFinalVersionKind)' == 'release'\">true</IsStableBuild>`",
+        "category": "可维护",
+        "subcategory": "MSBuild 属性覆盖与求值顺序",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 58,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F004",
+        "code": "<OfficialBaseURL>https://dotnetcli.azureedge.net/dotnet/</OfficialBaseURL>",
+        "review": "[缺陷类型] 依赖已弃用的 CDN 域名。影响评估：若任一 azureedge 端点被停用，非 Windows leg 的 runtime/installer 下载会失败，CI 与本地构建同时受影响；由于是构建期网络依赖，失败往往是间歇性或区域相关的，定位成本高。",
+        "suggestion": "[重构思路] 统一使用存储账户直连端点（blob.core.windows.net），或经确认后改为当前受支持的 CDN 域名；同一改动里三处基址保持一致，并在 CI 中增加一次简单的 HEAD 探测以便尽早发现端点失效。代码示例：`<OfficialBaseURL>https://dotnetcli.blob.core.windows.net/dotnet/</OfficialBaseURL>`",
+        "category": "可靠性",
+        "subcategory": "外部依赖端点可用性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 246,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".azure/pipelines/ci.yml",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "--publish",
+        "review": "[缺陷类型] 环境相关开关被硬编码取代，发布门控语义被削弱。影响评估：release/internal-release/Manual 构建的非 Windows 资产会从构建腿直接发布，绕过原先“PostBuildSign=false 时由 codesign 作业负责发布”的路径；一旦发布内容或时序不符合发布流程预期，问题会在发布后才暴露，回滚代价高。",
+        "suggestion": "[重构思路] 保留一个变量（或参数）来表达“本腿是否需要发布”，而不是硬编码；如果新设计确实要求所有分支都由构建腿发布，请在 PR 说明与 pipeline 注释中显式记录该语义变化。代码示例：`- name: _NonWindowsPublishArg\\n  value: ${{ ... }}` 并在各步骤中使用 `$(_NonWindowsPublishArg)`",
+        "category": "可靠性",
+        "subcategory": "CI 发布门控条件",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 302,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "path: artifacts/packages/",
+        "review": "[缺陷类型] 产物输出路径迁移后，pipeline 的 artifact 上传路径未同步更新。影响评估：deb/rpm/tar.gz 从构建可下载产物中消失，PR 阶段无法人工校验安装包；若存在依赖 `_Packages` 制品的下游作业（跨架构补包、codesign），会出现“找不到安装包”的空目录，且不一定会让作业失败。",
+        "suggestion": "[重构思路] 在三个 Linux 腿的 artifacts 列表中显式增加 installers 目录（或合并为一个路径列表），并确认 codesign-xplat 等消费方按新路径取件。代码示例：`- name: Linux_x64_Installers\\n  path: artifacts/installers/`",
+        "category": "可靠性",
+        "subcategory": "CI 产物上传路径不同步",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 406,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "eng/Version.Details.xml",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "<Dependency Name=\"dotnet-ef\" Version=\"10.0.0-alpha.1.24603.6\">",
+        "review": "[缺陷类型] 变更范围外的依赖版本回退（疑似误合并/回滚）。影响评估：会静默带走 runtime、arcade、roslyn 等上游仓库已合入的修复（含安全与稳定性修复），并把 Playwright/Selenium 拉回旧版本影响组件 E2E 测试覆盖；若 source-build 基线与实际包版本不一致，还会导致源构建校验失败。",
+        "suggestion": "[重构思路] 将安装包重构与依赖更新拆成两个 MR：依赖更新交由 darc/自动 PR 维护；如果本次回退是刻意的（例如为规避某个上游回归），请在 PR 描述中给出具体原因、影响范围与恢复计划，并核对 eng/SourceBuildPrebuiltBaseline.xml 与新版本是否一致。代码示例：`git checkout origin/main -- eng/Version.Details.xml eng/Versions.props global.json` 后再单独 PR 提交依赖更新",
+        "category": "可维护",
+        "subcategory": "依赖版本回退/变更范围外修改",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".azure/pipelines/jobs/default-build.yml",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "- script: $(BuildDirectory)\\build.cmd -ci -prepareMachine -nativeToolsOnMachine -nobl -Configuration $(BuildConfiguration) $(BuildScriptArgs)",
+        "review": "[缺陷类型] 构建可诊断性下降。影响评估：默认 job 的构建失败时只能依赖文本日志，MSBuild 双写/增量判定/属性求值类问题几乎无法定位，会拉长 CI 失败的平均排查时间。",
+        "suggestion": "[重构思路] 仅在确有磁盘/时长压力的 leg 上关闭 binlog；默认 job 保留 binlog 并在失败时上传 artifacts/log。代码示例：保留 `$(BuildDirectory)/build.sh --ci --configuration $(BuildConfiguration) $(BuildScriptArgs)`，在失败时通过 `publishOnError: true` 上传 artifacts/log",
+        "category": "可测试性",
+        "subcategory": "CI 日志与诊断能力",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 213,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Components/Web.JS/src/Services/NavigationEnhancement.ts",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "const submitterValue = event.submitter!.getAttribute('value');",
+        "review": "[缺陷类型] TypeScript 非空断言（`!`）掩盖了运行时的 null。影响评估：`form.requestSubmit()` 等 submitter 为 null 的提交会抛 TypeError，且因已 preventDefault 导致表单既不增强提交也不原生提交，属用户可见的功能失效。",
+        "suggestion": "[重构思路] 与其他访问保持一致改用可选链，并把 name/value 一起判空。代码示例：\n```ts\nconst submitterName = event.submitter?.getAttribute('name');\nconst submitterValue = event.submitter?.getAttribute('value');\nif (submitterName && submitterValue) {\n  formData.append(submitterName, submitterValue);\n}\n```",
+        "category": "可靠性",
+        "subcategory": "空值安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 147,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "eng/common/cross/build-rootfs.sh",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "--skipsigcheck)",
+        "review": "[缺陷类型] 选项变为 no-op（部分失效）。影响评估：依赖 `--skipsigcheck` 的构建（自建镜像/离线 keyring）会在 `apt-get update` 阶段失败，而脚本与文档仍宣称会跳过签名校验，误导排障方向。",
+        "suggestion": "[重构思路] 要么在 skip 时恢复 `--allow-unauthenticated` 等参数，要么删除该选项并让调用方显式失败。代码示例：\n```bash\nif [[ \"$__SkipSigCheck\" == \"0\" ]]; then\n    __Keyring=\"$__Keyring --force-check-gpg\"\nelse\n    __UpdateOptions=\"--allow-unauthenticated --allow-insecure-repositories\"\nfi\nchroot \"$__RootfsDir\" apt-get update $__UpdateOptions\n```",
+        "category": "可靠性",
+        "subcategory": "选项静默失效",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 389,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F011",
+        "code": "__AlpineVersion=3.13 # 3.13 to maximize compatibility",
+        "review": "[缺陷类型] 参数解析与消费者不一致导致入参被静默忽略。影响评估：CI 或本地传入 `alpine3.20` 时实际用 3.13 建 rootfs，可能拉入过旧的 llvm10-libs 并掩盖版本相关的构建问题，且排查困难（无任何告警）。",
+        "suggestion": "[重构思路] 要么恢复对显式版本的尊重，要么显式报错提示不支持。代码示例：\n```bash\nelse\n    if [[ -n \"$__AlpineMajorVersion\" ]]; then\n        __AlpineLlvmLibsLookup=1   # 尊重用户显式指定的版本，动态查找 llvm libs\n    else\n        __AlpineVersion=3.13\n        __AlpinePackages+=\" llvm10-libs\"\n    fi\nfi\n```",
+        "category": "可靠性",
+        "subcategory": "构建脚本参数语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 428,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Components/WebAssembly/DevServer/src/Server/Startup.cs",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "{",
+        "review": "[缺陷类型] 删除有明确注释与 issue 依据的行为修复。影响评估：仅影响开发体验（DevServer），但会让热重载在浏览器缓存命中时静默失效，症状随机且难以归因。",
+        "suggestion": "[重构思路] 若因其他原因（如改用别的注入机制）才删除，应在 MR 中给出替代机制并同步更新注释/issue；否则恢复该响应头。代码示例：\n```csharp\nOnPrepareResponse = fileContext =>\n{\n    // Avoid caching index.html during development (hot reload injects a script).\n    fileContext.Context.Response.Headers[HeaderNames.CacheControl] = \"no-store\";\n    if (applyCopHeaders) { /* ... */ }\n}\n```",
+        "category": "可靠性",
+        "subcategory": "HTTP 缓存语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 71,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Components/Components/src/RouteView.cs",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "private NavigationManager NavigationManager { get; set; }",
+        "review": "[缺陷类型] 未使用的依赖注入成员。影响评估：可维护性下降，并新增一个可能抛 InvalidOperationException 的注入点；若为后续改动预留，应同 PR 落地使用点或添加说明。",
+        "suggestion": "[重构思路] 删除该属性；若确有后续需要，改为在有使用点的 PR 中加入并附 TODO/说明，或改为在需要处通过 `[Inject]` 局部获取。代码示例：\n```csharp\n// 删除：\n// [Inject]\n// private NavigationManager NavigationManager { get; set; }\n```",
+        "category": "可维护",
+        "subcategory": "死代码/未使用注入",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 32,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "eng/tools/RepoTasks/RepoTasks.csproj",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "<PackageReference Include=\"System.Security.Cryptography.Xml\" Version=\"$(RepoTasksSystemSecurityCryptographyXmlVersion)\" />",
+        "review": "[缺陷类型] 安全修复被撤销 / 版本固定被移除。影响评估：构建工具进程可能重新使用存在 ASN.1 解析漏洞的旧版本程序集（CVE-2024-38095），且新属性若未定义会直接导致 RepoTasks 还原失败。",
+        "suggestion": "[重构思路] 保留 System.Formats.Asn1 的显式固定，另按需新增 Cryptography.Xml 固定；并在 eng/Versions.props 中确认新属性存在。代码示例：\n```xml\n<!-- Manually updated version to address CVE-2024-38095 -->\n<PackageReference Include=\"System.Formats.Asn1\" Version=\"$(SystemFormatsAsn1Version)\" />\n<!-- 若确需 -->\n<PackageReference Include=\"System.Security.Cryptography.Xml\" Version=\"$(RepoTasksSystemSecurityCryptographyXmlVersion)\" />\n```",
+        "category": "安全",
+        "subcategory": "依赖漏洞缓解回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 39,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "eng/common/native/install-dependencies.sh",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "elif [ \"$ID\" = \"fedora\" ]; then",
+        "review": "[缺陷类型] 平台分支收窄导致支持面回退。影响评估：在 RHEL 系镜像/容器上运行该脚本会静默成功但未安装任何依赖，构建失败点被推迟到编译阶段，不易归因。",
+        "suggestion": "[重构思路] 若并非有意放弃 RHEL，应恢复 rhel 分支或显式报错提示不支持。代码示例：\n```bash\nelif [ \"$ID\" = \"fedora\" ] || [ \"$ID\" = \"rhel\" ]; then\n    dnf install -y cmake llvm lld lldb clang python curl libicu-devel openssl-devel krb5-devel zlib-devel lttng-ust-devel pigz cpio\n```",
+        "category": "可移植",
+        "subcategory": "发行版支持范围",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 30,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/DataProtection/DataProtection/src/KeyManagement/KeyRingBasedDataProtector.cs",
+    "reviewTips": [
+      {
+        "id": "F017",
+        "code": "var purposeLengthsPool = ArrayPool<int>.Shared.Rent(purposes.Length);",
+        "review": "[缺陷类型] 池化资源未在异常路径释放。影响评估：异常情况下 ArrayPool 少回收一个数组，不会造成数据错误，但会削弱池化收益并成为后续复制的反例。",
+        "suggestion": "[重构思路] 用 try/finally 包裹写入逻辑。代码示例：\n```csharp\nvar purposeLengthsPool = ArrayPool<int>.Shared.Rent(purposes.Length);\ntry\n{\n    // 计算长度并写入 targetArr ...\n}\nfinally\n{\n    ArrayPool<int>.Shared.Return(purposeLengthsPool);\n}\n```",
+        "category": "性能",
+        "subcategory": "池化缓冲区生命周期",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 365,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Servers/Kestrel/Core/src/Internal/Http/Http1Connection.cs",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "hostText = _absoluteRequestTarget.Authority + \":\" + _absoluteRequestTarget.Port.ToString(CultureInfo.InvariantCulture);",
+        "review": "[缺陷类型] Host 头构造逻辑错误（端口重复拼接 / 请求头被改写）。影响评估：开启 AllowHostHeaderOverride 的反向代理或 absolute-form 请求场景下，Host 会被改写为 `host:port:port`（很可能直接被判非法并返回 400），或默认端口场景下被补上 `:80`/`:443`，影响基于 Host 的路由与生成链接。",
+        "suggestion": "[重构思路] 覆盖分支应回退为直接使用 Authority（它要么已带端口，要么是默认端口），端口拼接只保留在校验表达式里；如需减少分配可把 Authority 提取到局部变量只取一次。代码示例：`if (_context.ServiceContext.ServerOptions.AllowHostHeaderOverride) { hostText = _absoluteRequestTarget.Authority; HttpRequestHeaders.HeaderHost = hostText; }`",
+        "category": "可靠性",
+        "subcategory": "HTTP 请求头解析/构造",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 656,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Tools/GetDocumentInsider/src/Commands/GetDocumentCommandWorker.cs",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "if (!string.IsNullOrEmpty(_context.DocumentName) && !documentNames.Contains(_context.DocumentName))",
+        "review": "[缺陷类型] 过滤条件被删除导致输出范围扩大（既有行为回归）。影响评估：`--document-name` 语义失效，单文档生成退化为全文档生成，输出目录与文件缓存列表被污染，可能触发下游增量构建误判。",
+        "suggestion": "[重构思路] 恢复「校验 + 收敛」两步逻辑，把校验与赋值写在同一个分支内。代码示例：`if (!string.IsNullOrEmpty(_context.DocumentName)) { if (!documentNames.Contains(_context.DocumentName)) { _reporter.WriteError(Resources.FormatDocumentNotFound(_context.DocumentName)); return false; } documentNames = [_context.DocumentName]; }`",
+        "category": "可靠性",
+        "subcategory": "命令行工具行为回归",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 264,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Testing/src/xunit/SkipOnHelixAttribute.cs",
+    "reviewTips": [
+      {
+        "id": "F023",
+        "code": "return Queues.ToLowerInvariant().Split(';').Contains(targetQueue);",
+        "review": "[缺陷类型] 跳过条件的匹配语义被收窄（双向/前缀匹配 → 精确匹配）。影响评估：internal 与 public 队列不再联动跳过，已知失败测试会在另一侧队列真实运行，造成 CI 虚假失败与噪音；同时删除解释该约定的注释，后续维护者难以还原语义。",
+        "suggestion": "[重构思路] 保留 internal/public 队列互认的语义，并把 `.Open` 约定显式表达在代码里。代码示例：`var queues = Queues.ToLowerInvariant().Split(';'); var bare = targetQueue.Replace(\".open\", string.Empty); return queues.Any(q => q == targetQueue || q == targetQueue + \".open\" || q.Replace(\".open\", string.Empty) == bare);`",
+        "category": "可测试性",
+        "subcategory": "测试跳过条件",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 69,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Servers/Kestrel/Core/src/Internal/Infrastructure/TransportManager.cs",
+    "reviewTips": [
+      {
+        "id": "F025",
+        "code": "private ConnectionManager ConnectionManager => _serviceContext.ConnectionManager;",
+        "review": "[缺陷类型] 未使用的私有成员（死代码）。影响评估：无功能影响，但污染类表面、误导读者以为存在统一的访问入口；若启用 IDE0052/CA 类分析可能产生告警。",
+        "suggestion": "[重构思路] 删除该属性；若确实想统一访问入口，则应把第 100 行的 `_serviceContext.ConnectionManager` 也改为使用该属性。代码示例：`// 删除第 33 行，保持 `new TransportConnectionManager(_serviceContext.ConnectionManager)` 不变`",
+        "category": "可维护",
+        "subcategory": "死代码/未使用成员",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 33,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Tools/dotnet-user-jwts/src/Commands/CreateCommand.cs",
+    "reviewTips": [
+      {
+        "id": "F026",
+        "code": "var appsettingsFilePath = Path.Combine(Path.GetDirectoryName(project), \"appsettings.Development.json\");",
+        "review": "[缺陷类型] 魔法字符串重复（常量被移除导致契约分散）。影响评估：无即时功能缺陷，但三个命令必须写入同一配置文件才能保证 JWT scheme 的增删一致，分散硬编码提高了不同步风险。",
+        "suggestion": "[重构思路] 把一个共享常量保留在 DevJwtCliHelpers（或新建的常量类）中，三处统一引用。代码示例：`internal const string DefaultAppSettingsFile = \"appsettings.Development.json\";`，使用处 `Path.Combine(Path.GetDirectoryName(project)!, DevJwtCliHelpers.DefaultAppSettingsFile)`",
+        "category": "可维护",
+        "subcategory": "魔法字符串/常量抽取",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 247,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/Servers/HttpSys/src/RequestProcessing/Request.cs",
+    "reviewTips": [
+      {
+        "id": "F028",
+        "code": "public CipherAlgorithmType CipherAlgorithm { get; private set; }",
+        "review": "[缺陷类型] 弃用（[Obsolete]/SYSLIB0058）标注与警告抑制被整体移除，而弃用类型的使用点仍在。影响评估：编译期迁移指引丢失，调用方可能在无提示下继续使用将被移除的 TLS 枚举 API；同时签名与转换点重新暴露在 SYSLIB0058 之下，在告警即错误的仓库配置下可能直接阻断构建。",
+        "suggestion": "[重构思路] 先确认目标框架对这些枚举的弃用状态：若仍弃用，应恢复共享常量上的 [Obsolete] 与必要的局部 `#pragma warning disable SYSLIB0058`，或统一改用 `NegotiatedCipherSuite`；若确属有意回退，请在 MR 描述中说明并与接口侧标注保持一致。代码示例：`#pragma warning disable SYSLIB0058 // Type or member is obsolete` / `CipherAlgorithm = (CipherAlgorithmType)handshake.CipherType;` / `#pragma warning restore SYSLIB0058`",
+        "category": "可维护",
+        "subcategory": "API 弃用与兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 339,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

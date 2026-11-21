@@ -8,23 +8,26 @@
 
 ## 已迁移
 
-| 目录 | 文件数 | 说明 |
+| 目录 / 文件 | 文件数 | 说明 |
 |---|---:|---|
 | `README.md` | 1 | AACR-Bench v2 评测归档总说明 |
+| `MIGRATION.md` | 1 | 本迁移说明 |
+| `MANIFEST.json` | 1 | 归档索引（指向 artifacts / ocr / results） |
 | `scripts/` | 14 | 桥接、运行、后处理、报告、离线调参、子集生成 |
 | `data/` | 9 | 151 条标准样本、run / eval_ok / smoke10 / iter20、排除分析、原始数据 |
 | `configs/` | 10 | iterS / iterB / iterM / iterF 配置集 |
 | `metrics/` | 27 | 全量 baseline、smoke10 / iter20 / 各 config 基线、过滤扫描 |
+| `artifacts/` | 217 | review-pi 逐样本产物（reviews_all / tips / audit-summary） |
+| `ocr/` | 121 | OCR 结果、指标与对比材料 |
+| `results/` | 151 | 桥接层历史结果（status / review_output / token） |
 | `comparison/` | 2 | OCR vs review-pi 对比材料 |
+
+合计约 **554 个文件 / 20.5 MB**。`artifacts/`、`ocr/`、`results/` 都是历史运行产物，
+不是运行输入；重跑评测时请使用 `data/` / `configs/` 与外部 evaluation 环境。
 
 ## 未迁移
 
-| 目录 | 原因 |
-|---|---|
-| `artifacts/` | 217 个历史 review-pi 产物，约 5.2 MB；不是运行所需 |
-| `ocr/` | 121 个 OCR 结果/指标，约 7.6 MB；历史对照材料 |
-| `results/` | 历史运行结果；按 ADR-0033 运行留痕不入库 |
-| `MANIFEST.json` | 归档索引，指向未迁移的 artifacts / ocr / results |
+无（`docs/bench/` 已全量迁入）。`data/aacr-bench/` 是另一份本地数据集，仍在 `.gitignore` 中。
 
 ## 运行时依赖（重要）
 

@@ -1,0 +1,248 @@
+[
+  {
+    "filePath": "browser_use/controller/service.py",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if element_node:",
+        "review": "[缺陷类型] 缺少失败分支导致隐式返回 None，并被上层转换成「成功但无内容」。影响评估：动作实际未执行却反馈成功，误导 LLM 的后续决策，调试时日志里只有找不到元素的 warning 而无失败结果。",
+        "suggestion": "[重构思路] 补全 else 分支，返回明确错误。代码示例：`else:\\n\\treturn ActionResult(error=f\"No element found for selector '{params.css_selector}'\")`",
+        "category": "可靠性",
+        "subcategory": "返回值完整性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 177,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "await page.emulate_media('screen')",
+        "review": "[缺陷类型] 关键字唯一参数被改为位置参数。影响评估：既有 save_pdf 动作由可用变为必抛 TypeError，属于对既有功能的回归破坏。",
+        "suggestion": "[重构思路] 恢复关键字调用；如确实要缩短写法，也应保留参数名以保证可读性与兼容性。代码示例：`await page.emulate_media(media='screen')`",
+        "category": "可靠性",
+        "subcategory": "外部 API 调用兼容性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 269,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')",
+        "review": "[缺陷类型] 模块/类名误用导致的 AttributeError（`datetime` 模块被当作 `datetime` 类调用）。影响评估：新增的 HTML 保存动作完全不可用，且失败原因被吞进 ActionResult.error，排查成本高。",
+        "suggestion": "[重构思路] 改为 `from datetime import datetime` 后调用 `datetime.now()`，或保留模块导入并使用 `datetime.datetime.now()`；同时建议在文件内复用统一的 slug 生成函数。代码示例：`from datetime import datetime\\n...\\ntimestamp = datetime.now().strftime('%Y%m%d_%H%M%S')`",
+        "category": "可靠性",
+        "subcategory": "API 误用",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 352,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/utils.py",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "return any_or_all(os.getenv(key).strip() for key in keys)",
+        "review": "[缺陷类型] 缺失默认值导致的 NoneType 属性访问。影响评估：环境变量缺失这一最常见配置错误会被 AttributeError 掩盖，报错可读性显著下降。",
+        "suggestion": "[重构思路] 保留空串默认值，或显式判空。代码示例：`return any_or_all((os.getenv(key) or '').strip() for key in keys)`",
+        "category": "可靠性",
+        "subcategory": "环境变量校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 320,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/agent/service.py",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "AgentHookFunc = Callable[['Agent'], None]",
+        "review": "[缺陷类型] 类型别名与运行时调用方式不一致（同步签名 / 异步调用）。影响评估：按类型注解编程的用户会得到 `TypeError: object NoneType can't be used in 'await' expression`，且静态检查不会告警。",
+        "suggestion": "[重构思路] 二选一：恢复 `Awaitable[None]`；或保持宽松类型但在调用处兼容同步返回值。代码示例：`result = on_step_start(self)\\nif inspect.isawaitable(result):\\n\\tawait result`",
+        "category": "可靠性",
+        "subcategory": "类型契约一致性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 86,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "self.browser.config.new_context_config.disable_security = self.browser.config.disable_security",
+        "review": "[缺陷类型] 单向覆盖式配置同步，缺少「仅在用户未指定时继承」的判断。影响评估：用户显式配置被静默回滚，跨域 iframe 场景下元素定位失败，且问题难以定位。",
+        "suggestion": "[重构思路] 仅在 context 配置未被显式设置（None 语义）时继承 browser 级配置，或用 `model_fields_set` 判断用户是否显式传入。代码示例：`if 'disable_security' not in self.browser.config.new_context_config.model_fields_set:\\n\\tself.browser.config.new_context_config.disable_security = self.browser.config.disable_security`",
+        "category": "可靠性",
+        "subcategory": "配置继承",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 261,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/agent/memory/service.py",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "self._memory_config = self.settings.config or {'vector_store': {'provider': 'faiss'}}",
+        "review": "[缺陷类型] 默认配置语义收缩 + 默认开关翻转，导致默认路径引入外部依赖与数据外发。影响评估：非 OpenAI 项目可能直接构造失败；默认行为改变影响所有使用者；对话内容默认流向第三方 embedding 服务存在合规/隐私风险。具体失败形态取决于 mem0ai==0.1.81 的默认 config（该库源码不在本仓库快照内，需实际验证）。",
+        "suggestion": "[重构思路] 保留显式默认 embedder（或要求在未配置 embedder 时抛出清晰错误），并保持 `enable_memory` 默认关闭或明确在文档中声明默认开启的影响。代码示例：`DEFAULT_MEMORY_CONFIG = {'vector_store': {'provider': 'faiss'}, 'embedder': {'provider': 'huggingface', 'config': {'model': 'all-MiniLM-L6-v2'}}}`",
+        "category": "可靠性",
+        "subcategory": "默认配置收缩",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 49,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/browser/context.py",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "if self.browser.config.headless:",
+        "review": "[缺陷类型] 条件分支遗漏导致的配置项失效。影响评估：headed 模式下窗口尺寸配置静默失效，页面按 1280x720 渲染，可能影响依赖视口大小的可见性判定与高亮坐标，属于行为回归。",
+        "suggestion": "[重构思路] 两个模式都显式处理视口：headed 用 `no_viewport=True` 跟随真实窗口，headless 用配置尺寸。代码示例：`if self.browser.config.headless:\\n\\tkwargs['viewport'] = self.config.browser_window_size\\n\\tkwargs['no_viewport'] = False\\nelse:\\n\\tkwargs['no_viewport'] = True`",
+        "category": "可靠性",
+        "subcategory": "视口配置",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 414,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/dom/buildDomTree.js",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "popTiming('highlighting');",
+        "review": "[缺陷类型] 计时栈 push/pop 不配对。影响评估：debugMode 下的高亮耗时统计恒为 NaN，性能分析数据不可用；虽不影响功能，但会让后续排障得到错误结论。",
+        "suggestion": "[重构思路] 在函数入口成对调用。代码示例：`function highlightElement(element, index, parentIframe = null) { if (!element) return index; pushTiming('highlighting'); try { ... } finally { popTiming('highlighting'); } }`",
+        "category": "可维护",
+        "subcategory": "性能计时一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 331,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F010",
+        "code": "nodeData.isInViewport = true;",
+        "review": "[缺陷类型] 索引去重逻辑移除 + 视口标记硬编码。影响评估：每步 token 消耗上升、索引与真实可见区域脱钩，模型可能选择不可见元素；同时索引变化噪声增大，也会影响 multi_act 中基于 branch_path_hash 的元素变更检测。",
+        "suggestion": "[重构思路] 恢复父级去重（同一交互链只保留一个可点击索引），并把 isInViewport 改为基于 `isInExpandedViewport(node, viewportExpansion)` 计算。代码示例：`nodeData.isInViewport = isInExpandedViewport(node, viewportExpansion); if (nodeData.isInViewport) { nodeData.highlightIndex = highlightIndex++; }`",
+        "category": "性能",
+        "subcategory": "DOM 索引生成",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 926,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/dom/views.py",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "line += f'>{text}'",
+        "review": "[缺陷类型] 文本表示拼接缺陷（标签未闭合）与结构信息丢失。影响评估：畸形标记会让模型误判元素边界与文本归属，扁平输出削弱嵌套语义，可能降低元素选择的准确率。",
+        "suggestion": "[重构思路] 统一走一条分支拼接，并保留 depth 缩进。代码示例：`line = f'{\"\\\\t\" * depth}[{node.highlight_index}]<{node.tag_name}'; if attributes_str: line += f' {attributes_str}'; line += f'>{text}</{node.tag_name}>' if text else ' />'`",
+        "category": "可靠性",
+        "subcategory": "LLM 输入格式",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 149,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/agent/prompts.py",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "include_attributes: list[str] = [],",
+        "review": "[缺陷类型] 可变默认参数（mutable default argument）。影响评估：当前只读故未立即出错，但为后续原地修改埋下跨实例共享状态的隐患，且类型上不再允许表达「未指定」。",
+        "suggestion": "[重构思路] 恢复 `None` 默认值并在体内归一化。代码示例：`def __init__(self, state, result=None, include_attributes: list[str] | None = None, step_info=None): ... self.include_attributes = include_attributes or []`",
+        "category": "可维护",
+        "subcategory": "Python 反模式",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 67,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/dom/service.py",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "gc.collect()",
+        "review": "[缺陷类型] 热路径上的强制全量 GC。影响评估：每步增加一次全堆扫描开销，长任务下延迟累积；若确实存在内存增长，应定位循环引用而不是靠每步全量回收。",
+        "suggestion": "[重构思路] 移除热路径的全量 `gc.collect()`；如需控制内存，改为在任务结束或阈值触发时收集，并考虑用 weakref 打破 parent 循环引用。代码示例：`# 移除热路径 gc.collect()\\n# 在 Agent.close()/任务结束时统一 gc.collect()`",
+        "category": "性能",
+        "subcategory": "热路径开销",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 156,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "browser_use/controller/views.py",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "element_type: Optional[str]",
+        "review": "[缺陷类型] Pydantic v2 必填/可选语义混淆。影响评估：LLM 未提供 element_type 时工具调用直接校验失败，产生无谓的重试与步数浪费。",
+        "suggestion": "[重构思路] 补默认值使其真正可选。代码示例：`element_type: Optional[str] = None`",
+        "category": "可维护",
+        "subcategory": "参数模型定义",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 35,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

@@ -1,0 +1,300 @@
+{
+  "generatedAt": "2026-11-15T02:13:45.367Z",
+  "runId": "20261115_020620_360",
+  "source": "mr",
+  "caseId": "mpv-player__mpv@0729afe",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "osdep/language-posix.c",
+      "line": 42,
+      "title": "取消 locale 下划线归一化会让 OS 语言自动选轨失效",
+      "description": "mp_get_user_langs 不再把环境变量里的 `_` 替换为 `-`，而唯一消费方 misc/language.c 的 mp_match_lang 只按 `-` 切分，并只对两/三字母主标签做 canonicalize 映射。典型 `LANG=de_DE.UTF-8` 会产出 `de_DE`，切分后主标签为 `de_DE`，与音轨的 `de`/`de-DE` 都不相等，导致 --subs-match-os-language=yes 在 Linux 上静默失效（无任何报错提示）。",
+      "evidence": [
+        "osdep/language-posix.c:42 — ret[nb++] = talloc_strndup(ret, langList, len);（原先紧随其后有 `if (lang[i] == '_') lang[i] = '-';` 的循环，diff 中被删除）",
+        "osdep/language-posix.c:59 — 第二处 locale 解析（LANG/LC_* 分支）同样删除了 `_`→`-` 转换",
+        "misc/language.c:261 与 :274 — bstr_split(rest, \"-\", &rest)，只按 `-` 切分",
+        "misc/language.c:31-236 langmap 只含 2/3 字母主标签，canonicalize(\"de_DE\") 原样返回",
+        "player/loadfile.c:539 — char **autos = mp_get_user_langs();（add_os_langs 直接把这些串作为候选语言）"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 输入归一化缺失导致下游匹配失配。影响评估：绝大多数 Linux 用户环境是 `ll_CC.encoding` 形式，OS 语言自动选字幕/音轨功能整体失效，属无提示的行为回归。",
+        "suggestion": "[重构思路] 恢复 `_`→`-` 归一化，或把归一化下沉到 mp_match_lang 内部统一处理，避免各平台实现不一致。代码示例：`char *lang = talloc_strndup(ret, langList, len); for (size_t i = 0; i < len; i++) if (lang[i] == '_') lang[i] = '-'; ret[nb++] = lang;`",
+        "subcategory": "输入归一化缺失"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "stream/stream_dvdnav.c",
+      "line": 634,
+      "title": "open 失败路径不再调用 stream_dvdnav_close，泄漏 dvdnav 句柄并漏恢复光驱速度",
+      "description": "stream_dvdnav_close 统一负责 dvdnav_close、dvd_set_speed(-1) 与 talloc_free(priv->filename)，但原 `err:` 汇合点被删除后，new_dvdnav_stream 成功之后的两处提前 return（标题选择失败、菜单分支）都不会执行清理。而 stream.c 在 open 返回非 STREAM_OK 时只做 talloc_free(s)，不会调用 s->close（s->close 也只在成功路径赋值）。此外 filename 现在以 NULL 为父对象分配，不随流释放，因此该路径上 dvdnav 句柄、filename 内存都会泄漏，且光驱读取速度保持被修改值。",
+      "evidence": [
+        "stream/stream_dvdnav.c:537-546 — stream_dvdnav_close 负责 dvdnav_close / dvd_set_speed(s, priv->filename, -1) / talloc_free(priv->filename)",
+        "stream/stream_dvdnav.c:556 — priv->filename = mp_get_user_path(NULL, stream->global, filename)（父对象不再是 priv）",
+        "stream/stream_dvdnav.c:631-635 — dvdnav_title_play 失败后直接 return STREAM_UNSUPPORTED，无清理",
+        "stream/stream_dvdnav.c:636-639 — 菜单分支 return STREAM_ERROR，无清理",
+        "stream/stream_dvdnav.c:645 — stream->close = stream_dvdnav_close 仅在成功路径赋值",
+        "stream/stream.c:405-408 — open 返回非 STREAM_OK 时仅 talloc_free(s)，不调用 close"
+      ],
+      "rule": "RESOURCE-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 资源泄漏 + 外部状态未回滚（重构错误清理路径时漏掉分支）。影响评估：打开 DVD 失败后 dvdnav 句柄与 filename 内存泄漏，光驱速度保持被修改值，反复重试会累积泄漏。",
+        "suggestion": "[重构思路] 保留单一出口，或用 cleanup helper 在每个 return 前调用；最稳妥是恢复 goto err 汇合到 stream_dvdnav_close。代码示例：`if (dvdnav_title_play(priv->dvdnav, p->track + 1) != DVDNAV_STATUS_OK) { MP_FATAL(...); stream_dvdnav_close(stream); return STREAM_UNSUPPORTED; }`",
+        "subcategory": "错误路径资源泄漏"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "stream/stream_bluray.c",
+      "line": 445,
+      "title": "BluRay 菜单分支提前 return 未调用 destruct，泄漏已打开的 BLURAY 句柄",
+      "description": "bluray_stream_open_internal 在 b->bd = bd 之后，check_disc_info 失败与 num_titles==0 两个分支都已改为调用 destruct(b)，但 use_nav 分支仍是直接 return STREAM_ERROR。由于 stream.c 在 open 失败时只 talloc_free(s) 且 s->close 尚未赋值，已打开的 BLURAY 句柄与设备描述符不会经 bd_close 释放。",
+      "evidence": [
+        "stream/stream_bluray.c:435 — b->bd = bd;（bd_open 已成功）",
+        "stream/stream_bluray.c:437-440 与 :449-453 — 两个失败分支均调用 destruct(b)",
+        "stream/stream_bluray.c:443-445 — if (b->use_nav) { MP_FATAL(...); return STREAM_ERROR; } 未调用 destruct(b)",
+        "stream/stream_bluray.c:107-112 — 只有 destruct 才执行 bd_free_title_info / bd_close",
+        "stream/stream_bluray.c:489 — s->close 仅在成功路径设置为 bluray_stream_close",
+        "stream/stream.c:405-408 — open 失败时不调用 close，只 talloc_free(s)"
+      ],
+      "rule": "RESOURCE-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 错误路径资源泄漏（清理策略改造遗漏分支）。影响评估：以 bdnav:// 打开时 BLURAY 句柄泄漏，光驱/文件句柄被长期占用，重复尝试持续累积。",
+        "suggestion": "[重构思路] 统一所有 open 失败出口的清理动作，避免“有的分支 destruct、有的分支裸 return”。代码示例：`if (b->use_nav) { MP_FATAL(s, \"BluRay menu support has been removed.\\n\"); destruct(b); b->bd = NULL; return STREAM_ERROR; }`",
+        "subcategory": "错误路径资源泄漏"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "stream/stream_bluray.c",
+      "line": 276,
+      "title": "两个 control 分支不再释放 bd_get_title_info 的返回值，造成每次调用泄漏",
+      "description": "STREAM_CTRL_GET_TITLE_LENGTH 与 STREAM_CTRL_GET_TITLE_PLAYLIST 改为 `const BLURAY_TITLE_INFO *ti = bd_get_title_info(...)` 并删除了 bd_free_title_info(ti)。同文件 open 流程仍用非 const 指针接收同一 API 并调用 bd_free_title_info，说明该返回值需调用方释放；因此这两个 control 每次被调用都会泄漏一份含 chapters/clips 数组的 BLURAY_TITLE_INFO，而它们在选择标题与构建章节列表时会被反复调用。",
+      "evidence": [
+        "stream/stream_bluray.c:273-277 — const BLURAY_TITLE_INFO *ti = bd_get_title_info(b->bd, title, 0); 之后直接 return STREAM_OK，不再 bd_free_title_info",
+        "stream/stream_bluray.c:283-287 — GET_TITLE_PLAYLIST 分支同样改为 const 且不再释放",
+        "stream/stream_bluray.c:460 与 :475 — 同一 API 仍以非 const 指针接收并调用 bd_free_title_info(ti)",
+        "stream/stream_bluray.c:195-235 — 其它 control 分支复用 b->title_info，其生命周期由 handle_event 管理"
+      ],
+      "rule": "RESOURCE-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 内存泄漏（所有权约定在部分调用点被误改）。影响评估：每次查询标题长度/播放列表都泄漏一份标题信息结构，BD 导航过程中重复调用会让内存持续增长。",
+        "suggestion": "[重构思路] 保持与其它调用点一致的所有权处理：要么继续释放，要么统一改为复用 b->title_info；不要只改部分调用点。代码示例：`BLURAY_TITLE_INFO *ti = bd_get_title_info(b->bd, title, 0); if (!ti) return STREAM_UNSUPPORTED; *(double *)arg = BD_TIME_TO_MP(ti->duration); bd_free_title_info(ti); return STREAM_OK;`",
+        "subcategory": "内存泄漏"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "stream/stream_cdda.c",
+      "line": 228,
+      "title": "STREAM_CTRL_GET_CHAPTER_TIME 去掉 start_sector 偏移，与流内位置基准不一致",
+      "description": "cdda 流的对外位置基准是 p->start_sector：seek() 会把请求位置加上 start_sector 偏移，get_size() 以 (end_sector + 1 - start_sector) 计算。本处章节时间却直接用绝对扇区 disc_toc[track].dwStartSector，而章节索引仍按 start_track 相对平移。默认情况下 start_sector 为 0（open 时已用 toc_offset 把 disc_toc 首轨对齐到 0），但一旦用户用 --cdda-span-a 从中间轨道开始播放，start_sector 即为该轨首扇区，此时返回的章节时间是整盘绝对位置，与流内时间轴错位，章节跳转会落到错误位置。",
+      "evidence": [
+        "stream/stream_cdda.c:228 — int64_t sector = p->cd->disc_toc[track].dwStartSector;（原先还有 `- p->start_sector`）",
+        "stream/stream_cdda.c:163 — newpos += p->start_sector * CDIO_CD_FRAMESIZE_RAW（seek 以 start_sector 为基准）",
+        "stream/stream_cdda.c:241 — get_size 返回 (p->end_sector + 1 - p->start_sector) * CDIO_CD_FRAMESIZE_RAW",
+        "stream/stream_cdda.c:225 — track += start_track，章节索引是相对 start_track 的",
+        "stream/stream_cdda.c:302-305 — span[0] 非 0 时 start_sector = cdda_track_firstsector(cdd, p->span[0])；span 对应选项 `span-a`/`span-b`（:79-80）"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 时间/偏移基准不一致。影响评估：使用 --cdda-span-a 从中间轨道起播时，章节时间戳错误，章节切换与进度定位偏移；默认播放不受影响，故定位为 P2。",
+        "suggestion": "[重构思路] 所有对外位置/时间都必须相对 start_sector，保持与 seek()/get_size() 一致。代码示例：`int64_t sector = p->cd->disc_toc[track].dwStartSector - p->start_sector; int64_t pos = sector * CDIO_CD_FRAMESIZE_RAW;`",
+        "subcategory": "偏移基准错误"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "video/out/vo_gpu_next.c",
+      "line": 2304,
+      "title": "dither 参数切换时未清理 error_diffusion，残留内核会导致多重抖动",
+      "description": "原实现每次 update_render_options 都先把 dither_params 与 error_diffusion 一起置 NULL 再按 dither_algo 赋值。改动后只有 DITHER_NONE 分支清 dither_params，error_diffusion 仅在 DITHER_ERROR_DIFFUSION 时赋值；从一个 error-diffusion 算法切到 ordered/fruit/none 时旧内核仍留在常驻的 pars->params 中，与新的 dither_params 同时生效，渲染结果与选项不符。末尾 dither_depth<0 分支同样只清 dither_params。",
+      "evidence": [
+        "video/out/vo_gpu_next.c:2302-2322 — switch (opts->dither_algo)：DITHER_NONE 仅置 pars->params.dither_params = NULL；error_diffusion 只在 DITHER_ERROR_DIFFUSION 分支被赋值",
+        "diff 中被删除的两行 — `pars->params.dither_params = NULL;` 与 `pars->params.error_diffusion = NULL;`（原来位于 switch 之前，保证每次全量重置）",
+        "video/out/vo_gpu_next.c:2324-2325 — if (opts->dither_depth < 0) 只清 dither_params",
+        "video/out/vo_gpu_next.c:2338 — pars->params.hooks = p->hooks;（pars 为跨调用复用的持久结构）"
+      ],
+      "rule": "STATE-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 状态残留（重置逻辑被合并后覆盖不全）。影响评估：运行时切换 --dither 算法后渲染结果与选项不一致，且问题难以复现定位。",
+        "suggestion": "[重构思路] 在 switch 之前无条件重置两个字段，或为每个 case 写完整赋值，避免依赖上次调用的残留。代码示例：`pars->params.dither_params = NULL; pars->params.error_diffusion = NULL; switch (opts->dither_algo) { case DITHER_NONE: break; case DITHER_ERROR_DIFFUSION: pars->params.error_diffusion = pl_find_error_diffusion_kernel(opts->error_diffusion); /* fallthrough */ ... }`",
+        "subcategory": "状态残留"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "video/out/android_common.c",
+      "line": 47,
+      "title": "WinID 校验由可恢复错误改为 assert，缺失 surface 时可能崩溃",
+      "description": "vo_android_init 原本对 WinID==0 / WinID==-1 打印 FATAL 并 goto fail，使初始化失败可被上层优雅处理；改为 assert 后，在定义 NDEBUG 的构建中该检查会被完全编译掉，随后用 0 作为 jobject 调用 ANativeWindow_fromSurface，行为未定义；在未定义 NDEBUG 的构建中则直接 abort。两条路径都比原来的“返回 false”更糟，且丢失了可诊断的错误信息。",
+      "evidence": [
+        "video/out/android_common.c:47 — assert(vo->opts->WinID != 0 && vo->opts->WinID != -1);",
+        "video/out/android_common.c:48-49 — jobject surface = (jobject)(intptr_t)vo->opts->WinID; 紧接着 ANativeWindow_fromSurface(env, surface)",
+        "video/out/android_common.c:56-59 — 仍保留 fail: 分支（talloc_free(ctx); vo->android = NULL; return false;），说明本应有可恢复失败路径"
+      ],
+      "rule": "ROBUSTNESS-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 对外部输入校验误用断言。影响评估：Android 上 surface 未就绪时进程 abort 或把非法 jobject 传给 JNI，崩溃点远离根因，也无法回退到其它 VO。",
+        "suggestion": "[重构思路] 保留可恢复的错误处理，assert 只用于内部不变式。代码示例：`if (vo->opts->WinID == 0 || vo->opts->WinID == -1) { MP_FATAL(ctx, \"Missing surface pointer\\n\"); goto fail; }`",
+        "subcategory": "断言误用"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "DOCS/man/input.rst",
+      "line": 3886,
+      "title": "文档拼写错误：in the future 被改成 in the feature",
+      "description": "option-info 章节的说明被改为 “they may change radically in the feature.”，语义变成“在这个特性里”，与想表达的“将来可能发生剧烈变化”完全不符，会误导读者对 option-info 子属性稳定性的理解。",
+      "evidence": [
+        "DOCS/man/input.rst:3886 — \"sub-properties - they may change radically in the feature.\"",
+        "同一 hunk 的原始行是 \"sub-properties - they may change radically in the future.\""
+      ],
+      "rule": "DOC-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 文档拼写/语义错误。影响评估：用户可见文档出现明显错误，降低文档可信度，且易被本地化翻译继承。",
+        "suggestion": "[重构思路] 修正为 future，并在文档改动时做拼写检查。代码示例：`sub-properties - they may change radically in the future.`",
+        "subcategory": "文档拼写错误"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "DOCS/man/input.rst",
+      "line": 4022,
+      "title": "剪贴板 wayland 后端的协议名被改成 zwlr_data_control_manager_v1，与实现不符",
+      "description": "代码中的 Wayland 剪贴板后端使用 ext-data-control-v1 协议（clipboard-wayland.c 持有 struct ext_data_control_manager_v1 *dcman），文档却被改成旧的 zwlr_data_control_manager_v1。用户会据此确认错误的 compositor 协议支持情况，排障方向被误导。",
+      "evidence": [
+        "DOCS/man/input.rst:4022 — \"supports the ``zwlr_data_control_manager_v1`` protocol.\"",
+        "DOCS/man/input.rst:4027 — vo 回退说明同样被改成 zwlr_data_control_manager_v1",
+        "player/clipboard/clipboard-wayland.c:51 — struct ext_data_control_manager_v1 *dcman;（实现使用 ext-data-control-v1）"
+      ],
+      "rule": "DOC-002",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 文档与实现不一致。影响评估：用户按文档排查 clipboard/wayland 问题时得到错误结论，下游打包者也可能把它当成契约。",
+        "suggestion": "[重构思路] 文档以实际实现的协议为准，恢复 ext-data-control-v1。代码示例：`supports the ``ext-data-control-v1`` protocol.`",
+        "subcategory": "文档与实现不一致"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "DOCS/man/input.rst",
+      "line": 4030,
+      "title": "clock 属性文档被删除，但该属性仍然存在",
+      "description": "property list 中关于 ``clock``（当前本地时间，hour:minutes 格式）的整段说明被删除，但 player/command.c 仍然注册并实现该属性。删除后用户无法从手册得知该属性的存在与格式，属文档与实现脱节。",
+      "evidence": [
+        "DOCS/man/input.rst:4030 处（原 ``clock`` 段落所在位置，其后紧接 Inconsistencies 章节）已无 clock 条目",
+        "player/command.c:4311 — {\"clock\", mp_property_clock},",
+        "player/command.c:1637 — static int mp_property_clock(void *ctx, struct m_property *prop,"
+      ],
+      "rule": "DOC-003",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 有效文档被误删。影响评估：属性仍可用却无文档，用户和脚本作者难以发现，维护者也容易误判为死代码。",
+        "suggestion": "[重构思路] 若保留该属性则恢复文档；若计划移除，应同时改代码并给出兼容说明。代码示例：` ``clock``\\n\\n    The current local time in hour:minutes format.`",
+        "subcategory": "文档遗漏"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可维护性",
+      "file": "meson.options",
+      "line": 14,
+      "title": "cdda/dvdnav 默认由 auto 改为 disabled，静默关闭 CD/DVD 支持",
+      "description": "把 cdda 与 dvdnav 的默认值改为 disabled 后，任何未显式开启的构建（普通用户的 `meson setup build`、未同步修改的第三方打包脚本）都会在无任何提示的情况下失去 CD 播放与 DVD 导航能力，stream/stream.c 的 stream_list 中对应项会被 #if HAVE_CDDA / HAVE_DVDNAV 直接编译掉。CI 通过 ci/build-msys2.sh 显式 enabled 才保持覆盖，说明这是依赖显式开启的行为变更，却没有相应文档说明。",
+      "evidence": [
+        "meson.options:14 — option('cdda', type: 'feature', value: 'disabled', description: 'cdda support (libcdio)')",
+        "meson.options:17 — option('dvdnav', type: 'feature', value: 'disabled', description: 'dvdnav support')",
+        "stream/stream.c:66-76 — #if HAVE_CDDA / #if HAVE_DVDNAV 决定是否注册 cdda/dvdnav stream",
+        "ci/build-msys2.sh:6 — 通过 -D{cdda,d3d-hwaccel,d3d11,dvdnav,...}=enabled 显式开启",
+        "ci/build-openbsd.sh — diff 删除 -Dcdda=disabled，改为依赖新的默认值"
+      ],
+      "rule": "BUILD-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 默认构建配置的行为变更（静默功能裁剪）。影响评估：升级后 CD/DVD 功能消失且无运行时提示，用户难以判断是构建配置问题；打包产线行为随上游默认值漂移。",
+        "suggestion": "[重构思路] 若确实要默认关闭，应同步更新构建/选项文档并给出显著变更记录；否则保持 auto 由依赖探测决定。代码示例：`option('cdda', type: 'feature', value: 'auto', description: 'cdda support (libcdio)')`",
+        "subcategory": "构建默认值变更"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "player/command.c",
+      "line": 7729,
+      "title": "回调执行循环的边界取实时计数，执行期间新入队的回调会被同批执行",
+      "description": "mp_option_run_callbacks 的循环条件是 i < mpctx->num_option_callbacks（每轮重新读取），而循环体内的 run_command_opts 会执行用户 input-cmds 命令，这些命令经 m_config_set_option_raw → force_self_notify_change_opt(self_update=false) 再次进入 mp_option_change_callback 并向同一队列追加条目，从而在本轮遍历中被继续执行，形成“边执行边排队”的隐式语义（顺序与次数不再由入队那一刻决定）。原实现是同步逐次执行，不存在这种跨条目耦合，也难以复现与测试。",
+      "evidence": [
+        "player/command.c:7729 — for (int i = 0; i < mpctx->num_option_callbacks; i++)（边界每轮重读）",
+        "player/command.c:7721-7724 — mp_option_change_callback 中 MP_TARRAY_APPEND(mpctx, mpctx->option_callbacks, mpctx->num_option_callbacks, callback)",
+        "player/command.c:7853-7856 — if (opt_ptr == &opts->input_commands) { ...; run_command_opts(mpctx); } 在循环体内执行用户命令",
+        "player/command.c:435 与 :3714 — 命令路径调用 m_config_set_option_raw",
+        "options/m_config_frontend.c:639-640 — m_config_cache_write_opt 成功后 force_self_notify_change_opt(config, co, false)，即 self_update=false 会真正入队",
+        "player/command.c:7946 — 仅在循环结束后统一将 num_option_callbacks 置 0"
+      ],
+      "rule": "STATE-002",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 队列在遍历期间被修改（重入）。影响评估：同一批内回调的执行次数/顺序不确定，选项变更的副作用可能在半应用状态下执行；若某个处理反复触发同类变更，循环还可能持续增长。",
+        "suggestion": "[重构思路] 遍历前快照队列（把数组整体摘下后处理），执行期间新产生的变更留到下一轮。代码示例：`int n = mpctx->num_option_callbacks; struct mp_option_callback *list = mpctx->option_callbacks; mpctx->option_callbacks = NULL; mpctx->num_option_callbacks = 0; for (int i = 0; i < n; i++) { ... } talloc_free(list);`",
+        "subcategory": "重入与队列一致性"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "demux/cue.c",
+      "line": 216,
+      "title": "CUE 解析取消 TRACK 模式过滤，数据轨会被当作轨道加入时间线",
+      "description": "CUE_TRACK 分支删除了对 TRACK 参数中 `AUDIO` 关键字的校验，任何 TRACK 条目（包括 MODE1/2352 这类数据轨）都会被 append 到 f->tracks 并参与后续 timeline 构建。对于混合模式光盘的 CUE 表，轨道数量、章节数、时长与默认选轨都会包含无法播放的数据轨，表现为多出无效轨道/章节。",
+      "evidence": [
+        "demux/cue.c:216-223 — case CUE_TRACK 直接 MP_TARRAY_GROW / f->num_tracks += 1，不再检查 param 是否包含 AUDIO",
+        "diff 中被删除的两行 — if (bstr_find0(param, \"AUDIO\") == -1) break;",
+        "demux/demux_cue.c:278 — p->f = mp_parse_cue(data); 随后由 build_timeline 使用（:240-241 tl->meta = par->track_layout; tl->format = \"cue\";）",
+        "demux/cue.c:257-270 — mp_check_embedded_cue 遍历 f->tracks 全部条目，轨道集合变化会影响内嵌 CUE 判定"
+      ],
+      "rule": "CORRECTNESS-004",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 输入校验被移除导致数据集合扩大。影响评估：带数据轨的 CUE 会生成无法播放的轨道与错误章节，默认选轨可能落到数据轨上。",
+        "suggestion": "[重构思路] 若目的是支持非 AUDIO 轨，应显式解析 TRACK 模式并把模式带到下游，而不是无条件接受；否则恢复过滤。代码示例：`if (bstr_find0(param, \"AUDIO\") == -1) { MP_VERBOSE(demuxer, \"Skipping non-audio track\\n\"); break; }`",
+        "subcategory": "输入校验缺失"
+      }
+    }
+  ]
+}

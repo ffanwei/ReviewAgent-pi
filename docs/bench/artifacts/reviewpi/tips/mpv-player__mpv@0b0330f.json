@@ -1,0 +1,187 @@
+[
+  {
+    "filePath": "MPV_VERSION",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "0.39.0-UNKNOWN",
+        "review": "[缺陷类型] 发布元数据回退不完整，版本号、发布说明与接口变更记录三方不一致。影响评估：`mpv --version` 输出错误版本；升级用户丢失 0.40 周期的接口变更信息；后续发版脚本/打包脚本按 MPV_VERSION 生成包名时会产生错误版本。",
+        "suggestion": "[重构思路] 明确本 MR 的意图：若只是回退某一批代码改动，应保留 MPV_VERSION 与 RELEASE_NOTES 的当前开发版本，仅回退目标提交涉及的源码/文档；若确实要回退 0.40.0 发布，则必须同时回退新增的 `DOCS/interface-changes/*.txt` 片段与代码实现，使三者一致。代码示例：回退时保留 `MPV_VERSION` 为 `0.40.0-UNKNOWN`，并把 RELEASE_NOTES 中的 `Release 0.40.0` 段落、`git log v0.39.0..v0.40.0` 链接恢复。",
+        "category": "可维护",
+        "subcategory": "发布元数据一致性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "demux/demux_lavf.c",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "{\"hls\", .no_stream = true, .clear_filepos = true},",
+        "review": "[缺陷类型] 移除上游缺陷规避逻辑（workaround）而未提供替代方案。影响评估：使用较新 FFmpeg 的用户播放 HLS(m3u8) 流时可能直接打开失败或探测错误，且属于难以自查的回归。",
+        "suggestion": "[重构思路] 若确实不需要该 workaround，应在提交说明中给出「FFmpeg 已修复对应 bug」的证据与最低 FFmpeg 版本要求；否则保留逻辑并增加版本条件判断。代码示例：`if (priv->format_hack.no_ext_picky && !user_set_ext_picky) av_dict_set(&dopts, \"extension_picky\", \"0\", 0);`",
+        "category": "可靠性",
+        "subcategory": "上游缺陷规避",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 165,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "demux/demux_mpv.c",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "playlist_append_file(demuxer->playlist, s->path);",
+        "review": "[缺陷类型] URL 解码职责丢失。影响评估：通过 mpv:// 协议播放包含空格/非 ASCII/特殊字符的路径时无法打开或打开错误文件；与其他流的路径处理不一致。",
+        "suggestion": "[重构思路] 如果反转义被移到 stream 层完成，应在 demux_mpv.c 处加注释说明并在 stream 侧统一处理；否则恢复反转义。代码示例：`mp_url_unescape_inplace(s->path); playlist_append_file(demuxer->playlist, s->path);`",
+        "category": "可靠性",
+        "subcategory": "路径/URL 处理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 33,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "ci/build-win32.ps1",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "Set-StrictMode -Version Latest",
+        "review": "[缺陷类型] 错误处理策略被削弱。影响评估：Windows CI 中 git clone、meson、ninja 失败可能不立即中断，最终以缺文件/空产物形式失败，定位困难，甚至产出不完整的构建结果。",
+        "suggestion": "[重构思路] 恢复原生命令错误即中断的行为，或对每个原生调用显式检查 `$LASTEXITCODE`。代码示例：`$PSNativeCommandUseErrorActionPreference = $true`（若需兼容旧版 PowerShell，则每次调用后 `if ($LASTEXITCODE) { throw \"git clone failed\" }`）。",
+        "category": "可靠性",
+        "subcategory": "CI 错误处理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "git clone https://github.com/google/shaderc --depth 1 $subprojects/shaderc_cmake",
+        "review": "[缺陷类型] 构建依赖版本未固定 + 依赖源码打补丁。影响评估：Windows CI 可能因上游 shaderc 变更导致补丁失败而红，且失败与 MR 内容无关，排查成本高；构建不可复现。",
+        "suggestion": "[重构思路] 继续固定到经过验证的 tag/commit（或改用 subprojects 的 wrap 文件 + patch 目录由 meson 管理），在升级时显式评审补丁适配。代码示例：`git clone https://github.com/google/shaderc --depth 1 -b v2025.1 $subprojects/shaderc_cmake`。",
+        "category": "可靠性",
+        "subcategory": "CI 构建可复现性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 11,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "demux/demux_mkv.c",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "if (lav->profile == FF_PROFILE_UNKNOWN)",
+        "review": "[缺陷类型] 使用已废弃的上游 API 并与他处命名不一致。影响评估：编译期可能出现 deprecation 告警（在 -Werror 场景下直接失败），后续 FFmpeg 移除旧宏时需再次修复。",
+        "suggestion": "[重构思路] 统一使用 AV_PROFILE_*。代码示例：`lav->profile = AV_PROFILE_ARIB_PROFILE_A;` 与 `if (lav->profile == AV_PROFILE_UNKNOWN)`。",
+        "category": "可移植",
+        "subcategory": "上游 API 版本兼容",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2212,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "player/lua/select.lua",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "default_item = default_item + 1,",
+        "review": "[缺陷类型] 边界值（-1）语义丢失导致的下游索引越界/空列表。影响评估：在第一个章节起始时间大于 0 等 `chapter == -1` 的场景下，`select-chapter` 菜单会显示为空，用户按 Enter 会在 console 脚本内抛 `attempt to index a nil value`，章节选择功能不可用。",
+        "suggestion": "[重构思路] 保留对无效索引的显式转换，或在 console 侧把 0/负值统一视为「无默认项」。代码示例：`default_item = default_item > -1 and default_item + 1 or nil`；并在 console.lua 的 submit 分支加保护：`if #matches > 0 and selected_match >= 1 then ... end`。",
+        "category": "可靠性",
+        "subcategory": "边界值与索引安全",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 233,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "video/out/vo.c",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "if (!vo->config_ok || (vo->driver->caps & VO_CAP_NORETAIN) ||",
+        "review": "[缺陷类型] 状态标志未清零导致的事件循环空转（busy loop）。影响评估：对设置了 `VO_CAP_NORETAIN`/`VO_CAP_UNTIMED` 的输出驱动，一次重绘请求即可能让 VO 线程持续以最高速度循环，CPU 占满、终端/VO 事件被反复处理，属于性能与可用性回归。",
+        "suggestion": "[重构思路] 无论是否真正重绘，都要在持锁状态下消费掉 request_redraw；或把 caps 判断放到清标志之后。代码示例：`mp_mutex_lock(&in->lock); in->request_redraw = false; bool skip = (vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)); mp_mutex_unlock(&in->lock); if (skip) return;`",
+        "category": "性能",
+        "subcategory": "重绘标志与忙循环",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1079,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/out/vo_kitty.c",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "for (int offset = 0; offset < p->output_size; ) {",
+        "review": "[缺陷类型] 缓冲区长度 off-by-one，把字符串终止符当作数据发送。影响评估：`vo=kitty` 在非 `use-shm` 模式下每帧向终端注入一个多余的 0x00，可能造成图像解码失败、终端输出异常或每帧多出字节；同时发送的 base64 长度与 m 续传标志不再匹配实际数据长度。",
+        "suggestion": "[重构思路] 以 base64 实际输出长度（不含 NUL）作为循环上界，并显式保证最后一块带 m=0。代码示例：`const int b64_len = p->output_size - 1; for (int offset = 0; offset < b64_len; ) { int chunk = MPMIN(4096, b64_len - offset); if (offset > 0 || b64_len <= 4096) bstr_xappend_asprintf(NULL, &p->cmd, KITTY_ESC_CONTINUE, offset + chunk < b64_len); ... }`",
+        "category": "可靠性",
+        "subcategory": "缓冲区长度与协议帧边界",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 322,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/vdpau.c",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "if (ctx->is_preempted) {",
+        "review": "[缺陷类型] 非原子共享状态的跨线程读写竞争。影响评估：在初始化/抢占回调并发时可能出现撕裂读或未定义行为，理论上会误判抢占状态（吞掉或误报 `Got display preemption notice` 日志、错误地跳过恢复流程），属于低概率但难排查的并发缺陷。",
+        "suggestion": "[重构思路] 要么保留原子类型（读写都不加锁），要么把所有访问收敛到 `preempt_lock` 保护之下——包括 :83 的读取，以及创建路径中调用 `win_x11_init_vdpau_procs` 前先持锁。代码示例：`mp_mutex_lock(&ctx->preempt_lock); int r = win_x11_init_vdpau_procs(ctx, probing); mp_mutex_unlock(&ctx->preempt_lock);`",
+        "category": "可靠性",
+        "subcategory": "并发共享状态",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 83,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

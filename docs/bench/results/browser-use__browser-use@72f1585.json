@@ -1,0 +1,92 @@
+{
+  "instance_id": "browser-use__browser-use@72f1585",
+  "repo": "browser-use/browser-use",
+  "base_commit": "e85a547378b236c9788802d28e816f10940a7e53",
+  "head_commit": "72f1585f9add5b72e829eaee3b5bff684e0b08d3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 127.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 202,
+      "summary": "thinking_budget 默认值改为 0 且请求参数被硬编码为 -1，字段彻底失效并强制注入 thinking_config",
+      "failure_scenario": "字段默认值由 None 改为 0 后，L201 的 `if self.thinking_budget is not None:` 对所有 ChatGoogle 实例恒为真；而真正发给 API 的值在 L202 被硬编码成 -1（自动/动态思考），字段取值完全不参与请求构造。其后果有三：(1) 用户显式传入 ChatGoogle(thinking_budget=0) 想关闭思考的意图被静默忽略；(2) 该文件 VerifiedGeminiModels 中仍包含 gemma-3-27b-it、gemma-3-4b、gemini-2.0-flash 等不支持 thinking 配置的模型，改动前默认 None 时不会发送 thinking_config，改动后每次请求都会附带 thinking_config={'thinking_budget': -1}，存在被服务端以 400 INVALID_ARGUMENT 拒绝的风险；(3) L184-185 从 self.config 复制的用户自定义 config['thinking_config'] 会在 L203 被无条件覆盖。全仓库仅本文件引用该字段（L78 声明、L201/L202 使用），无外部调用方显式传值，因此默认值变更会波及所有 ChatGoogle 使用点（cli.py:255、examples/simple.py、examples/models/gemini.py 等）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CONFIG-002"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 384,
+      "summary": "删除 10 次指数退避手工重试但未配置 SDK 重试，瞬时错误将直接冒泡",
+      "failure_scenario": "本次改动删除了模块级 _is_retryable_error 与 invoke 中的 `for attempt in range(10)` 指数退避循环（上限 60s），改为单次调用并把注释写成「Let Google client handle retries internally」。但该「内置重试」在仓库中没有任何配置证据：get_client() 每次调用都新建 genai.Client，_get_client_params 只透传 api_key/vertexai/credentials/project/location/http_options，http_options 默认 None，没有任何 retry/退避参数；全仓库也没有断言重试行为的可执行证据（现有 Google 用例依赖真实 API key，缺失即 skip）。同时 BaseChatModel（browser_use/llm/base.py）只是 Protocol，无重试包装，唯一直接调用方 Agent.get_model_output（agent/service.py:1159）只捕获 ValidationError 后 re-raise。因此 429/503/网络抖动等瞬时错误会立即变成 ModelProviderError，Agent 多步执行的中断概率显著上升，属于可靠性回退。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RETRY-001"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 393,
+      "summary": "CancelledError 分支不可达：except Exception 捕获不到 BaseException 子类",
+      "failure_scenario": "Python 3.8+ 中 asyncio.CancelledError 继承自 BaseException 而非 Exception，因此 L386 的 `except Exception as e` 永远捕获不到任务取消，L392-401 里由 `isinstance(e, asyncio.CancelledError)` 驱动的「取消即超时」诊断与 status_code=504 映射是死代码；此外 `str(asyncio.CancelledError())` 为空字符串，L392 的 'timeout'/'cancelled' 子串匹配同样不会命中，两条路径都无法触发。结果是新增的超时诊断能力对真正的取消场景完全无效，却让维护者误以为取消会被解释为 504；同时 L1 新增的 `import asyncio` 仅被这段死代码使用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "DEAD-CODE-001"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 392,
+      "summary": "超时判定前置且 rate limit 改为 elif，可能把 429 限流误分类为 408/504",
+      "failure_scenario": "改动把原本独立的 `if any(indicator in ... '429')` 改成 `elif`，并在其前面插入了一个只做小写子串匹配的 timeout 分支。当错误文本同时含超时与限流线索时（例如 SDK 包装后的 '429 RESOURCE_EXHAUSTED ... deadline exceeded / timeout'，或网关 504 文本中夹带 429/rate limit 字样），status_code 会被定为 408 或 504 而不再是 429，从而丢失限流语义。上游若依据 status_code 判断是否退避/降级/提示配额问题，会做出错误决策；而且字符串匹配本身对 'timed out'、'DeadlineExceeded' 等常见表述也不命中，判定并不稳定。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "ERROR-CLASS-002"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 409,
+      "summary": "Google 限流仍抛 ModelProviderError 而非 ModelRateLimitError，与其他 provider 不一致",
+      "failure_scenario": "限流分支把状态码置为 429 后，最终在 L422-426 抛出的是通用 ModelProviderError；而其他 provider 在限流时抛专用 ModelRateLimitError（exceptions.py:18 定义了该类）：anthropic/chat.py:232、aws/chat_anthropic.py:238、aws/chat_bedrock.py:285、deepseek/chat.py:128/182/206、groq/chat.py:120、openrouter/chat.py:199。调用方若按异常类型识别限流（如决定是否退避或给出配额提示），对 Google provider 会失效，形成跨 provider 行为不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CONSISTENCY-003"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 284,
+      "summary": "调试日志直接输出模型原始响应片段，存在敏感信息落盘风险",
+      "failure_scenario": "结构化解析失败时，L284 与 L362 会把 response.text 的前 200 字符写入 debug 日志，L377 还会把完整异常字符串（可能包含请求 URL、参数、服务端返回体）写入 error 日志。该模块服务于浏览器自动化场景，模型输入输出常含页面内容、账号信息等敏感数据；一旦应用把日志级别调到 DEBUG 或日志被集中采集，可能造成数据外泄。",
+      "severity": "P3",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "SECURITY-LOG-001"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 375,
+      "summary": "内层 try/except 仅记录日志后原样抛出，导致同一失败被重复记录且整体缩进加深",
+      "failure_scenario": "_make_api_call 新增的 `try:`（L212）与 `except Exception as e:`（L375-379）只做耗时计算、写一条 error 日志并 `raise`，没有任何处理逻辑；外层 L386-426 会对同一异常再做分类、记录（如 L401）并包装抛出，因此每次失败至少产生两条日志，排查时噪音翻倍。同时这个无实际作用的内层 try 使方法体整体多缩进一层，diff 面积（约 200 行重排）远大于语义变化，增加了审阅与后续合并冲突成本。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "READABILITY-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\browser-use__browser-use@72f1585.diff\n  caseId              browser-use__browser-use@72f1585\n  --issue             (未传)\n  --taskId            browser-use__browser-use@72f1585\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 120.6s · 模型调用 18 次 · token 输入 46,856（未命中） · 输出 15,999 · 缓存命中 379,264（89.0%） · 工具 23 次（主会话 23 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0121\n[time] 阶段耗时 | 总墙钟 121.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 120.5s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 8.5s (7.1%) | P2 4.6s (3.8%) | P3 7.3s (6.0%) | P4 44.5s (36.9%) | P5 45.3s (37.6%) | P6 10.4s (8.6%)\n[usage] 任务总计 | 模型调用 18 次（Agent 18 + 一次性 0） | token 输入 46,856（未命中） | 输出 15,999 | 缓存命中 379,264（89.0%） | $0.0121\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\browser-use__browser-use@72f1585\\audit\\20261115_005425_168.json",
+  "token_usage": {
+    "input_tokens": 46856,
+    "output_tokens": 15999,
+    "cache_read_input_tokens": 379264
+  }
+}

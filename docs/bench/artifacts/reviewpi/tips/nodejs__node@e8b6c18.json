@@ -1,0 +1,116 @@
+[
+  {
+    "filePath": "tools/v8_gypfiles/abseil.gyp",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "'<(ABSEIL_ROOT)/absl/synchronization/internal/waiter_base.cc',",
+        "review": "[缺陷类型] 构建源文件列表与头文件选择逻辑不一致，Windows 专属实现被移出编译单元。影响评估：Windows 下 abseil 静态库缺少 Win32Waiter 符号定义，链接阶段报 undefined symbol，Node.js 无法在 Windows 上构建，Windows CI 必然红。",
+        "suggestion": "[重构思路] 若本次确实要回退 abseil 相关改动，需与 deps/v8/third_party/abseil-cpp 的实际版本保持一致：仅当快照中的 waiter.h 不再引用 win32_waiter 时才可删除；否则保留这两个源文件。建议在 Windows 构建验证后再合入。代码示例：`'<(ABSEIL_ROOT)/absl/synchronization/internal/win32_waiter.h',` 与 `'<(ABSEIL_ROOT)/absl/synchronization/internal/win32_waiter.cc',` 重新加入 sources 列表。",
+        "category": "可移植",
+        "subcategory": "跨平台构建链接一致性",
+        "severity": "Fatal",
+        "level": "Fatal",
+        "ruleId": "",
+        "lineNum": 279,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/node.cc",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "if (!(flags & ProcessInitializationFlags::kNoInitializeV8)) {",
+        "review": "[缺陷类型] 并发基础设施的全局安全阀被移除（absl 死锁检测误报抑制）。影响评估：若误报路径再次被触发，进程会收到 ABSL 的 fatal 报告并 abort，表现为随机的 worker/crypto 场景崩溃，且难以复现定位；属于对既有行为的破坏。",
+        "suggestion": "[重构思路] 若确需移除该关停逻辑，应先确认当前 V8/abseil 组合中的误报已被上游修复，并在 PR 描述中给出 node-v8#301 的关闭依据与压力测试证据；否则保留该调用或改为按用例抑制。代码示例：`V8::Initialize(); absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);`（恢复原状）。",
+        "category": "可靠性",
+        "subcategory": "并发死锁检测误报",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 1212,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "eslint.config.mjs",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "'test/fixtures/**',",
+        "review": "[缺陷类型] 配置迁移过程中丢失了取反白名单，导致静态检查覆盖范围缩小。影响评估：test/fixtures/{console,v8,vm} 下的代码不再被 lint，违反原有「有意保留少量 fixture 参与 lint」的约定，且此类回退通常不会引起任何测试失败，容易长期漏检。",
+        "suggestion": "[重构思路] 迁移时逐条保留取反模式；注意 ESLint flat config 中必须先声明忽略目录、再用 '!' 重新纳入，且父级忽略不能把子目录整体吞掉。代码示例：`{ ignores: ['test/fixtures/**', '!test/fixtures/console/**', '!test/fixtures/v8/**', '!test/fixtures/vm/**'] }`，并保留原有解释性注释。",
+        "category": "可测试性",
+        "subcategory": "lint 覆盖范围回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 52,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "lib/internal/modules/typescript.js",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "throw new ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX(error.message);",
+        "review": "[缺陷类型] 错误诊断信息能力回退（丢失文件位置与代码片段）。影响评估：`node --experimental-strip-types` 与 `--input-type=*-typescript` 用户在语法错误时只能看到一行 message，需自行定位；同时该行为变更未在 diff 中被显式说明，属隐式功能退化。",
+        "suggestion": "[重构思路] 若版本回退是必须的，请显式说明诊断能力的变化并补一条 release note；若仍希望保留定位信息，可在 Node 侧自行补齐（amaro 错误对象若提供了 line/col 就复用，否则不装饰）。代码示例：`if (error.filename && error.startLine) { err.stack = `${error.filename}:${error.startLine}\\n${err.stack}`; } throw err;`",
+        "category": "可维护",
+        "subcategory": "错误信息可诊断性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 67,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/update-wpt.yml",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "- cron: 0 0 * * *",
+        "review": "[缺陷类型] 配置与注释不一致 / 调度频率变更缺少说明。影响评估：后续维护者会依据注释误判执行频率；同时自动化 PR 与 CI 资源消耗提升到原来的 7 倍，可能造成 PR 噪音。",
+        "suggestion": "[重构思路] 让注释与 cron 保持一致，并在 PR 描述中说明频率调整的原因与预期影响；若确为临时调试，请勿合入默认分支。代码示例：`# Run once a day at 12:00 AM UTC.` + `- cron: 0 0 * * *`。",
+        "category": "可维护",
+        "subcategory": "CI 配置与注释一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 6,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "lib/internal/process/execution.js",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "const strippedSource = stripTypeScriptModuleTypes(source, getEvalModuleUrl());",
+        "review": "[缺陷类型] 同一逻辑脚本被赋予两个不同的伪 URL。影响评估：TypeScript eval 报错的堆栈可能显示与模块 URL 不匹配的 [evalN] 名字，影响可调试性；compile cache 键随每次 eval 变化，缓存条目无法复用。",
+        "suggestion": "[重构思路] 在函数内先取一次 URL 并复用，同时把 name 用于 CJS 分支以保持脚本名一致。代码示例：`const url = getEvalModuleUrl(); const strippedSource = stripTypeScriptModuleTypes(source, url); evalScript(name, strippedSource, breakFirstLine, print, shouldLoadESM);`（ESM 分支把同一 url 传给 evalModuleEntryPoint）。",
+        "category": "可靠性",
+        "subcategory": "eval URL 与缓存键一致性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 373,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

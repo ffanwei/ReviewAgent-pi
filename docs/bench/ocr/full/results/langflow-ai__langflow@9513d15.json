@@ -1,0 +1,149 @@
+{
+  "instance_id": "langflow-ai__langflow@9513d15",
+  "repo": "langflow-ai/langflow",
+  "base_commit": "d035e41e631f0da97bdc0e93e7afdae78d5e94da",
+  "head_commit": "9513d152197e5336fbc00eb6b891f1ffb25ad62d",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T04:38:23.441363+00:00",
+  "duration_seconds": 112.28,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 4 finding(s) across 2 selected item(s).",
+    "summary": {
+      "files_reviewed": 2,
+      "comments": 4,
+      "total_tokens": 305381,
+      "input_tokens": 291097,
+      "output_tokens": 14284,
+      "cache_read_tokens": 252928,
+      "elapsed": "1m52s"
+    },
+    "tool_calls": {
+      "total": 25,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 12,
+        "file_read": 11
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "src/backend/base/langflow/graph/vertex/base.py",
+        "content": "Deadlock risk: `_log_transaction_async` is awaited from `_get_result`, which is always invoked from `get_result` while `self._lock` is already held (`async with self._lock: return await self._get_result(...)`, line 621) and from `Vertex.build` (line 821) via the requester path. `asyncio.Lock` is **not** reentrant, so acquiring `self._lock` here will block forever whenever `flow_id` is set, i.e. on every result retrieval for a persisted flow. Task tracking does not need the vertex build/result lock; drop the lock acquisition here (and let the surrounding try/except CancelledError handle cleanup) or use a dedicated lock if mutual exclusion over `log_transaction_tasks` is really required.",
+        "existing_code": "            async with self._lock:",
+        "start_line": 621,
+        "end_line": 621,
+        "thinking": "Confirmed `get_result` is called during graph building (building params of vertices), which is the normal path. So deadlock would occur whenever flow_id is set (persisted flows) — that's the common case. Critical.\n\nAlso, note `_log_transaction_async` is called from `_get_result` only. In ComponentVertex._get_result the non-built path also called within lock.\n\nNow write comments.\n\nAlso potential issue: `_log_transaction_async` is called within the lock in `build()` too? build → get_requester_result → edge.get_result_from_source → doesn't call _get_result. So no.\n\nWrite the comments.",
+        "category": "bug",
+        "severity": "critical"
+      },
+      {
+        "path": "src/backend/base/langflow/graph/vertex/base.py",
+        "content": "`asyncio.gather` without `return_exceptions=True` re-raises any exception from a previously scheduled `log_transaction` task. That exception escapes `_log_transaction_async`, propagates out of `_get_result`, and turns a pure telemetry/logging failure into a failed vertex result retrieval (previously logging errors were swallowed). Pass `return_exceptions=True` and log failures instead, so logging can never break graph execution. Also note this awaits every previously scheduled log write while the vertex lock is held, serializing the hot path on log I/O; consider gathering outside the lock or using `return_exceptions=True` without bubbling failures.",
+        "suggestion_code": "                        results = await asyncio.gather(*tasks, return_exceptions=True)\n                        for res in results:\n                            if isinstance(res, BaseException) and not isinstance(res, asyncio.CancelledError):\n                                logger.warning(\"Failed to log transaction: %s\", res)",
+        "existing_code": "                        await asyncio.gather(*tasks)",
+        "start_line": 643,
+        "end_line": 643,
+        "thinking": "Confirmed `get_result` is called during graph building (building params of vertices), which is the normal path. So deadlock would occur whenever flow_id is set (persisted flows) — that's the common case. Critical.\n\nAlso, note `_log_transaction_async` is called from `_get_result` only. In ComponentVertex._get_result the non-built path also called within lock.\n\nNow write comments.\n\nAlso potential issue: `_log_transaction_async` is called within the lock in `build()` too? build → get_requester_result → edge.get_result_from_source → doesn't call _get_result. So no.\n\nWrite the comments.",
+        "category": "bug",
+        "severity": "high"
+      },
+      {
+        "path": "src/backend/base/langflow/graph/vertex/base.py",
+        "content": "`Task.cancel()` only requests cancellation and never raises `asyncio.CancelledError`, so the `suppress(...)` wrapper here is dead code. Call `pending_task.cancel()` directly.",
+        "existing_code": "                    with suppress(asyncio.CancelledError):",
+        "start_line": 658,
+        "end_line": 658,
+        "thinking": "Confirmed `get_result` is called during graph building (building params of vertices), which is the normal path. So deadlock would occur whenever flow_id is set (persisted flows) — that's the common case. Critical.\n\nAlso, note `_log_transaction_async` is called from `_get_result` only. In ComponentVertex._get_result the non-built path also called within lock.\n\nNow write comments.\n\nAlso potential issue: `_log_transaction_async` is called within the lock in `build()` too? build → get_requester_result → edge.get_result_from_source → doesn't call _get_result. So no.\n\nWrite the comments.",
+        "category": "maintainability",
+        "severity": "low"
+      },
+      {
+        "path": "src/backend/base/langflow/graph/vertex/base.py",
+        "content": "This turns the previously fire-and-forget transaction logging into a synchronous barrier: every `_get_result` call now waits (while holding `self._lock`) for all previously scheduled `log_transaction` tasks - i.e. real DB inserts - to finish before creating the new one and before returning the component result. On the per-vertex result hot path this adds the full logging/DB latency to graph execution and serializes it under the lock. To keep logging asynchronous, avoid awaiting the pending tasks here (attach a done-callback that retrieves exceptions, e.g. `task.add_done_callback(lambda t: t.exception())`), or flush all pending logging tasks once when the build/flow completes instead of on every result retrieval.",
+        "existing_code": "                task = asyncio.create_task(log_transaction(flow_id, source, status, target, error))",
+        "start_line": 651,
+        "end_line": 651,
+        "thinking": "Enough context. Now decide final comments.\n\nI'll report:\n\n1. base.py — performance/design: awaiting `asyncio.gather(*tasks)` inside the per-vertex lock on the result hot path makes transaction logging synchronous with graph execution; every `get_result` call now blocks on pending DB writes (and holding the vertex lock while doing so further serializes). Suggest not blocking the result path: keep fire-and-forget but retrieve exceptions in the done callback, or flush pending logging tasks once at the end of the flow/build rather than on every result retrieval.\n\nIs this \"real defect\"? I'm moderately confident. The declared intent \"proper task handling and cancellation\" might justify. But blocking the hot path inside a lock is a genuine concern. I'll report as medium.\n\n2. base.py — `self.log_transaction_tasks.clear()` before `await asyncio.gather(*tasks)` means if gather raises (or the coroutine is cancelled inside gather), the tracking reference is lost; plus tasks not in the set will not be cancelled by the outer handler... Actually the inner handler handles them. Hmm, weaker.\n\nAlternative distinct comment: the outer `except asyncio.CancelledError` cancels *all* pending log tasks of this vertex, which can silently drop transactions created by concurrent calls — but concurrency here can't happen (lock). So skip.\n\n3. vertex_types.py — should I flag the deadlock at the call sites? It's the same deadlock class. The confirmed finding explicitly is about base.py `async with self._lock:`. For completeness of per-file review, maybe I can note in vertex_types.py that these awaits go through `_log_transaction_async`, which acquires the same lock held by `get_result`/`build`, so they'd deadlock too — but that's repeating. The instruction says don't repeat confirmed findings. I'll skip.\n\nHmm, but I must give each file a pass; that's fine, vertex_types.py may have no new findings.\n\nWait — is there something in vertex_types that is actually unique: the not-built path already returns `default_value` instead of raising in the cycle-edge case. Awaiting the log first means if logging raises anything (e.g., CancelledError), the default value is never returned. Covered by finding 2 (exception propagation). Skip.\n\nAnother thought about the vertex_types not-built path: log with status \"error\" is now awaited and could deadlock → the ValueError never raised, hanging build. Same.\n\nOne more possible real issue in base.py: the docstring says \"Log a transaction asynchronously\" but the method now awaits; documentation mismatch — skip (docs only, and instructions say avoid doc comments).\n\nAnother newly introduced issue: the method's signature unchanged but return type None; fine.\n\nLet me also consider: `if self.log_transaction_tasks:` then clear+gather. Because gather is inside the lock, and the new task's completion callback `discard` executes in the event loop; `log_transaction` awaits DB operations while the next `_get_result` waits on the lock → serialization of the entire graph build? No: each vertex has own lock, so other vertices build concurrently, but each vertex's own logging blocks its result retrieval. Still adds latency.\n\nHmm, could awaiting the log task cause a deadlock with the DB session? If log_transaction uses a session from a limited pool, awaiting it while holding the vertex lock... could exhaust the pool if many vertices each hold a session while waiting on their locks? Not really—log tasks open session only while running.\n\nActually here's a potentially interesting deadlock: `_get_result` holds the vertex lock; `_log_transaction_async` awaits the previous log task, which may be blocked acquiring a DB session from a pool; meanwhile other tasks hold sessions and wait for... nothing related. Fine.\n\nI'll go with the performance comment only. Maybe also add a maintainability comment about the double try/except structure / redundant outer handler being unreachable when... no.\n\nActually, consider one more: `except asyncio.CancelledError: ... raise` inside the inner try, then the outer catches and re-raises. If gather raises CancelledError due to a subtask cancellation (not the outer task), the code re-raises CancelledError from a non-cancelled task, which effectively cancels the caller's task (the graph build). And meanwhile, `log_transaction` catches exceptions but not CancelledError, so a cancelled logging task (e.g., task cancelled because its event loop is shutting down, or by this very handler) will cause this. This is a real defect distinct-ish from finding 2? Finding 2 says gather re-raises any exception from a previously scheduled task; that exception escapes and fails result retrieval. That's the same. Skip.\n\nLet me write the perf comment anchored to the gather line — but careful: finding 2 is anchored to `await asyncio.gather(*tasks)` as well. The tool matches consecutive lines; anchoring the same line could collide with the existing comment but that's acceptable? Better anchor to a different line: `async with self._lock:` is finding 1's anchor. Hmm. I could anchor to `task = asyncio.create_task(log_transaction(flow_id, source, status, target, error))` for the perf comment about awaiting prior tasks. That line is unique and relevant (the new task creation after the barrier). I'll anchor there and explain the barrier created by the preceding gather.\n\nAlternatively, anchor to `if self.log_transaction_tasks:` line. Using the create_task line is fine.\n\nActually, is a performance comment valuable enough? Let me weigh: Reviewer trust. The change makes previously fire-and-forget logging awaited within result retrieval. This clearly adds latency to the critical path per vertex (DB insert). For a flow with, e.g., 20 components, logging inserts are typically fast but the barrier is inside the lock on get_result. It's a defensible design critique. I'll include it as medium performance.\n\nShould I also flag that `_log_transaction_async`'s logging tasks now can leak \"Task exception was never retrieved\" if the set is cleared and gather not run again? Not applicable.\n\nI'll produce one comment. Also maybe a second: since gather's CancelledError branch cancels tasks then re-raises, and then the outer handler cancels tasks again — duplicate cancellation logic; maintainability low. Skip.\n\nFinal: one comment, then task_done.",
+        "category": "performance",
+        "severity": "medium"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "src/backend/base/langflow/graph/vertex/base.py",
+          "src/backend/base/langflow/graph/vertex/vertex_types.py"
+        ]
+      }
+    ],
+    "session_id": "7c0d0d4a-0bd6-491e-89d0-1d83e29b1459",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "7c0d0d4a-0bd6-491e-89d0-1d83e29b1459",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "42a6850fb79697305e732e9d28db42dc03047c890182725ffbb69a1b6d67ee57"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "d035e41e631f0da97bdc0e93e7afdae78d5e94da",
+        "requested_head": "9513d152197e5336fbc00eb6b891f1ffb25ad62d",
+        "resolved_base": "22e24fa718a511e657c7c120721fa129f3c3b677",
+        "resolved_head": "9513d152197e5336fbc00eb6b891f1ffb25ad62d",
+        "exact_range": "22e24fa718a511e657c7c120721fa129f3c3b677..9513d152197e5336fbc00eb6b891f1ffb25ad62d",
+        "source_artifact_sha256": "3e9aa278d3a5af4e4cb0399773a166c8e1c24bc8a2fe6ba7a124a8092322c3df"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "23c4914abc4ca614d9bb3fe42d1ee7a61ab2c84518e60ebcf80636adde946cd7",
+            "path": "src/backend/base/langflow/graph/vertex/vertex_types.py",
+            "fingerprint": "bbc32b52c27f69f7304011fa423b775dfe02461578d787ff167210331e683e42"
+          },
+          {
+            "item_id": "81d6628eb99623e82f606428d87562bfc7214728b072ac98f50a38ccd49425f6",
+            "path": "src/backend/base/langflow/graph/vertex/base.py",
+            "fingerprint": "965a8ec1d0026878c58e98044b21733262fe1072a94661ea0b9292134a323e3b"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "23c4914abc4ca614d9bb3fe42d1ee7a61ab2c84518e60ebcf80636adde946cd7",
+            "path": "src/backend/base/langflow/graph/vertex/vertex_types.py",
+            "fingerprint": "bbc32b52c27f69f7304011fa423b775dfe02461578d787ff167210331e683e42"
+          },
+          {
+            "item_id": "81d6628eb99623e82f606428d87562bfc7214728b072ac98f50a38ccd49425f6",
+            "path": "src/backend/base/langflow/graph/vertex/base.py",
+            "fingerprint": "965a8ec1d0026878c58e98044b21733262fe1072a94661ea0b9292134a323e3b"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 111810
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

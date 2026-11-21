@@ -1,0 +1,182 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 257.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 16,
+  "review_output": [
+    {
+      "file": "src/api/providers/sapaicore.ts",
+      "line": 449,
+      "summary": "finish_reason 判断改用非可选链，choices 为空数组时会抛 TypeError",
+      "failure_scenario": "原代码使用 `data.choices?.[0]?.finish_reason === \"stop\"`，本次改为 `data.choices && data.choices[0].finish_reason === \"stop\"`。空数组 `[]` 在 JS 中为 truthy，因此 `data.choices[0]` 为 undefined，再读取 `.finish_reason` 会抛 TypeError；异常被同层 catch 捕获后只打印 \"Failed to parse GPT JSON data\"，导致该 chunk 后续解析被跳过、结束时的 usage 汇总丢失，并且日志中出现误导性的解析失败报错。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/api/providers/sapaicore.ts",
+      "line": 425,
+      "summary": "流式响应被整体 console.log 输出，可能泄露用户代码与提示词",
+      "failure_scenario": "新增的三处 `console.log(\"Received data:\", data)` / `console.log(\"Received GPT data:\", data)` 会把每个 SSE chunk 解析后的完整对象（含模型输出文本、疑似用户内容）写入扩展输出通道。这类日志会进入开发者工具/输出面板，可能通过日志收集或截图外泄用户源码，同时在高频流式场景下带来明显的日志与字符串化开销。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.8,
+      "rule": "SECURITY-LOG-001"
+    },
+    {
+      "file": "src/api/providers/anthropic.ts",
+      "line": 14,
+      "summary": "API key 校验被删除且 client 提前到构造函数创建，错误时机与错误信息双双退化",
+      "failure_scenario": "本次在 20+ 个 provider 中删除了 ensureClient()，其中包含各自的显式校验（如 `throw new Error(\"Anthropic API key is required\")`、`\"OpenAI API key is required\"`、`\"You don't seem to be logged in to a Cline account.\"`、`\"Vertex AI project ID is required\"`），改为构造期直接 `new Anthropic({ apiKey: this.options.apiKey })`。由此产生两个后果：(1) 缺少 key 时不再给出本地化的明确提示，而是由 SDK 在构造时抛英文默认错误（如 ANTHROPIC_API_KEY/OPENAI_API_KEY 缺失），甚至被静默地用空字符串 key 构造（cline.ts 的 `apiKey: this.options.clineApiKey || \"\"`），把问题推迟到请求阶段的 401；(2) 抛错时机从 createMessage 提前到 buildApiHandler，而 buildApiHandler 被 Task 构造器（src/core/task/index.ts:256）、updateApiConfigurationProto.ts:42、updateSettings.ts:24、controller/index.ts:484/1009 等配置更新路径调用，用户仅切换 provider/模型就可能直接收到异常，而 updateApiConfigurationProto 里配置已先落盘，出现“配置已保存但 handler 未更新”的不一致状态。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "API-CONTRACT-002"
+    },
+    {
+      "file": "src/api/providers/vertex.ts",
+      "line": 24,
+      "summary": "VertexHandler 构造期同时创建 Gemini 与 Claude 客户端，Gemini 路径被 Claude 客户端构造失败连带拖垮",
+      "failure_scenario": "改动前 GeminiHandler 与 AnthropicVertex 都是惰性创建：只在 `!modelId.includes(\"claude\")` 之外才会走 ensureAnthropicClient()，且该函数会先校验 vertexProjectId / vertexRegion 并给出明确错误。改动后两者都在构造函数中无条件创建，且 vertexProjectId/vertexRegion 的校验被删除，直接把可能为 undefined 的 `this.options.vertexProjectId` / `this.options.vertexRegion` 传入 AnthropicVertex。结果是：选择 Vertex 上的 Gemini 模型时也会先构造 Claude 客户端，一旦该构造因缺少 project/region 失败，Gemini 对话完全不可用；同时原本清晰的校验错误退化为 SDK/Google Auth 的底层异常。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "LIFECYCLE-001"
+    },
+    {
+      "file": "src/utils/path.ts",
+      "line": 127,
+      "summary": "isLocatedInWorkspace 改为只比对单个/当前编辑器所在工作区，多根工作区判定失真且丢失空路径保护",
+      "failure_scenario": "重写后的 isLocatedInWorkspace 不再遍历所有 workspace 根，而是先用 getWorkspacePath() 取“当前活动编辑器所在工作区，否则第一个工作区”，再判断目标是否落在其中。多根（multi-root）工作区下，当用户在 A 根打开文件、而工具操作目标位于 B 根时，结果会返回 false，表现为“操作在工作区外”，导致需要额外的用户确认；且该结果随当前打开的编辑器变化而不稳定。此外旧实现 isLocatedInPath 有 `if (!dirPath || !pathToCheck) return false` 的保护，新实现没有：当无工作区（getCwd() 返回 \"\"）或 pathToCheck 为空串时，`path.resolve(\"\", \"\")` 会退化为进程 cwd，`path.relative` 结果不再是 \"..\"，从而错误地返回 true。该方法被 ToolExecutor 11 处用于 operationIsLocatedInWorkspace，直接影响工具调用的审批判定。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "PATH-001"
+    },
+    {
+      "file": "src/core/controller/file/getRelativePaths.ts",
+      "line": 28,
+      "summary": "URI 解析改走 gRPC 后用手工字符串拼接重建，丢失 query/fragment 且破坏非层级 scheme",
+      "failure_scenario": "原实现是 `vscode.Uri.parse(uriString, true)`（strict 模式），改动后先调用 host bridge 的 uriServiceClient.parse 拿到 {scheme, authority, path}，再用模板串 `${parseResponse.scheme}://${parseResponse.authority}${parseResponse.path}` 重新构造一个 URI 字符串并二次 parse。该重建过程丢弃了 query 与 fragment（例如带 `?ref=` 的 URI），并且对非层级 scheme（如 `untitled:`、`vscode-remote:` 之外的简单 scheme，authority 为空）会拼出 `scheme://path` 这类非原样 URI，导致后续 asRelativePath / fs.stat 结果不正确。此外原始 strict=true 的严格校验也不再存在，非法 URI 不再快速失败。同时每个 URI 都新增了一次跨进程 gRPC 往返（Promise.all 中并发 N 次），对批量拖拽/多选文件场景是净性能开销。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "IPC-URI-001"
+    },
+    {
+      "file": "src/core/controller/file/getRelativePaths.ts",
+      "line": 29,
+      "summary": "提交中残留 [DEBUG] 调试日志",
+      "failure_scenario": "新增的 `console.log(\"[DEBUG] UriServiceClient.parse:\", fileUri)` 位于每个 URI 的处理循环内，批量转换时会按文件数量刷屏扩展输出通道，属于调试遗留代码。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.9,
+      "rule": "STYLE-LOG-001"
+    },
+    {
+      "file": "src/core/controller/index.ts",
+      "line": 473,
+      "summary": "登录成功后不再标记 welcomeViewCompleted，欢迎页可能一直不消失",
+      "failure_scenario": "handleAuthCallback 中原有的 `await updateGlobalState(this.context, \"welcomeViewCompleted\", true)`（注释为“Mark welcome view as completed since user has successfully logged in”）被删除。当前欢迎页只有点击 “Let's go!” 时通过 StateServiceClient.setWelcomeViewCompleted 才会被标记完成；而“Get Started for Free”按钮（handleLogin）只发起登录，不设置该标记。因此走 OAuth 登录的用户在回调完成后 welcomeViewCompleted 仍为 false/undefined，webview 端 `setShowWelcome(!newState.welcomeViewCompleted)` 会继续展示欢迎页，用户需要额外操作才能进入主界面。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "STATE-001"
+    },
+    {
+      "file": "webview-ui/src/components/mcp/configuration/tabs/marketplace/McpMarketplaceView.tsx",
+      "line": 64,
+      "summary": "下载成功后不再清除上一次的下载错误提示",
+      "failure_scenario": "改造后卡片只负责发起请求，错误通过 mcpDownloadDetails 消息回传：View 的 handleMessage 仅在 `message.error` 存在时 setError，成功消息里没有 error 字段，因此不会清除旧错误；同时 McpMarketplaceCard 中原有的 `setError(null)`（成功分支）已被删除，唯一清除点是 marketplace catalog 变化时的 setError(null)。结果是用户下载失败看到错误提示后再重试成功，错误提示仍留在界面上。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "UI-STATE-001"
+    },
+    {
+      "file": "src/core/controller/task/newTask.ts",
+      "line": 4,
+      "summary": "新增但未使用的导入 handleFileServiceRequest",
+      "failure_scenario": "本次为 newTask.ts 新增了 `import { handleFileServiceRequest } from \"../file\"`，但文件内 newTask 函数从未使用该符号。在启用 noUnusedLocals/eslint no-unused-vars 的构建下会导致 lint 失败或噪声，属于无关的遗留改动。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "LINT-UNUSED-001"
+    },
+    {
+      "file": "src/hosts/host-providers.ts",
+      "line": 4,
+      "summary": "host-providers.ts 新增未使用的 vscode 导入",
+      "failure_scenario": "本次为 src/hosts/host-providers.ts 添加了 `import * as vscode from \"vscode\"`，但该文件只包含 WebviewProviderCreator / HostBridgeClientProvider 的注入与读取逻辑，未使用 vscode 命名空间。该文件也会被 standalone 构建引用，多余的 vscode 导入会带来不必要的依赖耦合风险。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "LINT-UNUSED-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 32,
+      "summary": "批量写入函数用宽类型 + 强制断言，绕过了 GlobalStateKey/SecretKey 的编译期校验",
+      "failure_scenario": "updateGlobalStateBatch / updateSecretsBatch 接收 Record<string, any> 与 Record<string, string|undefined>，内部再 `key as GlobalStateKey`、`key as SecretKey` 强制断言。这使调用方传入任意字符串键都不会被类型系统拦截，键名拼写错误会静默写入无效 state（并且这些键将来会被 getAllExtensionState 忽略），与项目已有的强类型 state-keys 约定相违背。同时两个批量函数各自新增 PERF 日志，进一步放大了这条热路径的日志量。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "TYPE-SAFETY-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 80,
+      "summary": "高频路径中新增大量 [PERF] console.log，且含硬编码耗时承诺",
+      "failure_scenario": "getAllExtensionState（每次 postStateToWebview 都会走）、updateApiConfiguration、updateApiConfigurationProto 与前端 handleFieldChange 均被插入计时日志，一次 provider 切换会产生 10+ 行输出；同时 updateApiConfiguration 末尾日志硬编码了 \"was ~535ms, now should be <50ms\" 这类与实现强耦合的说明，容易随环境变化失准。这类日志应通过可开关的诊断通道输出，而不是以 console.log 常驻。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "PERF-LOG-001"
+    },
+    {
+      "file": "src/services/posthog/telemetry/TelemetryService.ts",
+      "line": 292,
+      "summary": "captureConversationTurnEvent 移除 tokenUsage 参数，会话轮次遥测丢失 token 与成本数据",
+      "failure_scenario": "本次不仅删除了形参 tokenUsage，还删除了事件属性里的 `...tokenUsage` 展开，Task 中的三处调用（2121、2294 等）同时去掉了 tokensIn/tokensOut/cacheWriteTokens/cacheReadTokens/totalCost 实参。这意味着 conversation_turn 事件不再携带任何用量与成本指标，服务端将无法统计单轮 token/费用，属于遥测数据维度回退；而被计算的 inputTokens/outputTokens 等变量在 Task 内仍然存在（用于 updateApiReqMsg），说明这是采集侧丢失而非计算侧不需要。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "TELEMETRY-001"
+    },
+    {
+      "file": "package.json",
+      "line": 5,
+      "summary": "版本号从 3.18.4 回退到 3.18.3，可能与已发布版本冲突",
+      "failure_scenario": "本次 MR 将 version 由 3.18.4 改为 3.18.3。若 3.18.3/3.18.4 已在 Marketplace 发布，回退版本号会导致：已安装 3.18.4 的用户不会被提示升级（新包的版本低于已安装版本），后续发布也需要再次上调版本，且同一版本号重复发布会失败。该改动与本次功能改动无关联，疑似误将版本回滚一并提交。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RELEASE-001"
+    },
+    {
+      "file": "src/shared/ExtensionMessage.ts",
+      "line": 17,
+      "summary": "ExtensionMessage.type 联合仍不完整，迫使调用方使用 as any 绕过类型检查",
+      "failure_scenario": "本次把 type 扩展为 \"action\" | \"state\" | \"selectedImages\" | \"mcpDownloadDetails\" | \"grpc_response\"，但同时新增了大量与之无关的可选字段（ollamaModels、commits、tab、results 等），而实际仍在使用的其他消息类型（如 McpHub 发送的 \"mcpNotification\"）不在联合中，调用处只能写 `as any`。这使 ExtensionMessage 既不能约束消息类型，又携带了大量含义不明的可选字段，类型契约名存实亡。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.4,
+      "rule": "TYPES-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 5 个文件 / 2726 字符（test=1, exclude=4），明细见审计 mrFilter\n✓ 完成 · 耗时 245.3s · 模型调用 27 次 · token 输入 97,357（未命中） · 输出 35,253 · 缓存命中 1,655,552（94.4%） · 工具 53 次（主会话 53 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0281\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 246.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 245.2s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.4s (0.1%)\n[time] 审计明细 | P1 12.9s (5.2%) | P2 4.6s (1.9%) | P3 12.1s (5.0%) | P4 119.8s (48.9%) | P5 71.0s (29.0%) | P6 24.8s (10.1%)\n[usage] 任务总计 | 模型调用 27 次（Agent 27 + 一次性 0） | token 输入 97,357（未命中） | 输出 35,253 | 缓存命中 1,655,552（94.4%） | $0.0281\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261115_042855_568.json",
+  "token_usage": {
+    "input_tokens": 97357,
+    "output_tokens": 35253,
+    "cache_read_input_tokens": 1655552
+  }
+}

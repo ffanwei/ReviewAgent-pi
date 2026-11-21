@@ -1,0 +1,251 @@
+[
+  {
+    "filePath": "comfy_extras/nodes_train.py",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "existing_steps = int(existing_lora.split(\"_steps_\")[0].split(\"_\")[-1])",
+        "review": "[缺陷类型] 未校验的字符串→整数转换（隐式格式假设）。影响评估：用户选择任意第三方 LoRA 作为 existing_lora 时节点直接抛 ValueError，训练无法启动；异常信息与输入字段无关联，排查成本高。",
+        "suggestion": "[重构思路] 把「步数」从文件名解析改为宽松解析 + 容错，并优先考虑将步数写入文件元数据而非依赖文件名。代码示例：\n```python\nimport re\nm = re.search(r\"_(\\d+)_steps_\", os.path.basename(existing_lora))\nexisting_steps = int(m.group(1)) if m else 0\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 403,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "train_adapter = existing_adapter.to_train().to(lora_dtype)",
+        "review": "[缺陷类型] 抽象方法在部分实现中缺失，调用点未做能力检测。影响评估：续训非 LoRA 算法权重时抛未捕获异常，节点整体失败；错误来自基类的 NotImplementedError，用户难以理解原因是“算法不支持”。",
+        "suggestion": "[重构思路] 调用前用能力检测（hasattr/覆写检查）判断，不支持时给出明确的可读错误或降级为新建 LoRA。代码示例：\n```python\nif existing_adapter is not None and type(existing_adapter).to_train is not WeightAdapterBase.to_train:\n    train_adapter = existing_adapter.to_train().to(lora_dtype)\nelse:\n    train_adapter = adapter_cls.create_train(m.weight, rank=rank, alpha=1.0).to(lora_dtype)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 431,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "lora_dtype = node_helpers.string_to_torch_dtype(lora_dtype)",
+        "review": "[缺陷类型] 枚举默认值拼写错误 + 转换函数无兜底。影响评估：默认路径下 dtype 选项完全失效，训练产物 dtype 与用户认知不符；若将来改成对 None 做显式 cast 还会直接抛异常。",
+        "suggestion": "[重构思路] 修正默认值，并让转换函数对未知取值抛错或给出明确警告，避免静默降级。代码示例：\n```python\n\"lora_dtype\": ([\"bf16\", \"fp32\"], {\"default\": \"bf16\", \"tooltip\": \"The dtype to use for lora.\"}),\n...\ndtype = node_helpers.string_to_torch_dtype(lora_dtype)\nif dtype is None:\n    raise ValueError(f\"Unsupported lora_dtype: {lora_dtype}\")\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 389,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "alpha = float(existing_weights.get(f\"{key}.alpha\", 1.0))",
+        "review": "[缺陷类型] 键名拼接错误导致数据读取永不命中。影响评估：续训时旧 LoRA 的 alpha 被静默重置为 1.0，rank 较大时缩放偏差成倍，训练从错误的起点继续，且无任何日志提示。",
+        "suggestion": "[重构思路] 用统一的键生成函数（与 comfy/lora.py 保持一致）构造 alpha/dora_scale 键，并在命中失败时记录日志。代码示例：\n```python\nweight_key = \"{}.weight\".format(n)\nalpha = float(existing_weights.get(f\"{n}.alpha\", 1.0))\ndora_scale = existing_weights.get(f\"{n}.dora_scale\", None)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 414,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F007",
+        "code": "output_file = f\"models/loras/{prefix}_{date}_lora.safetensors\"",
+        "review": "[缺陷类型] 硬编码相对路径 + 缺少目录创建。影响评估：自定义模型路径场景下训练权重写到错误位置，CWD 不匹配时保存直接失败并丢失整轮训练结果。",
+        "suggestion": "[重构思路] 通过 folder_paths 解析 loras 目录，复用现有的保存路径工具，并显式创建目录。代码示例：\n```python\nfrom folder_paths import get_folder_paths, get_save_image_path\nlora_dir = get_folder_paths(\"loras\")[0]\nos.makedirs(lora_dir, exist_ok=True)\noutput_file = os.path.join(lora_dir, f\"{prefix}_{steps}_steps_{date}_lora.safetensors\")\nsafetensors.torch.save_file(lora, output_file)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 599,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F008",
+        "code": "output_file = f\"models/loras/{prefix}_{steps}_steps_{date}_lora.safetensors\"",
+        "review": "[缺陷类型] 未净化的用户输入参与文件路径拼接（路径穿越/任意写）。影响评估：恶意或误填的 prefix 可覆盖、创建任意位置的 .safetensors 文件，破坏工作目录外数据；在共享/远程 ComfyUI 实例上风险更高。",
+        "suggestion": "[重构思路] 对 prefix 做白名单清洗，并校验最终路径仍在目标目录内。代码示例：\n```python\nprefix = re.sub(r\"[^A-Za-z0-9_.-]\", \"_\", prefix)\noutput_file = os.path.join(lora_dir, os.path.basename(f\"{prefix}_{date}_lora.safetensors\"))\nif not os.path.abspath(output_file).startswith(os.path.abspath(lora_dir) + os.sep):\n    raise ValueError(\"Invalid output path\")\n```",
+        "category": "安全",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 601,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F009",
+        "code": "loss.backward()",
+        "review": "[缺陷类型] 异常处理分支未终止流程导致后续使用未绑定变量。影响评估：真正的原因（如模型处于 inference 模式、loss 输入形状不一致）被 UnboundLocalError 掩盖，用户只能看到二次异常，训练中断且 loss 曲线无对应记录。",
+        "suggestion": "[重构思路] 让异常分支显式失败并保留原始堆栈，用异常类型/属性而非字符串匹配来判断。代码示例：\n```python\ntry:\n    loss = self.loss_fn(denoised, latent.clone())\nexcept RuntimeError as e:\n    raise RuntimeError(\"Loss computation failed; check that the model is not in inference mode\") from e\nif not loss.requires_grad:\n    raise RuntimeError(\"Loss does not require grad; model may be loaded in inference mode\")\nloss.backward()\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 51,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F010",
+        "code": "scaled_loss = [(l - min_loss) / (max_loss - min_loss) for l in loss_values]",
+        "review": "[缺陷类型] 归一化除零/空集合边界未处理。影响评估：steps=1 或 loss 恒定时 Plot Loss Graph 节点直接失败，而 loss 数据在内存中已无副本，用户拿不到曲线。",
+        "suggestion": "[重构思路] 对退化区间与空数据做显式兜底。代码示例：\n```python\nif not loss_values:\n    raise ValueError(\"No loss values to plot\")\nmin_loss, max_loss = min(loss_values), max(loss_values)\nspan = max_loss - min_loss\nscaled_loss = [0.5] * len(loss_values) if span == 0 else [(l - min_loss) / span for l in loss_values]\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 638,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F011",
+        "code": "INPUT_IS_LIST = True",
+        "review": "[缺陷类型] 未注册的死代码 + 列表输入下的类型假设错误。影响评估：该节点用户完全不可见（浪费维护成本）；一旦补注册就会因 resize_method 为 list 而出现“静默不缩放 + cat 报错”的迷惑性故障。",
+        "suggestion": "[重构思路] 要么删除该节点，要么在 load_images 中按 INPUT_IS_LIST 语义取首个元素并复用 LoadImageSetFromFolderNode 的实现。代码示例：\n```python\ndef load_images(self, input_files, resize_method):\n    files = input_files[0] if isinstance(input_files[0], list) else input_files\n    method = resize_method[0] if isinstance(resize_method, list) else resize_method\n    ...\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 147,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F012",
+        "code": "indices = torch.randperm(num_images)[:batch_size]",
+        "review": "[缺陷类型] 随机源未受控（声明了可复现性但实际不可复现）。影响评估：同参数多次训练结果差异不可解释，调参与问题定位失效；同时暴露“创建后未使用”的死变量。",
+        "suggestion": "[重构思路] 统一把 generator 传入所有随机调用，并把它传给 LoRA 初始化。代码示例：\n```python\ngenerator = torch.Generator(device=\"cpu\").manual_seed(seed)\nindices = torch.randperm(num_images, generator=generator)[:batch_size]\nperc = torch.rand((1,), generator=generator).item()\nsigma = torch.tensor([mp.model.model_sampling.percent_to_sigma(perc)])\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 382,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F011-DUP",
+        "code": "def draw_loss_graph(loss_map, steps):",
+        "review": "[缺陷类型] 死代码/重复实现。影响评估：两份几乎相同的绘图逻辑分别维护，修复边界问题时容易遗漏；也给阅读者造成“到底用哪个”的困惑。",
+        "suggestion": "[重构思路] 删除 draw_loss_graph，或让 plot_loss 调用一个共享的归一化+绘图辅助函数。代码示例：\n```python\ndef _scale_loss(loss_values):\n    lo, hi = min(loss_values), max(loss_values)\n    span = hi - lo\n    return [0.5] * len(loss_values) if span == 0 else [(v - lo) / span for v in loss_values]\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 208,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "comfy/weight_adapter/lora.py",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "self.alpha = torch.nn.Parameter(torch.tensor(alpha), requires_grad=False)",
+        "review": "[缺陷类型] 可空值未在构造路径上兜底。影响评估：对不带 alpha 的 LoRA 做续训会在构造 LoraDiff 时抛 RuntimeError，且异常信息（dtype 推断）与根因无关。",
+        "suggestion": "[重构思路] 在构造时统一缺省值，保持与 calculate_weight 的语义一致。代码示例：\n```python\nif alpha is None:\n    alpha = 1.0\nself.alpha = torch.nn.Parameter(torch.tensor(float(alpha)), requires_grad=False)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 40,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "self.lora_mid = layer(mid, rank, bias=False)",
+        "review": "[缺陷类型] 构造函数参数类型错误（tensor 传入 int 形参）。影响评估：LoCon/LoHa-mid 类 LoRA 续训路径直接抛 TypeError，属于“部分格式可用”的功能缺口。",
+        "suggestion": "[重构思路] 从 mid 的形状推导 Conv 的 in/out channels 与 kernel_size，再构造层，并校验 copy_ 的形状一致。代码示例：\n```python\nk = mid.shape[2:]\nself.lora_mid = layer(rank, rank, kernel_size=k, bias=False)  # 形参需按 Conv 实际签名推导\nself.lora_mid.weight.data.copy_(mid)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 35,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "comfy/ldm/modules/attention.py",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "x = n + x",
+        "review": "[缺陷类型] 原地→非原地运算带来的隐式类型提升（语义不完全等价）。影响评估：半精度/FP8 模型可能显存上升、数值路径改变；改造不完整还会造成同类分支行为不一致，难以推理。",
+        "suggestion": "[重构思路] 若要保留类型稳定，显式把加数转换到 x 的 dtype；并统一改造所有残差加法。代码示例：\n```python\nx = x + n.to(x.dtype)   # 或 (n + x) 后 x = x.to(org_dtype)\n...\nif self.is_res:\n    x = x + x_skip.to(x.dtype)\n```",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 756,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "comfy/ldm/cosmos/blocks.py",
+    "reviewTips": [
+      {
+        "id": "F014",
+        "code": "if self.training:",
+        "review": "[缺陷类型] 两套并行的梯度检查点机制 + 隐式子模块依赖。影响评估：显存优化是否生效取决于模型 training 标志这一隐式状态，行为难以预测；双重 checkpoint 会显著拖慢训练；缺少显式 import 在不同调用顺序下可能 AttributeError。",
+        "suggestion": "[重构思路] 只保留一种机制（推荐训练节点侧显式 patch），或在训练节点里显式切换 train/eval 并让 blocks.py 不再自行判断；同时在模块顶部显式导入。代码示例：\n```python\n# cosmos/blocks.py\nimport torch.utils.checkpoint as cp\n...\n# nodes_train.py\nmp.model.train()   # 显式进入训练态\ntry: ...\nfinally: mp.model.eval()\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 799,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "comfy/weight_adapter/base.py",
+    "reviewTips": [
+      {
+        "id": "F012-DUP",
+        "code": "def load(cls, x: str, lora: dict[str, torch.Tensor], alpha: float, dora_scale: torch.Tensor) -> Optional[\"WeightAdapterBase\"]:",
+        "review": "[缺陷类型] 抽象接口签名与实现/调用方不一致。影响评估：契约漂移会让静态检查失效，新增适配器时易写错参数；也是本次为训练功能改签名时遗留的不完整修改。",
+        "suggestion": "[重构思路] 让基类签名与调用方、子类保持一致，并统一用关键字参数调用。代码示例：\n```python\n@classmethod\ndef load(cls, x: str, lora: dict[str, torch.Tensor], alpha: float,\n         dora_scale: torch.Tensor, loaded_keys: set[str] | None = None) -> Optional[\"WeightAdapterBase\"]:\n    raise NotImplementedError\n```",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 15,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

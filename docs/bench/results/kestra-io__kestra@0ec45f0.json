@@ -1,0 +1,352 @@
+{
+  "instance_id": "kestra-io__kestra@0ec45f0",
+  "repo": "kestra-io/kestra",
+  "base_commit": "bfcfb2ac16dd8f198a99fef43072cb178f9a1d8e",
+  "head_commit": "0ec45f028467c99d8d1efeee6c201210d9433e6d",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 778.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 33,
+  "review_output": [
+    {
+      "file": ".github/workflows/main.yml",
+      "line": 386,
+      "summary": "发布 tag 时不再构建并推送 Docker 镜像，发布流程出现回归",
+      "failure_scenario": "重写后的 main.yml 中 docker（Publish Docker）job 的 if 条件要求 github.ref == 'refs/heads/develop'，而只有打 v* tag 才会由 release job 创建 GitHub Release；被删除的 .github/workflows/workflow-release.yml 里 Docker job 没有任何 ref 条件，旧的 main.yml 也会在 tag 场景下调用该可复用工作流。因此现在执行 v0.x.y 发布时，GitHub Release 与 Maven Central 照常发布，但 kestra/kestra:<tag> 与 <tag>-no-plugins 两个 Docker 镜像不会被构建推送，用户升级路径与 helm chart 引用的镜像将缺失版本。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CI-RELEASE-001"
+    },
+    {
+      "file": ".github/workflows/codeql-analysis.old",
+      "line": 8,
+      "summary": "CodeQL 工作流被改名为 .old，安全扫描实际被关闭",
+      "failure_scenario": "本次 MR 把 .github/workflows/codeql-analysis.yml 重命名为 codeql-analysis.old，同时在该文件内部新增了 push: branches: [develop] 触发并删除了 workflow_dispatch。GitHub Actions 只识别 .github/workflows 目录下 .yml/.yaml 后缀的文件，因此改名后 CodeQL 的 schedule 与新增 push 触发都不会执行，仓库的静态安全扫描被静默停用；而文件内新增的触发配置表明意图是“启用而非停用”，属于误操作的高风险信号。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.82,
+      "rule": "SECURITY-SCAN-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/SecretFunction.java",
+      "line": 29,
+      "summary": "secret() 移除 namespace 参数，已有 flow 中的双参调用会在渲染期失败",
+      "failure_scenario": "getArgumentNames 由 List.of(\"key\", \"namespace\") 收缩为 List.of(\"key\")，同时删除了 FlowService.checkAllowedNamespace 的跨命名空间校验分支，secretService.findSecret 固定使用当前 flow 的 tenantId/namespace。Pebble 以 getArgumentNames 作为函数签名依据，现存 flow / 插件模板里形如 {{ secret('KEY', 'other.namespace') }} 的调用将因参数个数超出声明而抛出模板异常（或在省略时静默改变语义），属于破坏性的表达式 API 变更，且没有任何弃用期或兼容分支。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "check-plugin-artifacts.sh",
+      "line": 136,
+      "summary": "删除 --version 必填校验但后续仍用 $VERSION 拼 URL，漏传时脚本静默给出错误结论",
+      "failure_scenario": "脚本从 dev-tools/ 迁到仓库根目录后，删除了 `if [[ -z \"$VERSION\" ]]` 的必填校验，但主流程仍然以 $VERSION 拼接 Maven 制品地址；未传 --version 时会请求 `.../<artifactId>//<artifactId>-.jar`，全部判定为 NOT available 并 exit 0，使用方会得到“插件不存在”的错误结论而不报错。此外 usage 文本已改为 `[--working-dir /tmp/kestra]`，但参数解析中并不存在 --working-dir，帮助信息与实现不一致。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.78,
+      "rule": "SCRIPT-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileEmptyFunction.java",
+      "line": 75,
+      "summary": "fileEmpty() 用 readAllBytes 全量读入内存判断空文件，大文件会撑爆堆",
+      "failure_scenario": "readAndCheckEmptyFileFromInternalStorage 通过 storageInterface.get(...) 打开流后用 inputStream.readAllBytes() 把整个文件读成 byte[] 再构造 String 判断 isBlank()。该函数在模板表达式中被调用，输入可能是 GB 级产出文件（Kestra 中常见的大文件下载/导出场景），会一次性占用与文件等大甚至更大的堆内存（byte[] + String 各一份），容易触发 OOM 或拖慢整个 worker；实际只需读取有限字节即可判断“是否为空”。另外用 isBlank() 判定，会把仅含空白字符/换行的文件视为 empty，与“文件大小为 0”的直觉语义不同，容易在条件判断里产生意外结果。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.75,
+      "rule": "PERF-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileExistsFunction.java",
+      "line": 19,
+      "summary": "新增函数的错误提示文案复制自其它函数，且存在未使用的 import",
+      "failure_scenario": "FileExistsFunction 的 ERROR_MESSAGE 写成 “The 'fileSize' function expects an argument 'path'...”，FileEmptyFunction 写成 “The 'read' function expects ...”，两者都是从已有函数复制粘贴而来，用户漏传 path 时会收到指向错误函数名的提示，增加排障成本。另外 FileEmptyFunction 导入了 io.micronaut.context.annotation.Value 但未使用，且两个类几乎是 FileSizeFunction 的逐行复制（约 90 行 × 2 的重复逻辑），后续修改容易漏改。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "READABILITY-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileExistsFunction.java",
+      "line": 97,
+      "summary": "storage URI 归属校验仅做字符串前缀匹配，未规范化路径即可绕过",
+      "failure_scenario": "isFileUriValid 通过 path.toString().startsWith(authorizedBasePath) 判断文件是否属于当前执行，但 path 直接来自模板参数（字符串或 URI），未做 normalize/resolve，也未拦截 “..” 段。构造 kestra:///<ns>/<flow>/executions/<本执行 id>/../../<其他 flow 或执行>/... 这类路径时前缀校验会通过，随后 storageInterface.exists / storageInterface.get(tenantId, namespace, path) 使用同一未规范化的 URI 取文件，存在跨执行/跨 flow 读取内部存储对象的越权风险。FileEmptyFunction 复制了同一段校验逻辑（isFileUriValid），因此新增的两个函数都带有该问题（FileSizeFunction 已有同构实现，本次扩大暴露面）。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/services/ExecutionLogService.java",
+      "line": 55,
+      "summary": "SSE 日志跟随改为每个订阅各自注册一个队列消费者，且使用无界 BUFFER",
+      "failure_scenario": "被删除的 LogStreamingService 采用“单个 logQueue 消费者 + 内存 fanout 到多个 FluxSink”的模型，并在 @PreDestroy 中统一释放；新的 streamExecutionLogs 在每次 Flux.create 订阅时调用 this.logQueue.receive(...) 注册一个独立的队列消费者。这意味着并发跟随日志的用户数直接等于队列消费者数，Kafka 等实现下会带来消费者/分区分配与网络开销放大、消费位点互相影响的风险；同时注销是在 doFinally 里通过 Schedulers.boundedElastic() 异步执行，取消与重复订阅之间缺少幂等保护（重复调用 run() 会二次取消）。此外 FluxSink.OverflowStrategy.BUFFER 会无界缓存慢客户端未消费的日志，长时间跟随大日志量执行时可能内存膨胀；either.isRight() 的反序列化错误也从原来的 log.error 变成静默 return，丢失可观测性。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "RESOURCE-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/services/ExecutionLogService.java",
+      "line": 55,
+      "summary": "日志/执行 follow 改为每请求一条队列轮询线程，连接数增长时线性放大数据库压力",
+      "failure_scenario": "streamExecutionLogs 在 Flux.create 内直接调用 this.logQueue.receive(...)，ExecutionController.follow 同样在请求内调用 executionQueue.receive(...)。JDBC 实现对每次 receive 都通过 poll() 向 cachedThreadPool 提交一个常驻 while 循环任务，按 minPollInterval/maxPollInterval 周期性查询 queues 表；删除 ExecutionStreamingService/LogStreamingService 后，原本每个队列只有一条轮询线程，变成「每条 SSE 连接一条轮询线程 + 一轮周期查询」。由于是 cachedThreadPool，线程数无上限，大量并发 follow（例如多人同时打开执行详情页 + 日志面板）会造成线程膨胀与 DB 轮询压力；取消时只把 running 置为 false，线程要等下一次 sleep 结束才退出，短时间内还会持续轮询。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "PERFORMANCE-003"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/services/ExecutionLogService.java",
+      "line": 55,
+      "summary": "日志与执行 follow 改为每请求一条队列轮询线程，并发连接会线性放大线程与数据库轮询压力",
+      "failure_scenario": "streamExecutionLogs 在 Flux.create 体内直接调用 this.logQueue.receive(...)，ExecutionController.follow 同样在请求内调用 executionQueue.receive(...)。JDBC 实现对每次 receive 都通过 cachedThreadPool 提交一个 `while(running) { runnable.get(); Thread.sleep(sleep); }` 的常驻轮询任务，周期性查询 queues 表；取消时只把 running 置为 false，线程要等下一次 sleep 结束才退出。删除 ExecutionStreamingService/LogStreamingService 后，原本每个队列一条轮询线程变成「每条 SSE 连接一条轮询线程 + 一轮周期查库」，且线程池是 cached 型无上限，大量并发 follow（执行详情页 + 日志面板）会造成线程膨胀与 DB 轮询压力。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "PERFORMANCE-003"
+    },
+    {
+      "file": "jdbc/src/main/java/io/kestra/jdbc/runner/JdbcExecutor.java",
+      "line": 551,
+      "summary": "worker task 结果由“同一把锁内直接应用”改为“重新投递回队列”，事务原子性与时序发生变化",
+      "failure_scenario": "原先 ExecutorService.addWorkerTaskResult 在持锁的当前执行上下文中直接 withExecution（含 addDynamicTaskRun、withTaskRun、KILLED 时 killParentTaskruns），执行状态变更与本次 process 的结果在同一事务内落库；改动后这些结果只被放进 Executor.workerTaskResults，由 JdbcExecutor 在同一锁作用域内 emit 回 workerTaskResultQueue，再由 workerTaskResultQueue(Either) 重新加锁执行相同的应用逻辑。这带来两点风险：(1) 结果是提交到外部队列的副作用，若随后的执行保存/事务回滚失败，队列消息已发出，可能出现“结果已应用但执行快照未保存”的不一致；(2) 每次 process 产生的结果都要额外经历一次队列投递 + 重新加锁 + 重新读取 flow/execution，扩大了同一 execution 的并发窗口并增加延迟，且本次 pass 后续逻辑（onNexts、workerTasks、subflow 处理）基于尚未更新的 execution 快照。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONSISTENCY-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/http/client/configurations/HttpConfiguration.java",
+      "line": 17,
+      "summary": "HttpConfiguration 移除 @Jacksonized 后可能无法从 YAML 反序列化 options 配置",
+      "failure_scenario": "HttpConfiguration 只保留了 Lombok 的 @Builder(toBuilder = true) 与 @Getter，没有无参构造器，也没有 @JsonCreator/@Jacksonized；而它是插件属性（AbstractHttp.options、plugin/core/http/Trigger.options 均声明为 private HttpConfiguration options，字段上还有 @PluginProperty 注解）。删除 @Jacksonized 后 Jackson 无法通过 builder 创建实例，对于在 flow YAML 中提供 `options:`（timeout/proxy/ssl/followRedirects 等）的用户，反序列化会在校验/解析阶段失败或配置被忽略，属于插件属性的兼容性回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "SERIALIZATION-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/repositories/ExecutionRepositoryInterface.java",
+      "line": 60,
+      "summary": "QueryFilter 通用过滤 API 被整体删除，REST 与仓储接口发生破坏性变更",
+      "failure_scenario": "本次删除了 core.models.QueryFilter 与 Enums.fromString，并把 Execution/Log/Trigger/Flow 仓储接口中的 `List<QueryFilter> filters` 重载替换为具名参数（query/namespace/flowId/state/labels/startDate/endDate/triggerExecutionId/childFilter 等），webserver 侧同时删除了 QueryFilterFormat、QueryFilterFormatBinder、QueryFilterUtils、TimeLineSearch、RequestUtils 中的解析逻辑（共 300+ 行）。这是一次无兼容层的对外契约变更：1) /api/v1 上原先以 `filters[field][op]=value` 传参的客户端会因参数被忽略而静默返回全量结果（比 400 更危险）；2) 依赖这些仓储重载的其它模块/插件（如仓库外的 EE 模块）会在编译期失败。需要确认已在文档/OpenAPI 中标注为 breaking change，并确认旧参数被识别后返回明确的 4xx 而不是被忽略。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "jdbc/src/main/java/io/kestra/jdbc/repository/AbstractJdbcLogRepository.java",
+      "line": 100,
+      "summary": "日志查询的 filter 返回值被丢弃，所有日志筛选条件失效",
+      "failure_scenario": "find(...) 通过 this.filter(select, query, namespace, flowId, triggerId, minLevel, startDate, endDate) 构造条件，但 filter 是私有的纯函数式构造器（内部每次都 select = select.and(...) 并 return select），返回值未赋回 select，因此最终查询只带 defaultFilter(tenantId)。结果是 /api/v1/logs/search 传入的 q、namespace、flowId、triggerId、minLevel、startDate、endDate 全部被忽略：跨 namespace 的日志会被一并返回（既是功能回归，也存在横向数据可见性风险），分页 total 也随之失真。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.95,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "ui/src/components/dashboard/Dashboard.vue",
+      "line": 182,
+      "summary": "流程仪表盘会渲染两个完全相同的 ExecutionsDoughnut 图表",
+      "failure_scenario": "模板在 L137-141 已无条件渲染一个 ExecutionsDoughnut（:data=\"graphData\"、class=card-1/3），变更又在 L182-187 追加了一个 v-if=\"props.flow\" 的 ExecutionsDoughnut（同样 :data=\"graphData\"、class=card-1/2）。当 props.flow 为真（流程详情页仪表盘）时两个环形图同时出现，内容重复且破坏卡片栅格布局；同时 L188 的 v-else-if=\"isAllowedTriggers\" 变成与前一个 v-if 互斥，语义上也不是原作者预期的新增/替换关系。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "UI-RENDER-001"
+    },
+    {
+      "file": "ui/src/components/namespace/Namespace.vue",
+      "line": 13,
+      "summary": "从 namespace 页面创建 Flow 时丢失目标 namespace",
+      "failure_scenario": "「创建 Flow」链接的 to 由 `{name: 'flows/create', query: {namespace: $route.params.id}}` 改成 `{name: 'flows/create'}`，不再携带当前 namespace。FlowCreate.vue 中模板默认值取自 `this.$route.query.namespace || \"company.team\"`，因此用户在任意 namespace 页面点击创建后，新建 Flow 的 namespace 会退化为默认值 company.team，容易把 Flow 误建到错误命名空间（并可能因权限不足而保存失败）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "UI-NAV-002"
+    },
+    {
+      "file": "ui/src/components/settings/BasicSettings.vue",
+      "line": 445,
+      "summary": "运行时切换语言未加载对应 locale 消息，界面仍显示英文",
+      "failure_scenario": "语言保存逻辑改为 `this.$i18n.locale = newlang`，但应用启动时只把 en 注入 createI18n（main.js 传入 en.json），非英文语言包是通过 loadLocaleMessages 在 init 阶段按 localStorage 中的初始 locale 懒加载一次。BasicSettings 直接切换 locale 时并未调用 loadLocaleMessages，新 locale 没有任何消息，vue-i18n 会回退到默认 en。原实现用整页刷新（document.location.assign）正是为了重新加载语言包，该逻辑已被删除，因此切换到非英文后界面文案不会生效，直到用户手动刷新。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "I18N-001"
+    },
+    {
+      "file": "platform/build.gradle",
+      "line": 34,
+      "summary": "依赖 BOM 与前端的 ui-libs 版本被回退，存在回归与安全风险",
+      "failure_scenario": "本次变更把 com.google.cloud:libraries-bom 由 26.54.0 降到 26.53.0、software.amazon.awssdk:bom 由 2.30.16 降到 2.30.11，同时 ui/package.json 中 @kestra-io/ui-libs 由 ^0.0.131 降到 ^0.0.129（0.0.x 的 caret 只允许 0.0.129，等价于硬性回退）。版本回退会带回上游已修复的缺陷/安全修复，且前端依赖回退可能与本次 UI 改动（新组件、筛选器改造）所依赖的 api 不一致，属于难以在评审中被发现的隐性回退。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "DEP-001"
+    },
+    {
+      "file": "ui/src/components/layout/Pagination.vue",
+      "line": 130,
+      "summary": ".text-total 的颜色被后定义的 .total 覆盖，属于无效样式",
+      "failure_scenario": "元素同时使用 class=\"total text-total\"，而 .text-total（color: var(--ks-content-primary)）写在 .total 之前，两者选择器权重相同，后出现的 .total{color: var(--ks-content-link)} 生效，导致新增的 .text-total 规则实际不起作用，总数文本显示为链接色而非预期的 primary 色。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.75,
+      "rule": "CSS-001"
+    },
+    {
+      "file": "ui/src/components/filter/composables/useFilters.ts",
+      "line": 37,
+      "summary": "i18n key `is_not_one_off` 拼写错误，与 `is_one_of` 不成对",
+      "failure_scenario": "新增比较器 IS_NOT_ONE_OF 取用的翻译 key 写成 filters.comparators.is_not_one_off（one_off），而对应语义的比较器是 is_one_of（one_of）；所有语言文件也被同步改成 is_not_one_off，使错误固化。key 不一致会让后续按命名规律增删翻译（以及 generate_translations.py 的差异比对）失效，也容易被误认为 typo 而被单侧修改，导致回退到原始 key 名时出现缺失翻译。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "I18N-KEY-002"
+    },
+    {
+      "file": "ui/src/translations/generate_translations.py",
+      "line": 129,
+      "summary": "翻译脚本从 git 回溯 en.json 的方式脆弱且会漏检本次提交",
+      "failure_scenario": "load_en_changes_from_last_commits 用 `commit.tree / input_file` 取历史版本：GitPython 在目标路径不存在于该 commit 时会抛 KeyError 而不是返回假值，脚本会直接中断；同时循环从 commits[1:] 开始，跳过了 HEAD，若本次改动已提交，则会把 HEAD 的改动再次判定为「新增/变更」导致重复翻译；此外 main() 中删除了「移除非 EN 键」的清理逻辑，废弃 key 会永久滞留在各语言文件中。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "TOOLING-001"
+    },
+    {
+      "file": "ui/src/components/layout/Labels.vue",
+      "line": 63,
+      "summary": "checked() 每次渲染都重复解析路由 query 两次",
+      "failure_scenario": "原先 labelsFromQuery 是 computed（按依赖缓存），本次改为方法 getLabelsFromQuery()：模板中每个 label 都要调用 checked()，而 checked 内部连续调用两次 getLabelsFromQuery()，每次都会重新遍历 this.$route.query.labels 并重建 Map；link() 也再调用一次。标签数量多时（如列表页每行多个标签）在同一渲染周期内产生大量重复解析。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "PERF-UI-001"
+    },
+    {
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/ExecutionController.java",
+      "line": 187,
+      "summary": "搜索接口删除 filters[...] 参数后，旧客户端传参会被静默忽略而非报错",
+      "failure_scenario": "MR 删除了 QueryFilterFormat/QueryFilterFormatBinder 与所有搜索接口上的 `filters` 参数，同时把原本标注 deprecated = true 的零散参数（q/namespace/flowId/startDate/state/labels/timeRange 等）恢复为正式参数。对于仍在使用 `?filters[namespace][starts_with]=x` 形式的客户端（外部脚本、旧版 UI、SDK），Micronaut 会直接忽略未知查询参数，于是过滤条件被静默丢弃，接口返回全量数据且 HTTP 200，调用方无法察觉结果语义已改变——这比返回 400 更危险（例如时间范围过滤失效导致一次拉取全量执行记录）。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "API-COMPAT-004"
+    },
+    {
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/ExecutionController.java",
+      "line": 226,
+      "summary": "resolveAbsoluteDateTime 从 RequestUtils 复制到两个 Controller，形成重复实现",
+      "failure_scenario": "该方法原本是 RequestUtils 中的静态工具（本次被删除），现在在 ExecutionController 与 TaskRunController 中各自新增了一份实现（且都带 @VisibleForTesting），逻辑完全一致。两份实现后续很容易不同步（例如一方增加时区/上限处理），并且都为本来可以单测工具类的方法引入了 @VisibleForTesting 依赖。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-005"
+    },
+    {
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/ExecutionController.java",
+      "line": 619,
+      "summary": "create 的队列回调在反序列化失败分支缺少 return，随后 either.getLeft() 必然抛异常",
+      "failure_scenario": "create(wait=true) 在 executionQueue.receive 的回调中，对 either.isRight()（反序列化失败）只记录日志并调用 sink.complete()，但没有 return 就继续执行 `Execution item = either.getLeft()`。根据 Either 的实现，right 分支的 left 是 Optional.empty()，getLeft() 内部调用 Optional.get() 直接抛 NoSuchElementException。该异常发生在队列轮询线程内（JdbcQueue.poll → send → consumer），导致这次回调中断，wait=true 的请求既得不到结果也拿不到错误（CompletableFuture 永不完成，只能等客户端超时）；同时 sink.complete() 之后再执行 sink.next(future) 属于对已终止 sink 的写入，会被直接丢弃。同一 MR 中 follow() 的同一模式带有 return，可确认此处是遗漏。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/ExecutionController.java",
+      "line": 1531,
+      "summary": "follow 由单一 fanout 消费者改为每请求一个队列消费者，JDBC 下可能互相跳过消息导致 SSE 永不结束",
+      "failure_scenario": "本次 MR 删除了 ExecutionStreamingService（其类注释明确说明用途是「用单个 execution queue 消费者向多个消费者 fanout」），改为在每个 follow 请求内直接调用 executionQueue.receive(...)。在 JDBC 队列实现中，receive 的取数语句使用 forUpdate().skipLocked()，当多个 follow 请求（或多个 follow 与 create(wait=true)）并发消费同一队列时，彼此已锁定的行会被跳过；由于每个 receive 各自维护 maxOffset 并在取到批次后直接推进到批次最后一条 offset，被跳过的行对该订阅者而言是永久丢失。一旦丢失的正是终止状态事件，isStopFollow 永远为 false，emitter 不会 complete，前端 SSE 会一直保持连接（没有超时机制）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/FlowController.java",
+      "line": 68,
+      "summary": "FlowController 新增了未使用的 zip 与 swagger Extension 相关 import",
+      "failure_scenario": "本 MR 在 FlowController 中新增了 ByteArrayOutputStream、ZipEntry、ZipInputStream、ZipOutputStream、Extension、ExtensionProperty 等 import，但文件内没有对应的使用点（ZipOutputStream 的引用检索显示 FlowController 只有 import 行，没有实例化代码）。这些多余 import 会绕过 IDE 的未使用检查进入代码库，干扰「该文件是否涉及导入/导出功能」的阅读判断，也与本次 MR 的清理目标相悖。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.85,
+      "rule": "MAINTAINABILITY-006"
+    },
+    {
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/FlowController.java",
+      "line": 68,
+      "summary": "FlowController 新增的 zip 与 swagger Extension import 在文件内没有任何使用点",
+      "failure_scenario": "本 MR 在 FlowController 中新增了 java.util.zip.ZipEntry / ZipInputStream / ZipOutputStream（以及 swagger 的 Extension / ExtensionProperty）等 import，但文件内没有对应使用：导出端点走 core 的 HasSource.asZipFile（FlowController.java:704、721），导入端点走 HasSource.readSourceFile（:841），并未直接使用 zip 流。名称级引用检索显示 ZipEntry/ZipInputStream/ZipOutputStream 在 FlowController 只命中 import 行；ExtensionProperty 在全仓仅命中 FlowController.java:51 这一处 import。这类残留 import 会误导读者以为本文件实现了 zip 处理，也与本次「清理死代码」的目标相悖。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-006"
+    },
+    {
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/TaskRunController.java",
+      "line": 19,
+      "summary": "TaskRunController 新增的 @Hidden import 未被使用",
+      "failure_scenario": "TaskRunController 新增了 io.swagger.v3.oas.annotations.Hidden 的 import，但整个类（findTaskRun 及其辅助方法）没有任何 @Hidden 注解使用。属于残留 import，与本次「清理无用代码」的目标不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-006"
+    },
+    {
+      "file": "ui/src/translations/en.json",
+      "line": 1089,
+      "summary": "新增翻译键 is_not_one_off 拼写错误（应为 is_not_one_of）",
+      "failure_scenario": "comparators 下新增键被写成 `is_not_one_off`（off 而非 of），并与同组的 `is_one_of` 不成对；该错误在 en.json、ru.json、zh_CN.json 以及 useFilters.ts 中被同步复制，因此当前功能可用，但键名语义错误且破坏了命名一致性：后续若有人「修正」翻译文件为 is_not_one_of，而代码仍取 is_not_one_off，则 UI 会直接显示原始键名。此外本次还删除了 not_in、greater_than、less_than、ends_with 等键，需要确认这些键已无引用。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.9,
+      "rule": "READABILITY-007"
+    },
+    {
+      "file": "ui/src/translations/en.json",
+      "line": 1089,
+      "summary": "新增翻译键 is_not_one_off 拼写错误（应为 is_not_one_of），且已扩散到多语言与代码",
+      "failure_scenario": "comparators 下新增键被写成 `is_not_one_off`（off 而非 of），与同组的 `is_one_of` 不成对。该键在 en.json（L1089）、ru.json（L1020）、zh_CN.json（L1020）以及 useFilters.ts（L37）中被一致使用，因此当前功能可用，但命名语义错误：一旦有人把语言包「修正」为 is_not_one_of 而代码仍取 is_not_one_off，UI 会直接显示原始 key。此外本次还删除了 not_in、greater_than、less_than、ends_with 等键，需确认无残留引用。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.9,
+      "rule": "READABILITY-007"
+    },
+    {
+      "file": "ui/vite.config.js",
+      "line": 36,
+      "summary": "vite.config.js 与 init.js 引入了无实际意义的行尾空格改动",
+      "failure_scenario": "本次 MR 在 vite.config.js 的 manualChunks 数组元素与 `manualChunks `（行尾多一个空格）处、以及 ui/src/utils/init.js 中新增了纯行尾空格改动，没有带来任何功能变化。这类噪声会让真正的语义改动（移除 codecovVitePlugin、移除 commit 之后的插件）在 diff 中更难被发现，也可能触发 lint/prettier 的尾随空格规则。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "STYLE-008"
+    },
+    {
+      "file": "ui/vite.config.js",
+      "line": 36,
+      "summary": "vite.config.js 与 init.js 引入无实际意义的行尾空格与空白行改动",
+      "failure_scenario": "MR 在 vite.config.js 的 manualChunks 数组元素行末与 `manualChunks ` 处新增空格，并在 ui/src/utils/init.js 中新增仅含空白的空行，均无功能变化。这些噪声会掩盖同文件中「删除 codecovVitePlugin、移除 @codecov/vite-plugin import」这一实质变更，也会在启用尾随空格检查时触发失败。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.85,
+      "rule": "STYLE-008"
+    }
+  ],
+  "stderr_tail": "m2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 3 片（单片上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 22 个文件 / 102663 字符（lockfile=1, test=20, exclude=1），明细见审计 mrFilter\n✓ 完成 · 耗时 765.2s · 模型调用 78 次 · token 输入 333,354（未命中） · 输出 107,133 · 缓存命中 5,319,936（94.1%） · 工具 160 次（主会话 160 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0916\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\kestra-io__kestra@0ec45f0...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 765.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 764.9s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.0%)\n[time] 审计明细 | S1P1 6.7s (0.9%) | S1P2 4.3s (0.6%) | S1P3 9.5s (1.2%) | S1P4 103.0s (13.5%) | S1P5 67.4s (8.8%) | S1P6 22.6s (3.0%) | S2P1 11.4s (1.5%) | S2P2 2.7s (0.4%) | S2P3 7.5s (1.0%) | S2P4 141.9s (18.6%) | S2P5 52.1s (6.8%) | S2P6 13.1s (1.7%) | S3P1 6.6s (0.9%) | S3P2 2.5s (0.3%) | S3P3 7.0s (0.9%) | S3P4 78.3s (10.2%) | S3P5 66.7s (8.7%) | S3P6 19.8s (2.6%) | S3R2P1 4.7s (0.6%) | S3R2P2 3.3s (0.4%) | S3R2P3 7.6s (1.0%) | S3R2P4 20.1s (2.6%) | S3R2P5 30.6s (4.0%) | S3R2P6 14.9s (2.0%) | S3R3P1 4.0s (0.5%) | S3R3P2 3.3s (0.4%) | S3R3P3 5.5s (0.7%) | S3R3P4 17.1s (2.2%) | S3R3P5 22.5s (2.9%) | S3R3P6 7.8s (1.0%)\n[usage] 任务总计 | 模型调用 78 次（Agent 78 + 一次性 0） | token 输入 333,354（未命中） | 输出 107,133 | 缓存命中 5,319,936（94.1%） | $0.0916\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\kestra-io__kestra@0ec45f0\\audit\\20261115_010411_562.json",
+  "token_usage": {
+    "input_tokens": 333354,
+    "output_tokens": 107133,
+    "cache_read_input_tokens": 5319936
+  }
+}

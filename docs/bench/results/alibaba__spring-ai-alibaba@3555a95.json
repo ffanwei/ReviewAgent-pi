@@ -1,0 +1,102 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@3555a95",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "76c06b58a4d9e8ee3fe3c0269a046987ad0502e5",
+  "head_commit": "3555a95e7b888335d9f72e432eb4f9fb9640e8cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 113.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 104,
+      "summary": "apply() 吞掉全部异常并仅记录 message，中断状态被丢弃且丢失堆栈信息",
+      "failure_scenario": "改造后 apply() 用 catch (Exception e) 捕获所有异常，只以 logger.error(\"...:{}\", e.getMessage()) 输出一行文本后 return null。这带来三个问题：一是 response.get() 抛出的 InterruptedException 被吞掉却没有调用 Thread.currentThread().interrupt() 恢复中断标志，线程池中的中断信号会丢失，影响优雅关闭与后续任务；二是日志只打印 getMessage()，不带异常对象，getTranslatedText 抛出的 IllegalStateException 与网络异常将完全没有堆栈，线上无法定位；三是行为语义从「抛 RuntimeException」变为「返回 null」，调用方拿到 null 无法区分「入参非法」「下游返回非 200」「网络超时」三类情况，翻译工具会静默失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "RELIABILITY-EXCEPTION-SWALLOW"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 142,
+      "summary": "sourceLanguage 声明为可选且宣称默认 zh，但反序列化缺失时 apply() 直接返回 null",
+      "failure_scenario": "Request record 把 sourceLanguage 标注为 @JsonProperty(required = false) 并在描述中写「default is zh」，但默认值只在单参构造器 Request(String text) 中通过 this(text, LANGUAGE_CODE_ZH, LANGUAGE_CODE_EN) 生效。作为 LLM 工具调用的参数载体，JSON 反序列化走的是三分量规范构造器，模型省略 sourceLanguage 时该分量为 null；而 apply() 新增的前置校验要求 sourceLanguage 非空白，于是返回 null，翻译静默失败。同时 targetLanguage 的默认值存在完全相同的陷阱（其描述也写「default is en」）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CONTRACT-DEFAULT-VALUE-IGNORED"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 62,
+      "summary": "删除 public 常量 LANGUAGE_CODE 并改变 Request record 的规范构造器签名属破坏性 API 变更",
+      "failure_scenario": "本次把 public static final String LANGUAGE_CODE 删除并替换为 LANGUAGE_CODE_ZH / LANGUAGE_CODE_EN，同时 Request record 的分量由 (text, targetLanguage) 变为 (text, sourceLanguage, targetLanguage)，targetLanguage 的位置随之从第 2 个参数变为第 3 个参数。仓库内检索 LANGUAGE_CODE 的名称级引用为 0 处、AliTranslateService 仅被 AliTranslateAutoConfiguration 引用，因此本仓库编译不受影响；但该 starter 是发布到社区的 artifact，外部使用者直接调用 new Request(text, \"en\") 会编译失败，而若是先编译再升级依赖，则旧的 (String,String) 构造器已不存在、只剩 (String) 与 (String,String,String)，属于二进制不兼容；同时被 @Deprecated 化的 setAccessKeyId/setAccessKeySecret 说明作者已在考虑兼容，常量删除却未给出同等的兼容层。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "API-BREAKING-CHANGE"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+      "line": 50,
+      "summary": "access-key-id/access-key-secret 与 api-key/secret-key 双套属性映射同一字段，绑定顺序不确定",
+      "failure_scenario": "改造后 AliTranslateProperties 同时存在继承来的 setApiKey/setSecretKey 与本地保留的 @Deprecated setAccessKeyId/setAccessKeySecret，两套 setter 写入的是同一个底层字段，因此 spring.ai.alibaba.toolcalling.alitranslate 下出现 access-key-id 与 api-key 两个等价属性名。当使用者在不同配置源中同时提供两者（例如 yaml 里写 access-key-id、环境变量里写 API_KEY），Spring Boot 的绑定顺序由属性源优先级与迭代顺序决定，最终取值不可预测，且会静默以错误凭据调用；此外 spring-boot-configuration-processor 会为同一字段生成两条元数据，IDE 提示出现重复项，用户无法判断哪个才是推荐写法。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-AMBIGUOUS-BINDING"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 78,
+      "summary": "继承 CommonToolCallProperties 后 base-url/network-timeout 可配置但实现中完全未使用",
+      "failure_scenario": "AliTranslateProperties 改为继承 CommonToolCallProperties 后，对外暴露了 base-url、network-timeout、app-id、token 等通用属性，但 AliTranslateService 仍然在 overrideConfiguration 中硬编码 setEndpointOverride(\"mt.aliyuncs.com\")，也没有把 properties.getNetworkTimeout() 传给 ClientOverrideConfiguration；父类无参构造器还把 baseUrl 默认置为 \"/\"、networkTimeout 默认置为 10。结果是用户按 common 模块约定配置 network-timeout 或 base-url 时不会产生任何效果，属于「配置静默无效」，与同目录 BaiduTranslate/GoogleTranslate 通过 super(baseUrl) 与 RestClientTool.builder(jsonParseTool, properties) 真正消费这些属性的做法不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-DEAD-CONFIG"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 133,
+      "summary": "getTranslatedText 未校验 data.getTranslated() 为空，可能构造出 Response(null)",
+      "failure_scenario": "新的强类型解析链已经逐级校验了 statusCode、body、code、data，但最后一个环节直接 return data.getTranslated()，未校验翻译结果是否为空。当接口返回 code=200 但 translated 缺省（例如源文本为纯符号、被过滤为空、或下游降级返回空串）时，会返回 new Response(null)，工具调用方得到一个 content 为 null 的结果而不是明确的错误，后续若对该字段做字符串处理将出现 NullPointerException。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-NULL-RESULT"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+      "line": 34,
+      "summary": "环境变量兜底使用通用名 ACCESS_KEY_ID/ACCESS_KEY_SECRET，与同类 starter 的服务专属命名约定不一致",
+      "failure_scenario": "构造器调用 setPropertiesFromEnv(\"ACCESS_KEY_ID\", \"ACCESS_KEY_SECRET\", null, null)，而 CommonToolCallProperties#setPropertiesFromEnv 在字段为空时直接 System.getenv 取值。ACCESS_KEY_ID / ACCESS_KEY_SECRET 是阿里云生态通用的变量名，宿主机上只要存在（例如为 aliyun CLI、OSS 或其它阿里云 SDK 配置的凭据），alitranslate 就会静默采用这套凭据发起调用，可能出现「用 A 账号凭据调用 B 账号翻译服务」的越权/串号情况，也让凭据来源难以审计。同目录已改造完成的 BaiduTranslateProperties、GoogleTranslateProperties 均使用带服务前缀的专属变量名（BAIDU_TRANSLATE_SECRET_KEY、GOOGLE_TRANSLATE_APIKEY），本模块偏离了既有约定。",
+      "severity": "P3",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "SECURITY-ENV-CREDENTIAL-LEAK"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateAutoConfiguration.java",
+      "line": 32,
+      "summary": "继承的 enabled 默认 true 与 @ConditionalOnProperty 缺少 matchIfMissing 造成开关语义自相矛盾",
+      "failure_scenario": "AliTranslateProperties 现在继承 CommonToolCallProperties，后者的 enabled 字段默认值为 true；但自动配置上的 @ConditionalOnProperty(prefix = AliTranslateProperties.PREFIX, name = \"enabled\", havingValue = \"true\") 未设置 matchIfMissing = true，判定依据是 Environment 而非已绑定的 properties bean。因此用户只配置了 api-key/secret-key 而没写 enabled=true 时，Bean 不会被创建，而配置元数据却宣称 enabled 默认为 true，排障时极易误判；同目录的 BaiduTranslateAutoConfiguration 已采用 matchIfMissing = true 的写法，本模块与之不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-SWITCH-INCONSISTENCY"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@3555a95.diff\n  caseId              alibaba__spring-ai-alibaba@3555a95\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@3555a95\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 788 字符（exclude=1），明细见审计 mrFilter\n✓ 完成 · 耗时 112.2s · 模型调用 12 次 · token 输入 27,974（未命中） · 输出 16,422 · 缓存命中 168,832（85.8%） · 工具 20 次（主会话 20 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0090\n[time] 阶段耗时 | 总墙钟 112.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 112.2s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 7.6s (6.8%) | P2 4.0s (3.6%) | P3 6.7s (6.0%) | P4 46.0s (41.0%) | P5 36.7s (32.8%) | P6 11.1s (9.9%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 27,974（未命中） | 输出 16,422 | 缓存命中 168,832（85.8%） | $0.0090\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@3555a95\\audit\\20261115_001617_922.json",
+  "token_usage": {
+    "input_tokens": 27974,
+    "output_tokens": 16422,
+    "cache_read_input_tokens": 168832
+  }
+}

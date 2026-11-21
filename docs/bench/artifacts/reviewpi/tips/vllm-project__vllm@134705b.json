@@ -1,0 +1,229 @@
+[
+  {
+    "filePath": "vllm/entrypoints/api_server.py",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "engine = (llm_engine",
+        "review": "[缺陷类型] 状态依赖被删除但消费方未同步（属性缺失导致的 AttributeError）。影响评估：`vllm.entrypoints.api_server` 与 disagg 代理示例启动即崩溃，属于既有入口的行为破坏；由于该入口非 OpenAI 生产服务，CI 覆盖较弱，容易漏检。",
+        "suggestion": "[重构思路] 恢复 init_app 中的 state 注入，或将 launcher 对 state 的依赖改为可缺省（两者取其一，但必须保持一致）。优先恢复赋值，改动最小且与 launcher 约定一致。代码示例：`global engine\\nengine = (llm_engine if llm_engine is not None else AsyncLLMEngine.from_engine_args(engine_args, usage_context=UsageContext.API_SERVER))\\napp.state.engine_client = engine\\nreturn app`",
+        "category": "可靠性",
+        "subcategory": "属性缺失/状态初始化",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 111,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/config.py",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "class ModelConfig:",
+        "review": "[缺陷类型] 单一事实来源被拆散（声明/文档/校验/CLI 多处重复）。影响评估：后续新增模型参数时极易漏改，表现为 --help 缺项、非法取值后置到运行期报错、文档与实际不符；也削弱了 @config 对 Union[Literal] 的静态校验。",
+        "suggestion": "[重构思路] 用枚举/常量作单一真源并让三处引用同一常量；或恢复基于 dataclass 字段的反射式 CLI 生成。代码示例：`TOKENIZER_MODES = (\"auto\", \"slow\", \"mistral\", \"custom\")\\n# arg_utils: parser.add_argument(\"--tokenizer-mode\", choices=TOKENIZER_MODES, ...)\\n# config:   if tokenizer_mode not in TOKENIZER_MODES: raise ValueError(...)`",
+        "category": "可维护",
+        "subcategory": "配置与 CLI 双写",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 214,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F003",
+        "code": "hf_overrides_str = json.dumps(hf_overrides)",
+        "review": "[缺陷类型] 序列化目标错误 + 未考虑 callable 输入。影响评估：使用 callable hf_overrides 且带 rope_scaling/rope_theta 的调用方在构造 ModelConfig 时直接 TypeError 崩溃；普通 dict 场景虽不崩，但告警内容缺失关键字段，误导用户迁移。",
+        "suggestion": "[重构思路] 序列化合并后的字典 hf_overrides_kw，并对 callable 场景给出可读的占位说明。代码示例：`if callable(hf_overrides):\\n    hf_overrides_str = \"<callable>\"\\nelse:\\n    hf_overrides_str = json.dumps(hf_overrides_kw)`",
+        "category": "可靠性",
+        "subcategory": "序列化/类型安全",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 416,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "benchmarks/benchmark_serving_structured_output.py",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "json_schemas[i][\"properties\"][",
+        "review": "[缺陷类型] 移除字典缺键兜底后直接下标赋值。影响评估：使用自定义 schema（或非 object 顶层 schema）跑 json-unique benchmark 时必现 KeyError，基准测试中断；属于工具脚本的可用性回退。",
+        "suggestion": "[重构思路] 恢复缺键初始化（用 setdefault 更简洁），或让脚本对不适用的 schema 显式报错并提示。代码示例：`for i, schema in enumerate(json_schemas):\\n    props = schema.setdefault(\"properties\", {})\\n    props[f\"__optional_field_{uuid.uuid4()}\"] = {\"type\": \"string\", \"description\": \"An unique optional field to avoid cached schemas\"}`",
+        "category": "可靠性",
+        "subcategory": "字典缺键访问",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 126,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "parser.add_argument(\"--json_schema_path\",",
+        "review": "[缺陷类型] 公共 CLI 参数命名不一致/兼容性破坏。影响评估：使用旧参数名的脚本在升级后立即报 unrecognized arguments；命名风格分裂增加使用与检索成本。",
+        "suggestion": "[重构思路] 统一为 kebab-case，并可用别名保留向后兼容。代码示例：`parser.add_argument(\"--json-schema-path\", \"--json_schema_path\", dest=\"json_schema_path\", type=str, default=None, help=\"Path to json schema.\")`",
+        "category": "可维护",
+        "subcategory": "CLI 参数命名",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 852,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "requirements/cpu.txt",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "torch==2.6.0+cpu; platform_machine == \"x86_64\"",
+        "review": "[缺陷类型] 带本地版本号的 torch 固定缺少对应包索引。影响评估：Docker 内构建可继续工作，但宿主/其它 CI 中直接按 requirements/cpu.txt 安装会失败；问题隐蔽，仅在使用裸 pip/uv 时暴露。",
+        "suggestion": "[重构思路] 在 requirements/cpu.txt 中恢复 CPU 索引行（与带 +cpu 的固定版本成对出现），或去掉 +cpu 后缀改为通用固定并在安装命令中显式提供索引。代码示例：`# Dependencies for CPUs\\n--extra-index-url https://download.pytorch.org/whl/cpu\\ntorch==2.6.0+cpu; platform_machine == \"x86_64\"`",
+        "category": "可移植",
+        "subcategory": "依赖索引配置",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 5,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "torch==2.7.0.dev20250304; platform_machine == \"s390x\"",
+        "review": "[缺陷类型] 多平台依赖矩阵回滚不一致。影响评估：s390x 构建的 torch 版本与 TORCH_SUPPORTED_VERSION 期望值不同（仅告警不报错），若该平台参与发布会产出与其它平台不一致的 wheel，问题在运行期才显现。",
+        "suggestion": "[重构思路] 一并回滚 s390x 分支到与主版本对应的 nightly/固定版本，并在 requirements 中显式固定 torchaudio/torchvision 以保证一致性。代码示例：`torch==2.6.0; platform_machine == \"s390x\"`（若该平台无 2.6.0 官方轮子，则添加注释说明原因并配套 CI 覆盖）",
+        "category": "可维护",
+        "subcategory": "依赖版本矩阵",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 8,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": ".buildkite/test-pipeline.yaml",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "- pip install causal-conv1d",
+        "review": "[缺陷类型] CI 中安装未固定版本的编译型依赖。影响评估：构建结果不可复现，测试失败来源与代码变更脱钩；对依赖 torch ABI 的 CUDA 扩展尤其明显。",
+        "suggestion": "[重构思路] 保持版本固定（PyPI 版本或 git tag 二选一，并注明升级时机）。代码示例：`- pip install causal-conv1d==1.5.0.post8`（或保留原 git tag 形式）",
+        "category": "可测试性",
+        "subcategory": "CI 依赖可复现性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 458,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "examples/online_serving/chart-helm/values.yaml",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "command: [\"vllm\", \"serve\", \"/data/\", \"--served-model-name\", \"opt-125m\", \"--dtype\", \"bfloat16\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]",
+        "review": "[缺陷类型] 与变更目的无关的 CI 部署参数漂移。影响评估：CPU 上 bfloat16 的算子支持/性能与 float32 不同，可能使 helm --wait 超时或 curl 校验结果变化；排查时容易误判为依赖回滚导致。",
+        "suggestion": "[重构思路] 如非有意变更，恢复 float32（及 --block-size）以保持 CI 基线稳定；若确实想验证 bfloat16，另起一条独立的 CI 用例并单独调整超时。代码示例：`command: [\"vllm\", \"serve\", \"/data/\", \"--served-model-name\", \"opt-125m\", \"--dtype\", \"float32\", \"--block-size\", \"16\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]`",
+        "category": "可维护",
+        "subcategory": "CI 部署参数",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 11,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/v1/core/sched/scheduler.py",
+    "reviewTips": [
+      {
+        "id": "F010",
+        "code": "request.spec_token_ids = spec_token_ids[req_index]",
+        "review": "[缺陷类型] 约束解码与推测解码的状态机一致性缺陷（缺少草稿 token 的语法校验）。影响评估：开启 --speculative-config 且请求使用 guided decoding 时可能输出违反 schema/正则的 token，且无任何报错，只能靠输出内容发现问题；错误会随 accept_tokens 失败而扩散到后续步的 bitmask。",
+        "suggestion": "[重构思路] 二选一：a) 在配置校验阶段显式禁止 structured output 与 speculative decoding 同时启用（配合 TODO 说明），把静默错误变成启动期报错；b) 恢复草稿 token 的语法校验（validate_tokens + rollback），保证 FSM 与已生成 token 一致。同时把 accept_tokens 的 False 返回视为致命错误而非仅打日志。代码示例：`if vllm_config.speculative_config is not None and vllm_config.decoding_config is not None: raise ValueError(\"structured output is not yet compatible with speculative decoding\")`；或在 scheduler 中 `filtered = request.structured_output_request.grammar.validate_tokens(spec_token_ids[req_index]); request.spec_token_ids = filtered`。",
+        "category": "可靠性",
+        "subcategory": "推测解码与约束解码一致性",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 687,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/v1/metrics/loggers.py",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "self.log_metrics_info(\"cache_config\", vllm_config.cache_config)",
+        "review": "[缺陷类型] 指标上报时机与数据来源不匹配（跨进程状态未同步）。影响评估：vllm:cache_config_info 中 num_gpu_blocks 恒为 \"None\"，KV cache 容量类监控与容量规划失去数据源；属于不易被现有单测发现的静默指标回归（测试只校验指标名存在）。",
+        "suggestion": "[重构思路] 保留「就绪后上报」的语义：或在 READY 消息中继续携带 num_gpu_blocks 并在握手完成后回填 cache_config，或在握手完成后再调用一次 log_metrics_info（构造期只注册 gauge，完成后 set）。代码示例：`# core_client._wait_for_engine_startup 之后\nself.vllm_config.cache_config.num_gpu_blocks = num_gpu_blocks\nfor stat_logger in self.stat_loggers[0]:\n    if hasattr(stat_logger, \"log_metrics_info\"):\n        stat_logger.log_metrics_info(\"cache_config\", self.vllm_config.cache_config)`。",
+        "category": "可靠性",
+        "subcategory": "监控指标正确性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 348,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F012",
+        "code": "labelnames=metrics_info.keys()).labels(**metrics_info)",
+        "review": "[缺陷类型] 指标标签契约变更（跨引擎维度丢失）。影响评估：现有 Prometheus 查询/面板中 `vllm:cache_config_info{engine=...}` 会匹配不到数据；多 engine 部署下不同 engine 的 cache 配置无法区分。",
+        "suggestion": "[重构思路] 统一标签来源：把 engine 维度作为 log_metrics_info 的显式参数注入，或在 __init__ 中保存 engine_index 后在 metrics_info 里补回。代码示例：`metrics_info = config_obj.metrics_info()\nmetrics_info[\"engine\"] = str(self.engine_index)\nname = \"vllm:cache_config_info\"`，并在 __init__ 恢复 `self.engine_index = engine_index`。若确认要移除该标签，应在发布说明中标注为破坏性指标变更。",
+        "category": "可维护",
+        "subcategory": "指标标签契约",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 365,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "vllm/transformers_utils/tokenizer_base.py",
+    "reviewTips": [
+      {
+        "id": "F013",
+        "code": "def encode(self,",
+        "review": "[缺陷类型] 公共接口破坏性变更（参数移除无过渡期）。影响评估：外部自定义 tokenizer 实现与直接调用 TokenizerGroup.encode 的集成代码会抛 TypeError；encode 层的截断能力消失，需要改由调用方在别处截断。",
+        "suggestion": "[重构思路] 若确需移除，至少保留一层兼容：在 TokenizerGroup.encode 中接受 **kwargs 并对 truncation/max_length 发 DeprecationWarning（或显式忽略），同时用 `@deprecated` 标注一个版本周期；并在 release note / docs 中记录 API 变更。代码示例：`def encode(self, prompt: str, lora_request=None, add_special_tokens=None, **kwargs) -> List[int]:\n    if kwargs:\n        logger.warning_once(\"truncation/max_length in encode() is removed; got %s\", list(kwargs))\n    ...`。",
+        "category": "可维护",
+        "subcategory": "公共接口兼容性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 95,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

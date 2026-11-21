@@ -1,0 +1,102 @@
+{
+  "instance_id": "infiniflow__ragflow@2d06022",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "469460483665000f522b6c9a6583bb34f17a954b",
+  "head_commit": "2d06022b78536bd22a0fd83f38804f39aa34cce8",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 136.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 21,
+      "summary": "从 '@/locales/config' 导入并不存在的 languageOptions，语言下拉必然失效",
+      "failure_scenario": "embed-modal/index.tsx 第 21 行 `import { languageOptions } from '@/locales/config';`，但 web/src/locales/config.ts 全文 68 行只导出了 translationTable 与默认 i18n 实例（以及从 './until' 导入的 flattenObject/createTranslationTable），没有任何名为 languageOptions 的导出；全仓库对该标识符的检索也只有本文件第 21 行的导入与第 91 行的 options={languageOptions} 两处使用、零处声明。结果是：若构建配置启用类型检查会直接报 “Module has no exported member 'languageOptions'” 导致前端构建失败；若走 babel/esbuild 不校验类型，则该导入在运行时为 undefined，Select 的 options 为空，新增的 locale 选项功能完全不可用。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.87,
+      "rule": "I18N-EXPORT-001"
+    },
+    {
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 81,
+      "summary": "新增的 avatarHidden / locale 词条在语言包中不存在，界面会直接显示 key",
+      "failure_scenario": "第 81 行 `t('avatarHidden')` 与第 87 行 `t('locale')` 使用了 chat 命名空间的新词条，但全仓库对 avatarHidden 的检索只有本文件这一处使用，没有任何语言包（en.ts、zh.ts、vi.ts 等）定义该键。i18n 初始化时 fallbackLng: 'en'（locales/config.ts:62），而 en.ts 中同样没有该键，因此回退也拿不到译文，react-i18next 会把原样的 'avatarHidden' 渲染成表单项标签。由于本 MR 同时新增了这两个 UI 标签，属于随特性引入的缺失资源。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.78,
+      "rule": "I18N-KEY-002"
+    },
+    {
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 48,
+      "summary": "visibleAvatar 状态名与其实际含义相反，勾选后写入的是隐藏头像参数",
+      "failure_scenario": "组件内状态名为 visibleAvatar（第 42 行），但第 47-48 行在其为 true 时追加 `&visible_avatar=1`；而分享页 web/src/pages/chat/shared-hooks.ts:30-32 把 visibleAvatar 解析为 `参数存在 ? 参数 !== '1' : true`，即 visible_avatar=1 表示“不显示头像”。于是“勾选 checkbox → visibleAvatar=true → 头像反而被隐藏”，状态名与语义相反，只是恰好配合 label t('avatarHidden') 才看起来正确，后续维护极易写出取反错误。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.7,
+      "rule": "NAMING-003"
+    },
+    {
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 87,
+      "summary": "Form.Item 被放在 Form 之外使用，表单上下文缺失",
+      "failure_scenario": "第 79-95 行把两个 Form.Item 直接放进 <Flex vertical>，整个组件（第 116-148 行的 Modal）中并没有任何 <Form> 包裹，Form 只是作为组件被导入（第 10 行）而未使用。antd 的 Form.Item 依赖 Form 上下文来承载 label 布局、name 绑定与校验，脱离 Form 使用时 label 与控件的排版/宽度由内部 fallback 逻辑决定，也拿不到 Form 提供的 layout 配置，属于误用表单组件。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "UI-FORM-004"
+    },
+    {
+      "file": "web/src/components/api-service/embed-modal/index.tsx",
+      "line": 80,
+      "summary": "新增选项区文案硬编码英文，未走 i18n",
+      "failure_scenario": "第 80 行 `<h2>Option</h2>` 与第 89 行 `placeholder=\"Select a locale\"` 都是硬编码英文字符串，而同一组件的其它文案（fullScreenTitle、fullScreenDescription、comingSoon 等）全部通过 t() 获取。在中文/越南语等界面下，选项区会突兀地出现英文，与产品既有的多语言约定不一致。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.85,
+      "rule": "I18N-HARDCODE-005"
+    },
+    {
+      "file": "web/src/locales/vi.ts",
+      "line": 473,
+      "summary": "删除的越南语词条仍有活跃调用方，越南语界面将回退为英文",
+      "failure_scenario": "本 MR 从 vi.ts 的 chat 与 knowledgeDetails/knowledgeConfiguration 段删除了 useKnowledgeGraph、useKnowledgeGraphTip、keyword、keywordTip、languageTip、setMetaData、metaData、pleaseInputJson、documentMetaTips、deleteDocumentConfirmContent、tagCloud、useGraphRag 等词条，但对应功能仍在使用：web/src/components/use-knowledge-graph-item.tsx:14/36 调用 t('chat.useKnowledgeGraph')，web/src/pages/add-knowledge/components/knowledge-file/set-meta-modal/index.tsx:70 调用 t('knowledgeDetails.documentMetaTips')，parsing-action-cell/index.tsx:45 调用 t('deleteDocumentConfirmContent')，且这些键在 en.ts:521 / zh.ts:521 / en.ts:176 / en.ts:196 等处仍然存在。删除后 fallbackLng('en') 会兜底为英文，等于越南语本地化覆盖被静默削掉，其余语言包与 vi.ts 的键集合也会持续漂移。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "I18N-RESOURCE-006"
+    },
+    {
+      "file": "web/src/hooks/llm-hooks.tsx",
+      "line": 98,
+      "summary": "图片理解下拉改用统一分组后丢失 tags 兼容匹配，仅以 tags 标注的模型会从选项消失",
+      "failure_scenario": "被删除的 groupImage2TextOptions 采用 `x.model_type.includes('image2text') || (x.tags && x.tags.includes('IMAGE2TEXT'))` 的双条件匹配（本次 diff 中被删代码即为此逻辑），而新的 groupOptionsByModelType 只判断 `x.model_type.includes(modelType)`（第 61-93 行，第 98 行接入 Image2text）。这说明历史上确实存在“model_type 是 chat、仅靠 tags 的 IMAGE2TEXT 标记才能出现在图片理解下拉”的模型（本 MR 修改前的 gpt-4o / gpt-4o-mini 就是这种形态）。若其他 factory（如自定义/兼容 OpenAI 的接入方）仍采用 tags 标注方式，则这些模型将从图片理解模型下拉中彻底消失，进而导致系统设置里的 img2txt_id 无法选择这些模型。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "LOGIC-EQUIV-007"
+    },
+    {
+      "file": "agent/component/rewrite.py",
+      "line": 48,
+      "summary": "else 分支的三引号结尾残留 12 个空格，向 prompt 注入带缩进的空白行",
+      "failure_scenario": "重写后第 45-48 行的 else 分支写作 `prompt += \"\"\"\\n    - Text generated MUST be in the same language of the original user's question.\\n            \"\"\"`，闭合三引号前的 12 个空格会作为内容进入字符串，在语言约束行后追加一整行仅含空白的文本；第 49 行紧接着再 `prompt += f\"\"\"...`，于是最终 prompt 中第 2、3 条约束与第 1 条缩进也不一致（第 44 行带 4 空格、第 50/51 行带 4 空格但通过不同拼接片段）。虽然不影响语义，但让逐字比对 prompt 的调试与后续维护变困难。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "PROMPT-FORMAT-008"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\infiniflow__ragflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\infiniflow__ragflow@2d06022.diff\n  caseId              infiniflow__ragflow@2d06022\n  --issue             (未传)\n  --taskId            infiniflow__ragflow@2d06022\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 126.6s · 模型调用 13 次 · token 输入 37,077（未命中） · 输出 17,706 · 缓存命中 190,592（83.7%） · 工具 23 次（主会话 23 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0107\n[time] 阶段耗时 | 总墙钟 127.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 126.6s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 6.3s (5.0%) | P2 7.2s (5.7%) | P3 11.3s (8.9%) | P4 49.1s (38.8%) | P5 41.5s (32.8%) | P6 11.1s (8.7%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 37,077（未命中） | 输出 17,706 | 缓存命中 190,592（83.7%） | $0.0107\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\infiniflow__ragflow@2d06022\\audit\\20261115_013821_514.json",
+  "token_usage": {
+    "input_tokens": 37077,
+    "output_tokens": 17706,
+    "cache_read_input_tokens": 190592
+  }
+}

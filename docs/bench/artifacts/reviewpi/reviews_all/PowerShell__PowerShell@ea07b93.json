@@ -1,0 +1,94 @@
+{
+  "generatedAt": "2026-11-15T00:06:52.815Z",
+  "runId": "20261115_000505_597",
+  "source": "mr",
+  "caseId": "PowerShell__PowerShell@ea07b93",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2238,
+      "title": "PATH 手工查找只用 File.Exists 判定，Unix 下可能命中无执行权限的同名文件",
+      "description": "无 Runspace 上下文的新分支用 File.Exists(sshCommandPath) 判定候选并立刻 break，只验证“文件存在”，未验证该文件在 Unix 上是可执行文件（执行位 / 有效 uid 访问权限）。若 PATH 中较前的目录里存在不可执行的同名 `ssh`（例如安装残留、只读挂载、被解包出的普通文件），会把 filePath 定为该文件后直接跳出循环，不再继续搜索后续目录；随后第 2272 行 ProcessStartInfo 与第 2329 行 StartSSHProcessImpl 启动时才会以 Win32Exception/“Permission denied” 形式失败，用户既看不到“ssh 未找到”的清晰提示，也无法回退到 PATH 中真正可用的 ssh。相较之下，via Runspace 的路径由 CommandDiscovery/CommandSearcher 解析，具备更完整的可执行性判定，两种路径行为不一致。",
+      "evidence": [
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2238-2242 — `if (File.Exists(sshCommandPath)) { filePath = sshCommandPath; break; }`，命中即 break，不校验执行权限",
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2202 — UNIX 分支下 `const string sshCommand = \"ssh\";`，说明该路径在类 Unix 平台上生效",
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2272 — `new System.Diagnostics.ProcessStartInfo(filePath)` 之后由 StartSSHProcessImpl 启动进程，无权限时才报错",
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2246-2253 — 只有 filePath 为空才抛 CommandNotFoundException，选中不可执行文件时不会走到该分支"
+      ],
+      "rule": "RELIABILITY-PATHRESOLUTION-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 不完整的可执行文件判定（仅存在性检查）。影响评估：Unix 上 ssh 启动可能给出难以理解的权限错误，且不会继续搜索 PATH 中真正可用的 ssh；与经由 CommandDiscovery 解析的既有路径行为不一致，属于偶发、难复现的可靠性问题。",
+        "suggestion": "[重构思路] 在 Unix 下把“存在且可执行”作为命中条件（可复用平台层的可执行性判定），并在命中后仍允许失败时继续搜索后续目录；至少应让错误信息能区分“未找到”与“不可执行”。代码示例：`var sshCommandPath = Path.Combine(path, sshCommand);\nif (File.Exists(sshCommandPath) && (!OperatingSystem.IsWindows() ? IsExecutable(sshCommandPath) : true))\n{\n    filePath = sshCommandPath;\n    break;\n}`，其中 IsExecutable 可复用仓库内已有的 Unix 权限判定实现（如 Platform/ClrFacade 中的模式）。",
+        "subcategory": "PATH 查找与可执行性校验"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2227,
+      "title": "新增的 PATH 解析逻辑与 CommandDiscovery.GetLookupDirectoryPaths 重复且语义更弱",
+      "description": "新分支自行读取 PATH 并用 Path.PathSeparator 拆分、RemoveEmptyEntries + TrimEntries，但这套解析在仓库中已由 CommandDiscovery.GetLookupDirectoryPaths() 实现，且后者额外做了 `~` 展开与基于 PATH 值的缓存复用。两份实现并存会导致语义漂移：例如在 Unix 上 PATH 中出现 `~/bin` 时，新代码用 Path.IsPathFullyQualified 判定其为非完全限定路径而直接跳过（第 2232-2235 行），而 PowerShell 自身解析会把它展开为用户主目录；又如每次建立 SSH 连接都会重新拆分并扫描整个 PATH，未复用缓存。后续任何人修改 CommandDiscovery 的 PATH 语义（缓存键、`~` 处理、去空格规则）时，本处代码不会同步更新，形成隐性不一致。",
+      "evidence": [
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2227-2229 — `Environment.GetEnvironmentVariable(\"PATH\")?.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? []`",
+        "src/System.Management.Automation/engine/CommandDiscovery.cs:1200-1253 — GetLookupDirectoryPaths() 同样拆分 PATH，并额外处理 `~`、`~/` 展开与 _pathCacheKey/_cachedPath 缓存",
+        "src/System.Management.Automation/engine/CommandDiscovery.cs:1236-1239 — `tempDir.StartsWith(\"~\" + Path.DirectorySeparatorChar)` 时展开为用户主目录，新代码无对应逻辑"
+      ],
+      "rule": "MAINTAINABILITY-DUPLICATION-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 重复实现同一领域逻辑（PATH 目录解析）。影响评估：两处对同一环境变量的语义不一致，`~/bin` 这类条目在新分支被静默跳过；后续演进容易只改一处，引发难以定位的“某台机器上 ssh 找不到”类问题。",
+        "suggestion": "[重构思路] 把 PATH 目录枚举抽成一个不依赖 ExecutionContext 的共享工具（例如放到 Platform / 已有的环境变量辅助类中），让 CommandDiscovery 与 StartSSHProcess 共用同一份拆分、去空格、`~` 展开逻辑；本处仅保留对共享结果的完全限定路径过滤。代码示例：`foreach (string dir in Platform.GetPathDirectories())\n{\n    if (!Path.IsPathFullyQualified(dir)) { continue; }\n    string candidate = Path.Combine(dir, sshCommand);\n    if (File.Exists(candidate)) { filePath = candidate; break; }\n}`",
+        "subcategory": "逻辑重复"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2232,
+      "title": "静默跳过非完全限定的 PATH 条目，收窄了 ssh 的可见范围且不给出提示",
+      "description": "新分支对 PATH 中非完全限定的条目（典型如 Windows 上的 `.` 或用户配置的相对目录）执行 `continue` 静默跳过。在旧行为下（无 Runspace 时 ProcessStartInfo 自行按 PATH 解析），这类条目是可以命中的；改成手工查找后，若 ssh.exe 仅能通过这些相对条目找到，会直接落到第 2246 行抛出 CommandNotFoundException。第 2222-2226 行的注释解释了原因是“cwd 会被设置为可执行文件的父目录”，因此这是一个有意的取舍，但跳过行为既未记录在日志/调试跟踪中，也未在异常信息中体现，用户在排查“明明 PATH 里有 ssh 却报找不到”时会缺少线索。",
+      "evidence": [
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2232-2235 — `if (!Path.IsPathFullyQualified(path)) { continue; }`，无任何日志或跟踪输出",
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2222-2226 — 注释说明 `While ProcessStartInfo can lookup the full path in PATH` 与 cwd 设定是手工查找的动因",
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2325 — `startInfo.WorkingDirectory = System.IO.Path.GetDirectoryName(filePath)` 说明 filePath 必须为完整路径"
+      ],
+      "rule": "RELIABILITY-PATHRESOLUTION-002",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 有意的行为收窄缺少可观测性。影响评估：仅在 PATH 含相对条目的特殊配置下触发，表现为 ssh 远程连接报 CommandNotFoundException，排查成本高；本次变更对绝大多数环境无影响，故列为建议级。",
+        "suggestion": "[重构思路] 保留跳过策略，但通过已有的调试/跟踪通道记录被跳过的条目，并在最终抛异常时补充已搜索目录数量等上下文，便于用户定位。代码示例：`if (!Path.IsPathFullyQualified(path))\n{\n    // 相对条目无法与 WorkingDirectory 组合使用，跳过\n    continue;\n}\n// ... 最终失败时\nthrow new CommandNotFoundException(sshCommand, null, \"CommandNotFoundException\", DiscoveryExceptions.CommandNotFoundException);`，并在循环前后用 discoveryTracer/Debug.WriteLine 记录扫描目录数。",
+        "subcategory": "诊断可观测性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2245,
+      "title": "else 块之后存在只含空格的空行（行尾空白）",
+      "description": "新增的 else 块结束（第 2244 行 `}`）与随后的 filePath 判空之间，第 2245 行是仅由空格组成的空行，带有行尾空白。该文件所在项目开启了 EnforceCodeStyleInBuild（PowerShell.Common.props 第 199 行）并且 TreatWarningsAsErrors 为 true，行尾空白属于典型的格式噪声，既会污染后续 diff，也可能被格式化/分析器规则标记。",
+      "evidence": [
+        "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs:2245 — 该行内容为若干空格（diff 中显示为 `+            `），位于 `}` 与 `if (string.IsNullOrEmpty(filePath))` 之间",
+        "PowerShell.Common.props:199-200 — `<EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>`；PowerShell.Common.props:150 — `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`"
+      ],
+      "rule": "READABILITY-WHITESPACE-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 行尾空白 / 格式噪声。影响评估：纯风格问题，不影响运行时行为，但会干扰后续 blame 与 diff 阅读，并可能在开启代码风格强制构建的 CI 下产生告警。",
+        "suggestion": "[重构思路] 删除该行空格，使其成为真正的空行；建议在提交前运行仓库既有的格式化流程（dotnet format / 编辑器配置中的 trim trailing whitespace）。代码示例：`            }\n\n            if (string.IsNullOrEmpty(filePath))`",
+        "subcategory": "格式与空白"
+      }
+    }
+  ]
+}

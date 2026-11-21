@@ -1,0 +1,125 @@
+[
+  {
+    "filePath": ".vscode/settings.json",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "\"editor.formatOnSave\": true,",
+        "review": "[缺陷类型] 工程约定缺失。影响评估：不影响运行时，但会让未使用的 import 更容易被提交，增加 review 噪音与 lint 修复成本；无结尾换行会引起无意义的 diff。",
+        "suggestion": "[重构思路] 恢复 JSON/JSONC 格式化与 codeActionsOnSave 配置，并在文件末尾补换行。代码示例：`\"[json]\": { \"editor.defaultFormatter\": \"esbenp.prettier-vscode\", \"editor.formatOnSave\": true, \"editor.tabSize\": 2 },` 与 `\"editor.codeActionsOnSave\": { \"source.organizeImports\": \"explicit\", \"source.removeUnusedImports\": \"explicit\" }`。",
+        "category": "可维护",
+        "subcategory": "编辑器/格式化配置",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/memory-page/memory-viewer.svelte",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "{fromLocalDateTime(current.memory.assets[0].localDateTime).toLocaleString(DateTime.DATE_FULL)}",
+        "review": "[缺陷类型] 本地化参数丢失导致的日期语言不一致。影响评估：非破坏性但用户可见——日期与界面语言不匹配，且在版本历史、回忆、登录设备等页面同时出现，容易被当作回归上报。",
+        "suggestion": "[重构思路] 二选一保持一致：要么恢复显式传 `locale`，要么在应用启动时统一设置 Luxon 默认 locale（如 `Settings.defaultLocale = $locale`），之后所有调用都不再传参。建议后者，可一次性消除散落的参数。代码示例：`// main.ts 或 locale effect 中\\nimport { Settings } from 'luxon';\\n$effect(() => { Settings.defaultLocale = $locale; });`",
+        "category": "可移植",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 547,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/service-worker/index.ts",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "cache.put(url, response.clone());",
+        "review": "[缺陷类型] 无界缓存 + 未处理的缓存写入 Promise。影响评估：长期使用后 CacheStorage 无界膨胀（原图也被缓存），可能导致配额失败、写盘抖动；put 的静默失败使「预加载」在真实场景中时好时坏。",
+        "suggestion": "[重构思路] 1) 只缓存 `thumbnail` 而不要缓存 `original`（或对 original 设置小容量上限）；2) 维护条数/字节上限并按 FIFO/LRU 清理；3) `await event.waitUntil(cache.put(...))` 并 catch 配额错误，避免未处理拒绝。代码示例：`event.waitUntil(cache.put(url, response.clone()).catch(() => {}));`，再配合定期 `trimCache(cache, MAX_ENTRIES)`。",
+        "category": "性能",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 60,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F004",
+        "code": "if (event.data.type === 'cancel') {",
+        "review": "[缺陷类型] 共享资源（同 URL 加载）被单方面取消，缺少引用计数。影响评估：偶发缩略图/大图变「裂图」，难以复现与归因；同时预加载的收益也会被误取消抵消。",
+        "suggestion": "[重构思路] 在 SW 侧对每个 URL 维护引用计数（preload/页面请求 +1，cancel -1，仅在计数归零时 abort）；或干脆去掉「基于 URL 的广播取消」，改为取消时携带 requestId/消费者 id，只 abort 自己发起的预加载。至少保证 cancel 只作用于 `type === 'preload'` 发起的加载，不影响浏览器 <img> 正常请求。代码示例：`const counts = new Map<string, number>();\\nfunction cancel(url: string) {\\n  const n = (counts.get(url) ?? 1) - 1;\\n  if (n > 0) { counts.set(url, n); return; }\\n  counts.delete(url);\\n  pendingLoads.get(url)?.abort();\\n  pendingLoads.delete(url);\\n}`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 76,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/shared-components/context-menu/context-menu.svelte",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "left = Math.min(window.innerWidth - rect.width, x - directionWidth);",
+        "review": "[缺陷类型] 弹出层定位缺少视口边界下限。影响评估：靠近屏幕边缘的元素打开「更多操作」菜单时菜单可能不可见/被截断，属可见可用性缺陷，且与 RTL 移除无必然关系（物理坐标下同样需要下界）。",
+        "suggestion": "[重构思路] 保留上界钳制的同时恢复下界，并抽取为一个纯函数便于测试（min/max 同时生效）。代码示例：`const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));\\nleft = clamp(x - directionWidth, 8, Math.max(8, window.innerWidth - rect.width));\\ntop = clamp(y, 8, Math.max(8, window.innerHeight - menuHeight));`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 48,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F006",
+        "code": "? 'max-h-dvh max-h-svh'",
+        "review": "[缺陷类型] 冗余且互相冲突的样式类。影响评估：不影响运行时行为，但造成样式意图不明确，属于可维护性隐患。",
+        "suggestion": "[重构思路] 明确目标单位后只保留一个类。代码示例：`class=\"{isVisible ? 'max-h-svh' : 'max-h-0'} …\"`",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 69,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "web/src/lib/components/shared-components/navigation-bar/navigation-bar.svelte",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "const { redirectUri } = await logout();",
+        "review": "[缺陷类型] 关键路径缺少错误处理。影响评估：登出失败时用户被静默困在已登录状态，无法自助恢复，也污染浏览器控制台。",
+        "suggestion": "[重构思路] 用 try/catch 包裹并复用统一错误处理，失败时给出可见提示。代码示例：`const onLogout = async () => {\\n  try {\\n    const { redirectUri } = await logout();\\n    await handleLogout(redirectUri);\\n  } catch (error) {\\n    handleError(error, $t('errors.unable_to_logout'));\\n  }\\n};`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 42,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

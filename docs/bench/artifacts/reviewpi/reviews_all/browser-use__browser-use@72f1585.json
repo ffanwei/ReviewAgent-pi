@@ -1,0 +1,166 @@
+{
+  "generatedAt": "2026-11-15T00:56:25.631Z",
+  "runId": "20261115_005425_168",
+  "source": "mr",
+  "caseId": "browser-use__browser-use@72f1585",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "browser_use/llm/google/chat.py",
+      "line": 202,
+      "title": "thinking_budget 默认值改为 0 且请求参数被硬编码为 -1，字段彻底失效并强制注入 thinking_config",
+      "description": "字段默认值由 None 改为 0 后，L201 的 `if self.thinking_budget is not None:` 对所有 ChatGoogle 实例恒为真；而真正发给 API 的值在 L202 被硬编码成 -1（自动/动态思考），字段取值完全不参与请求构造。其后果有三：(1) 用户显式传入 ChatGoogle(thinking_budget=0) 想关闭思考的意图被静默忽略；(2) 该文件 VerifiedGeminiModels 中仍包含 gemma-3-27b-it、gemma-3-4b、gemini-2.0-flash 等不支持 thinking 配置的模型，改动前默认 None 时不会发送 thinking_config，改动后每次请求都会附带 thinking_config={'thinking_budget': -1}，存在被服务端以 400 INVALID_ARGUMENT 拒绝的风险；(3) L184-185 从 self.config 复制的用户自定义 config['thinking_config'] 会在 L203 被无条件覆盖。全仓库仅本文件引用该字段（L78 声明、L201/L202 使用），无外部调用方显式传值，因此默认值变更会波及所有 ChatGoogle 使用点（cli.py:255、examples/simple.py、examples/models/gemini.py 等）。",
+      "evidence": [
+        "browser_use/llm/google/chat.py:78 — `thinking_budget: int | None = 0`（原为 None）",
+        "browser_use/llm/google/chat.py:201-203 — `if self.thinking_budget is not None:` → `thinking_config_dict: types.ThinkingConfigDict = {'thinking_budget': -1}` → `config['thinking_config'] = thinking_config_dict`",
+        "browser_use/llm/google/chat.py:184-185 — `config = self.config.copy()`，用户自带的 thinking_config 随后被 L203 覆盖",
+        "browser_use/llm/google/chat.py:32-36 — VerifiedGeminiModels 仍包含 gemma-3-27b-it / gemma-3-4b / gemma-3-12b / gemma-3n-*",
+        "review_find_references(thinking_budget) 仅命中 chat.py 的 L78 声明与 L201/L202 使用，无外部赋值点"
+      ],
+      "rule": "CONFIG-002",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 配置参数被硬编码覆盖 + 默认值变更导致的参数语义回退（死参数）。影响评估：用户无法关闭思考，token 成本与延迟不可控；对 gemma/gemini-2.0 等模型可能直接请求失败；用户通过 config 注入的 thinking_config 被静默丢弃。",
+        "suggestion": "[重构思路] 让字段值真正参与请求构造，并保持「None 表示不下发」的语义：默认恢复为 None，需要动态思考的用户显式传 -1；仅在显式给值时才写 config，并避免覆盖用户自带的 thinking_config。代码示例：`if self.thinking_budget is not None:\n    cfg = dict(config.get('thinking_config') or {})\n    cfg.setdefault('thinking_budget', self.thinking_budget)\n    config['thinking_config'] = cfg`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "browser_use/llm/google/chat.py",
+      "line": 384,
+      "title": "删除 10 次指数退避手工重试但未配置 SDK 重试，瞬时错误将直接冒泡",
+      "description": "本次改动删除了模块级 _is_retryable_error 与 invoke 中的 `for attempt in range(10)` 指数退避循环（上限 60s），改为单次调用并把注释写成「Let Google client handle retries internally」。但该「内置重试」在仓库中没有任何配置证据：get_client() 每次调用都新建 genai.Client，_get_client_params 只透传 api_key/vertexai/credentials/project/location/http_options，http_options 默认 None，没有任何 retry/退避参数；全仓库也没有断言重试行为的可执行证据（现有 Google 用例依赖真实 API key，缺失即 skip）。同时 BaseChatModel（browser_use/llm/base.py）只是 Protocol，无重试包装，唯一直接调用方 Agent.get_model_output（agent/service.py:1159）只捕获 ValidationError 后 re-raise。因此 429/503/网络抖动等瞬时错误会立即变成 ModelProviderError，Agent 多步执行的中断概率显著上升，属于可靠性回退。",
+      "evidence": [
+        "diff 删除：`for attempt in range(10): ... if not _is_retryable_error(e) or attempt == 9: break ... delay = min(60.0, 1.0 * (2.0**attempt))`",
+        "browser_use/llm/google/chat.py:381-384 — `# Let Google client handle retries internally ...` + `return await _make_api_call()`（只调用一次）",
+        "browser_use/llm/google/chat.py:102-117 — _get_client_params 只传 api_key/vertexai/credentials/project/location/http_options，无 retry 相关配置",
+        "browser_use/llm/google/chat.py:119-127 — get_client() 每次 `return genai.Client(**client_params)`，未配置 retry_options",
+        "browser_use/llm/base.py:40-42 — BaseChatModel.ainvoke 仅为 Protocol 声明，无重试/退避包装",
+        "browser_use/agent/service.py:1159-1177 — `response = await self.llm.ainvoke(...)` 只 `except ValidationError: raise`，无重试"
+      ],
+      "rule": "RETRY-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 重试策略缺失/迁移未落实（删除手工重试但未显式配置替代方案）。影响评估：限流与 5xx 瞬时错误不再自愈，长任务失败率上升；注释与实际行为不符，误导维护者。",
+        "suggestion": "[重构思路] 二选一：(a) 显式配置 SDK 重试，例如在 http_options 中设置 retry_options/超时并在 _get_client_params 中透传；(b) 保留一层受控重试（优先复用共享的 retry 工具而非逐 provider 手写）。代码示例：`http_options = self.http_options or types.HttpOptions()\nclient = genai.Client(**client_params, http_options=http_options)`，或在 ainvoke 外层 `for attempt in range(max_retries): try: return await _make_api_call() except ModelProviderError as e: if e.status_code not in (429, 500, 502, 503, 504): raise; await asyncio.sleep(min(60, 2 ** attempt))`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/llm/google/chat.py",
+      "line": 393,
+      "title": "CancelledError 分支不可达：except Exception 捕获不到 BaseException 子类",
+      "description": "Python 3.8+ 中 asyncio.CancelledError 继承自 BaseException 而非 Exception，因此 L386 的 `except Exception as e` 永远捕获不到任务取消，L392-401 里由 `isinstance(e, asyncio.CancelledError)` 驱动的「取消即超时」诊断与 status_code=504 映射是死代码；此外 `str(asyncio.CancelledError())` 为空字符串，L392 的 'timeout'/'cancelled' 子串匹配同样不会命中，两条路径都无法触发。结果是新增的超时诊断能力对真正的取消场景完全无效，却让维护者误以为取消会被解释为 504；同时 L1 新增的 `import asyncio` 仅被这段死代码使用。",
+      "evidence": [
+        "browser_use/llm/google/chat.py:386 — `except Exception as e:`（CancelledError 为 BaseException 子类，不会进入此分支）",
+        "browser_use/llm/google/chat.py:392-401 — `if 'timeout' in error_message.lower() or 'cancelled' in ...:` → `if isinstance(e, asyncio.CancelledError) or 'CancelledError' in str(type(e)):` → `status_code = 504`",
+        "browser_use/llm/google/chat.py:1 — `import asyncio`，全文件仅在 L393 使用",
+        "browser_use/llm/google/chat.py:375 — 内层同样为 `except Exception as e:`，也不会捕获取消"
+      ],
+      "rule": "DEAD-CODE-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 不可达分支 / 异常体系误用。影响评估：取消信号的差异化诊断与 504 映射永不生效，错误信息误导排查方向；死代码增加维护成本。",
+        "suggestion": "[重构思路] 若要区分取消与超时，需单独用 BaseException 分支处理并原样重新抛出取消（不应包装成 504），其余错误才做状态码映射；若不需要该诊断，直接删除该分支与 asyncio 导入。代码示例：`except asyncio.CancelledError:\n    self.logger.warning(f'🕐 request cancelled: {self.model}')\n    raise\nexcept Exception as e:\n    ...`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "browser_use/llm/google/chat.py",
+      "line": 392,
+      "title": "超时判定前置且 rate limit 改为 elif，可能把 429 限流误分类为 408/504",
+      "description": "改动把原本独立的 `if any(indicator in ... '429')` 改成 `elif`，并在其前面插入了一个只做小写子串匹配的 timeout 分支。当错误文本同时含超时与限流线索时（例如 SDK 包装后的 '429 RESOURCE_EXHAUSTED ... deadline exceeded / timeout'，或网关 504 文本中夹带 429/rate limit 字样），status_code 会被定为 408 或 504 而不再是 429，从而丢失限流语义。上游若依据 status_code 判断是否退避/降级/提示配额问题，会做出错误决策；而且字符串匹配本身对 'timed out'、'DeadlineExceeded' 等常见表述也不命中，判定并不稳定。",
+      "evidence": [
+        "browser_use/llm/google/chat.py:392 — `if 'timeout' in error_message.lower() or 'cancelled' in error_message.lower():` 位于所有分类之前",
+        "browser_use/llm/google/chat.py:403 — 非取消分支直接 `status_code = 408`",
+        "browser_use/llm/google/chat.py:405-409 — 原 `if any(..., '429')` 被改为 `elif any(...)`，优先级降到 timeout 之后",
+        "browser_use/llm/google/chat.py:422-426 — 最终以 `status_code=status_code or 502` 抛 ModelProviderError，分类结果直接决定对外错误码"
+      ],
+      "rule": "ERROR-CLASS-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 错误分类优先级/字符串匹配脆弱。影响评估：限流被误报为超时，上游退避与配额提示失效；同时 'DeadlineExceeded' 等真实超时反而落到 502 兜底。",
+        "suggestion": "[重构思路] 优先依据结构化属性（异常类型、error code、response.status_code）分类，字符串匹配仅作兜底；并保证限流判定优先于或独立于超时判定。代码示例：`code = getattr(e, 'code', None) or getattr(getattr(e, 'response', None), 'status_code', None)\nif code == 429: ...\nelif code in (408, 504): ...`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "browser_use/llm/google/chat.py",
+      "line": 409,
+      "title": "Google 限流仍抛 ModelProviderError 而非 ModelRateLimitError，与其他 provider 不一致",
+      "description": "限流分支把状态码置为 429 后，最终在 L422-426 抛出的是通用 ModelProviderError；而其他 provider 在限流时抛专用 ModelRateLimitError（exceptions.py:18 定义了该类）：anthropic/chat.py:232、aws/chat_anthropic.py:238、aws/chat_bedrock.py:285、deepseek/chat.py:128/182/206、groq/chat.py:120、openrouter/chat.py:199。调用方若按异常类型识别限流（如决定是否退避或给出配额提示），对 Google provider 会失效，形成跨 provider 行为不一致。",
+      "evidence": [
+        "browser_use/llm/google/chat.py:405-409 — 限流时 `status_code = 429`",
+        "browser_use/llm/google/chat.py:422-426 — 统一 `raise ModelProviderError(message=..., status_code=status_code or 502, model=self.name)`",
+        "browser_use/llm/exceptions.py:18-27 — 存在 `class ModelRateLimitError(ModelProviderError)`，默认 status_code=429",
+        "browser_use/llm/anthropic/chat.py:232、browser_use/llm/groq/chat.py:120、browser_use/llm/openrouter/chat.py:199 — 其他 provider 限流时抛 ModelRateLimitError"
+      ],
+      "rule": "CONSISTENCY-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 异常类型不统一。影响评估：基于异常类型的限流处理对 Google 失效，行为随 provider 漂移。",
+        "suggestion": "[重构思路] 在限流判定命中时抛 ModelRateLimitError，其余保持 ModelProviderError。代码示例：`if status_code == 429:\n    raise ModelRateLimitError(message=error_message, status_code=429, model=self.name) from e`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "安全",
+      "file": "browser_use/llm/google/chat.py",
+      "line": 284,
+      "title": "调试日志直接输出模型原始响应片段，存在敏感信息落盘风险",
+      "description": "结构化解析失败时，L284 与 L362 会把 response.text 的前 200 字符写入 debug 日志，L377 还会把完整异常字符串（可能包含请求 URL、参数、服务端返回体）写入 error 日志。该模块服务于浏览器自动化场景，模型输入输出常含页面内容、账号信息等敏感数据；一旦应用把日志级别调到 DEBUG 或日志被集中采集，可能造成数据外泄。",
+      "evidence": [
+        "browser_use/llm/google/chat.py:284 — `self.logger.debug(f'Raw response text: {response.text[:200]}...')`",
+        "browser_use/llm/google/chat.py:362 — `self.logger.debug(f'Raw response text: {response.text[:200]}...')`",
+        "browser_use/llm/google/chat.py:377 — `self.logger.error(f'💥 API call failed after {elapsed:.2f}s: {type(e).__name__}: {e}')`"
+      ],
+      "rule": "SECURITY-LOG-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 日志中的敏感数据暴露。影响评估：DEBUG 日志或集中式日志系统可能留存页面/用户数据与模型输出。",
+        "suggestion": "[重构思路] 只记录长度、哈希或错误定位信息，必要时对原文做脱敏/截断标识后再输出。代码示例：`self.logger.debug(f'Raw response length={len(response.text or \"\")}')`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "browser_use/llm/google/chat.py",
+      "line": 375,
+      "title": "内层 try/except 仅记录日志后原样抛出，导致同一失败被重复记录且整体缩进加深",
+      "description": "_make_api_call 新增的 `try:`（L212）与 `except Exception as e:`（L375-379）只做耗时计算、写一条 error 日志并 `raise`，没有任何处理逻辑；外层 L386-426 会对同一异常再做分类、记录（如 L401）并包装抛出，因此每次失败至少产生两条日志，排查时噪音翻倍。同时这个无实际作用的内层 try 使方法体整体多缩进一层，diff 面积（约 200 行重排）远大于语义变化，增加了审阅与后续合并冲突成本。",
+      "evidence": [
+        "browser_use/llm/google/chat.py:212 — `try:` 包裹整个响应处理流程",
+        "browser_use/llm/google/chat.py:375-379 — `except Exception as e:` 仅 `self.logger.error(...)` 后 `raise`",
+        "browser_use/llm/google/chat.py:386-401 — 外层 `except Exception as e:` 再次处理并可能再记一条 error",
+        "全程无新增分支逻辑，仅缩进层级变化导致大段 diff 重排"
+      ],
+      "rule": "READABILITY-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 冗余异常处理与无效缩进（日志重复、可维护性下降）。影响评估：同一错误被记录两次，排查噪音大；大段缩进重排掩盖真实语义变更，增大评审与回溯成本。",
+        "suggestion": "[重构思路] 去掉内层 try/except，把耗时统计放在 finally 或外层统一处理；日志只在最终包装处记录一次。代码示例：`start = time.time()\ntry:\n    return await _make_api_call_inner()\nfinally:\n    self.logger.debug(f'elapsed={time.time()-start:.2f}s')`",
+        "subcategory": ""
+      }
+    }
+  ]
+}

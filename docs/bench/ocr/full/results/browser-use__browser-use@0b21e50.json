@@ -1,0 +1,169 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T03:29:03.325544+00:00",
+  "duration_seconds": 189.52,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 3 finding(s) across 4 selected item(s).",
+    "summary": {
+      "files_reviewed": 4,
+      "comments": 3,
+      "total_tokens": 356143,
+      "input_tokens": 329635,
+      "output_tokens": 26508,
+      "cache_read_tokens": 274432,
+      "elapsed": "3m9s"
+    },
+    "tool_calls": {
+      "total": 25,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 12,
+        "file_read": 11
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "browser_use/browser/browser.py",
+        "content": "The new field is typed `int | None`, but every usage interpolates it unconditionally: the `/json/version` URLs, the CDP `endpoint_url`, `CHROME_DEBUGGING_ARG % {...}` and `socket.connect_ex(('localhost', self.config.chrome_remote_debugging_port))`. If a caller sets it to `None`, the request URL becomes `http://localhost:None/json/version` (httpx raises `InvalidURL`, which is not caught by the surrounding `except httpx.RequestError`), Chrome is launched with `--remote-debugging-port=None`, and `connect_ex` would raise `TypeError`. Since the documented default is always `9222` and there is no None-meaning, the type should be plain `int` (or None must be explicitly validated/guarded).",
+        "suggestion_code": "\tchrome_remote_debugging_port: int = CHROME_DEBUG_PORT",
+        "existing_code": "\tchrome_remote_debugging_port: int | None = CHROME_DEBUG_PORT",
+        "start_line": 111,
+        "end_line": 111,
+        "thinking": "Now, is there a bug for non-chromium builtin browsers? In `_setup_builtin_browser`, when browser_class is firefox/webkit, args don't include chrome_args, so nothing.\n\nWait — there's an important behavior change: previously in `_setup_builtin_browser`, if port 9222 taken, the arg was removed from chrome_args. That logic used `chrome_args.remove('--remote-debugging-port=9222')` — if CHROME_ARGS had been deduped... fine.\n\nBut there's a new bug risk: the set `chrome_args` in `_setup_builtin_browser` may have CHROME_DEBUGGING_ARG removed by an item in extra_browser_args? If user passes `--remote-debugging-port=9222` as extra arg... set dedupe means one instance, remove removes it. Fine.\n\nNow let me confirm the `int | None` issue is worth flagging. And also consider `CHROME_DEBUGGING_ARG % {'chrome_remote_debugging_port': None}` → '--remote-debugging-port=None'. Chrome would error. Yes.\n\nAlso `socket.connect_ex(('localhost', None))` raises TypeError (port must be int). That's an uncaught TypeError inside `_setup_builtin_browser`, which propagates through `_setup_browser` and re-raises → browser init fails. Real defect if user sets None.\n\nAlso, is there validation in BrowserConfig? No. So flag.\n\nNow let's also examine one more possibility: `create_subprocess_exec` — passing `shell=False` is fine (default). Also `chrome_launch_args` list-of-set — redundant, and there's a subtlety: since it's a list containing set-unpacked items, that's fine.\n\nActually wait: is there a subtle issue with the previous code where `browser_binary_path` was included in the list passed to create_subprocess_shell? Old code: `chrome_launch_cmd = [self.config.browser_binary_path, *{...}]` then `create_subprocess_shell(chrome_launch_cmd, ..., shell=False)`. Now exec. Fine.\n\nAnother potential issue: the new `create_subprocess_exec` doesn't set `start_new_session` or anything; same as before.\n\nNow consider whether `_chrome_subprocess` process pid for exec — the direct chrome process; fine.\n\nNow check the async-with fix in example: `async with await anyio.open_file(path, 'r') as f:` — valid. Good.\n\nAnything in chrome.py: CHROME_DEBUGGING_ARG uses `%` string with a dict; fine. However it's defined before CHROME_ARGS. Fine.\n\nNow, is there a duplication issue: `--remote-debugging-port` for the builtin browser: playwright launch with channel='chrome' — playwright itself passes `--remote-debugging-port=0` for CDP. Adding our own may conflict. Playwright's own launch adds `--remote-debugging-port=0`? Actually Playwright uses `--remote-debugging-pipe` for chromium now. Hmm. The existing code kept 9222 in CHROME_ARGS so behavior unchanged.\n\nLet me also verify that tests expect `args` containing the flag from create_subprocess_exec — yes.\n\nOne more: in `_setup_user_provided_browser`, `chrome_launch_args` list-wrapping is redundant; and set ordering nondeterminism means the remote-debugging-port from extra_browser_args may override — pre-existing.\n\nHmm, but actually there's a new concern in the user-provided path: the set dedupe relies on hash order; not new.\n\nSo final comments:\n1. medium: `int | None` type with unconditional interpolation → None breaks (bug). Suggest making it `int` (non-Optional) or validating.\n2. low: docstring typo \"to use to when\" — documentation.\n3. Possible: redundant list wrapper around set unpack — style, skip? Could mention as minor maintainability. The plan flagged as low. I think I'll skip to keep precision. Actually, it's a genuine unnecessary construct newly written (`chrome_launch_args = [ *{...} ]`). It's a nit; harmless. Guidelines: style suggestions non-blocking; low value. I'll skip or include? I'd rather include only meaningful. Skip.\n\n4. The noqa change from ASYNC to RUF006: RUF isn't in the ruff select list, so the noqa is a no-op; if the ASYNC rule was the one that triggered, removing it will break lint. Let me check whether ASYNC rules could trigger on `self.llm.invoke(...)` line. Ruff ASYNC rules: ASYNC100, 105, 109, 110, 115, 116, 119, 210, 220, 221, 222, 230, 240, 250, 251... ASYNC230 blocking-open-call-in-async-function - file open. ASYNC240 blocking-path-method-in-async-function - os.path. Not llm.invoke. Hmm, is there a rule for sync LLM call? Actually there was `ASYNC` too broad? The original comment says \"dont convert this to async! it should block any subsequent llm calls\". The noqa: ASYNC wouldn't be needed for llm.invoke under the selected rules. So both are no-ops. But changing to RUF006 which is not enabled... Not a functional defect. It's noise in review; skip? Might be worth a low note that RUF isn't selected so the noqa is inert. Hmm the instruction says avoid commenting on non-functional elements like tool-generated metadata. # noqa comments are code-level directives but non-functional. I'll skip.\n\nLet me double check whether there might be validation elsewhere that would catch None port — e.g. pydantic validator on BrowserConfig? The model has only ConfigDict. So no.\n\nAlso check whether port should probably not be Optional to align with docs \"chrome_remote_debugging_port: 9222\". Doc says default 9222. So type should be int.\n\nLet me also verify httpx URL with None: `f'http://localhost:{None}/json/version'` = 'http://localhost:None/json/version' → valid URL string, request fails with ConnectError. Actually host \"localhost:None\" — httpx parses port \"None\"? The URL is 'http://localhost:None/json/version'; httpx parses netloc 'localhost:None', port must be numeric → raises InvalidURL(\"Invalid port: 'None'\")? Let me check: httpx URL parsing uses urlparse; accessing .port with non-numeric raises ValueError → httpx raises InvalidURL? In httpx, URL.__init__ processes and raises InvalidURL for invalid port. And InvalidURL is not a subclass of RequestError (it's `class InvalidURL(Exception)`). So the try/except httpx.RequestError would not catch it → propagates → init error with confusing message. Even stronger argument.\n\nLet me verify httpx.InvalidURL hierarchy quickly by search? Not necessary; enough to say the flow breaks.\n\nNow, is the `chrome_remote_debugging_port` used when cdp_url? no.\n\nI'll produce 2 comments: the Optional port issue (medium, bug) and the docstring typo (low, documentation). Maybe also the redundant list wrapper? I'll skip.\n\nActually, hold on. Let me reconsider a potentially larger issue: `browser_binary_path` launch path is used with `extra_browser_args`; but this new code also for user-provided browser uses the config port. Fine.\n\nAnother: for the builtin browser, `chrome_args.remove(...)` when port taken — but with the port now also possibly present in extra args... fine.\n\nOne more real consideration: in `_setup_builtin_browser`, the check uses `self.config.chrome_remote_debugging_port` which is fine for chromium but for firefox/webkit it makes no sense — unchanged behavior.\n\nNow write comments.\n\nComment 1 anchor: line `\tchrome_remote_debugging_port: int | None = CHROME_DEBUG_PORT` in browser.py.\n\nComment 2 anchor: `\t\tchrome_remote_debugging_port: 9222` / the docstring text lines. Use the line \"\t\t\tChrome remote debugging port to use to when browser_binary_path is supplied.\" — must be in diff added lines: yes, added.\n\nLet me also double-check whether there's something regarding the agent/service.py change — nothing functional.\n\nNow, one more thought about a potential bug I should verify: the httpx call at line 200-215's try/except only catches httpx.RequestError; if the client raises other exceptions... only for None port. Covered.\n\nAlso: should I flag that when port isn't free for the user-provided browser path... they connect to whatever is running on that port. Fine.\n\nLet me write.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "browser_use/browser/browser.py",
+        "content": "Typo in the user-facing docstring: \"to use to when browser_binary_path is supplied\" has a doubled \"to\".",
+        "suggestion_code": "\t\t\tChrome remote debugging port to use when browser_binary_path is supplied.",
+        "existing_code": "\t\t\tChrome remote debugging port to use to when browser_binary_path is supplied.",
+        "start_line": 83,
+        "end_line": 83,
+        "thinking": "Now, is there a bug for non-chromium builtin browsers? In `_setup_builtin_browser`, when browser_class is firefox/webkit, args don't include chrome_args, so nothing.\n\nWait — there's an important behavior change: previously in `_setup_builtin_browser`, if port 9222 taken, the arg was removed from chrome_args. That logic used `chrome_args.remove('--remote-debugging-port=9222')` — if CHROME_ARGS had been deduped... fine.\n\nBut there's a new bug risk: the set `chrome_args` in `_setup_builtin_browser` may have CHROME_DEBUGGING_ARG removed by an item in extra_browser_args? If user passes `--remote-debugging-port=9222` as extra arg... set dedupe means one instance, remove removes it. Fine.\n\nNow let me confirm the `int | None` issue is worth flagging. And also consider `CHROME_DEBUGGING_ARG % {'chrome_remote_debugging_port': None}` → '--remote-debugging-port=None'. Chrome would error. Yes.\n\nAlso `socket.connect_ex(('localhost', None))` raises TypeError (port must be int). That's an uncaught TypeError inside `_setup_builtin_browser`, which propagates through `_setup_browser` and re-raises → browser init fails. Real defect if user sets None.\n\nAlso, is there validation in BrowserConfig? No. So flag.\n\nNow let's also examine one more possibility: `create_subprocess_exec` — passing `shell=False` is fine (default). Also `chrome_launch_args` list-of-set — redundant, and there's a subtlety: since it's a list containing set-unpacked items, that's fine.\n\nActually wait: is there a subtle issue with the previous code where `browser_binary_path` was included in the list passed to create_subprocess_shell? Old code: `chrome_launch_cmd = [self.config.browser_binary_path, *{...}]` then `create_subprocess_shell(chrome_launch_cmd, ..., shell=False)`. Now exec. Fine.\n\nAnother potential issue: the new `create_subprocess_exec` doesn't set `start_new_session` or anything; same as before.\n\nNow consider whether `_chrome_subprocess` process pid for exec — the direct chrome process; fine.\n\nNow check the async-with fix in example: `async with await anyio.open_file(path, 'r') as f:` — valid. Good.\n\nAnything in chrome.py: CHROME_DEBUGGING_ARG uses `%` string with a dict; fine. However it's defined before CHROME_ARGS. Fine.\n\nNow, is there a duplication issue: `--remote-debugging-port` for the builtin browser: playwright launch with channel='chrome' — playwright itself passes `--remote-debugging-port=0` for CDP. Adding our own may conflict. Playwright's own launch adds `--remote-debugging-port=0`? Actually Playwright uses `--remote-debugging-pipe` for chromium now. Hmm. The existing code kept 9222 in CHROME_ARGS so behavior unchanged.\n\nLet me also verify that tests expect `args` containing the flag from create_subprocess_exec — yes.\n\nOne more: in `_setup_user_provided_browser`, `chrome_launch_args` list-wrapping is redundant; and set ordering nondeterminism means the remote-debugging-port from extra_browser_args may override — pre-existing.\n\nHmm, but actually there's a new concern in the user-provided path: the set dedupe relies on hash order; not new.\n\nSo final comments:\n1. medium: `int | None` type with unconditional interpolation → None breaks (bug). Suggest making it `int` (non-Optional) or validating.\n2. low: docstring typo \"to use to when\" — documentation.\n3. Possible: redundant list wrapper around set unpack — style, skip? Could mention as minor maintainability. The plan flagged as low. I think I'll skip to keep precision. Actually, it's a genuine unnecessary construct newly written (`chrome_launch_args = [ *{...} ]`). It's a nit; harmless. Guidelines: style suggestions non-blocking; low value. I'll skip or include? I'd rather include only meaningful. Skip.\n\n4. The noqa change from ASYNC to RUF006: RUF isn't in the ruff select list, so the noqa is a no-op; if the ASYNC rule was the one that triggered, removing it will break lint. Let me check whether ASYNC rules could trigger on `self.llm.invoke(...)` line. Ruff ASYNC rules: ASYNC100, 105, 109, 110, 115, 116, 119, 210, 220, 221, 222, 230, 240, 250, 251... ASYNC230 blocking-open-call-in-async-function - file open. ASYNC240 blocking-path-method-in-async-function - os.path. Not llm.invoke. Hmm, is there a rule for sync LLM call? Actually there was `ASYNC` too broad? The original comment says \"dont convert this to async! it should block any subsequent llm calls\". The noqa: ASYNC wouldn't be needed for llm.invoke under the selected rules. So both are no-ops. But changing to RUF006 which is not enabled... Not a functional defect. It's noise in review; skip? Might be worth a low note that RUF isn't selected so the noqa is inert. Hmm the instruction says avoid commenting on non-functional elements like tool-generated metadata. # noqa comments are code-level directives but non-functional. I'll skip.\n\nLet me double check whether there might be validation elsewhere that would catch None port — e.g. pydantic validator on BrowserConfig? The model has only ConfigDict. So no.\n\nAlso check whether port should probably not be Optional to align with docs \"chrome_remote_debugging_port: 9222\". Doc says default 9222. So type should be int.\n\nLet me also verify httpx URL with None: `f'http://localhost:{None}/json/version'` = 'http://localhost:None/json/version' → valid URL string, request fails with ConnectError. Actually host \"localhost:None\" — httpx parses port \"None\"? The URL is 'http://localhost:None/json/version'; httpx parses netloc 'localhost:None', port must be numeric → raises InvalidURL(\"Invalid port: 'None'\")? Let me check: httpx URL parsing uses urlparse; accessing .port with non-numeric raises ValueError → httpx raises InvalidURL? In httpx, URL.__init__ processes and raises InvalidURL for invalid port. And InvalidURL is not a subclass of RequestError (it's `class InvalidURL(Exception)`). So the try/except httpx.RequestError would not catch it → propagates → init error with confusing message. Even stronger argument.\n\nLet me verify httpx.InvalidURL hierarchy quickly by search? Not necessary; enough to say the flow breaks.\n\nNow, is the `chrome_remote_debugging_port` used when cdp_url? no.\n\nI'll produce 2 comments: the Optional port issue (medium, bug) and the docstring typo (low, documentation). Maybe also the redundant list wrapper? I'll skip.\n\nActually, hold on. Let me reconsider a potentially larger issue: `browser_binary_path` launch path is used with `extra_browser_args`; but this new code also for user-provided browser uses the config port. Fine.\n\nAnother: for the builtin browser, `chrome_args.remove(...)` when port taken — but with the port now also possibly present in extra args... fine.\n\nOne more real consideration: in `_setup_builtin_browser`, the check uses `self.config.chrome_remote_debugging_port` which is fine for chromium but for firefox/webkit it makes no sense — unchanged behavior.\n\nNow write comments.\n\nComment 1 anchor: line `\tchrome_remote_debugging_port: int | None = CHROME_DEBUG_PORT` in browser.py.\n\nComment 2 anchor: `\t\tchrome_remote_debugging_port: 9222` / the docstring text lines. Use the line \"\t\t\tChrome remote debugging port to use to when browser_binary_path is supplied.\" — must be in diff added lines: yes, added.\n\nLet me also double-check whether there's something regarding the agent/service.py change — nothing functional.\n\nNow, one more thought about a potential bug I should verify: the httpx call at line 200-215's try/except only catches httpx.RequestError; if the client raises other exceptions... only for None port. Covered.\n\nAlso: should I flag that when port isn't free for the user-provided browser path... they connect to whatever is running on that port. Fine.\n\nLet me write.",
+        "category": "documentation",
+        "severity": "low"
+      },
+      {
+        "path": "browser_use/agent/service.py",
+        "content": "This noqa no longer matches what the line needs. `RUF006` (`asyncio-dangling-task`) only targets `asyncio.create_task`/`ensure_future` calls that drop the returned task, so it suppresses nothing here — and the `RUF` family isn't even enabled in `pyproject.toml` (`select = [\"ASYNC\", \"E\", \"F\", \"FAST\", \"I\", \"PLE\"]`). Meanwhile the previous `# noqa: ASYNC` (a valid prefix for the enabled flake8-async rules) was dropped, so if an `ASYNC` rule ever flags this intentional blocking call the lint gate will fail. Suggest reverting to the ASYNC prefix (or removing the noqa entirely if nothing fires).",
+        "suggestion_code": "\t\t\tresponse = self.llm.invoke([HumanMessage(content=test_prompt)])  # noqa: ASYNC",
+        "existing_code": "\t\t\tresponse = self.llm.invoke([HumanMessage(content=test_prompt)])  # noqa: RUF006",
+        "start_line": 1225,
+        "end_line": 1225,
+        "thinking": "Fine, extra handling likely ignored/allowed. No issue.\n\nNow, decide on final comments. I'll report the noqa issue only? The confirmed findings cover port typing/typo. Should I add anything else that is real?\n\nLet me reconsider the built-in path once more for a possible real defect introduced: the removal `.remove(f'--remote-debugging-port={...}')` from a set — but wait, if `extra_browser_args` or CHROME_DOCKER_ARGS contains the same string... no.\n\nHmm, what about this: `chrome_args` is a set, and line 292 removes the debug arg if port taken. Previously the code removed `'--remote-debugging-port=9222'` hardcoded. Same.\n\nI think there's another observation: In `_setup_user_provided_browser`, the debugging port arg is placed inside a set, and sets do not preserve order; but the previous version did the same. No comment.\n\nOne potentially real issue: In `_setup_user_provided_browser`, the code launches a new Chrome process but never checks whether the port they intend to use is free/occupied by a *different* browser; if some other app listens on that port and returns 200 for /json/version, it connects to it. Pre-existing.\n\nShould I flag that `chrome_remote_debugging_port` is accepted but has no effect when `browser_binary_path` is None except for the built-in launch? It does affect it. Fine.\n\nAnother thought: maybe flag that `--remote-debugging-address` comment... no.\n\nSo the only extra comment: the noqa change. Let me also consider whether the docstring should mention the field applies to built-in browsers too — marginal, skip.\n\nLet me write the noqa comment.\n\nActually, one more careful look at the example file: `async with await anyio.open_file(path, 'r') as f:` — check anyio version: `anyio.open_file` returns `AsyncFile` supporting async context manager; both forms work. Fine.\n\nLet me also double check agent service.py: only that line changed. Yes.\n\nFinal: one comment, low severity, on agent/service.py. Is it worth it at all? The rule: \"Focus primarily on the actual code logic and functionality. Avoid commenting on or providing feedback about non-functional elements such as code comments\". A misplaced `# noqa` is a lint directive with functional impact on CI lint. I'd say it's borderline-acceptable and a reviewer would reasonably flag it since it's clearly a mistaken change (suppressing an unrelated rule while removing the intended suppression). I'll include it as low severity.\n\nHmm, but is it clearly mistaken? RUF006 suppresses nothing, so it's a no-op — meaning it's noise but harmless. Under \"favor precision\" perhaps comment anyway since it's factual and cheap. I'll include.\n\nWait — there's another consideration that may be more valuable: does the removed `# noqa: ASYNC` suppression matter? The comment says \"dont convert this to async! it *should* block\". Ruff ASYNC family: there's no rule for \"sync call in async function\" other than specific libs. So no.\n\nAlright, final answer with one comment.\n\nActually, let me reconsider reporting something in browser.py that isn't in confirmed findings: The `_setup_builtin_browser` check `s.connect_ex(('localhost', self.config.chrome_remote_debugging_port))` — with `int | None`, None → TypeError. Covered by finding 1 (mentions the socket). Yes, covered.\n\nOkay, submit.",
+        "category": "maintainability",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "Browser file upload support and agent integration",
+        "files": [
+          "browser_use/agent/service.py",
+          "browser_use/browser/browser.py",
+          "browser_use/browser/chrome.py",
+          "examples/custom-functions/file_upload.py"
+        ]
+      }
+    ],
+    "session_id": "5541fe9d-d89e-4284-968a-7e90eb5c101b",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "5541fe9d-d89e-4284-968a-7e90eb5c101b",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "966b4fb055a2fbd87fd3283b41c816d3bf37efd7aef77080eab33af87b6d875c"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+        "requested_head": "0b21e50ca640581ecd46990475c8b223eaa05045",
+        "resolved_base": "b50bb2216721b82d81e0fda8fb50a31266e09ce4",
+        "resolved_head": "0b21e50ca640581ecd46990475c8b223eaa05045",
+        "exact_range": "b50bb2216721b82d81e0fda8fb50a31266e09ce4..0b21e50ca640581ecd46990475c8b223eaa05045",
+        "source_artifact_sha256": "649e4cdec6d3bcd01ca384ca35e936e346811e51d63948b494722dd190049eaa"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "2907f5ee76498bcd85425e43137e75d0b4e34b7203ce8c23cd7b17329057b9b0",
+            "path": "browser_use/agent/service.py",
+            "fingerprint": "a0fee97fbbe1ec0621abb3c83f94b38d03440e7343edfe19dc905efdfaa2c6f7"
+          },
+          {
+            "item_id": "682c9c42a465fdc94151214bca5a656f641ffe1aba3c80d628a3ac243cd9ae13",
+            "path": "browser_use/browser/chrome.py",
+            "fingerprint": "91ae91ea6d8b274025aa5e66c16a4bf72525d7f4f31ef7f72944f347c43dab37"
+          },
+          {
+            "item_id": "8d66379038c6c589f11ee4a67ccf244c67186da882fe263c2a509f076a43f239",
+            "path": "browser_use/browser/browser.py",
+            "fingerprint": "70a176dfacf086f37f4f2f939afcc71bcc12816756a234cd07ebdeaf595a5bda"
+          },
+          {
+            "item_id": "9ceb6637f2be0a6c8ad554c3440b6e532d90397deaf84d1b8a01bb3713b2a6dc",
+            "path": "examples/custom-functions/file_upload.py",
+            "fingerprint": "37eca130ff82043fba535f5b4ffd9ad601eee1635454946aeb44d5e4ec5efc09"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "2907f5ee76498bcd85425e43137e75d0b4e34b7203ce8c23cd7b17329057b9b0",
+            "path": "browser_use/agent/service.py",
+            "fingerprint": "a0fee97fbbe1ec0621abb3c83f94b38d03440e7343edfe19dc905efdfaa2c6f7"
+          },
+          {
+            "item_id": "682c9c42a465fdc94151214bca5a656f641ffe1aba3c80d628a3ac243cd9ae13",
+            "path": "browser_use/browser/chrome.py",
+            "fingerprint": "91ae91ea6d8b274025aa5e66c16a4bf72525d7f4f31ef7f72944f347c43dab37"
+          },
+          {
+            "item_id": "8d66379038c6c589f11ee4a67ccf244c67186da882fe263c2a509f076a43f239",
+            "path": "browser_use/browser/browser.py",
+            "fingerprint": "70a176dfacf086f37f4f2f939afcc71bcc12816756a234cd07ebdeaf595a5bda"
+          },
+          {
+            "item_id": "9ceb6637f2be0a6c8ad554c3440b6e532d90397deaf84d1b8a01bb3713b2a6dc",
+            "path": "examples/custom-functions/file_upload.py",
+            "fingerprint": "37eca130ff82043fba535f5b4ffd9ad601eee1635454946aeb44d5e4ec5efc09"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": [
+          {
+            "item_id": "6408cee2ff1247e9799c859f608cb42cec668c2389b90e98c32f4f6b887cfa91",
+            "path": "tests/test_browser.py",
+            "exclude_reason": "default_path"
+          }
+        ]
+      },
+      "elapsed_ms": 189005
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

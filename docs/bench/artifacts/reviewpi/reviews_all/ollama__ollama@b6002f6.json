@@ -1,0 +1,271 @@
+{
+  "generatedAt": "2026-11-15T02:38:11.826Z",
+  "runId": "20261115_023434_963",
+  "source": "mr",
+  "caseId": "ollama__ollama@b6002f6",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "server/routes.go",
+      "line": 387,
+      "title": "harmony 分支提前 return 导致 /api/generate 响应丢失 Context 字段并留下不可达代码",
+      "description": "GenerateHandler 的回调里，useHarmony 分支在处理完 tool_calls 名称回映射后直接 return，绕过了后面的 `sb.WriteString(cr.Content)` 与 `if cr.Done { if !req.Raw { r.Tokenize(...) ; res.Context = tokens } }`。结果是 gpt-oss 等 harmony 模型通过 /api/generate 调用时，done 响应不再包含 context（前缀 token 列表），依赖回传 context 做多轮续写的客户端会退化为每次重新编码整段 prompt；同时 sb 不再累积生成内容，410-417 行原有的 useHarmony 处理块变成永不可达的死代码。",
+      "evidence": [
+        "server/routes.go:380-388 — `if useHarmony { ... ; if res.Response != \"\" || res.Thinking != \"\" || len(res.ToolCalls) > 0 || res.Done { ch <- res }; return }`",
+        "server/routes.go:395 — `if _, err := sb.WriteString(cr.Content); err != nil {`（在 harmony 分支 return 之后，永不执行）",
+        "server/routes.go:399-408 — `if cr.Done { if !req.Raw { tokens, err := r.Tokenize(...); res.Context = tokens } }`（同样被跳过）",
+        "server/routes.go:410-417 — `if useHarmony { if res.Response != \"\" || ... { ch <- res }; return }`（重复且不可达，说明提前 return 是重构遗留）"
+      ],
+      "rule": "CORRECTNESS-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 控制流提前返回导致的既有功能丢失（Context 字段不再填充）＋残留不可达分支。影响评估：harmony 模型（gpt-oss 系列）在 /api/generate 下丢失 context，多轮对话/续写语义改变；不可达代码会误导后续维护者，并在下次改动时产生歧义。",
+        "suggestion": "[重构思路] 让 harmony 分支只负责「解析/改写 res 字段」，把「累积 sb + done 时 Tokenize 填 Context」的逻辑放在统一出口之前；再删除 410-417 行重复块。代码示例：\n```go\nif useHarmony {\n    for i, tool := range res.ToolCalls {\n        res.ToolCalls[i].Function.Name = functionNameMap.OriginalFromConverted(tool.Function.Name)\n    }\n} else if thinkingState != nil {\n    thinking, content := thinkingState.AddContent(cr.Content)\n    res.Thinking, res.Response = thinking, content\n}\n\nif _, err := sb.WriteString(cr.Content); err != nil { ch <- gin.H{\"error\": err.Error()} }\nif cr.Done && !req.Raw { /* Tokenize 填 res.Context */ }\nif res.Response != \"\" || res.Thinking != \"\" || len(res.ToolCalls) > 0 || res.Done { ch <- res }\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "runner/ollamarunner/runner.go",
+      "line": 884,
+      "title": "token 重复上限触发时在流式响应中途写入非 JSON 的 500 文本，导致上游解析失败且原始错误丢失",
+      "description": "completion 已经开始用 json.Encoder 逐条写出 CompletionResponse 并 Flush（HTTP 200 + 分块已发送）。当 TokenParser.AddContent 因 token 重复超限返回 error 时，代码调用 http.Error 直接向同一个 w 写入纯文本并试图改成 500，这在 headers 已发送后无效，只会让响应体里混入非 JSON 行。llm/server.go 侧逐行 json.Unmarshal，会以 “error unmarshalling llm prediction response” 失败，调用方看到的是「JSON 解析错误」而不是「重复生成中止」，且 Done 统计与 done_reason 完全缺失。",
+      "evidence": [
+        "runner/ollamarunner/runner.go:879-886 — `if ok { ... content, thinking, err = tokenParser.AddContent(content); if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); close(seq.quit); return } }`",
+        "同函数上文已用 `json.NewEncoder(w).Encode(&llm.CompletionResponse{...})` + `flusher.Flush()` 逐条流式输出并已发送 200 状态",
+        "llm/server.go:1503-1506 — 逐行 `json.Unmarshal(evt, &c)`，失败即 `return fmt.Errorf(\"error unmarshalling llm prediction response: %v\", err)`",
+        "llm/server.go:1516-1520 — 旧路径在重复超限时以 `return ctx.Err()` 结束，调用方能识别为流中断而非协议错误"
+      ],
+      "rule": "ERROR-HANDLING-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 已在流式响应中写入后仍使用 http.Error 改变状态码；错误通道与数据通道混用。影响评估：客户端/上层看到的错误信息失真（JSON 解析错误），/api 层无法给出准确的 done_reason 与统计信息，且服务端日志出现误导性 500。",
+        "suggestion": "[重构思路] 流式接口统一只用 JSON 事件表达错误：新增一个带 error 字段的完成响应（或复用 Done + DoneReason）后再关闭流，不调用 http.Error。代码示例：\n```go\ncontent, thinking, err = tokenParser.AddContent(content)\nif err != nil {\n    _ = json.NewEncoder(w).Encode(&llm.CompletionResponse{Done: true, DoneReason: llm.DoneReasonStop})\n    flusher.Flush()\n    close(seq.quit)\n    return\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "parser/token_parser.go",
+      "line": 113,
+      "title": "Drain 静默丢弃 JSON 解析失败的工具调用，错误不再回传给客户端",
+      "description": "重构前在 server/routes.go 中，工具调用参数 json.Unmarshal 失败会向响应通道推送 `{\"error\": \"error parsing tool call: raw='...', err=...\"}`，客户端能明确知道模型产出了非法工具参数。现在该逻辑下沉到 TokenParser.Drain，解析失败直接 `return nil`，调用方（runner 的 done 事件、以及 server 层的 ToolCalls 回填）完全感知不到失败：既没有 tool_calls 也没有错误，模型这一轮输出被整体吞掉。同时 TODO 注释表明当前仅支持单个 tool call，多 tool call 场景会被丢弃。",
+      "evidence": [
+        "parser/token_parser.go:112-115 — `var args api.ToolCallFunctionArguments; if err := json.Unmarshal([]byte(toolContent), &args); err != nil { return nil }`",
+        "server/routes.go（diff 删除段）原逻辑：`errStr := fmt.Sprintf(\"error parsing tool call: raw='%s', err=%s\", toolContent, err.Error()); ch <- gin.H{\"error\": errStr}`",
+        "parser/token_parser.go:107 — `// TODO: update to work with multiple toolcalls - unmarshalling should also happen on parser level`",
+        "runner/ollamarunner/runner.go:900-905 — done 分支仅把 `tokenParser.Drain()` 结果放进 ToolCalls，无错误分支"
+      ],
+      "rule": "ERROR-HANDLING-002",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 错误被静默吞掉（error swallowing）。影响评估：模型输出非法工具参数时用户得到「既无内容也无工具调用」的空响应，问题难以定位；多工具调用场景直接丢失后续调用。",
+        "suggestion": "[重构思路] 让 Drain 返回 ([]api.ToolCall, error)，由上层把错误转成显式错误事件。代码示例：\n```go\nfunc (p *TokenParser) Drain() ([]api.ToolCall, error) {\n    toolName, toolContent := p.toolParser.Drain()\n    if toolName == nil { return nil, nil }\n    var args api.ToolCallFunctionArguments\n    if err := json.Unmarshal([]byte(toolContent), &args); err != nil {\n        return nil, fmt.Errorf(\"error parsing tool call: raw=%q: %w\", toolContent, err)\n    }\n    ...\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "llama/llama.go",
+      "line": 531,
+      "title": "NewEmbed 改为只返回最后一个 chunk 的 embedding，多 chunk 图像的视觉 token 被丢弃",
+      "description": "原实现遍历所有 mtmd chunk，逐 chunk 取输出 embedding 并 append 到结果；重构后循环内只做 encode，并把 lastChunkSize 覆盖为最后一个 chunk 的 token 数，最终只为最后一个 chunk 分配/填充 embedding。当一张图被 mtmd 切成多个 chunk（动态分辨率/切片模型）时，前面所有 chunk 的 embedding 全部丢失，图像在上下文中的视觉表征缺失。同时 `nil == embd` 的处理从 `continue`（跳过该 chunk 继续）改为 `return nil, errors.New(...)`，行为也从「降级」变为「硬失败」，会导致图像请求整体报错。",
+      "evidence": [
+        "llama/llama.go:519-528 — 循环内只保留 `lastChunkSize = numTokens` 与 `mtmd_encode_chunk`，不再取每 chunk 的输出",
+        "llama/llama.go:531-543 — `embed := make([][]float32, lastChunkSize)` ... `s := unsafe.Slice((*float32)(embd), numEmbed*lastChunkSize)` 仅按最后一个 chunk 的大小构造结果",
+        "llama/llama.go:533-535 — `if nil == embd { return nil, errors.New(\"failed to get image embedding\") }`（旧代码为 `continue`）",
+        "runner/llamarunner/runner.go:203-210 — 调用方用返回的 embed 逐行替换图像占位符，embedding 行数直接决定图像 token 数量"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 循环重构导致的数据截断（多 chunk 结果被覆盖）＋错误处理从降级变为硬失败。影响评估：多 chunk 图像（高分辨率/切片视觉模型）在 compatibility runner 下的视觉理解明显退化或报错，属于难以察觉的语义回归。",
+        "suggestion": "[重构思路] 保留「先 encode 全部 chunk，再累加全部输出」的语义；若确实只支持最后一个 chunk，应在循环前显式断言 `nChunks == 1` 并给出明确的错误，避免静默截断。代码示例：\n```go\nif nChunks != 1 { return nil, fmt.Errorf(\"multi-chunk images not supported: %d chunks\", nChunks) }\n// 或恢复累加：embed = append(embed, chunkEmbed...)\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "llm/server.go",
+      "line": 437,
+      "title": "新引擎进程的封装类型被 OLLAMA_NEW_ESTIMATES 决定，默认关闭时新引擎 runner 被包装成 llamaServer",
+      "description": "子进程是否使用新引擎由 `textProcessor != nil` 决定（启动参数加 --ollama-engine），但返回哪个 Go 封装类型由 `newEstimates = textProcessor != nil && envconfig.NewMemoryEstimates()` 决定。OLLAMA_NEW_ESTIMATES 默认为 false，于是「新引擎 runner + llamaServer 封装」这种组合成为默认路径：llamaServer 携带 ggml/estimate/gpus 并走 estimateGPULayers 的旧显存估算与 VRAMSize/TotalSize 统计，而实际进程由新引擎自行分配内存（ollamaServer 的 mem *ml.BackendMemory 未被使用），显存核算与实际占用不一致，可能导致调度器误判可用显存（过度加载或拒绝加载）。两个正交关注点（引擎选择 / 估算策略）被耦合到同一个判断里。",
+      "evidence": [
+        "llm/server.go:151-157 — `if envconfig.NewEngine() || f.KV().OllamaEngineRequired() { textProcessor, err = model.NewTextProcessor(modelPath) ... }`",
+        "llm/server.go:298-302 — `if textProcessor != nil { params = append(params, \"--ollama-engine\") }`（子进程用新引擎）",
+        "llm/server.go:165-168 — `newEstimates := textProcessor != nil && envconfig.NewMemoryEstimates()`",
+        "llm/server.go:437-441 — `if newEstimates { return &ollamaServer{llmServer: s}, nil } else { return &llamaServer{llmServer: s, ggml: f}, nil }`",
+        "envconfig/config.go:188-189 — `NewMemoryEstimates = Bool(\"OLLAMA_NEW_ESTIMATES\")`，默认 false"
+      ],
+      "rule": "DESIGN-COUPLING-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 两个独立开关被耦合为一个布尔量，导致封装类型与实际运行的引擎不一致。影响评估：默认配置下新引擎模型的显存估算/统计走旧路径，可能出现 OOM 或调度拒绝；排查时日志与实际行为不符。",
+        "suggestion": "[重构思路] 用两个独立变量表达：`useNewEngine := textProcessor != nil`、`useNewEstimates := envconfig.NewMemoryEstimates()`；封装类型选择与内存估算策略分别由各自变量决定，并在启动日志中同时打印两者。代码示例：\n```go\nuseNewEngine := textProcessor != nil\nuseNewEstimates := useNewEngine && envconfig.NewMemoryEstimates()\n...\nif useNewEngine { return &ollamaServer{llmServer: s}, nil }\nreturn &llamaServer{llmServer: s, ggml: f}, nil\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "runner/ollamarunner/runner.go",
+      "line": 1104,
+      "title": "allocModel 把所有 error 类型的 panic 都当作加载错误，并新增无条件 debug.PrintStack()",
+      "description": "原实现仅当 panic 值可 As 为 ml.ErrNoMem 时才转换为 panicErr，其它 error panic 会重新 panic（保持崩溃语义）；现在任意 error panic 都被吞成 panicErr 返回，非内存错误（例如形状/维度断言失败、后端配置错误）会被上层当作普通的「加载失败」处理，可能触发重试或降级路径，掩盖真实 bug。同时新增的 `debug.PrintStack()` 无条件打印调用栈到 stderr，属于调试残留：即使最终错误被正常处理，也会在用户日志中输出无上下文关联的堆栈。",
+      "evidence": [
+        "runner/ollamarunner/runner.go:1101-1111 — `defer func() { if r := recover(); r != nil { debug.PrintStack(); if err, ok := r.(error); ok { panicErr = err } else { panic(r) } } }()`",
+        "diff 删除段原有逻辑：`var noMem ml.ErrNoMem; if errors.As(err, &noMem) { panicErr = noMem } else { panic(r) }`",
+        "runner/ollamarunner/runner.go 顶部新增 import `\"runtime/debug\"` 仅用于该处"
+      ],
+      "rule": "ERROR-HANDLING-003",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] panic 恢复范围过宽 + 调试输出残留。影响评估：非内存类的程序缺陷被转换为可恢复错误，掩盖真实故障并可能进入不必要的重试/降级；用户日志被无控制地注入堆栈，影响可运维性。",
+        "suggestion": "[重构思路] 保留按错误类型区分的恢复策略，堆栈打印改为受日志级别（如 logutil.Trace 或 env 开关）控制。代码示例：\n```go\ndefer func() {\n    if r := recover(); r != nil {\n        if err, ok := r.(error); ok && errors.As(err, new(ml.ErrNoMem)) {\n            panicErr = err\n            return\n        }\n        slog.Error(\"model allocation panic\", \"error\", r) // 需要堆栈时再 debug.PrintStack()\n        panic(r)\n    }\n}()\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P2",
+      "category": "安全",
+      "file": "ml/backend/ggml/ggml.go",
+      "line": 1023,
+      "title": "Floats()/Ints() 对 CPU 张量返回直接别名 C 内存的切片，缺少拷贝且与 Bytes() 行为不一致",
+      "description": "新增的 CPU 内存分支用 `unsafe.Slice((*float32)(C.ggml_get_data(t.t)), n)` / `(*int32)(...)` 返回直接指向 ggml 张量内存的视图，而同一文件中的 Bytes() 在同样分支使用 C.GoBytes 做了拷贝。这样 Floats()/Ints() 的返回值：1) 可被调用方写入从而静默改写张量内容；2) 生命周期不与该张量/ ctx 绑定，ctx.Close() 后即成为悬垂切片。runner 的 computeBatch 就把 `activeBatch.modelOutput.Floats()` 的结果继续传给采样与 `seq.embedding <- outputs`（可能跨 goroutine 使用到 defer activeBatch.ctx.Close() 之后），存在读到已释放内存的风险。",
+      "evidence": [
+        "ml/backend/ggml/ggml.go:1007-1009 — Bytes() 的 CPU 分支使用 `C.GoBytes(bts, C.int(C.ggml_nbytes(t.t)))`（拷贝）",
+        "ml/backend/ggml/ggml.go:1021-1023 — `data = unsafe.Slice((*float32)(bts), C.ggml_nelements(t.t))`（无拷贝，别名 C 内存）",
+        "ml/backend/ggml/ggml.go:1035-1037 — `data = unsafe.Slice((*int32)(bts), C.ggml_nelements(t.t))`（同上）",
+        "runner/ollamarunner/runner.go:686 — `outputs := activeBatch.modelOutput.Floats()`，随后在 704-713 行用于采样并把同一 slice 送入 `seq.embedding`，而 computeBatch 开头有 `defer activeBatch.ctx.Close()`"
+      ],
+      "rule": "MEMORY-SAFETY-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] unsafe 别名（无拷贝）返回内部内存，所有权语义不明确。影响评估：调用方若原地修改（如归一化）会破坏张量数据；ctx 关闭后持有该切片将读到已释放内存，产生难以复现的数据错乱或崩溃。",
+        "suggestion": "[重构思路] 统一语义：对外暴露的取值接口一律拷贝（与 Bytes 一致），确需零拷贝时另提供名称明确的 `View*`/`Unsafe*` 方法并在文档中标注生命周期约束。代码示例：\n```go\n} else if bts := C.ggml_get_data(t.t); bts != nil {\n    n := int(C.ggml_nelements(t.t))\n    data = make([]float32, n)\n    copy(data, unsafe.Slice((*float32)(bts), n))\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "fs/ggml/ggml.go",
+      "line": 868,
+      "title": "告警日志键名写成 \"mode\" 且消息带尾随空格",
+      "description": "SupportsKVCacheType 中 gpt-oss 分支的 slog.Warn 使用 `\"mode\"` 作为模型架构的键（应为 `\"model\"`，与同文件其它日志一致），消息字符串末尾还多了空格，并且返回值语义也被改写为 `cacheType == \"f16\"`（空字符串不再视为支持）。日志键名错误会让按 `model` 字段检索/聚合日志的运维与测试断言失效。",
+      "evidence": [
+        "fs/ggml/ggml.go:868 — `slog.Warn(\"model only supports non-quantized cache types \", \"mode\", arch)`",
+        "fs/ggml/ggml.go:869 — `return cacheType == \"f16\"`（原先 `return false`，且函数开头对 `\"\"`/`\"f16\"` 的提前返回已被删除）",
+        "调用点 llm/server.go:224-228 与 llm/memory.go:205 已用 `kvct != \"\"` 兜底，说明契约变化是隐式的"
+      ],
+      "rule": "LOGGING-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 日志字段名拼写错误 + 消息格式瑕疵。影响评估：日志检索/告警规则失效，排查 kv cache 相关问题时定位困难；被删除的空串提前返回让函数契约变得隐晦，易被后续调用者误用。",
+        "suggestion": "[重构思路] 修正键名为 `model`、去掉尾随空格，并在函数文档中明确「空字符串代表未指定，由调用方处理」或恢复 `cacheType == \"\" || cacheType == \"f16\"` 的早返回。代码示例：\n```go\nif cacheType == \"f16\" {\n    return true\n}\nif arch := ...; slices.Contains([]string{\"gptoss\", \"gpt-oss\"}, arch) {\n    slog.Warn(\"model only supports non-quantized cache types\", \"model\", arch)\n    return false\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "parser/token_parser.go",
+      "line": 21,
+      "title": "TokenParser.parserEngine 字段与 ParserInternals/defaultEngine 只写不读，属于死代码",
+      "description": "ParserInternals 接口和 defaultEngine 实现仅为给 TokenParser.parserEngine 赋值而存在，而该字段在整个包内没有任何读取点：prefill 是在 NewTokenParser 构造时直接作用于 HarmonyParser 的。这层抽象没有产生任何调用价值，却要求 HarmonyParser 暴露 AddImplicitStartOrPrefill 以满足接口，增加理解与演进成本（后续要迁移 prefill 到别处时会误以为存在统一入口）。",
+      "evidence": [
+        "parser/token_parser.go:21 — `parserEngine ParserInternals`",
+        "parser/token_parser.go:34-36 — `type ParserInternals interface { AddImplicitStartOrPrefill(prefillString string) }`",
+        "parser/token_parser.go:63-68 — 构造时 `harmonyMessageHandler.HarmonyParser.AddImplicitStartOrPrefill(prefillString)` 已直接调用，随后才赋值 `parserEngine: harmonyMessageHandler.HarmonyParser`",
+        "parser/token_parser.go:50-52 — `type defaultEngine struct{}` / `func (defaultEngine) AddImplicitStartOrPrefill(prefillString string) {}`（空实现）"
+      ],
+      "rule": "DEADCODE-001",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 未被使用的字段与接口（过度抽象）。影响评估：增加阅读负担、误导后续扩展方向；golangci-lint/staticcheck 的 unused 检查对结构体字段不生效，容易长期沉淀。",
+        "suggestion": "[重构思路] 删除 parserEngine 字段、ParserInternals 接口与 defaultEngine；若希望保留统一入口，则在 AddContent 路径中真正使用 p.parserEngine，而不是构造期一次性调用。代码示例：\n```go\ntype TokenParser struct {\n    messageHandler MessageHandler\n    toolParser     ToolParser\n    lastToken      string\n    ...\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可移植",
+      "file": ".github/workflows/release.yaml",
+      "line": 107,
+      "title": "CI 把 cuda-components 硬编码为 12/13 共用列表，CUDA 13 不再安装 crt/nvvm/nvptxcompiler",
+      "description": "release.yaml 中 CUDA 12.8 与 CUDA 13.0 两个 matrix 条目原本各自声明 cuda-components（CUDA 13 额外包含 crt、nvvm、nvptxcompiler），现在统一替换为硬编码的四个子包 `cudart/nvcc/cublas/cublas_dev`，并通过 `_${{ matrix.cuda-version }}` 拼接。CUDA 13 少装了 nvvm/nvptxcompiler（nvcc 在 Windows 上生成 PTX/SASS 依赖它们），可能使 CUDA 13 的构建/发布流水线在编译阶段失败；test.yaml 中该 matrix 条目还整体删除了 cuda-version 键，进一步说明配置已被硬编码透传，后续新增 CUDA 版本时需要手工改脚本而非改 matrix。",
+      "evidence": [
+        "release.yaml（diff 删除段）：CUDA 13 matrix 条目原有 `cuda-components: [\"cudart\",\"nvcc\",\"cublas\",\"cublas_dev\",\"crt\",\"nvvm\",\"nvptxcompiler\"]`",
+        "release.yaml:107 — `$subpackages = @(\"cudart\", \"nvcc\", \"cublas\", \"cublas_dev\") | Foreach-Object {\"${_}_${{ matrix.cuda-version }}\"}`（CUDA 13 与 12 共用同一列表）",
+        "test.yaml（diff 删除段）：该 CUDA matrix 条目同时删除了 `cuda-version: '13.0'`，脚本改为硬编码 `\"cudart_13.0\", \"nvcc_13.0\", \"cublas_13.0\", \"cublas_dev_13.0\"`"
+      ],
+      "rule": "BUILD-001",
+      "confidence": 0.42,
+      "tips": {
+        "review": "[缺陷类型] CI 配置硬编码导致版本间差异丢失。影响评估：CUDA 13 的 Windows 打包任务可能因缺少 nvvm/nvptxcompiler 组件而失败（表现为 nvcc 报错），且失败只在 release 分支暴露，反馈周期长；配置可维护性下降。",
+        "suggestion": "[重构思路] 保留 matrix 驱动的组件清单（或至少保留 per-version 的 components 变量），让 CUDA 12/13 各自声明所需子包，脚本只做拼接。代码示例：\n```yaml\n- cuda-version: '13.0'\n  cuda-components: ['cudart','nvcc','cublas','cublas_dev','crt','nvvm','nvptxcompiler']\n# 脚本：$subpackages = @(${{ join(matrix.cuda-components, ', ') }}) | %{ \"$_`_${{ matrix.cuda-version }}\".Replace('`','') }\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "api/types.go",
+      "line": 391,
+      "title": "EmbedRequest 删除 Dimensions 字段，/v1/embeddings 的 dimensions 参数被静默忽略",
+      "description": "本次同时删除了 api.EmbedRequest.Dimensions、openai.EmbedRequest.Dimensions 以及 EmbedHandler 中的截断+归一化逻辑。由于 gin/encoding-json 对未知字段默认忽略，OpenAI 兼容端点收到 `\"dimensions\": 512` 时不会报错，而是返回完整维度向量，客户端按声明维度使用会得到长度不符的结果；对直接使用 ollama Go 客户端 `api.EmbedRequest` 的程序则是编译期破坏（字段消失）。这属于无提示的对外契约变更。",
+      "evidence": [
+        "api/types.go:391 — 现在只剩 `Truncate *bool \\`json:\"truncate,omitempty\"\\``，diff 删除了 `Dimensions int \\`json:\"dimensions,omitempty\"\\`` 及其注释",
+        "openai/openai.go:78-80 — `type EmbedRequest struct { Input any; Model string }`（Dimensions 被删除）",
+        "openai/openai.go:1008 — `json.NewEncoder(&b).Encode(api.EmbedRequest{Model: req.Model, Input: req.Input})`（不再透传 Dimensions）",
+        "server/routes.go:558-561 — 删除 `if req.Dimensions > 0 && req.Dimensions < len(embedding) { embedding = normalize(embedding[:req.Dimensions]) }`，改为 `embeddings[i] = normalize(embedding)`"
+      ],
+      "rule": "API-COMPAT-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 公共 API 字段静默移除（破坏性变更且无错误提示）。影响评估：OpenAI 兼容调用方按 dimensions 期望的向量长度不再成立，可能导致下游向量检索维度不匹配；Go 客户端升级后编译失败。",
+        "suggestion": "[重构思路] 若不打算支持该参数，至少在 OpenAI 兼容层显式拒绝 `dimensions`（返回 400 并说明不支持）；若只是暂时下线，保留字段并返回明确错误。代码示例：\n```go\ntype EmbedRequest struct {\n    Input      any    `json:\"input\"`\n    Model      string `json:\"model\"`\n    Dimensions int    `json:\"dimensions,omitempty\"`\n}\n...\nif req.Dimensions > 0 { c.AbortWithStatusJSON(http.StatusBadRequest, NewError(..., \"dimensions is not supported\")); return }\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "llm/server.go",
+      "line": 227,
+      "title": "kvct 为空时仍打印 \"kv cache type not supported by model\" 告警，产生误导性日志",
+      "description": "由于 SupportsKVCacheType 不再把空字符串视为支持，两处调用点都加了 `kvct != \"\"` 前置判断，但 server.go 的 else 分支没有区分「未指定」与「不支持」：在开启 flash attention 且未设置 OLLAMA_KV_CACHE_TYPE（kvct == \"\"）的常规场景下，每次加载模型都会输出 `kv cache type not supported by model, type=\"\"` 的告警，用户会误以为配置有误。",
+      "evidence": [
+        "llm/server.go:218-228 — `if fa { ...; if kvct != \"\" && f.SupportsKVCacheType(kvct) { loadRequest.KvCacheType = kvct } else { slog.Warn(\"kv cache type not supported by model\", \"type\", kvct) } }`",
+        "llm/server.go:216 — `kvct := strings.ToLower(envconfig.KvCacheType())`，未设置时为空字符串",
+        "fs/ggml/ggml.go:866-870 — 函数已不再对空字符串提前返回 true，空串进入 else 分支"
+      ],
+      "rule": "LOGGING-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 日志在正常路径上误报。影响评估：默认配置下每次加载都会出现无意义的告警，降低日志信噪比，掩盖真正的 kv cache 类型不兼容问题。",
+        "suggestion": "[重构思路] 区分三种情况：未指定（不打日志）、指定但不支持（Warn）、指定且支持（设置）。代码示例：\n```go\nswitch {\ncase kvct == \"\":\n    // 未指定，使用默认 f16\ncase f.SupportsKVCacheType(kvct):\n    loadRequest.KvCacheType = kvct\ndefault:\n    slog.Warn(\"kv cache type not supported by model\", \"type\", kvct)\n}\n```",
+        "subcategory": ""
+      }
+    }
+  ]
+}

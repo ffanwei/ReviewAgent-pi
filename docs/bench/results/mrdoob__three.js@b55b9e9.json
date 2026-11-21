@@ -1,0 +1,112 @@
+{
+  "instance_id": "mrdoob__three.js@b55b9e9",
+  "repo": "mrdoob/three.js",
+  "base_commit": "de413e2112ff1ae80599f145b101354a1476976c",
+  "head_commit": "b55b9e97f6d0f5829e4d8fc364949e72b0d9e98c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 144.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 9,
+  "review_output": [
+    {
+      "file": "src/nodes/gpgpu/ComputeNode.js",
+      "line": 233,
+      "summary": "仅传 workgroupSize 数组时 count 被置为 null，可能导致计算静默不执行",
+      "failure_scenario": "新版 TSL compute() 在第二个参数是数组时把 count 置为 null（L233），随后构造 ComputeNode 并触发 updateDispatchCount()：dispatchCount = Math.ceil( count / size )，当 count 为 null 时得到 0。若调用方没有同时显式传入 dispatchSize（例如通过 updateBefore 自动触发的 renderer.compute( this )，或运行在无 dispatchSize 支持的 WebGL fallback backend），后端会以 dispatchWorkgroups( 0, 1, 1 ) / drawArrays( ..., 0 ) 执行，GPU 侧什么都不做且没有任何警告或异常，用户看到的是“commit 成功但结果缓冲区全为初值”。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/renderers/common/Renderer.js",
+      "line": 2322,
+      "summary": "未初始化与 computeAsync 路径丢失 dispatchSize 参数",
+      "failure_scenario": "Renderer.compute 新增 dispatchSize 参数，但在两条转发路径上都没有透传：一是 `_initialized === false` 时调用 `this.computeAsync( computeNodes )`（L2322），二是 computeAsync 内部调用 `this.compute( computeNodes )`（L2416）。因此在 renderer 尚未初始化时调用 `renderer.compute( node, [ x, y, z ] )`，用户指定的 dispatchSize 会被静默丢弃，最终走 computeNode.dispatchCount 的自动计算分支，得到与用户意图不同的 dispatch 网格。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "API-CONSISTENCY-002"
+    },
+    {
+      "file": "src/renderers/webgl-fallback/WebGLBackend.js",
+      "line": 919,
+      "summary": "WebGL fallback backend 的 compute 未同步 dispatchSize，跨后端行为不一致",
+      "failure_scenario": "Renderer.compute 现在会把 dispatchSize 作为第 5 个实参传给 backend.compute（Renderer.js:2393），但 WebGLBackend.compute 的签名仍是 `( computeGroup, computeNode, bindings, pipeline )`，既未声明也未使用 dispatchSize；其 dispatch 依据是 `computeNode.count`（drawArrays/drawArraysInstanced）。结果是同一份 TSL compute 代码在 WebGPU 上按 dispatchSize 派发，在 WebGL fallback 上被忽略，甚至在 count 为 null（workgroupSize-数组形式）时以 count=null 执行 draw，属于跨后端行为不一致。Backend 基类的抽象声明（src/renderers/common/Backend.js:169）也没有更新。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.8,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "src/renderers/webgpu/WebGPUBackend.js",
+      "line": 1350,
+      "summary": "用户显式传入的 dispatchSize 未做 maxComputeWorkgroupsPerDimension 校验",
+      "failure_scenario": "自动计算分支会用 `this.device.limits.maxComputeWorkgroupsPerDimension` 对 dispatchCount 做切分/clamp（L1358-1371），但新增的显式 dispatchSize 分支直接把 x/y/z 原样交给 `passEncoderGPU.dispatchWorkgroups()`。当用户传入的分量超过设备上限时，WebGPU 会触发校验错误（运行时异常或 device lost），而这一类错误正是原有代码专门规避的。建议在显式分支同样做上限校验并给出明确错误信息。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "WEBGPU-LIMITS-001"
+    },
+    {
+      "file": "src/renderers/webgpu/nodes/WGSLNodeBuilder.js",
+      "line": 1903,
+      "summary": "workgroupSize 必须为 3 元素的硬性校验使旧的 [ 64 ] 用法在构建期抛错",
+      "failure_scenario": "workgroupSize 的历史默认值是 `[ 64 ]`（见 ComputeNode.js 变更前 L23/L56 的 JSDoc 与默认参数），既有用户代码很可能写成 `compute( node, count, [ 64 ] )` 或 `[ 256 ]`。本次在 WGSL 构建路径新增 `if ( workgroupSize.length !== 3 ) throw new Error( 'workgroupSize must have 3 elements' );`，会让这类调用从“可正常编译”变成运行期直接抛错，且该错误发生在 shader 构建阶段，用户很难关联到自己传入的 workgroupSize。同时 GLSLNodeBuilder.getInvocationLocalIndex 仍用 `workgroupSize.reduce(...)` 支持任意长度，两个后端校验口径不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "src/renderers/webgpu/WebGPUBackend.js",
+      "line": 1329,
+      "summary": "dispatchSize 变量被复用为 computeNodeData 对象，语义漂移且 dispatchSize 字段成为陈旧数据",
+      "failure_scenario": "L1329 `dispatchSize = isValid ? dispatchSize : computeNodeData;` 让 dispatchSize 在回退分支中指代 node data 对象本身；随后 L1360 只更新 `computeNodeData.dispatchSize = { x: 0, y: 1, z: 1 }` 这一引用，但 L1364-1369 写入的是 `dispatchSize.x/y/z`，即 computeNodeData 的顶层属性，导致 `computeNodeData.dispatchSize` 永远停留在 { x: 0, y: 1, z: 1 }。目前靠“同一个对象被本地变量引用”侥幸正确，但该字段已成为不会更新的死数据，且同名变量在相邻分支中一处是数组、一处是对象，后续维护极易改动出错。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "src/nodes/gpgpu/ComputeNode.js",
+      "line": 222,
+      "summary": "JSDoc 与新签名不一致：countOrWorkgroupSize 类型、可选标记与缺失描述",
+      "failure_scenario": "JSDoc 未跟上实现变化：`compute()` 的第二个参数标为 `{number} countOrWorkgroupSize` 但实现上也可传数组；`Renderer.compute` 的 `dispatchSize` 有默认值却未标为可选；ComputeNode 构造函数的 `[workgroupSize = [ 64, 1, 1 ]]` 缺少参数说明；`_getWGSLComputeCode` 的 `@param {string} workgroupSize` 已过时（现在传数组）。这些不一致会误导使用 TSL compute 的调用方。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.75,
+      "rule": "DOC-001"
+    },
+    {
+      "file": "src/renderers/webgpu/nodes/WGSLNodeBuilder.js",
+      "line": 2136,
+      "summary": "生成的 WGSL 中 instanceIndex 表达式使用空格缩进而非项目 tabs 风格",
+      "failure_scenario": "模板字符串内新增的 instanceIndex 多行表达式用 4 个空格续行（L2136-2137），同文件其余代码与生成的 shader 文本均使用 tab 缩进。这会使生成出的 WGSL 源码缩进混杂，在 shader 编译报错定位与 diff 复核时增加噪声。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "STYLE-001"
+    },
+    {
+      "file": "src/renderers/common/Renderer.js",
+      "line": 2393,
+      "summary": "数组形式的多 computeNode 调用共用同一份 dispatchSize，语义未定义",
+      "failure_scenario": "Renderer.compute 支持传入 computeNode 数组，循环中对每个 computeNode 都传入同一个 dispatchSize（L2393）。当列表中各节点的 count/workgroupSize 不同却强制使用同一 [ x, y, z ] 时，除第一个节点外都会按与自身不匹配的网格派发，且没有任何校验或文档说明。建议在文档中明确限制，或仅允许单节点时使用 dispatchSize。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "API-DESIGN-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\mrdoob__three.js\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\mrdoob__three.js@b55b9e9.diff\n  caseId              mrdoob__three.js@b55b9e9\n  --issue             (未传)\n  --taskId            mrdoob__three.js@b55b9e9\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 106.0s · 模型调用 13 次 · token 输入 33,080（未命中） · 输出 15,518 · 缓存命中 182,144（84.6%） · 工具 23 次（主会话 23 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0095\n[time] 阶段耗时 | 总墙钟 106.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.6%)\n[time] 阶段 | 六阶段审计 105.9s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 9.6s (9.1%) | P2 4.1s (3.8%) | P3 5.3s (5.0%) | P4 29.4s (27.8%) | P5 47.2s (44.6%) | P6 10.3s (9.8%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 33,080（未命中） | 输出 15,518 | 缓存命中 182,144（84.6%） | $0.0095\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\mrdoob__three.js@b55b9e9\\audit\\20261115_003841_224.json",
+  "token_usage": {
+    "input_tokens": 33080,
+    "output_tokens": 15518,
+    "cache_read_input_tokens": 182144
+  }
+}

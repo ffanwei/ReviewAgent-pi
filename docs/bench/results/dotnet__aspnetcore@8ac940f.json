@@ -1,0 +1,312 @@
+{
+  "instance_id": "dotnet__aspnetcore@8ac940f",
+  "repo": "dotnet/aspnetcore",
+  "base_commit": "7ba02e8ac71eeba562476953d5ff6030b8eda765",
+  "head_commit": "8ac940ff581aa344ab8f859874f6d4c0ecaec6b6",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1273.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 29,
+  "review_output": [
+    {
+      "file": "eng/common/core-templates/steps/source-build.yml",
+      "line": 81,
+      "summary": "PortableBuild 参数被拼写为 PortabelBuild，源构建中该设置会被静默丢弃",
+      "failure_scenario": "本 MR 将 source-build 模板中传给构建脚本的 MSBuild 属性 `/p:PortableBuild` 改成了 `/p:PortabelBuild`。MSBuild 对未定义的全局属性不会报错，只会把它当作一个无人读取的属性，因此任何在 source-build leg 中显式指定 `platform.portableBuild` 的构建都会静默丢失该设置：仓库自身在 eng/Common.props:9 中定义并通过 `$(PortableBuild)` 控制可移植构建行为的属性将保持默认值 true，导致显式传 false（构建不可移植/绑定具体 RID 资产）的 leg 产出与预期相反的产物，且不会有任何告警。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CI-PARAM-PROPNAME-001"
+    },
+    {
+      "file": "eng/Build.props",
+      "line": 282,
+      "summary": "Debian 安装包项目在 linux-arm64 下也会被加入构建，而 Debian 项目自身只支持 linux-x64",
+      "failure_scenario": "eng/Build.props 新增的条件组在 `TargetRuntimeIdentifier` 为 linux-x64 **或 linux-arm64** 且 `LinuxInstallerType == 'deb'` 时把 `src\\Installers\\Debian\\**\\*.*proj` 加入 InstallerProject；但同一次变更新增的 src/Installers/Debian/Directory.Build.targets:21 明确对非 linux-x64 直接抛出 `Error ... Currently only linux-x64 is supported by Debian installers`，且 src/Installers/Debian/Directory.Build.props:11 只为 x64 定义 `DebianPackageArch`。也就是说任何 `--arch arm64 -p:LinuxInstallerType=deb` 的组合都会在构造项目图后立刻失败（或产生架构为空、文件名异常的 .deb），当前只是因为没有对应的 pipeline leg 才没有暴露。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "BUILD-CONFIG-CONSISTENCY-002"
+    },
+    {
+      "file": "Directory.Build.props",
+      "line": 58,
+      "summary": "IsStableBuild 无条件下赋值为 false，且位于 Arcade Sdk.props 导入之前",
+      "failure_scenario": "新增的 `IsStableBuild` 逻辑先无条件写 `<IsStableBuild>false</IsStableBuild>`，再在 `DotNetFinalVersionKind == 'release'` 时改为 true。该 PropertyGroup 位于文件前部（第 58-59 行），而 Arcade 的 `Sdk.props` 直到第 99 行才导入：一方面外部通过 `-p:IsStableBuild=true` 传入的值会被这里的无条件赋值覆盖，另一方面注释声称“Arcade 会自动挑选 IsStableBuild”，但赋值发生在 Arcade 导入之前，实际生效的是哪一方的值取决于 Arcade 是否在之后重新赋值，行为不够确定、排查困难。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MSBUILD-PROP-OVERRIDE-008"
+    },
+    {
+      "file": "Directory.Build.props",
+      "line": 246,
+      "summary": "资产下载基址切换为 azureedge.net CDN 端点，存在运行时资产无法下载的风险",
+      "failure_scenario": "本次把 `OfficialBaseURL`、`PublicBaseURL`、`InternalBaseURL` 从 `*.blob.core.windows.net` 换成 `*.azureedge.net`。这三个属性会直接进入 `RemoteAssetBaseURL` 项组用于下载已发布 runtime/installer 资产（Directory.Build.props:254-274），是构建能否拿到外部 runtime 包的关键路径。azureedge.net 属于旧的 Azure CDN 边缘端点，已处于弃用状态；一旦某条端点不可解析或返回 404，构建阶段就会出现资产下载失败，且失败点分散在 restore/installer 构建等多处，错误信息不直观。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONFIG-ENDPOINT-003"
+    },
+    {
+      "file": ".azure/pipelines/ci.yml",
+      "line": 302,
+      "summary": "删除 _ArcadePublishNonWindowsArg 后各非 Windows 腿硬编码 --publish，release/Manual 构建失去关闭非 Windows 发布的能力",
+      "failure_scenario": "原先非 Windows leg 的 `--publish` 由 `_ArcadePublishNonWindowsArg` 控制：release/*、internal/release/* 以及 Manual 触发时该变量为空字符串（此时 `PostBuildSign=false`，资产由 xplat codesign 作业签名后再发布），其它分支才传 `--publish`。本 MR 删除该变量并在 macOS x64/arm64、Linux x64（rpm 步骤）、Linux arm64（rpm 步骤）以及 Linux arm/musl 等位置全部改为硬编码 `--publish`，等于取消了这条按分支/触发方式的门控：release 分支构建现在会由构建腿直接发布非 Windows 资产，且 release 与 dev 两种构建在同一处代码上不再可区分。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CI-PUBLISH-GATING-005"
+    },
+    {
+      "file": ".azure/pipelines/ci.yml",
+      "line": 406,
+      "summary": "Linux 构建腿仍只上传 artifacts/packages，deb/rpm/tar.gz 迁到 artifacts/installers 后不再作为构建产物上传",
+      "failure_scenario": ".deb/.rpm/.tar.gz 的产出目录在本 MR 中由 `artifacts/packages`（原 CrossArchitectureInstallerBasePath 默认值指向 shipping 包目录）迁移到 `artifacts/installers`（Publishing.props 全部改为 `$(ArtifactsDir)installers\\**`，Debian 项目的 OutputPath 也指向 `$(InstallersOutputPath)`），但 ci.yml 中 Linux_x64 / Linux_arm / Linux_arm64 腿的 `artifacts:` 列表仍只有 `artifacts/packages/`。结果是这些安装包不再出现在构建的 published artifacts 里：PR/验证构建（此时 `_PublishArgs` 为空）无法下载 deb/rpm 进行检查，依赖 `<inputName>_Packages` 的下游作业（codesign-xplat）也拿不到安装包。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CI-ARTIFACT-PATH-004"
+    },
+    {
+      "file": "eng/Version.Details.xml",
+      "line": 12,
+      "summary": "本 MR 夹带大规模依赖版本回退与依赖删除，疑似分支合并/回滚副作用",
+      "failure_scenario": "在同一次变更中，Version.Details.xml 与 Versions.props 出现成片的版本“降级”：dotnet-ef/EFCore 从 10.0.0-alpha.1.25053.5 退到 24603.6，runtime 系列从 25052.4 退到 24603.1，roslyn 从 4.13.0-3.24613.7 退到 3.24576.5，arcade 从 25056.1 退到 24578.2，xdt 从 10.0-preview.24609.2 退到 9.0-preview.24522.2，Playwright 1.49.0→1.45.1、Selenium 4.27.0→4.26.1；同时删除了 dotnet-optimization 的全部 MIBC 依赖、Microsoft.DotNet.SharedFramework.Sdk 与 Microsoft.DotNet.Build.Tasks.Archives，source-build-externals 的版本串格式也从 `10.0.605601` 变为 `10.0.0-alpha.1.24575.3`。这与“安装包重构”的主题无关，更像是把较新的依赖更新回滚掉了：会导致刚合入的 runtime/arcade/roslyn 修复丢失，也可能让 source-build 基线与实际消费的包版本不再匹配。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "DEPS-VERSION-REGRESSION-006"
+    },
+    {
+      "file": ".azure/pipelines/jobs/default-build.yml",
+      "line": 213,
+      "summary": "通用构建模板给 build.cmd/build.sh 统一加 -nobl，CI 失败时缺少 binlog 诊断信息",
+      "failure_scenario": "default-build.yml 中两条默认构建脚本（Windows 的 build.cmd 与其它平台的 build.sh，共 4 处）都新增了 `-nobl`/`--nobl`，即不生成 MSBuild 二进制日志。该模板是绝大多数 job 的默认入口（ci.yml/ci-public.yml 中大量 job 依赖它），一旦 Windows/非 Windows 构建在 CI 上偶发失败，将没有 binlog 可供分析；而新增的 Linux 安装包步骤同时也在使用 `--nobl`，进一步减少了可诊断信息。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "CI-DIAGNOSABILITY-007"
+    },
+    {
+      "file": "src/Components/Web.JS/src/Services/NavigationEnhancement.ts",
+      "line": 147,
+      "summary": "submitter 为 null 时非空断言会导致增强导航抛 TypeError",
+      "failure_scenario": "onDocumentSubmit 中同一处 event.submitter 的其他访问（第 128/134/142/146 行）都使用可选链，唯第 147 行改成了非空断言 `event.submitter!.getAttribute('value')`。SubmitEvent.submitter 在无提交按钮的提交场景下为 null（典型如 `form.requestSubmit()` 不传参数，或 `requestSubmit()` 由非提交按钮元素触发），而此时第 140 行已经执行了 `event.preventDefault()`，因此抛出 TypeError 后既不会走增强导航、也不会退化为浏览器原生提交，表单直接提交失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "eng/common/cross/build-rootfs.sh",
+      "line": 389,
+      "summary": "--skipsigcheck 仍被接受但已无法真正跳过 apt 签名校验",
+      "failure_scenario": "`--skipsigcheck` 分支（第 389 行）仍把 `__SkipSigCheck=1`，且 usage 第 17 行仍宣传该选项；但本次删除了 `__UpdateOptions` 的赋值（原本在 skip 时设置 `--allow-unauthenticated --allow-insecure-repositories`），并把 `apt-get update $__UpdateOptions` 改成无参数的 `apt-get update`，同时删除了 skip 分支里的 `__Keyring=` 清空。现在 skip 模式下只少传 `--force-check-gpg`，`sources.list.d` 中的 `Signed-By: $__KeyringFile` 仍生效，apt 对未签名/签名不匹配的仓库依旧会失败。对需要绕过签名（如本地镜像、过期 keyring）的交叉构建场景属于静默失效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "eng/common/cross/build-rootfs.sh",
+      "line": 428,
+      "summary": "用户指定的 alpineX.YY 被静默覆盖为 3.13，版本参数失效",
+      "failure_scenario": "脚本仍在第 363 行解析 `__AlpineMajorVersion`/`__AlpineMinorVersion`，usage（第 10 行）也仍宣称可用 `alpineX.YY` 指定版本，但本次删除的 `elif [[ -n \"$__AlpineMajorVersion\" ]]; then __AlpineLlvmLibsLookup=1` 分支是唯一的消费者。删除后，显式传入的版本若不在 case 显式列举的 3.14/3.15/3.16/3.17/edge 中（例如 alpine3.19、alpine3.20），会落入 `*)` 分支并被改写为 `__AlpineVersion=3.13`，同时追加 `llvm10-libs`。结果是交叉构建实际使用的 Alpine 版本与调用方请求不符，且 `__AlpineMajorVersion` 变成死变量。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "src/Components/WebAssembly/DevServer/src/Server/Startup.cs",
+      "line": 71,
+      "summary": "开发服务器不再为 index.html 设置 no-store，热重载脚本可能被浏览器缓存绕过",
+      "failure_scenario": "本次删除了 StaticFileOptions.OnPrepareResponse 中对 `Cache-Control: no-store` 的设置，而被删注释明确说明了原因：热重载中间件会向响应 HTML 注入脚本，一旦浏览器复用缓存中不含注入脚本的 index.html，热重载就会失效（注释还引用了 issue 45213）。删除后 WebAssembly DevServer 的 index.html 恢复为可缓存，开发者可能看到缓存住的无注入页面，表现为热重载/脚本注入偶发不生效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-004"
+    },
+    {
+      "file": "src/Components/Components/src/RouteView.cs",
+      "line": 32,
+      "summary": "新增的 NavigationManager 注入字段在 RouteView 中完全未被使用",
+      "failure_scenario": "RouteView 全文件（99 行）只新增了 `[Inject] private NavigationManager NavigationManager { get; set; }`，Render/RenderPageWithParameters/SetParametersAsync 中均无引用。它带来两个成本：一是死代码（文件头为 `#nullable disable warnings`，编译器也不会提示未使用）；二是让 RouteView 多了一个构造期必须可解析的服务依赖，若宿主未注册 NavigationManager（部分自定义 Renderer/单元场景），组件渲染会因注入失败抛异常，而这对一个不使用该服务的组件本不该发生。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "eng/tools/RepoTasks/RepoTasks.csproj",
+      "line": 39,
+      "summary": "RepoTasks 移除 System.Formats.Asn1 的 CVE-2024-38095 缓解引用，改为另一个 CVE 的包",
+      "failure_scenario": "原引用带有明确注释“Manually updated version to address CVE-2024-38095”，本次将其替换为 System.Security.Cryptography.Xml（注释改为“from 6.0.0 to address CVE-2023-29331”）。若 RepoTasks 通过 Microsoft.Build.Tasks.Core 等依赖仍传递引入 System.Formats.Asn1，删除显式版本固定会把该传递依赖回退到较低版本，重新暴露 CVE-2024-38095。此外新增属性 `$(RepoTasksSystemSecurityCryptographyXmlVersion)` 是否已在 eng/Versions.props 中定义，在本轮上下文中未能确认（属性缺失会导致还原/构建失败）。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "eng/common/native/install-dependencies.sh",
+      "line": 30,
+      "summary": "安装依赖脚本不再覆盖 RHEL，RHEL 主机/镜像缺少构建依赖",
+      "failure_scenario": "该分支由 `[ \"$ID\" = \"fedora\" ] || [ \"$ID\" = \"rhel\" ]` 收窄为仅 fedora，导致 ID=rhel 的主机不再安装 cmake/llvm/lld/lldb/clang、libicu-devel、openssl-devel、krb5-devel 等依赖。RHEL 与 Fedora 的包名（dnf、*-devel）基本一致，原本可共用同一分支；收窄后 RHEL 环境下本脚本静默什么都不做，后续构建会在缺少工具链处失败。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.6,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "eng/targets/ResolveReferences.targets",
+      "line": 269,
+      "summary": "App.Ref 被并入 RemoveExtensionsCompileAssets 的 AND 条件，servicing 下的资产清理可能不再生效",
+      "failure_scenario": "原条件为 `'$(MSBuildProjectName)' == 'Microsoft.AspNetCore.App.Ref' OR (Pkg... != '' AND IsServicingBuild AND IsImplementationProject AND ...)`，即 App.Ref 无条件执行清理；改后 App.Ref 被放进 AND 链，额外要求 `PkgMicrosoft_Internal_Runtime_AspNetCore_Transport != ''`、`IsServicingBuild == 'true'` 且 `IsImplementationProject == 'true'`。同一文件第 247 行的 PackageReference 条件里 App.Ref 仍是独立 OR 分支，说明该工程被视为与 IsAspNetCoreApp 实现工程不同类型的角色；而新建的 Microsoft.AspNetCore.App.Ref.csproj 并未显式设置 IsImplementationProject，一旦其取值为 false，servicing 构建中参考包将不再移除与 Transport 重叠的编译资产，可能出现 target pack 中引用版本被 servicing 包抬高的问题。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "RELIABILITY-005"
+    },
+    {
+      "file": "src/DataProtection/DataProtection/src/KeyManagement/KeyRingBasedDataProtector.cs",
+      "line": 365,
+      "summary": "AAD 模板新实现的 ArrayPool 数组在异常路径下不会归还",
+      "failure_scenario": "NET10_0_OR_GREATER 分支先 `ArrayPool<int>.Shared.Rent(purposes.Length)`，直到第 397 行才 `Return`，中间 `EncodingUtil.SecureUtf8Encoding.GetByteCount/GetBytes` 都可能抛出（SecureUtf8Encoding 对非法代理项 throwOnInvalidBytes），一旦抛出，池化数组既不归还也不清理。该构造器只在创建 protector 时执行一次，影响有限，但池化缓冲未用 try/finally 保护属于易被复制的坏模式。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERFORMANCE-002"
+    },
+    {
+      "file": "src/Servers/Kestrel/Core/src/Internal/Http/Http1Connection.cs",
+      "line": 656,
+      "summary": "Host 头覆盖分支把端口重复拼接，写入的 Host 值可能被判定非法或被改写",
+      "failure_scenario": "ValidateNonOriginHostHeader 在 AllowHostHeaderOverride 为 true 时把 hostText 赋值为 `_absoluteRequestTarget.Authority + \":\" + _absoluteRequestTarget.Port.ToString(CultureInfo.InvariantCulture)`。System.Uri.Authority 在端口非默认值时本身就包含 \":port\"（这正是被删除注释「No need to include the port here, it's either already in the Authority or it's the default port」所表达的前提，原实现是 `hostText = authority;`），因此新表达式会得到 `example.com:8080:8080` 这样重复端口的取值；该值随即写回 `HttpRequestHeaders.HeaderHost` 并在第 668 行交给 `HttpUtilities.IsHostHeaderValid(hostText)` 校验。无论校验实现如何，语义上都已偏离原意：要么被判非法而导致本应「覆盖为合法 Host」的请求被 400 拒绝，要么把一个重复端口的畸形 Host 写入请求特征、影响依赖 Host 的路由与 URL 生成。默认端口场景（IsDefaultPort 为 true、Host 与 authority 不一致）则会把 Host 从 `example.com` 改为 `example.com:80`，同样属于写回值被改写。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-HOST-001"
+    },
+    {
+      "file": "src/Servers/Kestrel/Core/src/Internal/Http/Http1Connection.cs",
+      "line": 656,
+      "summary": "Host 头覆盖分支把端口重复拼接，写回的 Host 值含两个冒号或被动补默认端口",
+      "failure_scenario": "ValidateNonOriginHostHeader 在 AllowHostHeaderOverride 为 true 时把 hostText 赋值为 `_absoluteRequestTarget.Authority + \":\" + _absoluteRequestTarget.Port.ToString(CultureInfo.InvariantCulture)`。System.Uri.Authority 在端口非默认值时本身就包含 \":port\"（这正是被删除注释「No need to include the port here, it's either already in the Authority or it's the default port」所表达的前提，原实现是 `hostText = authority;`），因此新表达式会得到 `example.com:8080:8080` 这类重复端口的值，并立即写回 `HttpRequestHeaders.HeaderHost`，随后第 668 行交给 `HttpUtilities.IsHostHeaderValid(hostText)` 校验：要么判为非法导致本应被「覆盖为合法 Host」的请求返回 400，要么把畸形 Host 写入请求特征、影响依赖 Host 的路由与 URL 生成。默认端口场景（IsDefaultPort 为 true、Host 与 authority 不一致）则会把 Host 从 `example.com` 改写为 `example.com:80`，同样偏离原行为。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-HOST-001"
+    },
+    {
+      "file": "src/Servers/Kestrel/Core/src/Internal/Http/Http1Connection.cs",
+      "line": 656,
+      "summary": "Host 头覆盖分支把端口重复拼接，导致合法请求被拒绝或写入错误的 Host",
+      "failure_scenario": "ValidateNonOriginHostHeader 在 AllowHostHeaderOverride 为 true 时，把 hostText 赋值为 `_absoluteRequestTarget.Authority + \":\" + _absoluteRequestTarget.Port`。但 System.Uri.Authority 在非默认端口时本身就包含 \":port\"，因此该表达式会得到 `example.com:8080:8080` 这类重复端口的非法值；随后第 668 行的 `HttpUtilities.IsHostHeaderValid(hostText)` 校验失败，本应被「覆盖为合法 Host」的请求会被拒绝并返回 400，直接违背 AllowHostHeaderOverride 的语义。在默认端口场景下（IsDefaultPort 为 true、客户端 Host 与 authority 不一致），Host 会从原来的 `example.com` 变成 `example.com:80`，即写回的请求头与原始请求不一致，影响后续依赖 Host 的 URL 生成与路由。MR 删除的原注释「No need to include the port here, it's either already in the Authority or it's the default port」正是对上述约束的说明，删除该注释并改变赋值表达式属于行为回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-HOST-001"
+    },
+    {
+      "file": "src/Tools/GetDocumentInsider/src/Commands/GetDocumentCommandWorker.cs",
+      "line": 264,
+      "summary": "显式指定 DocumentName 时不再收敛文档集合，会生成全部文档并写入多余的缓存条目",
+      "failure_scenario": "改动后保留了 `_context.DocumentName` 的存在性校验，却删除了原有的 `documentNames = [_context.DocumentName];` 收敛逻辑，而第 257 行的注释「If an explicit document name is provided, then generate only that document.」仍保留。因此当调用方显式传入文档名时，第 280 行 `foreach (var documentName in documentNames)` 仍会遍历服务返回的全部文档名并逐个调用 GetDocument 生成文件，且第 300-302 行会把所有生成路径写入 `_context.FileListPath` 指向的缓存文件。影响：显式只请求一个文档时反而生成全部文档，输出目录出现多余文件，增量/上游构建基于该缓存文件判断产物时会得到错误的文件集合。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.63,
+      "rule": "BEHAVIOR-REGRESSION-002"
+    },
+    {
+      "file": "src/Tools/GetDocumentInsider/src/Commands/GetDocumentCommandWorker.cs",
+      "line": 264,
+      "summary": "显式指定 DocumentName 时不再收敛文档集合，会生成全部文档并写入多余缓存条目",
+      "failure_scenario": "改动保留了 `_context.DocumentName` 的存在性校验，却删除了原有的 `documentNames = [_context.DocumentName];` 收敛逻辑，而第 257 行注释「If an explicit document name is provided, then generate only that document.」仍然保留，注释与实现不一致。因此显式传入文档名时，第 280 行的 `foreach (var documentName in documentNames)` 仍会遍历服务返回的全部文档名逐个生成文件，第 300-302 行还会把全部路径写入 `_context.FileListPath` 指向的缓存文件。影响：单文档生成退化为全文档生成，输出目录出现多余文件，基于该文件列表做增量构建的上游会得到错误的文件集合。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.63,
+      "rule": "BEHAVIOR-REGRESSION-002"
+    },
+    {
+      "file": "src/Testing/src/xunit/SkipOnHelixAttribute.cs",
+      "line": 69,
+      "summary": "Helix 队列匹配简化为精确相等，internal 与 public 队列不再联动跳过",
+      "failure_scenario": "ShouldSkip 末尾由原来的 `q.Equals(targetQueue) || q.StartsWith(targetQueue) || targetQueue.StartsWith(q)` 改为 `Queues.ToLowerInvariant().Split(';').Contains(targetQueue)`（精确匹配）。仓库中 internal 与 public 队列就是同一队列名带/不带 `.Open` 后缀：eng/helix/helix.proj 第 23-24 行在 `_UseHelixOpenQueues != 'true'` 时会对可用队列执行 `Replace('.Open','')->Replace('.open','')`，把 `Windows.Amd64.Server2022.Open` 变成 `Windows.Amd64.Server2022`。因此在特性上写 `Queues = \"Windows.Amd64.Server2022.Open\"` 的测试，在 internal 队列 `Windows.Amd64.Server2022` 上不再被跳过（反之亦然），本应跳过的已知失败/不稳定测试会在另一侧队列真实执行并产生虚假失败；被删除的注释正是对这一约定的说明。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.7,
+      "rule": "TESTINFRA-003"
+    },
+    {
+      "file": "src/Testing/src/xunit/SkipOnHelixAttribute.cs",
+      "line": 69,
+      "summary": "Helix 队列匹配简化为精确相等，internal/public 队列互相跳过能力丢失",
+      "failure_scenario": "ShouldSkip 末尾由原来的 `q.Equals(targetQueue) || q.StartsWith(targetQueue) || targetQueue.StartsWith(q)` 改为 `Queues.ToLowerInvariant().Split(';').Contains(targetQueue)`（精确匹配）。被删除的注释明确说明设计意图：「We have \\\"QueueName\\\" and \\\"QueueName.Open\\\" queues for internal and public builds. If we want to skip the test in the public queue, we want to skip it in the internal queue, and vice versa」。改为精确匹配后，特性上写 `Queues = \\\"Windows.Amd64.Server2022.Open\\\"` 的测试在 internal 队列 `Windows.Amd64.Server2022` 上不再被跳过（反之亦然），本应被跳过的已知失败/不稳定测试会在 internal 或 public 构建中实际执行，产生虚假失败。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TESTINFRA-003"
+    },
+    {
+      "file": "src/Servers/Kestrel/Core/src/Internal/Infrastructure/TransportManager.cs",
+      "line": 33,
+      "summary": "新增的私有 ConnectionManager 属性未被任何代码使用，属死代码",
+      "failure_scenario": "MR 新增 `private ConnectionManager ConnectionManager => _serviceContext.ConnectionManager;`，但该 sealed 类的其余部分（StartAcceptLoop 第 100 行）仍然直接使用 `_serviceContext.ConnectionManager`，文件中没有任何成员引用这个新属性，也没有 partial 声明可供外部使用。该属性仅为无意义的中间层，增加阅读成本并可能触发未使用成员类分析告警（若仓库启用 warnings-as-errors 会阻断构建）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.68,
+      "rule": "MAINTAINABILITY-004"
+    },
+    {
+      "file": "src/Tools/dotnet-user-jwts/src/Commands/CreateCommand.cs",
+      "line": 247,
+      "summary": "删除 DefaultAppSettingsFile 常量后，\"appsettings.Development.json\" 字面量在三处重复硬编码",
+      "failure_scenario": "原先由 `DevJwtCliHelpers.DefaultAppSettingsFile` 统一维护的配置文件名，在删除该常量后被直接硬编码到 CreateCommand、ClearCommand、RemoveCommand 三个位置。文件名一旦调整（例如支持 appsettings.json 或按环境变量选择）需要同步修改多处，容易出现遗漏导致 create 与 remove/clear 写入不同文件、残留无效 JWT scheme 配置。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-007"
+    },
+    {
+      "file": "src/Servers/HttpSys/src/RequestProcessing/Request.cs",
+      "line": 339,
+      "summary": "整体移除 SYSLIB0058 弃用标注与警告抑制，弃用指引与编译期保护同时消失",
+      "failure_scenario": "本 MR 删除 src/Shared/Obsoletions.cs（内含 RuntimeTlsCipherAlgorithmEnumsMessage、RuntimeTlsCipherAlgorithmEnumsDiagId = \"SYSLIB0058\"、RuntimeSharedUrlFormat），并同步删除 HttpSys Request.cs、RequestContext.FeatureCollection.cs、IIS IISHttpContext.cs 与 IISHttpContext.FeatureCollection.cs、Kestrel TlsConnectionFeature.cs 上六个 TLS 成员的 `[Obsolete(..., DiagnosticId = Obsoletions.RuntimeTlsCipherAlgorithmEnumsDiagId)]`，以及包裹 CipherAlgorithmType/HashAlgorithmType/ExchangeAlgorithmType 转换的 `#pragma warning disable/restore SYSLIB0058`；IIS 与 Kestrel.Core 的 csproj 也移除了 Obsoletions.cs 的 Compile Include，diff 可见范围内没有替代引入。但 Request.cs 的 GetTlsHandshakeResults（第 355-360 行）仍在对这些类型做强制转换，即弃用类型的使用点依然存在。影响：(a) 移除 [Obsolete] 后，实现方不再向调用方传播「请改用 NegotiatedCipherSuite」的迁移指引；(b) 抑制被移除后，这些转换会重新暴露在 SYSLIB0058 警告下——若目标运行时仍将该枚举标记为弃用且仓库对告警视为错误，将直接影响构建（此点依赖目标框架版本，属需确认的前提）。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.38,
+      "rule": "API-OBSOLETE-005"
+    },
+    {
+      "file": "src/Servers/HttpSys/src/RequestProcessing/Request.cs",
+      "line": 339,
+      "summary": "移除 SYSLIB0058 弃用标注与警告抑制，而弃用枚举的使用点仍然存在",
+      "failure_scenario": "本 MR 删除 src/Shared/Obsoletions.cs（含 RuntimeTlsCipherAlgorithmEnumsMessage、RuntimeTlsCipherAlgorithmEnumsDiagId=\"SYSLIB0058\"、RuntimeSharedUrlFormat），并同步删除 HttpSys Request.cs、RequestContext.FeatureCollection.cs、IIS IISHttpContext.cs 与 IISHttpContext.FeatureCollection.cs、Kestrel TlsConnectionFeature.cs 上六个 TLS 成员的 `[Obsolete(..., DiagnosticId = Obsoletions.RuntimeTlsCipherAlgorithmEnumsDiagId)]`，以及包裹 CipherAlgorithmType/HashAlgorithmType/ExchangeAlgorithmType 转换的 `#pragma warning disable/restore SYSLIB0058`；IIS 与 Kestrel.Core csproj 也移除了 Obsoletions.cs 的 Compile Include，diff 可见范围内没有替代引入。然而 Request.cs 第 339-347 行的属性签名与第 355-360 行的强制转换仍直接使用这些枚举类型，而 eng/Versions.props 表明当前分支面向 net10.0。影响：(a) 移除 [Obsolete] 后实现方不再向调用方传播「请改用 NegotiatedCipherSuite」的迁移指引，同时也失去了成员级 [Obsolete] 对签名中弃用类型告警的抑制；(b) 抑制被移除后这些签名与转换会重新暴露在 SYSLIB0058 之下，考虑到 Directory.Build.props 通过 WarningsNotAsErrors 逐项豁免告警（暗示默认告警即错误），存在构建告警甚至构建失败的风险——此点仍需以目标引用程序集的实际标注与仓库 TreatWarningsAsErrors 配置为前提。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "API-OBSOLETE-005"
+    },
+    {
+      "file": "src/Tools/dotnet-user-jwts/src/Commands/ClearCommand.cs",
+      "line": 26,
+      "summary": "移除 --appsettings-file 选项是 CLI 契约的破坏性变更，且丢失了目标文件的校验",
+      "failure_scenario": "Clear/Create/Remove 三个命令都删除了 `--appsettings-file` 选项的注册，并把写入目标固定为项目目录下的 `appsettings.Development.json`；DevJwtCliHelpers.GetAppSettingsFile（含 `.json` 后缀校验与文件存在性校验）与 `DefaultAppSettingsFile` 常量、Resources.resx 中 6 条相关文案一并删除。影响：既有脚本或开发者使用 `dotnet user-jwts create --appsettings-file appsettings.Test.json` 时会因未知选项直接失败，且原本写入非 Development 配置文件的能力消失；同时不再对目标配置文件做扩展名/存在性前置校验与友好错误提示，行为差异只会在运行期体现。若是有意裁剪功能，属于对外命令行契约的破坏性调整，需在发布说明与文档中体现。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "CLI-COMPAT-006"
+    }
+  ],
+  "stderr_tail": "上限 120000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 75 个文件 / 698484 字符（lockfile=1, test=73, exclude=1），明细见审计 mrFilter\n✓ 完成 · 耗时 1136.7s · 模型调用 99 次 · token 输入 472,846（未命中） · 输出 165,459 · 缓存命中 5,550,592（92.1%） · 工具 139 次（主会话 139 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.1281\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: [r1 phase5] 候选解析失败（missing-key），本轮 0 候选；详见审计 phaseLog\nreview-pi: 置信度过滤丢弃 3 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\dotnet__aspnetcore@8ac940...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1137.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 1136.5s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.1s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.0%)\n[time] 审计明细 | S1P1 13.1s (1.1%) | S1P2 5.1s (0.5%) | S1P3 19.6s (1.7%) | S1P4 90.9s (8.0%) | S1P5 92.8s (8.2%) | S1P6 23.3s (2.0%) | S2P1 15.6s (1.4%) | S2P2 4.8s (0.4%) | S2P3 22.6s (2.0%) | S2P4 83.4s (7.3%) | S2P5 48.1s (4.2%) | S2P6 17.3s (1.5%) | S3P1 7.9s (0.7%) | S3P2 3.7s (0.3%) | S3P3 11.3s (1.0%) | S3P4 88.6s (7.8%) | S3P5 37.5s (3.3%) | S3P6 18.3s (1.6%) | S4P1 13.2s (1.2%) | S4P2 4.1s (0.4%) | S4P3 8.7s (0.8%) | S4P4 90.4s (8.0%) | S4P5 82.0s (7.2%) | S4P6 20.7s (1.8%) | S5P1 23.0s (2.0%) | S5P2 3.6s (0.3%) | S5P3 6.5s (0.6%) | S5P4 28.1s (2.5%) | S5P5 70.3s (6.2%) | S5P6 22.8s (2.0%) | S5R2P1 12.6s (1.1%) | S5R2P2 3.5s (0.3%) | S5R2P3 8.5s (0.7%) | S5R2P4 17.5s (1.5%) | S5R2P5 28.3s (2.5%) | S5R2P6 18.4s (1.6%) | S5R3P1 5.8s (0.5%) | S5R3P2 3.0s (0.3%) | S5R3P3 6.1s (0.5%) | S5R3P4 21.1s (1.9%) | S5R3P5 25.0s (2.2%) | S5R3P6 8.9s (0.8%)\n[usage] 任务总计 | 模型调用 99 次（Agent 99 + 一次性 0） | token 输入 472,846（未命中） | 输出 165,459 | 缓存命中 5,550,592（92.1%） | $0.1281\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\dotnet__aspnetcore@8ac940f\\audit\\20261115_050749_183.json",
+  "token_usage": {
+    "input_tokens": 472846,
+    "output_tokens": 165459,
+    "cache_read_input_tokens": 5550592
+  }
+}

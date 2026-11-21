@@ -1,0 +1,202 @@
+{
+  "instance_id": "google-gemini__gemini-cli@77ea28a",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "de968877895a8ae5f0edb83a43b37fa190cc8ec9",
+  "head_commit": "77ea28a234023019ddda3f4a5f7a81b3514d3eb8",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 245.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 18,
+  "review_output": [
+    {
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 123,
+      "summary": "命令替换检测被弱化为字面量 includes('$(')，反引号与 <() 可绕过",
+      "failure_scenario": "原实现 detectCommandSubstitution 会按 bash 引号规则（单引号内不做替换、双引号与无引号内生效）检测 $()、<() 与反引号，遇到即拒绝执行；本次内联后只剩 `command.includes('$(')` 一个字面量判断。结果是反引号命令替换（如 echo `rm -rf x`）与进程替换（如 diff <(cat a) <(cat b)）不再被拦截，而单引号内的字面量 '$(x)' 反而被误拒。该检查是 Shell 工具在交互确认之外的第一道安全护栏，弱化后模型可通过反引号构造任意子命令。",
+      "severity": "P0",
+      "category": "安全",
+      "confidence": 0.9,
+      "rule": "SECURITY-SHELL-SUBSTITUTION-001"
+    },
+    {
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 182,
+      "summary": "命令拆分改用正则且遗漏 & 与换行，黑/白名单可被前缀绕过",
+      "failure_scenario": "新的拆分逻辑为 `command.split(/&&|\\|\\||\\||;/)`，相比被删除的 splitCommands：(1) 不把单个 `&` 与换行符当作命令分隔符；(2) 完全忽略引号与转义状态。由于后续用 isPrefixedBy 只比对每段开头，`sleep 1 & rm -rf /`、`echo hi\\nrm -rf /` 这类命令会作为一整段以 sleep/echo 开头通过 excludeTools 黑名单与 coreTools 严格白名单，实际却由 bash 执行了被禁止的命令。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.82,
+      "rule": "SECURITY-SHELL-SPLIT-002"
+    },
+    {
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 262,
+      "summary": "确认流程降为单一 rootCommand，allow-always 会把整条复合命令的其余部分一并放行",
+      "failure_scenario": "shouldConfirmExecute 现在只取第一个 rootCommand 作为确认与白名单键：`const rootCommand = this.getCommandRoot(params.command)!`，并在 ProceedAlways 时仅 whitelist.add(rootCommand)。原实现会收集所有 root commands（commandsToConfirm.join(', ')）并逐个加入 allowlist。改后用户对 `git status && rm -rf build` 选择 “always allow” 时只记住 `git`，之后任意 `git ... && <任意命令>` 都不再弹确认，等于把 allow-always 的授权范围从“这条命令的每个子命令”扩大到“首个子命令前缀下的任意命令链”。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.85,
+      "rule": "SECURITY-SHELL-CONFIRM-003"
+    },
+    {
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 105,
+      "summary": "getCommandRoot 不处理引号且不再剥离 sh/bash 包装，白名单 bash 等于放行任意命令",
+      "failure_scenario": "新的 getCommandRoot 先删除 {}()，再按空白与 ;&| 切分取首段、再按路径分隔符取末段，全程不识别引号；同时 stripShellWrapper 被删除，执行时也不再剥壳。于是 `bash -c 'rm -rf /'` 的 root command 变成 `bash`、`sh -c \"...\"` 变成 `sh`。一旦用户在确认中选择 allow-always（或配置里允许 bash），后续任何 `bash -c <任意脚本>` 都直接执行且不再确认；原来靠 stripShellWrapper 将命令还原为 rm 后逐个子命令授权的保护消失。此外带引号的命令（如 `\"ls -la\"`）会被解析出带引号的 root command，导致白名单键与用户认知不一致。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.83,
+      "rule": "SECURITY-SHELL-WRAPPER-004"
+    },
+    {
+      "file": "packages/cli/src/ui/components/InputPrompt.tsx",
+      "line": 98,
+      "summary": "shouldShowCompletion 要求“@或/后无未转义空格”，导致 slash 子命令与参数补全不再触发",
+      "failure_scenario": "新增的门控把补全激活条件改为 (isAtCommand || isSlashCommand(buffer.text)) && isCursorAfterCommandWithoutSpace()，而 isCursorAfterCommandWithoutSpace 从光标向前遇到第一个未转义空格即 return false。原 useCompletion 里的 `if (isSlashCommand(buffer.text.trim())) return true;` 已被删除。因此输入 `/mcp `（含尾随空格，准备选子命令）或 `/myPrompt --`（准备补参数名）时光标前紧邻空格，判定恒为 false，补全列表不会再出现；这也使本次新增的 promptCommands completion（返回 `${partialArg}--${arg.name}=\"\"`）永远无法展示。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "UX-COMPLETION-005"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 146,
+      "summary": "prompt 结果用 JSON.stringify 直接提交，会把引号与转义换行注入到提示词",
+      "failure_scenario": "调用 MCP prompt 成功后返回 { type: 'submit_prompt', content: JSON.stringify(result.messages[0].content.text) }。JSON.stringify 会给文本加上外层双引号并把换行转义为字面的 \\n，因此模型收到的是被 JSON 编码后的字符串而不是 prompt 原文，多行模板会被压成一行带 \\n 的文本，模板中的引号也会被转义。同时只取 messages[0]，多消息 prompt 的其余内容被丢弃。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-PROMPT-006"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 26,
+      "summary": "prompt 命令在加载时一次性快照，MCP 异步发现完成后不会刷新",
+      "failure_scenario": "createPromptCommands 在 BuiltinCommandLoader.loadCommands 里被调用一次，内部通过 getMCPServerPrompts(serverName) 读取当时的全局缓存。而命令加载发生在 slashCommandProcessor 挂载时的 CommandService.create（useEffect 依赖 [config]，仅执行一次），MCP 连接与 prompts 发现（ToolRegistry.discoverMcpTools → connectAndDiscover → discoverPrompts）是异步进行的，通常晚于该时刻。结果是 prompt 对应的 slash 命令列表大概率为空且整个会话都不会补齐；同时若某个 prompt 在被调用时已被 mcpServerPromptsInternal 删除，命令仍会保留指向过期 prompt 的闭包。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "LIFECYCLE-COMMAND-007"
+    },
+    {
+      "file": "packages/core/src/tools/mcp-client.ts",
+      "line": 406,
+      "summary": "IDE MCP server 只设置了 onerror，未处理 onclose，断连后状态与 ideContext 保持陈旧",
+      "failure_scenario": "迁移到通用 MCP 机制后，IDE 连接只注册了 mcpClient.onerror（清理 prompts 缓存与 ideContext），原先 IdeClient 同时注册的 onclose 没有对应实现。当 VS Code companion 正常关闭连接（窗口关闭、扩展停用）时，连接是优雅结束而非 error，MCPServerStatus 会停留在 CONNECTED，ideContext 也不会 clearOpenFilesContext()。表现为 /ide status 一直显示 🟢 Connected，ContextSummaryDisplay 继续展示已失效的 activeFile，模型也可能继续把陈旧的文件上下文带入请求。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "LIFECYCLE-MCP-008"
+    },
+    {
+      "file": "packages/core/src/services/loopDetectionService.ts",
+      "line": 144,
+      "summary": "partialContent 无长度上限，且仅以 .!? 断句，无标点输出时永不检测且内存无界增长",
+      "failure_scenario": "新的内容循环检测把流式片段累加进 partialContent，只有在匹配到 [.!?]+(?=\\s|$) 时才切句，切句后仅保留最后一句之后的残余。若模型持续输出不含 .!? 的内容（压缩 JSON、代码、中文正文常用 。！？），partialContent 会在整个流式响应期间持续增长且从不清空，既丧失原有的 MAX_HISTORY_LENGTH=1000 截断保护，也使「句子重复」判定彻底失效（永远 return false）。这是一个既能导致内存膨胀又能导致防护失效的双向回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "PERF-LOOP-009"
+    },
+    {
+      "file": "packages/cli/src/ui/hooks/useCompletion.ts",
+      "line": 396,
+      "summary": "删除反斜杠归一化后，Windows 上 glob 建议值会带反斜杠，@ 路径补全与过滤逻辑失配",
+      "failure_scenario": "原实现在返回建议前统一把 label/value 的 \\\\ 替换为 /（注释明确写明“Like glob, we always return forwardslashes, even in windows”），本次删除了该归一化，并改为 label: path.relative(cwd, file)。glob 在 Windows 上返回正斜杠相对路径，经过 path.relative 后变成反斜杠形式；而 InputPrompt.handleAutocomplete 用 pathPart.lastIndexOf('/') 计算替换起点、fileDiscoveryService.shouldIgnoreFile 也以 / 为分隔符，含反斜杠的建议值会导致补全替换范围错误、ignore 判定不一致。另外 path.relative(cwd, file) 依赖 file 为绝对路径，当前仅因 targetDir 等于 process.cwd() 才碰巧成立。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.7,
+      "rule": "PORTABILITY-PATH-010"
+    },
+    {
+      "file": "packages/cli/src/ui/components/InputPrompt.tsx",
+      "line": 284,
+      "summary": "输入未聚焦时直接 return，破坏原先显式支持的拖拽粘贴",
+      "failure_scenario": "handleInput 开头由 `if (!focus && !key.paste) return;` 改为 `if (!focus) return;`，同时 useKeypress 的 isActive 也从 true 改为 focus。原代码留有注释「We want to handle paste even when not focused to support drag and drop.」，说明未聚焦时的粘贴是刻意支持的拖拽落文件路径场景；改动后未聚焦状态下的粘贴事件既不会进入 handleInput，也不会被 useKeypress 分发，拖拽文件到终端不再生成 @ 路径。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "UX-PASTE-011"
+    },
+    {
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 1045,
+      "summary": "拖拽路径改写为 @path 时不再补尾随空格，后续输入会粘在路径上",
+      "failure_scenario": "insert 中识别到有效路径时由 `ch = `@${potentialPath} `;` 改为 `ch = `@${potentialPath}`;`，去掉了用于分隔的尾随空格。用户拖入/粘贴文件路径后再继续输入内容，会直接拼接到路径后面（如 @src/a.tsfoo），既不再是可解析的 @ 引用，也会立刻触发/干扰 @ 补全。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "UX-ATREF-012"
+    },
+    {
+      "file": "packages/cli/src/config/config.ts",
+      "line": 359,
+      "summary": "保留名 _ide_server 只警告不剔除，端口缺失时用户配置仍会生效",
+      "failure_scenario": "ideMode 下先判断 if (mcpServers[IDE_SERVER_NAME]) 并 warn「Ignoring user-defined MCP server config ... reserved name」，但并未 delete 该键；只有 GEMINI_CLI_IDE_SERVER_PORT 存在时才用 MCPServerConfig 覆盖。端口不存在时（例如未安装 companion 扩展，恰好是这条 warn 最可能出现的场景），用户或扩展注入的 _ide_server 配置会被当作普通 MCP server 连接，而 mcp-client 又会因名字等于 IDE_SERVER_NAME 注册 OpenFilesNotificationSchema 处理器并向 ideContext 写入——日志与实际行为不一致，且保留了用保留名伪造 IDE 上下文的可能。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "CONFIG-RESERVED-013"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/promptCommands.ts",
+      "line": 28,
+      "summary": "prompt 命令直接以 prompt.name 作为全局 slash 命令名，无命名空间与冲突处理",
+      "failure_scenario": "createPromptCommands 用 `const commandName = `${prompt.name}`;` 生成顶层 slash 命令，既不加 server 前缀，也不检查与内置命令（mcp、memory、help、quit 等）或其他 server 同名 prompt 的冲突。多个 MCP server 暴露同名 prompt 时会生成重复命令，解析结果取决于加载顺序；若某个 prompt 恰好命名为内置命令（如 help、theme），则会与内置定义并存甚至覆盖用户预期，行为难以预测。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-NAMING-014"
+    },
+    {
+      "file": "packages/cli/src/validateNonInterActiveAuth.ts",
+      "line": 15,
+      "summary": "移除 GOOGLE_GENAI_USE_GCA 认证路径，存量脚本会静默改变认证方式或直接退出",
+      "failure_scenario": "本次同时删除了三处 GCA 相关逻辑：validateNonInterActiveAuth 的 getAuthTypeFromEnv 不再识别 GOOGLE_GENAI_USE_GCA=true、sandbox.ts 不再向容器传递该变量、oauth2.ts 不再支持 GOOGLE_CLOUD_ACCESS_TOKEN 直接设置凭据。对仍以 GOOGLE_GENAI_USE_GCA=true（或依赖 GOOGLE_CLOUD_ACCESS_TOKEN）运行的 CI/脚本，非交互启动会因无 effectiveAuthType 而直接 process.exit(1)，交互路径则会走完整 OAuth 流程而非无头凭据，属于无声的行为破坏且没有弃用提示。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "COMPAT-AUTH-015"
+    },
+    {
+      "file": "esbuild.config.js",
+      "line": 24,
+      "summary": "删除 is-in-ci 补丁后 ink 可能在 CI 环境不渲染 UI（回归 issue #1563）",
+      "failure_scenario": "被删除的 packages/cli/src/patches/is-in-ci.ts 明确说明其存在目的是规避「ink 检测到 CI 环境后不渲染 UI」的问题（引用 issue #1563），并通过 esbuild alias 生效；本次同时删除补丁文件与 esbuild 的 external/alias 配置。若依赖的 ink 版本仍带同样的 CI 检测逻辑，在设置了 CI 类环境变量的终端中运行时交互界面会不再渲染。这是一处需要在 MR 中说明原因（如 ink 升级已修复）的行为改动。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "COMPAT-INK-016"
+    },
+    {
+      "file": "esbuild.config.js",
+      "line": 12,
+      "summary": "移除 alias 后 __filename 成为未使用的残留变量",
+      "failure_scenario": "alias 删除后，esbuild.config.js 中 `const __filename = fileURLToPath(import.meta.url);` 已无任何使用点（__dirname 仍被 package.json 读取所用），会触发 lint 的 no-unused-vars 或给人误导。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.8,
+      "rule": "STYLE-UNUSED-017"
+    },
+    {
+      "file": "packages/cli/src/ui/commands/mcpCommand.ts",
+      "line": 181,
+      "summary": "prompt/tool 计数的兜底文案与后续“无工具”分支语义重复且不一致",
+      "failure_scenario": "CONNECTED 分支在没有任何 tool/prompt 时回退输出 `(0 tools)`，而下方第 270-273 行又会输出 `No tools or prompts available` / `No tools available`，同一状态出现两处措辞；同时第 255-263 行 `const descLines = prompt.description.trim().split('\\n'); if (descLines) {...} else {...}` 的 else 分支永远不可达（split 恒返回数组），属于无效分支。整体增加了输出文案的不一致与死代码。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "STYLE-MESSAGE-018"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\google-gemini__gemini-cli@77ea28a.diff\n  caseId              google-gemini__gemini-cli@77ea28a\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@77ea28a\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 22 个文件 / 250065 字符（lockfile=1, test=21），明细见审计 mrFilter\n✓ 完成 · 耗时 229.9s · 模型调用 16 次 · token 输入 86,873（未命中） · 输出 30,373 · 缓存命中 806,400（90.3%） · 工具 41 次（主会话 41 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0229\n[time] 阶段耗时 | 总墙钟 230.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 229.7s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 9.6s (4.2%) | P2 3.7s (1.6%) | P3 8.6s (3.7%) | P4 73.2s (31.9%) | P5 116.5s (50.7%) | P6 18.2s (7.9%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 86,873（未命中） | 输出 30,373 | 缓存命中 806,400（90.3%） | $0.0229\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\google-gemini__gemini-cli@77ea28a\\audit\\20261115_031756_069.json",
+  "token_usage": {
+    "input_tokens": 86873,
+    "output_tokens": 30373,
+    "cache_read_input_tokens": 806400
+  }
+}

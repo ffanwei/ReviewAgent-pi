@@ -1,0 +1,49 @@
+[
+  {
+    "filePath": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (File.Exists(sshCommandPath))",
+        "review": "[缺陷类型] 不完整的可执行文件判定（仅存在性检查）。影响评估：Unix 上 ssh 启动可能给出难以理解的权限错误，且不会继续搜索 PATH 中真正可用的 ssh；与经由 CommandDiscovery 解析的既有路径行为不一致，属于偶发、难复现的可靠性问题。",
+        "suggestion": "[重构思路] 在 Unix 下把“存在且可执行”作为命中条件（可复用平台层的可执行性判定），并在命中后仍允许失败时继续搜索后续目录；至少应让错误信息能区分“未找到”与“不可执行”。代码示例：`var sshCommandPath = Path.Combine(path, sshCommand);\nif (File.Exists(sshCommandPath) && (!OperatingSystem.IsWindows() ? IsExecutable(sshCommandPath) : true))\n{\n    filePath = sshCommandPath;\n    break;\n}`，其中 IsExecutable 可复用仓库内已有的 Unix 权限判定实现（如 Platform/ClrFacade 中的模式）。",
+        "category": "可靠性",
+        "subcategory": "PATH 查找与可执行性校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 2238,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F002",
+        "code": "string[] entries = Environment.GetEnvironmentVariable(\"PATH\")?.Split(",
+        "review": "[缺陷类型] 重复实现同一领域逻辑（PATH 目录解析）。影响评估：两处对同一环境变量的语义不一致，`~/bin` 这类条目在新分支被静默跳过；后续演进容易只改一处，引发难以定位的“某台机器上 ssh 找不到”类问题。",
+        "suggestion": "[重构思路] 把 PATH 目录枚举抽成一个不依赖 ExecutionContext 的共享工具（例如放到 Platform / 已有的环境变量辅助类中），让 CommandDiscovery 与 StartSSHProcess 共用同一份拆分、去空格、`~` 展开逻辑；本处仅保留对共享结果的完全限定路径过滤。代码示例：`foreach (string dir in Platform.GetPathDirectories())\n{\n    if (!Path.IsPathFullyQualified(dir)) { continue; }\n    string candidate = Path.Combine(dir, sshCommand);\n    if (File.Exists(candidate)) { filePath = candidate; break; }\n}`",
+        "category": "可维护",
+        "subcategory": "逻辑重复",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2227,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F004",
+        "code": "",
+        "review": "[缺陷类型] 行尾空白 / 格式噪声。影响评估：纯风格问题，不影响运行时行为，但会干扰后续 blame 与 diff 阅读，并可能在开启代码风格强制构建的 CI 下产生告警。",
+        "suggestion": "[重构思路] 删除该行空格，使其成为真正的空行；建议在提交前运行仓库既有的格式化流程（dotnet format / 编辑器配置中的 trim trailing whitespace）。代码示例：`            }\n\n            if (string.IsNullOrEmpty(filePath))`",
+        "category": "可读性",
+        "subcategory": "格式与空白",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 2245,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

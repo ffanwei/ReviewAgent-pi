@@ -1,0 +1,154 @@
+[
+  {
+    "filePath": "src/shared/proto-conversions/state/settings-conversion.ts",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "ulid: config.ulid,",
+        "review": "[缺陷类型] proto 契约与转换代码不同步导致编译失败 / 字段静默丢失。影响评估：生成代码中不存在 ulid，`create()` 与属性读取均报类型错误，构建无法通过；即使绕过类型检查，ulid 也会在 proto 序列化时被丢弃，任务标识在 settings/state 往返中丢失。",
+        "suggestion": "[重构思路] 在 proto 契约中把 task_id 改名为 ulid（保留字段号 3 以兼容线格式），重新生成 proto 代码，并确认 webview/其它转换路径不再引用 taskId。代码示例：`message ApiConfiguration { optional string ulid = 3; // 原 task_id，保留字段号以兼容 }`，随后执行 proto 生成脚本使 `ProtoApiConfiguration` 具备 `ulid`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 12,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/api/providers/cline.ts",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "\"X-Task-ID\": this.options.ulid || \"\",",
+        "review": "[缺陷类型] 对外标识语义变更（未做兼容）。影响评估：后端按 X-Task-ID / litellm_session_id 关联任务与用量的报表会断裂或与历史数据无法 join；若后端对 X-Task-ID 有格式校验，还可能直接拒绝请求。",
+        "suggestion": "[重构思路] 明确对外契约：若只是想统一内部标识，应保留原有头部值来源（taskId）或同时下发 X-Task-ID 与 X-Cline-Task-ULID；若确实要切换为 ulid，需与后端确认并按需重命名头部（如 X-Task-ULID），避免同名头部语义悄悄改变。代码示例：`defaultHeaders: { \"X-Task-ID\": this.options.taskId ?? \"\", \"X-Task-ULID\": this.options.ulid ?? \"\" }`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 54,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/integrations/checkpoints/CheckpointTracker.ts",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "telemetryService.captureCheckpointUsage(this.taskId, \"commit_created\", durationMs)",
+        "review": "[缺陷类型] 遥测属性语义不一致（形参改名但实参未改）。影响评估：checkpoint 事件的 ulid 字段值与其它事件不可比，按 ulid 统计 checkpoint 使用率、会话关联全部失真，且无编译期提示。",
+        "suggestion": "[重构思路] 让 CheckpointTracker/CheckpointGitOperations 持有真正的 ulid 并传入；若暂时只有 taskId，则保留独立属性名（如 task_id）避免语义污染。代码示例：`telemetryService.captureCheckpointUsage(this.ulid, \"commit_created\", durationMs)`，并在 CheckpointTracker.create 中把 ulid 一并传入构造参数。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 187,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/hosts/external/ExternalDiffviewProvider.ts",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "protected override async closeDiffView(): Promise<void> {",
+        "review": "[缺陷类型] 资源生命周期收窄导致编辑器泄漏。影响评估：外部宿主侧可能同时堆积多个 cline diff 视图，占用标签页且用户难以判断当前编辑状态；契约中“不关闭未保存 diff”的保护也被弱化。",
+        "suggestion": "[重构思路] 在保留按 id 关闭的同时维持兜底：HostProvider 侧除 closeDiff(diffId) 外保留一个“清理剩余 cline diff”的路径，或让 ExternalDiffViewProvider 记录所有已打开的 diffId 集合并逐个关闭；关闭前显式检查未保存状态。代码示例：`private openDiffIds = new Set<string>()`，open 时 add、close 时 delete，reset/任务结束时 `for (const id of this.openDiffIds) await HostProvider.diff.closeDiff({ diffId: id })`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 80,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/core/task/index.ts",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "telemetryService.captureTaskRestarted(this.ulid, currentProvider)",
+        "review": "[缺陷类型] 遥测事件丢失关联键。影响评估：老历史任务的重启事件变成孤立记录，任务重启率、恢复成功率等指标口径失真；对比 CREATED 事件也无法串联同一任务的生命周期。",
+        "suggestion": "[重构思路] 重启类事件应至少带上稳定的 taskId（或同时带 originalUlid），保留可关联性；若目标是精简属性，可只对非重启事件去掉 taskId。代码示例：`telemetryService.captureTaskRestarted(historyItem.id, this.ulid, currentProvider)`，并将 properties 写为 `{ taskId, ulid, apiProvider }`。",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 302,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "src/hosts/vscode/VscodeDiffViewProvider.ts",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "protected async closeDiffView(): Promise<void> {",
+        "review": "[缺陷类型] 命名与实现语义不一致（抽象契约漂移）。影响评估：不同宿主行为不一致，后续基于新命名的功能改动容易误关用户正在查看的 diff 标签；维护者需要额外阅读实现才能判断真实行为。",
+        "suggestion": "[重构思路] 要么让 VSCode 实现也只关闭当前追踪的 diff 标签（记录 activeDiffEditor 对应的 Tab），要么保留“关闭全部”语义但改回清晰命名（如 closeDiffViews），并在抽象文档中明确各实现的行为与 dirty 保护策略。代码示例：`protected async closeDiffView(): Promise<void> { const tab = this.activeDiffEditorTab; if (tab && !tab.isDirty) { await vscode.window.tabGroups.close(tab) } }`。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 174,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "src/services/posthog/telemetry/TelemetryService.ts",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "public captureModelSelected(model: string, provider: string, ulid?: string) {",
+        "review": "[缺陷类型] 死代码残留（公共 API 无调用方）。影响评估：与同 MR 清理 captureHistoricalTaskLoaded/captureRetryClicked 的做法不一致，增加维护面并可能误导后续埋点工作。",
+        "suggestion": "[重构思路] 若确实不再使用，按同一标准删除这两个方法及其对应 EVENTS 常量；若计划保留，请补上调用点或加注释说明保留原因。代码示例：删除 `public captureModelSelected(...)` 与 `public captureTokenUsage(...)` 两个方法声明及不再被引用的事件枚举项。",
+        "category": "可维护",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 377,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "proto/host/diff.proto",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "message OpenMultiFileDiffResponse {",
+        "review": "[缺陷类型] 无功能变化的格式噪声。影响评估：污染 diff 历史，增加后续代码评审与 blame 的干扰；若仓库开启 proto 格式化检查可能直接报错。",
+        "suggestion": "[重构思路] 回退为单行空消息体，保持与 CloseDiffResponse 等其它空消息一致。代码示例：`message OpenMultiFileDiffResponse {}`。",
+        "category": "可读性",
+        "subcategory": "未细分",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 109,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

@@ -1,0 +1,934 @@
+{
+  "generatedAt": "2026-11-15T03:41:17.547Z",
+  "runId": "20261115_032202_400",
+  "source": "mr",
+  "caseId": "google-gemini__gemini-cli@0fa1bd7",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/components/messages/CompressionMessage.tsx",
+      "line": 25,
+      "title": "压缩提示忽略 compressionStatus，失败/无变化时仍显示“已压缩”成功文案",
+      "description": "改写后的 CompressionMessage 只用 `isPending` 决定文案，删除了对 `CompressionStatus` 的分支判断：只要不在 pending 状态就输出 `Chat history compressed from X to Y tokens.` 并以 `Colors.AccentGreen` 渲染。但上游 `core/src/core/client.ts` 的 `tryCompressChat` 仍会返回 `CompressionStatus.NOOP`（历史已压缩）、`COMPRESSION_FAILED_TOKEN_COUNT_ERROR`、`COMPRESSION_FAILED_INFLATED_TOKEN_COUNT`，而 `compressCommand` 对任何非空返回值都会写入一条 compression 历史项，`CompressionProps.compressionStatus` 依旧存在却不再被消费。结果是：压缩失败或“无需压缩”时用户会看到绿色的“压缩成功、从 N 到 N tokens”，甚至出现 `from unknown to unknown tokens`（counts 为 null），误导用户以为上下文已被压缩、后续对话行为可能因此被误判。",
+      "evidence": [
+        "packages/cli/src/ui/components/messages/CompressionMessage.tsx:25-28 — `const text = compression.isPending ? 'Compressing chat history' : `Chat history compressed from ${compression.originalTokenCount ?? 'unknown'} to ${compression.newTokenCount ?? 'unknown'} tokens.``",
+        "packages/cli/src/ui/components/messages/CompressionMessage.tsx:41-43 — 非 pending 一律 `Colors.AccentGreen`，包括失败状态",
+        "packages/cli/src/ui/types.ts:72-77 — `CompressionProps` 仍保留 `compressionStatus: CompressionStatus | null`，但新实现已不再读取",
+        "packages/cli/src/ui/commands/compressCommand.ts:46-58 — `if (compressed)` 即写入 compression 项，未按 `compressed.compressionStatus` 区分 NOOP/失败",
+        "packages/core/src/core/client.ts:785 / 802 / 818 / 877 / 896 — `tryCompressChat` 仍会产出 `CompressionStatus.NOOP` 与 `COMPRESSION_FAILED_*`",
+        "原实现（diff 中被删除行）曾对 `COMPRESSION_FAILED_INFLATED_TOKEN_COUNT`（分 <50000 与大于阈值两种文案）、`COMPRESSION_FAILED_TOKEN_COUNT_ERROR`、`NOOP` 分别给出提示"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 状态分支被删除导致提示文案与真实结果不符（UI 层状态语义丢失）。影响评估：`/compress` 在“已压缩/压缩失败/压缩无收益”三种情况下都会向用户报告成功，且用成功色渲染；用户无法察觉压缩未生效，也不会去检查 token 计数或压缩 prompt 的问题，属于功能可用性但结果可被误读的回归。",
+        "suggestion": "[重构思路] 恢复按 `compressionStatus` 分支的文案，并让颜色与结果一致：成功才用 `Colors.AccentGreen`，失败/NOOP 用 `Colors.AccentYellow` 或 `Colors.Gray`；`null` 计数不要再退化为 `unknown`，而应先判断状态。代码示例：\n```tsx\nconst { isPending, compressionStatus, originalTokenCount, newTokenCount } = compression;\nconst text = isPending\n  ? 'Compressing chat history'\n  : compressionStatus === CompressionStatus.COMPRESSED\n    ? `Chat history compressed from ${originalTokenCount ?? 0} to ${newTokenCount ?? 0} tokens.`\n    : compressionStatus === CompressionStatus.NOOP\n      ? 'Chat history is already compressed.'\n      : 'Could not compress chat history.';\nconst color = isPending || compressionStatus !== CompressionStatus.COMPRESSED\n  ? Colors.AccentYellow\n  : Colors.AccentGreen;\n```",
+        "subcategory": "状态分支缺失"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "packages/cli/src/ui/components/Footer.tsx",
+      "line": 35,
+      "title": "Footer 移除 hideCWD/hideSandboxStatus/hideModelInfo 后，配置项与 Settings 对话框仍暴露但完全失效",
+      "description": "本次变更从 `FooterProps` 删除了 `hideCWD`、`hideSandboxStatus`、`hideModelInfo`，`Composer` 的 `footerProps` 也不再传递，`Config.getHideCWD` 已无任何引用；但 `settingsSchema.ts` 仍声明 `ui.footer.hideCWD / hideSandboxStatus / hideModelInfo` 三项，且都是 `showInDialog: true`（会出现在 Settings 对话框中），`settings.ts` 的 key 映射也仍保留。用户在 Settings 对话框里切换这些开关不会有任何可见效果，也不会报错，形成“死配置 + 静默失效”的不一致。",
+      "evidence": [
+        "packages/cli/src/ui/components/Footer.tsx:22-36 — `FooterProps` 已无 `hideCWD / hideSandboxStatus / hideModelInfo`",
+        "packages/cli/src/ui/components/Composer.tsx:43-57 — `footerProps` 不再传入这三个字段",
+        "packages/cli/src/config/settingsSchema.ts:264-291 — 仍声明 `hideCWD`、`hideSandboxStatus`、`hideModelInfo`，均 `showInDialog: true`",
+        "packages/cli/src/config/settings.ts:93-95 — 仍映射 `hideCWD: 'ui.footer.hideCWD'` 等三项",
+        "`find_references` 检索 `getHideCWD` 返回 0 处引用，`hideModelInfo`/`hideSandboxStatus` 仅剩 schema 与 key 映射",
+        "packages/cli/src/ui/components/Footer.test.tsx — 现有测试未覆盖这三个 props，不会暴露该不一致"
+      ],
+      "rule": "CONFIG-DEAD-001",
+      "confidence": 0.87,
+      "tips": {
+        "review": "[缺陷类型] 功能删除不彻底：UI props 与其配置项/设置入口未同步移除，形成可操作但无效的配置。影响评估：Settings 对话框中三个开关成为“假开关”，用户改动后无效果且无反馈，属用户可感知的功能回归与配置契约不一致；后续维护者也难以判断这些配置是否仍被支持。",
+        "suggestion": "[重构思路] 二选一：要么恢复 Footer 对这三个 props 的支持（推荐，因为它们是已发布配置，直接删除等同于静默移除功能），要么同步删除 `settingsSchema.ts` 中的三个属性、`settings.ts` 的 key 映射以及 `FooterSettings` 类型，并在 release note 中说明移除。代码示例（恢复路径）：`<Footer {...footerProps} hideCWD={settings.merged.ui?.footer?.hideCWD} hideSandboxStatus={...} hideModelInfo={...} />`，Footer 内部继续用 `justifyContent={hideCWD && hideModelInfo ? 'center' : 'space-between'}` 等逻辑。",
+        "subcategory": "死配置/配置契约不一致"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/cli/src/ui/components/InputPrompt.tsx",
+      "line": 717,
+      "title": "输入框边框不再随终端焦点变化，focus 状态只影响光标与占位符",
+      "description": "`InputPrompt` 的 `borderColor` 由原来的 `statusColor ?? (focus ? theme.border.focused : theme.border.default)` 改为恒为 `shellModeActive ? theme.status.warning : theme.border.focused`，而 `Composer` 仍在传 `focus={uiState.isFocused}`（来自 `useFocus` 的终端 focus-in/out 事件），组件内部也仍用 `focus` 决定占位符是否反色、是否绘制光标。结果是终端失去焦点时输入框边框仍是“聚焦色”，但光标/占位符已变为非聚焦样式，视觉信号互相矛盾。",
+      "evidence": [
+        "packages/cli/src/ui/components/InputPrompt.tsx:714-719 — `borderColor={shellModeActive ? theme.status.warning : theme.border.focused}`，不再包含 `focus ? ... : theme.border.default`",
+        "packages/cli/src/ui/components/InputPrompt.tsx:740-748 — 仍用 `focus ? chalk.inverse(placeholder.slice(0,1)) : ...` 区分聚焦状态",
+        "packages/cli/src/ui/components/InputPrompt.tsx:758-760 — 仍用 `focus && visualIdxInRenderedSet === cursorVisualRow` 决定是否渲染光标",
+        "packages/cli/src/ui/components/Composer.tsx:174 — 仍传入 `focus={uiState.isFocused}`，`isFocused` 来源于 `ui/hooks/useFocus.ts` 的终端 focus-in/out"
+      ],
+      "rule": "UX-FOCUS-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 焦点视觉反馈丢失/不一致。影响评估：仅影响终端失焦场景的外观与可读性，不影响输入逻辑；但输入框是主交互区域，边框是唯一的“整块”焦点提示，不一致会让用户误以为仍在输入。",
+        "suggestion": "[重构思路] 恢复边框对 `focus` 的响应，同时保留 shell 模式优先级。代码示例：\n```tsx\nborderColor={\n  shellModeActive\n    ? theme.status.warning\n    : focus\n      ? theme.border.focused\n      : theme.border.default\n}\n```",
+        "subcategory": "焦点视觉反馈"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/cli/src/ui/components/FolderTrustDialog.tsx",
+      "line": 53,
+      "title": "安全确认对话框的“Trust folder”选项不再显示待信任目录名",
+      "description": "变更删除了 `const dirName = path.basename(process.cwd())`，并把选项文案从 `Trust folder (${dirName})` 简化为 `Trust folder`，而同级的父目录选项仍显示 `Trust parent folder (${parentFolder})`。该对话框的标题是泛化的 “Do you trust this folder?”，正文也没有重复展示当前目录，因此在多窗口/多目录场景下用户无法从选项本身确认正在信任哪一个目录，而这是一个会放开命令执行权限的安全决策。",
+      "evidence": [
+        "packages/cli/src/ui/components/FolderTrustDialog.tsx:51-55 — `label: 'Trust folder'`，已无目录名",
+        "packages/cli/src/ui/components/FolderTrustDialog.tsx:57 — 同级选项仍为 `Trust parent folder (${parentFolder})`，信息不对称",
+        "diff 中删除了 `const dirName = path.basename(process.cwd());` 与 `label: `Trust folder (${dirName})``",
+        "packages/cli/src/ui/components/FolderTrustDialog.tsx:77-82 — 标题固定为 “Do you trust this folder?”，正文未再展示 cwd"
+      ],
+      "rule": "UX-SECURITY-CLARITY-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 安全决策缺少对象标识（信息弱化）。影响评估：不会直接导致越权，但会降低用户对“正在信任哪个目录”的判断力，尤其在多终端并行时可能误信任错误目录；属可读性/安全性提示弱化。",
+        "suggestion": "[重构思路] 保留目录名（至少显示 basename，必要时显示 tildeify 后的路径）。代码示例：\n```tsx\nconst dirName = path.basename(process.cwd());\n...\n{ label: `Trust folder (${dirName})`, value: FolderTrustChoice.TRUST_FOLDER }\n```",
+        "subcategory": "安全提示信息弱化"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/core/client.ts",
+      "line": 452,
+      "title": "压缩阈值判断不再计入本次待发送请求，超长提示词可能直接撞上上下文上限",
+      "description": "旧签名 tryCompressChat(prompt_id, force, request) 会把即将发送的请求以 createUserContent(request) 追加进 curatedHistory 再统计 token，从而在「历史 + 新请求」即将超限时触发压缩。改用 tryCompressChat(prompt_id) 后仅统计既有历史（第 775 行 getChat().getHistory(true)），第 811-820 行的阈值判断也基于不含新请求的 originalTokenCount。因此一次超长粘贴（大段日志/代码）不会触发压缩，请求以超长 contents 直接发出，容易被 API 以 token 超限拒绝。",
+      "evidence": [
+        "packages/core/src/core/client.ts:452 const compressed = await this.tryCompressChat(prompt_id); 未传入 request",
+        "packages/core/src/core/client.ts:775 const curatedHistory = this.getChat().getHistory(true); 仅统计历史",
+        "diff 中被删除的旧代码：if (request) { curatedHistory.push(createUserContent(request)); } 以及随之删除的 createUserContent import",
+        "packages/core/src/core/client.ts:811-820 阈值判断基于 originalTokenCount"
+      ],
+      "rule": "CORRECTNESS-TOKEN-BUDGET",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 预算计算遗漏待发送内容。影响评估：接近上限的会话中首次提交大段内容更易触发 400 token 超限，压缩机制在该场景形同失效，用户体验为「突然报错」。",
+        "suggestion": "[重构思路] 恢复把当前请求纳入统计的语义：tryCompressChat 增加可选 request 参数，统计时临时拼接但不写入历史。代码示例：\n```ts\nasync tryCompressChat(prompt_id: string, force = false, request?: PartListUnion) {\n  const history = this.getChat().getHistory(true);\n  const forCounting = request ? [...history, createUserContent(request)] : history;\n  const { totalTokens } = await this.getContentGeneratorOrFail().countTokens({ model, contents: forCounting });\n}\n```",
+        "subcategory": "上下文预算计算"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/core/client.ts",
+      "line": 452,
+      "title": "压缩阈值判断不再计入本次待发送请求，长提示词可能直接超出上下文窗口",
+      "description": "旧签名 tryCompressChat(prompt_id, force, request) 会把即将发送的用户请求以 createUserContent(request) 追加进 curatedHistory 再统计 token，从而在「历史 + 新请求」即将超限时触发压缩。本次改为 tryCompressChat(prompt_id) 后仅统计既有历史（第 775 行 getChat().getHistory(true)），因此一次超长粘贴（如大段日志/代码）不会触发压缩，请求直接以超长 contents 发出，容易被 API 以 token 超限拒绝。",
+      "evidence": [
+        "packages/core/src/core/client.ts:452 const compressed = await this.tryCompressChat(prompt_id); 未传入 request",
+        "packages/core/src/core/client.ts:775 const curatedHistory = this.getChat().getHistory(true); 仅统计历史",
+        "diff 中被删除的旧代码：if (request) { curatedHistory.push(createUserContent(request)); } 以及随之删除的 createUserContent import",
+        "packages/core/src/core/client.ts:811-820 阈值判断基于 originalTokenCount（不含新请求）"
+      ],
+      "rule": "CORRECTNESS-TOKEN-BUDGET",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 预算计算遗漏待发送内容。影响评估：接近上限时会话中第一次提交大段内容更易触发 400 token 超限，压缩机制形同失效，用户体验为「突然报错」。",
+        "suggestion": "[重构思路] 恢复把当前请求纳入 token 统计的语义：tryCompressChat 增加可选 request 参数，统计时临时拼接后计算，但不写入 chat 历史。代码示例：\n```ts\nasync tryCompressChat(prompt_id: string, force = false, request?: PartListUnion) {\n  const history = this.getChat().getHistory(true);\n  const forCounting = request ? [...history, createUserContent(request)] : history;\n  const { totalTokens } = await this.getContentGeneratorOrFail().countTokens({ model, contents: forCounting });\n  ...\n}\n```",
+        "subcategory": "上下文预算计算"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/core/src/core/client.ts",
+      "line": 507,
+      "title": "用「模型是否变化」判断配额降级失效，配额耗尽后仍会发起本应被阻止的 Flash 请求",
+      "description": "第 504-511 行把原先的 if (this.config.getQuotaErrorOccurred()) return turn; 换成了 if (currentModel !== initialModel) return turn;。但配额降级路径并不会修改 config 的 model：useQuotaAndFallback.ts:119 只调用 config.setQuotaErrorOccurred(true)，fallback/handler.ts:62-69 的 activateFallbackMode 只调用 config.setFallbackMode(true)，全仓 setModel 只出现在 config 声明、测试与 subagent.ts。因此降级后 config.getModel() 与 initialModel 相同，守卫永不触发，代码会继续执行 checkNextSpeaker 及「Please continue.」递归调用；而 geminiChat.ts:236-244 明确在 quotaErrorOccurred && model === Flash 时抛错 'Please submit a new query to continue with the Flash model.'，用户会在配额耗尽后收到这条误导性错误，而不是旧实现那样干净地结束本轮。",
+      "evidence": [
+        "packages/core/src/core/client.ts:504-511 if (!turn.pendingToolCalls.length && signal && !signal.aborted) { const currentModel = this.config.getModel(); if (currentModel !== initialModel) { return turn; } }",
+        "packages/cli/src/ui/hooks/useQuotaAndFallback.ts:118-119 setModelSwitchedFromQuotaError(true); config.setQuotaErrorOccurred(true);",
+        "packages/core/src/fallback/handler.ts:62-69 activateFallbackMode 仅调用 config.setFallbackMode(true)，无 setModel",
+        "packages/core/src/core/geminiChat.ts:236-244 if (this.config.getQuotaErrorOccurred() && modelToUse === DEFAULT_GEMINI_FLASH_MODEL) throw new Error('Please submit a new query to continue with the Flash model.')",
+        "diff 中被删除的旧守卫：if (this.config.getQuotaErrorOccurred()) { return turn; }"
+      ],
+      "rule": "CORRECTNESS-QUOTA-GUARD",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 守卫条件与实际状态来源不一致（用模型身份替代配额错误标志）。影响评估：Pro 配额耗尽并降级到 Flash 后，本轮仍会额外调用 checkNextSpeaker 并可能触发递归续写，最终抛出「Please submit a new query…」错误，属明显行为回归，并额外消耗配额。",
+        "suggestion": "[重构思路] 继续使用配额错误标志作为守卫，或同时保留两个条件；若确实希望以模型切换为信号，则必须在降级路径中同步调用 config.setModel(fallbackModel)。代码示例：\n```ts\nif (this.config.getQuotaErrorOccurred()) return turn;\nif (currentModel !== initialModel) return turn;\n```",
+        "subcategory": "状态标志判定"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/core/src/core/client.ts",
+      "line": 839,
+      "title": "压缩摘要失败时聊天历史已被破坏性截断，尾部历史永久丢失",
+      "description": "tryCompressChat 在发起摘要请求之前就先执行 this.getChat().setHistory(historyToCompress)，把「待压缩前缀」直接写成活动 GeminiChat 的历史；只有在摘要成功且 token 未膨胀时（第 890-891 行）才把 curatedHistory 恢复回来。若第 841 行 sendMessage（429、网络错误、用户 Esc 中止）或后续 startChat / countTokens 抛错，historyToKeep 与摘要都不会写回，当前会话的历史尾部被静默裁掉，后续提问会缺失上下文。旧实现用 config.getContentGenerator().generateContent 直接生成摘要、完全不触碰 chat 历史，因此这是本次改写引入的回归。",
+      "evidence": [
+        "packages/core/src/core/client.ts:839 this.getChat().setHistory(historyToCompress); 紧接 841 await this.getChat().sendMessage(...)",
+        "packages/core/src/core/client.ts:890-891 仅在 newTokenCount > originalTokenCount 分支执行 this.getChat().setHistory(curatedHistory) 恢复",
+        "packages/core/src/core/geminiChat.ts:559-561 setHistory(history) { this.history = history; } 为直接替换",
+        "diff 中被删除的旧实现：const summaryResponse = await this.config.getContentGenerator().generateContent({...}) 不修改 chat 历史",
+        "packages/core/src/core/client.ts:837 const historyToKeep = curatedHistory.slice(compressBeforeIndex); 仅在 852-862 的 startChat 中回填"
+      ],
+      "rule": "RELIABILITY-COMPRESSION-HISTORY",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 异步失败路径下未回滚破坏性状态写入。影响评估：上下文压缩总发生在接近上限时，一旦摘要请求失败或被中止，用户本轮会话历史尾部永久丢失，后续对话质量下降且不可恢复，属数据丢失类缺陷。",
+        "suggestion": "[重构思路] 要么沿用不改动 chat 历史的纯生成方式，要么把「先改后恢复」包进 try/catch 统一回滚。代码示例：\n```ts\nconst originalHistory = this.getChat().getHistory(true);\ntry {\n  this.getChat().setHistory(historyToCompress);\n  const { text: summary } = await this.getChat().sendMessage({...}, prompt_id);\n  ...\n} catch (e) {\n  this.getChat().setHistory(originalHistory);\n  this.hasFailedCompressionAttempt = !force;\n  return { originalTokenCount, newTokenCount: originalTokenCount, compressionStatus: CompressionStatus.COMPRESSION_FAILED_TOKEN_COUNT_ERROR };\n}\n```",
+        "subcategory": "失败路径未回滚"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/core/src/core/client.ts",
+      "line": 839,
+      "title": "压缩摘要失败时聊天历史被破坏性截断，尾部历史永久丢失",
+      "description": "tryCompressChat 在发起摘要请求之前就先执行 this.getChat().setHistory(historyToCompress)，把「待压缩前缀」直接写入活动的 GeminiChat 历史；只有在摘要成功且 newTokenCount 变大时（第 890-891 行）才把 curatedHistory 恢复回来。如果第 841 行 sendMessage（429/网络错误/用户 Esc 中止）或 startChat / countTokens 抛错，historyToKeep 与摘要都不会写回，会话历史被静默裁掉后半段，用户后续提问会缺失上下文。旧实现是用 config.getContentGenerator().generateContent 直接产出摘要、完全不动 chat 历史，因此这是本次改写引入的回归。",
+      "evidence": [
+        "packages/core/src/core/client.ts:839 this.getChat().setHistory(historyToCompress); 紧接 841 await this.getChat().sendMessage(...)",
+        "packages/core/src/core/client.ts:890-891 仅在 newTokenCount > originalTokenCount 分支执行 this.getChat().setHistory(curatedHistory) 恢复",
+        "packages/core/src/core/geminiChat.ts:559-561 setHistory(history) { this.history = history; } 为直接替换而非合并",
+        "diff 中已被删除的旧实现：const summaryResponse = await this.config.getContentGenerator().generateContent({...}) 不修改 chat 历史",
+        "packages/core/src/core/client.ts:837 const historyToKeep = curatedHistory.slice(compressBeforeIndex); 之后仅在 852-862 的 startChat 中使用"
+      ],
+      "rule": "RELIABILITY-COMPRESSION-HISTORY",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 异步失败路径下的状态未回滚（破坏性写历史 + 只在单一路径恢复）。影响评估：上下文压缩发生在接近上下文上限时，一旦摘要请求失败或被中止，用户当前会话的历史尾部永久丢失，后续对话质量下降且不可恢复，属于数据丢失类缺陷。",
+        "suggestion": "[重构思路] 要么沿用不修改 chat 历史的生成方式（直接用 ContentGenerator/SendMessage 的纯请求能力生成摘要），要么把所有「先改后恢复」的操作放进 try/finally/catch 中统一回滚。代码示例：\n```ts\nconst originalHistory = this.getChat().getHistory(true);\ntry {\n  this.getChat().setHistory(historyToCompress);\n  const { text: summary } = await this.getChat().sendMessage({...}, prompt_id);\n  ...\n} catch (e) {\n  this.getChat().setHistory(originalHistory);\n  this.hasFailedCompressionAttempt = !force;\n  return { originalTokenCount, newTokenCount: originalTokenCount, compressionStatus: CompressionStatus.COMPRESSION_FAILED_TOKEN_COUNT_ERROR };\n}\n```",
+        "subcategory": "失败路径未回滚"
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/core/client.ts",
+      "line": 841,
+      "title": "压缩提示词经 chat.sendMessage 发送，被当作真实用户消息写入会话记录",
+      "description": "摘要生成改用 this.getChat().sendMessage 后，内部会走 GeminiChat.sendMessage：一方面把 'First, reason in your scratchpad. Then, generate the <state_snapshot>.' 通过 chatRecordingService.recordMessage 记为 type: 'user' 写入会话记录文件，另一方面把它 append 进 history（requestContents = getHistory(true).concat(userContent)）。这会把内部压缩指令混入用户可见/可恢复的会话记录与 checkpoint，污染 /restore 与历史回放的内容，也不利于后续排查。",
+      "evidence": [
+        "packages/core/src/core/client.ts:841-851 this.getChat().sendMessage({ message: { text: 'First, reason in your scratchpad. Then, generate the <state_snapshot>.' }, config: { systemInstruction: { text: getCompressionPrompt() } } }, prompt_id)",
+        "packages/core/src/core/geminiChat.ts:210-222 createUserContent(params.message) 之后 chatRecordingService.recordMessage({ type: 'user', content: userMessage })",
+        "packages/core/src/core/geminiChat.ts:223 const requestContents = this.getHistory(true).concat(userContent);"
+      ],
+      "rule": "RELIABILITY-SIDE-EFFECT-RECORDING",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 内部提示词泄漏到持久化会话记录。影响评估：压缩发生时会在 chat recording 中多出一条用户消息，恢复会话或统计时出现非用户输入的内容，也会让压缩摘要本身被再次计入历史。",
+        "suggestion": "[重构思路] 摘要生成不要复用带记录副作用的 chat.sendMessage；若必须复用，应提供 skipRecording 选项或使用 ContentGenerator 的纯生成接口。代码示例：\n```ts\nconst summary = await this.getContentGeneratorOrFail().generateContent({ model, contents: [...historyToCompress, { role: 'user', parts: [{ text: COMPRESSION_INSTRUCTION }] }], config: { systemInstruction: { text: getCompressionPrompt() } } }, prompt_id);\n```",
+        "subcategory": "副作用泄漏"
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 831,
+      "title": "光标映射存在三处重叠兜底分支，其中文末分支自称可能已被覆盖却仍保留",
+      "description": "calculateVisualLayout 内有三段目的重叠的 cursor 映射：chunk 内的两分支（759-779 行，其中 === currentPosInLogLine + numCodePointsInChunk 的分支会被后续 chunk 起始命中覆盖）、逻辑行结束块（798-812 行）与函数末尾的「文本末尾」else-if（829-838 行，注释写明 'This case might be covered by the loop end condition now, but kept for safety.'）。多重兜底使光标映射的真值来源不唯一，后续修改极易在边界（行尾、自动折行处的空格旁）产生 1 格偏移，且缺少单一可读断言。",
+      "evidence": [
+        "packages/cli/src/ui/components/shared/text-buffer.ts:769-778 else if (cursorLogCol === currentPosInLogLine + numCodePointsInChunk && numCodePointsInChunk > 0) 设置 currentVisualCursor = [visualLines.length - 1, numCodePointsInChunk]",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:798-812 逻辑行末尾再次设置 currentVisualCursor = [lastVisualLineIdx, cpLen(visualLines[lastVisualLineIdx])]",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:829-838 注释 'This case might be covered by the loop end condition now, but kept for safety.' 后再次覆盖 currentVisualCursor"
+      ],
+      "rule": "MAINTAINABILITY-DEAD-BRANCH",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 同一状态的多处赋值分支互相重叠。影响评估：可读性差、回归风险高；一旦兜底顺序调整，光标在行尾/折行处会出现 1 格偏移且难以定位。",
+        "suggestion": "[重构思路] 收敛为单一职责的映射函数（输入 logicalCursor + visualToLogicalMap，输出 visualCursor），删除自认冗余的末尾分支，并为行尾、折行处空格等边界补针对性单测。代码示例：\n```\nfunction toVisualCursor(segments: Array<[number, number]>, visualLines: string[], [row, col]: [number, number]): [number, number] { /* 单一实现 */ }\n```",
+        "subcategory": "分支冗余"
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 831,
+      "title": "光标映射有三处重叠兜底逻辑，其中文末分支自称「可能已被覆盖」但仍保留",
+      "description": "calculateVisualLayout 内存在三段目的重叠的 cursor 映射：chunk 内的两分支（第 759-779 行，其中 === currentPosInLogLine + numCodePointsInChunk 的分支会被后续 chunk 的起始命中覆盖）、逻辑行结束块（第 796-812 行）以及函数末尾的「文本末尾」else-if（第 829-838 行，注释写明 'This case might be covered by the loop end condition now, but kept for safety.'）。多重兜底使光标映射的真值来源不唯一，后续修改极易在边界（行尾、自动换行处的空格旁）产生偏移，也缺少针对这些分支的可读断言。",
+      "evidence": [
+        "packages/cli/src/ui/components/shared/text-buffer.ts:769-778 else if (cursorLogCol === currentPosInLogLine + numCodePointsInChunk && numCodePointsInChunk > 0) 设置 currentVisualCursor = [visualLines.length - 1, numCodePointsInChunk]",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:798-812 逻辑行末尾再次设置 currentVisualCursor = [lastVisualLineIdx, cpLen(visualLines[lastVisualLineIdx])]",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:829-838 注释 'This case might be covered by the loop end condition now, but kept for safety.' 后再次覆盖 currentVisualCursor"
+      ],
+      "rule": "MAINTAINABILITY-DEAD-BRANCH",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 同一状态的多处赋值分支互相重叠。影响评估：可读性差、回归风险高；一旦某处兜底顺序调整，光标在行尾/折行处会出现 1 格偏移且难以定位。",
+        "suggestion": "[重构思路] 收敛为单一职责的映射函数（输入 logicalCursor + visualToLogicalMap，输出 visualCursor），删除自认冗余的末尾分支，并为行尾、折行处空格等边界补上针对性单测。代码示例：\n```\nfunction toVisualCursor(segments: Array<[number, number]>, visualLines: string[], [row, col]: [number, number]) { /* 单一实现 */ }\n```",
+        "subcategory": "分支冗余"
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 1060,
+      "title": "move 分支对逻辑移动也全量计算视觉布局，且 default 改为 break 丢失穷尽性检查",
+      "description": "case 'move' 在进入 switch (dir) 之前就无条件调用 calculateVisualLayout（1060-1064 行），而 wordLeft/wordRight 分支（1122-1187 行）只用 state.lines/cursorRow/cursorCol 并直接 return，完全不使用布局结果，等于每次 Ctrl+方向键都白算一次整篇重排。同时原实现末尾的 default: { const exhaustiveCheck: never = dir; ... } 被替换为 1188-1189 的 default: break;，Direction 新增取值时不再编译报错，而会静默落到 1192-1205 用 visualToLogicalMap 反算光标，可能产生难以发现的光标跳变。",
+      "evidence": [
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1060-1065 const visualLayout = calculateVisualLayout(lines, [cursorRow, cursorCol], viewportWidth); const { visualLines, visualCursor, visualToLogicalMap } = visualLayout; 位于 switch (dir) 之前",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1122-1187 wordLeft/wordRight 分支内 const { cursorRow, cursorCol, lines } = state 后直接 return，未使用 visualLayout",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1188-1189 default: break;（原为 const exhaustiveCheck: never = dir 的穷尽性断言）"
+      ],
+      "rule": "MAINTAINABILITY-EXHAUSTIVENESS",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 冗余计算 + 类型穷尽性检查丢失。影响评估：逻辑移动路径上的性能浪费；后续新增 Direction 时 TypeScript 不再兜底，错误会以光标位置异常的形式暴露。",
+        "suggestion": "[重构思路] 先按 dir 分流：只对 left/right/up/down/home/end 计算布局，wordLeft/wordRight 直接返回；并保留 never 断言。代码示例：\n```ts\nif (dir === 'wordLeft') { ...; return ...; }\nif (dir === 'wordRight') { ...; return ...; }\ndefault: { const exhaustiveCheck: never = dir; return state; }\n```",
+        "subcategory": "死计算与穷尽性"
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 1060,
+      "title": "reducer 的 move 分支对逻辑移动也全量计算视觉布局，且 default 改为 break 丢失穷尽性检查",
+      "description": "case 'move' 在拿到 dir 之后、进入 switch 之前就无条件调用 calculateVisualLayout（第 1060-1064 行），而 wordLeft/wordRight 分支只用 state.lines/cursorRow/cursorCol，完全不使用布局结果，等于每次按 Ctrl+方向键都白算一次整篇重排。同时原实现结尾的 default: { const exhaustiveCheck: never = dir; ... } 穷尽性断言被替换成 default: break;，Direction 新增取值时不会再编译报错，而是静默落到函数末尾用 visualToLogicalMap 反算光标，可能产生难以发现的光标跳变。",
+      "evidence": [
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1060-1065 const visualLayout = calculateVisualLayout(lines, [cursorRow, cursorCol], viewportWidth); const { visualLines, visualCursor, visualToLogicalMap } = visualLayout; 位于 switch (dir) 之前",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1168-1170 附近 wordLeft/wordRight 分支内重新取 const { cursorRow, cursorCol, lines } = state，未使用 visualLayout",
+        "diff 中 default: { const exhaustiveCheck: never = dir; console.error(...); return state; } 被改为 default: break;"
+      ],
+      "rule": "MAINTAINABILITY-EXHAUSTIVENESS",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 冗余计算 + 类型穷尽性检查丢失。影响评估：逻辑移动路径上的性能浪费；后续新增 Direction 时 TypeScript 不再兜底，错误会以光标位置异常的形式暴露。",
+        "suggestion": "[重构思路] 先按 dir 分流：只对 left/right/up/down/home/end 计算布局，wordLeft/wordRight 直接返回；并保留 never 断言。代码示例：\n```\nif (dir === 'wordLeft') { ... return ...; }\nif (dir === 'wordRight') { ... return ...; }\ndefault: { const exhaustiveCheck: never = dir; return state; }\n```",
+        "subcategory": "死计算与穷尽性"
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "category": "性能",
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 1480,
+      "title": "光标每次移动都全量重算视觉布局，且宽度/码点缓存被移除，大缓冲输入变慢",
+      "description": "视觉布局从 reducer 状态移入 useMemo 且依赖含 cursorRow/cursorCol（1480-1484 行），因此每次光标移动都会重新执行 calculateVisualLayout：逐 code point 调用未缓存的 stringWidth（673 行）并用 Array.from 重建码点数组；而 1505-1513 行的滚动 effect 又依赖 visualCursor，使移动链路更长。旧实现只在 lines 或 viewportWidth 变化时调用 calculateLayout，光标移动走轻量的 calculateVisualCursorFromLayout。同时 textUtils.ts 的 getCachedStringWidth/stringWidthCache 与 toCodePoints 缓存被删除，进一步放大单次成本。多行大段粘贴时光标移动退化为 O(总码点数) 重排。",
+      "evidence": [
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1480-1484 const visualLayout = useMemo(() => calculateVisualLayout(lines, [cursorRow, cursorCol], state.viewportWidth), [lines, cursorRow, cursorCol, state.viewportWidth])",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:673 const charVisualWidth = stringWidth(char); 位于逐码点循环内",
+        "packages/cli/src/ui/utils/textUtils.ts 中 getCachedStringWidth 与 stringWidthCache 被整体删除，toCodePoints 改为直接 return Array.from(str)",
+        "diff 中被删除的旧实现：visualCursor = useMemo(() => calculateVisualCursorFromLayout(visualLayout, [cursorRow, cursorCol]), ...)，visualLayout 只在 reducer 内 lines/viewportWidth 变化时重算"
+      ],
+      "rule": "PERF-VISUAL-LAYOUT",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 高频路径上的重复昂贵计算 + 缓存被移除。影响评估：长文本输入时方向键与编辑操作触发全量重排与逐字符宽度测量，出现输入卡顿，开销随缓冲行数/长度线性增长。",
+        "suggestion": "[重构思路] 拆分「重排」与「光标映射」：布局按 [lines, viewportWidth] 记忆化，光标用 logicalToVisualMap 做 O(段数) 换算；并恢复宽度/码点缓存。代码示例：\n```ts\nconst layout = useMemo(() => calculateLayout(lines, viewportWidth), [lines, viewportWidth]);\nconst visualCursor = useMemo(() => calculateVisualCursorFromLayout(layout, [cursorRow, cursorCol]), [layout, cursorRow, cursorCol]);\n```",
+        "subcategory": "重复计算与缓存缺失"
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P2",
+      "category": "性能",
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 1480,
+      "title": "光标每次移动都全量重算视觉布局，且宽度/码点缓存被移除，大缓冲输入明显变慢",
+      "description": "视觉布局从 reducer 状态移入 useMemo，且依赖数组包含 cursorRow/cursorCol（第 1480-1484 行），因此每一次光标移动（含长按方向键）都会重新执行 calculateVisualLayout：对每一行逐 code point 调用未缓存的 stringWidth（第 673 行），并通过 Array.from 重建码点数组。旧实现只在 lines 或 viewportWidth 变化时才调用 calculateLayout，光标移动走的是轻量的 calculateVisualCursorFromLayout。同时 textUtils.ts 中 getCachedStringWidth/stringWidthCache 与 toCodePoints 的 codePointsCache 均被删除，进一步放大了单次计算成本。对于多行大段粘贴内容，这会把光标移动变成 O(总码点数) 的重排。",
+      "evidence": [
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1480-1484 const visualLayout = useMemo(() => calculateVisualLayout(lines, [cursorRow, cursorCol], state.viewportWidth), [lines, cursorRow, cursorCol, state.viewportWidth])",
+        "packages/cli/src/ui/components/shared/text-buffer.ts:673 const charVisualWidth = stringWidth(char); 位于逐码点循环内",
+        "packages/cli/src/ui/utils/textUtils.ts 中 getCachedStringWidth 与 stringWidthCache 被整体删除（diff - 行），toCodePoints 改为直接 return Array.from(str)",
+        "diff 中删除的旧实现：visualCursor = useMemo(() => calculateVisualCursorFromLayout(visualLayout, [cursorRow, cursorCol]), [visualLayout, cursorRow, cursorCol]) 且 visualLayout 只在 reducer 内 lines/viewportWidth 变化时重算"
+      ],
+      "rule": "PERF-VISUAL-LAYOUT",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 高频路径上的重复昂贵计算 + 缓存被移除。影响评估：输入长文本时方向键/编辑操作会触发全量重排与逐字符宽度测量，出现明显输入延迟（卡顿），且开销随缓冲行数与长度线性增长。",
+        "suggestion": "[重构思路] 把「重排」与「光标映射」拆开：布局仍按 [lines, viewportWidth] 记忆化，光标位置用布局中的 logicalToVisualMap 做 O(段数) 轻量换算；并恢复宽度/码点缓存或至少在 chunk 级别测量宽度。代码示例：\n```ts\nconst layout = useMemo(() => calculateLayout(lines, viewportWidth), [lines, viewportWidth]);\nconst visualCursor = useMemo(() => calculateVisualCursorFromLayout(layout, [cursorRow, cursorCol]), [layout, cursorRow, cursorCol]);\n```",
+        "subcategory": "重复计算与缓存缺失"
+      }
+    },
+    {
+      "id": "F017",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/components/shared/text-buffer.ts",
+      "line": 1836,
+      "title": "移除 Ctrl+Z / Ctrl+Shift+Z 后 undo/redo 已无任何键盘入口，成为死代码",
+      "description": "handleInput 中原来的 else if (key.ctrl && !key.shift && key.name === 'z') undo(); 与 ctrl+shift+z redo() 两条分支被删除，而 keyBindings.ts 的 Command 枚举与 defaultKeyBindings 中并不存在 UNDO/REDO 命令，全仓对 undo 的引用只剩 text-buffer.ts 内部（case 'undo'、useTextBuffer 的 undo/redo 回调与 TextBuffer 声明）和测试文件。结果是 Ctrl+Z 不再撤销（也不落入末尾的 input 分支，因为该分支要求 !key.ctrl），TextBuffer.undo/redo 变成无调用方的死代码，功能静默回退。",
+      "evidence": [
+        "packages/cli/src/ui/components/shared/text-buffer.ts:1829-1838 handleInput 现有分支仅到 else if (input && !key.ctrl && !key.meta) insert(...)，无 ctrl+z 分支",
+        "packages/cli/src/config/keyBindings.ts:10-59 Command 枚举中无 UNDO/REDO；90-165 defaultKeyBindings 亦无对应项",
+        "review_find_references('undo') 结果：仅 text-buffer.ts:892/1336/1575/1896/1979 内部引用与测试文件，无 UI 调用方",
+        "diff 中被删除的旧代码：else if (key.ctrl && !key.shift && key.name === 'z') undo(); else if (key.ctrl && key.shift && key.name === 'z') redo();"
+      ],
+      "rule": "REGRESSION-KEYBINDING",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] 用户可见快捷键被移除导致功能回退。影响评估：用户在输入框中按 Ctrl+Z 不再撤销，误删内容无法恢复；同时 undo/redo 代码保留但不可达，后续维护者容易误以为功能存在。",
+        "suggestion": "[重构思路] 若是有意移除，请一并删除 TextBuffer.undo/redo 相关接口与实现；若是误删，请在 handleInput 或 keyBindings 中恢复绑定。代码示例：\n```ts\nelse if (key.ctrl && !key.shift && key.name === 'z') undo();\nelse if (key.ctrl && key.shift && key.name === 'z') redo();\n```",
+        "subcategory": "快捷键功能回退"
+      }
+    },
+    {
+      "id": "F018",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/ui/themes/theme.ts",
+      "line": 413,
+      "title": "createCustomTheme 完全忽略自定义语义颜色，用户自定义主题配置静默失效",
+      "description": "createCustomTheme 的 semanticColors 全部改为直接取 colors.*，customTheme.text?.primary / background?.diff?.added / border?.default / ui?.comment / status?.error 等覆盖值不再参与计算（第 411-439 行）。因此用户在自定义主题中声明的语义颜色会被静默丢弃，界面回退到基础色板；由于 validateCustomTheme 仍会校验这些字段，用户会看到「配置合法但不生效」的困惑行为。",
+      "evidence": [
+        "packages/cli/src/ui/themes/theme.ts:413-417 原 customTheme.text?.primary ?? colors.Foreground 变为 primary: colors.Foreground（同段落 secondary/link/accent 同样处理）",
+        "packages/cli/src/ui/themes/theme.ts:418-438 customTheme.background/border/ui/status 的 ?? 覆盖逻辑被全部删除",
+        "packages/cli/src/ui/themes/theme.ts:450-455 validateCustomTheme 仍对外暴露并校验自定义主题结构"
+      ],
+      "rule": "REGRESSION-CUSTOM-THEME",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 配置项被静默忽略（读取端删除覆盖逻辑）。影响评估：所有依赖自定义主题语义色的用户/主题包视觉表现改变，且没有任何告警，属于用户可见的功能回退。",
+        "suggestion": "[重构思路] 若要保持自定义主题能力，恢复 ?? 回退链；若确实要废弃语义色覆盖，应同步从 CustomTheme 类型与 validateCustomTheme 中移除这些字段并输出一次弃用告警。代码示例：\n```ts\nprimary: customTheme.text?.primary ?? colors.Foreground,\nsecondary: customTheme.text?.secondary ?? colors.Gray,\n```",
+        "subcategory": "配置失效"
+      }
+    },
+    {
+      "id": "F019",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 115,
+      "title": "env 变量回写按路径无条件覆盖，会把本次显式更新的新值改回 $VAR 原文",
+      "description": "restoreEnvVarReferences 会为所有 envVarMappings 建立 path -> originalValue 映射，restoreEnvVarsRecursive 在遍历时只要命中该路径且当前值是字符串，就无条件写回 originalValue（第 114-116 行），完全不检查该路径是否属于本次 updates。saveSettings 把整份 settings 与全部 envVarMappings 一起传入，因此当用户/命令显式修改一个原本由环境变量注入的字段（例如把 security.auth.selectedType 从 $AUTH_TYPE 改成具体值）时，写入文件的值会被还原成 $AUTH_TYPE，用户的修改静默丢失。",
+      "evidence": [
+        "packages/cli/src/utils/commentJson.ts:114-116 const envVarReference = envVarMap.get(pathStr); if (envVarReference && typeof value === 'string') { (obj as Record<string, unknown>)[key] = envVarReference; }",
+        "packages/cli/src/utils/commentJson.ts:48-52 applyUpdates 先应用 updates，随后 55-58 再 restoreEnvVarReferences 覆盖",
+        "packages/cli/src/config/settings.ts:738-742 saveSettings 传入 settingsToSave 与全部 envVarMappings",
+        "packages/cli/src/config/settings.ts:674-682 loadSettings 用 trackEnvVarMappings(userSettings, userOriginal) 收集全部映射"
+      ],
+      "rule": "CORRECTNESS-SETTINGS-ENV",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 后置覆盖逻辑未与本次变更集合求交。影响评估：环境变量驱动的配置项无法通过 UI/命令改写，写入被静默回滚，用户看到设置「改了又变回去」，排查成本高。",
+        "suggestion": "[重构思路] 只在「值未被本次 updates 修改」时才回写 env 引用，即把 updates 的路径集合传入 restore 阶段并跳过命中路径。代码示例：\n```ts\nconst updatedPaths = collectPaths(updates);\nif (envVarReference && typeof value === 'string' && !updatedPaths.has(pathStr)) {\n  (obj as Record<string, unknown>)[key] = envVarReference;\n}\n```",
+        "subcategory": "配置写回顺序"
+      }
+    },
+    {
+      "id": "F020",
+      "severity": "P2",
+      "category": "性能",
+      "file": "packages/core/src/config/config.ts",
+      "line": 380,
+      "title": "useRipgrep 与 skipNextSpeakerCheck 默认值被翻转，搜索性能与每轮额外模型调用行为改变",
+      "description": "构造器默认值从 useRipgrep ?? true 改为 ?? false，skipNextSpeakerCheck ?? true 改为 ?? false（第 380、382 行）。未显式传入该参数的调用方（库消费方、a2a-server、测试与子代理等）将失去 ripgrep 加速，glob/grep 走 JS 回退实现（更慢且忽略规则语义不同）；同时 skipNextSpeakerCheck 为 false 使 GeminiClient 在每次无工具调用的回合后额外执行 checkNextSpeaker 模型请求，增加延迟与配额消耗。这属于未在变更说明中体现的全局默认行为改动。",
+      "evidence": [
+        "packages/core/src/config/config.ts:380 this.useRipgrep = params.useRipgrep ?? false;（原为 ?? true）",
+        "packages/core/src/config/config.ts:382 this.skipNextSpeakerCheck = params.skipNextSpeakerCheck ?? false;（原为 ?? true）",
+        "packages/core/src/core/client.ts:513-521 if (this.config.getSkipNextSpeakerCheck()) return turn; 否则执行 await checkNextSpeaker(...) 并发起额外模型请求"
+      ],
+      "rule": "PERF-DEFAULT-FLIP",
+      "confidence": 0.58,
+      "tips": {
+        "review": "[缺陷类型] 全局默认值翻转带来的隐性行为/性能变化。影响评估：文件搜索性能下降、每轮多一次模型调用（费用与延迟）；对未显式配置的嵌入方是静默回归。",
+        "suggestion": "[重构思路] 若翻转默认值是有意的产品决策，请在变更说明与 CHANGELOG 中显式记录并在 CLI 侧显式传入参数；否则恢复默认 true。代码示例：\n```\nthis.useRipgrep = params.useRipgrep ?? true;\nthis.skipNextSpeakerCheck = params.skipNextSpeakerCheck ?? true;\n```",
+        "subcategory": "默认配置变更"
+      }
+    },
+    {
+      "id": "F021",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/config/config.ts",
+      "line": 872,
+      "title": "工具输出截断阈值不再按剩余上下文收敛，长输出可能撑爆上下文窗口",
+      "description": "getTruncateToolOutputThreshold 现在直接返回配置常量，删除了原先 Math.min(4 * (tokenLimit(this.model) - uiTelemetryService.getLastPromptTokenCount()), this.truncateToolOutputThreshold) 的动态收敛（同时删除了 tokenLimit 与 uiTelemetryService 的 import）。当上下文已接近上限时，工具输出仍按固定阈值保留，容易把下一次请求推到模型上下文窗口之外，导致 400 或触发不必要的压缩。",
+      "evidence": [
+        "packages/core/src/config/config.ts:871-873 getTruncateToolOutputThreshold() { return this.truncateToolOutputThreshold; }",
+        "diff 中删除的旧实现：return Math.min(4 * (tokenLimit(this.model) - uiTelemetryService.getLastPromptTokenCount()), this.truncateToolOutputThreshold);",
+        "packages/core/src/config/config.ts 顶部 diff 删除 import { uiTelemetryService } 与 import { tokenLimit } from '../core/tokenLimits.js'"
+      ],
+      "rule": "RELIABILITY-CONTEXT-BUDGET",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 上下文预算相关的动态上限被移除。影响评估：在长会话中执行 ls/grep 等大输出工具时，工具结果可能使请求超出模型上下文，出现请求失败或频繁压缩，降低稳定性。",
+        "suggestion": "[重构思路] 恢复按剩余 token 动态收敛的逻辑，或把剩余预算作为参数由调用方传入以便测试。代码示例：\n```\ngetTruncateToolOutputThreshold(): number {\n  const remaining = tokenLimit(this.getModel()) - uiTelemetryService.getLastPromptTokenCount();\n  return Math.min(Math.max(remaining, 0) * 4, this.truncateToolOutputThreshold);\n}\n```",
+        "subcategory": "上下文超限风险"
+      }
+    },
+    {
+      "id": "F022",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "packages/cli/src/ui/hooks/shellCommandProcessor.ts",
+      "line": 137,
+      "title": "PTY 执行不再传入终端尺寸，shell 输出固定按 80x30 渲染导致折行错乱",
+      "description": "useShellCommandProcessor 的签名删除了 terminalWidth/terminalHeight，调用 ShellExecutionService.execute 时只传 5 个参数（commandToExecute、targetDir、回调、abortSignal、config.getShouldUseNodePtyShell()），terminalColumns/terminalRows 为 undefined。而 executeWithPty 内部使用 const cols = terminalColumns ?? 80; const rows = terminalRows ?? 30;，因此无论真实终端多宽多窄，PTY 一律以 80x30 运行：长行在不该折的地方折行、表格/进度条等按 TUI 语义输出的命令布局错乱（宽终端下更明显）。同时 config.getShellExecutionConfig / setShellExecutionConfig 已被整体删除，全仓已无其它来源补充尺寸。",
+      "evidence": [
+        "packages/cli/src/ui/hooks/shellCommandProcessor.ts:137-190 ShellExecutionService.execute(commandToExecute, targetDir, (event) => {...}, abortSignal, config.getShouldUseNodePtyShell()) 仅 5 个实参",
+        "packages/core/src/services/shellExecutionService.ts:311-322 executeWithPty 使用 const cols = terminalColumns ?? 80; const rows = terminalRows ?? 30;",
+        "packages/core/src/services/shellExecutionService.ts:96-104 execute 的 terminalColumns/terminalRows 为可选参数",
+        "diff 中被删除的旧实现：setShellExecutionConfig(... terminalWidth, terminalHeight ...) 与 shellExecutionConfig 注入；review_find_references('getShellExecutionConfig') 返回 0"
+      ],
+      "rule": "PORTABILITY-TERMINAL-SIZE",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 终端尺寸上下文丢失（可选参数被整体弃用）。影响评估：以 ! 前缀执行的 shell 命令与 run_shell_command 在 PTY 模式下固定 80 列，输出折行位置与真实终端不符，宽字符/多列输出错位，属于用户可见的显示缺陷。",
+        "suggestion": "[重构思路] 恢复把终端尺寸透传到 execute（由 useTextBuffer 的 viewport 或 process.stdout 列数决定），或让 ShellExecutionService 在终参缺省时读取 process.stdout.columns/rows。代码示例：\n```ts\nShellExecutionService.execute(cmd, dir, cb, signal, config.getShouldUseNodePtyShell(), process.stdout.columns, process.stdout.rows);\n```",
+        "subcategory": "终端尺寸缺失"
+      }
+    },
+    {
+      "id": "F023",
+      "severity": "P2",
+      "category": "可移植",
+      "file": "packages/cli/src/ui/hooks/shellCommandProcessor.ts",
+      "line": 137,
+      "title": "PTY 执行链路已无任何终端尺寸来源，shell 输出固定按 80x30 渲染导致折行错乱",
+      "description": "useShellCommandProcessor 签名删除了 terminalWidth/terminalHeight，调用 ShellExecutionService.execute 时只传 5 个实参，terminalColumns/terminalRows 为 undefined；executeWithPty 内部改用 const cols = terminalColumns ?? 80; const rows = terminalRows ?? 30;。进一步检索确认全仓 terminalColumns 仅有「声明 + 透传」6 处（shellExecutionService 与 tools/shell.ts），而 ToolInvocation/BaseToolInvocation 的 execute 抽象签名只有 (signal, updateOutput)，没有任何调用方真正传入尺寸，config.getShellExecutionConfig/setShellExecutionConfig 也已被整体删除。因此不论真实终端宽度如何，`!` 前缀 shell 与 run_shell_command 在 PTY 模式下都固定 80 列 30 行：长行折行位置错误、表格/进度条等按 TUI 语义输出的命令布局错乱。",
+      "evidence": [
+        "packages/cli/src/ui/hooks/shellCommandProcessor.ts:137-190 ShellExecutionService.execute(commandToExecute, targetDir, (event) => {...}, abortSignal, config.getShouldUseNodePtyShell()) 仅 5 个实参",
+        "packages/core/src/services/shellExecutionService.ts:311-322 executeWithPty 使用 const cols = terminalColumns ?? 80; const rows = terminalRows ?? 30;",
+        "packages/core/src/services/shellExecutionService.ts:96-104 execute 的 terminalColumns/terminalRows 为可选参数",
+        "packages/core/src/tools/tools.ts:52-55 与 80-83 的 execute 抽象签名只有 (signal, updateOutput?)，无尺寸参数",
+        "review_find_references('terminalColumns') 仅 6 处，全部为 shellExecutionService.ts:102/114/316/321 与 shell.ts:100/188 的声明与透传，无调用方赋值",
+        "diff 中被删除的旧实现：setShellExecutionConfig(...terminalWidth, terminalHeight...) 注入；review_find_references('getShellExecutionConfig') 返回 0"
+      ],
+      "rule": "PORTABILITY-TERMINAL-SIZE",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 终端尺寸上下文丢失（可选参数被弃用且无调用方赋值）。影响评估：以 ! 前缀执行的 shell 命令与 run_shell_command 在 PTY 模式下固定 80 列，输出折行与真实终端不符，宽字符/多列输出错位，属用户可见的显示缺陷。",
+        "suggestion": "[重构思路] 恢复尺寸透传：由 InputPrompt 的 viewport 宽度或 process.stdout.columns/rows 取值传至 execute；或在 executeWithPty 缺省时读取 process.stdout.columns/rows。代码示例：\n```ts\nShellExecutionService.execute(cmd, dir, cb, signal, config.getShouldUseNodePtyShell(), process.stdout.columns, process.stdout.rows);\n```",
+        "subcategory": "终端尺寸缺失"
+      }
+    },
+    {
+      "id": "F024",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/core/src/core/subagent.ts",
+      "line": 646,
+      "title": "子代理启动时改写共享 Config 的全局模型且不恢复，主会话模型被静默切换",
+      "description": "sendMessageStream 去掉 model 参数后，子代理改为通过 runtimeContext.setModel(this.modelConfig.model) 把模型写进共享的 Config。由于 GeminiChat 的 apiCall 现在按 this.config.getModel() 决定实际调用的模型，子代理结束后没有任何代码把主代理的模型恢复回去（全仓库 setModel 除测试外仅此一处调用），主会话后续所有请求都会继续使用子代理指定的模型；若主代理配置为 pro、子代理统一用 flash，则用户会看到主对话在子代理运行后“降级”且无法察觉。并发的多个子代理还会互相覆盖该全局状态。",
+      "evidence": [
+        "packages/core/src/core/subagent.ts:646 — `this.runtimeContext.setModel(this.modelConfig.model);`，runtimeContext 是传入的 Config（构造函数 261 行 `readonly runtimeContext: Config`），并非新实例",
+        "packages/core/src/config/config.ts:507-515 — `getModel()` 返回 `this.contentGeneratorConfig?.model || this.model`；`setModel()` 直接改写 `this.contentGeneratorConfig.model`",
+        "packages/core/src/core/geminiChat.ts:231-233 — 每次请求都用 `this.config.isInFallbackMode() ? DEFAULT_GEMINI_FLASH_MODEL : this.config.getModel()`，因此全局改写会立即影响主会话",
+        "review_find_references(setModel) 结果：非测试调用点仅 subagent.ts:646，没有任何恢复/还原点"
+      ],
+      "rule": "STATE-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 共享可变全局状态被隐式改写（模型选择泄漏到其他会话）。影响评估：子代理运行后主会话模型被永久更换，行为与用户配置不一致；并发子代理时相互覆盖，且无法从日志/UI 察觉。",
+        "suggestion": "[重构思路] 让模型成为会话级参数而不是全局状态：给 GeminiChat 增加 model 字段（构造时传入），或在 SubAgentScope 内用独立 Config 副本；若必须复用 Config，则在 finally 中保存并恢复原模型。代码示例：`const prev = this.runtimeContext.getModel(); try { ... } finally { this.runtimeContext.setModel(prev); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F025",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/core/src/ide/ide-client.ts",
+      "line": 206,
+      "title": "移除 diffMutex 后同一文件重复 openDiff 会覆盖 resolver，导致前一个确认永远挂起",
+      "description": "原实现用 acquireMutex 串行化 diff 视图，并在 finally 中释放；本 MR 删除了互斥锁与 acquireMutex。现在 diffResponses 以 filePath 为 key 直接 set(resolve)，若同一文件在一轮内被多次发起 diff（例如模型并行发出两个 edit/smart-edit/write_file 调用，或编辑与写文件指向同一路径），第二次 openDiff 会覆盖第一次的 resolve 函数。accepted/diffClosed 通知按 filePath 只解析一次并 delete，第一次调用返回的 Promise 永远不会 settle，等待它的 UI 确认流程（edit.ts 的 onConfirm 中 await ideConfirmation）会一直阻塞，工具调用挂死。",
+      "evidence": [
+        "packages/core/src/ide/ide-client.ts:205-219 — `this.diffResponses.set(filePath, resolve);`，无互斥、无重入保护；diff 失败路径也不再 `diffResponses.delete(filePath)`",
+        "packages/core/src/ide/ide-client.ts:543-568 — diffAccepted/diffClosed 都用 `this.diffResponses.get(filePath)` 取 resolver 后 delete，只解析一个",
+        "diff 中删除了 `private diffMutex = Promise.resolve();`、`acquireMutex()` 及 `promise.finally(release)`（原注释明确写明用于防止 VSCode 无法处理多个 diff 视图的竞态）",
+        "packages/core/src/tools/edit.ts:273 与 290-296 — `ideClient.openDiff(...)` 的 Promise 在 onConfirm 中 `await ideConfirmation`"
+      ],
+      "rule": "CONCURRENCY-001",
+      "confidence": 0.66,
+      "tips": {
+        "review": "[缺陷类型] 并发竞态 + Promise 永不 settle。影响评估：同文件多次编辑时确认面板永久等待，工具调用无法完成（表现为卡死），且 VSCode 多 diff 视图可能错乱。",
+        "suggestion": "[重构思路] 至少恢复串行化或按键去重：若存在同 filePath 的未决 diff，先拒绝/复用而不是覆盖 resolver；同时把 diff 生命周期封装成带 finally 清理的对象。代码示例：`if (this.diffResponses.has(filePath)) { return Promise.reject(new Error('diff already open')); } ... try { return await p; } finally { this.diffResponses.delete(filePath); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F026",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/ide/ide-client.ts",
+      "line": 215,
+      "title": "openDiff 不再校验 callTool 的 isError 结果，也不清理 resolver，IDE 不支持该工具时留下悬挂状态",
+      "description": "原先 openDiff 会 safeParse CallToolResultSchema 并检查 isError，失败时 diffResponses.delete(filePath) 且 reject；现在只用 `.catch` 处理传输层异常，MCP 返回 isError 的结果被完全忽略，diff 永远等不到 accepted/closed 通知。同时 IDE 侧是否支持 openDiff 的探测（isDiffingEnabled / discoverTools）被删除，edit.ts 仅以连接状态为条件调用 openDiff，因此连接到不提供 openDiff 工具的 IDE 扩展时会得到 rejected Promise，而 diffResponses 中的条目不会被清除，后续对同一文件的 diff 会命中这个陈旧 resolver。",
+      "evidence": [
+        "packages/core/src/ide/ide-client.ts:207-218 — 只有 `.catch((err) => { ... reject(err); })`，没有 isError 判断、没有 `this.diffResponses.delete(filePath)`",
+        "diff 中删除了 `isDiffingEnabled()`、`discoverTools()`、`availableTools` 以及 `CallToolResultSchema.safeParse` 的 isError 分支与对应的 delete(filePath)",
+        "packages/core/src/tools/edit.ts:270-274 — 判断条件改为 `ideClient?.getConnectionStatus().status === IDEConnectionStatus.Connected`，不再检查工具可用性",
+        "packages/vscode-ide-companion/src/ide-server.ts:336-364 — openDiff 正常路径只返回文本结果，说明非 isError 结果不会 resolve diff"
+      ],
+      "rule": "ERROR-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 错误结果未处理 + 状态未清理。影响评估：IDE 端报错或工具缺失时 diff 请求悬挂，用户需重启；陈旧 resolver 会影响后续同文件编辑。",
+        "suggestion": "[重构思路] 在 finally 中统一清理并识别 isError。代码示例：`const result = await this.client.callTool(...); if ((result as {isError?: boolean}).isError) { this.diffResponses.delete(filePath); reject(new Error('openDiff failed')); }`，并在 catch/finally 中都 delete(filePath)。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F027",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/ide/ide-client.ts",
+      "line": 479,
+      "title": "端口号严格相等比较把 number 与 string 相比，多窗口场景下必然匹配失败",
+      "description": "多工作区时用 GEMINI_CLI_IDE_SERVER_PORT 环境变量挑选对应的端口文件，原实现是 String(content.port) === portFromEnv，本 MR 改成 content.port === portFromEnv。端口文件内容是 IDE 扩展 JSON.stringify({ port /* number */, ... }) 写出的，port 为 number；而 getPortFromEnv 返回 string。严格相等永远为 false，于是会退回 validWorkspaces[0]，可能连接到同一 IDE 进程的另一个窗口/工作区的服务端口，导致 IDE 集成行为异常或连接失败。",
+      "evidence": [
+        "packages/core/src/ide/ide-client.ts:478-483 — `const matchingPort = validWorkspaces.find((content) => content.port === portFromEnv)`",
+        "packages/core/src/ide/ide-client.ts:361-367 — `getPortFromEnv(): string | undefined`，直接返回 `process.env['GEMINI_CLI_IDE_SERVER_PORT']`（string）",
+        "packages/vscode-ide-companion/src/ide-server.ts:48 — `const content = JSON.stringify({ port, workspacePath, ppid: process.ppid });`，其中 port 来自 `(address as AddressInfo).port`（number）",
+        "packages/core/src/ide/ide-client.ts:486 — 匹配失败后 `return validWorkspaces[0];`"
+      ],
+      "rule": "TYPE-002",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 类型不一致导致的永远为假的等值判断。影响评估：多窗口/多工作区时无法定位到正确的 IDE MCP 服务端口，可能连到错误窗口或最终连接失败。",
+        "suggestion": "[重构思路] 统一两侧类型，比较前显式转换并做数值校验。代码示例：`const matchingPort = validWorkspaces.find((content) => String(content.port) === portFromEnv);`，并为端口文件定义 zod schema（`port: z.union([z.number(), z.string()])`）以固定契约。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F028",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/tools/glob.ts",
+      "line": 171,
+      "title": "glob 不再应用 .geminiignore 过滤，被用户排除的文件会重新出现在结果中",
+      "description": "重构后 glob 只在 respectGitIgnore 为真时调用 fileDiscovery.filterFiles(relativePaths, { respectGitIgnore })，显式传入的对象缺少 respectGeminiIgnore，而 filterFiles 内部用 `if (options.respectGeminiIgnore && ...)` 判断，undefined 直接跳过 gemini 过滤；同时 respect_gemini_ignore 参数与 geminiIgnoredCount 提示也被删除。结果是 .geminiignore 中被排除的文件会重新出现在 glob 结果里返回给模型，与同批重构的 ls.ts（仍同时应用 shouldGitIgnoreFile 与 shouldGeminiIgnoreFile）行为不一致。",
+      "evidence": [
+        "packages/core/src/tools/glob.ts:131-133 仅计算 respectGitIgnore；171-173 `fileDiscovery.filterFiles(relativePaths, { respectGitIgnore })` 未设置 respectGeminiIgnore",
+        "packages/core/src/services/fileDiscoveryService.ts:54-63 — `if (options.respectGeminiIgnore && this.shouldGeminiIgnoreFile(filePath))`，options.respectGeminiIgnore 为 undefined 时该分支被跳过",
+        "packages/core/src/services/fileDiscoveryService.ts:47-53 — 默认值 {respectGitIgnore:true,respectGeminiIgnore:true} 仅在未传参数时生效",
+        "packages/core/src/tools/ls.ts:203-209 — ls 仍保留 `fileFilteringOptions.respectGeminiIgnore && fileDiscovery.shouldGeminiIgnoreFile(relativePath)`"
+      ],
+      "rule": "FILTER-001",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 过滤能力在重构中丢失（静默回退）。影响评估：用户通过 .geminiignore 排除的敏感/无关文件会被 glob 列出并进入模型上下文；工具间过滤语义不一致。",
+        "suggestion": "[重构思路] 显式传入两个开关，或改用 shouldIgnoreFile(filePath, options) 这一统一入口，避免依赖默认值。代码示例：`const filtered = fileDiscovery.filterFiles(relativePaths, { respectGitIgnore, respectGeminiIgnore: this.config.getFileFilteringRespectGeminiIgnore() });`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F029",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "packages/core/src/services/shellExecutionService.ts",
+      "line": 20,
+      "title": "新增 getFullText 上的 @ts-expect-error 注释理由错误，很可能触发 TS2578",
+      "description": "注释写的是“getFullText is not a public API”，但 getFullText 是本文件内部的局部函数，不存在 API 可见性问题；它做的 buffer 遍历与同一文件被删除的 getFullBufferText 完全一致（那段代码原本没有任何 @ts-expect-error）。若该行本身不产生类型错误，TypeScript 会报 “Unused '@ts-expect-error' directive”，而 @ts-expect-error 又会屏蔽真正可能出现的类型问题，属于双向风险。",
+      "evidence": [
+        "packages/core/src/services/shellExecutionService.ts:20-29 — `// @ts-expect-error getFullText is not a public API.` 紧跟 `const getFullText = (terminal: Terminal) => { const buffer = terminal.buffer.active; ... }`",
+        "diff 中被删除的 `getFullBufferText` 使用相同的 `terminal.buffer.active` / `buffer.length` / `line.translateToString()` 写法，且没有该指令",
+        "packages/core/src/services/shellExecutionService.ts:344-348 — headlessTerminal 以 `allowProposedApi: true` 创建"
+      ],
+      "rule": "TYPE-003",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 无效/误导的类型抑制指令。影响评估：若指令未被使用会导致编译期报错中断构建；若确有错误被吞掉，则掩盖真实类型问题并使注释误导后续维护者。",
+        "suggestion": "[重构思路] 删除该指令，直接依赖类型；若确有头部私有 API 访问，应写明确切表达式与原因。代码示例：`// xterm 的 IBuffer.length 为内部字段，需允许访问\\nconst buffer = terminal.buffer.active;`，或改为本地类型 `type TerminalWithBuffer = Terminal & { buffer: { active: { length: number } } };`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F030",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/core/src/services/shellExecutionService.ts",
+      "line": 437,
+      "title": "PTY 中止从杀死进程组改为 ptyProcess.kill('SIGHUP')，子进程可能残留",
+      "description": "原实现在 POSIX 上执行 `process.kill(-ptyProcess.pid, 'SIGINT')` 以终止整个进程组，失败再回退到 ptyProcess.kill('SIGINT')，Windows 上走 ptyProcess.kill()。现在统一改为 ptyProcess.kill('SIGHUP')：只向 shell 自身发信号，其派生的子进程（长时间运行的构建/测试/监视进程）不保证被回收；在 Windows 上 SIGHUP 也不是有效信号语义，抑制强度与原实现不同。abort 后若 shell 未退出，resolve 也不会提前发生，用户按取消可能仍看到命令继续跑。",
+      "evidence": [
+        "packages/core/src/services/shellExecutionService.ts:435-439 — `const abortHandler = async () => { if (ptyProcess.pid && !exited) { ptyProcess.kill('SIGHUP'); } };`",
+        "diff 中删除了 `if (os.platform() === 'win32') { ptyProcess.kill(); } else { try { process.kill(-ptyProcess.pid, 'SIGINT'); } catch { ptyProcess.kill('SIGINT'); } }` 整段",
+        "packages/core/src/services/shellExecutionService.ts:329 — spawn 使用 `handleFlowControl: true` 的 PTY，shell 会再派生子进程"
+      ],
+      "rule": "RESOURCE-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 资源回收不彻底（进程组未被终止）。影响评估：取消命令后子进程继续占用 CPU/文件句柄，可能继续写入工作区；Windows 行为不确定。",
+        "suggestion": "[重构思路] 保留平台分支与进程组终止，并补充超时强制 kill。代码示例：`if (os.platform() === 'win32') { ptyProcess.kill(); } else { try { process.kill(-ptyProcess.pid, 'SIGHUP'); } catch { ptyProcess.kill('SIGHUP'); } }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F031",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "packages/core/src/services/chatRecordingService.ts",
+      "line": 212,
+      "title": "会话记录中的 model 固定取 config.getModel()，与实际调用的模型可能不一致",
+      "description": "原来由调用方把 model 传进来（真实使用的模型），现在统一改为记录 this.config.getModel()。但 geminiChat 在 fallback 模式下实际调用的是 DEFAULT_GEMINI_FLASH_MODEL（fallback 只置状态位、不修改 Config.model），且子代理会改写 Config.model，因此会话记录里的 model 与本次请求真正使用的模型可能不同，影响问题排查与用量核对。",
+      "evidence": [
+        "packages/core/src/services/chatRecordingService.ts:209-213 — `model: this.config.getModel(),`",
+        "packages/core/src/services/chatRecordingService.ts:318-321 — recordToolCalls 同样使用 `model: this.config.getModel()`",
+        "packages/core/src/core/geminiChat.ts:231-233 — 实际请求模型为 `isInFallbackMode() ? DEFAULT_GEMINI_FLASH_MODEL : this.config.getModel()`",
+        "packages/core/src/fallback/handler.ts:62-68 — activateFallbackMode 只调用 `config.setFallbackMode(true)`，不更新 model"
+      ],
+      "rule": "OBSERVABILITY-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 日志/审计字段与实际执行不一致。影响评估：分析会话记录或统计模型用量时会得到错误结论；排障时难以判断是否走了 flash 回退。",
+        "suggestion": "[重构思路] 让 GeminiChat 把本次实际使用的 currentAttemptModel 传给记录接口，而不是在记录层回查配置。代码示例：`this.chatRecordingService.recordMessage({ type: 'user', content, model: currentAttemptModel })`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F032",
+      "severity": "P2",
+      "category": "性能",
+      "file": "packages/core/src/tools/ls.ts",
+      "line": 212,
+      "title": "ls 改为在循环中使用 statSync/readdirSync，同步 IO 阻塞事件循环",
+      "description": "重构把 `await fs.stat` / `await fs.readdir` 换成 statSync/readdirSync，并在 for 循环里对每个条目执行一次 statSync。目录条目多时会在 Node 单线程上形成成百上千次同步 syscall，阻塞 TUI 渲染、取消信号处理与其他并发工具调用；同时原异步实现可被 AbortSignal 中断，现在 execute 完全忽略 signal。",
+      "evidence": [
+        "packages/core/src/tools/ls.ts:4 导入改为 `import fs from 'node:fs';`",
+        "packages/core/src/tools/ls.ts:136 — `const stats = fs.statSync(this.params.path);`",
+        "packages/core/src/tools/ls.ts:154 — `const files = fs.readdirSync(this.params.path);`",
+        "packages/core/src/tools/ls.ts:184-225 — `for (const file of files) { ... fs.statSync(fullPath) ... }`，且 execute 签名为 `async execute(_signal: AbortSignal)`，signal 未被使用"
+      ],
+      "rule": "PERF-002",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 同步 IO 阻塞事件循环。影响评估：大目录下列表操作卡住 UI 与其他工具，且无法被用户取消。",
+        "suggestion": "[重构思路] 恢复异步 API 并周期性检查 signal。代码示例：`const entries = await fs.readdir(dir, { withFileTypes: true }); for (const e of entries) { if (signal.aborted) return cancelled; const stats = await fs.stat(path.join(dir, e.name)); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F033",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/core/src/telemetry/clearcut-logger/clearcut-logger.ts",
+      "line": 554,
+      "title": "api_response 事件无条件写入 error 字段，无错误时得到 undefined 值",
+      "description": "新增的 GEMINI_CLI_API_ERROR_MESSAGE 条目插在 logApiResponseEvent 的固定 data 数组中，不论 event.error 是否存在都会执行 JSON.stringify(event.error)。当 error 为 undefined 时 JSON.stringify 返回 undefined，EventValue.value 声明为 string 却实际为 undefined，可能使上报负载出现空值/序列化异常，同时让“无错误”与“字段缺失”无法区分。",
+      "evidence": [
+        "packages/core/src/telemetry/clearcut-logger/clearcut-logger.ts:551-556 — `{ gemini_cli_key: EventMetadataKey.GEMINI_CLI_API_ERROR_MESSAGE, value: JSON.stringify(event.error) }` 位于固定的 data 数组中",
+        "packages/core/src/telemetry/types.ts:234 — ApiResponseEvent 新增字段为 `error?: string;`（可选）",
+        "packages/core/src/telemetry/loggers.ts:355-357 — 调用侧用 `if (event.error)` 判断，说明 error 经常不存在"
+      ],
+      "rule": "TELEMETRY-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 可选字段被无条件序列化。影响评估：遥测数据出现 undefined 值，下游解析可能丢弃整条记录或产生噪声。",
+        "suggestion": "[重构思路] 仅在存在时追加该字段。代码示例：`const data: EventValue[] = [...]; if (event.error) { data.push({ gemini_cli_key: EventMetadataKey.GEMINI_CLI_API_ERROR_MESSAGE, value: JSON.stringify(event.error) }); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F034",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "packages/core/src/telemetry/loggers.ts",
+      "line": 355,
+      "title": "logApiResponse 把 status_code 改成 else-if 分支，错误场景下不再记录 HTTP 状态码",
+      "description": "原来只要 event.status_code 存在就写入 HTTP 状态码属性；现在改成 `if (event.error) { attributes['error.message'] = ... } else if (event.status_code) { ... }`。当响应既带错误又带状态码（例如 429/500 的失败响应）时，状态码维度会丢失，改变了既有监控面板/查询依赖的属性集合。",
+      "evidence": [
+        "packages/core/src/telemetry/loggers.ts:355-363 — `if (event.error) { attributes['error.message'] = event.error; } else if (event.status_code) { ... SemanticAttributes.HTTP_STATUS_CODE ... }`",
+        "packages/core/src/telemetry/types.ts:231-234 — ApiResponseEvent 同时拥有 `status_code?: number | string;` 与新增的 `error?: string;`",
+        "packages/core/src/telemetry/metrics.ts:185-187 — recordApiResponseMetrics 中仍以 `statusCode ?? (error ? 'error' : 'ok')` 同时使用两者，说明二者可共存"
+      ],
+      "rule": "OBSERVABILITY-003",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 遥测属性写入条件收紧导致维度丢失。影响评估：错误请求的 HTTP 状态码无法再从日志属性中查询，破坏既有看板与告警条件。",
+        "suggestion": "[重构思路] 改为两个独立 if，错误信息与状态码并存。代码示例：`if (event.error) { attributes['error.message'] = event.error; } if (event.status_code) { attributes[SemanticAttributes.HTTP_STATUS_CODE] = event.status_code; }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F035",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/core/src/utils/gitIgnoreParser.ts",
+      "line": 21,
+      "title": "gitignore 改为一次性预加载且最多扫描 200 个目录，深层 .gitignore 会被静默丢弃",
+      "description": "新的实现把「按查询路径懒加载 .gitignore + cache」改成在 FileDiscoveryService 构造时一次性 BFS 预加载全部模式，并用 `maxScannedDirs = 200` 硬性截断队列，超出后循环直接结束且没有任何 warning/日志。仓库目录数超过 200（monorepo、含大量子包的工程很常见）时，深层目录里的 .gitignore 规则永远不会被加载，原本被忽略的文件会被 filterFiles/shouldIgnoreFile 判为「不忽略」而重新进入 read-many-files、bfsFileSearch、ripgrep 的结果集，等于 `respect_git_ignore` 在深层目录上静默失效，可能把用户明确排除的文件（含密钥、构建产物）读入模型上下文；同时该预加载是构造期同步 readdirSync，会把首次 getFileService() 调用变成一次最多 200 个目录的阻塞 IO。",
+      "evidence": [
+        "packages/core/src/utils/gitIgnoreParser.ts:21 — `private readonly maxScannedDirs = 200;`",
+        "packages/core/src/utils/gitIgnoreParser.ts:42 — `while (queueHead < queue.length && scannedDirs < this.maxScannedDirs) {`，达到上限后直接退出且无任何告警",
+        "packages/core/src/utils/gitIgnoreParser.ts:37-76 — findAndLoadGitignoreFiles 是唯一样式加载入口，仅在 `dir` 入队扫描到时才 loadPatterns，跳过即永不加载",
+        "packages/core/src/services/fileDiscoveryService.ts:27-33 — 构造函数内同步调用 `parser.loadGitRepoPatterns()`，失败也被 try/catch 吞掉",
+        "diff 中被删除的旧实现 — 原来 isIgnored 会按 filePath 逐级构造 `dirsToVisit` 并在每个目录读取 .gitignore（无目录数上限），故深层规则一定会生效"
+      ],
+      "rule": "CORRECTNESS-002",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 静默截断",
+        "suggestion": "[重构思路] 懒加载回退",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F036",
+      "severity": "P2",
+      "category": "性能",
+      "file": "packages/core/src/tools/read-many-files.ts",
+      "line": 279,
+      "title": "用 Array.includes 反推被忽略文件，使过滤阶段退化为 O(n²)",
+      "description": "新逻辑先用 fileDiscovery.filterFiles 得到 gitFilteredEntries / finalFilteredEntries（filterFiles 本身就返回「过滤后的子集」），然后又对 entries 全量遍历，在循环体内用 `gitFilteredEntries.includes(absoluteFilePath)` 与 `finalFilteredEntries.includes(absoluteFilePath)` 判断成员关系；这两个数组长度与 entries 同阶，因此过滤阶段是 O(n²) 的字符串比较。read_many_files 的典型输入是成千上万个 glob 结果，配合默认开启的 git/gemini 过滤，会在主线程上产生千万级的路径字符串比较；另外「字符串相等」被当作成员判定，一旦 path.relative/path.resolve 往返产生规范化差异（symlink、大小写、分隔符）该文件就会被误判为 ignored 而被 `continue` 丢弃，用户看到的是文件静默缺失。",
+      "evidence": [
+        "packages/core/src/tools/read-many-files.ts:262 — `for (const absoluteFilePath of entries) {`",
+        "packages/core/src/tools/read-many-files.ts:279 — `!gitFilteredEntries.includes(absoluteFilePath)`",
+        "packages/core/src/tools/read-many-files.ts:288 — `!finalFilteredEntries.includes(absoluteFilePath)`",
+        "packages/core/src/services/fileDiscoveryService.ts:47-66 — filterFiles 返回的已是过滤结果子集，可直接使用而无需再反推",
+        "packages/core/src/tools/read-many-files.ts:232-257 — 两次 filterFiles 之间还要对每个元素做 path.relative + path.resolve 往返"
+      ],
+      "rule": "PERF-001",
+      "confidence": 0.75,
+      "tips": {
+        "review": "[缺陷类型] 算法复杂度",
+        "suggestion": "[重构思路] 用 Set 差集",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F037",
+      "severity": "P2",
+      "category": "性能",
+      "file": "packages/core/src/utils/bfsFileSearch.ts",
+      "line": 102,
+      "title": "BFS 目录遍历把忽略判定提前到所有条目，非目标文件也要逐次匹配全部忽略规则",
+      "description": "改动前先做 `entry.isFile() && entry.name === fileName` 与 `ignoreDirsSet` 的廉价剪枝，只有目录和命中文件名的条目才会调用 fileService.shouldIgnoreFile；改动后把 shouldIgnoreFile 移到最前面，对每个目录条目（包括几乎所有与目标文件名无关的普通文件）都执行一次忽略判定。shouldIgnoreFile 默认 respectGitIgnore/respectGeminiIgnore 均为 true，内部会做 path.resolve + 逐条正则匹配（且 GitIgnoreParser 现在预加载了整仓 .gitignore 模式，模式数量显著变大），因此单次调用成本上升，而调用次数从「目录数 + 命中数」放大到「全部条目数」，在大仓库的文件搜索路径上属于明显的性能回退。",
+      "evidence": [
+        "packages/core/src/utils/bfsFileSearch.ts:102-110 — 忽略判定被移到最前，先于任何 isDirectory/isFile 剪枝执行",
+        "packages/core/src/utils/bfsFileSearch.ts:116-118 — 目标文件名判定 `entry.isFile() && entry.name === fileName` 现在排在忽略判定之后",
+        "packages/core/src/services/fileDiscoveryService.ts:95 — `const { respectGitIgnore = true, respectGeminiIgnore = true } = options;`，未显式传值时两者都启用",
+        "packages/core/src/utils/gitIgnoreParser.ts:161-193 — 每次 isIgnored 都要 path.resolve + `this.ig.ignores(...)` 匹配全部累积模式",
+        "diff 中被删除的旧代码 — `if (!isDirectory && !isMatchingFile) { continue; }` 与 `if (isDirectory && ignoreDirsSet.has(entry.name)) { continue; }` 原本在忽略判定之前"
+      ],
+      "rule": "PERF-002",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] 性能回退",
+        "suggestion": "[重构思路] 先廉价剪枝再昂贵判定",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F038",
+      "severity": "P2",
+      "category": "可维护性",
+      "file": "packages/core/src/tools/shell.ts",
+      "line": 100,
+      "title": "新增的 terminalColumns/terminalRows 参数无任何调用方传入，PTY 永远按 80x30 运行",
+      "description": "此前的 ShellExecutionConfig 被整体删除，其位置由 terminalColumns/terminalRows 两个可选参数承接，但全仓检索显示这两个名字只出现在 shell.ts 的 execute 声明/透传处和 ShellExecutionService 内部，没有任何上层调用方（ToolInvocation.execute / buildAndExecute / coreToolScheduler）传入实际值，而 CLI 侧的终端尺寸（useTerminalSize 提供的 columns/rows）也没有接入。结果是 executeWithPty 永远走 `terminalColumns ?? 80` / `terminalRows ?? 30` 的兜底值，PTY 会话宽度被固定为 80 列，长行命令与进度条类输出的换行/覆盖行为会与实际终端不符；同时新增参数属于「死参数」，后续维护者容易误以为已接通。",
+      "evidence": [
+        "packages/core/src/tools/shell.ts:98-101 — `signal: AbortSignal, updateOutput?: (output: string) => void, terminalColumns?: number, terminalRows?: number`",
+        "packages/core/src/tools/shell.ts:186-189 — 原样透传 terminalColumns / terminalRows 给 ShellExecutionService.execute",
+        "packages/core/src/services/shellExecutionService.ts:321-322 — `const cols = terminalColumns ?? 80; const rows = terminalRows ?? 30;`",
+        "review_find_references(terminalColumns) — 仅 shell.ts:100/188 与 shellExecutionService.ts:102/114/316/321 命中，无上层调用点",
+        "packages/core/src/tools/tools.ts:51-55 — ToolInvocation.execute 只保留 (signal, updateOutput?)，没有传递终端尺寸的通道",
+        "ShellExecutionConfig 类型全仓 0 命中（已删除），diff 中被移除的 `shellExecutionConfig ?? {}` 传参正是这两个参数的前身"
+      ],
+      "rule": "MAINTAINABILITY-003",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 未接通的参数",
+        "suggestion": "[重构思路] 打通终端尺寸传参",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F039",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "packages/core/src/tools/smart-edit.ts",
+      "line": 532,
+      "title": "同一判断在 smart-edit 使用 ideClient?. 而在 write-file 不使用，写法不一致且掩盖了不可空事实",
+      "description": "两处在本次改动中都从 isDiffingEnabled() 改为 getConnectionStatus().status === IDEConnectionStatus.Connected，但 smart-edit.ts 写成 `ideClient?.getConnectionStatus()`，write-file.ts 写成 `ideClient.getConnectionStatus()`。IdeClient.getInstance() 返回的是 Promise<IdeClient>（单例永不返回 null/undefined），可选链在这里恒为真值，只会让读者误以为 getInstance 可能返回空，并掩盖「若未来返回可空则条件会静默变成 falsy」的隐患；同一个语义两处不同写法也会让后续维护者难以判断哪种才是约定。",
+      "evidence": [
+        "packages/core/src/tools/smart-edit.ts:529-533 — `const ideClient = await IdeClient.getInstance(); ... ideClient?.getConnectionStatus().status === IDEConnectionStatus.Connected`",
+        "packages/core/src/tools/write-file.ts:196-201 — 同样逻辑写作 `ideClient.getConnectionStatus().status === IDEConnectionStatus.Connected`",
+        "packages/core/src/ide/ide-client.ts:84-99 — `static getInstance(): Promise<IdeClient>` 返回非可空单例"
+      ],
+      "rule": "STYLE-004",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 一致性问题",
+        "suggestion": "[重构思路] 抽取公共判定",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F040",
+      "severity": "P3",
+      "category": "可维护性",
+      "file": "packages/vscode-ide-companion/src/ide-server.ts",
+      "line": 341,
+      "title": "openDiff/closeDiff 的入参 schema 被内联到 IDE 服务端，与 core 侧客户端契约重复定义",
+      "description": "本次改动删除了从 @google/gemini-cli-core 导入 OpenDiffRequestSchema / CloseDiffRequestSchema，改为在 registerTool 里内联 `z.object({ filePath, newContent })` 与 `z.object({ filePath, suppressNotification })`。这两处 schema 是 CLI 端（core 的 IdeClient.openDiff，callTool 时提交 `{ filePath, newContent }`）与 IDE 端之间的通信契约，现在契约在两端各自维护一份、且 core 不再导出对应 schema，任何一侧新增字段（例如 newContent 变必填、增加元信息）都无法通过类型或校验同步，容易在运行时才暴露不一致（表现为 MCP 参数校验失败或字段被静默丢弃）。",
+      "evidence": [
+        "packages/vscode-ide-companion/src/ide-server.ts:341-345 — 内联 `inputSchema: z.object({ filePath: z.string(), newContent: z.string().optional() }).shape`（含遗留 TODO 注释）",
+        "diff 中被删除的导入 — `import { CloseDiffRequestSchema, IdeContextNotificationSchema, OpenDiffRequestSchema } from '@google/gemini-cli-core';` 现仅保留 IdeContextNotificationSchema",
+        "packages/core/src/ide/ide-client.ts:207-214 — 客户端 callTool 入参为 `{ name: 'openDiff', arguments: { filePath, newContent } }`，与内联 schema 是同一份契约的双方",
+        "packages/vscode-ide-companion/src/ide-server.ts:339-340 — description 仍保留拼写错误 'rejcted'，说明该段缺少审校"
+      ],
+      "rule": "MAINTAINABILITY-005",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 契约重复",
+        "suggestion": "[重构思路] 单一来源定义 schema",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F041",
+      "severity": "P3",
+      "category": "可维护性",
+      "file": "packages/core/src/tools/ripGrep.ts",
+      "line": 336,
+      "title": "ripgrep 启动失败提示仍指向已删除的 @lvce-editor/ripgrep，且 getRgPath 丢失返回类型注解",
+      "description": "本 MR 删除了 third_party/get-ripgrep（@lvce-editor/ripgrep），下载改为 @joshua.litt/get-ripgrep，但 spawn 失败时的错误文案仍提示「Please ensure @lvce-editor/ripgrep is properly installed」，排障时会误导用户去安装一个已不存在的包；同时 getRgPath 被去掉 `: string` 返回类型注解，与同文件其它导出函数的显式类型风格不一致，这类纯函数丢失注解会降低可读性（尽管 TS 可推断）。",
+      "evidence": [
+        "packages/core/src/tools/ripGrep.ts:11 — `import { downloadRipGrep } from '@joshua.litt/get-ripgrep';`",
+        "packages/core/src/tools/ripGrep.ts:336 — `Failed to start ripgrep: ${err.message}. Please ensure @lvce-editor/ripgrep is properly installed.`",
+        "diff 中删除的 third_party/get-ripgrep/package.json — `\"name\": \"@lvce-editor/ripgrep\"`，该包已从仓库移除",
+        "packages/core/src/tools/ripGrep.ts:23 — `function getRgPath() {`（diff 中由 `function getRgPath(): string {` 改为此形式）"
+      ],
+      "rule": "MAINTAINABILITY-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 陈旧文案",
+        "suggestion": "[重构思路] 同步更新提示与类型",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F042",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "scripts/get-release-version.js",
+      "line": 51,
+      "title": "版本号解析丢弃 minor 缺省保护，异常版本会生成 NaN 版本号",
+      "description": "原实现用 `versionParts[1] ? parseInt(versionParts[1]) : 0` 对 minor 缺省做了兜底，改动后直接 `const [major, minor] = packageJson.version.split('.'); const nextMinor = parseInt(minor) + 1;`。当 package.json 的 version 不含 minor 段（如 \"1\"，或格式异常导致 split 结果不足）时 minor 为 undefined，`parseInt(undefined)` 得到 NaN，nextMinor 变成 NaN，最终 nightly/preview 版本号会拼出 `1.NaN.<date>` 之类无法发布或无法解析的 tag，而该脚本在 CI 发布链路里属于关键路径，失败点离根因较远、排查成本高。",
+      "evidence": [
+        "scripts/get-release-version.js:50-51 — `const [major, minor] = packageJson.version.split('.'); const nextMinor = parseInt(minor) + 1;`",
+        "diff 中被删除的行 — `const minor = versionParts[1] ? parseInt(versionParts[1]) : 0;` 原本对缺省 minor 有兜底",
+        "scripts/get-release-version.js:52-54 — nextMinor 直接参与后续 releaseVersion 拼装"
+      ],
+      "rule": "CORRECTNESS-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 边界值未防御",
+        "suggestion": "[重构思路] 补默认值与显式校验",
+        "subcategory": ""
+      }
+    }
+  ]
+}

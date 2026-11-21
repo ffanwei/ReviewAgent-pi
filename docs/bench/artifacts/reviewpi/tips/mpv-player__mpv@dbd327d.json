@@ -1,0 +1,97 @@
+[
+  {
+    "filePath": "demux/demux_playlist.c",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if (bstrcasecmp0(proto, \"memory\") && bstrcasecmp0(proto, \"lavf\") &&",
+        "review": "[缺陷类型] 协议白名单遗漏导致基路径被错误拼接（回归）。影响评估：`--playlist=fd://N` / `--playlist=fdclose://N` 且列表内含相对路径时，所有非 URL 条目被改写为 `fd://<name>`，播放列表整体不可用；绝对路径条目不受影响，故障表现为“只有相对条目坏掉”，容易被误判为用户文件问题。",
+        "suggestion": "[重构思路] 恢复 `fd`/`fdclose` 的自展开判定，或改为按 stream 能力（例如非 local_fs / 无法给出目录）统一判断，避免逐协议硬编码。代码示例：`if (bstrcasecmp0(proto, \"memory\") && bstrcasecmp0(proto, \"lavf\") && bstrcasecmp0(proto, \"hex\") && bstrcasecmp0(proto, \"data\") && bstrcasecmp0(proto, \"fd\") && bstrcasecmp0(proto, \"fdclose\")) { playlist_add_base_path(...); }`；并在 demux_playlist 的播放列表解析测试中补一个 fd:// 相对条目用例（测试文件按配置不纳入本次检视）。",
+        "category": "可靠性",
+        "subcategory": "协议/路径拼接回归",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 702,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "misc/language.c",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "if (i >= 0 && lang_length >= 2 && !checked_hi && name.start[i] == delimiter) {",
+        "review": "[缺陷类型] 功能回退：后缀跳过逻辑随 forced 标志一并被删除，且后缀跳过被限制为单次。影响评估：`*.en.forced.srt`、`*.zh.forced.ass` 之类常见命名不再解析出语种，外挂字幕自动选择优先级下降甚至不被优先加载；`*[en][hi].srt` 等多后缀命名同样只能跳过第一个后缀。",
+        "suggestion": "[重构思路] 把“可跳过的后缀”与“要记录的语义标志”解耦：forced 即使不再作为 track 标志上报，也应继续作为文件名噪声后缀被剥掉；同时把单次 `checked_hi` 改为循环剥离（用局部 `matched` 标记每次是否命中）。代码示例：`static const char *const suffixes[] = { \"sdh\", \"hi\", \"cc\", \"forced\" };` → 命中后 `if (!strcasecmp(tag, \"forced\")) { /* 仅跳过，不置位 */ } else { *hi = true; }`，随后统一 `lang_length = 0; i -= (delimiter != '.') ? 2 : 1; continue;`。",
+        "category": "可靠性",
+        "subcategory": "文件名语种解析",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 336,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "player/lua/positioning.lua",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "local amount = t.arg * t.scale * 2 * dims.w / (width - dims.w)",
+        "review": "[缺陷类型] 输入校验被移除导致运行时错误。影响评估：用户绑定缺少数值参数时功能完全失效并产生错误日志/回溯，排查成本高；也无法再拿到原来的用法提示。若后续 `t.arg` 变为 nil（例如经 script-message 路径触发 `msg_cb`，只传 `{event=\"press\", is_mouse=false}`），同样会直接报错。",
+        "suggestion": "[重构思路] 在函数开头统一把 arg 转成数字并给出兜底，而不是删除校验。代码示例：`local arg = tonumber(t.arg or \"\"); if not arg then mp.osd_message(\"Usage: script-binding positioning/pan-x <amount>\"); return end`，随后 `local amount = arg * t.scale * ...`；`cursor-centric-zoom` 同理复用该 helper。",
+        "category": "可靠性",
+        "subcategory": "Lua 输入校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 40,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "DOCS/man/osc.rst",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": ".. admonition:: Example to add loop and shuffle buttons",
+        "review": "[缺陷类型] RST 标记缺失导致文档渲染退化（内容被并段、失去等宽）。影响评估：用户手册中可复制的配置示例变得不可读/不可直接粘贴；标题与内容不一致还会误导读者以为示例只有两个按钮。",
+        "suggestion": "[重构思路] 二选一：恢复字面量块（`::` 或 `.. code::` 后缩进），或与本章其它示例统一为逐行 `` ``key=value`` ``；同时把标题改成覆盖实际三个按钮，例如 \"Example to add loop, shuffle and speed buttons\"。代码示例：`.. admonition:: Example to add loop, shuffle and speed buttons\\n\\n    ::\\n\\n        custom_button_1_content=🔁`。",
+        "category": "可读性",
+        "subcategory": "文档标记/示例可读性",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 606,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "video/mp_image.c",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "void mp_image_vflip(struct mp_image *img)",
+        "review": "[缺陷类型] 功能移除不彻底，遗留死代码。影响评估：不影响运行，但留下与已删除数据结构（`params.vflip`）配套的 API，容易让人误判功能状态，也增加后续维护/移植成本。",
+        "suggestion": "[重构思路] 随本次移除一并删掉 `mp_image_vflip()` 的声明与实现；若担心外部 fork/驱动仍在调用，可先在 `mp_image.h` 里标注 `// unused / to be removed` 并在下个周期删除。代码示例：删除 `video/mp_image.h:157` 的声明与 `video/mp_image.c:734` 起的函数体，并确认构建无未使用告警。",
+        "category": "可维护",
+        "subcategory": "死代码清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 734,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

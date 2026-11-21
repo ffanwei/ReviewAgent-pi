@@ -1,0 +1,124 @@
+[
+  {
+    "filePath": ".github/scripts/download-translations.js",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "await fs.writeJson(outputPath, formattedTranslations, { spaces: 2 });",
+        "review": "[缺陷类型] 缺少内容级校验的破坏性覆盖（数据丢失）。影响评估：一次异常导出即可把 src/locales/*.json 清空或截断并自动推入主干，前端所有文案退化为 key，故障不报错、难察觉；叠加每日定时任务会持续覆盖，人工修复的文案也可能被下次运行抹掉。",
+        "suggestion": "[重构思路] 三重保护：1) 下载后校验 term 数量与非空 definition 比例，低于阈值直接失败；2) 与现有 src/locales/<lang>.json 做 key 集合比较，出现大量丢失 key 时中止而不是覆盖；3) 改为「合并写入」而非整体替换，并把校验失败从 exit 1 升级为显式失败（不带 push）。代码示例：`const next = toKeyValue(translations); const prev = await fs.readJson(existingPath).catch(() => null); if (Object.keys(next).length === 0) throw new Error('empty export'); if (prev && lostKeys(prev, next).length > Math.ceil(Object.keys(prev).length * 0.1)) throw new Error('too many missing keys'); await fs.writeJson(outputPath, { ...prev, ...next }, { spaces: 2 });`；workflow 中再加一步 `jq -e 'length > 50' \"$file\"` 之类的规模断言。",
+        "category": "可靠性",
+        "subcategory": "自动提交覆盖导致数据丢失",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 65,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F003",
+        "code": "const API_TOKEN = process.env.POEDITOR_API_TOKEN;",
+        "review": "[缺陷类型] 前置条件（配置）缺失未校验。影响评估：以 \"undefined\" 作为凭证发起请求，错误信息具有误导性（看起来像 API 报错而非配置缺失），且定时任务失败无人知晓，翻译长期停更。",
+        "suggestion": "[重构思路] 在脚本入口集中校验必填变量并给出可操作的报错，同时校验目标语言集合非空。代码示例：`const required = ['POEDITOR_API_TOKEN','POEDITOR_PROJECT_ID','LANGUAGES']; const missing = required.filter(k => !process.env[k]); if (missing.length) { console.error(`Missing env: ${missing.join(', ')}`); process.exit(2); }`",
+        "category": "可靠性",
+        "subcategory": "环境变量未校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 10,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F005",
+        "code": "console.error('An error occurred while downloading translations:', error);",
+        "review": "[缺陷类型] 敏感凭证可能经错误日志泄露。影响评估：POEditor token 一旦进入日志（尤其日志被归档、被第三方日志收集或日志可见范围大于 secrets 范围时），可用于读写该项目的全部翻译数据；依赖平台掩码属于 defence-by-luck。",
+        "suggestion": "[重构思路] 只记录安全字段：错误改为记录 error.message 与 response.status，绝不打印 error 对象本体；必要时对 token 做脱敏。代码示例：`catch (error) { console.error('Download failed:', error.message, error.response?.status ?? ''); process.exit(1); }` 并避免在异常消息中 JSON.stringify 整个响应体。",
+        "category": "安全",
+        "subcategory": "日志中的凭证泄露",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 72,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F009",
+        "code": "await fs.emptyDir(path.join(process.cwd(), 'temp'));",
+        "review": "[缺陷类型] 基于 cwd 的破坏性清理。影响评估：本地运行时可能删除与本任务无关的 temp 内容；行为隐式依赖「必须在仓库根执行」，换目录运行又会在错误位置创建/清空目录。",
+        "suggestion": "[重构思路] 使用脚本相对路径或独立临时目录（os.tmpdir()/fs.mkdtemp），并把输出目录作为参数/环境变量显式传入。代码示例：`const tempDir = process.env.OUTPUT_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '../../temp'); await fs.ensureDir(tempDir); await fs.emptyDir(tempDir);`",
+        "category": "可靠性",
+        "subcategory": "破坏性目录清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 81,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F010",
+        "code": "const __filename = fileURLToPath(import.meta.url);",
+        "review": "[缺陷类型] 死代码 / 注释语言不统一。影响评估：无功能风险，但会误导读者以为脚本依赖 __filename，也提高跨团队阅读成本。",
+        "suggestion": "[重构思路] 删除未使用的 import 与变量（或改为真正用于定位输出目录），并统一注释语言为英语。代码示例：`// 删除 import { fileURLToPath } from 'url'; 与 const __filename = ...` 或在需要时改为 `const scriptDir = path.dirname(fileURLToPath(import.meta.url));`",
+        "category": "可读性",
+        "subcategory": "死代码与注释规范",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 7,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": ".github/workflows/poeditor-sync.yml",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "default: \"tr,en\"",
+        "review": "[缺陷类型] 多处默认值不一致导致的行为分叉。影响评估：手动触发与定时触发同步出的语言集合不同，会往 src/locales 引入非预期的 en.json，污染语言列表并与 gb 重复维护；也掩盖了「主语言到底是 en 还是 gb」的语义混乱。",
+        "suggestion": "[重构思路] 统一以仓库事实（gb 为主语言）为唯一来源：把 input 默认值与脚本默认值都改成 tr,gb，并复用同一个 env 变量而不是两套 fallback。代码示例：`with: { default: \"tr,gb\" }` + `LANGUAGES: ${{ github.event.inputs.languages || 'tr,gb' }}` + 脚本侧 `const LANGUAGES = (process.env.LANGUAGES || 'tr,gb').split(',').map(s => s.trim()).filter(Boolean);`",
+        "category": "可维护",
+        "subcategory": "配置默认值不一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 10,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F006",
+        "code": "cat > .github/scripts/package.json << EOF",
+        "review": "[缺陷类型] 构建不可复现 / 依赖源分裂。影响评估：某次上游小版本变更即可让同步脚本行为改变，且失败无法通过锁文件回溯；临时包定义藏在 workflow 的 heredoc 中，本地也难以复跑同一环境。",
+        "suggestion": "[重构思路] 把 .github/scripts/package.json 与 package-lock.json 纳入仓库，使用 `npm ci` 安装；action 版本用 commit SHA 或至少固定到具体版本。代码示例：提交 .github/scripts/package.json（axios 版本与根工程对齐）+ package-lock.json，workflow 改为 `cd .github/scripts && npm ci`，并用 `uses: actions/checkout@v4 # pin: <sha>`。",
+        "category": "可维护",
+        "subcategory": "依赖与工具版本未锁定",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 38,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F007",
+        "code": "git push",
+        "review": "[缺陷类型] CI 中缺少并发/非快进处理。影响评估：与人工提交竞争时每日同步随机失败，属于难以复现的间歇性故障；失败也不会自动重试。",
+        "suggestion": "[重构思路] push 前 rebase 到最新默认分支并带重试；或改用创建 PR 的方式（如 peter-evans/create-pull-request），既避免直接写主干，也天然避让分支保护。代码示例：`git pull --rebase origin ${{ github.ref_name }} && git push`，或设置 `strategy.retry`/`concurrency` 组避免并发运行。",
+        "category": "可靠性",
+        "subcategory": "自动提交的并发与推送失败",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 92,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

@@ -1,0 +1,353 @@
+{
+  "generatedAt": "2026-11-15T01:21:20.442Z",
+  "runId": "20261115_011705_956",
+  "source": "mr",
+  "caseId": "kestra-io__kestra@06e7c6e",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 53,
+      "title": "Assert 的 @Plugin 示例 YAML 被写坏，文档示例无法直接运行",
+      "description": "新增任务的官方示例中，任务行被写成了 `\"  - id: fail\\\\n\\\" +\\n\"`，这段字符串会把字面量 `- id: fail\\n\" +` 输出到示例 YAML 里，生成的任务行既不是合法的 YAML 结构也不符合 Kestra 的 task 定义，用户从文档复制示例会直接解析失败。示例还会通过插件文档/JSON Schema 的 examples 暴露给 UI，属于对外可见的文档缺陷。",
+      "evidence": [
+        "core/src/main/java/io/kestra/plugin/core/execution/Assert.java:53 — \"  - id: fail\\\\n\\\" +\\n\" +",
+        "同文件 54-57 行紧跟 \"    type: io.kestra.plugin.core.execution.Assert\\n\" 与 conditions 列表，说明第 53 行本应是 \"  - id: assert\\n\"",
+        "示例标题为 \"Assert based on inputs data\" 且 full = true，会作为完整 flow 示例渲染到插件文档"
+      ],
+      "rule": "DOC-EXAMPLE-001",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 文档示例字符串转义错误导致的 YAML 损坏。影响评估：插件文档与 UI 中的示例不可运行，用户复制后 flow 解析报错，且会误导使用者。",
+        "suggestion": "[重构思路] 恢复正确的任务行，建议改用 Java 文本块（text block）书写示例，避免手工拼接与转义。代码示例：\n```java\ncode = {\n    \"\"\"\n    id: assert\n    namespace: company.team\n\n    tasks:\n      - id: assert-conditions\n        type: io.kestra.plugin.core.execution.Assert\n        conditions:\n          - \"{{ inputs.param == 'ok' }}\"\n    \"\"\"\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 89,
+      "title": "Assert 直接用 getExpression() 手写 JSON 解析 conditions，绕过标准渲染链路",
+      "description": "`conditions` 声明为 `Property<List<String>>`，但运行时通过 `MAPPER.readValue(this.conditions.getExpression(), LIST_TYPE_REFERENCE)` 读取原始 expression。`Property` 的 expression 是未经渲染的原始 YAML/JSON 文本：一旦用户把整个属性写成模板（例如 `conditions: \"{{ inputs.conditions }}\"`）或写成不以 `[` 开头的字符串，这里会直接抛 Jackson 的 `JsonProcessingException`（且不是 `IllegalVariableEvaluationException`，不会被下方 catch 捕获），报错信息对用户不可读；同时该写法绕过了 `Property` 的渲染/类型转换与缓存机制，与框架内其他 `Property<List<String>>` 的用法不一致。",
+      "evidence": [
+        "core/src/main/java/io/kestra/plugin/core/execution/Assert.java:88-89 — MAPPER.readValue(this.conditions.getExpression(), LIST_TYPE_REFERENCE)",
+        "core/src/main/java/io/kestra/core/models/property/Property.java:356-377 PropertyDeserializer 会把 YAML list/标量写入 expression，标量时 expression 为用户原文",
+        "core/src/main/java/io/kestra/core/models/property/Property.java:128 public static T asList(Property<T> property, RunContext runContext, Class<I> itemClazz) 已提供标准渲染+转换路径",
+        "Assert.java:101 catch 只捕获 IllegalVariableEvaluationException，JsonProcessingException 会直接冒泡"
+      ],
+      "rule": "RENDER-002",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 绕过框架渲染机制直接解析原始表达式。影响评估：模板化的 conditions 或非 JSON 字面量输入会以难以理解的解析异常失败；也失去统一的类型转换与校验。",
+        "suggestion": "[重构思路] 使用 `runContext.render(conditions).asList(String.class)`（或 `Property.asList`）让框架负责渲染与转换，并保留对解析失败的显式处理。代码示例：\n```java\nList<String> conditionList = runContext.render(this.conditions).asList(String.class);\nfor (String condition : conditionList) {\n    String rendered = runContext.render(condition);\n    ...\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 95,
+      "title": "Assert 失败日志的占位符与参数数量不匹配，渲染值不会出现在日志里",
+      "description": "`runContext.logger().error(\"Assertion `{}` failed!\", s, renderer)` 只有一个占位符却传了两个参数，SLF4J 会把多余的 `renderer` 当作可抛出对象候选处理（不是 Throwable 时被丢弃），因此断言失败时日志中拿不到实际渲染结果，排查断言语义问题（例如模板渲染成 `\"false \"` 或空串）时缺少关键信息。",
+      "evidence": [
+        "core/src/main/java/io/kestra/plugin/core/execution/Assert.java:95 — runContext.logger().error(\"Assertion `{}` failed!\", s, renderer)",
+        "同一 try 块的 92 行已算出 String renderer = runContext.render(s)"
+      ],
+      "rule": "LOGGING-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] SLF4J 占位符与参数不匹配。影响评估：日志丢失实际渲染值，断言失败难以定位根因；多余参数在部分实现下还会被当作 Throwable 候选。",
+        "suggestion": "[重构思路] 为渲染结果补一个占位符，并明确区分「原文」与「渲染值」。代码示例：\n```java\nrunContext.logger().error(\"Assertion `{}` failed, rendered to `{}`\", s, renderer);\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/RandomIntFunction.java",
+      "line": 33,
+      "title": "randomInt 参数类型由 Long 收窄为 Integer，Long 实参会直接抛异常",
+      "description": "`getArgument` 的返回类型与校验从 `Long` 改为 `Integer`，运行时用 `args.get(arg) instanceof Integer` 硬校验。凡是传入 `Long` 的调用（例如来自 Long 类型任务输出、超过 int 范围的数字、由其他函数/JSON 解析产生的 Long 值）现在都会抛 `The 'GenerateRandomNumber' function expects an argument ... with type Integer.`，而此前是可用的，属于模板函数的向后不兼容变更。同时类型判断应基于 `Number` 而不是具体包装类，否则同类问题会反复出现。",
+      "evidence": [
+        "core/src/main/java/io/kestra/core/runners/pebble/functions/RandomIntFunction.java:33 — private Integer getArgument(...)",
+        "diff 中 `if (!(args.get(arg) instanceof Long))` 被改为 `instanceof Integer`，并 as `(Integer) args.get(arg)`",
+        "core/src/test/java/io/kestra/core/runners/pebble/functions/RandomIntFunctionTest.java:36/60/68 全部用 Map.of 传入 Integer，未覆盖 Long 实参场景",
+        "core/src/main/java/io/kestra/core/runners/pebble/Extension.java:153 注册名为 randomInt，属对外模板 API"
+      ],
+      "rule": "COMPAT-003",
+      "confidence": 0.62,
+      "tips": {
+        "review": "[缺陷类型] 公共模板函数的入参类型收窄导致兼容性破坏。影响评估：既有工作流中传入 Long 的 randomInt 调用会在运行时失败，且错误信息指向类型不匹配，用户难以自行定位。",
+        "suggestion": "[重构思路] 按 `Number` 接收并做范围校验/转换，同时保留对 String 的显式拒绝。代码示例：\n```java\nObject raw = args.get(arg);\nif (!(raw instanceof Number number)) {\n    throw new PebbleException(null, \"The 'randomInt' function expects an argument \" + arg + \" of type Number.\", lineNumber, self.getName());\n}\nreturn number.longValue();\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/RandomIntFunction.java",
+      "line": 21,
+      "title": "randomInt 的报错文案把函数名写成 GenerateRandomNumber，且缺少空格",
+      "description": "函数注册名是 `randomInt`（Extension.java:153），但新文案写成 `'GenerateRandomNumber'`，用户按报错提示去搜索或修正模板时找不到对应函数；另外 `\"expects an argument \" + arg + \"with type Integer.\"` 缺少空格，拼出 `lowerwith`。这类文案属于用户可见的错误信息，会直接影响排障效率。",
+      "evidence": [
+        "core/src/main/java/io/kestra/core/runners/pebble/functions/RandomIntFunction.java:21 — \"In 'GenerateRandomNumber' upper is less than lower\"",
+        "diff 中 \"The 'randomIn()' function expects an argument \" 被改为 \"The 'GenerateRandomNumber' function expects an argument \"",
+        "diff 中拼串 \"... expects an argument \" + arg + \"with type Integer.\" 缺少空格",
+        "core/src/main/java/io/kestra/core/runners/pebble/Extension.java:153 functions.put(\"randomInt\", new RandomIntFunction())"
+      ],
+      "rule": "TEXT-001",
+      "confidence": 0.85,
+      "tips": {
+        "review": "[缺陷类型] 用户可见错误文案中的函数名/拼接错误。影响评估：报错信息与实际函数名不一致，误导用户；缺空格降低可读性。",
+        "suggestion": "[重构思路] 统一使用真实函数名常量，避免硬编码字符串重复出现。代码示例：\n```java\nprivate static final String FUNCTION_NAME = \"randomInt\";\nthrow new PebbleException(null, \"The '\" + FUNCTION_NAME + \"' function expects an argument \" + arg + \" of type Integer.\", lineNumber, self.getName());\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Count.java",
+      "line": 138,
+      "title": "Count 的 namespaces 不再渲染，模板值被原样用于权限校验与查询",
+      "description": "改动前 `namespaces` 是 `Property<List<String>>`，运行时会 `runContext.render(this.namespaces).asList(String.class)`；改动后字段变为 `List<String>` 且直接使用原值：138 行把它传给 `flowService.checkAllowedNamespace(...)`，147 行传给 `executionRepository.executionCounts(...)`。若用户在列表元素里写了模板（例如 `namespaces: [\"{{ inputs.namespace }}\"]`，此前是支持的），现在会以字面量 `\"{{ inputs.namespace }}\"` 去校验命名空间并查询统计，结果静默为空或直接因不允许的命名空间报错，而不是按预期统计目标命名空间。",
+      "evidence": [
+        "core/src/main/java/io/kestra/plugin/core/execution/Count.java:138 — namespaces.forEach(namespace -> flowService.checkAllowedNamespace(flowInfo.tenantId(), namespace, ...))",
+        "core/src/main/java/io/kestra/plugin/core/execution/Count.java:147 — executionCounts(..., namespaces)",
+        "diff 中删除的旧代码为 runContext.render(this.namespaces).asList(String.class)",
+        "core/src/main/java/io/kestra/plugin/core/execution/Count.java:116-117 仅标注 @PluginProperty（未声明 dynamic = true），与「仍支持模板」的旧行为不一致"
+      ],
+      "rule": "RENDER-003",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 去 Property 化时丢失了集合元素的模板渲染。影响评估：既有使用模板化 namespaces 的工作流会静默返回空统计或抛命名空间不允许异常，且不报编译/解析错误。",
+        "suggestion": "[重构思路] 在 run() 开头一次性渲染并复用渲染结果，既恢复旧行为又避免二次渲染。代码示例：\n```java\nList<String> renderedNamespaces = namespaces == null ? null : runContext.render(namespaces);\nif (renderedNamespaces != null) {\n    renderedNamespaces.forEach(ns -> flowService.checkAllowedNamespace(flowInfo.tenantId(), ns, flowInfo.tenantId(), flowInfo.namespace()));\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/PurgeExecutions.java",
+      "line": 133,
+      "title": "PurgeExecutions 对 namespace 重复 render 三次，权限判定与实际清理可能基于不同取值",
+      "description": "123-124 行为了与 `flowInfo.namespace()` 比较并做 ACL 校验各调用一次 `runContext.render(namespace)`，133 行又把 `runContext.render(namespace)` 传给 `executionService.purge`。同一属性被渲染多次：一是重复的渲染开销；二是对含 `randomInt()`/`now()` 等非确定性函数的模板，校验用的命名空间与实际被清理的命名空间可能不同，属于难以排查的隐患。建议渲染一次存为局部变量。",
+      "evidence": [
+        "core/src/main/java/io/kestra/plugin/core/execution/PurgeExecutions.java:123 — } else if (!runContext.render(namespace).equals(flowInfo.namespace())) {",
+        "core/src/main/java/io/kestra/plugin/core/execution/PurgeExecutions.java:124 — flowService.checkAllowedNamespace(flowInfo.tenantId(), runContext.render(namespace), ...)",
+        "core/src/main/java/io/kestra/plugin/core/execution/PurgeExecutions.java:133 — runContext.render(namespace),"
+      ],
+      "rule": "MAINTAIN-004",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 同一属性重复渲染。影响评估：多余开销；非确定性模板下 ACL 校验与清理目标可能不一致。",
+        "suggestion": "[重构思路] 顶部渲染一次，后续统一引用局部变量。代码示例：\n```java\nString renderedNamespace = runContext.render(namespace);\nif (renderedNamespace == null) {\n    flowService.checkAllowedAllNamespaces(...);\n} else if (!renderedNamespace.equals(flowInfo.namespace())) {\n    flowService.checkAllowedNamespace(flowInfo.tenantId(), renderedNamespace, ...);\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "script/src/main/java/io/kestra/plugin/scripts/runner/docker/Docker.java",
+      "line": 280,
+      "title": "privileged 声明为 dynamic = true 但既是强类型 Boolean 又未渲染，dynamic 标记失实",
+      "description": "`privileged` 从 `Property<Boolean>` 改成 `Boolean` 却仍标注 `@PluginProperty(dynamic = true)`：一方面文档/JSON Schema 会把它标为支持动态渲染，另一方面运行时是 `hostConfig.withPrivileged(this.getPrivileged())`，完全没有 render；此外 `Boolean` 字段在 flow 解析阶段由 Jackson 反序列化，写入 `\"{{ inputs.privileged }}\"` 这种模板会直接解析失败。结果是标记与实现互相矛盾：用户以为可以写模板，实际要么解析报错，要么拿到未渲染的值。同样的模式出现在 DockerOptions.privileged。",
+      "evidence": [
+        "script/src/main/java/io/kestra/plugin/scripts/runner/docker/Docker.java:279-280 — @PluginProperty(dynamic = true) private Boolean privileged;",
+        "diff 中该属性改为 hostConfig.withPrivileged(this.getPrivileged());（未 render）",
+        "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/models/DockerOptions.java 同样为 @PluginProperty(dynamic = true) private Boolean privileged;",
+        "core/src/main/java/io/kestra/core/docs/JsonSchemaGenerator.java:290 — memberAttributes.put(\"$dynamic\", pluginPropertyAnnotation.dynamic()) 会把该标记输出到 schema"
+      ],
+      "rule": "SCHEMA-005",
+      "confidence": 0.68,
+      "tips": {
+        "review": "[缺陷类型] dynamic 元数据与实际渲染行为不一致。影响评估：文档/UI 误导用户写模板；强类型字段无法承载模板，会退化为解析失败或静默使用未渲染值。",
+        "suggestion": "[重构思路] 二选一：不再支持模板就去掉 dynamic = true；需要支持模板则保留 Property<Boolean> 或改为 String 并在使用点 render 后转换。代码示例：\n```java\n@PluginProperty(dynamic = false)\nprivate Boolean privileged;\n...\nhostConfig.withPrivileged(this.getPrivileged());\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "script/src/main/java/io/kestra/plugin/scripts/exec/AbstractExecScript.java",
+      "line": 81,
+      "title": "interpreter 去 Property 化并移除 dynamic，模板化解释器配置将失效",
+      "description": "`interpreter` 原为 `@PluginProperty(dynamic = true) Property<List<String>>`，现改为 `@PluginProperty` + `List<String>`，且 `commands(RunContext)` 中并没有对 interpreter 做任何 render（`ScriptService.scriptCommands(List<String> interpreter, ...)` 只接收已就绪的列表）。因此用户此前可以用 `interpreter: \"{{ inputs.interpreter }}\"` 之类方式动态指定解释器，现在该值会以原样字符串/无法转换的形式传给执行层，导致脚本用错误的解释器启动或直接报错，而 flow 在创建阶段不会给出任何提示。",
+      "evidence": [
+        "script/src/main/java/io/kestra/plugin/scripts/exec/AbstractExecScript.java:78-81 — @PluginProperty @NotNull @NotEmpty protected List<String> interpreter = List.of(\"/bin/sh\", \"-c\");",
+        "diff 中删除了原 @PluginProperty(dynamic = true) 与 Property<List<String>> 包装",
+        "core/src/main/java/io/kestra/core/models/tasks/runners/ScriptService.java:148 — scriptCommands(List<String> interpreter, ...) 内部直接 new ArrayList<>(interpreter)，不做渲染",
+        "script/src/main/java/io/kestra/plugin/scripts/exec/AbstractExecScript.java:143-162 commands(RunContext) 未出现对 interpreter 的 render"
+      ],
+      "rule": "COMPAT-006",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 动态属性退化为静态属性但未提供迁移说明与替代方案。影响评估：依赖模板设置 interpreter 的工作流静默失效，实际执行的解释器与配置不符，可能造成脚本行为异常。",
+        "suggestion": "[重构思路] 若仍允许模板，保留动态能力并在消费点渲染；若确定改为静态，需要在此类破坏性变更中给出迁移说明/校验。代码示例：\n```java\n// 保留动态能力\n@PluginProperty(dynamic = true)\nprotected List<String> interpreter = List.of(\"/bin/sh\", \"-c\");\n// 消费端\nList<String> rendered = runContext.render(this.interpreter);\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F010",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "core/src/main/java/io/kestra/core/services/FlowService.java",
+      "line": 19,
+      "title": "FlowService 新增了未使用的 Nullable / SneakyThrows 导入",
+      "description": "本次改动只为删除方法，却在 import 区新增了 `io.micronaut.core.annotation.Nullable`（第 16 行）与 `lombok.SneakyThrows`（第 19 行），而这两个符号在 FlowService 全文（1-440 行）中都没有任何使用点。无用导入会污染 diff、干扰后续维护者对类依赖的判断，并可能触发静态检查告警。",
+      "evidence": [
+        "core/src/main/java/io/kestra/core/services/FlowService.java:16 — import io.micronaut.core.annotation.Nullable;",
+        "core/src/main/java/io/kestra/core/services/FlowService.java:19 — import lombok.SneakyThrows;",
+        "FlowService.java 全文 440 行内未出现 @Nullable 或 @SneakyThrows 注解使用",
+        "diff 中这两个 import 与本 MR 删除 checkValidSubflows / findById 的改动同批引入"
+      ],
+      "rule": "CLEANUP-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 无用导入。影响评估：降低可读性、触发 lint 告警，并让代码审阅者误以为类中新增了可空/异常包装逻辑。",
+        "suggestion": "[重构思路] 清理未使用的 import，提交前跑一次编译器/lint 检查。代码示例：\n```java\n-import io.micronaut.core.annotation.Nullable;\n-import lombok.SneakyThrows;\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F011",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "webserver/src/main/java/io/kestra/webserver/controllers/api/FlowController.java",
+      "line": 429,
+      "title": "删除 checkValidSubflows 后 subflow 存在性校验完全消失且无替代实现",
+      "description": "`flowService.checkValidSubflows(flowParsed)` 在 FlowController 的 update 路径（429 行附近）与 validate 路径（592 行附近）被直接删掉，`FlowService.checkValidSubflows` 与 `FlowService.findById` 也一并删除，全仓已无任何引用，也没有引入替代校验。结果是引用不存在 namespace/flowId 的 Subflow 任务在 flow 校验阶段不再报错。需要说明：被删除的旧实现本身有缺陷（对每个 subflow 无条件 add violation，而不判断 findById 是否为空），删除等于「放弃校验」而非「修复校验」，属于需要显式确认的产品行为变更，建议在 MR 中记录决策或补上正确实现。",
+      "evidence": [
+        "webserver/src/main/java/io/kestra/webserver/controllers/api/FlowController.java:429 — 原 flowService.checkValidSubflows(flowParsed) 位置变为空行",
+        "webserver/src/main/java/io/kestra/webserver/controllers/api/FlowController.java:592 — validate 路径中的 flowService.checkValidSubflows(flowParse) 同样被删除",
+        "find_references(\"checkValidSubflows\") 返回 0 命中，说明删除后无任何调用点",
+        "diff 中被删除的旧实现：subFlows.forEach(subflow -> { Optional<Flow> optional = findById(...); violations.add(ManualConstraintViolation.of(...)); }) 未判断 optional.isEmpty()"
+      ],
+      "rule": "VALIDATION-007",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 校验能力被移除而非修复。影响评估：subflow 指向不存在的 flow 也能通过校验，错误被推迟到运行期才暴露；同时 FlowService.findById 这一公共方法被删除，外部/EE 模块若依赖会编译失败。",
+        "suggestion": "[重构思路] 若产品上仍需要该校验，用正确实现替代删除：真正检查查询结果为空时才记录 violation。代码示例：\n```java\nsubFlows.forEach(subflow -> {\n    if (findById(flow.getTenantId(), subflow.getNamespace(), subflow.getFlowId()).isEmpty()) {\n        violations.add(ManualConstraintViolation.of(\n            \"The subflow '\" + subflow.getFlowId() + \"' not found in namespace '\" + subflow.getNamespace() + \"'.\",\n            flow, Flow.class, \"flow.tasks\", flow.getNamespace()));\n    }\n});\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F012",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "core/src/main/java/io/kestra/core/docs/JsonSchemaGenerator.java",
+      "line": 270,
+      "title": "删除 TYPES_RESOLVED_AS_STRING 分支会改变 Property<Duration/LocalTime/...> 的 schema 生成结果",
+      "description": "被删除的 `isAssignableFromResolvedAsString` 分支原本让 `Property<LocalDate/LocalTime/Duration/...>` 只取内部类型参数（配合时间类型的 string 格式化处理）；删除后这些类型落入 else 分支，返回 `[内部类型, String]` 两个候选。本次迁移并未清除所有此类字段——例如 `Task.timeout` 仍是 `Property<Duration>`，其生成的 JSON Schema/UI 表单类型会从单一时间类型变为「时间类型 + String 联合」，属于随本次改动附带、但未被显式说明的文档/Schema 行为变化。",
+      "evidence": [
+        "core/src/main/java/io/kestra/core/docs/JsonSchemaGenerator.java:266-275 — 删除 Resolved-as-string 分支后，非 String/Object/enum/List/Map 的 Property 走 else 分支返回 List.of(T, String)",
+        "diff 中被删除的 TYPES_RESOLVED_AS_STRING = List.of(Duration.class, LocalTime.class, LocalDate.class, LocalDateTime.class, ZonedDateTime.class, OffsetDateTime.class, OffsetTime.class)",
+        "core/src/main/java/io/kestra/core/models/tasks/Task.java:39 — protected Property<Duration> timeout; 仍在广泛使用"
+      ],
+      "rule": "SCHEMA-008",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] Schema 生成规则变更未与剩余 Property 用法对齐。影响评估：timeout 等属性的文档与 UI 表单类型可能发生变化（出现联合类型/失去时间格式提示），影响用户体验与前端校验。",
+        "suggestion": "[重构思路] 若确认仅新式插件属性不再使用这些类型，可删除；否则应保留时间类型的短路分支，并补一条 schema 快照断言覆盖 `Property<Duration>`。代码示例：\n```java\n} else if (isAssignableFromResolvedAsString(erasedType)) {\n    return List.of(javaType.getTypeParameters().getFirst());\n} else {\n    return List.of(javaType.getTypeParameters().getFirst(), context.resolve(String.class));\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+      "line": 54,
+      "title": "OutputValues 的文档示例被改成非法表达式 `{{ outputs.output_values.²}}`",
+      "description": "示例中的 `{{ outputs.output_values.values.taskrun_data }}` 被替换成了 `{{ outputs.output_values.²}}`，这不是合法的 Pebble 表达式，也不是有效的属性访问路径。该示例会出现在插件文档与 UI 中，用户照抄后模板渲染直接失败；从上下文看下一行仍保留 `outputs.output_values.values.execution_data`，可确认这是一次误编辑而非有意简化。",
+      "evidence": [
+        "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java:54 — {{ outputs.output_values.²}}",
+        "同文件相邻行仍为 {{ outputs.output_values.values.execution_data }}，说明取值路径格式未变",
+        "diff 中该行为 \"-      {{ outputs.output_values.values.taskrun_data }}\" → \"+      {{ outputs.output_values.²}}\""
+      ],
+      "rule": "DOC-EXAMPLE-002",
+      "confidence": 0.9,
+      "tips": {
+        "review": "[缺陷类型] 文档示例被误编辑为非法语法。影响评估：用户复制示例即报模板渲染错误，属于对外可见的文档缺陷。",
+        "suggestion": "[重构思路] 恢复被破坏的示例文本，必要时补充说明 taskrun_data 的来源。代码示例：\n```java\n\"      {{ outputs.output_values.values.taskrun_data }}\\n\" +\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F014",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "core/src/main/java/io/kestra/plugin/core/namespace/UploadFiles.java",
+      "line": 154,
+      "title": "UploadFiles.conflict 漏加 @PluginProperty，且注解与字段之间夹了空行",
+      "description": "其他属性都补上了 `@PluginProperty(...)`，唯独 `conflict` 只有 `@Builder.Default`，并且 `@Builder.Default` 与 `@Schema` 之间还留了一个空行（148-150 行）。缺少注解会让插件属性的元数据（如 schema 中的 `$dynamic`、生成文档时的属性归类）与其他属性不一致；夹空行则是明显的编辑残留，影响可读性。",
+      "evidence": [
+        "core/src/main/java/io/kestra/plugin/core/namespace/UploadFiles.java:148-154 — @Builder.Default 后跟空行，随后 @Schema ... private Namespace.Conflicts conflict = Namespace.Conflicts.OVERWRITE;",
+        "同文件 117/125/137/144 行其他属性均带 @PluginProperty 注解",
+        "diff 中该字段由 Property<Namespace.Conflicts> 改为 Namespace.Conflicts 时未补注解"
+      ],
+      "rule": "STYLE-002",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 注解缺失与格式残留。影响评估：属性元数据不统一，文档/Schema 输出与同类属性不一致；格式残留降低可读性。",
+        "suggestion": "[重构思路] 补上静态属性注解并去掉多余空行。代码示例：\n```java\n@PluginProperty\n@Builder.Default\n@Schema(title = \"Which action to take when uploading a file that already exists.\", ...)\nprivate Namespace.Conflicts conflict = Namespace.Conflicts.OVERWRITE;\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F015",
+      "severity": "P3",
+      "category": "可移植",
+      "file": "ui/src/styles/layout/element-plus-overload.scss",
+      "line": 365,
+      "title": "表格表头背景改为硬编码色值 #f5f5ff，脱离主题变量体系",
+      "description": "`--el-table-header-bg-color` 从 `var(--ks-background-table-header)` 改成硬编码 `#f5f5ff`，仅在 `html.dark` 下用变量覆盖 `--el-table-header-bg-color: var(--ks-background-input)`。这意味着浅色主题、以及用户自定义主题/品牌色时，表头颜色不再跟随主题变量，与其他组件（仍使用 `--ks-*` 变量）出现视觉不一致，后续调整主题需要回到此处改魔法值。",
+      "evidence": [
+        "ui/src/styles/layout/element-plus-overload.scss:365 — --el-table-header-bg-color: #f5f5ff;",
+        "同文件 366-371 行新增 html.dark & 覆盖：--el-table-tr-bg-color / --el-table-header-bg-color 才使用 var(--ks-*)",
+        "diff 中被替换的原值为 var(--ks-background-table-header)"
+      ],
+      "rule": "THEME-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 主题变量被硬编码色值替代。影响评估：自定义/暗色之外的主题无法继承品牌色，视觉不一致，后续主题维护成本上升。",
+        "suggestion": "[重构思路] 保留语义变量，必要时新增一个 light 主题变量并在主题文件里定义具体色值。代码示例：\n```scss\n--el-table-header-bg-color: var(--ks-background-table-header);\n\nhtml.dark & {\n    --el-table-header-bg-color: var(--ks-background-input);\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F016",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+      "line": 13,
+      "title": "isFalsy 采用精确字符串匹配，Assert 对 'False'、含空白等取值会静默判为通过",
+      "description": "`isFalsy` 仅在值精确等于 `\"false\"`、`\"0\"`、`\"-0\"`、`\"\"` 时返回 true，`null` 也返回 false。Assert 用它决定断言失败与否，因此像 `{{ someBoolean }}` 在特定渲染/字符串化路径下产出 `\"False\"`、`\"false \"`（含尾部空白）或 `\"null\"` 时，断言会被判为成功而不报错——断言工具静默通过比显式失败更危险。新增方法时建议同时明确这些边界并写入 Schema 描述。",
+      "evidence": [
+        "core/src/main/java/io/kestra/core/utils/TruthUtils.java:6 — private static final List<String> FALSE_VALUES = List.of(\"false\", \"0\", \"-0\", \"\");",
+        "core/src/main/java/io/kestra/core/utils/TruthUtils.java:12-14 — isFalsy 只在 FALSE_VALUES.contains(condition) 时返回 true，condition 为 null 返回 false",
+        "core/src/main/java/io/kestra/plugin/core/execution/Assert.java:94 — if (TruthUtils.isFalsy(renderer)) 决定断言是否失败"
+      ],
+      "rule": "SEMANTIC-003",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 布尔强制转换语义过窄导致的静默通过。影响评估：断言在边界取值下被误判为成功，掩盖真实失败，降低 Assert 任务可信度。",
+        "suggestion": "[重构思路] 统一大小写/去空白后再判断，并在 schema 描述中写明支持的取值；null 建议显式判为失败或给出告警日志。代码示例：\n```java\npublic static boolean isFalsy(String condition) {\n    if (condition == null) return true; // 或记录告警\n    return FALSE_VALUES.contains(condition.trim().toLowerCase(Locale.ROOT));\n}\n```",
+        "subcategory": ""
+      }
+    }
+  ]
+}

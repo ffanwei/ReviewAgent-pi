@@ -1,0 +1,82 @@
+{
+  "instance_id": "mpv-player__mpv@dbd327d",
+  "repo": "mpv-player/mpv",
+  "base_commit": "30869ddb904f800ad1b858ac99c5fb81690f0cb7",
+  "head_commit": "dbd327d36fd0dc80ebd6e5517c102a92e31a0836",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 372.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "demux/demux_playlist.c",
+      "line": 702,
+      "summary": "把 fd 从 self-expanding 协议列表移除后，fd:// 播放列表的相对条目会被拼成 fd://<name> 而加载失败",
+      "failure_scenario": "该分支对非自展开协议会给播放列表条目加上 `mp_dirname(demuxer->filename)` 作为基路径。fd 协议仍然存在（`stream_info_fd` 的 protocols 为 `fd`/`fdclose`），而 fd:// 的“路径”必须是纯数字：`open_f()` 用 `strtol` 解析 `://` 之后的部分并要求 `end[0] == '\\0'`，否则报错 \"Invalid FD number\"。因此以 `--playlist=fd://N` 打开含相对路径条目的播放列表时，`mp_dirname(\"fd://3\")` 得到 `\"fd://\"`，未经 URL 判定的相对条目被 `playlist_add_base_path()` 拼成 `fd://movie.mkv` 之类，打开时报 Invalid FD number，整份播放列表条目全部失效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "REGRESSION-PROTOCOL-001"
+    },
+    {
+      "file": "misc/language.c",
+      "line": 336,
+      "summary": "删除 forced 后缀识别后，形如 movie.en.forced.srt 的文件名不再识别出语种",
+      "failure_scenario": "新实现把后缀跳过分支限制为只执行一次（`checked_hi`），且 `suffixes[]` 只保留 sdh/hi/cc，原先用于跳过 `forced` 标签的分支在 diff 中被整段删除。结果是文件名中的 `forced` 被当成语言标签本身参与解析：`foo.en.forced` 会在第一次循环匹配到 `forced`（未命中 hi 列表）后进入长度校验，`lang_length=6` 超出主语言标签 2~3 字母的限制而直接 `return (bstr){0}`。旧实现会先把 `forced` 作为可跳过后缀剥掉、再解析出 `en`。语种丢失会直接影响 `append_dir_subtitles()` 的优先级计算（`prio |= 16/4/8`）与 `cmd_track_reload()` 的语种补全，常见命名的强制字幕外挂文件因此更难被自动选中。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-LANG-001"
+    },
+    {
+      "file": "player/lua/positioning.lua",
+      "line": 40,
+      "summary": "pan-x/pan-y/cursor-centric-zoom 删除空参数检查后，无参数调用会抛 Lua 算术错误",
+      "failure_scenario": "complex binding 的事件表里 `arg` 直接来自 C 侧命令参数；`script-binding` 的 `arg` 参数带 `OPTDEF_STR(\"\")`，所以用户只写 `script-binding positioning/pan-x`（不带数值）时 `t.arg` 是空字符串而不是 nil。删除 `if t.arg == nil or t.arg == \"\" then ... mp.osd_message(...) return end` 之后，`t.arg * t.scale` 会对空字符串做算术运算，触发 Lua 运行时错误（\"attempt to perform arithmetic on a string value\"），每次按键都会在脚本日志里打印错误且不做任何动作；原先的用法提示（USAGE）也随之消失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "ROBUSTNESS-LUA-001"
+    },
+    {
+      "file": "DOCS/man/osc.rst",
+      "line": 606,
+      "summary": "自定义按钮示例去掉 `::` 代码块后变成普通段落，且标题与实际按钮内容不一致",
+      "failure_scenario": "原示例用 `::` 引入 literal block，保留换行并等宽呈现；改动删除了 `::`，把内容上提为 admonition 正文的普通段落。RST 会把连续行合并为一个段落，因此 `custom_button_*` 多条 script-opts 会被渲染成一整行文本、且不是等宽字体，读者无法按行复制；同一章节其它示例（540-598 行）统一使用 `` ``key=value`` `` 行内字面量，此处也没有沿用该风格。另外标题被改为 \"Example to add loop and shuffle buttons\"，但示例里仍有 `custom_button_3_*` 的 speed 按钮，标题与内容不符。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "DOC-RST-001"
+    },
+    {
+      "file": "misc/random.h",
+      "line": 42,
+      "summary": "PRNG 改为显式状态后删除了互斥锁，但头文件未声明状态的线程安全约束",
+      "failure_scenario": "重构去掉了 `static uint64_t state[4]` 与 `mp_static_mutex`，`mp_rand_next()`/`mp_rand_next_double()`/`mp_rand_in_range32()` 现在直接读写调用方传入的 `struct mp_rand_state`。旧 API 在内部加锁、默认线程安全；新 API 的线程安全责任转移给调用方，但 `random.h` 的注释只说明“用 mp_rand_seed() 初始化”，没有说明同一个 state 不能被多线程并发使用、也不能跨线程传递（xoshiro 每次调用会写四个字，并发调用会产生数据竞争并破坏状态）。后续新增调用点很容易误以为仍是线程安全的。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "API-THREADSAFE-001"
+    },
+    {
+      "file": "video/mp_image.c",
+      "line": 734,
+      "summary": "vflip 支持移除后 mp_image_vflip() 变成无人调用的死代码",
+      "failure_scenario": "本 MR 删除了 `mp_image_params.vflip` 与 `VO_CAP_VFLIP`，并删掉了唯一调用点（gpu/video.c 中 `if (mpi->params.vflip) mp_image_vflip(mpi);`）。但 `mp_image_vflip()` 的声明与实现仍保留在 `video/mp_image.h:157` 与 `video/mp_image.c:734`，全仓库已无任何调用者，成为死代码；它的实现依赖对图像平面的原地重排，留着会误导后续维护者以为 vflip 功能仍被支持。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "DEADCODE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\mpv-player__mpv\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\mpv-player__mpv@dbd327d.diff\n  caseId              mpv-player__mpv@dbd327d\n  --issue             (未传)\n  --taskId            mpv-player__mpv@dbd327d\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 2 个文件 / 8299 字符（test=2），明细见审计 mrFilter\n✓ 完成 · 耗时 299.2s · 模型调用 36 次 · token 输入 97,248（未命中） · 输出 40,416 · 缓存命中 1,994,624（95.4%） · 工具 67 次（主会话 67 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0305\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 300.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 299.0s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.8s (0.3%)\n[time] 审计明细 | P1 163.5s (54.7%) | P2 3.8s (1.3%) | P3 11.8s (3.9%) | P4 39.9s (13.4%) | P5 65.0s (21.7%) | P6 15.0s (5.0%)\n[usage] 任务总计 | 模型调用 36 次（Agent 36 + 一次性 0） | token 输入 97,248（未命中） | 输出 40,416 | 缓存命中 1,994,624（95.4%） | $0.0305\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\mpv-player__mpv@dbd327d\\audit\\20261115_020017_614.json",
+  "token_usage": {
+    "input_tokens": 97248,
+    "output_tokens": 40416,
+    "cache_read_input_tokens": 1994624
+  }
+}

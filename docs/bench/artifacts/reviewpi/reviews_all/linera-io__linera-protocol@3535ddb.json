@@ -1,0 +1,99 @@
+{
+  "generatedAt": "2026-11-15T00:34:20.134Z",
+  "runId": "20261115_003228_978",
+  "source": "mr",
+  "caseId": "linera-io__linera-protocol@3535ddb",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "title": "分页终止条件用本地常量推断远端页大小，页大小不一致时会静默提前结束同步",
+      "description": "循环以 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 判断「已取完」，但这个上限是**服务端**（validator）在自己的 state.rs 里应用的分页大小，客户端只是引用了同一个 crate 内常量。若 validator 实际页大小小于客户端的 1000（例如按 state.rs:52 的 `TODO(#4638): Revisit the number.` 下调，或客户端与 validator 二进制版本不同步），一次响应只会返回 500 条，客户端会立即 break，`remote_log` 仅覆盖 received_log 的前缀，而 `ReceivedCertificatesFromValidator` 仍按「本轮已同步」返回，导致 heights_per_chain / downloaded_heights / other_sender_chains（第 858、867-900 行）只看到部分发送链，部分跨链消息要等到下一轮同步才进入 inbox，客户端可能在不完整视图下继续推进。由于 ChainInfo 契约中没有任何 `has_more` 或总数标记（linera-core/src/data_types.rs:179-210 的 ChainInfo 只有 `requested_received_log: Vec<ChainAndHeight>`），客户端无法从响应本身区分「已到末尾」和「被截断」。",
+      "evidence": [
+        "linera-core/src/client/mod.rs:854 — `if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES { break; }`，用本地常量作为服务端页大小的判据",
+        "linera-core/src/chain_worker/state.rs:1418-1420 — 截断上限 `end = (start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES)).min(chain.received_log.count())` 由服务端单方面决定",
+        "linera-core/src/chain_worker/state.rs:52 — `// TODO(#4638): Revisit the number.` 说明该页大小后续会调整，客户端与服务端常量存在漂移风险",
+        "linera-core/src/data_types.rs:83-85 — `request_received_log_excluding_first_n: Option<u64>`：查询只带 offset，响应没有 has_more/总条数字段，客户端无法自行判定是否取完",
+        "linera-core/src/client/mod.rs:936-945 — tracker 仅按 remote_log 中已下载条目递增，随后作为本轮同步结果返回，故截断不会报错而是静默缩短本轮处理范围"
+      ],
+      "rule": "RELIABILITY-PAGINATION-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 分页终止条件与服务端页大小隐式耦合（隐式协议约定 + 版本漂移）。\n[影响评估] 当前两端常量一致时行为正确；一旦服务端页大小变小或版本不同步，同步会静默只处理第一页，跨链消息延迟投递，且无任何错误/日志提示，排查成本高。",
+        "suggestion": "[重构思路] 让终止条件只依赖响应本身「是否还有数据」：取到空页才停止；或把页大小作为查询参数由客户端提出，并让响应用 `has_more` 显式表达是否被截断。\n代码示例：\n```rust\nloop {\n    let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n    let info = remote_node.handle_chain_info_query(query).await?;\n    let page = info.requested_received_log;\n    if page.is_empty() {\n        break;\n    }\n    offset += page.len() as u64;\n    remote_log.extend(page);\n}\n```",
+        "subcategory": "分页终止条件"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P3",
+      "category": "性能",
+      "file": "linera-core/src/client/mod.rs",
+      "line": 846,
+      "title": "分页后仍把所有页累积进单个 Vec，内存峰值未降低",
+      "description": "改动的目的之一应是避免一次把整条 received_log 传回并驻留内存，但客户端用 `remote_log` 累加所有页（第 853 行 `remote_log.extend(...)`），并且后续逻辑需要整份 remote_log（第 858 行 heights_per_chain 遍历全量、第 936 行再次遍历来自增 tracker）。对长期运行、received_log 很长的链，客户端内存占用与改动前的一次性响应处于同一量级，只是每次 RPC 的报文变小了；如果 validator 行为异常（返回远多于上限的条目），循环还会在无迭代次数/总条数上限的情况下持续累积。",
+      "evidence": [
+        "linera-core/src/client/mod.rs:846 — `let mut remote_log = Vec::new();` 在循环外声明，用于跨页累积",
+        "linera-core/src/client/mod.rs:853 — `remote_log.extend(info.requested_received_log);` 每页都追加到同一个 Vec",
+        "linera-core/src/client/mod.rs:858 — `Self::heights_per_chain(&remote_log)` 需要整份日志才能构建 chain→heights 映射",
+        "linera-core/src/client/mod.rs:936 — `for entry in remote_log` 再次全量遍历以推进 tracker"
+      ],
+      "rule": "PERFORMANCE-MEMORY-002",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 分页未降低客户端内存/累积量，缺少总量与迭代上限。\n[影响评估] 大链或异常 validator 下内存与请求次数无界增长；分页的收益只体现在单次报文体积。",
+        "suggestion": "[重构思路] 逐页增量处理：每取到一页就更新 chain→heights 映射，并保留一份轻量的位置索引（条目序号→是否已下载），避免持有一份完整 Vec；同时给循环加总条数/页数上限作为防护。\n代码示例：\n```rust\nlet mut max_pages = MAX_PAGES;\nloop {\n    let page = /* ... */;\n    if page.is_empty() || max_pages == 0 { break; }\n    max_pages -= 1;\n    for entry in &page { remote_heights.entry(entry.chain_id).or_default().insert(entry.height); }\n    offset += page.len() as u64;\n}\n```",
+        "subcategory": "内存占用"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "linera-core/src/chain_worker/state.rs",
+      "line": 53,
+      "title": "RPC 契约常量定义在 chain_worker 内部并经模块重导出，易导致两端只改一侧",
+      "description": "`CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 实际上是 client 与 validator 之间 ChainInfo RPC 的契约（决定响应最多带多少条 received_log），但它定义在 `chain_worker::state` 中，通过 `chain_worker/mod.rs` 重导出给 `client/mod.rs` 使用（client/mod.rs:72 的 `use crate::chain_worker::CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES`）。这让客户端的协议行为依赖服务端实现模块的内部常量，语义归属不清；后续按 TODO(#4638) 调整该数字时，很容易只关注服务端一侧而忽略客户端用它做分页终止判断（见 F001），使两处语义脱钩。",
+      "evidence": [
+        "linera-core/src/chain_worker/state.rs:50-53 — 常量连同 `// TODO(#4638): Revisit the number.` 定义在 chain worker 的 state 模块",
+        "linera-core/src/chain_worker/mod.rs:17 — `state::{BlockOutcome, CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES}` 重导出，使其成为 crate 内公共项",
+        "linera-core/src/client/mod.rs:72 — `chain_worker::CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES`，客户端跨越模块边界引用 worker 内部实现常量",
+        "linera-core/src/data_types.rs:61-100 — ChainInfoQuery 才是这类 RPC 契约字段/常量的自然归属位置"
+      ],
+      "rule": "MAINTAINABILITY-COUPLING-003",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 协议契约常量位置/可见性不当造成的模块耦合。\n[影响评估] 契约与实现分离，调整上限时容易漏改一侧，进而触发 F001 所述的静默截断。",
+        "suggestion": "[重构思路] 把上限移到 `linera-core/src/data_types.rs` 中与 `ChainInfoQuery`/`ChainInfo` 相邻（或改为查询参数 `request_received_log_page_size: Option<u64>`），让 client 与 worker 都从契约层读取同一语义。\n代码示例：\n```rust\n// data_types.rs\n/// Maximum number of `received_log` entries returned in one `ChainInfo`.\npub const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;\n```",
+        "subcategory": "模块耦合"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "linera-core/src/chain_worker/state.rs",
+      "line": 1418,
+      "title": "显式 end 夹取与 LogView::read 内部夹取重复，且隐含依赖「start>=end 返回空」",
+      "description": "新增的 `end = (start.saturating_add(N)).min(chain.received_log.count())` 与 `LogView::read` 自身的处理重复：read 会把 end 夹到 `self.count()`，并在 `start >= end` 时返回空 `Vec`（log_view.rs:316-329）。因此当客户端传入的 offset 大于服务端 received_log 长度（例如 tracker 来自另一验证者或状态被重建）时，当前实现恰好返回空列表而非报错；但这段安全性是由存储层 `read` 的实现细节提供的，本处代码 `read(start..end)` 中 `start > end` 的区间本身在语义上是不合法的区间，未来若改用不夹取的读法（或 `read` 语义变化）就会变成空区间/panic 风险。此外把 `end` 事件提前算出来也让人误以为 `read(start..)` 会读全量，掩盖了库本身的越界保护。",
+      "evidence": [
+        "linera-core/src/chain_worker/state.rs:1418-1420 — `let end = (start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES)).min(chain.received_log.count()); ... read(start..end)`",
+        "linera-views/src/views/log_view.rs:316-321 — read 内部已把 end 夹到 `self.count()`",
+        "linera-views/src/views/log_view.rs:327-329 — `if start >= end { return Ok(Vec::new()); }` 是本实现返回空 Vec 的真正依据",
+        "linera-core/src/client/mod.rs:847 — offset 直接来自本地保存的 tracker，可能与目标 validator 的日志长度不一致"
+      ],
+      "rule": "CORRECTNESS-RANGE-004",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 冗余的区间夹取 + 依赖存储层越界保护。\n[影响评估] 当前行为正确，但越界安全性不写在本地代码里；一旦读接口语义变化或换成批量读取，会出现 start>end 的非法区间处理问题，且冗余代码会误导读代码的人。",
+        "suggestion": "[重构思路] 显式表达意图：先按 count 判断是否还有数据，再计算合法区间；并在注释中说明依赖 read 的夹取行为，避免出现 start>end。\n代码示例：\n```rust\nlet count = chain.received_log.count();\nif start < count {\n    let end = start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES).min(count);\n    info.requested_received_log = chain.received_log.read(start..end).await?;\n}\n```",
+        "subcategory": "边界与区间安全"
+      }
+    }
+  ]
+}

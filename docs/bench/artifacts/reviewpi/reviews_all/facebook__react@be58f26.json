@@ -1,0 +1,83 @@
+{
+  "generatedAt": "2026-11-15T00:45:02.215Z",
+  "runId": "20261115_004132_750",
+  "source": "mr",
+  "caseId": "facebook__react@be58f26",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js",
+      "line": 697,
+      "title": "resetResumableState 不再把 instructions 重置为 NothingSent，postpone 重放会继承陈旧的指令位",
+      "description": "resetResumableState 的语义被注释明确限定为“This currently assumes nothing was flushed”，即调用后 resumableState 必须回到“什么都没 flush”的状态。本次删除 `resumableState.instructions = NothingSent;` 后，instructions 的位标记不再被清除。而 instructions 中至少两个位是在 render 阶段而非 flush 阶段就被置位的：injectFormReplayingRuntime（1974 行 `resumableState.instructions |= SentFormReplayingRuntime`，由 1209/2117 行的 pushStartButton / pushStartForm 在渲染带 action 的 form/button 时调用）以及 pushCompletedShellIdAttribute（5013 行 `|= SentCompletedShellId`）。因此当 root 被 postpone 或 preamble 未就绪时，ReactFizzServer.getPostponedState（ReactFizzServer.js:5533）调用 resetResumableState 时这些位可能已经是 1，而同一个 resumableState 会被放进 PostponedState 并由 resumeRequest（ReactFizzServer.js:599-611）直接复用。恢复渲染后：(1) injectFormReplayingRuntime 的 `(instructions & SentFormReplayingRuntime) === NothingSent` 判定为假，表单 replay 运行时脚本不再写入 bootstrapChunks，恢复出来的 form action 无法被 Fiber 接管/重放；(2) writeCompletedSegmentInstruction / writeCompletedBoundaryInstruction（4450-4459、4551-4559）会走 partial 分支，只输出 `$RS(` / `$RC(` 而缺少函数定义，客户端抛 ReferenceError，被恢复的 segment 无法 reveal；(3) pushCompletedShellIdAttribute 提前返回会导致补发的 bootstrap script 缺少 id=\"«R»\"，`rel=\"expect\" blocking=render` 无法解除，页面可能长时间白屏。",
+      "evidence": [
+        "packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js:122-129 — InstructionState 位定义：NothingSent / SentFormReplayingRuntime / SentCompletedShellId",
+        "packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js:657 — instructions: NothingSent 只在 createResumableState 初始化，全仓库无第二处重置点",
+        "packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js:697 — resetResumableState 最后一次赋值 resumableState.moduleScriptResources = {}，原 `resumableState.instructions = NothingSent; // Nothing was flushed so no instructions could've flushed.` 被删除",
+        "packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js:1209 与 2117 — render 阶段 pushStartButton / pushStartForm 调用 injectFormReplayingRuntime",
+        "packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js:1970-1999 — `(resumableState.instructions & SentFormReplayingRuntime) === NothingSent` 才把 formReplayingRuntimeScript 写入 bootstrapChunks",
+        "packages/react-dom-bindings/src/server/ReactFizzConfigDOM.js:4450-4459 / 4551-4559 — 依据 instructions 位决定输出完整函数体还是 `$RS(\"` / `$RC(\"` 简写",
+        "packages/react-server/src/ReactFizzServer.js:5529-5542 — root postponed 或 preamble 缺失时 resetResumableState(request.resumableState, request.renderState)，随后把同一个 resumableState 放进 PostponedState",
+        "packages/react-server/src/ReactFizzServer.js:599-611 — resumeRequest 用 postponedState.resumableState 构造新 Request，污染后的位会带入恢复渲染"
+      ],
+      "rule": "SSR-RESUMABLE-STATE-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 可恢复状态（resumable state）重置不完整 / 陈旧位标记泄漏到恢复渲染。影响评估：prerender + postpone 后再次 resume 时，表单动作运行时脚本被跳过、`$RC/$RS` 简写引用未定义函数、shell 完成标记缺失，属于流式 SSR 恢复路径上的功能性破坏（表单 action 不可用、segment 无法 reveal、可能出现渲染阻塞不解除）。",
+        "suggestion": "[重构思路] 恢复对 instructions 的重置，并在恢复渲染入口也做一次防御性复位；同时补一条断言/测试覆盖“渲染期已置位但未 flush 就 postpone”的场景。代码示例：`resumableState.moduleScriptResources = {};\\n  resumableState.instructions = NothingSent; // Nothing was flushed so no instructions could've flushed.`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/react-reconciler/src/ReactFiberHooks.js",
+      "line": 3264,
+      "title": "memoizedState 只有单个 hook 时会重建 hook 链表并丢弃既有 queue，移除 alternate 兜底后该中间态无保底处理",
+      "description": "ensureFormComponentIsStateful 的提前返回条件由 `existingStateHook !== null` 收紧为 `existingStateHook !== null && existingStateHook.next !== null`。当 form fiber 的 memoizedState 非空但 next 为 null（被删除注释所称的 broken intermediate state：formFiber 是 workInProgress 时可能出现的半成品状态）时，函数不再复用它，而是新建 stateHook + resetStateHook 并把两者写到 formFiber 与 alternate 的 memoizedState 上（3321-3325）。新建的两个 queue 以 NoPendingHostTransition / initialResetState 初始化（3275-3316），原先挂在旧 queue 上的 pending 更新（例如正在进行中的 host transition 状态）会被孤立，而这些 lane 仍留在 fiber.lanes 上，可能出现 pending 状态无法提交、useFormStatus 显示的 pending 与实际不符。同时 requestFormReset 里原本 `stateHook.next === null` 时回退到 `(formFiber.alternate: any).memoizedState` 的兜底被删除，改为直接用 `(stateHook.next: any)` 作为 resetStateHook——一旦上述不变量在其它路径被破坏（例如旧代码所防护的场景再次出现），就会对 null queue 调用 dispatchSetStateInternal 而抛错。删除该兜底与本 MR 未附带任何针对该中间态的测试或说明，风险难以被回归测试捕获。",
+      "evidence": [
+        "packages/react-reconciler/src/ReactFiberHooks.js:3264 — `if (existingStateHook !== null && existingStateHook.next !== null)` 作为新的提前返回条件",
+        "packages/react-reconciler/src/ReactFiberHooks.js:3321-3325 — 新建 hook 链后直接覆盖 `formFiber.memoizedState` 与 `alternate.memoizedState`，旧 hook 与其 queue 被丢弃",
+        "packages/react-reconciler/src/ReactFiberHooks.js:3288-3317 — 新 stateHook/resetStateHook 的 queue 以 NoPendingHostTransition / initialResetState 初始化且 pending: null",
+        "packages/react-reconciler/src/ReactFiberHooks.js:3234-3239 — startHostTransition 直接使用返回 hook 的 queue 发起 transition，queue 被重建即意味着新队列与原 pending 更新脱节",
+        "packages/react-reconciler/src/ReactFiberHooks.js:3358-3360 — `const stateHook = ensureFormComponentIsStateful(formFiber); ... const resetStateHook: Hook = (stateHook.next: any);` 不再有 alternate 兜底",
+        "diff 中被删除的注释：\"Hack alert. If formFiber is the workInProgress Fiber then we might get a broken intermediate state. Try the alternate instead.\""
+      ],
+      "rule": "CORRECTNESS-STATE-002",
+      "confidence": 0.45,
+      "tips": {
+        "review": "[缺陷类型] 状态容器（hook 链表与其 UpdateQueue）被重建导致 pending 更新丢失；同时删除了对已知中间态的兜底分支。影响评估：特定时序（form fiber 为 workInProgress 且 hook 链表未完整）下表单 pending 状态与 reset 状态可能丢失或被覆盖，表现为 action 完成后表单不重置或 pending 长时间不消失；若中间态以 next 为 null 的形式出现，还可能退化为对 null queue 的调用。",
+        "suggestion": "[重构思路] 明确该中间态是否仍可达：若可达，保留“从 alternate 取完整 hook 链”的兜底而不是重建；若确已不可达，用 invariant/注释 + 针对性测试固定不变量，并让 requestFormReset 继续对 `stateHook.next` 做防御性校验。代码示例：`const resetStateHook: Hook = (stateHook.next: any); if (resetStateHook === null) { throw new Error('Expected a reset state hook. This is a bug in React.'); }`",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "packages/react-devtools-shared/src/hydration.js",
+      "line": 400,
+      "title": "DevTools 删除 Error 类型后 Error 的 message/stack/cause 不再可展开，且唯一的验证载体被一并删除",
+      "description": "删除 getDataType 中的 isError 判定与 'error' DataType 后，Error 实例不再命中 'error' 分支，而是经 utils.js 的 isPlainObject 判定落入 'class_instance'。class_instance 分支只遍历 getAllEnumerableKeys(data)（hydration.js:420-431），而被删代码的注释明确指出 “name, message, stack and cause are not enumerable yet still interesting”，因此这些非枚举属性不再被序列化：DevTools 中展开 Error 只能看到可枚举的自定义字段，message/stack/cause 无法查看，RSC/Next.js 常用的 `digest` 字段若为自定义可枚举属性仍可见但语义上的 Error 结构化展示完全丢失（formatDataForPreview 也回落到 default 分支的 String(data)，仅剩一行预览）。同一 MR 还删除了 react-devtools-shell 中 error / errorWithCause / errorWithDigest / domexception 四个演示用例与 DigestError 类，等于移除后没有任何示例或测试承载该行为，属于无说明、无覆盖的产品行为退化。",
+      "evidence": [
+        "packages/react-devtools-shared/src/hydration.js:400-435 — 删除 'error' 分支后 Error 走 'class_instance'，仅通过 getAllEnumerableKeys(data) 序列化属性",
+        "packages/react-devtools-shared/src/utils.js:637-651 — isError 判定被删除，Error 的 toStringValue 为非 Date/HTMLAllCollection 后由 isPlainObject 判假并返回 'class_instance'",
+        "packages/react-devtools-shared/src/utils.js:1006-1008 — formatDataForPreview 对 'class_instance' 落到 default 分支 `truncateForDisplay(String(data))`",
+        "diff 中被删除的注释：\"// name, message, stack and cause are not enumerable yet still interesting.\" 与其对应的 value.message / value.stack / value.cause 序列化逻辑",
+        "packages/react-devtools-shell/src/app/Hydration/index.js — 删除 DigestError 类以及 error / errorWithCause / errorWithDigest / domexception 四个 props 用例"
+      ],
+      "rule": "REGRESSION-DEVTOOLS-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 功能回退（DevTools 可检视信息丢失）且缺少替代方案与验证。影响评估：用户在 Elements/Components 面板中无法再查看 Error 的 message / stack / cause，调试错误对象（尤其是 RSC/Server Action 错误）的能力明显下降；由于演示用例被删除，该退化不会被任何现有测试发现。",
+        "suggestion": "[重构思路] 若确需移除 'error' 类型，请在 dehydrate 的 'class_instance' 分支对 Error 做特判转发（或保留最小化的 message/stack 序列化），并在丢失字段处补一条注释/CHANGELOG 说明与对应单测。代码示例：`if (data instanceof Error) { value.message = data.message; value.stack = data.stack; }`",
+        "subcategory": ""
+      }
+    }
+  ]
+}

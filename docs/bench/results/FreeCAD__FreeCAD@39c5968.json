@@ -1,0 +1,62 @@
+{
+  "instance_id": "FreeCAD__FreeCAD@39c5968",
+  "repo": "FreeCAD/FreeCAD",
+  "base_commit": "b59cd794274c8c007b2ef16c3a06fecf30c0aef1",
+  "head_commit": "39c5968bdc6c0b20d94d4a629cd43eafee1e56d0",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 248.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "src/App/Application.cpp",
+      "line": 1167,
+      "summary": "删除 .c_str() 使 #6892 的 NUL 截断修复失效，路径尾部 PATHSEP 被埋到 NUL 之后",
+      "failure_scenario": "本次重构把 `std::string path = std::string(RESOURCEDIR).c_str();` 改成了 `auto path = std::string(RESOURCEDIR);`，但紧邻的注释仍写着「#6892: Conda may inject null characters => remove them」。原先的写法是先构造临时 std::string 再取其 c_str() 重新构造，从而在首个 NUL 处截断，正是该 issue 的修复手段；改写后字符串中保留了 conda 注入的空字符，随后 `path += PATHSEP` 追加的分隔符落在 NUL 之后。由于这些路径最终以 C 字符串形式传给 Qt/系统 API（如在 `QDir(QString::fromStdString(path))`、`mConfig[\"AppHomePath\"] + path` 之后返回给调用者再由 `c_str()` 使用），操作系统与 C 字符串处理会在 NUL 处截断，导致返回的路径丢失结尾分隔符或尾部片段，进而拼出错误的资源/库/文档目录。同样问题存在于 getLibraryDir 与 getHelpDir（第 1182、1196 行）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "REFACTOR-SEMANTICS-001"
+    },
+    {
+      "file": "src/App/Application.cpp",
+      "line": 421,
+      "summary": "AbortIOException 的 Python 限定名由 Base.PyExc_FC_AbortIOException 变为 Base.AbortIOException",
+      "failure_scenario": "旧实现对 AbortIOException 调用的是 `PyErr_NewException(\"Base.PyExc_FC_AbortIOException\", PyExc_BaseException, nullptr)`，而其他 12 个异常的名字与模块属性名一致。新的 lambda 统一以 `\"Base.\" + ename` 拼接，因此该异常类型的限定名变成 `Base.AbortIOException`。虽然模块属性键始终是 `AbortIOException`（Python 侧访问方式不变），但异常类型的 tp_name/`__name__` 会变化，异常回溯文本与任何按类型名做字符串匹配的脚本、日志解析或测试断言会看到不同的名字。该变更顺带修正了旧命名不一致的问题，但没有在提交说明/变更记录中体现。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "API-COMPAT-002"
+    },
+    {
+      "file": "cMake/FreeCAD_Helpers/InitializeFreeCADBuildOptions.cmake",
+      "line": 16,
+      "summary": "直接删除 FREECAD_PARALLEL_COMPILE_JOBS / FREECAD_PARALLEL_LINK_JOBS 而未提供弃用过渡",
+      "failure_scenario": "本次改动把两个构建选项的 `option()` 声明与对应的 Ninja `JOB_POOLS` 配置（`set_property(GLOBAL APPEND PROPERTY JOB_POOLS compile_job_pool=... / link_job_pool=...` 与 `CMAKE_JOB_POOL_COMPILE/LINK`）整段删除。这些选项是内存受限环境下构建 FreeCAD 的可用手段：删除后，用户与 CI 脚本传入的 `-DFREECAD_PARALLEL_COMPILE_JOBS=...` 将被 CMake 静默忽略（仅在「Manually-specified variables were not used」提示中出现），既没有 `message(DEPRECATION ...)`，也没有替代方案或迁移说明。在一个以代码现代化为主题的 MR 中夹带用户可见的功能移除，容易在下游打包/CI 中造成难以定位的构建并行度变化。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "BUILD-CONFIG-003"
+    },
+    {
+      "file": "src/App/Application.cpp",
+      "line": 305,
+      "summary": "同一个函数内 InterpreterSingleton 的限定方式不一致",
+      "failure_scenario": "重构后 application::setupPythonTypes 前半部分使用未限定的 `InterpreterSingleton::addType(...)`（第 305-310 行），后半部分却写成 `Base::InterpreterSingleton::addType(...)`（第 327 行起，共 20 余处），而同文件第 368 行仍保留 `Base::Interpreter()` 的函数式写法。这些写法在语义上等价（Interpreter.h:382-385 的 `Interpreter()` 返回单例，addType 为静态成员），但同一函数内三种风格并存，降低了可读性，也让后续批量替换/代码检索变得更困难。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.5,
+      "rule": "STYLE-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\FreeCAD__FreeCAD\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\FreeCAD__FreeCAD@39c5968.diff\n  caseId              FreeCAD__FreeCAD@39c5968\n  --issue             (未传)\n  --taskId            FreeCAD__FreeCAD@39c5968\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\n✓ 完成 · 耗时 135.4s · 模型调用 14 次 · token 输入 45,048（未命中） · 输出 17,254 · 缓存命中 341,888（88.4%） · 工具 27 次（主会话 27 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0121\n[time] 阶段耗时 | 总墙钟 136.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 135.4s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 3.0s (2.2%) | P2 8.1s (6.0%) | P3 5.9s (4.3%) | P4 80.6s (59.6%) | P5 30.7s (22.7%) | P6 7.0s (5.2%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 45,048（未命中） | 输出 17,254 | 缓存命中 341,888（88.4%） | $0.0121\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\FreeCAD__FreeCAD@39c5968\\audit\\20261115_055619_485.json",
+  "token_usage": {
+    "input_tokens": 45048,
+    "output_tokens": 17254,
+    "cache_read_input_tokens": 341888
+  }
+}

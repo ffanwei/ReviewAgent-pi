@@ -1,0 +1,185 @@
+{
+  "generatedAt": "2026-11-15T00:18:10.033Z",
+  "runId": "20261115_001617_922",
+  "source": "mr",
+  "caseId": "alibaba__spring-ai-alibaba@3555a95",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 104,
+      "title": "apply() 吞掉全部异常并仅记录 message，中断状态被丢弃且丢失堆栈信息",
+      "description": "改造后 apply() 用 catch (Exception e) 捕获所有异常，只以 logger.error(\"...:{}\", e.getMessage()) 输出一行文本后 return null。这带来三个问题：一是 response.get() 抛出的 InterruptedException 被吞掉却没有调用 Thread.currentThread().interrupt() 恢复中断标志，线程池中的中断信号会丢失，影响优雅关闭与后续任务；二是日志只打印 getMessage()，不带异常对象，getTranslatedText 抛出的 IllegalStateException 与网络异常将完全没有堆栈，线上无法定位；三是行为语义从「抛 RuntimeException」变为「返回 null」，调用方拿到 null 无法区分「入参非法」「下游返回非 200」「网络超时」三类情况，翻译工具会静默失败。",
+      "evidence": [
+        "AliTranslateService.java:99-103 — try { TranslateGeneralResponse resp = response.get(); String translated = getTranslatedText(resp); return new Response(translated); }",
+        "AliTranslateService.java:104-107 — catch (Exception e) { logger.error(\"Failed to invoke alitranslate caused by:{}\", e.getMessage()); return null; }",
+        "AliTranslateService.java:115-133 — getTranslatedText 会抛出 IllegalStateException（response error / body is null / code != 200 / data is null），这些信息在 apply() 中仅剩 message 文本",
+        "diff 中被删除的原实现为 `catch (Exception e) { throw new RuntimeException(e); }`，即本次由抛出改为静默返回 null"
+      ],
+      "rule": "RELIABILITY-EXCEPTION-SWALLOW",
+      "confidence": 0.82,
+      "tips": {
+        "review": "[缺陷类型] 异常吞噬 + 中断标志丢失 + 日志缺少堆栈 + 错误语义由抛异常退化为返回 null。影响评估：InterruptedException 被吞后线程中断状态不复位，可能造成线程池关闭阻塞；线上故障仅有单行 message，无法定位代码路径；翻译失败与参数错误对调用方不可区分，工具调用会静默产出空结果。",
+        "suggestion": "[重构思路] 分类型处理：中断异常单独捕获并恢复中断标志；其余异常保留异常对象记录完整堆栈；对外表现上保持可判别的错误语义（返回携带错误信息的 Response 或抛出受控的业务异常）。代码示例：`catch (InterruptedException e) { Thread.currentThread().interrupt(); logger.error(\"alitranslate invoke interrupted\", e); return null; } catch (Exception e) { logger.error(\"Failed to invoke alitranslate\", e); return null; }`",
+        "subcategory": "异常处理与中断恢复"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 142,
+      "title": "sourceLanguage 声明为可选且宣称默认 zh，但反序列化缺失时 apply() 直接返回 null",
+      "description": "Request record 把 sourceLanguage 标注为 @JsonProperty(required = false) 并在描述中写「default is zh」，但默认值只在单参构造器 Request(String text) 中通过 this(text, LANGUAGE_CODE_ZH, LANGUAGE_CODE_EN) 生效。作为 LLM 工具调用的参数载体，JSON 反序列化走的是三分量规范构造器，模型省略 sourceLanguage 时该分量为 null；而 apply() 新增的前置校验要求 sourceLanguage 非空白，于是返回 null，翻译静默失败。同时 targetLanguage 的默认值存在完全相同的陷阱（其描述也写「default is en」）。",
+      "evidence": [
+        "AliTranslateService.java:141-145 — @JsonProperty(required = false, value = \"sourceLanguage\") @JsonPropertyDescription(\"Source language of the text, default is zh\") String sourceLanguage",
+        "AliTranslateService.java:147-149 — public Request(@JsonProperty(\"text\") String text) { this(text, LANGUAGE_CODE_ZH, LANGUAGE_CODE_EN); } 仅此单参构造器提供默认值",
+        "AliTranslateService.java:84-87 — if (request == null || !StringUtils.hasText(request.text) || !StringUtils.hasText(request.sourceLanguage) || !StringUtils.hasText(request.targetLanguage)) { return null; }",
+        "diff 中 sourceLanguage 为本次新增分量，且原实现是硬编码 sourceLanguage(LANGUAGE_CODE)"
+      ],
+      "rule": "CONTRACT-DEFAULT-VALUE-IGNORED",
+      "confidence": 0.78,
+      "tips": {
+        "review": "[缺陷类型] 声明为可选并承诺默认值，但实际反序列化路径不填默认值，导致静默失败。影响评估：模型按 JSON Schema 理解 sourceLanguage 可省略，一旦省略即得到 null 结果，表现为工具「不返回任何翻译」，且与 F001 的返回 null 叠加后无从排查。",
+        "suggestion": "[重构思路] 在 apply() 或紧凑构造器中统一兜底默认值，使默认语义与 JSON Schema 描述一致；不要依赖只在 Java 侧生效的便利构造器。代码示例：`public Request { sourceLanguage = StringUtils.hasText(sourceLanguage) ? sourceLanguage : LANGUAGE_CODE_ZH; targetLanguage = StringUtils.hasText(targetLanguage) ? targetLanguage : LANGUAGE_CODE_EN; }`，或在校验处 `String src = StringUtils.hasText(request.sourceLanguage) ? request.sourceLanguage : LANGUAGE_CODE_ZH;`",
+        "subcategory": "参数默认值与契约不一致"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 62,
+      "title": "删除 public 常量 LANGUAGE_CODE 并改变 Request record 的规范构造器签名属破坏性 API 变更",
+      "description": "本次把 public static final String LANGUAGE_CODE 删除并替换为 LANGUAGE_CODE_ZH / LANGUAGE_CODE_EN，同时 Request record 的分量由 (text, targetLanguage) 变为 (text, sourceLanguage, targetLanguage)，targetLanguage 的位置随之从第 2 个参数变为第 3 个参数。仓库内检索 LANGUAGE_CODE 的名称级引用为 0 处、AliTranslateService 仅被 AliTranslateAutoConfiguration 引用，因此本仓库编译不受影响；但该 starter 是发布到社区的 artifact，外部使用者直接调用 new Request(text, \"en\") 会编译失败，而若是先编译再升级依赖，则旧的 (String,String) 构造器已不存在、只剩 (String) 与 (String,String,String)，属于二进制不兼容；同时被 @Deprecated 化的 setAccessKeyId/setAccessKeySecret 说明作者已在考虑兼容，常量删除却未给出同等的兼容层。",
+      "evidence": [
+        "AliTranslateService.java:62-64 — 新增 public static final String LANGUAGE_CODE_ZH = \"zh\"; 与 LANGUAGE_CODE_EN = \"en\";（diff 中被删除的为 public static final String LANGUAGE_CODE = \"zh\"）",
+        "AliTranslateService.java:137-145 — record Request(String text, String sourceLanguage, String targetLanguage)，分量顺序相较原 (String text, String targetLanguage) 已变化",
+        "review_find_references(\"LANGUAGE_CODE\") 返回 0 处引用；AliTranslateService 仅被 AliTranslateAutoConfiguration 引用，仓库内无测试或示例引用",
+        "AliTranslateProperties.java:49-61 — setAccessKeyId/setAccessKeySecret 被保留并标注 @Deprecated，说明项目对向后兼容有约定"
+      ],
+      "rule": "API-BREAKING-CHANGE",
+      "confidence": 0.65,
+      "tips": {
+        "review": "[缺陷类型] 公开常量删除与 record 规范构造器签名变更造成的源码/二进制不兼容。影响评估：升级该 starter 版本的外部项目将编译失败或运行时 NoSuchMethodError；调用方若仍按 (text, targetLanguage) 传参，positional 顺序变化还会被编译器以类型相同而放过（两参版本已删除，风险主要体现为编译错误与语义误解）。",
+        "suggestion": "[重构思路] 如需保持兼容，可保留 LANGUAGE_CODE 作为 LANGUAGE_CODE_ZH 的 @Deprecated 别名，并为 Request 保留旧的两参构造器转发到新逻辑；若确认允许破坏性变更，则应在 CHANGELOG/迁移说明中显式标注，避免使用者无感升级。代码示例：`@Deprecated public static final String LANGUAGE_CODE = LANGUAGE_CODE_ZH;` 与 `@Deprecated public Request(String text, String targetLanguage) { this(text, LANGUAGE_CODE_ZH, targetLanguage); }`",
+        "subcategory": "公开 API 兼容性"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+      "line": 50,
+      "title": "access-key-id/access-key-secret 与 api-key/secret-key 双套属性映射同一字段，绑定顺序不确定",
+      "description": "改造后 AliTranslateProperties 同时存在继承来的 setApiKey/setSecretKey 与本地保留的 @Deprecated setAccessKeyId/setAccessKeySecret，两套 setter 写入的是同一个底层字段，因此 spring.ai.alibaba.toolcalling.alitranslate 下出现 access-key-id 与 api-key 两个等价属性名。当使用者在不同配置源中同时提供两者（例如 yaml 里写 access-key-id、环境变量里写 API_KEY），Spring Boot 的绑定顺序由属性源优先级与迭代顺序决定，最终取值不可预测，且会静默以错误凭据调用；此外 spring-boot-configuration-processor 会为同一字段生成两条元数据，IDE 提示出现重复项，用户无法判断哪个才是推荐写法。",
+      "evidence": [
+        "AliTranslateProperties.java:37-43 — getAccessKeyId() 返回 getApiKey()，getAccessKeySecret() 返回 getSecretKey()",
+        "AliTranslateProperties.java:49-61 — @Deprecated setAccessKeyId(String) { this.setApiKey(accessKeyId); } 与 @Deprecated setAccessKeySecret(String) { this.setSecretKey(accessKeySecret); }",
+        "CommonToolCallProperties.java:56-70 — 父类已有 setApiKey/setSecretKey 写入 apiKey/secretKey 字段",
+        "同目录已完成 common 化改造的 BaiduTranslateProperties、GoogleTranslateProperties 均未保留此类别名 setter，属本模块独有写法"
+      ],
+      "rule": "MAINTAINABILITY-AMBIGUOUS-BINDING",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 同一配置字段的多属性名别名，导致绑定不确定与元数据重复。影响评估：多配置源混用时凭据可能取自非预期来源，表现为鉴权失败且难以复现；配置元数据重复降低可用性。",
+        "suggestion": "[重构思路] 只保留一套官方属性名（api-key/secret-key），在迁移说明中告知旧键改名；若必须兼容旧键，则在文档中明确不再推荐并保证只在单一属性源生效，避免两套键并存。代码示例：`// 仅保留 getter 兼容读取，移除别名 setter\\n@Deprecated public String getAccessKeyId() { return getApiKey(); }`",
+        "subcategory": "配置属性命名冲突"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 78,
+      "title": "继承 CommonToolCallProperties 后 base-url/network-timeout 可配置但实现中完全未使用",
+      "description": "AliTranslateProperties 改为继承 CommonToolCallProperties 后，对外暴露了 base-url、network-timeout、app-id、token 等通用属性，但 AliTranslateService 仍然在 overrideConfiguration 中硬编码 setEndpointOverride(\"mt.aliyuncs.com\")，也没有把 properties.getNetworkTimeout() 传给 ClientOverrideConfiguration；父类无参构造器还把 baseUrl 默认置为 \"/\"、networkTimeout 默认置为 10。结果是用户按 common 模块约定配置 network-timeout 或 base-url 时不会产生任何效果，属于「配置静默无效」，与同目录 BaiduTranslate/GoogleTranslate 通过 super(baseUrl) 与 RestClientTool.builder(jsonParseTool, properties) 真正消费这些属性的做法不一致。",
+      "evidence": [
+        "AliTranslateService.java:75-79 — AsyncClient.builder().region(properties.getRegion()).credentialsProvider(provider).overrideConfiguration(ClientOverrideConfiguration.create().setEndpointOverride(\"mt.aliyuncs.com\")).build()，未引用 properties.getBaseUrl()/getNetworkTimeout()",
+        "CommonToolCallProperties.java:41-44 — 无参构造器把 baseUrl 置为 CommonToolCallConstants.DEFAULT_BASE_URL（\"/\"）、networkTimeout 置为 10，这些默认值在 alitranslate 中无人读取",
+        "BaiduTranslateProperties.java:35-38 — 对比实现通过 super(TRANSLATE_HOST_URL) 把真实 baseUrl 交给父类，并由 BaiduTranslateService 消费",
+        "AliTranslateProperties.java:33-35 — 构造器仅调用 setPropertiesFromEnv，未调用 super(baseUrl)"
+      ],
+      "rule": "MAINTAINABILITY-DEAD-CONFIG",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 暴露但未消费的配置项（dead configuration）。影响评估：使用方按新继承的通用属性配置超时/端点时无任何效果，排障时会误判为 SDK 行为异常；属性语义在同一 common 体系内不一致，增加维护成本。",
+        "suggestion": "[重构思路] 二选一：要么把 base-url/network-timeout 真正接入 AsyncClient（endpoint 与 ClientOverrideConfiguration 的超时设置），要么不要暴露这些无意义的继承字段（改为组合而非继承）。代码示例：`ClientOverrideConfiguration cfg = ClientOverrideConfiguration.create().setEndpointOverride(StringUtils.hasText(properties.getBaseUrl()) ? properties.getBaseUrl() : \"mt.aliyuncs.com\"); if (properties.getNetworkTimeout() != null) { cfg.setConnectTimeout(Duration.ofMinutes(properties.getNetworkTimeout())); }`",
+        "subcategory": "配置项未被实现消费"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 133,
+      "title": "getTranslatedText 未校验 data.getTranslated() 为空，可能构造出 Response(null)",
+      "description": "新的强类型解析链已经逐级校验了 statusCode、body、code、data，但最后一个环节直接 return data.getTranslated()，未校验翻译结果是否为空。当接口返回 code=200 但 translated 缺省（例如源文本为纯符号、被过滤为空、或下游降级返回空串）时，会返回 new Response(null)，工具调用方得到一个 content 为 null 的结果而不是明确的错误，后续若对该字段做字符串处理将出现 NullPointerException。",
+      "evidence": [
+        "AliTranslateService.java:129-133 — TranslateGeneralResponseBody.Data data = body.getData(); if (null == data) { throw new IllegalStateException(...); } return data.getTranslated();",
+        "AliTranslateService.java:101-102 — String translated = getTranslatedText(resp); return new Response(translated);",
+        "AliTranslateService.java:152-154 — record Response(String translatedTexts) 无任何非空约束"
+      ],
+      "rule": "CORRECTNESS-NULL-RESULT",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 解析链末端缺少结果非空校验。影响评估：返回 Response(null) 使下游收到 null 字段，可能在消费端触发 NullPointerException，或让模型把 null 当作合法翻译结果。",
+        "suggestion": "[重构思路] 与前面几级保持一致，对 translated 也做非空白校验并抛出明确的 IllegalStateException（或返回空字符串兜底）。代码示例：`String translated = data.getTranslated(); if (!StringUtils.hasText(translated)) { throw new IllegalStateException(\"Failed to invoke alitranslate, caused translated text is empty.\"); } return translated;`",
+        "subcategory": "返回值空值安全"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "安全",
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+      "line": 34,
+      "title": "环境变量兜底使用通用名 ACCESS_KEY_ID/ACCESS_KEY_SECRET，与同类 starter 的服务专属命名约定不一致",
+      "description": "构造器调用 setPropertiesFromEnv(\"ACCESS_KEY_ID\", \"ACCESS_KEY_SECRET\", null, null)，而 CommonToolCallProperties#setPropertiesFromEnv 在字段为空时直接 System.getenv 取值。ACCESS_KEY_ID / ACCESS_KEY_SECRET 是阿里云生态通用的变量名，宿主机上只要存在（例如为 aliyun CLI、OSS 或其它阿里云 SDK 配置的凭据），alitranslate 就会静默采用这套凭据发起调用，可能出现「用 A 账号凭据调用 B 账号翻译服务」的越权/串号情况，也让凭据来源难以审计。同目录已改造完成的 BaiduTranslateProperties、GoogleTranslateProperties 均使用带服务前缀的专属变量名（BAIDU_TRANSLATE_SECRET_KEY、GOOGLE_TRANSLATE_APIKEY），本模块偏离了既有约定。",
+      "evidence": [
+        "AliTranslateProperties.java:33-35 — public AliTranslateProperties() { this.setPropertiesFromEnv(\"ACCESS_KEY_ID\", \"ACCESS_KEY_SECRET\", null, null); }",
+        "CommonToolCallProperties.java:115-121 — setPropertiesFromEnv 在字段为空时直接 this.apiKey = System.getenv(apiKeyEnv) / this.secretKey = System.getenv(secretKeyEnv)",
+        "BaiduTranslateProperties.java:37 — setPropertiesFromEnv(null, \"BAIDU_TRANSLATE_SECRET_KEY\", \"BAIDU_TRANSLATE_APP_ID\", null)",
+        "GoogleTranslateProperties.java:34 — setPropertiesFromEnv(\"GOOGLE_TRANSLATE_APIKEY\", null, null, null)"
+      ],
+      "rule": "SECURITY-ENV-CREDENTIAL-LEAK",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 通用环境变量名导致的凭据串用/来源不明。影响评估：共享宿主机上可能以非预期账号身份调用付费翻译接口，产生跨账号计费与权限问题，且难以从日志判断凭据来源。",
+        "suggestion": "[重构思路] 改用带模块前缀的专属变量名（如 ALITRANSLATE_ACCESS_KEY_ID / ALITRANSLATE_ACCESS_KEY_SECRET），把通用名作为次选兜底并在文档中显式说明优先级。代码示例：`this.setPropertiesFromEnv(\"ALITRANSLATE_ACCESS_KEY_ID\", \"ALITRANSLATE_ACCESS_KEY_SECRET\", null, null);`",
+        "subcategory": "凭据来源与配置隔离"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateAutoConfiguration.java",
+      "line": 32,
+      "title": "继承的 enabled 默认 true 与 @ConditionalOnProperty 缺少 matchIfMissing 造成开关语义自相矛盾",
+      "description": "AliTranslateProperties 现在继承 CommonToolCallProperties，后者的 enabled 字段默认值为 true；但自动配置上的 @ConditionalOnProperty(prefix = AliTranslateProperties.PREFIX, name = \"enabled\", havingValue = \"true\") 未设置 matchIfMissing = true，判定依据是 Environment 而非已绑定的 properties bean。因此用户只配置了 api-key/secret-key 而没写 enabled=true 时，Bean 不会被创建，而配置元数据却宣称 enabled 默认为 true，排障时极易误判；同目录的 BaiduTranslateAutoConfiguration 已采用 matchIfMissing = true 的写法，本模块与之不一致。",
+      "evidence": [
+        "AliTranslateAutoConfiguration.java:32 — @ConditionalOnProperty(prefix = AliTranslateProperties.PREFIX, name = \"enabled\", havingValue = \"true\")，缺少 matchIfMissing",
+        "CommonToolCallProperties.java:39 — private boolean enabled = true;",
+        "AliTranslateProperties.java:27 — public class AliTranslateProperties extends CommonToolCallProperties",
+        "BaiduTranslateAutoConfiguration.java:34-35 — @ConditionalOnProperty(prefix = BaiduTranslateProperties.BaiDuTranslatePrefix, name = \"enabled\", havingValue = \"true\", matchIfMissing = true)"
+      ],
+      "rule": "MAINTAINABILITY-SWITCH-INCONSISTENCY",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 自动配置开关的默认值与属性默认值不一致。影响评估：仅配置凭据（符合 common 体系 enabled 默认 true 的直觉）的用户会得不到 Bean，需额外排查为何翻译工具未注册；与同类 starter 行为不一致也增加维护心智负担。",
+        "suggestion": "[重构思路] 与其他已完成 common 化改造的 starter 对齐，显式声明 matchIfMissing 语义，并在迁移说明中写明行为变化。代码示例：`@ConditionalOnProperty(prefix = AliTranslateProperties.PREFIX, name = \"enabled\", havingValue = \"true\", matchIfMissing = true)`",
+        "subcategory": "自动配置开关语义"
+      }
+    }
+  ]
+}

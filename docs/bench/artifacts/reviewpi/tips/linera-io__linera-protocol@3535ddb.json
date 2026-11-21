@@ -1,0 +1,68 @@
+[
+  {
+    "filePath": "linera-core/src/client/mod.rs",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {",
+        "review": "[缺陷类型] 分页终止条件与服务端页大小隐式耦合（隐式协议约定 + 版本漂移）。\n[影响评估] 当前两端常量一致时行为正确；一旦服务端页大小变小或版本不同步，同步会静默只处理第一页，跨链消息延迟投递，且无任何错误/日志提示，排查成本高。",
+        "suggestion": "[重构思路] 让终止条件只依赖响应本身「是否还有数据」：取到空页才停止；或把页大小作为查询参数由客户端提出，并让响应用 `has_more` 显式表达是否被截断。\n代码示例：\n```rust\nloop {\n    let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n    let info = remote_node.handle_chain_info_query(query).await?;\n    let page = info.requested_received_log;\n    if page.is_empty() {\n        break;\n    }\n    offset += page.len() as u64;\n    remote_log.extend(page);\n}\n```",
+        "category": "可靠性",
+        "subcategory": "分页终止条件",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 854,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F002",
+        "code": "let mut remote_log = Vec::new();",
+        "review": "[缺陷类型] 分页未降低客户端内存/累积量，缺少总量与迭代上限。\n[影响评估] 大链或异常 validator 下内存与请求次数无界增长；分页的收益只体现在单次报文体积。",
+        "suggestion": "[重构思路] 逐页增量处理：每取到一页就更新 chain→heights 映射，并保留一份轻量的位置索引（条目序号→是否已下载），避免持有一份完整 Vec；同时给循环加总条数/页数上限作为防护。\n代码示例：\n```rust\nlet mut max_pages = MAX_PAGES;\nloop {\n    let page = /* ... */;\n    if page.is_empty() || max_pages == 0 { break; }\n    max_pages -= 1;\n    for entry in &page { remote_heights.entry(entry.chain_id).or_default().insert(entry.height); }\n    offset += page.len() as u64;\n}\n```",
+        "category": "性能",
+        "subcategory": "内存占用",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 846,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "linera-core/src/chain_worker/state.rs",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "pub const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;",
+        "review": "[缺陷类型] 协议契约常量位置/可见性不当造成的模块耦合。\n[影响评估] 契约与实现分离，调整上限时容易漏改一侧，进而触发 F001 所述的静默截断。",
+        "suggestion": "[重构思路] 把上限移到 `linera-core/src/data_types.rs` 中与 `ChainInfoQuery`/`ChainInfo` 相邻（或改为查询参数 `request_received_log_page_size: Option<u64>`），让 client 与 worker 都从契约层读取同一语义。\n代码示例：\n```rust\n// data_types.rs\n/// Maximum number of `received_log` entries returned in one `ChainInfo`.\npub const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;\n```",
+        "category": "可维护",
+        "subcategory": "模块耦合",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 53,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F004",
+        "code": "let end = (start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES))",
+        "review": "[缺陷类型] 冗余的区间夹取 + 依赖存储层越界保护。\n[影响评估] 当前行为正确，但越界安全性不写在本地代码里；一旦读接口语义变化或换成批量读取，会出现 start>end 的非法区间处理问题，且冗余代码会误导读代码的人。",
+        "suggestion": "[重构思路] 显式表达意图：先按 count 判断是否还有数据，再计算合法区间；并在注释中说明依赖 read 的夹取行为，避免出现 start>end。\n代码示例：\n```rust\nlet count = chain.received_log.count();\nif start < count {\n    let end = start.saturating_add(CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES).min(count);\n    info.requested_received_log = chain.received_log.read(start..end).await?;\n}\n```",
+        "category": "可靠性",
+        "subcategory": "边界与区间安全",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 1418,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

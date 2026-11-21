@@ -1,0 +1,328 @@
+[
+  {
+    "filePath": "internal/tsoptions/parsinghelpers.go",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "switch key {",
+        "review": "[缺陷类型] 配置选项解析分支缺失，选项声明与实现脱节。影响评估：`emitDeclarationOnly`、`downlevelIteration` 等选项在 tsconfig 中被静默忽略，产物形态错误（该只出 `.d.ts` 时仍出 JS；ES5 下迭代降级错误），且无任何诊断提示，用户极难察觉。",
+        "suggestion": "[重构思路] 要么恢复被删除的 case 分支，要么在删除字段的同时同步删除 `declscompiler.go` 中的声明以免「声明存在但静默不生效」；建议长期改为由 `CommandLineOption` 声明驱动赋值，避免 switch 与声明表漂移。代码示例：`case \"emitDeclarationOnly\":\\n\\tallOptions.EmitDeclarationOnly = parseTristate(value)\\ncase \"downlevelIteration\":\\n\\tallOptions.DownlevelIteration = parseTristate(value)`",
+        "category": "可靠性",
+        "subcategory": "未细分",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 143,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/parser/reparser.go",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "importClause := importTag.ImportClause.Clone(&p.factory)",
+        "review": "[缺陷类型] 未判空的指针解引用（parser panic）。影响评估：任何 JS 文件中出现 `@import` 但未写 import clause 时，解析器直接 panic，进程崩溃而不是给出诊断；该输入完全由用户源码控制。",
+        "suggestion": "[重构思路] 先取 `importTag.ImportClause`，为 nil 时按 side-effect import 处理（不设 IsTypeOnly，仍生成声明或跳过），仅在非 nil 时 Clone 并置 IsTypeOnly。代码示例：`importClause := importTag.ImportClause\\nif importClause != nil {\\n\\timportClause = importClause.Clone(&p.factory)\\n\\timportClause.AsImportClause().IsTypeOnly = true\\n}`",
+        "category": "可靠性",
+        "subcategory": "空指针安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 120,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/parser/parser.go",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "p.identifiers = nil",
+        "review": "[缺陷类型] 状态清理时机不当，二次装配拿到空状态。影响评估：含顶层 await 的模块文件（ESM 中很常见）在 emit 时可能生成与用户标识符冲突的临时名；JS/`@ts-check` 文件的 JSDoc 诊断被整份跳过，产生漏报。",
+        "suggestion": "[重构思路] 把 `p.jsdocCache = nil` / `p.identifiers = nil` 的位置移到 `parseSourceFileWorker` 末尾（与已有的 `p.jsdocCache = nil` 合并、放在最后一次 `finishSourceFile` 之后），或用局部变量在 `finishSourceFile` 内复制而非提前清空。代码示例：`// finishSourceFile 内只做赋值\\nresult.Identifiers = p.identifiers\\nresult.SetJSDocCache(p.jsdocCache)\\n// parseSourceFileWorker 末尾统一清理\\np.identifiers = nil\\np.jsdocCache = nil`",
+        "category": "可靠性",
+        "subcategory": "解析器状态生命周期",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 362,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/ast/ast.go",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "return updateNode(f.NewImportDeclaration(modifiers, importClause, moduleSpecifier, attributes), node.AsNode(), f.hooks)",
+        "review": "[缺陷类型] AST 工厂更新函数丢失节点 Kind。影响评估：Transformer 更新后节点种类漂移，后续基于 Kind 的判定（elide/跳过/打印分支）失效，可能把仅用于类型检查的 JSDoc `@import` 声明输出到 JS 中；此类缺陷表现为输出多出 import，排查成本高。",
+        "suggestion": "[重构思路] 参照其它节点成对提供更新函数，按 `node.Kind` 分派新建：`func (f *NodeFactory) updateImportOrJSImportDeclaration(kind Kind, node *ImportDeclaration, ...)`，`UpdateImportDeclaration` 与 `Clone` 都改为传 `node.Kind`（`node.AsNode().Kind`）。代码示例：`return updateNode(f.newImportOrJSImportDeclaration(node.AsNode().Kind, modifiers, importClause, moduleSpecifier, attributes), node.AsNode(), f.hooks)`",
+        "category": "可靠性",
+        "subcategory": "节点种类保真",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 4056,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/core/compileroptions.go",
+    "reviewTips": [
+      {
+        "id": "F005",
+        "code": "ModuleDetection                           ModuleDetectionKind                       `json:\"moduleDetectionKind,omitzero\"`",
+        "review": "[缺陷类型] 对外序列化字段名与选项规范名不一致。影响评估：API/showConfig 消费者按 `moduleDetection` 读取会拿不到值，输出与 tsconfig 文档不一致；若无兼容层则属于契约破坏。",
+        "suggestion": "[重构思路] JSON tag 与选项名保持一致（`json:\"moduleDetection,omitzero\"`）；若确实需要在内部区分类型名，改动结构体字段名或类型名而不是线格式（wire name），并补一个序列化快照/契约测试。代码示例：`ModuleDetection ModuleDetectionKind `json:\"moduleDetection,omitzero\"``",
+        "category": "可维护",
+        "subcategory": "序列化契约命名",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 62,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "cmd/tsgo/main.go",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "return int(execute.CommandLine(newSystem(), nil, args[1:]))",
+        "review": "[缺陷类型] 功能重复实现（两套 tsc 前端）。\n影响评估：诊断输出、pretty 判定、统计信息在两处独立维护，容易出现同一次改动只更新一处导致 CLI 行为不一致（例如 F003 的格式问题在 execute 包内修正后，main.go 旧路径仍然不同）。",
+        "suggestion": "[重构思路] 把旧的手写流程标记为 deprecated 并转发到 execute.CommandLine（或仅保留 --printTypes 等 devel 开关），统一由 execute 包负责诊断格式化与统计输出。\n代码示例：\n```go\nif len(os.Args) == 1 {\n    return int(execute.CommandLine(newSystem(), nil, nil)) // 与 `tsgo tsc` 行为一致\n}\n```",
+        "category": "可维护",
+        "subcategory": "重复实现收敛",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 133,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F008",
+        "code": "if compilerOptions.NoEmit.IsFalseOrUnknown() {",
+        "review": "[缺陷类型] 配置选项读取但不生效（noEmitOnError 语义缺失）。影响评估：有错仍落盘，用户以为「有错就不产出」，实际可能把坏产物继续发布；tsgo 默认入口与 tsc 模拟路径一致地偏离 tsc 语义。",
+        "suggestion": "[重构思路] 把「是否 emit」收敛到 execute 层一处：先算诊断，再按 noEmitOnError 跳过并返回 ExitStatusDiagnosticsPresent_OutputsSkipped。代码示例：`shouldEmit := !options.NoEmit.IsTrue() && !(options.NoEmitOnError.IsTrue() && len(diagnostics) > 0); if shouldEmit { emitResult = program.Emit(compiler.EmitOptions{}) } else { emitResult.EmitSkipped = true }`",
+        "category": "可靠性",
+        "subcategory": "编译选项未生效",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 227,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F011",
+        "code": "func identifierCount(p *compiler.Program) int {",
+        "review": "[缺陷类型] 死代码/重复实现。影响评估：不直接影响运行结果，但增加阅读成本并存在两份实现口径漂移的风险；Go 编译器不会对未使用的函数报错，因此会长期残留。",
+        "suggestion": "[重构思路] 删除 cmd/tsgo/main.go 中的 identifierCount，统一使用 Program 的方法；若担心后续需要按文件维度统计，则把该能力移入 Program 并加注释说明。代码示例：`// 删除 func identifierCount(...)`，保留 `stats.add(\"Identifiers\", program.IdentifierCount())`。",
+        "category": "可维护",
+        "subcategory": "死代码清理",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 318,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/execute/watch.go",
+    "reviewTips": [
+      {
+        "id": "F012",
+        "code": "watchInterval = time.Duration(*w.options.ParsedConfig.WatchOptions.Interval) * time.Millisecond",
+        "review": "[缺陷类型] 指针字段未判空即解引用（nil pointer dereference）。影响评估：`tsc --watch` 在常见配置下直接崩溃，watch 功能完全不可用；崩溃发生在启动阶段，用户无法通过重试规避。",
+        "suggestion": "[重构思路] 用带默认值的取值辅助函数替代裸解引用，并在解析层给 Interval 设默认值。代码示例：`watchInterval := 1000 * time.Millisecond; if wo := w.options.ParsedConfig.WatchOptions; wo != nil && wo.Interval != nil { watchInterval = time.Duration(*wo.Interval) * time.Millisecond }`；同时给 interval 增加下界（如 `< 1ms` 时回退默认值）以避免 0 轮询忙等。",
+        "category": "可靠性",
+        "subcategory": "空指针安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 16,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F014",
+        "code": "w.program = compiler.NewProgramFromParsedCommandLine(w.options, w.host)",
+        "review": "[缺陷类型] 无变化时的冗余全量重建（watch 轮询热点路径）。影响评估：常驻进程长时间空转，CPU 与磁盘 IO 持续占用；大项目下会显著拖慢保存后的实际响应时间，并使 watch 模式难以在笔记本/CI 上长时间运行。",
+        "suggestion": "[重构思路] 先用文件系统时间戳（或 fsnotify 事件）做变更检测，只有检测到变化时才重建 Program；把 prevModified 的采集与 Program 构建解耦（基于上次的 SourceFiles 列表）。代码示例：`if !w.filesChanged() { return }` 前置到 doCycle 开头；`w.program = compiler.NewProgramFromParsedCommandLine(...)` 仅在 changed 时执行，并复用上一次的 program 做增量重解析。",
+        "category": "性能",
+        "subcategory": "轮询热路径开销",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 30,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/execute/watcher.go",
+    "reviewTips": [
+      {
+        "id": "F016",
+        "code": "configFileName:   configParseResult.ConfigFile.SourceFile.FileName(),",
+        "review": "[缺陷类型] nil 结构体字段链式解引用（ConfigFile 未判空）。影响评估：`tsc <file> -w` 启动即 panic，watch 功能在该用法下完全不可用，且崩溃点远离用户输入，报错信息对用户无任何指导价值。",
+        "suggestion": "[重构思路] createWatcher 应容忍 ConfigFile 缺失：仅在 ConfigFile != nil 时取其文件名，否则回退为空（走非配置文件轮询路径），并在 watch 入口处对缺失 sys 支持/配置作显式诊断。代码示例：`configFileName := \"\"; if configParseResult.ConfigFile != nil { configFileName = configParseResult.ConfigFile.SourceFile.FileName() }`",
+        "category": "可靠性",
+        "subcategory": "空指针安全",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 28,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F017",
+        "code": "configParseResult, errors := getParsedCommandLineOfConfigFile(w.configFileName, &core.CompilerOptions{}, w.sys, extendedConfigCache)",
+        "review": "[缺陷类型] 状态延续缺失：watch 重解析丢弃命令行覆盖选项。影响评估：watch 进程运行中选项静默变化，错误数/产物与非 watch 编译不一致，排查成本高（用户看到的配置与实际生效配置不同）。",
+        "suggestion": "[重构思路] 将命令行覆盖项显式保存在 watcher 上，重解析时作为 existingOptions 传入，保持与非 watch 路径一致；或复用 ParsedCommandLine 的合并函数。代码示例：`configParseResult, errors := getParsedCommandLineOfConfigFile(w.configFileName, w.commandLineOverrides, w.sys, extendedConfigCache)`，其中 `w.commandLineOverrides` 在 createWatcher 时从 ParsedCommandLine 拷贝。",
+        "category": "可靠性",
+        "subcategory": "配置状态延续",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 46,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/tsoptions/tsconfigparsing.go",
+    "reviewTips": [
+      {
+        "id": "F019",
+        "code": "ParsedConfig: &core.ParsedOptions{",
+        "review": "[缺陷类型] 配置项未被消费（tsconfig watchOptions 被静默丢弃）。影响评估：用户对轮询策略、排除目录的设置在 watch 模式下不起作用，长轮询与大量无关文件扫描会持续发生，且没有任何告警，排查成本高。",
+        "suggestion": "[重构思路] 在 tsconfig 解析中按 \"watchOptions\" 键解析出 WatchOptions 并写入 ParsedOptions，与编译器选项走同一条 convertOptionsFromJson 流程。代码示例：`if watchJson, ok := rawConfig.Get(\"watchOptions\"); ok { wo, errs := convertOptionsFromJson(commandLineWatchOptionsMap, watchJson, basePath, &watchOptionsParser{&core.WatchOptions{}}); errors = append(errors, errs...); parsedConfig.watchOptions = *wo.WatchOptions }`，随后在构造 ParsedOptions 时填 `WatchOptions: parsedConfig.watchOptions`。",
+        "category": "可靠性",
+        "subcategory": "配置未生效",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1178,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/execute/tsc.go",
+    "reviewTips": [
+      {
+        "id": "F021",
+        "code": "return ExitStatusNotImplemented, nil",
+        "review": "[缺陷类型] 既有 CLI 能力被替换为「未实现」退出码，且两个入口行为分叉。影响评估：`tsc --showConfig` 的用户与自动化脚本拿到 5 且无输出，属功能可见的回归；若确为刻意暂留，也应至少恢复输出并统一退出码语义。",
+        "suggestion": "[重构思路] 复用旧入口的能力把 showConfig 落地到 tsc 路径：解析完配置后序列化 `configParseResult.CompilerOptions()` 并返回 `ExitStatusSuccess`，随后删除 NotImplemented 分支；同时把 cmd/tsgo 旧入口改为直接调用 execute.CommandLine。代码示例：`if compilerOptionsFromCommandLine.ShowConfig.IsTrue() { printShowConfig(sys, configParseResult.CompilerOptions()); return ExitStatusSuccess, nil }`",
+        "category": "可靠性",
+        "subcategory": "CLI 功能回归",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 104,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F022",
+        "code": "if options.ListFilesOnly.IsFalse() {",
+        "review": "[缺陷类型] Tristate 三态判断误用（IsFalse 当作「未开启」）。影响评估：默认配置下全局诊断永不报告，缺失 lib/全局类型错误被静默吞掉，tsc 退出码可能为 0，用户误以为编译成功。",
+        "suggestion": "[重构思路] 统一改成「显式为真才跳过」的否定形式，避免三态误读；建议在 code review 规则中禁止用 IsFalse() 表达「未开启」。代码示例：`if !options.ListFilesOnly.IsTrue() { diagnostics = append(diagnostics, program.GetGlobalDiagnostics()...) }`",
+        "category": "可靠性",
+        "subcategory": "三态判断误用",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 211,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/packagejson/cache.go",
+    "reviewTips": [
+      {
+        "id": "F024",
+        "code": "func (p *PackageJson) GetVersionPaths(trace func(string)) VersionPaths {",
+        "review": "[缺陷类型] 关键解析逻辑缺少聚焦单测，缺陷只能由重型基线间接暴露。影响评估：回归发现滞后、定位困难，且基线中混有大量纯格式变化，易掩盖真实行为变化。",
+        "suggestion": "[重构思路] 为 GetVersionPaths/GetPaths 增加表驱动单测：覆盖缺失字段、非 object 类型、合法 range 命中/不命中、非法 range、以及 paths 数组含非字符串元素；断言 VersionPaths.Exists()、Version 与映射结果。代码示例：`func TestGetVersionPaths(t *testing.T) { cases := []struct{ json, key string; wantVersion string; wantPaths map[string][]string }{...}; for _, c := range cases { p := packagejson.Parse([]byte(c.json)); got := p.GetVersionPaths(nil); ... } }`",
+        "category": "可测试性",
+        "subcategory": "关键路径缺测试",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 21,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      },
+      {
+        "id": "F025",
+        "code": "if ok {",
+        "review": "[缺陷类型] 布尔语义取反（成功分支被当作失败处理），导致版本化路径映射整体失效。影响评估：依赖 typesVersions 的第三方包解析结果改变，出现新增类型错误/找不到模块，且非法 range 会被误判为匹配全部版本，属于典型的静默回归。",
+        "suggestion": "[重构思路] 把 ok 的真假语义对齐，非法 range 才 trace 并 continue；同时补一个 typesVersions 命中/未命中的解析单测锁定行为。代码示例：`keyRange, ok := semver.TryParseVersionRange(key); if !ok { if trace != nil { trace(diagnostics.X_package_json_has_a_typesVersions_entry_0_that_is_not_a_valid_semver_range.Format(key)) }; continue }`",
+        "category": "可靠性",
+        "subcategory": "条件取反导致特性失效",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 42,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F027",
+        "code": "v.paths.Set(key, slice)",
+        "review": "[缺陷类型] nil 接收者方法调用（应为局部变量却写成字段）导致 panic，同时存在候选路径构造不完整。影响评估：命中 typesVersions 的项目在解析阶段直接崩溃，属致命可靠性问题；崩溃点还在模块解析热路径上。",
+        "suggestion": "[重构思路] 循环写入局部 `paths`，最后统一赋回；非字符串元素直接跳过该条目而不是留空串，并在写入前校验切片全部为有效字符串。代码示例：`paths := collections.NewOrderedMapWithSizeHint[string, []string](v.pathsJSON.Size()); for key, value := range v.pathsJSON.Entries() { if value.Type != JSONValueTypeArray { continue }; arr := value.AsArray(); slice := make([]string, 0, len(arr)); for _, p := range arr { if p.Type != JSONValueTypeString { continue }; slice = append(slice, p.Value.(string)) }; paths.Set(key, slice) }; v.paths = paths; return v.paths`",
+        "category": "可靠性",
+        "subcategory": "空指针解引用",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 99,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "internal/execute/outputs.go",
+    "reviewTips": [
+      {
+        "id": "F028",
+        "code": "if pretty.IsFalseOrUnknown() {",
+        "review": "[缺陷类型] 同一语义（默认 prettiness）在两处实现相反，产生混合格式输出。影响评估：终端输出格式不一致，错误摘要中的转义码污染非 TTY/日志场景，也让基线产生大量无意义格式变更。",
+        "suggestion": "[重构思路] 统一走单一判定：`createDiagnosticReporter` 也使用 `shouldBePretty(sys, options)`（并在其中补上 defaultIsPretty/TTY 判断），保证诊断行与错误摘要使用同一 pretty 结论。代码示例：`func createDiagnosticReporter(sys System, options *core.CompilerOptions) diagnosticReporter { if !shouldBePretty(sys, options) { return writePlain } ; return writePretty }`",
+        "category": "可读性",
+        "subcategory": "输出格式不一致",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 32,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  }
+]

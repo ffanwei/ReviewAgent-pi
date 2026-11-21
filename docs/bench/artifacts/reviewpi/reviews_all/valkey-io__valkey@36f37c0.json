@@ -1,0 +1,79 @@
+{
+  "generatedAt": "2026-11-15T01:19:47.484Z",
+  "runId": "20261115_011802_927",
+  "source": "mr",
+  "caseId": "valkey-io__valkey@36f37c0",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P0",
+      "category": "安全",
+      "file": "src/networking.c",
+      "line": 2771,
+      "title": "snprintf 三元分支内使用逗号表达式，格式串被替换为整数/用户缓冲区指针，构成格式化字符串漏洞并可能崩溃",
+      "description": "新增的长 query buffer 分支把三元运算符写在了 snprintf 的格式串实参位置，而每个分支内部用圆括号包了一个逗号表达式：真分支 `(\"...Redacted %zu bytes\", sdslen(c->querybuf) - c->qb_pos)` 的结果是 size_t，假分支 `(\"...%.*s...\", PROTO_DUMP_LEN / 2, c->querybuf + c->qb_pos, ..., c->querybuf + sdslen(c->querybuf) - PROTO_DUMP_LEN / 2)` 的结果是最后一个逗号操作数，即 `c->querybuf + sdslen(c->querybuf) - PROTO_DUMP_LEN / 2` 这个 char* 指针。于是：(a) 三元表达式两个操作数类型不兼容（size_t 与 char*），属于约束违反，编译器只能做隐式转换，代码语义已不可控；(b) 当 hide_user_data_from_log 为真时，snprintf 的格式串是一个小整数（字节数）被当成地址，解引用非法地址会直接崩溃；(c) 当 hide_user_data_from_log 为假时，格式串变成指向客户端 query buffer 尾部的指针——即攻击者完全可控的数据作为 printf 格式串解析，可触发 %s/%n 等格式化字符串攻击（越界读、任意写）并泄露内存，同时原有的 PROTO_DUMP_LEN/2 等参数不再与格式说明符对应，日志内容也是错的。该分支仅在 querybuf 长度 >= PROTO_DUMP_LEN 时触发，即构造较大的畸形请求即可稳定命中，属于可被远端客户端触发的路径。",
+      "evidence": [
+        "src/networking.c:2771-2776 — `snprintf(buf, sizeof(buf), server.hide_user_data_from_log ? (\"...Redacted %zu bytes\", sdslen(c->querybuf) - c->qb_pos) : (\"...'%.*s' (... more %zu bytes ...) '%.*s'\", PROTO_DUMP_LEN / 2, c->querybuf + c->qb_pos, sdslen(c->querybuf) - c->qb_pos - PROTO_DUMP_LEN, PROTO_DUMP_LEN / 2, c->querybuf + sdslen(c->querybuf) - PROTO_DUMP_LEN / 2));`",
+        "src/networking.c:2759-2766 — `#define PROTO_DUMP_LEN 128`、`char buf[256];`、`buf[0] = '\\0';`（该分支在 querybuf 剩余长度 >= 128 时进入）",
+        "src/networking.c:2788 — 随后 `serverLog(loglevel, \"Protocol error (%s) from client: %s. %s\", errstr, client, buf);` 会把 buf 内容输出",
+        "src/config.c:3194 — `createBoolConfig(\"hide-user-data-from-log\", NULL, MODIFIABLE_CONFIG, server.hide_user_data_from_log, 1, ...)` 默认值为 1，但两种取值下该 snprintf 都已被破坏"
+      ],
+      "rule": "FORMAT-STRING-001",
+      "confidence": 0.93,
+      "tips": {
+        "review": "[缺陷类型] 把三元/逗号表达式放在 snprintf 格式串位置，导致指针被当整数、用户数据被当格式串（格式化字符串漏洞 + 未定义行为）。影响评估：hide-user-data-from-log=on 时非法地址解引用可使 server 崩溃；=off 时攻击者可通过畸形协议请求让 query buffer 内容成为 printf 格式串，造成内存泄露或越界写；同时日志脱敏功能本身失效或输出错误信息。远端可触发，必须在合入前修复。",
+        "suggestion": "[重构思路] 用 if/else 拆成两次独立、带字面量格式串的 snprintf 调用，绝不要让格式串来自表达式或用户数据；两个分支各自保留正确的可变参数。代码示例：\n```c\n} else if (c->querybuf) {\n    if (server.hide_user_data_from_log) {\n        snprintf(buf, sizeof(buf),\n                 \"Query buffer during protocol error: [hide_user_data_from_log]Redacted %zu bytes\",\n                 sdslen(c->querybuf) - c->qb_pos);\n    } else {\n        snprintf(buf, sizeof(buf),\n                 \"Query buffer during protocol error: '%.*s' (... more %zu bytes ...) '%.*s'\",\n                 PROTO_DUMP_LEN / 2, c->querybuf + c->qb_pos,\n                 sdslen(c->querybuf) - c->qb_pos - PROTO_DUMP_LEN,\n                 PROTO_DUMP_LEN / 2, c->querybuf + sdslen(c->querybuf) - PROTO_DUMP_LEN / 2);\n    }\n}\n```",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/defrag.c",
+      "line": 845,
+      "title": "moduleLateDefrag 的 endtime 被换成 ustime 墙钟基准，与 VM_DefragShouldStop 的单调时钟比较不再同一基准",
+      "description": "defragLaterItem 现在把单调时钟的 endtime 转换成墙钟微秒（`ustime() + (endtime - getMonotonicUs())`）传给 moduleLateDefrag，但 moduleLateDefrag 只是把 endtime 原样放进 ValkeyModuleDefragCtx（src/module.c:13682-13686、13570-13575），其唯一消费者 VM_DefragShouldStop 仍然是 `ctx->endtime <= getMonotonicUs()`（src/module.c:13600）。getMonotonicUs() 是「相对任意起点」的微秒计数（src/monotonic.h:18-25），而 ustime() 是自 epoch 起的墙钟微秒（src/server.c:317-325），两者相差约 1.7e15 us 量级。因此模块在 late defrag 回调里调用 ValkeyModule_DefragShouldStop 时几乎永远返回 0（不停止），回调会一口气把整个大 key 迭代完；反之若单调时钟起点恰好偏大（如某些平台的 TSC 起点），也可能被立即判为超时导致 late defrag 反复中断、每轮只做极少工作。前者会让 active-defrag 的单次 duty cycle 失控、长时间阻塞主线程与命令处理，后者会让 defrag 长时间无进展、不断重试。此外 `endtime - getMonotonicUs()` 是 uint64 无符号运算后再与 long long 的 ustime() 相加并赋给 long long，存在有符号/无符号混用与实现定义转换，语义脆弱。",
+      "evidence": [
+        "src/defrag.c:845-846 — `long long endtimeWallClock = ustime() + (endtime - getMonotonicUs()); return moduleLateDefrag(sds_key_passed_as_robj, ob, cursor, endtimeWallClock, dbid);`",
+        "src/module.c:13682-13686 — `int moduleLateDefrag(robj *key, robj *value, unsigned long *cursor, monotime endtime, int dbid) { ... ValkeyModuleDefragCtx defrag_ctx = {endtime, cursor, key, dbid};`",
+        "src/module.c:13600 — `return (ctx->endtime != 0 && ctx->endtime <= getMonotonicUs());`（VM_DefragShouldStop，模块侧唯一读取 endtime 的 API）",
+        "src/defrag.c:1189-1191 — endtime 来源于 `monotime starttime = getMonotonicUs(); ... monotime endtime = starttime + dutyCycleUs;`",
+        "src/defrag.c:889 — 同一端逻辑用 `getMonotonicUs() > endtime` 判定超时，说明基准应为单调时钟",
+        "src/monotonic.h:22-25 — `typedef uint64_t monotime;` 且注释为「counter of micro-seconds relative to an arbitrary point in time」；src/server.c:317-325 ustime() 为 gettimeofday 的墙钟微秒"
+      ],
+      "rule": "CLOCK-BASE-001",
+      "confidence": 0.86,
+      "tips": {
+        "review": "[缺陷类型] 跨模块时间基准不一致（单调时钟 vs 墙钟），endtime 传给模块后仍被当作单调时钟使用。影响评估：模块 datatype 的 late defrag 超时判定失效，可能导致单次 defrag 占用主线程过久（延迟抖动、命令阻塞）或反复无效中断；属于 defrag 生命周期/调度路径的显著回归，且用户无感知，只在启用 activedefrag 且模块类型 free_effort 较大时暴露。",
+        "suggestion": "[重构思路] 保持 endtime 的单调时钟基准不变，直接传 endtime；如果确实有模块需要墙钟时间，应新增独立字段/API，而不是改变既有 endtime 的语义。若必须做换算，应保证换算方向与消费者一致，并避免有符号/无符号混用。代码示例：\n```c\nvoid *sds_key_passed_as_robj = objectGetKey(ob);\nreturn moduleLateDefrag(sds_key_passed_as_robj, ob, cursor, endtime, dbid);\n```\n若确实需要墙钟（例如模块 API 文档约定为 wall clock），则应同时修改 src/module.c:13600 为同一基准，例如在 defrag ctx 中分别保留 `monotime monotonic_endtime` 与 `ustime_t wallclock_endtime`，并同步更新 valkeymodule.h 的文档与模块侧行为。",
+        "subcategory": ""
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "src/module.c",
+      "line": 9766,
+      "title": "VM_GetCurrentUserName 删除 ctx->client 逐级判空，无客户端上下文调用将空指针崩溃",
+      "description": "改动前该 API 在 `ctx == NULL || ctx->client == NULL || ctx->client->user == NULL || ctx->client->user->name == NULL` 时返回 NULL 并置 errno=EINVAL（注释也已明确该契约），改动后直接 `VM_CreateString(ctx, ctx->client->user->name, sdslen(...))`。而 moduleCreateContext 只对 VALKEYMODULE_CTX_TEMP_CLIENT / VALKEYMODULE_CTX_NEW_CLIENT 设置 out_ctx->client，线程安全上下文（VM_GetThreadSafeContext / VM_GetDetachedThreadSafeContext）与定时器/事件回调等上下文 client 为 NULL（src/module.c:952-962 的 memset 后未赋值），此时会解引用 NULL/野指针，是整个 server 进程崩溃而不是该模块收到错误码。同时这是对外导出的模块 API（src/module.c:14088 REGISTER_API(GetCurrentUserName)、src/valkeymodule.h:2218），属于公开契约变更：依赖「无 client 返回 NULL」的既有模块会由「优雅失败」变成「进程崩溃」，且文档行被删除却没有任何断言或错误返回替代，行为变为未定义。VM_CreateString 本身支持 ctx 为 NULL（src/module.c:2704-2711），说明本函数被设计为可容忍宽泛上下文，删除判空更不合理；同文件 VM_GetModuleUserACLString 采用 serverAssert(user != NULL) 的显式防御风格（src/module.c:9754）。",
+      "evidence": [
+        "src/module.c:9765-9767 — `ValkeyModuleString *VM_GetCurrentUserName(ValkeyModuleCtx *ctx) { return VM_CreateString(ctx, ctx->client->user->name, sdslen(ctx->client->user->name)); }`",
+        "diff 中被删除的守卫：`if (ctx == NULL || ctx->client == NULL || ctx->client->user == NULL || ctx->client->user->name == NULL) { errno = EINVAL; return NULL; }`，同时删除了注释「If the context is not associated with a client connection, NULL is returned and errno is set to EINVAL.」",
+        "src/module.c:952-962 — moduleCreateContext 仅在 VALKEYMODULE_CTX_TEMP_CLIENT / VALKEYMODULE_CTX_NEW_CLIENT 分支设置 out_ctx->client，其余上下文（含线程安全上下文）client 保持 NULL",
+        "src/module.c:2704-2711 — VM_CreateString 明确「The module context 'ctx' is optional and may be NULL」，说明 NULL ctx 是受支持的输入",
+        "src/module.c:14088 / src/valkeymodule.h:2218 — `REGISTER_API(GetCurrentUserName);` 与 `VALKEYMODULE_GET_API(GetCurrentUserName);` 表明这是对外公开模块 API"
+      ],
+      "rule": "NULL-SAFETY-001",
+      "confidence": 0.88,
+      "tips": {
+        "review": "[缺陷类型] 公开 API 中删除了多重空指针守卫，却在未加断言的前提下解引用 ctx->client。影响评估：模块在线程安全上下文、定时器、事件回调、defrag 回调等无 client 场景调用该 API 时会让整个 server 段错误崩溃（进程级故障，非模块级错误）；同时属于不兼容的 API 契约变更，会影响已依赖 NULL/EINVAL 语义的第三方模块。",
+        "suggestion": "[重构思路] 恢复逐级判空并保留 errno=EINVAL 契约；若确实希望「必须有 client」的强约束，则改为 serverAssert/显式 serverLog 后返回 NULL，并在 valkeymodule.h 与模块文档中同步说明，同时提供不依赖 client 的替代 API。代码示例：\n```c\nValkeyModuleString *VM_GetCurrentUserName(ValkeyModuleCtx *ctx) {\n    if (ctx == NULL || ctx->client == NULL || ctx->client->user == NULL ||\n        ctx->client->user->name == NULL) {\n        errno = EINVAL;\n        return NULL;\n    }\n    return VM_CreateString(ctx, ctx->client->user->name,\n                           sdslen(ctx->client->user->name));\n}\n```\n若确定要变更契约，请在同一 MR 中更新 src/valkeymodule.h 的 API 文档并补充说明调用前提。",
+        "subcategory": ""
+      }
+    }
+  ]
+}

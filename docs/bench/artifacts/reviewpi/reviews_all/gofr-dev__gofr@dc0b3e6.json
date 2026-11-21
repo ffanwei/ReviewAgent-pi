@@ -1,0 +1,209 @@
+{
+  "generatedAt": "2026-11-15T02:56:48.755Z",
+  "runId": "20261115_025435_214",
+  "source": "mr",
+  "caseId": "gofr-dev__gofr@dc0b3e6",
+  "rep": 1,
+  "model": "deepseek-v4.1-flash",
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P1",
+      "category": "可靠性",
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 172,
+      "title": "URI 分支只接受 mongodb:// 方案，mongodb+srv:// 等标准连接串会被拒绝导致无法连接",
+      "description": "generateMongoURI 在 config.URI 非空时调用 getDBHost 校验，而 getDBHost 要求 parsedURL.Scheme 严格等于 \"mongodb\"，否则返回 errIncorrectURI；Connect 收到该错误后直接 return，不再建立连接。改造前 Connect 是把 c.config.URI 原样交给 options.Client().ApplyURI，因此 MongoDB Atlas 普遍使用的 mongodb+srv://（以及 driver 支持的其它方案）在旧版本可用，本 MR 之后会稳定失败并只打印一条 \"error generating mongo URI\" 日志。这是对既有可用配置的破坏性回归，属于 P1。",
+      "evidence": [
+        "pkg/gofr/datasource/mongo/mongo.go:172 — if parsedURL.Scheme != \"mongodb\" { return \"\", errIncorrectURI }",
+        "pkg/gofr/datasource/mongo/mongo.go:92-96 — Connect 中 generateMongoURI 返回错误后 c.logger.Errorf(...); return，不再调用 mongo.Connect",
+        "diff 中被删除的旧逻辑：uri := c.config.URI; if uri == \"\" { uri = fmt.Sprintf(...) }，随后直接 options.Client().ApplyURI(uri)，对方案不做限制",
+        "pkg/gofr/datasource/mongo/mongo.go:46 — errIncorrectURI = errors.New(\"incorrect URI for mongo\")"
+      ],
+      "rule": "RELIABILITY-URI-SCHEME-001",
+      "confidence": 0.8,
+      "tips": {
+        "review": "[缺陷类型] 连接串方案白名单过窄导致合法配置被判为非法。影响评估：使用 mongodb+srv://（Atlas 默认形态）或其它 driver 支持方案的既有服务在升级后无法连接数据库，且仅有一条笼统的错误日志，排查成本高；属于向后不兼容的行为回退。",
+        "suggestion": "[重构思路] 要么放宽方案校验（mongodb、mongodb+srv 均允许），要么直接复用官方 driver 的 connstring 解析器做校验，避免自己维护白名单；同时 host 提取失败也不应阻断连接，可降级为日志字段。代码示例：`var allowed = map[string]bool{\"mongodb\": true, \"mongodb+srv\": true}`；`if !allowed[parsedURL.Scheme] { return \"\", errIncorrectURI }`。",
+        "subcategory": "连接串校验回归"
+      }
+    },
+    {
+      "id": "F002",
+      "severity": "P2",
+      "category": "可靠性",
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 156,
+      "title": "user/password 与 database 先手工转义再交给 url.URL.String()，造成二次转义使包含特殊字符的凭据失效",
+      "description": "构造 URI 时对用户名/密码调用了 url.QueryEscape，对 database 调用了 url.PathEscape，但随后 u.String() 会按 userinfo/Path 规则再转义一次 '%'。结果是密码中的 '@'、'/'、'%' 等会从 \"%40\" 变成 \"%2540\"，空格会被 QueryEscape 变成 '+' 且不会再被还原，driver 收到的凭据与真实凭据不一致，认证失败；database 名同理被双重转义，导致连到的库名错误。现有用例只覆盖了纯字母密码（password / mydb），因此该问题不会被测试发现。",
+      "evidence": [
+        "pkg/gofr/datasource/mongo/mongo.go:156 — u.User = url.UserPassword(url.QueryEscape(config.User), url.QueryEscape(config.Password))",
+        "pkg/gofr/datasource/mongo/mongo.go:152 — Path: \"/\" + url.PathEscape(config.Database)",
+        "pkg/gofr/datasource/mongo/mongo.go:163 — return u.String(), u.Hostname(), nil，String() 会对 userinfo 与 Path 再次执行 escape",
+        "net/url 的 escape 对 '%' 一律转义，因此已转义序列会被二次编码为 %25xx；QueryEscape 还会把空格编码为 '+'"
+      ],
+      "rule": "RELIABILITY-URL-ENCODE-001",
+      "confidence": 0.72,
+      "tips": {
+        "review": "[缺陷类型] 手工转义 + 标准库自动转义导致的二次编码。影响评估：密码或库名包含 @ / : % 空格等字符时连接 MongoDB 认证失败或连到错误库，且错误信息仅是 ping 失败，难以定位。",
+        "suggestion": "[重构思路] 交给 net/url 统一转义：UserPassword 传原始值，Path 直接赋未转义的库名（若需严格禁止 '/' 可在赋 Path 前自行校验）；或者直接使用 driver 的 connstring 构建工具。代码示例：`u.Path = \"/\" + config.Database`；`if config.User != \"\" { u.User = url.UserPassword(config.User, config.Password) }`；随后 `return u.String(), u.Hostname(), nil`。",
+        "subcategory": "URL 转义"
+      }
+    },
+    {
+      "id": "F003",
+      "severity": "P2",
+      "category": "可测试性",
+      "file": "pkg/gofr/container/sql_mock.go",
+      "line": 44,
+      "title": "mock 的 Select 不再回填查询结果，使用方测试会静默拿到零值而产生假阳性",
+      "description": "sqlMockDB.Select 的 value 参数被改为忽略（_ interface{}），原来基于 reflect 的回填逻辑与 queryWithArgs.ReturnsResponse 一并删除。这意味着使用 NewMockContainer 的测试即使调用 ExpectSelect 声明了期望数据，被传入的 dest 也不会被填充，后续断言拿到的是零值。若使用方测试依赖 mock 返回的数据（例如断言查询结果长度或字段值），测试会判断失败或更糟——在不做断言时静默通过，掩盖真实的映射缺陷；同时 Select 的文档注释仍声称\"用户需预先提供已填充的数据接口\"，与实际行为相反。",
+      "evidence": [
+        "pkg/gofr/container/sql_mock.go:44 — func (m sqlMockDB) Select(_ context.Context, _ interface{}, query string, args ...interface{})，value 参数被丢弃",
+        "diff 中删除的旧实现：valueType := reflect.TypeOf(value); tobechanged.Set(reflect.ValueOf(m.queryWithArgs[0].value)) 等回填逻辑",
+        "diff 中删除的 queryWithArgs.value 字段与 func (q *queryWithArgs) ReturnsResponse(value any)",
+        "pkg/gofr/container/sql_mock.go:107-109 — 注释仍写着 \"it expects the user to already provide the populated data interface field, which can then be used within the functions implemented by the user\"",
+        "pkg/gofr/container/mockcontainer_test.go:79-80 — 调用时传入了 &ids，但测试未对回填结果做任何断言"
+      ],
+      "rule": "TESTABILITY-MOCK-BEHAVIOR-001",
+      "confidence": 0.7,
+      "tips": {
+        "review": "[缺陷类型] mock 能力被静默削弱（数据回填消失）。影响评估：下游基于 SQL mock 的测试失去验证结果映射的手段，可能长期假阳性；升级后既有测试若依赖回填数据会直接断言失败。",
+        "suggestion": "[重构思路] 若确要移除反射回填，应同步修正注释并通过显式 API 声明返回值（例如 ExpectSelect(...).WillReturnRows(...)），或至少在 Select 中记录\"value 未被填充\"的警告；并更新变更说明指导使用方改用 go-sqlmock 的 Rows 置入。代码示例：`func (m sqlMockDB) Select(_ context.Context, dest interface{}, query string, args ...interface{}) { ...; if dest != nil { m.logger.Debugf(\"Select mock does not populate %T\", dest) } }`，配合 `ExpectSelect(...).WillReturnRows(rows)`。",
+        "subcategory": "测试 mock 能力退化"
+      }
+    },
+    {
+      "id": "F004",
+      "severity": "P2",
+      "category": "可维护",
+      "file": "pkg/gofr/container/sql_mock.go",
+      "line": 110,
+      "title": "ExpectSelect 返回类型由 *queryWithArgs 改为 void、ReturnsResponse 被删除，属破坏性公开 API 变更",
+      "description": "ExpectSelect 是 container 包对外提供的测试辅助方法，原本返回 *queryWithArgs 以支持链式 .ReturnsResponse(...)。本次改为无返回值并删除 ReturnsResponse，使用方代码（框架外部项目）在升级后会出现编译错误：原本的 `mock.SQL.ExpectSelect(...).ReturnsResponse(x)` 无法编译。仓库内 ReturnsResponse 引用为 0，说明现有测试套件无法暴露该破坏性变更，缺少迁移说明与兼容层。",
+      "evidence": [
+        "pkg/gofr/container/sql_mock.go:110 — func (m *mockSQL) ExpectSelect(_ context.Context, _ interface{}, query string, args ...interface{})（无返回值）",
+        "diff 中删除：func (q *queryWithArgs) ReturnsResponse(value any)",
+        "引用检索：ReturnsResponse 全仓 0 处引用；ExpectSelect 仅 pkg/gofr/container/mockcontainer_test.go:76-77 两处调用，且未使用返回值",
+        "pkg/gofr/container/mockcontainer_test.go:57-70 注释仍按旧语义描述 ExpectSelect 的行为"
+      ],
+      "rule": "MAINTAINABILITY-API-BREAK-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 公开测试辅助 API 的不兼容变更。影响评估：下游项目升级后测试代码编译失败，需人工改写；由于仓库内无调用点，CI 无法提前发现。",
+        "suggestion": "[重构思路] 保留返回 *queryWithArgs 以维持链式调用兼容（ReturnsResponse 可标记 Deprecated 后逐步移除），或按语义化版本要求在主版本升级中说明；同时在包文档/CHANGELOG 中写明迁移方式。代码示例：`func (m *mockSQL) ExpectSelect(...) *queryWithArgs { ...; return &m.queryWithArgs[0] }`，`// Deprecated: mock no longer populates value; use ExpectSelect with sqlmock rows instead`。",
+        "subcategory": "公开 API 兼容性"
+      }
+    },
+    {
+      "id": "F005",
+      "severity": "P3",
+      "category": "可测试性",
+      "file": "pkg/gofr/container/sql_mock.go",
+      "line": 46,
+      "title": "mock 断言改用 Fatal/Fatalf，断言失败会通过 logging.Fatal 直接 os.Exit 终止整个测试进程",
+      "description": "Select/HealthCheck/Dialect 中原本使用 logger.Errorf/Error 记录不一致，现改为 Fatalf/Fatal。NewMockContainer 注入的是 logging.NewLogger(logging.DEBUG)，而 logging.logger.Fatal 在写日志后调用 os.Exit(1)。因此任何期望不匹配都会让整个 go test 进程立即退出：没有失败用例名、没有调用栈，同包其它测试不再执行，剩余未消费期望也不会被 finish 中的 require.Empty 报出，调试成本显著上升。",
+      "evidence": [
+        "pkg/gofr/container/sql_mock.go:46/54/58/63/72/86 — m.logger.Fatalf(...) / m.logger.Fatal(...)",
+        "pkg/gofr/logging/logger.go:135-140 — func (l *logger) Fatal(...) { l.logf(FATAL, ...); os.Exit(1) }",
+        "pkg/gofr/container/mock_container.go:60 — sqlMockDB{mockDB, &expectation, logging.NewLogger(logging.DEBUG)}，即断言路径使用真实 Fatal 实现",
+        "pkg/gofr/container/mockcontainer_test.go:68-70 注释承认该路径会 \"terminates the process\""
+      ],
+      "rule": "TESTABILITY-FATAL-ASSERT-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 测试辅助代码用进程级终止做断言。影响评估：失败信息丢失（无用例名与堆栈）、同包其它测试被中断，CI 上表现为无解释的 exit status 1。",
+        "suggestion": "[重构思路] 让 mock 持有 *testing.T（或用 t.Errorf/t.FailNow）以标准方式报告失败；若必须 fail-fast，采用 t.Fatalf 而非 os.Exit。代码示例：`type sqlMockDB struct { ...; t *testing.T }`；`if expectedText != query { m.t.Fatalf(\"expected query: %s, actual query: %s\", expectedText, query) }`。",
+        "subcategory": "测试失败反馈"
+      }
+    },
+    {
+      "id": "F006",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "pkg/gofr/container/sql_mock.go",
+      "line": 135,
+      "title": "ExpectHealthCheck/ExpectDialect 返回指向切片元素的指针，后续 prepend 重新分配会使先前返回的指针失效",
+      "description": "两个方法每次都新建一个长度 1 的切片，把新期望放在索引 0，再 append 到旧切片上，并返回 &m.expectedHealthCheck[0] / &m.expectedDialect[0]。这会分配新的底层数组，之前返回的指针指向旧数组；如果使用方先取指针、之后再声明第二条期望、然后才通过旧指针调用 WillReturnHealthCheck/WillReturnString，写入会落在已脱离 m.expectedHealthCheck 的副本上而静默丢失，测试拿到的是空期望值（空 status/空 dialect），产生难以定位的假失败或假通过。",
+      "evidence": [
+        "pkg/gofr/container/sql_mock.go:123-136 — ExpectHealthCheck 每次 make 新切片、append(healthCheckSlice, m.expectedHealthCheck...) 后 return &m.expectedHealthCheck[0]",
+        "pkg/gofr/container/sql_mock.go:142-155 — ExpectDialect 同样 prepend 并 return &m.expectedDialect[0]",
+        "pkg/gofr/container/sql_mock.go:138-140、161-163 — WillReturnHealthCheck/WillReturnString 通过该指针写入期望值",
+        "pkg/gofr/container/health_test.go:119 — 使用链式 mocks.SQL.ExpectHealthCheck().WillReturnHealthCheck(...)，一旦拆成两步即会触发指针失效"
+      ],
+      "rule": "CORRECTNESS-SLICE-PTR-001",
+      "confidence": 0.55,
+      "tips": {
+        "review": "[缺陷类型] 返回容器内部切片元素的指针，且该切片会被重建。影响评估：非链式写法下期望值写入丢失，测试表现不稳定且难以排查。",
+        "suggestion": "[重构思路] 改为传统追加并把返回指针保持在稳定位置（末尾），消费端相应从头部消费；或返回独立分配的期望对象并在消费时查找，避免暴露内部切片元素地址。代码示例：`hc := health{}; m.expectedHealthCheck = append(m.expectedHealthCheck, hc); return &m.expectedHealthCheck[len(m.expectedHealthCheck)-1]`，消费端改为 `idx := 0; expected := m.expectedHealthCheck[idx]; m.expectedHealthCheck = m.expectedHealthCheck[idx+1:]`。",
+        "subcategory": "指针失效"
+      }
+    },
+    {
+      "id": "F007",
+      "severity": "P3",
+      "category": "可靠性",
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 155,
+      "title": "仅当 User 与 Password 同时非空才写入 userinfo，配置了 User 但密码为空时凭据被静默丢弃",
+      "description": "构造 URI 时使用 `config.User != \"\" && config.Password != \"\"` 作为写入 userinfo 的条件，而旧实现无论密码是否为空都会拼出 `mongodb://user:pass@host:port/db?authSource=admin`。改造后只填了 User（例如密码通过其它方式注入、或从环境变量读取失败）的场景会生成不带任何凭据、却仍带 authSource=admin 的 URI，连接要么以匿名身份成功（权限语义变化），要么在后续操作中报权限错误，且日志里没有任何提示。",
+      "evidence": [
+        "pkg/gofr/datasource/mongo/mongo.go:155-157 — if config.User != \"\" && config.Password != \"\" { u.User = url.UserPassword(...) }",
+        "pkg/gofr/datasource/mongo/mongo.go:30-39 — Config 中 User/Password 为独立字段，未定义\"必须同时提供\"的约束",
+        "diff 中被删除的旧逻辑：fmt.Sprintf(\"mongodb://%s:%s@%s:%d/%s?authSource=admin\", c.config.User, c.config.Password, ...)，无论密码是否为空都会包含 userinfo",
+        "pkg/gofr/datasource/mongo/mongo.go:159-161 — 无条件设置 q.Set(\"authSource\", \"admin\")"
+      ],
+      "rule": "CORRECTNESS-CREDENTIAL-001",
+      "confidence": 0.5,
+      "tips": {
+        "review": "[缺陷类型] 凭据组合条件判断导致配置被静默忽略。影响评估：运维只配置了用户名而密码来源缺失时会以匿名连接，权限行为与预期不一致且无告警。",
+        "suggestion": "[重构思路] 以 User 是否非空作为判断依据（密码允许为空并显式传递），或在只配置一半时直接返回配置错误，避免静默降级。代码示例：`if config.User != \"\" { if config.Password == \"\" { return \"\", \"\", fmt.Errorf(\"%w: password is empty\", errMissingField) }; u.User = url.UserPassword(config.User, config.Password) }`。",
+        "subcategory": "凭据配置校验"
+      }
+    },
+    {
+      "id": "F008",
+      "severity": "P3",
+      "category": "可读性",
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 98,
+      "title": "连接日志改用 c.config.Host 而非解析出的 host，URI 场景下日志 host 为空；成功日志重复输出两次",
+      "description": "generateMongoURI 已返回 host，但紧随其后的 Debug 日志仍打印 c.config.Host；当使用 Config.URI（Deprecated 但受支持）时 Host 字段通常为空，日志会出现 \"connecting to MongoDB at  to database xxx\"，丢失最有用的连接目标信息。另外 Connect 末尾保留了原有的两条成功日志：L120 与 L127 内容几乎相同（都是 \"connected to mongoDB ... at <host> to database <db>\"），其中一条的 %v 传入的是 c.Database 对象，重复且不必要。",
+      "evidence": [
+        "pkg/gofr/datasource/mongo/mongo.go:92-98 — uri, host, err := generateMongoURI(...) 之后 c.logger.Debugf(\"connecting to MongoDB at %v to database %v\", c.config.Host, c.config.Database)",
+        "pkg/gofr/datasource/mongo/mongo.go:120 — c.logger.Logf(\"connected to mongoDB successfully at %v to database %v\", host, c.config.Database)",
+        "pkg/gofr/datasource/mongo/mongo.go:127 — c.logger.Logf(\"connected to MongoDB at %v to database %v\", host, c.Database)，与 L120 语义重复",
+        "pkg/gofr/datasource/mongo/mongo.go:131-137 — URI 分支下 host 由 getDBHost 解析得到，而 c.config.Host 保持为空"
+      ],
+      "rule": "READABILITY-LOG-001",
+      "confidence": 0.6,
+      "tips": {
+        "review": "[缺陷类型] 日志字段选取错误 + 重复日志。影响评估：使用 URI 配置时连接日志缺失目标地址，排障困难；重复成功日志增加噪音。",
+        "suggestion": "[重构思路] 统一使用 generateMongoURI 返回的 host，并合并两条成功日志为一条。代码示例：`c.logger.Debugf(\"connecting to MongoDB at %v to database %v\", host, c.config.Database)`；删除 L127，仅保留 `c.logger.Logf(\"connected to MongoDB at %v to database %v\", host, c.config.Database)`（放在 c.Database 赋值之后）。",
+        "subcategory": "日志质量"
+      }
+    },
+    {
+      "id": "F009",
+      "severity": "P3",
+      "category": "可维护",
+      "file": "go.mod",
+      "line": 39,
+      "title": "golang.org/x/oauth2、x/term、x/sys 被回退到旧版本，缺少原因说明与配套校验",
+      "description": "本 MR 在重构 mongo 与 sql mock 的同时，把 golang.org/x/oauth2 从 v0.25.0 回退到 v0.24.0、golang.org/x/term 从 v0.28.0 回退到 v0.27.0、间接依赖 golang.org/x/sys 从 v0.29.0 回退到 v0.28.0。依赖回退会一并丢弃这些版本中包含的缺陷/安全问题修复，且与本次改动主题无关；diff 中未同步出现 go.sum 变化，若校验和缺失会导致构建或 CI 失败，也使回退动机（解决依赖冲突？）无法追溯。",
+      "evidence": [
+        "go.mod:39 — golang.org/x/oauth2 v0.25.0 → v0.24.0",
+        "go.mod:41 — golang.org/x/term v0.28.0 → v0.27.0",
+        "go.mod:95 — golang.org/x/sys v0.29.0 → v0.28.0（indirect）",
+        "本次 diff 未包含 go.sum 的相应变化，无法确认校验和已同步"
+      ],
+      "rule": "MAINTAINABILITY-DEPS-001",
+      "confidence": 0.4,
+      "tips": {
+        "review": "[缺陷类型] 与主题无关的依赖降级且无说明。影响评估：可能回退上游修复引入的缺陷/安全问题；若 go.sum 未同步会直接导致 go build/go test 失败；后续排查依赖问题时缺少动机记录。",
+        "suggestion": "[重构思路] 若降级是为解决版本冲突，请在 MR 描述中写明冲突来源并单独提交依赖变更；确认 `go mod tidy` 后 go.sum 已同步，并跑通 CI 的构建与依赖检查。代码示例：`go get golang.org/x/oauth2@v0.24.0 && go mod tidy`，并在提交信息中记录降级原因。",
+        "subcategory": "依赖版本管理"
+      }
+    }
+  ]
+}

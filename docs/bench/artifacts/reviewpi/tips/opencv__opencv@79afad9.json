@@ -1,0 +1,187 @@
+[
+  {
+    "filePath": "modules/imgcodecs/src/grfmt_gif.cpp",
+    "reviewTips": [
+      {
+        "id": "F001",
+        "code": "restore = Mat(width, height, CV_8UC4, background);",
+        "review": "[缺陷类型] 几何尺寸参数顺序错误（rows/cols 互换）。影响评估：任何 width != height 且使用 DISPOSE_BACKGROUND 的 GIF 动画，消隐区域不会被恢复，输出帧内容错误；单元测试若只用方形帧则无法发现。",
+        "suggestion": "[重构思路] 恢复为 (rows, cols) 顺序，或改用 `Mat(Size(width, height), CV_8UC4, background)` 明确语义。代码示例：`restore = Mat(Size(width, height), CV_8UC4, background);`",
+        "category": "可靠性",
+        "subcategory": "内存布局/尺寸参数顺序",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 133,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "modules/imgproc/src/color_hsv.dispatch.cpp",
+    "reviewTips": [
+      {
+        "id": "F002",
+        "code": "static volatile bool initialized180 = false, initialized256 = false;",
+        "review": "[缺陷类型] 共享可变状态的竞态与不安全发布（benign initialization 被替换为手写标志）。影响评估：多线程首次调用 cvtColor(BGR2HSV) 时可能得到错误 HSV 结果、崩溃或内存损坏，且难以复现；延迟初始化本来是为避免启动期开销，现在反而引入竞态。",
+        "suggestion": "[重构思路] 回到编译器保证的 static 初始化（可用 lambda 一次性构造），或使用 std::once_flag / 原子标志 + 内存序；两张 hdiv 表与 sdiv 表各自独立初始化。代码示例：`static const UMat sdiv_data = []{ /* build */ return UMat(1,256,CV_32SC1,values); }();` 或 `static std::once_flag f180, f256; std::call_once(hrange==180 ? f180 : f256, [&]{ ... });`",
+        "category": "可靠性",
+        "subcategory": "并发初始化竞态",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 283,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  },
+  {
+    "filePath": "modules/videoio/misc/java/src/cpp/videoio_converters.cpp",
+    "reviewTips": [
+      {
+        "id": "F003",
+        "code": "JavaStreamReader::JavaStreamReader(JNIEnv* _env, jobject _obj) : env(_env)",
+        "review": "[缺陷类型] JNI 线程亲和性违规（跨线程复用 JNIEnv*）。影响评估：跨线程使用时 JNIEnv 指针可能失效，表现为崩溃（SIGSEGV）或随机 JNI 错误，属于难以定位的原生崩溃；析构路径同样受影响。",
+        "suggestion": "[重构思路] 缓存 JavaVM*（通过 `env->GetJavaVM(&vm)`），在 read/seek/析构中调用 `vm->GetEnv` 或 `vm->AttachCurrentThread` 获取当前线程的 JNIEnv，并在需要时 Detach；全局引用释放建议放在 Java 侧可控的生命周期点。代码示例：`JavaVM* vm; env->GetJavaVM(&vm); ... JNIEnv* e = nullptr; vm->GetEnv((void**)&e, JNI_VERSION_1_6); if (!e) { vm->AttachCurrentThread(&e, nullptr); }`",
+        "category": "可靠性",
+        "subcategory": "JNI 跨线程调用",
+        "severity": "Major",
+        "level": "Major",
+        "ruleId": "",
+        "lineNum": 3,
+        "source": "common-reviewer",
+        "confidence": "High"
+      },
+      {
+        "id": "F005",
+        "code": "env->GetByteArrayRegion(jBuffer, 0, static_cast<jsize>(size), reinterpret_cast<jbyte*>(buffer));",
+        "review": "[缺陷类型] JNI 调用错误处理缺失（未检查返回值与挂起异常）。影响评估：Java 侧异常被吞掉后转成“读到 0 字节/错误长度”，表现为视频打开失败但无有效错误信息，或解码数据错乱；挂起异常继续调用 JNI 还可能触发 VM abort。",
+        "suggestion": "[重构思路] 每次 JNI 调用后检查 `env->ExceptionCheck()` 并在必要时 `ExceptionDescribe/ExceptionClear` 后转成 C++ 异常；对返回长度做 `0 <= res <= size` 校验（参考 Python 侧的 CV_CheckLE）。代码示例：`jlong res = env->CallLongMethod(obj, m_read, jBuffer, size); if (env->ExceptionCheck()) { env->ExceptionClear(); CV_Error(cv::Error::StsError, \"Java IStreamReader::read failed\"); } CV_CheckLE(res, size, \"Stream chunk size should be <= requested size\");`",
+        "category": "可靠性",
+        "subcategory": "JNI 异常/返回值校验",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 24,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "modules/java/generator/gen_java.py",
+    "reviewTips": [
+      {
+        "id": "F004",
+        "code": "\"jni_var\": \"char* n_%(n)s = reinterpret_cast<char*>(env->GetByteArrayElements(%(n)s, NULL))\",",
+        "review": "[缺陷类型] JNI 资源泄漏（Get*Elements 未 Release）。影响评估：每次 read 调用泄漏一份 Java 数组 pin，长视频解码内存/堆碎片持续增长；生成的包装对纯虚方法调用属于未定义行为。",
+        "suggestion": "[重构思路] 在生成的包装结束处配对释放，例如把 jni_var 扩展为“取指针 + 在 c_epilogue 释放”，或为该类型增加 release 钩子；若 Java 侧本就要覆写 read/seek，则不要对这些纯虚方法加 CV_WRAP，避免生成无意义的原生包装。代码示例：`char* n_buffer = (char*)env->GetByteArrayElements(buffer, NULL); ... env->ReleaseByteArrayElements(buffer, (jbyte*)n_buffer, JNI_ABORT);`",
+        "category": "可靠性",
+        "subcategory": "JNI 资源泄漏",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 98,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "modules/core/src/opencl/arithm.cl",
+    "reviewTips": [
+      {
+        "id": "F006",
+        "code": "#define PROCESS_ELEM storedst(pown(srcelem1, srcelem2))",
+        "review": "[缺陷类型] GPU 内核数值类型/溢出语义变更（丢失饱和转换）。影响评估：整型 pow 的 OCL 结果在溢出时未定义，可能与 CPU 结果不一致，已知不一致会污染 OpenCL 与 CPU 双路径的一致性测试与用户结果。",
+        "suggestion": "[重构思路] 在 OP_POWN 中显式回到浮点工作类型并饱和回写，例如保留 `convertToDT`（`convert_uchar_sat` 等）或对整数类型先转 float 再 saturate 转换；同时为该路径补一个 OCL vs CPU 的一致性测试。代码示例：`#elif defined OP_POWN` + `#define PROCESS_ELEM storedst(convertToDT(pown(convert_float(srcelem1), srcelem2)))`（整数深度时由主机侧继续传 `-D convertToDT=convert_uchar_sat` 等）。",
+        "category": "可靠性",
+        "subcategory": "GPU 数值溢出语义",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 330,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "modules/core/perf/opencl/perf_arithm.cpp",
+    "reviewTips": [
+      {
+        "id": "F007",
+        "code": "OCL_TEST_SIZES, OCL_PERF_ENUM(CV_8UC1, CV_8SC1,CV_16UC1,CV_16SC1,CV_32SC1)))",
+        "review": "[缺陷类型] 测试覆盖退化 / 断言缺失。影响评估：OP_POWN 与 kernel 选项改动失去回归保护，多通道与 double 分支的问题只能靠用户发现；性能用例本应至少保留原有类型矩阵。",
+        "suggestion": "[重构思路] 恢复 CV_8UC3 与浮点类型覆盖；为整型幂增加一条正确性用例（OCL 与 CPU 结果对比、注意饱和语义约定），性能用例保持 SANITY_CHECK_NOTHING 但另配 accuracy 测试。代码示例：`OCL_PERF_ENUM(CV_8UC1, CV_8UC3, CV_8SC1, CV_16UC1, CV_16SC1, CV_32SC1, CV_32FC1, CV_64FC1)`",
+        "category": "可测试性",
+        "subcategory": "测试覆盖与断言",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 696,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "modules/dnn/src/tensorflow/tf_importer.cpp",
+    "reviewTips": [
+      {
+        "id": "F008",
+        "code": "if (strides.at<int>(i) != 1)",
+        "review": "[缺陷类型] 导入能力回退（算子支持被裁剪）。影响评估：含 stride != 1 的 TF/TFLite 模型从“可导入可运行”变为“导入即抛错”，属于用户可见的破坏性变更；若确实是有意裁剪，需要 release note 与明确的错误提示。",
+        "suggestion": "[重构思路] 若 Slice 层与后端仍支持 steps，则保留传入 steps 并仅在特定后端组合下报错；若必须裁剪，请在报错信息中给出可替代的图改写方式，并保留 tflite 侧对该算子的显式“不支持”错误而不是退化为未知算子。代码示例：`if (strides.at<int>(i) != 1) CV_Error(Error::StsNotImplemented, \"StridedSlice with stride != 1 is not supported; rewrite the model with Slice + Reshape\");`",
+        "category": "可靠性",
+        "subcategory": "算子支持回退",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 1691,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "modules/imgcodecs/src/grfmt_png.cpp",
+    "reviewTips": [
+      {
+        "id": "F009",
+        "code": "if (id != id_IHDR)",
+        "review": "[缺陷类型] 可观测性退化（诊断信息丢失）。影响评估：不影响正常解码，但畸形/不支持的 PNG 变体排查成本上升，issue 中难以判断根因。",
+        "suggestion": "[重构思路] 保留返回 false 的快速路径，同时保留一条包含 chunk id 的日志。代码示例：`if (id != id_IHDR) { CV_LOG_ERROR(NULL, \"PNG: IHDR chunk shall be first, got 0x\" << std::hex << id); return false; }`",
+        "category": "可维护",
+        "subcategory": "日志与诊断",
+        "severity": "Suggestion",
+        "level": "Suggestion",
+        "ruleId": "",
+        "lineNum": 289,
+        "source": "common-reviewer",
+        "confidence": "Medium"
+      }
+    ]
+  },
+  {
+    "filePath": "samples/python/tutorial_code/imgProc/match_template/match_template.py",
+    "reviewTips": [
+      {
+        "id": "F011",
+        "code": "cv.rectangle(img_display, matchLoc, (matchLoc[0] + templ.shape[0], matchLoc[1] + templ.shape[1]), (0,0,0), 2, 8, 0 )",
+        "review": "[缺陷类型] 示例代码几何语义错误（行列索引互换）。影响评估：教程输出图上矩形框尺寸错误，non-square 模板下明显可见；用户照抄会写出同样的错误。",
+        "suggestion": "[重构思路] 用命名变量表达宽高，避免下标歧义。代码示例：`h, w = templ.shape[:2]` 然后 `cv.rectangle(img_display, (matchLoc[0], matchLoc[1]), (matchLoc[0] + w, matchLoc[1] + h), (0,0,0), 2)`",
+        "category": "可靠性",
+        "subcategory": "示例正确性",
+        "severity": "Minor",
+        "level": "Minor",
+        "ruleId": "",
+        "lineNum": 89,
+        "source": "common-reviewer",
+        "confidence": "High"
+      }
+    ]
+  }
+]

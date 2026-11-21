@@ -1,0 +1,140 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "reviewer": "ocr",
+  "started_at": "2026-11-16T05:09:43.258598+00:00",
+  "duration_seconds": 211.08,
+  "ocr_exit_code": 0,
+  "ocr_format": "json",
+  "review": {
+    "status": "complete",
+    "llm": {
+      "model": "deepseek-v4.1-flash"
+    },
+    "message": "Review complete: 2 finding(s) across 3 selected item(s).",
+    "summary": {
+      "files_reviewed": 3,
+      "comments": 2,
+      "total_tokens": 681937,
+      "input_tokens": 654999,
+      "output_tokens": 26938,
+      "cache_read_tokens": 593280,
+      "elapsed": "3m31s"
+    },
+    "tool_calls": {
+      "total": 42,
+      "by_tool": {
+        "code_comment": 2,
+        "code_search": 21,
+        "file_read": 19
+      },
+      "failure": 0,
+      "failure_by_tool": {},
+      "failure_details": []
+    },
+    "comments": [
+      {
+        "path": "linera-core/src/client/mod.rs",
+        "content": "The pagination loop decides to stop by comparing the number of entries returned by the *remote* validator against the *local* constant `CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES`. This silently assumes every validator serves exactly the same page size as this build. Since the constant is explicitly marked as provisional (\"TODO(#4638): Revisit the number\"), the client and a validator running a different release (or an operator-tuned limit) can disagree: if the validator's page size is smaller than the client's constant, `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` becomes true after the first (partial) page and `remote_log` is silently truncated, so the remaining entries are never fetched by this call. Conversely, a validator that ignores/misbehaves w.r.t. the offset can keep returning a full page forever, causing an unbounded loop and unbounded memory growth of `remote_log`.\n\nThe response already carries the authoritative size of the log (`ChainInfo::count_received_log`), so terminate based on `offset >= count_received_log` instead. That is correct for any page size, avoids the extra round-trip when the log length is an exact multiple of the page size, and bounds the loop.",
+        "suggestion_code": "        let mut remote_log = Vec::new();\n        let mut offset = tracker;\n        loop {\n            let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n            let info = remote_node.handle_chain_info_query(query).await?;\n            let count_received_log = info.count_received_log as u64;\n            offset += info.requested_received_log.len() as u64;\n            remote_log.extend(info.requested_received_log);\n            if offset >= count_received_log {\n                break;\n            }\n        }",
+        "existing_code": "        let mut remote_log = Vec::new();\n        let mut offset = tracker;\n        loop {\n            let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n            let info = remote_node.handle_chain_info_query(query).await?;\n            let received_entries = info.requested_received_log.len();\n            offset += received_entries as u64;\n            remote_log.extend(info.requested_received_log);\n            if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n                break;\n            }\n        }",
+        "start_line": 846,
+        "end_line": 857,
+        "thinking": "Now, importantly, `communicate_with_quorum` with grace_period: the closure returns `(tracker, certificates)`. Let's see how the result is aggregated — maybe it uses the tracker from the first successful validator. Fine.\n\nOne more issue: the loop queries the remote node multiple times inside `communicate_with_quorum` closure — there might be a timeout per call. Not new.\n\nOK — let me finalize with the main comment. But let me reconsider severity and whether the reviewer would consider the \"mismatched page size\" scenario relevant. During rolling upgrades, old validators return the *full* log (no limit) and new ones 1000. Client version: it's the same binary as its local node's library; the client (linera-core lib) is embedded in the validator/CLI. So the \"different limit\" scenario only arises if a future release changes the constant — which is plausible since there's a TODO to revisit the number. If they lower it to e.g. 100, an older client would truncate silently (self-healing but slower progress and could even livelock if the truncated page's entries never advance the tracker... e.g., if all first 100 entries are from future epochs and skipped → tracker doesn't advance → next iteration re-fetches the same 100 → livelock! That's a real risk). Wait — is that plausible? Entries in the first N positions whose certificates are FutureEpoch get skipped, tracker stays. The pre-existing code already has that risk (if the first entries are future epoch, tracker doesn't advance), so not new. But with truncation, positions beyond the page are never seen this round. Even without truncation, they're seen and can advance the tracker past the skipped ones? No — tracker advancement stops at first non-downloaded entry. So the pre-existing code can already get stuck on a future-epoch entry. Hmm, actually tracker advancement breaks at first entry not in certificates_by_height_by_chain. If a future-epoch entry blocks, the tracker doesn't advance and the next sync refetches from the same position. So the pre-existing behavior already handles it by refetching (and hopefully by then the epoch is known). So truncation isn't catastrophic.\n\nSo the comment is a robustness improvement suggestion, medium/low. I'll mark medium.\n\nAlso consider adding a comment that the extra roundtrip at exact multiples of 1000 is avoided by count-based break. Included in the same comment.\n\nShould I also flag potential infinite loop on a malicious/buggy validator (unbounded memory)? Include in same comment content.\n\nLet me write the comment on client/mod.rs lines 848-857.\n\nexisting_code must match newly added lines exactly:\n\n```\n+        loop {\n+            let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n+            let info = remote_node.handle_chain_info_query(query).await?;\n+            let received_entries = info.requested_received_log.len();\n+            offset += received_entries as u64;\n+            remote_log.extend(info.requested_received_log);\n+            if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n+                break;\n+            }\n+        }\n```\n\nI'll provide suggestion code accordingly.\n\nAnything for state.rs? Let me think once more about whether the server-side change hides a bug: `end.min(count)` — the count is `received_log.count()` which is a sync call on a LogView; but is `chain.received_log` a `LogView` or a `HashedLogView`? `view.received_log.count()` used in data_types → LogView/HashedLogView both have `count()`? `HashedLogView` = `WrappedHashableContainerView` — does it have `count()`? In data_types.rs line 304 it calls `view.received_log.count()` where view is ChainStateView. That must compile, so count exists (maybe via Deref or it's a plain LogView). Fine; and state.rs uses the same, compiles presumably.\n\nActually wait: is `received_log` a `QueueView`? Doesn't matter.\n\nAlso check: does `read(start..end)` on `HashedLogView` exist? Well, the original code used `read(start..)`, so it exists.\n\nOne more possible issue on the server side: when `start` is huge and `count` is large but start > count... handled.\n\nAlright. Another thing: should the server also cap the `requested_received_log` for the *local* node path? The client also queries its own local node? No, `remote_node` only. Fine.\n\nI'll also consider commenting on whether ChainInfo consumers can distinguish truncation — they can via count_received_log. Fine.\n\nFinal answer: one comment. Maybe also add a low-severity comment that the constant should be `pub(crate)`. Hmm... I'll skip.\n\nActually, let me reconsider one more real potential bug: `offset += received_entries as u64;` occurs *before* `remote_log.extend(...)`, all fine.\n\nWhat about the case where the validator returns entries but the client's `tracker` doesn't advance because entries at positions ≥ tracker... fine.\n\nLet me deliver.",
+        "category": "bug",
+        "severity": "medium"
+      },
+      {
+        "path": "linera-core/src/client/mod.rs",
+        "content": "The new pagination path (server-side cap + client-side reassembly) has no test coverage. The existing test (`worker_tests.rs:2272`) only exercises a log with a single entry, so neither the truncation boundary (exactly `CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` entries, which triggers one extra empty request) nor the reassembly across multiple pages is verified. Consider adding a test that populates more than `CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` received entries and asserts that a `ChainInfo` response is capped and that the client reconstructs the full log/tracker.",
+        "existing_code": "            if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n                break;\n            }",
+        "start_line": 854,
+        "end_line": 856,
+        "thinking": "No received-log usage. Good.\n\nLet me check local_node.rs line 237 area — `chain_info` used to compute next_outbox_heights? Not relevant.\n\nSo the review for the three files:\n- mod.rs: fine.\n- state.rs: cap applied; redundant min (harmless).\n- client/mod.rs: loop, already flagged.\n\nI'll consider one more potential issue in state.rs: `usize::try_from(start)` — on 32-bit, large offsets error with ArithmeticError::Overflow, mapped to WorkerError. Fine.\n\nHmm, could there be an issue that the response doesn't indicate truncation, so an old client cannot tell? That's inherent to the wire protocol (no field). Not flagging.\n\nLet me think about whether reporting \"missing pagination test\" is really the best use. Alternatively, I can flag a real concern: the server-side cap applies to *all* requests including those from older clients, silently truncating responses — a backwards-compatibility break where an old client will get an incomplete log without any way to detect it (no truncation flag in the response). Actually the old client can detect via `count_received_log`, but old clients don't use it. Old clients' behavior: they'd think they got the whole remaining log and would advance the tracker by the number of matched certificates in the first 1000, missing the rest of the log in that sync — but subsequent syncs would continue from the new tracker, so no data loss, just an incomplete sync per call. So graceful.\n\nIs there any old client code that would *assert* the full log? An older version of the client in the wild: `let remote_log = info.requested_received_log;` then tracker advanced by matched entries; it wouldn't check count. So no assertion. But: the log might contain entries whose certificates weren't downloaded (e.g., from a future epoch), in which case the tracker stops before... still fine.\n\nHmm, but there IS a \"correctness\" nuance: since the client's tracker only advances for entries it fully processed, truncation yields gradual progress. Fine.\n\nI'll go with the test comment plus... let me reconsider whether to say nothing at all. The single confirmed finding already covers the main risk. For a thorough review, mentioning the missing test is reasonable and non-duplicative.\n\nActually, hold on. Let me reconsider something important in the client loop that the confirmed finding might not cover: error handling. If `handle_chain_info_query` fails mid-pagination (e.g., after 3 pages), the whole function returns an error and all fetched pages are discarded — fine, no partial state mutation.\n\nBut there's another point: the loop has no bound on the number of iterations, so a *misbehaving but not malicious* validator that always returns exactly 1000 entries (e.g., ignoring the `excluding_first_n` field due to a bug in an implementation) would loop forever, downloading 1000 entries per iteration → infinite loop + OOM. That's a DoS from a single validator. Is this \"the same\" as the confirmed finding? The confirmed finding is about the *page size assumption* for stopping; this is about *no bound* on the loop. I think it's arguably a distinct concern, and the suggested fix is to use `info.count_received_log` or cap total iterations. Given the confirmed finding will likely recommend using `count_received_log`, the two are related. Risk of being flagged as duplicate is high, but the failure mode (unbounded memory / hang) is different and specific. Hmm.\n\nGiven the instruction to not repeat, and that the confirmed finding is clearly about the termination condition of this exact loop, I'll skip.\n\nSo: one test comment. Let me write it on the loop lines. Severity low, category test.\n\nWait — maybe I should double check if there's an existing test in worker_tests that would already exercise this with >1000 entries (line 2272 test creates 1 entry). And are there tests that build chains with many received entries? Unlikely.\n\nI'll write the comment: \"Consider adding a test for the new pagination path...\" anchored on `if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {`.\n\nHmm, but the `code_comment` tool anchors on newly added lines. The lines:\n```\n            if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n                break;\n            }\n```\nThat works.\n\nShould I also mention in state.rs the missing test? One comment is enough; anchor in client where the pagination is.\n\nActually, let me reconsider adding a second comment about the redundant `.min(chain.received_log.count())`. It's not a bug; guidelines say avoid commenting on correct code. Skip.\n\nLet me do one final sanity check of the `state.rs` change region for potential issue: `info.requested_received_log` used to be the full remaining log. Could any *test* in the repo (not worker_tests) rely on the full log via a client sync with >1000 entries? Unlikely.\n\nDone. I'll post the test comment and call task_done.\n\nHmm, on reflection, is a test comment too weak/\"noise\"? Many reviewers would consider \"missing test for new pagination logic\" a valid, actionable comment. I'll include it with low severity.\n\nActually, let me reconsider one more time whether there's a genuine bug in the client's tracker-advance logic now that the log is paginated — line 936: `for entry in remote_log { if certificates_by_height_by_chain.get(&entry.chain_id).is_some_and(|certs| certs.contains_key(&entry.height)) { tracker += 1 } else { break } }`. Note `certs` may have been cleared at line 956 for chains with no messages for us — but that's after this loop? No: line 947-958 clears certs, which is *after* the tracker loop at 936-945. OK unchanged.\n\nFine.\n\nLet me write the comment.",
+        "category": "test",
+        "severity": "low"
+      }
+    ],
+    "groups": [
+      {
+        "label": "small change set",
+        "files": [
+          "linera-core/src/chain_worker/mod.rs",
+          "linera-core/src/chain_worker/state.rs",
+          "linera-core/src/client/mod.rs"
+        ]
+      }
+    ],
+    "session_id": "856a7cd0-c5e6-4276-83fe-30520a6e759e",
+    "manifest": {
+      "schema_version": "ocr.run-manifest/v1",
+      "run_id": "856a7cd0-c5e6-4276-83fe-30520a6e759e",
+      "operation": "review",
+      "terminal_state": "complete",
+      "repository": {
+        "identity_sha256": "d0738fdc8850c4f919fe15d2affb0d70b9da54e6edaf9e2d8d7e1adffe1f2bfc"
+      },
+      "input": {
+        "mode": "range",
+        "requested_from": "c31634e52d719fdf60694f47812e2f007022ae26",
+        "requested_head": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+        "resolved_base": "c31634e52d719fdf60694f47812e2f007022ae26",
+        "resolved_head": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+        "exact_range": "c31634e52d719fdf60694f47812e2f007022ae26..3535ddb83de7dfae5db1732a7f1535031d31380a",
+        "source_artifact_sha256": "9c79e00c534344e4566e1faca8e2235e55db40e27d1d89b80ab5cf43f11297ca"
+      },
+      "execution": {
+        "ocr_version": "v1.13.10",
+        "model": "deepseek-v4.1-flash",
+        "configured_concurrency": 8,
+        "max_tool_request_times": 50,
+        "rule_config_sha256": "7d579740667a61cd408a2fe6647d5c01864f7117f22bd9edf00e5511d947a5ab",
+        "runtime_config_sha256": "14b65680e8798a68dac9ddd2df66c0c19400f7a7068b813a1dae2ee0d942f6be"
+      },
+      "coverage": {
+        "selected": [
+          {
+            "item_id": "0e5f874c241d40e7ac78d01d33eb37d7f63dfaffeedeb22258272833b02e6708",
+            "path": "linera-core/src/chain_worker/state.rs",
+            "fingerprint": "2abc1b7287f9f89d75de7b80ea3972b33f27916edab0e3a17d15f9529874c5bf"
+          },
+          {
+            "item_id": "3fa84914fbe28cf60277b3a0d9a9e2589dad044f834abb69ae84eed6d72e7482",
+            "path": "linera-core/src/client/mod.rs",
+            "fingerprint": "3cca823ec4d8a47d164fb43b841d206cbe4e078d4fbc61fc50d968c78403ebc9"
+          },
+          {
+            "item_id": "526d7306e10a5295678e4250d586046360bdf6068920cf97e801e5852e0a22ce",
+            "path": "linera-core/src/chain_worker/mod.rs",
+            "fingerprint": "2cf4e5e271154c54220d0b0a91ab163924ec28ad6ee5132acf939fd859cc194c"
+          }
+        ],
+        "completed": [
+          {
+            "item_id": "0e5f874c241d40e7ac78d01d33eb37d7f63dfaffeedeb22258272833b02e6708",
+            "path": "linera-core/src/chain_worker/state.rs",
+            "fingerprint": "2abc1b7287f9f89d75de7b80ea3972b33f27916edab0e3a17d15f9529874c5bf"
+          },
+          {
+            "item_id": "3fa84914fbe28cf60277b3a0d9a9e2589dad044f834abb69ae84eed6d72e7482",
+            "path": "linera-core/src/client/mod.rs",
+            "fingerprint": "3cca823ec4d8a47d164fb43b841d206cbe4e078d4fbc61fc50d968c78403ebc9"
+          },
+          {
+            "item_id": "526d7306e10a5295678e4250d586046360bdf6068920cf97e801e5852e0a22ce",
+            "path": "linera-core/src/chain_worker/mod.rs",
+            "fingerprint": "2cf4e5e271154c54220d0b0a91ab163924ec28ad6ee5132acf939fd859cc194c"
+          }
+        ],
+        "reused": [],
+        "failed": [],
+        "waived": [],
+        "excluded": []
+      },
+      "elapsed_ms": 210675
+    }
+  },
+  "stderr": "[ocr] --max-tools 30 is below minimum 50, using 50\n"
+}

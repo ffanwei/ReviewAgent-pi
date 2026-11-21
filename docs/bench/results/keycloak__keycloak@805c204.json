@@ -1,0 +1,132 @@
+{
+  "instance_id": "keycloak__keycloak@805c204",
+  "repo": "keycloak/keycloak",
+  "base_commit": "8521b9952a989d0dac17697278610b053c613528",
+  "head_commit": "805c204a9dbfb5b8128de8f70c9f3fbd6d6583f9",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 584.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 11,
+  "review_output": [
+    {
+      "file": "model/jpa/src/main/java/org/keycloak/models/jpa/JpaUserProvider.java",
+      "line": 626,
+      "summary": "用户 count 查询丢失 FGAP 授权过滤，可能泄露管理员无权查看的用户总数",
+      "failure_scenario": "本次变更从 `getUsersCount(RealmModel, String search)`（L611-629）与 `getUsersCount(RealmModel, Map<String,String> params)`（L661-676）中删除了 `AdminPermissionsSchema.SCHEMA.applyAuthorizationFilters(...)`，而同一文件的 `searchForUserStream`（L805）、`getGroupMembersStream`（L718/L766）、`getUsersCount(realm, params, groupIds)`（L696）仍保留该过滤。FGAP v2 开启时，`UsersResource.getUsersCount` 在 L418/L421/L449/L452 正是调用这两个被改动的重载，因此 `/admin/realms/{realm}/users/count` 与 `/users` 列表的口径不再一致：列表只返回部分评估允许的用户，count 却返回全量匹配数，既暴露了管理员无权查看的用户规模，也会让控制台分页/总数显示错误。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.7,
+      "rule": "AUTHZ-002"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/services/resources/admin/ClientsResource.java",
+      "line": 141,
+      "summary": "按 clientId 单查 client 时不再校验 view 权限，FGAP v2 下可越权读取完整表示",
+      "failure_scenario": "`getClients` 在 `clientId` 分支上从 `Stream.of(client).filter(auth.clients()::canView)` 改成了 `clientModels = Stream.of(client)`。该方法入口只要求 `auth.clients().requireList()`（query-clients 或 view 即可）。而 L122 的 `canView = AdminPermissionsSchema.SCHEMA.isAdminPermissionsEnabled(realm) || auth.clients().canView()` 在 FGAP v2 开启时恒为 true，L148 因此不再走 `auth.clients().canView(c)` 分支，直接返回 `ModelToRepresentation.toRepresentation(c, session)`。又因为 `realm.getClientByClientId` 走的是 `JpaRealmProvider.getClientByClientId`（L968-979，无任何 `applyAuthorizationFilters`），数据库层也不会过滤，于是仅有 query-clients 的域管理员可以按 clientId 拿到其无权 view 的 client 的完整表示。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.68,
+      "rule": "AUTHZ-003"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/services/resources/admin/UsersResource.java",
+      "line": 305,
+      "summary": "search=id: 单用户查询移除 canView 过滤，FGAP v2 下可越权读取任意用户表示",
+      "failure_scenario": "`getUsers` 的 `search=id:<uuid>` 分支原本在 FGAP 开启时执行 `userModels.filter(userPermissionEvaluator::canView)`，本次删除后直接 `userModels = Stream.of(userModel)` 并交给 `toRepresentation`。而 `toRepresentation`（L491-498）只有在 `!AdminPermissionsSchema.SCHEMA.isAdminPermissionsEnabled(realm)` 时才做 `filter(usersEvaluator::canView)`，FGAP v2 开启时完全不过滤，最终返回完整 `UserRepresentation`（邮箱、姓名、属性等）。入口只要求 `userPermissionEvaluator.requireQuery()`，因此仅具备 query-users 的域管理员可以按 ID 读取其无权 view 的用户。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.68,
+      "rule": "AUTHZ-004"
+    },
+    {
+      "file": "docs/maven-plugin/src/main/java/org/keycloak/guides/maven/GuideParser.java",
+      "line": 80,
+      "summary": "switch 的 priority 分支缺少 break，贯穿到 tileVisible 并把 null 解析为 false",
+      "failure_scenario": "`setAttributes` 的 `case \"priority\"` 在 `guide.setPriority(Integer.parseInt(attributeMatcher.group(\"valueInt\")))` 之后没有 `break`，会贯穿执行 `case \"tileVisible\"` 的 `Boolean.parseBoolean(attributeMatcher.group(\"valueString\"))`。当属性写作整数形式（如 `priority=20`）时正则只填充 `valueInt`，`valueString` 为 null，`Boolean.parseBoolean(null)` 返回 false，于是任何声明了 priority 的 guide 都会被静默标记为 `tileVisible=false`；若文件里显式写了 `tileVisible=\"true\"` 且排在 `priority` 之前，也会被覆盖为 false。该值与 `Context` 新增校验（`Objects.equals(guide.getTileVisible(), Boolean.FALSE) && guide.getPriority() == Integer.MAX_VALUE`）直接相关，只是由于此时 priority 已被赋为具体值而不会抛错，缺陷被掩盖。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "PARSER-001"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/authentication/authenticators/browser/WebAuthnAuthenticator.java",
+      "line": 151,
+      "summary": "删除 WebAuthn 必需参数校验后仍直接 Base64Url.decode(null)，畸形请求将抛 NPE",
+      "failure_scenario": "本次变更删除了对 `credentialId`、`clientDataJSON`、`authenticatorData`、`signature` 的 `StringUtil.isBlank(...)` 校验（原先会返回 “Missing compulsory webauthn parameters” 错误页），但下方仍然无条件执行 `Base64Url.decode(params.getFirst(WebAuthnConstants.CREDENTIAL_ID))` 等调用。`params.getFirst` 在表单缺少该字段时返回 null，`Base64Url.decode` 内部 `encodeBase64UrlToBase64` 会调用 `base64Url.replace('-', '+')`，对 null 直接抛 NullPointerException。结果是浏览器未提交 webauthn 参数（例如认证器调用失败、脚本请求、代理裁剪表单）时，认证流程从“友好的错误提示”退化为 500 错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server-spi-private/src/main/java/org/keycloak/authorization/PartialEvaluator.java",
+      "line": 224,
+      "summary": "adminUser 为 null 时不再跳过部分评估，会在 provider 中触发空指针",
+      "failure_scenario": "`shouldSkipPartialEvaluation` 在 `user == null` 时由 `return true` 改为 `return false`，即允许在 admin 用户为空时继续执行部分评估。随后 `getPredicates` 把该 null 传给 `runEvaluation`，其中 `policyProvider.getPermissions(session, resourceType, adminUser)` 与 `provider.evaluate(session, policy, adminUser)` 的实现会直接解引用该参数（`UserPolicyProvider` 的 `subject.getId()` / `adminUser.getId()`），因此一旦取到 null 就会抛 NullPointerException 并中断管理员查询接口。更值得注意的是，同一 MR 把 `DefaultKeycloakContext.getUser()` 改成无法解析时抛 `IllegalStateException`（不再返回 null），两条改动互相矛盾：要么该 null 分支已成死代码，要么在其它 Context 实现下仍会走到并崩溃。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/services/DefaultKeycloakContext.java",
+      "line": 311,
+      "summary": "getUser() 由返回 null 改为抛出 IllegalStateException，未同步接口契约",
+      "failure_scenario": "`DefaultKeycloakContext.getUser()` 末尾由 `return user;` 改为“user 非空才返回，否则抛 `IllegalStateException(\"Could not resolve subject\")`”。但 `KeycloakContext.getUser()` 的接口 javadoc（server-spi/.../KeycloakContext.java:122-128）只声明“返回绑定到该 context 的 UserModel”，既没有标注可空也没有标注会抛异常，历史上调用方普遍按“未认证返回 null”处理（例如 `PartialEvaluator.java:59` 取到值后就按可能为 null 处理，L223 有显式判空）。把返回 null 改成抛未受检异常属于破坏性行为变更，任何依赖“null 表示未认证”的调用点都会在运行期变成 500 错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "API-001"
+    },
+    {
+      "file": "themes/src/main/resources-community/theme/base/admin/messages/messages_sl.properties",
+      "line": 63,
+      "summary": "斯洛文尼亚语消息中混入多余文本，破坏 MessageFormat choice 子句",
+      "failure_scenario": "`error-invalid-multivalued-size` 的取值在 `|501#vrednost|` 与 `601#vrednost` 之间被插入了字符串 `is `，形成 `|is 601#vrednost|`。该消息使用 `{2,choice,...}` 选择格式，每段必须是 `<数字>#<文本>`；`is 601` 不是合法数字，`ChoiceFormat` 在解析该模式时会抛 `IllegalArgumentException`，导致该条校验信息在 sl 语言环境下渲染失败（而不仅仅显示错乱）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "I18N-001"
+    },
+    {
+      "file": "docs/documentation/server_admin/topics/admin-console-permissions/fine-grain-v2.adoc",
+      "line": 127,
+      "summary": "文档称更新/删除 client 需同时具备 manage 与 configure，与实现只校验 configure 矛盾",
+      "failure_scenario": "新增 NOTE 声明 “For certain operations like updating or deleting clients it is required both *manage* and *configure* assigned”，但 `ClientResource.update` 仅调用 `auth.clients().requireConfigure(client)`，而 `ClientPermissionsV2.canConfigure` 的实现是 `canManage(client) || hasPermission(client, CONFIGURE)`，即只要具备 manage 或 configure 其一就能通过，configure 并非必需。同时 L113 新增的 `*configure*` 行描述与 L111 的 `*manage*` 完全相同（“Defines if a realm administrator can manage clients.”），完全没有说明该 scope 的真实能力边界。管理员按文档配置权限会得到与预期不符的结果。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "DOC-001"
+    },
+    {
+      "file": "services/src/main/java/org/keycloak/services/resources/admin/ClientAttributeCertificateResource.java",
+      "line": 148,
+      "summary": "uploadJks 新增的 requireConfigure 被后续 requireManage 覆盖，configure 权限实际无效",
+      "failure_scenario": "`uploadJks` 与 `uploadJksCertificate` 在方法入口新增了 `auth.clients().requireConfigure(client)`，但两者都调用 `updateCertFromRequest()`，而该方法首行是 `auth.clients().requireManage(client)`。由于 `canConfigure` 只在 `canManage || hasPermission(CONFIGURE)` 时通过，最终的有效要求退化为“必须 manage”，新增的 configure 校验对只被授予 configure 的管理员没有任何放行作用；同文件 `generate()`（L124）却只校验 configure，同一资源内证书相关操作的校验口径不一致，也与文档中“manage 允许 update certificates”的描述互相冲突。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.7,
+      "rule": "AUTHZ-005"
+    },
+    {
+      "file": "test-framework/oauth/src/main/java/org/keycloak/testframework/oauth/OAuthClientSupplier.java",
+      "line": 55,
+      "summary": "compatible 恒返回 true 且默认生命周期改为 GLOBAL，忽略 config 与 realmRef",
+      "failure_scenario": "`compatible()` 由“比较 `ref()`”改为无条件 `return true`，同时新增 `getDefaultLifecycle()` 返回 `LifeCycle.GLOBAL`，而 `InjectOAuthClient` 注解同时删除了 `ref()` 与 `lifecycle()`。但 `getValue()` 仍然依赖 `annotation.realmRef()`（L30）与 `annotation.config()`（L34）来定位 realm 并创建 client：一旦两个测试方法/类以不同 `config` 或不同 `realmRef` 请求 `OAuthClient`，注入框架会认为二者兼容并复用同一个 GLOBAL 实例，导致第二个测试拿到错误的 realm 与 client 配置，测试之间产生隐式耦合和偶发失败。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TEST-INFRA-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\keycloak__keycloak\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\diff\\keycloak__keycloak@805c204.diff\n  caseId              keycloak__keycloak@805c204\n  --issue             (未传)\n  --taskId            keycloak__keycloak@805c204\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\n  --model             deepseek-v4.1-flash（缺省：配置文件 model.default）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 19 个文件 / 223670 字符（lockfile=1, generated=1, test=17），明细见审计 mrFilter\n✓ 完成 · 耗时 300.9s · 模型调用 16 次 · token 输入 106,684（未命中） · 输出 36,556 · 缓存命中 966,144（90.1%） · 工具 56 次（主会话 56 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0279\n[time] 阶段耗时 | 总墙钟 301.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 300.7s (99.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 16.2s (5.4%) | P2 3.6s (1.2%) | P3 18.3s (6.1%) | P4 184.4s (61.3%) | P5 63.1s (21.0%) | P6 15.2s (5.1%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 106,684（未命中） | 输出 36,556 | 缓存命中 966,144（90.1%） | $0.0279\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\aacr_bench_v2\\reviewpi\\arm2\\.reviewpi\\tasks\\keycloak__keycloak@805c204\\audit\\20261115_040244_576.json",
+  "token_usage": {
+    "input_tokens": 106684,
+    "output_tokens": 36556,
+    "cache_read_input_tokens": 966144
+  }
+}
