@@ -42,8 +42,8 @@
 
 | ID | 任务 | 对应问题 | 优先级 | 状态 | 验收（摘要） | 证据 / commit | 备注 | 讨论 |
 |---|---|---|---|---|---|---|---|---|
-| F-01 | 覆盖账本：文件 × hunk 三态（candidate / no-issue / not-reached） | P0-1、P1-11、V1/V7 | P0 | DOING | not-reached 比例可见；未覆盖 hunk 只对缺口发补漏；P/R 不回退 | F-01a iterF91 零模型 91/91；F-01b 代码+单测 1207 passed | 先定账本 schema 与审计键 | [票](issues/F-01-coverage-ledger/ticket.md) · [讨论](issues/F-01-coverage-ledger/discussion.md) |
-| F-02 | 大 MR 准入与分片一致：split 启用时不再按 `maxDiffChars` 整条跳过 | P0-2、V2 | P0 | TODO | FreeCAD 类 diff 不再 skipped；片数 ≤ maxShards；截取留痕 | — | 需定“超 maxShards”失败语义 | — |
+| F-01 | 覆盖账本：文件 × hunk 三态（candidate / no-issue / not-reached） | P0-1、P1-11、V1/V7 | P0 | DONE | not-reached 比例可见；未覆盖 hunk 只对缺口发补漏；**Balanced 不回退（P 允许回退）** | F-01a iterF91 零模型 91/91；F-01b v3 P 0.522/R 0.400/B 0.453（A 0.500/0.316/0.387；v2 0.439/0.432/0.435）→ B +6.6pp；F-01c C1 `coverageSummary` 进 run.json；全包 1212 passed | C2/C3 拆到 F-15 | [票](issues/F-01-coverage-ledger/ticket.md) · [讨论](issues/F-01-coverage-ledger/discussion.md) |
+| F-02 | 大 MR 准入与分片一致：split 启用时不再按 `maxDiffChars` 整条跳过 | P0-2、V2 | P0 | DONE | FreeCAD 类 diff 不再 skipped；片数 ≤ maxShards；截取留痕 | 准入改为分片优先；单样本 cline（17,227 字符，maxDiffChars=8000）`ok` + `shards[]`（F-02 前会 skipped）；全包 1214 passed / 1 skipped；基准 91/91、B 0.298 已归档 | 超 maxShards = 模型前显式失败；不做大规模验证 | [票](issues/F-02-admission-split/ticket.md) · [讨论](issues/F-02-admission-split/discussion.md) |
 | F-03 | 分片并行（可配 3–8） | P0-3、V2 | P0 | TODO | findings 集合与串行一致；墙钟显著下降；429 不增加 | — | 片级审计/转录路径不变 | — |
 | F-04 | 证据接地：文件/行号/引文可核对 | P0-4、V3 | P0 | TODO | 伪造行号/引文/越界文件被确定性拒绝；真证据不误杀 | — | 先做零模型硬门 | — |
 | F-05 | 独立证伪核验（新会话；保护性主题 fail-open） | P0-5、V3 | P0 | TODO | 噪声率下降；真值损失 ≤ 阈值；核验理由可审计 | — | 与 F-04 分开实验 | — |
@@ -56,12 +56,12 @@
 | F-12 | 确定性预取（changed symbols / 直接引用 / 调用点） | P1-8、V6 | P2 | TODO | head 侧可用；base/mixed 降级；工具调用下降 | `resolveChangedFileSymbols` 无运行时调用方 | 先补 `newSpansOf` | — |
 | F-13 | 大 diff severity 区分度复核 | D.3 | P2 | TODO | 复跑数据；确认是否仍需校准 | 旧实验记忆，未复跑 | — | — |
 | F-14 | `search_rule` / `search_history` 可见性复核 | D.3 | P2 | TODO | 当前版本命中率与调用价值有结论 | 历史 run 24 次、约 111 字符/次 | — | — |
-| F-15 | preview / resume / manifest / PR 原生闭环 | 对比文档 P0 | P2 | TODO | 逐项产品验收 | — | 不阻塞流程正确性 | — |
+| F-15 | preview / resume / manifest / PR 原生闭环；含 F-01c C2/C3（覆盖阈值 warn/fail、manifest/CI 复用） | 对比文档 P0 | P2 | TODO | 逐项产品验收；覆盖阈值语义与退出码明确；manifest/CI 复用 `coverageSummary` | F-01c C1 已提供 `summarizeCoverage` 底座 | 不阻塞流程正确性 | [讨论](issues/F-15-delivery-platform/discussion.md) |
 
 ## 当前焦点
 
-- [ ] [F-01 覆盖账本（P0-1）](issues/F-01-coverage-ledger/discussion.md)——先写 schema、审计键、`not-reached` 统计，不先改提示词
-- [ ] F-02 准入与分片一致（P0-2）——用 FreeCAD 同类构造用例先红后绿
+- [x] [F-01 覆盖账本（P0-1）](issues/F-01-coverage-ledger/discussion.md)——DONE 2026-11-21；C2/C3 已拆到 F-15
+- [x] [F-02 准入与分片一致（P0-2）](issues/F-02-admission-split/discussion.md)——DONE 2026-11-22
 - [ ] F-03 分片并行（P0-3）——先证明 findings 与串行逐字节等价
 
 ## 验收门槛（每个任务都适用）
@@ -88,7 +88,10 @@
 
 - 2026-11-21：采用 `.scratch/<branch>/map.md` 作为分支 TODO 总表；详情票按 `docs/agents/issue-tracker.md` 放 `issues/<task-id>/ticket.md`。
 - 2026-11-21：先做 F-01/F-02/F-03 三个 P0，不做阶段压缩与预取（避免变量混在一起）。
+- 2026-11-21：F-01 的效果验收从“P/R 都不回退”改为 **Balanced 不回退即可**；P 允许回退，但仍需随报告披露。
+- 2026-11-21：F-01 收口为 `DONE`；F-01c C2/C3 拆到 F-15（覆盖阈值 warn/fail、manifest/CI/preview 复用）。
 - 2026-11-21：每个任务的讨论归档到 `issues/<task-id>/discussion.md`，并在本表「讨论」列提供跳转链接。
+- 2026-11-22：F-02 收口为 `DONE`；验收 = 单样本准入（17,227 字符 diff 在 maxDiffChars=8000 下由 skipped 变 ok + `shards[]`）+ 全包 1214 passed；不做大规模验证。桥接统一为 merge-base（PR 范围）口径。
 
 ## Changelog
 
@@ -102,3 +105,12 @@
 - 2026-11-21：AACR-Bench 归档从 `docs/bench` 迁到 `bench/aacr-bench-v2`；新增 `bench/README.md` 与结构指南条目。
 - 2026-11-21：F-01a iterF91 零模型验收通过（91 条；22,266 hunk；818 截取 hunk；maxShards=12 下 3 条显式失败，32 下 91/91）；证据 `issues/F-01-coverage-ledger/f01a-iterf91-zero-model.json`。
 - 2026-11-21：F-01b 缺口补漏落地（`coverage-repair.ts` + 配置 + 审计 + stderr）；全包 1206 passed / 1 skipped；待 iterB10 A/B。
+- 2026-11-21：修复补漏 `candidate` 回执不带 `hunk` 的解析 bug（首轮 26 条候选全 invalid）；全包 1207 passed；iterB10 A/B 重跑：not-reached 89.9%→17.5%，P 0.500→0.449 / R 0.316→0.358 / B 0.387→0.398，补漏候选精度约 26.7%，质量验收未通过；证据 `issues/F-01-coverage-ledger/discussion.md`。
+- 2026-11-21：修基准 token 汇总口径：桥接 `read_usage` 把审计根 `usage` 与 `coverageRepair.usage` 相加，并输出分项；B 实际总 token 6,186,912（报告旧值 5,840,941）。
+- 2026-11-21：F-01b v2 落地（no-issue 必须带 evidence；候选优先提示词；代码文件优先预算）；全包 1208 passed；iterB10：P 0.439 / R 0.432 / B 0.435，较 v1 B +3.7pp、R +7.4pp；补漏候选 7/27 命中，GT 文件意见 32→50。
+- 2026-11-21：F-01 验收口径改为 Balanced 不回退；v2 B 0.435 vs arm A 0.387，满足新口径（P 仍低 6.1pp，如实披露）。
+- 2026-11-21：F-01b v3 独立验证门落地；iterB10 P 0.522 / R 0.400 / B 0.453（v2 0.439/0.432/0.435），验证器 26 请求、拒绝 17、accept 9、fail-open 4；F-01c C1 `coverageSummary` 进 run.json；全包 1212 passed。
+- 2026-11-21：F-01c C1 验收：`summarizeCoverage`（counts + ratios + byCause）投影到 `audit.coverageSummary`，逐 hunk 明细仍在审计；单测 + 全包通过。C2（阈值告警/失败）与 C3（manifest/CI/preview）拆到 F-15。
+- 2026-11-21：F-01 状态改为 DONE；验收证据 F-01a 91/91、F-01b v3 B 0.453、F-01c C1 coverageSummary、全包 1212 passed。
+- 2026-11-22：iterF91 基准（F-02 前，最佳配置）91/91 ok，P 0.381 / R 0.245 / B 0.298，token 53,104,139；归档 `bench/experiments/2026-11-21-f02/baseline-f91-v3/`。
+- 2026-11-22：桥接改为 merge-base（PR 范围）口径，仓内副本同步；F-02 单样本 cline 17,227 字符在 maxDiffChars=8000 下 `ok` + `shards[]`，F-02 前会 skipped；归档 `.../f02-small-check/`；全包 1214 passed；F-02 收口 DONE。

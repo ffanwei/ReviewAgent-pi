@@ -330,6 +330,209 @@ OCR（`D:/Project/open-code-review` @ `d77d70b`）的做法是四层 + 一个出
   - `benchmark-large-pr.jsonc`：大 MR 专项配置，已开补漏。
 - 未做：真实模型 A/B；下一步用 iterB10 跑 arm A（补漏关）/ arm B（补漏开），看 not-reached 下降与 P/R/B、token、墙钟。
 
+## 2026-11-21 · F-01b iterB10 A/B 实测（官方 deepseek-flash）
+
+### 先修一个真实 bug
+
+- 线上模型按提示词示例输出 `candidate` 回执时**不带 `hunk` 字段**；v1 解析器却对每个回执强制要求 `hunk`，导致首轮 arm B 的 26 条候选全部 `invalid`、`acceptedFindings=0`。
+- 修复：`candidate` 回执改为按 `candidate.line` 落在哪个缺口 hunk 归属；`no-issue` 仍要求合法 `hunk`。补单测；全包 **1207 passed / 1 skipped**，严格 `build` 通过。
+- 首轮 arm B（`f01b-on-c10-20261121`）指标作废，只保留日志 `arm-b-c10-v1.log`；下表使用修复后重跑的 `f01b-on-c10-fixed-20261121`。
+
+### 口径
+
+- 数据：iterB10，10 条大 diff / 95 GT；judge `deepseek-v4-pro`，1 轮。
+- arm A：补漏关闭（复用 `f01b-off-c10-20261121`）；arm B：补漏开启，`maxRequests=32`、`maxHunksPerRequest=6`、`maxChars=24000`。
+- 两臂均为官方 `deepseek-flash`；arm B review 与 judge 分两段执行。
+
+### 指标
+
+| 指标 | arm A（off） | arm B（on，修复后） | Δ |
+|---|---:|---:|---:|
+| Precision | 0.500（17/34） | 0.449（22/49） | **-5.1pp** |
+| Recall | 0.316（30/95） | 0.358（34/95） | +4.2pp |
+| Balanced | 0.387 | 0.398 | +1.1pp |
+| generated | 34 | 49 | +15 |
+| matched generated | 17 | 22 | +5 |
+| covered GT | 30 | 34 | +4 |
+| 样本耗时合计 | 1,542.3s | 2,868.9s | +86% |
+| review 墙钟 | 277s | 591s | +113% |
+| 报告输入 token | 7,076,645 | 5,611,254 | -21% |
+| 报告输出 token | 238,607 | 229,687 | -4% |
+
+> **token 口径已修**：上表 B 的 5,840,941 是审计根 `usage`（仅 Agent 内调用，ADR-0066），不含 `coverageRepair.usage`。基准桥接 `read_usage` 已改为把两者相加，并输出 `token_usage_breakdown` 分项；归档副本同步修改。计入补漏后 B 实际为输入 267,279 / 输出 468,770 / cache 5,450,863，总计 **6,186,912**（约为 arm A 7,315,252 的 0.85 倍；输出约为 arm A 的 1.96 倍）。旧结果文件不会自动回填，需要重跑桥接或离线重算。
+
+### 补漏自身
+
+- 审计合计：117 请求 / 0 失败；发送 256 hunk / 覆盖 215；`no-issue` 200；候选 15 / 接受 15；invalid 11；预算跳过 11。
+- 账本覆盖：297 hunk 中 `not-reached` 从 **267（89.9%）降到 52（17.5%）**；`candidate` 30→45；新增 `no-issue` 200。未到达的 52 = 模型未回执 41（`no-signal`）+ 预算 11。
+- 候选质量：按 path+line 把 15 条 `CRxxx` 映射到 judge 的 `generated_comments`，**4 条命中**（appwrite Create.php / Functions.php、gofr ctx_logger.go、lvgl lv_span.c），补漏精度约 **26.7%**；主检视 18/34≈52.9%。补漏主要贡献 recall，但显著拉低 precision。
+- 低质量候选集中在文档/资源/头文件（`observer.rst`、`globals.xml`、`lv_switch.xml`、`lv_span.h`）和部分 Rust 代码；候选门只校验 schema/evidence/scope/去重，没有质量分层。
+- `no-issue` 200 条是结构化回执，但仍需抽样核对 reason 是否敷衍；本轮未做人工抽样。
+
+### 结论
+
+- F-01b v1 的**覆盖机制成立**：缺口可见、请求有上限、`no-issue` 有结构化来源、补漏候选能进候选门。
+- 但**质量验收未通过**：`P -5.1pp`，不满足任务表“P/R 不回退”；`B +1.1pp` 很小，不能据此宣称有效。
+- 下一步二选一（另开新一轮，不与本轮混算）：
+  1. 收紧补漏候选门：只接受整文件空缺口的高置信候选，或对文档/资源/头文件加路径过滤；
+  2. 先做 `no-issue` 抽样与补漏提示词校准，再复跑 iterB10；在 precision 回到 ≥ arm A 之前不进入 iterF91。
+- 成本侧先修汇总口径：审计消费方应把 `coverageRepair.usage` 计入总 token，或在 bridge 里显式求和；否则任何“补漏更省”的结论都不可信。
+
+## 2026-11-21 · 离线置信度与漏报结构分析
+
+### 置信度阈值扫描（复用当前 A/B 的 judge 结果，不重新调用模型）
+
+口径：按 `path + new line` 把每条 finding 映射到 judge 的 `generated_comments`（A/B 均 0 条未映射）；阈值 0.0 复算结果与 metrics 完全一致，说明映射可用。
+
+| confidence.min | A 生成 / P / R / B | B 生成 / P / R / B |
+|---:|---|---|
+| 0.0（全部） | 34 / 0.500 / 0.316 / 0.387 | 49 / 0.449 / 0.358 / 0.398 |
+| 0.4 | 34 / 0.500 / 0.316 / 0.387 | 48 / 0.458 / 0.358 / 0.402 |
+| 0.5（产品 tips 默认） | 32 / 0.500 / 0.253 / 0.336 | 45 / 0.444 / 0.337 / 0.383 |
+| 0.6 | 22 / 0.409 / 0.116 / 0.181 | 33 / 0.455 / 0.179 / 0.257 |
+| 0.7 | 11 / 0.455 / 0.074 / 0.127 | 21 / 0.524 / 0.137 / 0.217 |
+
+- 降低阈值到 0.0 只多拿回 2 条 A、4 条 B 的低置信意见；B 从 0.398 到 0.402（0.4 档）也只是 **+0.4pp**，在 judge 单轮噪声内。
+- 再往下没有可降空间：benchmark 读 `reviews_all.json`，当前 34/49 条已经全部在真源里；`limits.confidence.min` 只过滤 tips / MCP，不改变 benchmark。
+- 历史 108 条全量的 `filter-sweep` 结论相同：0.0 档 B 0.102，0.5 档 0.101，0.8 档 0.058；没有任何阈值提高 Balanced。低置信意见只占 2.8%，不是 precision 的主因。
+
+### 漏报落在哪
+
+| 口径 | A（补漏关） | B（补漏开） |
+|---|---:|---:|
+| 未覆盖 GT | 65 / 95 | 61 / 95 |
+| 其中：文件内已有意见但未命中 | 12 | 21 |
+| 其中：文件内没有任何意见 | 45 | 40 |
+| 其中：落在 `not-reached` hunk | 50 | 10 |
+| 其中：落在 `candidate` hunk | 12 | 13 |
+| 其中：落在 `no-issue` hunk | 0 | **35** |
+| 其中：GT 行不在账本 hunk 内 | 3 | 3 |
+
+补充事实：
+
+- B 的 49 条意见中，32 条落在有 GT 的文件、17 条落在无 GT 文件；A 是 28 / 6。补漏新增 15 条里，只有 4 条落在有 GT 文件，11 条落在无 GT 文件。
+- B 未覆盖的 61 条 GT 中，**35 条（57%）所在 hunk 被补漏标成 `no-issue`**；这些 hunk 并不是“没审到”，而是补漏看过之后判定“没问题”。抽样可见典型误判：debug console.log 未删、`Promise.all` 部分写入失败、`std::roundf` 浮点转换、`fiber.elementType` 覆盖真实类型、`delete_by_ids` 空列表 SQL / 事务缺失等，均被 `no-issue` 关掉。
+- 因此 B 相对 A 的 recall +4.2pp，来自 4 条补漏命中；代价是 11 条无 GT 文件意见和 35 条被 no-issue 吞掉的 GT。**`no-issue` 覆盖了 200 个 hunk，但只换来 15 条候选、4 条命中，质量明显不足。**
+
+### 结论
+
+- **不是“置信度太高把意见滤掉了”**：benchmark 真源本来就没有置信度过滤，降阈值最多 +0.4pp；历史全量也证明阈值不是杠杆。
+- **确实有“意见提得不够”**，但更准确地说是两层：
+  1. 45 / 65（A）、40 / 61（B）的漏报在**完全没有意见的文件**里，说明文件级覆盖仍不足；
+  2. 补漏把大量未覆盖 hunk 判成 `no-issue`，其中 35 条仍含 GT，说明**`no-issue` 过于自信**，不是“没生成候选”这么简单。
+- 下一步优先级应是：先让 `no-issue` 更保守（有疑问不输出 / 只对确定安全的小 hunk 输出），再谈扩大候选数量；单纯加意见或降 confidence 会把 B 的 precision 继续往下拉。
+
+## 2026-11-21 · F-01b v2：no-issue 收紧 + 候选优先 + 代码文件优先
+
+### 改动
+
+1. `no-issue` 必须有非空 `reason` + 至少一条 `evidence`（引用 hunk 内真实代码/行号）；只给 reason 的回执判 invalid，不再关闭缺口。
+2. 提示词改为“可疑就报 candidate”；`no-issue` 只适用于纯格式/注释/重命名/等价重构或能正面证明安全；拿不准省略，保持 `not-reached`。
+3. 补漏预算排序：整文件缺口 → 源码 → 头文件 → 文档/资源，避免 `.rst` / `.xml` 吃掉预算。
+4. 测试：13 个补漏用例 + 全包 **1208 passed / 1 skipped**；严格 `build` 通过。
+
+### iterB10 结果（同 arm A 对照，官方 `deepseek-flash`，judge 单轮）
+
+| 指标 | arm A（补漏关） | v1（原补漏） | **v2（本次）** | OCR |
+|---|---:|---:|---:|---:|
+| Precision | 0.500 | 0.449 | **0.439** | 0.4468 |
+| Recall | 0.316 | 0.358 | **0.432** | 0.5895 |
+| Balanced | 0.387 | 0.398 | **0.435** | 0.5083 |
+| generated | 34 | 49 | **66** | 94 |
+| matched generated | 17 | 22 | **29** | 42 |
+| covered GT | 30 | 34 | **41** | 56 |
+| 总 token | 7,315,252 | 6,186,912 | **7,725,485** | 28,447,839 |
+| 输出 token | 238,607 | 468,770 | **590,677** | — |
+| 样本耗时合计 | 1,542.3s | 2,868.9s | **3,824.1s** | 3,391.8s |
+
+- v1 → v2：P **-1.0pp**、R **+7.4pp**、B **+3.7pp**。
+- A → v2：P -6.1pp、R +11.6pp、B +4.8pp。
+- v2 vs OCR：P -0.8pp、R -15.8pp、B -7.3pp；差距从 v1 的 11.0pp 缩到 7.3pp。
+- 成本：v2 总 token 比 v1 修正值高 25%，非缓存 input+output 914K（v1 736K、A 509K）；补漏自身输出 322,532（v1 239,083）。
+
+### 补漏质量
+
+- 116 请求 / 0 失败；发送 253 hunk / 覆盖 191；`no-issue` 164（v1 200）；候选 **27 / 接受 27**（v1 15）；invalid 12；预算跳过 10。
+- 27 条候选 **7 条命中**（25.9%；v1 4/15=26.7%）——候选精度没有变好，但候选量翻倍，绝对命中 +3。
+- 账本：candidate 45→61，no-issue 200→164，not-reached 52→72；`not-reached` 上升是“证据不足不再假关闭”的预期结果，不是退化。
+- 未覆盖 GT：61→54；其中落在 `no-issue` hunk 的从 35 降到 29，仍是最主要的假阴性桶。
+- 有 GT 文件内的意见：32→50；无 GT 文件意见：17→16。**同样的预算下，v2 把意见明显推向了有 GT 的文件**，这是 B 提升的主因。
+- lvgl 的补漏候选从 v1 的 6 条（多为 `.rst` / `.xml` / `.h`）降到 3 条（1 条 `.rst` + 2 条 `.c`），说明代码优先级生效。
+- 反例：codex 的 10 条补漏候选全部未命中（含 4 条 P1 / 高置信），提示还需要独立证伪/验证门，单靠提示词无法消掉这类整文件误报。
+- 置信度离线扫描（v2）：0.0 档 B 0.4355 最优；0.5 档 0.416，0.6 档 0.340。没有任何阈值能提高 B，**不要用 confidence 过滤**。
+
+### 结论
+
+- v2 达到“B 提升、R 明显提升、P 小幅回退”的结果；若验收按 Balanced，v2 通过（0.435 > 0.398 > 0.387）；若严格按“P/R 都不回退”，P 仍差 A 6.1pp，不应标 DONE。
+- 下一步优先级：给补漏候选加独立证伪/验证门（尤其是整文件空、非主检视文件），而不是继续放宽提示词；`no-issue` 仍有 29 条 GT 误判，需继续收紧或抽样审计。
+- 当前不建议上 iterF91：先确认 v2 在 iterB10 的单轮结果可复现，再决定是否扩大。
+
+## 2026-11-21 · 验收口径调整：Balanced 不回退即可
+
+- 原口径：F-01 的补漏效果要求“P/R 都不回退”。
+- 新口径（本日决策）：**Balanced 不回退即可**；P 允许回退，但必须在报告中披露，不能只报 B。
+- 按新口径复核：
+  - arm A B 0.387；
+  - F-01b v1 B 0.398（+1.1pp）；
+  - F-01b v2 B 0.435（+4.8pp）；
+  - v2 通过 F-01 效果验收。
+- 保留的未决项：F-01c（汇总比例 / 阈值 / manifest / CI）未做；F-01b 仍缺独立验证门，不因验收口径调整而视为质量已完成。
+- 状态：F-01 仍为 `DOING`，不标 `DONE`——避免把“验收口径通过”误读为“所有子阶段完成”。
+
+## 2026-11-21 · F-01b v3：补漏候选独立验证门
+
+### 实现
+
+- 新增 `run/coverage-repair-verify.ts`：按补漏单元批量发独立证伪请求，真实 verdict 替代 v2 的 `pass:true`。
+- 验证器只读 hunk + 候选；pass 需 file/line 落在 hunk、evidence 可在原文核对、缺陷描述与代码一致；不确定即 reject。
+- 验证请求失败 / 回包不可解析时 fail-open（候选保留，计 `unverified`）。
+- 审计新增 `coverageRepair.verification { requests, failedRequests, accepted, rejected, unverified, usage }`；补漏总 `usage` 含验证器。
+- 单测 **1212 passed / 1 skipped**；严格 `build` 通过。
+
+### iterB10 结果
+
+| 指标 | arm A | v2 | **v3** | OCR |
+|---|---:|---:|---:|---:|
+| Precision | 0.500 | 0.439 | **0.522** | 0.4468 |
+| Recall | 0.316 | 0.432 | **0.400** | 0.5895 |
+| Balanced | 0.387 | 0.435 | **0.453** | 0.5083 |
+| generated | 34 | 66 | **46** | 94 |
+| matched generated | 17 | 29 | **24** | 42 |
+| covered GT | 30 | 41 | **38** | 56 |
+| 总 token | 7,315,252 | 7,725,485 | **7,738,434** | 28,447,839 |
+| 输出 token | 238,607 | 590,677 | **634,523** | — |
+| 样本耗时合计 | 1,542s | 3,824s | **3,827s** | 3,392s |
+
+- v2 → v3：P **+8.3pp**、R **-3.2pp**、B **+1.8pp**。
+- v3 vs OCR：P +7.5pp、R -19.0pp、B -5.5pp；B 差距从 v2 的 7.3pp 缩到 5.5pp。
+- 补漏：117 生成请求 / 0 失败，30 候选；验证器 26 请求（2 失败）、accept 9 / reject 17 / unverified 4；最终 13 条进门，4 条命中。
+- 主检视 33 条（v2 39），命中 20；主检视本身的轮次波动也是 recall 下降的一部分，不能全部归因于验证门。
+- 未覆盖 GT 57：no-issue 21（v2 29）、not-reached 22（v2 9）、candidate 11、no-file 3。验证器拒绝的候选保持未覆盖，不再假关闭。
+- 验证器用量：输入 31,073 / 输出 35,614 / cache 3,200；相对 v3 总输出 634,523 约 5.6%。
+
+### 判断
+
+- v3 是当前 Balanced 最高的一版（0.453），precision 已高于 arm A 与 OCR；recall 仍是主要短板。
+- 按 2026-11-21 调整后的“Balanced 不回退”口径，v3 通过；相对 v2 有 +1.8pp 提升。
+- 代价是 recall -3.2pp，其中既验证门拒掉了一部分候选，也有主检视轮次波动；下一轮若要继续提 B，应优先看“验证器拒绝里有没有真命中”，而不是继续放宽/收紧阈值。
+
+### F-01c（C1）落地
+
+- `run.json` 的 `audit.coverageSummary` 现在带 `hunks / candidate / noIssue / notReached / outOfHunk / byCause / candidateRatio / noIssueRatio / notReachedRatio`。
+- 逐 hunk 明细仍只在审计文件；run.json 只放汇总，避免体积膨胀。
+- C2（阈值告警/失败）与 C3（manifest/CI/preview 复用）仍需产品口径与 F-15 对接，未做。
+
+## 2026-11-21 · F-01 收口：C2/C3 拆到 F-15
+
+- F-01c C1（`run.json` 的 `coverageSummary`）已完成并通过全包测试。
+- C2（覆盖阈值 `warn` / `fail`）与 C3（manifest / CI / preview 复用）**拆到 F-15**：它们需要产品口径与 F-15 的 preview/manifest 本体，不属于 F-01 的验收范围。
+- F-01 状态改为 **DONE**：
+  - F-01a：iterF91 零模型 91/91；
+  - F-01b v3：P 0.522 / R 0.400 / B 0.453（arm A 0.387），Balanced 不回退；
+  - F-01c C1：`run.json` `coverageSummary`（counts + ratios + byCause）；
+  - 全包 1212 passed / 1 skipped，严格 build 通过。
+- 后续覆盖阈值/平台化在 F-15 继续，不回改本任务的历史实验结论。
+
 ## 下一步
 
 - 先落 F-01a：纯确定性账本 + 截取区间 + 审计键 + 恒等式测试 + 历史 diff 基线（零模型调用）。

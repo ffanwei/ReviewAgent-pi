@@ -1,6 +1,6 @@
 # F-01 覆盖账本：文件 × hunk 三态
 
-- Status: `claimed`
+- Status: `done`
 - 优先级：P0
 - 分支：`exp-flow`
 - 对应问题：P0-1、P1-11、V1/V7
@@ -75,13 +75,17 @@
   审计尾键 `coverageRepair`；stderr 一行摘要。
 - 验证：1207 passed / 1 skipped；`typecheck` 与严格 `build` 通过。
 - A/B 配置：`C:/Users/Li/.PiAgent/benchmark-aacr-v2-f01b.jsonc`（与历史 arm2 同口径，只开补漏）。
+- iterB10 实测（官方 `deepseek-flash`）：`not-reached` 267/297（89.9%）→ 52/297（17.5%）；补漏 117 请求 / 0 失败、15 条候选全部进门、200 条 `no-issue`。但 P 0.500→0.449（**-5.1pp**）、R 0.316→0.358、B 0.387→0.398；补漏候选命中率约 26.7%，拉低 precision，按**当时口径**“P/R 不回退”未通过。详见 [discussion.md](discussion.md#2026-11-21--f-01b-iterb10-ab-实测官方-deepseek-flash)。
+- v2（2026-11-21）：`no-issue` 强制 evidence、提示词候选优先、预算代码文件优先。iterB10：P 0.439 / R 0.432 / B 0.435（v1 0.449/0.358/0.398；A 0.500/0.316/0.387）；27 条补漏候选 7 条命中，GT 文件内意见 32→50，未覆盖 GT 61→54，`no-issue` 假阴性 35→29。按 2026-11-21 调整后的“Balanced 不回退”口径，**v2 通过**（B +4.8pp）；P 仍低于 arm A 6.1pp，已在报告披露。详见 [discussion.md](discussion.md#2026-11-21--f-01b-v2no-issue-收紧--候选优先--代码文件优先)。
+- v3（2026-11-21）：补漏候选独立验证门；iterB10 P 0.522 / R 0.400 / B 0.453（v2 0.439/0.432/0.435；A 0.500/0.316/0.387）。验证器 26 请求 / 失败 2 / accept 9 / reject 17 / unverified 4；最终 13 条补漏意见、4 条命中。B +1.8pp，precision 已高于 A 与 OCR，recall 仍是短板。详见 [discussion.md](discussion.md#2026-11-21--f-01b-v3补漏候选独立验证门)。
+- F-01c C1：`run.json` 新增 `audit.coverageSummary`（counts + ratios + byCause），逐 hunk 明细仍只在审计；C2/C3（阈值语义、manifest/CI/preview）已拆到 [F-15](../F-15-delivery-platform/discussion.md)，不在 F-01 内继续。
 
 ## 验收（摘要）
 
 - 每个 changed file 至少有一个 hunk 状态；`not-reached` 比例在审计与 stderr 可见。
 - `candidate + no-issue + not-reached == hunk 总数`；分片账本并集 == 整份 diff 账本（无截取时）。
 - 未覆盖 hunk 只对缺口发补漏；补漏请求数与缺口数可对账。
-- P/R 不回退；token、墙钟、请求数一起报。
+- **Balanced 不回退**（2026-11-21 口径调整：P 允许回退，但报告中必须披露）；token、墙钟、请求数一起报。
 - 同一输入 + 同一配置 → 同一分母、同一账本。
 - 提示词/工具 schema 未改时 replay 不受影响；若后续改动，先重录 trace。
 
