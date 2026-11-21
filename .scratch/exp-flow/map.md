@@ -100,3 +100,4 @@
 - 2026-11-21：stderr 覆盖摘要、失败旁路测试、零模型基线脚本（`scripts/coverage-baseline.mjs`）；全包 1189 passed / 1 skipped。
 - 2026-11-21：从 `exp-group` 全量迁移 `docs/bench`（554 files / 20.5 MB，含 artifacts / ocr / results）；运行时仍依赖外部 evaluation。
 - 2026-11-21：AACR-Bench 归档从 `docs/bench` 迁到 `bench/aacr-bench-v2`；新增 `bench/README.md` 与结构指南条目。
+- 2026-11-21：F-01a iterF91 零模型验收通过（91 条；22,266 hunk；818 截取 hunk；maxShards=12 下 3 条显式失败，32 下 91/91）；证据 `issues/F-01-coverage-ledger/f01a-iterf91-zero-model.json`。

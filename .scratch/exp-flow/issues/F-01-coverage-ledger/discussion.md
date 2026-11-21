@@ -299,6 +299,16 @@ OCR（`D:/Project/open-code-review` @ `d77d70b`）的做法是四层 + 一个出
 - 历史讨论中的 `docs/bench` 保留为当时路径；`git show exp-group:docs/bench/...` 也保留为 exp-group 历史路径。上文「细节与用法见 `docs/bench/MIGRATION.md`」现指向 `bench/aacr-bench-v2/MIGRATION.md`。
 - 未处理：`artifacts/` + `results/` + `ocr/**/results/` 约 15.2MB 仍入库；是否转出 git / Git LFS 待单独决定。
 
+## 2026-11-21 · F-01a iterF91 零模型验收
+
+- 数据：91 条 diff（iterF91 全量），来源外部 evaluation 的 `.reviewpi/diff` 缓存；**0 模型请求**。
+- 原始账本：6,603 文件 / 22,266 hunk / 1,037 excluded（deleted 701 / binary 291 / no-hunks 45）/ unattributed 0；分区恒等式 0 失败；同输入两次构建 deep-equal。
+- 分片 120K / `maxShards=12`：88 条成功，3 条显式失败（appwrite 20 片、keycloak 13 片、typescript-go 19 片）；合并后 16,003 hunk，818 个截取 hunk 全部为 `not-reached(truncated)`；分母集合与整份账本 0 不一致；分区恒等式 0 失败。
+- 分片 120K / `maxShards=32`：91/91 成功，0 失败；1,056 个截取 hunk 全部正确标记；分母 0 不一致。
+- 结论：F-01a 在 iterF91 上满足分母不缩水、截取不留白、分片合并等价、确定性；3 条 >12 片是 F-02 的已知准入问题，把 `maxShards` 调到 32 后消失。
+- 证据：[`f01a-iterf91-zero-model.json`](f01a-iterf91-zero-model.json)；原始 JSON 在 `.artifacts/coverage-baseline/`（gitignored）。
+- 范围：本次是零模型账本验收，不代表补漏（F-01b）的质量收益；F-01b 尚未实现。
+
 ## 下一步
 
 - 先落 F-01a：纯确定性账本 + 截取区间 + 审计键 + 恒等式测试 + 历史 diff 基线（零模型调用）。
