@@ -42,6 +42,7 @@ import {
   type RepoSnapshotSideRecord,
 } from "./repo-side.js";
 import { mergeShardFindings } from "./findings-merge.js";
+import { mergeCoverageLedgers } from "./coverage-ledger.js";
 import {
   buildRunContext,
   runPasses,
@@ -583,6 +584,8 @@ async function aggregateShards(
   executed: readonly ExecutedPass[],
 ): Promise<ReviewOutcome> {
   const findings = mergeShardFindings(executed.map((entry) => entry.pass.findings));
+  // 覆盖账本（F-01a）：各片账本合并；结果与片顺序无关。
+  const coverage = mergeCoverageLedgers(executed.map((entry) => entry.pass.coverage));
   // 单文件超预算截取留痕（ADR-0070）：片序 → 块序，无截取时为空数组
   const shardTruncation = executed.flatMap((entry) =>
     entry.descriptor.kind === "shard" ? entry.descriptor.shard.truncated : [],
@@ -716,6 +719,7 @@ async function aggregateShards(
     // 规则 Skill 装载审计在聚合层记一次（ADR-0039 决策 4 / 7）
     ruleSkill: context.ruleSkillAudit,
     shards: shardAudits,
+    coverage,
     ...(shardTruncation.length > 0 ? { shardTruncation } : {}),
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),

@@ -263,6 +263,17 @@ test("单块超预算不再报错：按整 hunk 截取后照常检视（单片�
 
   const audit = JSON.parse(readFileSync(run.auditPath, "utf8")) as Record<string, unknown>;
   expect(audit.shardTruncation).toEqual([record]);
+  // 覆盖账本：保留 hunk 1 + 截取丢弃 hunk 2 都进分母，后者标 truncated
+  const coverage = audit.coverage as {
+    counts: {
+      hunks: number;
+      notReached: number;
+      byCause: Record<string, number>;
+    };
+  };
+  expect(coverage.counts.hunks).toBe(2);
+  expect(coverage.counts.notReached).toBe(2);
+  expect(coverage.counts.byCause.truncated).toBe(1);
   const startEvent = events.find((event) => event.kind === "run" && event.state === "start");
   expect(startEvent !== undefined && startEvent.kind === "run" ? startEvent.shards : undefined).toEqual({
     total: 1,

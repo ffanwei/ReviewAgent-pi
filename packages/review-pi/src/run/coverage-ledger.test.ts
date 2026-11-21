@@ -9,6 +9,7 @@ import {
   emptyCoverageLedger,
   markNoIssue,
   mergeCoverageLedgers,
+  truncatedRangesFromShardRecords,
 } from "./coverage-ledger.js";
 
 function diffOf(file: string, hunks: readonly string[]): string {
@@ -209,6 +210,46 @@ describe("buildCoverageLedger", () => {
     const second = buildCoverageLedger(TWO_HUNKS);
     expect(first).toEqual(second);
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+});
+
+describe("truncatedRangesFromShardRecords", () => {
+  test("展开 dropped 区间；diff 前置块不产生区间", () => {
+    const ranges = truncatedRangesFromShardRecords([
+      {
+        path: "src/c.ts",
+        originalChars: 100,
+        keptChars: 50,
+        hunks: 2,
+        keptHunks: 1,
+        droppedHunks: 1,
+        dropped: [
+          { index: 2, old: { start: 5, count: 1 }, new: { start: 5, count: 1 } },
+        ],
+        droppedAdded: 1,
+        droppedRemoved: 1,
+      },
+      {
+        path: "",
+        originalChars: 10,
+        keptChars: 5,
+        hunks: 1,
+        keptHunks: 0,
+        droppedHunks: 1,
+        dropped: [],
+        droppedAdded: 1,
+        droppedRemoved: 0,
+      },
+    ]);
+
+    expect(ranges).toEqual([
+      {
+        file: "src/c.ts",
+        index: 2,
+        old: { start: 5, count: 1 },
+        new: { start: 5, count: 1 },
+      },
+    ]);
   });
 });
 

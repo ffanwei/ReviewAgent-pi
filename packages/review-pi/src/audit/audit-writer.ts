@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { CoverageLedger } from "../contracts/coverage.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
@@ -99,6 +100,11 @@ export interface AuditFileContent {
   /** Skill 包检视留痕：只在本次 diff 命中 skill 根时在场（缺省省键） */
   readonly skillReview?: SkillReviewRecord;
   /**
+   * 覆盖账本（F-01a）：文件 × hunk 三态；只在 pass 携带时出现。
+   * 键序在 config / modelFallback 之前，保持 modelFallback 为最后一个可选键。
+   */
+  readonly coverage?: CoverageLedger;
+  /**
    * 生效配置快照（ADR-0025）：全量非秘密生效值 + 来源 + digest；秘密只记
    * `set|missing`。只进审计文件（stdout 键集不变）。直调内核（测试/嵌入）可缺省。
    */
@@ -178,6 +184,7 @@ export function buildAuditFileContent(args: {
       ? { rejectionCounts: args.audit.rejectionCounts }
       : {}),
     ...(args.audit.skillReview !== undefined ? { skillReview: args.audit.skillReview } : {}),
+    ...(args.audit.coverage !== undefined ? { coverage: args.audit.coverage } : {}),
     ...(args.config !== undefined ? { config: args.config } : {}),
     // 模型替换留痕（ADR-0080）：无替换整键缺席（零字节漂移）
     ...(args.audit.modelFallback !== undefined

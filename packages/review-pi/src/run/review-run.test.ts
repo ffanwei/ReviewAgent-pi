@@ -120,6 +120,7 @@ const AUDIT_KEYS = [
   "ledger",
   "ruleSkill",
   "skillPassLog",
+  "coverage",
 ];
 
 test("全链零工具：req0 = ZoneA+MR+Phase-1 + 可见工具面；产物布局与审计键序", async () => {
@@ -172,6 +173,20 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 可见工具面；产物布局
   expect(audit.ledger).toEqual([]);
   expect(audit.ruleSkill).toEqual([]);
   expect(audit.skillPassLog).toEqual([]);
+  // 覆盖账本（F-01a）：vul4j-1 单文件单 hunk，零工具零候选 → not-reached(no-signal)
+  const coverage = audit.coverage as {
+    counts: {
+      hunks: number;
+      candidate: number;
+      noIssue: number;
+      notReached: number;
+      byCause: Record<string, number>;
+    };
+  };
+  expect(coverage).toMatchObject({
+    counts: { hunks: 1, candidate: 0, noIssue: 0, notReached: 1 },
+  });
+  expect(coverage.counts.byCause["no-signal"]).toBe(1);
   expect(audit.truncated).toBe(false);
   expect(audit.effort).toBe("default");
   expect(audit.requests).toHaveLength(6);

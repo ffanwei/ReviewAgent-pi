@@ -12,6 +12,7 @@ import {
   type ReviewRunContext,
 } from "./pass-runner.js";
 import type { ReviewPassInput, ReviewPassResult } from "./review-pass.js";
+import { emptyCoverageLedger } from "./coverage-ledger.js";
 import type { Shard } from "./shard-planner.js";
 
 // pass 装配（ADR-0081 候选 2）：单遍与分片共享同一 context，差异只在
@@ -212,6 +213,7 @@ function passResult(finishedAt: Date): ReviewPassResult {
       truncationReasons: [],
       ruleSkill: [],
     },
+    coverage: emptyCoverageLedger(),
     complete: true,
     transcriptPath: "/tmp/session.json",
     reviewsPath: "/tmp/reviews_all.json",

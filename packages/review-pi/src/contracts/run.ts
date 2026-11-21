@@ -1,7 +1,7 @@
 // run 级留痕契约（测量常量面：审计投影的形状与 DSH 线一致，
 // 冻结 analyze 脚本据此消费 pi RunRecord）。随模块落地逐步补齐。
 
-import type { DroppedHunkRange } from "./coverage.js";
+import type { CoverageLedger, DroppedHunkRange } from "./coverage.js";
 import type { Finding } from "./finding.js";
 import type { LedgerEntry } from "./ledger.js";
 import type { LlmUsage, ToolSchema, WireMessage } from "./llm.js";
@@ -378,6 +378,11 @@ export interface RunAudit {
    * 聚合审计记一次；分片审计不重复该键（`model` 已是生效值）。
    */
   readonly modelFallback?: ModelFallbackRecord;
+  /**
+   * 覆盖账本（F-01a）：本遍 / 聚合的文件 × hunk 三态。
+   * 只在 pass 审计携带；聚合审计由各片合并。
+   */
+  readonly coverage?: CoverageLedger;
 }
 
 /** 六阶段循环一次完整运行的结果（审计投影的输入） */

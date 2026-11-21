@@ -243,6 +243,29 @@ OCR（`D:/Project/open-code-review` @ `d77d70b`）的做法是四层 + 一个出
   - 全包 `1186 passed / 1 skipped`；`typecheck` 与严格 `build` 通过。
 - 未接线：`ShardTruncationRecord[] → TruncatedHunkRange[]` 的映射与 pass / 审计接线仍待下一步。
 
+## 2026-11-21 · pass + 审计接线落地（未提交）
+
+- `run/review-pass.ts`：
+  - `runReviewPass` 在**任何模型请求之前**从 `input.diff` 建账本；分片时用 `truncatedRangesFromShardRecords` 把截取区间接回分母；
+  - loop 返回后 `backfillCandidates(outcome.findings, "main")`，再按现场 `closeCoverage`：
+    - `MODEL_MAX_TOKENS_REACHED` → `output-truncated`
+    - `TOOL_BUDGET_EXHAUSTED` → `budget`
+    - `complete=false` → `round-cap`
+    - 否则 `no-signal`
+  - 异常路径：`closeCoverage(..., "flow-error")` 并把账本旁路写到 `<runDir>/coverage.json`（失败不覆盖原始错误）；
+  - 账本挂到 `RunAudit.coverage`，随审计落盘；`ReviewPassResult.coverage` 供分片聚合。
+- `run/pass-runner.ts`：分片时把 `descriptor.shard.truncated` 传进 `ReviewPassInput.shardTruncation`。
+- `run/review-run.ts`：`aggregateShards` 用 `mergeCoverageLedgers` 合并各片账本，写进聚合审计。
+- `audit/audit-writer.ts`：`AuditFileContent` 新增 `coverage?`，键序在 `config` / `modelFallback` 之前（`modelFallback` 仍是最后一个可选键）。
+- `contracts/run.ts`：`RunAudit.coverage?`。
+- 测试：
+  - `review-run.test.ts` 顶层键序加入 `coverage`，断言 vul4j-1 单 hunk = `not-reached(no-signal)`；
+  - `sharded-review.test.ts` 断言截取场景账本 `hunks=2 / truncated=1`；
+  - `coverage-ledger.test.ts` 新增 shardTruncation → 区间映射；
+  - 全包 `1187 passed / 1 skipped`；`typecheck` 与严格 `build` 通过。
+- 已知边界：同一文件多个 diff 块若被分到不同 shard，各片账本会重复文件路径并在聚合时抛错；正常 git diff 一文件一块，暂不处理。
+- 未做：stderr 覆盖摘要；失败旁路的自动化测试。
+
 ## 下一步
 
 - 先落 F-01a：纯确定性账本 + 截取区间 + 审计键 + 恒等式测试 + 历史 diff 基线（零模型调用）。

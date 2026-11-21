@@ -1,6 +1,8 @@
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FetchFunction } from "@earendil-works/pi-ai";
 import { buildAuditFileContent, buildRunId, writeAuditFile } from "../audit/audit-writer.js";
+import type { CoverageLedger, NotReachedCause } from "../contracts/coverage.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
@@ -11,6 +13,7 @@ import type {
   RuleSkillAudit,
   RuleSkillPassRecord,
   RunAudit,
+  ShardTruncationRecord,
 } from "../contracts/run.js";
 import { buildReviewsExport, writeReviewsAll } from "../export/reviews.js";
 import {
@@ -24,6 +27,7 @@ import type { RuleSkill } from "../knowledge/rule-skill.js";
 import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
 import { createCandidateRepair } from "../loop/candidate-repair.js";
+import { TRUNCATION_MODEL_LENGTH, TRUNCATION_TOOL_BUDGET } from "../loop/constants.js";
 import { buildInitialUserMessage } from "../loop/messages.js";
 import {
   createRequestTimelineWriter,
@@ -38,6 +42,12 @@ import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
 import { buildReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
+import {
+  backfillCandidates,
+  buildCoverageLedger,
+  closeCoverage,
+  truncatedRangesFromShardRecords,
+} from "./coverage-ledger.js";
 import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { formatRepoSnapshotModelNote, type RepoSnapshotSideRecord } from "./repo-side.js";
@@ -73,6 +83,8 @@ export interface ReviewPassInput {
   readonly diff: string;
   /** 初始用户消息里的 diff 文本（分片 = 片内 diff + 其他文件摘要） */
   readonly initialDiff: string;
+  /** 本片的截取明细（ADR-0070；单遍缺席） */
+  readonly shardTruncation?: readonly ShardTruncationRecord[];
   /** 规则 Skill（编排层只装载一次，各片共享） */
   readonly ruleSkills: readonly RuleSkill[];
   readonly ruleSkillAudit: readonly RuleSkillAudit[];
@@ -121,6 +133,8 @@ export interface ReviewPassResult {
   readonly rounds: number;
   readonly toolCalls: number;
   readonly audit: RunAudit;
+  /** 本遍覆盖账本（F-01a）：审计与分片聚合共用同一份 */
+  readonly coverage: CoverageLedger;
   readonly complete: boolean;
   readonly transcriptPath: string;
   readonly reviewsPath: string;
@@ -134,13 +148,24 @@ export interface ReviewPassResult {
 }
 
 export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassResult> {
+  // 覆盖分母先于任何模型请求冻结（F-01a）：从本遍 diff 确定性派生；
+  // 分片时把 ADR-0070 截取丢弃的 hunk 接回分母，标 not-reached(truncated)。
+  const coverage = buildCoverageLedger(
+    input.diff,
+    input.shardTruncation !== undefined
+      ? { truncated: truncatedRangesFromShardRecords(input.shardTruncation) }
+      : {},
+  );
   // 请求时间线（ADR-0076）：本遍独占一份文件；同步追加，失败现场不受
   // 「产物写盘在 pass 之后」的全有或全无影响。
   const timeline = createRequestTimelineWriter(input.runDir);
   setRequestTimelineSink(timeline.sink);
   try {
-    return await executeReviewPass(input);
+    return await executeReviewPass(input, coverage);
   } catch (error) {
+    // 失败路径：审计不会落盘，账本单独留一份失败现场；失败原因统一记为
+    // flow-error，未回填的 hunk 不静默成「已审」。
+    await persistCoverageSidecar(input.runDir, closeCoverage(coverage, "flow-error"));
     const summary = timeline.summary();
     if (summary !== null) {
       // 旁路：一行失败现场（同时被 review-pi.log 镜像）；不改退出码 / 不吞异常
@@ -150,6 +175,37 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
   } finally {
     setRequestTimelineSink(null);
     timeline.close();
+  }
+}
+
+/** 本次 run 的未覆盖原因：输出截断 > 工具预算 > 轮次未完成 > 正常无信号 */
+function coverageCauseFor(outcome: {
+  readonly audit: RunAudit;
+  readonly complete: boolean;
+}): NotReachedCause {
+  if (outcome.audit.truncationReasons.includes(TRUNCATION_MODEL_LENGTH)) {
+    return "output-truncated";
+  }
+  if (outcome.audit.truncationReasons.includes(TRUNCATION_TOOL_BUDGET)) {
+    return "budget";
+  }
+  return outcome.complete ? "no-signal" : "round-cap";
+}
+
+/** 失败路径的账本旁路落盘；任何失败都不覆盖原始错误 */
+async function persistCoverageSidecar(
+  runDir: string,
+  coverage: CoverageLedger,
+): Promise<void> {
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(
+      path.join(runDir, "coverage.json"),
+      `${JSON.stringify(coverage, null, 2)}\n`,
+      "utf8",
+    );
+  } catch {
+    // 旁路失败不改变检视失败的原因与退出码
   }
 }
 
@@ -177,7 +233,11 @@ function skillReviewAuditFacts(profile: SkillReviewProfile): {
   };
 }
 
-async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResult> {  // Skill 包识别（确定性）：只在本次 diff 命中 skill 根时追加清单；
+async function executeReviewPass(
+  input: ReviewPassInput,
+  coverage: CoverageLedger,
+): Promise<ReviewPassResult> {
+  // Skill 包识别（确定性）：只在本次 diff 命中 skill 根时追加清单；
   // 未命中 = undefined，初始消息、阶段消息与位置门都与全代码路径逐字节一致。
   const skillReview = detectSkillReview(input.diff, input.repoPath);
   const ruleSkillLoaded = input.ruleSkills.some(
@@ -278,6 +338,13 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     }),
   });
 
+  // 覆盖收口（F-01a）：finding 按新侧行号回填 candidate；其余 hunk 按本次
+  // run 的截断现场收口（输出截断 / 工具预算 / 轮次 / 正常 no-signal）。
+  const closedCoverage = closeCoverage(
+    backfillCandidates(coverage, outcome.findings, "main"),
+    coverageCauseFor(outcome),
+  );
+
   // 审计投影
   const finishedAt = new Date();
   // runId = 首次模型请求时刻（ADR-0032）：审计文件名、转录文件名与
@@ -298,6 +365,7 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
   const severityFilter = summarizeSeverityFilter(outcome.findings, input.tipsSeverityMin);
   const audit: RunAudit = {
     ...outcome.audit,
+    coverage: closedCoverage,
     ruleSkill: input.ruleSkillAudit,
     ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog: persisted.records } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
@@ -370,6 +438,7 @@ async function executeReviewPass(input: ReviewPassInput): Promise<ReviewPassResu
     rounds: outcome.rounds,
     toolCalls: outcome.toolCalls,
     audit,
+    coverage: closedCoverage,
     complete: outcome.complete,
     transcriptPath,
     reviewsPath,

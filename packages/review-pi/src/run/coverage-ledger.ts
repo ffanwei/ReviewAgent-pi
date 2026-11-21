@@ -23,6 +23,7 @@ import {
   type NotReachedCause,
   type TruncatedHunkRange,
 } from "../contracts/coverage.js";
+import type { ShardTruncationRecord } from "../contracts/run.js";
 import { parseUnifiedDiff, type ParsedFileChange, type ParsedHunk } from "../diff/parse.js";
 
 const ZERO_CAUSES: Record<NotReachedCause, number> = {
@@ -145,6 +146,25 @@ export function buildCoverageLedger(
     unattributedHunks: parsed.unattributedHunks,
     counts: computeCounts(files, 0),
   };
+}
+
+/**
+ * 把 `shardTruncation` 审计记录展开成账本需要的截取区间。
+ * diff 前置块（path = ""）不是文件，跳过；其计数仍留在 `droppedHunks`。
+ */
+export function truncatedRangesFromShardRecords(
+  records: readonly ShardTruncationRecord[],
+): readonly TruncatedHunkRange[] {
+  return records.flatMap((record) =>
+    record.path === ""
+      ? []
+      : record.dropped.map((range) => ({
+          file: record.path,
+          index: range.index,
+          old: range.old,
+          new: range.new,
+        })),
+  );
 }
 
 /**

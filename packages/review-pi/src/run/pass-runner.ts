@@ -373,6 +373,9 @@ export function buildPass(
       ...common,
       diff: descriptor.shard.diff,
       initialDiff: composeShardInput(descriptor.shard),
+      ...(descriptor.shard.truncated.length > 0
+        ? { shardTruncation: descriptor.shard.truncated }
+        : {}),
       runDir,
       auditDir: path.join(
         context.auditRoot,
