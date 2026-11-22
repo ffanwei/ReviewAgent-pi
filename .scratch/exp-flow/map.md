@@ -49,14 +49,19 @@
 | F-05 | 独立证伪核验（新会话；保护性主题 fail-open） | P0-5、V3 | P0 | DONE | 噪声率下降；真值损失 ≤ 阈值；核验理由可审计 | 回放 103 条 unverified：reject 仅 2/0 条、pass 精度 33–34%；F-04 drop + pass 返场 B 27.9%/28.4% < baseline 29.8% → 不接主路径（`bench/experiments/2026-11-22-f05/README.md`） | 一次调用/候选；不循环；默认 off | [票](issues/F-05-independent-verification/ticket.md) · [讨论](issues/F-05-independent-verification/discussion.md) |
 | F-06 | 独立补漏默认开启 / 标准化 | P0-6、V4 | P0 | DROPPED | — | 六项镜头是按测评集 GT 类别反推的固定清单（测评集过拟合）；B2 仅 10 条小 diff、最差轮差距在 judge 噪声带内 → 不实现 | 独立第二视角并入 P0-1 覆盖驱动补漏 | [票](issues/F-06-independent-sweep/ticket.md) · [讨论](issues/F-06-independent-sweep/discussion.md) |
 | F-07 | 阶段压缩：合并 1+2、条件化 Phase 4 | P1-6、V5 | P1 | DONE | 每单元请求 -≥1；P/R/B ±2pp 内 | S20：请求 308→271（−12%）、token 6.60M→6.27M（−5%）、B 25.8%→35.4%（ΔB CI +1.35~+15.63pp）；默认 `compact`（Phase 1 禁工具）；墙钟 +18.6% 待观察；条件化 4 零触发 | `off` 可回滚；P1-7 风险预算单列 | [票](issues/F-07-stage-compression/ticket.md) · [讨论](issues/F-07-stage-compression/discussion.md) |
-| F-08 | 检索预算 + 重叠区间 Ledger | P1-8/9 | P1 | TODO | 同文件区间不重读；空搜索比例下降 | — | 12 run 已证区间盲 | — |
-| F-09 | 输出校准：confidence 0.3；范围外 `scope` 标注 | P1-10、V8 | P1 | TODO | 真值不丢；噪声不升；范围外可被下游选择 | VUL4J 10 例数据 | 需产品口径确认 | — |
-| F-10 | Phase 5/6 按需读取 | P1-13、V5 | P1 | TODO | 工具调用 -≥20%；P/R/B 不回退 | 12 run：P5 仅 1 次、P6 为 0 | 提示词 + 预算 | — |
-| F-11 | 多轮语义：边际收益停止 + 硬上界 | P1-12 | P1 | TODO | 无新增即停；不再依赖模型显式 false | 12 run 全部 rounds=1 | 与 P0-1 联合看 | — |
-| F-12 | 确定性预取（changed symbols / 直接引用 / 调用点） | P1-8、V6 | P2 | TODO | head 侧可用；base/mixed 降级；工具调用下降 | `resolveChangedFileSymbols` 无运行时调用方 | 先补 `newSpansOf` | — |
-| F-13 | 大 diff severity 区分度复核 | D.3 | P2 | TODO | 复跑数据；确认是否仍需校准 | 旧实验记忆，未复跑 | — | — |
-| F-14 | `search_rule` / `search_history` 可见性复核 | D.3 | P2 | TODO | 当前版本命中率与调用价值有结论 | 历史 run 24 次、约 111 字符/次 | — | — |
+| F-08 | 检索预算与空结果停止 | P1-8/9 | P1 | DONE | 工具调用下降；P/R/B 回退 ≤2pp；审计计数 | 默认 3 次/文件、4 次连续空搜索、40 万字符；S20 复本 270→254 请求、token 6.75M→5.95M、B −0.7pp（CI 跨 0）；不做区间切片；`bench/experiments/2026-11-22-f08/README.md` | ADR-0114；`audit.retrievalBudget` | [票](issues/F-08-retrieval-budget/ticket.md) · [讨论](issues/F-08-retrieval-budget/discussion.md) |
+| F-09 | 输出校准：confidence 0.3；范围外 `scope` 标注 | P1-10、V8 | P1 | DONE | 真值不丢；噪声不升 | confidence 默认 0.5→0.3；v3 离线：0.5 砍 26 条含 6 TP，0.3 全保留；范围外 `scope` 标注留后续 | ADR-0114；F-09b 未做 | [票](issues/F-09-output-calibration/ticket.md) · [讨论](issues/F-09-output-calibration/discussion.md) |
+| F-10 | Phase 5/6 按需读取 | P1-13、V5 | P1 | DROPPED | — | 并入 F-08（预算/定向取证实验臂），不单独立项 | 12 run：P5 仅 1 次、P6 为 0 | — |
+| F-11 | 多轮语义：边际收益停止 + 硬上界 | P1-12 | P1 | DROPPED | — | 12 run 全部 rounds=1；F-06 已放弃；F-01b 补漏已提供显式第二遍；保留 maxRounds 硬上界 | 条件：未来默认机制实际产生多轮再重开 | — |
+| F-12 | 确定性预取（changed symbols / 直接引用 / 调用点） | P1-8、V6 | P2 | DROPPED | — | 并入 F-08 实验臂；`resolveChangedFileSymbols` 无调用方、证据仅假设 | 若 F-08 后续证明需要再重开 | — |
+| F-13 | 大 diff severity 区分度复核 | D.3 | P2 | DROPPED | — | 未复现：v3 归档大 diff P1/P2/P3 命中 54.2%/34.3%/32.1%，小 diff 40%/38.2%/21.4% | 不改 severity；P0 样本仅 1/6 条 | — |
+| F-14 | `search_rule` / `search_history` 可见性复核 | D.3 | P2 | DROPPED | — | 生产默认不注入 knowledge 语料时两工具不可见；历史调用来自带语料配置 | 产品引入语料再重开 | — |
 | F-15 | preview / resume / manifest / PR 原生闭环；含 F-01c C2/C3（覆盖阈值 warn/fail、manifest/CI 复用） | 对比文档 P0 | P2 | TODO | 逐项产品验收；覆盖阈值语义与退出码明确；manifest/CI 复用 `coverageSummary` | F-01c C1 已提供 `summarizeCoverage` 底座 | 不阻塞流程正确性 | [讨论](issues/F-15-delivery-platform/discussion.md) |
+| F-16 | 评测方法学：成对多 run + bootstrap CI | — | P1 | DONE | 每次 A/B 报 CI/token/墙钟/工具 | `bench/experiments/compare_arms.py`；F-08/F-18 对比已用 | 单次运行不再作为结论 | [票](issues/F-16-eval-methodology/ticket.md) · [讨论](issues/F-16-eval-methodology/discussion.md) |
+| F-17 | 一次性调用输出鲁棒性 | — | P1 | DONE | 空 content/截断重试一次；usage 相加 | ADR-0115；`one-shot-llm.test.ts` | 验证器不叠加重试 | [票](issues/F-17-oneshot-robustness/ticket.md) · [讨论](issues/F-17-oneshot-robustness/discussion.md) |
+| F-18 | 覆盖补漏默认化评估 | — | P1 | DONE | P/R/B + token + 墙钟 | S20：B +3.65pp（CI 跨 0）、墙钟 +30% → 保持默认关闭 | 不启用 `coverage.repair` | [票](issues/F-18-coverage-repair-default/ticket.md) · [讨论](issues/F-18-coverage-repair-default/discussion.md) |
+| F-19 | Replay trace 维护与门禁 | — | P2 | DONE | 6/6 场景通过 | 5 个 canned trace + large-mr 真网关重录；`test:replay` 6/6 | 改提示词必须重录 | [票](issues/F-19-replay-maintenance/ticket.md) · [讨论](issues/F-19-replay-maintenance/discussion.md) |
+| F-20 | 证据策略默认值 | — | P2 | DONE | `evidence.mode=warn` 默认；不拒绝 | ADR-0114；全包测试 | `drop` 仍不启用 | [票](issues/F-20-evidence-default/ticket.md) · [讨论](issues/F-20-evidence-default/discussion.md) |
 
 ## 当前焦点
 
@@ -117,3 +122,8 @@
 - 2026-11-22：桥接改为 merge-base（PR 范围）口径，仓内副本同步；F-02 单样本 cline 17,227 字符在 maxDiffChars=8000 下 `ok` + `shards[]`，F-02 前会 skipped；归档 `.../f02-small-check/`；全包 1214 passed；F-02 收口 DONE。
 - 2026-11-22：F-03 有界并行落地（`limits.split.concurrency` 1–8，默认 1；片序聚合/回调；AsyncLocalStorage 时间线；pass 前建 runDir）。live 3 样本 22 片：5298.9s → 2111.8s（2.51×），429 0/0；归档 `bench/experiments/2026-11-22-f03/`。等价性 replay 待补。
 - 2026-11-22：F-04 v1 落地（`limits.evidence` off/warn/drop + `EVIDENCE_UNGROUNDED` + `evidenceGrounding` 审计）。历史回放 v3 320 findings：grounded 217 / unverified 103；drop 会排除约 32%，默认保持 off。全包 1234 passed / 1 skipped。
+
+- 2026-11-22：F-08b/F-09a/F-17/F-20 收官批次：检索预算默认 3/4/40 万、confidence 0.3、evidence warn、one-shot 截断重试；S20 预算复本 270→254 请求、token −12%、B −0.7pp；全包 1249 passed / 1 skipped。
+- 2026-11-22：F-18 评估：coverage repair B +3.65pp（CI 跨 0）、墙钟 +30% → 保持默认关闭。
+- 2026-11-22：F-19 replay 维护：5 个 canned trace 重录 + large-mr 真网关重录，`test:replay` 6/6。
+- 2026-11-22：TODO 复盘：F-10/F-12 并入 F-08；F-11/F-13/F-14 DROPPED；新增 F-16–F-20 并收口。
