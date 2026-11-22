@@ -2,7 +2,7 @@
 
 > 分支：`exp-flow`（从 `exp-skill` @ `331ccc6` 切出）
 > 状态：active
-> 更新：2026-11-21
+> 更新：2026-11-22
 > 设计依据：[检视流程合理性评估-OCR对照与历史Session证据](../../docs/design/检视流程合理性评估-OCR对照与历史Session证据.md)（§5 / §7 / 附录 D）
 > 约定：每个任务一个目录 `issues/<task-id>/`，内含 `ticket.md`（详情票）与 `discussion.md`（讨论归档）；本文件只做索引、状态与验收证据。
 
@@ -46,7 +46,7 @@
 | F-02 | 大 MR 准入与分片一致：split 启用时不再按 `maxDiffChars` 整条跳过 | P0-2、V2 | P0 | DONE | FreeCAD 类 diff 不再 skipped；片数 ≤ maxShards；截取留痕 | 准入改为分片优先；单样本 cline（17,227 字符，maxDiffChars=8000）`ok` + `shards[]`（F-02 前会 skipped）；全包 1214 passed / 1 skipped；基准 91/91、B 0.298 已归档 | 超 maxShards = 模型前显式失败；不做大规模验证 | [票](issues/F-02-admission-split/ticket.md) · [讨论](issues/F-02-admission-split/discussion.md) |
 | F-03 | 分片并行（可配 3–8） | P0-3、V2 | P0 | DONE | findings 集合与串行一致；墙钟显著下降；429 不增加 | live：3 样本 22 片，5298.9s → 2111.8s（**2.51×**），429 0/0；fake 等价通过，replay 待补 | 默认 1；网关 `deepseek-v4.1-flash`；归档 `bench/experiments/2026-11-22-f03/` | [票](issues/F-03-shard-concurrency/ticket.md) · [讨论](issues/F-03-shard-concurrency/discussion.md) |
 | F-04 | 证据接地：文件/行号/引文可核对 | P0-4、V3 | P0 | DONE | 伪造行号/引文/越界文件被确定性拒绝；真证据不误杀 | v1 落地；回放 grounded 217/320、unverified 103/320；全包 1234 passed | 默认 off；warn 计数；drop 会误杀约 32%，未启用；live A/B 待做 | [票](issues/F-04-evidence-grounding/ticket.md) · [讨论](issues/F-04-evidence-grounding/discussion.md) |
-| F-05 | 独立证伪核验（新会话；保护性主题 fail-open） | P0-5、V3 | P0 | TODO | 噪声率下降；真值损失 ≤ 阈值；核验理由可审计 | — | 与 F-04 分开实验 | — |
+| F-05 | 独立证伪核验（新会话；保护性主题 fail-open） | P0-5、V3 | P0 | DONE | 噪声率下降；真值损失 ≤ 阈值；核验理由可审计 | 回放 103 条 unverified：reject 仅 2/0 条、pass 精度 33–34%；F-04 drop + pass 返场 B 27.9%/28.4% < baseline 29.8% → 不接主路径（`bench/experiments/2026-11-22-f05/README.md`） | 一次调用/候选；不循环；默认 off | [票](issues/F-05-independent-verification/ticket.md) · [讨论](issues/F-05-independent-verification/discussion.md) |
 | F-06 | 独立补漏默认开启 / 标准化 | P0-6、V4 | P0 | TODO | 3 轮 Balanced ≥ OCR；token 不高于当前 | B2 报告已有小 diff 数据 | 需补大 diff 数据 | — |
 | F-07 | 阶段压缩：合并 1+2、条件化 Phase 4 | P1-7、V5 | P1 | TODO | 每单元请求 -≥1；P/R/B ±2pp 内 | — | 6/4/2 三臂 A/B | — |
 | F-08 | 检索预算 + 重叠区间 Ledger | P1-8/9 | P1 | TODO | 同文件区间不重读；空搜索比例下降 | — | 12 run 已证区间盲 | — |
