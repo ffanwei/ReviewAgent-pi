@@ -169,6 +169,8 @@ async function defaultComplete(llm: IndependentVerifierLlm, user: string): Promi
     maxTokens: llm.maxTokens ?? VERIFY_MAX_TOKENS,
     responseFormat: "json_object",
     purpose: "finding-verification" satisfies OneShotPurpose,
+    // 解析失败由本模块自己重发一次，避免与 one-shot 的空回包重试叠加。
+    retryOnTruncation: false,
   });
   if (!result.ok) {
     return { ok: false };

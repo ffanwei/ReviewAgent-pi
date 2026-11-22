@@ -107,12 +107,11 @@ test("Retry-After 超过上限：不重试（避免把一次失败拖成几分�
   expect(count()).toBe(1);
 });
 
-test("空 completion：确定性非法输出，不重试", async () => {
+test("空 completion：按 F-17 重试一次，仍空则原样返回", async () => {
   const { fetch, count } = scripted(() => completion("   "));
   const result = await completeOneShot({ ...BASE_INPUT, fetch });
-  // 空串仍是合法 content → 调用方（summary）自行按空串降级；这里只断言不放大请求
   expect(result).toEqual({ ok: true, text: "   " });
-  expect(count()).toBe(1);
+  expect(count()).toBe(2);
 });
 
 test("非法 JSON：确定性输出问题，不重试", async () => {
@@ -269,7 +268,12 @@ test("finish_reason 与 reasoning_tokens：透传到结果（供截断判定与�
       { status: 200, headers: { "content-type": "application/json" } },
     );
 
-  const result = await completeOneShot({ ...BASE_INPUT, fetch, purpose: "summary" });
+  const result = await completeOneShot({
+    ...BASE_INPUT,
+    fetch,
+    purpose: "summary",
+    retryOnTruncation: false,
+  });
   expect(result).toEqual({
     ok: true,
     text: "partial",
@@ -283,4 +287,43 @@ test("回包未带 finish_reason / reasoning_tokens：结果不出现这两个�
   const { fetch } = scripted(() => completion("plain"));
   const result = await completeOneShot({ ...BASE_INPUT, fetch });
   expect(result).toEqual({ ok: true, text: "plain" });
+});
+
+test("F-17：空 content 触发一次翻倍预算重试，usage 相加", async () => {
+  const { fetch, count } = scripted((request) =>
+    request === 1
+      ? new Response(
+          JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "" }, finish_reason: "length" }],
+            usage: { prompt_tokens: 10, completion_tokens: 5 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )
+      : new Response(
+          JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 20, completion_tokens: 7 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+  );
+  const result = await completeOneShot({ ...BASE_INPUT, fetch, maxTokens: 1_024 });
+  expect(count()).toBe(2);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.text).toBe("ok");
+    expect(result.usage).toEqual({ inputTokens: 30, outputTokens: 12 });
+  }
+});
+
+test("F-17：retryOnTruncation=false 时不追加请求", async () => {
+  const { fetch, count } = scripted(() =>
+    new Response(
+      JSON.stringify({ choices: [{ message: { role: "assistant", content: "" }, finish_reason: "length" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ),
+  );
+  const result = await completeOneShot({ ...BASE_INPUT, fetch, retryOnTruncation: false });
+  expect(count()).toBe(1);
+  expect(result).toEqual({ ok: true, text: "", finishReason: "length" });
 });

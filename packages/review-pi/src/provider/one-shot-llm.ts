@@ -62,6 +62,13 @@ export interface OneShotLlmInput {
   readonly purpose?: OneShotPurpose;
   /** 传输层注入（测试确定性）；缺省 globalThis.fetch */
   readonly fetch?: FetchFunction;
+  /**
+   * 空 content / 截断回包的一次预算感知重试（F-17，缺省开启）：
+   * 推理模型可能把 completion 预算花在隐藏推理上，content 为空或
+   * `finish_reason=length`；此时用双倍 maxTokens 再发一次，仍失败则返回第二次结果。
+   * 只加一次逻辑请求，不做循环。
+   */
+  readonly retryOnTruncation?: boolean;
 }
 
 /** 一次性调用的用途分类（只用于日志账本，不改变任何请求字节） */
@@ -153,6 +160,27 @@ export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLl
     result = toResult(fallback, "after retrying without response_format");
   } else {
     result = toResult(first);
+  }
+  // F-17：空 content / 截断回包只重发一次，预算翻倍（调用方仍按 ok/reason 处理）
+  if (
+    result.ok &&
+    input.retryOnTruncation !== false &&
+    (result.text.trim() === "" || result.finishReason === "length")
+  ) {
+    const retryInput: OneShotLlmInput = {
+      ...input,
+      maxTokens:
+        input.maxTokens === undefined ? 4_096 : Math.min(input.maxTokens * 2, 65_536),
+    };
+    const previousUsage = result.usage;
+    const retried = await runAttempts(retryInput, policy, timeline);
+    result = toResult(retried, "after retrying empty/truncated reply");
+    if (result.ok) {
+      const combined = sumUsage(previousUsage, result.usage);
+      if (combined !== undefined) {
+        result = { ...result, usage: combined };
+      }
+    }
   }
   finishOneShotTimeline(timeline, result, first.ok ? undefined : first.failure);
   emitOneShotLifecycle(input, result, startedAt);
@@ -489,6 +517,24 @@ export function extractJsonObject(
   options: { readonly preferKey?: string } = {},
 ): unknown | null {
   return extractModelJson(text, options).value ?? null;
+}
+
+/** 两次逻辑请求的 usage 相加（缺席按 0；两者都缺席返回 undefined） */
+function sumUsage(
+  left: LlmUsage | undefined,
+  right: LlmUsage | undefined,
+): LlmUsage | undefined {
+  if (left === undefined && right === undefined) {
+    return undefined;
+  }
+  const cacheReadTokens = (left?.cacheReadTokens ?? 0) + (right?.cacheReadTokens ?? 0);
+  const cacheWriteTokens = (left?.cacheWriteTokens ?? 0) + (right?.cacheWriteTokens ?? 0);
+  return {
+    inputTokens: (left?.inputTokens ?? 0) + (right?.inputTokens ?? 0),
+    outputTokens: (left?.outputTokens ?? 0) + (right?.outputTokens ?? 0),
+    ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens > 0 ? { cacheWriteTokens } : {}),
+  };
 }
 
 /** 失败归因的类型别名（调用方需要时可直接 import） */
