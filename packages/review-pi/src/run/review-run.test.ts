@@ -1089,6 +1089,7 @@ test("limits.findingScope：默认只保留 diff hunk ±10 行内的意见，关
   expect(filteredAudit.rejectionCounts).toEqual({
     SCHEMA_INVALID: 0,
     NO_EVIDENCE: 0,
+    EVIDENCE_UNGROUNDED: 0,
     VERIFICATION_FAILED: 0,
     OUT_OF_SCOPE: 2,
     DUPLICATE_ID: 0,

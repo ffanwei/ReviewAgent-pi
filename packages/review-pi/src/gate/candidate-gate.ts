@@ -20,6 +20,7 @@ import {
   ROOT_CAUSE_WINDOW_LINES,
 } from "../finding/finding-key.js";
 import { validateFinding } from "../finding/finding-schema.js";
+import { groundFindingEvidence, type EvidenceGroundingResult } from "./evidence-grounding.js";
 import type { VerificationVerdict } from "../shared/parse.js";
 import { describeScopeRejection, type DiffScope } from "./diff-scope.js";
 
@@ -40,6 +41,17 @@ export interface GateInput {
    * （内核直调 / 单测零漂移）；run 层按配置构建后传入。
    */
   readonly scope?: DiffScope;
+  /**
+   * 证据接地（F-04）：缺省 undefined = 不核对（零行为变化）。
+   * `fileText` 返回 null 表示不可核对（文件缺失 / side 非 head），fail-open。
+   */
+  readonly evidence?: EvidenceGateOptions;
+}
+
+export interface EvidenceGateOptions {
+  readonly mode: "warn" | "drop";
+  readonly minMatchChars: number;
+  readonly fileText: (file: string) => string | null;
 }
 
 export interface GateOutput {
@@ -48,6 +60,14 @@ export interface GateOutput {
   readonly emittedIds: ReadonlySet<string>;
   readonly emittedContentKeys: ReadonlySet<string>;
   readonly emittedRootKeys: ReadonlySet<string>;
+  /** 只在 `evidence` 启用且检查过候选时在场 */
+  readonly evidenceGrounding?: {
+    readonly checked: number;
+    readonly grounded: number;
+    readonly unverified: number;
+    readonly unverifiable: number;
+    readonly dropped: number;
+  };
 }
 
 export function applyCandidateGate(input: GateInput): GateOutput {
@@ -57,9 +77,20 @@ export function applyCandidateGate(input: GateInput): GateOutput {
   const emittedContentKeys = new Set(input.emittedContentKeys ?? []);
   const emittedRootKeys = new Set(input.emittedRootKeys ?? []);
   const resolvedVerdicts = resolveVerdicts(input.candidates, input.verdicts, input.round);
+  const evidenceCounts = { checked: 0, grounded: 0, unverified: 0, unverifiable: 0, dropped: 0 };
 
   input.candidates.forEach((candidate, index) => {
     const candidateId = readCandidateId(candidate, input.round, index);
+    const grounding =
+      input.evidence !== undefined &&
+      validateFinding(candidate).length === 0 &&
+      hasEvidence(candidate)
+        ? groundCandidate(candidate, input.evidence)
+        : undefined;
+    if (grounding !== undefined) {
+      evidenceCounts.checked += 1;
+      evidenceCounts[grounding.status] += 1;
+    }
     const rejection = firstFailingStage(
       candidate,
       candidateId,
@@ -67,6 +98,9 @@ export function applyCandidateGate(input: GateInput): GateOutput {
       emittedContentKeys,
       emittedRootKeys,
       input.scope,
+      input.evidence !== undefined && grounding !== undefined
+        ? { mode: input.evidence.mode, grounding }
+        : undefined,
     );
     if (rejection !== undefined) {
       rejections.push(rejection);
@@ -79,7 +113,19 @@ export function applyCandidateGate(input: GateInput): GateOutput {
     addRootCauseKey(emittedRootKeys, finding);
   });
 
-  return { findings, rejections, emittedIds, emittedContentKeys, emittedRootKeys };
+  if (input.evidence?.mode === "drop") {
+    evidenceCounts.dropped = rejections.filter(
+      (rejection) => rejection.stage === "EVIDENCE_UNGROUNDED",
+    ).length;
+  }
+  return {
+    findings,
+    rejections,
+    emittedIds,
+    emittedContentKeys,
+    emittedRootKeys,
+    ...(evidenceCounts.checked > 0 ? { evidenceGrounding: evidenceCounts } : {}),
+  };
 }
 
 /**
@@ -126,6 +172,7 @@ function firstFailingStage(
   emittedContentKeys: ReadonlySet<string>,
   emittedRootKeys: ReadonlySet<string>,
   scope: DiffScope | undefined,
+  evidence: { readonly mode: "warn" | "drop"; readonly grounding: EvidenceGroundingResult } | undefined,
 ): CandidateRejection | undefined {
   const schemaErrors = validateFinding(candidate);
   if (schemaErrors.length > 0) {
@@ -133,6 +180,17 @@ function firstFailingStage(
   }
   if (!hasEvidence(candidate)) {
     return { candidateId, stage: "NO_EVIDENCE", reason: "未引用证据（No Evidence, No Finding）" };
+  }
+  if (
+    evidence !== undefined &&
+    evidence.mode === "drop" &&
+    evidence.grounding.status === "unverified"
+  ) {
+    return {
+      candidateId,
+      stage: "EVIDENCE_UNGROUNDED",
+      reason: "证据无法在 head 侧文件里定位到代码片段（Evidence must be checkable）",
+    };
   }
   if (verdict === undefined) {
     return { candidateId, stage: "VERIFICATION_FAILED", reason: "没有该候选的裁决结论" };
@@ -172,6 +230,19 @@ function firstFailingStage(
     };
   }
   return undefined;
+}
+
+function groundCandidate(
+  candidate: unknown,
+  options: EvidenceGateOptions,
+): EvidenceGroundingResult {
+  const file = (candidate as { file?: unknown }).file;
+  const fileText = typeof file === "string" ? options.fileText(file) : null;
+  return groundFindingEvidence(
+    candidate as { evidence?: unknown },
+    fileText,
+    options.minMatchChars,
+  );
 }
 
 function hasEvidence(candidate: unknown): boolean {

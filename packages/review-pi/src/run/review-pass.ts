@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FetchFunction } from "@earendil-works/pi-ai";
@@ -23,6 +24,7 @@ import {
 } from "../export/opencode-compat.js";
 import { buildTranscript, transcriptStem, writeTranscript } from "../export/transcript.js";
 import { buildDiffScope } from "../gate/diff-scope.js";
+import { parseUnifiedDiff } from "../diff/parse.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
@@ -196,6 +198,47 @@ function coverageCauseFor(outcome: {
   return outcome.complete ? "no-signal" : "round-cap";
 }
 
+/**
+ * 证据接地的 head 侧文件读取器（F-04）：只读本遍 diff 里出现的路径，
+ * 拒绝越界路径；单文件上限 2MB；读不到返回 null（调用方 fail-open）。
+ */
+function buildEvidenceFileReader(
+  repoPath: string,
+  diff: string,
+): (file: string) => string | null {
+  const paths = new Set(parseUnifiedDiff(diff).files.map((change) => change.path));
+  const root = path.resolve(repoPath);
+  const prefix = `${root}${path.sep}`;
+  const cache = new Map<string, string | null>();
+  return (file: string): string | null => {
+    const normalized = file.replace(/\\/g, "/").replace(/^\.\//, "").trim();
+    if (!paths.has(normalized)) {
+      return null;
+    }
+    if (cache.has(normalized)) {
+      return cache.get(normalized) ?? null;
+    }
+    const absolute = path.resolve(root, normalized);
+    if (absolute !== root && !absolute.startsWith(prefix)) {
+      cache.set(normalized, null);
+      return null;
+    }
+    try {
+      const stats = statSync(absolute);
+      if (!stats.isFile() || stats.size > 2_000_000) {
+        cache.set(normalized, null);
+        return null;
+      }
+      const text = readFileSync(absolute, "utf8");
+      cache.set(normalized, text);
+      return text;
+    } catch {
+      cache.set(normalized, null);
+      return null;
+    }
+  };
+}
+
 /** 失败路径的账本旁路落盘；任何失败都不覆盖原始错误 */
 async function persistCoverageSidecar(
   runDir: string,
@@ -310,6 +353,23 @@ async function executeReviewPass(
   const scope = findingScope.enabled
     ? buildDiffScope(input.diff, findingScope.contextLines, skillReview?.wholeFilePaths)
     : undefined;
+  const evidenceLimits = input.runtime.limits.evidence;
+  const evidenceSide = input.repoSnapshotSide?.side;
+  const evidenceReadable =
+    evidenceSide !== "base" && evidenceSide !== "mixed" && evidenceSide !== undefined
+      ? true
+      : evidenceSide === undefined;
+  const evidenceGrounding =
+    evidenceLimits.mode === "off"
+      ? undefined
+      : {
+          mode: evidenceLimits.mode,
+          minMatchChars: evidenceLimits.minMatchChars,
+          // base / mixed 侧读到的是改前文本：接地不可判定，统一 fail-open。
+          fileText: evidenceReadable
+            ? buildEvidenceFileReader(input.repoPath, input.diff)
+            : () => null,
+        };
   const outcome = await runAgentReviewLoop({
     systemPrompt: SYSTEM_PROMPT,
     initialContextMessages,
@@ -323,6 +383,7 @@ async function executeReviewPass(
     onProgress: input.emit,
     ...(input.shard !== undefined ? { shard: input.shard } : {}),
     ...(scope !== undefined ? { scope } : {}),
+    ...(evidenceGrounding !== undefined ? { evidenceGrounding } : {}),
     ...(phaseBrief !== undefined ? { phaseBrief } : {}),
     // Phase 5 之后追加独立 skill 检视会话（Phase 5 消息不再被修改）
     skillPass: {

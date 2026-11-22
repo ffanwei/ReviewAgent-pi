@@ -134,6 +134,13 @@ export interface FindingScopeLimits {
   readonly contextLines: number;
 }
 
+export interface EvidenceLimits {
+  /** off = 不核对（默认）；warn = 只计数；drop = 无接地候选进候选门拒绝 */
+  readonly mode: "off" | "warn" | "drop";
+  /** 长代码片段的窗口匹配长度（8–200）；整段逐字命中不受此限 */
+  readonly minMatchChars: number;
+}
+
 export interface BoundaryLimits {
   /** `>` 即降级；null = 该维度不设界 */
   readonly maxFiles: number | null;
@@ -202,6 +209,7 @@ export interface Limits {
   readonly testFiles: TestFileLimits;
   readonly mrFilter: MrFilterLimits;
   readonly findingScope: FindingScopeLimits;
+  readonly evidence: EvidenceLimits;
   readonly boundary: BoundaryLimits;
   readonly split: SplitLimits;
   readonly archive: ArchiveLimits;
@@ -241,6 +249,7 @@ export const DEFAULT_LIMITS: Limits = {
     excludeRegex: [],
   },
   findingScope: { enabled: true, contextLines: 10 },
+  evidence: { mode: "off", minMatchChars: 30 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_000_000 },
   split: { enabled: true, maxShardChars: 120_000, maxShards: 12, contextSummaryChars: 8_000, concurrency: 1 },
   archive: {
@@ -297,6 +306,8 @@ const TEST_FILES_KEYS = ["skip"] as const;
 const MR_FILTER_KEYS = ["excludeGlobs", "includeRegex", "excludeRegex"] as const;
 const FINDING_SCOPE_KEYS = ["enabled", "contextLines"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
+const EVIDENCE_KEYS = ["mode", "minMatchChars"] as const;
+
 const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars", "concurrency"] as const;
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
 const MICRO_KEYS = [
@@ -475,6 +486,28 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
           }) ?? DEFAULT_LIMITS.boundary.maxDiffChars),
   };
 
+  const evidenceObj = optionalObject(limits.evidence, "limits.evidence", warnings);
+  assertKnownKeys(evidenceObj, EVIDENCE_KEYS, "limits.evidence", warnings);
+  const evidenceMode = evidenceObj.mode;
+  if (
+    evidenceMode !== undefined &&
+    evidenceMode !== "off" &&
+    evidenceMode !== "warn" &&
+    evidenceMode !== "drop"
+  ) {
+    throw new Error('limits.evidence.mode must be "off", "warn" or "drop"');
+  }
+  const evidence: EvidenceLimits = {
+    mode: evidenceMode ?? DEFAULT_LIMITS.evidence.mode,
+    minMatchChars: intOr(
+      evidenceObj.minMatchChars,
+      "limits.evidence.minMatchChars",
+      8,
+      200,
+      DEFAULT_LIMITS.evidence.minMatchChars,
+    ),
+  };
+
   const splitObj = optionalObject(limits.split, "limits.split", warnings);
   assertKnownKeys(splitObj, SPLIT_KEYS, "limits.split", warnings);
   const split: SplitLimits = {
@@ -559,5 +592,5 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
     },
   };
 
-  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, boundary, split, archive, micro, coverage };
+  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, evidence, boundary, split, archive, micro, coverage };
 }

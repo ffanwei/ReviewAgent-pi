@@ -67,6 +67,7 @@ export interface CandidateRejection {
 export type RejectionStage =
   | "SCHEMA_INVALID"
   | "NO_EVIDENCE"
+  | "EVIDENCE_UNGROUNDED"
   | "VERIFICATION_FAILED"
   | "OUT_OF_SCOPE"
   | "DUPLICATE_ID";
@@ -339,6 +340,21 @@ export interface SkillReviewRecord {
 }
 
 /** 循环运行期的审计累积面（AuditFileContent 与 AuditLight 的共同来源） */
+/**
+ * 证据接地审计（F-04）：只记计数，不复制 evidence 正文。
+ * - `checked` = 进入核对的候选数；
+ * - `grounded` / `unverified` / `unverifiable` 为三态计数；
+ * - `dropped` = drop 模式下因 unverified 被拒绝的候选数。
+ */
+export interface EvidenceGroundingAudit {
+  readonly mode: "warn" | "drop";
+  readonly checked: number;
+  readonly grounded: number;
+  readonly unverified: number;
+  readonly unverifiable: number;
+  readonly dropped: number;
+}
+
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
   readonly toolCallLog: readonly ToolCallRecord[];
@@ -371,6 +387,8 @@ export interface RunAudit {
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** 候选拦截链阶段计数（只在有拦截时在场） */
   readonly rejectionCounts?: CandidateRejectionCounts;
+  /** 证据接地计数（F-04；只在 mode 非 off 且检查过候选时在场） */
+  readonly evidenceGrounding?: EvidenceGroundingAudit;
   /** Skill 包检视留痕：本次 diff 未命中任何 skill 根时省键 */
   readonly skillReview?: SkillReviewRecord;
   /**

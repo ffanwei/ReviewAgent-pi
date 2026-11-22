@@ -18,7 +18,7 @@ import type {
   WireRequest,
 } from "../contracts/run.js";
 import type { AgentTranscriptCapture } from "../export/transcript.js";
-import { applyCandidateGate } from "../gate/candidate-gate.js";
+import { applyCandidateGate, type EvidenceGateOptions } from "../gate/candidate-gate.js";
 import type { TimelineShard } from "../observability/request-timeline.js";
 import { normalizeCandidates } from "../gate/candidate-normalize.js";
 import { mergeSkillCandidates, type SkillCandidateBatch } from "../gate/candidate-merge.js";
@@ -122,6 +122,10 @@ export interface AgentReviewLoopInputs {
    * 缺省 undefined = 不过滤（内核直调 / 单测零漂移）。
    */
   readonly scope?: DiffScope;
+  /**
+   * 证据接地（F-04）：缺省 undefined = 不核对（零行为变化）。
+   */
+  readonly evidenceGrounding?: EvidenceGateOptions;
   /**
    * 运行进度投影（ADR-0016）：缺省不注入 = 零输出、零行为变化。事件只投影既有
    * 留痕（阶段推进 / 请求首尾 / 工具首尾 / skill 会话首尾），不改 wire 字节、
@@ -236,9 +240,17 @@ export async function runAgentReviewLoop(
   const rejectionCounts: Record<RejectionStage, number> = {
     SCHEMA_INVALID: 0,
     NO_EVIDENCE: 0,
+    EVIDENCE_UNGROUNDED: 0,
     VERIFICATION_FAILED: 0,
     OUT_OF_SCOPE: 0,
     DUPLICATE_ID: 0,
+  };
+  const evidenceGroundingCounts = {
+    checked: 0,
+    grounded: 0,
+    unverified: 0,
+    unverifiable: 0,
+    dropped: 0,
   };
   let repairCalls = 0;
   let truncated = false;
@@ -390,6 +402,14 @@ export async function runAgentReviewLoop(
     ...(inputs.skillPass !== undefined ? { skillPassLog } : {}),
     ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
     ...(totalRejections(rejectionCounts) > 0 ? { rejectionCounts } : {}),
+    ...(inputs.evidenceGrounding !== undefined && evidenceGroundingCounts.checked > 0
+      ? {
+          evidenceGrounding: {
+            mode: inputs.evidenceGrounding.mode,
+            ...evidenceGroundingCounts,
+          },
+        }
+      : {}),
   };
   if (firstRequestAt === undefined) {
     throw new Error("internal error: agent review loop finished without a model request");
@@ -563,7 +583,15 @@ export async function runAgentReviewLoop(
       emittedRootKeys,
       round,
       ...(inputs.scope !== undefined ? { scope: inputs.scope } : {}),
+      ...(inputs.evidenceGrounding !== undefined
+        ? { evidence: inputs.evidenceGrounding }
+        : {}),
     });
+    if (gate.evidenceGrounding !== undefined) {
+      for (const key of ["checked", "grounded", "unverified", "unverifiable", "dropped"] as const) {
+        evidenceGroundingCounts[key] += gate.evidenceGrounding[key];
+      }
+    }
     findings.push(...gate.findings);
     rejections.push(...gate.rejections);
     for (const rejection of gate.rejections) {

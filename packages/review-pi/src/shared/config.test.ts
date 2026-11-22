@@ -568,6 +568,31 @@ describe("loadConfig：边界", () => {
   });
 });
 
+describe("loadConfig：limits.evidence（F-04 证据接地）", () => {
+  test("缺省：mode=off / minMatchChars=30", () => {
+    const { config } = loadConfig({ configPath: writeConfig(minimalConfig("")) });
+    expect(config.limits.evidence).toEqual({ mode: "off", minMatchChars: 30 });
+  });
+
+  test("mode 与 minMatchChars 可覆盖", () => {
+    const { config } = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"limits":{"evidence":{"mode":"warn","minMatchChars":40}}`),
+      ),
+    });
+    expect(config.limits.evidence).toEqual({ mode: "warn", minMatchChars: 40 });
+  });
+
+  test("非法 mode / minMatchChars fail fast", () => {
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"evidence":{"mode":"drop-all"}}`)) }),
+    ).toThrow(/limits\.evidence\.mode/);
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"evidence":{"minMatchChars":7}}`)) }),
+    ).toThrow(/limits\.evidence\.minMatchChars/);
+  });
+});
+
 describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
   test("缺省值：enabled=true / 120000 / 12 / 8000 / concurrency=1（ADR-0071）", () => {
     const { config, warnings } = loadConfig({ configPath: writeConfig(minimalConfig("")) });

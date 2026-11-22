@@ -10,6 +10,7 @@ import type {
   CandidateRejection,
   CandidateRejectionCounts,
   CoverageRepairAudit,
+  EvidenceGroundingAudit,
   ModelFallbackRecord,
   PhaseRecord,
   RuleSkillAudit,
@@ -59,6 +60,8 @@ export interface AuditLight {
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** 候选拦截链阶段计数（P1）：只在有拦截时在场 */
   readonly rejectionCounts?: CandidateRejectionCounts;
+  /** 证据接地计数（F-04）：只在 mode 非 off 且检查过候选时在场 */
+  readonly evidenceGrounding?: EvidenceGroundingAudit;
   /** 覆盖缺口补漏（F-01b）：只在启用时在场 */
   readonly coverageRepair?: CoverageRepairAudit;
   /** 覆盖账本 JSON 汇总（F-01c）：只在 pass 携带 coverage 时在场 */
@@ -166,6 +169,9 @@ export function toAuditLight(audit: RunAudit): AuditLight {
       ? { candidateNormalizations: audit.candidateNormalizations }
       : {}),
     ...(audit.rejectionCounts !== undefined ? { rejectionCounts: audit.rejectionCounts } : {}),
+    ...(audit.evidenceGrounding !== undefined
+      ? { evidenceGrounding: audit.evidenceGrounding }
+      : {}),
     ...(audit.coverageRepair !== undefined ? { coverageRepair: audit.coverageRepair } : {}),
     ...(audit.coverage !== undefined ? { coverageSummary: summarizeCoverage(audit.coverage) } : {}),
   };

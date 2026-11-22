@@ -366,3 +366,65 @@ test("跨轮：同一文件相邻行的不同内容候选仍被同根因桶拦�
   expect(second.findings).toEqual([]);
   expect(second.rejections[0]?.stage).toBe("DUPLICATE_ID");
 });
+
+const GROUNDED_FILE = "void run() {\n  const value = compute(alpha, beta);\n}\n";
+
+test("F-04 warn：evidence 无法定位只计数，不丢候选", () => {
+  const out = applyCandidateGate({
+    candidates: [
+      {
+        ...VALID_CANDIDATE,
+        evidence: ["src/Foo.java:42 — totallyFabricated(input);"],
+      },
+    ],
+    verdicts: verdicts({ F001: { pass: true, reason: "" } }),
+    emittedIds: new Set(),
+    round: 1,
+    evidence: {
+      mode: "warn",
+      minMatchChars: 30,
+      fileText: () => GROUNDED_FILE,
+    },
+  });
+  expect(out.findings).toHaveLength(1);
+  expect(out.rejections).toEqual([]);
+  expect(out.evidenceGrounding).toEqual({
+    checked: 1,
+    grounded: 0,
+    unverified: 1,
+    unverifiable: 0,
+    dropped: 0,
+  });
+});
+
+test("F-04 drop：evidence 无法定位拒绝；可定位放行", () => {
+  const out = applyCandidateGate({
+    candidates: [
+      { ...VALID_CANDIDATE, id: "F001", evidence: ["src/Foo.java:2 — const value = compute(alpha, beta);"] },
+      { ...VALID_CANDIDATE, id: "F002", evidence: ["src/Foo.java:42 — totallyFabricated(input);"] },
+    ],
+    verdicts: verdicts({
+      F001: { pass: true, reason: "" },
+      F002: { pass: true, reason: "" },
+    }),
+    emittedIds: new Set(),
+    round: 1,
+    evidence: { mode: "drop", minMatchChars: 30, fileText: () => GROUNDED_FILE },
+  });
+  expect(out.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(out.rejections.map((rejection) => rejection.stage)).toEqual(["EVIDENCE_UNGROUNDED"]);
+  expect(out.evidenceGrounding).toMatchObject({ checked: 2, grounded: 1, unverified: 1, dropped: 1 });
+});
+
+test("F-04 drop：文件不可读 fail-open（unverifiable 不拒绝）", () => {
+  const out = applyCandidateGate({
+    candidates: [{ ...VALID_CANDIDATE, evidence: ["src/Foo.java:42 — anything();"] }],
+    verdicts: verdicts({ F001: { pass: true, reason: "" } }),
+    emittedIds: new Set(),
+    round: 1,
+    evidence: { mode: "drop", minMatchChars: 30, fileText: () => null },
+  });
+  expect(out.findings).toHaveLength(1);
+  expect(out.rejections).toEqual([]);
+  expect(out.evidenceGrounding).toMatchObject({ unverifiable: 1, dropped: 0 });
+});

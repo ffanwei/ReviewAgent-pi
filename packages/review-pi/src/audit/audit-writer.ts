@@ -189,6 +189,9 @@ export function buildAuditFileContent(args: {
     ...(args.audit.rejectionCounts !== undefined
       ? { rejectionCounts: args.audit.rejectionCounts }
       : {}),
+    ...(args.audit.evidenceGrounding !== undefined
+      ? { evidenceGrounding: args.audit.evidenceGrounding }
+      : {}),
     ...(args.audit.skillReview !== undefined ? { skillReview: args.audit.skillReview } : {}),
     ...(args.audit.coverage !== undefined ? { coverage: args.audit.coverage } : {}),
     ...(args.audit.coverageRepair !== undefined

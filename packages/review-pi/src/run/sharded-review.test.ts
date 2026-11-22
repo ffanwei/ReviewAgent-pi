@@ -682,3 +682,34 @@ test("F-03 并行分片：findings / usage 与串行一致，片级时间线不�
   expect(serialLines.every((count) => count > 0)).toBe(true);
   expect(timelineLines(parallelRoot, parallel)).toEqual(serialLines);
 });
+
+test("F-04 warn：证据接地计数进审计，且不丢候选", async () => {
+  const runsRoot = tempRunsRoot();
+  const alpha = "src/main/java/com/example/Alpha.java";
+  const runtime: ReviewRuntime = {
+    ...splitRuntime({ enabled: false, maxShardChars: 200 }),
+    limits: {
+      ...DEFAULT_LIMITS,
+      evidence: { mode: "warn", minMatchChars: 10 },
+      retry: { ...DEFAULT_LIMITS.retry, maxAttempts: 1, reviewTurnAttempts: 1 },
+    },
+  };
+  const candidateWithCode = candidate("F001", alpha, 11, {
+    evidence: [`${alpha}:11 — public int getBase() {`],
+  });
+  const run = await runReview(
+    baseInput(runsRoot, BLOCK_A, runtime, fakeFetch(sixPhaseWithCandidate(candidateWithCode)).fetch),
+  );
+  const audit = JSON.parse(readFileSync(run.auditPath, "utf8")) as {
+    evidenceGrounding?: Record<string, number | string>;
+  };
+  expect(audit.evidenceGrounding).toMatchObject({
+    mode: "warn",
+    checked: 1,
+    grounded: 1,
+    unverified: 0,
+    unverifiable: 0,
+    dropped: 0,
+  });
+  expect(run.record.baseline.findings).toHaveLength(1);
+});

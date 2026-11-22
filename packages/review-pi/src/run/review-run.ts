@@ -628,10 +628,19 @@ async function aggregateShards(
   const rejectionCounts: Record<RejectionStage, number> = {
     SCHEMA_INVALID: 0,
     NO_EVIDENCE: 0,
+    EVIDENCE_UNGROUNDED: 0,
     VERIFICATION_FAILED: 0,
     OUT_OF_SCOPE: 0,
     DUPLICATE_ID: 0,
   };
+  const evidenceGroundingCounts = {
+    checked: 0,
+    grounded: 0,
+    unverified: 0,
+    unverifiable: 0,
+    dropped: 0,
+  };
+  let evidenceGroundingMode: "warn" | "drop" | undefined;
 
   for (const { pass } of executed) {
     usage = addUsage(usage, pass.usage);
@@ -657,6 +666,12 @@ async function aggregateShards(
     candidateNormalizations.push(...(pass.audit.candidateNormalizations ?? []));
     for (const [stage, count] of Object.entries(pass.audit.rejectionCounts ?? {})) {
       rejectionCounts[stage as RejectionStage] += count;
+    }
+    if (pass.audit.evidenceGrounding !== undefined) {
+      evidenceGroundingMode = pass.audit.evidenceGrounding.mode;
+      for (const key of ["checked", "grounded", "unverified", "unverifiable", "dropped"] as const) {
+        evidenceGroundingCounts[key] += pass.audit.evidenceGrounding[key];
+      }
     }
     // 聚合 skillPassLog：把片内 basename 重写成 runs 目录相对路径，
     // 这样 export / session 索引能直接寻址到 shards/attempt-…/sNN 下的转录
@@ -747,6 +762,9 @@ async function aggregateShards(
     ...(severityFilter !== undefined ? { severityFilter } : {}),
     ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
     ...(Object.values(rejectionCounts).some((count) => count > 0) ? { rejectionCounts } : {}),
+    ...(evidenceGroundingMode !== undefined && evidenceGroundingCounts.checked > 0
+      ? { evidenceGrounding: { mode: evidenceGroundingMode, ...evidenceGroundingCounts } }
+      : {}),
     // 模型替换留痕（ADR-0080）：聚合审计只记一次；无替换整键缺席
     ...(context.modelFallback !== undefined
       ? { modelFallback: context.modelFallback }
