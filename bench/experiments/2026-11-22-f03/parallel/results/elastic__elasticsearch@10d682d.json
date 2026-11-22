@@ -1,0 +1,172 @@
+{
+  "instance_id": "elastic__elasticsearch@10d682d",
+  "repo": "elastic/elasticsearch",
+  "base_commit": "47e352fda0567a682687fe926927cee3f631ea24",
+  "head_commit": "10d682d9aa4b1c2976e1db769ba04cb15256da9e",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 513.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 15,
+  "review_output": [
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+      "line": 106,
+      "summary": "自动配置路径直接复用交互式 HTTP 命令的 keyUsage 默认常量，形成隐式耦合",
+      "failure_scenario": "AutoConfigureNode 新增静态导入 `HttpCertificateCommand.DEFAULT_CA_KEY_USAGE` 与 `DEFAULT_CERT_KEY_USAGE`（:105-107），使节点启动时的自动配置（生产关键路径）所生成证书的密钥用途，直接绑定到 `elasticsearch-certutil http` 这个交互式 CLI 命令的默认值。这两组默认值服务的场景并不完全相同（http 命令生成的是供人工分发的证书包，auto-configure 生成的是节点自身启动即用的 keystore），一旦后续为交互命令调整默认值（例如为支持 ECDSA/更严格的用途组合而修改），所有 auto-configured 节点的证书用途会被无声改变，且 `AutoConfigureNodeTests` 以同一个常量做断言（`assertExpectedKeyUsage(httpCertificate, HttpCertificateCommand.DEFAULT_CERT_KEY_USAGE)`），无法捕获这类默认值漂移。具体失败场景：未来将 `DEFAULT_CERT_KEY_USAGE` 改为 `digitalSignature` 单值或加入 `keyAgreement` 时，`certutil http` 的行为变更会连带改变节点自动配置产出的证书，可能引入与 TLS/客户端兼容性相关的回归而无人察觉。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.4,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+      "line": 418,
+      "summary": "transport 自签 CA 与 transport 证书仍显式传 keyUsage=null，与同方法内 HTTP 侧不一致且未覆盖同一缺陷",
+      "failure_scenario": "本次变更在 AutoConfigureNode 的初始节点分支中，为自签 HTTP CA 传入 `buildKeyUsage(DEFAULT_CA_KEY_USAGE)`（:449）、为 HTTP 服务端证书传入 `buildKeyUsage(DEFAULT_CERT_KEY_USAGE)`（:476），但同一方法中 self-signed 的 transport CA（:418）与 transport 证书（:433）的新增实参仍显式写为 `null, Set.of()`。由于 `CertGenUtils.generateSignedCertificate` 在 keyUsage 为 null 时根本不写入 keyUsage 扩展（CertGenUtils.java:308-312），自动配置生成的 node-to-node 证书链依旧缺少 keyUsage，issue 117769 描述的“生成证书缺少 keyUsage、被严格校验方拒绝/无法通过 X.509 校验”在 transport 层仍然存在；同时 `docs/changelog/126376.yaml` 声明本次为“generated HTTP certificates and self-signed CA”设置 keyUsage，而 transport CA 同样是 self-signed CA，实际实现与变更说明不一致，运维无法根据变更日志推断修复覆盖范围。具体失败场景：使用 auto-configure（或同源的 certutil 生成的 transport 证书）建立 transport TLS 时，若对端/中间件按严格模式要求 keyUsage 扩展，握手仍会被拒绝，而 HTTP 侧已可正常通过，形成同一集群内 HTTP 与 transport 行为不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONSISTENCY-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+      "line": 104,
+      "summary": "对外暴露 encipherOnly/decipherOnly 却未强制其与 keyAgreement 同时使用",
+      "failure_scenario": "新增的 KEY_USAGE_MAPPINGS 把 RFC 5280 中受约束的 encipherOnly、decipherOnly 与其余 7 个位一视同仁地暴露给 CLI（`certutil ca --ca-keyusage` 与 `certutil http` 交互提示都直接遍历该 map 的 keySet 作为可选值），而 buildKeyUsage 只按名称 OR 位、没有任何组合约束。RFC 5280 4.2.1.3 规定这两个位只有在 keyAgreement 位同时置位时才有意义，因此 `--ca-keyusage encipherOnly` 这类输入会被接受，生成带语义非法且 critical 的 keyUsage 扩展的证书，严格实现的校验方（如 BouncyCastle/NSS 的路径校验）会拒绝或按未定义行为处理；由于扩展被标记为 critical，这类证书在 TLS 握手阶段直接失败而不是被忽略，用户也很难从错误信息定位到是 key usage 组合非法。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+      "line": 124,
+      "summary": "KEY_USAGE_BITS 与 KEY_USAGE_MAPPINGS 重复编码同一份信息且生产代码零引用",
+      "failure_scenario": "本次新增了两个必须手工同步的映射：KEY_USAGE_MAPPINGS（名称→BouncyCastle 位掩码常量）与 KEY_USAGE_BITS（名称→位索引）。生产代码只使用前者，后者仅在 CertGenUtilsTests 中被引用（assertExpectedKeyUsage 用它推导 JDK `getKeyUsage()` 的位索引，并使断言 keyUsage.length 恒等于 KEY_USAGE_BITS.size()）。这意味着新增或改名一个 key usage 时两份映射可能悄然不一致——单测中 `KEY_USAGE_BITS.keySet()` 与 `KEY_USAGE_MAPPINGS.keySet()` 的对比只能发现“名称集合不同”，无法发现“位索引与掩码常量对不上”，此时 assertExpectedKeyUsage 会以错误期望去断言证书位，可能掩盖真实缺陷；同时它把纯测试用途的常量提升为 public API，扩大维护面（本仓库 libs/ssl-config/SslDiagnostics 已有一份同样的名称列表，重复定义进一步增加漂移风险）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-004"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+      "line": 150,
+      "summary": "CA 证书允许传入不含 keyCertSign 的 keyUsage，生成无法签发证书的 CA",
+      "failure_scenario": "generateCACertificate 新增的 keyUsage 参数被原样透传，并在 generateSignedCertificate 中以 critical 方式写入 keyUsage 扩展（本 diff line 308-312），但整条链路没有任何校验确保 CA 证书包含 keyCertSign。调用方 `certutil ca --ca-keyusage <list>`（CertificateTool.getCaKeyUsage:333-343 → generateCA:432-433）会把用户输入的任意合法名称组合直接传进来，例如 `--ca-keyusage digitalSignature`。这样生成的 CA 证书 keyUsage 位里没有 keyCertSign，而 RFC 5280 4.2.1.3 要求签发证书的 CA 必须置 keyCertSign，于是由该 CA 签发的所有节点/HTTP 证书在 PKIX 链校验（JDK PKIX、OpenSSL 等）时被判为无效，用户要到配置 TLS 时才暴露问题，而证书已写入 p12/zip 无法自动修复。由于该扩展同时被标记为 critical，校验端必然执行 keyUsage 检查，问题不会因实现宽松而被吞掉。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+      "line": 114,
+      "summary": "CA 默认 KeyUsage 常量在两个类中重复定义，存在安全默认值漂移风险",
+      "failure_scenario": "本次在 CertificateTool 中新增 `DEFAULT_CA_KEY_USAGE = List.of(\"keyCertSign\", \"cRLSign\")`，而 HttpCertificateCommand 中已有同值常量（AutoConfigureNode 正是通过静态 import 复用它）。同一个安全相关默认值出现两处独立定义，后续若只修改其中一处（例如为满足新合规要求增加 digitalSignature），certutil 的 ca/cert 模式与 http 自动配置模式会产出 KeyUsage 不同的 CA，且没有任何编译期或测试期提示，属于典型的安全默认值漂移隐患。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-DUPLICATION-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+      "line": 339,
+      "summary": "--ca-keyusage 未校验取值，非法输入抛裸 IllegalArgumentException、空 token 被静默丢弃",
+      "failure_scenario": "新增的 getCaKeyUsage 只处理了「选项缺省」和「整体为空串」两种情况，其余输入直接 `List.of(Strings.splitStringByCommaToArray(raw))` 返回，既没有像 HttpCertificateCommand 交互模式那样用 isValidKeyUsage 校验名称，也没有过滤空 token。由此产生两条失败路径：1) 用户输入拼写错误（如 `--ca-keyusage keycertsign`，映射表为驼峰 keyCertSign 且 findKeyUsageByName 只 trim 不做大小写归一）时， IllegalArgumentException 会在 generateCA 中抛出并直接冒泡出 CLI，用户得到 Java 堆栈而不是 USAGE 提示；2) 输入 `--ca-keyusage \",\"` 时 String.split 丢弃尾部空串得到空数组，`List.of()` 传入 buildKeyUsage 后返回 null，最终签发出的 CA 证书**完全没有 keyUsage 扩展**，用户以为限制了用途、实际毫无限制，且没有任何提示。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "INPUT-VALIDATION-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+      "line": 432,
+      "summary": "允许生成不含 keyCertSign 的 CA，签发链在运行时才因 PKIX 校验失败",
+      "failure_scenario": "新增的 --ca-keyusage 让用户完全接管 CA 证书的 KeyUsage，但工具在生成后仍会立刻用这个 CA 去签发叶子证书（cert 模式的 generateCA → createCertificate），既不校验 keyCertSign 是否在列表中，也不给出警告。若用户按直觉传入 `--ca-keyusage digitalSignature`（或只写 cRLSign），命令会成功产出 CA 文件与叶子证书，问题被推迟到部署时才暴露：JDK 的 PKIX 校验在发现 CA 证书带 critical 的 keyUsage 扩展却不含 keyCertSign 时会抛 \"KeyUsage does not allow certificate signing\"，导致节点/客户端 TLS 握手失败，排查成本远高于在 CLI 阶段报错。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-KEYUSAGE-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+      "line": 102,
+      "summary": "CA/CERT 的默认 key usage 常量被重复定义且被节点自举代码跨类引用，存在默认值漂移风险",
+      "failure_scenario": "`DEFAULT_CA_KEY_USAGE`/`DEFAULT_CERT_KEY_USAGE` 被定义在 CLI 命令类 `HttpCertificateCommand` 中，而 `CertificateTool` 又重复定义了一份等价的 `DEFAULT_CA_KEY_USAGE`（CertificateTool.java:114，供 `--ca-keyusage` 的默认值使用），`AutoConfigureNode` 则通过 static import 直接引用 `HttpCertificateCommand` 的常量（AutoConfigureNode.java:105-107）。同一个安全默认值现在有三处消费方、两份定义：后续只调整其中一处（例如为 CA 增加 `digitalSignature`）时，`certutil ca`、`certutil http` 与节点自动配置生成的 CA 会得到不同的默认 key usage，而这种差异只会在证书产物上体现（文档 docs/reference/elasticsearch/command-line-tools/certutil.md:102-103 也单独声明了默认值），很难被发现。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "MAINTAINABILITY-DEFAULTS-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+      "line": 765,
+      "summary": "交互提示列出 encipherOnly/decipherOnly 但不校验其必须与 keyAgreement 同时使用",
+      "failure_scenario": "新增的 Key Usage 提示直接遍历 `CertGenUtils.KEY_USAGE_MAPPINGS.keySet()` 打印全部 9 个取值，`readKeyUsage` 也只按“名称是否在映射中”逐项校验，因此用户可以只输入 `encipherOnly`（或 `decipherOnly`）而不输入 `keyAgreement`。按 RFC 5280 §4.2.1.3，这两个位只有在 keyAgreement 置位时才有意义/才允许出现；而 `generateSignedCertificate` 会把 keyUsage 标记为 critical（CertGenUtils.java:308-312），部分严格的 TLS/证书校验实现会因此直接拒绝该证书，用户遇到的是“证书生成成功但握手/校验失败”的排查困难问题。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "SECURITY-KEYUSAGE-002"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+      "line": 953,
+      "summary": "CA 的 key usage 可被改成不含 keyCertSign，工具仍用它签发证书并静默产出不可用证书链",
+      "failure_scenario": "本次变更新增了 CA 生成时的 Key Usage 交互输入，`readKeyUsage` 只校验“名称合法”，不校验“是否包含 keyCertSign”。因此在 `elasticsearch-certutil http` 选择新建 CA 并修改选项时，用户输入 `digitalSignature,keyEncipherment`（或只输入 `cRLSign`）即可让生成的 CA 证书带上 **critical** 的 keyUsage 但没有 keyCertSign；随后同一命令流程仍然使用这个 CA 私钥签发叶子证书（writeCertificateAndKeyDetails 中的 generateSignedCertificate 只校验 `caCert.getBasicConstraints() < 0`，不校验 keyUsage），最终 zip 中的 `ca.p12` 与 `http.p12` 组成的证书链无法通过 RFC 5280/JSSE PKIX 校验（报 “Certificate does not permit signing certificates”）。工具不会给出任何告警，用户只有在配置好 TLS 后连接失败时才会发现问题，且必须重新生成整套证书。`certutil ca --ca-keyusage`（CertificateTool.generateCA）走的是同一个 `buildKeyUsage` 路径，存在同样问题。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.58,
+      "rule": "SECURITY-KEYUSAGE-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/AutoConfigureNodeTests.java",
+      "line": 297,
+      "summary": "断言把生产常量当作期望值，测试无法发现默认 key usage 配置错误",
+      "failure_scenario": "新增断言 assertExpectedKeyUsage(httpCertificate, HttpCertificateCommand.DEFAULT_CERT_KEY_USAGE) 的期望值直接取自生产代码中被测路径所使用的同一个常量：AutoConfigureNode 第 476 行正是把 DEFAULT_CERT_KEY_USAGE 传给 generateSignedCertificate。测试与被测实现共享同一份输入，属于自证式断言（test oracle 与实现同源）。具体失败场景：若后续有人修改 HttpCertificateCommand.DEFAULT_CERT_KEY_USAGE（例如误删 digitalSignature、误加 keyCertSign 使终端实体证书具备签发能力，或改成服务端不支持的用途组合），AutoConfigureNode 会随之生成用途错误、却是 critical 的 keyUsage 扩展，本测试仍会断言通过，从而失去它声称要提供的“HTTP 证书用途正确”这一保护。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "TEST-ORACLE-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/CertGenUtilsTests.java",
+      "line": 243,
+      "summary": "重复与空白用例的第三条断言复制粘贴错误，实际未区分「重复项被忽略」",
+      "failure_scenario": "testBuildKeyUsage 的最后一个代码块注释声称验证「重复项与空白被忽略」，输入为 [digitalSignature(带尾随空格), nonRepudiation(前置空格), keyEncipherment(\\t 前缀), keyEncipherment(\\n 后缀)]；但第 243 行再次断言了 digitalSignature，与第 241 行完全重复。结果是「同一名称出现两次」这一场景仅由第 244 行的一次 keyEncipherment 断言覆盖，第 243 行既不增加覆盖也不产生任何区分度——即使将来 buildKeyUsage 对重复项的处理被改坏（例如重复项触发异常或覆盖而非 OR），这组断言也无法提供针对性证据。它还会误导后续维护者以为重复项已被显式校验。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.5,
+      "rule": "TEST-ASSERT-002"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/CertGenUtilsTests.java",
+      "line": 262,
+      "summary": "新增的 assertExpectedKeyUsage 未处理「证书无 keyUsage 扩展」与空/未知期望值，会抛 NPE 或静默误判",
+      "failure_scenario": "新增的公共断言辅助方法 assertExpectedKeyUsage 直接 dereference certificate.getKeyUsage() 并在第 263 行取 keyUsage.length，同时在第 264-266 行无条件对 expectedKeyUsage 做 stream().map(KEY_USAGE_BITS::get)。但本 MR 的契约明确允许「不指定 keyUsage」：buildKeyUsage(null/空集合) 返回 null，generateSignedCertificate 在 keyUsage==null 时不写 keyUsage 扩展，此时 X509Certificate.getKeyUsage() 返回 null（本文件第 190 行正是这样断言的）。因此一旦有人用该辅助方法去校验一个按契约合法生成的「无 keyUsage」证书，得到的不是清晰的断言失败而是 NullPointerException（栈指向 keyUsage.length），掩盖真实原因；同理 expectedKeyUsage 传 null 会在 264 行 NPE。另外第 264-266 行用 KEY_USAGE_BITS::get 查表但未校验 null，若传入大小写错误或拼错的名称（isValidKeyUsage 是大小写敏感的），该名称会被静默丢弃、被当作「所有位都不应该置位」，断言信息具有误导性。该方法已被 AutoConfigureNodeTests、HttpCertificateCommandTests 以 public static 方式复用，问题会随复用面扩散。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.62,
+      "rule": "TEST-ROBUST-001"
+    },
+    {
+      "file": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+      "line": 383,
+      "summary": "随机生成的空 CA keyUsage 集合会与命令行的空输入默认回退冲突，使新增断言必然失败",
+      "failure_scenario": "testGenerateMultipleCertificateWithNewCA 的“修改 CA 默认值”分支用 randomSubsetOf(CertGenUtils.KEY_USAGE_MAPPINGS.keySet()) 生成 caKeyUsage。ESTestCase.randomSubsetOf(Collection) 的 javadoc 明确写着“including a potential empty list”，其内部是 randomInt(collection.size())，即大小在 [0, 8] 内均匀取值，因此有 1/9 概率得到空列表。此时 Strings.collectionToCommaDelimitedString(caKeyUsage) 返回 \"\"，作为 Key Usage 提示的输入提交；HttpCertificateCommand.readKeyUsage → tryReadInput 遇到空输入直接返回默认值 DEFAULT_CA_KEY_USAGE（keyCertSign|cRLSign），生成的 CA 证书因此带有 critical 的 keyUsage=keyCertSign|cRLSign 扩展，而测试仍用空列表去调用第 474 行的 assertExpectedKeyUsage。assertExpectedKeyUsage 对任何不在期望集合中的比特断言必须为 false（CertGenUtilsTests.java:268-274），于是 keyCertSign(5)/cRLSign(6) 两个比特必然断言失败。综合分支概率，该测试约 0.5 × 1/9 ≈ 5.6% 的运行会失败，属于会长期污染 CI 的 flaky 用例；同时该随机集合还可能生成缺 keyCertSign 的 CA，使被验证的 CA 证书在语义上无法签发证书。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "TEST-FLAKY-EMPTY-RANDOM-SUBSET"
+    }
+  ],
+  "stderr_tail": "strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 7 片（单片上限 10000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已截取检视 2 个超预算文件（丢弃 6 个完整 hunk，保留 19331 字符），明细见审计 shardTruncation\nreview-pi: 覆盖账本 candidate 12 / no-issue 0 / not-reached 58（no-signal=52 truncated=6）\n✓ 完成 · 耗时 510.6s · 模型调用 171 次 · token 输入 250,711（未命中） · 输出 174,125 · 缓存命中 5,156,608（95.4%） · 工具 229 次（主会话 229 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0983\nreview-pi: 置信度过滤丢弃 5 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f03-parallel-20261122\\.reviewpi\\tasks\\elastic__elast...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 511.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.1%)\n[time] 阶段 | 六阶段审计 510.5s (99.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 24.8s (1.8%) | S1P2 3.1s (0.2%) | S1P3 5.4s (0.4%) | S1P4 99.0s (7.3%) | S1P5 46.7s (3.4%) | S1P6 7.5s (0.6%) | S2P1 3.1s (0.2%) | S2P2 3.2s (0.2%) | S2P3 3.4s (0.3%) | S2P4 193.8s (14.3%) | S2P5 28.8s (2.1%) | S2P6 6.5s (0.5%) | S3P1 19.2s (1.4%) | S3P2 2.7s (0.2%) | S3P3 5.1s (0.4%) | S3P4 75.6s (5.6%) | S3P5 33.6s (2.5%) | S3P6 6.2s (0.5%) | S4P1 24.4s (1.8%) | S4P2 4.9s (0.4%) | S4P3 6.7s (0.5%) | S4P4 116.2s (8.6%) | S4P5 48.3s (3.6%) | S4P6 9.0s (0.7%) | S5P1 20.8s (1.5%) | S5P2 3.3s (0.2%) | S5P3 8.4s (0.6%) | S5P4 116.6s (8.6%) | S5P5 24.9s (1.8%) | S5P6 8.2s (0.6%) | S6P1 85.7s (6.3%) | S6P2 3.2s (0.2%) | S6P3 6.6s (0.5%) | S6P4 123.0s (9.1%) | S6P5 16.4s (1.2%) | S6P6 4.8s (0.4%) | S7P1 3.3s (0.2%) | S7P2 5.0s (0.4%) | S7P3 6.1s (0.5%) | S7P4 108.9s (8.0%) | S7P5 31.4s (2.3%) | S7P6 3.4s (0.2%)\n[usage] 任务总计 | 模型调用 171 次（Agent 171 + 一次性 0） | token 输入 250,711（未命中） | 输出 174,125 | 缓存命中 5,156,608（95.4%） | $0.0983\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f03-parallel-20261122\\.reviewpi\\tasks\\elastic__elasticsearch@10d682d\\audit\\20261122_032102_575.json",
+  "token_usage": {
+    "input_tokens": 250711,
+    "output_tokens": 174125,
+    "cache_read_input_tokens": 5156608
+  }
+}

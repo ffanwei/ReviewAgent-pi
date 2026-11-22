@@ -1,0 +1,212 @@
+{
+  "instance_id": "microsoft__typescript-go@b970689",
+  "repo": "microsoft/typescript-go",
+  "base_commit": "bc3195e0f2727d11a48ed9fc61f37a90c9b7deb4",
+  "head_commit": "b970689fe86e0b6ef4f5285b18343ddf16b294eb",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 2918.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 19,
+  "review_output": [
+    {
+      "file": "internal/ast/ast.go",
+      "line": 4051,
+      "summary": "新增的 KindJSImportDeclaration 在 Update/Clone 中会静默退化回 KindImportDeclaration",
+      "failure_scenario": "本 MR 用 `newImportOrJSImportDeclaration(kind, ...)` 让同一份 `ImportDeclaration` 数据承载两种 Kind（ast.go:4037-4052），但紧随其后的 `UpdateImportDeclaration`（ast.go:4054-4056 内调用 `f.NewImportDeclaration`）和 `ImportDeclaration.Clone`（ast.go:4069-4070 同样调用 `f.NewImportDeclaration`）仍硬编码 `KindImportDeclaration`，没有按 `node.Kind` 分派。于是只要调用方因任一子节点被改写而重建语句（`ImportDeclaration.VisitEachChild` 在 ast.go:4065-4067 必然走这条路），新 Kind 就静默退回 `KindImportDeclaration`。仓库对同类 JS 变体都有保护：`TypeAliasDeclaration.VisitEachChild` 显式判断 `node.Kind == KindJSTypeAliasDeclaration` 后分派到 `UpdateJSTypeAliasDeclaration`（ast.go:3694-3699），`ExportAssignment` 的 Update/Clone 直接把 `node.Kind` 透传（ast.go:4353-4358、4368-4370）。具体后果：一旦退化发生，为 JSDoc `@import` 专门准备的丢弃分支（esmodule.go:42、commonjsmodule.go:66 的 `case ast.KindJSImportDeclaration: node = nil`）不再命中，而 printer 的 `case ast.KindImportDeclaration, ast.KindJSImportDeclaration: p.emitImportDeclaration(...)`（printer.go:3956）会把它当普通 import 打印，即注释中的 `@import` 可能以外发 `import`/`require` 出现在产物或用户文件中；同时 `Node.ModuleSpecifier()`、`ast.IsAnyImportSyntax` 等基于 Kind 的判断也会得到与设计不符的结论。需要注意当前普通编译路径被 `typeeraser.go:258-269` 的 `IsTypeOnly` 提前丢弃所掩盖（JS 文件不启用 import elision，见 transformer.go:59），因此该缺陷是否显形取决于调用路径（LS 重构/codefix、`Clone`、后续新增 transformer 等），现有 importTag* 基线只比对 errors/types，无法覆盖。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "AST-CONSISTENCY-001"
+    },
+    {
+      "file": "internal/ast/ast.go",
+      "line": 4051,
+      "summary": "新增的 KindJSImportDeclaration 未被 IsImportDeclaration 识别，使只含 @import 的 JS 文件退化为脚本",
+      "failure_scenario": "本次变更通过 `newImportOrJSImportDeclaration(KindJSImportDeclaration, ...)` 为 JSDoc `@import` 引入了独立节点种类，但 `ast.IsImportDeclaration` 仍只判断 `KindImportDeclaration`，因此所有经由它做出的判定都不再把 `@import` 合成声明当作 import 声明。最直接的后果是 `IsExternalModuleIndicator` 对 `@import` 返回 false：reparser 生成的合成声明会被 `parseListIndex` 插入到 sourceFile.Statements（parser.go:478-481），随后 `parser.go:349` 用 `isFileProbablyExternalModule` 计算 `sourceFile.ExternalModuleIndicator` 时就会漏掉它。于是“唯一的模块标识是一条 JSDoc @import”的 .js 文件会被当作全局脚本处理：其顶层声明与 `@import` 绑定进入全局符号表（可能与其他文件同名冲突）、模块自动严格模式判定失效（binder 中多处按 `file.ExternalModuleIndicator != nil` 选择诊断与作用域）、`--module commonjs` 下的模块化 emit 分支也不再命中（commonjsmodule.go:250）。上游 tsc 把 `@import` 重新解析为普通 `ImportDeclaration`，该判定为真，因此这是与上游行为不一致的回归。同一批“新 Kind 需要跟随”的更新里，`GetNamespaceDeclarationNode`（utilities.go:2343）已经接纳了新 Kind，而 `IsImportDeclaration`、`checker.go:14330` 的 `IsImportDeclaration(referenceParent)` 守卫、`checker/utilities.go:387` 的 `isSideEffectImport`、`emitresolver.go:148` 均未跟进，属于同一处遗漏的不同落点。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "internal/api/encoder/encoder.go",
+      "line": 462,
+      "summary": "encoder 为 JSImportDeclaration 输出 children 掩码，但 API 客户端缺少对应 Kind 与属性表",
+      "failure_scenario": "`getChildrenPropertyMask` 新增了 `ast.KindJSImportDeclaration` 分支，会为这种节点返回 4 位掩码（modifiers/importClause/moduleSpecifier/attributes，encoder.go:462-464），且该掩码会随节点数据一起编码（encoder.go:346-350 的 `getNodeData`）。但客户端侧完全没有对应定义：`_packages/api/src/node.ts` 的 `childProperties` 只有 `SyntaxKind.ImportDeclaration` 条目（第 49 行），没有新 Kind；`_packages/ast/src/syntaxKind.ts`/`syntaxKind.enum.ts` 的枚举在 `JSDocImportTag, SyntaxList, NotEmittedStatement, ..., Count` 处结束（`JSDocImportTag = 343`、`Count = 349`），不存在该 Kind。客户端解码时若 `childProperties[this.kind]` 未定义，会走「只有一个子节点」的兜底分支，并在实际存在多个子节点时 `throw new Error(\"Expected only one child\")`（node.ts:417-425）。触发场景：本 MR 之后，含 `/** @import {X} from \"./x\" */` 的 JS 文件其 `sourceFile.Statements` 会多出一条 `KindJSImportDeclaration` 语句（reparser.go:123-126 → parser.go:478-480 并入语句列表），API 客户端遍历/读取该类文件的 `moduleSpecifier`、`importClause` 等子属性时即会抛错或按错误 Kind 解析节点流。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "API-ENCODER-002"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 120,
+      "summary": "JSDoc @import 标签的 ImportClause 为 nil 时 Clone 触发空指针 panic",
+      "failure_scenario": "新增的 KindJSDocImportTag 分支无条件执行 `importTag.ImportClause.Clone(&p.factory)` 与 `importClause.AsImportClause().IsTypeOnly = true`，但 JSDocImportTag.ImportClause 在语法上允许为 nil：internal/parser/parser.go:2199-2204 的 tryParseImportClause 只在 identifier != nil 或下一个 token 为 `*`/`{` 时返回 ImportClause，否则 `return nil`；internal/parser/jsdoc.go:863-868 又把这个可能为 nil 的结果直接传给 NewJSDocImportTag。因此在 JS/JSX 文件里写 `/** @import \"mod\" */`（无 clause 的写法，属于解析器可接受的输入）时，reparseTags 会进入该分支并在 nil 接收者上调用 Node.Clone（internal/ast/ast.go:216 `return n.data.Clone(f)` 会解引用 n.data），导致解析阶段 panic，tsc/tsserver 进程直接崩溃，而不是像同函数其它 tag 分支那样安全跳过。",
+      "severity": "P0",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 120,
+      "summary": "JSDoc `@import` 缺少 import clause 时对 nil 执行 Clone 会 panic",
+      "failure_scenario": "新增的 reparser 分支直接把 `importTag.ImportClause` 当作非空使用：`importTag.ImportClause.Clone(&p.factory)` 与随后的 `importClause.AsImportClause().IsTypeOnly = true` 都没有判空。但 parser 侧的 `tryParseImportClause` 在既没有默认导入标识符、当前 token 也不是 `*` 或 `{` 时会返回 nil（例如 `/** @import \"mod\" */`、`/** @import */`、`/** @import from \"mod\" */` 这类书写错误的 JSDoc），而 `parseImportTag` 会把这个 nil 原样存入 `JSDocImportTag.ImportClause`。`Node.Clone` 的实现是 `return n.data.Clone(f)`，nil 接收者上读取 `n.data` 即空指针解引用。由于 `setJSDoc` 只要 JS/JSX 文件节点带 JSDoc 就会调用 `reparseTags`，任何 JS 文件里出现写错的 `@import` 注释都会让 parser 直接崩溃，进而拖垮 `tsgo` 编译进程与语言服务（LSP 断连）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 120,
+      "summary": "JSDoc 导入标签缺少导入子句时对 nil 解引用导致解析器崩溃",
+      "failure_scenario": "新增的 `KindJSDocImportTag` 重解析分支无条件调用 `importTag.ImportClause.Clone(&p.factory)`，但 `parseImportTag` 通过 `tryParseImportClause` 构造标签时，若 `@import` 后没有导入子句（例如 `/** @import \"./mod\" */` 或残缺的 `/** @import */`），会返回 nil 作为 `JSDocImportTag.ImportClause`。`(*Node).Clone` 的接收者是 `*Node` 且方法体直接读取 `n.data`，nil 接收者会触发 nil pointer dereference。任意 .js/.jsx 文件中出现这种 JSDoc 注释（不需要类型检查，仅解析即可）就会让编译入口 panic；仓库内只有 lsp/server.go 有 recover，CLI 与 api server 会直接崩溃。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-NIL-001"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 120,
+      "summary": "无 import clause 的 @import 标签会让 reparse 对 nil 节点调用 Clone，直接 panic",
+      "failure_scenario": "reparseTags 在处理 KindJSDocImportTag 时无判空地执行 importTag.ImportClause.Clone(&p.factory)。但 parseImportTag 是允许 ImportClause 为 nil 的：tryParseImportClause 在既没有 identifier、当前 token 也不是 `*` 或 `{` 时直接返回 nil 且不产生任何诊断。因此只要 .js/.jsx 文件里存在一个附着了 `/** @import */`（漏写导入子句）或 `/** @import \"./a\" */`（纯副作用形式）的声明，withJSDoc -> reparseTags 就会进入该分支，对 nil 的 *ast.Node 调用 Clone，而 Node.Clone 内部访问 n.data，触发 nil pointer dereference，解析阶段直接崩溃（tsc/LS 进程 panic），而不是像正常错误恢复那样报一条语法错误。已存在的 importTag10 之所以没暴露该问题，只是因为其 JSDoc 注释后面没有宿主节点（未被 withJSDoc 处理）；仓库中没有任何 case 覆盖“附着宿主 + 无 import clause”的组合。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-NIL-DEREF"
+    },
+    {
+      "file": "internal/parser/reparser.go",
+      "line": 122,
+      "summary": "把 @import 的 ImportClause 强制标记为 type-only，导致上游不存在的 TS1363/TS2857 假阳性与 default 类型显示",
+      "failure_scenario": "新增的 `KindJSDocImportTag` 重解析逻辑把克隆出来的 ImportClause 直接设成 `IsTypeOnly = true`，而 checker 的若干语法检查与别名解析都以该字段作为“用户写了 `import type`”的信号：`isExclusivelyTypeOnlyImportOrExport`（checker.go:5079-5086）读取它，进而在带 `with { type: \"json\" }` 的 @import 上额外报 TS2857（Import attributes cannot be used with type-only imports or exports）；type-only 条款上“默认绑定 + 命名绑定”的检查则对 `@import Foo, { I }` 额外报 TS1363。上游 tsc 的基线里这两种错误都不存在（importTag16 上游 0 错误，importTag15 上游只有 TS2823），因此本变更让合法的 JSDoc 代码在 tsgo 下多出编译错误，`--noEmitOnError`/CI 会直接失败。同一批基线还显示默认导入的类型从 `Foo` 退化为 `default`（importTag3、importTag16 的 types 基线），说明别名身份在 type-only 标记后没有保留，若声明生成沿用该符号名将产出 `default` 这种非法类型名。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "internal/checker/checker.go",
+      "line": 2208,
+      "summary": "JSDoc @import 合成声明被当作真实 type-only import 检查，新增 TS2857/TS1363 误报",
+      "failure_scenario": "reparser 把 JSDoc `@import` 标签合成为 KindJSImportDeclaration 时，会把 ImportClause.IsTypeOnly 强制置为 true（reparser.go:122）。本次变更让该合成声明与真实 import 一样进入 checkImportDeclaration（checker.go:2208），同时 isExclusivelyTypeOnlyImportOrExport 也识别新 Kind（checker.go:5083），于是本来对 JSDoc 导入合法的写法开始产生 Strada 参考实现不产生的语法错误：`/** @import { I } from './0' with { type: \"json\" } */` 会命中 checker.go:5069-5072 的 TS2857，`/** @import Foo, { I } from \"./a\" */` 会命中 grammarchecks.go:2120-2121 的 TS1363。对应基线已被改写为接受这些新增诊断（importTag15/importTag16 的 accepted diff 中新增了这些行），意味着 .js 用户会在原本无错的 JSDoc 导入上看到红色报错，属于行为回归/误报。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "internal/ast/utilities.go",
+      "line": 1680,
+      "summary": "GetExternalModuleName 不再接受 KindJSDocImportTag，传入该节点由返回说明符变为 panic",
+      "failure_scenario": "本次改动删除了 `case KindJSDocImportTag: return node.AsJSDocImportTag().ModuleSpecifier`，而该函数未命中的 Kind 会走到函数末尾的 `panic(\"Unhandled case in getExternalModuleName\")`。KindJSDocImportTag 仍然是一个活跃 Kind：解析器仍会产出 JSDocImportTag 节点（reparser 正是从 tag 上读取 ImportClause/ModuleSpecifier/Attributes 来合成新声明），encoder 也仍按该 Kind 序列化。任何仍以 JSDoc 标签节点为入口调用该工具函数的新代码/插件路径将直接 panic 而不是返回 nil 或说明符，属于共享 AST 工具函数契约的隐式收窄。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "API-CONTRACT-001"
+    },
+    {
+      "file": "internal/ast/utilities.go",
+      "line": 2556,
+      "summary": "删除 ForEachDynamicImportOrRequireCall 的 JSDocImportTag 分支后，非顶层 @import 不再进入 file.Imports",
+      "failure_scenario": "ForEachDynamicImportOrRequireCall 的文本扫描分支（`includeTypeSpaceImports && node.Kind == KindJSDocImportTag`）是 .js 文件里发现 JSDoc `@import` 模块说明符的唯一兜底路径，本次被整段删除。替代路径依赖 reparse 生成的合成 JSImportDeclaration 出现在 file.Statements 顶层：collectModuleReferences 只遍历顶层语句，而 reparse 产生的节点会被插入到“标签所在的那个列表”（parser.go:478-482，parseList 也委托给 parseListIndex）。因此当 `@import` 注释挂在类成员/块内语句上，或出现在文件末尾没有后续语句时，合成声明不在顶层列表，扫描分支又被删除，模块说明符不会进入 file.Imports，导入模块无法被解析，最终在合法代码上误报 TS2307 “Cannot find module”。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "internal/ls/utilities.go",
+      "line": 23,
+      "summary": "tryGetImportFromModuleSpecifier 用 KindJSImportDeclaration 替换了 KindJSDocImportTag，非 JS 文件的 @import 模块说明符不再被识别",
+      "failure_scenario": "本次把 `case ast.KindJSDocImportTag` 直接换成 `case ast.KindJSImportDeclaration`。但 JSImportDeclaration 只在 reparseTags 中产生，而 reparseTags 仅在 ScriptKindJS/JSX 下被调用（internal/parser/jsdoc.go:59-61），所以 .ts/.tsx 文件中的 `@import` 依然只是 JSDocImportTag，其模块说明符字符串的 Parent.Kind 仍是 KindJSDocImportTag，switch 不再命中、函数返回 nil。唯一调用点 internal/ls/completions.go:1650 正是用它判断是否处于模块说明符位置（isValidTrigger 的 \"/\" 分支），于是 `.ts` 文件里在 `/** @import { A } from \"./mod|` 中键入 `/` 不再触发模块路径补全，属于语言服务功能回退。另外该模块说明符节点被 JSImportDeclaration 与 JSDocImportTag 两棵树共享（reparser 直接复用 importTag.ModuleSpecifier），而 Node.Parent 只有一个字段，internal/parser/references.go:34 与 internal/binder/binder.go:757-762 都会调用 SetParentInChildren 无条件覆盖，因此即使在 JS 文件中，新加的 KindJSImportDeclaration 分支也未必稳定命中。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "REGRESSION-002"
+    },
+    {
+      "file": "testdata/baselines/reference/submodule/conformance/importTag3.types",
+      "line": 18,
+      "summary": "默认导入形式的 `@import Foo from \"./types\"` 类型被解析/打印成内部的 default 符号",
+      "failure_scenario": "本 MR 让 `@import` 真正参与绑定后，命名导入（`{ I }`）可以正确显示为 `I`，但默认导入却退化为打印内部符号名 `default`：`f : (foo: default) => void`、`foo : default`，而 upstream tsc 在同一用例上输出 `(foo: Foo) => void`。说明通过 reparser 合成 `ImportDeclaration` 时，默认导入的本地别名没有被当作别名使用，类型引用直接解析到了默认导出的目标符号（其内部名为 `default`）。影响面不止 quickinfo/`.types` 基线：hover、错误信息中的类型显示、以及基于别名解析的后续能力（如 go-to-definition 名称、可选属性诊断文案）都会出现 `default` 这种内部名称，用户看到的类型信息不可读，也与 tsc 行为不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "testdata/baselines/reference/submodule/conformance/importTag17.errors.txt",
+      "line": 1,
+      "summary": "`@import` 上带 `resolution-mode` 属性时被忽略，对合法代码误报 TS2305/TS2749",
+      "failure_scenario": "importTag17 用例在 `@import { Import } from 'foo' with { 'resolution-mode': 'import' }` 上被报 TS2305「has no exported member 'Import'」，并对 `@returns { Require }` 报 TS2749「'Require' refers to a value, but is being used as a type here」。对照 upstream 基线，正确行为是把 `resolution-mode` 属性用于模块解析（`import` 条件命中 `index.d.mts` 的 `Import`、`require` 条件命中 `index.d.cts` 的 `Require`），错误应是两处 `TS2322: Type '1' is not assignable to type '\"module\"'/\"script\"'`。这说明新合成的 type-only ImportDeclaration 虽然把 attributes 带上了（`NewJSImportDeclaration(..., importTag.Attributes)`），但模块解析没有使用该 resolution-mode，且 JSDoc 中引用导入的 const 时仍按“值不能当类型”处理。结果是合法写法会得到错误诊断，而真正的类型不匹配反而被漏报。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "testdata/baselines/reference/submodule/conformance/importTag15(module=es2015).errors.txt",
+      "line": 2,
+      "summary": "es2015 配置下 `@import` 带属性时同一位置重复上报 TS2823 与 TS2857",
+      "failure_scenario": "`@import` 现在被合成为 type-only ImportDeclaration 并进入常规 import 语法检查，因此在 `--module es2015` 下对 `@import { I } from './0' with { type: \"json\" }` 同时报出 TS2823（当前 module 不支持 import attributes）与 TS2857（import attributes 不能与 type-only import 共用）。upstream 在同一用例只报 TS2823；对照 esnext 用例的基线（只报 TS2857）可以看出，本变更在“配置不合法”这一分支没有提前返回，导致同一段 attributes 被两个错误重复覆盖。用户会看到同一位置的双份错误，且其中很可能是无意义的连带报错（既然 module 不支持 attributes，再提示 type-only 冲突没有信息价值）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "DIAGNOSTIC-001"
+    },
+    {
+      "file": "testdata/baselines/reference/submoduleAccepted/conformance/importTag16.types.diff",
+      "line": 10,
+      "summary": "@import 的 default 导入被解析成 default 而非导入名 Foo，且被 accepted 基线固化",
+      "failure_scenario": "本 MR 新增的 accepted 基线把上游期望的 `foo : (a: Foo, b: I) => void` / `a : Foo` 改成本地的 `foo : (a: default, b: I) => void` / `a : default`。`/** @import Foo, { I } from \"./a\" */` 里的 default 分支（`a.ts` 中 `export default interface Foo {}`）在重解析为 JSImportDeclaration 后没有建立名为 `Foo` 的类型别名，引用 `Foo` 时直接落到模块 default 导出符号（其符号名为 default），因此类型字符串、hover、声明输出、补全与错误信息都会显示 `default` 而不是 `Foo`。同一基线的命名导入 `b : I` 正确，说明缺陷只出在 default 分支，且该行为是本次变更新引入并被 accepted 基线固化下来。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "testdata/baselines/reference/submoduleAccepted/conformance/importTag17.errors.txt.diff",
+      "line": 6,
+      "summary": "@import 的 'resolution-mode' 属性未被用于模块解析，导入成员解析到错误条件",
+      "failure_scenario": "`/** @import { Import } from 'foo' with { 'resolution-mode': 'import' } */` 与 `'resolution-mode': 'require'` 是本用例的核心：前者应解析到 @types/foo 的 import 条件导出（类型为字面量 \"module\"），后者应解析到 require 条件导出（\"script\"\"）。新的 accepted 基线显示本地把 'Import' 解析到 `/node_modules/@types/foo/index` 并报 TS2305「has no exported member 'Import'」，同时上游本应出现的 `/a.js(8,5)`、`/a.js(15,5)` TS2322（`Type '1' is not assignable to type '\"module\"'` / `'\"script\"'`）在本地完全消失，说明 @param/@returns 依赖的 @import 类型没有按 resolution-mode 解析；第 30-31 行进一步把 `Require` 判为 TS2749「refers to a value」，表明该 @import 绑定被当作值符号而不是类型别名。结果是在 NodeNext 双模式包上 JSDoc `@import` 完全失效并被基线接受。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "testdata/baselines/reference/submoduleAccepted/conformance/importTag16.errors.txt.diff",
+      "line": 6,
+      "summary": "对 @import 的 default+named 组合新增 TS1363 误报，与上游不一致且与自身解析结果矛盾",
+      "failure_scenario": "新的 accepted 基线显示，本实现对 `/** @import Foo, { I } from \"./a\" */` 在 (1,13) 新增了 TS1363「A type-only import can specify a default import or named bindings, but not both」。该 .diff 第 4 行的 `-<no content>` 表明上游同名基线不存在（上游对该用例不报任何错误），因此这条 TS1363 是本次变更新引入的偏差。同时它与本实现的解析结果自相矛盾：同一次运行中 `I` 仍被正常解析（该 tag 下不再有 TS2304，types 基线 `b : I` 正确），default 分支也仍被解析成 `default` 类型——即一边把该 clause 判为非法语法，一边仍按该 clause 建立绑定，用户会对 `@import D, { N }` 这种写法收到与上游不一致的报错却仍能继续使用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "DIAGNOSTIC-001"
+    },
+    {
+      "file": "testdata/baselines/reference/submoduleAccepted/conformance/importTag3.types.diff",
+      "line": 9,
+      "summary": "default 形式的 @import 丢失别名，类型显示为 default 而非 Foo，并被固化为新的接受差异",
+      "failure_scenario": "本次新增的接受差异基线显示：`/** @import Foo from \"./types\" */` 之后 `@param { Foo } foo` 的类型在 port 中打印为 `(foo: default) => void` / `foo : default`，而 strada 基线是 `(foo: Foo) => void` / `foo : Foo`。也就是说合成 import declaration 的 default 导入在解析类型时落到了模块的 default 导出符号上，别名 Foo 的名字信息没有被保留，用户 hover/quick info 会看到 `default` 这个与源码中写的名字无关的类型名。importTag16.types.diff 也出现同样的 `a : default`，说明这不是单个用例的偶然现象；而仓库里仅 importTag3/importTag16 出现 `: default`，普通 import 的 default 导入没有该现象，故这是本次 @import 支持新引入的可观察差异。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-TYPE-DISPLAY"
+    }
+  ],
+  "stderr_tail": " 12 / no-issue 0 / not-reached 41（no-signal=41），hunk 外候选 7\n✓ 完成 · 耗时 2916.3s · 模型调用 286 次 · token 输入 384,711（未命中） · 输出 348,027 · 缓存命中 12,702,080（97.1%） · 工具 491 次（主会话 491 + 规则 Skill 0） · Ledger 命中 1 次（未重复读取原文） · $0.1869\nreview-pi: 置信度过滤丢弃 5 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f03-serial-20261122\\.reviewpi\\tasks\\microsoft__types...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 2917.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.0%)\n[time] 阶段 | 六阶段审计 2916.2s (100.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.0%)\n[time] 审计明细 | S1P1 16.0s (0.5%) | S1P2 5.4s (0.2%) | S1P3 72.9s (2.5%) | S1P4 277.8s (9.5%) | S1P5 19.8s (0.7%) | S1P6 7.5s (0.3%) | S2P1 15.3s (0.5%) | S2P2 3.8s (0.1%) | S2P3 7.0s (0.2%) | S2P4 294.2s (10.1%) | S2P5 12.1s (0.4%) | S2P6 4.8s (0.2%) | S3P1 4.0s (0.1%) | S3P2 3.9s (0.1%) | S3P3 7.7s (0.3%) | S3P4 312.4s (10.7%) | S3P5 60.2s (2.1%) | S3P6 8.4s (0.3%) | S4P1 10.8s (0.4%) | S4P2 4.0s (0.1%) | S4P3 14.5s (0.5%) | S4P4 187.3s (6.4%) | S4P5 64.8s (2.2%) | S4P6 7.6s (0.3%) | S5P1 20.7s (0.7%) | S5P2 4.4s (0.2%) | S5P3 8.7s (0.3%) | S5P4 276.6s (9.5%) | S5P5 64.8s (2.2%) | S5P6 9.8s (0.3%) | S6P1 13.6s (0.5%) | S6P2 4.4s (0.2%) | S6P3 9.4s (0.3%) | S6P4 119.9s (4.1%) | S6P5 44.9s (1.5%) | S6P6 9.0s (0.3%) | S7P1 42.2s (1.4%) | S7P2 6.5s (0.2%) | S7P3 6.3s (0.2%) | S7P4 162.3s (5.6%) | S7P5 76.8s (2.6%) | S7P6 6.1s (0.2%) | S8P1 56.8s (2.0%) | S8P2 5.5s (0.2%) | S8P3 6.4s (0.2%) | S8P4 358.9s (12.3%) | S8P5 23.2s (0.8%) | S8P6 8.9s (0.3%) | S9P1 52.2s (1.8%) | S9P2 4.9s (0.2%) | S9P3 8.7s (0.3%) | S9P4 77.0s (2.6%) | S9P5 3.1s (0.1%) | S9P6 0.8s (0.0%)\n[usage] 任务总计 | 模型调用 287 次（Agent 286 + 一次性 1） | token 输入 387,425（未命中） | 输出 355,112 | 缓存命中 12,702,080（97.0%） | $0.1892\n[usage] 一次性明细 | 解析修复 1 次（输入 2,714 / 输出 7,085 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f03-serial-20261122\\.reviewpi\\tasks\\microsoft__typescript-go@b970689\\audit\\20261122_014059_492.json",
+  "token_usage": {
+    "input_tokens": 384711,
+    "output_tokens": 348027,
+    "cache_read_input_tokens": 12702080
+  }
+}

@@ -1,0 +1,142 @@
+{
+  "instance_id": "immich-app__immich@5f47591",
+  "repo": "immich-app/immich",
+  "base_commit": "584e5894bfd4fe356e790fa9781ccee4e5224874",
+  "head_commit": "5f4759196534661bd332085514878d0efbb7ce84",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 1091.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 12,
+  "review_output": [
+    {
+      "file": "server/src/database.ts",
+      "line": 219,
+      "summary": "Person.birthDate 收窄为 Date|null，与 JSON 聚合路径下的实际字符串值不符",
+      "failure_scenario": "新引入的 Person 类型把 birthDate 声明为 Date | null，而被删除的 PersonEntity 声明的是 Date | string | null。但 AssetEntity.faces 里的 person 是数据库侧用 jsonb_insert(to_jsonb(asset_faces), '{person}', to_jsonb(person)) 拼出来的 JSON 对象，其中 date/timestamptz 字段（birthDate、createdAt、updatedAt）在运行时是字符串。类型收窄后，任何以 AssetFace.person（或 AssetEntity.faces[].person）为入口的代码在编译期都会被认为拿到的是 Date，一旦写成 person.birthDate.getTime()/toISOString() 之类的日期运算就会在运行时抛 TypeError（string 没有这些方法），且编译器无法拦截。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "TYPE-CONTRACT-001"
+    },
+    {
+      "file": "server/src/database.ts",
+      "line": 226,
+      "summary": "手写 AssetFace 与生成的 AssetFaces 行类型重复，表结构演进时需双处维护",
+      "failure_scenario": "新增的 AssetFace 是把 asset_faces 表列逐字手抄的一份行类型，与 kysely-codegen 生成的 AssetFaces 并行存在；同文件的 Exif 采用的是 `Omit<Selectable<DatabaseExif>, ...>` 派生写法。一旦 asset_faces 表增删列（本仓库近期就有为 asset_faces 增加字段的演进），AssetFace 不会自动更新：新增的列在 AssetEntity.faces / mapFaces 类型上不可见，使用新列的代码只能靠类型断言绕过；若列被重命名或删除，编译错误只出现在使用点而不在类型定义处，容易误改到别处。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "server/src/dtos/person.dto.ts",
+      "line": 251,
+      "summary": "mapFaces 内联复制 mapFacesWithoutPerson 的字段映射，字段集合易漂移",
+      "failure_scenario": "本次把 mapFaces 从 `...mapFacesWithoutPerson(face)` 改为逐字段内联展开（id/imageHeight/imageWidth/boundingBoxX1..Y2/sourceType），使同一份 face 基础字段出现两套映射实现。后续若给 AssetFaceWithoutPersonResponseDto 新增/调整字段（例如新增 face 相关属性或修正某字段取值），只要有人只改了 mapFacesWithoutPerson，/assets 相关接口（peopleWithFaces 走 mapFacesWithoutPerson）与 /people faces 接口（mapFaces）返回的同一 face 结构就会不一致，前端拿到的字段随入口不同而缺失，且不会有任何编译错误或测试直接覆盖这种差异。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "server/src/queries/person.repository.sql",
+      "line": 187,
+      "summary": "人物缩略图查询只按 id 关联 assets，未排除已软删除/不可见资产",
+      "failure_scenario": "新增的 getPersonForThumbnailGenerationJob 在嵌套 lateral 里只用 `\"assets\".\"id\" = \"asset_faces\".\"assetId\"` 关联资产，全文只过滤了 `asset_faces.deletedAt`（第 191 行），没有过滤 `assets.deletedAt`/`assets.isVisible`。当 person.faceAssetId 指向的资产已进入回收站（assets.deletedAt 非空，原图与 preview 文件已被移动到 trash 目录，asset_files 中的路径随之失效）时，查询仍会返回 originalPath/exifInfo/files，handleGeneratePersonThumbnail 会拿失效路径调用 generateThumbnail（IMAGE 走 assets.originalPath，视频走 preview 路径），抛 ENOENT 导致作业 FAILED；对回收站资产来说这是必然失败而非偶发失败，管理员执行“重建缩略图”时会为这类人物反复产生失败作业。对照仓库内其它人物/资产查询（如 getAllForUser 的 `on('assets.deletedAt','is',null)`、getStatistics），此处缺失同一层过滤是本条新查询引入的语义缺口。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "CORRECTNESS-DELETED-FILTER"
+    },
+    {
+      "file": "server/src/repositories/person.repository.ts",
+      "line": 113,
+      "summary": "delete 改为 string[] 后 @GenerateSql 参数仍传对象数组，生成器入参与签名不一致",
+      "failure_scenario": "delete 的入参由 PersonEntity[] 改成 string[]，但紧随其上的 @GenerateSql({ params: [[{ id: DummyValue.UUID }]] }) 没有同步修改。sync-sql 会直接把装饰器里的 params 作为实参调用仓库方法（server/src/bin/sync-sql.ts:147），此时 ids = [{ id: uuid }]，where('person.id','in', ids) 会把对象序列化成 JSON 字符串绑定到 uuid 比较列上，Postgres 侧报 invalid input syntax for type uuid，生成 sql 快照时打印错误；同时生成的文档 SQL 只剩 in ($1) 一个占位符，无法反映真实的多 id 语义。后续任何依赖该装饰器做 SQL 快照/示例的流程都会拿到与实际签名不匹配的样例。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.78,
+      "rule": "TOOLING-001"
+    },
+    {
+      "file": "server/src/repositories/person.repository.ts",
+      "line": 277,
+      "summary": "缩略图查询用 innerJoin('exif') 取资产，缺少 exif 行时整条 asset 变 NULL 导致任务直接 FAILED",
+      "failure_scenario": "getPersonForThumbnailGenerationJob 在 face.asset 的 leftJoinLateral 内部对 assets 使用 innerJoin('exif')，而外层又用 toJson(eb,'asset') 把该横向子查询转成 JSON。只要资产没有对应的 exif 行（元数据提取尚未执行/失败、或历史数据缺失 exif 记录），内层子查询就返回 0 行，face.asset 变成 NULL；handleGeneratePersonThumbnail 会命中 `!person?.face?.asset` 分支，打印误导性的 “person ... has no face asset” 并返回 JobStatus.FAILED（不可重试），人物缩略图从此缺失，且与“特征脸真的不存在”这一情况无法区分。相比之下 exif 只用于取宽高，属于可选信息，仓库其他位置（album.repository.ts:72、user.repository.ts:202、library.repository.ts:76）在仅取值时都使用 leftJoin，这里用 inner join 把资产行整体丢掉属于本次新引入的强依赖。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/src/repositories/search.repository.ts",
+      "line": 165,
+      "summary": "minBirthDate 放宽为可空后在 null 时静默丢弃生日过滤，人脸识别可能匹配到尚未出生的人",
+      "failure_scenario": "本次把 FaceEmbeddingSearch.minBirthDate 由 `Date` 放宽为 `Date | null`，并用它承接调用方 person.service 传入的 `face.asset.fileCreatedAt`（该字段在本次 MR 的类型体系里是 `Date | null`）。但 searchFaces 的实现用 `$if(!!minBirthDate, ...)` 包裹生日条件，因此当 fileCreatedAt 为 null 时整条 `person.birthDate <= minBirthDate` 过滤会被静默跳过，不会报错也不会留下日志；同时条件内部还用 `minBirthDate!` 非空断言，编译器无法再提示可空性。真实数据中 fileCreatedAt 可以为 null（assets.fileCreatedAt 已 DROP NOT NULL，library.service 也存在写入 `fileCreatedAt: null` 的路径），这类无日期资产走 FACIAL_RECOGNITION 时，会把人脸匹配到“拍摄日期之后才出生”的人物上，导致错误的人物归属、错误地复用已有 personId 甚至错误的生成缩略图/后续人物合并，属于与拍摄时间语义相关的一致性缺陷。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/src/services/person.service.spec.ts",
+      "line": 143,
+      "summary": "not-found 用例改为依赖 mock 的默认 undefined，偏离 getById 的 Promise<Person | null> 契约",
+      "failure_scenario": "本次 diff 删除了三处 `mocks.person.getById.mockResolvedValue(null)`（getById 的 not-found 用例、getThumbnail 的 invalid-id 用例、handlePersonMigration 用例）。删除后这三个用例靠 vitest 新建 mock 的默认返回值 `undefined` 走 falsy 分支，而仓储实现 `PersonRepository.getById` 明确以 `executeTakeFirst() ?? null` 返回 `null`（person.repository.ts:331-339），返回类型是 `Promise<Person | null>`，`undefined` 是真实仓储永不产生的状态。具体失败场景：若后续把 `findOrFail` 的判空从 `if (!person)`（person.service.ts:654-659）收紧为 `if (person === null)` 或改为可选链式判断，这三个用例会因为实际断言的是从未发生过的 `undefined` 分支而失去对 null 路径的保护，测试继续绿但真实行为已变。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.42,
+      "rule": "TEST-CONTRACT-001"
+    },
+    {
+      "file": "server/src/services/person.service.spec.ts",
+      "line": 863,
+      "summary": "handleRecognizeFaces 用例用完整 faceStub 桩新方法，掩盖了收窄投影后的字段缺失",
+      "failure_scenario": "本次变更把识别任务的取数从 `getFaceByIdWithAssets` 换成了新方法 `getFaceForFacialRecognitionJob`，后者只投影 `asset_faces.id / personId / sourceType` 加上精简的 asset（`ownerId / isArchived / fileCreatedAt`）与 `faceSearch`（person.repository.ts:246-263，SQL 快照 person.repository.sql:98-135 一致）。但 spec 仍直接 `mockResolvedValue(faceStub.face1)` / `faceStub.noPerson1`，这些 fixture 带有 `assetId`、`asset`（完整 asset）、`person`、`boundingBoxX1..Y2`、`imageWidth/Height`、`deletedAt` 等新查询根本不返回的字段。具体失败场景：后续若在 `handleRecognizeFaces` 中新增对 `face.boundingBoxX1`、`face.asset.originalPath`、`face.deletedAt` 之类的引用，测试依然全绿，而线上拿到的是 `undefined`（例如把 undefined 传入搜索/裁剪逻辑导致运行时报错或错误结果）；同理，生产查询过滤了 `asset_faces.deletedAt is null`，而 `faceStub.face1` 的 `deletedAt` 为非空仍被当作“已有 person”正常返回，覆盖不到该过滤条件。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.45,
+      "rule": "TEST-FIXTURE-002"
+    },
+    {
+      "file": "server/src/services/person.service.ts",
+      "line": 553,
+      "summary": "缩略图任务失败日志把整个 person 对象插值，输出 [object Object] 丢失 person id",
+      "failure_scenario": "重构后失败日志从 `person ${person?.id} has no face asset` 变成 `person ${person} has no face asset`，而 person 是 `getPersonForThumbnailGenerationJob` 返回的对象（或 undefined）。对象进入模板字符串会得到 `[object Object]`（或 `undefined`），日志中不再包含人物 id，也没有了原来“face xxx not found”的信息；同时 person 为 undefined（person 不存在 / faceAssetId 为空）与 face 或 asset 缺失（face 被软删除、asset 无 exif 记录）这几种截然不同的原因被合并为同一条误导性文案。该分支恰好是缩略图生成任务的失败路径，排障时最需要定位到具体人物，实际却无法从日志拿到任何可检索的标识。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "OBSERVABILITY-001"
+    },
+    {
+      "file": "server/src/services/person.service.ts",
+      "line": 567,
+      "summary": "asset.files.length === 0 守卫对所有资产类型生效，使图片资产白白失败并让 getInputDimensions 内新增的预览校验成为死代码",
+      "failure_scenario": "新仓库查询的 `files` 字段只包含 `AssetFileType.PREVIEW`（limit 1），因此 `asset.files.length === 0` 等价于“没有 PREVIEW 文件”。本次同时把 `getInputDimensions` 里的 PREVIEW 校验从函数开头下移到非图片（视频）分支，说明图片路径只需要 exif 尺寸 + originalPath、并不依赖预览文件；但放在第 567 行的通用守卫会在进入 getInputDimensions 之前就对图片资产做拦截。后果有两点：一是 IMAGE 资产一旦缺少 preview 文件（例如预览生成任务失败、导入流程未产出预览），人物缩略图任务会以 “has no preview” 直接 FAILED，而它本可以直接用原图裁剪生成；二是守卫与 getInputDimensions 第 684-687 行的校验语义完全重复，后者在守卫之后永远不可能命中 `!previewFile`，形成不可达分支，两处约束相互矛盾，后续维护者无法判断图片到底是否需要预览文件。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "LOGIC-002"
+    },
+    {
+      "file": "server/src/services/person.service.ts",
+      "line": 624,
+      "summary": "mergePerson 中 update 初始即含 id，导致每次合并都无条件执行一次 person UPDATE",
+      "failure_scenario": "本次把 `const update: Partial<PersonEntity> = {}` 改为 `const update: Updateable<Person> & { id: string } = { id: primaryPerson.id }`，但紧随其后的守卫仍是 `if (Object.keys(update).length > 0)`。由于 update 对象恒定至少有一个键（id），该条件恒为真，原先“仅当 primary person 的 name/birthDate 真正被补齐时才写库”的语义被破坏：合并循环中每处理一个待合并 person，都会对 primary person 执行一次 `update person set id=$1 where id=$1 returning *`。person 表带有 `@UpdatedAtTrigger('person_updated_at')` 与 `@UpdateIdColumn()`，因此即使没有任何字段变化，primary person 的 updatedAt/updateId 也会被刷新，产生无意义的写放大与虚假的“最近更新”时间；同时 id 作为主键被写入 SET 子句，容易让后续维护者误判为可修改字段。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "LOGIC-001"
+    }
+  ],
+  "stderr_tail": "--include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 分片检视 6 片（单片上限 10000 字符）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 3 个文件 / 12759 字符（exclude=3），明细见审计 mrFilter\nreview-pi: 已截取检视 2 个超预算文件（丢弃 14 个完整 hunk，保留 19936 字符），明细见审计 shardTruncation\nreview-pi: 覆盖账本 candidate 10 / no-issue 0 / not-reached 69（no-signal=55 truncated=14）\n✓ 完成 · 耗时 1090.8s · 模型调用 147 次 · token 输入 225,989（未命中） · 输出 157,131 · 缓存命中 4,844,416（95.5%） · 工具 209 次（主会话 209 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0892\nreview-pi: 置信度过滤丢弃 5 条检视意见（阈值 0.5），仅影响中文 tips\nreview-pi: trace 留痕写入失败（ENOENT: no such file or directory, open 'D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f03-serial-20261122\\.reviewpi\\tasks\\immich-app__immi...），不影响检视结果\n[time] 阶段耗时 | 总墙钟 1091.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 1090.7s (99.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.0%)\n[time] 审计明细 | S1P1 2.5s (0.2%) | S1P2 2.5s (0.2%) | S1P3 3.6s (0.3%) | S1P4 157.1s (14.4%) | S1P5 21.7s (2.0%) | S1P6 5.0s (0.5%) | S2P1 47.9s (4.4%) | S2P2 2.9s (0.3%) | S2P3 7.1s (0.7%) | S2P4 86.2s (7.9%) | S2P5 124.2s (11.4%) | S2P6 9.3s (0.9%) | S3P1 9.3s (0.8%) | S3P2 3.5s (0.3%) | S3P3 6.2s (0.6%) | S3P4 103.0s (9.4%) | S3P5 69.6s (6.4%) | S3P6 5.5s (0.5%) | S4P1 2.2s (0.2%) | S4P2 2.1s (0.2%) | S4P3 5.4s (0.5%) | S4P4 64.5s (5.9%) | S4P5 14.0s (1.3%) | S4P6 5.3s (0.5%) | S5P1 13.2s (1.2%) | S5P2 2.1s (0.2%) | S5P3 5.2s (0.5%) | S5P4 87.7s (8.0%) | S5P5 52.7s (4.8%) | S5P6 4.9s (0.5%) | S6P1 88.5s (8.1%) | S6P2 3.4s (0.3%) | S6P3 7.1s (0.7%) | S6P4 35.2s (3.2%) | S6P5 24.7s (2.3%) | S6P6 4.9s (0.5%)\n[usage] 任务总计 | 模型调用 147 次（Agent 147 + 一次性 0） | token 输入 225,989（未命中） | 输出 157,131 | 缓存命中 4,844,416（95.5%） | $0.0892\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f03-serial-20261122\\.reviewpi\\tasks\\immich-app__immich@5f47591\\audit\\20261122_003052_412.json",
+  "token_usage": {
+    "input_tokens": 225989,
+    "output_tokens": 157131,
+    "cache_read_input_tokens": 4844416
+  }
+}

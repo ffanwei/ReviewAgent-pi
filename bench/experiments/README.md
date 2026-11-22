@@ -24,3 +24,13 @@
 | `2026-11-21-f02/f02-small-check` | F-02 单样本准入检查（cline，merge-base diff 17,227 字符） | `ok`，4 findings | `maxDiffChars=8000` / `maxShardChars=10000`；F-02 前会 `diff-too-large` 跳过，F-02 后 `shards[]` 1 片、截取 1 hunk 留痕 |
 
 > 桥接口径（2026-11-22）：外部 `aacr_reviewpi_bridge.py` 使用 `merge-base`（PR 范围）而不是 `base..head`；仓内 `bench/aacr-bench-v2/scripts/` 副本已同步。上表基准与单样本检查均按 merge-base 口径。
+
+## 2026-11-22 · F-03 分片并行（串行 vs `concurrency=3`）
+
+| 目录 | 说明 | 结果 | 备注 |
+|---|---|---|---|
+| `2026-11-22-f03/serial` | 3 条多片样本，串行（`concurrency=1`），网关 `deepseek-v4.1-flash` | 22 片 / **5298.9s** / 23.41M token | 不跑 judge；429=0 |
+| `2026-11-22-f03/parallel` | 同 3 条、同配置，`concurrency=3` | 22 片 / **2111.8s** / 32.86M token | **2.51× 墙钟**；429=0 |
+| `2026-11-22-f03/comparison.md` | 对比报告、token 偏高的解释与后续 replay 计划 | — | `comparison.json` / `compare_runs.py` 同目录 |
+
+> F-03 的 live 对比证明墙钟与 429；findings/token 等价需 replay 同一 trace 证明，不能由 live 采样差异推出。
