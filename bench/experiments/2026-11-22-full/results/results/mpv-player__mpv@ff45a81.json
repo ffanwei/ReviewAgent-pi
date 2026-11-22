@@ -1,0 +1,52 @@
+{
+  "instance_id": "mpv-player__mpv@ff45a81",
+  "repo": "mpv-player/mpv",
+  "base_commit": "5ba7ee513751dd005379a06fb627303e6fe1b3dd",
+  "head_commit": "ff45a8103e3c5ec3e786b950b4852c2750de936f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 203.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "video/out/vo_gpu_next.c",
+      "line": 923,
+      "summary": "draw_frame 无条件解引用可能为 NULL 的 frame->current，导致崩溃",
+      "failure_scenario": "新增的 vflip 判定在 draw_frame 开头直接读取 frame->current->params.vflip。但 vo_frame.current 在 --force-window --idle 等只需绘制黑底 + OSD 的场景可以合法为 NULL；同一函数内既有代码（939、1001、1021、1050 行）全部显式判空，说明该指针确实可能为空。因此任何一次“无当前帧的 OSD 重绘”都会触发空指针解引用，使播放器直接崩溃。",
+      "severity": "P0",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "video/out/vo_dmabuf_wayland.c",
+      "line": 713,
+      "summary": "dmabuf-wayland 已实现 vflip 却未声明 VO_CAP_VFLIP，造成误告警与 autovflip 报错",
+      "failure_scenario": "本次变更让 dmabuf-wayland 通过 wl_surface_set_buffer_transform 和 target_params.vflip 支持垂直翻转，但驱动的 caps 仍是 `VO_CAP_ROTATE90 | VO_CAP_FRAMEOWNER`，没有加入新增的 VO_CAP_VFLIP。后果是：check_vo_caps 会对每个带 vflip 的配置打出“video output does not support this”的误导性告警；同时 f_auto_filters 中 autovflip 因 stream_info.vflip 为 false 会尝试创建软件 vflip 滤镜，而该 VO 只接收 IMGFMT_DRMPRIME/IMGFMT_VAAPI，mp_sws_supports_input 判定失败后打出 “Video vflip with this format not supported” 的 MP_ERR。功能上只能依赖“滤镜创建失败、帧上 vflip 保留”这一副作用侥幸生效，日志与能力协商完全失真。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CAPABILITY-001"
+    },
+    {
+      "file": "video/mp_image.h",
+      "line": 61,
+      "summary": "新增的 params.vflip 未纳入 mp_image_params_equal，仅翻转变更不会触发 VO reconfig",
+      "failure_scenario": "mp_image_params 新增了 vflip 字段，但 mp_image_params_equal 只比较了 rotate 等字段，没有比较 vflip。当显示矩阵从“未翻转”变为“仅垂直翻转”（rotate、格式、尺寸均不变）时参数会被判为相等，不会触发 reconfig：vo->params 不更新，check_vo_caps 的 vflip 告警不执行；依赖 reconfig 时刻取值的消费者会沿用旧值——vo_dmabuf_wayland 只在 reconfig 里调用 wl_surface_set_buffer_transform，gl_video 的 hwdec 上传路径用 reconfig 时缓存的 p->image_params 设置 `.flipped = layout.params.vflip`，于是出现“帧数据带 vflip 但输出仍按旧状态渲染”的错误方向；而同一文件的软件上传路径按帧读取 mpi->params.vflip 又能正确翻转，两条路径行为不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "STATE-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\mpv-player__mpv\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\mpv-player__mpv@ff45a81.diff\n  caseId              mpv-player__mpv@ff45a81\n  --issue             (未传)\n  --taskId            mpv-player__mpv@ff45a81\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 15（no-signal=15）\n✓ 完成 · 耗时 202.4s · 模型调用 18 次 · token 输入 31,816（未命中） · 输出 29,017 · 缓存命中 604,672（95.0%） · 工具 33 次（主会话 33 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0143\n[time] 阶段耗时 | 总墙钟 203.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.4%)\n[time] 阶段 | 六阶段审计 202.3s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 6.0s (3.0%) | P3 6.3s (3.1%) | P4 173.7s (85.9%) | P5 11.0s (5.4%) | P6 5.2s (2.6%)\n[usage] 任务总计 | 模型调用 18 次（Agent 18 + 一次性 0） | token 输入 31,816（未命中） | 输出 29,017 | 缓存命中 604,672（95.0%） | $0.0143\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\mpv-player__mpv@ff45a81\\audit\\20261122_105828_390.json",
+  "token_usage": {
+    "input_tokens": 31816,
+    "output_tokens": 29017,
+    "cache_read_input_tokens": 604672
+  }
+}

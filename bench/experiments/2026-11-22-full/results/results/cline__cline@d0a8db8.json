@@ -1,0 +1,52 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 113.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 623,
+      "summary": "批量写入把 73 次存储写改成并发 Promise.all，丢失原子性与确定性失败语义",
+      "failure_scenario": "updateApiConfiguration 原先逐个 await（49 次 globalState 写 + 24 次 secrets 写），任一写入失败时已写入的是确定前缀；改造后通过 Promise.all([updateGlobalStateBatch, updateSecretsBatch]) 一次性发起约 73 个互不相关的并发写入，既没有事务也没有顺序保证。任一次写入 reject 时 Promise.all 会立即 reject，但其余仍在飞行中的写操作会继续提交，调用方 updateApiConfigurationProto 的 catch 只记录日志并重新抛出，导致 postStateToWebview 被跳过、controller.task.api 未更新，而磁盘上已被部分改写；等到下一次读取时会看到 webview/任务内存态与持久化态不一致（例如 provider 已换、对应凭证仍是旧的或已被 delete）。此外 updateGlobalStateBatch 与 updateSecretsBatch 由串行变为并行后，global 状态与 secrets 之间也不再有先后关系，失败时可能出现“模型配置已落盘、密钥未落盘”的组合。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-ATOMICITY-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 32,
+      "summary": "批量接口用 Record<string, any> + as GlobalStateKey/SecretKey 强转，丢失键与存储归属的类型校验",
+      "failure_scenario": "新增的 updateGlobalStateBatch 参数类型是 Record<string, any>，内部再用 key as GlobalStateKey 强转；updateSecretsBatch 同样用 key as SecretKey。改造前每一条 updateGlobalState(context, \"apiProvider\", ...) / storeSecret(context, \"apiKey\", ...) 都由编译器校验键名与归属存储；改造后调用点是一个普通对象字面量（state.ts:539-620），编译器不再检查键是否存在于 GlobalStateKey/SecretKey 联合类型，也不再检查某个键是否被放错批次。具体失败场景：把 \"fireworksApiKey\"、\"sapAiCoreClientSecret\" 这类 SecretKey 误写进 batchedGlobalUpdates，或在 49 个键里打错一个字母（如 \"anthropicBaseURL\"），TypeScript 全部沉默通过，运行时会把它当作普通 globalState 键持久化——凭证被明文写进 globalState，或因键名拼错导致配置静默丢失且无任何报错。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "TYPE-SAFETY-002"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 626,
+      "summary": "性能调试日志与硬编码提速断言遗留在生产热路径",
+      "failure_scenario": "本次改动在 provider 切换与状态读取路径上加入了大量 [PERF] console.log，并在 updateApiConfiguration 结尾写死断言 “(was ~535ms, now should be <50ms)”。该路径由 webview 的 handleFieldChange 逐键触发（ApiOptions、各 Provider 的输入框 onChange 都直接调用它），因此用户每输入一个字符就会产生前端 1 条 + 主进程 6 条以上的日志；同时 getAllExtensionState 里的 “First batch (66 state reads)”“Second batch (30 state reads)” 把键数量写进字符串，任何一次增删键都会让日志与实际不符。这类日志没有任何开关控制，会污染扩展宿主日志并误导后续性能排查。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-LOGGING-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 12（no-signal=12）\n✓ 完成 · 耗时 111.2s · 模型调用 10 次 · token 输入 20,642（未命中） · 输出 15,426 · 缓存命中 184,064（89.9%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0077\n[time] 阶段耗时 | 总墙钟 112.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.7%)\n[time] 阶段 | 六阶段审计 111.1s (99.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 5.7s (5.1%) | P3 7.1s (6.4%) | P4 61.5s (55.3%) | P5 30.6s (27.5%) | P6 6.3s (5.6%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 20,642（未命中） | 输出 15,426 | 缓存命中 184,064（89.9%） | $0.0077\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261122_101758_524.json",
+  "token_usage": {
+    "input_tokens": 20642,
+    "output_tokens": 15426,
+    "cache_read_input_tokens": 184064
+  }
+}

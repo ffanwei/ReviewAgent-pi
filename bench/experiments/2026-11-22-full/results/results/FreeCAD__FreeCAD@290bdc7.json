@@ -1,0 +1,52 @@
+{
+  "instance_id": "FreeCAD__FreeCAD@290bdc7",
+  "repo": "FreeCAD/FreeCAD",
+  "base_commit": "16968aa3ee1bc7f2caf4ce592d13066aa8755a80",
+  "head_commit": "290bdc79d1ad92669431458a62205d694522586e",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 158.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/App/PropertyStandard.cpp",
+      "line": 606,
+      "summary": "无效枚举时提前 return false 未写入输出参数，getPathValue 会返回无效 Py 对象而非空 tuple",
+      "failure_scenario": "新增的 maxEnumValue < 0 判断在枚举为空时直接 return false，但没有给输出参数 r 赋任何值。原代码在此情形下 maxValue() 返回 -1、maxValue()+1 == 0，Py::Tuple res(0) 是合法的空 tuple，并非缺陷路径；改为 return false 后，本文件内的 PropertyEnumeration::getPathValue（第 581-597 行）忽略返回值，把默认构造（ptr()==nullptr）的 Py::Object 直接交给 pyObjectToAny(res, false)，得到一个包装 nullptr 的 App::any 并作为属性值返回给 ObjectIdentifier::getValue(pathValue=true)。因此对未设置枚举项的 PropertyEnumeration 访问 .Enum/.All 时，调用方拿到的是无效 Python 对象而不是原来的空 tuple，下游按序列/对象使用时会出现 Python 异常或表达式解析失败，属于行为回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/Gui/WorkbenchManipulatorPython.cpp",
+      "line": 317,
+      "summary": "工具栏删除循环中的 item == toolBar 判断不可达，真正的自删除路径仍未受保护",
+      "failure_scenario": "新增检查位于 `for (auto it : toolBar->getItems())` 循环内部：it 取自 toolBar 的直接子项列表，而 ToolBarItem::findItem 只会返回“自身”或“自身的一个直接子项”，因此 it->findItem(command) 的结果只能是 it 或其子项，绝不可能等于 toolBar，`item == toolBar` 恒为 false，这段防护是死代码（Coverity 513838 的修复未生效）。真正会出现“删除容器自身”的是上面的 `if (ToolBarItem* item = toolBar->findItem(command))` 分支：当被删除的名字恰好等于 toolBar 自身名字时 findItem 返回 toolBar，随后 `toolBar->removeItem(item)` 因不是子项而 no-op，再 `delete toolBar` 释放根工具栏节点，而 ToolBarManager 仍持有该指针，后续访问/清理即产生悬垂指针与重复释放。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "DEFENSIVE-001"
+    },
+    {
+      "file": "src/Gui/WorkbenchManipulatorPython.cpp",
+      "line": 156,
+      "summary": "菜单删除分支把 item 与 menuBar 比较，比较对象错误仍可能删除被父菜单引用的子菜单",
+      "failure_scenario": "par = menuBar->findParentOf(command) 得到的是 command 的父项，par->findItem(command) 在 par 自身名字等于 command 时会返回 par（MenuItem::findItem 先判断 `_name == name` 后返回 this）。新增检查只与 menuBar 比较：当 par 是中间层子菜单（par != menuBar 且 par->_name == command）时条件不成立，随后 `par->removeItem(par)` 因不在自己的子项列表中而是 no-op，紧接着 `delete par` 释放了仍挂在 menuBar->_items 里的子菜单节点，菜单树出现悬垂指针；后续 MenuItem::clear() 或再次查找/删除该节点即重复释放或访问已释放内存。同时该检查在 par == menuBar 的常规情形也几乎不可达，无法起到“不要删除容器自身”的保护作用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.42,
+      "rule": "DEFENSIVE-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\FreeCAD__FreeCAD\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\FreeCAD__FreeCAD@290bdc7.diff\n  caseId              FreeCAD__FreeCAD@290bdc7\n  --issue             (未传)\n  --taskId            FreeCAD__FreeCAD@290bdc7\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 156.4s · 模型调用 13 次 · token 输入 22,440（未命中） · 输出 19,926 · 缓存命中 260,480（92.1%） · 工具 26 次（主会话 26 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0095\n[time] 阶段耗时 | 总墙钟 157.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 156.3s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 6.0s (3.9%) | P3 7.4s (4.7%) | P4 90.8s (58.1%) | P5 45.5s (29.1%) | P6 6.6s (4.2%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 22,440（未命中） | 输出 19,926 | 缓存命中 260,480（92.1%） | $0.0095\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\FreeCAD__FreeCAD@290bdc7\\audit\\20261122_103421_998.json",
+  "token_usage": {
+    "input_tokens": 22440,
+    "output_tokens": 19926,
+    "cache_read_input_tokens": 260480
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 137.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "用 root.OpenFile 预校验路径时父目录不存在会误判合法路径为非法",
+      "failure_scenario": "convertFromSafetensors 新增的路径包含性校验直接调用 root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644)，但 openat 的 O_CREATE 只创建最后一级文件，不会创建中间目录。因此任何带子目录的相对路径（例如 \"dir/model.safetensors\"、\"a//b\" 经 Clean 后为 \"a/b\"）都会因父目录不存在返回 ENOENT，被包装成 errFilePath 直接终止整个转换；而 validRelative 与本次新增测试明确把 \"dir/file.txt\"、\"x/y/z\" 视为合法相对路径，createLink 也特意用 os.MkdirAll(filepath.Dir(dst)) 支持创建中间目录。结果是合法请求被拒绝，且错误文案变成 \"file path must be relative\"，与真实原因（目录不存在）完全不符，误导使用者排查。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "baseLayers 分支的错误分类列表漏加 errFilePath，路径非法被报成 500",
+      "failure_scenario": "本次只给 adapter 分支的 400 错误白名单加入了 errFilePath（第 118 行），而同一函数中处理 r.Files（base model）的分支（第 100 行）仍只包含 errNoFilesProvided、errOnlyGGUFSupported、errUnknownType。convertFromSafetensors 对 r.Files 同样会返回 errFilePath（例如多级路径触发 os.Root 的 ENOENT、Windows 盘符/反斜杠路径被 os.Root 拒绝），此时不会命中白名单，走 `ch <- gin.H{\"error\": err.Error()}` 且不带 status，waitForStream 会把缺失 status 的响应按 http.StatusInternalServerError 返回。于是同一类“文件路径不合法”的客户端错误，模型分支返回 500、adapter 分支返回 400，客户端无法据此判定是可重试的服务端故障还是请求错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "API-STATUS-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 58,
+      "summary": "无条件重建 Files map 使 nil 变成空 map，\"未提供 files/from\" 分支不再生效",
+      "failure_scenario": "CreateHandler 现在无条件执行 `files := make(map[string]string, len(r.Files))` 并 `r.Files = files`，即使请求体里根本没有 files 字段，r.Files 也从 nil 变成了空 map。第 97 行的分支判断是 `else if r.Files != nil`，因此“既没有 from 也没有 files”的请求不再进入原本的 errNeitherFromOrFiles 分支（400 + \"neither 'from' or 'files' was specified\"），而是进入 convertModelFromFiles 空 map 路径，detectModelTypeFromFiles 返回 \"\"，最终由 errUnknownType 返回 400 \"unknown type\"。错误语义与文档化的校验信息被改写，客户端/脚本依赖该文案进行判断时会失效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 136.0s · 模型调用 22 次 · token 输入 15,780（未命中） · 输出 18,065 · 缓存命中 459,648（96.7%） · 工具 27 次（主会话 27 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0086\n[time] 阶段耗时 | 总墙钟 136.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 135.9s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 5.5s (4.1%) | P3 7.1s (5.2%) | P4 103.5s (76.1%) | P5 14.7s (10.8%) | P6 5.2s (3.8%)\n[usage] 任务总计 | 模型调用 22 次（Agent 22 + 一次性 0） | token 输入 15,780（未命中） | 输出 18,065 | 缓存命中 459,648（96.7%） | $0.0086\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261122_102603_954.json",
+  "token_usage": {
+    "input_tokens": 15780,
+    "output_tokens": 18065,
+    "cache_read_input_tokens": 459648
+  }
+}

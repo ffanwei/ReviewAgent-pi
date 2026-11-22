@@ -1,0 +1,42 @@
+{
+  "instance_id": "langflow-ai__langflow@9513d15",
+  "repo": "langflow-ai/langflow",
+  "base_commit": "d035e41e631f0da97bdc0e93e7afdae78d5e94da",
+  "head_commit": "9513d152197e5336fbc00eb6b891f1ffb25ad62d",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 69.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/backend/base/langflow/graph/vertex/base.py",
+      "line": 637,
+      "summary": "_log_transaction_async 重入 self._lock 导致 get_result 永久死锁",
+      "failure_scenario": "新增的 `_log_transaction_async` 在方法体内再次获取 `self._lock`，而它的全部四个调用点都位于已持有该锁的 `_get_result` 中（`get_result` 用 `async with self._lock` 包裹 `_get_result`）。`asyncio.Lock` 不可重入，因此当 `flow_id` 非空（正常流程执行的常规情况）时，取任意数据边的结果都会在 `async with self._lock`（第 637 行）处永久阻塞：`_get_result` 不返回，`get_result` 不释放锁，整条 flow 执行挂起且不会自愈（无超时），表现为前端长时间无响应/构建卡住。",
+      "severity": "P0",
+      "category": "可靠性",
+      "confidence": 0.93,
+      "rule": "CONCURRENCY-LOCK-REENTRANCY"
+    },
+    {
+      "file": "src/backend/base/langflow/graph/vertex/base.py",
+      "line": 643,
+      "summary": "持锁 await 历史日志任务，使结果读取串行等待数据库写入",
+      "failure_scenario": "改动前 `_log_transaction_async` 是纯 fire-and-forget：创建 task 后立即返回，结果读取路径完全不等待日志落库。现在它在持有 `self._lock` 的情况下 `await asyncio.gather(*tasks)` 等待该 Vertex 上所有历史 `log_transaction` 任务完成，而 `log_transaction` 内部会 `async with session_getter(get_db_service())` 做一次数据库写入（graph/utils.py:163-164）。结果：每次 `get_result`（每个数据边解析）都会串行等待上一条日志的 DB 往返，同时长时间持有顶点锁，阻塞同一顶点的并发读取；日志本身是 best-effort（`transactions_storage_enabled` 关闭时直接 return），却成了主执行路径上的同步依赖。此外 `gather` 未使用 `return_exceptions=True`，历史任务的异常/取消会作为异常从 `_log_transaction_async` 抛给 `_get_result` → `get_result` 调用者，改变了日志“不影响主流程”的既有契约。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.72,
+      "rule": "PERF-BLOCKING-LOGGING"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\langflow-ai__langflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\langflow-ai__langflow@9513d15.diff\n  caseId              langflow-ai__langflow@9513d15\n  --issue             (未传)\n  --taskId            langflow-ai__langflow@9513d15\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 67.9s · 模型调用 10 次 · token 输入 9,779（未命中） · 输出 8,333 · 缓存命中 90,496（90.2%） · 工具 13 次（主会话 13 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0040\n[time] 阶段耗时 | 总墙钟 68.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (1.0%)\n[time] 阶段 | 六阶段审计 67.9s (98.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 4.2s (6.2%) | P3 3.4s (5.0%) | P4 27.3s (40.2%) | P5 29.3s (43.2%) | P6 3.8s (5.6%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 9,779（未命中） | 输出 8,333 | 缓存命中 90,496（90.2%） | $0.0040\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\langflow-ai__langflow@9513d15\\audit\\20261122_102522_805.json",
+  "token_usage": {
+    "input_tokens": 9779,
+    "output_tokens": 8333,
+    "cache_read_input_tokens": 90496
+  }
+}

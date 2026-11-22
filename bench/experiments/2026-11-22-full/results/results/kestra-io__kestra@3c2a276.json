@@ -1,0 +1,62 @@
+{
+  "instance_id": "kestra-io__kestra@3c2a276",
+  "repo": "kestra-io/kestra",
+  "base_commit": "a716094a9d3c3522fb40ea988b3dab2763d7519c",
+  "head_commit": "3c2a2765fcd06d7fe127e362ddc9a706d4073047",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 162.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/runners/CommandsWrapper.java",
+      "line": 179,
+      "summary": "interpreter 在 CommandsWrapper 与 TaskRunner 中被合并两次，最终 argv 重复解释器导致脚本静默不执行",
+      "failure_scenario": "CommandsWrapper.run() 已用 ScriptService.scriptCommands 把 interpreter/beforeCommands 合并进最终命令并回写到 this.commands（第 173-179 行），但没有清空 interpreter（第 47 行）与 beforeCommands（第 50 行）字段；随后 realTaskRunner.run(...) 会调用 TaskRunner.renderCommands（第 134-141 行），后者再次读取 taskCommands.getInterpreter()/getBeforeCommands() 并与已包含 interpreter 的 commands 做扁平拼接。以 interpreter=[/bin/sh,-c]、commands=[echo hi] 为例，容器/进程实际 argv 变成 [/bin/sh, -c, /bin/sh, -c, echo hi]：sh -c 的脚本参数是 /bin/sh，脚本 echo hi 变成位置参数被丢弃，命令静默返回 0，任务成功但没有任何预期输出。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/models/tasks/runners/TaskRunner.java",
+      "line": 139,
+      "summary": "renderCommands 用 flatMap 拼接 beforeCommands，与 scriptCommands 语义不符使 beforeCommands 顶替主脚本",
+      "failure_scenario": "ScriptService.scriptCommands 的既有语义是：interpreter 作为 argv 前缀，beforeCommands 与 commands 用行分隔符拼成一个脚本字符串作为最后一个 argv 元素。新增的 TaskRunner.renderCommands 却用 Stream.flatMap 把三段列表扁平拼接，beforeCommands 因此成为独立 argv 元素。以 interpreter=[/bin/sh,-c]、beforeCommands=[mkdir -p /tmp/x]、commands=[echo hi] 为例，Process/Docker 实际执行 [/bin/sh, -c, mkdir -p /tmp/x, echo hi]：sh -c 只把 -c 之后的第一个参数当作脚本，于是只执行 beforeCommands，主脚本 echo hi 变成位置参数被忽略，且退出码取自 beforeCommands，造成命令被静默丢弃。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.76,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "script/src/main/java/io/kestra/plugin/scripts/exec/scripts/runners/CommandsWrapper.java",
+      "line": 173,
+      "summary": "CommandsWrapper.run 把既有「完整 argv」形态的 commands 当脚本行重新拼接成单条命令",
+      "failure_scenario": "变更前 withCommands(List<String>) 接收的是包含解释器的完整 argv（例如 [/bin/sh, -c, script]），run() 只是逐项渲染；变更后 run() 固定用 ScriptService.scriptCommands(renderedInterpreter, ...) 重新组装，当调用方未拆分出 interpreter（interpreter 为 null，渲染结果为空列表）时，commands 会被 joining(lineSeparator) 压成单个字符串，例如 [/bin/sh, -c, echo hi] 变成单元素 [/bin/sh\\n-c\\necho hi]，容器/进程会尝试执行名为该整串的可执行文件而失败，既有调用方（包括本仓库仍以该形态构造 TaskCommands 的测试）在未同步改造时行为被静默改变。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/models/tasks/runners/TaskCommands.java",
+      "line": 29,
+      "summary": "TaskCommands 公共接口将 getCommands 返回类型改为 Property 并新增两个抽象方法，破坏既有实现",
+      "failure_scenario": "TaskCommands 是 task runner 与脚本任务之间的公共契约，本次把 List<String> getCommands() 改为 Property<List<String>> getCommands() 并新增 getInterpreter()/getBeforeCommands() 两个无默认实现的抽象方法。任何仓库外第三方实现（自定义 TaskCommands、测试替身、插件内的匿名实现）在升级后都会编译失败，且返回类型变更无法通过默认方法兼容；本 MR 已不得不同步修改 CommandsWrapper 与 TaskRunnerTest 中的实现即为例证，说明该契约变更具有扩散性。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "API-COMPAT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\kestra-io__kestra\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\kestra-io__kestra@3c2a276.diff\n  caseId              kestra-io__kestra@3c2a276\n  --issue             (未传)\n  --taskId            kestra-io__kestra@3c2a276\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 33（no-signal=33）\n✓ 完成 · 耗时 160.7s · 模型调用 14 次 · token 输入 30,202（未命中） · 输出 21,564 · 缓存命中 397,440（92.9%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0114\n[time] 阶段耗时 | 总墙钟 161.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 160.6s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 4.9s (3.1%) | P3 8.3s (5.2%) | P4 92.4s (57.6%) | P5 48.1s (29.9%) | P6 6.8s (4.2%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 30,202（未命中） | 输出 21,564 | 缓存命中 397,440（92.9%） | $0.0114\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\kestra-io__kestra@3c2a276\\audit\\20261122_102822_075.json",
+  "token_usage": {
+    "input_tokens": 30202,
+    "output_tokens": 21564,
+    "cache_read_input_tokens": 397440
+  }
+}

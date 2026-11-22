@@ -1,0 +1,52 @@
+{
+  "instance_id": "openai__codex@8c952af",
+  "repo": "openai/codex",
+  "base_commit": "d6182becbe155776b159270fe4a5e88d607f0c5e",
+  "head_commit": "8c952af20fe791cc0c5d0a59089d3329968b4373",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 140.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "codex-rs/protocol/src/models.rs",
+      "line": 51,
+      "summary": "Reasoning.id 改为不序列化后，rollout 里的 reasoning 项无法反序列化、resume 时被静默丢弃",
+      "failure_scenario": "`ResponseItem::Reasoning` 的 `id` 是非可选 `String`（没有 `#[serde(default)]`），本次给它加上 `#[serde(skip_serializing)]` 后，序列化出的 JSON 不再包含 `id`，但反序列化仍然要求 `id` 必填。而 rollout 持久化与恢复共用同一个 `Serialize`/`Deserialize` 实现：写入 `.jsonl` 时 reasoning 项没有 `id`，`codex resume`/继续会话时 `serde_json::from_value::<ResponseItem>` 会返回 `missing field \\`id\\``，代码只打印 `warn!` 然后 `continue`，于是历史中的所有 reasoning 项被静默丢弃。结果是恢复会话后模型看不到此前的推理上下文，且由于本次同时把 `store` 固定为 `false`（服务端也不再持有这些 reasoning），推理上下文会彻底丢失；同时每行都会产生一条 warn 日志。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "SERDE-ROUNDTRIP-001"
+    },
+    {
+      "file": "codex-rs/protocol/src/mcp_protocol.rs",
+      "line": 373,
+      "summary": "Profile 删除 disable_response_storage 字段后，mcp-server 测试仍构造该字段导致测试 crate 无法编译",
+      "failure_scenario": "本次从 `codex_protocol::mcp_protocol::Profile` 中删除了 `disable_response_storage` 字段，但 `codex-rs/mcp-server/tests/suite/config.rs` 中的 `Profile { .. }` 结构体字面量仍在初始化该字段。Rust 结构体字面量不允许出现不存在的字段，因此本 MR 合入后 `codex-mcp-server` 的测试目标会编译失败（`no field \\`disable_response_storage\\` on type \\`Profile\\``），整条 workspace 测试/CI 无法通过。此外该测试的 config.toml 夹具仍写入 `disable_response_storage = false`，由于 `Profile` 未启用 `deny_unknown_fields`，该键会被静默忽略，测试对「配置项被完整解析」的断言已不再覆盖任何真实字段。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.9,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "codex-rs/core/src/client.rs",
+      "line": 198,
+      "summary": "固定 store: false 且 reasoning 项不再带 id 后，缺少 encrypted_content 的 reasoning 项会变成无内容的空推理项",
+      "failure_scenario": "改动前 `store` 依赖 auth 模式：API key 场景下 `store=true`，此时 reasoning 项靠 `id` 被服务端引用（被删除的注释「otherwise reasoning items will be referenced by ID」正是此意）。本次把 `store` 硬编码为 `false`，同时 `ResponseItem::Reasoning.id` 不再序列化、`content` 在包含 `ReasoningText` 时依旧被 `should_serialize_reasoning_content` 跳过。于是一旦某个 reasoning 项没有 `encrypted_content`（例如由旧版本在 `store=true` 下记录、resume 回来的历史项；或第三方/自建 Responses 兼容 provider 不返回加密 CoT），再次发送时该项只剩 `{\"type\":\"reasoning\",\"summary\":[...],\"encrypted_content\":null}`：既无 id 可被服务端查找，也无内容可供模型使用，很可能被 Responses API 判为非法 reasoning 输入，导致该会话的后续请求失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "PROTOCOL-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\openai__codex\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\openai__codex@8c952af.diff\n  caseId              openai__codex@8c952af\n  --issue             (未传)\n  --taskId            openai__codex@8c952af\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 46（no-signal=46）\n✓ 完成 · 耗时 139.3s · 模型调用 14 次 · token 输入 28,366（未命中） · 输出 19,745 · 缓存命中 365,952（92.8%） · 工具 25 次（主会话 25 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0105\n[time] 阶段耗时 | 总墙钟 140.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.6%)\n[time] 阶段 | 六阶段审计 139.3s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 12.1s (8.7%) | P3 9.4s (6.8%) | P4 85.7s (61.6%) | P5 25.4s (18.3%) | P6 6.5s (4.7%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 28,366（未命中） | 输出 19,745 | 缓存命中 365,952（92.8%） | $0.0105\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\openai__codex@8c952af\\audit\\20261122_103619_142.json",
+  "token_usage": {
+    "input_tokens": 28366,
+    "output_tokens": 19745,
+    "cache_read_input_tokens": 365952
+  }
+}

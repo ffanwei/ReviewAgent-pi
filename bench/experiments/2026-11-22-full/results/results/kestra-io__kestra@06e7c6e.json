@@ -1,0 +1,72 @@
+{
+  "instance_id": "kestra-io__kestra@06e7c6e",
+  "repo": "kestra-io/kestra",
+  "base_commit": "01a77aff0422884ed7b18ba8d00a0495d0bab88e",
+  "head_commit": "06e7c6e48e22420da5bb0bf3188bc00f73974c9a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 154.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 89,
+      "summary": "conditions 直接读取原始 expression 解析 JSON，绕过 Property 渲染机制",
+      "failure_scenario": "Assert.run 用 `MAPPER.readValue(this.conditions.getExpression(), LIST_TYPE_REFERENCE)` 直接把 Property 的原始 expression 当作 JSON 解析，而不是通过 `runContext.render(conditions).asList(String.class)` 渲染后再转换。Property 的契约是“在使用时渲染”，expression 里可能仍是未渲染的模板文本（例如 `conditions: \"{{ inputs.conditions }}\"`、或整个列表由上游变量/输入提供），此时 readValue 会抛出 `Unrecognized token '{'` 之类的 JsonParseException，任务以与用户表达式完全无关的解析错误失败；此外 conditions 为 null 时（@NotNull 仅在流程校验层生效）该行会直接 NPE。同时该写法使“整个条件列表”无法动态生成，与其它插件的属性使用方式不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "ROBUSTNESS-PROPERTY-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+      "line": 12,
+      "summary": "isFalsy 未归一化且对 null 返回 false，断言可能被静默判为通过",
+      "failure_scenario": "新增的 `isFalsy` 只做 `FALSE_VALUES.contains(condition)` 的精确等值匹配：渲染结果带尾随空白（YAML 块标量 `|`、多行条件、表达式后跟空格等都会产生 `\"false \"`）时不匹配任何 FALSE_VALUE，被判定为“非 falsy”从而计入 success，断言静默漏报；condition 为 null 时同样返回 false，而 `isTruthy(null)` 也是 false，二者不构成互补关系，语义与函数名相悖。Assert 直接把未经 trim 的 render 结果传给 isFalsy，因此一条本应失败的条件可能让整个任务成功结束，属于断言工具最危险的失效方式（漏报）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 53,
+      "summary": "@Plugin 示例中残留拼接残片，生成的流程示例不可运行",
+      "failure_scenario": "示例代码第 53 行残留了 Java 字符串拼接片段 `  - id: fail\\n\" +`，它会被原样输出到插件文档/UI 的可复制示例中，导致任务的 id 变成 `fail\\n\" +`，后续 `type`/`conditions` 的缩进与结构也随之错乱，用户复制该示例后无法运行（与同 MR 中测试流程里的 `id: fail` 也不一致）。示例是本类唯一的用户可见用法说明，错误示例会直接转化为用户报障。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "READABILITY-DOC-EXAMPLE-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+      "line": 54,
+      "summary": "原有正确示例被改成含非法字符 `²` 的无效表达式",
+      "failure_scenario": "本 MR 把 OutputValues 示例中的 `{{ outputs.output_values.values.taskrun_data }}` 改成了 `{{ outputs.output_values.²}}`：既引入了非法字符 `²`（Pebble 无法解析该属性访问），又把原本指向 `values` 映射中 `taskrun_data` 键的正确引用替换成不存在的路径；而紧随其后的第 55 行仍使用 `outputs.output_values.values.execution_data`，同一示例内自相矛盾。这条改动与新增 Assert 任务无关，属于误改，会让用户复制到必然渲染失败/输出为空的日志示例。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.68,
+      "rule": "READABILITY-DOC-EXAMPLE-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+      "line": 95,
+      "summary": "失败日志占位符与参数数量不匹配，渲染结果被丢弃",
+      "failure_scenario": "失败日志使用 `error(\"Assertion `{}` failed!\", s, renderer)`，只有一个占位符却传了两个参数，SLF4J 会忽略多余参数，`renderer`（真正渲染出来的值）永远不会出现在日志里，用户只能看到原始模板 `s`，无法判断条件实际渲染成了什么（例如为何 `{{ outputs.x }}` 被判为真/假），显著增加断言失败的排障成本。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.55,
+      "rule": "READABILITY-LOG-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\kestra-io__kestra\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\kestra-io__kestra@06e7c6e.diff\n  caseId              kestra-io__kestra@06e7c6e\n  --issue             (未传)\n  --taskId            kestra-io__kestra@06e7c6e\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 152.5s · 模型调用 15 次 · token 输入 17,506（未命中） · 输出 20,867 · 缓存命中 299,008（94.5%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0091\n[time] 阶段耗时 | 总墙钟 153.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 152.5s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 10.4s (6.8%) | P3 5.2s (3.4%) | P4 84.0s (55.1%) | P5 44.7s (29.3%) | P6 8.1s (5.3%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 17,506（未命中） | 输出 20,867 | 缓存命中 299,008（94.5%） | $0.0091\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\kestra-io__kestra@06e7c6e\\audit\\20261122_103513_910.json",
+  "token_usage": {
+    "input_tokens": 17506,
+    "output_tokens": 20867,
+    "cache_read_input_tokens": 299008
+  }
+}

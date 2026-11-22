@@ -1,0 +1,42 @@
+{
+  "instance_id": "cline__cline@ca7f02b",
+  "repo": "cline/cline",
+  "base_commit": "8f4c6038dd70ce02caaf7ae924dc28d5be63968e",
+  "head_commit": "ca7f02b8cf8cd36d832a63e1c9ad892356c7df66",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 131.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/shared/proto-conversions/models/api-configuration-conversion.ts",
+      "line": 332,
+      "summary": "proto 消息没有 ulid 字段，改用 ulid 会导致类型错误/字段被丢弃",
+      "failure_scenario": "本次把 ApiConfiguration→proto 的映射从 taskId 改成了 `ulid: config.ulid`，但 proto/cline/models.proto 中 ModelsApiConfiguration 的该字段仍是 `optional string task_id = 3;`，proto 层不存在 ulid 字段。ts-proto 生成的 TS 类型只有 taskId，因此 `convertApiConfigurationToProto` 返回对象字面量里的 `ulid` 属于未知属性（TS2353 类型错误，阻塞 tsc 构建）；即使绕过类型检查，protobuf 编码时该未知属性也会被忽略，`ulid` 永远不会被序列化到 proto 消息中。同一文件的反向转换 `convertProtoToApiConfiguration` 中 `ulid: protoConfig.ulid`（第 464 行）会读取一个生成类型上不存在的属性，同样报类型错误，并且运行时恒为 undefined——从 webview 经 UpdateApiConfigurationRequest 回传的配置会丢失任务标识，使该映射形同残废。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "PROTO-SCHEMA-001"
+    },
+    {
+      "file": "src/shared/proto-conversions/state/settings-conversion.ts",
+      "line": 12,
+      "summary": "settings-conversion 向 proto ApiConfiguration 写入不存在的 ulid 字段",
+      "failure_scenario": "settings-conversion 的两处映射同样只做了符号改名：`ProtoApiConfiguration.create({ ... ulid: config.ulid ... })`（第 12 行）和反向的 `ulid: protoConfig.ulid`（第 139 行）。proto/cline/state.proto 的 ApiConfiguration 消息中只有 `optional string task_id = 3;`，没有 ulid，ts-proto 生成的类型只有 taskId。因此 `create({...})` 对象字面量中的 ulid 是多余属性（类型错误），而反向读取 `protoConfig.ulid` 直接是“属性不存在”的类型错误；运行期则表现为 updateSettings 收到的 ApiConfiguration 中 ulid 恒为 undefined，后续 buildApiHandler 只能依赖外部再覆盖，一旦某条路径忘记覆盖（例如直接使用 proto 转换结果构造 handler）就会把空任务标识发给 provider。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "PROTO-SCHEMA-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\cline__cline@ca7f02b.diff\n  caseId              cline__cline@ca7f02b\n  --issue             (未传)\n  --taskId            cline__cline@ca7f02b\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 86（no-signal=86）\n✓ 完成 · 耗时 128.3s · 模型调用 27 次 · token 输入 39,252（未命中） · 输出 16,890 · 缓存命中 901,120（95.8%） · 工具 42 次（主会话 42 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0127\n[time] 阶段耗时 | 总墙钟 129.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (1.0%)\n[time] 阶段 | 六阶段审计 128.2s (98.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 6.4s (5.0%) | P3 6.0s (4.7%) | P4 88.5s (69.2%) | P5 23.4s (18.3%) | P6 3.6s (2.8%)\n[usage] 任务总计 | 模型调用 27 次（Agent 27 + 一次性 0） | token 输入 39,252（未命中） | 输出 16,890 | 缓存命中 901,120（95.8%） | $0.0127\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\cline__cline@ca7f02b\\audit\\20261122_101128_226.json",
+  "token_usage": {
+    "input_tokens": 39252,
+    "output_tokens": 16890,
+    "cache_read_input_tokens": 901120
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "instance_id": "google-gemini__gemini-cli@0fa1bd7",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "5a05fb0dd002481343aaab7736a871904bb07c6f",
+  "head_commit": "0fa1bd7ac417366f321ed2554caeaef550321959",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 128.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 56,
+      "summary": "写盘改为只增改的递归合并，settings 中被删除的键永远不会从文件移除",
+      "failure_scenario": "applyUpdates 以磁盘解析出的对象为基底，只遍历 updates 的键做覆盖/递归合并，从不删除 parsed 中存在而 updates 中缺失的键；而 saveSettings 现在把该调用当作唯一写盘手段（原实现是 fs.writeFileSync 整文件覆盖）。因此任何通过「先从内存对象上删除键、再整对象 setValue 写回」实现的删除操作都会静默失效。具体场景：packages/cli/src/commands/mcp/remove.ts:30 先 delete mcpServers[name]，再 setValue(scope,'mcpServers',mcpServers)；本次改动后该服务器仍留在 settings.json 中，下次启动依旧被加载，`gemini mcp remove` 形同失效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "PERSIST-001"
+    },
+    {
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 115,
+      "summary": "回填环境变量引用时未校验当前值仍是解析值，用户新写入的字面量会被静默还原成 $VAR",
+      "failure_scenario": "trackEnvVarMappings 记录了 resolvedValue，但 restoreEnvVarsRecursive 只用 originalValue 做映射：只要路径命中且当前值是字符串，就无条件替换为原始 `$VAR` 引用，完全不比对 mapping.resolvedValue。于是当用户/命令显式把该字段改成新的字面量（例如轮换 API Key、通过 `gemini mcp add` 覆盖已有 server 的 header/env 值）并触发 setValue 写盘时，写进文件的仍是 `$API_KEY`，新值被丢弃，内存设置与磁盘内容不一致，下次加载会重新解析回旧的环境变量值。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 152,
+      "summary": "跟踪用的正则以整串锚定，内嵌占位符形式的环境变量仍会以明文写回配置文件",
+      "failure_scenario": "resolveEnvVarsInString 使用无锚定的全局正则，会替换字符串中任意位置的 `$VAR`/`${VAR}`（典型如 `\"Authorization\": \"Bearer $GITHUB_TOKEN\"`、`\"url\": \"https://$HOST/v1\"`）。但新增的 trackEnvVarMappings 用 `/^\\$(?:(\\w+)|{([^}]+)})$/` 要求整串恰好是一个占位符，内嵌形式不产生映射，保存时自然不会回填，解析后的明文 token 会被 stringify 写入 settings.json（workspace 作用域还可能随仓库提交）。本次变更想解决的正是「环境变量明文落盘」，但该场景仍未覆盖。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.66,
+      "rule": "SECURITY-003"
+    },
+    {
+      "file": "packages/cli/src/utils/commentJson.ts",
+      "line": 162,
+      "summary": "跟踪逻辑会递归进数组、回填逻辑却跳过数组，数组内的环境变量引用必然以明文写回",
+      "failure_scenario": "trackEnvVarMappings 的 else 分支只判断 `typeof value === 'object' && value !== null`，数组同样满足，因此会为数组元素生成 `['mcpServers','x','args','0']` 这类路径（resolveEnvVarsInObject 也确实逐元素解析数组中的 `$VAR`）。但 restoreEnvVarsRecursive 只有在 `!Array.isArray(value)` 时才继续递归、且只替换字符串叶子，数组元素永远不会被回填。结果：`\"args\": [\"--token\", \"$API_KEY\"]`、`\"env\": [\"$SECRET\"]` 这类配置在保存时把解析后的密钥明文写入配置文件，而这些映射项在回填阶段彻底失效。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\google-gemini__gemini-cli@0fa1bd7.diff\n  caseId              google-gemini__gemini-cli@0fa1bd7\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@0fa1bd7\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 3964 字符（lockfile=1），明细见审计 mrFilter\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 11（no-signal=11）\n✓ 完成 · 耗时 126.6s · 模型调用 14 次 · token 输入 22,399（未命中） · 输出 17,428 · 缓存命中 280,576（92.6%） · 工具 16 次（主会话 16 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0088\n[time] 阶段耗时 | 总墙钟 127.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.6%)\n[time] 阶段 | 六阶段审计 126.5s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 3.9s (3.1%) | P3 9.9s (7.9%) | P4 80.9s (64.0%) | P5 24.7s (19.5%) | P6 7.1s (5.6%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 22,399（未命中） | 输出 17,428 | 缓存命中 280,576（92.6%） | $0.0088\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\google-gemini__gemini-cli@0fa1bd7\\audit\\20261122_102335_967.json",
+  "token_usage": {
+    "input_tokens": 22399,
+    "output_tokens": 17428,
+    "cache_read_input_tokens": 280576
+  }
+}

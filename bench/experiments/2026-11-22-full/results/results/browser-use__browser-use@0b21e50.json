@@ -1,0 +1,42 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 164.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "chrome_remote_debugging_port 允许 None 且未校验端口范围，下游无兜底会抛 TypeError/InvalidURL",
+      "failure_scenario": "新增字段声明为 `int | None`，Pydantic 会接受显式传入的 None（配置字典、序列化结果或用户误填都可能出现），但该值在后续被无条件当成有效整数使用：`_setup_user_provided_browser` 直接把它拼进探测 URL（202/243 行）和 CDP endpoint（210/255 行），`CHROME_DEBUGGING_ARG % {...}` 会生成 `--remote-debugging-port=None`（220/277 行），`_setup_builtin_browser` 把它直接传给 `socket.connect_ex`（291 行）并用于 `chrome_args.remove` 的字符串拼接（292 行）。失败场景：当配置为 None 时，builtin 路径在 `s.connect_ex(('localhost', None))` 处抛 TypeError（端口必须是整数），user-provided 路径先拼出 `http://localhost:None/json/version` 的非法 URL，httpx 抛出的 InvalidURL 不是 `httpx.RequestError` 子类，214 行的 except 捕获不到，最终以笼统的 “Failed to initialize Playwright browser” 失败；即使继续走到启动，Chrome 也会因 `--remote-debugging-port=None` 无法监听，随后 connect_over_cdp 失败并抛出误导性的“请关闭所有已打开的 Chrome”提示。同理，超出 1~65535 的端口会触发 OverflowError / httpx.InvalidURL，错误信息同样不可诊断。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CONFIG-VALIDATION-001"
+    },
+    {
+      "file": "tests/test_browser.py",
+      "line": 180,
+      "summary": "新测试 mock 的是 requests.get，而生产代码用 httpx，stub 不生效且触发真实网络探测",
+      "failure_scenario": "新增用例为“检查 chrome debugging endpoint”准备 `DummyResponse` 并 `monkeypatch.setattr(requests, 'get', dummy_get)`，但被测的 `Browser._setup_user_provided_browser` 使用的是 `httpx.AsyncClient().get(...)`（browser.py:200-203、241-244），因此该 stub 对被测代码完全不可见，属于死代码。实际执行时测试会向真实 `http://localhost:9223/json/version` 发网络请求：无服务时每次 ConnectError 被吞掉后 `await asyncio.sleep(1)`，10 次重试使该用例固定耗时约 10 秒；若 CI/开发机上恰好有进程占用 9223 并返回 200，则会走 `_setup_user_provided_browser` 的“复用已有浏览器”提前 return 分支，189-192 行 `dummy_create_subprocess_exec` 中的端口参数断言根本不会执行，用例会在未验证新功能的情况下“假通过”。此外 172-178 行的 DummyResponse 路径永远走不到，掩盖了探测分支未被覆盖的事实。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.62,
+      "rule": "TEST-MOCK-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 13（no-signal=13）\n✓ 完成 · 耗时 162.0s · 模型调用 14 次 · token 输入 17,711（未命中） · 输出 22,688 · 缓存命中 342,016（95.1%） · 工具 19 次（主会话 19 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0098\n[time] 阶段耗时 | 总墙钟 163.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.8%)\n[time] 阶段 | 六阶段审计 161.9s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 6.9s (4.3%) | P3 9.4s (5.8%) | P4 99.8s (61.6%) | P5 41.7s (25.8%) | P6 4.0s (2.5%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 17,711（未命中） | 输出 22,688 | 缓存命中 342,016（95.1%） | $0.0098\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261122_101127_558.json",
+  "token_usage": {
+    "input_tokens": 17711,
+    "output_tokens": 22688,
+    "cache_read_input_tokens": 342016
+  }
+}

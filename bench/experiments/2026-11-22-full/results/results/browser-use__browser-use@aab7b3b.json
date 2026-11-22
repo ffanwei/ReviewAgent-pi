@@ -1,0 +1,82 @@
+{
+  "instance_id": "browser-use__browser-use@aab7b3b",
+  "repo": "browser-use/browser-use",
+  "base_commit": "515b94225aa86c40dc2c20034055ab8bcc88c6ae",
+  "head_commit": "aab7b3bb54e2b15ee3b32ad7de74c91fc8b22f52",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 171.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 283,
+      "summary": "内置浏览器启动硬编码 channel='chrome'，未安装系统 Chrome 的环境直接启动失败",
+      "failure_scenario": "_setup_builtin_browser 在 browser_class.launch(...) 中无条件传入 channel='chrome'，而该方法正是 browser_binary_path/cdp_url/wss_url 都未设置时的默认启动路径（browser.py:302-305）。Playwright/patchright 的 channel='chrome' 只会去标准系统路径查找 Google Chrome（/opt/google/chrome/chrome、/Applications/Google Chrome.app/...），不会回退到 playwright 下载的 chromium。因此凡是没有安装系统 Chrome 的环境（常见 Linux CI、Docker 镜像、只执行过 `playwright install` 的机器），默认 `Browser()` 都会在 launch 阶段抛 \"Chromium distribution 'chrome' is not found\"，而仓库的安装指引仍然只有 `playwright install chromium` / `uv run playwright install`，没有任何安装 Chrome 的步骤，也没有做存在性探测或降级到 channel=None 的逻辑。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 283,
+      "summary": "channel='chrome' 被无条件传给 firefox/webkit，非 chromium 分支启动报错",
+      "failure_scenario": "browser_class 是 Literal['chromium','firefox','webkit'] 的可配置项，_setup_builtin_browser 也为三种浏览器分别构造了 args（browser.py:265-279）。本次把 channel='chrome' 直接写进统一的 browser_class.launch(...) 调用后，选择 firefox 或 webkit 的用户在启动时会把 'chrome' 通道传给 Firefox/WebKit 驱动，而该通道只对 Chromium 系有效，驱动会因不支持的分发而启动失败（而不是退回默认的 firefox/webkit 构建）。这使 BrowserConfig.browser_class 非 chromium 的既有配置从「可用」变成「必然启动失败」。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "COMPAT-002"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 127,
+      "summary": "new_context 改用 new_context_config 后，直接创建上下文的用户丢失 disable_security",
+      "failure_scenario": "旧实现 `BrowserContext(config=config or self.config, ...)` 把 BrowserConfig 实例本身当作上下文配置传入，由于两者都有同名字段 disable_security，用户 `Browser(config=BrowserConfig(disable_security=True))` 后直接 `await browser.new_context()` 时，_create_context 里的 bypass_csp/ignore_https_errors 会为 True。改为 `self.config.new_context_config` 之后，该字段来自 new_context_config（默认 False），BrowserConfig.disable_security 不再传导到上下文，只有走 Agent（agent/service.py:261 新加的赋值）才会同步。因此所有不经过 Agent 而直接 `browser.new_context()` 的官方推荐用法（持久化会话/自定义 context）在设置 disable_security=True 时会静默失去 cross-origin iframe 支持（bypass_csp/ignore_https_errors 均不再下发），而 launch 层仍带着 CHROME_DISABLE_SECURITY_ARGS，形成「半开安全」的不一致状态，问题只在访问跨域 iframe 页面的运行期才暴露。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CONTRACT-001"
+    },
+    {
+      "file": "browser_use/agent/service.py",
+      "line": 261,
+      "summary": "Agent 无条件用 BrowserConfig.disable_security 覆盖用户显式设置的 new_context_config",
+      "failure_scenario": "新增的 `self.browser.config.new_context_config.disable_security = self.browser.config.disable_security` 是无条件赋值：当用户通过 `BrowserConfig(new_context_config=BrowserContextConfig(disable_security=True))` 或 `Agent(browser=Browser(...))` 显式打开了上下文级 disable_security，却没有同时设置 BrowserConfig.disable_security（默认 False）时，用户的显式配置会被静默改回 False，跨域 iframe 支持失效。此外该语句在 `self.browser = browser or Browser()` 之后执行，当 browser 是外部注入对象时，会直接修改调用方持有的 BrowserConfig/BrowserContextConfig 实例（pydantic validate_assignment 会真实写回），属于对入参对象的副作用，同一 Browser 复用多个 Agent 时状态会被反复改写。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "SIDE-EFFECT-001"
+    },
+    {
+      "file": "browser_use/browser/context.py",
+      "line": 413,
+      "summary": "viewporth 仅在 headless 时设置，headed 分支丢失 no_viewport 且 no_viewport/browser_window_size 配置失效",
+      "failure_scenario": "旧实现固定传 no_viewport=True（视口跟随真实窗口尺寸）。新实现只在 self.browser.config.headless 为真时才传 viewport=browser_window_size 与 no_viewport=False；headed 模式（默认 headless=False）既不传 viewport 也不传 no_viewport，Playwright 会回落到默认 1280x720 视口，与 launch 时 `--window-size=<屏幕分辨率>`、与 browser_window_size（默认 1280x1100，仍作为 record_video_size）都不一致：页面渲染/截图尺寸变小、录像尺寸与实际视口不符，DOM 高亮与坐标换算基于视口的假设被打破。同时 BrowserContextConfig.no_viewport 字段（context.py:147）从此完全不被读取，用户显式设置 no_viewport=True 会被静默忽略。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "BEHAVIOR-001"
+    },
+    {
+      "file": "browser_use/browser/context.py",
+      "line": 449,
+      "summary": "移除强制 attachShadow 为 open 的脚本后，closed shadow root 中的元素不再被 DOM 抽取与高亮",
+      "failure_scenario": "本次把 init script 精简为只保留 navigator.permissions.query 覆写，删除了 `Element.prototype.attachShadow` 包装（原本把 mode 强制改成 'open'）。而 DOM 抽取在 JS 侧依赖 open 的 shadowRoot：buildDomTree.js 用 `if (node.shadowRoot)` 决定是否下钻 shadow 子树、并用 element.getRootNode() 判断 ShadowRoot 计算命中点；closed shadow root 的 element.shadowRoot 为 null，子树会被整体跳过。因此含 closed shadow DOM 的组件（部分 Web Components/设计系统实现）内的按钮、输入框将不再出现在可交互元素列表里，模型也无从点击；这类页面先前因强制 open 而可用。补丁层面 patchright 已原生处理 webdriver/languages/plugins 等指纹，但并没有替代码层把 closed shadow root 变可遍历的能力。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "BEHAVIOR-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\browser-use__browser-use@aab7b3b.diff\n  caseId              browser-use__browser-use@aab7b3b\n  --issue             (未传)\n  --taskId            browser-use__browser-use@aab7b3b\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 0 / not-reached 12（no-signal=12）\n✓ 完成 · 耗时 170.2s · 模型调用 14 次 · token 输入 27,828（未命中） · 输出 23,430 · 缓存命中 353,792（92.7%） · 工具 25 次（主会话 25 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0114\n[time] 阶段耗时 | 总墙钟 171.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 170.1s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 5.6s (3.3%) | P3 9.2s (5.4%) | P4 100.1s (58.9%) | P5 35.4s (20.8%) | P6 19.7s (11.6%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 27,828（未命中） | 输出 23,430 | 缓存命中 353,792（92.7%） | $0.0114\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\browser-use__browser-use@aab7b3b\\audit\\20261122_101411_212.json",
+  "token_usage": {
+    "input_tokens": 27828,
+    "output_tokens": 23430,
+    "cache_read_input_tokens": 353792
+  }
+}

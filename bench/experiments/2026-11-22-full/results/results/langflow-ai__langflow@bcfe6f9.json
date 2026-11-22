@@ -1,0 +1,72 @@
+{
+  "instance_id": "langflow-ai__langflow@bcfe6f9",
+  "repo": "langflow-ai/langflow",
+  "base_commit": "5bcf4d001f1174ed9e63b7115f10e5dbe1bcca9f",
+  "head_commit": "bcfe6f9ded091cd360b3212b6e9f5a58cbcdac5e",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 157.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 89,
+      "summary": "字符串截断分支不可达，MAX_TEXT_LENGTH 对字符串完全失效",
+      "failure_scenario": "_serialize_primitive 把 str 当作“原语”直接原样返回，而 _serialize_dispatcher 在进入 match 之前就 `if primitive is not None: return primitive` 提前返回，导致 line 134-135 的 `case str(): return _serialize_str(...)` 成为死代码。任何字符串（包括 dict 值、list 元素经 serialize 递归得到的字符串）都不会被 max_length 截断。后果：ResultDataResponse 依赖的 20000 字符上限失效（api/v1/schemas.py:273、280-283），超长 LLM 输出/日志会原样进入 HTTP 响应与前端渲染，响应体体积不再受控；同时本 MR 新增的 test_string_serialization（断言返回 text[:MAX_TEXT_LENGTH] + '...'）与 test_api_schemas.py 中所有截断断言都会失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 160,
+      "summary": "catch-all 分支先于 numpy/Enum 分支命中，numpy 标量被降级为字符串",
+      "failure_scenario": "`case object() if not isinstance(obj, type)` 对任何非类实例都成立，且位置排在 Enum（162-167）与 numpy dtype 处理（168-183）之前，因此这两个分支全部不可达。实际效果是 np.int64(42) 经 _serialize_instance 变成字符串 \"42\"、np.bool_(True) 变成 \"True\"，数值类型信息丢失。失败场景：组件输出中的 numpy 标量（pandas/numpy 计算结果、DataFrame 单元格的数值）写入 results 后变成字符串，前端图表/数值比较（排序、求和、`>` 判断）与后端按数值消费的调用方（例如直接 `sum(...)` 或格式化）行为改变；本 MR 新增的 test_numpy_int64_serialization / test_numpy_numeric_serialization 断言 `isinstance(result, int)`，会失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/backend/base/langflow/graph/utils.py",
+      "line": 163,
+      "summary": "持久化的 vertex build 数据开始被默认截断并注入标记字符串",
+      "failure_scenario": "旧的 serialize_field 不做任何截断，而 serialize 的默认参数是 max_length=MAX_TEXT_LENGTH、max_items=MAX_ITEMS_LENGTH（serialization.py:188-189）。因此 log_vertex_build 落库的 data/artifacts、StateVertex.dict_to_codeblock 的状态展示、artifact._to_list_of_dicts、build_output_logs 现在都会在元素超过 1000 个时被截断，并向列表尾部追加一个字符串元素 \"... [truncated N items]\"。失败场景：某组件输出 5000 条记录的列表，vertex_builds.data 只保留 1000 条且末尾多出一个字符串；任何按“列表元素均为 dict”遍历渲染/解析 build 数据的前端或调用方会在这个字符串上抛 `TypeError: string indices must be integers`，同时历史数据与新数据长度不一致，按 build 数据排查问题会看到被静默删减的内容。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "BEHAVIOR-CHANGE-003"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 37,
+      "summary": "datetime 用 replace 强改 tzinfo 为 UTC，非 UTC 时间戳被错位标注",
+      "failure_scenario": "_serialize_datetime 使用 `obj.replace(tzinfo=timezone.utc)`，只改标签不做时区换算。本次变更把它接到了原先使用 `value.isoformat()`（保留原时区）的 graph 路径上：graph/schema.py 的 ResultData.serialize_results、log_vertex_build 的 data、vertex_types.dict_to_codeblock。失败场景：一个带 +08:00 的 datetime(2024-01-01 12:00+08:00) 会被序列化为 \"2024-01-01T12:00:00+00:00\"，时间点整体偏移 8 小时；naive datetime 则被无依据地标记为 UTC。这些值会写入 vertex_builds 记录与前端展示的状态 JSON，导致时间类信息失真。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "src/backend/base/langflow/serialization/serialization.py",
+      "line": 29,
+      "summary": "bytes 截断用字节长度与字符长度比较，多字节内容会被错误追加省略号",
+      "failure_scenario": "_serialize_bytes 用 `len(obj) > max_length`（字节数）决定是否截断，但截断结果与期望语义都是按解码后的字符数计。失败场景：20000 字节的 UTF-8 中文文本解码后仅约 6666 字符，却会被判定超长并被追加 \"...\"，输出与内容不符（内容本身未超限却带省略号）；同时新增的 test_bytes_serialization 按 decoded 长度计算期望值，遇到多字节二进制输入会与实现不一致而失败。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.5,
+      "rule": "CONSISTENCY-005"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\langflow-ai__langflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\langflow-ai__langflow@bcfe6f9.diff\n  caseId              langflow-ai__langflow@bcfe6f9\n  --issue             (未传)\n  --taskId            langflow-ai__langflow@bcfe6f9\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 39（no-signal=39）\n✓ 完成 · 耗时 156.1s · 模型调用 10 次 · token 输入 28,446（未命中） · 输出 23,763 · 缓存命中 304,000（91.4%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0115\n[time] 阶段耗时 | 总墙钟 156.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 156.0s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 4.8s (3.1%) | P3 6.5s (4.2%) | P4 103.2s (66.2%) | P5 35.8s (23.0%) | P6 5.6s (3.6%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 28,446（未命中） | 输出 23,763 | 缓存命中 304,000（91.4%） | $0.0115\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\langflow-ai__langflow@bcfe6f9\\audit\\20261122_102632_669.json",
+  "token_usage": {
+    "input_tokens": 28446,
+    "output_tokens": 23763,
+    "cache_read_input_tokens": 304000
+  }
+}

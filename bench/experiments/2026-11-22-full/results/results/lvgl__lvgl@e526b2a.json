@@ -1,0 +1,122 @@
+{
+  "instance_id": "lvgl__lvgl@e526b2a",
+  "repo": "lvgl/lvgl",
+  "base_commit": "244b3b996e0b331468cf5967c937029535af569c",
+  "head_commit": "e526b2a1faa4672eeb3610b466ecc25b1abb220b",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 302.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 10,
+  "review_output": [
+    {
+      "file": "src/others/xml/parsers/lv_xml_obj_parser.c",
+      "line": 903,
+      "summary": "grid dsc 数组按空格数分配导致越界写",
+      "failure_scenario": "代码统计的是属性值中的空格数量 item_cnt，随后只分配 item_cnt + 1 个 int32_t，但 N 个 token 实际需要 N + 1 个元素（最后还要写 LV_GRID_TEMPLATE_LAST）。例如 \"40 40 40\" 只有 2 个空格，却会写入 3 个 token 后再写 dsc_array[3]，造成 4 字节堆越界写；单 token 模板也会在 dsc_array[1] 越界。",
+      "severity": "P0",
+      "category": "安全",
+      "confidence": 0.98,
+      "rule": "MEMORY-001"
+    },
+    {
+      "file": "src/others/xml/lv_xml_style.c",
+      "line": 293,
+      "summary": "style grid dsc 数组分配少一个元素导致越界写",
+      "failure_scenario": "与对象属性解析路径相同，这里按空格数统计 item_cnt，却只分配 item_cnt + 1 个 int32_t。拆分 N 个 token 后还要写入 LV_GRID_TEMPLATE_LAST，因此正常的多列/多行模板会越界写一个 int32_t，破坏堆内存。",
+      "severity": "P0",
+      "category": "安全",
+      "confidence": 0.98,
+      "rule": "MEMORY-001"
+    },
+    {
+      "file": "src/widgets/span/lv_span.c",
+      "line": 216,
+      "summary": "span 格式化文本更新时旧动态文本未释放",
+      "failure_scenario": "释放条件被写成 `span->txt == NULL && span->static_flag`，对已分配的动态文本（txt 非空、static_flag == 0）永远不成立，随后直接覆盖 span->txt，导致每次格式化更新都泄漏旧字符串。`lv_spangroup_set_span_text_fmt` 第 274 行存在同样问题。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.97,
+      "rule": "RESOURCE-001"
+    },
+    {
+      "file": "src/others/observer/lv_observer.h",
+      "line": 548,
+      "summary": "Span 绑定 API 使用 LV_USE_LABEL 作为编译开关",
+      "failure_scenario": "`lv_spangroup_bind_span_text` 属于 Span 模块，但声明被包在 `#if LV_USE_LABEL` 中。LV_USE_LABEL=1 且 LV_USE_SPAN=0 时，`lv_span_t` 未定义会导致头文件编译失败；LV_USE_LABEL=0 且 LV_USE_SPAN=1 时，实现存在但声明缺失，调用方会出现隐式声明或链接问题。",
+      "severity": "P1",
+      "category": "可移植",
+      "confidence": 0.99,
+      "rule": "BUILD-001"
+    },
+    {
+      "file": "src/others/xml/lv_xml_style.c",
+      "line": 284,
+      "summary": "style 级 grid dsc 属性名匹配错误，分支不会命中",
+      "failure_scenario": "`<style>` 内属性名遵循无 `style_` 前缀的约定，globals.xml 新增的是 `grid_column_dsc_array`/`grid_row_dsc_array`，但这里检查的是 `style_grid_column_dsc_array`/`style_grid_row_dsc_array`。因此合法的 style 配置会落到 “style property is not supported” 警告，grid 模板不会生效。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.95,
+      "rule": "XML-001"
+    },
+    {
+      "file": "xmls/lv_textarea.xml",
+      "line": 9,
+      "summary": "textarea XML 属性改名后解析器仍只识别 placeholder",
+      "failure_scenario": "本次把 schema 中属性从 `placeholder` 改为 `placeholder_text`，但 `lv_xml_textarea_apply` 仍只匹配 `\"placeholder\"`。按新 schema 写 `placeholder_text` 会被忽略并产生未识别属性警告，占位文本不会设置。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.96,
+      "rule": "XML-002"
+    },
+    {
+      "file": "src/others/xml/lv_xml_style.c",
+      "line": 312,
+      "summary": "style 中分配的 grid dsc 数组没有释放路径",
+      "failure_scenario": "`dsc_array` 由 lv_malloc 分配后仅把指针存入 style，组件 scope 销毁时只调用 lv_style_reset，而 lv_style_reset 只释放 style 内部的 values_and_props，不会释放 grid dsc 指针指向的数组，导致每个含 grid dsc 的 style 泄漏一块内存。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "RESOURCE-002"
+    },
+    {
+      "file": "src/layouts/grid/lv_grid.c",
+      "line": 194,
+      "summary": "grid_update 在 calc 失败时直接返回，泄漏已分配的行计算数组",
+      "failure_scenario": "`calc` 可能先由 `calc_rows` 分配 `c.y/c.h`，随后 `calc_cols` 因找不到列模板返回 `LV_RESULT_INVALID`；新增的早退没有调用 `calc_free`，造成泄漏。若失败发生在更早阶段，`c` 甚至尚未初始化，需要先清零。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "RESOURCE-003"
+    },
+    {
+      "file": "src/others/observer/lv_observer.c",
+      "line": 836,
+      "summary": "lv_spangroup_bind_span_text 未检查 observer 分配失败即解引用",
+      "failure_scenario": "`lv_subject_add_observer_obj` 在链表节点分配失败时会返回 NULL，紧接着执行 `observer->auto_free_user_data = 1` 会空指针解引用；同时已分配的 user_data 也会泄漏。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/others/xml/parsers/lv_xml_obj_parser.c",
+      "line": 905,
+      "summary": "直接改写 XML 属性/常量字符串进行拆分",
+      "failure_scenario": "`lv_xml_split_str` 会把分隔符位置写成 '\\0'，这里把 `const char *value` 强转为 `char *` 后原地拆分。若 value 来自 `resolve_consts` 替换后的常量字符串，会永久截断该常量，后续使用同一常量的属性只得到第一个 token；style 解析路径第 295 行同样。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "XML-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\lvgl__lvgl\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\lvgl__lvgl@e526b2a.diff\n  caseId              lvgl__lvgl@e526b2a\n  --issue             (未传)\n  --taskId            lvgl__lvgl@e526b2a\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 7 / no-issue 0 / not-reached 60（no-signal=60）\n✓ 完成 · 耗时 299.5s · 模型调用 41 次 · token 输入 73,508（未命中） · 输出 47,283 · 缓存命中 3,019,136（97.6%） · 工具 91 次（主会话 91 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0320\n[time] 阶段耗时 | 总墙钟 300.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 299.2s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.7s (0.2%)\n[time] 审计明细 | P1 9.1s (3.0%) | P3 7.2s (2.4%) | P4 227.1s (76.0%) | P5 47.6s (15.9%) | P6 7.9s (2.7%)\n[usage] 任务总计 | 模型调用 41 次（Agent 41 + 一次性 0） | token 输入 73,508（未命中） | 输出 47,283 | 缓存命中 3,019,136（97.6%） | $0.0320\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\lvgl__lvgl@e526b2a\\audit\\20261122_105653_057.json",
+  "token_usage": {
+    "input_tokens": 73508,
+    "output_tokens": 47283,
+    "cache_read_input_tokens": 3019136
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "instance_id": "bitcoin__bitcoin@e98c51f",
+  "repo": "bitcoin/bitcoin",
+  "base_commit": "663a9cabf811e2fc53102bc6da00d09fc99d1d81",
+  "head_commit": "e98c51fcce9ae3f441a416cab32a5c85756c6c64",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 227.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/init.cpp",
+      "line": 1598,
+      "summary": "-proxy 改为遍历 GetArgs 后配置文件反而覆盖命令行参数",
+      "failure_scenario": "新增的 -proxy 解析循环用「后出现者覆盖先出现者」的赋值实现（1625-1637），但 ArgsManager::GetArgs(\"-proxy\") 返回值的顺序是「命令行值在前、配置文件/设置文件值在后」（GetSettingsList 按 FORCED→COMMAND_LINE→RW_SETTINGS→CONFIG 网络段→CONFIG 默认段 的顺序 append，只有遇到 negated 值或 FORCED 才停止追加），因此配置文件里的 proxy= 会最后被应用并覆盖命令行给出的代理。旧实现 `args.GetArg(\"-proxy\", \"\")` 通过 GetSetting 命中 COMMAND_LINE 即 done，配置文件值被忽略，行为正好相反。具体失败场景：bitcoin.conf 中残留 `proxy=127.0.0.1:9050`，用户以 `-proxy=127.0.0.1:9150` 启动，实际使用的却是 9050；或 bitcoin.conf 有通用 `proxy=X`，用户用 `-proxy=0=cjdns` 想移除 CJDNS 代理，配置文件的通用代理最后被应用又重新给 cjdns 设上代理（本次新增的 \"Test removing CJDNS proxy\" 因没有配置文件才通过）。这也与该 diff 在 doc/tor.md 新增的说明「command line overrides the config file」相矛盾。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CONFIG-PRECEDENCE-001"
+    },
+    {
+      "file": "src/init.cpp",
+      "line": 1600,
+      "summary": "按最后一个 '=' 无条件拆分网络后缀，含 '=' 的 UNIX socket 路径不再可用",
+      "failure_scenario": "新代码用 `param_value.rfind('=')` 无条件把 -proxy 值拆成「代理地址」与「网络名」，但 -proxy 也是支持 `unix:<path>` 的，合法 POSIX 路径可以包含 '='。当用户写 `-proxy=unix:/run/user/1000/tor=sock/torsocket` 时，拆出的 net_str 为 `sock/torsocket`，第 1635-1636 行直接返回 InitError(\"Unrecognized network ...\") 导致启动失败；变更前整串会被 IsUnixSocketPath 认定为 unix socket 路径并正常工作。注意 CheckHostPortOptions（1222-1231）因为对 `param_value.starts_with(\"unix:\")` 有兜底分支不会报错，所以这个失败只在 AppInitMain 阶段以误导性的「未知网络」错误暴露，用户很难定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "PARSING-002"
+    },
+    {
+      "file": "src/init.cpp",
+      "line": 1628,
+      "summary": "-proxy=0=ipv6 会把已配置的 DNS 代理一并清除",
+      "failure_scenario": "网络专属分支把 name proxy 与 ipv4/ipv6 绑定：`ipv4_proxy = name_proxy = proxy;`、`ipv6_proxy = name_proxy = proxy;`。因此「先给通用代理、再显式关闭某个网络」的组合会把 name proxy 覆盖为无效 Proxy，而 1645-1647 行只在 `name_proxy.IsValid()` 时才调用 SetNameProxy，全局 nameProxy 从未被设置，最终 `HaveNameProxy()` 为假。具体失败场景：`-proxy=127.0.0.1:9050 -proxy=0=ipv6`（通用代理仍然对 ipv4/onion/cjdns 生效，只是不用代理连 IPv6），DNS 请求却因 name proxy 丢失而退回操作系统解析、走明网，造成用户未预期的 DNS 泄露；同类问题也出现在 `-proxy=A=ipv4 -proxy=0=ipv6` 这类组合上。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.45,
+      "rule": "PRIVACY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bitcoin__bitcoin\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\bitcoin__bitcoin@e98c51f.diff\n  caseId              bitcoin__bitcoin@e98c51f\n  --issue             (未传)\n  --taskId            bitcoin__bitcoin@e98c51f\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 7（no-signal=7）\n✓ 完成 · 耗时 224.9s · 模型调用 21 次 · token 输入 30,231（未命中） · 输出 30,739 · 缓存命中 702,208（95.9%） · 工具 39 次（主会话 39 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0148\n[time] 阶段耗时 | 总墙钟 226.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (0.6%)\n[time] 阶段 | 六阶段审计 224.8s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 14.7s (6.5%) | P3 5.8s (2.6%) | P4 134.6s (59.9%) | P5 64.7s (28.8%) | P6 4.9s (2.2%)\n[usage] 任务总计 | 模型调用 21 次（Agent 21 + 一次性 0） | token 输入 30,231（未命中） | 输出 30,739 | 缓存命中 702,208（95.9%） | $0.0148\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\bitcoin__bitcoin@e98c51f\\audit\\20261122_110901_861.json",
+  "token_usage": {
+    "input_tokens": 30231,
+    "output_tokens": 30739,
+    "cache_read_input_tokens": 702208
+  }
+}

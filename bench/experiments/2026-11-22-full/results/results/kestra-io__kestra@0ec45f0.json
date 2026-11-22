@@ -1,0 +1,62 @@
+{
+  "instance_id": "kestra-io__kestra@0ec45f0",
+  "repo": "kestra-io/kestra",
+  "base_commit": "bfcfb2ac16dd8f198a99fef43072cb178f9a1d8e",
+  "head_commit": "0ec45f028467c99d8d1efeee6c201210d9433e6d",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 249.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileEmptyFunction.java",
+      "line": 75,
+      "summary": "fileEmpty 为判断空文件读取整个文件内容，可能导致大文件 OOM",
+      "failure_scenario": "FileEmptyFunction 在授权后调用 storageInterface.get(...) 并执行 inputStream.readAllBytes()，随后又用 new String(...) 构造完整字符串。fileEmpty 是模板函数，可作用在流程下载、输出等大文件上；这会把整个文件加载到堆内存，并额外复制一份字符数据，容易造成 Worker OOM 或远程存储大流量读取。判断文件是否为空或空白只需读取元数据或流式扫描到第一个非空白字符。",
+      "severity": "P1",
+      "category": "性能",
+      "confidence": 0.93,
+      "rule": "PERFORMANCE-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileEmptyFunction.java",
+      "line": 101,
+      "summary": "URI 归属校验使用未解码字符串，编码路径穿越可绕过执行隔离",
+      "failure_scenario": "isFileUriValid 仅用 `path.toString().startsWith(authorizedBasePath)` 判断文件是否属于当前执行。调用方可以传入 `kestra:///ns/flow/executions/<id>/%2e%2e/%2e%2e/...`，原始字符串仍以授权前缀开头，但存储实现通常会解码 URI 后再解析路径；LocalStorage.getPath 先对原始 URI 做 parentTraversalGuard（只检查字面量 `../`），随后用解码后的 `uri.getPath()` 拼接文件路径，编码的 `..` 因此未被拦截。这样新增的 fileEmpty 可读取执行目录外的文件并返回空白判断，fileExists 也可探测其存在性，绕过当前执行或父执行的归属限制。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.72,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileExistsFunction.java",
+      "line": 72,
+      "summary": "fileExists 用 StorageInterface.exists 吞掉所有 IOException，存储故障会被当成文件不存在",
+      "failure_scenario": "FileExistsFunction 在 checkFileExistsFromInternalStorage 中调用 storageInterface.exists(...)。StorageInterface.exists 的默认实现会 catch(IOException) 并返回 false，因此后端网络错误、权限错误或临时故障都会被静默转换为 false；同时该方法声明 throws IOException、execute 中也写了 catch(IOException)，但实际不会走到。流程因此可能错误地走“文件不存在”分支，而不是失败并暴露存储问题。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "RELIABILITY-002"
+    },
+    {
+      "file": "core/src/main/java/io/kestra/core/runners/pebble/functions/FileEmptyFunction.java",
+      "line": 22,
+      "summary": "新增函数的缺参错误信息复制自 read/fileSize，且 fileEmpty 宣称支持 namespace 文件但实现不支持",
+      "failure_scenario": "FileEmptyFunction 的 ERROR_MESSAGE 仍写着 `The 'read' function` 并声称 path 可以是 namespace 文件或 internal storage URI，但 getUriFromThePath 只接受 URI 对象或以 `kestra:///` 开头的字符串，普通 namespace 路径会直接报 `Unable to create the URI`。FileExistsFunction 的 ERROR_MESSAGE 也仍写着 `The 'fileSize' function`。调用方缺少 path 时会得到错误函数名和误导性的路径说明，增加排查成本。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.95,
+      "rule": "MAINTAINABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\kestra-io__kestra\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\kestra-io__kestra@0ec45f0.diff\n  caseId              kestra-io__kestra@0ec45f0\n  --issue             (未传)\n  --taskId            kestra-io__kestra@0ec45f0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 5（no-signal=5）\n✓ 完成 · 耗时 247.8s · 模型调用 12 次 · token 输入 26,226（未命中） · 输出 36,180 · 缓存命中 359,552（93.2%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0148\n[time] 阶段耗时 | 总墙钟 248.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.3%)\n[time] 阶段 | 六阶段审计 247.7s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 5.0s (2.0%) | P3 9.7s (3.9%) | P4 18.8s (7.6%) | P5 198.4s (80.1%) | P6 15.7s (6.3%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 26,226（未命中） | 输出 36,180 | 缓存命中 359,552（93.2%） | $0.0148\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\kestra-io__kestra@0ec45f0\\audit\\20261122_103104_459.json",
+  "token_usage": {
+    "input_tokens": 26226,
+    "output_tokens": 36180,
+    "cache_read_input_tokens": 359552
+  }
+}

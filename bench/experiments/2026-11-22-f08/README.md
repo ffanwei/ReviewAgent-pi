@@ -43,3 +43,9 @@ bootstrap（按实例重采样 2 万次）：
 - `budget-comparison.json`、`repair-comparison.json`：`compare_arms.py` 输出
 - `replay-record.log`：large-mr 真网关重录日志
 - 复现：`bench/experiments/compare_arms.py`、`bench/experiments/2026-11-22-f07/eval_arm.py`
+
+## 后续：全量基准回退
+
+iterF91 全量（compact + 预算 3/4/40 万）B 23.7% vs v3 29.8% 显著回退；
+ADR-0116 已把 `stageCompression` 回退为 off、`retrieval` 回退为全 0。
+本页 S20 的“预算无明显伤害”结论仅在 20 条小 diff 上成立。

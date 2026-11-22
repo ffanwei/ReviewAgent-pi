@@ -1,0 +1,52 @@
+{
+  "instance_id": "gofr-dev__gofr@49ab394",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "ba0316277a22f508ed645951705f53d151552916",
+  "head_commit": "49ab39432cf4892ee84569099b8065dfe45fae92",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 162.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "pkg/gofr/datasource/pubsub/nats/client.go",
+      "line": 83,
+      "summary": "后台重连与业务方法并发读写 Client 连接字段，存在数据竞争",
+      "failure_scenario": "retryConnect 在独立 goroutine 中直接写入 c.connManager、c.streamManager、c.subManager，而 checkClient、Publish、Subscribe、CreateTopic、Health、Close 等方法会无锁读取这些字段。初始连接失败后 PubSubWrapper.Connect 只记录错误并继续启动服务，因此运行期间的请求或健康检查会与后台重连并发，构成 Go data race，并可能观察到只更新了一半的连接状态。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/pubsub/nats/client.go",
+      "line": 52,
+      "summary": "retryConnect 无取消与单飞控制，Close 或重复 Connect 会遗留后台重连",
+      "failure_scenario": "每次 Connect 失败都会无条件启动新的 retryConnect goroutine，该循环没有 context 或停止标记；Close 只关闭当前 connManager，不会终止循环。若初始连接失败后服务进入关闭流程，后台循环仍可能在 Close 之后连接成功并持有 NATS 连接；重复调用 Connect 还会启动多个循环，互相覆盖连接并泄漏旧连接。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "LIFECYCLE-002"
+    },
+    {
+      "file": "pkg/gofr/datasource/pubsub/nats/client.go",
+      "line": 362,
+      "summary": "checkClient 放行后 streamManager 可能仍为 nil，导致空指针 panic",
+      "failure_scenario": "retryConnect 先赋值 c.connManager（第 83 行），之后才创建 c.streamManager（第 93 行）；而 checkClient 只检查 connManager 是否存在且已连接。若 CreateTopic/DeleteTopic/CreateStream/DeleteStream/CreateOrUpdateStream 在 connManager 已赋值但 streamManager 尚未初始化的窗口内执行，checkClient 会返回 nil，随后调用 c.streamManager 的方法会触发 nil interface 方法调用 panic。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.84,
+      "rule": "CORRECTNESS-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\gofr-dev__gofr@49ab394.diff\n  caseId              gofr-dev__gofr@49ab394\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@49ab394\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 27（no-signal=27）\n✓ 完成 · 耗时 159.8s · 模型调用 14 次 · token 输入 42,700（未命中） · 输出 20,732 · 缓存命中 482,048（91.9%） · 工具 27 次（主会话 27 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0131\n[time] 阶段耗时 | 总墙钟 161.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (0.8%)\n[time] 阶段 | 六阶段审计 159.7s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 4.3s (2.7%) | P3 7.2s (4.5%) | P4 51.6s (32.4%) | P5 89.7s (56.2%) | P6 6.8s (4.2%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 42,700（未命中） | 输出 20,732 | 缓存命中 482,048（91.9%） | $0.0131\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\gofr-dev__gofr@49ab394\\audit\\20261122_101127_481.json",
+  "token_usage": {
+    "input_tokens": 42700,
+    "output_tokens": 20732,
+    "cache_read_input_tokens": 482048
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "instance_id": "comfyanonymous__ComfyUI@0bb6023",
+  "repo": "comfyanonymous/ComfyUI",
+  "base_commit": "6c0377f43e7b6ed58d48ae05cff9bc45b52ef5e0",
+  "head_commit": "0bb60235132cc72daea81427107a40ba1ccb5ddf",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 121.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "notebooks/comfyui_colab.ipynb",
+      "line": 240,
+      "summary": "localtunnel 单元格删除了函数体仍在使用的 import，单独运行会 NameError",
+      "failure_scenario": "本次变更从 “Run ComfyUI with localtunnel” 单元格中删除了 `import subprocess`、`import time`、`import socket`、`import urllib.request`，但同一单元格内 `iframe_thread(port)` 的函数体仍在调用 `time.sleep(0.5)`、`socket.socket(...)`、`urllib.request.urlopen(...)`、`subprocess.Popen([\"lt\", ...])`。该单元格是 “cloudflared 不行时” 的互斥备用方案，用户按照说明只运行 clone/pip 安装单元 + 本单元时，四个名字均不存在，`iframe_thread` 在后台线程首行 `time.sleep` 处抛 NameError 而静默退出（线程异常不会回显到主线程），最终表现为 “ComfyUI 已启动但 localtunnel 链接永远不出现”，且没有任何错误提示，排查成本高。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "notebooks/comfyui_colab.ipynb",
+      "line": 289,
+      "summary": "colab iframe 单元格删除 time/socket 导入后，函数体仍在调用它们",
+      "failure_scenario": "第三个单元格（“Run ComfyUI with colab iframe”，文档注明是 localtunnel 方案失败后的兜底）删除了 `import time` 与 `import socket`，而 `iframe_thread(port)` 内紧接着仍执行 `time.sleep(0.5)` 与 `socket.socket(socket.AF_INET, socket.SOCK_STREAM)`。由于该单元格设计为独立兜底路径（前置 localtunnel 单元本身已被上一条问题破坏），单独运行时 `iframe_thread` 在后台线程内首行即抛 NameError，`output.serve_kernel_port_as_iframe` 永不执行，用户看不到 UI iframe，且异常被线程吞掉无法定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "ruff.toml",
+      "line": 9,
+      "summary": "启用全量 \"F\" 规则会连带重新开启 F821，而被删注释自述仍有 7 处未定义名错误",
+      "failure_scenario": "本次把 `lint.select` 从显式列出的 `S307`/`F401`/`F841` 改为 `\"F\"`，并删掉了原注释 “TODO: Enable F821 after all errors has been fixed. Remaining errors: 7.”。该注释是仓库自己记录的现状：F821（undefined-name）此前是为了让 lint 通过而刻意停用的。扩展为全量 `F` 后 F821 被隐式重新启用，而本 MR 的 diff 只清理了 F401（未使用 import）、F841（未使用局部变量）、无占位符 f-string、重复字典键等类型，没有修复任何未定义名，因此一旦执行 `ruff check` / 本地或后续接入 CI 的 lint 环节，会因残留的未定义名断言失败，使本次“清理 lint”的变更反而把 lint 置为红灯。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "comfy_extras/nodes_clip_sdxl.py",
+      "line": 25,
+      "summary": "把 clip 移到 required 首位会整体改变输入槽索引，可能使旧工作流连线错位",
+      "failure_scenario": "原 `required` 字典的顺序是 `width, height, crop_w, crop_h, target_width, target_height, text_g, clip, text_l`（重复的第二个 `clip` 因 dict 同键覆盖，`clip` 实际位于 `text_g` 与 `text_l` 之间，即第 8 个槽位、索引 7）。本次修复重复键时把 `clip` 放到了 `required` 的第一位，使 `clip` 索引由 7 变为 0，其余 `width…text_l` 全部后移一位。前端保存的 UI 工作流中 link 记录的是目标的槽位索引（target_slot），加载旧工作流时按索引回填连线，索引整体位移会让 `clip` 连线落到 `width`、`width` 的旧连线落到 `height` 等位置，表现为旧工作流打开后连线错乱/类型不匹配。正确的修复只需删除重复项，不必改变既有位置。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "COMPAT-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\comfyanonymous__ComfyUI\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\comfyanonymous__ComfyUI@0bb6023.diff\n  caseId              comfyanonymous__ComfyUI@0bb6023\n  --issue             (未传)\n  --taskId            comfyanonymous__ComfyUI@0bb6023\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 7（no-signal=7）\n✓ 完成 · 耗时 119.0s · 模型调用 8 次 · token 输入 13,163（未命中） · 输出 16,392 · 缓存命中 105,856（88.9%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0067\n[time] 阶段耗时 | 总墙钟 120.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.8%)\n[time] 阶段 | 六阶段审计 119.0s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 8.6s (7.2%) | P3 8.1s (6.8%) | P4 70.2s (59.0%) | P5 20.2s (17.0%) | P6 11.8s (9.9%)\n[usage] 任务总计 | 模型调用 8 次（Agent 8 + 一次性 0） | token 输入 13,163（未命中） | 输出 16,392 | 缓存命中 105,856（88.9%） | $0.0067\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\comfyanonymous__ComfyUI@0bb6023\\audit\\20261122_104300_216.json",
+  "token_usage": {
+    "input_tokens": 13163,
+    "output_tokens": 16392,
+    "cache_read_input_tokens": 105856
+  }
+}

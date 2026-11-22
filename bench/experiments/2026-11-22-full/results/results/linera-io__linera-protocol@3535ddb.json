@@ -1,0 +1,42 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 96.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件依赖本地常量与服务端页大小一致，跨版本时会静默提前结束分页",
+      "failure_scenario": "新的分页循环用「本次返回条目数 < 本地常量 CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES」判断是否已经取完。但服务端在 `linera-core/src/chain_worker/state.rs:1418-1420` 是**静默截断**的：响应里没有 has_more 之类的标记，`requested_received_log` 只是被 read 区间限制住；而响应本身已带 `count_received_log`（`data_types.rs:214`），客户端却完全没有使用。失败场景：客户端常量与服务端页大小不一致（滚动升级期间 validator 仍是旧/新版本的更小页大小，或后续按 `TODO(#4638)` 调整该数字、或第三方实现的页大小不同）时，服务端若只返回 100 条（< 1000），客户端立刻 break，把这一轮读取当作已经取完整条 received_log；offset 之后的条目在本轮永远不会被拉取，于是 `heights_per_chain`/`remote_heights` 缺失这些后续条目所指向的发送方高度，相关证书本轮不下载，跨链消息交付被推迟到下一次同步轮（每轮只能推进一个服务端页大小），且过程中没有任何 warn/error，问题难以定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-PAGINATION-001"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 848,
+      "summary": "分页循环无迭代上界且不校验返回页起点，异常/恶意 validator 可让客户端陷入无限循环并持续占用内存",
+      "failure_scenario": "新增的 `loop` 既没有迭代次数/累计条目的上界，也不校验返回的这一页是否真的从 `offset` 开始（既不检查首条目的位置，也不去重）。失败场景：某个异常或恶意 validator 的 `handle_chain_info_query` 忽略 `request_received_log_excluding_first_n`，每次都返回同一整页 1000 条，那么 `received_entries` 恒为 1000、`offset` 会持续递增而服务端数据并不前进，循环永不进入 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 分支，`remote_log.extend(...)` 每轮再追加 1000 条重复项，导致同步任务永久挂起并伴随内存无界增长（最终 OOM），进而可能拖垮整个客户端进程正在做的 `communicate_with_quorum` 同步。改动前这里只有一次 `handle_chain_info_query` 调用，远端返回值无法把客户端放大成死循环，因此该风险由本次变更引入。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.45,
+      "rule": "SECURITY-DOS-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 94.9s · 模型调用 18 次 · token 输入 13,611（未命中） · 输出 11,768 · 缓存命中 266,240（95.1%） · 工具 16 次（主会话 16 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0059\n[time] 阶段耗时 | 总墙钟 95.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.8%)\n[time] 阶段 | 六阶段审计 94.9s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.2%)\n[time] 审计明细 | P1 2.6s (2.8%) | P3 5.0s (5.3%) | P4 67.9s (71.6%) | P5 14.5s (15.3%) | P6 4.8s (5.0%)\n[usage] 任务总计 | 模型调用 18 次（Agent 18 + 一次性 0） | token 输入 13,611（未命中） | 输出 11,768 | 缓存命中 266,240（95.1%） | $0.0059\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261122_104040_011.json",
+  "token_usage": {
+    "input_tokens": 13611,
+    "output_tokens": 11768,
+    "cache_read_input_tokens": 266240
+  }
+}

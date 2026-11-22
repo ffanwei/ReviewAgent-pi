@@ -1,0 +1,52 @@
+{
+  "instance_id": "linera-io__linera-protocol@024925d",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c4a8ac301274ccdfc8d0fc87871d557534a8405f",
+  "head_commit": "024925dfbeff5daaecdd2cd733cda2825eff1bb7",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 120.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 174,
+      "summary": "quorum 不可达时立即 break 会丢失 Trusted 错误分类与错误样本",
+      "failure_scenario": "新增的 `if highest_key_score + remaining_votes < committee.quorum_threshold() { break 'vote_wait; }` 在判定「任何 key 都已无法达到 quorum」时立即跳出循环，不再等待剩余 validator 的响应。但 `validity_threshold < quorum_threshold`（`committee.rs:301-302`：quorum=2N/3+1，validity=(N+2)/3），因此「quorum 不可达」并不等于「剩余响应无法把某个 error 的权重推到 validity_threshold」。提前退出会跳过后续错误响应的累积，导致原本应命中 `error_scores >= validity_threshold()` 而返回的 `CommunicationError::Trusted(err)` 被降级成 `CommunicationError::Sample`（错误样本）甚至 `NoConsensus`（完全没有错误信息）。失败场景（10 个等权 validator：quorum=7、validity=4）：客户端收到 7 个响应，其中 4 个是互不相同的 value（highest_key_score=1）、3 个是同一个 error（error_scores=3 < 4），此时 remaining_votes=3、1+3=4<7，新代码立即 break 并返回 `Sample(3 个 error)`；而旧的 grace 等待会让剩余 3 个 validator 继续返回同一 error，使 error_scores=6>=4，返回 `Trusted`。上层对此有真实区别：`client/mod.rs:1526` 只有 `CommunicationError::Trusted(NodeError::InactiveChain(id))` 会被当作「链不活跃」而正常返回 Ok，其余错误一律向上抛出，因此同步收到的证书等流程会从「正常跳过」退化为「报通信错误」。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 109,
+      "summary": "新增的 grace_period 参数在所有调用点都传 None，形成未启用的配置面",
+      "failure_scenario": "本次为 `communicate_with_quorum` 新增了 `grace_period: impl Into<Option<f64>>` 参数，但四个调用点（`client/mod.rs:1114`、`1150`、`1521`、`1677`）全部传入 `None`，仓库中不存在任何传入 `Some(...)` 的调用方。结果是新增的「按调用点定制 grace period」能力实际不可达且完全没有被任何路径验证过，同时文档注释却写成「If `grace_period` is specified, other validators are given additional time…」，与实际永远走 `DEFAULT_GRACE_PERIOD` 的行为不一致；后续维护者会误以为该参数已被使用/被测试覆盖。同时默认值在本 MR 中从 0.2 静默改为 0.1，所有调用方（含 `find_received_certificates` 收集 validator 证书批次、`communicate_chain_action` 收集多余 vote）的超时行为都随之改变，而这一点在调用点上看不出任何痕迹。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 36,
+      "summary": "默认 grace period 由 0.2 降到 0.1 会收窄多 validator 结果的收集窗口",
+      "failure_scenario": "`GRACE_PERIOD` 被重命名为 `DEFAULT_GRACE_PERIOD` 且值从 0.2 改为 0.1，而 `end_time = Some(Instant::now() + start_time.elapsed().mul_f64(grace_period))` 决定了 quorum 达成后还愿意等待多久。由于所有调用点都传 `None`，这个值对所有调用方生效。对 `find_received_certificates`（`client/mod.rs:1505`）而言，`Ok(((), received_certificate_batches))` 中的 `Vec<V>` 正是「在窗口内响应的 validator 返回的证书批次」，随后被 `receive_certificates_from_validators` 一次性消费；窗口减半意味着在部分 validator 较慢时单轮收集到的批次更少，链上收到的跨链消息需要更多轮同步才能追平，表现为收款/跨链消息可见性延迟。对 `communicate_chain_action` 而言则是证书中冗余 vote 变少（这部分是收益）。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.4,
+      "rule": "PERFORMANCE-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\linera-io__linera-protocol@024925d.diff\n  caseId              linera-io__linera-protocol@024925d\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@024925d\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 10（no-signal=10）\n✓ 完成 · 耗时 118.4s · 模型调用 12 次 · token 输入 12,294（未命中） · 输出 17,184 · 缓存命中 167,936（93.2%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0070\n[time] 阶段耗时 | 总墙钟 119.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.6%)\n[time] 阶段 | 六阶段审计 118.4s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 4.0s (3.4%) | P3 4.5s (3.8%) | P4 73.6s (62.2%) | P5 29.4s (24.9%) | P6 6.8s (5.8%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 12,294（未命中） | 输出 17,184 | 缓存命中 167,936（93.2%） | $0.0070\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\linera-io__linera-protocol@024925d\\audit\\20261122_103839_883.json",
+  "token_usage": {
+    "input_tokens": 12294,
+    "output_tokens": 17184,
+    "cache_read_input_tokens": 167936
+  }
+}

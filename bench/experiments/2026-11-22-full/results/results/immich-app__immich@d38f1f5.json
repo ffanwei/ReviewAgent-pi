@@ -1,0 +1,72 @@
+{
+  "instance_id": "immich-app__immich@d38f1f5",
+  "repo": "immich-app/immich",
+  "base_commit": "c664d99a348999d16cda45a8dd57db436b8f9fba",
+  "head_commit": "d38f1f55f42d600d05058e70d6ccee9679623591",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 234.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "web/src/service-worker/index.ts",
+      "line": 45,
+      "summary": "受鉴权的原图/缩略图响应按纯 URL 长期缓存，退出登录或权限撤销后仍可命中",
+      "failure_scenario": "immichAsset 先 cache.match(url)，命中即直接 return，不再向服务端发任何请求，也不做 revalidate/鉴权检查；缓存只在 activate 时按 CACHE 名（版本号）整体清理，diff 中没有任何登出/撤销清理逻辑。缓存键只由 asset id、共享链接 key、thumbhash 构成，不含用户或会话身份，因此退出登录、切换账号、共享链接被撤销或过期、资产被删除后，同一浏览器仍可用相同 URL 从 Cache Storage 读到此前缓存的 /original、/thumbnail，等于在客户端绕过服务端的授权与失效逻辑，且 Cache Storage 长期驻留（不同于会带 ETag 重新协商的 HTTP 缓存）。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.65,
+      "rule": "SEC-PRIVACY-CACHE-001"
+    },
+    {
+      "file": "web/src/service-worker/index.ts",
+      "line": 80,
+      "summary": "pendingLoads 以 URL 为键且无引用计数，取消失效并会误中断其他使用者的请求",
+      "failure_scenario": "pendingLoads 用 URL 字符串映射到单个 AbortController，且登记发生在 await caches.open/cache.match 之后。同一 URL 存在并发请求时（photo-viewer 中两个 <img> 共用同一个 imageLoaderUrl，或同一浏览器多标签页打开同一照片），后发请求覆盖前一个 controller，先完成的请求在 finally 中删除后发请求的条目，使随后的 cancel 找不到 controller 而完全失效；反过来，BroadcastChannel('immich') 的消息是对所有页面与 SW 广播的，任意页面/组件发出的 cancel（image-thumbnail 的 destroy 即调用）会中止其他使用者的进行中请求，被中止的请求走 catch 返回 Response.error()，对方 <img> 触发 onerror 后永久显示 BrokenAsset（无重试）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CONCURRENCY-ABORT-001"
+    },
+    {
+      "file": "web/src/service-worker/index.ts",
+      "line": 60,
+      "summary": "cache.put 未 await 也未 waitUntil，缓存写入可能丢失且失败时产生未处理 rejection",
+      "failure_scenario": "cache.put(url, response.clone()) 返回 Promise，但既未 await 也未通过 event.waitUntil 绑定到 fetch 事件生命周期（fetch 监听器在 31 行直接 respondWith）。respondWith 的 Promise resolve 后事件即结束，浏览器可在写入完成前终止 SW，导致条目实际未落盘——preload 的收益（后续 <img> 命中缓存）会随机失效并重复下载；一旦 put 失败（配额超限 QuotaExceededError、响应不可缓存如 partial/Vary: *），会在 SW 全局产生未处理的 Promise rejection。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "SW-CACHE-001"
+    },
+    {
+      "file": "web/src/service-worker/index.ts",
+      "line": 30,
+      "summary": "拦截规则把 /original 原图纳入无上限缓存，缺少淘汰导致存储持续膨胀",
+      "failure_scenario": "拦截正则同时匹配 original 与 thumbnail，于是每张原图（数 MB 到数十 MB，photo-viewer 放大或 alwaysLoadOriginal 时请求 original）都会写入 Cache Storage，且没有任何容量上限、LRU/过期淘汰或键归一处理；缓存键还包含 c=<thumbhash>，资产被编辑后 thumbhash 变化会生成新条目，旧条目只能等下一次版本升级（CACHE 名变化）才被清掉。长期浏览大量照片会让缓存单调增长、挤占该 origin 的存储配额，最终使 cache.put 失败（叠加 F003 的未处理 rejection），并可能影响同 origin 其他存储。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-CACHE-GROWTH-001"
+    },
+    {
+      "file": "web/src/service-worker/index.ts",
+      "line": 51,
+      "summary": "重建 fetch 时丢弃原请求头，/original 的 Range 请求退化为整文件下载",
+      "failure_scenario": "immichAsset 只依据 event.request.url 重新构造 fetch(url, { signal })，完全没有转发原始请求的 headers/mode/credentials。对 /api/assets/{id}/original 的媒体请求，浏览器会发送 Range（以及 If-Range）来分段拉取，例如 video-panorama-viewer 直接把 getAssetOriginalUrl(assetId) 作为视频源交给全景播放器；这些请求被 SW 拦截后 Range 被丢弃，SW 拉取完整文件并以 200 返回，导致分段与拖动定位失效、重复下载完整视频，并把完整原文件写入缓存（叠加 F004 的存储膨胀）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "SW-FETCH-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\immich-app__immich\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\immich-app__immich@d38f1f5.diff\n  caseId              immich-app__immich@d38f1f5\n  --issue             (未传)\n  --taskId            immich-app__immich@d38f1f5\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 11（no-signal=11）\n✓ 完成 · 耗时 233.2s · 模型调用 12 次 · token 输入 20,215（未命中） · 输出 31,350 · 缓存命中 288,000（93.4%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0124\n[time] 阶段耗时 | 总墙钟 234.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 233.2s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 4.5s (1.9%) | P3 7.8s (3.4%) | P4 197.2s (84.6%) | P5 15.9s (6.8%) | P6 7.7s (3.3%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 20,215（未命中） | 输出 31,350 | 缓存命中 288,000（93.4%） | $0.0124\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\immich-app__immich@d38f1f5\\audit\\20261122_102213_231.json",
+  "token_usage": {
+    "input_tokens": 20215,
+    "output_tokens": 31350,
+    "cache_read_input_tokens": 288000
+  }
+}

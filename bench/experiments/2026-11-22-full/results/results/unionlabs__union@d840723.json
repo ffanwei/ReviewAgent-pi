@@ -1,0 +1,62 @@
+{
+  "instance_id": "unionlabs__union@d840723",
+  "repo": "unionlabs/union",
+  "base_commit": "efab2bedc6beb4e1bb01906cba9e0dabd3072f13",
+  "head_commit": "d840723278f1d4cecc02ac540385725a1c54ca84",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 166.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "voyager/modules/consensus/cometbls/src/main.rs",
+      "line": 168,
+      "summary": "返回类型改为 Timestamp 后残留了恒成功的 try_into().expect，属于无效转换",
+      "failure_scenario": "本函数返回类型已从 `i64` 改为 `RpcResult<Timestamp>`，但函数尾部仍保留 `Timestamp::from_nanos(...).try_into().expect(\"should be fine\")`。`Timestamp::from_nanos` 已经直接生成了目标类型，`Timestamp -> Timestamp` 会命中标准库的 blanket `impl TryFrom<U> for T where U: Into<T>`（Error = Infallible），因此这个 `try_into()` 永远不会失败，`.expect(\"should be fine\")` 是死代码。它会造成两点实际危害：一是读者会误以为这里存在可失败的宽度转换而不敢改动；二是当日后有人把 `from_nanos` 换成真正会失败的转换（例如重新引入 `i64`/带校验的构造）时，这个“看起来已验证”的 `expect` 会掩盖问题。同样的残留出现在 voyager/modules/consensus/tendermint/src/main.rs:161-165。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.78,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "voyager/modules/consensus/ethereum/src/main.rs",
+      "line": 179,
+      "summary": "ethereum consensus 时间戳构造混用 from_nanos 与冗余 try_into().unwrap()，两分支写法不一致",
+      "failure_scenario": "finalized 分支被改成 `Ok(Timestamp::from_nanos(<u64>).try_into().unwrap())`：`from_nanos` 已产出 `Timestamp`，其后的 `try_into().unwrap()` 是恒成功的 identity 转换（blanket `TryFrom<U> for T where U: Into<T>`，Error = Infallible），`.unwrap()` 永远不会触发；而 else 分支写成了 `Ok(Timestamp::from_nanos(... .timestamp.try_into().unwrap(),))`，把原先 `u64 -> i64` 的转换残留搬进了构造参数里。同一个函数内两种写法并存、且都包含死代码，会让读者无法判断这里到底是“有校验”还是“无校验”，并容易让人误以为 `from_nanos` 需要外部先做类型转换。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "voyager/modules/consensus/movement/src/main.rs",
+      "line": 165,
+      "summary": "movement 模块对已构造好的 Timestamp 再做 try_into().unwrap() 属无效操作",
+      "failure_scenario": "`Timestamp::from_nanos(timestamp)` 已经是 `Timestamp`，再 `.try_into().unwrap()` 是恒成功的 identity 转换，`unwrap()` 为死代码；旧代码中这里是把 `u64` 转成 `i64`（可能失败）才有意义，替换类型后该转换已无必要。同样的写法在 voyager/modules/state/movement/src/main.rs:148 重复出现。这种“有 unwrap 但永不失败”的代码会误导后续维护者以为此处存在窄化风险。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.68,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "lib/voyager-core/src/lib.rs",
+      "line": 336,
+      "summary": "Timestamp::from_secs 使用未检查的 u64 乘法，溢出会 panic 或静默回绕",
+      "failure_scenario": "新增的 `from_secs` 直接做 `secs * 1_000_000_000`。在 debug 构建下（含测试）超出 u64 会 panic；在 release 构build下会静默回绕，得到一个看似合法但完全错误的时间戳，随后参与 `WaitForTimestamp` 的 `chain_timestamp >= timestamp` 比较（lib/voyager-message/src/call.rs:238），可能导致等待条件永不成立或立即成立。该函数是 voyager-core 对外公开的通用构造器，当前调用点 voyager/plugins/client-update/ethereum/src/main.rs:539 传入的是由外部 beacon 数据（`genesis.genesis_time` + slot×`seconds_per_slot`）算出的秒数，一旦上游给出异常值（例如误把纳秒当秒传入），这里不会报错而是直接回绕，问题会以“时间戳莫名错乱/消息长期不推进”的形式暴露，难以定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RELIABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\unionlabs__union\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\unionlabs__union@d840723.diff\n  caseId              unionlabs__union@d840723\n  --issue             (未传)\n  --taskId            unionlabs__union@d840723\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 32（no-signal=32）\n✓ 完成 · 耗时 163.9s · 模型调用 17 次 · token 输入 27,301（未命中） · 输出 22,318 · 缓存命中 449,792（94.3%） · 工具 31 次（主会话 31 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0113\n[time] 阶段耗时 | 总墙钟 165.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.7%)\n[time] 阶段 | 六阶段审计 163.8s (99.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 12.0s (7.4%) | P3 7.6s (4.6%) | P4 123.3s (75.4%) | P5 16.2s (9.9%) | P6 4.5s (2.7%)\n[usage] 任务总计 | 模型调用 17 次（Agent 17 + 一次性 0） | token 输入 27,301（未命中） | 输出 22,318 | 缓存命中 449,792（94.3%） | $0.0113\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\unionlabs__union@d840723\\audit\\20261122_101128_171.json",
+  "token_usage": {
+    "input_tokens": 27301,
+    "output_tokens": 22318,
+    "cache_read_input_tokens": 449792
+  }
+}

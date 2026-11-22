@@ -1,0 +1,62 @@
+{
+  "instance_id": "google-gemini__gemini-cli@c6e6248",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "809b933d8150c29154062e4d596cd916258022fc",
+  "head_commit": "c6e624883852318b71baa2a060c933bb5de591ef",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 150.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "integration-tests/test-helper.ts",
+      "line": 323,
+      "summary": "runCommand 未传 stdin 时不关闭子进程 stdin，命令读 stdin 时会挂死到超时",
+      "failure_scenario": "新增的 runCommand 只在 options.stdin 为真时才写入并 close 子进程的 stdin（323-326 行），其余调用（本测试 39、42、49 行的 extensions list/update/uninstall）stdin 管道始终打开。既有 run() 的契约不同：除显式 stdinDoesNotEnd 外一律 end（219-228 行）。CLI 子命令路径上任何读取 stdin 的实现（例如 packages/cli/src/config/extension.ts:360-373 的 promptForContinuation 用 readline 读 process.stdin，或 readStdin）都会等待 EOF；而 runCommand 返回的 Promise 只在 'close' 事件 settle（343-355 行），因此会一直挂到 integration-tests/vitest.config.ts:11 的 300000ms 超时，失败信息只有 \"test timed out\"，定位成本很高。且 stdio 为 pipe 时子进程 stdin 一直打开，也让“交互命令无输入”这一场景无法快速失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-002"
+    },
+    {
+      "file": "integration-tests/extensions-install.test.ts",
+      "line": 49,
+      "summary": "卸载与清理只写在成功路径，失败时会在真实 ~/.gemini 残留已启用扩展并干扰并行测试",
+      "failure_scenario": "测试把 setup → install → 断言 → uninstall → cleanup → rmSync 平铺在函数体内（24-52 行），没有 try/finally。extensions install 会把测试目录整体复制到用户级扩展目录（packages/cli/src/config/extension.ts:392 用 ExtensionStorage.getUserExtensionsDir()，其实现为 new Storage(os.homedir()).getExtensionsDir()，见 83-86 行），并调用 enableExtension(name, SettingScope.User)（485 行）改写用户设置；而 runCommand 在退出码非 0 时直接 reject（test-helper.ts:352-353）。因此当第 37、40、47 行的 expect 失败（例如 update 打印 \"already up to date\" 而非 0.0.2）时，第 49 行的卸载与 51-52 行的清理全部被跳过，开发者的真实 ~/.gemini/extensions/test-extension 与启用状态、以及测试目录都会残留。更严重的是 integration-tests/vitest.config.ts:16 开启 fileParallelism（8-16 线程），残留/安装中的扩展对同时运行的其他集成测试可见（CLI 启动时 packages/cli/src/gemini.tsx:251 会 loadExtensions()），存在跨测试互相影响的可能。第 27-31 行的兜底 uninstall 只能部分缓解，不能替代失败路径清理。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.62,
+      "rule": "TESTABILITY-001"
+    },
+    {
+      "file": "integration-tests/extensions-install.test.ts",
+      "line": 52,
+      "summary": "rmSync 重复删除测试目录，并绕过 KEEP_OUTPUT 的产物保留约定",
+      "failure_scenario": "第 51 行的 rig.cleanup() 已经删除同一个 testDir（test-helper.ts:371-382：`if (this.testDir && !env.KEEP_OUTPUT) { execSync('rm -rf ' + this.testDir); }`），第 52 行再无条件 rmSync 一次属重复释放；更关键的是它绕过了 KEEP_OUTPUT 语义：globalSetup.ts:76-78 在 KEEP_OUTPUT 为真时明确提示“Keeping output for test run in …”，其它集成测试因此会保留产物，唯独该测试的目录被无条件删掉，排障时容易被误判为“该测试没有产生输出”。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "integration-tests/test-helper.ts",
+      "line": 343,
+      "summary": "runCommand 只监听 close，spawn 失败或信号终止时无法正确失败",
+      "failure_scenario": "新增的 runCommand 仅注册 child.on('close', (code: number) => ...)：1）缺少 'error' 监听，若 spawn 失败（bundle/gemini.js 不存在、node 不可执行等），Node 会因未处理的 'error' 事件抛出未捕获异常，测试以无关堆栈崩溃，且返回的 Promise 永不 settle；2）把 code 断言为 number，但子进程被信号杀死时 code 通常为 null，此时进入 else 分支会生成 `Process exited with code null:\\n<stderr>`，丢失 signal 信息（如 SIGKILL/OOM），难以定位真实原因。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "RELIABILITY-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\google-gemini__gemini-cli@c6e6248.diff\n  caseId              google-gemini__gemini-cli@c6e6248\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@c6e6248\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 148.8s · 模型调用 23 次 · token 输入 26,816（未命中） · 输出 20,961 · 缓存命中 566,656（95.5%） · 工具 31 次（主会话 31 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0112\n[time] 阶段耗时 | 总墙钟 149.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 148.7s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 2.5s (1.7%) | P3 4.1s (2.8%) | P4 113.9s (76.6%) | P5 22.6s (15.2%) | P6 5.5s (3.7%)\n[usage] 任务总计 | 模型调用 23 次（Agent 23 + 一次性 0） | token 输入 26,816（未命中） | 输出 20,961 | 缓存命中 566,656（95.5%） | $0.0112\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\google-gemini__gemini-cli@c6e6248\\audit\\20261122_101847_580.json",
+  "token_usage": {
+    "input_tokens": 26816,
+    "output_tokens": 20961,
+    "cache_read_input_tokens": 566656
+  }
+}

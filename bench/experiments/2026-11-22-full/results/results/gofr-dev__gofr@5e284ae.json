@@ -1,0 +1,52 @@
+{
+  "instance_id": "gofr-dev__gofr@5e284ae",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "de79ab765d0d34d78a42ebdd50a21a6f26841b7f",
+  "head_commit": "5e284aec0447be34c96a252e959067c8bcd9cd4c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 129.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 73,
+      "summary": "在请求处理中就地改写共享的 container.Logger，导致数据竞争与 trace ID 跨请求串号",
+      "failure_scenario": "ServeHTTP 把 h.container.Logger 直接替换为绑定当前请求上下文的 ContextLogger，而 handler 持有的是进程内共享的 *container.Container（每个路由注入同一个 a.container），ServeHTTP 会被并发调用，因此这里是对共享对象的无同步写入。并发时序下会出现：(1) 其他 goroutine 正在读 container.Logger 记录日志，与这里的写构成数据竞争（接口值非原子写，可能出现类型/数据指针撕裂）；(2) 请求 A 保存 origLogger（base）并置为 ctxA，请求 B 读到 origLogger=ctxA 并置为 ctxB，A 先返回把字段写回 base（此时 B 仍在运行，B 的错误日志丢失 trace_id），B 再返回把字段写回 ctxA——全局 logger 永久变为绑定 A 请求上下文的 ContextLogger，之后所有请求的日志都会带上 A 的 trace_id；(3) WebSocket 升级分支不设超时、c.Context 就是连接上下文，连接存活期间 container.Logger 一直被该连接的 ctxLogger 占用，期间所有并发 HTTP 请求的日志都被打上该 WS 连接的 trace_id。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 91,
+      "summary": "后台 goroutine 在 ServeHTTP 返回后读取 h.container.Logger，错误日志丢失 trace 且与恢复写竞争",
+      "failure_scenario": "handler 在 goroutine 内调用 h.logError(h.container.Logger, err) 和 panicRecoveryHandler(recover(), h.container.Logger, panicked)，即每次日志都在运行时重新读取共享字段，而不是使用本次请求构造的 ctxLogger。在超时分支（c.Context.Done）或 panic 分支下，ServeHTTP 会先返回并执行 defer 恢复 origLogger，而 goroutine 仍在执行 h.function，之后才走到第 91 行读 h.container.Logger：此时读到的是恢复后的基础 logger（错误日志丢失 trace_id），或者被其他并发请求替换后的 ctxLogger（错误日志被打上别的请求的 trace_id），并且该读取与第 73 行的写入构成数据竞争。panic 路径同理：panicRecoveryHandler 先 close(panicked) 再写 Error 日志，ServeHTTP 可在日志写出过程中返回并恢复 logger。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "LIFECYCLE-001"
+    },
+    {
+      "file": "pkg/gofr/logging/logger.go",
+      "line": 256,
+      "summary": "用 __trace_id__ 魔法键在日志参数中传递 trace，会静默丢弃同名字段的用户日志内容",
+      "failure_scenario": "ContextLogger 把 trace ID 以 map[string]any{\"__trace_id__\": ...} 的形式追加进业务日志参数，logf 再用 extractTraceIDAndFilterArgs 扫描参数并把该 map 整体剔除。这使内部元数据与用户日志参数共享同一命名空间：任何以 map 形式打印且恰含 \"__trace_id__\" 键的业务数据会被 continue 跳过（不再进入 filtered），内容静默消失，同时把用户数据当作 trace_id 写入日志；若发生嵌套包装（例如并发串号场景下 ctxLogger 套 ctxLogger），withTraceInfo 追加的第二个 trace map 不会被提取，会残留在 entry.Message 中输出 {\"__trace_id__\":...}。日志内容与 trace 归属都可能因此不可信。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "LOGGING-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\gofr-dev__gofr@5e284ae.diff\n  caseId              gofr-dev__gofr@5e284ae\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@5e284ae\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 11（no-signal=11）\n✓ 完成 · 耗时 127.6s · 模型调用 11 次 · token 输入 25,513（未命中） · 输出 16,260 · 缓存命中 245,248（90.6%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0088\n[time] 阶段耗时 | 总墙钟 128.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 127.6s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 7.9s (6.2%) | P3 6.1s (4.8%) | P4 63.0s (49.4%) | P5 45.9s (36.0%) | P6 4.6s (3.6%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 25,513（未命中） | 输出 16,260 | 缓存命中 245,248（90.6%） | $0.0088\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\gofr-dev__gofr@5e284ae\\audit\\20261122_102313_303.json",
+  "token_usage": {
+    "input_tokens": 25513,
+    "output_tokens": 16260,
+    "cache_read_input_tokens": 245248
+  }
+}

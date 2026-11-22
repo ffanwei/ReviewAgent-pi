@@ -1,0 +1,42 @@
+{
+  "instance_id": "libsdl-org__SDL@96dfef3",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "ab34ea5a2684766e510de1daf8ae44c41b6af704",
+  "head_commit": "96dfef35c4b0b89f2f8d9c2ecc4f5e3a25d3e7a0",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 129.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 5881,
+      "summary": "CycleActiveTexture 在判空之前对可能为 NULL 的新纹理做布局过渡，OOM 时崩溃",
+      "failure_scenario": "VULKAN_INTERNAL_CycleActiveTexture 现在用 transitionToDefaultLayout=false 创建纹理，然后立即对该纹理调用 VULKAN_INTERNAL_TextureTransitionToDefaultUsage，而原有的 if (!texture) { return; } 判空却排在这个调用之后。VULKAN_INTERNAL_CreateTexture 在内存分配/vkCreateImage 失败时返回 NULL（VULKAN_CreateTexture 与 defrag 路径都显式判空，可证），此时 TextureTransitionToDefaultUsage 会遍历 texture->subresourceCount 并取 &texture->subresources[i]，直接解引用 NULL，进程崩溃而不是走原有的“放弃轮回、返回”降级路径。触发场景：纹理池需要轮换活跃纹理时恰好显存不足（正是本 MR 引入 defrag 想缓解的 OOM 场景）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.92,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10533,
+      "summary": "把 fence 清理/空 allocation 回收/待销毁资源处理全部收进 if (presenting)，纯离屏提交流程不再回收内存",
+      "failure_scenario": "重构后，VULKAN_Submit 里的三块清理工作（轮询 inFlightFence 并 VULKAN_INTERNAL_CleanCommandBuffer、消费 renderer->checkEmptyAllocations 释放空 allocation、VULKAN_INTERNAL_PerformPendingDestroys）被整体移入新增的 if (presenting) 分支，而 presenting 只由 vulkanCommandBuffer->presentDataCount > 0 决定。对于不 present 的提交（例如离屏渲染/计算后下载纹理、无窗口 headless 用法），这些清理永不执行：submittedCommandBuffers 只增不减，每个命令缓冲持有的 buffer/texture/pipeline 引用计数不被递减，buffersToDestroy 等销毁队列不会被消费，VULKAN_INTERNAL_DeallocateMemory 也不会因 usedRegionCount==0 回收整块 VkDeviceMemory，显存与 CPU 侧数组持续增长，直到 App 主动 VULKAN_Wait/WaitForFences（SDL_WaitForGPUIdle 等）才兜底。相比变更前每次 Submit 都会清理，这是行为回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RESOURCE-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\libsdl-org__SDL@96dfef3.diff\n  caseId              libsdl-org__SDL@96dfef3\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@96dfef3\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 16（no-signal=16）\n✓ 完成 · 耗时 128.3s · 模型调用 13 次 · token 输入 16,825（未命中） · 输出 17,557 · 缓存命中 233,472（93.3%） · 工具 19 次（主会话 19 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0079\n[time] 阶段耗时 | 总墙钟 129.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 128.2s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 12.0s (9.4%) | P3 7.3s (5.7%) | P4 87.0s (67.9%) | P5 16.7s (13.0%) | P6 5.3s (4.1%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 16,825（未命中） | 输出 17,557 | 缓存命中 233,472（93.3%） | $0.0079\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\libsdl-org__SDL@96dfef3\\audit\\20261122_104600_080.json",
+  "token_usage": {
+    "input_tokens": 16825,
+    "output_tokens": 17557,
+    "cache_read_input_tokens": 233472
+  }
+}

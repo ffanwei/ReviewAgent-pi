@@ -1,0 +1,62 @@
+{
+  "instance_id": "gofr-dev__gofr@dc0b3e6",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "44e3eeb2786ad4d333dc1f528fb104236693d060",
+  "head_commit": "dc0b3e630423b72cb9b2f273fdc18a5c11d12984",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 86.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 172,
+      "summary": "URI 分支强制 scheme 必须为 \"mongodb\"，导致 mongodb+srv:// 连接串被拒绝",
+      "failure_scenario": "getDBHost 要求 parsedURL.Scheme 严格等于 \"mongodb\"，否则返回 errIncorrectURI；而 generateMongoURI 在 Config.URI 非空时把该错误直接上抛，Connect 收到错误后立即 return，不再建立连接。改动前用户提供的 URI 会原样交给 options.Client().ApplyURI(uri)，ece mongodb+srv://（Atlas/DNS seed list，驱动原生支持，也是 Config.URI 注释中“驱动将生成 URI”语义下最常见的云上写法）可以正常连接；改动后这类合法连接串会在启动阶段被判定为配置错误，数据源静默不可用（只打印一行日志，c.Database 保持 nil），所有后续 mongo 操作与 HealthCheck 都不可用。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "REGRESSION-URI-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 156,
+      "summary": "User/Password 先经 QueryEscape 再交给 url.Userinfo 编码，特殊字符密码会被二次编码导致认证失败",
+      "failure_scenario": "url.URL.String() 在输出时会对 u.User（*url.Userinfo）按 userinfo 规则再转义一次，其中 '%' 会被转成 \"%25\"。代码先把 User/Password 用 url.QueryEscape 编码（'!' → \"%21\"、'@' → \"%40\"、空格 → \"+\"），再用 url.UserPassword 包装，最终 URI 里的密码变成 \"%2521\" 之类，驱动解码后得到的是 \"%21\" 而不是原始字符，认证必然失败。同理 config.Database 在 line 152 先 PathEscape 又作为 URL.Path 被 String() 二次转义（空格 → \"%2520\"），会在 m.Database(c.config.Database) 之外产生服务端不存在的库名。只要密码包含 '!$&()*+,;=:@/%~ ' 等常见字符（例如 \"P@ssw0rd!\"），改用 Host/Port/User/Password 字段配置后就会连不上 Mongo，而传入的账号密码本身是正确的。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-ESCAPE-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 155,
+      "summary": "User 与 Password 同时非空才携带凭据，半配置凭据被静默丢弃",
+      "failure_scenario": "新逻辑只在 `config.User != \"\" && config.Password != \"\"` 时才设置 Userinfo；若用户只填了 User（或只填了 Password，例如密码通过外部注入但未生效、拼写错误的 key），生成的 URI 将不带任何认证信息，驱动会以匿名方式连接。改动前同样的半配置会拼出 `mongodb://user:@host:port/db?authSource=admin`，驱动会明确因认证失败报错，问题暴露在连接阶段；改动后连接可能“成功”（服务端允许匿名或延迟到首次操作才报错），配置错误被静默吞掉，排查成本显著上升。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-CONFIG-001"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 98,
+      "summary": "调试日志改用 c.config.Host，URI 方式配置时打印为空主机",
+      "failure_scenario": "Connect 的 Debug 日志从打印实际使用的 URI 改为打印 `c.config.Host`，但 Host 只在字段式配置下才有值；当用户通过 Config.URI（含 Deprecated 用法与文档示例）注入时 Host 为空，日志会输出 `connecting to MongoDB at  to database xxx`，丢失连接目标信息，线上排查“连的是哪个实例”时失去唯一线索（后续成功日志已统一改为 host，同样为空）。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "OBSERVABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\diff\\gofr-dev__gofr@dc0b3e6.diff\n  caseId              gofr-dev__gofr@dc0b3e6\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@dc0b3e6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f09-full.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 84.9s · 模型调用 8 次 · token 输入 13,681（未命中） · 输出 10,677 · 缓存命中 101,248（88.1%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0052\n[time] 阶段耗时 | 总墙钟 85.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.8%)\n[time] 阶段 | 六阶段审计 84.9s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 6.4s (7.6%) | P3 7.2s (8.4%) | P4 41.7s (49.1%) | P5 24.0s (28.3%) | P6 5.6s (6.6%)\n[usage] 任务总计 | 模型调用 8 次（Agent 8 + 一次性 0） | token 输入 13,681（未命中） | 输出 10,677 | 缓存命中 101,248（88.1%） | $0.0052\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\full-20261122\\.reviewpi\\tasks\\gofr-dev__gofr@dc0b3e6\\audit\\20261122_101546_737.json",
+  "token_usage": {
+    "input_tokens": 13681,
+    "output_tokens": 10677,
+    "cache_read_input_tokens": 101248
+  }
+}
