@@ -1,0 +1,52 @@
+{
+  "instance_id": "lvgl__lvgl@9cce37c",
+  "repo": "lvgl/lvgl",
+  "base_commit": "344ba9fe99b487f7f5164900679d56acf2d8bff2",
+  "head_commit": "9cce37c219f95701fecc44f74595aa9c6effbdba",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 115.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/widgets/animimage/lv_animimage.h",
+      "line": 76,
+      "summary": "公开 API `lv_animimg_set_src` 删除 `reverse` 参数属破坏性变更，未留兼容入口或迁移说明",
+      "failure_scenario": "本次把已发布的 `lv_animimg_set_src(obj, dsc, num, reverse)` 直接改为三参数版本，并把反向能力迁移到新函数 `lv_animimg_set_src_reverse`。仓库内 5 处调用点虽已同步修改，但该符号是公开头文件导出的 API（`src/widgets/animimage/lv_animimage.h`、包含于 `lvgl.h`），仓库外的用户应用以及 MicroPython/SquareLine 等绑定仍按 4 参数调用。对于未开启 `-Werror` 的工程，旧代码在 C 中会被当作调用未声明原型以外的错误直接编译失败；更隐蔽的是，任何仍以 4 个实参调用旧签名的代码（例如通过旧头文件或手写的强弱声明、旧版绑定胶水代码）会被静默解释为 (obj, dsc, num)，`reverse` 实参被丢弃，反向播放行为变成正向播放，且不会有任何编译期或运行期告警。仓库内已有对已发布 API 保留警告式兼容壳的先例（`src/draw/lv_draw_buf.c:632` 的 `lv_image_buf_set_palette` 仅 `LV_LOG_WARN` 后转调新 API），而本次变更没有提供同类兼容路径，也未在 `docs/src/CHANGELOG.rst` 的 “Breaking Changes” 段（第 26-34 行）登记，迁移成本完全转嫁给下游。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "src/widgets/animimage/lv_animimage.c",
+      "line": 119,
+      "summary": "新增 `lv_animimg_set_src_reverse` 与 `lv_animimg_set_src` 实现完全重复，仅动画起止值不同",
+      "failure_scenario": "新增的反向设置函数把正向函数的 4 行函数体（`LV_ASSERT_OBJ`、写 `animimg->dsc`、写 `animimg->pic_count`、`lv_anim_set_values`）整体复制，只有 `lv_anim_set_values` 的起止值参数不同（`(int32_t)num, 0` 对 `0, (int32_t)num`）。这属于同一份状态写入逻辑的两处副本，未来若给 `lv_animimg_t` 增加与源列表相关的字段（例如缓存帧数上限、预加载标志）或增加额外的空指针/边界校验，很容易只改一处，导致正反向两条路径的状态不一致，出现“正向正常、反向异常”的隐蔽缺陷。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "tests/src/test_cases/widgets/test_animimg.c",
+      "line": 57,
+      "summary": "新增 `test_animimg_set_src_reverse` 仅断言对象非空，无法验证反向播放语义",
+      "failure_scenario": "新增测试用例调用 `lv_animimg_set_src_reverse` 后唯一的断言是 `TEST_ASSERT_NOT_NULL(animimg)`，而 `animimg` 在 `setUp()` 中已由 `lv_animimg_create()` 返回，因此即使 `lv_animimg_set_src_reverse` 的实现被整体删空、或误写成与正向完全相同的 `lv_anim_set_values(&animimg->anim, 0, (int32_t)num)`（正是本 MR 重构要区分的核心行为），该测试依然会通过。这使本次新增 API 的唯一失败模式（起止值方向错误）完全没有被覆盖，后续重构或回归无法被 CI 拦截。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.5,
+      "rule": "TEST-ASSERT-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\lvgl__lvgl\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\diff\\lvgl__lvgl@9cce37c.diff\n  caseId              lvgl__lvgl@9cce37c\n  --issue             (未传)\n  --taskId            lvgl__lvgl@9cce37c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 5（no-signal=5）\n✓ 完成 · 耗时 113.4s · 模型调用 19 次 · token 输入 20,758（未命中） · 输出 14,671 · 缓存命中 359,808（94.5%） · 工具 27 次（主会话 27 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0080\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 114.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (1.0%)\n[time] 阶段 | 六阶段审计 113.4s (98.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 2.6s (2.3%) | P2 2.2s (2.0%) | P3 4.0s (3.5%) | P4 82.6s (72.9%) | P5 17.3s (15.2%) | P6 4.7s (4.1%)\n[usage] 任务总计 | 模型调用 19 次（Agent 19 + 一次性 0） | token 输入 20,758（未命中） | 输出 14,671 | 缓存命中 359,808（94.5%） | $0.0080\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\\lvgl__lvgl@9cce37c\\audit\\20261122_063351_572.json",
+  "token_usage": {
+    "input_tokens": 20758,
+    "output_tokens": 14671,
+    "cache_read_input_tokens": 359808
+  }
+}

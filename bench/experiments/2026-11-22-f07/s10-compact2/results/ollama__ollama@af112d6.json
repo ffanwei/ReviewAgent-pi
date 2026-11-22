@@ -1,0 +1,82 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 220.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "含子目录的 Files key 会在 os.Root 预创建阶段因父目录不存在而失败",
+      "failure_scenario": "新增的校验循环用 root.OpenFile(fp, O_CREATE|O_WRONLY) 打开路径，但 os.Root.OpenFile 不会创建中间目录，而 tmpDir 是刚 MkdirTemp 出来的空目录。因此任何带目录分量的 key（如 \"subdir/model.safetensors\"、\"a/b.safetensors\"）都会返回 ENOENT，并被包装成 errFilePath 直接终止转换；而原有下游 createLink 里原本有 os.MkdirAll(filepath.Dir(dst))，说明嵌套 key 是被设计支持的，旧代码可以正常创建这类模型。本次改动使嵌套路径（validRelative 明确放行、新测试也把它列为合法）从“可用”变为“必然失败”，且错误信息是误导性的 \"file path must be relative\"。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "路径类错误只被映射为 400 于 adapter 分支，base 模型分支会退化为 500",
+      "failure_scenario": "新增的 errFilePath 只加入 adapters 的 bad-request 集合（第 118 行），base 模型分支（第 100 行）的集合未同步。convertFromSafetensors 在 os.Root 校验失败时返回包装了 errFilePath 的错误（第 279 行），而 validRelative 并不能覆盖所有会被 os.Root 拒绝的输入（超长文件名、含 NUL 的路径、Windows 盘符路径、父目录不存在等），因此 base 模型请求仍可能拿到 errFilePath。该错误在 base 分支落到 `ch <- gin.H{\"error\": err.Error()}`（第 106 行），waitForStream 对不含 status 的消息默认使用 500，于是同一类非法路径在 adapter 请求返回 400、在 base 模型请求返回 500。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 58,
+      "summary": "r.Files 被无条件替换为非 nil 空 map，导致 \"neither 'from' or 'files'\" 分支不可达",
+      "failure_scenario": "新增循环先 `files := make(map[string]string, len(r.Files))`（第 50 行）再 `r.Files = files`（第 58 行），即使请求体没有 files（或显式 null），r.Files 也变成非 nil 空 map。于是第 97 行的 `else if r.Files != nil` 恒为真，请求进入 convertModelFromFiles，detectModelTypeFromFiles(空 map) 返回 \"\"，走 default 返回 errUnknownType；第 109-111 行的 errNeitherFromOrFiles 分支成为死代码，客户端看到的错误从 \"neither 'from' or 'files' was specified\" 退化为不具指向性的 \"unknown type\"。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "filepath.Clean 归一化后直接作 key，可能静默覆盖同归一化路径的文件",
+      "failure_scenario": "新增代码把校验通过的 key 归一化后写回 map：`files[filepath.Clean(k)] = v`。validRelative 明确放行重复分隔符与尾部斜杠（新测试把 \"a//b\"、\"a/b/\" 列为合法），因此 \"a/b.safetensors\" 与 \"a//b.safetensors\"、\"a/b.safetensors/\" 会归一化成同一个 key，后写入的 digest 覆盖前一个且无任何报错。convertFromSafetensors 随后以 map key 作为落盘文件名，被覆盖的分片不会被创建，最终表现为分片缺失导致转换失败或模型内容不完整（旧代码没有这次归一化写回，故为本次变更引入）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "DATA-LOSS-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 167,
+      "summary": "validRelative 只识别正斜杠，Windows 下的绝对路径与反斜杠穿越不会被拦截",
+      "failure_scenario": "validRelative 的全部判断都基于 '/'：`strings.HasPrefix(path, \"/\")`、`strings.HasPrefix(path, \"../\")`、`strings.Contains(path, \"/../\")` 等。在 Windows 上 `C:\\models\\x.safetensors`、`..\\..\\x.safetensors` 不含这些模式，函数会返回 nil，与注释中“拦截绝对路径与目录穿越”的契约不符，接口层校验在 Windows 上实际失效，安全边界完全退化为 convertFromSafetensors 内的 os.Root 检查。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.7,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 172,
+      "summary": "接口层拒绝 \"./\" 前缀与内部 \"..\"，os.Root 却接受，两处校验语义不一致",
+      "failure_scenario": "CreateHandler 用 validRelative 校验时，`./model.safetensors`（第 172 行）与 `a/../b`（第 182 行）一律返回 400；而 convertFromSafetensors 依赖 os.Root，这两个路径都在 root 内、本可接受——新增测试也正是这样写的：`\"./model.safetensors\"`（create_test.go:87）与 `\"nested/../model.safetensors\"`（create_test.go:92）期望成功，同时 `\"./x/y\"`（create_test.go:141）与 `\"a/../b\"`（create_test.go:144）期望失败。结果是同一份输入在 HTTP 接口被拒、在内部函数被接受，带 \"./\" 前缀或内部 \"..\" 的合法调用方会突然收到 400，两套并存的语义也容易在后续维护中被改坏。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "CONSISTENCY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 218.7s · 模型调用 23 次 · token 输入 19,436（未命中） · 输出 30,705 · 缓存命中 578,176（96.7%） · 工具 33 次（主会话 33 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0129\n[time] 阶段耗时 | 总墙钟 219.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 218.7s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.2%)\n[time] 审计明细 | P1 4.8s (2.2%) | P3 9.2s (4.2%) | P4 157.8s (72.1%) | P5 36.0s (16.5%) | P6 10.9s (5.0%)\n[usage] 任务总计 | 模型调用 23 次（Agent 23 + 一次性 0） | token 输入 19,436（未命中） | 输出 30,705 | 缓存命中 578,176（96.7%） | $0.0129\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261122_061338_472.json",
+  "token_usage": {
+    "input_tokens": 19436,
+    "output_tokens": 30705,
+    "cache_read_input_tokens": 578176
+  }
+}

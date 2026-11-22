@@ -1,0 +1,42 @@
+{
+  "instance_id": "filamentphp__filament@d47632c",
+  "repo": "filamentphp/filament",
+  "base_commit": "ce4d9d08df41142ff219bb3dc44968084eaae0dc",
+  "head_commit": "d47632c0583bac481d4ce7cc9b6b1711d0f8e0fc",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 234.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 184,
+      "summary": "用 str_contains($column, '->') 判定 JSON 路径列并按第一个 `->` 直接拆分，可能把原本合法的 SQL 表达式拆成非法 SQL",
+      "failure_scenario": "新增分支只根据列字符串中是否包含子串 `->` 来判断它是不是 JSON 路径列，然后直接按第一个 `->` 拆分，再拼回 `json_extract(field, path)`，但没有排除三类同样含有 `->`、却并非该形态的输入：(1) MySQL 的取文本运算符 `->>`，例如 `data->>'$.title'`；(2) 已经带引号路径的写法，例如 `data->'$.title'`；(3) 嵌在原始函数中的 JSON 路径表达式，例如 `json_unquote(data->'$.title')`。在这三种情况下，`wrapJsonFieldAndPath()` 会把 path 解析成 `>'$.title'`、`'$.title'` 或 `$.title')` 之类的片段，再经过 JSON path 包装拼出 `json_extract(`data`, '$.>$.title'')` 这类非法片段，或者把字段名拆坏成 `json_unquote(data`，最终导致 SQL 语法错误（MySQL/MariaDB 1064），整张表格的搜索请求会直接返回 500。改动前，这些写法会因为包含 `(` 或直接作为 `Expression` 原样下发，例如 `lower(data->>'$.title')` 在 MySQL 上是合法语句，因此该分支对这类既有用法造成了行为回退。需要注意，搜索列可以由使用者自由传入（例如 tables 列的 searchColumns()），函数自身的注释也承认列名可能本身就是裸表达式。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.47,
+      "rule": "SQL-EXPRESSION-REWRITE-001"
+    },
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 185,
+      "summary": "通过 invade() 调用框架 protected 方法 wrapJsonFieldAndPath()，缺少存在性回退，自定义 grammar 下会致命报错",
+      "failure_scenario": "新增代码用 `invade()` 反射调用 `Illuminate\\Database\\Query\\Grammars\\Grammar::wrapJsonFieldAndPath()`，这是 Laravel 的 protected（非公开契约）API，且调用点没有任何 `method_exists()` / `try-catch` 回退，同时还标注了 `@phpstan-ignore-line` 来压制静态分析告警。filament/support 的 composer.json 只声明了 illuminate/contracts|support|view，并未声明 illuminate/database，因此该方法的存在性与签名并不由依赖契约保证，只是“当前 Laravel 版本恰好有”。一旦应用注册了未继承 Illuminate 查询 Grammar 的自定义 grammar（或未来 Laravel 版本重命名、调整该 protected 方法），所有强制大小写不敏感的 MySQL/MariaDB 搜索都会在每次构造搜索条件时抛出 `Error: Call to undefined method`，导致整条搜索链路不可用；而且这种签名耦合完全藏在一行被 phpstan 忽略的代码里，后续升级时静态检查无法发现。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.36,
+      "rule": "API-COUPLING-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\filamentphp__filament\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\diff\\filamentphp__filament@d47632c.diff\n  caseId              filamentphp__filament@d47632c\n  --issue             (未传)\n  --taskId            filamentphp__filament@d47632c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 232.1s · 模型调用 13 次 · token 输入 10,929（未命中） · 输出 31,049 · 缓存命中 190,976（94.6%） · 工具 16 次（主会话 16 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0108\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 233.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 232.1s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 29.8s (12.8%) | P3 15.0s (6.4%) | P4 89.5s (38.6%) | P5 91.3s (39.4%) | P6 6.4s (2.8%)\n[usage] 任务总计 | 模型调用 14 次（Agent 13 + 一次性 1） | token 输入 13,099（未命中） | 输出 38,990 | 缓存命中 190,976（93.6%） | $0.0133\n[usage] 一次性明细 | 解析修复 1 次（输入 2,170 / 输出 7,941 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\\filamentphp__filament@d47632c\\audit\\20261122_064735_806.json",
+  "token_usage": {
+    "input_tokens": 10929,
+    "output_tokens": 31049,
+    "cache_read_input_tokens": 190976
+  }
+}

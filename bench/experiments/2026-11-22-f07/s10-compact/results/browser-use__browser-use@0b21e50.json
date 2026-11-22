@@ -1,0 +1,52 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 142.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "调试端口声明为可空但下游无兜底，传 None 会让浏览器初始化直接抛异常",
+      "failure_scenario": "新增字段 `chrome_remote_debugging_port: int | None = CHROME_DEBUG_PORT` 在类型上明确允许 None，但三处使用点都没有 None 兜底：user-provided 分支把端口拼进 `http://localhost:{port}/json/version` 与 CDP endpoint，None 会得到 'http://localhost:None'，httpx 解析时抛 InvalidURL，而第 214 行只捕获 `httpx.RequestError`，异常会直接冒出 `_setup_browser`，浏览器初始化失败；builtin 分支把端口交给 `socket.connect_ex(('localhost', port))`，None 会抛 TypeError，同时 `chrome_args.remove(f'--remote-debugging-port=None')` 也移除不掉真实参数。此外传给 Chrome 的启动参数会变成非法的 `--remote-debugging-port=None`。只要调用方按类型契约传入 None（例如“不指定端口”），或在配置反序列化中缺少该键被填成 None，就会立刻崩溃而非降级到默认端口。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 218,
+      "summary": "用户浏览器启动未带独立的 user-data-dir，自定义端口仍无法与已开着的 Chrome 共存",
+      "failure_scenario": "本次新增的文档承诺“provide non-default chrome debugging port 即可在不关闭已开 Chrome 的情况下启动新的用户 Chrome”（第 82-86 行），但新的 `chrome_launch_args` 只是替换了启动方式与端口参数，并未附带任何 `--user-data-dir`（CHROME_ARGS 中该参数在 chrome.py:102 被注释掉，注明“managed by playwright arg instead”，而本分支是直接 exec 启动，不经过 playwright launch，因此完全没有 user-data-dir）。当用户已有 Chrome 使用默认 profile 在运行时，再次用同一 binary 启动会走 Chrome 的进程单例逻辑，新进程把命令行交给已存在实例后立即退出，`--remote-debugging-port=<custom>` 不会生效；随后第 239-249 行的 10 次轮询全部失败，第 251-263 行抛出 RuntimeError 并提示“需要关闭所有已打开的 Chrome 实例”，与本次新增文档宣称的能力相反。另外新进程退出后 `psutil.Process(pid)` 指向的进程已不存在，`close()` 中的 kill 只会走异常分支。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "browser_use/browser/chrome.py",
+      "line": 132,
+      "summary": "从公共常量 CHROME_ARGS 中移除了 remote-debugging-port，属静默的常量契约变更",
+      "failure_scenario": "本次把 `f'--remote-debugging-port={CHROME_DEBUG_PORT}'` 从模块级公共常量 CHROME_ARGS 中删除，改由 `browser.py` 两处调用点显式拼接新的 CHROME_DEBUGGING_ARG。仓库内部两处使用点已同步修改、行为一致，但 CHROME_ARGS 是对外可导入的常量，下游若基于它自行拼装 Chrome 启动命令（该用法在 examples/browser/using_cdp.py 中以 `--remote-debugging-port=9222` 的形式被公开示范），升级后将静默丢掉调试端口，`connect_over_cdp('http://localhost:9222')` 连接失败且无提示，排查成本高。建议要么保留带默认端口的等价常量/辅助函数，要么在常量命名与文档上明确“不含调试端口”。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.35,
+      "rule": "API-COMPAT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 12（no-signal=12）\n✓ 完成 · 耗时 141.0s · 模型调用 10 次 · token 输入 12,532（未命中） · 输出 20,691 · 缓存命中 195,712（94.0%） · 工具 12 次（主会话 12 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0081\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 141.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 140.9s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 22.6s (16.0%) | P3 4.5s (3.2%) | P4 72.4s (51.4%) | P5 34.5s (24.5%) | P6 6.9s (4.9%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 12,532（未命中） | 输出 20,691 | 缓存命中 195,712（94.0%） | $0.0081\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261122_054206_283.json",
+  "token_usage": {
+    "input_tokens": 12532,
+    "output_tokens": 20691,
+    "cache_read_input_tokens": 195712
+  }
+}

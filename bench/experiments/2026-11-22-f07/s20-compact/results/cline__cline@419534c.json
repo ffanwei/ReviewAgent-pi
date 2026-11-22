@@ -1,0 +1,62 @@
+{
+  "instance_id": "cline__cline@419534c",
+  "repo": "cline/cline",
+  "base_commit": "a1bf1f95a30ca95581d9811488636aec42dd2f80",
+  "head_commit": "419534ccd4241fc11827741eb0d76ba0c9d21277",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 85.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1322,
+      "summary": "checkpoint commit 改为 fire-and-forget 后 promise 拒绝无人处理，错误被静默吞掉",
+      "failure_scenario": "改动前 `const commitHash = await this.checkpointTracker.commit()` 被 await，提交失败会抛到 saveCheckpoint 的调用点，由 ToolExecutor 各工具分支的 try/catch → handleError 处理并反馈给用户与模型。改动后 `this.checkpointTracker.commit().then(...)` 没有任何 `.catch()`，而 CheckpointTracker.commit() 在失败时是 `throw new Error(...)` 而不是返回 undefined，因此该拒绝会成为未处理的 Promise rejection：错误既不会记录到 taskState.checkpointTrackerErrorMessage，也不会走 handleError，checkpoint 永久缺失；同时 `.then` 回调内部的 `updateClineMessage` 也可能因索引非法直接 throw，同样变成未处理拒绝。失败场景：shadow git 锁冲突 / 磁盘满 / `git add` 失败时，checkpoint 静默丢失，UI 仍显示已创建检查点，用户后续点“恢复检查点”才发现失败，且控制台只有未处理拒绝告警。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1324,
+      "summary": "后台回调按“最新一条 checkpoint_created”回填 hash，会与后续检查点交错写错消息",
+      "failure_scenario": "commit 从 await 变为后台执行后，回调里用 `findLastIndex(messages, m => m.say === \"checkpoint_created\")` 定位待回填消息，但该查找发生在 commit 解析时刻，而非发起时刻。若一次 commit 耗时数秒（注释本身说明大 shadow git 仓库可能耗时数秒），期间任务继续推进（ToolExecutor 中约 20 处 `await this.saveCheckpoint()`），会产生新的 checkpoint_created 消息；此时旧 commit 的 hash 会被写到新消息上，旧消息则永远没有 hash。随后新 commit 解析时又覆盖同一条消息，导致 hash 与检查点语义错位。失败场景：用户在消息 A 的检查点上点“恢复”，restoreCheckpoint 拿 message.lastCheckpointHash 去 `resetHead`，实际回滚到 B 时刻的 commit，工作区被恢复成错误快照；消息 A 因无 hash 走到 index.ts:429 的 fallback 分支，恢复成“最近的检查点”，与用户点击的检查点不一致。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1321,
+      "summary": "checkpoint_created 提前到 commit 之前发出，失败时 UI 仍展示可用检查点",
+      "failure_scenario": "改动前 `await this.say(\"checkpoint_created\")` 位于 `if (commitHash)` 内，只有成功拿到 hash 才向聊天视图宣告检查点已创建；改动后它被提到 commit 之前且无条件执行。于是 commit 失败（或返回空 hash）时，UI 仍出现一个 checkpoint_created 消息且没有 lastCheckpointHash，用户点击该条消息的恢复/查看改动会命中 `presentMultifileDiff`/`restoreCheckpoint` 中的 `if (!hash)` 分支，只得到 “No checkpoint hash found” 或 “Failed to restore checkpoint”，或者被静默 fallback 到上一个检查点。失败场景：git 提交因锁冲突/超时失败后，用户在聊天里看到“已创建检查点”，尝试回滚却回滚到更早的快照。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "UI-STATE-001"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1322,
+      "summary": "后台 commit 可能在 resetHead/任务取消之后落地，污染 shadow git 状态",
+      "failure_scenario": "commit 不再被等待后，其生命周期与任务/检查点恢复流程解耦。restoreCheckpoint 会对 shadow 仓库执行 `resetHead`（`git reset --hard <hash>`），而 resetHead 的取值依赖消息上的 hash；若此时仍有后台 commit 在飞行中（例如用户在看到 checkpoint_created 后立刻回滚，或任务被 abortTask 取消），该 commit 会在 reset 之后继续执行 `git add` + `git commit`，在已回滚的 HEAD 之上新建一个 commit，使 shadow 仓库重新包含被用户回滚掉的改动。之后基于消息 hash 计算的 diff（presentMultifileDiff / doesLatestTaskCompletionHaveNewChanges）会与工作区真实状态不符，用户“查看改动/恢复检查点”结果错乱。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "LIFECYCLE-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\diff\\cline__cline@419534c.diff\n  caseId              cline__cline@419534c\n  --issue             (未传)\n  --taskId            cline__cline@419534c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 84.0s · 模型调用 13 次 · token 输入 18,737（未命中） · 输出 10,783 · 缓存命中 188,928（91.0%） · 工具 20 次（主会话 20 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0062\n[time] 阶段耗时 | 总墙钟 84.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.7%)\n[time] 阶段 | 六阶段审计 83.9s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 6.0s (7.1%) | P3 4.8s (5.7%) | P4 33.1s (39.5%) | P5 29.4s (35.1%) | P6 10.6s (12.6%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 18,737（未命中） | 输出 10,783 | 缓存命中 188,928（91.0%） | $0.0062\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\\cline__cline@419534c\\audit\\20261122_065207_872.json",
+  "token_usage": {
+    "input_tokens": 18737,
+    "output_tokens": 10783,
+    "cache_read_input_tokens": 188928
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@29e03a6",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "7c369e84052aaee15a6dedf8928b5af4c869037b",
+  "head_commit": "29e03a6294edfe43b49eba20fe49099cef601d34",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 160.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 65,
+      "summary": "导出结果未经任何键校验即写入并被整体覆盖到 locale 文件，空导出会把页面文案全部变成键名",
+      "failure_scenario": "脚本把 POEditor 下载到的内容直接 writeJson 落盘，唯一的质量检查是 workflow 里「文件非空 + jq 可解析」。当导出内容为空对象、或数组项缺 term/definition 被 forEach 静默过滤成 {} 时，temp/<lang>.json 仍是非空合法 JSON，会通过校验并由 cp -r temp/* src/locales/ 整体覆盖 src/locales/gb.json、tr.json。由于 src/Utils/i18n.js 以 import.meta.glob(\"../locales/*.json\") 装载资源、LanguageSelector 直接渲染语言码，覆盖后前端所有文案会退化为键名（如 dontHaveAccount），且工作流会自动 commit+push 到分支，人很难第一时间发现。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-DATA-LOSS-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "工作流未声明 permissions: contents: write，git push 在只读 GITHUB_TOKEN 下会 403 失败",
+      "failure_scenario": "该 workflow 用 secrets.GITHUB_TOKEN 检出代码，并在最后一步直接 git push，但整个 jobs 块没有任何 permissions 声明。当仓库/组织的 Actions 默认 token 权限为 read-only（GitHub 新仓库默认、以及收紧权限的组织的常见设置）时，checkout 能成功但 push 会因 403 失败，导致每日定时同步在最后一步稳定报错；而前面的 npm install、下载、复制都在每次运行中白跑。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CI-PERMISSIONS-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 83,
+      "summary": "下载结果以任意语言码文件名直接落入 src/locales，前端会把它当成新语言项暴露给用户",
+      "failure_scenario": "workflow 把用户输入的 languages 原样传给脚本，脚本以 ${language}.json 命名输出，最后 cp -r temp/* src/locales/ 无白名单地粘贴进资源目录。而前端 src/Utils/i18n.js 用 import.meta.glob(\"../locales/*.json\") 并以文件名正则提取语言码，LanguageSelector 又用 Object.keys(i18n.options.resources) 渲染选项、直接显示裸语言码。因此手动触发时输入 en、en-US 等任何 POEditor 侧存在的语言码，都会在仓库里新增 en.json / en-us.json 等文件，并在下一次构建后作为语言选项出现在界面上（标签是裸代码，且没有对应的 gb 回退覆盖率保证）；错误语言码则会让脚本在 API 处直接报错退出。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "I18N-CONTRACT-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 18,
+      "summary": "定时任务把机器生成内容直接提交到默认分支，且 GITHUB_TOKEN 推送不会触发后续 CI 校验",
+      "failure_scenario": "schedule（每日 0 点）触发时没有任何人工审核环节：下载的翻译经 cp 覆盖 src/locales 后由 bot 直接 git push 到检出分支。一方面翻译改动绕过 PR 与代码评审直接进入默认分支；另一方面以 secrets.GITHUB_TOKEN 身份推送的提交按 GitHub 设计不会触发其它 workflow，因此这份自动生成、未经任何构建/测试校验的 locale 变更落地后没有 CI 兜底，也无法通过分支保护审批。若上游同时有合并使分支前进，git push 还会因 non-fast-forward 被拒，使定时任务报红。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CI-REVIEW-BYPASS-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 81,
+      "summary": "脚本对 process.cwd()/temp 执行 emptyDir，输出目录硬编码在仓库工作树内且未被忽略",
+      "failure_scenario": "main() 在下载前调用 fs.emptyDir(path.join(process.cwd(), 'temp'))，而 workflow 是在仓库根目录执行脚本（run 步骤的 cwd 即 workspace，且前面还 mkdir -p temp）。这意味着脚本会无条件清空仓库根下的 temp 目录：一旦仓库后续（或开发者本地运行）在 temp/ 下存放任何文件，会被静默删除；同时 .gitignore 并未忽略 temp/，同步后残留的 temp/*.json 会成为工作树中的未跟踪文件，任何使用 git add -A 的本地操作都可能把这些中间产物误提交。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RESOURCE-SIDE-EFFECT-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 12,
+      "summary": "脚本默认语言列表 'tr,en' 与 workflow/仓库实际语言（gb）不一致，本地直接运行会生成无人使用的 en.json",
+      "failure_scenario": "脚本自身回退值是 (process.env.LANGUAGES || 'tr,en')，而 workflow 传给它的默认值是 tr,gb，仓库 src/locales 里也只有 gb.json 与 tr.json，且 src/Utils/i18n.js 的 primaryLanguage 是 \"gb\"。任何绕过 workflow 直接运行脚本的场景（本地调试、其它 pipeline）都会按 en 去拉取并写出 temp/en.json，随后被复制进 src/locales 成为前端可选的英文语言项，而真正的 gb 资源却没有更新——两个入口的默认值不一致会让「默认行为」变得依赖调用方式。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "CONFIG-DEFAULT-CONSISTENCY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\diff\\bluewave-labs__Checkmate@29e03a6.diff\n  caseId              bluewave-labs__Checkmate@29e03a6\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@29e03a6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 1（no-signal=1）\n✓ 完成 · 耗时 159.0s · 模型调用 17 次 · token 输入 19,541（未命中） · 输出 26,012 · 缓存命中 257,792（93.0%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0107\n[time] 阶段耗时 | 总墙钟 159.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 158.9s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 10.9s (6.8%) | P3 26.6s (16.7%) | P4 13.2s (8.3%) | P5 101.3s (63.7%) | P6 7.0s (4.4%)\n[usage] 任务总计 | 模型调用 18 次（Agent 17 + 一次性 1） | token 输入 23,257（未命中） | 输出 31,810 | 缓存命中 257,792（91.7%） | $0.0129\n[usage] 一次性明细 | 解析修复 1 次（输入 3,716 / 输出 5,798 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\tasks\\bluewave-labs__Checkmate@29e03a6\\audit\\20261122_054024_220.json",
+  "token_usage": {
+    "input_tokens": 19541,
+    "output_tokens": 26012,
+    "cache_read_input_tokens": 257792
+  }
+}

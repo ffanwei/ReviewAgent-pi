@@ -1,0 +1,42 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 114.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件用客户端常量判定日志结尾，服务端分页大小不同时会提前截断同步",
+      "failure_scenario": "新增的 loop 以 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 作为「已到达 received_log 末尾」的判据。这个判据隐含假设「服务端每页上限 == 客户端常量」。但 validator 与 client 是独立部署/升级的：若对端 validator 的分页上限比客户端常量小（例如对端来自把上限调小的版本，state.rs:52 的 `TODO(#4638): Revisit the number` 正说明该数值预期会变），某页只返回 500 条时客户端就会认为日志已结束而 break，剩下的条目本轮不会被拉取。影响：`remote_log` 被当作完整后缀用于 `heights_per_chain` 与 tracker 推进，于是本轮同步静默地只处理前一段日志却返回成功（`ReceivedCertificatesFromValidator { tracker, .. }` 照常被写入 received_certificate_trackers），后续页中的跨链消息要等下一次同步才会被处理；而响应里本已带有全量条数 `count_received_log`，完全可以据此判断是否到末尾，无需依赖跨版本常量一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-PAGINATION-001"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 848,
+      "summary": "新增的分页循环没有总条数/进度校验，对端不推进 offset 时会无界循环并耗尽内存",
+      "failure_scenario": "循环的推进完全依赖对端返回的条目数：`offset += received_entries as u64`，且只在「本页条目数 < 上限」时才退出；没有任何校验确认返回的条目确实对应请求的 `offset` 位置，也没有总条数或迭代次数上限。若对端 validator（旧版/异常实现/被篡改节点）忽略 `request_received_log_excluding_first_n` 而每次返回同样的一整页（例如始终 1000 条），`offset` 会持续增长而实际位置不前进，`remote_log.extend(...)` 每轮再追加 1000 条，循环永不终止，直到进程内存/CPU 被耗尽——且 `RemoteNode::handle_chain_info_query` 只是一次性调用、没有重试或超时兜底。相比改动前的单次请求（响应体积受传输层限制），这是本变更新引入的无界资源消耗路径。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RELIABILITY-LOOP-BOUND-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 113.4s · 模型调用 16 次 · token 输入 18,660（未命中） · 输出 15,070 · 缓存命中 221,312（92.2%） · 工具 19 次（主会话 19 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0075\n[time] 阶段耗时 | 总墙钟 114.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.6%)\n[time] 阶段 | 六阶段审计 113.3s (99.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 3.4s (3.0%) | P2 4.7s (4.2%) | P3 13.1s (11.6%) | P4 70.9s (62.6%) | P5 16.4s (14.5%) | P6 4.6s (4.1%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 18,660（未命中） | 输出 15,070 | 缓存命中 221,312（92.2%） | $0.0075\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261122_053507_548.json",
+  "token_usage": {
+    "input_tokens": 18660,
+    "output_tokens": 15070,
+    "cache_read_input_tokens": 221312
+  }
+}

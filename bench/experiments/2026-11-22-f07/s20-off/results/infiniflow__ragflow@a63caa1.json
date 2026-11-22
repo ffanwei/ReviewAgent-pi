@@ -1,0 +1,42 @@
+{
+  "instance_id": "infiniflow__ragflow@a63caa1",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "0a42e5777eb966b26aaf8f2a7d593ae99a4aa87a",
+  "head_commit": "a63caa1087852ada98964678be26b7c4d8363af6",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 100.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "graphrag/utils.py",
+      "line": 442,
+      "summary": "removed_edges 的文档删除被改成逐条 await，串行化后放大了 ES 往返延迟",
+      "failure_scenario": "改动把原来由 `nursery.start_soon` 并发派发的删除改为在 `for` 循环体内直接 `await trio.to_thread.run_sync(...)`，于是每一条被移除的边都要等一次同步 `docStoreConn.delete`（ES/Infinity HTTP 往返）完成后才处理下一条。实体解析阶段一次可产生成百上千条 removed_edges，删除耗时从一次往返变成 N 次往返的串行累加；而 `set_graph` 是在 `merge_subgraph` 的 `RedisDistributedLock(f\"graphrag_task_{kb_id}\", timeout=600)` 保护区内被调用，串行等待会直接拉长持锁时间，可能导致其他文档的 graphrag 任务长时间阻塞甚至锁超时/丢锁。同时外层 `async with trio.open_nursery()` 已经没有并发任务，成了无用包装，容易被误读为仍在并发执行。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.72,
+      "rule": "PERF-003"
+    },
+    {
+      "file": "graphrag/entity_resolution.py",
+      "line": 114,
+      "summary": "用 list(set) 生成 merging_nodes 使合并代表节点不确定，图谱结果不可复现",
+      "failure_scenario": "`nx.connected_components` 产出的是节点 `set`，改为 `list(sub_connect_graph)` 虽然修掉了原来 `set.nodes` 的 AttributeError，但保留了集合的哈希迭代顺序。`_merge_graph_nodes` 把 `nodes[0]` 当作合并后保留的代表节点（其余节点全部删除并进入 `change.removed_nodes`），代表节点的 `entity_name`/`entity_type` 保持不变、`description` 被拼接，并且摘要提示与 `change.added_updated_nodes` 都基于 `nodes[0]`。由于 Python 字符串哈希默认随机化，同一份输入在不同进程/不同次运行中 `nodes[0]` 可能不同，导致最终写入知识图谱的实体名、属性与文档库中被删除的实体集合不稳定，进而影响增量合并结果的一致性与问题复现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-007"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\infiniflow__ragflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\diff\\infiniflow__ragflow@a63caa1.diff\n  caseId              infiniflow__ragflow@a63caa1\n  --issue             (未传)\n  --taskId            infiniflow__ragflow@a63caa1\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 2（no-signal=2）\n✓ 完成 · 耗时 99.0s · 模型调用 11 次 · token 输入 14,998（未命中） · 输出 12,872 · 缓存命中 136,320（90.1%） · 工具 13 次（主会话 13 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0061\n[time] 阶段耗时 | 总墙钟 99.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.8%)\n[time] 阶段 | 六阶段审计 99.0s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 11.6s (11.7%) | P2 2.8s (2.8%) | P3 3.3s (3.4%) | P4 62.7s (63.3%) | P5 14.3s (14.4%) | P6 4.3s (4.4%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 14,998（未命中） | 输出 12,872 | 缓存命中 136,320（90.1%） | $0.0061\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\\infiniflow__ragflow@a63caa1\\audit\\20261122_064005_678.json",
+  "token_usage": {
+    "input_tokens": 14998,
+    "output_tokens": 12872,
+    "cache_read_input_tokens": 136320
+  }
+}

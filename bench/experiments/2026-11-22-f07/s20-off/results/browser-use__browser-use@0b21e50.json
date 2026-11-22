@@ -1,0 +1,52 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 111.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "chrome_remote_debugging_port 类型允许 None，但所有使用点都按 int 处理会崩溃",
+      "failure_scenario": "新增字段声明为 `int | None`（默认 CHROME_DEBUG_PORT），但本次变更引入的所有消费点都把它当成 int 直接使用：_setup_builtin_browser 中 `s.connect_ex(('localhost', self.config.chrome_remote_debugging_port))` 在 None 时抛 TypeError；用户自提供浏览器分支里 URL 会拼成 `http://localhost:None/json/version`（httpx 抛的 InvalidURL 不属于被捕获的 httpx.RequestError），启动参数会变成 `--remote-debugging-port=None`。也就是说该字段一旦被显式设为 None（类型声明明确允许，配置反序列化或调用方传 None 时很常见），浏览器初始化会在 _setup_browser 中直接异常退出，且错误信息与端口无关，难以定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "NULL-SAFETY-001"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 229,
+      "summary": "改用 create_subprocess_exec 后，文档示例中带转义空格的浏览器路径将无法启动",
+      "failure_scenario": "本次把用户自提供浏览器的启动方式从 create_subprocess_shell 改为 create_subprocess_exec。exec 不做 shell 解析，参数被原样交给 execve，而 BrowserConfig 文档给出的 browser_binary_path 示例本身是用反斜杠转义空格的（`/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome`）。按文档填写配置的 macOS 用户会得到 FileNotFoundError（路径中带字面反斜杠），异常直接抛在 psutil.Process 之前，与本次“让用户自提供浏览器更好用（可指定端口）”的目标相冲突。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "SUBPROCESS-002"
+    },
+    {
+      "file": "tests/test_browser.py",
+      "line": 180,
+      "summary": "新测试 mock 的是 requests.get，被测代码用 httpx，复用分支未被覆盖且用例空转约 10 秒",
+      "failure_scenario": "新测试通过 monkeypatch 替换 requests.get 来伪造调试端口探测结果，但 Browser._setup_user_provided_browser 使用的是 `httpx.AsyncClient().get(...)`，dummy_get 永远不会被调用。于是测试会真实访问 localhost:9223 并失败，进入 10 次重试循环（每次 await asyncio.sleep(1)），最后只验证了被 mock 的 create_subprocess_exec 启动路径。用例虽然通过，但既没有验证“检测到已存在浏览器并复用 + connect_over_cdp 到自定义端口”这条本次改动的核心分支，也让每次运行固定多出约 10 秒真实网络重试，回归时无法报警。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.65,
+      "rule": "TESTABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 12（no-signal=12）\n✓ 完成 · 耗时 109.5s · 模型调用 12 次 · token 输入 11,833（未命中） · 输出 14,779 · 缓存命中 196,608（94.3%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0063\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 110.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.6%)\n[time] 阶段 | 六阶段审计 109.4s (99.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 2.5s (2.3%) | P2 8.0s (7.3%) | P3 4.3s (4.0%) | P4 77.6s (70.9%) | P5 11.6s (10.6%) | P6 5.4s (5.0%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 11,833（未命中） | 输出 14,779 | 缓存命中 196,608（94.3%） | $0.0063\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261122_063625_563.json",
+  "token_usage": {
+    "input_tokens": 11833,
+    "output_tokens": 14779,
+    "cache_read_input_tokens": 196608
+  }
+}

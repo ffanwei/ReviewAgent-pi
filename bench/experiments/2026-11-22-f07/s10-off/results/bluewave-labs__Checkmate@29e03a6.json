@@ -1,0 +1,82 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@29e03a6",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "7c369e84052aaee15a6dedf8928b5af4c869037b",
+  "head_commit": "29e03a6294edfe43b49eba20fe49099cef601d34",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 129.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 71,
+      "summary": "校验步骤只判断文件非空，空导出会覆盖并清空现有全部翻译",
+      "failure_scenario": "Verify 步骤仅用 `[ ! -s \"$file\" ]`（文件大小非 0）与 `jq .`（JSON 语法合法）来校验下载结果，而 `{}`、`{\"a\":\"\"}` 这类内容完全能通过：脚本在数组格式转换分支里 `formattedTranslations = {}`，只有 `item.term && item.definition` 同时为真才赋值，因此当 POEditor 返回空数组、术语未翻译（definition 为空串）或接口返回了非预期形状时，写盘的最终就是一个空/近空对象。随后 Copy 步骤用 `cp -r temp/* src/locales/` 无条件覆盖，把 `src/locales/gb.json`（现有 178 行键值）整个替换成 `{}`，并由 bot 自动 commit + push 到主分支。由于 `src/Utils/i18n.js` 是 `import.meta.glob(\"../locales/*.json\", { eager: true })` 全量加载，翻译资源为空后所有 `t()` 都取不到值，前端界面会整体退化为显示原始 key，且 @ 历史记录里才会发现。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "RELIABILITY-DATA-LOSS-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 10,
+      "summary": "手动触发的默认语言 `tr,en` 与应用实际使用的 `gb` 不一致，跑完不更新 gb.json",
+      "failure_scenario": "`workflow_dispatch` 的 `languages` 输入默认值是 `\"tr,en\"`，脚本内 `LANGUAGES` 的缺省值也是 `'tr,en'`，但工作流 env 的回退值是 `'tr,gb'`，README 也声明默认下载 `tr` 和 `gb`，而前端 i18n 的主语言/回退语言是 `gb`（`src/Utils/i18n.js:6`）。因此任何人从 Actions 页面直接点“Run workflow”而不修改输入，下载得到的是 `en.json`：`gb.json` 不会被更新（真正需要同步的主语言漏更新），同时会在 `src/locales/` 新增一个 `en.json`，被 `import.meta.glob` 自动加载后在语言选择器里多出一个“en”选项，而 `LanguageSelector.jsx:80` 用 `fi fi-${lang}` 取旗标，flag-icons 中英语对应 `gb`，`fi-en` 不存在，语言项会显示空白旗标。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "RELIABILITY-CONFIG-002"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 28,
+      "summary": "未声明 `permissions: contents: write`，`git push` 可能直接 403 失败",
+      "failure_scenario": "工作流用 `secrets.GITHUB_TOKEN` 做 checkout，最后一步执行 `git push` 回写仓库，但整个文件（第 1-92 行）没有 `permissions:` 声明。GitHub 对新建仓库/组织的默认工作流权限是只读（`contents: read`），在这种配置下 `git push` 会失败（remote: Permission denied / 403），每日定时同步会持续红灯；此外若主分支有分支保护（要求 PR 或状态检查），`git push` 同样会被拒绝，而工作流没有做任何降级（例如开 PR）处理。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-CI-PERM-003"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 12,
+      "summary": "语言列表 split 后未 trim/过滤空项，含空格输入会让整个任务退出",
+      "failure_scenario": "`languages` 是自由文本输入（描述里示例 `tr,en,es`），脚本直接 `split(',')` 且不 `trim()`、不过滤空串，随后把每个值原样作为 `language` 字段发给 POEditor。用户输入 `tr, gb` 或 `tr,gb,` 时会得到 `\" gb\"` / `\"\"` 这样的非法语言码，POEditor 返回非 `success`，命中第 37-39 行的 `throw`，`process.exit(1)` 让整个工作流失败；由于第 81 行已 `fs.emptyDir(temp)` 并逐语言顺序处理，排在后面的合法语言根本不会被下载，等于一次输入格式瑕疵就让整次同步全废。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "ROBUSTNESS-INPUT-004"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "定时任务与手动触发无并发控制，push 冲突时后完成者失败",
+      "failure_scenario": "工作流同时由 `schedule`（每天 0 点）和 `workflow_dispatch` 触发，但没有 `concurrency` 组，提交步骤也没有在 `git push` 前做 `git pull --rebase`。当手动触发与定时任务（或两次手动）时间接近时，两个运行各自基于旧 commit 提交，后完成者的 `git push` 会被远端拒绝（non-fast-forward），整次同步失败，且看不到有任何重试。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RELIABILITY-CI-CONCURRENCY-005"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 54,
+      "summary": "每次运行动态生成 package.json 并 `npm install`，无 lockfile 导致依赖漂移",
+      "failure_scenario": "工作流在运行时用 heredoc 生成 `.github/scripts/package.json` 再 `npm install`，既没有 committed lockfile（不是 `npm ci`），也与仓库已有的依赖管理割裂：根 `package.json` 已包含 `axios`（`^1.7.4`），这里又声明 `axios: ^1.6.0` 且额外引入 `fs-extra`。由于依赖范围是浮动的，未来某次 axios/fs-extra 主版本发布后，每日定时任务可能在无人改代码的情况下突然失败；同时该目录的 `node_modules` 未纳入任何缓存，每天重复安装。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-DEPS-006"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\diff\\bluewave-labs__Checkmate@29e03a6.diff\n  caseId              bluewave-labs__Checkmate@29e03a6\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@29e03a6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 1（no-signal=1）\n✓ 完成 · 耗时 127.8s · 模型调用 11 次 · token 输入 11,798（未命中） · 输出 19,634 · 缓存命中 131,712（91.8%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0075\n[time] 阶段耗时 | 总墙钟 128.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 127.8s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 4.8s (3.7%) | P2 3.3s (2.6%) | P3 28.7s (22.5%) | P4 12.6s (9.9%) | P5 66.5s (52.1%) | P6 11.8s (9.2%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 11,798（未命中） | 输出 19,634 | 缓存命中 131,712（91.8%） | $0.0075\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\tasks\\bluewave-labs__Checkmate@29e03a6\\audit\\20261122_053402_410.json",
+  "token_usage": {
+    "input_tokens": 11798,
+    "output_tokens": 19634,
+    "cache_read_input_tokens": 131712
+  }
+}

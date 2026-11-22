@@ -1,0 +1,42 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 133.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件依赖与服务端共享的常量而非响应中的 count_received_log，页大小不一致时会提前停止拉取",
+      "failure_scenario": "新增的分页循环只以“本页条目数 < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES”作为唯一终止条件，把“服务端一页恰好等于 1000 条”当作“后面还有更多”的隐式信号。服务端侧该值是本地常量（state.rs:1418-1420 的 min(start+1000, count)），响应中既不携带“已被截断”标志，客户端也没有使用响应里已有的 count_received_log。一旦 validator 的页大小与客户端常量不一致（混合版本部署、后续只在一侧调整该常量、或旧实现/第三方实现按更小页返回），客户端会在第一页不足 1000 条时就把该页当成“日志已取完”而跳出循环，随后仍按截断后的 remote_log 计算 remote_heights 并推进 tracker，find_received_certificates 依旧返回 Ok(())，本轮同步静默跳过尚未下载的接收证书（跨链消息投递被推迟，直到后续同步轮次从同一 tracker 重新拉取）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-PAGINATION-001"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 848,
+      "summary": "分页循环既无轮数上限也不校验偏移/进展，异常 validator 可令客户端无限拉取并无限增长内存",
+      "failure_scenario": "新增的 loop 没有任何上界：既没有最大轮数或最大条目数限制，也没有校验“本页确实从 offset 开始且相对上一页有进展、且不与已收条目重复”。分页内容是来自 validator 的不可信数据——remote_node.handle_chain_info_query 只经 check_and_return_info 校验签名与 chain_id，不校验 requested_received_log 的内容或起始位置。因此一个作恶或实现有缺陷的 validator 只要每页都返回恰好 CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES 条（忽略 offset 或重复返回同一批条目），循环就永不退出，remote_log 无界增长，客户端在 find_received_certificates 路径上挂死并最终 OOM。旧代码只有单次请求，内存规模受单次响应大小约束；本次改动把该约束放开成无界的连续请求。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RELIABILITY-UNBOUNDED-LOOP-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 132.4s · 模型调用 19 次 · token 输入 21,123（未命中） · 输出 18,631 · 缓存命中 363,392（94.5%） · 工具 24 次（主会话 24 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0092\n[time] 阶段耗时 | 总墙钟 133.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 132.4s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 46.4s (35.1%) | P3 7.6s (5.8%) | P4 31.3s (23.7%) | P5 41.5s (31.3%) | P6 5.5s (4.2%)\n[usage] 任务总计 | 模型调用 20 次（Agent 19 + 一次性 1） | token 输入 22,857（未命中） | 输出 20,850 | 缓存命中 363,392（94.1%） | $0.0101\n[usage] 一次性明细 | 解析修复 1 次（输入 1,734 / 输出 2,219 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact-20261122\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261122_054232_189.json",
+  "token_usage": {
+    "input_tokens": 21123,
+    "output_tokens": 18631,
+    "cache_read_input_tokens": 363392
+  }
+}

@@ -1,0 +1,738 @@
+{
+  "ex_info": {
+    "start_time": "2026-11-22T13:54:27.321810",
+    "results_dir": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122",
+    "reviewer": "claude",
+    "line_k": 1,
+    "limit": null,
+    "score_mode": "file_semantic",
+    "missing_instance_ids": []
+  },
+  "summary": {
+    "total_instances": 10,
+    "candidate_instances": 10,
+    "evaluated_instances": 10,
+    "missing_instances": 0,
+    "expected_notes": 40,
+    "generated_notes": 31,
+    "total_duration_seconds": 1400.7,
+    "avg_duration_seconds": 140.07,
+    "total_input_tokens": 3582035,
+    "total_output_tokens": 194964,
+    "total_tokens": 3776999,
+    "avg_input_tokens": 358204,
+    "avg_output_tokens": 19496,
+    "matched_generated_notes": 13,
+    "matched_file_semantic_notes": 13,
+    "file_semantic_match_rate": 0.419,
+    "file_semantic_recall_rate": 0.325,
+    "balanced_score": 0.366
+  },
+  "eval_res": [
+    {
+      "instance_id": "lvgl__lvgl@9cce37c",
+      "repo": "lvgl/lvgl",
+      "comments": [
+        {
+          "note": "Buffer/OOB risk from animation range: `lv_anim_set_values(..., 0, (int32_t)num)` allows `idx==num`. `index_change` only clamps `idx >= pic_count` to `pic_count - 1`, so `idx==num` becomes `num-1` (OK) **unless `num==0`**, where it becomes `-1` and then `animimg->dsc[-1]` is accessed. Also in reverse API you start from `(int32_t)num`, which will also become `-1` when `num==0` after clamping. Suggest guarding `num==0` early (set `dsc`, set `pic_count=0`, and return), and ideally use `num-1` as start/end values when `num>0` to avoid ever producing `idx==num`.\n\n```suggestion\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n\n    if(num == 0) {\n        /* No frames: avoid idx underflow in index_change */\n        return;\n    }\n\n    lv_anim_set_values(&animimg->anim, 0, (int32_t)num - 1);\n}\n\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n\n    if(num == 0) {\n        return;\n    }\n\n    lv_anim_set_values(&animimg->anim, (int32_t)num - 1, 0);\n}\n```",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "side": "right",
+          "from_line": 110,
+          "to_line": 117,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Duplicate setup logic in `lv_animimg_set_src` and `lv_animimg_set_src_reverse` functions should be refactored into a private static helper function to eliminate code duplication while maintaining API compatibility.",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "side": "right",
+          "from_line": 110,
+          "to_line": 125,
+          "file_semantic_match": true
+        },
+        {
+          "note": "**Breaking API Change - This is NOT backwards compatible**\n\nThe PR description claims to \"ensure backwards compatibility\" but this change breaks the existing API. The original function signature was:\n```c\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse);\n```\n\nRemoving the `reverse` parameter means any existing code calling this function with 4 arguments will fail to compile. This is a **breaking change**.\n\n**Suggested Fix:**\nTo maintain true backwards compatibility, you should:\n\n1. Keep the original 4-parameter function and mark it as deprecated, OR\n2. Use a macro/inline wrapper to maintain the old signature\n\nFor example:\n```c\n// New implementation\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num);\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num);\n\n// Backwards compatibility - deprecated\nstatic inline void lv_animimg_set_src_legacy(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse) {\n    if(reverse) {\n        lv_animimg_set_src_reverse(obj, dsc, num);\n    } else {\n        lv_animimg_set_src(obj, dsc, num);\n    }\n}\n```\n\nOr consider if the API design should use a single function with flags/options struct instead of two separate functions.",
+          "path": "src/widgets/animimage/lv_animimage.h",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 76,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "公开 API `lv_animimg_set_src` 直接删除 `reverse` 参数，破坏既有源码兼容且未提供兼容层\n本次变更把 `lv_animimg_set_src()` 的四参数签名 `(obj, dsc[], num, reverse)` 收窄为三参数 `(obj, dsc[], num)`，方向控制改为新增函数 `lv_animimg_set_src_reverse()`。仓库内所有调用点已同步，但该函数是导出的公开 Widget API（`lvgl.h` 直接暴露 `src/widgets/animimage/lv_animimage.h`），任何基于旧签名的应用代码、示例工程或第三方语言绑定在升级后都会直接编译失败：`lv_animimg_set_src(animimg, dsc, 3, true)` 触发 “too many arguments to function” 编译错误，而本 diff 没有提供任何兼容宏/垫片或迁移说明，升级者无法平滑过渡。",
+          "path": "src/widgets/animimage/lv_animimage.h",
+          "from_line": 76,
+          "to_line": 76,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. Match — both flag the removal of the `reverse` parameter as a breaking public API change requiring a compatibility wrapper/macro.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "新增的 `test_animimg_set_src_reverse` 断言恒真，无法验证反向播放实现\n新增用例只调用了 `lv_animimg_set_src_reverse(animimg, ...)` 然后断言 `animimg != NULL`，而 `animimg` 已在 `setUp()` 第 33 行由 `lv_animimg_create()` 创建，该断言在任何实现下都成立。用例既没有校验 `dsc`/`pic_count` 是否被写入，也没有校验新函数与正向函数的唯一差异——动画取值区间是否被设为 `(num, 0)`。具体失败场景：把 `lv_animimg_set_src_reverse()` 误写成与 `lv_animimg_set_src()` 完全相同（漏掉 `(num, 0)` 方向设置），甚至写成空函数体，该用例仍然全部通过，反向播放的回归缺陷无法被测试拦截。",
+          "path": "tests/src/test_cases/widgets/test_animimg.c",
+          "from_line": 57,
+          "to_line": 57,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "`lv_animimg_set_src_reverse` 与 `lv_animimg_set_src` 函数体重复，后续修改易两处不一致\n新增的 `lv_animimg_set_src_reverse()` 完整复制了 `lv_animimg_set_src()` 的校验与状态写入（`LV_ASSERT_OBJ`、`animimg->dsc = dsc`、`animimg->pic_count = num`），仅最后的 `lv_anim_set_values()` 参数顺序不同。具体失败场景：后续若给该 setter 增加共享逻辑（例如 `num == 0` 时拒绝设置、或在设置源时同步刷新当前帧 `lv_image_set_src()`、或调整 `pic_count` 的范围检查），很容易只改一处而漏改另一处，导致正向与反向两条路径在相同输入下行为分叉。",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "from_line": 119,
+          "to_line": 119,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — generated comment focuses on code duplication/maintainability, while reference 1 focuses on a current OOB/underflow bug when `num == 0`.\n2. Match — both flag the duplicated setup logic between `lv_animimg_set_src` and `lv_animimg_set_src_reverse` and suggest refactoring into a shared helper.\n\n[2]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "PowerShell__PowerShell@ea07b93",
+      "repo": "PowerShell/PowerShell",
+      "comments": [
+        {
+          "note": "The manual PATH lookup filters out entries that are not fully qualified paths using `Path.IsPathFullyQualified(path)`. However, the PATH environment variable can legitimately contain relative paths (e.g., \".\" or \"..\\bin\" on Windows, or \"/usr/local/bin:./scripts\" on Unix). Filtering these out will cause the SSH command lookup to fail even when the executable exists in those locations.\n\nConsider removing this filter, or at minimum checking if the combined path resolves to an existing file before skipping.\n\n```suggestion\n                foreach (var path in entries)\n                {\n                    var sshCommandPath = Path.Combine(path, sshCommand);\n                    if (File.Exists(sshCommandPath))\n                    {\n                        filePath = sshCommandPath;\n                        break;\n                    }\n                }\n```",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "side": "right",
+          "from_line": 2230,
+          "to_line": 2237,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The manual PATH lookup should handle potential exceptions from Path.Combine() or File.Exists(). If the PATH environment variable contains entries with invalid characters or malformed paths, these methods could throw exceptions (e.g., ArgumentException, NotSupportedException). Consider wrapping the path operations in a try-catch block to skip invalid PATH entries gracefully.\n\nSuggested approach:\n```csharp\nforeach (var path in entries)\n{\n    if (!Path.IsPathFullyQualified(path))\n    {\n        continue;\n    }\n\n    try\n    {\n        var sshCommandPath = Path.Combine(path, sshCommand);\n        if (File.Exists(sshCommandPath))\n        {\n            filePath = sshCommandPath;\n            break;\n        }\n    }\n    catch (ArgumentException)\n    {\n        // Skip invalid path entries\n        continue;\n    }\n}\n```",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "side": "right",
+          "from_line": 2230,
+          "to_line": 2243,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Consider validating that 'filePath' does not point to an unexpected location due to symbolic links or junction points, especially since this involves executing external processes.",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "side": "right",
+          "from_line": 2238,
+          "to_line": 2242,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "PATH 条目被 Path.IsPathFullyQualified 预过滤，会漏掉 ~/bin、相对目录等合法条目并误抛 CommandNotFoundException\n新增的无 Runspace 分支在遍历 PATH 前，用 `Path.IsPathFullyQualified(path)` 直接 continue 跳过非全限定条目。Unix 上 PATH 里常见 `~/bin`（以及部分容器/测试环境的 `.`、`bin` 这类相对条目），这些条目既没有被展开也没有被解析就被丢弃；同时 `Split(..., TrimEntries)` 只去空白、不会去掉条目两侧的引号，因此 Windows 上手工加过引号的条目（如 `\"C:\\Program Files\\OpenSSH\"`）同样被判定为非全限定而跳过。结果是：在有 Runspace 的进程里 `ssh` 能被 CommandDiscovery 的 PathSearcher 正常找到（其 GetLookupDirectoryPaths 会展开 `~`），而在 SDK 宿主/无 Runspace 场景下同一台机器却走到 2246 行的新守卫并抛出 CommandNotFoundException，形成随宿主环境变化的不一致失败，且错误信息 `The term 'ssh.exe' is not recognized...` 会误导用户以为 ssh 未安装。",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "from_line": 2232,
+          "to_line": 2232,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both identify the `Path.IsPathFullyQualified` prefilter as incorrectly skipping valid relative/quoted PATH entries, causing executable lookup to fail.\n2. No match — generated comment does not discuss exception handling for invalid PATH entries.\n3. No match — generated comment does not discuss symbolic links, junction points, or validating the resolved executable path.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "Unix 上只用 File.Exists 判断，可能选中无执行权限的同名文件并中止对后续 PATH 目录的查找\n新增的 PATH 扫描把 `File.Exists(sshCommandPath)` 作为唯一命中条件。File.Exists 只判断文件存在，不判断 Unix 执行位，因此当 PATH 靠前的目录中存在名为 `ssh` 但未 chmod +x 的文件（例如解压后未赋权的二进制、被误命名为 ssh 的普通文件/包装脚本）时会立即 break 并把该路径作为 startInfo.FileName。Unix 分支随后在 StartSSHProcess 中把 FileName 原样交给 CreateProcess/fork+execve（RunspaceConnectionInfo.cs:2412、2423-2428），execve 因 EACCES 失败，最终抛出的是底层进程创建异常而不是 2246 行新增的 CommandNotFoundException；同时因为已经 break，PATH 后面真正可用的 ssh 不会再被尝试，用户看到的是权限相关报错而不是“未找到 ssh”或正常连接。",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "from_line": 2238,
+          "to_line": 2238,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses filtering out relative PATH entries, generated discusses Unix execute permission and File.Exists false positives.\n2. No match — ref discusses handling exceptions from Path operations, generated discusses executable-bit validation on Unix.\n3. No match — ref discusses symlink/junction destination validation, generated discusses non-executable `ssh` files stopping PATH lookup.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "在同一方法内新增第三套 ssh 路径解析逻辑，与 CommandDiscovery 的 PATH 处理约定重复且无从复用\nStartSSHProcess 现在同时存在两条解析路径：context != null 走 CommandDiscovery.LookupCommandInfo（含 PSModuleAutoLoading、Pre/PostCommandLookup 回调、PATH 缓存与 PATHEXT 处理），context == null 走这里内联的手写 PATH 扫描（自行 Split、自行跳过非全限定条目、无 `~` 展开、无缓存、不识别 PATHEXT）。两套逻辑对“PATH 条目如何解释”的规则已经不一致（见 F001），后续任何一方调整 PATH 解析语义都不会自动同步；这段逻辑又内联在 StartSSHProcess 里，无法被其他需要“无 Runspace 时定位可执行文件”的代码复用或单独验证，长期维护容易漂移。",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "from_line": 2227,
+          "to_line": 2227,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated focuses on duplication/inconsistency between the inline PATH scan and CommandDiscovery; ref 1 focuses on the specific relative-path filtering bug.\n2. No match — ref 2 asks for exception handling around PATH operations; generated does not discuss exceptions.\n3. No match — ref 3 concerns symlink/junction validation; generated does not address that.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "FreeCAD__FreeCAD@39c5968",
+      "repo": "FreeCAD/FreeCAD",
+      "comments": [
+        {
+          "note": "The lambda parameter `str` is unnecessarily defined as `std::string` when it could use string literals directly, creating redundant string conversions. While string concatenation requires one string type, the implementation should optimize for minimal object creation by using C-style strings where possible.",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 402,
+          "to_line": 402,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential namespace/qualification regression: the old code assigned to `Base::PyExc_*` globals, but the new code assigns to unqualified `PyExc_FC_*`. If these variables live in `Base::` (as before), this will either fail to compile or silently assign different symbols (if there are similarly named globals in another namespace). Suggest explicitly qualifying (e.g., `Base::PyExc_FC_GeneralError = ...`) or adding `using Base::PyExc_FC_GeneralError;` etc. Also consider making `module` a `PyObject* const` or capturing by value to avoid referencing a local through the lambda unnecessarily.\n\n```suggestion\n    Base::PyExc_FC_GeneralError = setup(\"FreeCADError\", PyExc_RuntimeError);\n    Base::PyExc_FC_FreeCADAbort = setup(\"FreeCADAbort\", PyExc_BaseException);\n    Base::PyExc_FC_XMLBaseException = setup(\"XMLBaseException\", PyExc_Exception);\n```",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 409,
+          "to_line": 411,
+          "file_semantic_match": false
+        },
+        {
+          "note": "According to the RAII principle and smart pointer usage guidelines, this code uses manual `new` and `delete` to manage dynamic memory. If `realpath` throws an exception or if there's another code path that exits the scope before `delete [] buf`, it would cause a memory leak. Consider using `std::unique_ptr<char[]>` to manage the memory automatically and ensure exception safety.\n\n```suggestion\n        if (auto buf = std::make_unique<char[]>(++sz); _NSGetExecutablePath(buf.get(), &sz) == 0) {\n                    char resolved[PATH_MAX];\n                    char* path = realpath(buf.get(), resolved);\n```",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 3488,
+          "to_line": 3491,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The init-capture `str {\"Base.\"}` creates a non-const copy of the string. Since this value is never modified within the lambda, it should be marked as `const` for better const correctness. Change `str {\"Base.\"}` to `const str {\"Base.\"}` or use a more explicit syntax.",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 402,
+          "to_line": 402,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Replace the manual null or empty string check `if(!path || path[0] == '\\0')` with the existing `isNullOrEmpty()` helper function for consistency and readability.",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 681,
+          "to_line": 681,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "重构异常注册 lambda 时顺带改变了 AbortIOException 的 Python 类型限定名\nsetupPythonException 重构为 lambda setup 后，异常名统一由 \"Base.\" 前缀 + ename 拼接生成，唯独 AbortIOException 的限定名与旧实现不同：旧代码是 PyErr_NewException(\"Base.PyExc_FC_AbortIOException\", ...)，而同时以 \"AbortIOException\" 为键挂到 Base 模块上；新代码 Application.cpp:421 调用 setup(\"AbortIOException\", ...) 后，类型名字符串变成 \"Base.AbortIOException\"。PyErr_NewException 会用传入的限定名填充异常类型的 __module__ 与 __name__，因此 FreeCAD.Base.AbortIOException.__name__ 从 \"PyExc_FC_AbortIOException\" 变为 \"AbortIOException\"，repr(type(e))、traceback 中的异常类型显示以及 __qualname__ 都会随之改变。该变化对以属性方式使用异常（如 src/Ext/freecad/module_io.py:17 的 except Base.AbortIOException:）和 C++ 侧直接使用 Base::PyExc_FC_AbortIOException 指针（src/Mod/Import/Gui/AppImportGuiPy.cpp:133）都无影响，因此不是功能性回归；但对依赖异常类型名字符串的下游代码（例如用 type(e).__name__ == \"PyExc_FC_AbortIOException\" 判定用户取消操作、或对 repr(e) 做日志/断言比对的插件与测试）会得到不同的字符串，属于本次纯重构提交顺带引入的、未在变更说明中声明的对外可见行为变化。",
+          "path": "src/App/Application.cpp",
+          "from_line": 421,
+          "to_line": 421,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — Reference 1 is about unnecessary `std::string` conversions/performance, while the generated comment is about a changed Python exception type qualified name.\n2. No match — Reference 2 is about missing C++ namespace qualification for `PyExc_*` globals, while the generated comment is about the Python `__module__`/`__name__` string change for `AbortIOException`.\n3. No match — Reference 3 is about manual `new`/`delete` and RAII, unrelated to exception naming/registration.\n4. No match — ",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "ollama__ollama@af112d6",
+      "repo": "ollama/ollama",
+      "comments": [
+        {
+          "note": "The validation is performed on the original path before it is cleaned with `filepath.Clean()`. This causes `validRelative()` to reject paths like `\"./model.safetensors\"` and `\"nested/../model.safetensors\"` even though they would resolve to safe relative paths after cleaning.\n\nThe PR description states the code should \"Properly handle relative paths (like `./model.safetensors`)\", which suggests these paths should be accepted. \n\n**Suggested fix:** Clean the path first, then validate the cleaned version:\n\n```go\nfiles := make(map[string]string, len(r.Files))\nfor k, v := range r.Files {\n    cleaned := filepath.Clean(k)\n    if err := validRelative(cleaned); err != nil {\n        c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{\"error\": err.Error()})\n        return\n    }\n    files[cleaned] = v\n}\n```\n\nThis approach would:\n1. Convert `\"./model.safetensors\"` to `\"model.safetensors\"` (valid)\n2. Convert `\"nested/../model.safetensors\"` to `\"model.safetensors\"` (valid)\n3. Still reject `\"../etc/passwd\"` which cleans to `\"../etc/passwd\"` (invalid due to `\"..\"` prefix)\n\nAdditionally, update `validRelative()` to validate already-cleaned paths, which simplifies the checks since `filepath.Clean()` normalizes the path format.",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 52,
+          "to_line": 52,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The `validRelative` function only checks for forward slashes (`/`) as path separators. On Windows, backslashes (`\\`) are also valid separators. This means a path like `..\\..\\windows\\system32` could bypass this validation. \n\nIt is recommended to use `filepath.ToSlash` to normalize the path before checking, or explicitly check for backslashes as well to ensure cross-platform security.",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 161,
+          "to_line": 188,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Path containment validation uses `OpenFile` with `O_CREATE`, which unnecessarily creates files during path checks; replace with `Stat` to validate paths without filesystem side effects.",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 277,
+          "to_line": 277,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The newly added `validRelative` function duplicates standard library functionality; replace it with `io/fs.ValidPath` for correctness and simplicity.",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 161,
+          "to_line": 161,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential compatibility risk: `os.OpenRoot` / `Root.OpenFile` are newer APIs. Please confirm the project Go toolchain version supports them; otherwise this will not compile in CI/users. If older Go versions must be supported, use alternative containment validation (e.g. `clean := filepath.Clean(fp)` + `rel, _ := filepath.Rel(tmpDir, filepath.Join(tmpDir, clean))` and reject `strings.HasPrefix(rel, \"..\")` etc.).",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 267,
+          "to_line": 271,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "validRelative 与转换层 os.Root 判定不一致，合法且此前可用的 './xxx' 路径被 400 拒绝\nCreateHandler 在入口用 validRelative 拒绝所有以 './' 开头、以及任何包含 '/../'、'/./' 的键，但 convertFromSafetensors 依赖 os.Root + filepath.Clean 的判定语义要宽松得多：\"./model.safetensors\" 与 \"nested/../model.safetensors\" Clean 后都是 root 下的合法相对路径，新增测试也正是把它们断言为合法（wantErr nil）。结果是同一份输入在两层的结论相反：handler 层直接 400，转换层认为没问题。对现有 HTTP API 客户端而言，此前提交 {\"files\": {\"./model.safetensors\": digest}} 是可成功的（detectModelTypeFromFiles 用 HasSuffix 命中 .safetensors，createLink 里 filepath.Join(tmpDir, \"./model.safetensors\") 会归一化为 tmpDir/model.safetensors，ConvertModel 在根目录 glob 到它），现在会在路径校验阶段被拒绝，属于对既有请求的兼容性回归。",
+          "path": "server/create.go",
+          "from_line": 172,
+          "to_line": 172,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both identify `validRelative` rejecting safe paths like `\"./model.safetensors\"` and `\"nested/../model.safetensors\"` because validation occurs before cleaning.\n2. No match — ref discusses Windows backslash handling, generated discusses cleaning/validation mismatch.\n3. No match — ref discusses `OpenFile` side effects, generated discusses path validation semantics.\n4. No match — ref discusses duplication with `io/fs.ValidPath`, generated discusses rejection of safe paths.\n5. No match — r",
+          "hit_new_gt": true
+        },
+        {
+          "note": "errFilePath 只加入 adapters 分支的 400 白名单，base model 分支仍会把路径错误当内部错误返回\n本次变更把 errFilePath 追加到 adapters 分支的错误白名单（映射为 HTTP 400），却遗漏了上方 base model 分支同一形态的白名单。convertFromSafetensors 现在会在路径预检失败时返回包裹 errFilePath 的错误；当这种错误来自 r.Files（base model 场景）时，会落到 server/create.go:106 的兜底分支 `ch <- gin.H{\"error\": err.Error()}`，响应里没有 status 字段，客户端拿到的是非 400 的通用错误（流式响应下甚至是 200 + error 文本），与 adapters 场景 400 的行为不一致。典型触发：base model 的 files 键通过 validRelative 但在 root.OpenFile 处失败（如键含子目录导致父目录不存在、路径过长、Windows 反斜杠路径）。",
+          "path": "server/create.go",
+          "from_line": 118,
+          "to_line": 118,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated is about missing errFilePath error mapping in the base model branch, while ref1 is about cleaning paths before validation.\n2. No match — generated only lists Windows backslash paths as a trigger for OpenFile failure; ref2 is about validation bypass in validRelative.\n3. No match — generated does not discuss O_CREATE side effects or replacing OpenFile with Stat.\n4. No match — generated does not discuss validRelative duplicating io/fs.ValidPath.\n5. No match — generated does ",
+          "hit_new_gt": false
+        },
+        {
+          "note": "root.OpenFile(O_CREATE) 不创建父目录，含子目录的合法键被误判为路径非法\n预检用 root.OpenFile(fp, os.O_CREATE|os.O_WRONLY) 打开目标路径，注释声称\"即使文件不存在也能校验包含性\"，但 O_CREATE 只会创建最后一级组件：当键包含子目录（如 \"dir/model.safetensors\"，而 validRelative 明确把 \"dir/file.txt\" 视为合法）时，tmpDir 下并没有 dir 目录，OpenFile 以 ENOENT 失败，于是被包装成 errFilePath 返回，客户端看到的是 \"file path must be relative: invalid path dir/model.safetensors: no such file or directory\" —— 用\"路径必须是相对路径\"去解释一个目录不存在的问题，误导排查方向。与之对照，紧随其后的 createLink 会 os.MkdirAll(filepath.Dir(dst)) 主动建目录，说明写入层本身支持嵌套路径，预检与写入层的假设不一致。新增测试的合法用例（\"./model.safetensors\"、\"nested/../model.safetensors\"）Clean 后都退化成扁平名，因此没有覆盖真正的嵌套目录键。",
+          "path": "server/create.go",
+          "from_line": 277,
+          "to_line": 277,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref 1 is about cleaning before validation, not about `OpenFile(O_CREATE)` failing on nested parent directories.\n2. No match — ref 2 is about Windows backslash path separators, unrelated.\n3. No match — ref 3 mentions the same `OpenFile(O_CREATE)` call but focuses on side-effect file creation, whereas the generated comment focuses on missing parent directories causing ENOENT and false rejection.\n4. No match — ref 4 is about replacing `validRelative` with `io/fs.ValidPath`, unrelated.",
+          "hit_new_gt": false
+        },
+        {
+          "note": "validRelative 仅按 '/' 判断绝对路径与穿越，Windows 分隔符路径完全绕过该检查\nvalidRelative 的全部判定都写死了 POSIX 的 '/'：只拒绝 '/' 前缀、'./'/'../' 前缀以及 '/../'、'/./' 子串。在 Windows 上，`C:\\\\tmp\\\\x.safetensors`、`\\\\\\\\server\\\\share\\\\x`、`..\\\\..\\\\x.safetensors` 都不含 '/'，函数返回 nil，随后 filepath.Clean 在 Windows 上也不会把它们变成相对扁平路径，校验层的承诺（\"a valid relative path without directory traversal components or absolute path indicators\"）实际未兑现。当前真正的防护来自 convertFromSafetensors 内的 os.Root，所以暂时不构成可利用的穿越；但该函数被 CreateHandler 当作唯一入口校验使用（adapter 的键甚至不经它），任何未来\"直接用 r.Files 键拼路径\"的改动都会直接踩空，安全性完全依赖调用点自觉。",
+          "path": "server/create.go",
+          "from_line": 167,
+          "to_line": 167,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — ref discusses validation order (clean before validate), generated discusses Windows separator bypass.\n2. Match — both flag that `validRelative` only checks forward slashes, allowing Windows backslash traversal paths to bypass validation.\n3. No match — ref discusses `OpenFile` with `O_CREATE` causing side effects, generated discusses path separator handling.\n4. No match — ref suggests replacing with `io/fs.ValidPath`, generated discusses Windows separator bypass.\n5. No match — ref r",
+          "hit_new_gt": true
+        },
+        {
+          "note": "filepath.Clean 归一会让不同键折叠为同一键并静默丢弃一个文件\n重建 r.Files 时以 filepath.Clean(k) 作为新键，但 validRelative 放行了会在归一化后相等的多种写法（新增测试的 validPaths 明确包含 \"a//b\" 与 \"a/b/\"）。若同一次请求同时给出 \"a//b\" 与 \"a/b\"（或 \"a/b/\" 与 \"a/b\"）并指向不同 digest，后写入的一项会静默覆盖前一项，且没有任何报错或日志；随后 detectModelTypeFromFiles / createLink 只会处理被保留的那个 digest，模型转换会缺少文件，症状表现为难以定位的\"unknown tensor format\"或转换结果异常，而不是清晰的参数错误。",
+          "path": "server/create.go",
+          "from_line": 56,
+          "to_line": 56,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — reference concerns false rejection before cleaning, not silent key collisions/overwrites.\n2. No match — reference concerns Windows backslash validation, unrelated to `filepath.Clean` key folding.\n3. No match — reference concerns filesystem side effects from `OpenFile`, unrelated.\n4. No match — reference suggests replacing `validRelative` with `io/fs.ValidPath` to avoid duplication, but does not address clean-key collisions or silent overwriting.\n5. No match — reference concerns Go ",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "alibaba__spring-ai-alibaba@3555a95",
+      "repo": "alibaba/spring-ai-alibaba",
+      "comments": [
+        {
+          "note": "- Environment variables \"ACCESS_KEY_ID\" and \"ACCESS_KEY_SECRET\" lack service-specific prefixing and risk naming conflicts; must be prefixed with \"ALITRANSLATE_\".  \n- Replace `setPropertiesFromEnv` helper method calls with direct `System.getenv` assignments for access key fields.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "side": "right",
+          "from_line": 34,
+          "to_line": 34,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The validation logic strictly requires `sourceLanguage` and `targetLanguage` to be present, contradicting the `@JsonProperty(required = false)` annotation in the `Request` record. If these optional fields are omitted in the tool call (resulting in null values), the method will return `null` silently. \n\nConsider applying default values when these fields are missing, consistent with the property descriptions.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "side": "right",
+          "from_line": 84,
+          "to_line": 92,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "新增的 sourceLanguage 必填校验与「默认 zh」声明矛盾，工具调用会静默返回 null\nRequest 的 sourceLanguage 组件被标注为 @JsonProperty(required = false) 且描述为 \"default is zh\"，但 apply 新增了对 sourceLanguage 的非空校验，空值直接 return null。工具调用的 Request 是由模型生成的 JSON 经 Jackson 反序列化构造的，走的是 record 的规范构造器（三参），不会命中单参构造器 Request(String text) 里的 (zh, en) 默认值，因此模型按 schema 省略可选参数 sourceLanguage 时（这是 schema 明确允许的），请求会被判定为非法并返回 null，调用方既拿不到译文也拿不到任何异常/错误信息，表现为「翻译工具无输出」。对于此前只传 text+targetLanguage 就能工作的调用方式，这是行为回归。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 84,
+          "to_line": 84,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. Match — both highlight that strict validation of optional language fields contradicts the `@JsonProperty(required = false)` annotation and causes silent `null` returns; both suggest applying defaults instead.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "异常被吞掉只记录 e.getMessage()，丢失堆栈且与参数非法共用 null 返回值\n本次把 catch 分支从 `throw new RuntimeException(e)` 改为 `logger.error(\"...{}\", e.getMessage())` 后 return null。一方面日志只输出 message、不传异常对象，堆栈完全丢失；而 CompletableFuture.get() 常见的 TimeoutException、CancellationException 默认 message 为 null，日志会退化成 `Failed to invoke alitranslate caused by:null`，线上无法定位。另一方面，远程调用失败与 apply 开头参数校验失败都返回 null，调用方无法区分「请求不合法」与「远端/网络故障」，错误语义从原来的抛出异常变为静默失败。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 105,
+          "to_line": 105,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — reference concerns optional `sourceLanguage`/`targetLanguage` validation causing silent null returns and suggests defaults; generated concerns swallowed exception details/lost stack and null returns conflating remote failures with invalid parameters.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "Request 增加 sourceLanguage 改变了 record 规范构造器签名，且公共常量 LANGUAGE_CODE 被移除\nRequest 由两参 record 变为三参 record，规范构造器从 (String text, String targetLanguage) 变为 (String text, String sourceLanguage, String targetLanguage)：任何既有的 `new Request(text, \"en\")` 调用将直接编译失败（该 starter 已进入 spring-ai-alibaba-bom，属于对外发布的 API）。同时 public 常量 LANGUAGE_CODE 被删除并改名为 LANGUAGE_CODE_ZH，外部引用同样编译失败。虽然仓库内暂无其它引用点，但作为已发布的 starter 模块，此变更缺少兼容层/迁移说明，会让下游升级时被迫改代码。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 142,
+          "to_line": 142,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — the generated comment concerns API compatibility breaking changes (record constructor signature and removed public constant), while Reference 1 concerns validation contradicting optional JSON properties and null handling.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "环境变量名 ACCESS_KEY_ID/ACCESS_KEY_SECRET 过于通用，易误用其它服务的凭证\n新增的构造器用 `setPropertiesFromEnv(\"ACCESS_KEY_ID\", \"ACCESS_KEY_SECRET\", null, null)` 读取凭证，这两个变量名是阿里云/通用 AK 的常见命名，任何在机器或容器里为其它云服务配置的同名变量都会被 alitranslate 静默采用。仓库规范与其他插件都使用模块前缀（BAIDU_MAP_API_KEY、BAIDU_TRANSLATE_SECRET_KEY、GOOGLE_TRANSLATE_APIKEY、MICROSOFT_TRANSLATE_API_KEY 等），此处不一致；失败场景是：运行环境已存在指向别的账号/子账号的 ACCESS_KEY_ID，alitranslate 会用其发起请求，得到 401/权限错误，或更糟——用错误账号产生调用与计费，且日志中仅表现为业务失败，难以联想到凭证来源。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "from_line": 34,
+          "to_line": 34,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag the generic ACCESS_KEY_ID/ACCESS_KEY_SECRET environment variables as lacking a service-specific prefix and risking credential conflicts, recommending prefixed names.\n\n[1]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "bluewave-labs__Checkmate@29e03a6",
+      "repo": "bluewave-labs/Checkmate",
+      "comments": [
+        {
+          "note": "Missing global axios error interceptor prevents proper handling and logging of network failures. Without it, the application cannot differentiate or log critical error types like HTTP status errors, no response scenarios, or request configuration issues.",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 1,
+          "to_line": 5,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Missing validation for required environment variables POEDITOR_API_TOKEN and POEDITOR_PROJECT_ID; add explicit checks to exit with error if unset.",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 10,
+          "to_line": 13,
+          "file_semantic_match": false
+        },
+        {
+          "note": "`LANGUAGES` parsing should trim whitespace and drop empty entries (e.g. `\"tr, en,\"`). Otherwise you may request an empty/invalid language code.\n\n```suggestion\nconst LANGUAGES = (process.env.LANGUAGES || 'tr,en')\n  .split(',')\n  .map(s => s.trim())\n  .filter(Boolean);\n```",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 12,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Default language mismatch: This script defaults to 'tr,en' but the workflow file `.github/workflows/poeditor-sync.yml` (line 58) defaults to 'tr,gb'. This inconsistency could cause unexpected behavior when the workflow runs on schedule without manual input.\n\n```suggestion\n-const LANGUAGES = (process.env.LANGUAGES || 'tr,en').split(',');\n+const LANGUAGES = (process.env.LANGUAGES || 'tr,gb').split(',');\n```",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 12,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Missing null safety checks when accessing nested API response properties. If the API response structure is unexpected, accessing `exportResponse.data.response.status` or `exportResponse.data.result.url` could throw errors. Consider adding optional chaining or explicit null checks.",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 37,
+          "to_line": 41,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Inconsistent default language codes: the workflow input defaults to 'tr,en' for manual runs, but the environment variable fallback uses 'tr,gb' for scheduled runs.",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "side": "right",
+          "from_line": 60,
+          "to_line": 61,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The workflow uses `jq` command to validate JSON format in the 'Verify translation files' step, but `jq` is not installed. The ubuntu-latest runner does not include `jq` by default. You need to add a step to install `jq` before using it, otherwise this step will fail.",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 76,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "校验步骤只判断文件非空，空导出会覆盖并清空现有全部翻译\nVerify 步骤仅用 `[ ! -s \"$file\" ]`（文件大小非 0）与 `jq .`（JSON 语法合法）来校验下载结果，而 `{}`、`{\"a\":\"\"}` 这类内容完全能通过：脚本在数组格式转换分支里 `formattedTranslations = {}`，只有 `item.term && item.definition` 同时为真才赋值，因此当 POEditor 返回空数组、术语未翻译（definition 为空串）或接口返回了非预期形状时，写盘的最终就是一个空/近空对象。随后 Copy 步骤用 `cp -r temp/* src/locales/` 无条件覆盖，把 `src/locales/gb.json`（现有 178 行键值）整个替换成 `{}`，并由 bot 自动 commit + push 到主分支。由于 `src/Utils/i18n.js` 是 `import.meta.glob(\"../locales/*.json\", { eager: true })` 全量加载，翻译资源为空后所有 `t()` 都取不到值，前端界面会整体退化为显示原始 key，且 @ 历史记录里才会发现。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 71,
+          "to_line": 71,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses inconsistent default language codes, generated discusses insufficient validation allowing empty translation overwrite\n2. No match — ref discusses jq missing from runner, generated discusses jq syntax validation being insufficient to catch empty objects\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "手动触发的默认语言 `tr,en` 与应用实际使用的 `gb` 不一致，跑完不更新 gb.json\n`workflow_dispatch` 的 `languages` 输入默认值是 `\"tr,en\"`，脚本内 `LANGUAGES` 的缺省值也是 `'tr,en'`，但工作流 env 的回退值是 `'tr,gb'`，README 也声明默认下载 `tr` 和 `gb`，而前端 i18n 的主语言/回退语言是 `gb`（`src/Utils/i18n.js:6`）。因此任何人从 Actions 页面直接点“Run workflow”而不修改输入，下载得到的是 `en.json`：`gb.json` 不会被更新（真正需要同步的主语言漏更新），同时会在 `src/locales/` 新增一个 `en.json`，被 `import.meta.glob` 自动加载后在语言选择器里多出一个“en”选项，而 `LanguageSelector.jsx:80` 用 `fi fi-${lang}` 取旗标，flag-icons 中英语对应 `gb`，`fi-en` 不存在，语言项会显示空白旗标。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 10,
+          "to_line": 10,
+          "matched_gt_indices": [
+            5
+          ],
+          "judge_reason": "1. Match — both flag the inconsistent default language codes (`tr,en` vs `tr,gb`) in the workflow.\n2. No match — the generated comment concerns default languages, while this reference concerns a missing `jq` dependency.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "未声明 `permissions: contents: write`，`git push` 可能直接 403 失败\n工作流用 `secrets.GITHUB_TOKEN` 做 checkout，最后一步执行 `git push` 回写仓库，但整个文件（第 1-92 行）没有 `permissions:` 声明。GitHub 对新建仓库/组织的默认工作流权限是只读（`contents: read`），在这种配置下 `git push` 会失败（remote: Permission denied / 403），每日定时同步会持续红灯；此外若主分支有分支保护（要求 PR 或状态检查），`git push` 同样会被拒绝，而工作流没有做任何降级（例如开 PR）处理。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 28,
+          "to_line": 28,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — reference discusses inconsistent default language codes, generated discusses missing `permissions: contents: write` for `git push`\n2. No match — reference discusses missing `jq` installation, generated discusses workflow permissions and push failure\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "定时任务与手动触发无并发控制，push 冲突时后完成者失败\n工作流同时由 `schedule`（每天 0 点）和 `workflow_dispatch` 触发，但没有 `concurrency` 组，提交步骤也没有在 `git push` 前做 `git pull --rebase`。当手动触发与定时任务（或两次手动）时间接近时，两个运行各自基于旧 commit 提交，后完成者的 `git push` 会被远端拒绝（non-fast-forward），整次同步失败，且看不到有任何重试。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 92,
+          "to_line": 92,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses inconsistent default language codes, generated discusses missing concurrency control for push conflicts\n2. No match — ref discusses missing `jq` dependency, generated discusses race between scheduled/manual workflow runs causing non-fast-forward push failure\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "每次运行动态生成 package.json 并 `npm install`，无 lockfile 导致依赖漂移\n工作流在运行时用 heredoc 生成 `.github/scripts/package.json` 再 `npm install`，既没有 committed lockfile（不是 `npm ci`），也与仓库已有的依赖管理割裂：根 `package.json` 已包含 `axios`（`^1.7.4`），这里又声明 `axios: ^1.6.0` 且额外引入 `fs-extra`。由于依赖范围是浮动的，未来某次 axios/fs-extra 主版本发布后，每日定时任务可能在无人改代码的情况下突然失败；同时该目录的 `node_modules` 未纳入任何缓存，每天重复安装。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 54,
+          "to_line": 54,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — Reference 1 flags inconsistent default language codes, while Generated Comment concerns dependency drift and lack of lockfile.\n2. No match — Reference 2 flags missing `jq` installation, while Generated Comment concerns dynamic `package.json`, floating dependencies, and uncached installs.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "语言列表 split 后未 trim/过滤空项，含空格输入会让整个任务退出\n`languages` 是自由文本输入（描述里示例 `tr,en,es`），脚本直接 `split(',')` 且不 `trim()`、不过滤空串，随后把每个值原样作为 `language` 字段发给 POEditor。用户输入 `tr, gb` 或 `tr,gb,` 时会得到 `\" gb\"` / `\"\"` 这样的非法语言码，POEditor 返回非 `success`，命中第 37-39 行的 `throw`，`process.exit(1)` 让整个工作流失败；由于第 81 行已 `fs.emptyDir(temp)` 并逐语言顺序处理，排在后面的合法语言根本不会被下载，等于一次输入格式瑕疵就让整次同步全废。",
+          "path": ".github/scripts/download-translations.js",
+          "from_line": 12,
+          "to_line": 12,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. No match — generated discusses language list parsing, reference discusses axios error interceptor.\n2. No match — generated discusses trimming/filtering languages, reference discusses missing env var validation.\n3. Match — both flag that LANGUAGES split should trim whitespace and drop empty entries to avoid invalid language codes.\n4. No match — generated discusses parsing robustness, reference discusses default language mismatch between script and workflow.\n5. No match — generated discusses in",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "filamentphp__filament@d47632c",
+      "repo": "filamentphp/filament",
+      "comments": [
+        {
+          "note": "The new condition for '->' JSON syntax must skip columns starting with `json_extract()` to prevent double-wrapping, as the two syntax forms are mutually exclusive and the translatable plugin already handles these columns.",
+          "path": "packages/support/src/helpers.php",
+          "side": "right",
+          "from_line": 184,
+          "to_line": 184,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential SQL correctness/safety issue: building `$column = \"json_extract({$field}{$path})\"` assumes `$path` already includes the comma and is correctly quoted/escaped, and that JSON extraction syntax matches the current connection settings (e.g., MySQL vs MariaDB variants, json type/collation). Since this string is later interpolated into `lower({$column})`, any mismatch can break queries or bypass proper identifier wrapping.\n\nSuggestion: prefer using the grammar’s JSON selector wrapping (or query builder expressions) end-to-end rather than concatenating raw SQL. If you must transform here, ensure the generated SQL includes the required `,` between field and path and that both parts are wrapped/escaped by the grammar (e.g., `json_extract({$field}, {$path})`), and consider handling nested selectors/edge cases consistently with other drivers.",
+          "path": "packages/support/src/helpers.php",
+          "side": "right",
+          "from_line": 184,
+          "to_line": 188,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "用 invade() 调用框架 protected 的 wrapJsonFieldAndPath()，依赖未公开内部 API 且硬编码其返回格式\n新增逻辑通过 `invade($databaseConnection->getQueryGrammar())->wrapJsonFieldAndPath($column)` 直接穿透访问 Laravel `Illuminate\\Database\\Grammar` 的 protected 方法，并假设其返回值恰好是 `[已引用字段, \", '$.path'\"]` 两段（第 187 行用 `\"json_extract({$field}{$path})\"` 拼接，逗号必须由 `$path` 自带）。这两点都不是 Laravel 的公开契约：`wrapJsonFieldAndPath()` 是受保护方法（这也是同行为何要写 `@phpstan-ignore-line` 并用 `invade()` 绕过可见性），其拆分/引号/逗号格式以及 `wrapJsonPath()` 的分段规则都可能随框架版本调整，而 `packages/support/composer.json` 只约束到 `illuminate/support: ^10.45|^11.0`，无法锁定具体实现。一旦上游重命名该方法、改为 `private`、拆分签名或改变路径渲染格式，所有 MySQL/MariaDB 上「JSON 列 + 强制大小写不敏感」的搜索路径都会在运行时抛 `Error: Call to protected method` / `BadMethodCallException`，或静默生成非法 SQL（如 `json_extract(`data`'$.name')` 缺逗号导致 1064 语法错误），表现为表格搜索、Select 搜索、全局搜索整体 500。",
+          "path": "packages/support/src/helpers.php",
+          "from_line": 185,
+          "to_line": 185,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — discusses preventing double-wrapping of existing `json_extract()` columns, not the use of `invade()`/protected API or hardcoded return format.\n2. Match — both flag the unsafe assumption that `$path` already includes the comma/quoting and recommend using grammar-based wrapping instead of raw concatenation.\n\n[2]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "browser-use__browser-use@0b21e50",
+      "repo": "browser-use/browser-use",
+      "comments": [
+        {
+          "note": "`self.config.chrome_remote_debugging_port` is typed as `int | None`. If it is `None`, `socket.connect_ex` will raise a `TypeError` because it expects an integer port. Suggest adding a check for `None` or ensuring it is a valid integer before using it here.",
+          "path": "browser_use/browser/browser.py",
+          "side": "right",
+          "from_line": 290,
+          "to_line": 292,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "chrome_remote_debugging_port 允许为 None，但下游直接拼进 URL 与端口参数\n新增字段声明为 `int | None`（默认 CHROME_DEBUG_PORT），但 _setup_user_provided_browser 与 _setup_builtin_browser 都把它当作必定为整数的端口使用：既拼进 `http://localhost:{port}/json/version` 与 `--remote-debugging-port={port}`，也传给 `socket.connect_ex(('localhost', port))`。一旦用户按类型注解显式传入 None（该类型本身鼓励这种用法），会分别演化为：httpx 因非法 URL 抛出 `InvalidURL`（不属于 `httpx.RequestError`，不会被第 214 行捕获）直接冒泡到 _setup_browser 使浏览器初始化失败；以及 socket 层 TypeError。用户看到的只是 `Failed to initialize Playwright browser` 之类模糊错误，与端口配置错误无关联线索。",
+          "path": "browser_use/browser/browser.py",
+          "from_line": 111,
+          "to_line": 111,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag that `chrome_remote_debugging_port` may be `None` and cause a `TypeError` when passed to `socket.connect_ex`.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "新增用例 mock 的是 requests.get，但被测代码使用 httpx，复用分支实际未被覆盖\n新用例通过 `monkeypatch.setattr(requests, 'get', dummy_get)` 想模拟 “已存在 Chrome 调试端点”，但 _setup_user_provided_browser 的探测与连接全部走 `httpx.AsyncClient().get(...)`，因此 dummy_get 永远不会被调用。结果是：该用例总是落入 “启动新 Chrome” 分支，并对 localhost:9223 发起真实 HTTP 请求，还会经历 239-249 行的 10 次重试（每次 `await asyncio.sleep(1)`），使用例额外耗时约 10 秒且依赖执行环境；更糟的是，若 CI 或开发机恰好有服务监听 9223，用例会走复用分支，`dummy_create_subprocess_exec` 中的端口参数断言被静默跳过，用例仍显示为通过，从而对本次改造最关键的启动参数失去保护。",
+          "path": "tests/test_browser.py",
+          "from_line": 180,
+          "to_line": 180,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "noqa 抑制码由 ASYNC 改为 RUF006，与项目启用的 ruff 规则集不匹配\n该行原本用 `# noqa: ASYNC` 压制 flake8-async 的 “在 async 函数中执行阻塞调用” 告警（紧邻注释也明确写了 “it *should* block any subsequent llm calls”）。改为 `# noqa: RUF006` 后，RUF006 语义是 asyncio 悬空 task，与这里的同步阻塞调用毫无关系；而 pyproject.toml 的 ruff select 只启用了 [\"ASYNC\", \"E\", \"F\", \"FAST\", \"I\", \"PLE\"]，并未启用 RUF 系列，因此新的 noqa 对任何已启用规则都不起作用。若该行确实被 ASYNC 规则命中，抑制将失效导致 lint 报错；若未被命中，则这行 noqa 变成误导后来者的死注释。",
+          "path": "browser_use/agent/service.py",
+          "from_line": 1225,
+          "to_line": 1225,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "linera-io__linera-protocol@3535ddb",
+      "repo": "linera-io/linera-protocol",
+      "comments": [
+        {
+          "note": "Consider adding validation to handle the case where `start >= chain.received_log.count()`. Currently, if start exceeds the log count, the range `start..end` could be invalid or empty. It might be better to return early with an empty result or an error to make the behavior explicit.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 1418,
+          "to_line": 1420,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The pagination loop condition might result in an extra unnecessary request when exactly CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES entries are returned. Consider using <= comparison to break when the number of received entries is less than or equal to the maximum.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 1418,
+          "to_line": 1419,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The pagination loop lacks a safeguard against infinite iteration. If entries are being added to the `received_log` faster than the client paginates through it (e.g., during concurrent writes), the condition `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` might never be met, potentially causing an infinite loop.\n\nConsider adding a maximum iteration limit or a timeout safeguard to prevent this edge case. For example:\n```rust\nlet mut iterations = 0;\nconst MAX_ITERATIONS: u32 = 1000;\nloop {\n    let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n    let info = remote_node.handle_chain_info_query(query).await?;\n    let received_entries = info.requested_received_log.len();\n    offset += received_entries as u64;\n    remote_log.extend(info.requested_received_log);\n    if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n        break;\n    }\n    iterations += 1;\n    if iterations >= MAX_ITERATIONS {\n        warn!(\"Reached maximum iterations while paginating received log for chain {:?}\", chain_id);\n        break;\n    }\n}\n```",
+          "path": "linera-core/src/client/mod.rs",
+          "side": "right",
+          "from_line": 846,
+          "to_line": 857,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The pagination loop will make an extra unnecessary query when the total number of entries is exactly a multiple of CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES (1000). For example, if there are exactly 2000 new entries, it will make 3 queries returning (1000, 1000, 0) instead of stopping after 2 queries. While this doesn't affect correctness, consider adding a check to avoid the extra query, such as tracking if we've reached the expected end or checking if the response is empty before extending the vector.",
+          "path": "linera-core/src/client/mod.rs",
+          "side": "right",
+          "from_line": 848,
+          "to_line": 857,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Making this `pub` exposes a protocol/behavior constant outside the crate. If this limit is only an internal safeguard for responses, consider `pub(crate)` to avoid accidental external coupling. If it must be public, document whether it’s a hard API guarantee and whether changing it is a breaking change.\n\n```suggestion\npub(crate) const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;\n```",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 53,
+          "to_line": 53,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "分页终止条件用客户端常量判定日志结尾，服务端分页大小不同时会提前截断同步\n新增的 loop 以 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 作为「已到达 received_log 末尾」的判据。这个判据隐含假设「服务端每页上限 == 客户端常量」。但 validator 与 client 是独立部署/升级的：若对端 validator 的分页上限比客户端常量小（例如对端来自把上限调小的版本，state.rs:52 的 `TODO(#4638): Revisit the number` 正说明该数值预期会变），某页只返回 500 条时客户端就会认为日志已结束而 break，剩下的条目本轮不会被拉取。影响：`remote_log` 被当作完整后缀用于 `heights_per_chain` 与 tracker 推进，于是本轮同步静默地只处理前一段日志却返回成功（`ReceivedCertificatesFromValidator { tracker, .. }` 照常被写入 received_certificate_trackers），后续页中的跨链消息要等下一次同步才会被处理；而响应里本已带有全量条数 `count_received_log`，完全可以据此判断是否到末尾，无需依赖跨版本常量一致。",
+          "path": "linera-core/src/client/mod.rs",
+          "from_line": 854,
+          "to_line": 854,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses infinite loop risk under concurrent writes; generated discusses early truncation when server page size is smaller than client constant.\n2. No match — ref discusses extra query when total entries are an exact multiple; generated discusses silent partial sync due to server/client page-size mismatch.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "新增的分页循环没有总条数/进度校验，对端不推进 offset 时会无界循环并耗尽内存\n循环的推进完全依赖对端返回的条目数：`offset += received_entries as u64`，且只在「本页条目数 < 上限」时才退出；没有任何校验确认返回的条目确实对应请求的 `offset` 位置，也没有总条数或迭代次数上限。若对端 validator（旧版/异常实现/被篡改节点）忽略 `request_received_log_excluding_first_n` 而每次返回同样的一整页（例如始终 1000 条），`offset` 会持续增长而实际位置不前进，`remote_log.extend(...)` 每轮再追加 1000 条，循环永不终止，直到进程内存/CPU 被耗尽——且 `RemoteNode::handle_chain_info_query` 只是一次性调用、没有重试或超时兜底。相比改动前的单次请求（响应体积受传输层限制），这是本变更新引入的无界资源消耗路径。",
+          "path": "linera-core/src/client/mod.rs",
+          "from_line": 848,
+          "to_line": 848,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. Match — both flag missing safeguard against unbounded/infinite pagination loop and suggest a maximum iteration/termination limit.\n2. No match — reference discusses an extra empty query at exact multiples, generated discusses unbounded looping due to untrusted peer progress.\n\n[1]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "cline__cline@2195a68",
+      "repo": "cline/cline",
+      "comments": [
+        {
+          "note": "Potential security issue: Nonce is not being cleared after validation. This could allow reuse of the same state parameter (replay attack). Consider restoring the call to `this.authService.resetAuthNonce()` upon successful validation.",
+          "path": "src/core/controller/index.ts",
+          "side": "right",
+          "from_line": 461,
+          "to_line": 461,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Security issue: Nonce should be single-use to prevent replay attacks. The current implementation uses a static readonly nonce that never changes, making it vulnerable to replay attacks. Consider generating a new nonce for each authentication request.",
+          "path": "src/core/controller/index.ts",
+          "side": "right",
+          "from_line": 461,
+          "to_line": 461,
+          "file_semantic_match": false
+        },
+        {
+          "note": "**Security Issue: Nonce Reuse Vulnerability**\n\nGenerating the nonce once at service construction creates a serious security vulnerability. The nonce should be unique for each authentication request to provide proper CSRF protection. Reusing the same nonce allows potential replay attacks.\n\n**Recommendation**: Generate a new nonce for each `createAuthRequest()` call. Consider:\n```typescript\nprivate _authNonce: string = ''\n\nasync createAuthRequest(): Promise<String> {\n    if (this._authenticated) {\n        this.sendAuthStatusUpdate()\n        return String.create({ value: \"Already authenticated\" })\n    }\n    \n    // Generate fresh nonce for each auth request\n    this._authNonce = crypto.randomBytes(32).toString(\"hex\")\n    \n    // ... rest of the code\n}\n```",
+          "path": "src/services/auth/AuthService.ts",
+          "side": "right",
+          "from_line": 33,
+          "to_line": 33,
+          "file_semantic_match": true
+        },
+        {
+          "note": "`createAuthRequest(): Promise<String>` uses the protobuf/SDK `String` type (from `@modelcontextprotocol/sdk/types`?) rather than native `string`. This is easy to confuse and can lead to wrong usage. Consider renaming the import (`import { String as RpcString } ...`) and/or changing the method return type to a native `string` if RPC wrapping is not required at this layer.",
+          "path": "src/services/auth/AuthService.ts",
+          "side": "right",
+          "from_line": 173,
+          "to_line": 173,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Throwing a raw Error here may surface as an unhandled exception depending on caller; checklist asks for user-friendly error handling in async flows. Consider catching at the boundary and showing `vscode.window.showErrorMessage(...)` or returning a structured error result for the controller layer to display.",
+          "path": "src/services/auth/AuthService.ts",
+          "side": "right",
+          "from_line": 179,
+          "to_line": 181,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Remove async keyword as this method doesn't perform any asynchronous operations. This is misleading and unnecessary.",
+          "path": "src/core/controller/index.ts",
+          "side": "right",
+          "from_line": 460,
+          "to_line": 460,
+          "file_semantic_match": false
+        },
+        {
+          "note": "State validation logic is duplicated in the activation function; delegate the `authService.authNonce !== state` check to `controller.validateAuthState` to maintain a single source of truth.",
+          "path": "src/extension.ts",
+          "side": "right",
+          "from_line": 312,
+          "to_line": 312,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "state 不匹配不再拒绝回调，任意来源的 idToken 可被写入登录状态\n原实现在 authService.authNonce !== state 时直接 showErrorMessage 并 return，state 是 auth 回调路径上唯一的 CSRF 防护。改动后该分支只弹出警告对话框，只要用户点击“Store”，就会继续执行 324-325 行的 handleAuthCallback(token, provider)，用 URL query 里的 idToken 完成登录。任何网页或本地程序都可以打开 vscode://saoudrizwan.claude-dev/auth?idToken=<攻击者 token>&state=x 触发这条路径：用户确认后扩展会以攻击者账号登录（会话固定/账号劫持），受害者后续的对话内容、代码片段等数据会写入攻击者账户。而对话框文案“Store token returned from /auth”完全没有暴露 token 来源或目标账号，用户没有判断依据。",
+          "path": "src/extension.ts",
+          "from_line": 312,
+          "to_line": 312,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — Ref 1 discusses duplication/single source of truth for state validation, while the generated comment flags a CSRF/account-hijack security issue from allowing the callback to continue after state mismatch.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "确认框被关闭（返回 undefined）会被当作同意并继续写入 token\n新逻辑只把精确返回 \"Cancel\" 视为拒绝；而 VS Code 的 showWarningMessage 在被用户通过 ESC/关闭按钮忽略时返回 undefined。因此用户“关掉弹窗”这一最常见的拒绝动作会被当成同意，直接落到 324 行用外部传入的 idToken 完成登录。叠加 F001，任何站点都可以触发这个警告框，用户习惯性关闭弹窗即被登录。",
+          "path": "src/extension.ts",
+          "from_line": 318,
+          "to_line": 318,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment discusses confirmation dialog dismiss being treated as consent; reference discusses duplicated state validation logic.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "authNonce 变为实例生命周期内的固定值，state 永不轮换也永不失效\n_authNonce 从“每次 createAuthRequest 生成、校验通过后由 resetAuthNonce 置空”改为字段初始化时生成一次的 readonly 常量，resetAuthNonce 被删除，validateAuthState 也不再清除 nonce。结果是同一个 state 在扩展整个运行期内对所有登录请求复用：一旦该值从浏览器历史、Referer、日志或用户分享的登录链接中泄露，就能被无限次复用，state 作为防重放/防伪随机数的作用被削弱；登出后重新登录也复用同一个 state。AuthService 是单例（getInstance），因此该值在扩展进程存活期内恒定。",
+          "path": "src/services/auth/AuthService.ts",
+          "from_line": 33,
+          "to_line": 33,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. Match — both identify the nonce initialized once and reused, weakening CSRF/replay protection, and recommend generating a fresh nonce per authentication request.\n2. No match — ref discusses the SDK `String` return type vs native `string`, unrelated to nonce reuse or rotation.\n3. No match — ref discusses raw Error handling and user-facing error reporting, unrelated to nonce lifecycle or replay protection.\n\n[1]",
+          "hit_new_gt": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "instance_id": "cline__cline@2195a68",
+  "repo": "cline/cline",
+  "base_commit": "398bc87a64800e021966868243be2f09be72e73c",
+  "head_commit": "2195a689b787a963bdacc35d348f4590c30a2692",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 79.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/extension.ts",
+      "line": 318,
+      "summary": "state 不匹配时用户关闭警告提示会被当作同意，直接存入任意来源的 token",
+      "failure_scenario": "新增的确认逻辑只在 `userConfirmation === \"Cancel\"` 时中止，但 `vscode.window.showWarningMessage` 是非 modal 通知：用户按 ESC 或点击通知的关闭按钮时返回 `undefined`（仓库其他危险确认处如 deleteTasksWithIds.ts:30 都显式使用 `{ modal: true }`）。此时控制流会落到 324 行的 `handleAuthCallback(token, provider)`，把回调 URI 中任意 `idToken` 静默持久化，并切换到该账户（Controller.handleAuthCallback 会写入 cline 账户、把 apiProvider 改为 cline）。由于本次 diff 同时把 state 校验降级为“可确认跳过”，任何能诱导用户点击 `vscode://saoudrizwan.claude-dev/auth?idToken=...` 链接的攻击者都可以借用户一次误关闭提示完成 token 注入/登录态替换。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.82,
+      "rule": "SEC-AUTH-001"
+    },
+    {
+      "file": "src/services/auth/AuthService.ts",
+      "line": 33,
+      "summary": "authNonce 改为进程内恒定值且不再清除，OAuth state 失去一次性/防重放能力",
+      "failure_scenario": "`_authNonce` 由“每次 createAuthRequest 生成、校验成功后 resetAuthNonce() 作废”改为字段初始化器一次性生成的 readonly 常量，同时删除了 `resetAuthNonce()`，Controller.validateAuthState 也不再清除 nonce。结果是同一扩展进程内所有登录请求共用同一个 state，且该 state 在首次成功登录后依然有效：任何曾观察到该值的一方（例如扩展日志会打印含 state 的完整回调 URI）都能重复构造看似合法的回调。配合本次把 state 不匹配改为“用户确认即可继续”，state 参数已不具备一次性 CSRF 令牌的防护强度，安全边界完全依赖用户点击。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.7,
+      "rule": "SEC-AUTH-002"
+    },
+    {
+      "file": "src/services/auth/AuthService.ts",
+      "line": 181,
+      "summary": "createAuthRequest 新增抛错改变契约，唯一调用方未捕获，登录点击会静默失败",
+      "failure_scenario": "重构后 `createAuthRequest` 在 `_config.URI` 为空时 `throw new Error(\"Authentication URI is not configured\")`，函数从“总能返回 `String`”变为可能抛出异常；而唯一调用方 accountLoginClicked 只是 `return await authService.createAuthRequest()`，没有任何 try/catch 或用户可见提示，异常会直接冒泡到 gRPC handler，表现为点击登录无响应/前端只拿到通用错误。另外构造函数已用 `Object.assign({ URI: DefaultClineAccountURI }, config)` 兜底，该抛错分支只在 config 显式传入空 URI 时可触发，属于难以覆盖的防御性死分支，与其新增契约风险不匹配。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONTRACT-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\diff\\cline__cline@2195a68.diff\n  caseId              cline__cline@2195a68\n  --issue             (未传)\n  --taskId            cline__cline@2195a68\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 2（no-signal=2）\n✓ 完成 · 耗时 77.7s · 模型调用 9 次 · token 输入 9,492（未命中） · 输出 9,994 · 缓存命中 96,128（91.0%） · 工具 13 次（主会话 13 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0044\n[time] 阶段耗时 | 总墙钟 78.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (1.0%)\n[time] 阶段 | 六阶段审计 77.7s (98.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 4.1s (5.3%) | P3 5.7s (7.4%) | P4 32.3s (41.5%) | P5 26.3s (33.8%) | P6 9.3s (11.9%)\n[usage] 任务总计 | 模型调用 9 次（Agent 9 + 一次性 0） | token 输入 9,492（未命中） | 输出 9,994 | 缓存命中 96,128（91.0%） | $0.0044\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\tasks\\cline__cline@2195a68\\audit\\20261122_062142_175.json",
+  "token_usage": {
+    "input_tokens": 9492,
+    "output_tokens": 9994,
+    "cache_read_input_tokens": 96128
+  }
+}

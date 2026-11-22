@@ -1,0 +1,82 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 123.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "嵌套相对路径在 root.OpenFile 阶段因父目录不存在被误判为非法路径",
+      "failure_scenario": "新增的路径包含性检查用 root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644) 预创建文件来验证路径，但 os.Root.OpenFile 不会创建父目录。对于合法且被 validRelative 明确放行的嵌套路径（如 \"dir/file.safetensors\"、\"a/b\"），该调用会返回 ENOENT，被包装成 errFilePath 直接中断转换。变更前该循环直接调用 createLink，而 createLink 内部先 os.MkdirAll(filepath.Dir(dst)) 再创建链接，因此嵌套目录上传原本是可用的；本次改动把这类输入变成了必然失败，且错误文案会误导为“file path must be relative”。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-PATH-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "errFilePath 只加入 adapter 分支的 400 列表，base 文件分支仍返回 500",
+      "failure_scenario": "本次只把 errFilePath 加进 r.Adapters 的错误分类列表，而 r.Files（base model）分支的列表仍是 {errNoFilesProvided, errOnlyGGUFSupported, errUnknownType}。当 convertFromSafetensors 对 base 文件返回 errFilePath（例如上面提到的嵌套路径 ENOENT，或 os.Root 的包含性拒绝）时，会走到不带 \"status\" 的 gin.H 分支，waitForStream 默认按 500 返回。同一类“客户端路径非法”错误在 base 与 adapter 两条路径上得到 400/500 两种语义，客户端无法据此提示用户修正请求。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "API-STATUS-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 167,
+      "summary": "validRelative 只识别正斜杠，Windows 下反斜杠与盘符路径被放行",
+      "failure_scenario": "validRelative 的声明是拒绝绝对路径与目录穿越，但实现只用 strings.HasPrefix(path, \"/\") 与 \"/../\"、\"/./\" 等正斜杠模式判断。在 Windows 上 filepath 分隔符是 \\\\，因此 key 为 \"..\\\\..\\\\..\\\\Users\\\\Public\\\\x.safetensors\" 或 \"C:\\\\Windows\\\\x.safetensors\" 时 validRelative 返回 nil，第一道防线形同虚设；随后 filepath.Clean(k) 在 Windows 上也不会把 \"..\\\\..\\\\x\" 归一化掉，实际安全完全依赖下一层 os.OpenRoot 的实现细节，且该路径失败时会以 500 返回（base 分支）。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-PATH-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 58,
+      "summary": "r.Files 被规范化为非 nil 空 map，导致 errNeitherFromOrFiles 分支不可达",
+      "failure_scenario": "handler 现在无条件执行 r.Files = files，而 files 由 make(map[string]string, len(r.Files)) 创建，即使请求既没有 from 也没有 files，r.Files 也会变成非 nil 的空 map。后面的 else if r.Files != nil 因此恒为真，请求会进入 convertModelFromFiles，detectModelTypeFromFiles 对空 map 返回 \"\"，最终得到 errUnknownType。结果：客户端漏传 from/files 时错误提示从 \"neither 'from' or 'files' was specified\" 退化为 \"unknown type\"，仍是 400 但语义误导，且 errNeitherFromOrFiles 及其对应分支成为死代码。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "LOGIC-NIL-004"
+    },
+    {
+      "file": "server/create_test.go",
+      "line": 18,
+      "summary": "测试把 OLLAMA_MODELS 设为环境已有值，会写入用户真实模型目录",
+      "failure_scenario": "t.Setenv(\"OLLAMA_MODELS\", cmp.Or(os.Getenv(\"OLLAMA_MODELS\"), t.TempDir())) 在开发机已设置 OLLAMA_MODELS 时不会使用临时目录，NewLayer 生成的 blob 会落在用户真实的模型仓库中（该用例还会反复创建 layer），造成测试对环境的隐式依赖与真实数据污染；反之在干净 CI 中走 t.TempDir 分支，两种环境行为不同。另外用例 L86-93 断言 \"./model.safetensors\"、\"nested/../model.safetensors\" 可成功，而 handler 层 validRelative 会拒绝这两类 key（L172、L182-183），测试把与生产入口不一致的策略固化下来。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "TEST-ISOLATION-005"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "filepath.Clean 归一化后不同 key 可能碰撞并静默丢文件",
+      "failure_scenario": "把 files[filepath.Clean(k)] = v 用作重建 map，会在 Clean 之后发生 key 收敛：例如同时上传 \"a/b.safetensors\" 与 \"a//b.safetensors\"（validRelative 都判为合法，测试 L133 也把 \"a//b\" 列为合法），或 \"a/b\" 与 \"a/./b\"（后者被拒，但 Config/Tokenizer 类路径仍可能出现等价写法）时，后遍历到的值会覆盖前者，其中一个 digest 被静默丢弃，转换出的模型可能缺少分片却不报错。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "DATA-LOSS-006"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 0 / not-reached 2（no-signal=2）\n✓ 完成 · 耗时 121.9s · 模型调用 11 次 · token 输入 12,400（未命中） · 输出 15,442 · 缓存命中 191,488（93.9%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0066\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 123.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (1.1%)\n[time] 阶段 | 六阶段审计 121.9s (98.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 7.7s (6.3%) | P3 7.1s (5.8%) | P4 66.1s (54.3%) | P5 33.5s (27.5%) | P6 7.5s (6.1%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 12,400（未命中） | 输出 15,442 | 缓存命中 191,488（93.9%） | $0.0066\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261122_064458_302.json",
+  "token_usage": {
+    "input_tokens": 12400,
+    "output_tokens": 15442,
+    "cache_read_input_tokens": 191488
+  }
+}

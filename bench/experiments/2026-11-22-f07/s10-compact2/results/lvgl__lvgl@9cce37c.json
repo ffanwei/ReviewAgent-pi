@@ -1,0 +1,52 @@
+{
+  "instance_id": "lvgl__lvgl@9cce37c",
+  "repo": "lvgl/lvgl",
+  "base_commit": "344ba9fe99b487f7f5164900679d56acf2d8bff2",
+  "head_commit": "9cce37c219f95701fecc44f74595aa9c6effbdba",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 143.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/widgets/animimage/lv_animimage.h",
+      "line": 76,
+      "summary": "公开 API lv_animimg_set_src 直接删除 reverse 形参，破坏所有既有调用方的源码兼容",
+      "failure_scenario": "本次变更删除了 lv_animimg_set_src 的第四个 bool reverse 形参，反向能力改由新函数 lv_animimg_set_src_reverse 提供，但没有保留任何过渡接口（旧签名包装、deprecated 标记或兼容映射）。所有使用 `lv_animimg_set_src(obj, dsc, num, true/false)` 的用户代码在升级后都会编译失败（实参个数不匹配）；而仓库自身的示例和测试也逐一被修改（examples/widgets/animimg/lv_example_animimg_1.c:17、tests/src/test_cases/widgets/test_animimg.c:48/62/74/105），说明该函数是面向用户的公开入口，影响面不止仓库内部。若用户为了通过编译而简单删掉第四个实参，原本 reverse=true 的反向播放会被静默降级为正向播放，且不产生任何运行时报错。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "src/widgets/animimage/lv_animimage.c",
+      "line": 119,
+      "summary": "新增 lv_animimg_set_src_reverse 复制了 set_src 的全部赋值逻辑，两处状态写入易漂移",
+      "failure_scenario": "lv_animimg_set_src_reverse 的函数体（LV_ASSERT_OBJ、取 animimg、写 dsc、写 pic_count）与 lv_animimg_set_src 完全相同，只有最后一行 lv_anim_set_values 的区间相反。这类“复制粘贴 + 一行差异”的实现会让后续维护出现风险：一旦有人给 set_src 补上新增的字段赋值、空指针/范围校验或 anim 状态重置（例如 num 与 pic_count 的一致性检查），set_src_reverse 很可能被遗漏，两个 API 行为随之不一致，且这种不一致难以被现有测试发现。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAIN-002"
+    },
+    {
+      "file": "tests/src/test_cases/widgets/test_animimg.c",
+      "line": 57,
+      "summary": "新增 test_animimg_set_src_reverse 的断言恒为真，无法校验反向播放语义",
+      "failure_scenario": "新增用例在调用 lv_animimg_set_src_reverse 之后只执行 `TEST_ASSERT_NOT_NULL(animimg)`，而 animimg 是在 setUp 中由 lv_animimg_create 创建的非空指针，因此该断言与函数调用无关、永远不会失败：即使 lv_animimg_set_src_reverse 什么都不做，或区间被写成了 0→num（正向），用例依然绿灯。这使本次变更最核心的新行为（反向区间）在测试层面完全得不到保护，属于“变绿但不校验”的恒真断言。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.5,
+      "rule": "TEST-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\lvgl__lvgl\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\diff\\lvgl__lvgl@9cce37c.diff\n  caseId              lvgl__lvgl@9cce37c\n  --issue             (未传)\n  --taskId            lvgl__lvgl@9cce37c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 5（no-signal=5）\n✓ 完成 · 耗时 141.7s · 模型调用 13 次 · token 输入 19,741（未命中） · 输出 18,791 · 缓存命中 256,768（92.9%） · 工具 20 次（主会话 20 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0087\n[time] 阶段耗时 | 总墙钟 142.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.6%)\n[time] 阶段 | 六阶段审计 141.7s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 7.0s (4.9%) | P3 6.3s (4.4%) | P4 92.9s (65.6%) | P5 28.8s (20.3%) | P6 6.7s (4.7%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 19,741（未命中） | 输出 18,791 | 缓存命中 256,768（92.9%） | $0.0087\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-compact2-20261122\\.reviewpi\\tasks\\lvgl__lvgl@9cce37c\\audit\\20261122_061109_068.json",
+  "token_usage": {
+    "input_tokens": 19741,
+    "output_tokens": 18791,
+    "cache_read_input_tokens": 256768
+  }
+}

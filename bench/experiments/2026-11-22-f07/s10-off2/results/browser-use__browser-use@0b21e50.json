@@ -1,0 +1,52 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 142.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 234,
+      "summary": "create_subprocess_exec 仍传入 shell=False，会在启动用户自带浏览器时抛 TypeError",
+      "failure_scenario": "本次把启动方式从 asyncio.create_subprocess_shell 改成 asyncio.create_subprocess_exec，但在调用中保留了 shell=False。create_subprocess_exec 内部对 shell 已经固定为 shell=False 并以关键字形式显式传给下层 subprocess transport，外部再通过 **kwds 传一次 shell 会造成重复关键字；也就是说 browser_binary_path / chrome_instance_path（用户自备 Chrome）这一整条启动路径在真正拉起进程时会抛 TypeError，浏览器永远起不来，且每次都在 _setup_user_provided_browser 里失败（外层 except 会把错误包装成 RuntimeError 误导排查）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "API-MISUSE-001"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "chrome_remote_debugging_port 声明为 int | None，但所有下游用法都要求非空整数",
+      "failure_scenario": "新增配置字段类型放宽为 int | None（默认 CHROME_DEBUG_PORT），但代码在拼接 URL、格式化启动参数和做端口探测时都直接把它当 int 用：f'http://localhost:{port}/json/version' 会得到 'localhost:None'，CHROME_DEBUGGING_ARG % {...} 会生成 '--remote-debugging-port=None' 传给 Chrome，socket.connect_ex(('localhost', None)) 会直接抛 TypeError。由于字段可通过构造函数/dict 显式传 None（类型声明也允许），用户一旦按类型提示传 None 就会在启动阶段得到晦涩异常，而不是配置校验错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "TYPE-CONTRACT-001"
+    },
+    {
+      "file": "tests/test_browser.py",
+      "line": 180,
+      "summary": "新增用例 mock 的 requests.get 与实际使用的 httpx 不匹配，端口分支实际未被覆盖",
+      "failure_scenario": "新增测试的目的是验证自定义 chrome_remote_debugging_port 会被用于端口探测与 CDP 连接，但生产代码 browser.py 中检查 http://localhost:{port}/json/version 用的是 httpx.AsyncClient，而测试 monkeypatch 的是 requests.get，因此 dummy_get 永远不会被调用：现有实例探测分支实际走的是真实网络请求（localhost 上无服务时抛 httpx.RequestError 被吞掉），再进入“启动新进程 → 10 次每次间隔 1 秒的重试”循环（测试也没有 patch asyncio.sleep），最后靠 DummyChromium.connect_over_cdp 的断言才通过。结果是该用例既拉长执行时间（≈10s 真实 sleep），又无法证明端口被正确用于探测/复用已有浏览器的分支，防回归价值很低。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.62,
+      "rule": "TEST-MOCK-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 12（no-signal=12）\n✓ 完成 · 耗时 140.8s · 模型调用 15 次 · token 输入 18,468（未命中） · 输出 19,620 · 缓存命中 322,176（94.6%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0090\n[time] 阶段耗时 | 总墙钟 141.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 140.7s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 27.3s (19.4%) | P2 3.0s (2.1%) | P3 10.5s (7.5%) | P4 74.9s (53.2%) | P5 16.6s (11.8%) | P6 8.4s (6.0%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 18,468（未命中） | 输出 19,620 | 缓存命中 322,176（94.6%） | $0.0090\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261122_061941_799.json",
+  "token_usage": {
+    "input_tokens": 18468,
+    "output_tokens": 19620,
+    "cache_read_input_tokens": 322176
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "instance_id": "gofr-dev__gofr@b9cdcbb",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "7f1760b083ea23ffd95fdf83467bdfa21735df81",
+  "head_commit": "b9cdcbb2b9fc78499d15d51ffbb7c861592b0efe",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 80.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "pkg/gofr/http/responder.go",
+      "line": 32,
+      "summary": "未设置 Metadata 时响应体会多出 \"metadata\":null，与 omitempty 及文档承诺不符",
+      "failure_scenario": "新增分支把 Response.Metadata（map[string]any）直接赋给内部 response 结构体的 interface{} 字段。当 handler 返回 response.Response 且未设置 Metadata 时，nil map 被装箱成非 nil 的 interface{} 值，encoding/json 的 omitempty 对 interface 只判断 IsNil()，因此不会省略该字段，实际输出为 {\"metadata\":null,\"data\":...}。这既违背了 Response.Metadata 上声明的 `json:\"metadata,omitempty\"` 语义，也与本 MR 文档中“未提供 metadata 时响应只包含 data 字段”的承诺（docs 第 105-114 行）矛盾；同时它给所有以 response.Response 作为返回值的既有接口无条件新增了一个 metadata 键（值恒为 null），对做严格 schema 校验或按字段白名单解析的客户端属于破坏性变更。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "API-RESPONSE-001"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 100,
+      "summary": "不再解包 Response.Data 后，nil Data 的语义丢失，错误响应状态码被改写为 206 / POST 变成 201",
+      "failure_scenario": "删除 `result = resp.Data` 后，Responder 收到的 data 恒为非 nil 的 response.Response 结构体，getStatusCode 中基于 data 是否为 nil 的判断全部失效。两个具体回归：1) handler 返回 `response.Response{Headers: ...}, err`（希望在错误响应上也带自定义头、Data 为 nil）时，err != nil 且 !isNil(data) 成立，getStatusCode 返回 http.StatusPartialContent(206)，错误从 404/500 等真实状态码被掩盖为“部分内容成功”，客户端会当成成功响应处理；2) POST 请求返回 Data 为 nil 的 Response 时，handleSuccess 看到 data 非 nil，状态码由原本的 202 Accepted 变为 201 Created。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\diff\\gofr-dev__gofr@b9cdcbb.diff\n  caseId              gofr-dev__gofr@b9cdcbb\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@b9cdcbb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 79.3s · 模型调用 10 次 · token 输入 11,167（未命中） · 输出 9,925 · 缓存命中 118,656（91.4%） · 工具 9 次（主会话 9 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0047\n[time] 阶段耗时 | 总墙钟 80.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.9%)\n[time] 阶段 | 六阶段审计 79.3s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 2.8s (3.5%) | P2 2.2s (2.8%) | P3 7.5s (9.5%) | P4 43.6s (55.1%) | P5 18.0s (22.7%) | P6 5.1s (6.5%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 11,167（未命中） | 输出 9,925 | 缓存命中 118,656（91.4%） | $0.0047\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\\gofr-dev__gofr@b9cdcbb\\audit\\20261122_063943_261.json",
+  "token_usage": {
+    "input_tokens": 11167,
+    "output_tokens": 9925,
+    "cache_read_input_tokens": 118656
+  }
+}

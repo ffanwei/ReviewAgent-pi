@@ -1,0 +1,52 @@
+{
+  "instance_id": "lvgl__lvgl@9cce37c",
+  "repo": "lvgl/lvgl",
+  "base_commit": "344ba9fe99b487f7f5164900679d56acf2d8bff2",
+  "head_commit": "9cce37c219f95701fecc44f74595aa9c6effbdba",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 170.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/widgets/animimage/lv_animimage.h",
+      "line": 76,
+      "summary": "公开 API `lv_animimg_set_src` 直接删除 `reverse` 参数，破坏既有源码兼容且未提供兼容层",
+      "failure_scenario": "本次变更把 `lv_animimg_set_src()` 的四参数签名 `(obj, dsc[], num, reverse)` 收窄为三参数 `(obj, dsc[], num)`，方向控制改为新增函数 `lv_animimg_set_src_reverse()`。仓库内所有调用点已同步，但该函数是导出的公开 Widget API（`lvgl.h` 直接暴露 `src/widgets/animimage/lv_animimage.h`），任何基于旧签名的应用代码、示例工程或第三方语言绑定在升级后都会直接编译失败：`lv_animimg_set_src(animimg, dsc, 3, true)` 触发 “too many arguments to function” 编译错误，而本 diff 没有提供任何兼容宏/垫片或迁移说明，升级者无法平滑过渡。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.5,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "tests/src/test_cases/widgets/test_animimg.c",
+      "line": 57,
+      "summary": "新增的 `test_animimg_set_src_reverse` 断言恒真，无法验证反向播放实现",
+      "failure_scenario": "新增用例只调用了 `lv_animimg_set_src_reverse(animimg, ...)` 然后断言 `animimg != NULL`，而 `animimg` 已在 `setUp()` 第 33 行由 `lv_animimg_create()` 创建，该断言在任何实现下都成立。用例既没有校验 `dsc`/`pic_count` 是否被写入，也没有校验新函数与正向函数的唯一差异——动画取值区间是否被设为 `(num, 0)`。具体失败场景：把 `lv_animimg_set_src_reverse()` 误写成与 `lv_animimg_set_src()` 完全相同（漏掉 `(num, 0)` 方向设置），甚至写成空函数体，该用例仍然全部通过，反向播放的回归缺陷无法被测试拦截。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TEST-VACUOUS-001"
+    },
+    {
+      "file": "src/widgets/animimage/lv_animimage.c",
+      "line": 119,
+      "summary": "`lv_animimg_set_src_reverse` 与 `lv_animimg_set_src` 函数体重复，后续修改易两处不一致",
+      "failure_scenario": "新增的 `lv_animimg_set_src_reverse()` 完整复制了 `lv_animimg_set_src()` 的校验与状态写入（`LV_ASSERT_OBJ`、`animimg->dsc = dsc`、`animimg->pic_count = num`），仅最后的 `lv_anim_set_values()` 参数顺序不同。具体失败场景：后续若给该 setter 增加共享逻辑（例如 `num == 0` 时拒绝设置、或在设置源时同步刷新当前帧 `lv_image_set_src()`、或调整 `pic_count` 的范围检查），很容易只改一处而漏改另一处，导致正向与反向两条路径在相同输入下行为分叉。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAIN-DUP-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\lvgl__lvgl\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\diff\\lvgl__lvgl@9cce37c.diff\n  caseId              lvgl__lvgl@9cce37c\n  --issue             (未传)\n  --taskId            lvgl__lvgl@9cce37c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 5（no-signal=5）\n✓ 完成 · 耗时 168.9s · 模型调用 21 次 · token 输入 19,398（未命中） · 输出 23,911 · 缓存命中 510,720（96.3%） · 工具 25 次（主会话 25 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0108\n[time] 阶段耗时 | 总墙钟 170.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.6%)\n[time] 阶段 | 六阶段审计 168.8s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 81.7s (48.4%) | P2 2.6s (1.5%) | P3 6.3s (3.7%) | P4 42.9s (25.4%) | P5 29.8s (17.6%) | P6 5.6s (3.3%)\n[usage] 任务总计 | 模型调用 21 次（Agent 21 + 一次性 0） | token 输入 19,398（未命中） | 输出 23,911 | 缓存命中 510,720（96.3%） | $0.0108\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\tasks\\lvgl__lvgl@9cce37c\\audit\\20261122_053126_729.json",
+  "token_usage": {
+    "input_tokens": 19398,
+    "output_tokens": 23911,
+    "cache_read_input_tokens": 510720
+  }
+}

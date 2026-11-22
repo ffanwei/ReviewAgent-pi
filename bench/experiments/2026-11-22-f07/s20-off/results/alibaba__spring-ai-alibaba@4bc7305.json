@@ -1,0 +1,82 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@4bc7305",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "71e7eeb27dfe42c5a805da413ef6e9faf84fe9d0",
+  "head_commit": "4bc73055c7b33f53433d9725eab5010b85a59632",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 156.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 51,
+      "summary": "点击前新增的滚动改变了坐标系，但点击仍使用滚动前的原始 x/y，会把元素滚走并点错位置",
+      "failure_scenario": "新增逻辑把入参 x/y 当成文档坐标来计算 window.scrollTo 的目标（scrollX = x - viewportWidth/2），但这两个坐标是由 get_element_position 通过 Locator.boundingBox() 得到的、相对主视口的滚动敏感坐标（即 getBoundingClientRect 语义）。滚动后元素在视口中的实际位置已经变成 (x + 原滚动偏移 - 新滚动偏移, …)，而 page.mouse().move/click 仍然使用未修正的 x/y，导致点击落点与目标元素错位：页面已向下滚动时，scrollY 被算成接近 0 会把页面滚回顶部，元素离开 (x,y) 位置；元素在首屏之外（y 大于视口高度）时先滚到 y-vh/2，再在视口外坐标 y 点击，等于既没有命中元素又破坏了原本可用的点击。这正是 DBrowserAgent 提示词中“先 get_element_position 再 move_to_and_click”的主流程，属于高概率行为回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-COORDINATE-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+      "line": 43,
+      "summary": "无条件给非 http(s) 的 URL 补 https://，会把 localhost/内网/自定义 scheme 导航到错误地址",
+      "failure_scenario": "新增逻辑只判断是否以 http:// 或 https:// 开头，其余一律加 https://。对于常见的 `localhost:3000`、`127.0.0.1:8080`、`192.168.x.x:port` 这类仅提供 HTTP 的本地/内网服务，会被改写成 https 地址，触发 SSL 握手失败并最终抛出导航超时；对于 `about:blank`、`file://`、`data:` 等原本合法的 scheme 会被拼成 `https://about:blank` 这类非法 URL。原来 Playwright 对无 scheme 的输入会直接报错并暴露真实原因，现在则变成一次“看起来像超时”的失败，同时返回消息里展示的是被改写的 URL，会误导排查。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "BEHAVIOR-URL-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+      "line": 66,
+      "summary": "pressSequentially 固定 100ms/字符且未放大超时，长文本必然触发 30s 超时后回退",
+      "failure_scenario": "新的输入实现给每个字符加了 100ms 延迟，但 pressSequentially 使用 Locator 默认动作超时（Playwright 默认 30s）。agent 输入的内容来自 LLM/用户，长度经常超过约 300 字符，此时 pressSequentially 必定在中途抛出 TimeoutError 被 catch 吞掉，再回退到 fill(\"\")+fill(text)。结果是：每次输入长文本都要先空转约 30 秒、输入框里出现一段被随后清掉的半截文字，工具调用整体耗时显著上升；而“模拟人类输入”的效果在长文本上根本不会生效。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.62,
+      "rule": "PERF-TIMEOUT-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+      "line": 80,
+      "summary": "最终兜底仅直接赋 el.value 并只派发 input 事件，却无条件返回“成功输入”，会产生假成功",
+      "failure_scenario": "第三级兜底用 el.value = value 直接改写 DOM 属性，只 dispatch 了 bubbles 的 input 事件，既没有派发 change 事件，也没有 blur，更没有走浏览器的真实键盘/粘贴路径。对于把值同步挂在 change/blur 上的组件（大量表单库、antd/element 等受控组件），DOM 值会在下一次渲染被恢复为空，提交时数据丢失；对 readonly 或 type=file 的输入框，JS 赋值会被静默忽略且不抛异常。由于只有 e3 才返回失败，这条路径会打印“成功输入”，让 agent 误以为已经填入内容并继续后续步骤（例如直接提交空表单）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.56,
+      "rule": "CORRECTNESS-FALSE-POSITIVE-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/entity/DynamicAgentEntity.java",
+      "line": 47,
+      "summary": "用单个空格作为废弃列的占位值，使 mergePrompts 的判空分支恒为真并持续写误导性 WARN",
+      "failure_scenario": "把 systemPrompt 的默认值改为字符串 \" \"、并在 service 里用 setSystemPrompt(\" \") 取代 setSystemPrompt(null)，意味着该字段永远非 null。而 mergePrompts 的条件是 `entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty()`，只要非 null 就成立，因此 getAllAgents/getAgentById/createAgent/updateAgent 每次都会进入“SystemPrompt 不为空”的分支：对新建 agent 也会打一条“SystemPrompt不为空”的 WARN，日志里还会用 \" \" 参与 `systemPrompt + \"\\n\" + nextPrompt` 拼接。占位空格也无法与真实内容区分，后续若想恢复该字段或做数据清洗都缺少可用判据。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-SENTINEL-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 73,
+      "summary": "debug 红点标记的注入与移除未成对，异常路径下会残留在页面 DOM 中",
+      "failure_scenario": "红点的移除写在同一个 try 的末尾，一旦中间的 page.mouse().move/click 抛异常（元素被遮挡、页面导航中、坐标越界等），会跳到 catch 直接返回失败文本，红点不会被清理，页面里就残留一个 zIndex 99999 的 24px 红色圆点；同一 plan 的后续调用会因为 `document.getElementById(id)` 已存在而继续复用这个过期位置的标记。另外标记用 position:'absolute' 配视口坐标 x/y，与新增的滚动逻辑叠加后，红点位置和真实点击点也不再一致，debug 观察到的是错误位置。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RESOURCE-CLEANUP-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@4bc7305.diff\n  caseId              alibaba__spring-ai-alibaba@4bc7305\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@4bc7305\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 154.9s · 模型调用 16 次 · token 输入 24,542（未命中） · 输出 19,472 · 缓存命中 344,320（93.3%） · 工具 24 次（主会话 24 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0099\n[time] 阶段耗时 | 总墙钟 155.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 154.8s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 4.2s (2.7%) | P2 3.4s (2.2%) | P3 5.4s (3.5%) | P4 90.2s (58.3%) | P5 45.1s (29.2%) | P6 6.4s (4.2%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 24,542（未命中） | 输出 19,472 | 缓存命中 344,320（93.3%） | $0.0099\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@4bc7305\\audit\\20261122_063535_601.json",
+  "token_usage": {
+    "input_tokens": 24542,
+    "output_tokens": 19472,
+    "cache_read_input_tokens": 344320
+  }
+}

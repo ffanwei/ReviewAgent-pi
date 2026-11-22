@@ -1,0 +1,42 @@
+{
+  "instance_id": "FreeCAD__FreeCAD@39c5968",
+  "repo": "FreeCAD/FreeCAD",
+  "base_commit": "b59cd794274c8c007b2ef16c3a06fecf30c0aef1",
+  "head_commit": "39c5968bdc6c0b20d94d4a629cd43eafee1e56d0",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 237.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/App/Application.cpp",
+      "line": 1167,
+      "summary": "getResourceDir 等三处删除了 #6892 的空字符截断处理，Conda 打包环境下的路径防护被移除",
+      "failure_scenario": "本次改动把 `std::string path = std::string(RESOURCEDIR).c_str();` 改成 `auto path = std::string(RESOURCEDIR);`（getLibraryDir/getHelpDir 同样处理），但紧邻其上的注释 `// #6892: Conda may inject null characters => remove them` 原样保留。该行原本是 issue #6892 的显式修复点：宏值来自 `add_definitions(-DRESOURCEDIR=\"${RESOURCEDIR}\")`（由 CMAKE_INSTALL_DATADIR 生成），在 Conda 等打包环境中该宏可能带有内嵌 NUL 字节，原写法通过 `c_str()` 再次经由 const char* 构造来显式截断。删除后该语义退化为依赖 `std::string(const char*)` 构造函数的隐式截断，代码与注释不再对应：一旦 RESOURCEDIR 的生成方式或类型形式发生变化（改为生成的 std::string/wstring 变量、或打包脚本注入形态不同），残留的 NUL 及其后字节会重新进入 path，导致 getResourceDir()/getLibraryDir()/getHelpDir() 返回被污染的路径，QDir 判定为相对路径或指向错误目录，进而使 FreeCAD 启动期找不到资源/文档/模块目录。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.42,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "src/App/Application.cpp",
+      "line": 421,
+      "summary": "清理 MR 夹带 Python 异常类型名变更：AbortIOException 的 __name__ 由 Base.PyExc_FC_AbortIOException 改为 Base.AbortIOException",
+      "failure_scenario": "setupPythonException 抽取 lambda 时，除了等价改写样板代码，还顺带改变了 AbortIOException 传给 PyErr_NewException 的类型全名：原为 `\"Base.PyExc_FC_AbortIOException\"`，新代码通过 `setup(\"AbortIOException\", ...)` 生成为 `\"Base.AbortIOException\"`。PyErr_NewException 的第一个参数决定异常类的 `__module__`/`__name__`，因此这是 Python 侧可见的语义变更：异常在 traceback、`type(e).__name__`、以及 `Base::PyException::getErrorType()` 返回的 \"模块.类型\" 字符串中都变成 \"Base.AbortIOException\"。该变更与本次“无行为变更”的清理目标不一致且未在描述中说明；仓库内 src/Ext/freecad/module_io.py:17 通过 `except Base.AbortIOException` 按模块属性捕获（属性名未变，不受影响），但依赖旧类型名字符串的外部脚本、日志解析或错误类型白名单会失配，容易误判为新增异常类型。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.4,
+      "rule": "COMPAT-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\FreeCAD__FreeCAD\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\diff\\FreeCAD__FreeCAD@39c5968.diff\n  caseId              FreeCAD__FreeCAD@39c5968\n  --issue             (未传)\n  --taskId            FreeCAD__FreeCAD@39c5968\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 40（no-signal=40）\n✓ 完成 · 耗时 236.0s · 模型调用 15 次 · token 输入 17,281（未命中） · 输出 32,512 · 缓存命中 480,128（96.5%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0129\nreview-pi: 置信度过滤丢弃 2 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 236.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 236.0s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 38.4s (16.3%) | P2 6.4s (2.7%) | P3 7.1s (3.0%) | P4 139.4s (59.1%) | P5 38.1s (16.2%) | P6 6.5s (2.8%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 17,281（未命中） | 输出 32,512 | 缓存命中 480,128（96.5%） | $0.0129\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\tasks\\FreeCAD__FreeCAD@39c5968\\audit\\20261122_061338_849.json",
+  "token_usage": {
+    "input_tokens": 17281,
+    "output_tokens": 32512,
+    "cache_read_input_tokens": 480128
+  }
+}

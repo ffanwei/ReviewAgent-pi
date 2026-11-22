@@ -1,0 +1,42 @@
+{
+  "instance_id": "PowerShell__PowerShell@ea07b93",
+  "repo": "PowerShell/PowerShell",
+  "base_commit": "ce76ae1def6d5b00fff0d855ec01575121268ef3",
+  "head_commit": "ea07b93a40f64274505e3a070c1fd91684ff2959",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 154.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2232,
+      "summary": "手工 PATH 查找会跳过相对与 `~` 条目，导致 ssh 实际可用时仍抛 CommandNotFoundException",
+      "failure_scenario": "新增的兜底分支先用 `Path.IsPathFullyQualified(path)` 过滤 PATH 条目，非完全限定的条目被直接 `continue` 跳过；同时只做了 `TrimEntries`，没有展开 `~`、也没有去除 Windows 上常见的引号包裹条目。而 PowerShell 自身的命令发现（`CommandDiscovery.GetLookupDirectoryPaths`）会把 `~` / `~/...` 展开成用户主目录、并按 execvp/CreateProcess 语义允许相对条目参与查找。结果是：当进程 PATH 中含有 `~/bin`（如由 systemd/容器启动器设置的 PATH）或相对条目，而 ssh 恰好只在这些目录里时，本次新增逻辑判定“ssh 不存在”，在 2246 行抛出 `CommandNotFoundException`，SSH 远程连接整体失败；Windows 上 PATH 条目被引号包裹（`\"C:\\Program Files\\OpenSSH\"`）时同样会误判为缺失。该分支此前完全不可用（空 filePath 会在 `Path.GetDirectoryName`/`ProcessStartInfo` 处失败），因此这是新逻辑自身引入的误报缺陷，会让 SDK 宿主场景的 SSH 传输在等价于系统可解析的 PATH 下依旧不可用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "PATH-RESOLUTION-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2238,
+      "summary": "Unix 下仅用 File.Exists 判定命中，未校验执行位即停止搜索",
+      "failure_scenario": "新增的兜底查找在非 Windows 平台上只用 `File.Exists(sshCommandPath)` 判断是否找到了 ssh，命中后立即 `break` 并把 `filePath` 固定为该路径。但 Unix 上可执行文件必须带执行位，仓库内其它命令查找路径（`CommandPathSearch`、`NativeCommandProcessor`）都额外调用了 `Platform.NonWindowsIsExecutable` 做校验。若 PATH 靠前的目录里存在一个同名但不可执行的普通文件 `ssh`（常见于残留文件、被 chmod 掉的构建产物、或用户误放的文本文件），本逻辑会选中它并停止搜索：`filePath` 随后被传给 `CreateProcess`/`execve`（2423-2428），在进程创建阶段报出 “Permission denied” 一类晦涩错误，而 PATH 后面真正可用的 `ssh` 永远不会被尝试，也无法得到本 MR 新加的 “命令未找到” 提示。Windows 上对应的 PATHEXT/可执行性判定不受影响，因此这是 Unix 专属的可移植性缺陷。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "PORTABILITY-EXEC-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\PowerShell__PowerShell\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\diff\\PowerShell__PowerShell@ea07b93.diff\n  caseId              PowerShell__PowerShell@ea07b93\n  --issue             (未传)\n  --taskId            PowerShell__PowerShell@ea07b93\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 152.3s · 模型调用 20 次 · token 输入 20,207（未命中） · 输出 19,470 · 缓存命中 355,968（94.6%） · 工具 25 次（主会话 25 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0093\n[time] 阶段耗时 | 总墙钟 153.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (0.8%)\n[time] 阶段 | 六阶段审计 152.2s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 11.9s (7.8%) | P2 3.1s (2.0%) | P3 4.2s (2.8%) | P4 98.9s (64.9%) | P5 22.7s (14.9%) | P6 11.5s (7.5%)\n[usage] 任务总计 | 模型调用 20 次（Agent 20 + 一次性 0） | token 输入 20,207（未命中） | 输出 19,470 | 缓存命中 355,968（94.6%） | $0.0093\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\\PowerShell__PowerShell@ea07b93\\audit\\20261122_063351_649.json",
+  "token_usage": {
+    "input_tokens": 20207,
+    "output_tokens": 19470,
+    "cache_read_input_tokens": 355968
+  }
+}

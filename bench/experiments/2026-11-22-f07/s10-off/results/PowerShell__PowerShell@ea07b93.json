@@ -1,0 +1,52 @@
+{
+  "instance_id": "PowerShell__PowerShell@ea07b93",
+  "repo": "PowerShell/PowerShell",
+  "base_commit": "ce76ae1def6d5b00fff0d855ec01575121268ef3",
+  "head_commit": "ea07b93a40f64274505e3a070c1fd91684ff2959",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 156.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2232,
+      "summary": "PATH 条目被 Path.IsPathFullyQualified 预过滤，会漏掉 ~/bin、相对目录等合法条目并误抛 CommandNotFoundException",
+      "failure_scenario": "新增的无 Runspace 分支在遍历 PATH 前，用 `Path.IsPathFullyQualified(path)` 直接 continue 跳过非全限定条目。Unix 上 PATH 里常见 `~/bin`（以及部分容器/测试环境的 `.`、`bin` 这类相对条目），这些条目既没有被展开也没有被解析就被丢弃；同时 `Split(..., TrimEntries)` 只去空白、不会去掉条目两侧的引号，因此 Windows 上手工加过引号的条目（如 `\"C:\\Program Files\\OpenSSH\"`）同样被判定为非全限定而跳过。结果是：在有 Runspace 的进程里 `ssh` 能被 CommandDiscovery 的 PathSearcher 正常找到（其 GetLookupDirectoryPaths 会展开 `~`），而在 SDK 宿主/无 Runspace 场景下同一台机器却走到 2246 行的新守卫并抛出 CommandNotFoundException，形成随宿主环境变化的不一致失败，且错误信息 `The term 'ssh.exe' is not recognized...` 会误导用户以为 ssh 未安装。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "ROBUSTNESS-PATH-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2238,
+      "summary": "Unix 上只用 File.Exists 判断，可能选中无执行权限的同名文件并中止对后续 PATH 目录的查找",
+      "failure_scenario": "新增的 PATH 扫描把 `File.Exists(sshCommandPath)` 作为唯一命中条件。File.Exists 只判断文件存在，不判断 Unix 执行位，因此当 PATH 靠前的目录中存在名为 `ssh` 但未 chmod +x 的文件（例如解压后未赋权的二进制、被误命名为 ssh 的普通文件/包装脚本）时会立即 break 并把该路径作为 startInfo.FileName。Unix 分支随后在 StartSSHProcess 中把 FileName 原样交给 CreateProcess/fork+execve（RunspaceConnectionInfo.cs:2412、2423-2428），execve 因 EACCES 失败，最终抛出的是底层进程创建异常而不是 2246 行新增的 CommandNotFoundException；同时因为已经 break，PATH 后面真正可用的 ssh 不会再被尝试，用户看到的是权限相关报错而不是“未找到 ssh”或正常连接。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.42,
+      "rule": "PORTABILITY-EXEC-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2227,
+      "summary": "在同一方法内新增第三套 ssh 路径解析逻辑，与 CommandDiscovery 的 PATH 处理约定重复且无从复用",
+      "failure_scenario": "StartSSHProcess 现在同时存在两条解析路径：context != null 走 CommandDiscovery.LookupCommandInfo（含 PSModuleAutoLoading、Pre/PostCommandLookup 回调、PATH 缓存与 PATHEXT 处理），context == null 走这里内联的手写 PATH 扫描（自行 Split、自行跳过非全限定条目、无 `~` 展开、无缓存、不识别 PATHEXT）。两套逻辑对“PATH 条目如何解释”的规则已经不一致（见 F001），后续任何一方调整 PATH 解析语义都不会自动同步；这段逻辑又内联在 StartSSHProcess 里，无法被其他需要“无 Runspace 时定位可执行文件”的代码复用或单独验证，长期维护容易漂移。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-DUP-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\PowerShell__PowerShell\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\diff\\PowerShell__PowerShell@ea07b93.diff\n  caseId              PowerShell__PowerShell@ea07b93\n  --issue             (未传)\n  --taskId            PowerShell__PowerShell@ea07b93\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 153.7s · 模型调用 21 次 · token 输入 23,051（未命中） · 输出 19,905 · 缓存命中 424,448（94.8%） · 工具 34 次（主会话 34 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0100\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 154.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.6%)\n[time] 阶段 | 六阶段审计 153.6s (99.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 7.2s (4.7%) | P2 4.1s (2.7%) | P3 4.8s (3.1%) | P4 103.0s (67.1%) | P5 26.8s (17.4%) | P6 7.6s (4.9%)\n[usage] 任务总计 | 模型调用 21 次（Agent 21 + 一次性 0） | token 输入 23,051（未命中） | 输出 19,905 | 缓存命中 424,448（94.8%） | $0.0100\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off-20261122\\.reviewpi\\tasks\\PowerShell__PowerShell@ea07b93\\audit\\20261122_053127_256.json",
+  "token_usage": {
+    "input_tokens": 23051,
+    "output_tokens": 19905,
+    "cache_read_input_tokens": 424448
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "instance_id": "gofr-dev__gofr@b9cdcbb",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "7f1760b083ea23ffd95fdf83467bdfa21735df81",
+  "head_commit": "b9cdcbb2b9fc78499d15d51ffbb7c861592b0efe",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 106.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "pkg/gofr/http/responder.go",
+      "line": 97,
+      "summary": "Metadata 用 interface{} 承载 map 导致 omitempty 失效，所有 Response 响应都会多出 \"metadata\":null",
+      "failure_scenario": "内部 response 结构的 Metadata 字段声明为 interface{}（omitempty），而 Responder 在新增分支里把 v.Metadata（类型 map[string]any，未设置时为 nil map）赋给它。nil map 装入 interface{} 后接口本身非 nil，encoding/json 的 isEmptyValue 只判断 interface 本身是否为 nil，因此该字段不会被省略，而是编码成 \"metadata\":null。后果：1) 所有返回 response.Response 的接口报文从 {\"data\":...} 变成 {\"metadata\":null,\"data\":...}，对做严格 JSON 校验或反序列化到强类型结构的客户端是破坏性变更；2) 与本次 MR 同一份文档所声明的默认形态（仅 data 字段）自相矛盾，按文档实现的客户端/用户会产生误解。新增测试第 59 行已经把这个 null 固化为预期，说明问题被测试覆盖但未被识别为缺陷。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "API-CONTRACT-002"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 101,
+      "summary": "移除 result = resp.Data 解包后，错误场景的状态码被改成 206 Partial Content",
+      "failure_scenario": "原实现把 response.Response 解包成 resp.Data 再交给 Responder，getStatusCode 与 handleSuccess 都是基于「解包后的数据是否为空」决定状态码。本次删除解包后，Responder 收到的是恒非 nil 的 Response 结构值，于是 getStatusCode 中 `if !isNil(data)` 恒成立、handleSuccess 中 `data != nil` 也恒成立，状态码判定失真。具体失败场景：1) handler 写 `return response.Response{}, gofrHTTP.ErrorEntityNotFound{}`（错误路径下返回空 Response 的常见写法），原先 data 为 nil，走 statusCodeResponder 分支得到 404；现在 data 为非 nil 的 Response{}，被判定为 partial content 返回 206，客户端拿到的是「部分内容」而非 404/400/500，重试与错误处理逻辑会整体错乱；2) POST 接口返回 `response.Response{}`（Data 为空），原先得 202 Accepted，现在得 201 Created。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "pkg/gofr/http/responder.go",
+      "line": 31,
+      "summary": "新增的 resTypes.Response 分支先于 File/Raw 命中，包裹在 Response 中的 File/Raw 不再按原类型写出",
+      "failure_scenario": "switch 中 resTypes.Response 分支位于 resTypes.File 之前，且 handler 层已不再解包，因此 `response.Response{Data: response.File{...}}` 这类写法不再走到 File 分支：文件内容会被当作普通结构体做 JSON 编码（Content []byte 变成 base64 字符串），Content-Type 从文件自身的类型退化为 application/json，浏览器/客户端拿到的是 JSON 而非二进制文件。同理 `response.Response{Data: response.Raw{...}}` 也不再走 Raw 分支，Raw 的「直接写出字节」语义丢失。原实现因为先解包、再按 Data 的类型匹配，这两条路径都是有效的，属于本次变更引入的行为回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\diff\\gofr-dev__gofr@b9cdcbb.diff\n  caseId              gofr-dev__gofr@b9cdcbb\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@b9cdcbb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 105.4s · 模型调用 9 次 · token 输入 11,313（未命中） · 输出 13,364 · 缓存命中 129,408（92.0%） · 工具 9 次（主会话 9 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0057\n[time] 阶段耗时 | 总墙钟 106.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.7%)\n[time] 阶段 | 六阶段审计 105.3s (99.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 8.7s (8.3%) | P3 6.4s (6.1%) | P4 27.6s (26.2%) | P5 57.2s (54.4%) | P6 5.4s (5.1%)\n[usage] 任务总计 | 模型调用 9 次（Agent 9 + 一次性 0） | token 输入 11,313（未命中） | 输出 13,364 | 缓存命中 129,408（92.0%） | $0.0057\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\\gofr-dev__gofr@b9cdcbb\\audit\\20261122_065107_076.json",
+  "token_usage": {
+    "input_tokens": 11313,
+    "output_tokens": 13364,
+    "cache_read_input_tokens": 129408
+  }
+}

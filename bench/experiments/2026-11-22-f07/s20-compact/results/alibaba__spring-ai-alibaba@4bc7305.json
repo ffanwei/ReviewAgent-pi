@@ -1,0 +1,62 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@4bc7305",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "71e7eeb27dfe42c5a805da413ef6e9faf84fe9d0",
+  "head_commit": "4bc73055c7b33f53433d9725eab5010b85a59632",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 234.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 49,
+      "summary": "新增居中滚动后仍用滚动前的视窗坐标点击，坐标点击会打到错误元素",
+      "failure_scenario": "本次新增了「先把页面滚动到以 (x, y) 为中心，再在 (x, y) 处点击」的逻辑，但 move_to_and_click 收到的 x/y 是相对视窗的坐标（来自 get_element_position 的 boundingBox），滚动并不会同步换算，导致滚动后点击落点与目标元素错位。具体失败场景：视窗 1280x720、目标元素在视窗内 y=400，新增的 scrollY = 400-360 = 40 会把页面上滚 40px，元素随之移动到视窗 y=360，但随后仍在 (x, 400) 处 click，落点相对目标偏移 40px，可能命中相邻链接/按钮或空白处；目标在首屏之外（如 y=900）时，滚动后元素实际在视窗 y=180，而代码仍然点击 y=900，直接点到视窗之外。由于异常分支只捕获 Playwright 抛错、越界点击通常不抛错，方法最后仍返回「Clicked at position」，形成静默误点，Agent 会基于错误结果继续执行。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-COORD-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+      "line": 42,
+      "summary": "无条件补 https:// 前缀会破坏非 http(s) 协议与本地 http 站点导航",
+      "failure_scenario": "新增的「自动补全 URL 前缀」只对以 http:// 或 https:// 开头的字符串放行，其余一律拼成 https://<原串>。具体失败场景：1) url = \"file:///tmp/report.html\" → 变成 \"https://file:///tmp/report.html\"，属非法 URL，page.navigate 抛异常，原本可用的本地文件导航直接失效；2) \"about:blank\"、\"data:text/html,<h1>hi</h1>\"、\"chrome://version\" 同样被强行加前缀；3) 大小写不敏感问题：\"HTTP://example.com\" 不以小写 \"http://\" 开头，会被拼成 \"https://HTTP://example.com\"；4) 本地/内网 http 服务如 \"localhost:8080\"、\"127.0.0.1:8080\"、\"192.168.1.10:8080\" 会被强制升级为 https，命中 ERR_SSL_PROTOCOL_ERROR 或连接被拒，而这些场景在测试环境非常常见。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "URL-NORMALIZE-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java",
+      "line": 200,
+      "summary": "用空格串代替 null 规避 NPE，使废弃字段的判空分支恒真并输出误导性 WARN",
+      "failure_scenario": "本次把 `setSystemPrompt(null)` 改成 `setSystemPrompt(\" \")`，并在实体上给 systemPrompt 加了默认值 \" \"。但 mergePrompts 的判空条件是 `entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty()`，`||` 在左侧为 true 时短路，因此「非 null 即进入合并分支」——加上默认值 \" \"，该条件变成恒真。具体失败场景：mapToAgentConfig（getAllAgents/getAgentById 都走它）与 updateEntityFromConfig（createAgent/updateAgent 走它）每次都会进入分支，打印「Agent[xxx]的SystemPrompt不为空，但属性已经废弃…」的 WARN，并计算 `nextPrompt = \" \" + \"\\n\" + nextPrompt`。结果是正常业务操作持续产生虚假告警（列表页每个 Agent 一条），且把「字段为空」这一真实状态变成不可判定；一旦后续把合并结果真正写回 nextStepPrompt，所有 Agent 的提示词都会被注入前导 \" \\n\"。NPE 只是被换成哨兵值掩盖，根因（判空条件写错）未修。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "NULL-SENTINEL-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+      "line": 80,
+      "summary": "输入降级链吞掉所有异常并返回「成功输入」，JS 兜底对受控组件无效时构成假成功",
+      "failure_scenario": "重写后的输入实现把 fill/pressSequentially 的异常全部在本地吞掉，最终兜底直接用 `el.value = value` 赋值并派发 input 事件，而无论走哪条降级分支，方法最后都返回「成功输入: ...」。具体失败场景：目标框是 readonly/disabled、type=file 或已被遮挡（fill 与 pressSequentially 均失败），代码退到 JS 赋值；对于 React/Vue 等受控组件，直接写 el.value 不会更新框架内部的 value tracker，随后派发的 input 事件会被框架判为「值未变化」而丢弃，页面状态仍为空，但工具已返回成功，Agent 据此认为已填写并继续提交，最终出现空表单提交或前端校验失败，且日志中只剩第三级异常信息（前两级原因被丢弃），现场无从排查。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "SILENT-FAIL-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@4bc7305.diff\n  caseId              alibaba__spring-ai-alibaba@4bc7305\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@4bc7305\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-compact.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 233.4s · 模型调用 33 次 · token 输入 35,823（未命中） · 输出 30,050 · 缓存命中 1,065,088（96.7%） · 工具 39 次（主会话 39 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0164\n[time] 阶段耗时 | 总墙钟 234.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 233.2s (99.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 127.6s (54.7%) | P3 6.5s (2.8%) | P4 36.7s (15.8%) | P5 54.4s (23.3%) | P6 7.9s (3.4%)\n[usage] 任务总计 | 模型调用 33 次（Agent 33 + 一次性 0） | token 输入 35,823（未命中） | 输出 30,050 | 缓存命中 1,065,088（96.7%） | $0.0164\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-compact-20261122\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@4bc7305\\audit\\20261122_064653_469.json",
+  "token_usage": {
+    "input_tokens": 35823,
+    "output_tokens": 30050,
+    "cache_read_input_tokens": 1065088
+  }
+}

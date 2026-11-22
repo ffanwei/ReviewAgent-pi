@@ -1,0 +1,72 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 124.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "新增的 root 路径校验在父目录缺失时误判合法嵌套路径，导致 safetensors 上传被拒绝",
+      "failure_scenario": "convertFromSafetensors 在拷贝 blob 之前新增了 root.OpenFile(fp, O_CREATE|O_WRONLY) 做包含性校验，但调用前没有创建 fp 的父目录。此前嵌套路径（如 \"subdir/model.safetensors\"）之所以能工作，是因为后面 createLink 内部执行 os.MkdirAll(filepath.Dir(dst))；现在该校验先于 createLink 执行，对不存在的父目录会返回 ENOENT，并被统一包装成 errFilePath。结果是：CreateHandler 里已经通过 validRelative 校验的合法嵌套文件名，在转换阶段被当作非法路径拒绝，属于对既有可用请求的功能回归。新增测试全部使用平铺文件名（model.safetensors），因此无法暴露该问题。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.84,
+      "rule": "RESOURCE-LIFECYCLE-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "errFilePath 只加入适配器分支的错误映射，主 Files 分支仍返回非 400",
+      "failure_scenario": "本次把 errFilePath 加进了 r.Adapters 分支的 badReq 列表，但 r.Files 分支（create.go:100）的列表没有同步更新。convertFromSafetensors 内部产生的 errFilePath（例如 F001 中的父目录缺失、Windows 反斜杠路径等）在主模型转换路径上不会命中任何 badReq，于是走 ch <- gin.H{\"error\": err.Error()} 这一无 status 字段的分支，最终由 streamResponse 以 HTTP 200 返回错误体。同一个错误在适配器分支返回 400、在主分支返回 200，错误码语义不一致，客户端难以区分「请求非法」与「服务端内部错误」。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "ERROR-HANDLING-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 172,
+      "summary": "validRelative 拒绝本可安全归一化的路径写法，与转换层语义和测试期望自相矛盾",
+      "failure_scenario": "validRelative 直接拒绝以 \"./\" 开头以及包含 \"/./\"、\"/../\"、尾部 \"/.\" 的路径，但这些片段经 filepath.Clean 后都落在同一目录内、并无穿越风险；convertFromSafetensors 自身正是先 filepath.Clean(fp) 再交给 os.Root 校验，且新增测试把 \"./model.safetensors\" 与 \"nested/../model.safetensors\" 断言为合法（wantErr nil）。因此同一份输入在 handler 层会被 400 拒绝、在转换层却被视为合法；同时这也是对这些原本可正常工作的路径写法（变更前 \"./xxx.safetensors\" 能通过 createLink 正常处理）的行为回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "INPUT-VALIDATION-004"
+    },
+    {
+      "file": "server/create.go",
+      "line": 182,
+      "summary": "validRelative 仅识别正斜杠分隔符，Windows 下反斜杠穿越路径可绕过首层校验",
+      "failure_scenario": "函数只用 \"/\" 判断绝对路径与 \"..\" 片段，而仓库同时支持 Windows（存在 app/lifecycle/logging_windows.go 等 windows 构建）。在 Windows 上 \"..\\\\..\\\\evil.safetensors\" 既不匹配 \"/\" 前缀、也不匹配 \"/../\" 等模式，validRelative 会放行；随后 CreateHandler 用 filepath.Clean(k) 写回 map，会把该键归一化成 \"../../evil.safetensors\" 交给后续流程。目前靠 convertFromSafetensors 中的 os.Root 兜底才没有真正逃逸，但 GGUF 分支只使用 digest、不会走到该校验，因此首层防线在 Windows 上是失效的，与函数注释声明的「拒绝目录穿越」不符。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "PORTABILITY-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "用 filepath.Clean 后的键覆盖写回 map，可能静默丢弃同名归一化条目",
+      "failure_scenario": "CreateHandler 把校验后的键以 files[filepath.Clean(k)] = v 写回新 map。validRelative 允许 \"a//b\"、\"a/b/\" 等写法（新增测试明确判定为合法），它们 Clean 后都会得到同一个键；若客户端同时提交 \"a/b\" 与 \"a//b\"（对应不同 digest），后写入的会覆盖前一条，其中一个 blob 被静默丢弃且不返回任何错误。对 safetensors 这类按文件名索引权重分片的格式，丢文件会表现为后续转换阶段难以定位的失败。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.42,
+      "rule": "DATA-INTEGRITY-005"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 122.4s · 模型调用 16 次 · token 输入 11,288（未命中） · 输出 16,987 · 缓存命中 284,800（96.2%） · 工具 20 次（主会话 20 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0071\nreview-pi: 置信度过滤丢弃 1 条检视意见（阈值 0.5），仅影响中文 tips\n[time] 阶段耗时 | 总墙钟 123.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (1.0%)\n[time] 阶段 | 六阶段审计 122.3s (98.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 9.8s (8.0%) | P2 2.6s (2.1%) | P3 6.0s (4.9%) | P4 36.3s (29.6%) | P5 62.0s (50.7%) | P6 5.6s (4.6%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 11,288（未命中） | 输出 16,987 | 缓存命中 284,800（96.2%） | $0.0071\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07s20-off-20261122\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261122_063351_429.json",
+  "token_usage": {
+    "input_tokens": 11288,
+    "output_tokens": 16987,
+    "cache_read_input_tokens": 284800
+  }
+}

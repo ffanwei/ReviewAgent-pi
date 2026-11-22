@@ -1,0 +1,52 @@
+{
+  "instance_id": "cline__cline@2195a68",
+  "repo": "cline/cline",
+  "base_commit": "398bc87a64800e021966868243be2f09be72e73c",
+  "head_commit": "2195a689b787a963bdacc35d348f4590c30a2692",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 82.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/extension.ts",
+      "line": 318,
+      "summary": "确认框被关闭（返回 undefined）时被当作同意，直接写入外部传入的 token",
+      "failure_scenario": "state 不匹配时的用户确认是本次新增的唯一拦截点，但代码只把精确等于 \"Cancel\" 的返回值视为拒绝：showWarningMessage 在用户按 Esc、点击关闭按钮或提示被系统丢失时会返回 undefined，此时 userConfirmation !== \"Cancel\" 成立，代码继续向下执行 handleAuthCallback(token, provider)。由于任意网页都可以构造 vscode://saoudrizwan.claude-dev/auth?idToken=...&state=attacker 深链触发该分支，用户只要「关掉」这个提示（而不是精确点 Cancel），攻击者的 token 就会被 AuthService.handleAuthCallback 写入并把 apiProvider 切成 cline、welcomeViewCompleted 置 true（src/core/controller/index.ts:466-484），造成 token 注入与会话固定，用户后续的对话内容会流向攻击者账号。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.85,
+      "rule": "SECURITY-AUTH-FAILOPEN-001"
+    },
+    {
+      "file": "src/services/auth/AuthService.ts",
+      "line": 33,
+      "summary": "authNonce 变成进程内永不变的常量且不再重置，state 失去一次性 CSRF 令牌语义",
+      "failure_scenario": "改动前 nonce 在每次 createAuthRequest 时重新生成、并在校验通过后由 resetAuthNonce() 清空，一个 state 只能使用一次；改动后 _authNonce 为构造期生成的 readonly 字段，resetAuthNonce() 被整体删除，createAuthRequest 每次都复用同一个值（src/services/auth/AuthService.ts:187），Controller.validateAuthState 也不再清空（src/core/controller/index.ts:461）。结果是同一扩展会话内签发的所有回调 URL 共用同一个 state，一旦该 URL 通过浏览器历史、Referrer、剪贴板或日志泄露，攻击者可在整个会话生命周期内重放 .../auth?idToken=<attacker>&state=<已知 nonce> 并通过 src/extension.ts:312 的相等判断，从而绕过新增的确认框把攻击者 token 直接写入本地登录态，一次性 CSRF 防护退化为长期有效凭证。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.72,
+      "rule": "SECURITY-CSRF-STATE-REUSE-001"
+    },
+    {
+      "file": "src/extension.ts",
+      "line": 314,
+      "summary": "确认框文案使用 uri.path，用户无法判断 token 来源，且默认首选按钮为 Store",
+      "failure_scenario": "提示文案 Store token returned from ${uri.path} 中的 uri.path 在本分支恒为 \"/auth\"（由 switch (path) 的 case \"/auth\" 进入），因此用户看到的是没有任何来源信息的提示，无法分辨该 token 来自官方登录页还是任意网页构造的 deep link；同时 \"Store\" 位于按钮列表首位，是默认首选动作。这使本次新增的确认机制无法起到「知情同意」的作用，配合外部深链可低成本诱导用户误点，把攻击者 token 写入本地登录态。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "SECURITY-UI-INFORMED-CONSENT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\diff\\cline__cline@2195a68.diff\n  caseId              cline__cline@2195a68\n  --issue             (未传)\n  --taskId            cline__cline@2195a68\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f07-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 80.9s · 模型调用 15 次 · token 输入 8,846（未命中） · 输出 10,399 · 缓存命中 162,816（94.8%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0046\n[time] 阶段耗时 | 总墙钟 81.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.8%)\n[time] 阶段 | 六阶段审计 80.9s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 10.5s (13.0%) | P2 2.9s (3.6%) | P3 4.1s (5.1%) | P4 19.4s (23.9%) | P5 38.0s (47.0%) | P6 6.0s (7.4%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 8,846（未命中） | 输出 10,399 | 缓存命中 162,816（94.8%） | $0.0046\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f07-off2-20261122\\.reviewpi\\tasks\\cline__cline@2195a68\\audit\\20261122_062204_039.json",
+  "token_usage": {
+    "input_tokens": 8846,
+    "output_tokens": 10399,
+    "cache_read_input_tokens": 162816
+  }
+}
