@@ -5,6 +5,7 @@ import {
   PHASE_INSTRUCTIONS,
   PHASE_ORDER,
   buildPhaseInstruction,
+  buildStageInstruction,
 } from "./phases.js";
 
 // 六阶段指令（中文原生，ADR-0090）：不再对 DSH 审计真源逐字节对照（ADR-0038）。
@@ -45,4 +46,21 @@ test("测试文件提示只挂在 Phase 5，其余阶段逐字节等于原指令
       expect(included).toBe(instruction);
     }
   });
+});
+
+test("compact：Phase 1 合并风险分级、Phase 3 允许空 neededContext，其余阶段不变", () => {
+  for (let index = 0; index < PHASE_COUNT; index += 1) {
+    const compact = buildStageInstruction(index, false, "compact");
+    if (index === 0) {
+      expect(compact.startsWith(`Phase 1 of 6 - ${PHASE_ORDER[0]}.\n`)).toBe(true);
+      expect(compact).toContain('"riskClass"');
+      expect(compact).toContain("不要调用工具");
+      expect(compact).toContain('"summary"');
+    } else if (index === 2) {
+      expect(compact.startsWith(`Phase 3 of 6 - ${PHASE_ORDER[2]}.\n`)).toBe(true);
+      expect(compact).toContain("neededContext 返回空数组");
+    } else {
+      expect(compact).toBe(buildPhaseInstruction(index, false));
+    }
+  }
 });

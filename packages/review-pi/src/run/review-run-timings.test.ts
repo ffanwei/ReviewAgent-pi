@@ -71,6 +71,8 @@ function splitRuntime(overrides: Partial<SplitLimits>): ReviewRuntime {
     ...DEFAULT_REVIEW_RUNTIME,
     limits: {
       ...DEFAULT_LIMITS,
+      // 六阶段手写脚本 / 计时窗口：显式钉 off（默认已切 compact，ADR-0113）。
+      loop: { ...DEFAULT_LIMITS.loop, stageCompression: "off" },
       retry: { ...DEFAULT_LIMITS.retry, maxAttempts: 1, reviewTurnAttempts: 1 },
       split: { ...DEFAULT_LIMITS.split, ...overrides },
     },

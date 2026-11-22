@@ -58,6 +58,9 @@ export interface RetryLimits {
   readonly streamReplayBudgetMs: number;
 }
 
+/** 阶段计划：`off` = 六阶段各发一次请求；`compact` = 合并 1+2 + 无需求时跳过 Phase 4 */
+export type StageCompression = "off" | "compact";
+
 /** 检视循环上限（ADR-0046） */
 export interface LoopLimits {
   /**
@@ -72,6 +75,12 @@ export interface LoopLimits {
    * 按 (file, line, category) 合并，主候选永不被丢弃。缺省关闭。
    */
   readonly phase5Sweep: boolean;
+  /**
+   * 阶段压缩：`off`（缺省）= 六阶段各发一次请求；`compact` = Phase 1+2 合并为
+   * 一次请求（同时产出 summary 与 riskClass），Phase 3 的 `neededContext` 为空时
+   * 跳过 Phase 4。审计仍保留六阶段记录（跳过项 requestCount = 0）。
+   */
+  readonly stageCompression: StageCompression;
 }
 
 /**
@@ -218,7 +227,7 @@ export interface Limits {
 }
 
 export const DEFAULT_LIMITS: Limits = {
-  loop: { maxRounds: 3, phase5Sweep: false },
+  loop: { maxRounds: 3, phase5Sweep: false, stageCompression: "compact" },
   timeouts: {
     skillPassMs: 1_200_000,
     skillBashMs: 120_000,
@@ -278,7 +287,7 @@ export const DEFAULT_LIMITS: Limits = {
 
 
 const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro", "coverage"] as const;
-const LOOP_KEYS = ["maxRounds", "phase5Sweep"] as const;
+const LOOP_KEYS = ["maxRounds", "phase5Sweep", "stageCompression"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
   "skillBashMs",
@@ -331,6 +340,14 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
 
   const loopObj = optionalObject(limits.loop, "limits.loop", warnings);
   assertKnownKeys(loopObj, LOOP_KEYS, "limits.loop", warnings);
+  const stageCompression = loopObj.stageCompression;
+  if (
+    stageCompression !== undefined &&
+    stageCompression !== "off" &&
+    stageCompression !== "compact"
+  ) {
+    throw new Error('limits.loop.stageCompression must be "off" or "compact"');
+  }
   const loop: LoopLimits = {
     maxRounds: intOr(loopObj.maxRounds, "limits.loop.maxRounds", 1, 20, DEFAULT_LIMITS.loop.maxRounds),
     phase5Sweep: boolOr(
@@ -338,6 +355,7 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
       "limits.loop.phase5Sweep",
       DEFAULT_LIMITS.loop.phase5Sweep,
     ),
+    stageCompression: stageCompression ?? DEFAULT_LIMITS.loop.stageCompression,
   };
 
   const timeoutsObj = optionalObject(limits.timeouts, "limits.timeouts", warnings);

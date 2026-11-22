@@ -324,6 +324,8 @@ function runtimeWithoutScope(): ReviewRuntime {
     ...DEFAULT_REVIEW_RUNTIME,
     limits: {
       ...DEFAULT_REVIEW_RUNTIME.limits,
+      // 六阶段手写脚本：显式钉 off（默认已切 compact，ADR-0113）。
+      loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
       findingScope: { enabled: false, contextLines: 10 },
     },
   };
@@ -432,6 +434,7 @@ test("全链边界内零漂移：护栏键全缺席 + req0 消息面逐字节断
     fetch: script.fetch,
     runsRoot,
     rep: 1,
+    runtime: runtimeWithoutScope(),
     ruleSkillLoader: async () => [],
   });
 

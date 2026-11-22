@@ -10,6 +10,7 @@ import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { runReview } from "./review-run.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 
 // 运行进度投影（ADR-0016）在 run 入口（S1 = runReview）的行为契约：
 // - 事件序列 = 既有留痕的实时投影（阶段 → 请求首尾 → 工具首尾 → skill 首尾）；
@@ -18,6 +19,18 @@ import { runReview } from "./review-run.js";
 //   也不含工具结果全文（进度只报行数/字符数）。
 //
 // 断言面只看公共入口（runReview + onProgress 注入），不窥探内核变量。
+
+
+/** 六阶段手写脚本：默认运行时已切 compact（ADR-0113），显式钉 off。 */
+function sixPhaseRuntime(): ReviewRuntime {
+  return {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
+    },
+  };
+}
 
 const tempDirs: string[] = [];
 
@@ -144,6 +157,7 @@ test("阶段/请求/工具/skill 事件按发生序投影，请求 usage 总和�
     verdictsReply([candidate.id as string], 9),
   ]);
   const run = await runReview({
+    runtime: sixPhaseRuntime(),
     caseId: "VUL4J-1",
     repoPath: repoFixturePath("sample"),
     diff: goldenFixture("vul4j-1.diff"),
@@ -287,6 +301,7 @@ test("工具失败投影为 ok=false + 一行 detail（不落工具结果全文�
     verdictsReply([], 7),
   ]);
   const run = await runReview({
+    runtime: sixPhaseRuntime(),
     caseId: "VUL4J-1",
     repoPath: repoFixturePath("sample"),
     diff: goldenFixture("vul4j-1.diff"),
@@ -329,6 +344,7 @@ test("零工具路径只投阶段与请求（没有工具/skill 事件）", asyn
     verdictsReply([], 6),
   ]);
   await runReview({
+    runtime: sixPhaseRuntime(),
     caseId: "VUL4J-1",
     repoPath: repoFixturePath("sample"),
     diff: goldenFixture("vul4j-1.diff"),
@@ -365,6 +381,7 @@ test("skill 会话的 bash 计入会话留痕、不计入指标 toolCalls（ADR-
     verdictsReply([], 8),
   ]);
   const run = await runReview({
+    runtime: sixPhaseRuntime(),
     caseId: "VUL4J-1",
     repoPath: repoFixturePath("sample"),
     diff: goldenFixture("vul4j-1.diff"),

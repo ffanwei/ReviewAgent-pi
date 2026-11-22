@@ -873,7 +873,9 @@ ${excludeGlobLines}
     // 检视轮次（ADR-0046）：一轮 = 六阶段完整一遍（约 6 次模型请求）。
     // 最后一轮强制 complete：模型说「还要再审」也不再开新轮，本轮产出即最终结果；
     // 轮次上限是成本线，不是失败（不产生截断）。范围 1–20。
-    "loop": { "maxRounds": 3, "phase5Sweep": false },
+    // stageCompression：compact（默认）= 合并 Phase 1+2、Phase 1 不调工具、
+    // Phase 3 无额外上下文需求时跳过 Phase 4（审计仍保留六阶段记录）；off = 六阶段各发一次请求。
+    "loop": { "maxRounds": 3, "phase5Sweep": false, "stageCompression": "compact" },
     // 各阶段超时（毫秒）。
     "timeouts": {
       "skillPassMs": 1200000,            // 单个规则 Skill 会话的总超时。

@@ -41,7 +41,7 @@ import {
   CANDIDATES_PHASE_INDEX,
   PHASE_COUNT,
   PHASE_ORDER,
-  buildPhaseInstruction,
+  buildStageInstruction,
 } from "./phases.js";
 import { createRequestProgress } from "../shared/request-progress.js";
 import type { CandidateRepairFn } from "./candidate-repair.js";
@@ -52,7 +52,7 @@ import type { ReviewToolkit } from "../tools/toolkit.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
 import { runSkillPass, type SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { buildSkillCandidatesBrief } from "../knowledge/skill-pass-brief.js";
-import { completeOneShot } from "../provider/one-shot-llm.js";
+import { completeOneShot, extractJsonObject } from "../provider/one-shot-llm.js";
 
 // agentLoop 钩子驱动循环（#6 P3a）：六阶段 + 工具子循环跑在
 // pi-agent-core Agent 上，三个预定缝承载 review 语义——
@@ -270,6 +270,12 @@ export async function runAgentReviewLoop(
   const runtime = inputs.runtime ?? DEFAULT_REVIEW_RUNTIME;
   // 轮次上限（ADR-0046）：配置驱动；最后一轮强制 complete（见 advancePhase）
   const maxRounds = runtime.limits.loop.maxRounds;
+  // 阶段压缩（ADR-0113）：compact = Phase 1+2 合并为一次请求、Phase 3 无额外
+  // 上下文需求时跳过 Phase 4。缺省 off，路径与历史逐请求一致。
+  const compactStages = runtime.limits.loop.stageCompression === "compact";
+  // Phase 3 的 neededContext：null = 未解析/不可用 → fail-open，不跳过 Phase 4。
+  let phase3NeededContext: readonly string[] | null = null;
+  let phase1RiskClass: string | undefined;
   // DISP 微限（ADR-0025）：进度行只在开进度时有意义；缺省值与历史行为一致
   const progressLimits = {
     argumentsSummaryChars: runtime.limits.micro.argumentsSummaryChars,
@@ -566,7 +572,24 @@ export async function runAgentReviewLoop(
     }
 
     if (phaseIndex < PHASE_COUNT - 1) {
-      phaseIndex += 1;
+      let next = phaseIndex + 1;
+      if (compactStages && phaseIndex === 0) {
+        recordSkippedPhase(
+          1,
+          `阶段压缩：Phase 2 并入 Phase 1${phase1RiskClass !== undefined ? `（riskClass=${phase1RiskClass}）` : ""}`,
+        );
+        next = 2;
+      }
+      if (
+        compactStages &&
+        phaseIndex === 2 &&
+        phase3NeededContext !== null &&
+        phase3NeededContext.length === 0
+      ) {
+        recordSkippedPhase(3, "阶段压缩：Phase 3 无额外上下文需求，跳过 Phase 4");
+        next = 4;
+      }
+      phaseIndex = next;
       resetPhaseCounters();
       emitPhase(phaseIndex);
       followUp(phaseMessage(phaseIndex));
@@ -613,6 +636,8 @@ export async function runAgentReviewLoop(
     round += 1;
     phaseIndex = 0;
     resetPhaseCounters();
+    phase3NeededContext = null;
+    phase1RiskClass = undefined;
     roundCandidates = [];
     phase5SweepState = "idle";
     phase5SweepCandidates = [];
@@ -780,10 +805,39 @@ export async function runAgentReviewLoop(
     roundCandidates = next;
   }
 
+  /**
+   * 阶段压缩的附带解析（ADR-0113）：
+   * - Phase 1：取出合并回复里的 riskClass（只写审计 note，v1 不驱动预算）；
+   * - Phase 3：取出 neededContext；缺失/非法 = null（fail-open，不跳过 Phase 4）。
+   */
+  function parseCompactSupport(replyText: string): void {
+    if (!compactStages) {
+      return;
+    }
+    if (phaseIndex === 0) {
+      const parsed = extractJsonObject(replyText);
+      if (isRecord(parsed) && typeof parsed.riskClass === "string") {
+        phase1RiskClass = parsed.riskClass;
+      }
+      return;
+    }
+    if (phaseIndex === 2) {
+      const parsed = extractJsonObject(replyText);
+      if (!isRecord(parsed) || !Array.isArray(parsed.neededContext)) {
+        phase3NeededContext = null;
+        return;
+      }
+      phase3NeededContext = parsed.neededContext.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0,
+      );
+    }
+  }
+
   function parsePhaseReply(replyText: string): {
     readonly note?: string;
     readonly parseFailure?: PhaseParseFailure;
   } {
+    parseCompactSupport(replyText);
     if (phaseIndex === CANDIDATES_PHASE_INDEX) {
       const parsed = parseCandidatesReply(replyText);
       const normalized = normalizeCandidates({ candidates: parsed.candidates, round });
@@ -818,6 +872,16 @@ export async function runAgentReviewLoop(
     phaseRequestCount = 0;
     phaseSkippedToolCalls = 0;
     phaseParseRetries = 0;
+  }
+
+  /** 被压缩跳过的阶段：保留阶段名与顺序，requestCount 记 0，原因写 note。 */
+  function recordSkippedPhase(index: number, note: string): void {
+    phaseLog.push({
+      round,
+      phase: phaseNameOf(index),
+      requestCount: 0,
+      note,
+    });
   }
 
   /** 解析失败回灌：只补一条短提示，阶段指令与已检索证据仍在会话里。 */
@@ -909,7 +973,11 @@ ${raw}`,
   function phaseMessage(index: number): AgentMessage {
     const skillBrief =
       index === VERIFICATION_PHASE_INDEX ? buildSkillCandidatesBrief(roundSkillBatches) : undefined;
-    const instruction = buildPhaseInstruction(index, runtime.limits.testFiles.skip);
+    const instruction = buildStageInstruction(
+      index,
+      runtime.limits.testFiles.skip,
+      runtime.limits.loop.stageCompression,
+    );
     const strategyBrief = inputs.phaseBrief?.(index);
     const content = [instruction, strategyBrief, skillBrief]
       .filter((part): part is string => part !== undefined && part.trim().length > 0)

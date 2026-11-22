@@ -56,6 +56,42 @@ export const PHASE_INSTRUCTIONS: readonly string[] = [
 
 export const PHASE_COUNT = PHASE_INSTRUCTIONS.length;
 
+/**
+ * 压缩阶段指令（`limits.loop.stageCompression = "compact"`，ADR-0113）：
+ *
+ * - Phase 1 吸收 Phase 2：一次请求同时产出变更摘要与风险分级；
+ * - Phase 3 显式允许空 `neededContext`，让循环可以跳过 Phase 4；
+ * - 其余阶段逐字节沿用 `PHASE_INSTRUCTIONS`。
+ *
+ * 阶段编号与名称保持不变（`Phase N of 6 - <name>.`），审计仍按六阶段记录。
+ */
+const COMPACT_UNDERSTANDING = `Phase 1 of 6 - Change Understanding.
+分析本次合并请求的 unified diff：改了什么、涉及哪些文件与符号、变更意图是什么；同时评定本次变更的风险等级。
+本阶段不要调用工具：只基于会话中已有的 diff 与上下文作答；需要检索的上下文留给后续阶段。
+只回一个 JSON 对象：{"summary": "<一段中文变更摘要>", "riskClass": "Low" | "Medium" | "High", "reason": "<中文分级理由>"}`;
+
+const COMPACT_CONTEXT_DECISION = `Phase 3 of 6 - Context Decision.
+判断除当前会话外，还需要哪些额外上下文才能正确评审本次变更。
+若变更涉及函数/方法契约（返回值、异常、空值、所有权或副作用）、错误路径或资源生命周期，把调用方与关键被调方列入 neededContext。
+若当前会话里的 diff 与已有上下文已经足够评审，neededContext 返回空数组。
+只回一个 JSON 对象：{"neededContext": ["<条目>", ...], "reason": "<中文理由>"}`;
+
+export function buildStageInstruction(
+  index: number,
+  skipTestFiles: boolean,
+  compression: "off" | "compact",
+): string {
+  if (compression === "compact") {
+    if (index === 0) {
+      return COMPACT_UNDERSTANDING;
+    }
+    if (index === 2) {
+      return COMPACT_CONTEXT_DECISION;
+    }
+  }
+  return buildPhaseInstruction(index, skipTestFiles);
+}
+
 /** 候选生成阶段（Phase 5 / 0-based 4）：测试文件提示的挂载点 */
 export const CANDIDATES_PHASE_INDEX = 4;
 

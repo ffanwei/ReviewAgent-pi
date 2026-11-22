@@ -201,6 +201,20 @@ describe("loadConfig：失败策略", () => {
     expect(defaults.limits.loop.phase5Sweep).toBe(false);
   });
 
+  test("limits.loop.stageCompression：off/compact（缺省 compact；非法值 fail fast）", () => {
+    const compact = loadConfig({
+      configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"stageCompression":"compact"}}`)),
+    });
+    expect(compact.config.limits.loop.stageCompression).toBe("compact");
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.loop.stageCompression).toBe("compact");
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"stageCompression":"lean"}}`)),
+      }),
+    ).toThrow(/stageCompression must be "off" or "compact"/);
+  });
+
   test("limits.retry：路径次数缺省继承 maxAttempts，smoke 缺省 1", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
     expect(defaults.limits.retry).toEqual(DEFAULT_LIMITS.retry);

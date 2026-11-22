@@ -106,6 +106,18 @@ function singleRoundScript(): readonly FakeReply[] {
   ];
 }
 
+
+/** 六阶段手写脚本的运行时：显式钉 off（默认已切 compact，ADR-0113）。 */
+function sixPhaseRuntime(): ReviewRuntime {
+  return {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
+    },
+  };
+}
+
 function scriptedLoop(
   replies: readonly FakeReply[],
   initial = INITIAL,
@@ -117,7 +129,16 @@ function scriptedLoop(
   const toolkit = buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF });
   // 单元测试固定单次流尝试（ADR-0077）：默认 13 次重放会让「注入一次流错误」的
   // 用例真的重放十几轮并把脚本耗尽；重放行为本身另有用例覆盖。
-  const base = runtime ?? DEFAULT_REVIEW_RUNTIME;
+  // 本文件的脚本文本按六阶段手写；默认运行时已切到 compact（ADR-0113），
+  // 这里显式钉住 off，保持逐请求契约用例的原意。compact 行为另有用例覆盖。
+  const base: ReviewRuntime =
+    runtime ?? {
+      ...DEFAULT_REVIEW_RUNTIME,
+      limits: {
+        ...DEFAULT_REVIEW_RUNTIME.limits,
+        loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
+      },
+    };
   const singleAttempt: ReviewRuntime = {
     ...base,
     limits: {
@@ -143,7 +164,7 @@ function scriptedLoop(
 function runtimeWith(maxRounds: number): ReviewRuntime {
   return {
     ...DEFAULT_REVIEW_RUNTIME,
-    limits: { ...DEFAULT_REVIEW_RUNTIME.limits, loop: { maxRounds, phase5Sweep: false } },
+    limits: { ...DEFAULT_REVIEW_RUNTIME.limits, loop: { maxRounds, phase5Sweep: false, stageCompression: "off" } },
   };
 }
 
@@ -271,7 +292,7 @@ test("Phase 5 二次扫描：新增候选并入主候选，PhaseRecord 仍为六
     ...DEFAULT_REVIEW_RUNTIME,
     limits: {
       ...DEFAULT_REVIEW_RUNTIME.limits,
-      loop: { maxRounds: 3, phase5Sweep: true },
+      loop: { maxRounds: 3, phase5Sweep: true, stageCompression: "off" },
     },
   };
   const replies = [
@@ -545,6 +566,7 @@ test("规则 Skill：Phase 5 文本回合后先跑 skill 会话，Phase 6 一次
     toolkit: buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF }),
     apiKey: "test-key",
     fetch: script.fetch,
+    runtime: sixPhaseRuntime(),
     skillPass: {
       skills: [skill],
       toolkitFor: () => buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF }),
@@ -800,4 +822,74 @@ test("有界一次性修复：确定性归一化救不回的候选在 Phase 6 �
   const records = outcome.audit.candidateNormalizations ?? [];
   expect(records.some((record) => record.source === "one-shot")).toBe(true);
   expect(outcome.audit.rejectionCounts).toBeUndefined();
+});
+
+/** 阶段压缩运行时（F-07 / ADR-0113）：maxRounds 固定 1，其余沿用缺省。 */
+function compactRuntime(): ReviewRuntime {
+  return {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      loop: { maxRounds: 1, phase5Sweep: false, stageCompression: "compact" },
+    },
+  };
+}
+
+test("阶段压缩：合并 Phase 1+2，Phase 3 无需求时跳过 Phase 4（单轮 4 请求）", async () => {
+  const replies = [
+    textReply('{"summary":"改了 Foo","riskClass":"Medium","reason":"契约变更"}', 0),
+    textReply('{"neededContext":[],"reason":"diff 已足够"}', 1),
+    textReply(phaseText(4), 2),
+    textReply(phaseText(5), 3),
+  ];
+  const { run } = scriptedLoop(replies, INITIAL, compactRuntime());
+  const outcome = await run();
+
+  expect(outcome.complete).toBe(true);
+  expect(outcome.audit.requests).toHaveLength(4);
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  // 六阶段审计记录保留，跳过项 requestCount = 0 且有原因。
+  expect(outcome.audit.phaseLog.map((entry) => entry.phase)).toEqual([
+    "Change Understanding",
+    "Risk Classification",
+    "Context Decision",
+    "Context Retrieval",
+    "Deep Reasoning",
+    "Evidence Verification",
+  ]);
+  expect(outcome.audit.phaseLog.map((entry) => entry.requestCount)).toEqual([1, 0, 1, 0, 1, 1]);
+  expect(outcome.audit.phaseLog[1]?.note).toContain("Phase 2 并入 Phase 1");
+  expect(outcome.audit.phaseLog[1]?.note).toContain("riskClass=Medium");
+  expect(outcome.audit.phaseLog[3]?.note).toContain("跳过 Phase 4");
+});
+
+test("阶段压缩：Phase 3 有额外上下文需求时保留 Phase 4（单轮 5 请求）", async () => {
+  const replies = [
+    textReply('{"summary":"改了 Foo","riskClass":"High","reason":"错误路径"}', 0),
+    textReply('{"neededContext":["调用方 Bar"],"reason":"需要调用方"}', 1),
+    textReply(phaseText(3), 2),
+    textReply(phaseText(4), 3),
+    textReply(phaseText(5), 4),
+  ];
+  const { run } = scriptedLoop(replies, INITIAL, compactRuntime());
+  const outcome = await run();
+
+  expect(outcome.audit.requests).toHaveLength(5);
+  expect(outcome.audit.phaseLog.map((entry) => entry.requestCount)).toEqual([1, 0, 1, 1, 1, 1]);
+  expect(outcome.audit.phaseLog[3]?.note).toBeUndefined();
+});
+
+test("阶段压缩：Phase 3 回复缺 neededContext 时不跳过 Phase 4（fail-open）", async () => {
+  const replies = [
+    textReply('{"summary":"改了 Foo","riskClass":"Low","reason":"局部"}', 0),
+    textReply("garbage", 1),
+    textReply(phaseText(3), 2),
+    textReply(phaseText(4), 3),
+    textReply(phaseText(5), 4),
+  ];
+  const { run } = scriptedLoop(replies, INITIAL, compactRuntime());
+  const outcome = await run();
+
+  expect(outcome.audit.requests).toHaveLength(5);
+  expect(outcome.audit.phaseLog.map((entry) => entry.requestCount)).toEqual([1, 0, 1, 1, 1, 1]);
 });

@@ -45,11 +45,25 @@ const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as con
  * 关闭非 diff 区域过滤：这些用例只测 skill 会话 / 候选合并，不测位置范围；
  * 夹具里的候选故意落在 golden diff 之外。默认开启的过滤另有专测覆盖。
  */
+
+/** 六阶段手写脚本的运行时：显式钉 off（默认已切 compact，ADR-0113）。 */
+function sixPhaseRuntime(): ReviewRuntime {
+  return {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
+    },
+  };
+}
+
 function runtimeWithoutScope(): ReviewRuntime {
   return {
     ...DEFAULT_REVIEW_RUNTIME,
     limits: {
       ...DEFAULT_REVIEW_RUNTIME.limits,
+      // 本文件按六阶段手写脚本；默认运行时已切 compact（ADR-0113），显式钉 off。
+      loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
       findingScope: { enabled: false, contextLines: 10 },
     },
   };
@@ -135,6 +149,7 @@ test("全链零工具：req0 = ZoneA+MR+Phase-1 + 可见工具面；产物布局
     fetch: script.fetch,
     runsRoot,
     rep: 1,
+    runtime: sixPhaseRuntime(),
     ruleSkillLoader: async () => [],
   });
 
@@ -459,6 +474,7 @@ test("规则 Skill：Phase 1–5 与无规则包逐字节相同，Phase 6 追加
     fetch: baselineScript.fetch,
     runsRoot: tempRunsRoot(),
     rep: 1,
+    runtime: sixPhaseRuntime(),
     ruleSkillLoader: async () => [],
   });
 
@@ -703,6 +719,7 @@ test("skill 会话解析失败：status=failed/parse，Phase 6 无候选清单�
     fetch: baselineScript.fetch,
     runsRoot: tempRunsRoot(),
     rep: 1,
+    runtime: sixPhaseRuntime(),
     ruleSkillLoader: async () => [],
   });
 
@@ -725,6 +742,7 @@ test("skill 会话解析失败：status=failed/parse，Phase 6 无候选清单�
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
     rep: 1,
+    runtime: sixPhaseRuntime(),
     ruleSkillLoader: async () => [SAMPLE_RULE_SKILL],
   });
 
@@ -793,6 +811,7 @@ test("装载降级：不跑会话，主路径字节不变（ruleSkill[] 带 degr
     fetch: baselineScript.fetch,
     runsRoot: tempRunsRoot(),
     rep: 1,
+    runtime: sixPhaseRuntime(),
     ruleSkillLoader: async () => [],
   });
   const script = fakeFetch(sixPhaseNoToolCorpus());
@@ -805,6 +824,7 @@ test("装载降级：不跑会话，主路径字节不变（ruleSkill[] 带 degr
     fetch: script.fetch,
     runsRoot: tempRunsRoot(),
     rep: 1,
+    runtime: sixPhaseRuntime(),
     ruleSkillLoader: async () => [degradedSkill],
   });
 
@@ -995,6 +1015,7 @@ test("limits.testFiles.skip：默认包含测试文件，开启后整块剔除",
     ...base,
     fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
     runsRoot: tempRunsRoot(),
+    runtime: sixPhaseRuntime(),
   });
   expect(included.mrFilter).toBeUndefined();
   const includedAudit = readAudit(included.auditPath);
@@ -1014,7 +1035,11 @@ test("limits.testFiles.skip：默认包含测试文件，开启后整块剔除",
     fetch: fakeFetch(sixPhaseNoToolCorpus()).fetch,
     runtime: {
       ...DEFAULT_REVIEW_RUNTIME,
-      limits: { ...DEFAULT_REVIEW_RUNTIME.limits, testFiles: { skip: true } },
+      limits: {
+        ...DEFAULT_REVIEW_RUNTIME.limits,
+        loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
+        testFiles: { skip: true },
+      },
     },
     runsRoot: tempRunsRoot(),
   });

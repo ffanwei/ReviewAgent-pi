@@ -16,10 +16,23 @@ import { repoFixturePath } from "../testing/repos.js";
 import { VUL4J_1_ISSUE } from "../testing/vul4j1-script.js";
 import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import { runReview } from "./review-run.js";
+import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 
 // 落盘产物（ADR-0013）：检视转录 `session-*.json`（`{ info, messages, view }`）
 // + 检视意见导出 `reviews_all.json`。断言面 = 磁盘文件与其形状（S1 = runReview
 // 公共入口），不窥探内核内部状态。零网络（fake 适配器）。
+
+
+/** 六阶段手写脚本：默认运行时已切 compact（ADR-0113），显式钉 off。 */
+function sixPhaseRuntime(): ReviewRuntime {
+  return {
+    ...DEFAULT_REVIEW_RUNTIME,
+    limits: {
+      ...DEFAULT_REVIEW_RUNTIME.limits,
+      loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
+    },
+  };
+}
 
 const tempDirs: string[] = [];
 
@@ -135,6 +148,7 @@ test("检视转录：落点/命名/info 精确键表/messages 原生序列", asy
   const runsRoot = tempRunsRoot();
   const repoPath = repoFixturePath("sample");
   const { record, auditPath, transcriptPath, reviewsPath } = await runReview({
+    runtime: sixPhaseRuntime(),
     caseId: "VUL4J-1",
     repoPath,
     diff: goldenFixture("vul4j-1.diff"),
@@ -424,6 +438,7 @@ test("检视转录：assistant toolCall 与 toolResult 原样保留（链接键 
   ]);
   const runsRoot = tempRunsRoot();
   const { transcriptPath } = await runReview({
+    runtime: sixPhaseRuntime(),
     caseId: "VUL4J-1",
     repoPath: repoFixturePath("sample"),
     diff,
