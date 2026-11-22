@@ -1,0 +1,42 @@
+{
+  "instance_id": "libsdl-org__SDL@1526727",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "71303b41bf89c4bb68dbe1bed12fd2ee1dc0dd41",
+  "head_commit": "15267271865f73c996719238425f1604fc2fa205",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 102.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 150,
+      "summary": "仅凭 feature report 0x06 读取返回值就同时置位 sensors/rumble/powerstate 三项能力，探测结果不可信",
+      "failure_scenario": "新增的分支用一次 ReadFeatureReport(device->dev, 0x06, ...) 的返回值 size > 0 作为“该设备支持 IMU 传感器、支持 rumble、支持电量上报”的统一判据。但 SDL_hid_get_feature_report 的返回值只表示后端取报告这个 IOCTL/控制传输是否成功：Windows 后端在 IOCTL 成功后直接返回 bytes_returned（bytes_returned 也可能是零填充缓冲），并不会校验返回内容里的报告 ID 或有效载荷；代码也没有检查 size 是否达到该报告应有的长度，也没有校验 data[0] == 0x06。因此只要设备（或后端）对 0x06 报告“应答成功”，哪怕内容全 0 或长度不足，也会被判定为三项能力全支持。失败场景：对 SN30 Pro / SF30 Pro 这类无 IMU 的型号，OpenJoystick 会因 sensors_supported 为真而注册 SDL_SENSOR_GYRO / SDL_SENSOR_ACCEL（SDL_hidapi_8bitdo.c:189-196），应用会看到永不产生数据的陀螺仪/加速度计；同时 powerstate_supported 为真会让 HandleStatePacket 从 data[14] 解析并上报电量（SDL_hidapi_8bitdo.c:349-376），在报文布局不匹配的型号上给出错误电量；rumble 被误判为支持时 SDL_RumbleJoystick 会返回成功但实际无效果。同仓库 ps4/ps5 驱动对同一类探测都做了更严格的长度校验（SDL_hidapi_ps4.c:200-205 的 ReadFeatureReport 调用方要求长度精确匹配 64，ps5 要求 >= 46），说明仅 > 0 的判据过宽。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-CAPABILITY-PROBE-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 259,
+      "summary": "新增放行的 report 0x04 未做长度校验即按 0x01/0x03 的固定偏移解析",
+      "failure_scenario": "HandleStatePacket 的入口条件被放宽为 data[0] 可为 0x04，但函数体后续全部按 0x01/0x03 报文的固定偏移无条件访问 data[1]、data[8..10]、data[2..7]、data[14] 以及 &data[15]（IMU 区）。函数从未使用 size 参数做边界判断，UpdateDevice 传入的 data 是未初始化的 Uint8 data[USB_PACKET_LENGTH]（SDL_hidapi_8bitdo.c:420），仅在尾部 SDL_memcpy(ctx->last_state, data, SDL_min(size, sizeof(ctx->last_state))) 使用 size。失败场景：当新放行的 0x04 报文属于较短报文（或长度随型号/固件不同）时，data[1] 之后的字段会读到上一包的残留字节或未初始化栈数据，被当作 hat、按键位、扳机、电量甚至 IMU 样本解析，从而向应用发出虚假的按键/摇杆/扳机/传感器事件；由于这些读取发生在“能力位已置真”的新型号上，问题会直接出现在用户输入路径。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-BOUNDS-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\diff\\libsdl-org__SDL@1526727.diff\n  caseId              libsdl-org__SDL@1526727\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@1526727\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-baseline.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 101.0s · 模型调用 9 次 · token 输入 17,895（未命中） · 输出 14,099 · 缓存命中 140,288（88.7%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0068\n[time] 阶段耗时 | 总墙钟 102.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.9s (0.9%)\n[time] 阶段 | 六阶段审计 101.0s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 6.1s (6.1%) | P3 6.7s (6.6%) | P4 64.3s (63.7%) | P5 18.1s (18.0%) | P6 5.7s (5.7%)\n[usage] 任务总计 | 模型调用 9 次（Agent 9 + 一次性 0） | token 输入 17,895（未命中） | 输出 14,099 | 缓存命中 140,288（88.7%） | $0.0068\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\\libsdl-org__SDL@1526727\\audit\\20261122_083437_573.json",
+  "token_usage": {
+    "input_tokens": 17895,
+    "output_tokens": 14099,
+    "cache_read_input_tokens": 140288
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "instance_id": "libsdl-org__SDL@1526727",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "71303b41bf89c4bb68dbe1bed12fd2ee1dc0dd41",
+  "head_commit": "15267271865f73c996719238425f1604fc2fa205",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 157.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 259,
+      "summary": "放行 report ID 0x04 但解析仍沿用 0x01/0x03 的固定偏移，且无长度校验",
+      "failure_scenario": "本次把状态报文白名单从 0x01/0x03 扩展到包含 0x04，但 HIDAPI_Driver8BitDo_HandleStatePacket 接下来不做任何 size 校验就按既有布局解析：hat 取 data[1]、按键取 data[8]/data[9]/data[10]、摇杆取 data[2..5]、扳机取 data[6]/data[7]，并在 powerstate_supported / sensors_enabled 打开时读 data[14] 与 data[15..20]。而 UpdateDevice 把 SDL_hid_read_timeout 返回的原始长度直接传入，且复用同一个未清零的 64 字节栈缓冲区。因此一旦 0x04 报文的布局或长度与 0x01/0x03 不同（0x04 是本次新放行的报文类型，diff 中没有任何证据表明其布局一致），被解析的字节就会落到报文之外，读到上一包残留数据或未初始化栈内容，直接表现为摇杆/扳机/按键随机抖动、hat 乱跳，以及向应用上报错误的电量与姿态数据。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-PACKET-BOUNDS"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 150,
+      "summary": "用 feature report 0x06 可读性推断 IMU/电量能力，会把无传感器型号标记为支持传感器",
+      "failure_scenario": "新分支仅凭 `ReadFeatureReport(device->dev, 0x06, ...)` 返回 size > 0 就同时置位 sensors_supported、rumble_supported、powerstate_supported。但 feature report 可读只说明该报告存在，并不能证明输入状态报文里 data[15..20] 是 IMU 数据、data[14] 是电量字节。对照既有 Ultimate 2 分支（:135-144）的做法——它要求读到的输入报文长度 >= 34 字节才认为具备这些能力——新分支缺少同等的“输入报文确实携带这些字段”的证据。后果是：OpenJoystick（:189-196）会为 SN30 Pro / SF30 Pro / Pro 2 等型号注册 SDL_SENSOR_GYRO/ACCEL，一旦应用开启传感器（SetJoystickSensorsEnabled 因 sensors_supported 返回 true），HandleStatePacket 就会以 125Hz 用 data[15..20] 的任意内容当作陀螺仪/加速度上报，同时 data[14] 也被当作电量解析并调用 SDL_SendJoystickPowerInfo，导致应用收到持续的错误运动数据与错误的电量百分比。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-CAPABILITY-DETECT"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 149,
+      "summary": "设备初始化路径中新增同步 feature report 读取，最长可阻塞 1 秒",
+      "failure_scenario": "ReadFeatureReport 直接调用 SDL_hid_get_feature_report，实现为同步控制传输：libusb 后端以 1000ms 超时发起 control transfer，Windows 后端通过 DeviceIoControl + GetOverlappedResult(…, TRUE) 同步等待。该调用位于 HIDAPI_Driver8BitDo_InitDevice，即设备接入/枚举时在 joystick 线程上执行的一次性初始化中，且对所有 5 个新 PID 无条件执行。若设备不响应该 feature report（型号固件差异、非 8BitDo 协议模式下被 PID 误匹配等），该线程最长会被阻塞约 1 秒，期间所有手柄的输入更新都会被推迟，表现为整机手柄输入卡顿/延迟；相较既有 Ultimate 2 分支使用的 SDL_hid_read_timeout(…, 80)（80ms 上限），新路径的阻塞上界显著更差。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.4,
+      "rule": "PERF-BLOCKING-IO"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\diff\\libsdl-org__SDL@1526727.diff\n  caseId              libsdl-org__SDL@1526727\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@1526727\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-budget.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 156.3s · 模型调用 10 次 · token 输入 18,343（未命中） · 输出 20,074 · 缓存命中 173,696（90.4%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0087\n[time] 阶段耗时 | 总墙钟 157.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 156.3s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 5.3s (3.4%) | P3 6.4s (4.1%) | P4 101.7s (65.1%) | P5 34.1s (21.8%) | P6 8.8s (5.6%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 18,343（未命中） | 输出 20,074 | 缓存命中 173,696（90.4%） | $0.0087\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\tasks\\libsdl-org__SDL@1526727\\audit\\20261122_092220_775.json",
+  "token_usage": {
+    "input_tokens": 18343,
+    "output_tokens": 20074,
+    "cache_read_input_tokens": 173696
+  }
+}

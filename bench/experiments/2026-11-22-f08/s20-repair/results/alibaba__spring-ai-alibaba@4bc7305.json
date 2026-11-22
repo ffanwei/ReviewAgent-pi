@@ -1,0 +1,94 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@4bc7305",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "71e7eeb27dfe42c5a805da413ef6e9faf84fe9d0",
+  "head_commit": "4bc73055c7b33f53433d9725eab5010b85a59632",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 179.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 51,
+      "summary": "新增的滚动居中逻辑未换算坐标，导致点击落点偏移到错误元素",
+      "failure_scenario": "本 hunk 新增了 `page.evaluate(\"...window.scrollTo({left: args[0], top: args[1]...\")`，用 `Math.max(0, x - viewportSize().width/2)` / `y - viewportSize().height/2` 计算滚动量并真正滚动了页面，但随后的 `page.mouse().move(x, y)` / `click(x, y)` 仍然使用滚动前的原始 x/y。传入的 position_x/position_y 来自 get_element_position（boundingBox 中心点，是**视口相对坐标**），页面一旦滚动，同一视口坐标就落在另一个位置：只要目标元素位于视口下半部（y > viewportHeight/2）且页面可滚动，点击就会向下偏移 scrollY 像素，点错元素或点到空白；元素在首屏之外时 y 仍超出视口高度，`mouse.click` 直接因坐标越界报错。这属于对原本可正常工作的点击路径的回归。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 75,
+      "summary": "debug 模式下点击触发导航后清理红点的 evaluate 会抛异常，导致动作误报失败",
+      "failure_scenario": "新增的 debug 标记清理 `page.evaluate(\"(id) => {...dot.remove(); }\")` 紧随点击之后同步执行。当被点击的是一个会跳转的链接/按钮时，点击会触发导航，此时旧 document 的执行上下文被销毁，该 evaluate 抛出 “Execution context was destroyed / Target page, context or browser has been closed” 类异常，被外层 `catch (Exception e)` 捕获后直接 `return new ToolExecuteResult(\"Failed to click at position ...\")`：明明点击已成功却向 Agent 报告失败，并且跳过了后面 84-103 行的新标签页检测与切换逻辑（该段代码在 try 之外，只在正常路径执行）。同样地，若 `mouse().click` 本身抛错，红点不会被移除，调试标记残留在页面上影响后续截图识别。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.63,
+      "rule": "ERROR-PATH-003"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 65,
+      "summary": "debug 红点用 absolute + 视口坐标绘制，滚动后落点与实际点击位置不一致",
+      "failure_scenario": "新增的红点注入脚本把 `dot.style.position` 设为 `'absolute'`（相对文档定位），却把 `left/top` 直接赋值为入参 x、y（视口坐标）。紧跟其前的 51-52 行刚刚执行过 window.scrollTo，因此只要 scrollX/scrollY 非 0，红点就会出现在与实际期望点击位置相差 (scrollX, scrollY) 的位置；而真实鼠标点击又发生在 (x, y) 视口坐标处。调试标记的用途是让人/截图核对点击位置，这种偏差会掩盖 F001 的落点错误，使排查结论反向。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "UI-CONSISTENCY-004"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+      "line": 43,
+      "summary": "无条件给 URL 补 https:// 前缀会破坏非 http(s) 协议与大小写 scheme",
+      "failure_scenario": "新增的 `if (!url.startsWith(\"http://\") && !url.startsWith(\"https://\")) url = \"https://\" + url;` 对所有不含小写 http(s) 前缀的输入一律加前缀，导致：① 非 http(s) 协议（`about:blank`、`file:///...`、`data:text/html,...`、`chrome://`、`view-source:`）被改写为非法 URL，page.navigate 抛错；② 本地/内网服务 `localhost:3000`、`127.0.0.1:8080` 被强制升为 https 而握手失败；③ 大小写不敏感的合法输入 `HTTPS://example.com` 因 startsWith 大小写敏感而被改写成 `https://HTTPS://example.com`，直接导航失败。navigate 是 Agent 每一步的入口动作，失败会让整条计划中断。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "ROBUSTNESS-005"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+      "line": 79,
+      "summary": "JS 兜底直接赋值 el.value 后仍返回成功，受控组件实际未收到输入",
+      "failure_scenario": "第三层兜底用 `elementLocator.evaluate(\"(el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }\", text)` 直接写 DOM value 并只派发 input 事件。对 React/Vue 等受控组件，直接赋值会被框架的 value tracker 视为“未变更”，state 不更新，表单提交时值仍为空（且未派发 change/blur 事件）；方法随后 `return new ToolExecuteResult(\"成功输入: ...\")`，Agent 会认为输入成功并继续点击“搜索/提交”，得到空查询或旧值的页面。此外该兜底在元素不可编辑（readonly/disabled）时也只是静默“成功”。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-006"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/entity/DynamicAgentEntity.java",
+      "line": 47,
+      "summary": "用 \" \" 作为已废弃字段的哨兵值，使 mergePrompts 恒进入“SystemPrompt 不为空”分支并刷告警日志",
+      "failure_scenario": "本次把已废弃的 systemPrompt 默认值设为 `\" \"`，同时 AgentServiceImpl 也改为 `setSystemPrompt(\" \")`。而 mergePrompts 的判定是 `if (entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty())`（|| 短路，非 null 恒为 true），因此：① 新建实体（createAgent 第 93-94 行先 `new DynamicAgentEntity()` 再 mergePrompts，随后 updateEntityFromConfig 再 mergePrompts 一次）每次创建都会打两条“SystemPrompt不为空…本次将agent的内容合并”的 WARN，但实际并没有任何 systemPrompt 内容，也没有把合并结果写回 nextStepPrompt（第 195 行结果只用于日志），日志内容与真实行为不符；② 该废弃字段被永久写成 \" \" 而非置空，无法收敛到“已清空”状态；③ 字段默认值对 JPA 水合的实体不生效（Hibernate 直接从列赋值），而列已在本 hunk 去掉 nullable=false，若库中出现 NULL（旧数据或外部写入，且 ddl-auto=update 不会撤销存量 NOT NULL 也不会替代这一风险）仍会在第 190 行 `entity.getSystemPrompt().trim()` 触发 NullPointerException。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-007"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@4bc7305.diff\n  caseId              alibaba__spring-ai-alibaba@4bc7305\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@4bc7305\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f18-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 2 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 2/3 / 新候选 0 / no-issue 2 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 177.7s · 模型调用 19 次 · token 输入 34,458（未命中） · 输出 21,011 · 缓存命中 565,888（94.3%） · 工具 35 次（主会话 35 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0123\n[time] 阶段耗时 | 总墙钟 178.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 156.7s (87.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 21.3s (11.9%)\n[time] 审计明细 | P1 3.9s (2.5%) | P3 4.6s (2.9%) | P4 104.1s (66.5%) | P5 37.8s (24.2%) | P6 6.3s (4.0%)\n[usage] 任务总计 | 模型调用 23 次（Agent 19 + 一次性 4） | token 输入 37,952（未命中） | 输出 23,564 | 缓存命中 565,888（93.7%） | $0.0135\n[usage] 一次性明细 | 覆盖补漏 4 次（输入 3,494 / 输出 2,553 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@4bc7305\\audit\\20261122_093306_087.json",
+  "token_usage": {
+    "input_tokens": 37952,
+    "output_tokens": 23564,
+    "cache_read_input_tokens": 565888
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 34458,
+      "output_tokens": 21011,
+      "cache_read_input_tokens": 565888
+    },
+    "coverage_repair": {
+      "input_tokens": 3494,
+      "output_tokens": 2553,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

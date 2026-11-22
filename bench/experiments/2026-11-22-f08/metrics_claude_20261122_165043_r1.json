@@ -1,0 +1,1243 @@
+{
+  "ex_info": {
+    "start_time": "2026-11-22T16:50:43.083287",
+    "results_dir": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122",
+    "reviewer": "claude",
+    "line_k": 1,
+    "limit": null,
+    "score_mode": "file_semantic",
+    "missing_instance_ids": []
+  },
+  "summary": {
+    "total_instances": 20,
+    "candidate_instances": 20,
+    "evaluated_instances": 20,
+    "missing_instances": 0,
+    "expected_notes": 73,
+    "generated_notes": 48,
+    "total_duration_seconds": 2835.8,
+    "avg_duration_seconds": 141.79,
+    "total_input_tokens": 6378885,
+    "total_output_tokens": 373122,
+    "total_tokens": 6752007,
+    "avg_input_tokens": 318944,
+    "avg_output_tokens": 18656,
+    "matched_generated_notes": 17,
+    "matched_file_semantic_notes": 17,
+    "file_semantic_match_rate": 0.354,
+    "file_semantic_recall_rate": 0.233,
+    "balanced_score": 0.281
+  },
+  "eval_res": [
+    {
+      "instance_id": "lvgl__lvgl@9cce37c",
+      "repo": "lvgl/lvgl",
+      "comments": [
+        {
+          "note": "Buffer/OOB risk from animation range: `lv_anim_set_values(..., 0, (int32_t)num)` allows `idx==num`. `index_change` only clamps `idx >= pic_count` to `pic_count - 1`, so `idx==num` becomes `num-1` (OK) **unless `num==0`**, where it becomes `-1` and then `animimg->dsc[-1]` is accessed. Also in reverse API you start from `(int32_t)num`, which will also become `-1` when `num==0` after clamping. Suggest guarding `num==0` early (set `dsc`, set `pic_count=0`, and return), and ideally use `num-1` as start/end values when `num>0` to avoid ever producing `idx==num`.\n\n```suggestion\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n\n    if(num == 0) {\n        /* No frames: avoid idx underflow in index_change */\n        return;\n    }\n\n    lv_anim_set_values(&animimg->anim, 0, (int32_t)num - 1);\n}\n\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num)\n{\n    LV_ASSERT_OBJ(obj, MY_CLASS);\n    lv_animimg_t * animimg = (lv_animimg_t *)obj;\n    animimg->dsc = dsc;\n    animimg->pic_count = num;\n\n    if(num == 0) {\n        return;\n    }\n\n    lv_anim_set_values(&animimg->anim, (int32_t)num - 1, 0);\n}\n```",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "side": "right",
+          "from_line": 110,
+          "to_line": 117,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Duplicate setup logic in `lv_animimg_set_src` and `lv_animimg_set_src_reverse` functions should be refactored into a private static helper function to eliminate code duplication while maintaining API compatibility.",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "side": "right",
+          "from_line": 110,
+          "to_line": 125,
+          "file_semantic_match": true
+        },
+        {
+          "note": "**Breaking API Change - This is NOT backwards compatible**\n\nThe PR description claims to \"ensure backwards compatibility\" but this change breaks the existing API. The original function signature was:\n```c\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse);\n```\n\nRemoving the `reverse` parameter means any existing code calling this function with 4 arguments will fail to compile. This is a **breaking change**.\n\n**Suggested Fix:**\nTo maintain true backwards compatibility, you should:\n\n1. Keep the original 4-parameter function and mark it as deprecated, OR\n2. Use a macro/inline wrapper to maintain the old signature\n\nFor example:\n```c\n// New implementation\nvoid lv_animimg_set_src(lv_obj_t * obj, const void * dsc[], size_t num);\nvoid lv_animimg_set_src_reverse(lv_obj_t * obj, const void * dsc[], size_t num);\n\n// Backwards compatibility - deprecated\nstatic inline void lv_animimg_set_src_legacy(lv_obj_t * obj, const void * dsc[], size_t num, bool reverse) {\n    if(reverse) {\n        lv_animimg_set_src_reverse(obj, dsc, num);\n    } else {\n        lv_animimg_set_src(obj, dsc, num);\n    }\n}\n```\n\nOr consider if the API design should use a single function with flags/options struct instead of two separate functions.",
+          "path": "src/widgets/animimage/lv_animimage.h",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 76,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "新增的 reverse setter 与 lv_animimg_set_src 逻辑完全重复，后续必然漏改一处\n`lv_animimg_set_src_reverse()` 的 `dsc`/`pic_count` 赋值与 `lv_animimg_set_src()` 逐字相同，仅 `lv_anim_set_values()` 的两个端点顺序不同。今后任何对源图设置公共前置逻辑的修改（新增 `num` 校验、切源时重置已缓存的图片、统一 `pic_count` 存储类型、增加空指针处理等）都必须在两个函数里各改一次；只改一处会让正向/反向两个公开入口行为分叉，而现有测试对两者都只断言对象非空，无法暴露此类不一致。",
+          "path": "src/widgets/animimage/lv_animimage.c",
+          "from_line": 119,
+          "to_line": 119,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — Reference 1 focuses on an OOB/`num==0` underflow risk, while the Generated Comment focuses on code duplication.\n2. Match — both flag the duplicate setup logic between `lv_animimg_set_src` and `lv_animimg_set_src_reverse` and the need to refactor it.\n\n[2]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "新增的反向播放用例只断言对象非空，无法验证反向语义\n`test_animimg_set_src_reverse()` 调用新接口后仅 `TEST_ASSERT_NOT_NULL(animimg)`，而 `animimg` 在 `setUp()` 中创建，该断言恒为真。本变更真正的行为差异是反向接口把动画取值范围设成 `num → 0`（正向为 `0 → num`），但用例既没有通过 `lv_animimg_get_anim()` 检查 `start_value`/`end_value`，也没有与正向调用做对照；即使 `lv_animimg_set_src_reverse()` 被误实现成与 `lv_animimg_set_src()` 完全一致（即方向写错），本条测试依旧全绿，本次 API 拆分实际处于无覆盖状态。",
+          "path": "tests/src/test_cases/widgets/test_animimg.c",
+          "from_line": 55,
+          "to_line": 55,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "PowerShell__PowerShell@ea07b93",
+      "repo": "PowerShell/PowerShell",
+      "comments": [
+        {
+          "note": "The manual PATH lookup filters out entries that are not fully qualified paths using `Path.IsPathFullyQualified(path)`. However, the PATH environment variable can legitimately contain relative paths (e.g., \".\" or \"..\\bin\" on Windows, or \"/usr/local/bin:./scripts\" on Unix). Filtering these out will cause the SSH command lookup to fail even when the executable exists in those locations.\n\nConsider removing this filter, or at minimum checking if the combined path resolves to an existing file before skipping.\n\n```suggestion\n                foreach (var path in entries)\n                {\n                    var sshCommandPath = Path.Combine(path, sshCommand);\n                    if (File.Exists(sshCommandPath))\n                    {\n                        filePath = sshCommandPath;\n                        break;\n                    }\n                }\n```",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "side": "right",
+          "from_line": 2230,
+          "to_line": 2237,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The manual PATH lookup should handle potential exceptions from Path.Combine() or File.Exists(). If the PATH environment variable contains entries with invalid characters or malformed paths, these methods could throw exceptions (e.g., ArgumentException, NotSupportedException). Consider wrapping the path operations in a try-catch block to skip invalid PATH entries gracefully.\n\nSuggested approach:\n```csharp\nforeach (var path in entries)\n{\n    if (!Path.IsPathFullyQualified(path))\n    {\n        continue;\n    }\n\n    try\n    {\n        var sshCommandPath = Path.Combine(path, sshCommand);\n        if (File.Exists(sshCommandPath))\n        {\n            filePath = sshCommandPath;\n            break;\n        }\n    }\n    catch (ArgumentException)\n    {\n        // Skip invalid path entries\n        continue;\n    }\n}\n```",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "side": "right",
+          "from_line": 2230,
+          "to_line": 2243,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Consider validating that 'filePath' does not point to an unexpected location due to symbolic links or junction points, especially since this involves executing external processes.",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "side": "right",
+          "from_line": 2238,
+          "to_line": 2242,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "手工 PATH 查找只接受完全限定条目且只判存在，会让可用的 ssh 被判为找不到并直接失败\n新增的无 Runspace 回退分支先丢弃所有非“完全限定”的 PATH 条目（第 2232-2235 行），再用 File.Exists 判定候选路径（第 2238 行），这与平台/引擎自身的解析规则不一致：引擎的 CommandDiscovery.GetLookupDirectoryPaths 会保留相对条目待解析、并把 `~/xxx` 展开为用户主目录（CommandDiscovery.cs:1226-1243），而 ProcessStartInfo 交给操作系统的 PATH 解析（注释第 2224-2225 行也承认这一点）还允许 Windows 上带引号的条目。当 ssh 所在的 PATH 条目写成 `~/bin`、`.`、相对路径，或在 Windows 上被引号包裹（如 `\"C:\\Program Files\\OpenSSH\"`）时，循环找不到文件，随后第 2246-2253 行直接抛出 CommandNotFoundException，连接在启动 ssh 之前就失败，而实际上 ssh 完全可用。另外 File.Exists 不校验可执行权限，PATH 中靠前的同名非可执行文件会被选中，从而遮蔽后面真正可用的 ssh，导致 Process.Start 以权限/格式错误失败。",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "from_line": 2232,
+          "to_line": 2232,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag the manual PATH lookup filtering out non-fully-qualified entries, causing usable ssh to be missed.\n2. No match — reference discusses exception handling for invalid PATH entries, generated discusses PATH resolution rules and executable permission/shadowing.\n3. No match — reference discusses symlink/junction validation, generated does not.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "新增的 filePath 空值检查与 PATH 回退在 Runspace 分支不可达，两条失败路径语义不一致\n第 2209-2214 行改为调用静态 CommandDiscovery.LookupCommandInfo，而该方法在未找到命令时会内部抛出 CommandNotFoundException（CommandDiscovery.cs:775-787），不会返回 null；因此当 Runspace 存在（交互式/脚本/多数宿主场景）且机器上没有 ssh 时，异常在第 2214 行就已抛出，新增的第 2246-2253 行统一检查、以及为无 Runspace 场景准备的 PATH 手工回退都不会执行。结果是：这段代码本想统一“找不到 ssh”的失败处理，实际上只有 context == null 时才走到统一检查；此外 LookupCommandInfo 还会调用 PreCommandLookupAction/CommandNotFoundAction 等宿主回调（CommandDiscovery.cs:678-732），若回调返回的不是 ApplicationInfo，`as ApplicationInfo` 会得到 null，随后在第 2248 行以「The term 'ssh.exe' is not recognized as a name of a cmdlet, function, script file, or executable program.」（DiscoveryExceptions.resx:136）这一通用文案失败——对 SSH 远程连接用户而言极易误解为需要安装某个 cmdlet，且此时即便 PATH 中有 ssh 也不会尝试回退。",
+          "path": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+          "from_line": 2246,
+          "to_line": 2246,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — reference discusses filtering relative PATH entries; generated discusses the fallback being unreachable due to LookupCommandInfo throwing.\n2. No match — reference discusses handling malformed PATH entry exceptions; generated discusses CommandNotFoundException and inconsistent failure semantics.\n3. No match — reference discusses symlink/junction path validation; generated discusses misleading error handling and unreachable PATH fallback.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "FreeCAD__FreeCAD@39c5968",
+      "repo": "FreeCAD/FreeCAD",
+      "comments": [
+        {
+          "note": "The lambda parameter `str` is unnecessarily defined as `std::string` when it could use string literals directly, creating redundant string conversions. While string concatenation requires one string type, the implementation should optimize for minimal object creation by using C-style strings where possible.",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 402,
+          "to_line": 402,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential namespace/qualification regression: the old code assigned to `Base::PyExc_*` globals, but the new code assigns to unqualified `PyExc_FC_*`. If these variables live in `Base::` (as before), this will either fail to compile or silently assign different symbols (if there are similarly named globals in another namespace). Suggest explicitly qualifying (e.g., `Base::PyExc_FC_GeneralError = ...`) or adding `using Base::PyExc_FC_GeneralError;` etc. Also consider making `module` a `PyObject* const` or capturing by value to avoid referencing a local through the lambda unnecessarily.\n\n```suggestion\n    Base::PyExc_FC_GeneralError = setup(\"FreeCADError\", PyExc_RuntimeError);\n    Base::PyExc_FC_FreeCADAbort = setup(\"FreeCADAbort\", PyExc_BaseException);\n    Base::PyExc_FC_XMLBaseException = setup(\"XMLBaseException\", PyExc_Exception);\n```",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 409,
+          "to_line": 411,
+          "file_semantic_match": false
+        },
+        {
+          "note": "According to the RAII principle and smart pointer usage guidelines, this code uses manual `new` and `delete` to manage dynamic memory. If `realpath` throws an exception or if there's another code path that exits the scope before `delete [] buf`, it would cause a memory leak. Consider using `std::unique_ptr<char[]>` to manage the memory automatically and ensure exception safety.\n\n```suggestion\n        if (auto buf = std::make_unique<char[]>(++sz); _NSGetExecutablePath(buf.get(), &sz) == 0) {\n                    char resolved[PATH_MAX];\n                    char* path = realpath(buf.get(), resolved);\n```",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 3488,
+          "to_line": 3491,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The init-capture `str {\"Base.\"}` creates a non-const copy of the string. Since this value is never modified within the lambda, it should be marked as `const` for better const correctness. Change `str {\"Base.\"}` to `const str {\"Base.\"}` or use a more explicit syntax.",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 402,
+          "to_line": 402,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Replace the manual null or empty string check `if(!path || path[0] == '\\0')` with the existing `isNullOrEmpty()` helper function for consistency and readability.",
+          "path": "src/App/Application.cpp",
+          "side": "right",
+          "from_line": 681,
+          "to_line": 681,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "重构顺带改变了 AbortIOException 的 Python 异常限定名，属未声明的对外可见行为变更\n异常创建被抽成 `setup` lambda 后，每个异常类的全名完全由传入的 ename 与固定的 \"Base.\" 前缀拼成（`(str + ename).c_str()`），而 `PyErr_NewException` 会用该名字设置异常类的 `__name__` 与 `__module__`。本次把 AbortIOException 的入参由原代码的 \"Base.PyExc_FC_AbortIOException\" 改成 \"AbortIOException\"，于是 Python 侧看到的类名从 `Base.PyExc_FC_AbortIOException` 变成 `Base.AbortIOException`，traceback、日志以及 `type(e).__name__` / `type(e).__module__` 的取值都随之变化。模块属性名（`PyModule_AddObject(module, ename.c_str(), ...)` 仍为 \"AbortIOException\"）未变，因此 `except Base.AbortIOException` 一类按属性捕获的用法不受影响；但任何按旧类名做识别、异常重建或序列化的脚本/插件会在本次「纯重构」中无声失效。其余 12 个异常名与原实现完全一致，说明这只是重构时的一处笔误式偏差，需要作者确认是否有意。",
+          "path": "src/App/Application.cpp",
+          "from_line": 421,
+          "to_line": 421,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref 1 discusses unnecessary `std::string` conversion/object creation, while the generated comment discusses a Python exception qualified-name change.\n2. No match — ref 2 discusses C++ namespace qualification of `PyExc_FC_*` globals, not the Python-visible `__module__`/`__name__` regression for `AbortIOException`.\n3. No match — ref 3 discusses manual `new`/`delete` memory management and `unique_ptr`, unrelated to exception naming.\n4. No match — ref 4 discusses const correctness of t",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "ollama__ollama@af112d6",
+      "repo": "ollama/ollama",
+      "comments": [
+        {
+          "note": "The validation is performed on the original path before it is cleaned with `filepath.Clean()`. This causes `validRelative()` to reject paths like `\"./model.safetensors\"` and `\"nested/../model.safetensors\"` even though they would resolve to safe relative paths after cleaning.\n\nThe PR description states the code should \"Properly handle relative paths (like `./model.safetensors`)\", which suggests these paths should be accepted. \n\n**Suggested fix:** Clean the path first, then validate the cleaned version:\n\n```go\nfiles := make(map[string]string, len(r.Files))\nfor k, v := range r.Files {\n    cleaned := filepath.Clean(k)\n    if err := validRelative(cleaned); err != nil {\n        c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{\"error\": err.Error()})\n        return\n    }\n    files[cleaned] = v\n}\n```\n\nThis approach would:\n1. Convert `\"./model.safetensors\"` to `\"model.safetensors\"` (valid)\n2. Convert `\"nested/../model.safetensors\"` to `\"model.safetensors\"` (valid)\n3. Still reject `\"../etc/passwd\"` which cleans to `\"../etc/passwd\"` (invalid due to `\"..\"` prefix)\n\nAdditionally, update `validRelative()` to validate already-cleaned paths, which simplifies the checks since `filepath.Clean()` normalizes the path format.",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 52,
+          "to_line": 52,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The `validRelative` function only checks for forward slashes (`/`) as path separators. On Windows, backslashes (`\\`) are also valid separators. This means a path like `..\\..\\windows\\system32` could bypass this validation. \n\nIt is recommended to use `filepath.ToSlash` to normalize the path before checking, or explicitly check for backslashes as well to ensure cross-platform security.",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 161,
+          "to_line": 188,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Path containment validation uses `OpenFile` with `O_CREATE`, which unnecessarily creates files during path checks; replace with `Stat` to validate paths without filesystem side effects.",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 277,
+          "to_line": 277,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The newly added `validRelative` function duplicates standard library functionality; replace it with `io/fs.ValidPath` for correctness and simplicity.",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 161,
+          "to_line": 161,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential compatibility risk: `os.OpenRoot` / `Root.OpenFile` are newer APIs. Please confirm the project Go toolchain version supports them; otherwise this will not compile in CI/users. If older Go versions must be supported, use alternative containment validation (e.g. `clean := filepath.Clean(fp)` + `rel, _ := filepath.Rel(tmpDir, filepath.Join(tmpDir, clean))` and reject `strings.HasPrefix(rel, \"..\")` etc.).",
+          "path": "server/create.go",
+          "side": "right",
+          "from_line": 267,
+          "to_line": 271,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "root.OpenFile 预校验导致带子目录的合法 safetensors 路径被误判为非法\n新增的校验在空临时目录中用 root.OpenFile(fp, O_CREATE|O_WRONLY) 预创建目标文件。os.Root.OpenFile 不会创建父目录，因此形如 \"dir/model.safetensors\"、\"x/y/z.safetensors\" 这种带子目录的合法相对路径会因父目录不存在而返回 ENOENT，被包装成 errFilePath 直接返回，整个 create 请求失败。而紧随其后的 createLink 本身会先 MkdirAll(filepath.Dir(dst)) 创建父目录，说明子目录路径是原本被支持的用法；validRelative 的显式校验与新增测试也把 \"dir/file.txt\" 列为合法路径，因此这是本次变更新引入的功能回归：所有把 safetensors（含分片模型放在子目录）放在子目录下上传的客户端都会从“成功”变为“file path must be relative”错误。",
+          "path": "server/create.go",
+          "from_line": 277,
+          "to_line": 277,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated concerns `root.OpenFile` failing on subdirectory paths because parent directories are not created; ref1 concerns missing `filepath.Clean` causing `./` and",
+          "hit_new_gt": false
+        },
+        {
+          "note": "errFilePath 只加入 adapters 白名单，主 files 分支仍返回非 400 状态\n本次把 errFilePath 加进了 adapters 分支的错误白名单（118 行），但主 files 分支的白名单（100 行）没有同步加入。由于 convertFromSafetensors 现在会对 r.Files 的每个条目做 root.OpenFile 校验并以 errFilePath 返回失败（例如 F001 的嵌套路径场景、Windows 绝对路径等），这些错误会走 106 行的无 status 分支：非流式请求经 waitForStream 回落到 500，流式请求则固定 200 并在 body 里带 error。同一个“非法文件路径”错误在 adapters 与 files 两条路径上得到不同 HTTP 状态码，客户端无法可靠区分参数错误与服务器内部错误。",
+          "path": "server/create.go",
+          "from_line": 118,
+          "to_line": 118,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref 1 concerns rejecting paths before cleaning, while the generated comment concerns a missing errFilePath whitelist entry causing inconsistent HTTP status codes.\n2. No match — ref 2 concerns Windows backslash separator validation bypass, not HTTP status mapping for invalid file paths.\n3. No match — ref 3 concerns filesystem side effects from OpenFile/O_CREATE, not error classification in the files branch.\n4. No match — ref 4 concerns replacing validRelative with io/fs.ValidPath, u",
+          "hit_new_gt": false
+        },
+        {
+          "note": "validRelative 仅按 \"/\" 判定绝对路径与遍历，Windows 路径可绕过\nvalidRelative 用硬编码的 \"/\" 判断绝对路径（167 行）、用 \"./\"、\"../\" 前缀与 \"/../\"、\"/./\" 子串判断遍历（172、182-183 行），完全忽略平台分隔符，也未使用 filepath.IsAbs/filepath.IsLocal。在 Windows 上，\"..\\\\..\\\\config.json\"、\"C:\\\\Windows\\\\Temp\\\\x.safetensors\"、\"\\\\\\\\server\\\\share\\\\x\" 等路径都会整条通过校验，随后进入 convertFromSafetensors。此外 CreateHandler 只对 r.Files 调用了 validRelative（50-58 行），r.Adapters 完全未做该校验，而 118 行又把 errFilePath 当作 adapters 的 400 错误来识别，说明作者预期 adapters 也会产生该类错误。结果是路径包含性完全依赖 root.OpenFile 兜底，一旦兜底缺失或被未来重构移除，就会重新暴露路径穿越风险。",
+          "path": "server/create.go",
+          "from_line": 167,
+          "to_line": 167,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — ref concerns over-rejection of safe cleaned-relative paths; generated concerns Windows backslash bypass.\n2. Match — both identify that `validRelative` only checks `/` and allows Windows `\\` traversal paths to bypass.\n3. No match — ref concerns `OpenFile` with `O_CREATE` causing side effects; generated concerns reliance on `root.OpenFile` as a fallback and unvalidated adapters.\n4. No match — ref suggests replacing `validRelative` with `io/fs.ValidPath` for duplication/simplicity; ge",
+          "hit_new_gt": true
+        },
+        {
+          "note": "\"./model.safetensors\" 在 handler 层被拒但测试断言其合法，校验契约自相矛盾\nvalidRelative 在 172 行显式拒绝以 \"./\" 开头的路径，因此经 HTTP 接口上传 \"./model.safetensors\" 会直接返回 400；但新增测试 TestConvertFromSafetensors 中的 ValidRelativeWithDot 用例断言 \"./model.safetensors\" 应当成功（因为它绕过 handler 直接调用 convertFromSafetensors，filepath.Clean 后变成 \"model.safetensors\"），而同一个测试文件的 TestValidRelative 又把 \"./x/y\" 列为非法。同一份代码对同一路径形式存在两种判定，测试给出的是“合法”的错误预期，掩盖了 handler 行为变化：此前可用的带 \"./\" 前缀的 files 键现在被拒绝。",
+          "path": "server/create.go",
+          "from_line": 172,
+          "to_line": 172,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag that `validRelative` rejects `\"./model.safetensors\"` before cleaning, contradicting the intended/tested behavior.\n2. No match — reference discusses Windows backslash path separators.\n3. No match — reference discusses `OpenFile`/`O_CREATE` side effects.\n4. No match — reference discusses replacing `validRelative` with `io/fs.ValidPath`.\n5. No match — reference discusses Go toolchain compatibility for `os.OpenRoot`.\n\n[1]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "alibaba__spring-ai-alibaba@3555a95",
+      "repo": "alibaba/spring-ai-alibaba",
+      "comments": [
+        {
+          "note": "- Environment variables \"ACCESS_KEY_ID\" and \"ACCESS_KEY_SECRET\" lack service-specific prefixing and risk naming conflicts; must be prefixed with \"ALITRANSLATE_\".  \n- Replace `setPropertiesFromEnv` helper method calls with direct `System.getenv` assignments for access key fields.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+          "side": "right",
+          "from_line": 34,
+          "to_line": 34,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The validation logic strictly requires `sourceLanguage` and `targetLanguage` to be present, contradicting the `@JsonProperty(required = false)` annotation in the `Request` record. If these optional fields are omitted in the tool call (resulting in null values), the method will return `null` silently. \n\nConsider applying default values when these fields are missing, consistent with the property descriptions.",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "side": "right",
+          "from_line": 84,
+          "to_line": 92,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "sourceLanguage 被当作必填校验，缺省时翻译静默返回 null\nRequest 的 sourceLanguage 字段被声明为 required = false、描述为“default is zh”，但 apply 新增了 !StringUtils.hasText(request.sourceLanguage) 校验并在不满足时直接 return null。默认值只在单参构造器 Request(String text) 中被回填；工具调用时参数是由模型按 JSON 传入（通常只给 text、targetLanguage，甚至沿用旧版参数集），不会走这个单参构造器，sourceLanguage 为 null，于是 apply 一律返回 null。结果是本次改动把“源语言固定为 zh”的可用行为改成“不显式传 sourceLanguage 就翻译失败”，且失败完全没有异常，调用方/模型只能收到 null，表现为工具调用无输出。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 84,
+          "to_line": 84,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. Match — both point out that optional fields (required=false) are being enforced by validation, causing silent null return and missing default values.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "异常被吞掉后返回 null，中断信号同时丢失\n改动前 apply 在失败时抛出 RuntimeException，调用链能感知失败；现在 catch (Exception e) 只记录 e.getMessage() 并 return null。一方面失败语义从“抛出”变成“返回 null”，上层（工具调用框架/业务代码）无法区分“翻译失败”和“无结果”，并且 System 级故障、鉴权失败、getTranslatedText 抛出的 IllegalStateException 全部被转成 null；另一方面 logger.error 只输出 message 不带堆栈，问题定位缺关键信息。此外 response.get() 抛出的 InterruptedException 也会被这个宽泛的 catch 吞掉，线程中断标志未被恢复，容器关闭或请求取消时阻塞线程可能无法及时退出。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 106,
+          "to_line": 106,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated concerns broad exception swallowing and loss of interruption signal, while reference concerns optional language fields causing silent null return due validation.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "Request 新增字段插入中间位置，破坏既有两参构造契约\nRequest 记录原先的规范构造器是 (String text, String targetLanguage)，现在插入 sourceLanguage 后变成 (String text, String sourceLanguage, String targetLanguage)，且只额外提供 Request(String text) 单参构造器。所有既有的 new AliTranslateService.Request(text, targetLanguage) 调用（本 starter 是对外发布的模块，下游会直接构造）升级后编译失败；若下游通过位置式反射/序列化（如按构造器参数数组）构造，则会静默把原 targetLanguage 当成 sourceLanguage，导致 targetLanguage 为 null 而被 apply 的校验拒绝并返回 null，表现为翻译功能无声失效。新增字段没有提供兼容的两参构造桥接，也没有把默认值放进紧凑构造器，使契约变化缺乏防护。",
+          "path": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+          "from_line": 142,
+          "to_line": 142,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "bluewave-labs__Checkmate@29e03a6",
+      "repo": "bluewave-labs/Checkmate",
+      "comments": [
+        {
+          "note": "Missing global axios error interceptor prevents proper handling and logging of network failures. Without it, the application cannot differentiate or log critical error types like HTTP status errors, no response scenarios, or request configuration issues.",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 1,
+          "to_line": 5,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Missing validation for required environment variables POEDITOR_API_TOKEN and POEDITOR_PROJECT_ID; add explicit checks to exit with error if unset.",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 10,
+          "to_line": 13,
+          "file_semantic_match": false
+        },
+        {
+          "note": "`LANGUAGES` parsing should trim whitespace and drop empty entries (e.g. `\"tr, en,\"`). Otherwise you may request an empty/invalid language code.\n\n```suggestion\nconst LANGUAGES = (process.env.LANGUAGES || 'tr,en')\n  .split(',')\n  .map(s => s.trim())\n  .filter(Boolean);\n```",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 12,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Default language mismatch: This script defaults to 'tr,en' but the workflow file `.github/workflows/poeditor-sync.yml` (line 58) defaults to 'tr,gb'. This inconsistency could cause unexpected behavior when the workflow runs on schedule without manual input.\n\n```suggestion\n-const LANGUAGES = (process.env.LANGUAGES || 'tr,en').split(',');\n+const LANGUAGES = (process.env.LANGUAGES || 'tr,gb').split(',');\n```",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 12,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Missing null safety checks when accessing nested API response properties. If the API response structure is unexpected, accessing `exportResponse.data.response.status` or `exportResponse.data.result.url` could throw errors. Consider adding optional chaining or explicit null checks.",
+          "path": ".github/scripts/download-translations.js",
+          "side": "right",
+          "from_line": 37,
+          "to_line": 41,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Inconsistent default language codes: the workflow input defaults to 'tr,en' for manual runs, but the environment variable fallback uses 'tr,gb' for scheduled runs.",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "side": "right",
+          "from_line": 60,
+          "to_line": 61,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The workflow uses `jq` command to validate JSON format in the 'Verify translation files' step, but `jq` is not installed. The ubuntu-latest runner does not include `jq` by default. You need to add a step to install `jq` before using it, otherwise this step will fail.",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 76,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "用 POEditor 导出内容整文件覆盖翻译文件，会静默删除仓库中新增但尚未同步的 key\nCopy translations to project 步骤用 `cp -r temp/* src/locales/` 无条件覆盖现有语言文件，而 temp 下的文件内容完全来自 POEditor 导出结果。脚本只做整对象的 writeJson，或把数组转成对象（且要求 `item.term && item.definition` 同时存在才写入），没有与仓库现有 key 合并或校验。具体失败场景：开发者先在 PR 里给 src/locales/gb.json 新增 key（例如新增页面文案），但 POEditor 项目中尚未添加该 term；当晚 cron 触发同步后，下载到的 gb.json 只包含 POEditor 侧已有的 term，覆盖后新 key 消失，自动 commit 直接进入主分支，线上该文案退化为显示原始 key。gb.json 是 i18n 的 primaryLanguage（src/Utils/i18n.js:6），其缺 key 会同时影响所有语言的 fallback。目前 tr.json 仅 105 行而 gb.json 有 178 行，说明 POEditor 侧各语言的 term 覆盖并不完整，覆盖式写入的风险是现实存在的。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 83,
+          "to_line": 83,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment discusses overwriting/deleting unsynced translation keys, while reference 1 discusses inconsistent default language codes between manual and scheduled runs.\n2. No match — generated comment discusses destructive file overwrite/key loss, while reference 2 discusses missing `jq` installation causing validation step failure.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "语言默认值三处不一致（tr,en / tr,gb / tr,en），手动触发会生成应用未使用的 en.json\n同一次变更里语言默认值出现三种定义：workflow_dispatch 的 `languages` 默认 `tr,en`（第 10 行）、env 回退值 `tr,gb`（第 60 行）、脚本内 `process.env.LANGUAGES || 'tr,en'`（download-translations.js:12）。而仓库实际只有 src/locales/gb.json 与 tr.json，应用主语言是 `gb`（src/Utils/i18n.js:6、src/Features/UI/uiSlice.js:26）。具体失败场景：维护者按 README 的说明手动触发工作流并接受默认值，下载出 `en.json` 并提交到 src/locales/，由于 i18n 用 `import.meta.glob(\"../locales/*.json\")` 并以文件名作为语言码，仓库会多出一个任何 UI 语言选项都选不到的 `en` 资源，同时 `gb.json` 不更新，用户看到的是旧翻译；相反定时任务用的是 `tr,gb`，两条路径产生的文件集不同，长期造成 gb.json/en.json 双份来源漂移。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 10,
+          "to_line": 10,
+          "matched_gt_indices": [
+            5
+          ],
+          "judge_reason": "1. Match — both flag inconsistent default language codes between manual dispatch and scheduled runs.\n2. No match — ref discusses missing `jq` installation, generated discusses language default inconsistency.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "未声明 permissions: contents: write，默认只读 GITHUB_TOKEN 下 git push 会 403 失败\n工作流用 `secrets.GITHUB_TOKEN` 检出代码（第 26-28 行），随后在第 92 行直接 `git push` 提交翻译。但整个 job 没有声明 `permissions:` 块。GitHub 对 2023-02 之后创建的仓库默认将 GITHUB_TOKEN 设为只读（或在组织/仓库级把默认收紧为 read-only），此时 `git push` 会以 `remote: Permission to ... denied` / 403 失败，工作流每天都红，翻译永远不会被同步；而因为失败发生在 commit 之后、push 阶段，日志只呈现一条通用 permission 错误，容易被当成密钥问题排查。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 92,
+          "to_line": 92,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — 参考评论讨论 manual 与 scheduled 默认语言代码不一致，生成评论讨论缺少 `permissions: contents: write` 导致 git push 403。\n2. No match — 参考评论讨论 `jq` 未安装导致验证步骤失败，生成评论讨论 GITHUB_TOKEN 只读导致 push 权限失败。\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "校验步骤只检查文件非空与 JSON 合法，空对象仍会通过并覆盖掉整个语言文件\nVerify translation files 步骤的判定是 `[ ! -s \"$file\" ]`（文件非空）与 `jq .`（JSON 语法合法），并不校验内容是否为非空对象、是否包含 term。具体失败场景：POEditor 某语言尚无任何已确认翻译时，导出结果可能是空数组或空对象；脚本对数组的处理是只保留 `item.term && item.definition` 都存在的项（download-translations.js:56-60），全部被过滤后 `formattedTranslations` 成为 `{}`，`writeJson` 写出字面量 `{}`（2 字节、非空、合法 JSON），两个校验条件全部通过，随后第 83 行把 `src/locales/gb.json` 覆盖成空对象，自动提交进主分支，全站文案退回显示 key。此外校验也不比对导出 key 数与现有 key 数，无法发现导入内容明显缩水。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 71,
+          "to_line": 71,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses inconsistent default language codes; generated discusses insufficient validation allowing empty locale objects.\n2. No match — ref discusses missing `jq` installation causing step failure; generated discusses validation passing empty JSON objects despite `jq` syntax check.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "定时任务与手动触发无并发控制，且 push 无重试，后完成的一次会因非快进而失败\n工作流同时由 `schedule: cron: \"0 0 * * *\"`（第 17-18 行）和 `workflow_dispatch` 触发，但没有 `concurrency` 组；两个运行结束阶段都会 `git add` / `git commit` / `git push`（第 90-92 行），且 push 前没有 `git pull --rebase` 或失败重试。具体失败场景：维护者在 00:00 前后手动触发一次同步，与定时任务几乎同时执行，两者基于同一 base commit 各生成一个 commit，先 push 的成功，后 push 的因 remote 已有新提交被拒绝（`! [rejected] ... (fetch first)`），job 以失败告终；若此时先完成的运行内容更旧，还会出现内容互相覆盖、难以判断最终生效版本的情况。",
+          "path": ".github/workflows/poeditor-sync.yml",
+          "from_line": 18,
+          "to_line": 18,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses inconsistent default language codes; generated discusses missing concurrency control and push race failures.\n2. No match — ref discusses missing `jq` installation; generated discusses missing concurrency control and push race failures.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "filamentphp__filament@d47632c",
+      "repo": "filamentphp/filament",
+      "comments": [
+        {
+          "note": "The new condition for '->' JSON syntax must skip columns starting with `json_extract()` to prevent double-wrapping, as the two syntax forms are mutually exclusive and the translatable plugin already handles these columns.",
+          "path": "packages/support/src/helpers.php",
+          "side": "right",
+          "from_line": 184,
+          "to_line": 184,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential SQL correctness/safety issue: building `$column = \"json_extract({$field}{$path})\"` assumes `$path` already includes the comma and is correctly quoted/escaped, and that JSON extraction syntax matches the current connection settings (e.g., MySQL vs MariaDB variants, json type/collation). Since this string is later interpolated into `lower({$column})`, any mismatch can break queries or bypass proper identifier wrapping.\n\nSuggestion: prefer using the grammar’s JSON selector wrapping (or query builder expressions) end-to-end rather than concatenating raw SQL. If you must transform here, ensure the generated SQL includes the required `,` between field and path and that both parts are wrapped/escaped by the grammar (e.g., `json_extract({$field}, {$path})`), and consider handling nested selectors/edge cases consistently with other drivers.",
+          "path": "packages/support/src/helpers.php",
+          "side": "right",
+          "from_line": 184,
+          "to_line": 188,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "手拼 json_extract 缺少 json_unquote，JSON 字符串值带引号转义会削弱搜索匹配\n新增分支直接拼出 `json_extract({$field}{$path})`，随后在 190 行整体套 `lower()`；而 MySQL/MariaDB 的 json_extract 对 JSON 字符串返回的是带双引号并做转义的 JSON 文本（如 `\"John\"`），Laravel 语法器对 JSON 选择器的标准包装是 `json_unquote(json_extract(...))`。因此生成的 `lower(json_extract(...))` 实际是把「带引号的 JSON 文本」与 `%term%` 比较：搜索词包含 `\"`、`\\` 等会被转义的字符时永远匹配不到；当路径指向 JSON 对象/数组时，`%term%` 还会命中键名造成误匹配（例如搜索 \"title\" 命中 `{\"title\":...}` 的键而不是值）。同时 185 行用 invade() 反射调用语法器的 protected 方法 wrapJsonFieldAndPath，绕开了公有的 Grammar::wrap()（后者本身就会产出 `json_unquote(json_extract(...))`），一旦 Laravel 调整该方法签名/可见性或应用使用自定义 QueryGrammar，该 helper 会在搜索热路径上直接抛 Error，影响所有搜索入口（InteractsWithTableQuery.php:107、Select.php:1087、Resource.php:768 等）。",
+          "path": "packages/support/src/helpers.php",
+          "from_line": 187,
+          "to_line": 187,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — focuses on avoiding double-wrapping for existing `json_extract()` columns, while the generated comment focuses on missing `json_unquote` and bypassing grammar wrapping.\n2. Match — both flag the manual concatenation of `json_extract(...)` and recommend using the query grammar’s JSON selector wrapping instead of raw SQL.\n\n[2]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "browser-use__browser-use@0b21e50",
+      "repo": "browser-use/browser-use",
+      "comments": [
+        {
+          "note": "`self.config.chrome_remote_debugging_port` is typed as `int | None`. If it is `None`, `socket.connect_ex` will raise a `TypeError` because it expects an integer port. Suggest adding a check for `None` or ensuring it is a valid integer before using it here.",
+          "path": "browser_use/browser/browser.py",
+          "side": "right",
+          "from_line": 290,
+          "to_line": 292,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "chrome_remote_debugging_port 允许为 None，但所有使用点都未做 None 处理\n新增字段声明为 `chrome_remote_debugging_port: int | None = CHROME_DEBUG_PORT`，从类型上允许用户显式传入 None；但该值在四处被直接使用且没有空值兜底：拼接 URL 时会产生 'http://localhost:None/json/version'（httpx 抛 InvalidURL，而该异常不是 httpx.RequestError，走不到 _setup_user_provided_browser 的 except 分支，会直接向上冒泡，使浏览器初始化整体失败而不是退化为“启动新实例”）；socket.connect_ex(('localhost', None)) 会抛 TypeError；CHROME_DEBUGGING_ARG % {...} 会拼出 '--remote-debugging-port=None' 传给 Chrome。也就是说配置项声明为可选却只支持 int，用户在配置里写 None 会得到与文档不符的崩溃，而不是回落到默认端口。",
+          "path": "browser_use/browser/browser.py",
+          "from_line": 111,
+          "to_line": 111,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag the same missing `None` handling for `chrome_remote_debugging_port`, specifically causing `TypeError` in `socket.connect_ex`.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "文档宣称可用自定义端口并行启动用户浏览器，但启动参数未隔离用户数据目录\n新增的配置文档（第 82-86 行）声称该配置“makes it possible to launch new user provided chrome browser without closing already opened chrome instances”。但在 _setup_user_provided_browser 的启动参数集合中只有 CHROME_DEBUGGING_ARG 与 CHROME_ARGS 等，没有 `--user-data-dir`（chrome.py 中该参数处于注释状态），因此新实例复用默认 profile。当用户机器上已有同 profile 的 Chrome 在运行时，Chrome 的进程单例会把这些命令行参数转发给已存在实例后退出，请求的调试端口不会被打开；随后代码轮询 10 次仍连不上，最终抛出 'you need to close all existing Chrome instances' 的 RuntimeError —— 正是本次文档声称已解决、实际仍会发生的场景。",
+          "path": "browser_use/browser/browser.py",
+          "from_line": 229,
+          "to_line": 229,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated discusses missing `--user-data-dir` causing profile reuse and parallel launch failure; reference discusses `None` port causing `TypeError` in `socket.connect_ex`.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "新测试 monkeypatch 的是 requests，而实现使用 httpx，复用分支实际未被覆盖\ntest_user_provided_browser_launch_on_custom_chrome_remote_debugging_port 用 `monkeypatch.setattr(requests, 'get', dummy_get)` 与 DummyResponse 模拟 http://localhost:9223/json/version 返回 200，但被测的 _setup_user_provided_browser 是通过 `httpx.AsyncClient().get(...)` 探活，永远走不到 dummy_get。结果是：(1) DummyResponse/dummy_get 成为死代码，测试并未校验“复用已存在浏览器”分支中端口插值的改动（第 201-213 行）；(2) 该断言分支实际依赖对 localhost:9223 的真实网络调用失败，机器上恰好有服务监听 9223 时会进入复用分支并连接真实端口，测试结果依赖环境。",
+          "path": "tests/test_browser.py",
+          "from_line": 180,
+          "to_line": 180,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "linera-io__linera-protocol@3535ddb",
+      "repo": "linera-io/linera-protocol",
+      "comments": [
+        {
+          "note": "Consider adding validation to handle the case where `start >= chain.received_log.count()`. Currently, if start exceeds the log count, the range `start..end` could be invalid or empty. It might be better to return early with an empty result or an error to make the behavior explicit.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 1418,
+          "to_line": 1420,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The pagination loop condition might result in an extra unnecessary request when exactly CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES entries are returned. Consider using <= comparison to break when the number of received entries is less than or equal to the maximum.",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 1418,
+          "to_line": 1419,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The pagination loop lacks a safeguard against infinite iteration. If entries are being added to the `received_log` faster than the client paginates through it (e.g., during concurrent writes), the condition `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` might never be met, potentially causing an infinite loop.\n\nConsider adding a maximum iteration limit or a timeout safeguard to prevent this edge case. For example:\n```rust\nlet mut iterations = 0;\nconst MAX_ITERATIONS: u32 = 1000;\nloop {\n    let query = ChainInfoQuery::new(chain_id).with_received_log_excluding_first_n(offset);\n    let info = remote_node.handle_chain_info_query(query).await?;\n    let received_entries = info.requested_received_log.len();\n    offset += received_entries as u64;\n    remote_log.extend(info.requested_received_log);\n    if received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES {\n        break;\n    }\n    iterations += 1;\n    if iterations >= MAX_ITERATIONS {\n        warn!(\"Reached maximum iterations while paginating received log for chain {:?}\", chain_id);\n        break;\n    }\n}\n```",
+          "path": "linera-core/src/client/mod.rs",
+          "side": "right",
+          "from_line": 846,
+          "to_line": 857,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The pagination loop will make an extra unnecessary query when the total number of entries is exactly a multiple of CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES (1000). For example, if there are exactly 2000 new entries, it will make 3 queries returning (1000, 1000, 0) instead of stopping after 2 queries. While this doesn't affect correctness, consider adding a check to avoid the extra query, such as tracking if we've reached the expected end or checking if the response is empty before extending the vector.",
+          "path": "linera-core/src/client/mod.rs",
+          "side": "right",
+          "from_line": 848,
+          "to_line": 857,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Making this `pub` exposes a protocol/behavior constant outside the crate. If this limit is only an internal safeguard for responses, consider `pub(crate)` to avoid accidental external coupling. If it must be public, document whether it’s a hard API guarantee and whether changing it is a breaking change.\n\n```suggestion\npub(crate) const CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES: usize = 1000;\n```",
+          "path": "linera-core/src/chain_worker/state.rs",
+          "side": "right",
+          "from_line": 53,
+          "to_line": 53,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "分页终止条件依赖客户端本地常量而非响应中已有的 count_received_log，可能与服务端页大小不一致导致静默漏取\n新循环用 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 判断日志是否已取尽，但这只是客户端持有的常量副本，服务端每页实际返回多少条是服务端实现细节（该常量旁已写明 `// TODO(#4638): Revisit the number.`）。一旦两侧取值不同（例如后续调小服务端上限，或灰度升级期间新旧版本混跑），当服务端返回条数少于客户端常量时循环会提前 break，此时 remote_log 只是被截断的第一页；函数随后仍返回 Ok 的 ReceivedCertificatesFromValidator，调用方 find_received_certificates 将其视为一次成功的 best-effort 同步，被截掉的已接收证书本轮不会下载、tracker 也不推进，相关跨链消息处理被推迟到下一次同步轮次，且全程没有 warn 或错误暴露。修复所需信息其实已在响应中：ChainInfo 的 `count_received_log`（data_types.rs:213-214 注释即写明 useful for `request_received_log_excluding_first_n`），当前仓库中没有任何读取方。",
+          "path": "linera-core/src/client/mod.rs",
+          "from_line": 854,
+          "to_line": 854,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated comment focuses on premature termination due to local constant/server page-size mismatch causing silent truncation; reference comment focuses on infinite-loop risk under concurrent writes.\n2. No match — generated comment focuses on missing logs when page size differs; reference comment focuses on an extra unnecessary query when the total is an exact multiple.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "分页循环的终止条件与内存上限完全由远端返回条数决定，缺少进度校验，异常 validator 响应会导致无限循环\n新增的 loop 只有 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 一个出口，而 received_entries 来自远端 validator 的响应体；循环体内没有“本轮是否真正推进游标（received_entries > 0）”“已取条数是否已达 count_received_log”“最多迭代多少页”这类保护。若远端每次都返回满额一页却没有推进到新数据（例如对 `request_received_log_excluding_first_n` 的处理与本端假设不一致的实现、或分页上限不同的 validator），offset 会持续增加、remote_log 持续 extend，函数既不返回也没有上限，表现为客户端同步挂起并在内存中累积该链的 received log 条目；而 find_received_certificates 是通过 communicate_with_quorum 逐 validator 调用该函数的，整个同步流程都会被拖住。原实现是“一次请求即结束”，不存在这种由远端响应驱动循环的情况，属本次变更新引入的活性/资源风险。",
+          "path": "linera-core/src/client/mod.rs",
+          "from_line": 848,
+          "to_line": 848,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. Match — both flag the missing safeguard against an infinite pagination loop in the new received-log loop.\n2. No match — ref discusses an extra query when the total is an exact multiple, while generated discusses infinite-loop/resource risk from unchecked remote progress.\n\n[1]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "cline__cline@2195a68",
+      "repo": "cline/cline",
+      "comments": [
+        {
+          "note": "Potential security issue: Nonce is not being cleared after validation. This could allow reuse of the same state parameter (replay attack). Consider restoring the call to `this.authService.resetAuthNonce()` upon successful validation.",
+          "path": "src/core/controller/index.ts",
+          "side": "right",
+          "from_line": 461,
+          "to_line": 461,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Security issue: Nonce should be single-use to prevent replay attacks. The current implementation uses a static readonly nonce that never changes, making it vulnerable to replay attacks. Consider generating a new nonce for each authentication request.",
+          "path": "src/core/controller/index.ts",
+          "side": "right",
+          "from_line": 461,
+          "to_line": 461,
+          "file_semantic_match": false
+        },
+        {
+          "note": "**Security Issue: Nonce Reuse Vulnerability**\n\nGenerating the nonce once at service construction creates a serious security vulnerability. The nonce should be unique for each authentication request to provide proper CSRF protection. Reusing the same nonce allows potential replay attacks.\n\n**Recommendation**: Generate a new nonce for each `createAuthRequest()` call. Consider:\n```typescript\nprivate _authNonce: string = ''\n\nasync createAuthRequest(): Promise<String> {\n    if (this._authenticated) {\n        this.sendAuthStatusUpdate()\n        return String.create({ value: \"Already authenticated\" })\n    }\n    \n    // Generate fresh nonce for each auth request\n    this._authNonce = crypto.randomBytes(32).toString(\"hex\")\n    \n    // ... rest of the code\n}\n```",
+          "path": "src/services/auth/AuthService.ts",
+          "side": "right",
+          "from_line": 33,
+          "to_line": 33,
+          "file_semantic_match": true
+        },
+        {
+          "note": "`createAuthRequest(): Promise<String>` uses the protobuf/SDK `String` type (from `@modelcontextprotocol/sdk/types`?) rather than native `string`. This is easy to confuse and can lead to wrong usage. Consider renaming the import (`import { String as RpcString } ...`) and/or changing the method return type to a native `string` if RPC wrapping is not required at this layer.",
+          "path": "src/services/auth/AuthService.ts",
+          "side": "right",
+          "from_line": 173,
+          "to_line": 173,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Throwing a raw Error here may surface as an unhandled exception depending on caller; checklist asks for user-friendly error handling in async flows. Consider catching at the boundary and showing `vscode.window.showErrorMessage(...)` or returning a structured error result for the controller layer to display.",
+          "path": "src/services/auth/AuthService.ts",
+          "side": "right",
+          "from_line": 179,
+          "to_line": 181,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Remove async keyword as this method doesn't perform any asynchronous operations. This is misleading and unnecessary.",
+          "path": "src/core/controller/index.ts",
+          "side": "right",
+          "from_line": 460,
+          "to_line": 460,
+          "file_semantic_match": false
+        },
+        {
+          "note": "State validation logic is duplicated in the activation function; delegate the `authService.authNonce !== state` check to `controller.validateAuthState` to maintain a single source of truth.",
+          "path": "src/extension.ts",
+          "side": "right",
+          "from_line": 312,
+          "to_line": 312,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "state 不匹配时关闭弹窗仍会继续写入 token\nstate 不匹配本应拒绝回调，但这里只在用户明确选择 \"Cancel\" 时 return；VS Code 的 showWarningMessage 在用户按 Esc 或关闭提示时返回 undefined，条件不成立，流程会继续把 query 中的 idToken 交给 handleAuthCallback 并写入登录态。攻击者可构造 vscode://saoudrizwan.claude-dev/auth?idToken=...&state=... 诱导用户关闭提示，从而完成登录 CSRF 或账号注入。",
+          "path": "src/extension.ts",
+          "from_line": 318,
+          "to_line": 318,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref focuses on duplicated state validation logic and consolidation into `controller.validateAuthState`; generated focuses on the security bypass when the warning dialog is dismissed and execution continues to write the token.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "state 不匹配的确认提示未展示真实来源，仅显示 /auth\n提示文案使用 uri.path，而在 /auth 分支下该值恒为 \"/auth\"，既不说明 state 不匹配，也不显示 token 的实际来源、provider 或目标账号。该提示是用户存储外部 token 的唯一安全决策点，信息不足会让用户无法判断是否应继续，攻击者可借此诱导用户点击 Store。",
+          "path": "src/extension.ts",
+          "from_line": 314,
+          "to_line": 314,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — the generated comment concerns the insecure/misleading confirmation prompt showing only \"/auth\", while the reference comment concerns duplicated state validation logic and delegating it to `validateAuthState`.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "authNonce 固定为进程级常量，state 失去一次性语义\n_authNonce 在 AuthService 构造时生成一次且为 readonly，createAuthRequest 每次复用同一值，原有的 resetAuthNonce 也被删除。扩展进程生命周期内所有授权请求共享同一个 state，成功登录或登出后都不会轮换；旧授权 URL 或浏览器历史中的 state 可被重放，state 不再绑定单次登录尝试，削弱了认证回调的 CSRF 防护。",
+          "path": "src/services/auth/AuthService.ts",
+          "from_line": 33,
+          "to_line": 33,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. Match — both flag the auth nonce being generated once and reused, weakening CSRF protection and enabling replay.\n2. No match — reference discusses SDK `String` type usage, generated discusses nonce/state reuse.\n3. No match — reference discusses raw Error handling, generated discusses nonce/state reuse.\n\n[1]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "libsdl-org__SDL@1526727",
+      "repo": "libsdl-org/SDL",
+      "comments": [
+        {
+          "note": "`ReadFeatureReport()` writes `report[0]` unconditionally. If `length` is ever 0 (or `report` is NULL), this becomes an out-of-bounds write. Current call site uses a stack buffer so it’s OK today, but adding a defensive check makes the helper safer and easier to reuse.\n\nAlso consider logging the underlying HID error (e.g. `SDL_hid_error(dev)`) when `SDL_hid_get_feature_report` fails, to make device-specific failures actionable.\n\n```suggestion\nstatic int ReadFeatureReport(SDL_hid_device *dev, Uint8 report_id, Uint8 *report, size_t length)\n{\n    if (!report || length == 0) {\n        return -1;\n    }\n    SDL_memset(report, 0, length);\n    report[0] = report_id;\n    return SDL_hid_get_feature_report(dev, report, length);\n}\n```",
+          "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+          "side": "right",
+          "from_line": 115,
+          "to_line": 120,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The current implementation uses a verbose OR chain with inconsistent product ID constant casing (e.g., `SN30_Pro` vs conventional `SN30_PRO`); replace with a switch statement for maintainability and correctness.",
+          "path": "src/joystick/SDL_joystick.c",
+          "side": "right",
+          "from_line": 3180,
+          "to_line": 3182,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "仅凭 feature report 0x06 读取返回值就同时置位 sensors/rumble/powerstate 三项能力，探测结果不可信\n新增的分支用一次 ReadFeatureReport(device->dev, 0x06, ...) 的返回值 size > 0 作为“该设备支持 IMU 传感器、支持 rumble、支持电量上报”的统一判据。但 SDL_hid_get_feature_report 的返回值只表示后端取报告这个 IOCTL/控制传输是否成功：Windows 后端在 IOCTL 成功后直接返回 bytes_returned（bytes_returned 也可能是零填充缓冲），并不会校验返回内容里的报告 ID 或有效载荷；代码也没有检查 size 是否达到该报告应有的长度，也没有校验 data[0] == 0x06。因此只要设备（或后端）对 0x06 报告“应答成功”，哪怕内容全 0 或长度不足，也会被判定为三项能力全支持。失败场景：对 SN30 Pro / SF30 Pro 这类无 IMU 的型号，OpenJoystick 会因 sensors_supported 为真而注册 SDL_SENSOR_GYRO / SDL_SENSOR_ACCEL（SDL_hidapi_8bitdo.c:189-196），应用会看到永不产生数据的陀螺仪/加速度计；同时 powerstate_supported 为真会让 HandleStatePacket 从 data[14] 解析并上报电量（SDL_hidapi_8bitdo.c:349-376），在报文布局不匹配的型号上给出错误电量；rumble 被误判为支持时 SDL_RumbleJoystick 会返回成功但实际无效果。同仓库 ps4/ps5 驱动对同一类探测都做了更严格的长度校验（SDL_hidapi_ps4.c:200-205 的 ReadFeatureReport 调用方要求长度精确匹配 64，ps5 要求 >= 46），说明仅 > 0 的判据过宽。",
+          "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+          "from_line": 150,
+          "to_line": 150,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated 关注的是以 feature report 0x06 的返回值 `> 0` 作为能力探测判据过宽，缺少报告长度/报告 ID 校验；reference 关注的是 `ReadFeatureReport()` 绑定 `report[0]` 时缺少空指针/长度为 0 的防御检查及错误日志。\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "新增放行的 report 0x04 未做长度校验即按 0x01/0x03 的固定偏移解析\nHandleStatePacket 的入口条件被放宽为 data[0] 可为 0x04，但函数体后续全部按 0x01/0x03 报文的固定偏移无条件访问 data[1]、data[8..10]、data[2..7]、data[14] 以及 &data[15]（IMU 区）。函数从未使用 size 参数做边界判断，UpdateDevice 传入的 data 是未初始化的 Uint8 data[USB_PACKET_LENGTH]（SDL_hidapi_8bitdo.c:420），仅在尾部 SDL_memcpy(ctx->last_state, data, SDL_min(size, sizeof(ctx->last_state))) 使用 size。失败场景：当新放行的 0x04 报文属于较短报文（或长度随型号/固件不同）时，data[1] 之后的字段会读到上一包的残留字节或未初始化栈数据，被当作 hat、按键位、扳机、电量甚至 IMU 样本解析，从而向应用发出虚假的按键/摇杆/扳机/传感器事件；由于这些读取发生在“能力位已置真”的新型号上，问题会直接出现在用户输入路径。",
+          "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+          "from_line": 259,
+          "to_line": 259,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — reference comment discusses missing defensive pointer/length checks before writing `report[0]` in `ReadFeatureReport` (OOB write risk), whereas the generated comment discusses missing `size` boundary validation when parsing report 0x04 in `HandleStatePacket` (OOB/uninitialized reads producing false input events).\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "ppy__osu@748ab3d",
+      "repo": "ppy/osu",
+      "comments": [
+        {
+          "note": "`reverseDeltaDifferenceRatio` and the later `fraction = Math.Max(prevDelta / currDelta, ...)` both divide by `Math.Min(prevDelta, currDelta)` / `currDelta` etc. If `StrainTime` can ever be 0 (or extremely close), this will produce `Infinity/NaN` and destabilise difficulty.\n\nAlso, `SmoothstepBellCurve()` is designed around `x` in ~[0,1] (mean=0.5,width=0.5). The fractional-part calculation `x - (long)x` can lose precision for large ratios and doesn’t clamp against small floating overshoots (<0 or >1). Prefer `Math.Floor` and clamp to [0,1] before passing into `SmoothstepBellCurve`.\n\nSuggested:\n- Guard: `if (prevDelta <= 0 || currDelta <= 0) return 1.0;` (or skip bonus) consistent with intended behaviour.\n- `var frac = reverse - Math.Floor(reverse); frac = Math.Clamp(frac, 0, 1);`",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/Evaluators/RhythmEvaluator.cs",
+          "side": "right",
+          "from_line": 71,
+          "to_line": 76,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Fractional part calculation uses unsafe cast to long; replace with Math.Truncate to prevent overflow for large ratio values.",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/Evaluators/RhythmEvaluator.cs",
+          "side": "right",
+          "from_line": 74,
+          "to_line": 74,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential edge case: when width == 0, this will call Smoothstep(x, 0, 0) and likely divide by zero / produce NaN depending on Smoothstep implementation. Consider guarding (e.g., return x==mean ? 1 : 0) or clamping width to a small epsilon.\n\nAlso consider behavior for negative width: current math inverts range unexpectedly; either validate width > 0 or document it.\n\n```suggestion\n        public static double SmoothstepBellCurve(double x, double mean = 0.5, double width = 0.5)\n        {\n            if (width <= 0)\n                return x == mean ? 1 : 0;\n        \n            x -= mean;\n            x = x > 0 ? (width - x) : (width + x);\n            return Smoothstep(x, 0, width);\n        }\n```",
+          "path": "osu.Game/Rulesets/Difficulty/Utils/DifficultyCalculationUtils.cs",
+          "side": "right",
+          "from_line": 76,
+          "to_line": 81,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The ternary expression can be simplified to `Math.Abs(x)` for better readability. Both branches compute `width - Math.Abs(x)`, just written differently.",
+          "path": "osu.Game/Rulesets/Difficulty/Utils/DifficultyCalculationUtils.cs",
+          "side": "right",
+          "from_line": 78,
+          "to_line": 79,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "节奏加成曲线换算法后 SR 结果改变，但难度测试硬编码期望值未同步更新，相关测试必然变红\n本次把 currRatio 的节奏加成函数由 sin²(π·ratio) 换成 SmoothstepBellCurve(frac)。两者只在 frac 为 0 / 0.25 / 0.5 时取值相同，其余小数部分存在可见偏差（例：frac=0.1 时 sin²(0.1π)≈0.0955，而 smoothstep 分支为 0.104；frac=0.4 时 ≈0.9045 vs 0.896）。currRatio 会乘入 effectiveRatio（第 84 行）并通过 Math.Sqrt 累加进 rhythmComplexitySum（第 142、177 行），因此 star rating 的变化幅度远大于测试容差 0.00001；而 osu.Game.Rulesets.Osu.Tests/OsuDifficultyCalculatorTest.cs:18-35 中的期望 StarRating 是硬编码常量，本 MR 未同步更新，Test/TestClockRateAdjusted/TestClassicMod 共 11 个 case 会断言失败。同时 SR 变化也意味着线上 pp/难度值发生漂移，若 MR 描述未给出改动前后对比，无法判断这是预期的难度微调还是公式引入的偏差。",
+          "path": "osu.Game.Rulesets.Osu/Difficulty/Evaluators/RhythmEvaluator.cs",
+          "from_line": 76,
+          "to_line": 76,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses division-by-zero and precision/clamping of Smoothstep input; generated discusses hardcoded test expectations not being updated after SR changes.\n2. No match — ref discusses unsafe long cast overflow; generated discusses SR/pp drift and failing difficulty test constants.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "gofr-dev__gofr@b9cdcbb",
+      "repo": "gofr-dev/gofr",
+      "comments": [
+        {
+          "note": "The `resTypes.Response` type has a `Headers` field and a `SetCustomHeaders()` method to apply custom HTTP response headers. However, this code doesn't call `v.SetCustomHeaders(r.w)`, which means any custom headers specified in the `Response` object will be ignored. You should add `v.SetCustomHeaders(r.w)` before setting the Content-Type header to ensure custom headers are properly applied.",
+          "path": "pkg/gofr/http/responder.go",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 32,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential inconsistency in metadata handling. When v.Metadata is nil, this will result in omitting the metadata field due to json:\"metadata,omitempty\" in the response struct. However, tests expect \"metadata\":null when metadata is not provided. Consider initializing Metadata appropriately to match expected behavior.",
+          "path": "pkg/gofr/http/responder.go",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 32,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "未设置 Metadata 时仍会输出 \"metadata\":null\n内部 response.Metadata 的类型是 interface{}，而 respond 把 Response.Metadata（map[string]any 的 nil 零值）直接赋给该接口。nil map 装入 interface 后接口本身并不为 nil，json 的 omitempty 不会生效，因此未设置 metadata 的 response.Response 仍会输出 \"metadata\":null；空 map 也会输出 \"metadata\":{}。这与文档“metadata 省略时只返回 data”相矛盾，客户端会收到多余或误导性的字段。新增测试 responder_test.go:59 甚至把 null 固化成了期望值。",
+          "path": "pkg/gofr/http/responder.go",
+          "from_line": 97,
+          "to_line": 97,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — reference 1 discusses custom headers not being applied, while the generated comment discusses metadata serialization.\n2. Match — both address inconsistent handling of nil/unset Metadata and the resulting `\"metadata\":null` expectation vs omission.\n\n[2]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "Response 内嵌 File/Raw 时不再走原始内容或文件响应分支\n新增的 resTypes.Response 分支位于 resTypes.File 之前，并直接把 v.Data 放进 JSON 用的内部 response 结构；因此 response.Response 的 Data 为 response.File 或 response.Raw 时，原本 File/Raw 的特殊写出逻辑不会执行。结果是文件内容或 Raw 字节被 JSON 编码，Content-Type 还会被强制设为 application/json。",
+          "path": "pkg/gofr/http/responder.go",
+          "from_line": 31,
+          "to_line": 31,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses custom headers not being applied, while generated discusses File/Raw responses being JSON-encoded due branch ordering.\n2. No match — ref discusses metadata nil/omission vs null expectation, while generated discusses File/Raw response handling being bypassed.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "直接传递 Response 包装体导致状态码按包装体而非 Data 判定\nhandler 不再把 response.Response 解包为 resp.Data，而 Respond 在类型分支之前就用传入的 data 调用 getStatusCode。response.Response 包装体本身永远非 nil，因此错误场景下 getStatusCode 中的 `if !isNil(data)` 会成立并返回 206 Partial Content，丢失原本的 4xx/5xx 状态码；同样，POST handler 返回 Data 为 nil 的 Response 时也会从原来的 202 变成 201。",
+          "path": "pkg/gofr/handler.go",
+          "from_line": 100,
+          "to_line": 100,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "alibaba__spring-ai-alibaba@4bc7305",
+      "repo": "alibaba/spring-ai-alibaba",
+      "comments": [
+        {
+          "note": "Potential NPE risk: getBrowserDebug() returns Boolean (wrapper type) which can be null if the configuration is not set. Auto-unboxing to primitive boolean will throw NullPointerException if null. Consider using Boolean.TRUE.equals() or providing a default value (e.g., Boolean.TRUE.equals(getBrowserUseTool().getManusProperties().getBrowserDebug())).",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+          "side": "right",
+          "from_line": 46,
+          "to_line": 46,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Potential NullPointerException: `page.viewportSize()` can return null in Playwright (e.g., when running in headless mode without explicit viewport configuration or in certain browser contexts). Accessing `.width` and `.height` directly will throw NPE. Please add null check before using viewport dimensions.\n\n```suggestion\n\t\t\t// 1. 滚动到目标位置（让目标点尽量在视窗中央）\n\t\t\tvar viewportSize = page.viewportSize();\n\t\t\tif (viewportSize != null) {\n\t\t\t\tint scrollX = Math.max(0, x - viewportSize.width / 2);\n\t\t\t\tint scrollY = Math.max(0, y - viewportSize.height / 2);\n\t\t\t\tpage.evaluate(\"(args) => window.scrollTo({left: args[0], top: args[1], behavior: 'instant'})\",\n\t\t\t\t\t\tnew Object[] { scrollX, scrollY });\n\t\t\t}\n```",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+          "side": "right",
+          "from_line": 48,
+          "to_line": 50,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Coordinate semantics risk: after `window.scrollTo`, `page.mouse().move(x,y)` uses viewport coordinates, while your scroll calculation assumes `x/y` are document coordinates (and the debug marker uses `position:absolute` on `body`, also document coordinates). If callers provide viewport coords, scrolling will shift the target and you’ll click the wrong spot; if callers provide document coords, you should click at `(x - scrollX, y - scrollY)` after scrolling. Please clarify/normalize coordinates and keep marker/click consistent (also consider `position: fixed` for viewport marker).",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+          "side": "right",
+          "from_line": 51,
+          "to_line": 70,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Resource leak in debug mode: If an exception occurs after inserting the red marker but before removing it, the marker will remain in the DOM permanently. Consider using a try-finally block to ensure cleanup, or wrap the marker removal in the catch block as well.\n\n```suggestion\n\t\t\tif (isDebug) {\n\t\t\t\t// 2. 注入大红点（仅debug模式）\n\t\t\t\tpage.evaluate(\"(args) => {\\n\" + \"  const [x, y, id] = args;\\n\"\n\t\t\t\t\t\t+ \"  let dot = document.getElementById(id);\\n\" + \"  if (!dot) {\\n\"\n\t\t\t\t\t\t+ \"    dot = document.createElement('div');\\n\" + \"    dot.id = id;\\n\"\n\t\t\t\t\t\t+ \"    dot.style.position = 'absolute';\\n\" + \"    dot.style.left = x + 'px';\\n\"\n\t\t\t\t\t\t+ \"    dot.style.top = y + 'px';\\n\" + \"    dot.style.width = '24px';\\n\"\n\t\t\t\t\t\t+ \"    dot.style.height = '24px';\\n\" + \"    dot.style.background = 'red';\\n\"\n\t\t\t\t\t\t+ \"    dot.style.borderRadius = '50%';\\n\" + \"    dot.style.zIndex = 99999;\\n\"\n\t\t\t\t\t\t+ \"    dot.style.boxShadow = '0 0 8px 4px #f00';\\n\" + \"    dot.style.pointerEvents = 'none';\\n\"\n\t\t\t\t\t\t+ \"    document.body.appendChild(dot);\\n\" + \"  }\\n\" + \"}\", new Object[] { x, y, markerId });\n\t\t\t\ttry {\n\t\t\t\t\t// 3. 鼠标移动并点击\n\t\t\t\t\tpage.mouse().move(x, y);\n\t\t\t\t\tpage.mouse().click(x, y);\n\t\t\t\t\tlog.info(\"Clicked at position ({}, {})\", x, y);\n\t\t\t\t} finally {\n\t\t\t\t\t// 4. 移除大红点（仅debug模式）\n\t\t\t\t\tpage.evaluate(\"(id) => { const dot = document.getElementById(id); if (dot) dot.remove(); }\",\n\t\t\t\t\t\t\tnew Object[] { markerId });\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\t// 3. 鼠标移动并点击\n\t\t\t\tpage.mouse().move(x, y);\n\t\t\t\tpage.mouse().click(x, y);\n\t\t\t\tlog.info(\"Clicked at position ({}, {})\", x, y);\n\t\t\t}\n```",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+          "side": "right",
+          "from_line": 55,
+          "to_line": 66,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The URL prefix auto-completion logic may incorrectly handle certain edge cases:\n1. Protocol-relative URLs (e.g., '//example.com') would become 'https:////example.com'\n2. URLs with other protocols (e.g., 'ftp://example.com') would become 'https://ftp://example.com'\n\nConsider using a more robust check, such as:\n```java\nif (!url.matches(\"^[a-zA-Z][a-zA-Z0-9+.-]*://.*\")) {\n    url = \"https://\" + url;\n}\n```\nThis regex checks for any valid protocol scheme, not just http/https.",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+          "side": "right",
+          "from_line": 41,
+          "to_line": 44,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The use of a single space character (\" \") to represent an empty system prompt may bypass validation checks that treat it as non-empty. Replace with an empty string (\"\") to properly indicate no prompt content while maintaining non-null safety.",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java",
+          "side": "right",
+          "from_line": 200,
+          "to_line": 200,
+          "file_semantic_match": true
+        },
+        {
+          "note": "The second `fill(\"\")` call in the exception handler is redundant since the field was already cleared in the try block before attempting text input. Removing this duplicate operation would simplify the fallback logic without affecting functionality.",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+          "side": "right",
+          "from_line": 73,
+          "to_line": 73,
+          "file_semantic_match": false
+        },
+        {
+          "note": "**Suggestion: Consider extracting marker injection to a separate method**\n\nThe debug marker injection code (lines 54-66) makes the main method harder to read. Consider extracting it:\n\n```java\nprivate void injectDebugMarker(Page page, int x, int y, String markerId) {\n    page.evaluate(\"(args) => {\\\\n\"\n        + \"  const [x, y, id] = args;\\\\n\"\n        + \"  let dot = document.getElementById(id);\\\\n\"\n        // ... rest of the JavaScript\n        + \"}\", new Object[] { x, y, markerId });\n}\n\nprivate void removeDebugMarker(Page page, String markerId) {\n    page.evaluate(\"(id) => { const dot = document.getElementById(id); if (dot) dot.remove(); }\", \n        new Object[] { markerId });\n}\n```\n\nThis would make the main execute method more readable and the debug logic more testable.",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+          "side": "right",
+          "from_line": 54,
+          "to_line": 54,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "先滚动再按原坐标点击，导致点击落在错误元素上\n新增逻辑先用 window.scrollTo 把目标点滚到视窗中央，随后仍然用原始的 (x, y) 调用 page.mouse().move/click。而该坐标来自 get_element_position，是 locator.boundingBox() 计算的、相对主 frame 视窗（viewport）的坐标。滚动发生在取坐标之后，坐标因此失效：只要目标位于视窗下半部且页面可滚动，页面会被滚动 y-vh/2 像素，元素实际上移到视窗中央，但点击仍打在原来的 (x, y) 处，命中另一个元素，可能误触链接、按钮或表单提交。示例：视窗 1280x720、目标 y=500 时先向下滚动 140px，元素上移到 360，点击仍落在视窗 y=500，命中错误目标。",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+          "from_line": 51,
+          "to_line": 51,
+          "matched_gt_indices": [
+            2
+          ],
+          "judge_reason": "1. No match — discusses NPE risk from Boolean unboxing, unrelated to coordinate/scroll issue.\n2. No match — discusses null viewportSize NPE, unrelated to click coordinate after scroll.\n3. Match — both flag that after `window.scrollTo`, clicking the original `(x, y)` may hit the wrong location due to viewport/document coordinate mismatch.\n4. No match — discusses resource leak/cleanup of debug marker, unrelated to coordinate correctness.\n5. No match — suggests extracting debug marker logic into me",
+          "hit_new_gt": true
+        },
+        {
+          "note": "把废弃字段写成空格使 mergePrompts 废弃分支恒成立，每次读取都误报 WARN\nsystemPrompt 由 null 改为 \" \"（含实体默认值 `private String systemPrompt = \" \";`），而 mergePrompts 的前置判断是 `entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty()`。因为 \" \" 永远非 null，该条件恒为真：每次 getAllAgents/getAgentById/createAgent 都会进入废弃分支，打印误导性 WARN「SystemPrompt不为空，但属性已经废弃…当前制定的值」，运维会误以为库里存在历史 prompt；同时 mapToAgentConfig 把 systemPrompt 以 \" \"（非空）写进 AgentConfig 返回给调用方，与「该字段已废弃、内容被忽略」的契约不一致。另外 DynamicAgentScanner.saveDynamicAgent 不会设置 systemPrompt，新建/重置的实体落库即为 \" \"，使上述行为成为常态。",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java",
+          "from_line": 200,
+          "to_line": 200,
+          "matched_gt_indices": [
+            5
+          ],
+          "judge_reason": "1. Match — both identify that using a single space for systemPrompt causes it to be treated as non-empty, leading to incorrect behavior.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "JS 兜底仅赋值 el.value 便返回成功，受控组件场景会静默失败\n新增的最内层兜底用 `el.value = value` 直接改 DOM 值并派发 input 事件。对 React 等受控组件，框架的 value tracker 会忽略这种直接赋值（需要调用原型链上的原生 setter），Vue/其他框架还常依赖 change/blur 才提交，因此页面上看起来输入成功、组件内部状态却未更新；而本方法对所有兜底路径都返回「成功输入: ...」，agent 会据此继续执行下一步（如点击提交），把整体任务带偏且难以定位。此外外层 `catch (Exception e)` 吞掉了 fill/pressSequentially 的真实异常，排障时看不到首因。",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+          "from_line": 79,
+          "to_line": 79,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref addresses redundant `fill(\"\")` call in exception handler; generated addresses direct `el.value` fallback failures in controlled components and swallowed exceptions.\n\n[]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "URL 前缀补全只认小写 http/https，其他 scheme 与本地 http 服务会被改坏\n新增逻辑仅在 url 不以小写 \"http://\" / \"https://\" 开头时无条件拼接 \"https://\"。这会破坏合法但非 http 的 URL：`about:blank`、`file:///...`、`data:text/html,...`、`chrome://...` 会被改写为 `https://about:blank` 之类的非法地址；大写 scheme（如 `HTTPS://example.com`）也会被改写为 `https://HTTPS://example.com` 而导航失败；内网/本地只提供 http 的服务写成 `localhost:8080` 时会被强制成 https 从而握手失败。变更前 page.navigate 会直接按原串导航，这些输入是能工作的。",
+          "path": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+          "from_line": 43,
+          "to_line": 43,
+          "matched_gt_indices": [
+            4
+          ],
+          "judge_reason": "1. Match — both flag the same URL prefix auto-completion issue: it only handles lowercase http/https and would incorrectly rewrite other schemes/protocol-relative URLs into invalid forms.\n\n[1]",
+          "hit_new_gt": true
+        }
+      ]
+    },
+    {
+      "instance_id": "sveltejs__svelte@44bec4c",
+      "repo": "sveltejs/svelte",
+      "comments": [
+        {
+          "note": "The `maybe_runes` condition fails to exclude components with `$:` reactive statements, risking misclassification of traditional Svelte components as runes-compatible when they lack `export let` and reserved references. This omission could trigger incorrect runic behavior fallbacks in standard components.",
+          "path": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+          "side": "right",
+          "from_line": 437,
+          "to_line": 437,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The condition in `build_expression` fails to account for `maybe_runes` state, causing breaks in existing components that operate in an intermediate mode (not explicitly legacy or runes). Update the check to include both `runes` and `maybe_runes` for backward compatibility.",
+          "path": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/utils.js",
+          "side": "right",
+          "from_line": 373,
+          "to_line": 373,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Checklist: `var` is forbidden; use `let` (since it’s reassigned) to avoid function-scoped hoisting surprises.\n\n```suggestion\n\t\tlet getter = build_getter({ ...binding.node }, state);\n```",
+          "path": "packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/utils.js",
+          "side": "right",
+          "from_line": 389,
+          "to_line": 389,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Adding `maybe_runes: boolean` to `ComponentAnalysis` makes this a new *required* property for all code paths that create/return `ComponentAnalysis`. If any producer doesn’t set it, TS will start failing (or consumers relying on structural typing may break). Consider making it optional (`maybe_runes?: boolean`) or defaulting it in all construction sites, and ensure naming/semantics are consistent with `runes` (e.g., tri-state could be modeled as `runes: boolean | 'maybe'` or a single enum).",
+          "path": "packages/svelte/src/compiler/phases/types.d.ts",
+          "side": "right",
+          "from_line": 54,
+          "to_line": 54,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "maybe_runes 的 prop 检测遗漏 `var` 导出，带 prop 的 legacy 组件被误判为 maybe_runes\n新增的 maybe_runes 判定把「没有 props」等价为「没有 `$$props`/`$$restProps` 且没有 `export let`」，其中声明分支只判断 `node.declaration.kind === 'let'`（445-447 行），specifier 分支只判断 `instance.scope.get(...).declaration_kind === 'let'`（448-452 行）。但同文件既有的 legacy prop 识别规则把 `export var x`（任意非 const 的 VariableDeclaration，522-528 行）以及 `export { x }` 中 `var`/`let` 声明（538-542 行，注释明确写 \"every exported `let` or `var` declaration becomes a prop\"）都标记为 `bindable_prop`。因此用 `var` 声明 prop 的 legacy 组件会被标记 `maybe_runes = true`，模板表达式在 build_expression 中改走 runes 细粒度分支（utils.js:373），不再生成 legacy 的 `$.deep_read_state` 粗粒度依赖读取（utils.js:391-402），而组件其余部分（props 绑定、`$.push($$props, false)`、`$.mutate` 等）仍按 legacy 处理。这破坏了该启发式「无 props」的前提：带 prop 的 legacy 组件被推到「模板细粒度 + props/状态粗粒度」这一未经设计覆盖的混合路径上，prop 相关表达式的响应式语义与改动前不同，存在 prop 变更后模板不再刷新的回归风险，且新增的四个样例只覆盖了无导出/`const`/`let`，未覆盖 `var` 情形。",
+          "path": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+          "from_line": 447,
+          "to_line": 447,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — both concern `maybe_runes` misclassification of legacy components, but generated focuses on missing `export var` prop detection while this reference focuses on missing `$:` reactive statement exclusion.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "filamentphp__filament@871ec75",
+      "repo": "filamentphp/filament",
+      "comments": [
+        {
+          "note": "This block unconditionally overwrites `$columnData['sortable']` with an empty array. If earlier logic (or user config) already set `sortable` (e.g., `true`, `false`, or options), this will wipe it out. Consider only setting it when not already defined, or merging with existing config to avoid unexpected behavior.\n\n```suggestion\n                if (in_array($type['name'], [\n                    'time',\n                ])) {\n                    $columnData['time'] = [];\n\n                    // Preserve existing sortable configuration if already set.\n                    $columnData['sortable'] ??= [];\n                }\n```",
+          "path": "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php",
+          "side": "right",
+          "from_line": 145,
+          "to_line": 150,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Consider adding default formatting for 'time' columns to align with conventions used for datetime/timestamp columns.",
+          "path": "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php",
+          "side": "right",
+          "from_line": 148,
+          "to_line": 148,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The condition for the 'time' type incorrectly uses `in_array` for a single string comparison; replace it with a direct `===` check for efficiency and readability.",
+          "path": "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php",
+          "side": "right",
+          "from_line": 145,
+          "to_line": 147,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "新增的 time 分支未限制列类型，image 命名的 time 列会生成 ImageColumn::time() 而运行时报错\n第 145-150 行新增的 time 分支只判断 $type['name'] === 'time'，就无条件向 $columnData 追加 'time' 与 'sortable'。而列类型在第 126-129 行的 match 中已可能被判定为 ImageColumn::class（列名为 image、以 image_ 开头、包含 _image_ 或以 _image 结尾时）。ImageColumn 只 use Concerns\\CanWrap，未 use Concerns\\CanFormatState，全仓库 time() 仅在 TextColumn 的 CanFormatState 中定义，因此对于形如 image_time / time_image 的 time 字段，生成器会输出 ImageColumn::make('image_time')->time()->sortable()，生成的 Resource/Table 类一旦在列表页渲染就会抛出 BadMethodCallException（Method ImageColumn::time does not exist），即 make:resource/make:model 生成的代码直接不可用。对比同文件第 131-136 行的 string/char 分支，它在追加格式化方法前显式判断了 $columnData['type'] === TextColumn::class，说明该守卫是本文件既有约定；新增分支缺失该守卫，等于把这一失败场景扩展到 time 类型。",
+          "path": "packages/tables/src/Commands/FileGenerators/Concerns/CanGenerateModelTables.php",
+          "from_line": 148,
+          "to_line": 148,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — ref discusses overwriting `sortable` config, generated discusses missing column type guard causing `ImageColumn::time()` runtime errors.\n2. No match — ref suggests adding default formatting for time columns, generated flags unsafe generation of `time()` on non-TextColumn types.\n3. No match — ref suggests a style/efficiency change to direct comparison, generated addresses type-guard logic and runtime failure.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "infiniflow__ragflow@a63caa1",
+      "repo": "infiniflow/ragflow",
+      "comments": [
+        {
+          "note": "Accessing `.nodes` on the result of `nx.connected_components` (which returns node sets, not graph objects) causes AttributeError; use the set of nodes directly.",
+          "path": "graphrag/entity_resolution.py",
+          "side": "right",
+          "from_line": 114,
+          "to_line": 114,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Critical bug: Lambda function captures loop variable by reference. All async tasks will use the last value of `merging_nodes` instead of their intended values. This will cause incorrect node merging behavior. Fix by using a default argument to capture the value: `lambda nodes=merging_nodes: self._merge_graph_nodes(graph, nodes, change)`\n\n```suggestion\n                nursery.start_soon(lambda nodes=merging_nodes: self._merge_graph_nodes(graph, nodes, change))\n```",
+          "path": "graphrag/entity_resolution.py",
+          "side": "right",
+          "from_line": 115,
+          "to_line": 115,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The direct access to `node1_attrs[\"source_id\"]` risks KeyError if the attribute is missing; replace with `.get(\"source_id\", [])` to safely handle absent attributes during list extension.",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 205,
+          "to_line": 205,
+          "file_semantic_match": false
+        },
+        {
+          "note": "Type/ordering consistency: for edges you deduplicate with `list(set(...))`, which produces non-deterministic order. Elsewhere you use `sorted(set(...))` (node source_id). If downstream relies on stable ordering (e.g., tests, hashing, serialization diffs), consider using `sorted(set(...))` consistently for both `keywords` and `source_id`. Also ensure the attributes exist and are lists before calling `extend`.\n\n```suggestion\n                        if isinstance(edge0_attrs.get(\"keywords\"), list) and isinstance(edge1_attrs.get(\"keywords\"), list):\n                            edge0_attrs[\"keywords\"].extend(edge1_attrs[\"keywords\"])\n                            edge0_attrs[\"keywords\"] = sorted(set(edge0_attrs[\"keywords\"]))\n                        \n                        if isinstance(edge0_attrs.get(\"source_id\"), list) and isinstance(edge1_attrs.get(\"source_id\"), list):\n                            edge0_attrs[\"source_id\"].extend(edge1_attrs[\"source_id\"])\n                            edge0_attrs[\"source_id\"] = sorted(set(edge0_attrs[\"source_id\"]))\n```",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 216,
+          "to_line": 219,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The change replaces concurrent edge deletion (via `nursery.start_soon`) with sequential execution (via `await trio.to_thread.run_sync`), causing unnecessary performance degradation when removing multiple edges.",
+          "path": "graphrag/utils.py",
+          "side": "right",
+          "from_line": 442,
+          "to_line": 442,
+          "file_semantic_match": true
+        },
+        {
+          "note": "Similar to prior corrections applied to node merging logic, suggest applying consistent idiom here too i.e., prefer creating new combined collection over mutating existing one e.g.: `edge0_attrs[\"keywords\"] = list(set(edge0_attrs[\"keywords\"] + edge1_attrs[\"keywords\"]))`. Improves readability & reduces mutation-related confusion.",
+          "path": "graphrag/general/extractor.py",
+          "side": "right",
+          "from_line": 216,
+          "to_line": 217,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "删除已移除边由并发改为串行 await，且外层 nursery 已成空壳\n本次把 `nursery.start_soon(lambda: settings.docStoreConn.delete(...))` 改成 `await trio.to_thread.run_sync(...)`，但外层仍保留 `async with trio.open_nursery() as nursery:`（第 440 行）却再没有任何 `start_soon`。结果是：对 `change.removed_edges` 中每一条边都串行执行一次 docStore 删除（每条一次线程 + 一次 ES/Infinity 往返），删除 N 条边从“N 个并发任务”退化为“N 次串行往返”；同时 nursery 块不再承担任何并发语义，成为误导性的死代码。该路径在 `resolve_entities` / `merge_subgraph` 中是在 `RedisDistributedLock(..., timeout=600)` 持锁期间调用的（graphrag/general/index.py:235、194），实体归一化一次可能产生大量 removed_edges，串行化会显著拉长持锁时间，存在超出锁 TTL 导致锁自动过期、其他任务并发改写同一图谱的风险；回调 `set_graph removed ... in {now - start:.2f}s` 的耗时也会随之放大。",
+          "path": "graphrag/utils.py",
+          "from_line": 442,
+          "to_line": 442,
+          "matched_gt_indices": [
+            4
+          ],
+          "judge_reason": "1. Match — both flag the replacement of concurrent edge deletion with sequential execution via `await trio.to_thread.run_sync`, causing performance degradation when multiple edges are removed.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "合并节点列表来自 set 迭代，保留节点在多次运行间不确定\n`nx.connected_components(connect_graph)` 返回的是节点名集合（set），`list(sub_connect_graph)` 的顺序由字符串哈希决定，受 `PYTHONHASHSEED` 影响、跨进程不稳定。而 `Extractor._merge_graph_nodes` 把 `nodes[0]` 作为合并后的保留节点（`change.added_updated_nodes.add(nodes[0])`，且注释明确 keep \"entity_name\"、\"entity_type\"、\"page_rank\" unchanged），其余节点被 `graph.remove_node`。因此同一份图谱、同一批 resolution_result 重复执行实体归一化，可能保留不同的实体名与 entity_type，进而导致写回 docStore 的 entity_kwd、节点 chunk id、以及下游检索结果不可复现；同文件第 85 行 `nodes = sorted(graph.nodes())` 已经体现了“先排序保证确定性”的约定，此处未遵循。",
+          "path": "graphrag/entity_resolution.py",
+          "from_line": 114,
+          "to_line": 114,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated discusses nondeterministic ordering from set iteration, while ref discusses an AttributeError from accessing `.nodes` on connected_components output.\n2. No match — generated discusses reproducibility of merged node selection, while ref discusses lambda late binding of the loop variable.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "astral-sh__uv@61b521f",
+      "repo": "astral-sh/uv",
+      "comments": [
+        {
+          "note": "Wiremock is typically used for testing/mocking HTTP servers and should ideally be a dev-dependency rather than a regular dependency to avoid including it in production binaries.",
+          "path": "Cargo.lock",
+          "side": "right",
+          "from_line": 4664,
+          "to_line": 4664,
+          "file_semantic_match": false
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "current_thread 的 #[tokio::test] 中同步阻塞等待子进程，会饿死同运行时上的 mock server\n新增测试用 `#[tokio::test]`（tokio 默认 current_thread 单线程运行时），随后在同一运行时上 `MockServer::start().await` 启动 wiremock；但 `uv_snapshot!` 内部走的是同步的 `run_and_format` → `command.output()`，会阻塞当前线程直到子进程 uv 退出。子进程在运行期间必须向 mock server 发 HTTP 请求（第 520、537、575 行的三次 `pip_install -r <url>`），而 mock server 作为同运行时上的任务，在唯一工作线程被阻塞时无法 accept/读写响应，于是子进程的请求无法得到回应，测试要么长时间挂起，要么在 uv 的 HTTP 超时后得到错误输出，导致第 520、537、575 行的快照断言失败。仓库内 tokio 的 workspace 特性（根 Cargo.toml:168）未启用 `rt-multi-thread`，且整个 pip_install.rs 只有这一个 async 测试（无既有 async + 阻塞子进程的先例可参照），这一组合是本次变更首次引入的。",
+          "path": "crates/uv/tests/it/pip_install.rs",
+          "from_line": 490,
+          "to_line": 490,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "重复 mount 与首个 mock 匹配条件完全相同的 200 mock，第三个快照可能仍拿到旧的 \"Flask\" 正文\n第 504-509 行已 mount 了一个 `method(GET) + path(/requirements.txt) + basic_auth(user, password)` → 200、正文为 \"Flask\" 的 mock，且该 mock 不会因一次命中而失效；第 564-573 行又 mount 了一个匹配条件**完全相同**的 mock，只是正文改成 \"Jinja2\"。两个 mock 的匹配集合无任何差异，实际返回哪个正文取决于 wiremock 对并列匹配的仲裁策略，测试无法保证“更新后的 requirements.txt 生效”。若返回的仍是旧的 \"Flask\"，第 575-586 行期望的 `Audited 1 package in [TIME]` 就不成立（对照同文件 install_requirements_txt 第 480 行：以 Jinja2 为目标且已安装时才输出 `Audited 1 package`，重新解析 Flask 的 7 个包应输出 `Audited 7 packages`），该断言会失败或变成随库版本变化的脆弱断言。仓库既有约定（crates/uv-auth/src/middleware.rs:546-561、613-615）依赖的是“先 mount 的精确 mock 优先于后 mount 的宽泛 mock”，而不是同匹配集下的覆盖语义。",
+          "path": "crates/uv/tests/it/pip_install.rs",
+          "from_line": 564,
+          "to_line": 564,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "URL 用户名/密码设置失败被静默忽略，认证失败时会以误导性的快照差异呈现\n第 533-534 行用 `let _ = requirements_url.set_username(username);` / `let _ = requirements_url.set_password(Some(password));` 丢弃 `Result`。一旦设置失败（例如 URL 形态不符合预期时 set_username 返回 Err），URL 上不会带凭据，第 537 行的“应当带凭据成功”用例就会实际以匿名请求打到 mock server 并拿到 401，表现为 `Installed 7 packages` 快照不符；由于错误被静默吞掉，排查时会被误导向 uv 的鉴权逻辑，而不是测试自身的 URL 构造问题。",
+          "path": "crates/uv/tests/it/pip_install.rs",
+          "from_line": 533,
+          "to_line": 533,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "cline__cline@419534c",
+      "repo": "cline/cline",
+      "comments": [
+        {
+          "note": "Missing error handling for the asynchronous checkpoint commit operation may cause unhandled promise rejections and leave checkpoint messages without commit hashes on failure.",
+          "path": "src/core/task/index.ts",
+          "side": "right",
+          "from_line": 1322,
+          "to_line": 1322,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "后台 commit 回填时用 findLastIndex 重新定位消息，会把 hash 写到错误的 checkpoint 消息上\ncommit 改为后台执行后，回填 hash 时不再使用「刚创建的那条 checkpoint_created 消息」的索引，而是在 then 回调真正执行时用 `findLastIndex(...)` 重新查找最后一条 checkpoint_created 消息。由于 saveCheckpoint 现在会立刻返回，同一批次内可以连续产生多条 checkpoint_created（例如用户批准工具并附带 feedback 时先 say(\"user_feedback\")+saveCheckpoint，随后工具继续执行到 saveCheckpoint），两条 commit 可能同时在途。此时先完成的 commit 的 hash 会被写到「更晚创建」的消息上，后完成的 commit 再覆盖一次，最终：要么较早的消息永远没有 hash（用户对其执行还原时 restoreCheckpoint 会 fallback 到更早的 checkpoint，静默多回退一步），要么较晚的消息持有较早的 hash（还原到该 checkpoint 会把这一步的改动一起丢掉，造成工作区内容丢失）。此外，若期间发生过回滚/还原导致 clineMessages 被截断，updateClineMessage 对越界索引会直接 throw（message-state.ts:136-137），同样落入未捕获路径。",
+          "path": "src/core/task/index.ts",
+          "from_line": 1324,
+          "to_line": 1324,
+          "matched_gt_indices": [],
+          "judge_reason": "",
+          "hit_new_gt": false
+        },
+        {
+          "note": "后台 commit 没有 catch，失败时变成 unhandled rejection 且 checkpoint 消息永久没有 hash\nCheckpointTracker.commit 在失败时是 `throw new Error(...)` 而不是返回 undefined，原实现用 `await` 调用，异常会沿调用栈传给 ToolExecutor 中各工具的 try/catch（经 handleError 展示给用户）。改成 `commit().then(...)` 后既没有 `.catch()`，也没有 try/catch 包裹，异常会变成未处理的 promise rejection：扩展宿主侧只有 standalone 入口注册了 unhandledRejection，日志之后无人处理，用户看不到任何错误。同时因为 `say(\"checkpoint_created\")` 现在在 commit 之前执行并且已经落盘（message-state.ts:127 `saveClineMessagesAndUpdateHistory`），失败后聊天里会留下一条永远没有 lastCheckpointHash 的 checkpoint 消息：对该消息点“Restore checkpoint”会走 fallback 分支恢复到更早的 checkpoint（index.ts:429-433），点“See changes”则直接 console.error 后放弃（index.ts:566-571），且重新打开任务后该消息也不会再被补上 hash。",
+          "path": "src/core/task/index.ts",
+          "from_line": 1322,
+          "to_line": 1322,
+          "matched_gt_indices": [
+            0
+          ],
+          "judge_reason": "1. Match — both flag missing error handling for the asynchronous checkpoint commit causing unhandled promise rejections and checkpoint messages without commit hashes on failure.\n\n[1]",
+          "hit_new_gt": true
+        },
+        {
+          "note": "commit 被推迟到后台执行，checkpoint 可能快照到后续步骤的改动，导致还原点语义错误\nsaveCheckpoint 的调用点都在工具把改动写入磁盘之后（例如 write_to_file/replace_in_file 在 `diffViewProvider.saveChanges()` 之后调用 saveCheckpoint）。原实现立刻 `await commit()`，快照的正是「这一步结束时」的工作区状态。改为后台执行后，commit 里的 `addCheckpointFiles(git)`（`git add .`）读取的是回调真正运行时刻的工作区：如果在一个 assistant 消息里连续执行多个工具（同样是 saveCheckpoint 之后立刻处理下一个工具，无需等待 LLM 往返），或大仓库 commit 需要数秒，那么这一次 commit 会把我下一步、甚至下几步的改动一起提交进快照。结果是该 checkpoint 的 hash 指向一个更晚的状态：用户对其执行 restore 无法撤销这一步的改动，基于该 hash 的 diff 也会漏掉改动，静默破坏 checkpoint 的“回到这一步”语义。",
+          "path": "src/core/task/index.ts",
+          "from_line": 1321,
+          "to_line": 1321,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — generated 关注后台 commit 延迟执行导致快照包含后续改动、还原点语义错误；reference 关注异步 commit 缺少错误处理，可能造成未处理的 Promise 拒绝和提交哈希缺失。\n\n[0]",
+          "hit_new_gt": false
+        },
+        {
+          "note": "后台 commit 与 attempt_completion 的同步 commit 可能并发操作同一个 shadow git 仓库\n非 attempt_completion 分支现在把 commit 放到后台，而同一 Task 的 attempt_completion 分支（index.ts:1363 以及 ToolExecutor 中 `saveCheckpoint(true)` 之后立刻 `addNewChangesFlagToLastCompletionResultMessage()`）仍然要求 commit 在前台完成。如果上一个工具触发的后台 commit 仍在运行（大仓库可达数秒），紧接着到达的 attempt_completion 会在同一个 shadow git 仓库上并发执行 `git add .` / `git commit`，容易出现 index.lock 冲突或提交丢失：前台 commit 抛错会中断 attempt_completion 流程、使 completion_result 拿不到 latest hash（无法呈现“see new changes”按钮）；后台 commit 抛错则如前所述变成未处理拒绝。注释本身也承认 attempt_completion 流程对 hash 有时序依赖，但代码并未对两条路径的 commit 做串行化。",
+          "path": "src/core/task/index.ts",
+          "from_line": 1322,
+          "to_line": 1322,
+          "matched_gt_indices": [],
+          "judge_reason": "1. No match — reference focuses on missing error handling for the async commit; generated focuses on the concurrency/race between background and attempt_completion commits on the same shadow git repository.\n\n[]",
+          "hit_new_gt": false
+        }
+      ]
+    },
+    {
+      "instance_id": "valkey-io__valkey@36f37c0",
+      "repo": "valkey-io/valkey",
+      "comments": [
+        {
+          "note": "The current implementation processes the query buffer before checking `server.hide_user_data_from_log` in `setProtocolError`, risking exposure of sensitive user data in logs. Move the redaction check to the beginning of buffer handling logic to immediately skip data processing when enabled.",
+          "path": "src/networking.c",
+          "side": "right",
+          "from_line": 2773,
+          "to_line": 2773,
+          "file_semantic_match": false
+        },
+        {
+          "note": "The snprintf ternary expression for redacting long query buffers has mismatched types and incorrect argument structure, failing to suppress user data exposure when `server.hide_user_data_from_log` is enabled and causing potential crashes.",
+          "path": "src/networking.c",
+          "side": "right",
+          "from_line": 2776,
+          "to_line": 2776,
+          "file_semantic_match": true
+        }
+      ],
+      "generated_comments": [
+        {
+          "note": "snprintf 的格式串位置放入逗号表达式，格式参数与可变参数全部丢失，编译告警/崩溃\n第二个分支把 `server.hide_user_data_from_log ? (...) : (...)` 直接放在 snprintf 的 `const char *format` 形参位置，而两个括号内部都是逗号表达式：`(\"Query buffer during protocol error: [hide_user_data_from_log]Redacted %zu bytes\", sdslen(c->querybuf)-c->qb_pos)` 的值只是末尾的 `size_t` 字节数，另一分支也只是 `size_t`（`sdslen(...) - c->qb_pos - PROTO_DUMP_LEN`）。因此：1) 传给 format 形参的实参类型为 size_t（整数）而非 char*，是对 snprintf 原型的约束违反，GCC/Clang 会报 `-Wint-conversion`/`-Wformat` 类告警，Valkey 以 -Werror 构建时会直接编译失败；2) 即便不影响编译，实际运行的是一条地址为小整数的“格式串”，snprintf 会解引用该非法指针，并且原本的 `%.*s` 宽度/指针与 `%zu` 字节数全部作为逗号表达式的中间值被丢弃，属于未定义行为，会在协议错误处理路径上崩溃（该路径仅在 `server.verbosity <= LL_VERBOSE` 或主节点客户端时执行，因此问题容易在压测/低 verbosity 的线上环境才暴露）。此外 `%zu` 与 `sdslen()` 返回的 size_t 之间的对应关系也已失效，脱敏日志的字节数信息不再输出。",
+          "path": "src/networking.c",
+          "from_line": 2771,
+          "to_line": 2771,
+          "matched_gt_indices": [
+            1
+          ],
+          "judge_reason": "1. No match — ref1 discusses redaction check ordering, while generated discusses the comma expression misused as snprintf format argument.\n2. Match — both flag the snprintf ternary/comma expression type mismatch and incorrect argument structure causing potential crashes.\n\n[2]",
+          "hit_new_gt": true
+        }
+      ]
+    }
+  ]
+}

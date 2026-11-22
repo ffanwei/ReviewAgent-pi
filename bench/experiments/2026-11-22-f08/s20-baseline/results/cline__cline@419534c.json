@@ -1,0 +1,62 @@
+{
+  "instance_id": "cline__cline@419534c",
+  "repo": "cline/cline",
+  "base_commit": "a1bf1f95a30ca95581d9811488636aec42dd2f80",
+  "head_commit": "419534ccd4241fc11827741eb0d76ba0c9d21277",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 113.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1324,
+      "summary": "后台 commit 回填时用 findLastIndex 重新定位消息，会把 hash 写到错误的 checkpoint 消息上",
+      "failure_scenario": "commit 改为后台执行后，回填 hash 时不再使用「刚创建的那条 checkpoint_created 消息」的索引，而是在 then 回调真正执行时用 `findLastIndex(...)` 重新查找最后一条 checkpoint_created 消息。由于 saveCheckpoint 现在会立刻返回，同一批次内可以连续产生多条 checkpoint_created（例如用户批准工具并附带 feedback 时先 say(\"user_feedback\")+saveCheckpoint，随后工具继续执行到 saveCheckpoint），两条 commit 可能同时在途。此时先完成的 commit 的 hash 会被写到「更晚创建」的消息上，后完成的 commit 再覆盖一次，最终：要么较早的消息永远没有 hash（用户对其执行还原时 restoreCheckpoint 会 fallback 到更早的 checkpoint，静默多回退一步），要么较晚的消息持有较早的 hash（还原到该 checkpoint 会把这一步的改动一起丢掉，造成工作区内容丢失）。此外，若期间发生过回滚/还原导致 clineMessages 被截断，updateClineMessage 对越界索引会直接 throw（message-state.ts:136-137），同样落入未捕获路径。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1322,
+      "summary": "后台 commit 没有 catch，失败时变成 unhandled rejection 且 checkpoint 消息永久没有 hash",
+      "failure_scenario": "CheckpointTracker.commit 在失败时是 `throw new Error(...)` 而不是返回 undefined，原实现用 `await` 调用，异常会沿调用栈传给 ToolExecutor 中各工具的 try/catch（经 handleError 展示给用户）。改成 `commit().then(...)` 后既没有 `.catch()`，也没有 try/catch 包裹，异常会变成未处理的 promise rejection：扩展宿主侧只有 standalone 入口注册了 unhandledRejection，日志之后无人处理，用户看不到任何错误。同时因为 `say(\"checkpoint_created\")` 现在在 commit 之前执行并且已经落盘（message-state.ts:127 `saveClineMessagesAndUpdateHistory`），失败后聊天里会留下一条永远没有 lastCheckpointHash 的 checkpoint 消息：对该消息点“Restore checkpoint”会走 fallback 分支恢复到更早的 checkpoint（index.ts:429-433），点“See changes”则直接 console.error 后放弃（index.ts:566-571），且重新打开任务后该消息也不会再被补上 hash。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "ERROR-HANDLING-002"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1321,
+      "summary": "commit 被推迟到后台执行，checkpoint 可能快照到后续步骤的改动，导致还原点语义错误",
+      "failure_scenario": "saveCheckpoint 的调用点都在工具把改动写入磁盘之后（例如 write_to_file/replace_in_file 在 `diffViewProvider.saveChanges()` 之后调用 saveCheckpoint）。原实现立刻 `await commit()`，快照的正是「这一步结束时」的工作区状态。改为后台执行后，commit 里的 `addCheckpointFiles(git)`（`git add .`）读取的是回调真正运行时刻的工作区：如果在一个 assistant 消息里连续执行多个工具（同样是 saveCheckpoint 之后立刻处理下一个工具，无需等待 LLM 往返），或大仓库 commit 需要数秒，那么这一次 commit 会把我下一步、甚至下几步的改动一起提交进快照。结果是该 checkpoint 的 hash 指向一个更晚的状态：用户对其执行 restore 无法撤销这一步的改动，基于该 hash 的 diff 也会漏掉改动，静默破坏 checkpoint 的“回到这一步”语义。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CHECKPOINT-003"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1322,
+      "summary": "后台 commit 与 attempt_completion 的同步 commit 可能并发操作同一个 shadow git 仓库",
+      "failure_scenario": "非 attempt_completion 分支现在把 commit 放到后台，而同一 Task 的 attempt_completion 分支（index.ts:1363 以及 ToolExecutor 中 `saveCheckpoint(true)` 之后立刻 `addNewChangesFlagToLastCompletionResultMessage()`）仍然要求 commit 在前台完成。如果上一个工具触发的后台 commit 仍在运行（大仓库可达数秒），紧接着到达的 attempt_completion 会在同一个 shadow git 仓库上并发执行 `git add .` / `git commit`，容易出现 index.lock 冲突或提交丢失：前台 commit 抛错会中断 attempt_completion 流程、使 completion_result 拿不到 latest hash（无法呈现“see new changes”按钮）；后台 commit 抛错则如前所述变成未处理拒绝。注释本身也承认 attempt_completion 流程对 hash 有时序依赖，但代码并未对两条路径的 commit 做串行化。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONCURRENCY-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\diff\\cline__cline@419534c.diff\n  caseId              cline__cline@419534c\n  --issue             (未传)\n  --taskId            cline__cline@419534c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-baseline.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 111.7s · 模型调用 15 次 · token 输入 23,908（未命中） · 输出 14,728 · 缓存命中 280,832（92.2%） · 工具 25 次（主会话 25 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0083\n[time] 阶段耗时 | 总墙钟 112.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.6%)\n[time] 阶段 | 六阶段审计 111.6s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 4.3s (3.8%) | P3 4.4s (3.9%) | P4 63.0s (56.4%) | P5 29.2s (26.2%) | P6 10.8s (9.7%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 23,908（未命中） | 输出 14,728 | 缓存命中 280,832（92.2%） | $0.0083\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\\cline__cline@419534c\\audit\\20261122_083518_495.json",
+  "token_usage": {
+    "input_tokens": 23908,
+    "output_tokens": 14728,
+    "cache_read_input_tokens": 280832
+  }
+}

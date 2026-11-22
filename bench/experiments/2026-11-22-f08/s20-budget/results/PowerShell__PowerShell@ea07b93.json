@@ -1,0 +1,52 @@
+{
+  "instance_id": "PowerShell__PowerShell@ea07b93",
+  "repo": "PowerShell/PowerShell",
+  "base_commit": "ce76ae1def6d5b00fff0d855ec01575121268ef3",
+  "head_commit": "ea07b93a40f64274505e3a070c1fd91684ff2959",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 143.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2232,
+      "summary": "新增 PATH 手工查找会跳过非完全限定条目，使可用的 ssh 被误判为不存在",
+      "failure_scenario": "新增的 else 分支读取 PATH 后，只要某个条目不是完全限定路径就直接 continue 丢弃。但相对 PATH 条目是合法的：Unix 常见的 ~/bin、~/.local/bin，Windows 的 . 或 tools，以及带引号的 \"C:\\Program Files\\OpenSSH\"；TrimEntries 只删除空白字符不删除引号，首字符为引号时 IsPathFullyQualified 同样返回 false。引擎自身的 PATH 处理并不丢弃这些条目：CommandDiscovery.GetLookupDirectoryPaths 会保留 ~ 开头和相对条目并注明以 . 开头的路径留到查找时再解析，CommandPathSearch.ResolveCurrentDirectoryInLookupPaths 会把相对 lookup path 解析为绝对目录。因此若 ssh 位于这类目录，新代码循环结束后 filePath 仍为空，随即抛出 CommandNotFoundException；而同一环境下 TLS-Runspace 分支的 LookupCommandInfo 能找到 ssh，两者行为不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2238,
+      "summary": "Unix 上仅用 File.Exists 判定候选 ssh，未校验可执行权限即停止搜索",
+      "failure_scenario": "新增查找在 Unix 上用 File.Exists(sshCommandPath) 作为唯一判据，命中即 break 并作为 filePath 使用。Unix 上“存在”与“可执行”是两个条件：若 PATH 中靠前目录（例如优先的 ~/bin）存在不可执行或损坏的同名 ssh 文件，代码会选中它并终止搜索，不再尝试后面真正可用的 ssh。该路径随后用于 new ProcessStartInfo(filePath)，在 Unix 分支被直接交给原生 CreateProcess（fork + execve）；exec 失败会表现为难以诊断的进程创建失败，而不是明确的“ssh 未找到”，且失败发生在 OutOfProcTransportManager.CreateAsync 的连接建立路径上。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "PORTABILITY-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2227,
+      "summary": "手工重写可执行文件查找逻辑，与引擎既有 PATH 解析形成两套语义",
+      "failure_scenario": "新增的 else 分支在 RunspaceConnectionInfo 内自行实现了一套“按 PATH 查找可执行文件”的逻辑（读取环境变量、Split、TrimEntries、IsPathFullyQualified 过滤、Path.Combine、File.Exists），而引擎中已有承担同样职责的实现：CommandDiscovery.GetLookupDirectoryPaths 负责 PATH 读取与规范化（~ 展开、缓存），CommandPathSearch 负责按 PATHEXT/可执行名匹配并解析相对查找路径。两套实现已出现语义差异（相对条目、~ 条目、引号条目处理，以及可执行性校验），后续任一处的修复不会自动同步，同一台机器上 ssh 的解析结果可能随宿主场景（有无 TLS Runspace）而不同。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\PowerShell__PowerShell\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\diff\\PowerShell__PowerShell@ea07b93.diff\n  caseId              PowerShell__PowerShell@ea07b93\n  --issue             (未传)\n  --taskId            PowerShell__PowerShell@ea07b93\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-budget.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 142.1s · 模型调用 16 次 · token 输入 19,228（未命中） · 输出 18,973 · 缓存命中 292,992（93.8%） · 工具 24 次（主会话 24 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0088\n[time] 阶段耗时 | 总墙钟 143.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.1s (0.8%)\n[time] 阶段 | 六阶段审计 142.1s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 3.2s (2.3%) | P3 6.6s (4.6%) | P4 106.7s (75.1%) | P5 21.5s (15.2%) | P6 4.0s (2.8%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 19,228（未命中） | 输出 18,973 | 缓存命中 292,992（93.8%） | $0.0088\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\tasks\\PowerShell__PowerShell@ea07b93\\audit\\20261122_091714_388.json",
+  "token_usage": {
+    "input_tokens": 19228,
+    "output_tokens": 18973,
+    "cache_read_input_tokens": 292992
+  }
+}

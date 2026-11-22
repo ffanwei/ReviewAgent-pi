@@ -1,0 +1,42 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 136.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件依赖客户端本地常量而非响应中已有的 count_received_log，可能与服务端页大小不一致导致静默漏取",
+      "failure_scenario": "新循环用 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 判断日志是否已取尽，但这只是客户端持有的常量副本，服务端每页实际返回多少条是服务端实现细节（该常量旁已写明 `// TODO(#4638): Revisit the number.`）。一旦两侧取值不同（例如后续调小服务端上限，或灰度升级期间新旧版本混跑），当服务端返回条数少于客户端常量时循环会提前 break，此时 remote_log 只是被截断的第一页；函数随后仍返回 Ok 的 ReceivedCertificatesFromValidator，调用方 find_received_certificates 将其视为一次成功的 best-effort 同步，被截掉的已接收证书本轮不会下载、tracker 也不推进，相关跨链消息处理被推迟到下一次同步轮次，且全程没有 warn 或错误暴露。修复所需信息其实已在响应中：ChainInfo 的 `count_received_log`（data_types.rs:213-214 注释即写明 useful for `request_received_log_excluding_first_n`），当前仓库中没有任何读取方。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "PROTOCOL-PAGINATION-001"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 848,
+      "summary": "分页循环的终止条件与内存上限完全由远端返回条数决定，缺少进度校验，异常 validator 响应会导致无限循环",
+      "failure_scenario": "新增的 loop 只有 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 一个出口，而 received_entries 来自远端 validator 的响应体；循环体内没有“本轮是否真正推进游标（received_entries > 0）”“已取条数是否已达 count_received_log”“最多迭代多少页”这类保护。若远端每次都返回满额一页却没有推进到新数据（例如对 `request_received_log_excluding_first_n` 的处理与本端假设不一致的实现、或分页上限不同的 validator），offset 会持续增加、remote_log 持续 extend，函数既不返回也没有上限，表现为客户端同步挂起并在内存中累积该链的 received log 条目；而 find_received_certificates 是通过 communicate_with_quorum 逐 validator 调用该函数的，整个同步流程都会被拖住。原实现是“一次请求即结束”，不存在这种由远端响应驱动循环的情况，属本次变更新引入的活性/资源风险。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.42,
+      "rule": "LIVENESS-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-baseline.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 135.3s · 模型调用 16 次 · token 输入 22,600（未命中） · 输出 17,358 · 缓存命中 319,104（93.4%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0089\n[time] 阶段耗时 | 总墙钟 136.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 135.3s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 13.1s (9.7%) | P3 5.6s (4.1%) | P4 78.7s (58.2%) | P5 31.9s (23.6%) | P6 6.0s (4.4%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 22,600（未命中） | 输出 17,358 | 缓存命中 319,104（93.4%） | $0.0089\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261122_083334_503.json",
+  "token_usage": {
+    "input_tokens": 22600,
+    "output_tokens": 17358,
+    "cache_read_input_tokens": 319104
+  }
+}

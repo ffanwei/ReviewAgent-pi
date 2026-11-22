@@ -1,0 +1,72 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@29e03a6",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "7c369e84052aaee15a6dedf8928b5af4c869037b",
+  "head_commit": "29e03a6294edfe43b49eba20fe49099cef601d34",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 142.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 83,
+      "summary": "用 POEditor 导出内容整文件覆盖翻译文件，会静默删除仓库中新增但尚未同步的 key",
+      "failure_scenario": "Copy translations to project 步骤用 `cp -r temp/* src/locales/` 无条件覆盖现有语言文件，而 temp 下的文件内容完全来自 POEditor 导出结果。脚本只做整对象的 writeJson，或把数组转成对象（且要求 `item.term && item.definition` 同时存在才写入），没有与仓库现有 key 合并或校验。具体失败场景：开发者先在 PR 里给 src/locales/gb.json 新增 key（例如新增页面文案），但 POEditor 项目中尚未添加该 term；当晚 cron 触发同步后，下载到的 gb.json 只包含 POEditor 侧已有的 term，覆盖后新 key 消失，自动 commit 直接进入主分支，线上该文案退化为显示原始 key。gb.json 是 i18n 的 primaryLanguage（src/Utils/i18n.js:6），其缺 key 会同时影响所有语言的 fallback。目前 tr.json 仅 105 行而 gb.json 有 178 行，说明 POEditor 侧各语言的 term 覆盖并不完整，覆盖式写入的风险是现实存在的。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "DATA-LOSS-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 10,
+      "summary": "语言默认值三处不一致（tr,en / tr,gb / tr,en），手动触发会生成应用未使用的 en.json",
+      "failure_scenario": "同一次变更里语言默认值出现三种定义：workflow_dispatch 的 `languages` 默认 `tr,en`（第 10 行）、env 回退值 `tr,gb`（第 60 行）、脚本内 `process.env.LANGUAGES || 'tr,en'`（download-translations.js:12）。而仓库实际只有 src/locales/gb.json 与 tr.json，应用主语言是 `gb`（src/Utils/i18n.js:6、src/Features/UI/uiSlice.js:26）。具体失败场景：维护者按 README 的说明手动触发工作流并接受默认值，下载出 `en.json` 并提交到 src/locales/，由于 i18n 用 `import.meta.glob(\"../locales/*.json\")` 并以文件名作为语言码，仓库会多出一个任何 UI 语言选项都选不到的 `en` 资源，同时 `gb.json` 不更新，用户看到的是旧翻译；相反定时任务用的是 `tr,gb`，两条路径产生的文件集不同，长期造成 gb.json/en.json 双份来源漂移。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CONFIG-CONSISTENCY-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "未声明 permissions: contents: write，默认只读 GITHUB_TOKEN 下 git push 会 403 失败",
+      "failure_scenario": "工作流用 `secrets.GITHUB_TOKEN` 检出代码（第 26-28 行），随后在第 92 行直接 `git push` 提交翻译。但整个 job 没有声明 `permissions:` 块。GitHub 对 2023-02 之后创建的仓库默认将 GITHUB_TOKEN 设为只读（或在组织/仓库级把默认收紧为 read-only），此时 `git push` 会以 `remote: Permission to ... denied` / 403 失败，工作流每天都红，翻译永远不会被同步；而因为失败发生在 commit 之后、push 阶段，日志只呈现一条通用 permission 错误，容易被当成密钥问题排查。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CI-PERMISSION-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 71,
+      "summary": "校验步骤只检查文件非空与 JSON 合法，空对象仍会通过并覆盖掉整个语言文件",
+      "failure_scenario": "Verify translation files 步骤的判定是 `[ ! -s \"$file\" ]`（文件非空）与 `jq .`（JSON 语法合法），并不校验内容是否为非空对象、是否包含 term。具体失败场景：POEditor 某语言尚无任何已确认翻译时，导出结果可能是空数组或空对象；脚本对数组的处理是只保留 `item.term && item.definition` 都存在的项（download-translations.js:56-60），全部被过滤后 `formattedTranslations` 成为 `{}`，`writeJson` 写出字面量 `{}`（2 字节、非空、合法 JSON），两个校验条件全部通过，随后第 83 行把 `src/locales/gb.json` 覆盖成空对象，自动提交进主分支，全站文案退回显示 key。此外校验也不比对导出 key 数与现有 key 数，无法发现导入内容明显缩水。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "VALIDATION-002"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 18,
+      "summary": "定时任务与手动触发无并发控制，且 push 无重试，后完成的一次会因非快进而失败",
+      "failure_scenario": "工作流同时由 `schedule: cron: \"0 0 * * *\"`（第 17-18 行）和 `workflow_dispatch` 触发，但没有 `concurrency` 组；两个运行结束阶段都会 `git add` / `git commit` / `git push`（第 90-92 行），且 push 前没有 `git pull --rebase` 或失败重试。具体失败场景：维护者在 00:00 前后手动触发一次同步，与定时任务几乎同时执行，两者基于同一 base commit 各生成一个 commit，先 push 的成功，后 push 的因 remote 已有新提交被拒绝（`! [rejected] ... (fetch first)`），job 以失败告终；若此时先完成的运行内容更旧，还会出现内容互相覆盖、难以判断最终生效版本的情况。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONCURRENCY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\diff\\bluewave-labs__Checkmate@29e03a6.diff\n  caseId              bluewave-labs__Checkmate@29e03a6\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@29e03a6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-baseline.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 2（no-signal=2）\n✓ 完成 · 耗时 141.0s · 模型调用 12 次 · token 输入 8,756（未命中） · 输出 19,940 · 缓存命中 178,176（95.3%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0073\n[time] 阶段耗时 | 总墙钟 141.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 140.9s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 7.3s (5.2%) | P3 7.1s (5.0%) | P4 56.6s (40.2%) | P5 63.5s (45.1%) | P6 6.4s (4.5%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 8,756（未命中） | 输出 19,940 | 缓存命中 178,176（95.3%） | $0.0073\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\\bluewave-labs__Checkmate@29e03a6\\audit\\20261122_083130_676.json",
+  "token_usage": {
+    "input_tokens": 8756,
+    "output_tokens": 19940,
+    "cache_read_input_tokens": 178176
+  }
+}

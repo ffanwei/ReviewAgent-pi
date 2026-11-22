@@ -1,0 +1,42 @@
+{
+  "instance_id": "PowerShell__PowerShell@ea07b93",
+  "repo": "PowerShell/PowerShell",
+  "base_commit": "ce76ae1def6d5b00fff0d855ec01575121268ef3",
+  "head_commit": "ea07b93a40f64274505e3a070c1fd91684ff2959",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 165.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2232,
+      "summary": "手工 PATH 查找只接受完全限定条目且只判存在，会让可用的 ssh 被判为找不到并直接失败",
+      "failure_scenario": "新增的无 Runspace 回退分支先丢弃所有非“完全限定”的 PATH 条目（第 2232-2235 行），再用 File.Exists 判定候选路径（第 2238 行），这与平台/引擎自身的解析规则不一致：引擎的 CommandDiscovery.GetLookupDirectoryPaths 会保留相对条目待解析、并把 `~/xxx` 展开为用户主目录（CommandDiscovery.cs:1226-1243），而 ProcessStartInfo 交给操作系统的 PATH 解析（注释第 2224-2225 行也承认这一点）还允许 Windows 上带引号的条目。当 ssh 所在的 PATH 条目写成 `~/bin`、`.`、相对路径，或在 Windows 上被引号包裹（如 `\"C:\\Program Files\\OpenSSH\"`）时，循环找不到文件，随后第 2246-2253 行直接抛出 CommandNotFoundException，连接在启动 ssh 之前就失败，而实际上 ssh 完全可用。另外 File.Exists 不校验可执行权限，PATH 中靠前的同名非可执行文件会被选中，从而遮蔽后面真正可用的 ssh，导致 Process.Start 以权限/格式错误失败。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "PORTABILITY-PATH-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2246,
+      "summary": "新增的 filePath 空值检查与 PATH 回退在 Runspace 分支不可达，两条失败路径语义不一致",
+      "failure_scenario": "第 2209-2214 行改为调用静态 CommandDiscovery.LookupCommandInfo，而该方法在未找到命令时会内部抛出 CommandNotFoundException（CommandDiscovery.cs:775-787），不会返回 null；因此当 Runspace 存在（交互式/脚本/多数宿主场景）且机器上没有 ssh 时，异常在第 2214 行就已抛出，新增的第 2246-2253 行统一检查、以及为无 Runspace 场景准备的 PATH 手工回退都不会执行。结果是：这段代码本想统一“找不到 ssh”的失败处理，实际上只有 context == null 时才走到统一检查；此外 LookupCommandInfo 还会调用 PreCommandLookupAction/CommandNotFoundAction 等宿主回调（CommandDiscovery.cs:678-732），若回调返回的不是 ApplicationInfo，`as ApplicationInfo` 会得到 null，随后在第 2248 行以「The term 'ssh.exe' is not recognized as a name of a cmdlet, function, script file, or executable program.」（DiscoveryExceptions.resx:136）这一通用文案失败——对 SSH 远程连接用户而言极易误解为需要安装某个 cmdlet，且此时即便 PATH 中有 ssh 也不会尝试回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "ERROR-PATH-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\PowerShell__PowerShell\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\diff\\PowerShell__PowerShell@ea07b93.diff\n  caseId              PowerShell__PowerShell@ea07b93\n  --issue             (未传)\n  --taskId            PowerShell__PowerShell@ea07b93\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-baseline.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 163.6s · 模型调用 22 次 · token 输入 23,805（未命中） · 输出 20,763 · 缓存命中 464,256（95.1%） · 工具 27 次（主会话 27 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0104\n[time] 阶段耗时 | 总墙钟 165.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (0.8%)\n[time] 阶段 | 六阶段审计 163.6s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 3.5s (2.1%) | P3 10.0s (6.1%) | P4 129.7s (79.3%) | P5 15.2s (9.3%) | P6 5.1s (3.1%)\n[usage] 任务总计 | 模型调用 22 次（Agent 22 + 一次性 0） | token 输入 23,805（未命中） | 输出 20,763 | 缓存命中 464,256（95.1%） | $0.0104\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\\PowerShell__PowerShell@ea07b93\\audit\\20261122_083013_843.json",
+  "token_usage": {
+    "input_tokens": 23805,
+    "output_tokens": 20763,
+    "cache_read_input_tokens": 464256
+  }
+}

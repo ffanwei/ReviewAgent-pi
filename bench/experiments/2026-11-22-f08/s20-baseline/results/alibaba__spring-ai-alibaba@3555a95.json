@@ -1,0 +1,52 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@3555a95",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "76c06b58a4d9e8ee3fe3c0269a046987ad0502e5",
+  "head_commit": "3555a95e7b888335d9f72e432eb4f9fb9640e8cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 108.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 84,
+      "summary": "sourceLanguage 被当作必填校验，缺省时翻译静默返回 null",
+      "failure_scenario": "Request 的 sourceLanguage 字段被声明为 required = false、描述为“default is zh”，但 apply 新增了 !StringUtils.hasText(request.sourceLanguage) 校验并在不满足时直接 return null。默认值只在单参构造器 Request(String text) 中被回填；工具调用时参数是由模型按 JSON 传入（通常只给 text、targetLanguage，甚至沿用旧版参数集），不会走这个单参构造器，sourceLanguage 为 null，于是 apply 一律返回 null。结果是本次改动把“源语言固定为 zh”的可用行为改成“不显式传 sourceLanguage 就翻译失败”，且失败完全没有异常，调用方/模型只能收到 null，表现为工具调用无输出。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 106,
+      "summary": "异常被吞掉后返回 null，中断信号同时丢失",
+      "failure_scenario": "改动前 apply 在失败时抛出 RuntimeException，调用链能感知失败；现在 catch (Exception e) 只记录 e.getMessage() 并 return null。一方面失败语义从“抛出”变成“返回 null”，上层（工具调用框架/业务代码）无法区分“翻译失败”和“无结果”，并且 System 级故障、鉴权失败、getTranslatedText 抛出的 IllegalStateException 全部被转成 null；另一方面 logger.error 只输出 message 不带堆栈，问题定位缺关键信息。此外 response.get() 抛出的 InterruptedException 也会被这个宽泛的 catch 吞掉，线程中断标志未被恢复，容器关闭或请求取消时阻塞线程可能无法及时退出。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-002"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 142,
+      "summary": "Request 新增字段插入中间位置，破坏既有两参构造契约",
+      "failure_scenario": "Request 记录原先的规范构造器是 (String text, String targetLanguage)，现在插入 sourceLanguage 后变成 (String text, String sourceLanguage, String targetLanguage)，且只额外提供 Request(String text) 单参构造器。所有既有的 new AliTranslateService.Request(text, targetLanguage) 调用（本 starter 是对外发布的模块，下游会直接构造）升级后编译失败；若下游通过位置式反射/序列化（如按构造器参数数组）构造，则会静默把原 targetLanguage 当成 sourceLanguage，导致 targetLanguage 为 null 而被 apply 的校验拒绝并返回 null，表现为翻译功能无声失效。新增字段没有提供兼容的两参构造桥接，也没有把默认值放进紧凑构造器，使契约变化缺乏防护。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "API-COMPAT-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@3555a95.diff\n  caseId              alibaba__spring-ai-alibaba@3555a95\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@3555a95\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-baseline.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 5（no-signal=5）\n✓ 完成 · 耗时 106.3s · 模型调用 11 次 · token 输入 17,349（未命中） · 输出 13,576 · 缓存命中 187,776（91.5%） · 工具 17 次（主会话 17 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0068\n[time] 阶段耗时 | 总墙钟 107.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.4s (1.3%)\n[time] 阶段 | 六阶段审计 106.2s (98.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 4.1s (3.8%) | P3 5.6s (5.3%) | P4 61.5s (57.9%) | P5 28.3s (26.6%) | P6 6.7s (6.3%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 17,349（未命中） | 输出 13,576 | 缓存命中 187,776（91.5%） | $0.0068\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@3555a95\\audit\\20261122_083014_073.json",
+  "token_usage": {
+    "input_tokens": 17349,
+    "output_tokens": 13576,
+    "cache_read_input_tokens": 187776
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "instance_id": "astral-sh__uv@61b521f",
+  "repo": "astral-sh/uv",
+  "base_commit": "041c7a5e63d5559ce5571a30e177c072b1b357b2",
+  "head_commit": "61b521f4e9a1e8bdba760394740814f25cc108c2",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 170.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "crates/uv/tests/it/pip_install.rs",
+      "line": 490,
+      "summary": "current_thread 的 #[tokio::test] 中同步阻塞等待子进程，会饿死同运行时上的 mock server",
+      "failure_scenario": "新增测试用 `#[tokio::test]`（tokio 默认 current_thread 单线程运行时），随后在同一运行时上 `MockServer::start().await` 启动 wiremock；但 `uv_snapshot!` 内部走的是同步的 `run_and_format` → `command.output()`，会阻塞当前线程直到子进程 uv 退出。子进程在运行期间必须向 mock server 发 HTTP 请求（第 520、537、575 行的三次 `pip_install -r <url>`），而 mock server 作为同运行时上的任务，在唯一工作线程被阻塞时无法 accept/读写响应，于是子进程的请求无法得到回应，测试要么长时间挂起，要么在 uv 的 HTTP 超时后得到错误输出，导致第 520、537、575 行的快照断言失败。仓库内 tokio 的 workspace 特性（根 Cargo.toml:168）未启用 `rt-multi-thread`，且整个 pip_install.rs 只有这一个 async 测试（无既有 async + 阻塞子进程的先例可参照），这一组合是本次变更首次引入的。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CONCURRENCY-TEST-001"
+    },
+    {
+      "file": "crates/uv/tests/it/pip_install.rs",
+      "line": 564,
+      "summary": "重复 mount 与首个 mock 匹配条件完全相同的 200 mock，第三个快照可能仍拿到旧的 \"Flask\" 正文",
+      "failure_scenario": "第 504-509 行已 mount 了一个 `method(GET) + path(/requirements.txt) + basic_auth(user, password)` → 200、正文为 \"Flask\" 的 mock，且该 mock 不会因一次命中而失效；第 564-573 行又 mount 了一个匹配条件**完全相同**的 mock，只是正文改成 \"Jinja2\"。两个 mock 的匹配集合无任何差异，实际返回哪个正文取决于 wiremock 对并列匹配的仲裁策略，测试无法保证“更新后的 requirements.txt 生效”。若返回的仍是旧的 \"Flask\"，第 575-586 行期望的 `Audited 1 package in [TIME]` 就不成立（对照同文件 install_requirements_txt 第 480 行：以 Jinja2 为目标且已安装时才输出 `Audited 1 package`，重新解析 Flask 的 7 个包应输出 `Audited 7 packages`），该断言会失败或变成随库版本变化的脆弱断言。仓库既有约定（crates/uv-auth/src/middleware.rs:546-561、613-615）依赖的是“先 mount 的精确 mock 优先于后 mount 的宽泛 mock”，而不是同匹配集下的覆盖语义。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.5,
+      "rule": "TEST-DETERMINISM-002"
+    },
+    {
+      "file": "crates/uv/tests/it/pip_install.rs",
+      "line": 533,
+      "summary": "URL 用户名/密码设置失败被静默忽略，认证失败时会以误导性的快照差异呈现",
+      "failure_scenario": "第 533-534 行用 `let _ = requirements_url.set_username(username);` / `let _ = requirements_url.set_password(Some(password));` 丢弃 `Result`。一旦设置失败（例如 URL 形态不符合预期时 set_username 返回 Err），URL 上不会带凭据，第 537 行的“应当带凭据成功”用例就会实际以匿名请求打到 mock server 并拿到 401，表现为 `Installed 7 packages` 快照不符；由于错误被静默吞掉，排查时会被误导向 uv 的鉴权逻辑，而不是测试自身的 URL 构造问题。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "TEST-ROBUSTNESS-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\astral-sh__uv\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\diff\\astral-sh__uv@61b521f.diff\n  caseId              astral-sh__uv@61b521f\n  --issue             (未传)\n  --taskId            astral-sh__uv@61b521f\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-baseline.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 已过滤 1 个文件 / 228 字符（lockfile=1），明细见审计 mrFilter\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 2（no-signal=2）\n✓ 完成 · 耗时 169.7s · 模型调用 15 次 · token 输入 15,802（未命中） · 输出 23,144 · 缓存命中 294,272（94.9%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0095\n[time] 阶段耗时 | 总墙钟 170.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 169.7s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 4.7s (2.8%) | P3 6.0s (3.5%) | P4 133.8s (78.9%) | P5 18.4s (10.9%) | P6 6.7s (3.9%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 15,802（未命中） | 输出 23,144 | 缓存命中 294,272（94.9%） | $0.0095\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-baseline-20261122\\.reviewpi\\tasks\\astral-sh__uv@61b521f\\audit\\20261122_083711_478.json",
+  "token_usage": {
+    "input_tokens": 15802,
+    "output_tokens": 23144,
+    "cache_read_input_tokens": 294272
+  }
+}

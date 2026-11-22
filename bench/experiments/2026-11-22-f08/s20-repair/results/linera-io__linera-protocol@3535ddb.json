@@ -1,0 +1,54 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 193.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件依赖本端固定常量而非响应中的 count_received_log，可能提前结束并静默漏取条目",
+      "failure_scenario": "新增的分页循环用 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES`（本进程编译期常量 1000）判断远端日志是否已经取完，但真正权威的总条数已经在同一个响应里由 `ChainInfo::count_received_log` 返回（服务端用 `view.received_log.count()` 填入）。服务端上限是 `min(start + CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES, count)`，因此只要远端实际返回的页大小小于本端常量（例如 validator 侧该常量被调小或被后续版本改动、服务前有代理或分页中间层），客户端就会把「远端还有数据但这一页不满」误判为「日志已取完」，本轮直接跳出循环。此时 remote_log 被截断，`heights_per_chain` 只覆盖前若干条 entry，后续 entry 里的跨链证书不会在本轮下载；tracker 只在连续条目的证书都已下载时才递增，所以不会永久丢消息，但每次同步只能前进一页，需要额外多轮同步才能补齐，期间这些跨链消息延迟可见。反过来，当日志长度恰为常量整数倍时，循环还会多发一次必然返回空页的请求。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "PAGINATION-002"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 848,
+      "summary": "分页循环缺少页数与总量上界，异常或恶意 validator 可持续返回满页使客户端无限循环且内存无界增长",
+      "failure_scenario": "新循环的唯一退出条件是「本页条数小于 1000」，没有任何最大页数、最大累计条数或累计体量限制，而 `remote_log` 通过 `extend` 不断累积。validator 返回的日志内容在循环期间尚未做任何签名或证书校验（校验发生在跳出循环之后），因此一个行为异常或被控的 validator 只要每轮都返回 1000 条 entry，`synchronize_received_certificates_from_validator` 就永远不会返回：客户端持续发起 ChainInfo 查询、`remote_log` 持续增长直至内存耗尽，调用方（`synchronize_chain_state_from_committee` 的 quorum 汇总）也随之挂起，本来用于容忍故障 validator 的机制（grace period、quorum）失效。改动前是单次请求单次响应，体量受 RPC 消息大小限制；引入分页后客户端侧总量变成无界，等于把服务端刚设定的 1000 条上限在客户端抵消掉。同一响应中已有的 `count_received_log` 正好可以作为天然上界。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.5,
+      "rule": "RESOURCE-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f18-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 3 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 3/4 / 新候选 0 / no-issue 3 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 192.1s · 模型调用 13 次 · token 输入 12,028（未命中） · 输出 18,282 · 缓存命中 190,848（94.1%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0073\n[time] 阶段耗时 | 总墙钟 192.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 139.1s (72.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 53.1s (27.6%)\n[time] 审计明细 | P1 9.6s (6.9%) | P3 9.3s (6.7%) | P4 89.8s (64.6%) | P5 25.2s (18.1%) | P6 5.2s (3.8%)\n[usage] 任务总计 | 模型调用 17 次（Agent 13 + 一次性 4） | token 输入 15,863（未命中） | 输出 24,284 | 缓存命中 190,848（92.3%） | $0.0096\n[usage] 一次性明细 | 覆盖补漏 4 次（输入 3,835 / 输出 6,002 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261122_093605_170.json",
+  "token_usage": {
+    "input_tokens": 15863,
+    "output_tokens": 24284,
+    "cache_read_input_tokens": 190848
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 12028,
+      "output_tokens": 18282,
+      "cache_read_input_tokens": 190848
+    },
+    "coverage_repair": {
+      "input_tokens": 3835,
+      "output_tokens": 6002,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 244.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "新增的 chrome_remote_debugging_port 允许 None，但下游全部按整数端口消费",
+      "failure_scenario": "该字段声明为 `int | None`，却没有 validator 或默认值归一，而所有使用点都直接把它当整数端口：拼探测 URL 与 CDP endpoint、用 `%` 渲染 `--remote-debugging-port=%s`、以及传给 `socket.connect_ex(('localhost', port))`。一旦配置里出现 None（例如从 JSON/CLI/外部封装反序列化、或使用者把 None 理解为“用默认端口”），会出现三类失败：1) `http://localhost:None/json/version` 让 httpx 抛 `httpx.InvalidURL`，它不是 `httpx.RequestError` 子类，不会被 214 行的 except 捕获，直接逃出 `_setup_user_provided_browser` 使浏览器初始化彻底失败；2) Chrome 收到非法参数 `--remote-debugging-port=None`，进程启动失败，最终只抛出误导性的 “close all existing Chrome instances and try again”；3) 内置浏览器分支在 `s.connect_ex(('localhost', None))` 处抛 TypeError。该字段同时缺少 1~65535 范围约束，0 或超范围值也会静默生成无效启动参数。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 83,
+      "summary": "文档宣称可用自定义端口并存多个 Chrome，但启动参数未隔离用户 profile",
+      "failure_scenario": "新增配置说明称“providing non-default chrome debugging port 即可在不关闭已打开 Chrome 的情况下启动新的用户浏览器，从而用同一 browser_binary_path 在不同端口并行多个 Chrome”。但 `_setup_user_provided_browser` 组装的启动参数里没有任何 `--user-data-dir`（chrome.py 中该参数被注释为“由 playwright 管理”，而这条分支并不经过 playwright launch），因此新进程会使用用户默认 profile。Chrome 对同一 user-data-dir 是单实例的：已有 Chrome 运行时再次执行同一二进制只会把命令行转发给既有实例并退出，不会在 9223 这类新端口上监听，随后 10 次重试全部失败，最终抛出与本 MR 目标正好相反的错误 “you need to close all existing Chrome instances and try again”。即按新增说明配置的用户会稳定复现失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "tests/test_browser.py",
+      "line": 176,
+      "summary": "新增用例 mock 的是 requests，但被测代码使用 httpx，端口复用分支未被真正覆盖",
+      "failure_scenario": "新用例通过 `monkeypatch.setattr(requests, 'get', dummy_get)` 声称拦截“检查 chrome 调试端点”的请求，但 `_setup_user_provided_browser` 的第一段探测使用 `httpx.AsyncClient().get(...)`，`browser_use/browser` 包内并无 requests 调用，因此该 mock 是死代码：用例会真的向 `localhost:9223` 发起一次 HTTP 请求（依赖连接被立即拒绝），且“端口上已有浏览器则直接复用”这条路径完全没有断言。后果是即使端口从配置向 httpx 探测/CdpEndpoint 传递写错，该用例也可能通过；在 9223 恰好有服务监听的机器上用例会走另一分支，产生环境依赖。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TESTABILITY-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f18-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 5 / not-reached 7（no-signal=7）\nreview-pi: 覆盖补漏 请求 6（失败 0）/ 覆盖 hunk 5/12 / 新候选 0 / no-issue 5 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 243.0s · 模型调用 12 次 · token 输入 13,062（未命中） · 输出 19,599 · 缓存命中 228,352（94.6%） · 工具 16 次（主会话 16 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0080\n[time] 阶段耗时 | 总墙钟 243.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.8s (0.3%)\n[time] 阶段 | 六阶段审计 146.9s (60.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 96.2s (39.5%)\n[time] 审计明细 | P1 7.0s (4.7%) | P3 6.6s (4.5%) | P4 104.2s (71.0%) | P5 21.1s (14.4%) | P6 7.9s (5.4%)\n[usage] 任务总计 | 模型调用 19 次（Agent 12 + 一次性 7） | token 输入 20,043（未命中） | 输出 32,107 | 缓存命中 228,864（91.9%） | $0.0124\n[usage] 一次性明细 | 覆盖补漏 7 次（输入 6,981 / 输出 12,508 / 缓存 512）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261122_093415_586.json",
+  "token_usage": {
+    "input_tokens": 20043,
+    "output_tokens": 32107,
+    "cache_read_input_tokens": 228864
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 13062,
+      "output_tokens": 19599,
+      "cache_read_input_tokens": 228352
+    },
+    "coverage_repair": {
+      "input_tokens": 6981,
+      "output_tokens": 12508,
+      "cache_read_input_tokens": 512
+    }
+  }
+}

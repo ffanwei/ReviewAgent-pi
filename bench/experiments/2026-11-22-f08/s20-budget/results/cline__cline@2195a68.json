@@ -1,0 +1,52 @@
+{
+  "instance_id": "cline__cline@2195a68",
+  "repo": "cline/cline",
+  "base_commit": "398bc87a64800e021966868243be2f09be72e73c",
+  "head_commit": "2195a689b787a963bdacc35d348f4590c30a2692",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 75.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/extension.ts",
+      "line": 318,
+      "summary": "用户关闭 state 不匹配的警告即被视为同意，未校验的 token 会被直接写入登录态",
+      "failure_scenario": "新逻辑用三元判断只把「用户显式点击 Cancel」当作拒绝：`showWarningMessage` 返回 undefined（用户按 ESC、点击通知右上角关闭、或通知被系统收起）时也继续执行，等同于默认同意。由于该警告是 state 不匹配时唯一的安全门槛，任何外部页面构造的 `vscode://saoudrizwan.claude-dev/auth?idToken=<攻击者 token>&provider=google&state=x` 链接，只要用户没有明确点 Cancel（很可能只是把通知划掉），就会走 `controller.handleAuthCallback(token, provider)` 完成登录，把扩展的 apiProvider 切成 cline 并使用攻击者提供的凭证——即登录 CSRF / 账号劫持，属于本次「不匹配也让用户确认放行」的改动直接引入的风险。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.82,
+      "rule": "SECURITY-CSRF-001"
+    },
+    {
+      "file": "src/extension.ts",
+      "line": 314,
+      "summary": "state 不匹配的确认提示不含任何来源信息，用户无法判断是否可信",
+      "failure_scenario": "确认对话框的文案是 `Store token returned from ${uri.path}`，而在本分支中 `uri.path` 恒为 \"/auth\"（由 `switch (path) { case \"/auth\": ... }` 决定），因此提示对用户判断毫无信息量：既不显示 token 来自哪个域名/账号，也不说明这是「未知来源的登录请求」。配合本次把 state 校验降级为一次可点掉的通知，安全决策被完全转移给用户，而用户拿到的是无信息量的提示，实际效果是既有 CSRF 校验被形式化；这是改动的核心安全设计缺陷，与 F001 的按钮逻辑缺陷相互独立。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.66,
+      "rule": "SECURITY-STATE-VALIDATION-002"
+    },
+    {
+      "file": "src/services/auth/AuthService.ts",
+      "line": 33,
+      "summary": "authNonce 改为进程生命周期内恒定且永不失效，state 的重放保护被移除",
+      "failure_scenario": "`_authNonce` 由「每次 createAuthRequest 时随机生成、验证成功后 resetAuthNonce() 置空」改为构造时生成一次的 readonly 常量，且 validateAuthState 也不再清除 nonce（diff 中删除了 `this.authService.resetAuthNonce()`）。后果是：同一扩展进程内所有登录请求共用同一个 state，登出/重新登录后 nonce 也不轮换，验证通过后也不会失效，一旦 state 通过日志或历史 URL 泄漏（`src/extension.ts:304-308` 会把 state 打印到 console），该值在进程存活期内始终「合法」，攻击者可无限次构造匹配 state 的回调；同时并发多次登录请求共享同一 nonce 也失去了「一次一密」的语义。这是本次改动直接引入的防护弱化。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.62,
+      "rule": "SECURITY-REPLAY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\diff\\cline__cline@2195a68.diff\n  caseId              cline__cline@2195a68\n  --issue             (未传)\n  --taskId            cline__cline@2195a68\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f08-budget.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 73.1s · 模型调用 11 次 · token 输入 7,838（未命中） · 输出 8,780 · 缓存命中 101,760（92.8%） · 工具 12 次（主会话 12 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0038\n[time] 阶段耗时 | 总墙钟 73.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (1.0%)\n[time] 阶段 | 六阶段审计 73.1s (98.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 4.4s (6.0%) | P3 6.3s (8.6%) | P4 38.1s (52.2%) | P5 19.4s (26.5%) | P6 4.9s (6.7%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 7,838（未命中） | 输出 8,780 | 缓存命中 101,760（92.8%） | $0.0038\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f08-budget3-20261122\\.reviewpi\\tasks\\cline__cline@2195a68\\audit\\20261122_092150_767.json",
+  "token_usage": {
+    "input_tokens": 7838,
+    "output_tokens": 8780,
+    "cache_read_input_tokens": 101760
+  }
+}

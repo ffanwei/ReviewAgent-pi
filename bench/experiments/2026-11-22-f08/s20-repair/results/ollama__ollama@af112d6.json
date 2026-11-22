@@ -1,0 +1,74 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 245.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "root.OpenFile 不会创建父目录，导致合法子目录路径被误判为非法路径",
+      "failure_scenario": "新增的路径校验用 root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644) 逐文件打开目标路径来验证包含性，但 os.Root 的 OpenFile 不会创建缺失的父目录；而旧实现中 createLink 会先 os.MkdirAll(filepath.Dir(dst)) 再建链接，因此像 \"dir/model.safetensors\" 这样的嵌套相对路径此前是可用的。改造后任何带子目录的 files 键都会在 L277 返回 ENOENT，并被 L279 包装成 errFilePath，导致转换直接失败（base 分支还会因此返回非 400 的状态），使本来合法的 safetensors 上传由可用变为失败；validRelative 与新增测试也把 \"dir/file.txt\" 这类路径列为合法，契约自相矛盾。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "errFilePath 只加入 adapters 分支的错误分类，base files 分支仍会把路径错误返回为 500",
+      "failure_scenario": "本次变更在 adapters 的错误分类列表中补上了 errFilePath（L118），但同一 handler 内 base files 分支的错误分类列表（L100）未同步更新。由于 convertModelFromFiles 的 safetensors 分支会用 errFilePath 包装路径校验失败，当用户提交的模型文件路径非法（或如 F001 所述的合法嵌套路径失败）而走 base 分支时，错误不会命中任何 badReq，最终落到 ch <- gin.H{\"error\": err.Error()} 而无 status，客户端收到 500 而非 400，无法区分参数错误与服务端错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 172,
+      "summary": "入口先用 validRelative 拒绝可安全规范化的路径，与 convertFromSafetensors 及新增测试的契约矛盾",
+      "failure_scenario": "CreateHandler 在 filepath.Clean 之前调用 validRelative，因此 \"./model.safetensors\"、\"nested/../model.safetensors\" 这类 Clean 之后仍落在临时目录内的路径会在 HTTP 入口被 400 拒绝；但 convertFromSafetensors 内部先 Clean 再交给 root.OpenFile，同一批路径在那里是通过的。新增测试 TestConvertFromSafetensors 的 \"ValidRelativeWithDot\"（\"./model.safetensors\"）期望成功，而 TestValidRelative 又把 \"./x/y\" 列为必须报错，说明校验语义跨层不一致。结果是客户端把模型文件键写成 \"./xxx\" 这类此前可用的形式会由成功变为 400，而测试因绕过 handler 无法暴露该回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CONTRACT-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 182,
+      "summary": "validRelative 仅识别 '/' 分隔符，Windows 上反斜杠与盘符路径可绕过该检查",
+      "failure_scenario": "validRelative 全部使用字符串形式的分隔符判断（\"/\" 前缀、\"/../\"、\"/./\"、\"/..\"、\"/.\"），未考虑 Windows 的反斜杠与盘符写法。在 Windows 上 \"..\\\\..\\\\data\\\\file.safetensors\"、\"C:\\\\Windows\\\\x.safetensors\" 都能通过 CreateHandler 的入口校验，后续只依赖 convertFromSafetensors 中的 root.OpenFile 兜底；而 r.Adapters 等使用同一 map 的路径没有同等的入口校验，一旦有人复用 validRelative 作为唯一防护或在其他流程中使用键名，就会失去目录穿越防护，形成可移植性缺口。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "PORTABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-f18-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 2 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 2/4 / 新候选 0 / no-issue 2 / 预算跳过 0 / 验证拒绝 2\n✓ 完成 · 耗时 243.3s · 模型调用 11 次 · token 输入 8,734（未命中） · 输出 13,037 · 缓存命中 154,880（94.7%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0053\n[time] 阶段耗时 | 总墙钟 244.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (0.5%)\n[time] 阶段 | 六阶段审计 102.7s (42.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 140.7s (57.5%)\n[time] 审计明细 | P1 3.4s (3.3%) | P3 4.9s (4.8%) | P4 41.1s (40.1%) | P5 41.3s (40.3%) | P6 11.9s (11.6%)\n[usage] 任务总计 | 模型调用 16 次（Agent 11 + 一次性 5） | token 输入 16,382（未命中） | 输出 33,209 | 缓存命中 157,440（90.6%） | $0.0120\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 7,648 / 输出 20,172 / 缓存 2,560）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterF91\\reviewpi\\f18-repair-20261122\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261122_093010_776.json",
+  "token_usage": {
+    "input_tokens": 16382,
+    "output_tokens": 33209,
+    "cache_read_input_tokens": 157440
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 8734,
+      "output_tokens": 13037,
+      "cache_read_input_tokens": 154880
+    },
+    "coverage_repair": {
+      "input_tokens": 7648,
+      "output_tokens": 20172,
+      "cache_read_input_tokens": 2560
+    }
+  }
+}
