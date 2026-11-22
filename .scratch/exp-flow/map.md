@@ -45,7 +45,7 @@
 | F-01 | 覆盖账本：文件 × hunk 三态（candidate / no-issue / not-reached） | P0-1、P1-11、V1/V7 | P0 | DONE | not-reached 比例可见；未覆盖 hunk 只对缺口发补漏；**Balanced 不回退（P 允许回退）** | F-01a iterF91 零模型 91/91；F-01b v3 P 0.522/R 0.400/B 0.453（A 0.500/0.316/0.387；v2 0.439/0.432/0.435）→ B +6.6pp；F-01c C1 `coverageSummary` 进 run.json；全包 1212 passed | C2/C3 拆到 F-15 | [票](issues/F-01-coverage-ledger/ticket.md) · [讨论](issues/F-01-coverage-ledger/discussion.md) |
 | F-02 | 大 MR 准入与分片一致：split 启用时不再按 `maxDiffChars` 整条跳过 | P0-2、V2 | P0 | DONE | FreeCAD 类 diff 不再 skipped；片数 ≤ maxShards；截取留痕 | 准入改为分片优先；单样本 cline（17,227 字符，maxDiffChars=8000）`ok` + `shards[]`（F-02 前会 skipped）；全包 1214 passed / 1 skipped；基准 91/91、B 0.298 已归档 | 超 maxShards = 模型前显式失败；不做大规模验证 | [票](issues/F-02-admission-split/ticket.md) · [讨论](issues/F-02-admission-split/discussion.md) |
 | F-03 | 分片并行（可配 3–8） | P0-3、V2 | P0 | DONE | findings 集合与串行一致；墙钟显著下降；429 不增加 | live：3 样本 22 片，5298.9s → 2111.8s（**2.51×**），429 0/0；fake 等价通过，replay 待补 | 默认 1；网关 `deepseek-v4.1-flash`；归档 `bench/experiments/2026-11-22-f03/` | [票](issues/F-03-shard-concurrency/ticket.md) · [讨论](issues/F-03-shard-concurrency/discussion.md) |
-| F-04 | 证据接地：文件/行号/引文可核对 | P0-4、V3 | P0 | TODO | 伪造行号/引文/越界文件被确定性拒绝；真证据不误杀 | — | 先做零模型硬门 | — |
+| F-04 | 证据接地：文件/行号/引文可核对 | P0-4、V3 | P0 | DONE | 伪造行号/引文/越界文件被确定性拒绝；真证据不误杀 | v1 落地；回放 grounded 217/320、unverified 103/320；全包 1234 passed | 默认 off；warn 计数；drop 会误杀约 32%，未启用；live A/B 待做 | [票](issues/F-04-evidence-grounding/ticket.md) · [讨论](issues/F-04-evidence-grounding/discussion.md) |
 | F-05 | 独立证伪核验（新会话；保护性主题 fail-open） | P0-5、V3 | P0 | TODO | 噪声率下降；真值损失 ≤ 阈值；核验理由可审计 | — | 与 F-04 分开实验 | — |
 | F-06 | 独立补漏默认开启 / 标准化 | P0-6、V4 | P0 | TODO | 3 轮 Balanced ≥ OCR；token 不高于当前 | B2 报告已有小 diff 数据 | 需补大 diff 数据 | — |
 | F-07 | 阶段压缩：合并 1+2、条件化 Phase 4 | P1-7、V5 | P1 | TODO | 每单元请求 -≥1；P/R/B ±2pp 内 | — | 6/4/2 三臂 A/B | — |
@@ -116,3 +116,4 @@
 - 2026-11-22：iterF91 基准（F-02 前，最佳配置）91/91 ok，P 0.381 / R 0.245 / B 0.298，token 53,104,139；归档 `bench/experiments/2026-11-21-f02/baseline-f91-v3/`。
 - 2026-11-22：桥接改为 merge-base（PR 范围）口径，仓内副本同步；F-02 单样本 cline 17,227 字符在 maxDiffChars=8000 下 `ok` + `shards[]`，F-02 前会 skipped；归档 `.../f02-small-check/`；全包 1214 passed；F-02 收口 DONE。
 - 2026-11-22：F-03 有界并行落地（`limits.split.concurrency` 1–8，默认 1；片序聚合/回调；AsyncLocalStorage 时间线；pass 前建 runDir）。live 3 样本 22 片：5298.9s → 2111.8s（2.51×），429 0/0；归档 `bench/experiments/2026-11-22-f03/`。等价性 replay 待补。
+- 2026-11-22：F-04 v1 落地（`limits.evidence` off/warn/drop + `EVIDENCE_UNGROUNDED` + `evidenceGrounding` 审计）。历史回放 v3 320 findings：grounded 217 / unverified 103；drop 会排除约 32%，默认保持 off。全包 1234 passed / 1 skipped。
