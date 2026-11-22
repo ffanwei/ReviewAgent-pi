@@ -81,6 +81,14 @@ export function normalizeScenario(input, source = "scenario") {
   ) {
     throw new Error(`${source}: split.maxShardChars 必须是 ≥ 10000 的整数（产品下限）`);
   }
+  const stageCompression = input.stageCompression;
+  if (
+    stageCompression !== undefined &&
+    stageCompression !== "off" &&
+    stageCompression !== "compact"
+  ) {
+    throw new Error(`${source}: stageCompression 必须是 off / compact`);
+  }
   const timeouts = input.timeouts ?? {};
   if (
     timeouts.oneShotMs !== undefined &&
@@ -102,6 +110,7 @@ export function normalizeScenario(input, source = "scenario") {
     },
     model: input.model,
     corpus: input.corpus,
+    stageCompression,
     ruleSkills,
     strictRuleSkill: input.strictRuleSkill === true,
     split: {

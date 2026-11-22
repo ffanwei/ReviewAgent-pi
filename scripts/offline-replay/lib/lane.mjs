@@ -66,6 +66,11 @@ export async function createLane({ runDir, label, scenario, server, index }) {
   // 开着会让回放把哨兵意见全判 OUT_OF_SCOPE，断言与产品策略耦合。这里与
   // `bin.process.test.ts` 的进程面用例同口径：回放 lane 显式关闭。
   limits.findingScope = { enabled: false };
+  // 阶段计划（ADR-0113）：compact 是产品缺省；冻结 trace 录制于哪一版就按哪一版回放。
+  // 未声明时沿用产品缺省（compact），声明 off 的旧 trace 不会被默认值改动打穿。
+  if (scenario.stageCompression !== undefined) {
+    limits.loop = { stageCompression: scenario.stageCompression };
+  }
   // 预过滤 glob（ADR-0069）同理：回放断言的是冻结产物，`large-mr` 的期望产物里
   // README.md 被真实检视并上报；回放 lane 必须显式固定为空数组，才能与 trace
   // 逐字节对齐（ADR-0092 已把 Markdown 从产品缺省里移出，这里仍按录制期配置快照固定）。
