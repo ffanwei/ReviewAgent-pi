@@ -114,6 +114,7 @@
 | [ADR-0109](0109-repo-side-model-note.md) | `--repo` 停在 base / mixed 侧时把可执行提示注入初始 user 消息；head / unknown 请求字节不变 |
 | [ADR-0110](0110-semantic-aware-skill-candidate-merge.md) | 规则 Skill 候选预合并改为同根因语义判定：同文件/同 category/±5 行 + rule 或标题相似度；不同意见不再被提前吞掉 |
 | [ADR-0111](0111-tip-markdown-output-formatting.md) | 上报 tips 的 `review` / `suggestion` 在输出面按 `影响评估` / `代码示例` 确定性断段；不改请求字节与候选流 |
+| [ADR-0112](0112-shard-concurrency.md) | 分片检视有界并行：`limits.split.concurrency` 1–8（默认 1）、按片序聚合/回调、AsyncLocalStorage 隔离请求时间线 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 
