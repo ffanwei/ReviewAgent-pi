@@ -115,6 +115,7 @@
 | [ADR-0110](0110-semantic-aware-skill-candidate-merge.md) | 规则 Skill 候选预合并改为同根因语义判定：同文件/同 category/±5 行 + rule 或标题相似度；不同意见不再被提前吞掉 |
 | [ADR-0111](0111-tip-markdown-output-formatting.md) | 上报 tips 的 `review` / `suggestion` 在输出面按 `影响评估` / `代码示例` 确定性断段；不改请求字节与候选流 |
 | [ADR-0112](0112-shard-concurrency.md) | 分片检视有界并行：`limits.split.concurrency` 1–8（默认 1）、按片序聚合/回调、AsyncLocalStorage 隔离请求时间线 |
+| [ADR-0113](0113-stage-compression.md) | 阶段压缩默认 `compact`：合并 Phase 1+2、Phase 1 禁工具、`neededContext` 为空时跳过 Phase 4；`off` 可回滚 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

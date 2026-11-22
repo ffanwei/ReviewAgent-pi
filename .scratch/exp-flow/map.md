@@ -48,7 +48,7 @@
 | F-04 | 证据接地：文件/行号/引文可核对 | P0-4、V3 | P0 | DONE | 伪造行号/引文/越界文件被确定性拒绝；真证据不误杀 | v1 落地；回放 grounded 217/320、unverified 103/320；全包 1234 passed | 默认 off；warn 计数；drop 会误杀约 32%，未启用；live A/B 待做 | [票](issues/F-04-evidence-grounding/ticket.md) · [讨论](issues/F-04-evidence-grounding/discussion.md) |
 | F-05 | 独立证伪核验（新会话；保护性主题 fail-open） | P0-5、V3 | P0 | DONE | 噪声率下降；真值损失 ≤ 阈值；核验理由可审计 | 回放 103 条 unverified：reject 仅 2/0 条、pass 精度 33–34%；F-04 drop + pass 返场 B 27.9%/28.4% < baseline 29.8% → 不接主路径（`bench/experiments/2026-11-22-f05/README.md`） | 一次调用/候选；不循环；默认 off | [票](issues/F-05-independent-verification/ticket.md) · [讨论](issues/F-05-independent-verification/discussion.md) |
 | F-06 | 独立补漏默认开启 / 标准化 | P0-6、V4 | P0 | DROPPED | — | 六项镜头是按测评集 GT 类别反推的固定清单（测评集过拟合）；B2 仅 10 条小 diff、最差轮差距在 judge 噪声带内 → 不实现 | 独立第二视角并入 P0-1 覆盖驱动补漏 | [票](issues/F-06-independent-sweep/ticket.md) · [讨论](issues/F-06-independent-sweep/discussion.md) |
-| F-07 | 阶段压缩：合并 1+2、条件化 Phase 4 | P1-7、V5 | P1 | TODO | 每单元请求 -≥1；P/R/B ±2pp 内 | — | 6/4/2 三臂 A/B | — |
+| F-07 | 阶段压缩：合并 1+2、条件化 Phase 4 | P1-6、V5 | P1 | DONE | 每单元请求 -≥1；P/R/B ±2pp 内 | S20：请求 308→271（−12%）、token 6.60M→6.27M（−5%）、B 25.8%→35.4%（ΔB CI +1.35~+15.63pp）；默认 `compact`（Phase 1 禁工具）；墙钟 +18.6% 待观察；条件化 4 零触发 | `off` 可回滚；P1-7 风险预算单列 | [票](issues/F-07-stage-compression/ticket.md) · [讨论](issues/F-07-stage-compression/discussion.md) |
 | F-08 | 检索预算 + 重叠区间 Ledger | P1-8/9 | P1 | TODO | 同文件区间不重读；空搜索比例下降 | — | 12 run 已证区间盲 | — |
 | F-09 | 输出校准：confidence 0.3；范围外 `scope` 标注 | P1-10、V8 | P1 | TODO | 真值不丢；噪声不升；范围外可被下游选择 | VUL4J 10 例数据 | 需产品口径确认 | — |
 | F-10 | Phase 5/6 按需读取 | P1-13、V5 | P1 | TODO | 工具调用 -≥20%；P/R/B 不回退 | 12 run：P5 仅 1 次、P6 为 0 | 提示词 + 预算 | — |
