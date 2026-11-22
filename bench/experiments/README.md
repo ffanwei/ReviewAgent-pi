@@ -34,3 +34,12 @@
 | `2026-11-22-f03/comparison.md` | 对比报告、token 偏高的解释与后续 replay 计划 | — | `comparison.json` / `compare_runs.py` 同目录 |
 
 > F-03 的 live 对比证明墙钟与 429；findings/token 等价需 replay 同一 trace 证明，不能由 live 采样差异推出。
+
+## 2026-11-22 · F-04 证据接地历史回放
+
+| 目录 | 说明 | 结果 |
+|---|---|---|
+| `2026-11-22-f04/v3.json` | v3 iterF91 320 findings 的接地分布 | grounded 217 / unverified 103 / unverifiable 0 |
+| `2026-11-22-f04/old-arm2.json` | 旧 0.6.1 arm2 1489 findings | grounded 1022 / unverified 463 / unverifiable 4 |
+| `2026-11-22-f04/eval_grounding.mjs` | 零模型回放脚本（编译后的 grounding 模块） | 只读审计 + git show head 文件 |
+| `2026-11-22-f04/README.md` | 方法与误杀风险说明 | drop 会排除约 32%，默认 off |
