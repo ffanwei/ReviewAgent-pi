@@ -65,7 +65,13 @@ export interface OneShotLlmInput {
 }
 
 /** 一次性调用的用途分类（只用于日志账本，不改变任何请求字节） */
-export type OneShotPurpose = "tips" | "summary" | "candidate-repair" | "reply-repair" | "coverage-repair";
+export type OneShotPurpose =
+  | "tips"
+  | "summary"
+  | "candidate-repair"
+  | "reply-repair"
+  | "coverage-repair"
+  | "finding-verification";
 
 /**
  * 一次成功的一次性调用样本（进程级 usage 观测）。

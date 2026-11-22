@@ -734,6 +734,7 @@ const ONE_SHOT_PURPOSE_ORDER: readonly OneShotPurposeKey[] = [
   "candidate-repair",
   "reply-repair",
   "coverage-repair",
+  "finding-verification",
   "other",
 ];
 
@@ -743,6 +744,7 @@ const ONE_SHOT_PURPOSE_LABEL: Readonly<Record<OneShotPurposeKey, string>> = {
   "candidate-repair": "候选修复",
   "reply-repair": "解析修复",
   "coverage-repair": "覆盖补漏",
+  "finding-verification": "独立证伪",
   other: "其他",
 };
 
