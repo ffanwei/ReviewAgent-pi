@@ -355,6 +355,21 @@ export interface EvidenceGroundingAudit {
   readonly dropped: number;
 }
 
+/**
+ * 检索预算留痕（F-08b）：只在 `limits.retrieval` 任一上限 > 0 时出现。
+ * 计数器覆盖整个 pass（分片路径按片独立）。
+ */
+export interface RetrievalBudgetAudit {
+  readonly maxReadsPerFile: number;
+  readonly maxConsecutiveEmptySearches: number;
+  readonly maxReadCharsPerRun: number;
+  readonly reads: number;
+  readonly readSkips: number;
+  readonly searchSkips: number;
+  readonly emptySearches: number;
+  readonly readChars: number;
+}
+
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
   readonly toolCallLog: readonly ToolCallRecord[];
@@ -389,6 +404,8 @@ export interface RunAudit {
   readonly rejectionCounts?: CandidateRejectionCounts;
   /** 证据接地计数（F-04；只在 mode 非 off 且检查过候选时在场） */
   readonly evidenceGrounding?: EvidenceGroundingAudit;
+  /** 检索预算计数（F-08b）：只在配置了上限时出现 */
+  readonly retrievalBudget?: RetrievalBudgetAudit;
   /** Skill 包检视留痕：本次 diff 未命中任何 skill 根时省键 */
   readonly skillReview?: SkillReviewRecord;
   /**

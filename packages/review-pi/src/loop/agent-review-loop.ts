@@ -282,6 +282,84 @@ export async function runAgentReviewLoop(
     progressDetailChars: runtime.limits.micro.progressDetailChars,
   };
 
+  // 检索预算（F-08b）：工具层确定性护栏；上限全 0 = 关闭（默认）。
+  const retrievalLimits = runtime.limits.retrieval;
+  const retrievalState = {
+    readsByPath: new Map<string, number>(),
+    reads: 0,
+    readSkips: 0,
+    searchSkips: 0,
+    emptySearches: 0,
+    consecutiveEmptySearches: 0,
+    readChars: 0,
+  };
+  const retrievalEnabled =
+    retrievalLimits.maxReadsPerFile > 0 ||
+    retrievalLimits.maxConsecutiveEmptySearches > 0 ||
+    retrievalLimits.maxReadCharsPerRun > 0;
+
+  /** 返回 undefined = 放行；否则为回给模型的跳过文本（并计数）。 */
+  function retrievalSkip(call: { readonly name: string; readonly argumentsJson: string }): string | undefined {
+    if (!retrievalEnabled) {
+      return undefined;
+    }
+    if (call.name === "review.get_file") {
+      let path = "";
+      try {
+        const args = JSON.parse(call.argumentsJson) as { path?: unknown };
+        path = typeof args.path === "string" ? args.path : "";
+      } catch {
+        return undefined;
+      }
+      if (path === "") {
+        return undefined;
+      }
+      const count = retrievalState.readsByPath.get(path) ?? 0;
+      if (retrievalLimits.maxReadsPerFile > 0 && count >= retrievalLimits.maxReadsPerFile) {
+        retrievalState.readSkips += 1;
+        return `Retrieval budget: review.get_file for "${path}" already read ${String(count)} time(s) (limit ${String(retrievalLimits.maxReadsPerFile)}). Use the content already returned, or proceed with current evidence.`;
+      }
+      if (
+        retrievalLimits.maxReadCharsPerRun > 0 &&
+        retrievalState.readChars >= retrievalLimits.maxReadCharsPerRun
+      ) {
+        retrievalState.readSkips += 1;
+        return `Retrieval budget: total get_file content limit (${String(retrievalLimits.maxReadCharsPerRun)} chars) reached. Proceed with current evidence.`;
+      }
+      retrievalState.readsByPath.set(path, count + 1);
+      retrievalState.reads += 1;
+      return undefined;
+    }
+    if (call.name === "review.search_code") {
+      if (
+        retrievalLimits.maxConsecutiveEmptySearches > 0 &&
+        retrievalState.consecutiveEmptySearches >= retrievalLimits.maxConsecutiveEmptySearches
+      ) {
+        retrievalState.searchSkips += 1;
+        return `Retrieval budget: ${String(retrievalState.consecutiveEmptySearches)} consecutive searches returned no matches. Stop searching and proceed with current evidence.`;
+      }
+    }
+    return undefined;
+  }
+
+  function noteRetrievalResult(call: { readonly name: string }, result: string): void {
+    if (!retrievalEnabled) {
+      return;
+    }
+    if (call.name === "review.get_file") {
+      retrievalState.readChars += result.length;
+      return;
+    }
+    if (call.name === "review.search_code") {
+      if (result.includes(": no matches.")) {
+        retrievalState.emptySearches += 1;
+        retrievalState.consecutiveEmptySearches += 1;
+      } else {
+        retrievalState.consecutiveEmptySearches = 0;
+      }
+    }
+  }
+
   const agentTools = buildAgentTools(inputs.toolkit, {
     beforeExecute: (call) => {
       if (executedToolCalls >= MAX_TOOL_CALLS) {
@@ -294,11 +372,21 @@ export async function runAgentReviewLoop(
         });
         return { kind: "skip", text: TOOL_BUDGET_EXHAUSTED_SUMMARY };
       }
+      const skippedByRetrieval = retrievalSkip(call);
+      if (skippedByRetrieval !== undefined) {
+        toolCallLog.push({
+          name: call.name,
+          argumentsJson: call.argumentsJson,
+          resultSummary: skippedByRetrieval,
+        });
+        return { kind: "skip", text: skippedByRetrieval };
+      }
       // 预算预约同步于检查（批内调用序即预约序）；失败不退还（防失败死循环）
       executedToolCalls += 1;
       return { kind: "run" };
     },
     onResult: (call, result) => {
+      noteRetrievalResult(call, result);
       toolCallLog.push({
         name: call.name,
         argumentsJson: call.argumentsJson,
@@ -413,6 +501,18 @@ export async function runAgentReviewLoop(
           evidenceGrounding: {
             mode: inputs.evidenceGrounding.mode,
             ...evidenceGroundingCounts,
+          },
+        }
+      : {}),
+    ...(retrievalEnabled
+      ? {
+          retrievalBudget: {
+            ...retrievalLimits,
+            reads: retrievalState.reads,
+            readSkips: retrievalState.readSkips,
+            searchSkips: retrievalState.searchSkips,
+            emptySearches: retrievalState.emptySearches,
+            readChars: retrievalState.readChars,
           },
         }
       : {}),

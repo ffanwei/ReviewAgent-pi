@@ -2703,12 +2703,12 @@ test(
         tipsFilter?: unknown;
         severityFilter?: unknown;
       };
-      expect(audit.tipsFilter).toEqual({ minConfidence: 0.5, droppedTips: 0 });
+      expect(audit.tipsFilter).toEqual({ minConfidence: 0.3, droppedTips: 0 });
       expect(audit.severityFilter).toEqual({ minSeverity: "P3", droppedTips: 0 });
       const record = JSON.parse(
         readFileSync(path.join(outDir, CLI_TASK_ID, "runs", "run.json"), "utf8"),
       ) as { baseline: { audit: { tipsFilter?: unknown; severityFilter?: unknown } } };
-      expect(record.baseline.audit.tipsFilter).toEqual({ minConfidence: 0.5, droppedTips: 0 });
+      expect(record.baseline.audit.tipsFilter).toEqual({ minConfidence: 0.3, droppedTips: 0 });
       expect(record.baseline.audit.severityFilter).toEqual({ minSeverity: "P3", droppedTips: 0 });
 
       expectNoKeyLeak([

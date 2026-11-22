@@ -893,3 +893,77 @@ test("阶段压缩：Phase 3 回复缺 neededContext 时不跳过 Phase 4（fail
   expect(outcome.audit.requests).toHaveLength(5);
   expect(outcome.audit.phaseLog.map((entry) => entry.requestCount)).toEqual([1, 0, 1, 1, 1, 1]);
 });
+
+test("检索预算：同文件读取超限后返回跳过文本，计数进审计", async () => {
+  const base = sixPhaseRuntime();
+  const runtime: ReviewRuntime = {
+    ...base,
+    limits: {
+      ...base.limits,
+      retrieval: { maxReadsPerFile: 1, maxConsecutiveEmptySearches: 0, maxReadCharsPerRun: 0 },
+    },
+  };
+  const replies = [
+    textReply(phaseText(0), 0),
+    toolReply([{ id: "call-a", name: "review_get_file", args: { path: "README.md" } }], 1),
+    textReply(phaseText(1), 2),
+    textReply(phaseText(2), 3),
+    toolReply([{ id: "call-b", name: "review_get_file", args: { path: "README.md" } }], 4),
+    textReply(phaseText(3), 5),
+    textReply(phaseText(4), 6),
+    textReply(phaseText(5), 7),
+  ];
+  const { run } = scriptedLoop(replies, INITIAL, runtime);
+  const outcome = await run();
+
+  expect(outcome.complete).toBe(true);
+  expect(outcome.audit.retrievalBudget).toEqual({
+    maxReadsPerFile: 1,
+    maxConsecutiveEmptySearches: 0,
+    maxReadCharsPerRun: 0,
+    reads: 1,
+    readSkips: 1,
+    searchSkips: 0,
+    emptySearches: 0,
+    readChars: expect.any(Number),
+  });
+  expect(
+    outcome.audit.toolCallLog.some((entry) => entry.resultSummary.includes("Retrieval budget")),
+  ).toBe(true);
+});
+
+test("检索预算：连续空搜索达到上限后返回跳过文本", async () => {
+  const base = sixPhaseRuntime();
+  const runtime: ReviewRuntime = {
+    ...base,
+    limits: {
+      ...base.limits,
+      retrieval: { maxReadsPerFile: 0, maxConsecutiveEmptySearches: 1, maxReadCharsPerRun: 0 },
+    },
+  };
+  const replies = [
+    textReply(phaseText(0), 0),
+    toolReply(
+      [{ id: "call-a", name: "review_search_code", args: { query: "zzzz-not-present" } }],
+      1,
+    ),
+    textReply(phaseText(1), 2),
+    textReply(phaseText(2), 3),
+    toolReply(
+      [{ id: "call-b", name: "review_search_code", args: { query: "zzzz-not-present" } }],
+      4,
+    ),
+    textReply(phaseText(3), 5),
+    textReply(phaseText(4), 6),
+    textReply(phaseText(5), 7),
+  ];
+  const { run } = scriptedLoop(replies, INITIAL, runtime);
+  const outcome = await run();
+
+  expect(outcome.complete).toBe(true);
+  expect(outcome.audit.retrievalBudget?.emptySearches).toBe(1);
+  expect(outcome.audit.retrievalBudget?.searchSkips).toBe(1);
+  expect(
+    outcome.audit.toolCallLog.some((entry) => entry.resultSummary.includes("consecutive searches")),
+  ).toBe(true);
+});

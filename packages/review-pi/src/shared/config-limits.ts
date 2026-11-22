@@ -181,6 +181,21 @@ export interface ArchiveLimits {
   readonly maxCompressionRatio: number;
 }
 
+/**
+ * 检索预算（F-08b）：工具层的确定性护栏，缺省全部 0 = 不限制。
+ *
+ * - `maxReadsPerFile`：同一路径一次检视内最多 `get_file` 次数；
+ * - `maxConsecutiveEmptySearches`：连续空 `search_code` 达到上限后停止继续搜索；
+ * - `maxReadCharsPerRun`：一次检视内 `get_file` 结果字符总量上限。
+ *
+ * 只影响工具执行，不改变 findings 语义；跳过与命中都进审计。
+ */
+export interface RetrievalLimits {
+  readonly maxReadsPerFile: number;
+  readonly maxConsecutiveEmptySearches: number;
+  readonly maxReadCharsPerRun: number;
+}
+
 export interface MicroLimits {
   readonly skillBashOutputChars: number;
   readonly queryEchoChars: number;
@@ -223,6 +238,7 @@ export interface Limits {
   readonly split: SplitLimits;
   readonly archive: ArchiveLimits;
   readonly micro: MicroLimits;
+  readonly retrieval: RetrievalLimits;
   readonly coverage: CoverageLimits;
 }
 
@@ -249,7 +265,7 @@ export const DEFAULT_LIMITS: Limits = {
     streamAttempts: 3,
     streamReplayBudgetMs: 600_000,
   },
-  confidence: { min: 0.5 },
+  confidence: { min: 0.3 },
   severity: { min: "P3" },
   testFiles: { skip: false },
   mrFilter: {
@@ -258,7 +274,7 @@ export const DEFAULT_LIMITS: Limits = {
     excludeRegex: [],
   },
   findingScope: { enabled: true, contextLines: 10 },
-  evidence: { mode: "off", minMatchChars: 30 },
+  evidence: { mode: "warn", minMatchChars: 30 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_000_000 },
   split: { enabled: true, maxShardChars: 120_000, maxShards: 12, contextSummaryChars: 8_000, concurrency: 1 },
   archive: {
@@ -267,6 +283,7 @@ export const DEFAULT_LIMITS: Limits = {
     maxTotalUncompressed: 64 * 1024 * 1024,
     maxCompressionRatio: 100,
   },
+  retrieval: { maxReadsPerFile: 3, maxConsecutiveEmptySearches: 4, maxReadCharsPerRun: 400_000 },
   micro: {
     skillBashOutputChars: 256_000,
     queryEchoChars: 120,
@@ -286,7 +303,7 @@ export const DEFAULT_LIMITS: Limits = {
 };
 
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "boundary", "split", "archive", "micro", "coverage"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "evidence", "boundary", "split", "archive", "micro", "retrieval", "coverage"] as const;
 const LOOP_KEYS = ["maxRounds", "phase5Sweep", "stageCompression"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -319,6 +336,7 @@ const EVIDENCE_KEYS = ["mode", "minMatchChars"] as const;
 
 const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars", "concurrency"] as const;
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
+const RETRIEVAL_KEYS = ["maxReadsPerFile", "maxConsecutiveEmptySearches", "maxReadCharsPerRun"] as const;
 const MICRO_KEYS = [
   "skillBashOutputChars",
   "queryEchoChars",
@@ -563,6 +581,14 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
     maxCompressionRatio: intOr(archiveObj.maxCompressionRatio, "limits.archive.maxCompressionRatio", 1, 10_000, DEFAULT_LIMITS.archive.maxCompressionRatio),
   };
 
+  const retrievalObj = optionalObject(limits.retrieval, "limits.retrieval", warnings);
+  assertKnownKeys(retrievalObj, RETRIEVAL_KEYS, "limits.retrieval", warnings);
+  const retrieval: RetrievalLimits = {
+    maxReadsPerFile: intOr(retrievalObj.maxReadsPerFile, "limits.retrieval.maxReadsPerFile", 0, 100, DEFAULT_LIMITS.retrieval.maxReadsPerFile),
+    maxConsecutiveEmptySearches: intOr(retrievalObj.maxConsecutiveEmptySearches, "limits.retrieval.maxConsecutiveEmptySearches", 0, 100, DEFAULT_LIMITS.retrieval.maxConsecutiveEmptySearches),
+    maxReadCharsPerRun: intOr(retrievalObj.maxReadCharsPerRun, "limits.retrieval.maxReadCharsPerRun", 0, 100_000_000, DEFAULT_LIMITS.retrieval.maxReadCharsPerRun),
+  };
+
   const microObj = optionalObject(limits.micro, "limits.micro", warnings);
   assertKnownKeys(microObj, MICRO_KEYS, "limits.micro", warnings);
   const micro: MicroLimits = {
@@ -610,5 +636,5 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
     },
   };
 
-  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, evidence, boundary, split, archive, micro, coverage };
+  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, evidence, boundary, split, archive, micro, retrieval, coverage };
 }

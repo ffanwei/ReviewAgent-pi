@@ -910,7 +910,7 @@ ${excludeGlobLines}
     // 检视意见置信度过滤（ADR-0052）：confidence 低于 min 的意见不进入中文 tips
     // （reviews_tips_zh.json 与 mrReviewResult.reviewTips）；英文 findings / stdout 不受影响。
     // 0–1，缺省 0.5（= 过滤 Low 档）；0 = 不过滤。
-    "confidence": { "min": 0.5 },
+    "confidence": { "min": 0.3 },
     // 检视意见严重级过滤：severity 低于 min 的意见不进入中文 tips
     // （reviews_tips_zh.json 与 mrReviewResult.reviewTips）；英文 findings / stdout 不受影响。
     // 取值 P0–P3，缺省 P3（= 不过滤）；P2 = 只保留 P0/P1/P2，丢弃 P3 建议级。
@@ -948,7 +948,7 @@ ${excludeGlobLines}
     "findingScope": { "enabled": true, "contextLines": 10 },
     // 证据接地（F-04）：off = 不核对；warn = 只计数；drop = 无接地候选拒绝。
     // minMatchChars 是长代码片段的窗口匹配长度；整段逐字命中不受此限。
-    "evidence": { "mode": "off", "minMatchChars": 30 },
+    "evidence": { "mode": "warn", "minMatchChars": 30 },
     // MR 边界护栏：超界只告警（domainWarning）不拒检；null = 该维不设界。
     // maxDiffChars 是输入体积门：过滤后超限直接报错（不发模型请求），null = 关闭门禁。
     "boundary": {
@@ -985,6 +985,13 @@ ${excludeGlobLines}
       "toolNameChars": 60,               // 未知名工具回显的字符上限。
       "argumentsSummaryChars": 80,       // 进度行里工具入参摘要的字符上限（脱敏）。
       "progressDetailChars": 120         // 进度行里失败 / 结果摘要的字符上限（只取首行）。
+    },
+    // 检索预算（F-08b）：工具层护栏；缺省 3 次/文件、4 次连续空搜索、40 万字符（0 = 不限）。
+    // 超限不执行工具、返回有界提示；计数进审计 retrievalBudget。
+    "retrieval": {
+      "maxReadsPerFile": 3,              // 同一文件一次检视内最多 get_file 次数（0 = 不限）。
+      "maxConsecutiveEmptySearches": 4,  // 连续空 search_code 达到上限后停止搜索（0 = 不限）。
+      "maxReadCharsPerRun": 400000       // 一次检视 get_file 结果字符总量上限（0 = 不限）。
     },
     // 覆盖缺口补漏（F-01b）：只对账本里 not-reached 的 hunk 发独立一次性请求。
     // enabled = false（缺省）时行为与 F-01a 完全一致；开启后每个 pass 最多

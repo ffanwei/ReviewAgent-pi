@@ -201,6 +201,30 @@ describe("loadConfig：失败策略", () => {
     expect(defaults.limits.loop.phase5Sweep).toBe(false);
   });
 
+  test("limits.retrieval：缺省 3/4/40 万，可配且上限校验", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.retrieval).toEqual({
+      maxReadsPerFile: 3,
+      maxConsecutiveEmptySearches: 4,
+      maxReadCharsPerRun: 400000,
+    });
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"retrieval":{"maxReadsPerFile":3,"maxConsecutiveEmptySearches":4,"maxReadCharsPerRun":400000}}`,
+        ),
+      ),
+    }).config;
+    expect(tuned.limits.retrieval.maxReadsPerFile).toBe(3);
+    expect(tuned.limits.retrieval.maxConsecutiveEmptySearches).toBe(4);
+    expect(tuned.limits.retrieval.maxReadCharsPerRun).toBe(400000);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"retrieval":{"maxReadsPerFile":-1}}`)),
+      }),
+    ).toThrow(/maxReadsPerFile/);
+  });
+
   test("limits.loop.stageCompression：off/compact（缺省 compact；非法值 fail fast）", () => {
     const compact = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"stageCompression":"compact"}}`)),
@@ -258,9 +282,9 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/limits.retry.baseDelayMs must be an integer/);
   });
 
-  test("limits.confidence.min：缺省 0.5，0–1 小数可配且进 digest", () => {
+  test("limits.confidence.min：缺省 0.3，0–1 小数可配且进 digest", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
-    expect(defaults.limits.confidence).toEqual({ min: 0.5 });
+    expect(defaults.limits.confidence).toEqual({ min: 0.3 });
 
     const tuned = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"confidence":{"min":0.7}}`)),
@@ -585,7 +609,7 @@ describe("loadConfig：边界", () => {
 describe("loadConfig：limits.evidence（F-04 证据接地）", () => {
   test("缺省：mode=off / minMatchChars=30", () => {
     const { config } = loadConfig({ configPath: writeConfig(minimalConfig("")) });
-    expect(config.limits.evidence).toEqual({ mode: "off", minMatchChars: 30 });
+    expect(config.limits.evidence).toEqual({ mode: "warn", minMatchChars: 30 });
   });
 
   test("mode 与 minMatchChars 可覆盖", () => {

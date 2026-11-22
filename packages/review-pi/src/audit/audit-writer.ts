@@ -10,6 +10,7 @@ import type {
   CandidateRejection,
   CandidateRejectionCounts,
   CoverageRepairAudit,
+  RetrievalBudgetAudit,
   MrBoundaryRecord,
   MrFilterRecord,
   ModelFallbackRecord,
@@ -110,6 +111,8 @@ export interface AuditFileContent {
    * 键序紧接 coverage，config / modelFallback 仍在尾部。
    */
   readonly coverageRepair?: CoverageRepairAudit;
+  /** 检索预算计数（F-08b）：只在配置了上限时出现 */
+  readonly retrievalBudget?: RetrievalBudgetAudit;
   /**
    * 生效配置快照（ADR-0025）：全量非秘密生效值 + 来源 + digest；秘密只记
    * `set|missing`。只进审计文件（stdout 键集不变）。直调内核（测试/嵌入）可缺省。
@@ -196,6 +199,9 @@ export function buildAuditFileContent(args: {
     ...(args.audit.coverage !== undefined ? { coverage: args.audit.coverage } : {}),
     ...(args.audit.coverageRepair !== undefined
       ? { coverageRepair: args.audit.coverageRepair }
+      : {}),
+    ...(args.audit.retrievalBudget !== undefined
+      ? { retrievalBudget: args.audit.retrievalBudget }
       : {}),
     ...(args.config !== undefined ? { config: args.config } : {}),
     // 模型替换留痕（ADR-0080）：无替换整键缺席（零字节漂移）

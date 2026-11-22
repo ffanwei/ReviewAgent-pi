@@ -15,6 +15,7 @@ import type {
   PhaseRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
+  RetrievalBudgetAudit,
   RunAudit,
   RunResult,
   SeverityFilterRecord,
@@ -62,6 +63,8 @@ export interface AuditLight {
   readonly rejectionCounts?: CandidateRejectionCounts;
   /** 证据接地计数（F-04）：只在 mode 非 off 且检查过候选时在场 */
   readonly evidenceGrounding?: EvidenceGroundingAudit;
+  /** 检索预算计数（F-08b）：只在配置了上限时出现 */
+  readonly retrievalBudget?: RetrievalBudgetAudit;
   /** 覆盖缺口补漏（F-01b）：只在启用时在场 */
   readonly coverageRepair?: CoverageRepairAudit;
   /** 覆盖账本 JSON 汇总（F-01c）：只在 pass 携带 coverage 时在场 */
@@ -171,6 +174,9 @@ export function toAuditLight(audit: RunAudit): AuditLight {
     ...(audit.rejectionCounts !== undefined ? { rejectionCounts: audit.rejectionCounts } : {}),
     ...(audit.evidenceGrounding !== undefined
       ? { evidenceGrounding: audit.evidenceGrounding }
+      : {}),
+    ...(audit.retrievalBudget !== undefined
+      ? { retrievalBudget: audit.retrievalBudget }
       : {}),
     ...(audit.coverageRepair !== undefined ? { coverageRepair: audit.coverageRepair } : {}),
     ...(audit.coverage !== undefined ? { coverageSummary: summarizeCoverage(audit.coverage) } : {}),
