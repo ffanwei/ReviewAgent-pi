@@ -133,7 +133,7 @@ test("F-02：split 开启时超 maxDiffChars 仍进入分片，不再整条跳�
     limits: {
       ...DEFAULT_REVIEW_RUNTIME.limits,
       boundary: { ...DEFAULT_REVIEW_RUNTIME.limits.boundary, maxDiffChars: 10 },
-      split: { enabled: true, maxShardChars: 200, maxShards: 4, contextSummaryChars: 1_000 },
+      split: { enabled: true, maxShardChars: 200, maxShards: 4, contextSummaryChars: 1_000, concurrency: 1 },
     },
   };
   const outcome = await runReviewOutcome(
@@ -156,7 +156,7 @@ test("F-02：片数超 maxShards 显式失败，且在模型请求之前", async
     limits: {
       ...DEFAULT_REVIEW_RUNTIME.limits,
       boundary: { ...DEFAULT_REVIEW_RUNTIME.limits.boundary, maxDiffChars: 10 },
-      split: { enabled: true, maxShardChars: 200, maxShards: 2, contextSummaryChars: 1_000 },
+      split: { enabled: true, maxShardChars: 200, maxShards: 2, contextSummaryChars: 1_000, concurrency: 1 },
     },
   };
   await expect(

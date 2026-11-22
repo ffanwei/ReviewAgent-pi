@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
@@ -146,21 +147,48 @@ export type RequestTimelineEntry = TimelineAttemptLine | TimelineRequestLine;
 /** 观测缝：缺省 null = 零行为变化、零 IO */
 export type RequestTimelineSink = (entry: RequestTimelineEntry) => void;
 
-let timelineSink: RequestTimelineSink | null = null;
-
-/** 安装 / 清除进程级观测器（只影响留痕采集，不改变任何调用结果） */
-export function setRequestTimelineSink(sink: RequestTimelineSink | null): void {
-  timelineSink = sink;
+/**
+ * 片级时间线隔离（F-03）：并行分片时每遍必须写自己的
+ * `request-timeline.jsonl`。进程级单值 sink 会让并发遍互相覆盖，
+ * 因此把 sink 放进 AsyncLocalStorage；未进入 scope 的调用（CLI 收尾、
+ * 单遍外部调用）仍落到 fallback，保持旧行为。
+ */
+interface TimelineSinkScope {
+  sink: RequestTimelineSink | null;
 }
 
-/** 是否已安装观测器（kernel 侧据此决定要不要包 fetch / 流） */
+const timelineScope = new AsyncLocalStorage<TimelineSinkScope>();
+let fallbackTimelineSink: RequestTimelineSink | null = null;
+
+/**
+ * 在一个独立的观测 scope 中执行 `fn`。并行分片时每个 pass / 每个片级
+ * 回调各包一层，保证 `setRequestTimelineSink` 不跨片串写。
+ */
+export function runWithRequestTimelineScope<T>(fn: () => Promise<T>): Promise<T> {
+  return timelineScope.run({ sink: null }, fn);
+}
+
+/** 安装 / 清除观测器（scope 内只影响本异步上下文；scope 外维持旧全局行为） */
+export function setRequestTimelineSink(sink: RequestTimelineSink | null): void {
+  const scope = timelineScope.getStore();
+  if (scope !== undefined) {
+    scope.sink = sink;
+    return;
+  }
+  fallbackTimelineSink = sink;
+}
+
+/** 当前上下文是否已安装观测器（kernel 侧据此决定要不要包 fetch / 流） */
 export function hasRequestTimelineSink(): boolean {
-  return timelineSink !== null;
+  const scope = timelineScope.getStore();
+  return (scope !== undefined ? scope.sink : fallbackTimelineSink) !== null;
 }
 
 /** 发射一条时间线（缺省 sink = 空操作） */
 export function emitRequestTimeline(entry: RequestTimelineEntry): void {
-  timelineSink?.(entry);
+  const scope = timelineScope.getStore();
+  const sink = scope !== undefined ? scope.sink : fallbackTimelineSink;
+  sink?.(entry);
 }
 
 /** 进程级 requestId 分配（同一 JSONL 内唯一；agent 与 one-shot 共用） */

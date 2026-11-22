@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "vitest";
 
 import {
   createTimelineRecorder,
+  emitRequestTimeline,
+  runWithRequestTimelineScope,
   setRequestTimelineSink,
   type RequestTimelineEntry,
 } from "./request-timeline.js";
@@ -135,4 +137,26 @@ test("进程级 requestId 唯一（同一次逻辑请求的 replay 共享）", (
 
   expect(first.requestId).not.toBe(second.requestId);
   expect(replay.requestId).toBe(first.requestId);
+});
+
+test("time-line scope：并发 pass 各写各的 sink，不互相覆盖", async () => {
+  const first: RequestTimelineEntry[] = [];
+  const second: RequestTimelineEntry[] = [];
+  const entry = { kind: "attempt" } as unknown as RequestTimelineEntry;
+
+  await Promise.all([
+    runWithRequestTimelineScope(async () => {
+      setRequestTimelineSink((item) => first.push(item));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      emitRequestTimeline(entry);
+    }),
+    runWithRequestTimelineScope(async () => {
+      setRequestTimelineSink((item) => second.push(item));
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      emitRequestTimeline(entry);
+    }),
+  ]);
+
+  expect(first).toEqual([entry]);
+  expect(second).toEqual([entry]);
 });

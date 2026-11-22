@@ -569,13 +569,14 @@ describe("loadConfig：边界", () => {
 });
 
 describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
-  test("缺省值：enabled=true / 120000 / 12 / 8000（ADR-0071）", () => {
+  test("缺省值：enabled=true / 120000 / 12 / 8000 / concurrency=1（ADR-0071）", () => {
     const { config, warnings } = loadConfig({ configPath: writeConfig(minimalConfig("")) });
     expect(config.limits.split).toEqual({
       enabled: true,
       maxShardChars: 120_000,
       maxShards: 12,
       contextSummaryChars: 8_000,
+      concurrency: 1,
     });
     expect(warnings.join("\n")).not.toContain("limits.split");
   });
@@ -584,7 +585,7 @@ describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
     const { config } = loadConfig({
       configPath: writeConfig(
         minimalConfig(
-          `,"limits":{"split":{"enabled":false,"maxShardChars":10000,"maxShards":1,"contextSummaryChars":1000}}`,
+          `,"limits":{"split":{"enabled":false,"maxShardChars":10000,"maxShards":1,"contextSummaryChars":1000,"concurrency":3}}`,
         ),
       ),
     });
@@ -593,9 +594,11 @@ describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
       maxShardChars: 10_000,
       maxShards: 1,
       contextSummaryChars: 1_000,
+      concurrency: 3,
     });
     expect(config.overridden).toContain("limits.split.enabled");
     expect(config.overridden).toContain("limits.split.maxShards");
+    expect(config.overridden).toContain("limits.split.concurrency");
   });
 
   test("enabled 必须是布尔值（不把字符串 \"false\" 当 false）", () => {
@@ -604,7 +607,7 @@ describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
     ).toThrow(/limits\.split\.enabled must be true or false/);
   });
 
-  test("数值越界 fail fast（maxShardChars < 10000 / maxShards > 64 / contextSummaryChars < 1000）", () => {
+  test("数值越界 fail fast（maxShardChars < 10000 / maxShards > 64 / contextSummaryChars < 1000 / concurrency 不在 1–8）", () => {
     expect(() =>
       loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"split":{"maxShardChars":9999}}`)) }),
     ).toThrow(/limits\.split\.maxShardChars/);
@@ -616,6 +619,9 @@ describe("loadConfig：limits.split（大 MR 分片，ADR-0039）", () => {
         configPath: writeConfig(minimalConfig(`,"limits":{"split":{"contextSummaryChars":999}}`)),
       }),
     ).toThrow(/limits\.split\.contextSummaryChars/);
+    expect(() =>
+      loadConfig({ configPath: writeConfig(minimalConfig(`,"limits":{"split":{"concurrency":9}}`)) }),
+    ).toThrow(/limits\.split\.concurrency/);
   });
 
   test("未知键只警告不改行为", () => {

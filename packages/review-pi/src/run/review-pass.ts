@@ -158,7 +158,10 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
       : {},
   );
   // 请求时间线（ADR-0076）：本遍独占一份文件；同步追加，失败现场不受
-  // 「产物写盘在 pass 之后」的全有或全无影响。
+  // 「产物写盘在 pass 之后」的全有或全无影响。目录必须先建好：直接调用
+  // （内核直调 / 单测）时没有 CLI 的预建目录，否则时间线文件打开失败，
+  // 失败现场会静默丢失。
+  await mkdir(input.runDir, { recursive: true });
   const timeline = createRequestTimelineWriter(input.runDir);
   setRequestTimelineSink(timeline.sink);
   try {

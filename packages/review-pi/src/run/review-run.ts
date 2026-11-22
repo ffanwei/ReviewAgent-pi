@@ -587,7 +587,9 @@ async function executeShardedPasses(
 ): Promise<ReviewOutcome> {
   const total = shards.length;
   const descriptors = shards.map((shard) => ({ kind: "shard" as const, shard, total }));
-  const executed = await runPasses(context, descriptors);
+  const executed = await runPasses(context, descriptors, {
+    concurrency: context.runtime.limits.split.concurrency,
+  });
   return aggregateShards(context, executed);
 }
 

@@ -9,6 +9,7 @@ import {
   buildPass,
   ruleSkillCacheRoot,
   runPasses,
+  type PassDescriptor,
   type ReviewRunContext,
 } from "./pass-runner.js";
 import type { ReviewPassInput, ReviewPassResult } from "./review-pass.js";
@@ -309,6 +310,114 @@ test("片级回调抛错不打断执行（旁路纪律）", async () => {
   });
 
   expect(executed).toHaveLength(1);
+});
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shardDescriptors(count: number): PassDescriptor[] {
+  return Array.from({ length: count }, (_, offset) => {
+    const index = offset + 1;
+    return {
+      kind: "shard" as const,
+      shard: { ...SHARD, index, files: [`f${String(index)}.ts`] },
+      total: count,
+    };
+  });
+}
+
+test("runPasses 并行：在飞片数不超过 concurrency，结果仍按片序返回", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const started: number[] = [];
+  const executed = await runPasses(context(), shardDescriptors(4), {
+    concurrency: 2,
+    runPass: async (input) => {
+      const index = input.shard?.index ?? 0;
+      started.push(index);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await delay(index === 1 ? 20 : 2);
+      inFlight -= 1;
+      return passResult(new Date());
+    },
+  });
+
+  expect(maxInFlight).toBeLessThanOrEqual(2);
+  expect(started).toHaveLength(4);
+  expect(
+    executed.map((entry) => (entry.descriptor.kind === "shard" ? entry.descriptor.shard.index : 0)),
+  ).toEqual([1, 2, 3, 4]);
+});
+
+test("runPasses 并行：片级回调按片序执行，不跟随完成顺序", async () => {
+  const completion: number[] = [];
+  const hooks: number[] = [];
+  const ctx = context({
+    onShardFindings: async (label) => {
+      hooks.push(label.index);
+    },
+  });
+
+  await runPasses(ctx, shardDescriptors(3), {
+    concurrency: 3,
+    runPass: async (input) => {
+      const index = input.shard?.index ?? 0;
+      await delay(index === 1 ? 30 : index === 2 ? 10 : 1);
+      completion.push(index);
+      return passResult(new Date());
+    },
+  });
+
+  expect(completion).toEqual([3, 2, 1]);
+  expect(hooks).toEqual([1, 2, 3]);
+});
+
+test("runPasses 并行：pass 结果与串行一致（按片序）", async () => {
+  const descriptors = shardDescriptors(3);
+  const runOne = async (input: { shard?: { index: number } }) => {
+    const result = passResult(new Date());
+    return { ...result, runId: `run-${String(input.shard?.index ?? 0)}` };
+  };
+  const serial = await runPasses(context(), descriptors, {
+    concurrency: 1,
+    runPass: runOne,
+  });
+  const parallel = await runPasses(context(), descriptors, {
+    concurrency: 3,
+    runPass: runOne,
+  });
+
+  expect(parallel.map((entry) => entry.pass.runId)).toEqual(
+    serial.map((entry) => entry.pass.runId),
+  );
+});
+
+test("runPasses 并行：一片失败后抛最低片号错误，失败片及之后的回调不再执行", async () => {
+  const hooks: number[] = [];
+  const ctx = context({
+    onShardFindings: async (label) => {
+      hooks.push(label.index);
+    },
+  });
+
+  await expect(
+    runPasses(ctx, shardDescriptors(4), {
+      concurrency: 2,
+      runPass: async (input) => {
+        const index = input.shard?.index ?? 0;
+        await delay(2);
+        if (index === 2) {
+          throw new Error("shard-2-boom");
+        }
+        return passResult(new Date());
+      },
+    }),
+  ).rejects.toThrow("shard-2-boom");
+
+  expect(hooks).not.toContain(2);
+  expect(hooks).not.toContain(4);
 });
 
 test("ruleSkillCacheRoot：Windows 深路径回落到短临时根，短路径保持不变", () => {

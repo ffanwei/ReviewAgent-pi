@@ -1,9 +1,10 @@
+import type { FetchFunction } from "@earendil-works/pi-ai";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, expect, test } from "vitest";
 import type { RunProgressEvent } from "../contracts/progress.js";
-import { fakeFetch, type FakeReply, type FakeUsage } from "../provider/fake-fetch.js";
+import { fakeFetch, sseBody, type FakeReply, type FakeUsage } from "../provider/fake-fetch.js";
 import { DEFAULT_LIMITS, type FindingScopeLimits, type SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { repoFixturePath } from "../testing/repos.js";
@@ -586,4 +587,98 @@ test("hook 抛错 = 实现方 bug：run 层吞掉，检视照常成功（旁路�
 
   expect(run.record.baseline.findings).toEqual([]);
   expect(script.requests).toHaveLength(6);
+});
+
+/**
+ * F-03：按请求体里的片内标记分派回复（fakeFetch 是位置队列，并行下顺序会交错）。
+ * 两片各 6 个相位；第 5 相位给本片候选，第 6 相位放行。
+ */
+function shardAwareFetch(alpha: string, beta: string): FetchFunction {
+  const counts = new Map<string, number>();
+  const candidates: Record<string, Record<string, unknown>> = {
+    A: candidate("F001", alpha, 11),
+    B: candidate("F001", beta, 5, {
+      title: "Unused import left behind",
+      rule: "STYLE-001",
+    }),
+  };
+  return async (_input, init) => {
+    const raw = init?.body;
+    const body = typeof raw === "string" ? raw : JSON.stringify(raw ?? "");
+    const key = body.includes("ALPHA-MARKER") ? "A" : "B";
+    const call = (counts.get(key) ?? 0) + 1;
+    counts.set(key, call);
+    const reply: FakeReply =
+      call === 5
+        ? { text: JSON.stringify({ candidates: [candidates[key]] }), usage: USAGE }
+        : call === 6
+          ? {
+              text: JSON.stringify({
+                verdicts: [{ id: "F001", pass: true, reason: "evidence supports" }],
+                complete: true,
+              }),
+              usage: USAGE,
+            }
+          : ZERO_REPLY;
+    return new Response(sseBody(reply), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+}
+
+test("F-03 并行分片：findings / usage 与串行一致，片级时间线不串写", async () => {
+  const alpha = "src/main/java/com/example/Alpha.java";
+  const beta = "src/main/java/com/example/Beta.java";
+  const runtime = splitRuntime({
+    enabled: true,
+    maxShardChars: Math.max(BLOCK_A.length, BLOCK_B.length) + 1,
+    maxShards: 4,
+  });
+  const parallelRuntime: ReviewRuntime = {
+    ...runtime,
+    limits: {
+      ...runtime.limits,
+      split: { ...runtime.limits.split, concurrency: 2 },
+    },
+  };
+
+  const serialRoot = tempRunsRoot();
+  const serial = await runReview(
+    baseInput(serialRoot, TWO_FILE_DIFF, runtime, shardAwareFetch(alpha, beta)),
+  );
+  const parallelRoot = tempRunsRoot();
+  const parallel = await runReview(
+    baseInput(parallelRoot, TWO_FILE_DIFF, parallelRuntime, shardAwareFetch(alpha, beta)),
+  );
+
+  const findingsOf = (run: typeof serial) =>
+    run.record.baseline.findings.map((finding) => ({
+      file: finding.file,
+      line: finding.line,
+      title: finding.title,
+      severity: finding.severity,
+      confidence: finding.confidence,
+      evidence: finding.evidence,
+    }));
+  expect(findingsOf(parallel)).toEqual(findingsOf(serial));
+  expect(parallel.record.baseline.usage).toEqual(serial.record.baseline.usage);
+  expect(parallel.record.shards?.length).toBe(2);
+
+  // 每片各写各的请求时间线：先建 runDir 后开文件；并行不应翻倍/串写。
+  const timelineLines = (root: string, run: typeof serial): number[] =>
+    (run.record.shards ?? []).map((shard) => {
+      const file = path.join(
+        root,
+        "runs",
+        path.dirname(shard.transcriptFile),
+        "request-timeline.jsonl",
+      );
+      return readFileSync(file, "utf8")
+        .split(/\r?\n/)
+        .filter((line) => line.trim() !== "").length;
+    });
+  const serialLines = timelineLines(serialRoot, serial);
+  expect(serialLines.every((count) => count > 0)).toBe(true);
+  expect(timelineLines(parallelRoot, parallel)).toEqual(serialLines);
 });

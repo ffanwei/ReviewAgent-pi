@@ -18,7 +18,7 @@ import type {
 } from "../contracts/run.js";
 import { runDirPath } from "../run/run-record.js";
 import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
-import { withRequestTimelineAppend } from "../observability/request-timeline.js";
+import { withRequestTimelineAppend, runWithRequestTimelineScope } from "../observability/request-timeline.js";
 import type { ConfigSnapshot } from "../shared/config.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
@@ -186,11 +186,20 @@ export interface PassTiming {
 export interface RunPassesOptions {
   readonly runPass?: (input: ReviewPassInput) => Promise<ReviewPassResult>;
   readonly now?: () => number;
+  /**
+   * 同一 review 内并行执行的分片上界（F-03）。缺省 1 = 串行旧行为；
+   * 单遍路径即使传 >1 也只会跑 1 片。非法值按 1 处理。
+   */
+  readonly concurrency?: number;
 }
 
 /**
  * 执行一遍或多遍：串行、每遍结束后执行片级回调（含请求时间线续写），
  * 再推进下一遍的 `startedAt`。单遍 = 单元素 descriptors。
+ *
+ * `concurrency ≥ 2` 时切到有界并行（F-03）：固定 worker 池取片，
+ * `ExecutedPass[]` 仍按 descriptor 顺序返回；片级回调按片序串行；
+ * 失败时停止取新片、等待在飞片结束，再抛最低片号的错误。
  *
  * 同时采集每遍的真实时间事实：phase 起止由本遍 emit 观察得到，最后一段
  * 以本遍最后一个请求结束为界（fallback = pass.finishedAt），避免把片间
@@ -203,6 +212,30 @@ export async function runPasses(
 ): Promise<readonly ExecutedPass[]> {
   const runPass = options.runPass ?? runReviewPass;
   const now = options.now ?? Date.now;
+  const concurrency = passConcurrency(options.concurrency, descriptors.length);
+  if (concurrency === 1) {
+    return runPassesSerial(context, descriptors, runPass, now);
+  }
+  return runPassesConcurrent(context, descriptors, runPass, now, concurrency);
+}
+
+function passConcurrency(value: number | undefined, total: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return 1;
+  }
+  const requested = Math.floor(value);
+  if (requested < 2) {
+    return 1;
+  }
+  return Math.min(requested, Math.max(total, 1));
+}
+
+async function runPassesSerial(
+  context: ReviewRunContext,
+  descriptors: readonly PassDescriptor[],
+  runPass: (input: ReviewPassInput) => Promise<ReviewPassResult>,
+  now: () => number,
+): Promise<readonly ExecutedPass[]> {
   const executed: ExecutedPass[] = [];
   let startedAt = context.startedAt;
   for (const [index, descriptor] of descriptors.entries()) {
@@ -233,6 +266,158 @@ export async function runPasses(
     startedAt = pass.finishedAt;
   }
   return executed;
+}
+
+async function runPassesConcurrent(
+  context: ReviewRunContext,
+  descriptors: readonly PassDescriptor[],
+  runPass: (input: ReviewPassInput) => Promise<ReviewPassResult>,
+  now: () => number,
+  concurrency: number,
+): Promise<readonly ExecutedPass[]> {
+  const total = descriptors.length;
+  const passes: Array<ReviewPassResult | undefined> = new Array(total);
+  const timings: Array<PassTiming | undefined> = new Array(total);
+  const failures: Array<{ readonly index: number; readonly error: unknown }> = [];
+  let nextIndex = 0;
+  let failedIndex = Number.POSITIVE_INFINITY;
+
+  // 片级回调按片序串行：完成顺序可以乱，但对外副作用（平台上报 +
+  // 时间线续写）必须与串行一致。回调排队但不阻塞 worker 取下一片。
+  const pendingCallbacks = new Map<
+    number,
+    { readonly run: () => Promise<number>; readonly resolve: () => void }
+  >();
+  const callbackDone: Promise<void>[] = [];
+  let nextCallback = 0;
+  let callbackChain: Promise<void> = Promise.resolve();
+  let callbackError: unknown;
+
+  const drainCallbacks = async (): Promise<void> => {
+    while (nextCallback < failedIndex && pendingCallbacks.has(nextCallback)) {
+      const index = nextCallback;
+      const entry = pendingCallbacks.get(index);
+      pendingCallbacks.delete(index);
+      if (entry !== undefined) {
+        try {
+          const callbackMs = await entry.run();
+          const timing = timings[index];
+          if (timing !== undefined) {
+            timings[index] = { ...timing, reportCallbacksMs: callbackMs };
+          }
+        } catch (error) {
+          if (callbackError === undefined) {
+            callbackError = error;
+          }
+          if (index < failedIndex) {
+            failedIndex = index;
+          }
+        } finally {
+          entry.resolve();
+        }
+      }
+      nextCallback += 1;
+    }
+    if (nextCallback >= failedIndex) {
+      for (const [index, entry] of [...pendingCallbacks]) {
+        if (index >= failedIndex) {
+          pendingCallbacks.delete(index);
+          entry.resolve();
+        }
+      }
+    }
+  };
+
+  const enqueueCallback = (index: number, run: () => Promise<number>): void => {
+    callbackDone.push(
+      new Promise<void>((resolve) => {
+        pendingCallbacks.set(index, { run, resolve });
+      }),
+    );
+    scheduleDrain();
+  };
+
+  const scheduleDrain = (): void => {
+    callbackChain = callbackChain.then(drainCallbacks).catch((error: unknown) => {
+      if (callbackError === undefined) {
+        callbackError = error;
+      }
+    });
+  };
+
+  const worker = async (): Promise<void> => {
+    while (failedIndex === Number.POSITIVE_INFINITY) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= total || index >= failedIndex) {
+        return;
+      }
+      const descriptor = descriptors[index];
+      if (descriptor === undefined) {
+        return;
+      }
+      const built = buildPass(context, descriptor, context.startedAt);
+      const observer = observePassEmit(built.input.emit, now);
+      try {
+        // 时间线 sink 是 AsyncLocalStorage 作用域内的单值：并发遍各写各的
+        // `request-timeline.jsonl`，不会互相覆盖。
+        const pass = await runWithRequestTimelineScope(() =>
+          runPass({ ...built.input, emit: observer.emit }),
+        );
+        const observed = observer.finish(pass.finishedAt.getTime());
+        passes[index] = pass;
+        timings[index] = {
+          phaseSpans: observed.phaseSpans,
+          lastRequestEndAt: observed.lastRequestEndAt,
+          reportCallbacksMs: 0,
+          // 并行没有「上一片回调」这个串行空档，统一记 0。
+          interPassReportMs: 0,
+        };
+        enqueueCallback(index, () =>
+          runWithRequestTimelineScope(async () => {
+            const reportStartedAt = now();
+            await withRequestTimelineAppend(built.runDir, () =>
+              notifyShardFindings(
+                context.onShardFindings,
+                built.label,
+                pass.findings,
+                built.files,
+              ),
+            );
+            return Math.max(0, now() - reportStartedAt);
+          }),
+        );
+      } catch (error) {
+        failures.push({ index, error });
+        if (index < failedIndex) {
+          failedIndex = index;
+          // 失败后已排队的回调要按新边界唤醒（否则等待方永远挂住）。
+          scheduleDrain();
+        }
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  await Promise.all(callbackDone);
+  const failure = failures.reduce<{ readonly index: number; readonly error: unknown } | undefined>(
+    (best, current) => (best === undefined || current.index < best.index ? current : best),
+    undefined,
+  );
+  if (failure !== undefined) {
+    throw failure.error;
+  }
+  if (callbackError !== undefined) {
+    throw callbackError;
+  }
+  return descriptors.map((descriptor, index) => {
+    const pass = passes[index];
+    const timing = timings[index];
+    if (pass === undefined || timing === undefined) {
+      throw new Error(`pass ${String(index + 1)} 未产出结果`);
+    }
+    return { descriptor, pass, timing };
+  });
 }
 
 /**

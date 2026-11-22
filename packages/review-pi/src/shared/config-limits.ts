@@ -151,6 +151,11 @@ export interface SplitLimits {
   readonly maxShards: number;
   /** 每片附带的「其他文件变更摘要」字符上限 */
   readonly contextSummaryChars: number;
+  /**
+   * 同一 review 内同时执行的分片数（F-03）。默认 1 = 保持串行旧行为；
+   * 仅在多片路径生效，单遍路径恒为 1。上限 8，避免把进程级并发放大成请求风暴。
+   */
+  readonly concurrency: number;
 }
 
 export interface ArchiveLimits {
@@ -237,7 +242,7 @@ export const DEFAULT_LIMITS: Limits = {
   },
   findingScope: { enabled: true, contextLines: 10 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_000_000 },
-  split: { enabled: true, maxShardChars: 120_000, maxShards: 12, contextSummaryChars: 8_000 },
+  split: { enabled: true, maxShardChars: 120_000, maxShards: 12, contextSummaryChars: 8_000, concurrency: 1 },
   archive: {
     maxArchiveBytes: 8 * 1024 * 1024,
     maxEntries: 2_000,
@@ -292,7 +297,7 @@ const TEST_FILES_KEYS = ["skip"] as const;
 const MR_FILTER_KEYS = ["excludeGlobs", "includeRegex", "excludeRegex"] as const;
 const FINDING_SCOPE_KEYS = ["enabled", "contextLines"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
-const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars"] as const;
+const SPLIT_KEYS = ["enabled", "maxShardChars", "maxShards", "contextSummaryChars", "concurrency"] as const;
 const ARCHIVE_KEYS = ["maxArchiveBytes", "maxEntries", "maxTotalUncompressed", "maxCompressionRatio"] as const;
 const MICRO_KEYS = [
   "skillBashOutputChars",
@@ -488,6 +493,13 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
       1_000,
       64_000,
       DEFAULT_LIMITS.split.contextSummaryChars,
+    ),
+    concurrency: intOr(
+      splitObj.concurrency,
+      "limits.split.concurrency",
+      1,
+      8,
+      DEFAULT_LIMITS.split.concurrency,
     ),
   };
 
