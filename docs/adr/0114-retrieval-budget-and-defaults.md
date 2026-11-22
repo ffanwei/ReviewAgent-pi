@@ -1,6 +1,6 @@
 # 0114. 检索预算与输出默认校准（F-08b / F-09a / F-20）
 
-**状态**：已接受（2026-11-22，F-08b/F-09a/F-20 实施完成）
+**状态**：已接受（2026-11-22，F-08b/F-09a/F-20 实施完成）；检索预算默认值经 [ADR-0116](0116-revert-compact-and-budget-defaults.md) 回退为 0
 **关联**：[ADR-0052](0052-tips-confidence-filter.md)（confidence 过滤）、[ADR-0064](0064-finding-scope.md)（范围门）、[ADR-0066](0066-usage-accounting.md)（usage 口径）、[ADR-0113](0113-stage-compression.md)（compact 后 Phase 4 占比上升）
 **范围**：工具执行护栏 + 两个默认值；不改 findings 语义、不改工具输出格式。
 

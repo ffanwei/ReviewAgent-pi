@@ -1,6 +1,6 @@
 # 0113. 阶段压缩：合并 Phase 1+2，默认 compact（F-07）
 
-**状态**：已接受（2026-11-22，F-07 实施完成）
+**状态**：已接受（2026-11-22，F-07 实施完成）；默认值经 [ADR-0116](0116-revert-compact-and-budget-defaults.md) 回退为 `off`
 **关联**：[ADR-0046](0046-round-budget-and-forced-complete.md)（轮次/阶段成本线）、[ADR-0090](0090-native-chinese-phase-prompts.md)（阶段提示词中文原生）、[ADR-0038](0038-retire-byte-level-prompt-parity.md)（阶段内容可演进）、[ADR-0043](0043-optional-coverage-repair.md)（独立补漏请求）
 **范围**：只改阶段计划与配置面；不改 Phase 5/6 内容、工具 schema、findings 合并、分片规划、wire 协议。
 

@@ -48,8 +48,8 @@
 | F-04 | 证据接地：文件/行号/引文可核对 | P0-4、V3 | P0 | DONE | 伪造行号/引文/越界文件被确定性拒绝；真证据不误杀 | v1 落地；回放 grounded 217/320、unverified 103/320；全包 1234 passed | 默认 off；warn 计数；drop 会误杀约 32%，未启用；live A/B 待做 | [票](issues/F-04-evidence-grounding/ticket.md) · [讨论](issues/F-04-evidence-grounding/discussion.md) |
 | F-05 | 独立证伪核验（新会话；保护性主题 fail-open） | P0-5、V3 | P0 | DONE | 噪声率下降；真值损失 ≤ 阈值；核验理由可审计 | 回放 103 条 unverified：reject 仅 2/0 条、pass 精度 33–34%；F-04 drop + pass 返场 B 27.9%/28.4% < baseline 29.8% → 不接主路径（`bench/experiments/2026-11-22-f05/README.md`） | 一次调用/候选；不循环；默认 off | [票](issues/F-05-independent-verification/ticket.md) · [讨论](issues/F-05-independent-verification/discussion.md) |
 | F-06 | 独立补漏默认开启 / 标准化 | P0-6、V4 | P0 | DROPPED | — | 六项镜头是按测评集 GT 类别反推的固定清单（测评集过拟合）；B2 仅 10 条小 diff、最差轮差距在 judge 噪声带内 → 不实现 | 独立第二视角并入 P0-1 覆盖驱动补漏 | [票](issues/F-06-independent-sweep/ticket.md) · [讨论](issues/F-06-independent-sweep/discussion.md) |
-| F-07 | 阶段压缩：合并 1+2、条件化 Phase 4 | P1-6、V5 | P1 | DONE | 每单元请求 -≥1；P/R/B ±2pp 内 | S20：请求 308→271（−12%）、token 6.60M→6.27M（−5%）、B 25.8%→35.4%（ΔB CI +1.35~+15.63pp）；默认 `compact`（Phase 1 禁工具）；墙钟 +18.6% 待观察；条件化 4 零触发 | `off` 可回滚；P1-7 风险预算单列 | [票](issues/F-07-stage-compression/ticket.md) · [讨论](issues/F-07-stage-compression/discussion.md) |
-| F-08 | 检索预算与空结果停止 | P1-8/9 | P1 | DONE | 工具调用下降；P/R/B 回退 ≤2pp；审计计数 | 默认 3 次/文件、4 次连续空搜索、40 万字符；S20 复本 270→254 请求、token 6.75M→5.95M、B −0.7pp（CI 跨 0）；不做区间切片；`bench/experiments/2026-11-22-f08/README.md` | ADR-0114；`audit.retrievalBudget` | [票](issues/F-08-retrieval-budget/ticket.md) · [讨论](issues/F-08-retrieval-budget/discussion.md) |
+| F-07 | 阶段压缩：合并 1+2、条件化 Phase 4 | P1-6、V5 | P1 | DONE | 每单元请求 -≥1；P/R/B ±2pp 内 | S20：请求 308→271（−12%）、token 6.60M→6.27M（−5%）、B 25.8%→35.4%（ΔB CI +1.35~+15.63pp）；默认经全量基准回退为 `off`（ADR-0116）；compact 保留 opt-in；S20 曾 +9.6pp，全量不成立 | `off` 可回滚；P1-7 风险预算单列 | [票](issues/F-07-stage-compression/ticket.md) · [讨论](issues/F-07-stage-compression/discussion.md) |
+| F-08 | 检索预算与空结果停止 | P1-8/9 | P1 | DONE | 工具调用下降；P/R/B 回退 ≤2pp；审计计数 | 默认经全量基准回退为全 0（ADR-0116），功能保留 opt-in；S20 复本 270→254、token −12%、B −0.7pp；不做区间切片；`bench/experiments/2026-11-22-f08/README.md` | ADR-0114；`audit.retrievalBudget` | [票](issues/F-08-retrieval-budget/ticket.md) · [讨论](issues/F-08-retrieval-budget/discussion.md) |
 | F-09 | 输出校准：confidence 0.3；范围外 `scope` 标注 | P1-10、V8 | P1 | DONE | 真值不丢；噪声不升 | confidence 默认 0.5→0.3；v3 离线：0.5 砍 26 条含 6 TP，0.3 全保留；范围外 `scope` 标注留后续 | ADR-0114；F-09b 未做 | [票](issues/F-09-output-calibration/ticket.md) · [讨论](issues/F-09-output-calibration/discussion.md) |
 | F-10 | Phase 5/6 按需读取 | P1-13、V5 | P1 | DROPPED | — | 并入 F-08（预算/定向取证实验臂），不单独立项 | 12 run：P5 仅 1 次、P6 为 0 | — |
 | F-11 | 多轮语义：边际收益停止 + 硬上界 | P1-12 | P1 | DROPPED | — | 12 run 全部 rounds=1；F-06 已放弃；F-01b 补漏已提供显式第二遍；保留 maxRounds 硬上界 | 条件：未来默认机制实际产生多轮再重开 | — |
@@ -127,3 +127,5 @@
 - 2026-11-22：F-18 评估：coverage repair B +3.65pp（CI 跨 0）、墙钟 +30% → 保持默认关闭。
 - 2026-11-22：F-19 replay 维护：5 个 canned trace 重录 + large-mr 真网关重录，`test:replay` 6/6。
 - 2026-11-22：TODO 复盘：F-10/F-12 并入 F-08；F-11/F-13/F-14 DROPPED；新增 F-16–F-20 并收口。
+
+- 2026-11-22：全量 iterF91 基准（compact+预算默认）：91/91 ok，P 36.0% / R 17.7% / B 23.7%，对 v3 B 29.8% 显著回退（ΔB −4.6pp，CI [−8.3,−1.1]）；按 ADR-0116 回退 compact/预算默认，保留 opt-in。
