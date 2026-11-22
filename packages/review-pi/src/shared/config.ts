@@ -873,9 +873,9 @@ ${excludeGlobLines}
     // 检视轮次（ADR-0046）：一轮 = 六阶段完整一遍（约 6 次模型请求）。
     // 最后一轮强制 complete：模型说「还要再审」也不再开新轮，本轮产出即最终结果；
     // 轮次上限是成本线，不是失败（不产生截断）。范围 1–20。
-    // stageCompression：compact（默认）= 合并 Phase 1+2、Phase 1 不调工具、
+    // stageCompression：off（默认）= 六阶段各发一次请求；compact = 合并 Phase 1+2、Phase 1 不调工具、
     // Phase 3 无额外上下文需求时跳过 Phase 4（审计仍保留六阶段记录）；off = 六阶段各发一次请求。
-    "loop": { "maxRounds": 3, "phase5Sweep": false, "stageCompression": "compact" },
+    "loop": { "maxRounds": 3, "phase5Sweep": false, "stageCompression": "off" },
     // 各阶段超时（毫秒）。
     "timeouts": {
       "skillPassMs": 1200000,            // 单个规则 Skill 会话的总超时。
@@ -986,12 +986,12 @@ ${excludeGlobLines}
       "argumentsSummaryChars": 80,       // 进度行里工具入参摘要的字符上限（脱敏）。
       "progressDetailChars": 120         // 进度行里失败 / 结果摘要的字符上限（只取首行）。
     },
-    // 检索预算（F-08b）：工具层护栏；缺省 3 次/文件、4 次连续空搜索、40 万字符（0 = 不限）。
+    // 检索预算（F-08b）：工具层护栏；缺省全 0 = 不限制（全量基准后回退，ADR-0116）。
     // 超限不执行工具、返回有界提示；计数进审计 retrievalBudget。
     "retrieval": {
-      "maxReadsPerFile": 3,              // 同一文件一次检视内最多 get_file 次数（0 = 不限）。
-      "maxConsecutiveEmptySearches": 4,  // 连续空 search_code 达到上限后停止搜索（0 = 不限）。
-      "maxReadCharsPerRun": 400000       // 一次检视 get_file 结果字符总量上限（0 = 不限）。
+      "maxReadsPerFile": 0,              // 同一文件一次检视内最多 get_file 次数（0 = 不限）。
+      "maxConsecutiveEmptySearches": 0,  // 连续空 search_code 达到上限后停止搜索（0 = 不限）。
+      "maxReadCharsPerRun": 0            // 一次检视 get_file 结果字符总量上限（0 = 不限）。
     },
     // 覆盖缺口补漏（F-01b）：只对账本里 not-reached 的 hunk 发独立一次性请求。
     // enabled = false（缺省）时行为与 F-01a 完全一致；开启后每个 pass 最多

@@ -201,12 +201,12 @@ describe("loadConfig：失败策略", () => {
     expect(defaults.limits.loop.phase5Sweep).toBe(false);
   });
 
-  test("limits.retrieval：缺省 3/4/40 万，可配且上限校验", () => {
+  test("limits.retrieval：缺省全 0，可配且上限校验", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
     expect(defaults.limits.retrieval).toEqual({
-      maxReadsPerFile: 3,
-      maxConsecutiveEmptySearches: 4,
-      maxReadCharsPerRun: 400000,
+      maxReadsPerFile: 0,
+      maxConsecutiveEmptySearches: 0,
+      maxReadCharsPerRun: 0,
     });
     const tuned = loadConfig({
       configPath: writeConfig(
@@ -225,13 +225,13 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/maxReadsPerFile/);
   });
 
-  test("limits.loop.stageCompression：off/compact（缺省 compact；非法值 fail fast）", () => {
+  test("limits.loop.stageCompression：off/compact（缺省 off；非法值 fail fast）", () => {
     const compact = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"stageCompression":"compact"}}`)),
     });
     expect(compact.config.limits.loop.stageCompression).toBe("compact");
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
-    expect(defaults.limits.loop.stageCompression).toBe("compact");
+    expect(defaults.limits.loop.stageCompression).toBe("off");
     expect(() =>
       loadConfig({
         configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"stageCompression":"lean"}}`)),

@@ -135,7 +135,6 @@ const AUDIT_KEYS = [
   "ruleSkill",
   "skillPassLog",
   "coverage",
-  "retrievalBudget",
 ];
 
 test("全链零工具：req0 = ZoneA+MR+Phase-1 + 可见工具面；产物布局与审计键序", async () => {

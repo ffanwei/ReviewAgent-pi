@@ -243,7 +243,7 @@ export interface Limits {
 }
 
 export const DEFAULT_LIMITS: Limits = {
-  loop: { maxRounds: 3, phase5Sweep: false, stageCompression: "compact" },
+  loop: { maxRounds: 3, phase5Sweep: false, stageCompression: "off" },
   timeouts: {
     skillPassMs: 1_200_000,
     skillBashMs: 120_000,
@@ -283,7 +283,7 @@ export const DEFAULT_LIMITS: Limits = {
     maxTotalUncompressed: 64 * 1024 * 1024,
     maxCompressionRatio: 100,
   },
-  retrieval: { maxReadsPerFile: 3, maxConsecutiveEmptySearches: 4, maxReadCharsPerRun: 400_000 },
+  retrieval: { maxReadsPerFile: 0, maxConsecutiveEmptySearches: 0, maxReadCharsPerRun: 0 },
   micro: {
     skillBashOutputChars: 256_000,
     queryEchoChars: 120,
