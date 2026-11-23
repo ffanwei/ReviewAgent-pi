@@ -1,0 +1,960 @@
+<title>ReviewAgent 一页纸</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+  /* Design plan
+     Subject: a code-review pipeline that trades noise for evidence.
+     Palette: cool paper + deep teal, one warm negative for the reverted config.
+     Type: Space Grotesk for figures/headings, Noto Sans SC for Chinese body.
+     Layout: a 16:9-ish technical one-pager: thesis, pipeline, four defenses, evidence chart. */
+
+  :root {
+    --bg: #eef1f4;
+    --surface: #fbfcfd;
+    --panel: #f4f6f8;
+    --ink: #14212b;
+    --muted: #586977;
+    --faint: #7d8d99;
+    --line: #d3dce3;
+    --line-strong: #b7c4ce;
+    --accent: #0d6a68;
+    --accent-soft: #dcebe9;
+    --bad: #a94f37;
+    --bad-soft: #f3e3dd;
+    --shadow: 0 18px 50px rgba(20, 33, 43, 0.08);
+    --font-display: "Space Grotesk", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    color-scheme: light;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1317;
+      --surface: #131b21;
+      --panel: #182229;
+      --ink: #e7edf2;
+      --muted: #a3b2be;
+      --faint: #7f909d;
+      --line: #293741;
+      --line-strong: #3b4c58;
+      --accent: #63c6bf;
+      --accent-soft: #1a3436;
+      --bad: #e08a72;
+      --bad-soft: #38231e;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+      color-scheme: dark;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0d1317;
+    --surface: #131b21;
+    --panel: #182229;
+    --ink: #e7edf2;
+    --muted: #a3b2be;
+    --faint: #7f909d;
+    --line: #293741;
+    --line-strong: #3b4c58;
+    --accent: #63c6bf;
+    --accent-soft: #1a3436;
+    --bad: #e08a72;
+    --bad-soft: #38231e;
+    --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 24px;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: clamp(13px, 1.02vw, 15.5px);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  html, body { max-width: 100%; overflow-x: clip; }
+
+  .page { display: flex; justify-content: center; min-width: 0; }
+
+  .slide {
+    width: min(100%, 1400px);
+    min-width: 0;
+    min-height: 760px;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(14px, 1.4vw, 20px);
+    padding: clamp(22px, 2.6vw, 38px);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+  }
+
+  .masthead {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 24px;
+    align-items: end;
+    padding-bottom: clamp(12px, 1.5vw, 20px);
+    border-bottom: 1px solid var(--line-strong);
+  }
+
+  .eyebrow {
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    margin: 8px 0 6px;
+    font-family: var(--font-display);
+    font-size: clamp(30px, 3.35vw, 48px);
+    line-height: 1.08;
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+    font-weight: 700;
+  }
+
+  .dek {
+    margin: 0;
+    font-size: clamp(15px, 1.35vw, 19px);
+    color: var(--muted);
+    text-wrap: balance;
+  }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-end;
+    font-family: var(--font-display);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .meta strong { color: var(--ink); font-weight: 600; }
+
+  /* Pipeline strip */
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 0 4px;
+  }
+
+  .pipe {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-family: var(--font-display);
+    font-size: clamp(12px, 1.05vw, 14px);
+  }
+
+  .node {
+    padding: 7px 11px;
+    border: 1px solid var(--line-strong);
+    background: var(--panel);
+    white-space: nowrap;
+  }
+
+  .node.accent {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .arrow { color: var(--faint); font-size: 1.1em; }
+
+  .side-note {
+    margin-left: auto;
+    color: var(--faint);
+    font-family: var(--font-body);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .scheme-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 2px;
+  }
+
+  .scheme-head .kicker {
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  .scheme-head .hint { color: var(--faint); font-size: 11px; min-width: 0; overflow-wrap: anywhere; }
+
+  .stages {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .stage {
+    min-width: 0;
+    padding: 6px 8px 7px;
+    background: var(--panel);
+    border-top: 1px solid var(--line-strong);
+  }
+
+  .stage b {
+    display: block;
+    font-family: var(--font-display);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+
+  .stage span {
+    display: block;
+    margin-top: 1px;
+    font-size: clamp(11px, 0.9vw, 12.5px);
+    font-weight: 600;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stage em {
+    display: block;
+    font-style: normal;
+    font-size: 10.5px;
+    color: var(--faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .io {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 18px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .io span { min-width: 0; overflow-wrap: anywhere; }
+  .io b { color: var(--ink); font-weight: 600; }
+
+  .gates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    padding-top: 2px;
+    font-size: clamp(11px, 0.92vw, 13px);
+    color: var(--muted);
+  }
+
+  .gates span { min-width: 0; }
+
+  .gates span::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    background: var(--accent);
+    vertical-align: 1px;
+  }
+
+  /* Body grid */
+  .body-grid {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1.28fr) minmax(0, 0.88fr);
+    gap: clamp(16px, 2vw, 28px);
+    align-items: start;
+    flex: 1;
+  }
+
+  .problems {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 12px 13px 11px;
+    background: var(--panel);
+    border-top: 2px solid var(--line-strong);
+    min-width: 0;
+  }
+
+  .card .idx {
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+
+  .card h3 {
+    margin: 0;
+    font-size: clamp(13px, 1.05vw, 15px);
+    line-height: 1.35;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .card .defense {
+    margin: 0;
+    color: var(--muted);
+    font-size: clamp(12px, 0.95vw, 13.5px);
+    line-height: 1.45;
+  }
+
+  .card .figure {
+    margin-top: auto;
+    padding-top: 7px;
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+
+  .card .num {
+    font-family: var(--font-display);
+    font-size: clamp(21px, 2.05vw, 29px);
+    font-weight: 700;
+    letter-spacing: -0.035em;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+
+  .card .unit {
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+
+  .card .foot {
+    font-size: 11.5px;
+    color: var(--faint);
+    line-height: 1.45;
+  }
+
+  .defense-map {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+
+  .defense-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--font-display);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .defense-head span:last-child {
+    font-family: var(--font-body);
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--faint);
+  }
+
+  .defense-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .defense-col {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 9px 9px;
+    background: var(--panel);
+    border-top: 1px solid var(--line-strong);
+  }
+
+  .defense-col .idx {
+    font-family: var(--font-display);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+
+  .defense-col .problem {
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--ink);
+  }
+
+  .defense-col .arrow {
+    font-size: 10px;
+    line-height: 1;
+    color: var(--faint);
+  }
+
+  .defense-col .defense-line {
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--accent);
+  }
+
+  .defense-col .result {
+    margin-top: auto;
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--muted);
+  }
+
+  .defense-col .result b {
+    font-family: var(--font-display);
+    font-size: 13px;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Evidence panel */
+  .evidence {
+    padding: 2px 0 0;
+    min-width: 0;
+  }
+
+  .evidence h2 {
+    margin: 0 0 2px;
+    font-family: var(--font-display);
+    font-size: clamp(18px, 1.65vw, 23px);
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+
+  .evidence .sub {
+    margin: 0 0 12px;
+    color: var(--faint);
+    font-size: 11.5px;
+  }
+
+  .chart {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: clamp(12px, 0.95vw, 13.5px);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chart th, .chart td {
+    min-width: 0;
+    padding: 7px 0;
+    text-align: left;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .chart thead th {
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+    border-bottom-color: var(--line-strong);
+  }
+
+  .chart th[scope="row"] {
+    width: 48%;
+    overflow-wrap: anywhere;
+    font-weight: 500;
+    padding-right: 10px;
+  }
+
+  .chart .cfg {
+    font-family: var(--font-display);
+    font-weight: 700;
+    color: var(--accent);
+    margin-right: 3px;
+  }
+
+  .chart .tag {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 4px;
+    border: 1px solid var(--bad);
+    color: var(--bad);
+    font-size: 9.5px;
+    line-height: 1.45;
+    vertical-align: 1px;
+  }
+
+  .bar-track {
+    display: block;
+    width: 100%;
+    height: 5px;
+    margin-top: 4px;
+    background: var(--line);
+  }
+
+  .bar {
+    display: block;
+    height: 100%;
+    width: var(--w);
+    min-width: 3px;
+    background: var(--accent);
+  }
+
+  .bar.bad { background: var(--bad); }
+
+  .chart .num-cell {
+    width: 25%;
+    font-family: var(--font-display);
+    font-weight: 600;
+    text-align: right;
+    padding-right: 10px;
+    white-space: nowrap;
+  }
+
+  .chart .recall {
+    width: 27%;
+    text-align: right;
+    white-space: nowrap;
+    color: var(--ink);
+  }
+
+  .chart .recall.low { color: var(--bad); }
+
+  .chart-note {
+    margin: 7px 0 12px;
+    color: var(--faint);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .takeaways {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: clamp(12px, 0.95vw, 13.5px);
+    color: var(--muted);
+  }
+
+  .takeaways li {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    gap: 6px;
+    line-height: 1.5;
+  }
+
+  .takeaways li::before {
+    content: "—";
+    color: var(--accent);
+    font-family: var(--font-display);
+  }
+
+  .takeaways strong { color: var(--ink); font-weight: 600; }
+
+  .rollback {
+    margin-top: 10px;
+    overflow-wrap: anywhere;
+    padding: 9px 11px;
+    background: var(--bad-soft);
+    border-left: 2px solid var(--bad);
+    color: var(--bad);
+    font-size: clamp(12px, 0.95vw, 13.5px);
+    line-height: 1.5;
+  }
+
+  .rollback strong { font-weight: 700; }
+
+  .cost-panel {
+    margin-top: 10px;
+    padding: 9px 11px 10px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .cost-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-family: var(--font-display);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .cost-head span:last-child {
+    font-family: var(--font-body);
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--faint);
+  }
+
+  .cost-cols {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 14px;
+    margin-top: 6px;
+  }
+
+  .cost-col { min-width: 0; }
+
+  .cost-col h4 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: var(--ink);
+  }
+
+  .cost-col p {
+    margin: 2px 0 5px;
+    font-size: 10px;
+    line-height: 1.45;
+    color: var(--muted);
+  }
+
+  .cost-effect {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .cost-effect b {
+    font-family: var(--font-display);
+    font-size: clamp(16px, 1.35vw, 20px);
+    line-height: 1.1;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cost-effect span {
+    font-size: 9.5px;
+    line-height: 1.35;
+    color: var(--faint);
+  }
+
+  /* Footer */
+  .footer {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line-strong);
+  }
+
+  .discipline {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    font-size: clamp(12px, 1vw, 14px);
+    color: var(--ink);
+  }
+
+  .discipline span { white-space: nowrap; }
+  .discipline span + span::before { content: "/"; color: var(--faint); margin-right: 14px; }
+
+  .fine span { min-width: 0; overflow-wrap: anywhere; }
+
+  .fine {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px 16px;
+    color: var(--faint);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 900px) {
+    .slide { min-height: 0; }
+    .masthead { grid-template-columns: 1fr; align-items: start; }
+    .meta { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 14px; text-align: left; }
+    .body-grid { grid-template-columns: 1fr; }
+    .side-note { margin-left: 0; width: 100%; }
+    .stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
+  @media (max-width: 620px) {
+    body { font-size: 15px; padding-block: 12px; }
+    .slide { padding: 18px 16px; gap: 16px; }
+    h1 { font-size: 30px; }
+    .dek { font-size: 15px; }
+    .problems { grid-template-columns: 1fr; }
+    .pipe { flex-direction: column; align-items: stretch; gap: 4px; }
+    .gates { flex-direction: column; gap: 2px; }
+    .scheme-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+    .cost-cols { grid-template-columns: 1fr; gap: 7px; }
+    .defense-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .defense-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+    .stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stage span, .stage em { white-space: normal; overflow: visible; }
+    .defense-grid { grid-template-columns: 1fr; }
+    .node { text-align: center; }
+    .arrow { display: none; }
+    .chart th[scope="row"] { width: 52%; }
+    .chart .num-cell { width: 23%; }
+    .chart .recall { width: 25%; }
+    .discipline span { white-space: normal; }
+    .discipline span + span::before { content: ""; margin-right: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { scroll-behavior: auto !important; }
+  }
+</style>
+
+<main class="page">
+  <article class="slide" aria-label="ReviewAgent 一页纸：四道防线与默认值回退纪律">
+    <header class="masthead">
+      <div>
+        <div class="eyebrow">ReviewAgent-pi · 检视内核 · 一页纸</div>
+        <h1>从“审完了”<br>到“审得准、花得少”</h1>
+        <p class="dek">四道防线 + 一条默认值回退纪律</p>
+      </div>
+      <div class="meta" aria-label="数据口径">
+        <span><strong>Phase 2</strong> · 30 案 × 3 rep</span>
+        <span><strong>iterF91</strong> · 91 案 / 588 GT</span>
+        <span><strong>pi</strong> · 0.85.1</span>
+      </div>
+    </header>
+
+    <section class="pipeline" aria-label="检视方案与四道防线">
+      <div class="scheme-head">
+        <span class="kicker">检视方案</span>
+        <span class="hint">一次 pass：diff 进 → 证据、建议、审计出</span>
+      </div>
+      <div class="pipe" aria-label="流水线">
+        <span class="node">diff</span>
+        <span class="arrow" aria-hidden="true">→</span>
+        <span class="node accent">准入 / 分片</span>
+        <span class="arrow" aria-hidden="true">→</span>
+        <span class="node">六阶段检视</span>
+        <span class="arrow" aria-hidden="true">→</span>
+        <span class="node">候选门</span>
+        <span class="arrow" aria-hidden="true">→</span>
+        <span class="node">findings + tips</span>
+        <span class="side-note">+ 审计 · 覆盖账本 · 回放</span>
+      </div>
+      <div class="stages" aria-label="六阶段">
+        <div class="stage"><b>01</b><span>理解变更</span><em>读懂改了什么</em></div>
+        <div class="stage"><b>02</b><span>风险分类</span><em>给风险贴标签</em></div>
+        <div class="stage"><b>03</b><span>上下文决策</span><em>决定还看什么</em></div>
+        <div class="stage"><b>04</b><span>检索取证</span><em>读文件 / 搜索</em></div>
+        <div class="stage"><b>05</b><span>深度推理</span><em>形成候选意见</em></div>
+        <div class="stage"><b>06</b><span>证据核验</span><em>核对文件 / 行号 / 引文</em></div>
+      </div>
+      <div class="io">
+        <span><b>输入</b> MR diff / commit range · 规则 Skill · 仓库快照</span>
+        <span><b>输出</b> 英文 findings + 中文 tips + 审计 / 覆盖账本</span>
+      </div>
+      <div class="gates" aria-label="四道防线">
+        <span>① 准入不静默 + 覆盖账本</span>
+        <span>② 证据三件套核对</span>
+        <span>③ 候选门 + 规则 Skill</span>
+        <span>④ 分片 + 预算 + 窗口</span>
+      </div>
+    </section>
+
+    <div class="body-grid">
+      <section class="problems" aria-label="四种糊弄与对应防线">
+        <article class="card">
+          <span class="idx">①</span>
+          <h3>没看，却说“审完了”</h3>
+          <p class="defense">准入不静默 + 覆盖账本<br>candidate / no-issue / not-reached</p>
+          <div class="figure"><span class="num">22,266</span><span class="unit">个 hunk 全部有状态</span></div>
+          <div class="foot">缺口 89.9% → 17.5%；账本零模型调用</div>
+        </article>
+
+        <article class="card">
+          <span class="idx">②</span>
+          <h3>看了，但说错行号、编证据</h3>
+          <p class="defense">文件 / 行号 / 引文三件套<br>确定性核对，不掺语义</p>
+          <div class="figure"><span class="num">217/320</span><span class="unit">条证据成立</span></div>
+          <div class="foot">103 条存疑只标记；里面藏着 30 条真问题</div>
+        </article>
+
+        <article class="card">
+          <span class="idx">③</span>
+          <h3>意见太吵，真问题反而没提</h3>
+          <p class="defense">少而准的上下文 + 候选门<br>规则走独立 Skill 会话</p>
+          <div class="figure"><span class="num">50.1%</span><span class="unit">仅 diff 的召回</span></div>
+          <div class="foot">全仓注入只有 13.4%；token 却是 31 倍</div>
+        </article>
+
+        <article class="card">
+          <span class="idx">④</span>
+          <h3>上下文越读越大，最后超时</h3>
+          <p class="defense">分片 + 有界并发<br>检索预算 + 窗口预算</p>
+          <div class="figure"><span class="num">2.51×</span><span class="unit">墙钟加速</span></div>
+          <div class="foot">22 片 5298.9s → 2111.8s；400 不再杀死整次 run</div>
+        </article>
+
+      </section>
+
+      <aside class="evidence" aria-label="自比证据">
+        <h2>过滤救不了精度</h2>
+        <p class="sub">AACR-Bench v2 · 108 ok / 676 GT · judge 口径 · 2026-11-16</p>
+
+        <table class="chart">
+          <thead>
+            <tr>
+              <th scope="col">配置</th>
+              <th scope="col" class="num-cell">意见数</th>
+              <th scope="col" class="recall">P / R / B</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr title="全部意见：1489 条，P 7.3% / R 17.5% / B 10.2%">
+              <th scope="row"><span class="cfg">全部</span>P3 全收
+                <span class="bar-track" aria-hidden="true"><span class="bar" style="--w:100%"></span></span>
+              </th>
+              <td class="num-cell">1,489</td>
+              <td class="recall">7.3 / 17.5 / <b>10.2%</b></td>
+            </tr>
+            <tr title="conf ≥0.5：1377 条，P 7.3% / R 16.4% / B 10.1%">
+              <th scope="row"><span class="cfg">≥0.5</span>产品默认
+                <span class="bar-track" aria-hidden="true"><span class="bar" style="--w:92.5%"></span></span>
+              </th>
+              <td class="num-cell">1,377</td>
+              <td class="recall">7.3 / 16.4 / 10.1%</td>
+            </tr>
+            <tr title="conf ≥0.8：347 条，P 8.4% / R 4.4% / B 5.8%">
+              <th scope="row"><span class="cfg">≥0.8</span>高置信
+                <span class="bar-track" aria-hidden="true"><span class="bar" style="--w:23.3%"></span></span>
+              </th>
+              <td class="num-cell">347</td>
+              <td class="recall low">8.4 / 4.4 / 5.8%</td>
+            </tr>
+            <tr title="severity ≥P1：224 条，P 9.8% / R 3.4% / B 5.1%">
+              <th scope="row"><span class="cfg bad" style="color:var(--bad)">P1</span>只看最高级
+                <span class="tag">反例</span>
+                <span class="bar-track" aria-hidden="true"><span class="bar bad" style="--w:15.0%"></span></span>
+              </th>
+              <td class="num-cell">224</td>
+              <td class="recall low">9.8 / 3.4 / 5.1%</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="chart-note">同一批 108 条、同一 judge；只重放输出侧过滤，不重跑模型。Balanced 全线低于全收。</p>
+
+        <ul class="takeaways">
+          <li><span><strong>没有任何阈值能提高 Balanced</strong>；最严的 P1 只剩 5.1%。</span></li>
+          <li><span><strong>低置信意见只占 2.8%</strong>；precision 低的根因是 <strong>80.6% 意见落在无 GT 文件</strong>。</span></li>
+        </ul>
+
+        <div class="rollback"><strong>全量组合不成立就回退：</strong>compact + 预算 token +14%，ΔB −4.6pp，默认关闭。</div>
+
+        <div class="cost-panel" aria-label="省 token 与高 cache 的思路和效果">
+          <div class="cost-head"><span>省 token / 高 cache</span><span>Phase 2 历史 · 结构性，不靠少报</span></div>
+          <div class="cost-cols">
+            <div class="cost-col">
+              <h4>省 token：少而准</h4>
+              <p>diff-first · 8k 结果上限 · 搜索封顶 · 六阶段有界</p>
+              <div class="cost-effect"><b>31×</b><span>A 22.6k vs C 706.5k；B 仅为 C 的 7%</span></div>
+            </div>
+            <div class="cost-col">
+              <h4>高 cache：稳定前缀</h4>
+              <p>system / tools 字节稳定 · 消息只追加 · Ledger 去重</p>
+              <div class="cost-effect"><b>0.81</b><span>B cacheHit（A 0.37）；命中价 1/30</span></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <section class="defense-map" aria-label="四道防线：问题、防线与结果">
+      <div class="defense-head">
+        <span>四道防线 · 一张图</span>
+        <span>问题 → 防线 → 结果</span>
+      </div>
+      <div class="defense-grid">
+        <div class="defense-col">
+          <span class="idx">①</span>
+          <span class="problem">没看，却说审完</span>
+          <span class="arrow" aria-hidden="true">↓</span>
+          <span class="defense-line">准入不静默 + 覆盖账本</span>
+          <span class="arrow" aria-hidden="true">↓</span>
+          <span class="result">缺口可见 · <b>22,266</b> hunk</span>
+        </div>
+        <div class="defense-col">
+          <span class="idx">②</span>
+          <span class="problem">看错、编证据</span>
+          <span class="arrow" aria-hidden="true">↓</span>
+          <span class="defense-line">文件 / 行号 / 引文三件套</span>
+          <span class="arrow" aria-hidden="true">↓</span>
+          <span class="result">每条可核对 · <b>217/320</b></span>
+        </div>
+        <div class="defense-col">
+          <span class="idx">③</span>
+          <span class="problem">太吵，真问题没提</span>
+          <span class="arrow" aria-hidden="true">↓</span>
+          <span class="defense-line">少而准上下文 + 候选门</span>
+          <span class="arrow" aria-hidden="true">↓</span>
+          <span class="result">每条可解释 · <b>50.1%</b> vs 13.4%</span>
+        </div>
+        <div class="defense-col">
+          <span class="idx">④</span>
+          <span class="problem">膨胀，最后超时</span>
+          <span class="arrow" aria-hidden="true">↓</span>
+          <span class="defense-line">分片 + 并发 + 预算 + 窗口</span>
+          <span class="arrow" aria-hidden="true">↓</span>
+          <span class="result">请求有界 · <b>2.51×</b></span>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p class="discipline">
+        <span>先让问题可见 → 再自动解决</span>
+        <span>删之前先证明不会误杀</span>
+        <span>省成本必须过大考</span>
+      </p>
+      <p class="fine">
+        <span>底座：pi-ai + pi-agent-core · 自研 8 个只读工具 · 规则走 Skill</span>
+        <span>数据：Phase 2（VUL4J 30 案 × 3 rep，历史）· AACR-Bench v2（108 ok / 676 GT，2026-11-16）· iterF91（91 案 / 588 GT）</span>
+      </p>
+    </footer>
+  </article>
+</main>
