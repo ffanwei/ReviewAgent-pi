@@ -270,6 +270,11 @@ OCR 601 条意见覆盖 217 条。
 > 按规模分层见 [`ocr/full/size-stratification.md`](ocr/full/size-stratification.md)：
 > **≤5 个 changed files 时两者几乎打平（B 0.328 vs 0.327）；>40 文件时 0.046 vs 0.353**；
 > 差距随文件广度/diff 足迹扩大，`change_line_count` 不是好变量。
+>
+> 最新三档汇总（v3 / OCR，全量 + 小/大 diff）见
+> [`ocr/full/size-summary-2026-11-22.md`](ocr/full/size-summary-2026-11-22.md)：
+> 小 diff v3 B 36.8% vs OCR 34.5%，大 diff 26.1% vs 33.6%，全量 29.8% vs 33.9%；
+> v3 评审耗时 24,734s、非缓存 token 6.89M，OCR 为 26,891s / 29.81M。
 
 > 按 severity 分层见 [`ocr/full/severity-analysis.md`](ocr/full/severity-analysis.md)：
 > **小 diff（<50KB）P1 41.4% / P2 29.5% / P3 19.8%（趋势 p=0.014）；大 diff（≥50KB）
