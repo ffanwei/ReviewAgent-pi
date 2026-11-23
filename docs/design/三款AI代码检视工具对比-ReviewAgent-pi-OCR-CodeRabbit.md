@@ -1,15 +1,17 @@
-# 三款 AI 代码检视工具对比：ReviewAgent-pi / Open Code Review / CodeRabbit
+# 三款 AI 代码检视工具对比：ReviewAgent-pi / Open Code Review / CodeRabbit（附 Claude Code /code-review）
 
-> 状态：分析报告（2026-11-18）
+> 状态：分析报告（2026-11-18）；2026-11-23 增补第 19 节「Claude Code 内置 `/code-review`」
 > 分析对象：
 > - **ReviewAgent-pi**：本仓 `D:/Project/ReviewAgent-pi`，分支 `exp-skill`，产品版本 `0.6.1`
 > - **Open Code Review（OCR）**：`D:/Project/open-code-review`，`v1.13.9-3-gd77d70b`（2026-11-14）
 > - **CodeRabbit**：商业 SaaS / 自托管企业版；本报告基于公开产品资料与社区经验，**未能联网核验 2026-11 的最新价格与功能**，对外引用前请以官网为准
+> - **Claude Code 内置 `/code-review`（补充参照）**：本机 Claude Code `2.1.330` 的 bundled skill；结论来自安装包内 skill 文本与命令定义，不是官方文档
 >
 > 口径说明：
 > - 本仓与 OCR 的结论来自源码、README、ADR、设计文档与本地实测；
 > - CodeRabbit 的内部实现不公开，本文只对其**产品形态与公开能力**做对比，不臆测其提示词、模型路由或内部流水线；
-> - 三家不在同一评测集上跑过，**所有 token / 质量数字不可直接横比**。
+> - Claude Code 的 `/code-review` 是闭源宿主内置能力，本文只记录能从本机安装包确认的行为；模型路由、计费与内部实现不公开；
+> - 四家不在同一评测集上跑过，**所有 token / 质量数字不可直接横比**。
 
 ---
 
@@ -23,6 +25,7 @@
 | **OCR 最值得借的** | GitHub Action 的 inline + sticky + incremental 发帖；`--preview`；`--resume`；SARIF；覆盖 manifest；多协议 provider；session viewer |
 | **CodeRabbit 最值得借的** | 零配置 PR 原生体验；chat 命令；auto-fix；增量复审；路径级自定义指令；linter/SAST 结果融合；分析看板；企业级自托管/合规包装 |
 | **不建议照搬** | 不要为了评论数量牺牲 Evidence Gate；不要在没有评测的情况下做多模型路由；不要先做 SaaS 计费/看板而不做 PR 原生闭环；不要让规则包默认自动发现 |
+| **Claude Code `/code-review` 是补充参照** | 宿主内置的多 Agent 本地预检，零配置、有 `--comment`/`--fix`；但无规则执行、无审计/回放、无标准 JSON/中文建议，不能替代 Review Runtime（详见第 19 节） |
 
 ---
 
@@ -600,6 +603,102 @@
 
 ---
 
+## 19. 补充参照：Claude Code 内置 `/code-review`（2026-11-23）
+
+> 本节不是第四款同台竞品，而是把「宿主内置的本地 diff 预检」作为参照系补进来。它回答的问题是：如果用户已经在 Claude Code 里工作，零配置能拿到什么质量的检视。
+
+### 19.1 定位与形态
+
+| 维度 | 事实 |
+|---|---|
+| 宿主 | Claude Code CLI（本机 `2.1.330`） |
+| 形态 | bundled skill，不是独立 CLI/服务；用法 `/code-review [low\|medium\|high\|xhigh\|max] [--fix] [--comment] [<pr#>\|<branch>\|<path>] [--max-findings <n>\|all]` |
+| 模型 | Anthropic 模型，档位内置映射；用户不能选 provider |
+| 定位 | 本地/PR 前置的「正确性 bug 预检」，零配置；`/simplify` 只做 cleanup 并直接改，`/security-review` 专看安全，`/verify` 负责跑起来验证 |
+| 分发 | 闭源、随 Claude Code 分发；官方 marketplace 另有一个使用 4 个并行 agent 的简化版 `code-review` 插件（README 口径：置信度阈值 80），与当前内置 skill 不是同一实现 |
+
+### 19.2 流水线
+
+| 阶段 | 做法 |
+|---|---|
+| **Phase 0 取 diff** | 默认 `git diff origin/HEAD...HEAD`；失败退 `git diff main...HEAD`，再退 `git diff HEAD~1`；有未提交变更或 range 为空时追加 `git diff HEAD`；参数可改为 PR 号 / 分支 / 路径 |
+| **Phase 1 找问题** | 多角度 finder：A 逐行 diff 扫描、B 删除行为审计（被删的保护/错误路径/测试是否被重新建立）、C 跨文件调用链、D 语言陷阱、E wrapper/proxy 正确性；另有 Reuse、Simplification、Efficiency、Altitude、Conventions（CLAUDE.md）。内置文案标注 medium/high 为「8 个 inline 角度」；xhigh/max 才扇出子代理 |
+| **Phase 2 验证** | 先按行/机制去重；每条候选一个 verifier，返回 `CONFIRMED / PLAUSIBLE / REFUTED` 三态，保留前两者。规则是 recall-biased：真实可达的罕见路径默认 `PLAUSIBLE`，只有能从代码构造出反证才 `REFUTED`。medium/high 只去重、不跑 verifier |
+| **Phase 3 补漏** | 再跑一个 fresh finder，带着已确认清单只找「还没列出的缺陷」，最多补 8 条，找不到就返回空，不凑数 |
+| **输出** | 宿主 `ReportFindings` 结构化列表：`file` / `line` / `summary` / `failure_scenario` / `category` / `severity` / `verdict`；`severity` 只有 `important` / `pre_existing` / `nit`；超出 `--max-findings` 时按严重级截断；summary 要求以 `Fix:` 结尾 |
+| **修复** | `--fix` 在审完后直接改工作区，并按 `fixed` / `no_change_needed` / `skipped` 回写 outcome |
+| **发帖** | `--comment` 通过 `gh` / inline-comment MCP 发 PR 行内评论；小修复附 committable suggestion；同一问题只发一条 |
+| **收尾** | 若 diff 有 runtime surface，建议再跑 `/verify`；纯文档/测试 diff 跳过 |
+
+档位（内置文案与预设）：
+
+| 档位 | 行为 | 成本 |
+|---|---|---|
+| `low` | 少量高置信 findings | 最低 |
+| `medium` | 8 个 inline 角度 + 去重，不验证，偏 surfacing | 低 |
+| `high` | 同上，recall 优先 | 中 |
+| `xhigh` | 子代理扇出 + 逐条验证 | 高 |
+| `max` | 最贵；启动大量 reviewer subagent，必须显式要求才会用 | 最高 |
+| `ultra` | 云端深度多 agent 检视，需 claude.ai 账号；GitHub PR 可用 `--post` 发单条评论 | 另计 |
+
+> 未指定档位时沿用上一次选择；显式档位会记住。
+
+### 19.3 与三款的对比
+
+| 维度 | ReviewAgent-pi | OCR | CodeRabbit | Claude Code `/code-review` |
+|---|---|---|---|---|
+| 形态 | npm CLI / 可嵌入 Runtime | Go CLI + GitHub Action | PR SaaS | 宿主内置 skill |
+| 触发 | CLI / CI / Skill / MCP | CLI / Action / CI | PR webhook | 手动 `/code-review` |
+| 模型选择 | 自选网关 | 4 协议 | 托管 | Anthropic 内置，不可选 |
+| 规则 | **可执行规则 Skill + bash** | 文本规则 | YAML 指令 | CLAUDE.md 文本约定 |
+| 代码智能 | **5 语言 AST 符号/引用/调用链** | file / git grep | 平台索引 | Read / Grep / Bash，无 AST 工具 |
+| 上下文 | C0–C3 + 最小充分 + Ledger | 分组 / 压缩 / 预算 | 托管 | 宿主上下文；大 diff 无分片/预算机制 |
+| 证据 | `evidence[]` + confidence | Review Filter | 不公开 | `failure_scenario` + 三态 verdict |
+| 验证 | Evidence Gate + Phase 6 | fail-open Filter | 不公开 | 1 vote / 3 态（xhigh 起） |
+| 输出 | JSON + `reviews_tips_zh.json` + 审计 | text / JSON / SARIF | PR 评论 | 宿主 findings 列表，不落标准文件 |
+| PR inline | 无（规划中） | Action | 原生 | `--comment`（需 gh） |
+| 自动修复 | 无 | suggestion_code | 有 | `--fix` 直接改工作区 |
+| 审计 / 回放 | **audit + trace + 离线回放** | session / manifest | 黑盒 | 无 |
+| 中文 | **原生（结构化中文建议）** | 可配 | 可配 | 跟随宿主，无结构化中文建议 |
+| 成本可控 | token / 分片 / 上下文可配 | 预算 / effort / 并发 | 席位 | 由档位决定，无 token 账本 |
+| 自托管 | 有 | 有 | 企业版 | 本地 CLI + Anthropic API |
+
+### 19.4 最值得借鉴
+
+| 能力 | 它的做法 | 我们怎么接 | 优先级 |
+|---|---|---|---|
+| 角度清单 | A–E + Reuse/Simplification/Efficiency/Altitude/Conventions | 做成内置通用规则 Skill 的角度模板；自定义包可覆盖 | P1 |
+| 显式 effort 旋钮 | low→max + 记住上次 | 映射 `limits.loop.maxRounds` 与分片/验证策略 | P1 |
+| 三态 verdict | CONFIRMED / PLAUSIBLE / REFUTED | Evidence Gate 从二元改为三态，`PLAUSIBLE` 单独标注 | P1 |
+| Phase 3 补漏 | 一个 fresh finder 只找未列项，最多 8 条 | 在最后一轮加「只补漏」回合，禁止重复已确认项 | P1 |
+| `--fix` outcome 回写 | fixed / no_change_needed / skipped | 平台适配器回写 finding 状态与采纳率 | P2 |
+| 严重级文本前缀 | `Important:` / `Nit:` / `Pre-existing:` | 中文建议里用「重要 / 建议 / 既有问题」前缀，少用 emoji | P2 |
+| 单通道降级要声明 | 子代理不可用时明确说「single-pass」 | 与我们「诚实截断」同源，继续坚持 | 已具备 |
+| PR inline + suggestion | `--comment` + committable suggestion | 已在 P0 路线图 | P0 |
+
+### 19.5 不要照搬
+
+| 做法 | 为什么不建议 |
+|---|---|
+| 只认 CLAUDE.md 文本规则 | 不能执行项目检查器、不能把脚本输出变成证据；规则 Skill 是我们的护城河 |
+| medium/high 不验证、recall 优先 | 与 Evidence Gate 的信噪比目标相反；会增加 triage 成本 |
+| findings 只进宿主 UI | 不可入库、不可审计、不可回放，不能作为团队质量数据源 |
+| 无 token 预算/分片 | 大 diff 只能硬吃上下文窗口，成本与截断都不可控 |
+| 依赖宿主的闭源多 Agent 编排 | 换宿主即失效，且结论不可复现 |
+
+### 19.6 选型补充
+
+| 场景 | 建议 |
+|---|---|
+| 个人/小团队已在 Claude Code 里，只想合并前自查 | `/code-review`（零配置） |
+| 需要结果入库、审计、接内部平台或 CI 契约 | ReviewAgent-pi |
+| 需要可执行项目规则 + 证据链 + 结构化中文建议 | ReviewAgent-pi |
+| 只想对当前 diff 求第二意见 | `/code-review` 作对照，不替代 `review-pi`；两者可以先后跑 |
+
+> **判断**：Claude Code 的 `/code-review` 证明「多角度 finder + 三态验证 + effort 旋钮」是有效的通用配方，值得吸收；但它把确定性放在**宿主编排**，我们把确定性放在**证据纪律与可复现产物**。它适合做开发者的第一道自查，不适合做企业的 Review Runtime。
+
+---
+
 ## 附录 A：事实与来源
 
 | 主题 | 来源 |
@@ -613,6 +712,7 @@
 | OCR 集成 | `action.yml`、`plugins/`、`skills/`、`extensions/`、`acp/`、`internal/viewer` |
 | CodeRabbit 产品能力 | 公开产品资料/社区经验；**未联网核验 2026-11 最新状态** |
 | CodeRabbit 价格 | 公开资料常见档位（Free/OSS、Lite、Pro、Enterprise）；**以官网为准** |
+| Claude Code `/code-review` | 本机 Claude Code `2.1.330` 安装包内置 skill 文本与命令定义（bundled skill，2026-11-23 离线读取）；官方 marketplace 的 `code-review` 插件 README 仅作旧版对照 |
 
 ## 附录 B：术语
 
