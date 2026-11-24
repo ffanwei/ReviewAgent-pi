@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, expect, test } from "vitest";
@@ -84,4 +84,37 @@ test("枚举：maxFiles 截断后其余文件记为 max-files", async () => {
 
   expect(result.files.map((file) => file.path)).toEqual(["a.ts", "b.ts"]);
   expect(result.skipped).toContainEqual({ path: "c.ts", reason: "max-files" });
+});
+
+test("枚举：同一快照两次结果字节一致", async () => {
+  const root = tempRepo();
+  write(root, "src/b.ts", "b\n");
+  write(root, "src/a.ts", "a\n");
+  write(root, "src/nested/d.py", "d\n");
+
+  const options = { repoPath: root, maxFiles: 10, maxFileChars: 1_000 };
+  const first = await enumerateRepoFiles(options);
+  const second = await enumerateRepoFiles(options);
+  expect(JSON.stringify(second)).toBe(JSON.stringify(first));
+});
+
+test("枚举：符号链接不跟随，记为 not-a-regular-file", async () => {
+  const root = tempRepo();
+  write(root, "src/a.ts", "a\n");
+  const outside = path.join(tempRepo(), "outside.ts");
+  writeFileSync(outside, "outside\n");
+  try {
+    symlinkSync(outside, path.join(root, "src", "link.ts"));
+  } catch {
+    return; // Windows 无权限时跳过，不把环境限制当产品行为
+  }
+
+  const result = await enumerateRepoFiles({
+    repoPath: root,
+    maxFiles: 10,
+    maxFileChars: 1_000,
+  });
+
+  expect(result.files.map((file) => file.path)).toEqual(["src/a.ts"]);
+  expect(result.skipped).toContainEqual({ path: "src/link.ts", reason: "not-a-regular-file" });
 });

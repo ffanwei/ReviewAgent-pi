@@ -70,6 +70,13 @@ export async function runRepoSpike(
     maxFilesPerGroup: options.maxFilesPerGroup,
     maxGroupChars: options.maxGroupChars,
   });
+  if (plan.groups.length > options.maxGroups) {
+    throw new Error(
+      `repo-spike: group count ${String(plan.groups.length)} exceeds --max-groups ${String(
+        options.maxGroups,
+      )}; narrow --path or raise the guard explicitly`,
+    );
+  }
 
   progress(
     `[repo-spike] discovered=${String(enumerated.discovered)} selected=${String(
@@ -115,7 +122,7 @@ export async function runRepoSpike(
     throw new Error("repo-spike: missing reviewer API key (run `review-pi config init` or pass --config)");
   }
   const fetchFn = deps.fetch ?? globalThis.fetch;
-  const runtime = buildSpikeRuntime(options.maxRounds);
+  const runtime = buildSpikeRuntime(options.maxRounds, options.includeTests);
 
   const groupOutcomes = await mapWithConcurrency(
     syntheticGroups,

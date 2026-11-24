@@ -21,10 +21,13 @@ export interface RepoSpikeOptions {
   readonly groupBy: RepoSpikeGroupBy;
   readonly maxFilesPerGroup: number;
   readonly maxGroupChars: number;
+  readonly maxGroups: number;
   readonly maxFiles: number;
   readonly maxFileChars: number;
   readonly maxRounds: number;
   readonly groupConcurrency: number;
+  /** 是否把测试文件纳入检视（缺省 false，与全仓扫描契约一致） */
+  readonly includeTests: boolean;
   readonly dryRun: boolean;
   /** 只检视该仓库相对路径前缀（POSIX，空 = 全仓） */
   readonly pathPrefix?: string;

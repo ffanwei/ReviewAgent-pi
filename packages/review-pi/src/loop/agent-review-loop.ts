@@ -220,6 +220,7 @@ export async function runAgentReviewLoop(
   const truncationReasons: string[] = [];
   let usage: LlmUsage = ZERO_USAGE;
   let executedToolCalls = 0;
+  let attemptedToolCalls = 0;
   let round = 1;
   let phaseIndex = 0;
   let phaseRequestCount = 0;
@@ -270,6 +271,8 @@ export async function runAgentReviewLoop(
   const runtime = inputs.runtime ?? DEFAULT_REVIEW_RUNTIME;
   // 轮次上限（ADR-0046）：配置驱动；最后一轮强制 complete（见 advancePhase）
   const maxRounds = runtime.limits.loop.maxRounds;
+  const maxToolCalls = runtime.maxToolCalls ?? MAX_TOOL_CALLS;
+  const maxToolAttempts = runtime.maxToolAttempts ?? Number.POSITIVE_INFINITY;
   // 阶段压缩（ADR-0113）：compact = Phase 1+2 合并为一次请求、Phase 3 无额外
   // 上下文需求时跳过 Phase 4。缺省 off，路径与历史逐请求一致。
   const compactStages = runtime.limits.loop.stageCompression === "compact";
@@ -362,7 +365,18 @@ export async function runAgentReviewLoop(
 
   const agentTools = buildAgentTools(inputs.toolkit, {
     beforeExecute: (call) => {
-      if (executedToolCalls >= MAX_TOOL_CALLS) {
+      if (attemptedToolCalls >= maxToolAttempts) {
+        phaseSkippedToolCalls += 1;
+        appendReason(truncationReasons, TRUNCATION_TOOL_BUDGET);
+        toolCallLog.push({
+          name: call.name,
+          argumentsJson: call.argumentsJson,
+          resultSummary: TOOL_BUDGET_EXHAUSTED_SUMMARY,
+        });
+        return { kind: "skip", text: TOOL_BUDGET_EXHAUSTED_SUMMARY };
+      }
+      attemptedToolCalls += 1;
+      if (executedToolCalls >= maxToolCalls) {
         phaseSkippedToolCalls += 1;
         appendReason(truncationReasons, TRUNCATION_TOOL_BUDGET);
         toolCallLog.push({

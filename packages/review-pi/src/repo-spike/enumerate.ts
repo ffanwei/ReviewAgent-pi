@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { open, readdir, stat } from "node:fs/promises";
+import { lstat, open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { EnumeratedRepo, RepoFile, SkippedFile } from "./types.js";
@@ -152,7 +152,8 @@ export async function enumerateRepoFiles(options: EnumerateRepoOptions): Promise
       continue;
     }
     const full = path.join(repoPath, ...rel.split("/"));
-    const fileStat = await stat(full).catch(() => undefined);
+    // lstat 而非 stat：符号链接一律不跟随，避免把仓库外文件带进检视范围。
+    const fileStat = await lstat(full).catch(() => undefined);
     if (fileStat === undefined || !fileStat.isFile()) {
       skipped.push({ path: rel, reason: "not-a-regular-file" });
       continue;

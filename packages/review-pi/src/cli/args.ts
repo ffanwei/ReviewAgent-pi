@@ -73,6 +73,7 @@ const KNOWN_REPO_SPIKE_FLAGS: readonly string[] = [
   "--group-by",
   "--max-files-per-group",
   "--max-group-chars",
+  "--max-groups",
   "--max-files",
   "--max-file-chars",
   "--max-rounds",
@@ -92,14 +93,14 @@ const REPEATABLE_REPO_SPIKE_FLAGS: readonly string[] = [
 ];
 
 /** repo-spike 的无值布尔旗标 */
-const REPO_SPIKE_BOOLEAN_FLAGS = new Set(["--dry-run", "--strict-rule-skill", "--no-progress"]);
+const REPO_SPIKE_BOOLEAN_FLAGS = new Set(["--dry-run", "--strict-rule-skill", "--include-tests", "--no-progress"]);
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
 export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>（已废弃，忽略）] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--include <regex>]... [--exclude <regex>]... [--strict-rule-skill] [--no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
-       review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--path <prefix>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+       review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--include-tests] [--path <prefix>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi version [--json]
        review-pi --version
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
@@ -253,10 +254,12 @@ export interface RepoSpikeCliArgs {
   readonly groupBy: "directory" | "files" | "language" | "none";
   readonly maxFilesPerGroup: number;
   readonly maxGroupChars: number;
+  readonly maxGroups: number;
   readonly maxFiles: number;
   readonly maxFileChars: number;
   readonly maxRounds: number;
   readonly groupConcurrency: number;
+  readonly includeTests: boolean;
   readonly dryRun: boolean;
   /** 只检视该仓库相对路径前缀（POSIX；缺席 = 全仓） */
   readonly pathPrefix?: string;
@@ -774,6 +777,10 @@ function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
   if (!maxGroupChars.ok) {
     return maxGroupChars;
   }
+  const maxGroups = parseSpikeInt(flags.values.get("--max-groups"), "--max-groups", 500, 1, 100_000);
+  if (!maxGroups.ok) {
+    return maxGroups;
+  }
   const maxFiles = parseSpikeInt(flags.values.get("--max-files"), "--max-files", 200, 1, 100_000);
   if (!maxFiles.ok) {
     return maxFiles;
@@ -797,7 +804,7 @@ function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
     "--group-concurrency",
     1,
     1,
-    16,
+    5,
   );
   if (!groupConcurrency.ok) {
     return groupConcurrency;
@@ -824,10 +831,12 @@ function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
       groupBy,
       maxFilesPerGroup: maxFilesPerGroup.value,
       maxGroupChars: maxGroupChars.value,
+      maxGroups: maxGroups.value,
       maxFiles: maxFiles.value,
       maxFileChars: maxFileChars.value,
       maxRounds: maxRounds.value,
       groupConcurrency: groupConcurrency.value,
+      includeTests: stripped.includeTests,
       dryRun: stripped.dryRun,
       ...(pathPrefix !== undefined && pathPrefix.trim().length > 0
         ? { pathPrefix: pathPrefix.trim() }
@@ -846,6 +855,7 @@ function stripRepoSpikeBooleanFlags(rest: readonly string[]): {
   readonly tokens: readonly string[];
   readonly dryRun: boolean;
   readonly strict: boolean;
+  readonly includeTests: boolean;
   readonly progress?: boolean;
 } | { readonly ok: false; readonly message: string } {
   const counts = new Map<string, number>();
@@ -867,6 +877,7 @@ function stripRepoSpikeBooleanFlags(rest: readonly string[]): {
     tokens,
     dryRun: counts.has("--dry-run"),
     strict: counts.has("--strict-rule-skill"),
+    includeTests: counts.has("--include-tests"),
     ...(counts.has("--no-progress") ? { progress: false } : {}),
   };
 }

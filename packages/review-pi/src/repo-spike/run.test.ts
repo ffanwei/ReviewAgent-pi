@@ -28,10 +28,12 @@ function options(root: string, out: string, overrides: Partial<RepoSpikeOptions>
     groupBy: "none",
     maxFilesPerGroup: 10,
     maxGroupChars: 120_000,
+    maxGroups: 500,
     maxFiles: 20,
     maxFileChars: 100_000,
     maxRounds: 1,
     groupConcurrency: 1,
+    includeTests: false,
     dryRun: false,
     ...overrides,
   };

@@ -25,6 +25,20 @@ export interface ReviewRuntime {
   readonly maxOutputTokens: number | null;
   /** 模型真实上下文窗口；缺省 / null = 用内核模型目录画像（ADR-0102） */
   readonly contextWindow?: number | null;
+  /**
+   * 单 pass 工具调用硬上界；缺省 = `MAX_TOOL_CALLS`（100）。
+   *
+   * 只给全仓扫描这类「组内文件多、合成 diff 已含全文」的调用方收紧预算；
+   * MR 路径不传，保持 100 不变。
+   */
+  readonly maxToolCalls?: number;
+  /**
+   * 单 pass 工具调用**尝试**上界（含被 retrieval 预算跳过的调用）；缺省不限。
+   *
+   * `maxToolCalls` 只计真正执行的调用；模型可能反复请求已被 retrieval 预算
+   * 拒绝的读取，靠 skipped 调用空转。全仓扫描需要这一层封顶。
+   */
+  readonly maxToolAttempts?: number;
 }
 
 export const DEFAULT_REVIEW_RUNTIME: ReviewRuntime = Object.freeze({
