@@ -37,5 +37,7 @@ R-01、R-03；R-05 输出契约可并行。
 - 未完成：scan 专用 Zone A 与初始消息（当前仍沿用 MR 的「本次新增」语义）；
   该语义债不改变行锚点，但会影响「既有问题」的措辞。
 - 全仓实跑：`spring-ai-java-prod` 1,390 文件 / 255 组，并发 3，起跑 2026-11-24 22:03；
-  前 8 组完成，约 1.1 组/分钟；预计 3.5–4h。产物 `D:/Project/.repos/out/full-ours/`。
+  75 组完成时 1.21 组/分钟，预计 01:33 完成；75 组产出 403 条 findings（P0 3 / P1 61 /
+  P2 289 / P3 50），含 SQL 注入、SSRF、WebSocket 并发写、NPE 等可复核缺陷。
+  产物 `D:/Project/.repos/out/full-ours/`。
 

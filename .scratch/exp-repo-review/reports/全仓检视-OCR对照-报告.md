@@ -146,6 +146,22 @@
 
 > 结论：我方的 6 条中至少 5 条是真实代码缺陷；OCR 的 42 条中大量是 Javadoc / 风格类，模型判官判为 INVALID。
 
+全量运行中的 P0/P1 样例（前 75 组）：
+
+| 文件:行 | 断言 |
+|---|---|
+| `SandboxManager.java:137` | Python 沙箱 `allowAllAccess(true)`，用户脚本可越权访问宿主文件/进程/网络（已验证） |
+| `AESCryptUtils.java:34` | AES 密钥硬编码为 `public static final`，可解密全部已存 API Key（已验证） |
+| `RequestContextThreadPoolWrapper.java:236` | 使用 `ThreadPoolExecutor` 但未 import，server-core 无法编译（已验证） |
+| `SqlTools.java:59` | `getSchema` 用字符串拼接表名执行 SQL，存在 SQL 注入 |
+| `FileManager.java:154` | `getMediaTypeFromUrl` 对未校验的外部 URL 直接发起连接，存在 SSRF |
+| `VoiceAgentAudioWebSocketHandler.java:147` | WebSocket 会话被多个响应式线程并发 `sendMessage`，未串行化 |
+| `WorkflowAgentExecutor.java:43` | `execute/streamExecute` 返回 null，上游 `postHandle` 会 NPE |
+| `BasicAgentExecutor.java:442` | 多模态 data URI 的 mimeType 解析与 base64 解码错误 |
+| `AppComponentManager.java:158` | 取 START/End 节点直接 `get(0)`，缺失即 `IndexOutOfBoundsException` |
+
+这些是可以在代码中逐条复核的实质缺陷，不是风格意见。
+
 ---
 
 ## 6. 分析
