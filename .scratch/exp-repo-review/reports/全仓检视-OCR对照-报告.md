@@ -47,7 +47,7 @@
 | 版本 | `exp-repo-review@<commit>` | `open-code-review v1.14.3 (f6379f71)` |
 | 命令 | `review-pi repo-spike`（R-04 产品化前的探针） | `ocr scan` |
 | 模型 | `deepseek-v4.1-flash`（同一网关） | `deepseek-v4.1-flash`（同一网关） |
-| 并发 | 3 组（实测 3 组稳定；上限 5） | 5 子任务 |
+| 并发 | 3 组（实测 3 组稳定；上限 5） | 分片 2 → 5 子任务（受总并发 5 约束） |
 | 轮次 / 预检 | `--max-rounds 1`，工具尝试 15/20 次封顶 | `--no-plan`（跳过逐文件 PLAN） |
 | 去重 / 总结 | 无（findings 合并去重） | 保留 DEDUP，`--no-summary` |
 | 规则 | 未装载规则 Skill（裸检视） | 内置 `java.md` 等系统规则 |
@@ -63,7 +63,7 @@
 ### 4.1 运行
 
 - 同一快照、同一模型、同一时间窗；
-- 我方先跑（并发 3），OCR 后跑（并发 5），任一时刻并发 ≤ 5；
+- 我方先跑（并发 3）；OCR 分片推进：与并行阶段用并发 2，我方结束后余片用并发 5；任一时刻总并发 ≤ 5；
 - 原始产物：
   - 我方：`D:/Project/.repos/out/full-ours/repo-spike-result.json` + `runs/*/runs/run.json`
   - OCR：`D:/Project/.repos/out/ocr-shards/merged.json` + `shard-*.json`
