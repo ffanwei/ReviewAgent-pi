@@ -127,7 +127,7 @@ review-pi repo-spike --repo /path/to/repo \
 | `--max-files-per-group` | 10 | 单组文件数上限 |
 | `--max-group-chars` | 120000 | 单组估算字符上限 |
 | `--max-groups` | 500 | 组数护栏；超限显式失败，不静默截断 |
-| `--max-files` | 200 | 本次最多检视文件数 |
+| `--max-files` | 2000 | 本次最多检视文件数 |
 | `--max-file-chars` | 100000 | 单文件字符上限 |
 | `--max-rounds` | 1 | 每组最大轮次（spike 默认 1 轮控成本） |
 | `--group-concurrency` | 1 | 同时跑几组（默认串行；v1 上限 5） |

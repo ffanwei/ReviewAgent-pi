@@ -1,6 +1,6 @@
 # R-05 · 输出契约与呈现
 
-- Status: TODO
+- Status: DONE
 - Branch: `exp-repo-review`
 - Created: 2026-11-24
 
@@ -24,3 +24,13 @@
 ## 依赖
 
 R-01。
+
+## 实现与验收证据（2026-11-24）
+
+- schema：`docs/design/全仓扫描-方案与契约.md` §6（`repo-spike-result.json` / 组内 MR 兼容产物）。
+- 样例：`D:/Project/.repos/out/spring-calib-ours/repo-spike-result.json`（10 文件 / 6 findings / 带 tips）。
+- 行锚点：`Finding.file` 为仓库相对路径，`Finding.line` 为真实 1-based 行号；无 `lineType`。
+- tips：`Finding.tips`（review / suggestion / subcategory）随候选产出；按文件分组不依赖 diff 变更行。
+- 下游边界：不写 `mrReviewResult` / `baseSha` / `headSha`；聚合产物只供 CLI 与本地复核，不伪造平台 MR 报文。
+- 未做：独立 `reviews_tips_zh.json` 投影（当前 tips 内嵌 finding）；产品化时由 R-04 的 delivery 层补。
+

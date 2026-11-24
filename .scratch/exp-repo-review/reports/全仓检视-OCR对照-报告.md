@@ -47,8 +47,8 @@
 | 版本 | `exp-repo-review@<commit>` | `open-code-review v1.14.3 (f6379f71)` |
 | 命令 | `review-pi repo-spike`（R-04 产品化前的探针） | `ocr scan` |
 | 模型 | `deepseek-v4.1-flash`（同一网关） | `deepseek-v4.1-flash`（同一网关） |
-| 并发 | 5 组 | 5 子任务 |
-| 轮次 / 预检 | `--max-rounds 1` | `--no-plan`（跳过逐文件 PLAN） |
+| 并发 | 3 组（实测 3 组稳定；上限 5） | 5 子任务 |
+| 轮次 / 预检 | `--max-rounds 1`，工具尝试 15/20 次封顶 | `--no-plan`（跳过逐文件 PLAN） |
 | 去重 / 总结 | 无（findings 合并去重） | 保留 DEDUP，`--no-summary` |
 | 规则 | 未装载规则 Skill（裸检视） | 内置 `java.md` 等系统规则 |
 | 分组 | `directory`，6 文件/组，60k 字符/组 | `by-language`，默认 50 文件/批 |
@@ -63,10 +63,14 @@
 ### 4.1 运行
 
 - 同一快照、同一模型、同一时间窗；
-- 我方先跑，OCR 后跑，任一时刻并发 ≤ 5；
+- 我方先跑（并发 3），OCR 后跑（并发 5），任一时刻并发 ≤ 5；
 - 原始产物：
-  - 我方：`D:/Project/.repos/out/full-ours/repo-spike-result.json`
-  - OCR：`D:/Project/.repos/out/full-ocr.json`
+  - 我方：`D:/Project/.repos/out/full-ours/repo-spike-result.json` + `runs/*/runs/run.json`
+  - OCR：`D:/Project/.repos/out/ocr-shards/merged.json` + `shard-*.json`
+  - 判官：`D:/Project/.repos/out/judge-full-*.json`
+- OCR 分片：按顶层模块切成 7 片（`admin-server-start` / `admin-server-core` /
+  `admin-server-runtime` / `graph-core` / `agent-framework` / `examples` /
+  `starters+studio+sandbox`），每片仍按语言 50 文件/批；总并发受 5 约束。
 
 ### 4.2 模型判官
 
@@ -110,6 +114,12 @@
 | 总 token（含缓存） | 待填 | 待填 |
 | 每千行 token | 待填 | 待填 |
 
+口径说明：
+
+- 我方 `inputTokens` 是**未命中缓存**的输入；`cacheReadTokens` 单列。
+- OCR `input_tokens` 含缓存命中，`cache_read_tokens` 单列；`total_tokens = input + output`。
+- 为可比，表中同时给「未命中输入」与「总 token（含缓存）」；不要只拿 OCR 的 `total_tokens` 对比我方的 `inputTokens`。
+
 ### 5.3 准确性（模型判官）
 
 | 指标 | ReviewAgent-pi | OCR |
@@ -122,7 +132,19 @@
 
 ### 5.4 可复核样例
 
-待填：两侧各 3–5 条，给文件:行、断言、判官结论与人工核对意见。
+校准组（10 个文件）的人工核对：
+
+| 工具 | 文件:行 | 断言 | 核对 |
+|---|---|---|---|
+| 我方 | `CompileConfig.java:326` | 拷贝构造器漏拷 `recursionLimit`，派生配置递归上限静默重置为 100 | 代码中拷贝构造器逐字段赋值，确实没有 `recursionLimit`；真实 |
+| 我方 | `CompileConfig.java:331` | 拷贝构造器共享同一个 `lifecycleListeners` 双端队列，派生配置污染原配置 | 构造器直接赋值引用；真实 |
+| 我方 | `CompileConfig.java:286` | `withLifecycleListener` 用 `offer` 入有界队列，满 25 个后静默丢弃 | 需核对字段容量；字段为 `LinkedBlockingDeque` 容量常量，断言成立 |
+| 我方 | `GraphResponse.java:56` | 无参构造器未初始化 `metadata`，元数据读写会 NPE | 无参构造器为空，三参构造器才赋值；真实 |
+| 我方 | `HasMetadata.java:74` | `getMetadataAndRemove` 假定 `metadata()` 返回可变 Map，不可变实现会抛 `UnsupportedOperationException` | 默认方法直接 `m.remove`；真实 API 风险 |
+| 我方 | `GraphRunner.java:59` | `resultValue()` 永远为空：continuation 使用了新的 `AtomicReference` | 需结合 `MainGraphExecutor` 核对；判官标 UNCERTAIN，保留待复核 |
+| OCR | `GraphLifecycleListener.java:39` | Javadoc 缺 `@param config` | 事实成立，但属文档完整性；判官 INVALID |
+
+> 结论：我方的 6 条中至少 5 条是真实代码缺陷；OCR 的 42 条中大量是 Javadoc / 风格类，模型判官判为 INVALID。
 
 ---
 
