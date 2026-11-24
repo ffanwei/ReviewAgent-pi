@@ -1,6 +1,6 @@
 # R-02 · 仓库文件枚举与过滤
 
-- Status: TODO
+- Status: DONE
 - Branch: `exp-repo-review`
 - Created: 2026-11-24
 
@@ -25,3 +25,15 @@
 ## 依赖
 
 R-01 输入契约。
+
+## 实现与验收证据（2026-11-24）
+
+- 实现：`packages/review-pi/src/repo-spike/enumerate.ts`
+  - git `ls-files -z` + `--others --exclude-standard`，非 git 仓库回退 walk；
+  - 目录 / 文件名 / 后缀排除、源码扩展名白名单、8 KB 二进制嗅探、空文件、单文件字符上限、全局文件数上限；
+  - `lstat` 不跟随符号链接，避免把仓库外文件带进检视范围；
+  - 输出按路径排序，跳过项带固定原因。
+- 单测：`enumerate.test.ts` 5 个用例（排序 / 原因、pathPrefix、maxFiles、两次枚举字节一致、符号链接）。
+- dry-run 证据：`repo-spike --repo spring-ai-java --dry-run` → discovered=1607, selected=1607, groups=175, skipped=0。
+- 局限：排除目录 / 后缀目前是代码常量，尚未提升为 `limits.repoScan.*` 配置；配置化列为 R-02b（不阻塞本轮评测）。
+

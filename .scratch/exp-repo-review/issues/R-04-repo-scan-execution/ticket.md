@@ -1,6 +1,6 @@
 # R-04 · 全仓扫描执行路径
 
-- Status: TODO
+- Status: DOING
 - Branch: `exp-repo-review`
 - Created: 2026-11-24
 
@@ -26,3 +26,14 @@
 ## 依赖
 
 R-01、R-03；R-05 输出契约可并行。
+
+## 实现进展（2026-11-24）
+
+- 执行缝：`src/repo-spike/run.ts` 每组合成「全新增」diff 后调用一次 `runReviewOutcome`；
+  `mapWithConcurrency` 控制组并发（v1 上限 5）；组失败不终止整次运行。
+- 预算：新增 `ReviewRuntime.maxToolCalls`（缺省不传 = 100，MR 路径不变），
+  spike 设 15；`limits.retrieval` 设 1 次/文件、2 次连续空搜索、12 万字符。
+- 行锚点：合成 diff 的 `+` 行号 = 真实文件行号，校准 run 已人工核对 6 条 finding 的行号。
+- 未完成：scan 专用 Zone A 与初始消息（当前仍沿用 MR 的「本次新增」语义）；
+  该语义债不改变行锚点，但会影响「既有问题」的措辞。
+

@@ -13,3 +13,11 @@
   - 共享 `.git` 对象库 / refs、pnpm store、机器 CPU / 内存 / 磁盘、`~/.PiAgent/PiAgent.jsonc`；
   - 建分支本身无影响；避免并发跑大 benchmark，避免 `git clean -xdf`、`git gc --prune=now`。
 - `git fetch origin` 本次因网络重置失败，基点使用本地 `exp-flow` 引用（`09870c7`）。
+
+## 2026-11-24 · 契约定稿
+
+- 结论：输入是仓库快照，不是 diff；文件是不可拆单元；finding 锚真实文件行号；新增 `repo-review-result.json`，不伪造 MR 字段。
+- CLI：产品名 `repo-review`；`repo-spike` 保留为探针，R-04 后别名或删除。
+- 评测：全仓 GT 独立构造，禁止把 iterF91 / AACR 的 MR 指标换算成全仓成绩。
+- 依赖：R-02 / R-03 零模型先行；R-04 才发模型请求；R-05 与 R-04 并行；R-06 可提前准备 GT。
+- 文档：`docs/design/全仓扫描-方案与契约.md`（D1–D8 决策表、§10 依赖、§11 未决问题）。
