@@ -27,6 +27,18 @@ export function buildSpikeRuntime(maxRounds: number, includeTests: boolean): Rev
         ...limits.loop,
         maxRounds: Math.max(1, Math.floor(maxRounds)),
       },
+      // 全仓组多，单次请求最坏 180s × 3 次重试会让一个组卡 9 分钟；
+      // 探针把单次上界压到 90s、重试压到 1 次，失败组显式记 failed。
+      timeouts: {
+        ...limits.timeouts,
+        reviewTurnMs: 90_000,
+        oneShotMs: 120_000,
+      },
+      retry: {
+        ...limits.retry,
+        reviewTurnAttempts: 1,
+        streamAttempts: 1,
+      },
       testFiles: {
         ...limits.testFiles,
         skip: !includeTests,
