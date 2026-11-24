@@ -80,7 +80,7 @@
 | R-03 | 仓级分组与预算账本 | 全仓不能沿用 diff 字符分片 | P0 | DONE | 确定性分组；文件不重复 / 不跨组；文件数 + 字符双上限；组数护栏；截断留痕 | 2026-11-24 完成：四策略 + 双上限 + `maxGroups` 护栏；单测与 dry-run 证据见票 | [票](issues/R-03-repo-grouping-budget/ticket.md) · [讨论](issues/R-03-repo-grouping-budget/discussion.md) |
 | R-04 | 全仓扫描执行路径 | 现有 `review-run.ts` 是 diff 入口 | P0 | TODO | 单组 / 多组均可跑通；行锚点真实；组失败隔离；与 MR 路径不互相污染 | 新模块 + 薄适配层；尽量不改主路径 | [票](issues/R-04-repo-scan-execution/ticket.md) · — |
 | R-05 | 输出契约与呈现 | findings / tips 依赖「变更行」语义 | P1 | DONE | schema 与样例；无 diff 行锚点语义；tips 不依赖变更行；下游边界写清 | 2026-11-24 完成：R-01 §6 schema + calibration 样例；tips 内嵌 finding | [票](issues/R-05-output-contract/ticket.md) · — |
-| R-06 | 全仓评测集与基线 | 现有 iterF91 / AACR 是 MR + diff GT | P1 | TODO | 评测集冻结；零模型基线可复跑；指标定义成文；不与 MR 结果混报 | GT 来源：VUL4J 快照 / 注入缺陷 | [票](issues/R-06-repo-eval/ticket.md) · — |
+| R-06 | 全仓评测集与基线 | 现有 iterF91 / AACR 是 MR + diff GT | P1 | DOING | 评测集冻结；零模型基线可复跑；指标定义成文；不与 MR 结果混报 | 2026-11-24 实跑：spring-ai-alibaba 生产 Java 1,390 文件；我方 255 组 + OCR 7 片；报告 `reports/全仓检视-OCR对照-报告.md` | [票](issues/R-06-repo-eval/ticket.md) · — |
 | R-07 | 增量扫描 | 全仓重扫成本高 | P2 | TODO | 同快照全量 vs 增量结果一致；缓存失效规则明确；审计记录命中 | 依赖 R-02、R-04 | [票](issues/R-07-incremental-scan/ticket.md) · — |
 | R-08 | 与多文件实验及主线的合并路径 | 三条实验线共享文件，长期分叉 | P1 | BLOCKED | 集成顺序与冲突面清单；共享文件改动清单；合并前回归范围 | 等 `exp-flow → main` 与 multifile 结论 | [票](issues/R-08-merge-path/ticket.md) · — |
 
