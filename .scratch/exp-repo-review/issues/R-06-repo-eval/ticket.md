@@ -1,6 +1,6 @@
 # R-06 · 全仓评测集与基线
 
-- Status: DOING
+- Status: DONE
 - Branch: `exp-repo-review`
 - Created: 2026-11-24
 
@@ -58,3 +58,21 @@ R-01；可与 R-02 并行。
   `run.json` 合并，覆盖缺口在报告中显式标注。
 - OCR：前三片 682 文件 / 1,625 条 / 41.57M token / 163.7 min（并发 2）；
   剩余分片以并发 4 继续。
+
+## 验收证据（2026-11-25）
+
+- 报告：`.scratch/exp-repo-review/reports/全仓检视-OCR对照-报告.md` / `.pdf`。
+- 我方：253/255 组、1,378 文件、1,331 条 findings、67.97M token、204 min；
+  判官 100 条 precision 0.81（P0–P2 0.96）。
+- OCR：1,388 文件、3,561 条 comments、95.51M token、285 min 分片执行；
+  判官 150 条 precision 0.69（high/critical 1.00、medium 0.63、low 0.21）。
+- 指标口径：precision 按严重级分层抽样，`UNCERTAIN` 单列；不测召回（留 R-06b）。
+- 与 MR 指标隔离：本报告只报全仓结果，不引用 iterF91 / AACR 的 MR 成绩。
+- 覆盖缺口：我方 2 组（12 文件）因宿主内存保护停止，已在报告 §5.1 / §7 标注。
+
+## 未做 / 后续
+
+- 未冻结逐行 GT，未做零模型覆盖基线，未测召回；本轮是「同快照跨工具全仓对照」，
+  不是完整的冻结评测集。
+- R-06b：合成缺陷注入 / 真实修复回滚测召回；把 precision + recall 一起报。
+- 复跑脚本与原始产物在 `D:/Project/.repos/out/`（gitignored 语义，不入库）。

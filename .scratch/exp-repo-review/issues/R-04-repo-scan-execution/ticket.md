@@ -1,6 +1,6 @@
 # R-04 · 全仓扫描执行路径
 
-- Status: DOING
+- Status: DONE
 - Branch: `exp-repo-review`
 - Created: 2026-11-24
 
@@ -42,7 +42,7 @@ R-01、R-03；R-05 输出契约可并行。
   产物 `D:/Project/.repos/out/full-ours/`。
 
 
-## 2026-11-25 · 全仓实跑收尾
+## 2026-11-25 · 全仓实跑收尾（DONE）
 
 - 我方：253/255 组完成（1,378/1,390 文件，99.1%），1,331 条 findings
   （P0 3 / P1 170 / P2 998 / P3 160），67.97M token，204 min（并发 3）。
