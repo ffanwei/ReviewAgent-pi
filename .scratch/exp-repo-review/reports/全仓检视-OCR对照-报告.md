@@ -98,23 +98,23 @@
 
 | 指标 | ReviewAgent-pi | OCR |
 |---|---|---|
-| 检视文件 | 1,390 | 1,390（待确认） |
-| 组 / 批 | 约 250 组 | 约 28 批 |
-| 墙钟 | 待填 | 首片 93.7 min（并发 2）；全量待填 |
+| 检视文件 | **1,378 / 1,390**（253/255 组；2 组被后台内存压力中止） | 待填 |
+| 组 / 批 | 255 组（完成 253） | 7 片 / 约 28 批 |
+| 墙钟 | **204 min（并发 3）** | 待填 |
 | 失败组 | 待填 | 待填 |
-| findings / comments | 待填 | 首片 347 文件 / 888 条；全量待填 |
+| findings / comments | **1,331 条**（P0 3 / P1 170 / P2 998 / P3 160） | 前三片 1,625 条；全量待填 |
 
-> OCR 首片实测：347 文件 / 888 条 comments / 24.88M token（input 23.47M，output 1.42M，cache 20.92M）/ 1h33m41s，并发 2。折算约 71.7k token/文件、2.56 条/文件。
+> OCR 前 3 片实测：682 文件 / 1,625 条 comments / 41.57M token / 163.7 min（并发 2）；折算约 61.0k token/文件、2.38 条/文件。前 3 片未命中输入合计约 4.49M。
 
 ### 5.2 Token
 
 | 指标 | ReviewAgent-pi | OCR |
 |---|---|---|
-| 未命中输入 | 待填 | 待填 |
-| 缓存命中输入 | 待填 | 待填 |
-| 输出 | 待填 | 待填 |
-| 总 token（含缓存） | 待填 | 待填 |
-| 每千行 token | 待填 | 待填 |
+| 未命中输入 | **5.58M** | 待填 |
+| 缓存命中输入 | **56.90M** | 待填 |
+| 输出 | **5.50M** | 待填 |
+| 总 token（含缓存） | **67.97M** | 待填 |
+| 每千行 token | **352.6k（总）/ 28.9k（未命中）** | 待填 |
 
 口径说明：
 
@@ -126,11 +126,11 @@
 
 | 指标 | ReviewAgent-pi | OCR |
 |---|---|---|
-| 抽样 | 待填 | 待填 |
-| VALID | 待填 | 待填 |
-| INVALID | 待填 | 待填 |
-| UNCERTAIN | 待填 | 待填 |
-| Precision（VALID / 已决） | 待填 | 待填 |
+| 抽样 | **100** | **100（前三片）** |
+| VALID | **68** | **53** |
+| INVALID | **16** | **24** |
+| UNCERTAIN | **16** | **23** |
+| Precision（VALID / 已决） | **0.81** | **0.69**（前三片） |
 
 ### 5.4 可复核样例
 
@@ -164,23 +164,48 @@
 
 这些是可以在代码中逐条复核的实质缺陷，不是风格意见。
 
+OCR 的 high/critical 也有真实缺陷（判官 VALID）：
+
+| 文件:行 | 断言 |
+|---|---|
+| `GlobalExceptionHandler.java:154` | 异常处理把全部请求头（含 Authorization/Cookie/API-Key）与完整 body 写入日志，凭证泄漏 |
+| `AgentSchemaController.java:85` | workspace ID 硬编码为 `"1"`，破坏多租户隔离 |
+| `AppChatController.java:109` | `doOnNext` 在 `onErrorResume` 之前，错误回复不会发给 SSE 客户端 |
+| `AppComponentController.java:504` | `getAppComponentByCode` 可能返回 null，后续直接解引用 |
+
+> 两侧都能找到真实缺陷；差别在噪声比例与成本，而不是「一个能用一个不能用」。
+
 ---
 
 ## 6. 分析
 
-### 6.1 噪声集中在低严重级
+### 6.1 精度分层：噪声集中在低严重级
 
-校准组（10 文件）的判官分层结果：
+我方全量（100 条，严重级分层）：
 
-| 工具 | 严重级 | VALID | INVALID | UNCERTAIN | Precision |
-|---|---|---:|---:|---:|---:|
-| 我方 | P2 | 4 | 0 | 2 | 1.00 |
-| OCR | medium | 2 | 0 | 0 | 1.00 |
-| OCR | low | 2 | 10 | 6 | **0.17** |
+| 严重级 | VALID | INVALID | UNCERTAIN | Precision |
+|---|---:|---:|---:|---:|
+| P0 | 3 | 0 | 0 | 1.00 |
+| P1 | 28 | 0 | 5 | 1.00 |
+| P2 | 22 | 2 | 8 | 0.92 |
+| P3 | 15 | 14 | 3 | 0.52 |
+| **合计** | **68** | **16** | **16** | **0.81** |
 
-OCR 的高严重级断言并不弱：同一组 10 个文件里，OCR 的 6 条 high 包含「拷贝构造器漏 `recursionLimit`」「`GraphResponse` 无参构造器 `metadata` 为 null」「`GraphRunner.resultValue()` 引用错位」——与我方命中同一批真实缺陷。问题在**低严重级**：大量 Javadoc / 风格 / 推测性建议把整体精度拉到 0.29。若消费方只取 high/medium，OCR 的可用性明显提升。
+OCR 前三片（682 文件，100 条）：
 
-我方产出更少（0.6 条/文件 vs OCR 4.2 条/文件），但没有 low 档；P2 校准组精度 1.00，全量初步 0.69。
+| 严重级 | VALID | INVALID | UNCERTAIN | Precision |
+|---|---:|---:|---:|---:|
+| critical | 21 | 0 | 4 | 1.00 |
+| high | 19 | 0 | 6 | 1.00 |
+| medium | 9 | 5 | 11 | 0.64 |
+| low | 4 | 19 | 2 | **0.17** |
+| **合计** | **53** | **24** | **23** | **0.69** |
+
+OCR 前三片的 1,625 条 comments 按严重级：low 381 / medium 793 / high 404 / critical 47；按类别：bug 1,021 / security 98 / maintainability 362 / documentation 48 / performance 63 / style 30。它不是只会报文档问题，但低档噪声占比很大。
+
+OCR 的高严重级断言并不弱：critical / high 两档在 100 条抽样中全部 VALID（40/40），包含「拷贝构造器漏 `recursionLimit`」「`GraphResponse` 无参构造器 `metadata` 为 null」「`GraphRunner.resultValue()` 引用错位」等我方也命中的真实缺陷。问题在**低严重级**：low 档 precision 只有 0.17，medium 0.64；low+medium 共 1,174 条（占 72%），把整体精度拉到 0.69。若消费方只取 high/critical，OCR 的 precision 为 1.00，但覆盖面收窄到 451 条。
+
+我方的噪声同样集中在 P3：P0–P2 的已决样本 53/55 为 VALID（0.96），P3 只有 0.52。全量整体 0.81。产出密度 0.97 条/文件，低于 OCR 的 2.38 条/文件；若同样只取 P0–P2，我方 1,171 条、precision 0.96。
 
 ### 6.2 Token 差异来自哪里
 
@@ -206,9 +231,10 @@ OCR 的高严重级断言并不弱：同一组 10 个文件里，OCR 的 6 条 h
 - 单仓、单模型、单次运行；没有重复实验方差。
 - 只测精度，不测召回。
 - 我方是 `repo-spike` 探针，不是最终 `repo-review`；提示词仍是 MR 语义（合成「全新增」diff），会把既有问题说成「本次新增」，但不影响行锚点与缺陷判断。
-- OCR 跳过了 PLAN 与 PROJECT_SUMMARY，结果不代表其默认全功能配置。
+- OCR 跳过了 PLAN 与 PROJECT_SUMMARY，结果不代表其默认全功能配置；DEDUP 在 shard 1 的第 4/7 批、shard 2 的第 2/4 批解析失败并保留原始 comments，可能抬高 OCR 的 comment 数与噪声。
 - 模型判官与检视模型同源，存在同偏好偏差；样例需人工复核。
 - 生产代码 19.3 万行，低于 30 万行目标。
+- 我方全仓在 253/255 组（1,378/1,390 文件）时被 Claude Code 的后台内存压力机制停止；2 组 12 文件未覆盖（0.9%），结果由 per-group `run.json` 合并。这是宿主资源保护，不是检视命令失败；未自动重启。
 
 ---
 
@@ -216,8 +242,8 @@ OCR 的高严重级断言并不弱：同一组 10 个文件里，OCR 的 6 条 h
 
 待全量数据回填。当前可下的判断：
 
-1. **默认全仓检视应走我方路径**：同样 1,390 个文件，我方约 0.69 条/文件、判官 precision 约 0.69；OCR 约 4.2 条/文件、整体 precision 约 0.29。
-2. **OCR 不是没有价值**：它的 high / medium 档能命中与我方相同的真实缺陷（拷贝构造器漏字段、`metadata` NPE、`resultValue` 引用错位）；噪声集中在 low 档的 Javadoc / 风格建议。如果消费方只取 high/medium，OCR 可作为补充。
+1. **默认全仓检视应走我方路径**：我方约 0.97 条/文件、整体 precision 0.81；OCR 约 2.38 条/文件、整体 precision 0.69（前三片抽样）。但两侧的高档都可靠：我方 P0–P2 precision 0.96，OCR high/critical 1.00。
+2. **OCR 不是没有价值**：critical/high 档 40/40 VALID，能命中与我方相同的真实缺陷；噪声集中在 low/medium 档（low precision 0.17、medium 0.64）。如果消费方只取 high/critical，OCR 可作为补充，但会漏掉大量中低档真实问题。
 3. **Token 差距主要来自输入组织**：组级合成 diff 让整文件只进一次上下文；OCR 的逐文件 agent 循环会反复读关联文件。
 4. **全仓扩展性**：两侧都随文件数线性增长；我方可用「组数 × 文件数 × 字符数 × 工具次数 × 轮次」显式封顶，OCR 的单文件循环缺少等价硬门。
 
