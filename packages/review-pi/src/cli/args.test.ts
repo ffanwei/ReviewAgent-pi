@@ -14,12 +14,12 @@ import { parseCliArgs, USAGE_TEXT } from "./args.js";
 test("空 argv 与未知子命令 → 用法错误（不抛异常）", () => {
   expect(parseCliArgs([])).toEqual({
     ok: false,
-    message: "missing command (expected `review`, `smoke`, `config`, `export` or `version`)",
+    message: "missing command (expected `review`, `smoke`, `config`, `export`, `repo-spike` or `version`)",
   });
   expect(parseCliArgs(["deploy"])).toEqual({
     ok: false,
     message:
-      'unknown command "deploy" (expected `review`, `smoke`, `config`, `export` or `version`)',
+      'unknown command "deploy" (expected `review`, `smoke`, `config`, `export`, `repo-spike` or `version`)',
   });
 });
 
@@ -970,20 +970,23 @@ test("smoke：窄旗标面（仅 --model / --config）；review 专属旗标对 
   });
 });
 
-test("USAGE_TEXT：宣告五个子命令（stderr 错误路径同款文案，单一来源）", () => {
+test("USAGE_TEXT：宣告六个子命令（stderr 错误路径同款文案，单一来源）", () => {
   expect(USAGE_TEXT).toContain("review-pi review --repo");
   expect(USAGE_TEXT).toContain("review-pi smoke");
   expect(USAGE_TEXT).toContain("review-pi config <init|show>");
   // export（ADR-0036 / ADR-0072）：四个旗标都在用法面
   expect(USAGE_TEXT).toContain("review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]");
+  // repo-spike：一次性全仓探针（不是产品化 scan）
+  expect(USAGE_TEXT).toContain("review-pi repo-spike --repo <path>");
+  expect(USAGE_TEXT).toContain("--out <dir>");
+  expect(USAGE_TEXT).toContain("--group-by directory|files|language|none");
   // version（ADR-0079）：子命令 + 顶层别名都在用法面；没有 --help
   expect(USAGE_TEXT).toContain("review-pi version [--json]");
   expect(USAGE_TEXT).toContain("review-pi --version");
   expect(USAGE_TEXT).not.toContain("--help");
-  // 落盘位置只在 taskId 面上出现（--out 已从用法面移除）
+  // 落盘位置只在 taskId 面上出现（--out 已从 review 用法面移除；repo-spike 用自己的 --out）
   expect(USAGE_TEXT).toContain("--taskId <id>");
   expect(USAGE_TEXT).toContain("--tasks-dir <dir>");
-  expect(USAGE_TEXT).not.toContain("--out ");
   // 一个包就是一个 skill（ADR-0034）：包内消歧旗标不再宣告
   expect(USAGE_TEXT).not.toContain("--rule-skill-name");
   // `--skill` 是规则 Skill 目录输入的等价旗标

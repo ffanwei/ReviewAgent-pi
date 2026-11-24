@@ -1,0 +1,87 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterAll, expect, test } from "vitest";
+
+import { enumerateRepoFiles } from "./enumerate.js";
+
+const dirs: string[] = [];
+
+function tempRepo(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "repo-spike-enum-"));
+  dirs.push(dir);
+  return dir;
+}
+
+function write(root: string, rel: string, content: string | Buffer): void {
+  const full = path.join(root, ...rel.split("/"));
+  mkdirSync(path.dirname(full), { recursive: true });
+  writeFileSync(full, content);
+}
+
+afterAll(() => {
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("枚举：只保留源码/配置，按路径排序，跳过原因可枚举", async () => {
+  const root = tempRepo();
+  write(root, "src/a.ts", "export const a = 1;\n");
+  write(root, "src/b.py", "print(1)\n");
+  write(root, "README.md", "# docs\n");
+  write(root, "node_modules/x.js", "module.exports = 1;\n");
+  write(root, "src/logo.ts", Buffer.from([0, 1, 2, 3]));
+  write(root, "src/empty.ts", "");
+  write(root, "src/large.ts", "x".repeat(1_000));
+  write(root, "package-lock.json", "{}");
+
+  const result = await enumerateRepoFiles({
+    repoPath: root,
+    maxFiles: 10,
+    maxFileChars: 100,
+  });
+
+  expect(result.files.map((file) => file.path)).toEqual(["src/a.ts", "src/b.py"]);
+  expect(result.skipped).toEqual(
+    expect.arrayContaining([
+      { path: "README.md", reason: "unsupported-extension" },
+      { path: "src/logo.ts", reason: "binary" },
+      { path: "src/empty.ts", reason: "empty" },
+      { path: "src/large.ts", reason: "too-large(1000>100)" },
+      { path: "package-lock.json", reason: "excluded-path" },
+    ]),
+  );
+});
+
+test("枚举：pathPrefix 只保留前缀内的文件", async () => {
+  const root = tempRepo();
+  write(root, "src/a.ts", "a\n");
+  write(root, "src/nested/b.ts", "b\n");
+  write(root, "test/c.ts", "c\n");
+
+  const result = await enumerateRepoFiles({
+    repoPath: root,
+    maxFiles: 10,
+    maxFileChars: 1_000,
+    pathPrefix: "src",
+  });
+
+  expect(result.files.map((file) => file.path)).toEqual(["src/a.ts", "src/nested/b.ts"]);
+});
+
+test("枚举：maxFiles 截断后其余文件记为 max-files", async () => {
+  const root = tempRepo();
+  write(root, "a.ts", "a\n");
+  write(root, "b.ts", "b\n");
+  write(root, "c.ts", "c\n");
+
+  const result = await enumerateRepoFiles({
+    repoPath: root,
+    maxFiles: 2,
+    maxFileChars: 1_000,
+  });
+
+  expect(result.files.map((file) => file.path)).toEqual(["a.ts", "b.ts"]);
+  expect(result.skipped).toContainEqual({ path: "c.ts", reason: "max-files" });
+});

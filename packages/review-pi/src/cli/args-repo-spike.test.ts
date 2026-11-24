@@ -1,0 +1,103 @@
+import { expect, test } from "vitest";
+
+import { parseCliArgs } from "./args.js";
+
+test("repo-spike：最小 dry-run 参数", () => {
+  expect(parseCliArgs(["repo-spike", "--repo", "repo", "--dry-run"])).toEqual({
+    ok: true,
+    command: "repo-spike",
+    args: {
+      repo: "repo",
+      outDir: "repo-spike-out",
+      groupBy: "directory",
+      maxFilesPerGroup: 10,
+      maxGroupChars: 120_000,
+      maxFiles: 200,
+      maxFileChars: 100_000,
+      maxRounds: 1,
+      groupConcurrency: 1,
+      dryRun: true,
+    },
+  });
+});
+
+test("repo-spike：分组、上限、规则包与进度旗标", () => {
+  expect(
+    parseCliArgs([
+      "repo-spike",
+      "--repo",
+      "repo",
+      "--out",
+      "out",
+      "--group-by",
+      "files",
+      "--max-files-per-group",
+      "3",
+      "--max-group-chars",
+      "5000",
+      "--max-files",
+      "7",
+      "--max-file-chars",
+      "9000",
+      "--max-rounds",
+      "2",
+      "--group-concurrency",
+      "2",
+      "--path",
+      "src",
+      "--rule-skill",
+      "a,b",
+      "--rule-skill",
+      "c",
+      "--rule-skill-zip",
+      "z.zip",
+      "--skill",
+      "s",
+      "--strict-rule-skill",
+      "--no-progress",
+      "--config",
+      "cfg.json",
+    ]),
+  ).toEqual({
+    ok: true,
+    command: "repo-spike",
+    args: {
+      repo: "repo",
+      outDir: "out",
+      groupBy: "files",
+      maxFilesPerGroup: 3,
+      maxGroupChars: 5_000,
+      maxFiles: 7,
+      maxFileChars: 9_000,
+      maxRounds: 2,
+      groupConcurrency: 2,
+      dryRun: false,
+      pathPrefix: "src",
+      configPath: "cfg.json",
+      ruleSkillZips: ["z.zip"],
+      ruleSkillDirs: ["a", "b", "c", "s"],
+      strictRuleSkill: true,
+      progress: false,
+    },
+  });
+});
+
+test("repo-spike：缺 --repo / 非法 group-by / 非法整数 / 未知旗标", () => {
+  expect(parseCliArgs(["repo-spike", "--dry-run"])).toEqual({
+    ok: false,
+    message: "repo-spike requires --repo <path>",
+  });
+  expect(parseCliArgs(["repo-spike", "--repo", "r", "--group-by", "module"])).toEqual({
+    ok: false,
+    message:
+      'invalid --group-by "module" (expected directory, files, language or none)',
+  });
+  expect(parseCliArgs(["repo-spike", "--repo", "r", "--max-files-per-group", "0"])).toEqual({
+    ok: false,
+    message: 'invalid --max-files-per-group "0": expected 1..1000',
+  });
+  expect(parseCliArgs(["repo-spike", "--repo", "r", "--nope", "x"])).toEqual({
+    ok: false,
+    message: 'unknown flag "--nope"',
+  });
+});

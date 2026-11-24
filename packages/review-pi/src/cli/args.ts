@@ -66,16 +66,46 @@ const KNOWN_CONFIG_FLAGS: readonly string[] = ["--config", "--force", "--from-en
 /** export 子命令的已知旗标（ADR-0036 只寻址与复制 + ADR-0072 `--native` 表示切换 + ADR-0074 `--trace`，不碰配置） */
 const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--path", "--trace"];
 
+/** repo-spike（一次性全仓探针）的已知旗标 */
+const KNOWN_REPO_SPIKE_FLAGS: readonly string[] = [
+  "--repo",
+  "--out",
+  "--group-by",
+  "--max-files-per-group",
+  "--max-group-chars",
+  "--max-files",
+  "--max-file-chars",
+  "--max-rounds",
+  "--group-concurrency",
+  "--path",
+  "--config",
+  "--rule-skill-zip",
+  "--rule-skill",
+  "--skill",
+];
+
+/** repo-spike 可重复旗标（与 review 的规则包口径一致） */
+const REPEATABLE_REPO_SPIKE_FLAGS: readonly string[] = [
+  "--rule-skill-zip",
+  "--rule-skill",
+  "--skill",
+];
+
+/** repo-spike 的无值布尔旗标 */
+const REPO_SPIKE_BOOLEAN_FLAGS = new Set(["--dry-run", "--strict-rule-skill", "--no-progress"]);
+
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
 export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>（已废弃，忽略）] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--include <regex>]... [--exclude <regex>]... [--strict-rule-skill] [--no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
+       review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--path <prefix>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi version [--json]
        review-pi --version
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
   （config init = 写缺省 JSONC；config show = 脱敏打印生效配置与来源）
   （export = 单行打印主 / skill session 的绝对路径，逗号分隔、主在前；缺省 OpenCode 兼容版、--native 原生；--path 复制到目录）
+  （repo-spike = 一次性全仓探针：枚举文件 → 合成为「全新增」diff → 按目录/文件数分组，每组一次现有 MR 流水线；不是产品化 scan）
   （version = 产品版本单行；--json 额外给出 Node 与内核四包实际版本，不加载配置）
 
 配置（ADR-0025）：~/.PiAgent/PiAgent.jsonc（Linux $HOME / Windows %USERPROFILE%），JSONC。
@@ -216,6 +246,28 @@ export interface ReviewCliArgs {
   readonly progress?: boolean;
 }
 
+/** 解析后的 repo-spike 命令参数（一次性全仓探针；不是产品化 scan 契约） */
+export interface RepoSpikeCliArgs {
+  readonly repo: string;
+  readonly outDir: string;
+  readonly groupBy: "directory" | "files" | "language" | "none";
+  readonly maxFilesPerGroup: number;
+  readonly maxGroupChars: number;
+  readonly maxFiles: number;
+  readonly maxFileChars: number;
+  readonly maxRounds: number;
+  readonly groupConcurrency: number;
+  readonly dryRun: boolean;
+  /** 只检视该仓库相对路径前缀（POSIX；缺席 = 全仓） */
+  readonly pathPrefix?: string;
+  readonly configPath?: string;
+  readonly ruleSkillZips?: readonly string[];
+  readonly ruleSkillDirs?: readonly string[];
+  readonly strictRuleSkill?: boolean;
+  /** `--no-progress` → false；缺席 = 打印 */
+  readonly progress?: boolean;
+}
+
 /** 解析后的 smoke 命令参数 */
 export interface SmokeCliArgs {
   readonly model?: string;
@@ -262,6 +314,7 @@ export type ParseCliArgsResult =
   | { readonly ok: true; readonly command: "smoke"; readonly args: SmokeCliArgs }
   | { readonly ok: true; readonly command: "config"; readonly args: ConfigCliArgs }
   | { readonly ok: true; readonly command: "export"; readonly args: ExportCliArgs }
+  | { readonly ok: true; readonly command: "repo-spike"; readonly args: RepoSpikeCliArgs }
   | { readonly ok: true; readonly command: "version"; readonly args: VersionCliArgs }
   | { readonly ok: false; readonly message: string };
 
@@ -580,6 +633,9 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   if (command === "export") {
     return parseExportCommand(rest);
   }
+  if (command === "repo-spike") {
+    return parseRepoSpikeCommand(rest);
+  }
   // 版本面（ADR-0079）：`version` 子命令与顶层 `--version` / `-v` 同义。
   // 放在配置装载之前（main 里直接返回），所以这里只认 `--json`，不接受
   // `--config`——版本命令不读配置，给了配置旗标是用法错误而不是静默忽略。
@@ -591,8 +647,8 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
       ok: false,
       message:
         argv.length === 0
-          ? "missing command (expected `review`, `smoke`, `config`, `export` or `version`)"
-          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\`, \`config\`, \`export\` or \`version\`)`,
+          ? "missing command (expected `review`, `smoke`, `config`, `export`, `repo-spike` or `version`)"
+          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\`, \`config\`, \`export\`, \`repo-spike\` or \`version\`)`,
     };
   }
   const booleanFlags = command === "review" ? stripReviewBooleanFlags(rest) : undefined;
@@ -655,6 +711,195 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
     joined !== undefined ? joined.emptyFlags : [],
     pathFilterStripped !== undefined ? pathFilterStripped.emptyFlags : [],
   );
+}
+
+/**
+ * repo-spike：一次性全仓探针。
+ *
+ * 参数面刻意比 review 窄：没有 MR 输入，只有仓库、分组、上限与规则包。
+ * dry-run 不要求配置/API key；真跑仍走用户配置。
+ */
+function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
+  const stripped = stripRepoSpikeBooleanFlags(rest);
+  if (!stripped.ok) {
+    return stripped;
+  }
+  const flags = parseFlags(
+    stripped.tokens,
+    KNOWN_REPO_SPIKE_FLAGS,
+    REPEATABLE_REPO_SPIKE_FLAGS,
+  );
+  if (!flags.ok) {
+    return flags;
+  }
+
+  const repo = flags.values.get("--repo");
+  if (repo === undefined || repo.trim().length === 0) {
+    return { ok: false, message: "repo-spike requires --repo <path>" };
+  }
+  const outDir = flags.values.get("--out") ?? "repo-spike-out";
+  if (outDir.trim().length === 0) {
+    return { ok: false, message: "--out must be a non-empty directory" };
+  }
+  const groupBy = flags.values.get("--group-by") ?? "directory";
+  if (
+    groupBy !== "directory" &&
+    groupBy !== "files" &&
+    groupBy !== "language" &&
+    groupBy !== "none"
+  ) {
+    return {
+      ok: false,
+      message: `invalid --group-by ${JSON.stringify(groupBy)} (expected directory, files, language or none)`,
+    };
+  }
+
+  const maxFilesPerGroup = parseSpikeInt(
+    flags.values.get("--max-files-per-group"),
+    "--max-files-per-group",
+    10,
+    1,
+    1_000,
+  );
+  if (!maxFilesPerGroup.ok) {
+    return maxFilesPerGroup;
+  }
+  const maxGroupChars = parseSpikeInt(
+    flags.values.get("--max-group-chars"),
+    "--max-group-chars",
+    120_000,
+    1_000,
+    10_000_000,
+  );
+  if (!maxGroupChars.ok) {
+    return maxGroupChars;
+  }
+  const maxFiles = parseSpikeInt(flags.values.get("--max-files"), "--max-files", 200, 1, 100_000);
+  if (!maxFiles.ok) {
+    return maxFiles;
+  }
+  const maxFileChars = parseSpikeInt(
+    flags.values.get("--max-file-chars"),
+    "--max-file-chars",
+    100_000,
+    1_000,
+    10_000_000,
+  );
+  if (!maxFileChars.ok) {
+    return maxFileChars;
+  }
+  const maxRounds = parseSpikeInt(flags.values.get("--max-rounds"), "--max-rounds", 1, 1, 10);
+  if (!maxRounds.ok) {
+    return maxRounds;
+  }
+  const groupConcurrency = parseSpikeInt(
+    flags.values.get("--group-concurrency"),
+    "--group-concurrency",
+    1,
+    1,
+    16,
+  );
+  if (!groupConcurrency.ok) {
+    return groupConcurrency;
+  }
+
+  const config = parseConfigFlag(flags.values);
+  if (!config.ok) {
+    return config;
+  }
+
+  const ruleSkillZips = splitCommaList(flags.repeated.get("--rule-skill-zip"));
+  const ruleSkillDirs = [
+    ...splitCommaList(flags.repeated.get("--rule-skill")),
+    ...splitCommaList(flags.repeated.get("--skill")),
+  ];
+  const pathPrefix = flags.values.get("--path");
+
+  return {
+    ok: true,
+    command: "repo-spike",
+    args: {
+      repo,
+      outDir,
+      groupBy,
+      maxFilesPerGroup: maxFilesPerGroup.value,
+      maxGroupChars: maxGroupChars.value,
+      maxFiles: maxFiles.value,
+      maxFileChars: maxFileChars.value,
+      maxRounds: maxRounds.value,
+      groupConcurrency: groupConcurrency.value,
+      dryRun: stripped.dryRun,
+      ...(pathPrefix !== undefined && pathPrefix.trim().length > 0
+        ? { pathPrefix: pathPrefix.trim() }
+        : {}),
+      ...(config.configPath !== undefined ? { configPath: config.configPath } : {}),
+      ...(ruleSkillZips.length > 0 ? { ruleSkillZips } : {}),
+      ...(ruleSkillDirs.length > 0 ? { ruleSkillDirs } : {}),
+      ...(stripped.strict ? { strictRuleSkill: true } : {}),
+      ...(stripped.progress === false ? { progress: false } : {}),
+    },
+  };
+}
+
+function stripRepoSpikeBooleanFlags(rest: readonly string[]): {
+  readonly ok: true;
+  readonly tokens: readonly string[];
+  readonly dryRun: boolean;
+  readonly strict: boolean;
+  readonly progress?: boolean;
+} | { readonly ok: false; readonly message: string } {
+  const counts = new Map<string, number>();
+  const tokens: string[] = [];
+  for (const token of rest) {
+    if (REPO_SPIKE_BOOLEAN_FLAGS.has(token)) {
+      counts.set(token, (counts.get(token) ?? 0) + 1);
+    } else {
+      tokens.push(token);
+    }
+  }
+  for (const flag of REPO_SPIKE_BOOLEAN_FLAGS) {
+    if ((counts.get(flag) ?? 0) > 1) {
+      return { ok: false, message: `duplicate flag ${flag}` };
+    }
+  }
+  return {
+    ok: true,
+    tokens,
+    dryRun: counts.has("--dry-run"),
+    strict: counts.has("--strict-rule-skill"),
+    ...(counts.has("--no-progress") ? { progress: false } : {}),
+  };
+}
+
+function parseSpikeInt(
+  raw: string | undefined,
+  flag: string,
+  fallback: number,
+  min: number,
+  max: number,
+): { readonly ok: true; readonly value: number } | { readonly ok: false; readonly message: string } {
+  if (raw === undefined) {
+    return { ok: true, value: fallback };
+  }
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) {
+    return { ok: false, message: `invalid ${flag} ${JSON.stringify(raw)}: expected an integer` };
+  }
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    return {
+      ok: false,
+      message: `invalid ${flag} ${JSON.stringify(raw)}: expected ${String(min)}..${String(max)}`,
+    };
+  }
+  return { ok: true, value };
+}
+
+function splitCommaList(values: readonly string[] | undefined): readonly string[] {
+  return (values ?? [])
+    .flatMap((value) => value.split(","))
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 }
 
 /** config 子命令：`config <init|show>` + 四个旗标（布尔与有值分开处理） */
