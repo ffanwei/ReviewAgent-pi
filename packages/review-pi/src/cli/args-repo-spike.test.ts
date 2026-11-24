@@ -13,7 +13,7 @@ test("repo-spike：最小 dry-run 参数", () => {
       maxFilesPerGroup: 10,
       maxGroupChars: 120_000,
       maxGroups: 500,
-      maxFiles: 200,
+      maxFiles: 2_000,
       maxFileChars: 100_000,
       maxRounds: 1,
       groupConcurrency: 1,

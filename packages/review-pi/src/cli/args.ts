@@ -781,7 +781,7 @@ function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
   if (!maxGroups.ok) {
     return maxGroups;
   }
-  const maxFiles = parseSpikeInt(flags.values.get("--max-files"), "--max-files", 200, 1, 100_000);
+  const maxFiles = parseSpikeInt(flags.values.get("--max-files"), "--max-files", 2_000, 1, 100_000);
   if (!maxFiles.ok) {
     return maxFiles;
   }
