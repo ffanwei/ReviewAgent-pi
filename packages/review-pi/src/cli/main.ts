@@ -849,8 +849,8 @@ function main(): void {
     runExportCommand(parsed.args).then((code) => exitGracefully(code)).catch(reportErrorAndExit);
     return;
   }
-  // repo-spike 的 dry-run 是纯文件系统命令：不加载配置、不要求 API key。
-  if (parsed.command === "repo-spike" && parsed.args.dryRun) {
+  // repo-review / repo-spike 的 dry-run 是纯文件系统命令：不加载配置、不要求 API key。
+  if ((parsed.command === "repo-review" || parsed.command === "repo-spike") && parsed.args.dryRun) {
     runRepoSpikeCommand(parsed.args)
       .then((code) => exitGracefully(code))
       .catch(reportErrorAndExit);
@@ -891,7 +891,7 @@ function main(): void {
     command = Promise.resolve().then(() => runConfigCommand(parsed.args));
   } else if (parsed.command === "smoke") {
     command = runSmokeCommand(parsed.args, config);
-  } else if (parsed.command === "repo-spike") {
+  } else if (parsed.command === "repo-spike" || parsed.command === "repo-review") {
     command = runRepoSpikeCommand(parsed.args, config);
   } else {
     command = runReviewCommand(parsed.args, config);

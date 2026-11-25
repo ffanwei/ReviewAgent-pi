@@ -30,6 +30,7 @@ import {
 } from "../run/run-record.js";
 import { buildReviewsExport, writeReviewsEn } from "../export/reviews.js";
 import { loadRuleSkills } from "../knowledge/rule-skill.js";
+import type { RepoSnapshotFile } from "../loop/messages.js";
 import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
@@ -80,6 +81,14 @@ export interface ReviewRunInput {
   /** 本地 git 仓库快照路径（base = MR 前版本） */
   readonly repoPath: string;
   readonly diff: string;
+  /**
+   * 输入语义（缺省 `diff` = 现有 MR 行为，逐字节不变）。
+   * `repo` = 全仓扫描：初始消息用文件快照、系统提示用 scan Zone A；
+   * `diff` 仍作为工具 / 证据门的底稿（合成 diff 的行号 = 真实行号）。
+   */
+  readonly reviewMode?: "diff" | "repo";
+  /** `repo` 模式的文件快照；在场时初始 user 消息不出现 diff 头。 */
+  readonly fileSnapshot?: readonly RepoSnapshotFile[];
   readonly issueDescription: string;
   readonly apiKey: string;
   /** 网关 base URL（配置 `reviewer.baseUrl`；缺省官方 api.deepseek.com） */
@@ -534,7 +543,7 @@ async function executeSinglePass(
     ...(context.boundary.degraded ? { domainWarning: context.boundary.domainWarning } : {}),
   };
   const record = buildRunRecord({
-    source: "mr",
+    source: context.source ?? "mr",
     caseId: context.caseId,
     rep: context.rep,
     model: context.modelId,
@@ -795,7 +804,7 @@ async function aggregateShards(
     buildReviewsExport({
       generatedAt: finishedAt,
       runId: aggRunId,
-      source: "mr",
+      source: context.source ?? "mr",
       caseId: context.caseId,
       rep: context.rep,
       model: context.modelId,
@@ -835,7 +844,7 @@ async function aggregateShards(
     };
   });
   const record = buildRunRecord({
-    source: "mr",
+    source: context.source ?? "mr",
     caseId: context.caseId,
     rep: context.rep,
     model: context.modelId,

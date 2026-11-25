@@ -50,7 +50,7 @@ export async function runRepoSpikeCommand(
   }
 
   if (config === undefined) {
-    throw new Error("repo-spike: missing user config (run `review-pi config init` or pass --config)");
+    throw new Error("repo-review: missing user config (run `review-pi config init` or pass --config)");
   }
   const endpoint = resolveReviewerEndpoint(config);
   const rawModel = config.model.default.trim();

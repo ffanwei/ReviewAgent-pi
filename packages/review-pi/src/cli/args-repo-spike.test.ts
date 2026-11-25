@@ -23,6 +23,31 @@ test("repo-spike：最小 dry-run 参数", () => {
   });
 });
 
+test("repo-review：产品命令名与独立缺省输出目录", () => {
+  expect(parseCliArgs(["repo-review", "--repo", "repo", "--dry-run"])).toEqual({
+    ok: true,
+    command: "repo-review",
+    args: {
+      repo: "repo",
+      outDir: "repo-review-out",
+      groupBy: "directory",
+      maxFilesPerGroup: 10,
+      maxGroupChars: 120_000,
+      maxGroups: 500,
+      maxFiles: 2_000,
+      maxFileChars: 100_000,
+      maxRounds: 1,
+      groupConcurrency: 1,
+      includeTests: false,
+      dryRun: true,
+    },
+  });
+  expect(parseCliArgs(["repo-review", "--dry-run"])).toEqual({
+    ok: false,
+    message: "repo-review requires --repo <path>",
+  });
+});
+
 test("repo-spike：分组、上限、规则包与进度旗标", () => {
   expect(
     parseCliArgs([

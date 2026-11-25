@@ -28,12 +28,12 @@ export function groupSlug(index: number, key: string): string {
 
 export function formatPlanSummary(plan: RepoSpikePlan): string {
   return [
-    `[repo-spike] dry-run: discovered=${String(plan.files.discovered)} selected=${String(
+    `[repo-review] dry-run: discovered=${String(plan.files.discovered)} selected=${String(
       plan.files.selected,
     )} skipped=${String(plan.files.skipped)} groups=${String(plan.groups.length)}`,
     ...plan.groups.map(
       (group) =>
-        `[repo-spike]   ${String(group.index).padStart(3, "0")} ${group.key} files=${String(
+        `[repo-review]   ${String(group.index).padStart(3, "0")} ${group.key} files=${String(
           group.files.length,
         )} diffChars=${String(group.diffChars)}`,
     ),
@@ -45,15 +45,15 @@ export function formatResultSummary(result: RepoSpikeResult): string {
   const skipped = result.groups.filter((group) => group.status === "skipped").length;
   const failed = result.groups.filter((group) => group.status === "failed").length;
   return [
-    `[repo-spike] files: discovered=${String(result.files.discovered)} selected=${String(
+    `[repo-review] files: discovered=${String(result.files.discovered)} selected=${String(
       result.files.selected,
     )} skipped=${String(result.files.skipped)}`,
-    `[repo-spike] groups: reviewed=${String(reviewed)} skipped=${String(skipped)} failed=${String(
+    `[repo-review] groups: reviewed=${String(reviewed)} skipped=${String(skipped)} failed=${String(
       failed,
     )}`,
-    `[repo-spike] findings=${String(result.findings.length)} usage=input ${String(
+    `[repo-review] findings=${String(result.findings.length)} usage=input ${String(
       result.usage.inputTokens,
     )} output ${String(result.usage.outputTokens)}`,
-    `[repo-spike] result: ${path.join(result.outDir, "repo-spike-result.json")}`,
+    `[repo-review] result: ${path.join(result.outDir, "repo-review-result.json")}`,
   ].join("\n");
 }

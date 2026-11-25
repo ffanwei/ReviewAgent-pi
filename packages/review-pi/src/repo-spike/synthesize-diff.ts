@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { RepoSnapshotFile } from "../loop/messages.js";
 import type { RepoGroup, SkippedFile, SyntheticGroup } from "./types.js";
 
 export interface SynthesizeGroupOptions {
@@ -23,6 +24,7 @@ export async function synthesizeGroupDiff(
 ): Promise<SyntheticGroup> {
   const parts: string[] = [];
   const files: string[] = [];
+  const snapshot: RepoSnapshotFile[] = [];
   const skipped: SkippedFile[] = [];
 
   for (const file of group.files) {
@@ -53,6 +55,8 @@ export async function synthesizeGroupDiff(
     }
     parts.push([...header, ...bodyLines].join("\n"));
     files.push(file.path);
+    // repo 模式给模型的原貌：不含 `new file mode` / `@@` / `+` 前缀。
+    snapshot.push({ path: file.path, content: body });
   }
 
   const diff = parts.length === 0 ? "" : `${parts.join("\n")}\n`;
@@ -60,6 +64,7 @@ export async function synthesizeGroupDiff(
     group,
     diff,
     files,
+    snapshot,
     chars: diff.length,
     skipped,
   };

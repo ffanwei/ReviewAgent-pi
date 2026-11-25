@@ -36,7 +36,7 @@ export interface RepoSpikeDeps {
 }
 
 const ISSUE_DESCRIPTION =
-  "Full-repository scan spike. Every file is presented as a newly added file so the existing MR review pipeline can run without diff input. Findings may include pre-existing issues.";
+  "Full-repository review. The snapshot contains existing production source files. Find real, evidence-backed defects in the provided files; do not describe them as newly introduced changes.";
 
 /** 一个组的结果（内部用） */
 interface ReviewedGroup {
@@ -73,14 +73,14 @@ export async function runRepoSpike(
   });
   if (plan.groups.length > options.maxGroups) {
     throw new Error(
-      `repo-spike: group count ${String(plan.groups.length)} exceeds --max-groups ${String(
+      `repo-review: group count ${String(plan.groups.length)} exceeds --max-groups ${String(
         options.maxGroups,
       )}; narrow --path or raise the guard explicitly`,
     );
   }
 
   progress(
-    `[repo-spike] discovered=${String(enumerated.discovered)} selected=${String(
+    `[repo-review] discovered=${String(enumerated.discovered)} selected=${String(
       enumerated.files.length,
     )} groups=${String(plan.groups.length)} skipped=${String(
       enumerated.skipped.length + plan.skipped.length,
@@ -95,7 +95,7 @@ export async function runRepoSpike(
   if (options.dryRun) {
     const planDoc: RepoSpikePlan = {
       schemaVersion: 1,
-      mode: "repo-spike-plan",
+      mode: "repo-review-plan",
       generatedAt: now().toISOString(),
       repoPath,
       outDir,
@@ -113,6 +113,8 @@ export async function runRepoSpike(
       })),
       skippedFiles: mergeSkipped(enumerated.skipped, plan.skipped, syntheticGroups),
     };
+    await writeJsonFile(path.join(outDir, "repo-review-plan.json"), planDoc);
+    // 兼容旧脚本：过渡期保留 repo-spike 文件名，内容与新产品名一致。
     await writeJsonFile(path.join(outDir, "repo-spike-plan.json"), planDoc);
     progress(formatPlanSummary(planDoc));
     return 0;
@@ -120,7 +122,7 @@ export async function runRepoSpike(
 
   const apiKey = deps.apiKey;
   if (apiKey === undefined || apiKey.trim().length === 0) {
-    throw new Error("repo-spike: missing reviewer API key (run `review-pi config init` or pass --config)");
+    throw new Error("repo-review: missing reviewer API key (run `review-pi config init` or pass --config)");
   }
   const fetchFn = deps.fetch ?? globalThis.fetch;
   const runtime = buildSpikeRuntime(options.maxRounds, options.includeTests);
@@ -130,7 +132,7 @@ export async function runRepoSpike(
     options.groupConcurrency,
     async (synthetic): Promise<RepoSpikeGroupOutcome> => {
       const slug = groupSlug(synthetic.group.index, synthetic.group.key);
-      const caseId = `repo-spike-${slug}`;
+      const caseId = `repo-review-${slug}`;
       const runsRoot = path.join(outDir, "runs", slug);
       const files = synthetic.files;
       if (synthetic.diff === "" || files.length === 0) {
@@ -145,7 +147,7 @@ export async function runRepoSpike(
         };
       }
       progress(
-        `[repo-spike] group ${String(synthetic.group.index)}/${String(
+        `[repo-review] group ${String(synthetic.group.index)}/${String(
           syntheticGroups.length,
         )} ${synthetic.group.key} files=${String(files.length)} chars=${String(synthetic.chars)}`,
       );
@@ -155,6 +157,8 @@ export async function runRepoSpike(
           caseId,
           repoPath,
           diff: synthetic.diff,
+          reviewMode: "repo",
+          fileSnapshot: synthetic.snapshot,
           issueDescription: ISSUE_DESCRIPTION,
           apiKey,
           ...(deps.baseUrl !== undefined ? { baseUrl: deps.baseUrl } : {}),
@@ -202,7 +206,7 @@ export async function runRepoSpike(
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        progress(`[repo-spike] group ${String(synthetic.group.index)} failed: ${message}`);
+        progress(`[repo-review] group ${String(synthetic.group.index)} failed: ${message}`);
         return {
           index: synthetic.group.index,
           key: synthetic.group.key,
@@ -236,7 +240,7 @@ export async function runRepoSpike(
 
   const result: RepoSpikeResult = {
     schemaVersion: 1,
-    mode: "repo-spike",
+    mode: "repo",
     generatedAt: now().toISOString(),
     repoPath,
     outDir,
@@ -253,8 +257,10 @@ export async function runRepoSpike(
     skippedFiles,
     errors,
   };
-  const resultPath = path.join(outDir, "repo-spike-result.json");
+  const resultPath = path.join(outDir, "repo-review-result.json");
   await writeJsonFile(resultPath, result);
+  // 兼容旧脚本：过渡期保留 repo-spike 文件名，内容与新产品名一致。
+  await writeJsonFile(path.join(outDir, "repo-spike-result.json"), result);
   progress(formatResultSummary(result));
 
   // 与 review 的退出码口径一致：全部组失败才非 0；全跳过 / 无文件视为完成。

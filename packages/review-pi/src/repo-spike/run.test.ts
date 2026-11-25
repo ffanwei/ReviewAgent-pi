@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, expect, test } from "vitest";
@@ -71,16 +71,57 @@ test("dry-run：枚举 + 分组 + 合成 diff，不触模型，写 plan", async 
   );
 
   expect(code).toBe(0);
+  expect(existsSync(path.join(out, "repo-review-plan.json"))).toBe(true);
   expect(existsSync(path.join(out, "repo-spike-plan.json"))).toBe(true);
-  expect(existsSync(path.join(out, "repo-spike-result.json"))).toBe(false);
+  expect(existsSync(path.join(out, "repo-review-result.json"))).toBe(false);
 
-  const plan = JSON.parse(readFileSync(path.join(out, "repo-spike-plan.json"), "utf8")) as {
+  const plan = JSON.parse(readFileSync(path.join(out, "repo-review-plan.json"), "utf8")) as {
+    mode: string;
     groups: { key: string; files: string[] }[];
     files: { discovered: number; selected: number };
   };
+  expect(plan.mode).toBe("repo-review-plan");
   expect(plan.files).toMatchObject({ discovered: 2, selected: 2 });
   expect(plan.groups).toHaveLength(2);
   expect(plan.groups.map((group) => group.files)).toEqual([["src/a.ts"], ["src/b.ts"]]);
+});
+
+test("repo 模式：模型消息是中性文件快照 + scan 提示，run.json source=repo-scan", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+
+  const script = fakeFetch(sixPhase());
+  const bodies: string[] = [];
+  const captureFetch: typeof script.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    bodies.push(await request.clone().text());
+    return script.fetch(input, init);
+  };
+  const code = await runRepoSpike(options(root, out), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: captureFetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+
+  expect(code).toBe(0);
+  expect(bodies).toHaveLength(6);
+  const first = bodies[0] ?? "";
+  expect(first).toContain("仓库快照");
+  expect(first).toContain("Repository snapshot under review.");
+  expect(first).toContain("=== src/a.ts ===");
+  expect(first).not.toContain("new file mode");
+  expect(first).not.toContain("Unified diff");
+  // 六阶段消息也不能出现 MR 的变更语义。
+  expect(bodies.join("\n")).not.toContain("本次合并请求的 unified diff");
+
+  const runDirs = readdirSync(path.join(out, "runs"));
+  expect(runDirs).toHaveLength(1);
+  const record = JSON.parse(
+    readFileSync(path.join(out, "runs", runDirs[0] ?? "", "runs", "run.json"), "utf8"),
+  ) as { source: string };
+  expect(record.source).toBe("repo-scan");
 });
 
 test("真跑：每组一次 runReviewOutcome，findings 合并后写独立结果", async () => {
@@ -100,13 +141,19 @@ test("真跑：每组一次 runReviewOutcome，findings 合并后写独立结果
   expect(code).toBe(0);
   expect(script.requests).toHaveLength(12);
 
-  const result = JSON.parse(readFileSync(path.join(out, "repo-spike-result.json"), "utf8")) as {
+  const result = JSON.parse(readFileSync(path.join(out, "repo-review-result.json"), "utf8")) as {
+    mode: string;
     groups: { status: string; files: string[]; findingsCount: number }[];
     findings: unknown[];
     files: { selected: number };
   };
+  expect(result.mode).toBe("repo");
   expect(result.files.selected).toBe(2);
   expect(result.groups).toHaveLength(2);
   expect(result.groups.every((group) => group.status === "reviewed")).toBe(true);
   expect(result.findings).toEqual([]);
+  // 过渡期旧文件名仍写一份，内容一致。
+  expect(existsSync(path.join(out, "repo-spike-result.json"))).toBe(true);
+  const legacy = readFileSync(path.join(out, "repo-spike-result.json"), "utf8");
+  expect(legacy).toBe(readFileSync(path.join(out, "repo-review-result.json"), "utf8"));
 });

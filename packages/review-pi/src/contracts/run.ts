@@ -9,6 +9,7 @@ import type { LlmUsage, ToolSchema, WireMessage } from "./llm.js";
 /** 六阶段名（固定顺序；phaseLog 留痕用） */
 export type ReviewPhase =
   | "Change Understanding"
+  | "Code Understanding"
   | "Risk Classification"
   | "Context Decision"
   | "Context Retrieval"

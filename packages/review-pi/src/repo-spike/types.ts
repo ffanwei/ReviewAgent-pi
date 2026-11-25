@@ -1,6 +1,7 @@
 import type { CoverageLedger } from "../contracts/coverage.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
+import type { RepoSnapshotFile } from "../loop/messages.js";
 
 /**
  * repo-spike：全仓检视的**一次性探针**。
@@ -75,6 +76,8 @@ export interface SyntheticGroup {
   readonly group: RepoGroup;
   readonly diff: string;
   readonly files: readonly string[];
+  /** 模型可见的文件快照（repo 模式初始消息用；无 diff 头） */
+  readonly snapshot: readonly RepoSnapshotFile[];
   readonly chars: number;
   readonly skipped: readonly SkippedFile[];
 }
@@ -103,7 +106,7 @@ export interface RepoSpikeGroupOutcome {
 
 export interface RepoSpikeResult {
   readonly schemaVersion: 1;
-  readonly mode: "repo-spike";
+  readonly mode: "repo";
   readonly generatedAt: string;
   readonly repoPath: string;
   readonly outDir: string;
@@ -123,7 +126,7 @@ export interface RepoSpikeResult {
 
 export interface RepoSpikePlan {
   readonly schemaVersion: 1;
-  readonly mode: "repo-spike-plan";
+  readonly mode: "repo-review-plan";
   readonly generatedAt: string;
   readonly repoPath: string;
   readonly outDir: string;

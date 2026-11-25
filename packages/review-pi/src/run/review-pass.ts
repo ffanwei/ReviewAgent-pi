@@ -30,7 +30,7 @@ import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
 import { createCandidateRepair } from "../loop/candidate-repair.js";
 import { TRUNCATION_MODEL_LENGTH, TRUNCATION_TOOL_BUDGET } from "../loop/constants.js";
-import { buildInitialUserMessage } from "../loop/messages.js";
+import { buildInitialUserMessage, buildRepoInitialUserMessage, type RepoSnapshotFile } from "../loop/messages.js";
 import {
   createRequestTimelineWriter,
   setRequestTimelineSink,
@@ -50,7 +50,7 @@ import {
   closeCoverage,
   truncatedRangesFromShardRecords,
 } from "./coverage-ledger.js";
-import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
+import { SCAN_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import { repairCoverageGaps } from "./coverage-repair.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { formatRepoSnapshotModelNote, type RepoSnapshotSideRecord } from "./repo-side.js";
@@ -76,6 +76,13 @@ export interface ReviewPassInput {
   readonly caseId: string;
   readonly repoPath: string;
   readonly issueDescription: string;
+  /**
+   * 输入语义（缺省 `diff`）：repo 模式用 scan 系统提示与文件快照消息。
+   * 不改 `diff` 字段——它仍是工具 / 证据门的底稿。
+   */
+  readonly reviewMode?: "diff" | "repo";
+  /** repo 模式的文件快照；在场时初始消息不走 `buildInitialUserMessage`。 */
+  readonly fileSnapshot?: readonly RepoSnapshotFile[];
   readonly apiKey: string;
   readonly fetch: FetchFunction;
   readonly runtime: ReviewRuntime;
@@ -284,6 +291,9 @@ async function executeReviewPass(
   input: ReviewPassInput,
   coverage: CoverageLedger,
 ): Promise<ReviewPassResult> {
+  // Zone A 按输入语义二选一：MR 缺省仍是 SYSTEM_PROMPT（逐字节不变）；
+  // repo 模式用 scan 专用提示，不把既有代码说成「本次新增」。
+  const systemPrompt = input.reviewMode === "repo" ? SCAN_SYSTEM_PROMPT : SYSTEM_PROMPT;
   // Skill 包识别（确定性）：只在本次 diff 命中 skill 根时追加清单；
   // 未命中 = undefined，初始消息、阶段消息与位置门都与全代码路径逐字节一致。
   const skillReview = detectSkillReview(input.diff, input.repoPath);
@@ -318,12 +328,20 @@ async function executeReviewPass(
   const initialContextMessages = [
     {
       role: "user" as const,
-      content: buildInitialUserMessage(
-        input.caseId,
-        input.issueDescription,
-        input.initialDiff,
-        extraSections.length > 0 ? extraSections.join("\n\n") : undefined,
-      ),
+      content:
+        input.fileSnapshot !== undefined
+          ? buildRepoInitialUserMessage(
+              input.caseId,
+              input.issueDescription,
+              input.fileSnapshot,
+              extraSections.length > 0 ? extraSections.join("\n\n") : undefined,
+            )
+          : buildInitialUserMessage(
+              input.caseId,
+              input.issueDescription,
+              input.initialDiff,
+              extraSections.length > 0 ? extraSections.join("\n\n") : undefined,
+            ),
     },
   ];
 
@@ -371,7 +389,8 @@ async function executeReviewPass(
             : () => null,
         };
   const outcome = await runAgentReviewLoop({
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt,
+    ...(input.reviewMode !== undefined ? { reviewMode: input.reviewMode } : {}),
     initialContextMessages,
     toolkit,
     apiKey: input.apiKey,
@@ -448,6 +467,7 @@ async function executeReviewPass(
     runId,
     finishedAt,
     runDir: input.runDir,
+    systemPrompt,
     records: outcome.skillPassLog,
     transcripts: outcome.skillTranscripts,
   });
@@ -504,6 +524,7 @@ async function executeReviewPass(
     runId,
     finishedAt,
     runDir: input.runDir,
+    systemPrompt,
     capture: outcome.transcript,
     complete: outcome.complete,
     truncated: outcome.audit.truncated,
@@ -513,6 +534,7 @@ async function executeReviewPass(
   const reviewsPath = await persistReviewsEn({
     caseId: input.caseId,
     rep: input.rep,
+    source: input.reviewMode === "repo" ? "repo-scan" : "mr",
     runId,
     modelId: input.modelId,
     finishedAt,
@@ -554,6 +576,7 @@ async function persistSkillTranscripts(args: {
   readonly runId: string;
   readonly finishedAt: Date;
   readonly runDir: string;
+  readonly systemPrompt: string;
   readonly records: readonly RuleSkillPassRecord[];
   readonly transcripts: readonly SkillPassTranscript[];
 }): Promise<{
@@ -586,7 +609,7 @@ async function persistSkillTranscripts(args: {
       runId: args.runId,
       caseId: args.caseId,
       repoPath: args.repoPath,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: args.systemPrompt,
       capture: transcript.capture,
       complete: transcript.complete,
       truncated: transcript.truncated,
@@ -599,7 +622,7 @@ async function persistSkillTranscripts(args: {
     // 同 run 的主会话；sessionId 与原生 `info.id` 同值、稳定且全局唯一。
     const compat = buildOpenCodeSession({
       info: content.info,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: args.systemPrompt,
       messages: transcript.capture.messages,
       parentID: transcriptStem(args.runId),
       seedCount: transcript.seedCount,
@@ -637,6 +660,7 @@ async function persistTranscript(args: {
   readonly runId: string;
   readonly finishedAt: Date;
   readonly runDir: string;
+  readonly systemPrompt: string;
   readonly capture: Parameters<typeof buildTranscript>[0]["capture"];
   readonly complete: boolean;
   readonly truncated: boolean;
@@ -647,7 +671,7 @@ async function persistTranscript(args: {
     runId: args.runId,
     caseId: args.caseId,
     repoPath: args.repoPath,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: args.systemPrompt,
     capture: args.capture,
     complete: args.complete,
     truncated: args.truncated,
@@ -657,7 +681,7 @@ async function persistTranscript(args: {
   // 父会话无 `seedCount`（全量），`subagents` 让 viewer 能点进各子会话。
   const compat = buildOpenCodeSession({
     info: content.info,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: args.systemPrompt,
     messages: args.capture.messages,
     ...(args.subagents.length > 0 ? { subagents: args.subagents } : {}),
   });
@@ -673,12 +697,13 @@ async function persistReviewsEn(args: {
   readonly modelId: string;
   readonly finishedAt: Date;
   readonly runDir: string;
+  readonly source: string;
   readonly findings: readonly Finding[];
 }): Promise<string> {
   const envelope = buildReviewsExport({
     generatedAt: args.finishedAt,
     runId: args.runId,
-    source: "mr",
+    source: args.source,
     caseId: args.caseId,
     rep: args.rep,
     model: args.modelId,

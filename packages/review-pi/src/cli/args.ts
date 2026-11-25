@@ -102,13 +102,14 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <dif
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
+       review-pi repo-review --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi version [--json]
        review-pi --version
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
   （config init = 写缺省 JSONC；config show = 脱敏打印生效配置与来源）
   （export = 单行打印主 / skill session 的绝对路径，逗号分隔、主在前；缺省 OpenCode 兼容版、--native 原生；--path 复制到目录）
-  （repo-spike = 一次性全仓探针：枚举文件 → 合成为「全新增」diff → 按目录/文件数分组，每组一次现有 MR 流水线；不是产品化 scan）
+  （repo-review = 全仓扫描：枚举文件 → 按目录/文件数分组 → 每组一次现有检视流水线；repo-spike 为兼容别名）
   （version = 产品版本单行；--json 额外给出 Node 与内核四包实际版本，不加载配置）
 
 配置（ADR-0025）：~/.PiAgent/PiAgent.jsonc（Linux $HOME / Windows %USERPROFILE%），JSONC。
@@ -322,6 +323,7 @@ export type ParseCliArgsResult =
   | { readonly ok: true; readonly command: "config"; readonly args: ConfigCliArgs }
   | { readonly ok: true; readonly command: "export"; readonly args: ExportCliArgs }
   | { readonly ok: true; readonly command: "repo-spike"; readonly args: RepoSpikeCliArgs }
+  | { readonly ok: true; readonly command: "repo-review"; readonly args: RepoSpikeCliArgs }
   | { readonly ok: true; readonly command: "version"; readonly args: VersionCliArgs }
   | { readonly ok: false; readonly message: string };
 
@@ -640,8 +642,8 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
   if (command === "export") {
     return parseExportCommand(rest);
   }
-  if (command === "repo-spike") {
-    return parseRepoSpikeCommand(rest);
+  if (command === "repo-spike" || command === "repo-review") {
+    return parseRepoSpikeCommand(rest, command);
   }
   // 版本面（ADR-0079）：`version` 子命令与顶层 `--version` / `-v` 同义。
   // 放在配置装载之前（main 里直接返回），所以这里只认 `--json`，不接受
@@ -654,8 +656,8 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
       ok: false,
       message:
         argv.length === 0
-          ? "missing command (expected `review`, `smoke`, `config`, `export`, `repo-spike` or `version`)"
-          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\`, \`config\`, \`export\`, \`repo-spike\` or \`version\`)`,
+          ? "missing command (expected `review`, `smoke`, `config`, `export`, `repo-review`, `repo-spike` or `version`)"
+          : `unknown command ${JSON.stringify(command)} (expected \`review\`, \`smoke\`, \`config\`, \`export\`, \`repo-review\`, \`repo-spike\` or \`version\`)`,
     };
   }
   const booleanFlags = command === "review" ? stripReviewBooleanFlags(rest) : undefined;
@@ -726,7 +728,10 @@ export function parseCliArgs(argv: readonly string[]): ParseCliArgsResult {
  * 参数面刻意比 review 窄：没有 MR 输入，只有仓库、分组、上限与规则包。
  * dry-run 不要求配置/API key；真跑仍走用户配置。
  */
-function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
+function parseRepoSpikeCommand(
+  rest: readonly string[],
+  command: "repo-spike" | "repo-review" = "repo-spike",
+): ParseCliArgsResult {
   const stripped = stripRepoSpikeBooleanFlags(rest);
   if (!stripped.ok) {
     return stripped;
@@ -742,9 +747,9 @@ function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
 
   const repo = flags.values.get("--repo");
   if (repo === undefined || repo.trim().length === 0) {
-    return { ok: false, message: "repo-spike requires --repo <path>" };
+    return { ok: false, message: `${command} requires --repo <path>` };
   }
-  const outDir = flags.values.get("--out") ?? "repo-spike-out";
+  const outDir = flags.values.get("--out") ?? `${command}-out`;
   if (outDir.trim().length === 0) {
     return { ok: false, message: "--out must be a non-empty directory" };
   }
@@ -829,7 +834,7 @@ function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
 
   return {
     ok: true,
-    command: "repo-spike",
+    command,
     args: {
       repo,
       outDir,

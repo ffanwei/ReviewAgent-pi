@@ -14,12 +14,12 @@ import { parseCliArgs, USAGE_TEXT } from "./args.js";
 test("空 argv 与未知子命令 → 用法错误（不抛异常）", () => {
   expect(parseCliArgs([])).toEqual({
     ok: false,
-    message: "missing command (expected `review`, `smoke`, `config`, `export`, `repo-spike` or `version`)",
+    message: "missing command (expected `review`, `smoke`, `config`, `export`, `repo-review`, `repo-spike` or `version`)",
   });
   expect(parseCliArgs(["deploy"])).toEqual({
     ok: false,
     message:
-      'unknown command "deploy" (expected `review`, `smoke`, `config`, `export`, `repo-spike` or `version`)',
+      'unknown command "deploy" (expected `review`, `smoke`, `config`, `export`, `repo-review`, `repo-spike` or `version`)',
   });
 });
 
@@ -976,7 +976,8 @@ test("USAGE_TEXT：宣告六个子命令（stderr 错误路径同款文案，单
   expect(USAGE_TEXT).toContain("review-pi config <init|show>");
   // export（ADR-0036 / ADR-0072）：四个旗标都在用法面
   expect(USAGE_TEXT).toContain("review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]");
-  // repo-spike：一次性全仓探针（不是产品化 scan）
+  // repo-review：全仓扫描产品命令；repo-spike 保留为兼容别名
+  expect(USAGE_TEXT).toContain("review-pi repo-review --repo <path>");
   expect(USAGE_TEXT).toContain("review-pi repo-spike --repo <path>");
   expect(USAGE_TEXT).toContain("--out <dir>");
   expect(USAGE_TEXT).toContain("--group-by directory|files|language|none");

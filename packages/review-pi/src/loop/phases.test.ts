@@ -4,6 +4,8 @@ import {
   PHASE_COUNT,
   PHASE_INSTRUCTIONS,
   PHASE_ORDER,
+  SCAN_PHASE_INSTRUCTIONS,
+  SCAN_PHASE_ORDER,
   buildPhaseInstruction,
   buildStageInstruction,
 } from "./phases.js";
@@ -63,4 +65,19 @@ test("compact：Phase 1 合并风险分级、Phase 3 允许空 neededContext，�
       expect(compact).toBe(buildPhaseInstruction(index, false));
     }
   }
+});
+
+test("repo 模式：scan 六阶段与命名序一一对应，且不带 MR 变更语义", () => {
+  expect(SCAN_PHASE_INSTRUCTIONS).toHaveLength(6);
+  expect(SCAN_PHASE_ORDER).toHaveLength(6);
+  SCAN_PHASE_INSTRUCTIONS.forEach((instruction, index) => {
+    expect(instruction.startsWith(`Phase ${index + 1} of 6 - ${SCAN_PHASE_ORDER[index]}.`)).toBe(
+      true,
+    );
+    expect(instruction).toContain("只回一个 JSON 对象：");
+    expect(instruction).not.toContain("本次 diff");
+    expect(instruction).not.toContain("本次变更引入");
+    // compact / 测试文件提示都不应把 MR 指令混进 repo 模式。
+    expect(buildStageInstruction(index, true, "compact", "repo")).toBe(instruction);
+  });
 });

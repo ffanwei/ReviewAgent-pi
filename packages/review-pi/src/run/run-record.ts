@@ -32,8 +32,8 @@ import { summarizeCoverage } from "./coverage-ledger.js";
 // 请求字节不重复落盘：审计文件（auditPath）承载全部请求的可重放字节，
 // 本记录保留指标所需的最小审计面（toolCallLog / phaseLog / rejections 等）。
 
-/** 数据源标识（一次 MR 触发一次检视） */
-export type ExperimentSource = "mr";
+/** 数据源标识（MR = 一次 MR 触发一次检视；repo-scan = 全仓快照扫描） */
+export type ExperimentSource = "mr" | "repo-scan";
 
 /** 二遍 Verifier 开关（P1a 恒 off） */
 export type VerifierMode = "off" | "on";

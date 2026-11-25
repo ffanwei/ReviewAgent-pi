@@ -49,6 +49,8 @@ test("合成 diff：新文件头 + 全部 + 行 + 行数正确", async () => {
   expect(synthetic.diff).toContain("+line 1");
   expect(synthetic.diff).toContain("+line 2");
   expect(synthetic.diff.endsWith("\n")).toBe(true);
+  // repo 模式给模型的原貌：同样的文件，但没有任何 diff 头。
+  expect(synthetic.snapshot).toEqual([{ path: "src/a.ts", content: "line 1\nline 2" }]);
 });
 
 test("合成 diff：CRLF 归一化、无尾换行标记", async () => {

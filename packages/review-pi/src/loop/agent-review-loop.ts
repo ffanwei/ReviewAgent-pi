@@ -41,6 +41,7 @@ import {
   CANDIDATES_PHASE_INDEX,
   PHASE_COUNT,
   PHASE_ORDER,
+  SCAN_PHASE_ORDER,
   buildStageInstruction,
 } from "./phases.js";
 import { createRequestProgress } from "../shared/request-progress.js";
@@ -87,6 +88,8 @@ export type PhaseReplyRepairFn = (input: {
 
 export interface AgentReviewLoopInputs {
   readonly systemPrompt: string;
+  /** 输入语义（缺省 `diff`）：repo 模式用 scan 阶段指令与阶段名。 */
+  readonly reviewMode?: "diff" | "repo";
   /** 初始上下文消息（MR 消息等 run 级组装，由调用方决定） */
   readonly initialContextMessages: readonly LlmMessage[];
   /** 八工具执行面（含 Ledger；唯一形态恒传 ledgerMode "enabled" 的 toolkit） */
@@ -431,7 +434,7 @@ export async function runAgentReviewLoop(
         site: "main",
         ...(inputs.shard !== undefined ? { shard: inputs.shard } : {}),
         round,
-        phase: phaseNameOf(phaseIndex),
+        phase: phaseNameOf(phaseIndex, inputs.reviewMode),
         phaseIndex: phaseIndex + 1,
       }),
     },
@@ -630,7 +633,7 @@ export async function runAgentReviewLoop(
     } else {
       phaseLog.push({
         round,
-        phase: phaseNameOf(phaseIndex),
+        phase: phaseNameOf(phaseIndex, inputs.reviewMode),
         requestCount: phaseRequestCount,
         ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
         ...(parsed.parseFailure !== undefined ? { parseFailure: parsed.parseFailure } : {}),
@@ -992,7 +995,7 @@ export async function runAgentReviewLoop(
   function recordSkippedPhase(index: number, note: string): void {
     phaseLog.push({
       round,
-      phase: phaseNameOf(index),
+      phase: phaseNameOf(index, inputs.reviewMode),
       requestCount: 0,
       note,
     });
@@ -1033,7 +1036,7 @@ export async function runAgentReviewLoop(
   /** 短窗口 LLM 修复：只带畸形回复与 schema，不带会话/diff/工具证据。 */
   async function shortRepairReply(raw: string): Promise<string | undefined> {
     if (inputs.phaseReplyRepair !== undefined) {
-      return inputs.phaseReplyRepair({ raw, phase: phaseNameOf(phaseIndex) });
+      return inputs.phaseReplyRepair({ raw, phase: phaseNameOf(phaseIndex, inputs.reviewMode) });
     }
     const format =
       phaseIndex === CANDIDATES_PHASE_INDEX
@@ -1046,7 +1049,7 @@ export async function runAgentReviewLoop(
       system:
         "你是 JSON 语法修复器。只修复 JSON 语法错误，不改变字段值、不增删候选。" +
         "只输出修复后的 JSON 对象，不要解释，不要 Markdown 围栏。",
-      user: `阶段：${phaseNameOf(phaseIndex)}。
+      user: `阶段：${phaseNameOf(phaseIndex, inputs.reviewMode)}。
 目标格式：${format}
 
 待修复回复：
@@ -1071,7 +1074,7 @@ ${raw}`,
     emitProgress({
       kind: "phase",
       round,
-      phase: phaseNameOf(index),
+      phase: phaseNameOf(index, inputs.reviewMode),
       index: index + 1,
       total: PHASE_COUNT,
     });
@@ -1091,6 +1094,7 @@ ${raw}`,
       index,
       runtime.limits.testFiles.skip,
       runtime.limits.loop.stageCompression,
+      inputs.reviewMode,
     );
     const strategyBrief = inputs.phaseBrief?.(index);
     const content = [instruction, strategyBrief, skillBrief]
@@ -1182,8 +1186,12 @@ function totalRejections(counts: CandidateRejectionCounts): number {
   return Object.values(counts).reduce((total, value) => total + value, 0);
 }
 
-function phaseNameOf(phaseIndex: number): PhaseRecord["phase"] {
-  const name = PHASE_ORDER[phaseIndex];
+function phaseNameOf(
+  phaseIndex: number,
+  reviewMode: "diff" | "repo" = "diff",
+): PhaseRecord["phase"] {
+  const order = reviewMode === "repo" ? SCAN_PHASE_ORDER : PHASE_ORDER;
+  const name = order[phaseIndex];
   if (name === undefined) {
     throw new Error(`missing phase name at index ${phaseIndex}`);
   }

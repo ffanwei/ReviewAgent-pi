@@ -16,8 +16,9 @@ import type {
   ReviewPhase,
   RuleSkillAudit,
 } from "../contracts/run.js";
-import { runDirPath } from "../run/run-record.js";
+import { runDirPath, type ExperimentSource } from "../run/run-record.js";
 import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
+import type { RepoSnapshotFile } from "../loop/messages.js";
 import { withRequestTimelineAppend, runWithRequestTimelineScope } from "../observability/request-timeline.js";
 import type { ConfigSnapshot } from "../shared/config.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
@@ -46,6 +47,14 @@ export interface ReviewRunContext {
   readonly caseId: string;
   readonly repoPath: string;
   readonly issueDescription: string;
+  /**
+   * 输入语义（缺省 `diff`）：repo 模式用 scan 提示词与文件快照消息。
+   * 缺省字段是为了让测试 / 旧调用方零改动。
+   */
+  readonly reviewMode?: "diff" | "repo";
+  readonly fileSnapshot?: readonly RepoSnapshotFile[];
+  /** 数据源标识：MR = `mr`，全仓扫描 = `repo-scan`（缺省按 `mr` 处理）。 */
+  readonly source?: ExperimentSource;
   readonly apiKey: string;
   readonly baseUrl?: string;
   readonly fetch: FetchFunction;
@@ -108,6 +117,9 @@ export async function buildRunContext(
     caseId: input.caseId,
     repoPath: input.repoPath,
     issueDescription: input.issueDescription,
+    ...(input.reviewMode !== undefined ? { reviewMode: input.reviewMode } : {}),
+    ...(input.fileSnapshot !== undefined ? { fileSnapshot: input.fileSnapshot } : {}),
+    source: input.reviewMode === "repo" ? "repo-scan" : "mr",
     apiKey: input.apiKey,
     ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
     fetch: input.fetch,
@@ -496,6 +508,8 @@ export function buildPass(
     caseId: context.caseId,
     repoPath: context.repoPath,
     issueDescription: context.issueDescription,
+    ...(context.reviewMode !== undefined ? { reviewMode: context.reviewMode } : {}),
+    ...(context.fileSnapshot !== undefined ? { fileSnapshot: context.fileSnapshot } : {}),
     apiKey: context.apiKey,
     fetch: context.fetch,
     runtime: context.runtime,

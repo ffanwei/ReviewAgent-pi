@@ -31,3 +31,12 @@ R-01、R-04；与 R-05b 并行，先冻结 `repo-review-result.json` schema。
 ## 范围决定
 
 - 2026-11-25：快速上生产的第一优先级；不包含覆盖账本（R-05b）与持久化（R-09）。
+
+## 实现进展（2026-11-25）
+
+- 命令：新增 `review-pi repo-review`；`repo-spike` 保留为别名（缺省输出目录分别是 `repo-review-out` / `repo-spike-out`）。
+- 输入语义：`ReviewRunInput.reviewMode: "diff" | "repo"`（缺省 diff）；`fileSnapshot` 进 `ReviewPassInput`，初始消息改用 `buildRepoInitialUserMessage`（`=== path ===` + 内容，无 `new file mode` / `--- /dev/null` / `Unified diff`）。
+- 提示词：新增 `SCAN_SYSTEM_PROMPT`；`SYSTEM_PROMPT` 未改一个字节。新增 `SCAN_PHASE_INSTRUCTIONS` / `SCAN_PHASE_ORDER`，Phase 1 为 Code Understanding；repo 模式忽略 compact，避免 MR 指令混入。
+- 审计/产物：`run.json` 与 `reviews_all.json` 的 `source = repo-scan`；结果写 `repo-review-result.json`，过渡期兼容写 `repo-spike-result.json`；plan 同理。
+- 验证：全包 `1275 passed / 1 skipped`；真实 1 组 smoke（2 个 Java 文件）通过，审计确认 system prompt 含「仓库快照」且不含「本次 diff」，phaseLog 六阶段为 Code Understanding 起头。
+- 待办：20 组 A/B（旧 spike 语义 vs 新 scan 语义）——统计「本次新增」出现次数、precision 是否回退 >5%、token 是否增幅 >10%。
