@@ -777,10 +777,12 @@ function parseRepoSpikeCommand(
     };
   }
 
+  // 生产缺省 5 文件 / 60k 字符：全仓实跑（1,390 文件 / 255 组，6/60k）显示
+  // 单组超过 5 个文件后注意力明显下降；缩小上限换更稳的单组质量。
   const maxFilesPerGroup = parseSpikeInt(
     flags.values.get("--max-files-per-group"),
     "--max-files-per-group",
-    10,
+    5,
     1,
     1_000,
   );
@@ -790,7 +792,7 @@ function parseRepoSpikeCommand(
   const maxGroupChars = parseSpikeInt(
     flags.values.get("--max-group-chars"),
     "--max-group-chars",
-    120_000,
+    60_000,
     1_000,
     10_000_000,
   );
