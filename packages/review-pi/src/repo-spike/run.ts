@@ -25,7 +25,9 @@ import {
 } from "./job.js";
 import {
   ensureDir,
+  formatDuration,
   formatPlanSummary,
+  formatProgressLine,
   formatResultSummary,
   groupSlug,
   writeJsonFile,
@@ -234,8 +236,37 @@ export async function runRepoSpike(
   };
   await persistJob();
 
-  const progressLabel = (synthetic: SyntheticGroup): string =>
-    `[repo-review] group ${String(synthetic.group.index)}/${String(syntheticGroups.length)} ${synthetic.group.key} files=${String(synthetic.files.length)} chars=${String(synthetic.chars)}`;
+  const runStartedAt = Date.now();
+  const initialCompleted = outcomes.filter((outcome) => outcome !== undefined).length;
+  const totalGroups = syntheticGroups.length;
+  let finishedThisRun = 0;
+  let activeCount = 0;
+  const elapsedMs = (): number => Date.now() - runStartedAt;
+  const etaMs = (): number | undefined => {
+    const remaining = Math.max(0, syntheticGroups.length - initialCompleted - finishedThisRun);
+    if (remaining === 0) {
+      return 0;
+    }
+    if (finishedThisRun === 0) {
+      return undefined;
+    }
+    return Math.round((elapsedMs() / finishedThisRun) * remaining);
+  };
+  const etaText = (): string =>
+    etaMs() === undefined ? "eta=calculating" : `eta=${formatDuration(etaMs() ?? 0)}`;
+  const tokenText = (): string =>
+    maxTotalTokens > 0
+      ? ` tokens=${String(job.spentTokens)}/${String(maxTotalTokens)}`
+      : ` tokens=${String(job.spentTokens)}`;
+  const progressSnapshot = () => ({
+    completed: initialCompleted + finishedThisRun,
+    total: totalGroups,
+    active: activeCount,
+    elapsedMs: elapsedMs(),
+    etaMs: etaMs(),
+    spentTokens: job.spentTokens,
+    maxTotalTokens,
+  });
 
   const executeGroup = async (index: number): Promise<RepoSpikeGroupOutcome> => {
     const synthetic = syntheticGroups[index];
@@ -254,7 +285,9 @@ export async function runRepoSpike(
     const slug = groupSlug(synthetic.group.index, synthetic.group.key);
     const caseId = `repo-review-${slug}`;
     const runsRoot = path.join(outDir, "runs", slug);
-    progress(progressLabel(synthetic));
+    progress(
+      `[repo-review] [${String(synthetic.group.index)}/${String(totalGroups)}] start ${synthetic.group.key} files=${String(synthetic.files.length)} chars=${String(synthetic.chars)} elapsed=${formatDuration(elapsedMs())} ${etaText()}`,
+    );
     await ensureDir(runsRoot);
 
     for (let attempt = 0; attempt < groupAttempts; attempt += 1) {
@@ -351,16 +384,40 @@ export async function runRepoSpike(
       if (index === undefined) {
         return;
       }
-      const outcome = await executeGroup(index);
+      activeCount += 1;
+      const groupStartedAt = Date.now();
+      let outcome: RepoSpikeGroupOutcome;
+      try {
+        outcome = await executeGroup(index);
+      } finally {
+        activeCount -= 1;
+        finishedThisRun += 1;
+      }
       outcomes[index] = outcome;
       job.spentTokens += usageTotal(outcome.usage);
       await persistJob();
+      progress(
+        `[repo-review] [${String(initialCompleted + finishedThisRun)}/${String(totalGroups)}] ${outcome.status} ${outcome.key} findings=${String(outcome.findingsCount)} group=${formatDuration(Date.now() - groupStartedAt)} elapsed=${formatDuration(elapsedMs())} ${etaText()}${tokenText()}`,
+      );
       if (maxTotalTokens > 0 && job.spentTokens >= maxTotalTokens) {
         budgetStopped = true;
       }
     }
   };
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  const heartbeat =
+    pending.length > 0
+      ? setInterval(() => {
+          progress(formatProgressLine(progressSnapshot()));
+        }, 30_000)
+      : undefined;
+  heartbeat?.unref?.();
+  try {
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  } finally {
+    if (heartbeat !== undefined) {
+      clearInterval(heartbeat);
+    }
+  }
 
   for (let index = 0; index < syntheticGroups.length; index += 1) {
     if (outcomes[index] !== undefined) {

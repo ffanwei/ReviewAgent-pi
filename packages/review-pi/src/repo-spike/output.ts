@@ -62,3 +62,46 @@ export function formatResultSummary(result: RepoSpikeResult): string {
     `[repo-review] result: ${path.join(result.outDir, "repo-review-result.json")}`,
   ].join("\n");
 }
+
+/** 毫秒 → 人读时长：`0s` / `42s` / `2m10s` / `1h05m`。 */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  if (totalSeconds < 60) {
+    return `${String(totalSeconds)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return seconds === 0 ? `${String(minutes)}m` : `${String(minutes)}m${String(seconds)}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes === 0
+    ? `${String(hours)}h`
+    : `${String(hours)}h${String(restMinutes).padStart(2, "0")}m`;
+}
+
+export interface ProgressSnapshot {
+  readonly completed: number;
+  readonly total: number;
+  readonly active: number;
+  readonly elapsedMs: number;
+  readonly etaMs?: number | undefined;
+  readonly spentTokens?: number | undefined;
+  readonly maxTotalTokens?: number | undefined;
+}
+
+/** 定时/组间进度行：完成数、在飞数、已耗时、预估剩余、token 消耗。 */
+export function formatProgressLine(snapshot: ProgressSnapshot): string {
+  const eta =
+    snapshot.etaMs === undefined ? "eta=calculating" : `eta=${formatDuration(snapshot.etaMs)}`;
+  const tokens =
+    snapshot.spentTokens === undefined
+      ? ""
+      : snapshot.maxTotalTokens !== undefined && snapshot.maxTotalTokens > 0
+        ? ` tokens=${String(snapshot.spentTokens)}/${String(snapshot.maxTotalTokens)}`
+        : ` tokens=${String(snapshot.spentTokens)}`;
+  return `[repo-review] progress completed=${String(snapshot.completed)}/${String(
+    snapshot.total,
+  )} active=${String(snapshot.active)} elapsed=${formatDuration(snapshot.elapsedMs)} ${eta}${tokens}`;
+}
