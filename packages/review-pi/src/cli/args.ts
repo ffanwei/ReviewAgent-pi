@@ -79,6 +79,7 @@ const KNOWN_REPO_SPIKE_FLAGS: readonly string[] = [
   "--max-rounds",
   "--group-concurrency",
   "--path",
+  "--files",
   "--config",
   "--rule-skill-zip",
   "--rule-skill",
@@ -87,6 +88,7 @@ const KNOWN_REPO_SPIKE_FLAGS: readonly string[] = [
 
 /** repo-spike 可重复旗标（与 review 的规则包口径一致） */
 const REPEATABLE_REPO_SPIKE_FLAGS: readonly string[] = [
+  "--files",
   "--rule-skill-zip",
   "--rule-skill",
   "--skill",
@@ -100,7 +102,7 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <dif
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
-       review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--include-tests] [--path <prefix>] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+       review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi version [--json]
        review-pi --version
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
@@ -263,6 +265,8 @@ export interface RepoSpikeCliArgs {
   readonly dryRun: boolean;
   /** 只检视该仓库相对路径前缀（POSIX；缺席 = 全仓） */
   readonly pathPrefix?: string;
+  /** 只检视这些仓库相对路径（POSIX，精确匹配） */
+  readonly files?: readonly string[];
   readonly configPath?: string;
   readonly ruleSkillZips?: readonly string[];
   readonly ruleSkillDirs?: readonly string[];
@@ -821,6 +825,7 @@ function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
     ...splitCommaList(flags.repeated.get("--skill")),
   ];
   const pathPrefix = flags.values.get("--path");
+  const files = splitCommaList(flags.repeated.get("--files"));
 
   return {
     ok: true,
@@ -841,6 +846,7 @@ function parseRepoSpikeCommand(rest: readonly string[]): ParseCliArgsResult {
       ...(pathPrefix !== undefined && pathPrefix.trim().length > 0
         ? { pathPrefix: pathPrefix.trim() }
         : {}),
+      ...(files.length > 0 ? { files } : {}),
       ...(config.configPath !== undefined ? { configPath: config.configPath } : {}),
       ...(ruleSkillZips.length > 0 ? { ruleSkillZips } : {}),
       ...(ruleSkillDirs.length > 0 ? { ruleSkillDirs } : {}),

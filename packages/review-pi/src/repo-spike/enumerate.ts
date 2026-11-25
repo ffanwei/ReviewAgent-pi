@@ -118,6 +118,8 @@ export interface EnumerateRepoOptions {
   readonly maxFileChars: number;
   /** 只检视该仓库相对路径前缀（POSIX，空 = 全仓） */
   readonly pathPrefix?: string;
+  /** 只检视这些仓库相对路径（POSIX，精确匹配） */
+  readonly files?: readonly string[];
 }
 
 /**
@@ -136,10 +138,20 @@ export async function enumerateRepoFiles(options: EnumerateRepoOptions): Promise
 
   const all = [...(await listRepoPaths(repoPath))].sort(compareText);
   const prefix = normalizePrefix(options.pathPrefix);
+  const requested = options.files === undefined ? undefined : new Set(options.files.map(toPosix));
+  if (requested !== undefined) {
+    const missing = [...requested].filter((rel) => !all.includes(rel));
+    if (missing.length > 0) {
+      throw new Error(`--files contains path(s) not found in repo: ${missing.join(", ")}`);
+    }
+  }
   const skipped: SkippedFile[] = [];
   const files: RepoFile[] = [];
 
   for (const rel of all) {
+    if (requested !== undefined && !requested.has(rel)) {
+      continue;
+    }
     if (prefix !== "" && rel !== prefix && !rel.startsWith(`${prefix}/`)) {
       continue;
     }

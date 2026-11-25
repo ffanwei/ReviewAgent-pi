@@ -31,6 +31,8 @@ export interface RepoSpikeOptions {
   readonly dryRun: boolean;
   /** 只检视该仓库相对路径前缀（POSIX，空 = 全仓） */
   readonly pathPrefix?: string;
+  /** 只检视这些仓库相对路径（POSIX，精确匹配；用于补跑指定组/文件） */
+  readonly files?: readonly string[];
   readonly ruleSkillZips?: readonly string[];
   readonly ruleSkillDirs?: readonly string[];
   readonly strictRuleSkill?: boolean;

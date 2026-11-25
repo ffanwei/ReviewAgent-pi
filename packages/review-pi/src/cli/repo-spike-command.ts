@@ -38,6 +38,7 @@ export async function runRepoSpikeCommand(
     includeTests: args.includeTests,
     dryRun: args.dryRun,
     ...(args.pathPrefix !== undefined ? { pathPrefix: args.pathPrefix } : {}),
+    ...(args.files !== undefined ? { files: args.files } : {}),
     ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
     ...(args.ruleSkillDirs !== undefined ? { ruleSkillDirs: args.ruleSkillDirs } : {}),
     ...(args.strictRuleSkill === true ? { strictRuleSkill: true } : {}),

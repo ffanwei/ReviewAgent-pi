@@ -118,3 +118,34 @@ test("枚举：符号链接不跟随，记为 not-a-regular-file", async () => {
   expect(result.files.map((file) => file.path)).toEqual(["src/a.ts"]);
   expect(result.skipped).toContainEqual({ path: "src/link.ts", reason: "not-a-regular-file" });
 });
+
+test("枚举：files 精确过滤，只保留给定路径", async () => {
+  const root = tempRepo();
+  write(root, "src/a.ts", "a\n");
+  write(root, "src/b.ts", "b\n");
+  write(root, "src/c.ts", "c\n");
+
+  const result = await enumerateRepoFiles({
+    repoPath: root,
+    maxFiles: 10,
+    maxFileChars: 1_000,
+    files: ["src/a.ts", "src/c.ts"],
+  });
+
+  expect(result.files.map((file) => file.path)).toEqual(["src/a.ts", "src/c.ts"]);
+  expect(result.discovered).toBe(3);
+});
+
+test("枚举：files 含仓库不存在的路径时抛错", async () => {
+  const root = tempRepo();
+  write(root, "src/a.ts", "a\n");
+
+  await expect(
+    enumerateRepoFiles({
+      repoPath: root,
+      maxFiles: 10,
+      maxFileChars: 1_000,
+      files: ["src/missing.ts"],
+    }),
+  ).rejects.toThrow(/--files contains path/);
+});
