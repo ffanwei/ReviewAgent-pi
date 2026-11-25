@@ -52,3 +52,7 @@ R-01、R-03；R-05 输出契约可并行。
   `run.json` 合并，覆盖缺口在报告中显式标注。
 - OCR：前三片 682 文件 / 1,625 条 / 41.57M token / 163.7 min（并发 2）；
   剩余分片以并发 4 继续。
+
+## 2026-11-25 · 生产化拆分
+
+- 本票的 `DONE` 只覆盖 spike 执行缝；scan 专用 Zone A、`repo-review` 命令与中性文件快照见 [R-04b](../R-04b-scan-semantics/ticket.md)。

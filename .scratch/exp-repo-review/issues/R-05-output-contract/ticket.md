@@ -34,3 +34,6 @@ R-01。
 - 下游边界：不写 `mrReviewResult` / `baseSha` / `headSha`；聚合产物只供 CLI 与本地复核，不伪造平台 MR 报文。
 - 未做：独立 `reviews_tips_zh.json` 投影（当前 tips 内嵌 finding）；产品化时由 R-04 的 delivery 层补。
 
+## 2026-11-25 · 生产化拆分
+
+- 本票的 `DONE` 只覆盖 schema、行锚点与 tips；文件三态覆盖与 `repo-review-result.json` 见 [R-05b](../R-05b-repo-coverage/ticket.md)。

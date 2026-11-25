@@ -78,12 +78,15 @@
 | R-SPK | 全仓检视 spike：分组 + 合成 diff + 复用 `runReviewOutcome` | 先用最小侵入验证可行性、隔离性与 Skill 透传 | P0 | DONE | dry-run + fake-fetch 全链；PR 核心零修改；报告 md/pdf | 2026-11-24 完成：commit `511b256`；6 个测试文件 63 passed；全包 1265 passed / 1 skipped；报告 [`repo-spike-方案报告.md`](reports/repo-spike-方案报告.md) + `.pdf` | [票](issues/R-SPK-repo-spike/ticket.md) · [讨论](issues/R-SPK-repo-spike/discussion.md) |
 | R-02 | 仓库文件枚举与过滤 | 全仓扫描没有可检视文件清单 | P0 | DONE | 同快照两次枚举一致；忽略 / 二进制 / 生成物 / 超大文件规则可配；跳过有原因 | 2026-11-24 完成：`enumerate.ts` 5 单测；1607 文件 dry-run；规则配置化留 R-02b | [票](issues/R-02-file-inventory/ticket.md) · — |
 | R-03 | 仓级分组与预算账本 | 全仓不能沿用 diff 字符分片 | P0 | DONE | 确定性分组；文件不重复 / 不跨组；文件数 + 字符双上限；组数护栏；截断留痕 | 2026-11-24 完成：四策略 + 双上限 + `maxGroups` 护栏；单测与 dry-run 证据见票 | [票](issues/R-03-repo-grouping-budget/ticket.md) · [讨论](issues/R-03-repo-grouping-budget/discussion.md) |
-| R-04 | 全仓扫描执行路径 | 现有 `review-run.ts` 是 diff 入口 | P0 | DONE | 单组 / 多组均可跑通；行锚点真实；组失败隔离；与 MR 路径不互相污染 | 2026-11-25 完成：255/255 组、1,342 findings、207.5 min；主跑被宿主内存保护停在 253 组，缺失 2 组用 `--files` 补跑 | [票](issues/R-04-repo-scan-execution/ticket.md) · — |
-| R-05 | 输出契约与呈现 | findings / tips 依赖「变更行」语义 | P1 | DONE | schema 与样例；无 diff 行锚点语义；tips 不依赖变更行；下游边界写清 | 2026-11-24 完成：R-01 §6 schema + calibration 样例；tips 内嵌 finding | [票](issues/R-05-output-contract/ticket.md) · — |
+| R-04 | 全仓扫描执行路径 | 现有 `review-run.ts` 是 diff 入口 | P0 | DONE | 单组 / 多组均可跑通；行锚点真实；组失败隔离；与 MR 路径不互相污染 | 2026-11-25 完成：255/255 组、1,342 findings、207.5 min；主跑被宿主内存保护停在 253 组，缺失 2 组用 `--files` 补跑；生产契约补齐见 R-04b | [票](issues/R-04-repo-scan-execution/ticket.md) · — |
+| R-04b | scan 语义与产品命令 | R-04 按 spike 形态验收，仍把文件伪装成新增 | P0 | TODO | `repo-review` 命令；中性文件快照消息；scan Zone A；MR 提示词字节不变；20 组 A/B 不回退 | 2026-11-25 拆分：生产化第一卡点；详见票 | [票](issues/R-04b-scan-semantics/ticket.md) · [讨论](issues/R-04b-scan-semantics/discussion.md) |
+| R-05 | 输出契约与呈现 | findings / tips 依赖「变更行」语义 | P1 | DONE | schema 与样例；无 diff 行锚点语义；tips 不依赖变更行；下游边界写清 | 2026-11-24 完成：R-01 §6 schema + calibration 样例；tips 内嵌 finding；三态覆盖见 R-05b | [票](issues/R-05-output-contract/ticket.md) · — |
+| R-05b | 覆盖账本与结果契约 | R-05 只完成 schema，coverage 仍是 MR hunk 账本 | P0 | TODO | 文件三态；失败 / 跳过 / 超预算归因；三态之和 = selected；`repo-review-result.json` | 2026-11-25 拆分：生产化第二卡点；详见票 | [票](issues/R-05b-repo-coverage/ticket.md) · [讨论](issues/R-05b-repo-coverage/discussion.md) |
 | R-06 | 全仓评测集与基线 | 现有 iterF91 / AACR 是 MR + diff GT | P1 | DONE | 全仓对照口径成文；precision / 耗时 / token 可复核；不与 MR 结果混报；召回留 R-06b | 2026-11-25 完成：我方 255/255 组（1,390 文件）、OCR 1,388 文件；报告 md/pdf；precision 0.82 vs 0.69（我方 120 条 / OCR 150 条抽样） | [票](issues/R-06-repo-eval/ticket.md) · — |
 | R-06b | 全仓召回评测 | 全仓没有逐行 GT，precision 不能推 recall | P2 | TODO | 冻结注入/回滚清单；recall + 注入文件 precision；不与自然召回混报 | 2026-11-25 决定暂缓：本轮不测 recall，后续可能做 | [票](issues/R-06b-recall/ticket.md) · [讨论](issues/R-06b-recall/discussion.md) |
 | R-07 | 增量扫描 | 全仓重扫成本高 | P2 | TODO | 同快照全量 vs 增量结果一致；缓存失效规则明确；审计记录命中 | 依赖 R-02、R-04；2026-11-25 决定暂缓，后续可能做 | [票](issues/R-07-incremental-scan/ticket.md) · [讨论](issues/R-07-incremental-scan/discussion.md) |
 | R-08 | 与多文件实验及主线的合并路径 | 三条实验线共享文件，长期分叉 | P1 | BLOCKED | 集成顺序与冲突面清单；共享文件改动清单；合并前回归范围 | 等 `exp-flow → main` 与 multifile 结论 | [票](issues/R-08-merge-path/ticket.md) · — |
+| R-09 | 持久化编排与总预算 | 单进程；253/255 内存停止后靠人工 `--files` 补跑 | P0 | TODO | `job.json` + `--resume`；kill 后续跑一致；临时 / 永久错误分流；`--max-total-tokens` | 2026-11-25 拆分：生产化第三卡点；增量仍暂缓 | [票](issues/R-09-durable-scan-job/ticket.md) · [讨论](issues/R-09-durable-scan-job/discussion.md) |
 
 ## 当前焦点
 
@@ -94,6 +97,9 @@
 - [x] **R-04 执行路径**：255/255 组全仓实跑（主跑 253 + 补跑 2），行锚点真实，组失败隔离。
 - [x] **R-05 输出契约**：`repo-spike-result.json` + tips 内嵌 finding。
 - [x] **R-06 全仓对照**：我方 vs OCR，precision / 耗时 / token 已出报告。
+- [ ] **R-04b scan 语义**：`repo-review` + 中性文件快照 + scan Zone A；生产化第一卡点。
+- [ ] **R-05b 覆盖账本**：文件三态 + `repo-review-result.json`；生产化第二卡点。
+- [ ] **R-09 持久化编排**：`job.json` + `--resume` + 总 token 预算；生产化第三卡点。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
 
@@ -104,3 +110,4 @@
 - 2026-11-24：R-SPK 完成：新增 `src/repo-spike/` + `repo-spike` 子命令；每组一次 `runReviewOutcome`；PR 核心零修改；报告 md/pdf 已产出。
 - 2026-11-25：R-01–R-06 完成；全仓对照报告 `reports/全仓检视-OCR对照-报告.md` + `.pdf`；我方 255/255 组（主跑 253 + `--files` 补跑 2，1,342 findings），OCR 全量 1,388 文件；precision 0.82 vs 0.69。
 - 2026-11-25：决定暂缓 R-06b 召回与 R-07 增量扫描；本轮范围锁定在已完成的 R-01–R-06，后续需要时再启动。
+- 2026-11-25：按「快速上生产（内部非阻断）」拆分 R-04b / R-05b / R-09；R-04 / R-05 的 DONE 保留为 spike 验收，不改写历史。
