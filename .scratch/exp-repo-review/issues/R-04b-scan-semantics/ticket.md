@@ -40,3 +40,4 @@ R-01、R-04；与 R-05b 并行，先冻结 `repo-review-result.json` schema。
 - 审计/产物：`run.json` 与 `reviews_all.json` 的 `source = repo-scan`；结果写 `repo-review-result.json`，过渡期兼容写 `repo-spike-result.json`；plan 同理。
 - 验证：全包 `1275 passed / 1 skipped`；真实 1 组 smoke（2 个 Java 文件）通过，审计确认 system prompt 含「仓库快照」且不含「本次 diff」，phaseLog 六阶段为 Code Understanding 起头。
 - 待办：20 组 A/B（旧 spike 语义 vs 新 scan 语义）——统计「本次新增」出现次数、precision 是否回退 >5%、token 是否增幅 >10%。
+- 离线回放：`test:replay` 5/6 通过；`rule-skill-single-finding` 在 phase 6 的 skill 候选 brief 上 miss（live 352 chars vs trace 877 chars）。已在父提交 `c99fd18` 复跑同一场景，失败相同 → 既有 trace 陈旧，不是 R-04b 引入；后续按需重录该场景。
