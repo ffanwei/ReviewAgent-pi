@@ -78,9 +78,9 @@
 | R-SPK | 全仓检视 spike：分组 + 合成 diff + 复用 `runReviewOutcome` | 先用最小侵入验证可行性、隔离性与 Skill 透传 | P0 | DONE | dry-run + fake-fetch 全链；PR 核心零修改；报告 md/pdf | 2026-11-24 完成：commit `511b256`；6 个测试文件 63 passed；全包 1265 passed / 1 skipped；报告 [`repo-spike-方案报告.md`](reports/repo-spike-方案报告.md) + `.pdf` | [票](issues/R-SPK-repo-spike/ticket.md) · [讨论](issues/R-SPK-repo-spike/discussion.md) |
 | R-02 | 仓库文件枚举与过滤 | 全仓扫描没有可检视文件清单 | P0 | DONE | 同快照两次枚举一致；忽略 / 二进制 / 生成物 / 超大文件规则可配；跳过有原因 | 2026-11-24 完成：`enumerate.ts` 5 单测；1607 文件 dry-run；规则配置化留 R-02b | [票](issues/R-02-file-inventory/ticket.md) · — |
 | R-03 | 仓级分组与预算账本 | 全仓不能沿用 diff 字符分片 | P0 | DONE | 确定性分组；文件不重复 / 不跨组；文件数 + 字符双上限；组数护栏；截断留痕 | 2026-11-24 完成：四策略 + 双上限 + `maxGroups` 护栏；单测与 dry-run 证据见票 | [票](issues/R-03-repo-grouping-budget/ticket.md) · [讨论](issues/R-03-repo-grouping-budget/discussion.md) |
-| R-04 | 全仓扫描执行路径 | 现有 `review-run.ts` 是 diff 入口 | P0 | DONE | 单组 / 多组均可跑通；行锚点真实；组失败隔离；与 MR 路径不互相污染 | 2026-11-25 完成：253/255 组、1,331 findings、204 min；2 组因宿主内存保护停止 | [票](issues/R-04-repo-scan-execution/ticket.md) · — |
+| R-04 | 全仓扫描执行路径 | 现有 `review-run.ts` 是 diff 入口 | P0 | DONE | 单组 / 多组均可跑通；行锚点真实；组失败隔离；与 MR 路径不互相污染 | 2026-11-25 完成：255/255 组、1,342 findings、207.5 min；主跑被宿主内存保护停在 253 组，缺失 2 组用 `--files` 补跑 | [票](issues/R-04-repo-scan-execution/ticket.md) · — |
 | R-05 | 输出契约与呈现 | findings / tips 依赖「变更行」语义 | P1 | DONE | schema 与样例；无 diff 行锚点语义；tips 不依赖变更行；下游边界写清 | 2026-11-24 完成：R-01 §6 schema + calibration 样例；tips 内嵌 finding | [票](issues/R-05-output-contract/ticket.md) · — |
-| R-06 | 全仓评测集与基线 | 现有 iterF91 / AACR 是 MR + diff GT | P1 | DONE | 全仓对照口径成文；precision / 耗时 / token 可复核；不与 MR 结果混报；召回留 R-06b | 2026-11-25 完成：我方 253/255 组、OCR 1,388 文件；报告 md/pdf；precision 0.81 vs 0.69 | [票](issues/R-06-repo-eval/ticket.md) · — |
+| R-06 | 全仓评测集与基线 | 现有 iterF91 / AACR 是 MR + diff GT | P1 | DONE | 全仓对照口径成文；precision / 耗时 / token 可复核；不与 MR 结果混报；召回留 R-06b | 2026-11-25 完成：我方 255/255 组（1,390 文件）、OCR 1,388 文件；报告 md/pdf；precision 0.82 vs 0.69（我方 120 条 / OCR 150 条抽样） | [票](issues/R-06-repo-eval/ticket.md) · — |
 | R-07 | 增量扫描 | 全仓重扫成本高 | P2 | TODO | 同快照全量 vs 增量结果一致；缓存失效规则明确；审计记录命中 | 依赖 R-02、R-04 | [票](issues/R-07-incremental-scan/ticket.md) · — |
 | R-08 | 与多文件实验及主线的合并路径 | 三条实验线共享文件，长期分叉 | P1 | BLOCKED | 集成顺序与冲突面清单；共享文件改动清单；合并前回归范围 | 等 `exp-flow → main` 与 multifile 结论 | [票](issues/R-08-merge-path/ticket.md) · — |
 
@@ -90,7 +90,7 @@
 - [x] **R-01 契约定稿**：输入、单元、行锚点、输出、CLI 五项已定，D1–D8 写入设计文档。
 - [x] **R-02 零模型文件枚举**：确定性、排除规则、跳过原因与单测已完成。
 - [x] **R-03 分组与预算**：四策略 + 双上限 + `maxGroups` 护栏已完成。
-- [x] **R-04 执行路径**：253/255 组全仓实跑，行锚点真实，组失败隔离。
+- [x] **R-04 执行路径**：255/255 组全仓实跑（主跑 253 + 补跑 2），行锚点真实，组失败隔离。
 - [x] **R-05 输出契约**：`repo-spike-result.json` + tips 内嵌 finding。
 - [x] **R-06 全仓对照**：我方 vs OCR，precision / 耗时 / token 已出报告。
 - [ ] **R-06b 召回**：合成缺陷注入 / 真实修复回滚测 recall。
@@ -101,4 +101,4 @@
 - 2026-11-24：从 `exp-flow@09870c7` 切出 worktree `.claude/worktrees/exp-repo-review`；确认 A 方案（无 diff 全仓扫描）；登记 R-01–R-08；明确「不改主路径」「不继承未提交改动」边界。
 - 2026-11-24：讨论确认全仓扫描**不直接复用 `planGroups`**，只复用零模型分组纪律；详见 R-03 讨论。
 - 2026-11-24：R-SPK 完成：新增 `src/repo-spike/` + `repo-spike` 子命令；每组一次 `runReviewOutcome`；PR 核心零修改；报告 md/pdf 已产出。
-- 2026-11-25：R-01–R-06 完成；全仓对照报告 `reports/全仓检视-OCR对照-报告.md` + `.pdf`；我方 253/255 组（宿主内存保护停止 2 组），OCR 全量 1,388 文件；precision 0.81 vs 0.69。
+- 2026-11-25：R-01–R-06 完成；全仓对照报告 `reports/全仓检视-OCR对照-报告.md` + `.pdf`；我方 255/255 组（主跑 253 + `--files` 补跑 2，1,342 findings），OCR 全量 1,388 文件；precision 0.82 vs 0.69。
