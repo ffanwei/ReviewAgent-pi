@@ -30,6 +30,12 @@ export interface RepoSpikeOptions {
   /** 是否把测试文件纳入检视（缺省 false，与全仓扫描契约一致） */
   readonly includeTests: boolean;
   readonly dryRun: boolean;
+  /** 从 `<out>/job.json` 续跑：校验快照 / 配置 / 计划 hash 后跳过已完成组 */
+  readonly resume?: boolean;
+  /** 总 token 预算（含缓存）；0 / 缺省 = 不限；达到后停止派发新组 */
+  readonly maxTotalTokens?: number;
+  /** 单组最多尝试次数（仅临时错误重试；缺省 2） */
+  readonly groupAttempts?: number;
   /** 只检视该仓库相对路径前缀（POSIX，空 = 全仓） */
   readonly pathPrefix?: string;
   /** 只检视这些仓库相对路径（POSIX，精确匹配；用于补跑指定组/文件） */

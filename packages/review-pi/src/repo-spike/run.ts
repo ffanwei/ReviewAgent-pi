@@ -1,4 +1,5 @@
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
@@ -8,6 +9,20 @@ import { runReviewOutcome, type ReviewRunResult } from "../run/review-run.js";
 import { buildRepoCoverage, coverageIsConsistent } from "./coverage.js";
 import { enumerateRepoFiles } from "./enumerate.js";
 import { groupRepoFiles } from "./group.js";
+import {
+  createJob,
+  fingerprintConfig,
+  fingerprintGroups,
+  fingerprintPlan,
+  fingerprintRuleSkills,
+  isTransientError,
+  jobPath,
+  loadJob,
+  readDoneGroup,
+  usageTotal,
+  validateJob,
+  writeJob,
+} from "./job.js";
 import {
   ensureDir,
   formatPlanSummary,
@@ -125,32 +140,130 @@ export async function runRepoSpike(
   }
   const fetchFn = deps.fetch ?? globalThis.fetch;
   const runtime = buildSpikeRuntime(options.maxRounds, options.includeTests);
+  const maxTotalTokens = Math.max(0, Math.floor(options.maxTotalTokens ?? 0));
+  const groupAttempts = Math.max(1, Math.floor(options.groupAttempts ?? 2));
 
-  const groupOutcomes = await mapWithConcurrency(
-    syntheticGroups,
-    options.groupConcurrency,
-    async (synthetic): Promise<RepoSpikeGroupOutcome> => {
-      const slug = groupSlug(synthetic.group.index, synthetic.group.key);
-      const caseId = `repo-review-${slug}`;
-      const runsRoot = path.join(outDir, "runs", slug);
-      const files = synthetic.files;
-      if (synthetic.diff === "" || files.length === 0) {
-        return {
-          index: synthetic.group.index,
-          key: synthetic.group.key,
-          files,
-          diffChars: synthetic.chars,
-          status: "skipped",
-          findingsCount: 0,
-          skipReason: "no-reviewable-files",
-        };
+  const hashes = {
+    snapshotHash: fingerprintGroups(syntheticGroups),
+    planHash: fingerprintPlan(syntheticGroups),
+    configHash: fingerprintConfig({
+      ...(deps.modelId !== undefined ? { modelId: deps.modelId } : {}),
+      ...(deps.baseUrl !== undefined ? { baseUrl: deps.baseUrl } : {}),
+      maxRounds: options.maxRounds,
+      includeTests: options.includeTests,
+      groupBy: options.groupBy,
+      ruleSkillsHash: await fingerprintRuleSkills(options.ruleSkillZips, options.ruleSkillDirs),
+      strictRuleSkill: options.strictRuleSkill === true,
+    }),
+  };
+
+  let job = options.resume === true ? await loadJob(outDir) : undefined;
+  if (options.resume === true) {
+    if (job === undefined) {
+      throw new Error(`repo-review: cannot resume: ${jobPath(outDir)} not found`);
+    }
+    validateJob(job, hashes);
+    job = { ...job, maxTotalTokens, status: "running", updatedAt: now().toISOString() };
+  } else {
+    job = createJob({
+      outDir,
+      repoPath,
+      now: now(),
+      ...(deps.modelId !== undefined ? { modelId: deps.modelId } : {}),
+      maxTotalTokens,
+      hashes,
+      groups: syntheticGroups,
+    });
+  }
+  if (job.groups.length !== syntheticGroups.length) {
+    throw new Error("repo-review: job group count does not match the current plan");
+  }
+
+  const outcomes = new Array<RepoSpikeGroupOutcome | undefined>(syntheticGroups.length);
+  let spentTokens = 0;
+  for (let index = 0; index < syntheticGroups.length; index += 1) {
+    const group = job.groups[index];
+    const synthetic = syntheticGroups[index];
+    if (group === undefined || synthetic === undefined) {
+      throw new Error("repo-review: internal job/plan mismatch");
+    }
+    if (options.resume === true && group.status === "done") {
+      const done = await readDoneGroup(outDir, group);
+      if (done !== undefined) {
+        outcomes[index] = done;
+        spentTokens += usageTotal(done.usage);
+        continue;
       }
-      progress(
-        `[repo-review] group ${String(synthetic.group.index)}/${String(
-          syntheticGroups.length,
-        )} ${synthetic.group.key} files=${String(files.length)} chars=${String(synthetic.chars)}`,
-      );
-      await ensureDir(runsRoot);
+      // run.json 缺失或损坏：退回 pending，重新检视。
+      group.attempts = 0;
+      delete group.startedAt;
+      delete group.finishedAt;
+      delete group.runId;
+      delete group.findingsCount;
+      delete group.usage;
+      delete group.error;
+      delete group.skipReason;
+    }
+    if (
+      options.resume === true &&
+      group.status === "skipped" &&
+      group.skipReason !== "budget-exhausted"
+    ) {
+      outcomes[index] = skippedOutcome(synthetic, group.skipReason ?? "no-reviewable-files");
+      continue;
+    }
+    // pending / running / failed / budget-skipped：本次重新派发。
+    group.status = "pending";
+    group.attempts = group.attempts ?? 0;
+    delete group.startedAt;
+    delete group.finishedAt;
+    delete group.runId;
+    delete group.findingsCount;
+    delete group.usage;
+    delete group.error;
+    delete group.skipReason;
+  }
+  job.spentTokens = spentTokens;
+
+  let persistChain: Promise<void> = Promise.resolve();
+  const persistJob = (): Promise<void> => {
+    job.updatedAt = now().toISOString();
+    const snapshot = job;
+    persistChain = persistChain.then(() => writeJob(snapshot));
+    return persistChain;
+  };
+  await persistJob();
+
+  const progressLabel = (synthetic: SyntheticGroup): string =>
+    `[repo-review] group ${String(synthetic.group.index)}/${String(syntheticGroups.length)} ${synthetic.group.key} files=${String(synthetic.files.length)} chars=${String(synthetic.chars)}`;
+
+  const executeGroup = async (index: number): Promise<RepoSpikeGroupOutcome> => {
+    const synthetic = syntheticGroups[index];
+    const jobGroup = job.groups[index];
+    if (synthetic === undefined || jobGroup === undefined) {
+      throw new Error("repo-review: internal job/plan mismatch");
+    }
+    if (synthetic.diff === "" || synthetic.files.length === 0) {
+      const skipped = skippedOutcome(synthetic, "no-reviewable-files");
+      jobGroup.status = "skipped";
+      jobGroup.skipReason = skipped.skipReason;
+      jobGroup.finishedAt = now().toISOString();
+      return skipped;
+    }
+
+    const slug = groupSlug(synthetic.group.index, synthetic.group.key);
+    const caseId = `repo-review-${slug}`;
+    const runsRoot = path.join(outDir, "runs", slug);
+    progress(progressLabel(synthetic));
+    await ensureDir(runsRoot);
+
+    for (let attempt = 0; attempt < groupAttempts; attempt += 1) {
+      jobGroup.status = "running";
+      jobGroup.attempts = (jobGroup.attempts ?? 0) + 1;
+      jobGroup.startedAt = jobGroup.startedAt ?? now().toISOString();
+      delete jobGroup.finishedAt;
+      delete jobGroup.error;
+      await persistJob();
       try {
         const outcome = await runReviewOutcome({
           caseId,
@@ -175,49 +288,111 @@ export async function runRepoSpike(
           ...(options.strictRuleSkill === true ? { strictRuleSkill: true } : {}),
         });
         if (outcome.kind === "skipped") {
-          return {
-            index: synthetic.group.index,
-            key: synthetic.group.key,
-            files,
-            diffChars: synthetic.chars,
-            status: "skipped",
-            findingsCount: 0,
-            skipReason: outcome.skip.reason,
-          };
+          const skipped = skippedOutcome(synthetic, outcome.skip.reason);
+          jobGroup.status = "skipped";
+          jobGroup.skipReason = skipped.skipReason;
+          jobGroup.finishedAt = now().toISOString();
+          return skipped;
         }
-        return {
-          index: synthetic.group.index,
-          key: synthetic.group.key,
-          files,
-          diffChars: synthetic.chars,
-          status: "reviewed",
-          findingsCount: outcome.result.record.baseline.findings.length,
-          findings: outcome.result.record.baseline.findings,
-          runId: outcome.result.runId,
-          usage: outcome.result.record.baseline.usage,
-          ...(outcome.result.coverage !== undefined
-            ? { coverage: outcome.result.coverage }
-            : {}),
-          recordPath: outcome.result.recordPath,
-          auditPath: outcome.result.auditPath,
-          reviewsPath: outcome.result.reviewsPath,
-          transcriptPath: outcome.result.transcriptPath,
-        };
+        const reviewed = reviewedOutcome(synthetic, outcome.result);
+        jobGroup.status = "done";
+        jobGroup.runId = reviewed.runId;
+        jobGroup.findingsCount = reviewed.findingsCount;
+        jobGroup.usage = reviewed.usage;
+        jobGroup.finishedAt = now().toISOString();
+        return reviewed;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const canRetry = attempt + 1 < groupAttempts && isTransientError(error);
+        if (canRetry) {
+          progress(`[repo-review] group ${String(synthetic.group.index)} transient failure, retrying: ${message}`);
+          await delay(500 * (attempt + 1));
+          continue;
+        }
         progress(`[repo-review] group ${String(synthetic.group.index)} failed: ${message}`);
+        jobGroup.status = "failed";
+        jobGroup.error = message;
+        jobGroup.finishedAt = now().toISOString();
         return {
           index: synthetic.group.index,
           key: synthetic.group.key,
-          files,
+          files: synthetic.files,
           diffChars: synthetic.chars,
           status: "failed",
           findingsCount: 0,
           error: message,
         };
       }
-    },
+    }
+    throw new Error("repo-review: internal retry loop exhausted without a result");
+  };
+
+  const pending = syntheticGroups
+    .map((_, index) => index)
+    .filter((index) => outcomes[index] === undefined);
+  let cursor = 0;
+  let budgetStopped = false;
+  const concurrency = Math.max(
+    1,
+    Math.min(Math.floor(options.groupConcurrency), Math.max(pending.length, 1)),
   );
+  const worker = async (): Promise<void> => {
+    while (true) {
+      if (budgetStopped) {
+        return;
+      }
+      if (maxTotalTokens > 0 && job.spentTokens >= maxTotalTokens) {
+        budgetStopped = true;
+        return;
+      }
+      const position = cursor;
+      cursor += 1;
+      const index = pending[position];
+      if (index === undefined) {
+        return;
+      }
+      const outcome = await executeGroup(index);
+      outcomes[index] = outcome;
+      job.spentTokens += usageTotal(outcome.usage);
+      await persistJob();
+      if (maxTotalTokens > 0 && job.spentTokens >= maxTotalTokens) {
+        budgetStopped = true;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  for (let index = 0; index < syntheticGroups.length; index += 1) {
+    if (outcomes[index] !== undefined) {
+      continue;
+    }
+    const synthetic = syntheticGroups[index];
+    const jobGroup = job.groups[index];
+    if (synthetic === undefined || jobGroup === undefined) {
+      throw new Error("repo-review: internal job/plan mismatch");
+    }
+    outcomes[index] = skippedOutcome(synthetic, "budget-exhausted");
+    jobGroup.status = "skipped";
+    jobGroup.skipReason = "budget-exhausted";
+    jobGroup.finishedAt = now().toISOString();
+  }
+
+  const groupOutcomes = outcomes.filter(
+    (outcome): outcome is RepoSpikeGroupOutcome => outcome !== undefined,
+  );
+  const reviewedCount = groupOutcomes.filter((outcome) => outcome.status === "reviewed").length;
+  const failedCount = groupOutcomes.filter((outcome) => outcome.status === "failed").length;
+  const budgetSkippedCount = job.groups.filter(
+    (group) => group.status === "skipped" && group.skipReason === "budget-exhausted",
+  ).length;
+  const partial = failedCount > 0 || budgetSkippedCount > 0;
+  job.status =
+    failedCount > 0 && reviewedCount === 0 && budgetSkippedCount === 0
+      ? "failed"
+      : partial
+        ? "partial"
+        : "completed";
+  await persistJob();
 
   const reviewed = groupOutcomes.filter(
     (outcome): outcome is RepoSpikeGroupOutcome & { status: "reviewed" } =>
@@ -265,12 +440,53 @@ export async function runRepoSpike(
   // 兼容旧脚本：过渡期保留 repo-spike 文件名，内容与新产品名一致。
   await writeJsonFile(path.join(outDir, "repo-spike-result.json"), result);
   progress(formatResultSummary(result));
+  progress(`[repo-review] job: status=${job.status} path=${jobPath(outDir)}`);
 
-  // 与 review 的退出码口径一致：全部组失败才非 0；全跳过 / 无文件视为完成。
-  if (groupOutcomes.length > 0 && reviewed.length === 0 && errors.length > 0) {
+  // 0 = 完成；2 = 部分完成（失败组 / 预算停止）；1 = 全部失败。
+  if (job.status === "failed") {
     return 1;
   }
+  if (job.status === "partial") {
+    return 2;
+  }
   return 0;
+}
+
+function skippedOutcome(
+  synthetic: SyntheticGroup,
+  reason: string,
+): RepoSpikeGroupOutcome {
+  return {
+    index: synthetic.group.index,
+    key: synthetic.group.key,
+    files: synthetic.files,
+    diffChars: synthetic.chars,
+    status: "skipped",
+    findingsCount: 0,
+    skipReason: reason,
+  };
+}
+
+function reviewedOutcome(
+  synthetic: SyntheticGroup,
+  result: ReviewRunResult,
+): RepoSpikeGroupOutcome {
+  return {
+    index: synthetic.group.index,
+    key: synthetic.group.key,
+    files: synthetic.files,
+    diffChars: synthetic.chars,
+    status: "reviewed",
+    findingsCount: result.record.baseline.findings.length,
+    findings: result.record.baseline.findings,
+    runId: result.runId,
+    usage: result.record.baseline.usage,
+    ...(result.coverage !== undefined ? { coverage: result.coverage } : {}),
+    recordPath: result.recordPath,
+    auditPath: result.auditPath,
+    reviewsPath: result.reviewsPath,
+    transcriptPath: result.transcriptPath,
+  };
 }
 
 function countSkipped(
@@ -300,33 +516,4 @@ function mergeSkipped(
     }
   }
   return out;
-}
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  requested: number,
-  fn: (item: T) => Promise<R>,
-): Promise<readonly R[]> {
-  const limit = Math.max(1, Math.min(Math.floor(requested), Math.max(items.length, 1)));
-  if (limit === 1) {
-    const out: R[] = [];
-    for (const item of items) {
-      out.push(await fn(item));
-    }
-    return out;
-  }
-  const results = new Array<R | undefined>(items.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      const item = items[index];
-      if (item !== undefined) {
-        results[index] = await fn(item);
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: limit }, () => worker()));
-  return results.filter((value): value is R => value !== undefined);
 }

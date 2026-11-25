@@ -18,6 +18,9 @@ test("repo-spike：最小 dry-run 参数", () => {
       maxRounds: 1,
       groupConcurrency: 1,
       includeTests: false,
+      maxTotalTokens: 0,
+      groupAttempts: 2,
+      resume: false,
       dryRun: true,
     },
   });
@@ -39,6 +42,9 @@ test("repo-review：产品命令名与独立缺省输出目录", () => {
       maxRounds: 1,
       groupConcurrency: 1,
       includeTests: false,
+      maxTotalTokens: 0,
+      groupAttempts: 2,
+      resume: false,
       dryRun: true,
     },
   });
@@ -103,6 +109,9 @@ test("repo-spike：分组、上限、规则包与进度旗标", () => {
       maxRounds: 2,
       groupConcurrency: 2,
       includeTests: true,
+      maxTotalTokens: 0,
+      groupAttempts: 2,
+      resume: false,
       dryRun: false,
       pathPrefix: "src",
       configPath: "cfg.json",
@@ -131,5 +140,27 @@ test("repo-spike：缺 --repo / 非法 group-by / 非法整数 / 未知旗标", 
   expect(parseCliArgs(["repo-spike", "--repo", "r", "--nope", "x"])).toEqual({
     ok: false,
     message: 'unknown flag "--nope"',
+  });
+});
+
+test("repo-review：--resume / 总预算 / 组尝试次数", () => {
+  const parsed = parseCliArgs([
+    "repo-review",
+    "--repo",
+    "r",
+    "--resume",
+    "--max-total-tokens",
+    "1234",
+    "--group-attempts",
+    "3",
+  ]);
+  expect(parsed).toMatchObject({
+    ok: true,
+    command: "repo-review",
+    args: {
+      resume: true,
+      maxTotalTokens: 1234,
+      groupAttempts: 3,
+    },
   });
 });

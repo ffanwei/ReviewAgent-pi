@@ -86,7 +86,7 @@
 | R-06b | 全仓召回评测 | 全仓没有逐行 GT，precision 不能推 recall | P2 | TODO | 冻结注入/回滚清单；recall + 注入文件 precision；不与自然召回混报 | 2026-11-25 决定暂缓：本轮不测 recall，后续可能做 | [票](issues/R-06b-recall/ticket.md) · [讨论](issues/R-06b-recall/discussion.md) |
 | R-07 | 增量扫描 | 全仓重扫成本高 | P2 | TODO | 同快照全量 vs 增量结果一致；缓存失效规则明确；审计记录命中 | 依赖 R-02、R-04；2026-11-25 决定暂缓，后续可能做 | [票](issues/R-07-incremental-scan/ticket.md) · [讨论](issues/R-07-incremental-scan/discussion.md) |
 | R-08 | 与多文件实验及主线的合并路径 | 三条实验线共享文件，长期分叉 | P1 | BLOCKED | 集成顺序与冲突面清单；共享文件改动清单；合并前回归范围 | 等 `exp-flow → main` 与 multifile 结论 | [票](issues/R-08-merge-path/ticket.md) · — |
-| R-09 | 持久化编排与总预算 | 单进程；253/255 内存停止后靠人工 `--files` 补跑 | P0 | TODO | `job.json` + `--resume`；kill 后续跑一致；临时 / 永久错误分流；`--max-total-tokens` | 2026-11-25 拆分：生产化第三卡点；增量仍暂缓 | [票](issues/R-09-durable-scan-job/ticket.md) · [讨论](issues/R-09-durable-scan-job/discussion.md) |
+| R-09 | 持久化编排与总预算 | 单进程；253/255 内存停止后靠人工 `--files` 补跑 | P0 | DONE | `job.json` + `--resume`；kill 后续跑一致；临时 / 永久错误分流；`--max-total-tokens` | 2026-11-25 完成：job 清单 + hash 校验 + resume + 重试 + 总预算；全包 1290 passed / 1 skipped；真实 resume 8.4s 无模型请求；预算超出上界为在飞组数 | [票](issues/R-09-durable-scan-job/ticket.md) · [讨论](issues/R-09-durable-scan-job/discussion.md) |
 
 ## 当前焦点
 
@@ -99,7 +99,7 @@
 - [x] **R-06 全仓对照**：我方 vs OCR，precision / 耗时 / token 已出报告。
 - [x] **R-04b scan 语义**：完成；`repo-review` + 中性文件快照 + scan Zone A，20 组 A/B 通过（precision 0.816 vs 0.776）。
 - [x] **R-05b 覆盖账本**：完成；文件三态 + 稳定 reason + `repo-review-result.json`，真实 smoke 通过。
-- [ ] **R-09 持久化编排**：`job.json` + `--resume` + 总 token 预算；生产化第三卡点。
+- [x] **R-09 持久化编排**：完成；`job.json` + `--resume` + 重试 + 总 token 预算，真实 resume 通过。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
 
@@ -114,3 +114,4 @@
 - 2026-11-25：R-04b 代码与单测完成（`repo-review`、scan Zone A、中性文件快照、`source=repo-scan`）；1 组真实 smoke 通过，20 组 A/B 待跑。
 - 2026-11-25：R-04b 完成；20 组 A/B 73 vs 83 findings、token +5.4%、precision 0.816 vs 0.776，均满足验收。
 - 2026-11-25：R-05b 完成；文件级三态覆盖账本、reason 归一化、CLI 计数；全包 1280 passed / 1 skipped。
+- 2026-11-25：R-09 完成；job.json 持久化、hash 校验续跑、临时错误重试、总 token 预算与 0/2/1 退出码。

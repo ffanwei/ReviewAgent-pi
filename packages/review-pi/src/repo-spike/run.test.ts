@@ -168,3 +168,171 @@ test("真跑：每组一次 runReviewOutcome，findings 合并后写独立结果
   const legacy = readFileSync(path.join(out, "repo-spike-result.json"), "utf8");
   expect(legacy).toBe(readFileSync(path.join(out, "repo-review-result.json"), "utf8"));
 });
+
+function sixPhaseWithUsage(usage: FakeReply["usage"]): FakeReply[] {
+  return sixPhase().map((reply) => ({ ...reply, usage }));
+}
+
+test("resume：done 组不重新请求，job 完成", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+  write(root, "src/b.ts", "export const b = 2;\n");
+
+  const first = fakeFetch([
+    ...sixPhaseWithUsage({ promptTokens: 10, completionTokens: 0, cacheReadTokens: 0 }),
+    ...sixPhaseWithUsage({ promptTokens: 10, completionTokens: 0, cacheReadTokens: 0 }),
+  ]);
+  const code = await runRepoSpike(options(root, out), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: first.fetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+  expect(code).toBe(0);
+
+  const job = JSON.parse(readFileSync(path.join(out, "job.json"), "utf8")) as {
+    status: string;
+    spentTokens: number;
+    groups: { status: string; attempts: number }[];
+  };
+  expect(job.status).toBe("completed");
+  expect(job.groups.map((group) => group.status)).toEqual(["done", "done"]);
+  expect(job.spentTokens).toBeGreaterThan(0);
+
+  const second = fakeFetch([]);
+  const resumeCode = await runRepoSpike(options(root, out, { resume: true }), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: second.fetch,
+    now: () => new Date("2026-11-24T01:00:00.000Z"),
+  });
+  expect(resumeCode).toBe(0);
+  expect(second.requests).toHaveLength(0);
+});
+
+test("预算：达到 maxTotalTokens 后停止派发，剩余组 not-reached；resume 可继续", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+  write(root, "src/b.ts", "export const b = 2;\n");
+
+  const first = fakeFetch(
+    sixPhaseWithUsage({ promptTokens: 10, completionTokens: 0, cacheReadTokens: 0 }),
+  );
+  const code = await runRepoSpike(options(root, out, { groupConcurrency: 1, maxTotalTokens: 1 }), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: first.fetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+  expect(code).toBe(2);
+
+  const job = JSON.parse(readFileSync(path.join(out, "job.json"), "utf8")) as {
+    status: string;
+    groups: { status: string; skipReason?: string }[];
+  };
+  expect(job.status).toBe("partial");
+  expect(job.groups.map((group) => group.status)).toEqual(["done", "skipped"]);
+  expect(job.groups[1]?.skipReason).toBe("budget-exhausted");
+
+  const partial = JSON.parse(readFileSync(path.join(out, "repo-review-result.json"), "utf8")) as {
+    coverage: { summary: { notReached: number }; files: { state: string; reason?: string }[] };
+  };
+  expect(partial.coverage.summary.notReached).toBe(1);
+  expect(partial.coverage.files.some((file) => file.reason === "budget-exhausted")).toBe(true);
+
+  const second = fakeFetch(sixPhase());
+  const resumeCode = await runRepoSpike(options(root, out, { resume: true, groupConcurrency: 1 }), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: second.fetch,
+    now: () => new Date("2026-11-24T01:00:00.000Z"),
+  });
+  expect(resumeCode).toBe(0);
+  expect(second.requests).toHaveLength(6);
+  const done = JSON.parse(readFileSync(path.join(out, "job.json"), "utf8")) as {
+    status: string;
+    groups: { status: string }[];
+  };
+  expect(done.status).toBe("completed");
+  expect(done.groups.map((group) => group.status)).toEqual(["done", "done"]);
+});
+
+test("resume：快照内容变化 → 拒绝续跑", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+
+  const first = fakeFetch(sixPhase());
+  await runRepoSpike(options(root, out), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: first.fetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+
+  write(root, "src/a.ts", "export const a = 2;\n");
+  const second = fakeFetch([]);
+  await expect(
+    runRepoSpike(options(root, out, { resume: true }), {
+      apiKey: "test-key",
+      baseUrl: "http://example.invalid",
+      fetch: second.fetch,
+      now: () => new Date("2026-11-24T01:00:00.000Z"),
+    }),
+  ).rejects.toThrow(/cannot resume: snapshot/);
+});
+
+test("临时错误：同一组按 groupAttempts 重试", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+
+  const script = fakeFetch(sixPhase());
+  let failedOnce = false;
+  const flaky: typeof script.fetch = async (input, init) => {
+    if (!failedOnce) {
+      failedOnce = true;
+      throw new Error("500 upstream unavailable");
+    }
+    return script.fetch(input, init);
+  };
+  const code = await runRepoSpike(options(root, out, { groupAttempts: 2 }), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: flaky,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+  expect(code).toBe(0);
+  expect(script.requests).toHaveLength(6);
+  const job = JSON.parse(readFileSync(path.join(out, "job.json"), "utf8")) as {
+    groups: { status: string; attempts: number }[];
+  };
+  expect(job.groups[0]?.status).toBe("done");
+  expect(job.groups[0]?.attempts).toBe(2);
+});
+
+test("永久错误：不按 groupAttempts 重试", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+
+  const fetchImpl: typeof globalThis.fetch = async () =>
+    new Response(JSON.stringify({ error: { message: "unauthorized" } }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+  const code = await runRepoSpike(options(root, out, { groupAttempts: 3 }), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: fetchImpl,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+  expect(code).toBe(1);
+  const job = JSON.parse(readFileSync(path.join(out, "job.json"), "utf8")) as {
+    groups: { status: string; attempts: number }[];
+  };
+  expect(job.groups[0]?.status).toBe("failed");
+  expect(job.groups[0]?.attempts).toBe(1);
+});

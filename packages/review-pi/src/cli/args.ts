@@ -78,6 +78,8 @@ const KNOWN_REPO_SPIKE_FLAGS: readonly string[] = [
   "--max-file-chars",
   "--max-rounds",
   "--group-concurrency",
+  "--max-total-tokens",
+  "--group-attempts",
   "--path",
   "--files",
   "--config",
@@ -95,15 +97,15 @@ const REPEATABLE_REPO_SPIKE_FLAGS: readonly string[] = [
 ];
 
 /** repo-spike 的无值布尔旗标 */
-const REPO_SPIKE_BOOLEAN_FLAGS = new Set(["--dry-run", "--strict-rule-skill", "--include-tests", "--no-progress"]);
+const REPO_SPIKE_BOOLEAN_FLAGS = new Set(["--dry-run", "--strict-rule-skill", "--include-tests", "--no-progress", "--resume"]);
 
 /** 用法文案（stderr 错误路径的同款文案，单一来源） */
 export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <diff-file> | --mr-json <files-json>) --taskId <id> [--issue <text>] [--tasks-dir <dir>] [--model <id>（已废弃，忽略）] [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--include <regex>]... [--exclude <regex>]... [--strict-rule-skill] [--no-progress]
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
-       review-pi repo-review --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
-       review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+       review-pi repo-review --repo <path> [--out <dir>] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+       review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi version [--json]
        review-pi --version
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
@@ -262,6 +264,9 @@ export interface RepoSpikeCliArgs {
   readonly maxFileChars: number;
   readonly maxRounds: number;
   readonly groupConcurrency: number;
+  readonly maxTotalTokens: number;
+  readonly groupAttempts: number;
+  readonly resume: boolean;
   readonly includeTests: boolean;
   readonly dryRun: boolean;
   /** 只检视该仓库相对路径前缀（POSIX；缺席 = 全仓） */
@@ -818,6 +823,26 @@ function parseRepoSpikeCommand(
   if (!groupConcurrency.ok) {
     return groupConcurrency;
   }
+  const maxTotalTokens = parseSpikeInt(
+    flags.values.get("--max-total-tokens"),
+    "--max-total-tokens",
+    0,
+    0,
+    1_000_000_000,
+  );
+  if (!maxTotalTokens.ok) {
+    return maxTotalTokens;
+  }
+  const groupAttempts = parseSpikeInt(
+    flags.values.get("--group-attempts"),
+    "--group-attempts",
+    2,
+    1,
+    10,
+  );
+  if (!groupAttempts.ok) {
+    return groupAttempts;
+  }
 
   const config = parseConfigFlag(flags.values);
   if (!config.ok) {
@@ -846,6 +871,9 @@ function parseRepoSpikeCommand(
       maxFileChars: maxFileChars.value,
       maxRounds: maxRounds.value,
       groupConcurrency: groupConcurrency.value,
+      maxTotalTokens: maxTotalTokens.value,
+      groupAttempts: groupAttempts.value,
+      resume: stripped.resume,
       includeTests: stripped.includeTests,
       dryRun: stripped.dryRun,
       ...(pathPrefix !== undefined && pathPrefix.trim().length > 0
@@ -867,6 +895,7 @@ function stripRepoSpikeBooleanFlags(rest: readonly string[]): {
   readonly dryRun: boolean;
   readonly strict: boolean;
   readonly includeTests: boolean;
+  readonly resume: boolean;
   readonly progress?: boolean;
 } | { readonly ok: false; readonly message: string } {
   const counts = new Map<string, number>();
@@ -889,6 +918,7 @@ function stripRepoSpikeBooleanFlags(rest: readonly string[]): {
     dryRun: counts.has("--dry-run"),
     strict: counts.has("--strict-rule-skill"),
     includeTests: counts.has("--include-tests"),
+    resume: counts.has("--resume"),
     ...(counts.has("--no-progress") ? { progress: false } : {}),
   };
 }

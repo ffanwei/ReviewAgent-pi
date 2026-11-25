@@ -1,6 +1,6 @@
 # R-09 · 持久化编排与总预算
 
-- Status: TODO
+- Status: DONE
 - Branch: `exp-repo-review`
 - Created: 2026-11-25
 
@@ -31,3 +31,14 @@ R-04b、R-05b。
 ## 范围决定
 
 - 2026-11-25：快速上生产的第三优先级；增量扫描仍暂缓，本任务只保证「全量可续跑」，不做跨轮缓存。
+
+## 实现进展（2026-11-25）
+
+- `job.ts`：`job.json` 清单（jobId / snapshotHash / configHash / planHash / maxTotalTokens / spentTokens / 每组 status + attempts + usage）；原子写（temp + rename）。
+- hash：snapshot = 实际送入模型的全部文件内容；plan = 分组键 / 文件集 / 字符量；config = model / baseUrl / runtime / 规则包内容。
+- `--resume`：校验 hash，跳过 `done`（从 `runs/<group>/runs/run.json` 重建结果），重跑 `pending / running / failed / budget-exhausted`；hash 不一致拒绝续跑。
+- 重试：`--group-attempts`（缺省 2）；只对 429 / 5xx / 超时 / 网络类错误重试，401/403/400/404/配置类不重试。
+- 预算：`--max-total-tokens`（含缓存）达到后停止派发新组，未派发组记 `skipped` + `budget-exhausted`，coverage 中为 `not-reached`。
+- 退出码：0 完成 / 2 部分完成（失败组或预算停止）/ 1 全部失败；`job.json` 同步 `completed / partial / failed`。
+- 验证：全包 1290 passed / 1 skipped；单测覆盖 job 写读 / hash 拒绝 / resume / 预算停止 + resume 继续 / 临时错误重试 / 永久错误不重试；真实 smoke 首跑完成，`--resume` 8.4s exit 0 且无模型请求。
+- 口径说明：并发 >1 且设预算时，已派发组会继续完成，预算最多超出「在飞组数」；`attempts` 记在 `job.json`，组内 audit 只保留最后一次尝试。
