@@ -70,6 +70,7 @@ const KNOWN_EXPORT_FLAGS: readonly string[] = ["--taskId", "--tasks-dir", "--pat
 const KNOWN_REPO_SPIKE_FLAGS: readonly string[] = [
   "--repo",
   "--out",
+  "--taskId",
   "--group-by",
   "--max-files-per-group",
   "--max-group-chars",
@@ -104,8 +105,8 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <dif
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
-       review-pi repo-review --repo <path> [--out <dir>] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
-       review-pi repo-spike --repo <path> [--out <dir>] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+       review-pi repo-review --repo <path> [--out <dir>] [--taskId <id>] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+       review-pi repo-spike --repo <path> [--out <dir>] [--taskId <id>] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi version [--json]
        review-pi --version
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
@@ -269,6 +270,11 @@ export interface RepoSpikeCliArgs {
   readonly resume: boolean;
   readonly includeTests: boolean;
   readonly dryRun: boolean;
+  /**
+   * 远端全仓检视任务 id（MCP 业务上报用）。MCP 已配置且 `mcp.report.task`
+   * 打开时必需；纯本地运行可缺席。
+   */
+  readonly taskId?: string;
   /** 只检视该仓库相对路径前缀（POSIX；缺席 = 全仓） */
   readonly pathPrefix?: string;
   /** 只检视这些仓库相对路径（POSIX，精确匹配） */
@@ -849,6 +855,16 @@ function parseRepoSpikeCommand(
     return config;
   }
 
+  const taskIdRaw = flags.values.get("--taskId");
+  let taskId: string | undefined;
+  if (taskIdRaw !== undefined) {
+    const checked = checkTaskId(taskIdRaw);
+    if (!checked.ok) {
+      return checked;
+    }
+    taskId = checked.taskId;
+  }
+
   const ruleSkillZips = splitCommaList(flags.repeated.get("--rule-skill-zip"));
   const ruleSkillDirs = [
     ...splitCommaList(flags.repeated.get("--rule-skill")),
@@ -876,6 +892,7 @@ function parseRepoSpikeCommand(
       resume: stripped.resume,
       includeTests: stripped.includeTests,
       dryRun: stripped.dryRun,
+      ...(taskId !== undefined ? { taskId } : {}),
       ...(pathPrefix !== undefined && pathPrefix.trim().length > 0
         ? { pathPrefix: pathPrefix.trim() }
         : {}),

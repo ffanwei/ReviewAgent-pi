@@ -686,3 +686,42 @@ test("业务 tool 重试：3 次尝试、退避 100/400ms", async () => {
   expect(toolCalls).toBe(3);
   await reporter.close();
 });
+
+test("全仓业务面（ADR-0117）：四个 tool 名与平铺参数", async () => {
+  const transport = fakeTransport();
+  const reporter = await createMcpReporter({
+    config: reportConfig(),
+    clientVersion: "test",
+    transport,
+    streamId: "s",
+  });
+  const before = transport.calls.length;
+
+  expect(await reporter.fullRepo.startTask({ taskId: "repo-1" })).toEqual({ ok: true });
+  expect(
+    await reporter.fullRepo.reportFileResult({
+      taskId: "repo-1",
+      filePath: "src/a.ts",
+      reviewTips: [],
+    }),
+  ).toEqual({ ok: true });
+  expect(
+    await reporter.fullRepo.reportCurrentTips({ taskId: "repo-1", invalidatedTips: [] }),
+  ).toEqual({ ok: true });
+  expect(await reporter.fullRepo.endTask({ taskId: "repo-1" })).toEqual({ ok: true });
+
+  const calls = transport.calls
+    .slice(before)
+    .filter((call) => call.method === "tools/call");
+  expect(calls.map((call) => call.params.name)).toEqual([
+    "fullRepoStartTask",
+    "fullRepoReportReviewResult",
+    "fullRepoFilerCurrentTips",
+    "fullRepoEndTask",
+  ]);
+  expect(calls[2]?.params.arguments).toEqual({
+    taskId: "repo-1",
+    invalidatedTips: [],
+  });
+  await reporter.close();
+});

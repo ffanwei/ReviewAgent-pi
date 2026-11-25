@@ -1,22 +1,41 @@
 import { resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
+import {
+  createFullRepoLifecycle,
+  createMcpReporter,
+  resolveReportConfig,
+  type FullRepoLifecycle,
+  type McpReporter,
+} from "../mcp/index.js";
+import { resolveTaskToolSettleMs } from "../mcp/task-lifecycle.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { runRepoSpike } from "../repo-spike/run.js";
+import type { RepoReviewedBatch } from "../repo-spike/types.js";
 import type { ResolvedConfig } from "../shared/config.js";
 import { modelIdForGateway } from "../shared/config-schema.js";
+import { REVIEW_PI_VERSION } from "../shared/version.js";
 import type { RepoSpikeCliArgs } from "./args.js";
+import { reportFullRepoBatch } from "./full-repo-report.js";
+import { describeReportFailure } from "./report-failure.js";
 
 /**
  * `repo-spike` 命令执行缝。
  *
  * - dry-run：不加载配置、不触模型，只做枚举/分组/合成 diff；
  * - 真跑：与 `review` 共用配置解析（reviewer 端点 + model.default），
- *   但运行入口是独立的 `runRepoSpike`，不进入 `prepareReview` 的准入分支。
+ *   但运行入口是独立的 `runRepoSpike`，不进入 `prepareReview` 的准入分支；
+ * - MCP（ADR-0117）：复用同一 server 配置，按
+ *   `fullRepoStartTask → fullRepoReportReviewResult（每批） →
+ *   fullRepoFilerCurrentTips → fullRepoEndTask` 上报。
  */
 export async function runRepoSpikeCommand(
   args: RepoSpikeCliArgs,
   config?: ResolvedConfig,
 ): Promise<number> {
+  const log = (line: string): void => {
+    process.stderr.write(`${line}\n`);
+  };
   const onProgress =
     args.progress === false
       ? undefined
@@ -61,11 +80,84 @@ export async function runRepoSpikeCommand(
     rawModel.length > 0
       ? modelIdForGateway(rawModel, config.reviewer.stripModelPrefix)
       : undefined;
-  return runRepoSpike(common, {
-    apiKey: endpoint.apiKey,
-    baseUrl: endpoint.baseUrl,
-    ...(modelId !== undefined ? { modelId } : {}),
-    fetch: globalThis.fetch,
-    now: () => new Date(),
-  });
+
+  // MCP 业务上报（ADR-0117）：与 PR 共用 `mcp.report.server`；建连失败只降级，
+  // 不影响检视。事件通道（`mcp.report.tool`）不接——全仓只调四个业务 tool。
+  const reportConfig = resolveReportConfig(config);
+  const repoTaskId = args.taskId;
+  const taskToolsConfigured = reportConfig !== null && reportConfig.task;
+  if (
+    taskToolsConfigured &&
+    (repoTaskId === undefined || repoTaskId.trim() === "")
+  ) {
+    throw new Error(
+      "repo-review: --taskId is required when MCP task reporting is enabled (mcp.report.task)",
+    );
+  }
+  let reporter: McpReporter | null = null;
+  if (reportConfig !== null) {
+    try {
+      reporter = await createMcpReporter({
+        config: reportConfig,
+        clientVersion: REVIEW_PI_VERSION,
+      });
+    } catch (error) {
+      log(`review-pi: MCP 上报不可用（${describeReportFailure(error)}），继续检视`);
+    }
+  }
+  if (reporter !== null && reporter.handshake === "stateless") {
+    log(
+      "review-pi: MCP 服务端未接受 initialize，已改为无状态直调（与 Postman 单发同形），继续检视",
+    );
+  }
+
+  const taskToolsOn = reporter !== null && taskToolsConfigured;
+  let lifecycle: FullRepoLifecycle | undefined;
+  let onGroupReviewed: ((batch: RepoReviewedBatch) => Promise<void>) | undefined;
+  if (taskToolsOn && reporter !== null && repoTaskId !== undefined) {
+    lifecycle = createFullRepoLifecycle({
+      tasks: reporter.fullRepo,
+      taskId: repoTaskId,
+      settleMs: resolveTaskToolSettleMs(process.env),
+      now: () => Date.now(),
+      sleep: (ms) => delay(ms),
+      log,
+    });
+    const repoLifecycle = lifecycle;
+    onGroupReviewed = (batch) =>
+      reportFullRepoBatch({
+        taskId: repoTaskId,
+        repoPath: common.repoPath,
+        batch,
+        lifecycle: repoLifecycle,
+        log,
+      });
+    const started = await lifecycle.start();
+    if (!started.ok) {
+      log(`review-pi: MCP fullRepoStartTask 失败（${started.reason}），继续检视`);
+    }
+  }
+
+  try {
+    return await runRepoSpike(common, {
+      apiKey: endpoint.apiKey,
+      baseUrl: endpoint.baseUrl,
+      ...(modelId !== undefined ? { modelId } : {}),
+      fetch: globalThis.fetch,
+      now: () => new Date(),
+      ...(onGroupReviewed !== undefined ? { onGroupReviewed } : {}),
+    });
+  } finally {
+    if (lifecycle !== undefined) {
+      const tips = await lifecycle.reportCurrentTips();
+      if (!tips.ok) {
+        log(`review-pi: MCP fullRepoFilerCurrentTips 失败（${tips.reason}），继续收尾`);
+      }
+      const done = await lifecycle.finish();
+      if (!done.ok) {
+        log(`review-pi: MCP fullRepoEndTask 失败（${done.reason}）`);
+      }
+    }
+    await reporter?.close().catch(() => undefined);
+  }
 }

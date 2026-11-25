@@ -35,6 +35,7 @@ import {
 import { buildSpikeRuntime } from "./runtime.js";
 import { synthesizeGroupDiff } from "./synthesize-diff.js";
 import type {
+  RepoReviewedBatch,
   RepoSpikeGroupOutcome,
   RepoSpikeOptions,
   RepoSpikePlan,
@@ -49,6 +50,12 @@ export interface RepoSpikeDeps {
   readonly modelId?: string;
   readonly fetch?: FetchFunction;
   readonly now?: () => Date;
+  /**
+   * 每批（组）检视完成后的上报缝（ADR-0117）：只在 `status=reviewed` 时、组结果
+   * 已落 job 之后触发。回调抛错只留一行进度，绝不影响检视结果与退出码。
+   * 续跑跳过的 done 组不会触发。
+   */
+  readonly onGroupReviewed?: (batch: RepoReviewedBatch) => Promise<void>;
 }
 
 const ISSUE_DESCRIPTION =
@@ -399,6 +406,23 @@ export async function runRepoSpike(
       progress(
         `[repo-review] [${String(initialCompleted + finishedThisRun)}/${String(totalGroups)}] ${outcome.status} ${outcome.key} findings=${String(outcome.findingsCount)} group=${formatDuration(Date.now() - groupStartedAt)} elapsed=${formatDuration(elapsedMs())} ${etaText()}${tokenText()}`,
       );
+      // 上报缝（ADR-0117）：只在本次进程真正检视完成的组触发；续跑 done 组已在
+      // 上面跳过，不会重报。失败只留一行，不改变组状态与退出码。
+      if (outcome.status === "reviewed" && deps.onGroupReviewed !== undefined) {
+        try {
+          await deps.onGroupReviewed({
+            index: outcome.index,
+            key: outcome.key,
+            files: outcome.files,
+            findings: outcome.findings ?? [],
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          progress(
+            `[repo-review] group ${String(outcome.index)} report callback failed: ${message}`,
+          );
+        }
+      }
       if (maxTotalTokens > 0 && job.spentTokens >= maxTotalTokens) {
         budgetStopped = true;
       }

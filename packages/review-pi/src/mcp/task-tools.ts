@@ -18,6 +18,17 @@ export const MCP_TASK_TOOL_NAMES = {
 } as const;
 
 /**
+ * 全仓检视的四个业务 tool 名（ADR-0117；与 PR 的四个 tool 并列，复用同一
+ * MCP server 配置）。名字同样来自服务端契约、硬编码为常量、不开配置面。
+ */
+export const MCP_FULL_REPO_TOOL_NAMES = {
+  startTask: "fullRepoStartTask",
+  endTask: "fullRepoEndTask",
+  reportFile: "fullRepoReportReviewResult",
+  currentTips: "fullRepoFilerCurrentTips",
+} as const;
+
+/**
  * 业务 tool 之间的固定沉降间隔（毫秒，ADR-0053）：`mrReviewResult` 全部结束后
  * 等这么久再发 `saveReviewSummary`；`saveReviewSummary` 结束后再等这么久才发
  * `endTask`。
@@ -71,6 +82,27 @@ export interface MrReviewResultArgs {
   /** 相对工作空间路径，正斜杠分隔（发送层已规范化） */
   readonly filePath: string;
   readonly reviewTips: readonly AgentReviewTip[];
+}
+
+/** `fullRepoReportReviewResult` 参数：与 `mrReviewResult` 同形（服务端契约） */
+export type FullRepoReviewResultArgs = MrReviewResultArgs;
+
+/** 历史意见失效单条（`fullRepoFilerCurrentTips.invalidatedTips[]`） */
+export interface InvalidatedTip {
+  /** 失效原因 */
+  readonly reason: string;
+  /** 历史意见 id（服务端 int64） */
+  readonly tipsId: number;
+}
+
+/**
+ * `fullRepoFilerCurrentTips` 参数：全仓历史意见失效清单。
+ *
+ * v1 只发空数组（不处理失效逻辑）；字段形状按服务端 inputSchema 固定。
+ */
+export interface FullRepoCurrentTipsArgs {
+  readonly taskId: string;
+  readonly invalidatedTips: readonly InvalidatedTip[];
 }
 
 /** 一个文件的报文（报文调用产物；filePath 已规范化） */

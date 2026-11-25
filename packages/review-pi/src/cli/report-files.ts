@@ -15,6 +15,8 @@ import { normalizeReportFilePath } from "../mcp/task-tools.js";
  */
 export async function reportFilesWithoutTips(input: {
   readonly label: string;
+  /** 日志里的 tool 名（缺省 `mrReviewResult`；全仓用 `fullRepoReportReviewResult`） */
+  readonly toolLabel?: string;
   readonly taskId: string;
   readonly files: readonly string[];
   readonly reportedFiles: string[];
@@ -24,13 +26,14 @@ export async function reportFilesWithoutTips(input: {
   readonly log: (line: string) => void;
   readonly reportFileResult: (args: MrReviewResultArgs) => Promise<TaskCallResult>;
 }): Promise<number> {
+  const tool = input.toolLabel ?? "mrReviewResult";
   const seen = new Set<string>();
   let sent = 0;
   for (const raw of input.files) {
     const filePath = normalizeReportFilePath(raw);
     if (filePath === null) {
       input.log(
-        `review-pi: MCP mrReviewResult${input.label} 跳过文件（filePath 非法：${JSON.stringify(raw)}）\n`,
+        `review-pi: MCP ${tool}${input.label} 跳过文件（filePath 非法：${JSON.stringify(raw)}）\n`,
       );
       continue;
     }
@@ -51,7 +54,7 @@ export async function reportFilesWithoutTips(input: {
       input.reportedFiles.push(filePath);
     } else {
       input.log(
-        `review-pi: MCP mrReviewResult${input.label} ${filePath} 失败（${result.reason}）\n`,
+        `review-pi: MCP ${tool}${input.label} ${filePath} 失败（${result.reason}）\n`,
       );
     }
   }

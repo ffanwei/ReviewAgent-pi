@@ -336,3 +336,68 @@ test("永久错误：不按 groupAttempts 重试", async () => {
   expect(job.groups[0]?.status).toBe("failed");
   expect(job.groups[0]?.attempts).toBe(1);
 });
+
+test("上报缝：每个 reviewed 组完成后回调一次，携带组文件与 findings", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+  write(root, "src/b.ts", "export const b = 2;\n");
+
+  const calls: { index: number; key: string; files: readonly string[] }[] = [];
+  const code = await runRepoSpike(options(root, out, { groupBy: "files", maxFilesPerGroup: 1 }), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: fakeFetch([...sixPhase(), ...sixPhase()]).fetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+    onGroupReviewed: async (batch) => {
+      calls.push({ index: batch.index, key: batch.key, files: batch.files });
+      expect(batch.findings).toEqual([]);
+    },
+  });
+
+  expect(code).toBe(0);
+  expect(calls).toHaveLength(2);
+  expect(calls.map((call) => call.files)).toEqual([["src/a.ts"], ["src/b.ts"]]);
+});
+
+test("上报缝：回调抛错不影响检视结果与退出码", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+
+  const code = await runRepoSpike(options(root, out), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: fakeFetch(sixPhase()).fetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+    onGroupReviewed: () => Promise.reject(new Error("report down")),
+  });
+
+  expect(code).toBe(0);
+  expect(existsSync(path.join(out, "repo-review-result.json"))).toBe(true);
+});
+
+test("续跑：done 组不触发上报缝", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+
+  const deps = {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: fakeFetch(sixPhase()).fetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  } as const;
+  expect(await runRepoSpike(options(root, out), deps)).toBe(0);
+
+  let reportCalls = 0;
+  expect(
+    await runRepoSpike(options(root, out, { resume: true }), {
+      ...deps,
+      onGroupReviewed: async () => {
+        reportCalls += 1;
+      },
+    }),
+  ).toBe(0);
+  expect(reportCalls).toBe(0);
+});

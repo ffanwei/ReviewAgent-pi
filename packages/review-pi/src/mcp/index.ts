@@ -7,6 +7,12 @@
 export { MCP_CLIENT_NAME, SUPPORTED_PROTOCOL_VERSIONS, type McpClient, type McpHandshakeMode, type ServerInfo, type ToolCallResult } from "./client.js";
 export { resolveReportConfig, type ReportConfig } from "./config.js";
 export { createMcpReporter, type CreateMcpReporterOptions, type McpReporter, type TaskCallResult, type TaskCallTrace } from "./report.js";
+export {
+  createFullRepoLifecycle,
+  type CreateFullRepoLifecycleOptions,
+  type FullRepoLifecycle,
+  type FullRepoTasksTransport,
+} from "./full-repo-lifecycle.js";
 export { createHttpTransport, type HttpTransportOptions, type Transport, type TransportResponse } from "./transport.js";
 export {
   createLegacySseTransport,
@@ -16,6 +22,7 @@ export { ProtocolError, type JsonRpcRequest, type JsonRpcSuccess, type JsonRpcFa
 export {
   AGENT_REVIEW_CATEGORIES,
   AGENT_REVIEW_LEVELS,
+  MCP_FULL_REPO_TOOL_NAMES,
   MCP_TASK_TOOL_NAMES,
   TASK_TOOL_SETTLE_ENV,
   TASK_TOOL_SETTLE_MS,
@@ -25,6 +32,9 @@ export {
   type AgentReviewCategory,
   type AgentReviewLevel,
   type AgentReviewTip,
+  type FullRepoCurrentTipsArgs,
+  type FullRepoReviewResultArgs,
+  type InvalidatedTip,
   type MrFileReport,
   type MrReviewResultArgs,
   type SaveReviewSummaryArgs,

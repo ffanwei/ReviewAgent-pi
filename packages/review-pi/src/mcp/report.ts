@@ -13,7 +13,9 @@ import type { ReportConfig } from "./config.js";
 import { createLegacySseTransport } from "./legacy-sse-transport.js";
 import { ProtocolError } from "./protocol.js";
 import {
+  MCP_FULL_REPO_TOOL_NAMES,
   MCP_TASK_TOOL_NAMES,
+  type FullRepoCurrentTipsArgs,
   type MrReviewResultArgs,
   type SaveReviewSummaryArgs,
   type TaskIdArgs,
@@ -83,6 +85,16 @@ export interface McpReporter {
     endTask(args: TaskIdArgs): Promise<TaskCallResult>;
     saveReviewSummary(args: SaveReviewSummaryArgs): Promise<TaskCallResult>;
     reportFileResult(args: MrReviewResultArgs): Promise<TaskCallResult>;
+  };
+  /**
+   * 全仓检视的业务 tool 面（ADR-0117）：与 PR 的 `task` 共用同一连接、重试与
+   * 留痕，只是 tool 名与调用序列不同（无总结，收尾改为历史意见失效清单）。
+   */
+  readonly fullRepo: {
+    startTask(args: TaskIdArgs): Promise<TaskCallResult>;
+    endTask(args: TaskIdArgs): Promise<TaskCallResult>;
+    reportFileResult(args: MrReviewResultArgs): Promise<TaskCallResult>;
+    reportCurrentTips(args: FullRepoCurrentTipsArgs): Promise<TaskCallResult>;
   };
   /** 等队列排空（最多 `timeoutMs`，缺省配置值）；超时返回当前统计，不抛错 */
   flush(timeoutMs?: number): Promise<McpReportStats>;
@@ -344,11 +356,21 @@ export async function createMcpReporter(options: CreateMcpReporterOptions): Prom
       callTaskTool(MCP_TASK_TOOL_NAMES.mrReviewResult, args),
   };
 
+  const fullRepo = {
+    startTask: (args: TaskIdArgs) => callTaskTool(MCP_FULL_REPO_TOOL_NAMES.startTask, args),
+    endTask: (args: TaskIdArgs) => callTaskTool(MCP_FULL_REPO_TOOL_NAMES.endTask, args),
+    reportFileResult: (args: MrReviewResultArgs) =>
+      callTaskTool(MCP_FULL_REPO_TOOL_NAMES.reportFile, args),
+    reportCurrentTips: (args: FullRepoCurrentTipsArgs) =>
+      callTaskTool(MCP_FULL_REPO_TOOL_NAMES.currentTips, args),
+  };
+
   return {
     streamId,
     handshake: session.handshake,
     sink,
     task,
+    fullRepo,
     flush,
     async close() {
       if (closing) {

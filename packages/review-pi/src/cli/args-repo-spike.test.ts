@@ -164,3 +164,17 @@ test("repo-review：--resume / 总预算 / 组尝试次数", () => {
     },
   });
 });
+
+test("repo-review：--taskId（MCP 上报）与单段目录名校验", () => {
+  expect(
+    parseCliArgs(["repo-review", "--repo", "r", "--taskId", "repo-task-1"]),
+  ).toMatchObject({
+    ok: true,
+    command: "repo-review",
+    args: { taskId: "repo-task-1" },
+  });
+  expect(parseCliArgs(["repo-review", "--repo", "r", "--taskId", "../x"])).toMatchObject({
+    ok: false,
+    message: expect.stringContaining("--taskId"),
+  });
+});

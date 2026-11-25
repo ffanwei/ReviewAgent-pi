@@ -90,6 +90,18 @@ export interface SyntheticGroup {
 
 export type RepoSpikeGroupStatus = "reviewed" | "skipped" | "failed";
 
+/**
+ * 一批（组）检视完成后的上报材料（ADR-0117）：组内实际送检文件 + 已合并
+ * findings。CLI 用它组装 `fullRepoReportReviewResult`；repo-spike 不认识 MCP。
+ */
+export interface RepoReviewedBatch {
+  readonly index: number;
+  readonly key: string;
+  /** 该组实际送检的文件（仓库相对 POSIX 路径；不含组内跳过） */
+  readonly files: readonly string[];
+  readonly findings: readonly Finding[];
+}
+
 export interface RepoSpikeGroupOutcome {
   readonly index: number;
   readonly key: string;

@@ -4036,3 +4036,133 @@ test(
   },
   180_000,
 );
+
+/** 全仓检视的一轮候选语料：finding 落在 multilang 仓库的真实文件上 */
+function repoOneFindingCorpus(): FakeReply[] {
+  const ZERO = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 } as const;
+  const candidate = {
+    id: "F100",
+    severity: "P2",
+    category: "可靠性",
+    file: "service/cmd/main.go",
+    line: 1,
+    title: "全仓哨兵意见",
+    description: "全仓哨兵描述。",
+    evidence: ["service/cmd/main.go:1"],
+    rule: "",
+    confidence: 0.6,
+    tips: {
+      review: "[缺陷类型] 全仓哨兵。影响评估：仅测试。",
+      suggestion: "[重构思路] 无。代码示例：```无```",
+      subcategory: "哨兵",
+    },
+  };
+  return [
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: JSON.stringify({ candidates: [candidate] }), usage: ZERO },
+    {
+      text: JSON.stringify({
+        verdicts: [{ id: "F100", pass: true, reason: "stub verdict: evidence holds" }],
+        complete: true,
+      }),
+      usage: ZERO,
+    },
+  ];
+}
+
+test(
+  "repo-review MCP（ADR-0117）：全仓四工具顺序、按文件 tips、currentTips 空数组",
+  async () => {
+    const stub = await startLoopbackStub(repoOneFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-repo-out-");
+      const run = await runBin(
+        [
+          "repo-review",
+          "--repo",
+          repoFixturePath("multilang"),
+          "--out",
+          outDir,
+          "--taskId",
+          "repo-t1",
+          "--files",
+          "service/cmd/main.go",
+          "--no-progress",
+        ],
+        {
+          ...stubEnv(stub.baseUrl),
+          mcpServerUrl: mcp.url,
+          env: { PIAGENT_TEST_TASK_TOOL_SETTLE_MS: "0" },
+        },
+      );
+
+      expect(run.status).toBe(0);
+      const calls = mcp.toolCalls();
+      expect(calls.map((call) => call.name)).toEqual([
+        "fullRepoStartTask",
+        "fullRepoReportReviewResult",
+        "fullRepoFilerCurrentTips",
+        "fullRepoEndTask",
+      ]);
+      expect(calls[0]?.args).toEqual({ taskId: "repo-t1" });
+      const report = calls[1]?.args as {
+        taskId: string;
+        filePath: string;
+        reviewTips: Record<string, unknown>[];
+      };
+      expect(report.taskId).toBe("repo-t1");
+      expect(report.filePath).toBe("service/cmd/main.go");
+      expect(report.reviewTips).toHaveLength(1);
+      expect(report.reviewTips[0]).toMatchObject({
+        category: "可靠性",
+        subcategory: "哨兵",
+        level: "Minor",
+        ruleId: null,
+        lineNum: "1",
+      });
+      expect(calls[2]?.args).toEqual({ taskId: "repo-t1", invalidatedTips: [] });
+      expect(calls[3]?.args).toEqual({ taskId: "repo-t1" });
+      // 不误用 PR 的四个 tool
+      expect(
+        calls.filter((call) =>
+          ["startTask", "mrReviewResult", "saveReviewSummary", "endTask"].includes(call.name),
+        ),
+      ).toEqual([]);
+    } finally {
+      await mcp.close();
+      await stub.close();
+    }
+  },
+  30_000,
+);
+
+test(
+  "repo-review MCP（ADR-0117）：MCP 打开但缺 --taskId → fail fast，零 tool 调用",
+  async () => {
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-repo-out-");
+      const run = await runBin(
+        [
+          "repo-review",
+          "--repo",
+          repoFixturePath("multilang"),
+          "--out",
+          outDir,
+          "--no-progress",
+        ],
+        { mcpServerUrl: mcp.url },
+      );
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain("--taskId is required");
+      expect(mcp.toolCalls()).toEqual([]);
+    } finally {
+      await mcp.close();
+    }
+  },
+  30_000,
+);
