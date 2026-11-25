@@ -54,6 +54,11 @@ export function formatResultSummary(result: RepoSpikeResult): string {
     `[repo-review] findings=${String(result.findings.length)} usage=input ${String(
       result.usage.inputTokens,
     )} output ${String(result.usage.outputTokens)}`,
+    `[repo-review] coverage: selected=${String(result.coverage.summary.selected)} candidate=${String(
+      result.coverage.summary.candidate,
+    )} no-issue=${String(result.coverage.summary.noIssue)} not-reached=${String(
+      result.coverage.summary.notReached,
+    )}`,
     `[repo-review] result: ${path.join(result.outDir, "repo-review-result.json")}`,
   ].join("\n");
 }

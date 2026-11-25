@@ -2,11 +2,10 @@ import path from "node:path";
 
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
-import type { CoverageLedger } from "../contracts/coverage.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
-import { emptyCoverageLedger, mergeCoverageLedgers } from "../run/coverage-ledger.js";
 import { mergeShardFindings } from "../run/findings-merge.js";
 import { runReviewOutcome, type ReviewRunResult } from "../run/review-run.js";
+import { buildRepoCoverage, coverageIsConsistent } from "./coverage.js";
 import { enumerateRepoFiles } from "./enumerate.js";
 import { groupRepoFiles } from "./group.js";
 import {
@@ -228,11 +227,15 @@ export async function runRepoSpike(
     reviewed.map((outcome) => outcome.findings ?? []),
   );
   const usage = reviewed.reduce((total, outcome) => addUsage(total, outcome.usage ?? ZERO_USAGE), ZERO_USAGE);
-  const coverage = mergeCoverage(
-    groupOutcomes
-      .filter((outcome) => outcome.coverage !== undefined)
-      .map((outcome) => outcome.coverage as CoverageLedger),
-  );
+  const coverage = buildRepoCoverage({
+    selected: enumerated.files,
+    groupedSkipped: plan.skipped,
+    groups: syntheticGroups,
+    outcomes: groupOutcomes,
+  });
+  if (!coverageIsConsistent(coverage)) {
+    throw new Error("repo-review: coverage summary is inconsistent with selected files");
+  }
   const skippedFiles = mergeSkipped(enumerated.skipped, plan.skipped, syntheticGroups);
   const errors = groupOutcomes
     .filter((outcome) => outcome.status === "failed" && outcome.error !== undefined)
@@ -253,7 +256,7 @@ export async function runRepoSpike(
     groups: groupOutcomes.map(({ findings: _findings, ...rest }) => rest),
     findings,
     usage,
-    ...(coverage !== undefined ? { coverage } : {}),
+    coverage,
     skippedFiles,
     errors,
   };
@@ -268,14 +271,6 @@ export async function runRepoSpike(
     return 1;
   }
   return 0;
-}
-
-function mergeCoverage(ledgers: readonly CoverageLedger[]): CoverageLedger | undefined {
-  if (ledgers.length === 0) {
-    return undefined;
-  }
-  // 组之间文件不重复（分组保证）；补空账本不会引入文件。
-  return mergeCoverageLedgers([...ledgers, emptyCoverageLedger()]);
 }
 
 function countSkipped(

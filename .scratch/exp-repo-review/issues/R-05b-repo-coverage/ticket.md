@@ -30,3 +30,13 @@ R-01、R-05；与 R-04b 并行。
 ## 范围决定
 
 - 2026-11-25：快速上生产的第二优先级；区域级（类 / 方法）三态留到后续，v1 只做文件级。
+
+## 实现进展（2026-11-25）
+
+- 新增 `repo-spike/coverage.ts`：`buildRepoCoverage` 纯函数，按 selected 枚举顺序输出文件级三态；`coverageIsConsistent` 自检。
+- `RepoSpikeResult.coverage` 改为 repo 专用形状：`summary { selected, candidate, noIssue, notReached }` + `files[{ path, state, reason?, findingIds? }]`；不再复用 MR hunk 账本。
+- 失败组 → `failed-group`；跳过组 → `no-reviewable-files`；分组/合成跳过 → `group-too-large` / `read-failed` / `empty` 等；`too-large(N>M)` 归一化为 `too-large`。
+- CLI 摘要新增 coverage 三态计数。
+- 单测：三态计数、失败/跳过/合成跳过归因、顺序与重复路径、reason 归一化、两次输出字节一致；全包 1280 passed / 1 skipped。
+- 真实 smoke（2 个 Java 文件）：`selected=2, candidate=2, noIssue=0, notReached=0`，findingIds 正确。
+- 未做：区域级（类/方法）覆盖；`budget-exhausted` 只预留 reason，等 R-09 接入。

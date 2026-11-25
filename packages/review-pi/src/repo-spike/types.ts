@@ -119,9 +119,52 @@ export interface RepoSpikeResult {
   readonly groups: readonly RepoSpikeGroupOutcome[];
   readonly findings: readonly Finding[];
   readonly usage: LlmUsage;
-  readonly coverage?: CoverageLedger;
+  /** 文件级三态覆盖账本（repo 模式专用；不写 MR 的 hunk 账本） */
+  readonly coverage: RepoCoverage;
   readonly skippedFiles: readonly SkippedFile[];
   readonly errors: readonly string[];
+}
+
+/** 文件级覆盖状态：已检视且有 finding / 已检视无 finding / 未触达 */
+export type RepoCoverageState = "candidate" | "no-issue" | "not-reached";
+
+/** 未触达的稳定原因（枚举阶段 / 分组 / 执行 / 预算） */
+export type RepoCoverageReason =
+  | "failed-group"
+  | "group-too-large"
+  | "too-large"
+  | "binary"
+  | "unsupported-extension"
+  | "excluded-path"
+  | "not-a-regular-file"
+  | "empty"
+  | "read-failed"
+  | "no-reviewable-files"
+  | "budget-exhausted"
+  | "over-max-files"
+  | "unknown";
+
+export interface RepoCoverageFile {
+  /** 仓库相对 POSIX 路径 */
+  readonly path: string;
+  readonly state: RepoCoverageState;
+  /** 仅 `not-reached` 在场 */
+  readonly reason?: RepoCoverageReason;
+  /** 仅 `candidate` 在场；组内 finding id，保持组内顺序 */
+  readonly findingIds?: readonly string[];
+}
+
+export interface RepoCoverageSummary {
+  readonly selected: number;
+  readonly candidate: number;
+  readonly noIssue: number;
+  readonly notReached: number;
+}
+
+export interface RepoCoverage {
+  readonly summary: RepoCoverageSummary;
+  /** 按枚举顺序（路径字典序）排列；每个 selected 文件恰好一条 */
+  readonly files: readonly RepoCoverageFile[];
 }
 
 export interface RepoSpikePlan {

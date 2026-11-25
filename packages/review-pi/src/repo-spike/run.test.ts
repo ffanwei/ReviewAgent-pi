@@ -146,12 +146,23 @@ test("真跑：每组一次 runReviewOutcome，findings 合并后写独立结果
     groups: { status: string; files: string[]; findingsCount: number }[];
     findings: unknown[];
     files: { selected: number };
+    coverage: {
+      summary: { selected: number; candidate: number; noIssue: number; notReached: number };
+      files: { path: string; state: string }[];
+    };
   };
   expect(result.mode).toBe("repo");
   expect(result.files.selected).toBe(2);
   expect(result.groups).toHaveLength(2);
   expect(result.groups.every((group) => group.status === "reviewed")).toBe(true);
   expect(result.findings).toEqual([]);
+  expect(result.coverage.summary).toEqual({
+    selected: 2,
+    candidate: 0,
+    noIssue: 2,
+    notReached: 0,
+  });
+  expect(result.coverage.files.map((item) => item.state)).toEqual(["no-issue", "no-issue"]);
   // 过渡期旧文件名仍写一份，内容一致。
   expect(existsSync(path.join(out, "repo-spike-result.json"))).toBe(true);
   const legacy = readFileSync(path.join(out, "repo-spike-result.json"), "utf8");
