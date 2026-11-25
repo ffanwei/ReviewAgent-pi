@@ -247,6 +247,15 @@ export interface RepoScanLimits {
   readonly excludeRegex: readonly string[];
 }
 
+/**
+ * 语言缺陷清单注入（ADR-0118）：MR 与全仓扫描各自独立开关。开启后只在
+ * Phase 5（候选生成）追加对应语言的规则块；缺省关闭，避免改变既有测量面。
+ */
+export interface LanguageRulesLimits {
+  readonly mr: boolean;
+  readonly repo: boolean;
+}
+
 export interface Limits {
   readonly loop: LoopLimits;
   readonly timeouts: TimeoutLimits;
@@ -264,6 +273,7 @@ export interface Limits {
   readonly retrieval: RetrievalLimits;
   readonly coverage: CoverageLimits;
   readonly repoScan: RepoScanLimits;
+  readonly languageRules: LanguageRulesLimits;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -340,10 +350,11 @@ export const DEFAULT_LIMITS: Limits = {
     includeRegex: [],
     excludeRegex: [],
   },
+  languageRules: { mr: false, repo: false },
 };
 
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "evidence", "boundary", "split", "archive", "micro", "retrieval", "coverage", "repoScan"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "evidence", "boundary", "split", "archive", "micro", "retrieval", "coverage", "repoScan", "languageRules"] as const;
 const LOOP_KEYS = ["maxRounds", "phase5Sweep", "stageCompression"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -402,6 +413,7 @@ const REPO_SCAN_KEYS = [
   "includeRegex",
   "excludeRegex",
 ] as const;
+const LANGUAGE_RULES_KEYS = ["mr", "repo"] as const;
 
 
 export function parseLimits(raw: unknown, warnings: string[]): Limits {
@@ -787,5 +799,24 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
     ),
   };
 
-  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, evidence, boundary, split, archive, micro, retrieval, coverage, repoScan };
+  const languageRulesObj = optionalObject(
+    limits.languageRules,
+    "limits.languageRules",
+    warnings,
+  );
+  assertKnownKeys(languageRulesObj, LANGUAGE_RULES_KEYS, "limits.languageRules", warnings);
+  const languageRules: LanguageRulesLimits = {
+    mr: boolOr(
+      languageRulesObj.mr,
+      "limits.languageRules.mr",
+      DEFAULT_LIMITS.languageRules.mr,
+    ),
+    repo: boolOr(
+      languageRulesObj.repo,
+      "limits.languageRules.repo",
+      DEFAULT_LIMITS.languageRules.repo,
+    ),
+  };
+
+  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, evidence, boundary, split, archive, micro, retrieval, coverage, repoScan, languageRules };
 }

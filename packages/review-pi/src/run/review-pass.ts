@@ -26,6 +26,7 @@ import { buildTranscript, transcriptStem, writeTranscript } from "../export/tran
 import { buildDiffScope } from "../gate/diff-scope.js";
 import { parseUnifiedDiff } from "../diff/parse.js";
 import type { RuleSkill } from "../knowledge/rule-skill.js";
+import { buildLanguageRulesText } from "../knowledge/language-rules.js";
 import type { SkillPassTranscript } from "../knowledge/skill-pass.js";
 import { runAgentReviewLoop } from "../loop/agent-review-loop.js";
 import { createCandidateRepair } from "../loop/candidate-repair.js";
@@ -54,6 +55,7 @@ import { SCAN_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import { repairCoverageGaps } from "./coverage-repair.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { formatRepoSnapshotModelNote, type RepoSnapshotSideRecord } from "./repo-side.js";
+import { listChangedFilePaths } from "./mr-input.js";
 import {
   buildSkillPhase5Override,
   buildSkillPhase6VerificationNote,
@@ -304,18 +306,37 @@ async function executeReviewPass(
     skillReview === undefined
       ? undefined
       : buildSkillReviewBrief(skillReview, { ruleSkillLoaded });
+  // 语言缺陷清单（ADR-0118）：只接在 Phase 5，按本次 pass 的文件集合选规则。
+  // 关闭时返回 undefined，Phase 消息与既有字节完全一致。
+  const languageRulesMode = input.reviewMode === "repo" ? "repo" : "mr";
+  const languageRulesEnabled =
+    input.reviewMode === "repo"
+      ? input.runtime.limits.languageRules.repo
+      : input.runtime.limits.languageRules.mr;
+  const languageRuleFiles = languageRulesEnabled
+    ? input.reviewMode === "repo"
+      ? (input.fileSnapshot?.map((file) => file.path) ?? listChangedFilePaths(input.diff))
+      : listChangedFilePaths(input.diff)
+    : [];
+  const languageRulesText = languageRulesEnabled
+    ? buildLanguageRulesText(languageRuleFiles, languageRulesMode)
+    : undefined;
   // Phase 5/6 覆盖：放在生成 / 核验前最后一条 user 消息末尾，覆盖编码导向。
   const phaseBrief =
-    skillReview === undefined
+    skillReview === undefined && languageRulesText === undefined
       ? undefined
       : (index: number): string | undefined => {
-          if (index === 4) {
-            return buildSkillPhase5Override(skillReview, { ruleSkillLoaded });
+          const parts: string[] = [];
+          if (skillReview !== undefined && index === 4) {
+            parts.push(buildSkillPhase5Override(skillReview, { ruleSkillLoaded }));
           }
-          if (index === 5) {
-            return buildSkillPhase6VerificationNote();
+          if (skillReview !== undefined && index === 5) {
+            parts.push(buildSkillPhase6VerificationNote());
           }
-          return undefined;
+          if (index === 4 && languageRulesText !== undefined) {
+            parts.push(languageRulesText);
+          }
+          return parts.length > 0 ? parts.join("\n\n") : undefined;
         };
   // ADR-0109：只有 --repo 停在 base / mixed 侧时才追加可执行提示；head 是大多数
   // 情况，保持初始消息逐字节不变。提示放在 extra section 末尾，模型最后看到。

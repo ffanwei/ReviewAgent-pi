@@ -3,6 +3,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
+import type { LanguageRulesLimits } from "../shared/config-limits.js";
+
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import { mergeShardFindings } from "../run/findings-merge.js";
 import { runReviewOutcome, type ReviewRunResult } from "../run/review-run.js";
@@ -50,6 +52,11 @@ export interface RepoSpikeDeps {
   readonly modelId?: string;
   readonly fetch?: FetchFunction;
   readonly now?: () => Date;
+  /**
+   * 语言缺陷清单开关（ADR-0118）：来自配置 `limits.languageRules`。
+   * 缺席 = 内置缺省（repo 关闭）。
+   */
+  readonly languageRules?: LanguageRulesLimits;
   /**
    * 每批（组）检视完成后的上报缝（ADR-0117）：只在 `status=reviewed` 时、组结果
    * 已落 job 之后触发。回调抛错只留一行进度，绝不影响检视结果与退出码。
@@ -150,7 +157,11 @@ export async function runRepoSpike(
     throw new Error("repo-review: missing reviewer API key (run `review-pi config init` or pass --config)");
   }
   const fetchFn = deps.fetch ?? globalThis.fetch;
-  const runtime = buildSpikeRuntime(options.maxRounds, options.includeTests);
+  const runtime = buildSpikeRuntime(
+    options.maxRounds,
+    options.includeTests,
+    deps.languageRules,
+  );
   const maxTotalTokens = Math.max(0, Math.floor(options.maxTotalTokens ?? 0));
   const groupAttempts = Math.max(1, Math.floor(options.groupAttempts ?? 2));
 

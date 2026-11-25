@@ -1,3 +1,4 @@
+import type { LanguageRulesLimits } from "../shared/config-limits.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 
 /**
@@ -14,7 +15,11 @@ import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-run
  * - 工具预算 15：合成 diff 已含整文件内容，Context Retrieval 的边际收益低；
  *   不设界时单组会跑满 100 次工具预算，全仓成本不可控。
  */
-export function buildSpikeRuntime(maxRounds: number, includeTests: boolean): ReviewRuntime {
+export function buildSpikeRuntime(
+  maxRounds: number,
+  includeTests: boolean,
+  languageRules?: LanguageRulesLimits,
+): ReviewRuntime {
   const defaults = DEFAULT_REVIEW_RUNTIME;
   const limits = defaults.limits;
   return {
@@ -23,6 +28,7 @@ export function buildSpikeRuntime(maxRounds: number, includeTests: boolean): Rev
     maxToolAttempts: 20,
     limits: {
       ...limits,
+      languageRules: languageRules ?? limits.languageRules,
       loop: {
         ...limits.loop,
         maxRounds: Math.max(1, Math.floor(maxRounds)),

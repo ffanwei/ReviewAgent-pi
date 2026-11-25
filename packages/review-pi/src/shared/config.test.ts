@@ -261,6 +261,25 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/maxFilesPerGroup/);
   });
 
+  test("limits.languageRules：mr / repo 独立开关，缺省全关", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.languageRules).toEqual({ mr: false, repo: false });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"limits":{"languageRules":{"mr":true,"repo":true}}`),
+      ),
+    }).config;
+    expect(tuned.limits.languageRules).toEqual({ mr: true, repo: true });
+    expect(tuned.overridden).toContain("limits.languageRules.mr");
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"languageRules":{"mr":"yes"}}`)),
+      }),
+    ).toThrow(/languageRules.mr/);
+  });
+
   test("limits.loop.stageCompression：off/compact（缺省 off；非法值 fail fast）", () => {
     const compact = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"stageCompression":"compact"}}`)),

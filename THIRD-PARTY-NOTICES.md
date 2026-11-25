@@ -47,3 +47,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## open-code-review（语言规则文档，Apache-2.0）
+
+`packages/review-pi/src/knowledge/language-rule-texts.ts` 中的中文语言缺陷清单，
+由 [alibaba/open-code-review](https://github.com/alibaba/open-code-review) 的
+`internal/config/rules/rule_docs/*.md` 翻译并删减而来（只保留缺陷导向条目，
+删除拼写、命名、注释、格式与风格类内容）。
+
+Copyright 2026 alibaba/open-code-review Contributors
+
+Licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0

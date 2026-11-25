@@ -90,6 +90,7 @@
 | R-10 | 全仓检视 MCP 上报 | `repo-review` 不接 MCP，平台收不到任务与按文件意见 | P0 | DOING | 四工具（start / report / currentTips / end）顺序；按批逐文件上报；复用同一 server 配置；失败不改退出码 | 2026-11-25 实现、单测与进程级 stub 端到端完成：全包 1307 passed / 1 skipped，build 通过；待真实 MCP server 联调 | [票](issues/R-10-full-repo-mcp-reporting/ticket.md) · [讨论](issues/R-10-full-repo-mcp-reporting/discussion.md) |
 | R-11 | 全仓 CLI 与 review 对齐 | repo 缺 taskId/tasks-dir/model 口径，产物不在任务目录 | P0 | DONE | `--taskId` 必填；产物落 `<tasks>/<taskId>`；`--tasks-dir` / `--model` 同 review；`--include/--exclude` 过滤路径 | 2026-11-25 完成：全包 1309 passed / 1 skipped，build 通过；参数 / 枚举 / 进程级用例覆盖 | [票](issues/R-11-repo-cli-task-dir/ticket.md) · [讨论](issues/R-11-repo-cli-task-dir/discussion.md) |
 | R-12 | `limits.repoScan` 配置块 | repo 缺省只能靠 CLI，`config init` 不含这些值 | P1 | DONE | `config init` 生成 repoScan 默认块；CLI > 配置 > 内置；范围校验 | 2026-11-25 完成：`config init` 实测生成 repoScan 块；全包 1314 passed / 1 skipped，build 通过 | [票](issues/R-12-repo-scan-config/ticket.md) · [讨论](issues/R-12-repo-scan-config/discussion.md) |
+| R-13 | 语言缺陷清单（MR + 全仓） | 需要复用 OCR 的语言规则，但不能增加每组会话成本 | P1 | DONE | 5 种 AST 语言；Phase 5 注入；MR / Repo 独立开关；中文缺陷清单；`<rules for>` 分块 | 2026-11-25 完成：全包 1324 passed / 1 skipped，build 通过；Phase 5 注入与开关单测通过 | [票](issues/R-13-language-rules/ticket.md) · [讨论](issues/R-13-language-rules/discussion.md) |
 
 ## 当前焦点
 
@@ -106,6 +107,7 @@
 - [ ] **R-10 全仓 MCP 上报**：实现与单测完成；待真实 server 联调（四工具顺序、按批文件包、currentTips 空数组）。
 - [x] **R-11 CLI 对齐**：完成；`--taskId` 必填、产物落 `<tasks>/<taskId>`、`--tasks-dir` / `--model` 同 review、`--include/--exclude` 路径过滤。
 - [x] **R-12 repoScan 配置**：完成；`config init` 生成 `limits.repoScan`，优先级 CLI > 配置 > 内置。
+- [x] **R-13 语言缺陷清单**：完成；5 种 AST 语言、Phase 5 注入、MR / Repo 独立开关，缺省关闭。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
 
@@ -125,3 +127,4 @@
 - 2026-11-25：生产缺省调整为 5 文件 / 60k 字符（原 10 / 120k）：全仓实跑（255 组、平均 5.45 文件/组）表明单组超过 5 个文件后注意力下降。
 - 2026-11-25：登记 R-11；repo CLI 对齐 review：`--taskId` 必填、产物落 `<tasks>/<taskId>`、`--tasks-dir` / `--model` 同策略、`--include/--exclude` 路径过滤。
 - 2026-11-25：登记 R-12；新增 `limits.repoScan` 配置块，`config init` 生成默认值，优先级 CLI > 配置 > 内置。
+- 2026-11-25：登记 R-13；Phase 5 语言缺陷清单（5 种 AST 语言、中文、缺陷导向），`limits.languageRules` MR / Repo 独立开关，缺省关闭。

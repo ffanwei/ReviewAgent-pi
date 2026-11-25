@@ -1280,3 +1280,38 @@ test("失败路径：coverage.json 旁路落盘，未覆盖 hunk 标 flow-error"
   expect(coverage.counts.notReached).toBe(1);
   expect(coverage.counts.byCause["flow-error"]).toBe(1);
 });
+
+test("语言规则（ADR-0118）：MR 开关打开时只在 Phase 5 注入", async () => {
+  const script = fakeFetch(sixPhaseNoToolCorpus());
+  const bodies: string[] = [];
+  const captureFetch: typeof script.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    bodies.push(await request.clone().text());
+    return script.fetch(input, init);
+  };
+  const base = sixPhaseRuntime();
+  await runReview({
+    caseId: "VUL4J-1",
+    repoPath: repoFixturePath("sample"),
+    diff: goldenFixture("vul4j-1.diff"),
+    issueDescription: VUL4J_1_ISSUE,
+    apiKey: "offline-test",
+    fetch: captureFetch,
+    runsRoot: tempRunsRoot(),
+    rep: 1,
+    runtime: {
+      ...base,
+      limits: {
+        ...base.limits,
+        languageRules: { mr: true, repo: false },
+      },
+    },
+    ruleSkillLoader: async () => [],
+  });
+
+  expect(bodies).toHaveLength(6);
+  expect(bodies[0]).not.toContain("<rules for=");
+  expect(bodies[4]).toContain("<rules for=");
+  expect(bodies[4]).toContain("ObjectArrayCodec.java");
+  expect(bodies[4]).toContain("以下是与本次变更文件语言相关的缺陷检查清单。");
+});

@@ -401,3 +401,54 @@ test("续跑：done 组不触发上报缝", async () => {
   ).toBe(0);
   expect(reportCalls).toBe(0);
 });
+
+test("语言规则：repo 开关打开时只在 Phase 5 注入 <rules for>", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+
+  const script = fakeFetch(sixPhase());
+  const bodies: string[] = [];
+  const captureFetch: typeof script.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    bodies.push(await request.clone().text());
+    return script.fetch(input, init);
+  };
+  const code = await runRepoSpike(options(root, out), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: captureFetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+    languageRules: { mr: false, repo: true },
+  });
+
+  expect(code).toBe(0);
+  expect(bodies).toHaveLength(6);
+  expect(bodies[0]).not.toContain("<rules for=");
+  expect(bodies[4]).toContain("<rules for=");
+  expect(bodies[4]).toContain("src/a.ts");
+  expect(bodies[4]).toContain("以下是与本组文件语言相关的缺陷检查清单。");
+});
+
+test("语言规则：缺省关闭时 Phase 5 不注入规则", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+
+  const script = fakeFetch(sixPhase());
+  const bodies: string[] = [];
+  const captureFetch: typeof script.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    bodies.push(await request.clone().text());
+    return script.fetch(input, init);
+  };
+  const code = await runRepoSpike(options(root, out), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: captureFetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+
+  expect(code).toBe(0);
+  expect(bodies[4]).not.toContain("<rules for=");
+});

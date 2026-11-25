@@ -173,6 +173,7 @@ export async function runRepoSpikeCommand(
       ...(modelId !== undefined ? { modelId } : {}),
       fetch: globalThis.fetch,
       now: () => new Date(),
+      languageRules: config.limits.languageRules,
       ...(onGroupReviewed !== undefined ? { onGroupReviewed } : {}),
     });
   } finally {
