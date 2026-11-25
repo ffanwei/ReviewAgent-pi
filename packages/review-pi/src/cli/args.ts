@@ -71,6 +71,7 @@ const KNOWN_REPO_SPIKE_FLAGS: readonly string[] = [
   "--repo",
   "--out",
   "--taskId",
+  "--tasks-dir",
   "--group-by",
   "--max-files-per-group",
   "--max-group-chars",
@@ -83,15 +84,19 @@ const KNOWN_REPO_SPIKE_FLAGS: readonly string[] = [
   "--group-attempts",
   "--path",
   "--files",
+  "--include",
+  "--exclude",
   "--config",
   "--rule-skill-zip",
   "--rule-skill",
   "--skill",
 ];
 
-/** repo-spike 可重复旗标（与 review 的规则包口径一致） */
+/** repo-spike 可重复旗标（与 review 的规则包 / 路径过滤口径一致） */
 const REPEATABLE_REPO_SPIKE_FLAGS: readonly string[] = [
   "--files",
+  "--include",
+  "--exclude",
   "--rule-skill-zip",
   "--rule-skill",
   "--skill",
@@ -105,8 +110,8 @@ export const USAGE_TEXT = `usage: review-pi review --repo <path> (--mr-diff <dif
        review-pi smoke [--model <id>] [--config <path>]
        review-pi config <init|show> [--config <path>] [--force] [--from-env <file>] [--json]
        review-pi export [--taskId <id>] [--tasks-dir <dir>] [--path <dir>] [--native] [--trace <dir>]
-       review-pi repo-review --repo <path> [--out <dir>] [--taskId <id>] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
-       review-pi repo-spike --repo <path> [--out <dir>] [--taskId <id>] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+       review-pi repo-review --repo <path> --taskId <id> [--tasks-dir <dir>] [--out <dir>] [--model <id>（已废弃，忽略）] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--include <regex>]... [--exclude <regex>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
+       review-pi repo-spike --repo <path> --taskId <id> [--tasks-dir <dir>] [--out <dir>] [--model <id>（已废弃，忽略）] [--dry-run] [--resume] [--group-by directory|files|language|none] [--max-files-per-group <n>] [--max-group-chars <n>] [--max-groups <n>] [--max-files <n>] [--max-file-chars <n>] [--max-rounds <n>] [--group-concurrency <n>] [--max-total-tokens <n>] [--group-attempts <n>] [--include-tests] [--path <prefix>] [--files <path[,path…]>]... [--include <regex>]... [--exclude <regex>]... [--config <path>] [--rule-skill-zip <path>[,<path>…]]... [--rule-skill <dir>[,<dir>…]]... [--skill <dir>[,<dir>…]]... [--strict-rule-skill] [--no-progress]
        review-pi version [--json]
        review-pi --version
   （smoke = 网关冒烟自检，双探针：网关健康 + 模型可达，输出人话诊断）
@@ -256,7 +261,15 @@ export interface ReviewCliArgs {
 /** 解析后的 repo-spike 命令参数（一次性全仓探针；不是产品化 scan 契约） */
 export interface RepoSpikeCliArgs {
   readonly repo: string;
-  readonly outDir: string;
+  /**
+   * 显式输出目录覆盖（`--out`）。缺席 = 任务目录
+   * `<tasks 根>/<taskId>`（与 review 同口径，ADR-0033）。
+   */
+  readonly outDir?: string;
+  /** 任务 id（必需）：产物落到 `<tasks 根>/<taskId>/` */
+  readonly taskId: string;
+  /** `--tasks-dir`：只覆盖 tasks 根，taskId 语义不变 */
+  readonly tasksDir?: string;
   readonly groupBy: "directory" | "files" | "language" | "none";
   readonly maxFilesPerGroup: number;
   readonly maxGroupChars: number;
@@ -270,15 +283,21 @@ export interface RepoSpikeCliArgs {
   readonly resume: boolean;
   readonly includeTests: boolean;
   readonly dryRun: boolean;
-  /**
-   * 远端全仓检视任务 id（MCP 业务上报用）。MCP 已配置且 `mcp.report.task`
-   * 打开时必需；纯本地运行可缺席。
-   */
-  readonly taskId?: string;
   /** 只检视该仓库相对路径前缀（POSIX；缺席 = 全仓） */
   readonly pathPrefix?: string;
   /** 只检视这些仓库相对路径（POSIX，精确匹配） */
   readonly files?: readonly string[];
+  /**
+   * 检视范围白名单正则（`--include`，与 review 同语义，作用于仓库相对 POSIX
+   * 路径）。缺席省键 = 不过滤；空数组不产生。
+   */
+  readonly includePatterns?: readonly string[];
+  /** 检视范围黑名单正则（`--exclude`）；命中即剔除，优先于白名单 */
+  readonly excludePatterns?: readonly string[];
+  /** 非法正则（已按「忽略该条」处理；CLI 逐条提示） */
+  readonly ignoredPathFilterPatterns?: readonly IgnoredPathFilterPattern[];
+  /** 传过的 `--model`（ADR-0093：接受但忽略，仅回显告警） */
+  readonly ignoredModel?: { readonly raw?: string };
   readonly configPath?: string;
   readonly ruleSkillZips?: readonly string[];
   readonly ruleSkillDirs?: readonly string[];
@@ -743,7 +762,9 @@ function parseRepoSpikeCommand(
   rest: readonly string[],
   command: "repo-spike" | "repo-review" = "repo-spike",
 ): ParseCliArgsResult {
-  const stripped = stripRepoSpikeBooleanFlags(rest);
+  // `--model` 与 review 同策略（ADR-0093）：接受但忽略，只回传「传过」供告警。
+  const modelStripped = stripIgnoredModelFlag(rest);
+  const stripped = stripRepoSpikeBooleanFlags(modelStripped.tokens);
   if (!stripped.ok) {
     return stripped;
   }
@@ -760,8 +781,28 @@ function parseRepoSpikeCommand(
   if (repo === undefined || repo.trim().length === 0) {
     return { ok: false, message: `${command} requires --repo <path>` };
   }
-  const outDir = flags.values.get("--out") ?? `${command}-out`;
-  if (outDir.trim().length === 0) {
+  // 任务 id 必需（ADR-0033 同口径）：落盘位置由它决定，不设缺省。
+  const taskIdRaw = flags.values.get("--taskId");
+  if (taskIdRaw === undefined) {
+    return {
+      ok: false,
+      message: `missing required flag --taskId (output goes to <tasks root>/<taskId>)`,
+    };
+  }
+  const taskId = checkTaskId(taskIdRaw);
+  if (!taskId.ok) {
+    return taskId;
+  }
+  const tasksDirRaw = flags.values.get("--tasks-dir");
+  if (tasksDirRaw !== undefined && tasksDirRaw.trim().length === 0) {
+    return {
+      ok: false,
+      message: `invalid --tasks-dir ${JSON.stringify(tasksDirRaw)}: must be a non-empty directory path`,
+    };
+  }
+  // `--out` 只是显式覆盖；缺席时由命令层解析 `<tasks 根>/<taskId>`。
+  const outDir = flags.values.get("--out");
+  if (outDir !== undefined && outDir.trim().length === 0) {
     return { ok: false, message: "--out must be a non-empty directory" };
   }
   const groupBy = flags.values.get("--group-by") ?? "directory";
@@ -857,15 +898,8 @@ function parseRepoSpikeCommand(
     return config;
   }
 
-  const taskIdRaw = flags.values.get("--taskId");
-  let taskId: string | undefined;
-  if (taskIdRaw !== undefined) {
-    const checked = checkTaskId(taskIdRaw);
-    if (!checked.ok) {
-      return checked;
-    }
-    taskId = checked.taskId;
-  }
+  const include = parseRegexPatterns("--include", flags.repeated.get("--include"));
+  const exclude = parseRegexPatterns("--exclude", flags.repeated.get("--exclude"));
 
   const ruleSkillZips = splitCommaList(flags.repeated.get("--rule-skill-zip"));
   const ruleSkillDirs = [
@@ -880,7 +914,9 @@ function parseRepoSpikeCommand(
     command,
     args: {
       repo,
-      outDir,
+      taskId: taskId.taskId,
+      ...(outDir !== undefined ? { outDir: outDir.trim() } : {}),
+      ...(tasksDirRaw !== undefined ? { tasksDir: tasksDirRaw.trim() } : {}),
       groupBy,
       maxFilesPerGroup: maxFilesPerGroup.value,
       maxGroupChars: maxGroupChars.value,
@@ -894,11 +930,18 @@ function parseRepoSpikeCommand(
       resume: stripped.resume,
       includeTests: stripped.includeTests,
       dryRun: stripped.dryRun,
-      ...(taskId !== undefined ? { taskId } : {}),
       ...(pathPrefix !== undefined && pathPrefix.trim().length > 0
         ? { pathPrefix: pathPrefix.trim() }
         : {}),
       ...(files.length > 0 ? { files } : {}),
+      ...(include.items !== undefined ? { includePatterns: include.items } : {}),
+      ...(exclude.items !== undefined ? { excludePatterns: exclude.items } : {}),
+      ...(include.invalid.length + exclude.invalid.length > 0
+        ? { ignoredPathFilterPatterns: [...include.invalid, ...exclude.invalid] }
+        : {}),
+      ...(modelStripped.ignoredModel !== undefined
+        ? { ignoredModel: modelStripped.ignoredModel }
+        : {}),
       ...(config.configPath !== undefined ? { configPath: config.configPath } : {}),
       ...(ruleSkillZips.length > 0 ? { ruleSkillZips } : {}),
       ...(ruleSkillDirs.length > 0 ? { ruleSkillDirs } : {}),

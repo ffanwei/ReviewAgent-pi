@@ -4141,7 +4141,7 @@ test(
 );
 
 test(
-  "repo-review MCP（ADR-0117）：MCP 打开但缺 --taskId → fail fast，零 tool 调用",
+  "repo-review：缺 --taskId → fail fast，零 tool 调用",
   async () => {
     const mcp = await startMcpStub();
     try {
@@ -4158,7 +4158,7 @@ test(
         { mcpServerUrl: mcp.url },
       );
       expect(run.status).toBe(1);
-      expect(run.stderr).toContain("--taskId is required");
+      expect(run.stderr).toContain("missing required flag --taskId");
       expect(mcp.toolCalls()).toEqual([]);
     } finally {
       await mcp.close();

@@ -149,3 +149,26 @@ test("枚举：files 含仓库不存在的路径时抛错", async () => {
     }),
   ).rejects.toThrow(/--files contains path/);
 });
+
+test("枚举：include / exclude 按相对路径过滤，exclude 优先", async () => {
+  const root = tempRepo();
+  write(root, "src/a.ts", "a\n");
+  write(root, "src/a.test.ts", "t\n");
+  write(root, "docs/b.ts", "b\n");
+
+  const result = await enumerateRepoFiles({
+    repoPath: root,
+    maxFiles: 10,
+    maxFileChars: 1_000,
+    includeRegexes: [/^src\//],
+    excludeRegexes: [/\.test\.ts$/],
+  });
+
+  expect(result.files.map((file) => file.path)).toEqual(["src/a.ts"]);
+  expect(result.skipped).toEqual(
+    expect.arrayContaining([
+      { path: "src/a.test.ts", reason: "excluded-path" },
+      { path: "docs/b.ts", reason: "excluded-path" },
+    ]),
+  );
+});

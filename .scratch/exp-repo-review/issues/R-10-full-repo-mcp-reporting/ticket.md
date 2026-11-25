@@ -27,7 +27,7 @@
 - `repo-spike/run.ts`：`deps.onGroupReviewed`，只在 reviewed 组、job 落盘后触发；回调失败不影响退出码；resume 的 done 组不触发。
 - `cli/full-repo-report.ts`：复用 `buildShardReport` / `readCodeLines` / `tip-format`，按文件上报 + 补齐空包。
 - `cli/repo-spike-command.ts`：建 reporter、start、注入回调、finally 发 currentTips + endTask + close。
-- `cli/args.ts`：repo-review 新增 `--taskId`（MCP 打开时必需）。
+- `cli/args.ts`：repo-review 新增 `--taskId`（R-11 起与 review 同口径：必填）。
 - `cli/report-files.ts`：日志 tool 名参数化。
 
 ## 默认口径（待真实 server 确认）

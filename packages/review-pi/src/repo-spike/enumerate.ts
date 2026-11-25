@@ -120,6 +120,10 @@ export interface EnumerateRepoOptions {
   readonly pathPrefix?: string;
   /** 只检视这些仓库相对路径（POSIX，精确匹配） */
   readonly files?: readonly string[];
+  /** 路径白名单正则（`--include`）：命中任一才保留；空 = 不过滤 */
+  readonly includeRegexes?: readonly RegExp[];
+  /** 路径黑名单正则（`--exclude`）：命中即剔除，优先于白名单 */
+  readonly excludeRegexes?: readonly RegExp[];
 }
 
 /**
@@ -147,12 +151,23 @@ export async function enumerateRepoFiles(options: EnumerateRepoOptions): Promise
   }
   const skipped: SkippedFile[] = [];
   const files: RepoFile[] = [];
+  const include = options.includeRegexes ?? [];
+  const exclude = options.excludeRegexes ?? [];
 
   for (const rel of all) {
     if (requested !== undefined && !requested.has(rel)) {
       continue;
     }
     if (prefix !== "" && rel !== prefix && !rel.startsWith(`${prefix}/`)) {
+      continue;
+    }
+    // 检视范围过滤（ADR-0078 同语义）：白名单先选、黑名单后剔。
+    if (include.length > 0 && !matchesAny(include, rel)) {
+      skipped.push({ path: rel, reason: "excluded-path" });
+      continue;
+    }
+    if (matchesAny(exclude, rel)) {
+      skipped.push({ path: rel, reason: "excluded-path" });
       continue;
     }
     if (isExcludedPath(rel)) {
@@ -321,4 +336,8 @@ function toPosix(value: string): string {
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function matchesAny(patterns: readonly RegExp[], value: string): boolean {
+  return patterns.some((pattern) => pattern.test(value));
 }

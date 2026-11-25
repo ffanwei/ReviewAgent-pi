@@ -14,6 +14,7 @@ import { runRepoSpike } from "../repo-spike/run.js";
 import type { RepoReviewedBatch } from "../repo-spike/types.js";
 import type { ResolvedConfig } from "../shared/config.js";
 import { modelIdForGateway } from "../shared/config-schema.js";
+import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { REVIEW_PI_VERSION } from "../shared/version.js";
 import type { RepoSpikeCliArgs } from "./args.js";
 import { reportFullRepoBatch } from "./full-repo-report.js";
@@ -43,9 +44,39 @@ export async function runRepoSpikeCommand(
           process.stderr.write(`${line}\n`);
         };
 
+  // 落盘根（ADR-0033 同口径）：`--out` 只是显式覆盖；缺省
+  // `<tasks 根>/<taskId>`，`--tasks-dir` 只覆盖根。
+  const outDir =
+    args.outDir !== undefined
+      ? resolve(args.outDir)
+      : taskDirPath(
+          resolveTasksRoot({
+            ...(args.tasksDir !== undefined ? { tasksDir: args.tasksDir } : {}),
+          }),
+          args.taskId,
+        );
+  // 非法正则已由参数层丢弃，这里逐条可见（零静默）。
+  for (const item of args.ignoredPathFilterPatterns ?? []) {
+    log(
+      `review-pi: ${item.flag} ${JSON.stringify(item.pattern)} 不是合法正则，已忽略（${item.reason}）`,
+    );
+  }
+  // `--model` 与 review 同策略（ADR-0093）：接受但忽略。
+  if (args.ignoredModel !== undefined) {
+    const passed =
+      args.ignoredModel.raw !== undefined
+        ? JSON.stringify(args.ignoredModel.raw)
+        : "未带值";
+    log(
+      `review-pi: --model 已废弃并忽略（传入 ${passed}；全仓检视模型取配置文件 model.default）`,
+    );
+  }
+  const includeRegexes = (args.includePatterns ?? []).map((pattern) => new RegExp(pattern));
+  const excludeRegexes = (args.excludePatterns ?? []).map((pattern) => new RegExp(pattern));
+
   const common = {
     repoPath: resolve(args.repo),
-    outDir: resolve(args.outDir),
+    outDir,
     groupBy: args.groupBy,
     maxFilesPerGroup: args.maxFilesPerGroup,
     maxGroupChars: args.maxGroupChars,
@@ -61,6 +92,8 @@ export async function runRepoSpikeCommand(
     dryRun: args.dryRun,
     ...(args.pathPrefix !== undefined ? { pathPrefix: args.pathPrefix } : {}),
     ...(args.files !== undefined ? { files: args.files } : {}),
+    ...(includeRegexes.length > 0 ? { includeRegexes } : {}),
+    ...(excludeRegexes.length > 0 ? { excludeRegexes } : {}),
     ...(args.ruleSkillZips !== undefined ? { ruleSkillZips: args.ruleSkillZips } : {}),
     ...(args.ruleSkillDirs !== undefined ? { ruleSkillDirs: args.ruleSkillDirs } : {}),
     ...(args.strictRuleSkill === true ? { strictRuleSkill: true } : {}),
@@ -86,14 +119,6 @@ export async function runRepoSpikeCommand(
   const reportConfig = resolveReportConfig(config);
   const repoTaskId = args.taskId;
   const taskToolsConfigured = reportConfig !== null && reportConfig.task;
-  if (
-    taskToolsConfigured &&
-    (repoTaskId === undefined || repoTaskId.trim() === "")
-  ) {
-    throw new Error(
-      "repo-review: --taskId is required when MCP task reporting is enabled (mcp.report.task)",
-    );
-  }
   let reporter: McpReporter | null = null;
   if (reportConfig !== null) {
     try {
@@ -114,7 +139,7 @@ export async function runRepoSpikeCommand(
   const taskToolsOn = reporter !== null && taskToolsConfigured;
   let lifecycle: FullRepoLifecycle | undefined;
   let onGroupReviewed: ((batch: RepoReviewedBatch) => Promise<void>) | undefined;
-  if (taskToolsOn && reporter !== null && repoTaskId !== undefined) {
+  if (taskToolsOn && reporter !== null) {
     lifecycle = createFullRepoLifecycle({
       tasks: reporter.fullRepo,
       taskId: repoTaskId,

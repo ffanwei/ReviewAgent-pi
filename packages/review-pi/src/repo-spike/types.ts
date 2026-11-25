@@ -40,6 +40,10 @@ export interface RepoSpikeOptions {
   readonly pathPrefix?: string;
   /** 只检视这些仓库相对路径（POSIX，精确匹配；用于补跑指定组/文件） */
   readonly files?: readonly string[];
+  /** 路径白名单正则（`--include`）：命中任一才保留；空 = 不过滤 */
+  readonly includeRegexes?: readonly RegExp[];
+  /** 路径黑名单正则（`--exclude`）：命中即剔除，优先于白名单 */
+  readonly excludeRegexes?: readonly RegExp[];
   readonly ruleSkillZips?: readonly string[];
   readonly ruleSkillDirs?: readonly string[];
   readonly strictRuleSkill?: boolean;

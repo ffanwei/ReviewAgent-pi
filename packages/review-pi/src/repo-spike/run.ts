@@ -88,6 +88,8 @@ export async function runRepoSpike(
     maxFileChars: options.maxFileChars,
     ...(options.pathPrefix !== undefined ? { pathPrefix: options.pathPrefix } : {}),
     ...(options.files !== undefined ? { files: options.files } : {}),
+    ...(options.includeRegexes !== undefined ? { includeRegexes: options.includeRegexes } : {}),
+    ...(options.excludeRegexes !== undefined ? { excludeRegexes: options.excludeRegexes } : {}),
   });
   const plan = groupRepoFiles(enumerated.files, {
     groupBy: options.groupBy,

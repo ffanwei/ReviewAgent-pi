@@ -30,8 +30,8 @@
    「没问题」）。`--resume` 跳过的已完成组不重报。
 4. **开关与配置**：沿用 `mcp.report.task`（缺省 true）与同一 `mcp.report.server`；
    不新增配置键。MCP 关闭时零建连、零调用。
-5. **`--taskId`**：repo-review 新增该旗标；MCP 打开时缺失即 fail fast，纯本地
-   运行可缺席。
+5. **`--taskId`**：repo-review 必需（与 review 同口径），产物落到
+   `<tasks 根>/<taskId>/`；`--tasks-dir` 只覆盖根，`--out` 只作显式覆盖。
 6. **分层**：`repo-spike/` 不 import `mcp/**`；`runRepoSpike` 只暴露
    `onGroupReviewed(batch)` 回调，由 CLI 组装报文并发送。回调抛错只留一行，
    绝不影响检视结果与退出码。
