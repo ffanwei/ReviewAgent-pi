@@ -224,6 +224,29 @@ export interface CoverageLimits {
   readonly repair: CoverageRepairLimits;
 }
 
+/**
+ * 全仓扫描（`repo-review`）缺省值（ADR-0117 后续修订）。CLI 显式旗标优先；
+ * 配置只提供「没传旗标时」的缺省，`--taskId` / `--tasks-dir` / `--out` /
+ * `--model` 不在此块（单次身份 / 环境路径 / 废弃旗标）。
+ */
+export interface RepoScanLimits {
+  readonly groupBy: "directory" | "files" | "language" | "none";
+  readonly maxFilesPerGroup: number;
+  readonly maxGroupChars: number;
+  readonly maxGroups: number;
+  readonly maxFiles: number;
+  readonly maxFileChars: number;
+  readonly maxRounds: number;
+  readonly groupConcurrency: number;
+  readonly maxTotalTokens: number;
+  readonly groupAttempts: number;
+  readonly includeTests: boolean;
+  /** 仓库相对 POSIX 路径白名单；空 = 不过滤 */
+  readonly includeRegex: readonly string[];
+  /** 仓库相对 POSIX 路径黑名单；命中即剔除，优先于白名单 */
+  readonly excludeRegex: readonly string[];
+}
+
 export interface Limits {
   readonly loop: LoopLimits;
   readonly timeouts: TimeoutLimits;
@@ -240,6 +263,7 @@ export interface Limits {
   readonly micro: MicroLimits;
   readonly retrieval: RetrievalLimits;
   readonly coverage: CoverageLimits;
+  readonly repoScan: RepoScanLimits;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -300,10 +324,26 @@ export const DEFAULT_LIMITS: Limits = {
       maxHunksPerRequest: 6,
     },
   },
+  // 5 / 60k 来自全仓实跑：单组超过 5 个文件后注意力下降。
+  repoScan: {
+    groupBy: "directory",
+    maxFilesPerGroup: 5,
+    maxGroupChars: 60_000,
+    maxGroups: 500,
+    maxFiles: 2_000,
+    maxFileChars: 100_000,
+    maxRounds: 1,
+    groupConcurrency: 1,
+    maxTotalTokens: 0,
+    groupAttempts: 2,
+    includeTests: false,
+    includeRegex: [],
+    excludeRegex: [],
+  },
 };
 
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "evidence", "boundary", "split", "archive", "micro", "retrieval", "coverage"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "evidence", "boundary", "split", "archive", "micro", "retrieval", "coverage", "repoScan"] as const;
 const LOOP_KEYS = ["maxRounds", "phase5Sweep", "stageCompression"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -347,6 +387,21 @@ const MICRO_KEYS = [
 ] as const;
 const COVERAGE_KEYS = ["repair"] as const;
 const COVERAGE_REPAIR_KEYS = ["enabled", "maxRequests", "maxChars", "maxHunksPerRequest"] as const;
+const REPO_SCAN_KEYS = [
+  "groupBy",
+  "maxFilesPerGroup",
+  "maxGroupChars",
+  "maxGroups",
+  "maxFiles",
+  "maxFileChars",
+  "maxRounds",
+  "groupConcurrency",
+  "maxTotalTokens",
+  "groupAttempts",
+  "includeTests",
+  "includeRegex",
+  "excludeRegex",
+] as const;
 
 
 export function parseLimits(raw: unknown, warnings: string[]): Limits {
@@ -636,5 +691,101 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
     },
   };
 
-  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, evidence, boundary, split, archive, micro, retrieval, coverage };
+  const repoScanObj = optionalObject(limits.repoScan, "limits.repoScan", warnings);
+  assertKnownKeys(repoScanObj, REPO_SCAN_KEYS, "limits.repoScan", warnings);
+  const repoGroupBy = repoScanObj.groupBy;
+  if (
+    repoGroupBy !== undefined &&
+    repoGroupBy !== "directory" &&
+    repoGroupBy !== "files" &&
+    repoGroupBy !== "language" &&
+    repoGroupBy !== "none"
+  ) {
+    throw new Error(
+      'limits.repoScan.groupBy must be "directory", "files", "language" or "none"',
+    );
+  }
+  const repoScan: RepoScanLimits = {
+    groupBy: repoGroupBy ?? DEFAULT_LIMITS.repoScan.groupBy,
+    maxFilesPerGroup: intOr(
+      repoScanObj.maxFilesPerGroup,
+      "limits.repoScan.maxFilesPerGroup",
+      1,
+      1_000,
+      DEFAULT_LIMITS.repoScan.maxFilesPerGroup,
+    ),
+    maxGroupChars: intOr(
+      repoScanObj.maxGroupChars,
+      "limits.repoScan.maxGroupChars",
+      1_000,
+      10_000_000,
+      DEFAULT_LIMITS.repoScan.maxGroupChars,
+    ),
+    maxGroups: intOr(
+      repoScanObj.maxGroups,
+      "limits.repoScan.maxGroups",
+      1,
+      100_000,
+      DEFAULT_LIMITS.repoScan.maxGroups,
+    ),
+    maxFiles: intOr(
+      repoScanObj.maxFiles,
+      "limits.repoScan.maxFiles",
+      1,
+      100_000,
+      DEFAULT_LIMITS.repoScan.maxFiles,
+    ),
+    maxFileChars: intOr(
+      repoScanObj.maxFileChars,
+      "limits.repoScan.maxFileChars",
+      1_000,
+      10_000_000,
+      DEFAULT_LIMITS.repoScan.maxFileChars,
+    ),
+    maxRounds: intOr(
+      repoScanObj.maxRounds,
+      "limits.repoScan.maxRounds",
+      1,
+      10,
+      DEFAULT_LIMITS.repoScan.maxRounds,
+    ),
+    groupConcurrency: intOr(
+      repoScanObj.groupConcurrency,
+      "limits.repoScan.groupConcurrency",
+      1,
+      5,
+      DEFAULT_LIMITS.repoScan.groupConcurrency,
+    ),
+    maxTotalTokens: intOr(
+      repoScanObj.maxTotalTokens,
+      "limits.repoScan.maxTotalTokens",
+      0,
+      1_000_000_000,
+      DEFAULT_LIMITS.repoScan.maxTotalTokens,
+    ),
+    groupAttempts: intOr(
+      repoScanObj.groupAttempts,
+      "limits.repoScan.groupAttempts",
+      1,
+      10,
+      DEFAULT_LIMITS.repoScan.groupAttempts,
+    ),
+    includeTests: boolOr(
+      repoScanObj.includeTests,
+      "limits.repoScan.includeTests",
+      DEFAULT_LIMITS.repoScan.includeTests,
+    ),
+    includeRegex: parseRegexList(
+      repoScanObj.includeRegex,
+      "limits.repoScan.includeRegex",
+      DEFAULT_LIMITS.repoScan.includeRegex,
+    ),
+    excludeRegex: parseRegexList(
+      repoScanObj.excludeRegex,
+      "limits.repoScan.excludeRegex",
+      DEFAULT_LIMITS.repoScan.excludeRegex,
+    ),
+  };
+
+  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, evidence, boundary, split, archive, micro, retrieval, coverage, repoScan };
 }

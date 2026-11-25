@@ -225,6 +225,42 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/maxReadsPerFile/);
   });
 
+  test("limits.repoScan：缺省 5 文件 / 60k 字符，可配且校验", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.repoScan).toEqual(DEFAULT_LIMITS.repoScan);
+    expect(defaults.limits.repoScan.maxFilesPerGroup).toBe(5);
+    expect(defaults.limits.repoScan.maxGroupChars).toBe(60_000);
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"repoScan":{"groupBy":"language","maxFilesPerGroup":8,"maxGroupChars":80000,"groupConcurrency":3,"includeTests":true,"includeRegex":["^src/"],"excludeRegex":["\\\\.test\\\\.ts$"]}}`,
+        ),
+      ),
+    }).config;
+    expect(tuned.limits.repoScan).toMatchObject({
+      groupBy: "language",
+      maxFilesPerGroup: 8,
+      maxGroupChars: 80_000,
+      groupConcurrency: 3,
+      includeTests: true,
+      includeRegex: ["^src/"],
+      excludeRegex: ["\\.test\\.ts$"],
+    });
+    expect(tuned.overridden.some((key) => key.startsWith("limits.repoScan"))).toBe(true);
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"repoScan":{"groupBy":"module"}}`)),
+      }),
+    ).toThrow(/repoScan.groupBy/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"repoScan":{"maxFilesPerGroup":0}}`)),
+      }),
+    ).toThrow(/maxFilesPerGroup/);
+  });
+
   test("limits.loop.stageCompression：off/compact（缺省 off；非法值 fail fast）", () => {
     const compact = loadConfig({
       configPath: writeConfig(minimalConfig(`,"limits":{"loop":{"stageCompression":"compact"}}`)),

@@ -270,18 +270,19 @@ export interface RepoSpikeCliArgs {
   readonly taskId: string;
   /** `--tasks-dir`：只覆盖 tasks 根，taskId 语义不变 */
   readonly tasksDir?: string;
-  readonly groupBy: "directory" | "files" | "language" | "none";
-  readonly maxFilesPerGroup: number;
-  readonly maxGroupChars: number;
-  readonly maxGroups: number;
-  readonly maxFiles: number;
-  readonly maxFileChars: number;
-  readonly maxRounds: number;
-  readonly groupConcurrency: number;
-  readonly maxTotalTokens: number;
-  readonly groupAttempts: number;
+  readonly groupBy?: "directory" | "files" | "language" | "none";
+  readonly maxFilesPerGroup?: number;
+  readonly maxGroupChars?: number;
+  readonly maxGroups?: number;
+  readonly maxFiles?: number;
+  readonly maxFileChars?: number;
+  readonly maxRounds?: number;
+  readonly groupConcurrency?: number;
+  readonly maxTotalTokens?: number;
+  readonly groupAttempts?: number;
   readonly resume: boolean;
-  readonly includeTests: boolean;
+  /** `--include-tests` 出现才为 true；缺席 = 用配置 `limits.repoScan.includeTests` */
+  readonly includeTests?: boolean;
   readonly dryRun: boolean;
   /** 只检视该仓库相对路径前缀（POSIX；缺席 = 全仓） */
   readonly pathPrefix?: string;
@@ -805,8 +806,11 @@ function parseRepoSpikeCommand(
   if (outDir !== undefined && outDir.trim().length === 0) {
     return { ok: false, message: "--out must be a non-empty directory" };
   }
-  const groupBy = flags.values.get("--group-by") ?? "directory";
+  // 以下数值 / 枚举旗标只在显式传入时进入 args；缺席交给
+  // `limits.repoScan`（配置）→ 内置缺省合并（CLI > 配置 > 缺省）。
+  const groupBy = flags.values.get("--group-by");
   if (
+    groupBy !== undefined &&
     groupBy !== "directory" &&
     groupBy !== "files" &&
     groupBy !== "language" &&
@@ -818,74 +822,81 @@ function parseRepoSpikeCommand(
     };
   }
 
-  // 生产缺省 5 文件 / 60k 字符：全仓实跑（1,390 文件 / 255 组，6/60k）显示
-  // 单组超过 5 个文件后注意力明显下降；缩小上限换更稳的单组质量。
-  const maxFilesPerGroup = parseSpikeInt(
+  const maxFilesPerGroup = parseOptionalSpikeInt(
     flags.values.get("--max-files-per-group"),
     "--max-files-per-group",
-    5,
     1,
     1_000,
   );
   if (!maxFilesPerGroup.ok) {
     return maxFilesPerGroup;
   }
-  const maxGroupChars = parseSpikeInt(
+  const maxGroupChars = parseOptionalSpikeInt(
     flags.values.get("--max-group-chars"),
     "--max-group-chars",
-    60_000,
     1_000,
     10_000_000,
   );
   if (!maxGroupChars.ok) {
     return maxGroupChars;
   }
-  const maxGroups = parseSpikeInt(flags.values.get("--max-groups"), "--max-groups", 500, 1, 100_000);
+  const maxGroups = parseOptionalSpikeInt(
+    flags.values.get("--max-groups"),
+    "--max-groups",
+    1,
+    100_000,
+  );
   if (!maxGroups.ok) {
     return maxGroups;
   }
-  const maxFiles = parseSpikeInt(flags.values.get("--max-files"), "--max-files", 2_000, 1, 100_000);
+  const maxFiles = parseOptionalSpikeInt(
+    flags.values.get("--max-files"),
+    "--max-files",
+    1,
+    100_000,
+  );
   if (!maxFiles.ok) {
     return maxFiles;
   }
-  const maxFileChars = parseSpikeInt(
+  const maxFileChars = parseOptionalSpikeInt(
     flags.values.get("--max-file-chars"),
     "--max-file-chars",
-    100_000,
     1_000,
     10_000_000,
   );
   if (!maxFileChars.ok) {
     return maxFileChars;
   }
-  const maxRounds = parseSpikeInt(flags.values.get("--max-rounds"), "--max-rounds", 1, 1, 10);
+  const maxRounds = parseOptionalSpikeInt(
+    flags.values.get("--max-rounds"),
+    "--max-rounds",
+    1,
+    10,
+  );
   if (!maxRounds.ok) {
     return maxRounds;
   }
-  const groupConcurrency = parseSpikeInt(
+  const groupConcurrency = parseOptionalSpikeInt(
     flags.values.get("--group-concurrency"),
     "--group-concurrency",
-    1,
     1,
     5,
   );
   if (!groupConcurrency.ok) {
     return groupConcurrency;
   }
-  const maxTotalTokens = parseSpikeInt(
+  const maxTotalTokens = parseOptionalSpikeInt(
     flags.values.get("--max-total-tokens"),
     "--max-total-tokens",
-    0,
     0,
     1_000_000_000,
   );
   if (!maxTotalTokens.ok) {
     return maxTotalTokens;
   }
-  const groupAttempts = parseSpikeInt(
+  const groupAttempts = parseOptionalSpikeInt(
     flags.values.get("--group-attempts"),
     "--group-attempts",
-    2,
     1,
     10,
   );
@@ -898,8 +909,10 @@ function parseRepoSpikeCommand(
     return config;
   }
 
-  const include = parseRegexPatterns("--include", flags.repeated.get("--include"));
-  const exclude = parseRegexPatterns("--exclude", flags.repeated.get("--exclude"));
+  const includeRaw = flags.repeated.get("--include");
+  const excludeRaw = flags.repeated.get("--exclude");
+  const include = parseRegexPatterns("--include", includeRaw);
+  const exclude = parseRegexPatterns("--exclude", excludeRaw);
 
   const ruleSkillZips = splitCommaList(flags.repeated.get("--rule-skill-zip"));
   const ruleSkillDirs = [
@@ -917,25 +930,31 @@ function parseRepoSpikeCommand(
       taskId: taskId.taskId,
       ...(outDir !== undefined ? { outDir: outDir.trim() } : {}),
       ...(tasksDirRaw !== undefined ? { tasksDir: tasksDirRaw.trim() } : {}),
-      groupBy,
-      maxFilesPerGroup: maxFilesPerGroup.value,
-      maxGroupChars: maxGroupChars.value,
-      maxGroups: maxGroups.value,
-      maxFiles: maxFiles.value,
-      maxFileChars: maxFileChars.value,
-      maxRounds: maxRounds.value,
-      groupConcurrency: groupConcurrency.value,
-      maxTotalTokens: maxTotalTokens.value,
-      groupAttempts: groupAttempts.value,
+      ...(groupBy !== undefined ? { groupBy } : {}),
+      ...(maxFilesPerGroup.value !== undefined
+        ? { maxFilesPerGroup: maxFilesPerGroup.value }
+        : {}),
+      ...(maxGroupChars.value !== undefined ? { maxGroupChars: maxGroupChars.value } : {}),
+      ...(maxGroups.value !== undefined ? { maxGroups: maxGroups.value } : {}),
+      ...(maxFiles.value !== undefined ? { maxFiles: maxFiles.value } : {}),
+      ...(maxFileChars.value !== undefined ? { maxFileChars: maxFileChars.value } : {}),
+      ...(maxRounds.value !== undefined ? { maxRounds: maxRounds.value } : {}),
+      ...(groupConcurrency.value !== undefined
+        ? { groupConcurrency: groupConcurrency.value }
+        : {}),
+      ...(maxTotalTokens.value !== undefined
+        ? { maxTotalTokens: maxTotalTokens.value }
+        : {}),
+      ...(groupAttempts.value !== undefined ? { groupAttempts: groupAttempts.value } : {}),
       resume: stripped.resume,
-      includeTests: stripped.includeTests,
+      ...(stripped.includeTests ? { includeTests: true } : {}),
       dryRun: stripped.dryRun,
       ...(pathPrefix !== undefined && pathPrefix.trim().length > 0
         ? { pathPrefix: pathPrefix.trim() }
         : {}),
       ...(files.length > 0 ? { files } : {}),
-      ...(include.items !== undefined ? { includePatterns: include.items } : {}),
-      ...(exclude.items !== undefined ? { excludePatterns: exclude.items } : {}),
+      ...(includeRaw !== undefined ? { includePatterns: include.items ?? [] } : {}),
+      ...(excludeRaw !== undefined ? { excludePatterns: exclude.items ?? [] } : {}),
       ...(include.invalid.length + exclude.invalid.length > 0
         ? { ignoredPathFilterPatterns: [...include.invalid, ...exclude.invalid] }
         : {}),
@@ -1007,6 +1026,22 @@ function parseSpikeInt(
     };
   }
   return { ok: true, value };
+}
+
+function parseOptionalSpikeInt(
+  raw: string | undefined,
+  flag: string,
+  min: number,
+  max: number,
+): { readonly ok: true; readonly value?: number } | { readonly ok: false; readonly message: string } {
+  if (raw === undefined) {
+    return { ok: true };
+  }
+  const parsed = parseSpikeInt(raw, flag, min, min, max);
+  if (!parsed.ok) {
+    return parsed;
+  }
+  return { ok: true, value: parsed.value };
 }
 
 function splitCommaList(values: readonly string[] | undefined): readonly string[] {

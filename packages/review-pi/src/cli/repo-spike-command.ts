@@ -19,6 +19,7 @@ import { REVIEW_PI_VERSION } from "../shared/version.js";
 import type { RepoSpikeCliArgs } from "./args.js";
 import { reportFullRepoBatch } from "./full-repo-report.js";
 import { describeReportFailure } from "./report-failure.js";
+import { resolveRepoScanSettings } from "./repo-scan-settings.js";
 
 /**
  * `repo-spike` 命令执行缝。
@@ -71,24 +72,26 @@ export async function runRepoSpikeCommand(
       `review-pi: --model 已废弃并忽略（传入 ${passed}；全仓检视模型取配置文件 model.default）`,
     );
   }
-  const includeRegexes = (args.includePatterns ?? []).map((pattern) => new RegExp(pattern));
-  const excludeRegexes = (args.excludePatterns ?? []).map((pattern) => new RegExp(pattern));
+  // 全仓扫描设置：CLI 显式旗标 > 配置 limits.repoScan > 内置缺省。
+  const settings = resolveRepoScanSettings(args, config);
+  const includeRegexes = settings.includeRegex.map((pattern) => new RegExp(pattern));
+  const excludeRegexes = settings.excludeRegex.map((pattern) => new RegExp(pattern));
 
   const common = {
     repoPath: resolve(args.repo),
     outDir,
-    groupBy: args.groupBy,
-    maxFilesPerGroup: args.maxFilesPerGroup,
-    maxGroupChars: args.maxGroupChars,
-    maxGroups: args.maxGroups,
-    maxFiles: args.maxFiles,
-    maxFileChars: args.maxFileChars,
-    maxRounds: args.maxRounds,
-    groupConcurrency: args.groupConcurrency,
-    maxTotalTokens: args.maxTotalTokens,
-    groupAttempts: args.groupAttempts,
+    groupBy: settings.groupBy,
+    maxFilesPerGroup: settings.maxFilesPerGroup,
+    maxGroupChars: settings.maxGroupChars,
+    maxGroups: settings.maxGroups,
+    maxFiles: settings.maxFiles,
+    maxFileChars: settings.maxFileChars,
+    maxRounds: settings.maxRounds,
+    groupConcurrency: settings.groupConcurrency,
+    maxTotalTokens: settings.maxTotalTokens,
+    groupAttempts: settings.groupAttempts,
     resume: args.resume,
-    includeTests: args.includeTests,
+    includeTests: settings.includeTests,
     dryRun: args.dryRun,
     ...(args.pathPrefix !== undefined ? { pathPrefix: args.pathPrefix } : {}),
     ...(args.files !== undefined ? { files: args.files } : {}),

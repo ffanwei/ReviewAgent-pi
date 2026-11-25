@@ -89,6 +89,7 @@
 | R-09 | 持久化编排与总预算 | 单进程；253/255 内存停止后靠人工 `--files` 补跑 | P0 | DONE | `job.json` + `--resume`；kill 后续跑一致；临时 / 永久错误分流；`--max-total-tokens` | 2026-11-25 完成：job 清单 + hash 校验 + resume + 重试 + 总预算；全包 1290 passed / 1 skipped；真实 resume 8.4s 无模型请求；预算超出上界为在飞组数 | [票](issues/R-09-durable-scan-job/ticket.md) · [讨论](issues/R-09-durable-scan-job/discussion.md) |
 | R-10 | 全仓检视 MCP 上报 | `repo-review` 不接 MCP，平台收不到任务与按文件意见 | P0 | DOING | 四工具（start / report / currentTips / end）顺序；按批逐文件上报；复用同一 server 配置；失败不改退出码 | 2026-11-25 实现、单测与进程级 stub 端到端完成：全包 1307 passed / 1 skipped，build 通过；待真实 MCP server 联调 | [票](issues/R-10-full-repo-mcp-reporting/ticket.md) · [讨论](issues/R-10-full-repo-mcp-reporting/discussion.md) |
 | R-11 | 全仓 CLI 与 review 对齐 | repo 缺 taskId/tasks-dir/model 口径，产物不在任务目录 | P0 | DONE | `--taskId` 必填；产物落 `<tasks>/<taskId>`；`--tasks-dir` / `--model` 同 review；`--include/--exclude` 过滤路径 | 2026-11-25 完成：全包 1309 passed / 1 skipped，build 通过；参数 / 枚举 / 进程级用例覆盖 | [票](issues/R-11-repo-cli-task-dir/ticket.md) · [讨论](issues/R-11-repo-cli-task-dir/discussion.md) |
+| R-12 | `limits.repoScan` 配置块 | repo 缺省只能靠 CLI，`config init` 不含这些值 | P1 | DONE | `config init` 生成 repoScan 默认块；CLI > 配置 > 内置；范围校验 | 2026-11-25 完成：`config init` 实测生成 repoScan 块；全包 1314 passed / 1 skipped，build 通过 | [票](issues/R-12-repo-scan-config/ticket.md) · [讨论](issues/R-12-repo-scan-config/discussion.md) |
 
 ## 当前焦点
 
@@ -104,6 +105,7 @@
 - [x] **R-09 持久化编排**：完成；`job.json` + `--resume` + 重试 + 总 token 预算，真实 resume 通过。
 - [ ] **R-10 全仓 MCP 上报**：实现与单测完成；待真实 server 联调（四工具顺序、按批文件包、currentTips 空数组）。
 - [x] **R-11 CLI 对齐**：完成；`--taskId` 必填、产物落 `<tasks>/<taskId>`、`--tasks-dir` / `--model` 同 review、`--include/--exclude` 路径过滤。
+- [x] **R-12 repoScan 配置**：完成；`config init` 生成 `limits.repoScan`，优先级 CLI > 配置 > 内置。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
 
@@ -122,3 +124,4 @@
 - 2026-11-25：登记 R-10；全仓 MCP 四工具上报实现、单测与进程级 stub 端到端完成（全包 1307 passed / 1 skipped），待真实 server 联调。
 - 2026-11-25：生产缺省调整为 5 文件 / 60k 字符（原 10 / 120k）：全仓实跑（255 组、平均 5.45 文件/组）表明单组超过 5 个文件后注意力下降。
 - 2026-11-25：登记 R-11；repo CLI 对齐 review：`--taskId` 必填、产物落 `<tasks>/<taskId>`、`--tasks-dir` / `--model` 同策略、`--include/--exclude` 路径过滤。
+- 2026-11-25：登记 R-12；新增 `limits.repoScan` 配置块，`config init` 生成默认值，优先级 CLI > 配置 > 内置。
