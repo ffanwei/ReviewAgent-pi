@@ -41,3 +41,15 @@ R-01、R-04；与 R-05b 并行，先冻结 `repo-review-result.json` schema。
 - 验证：全包 `1275 passed / 1 skipped`；真实 1 组 smoke（2 个 Java 文件）通过，审计确认 system prompt 含「仓库快照」且不含「本次 diff」，phaseLog 六阶段为 Code Understanding 起头。
 - 待办：20 组 A/B（旧 spike 语义 vs 新 scan 语义）——统计「本次新增」出现次数、precision 是否回退 >5%、token 是否增幅 >10%。
 - 离线回放：`test:replay` 5/6 通过；`rule-skill-single-finding` 在 phase 6 的 skill 候选 brief 上 miss（live 352 chars vs trace 877 chars）。已在父提交 `c99fd18` 复跑同一场景，失败相同 → 既有 trace 陈旧，不是 R-04b 引入；后续按需重录该场景。
+
+## 20 组 A/B（2026-11-25）
+
+- 范围：同一快照，旧 spike 语义的 20 组 / 89 文件；新 scan 语义用同一文件集、同分组参数、同并发 3。
+- 新语义：20/20 组完成，0 失败，73 findings（P1 5 / P2 55 / P3 13）。
+- 旧语义：20 组，83 findings（P1 3 / P2 58 / P3 22）。
+- token：新 6.92M（未命中 0.49M / 输出 0.51M / 缓存 5.92M）vs 旧 6.57M；**+5.4%**，在 ≤10% 验收线内。
+- 「本次新增」：新 0 次、旧 0 次（该指标在本样本上不区分）。
+- 判官（各 60 条抽样）：
+  - 新语义：VALID 40 / INVALID 9 / UNCERTAIN 11，precision **0.816**（P1 1.00、P2 0.909、P3 0.538）。
+  - 旧语义：VALID 38 / INVALID 11 / UNCERTAIN 11，precision **0.776**（P1 1.00、P2 0.893、P3 0.579）。
+  - 结论：precision **+4.1pp**，未回退；token +5.4% ≤10%；「本次新增」0 次。R-04b A/B 通过。
