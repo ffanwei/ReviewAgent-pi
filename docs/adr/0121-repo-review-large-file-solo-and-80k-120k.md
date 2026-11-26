@@ -4,6 +4,9 @@
 **关联**：[ADR-0117](0117-full-repo-mcp-reporting.md)（全仓上报）、[ADR-0118](0118-language-defect-checklists.md)（语言清单）、[ADR-0120](0120-finding-path-repair.md)（路径修复）
 **范围**：只改全仓扫描的缺省预算与分组规则；不改 MR diff 路径、不改 `runReviewOutcome`、不改提示词。
 
+> **后续注记（2026-11-26）**：5 文件依据已补入设计文档 §4.2.1 的 v3 91 条分档数据；
+> 1–10 文件稳定，11–20 文件开始明显下滑。本 ADR 的 5 文件缺省不变。
+
 ## Context
 
 全仓扫描原缺省是 `maxFilesPerGroup=5`、`maxGroupChars=60,000`、
