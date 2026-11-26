@@ -8,6 +8,8 @@
 | `02-enumerate.dot` | `02-enumerate.png` | 文件枚举与过滤链、跳过原因 |
 | `03-grouping.dot` | `03-grouping.png` | 四种分组策略、双上限、大文件单文件成组（soloLarge）、组数护栏 |
 | `04-group-execution.dot` | `04-group-execution.png` | 单组六阶段、语言清单 / Skill、路径修复、覆盖回填、逐文件上报 |
+| `05-six-phases-skills.dot` | `05-six-phases-skills.png` | 六阶段顺序、Phase 5 快照、规则 Skill 独立会话与候选合并 |
+| `06-repo-token-strategy.dot` | `06-repo-token-strategy.png` | 全仓 token 策略：一次快照、单轮、工具预算、缓存、Skill 复用与全局闸 |
 
 ## 重新渲染
 
@@ -17,7 +19,7 @@
 
 ```bash
 cd docs/design/assets/repo-review-flow
-for f in 01-global 02-enumerate 03-grouping 04-group-execution; do
+for f in 01-global 02-enumerate 03-grouping 04-group-execution 05-six-phases-skills 06-repo-token-strategy; do
   dot -Tpng -Gdpi=150 "$f.dot" -o "$f.png"
 done
 ```
