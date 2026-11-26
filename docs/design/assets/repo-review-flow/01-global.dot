@@ -1,0 +1,67 @@
+// 全仓检视全局流程（docs/design/全仓扫描-方案与契约.md）
+// 渲染：dot -Tpng -Gdpi=150 01-global.dot -o repo-review-global-flow.png
+digraph RepoReviewGlobal {
+  graph [
+    rankdir=TB,
+    fontname="Microsoft YaHei",
+    fontsize=13,
+    nodesep=0.40,
+    ranksep=0.42,
+    pad=0.25,
+    bgcolor="white",
+    compound=true
+  ];
+  node [
+    fontname="Microsoft YaHei",
+    fontsize=11,
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#F7F9FC",
+    color="#5B7DB1",
+    penwidth=1.1,
+    margin="0.18,0.10"
+  ];
+  edge [
+    fontname="Microsoft YaHei",
+    fontsize=10,
+    color="#5B7DB1",
+    arrowsize=0.8,
+    penwidth=1.1
+  ];
+
+  start [label="review-pi repo-review\n--repo <path> --taskId <id>", fillcolor="#E8F0FE", penwidth=1.5];
+  dry [label="--dry-run?", shape=diamond, fillcolor="#FFF4E5", color="#D98E2B", margin="0.08,0.05"];
+  plan [label="枚举 → 分组 → 合成\n写 repo-review-plan.json\n（不读配置、不触模型）", fillcolor="#FFF8E8", color="#D98E2B"];
+  dryOut [label="repo-review-plan.json\n+ review-pi.log\nexit 0 / 2", fillcolor="#EAF7EE", color="#3C8D5A"];
+  cfg [label="加载配置\nreviewer / model\nlimits.repoScan / languageRules"];
+  log [label="打开运行日志\n<out>/runs/review-pi.log"];
+  mcpStart [label="fullRepoStartTask\n（启用 MCP 时）"];
+  enum [label="文件枚举与过滤\n图 2"];
+  group [label="确定性分组与预算\n图 3"];
+  synth [label="合成组内中性文件快照\n+ 内部全新增 diff\n建立 / 校验 job.json"];
+  resume [label="--resume?", shape=diamond, fillcolor="#FFF4E5", color="#D98E2B", margin="0.08,0.05"];
+  skipped [label="已完成组\n不重跑、不重报"];
+  pool [label="组级 worker 池\ngroupConcurrency 1–5\ntoken 预算闸 / 临时错误重试"];
+  pass [label="逐组 runReviewOutcome\n图 4"];
+  merge [label="合并 findings / usage / coverage\n文件级三态账本"];
+  report [label="按文件上报\nfullRepoReportReviewResult\n有意见带 tips，无意见空包"];
+  tips [label="fullRepoFilerCurrentTips\ninvalidatedTips: []"];
+  endTask [label="fullRepoEndTask"];
+  result [label="repo-review-result.json\n+ 组内 run / audit / reviews\n+ review-pi.log", fillcolor="#EAF7EE", color="#3C8D5A", penwidth=1.5];
+  fail [label="计划失败 / 全部组失败\nexit 1 或 2", fillcolor="#FDECEC", color="#C0504D"];
+
+  start -> dry;
+  dry -> plan [label=" 是"];
+  plan -> dryOut;
+  dry -> cfg [label=" 否"];
+  cfg -> log -> mcpStart -> enum -> group -> synth -> resume;
+  resume -> skipped [label=" 命中 done"];
+  resume -> pool [label=" pending / failed"];
+  skipped -> merge;
+  pool -> pass -> merge;
+  merge -> report -> tips -> endTask -> result;
+  group -> fail [label="组数 > maxGroups", style=dashed, color="#C0504D", fontcolor="#C0504D"];
+  pool -> fail [label="全部组失败", style=dashed, color="#C0504D", fontcolor="#C0504D"];
+
+  { rank=same; enum; group; synth; }
+}

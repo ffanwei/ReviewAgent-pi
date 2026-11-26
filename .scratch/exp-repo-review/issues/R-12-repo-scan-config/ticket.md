@@ -30,6 +30,7 @@
 
 - `config init` 模板含 `limits.repoScan`，示例文件逐字节同源。
 - 配置缺省 = 5 / 60k；可配、越界 fail fast、未知键仍只告警。
+  （后续修订：ADR-0121 改为 5 / 80k 组 / 120k 文件，并补大文件单文件成组。）
 - 合并单测：无配置用缺省；配置覆盖缺省；CLI 覆盖配置；CLI 空 include 清空配置。
 - 全包回归通过。
 - 全包 1314 passed / 1 skipped；`config init` 实测输出 `limits.repoScan`；build 通过。

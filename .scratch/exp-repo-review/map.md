@@ -94,6 +94,7 @@
 | R-14 | 全仓运行日志 | 全仓只有 stderr，宿主停止后无法复盘执行过程 | P1 | DONE | `<out>/runs/review-pi.log` 实时镜像 stderr；dry-run 也留痕；打开失败不改退出码 | 2026-11-25 完成：全包 1325 passed / 1 skipped，build 通过；dry-run 与真跑进程用例断言日志内容 | [票](issues/R-14-repo-run-log/ticket.md) · — |
 | R-15 | 跳过检视按文件上报 | 跳过路径只报首个文件，平台无法按文件登记 | P1 | DONE | 跳过路径按变更文件全集逐个上报空 tips；全仓零意见组同样逐文件 | 2026-11-25 完成：全包 1328 passed / 1 skipped，build / typecheck 通过；ADR-0119 | [票](issues/R-15-report-every-file-when-skipped/ticket.md) · — |
 | R-16 | Finding 路径修复 | 模型路径少量字符错误 → 读不到源码行，意见丢失 | P0 | DONE | 按已知文件全集修 `Finding.file`；唯一最佳才修；覆盖 / 落盘 / 报文统一用修复值 | 2026-11-25 完成：新增 `finding/path-repair.ts` + 9 单测 + repo 集成测试；ADR-0120 | [票](issues/R-16-finding-path-repair/ticket.md) · — |
+| R-17 | 大文件入口与上限调整 | 60–100k 文件被 selected 后 `group-too-large`，从未送检 | P1 | DONE | 缺省改 5 文件 / 80k 组 / 120k 文件；单文件超组上限时单独成组（soloLarge）；>120k 仍显式跳过 | 2026-11-26 完成：group / dry-run / config 单测；设计文档与流程图更新；ADR-0121 | [票](issues/R-17-large-file-solo/ticket.md) · — |
 
 ## 当前焦点
 
@@ -114,6 +115,7 @@
 - [x] **R-14 全仓运行日志**：完成；`<out>/runs/review-pi.log` 实时镜像 stderr，dry-run 同样留痕。
 - [x] **R-15 跳过检视按文件上报**：完成；跳过路径按变更文件全集逐个发空 tips，全仓零意见组同样逐文件。
 - [x] **R-16 Finding 路径修复**：完成；按已知文件全集修正少量字符错误，唯一最佳才修；ADR-0120。
+- [x] **R-17 大文件入口与上限调整**：完成；缺省 5 文件 / 80k 组 / 120k 文件，单文件超组上限时单独成组（soloLarge）；ADR-0121。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
 
@@ -137,3 +139,4 @@
 - 2026-11-25：R-14 完成；全仓命令接入 `review-pi.log`（`<out>/runs/review-pi.log`），stderr 实时镜像，dry-run 也留痕。
 - 2026-11-25：R-15 完成；跳过检视（diff-too-large / no-reviewable-files）改为按变更文件全集逐个上报空 tips；ADR-0119。
 - 2026-11-25：R-16 完成；新增 Finding 路径修复（宽松匹配 + 有界编辑距离，唯一最佳才修），修复值进入覆盖账本与报文；ADR-0120。
+- 2026-11-26：R-17 完成；缺省调整为 5 文件 / 80k 组 / 120k 文件，单文件超 `maxGroupChars` 时单独成组（`soloLarge`），不再整文件跳过；>120k 仍显式跳过；ADR-0121。

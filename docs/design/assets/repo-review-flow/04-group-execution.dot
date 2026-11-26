@@ -1,0 +1,61 @@
+// 图 4：单组执行与上报（docs/design/全仓扫描-方案与契约.md §4、§6）
+// 渲染：dot -Tpng -Gdpi=150 04-group-execution.dot -o repo-review-group-execution-flow.png
+digraph GroupExecutionFlow {
+  graph [
+    rankdir=TB,
+    fontname="Microsoft YaHei",
+    fontsize=13,
+    nodesep=0.38,
+    ranksep=0.36,
+    pad=0.25,
+    bgcolor="white",
+    compound=true
+  ];
+  node [
+    fontname="Microsoft YaHei",
+    fontsize=10.5,
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#F7F9FC",
+    color="#5B7DB1",
+    penwidth=1.1,
+    margin="0.15,0.09"
+  ];
+  edge [
+    fontname="Microsoft YaHei",
+    fontsize=9.5,
+    color="#5B7DB1",
+    arrowsize=0.75
+  ];
+
+  group [label="一个 RepoGroup\n（≤5 文件 / ≤80k 估算字符\n大文件可 solo 至 120k）", fillcolor="#E8F0FE"];
+  snapshot [label="读取文件\n中性文件快照（模型可见）\n+ 内部全新增 diff（工具 / 证据门可见）"];
+  runtime [label="buildSpikeRuntime\nboundary 全开 / split 关 / findingScope 关\ncoverage.repair 关 / 工具预算 15"];
+  phases [label="六阶段主循环\n（scan Zone A + repo 初始消息）", fillcolor="#EEF4FF"];
+  lang [label="Phase 5\nlanguageRules.repo 开启时\n按文件注入 <rules for>", fillcolor="#FFF8E8", color="#D98E2B"];
+  skills [label="Phase 5 之后\n规则 Skill 独立会话（N 个）", fillcolor="#FFF8E8", color="#D98E2B"];
+  candidates [label="候选门\nschema / evidence / scope（repo 关）/ 去重"];
+  verdict [label="Phase 6 验证\npass / reject / complete"];
+  findings [label="组内 findings"];
+  repair [label="Finding 路径修复\n（已知文件 = 本组送检文件）\n唯一最佳才修（ADR-0120）", fillcolor="#F3EEFF", color="#7B61B5"];
+  coverage [label="覆盖回填\n每文件 candidate / no-issue"];
+  artifacts [label="组内落盘\nreviews_all.json / reviews_tips_zh.json\nrun.json / audit / transcript"];
+
+  report [label="上报回调（reviewed 组）\n按文件 fullRepoReportReviewResult", fillcolor="#EAF7EE", color="#3C8D5A"];
+  withTips [label="有 finding 的文件\n带 tips（code 取仓库原文）"];
+  empty [label="其余送检文件\nreviewTips: []（每文件一次）"];
+  failed [label="组失败 / 跳过\n不上报（不把「没看」冒充「没问题」）", fillcolor="#FDECEC", color="#C0504D"];
+  retry [label="临时错误（429 / 5xx / 超时 / 网络）\n最多 groupAttempts 次", shape=note, fillcolor="#FFF8E8", color="#D98E2B", fontsize=9];
+
+  group -> snapshot -> runtime -> phases;
+  phases -> lang -> skills -> candidates -> verdict -> findings;
+  findings -> repair -> coverage -> artifacts -> report;
+  report -> withTips;
+  report -> empty;
+  group -> failed [style=dashed, color="#C0504D", fontcolor="#C0504D"];
+  group -> retry [style=dotted, arrowhead=none, color="#999999"];
+  retry -> snapshot [style=dotted, label=" 重试", color="#999999"];
+
+  note [shape=note, label="组级隔离：一组失败不终止整次运行\ncoverage 记 failed-group；job.json 逐组持久化", fillcolor="#FFF8E8", color="#D98E2B", fontsize=9];
+  failed -> note [style=dotted, arrowhead=none, color="#999999"];
+}
