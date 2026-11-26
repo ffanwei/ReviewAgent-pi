@@ -75,6 +75,8 @@ export interface RepoGroup {
   readonly files: readonly RepoFile[];
   /** 估算字符数（文件大小 + diff 头开销） */
   readonly estimatedChars: number;
+  /** 单文件估算超过 maxGroupChars、按大文件例外单独成组 */
+  readonly soloLarge?: boolean;
 }
 
 export interface GroupPlan {
@@ -206,6 +208,8 @@ export interface RepoSpikePlan {
     readonly key: string;
     readonly files: readonly string[];
     readonly diffChars: number;
+    /** 单文件超过 maxGroupChars、按大文件例外单独成组 */
+    readonly soloLarge?: boolean;
   }[];
   readonly skippedFiles: readonly SkippedFile[];
 }

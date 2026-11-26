@@ -334,14 +334,16 @@ export const DEFAULT_LIMITS: Limits = {
       maxHunksPerRequest: 6,
     },
   },
-  // 5 / 60k 来自全仓实跑：单组超过 5 个文件后注意力下降。
+  // 5 文件/组来自全仓实跑：单组超过 5 个文件后注意力下降。
+  // 80k/组 ≈ 2,270 行、120k/文件 ≈ 3,400 行（按 35.2 B/行）：
+  // 80–120k 的单文件按大文件例外单独成组，不再整文件跳过。
   repoScan: {
     groupBy: "directory",
     maxFilesPerGroup: 5,
-    maxGroupChars: 60_000,
+    maxGroupChars: 80_000,
     maxGroups: 500,
     maxFiles: 2_000,
-    maxFileChars: 100_000,
+    maxFileChars: 120_000,
     maxRounds: 1,
     groupConcurrency: 1,
     maxTotalTokens: 0,

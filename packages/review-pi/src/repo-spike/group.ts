@@ -17,7 +17,9 @@ export interface GroupRepoFilesOptions {
  * - `language`：按扩展名；
  * - `none`：一个文件一组。
  *
- * 单文件估算超过 `maxGroupChars` 时跳过并留原因；绝不把文件拆开。
+ * 单文件估算超过 `maxGroupChars` 时**单独成组**（`soloLarge`），不再整文件跳过：
+ * 多文件装箱上限不适用于已经不可再拆的单文件；单文件体积由枚举阶段的
+ * `maxFileChars` 兜底。绝不把文件拆开。
  */
 export function groupRepoFiles(
   files: readonly RepoFile[],
@@ -49,21 +51,11 @@ export function groupRepoFiles(
     );
     if (options.groupBy === "none") {
       for (const file of bucket) {
-        const cost = estimateChars(file);
-        if (cost > maxChars) {
-          skipped.push({ path: file.path, reason: `group-too-large(${cost}>${maxChars})` });
-          continue;
-        }
-        groups.push({
-          index: 0,
-          key,
-          files: [file],
-          estimatedChars: cost,
-        });
+        groups.push(singleFileGroup(file, key, maxChars));
       }
       continue;
     }
-    chunkBucket(bucket, key, maxFiles, maxChars, groups, skipped);
+    chunkBucket(bucket, key, maxFiles, maxChars, groups);
   }
 
   groups.sort((left, right) => {
@@ -86,7 +78,6 @@ function chunkBucket(
   maxFiles: number,
   maxChars: number,
   out: RepoGroup[],
-  skipped: SkippedFile[],
 ): void {
   let current: RepoFile[] = [];
   let chars = 0;
@@ -108,7 +99,9 @@ function chunkBucket(
   for (const file of bucket) {
     const cost = estimateChars(file);
     if (cost > maxChars) {
-      skipped.push({ path: file.path, reason: `group-too-large(${cost}>${maxChars})` });
+      // 单文件已不可再拆：多文件装箱上限不适用，单独成组并留审计标记。
+      flush();
+      out.push(singleFileGroup(file, key, maxChars));
       continue;
     }
     if (current.length > 0 && (current.length >= maxFiles || chars + cost > maxChars)) {
@@ -118,6 +111,17 @@ function chunkBucket(
     chars += cost;
   }
   flush();
+}
+
+function singleFileGroup(file: RepoFile, key: string, maxChars: number): RepoGroup {
+  const cost = estimateChars(file);
+  return {
+    index: 0,
+    key,
+    files: [file],
+    estimatedChars: cost,
+    ...(cost > maxChars ? { soloLarge: true as const } : {}),
+  };
 }
 
 function estimateChars(file: RepoFile): number {

@@ -225,11 +225,12 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/maxReadsPerFile/);
   });
 
-  test("limits.repoScan：缺省 5 文件 / 60k 字符，可配且校验", () => {
+  test("limits.repoScan：缺省 5 文件 / 80k 组 / 120k 文件，可配且校验", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
     expect(defaults.limits.repoScan).toEqual(DEFAULT_LIMITS.repoScan);
     expect(defaults.limits.repoScan.maxFilesPerGroup).toBe(5);
-    expect(defaults.limits.repoScan.maxGroupChars).toBe(60_000);
+    expect(defaults.limits.repoScan.maxGroupChars).toBe(80_000);
+    expect(defaults.limits.repoScan.maxFileChars).toBe(120_000);
 
     const tuned = loadConfig({
       configPath: writeConfig(

@@ -27,10 +27,10 @@ function options(root: string, out: string, overrides: Partial<RepoSpikeOptions>
     outDir: out,
     groupBy: "none",
     maxFilesPerGroup: 10,
-    maxGroupChars: 120_000,
+    maxGroupChars: 80_000,
     maxGroups: 500,
     maxFiles: 20,
-    maxFileChars: 100_000,
+    maxFileChars: 120_000,
     maxRounds: 1,
     groupConcurrency: 1,
     includeTests: false,
@@ -84,6 +84,30 @@ test("dry-run：枚举 + 分组 + 合成 diff，不触模型，写 plan", async 
   expect(plan.files).toMatchObject({ discovered: 2, selected: 2 });
   expect(plan.groups).toHaveLength(2);
   expect(plan.groups.map((group) => group.files)).toEqual([["src/a.ts"], ["src/b.ts"]]);
+});
+
+test("dry-run：大文件超过 maxGroupChars 但不超过 maxFileChars 时单独成组", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a/small-one.ts", "a".repeat(1_000));
+  write(root, "src/a/small-two.ts", "b".repeat(1_000));
+  write(root, "src/a/z-large.ts", "c".repeat(5_000));
+
+  const code = await runRepoSpike(
+    options(root, out, { dryRun: true, groupBy: "directory", maxGroupChars: 3_000 }),
+    { now: () => new Date("2026-11-24T00:00:00.000Z") },
+  );
+
+  expect(code).toBe(0);
+  const plan = JSON.parse(readFileSync(path.join(out, "repo-review-plan.json"), "utf8")) as {
+    groups: { files: string[]; soloLarge?: boolean }[];
+    skippedFiles: { path: string; reason: string }[];
+  };
+  expect(plan.groups).toEqual([
+    expect.objectContaining({ files: ["src/a/small-one.ts", "src/a/small-two.ts"] }),
+    expect.objectContaining({ files: ["src/a/z-large.ts"], soloLarge: true }),
+  ]);
+  expect(plan.skippedFiles).toEqual([]);
 });
 
 test("repo 模式：模型消息是中性文件快照 + scan 提示，run.json source=repo-scan", async () => {

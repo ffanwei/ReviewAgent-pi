@@ -142,6 +142,7 @@ export async function runRepoSpike(
         key: synthetic.group.key,
         files: synthetic.files,
         diffChars: synthetic.chars,
+        ...(synthetic.group.soloLarge === true ? { soloLarge: true } : {}),
       })),
       skippedFiles: mergeSkipped(enumerated.skipped, plan.skipped, syntheticGroups),
     };

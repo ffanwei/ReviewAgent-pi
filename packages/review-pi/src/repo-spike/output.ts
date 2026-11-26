@@ -35,7 +35,7 @@ export function formatPlanSummary(plan: RepoSpikePlan): string {
       (group) =>
         `[repo-review]   ${String(group.index).padStart(3, "0")} ${group.key} files=${String(
           group.files.length,
-        )} diffChars=${String(group.diffChars)}`,
+        )} diffChars=${String(group.diffChars)}${group.soloLarge === true ? " solo=true" : ""}`,
     ),
   ].join("\n");
 }

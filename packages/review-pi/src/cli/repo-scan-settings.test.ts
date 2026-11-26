@@ -41,7 +41,7 @@ function configWithRepoScan(overrides: Partial<ResolvedConfig["limits"]["repoSca
 }
 
 describe("resolveRepoScanSettings：CLI > 配置 > 内置缺省", () => {
-  test("无配置、无旗标 → 内置缺省（5 / 60k）", () => {
+  test("无配置、无旗标 → 内置缺省（5 / 80k / 120k）", () => {
     expect(resolveRepoScanSettings(args(), undefined)).toEqual(DEFAULT_LIMITS.repoScan);
   });
 
