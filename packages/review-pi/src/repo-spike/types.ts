@@ -25,6 +25,10 @@ export interface RepoSpikeOptions {
   readonly maxGroups: number;
   readonly maxFiles: number;
   readonly maxFileChars: number;
+  /** 每文件平均工具调用预算；缺省 8 */
+  readonly maxToolCallsPerFile?: number;
+  /** 单组工具调用硬上限；缺省 40 */
+  readonly maxToolCallsPerGroup?: number;
   readonly maxRounds: number;
   readonly groupConcurrency: number;
   /** 是否把测试文件纳入检视（缺省 false，与全仓扫描契约一致） */

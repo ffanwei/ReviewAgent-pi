@@ -23,6 +23,8 @@ export function resolveRepoScanSettings(
     maxGroups: args.maxGroups ?? base.maxGroups,
     maxFiles: args.maxFiles ?? base.maxFiles,
     maxFileChars: args.maxFileChars ?? base.maxFileChars,
+    maxToolCallsPerFile: base.maxToolCallsPerFile,
+    maxToolCallsPerGroup: base.maxToolCallsPerGroup,
     maxRounds: args.maxRounds ?? base.maxRounds,
     groupConcurrency: args.groupConcurrency ?? base.groupConcurrency,
     maxTotalTokens: args.maxTotalTokens ?? base.maxTotalTokens,

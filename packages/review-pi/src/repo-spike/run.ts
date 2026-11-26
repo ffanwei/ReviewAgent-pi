@@ -34,7 +34,7 @@ import {
   groupSlug,
   writeJsonFile,
 } from "./output.js";
-import { buildSpikeRuntime } from "./runtime.js";
+import { buildSpikeRuntime, computeSpikeToolBudget } from "./runtime.js";
 import { synthesizeGroupDiff } from "./synthesize-diff.js";
 import type {
   RepoReviewedBatch,
@@ -158,13 +158,10 @@ export async function runRepoSpike(
     throw new Error("repo-review: missing reviewer API key (run `review-pi config init` or pass --config)");
   }
   const fetchFn = deps.fetch ?? globalThis.fetch;
-  const runtime = buildSpikeRuntime(
-    options.maxRounds,
-    options.includeTests,
-    deps.languageRules,
-  );
   const maxTotalTokens = Math.max(0, Math.floor(options.maxTotalTokens ?? 0));
   const groupAttempts = Math.max(1, Math.floor(options.groupAttempts ?? 2));
+  const toolCallsPerFile = Math.max(1, Math.floor(options.maxToolCallsPerFile ?? 8));
+  const maxToolCallsPerGroup = Math.max(1, Math.floor(options.maxToolCallsPerGroup ?? 40));
 
   const hashes = {
     snapshotHash: fingerprintGroups(syntheticGroups),
@@ -175,6 +172,8 @@ export async function runRepoSpike(
       maxRounds: options.maxRounds,
       includeTests: options.includeTests,
       groupBy: options.groupBy,
+      maxToolCallsPerFile: toolCallsPerFile,
+      maxToolCallsPerGroup: maxToolCallsPerGroup,
       ruleSkillsHash: await fingerprintRuleSkills(options.ruleSkillZips, options.ruleSkillDirs),
       strictRuleSkill: options.strictRuleSkill === true,
     }),
@@ -310,6 +309,16 @@ export async function runRepoSpike(
       `[repo-review] [${String(synthetic.group.index)}/${String(totalGroups)}] start ${synthetic.group.key} files=${String(synthetic.files.length)} chars=${String(synthetic.chars)} elapsed=${formatDuration(elapsedMs())} ${etaText()}`,
     );
     await ensureDir(runsRoot);
+    const groupRuntime = buildSpikeRuntime(
+      options.maxRounds,
+      options.includeTests,
+      deps.languageRules,
+      computeSpikeToolBudget(
+        synthetic.files.length,
+        toolCallsPerFile,
+        maxToolCallsPerGroup,
+      ),
+    );
 
     for (let attempt = 0; attempt < groupAttempts; attempt += 1) {
       jobGroup.status = "running";
@@ -329,7 +338,7 @@ export async function runRepoSpike(
           apiKey,
           ...(deps.baseUrl !== undefined ? { baseUrl: deps.baseUrl } : {}),
           ...(deps.modelId !== undefined ? { modelId: deps.modelId } : {}),
-          runtime,
+          runtime: groupRuntime,
           fetch: fetchFn,
           runsRoot,
           rep: 1,

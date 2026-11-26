@@ -945,6 +945,8 @@ ${excludeGlobLines}
     // maxGroupChars=80000 约 2,270 行；maxFileChars=120000 约 3,400 行（按 35.2 B/行）。
     // 单文件估算超过 maxGroupChars 但不超过 maxFileChars 时单独成组（大文件例外），
     // 不再整文件跳过；超过 maxFileChars 才在枚举阶段跳过。
+    // 工具预算按文件数分配：min(maxToolCallsPerGroup, maxToolCallsPerFile × 文件数)；
+    // 5 文件组默认 8 × 5 = 40 次。
     // includeRegex / excludeRegex 匹配仓库相对 POSIX 路径；exclude 优先。
     "repoScan": {
       "groupBy": "directory",
@@ -953,6 +955,8 @@ ${excludeGlobLines}
       "maxGroups": 500,
       "maxFiles": 2000,
       "maxFileChars": 120000,
+      "maxToolCallsPerFile": 8,
+      "maxToolCallsPerGroup": 40,
       "maxRounds": 1,
       "groupConcurrency": 1,
       "maxTotalTokens": 0,

@@ -12,20 +12,45 @@ import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-run
  * - findingScope 关闭：合成 diff 里所有行都是 `+`，不应再按 hunk 收窄；
  * - evidence 用 warn：先观察接地率，不直接 drop；
  * - coverage.repair 关闭：避免在合成 diff 上触发补漏；
- * - 工具预算 15：合成 diff 已含整文件内容，Context Retrieval 的边际收益低；
- *   不设界时单组会跑满 100 次工具预算，全仓成本不可控。
+ * - 工具预算按文件数分配：`min(maxToolCallsPerGroup, maxToolCallsPerFile × 文件数)`；
+ *   合成 diff 已含整文件内容，Context Retrieval 的边际收益低，仍保留单组硬上限。
  */
+export interface SpikeToolBudget {
+  readonly maxToolCalls: number;
+  readonly maxToolAttempts: number;
+}
+
+/**
+ * 按文件数计算单组工具预算。
+ *
+ * - 每文件预算 `perFile`（缺省 8）；
+ * - 单组硬上限 `maxPerGroup`（缺省 40）；
+ * - 尝试预算 = 执行预算 + 10，避免被 retrieval 拒绝的重复请求先耗尽尝试次数。
+ */
+export function computeSpikeToolBudget(
+  fileCount: number,
+  perFile: number,
+  maxPerGroup: number,
+): SpikeToolBudget {
+  const files = Math.max(1, Math.floor(fileCount));
+  const per = Math.max(1, Math.floor(perFile));
+  const cap = Math.max(1, Math.floor(maxPerGroup));
+  const maxToolCalls = Math.min(cap, per * files);
+  return { maxToolCalls, maxToolAttempts: maxToolCalls + 10 };
+}
+
 export function buildSpikeRuntime(
   maxRounds: number,
   includeTests: boolean,
-  languageRules?: LanguageRulesLimits,
+  languageRules: LanguageRulesLimits | undefined,
+  toolBudget: SpikeToolBudget,
 ): ReviewRuntime {
   const defaults = DEFAULT_REVIEW_RUNTIME;
   const limits = defaults.limits;
   return {
     ...defaults,
-    maxToolCalls: 15,
-    maxToolAttempts: 20,
+    maxToolCalls: toolBudget.maxToolCalls,
+    maxToolAttempts: toolBudget.maxToolAttempts,
     limits: {
       ...limits,
       languageRules: languageRules ?? limits.languageRules,

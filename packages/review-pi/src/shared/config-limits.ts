@@ -236,6 +236,10 @@ export interface RepoScanLimits {
   readonly maxGroups: number;
   readonly maxFiles: number;
   readonly maxFileChars: number;
+  /** 每文件平均工具调用预算；单组预算 = min(maxToolCallsPerGroup, 本值 × 文件数) */
+  readonly maxToolCallsPerFile: number;
+  /** 单组工具调用硬上限 */
+  readonly maxToolCallsPerGroup: number;
   readonly maxRounds: number;
   readonly groupConcurrency: number;
   readonly maxTotalTokens: number;
@@ -337,6 +341,8 @@ export const DEFAULT_LIMITS: Limits = {
   // 5 文件/组来自全仓实跑：单组超过 5 个文件后注意力下降。
   // 80k/组 ≈ 2,270 行、120k/文件 ≈ 3,400 行（按 35.2 B/行）：
   // 80–120k 的单文件按大文件例外单独成组，不再整文件跳过。
+  // 工具预算：min(maxToolCallsPerGroup, maxToolCallsPerFile × 文件数)；
+  // 5 文件组默认 8 × 5 = 40 次。
   repoScan: {
     groupBy: "directory",
     maxFilesPerGroup: 5,
@@ -344,6 +350,8 @@ export const DEFAULT_LIMITS: Limits = {
     maxGroups: 500,
     maxFiles: 2_000,
     maxFileChars: 120_000,
+    maxToolCallsPerFile: 8,
+    maxToolCallsPerGroup: 40,
     maxRounds: 1,
     groupConcurrency: 1,
     maxTotalTokens: 0,
@@ -407,6 +415,8 @@ const REPO_SCAN_KEYS = [
   "maxGroups",
   "maxFiles",
   "maxFileChars",
+  "maxToolCallsPerFile",
+  "maxToolCallsPerGroup",
   "maxRounds",
   "groupConcurrency",
   "maxTotalTokens",
@@ -755,6 +765,20 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
       1_000,
       10_000_000,
       DEFAULT_LIMITS.repoScan.maxFileChars,
+    ),
+    maxToolCallsPerFile: intOr(
+      repoScanObj.maxToolCallsPerFile,
+      "limits.repoScan.maxToolCallsPerFile",
+      1,
+      1_000,
+      DEFAULT_LIMITS.repoScan.maxToolCallsPerFile,
+    ),
+    maxToolCallsPerGroup: intOr(
+      repoScanObj.maxToolCallsPerGroup,
+      "limits.repoScan.maxToolCallsPerGroup",
+      1,
+      1_000,
+      DEFAULT_LIMITS.repoScan.maxToolCallsPerGroup,
     ),
     maxRounds: intOr(
       repoScanObj.maxRounds,

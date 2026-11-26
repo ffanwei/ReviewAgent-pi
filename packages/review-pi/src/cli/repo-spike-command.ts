@@ -86,6 +86,8 @@ export async function runRepoSpikeCommand(
     maxGroups: settings.maxGroups,
     maxFiles: settings.maxFiles,
     maxFileChars: settings.maxFileChars,
+    maxToolCallsPerFile: settings.maxToolCallsPerFile,
+    maxToolCallsPerGroup: settings.maxToolCallsPerGroup,
     maxRounds: settings.maxRounds,
     groupConcurrency: settings.groupConcurrency,
     maxTotalTokens: settings.maxTotalTokens,

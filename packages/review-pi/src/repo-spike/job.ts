@@ -89,6 +89,8 @@ export function fingerprintConfig(input: {
   readonly maxRounds: number;
   readonly includeTests: boolean;
   readonly groupBy: string;
+  readonly maxToolCallsPerFile: number;
+  readonly maxToolCallsPerGroup: number;
   readonly ruleSkillsHash: string;
   readonly strictRuleSkill: boolean;
 }): string {
@@ -98,6 +100,8 @@ export function fingerprintConfig(input: {
     maxRounds: input.maxRounds,
     includeTests: input.includeTests,
     groupBy: input.groupBy,
+    maxToolCallsPerFile: input.maxToolCallsPerFile,
+    maxToolCallsPerGroup: input.maxToolCallsPerGroup,
     ruleSkillsHash: input.ruleSkillsHash,
     strictRuleSkill: input.strictRuleSkill,
   });

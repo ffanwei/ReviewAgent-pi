@@ -225,17 +225,19 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/maxReadsPerFile/);
   });
 
-  test("limits.repoScan：缺省 5 文件 / 80k 组 / 120k 文件，可配且校验", () => {
+  test("limits.repoScan：缺省 5 文件 / 80k 组 / 120k 文件 / 8·40 工具预算，可配且校验", () => {
     const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
     expect(defaults.limits.repoScan).toEqual(DEFAULT_LIMITS.repoScan);
     expect(defaults.limits.repoScan.maxFilesPerGroup).toBe(5);
     expect(defaults.limits.repoScan.maxGroupChars).toBe(80_000);
     expect(defaults.limits.repoScan.maxFileChars).toBe(120_000);
+    expect(defaults.limits.repoScan.maxToolCallsPerFile).toBe(8);
+    expect(defaults.limits.repoScan.maxToolCallsPerGroup).toBe(40);
 
     const tuned = loadConfig({
       configPath: writeConfig(
         minimalConfig(
-          `,"limits":{"repoScan":{"groupBy":"language","maxFilesPerGroup":8,"maxGroupChars":80000,"groupConcurrency":3,"includeTests":true,"includeRegex":["^src/"],"excludeRegex":["\\\\.test\\\\.ts$"]}}`,
+          `,"limits":{"repoScan":{"groupBy":"language","maxFilesPerGroup":8,"maxGroupChars":80000,"maxToolCallsPerFile":6,"maxToolCallsPerGroup":30,"groupConcurrency":3,"includeTests":true,"includeRegex":["^src/"],"excludeRegex":["\\\\.test\\\\.ts$"]}}`,
         ),
       ),
     }).config;
@@ -243,6 +245,8 @@ describe("loadConfig：失败策略", () => {
       groupBy: "language",
       maxFilesPerGroup: 8,
       maxGroupChars: 80_000,
+      maxToolCallsPerFile: 6,
+      maxToolCallsPerGroup: 30,
       groupConcurrency: 3,
       includeTests: true,
       includeRegex: ["^src/"],
@@ -260,6 +264,11 @@ describe("loadConfig：失败策略", () => {
         configPath: writeConfig(minimalConfig(`,"limits":{"repoScan":{"maxFilesPerGroup":0}}`)),
       }),
     ).toThrow(/maxFilesPerGroup/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(minimalConfig(`,"limits":{"repoScan":{"maxToolCallsPerFile":0}}`)),
+      }),
+    ).toThrow(/maxToolCallsPerFile/);
   });
 
   test("limits.languageRules：mr / repo 独立开关，缺省全关", () => {
