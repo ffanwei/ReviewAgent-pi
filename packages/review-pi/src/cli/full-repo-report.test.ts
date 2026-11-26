@@ -97,6 +97,25 @@ test("按文件上报：有意见带 8 字段 tip，无意见文件补空包", a
   expect(logs.join("\n")).toContain("已上报 2 文件 / 1 条意见（补空 1）");
 });
 
+test("零意见组：每个文件各报一次空 tips（不合并成一条）", async () => {
+  const repoPath = tempRepo();
+  const lifecycle = fakeLifecycle();
+  const files = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts", "src/e.ts"];
+
+  await reportFullRepoBatch({
+    taskId: "repo-1",
+    repoPath,
+    batch: { index: 1, key: "src", files, findings: [] },
+    lifecycle,
+    log: () => undefined,
+  });
+
+  expect(lifecycle.calls.map((call) => call.filePath)).toEqual(files);
+  for (const call of lifecycle.calls) {
+    expect(call.reviewTips).toEqual([]);
+  }
+});
+
 test("上报失败只留痕：不抛错，失败文件不重复补空包", async () => {
   const repoPath = tempRepo();
   const lifecycle = fakeLifecycle({ ok: false, reason: "server rejected" });

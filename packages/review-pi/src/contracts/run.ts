@@ -371,6 +371,16 @@ export interface RetrievalBudgetAudit {
   readonly readChars: number;
 }
 
+/**
+ * Finding 路径修复留痕：模型把 `file` 写错几个字符时，按已知文件全集修正为
+ * 真实路径（ADR-0120）。`distance` = 宽松匹配 0 / 编辑距离 1..N。
+ */
+export interface PathRepairRecord {
+  readonly from: string;
+  readonly to: string;
+  readonly distance: number;
+}
+
 export interface RunAudit {
   readonly requests: readonly WireRequest[];
   readonly toolCallLog: readonly ToolCallRecord[];
@@ -401,6 +411,8 @@ export interface RunAudit {
   readonly severityFilter?: SeverityFilterRecord;
   /** 候选字段归一化留痕（只在真有修复时在场；零漂移纪律） */
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
+  /** Finding 路径修复留痕（ADR-0120）：只在真有修复时在场 */
+  readonly pathRepairs?: readonly PathRepairRecord[];
   /** 候选拦截链阶段计数（只在有拦截时在场） */
   readonly rejectionCounts?: CandidateRejectionCounts;
   /** 证据接地计数（F-04；只在 mode 非 off 且检查过候选时在场） */

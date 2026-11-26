@@ -12,6 +12,7 @@ import type {
   CoverageRepairAudit,
   EvidenceGroundingAudit,
   ModelFallbackRecord,
+  PathRepairRecord,
   PhaseRecord,
   RuleSkillAudit,
   RuleSkillPassRecord,
@@ -59,6 +60,8 @@ export interface AuditLight {
   readonly severityFilter?: SeverityFilterRecord;
   /** 候选字段归一化留痕（P1）：只在真有修复时在场 */
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
+  /** Finding 路径修复留痕（ADR-0120）：只在真有修复时在场 */
+  readonly pathRepairs?: readonly PathRepairRecord[];
   /** 候选拦截链阶段计数（P1）：只在有拦截时在场 */
   readonly rejectionCounts?: CandidateRejectionCounts;
   /** 证据接地计数（F-04）：只在 mode 非 off 且检查过候选时在场 */
@@ -171,6 +174,7 @@ export function toAuditLight(audit: RunAudit): AuditLight {
     ...(audit.candidateNormalizations !== undefined
       ? { candidateNormalizations: audit.candidateNormalizations }
       : {}),
+    ...(audit.pathRepairs !== undefined ? { pathRepairs: audit.pathRepairs } : {}),
     ...(audit.rejectionCounts !== undefined ? { rejectionCounts: audit.rejectionCounts } : {}),
     ...(audit.evidenceGrounding !== undefined
       ? { evidenceGrounding: audit.evidenceGrounding }

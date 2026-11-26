@@ -52,6 +52,7 @@ import {
   truncatedRangesFromShardRecords,
 } from "./coverage-ledger.js";
 import { SCAN_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../loop/system-prompt.js";
+import { repairFilePaths } from "../finding/path-repair.js";
 import { repairCoverageGaps } from "./coverage-repair.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { formatRepoSnapshotModelNote, type RepoSnapshotSideRecord } from "./repo-side.js";
@@ -443,16 +444,26 @@ async function executeReviewPass(
     }),
   });
 
+  // Finding 路径修复（ADR-0120）：模型偶发把 file 写错几个字符，先按本遍
+  // 已知文件全集（全仓 = 本组送检文件；MR = 本遍 diff）修正到真实路径，
+  // 再回填覆盖账本 / 组装报文。修不准就保持原样，绝不跨文件猜。
+  const knownFindingFiles =
+    input.reviewMode === "repo"
+      ? (input.fileSnapshot?.map((file) => file.path) ?? listChangedFilePaths(input.diff))
+      : listChangedFilePaths(input.diff);
+  const pathRepair = repairFilePaths(outcome.findings, knownFindingFiles);
+  const outcomeFindings = pathRepair.items;
+
   // 覆盖收口（F-01a）：finding 按新侧行号回填 candidate；F-01b 启用时再对
   // 仍未覆盖的 hunk 发独立补漏请求，补漏候选仍走同一候选门。
-  const mainCoverage = backfillCandidates(coverage, outcome.findings, "main");
+  const mainCoverage = backfillCandidates(coverage, outcomeFindings, "main");
   const repairLimits = input.runtime.limits.coverage.repair;
   const repair =
     repairLimits.enabled
       ? await repairCoverageGaps({
           diff: input.diff,
           ledger: mainCoverage,
-          findings: outcome.findings,
+          findings: outcomeFindings,
           limits: repairLimits,
           ...(scope !== undefined ? { scope } : {}),
           llm: {
@@ -466,7 +477,7 @@ async function executeReviewPass(
         })
       : undefined;
   const findings =
-    repair === undefined ? outcome.findings : [...outcome.findings, ...repair.findings];
+    repair === undefined ? outcomeFindings : [...outcomeFindings, ...repair.findings];
   // 补漏是一次性调用：成本记在 `coverageRepair.usage` 与 one-shot 账本，
   // 不并入主会话 usage（避免与 one-shot 汇总重复计数）。
   const usage = outcome.usage;
@@ -502,6 +513,7 @@ async function executeReviewPass(
     ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog: persisted.records } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
     ...(severityFilter !== undefined ? { severityFilter } : {}),
+    ...(pathRepair.repairs.length > 0 ? { pathRepairs: pathRepair.repairs } : {}),
     ...(skillReview !== undefined
       ? {
           skillReview: {

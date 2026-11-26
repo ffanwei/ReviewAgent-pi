@@ -3914,6 +3914,72 @@ test(
 );
 
 test(
+  "ADR-0119：跳过检视也按变更文件逐个上报空 tips（每个文件一次）",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-out-");
+      const mrFile = writeMr(
+        [
+          "diff --git a/src/main/java/Keep.java b/src/main/java/Keep.java",
+          "--- a/src/main/java/Keep.java",
+          "+++ b/src/main/java/Keep.java",
+          "@@ -1 +1 @@",
+          "-class Keep {}",
+          "+class Keep { }",
+          "diff --git a/src/main/java/Other.java b/src/main/java/Other.java",
+          "--- a/src/main/java/Other.java",
+          "+++ b/src/main/java/Other.java",
+          "@@ -1 +1 @@",
+          "-class Other {}",
+          "+class Other { }",
+        ].join("\n"),
+      );
+
+      const run = await runBin(
+        [
+          "review",
+          "--repo",
+          repoFixturePath("sample"),
+          "--mr-diff",
+          mrFile,
+          "--taskId",
+          CLI_TASK_ID,
+          "--tasks-dir",
+          outDir,
+          "--include",
+          "^no-such-dir/",
+        ],
+        { ...stubEnv(stub.baseUrl), mcpServerUrl: mcp.url },
+      );
+
+      expect(run.status).toBe(0);
+      const business = mcp.toolCalls().filter((call) => call.name !== "report_events");
+      expect(business.map((call) => call.name)).toEqual([
+        "startTask",
+        "mrReviewResult",
+        "mrReviewResult",
+        "saveReviewSummary",
+        "endTask",
+      ]);
+      expect(business.slice(1, 3).map((call) => call.args.filePath)).toEqual([
+        "src/main/java/Keep.java",
+        "src/main/java/Other.java",
+      ]);
+      for (const call of business.slice(1, 3)) {
+        expect(call.args.reviewTips).toEqual([]);
+      }
+      expect(stub.requests()).toHaveLength(0);
+    } finally {
+      await stub.close();
+      await mcp.close();
+    }
+  },
+  180_000,
+);
+
+test(
   "ADR-0078：--include + --exclude 联动——白名单先选、黑名单后剔，仍照常检视并补报被剔文件",
   async () => {
     const stub = await startLoopbackStub(noFindingCorpus());
@@ -4126,6 +4192,10 @@ test(
       });
       expect(calls[2]?.args).toEqual({ taskId: "repo-t1", invalidatedTips: [] });
       expect(calls[3]?.args).toEqual({ taskId: "repo-t1" });
+      // 运行日志：真跑的 stderr（含 MCP 上报行）实时镜像到任务目录。
+      const repoLog = readFileSync(path.join(outDir, "runs", "review-pi.log"), "utf8");
+      expect(repoLog).toContain("# taskId: repo-t1");
+      expect(repoLog).toContain("fullRepoReportReviewResult");
       // 不误用 PR 的四个 tool
       expect(
         calls.filter((call) =>
@@ -4138,6 +4208,56 @@ test(
     }
   },
   30_000,
+);
+
+test(
+  "repo-review：零意见组按文件逐个上报（5 个文件 = 5 次 fullRepoReportReviewResult）",
+  async () => {
+    const stub = await startLoopbackStub(noFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-repo-out-");
+      const files = [
+        "native/src/math.cpp",
+        "service/cmd/main.go",
+        "service/pkg/__init__.py",
+        "service/pkg/util.py",
+        "web/src/app.ts",
+      ];
+      const run = await runBin(
+        [
+          "repo-review",
+          "--repo",
+          repoFixturePath("multilang"),
+          "--out",
+          outDir,
+          "--taskId",
+          "repo-t2",
+          "--files",
+          files.join(","),
+          "--group-by",
+          "files",
+          "--max-files-per-group",
+          "5",
+          "--no-progress",
+        ],
+        { ...stubEnv(stub.baseUrl), mcpServerUrl: mcp.url, env: { PIAGENT_TEST_TASK_TOOL_SETTLE_MS: "0" } },
+      );
+
+      expect(run.status).toBe(0);
+      const reports = mcp
+        .toolCalls()
+        .filter((call) => call.name === "fullRepoReportReviewResult");
+      expect(reports.map((call) => (call.args as { filePath: string }).filePath)).toEqual(files);
+      for (const report of reports) {
+        expect((report.args as { reviewTips: unknown[] }).reviewTips).toEqual([]);
+      }
+    } finally {
+      await mcp.close();
+      await stub.close();
+    }
+  },
+  180_000,
 );
 
 test(
@@ -4163,6 +4283,34 @@ test(
     } finally {
       await mcp.close();
     }
+  },
+  30_000,
+);
+
+test(
+  "repo-review：运行日志镜像 stderr 到 <out>/runs/review-pi.log（dry-run 也留痕）",
+  async () => {
+    const outDir = makeTempDir("review-pi-cli-repo-log-");
+    const run = await runBin([
+      "repo-review",
+      "--repo",
+      repoFixturePath("multilang"),
+      "--out",
+      outDir,
+      "--taskId",
+      "repo-log-t1",
+      "--dry-run",
+    ]);
+
+    expect(run.status).toBe(0);
+    const logPath = path.join(outDir, "runs", "review-pi.log");
+    expect(existsSync(logPath)).toBe(true);
+    const log = readFileSync(logPath, "utf8");
+    expect(log).toContain("# review-pi run log");
+    expect(log).toContain(`# version: ${REVIEW_PI_VERSION}`);
+    expect(log).toContain("# taskId: repo-log-t1");
+    expect(log).toContain("[repo-review] dry-run: discovered=");
+    expect(log).toContain("[repo-review]   001 ");
   },
   30_000,
 );

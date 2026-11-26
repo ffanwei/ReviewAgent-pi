@@ -434,20 +434,20 @@ function skipTask(options: {
   return fakeTask(options);
 }
 
-test("deliverSkip：业务开启时报首个文件与固定总结，返回 stdout 文档", async () => {
+test("deliverSkip：业务开启时按文件逐个上报（每个文件一次）再发固定总结", async () => {
   const calls: string[] = [];
   const summaries: string[] = [];
 
   const outcome = await deliverSkip({
     identity: { caseId: "case-1", taskId: "task-1" },
     skip: { reason: "diff-too-large", message: "msg", diffLength: 100, maxChars: 10 },
-    firstFile: "a.ts",
+    files: ["a.ts", "b.ts", "c.ts"],
     task: skipTask({ calls }),
     reportedFiles: [],
     log: () => undefined,
   });
 
-  expect(calls).toEqual(["report:a.ts", "summary"]);
+  expect(calls).toEqual(["report:a.ts", "report:b.ts", "report:c.ts", "summary"]);
   expect(JSON.parse(outcome.stdoutDocument)).toEqual({
     ok: true,
     caseId: "case-1",
@@ -473,7 +473,7 @@ test("deliverSkip：业务关闭时零 MCP 调用，仍产 stdout 文档", async
   });
 });
 
-test("deliverSkip：首个文件缺席时仍发固定总结", async () => {
+test("deliverSkip：没有变更文件时仍发固定总结", async () => {
   const calls: string[] = [];
 
   await deliverSkip({
@@ -493,7 +493,7 @@ test("deliverSkip：startTask 未发出时零 MCP 调用", async () => {
   await deliverSkip({
     identity: { caseId: "case-1", taskId: "task-1" },
     skip: { reason: "diff-too-large", message: "msg", diffLength: 100, maxChars: 10 },
-    firstFile: "a.ts",
+    files: ["a.ts"],
     task: skipTask({ calls, started: false }),
     reportedFiles: [],
     log: () => undefined,

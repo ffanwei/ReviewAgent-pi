@@ -87,7 +87,13 @@ import { reviewRuntimeOf } from "../shared/review-runtime.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { REVIEW_PI_VERSION } from "../shared/version.js";
 import { mrJsonToUnifiedDiff } from "../analysis/mr-json.js";
-import { parseCliArgs, USAGE_TEXT, type ReviewCliArgs, type SmokeCliArgs } from "./args.js";
+import {
+  parseCliArgs,
+  USAGE_TEXT,
+  type RepoSpikeCliArgs,
+  type ReviewCliArgs,
+  type SmokeCliArgs,
+} from "./args.js";
 import { formatReviewArgs } from "./args-echo.js";
 import { runConfigCommand } from "./config-command.js";
 import { runVersionCommand } from "./version-command.js";
@@ -119,8 +125,9 @@ import {
 } from "./task-usage.js";
 
 /**
- * 本次 review 的运行日志（stderr 镜像 + 未捕获异常堆栈）。
- * 只有 review 命令会打开；config / smoke / export 与打开失败的路径恒为 null。
+ * 本次运行的运行日志（stderr 镜像 + 未捕获异常堆栈）。
+ * review / repo-review / repo-spike 会打开；config / smoke / export 与
+ * 打开失败的路径恒为 null。
  */
 let activeRunLog: RunLog | null = null;
 
@@ -487,7 +494,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       const delivered = await deliverSkip({
         identity: { caseId: args.caseId, taskId: args.taskId },
         skip: outcome.skip,
-        ...(changedFiles[0] !== undefined ? { firstFile: changedFiles[0] } : {}),
+        ...(changedFiles.length > 0 ? { files: changedFiles } : {}),
         // ADR-0100：无文件可检视的总结与零意见同模板——变更规模取过滤前
         // diff（变更文件全集口径），预算 / 资源为 0。
         ...(outcome.skip.reason === "no-reviewable-files"
@@ -826,6 +833,32 @@ function exitGracefully(code: number): void {
   setTimeout(() => process.exit(code), GRACEFUL_EXIT_FALLBACK_MS).unref();
 }
 
+/**
+ * 全仓命令的运行日志（与 review 同布局：`<out>/runs/review-pi.log`）。
+ *
+ * 打开时机早于枚举 / 配置装载，确保开跑前的告警、进度、失败原因都进日志；
+ * dry-run 也写（它同样是“执行过程”，只是不触模型）。日志是旁路：打不开只
+ * 警告，检视照跑。
+ */
+function openRepoRunLog(args: RepoSpikeCliArgs): void {
+  try {
+    const outDir =
+      args.outDir !== undefined
+        ? resolve(args.outDir)
+        : taskDirPath(
+            resolveTasksRoot({
+              ...(args.tasksDir !== undefined ? { tasksDir: args.tasksDir } : {}),
+            }),
+            args.taskId,
+          );
+    activeRunLog = openRunLog(runDirPath(outDir), { taskId: args.taskId });
+  } catch (error) {
+    process.stderr.write(
+      `review-pi: 运行日志打开失败（${describeReportFailure(error)}），继续检视\n`,
+    );
+  }
+}
+
 function main(): void {
   const parsed = parseCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -848,6 +881,12 @@ function main(): void {
   if (parsed.command === "export") {
     runExportCommand(parsed.args).then((code) => exitGracefully(code)).catch(reportErrorAndExit);
     return;
+  }
+  // 全仓命令：运行日志先于 dry-run / 配置装载打开，枚举、分组、组执行与
+  // 收尾的全部 stderr（进度 / 告警 / 失败原因）实时镜像到
+  // `<out>/runs/review-pi.log`。dry-run 同样留痕，便于复盘计划。
+  if (parsed.command === "repo-review" || parsed.command === "repo-spike") {
+    openRepoRunLog(parsed.args);
   }
   // repo-review / repo-spike 的 dry-run 是纯文件系统命令：不加载配置、不要求 API key。
   if ((parsed.command === "repo-review" || parsed.command === "repo-spike") && parsed.args.dryRun) {

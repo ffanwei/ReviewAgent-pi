@@ -348,6 +348,12 @@ export async function runRepoSpike(
           return skipped;
         }
         const reviewed = reviewedOutcome(synthetic, outcome.result);
+        // 路径修复留痕（ADR-0120）：group 级一行，CLI 与 review-pi.log 都可见。
+        for (const repair of outcome.result.record.baseline.audit.pathRepairs ?? []) {
+          progress(
+            `[repo-review] group ${String(synthetic.group.index)} path repaired: ${repair.from} -> ${repair.to} (distance=${String(repair.distance)})`,
+          );
+        }
         jobGroup.status = "done";
         jobGroup.runId = reviewed.runId;
         jobGroup.findingsCount = reviewed.findingsCount;

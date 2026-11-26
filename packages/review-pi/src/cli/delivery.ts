@@ -191,8 +191,11 @@ export interface DeliveryOutcome {
 export interface SkipDeliveryInput {
   readonly identity: { readonly caseId: string; readonly taskId: string };
   readonly skip: ReviewSkip;
-  /** 原始变更文件的首个（与既有跳过上报口径一致） */
-  readonly firstFile?: string;
+  /**
+   * 原始变更文件全集（过滤前 diff）：跳过检视时按文件逐个上报空 tips，
+   * 保证平台对每个变更文件都有一次登记（ADR-0119）。
+   */
+  readonly files?: readonly string[];
   /** 无文件可检视路径的收尾指标（变更规模取过滤前 diff；预算 / 资源为 0） */
   readonly metrics?: ReviewSummaryMetrics;
   readonly task?: DeliveryTaskPort;
@@ -206,24 +209,30 @@ export interface SkipDeliveryOutcome {
 }
 
 /**
- * 跳过交付（ADR-0075 / ADR-0078 / ADR-0081 / ADR-0100）：超大 diff 用固定
- * 文案；无可检视文件与正常零意见共用四节结构化模板。另发首个文件空 tips +
- * 单 JSON stdout 文档。不写 audit / run.json，不发进度事件。
+ * 跳过交付（ADR-0075 / ADR-0078 / ADR-0081 / ADR-0100 / ADR-0119）：超大 diff
+ * 用固定文案；无可检视文件与正常零意见共用四节结构化模板。跳过检视时仍按
+ * **变更文件全集逐个**发空 tips（每个文件一次），再发单 JSON stdout 文档。
+ * 不写 audit / run.json，不发进度事件。
  */
 export async function deliverSkip(input: SkipDeliveryInput): Promise<SkipDeliveryOutcome> {
   const { log } = input;
   const task = input.task;
   if (task !== undefined && task.started) {
-    if (input.firstFile !== undefined) {
-      await reportFilesWithoutTips({
+    if (input.files !== undefined && input.files.length > 0) {
+      const sent = await reportFilesWithoutTips({
         label: "",
         taskId: input.identity.taskId,
         reportFileResult: (args) =>
           task.reportFile({ filePath: args.filePath, reviewTips: args.reviewTips }),
-        files: [input.firstFile],
+        files: input.files,
         reportedFiles: input.reportedFiles,
         log,
       });
+      if (sent > 0) {
+        log(
+          `review-pi: MCP mrReviewResult 已上报 ${String(sent)} 个变更文件 / 0 条意见（跳过检视）\n`,
+        );
+      }
     }
     const markdownContent =
       input.skip.reason === "diff-too-large"

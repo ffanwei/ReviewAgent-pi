@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0118）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0120）。
 
 ## 记录纪律
 
@@ -121,6 +121,8 @@
 | [ADR-0113](0113-stage-compression.md) | 阶段压缩默认 `compact`：合并 Phase 1+2、Phase 1 禁工具、`neededContext` 为空时跳过 Phase 4；`off` 可回滚 |
 | [ADR-0117](0117-full-repo-mcp-reporting.md) | 全仓检视 MCP 上报用独立四工具（start / report / currentTips / end），复用同一 server 与 `mcp.report.task` 开关；无总结、currentTips v1 恒空 |
 | [ADR-0118](0118-language-defect-checklists.md) | Phase 5 按文件语言注入中文缺陷清单（5 种 AST 语言）；MR / 全仓独立开关，缺省全关；`<rules for>` 分块 |
+| [ADR-0119](0119-report-every-file-when-skipped.md) | 跳过检视也按变更文件逐个上报空 tips（取代 ADR-0075 的「只报首个文件」口径）；全仓零意见组同口径 |
+| [ADR-0120](0120-finding-path-repair.md) | Finding 路径修复：按已知文件全集修正少量字符错误（宽松匹配 + 有界编辑距离，唯一最佳才修） |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

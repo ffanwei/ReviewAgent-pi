@@ -4,6 +4,10 @@
 **关联**：ADR-0045（MCP 业务 tool 生命周期）、ADR-0061（summary 前每个改动文件必报）、ADR-0068（过滤文件也报空 tips）、ADR-0071（大 MR 阈值重标定）
 **跨仓**：本 ADR 为本仓 pi 线序列 0075；引用 DSH 兄弟仓决策须写全限定语「DSH 线 ADR-XXXX」。
 
+> **后续修订（[ADR-0119](0119-report-every-file-when-skipped.md)，2026-11-25）**：
+> 跳过路径改为对**全部变更文件**逐个发空 `mrReviewResult`（不再只报首个文件）；
+> 跳过判定、固定总结、stdout 与退出码不变。
+
 ## Context
 
 过滤后 diff 超过 `limits.boundary.maxDiffChars` 时，原实现（`assertDiffWithinCharLimit`）直接抛错，整条 `review` 命令 exit 1。对启用了 MCP 业务上报的场景，这意味着平台只收到 `startTask` + `endTask`（「有始有终」的空壳），中间没有任何 `mrReviewResult` / `saveReviewSummary`——平台无法区分「真的没发」与「检视被体积门禁拦下」。

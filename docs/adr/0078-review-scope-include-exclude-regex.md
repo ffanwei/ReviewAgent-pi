@@ -11,6 +11,9 @@
 > **再修订（[ADR-0103](0103-honest-zero-summaries-and-count-only-star-criteria.md)，2026-11-18）**：
 > 四节结构保留，但说明句恢复「无可检视文件，跳过检视。」且不作星级评价——
 > 「没检视」不再写成「未发现缺陷」。
+>
+> **再修订（[ADR-0119](0119-report-every-file-when-skipped.md)，2026-11-25）**：
+> 跳过路径改为对全部变更文件逐个发空 `mrReviewResult`（不再只报首个文件）。
 
 ## Context
 

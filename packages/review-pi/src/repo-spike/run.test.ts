@@ -124,6 +124,70 @@ test("repo 模式：模型消息是中性文件快照 + scan 提示，run.json s
   expect(record.source).toBe("repo-scan");
 });
 
+test("路径修复：候选 file 少数拼写错误 → 修正到真实送检文件（ADR-0120）", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/util/helper.ts", "export const helper = 1;\n");
+
+  const candidate = {
+    id: "F001",
+    severity: "P2",
+    category: "可维护",
+    file: "src/utli/helper.ts",
+    line: 1,
+    title: "导出常量未使用",
+    description: "该常量未被引用。",
+    evidence: ["src/utli/helper.ts:1 export const helper = 1;"],
+    rule: "",
+    confidence: 0.9,
+    tips: {
+      review: "[缺陷类型] 未使用。影响评估：无。",
+      suggestion: "[重构思路] 删除。代码示例：```删除```",
+      subcategory: "未使用代码",
+    },
+  };
+  const script = fakeFetch([
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: "ok", usage: ZERO },
+    { text: `{"candidates":[${JSON.stringify(candidate)}]}`, usage: ZERO },
+    {
+      text: '{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}],"complete":true}',
+      usage: ZERO,
+    },
+  ]);
+  const code = await runRepoSpike(options(root, out), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: script.fetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+
+  expect(code).toBe(0);
+  const result = JSON.parse(readFileSync(path.join(out, "repo-review-result.json"), "utf8")) as {
+    findings: { file: string }[];
+    coverage: { files: { path: string; state: string; findingIds?: string[] }[] };
+  };
+  expect(result.findings).toHaveLength(1);
+  expect(result.findings[0]?.file).toBe("src/util/helper.ts");
+  expect(result.coverage.files).toEqual([
+    { path: "src/util/helper.ts", state: "candidate", findingIds: ["F001"] },
+  ]);
+
+  const groupDir = readdirSync(path.join(out, "runs"))[0] ?? "";
+  const reviews = JSON.parse(
+    readFileSync(path.join(out, "runs", groupDir, "runs", "reviews_all.json"), "utf8"),
+  ) as { findings: { file: string }[] };
+  expect(reviews.findings[0]?.file).toBe("src/util/helper.ts");
+  const record = JSON.parse(
+    readFileSync(path.join(out, "runs", groupDir, "runs", "run.json"), "utf8"),
+  ) as { baseline?: { audit?: { pathRepairs?: { from: string; to: string }[] } } };
+  expect(record.baseline?.audit?.pathRepairs).toEqual([
+    { from: "src/utli/helper.ts", to: "src/util/helper.ts", distance: 2 },
+  ]);
+});
+
 test("真跑：每组一次 runReviewOutcome，findings 合并后写独立结果", async () => {
   const root = tempDir("repo-spike-run-root-");
   const out = tempDir("repo-spike-run-out-");

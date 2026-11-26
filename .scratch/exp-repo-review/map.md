@@ -91,6 +91,9 @@
 | R-11 | 全仓 CLI 与 review 对齐 | repo 缺 taskId/tasks-dir/model 口径，产物不在任务目录 | P0 | DONE | `--taskId` 必填；产物落 `<tasks>/<taskId>`；`--tasks-dir` / `--model` 同 review；`--include/--exclude` 过滤路径 | 2026-11-25 完成：全包 1309 passed / 1 skipped，build 通过；参数 / 枚举 / 进程级用例覆盖 | [票](issues/R-11-repo-cli-task-dir/ticket.md) · [讨论](issues/R-11-repo-cli-task-dir/discussion.md) |
 | R-12 | `limits.repoScan` 配置块 | repo 缺省只能靠 CLI，`config init` 不含这些值 | P1 | DONE | `config init` 生成 repoScan 默认块；CLI > 配置 > 内置；范围校验 | 2026-11-25 完成：`config init` 实测生成 repoScan 块；全包 1314 passed / 1 skipped，build 通过 | [票](issues/R-12-repo-scan-config/ticket.md) · [讨论](issues/R-12-repo-scan-config/discussion.md) |
 | R-13 | 语言缺陷清单（MR + 全仓） | 需要复用 OCR 的语言规则，但不能增加每组会话成本 | P1 | DONE | 5 种 AST 语言；Phase 5 注入；MR / Repo 独立开关；中文缺陷清单；`<rules for>` 分块 | 2026-11-25 完成：全包 1324 passed / 1 skipped，build 通过；Phase 5 注入与开关单测通过 | [票](issues/R-13-language-rules/ticket.md) · [讨论](issues/R-13-language-rules/discussion.md) |
+| R-14 | 全仓运行日志 | 全仓只有 stderr，宿主停止后无法复盘执行过程 | P1 | DONE | `<out>/runs/review-pi.log` 实时镜像 stderr；dry-run 也留痕；打开失败不改退出码 | 2026-11-25 完成：全包 1325 passed / 1 skipped，build 通过；dry-run 与真跑进程用例断言日志内容 | [票](issues/R-14-repo-run-log/ticket.md) · — |
+| R-15 | 跳过检视按文件上报 | 跳过路径只报首个文件，平台无法按文件登记 | P1 | DONE | 跳过路径按变更文件全集逐个上报空 tips；全仓零意见组同样逐文件 | 2026-11-25 完成：全包 1328 passed / 1 skipped，build / typecheck 通过；ADR-0119 | [票](issues/R-15-report-every-file-when-skipped/ticket.md) · — |
+| R-16 | Finding 路径修复 | 模型路径少量字符错误 → 读不到源码行，意见丢失 | P0 | DONE | 按已知文件全集修 `Finding.file`；唯一最佳才修；覆盖 / 落盘 / 报文统一用修复值 | 2026-11-25 完成：新增 `finding/path-repair.ts` + 9 单测 + repo 集成测试；ADR-0120 | [票](issues/R-16-finding-path-repair/ticket.md) · — |
 
 ## 当前焦点
 
@@ -108,6 +111,9 @@
 - [x] **R-11 CLI 对齐**：完成；`--taskId` 必填、产物落 `<tasks>/<taskId>`、`--tasks-dir` / `--model` 同 review、`--include/--exclude` 路径过滤。
 - [x] **R-12 repoScan 配置**：完成；`config init` 生成 `limits.repoScan`，优先级 CLI > 配置 > 内置。
 - [x] **R-13 语言缺陷清单**：完成；5 种 AST 语言、Phase 5 注入、MR / Repo 独立开关，缺省关闭。
+- [x] **R-14 全仓运行日志**：完成；`<out>/runs/review-pi.log` 实时镜像 stderr，dry-run 同样留痕。
+- [x] **R-15 跳过检视按文件上报**：完成；跳过路径按变更文件全集逐个发空 tips，全仓零意见组同样逐文件。
+- [x] **R-16 Finding 路径修复**：完成；按已知文件全集修正少量字符错误，唯一最佳才修；ADR-0120。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
 
@@ -128,3 +134,6 @@
 - 2026-11-25：登记 R-11；repo CLI 对齐 review：`--taskId` 必填、产物落 `<tasks>/<taskId>`、`--tasks-dir` / `--model` 同策略、`--include/--exclude` 路径过滤。
 - 2026-11-25：登记 R-12；新增 `limits.repoScan` 配置块，`config init` 生成默认值，优先级 CLI > 配置 > 内置。
 - 2026-11-25：登记 R-13；Phase 5 语言缺陷清单（5 种 AST 语言、中文、缺陷导向），`limits.languageRules` MR / Repo 独立开关，缺省关闭。
+- 2026-11-25：R-14 完成；全仓命令接入 `review-pi.log`（`<out>/runs/review-pi.log`），stderr 实时镜像，dry-run 也留痕。
+- 2026-11-25：R-15 完成；跳过检视（diff-too-large / no-reviewable-files）改为按变更文件全集逐个上报空 tips；ADR-0119。
+- 2026-11-25：R-16 完成；新增 Finding 路径修复（宽松匹配 + 有界编辑距离，唯一最佳才修），修复值进入覆盖账本与报文；ADR-0120。
