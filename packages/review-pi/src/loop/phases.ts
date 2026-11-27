@@ -43,8 +43,8 @@ export const PHASE_INSTRUCTIONS: readonly string[] = [
 - tips.review: 中文 Markdown，含「[缺陷类型]」「影响评估」
 - tips.suggestion: 中文 Markdown，含「[重构思路]」「代码示例」
 - tips.subcategory: 非空中文细分类型
-完整示例：
-{"candidates":[{"id":"F001","severity":"P1","category":"可靠性","file":"src/Foo.java","line":42,"title":"用户缺失时发生空指针解引用","description":"findUser 可能返回 null，结果未判空即被解引用，请求路径可能抛出 NullPointerException。","evidence":["src/Foo.java:42 findUser(id) 之后调用 user.getName()","没有匹配行时 findUser 返回 null"],"rule":"CORRECTNESS-001","confidence":0.82,"tips":{"review":"[缺陷类型] 未判空的用户对象解引用。影响评估：请求路径抛 NPE。","suggestion":"[重构思路] 判空后走缺省分支。代码示例：\`if (user == null) { return; }\`","subcategory":"空指针安全"}}]}`,
+完整示例（两条候选；每条候选是数组中的独立对象，用 },{ 分隔；每个对象只出现一次 id）：
+{"candidates":[{"id":"F001","severity":"P1","category":"可靠性","file":"src/Foo.java","line":42,"title":"用户缺失时发生空指针解引用","description":"findUser 可能返回 null，结果未判空即被解引用，请求路径可能抛出 NullPointerException。","evidence":["src/Foo.java:42 findUser(id) 之后调用 user.getName()","没有匹配行时 findUser 返回 null"],"rule":"CORRECTNESS-001","confidence":0.82,"tips":{"review":"[缺陷类型] 未判空的用户对象解引用。影响评估：请求路径抛 NPE。","suggestion":"[重构思路] 判空后走缺省分支。代码示例：\`if (user == null) { return; }\`","subcategory":"空指针安全"}},{"id":"F002","severity":"P2","category":"可维护","file":"src/main/java/com/example/Bar.java","line":88,"title":"异常路径只记录 message，丢失 cause 与堆栈","description":"catch 异常后只输出 e.getMessage()，原始异常类型和堆栈被丢弃，线上无法定位根因。","evidence":["src/main/java/com/example/Bar.java:88 — catch (Exception e) 中仅 logger.error(e.getMessage())"],"rule":"RELIABILITY-002","confidence":0.74,"tips":{"review":"[缺陷类型] 异常吞噬。影响评估：故障现场只剩一行 message，无法定位根因。","suggestion":"[重构思路] 记录异常对象而不是仅 message，保留 cause 与堆栈。","subcategory":"异常处理"}}]}`,
 
   `Phase 6 of 6 - Evidence Verification.
 逐条核验候选意见的证据：每条候选所引证据是否真的支撑该结论。
@@ -97,8 +97,8 @@ export const SCAN_PHASE_INSTRUCTIONS: readonly string[] = [
 - tips.review: 中文 Markdown，含「[缺陷类型]」「影响评估」
 - tips.suggestion: 中文 Markdown，含「[重构思路]」「代码示例」
 - tips.subcategory: 非空中文细分类型
-完整示例：
-{"candidates":[{"id":"F001","severity":"P1","category":"可靠性","file":"src/Foo.java","line":42,"title":"用户缺失时发生空指针解引用","description":"findUser 可能返回 null，结果未判空即被解引用，请求路径可能抛出 NullPointerException。","evidence":["src/Foo.java:42 findUser(id) 之后调用 user.getName()","没有匹配行时 findUser 返回 null"],"rule":"CORRECTNESS-001","confidence":0.82,"tips":{"review":"[缺陷类型] 未判空的用户对象解引用。影响评估：请求路径抛 NPE。","suggestion":"[重构思路] 判空后走缺省分支。代码示例：\`if (user == null) { return; }\`","subcategory":"空指针安全"}}]}`,
+完整示例（两条候选；每条候选是数组中的独立对象，用 },{ 分隔；每个对象只出现一次 id）：
+{"candidates":[{"id":"F001","severity":"P1","category":"可靠性","file":"src/Foo.java","line":42,"title":"用户缺失时发生空指针解引用","description":"findUser 可能返回 null，结果未判空即被解引用，请求路径可能抛出 NullPointerException。","evidence":["src/Foo.java:42 findUser(id) 之后调用 user.getName()","没有匹配行时 findUser 返回 null"],"rule":"CORRECTNESS-001","confidence":0.82,"tips":{"review":"[缺陷类型] 未判空的用户对象解引用。影响评估：请求路径抛 NPE。","suggestion":"[重构思路] 判空后走缺省分支。代码示例：\`if (user == null) { return; }\`","subcategory":"空指针安全"}},{"id":"F002","severity":"P2","category":"可维护","file":"src/main/java/com/example/Bar.java","line":88,"title":"异常路径只记录 message，丢失 cause 与堆栈","description":"catch 异常后只输出 e.getMessage()，原始异常类型和堆栈被丢弃，线上无法定位根因。","evidence":["src/main/java/com/example/Bar.java:88 — catch (Exception e) 中仅 logger.error(e.getMessage())"],"rule":"RELIABILITY-002","confidence":0.74,"tips":{"review":"[缺陷类型] 异常吞噬。影响评估：故障现场只剩一行 message，无法定位根因。","suggestion":"[重构思路] 记录异常对象而不是仅 message，保留 cause 与堆栈。","subcategory":"异常处理"}}]}`,
 
   `Phase 6 of 6 - Evidence Verification.
 逐条核验候选意见的证据：每条候选所引证据是否真的支撑该结论。

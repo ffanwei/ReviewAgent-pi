@@ -663,6 +663,27 @@ test("Phase 5 解析失败：同会话重试成功，候选恢复且审计留痕
   expect(phase5?.parseRecovery).toBe("retry");
 });
 
+test("Phase 5 重复键折叠：判 duplicate-key 并同会话重试，不静默只留最后一条", async () => {
+  const collapsed = '{"candidates":[{"id":"F001","id":"F002"}]}';
+  const { run } = scriptedLoop([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply(collapsed, 4),
+    textReply(phaseText(4), 5),
+    textReply(phaseText(5), 6),
+  ]);
+  const outcome = await run();
+
+  expect(outcome.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  expect(outcome.audit.requests).toHaveLength(7);
+  expect(outcome.audit.requests[5]?.wireBody).toContain("上一次回复无法解析");
+  expect(outcome.audit.phaseLog[4]?.parseRetries).toBe(1);
+  expect(outcome.audit.phaseLog[4]?.parseRecovered).toBe(true);
+  expect(outcome.audit.phaseLog[4]?.parseRecovery).toBe("retry");
+});
+
 test("Phase 5 解析失败：离线 salvage 成功，不发起重试", async () => {
   const malformed =
     '{"candidates":[{"id":"F001","severity":"P3","category":"MAINTAINABILITY","file":"src/main/java/Foo.java","line":10,"title":"Unused helper method","description":"uses "foo" here","evidence":["src/main/java/Foo.java:10 private void helper()"],"rule":"MAINTAINABILITY-001","confidence":0.7}]}';

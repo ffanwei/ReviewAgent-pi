@@ -24,6 +24,34 @@ test("parseCandidatesReply 提取 candidates 数组", () => {
   expect(out.note).toBeUndefined();
 });
 
+test("parseCandidatesReply 检测重复键折叠：原文 4 个 id、解析 1 条 → duplicate-key", () => {
+  const collapsed =
+    '{"candidates":[{"id":"F001","title":"a","id":"F002","title":"b","id":"F003","title":"c","id":"F004","title":"d"}]}';
+  const out = parseCandidatesReply(collapsed);
+  expect(out.candidates).toEqual([]);
+  expect(out.failure).toBe("duplicate-key");
+  expect(out.note).toContain("4 个 id");
+  expect(out.note).toContain("1 条");
+});
+
+test("parseCandidatesReply 只统计最后一个 candidates 块，示例块不误判", () => {
+  const text =
+    '示例：{"candidates":[{"id":"EXAMPLE"}]}。结果：{"candidates":[{"id":"F001"},{"id":"F002"}]}';
+  const out = parseCandidatesReply(text);
+  expect(out.candidates).toEqual([{ id: "F001" }, { id: "F002" }]);
+  expect(out.failure).toBeUndefined();
+});
+
+test("parseCandidatesReply 不把 evidence 字符串里的 \\\"id\\\": 计入重复键", () => {
+  const out = parseCandidatesReply(
+    '{"candidates":[{"id":"F001","evidence":["原文包含 \\\"id\\\": 字段的说明"]}]}',
+  );
+  expect(out.candidates).toEqual([
+    { id: "F001", evidence: ['原文包含 "id": 字段的说明'] },
+  ]);
+  expect(out.failure).toBeUndefined();
+});
+
 test("parseCandidatesReply 容错：非 JSON / 缺 candidates 数组 → 空结果 + 留痕", () => {
   const notJson = parseCandidatesReply("garbage");
   expect(notJson.candidates).toEqual([]);

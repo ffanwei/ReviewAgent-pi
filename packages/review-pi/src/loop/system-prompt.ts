@@ -66,6 +66,8 @@ Schema 检查清单（全部满足，否则候选被拒绝）：
 合法候选回复的完整示例：
 {"candidates":[{"id":"F001","severity":"P1","category":"可靠性","file":"src/main/java/com/example/Foo.java","line":42,"title":"用户缺失时发生空指针解引用","description":"findUser 的返回值可能为 null，且未做检查即被解引用，会在请求路径上抛出 NullPointerException。","evidence":["src/main/java/com/example/Foo.java:42 — findUser(id) 之后调用 user.getName()","当没有匹配行时 findUser 返回 null"],"rule":"CORRECTNESS-001","confidence":0.82,"tips":{"review":"[缺陷类型] 未判空的用户对象解引用。影响评估：请求路径抛 NPE，接口 500。","suggestion":"[重构思路] 判空后走缺省分支。代码示例：\`if (user == null) { return NOT_FOUND; }\`","subcategory":"空指针安全"}}]}
 
+多条候选时，每个候选是 candidates 数组中的独立对象，用 },{ 分隔；禁止在一个对象里重复写 id。
+
 ## 严重级定义
 - P0: 致命。必须在合入前修复（安全漏洞、数据丢失、崩溃）。
 - P1: 严重。大概率是破坏既有行为或引入明显缺陷的 bug。
@@ -147,6 +149,8 @@ Schema 检查清单（全部满足，否则候选被拒绝）：
 
 合法候选回复的完整示例：
 {"candidates":[{"id":"F001","severity":"P1","category":"可靠性","file":"src/main/java/com/example/Foo.java","line":42,"title":"用户缺失时发生空指针解引用","description":"findUser 的返回值可能为 null，且未做检查即被解引用，会在请求路径上抛出 NullPointerException。","evidence":["src/main/java/com/example/Foo.java:42 — findUser(id) 之后调用 user.getName()","当没有匹配行时 findUser 返回 null"],"rule":"CORRECTNESS-001","confidence":0.82,"tips":{"review":"[缺陷类型] 未判空的用户对象解引用。影响评估：请求路径抛 NPE，接口 500。","suggestion":"[重构思路] 判空后走缺省分支。代码示例：\`if (user == null) { return NOT_FOUND; }\`","subcategory":"空指针安全"}}]}
+
+多条候选时，每个候选是 candidates 数组中的独立对象，用 },{ 分隔；禁止在一个对象里重复写 id。
 
 ## 严重级定义
 - P0: 致命。必须优先修复（安全漏洞、数据丢失、崩溃）。

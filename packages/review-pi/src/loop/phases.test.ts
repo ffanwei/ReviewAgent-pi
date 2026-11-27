@@ -34,6 +34,17 @@ test("每条指令都要求以单个 JSON 对象回复（ADR-0090 中文措辞�
   }
 });
 
+test("Phase 5 示例演示两条候选的数组边界", () => {
+  for (const instruction of [
+    PHASE_INSTRUCTIONS[CANDIDATES_PHASE_INDEX],
+    SCAN_PHASE_INSTRUCTIONS[CANDIDATES_PHASE_INDEX],
+  ]) {
+    expect(instruction).toContain("两条候选");
+    expect(instruction).toContain('},{"id":"F002"');
+    expect(instruction).toContain("每个对象只出现一次 id");
+  }
+});
+
 test("测试文件提示只挂在 Phase 5，其余阶段逐字节等于原指令", () => {
   PHASE_INSTRUCTIONS.forEach((instruction, index) => {
     const skipped = buildPhaseInstruction(index, true);

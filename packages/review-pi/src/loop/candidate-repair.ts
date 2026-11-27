@@ -2,6 +2,7 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { RetryPolicy } from "../shared/llm-retry.js";
 import { completeOneShot, extractJsonObject } from "../provider/one-shot-llm.js";
+import { countCandidateIds } from "../shared/parse.js";
 
 /**
  * 有界一次性候选修复（P1 步骤 3）：只针对**确定性归一化后仍 schema 非法**的
@@ -40,6 +41,7 @@ const REPAIR_SYSTEM_PROMPT = [
   "候选正文已是中文。不要翻译、不要改写实质内容。",
   "只回一个 JSON 对象，不附带任何其他文本：",
   '{"candidates":[{"id":"…","severity":"P0|P1|P2|P3","category":"可维护|安全|可靠性|可测试性|性能|可移植|可读性","file":"…","line":1,"title":"…","description":"…","evidence":["…"],"rule":"…","confidence":0.0,"tips":{"review":"…","suggestion":"…","subcategory":"…"}}]}',
+  "多条候选必须是多个独立对象；每个对象只出现一次 id，用 },{ 分隔。",
   "每条输入候选恰好返回一条，顺序不变。",
   "字段规则：",
   "- id: 原样保留输入 id，绝不修改。",
@@ -86,6 +88,10 @@ export function createCandidateRepair(llm: CandidateRepairLlm): CandidateRepairF
     }
     const candidates = (parsed as { candidates?: unknown }).candidates;
     if (!Array.isArray(candidates)) {
+      return [];
+    }
+    // 重复键会把多条修复结果折叠成一条；宁可整批放弃，也不静默错配。
+    if (countCandidateIds(completion.text) > candidates.length) {
       return [];
     }
     return candidates;

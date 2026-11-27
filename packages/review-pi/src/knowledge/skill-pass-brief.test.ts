@@ -55,6 +55,8 @@ test("会话首消息：内核 skill 块（真实 pack 路径）+ 宿主平台�
   expect(prompt).toContain("输出格式以本节契约为准");
   expect(prompt).toContain('即使没有候选，也必须输出 {"candidates": []}');
   expect(prompt).toContain("不要使用 findings / issues / violations 等其它键");
+  expect(prompt).toContain("多条候选必须是多个独立对象");
+  expect(prompt).toContain("每个对象只出现一次 id");
   expect(prompt).toContain("RULE-CHECK@sample-rule@<file>:<line>");
   expect(prompt).toContain('"rule" 字段填该意见违反的本 skill rules/ 里具体规则的 frontmatter id');
   expect(prompt).toContain('如 "GEN-SQL-001"');

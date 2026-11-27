@@ -63,6 +63,19 @@ export function parseCandidatesReply(content: string): CandidatesParseResult {
       failure: "missing-key",
     };
   }
+  // 重复键防御：JSON.parse 对同名键保留最后一个值，会把多条候选折叠成一条。
+  // 这里按原文最后一个 candidates 块统计 id 键；多于解析结果即判重复键，
+  // 交给主 loop / Skill 的同会话重试，绝不静默接受被折叠的候选。
+  const idCount = countCandidateIds(content);
+  if (idCount > candidates.length) {
+    return {
+      candidates: [],
+      note:
+        `深度推理回复把多条候选写成了重复键对象` +
+        `（原文 ${String(idCount)} 个 id，仅解析出 ${String(candidates.length)} 条）`,
+      failure: "duplicate-key",
+    };
+  }
   return { candidates };
 }
 
@@ -127,6 +140,8 @@ function candidatesNote(kind: ModelJsonFailureKind): string {
       return "深度推理回复不是合法 JSON";
     case "missing-key":
       return "深度推理回复没有 candidates 数组";
+    case "duplicate-key":
+      return "深度推理回复把多条候选写成了重复键对象";
   }
 }
 
@@ -140,6 +155,8 @@ function verificationNote(kind: ModelJsonFailureKind): string {
       return "证据核验回复不是合法 JSON";
     case "missing-key":
       return "证据核验回复没有 verdicts 数组";
+    case "duplicate-key":
+      return "证据核验回复含重复键";
   }
 }
 
@@ -158,4 +175,68 @@ function mapVerdict(entry: unknown): { id: string; verdict: VerificationVerdict 
       reason: typeof record.reason === "string" ? record.reason : "",
     },
   };
+}
+
+/**
+ * 统计原文最后一个 `candidates` 键之后出现的 `id` 键数量。
+ *
+ * 只扫字符串外的 `"key":`，因此 evidence / tips 文本里的 `"id":` 不计入。
+ * 取最后一个 `candidates` 块，避免把模型先给的格式示例算进本次结果。
+ * JSON.parse 会折叠同名键；调用方用本函数与解析条数对账，检测静默丢候选。
+ */
+export function countCandidateIds(content: string): number {
+  const keys = scanKeyPositions(content);
+  let lastCandidates = -1;
+  for (const entry of keys) {
+    if (entry.key === "candidates") {
+      lastCandidates = entry.index;
+    }
+  }
+  if (lastCandidates < 0) {
+    return 0;
+  }
+  let count = 0;
+  for (const entry of keys) {
+    if (entry.index > lastCandidates && entry.key === "id") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/** 扫描 JSON 文本中所有字符串键（仅 `"key":` 形态），忽略字符串值内部内容。 */
+function scanKeyPositions(content: string): readonly { readonly key: string; readonly index: number }[] {
+  const keys: { key: string; index: number }[] = [];
+  let index = 0;
+  while (index < content.length) {
+    if (content[index] !== '"') {
+      index += 1;
+      continue;
+    }
+    const start = index + 1;
+    let cursor = start;
+    let escaped = false;
+    for (; cursor < content.length; cursor += 1) {
+      const char = content[cursor];
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        break;
+      }
+    }
+    if (cursor >= content.length) {
+      break;
+    }
+    let next = cursor + 1;
+    while (next < content.length && /\s/.test(content[next] ?? "")) {
+      next += 1;
+    }
+    if (content[next] === ":") {
+      keys.push({ key: content.slice(start, cursor), index });
+    }
+    index = cursor + 1;
+  }
+  return keys;
 }

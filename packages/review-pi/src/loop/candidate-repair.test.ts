@@ -69,6 +69,15 @@ test("回包不是合法 JSON → 空数组", async () => {
   await expect(repair({ round: 1, candidates: [{ id: "F001" }] })).resolves.toEqual([]);
 });
 
+test("回包重复键折叠候选 → 空数组，不静默返回最后一条", async () => {
+  const fetch: FetchFunction = async () =>
+    completion('{"candidates":[{"id":"F001","id":"F002","id":"F003"}]}');
+  const repair = createCandidateRepair(llm(fetch));
+  await expect(
+    repair({ round: 1, candidates: [{ id: "F001" }, { id: "F002" }, { id: "F003" }] }),
+  ).resolves.toEqual([]);
+});
+
 test("空候选集：不发请求", async () => {
   let calls = 0;
   const fetch: FetchFunction = async () => {

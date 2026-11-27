@@ -17,7 +17,12 @@ export type ReviewPhase =
   | "Evidence Verification";
 
 /** 模型 JSON 回复失败的分级原因（P0 宽松提取器；写进 phaseLog.parseFailure） */
-export type ModelJsonFailureKind = "empty" | "truncated" | "not-json" | "missing-key";
+export type ModelJsonFailureKind =
+  | "empty"
+  | "truncated"
+  | "not-json"
+  | "missing-key"
+  | "duplicate-key";
 
 /**
  * 阶段回复解析失败留痕（P1）：**仅在失败时在场**——成功 run 的 phaseLog
