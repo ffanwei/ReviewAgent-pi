@@ -33,6 +33,7 @@ import { loadRuleSkills } from "../knowledge/rule-skill.js";
 import type { RepoSnapshotFile } from "../loop/messages.js";
 import { LOCKED_EFFORT_LABEL, REVIEW_MODEL_ID } from "../provider/pi-client.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
+import type { UsageLedger } from "../observability/usage-ledger.js";
 import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { summarizeSeverityFilter } from "../shared/severity-filter.js";
@@ -110,6 +111,11 @@ export interface ReviewRunInput {
    * `modelFallback` 与 run.json 同名字段。缺省 = 无替换（整键缺席）。
    */
   readonly modelFallback?: ModelFallbackRecord;
+  /**
+   * 用量账本（ADR-0066 收敛）：调用方传入时所有 pass 共用同一账本，便于
+   * CLI / repo 在 run 结束后做只读投影；缺席 = 本 run 自建一个。
+   */
+  readonly usageLedger?: UsageLedger;
   /** 传输层注入（离线 = fakeFetch；线上 = 真 fetch） */
   readonly fetch: FetchFunction;
   /** 运行留痕根目录（fixture 或真实 runs/）；布局 `<runsRoot>/{runs,audit}/` */
@@ -208,6 +214,12 @@ export interface ReviewRunResult {
    * 文件里，轻量快照不带，所以这个数只能从返回值上取。
    */
   readonly modelCalls: number;
+  /**
+   * 本 run 的用量账本（ADR-0066）：Agent / Skill / 一次性调用 / 覆盖补漏
+   * 全部按 pass scope 记在这里；CLI 与 repo 汇总只做只读投影，不再各自
+   * 手工相加 audit.usage + coverageRepair.usage。
+   */
+  readonly usageLedger: UsageLedger;
   /** 规则 Skill 会话里的 `bash` 调用数（指标 `toolCalls` 不含它，摘要行单列） */
   readonly skillBashCalls: number;
   /**
@@ -565,6 +577,7 @@ async function executeSinglePass(
       reviewsPath: pass.reviewsPath,
       ledgerHitCount: pass.ledgerHitCount,
       modelCalls: pass.modelCalls,
+      usageLedger: context.usageLedger,
       skillBashCalls: pass.skillBashCalls,
       ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
       ...(context.repoSnapshotSide !== undefined
@@ -868,6 +881,7 @@ async function aggregateShards(
       reviewsPath,
       ledgerHitCount,
       modelCalls,
+      usageLedger: context.usageLedger,
       skillBashCalls,
       ...(context.mrFilter !== undefined ? { mrFilter: context.mrFilter } : {}),
       ...(context.repoSnapshotSide !== undefined

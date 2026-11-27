@@ -47,7 +47,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { calculateCost } from "@earendil-works/pi-ai";
 
 import type { Finding } from "../contracts/finding.js";
-import type { LlmUsage } from "../contracts/llm.js";
 import type { RunProgressSink } from "../contracts/progress.js";
 import { runDirPath } from "../run/run-record.js";
 import { LifecycleCollector } from "../export/lifecycle.js";
@@ -67,7 +66,7 @@ import {
 import { formatSmokeDiagnostics, runSmokeProbes } from "../provider/gateway-probe.js";
 import { reviewModelOf } from "../provider/pi-client.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
-import { llmUsageToPiUsage, ZERO_USAGE } from "../provider/usage-map.js";
+import { llmUsageToPiUsage } from "../provider/usage-map.js";
 import { measureDiffScale } from "../run/mr-boundary-guard.js";
 import { listChangedFilePaths } from "../run/mr-input.js";
 import { runReviewOutcome, type ReviewRunOutcome } from "../run/review-run.js";
@@ -82,7 +81,7 @@ import {
   type ResolvedConfig,
 } from "../shared/config.js";
 import { retryPolicyFor } from "../shared/llm-retry.js";
-import { setOneShotUsageSink, setOneShotLifecycleSink } from "../provider/one-shot-llm.js";
+import { setOneShotLifecycleSink } from "../provider/one-shot-llm.js";
 import { reviewRuntimeOf } from "../shared/review-runtime.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { REVIEW_PI_VERSION } from "../shared/version.js";
@@ -119,10 +118,11 @@ import {
 } from "./progress-render.js";
 import { buildStageBreakdown, type StageClock } from "./stage-clock.js";
 import {
-  createOneShotUsageCollector,
-  type OneShotPurposeKey,
-  type OneShotUsageCollector,
-} from "./task-usage.js";
+  createUsageScope,
+  partitionUsage,
+  type UsageLedger,
+  type UsageSource,
+} from "../observability/usage-ledger.js";
 
 /**
  * 本次运行的运行日志（stderr 镜像 + 未捕获异常堆栈）。
@@ -149,12 +149,10 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
     skillSpans: [],
     skillStartedAt: undefined,
   };
-  // 整任务 LLM 账本（ADR-0066）：Agent 内 usage 由 runReview 返回；Agent 之后的
-  // 一次性调用（tips / 总结 / 候选修复）走 one-shot 层的进程级 sink 采集。
+  // 整任务 LLM 账本（ADR-0066）：Agent / Skill / 一次性调用 / 覆盖补漏全部
+  // 由 runReview 内统一写入 UsageLedger；收尾只做只读投影。
   // 只进收尾日志，不改审计 / run.json / stdout。
-  const usageCollector = createOneShotUsageCollector();
-  let agentUsage: LlmUsage = ZERO_USAGE;
-  let agentCalls = 0;
+  let taskUsageLedger: UsageLedger | undefined;
   // 缺值的规则包旗标（B 档：按未传处理，但不静默）：先喊一声再往下走，保证即使
   // 后面因别的错误早退，用户也能看到「规则包根本没装载」这个原因。
   for (const flag of args.emptyRuleSkillFlags ?? []) {
@@ -374,8 +372,6 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
   let postPassTimeline: ReturnType<typeof createRequestTimelineWriter> | null = null;
 
   try {
-    setOneShotUsageSink(usageCollector.sink);
-    // 生命周期全文留痕（ADR-0073）：one-shot 三目的全文进会话时间线
     setOneShotLifecycleSink((event) => lifecycleCollector.recordOneShot(event));
     // 输入形态（ADR-0029）：JSON 在装载期补文件头转成统一 diff，之后与 --mr-diff 同一条路径
     const mrText = await readFile(mrPath, "utf8");
@@ -516,6 +512,7 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
       return 0;
     }
     const reviewed = outcome.result;
+    taskUsageLedger = reviewed.usageLedger;
     // 请求时间线（ADR-0076）：pass 已写过单片 / 分片文件；收尾的报文与总结
     // 属于同一次 run，续写顶层文件（追加模式，保留 pass 已写的行）。
     const { record, runId, transcriptPaths } = reviewed;
@@ -541,11 +538,12 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
             auditPath: resolve(runDirPath(runsRoot), shard.auditFile),
           }));
     lifecycleRun = { runId, transcriptPaths, artifacts: lifecycleArtifacts };
-    agentUsage = record.baseline.usage;
-    agentCalls = reviewed.modelCalls;
     stageClock.auditMs = (stageClock.auditEndedAt ?? Date.now()) - startedAt;
+    // 收尾一次性调用（总结）继续写同一本任务账：scope 与 pass 分开，便于定位。
+    const taskUsageScope = createUsageScope(reviewed.usageLedger, "task");
     const delivery = await deliverReviewRun({
       run: reviewed,
+      usageScope: taskUsageScope,
       identity: { caseId: args.caseId, taskId: args.taskId, cwd: process.cwd() },
       paths: { tasksRoot, runsRoot },
       repoPath,
@@ -644,18 +642,16 @@ async function runReviewCommand(args: ReviewCliArgs, config: ResolvedConfig): Pr
         }
         // 整任务 LLM 账本（ADR-0066）：Agent 内 + 一次性调用，只走 stderr（因此
         // 自动进 review-pi.log）；不改审计 / run.json / stdout。
-        for (const line of buildTaskUsageLines({
-          usageCollector,
-          agentUsage,
-          agentCalls,
-          modelId,
-          baseUrl: endpoint.baseUrl,
-        })) {
-          process.stderr.write(`${line}\n`);
+        if (taskUsageLedger !== undefined) {
+          for (const line of buildTaskUsageLines({
+            ledger: taskUsageLedger,
+            baseUrl: endpoint.baseUrl,
+          })) {
+            process.stderr.write(`${line}\n`);
+          }
         }
       }
     } finally {
-      setOneShotUsageSink(null);
       setOneShotLifecycleSink(null);
       setRequestTimelineSink(null);
       postPassTimeline?.close();
@@ -735,74 +731,81 @@ function startProgress(args: ReviewCliArgs, modelId: string): ProgressRenderer |
   return renderer;
 }
 
-/** 一次性调用分项的展示顺序（`other` 只在异常路径出现，压到最后） */
-const ONE_SHOT_PURPOSE_ORDER: readonly OneShotPurposeKey[] = [
-  "tips",
-  "summary",
-  "candidate-repair",
+/** 用量来源的展示顺序（Agent / Skill 是主会话，其余是一性调用分项） */
+const USAGE_SOURCE_ORDER: readonly UsageSource[] = [
+  "agent",
+  "skill",
   "reply-repair",
+  "candidate-repair",
   "coverage-repair",
   "finding-verification",
+  "tips",
+  "summary",
   "other",
 ];
 
-const ONE_SHOT_PURPOSE_LABEL: Readonly<Record<OneShotPurposeKey, string>> = {
-  tips: "中文 tips",
-  summary: "收尾总结",
-  "candidate-repair": "候选修复",
+const USAGE_SOURCE_LABEL: Readonly<Record<UsageSource, string>> = {
+  agent: "Agent",
+  skill: "规则 Skill",
   "reply-repair": "解析修复",
+  "candidate-repair": "候选修复",
   "coverage-repair": "覆盖补漏",
   "finding-verification": "独立证伪",
+  tips: "中文 tips",
+  summary: "收尾总结",
   other: "其他",
 };
 
+const ONE_SHOT_SOURCES = USAGE_SOURCE_ORDER.filter(
+  (source) => source !== "agent" && source !== "skill",
+);
+
 /**
- * 整任务 LLM 账本（ADR-0066）：Agent 内 usage + 一次性调用样本。
+ * 整任务 LLM 账本（ADR-0066）：**只读投影**用量账本，不再手工相加
+ * `audit.usage + one-shot collector`。
  *
- * 成本必须按模型分桶：tips / 总结走 `model.presentation`（可能不是检视模型），
- * 候选修复与 Agent 内走检视模型；同一个总 token 套单一单价会算错。
+ * 口径：
+ * - Agent = `source ∈ {agent, skill}`（主会话 + 规则 Skill）；
+ * - 一次性 = 其余来源（解析修复 / 候选修复 / 覆盖补漏 / 总结 / …）；
+ * - 总计 = 账本全部条目，一条调用只加一次（reply-repair 不再双算）；
+ * - 成本按账本里的 `modelId` 分桶，避免 presentation 模型套检视模型单价。
  */
 function buildTaskUsageLines(input: {
-  readonly usageCollector: OneShotUsageCollector;
-  readonly agentUsage: LlmUsage;
-  readonly agentCalls: number;
-  readonly modelId: string;
+  readonly ledger: UsageLedger;
   readonly baseUrl: string;
 }): string[] {
-  const snapshot = input.usageCollector.snapshot();
-  const agentUsage = input.agentUsage;
-  const agentCost = calculateCost(
-    reviewModelOf(input.modelId, input.baseUrl),
-    llmUsageToPiUsage(agentUsage),
-  ).total;
-  let oneShotCost = 0;
-  for (const [model, bucket] of snapshot.total.byModel) {
-    oneShotCost += calculateCost(
+  const { agent, oneShot, total: all } = partitionUsage(input.ledger);
+  if (all.calls <= 0) {
+    return [];
+  }
+  let costUsd = 0;
+  for (const [model, bucket] of all.byModel) {
+    costUsd += calculateCost(
       reviewModelOf(model, input.baseUrl),
       llmUsageToPiUsage(bucket.usage),
     ).total;
   }
   const purposes: TaskUsagePurposeLine[] = [];
-  for (const key of ONE_SHOT_PURPOSE_ORDER) {
-    const aggregate = snapshot.byPurpose.get(key);
-    if (aggregate === undefined || aggregate.calls <= 0) {
+  for (const source of ONE_SHOT_SOURCES) {
+    const bucket = input.ledger.aggregate({ sources: [source] });
+    if (bucket.calls <= 0) {
       continue;
     }
     purposes.push({
-      label: ONE_SHOT_PURPOSE_LABEL[key],
-      calls: aggregate.calls,
-      usage: aggregate.usage,
-      usageMissingCalls: aggregate.usageMissingCalls,
+      label: USAGE_SOURCE_LABEL[source],
+      calls: bucket.calls,
+      usage: bucket.usage,
+      usageMissingCalls: bucket.missingUsageCalls,
     });
   }
   return taskUsageLines({
-    agentCalls: input.agentCalls,
-    agentUsage,
-    oneShotCalls: snapshot.total.calls,
-    oneShotUsage: snapshot.total.usage,
-    oneShotMissingUsageCalls: snapshot.total.usageMissingCalls,
+    agentCalls: agent.calls,
+    agentUsage: agent.usage,
+    oneShotCalls: oneShot.calls,
+    oneShotUsage: oneShot.usage,
+    oneShotMissingUsageCalls: oneShot.missingUsageCalls,
     purposes,
-    costUsd: agentCost + oneShotCost,
+    costUsd,
   });
 }
 

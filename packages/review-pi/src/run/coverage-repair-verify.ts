@@ -85,6 +85,7 @@ export async function verifyRepairCandidates(input: {
       maxTokens: input.maxTokens ?? VERIFY_MAX_TOKENS,
       responseFormat: "json_object",
       purpose: "coverage-repair",
+      ...(input.llm.usageScope !== undefined ? { usageScope: input.llm.usageScope } : {}),
       ...(input.llm.fetch !== undefined ? { fetch: input.llm.fetch } : {}),
     });
     if (!completion.ok) {

@@ -52,6 +52,7 @@ import {
 } from "./reviews-tips-zh.js";
 import { removeStaleReviewsZh } from "./reviews-zh.js";
 import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
+import type { UsageScope } from "../observability/usage-ledger.js";
 import { assembleUnifiedTips, countTips, filterFindingsForTips } from "./unified-tips.js";
 
 /**
@@ -161,6 +162,8 @@ export interface DeliveryInput {
     /** run 开始时刻（收尾摘要的 durationMs 基准） */
     readonly startedAt: number;
   };
+  /** 收尾一次性调用的用量账本作用域（缺席 = 不写账） */
+  readonly usageScope?: UsageScope;
   readonly modelFallback?: ModelFallbackRecord;
   readonly ports: {
     readonly oneShot: DeliveryOneShotPort;
@@ -612,6 +615,7 @@ async function publishSummary(
       : {}),
     ...(input.mcp.reportedFiles.length > 0 ? { reportedFiles: [...input.mcp.reportedFiles] } : {}),
     metrics,
+    ...(input.usageScope !== undefined ? { usageScope: input.usageScope } : {}),
   });
   const summaryMs = clock.now() - summaryStartedAt;
   if (summaryReport.degradedReason !== undefined) {

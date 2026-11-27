@@ -54,6 +54,7 @@ import {
 import { SCAN_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import { repairFilePaths } from "../finding/path-repair.js";
 import { repairCoverageGaps } from "./coverage-repair.js";
+import { createDetachedUsageScope, type UsageScope } from "../observability/usage-ledger.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { formatRepoSnapshotModelNote, type RepoSnapshotSideRecord } from "./repo-side.js";
 import { listChangedFilePaths } from "./mr-input.js";
@@ -134,6 +135,11 @@ export interface ReviewPassInput {
   readonly repoSnapshotSide?: RepoSnapshotSideRecord;
   /** 分片标签（ADR-0076 请求时间线）：多片才在场，单片路径缺席 */
   readonly shard?: TimelineShard;
+  /**
+   * 用量账本作用域（ADR-0066）：本 pass 的 Agent / Skill / 一次性调用统一
+   * 写这里；缺席 = 直调 / 测试，自动建独立作用域。
+   */
+  readonly usageScope?: UsageScope;
   readonly emit: RunProgressSink;
 }
 
@@ -176,8 +182,10 @@ export async function runReviewPass(input: ReviewPassInput): Promise<ReviewPassR
   await mkdir(input.runDir, { recursive: true });
   const timeline = createRequestTimelineWriter(input.runDir);
   setRequestTimelineSink(timeline.sink);
+  const usageScope =
+    input.usageScope ?? createDetachedUsageScope(`pass-${input.caseId}-r${String(input.rep)}`);
   try {
-    return await executeReviewPass(input, coverage);
+    return await executeReviewPass(input, coverage, usageScope);
   } catch (error) {
     // 失败路径：审计不会落盘，账本单独留一份失败现场；失败原因统一记为
     // flow-error，未回填的 hunk 不静默成「已审」。
@@ -293,6 +301,7 @@ function skillReviewAuditFacts(profile: SkillReviewProfile): {
 async function executeReviewPass(
   input: ReviewPassInput,
   coverage: CoverageLedger,
+  usageScope: UsageScope,
 ): Promise<ReviewPassResult> {
   // Zone A 按输入语义二选一：MR 缺省仍是 SYSTEM_PROMPT（逐字节不变）；
   // repo 模式用 scan 专用提示，不把既有代码说成「本次新增」。
@@ -421,6 +430,7 @@ async function executeReviewPass(
     modelId: input.modelId,
     fetch: input.fetch,
     includeLedgerAudit: true,
+    usageScope,
     onProgress: input.emit,
     ...(input.shard !== undefined ? { shard: input.shard } : {}),
     ...(scope !== undefined ? { scope } : {}),
@@ -440,6 +450,7 @@ async function executeReviewPass(
       modelId: input.modelId,
       timeoutMs: input.runtime.limits.timeouts.oneShotMs,
       retry: retryPolicyFor(input.runtime.limits.retry, "oneShot"),
+      usageScope,
       ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
     }),
   });
@@ -472,6 +483,7 @@ async function executeReviewPass(
             modelId: input.modelId,
             timeoutMs: input.runtime.limits.timeouts.oneShotMs,
             retry: retryPolicyFor(input.runtime.limits.retry, "oneShot"),
+            usageScope,
             ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
           },
         })

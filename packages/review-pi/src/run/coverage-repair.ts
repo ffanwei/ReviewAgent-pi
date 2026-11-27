@@ -28,6 +28,7 @@ import { normalizeCandidates } from "../gate/candidate-normalize.js";
 import type { DiffScope } from "../gate/diff-scope.js";
 import { completeOneShot, extractJsonObject } from "../provider/one-shot-llm.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
+import type { UsageScope } from "../observability/usage-ledger.js";
 import type { RetryPolicy } from "../shared/llm-retry.js";
 import type { VerificationVerdict } from "../shared/parse.js";
 import type { CoverageRepairLimits } from "../shared/config-limits.js";
@@ -43,6 +44,8 @@ export interface CoverageRepairLlm {
   readonly retry?: RetryPolicy;
   readonly fetch?: FetchFunction;
   readonly maxTokens?: number;
+  /** 用量账本作用域（由 pass 注入；缺省不写账） */
+  readonly usageScope?: UsageScope;
 }
 
 export interface CoverageRepairInput {
@@ -395,6 +398,7 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
       maxTokens: input.llm.maxTokens ?? REPAIR_MAX_TOKENS,
       responseFormat: "json_object",
       purpose: "coverage-repair",
+      ...(input.llm.usageScope !== undefined ? { usageScope: input.llm.usageScope } : {}),
       ...(input.llm.fetch !== undefined ? { fetch: input.llm.fetch } : {}),
     });
     if (!completion.ok) {

@@ -19,6 +19,11 @@ import {
 } from "./constants.js";
 import { PHASE_COUNT, PHASE_INSTRUCTIONS } from "./phases.js";
 import { runAgentReviewLoop } from "./agent-review-loop.js";
+import {
+  createUsageLedger,
+  createUsageScope,
+  type UsageScope,
+} from "../observability/usage-ledger.js";
 
 // agentLoop 钩子驱动循环（#6 P3a）：pi-agent-core Agent 上的
 // 六阶段 + 工具子循环。时序真源 = t-series 审计：
@@ -124,6 +129,7 @@ function scriptedLoop(
   runtime?: ReviewRuntime,
   phaseReplyRepair?: (input: { raw: string; phase: string }) => Promise<string | undefined>,
   phaseBrief?: (index: number) => string | undefined,
+  usageScope?: UsageScope,
 ): ScriptedRun {
   const script = fakeFetch([...replies]);
   const toolkit = buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF });
@@ -156,6 +162,7 @@ function scriptedLoop(
       runtime: singleAttempt,
       ...(phaseReplyRepair !== undefined ? { phaseReplyRepair } : {}),
       ...(phaseBrief !== undefined ? { phaseBrief } : {}),
+      ...(usageScope !== undefined ? { usageScope } : {}),
     });
   return { run, requestUrls: script.requests.map((request) => request.url) };
 }
@@ -238,6 +245,27 @@ test("单轮直驱 + 工具子循环：phase-2 执行 get_diff 后 recall 收尾
   // 截断留痕：无
   expect(outcome.audit.truncated).toBe(false);
   expect(outcome.audit.truncationReasons).toEqual([]);
+});
+
+test("用量账本：Agent 每轮写一条账，audit.usage 从同一 scope 派生", async () => {
+  const ledger = createUsageLedger();
+  const scope = createUsageScope(ledger, "loop-test");
+  const { run } = scriptedLoop(
+    singleRoundScript(),
+    INITIAL,
+    undefined,
+    undefined,
+    undefined,
+    scope,
+  );
+  const outcome = await run();
+
+  const entries = ledger.entries({ scope: scope.id });
+  expect(entries).toHaveLength(7);
+  expect(entries.every((entry) => entry.source === "agent")).toBe(true);
+  // 账本投影 = 审计 usage；没有第二条手工累加的路径
+  expect(ledger.aggregate({ scope: scope.id, sources: ["agent", "skill", "reply-repair"] }).usage)
+    .toEqual(outcome.usage);
 });
 
 test("Phase 6 缺 complete：按完成处理，不开下一轮（ADR-0105）", async () => {

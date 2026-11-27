@@ -22,6 +22,7 @@ import {
 } from "../observability/request-timeline.js";
 import { extractModelJson } from "../shared/model-json.js";
 import { extractChatUsage, type RawWireUsage } from "../shared/wire-usage.js";
+import type { UsageScope, UsageSource } from "../observability/usage-ledger.js";
 
 /**
  * 一次性模型调用缝（ADR-0045）：报文 / 总结 / 候选修复生成用的最小 chat completion。
@@ -60,6 +61,11 @@ export interface OneShotLlmInput {
   readonly responseFormat?: "json_object";
   /** 调用用途（进程级 usage 观测用；缺席 = 不分类） */
   readonly purpose?: OneShotPurpose;
+  /**
+   * 用量账本作用域（ADR-0066 收敛）：成功回包时按 `purpose` 写一条账。
+   * 缺席 = 不写账（直调内核 / 测试；行为与历史一致）。
+   */
+  readonly usageScope?: UsageScope;
   /** 传输层注入（测试确定性）；缺省 globalThis.fetch */
   readonly fetch?: FetchFunction;
   /**
@@ -440,14 +446,30 @@ function wireUsageToLlmUsage(raw: RawWireUsage | null): LlmUsage | undefined {
 
 function emitOneShotSample(input: OneShotLlmInput, usage: LlmUsage | undefined): void {
   const sink = usageSink;
-  if (sink === null) {
-    return;
+  if (sink !== null) {
+    sink({
+      modelId: input.modelId,
+      ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
+      ...(usage !== undefined ? { usage } : {}),
+    });
   }
-  sink({
-    modelId: input.modelId,
-    ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
-    ...(usage !== undefined ? { usage } : {}),
-  });
+  // 账本写入与 sink 并列：sink 是历史观测缝（CLI 旧 collector），账本是
+  // 唯一汇总源。缺席 scope = 直调内核 / 测试，不写账（零行为变化）。
+  const scope = input.usageScope;
+  if (scope !== undefined) {
+    scope.ledger.record({
+      scope: scope.id,
+      source: purposeSource(input.purpose),
+      modelId: input.modelId,
+      ...(usage !== undefined ? { usage } : {}),
+      attempts: 1,
+    });
+  }
+}
+
+/** 一次性用途 → 账本来源（同一枚举，缺省归 other） */
+function purposeSource(purpose: OneShotPurpose | undefined): UsageSource {
+  return purpose ?? "other";
 }
 
 /**

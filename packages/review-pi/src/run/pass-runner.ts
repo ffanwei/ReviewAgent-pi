@@ -20,6 +20,7 @@ import { runDirPath, type ExperimentSource } from "../run/run-record.js";
 import { loadRuleSkills, type RuleSkill } from "../knowledge/rule-skill.js";
 import type { RepoSnapshotFile } from "../loop/messages.js";
 import { withRequestTimelineAppend, runWithRequestTimelineScope } from "../observability/request-timeline.js";
+import { createUsageLedger, createUsageScope, type UsageLedger } from "../observability/usage-ledger.js";
 import type { ConfigSnapshot } from "../shared/config.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
@@ -90,6 +91,8 @@ export interface ReviewRunContext {
   readonly startedAt: Date;
   readonly emit: RunProgressSink;
   readonly onShardFindings?: ReviewShardFindingsHook;
+  /** 本 run 的用量账本：各遍建独立 scope，CLI / repo 汇总只读投影 */
+  readonly usageLedger: UsageLedger;
 }
 
 /** `runReview` 已解析的缺省值与入口度量结果 */
@@ -147,6 +150,7 @@ export async function buildRunContext(
     ruleSkillAudit: loaded.audit,
     startedAt: resolved.startedAt,
     emit: resolved.emit,
+    usageLedger: input.usageLedger ?? createUsageLedger(),
     ...(input.onShardFindings !== undefined
       ? { onShardFindings: input.onShardFindings }
       : {}),
@@ -519,6 +523,12 @@ export function buildPass(
     ruleSkills: context.ruleSkills,
     ruleSkillAudit: context.ruleSkillAudit,
     startedAt,
+    usageScope: createUsageScope(
+      context.usageLedger,
+      `pass-${context.caseId}-r${String(context.rep)}-${
+        descriptor.kind === "single" ? "single" : `s${String(descriptor.shard.index)}`
+      }`,
+    ),
     ...(context.tipsConfidenceMin !== undefined
       ? { tipsConfidenceMin: context.tipsConfidenceMin }
       : {}),

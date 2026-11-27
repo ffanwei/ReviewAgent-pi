@@ -4,6 +4,7 @@ import type { RetryPolicy } from "../shared/llm-retry.js";
 import { completeOneShot } from "../provider/one-shot-llm.js";
 import type { Finding } from "../contracts/finding.js";
 import { DEFAULT_GATEWAY_MAX_TOKENS } from "../shared/config.js";
+import type { UsageScope } from "../observability/usage-ledger.js";
 import type { ReviewTipsDocumentLike } from "./presentation-projection.js";
 
 /** 收尾总结（与候选修复同档）的运行时：呈现档模型 / oneShot 超时与重试 */
@@ -88,6 +89,8 @@ export interface ReviewSummaryInput {
   readonly metrics?: ReviewSummaryMetrics;
   readonly runtime: ReportLlmRuntime;
   readonly fetch?: FetchFunction;
+  /** 用量账本作用域（收尾总结的一次性调用记在这里） */
+  readonly usageScope?: UsageScope;
 }
 
 export interface ReviewSummaryResult {
@@ -569,6 +572,7 @@ export async function buildReviewSummary(input: ReviewSummaryInput): Promise<Rev
     ...(input.runtime.retry !== undefined ? { retry: input.runtime.retry } : {}),
     maxTokens: SUMMARY_MAX_TOKENS,
     purpose: "summary",
+    ...(input.usageScope !== undefined ? { usageScope: input.usageScope } : {}),
     ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
   });
   if (completion.ok) {

@@ -2,6 +2,7 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { RetryPolicy } from "../shared/llm-retry.js";
 import { completeOneShot, extractJsonObject } from "../provider/one-shot-llm.js";
+import type { UsageScope } from "../observability/usage-ledger.js";
 import { countCandidateIds } from "../shared/parse.js";
 
 /**
@@ -24,6 +25,8 @@ export interface CandidateRepairLlm {
   readonly timeoutMs: number;
   readonly retry?: RetryPolicy;
   readonly fetch?: FetchFunction;
+  /** 用量账本作用域（由 run 层按 pass 注入；缺省不写账） */
+  readonly usageScope?: UsageScope;
 }
 
 export interface CandidateRepairRequest {
@@ -77,6 +80,7 @@ export function createCandidateRepair(llm: CandidateRepairLlm): CandidateRepairF
       maxTokens: REPAIR_MAX_TOKENS,
       responseFormat: "json_object",
       purpose: "candidate-repair",
+      ...(llm.usageScope !== undefined ? { usageScope: llm.usageScope } : {}),
       ...(llm.fetch !== undefined ? { fetch: llm.fetch } : {}),
     });
     if (!completion.ok) {

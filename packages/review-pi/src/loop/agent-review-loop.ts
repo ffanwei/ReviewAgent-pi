@@ -26,7 +26,8 @@ import type { DiffScope } from "../gate/diff-scope.js";
 import { validateFinding } from "../finding/finding-schema.js";
 import { assistantText, captureWire, reviewModelOf, reviewStreamFn } from "../provider/pi-client.js";
 import { reviewTurnStreamOptions } from "../provider/review-turn-policy.js";
-import { addUsage, piUsageToLlmUsage, ZERO_USAGE } from "../provider/usage-map.js";
+import { piUsageToLlmUsage } from "../provider/usage-map.js";
+import { createDetachedUsageScope, type UsageScope } from "../observability/usage-ledger.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { classifyCacheBreaks } from "./cache-break.js";
 import {
@@ -146,6 +147,11 @@ export interface AgentReviewLoopInputs {
    * 只进时间线行，不进审计 / wire 字节。
    */
   readonly shard?: TimelineShard;
+  /**
+   * 用量账本作用域（ADR-0066 收敛）：本 pass 的 Agent / Skill / 一次性调用
+   * 统一写这里；缺席 = 直调内核 / 测试，自动建一个独立作用域。
+   */
+  readonly usageScope?: UsageScope;
 }
 
 /** skill 会话接线（由 run 层提供 pack 与 toolkit 工厂） */
@@ -221,7 +227,9 @@ export async function runAgentReviewLoop(
   const rejections: CandidateRejection[] = [];
   const findings: Finding[] = [];
   const truncationReasons: string[] = [];
-  let usage: LlmUsage = ZERO_USAGE;
+  // 用量账本作用域（ADR-0066）：本 pass 的 Agent / Skill / 一次性调用统一写这里；
+  // 直调内核 / 测试没有上层账本时自动建独立作用域，audit.usage 仍从账本派生。
+  const usageScope = inputs.usageScope ?? createDetachedUsageScope("loop");
   let executedToolCalls = 0;
   let attemptedToolCalls = 0;
   let round = 1;
@@ -468,7 +476,15 @@ export async function runAgentReviewLoop(
     shouldStopAfterTurn: (context): boolean | Promise<boolean> => {
       const message = context.message;
       const turnUsage = piUsageToLlmUsage(message.usage);
-      usage = addUsage(usage, turnUsage);
+      usageScope.ledger.record({
+        scope: usageScope.id,
+        source: "agent",
+        modelId: model.id,
+        usage: turnUsage,
+        attempts: 1,
+        phase: phaseNameOf(phaseIndex, inputs.reviewMode),
+        round,
+      });
       requestProgress.end(turnUsage);
       // 输出撞上 max_tokens 上界（思维链含在预算内时尤易发生）：不翻转控制流
       // （相位推进与 DSH 一致），但必须留痕——否则截断静默成"审 0 条"。
@@ -542,6 +558,12 @@ export async function runAgentReviewLoop(
     firstRequestAt,
     model: { id: model.id, baseUrl: model.baseUrl },
   };
+  // Agent 本体账：主会话 + Skill 会话 + 短窗口解析修复；全部来自同一 scope 的
+  // 用量账本，调用方不再手工 addUsage（候选修复 / 覆盖补漏属一次性账，不进这里）。
+  const usage = usageScope.ledger.aggregate({
+    scope: usageScope.id,
+    sources: ["agent", "skill", "reply-repair"],
+  }).usage;
   return {
     findings,
     usage,
@@ -842,7 +864,14 @@ export async function runAgentReviewLoop(
     roundCandidates = merged.candidates;
     roundSkillBatches = merged.survivingBatches;
     outcomes.forEach((outcome, index) => {
-      usage = addUsage(usage, outcome.usage);
+      usageScope.ledger.record({
+        scope: usageScope.id,
+        source: "skill",
+        modelId: model.id,
+        usage: outcome.usage,
+        attempts: 1,
+        round,
+      });
       skillToolCalls += outcome.record.toolCallCount;
       skillBashCalls += outcome.bashCallCount;
       skillLedgerHits += outcome.ledgerHitCount;
@@ -1058,14 +1087,14 @@ ${raw}`,
       maxTokens: Math.min(runtime.maxOutputTokens ?? 16_000, 16_000),
       responseFormat: "json_object",
       purpose: "reply-repair",
+      usageScope,
       ...(inputs.fetch !== undefined ? { fetch: inputs.fetch } : {}),
     });
     if (!result.ok) {
       return undefined;
     }
-    if (result.usage !== undefined) {
-      usage = addUsage(usage, result.usage);
-    }
+    // usage 由 one-shot 边界写账（source=reply-repair），这里不再手工累加；
+    // audit.usage 在收尾时从同一 scope 的账本派生，避免双算。
     return result.text;
   }
 
