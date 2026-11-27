@@ -6,6 +6,12 @@ import type { FetchFunction } from "@earendil-works/pi-ai";
 import type { LanguageRulesLimits } from "../shared/config-limits.js";
 
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
+import {
+  createUsageLedger,
+  mergeUsageSummaries,
+  summarizeUsage,
+  type UsageLedgerSummary,
+} from "../observability/usage-ledger.js";
 import { mergeShardFindings } from "../run/findings-merge.js";
 import { runReviewOutcome, type ReviewRunResult } from "../run/review-run.js";
 import { buildRepoCoverage, coverageIsConsistent } from "./coverage.js";
@@ -309,6 +315,9 @@ export async function runRepoSpike(
       `[repo-review] [${String(synthetic.group.index)}/${String(totalGroups)}] start ${synthetic.group.key} files=${String(synthetic.files.length)} chars=${String(synthetic.chars)} elapsed=${formatDuration(elapsedMs())} ${etaText()}`,
     );
     await ensureDir(runsRoot);
+    // 组级账本：同一组的所有重试 attempt 共用；失败 attempt 已产生的用量也
+    // 留在账里（不能因为最后一次成功就把前几次的钱抹掉）。
+    const groupLedger = createUsageLedger();
     const groupRuntime = buildSpikeRuntime(
       options.maxRounds,
       options.includeTests,
@@ -342,6 +351,7 @@ export async function runRepoSpike(
           fetch: fetchFn,
           runsRoot,
           rep: 1,
+          usageLedger: groupLedger,
           ...(options.ruleSkillZips !== undefined
             ? { ruleSkillZips: options.ruleSkillZips }
             : {}),
@@ -351,13 +361,18 @@ export async function runRepoSpike(
           ...(options.strictRuleSkill === true ? { strictRuleSkill: true } : {}),
         });
         if (outcome.kind === "skipped") {
-          const skipped = skippedOutcome(synthetic, outcome.skip.reason);
+          const skipped = withGroupUsage(
+            skippedOutcome(synthetic, outcome.skip.reason),
+            groupLedger,
+          );
           jobGroup.status = "skipped";
           jobGroup.skipReason = skipped.skipReason;
+          jobGroup.usage = skipped.usage;
+          jobGroup.usageLedger = skipped.usageLedger;
           jobGroup.finishedAt = now().toISOString();
           return skipped;
         }
-        const reviewed = reviewedOutcome(synthetic, outcome.result);
+        const reviewed = withGroupUsage(reviewedOutcome(synthetic, outcome.result), groupLedger);
         // 路径修复留痕（ADR-0120）：group 级一行，CLI 与 review-pi.log 都可见。
         for (const repair of outcome.result.record.baseline.audit.pathRepairs ?? []) {
           progress(
@@ -368,6 +383,7 @@ export async function runRepoSpike(
         jobGroup.runId = reviewed.runId;
         jobGroup.findingsCount = reviewed.findingsCount;
         jobGroup.usage = reviewed.usage;
+        jobGroup.usageLedger = reviewed.usageLedger;
         jobGroup.finishedAt = now().toISOString();
         return reviewed;
       } catch (error) {
@@ -382,15 +398,21 @@ export async function runRepoSpike(
         jobGroup.status = "failed";
         jobGroup.error = message;
         jobGroup.finishedAt = now().toISOString();
-        return {
-          index: synthetic.group.index,
-          key: synthetic.group.key,
-          files: synthetic.files,
-          diffChars: synthetic.chars,
-          status: "failed",
-          findingsCount: 0,
-          error: message,
-        };
+        const failed = withGroupUsage(
+          {
+            index: synthetic.group.index,
+            key: synthetic.group.key,
+            files: synthetic.files,
+            diffChars: synthetic.chars,
+            status: "failed",
+            findingsCount: 0,
+            error: message,
+          },
+          groupLedger,
+        );
+        jobGroup.usage = failed.usage;
+        jobGroup.usageLedger = failed.usageLedger;
+        return failed;
       }
     }
     throw new Error("repo-review: internal retry loop exhausted without a result");
@@ -511,7 +533,15 @@ export async function runRepoSpike(
   const findings = mergeShardFindings(
     reviewed.map((outcome) => outcome.findings ?? []),
   );
-  const usage = reviewed.reduce((total, outcome) => addUsage(total, outcome.usage ?? ZERO_USAGE), ZERO_USAGE);
+  // 全组用量：reviewed / failed / skipped 都算（失败 attempt 的账不能丢）。
+  const usage = groupOutcomes.reduce(
+    (total, outcome) => addUsage(total, outcome.usage ?? ZERO_USAGE),
+    ZERO_USAGE,
+  );
+  let usageLedger: UsageLedgerSummary | undefined;
+  for (const outcome of groupOutcomes) {
+    usageLedger = mergeUsageSummaries(usageLedger, outcome.usageLedger);
+  }
   const coverage = buildRepoCoverage({
     selected: enumerated.files,
     groupedSkipped: plan.skipped,
@@ -541,6 +571,7 @@ export async function runRepoSpike(
     groups: groupOutcomes.map(({ findings: _findings, ...rest }) => rest),
     findings,
     usage,
+    ...(usageLedger !== undefined ? { usageLedger } : {}),
     coverage,
     skippedFiles,
     errors,
@@ -574,6 +605,22 @@ function skippedOutcome(
     status: "skipped",
     findingsCount: 0,
     skipReason: reason,
+  };
+}
+
+/** 把组账本投影回 outcome：usage 含 Agent + 一次性 + 覆盖补漏 + 失败 attempt */
+function withGroupUsage(
+  outcome: RepoSpikeGroupOutcome,
+  ledger: ReturnType<typeof createUsageLedger>,
+): RepoSpikeGroupOutcome {
+  const summary = summarizeUsage(ledger);
+  if (summary.calls === 0) {
+    return outcome;
+  }
+  return {
+    ...outcome,
+    usage: summary.usage,
+    usageLedger: summary,
   };
 }
 

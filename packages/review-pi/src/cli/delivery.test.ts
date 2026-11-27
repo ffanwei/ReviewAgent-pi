@@ -7,6 +7,7 @@ import { afterEach, expect, test } from "vitest";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import { findingMergeKey } from "../run/findings-merge.js";
+import { createUsageLedger } from "../observability/usage-ledger.js";
 import type { RepoSnapshotSideRecord } from "../run/repo-side.js";
 import type { ReviewRunResult } from "../run/review-run.js";
 import {
@@ -96,6 +97,7 @@ function runResult(findings: readonly Finding[], reviewsPath: string): ReviewRun
     transcriptPath: "session.json",
     transcriptPaths: ["session.json"],
     reviewsPath,
+    usageLedger: createUsageLedger(),
     ledgerHitCount: 0,
     modelCalls: 1,
     skillBashCalls: 0,

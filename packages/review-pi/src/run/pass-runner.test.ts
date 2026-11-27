@@ -14,6 +14,7 @@ import {
 } from "./pass-runner.js";
 import type { ReviewPassInput, ReviewPassResult } from "./review-pass.js";
 import { emptyCoverageLedger } from "./coverage-ledger.js";
+import { createUsageLedger } from "../observability/usage-ledger.js";
 import type { Shard } from "./shard-planner.js";
 
 // pass 装配（ADR-0081 候选 2）：单遍与分片共享同一 context，差异只在
@@ -58,6 +59,7 @@ function context(overrides: Partial<ReviewRunContext> = {}): ReviewRunContext { 
     }) as unknown as ReviewRunContext["fetch"],
     rep: 1,
     runtime: DEFAULT_REVIEW_RUNTIME,
+    usageLedger: createUsageLedger(),
     modelId: "model-1",
     runsRoot: "/tasks/t1",
     runsDir: "/tasks/t1/runs",

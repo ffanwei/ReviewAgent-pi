@@ -178,6 +178,36 @@ describe("buildAuditFileContent", () => {
     expect(keys.slice(-2)).toEqual(["ruleSkill", "skillPassLog"]);
   });
 
+  test("usageLedger（LLM 调用账本摘要）：只在审计携带时出现，且在 config / modelFallback 之前", () => {
+    const summary = {
+      calls: 2,
+      attempts: 2,
+      missingUsageCalls: 0,
+      usage: { inputTokens: 11, outputTokens: 7 },
+      bySource: {},
+      byModel: {},
+    };
+    const content = buildAuditFileContent({
+      runId: "20260914T180846.922-VUL4J-1",
+      caseId: "VUL4J-1",
+      model: "deepseek-v4-flash",
+      effort: "default",
+      startedAt: STARTED,
+      finishedAt: FINISHED,
+      rounds: 1,
+      toolCalls: 0,
+      usage: { inputTokens: 9579, outputTokens: 14484, cacheReadTokens: 24064 },
+      findings: [],
+      audit: { ...EMPTY_AUDIT, usageLedger: summary },
+      config: { path: "~/.PiAgent/PiAgent.jsonc", version: 1, digest: "d", values: {}, overridden: [], secret: {} },
+    });
+    expect(content.usageLedger).toEqual(summary);
+    const keys = Object.keys(content);
+    expect(keys.indexOf("usageLedger")).toBe(keys.indexOf("config") - 1);
+    expect(keys.at(-1)).toBe("config");
+    expect("usageLedger" in contentFixture()).toBe(false);
+  });
+
   test("元数据换算：ISO 时间戳与 durationMs", () => {
     const content = contentFixture();
     expect(content.startedAt).toBe("2026-09-14T18:08:46.922Z");

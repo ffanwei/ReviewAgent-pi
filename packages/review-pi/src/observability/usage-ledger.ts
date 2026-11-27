@@ -61,6 +61,22 @@ export interface UsageAggregate {
   readonly byModel: ReadonlyMap<string, UsageAggregate>;
 }
 
+/** JSON 友好的账本摘要（落审计 / run.json / repo 结果用） */
+export interface UsageLedgerSummary {
+  readonly calls: number;
+  readonly attempts: number;
+  readonly missingUsageCalls: number;
+  readonly usage: LlmUsage;
+  readonly bySource: Readonly<Partial<Record<UsageSource, UsageBucketSummary>>>;
+  readonly byModel: Readonly<Record<string, UsageBucketSummary>>;
+}
+
+export interface UsageBucketSummary {
+  readonly calls: number;
+  readonly usage: LlmUsage;
+  readonly missingUsageCalls: number;
+}
+
 /** 单一作用域句柄：ledger + scope id */
 export interface UsageScope {
   readonly ledger: UsageLedger;
@@ -169,6 +185,87 @@ export function aggregateEntries(entries: readonly UsageEntry[]): UsageAggregate
     missingUsageCalls,
     bySource: freezeBuckets(bySource),
     byModel: freezeBuckets(byModel),
+  };
+}
+
+/** 账本 → JSON 摘要（审计 / run.json / repo 结果落盘用） */
+export function summarizeUsage(
+  ledger: UsageLedger,
+  filter: UsageFilter = {},
+): UsageLedgerSummary {
+  const aggregate = ledger.aggregate(filter);
+  const bySource: Partial<Record<UsageSource, UsageBucketSummary>> = {};
+  for (const [source, bucket] of aggregate.bySource) {
+    bySource[source] = bucketSummary(bucket);
+  }
+  const byModel: Record<string, UsageBucketSummary> = {};
+  for (const [model, bucket] of aggregate.byModel) {
+    byModel[model] = bucketSummary(bucket);
+  }
+  return {
+    calls: aggregate.calls,
+    attempts: aggregate.attempts,
+    missingUsageCalls: aggregate.missingUsageCalls,
+    usage: aggregate.usage,
+    bySource,
+    byModel,
+  };
+}
+
+/** 合并两份摘要（多组 / 多片汇总） */
+export function mergeUsageSummaries(
+  left: UsageLedgerSummary | undefined,
+  right: UsageLedgerSummary | undefined,
+): UsageLedgerSummary {
+  const a = left ?? EMPTY_SUMMARY;
+  const b = right ?? EMPTY_SUMMARY;
+  const bySource: Partial<Record<UsageSource, UsageBucketSummary>> = { ...a.bySource };
+  for (const [source, bucket] of Object.entries(b.bySource)) {
+    const key = source as UsageSource;
+    bySource[key] = mergeBucket(bySource[key], bucket);
+  }
+  const byModel: Record<string, UsageBucketSummary> = { ...a.byModel };
+  for (const [model, bucket] of Object.entries(b.byModel)) {
+    byModel[model] = mergeBucket(byModel[model], bucket);
+  }
+  return {
+    calls: a.calls + b.calls,
+    attempts: a.attempts + b.attempts,
+    missingUsageCalls: a.missingUsageCalls + b.missingUsageCalls,
+    usage: addUsage(a.usage, b.usage),
+    bySource,
+    byModel,
+  };
+}
+
+const EMPTY_SUMMARY: UsageLedgerSummary = {
+  calls: 0,
+  attempts: 0,
+  missingUsageCalls: 0,
+  usage: ZERO_USAGE,
+  bySource: {},
+  byModel: {},
+};
+
+function bucketSummary(bucket: UsageAggregate): UsageBucketSummary {
+  return {
+    calls: bucket.calls,
+    usage: bucket.usage,
+    missingUsageCalls: bucket.missingUsageCalls,
+  };
+}
+
+function mergeBucket(
+  left: UsageBucketSummary | undefined,
+  right: UsageBucketSummary,
+): UsageBucketSummary {
+  if (left === undefined) {
+    return right;
+  }
+  return {
+    calls: left.calls + right.calls,
+    usage: addUsage(left.usage, right.usage),
+    missingUsageCalls: left.missingUsageCalls + right.missingUsageCalls,
   };
 }
 

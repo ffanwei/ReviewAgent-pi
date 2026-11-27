@@ -5,6 +5,7 @@ import path from "node:path";
 import type { LlmUsage } from "../contracts/llm.js";
 import type { Finding } from "../contracts/finding.js";
 import { ZERO_USAGE } from "../provider/usage-map.js";
+import type { UsageLedgerSummary } from "../observability/usage-ledger.js";
 import { groupSlug } from "./output.js";
 import type {
   RepoSpikeGroupOutcome,
@@ -25,6 +26,8 @@ export interface RepoJobGroup {
   runId?: string | undefined;
   findingsCount?: number | undefined;
   usage?: LlmUsage | undefined;
+  /** 组账本摘要（resume 时恢复；含一次性调用与失败 attempt） */
+  usageLedger?: UsageLedgerSummary | undefined;
   error?: string | undefined;
   skipReason?: string | undefined;
 }
@@ -257,6 +260,7 @@ export async function readDoneGroup(
       findingsCount: findings.length,
       findings,
       usage: record.baseline?.usage ?? ZERO_USAGE,
+      ...(group.usageLedger !== undefined ? { usageLedger: group.usageLedger } : {}),
       ...(record.baseline?.auditPath !== undefined ? { auditPath: record.baseline.auditPath } : {}),
       ...(record.baseline?.transcriptPath !== undefined
         ? { transcriptPath: record.baseline.transcriptPath }

@@ -2,6 +2,7 @@ import type { CoverageLedger } from "../contracts/coverage.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
 import type { RepoSnapshotFile } from "../loop/messages.js";
+import type { UsageLedgerSummary } from "../observability/usage-ledger.js";
 
 /**
  * repo-spike：全仓检视的**一次性探针**。
@@ -123,6 +124,8 @@ export interface RepoSpikeGroupOutcome {
   readonly findings?: readonly Finding[];
   readonly runId?: string;
   readonly usage?: LlmUsage;
+  /** 组账本摘要（含 Agent / 一次性 / 覆盖补漏 / 失败 attempt） */
+  readonly usageLedger?: UsageLedgerSummary;
   readonly coverage?: CoverageLedger;
   readonly recordPath?: string;
   readonly auditPath?: string;
@@ -147,6 +150,8 @@ export interface RepoSpikeResult {
   readonly groups: readonly RepoSpikeGroupOutcome[];
   readonly findings: readonly Finding[];
   readonly usage: LlmUsage;
+  /** 全仓账本摘要：按 source / model 聚合（含失败组与一次性调用） */
+  readonly usageLedger?: UsageLedgerSummary;
   /** 文件级三态覆盖账本（repo 模式专用；不写 MR 的 hunk 账本） */
   readonly coverage: RepoCoverage;
   readonly skippedFiles: readonly SkippedFile[];

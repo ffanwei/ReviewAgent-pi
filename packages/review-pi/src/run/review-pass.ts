@@ -54,7 +54,7 @@ import {
 import { SCAN_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import { repairFilePaths } from "../finding/path-repair.js";
 import { repairCoverageGaps } from "./coverage-repair.js";
-import { createDetachedUsageScope, type UsageScope } from "../observability/usage-ledger.js";
+import { createDetachedUsageScope, summarizeUsage, type UsageScope } from "../observability/usage-ledger.js";
 import type { MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { formatRepoSnapshotModelNote, type RepoSnapshotSideRecord } from "./repo-side.js";
 import { listChangedFilePaths } from "./mr-input.js";
@@ -517,6 +517,7 @@ async function executeReviewPass(
   });
   const tipsFilter = summarizeTipsFilter(findings, input.tipsConfidenceMin);
   const severityFilter = summarizeSeverityFilter(findings, input.tipsSeverityMin);
+  const usageLedger = summarizeUsage(usageScope.ledger, { scope: usageScope.id });
   const audit: RunAudit = {
     ...outcome.audit,
     coverage: closedCoverage,
@@ -537,6 +538,7 @@ async function executeReviewPass(
         }
       : {}),
     ...(input.modelFallback !== undefined ? { modelFallback: input.modelFallback } : {}),
+    ...(usageLedger.calls > 0 ? { usageLedger } : {}),
   };
   const auditContent = buildAuditFileContent({
     runId,

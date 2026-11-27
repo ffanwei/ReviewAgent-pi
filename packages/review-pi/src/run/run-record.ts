@@ -4,6 +4,7 @@ import type { Finding } from "../contracts/finding.js";
 import type { CoverageSummary } from "../contracts/coverage.js";
 import type { LedgerEntry } from "../contracts/ledger.js";
 import type { LlmUsage } from "../contracts/llm.js";
+import type { UsageLedgerSummary } from "../observability/usage-ledger.js";
 import type {
   CacheBreakRecord,
   CandidateNormalizationRecord,
@@ -72,6 +73,8 @@ export interface AuditLight {
   readonly coverageRepair?: CoverageRepairAudit;
   /** 覆盖账本 JSON 汇总（F-01c）：只在 pass 携带 coverage 时在场 */
   readonly coverageSummary?: CoverageSummary;
+  /** 用量账本摘要（ADR-0066）：按 source / model 聚合，审计与 run.json 同源 */
+  readonly usageLedger?: UsageLedgerSummary;
 }
 
 /** RunResult 快照（audit 以轻量投影落盘） */
@@ -184,6 +187,7 @@ export function toAuditLight(audit: RunAudit): AuditLight {
       : {}),
     ...(audit.coverageRepair !== undefined ? { coverageRepair: audit.coverageRepair } : {}),
     ...(audit.coverage !== undefined ? { coverageSummary: summarizeCoverage(audit.coverage) } : {}),
+    ...(audit.usageLedger !== undefined ? { usageLedger: audit.usageLedger } : {}),
   };
 }
 

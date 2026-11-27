@@ -5,6 +5,7 @@ import type { CoverageLedger, DroppedHunkRange } from "./coverage.js";
 import type { Finding } from "./finding.js";
 import type { LedgerEntry } from "./ledger.js";
 import type { LlmUsage, ToolSchema, WireMessage } from "./llm.js";
+import type { UsageLedgerSummary } from "../observability/usage-ledger.js";
 
 /** 六阶段名（固定顺序；phaseLog 留痕用） */
 export type ReviewPhase =
@@ -441,6 +442,12 @@ export interface RunAudit {
    * 关闭时整键缺席（零漂移）。
    */
   readonly coverageRepair?: CoverageRepairAudit;
+  /**
+   * 本遍用量账本摘要（ADR-0066 收敛）：按 source / model 聚合，含 Agent / Skill
+   * / 解析修复 / 候选修复 / 覆盖补漏；落审计可供基准与复盘直接读取，不再
+   * 手工相加 `usage + coverageRepair.usage`。
+   */
+  readonly usageLedger?: UsageLedgerSummary;
 }
 
 /**

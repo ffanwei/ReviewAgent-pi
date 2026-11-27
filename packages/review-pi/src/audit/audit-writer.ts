@@ -27,6 +27,7 @@ import type {
   WireRequest,
 } from "../contracts/run.js";
 import type { ConfigSnapshot } from "../shared/config.js";
+import type { UsageLedgerSummary } from "../observability/usage-ledger.js";
 
 // 审计投影（测量常量面）：AuditFileContent 字段集与键序和 DSH 线审计文件
 // 逐键一致（t-series 审计为地面真源，src/audit/audit-writer.test.ts 断言）。
@@ -113,6 +114,11 @@ export interface AuditFileContent {
   readonly coverageRepair?: CoverageRepairAudit;
   /** 检索预算计数（F-08b）：只在配置了上限时出现 */
   readonly retrievalBudget?: RetrievalBudgetAudit;
+  /**
+   * 本 pass 的 LLM 调用账本摘要（source / model 聚合）：只在真有调用时出现。
+   * 键序在 config / modelFallback 之前，保持 modelFallback 为最后一个可选键。
+   */
+  readonly usageLedger?: UsageLedgerSummary;
   /**
    * 生效配置快照（ADR-0025）：全量非秘密生效值 + 来源 + digest；秘密只记
    * `set|missing`。只进审计文件（stdout 键集不变）。直调内核（测试/嵌入）可缺省。
@@ -203,6 +209,7 @@ export function buildAuditFileContent(args: {
     ...(args.audit.retrievalBudget !== undefined
       ? { retrievalBudget: args.audit.retrievalBudget }
       : {}),
+    ...(args.audit.usageLedger !== undefined ? { usageLedger: args.audit.usageLedger } : {}),
     ...(args.config !== undefined ? { config: args.config } : {}),
     // 模型替换留痕（ADR-0080）：无替换整键缺席（零字节漂移）
     ...(args.audit.modelFallback !== undefined

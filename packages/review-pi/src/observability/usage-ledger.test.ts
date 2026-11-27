@@ -5,7 +5,9 @@ import {
   createDetachedUsageScope,
   createUsageLedger,
   createUsageScope,
+  mergeUsageSummaries,
   partitionUsage,
+  summarizeUsage,
   type UsageEntry,
 } from "./usage-ledger.js";
 
@@ -87,6 +89,26 @@ test("aggregateEntries 是纯函数：不改写入参数组", () => {
   const agg = aggregateEntries(entries);
   expect(agg.calls).toBe(2);
   expect(entries).toEqual(before);
+});
+
+test("summarizeUsage：JSON 摘要按 source / model 聚合；merge 等价于逐条相加", () => {
+  const a = createUsageLedger();
+  a.record(entry({ scope: "s1", source: "agent", usage: { inputTokens: 10, outputTokens: 5 } }));
+  a.record(entry({ scope: "s1", source: "coverage-repair", usage: { inputTokens: 3, outputTokens: 4 } }));
+  const b = createUsageLedger();
+  b.record(entry({ scope: "s2", source: "agent", usage: { inputTokens: 1, outputTokens: 2 } }));
+
+  const sa = summarizeUsage(a, { scope: "s1" });
+  expect(sa.calls).toBe(2);
+  expect(sa.bySource.agent?.usage).toEqual({ inputTokens: 10, outputTokens: 5 });
+  expect(sa.bySource["coverage-repair"]?.usage).toEqual({ inputTokens: 3, outputTokens: 4 });
+  expect(sa.byModel["deepseek-v4.1-flash"]?.calls).toBe(2);
+
+  const merged = mergeUsageSummaries(sa, summarizeUsage(b));
+  expect(merged.calls).toBe(3);
+  expect(merged.usage).toEqual({ inputTokens: 14, outputTokens: 11 });
+  expect(merged.bySource.agent?.calls).toBe(2);
+  expect(merged.bySource.agent?.usage).toEqual({ inputTokens: 11, outputTokens: 7 });
 });
 
 test("scope 序号单调递增，互不重叠", () => {

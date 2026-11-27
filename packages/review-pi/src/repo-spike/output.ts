@@ -53,7 +53,13 @@ export function formatResultSummary(result: RepoSpikeResult): string {
     )}`,
     `[repo-review] findings=${String(result.findings.length)} usage=input ${String(
       result.usage.inputTokens,
-    )} output ${String(result.usage.outputTokens)}`,
+    )} output ${String(result.usage.outputTokens)} cache ${String(
+      result.usage.cacheReadTokens ?? 0,
+    )} calls ${String(result.usageLedger?.calls ?? 0)}${
+      (result.usageLedger?.missingUsageCalls ?? 0) > 0
+        ? ` missing-usage ${String(result.usageLedger?.missingUsageCalls ?? 0)}`
+        : ""
+    }`,
     `[repo-review] coverage: selected=${String(result.coverage.summary.selected)} candidate=${String(
       result.coverage.summary.candidate,
     )} no-issue=${String(result.coverage.summary.noIssue)} not-reached=${String(
