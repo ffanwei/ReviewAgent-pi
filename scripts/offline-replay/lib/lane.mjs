@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { REPO_ROOT } from "./scenario.mjs";
 
@@ -102,6 +104,12 @@ export async function createLane({ runDir, label, scenario, server, index }) {
   // 运行期目录归一化（ADR-0049）：规则 Skill 会话的 location 会带 lane 绝对
   // 路径；同一 trace 在不同 lane / 不同运行重放时只有归一化后指纹才稳定。
   server.addPathRoot?.(laneDir, "<lane>");
+  // 长路径下规则 Skill 缓存根会回落到 os.tmpdir()/rp-rule-skills/<runHash>
+  // （pass-runner.ts 的 ruleSkillCacheRoot）。它不在 lane 下，且 hash 由本 lane
+  // 的 runsRoot 决定；不归一化会让 skill 会话首条消息每次运行都不同。
+  const runsRoot = join(tasksDir, TASK_ID);
+  const fallbackHash = createHash("sha256").update(resolve(runsRoot)).digest("hex").slice(0, 12);
+  server.addPathRoot?.(join(tmpdir(), "rp-rule-skills", fallbackHash), "<rule-skill-cache>");
 
   return {
     index,

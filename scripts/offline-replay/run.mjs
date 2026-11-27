@@ -115,7 +115,7 @@ async function record(flags) {
     },
     model: { id: scenario.model },
     toolsVariants: variants,
-    requestNormalization: { placeholders: ["<lane>"] },
+    requestNormalization: { placeholders: ["<lane>", "<rule-skill-cache>"] },
     interactions,
   });
   const tracePath = flags.trace !== undefined ? resolve(flags.trace) : scenario.trace;
