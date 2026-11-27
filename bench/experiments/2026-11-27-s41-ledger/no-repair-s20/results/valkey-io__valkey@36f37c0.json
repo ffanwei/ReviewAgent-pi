@@ -1,0 +1,32 @@
+{
+  "instance_id": "valkey-io__valkey@36f37c0",
+  "repo": "valkey-io/valkey",
+  "base_commit": "ea2e48a807e1d4a1a5a684a2a699eda1934a0c6f",
+  "head_commit": "36f37c0bafa72c091a9a3725b9a026a056130892",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 55.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 1,
+  "review_output": [
+    {
+      "file": "src/networking.c",
+      "line": 2771,
+      "summary": "三元表达式内误用逗号运算符，导致 snprintf 拿到非格式串（默认配置下崩溃、关闭脱敏时沦为格式化字符串漏洞）",
+      "failure_scenario": "第 2771-2776 行把两个候选格式串写成了括号内的逗号表达式：`(fmt, args...)`。C 语言中逗号表达式的值是其最后一个操作数，因此这两个分支的结果分别是 `size_t`（剩余字节数）和 `char*`（querybuf 尾部指针），而不是要打印的字符串；真正的格式串被当成无用值丢弃。于是 snprintf 的第三个参数（format）收到的是一个与预期完全无关的值：\n1) 默认配置下 server.hide_user_data_from_log = 1（src/config.c:3194 默认值 1），三元表达式取第一分支的值，即 `sdslen(c->querybuf) - c->qb_pos` 这个整数被当作 `char *format` 传入，vsnprintf 会解引用一个非法地址——任意客户端只要发送一条长度 ≥ PROTO_DUMP_LEN(128) 的畸形协议即可稳定触发段错误，形成远端可触发的 DoS。\n2) 即使关闭该配置（hide_user_data_from_log = 0），format 变成 `c->querybuf + sdslen(c->querybuf) - PROTO_DUMP_LEN / 2`，即客户端完全可控的 query 缓冲区尾部被当作格式化串使用；客户端可借此注入 `%s`/`%n`/`%x` 等格式符，造成内存泄露或再次崩溃，而这恰恰发生在“为保护用户数据而新增”的脱敏代码里。\n3) 两个分支内部的 `%zu` / `%.*s` 参数永远不会与格式串配对（格式串本身已被丢弃），即便编译器按指针/整数转换强行通过，行为也是未定义；这类写法在 GCC 下至少产生 pointer/integer type mismatch 警告，在 Clang 下通常会直接编译失败，使构建/可移植性同时受损。",
+      "severity": "P0",
+      "category": "安全",
+      "confidence": 0.93,
+      "rule": "FORMAT-STRING-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\valkey-io__valkey\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\diff\\valkey-io__valkey@36f37c0.diff\n  caseId              valkey-io__valkey@36f37c0\n  --issue             (未传)\n  --taskId            valkey-io__valkey@36f37c0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 54.3s · 模型调用 8 次 · token 输入 5,397（未命中） · 输出 6,239 · 缓存命中 53,504（90.8%） · 工具 4 次（主会话 4 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0027\n[time] 阶段耗时 | 总墙钟 55.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (1.2%)\n[time] 阶段 | 六阶段审计 54.3s (98.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.2%)\n[time] 审计明细 | P1 8.7s (16.0%) | P2 3.8s (7.0%) | P3 3.3s (6.1%) | P4 16.8s (30.9%) | P5 19.0s (35.0%) | P6 2.7s (5.0%)\n[usage] 任务总计 | 模型调用 8 次（Agent 8 + 一次性 0） | token 输入 5,397（未命中） | 输出 6,239 | 缓存命中 53,504（90.8%） | $0.0027\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\\valkey-io__valkey@36f37c0\\audit\\20261126_123732_830.json",
+  "token_usage": {
+    "input_tokens": 5397,
+    "output_tokens": 6239,
+    "cache_read_input_tokens": 53504
+  }
+}

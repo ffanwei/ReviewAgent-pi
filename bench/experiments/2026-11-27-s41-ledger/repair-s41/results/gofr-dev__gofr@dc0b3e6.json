@@ -1,0 +1,74 @@
+{
+  "instance_id": "gofr-dev__gofr@dc0b3e6",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "44e3eeb2786ad4d333dc1f528fb104236693d060",
+  "head_commit": "dc0b3e630423b72cb9b2f273fdc18a5c11d12984",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 149.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 172,
+      "summary": "仅接受 scheme 恰为 mongodb 的 URI，会拒绝 mongodb+srv 等驱动本可支持的连接串",
+      "failure_scenario": "generateMongoURI 在 config.URI 非空时先调用 getDBHost 校验，而 getDBHost 要求 parsedURL.Scheme 严格等于 \"mongodb\"，否则返回 errIncorrectURI。mongo-driver 的 options.Client().ApplyURI 本身支持 mongodb+srv://（Atlas 常用）等连接串形式，这些配置在改动前可直接交给驱动解析并成功连接，改动后会在 Connect 的 92-96 行被 Errorf 记录并直接 return，连接完全无法建立；同时 c.Database 仍为 nil，后续 HealthCheck 调用 c.Database.Client() 会因空指针崩溃，业务查询也会失败。Config.URI 虽然被标注 Deprecated，但仍然是受支持的配置入口（mongo.go:36-37），该变更实际上把一部分原本可用的配置变成了硬失败。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 156,
+      "summary": "用户名/密码先 QueryEscape 再交给 url.UserPassword，造成凭据二次转义",
+      "failure_scenario": "新代码对 User/Password 调用 url.QueryEscape 后再传给 url.UserPassword，而 url.Userinfo 在 String() 时会再次按 userinfo 规则做百分号编码，`%` 被转成 `%25`。结果任何包含需要转义字符的凭据都会变成错误值：例如密码 `pa&ss` → QueryEscape 得 `pa%26ss` → 最终 URI 中为 `pa%2526ss`，驱动解析出的密码是 `pa%26ss`，与真实密码不符，认证必然失败（`+`、空格、`%`、`=` 等字符同理）。改动前这些字符是原样拼进 URI 的，url.Parse 在 userinfo 中允许 `&`、`=`、`+` 等子分隔符，因此这类密码原本可以正常认证，属于本次变更引入的回归。同理第 152 行对 Database 使用 url.PathEscape 后写入 u.Path 也会被二次转义。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 155,
+      "summary": "仅设置 User 或仅设置 Password 时凭据被静默丢弃，可能以无凭据方式连接",
+      "failure_scenario": "新逻辑只在 `config.User != \"\" && config.Password != \"\"` 时才写入 userinfo；若用户配置了非空 User 但 Password 为空（例如密码来自尚未注入的环境变量、或确实使用空密码账号），生成的 URI 完全不含凭据，却仍然带上 `authSource=admin`。改动前的拼接方式会生成 `mongodb://user:@host:port/db?authSource=admin`，以该凭据去认证并在失败时明确报错；改动后则可能以无凭据身份连上未开启鉴权的实例，或得到与真实配置无关的错误，属于静默降级，配置错误不再被暴露。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "pkg/gofr/datasource/mongo/mongo.go",
+      "line": 98,
+      "summary": "改用 URI 配置时调试日志中的 host 为空，连接日志失去定位信息",
+      "failure_scenario": "调试日志由原来的 `c.config.URI` 改为 `c.config.Host`，而走 URI 配置路径时用户通常只填 URI（mongo.go:36-37 的 Deprecated 字段），Host 为空。此时日志输出形如 `connecting to MongoDB at  to database `，既看不到目标地址，也看不到实际使用的数据库（URI 里的 db 不会被解析出来），出现连接问题时无法从日志判断到底连的是哪个实例。成功日志（第 120、127 行）同样只打印 host，丢失了端口/副本集等关键信息。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\gofr-dev__gofr@dc0b3e6.diff\n  caseId              gofr-dev__gofr@dc0b3e6\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@dc0b3e6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 4 / not-reached 0\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 4/4 / 新候选 0 / no-issue 4 / 预算跳过 0\n✓ 完成 · 耗时 148.6s · 模型调用 9 次 · token 输入 10,378（未命中） · 输出 15,951 · 缓存命中 113,664（91.6%） · 工具 5 次（主会话 5 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0062\n[time] 阶段耗时 | 总墙钟 149.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 100.5s (67.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 48.1s (32.2%)\n[time] 审计明细 | P1 2.8s (2.8%) | P2 3.2s (3.2%) | P3 3.5s (3.5%) | P4 37.7s (37.5%) | P5 48.0s (47.8%) | P6 5.3s (5.2%)\n[usage] 任务总计 | 模型调用 12 次（Agent 9 + 一次性 3） | token 输入 16,589（未命中） | 输出 26,060 | 缓存命中 113,664（87.3%） | $0.0099\n[usage] 一次性明细 | 解析修复 1 次（输入 2,681 / 输出 3,592 / 缓存 0） | 覆盖补漏 2 次（输入 3,530 / 输出 6,517 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\gofr-dev__gofr@dc0b3e6\\audit\\20261127_043506_298.json",
+  "token_usage": {
+    "input_tokens": 13908,
+    "output_tokens": 22468,
+    "cache_read_input_tokens": 113664
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 10378,
+      "output_tokens": 15951,
+      "cache_read_input_tokens": 113664
+    },
+    "coverage_repair": {
+      "input_tokens": 3530,
+      "output_tokens": 6517,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 246.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 218,
+      "summary": "用户自带浏览器启动参数被整体包成一个 set 传入 create_subprocess_exec，启动必然失败",
+      "failure_scenario": "第 218-228 行仍然把 `*{...}` 展开写在列表字面量里，所以 `chrome_launch_args` 是「只含一个 set 元素」的列表；第 229-235 行用 `create_subprocess_exec(self.config.browser_binary_path, *chrome_launch_args, ...)` 展开时，这个 set 会被当作单个 argv 元素传给 subprocess，而 Popen 要求每个 argv 元素是 str/bytes/os.PathLike，因此会立刻抛出 `TypeError: expected str, bytes or os.PathLike object, not set`。结果是只要设置了 browser_binary_path（用户自带 Chrome 的整条路径），一旦本地没有可复用的调试端口实例就会直接崩溃，Chrome 永远起不来，属于对既有功能的行为回归。新增用例 tests/test_browser.py:190 的 `assert '--remote-debugging-port=9223' in args` 也印证参数结构不对（此时 args 里是 set，断言不成立）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "chrome_remote_debugging_port 声明为可 None，但下游三处均未做 None 处理",
+      "failure_scenario": "字段类型写成 `int | None`，然而后续所有使用点都假定它是整数：`CHROME_DEBUGGING_ARG % {'chrome_remote_debugging_port': None}` 会拼出 `--remote-debugging-port=None` 传给 Chrome（Chrome 会因非法端口参数启动失败），URL 会拼成 `http://localhost:None/json/version`（httpx 抛 InvalidURL 等非 RequestError 异常，无法被第 214 行的 `except httpx.RequestError` 兜住），`s.connect_ex(('localhost', None))` 会直接抛 TypeError。用户按类型提示显式传 `chrome_remote_debugging_port=None` 时会得到难以定位的怪异报错，而不是清晰的校验失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "TYPE-CONTRACT-002"
+    },
+    {
+      "file": "tests/test_browser.py",
+      "line": 180,
+      "summary": "新增用例 mock 的是 requests.get，而被测代码走 httpx，mock 完全不生效",
+      "failure_scenario": "新增的 test_user_provided_browser_launch_on_custom_chrome_remote_debugging_port 通过 `monkeypatch.setattr(requests, 'get', dummy_get)` 试图伪造调试端点探测结果，但 `_setup_user_provided_browser` 与启动后的重试循环用的是 `httpx.AsyncClient().get(...)`，`requests.get` 根本不会被调用：DummyResponse 永远用不上，异步 httpx 会发起真实连接，启动后的 for 循环在每轮失败后 `await asyncio.sleep(1)`，使测试额外耗时约 10 秒且依赖运行环境的端口状态；一旦本机 9223 真的被占用，用例行为还会翻转。这让用例既没有验证它声明的「复用/探测」语义，也不稳定。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TESTABILITY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 5 / not-reached 7（no-signal=7）\nreview-pi: 覆盖补漏 请求 6（失败 0）/ 覆盖 hunk 5/12 / 新候选 0 / no-issue 5 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 240.2s · 模型调用 9 次 · token 输入 12,864（未命中） · 输出 11,801 · 缓存命中 110,592（89.6%） · 工具 6 次（主会话 6 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0054\n[time] 阶段耗时 | 总墙钟 244.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 3.8s (1.5%)\n[time] 阶段 | 六阶段审计 87.5s (35.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 152.7s (62.6%)\n[time] 审计明细 | P1 6.6s (7.6%) | P2 1.9s (2.2%) | P3 4.8s (5.5%) | P4 51.0s (58.4%) | P5 16.6s (19.0%) | P6 6.4s (7.4%)\n[usage] 任务总计 | 模型调用 16 次（Agent 9 + 一次性 7） | token 输入 20,271（未命中） | 输出 33,165 | 缓存命中 110,592（84.5%） | $0.0124\n[usage] 一次性明细 | 覆盖补漏 7 次（输入 7,407 / 输出 21,364 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261127_042112_458.json",
+  "token_usage": {
+    "input_tokens": 20271,
+    "output_tokens": 33165,
+    "cache_read_input_tokens": 110592
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 12864,
+      "output_tokens": 11801,
+      "cache_read_input_tokens": 110592
+    },
+    "coverage_repair": {
+      "input_tokens": 7407,
+      "output_tokens": 21364,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

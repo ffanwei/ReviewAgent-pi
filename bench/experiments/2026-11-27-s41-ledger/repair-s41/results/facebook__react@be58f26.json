@@ -1,0 +1,64 @@
+{
+  "instance_id": "facebook__react@be58f26",
+  "repo": "facebook/react",
+  "base_commit": "88b976740467f9dfabae03c79a8eff9033c35050",
+  "head_commit": "be58f26f9a6e579d8df36d901a59249d9ac1393f",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 181.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/react-dom/src/__tests__/ReactDOMForm-test.js",
+      "line": 1673,
+      "summary": "新增用例遗留 `it.only`，会静默跳过本文件其余全部用例",
+      "failure_scenario": "新增的回归测试使用了 `it.only('multiple form submissions in rapid succession do not throw', ...)`。Jest 在包含 focused test 的文件里只执行被 `.only` 标记的用例，ReactDOMForm-test.js 中其余约两千行的表单 action / requestFormReset / useFormStatus 用例会全部被标记为 skipped。合入后 CI 仍然“通过”，但整套 form 相关回归（包括本次修复本可能打破的 requestFormReset、useFormStatus pending 语义等）不再被执行，属于隐蔽的测试覆盖丢失；仓库 eslint 配置中启用了 `jest/no-focused-tests`，该行也会直接触发 lint 失败。",
+      "severity": "P1",
+      "category": "可测试性",
+      "confidence": 0.95,
+      "rule": "TEST-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberHooks.js",
+      "line": 3264,
+      "summary": "`next === null` 时整体重建 hook 链会丢弃旧 queue 中已入队的 pending 状态与表单重置更新",
+      "failure_scenario": "新条件是 `existingStateHook !== null && existingStateHook.next !== null`，只有链上已有第二个 hook（resetStateHook）时才视为“已升级”。当 `memoizedState` 存在但 `next` 为 null（即渲染在第一个 `useState` 的 `useThenable` 处挂起后残留的半个 hook 链）时，会走完整升级流程：新建 `newQueue`/`newResetStateQueue`，并用全新的 `stateHook` 覆盖 `formFiber.memoizedState` 与 `alternate.memoizedState`（3321-3325 行）。而挂起态的半个 hook 是通过 `updateWorkInProgressHook` 从 current 克隆来的，其 `queue` 与 current 上的真实 queue 是同一个对象（1053 行），第一次提交已经通过 `startTransition` 把 pending 状态的 thenable 入队、并通过 `requestFormReset` 把 reset 状态入队到这条共享 queue。整体重建后这些已入队的更新被静默丢弃：`useFormStatus` 观察不到第一次提交的 pending 状态，第一次 action 完成后表单也不会被自动重置，且 fiber 上已记录的 lanes 与任何队列都不再对应，行为从“抛错”变成“静默丢失状态”，比崩溃更难被发现。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "STATE-002"
+    },
+    {
+      "file": "packages/react-dom/src/__tests__/ReactDOMForm-test.js",
+      "line": 1682,
+      "summary": "回归用例用两个相同 1ms 的真实定时器制造并发，时序上很可能不再并发导致回归覆盖失效",
+      "failure_scenario": "用例靠真实 `setTimeout(res, 1)` 来制造“两次提交重叠”：`submitFormTwice` 在第一次 `requestSubmit()` 之后 `await new Promise(res => setTimeout(res, 1))`，而用户 action 自身也返回 `new Promise(res => setTimeout(res, 1))`。action 的定时器在第一次 `requestSubmit()` 内同步注册，早于 `submitFormTwice` 里的等待定时器注册，两者延时相同，因此 action 的 promise 通常会先 resolve 并触发 transition 重试/提交，等第二次 `requestSubmit()` 执行时第一次提交很可能已经结束——正是注释里担心的“transitions 会被 batch、不会并发执行”的情形。此时用例退化为普通连续两次提交，即使把 `ensureFormComponentIsStateful` 的修复回退也可能通过，回归保护不可靠；在慢机器/调度繁忙时又可能因 `act` 边界内定时器触发顺序不同而出现偶发失败。该文件其余 suspend/transition 相关用例均用 `resolveText` / `assertLog` 的确定性驱动方式，本用例是全文件唯一使用真实 `setTimeout` 的地方。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.55,
+      "rule": "TEST-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\facebook__react\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\facebook__react@be58f26.diff\n  caseId              facebook__react@be58f26\n  --issue             (未传)\n  --taskId            facebook__react@be58f26\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 179.2s · 模型调用 16 次 · token 输入 18,406（未命中） · 输出 24,102 · 缓存命中 323,968（94.6%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0102\n[time] 阶段耗时 | 总墙钟 180.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.4%)\n[time] 阶段 | 六阶段审计 179.1s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 35.6s (19.9%) | P2 4.1s (2.3%) | P3 4.9s (2.7%) | P4 98.4s (54.9%) | P5 22.8s (12.7%) | P6 13.3s (7.4%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 18,406（未命中） | 输出 24,102 | 缓存命中 323,968（94.6%） | $0.0102\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\facebook__react@be58f26\\audit\\20261127_043310_031.json",
+  "token_usage": {
+    "input_tokens": 18406,
+    "output_tokens": 24102,
+    "cache_read_input_tokens": 323968
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 18406,
+      "output_tokens": 24102,
+      "cache_read_input_tokens": 323968
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

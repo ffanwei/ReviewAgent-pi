@@ -1,0 +1,62 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@3555a95",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "76c06b58a4d9e8ee3fe3c0269a046987ad0502e5",
+  "head_commit": "3555a95e7b888335d9f72e432eb4f9fb9640e8cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 127.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 84,
+      "summary": "sourceLanguage 声明为可选但运行时强制必填，模型只给 text/targetLanguage 时翻译被静默丢弃",
+      "failure_scenario": "改造后 apply() 增加了 !StringUtils.hasText(request.sourceLanguage) 的校验，而 Request 的 sourceLanguage 分量用 @JsonProperty(required = false) 声明并注明 “default is zh”，因此由 Spring AI 工具回调按 JSON 反序列化生成的 Request（走三参 canonical 构造器）在模型省略 sourceLanguage 时该字段为 null。改造前源语言是硬编码的 LANGUAGE_CODE=\"zh\"，只传 text + targetLanguage 的调用可以正常翻译；改造后同样的调用会命中第 84-85 行的判空直接 return null，工具返回空结果且没有任何错误信息，“default is zh” 的默认值只存在于 Request(String text) 这个 Java 单参构造器，对 JSON 路径完全无效。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 104,
+      "summary": "catch (Exception) 吞掉 InterruptedException，中断信号被清除且未恢复中断位",
+      "failure_scenario": "apply() 中的 response.get() 是阻塞式等待 CompletableFuture，线程被中断时抛出 InterruptedException。新增的 catch (Exception e) 分支只打印 e.getMessage() 并 return null，既没有 Thread.currentThread().interrupt() 恢复中断状态，也没有把异常向上抛出（改造前至少是 throw new RuntimeException(e)）。容器关闭、超时取消或上层任务被 cancel 时，中断信号会被彻底吞掉，线程继续正常工作，可能导致关闭流程卡住或取消请求不生效；同时仅记录 message 也丢失了堆栈与 cause。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CONCURRENCY-002"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateProperties.java",
+      "line": 34,
+      "summary": "凭证回退使用过于通用的环境变量名 ACCESS_KEY_ID/ACCESS_KEY_SECRET",
+      "failure_scenario": "新增的构造器把环境变量回退固定为 ACCESS_KEY_ID 与 ACCESS_KEY_SECRET。这两个名字不带任何服务/厂商前缀，任何在同一容器或 CI 环境中导出的同名变量（其它云厂商 SDK、对象存储、第三方工具的常见命名习惯）都会被静默当作阿里云机器翻译凭证使用，导致以错误身份调用接口（鉴权失败或调用到他人账号），且因为失败路径只 return null，问题很难被发现。仓库内其它 tool-calling 模块的环境变量均带业务前缀（如 BAIDU_MAP_API_KEY、MICROSOFT_TRANSLATE_API_KEY），本次写法与既有约定不一致。",
+      "severity": "P3",
+      "category": "安全",
+      "confidence": 0.4,
+      "rule": "SECURITY-003"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 62,
+      "summary": "公共常量 LANGUAGE_CODE 被重命名为 LANGUAGE_CODE_ZH 且未保留兼容别名",
+      "failure_scenario": "AliTranslateService 中 public static final String LANGUAGE_CODE = \"zh\" 被删除并改名为 LANGUAGE_CODE_ZH，同时新增 LANGUAGE_CODE_EN。该类是发布到 Maven 的 starter 公共类，下游直接引用 AliTranslateService.LANGUAGE_CODE 的代码在升级到本次版本后会编译失败；本次变更对同类的 deprecated 属性 setter（setAccessKeyId/setAccessKeySecret）都保留了兼容入口，常量却没有同等处理，兼容策略不一致。仓库内搜索确认没有其它引用，因此仅影响外部使用方。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "COMPAT-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@3555a95.diff\n  caseId              alibaba__spring-ai-alibaba@3555a95\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@3555a95\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 124.0s · 模型调用 13 次 · token 输入 17,252（未命中） · 输出 15,816 · 缓存命中 244,480（93.4%） · 工具 21 次（主会话 21 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0075\n[time] 阶段耗时 | 总墙钟 125.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.7s (1.3%)\n[time] 阶段 | 六阶段审计 124.0s (98.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 9.1s (7.3%) | P2 3.8s (3.0%) | P3 11.5s (9.2%) | P4 75.2s (60.7%) | P5 18.1s (14.6%) | P6 6.3s (5.1%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 17,252（未命中） | 输出 15,816 | 缓存命中 244,480（93.4%） | $0.0075\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@3555a95\\audit\\20261126_123432_102.json",
+  "token_usage": {
+    "input_tokens": 17252,
+    "output_tokens": 15816,
+    "cache_read_input_tokens": 244480
+  }
+}

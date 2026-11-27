@@ -1,0 +1,44 @@
+{
+  "instance_id": "valkey-io__valkey@36f37c0",
+  "repo": "valkey-io/valkey",
+  "base_commit": "ea2e48a807e1d4a1a5a684a2a699eda1934a0c6f",
+  "head_commit": "36f37c0bafa72c091a9a3725b9a026a056130892",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 62.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 1,
+  "review_output": [
+    {
+      "file": "src/networking.c",
+      "line": 2771,
+      "summary": "snprintf 的格式串被写成逗号表达式，实参退化为整型，导致编译失败或运行时崩溃",
+      "failure_scenario": "新代码把两个「格式串 + 参数」组合放进括号作为条件表达式的两个分支：`server.hide_user_data_from_log ? (\"...Redacted %zu bytes\", sdslen(...) - c->qb_pos) : (\"...'%.*s' (... more %zu bytes ...) '%.*s'\", ...)`。C 语言中括号内的逗号是逗号运算符而非参数分组，因此该表达式的结果是最后一个操作数——即一个整型长度值（size_t/int，经通常算术转换后为无符号整型），而两个分支中的格式串都被丢弃。于是 snprintf 的第三参数（`const char *format`）实际收到一个整数：轻则触发 -Wint-conversion/-Wformat 诊断（GCC 14 起 int-conversion 默认即为 error，构建失败），重则在仅告警的编译器上编译通过，运行时 snprintf 把长度值当成指针解引用，在与崩溃地址无关的任意低地址读取，必然段错误。该分支在 querybuf 剩余长度 >= PROTO_DUMP_LEN(128) 时命中，且 setProtocolError 的入口条件为 `server.verbosity <= LL_VERBOSE || c->flag.primary`（LL_VERBOSE=1，默认 loglevel=LL_NOTICE=2），因此当运维把 loglevel 设为 verbose/debug，或错误来自 primary 连接时即会执行；攻击者只需发送一个超过 128 字节的畸形 RESP 请求即可触发，属于可远程触发的进程崩溃（DoS），同时也使「隐藏用户数据」这一脱敏改动完全失效——包含 querybuf 原文的分支根本没被当成格式串使用。",
+      "severity": "P0",
+      "category": "可靠性",
+      "confidence": 0.9,
+      "rule": "CORRECTNESS-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\valkey-io__valkey\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\valkey-io__valkey@36f37c0.diff\n  caseId              valkey-io__valkey@36f37c0\n  --issue             (未传)\n  --taskId            valkey-io__valkey@36f37c0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 61.8s · 模型调用 10 次 · token 输入 7,795（未命中） · 输出 6,961 · 缓存命中 82,816（91.4%） · 工具 10 次（主会话 10 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0033\n[time] 阶段耗时 | 总墙钟 62.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (1.0%)\n[time] 阶段 | 六阶段审计 61.8s (98.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 9.0s (14.5%) | P2 3.5s (5.7%) | P3 6.2s (10.1%) | P4 13.7s (22.1%) | P5 26.0s (42.1%) | P6 3.4s (5.5%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 7,795（未命中） | 输出 6,961 | 缓存命中 82,816（91.4%） | $0.0033\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\valkey-io__valkey@36f37c0\\audit\\20261127_043030_108.json",
+  "token_usage": {
+    "input_tokens": 7795,
+    "output_tokens": 6961,
+    "cache_read_input_tokens": 82816
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 7795,
+      "output_tokens": 6961,
+      "cache_read_input_tokens": 82816
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

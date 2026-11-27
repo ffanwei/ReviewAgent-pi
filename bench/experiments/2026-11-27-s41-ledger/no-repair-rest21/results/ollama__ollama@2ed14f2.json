@@ -1,0 +1,92 @@
+{
+  "instance_id": "ollama__ollama@2ed14f2",
+  "repo": "ollama/ollama",
+  "base_commit": "4ea4d2b18952a104a47079df00ac0bfe4706f3aa",
+  "head_commit": "2ed14f2a28867c017426b41a9ff6bfc52c981a43",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 285.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 488,
+      "summary": "chunksums 列表请求失败只更新进度就 break，Pull 仍提交 manifest 把残缺模型标记为已安装",
+      "failure_scenario": "新的分块下载路径中，r.chunksums 返回错误（chunksums 端点 404/500、网络错误、响应解析失败）时，代码只调用 t.update(l, progress.Load(), err) 然后 break，既没有让 errgroup 感知，也没有把错误返回给调用方；随后 g.Wait() 返回 nil，Pull 继续执行 blob.PutBytes(m.Data) 与 c.Link(m.Name, md)，于是本地写入指向一个层并未下载（或只写了一部分）的 manifest。结果是 ollama list 能看到模型，但 ollama run 时因 blob 缺失/尺寸不符而失败；对不实现 chunksums 端点的 registry，大于阈值的层会“零字节下载”却仍报告拉取成功。Chunked 创建写入器失败的分支（line 477-481）也是同样的 continue 吞错模式。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 499,
+      "summary": "blob 下载请求改用 http.NewRequestWithContext 直接构造，丢失 Authorization/User-Agent",
+      "failure_scenario": "层下载的 GET 请求不再经过 r.newRequest，而是用裸的 http.NewRequestWithContext 构造，因此缺少 r.newRequest 注入的 Authorization: Bearer 令牌与 User-Agent。对于小于 ChunkingThreshold 的层，cs.URL 就是 registry 自己的 /v2/<ns>/<model>/blobs/<digest> 端点（chunksums 中按 scheme/host 拼出），这类端点需要鉴权：改造前该请求由 r.newRequest 签名，现在会以匿名请求发送，私有/需登录的模型拉取会得到 401/403；同一 URL 也不再被 sendRequest 之外的签名逻辑覆盖。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "AUTH-001"
+    },
+    {
+      "file": "server/internal/registry/server.go",
+      "line": 317,
+      "summary": "流式 /api/pull 成功时不再发送 status=success，末条消息 status 为空字符串",
+      "failure_scenario": "新的 handlePull 在 done 分支只调用 pushUpdate() 就 return nil，成功路径上不再输出任何终结状态；最后一条 JSON 是 {\"status\":\"\",\"digest\":\"smol\",\"total\":8,\"completed\":8}（见 server_test.go 的新期望）。而 docs/api.md 明确的协议是“下载完成后最终响应包含 {\\\"status\\\": \\\"success\\\"}”（非流式分支仍保留该状态）。按文档实现、以 status==\\\"success\\\" 判定拉取完成的客户端（第三方 SDK、WebUI、以及仓库内 routes.go:1343 这类按 success 收敛的写法）会认为流被异常截断，出现“卡住/末状态为空”的现象。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "API-CONTRACT-001"
+    },
+    {
+      "file": "server/internal/registry/server.go",
+      "line": 294,
+      "summary": "进度对象的 digest 字段被填成模型名，total/completed 由按层改为整模型汇总",
+      "failure_scenario": "pushUpdate 把 progressUpdateJSON.Digest 设为 p.model()（模型名），而该字段在改造前是层摘要 blob.Digest；同时 Total/Completed 变成所有层之和。任何按 digest 区分层的客户端（旧版 CLI 就是 `bars[resp.Digest]` + `resp.Digest[7:19]` 生成标签）会把所有层混成一个进度条；对短字符串做切片的老客户端会直接 index out of range 崩溃。字段语义（层摘要）与文档示例 `{\\\"status\\\":\\\"downloading digestname\\\",\\\"digest\\\":\\\"digestname\\\"}` 也不再一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "API-CONTRACT-002"
+    },
+    {
+      "file": "server/internal/cache/blob/chunked.go",
+      "line": 49,
+      "summary": "分块写入只校验每块的摘要，整层内容不再与 manifest 中的层 digest 比对",
+      "failure_scenario": "Chunker.Put 为每个 chunk 构造 checkWriter 时把 d 设为该 chunk 的摘要、size 设为 chunk.Size()，因此校验范围仅限单个分块，且这些分块摘要同样来自 registry 的 chunksums 响应。原先的 c.Put(l.Digest, body, l.Size) 会用 manifest 中的层 digest 对整段内容做 SHA-256 校验；改造后超过阈值的层完全没有整层校验，若 chunksums 列表过期/被篡改或分块数据错位，就会把与 digest 不符的内容写进按该 digest 命名的 blob 文件，而 exists() 只看文件尺寸，之后每次拉取都会因尺寸相符而跳过重下，损坏内容被静默接受。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.55,
+      "rule": "INTEGRITY-001"
+    },
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 279,
+      "summary": "删除 maxChunkSize()/DefaultMaxChunkSize 后 Registry.MaxChunkSize 字段变成静默失效的配置",
+      "failure_scenario": "本次改动删除了 DefaultMaxChunkSize 常量和 maxChunkSize() 方法，但公开字段 Registry.MaxChunkSize 仍然保留（且注释仍写着“If zero, the default is [DefaultMaxChunkSize]”“仅在层大于 [MaxChunkingThreshold] 时使用”）。现在设置该字段不会有任何效果——chunk 大小完全由服务端 chunksums 响应决定；文档链接指向已删除的标识符，调用方（例如 registry_test.go 里仍设置 rc.MaxChunkSize = 3）会误以为自己在控制分块行为，调试与容量调优时得到与预期相反的结论。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "DEAD-CONFIG-001"
+    },
+    {
+      "file": "server/internal/client/ollama/registry_test.go",
+      "line": 535,
+      "summary": "TestRegistryPullChunking 被 t.Skip(\"TODO: BRING BACK BEFORE LANDING\") 跳过，本 MR 的核心分块路径失去自动化覆盖",
+      "failure_scenario": "唯一覆盖“层超过阈值 → 走 chunksums/Range 分块下载 → 偏移写入并校验”的用例被直接 Skip，并在代码里留下 “BRING BACK BEFORE LANDING” 的自我提示。等于本 MR 的主干逻辑（新增的 chunksums 迭代、Chunker.Put 偏移写、进度累加、错误传播）没有任何端到端断言保护：F001 的错误吞噬、F005 的整层校验缺失都不会被测试发现；同时该用例里仍在设置已经失效的 rc.MaxChunkSize = 3，即便恢复也会给出错误的配置信号。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.65,
+      "rule": "TEST-COVERAGE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\diff\\ollama__ollama@2ed14f2.diff\n  caseId              ollama__ollama@2ed14f2\n  --issue             (未传)\n  --taskId            ollama__ollama@2ed14f2\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 0 / not-reached 39（no-signal=39）\n✓ 完成 · 耗时 284.2s · 模型调用 24 次 · token 输入 57,138（未命中） · 输出 34,729 · 缓存命中 1,185,792（95.4%） · 工具 35 次（主会话 35 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0210\n[time] 阶段耗时 | 总墙钟 285.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 284.1s (99.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 123.4s (43.5%) | P2 2.7s (1.0%) | P3 9.2s (3.3%) | P4 41.2s (14.5%) | P5 93.2s (32.8%) | P6 14.2s (5.0%)\n[usage] 任务总计 | 模型调用 24 次（Agent 24 + 一次性 0） | token 输入 57,138（未命中） | 输出 34,729 | 缓存命中 1,185,792（95.4%） | $0.0210\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\\ollama__ollama@2ed14f2\\audit\\20261127_031040_702.json",
+  "token_usage": {
+    "input_tokens": 57138,
+    "output_tokens": 34729,
+    "cache_read_input_tokens": 1185792
+  }
+}

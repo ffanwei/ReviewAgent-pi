@@ -1,0 +1,72 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 180.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "模型文件分支未把 errFilePath 映射为 400，路径校验失败会返回 500",
+      "failure_scenario": "新增代码只把 errFilePath 加入了 adapter 分支的 badReq 列表（第 118 行），但同样是 convertModelFromFiles 返回值的主模型分支（第 100 行的列表）没有加入。convertFromSafetensors 内部第 279 行会以 `fmt.Errorf(\"%w: invalid path %s: %v\", errFilePath, fp, err)` 返回该错误，因此 r.Files 这条主路径上的路径校验失败不会被识别为 bad request，而是走到第 106 行 `ch <- gin.H{\"error\": err.Error()}`（无 status 字段）。结合 routes.go 的 waitForStream 在缺少 \"status\" 时默认 http.StatusInternalServerError（1307-1310 行），客户端收到的是 500，而不是与 adapter 分支一致的 400，同一类输入在不同字段上得到不同的 HTTP 语义。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "root.OpenFile 用 O_CREATE 做校验会把父目录不存在的合法嵌套路径误判为非法路径",
+      "failure_scenario": "新加的包含性校验用 `root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644)` 先创建文件再关闭，但 os.Root.OpenFile 不会创建父目录：对 `sub/model.safetensors` 这类键，当 tmpDir 下没有 `sub` 目录时会直接返回 ENOENT，随后被包装成 errFilePath（错误文案变成“invalid path ...: no such file or directory”）。而 validRelative 明确允许嵌套路径（新增测试的 validPaths 就包含 \"x/y/z\"、\"a/b\"），紧随其后的 createLink 本身也会 `os.MkdirAll(filepath.Dir(dst))`（第 723 行）。改动前嵌套键是可用的（createLink 建目录后 symlink 成功），改动后整条请求失败，且错误信息把「目录不存在」谎报为「路径必须是相对路径」；同时 `%v` 丢弃了底层错误，调用方无法用 errors.Is(err, fs.ErrNotExist) 区分。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RELIABILITY-004"
+    },
+    {
+      "file": "server/create.go",
+      "line": 167,
+      "summary": "validRelative 只识别 '/' 分隔符，Windows 下反斜杠穿越与盘符绝对路径绕过入口校验",
+      "failure_scenario": "validRelative 完全基于字面量 `\"/\"` 判断（HasPrefix(path, \"/\")、HasPrefix(path, \"./\")、Contains(path, \"/../\") 等），没有使用 filepath.IsAbs / filepath.Separator，也没有先做 filepath.Clean。在 Windows 上 `..\\\\..\\\\evil.safetensors`、`C:\\\\models\\\\x.safetensors`、`\\\\\\\\server\\\\share\\\\x` 这类键都不会命中任何一条规则，直接通过 CreateHandler 的拦截；随后 `files[filepath.Clean(k)]` 在 Windows 语义下仍保留绝对路径/穿越成分。真正拦住它们的是 convertFromSafetensors 里的 os.Root（且会走 F001 描述的无 status 路径，返回 500）。结果是：这个为安全而加的入口守卫在 Windows 上退化为「事后兜底」，跨平台行为不一致，安全防线被压缩到单点。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.62,
+      "rule": "PORTABILITY-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 58,
+      "summary": "r.Files 被无条件重建为非 nil 空 map，导致 “neither from or files” 分支不可达",
+      "failure_scenario": "新增的归一化代码先 `make(map[string]string, len(r.Files))` 再 `r.Files = files`，即使请求里完全没有 files 字段也会把 r.Files 变成非 nil 的空 map。CreateHandler 第 97 行原本用 `r.Files != nil` 作为「未提供 files」的哨兵，如今该条件恒为真：请求只带 name 时不再进入第 109-111 行的 errNeitherFromOrFiles 分支，而是调用 convertModelFromFiles 的空 map 分支，得到 errUnknownType（第 218 行），客户端看到的是 \"unknown type\"（400）而不是 \"neither 'from' or 'files' was specified\"。第 36 行定义的 errNeitherFromOrFiles 由此成为不会被触发的死代码，错误契约发生静默回归。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.64,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/create_test.go",
+      "line": 92,
+      "summary": "新增测试断言的合法路径与 CreateHandler 的 validRelative 策略互相矛盾",
+      "failure_scenario": "TestConvertFromSafetensors 把 `./model.safetensors`（第 87 行）和 `nested/../model.safetensors`（第 92 行）断言为合法（wantErr: nil），但真实入口 CreateHandler 会对每个 key 先调用 validRelative，而该函数对以 `./` 开头的路径（create.go:172-173）和包含 `/../` 的路径（create.go:182）一律返回 errFilePath。也就是说，这两条被测试判定为「应当成功」的输入，经 /api/create 实际上会被 400 拒绝；测试只覆盖了转换函数这一层，反而掩盖了入口策略收紧后对既有客户端的行为回归，无法反映端到端真实行为。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.58,
+      "rule": "TESTABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 0 / not-reached 2（no-signal=2）\n✓ 完成 · 耗时 175.8s · 模型调用 27 次 · token 输入 18,415（未命中） · 输出 22,151 · 缓存命中 580,864（96.9%） · 工具 33 次（主会话 33 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0104\n[time] 阶段耗时 | 总墙钟 177.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.4s (0.8%)\n[time] 阶段 | 六阶段审计 175.7s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 5.7s (3.3%) | P2 2.4s (1.4%) | P3 7.7s (4.4%) | P4 119.8s (68.2%) | P5 32.6s (18.6%) | P6 7.4s (4.2%)\n[usage] 任务总计 | 模型调用 27 次（Agent 27 + 一次性 0） | token 输入 18,415（未命中） | 输出 22,151 | 缓存命中 580,864（96.9%） | $0.0104\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261126_123432_227.json",
+  "token_usage": {
+    "input_tokens": 18415,
+    "output_tokens": 22151,
+    "cache_read_input_tokens": 580864
+  }
+}

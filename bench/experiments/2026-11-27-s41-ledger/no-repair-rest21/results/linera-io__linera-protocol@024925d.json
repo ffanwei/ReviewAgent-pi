@@ -1,0 +1,52 @@
+{
+  "instance_id": "linera-io__linera-protocol@024925d",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c4a8ac301274ccdfc8d0fc87871d557534a8405f",
+  "head_commit": "024925dfbeff5daaecdd2cd733cda2825eff1bb7",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 134.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 174,
+      "summary": "无法达成 quorum 时立即退出，丢弃后续错误聚合，Trusted 错误可能不再被返回",
+      "failure_scenario": "原逻辑中「已达成 quorum」与「确定无法达成 quorum」共用一条分支：两者都只设置 `end_time`，随后在宽限期内继续 `await` 其余 validator 的响应，以便把更多加权错误累计到 `error_scores`。本次改成无法达成 quorum 时直接 `break 'vote_wait`，循环在收集完剩余响应之前就结束，于是「某个错误权重累积到 `validity_threshold()` 后返回 `CommunicationError::Trusted(err)`」这条路径可能被跳过，最终退化为 `NoConsensus` 或只含少量样本的 `Sample`。这不只是调试信息变少：`ChainClient::find_received_certificates` 对 `Err(CommunicationError::Trusted(NodeError::InactiveChain(id)))` 有专门的良性分支（直接返回 `Ok(())`），一旦该 `Trusted` 错误因为提前 break 而不再产生，原本可以按“链未激活”优雅返回的场景就会变成向调用方抛出 `NoConsensus`/`Sample` 硬错误。具体场景：3 个权重为 334/333/333 的 validator（total 1000、quorum 阈值 667、validity 阈值 334），先后返回两个不同错误各得 333 权重，此时 `highest_key_score = 0`、`remaining_votes = 334`，`0 + 334 < 667` 立刻 break，第三个 validator 若返回与前面相同的错误，其权重累计将达到 666 ≥ 334 从而产生 `Trusted`，但现在该响应已无机会被读取。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 109,
+      "summary": "新增 grace_period 参数的所有调用点均传 None，可配置能力实际未生效",
+      "failure_scenario": "本次为 `communicate_with_quorum` 新增了 `grace_period: impl Into<Option<f64>>` 参数，并在 139 行用 `unwrap_or(DEFAULT_GRACE_PERIOD)` 回退。但 diff 中四处调用点（广播链更新、广播链动作、下载已接收证书、同步链状态）全部传入 `None`，因此这条「可配置」路径在生产代码中永远走默认值，函数文档中「If `grace_period` is specified, other validators are given additional time」描述的分支不可达。影响：公共 API 表面积扩大而没有任何实际收益，且默认值从 0.2 改为 0.1 是经由 `unwrap_or` 隐式作用于全部调用路径的，读者无法从调用点看出时序行为发生了变化；后续若有人误传 `Some(0.0)`，`end_time` 会被设为“当前时刻”，宽限期直接消失，行为与旧注释「If `grace_period` is not zero」的语义也不再对应。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-004"
+    },
+    {
+      "file": "linera-core/src/updater.rs",
+      "line": 36,
+      "summary": "默认宽限期由 0.2 降到 0.1，非 quorum 的慢速 validator 被同步的概率下降",
+      "failure_scenario": "`GRACE_PERIOD` 被重命名为 `DEFAULT_GRACE_PERIOD` 的同时，取值由 0.2 改为 0.1，而宽限期的长度是「达成 quorum 所耗时间 × grace_period」（第 181 行 `start_time.elapsed().mul_f64(grace_period)`）。这意味着收集窗口被整体减半：任何响应时间位于 quorum 耗时 10%~20% 之间的 validator，都会从「变更前能被纳入本次结果」变成「变更后不再等待」。在 `communicate_chain_updates` 这类广播路径上，结果就是返回时被推送最新 block 的 validator 集合变小，未赶上的 validator 仍停留在旧的 height，客户端后续的链更新/查询需要额外的往返才能把它补齐；在 `find_received_certificates` 这类 best-effort 拉取路径上，则单轮能拿到的证书批次更少，链状态收敛更慢。该默认值变更没有开关，直接作用于全部四条调用路径。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.45,
+      "rule": "PERFORMANCE-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\diff\\linera-io__linera-protocol@024925d.diff\n  caseId              linera-io__linera-protocol@024925d\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@024925d\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 10（no-signal=10）\n✓ 完成 · 耗时 118.3s · 模型调用 10 次 · token 输入 13,164（未命中） · 输出 13,312 · 缓存命中 112,000（89.5%） · 工具 8 次（主会话 8 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0059\n[time] 阶段耗时 | 总墙钟 133.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 14.6s (11.0%)\n[time] 阶段 | 六阶段审计 118.2s (88.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 9.2s (7.8%) | P2 3.5s (3.0%) | P3 6.2s (5.2%) | P4 46.6s (39.5%) | P5 46.6s (39.5%) | P6 5.9s (5.0%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 13,164（未命中） | 输出 13,312 | 缓存命中 112,000（89.5%） | $0.0059\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\\linera-io__linera-protocol@024925d\\audit\\20261127_030705_668.json",
+  "token_usage": {
+    "input_tokens": 13164,
+    "output_tokens": 13312,
+    "cache_read_input_tokens": 112000
+  }
+}

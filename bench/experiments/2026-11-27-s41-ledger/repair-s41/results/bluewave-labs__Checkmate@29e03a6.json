@@ -1,0 +1,84 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@29e03a6",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "7c369e84052aaee15a6dedf8928b5af4c869037b",
+  "head_commit": "29e03a6294edfe43b49eba20fe49099cef601d34",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 108.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "工作流缺少 permissions: contents: write，git push 可能被 403 拒绝",
+      "failure_scenario": "工作流用 actions/checkout 注入的 GITHUB_TOKEN 直接执行 `git push`，但整个 workflow 与 job 都没有声明 `permissions: contents: write`。当仓库的 Settings > Actions > Workflow permissions 采用默认的只读（Read repository contents permission）时，push 会返回 403 `Permission to ... denied`，导致每日定时任务与手工触发都必然失败，翻译永远同步不进仓库；这类失败在首次配置后才会暴露，排查成本高。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CI-TOKEN-PERMISSION-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "推送前未同步上游且无并发控制，git push 会因非快进被拒绝",
+      "failure_scenario": "工作流在 checkout 后直接把自动提交 push 回默认分支，既没有 `git pull --rebase`（或 `git pull -X ours` 之类的合并策略），也没有 `concurrency` 分组来串行化「定时任务 + 手工触发」。只要在 checkout 到 push 之间默认分支上有任何新提交（合并 PR、另一次手工触发的同步），push 就会以 non-fast-forward 被拒绝，本次下载的翻译全部丢失；并发场景下两次定时/手工运行还会互相打断，且因为失败发生在最后一步，前序下载与校验全部作废。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CI-PUSH-RACE-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 12,
+      "summary": "默认语言 tr,en 与仓库实际语言码 gb 不一致，手工触发会生成多余的 en.json",
+      "failure_scenario": "仓库实际的语言码是 `gb` 与 `tr`：i18n 以文件名作为 resources 键，primaryLanguage 与 uiSlice 初值都是 `gb`，src/locales 下只有 gb.json 与 tr.json。但脚本的兜底默认值与 workflow_dispatch 的默认输入都是 `tr,en`（而第 60 行的 env 兜底又写成 `tr,gb`），三种默认值互相矛盾。手工触发时若沿用默认值，脚本会写出 temp/en.json 并被 `cp` 到 src/locales/en.json：由于 LanguageSelector 直接用 resources 的键渲染选项，前端会多出一个 “EN” 选项，且语言下拉里没有 en 对应的 flag（flag-icons 无 `fi-en`），用户选择后看到的是与 gb 重复的内容，同时仓库里多出一个需要长期维护的脏翻译文件。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CONFIG-DEFAULT-MISMATCH-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 83,
+      "summary": "整文件覆盖 src/locales 且不校验键集合，POEditor 缺词会静默删掉本地翻译",
+      "failure_scenario": "同步流程只做「非空 + 合法 JSON」校验，随后用 `cp -r temp/* src/locales/` 整文件覆盖受版本管理的翻译文件。这既不检查键集合是否收缩（例如 POEditor 项目比本地少词、某语言的 term 被改名或删除），也不校验 key 的命名风格是否与现有 `dontHaveAccount` 之类保持一致。一旦 POEditor 端的词条少于本地文件，覆盖后对应 key 直接从 src/locales 消失：由于 i18n 以 gb 作为 fallbackLng，gb.json 缺词时所有语言都会把原始 key 直接渲染到界面上，属于静默的界面回归，且只能靠事后 diff 发现。现有 gb.json（178 行）与 tr.json（105 行）本身键数量就差很多，说明两端词条集合确实不同步，该风险是现实存在的。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "DATA-OVERWRITE-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 38,
+      "summary": "运行时动态生成 package.json 并 npm install，依赖不可复现",
+      "failure_scenario": "工作流在每次运行时用 heredoc 覆盖生成 `.github/scripts/package.json`，然后执行 `npm install` 安装 axios ^1.6.0 与 fs-extra ^11.1.1。同一份脚本依赖的版本完全由运行当天的 registry 解析结果决定（无 lockfile），今天能跑通、明天可能因为 minor 升级而行为变化；同时该 package.json 也不进入版本管理，本地无法按同样方式复现脚本运行。仓库根 package.json 已经声明了 axios ^1.7.4，这里再引入一套浮动版本，进一步加大了依赖版本分叉。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "DEP-REPRODUCIBILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\bluewave-labs__Checkmate@29e03a6.diff\n  caseId              bluewave-labs__Checkmate@29e03a6\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@29e03a6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 1 / not-reached 0\nreview-pi: 覆盖补漏 请求 1（失败 0）/ 覆盖 hunk 1/1 / 新候选 0 / no-issue 1 / 预算跳过 0\n✓ 完成 · 耗时 103.0s · 模型调用 15 次 · token 输入 12,219（未命中） · 输出 13,056 · 缓存命中 170,112（93.3%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0058\n[time] 阶段耗时 | 总墙钟 107.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 4.2s (3.9%)\n[time] 阶段 | 六阶段审计 99.2s (92.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 3.9s (3.6%)\n[time] 审计明细 | P1 7.0s (7.1%) | P2 3.1s (3.1%) | P3 13.6s (13.7%) | P4 27.0s (27.2%) | P5 39.8s (40.1%) | P6 8.7s (8.8%)\n[usage] 任务总计 | 模型调用 16 次（Agent 15 + 一次性 1） | token 输入 13,320（未命中） | 输出 13,454 | 缓存命中 170,112（92.7%） | $0.0061\n[usage] 一次性明细 | 覆盖补漏 1 次（输入 1,101 / 输出 398 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\bluewave-labs__Checkmate@29e03a6\\audit\\20261127_042112_299.json",
+  "token_usage": {
+    "input_tokens": 13320,
+    "output_tokens": 13454,
+    "cache_read_input_tokens": 170112
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 12219,
+      "output_tokens": 13056,
+      "cache_read_input_tokens": 170112
+    },
+    "coverage_repair": {
+      "input_tokens": 1101,
+      "output_tokens": 398,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

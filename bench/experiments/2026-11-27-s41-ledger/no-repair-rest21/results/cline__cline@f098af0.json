@@ -1,0 +1,82 @@
+{
+  "instance_id": "cline__cline@f098af0",
+  "repo": "cline/cline",
+  "base_commit": "b3abbd886e7e693c48b31a0af8046035bf014118",
+  "head_commit": "f098af0f52bf1cdb7eb561c380caef5746b58d40",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 149.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "src/integrations/terminal/TerminalProcess.ts",
+      "line": 198,
+      "summary": "新增的未保护 getLatestTerminalOutput() 调用若抛错会让命令永不完成",
+      "failure_scenario": "新增代码在 shell integration 分支中直接 `await getLatestTerminalOutput()`，但该调用没有 try/catch 保护；而同一个函数里的 `returnCurrentTerminalContents` 对同样的调用包了 try/catch 并降级为 console.error（31-39 行）。getLatestTerminalOutput 依赖 `vscode.commands.executeCommand(\"workbench.action.terminal.selectAll\"/\"copySelection\")` 与剪贴板读写，在没有活动终端、命令不可用或宿主环境不支持（standalone/core 宿主）时会 reject。一旦 reject，run() 会在第 216-217 行的 `this.emit(\"completed\")` / `this.emit(\"continue\")` 之前抛出，而 TerminalManager.runCommand 返回的 promise 只在 \"continue\" 事件时 resolve、在 \"error\" 事件时才 reject（TerminalManager.ts:181-189），且 `process.run(...)` 是非 await 调用（TerminalManager.ts:194）。结果是 \"continue\" 与 \"completed\" 都不会发出，Task 侧 `await process`（src/core/task/index.ts:1606）永久挂起，命令工具调用卡死到用户手动中断——这比变更前「fallback 失败只打印日志」的行为严重退化。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "RELIABILITY-ASYNC-001"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1533,
+      "summary": "catch 把所有 ask 异常都记为 STREAM_TIMEOUT，任务中止与 ask 被覆盖会被误报为终端卡死",
+      "failure_scenario": "catch 分支没有任何异常判断就直接上报 `TerminalHangStage.STREAM_TIMEOUT`。但 `this.ask(\"command_output\", chunk)` 的抛错来源包括：任务被用户中止时抛 \"Cline instance aborted\"（第 742 行），以及连续 ask 时 lastMessageTs 被覆盖抛 \"Current ask promise was ignored\"（第 846 行，代码注释明确说明这在 command_output 场景常见）。这两类都是正常控制流而非终端 hang，会把 hang 指标噪声放大，让该埋点无法用于判断真实的流超时。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.65,
+      "rule": "TELEMETRY-ACCURACY-001"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1578,
+      "summary": "固定 60s 的完成等待定时器会把长运行命令（如 dev server）全部误报为 WAITING_FOR_COMPLETION",
+      "failure_scenario": "completionTimer 在命令启动后固定 60s 触发，只判断 `!completed` 就上报 hang。但本工具的「Proceed While Running」流程本身就支持长时间运行的命令：TerminalProcess 只有在 shell integration 的 for await 流结束后才 emit \"completed\"（TerminalProcess.ts:216），而 `npm run dev`、`tail -f` 这类命令在 60s 内不会结束，输出持续通过 \"line\" 事件流入（第 1556-1571 行）。因此凡是运行超过 60s 的合法命令，都会在 60s 后必然产出一条 terminal_hang/WAITING_FOR_COMPLETION，指标被长期运行命令淹没。另外该定时器只在 completed 回调（1588-1591）和 `await process` 正常返回后（1609-1612）清理，异常路径没有 finally 兜底。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "TELEMETRY-ACCURACY-002"
+    },
+    {
+      "file": "src/integrations/terminal/TerminalProcess.ts",
+      "line": 195,
+      "summary": "把「命令本来没有输出」计为 TIMEOUT 输出失败，正常命令被误报",
+      "failure_scenario": "`if (!this.fullOutput.trim())` 无法区分「shell integration 捕获失败」和「命令本身不产生输出」。`cd`、`mkdir`、`git add`、`clear` 等命令正常执行也会让 fullOutput 为空，此时新增埋点会上报 TerminalOutputFailureReason.TIMEOUT，接着 fallback 抓取到终端上残留的提示符/历史内容还会被判定为 `captureTerminalExecution(true, \"clipboard\")` 成功，导致失败率与 fallback 成功率两个指标同时失真。此外失败原因在这里被写成 TIMEOUT，但空输出并不是超时，语义与定义的枚举不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "TELEMETRY-ACCURACY-003"
+    },
+    {
+      "file": "src/integrations/terminal/TerminalProcess.ts",
+      "line": 229,
+      "summary": "为判定 fallback 是否成功又调用一次 getLatestTerminalOutput，重复执行终端全选与剪贴板读写",
+      "failure_scenario": "在无 shell integration 分支中，第 227 行 `await returnCurrentTerminalContents()` 内部已经调用 getLatestTerminalOutput 并把内容 emit 出去；第 229 行为了判断「clipboard 是否成功」又独立调用一次同一函数（shell integration 分支的第 196/198 行同样重复）。getLatestTerminalOutput 每次都会读取剪贴板、执行 terminal.selectAll / copySelection / clearSelection 再回写剪贴板恢复原内容。也就是说每条命令完成路径上至少多出 3 次 VS Code 终端命令与 3 次剪贴板操作，这些 await 都发生在 `emit(\"completed\")` / `emit(\"continue\")` 之前，直接加在命令完成的主链路上，并会与用户自身的复制粘贴竞争剪贴板。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.62,
+      "rule": "PERFORMANCE-001"
+    },
+    {
+      "file": "src/services/telemetry/TelemetryService.ts",
+      "line": 959,
+      "summary": "captureTerminalExecution 用裸 string 表示 method，调用点散落魔法字符串且 CLIPBOARD_FAILED 枚举从未使用",
+      "failure_scenario": "新增的 `captureTerminalExecution(success: boolean, method: string)` 只用注释声明取值是 \"shell_integration\" | \"clipboard\" | \"none\"，而同一批新增的另外三个 capture 方法都接收枚举。调用侧在 TerminalProcess.ts 中硬编码了 \"clipboard\"、\"none\"、\"shell_integration\" 五个字面量，一旦拼写不一致就会产出无法聚合的事件属性且不会有编译期报错；同时 TerminalOutputFailureReason.CLIPBOARD_FAILED 虽被定义（第 27 行）却从未使用，说明失败原因分类还没有收敛，后续迭代容易继续堆积无法枚举的字符串。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-TYPE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\diff\\cline__cline@f098af0.diff\n  caseId              cline__cline@f098af0\n  --issue             (未传)\n  --taskId            cline__cline@f098af0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 0 / not-reached 10（no-signal=10）\n✓ 完成 · 耗时 147.0s · 模型调用 16 次 · token 输入 21,956（未命中） · 输出 18,071 · 缓存命中 327,424（93.7%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0091\n[time] 阶段耗时 | 总墙钟 147.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 146.9s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 4.3s (2.9%) | P2 5.7s (3.9%) | P3 37.3s (25.4%) | P4 38.4s (26.1%) | P5 52.7s (35.9%) | P6 8.3s (5.7%)\n[usage] 任务总计 | 模型调用 16 次（Agent 16 + 一次性 0） | token 输入 21,956（未命中） | 输出 18,071 | 缓存命中 327,424（93.7%） | $0.0091\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\\cline__cline@f098af0\\audit\\20261127_030851_199.json",
+  "token_usage": {
+    "input_tokens": 21956,
+    "output_tokens": 18071,
+    "cache_read_input_tokens": 327424
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@3555a95",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "76c06b58a4d9e8ee3fe3c0269a046987ad0502e5",
+  "head_commit": "3555a95e7b888335d9f72e432eb4f9fb9640e8cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 217.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 84,
+      "summary": "sourceLanguage 变为必填后，反序列化得到的 Request 会因该字段为 null 而直接返回 null，默认翻译能力失效",
+      "failure_scenario": "apply 新增了 `!StringUtils.hasText(request.sourceLanguage)` 校验，缺失即返回 null。但 Request 的 sourceLanguage 标注为 `@JsonProperty(required = false)`，Jackson 反序列化 record 时走的是三参规范构造器，缺失属性会被填成 null，第 147-149 行单参构造器里的 LANGUAGE_CODE_ZH 默认值只在使用 `new Request(text)` 时生效。因此 LLM/框架按 JSON 传入 {\"text\":\"...\",\"targetLanguage\":\"en\"} 这类此前完全可用的请求（旧实现 sourceLanguage 固定为 \"zh\"），现在会静默返回 null，工具调用方拿到空结果而非译文。同时 `@JsonPropertyDescription(\"Source language of the text, default is zh\")` 与实际行为矛盾，会误导模型生成不合规入参。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 104,
+      "summary": "翻译链路异常被 catch(Exception) 吞掉后返回 null，与原先抛异常相比变为静默失败",
+      "failure_scenario": "原实现对 `response.get()` 的异常直接 `throw new RuntimeException(e)`，本次改为 catch(Exception) 后仅记录一行 `e.getMessage()` 并返回 null。具体失败场景：阿里云返回非 200（鉴权失败、限流、参数非法）时 getTranslatedText 抛出 IllegalStateException，或在 `response.get()` 上抛 ExecutionException/超时，这些都会被吞掉，调用方只拿到 null 的 Response；由于 Response 只有 translatedTexts 字段、没有状态信息，上层无法区分服务异常与参数非法返回 null，也无法重试或降级；日志中只输出 message 而丢失异常类型与堆栈，线上难以定位根因。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "ERROR-HANDLING-001"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 105,
+      "summary": "catch(Exception) 会吞掉 InterruptedException 且不恢复中断标志",
+      "failure_scenario": "`response.get()` 是可中断阻塞调用，线程被中断时抛出 InterruptedException；由于它是 Exception 子类，会被本次新增的 catch (Exception e) 捕获，随后既不重新抛出也不调用 Thread.currentThread().interrupt()。具体失败场景：应用关闭或请求超时取消时，正在翻译的线程中断状态被清除，线程池的 shutdownNow/cancel 无法生效，任务继续执行、优雅停机被阻塞；同时丢失了被取消这一语义，只剩一条普通的翻译失败日志。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "community/tool-calls/spring-ai-alibaba-starter-tool-calling-alitranslate/src/main/java/com/alibaba/cloud/ai/toolcalling/alitranslate/AliTranslateService.java",
+      "line": 137,
+      "summary": "Request 规范构造器新增 sourceLanguage 参数，旧的两参调用会被静默错位解释",
+      "failure_scenario": "Request record 的组件由 (text, targetLanguage) 变为 (text, sourceLanguage, targetLanguage)，这是对发布出去的 starter 公共 API 的破坏性变更：既有代码 `new Request(\"hello\", \"en\")` 仍能编译，但 \"en\" 会被当成 sourceLanguage，targetLanguage 为 null，随后在 apply 第 84-86 行被判为非法并返回 null，编译期无告警、运行期静默失效。此外原先 `public static final String LANGUAGE_CODE = \"zh\"` 被改名删除（改为 LANGUAGE_CODE_ZH），使用该常量的外部代码会直接编译失败。仓库内暂无调用点，但该类是 starter 的公共类型，属于面向用户的可移植性回归。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.62,
+      "rule": "API-BREAKING-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@3555a95.diff\n  caseId              alibaba__spring-ai-alibaba@3555a95\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@3555a95\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 3 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 4（失败 0）/ 覆盖 hunk 3/5 / 新候选 0 / no-issue 3 / 预算跳过 0\n✓ 完成 · 耗时 216.2s · 模型调用 12 次 · token 输入 14,799（未命中） · 输出 14,328 · 缓存命中 178,176（92.3%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0066\n[time] 阶段耗时 | 总墙钟 217.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.5%)\n[time] 阶段 | 六阶段审计 101.1s (46.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 115.2s (53.0%)\n[time] 审计明细 | P1 7.4s (7.3%) | P2 3.8s (3.8%) | P3 5.4s (5.4%) | P4 40.2s (39.8%) | P5 38.7s (38.3%) | P6 5.5s (5.4%)\n[usage] 任务总计 | 模型调用 17 次（Agent 12 + 一次性 5） | token 输入 18,203（未命中） | 输出 30,585 | 缓存命中 180,480（90.8%） | $0.0116\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 3,404 / 输出 16,257 / 缓存 2,304）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@3555a95\\audit\\20261127_043036_450.json",
+  "token_usage": {
+    "input_tokens": 18203,
+    "output_tokens": 30585,
+    "cache_read_input_tokens": 180480
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 14799,
+      "output_tokens": 14328,
+      "cache_read_input_tokens": 178176
+    },
+    "coverage_repair": {
+      "input_tokens": 3404,
+      "output_tokens": 16257,
+      "cache_read_input_tokens": 2304
+    }
+  }
+}

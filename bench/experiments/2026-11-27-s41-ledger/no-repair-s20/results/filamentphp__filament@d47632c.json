@@ -1,0 +1,42 @@
+{
+  "instance_id": "filamentphp__filament@d47632c",
+  "repo": "filamentphp/filament",
+  "base_commit": "ce4d9d08df41142ff219bb3dc44968084eaae0dc",
+  "head_commit": "d47632c0583bac481d4ce7cc9b6b1711d0f8e0fc",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 198.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 184,
+      "summary": "仅凭 `->` 子串判定 JSON 列，会对已构造的表达式二次包裹并生成非法 SQL",
+      "failure_scenario": "新增分支用 `str_contains($column, '->')` 判断列是否为 JSON 路径列，却没有排除“列字符串本身已经是一个 SQL 表达式”的情况。同一函数在 178-181 行把包含 `json_extract(` 的列默认为强制大小写不敏感，说明这里本来就预期会收到已构造好的表达式（例如 SpatieLaravelTranslatableContentDriver.php:118 在 mysql 下传入 `json_extract(name, \"$.en\")`）。一旦这种表达式里同时出现 `->`（如 `json_extract(data->name, \"$.en\")`，或插件/自定义调用方直接传入含 JSON 路径的表达式），`wrapJsonFieldAndPath()` 内部按 `->` 首次出现位置 `explode('->', $column, 2)`，会把 `json_extract(data` 当作字段名交给 `wrap()`、把 `name, \"$.en\")` 当作 JSON 路径，最终拼出 `json_extract(`json_extract(data`, '$.\"name, ...\"')` 这类结构错误的片段；由于随后 `$column` 含 `(` 会被包装成 `Expression` 直接拼进 where 条件，搜索请求会抛数据库错误（如 MySQL 3143 Invalid JSON path）或静默返回空结果。同理，Laravel 支持的 `col->>path`（json_unquote）写法也会被 `->` 子串命中，被拆出以 `>` 开头的路径片段，得到错误的 JSON 路径。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "SQL-EXPRESSION-001"
+    },
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 185,
+      "summary": "用 invade() 反射调用 Laravel 受保护的 wrapJsonFieldAndPath() 且抑制静态检查",
+      "failure_scenario": "新增代码依赖 `Illuminate\\Database\\Grammar::wrapJsonFieldAndPath()` 这一受保护（protected）的框架内部方法：必须通过 `invade()` 反射调用，并用 `@phpstan-ignore-line` 压制静态分析告警。该方法的可见性与签名都不属于公开契约，Laravel 升级若调整（或某个自定义 Query Grammar 未按预期提供）只能等到运行时真正走到“强制大小写不敏感 + JSON 路径列”的搜索分支才以 `Error`/`BadMethodCallException` 暴露；而 `@phpstan-ignore-line` 使 CI 与静态检查无法提前发现该风险。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.35,
+      "rule": "MAINTAINABILITY-014"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\filamentphp__filament\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\diff\\filamentphp__filament@d47632c.diff\n  caseId              filamentphp__filament@d47632c\n  --issue             (未传)\n  --taskId            filamentphp__filament@d47632c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 195.2s · 模型调用 14 次 · token 输入 12,257（未命中） · 输出 25,463 · 缓存命中 244,480（95.2%） · 工具 19 次（主会话 19 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0095\n[time] 阶段耗时 | 总墙钟 197.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (0.8%)\n[time] 阶段 | 六阶段审计 195.2s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 6.0s (3.1%) | P2 2.8s (1.4%) | P3 4.9s (2.5%) | P4 144.2s (73.9%) | P5 26.5s (13.6%) | P6 10.8s (5.5%)\n[usage] 任务总计 | 模型调用 14 次（Agent 14 + 一次性 0） | token 输入 12,257（未命中） | 输出 25,463 | 缓存命中 244,480（95.2%） | $0.0095\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\\filamentphp__filament@d47632c\\audit\\20261126_123431_312.json",
+  "token_usage": {
+    "input_tokens": 12257,
+    "output_tokens": 25463,
+    "cache_read_input_tokens": 244480
+  }
+}

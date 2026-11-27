@@ -1,0 +1,84 @@
+{
+  "instance_id": "libsdl-org__SDL@96dfef3",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "ab34ea5a2684766e510de1daf8ae44c41b6af704",
+  "head_commit": "96dfef35c4b0b89f2f8d9c2ecc4f5e3a25d3e7a0",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 387.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 5881,
+      "summary": "新建纹理失败时仍先做布局转换，导致空指针解引用崩溃",
+      "failure_scenario": "VULKAN_INTERNAL_CycleActiveTexture 新增的默认布局转换被放在了 `if (!texture) return;` 之前：VULKAN_INTERNAL_CreateTexture 在 vkCreateImage 失败、BindMemoryForImage 失败或某个 subresource view 创建失败时会销毁纹理并返回 NULL，此时仍会调用 VULKAN_INTERNAL_TextureTransitionToDefaultUsage(renderer, commandBuffer, ..., texture)，该函数无条件读取 texture->subresourceCount 并访问 texture->subresources[i]，直接解引用 NULL 指针崩溃。改动前这条路径是先判空再返回的优雅失败，因此本次变更把「纹理创建失败」从可恢复错误变成了进程崩溃（常见触发场景：显存不足、驱动拒绝某个 format/usage 组合、创建大纹理时 OOM）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-NULL-DEREF-001"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10533,
+      "summary": "清理与待销毁资源回收被 present 门控，非 presenting 提交不再回收任何资源",
+      "failure_scenario": "改动把 fence 检查清理（VULKAN_INTERNAL_CleanCommandBuffer）、checkEmptyAllocations 空分配释放和 VULKAN_INTERNAL_PerformPendingDestroys 全部放进了 `if (presenting)` 分支，而 presenting 由 `vulkanCommandBuffer->presentDataCount > 0` 决定。于是任何不携带 present 数据的提交（纯计算工作负载、无窗口渲染、仅上传纹理/缓冲的提交）都不会归还命令缓冲、不会递减已用资源引用计数、不会执行待销毁队列；这些回收只会在用户显式调用 SDL_WaitForGPUIdle/SDL_WaitForFences 时才发生。对于无窗口的 compute/headless 用法，submittedCommandBuffers 与命令缓冲池会随提交次数线性增长，待销毁的 buffer/texture 永不释放（markedForDestroy 但引用计数不归零），最终表现为显存/内存持续增长直至 OOM。改动前这些清理在每次提交后都会执行，是本次变更新引入的行为退化。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.76,
+      "rule": "RESOURCE-LIFECYCLE-002"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10577,
+      "summary": "defrag 失败被吞掉且 VULKAN_Submit 恒返回 true，OOM 无法上报到调用方",
+      "failure_scenario": "VULKAN_INTERNAL_DefragmentMemory 现在把「失败」改为内部 SDL_LogError 后返回 false，而调用点只打印一行日志就继续提交；同时 VULKAN_Submit 结尾由 `return result;`（原 result 为 defrag 结果）改为 `return true;`，VULKAN_INTERNAL_DefragmentMemory 自身在成功路径也无条件 `return true`，且不再通过 VULKAN_Submit 返回其提交结果。结果是：显存碎片整理因 OOM 失败时，VULKAN_Submit / VULKAN_SubmitAndAcquireFence 依然报告成功，调用方拿不到 false 也就不会走错误处理分支；而失败时 allocationsToDefragCount 已被减一、部分 region 已重指向新资源，后续既没有重试也没有错误状态，碎片化只能继续累积，用户侧看到的是「无报错的显存泄漏/后续分配失败」。错误上报语义的这种削弱是本次变更引入的。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "ERROR-HANDLING-003"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10451,
+      "summary": "defrag 被移入 submitLock 临界区内执行，逐 region 分配与录制阻塞所有提交线程",
+      "failure_scenario": "改动前 defrag 在工作线程中自行 VULKAN_AcquireCommandBuffer 并在 allocatorLock 与 submitLock 之外准备命令，只在最后 self-submit 时短暂持有 submitLock；现在 defrag 直接在 VULKAN_Submit 的 submitLock 临界区（10426 加锁）内、EndCommandBuffer 之前执行，其间会持有 allocatorLock、对每个 used region 调用 VULKAN_INTERNAL_CreateBuffer / VULKAN_INTERNAL_CreateTexture（含 vkCreateBuffer/vkCreateImage/vkAllocateMemory 等驱动调用）并逐 subresource 录制 vkCmdCopyBuffer/vkCmdCopyImage、做容器重指向。该过程耗时与被整理 allocation 的 region 数量成正比，且完全串行化在全局提交锁内，多线程提交的渲染器在发生 defrag 的帧上会出现明显卡顿（其他线程的 SDL_SubmitGPUCommandBuffer 全部阻塞），这也加重了提交路径的最坏延迟。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.58,
+      "rule": "PERFORMANCE-LOCK-004"
+    },
+    {
+      "file": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+      "line": 10701,
+      "summary": "纹理分配失败的日志文案写成 defrag buffer，与实际资源类型不符",
+      "failure_scenario": "该分支调用 VULKAN_INTERNAL_CreateTexture 为纹理 region 创建替换纹理，失败时新增的日志却是 \"Failed to allocate defrag buffer!\"。资源类型写错会在 OOM/分配失败时把排障方向引向 buffer 分支，且与同一函数中 buffer 分支的语义混淆，属于可验证的日志缺陷。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "错误日志文案应与实际操作的资源类型一致，避免误导排障"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\libsdl-org__SDL@96dfef3.diff\n  caseId              libsdl-org__SDL@96dfef3\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@96dfef3\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 10 / not-reached 4（no-signal=4）\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 11/15 / 新候选 1 / no-issue 10 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 386.0s · 模型调用 21 次 · token 输入 34,463（未命中） · 输出 23,505 · 缓存命中 613,760（94.7%） · 工具 25 次（主会话 25 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0131\n[time] 阶段耗时 | 总墙钟 386.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.1%)\n[time] 阶段 | 六阶段审计 179.3s (46.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 206.8s (53.5%)\n[time] 审计明细 | P1 51.0s (28.5%) | P2 3.1s (1.7%) | P3 7.6s (4.3%) | P4 78.7s (43.9%) | P5 32.1s (17.9%) | P6 6.8s (3.8%)\n[usage] 任务总计 | 模型调用 27 次（Agent 21 + 一次性 6） | token 输入 41,548（未命中） | 输出 53,006 | 缓存命中 617,600（93.7%） | $0.0224\n[usage] 一次性明细 | 覆盖补漏 6 次（输入 7,085 / 输出 29,501 / 缓存 3,840）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\libsdl-org__SDL@96dfef3\\audit\\20261127_042256_129.json",
+  "token_usage": {
+    "input_tokens": 41548,
+    "output_tokens": 53006,
+    "cache_read_input_tokens": 617600
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 34463,
+      "output_tokens": 23505,
+      "cache_read_input_tokens": 613760
+    },
+    "coverage_repair": {
+      "input_tokens": 7085,
+      "output_tokens": 29501,
+      "cache_read_input_tokens": 3840
+    }
+  }
+}

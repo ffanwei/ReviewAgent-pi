@@ -1,0 +1,84 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 179.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "含子目录的相对路径在预创建文件时因父目录不存在而报错，破坏原有支持的嵌套路径上传",
+      "failure_scenario": "convertFromSafetensors 新增的校验用 root.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0o644) 先创建目标文件，但 os.Root.OpenFile 与 os.OpenFile 语义一致、不会创建父目录。对形如 \"subdir/model.safetensors\" 的键，父目录 subdir 尚不存在，OpenFile 返回 ENOENT，函数随即以 errFilePath 失败。而原有实现中真正落盘的 createLink 内部会先 os.MkdirAll(filepath.Dir(dst))，因此嵌套路径此前是可用的；同时本次新增的 validRelative 明确把 \"a/b\"、\"dir/file.txt\" 视为合法路径，说明设计意图仍要支持嵌套。结果是对这类上传（常见于第三方客户端按 HuggingFace 目录结构上传）会得到误导性的 \"file path must be relative: invalid path ...: no such file or directory\" 错误并中断转换。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "errFilePath 只加入 adapter 的 400 分类列表，基础模型文件路径错误仍以 200 状态返回",
+      "failure_scenario": "本次改动仅在第 118 行的 adapter 错误分类里追加了 errFilePath，而第 100 行处理 r.Files（基础模型/适配器之外的主模型）的分支仍只有 errNoFilesProvided/errOnlyGGUFSupported/errUnknownType。convertFromSafetensors 既服务于 r.Adapters 也服务于 r.Files（第 98 行），其返回的 errFilePath（例如上面父目录缺失、或键在 handler 校验后被 filepath.Clean 归一化仍无法被 os.Root 接受的情况）在主模型分支中不会被识别为客户端错误，最终走 ch <- gin.H{\"error\": err.Error()} 而不带 status，客户端拿到的是 HTTP 200 + 错误文本。同一类错误在 adapter 路径返回 400、在主模型路径返回 200，行为不一致，自动化客户端依赖状态码判断时会误以为创建成功。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "API-STATUS-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 50,
+      "summary": "无条件重建 r.Files 把 nil 变成非 nil 空 map，使 errNeitherFromOrFiles 分支不可达并改变错误文案",
+      "failure_scenario": "新增代码无条件执行 files := make(map[string]string, len(r.Files)) 再 r.Files = files。make 永远返回非 nil map，因此即使请求既没有 files 也没有 from，r.Files 也不再是 nil。后续协程中的判断是 `if r.From != \"\" { ... } else if r.Files != nil { ... } else { errNeitherFromOrFiles }`，于是空请求会进入 convertModelFromFiles 分支，经 detectModelTypeFromFiles 返回空串后落到 errUnknownType，用户收到 \"unknown type\"（400），而不是原本明确的 \"neither 'from' or 'files' was specified\"；第 110 行的 errNeitherFromOrFiles 分支同时变成死代码。这属于本次变更引入的行为回归，会让客户端在请求体写错时看到完全误导的错误信息。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 167,
+      "summary": "validRelative 只识别 '/' 分隔符，Windows 下 '../..' 与盘符/UNC 绝对路径可绕过校验",
+      "failure_scenario": "validRelative 完全以 '/' 硬编码判断：只拒绝 strings.HasPrefix(path, \"/\")、\"./\"、\"../\"，以及包含 \"/../\"、\"/./\" 的串。在 Windows 上 Go 的路径分隔符是 '\\\\'，因此 \"..\\\\..\\\\..\\\\data\\\\x.safetensors\"、\"C:\\\\Windows\\\\x\"、\"\\\\\\\\server\\\\share\\\\x\" 都能通过这里的所有检查，随后被 filepath.Clean 归一化写入 r.Files——也就是说 CreateHandler 这一层校验在 Windows 上事实上失效，只有当该键进入 convertFromSafetensors 并被 os.Root 拒绝时才被拦下（且如 F002 所述在主模型分支还会以 200 返回）。函数注释声称“确保是有效相对路径、不含目录穿越与绝对路径指示符”，实际实现与声明不符，安全性依赖下游单一检查点。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.7,
+      "rule": "SECURITY-PATH-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "用 filepath.Clean 后的键写回 map 会让不同键归一化后互相覆盖，文件被静默丢弃",
+      "failure_scenario": "handler 在校验通过后用 files[filepath.Clean(k)] = v 重建 map，而 validRelative 允许带冗余分隔符/尾斜杠的键（新增测试明确把 \"a/b/\" 与 \"a//b\" 列为合法）。这些键 Clean 后都变成 \"a/b\"，因此同一请求里若同时出现 \"model.safetensors\" 与 \"model.safetensors/\"（或 \"sub/a.shard\" 与 \"sub//a.shard\"），其中一个条目会被静默覆盖。对 safetensors 多分片上传而言，丢失一个键意味着 tmpDir 中缺少对应文件，后续 convert.ConvertModel 可能报出与真实原因无关的错误，或者生成缺少分片的模型，而请求方无法从响应中得知哪个键被吞掉。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 2 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 2/3 / 新候选 0 / no-issue 2 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 178.5s · 模型调用 15 次 · token 输入 16,188（未命中） · 输出 16,324 · 缓存命中 231,040（93.5%） · 工具 20 次（主会话 20 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0075\n[time] 阶段耗时 | 总墙钟 179.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 124.6s (69.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 54.0s (30.1%)\n[time] 审计明细 | P1 8.5s (6.8%) | P2 2.5s (2.0%) | P3 7.5s (6.0%) | P4 54.8s (44.0%) | P5 42.1s (33.8%) | P6 9.2s (7.4%)\n[usage] 任务总计 | 模型调用 18 次（Agent 15 + 一次性 3） | token 输入 22,563（未命中） | 输出 24,070 | 缓存命中 231,040（91.1%） | $0.0105\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 6,375 / 输出 7,746 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261127_044004_099.json",
+  "token_usage": {
+    "input_tokens": 22563,
+    "output_tokens": 24070,
+    "cache_read_input_tokens": 231040
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 16188,
+      "output_tokens": 16324,
+      "cache_read_input_tokens": 231040
+    },
+    "coverage_repair": {
+      "input_tokens": 6375,
+      "output_tokens": 7746,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

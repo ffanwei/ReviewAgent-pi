@@ -1,0 +1,54 @@
+{
+  "instance_id": "sveltejs__svelte@44bec4c",
+  "repo": "sveltejs/svelte",
+  "base_commit": "2af7ba21563f1b7f011ffa9f0c08e4acb473eef3",
+  "head_commit": "44bec4c8b172a47ff300f754463555bbb694bb05",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 409.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+      "line": 447,
+      "summary": "maybe_runes 判定只认 `let`，遗漏 `export var` 形式的 legacy prop，会把真正的 legacy 组件误判为 runes",
+      "failure_scenario": "新增判定用内联 AST 遍历复刻「是否存在 legacy prop」，但只匹配 `VariableDeclaration.kind === 'let'` 与 `declaration_kind === 'let'`。而同一函数中权威的 legacy props 判定明确把 `var` 与 `let` 一视同仁：`export var x = ...` 以及 `var x; export { x }` 都会把绑定改成 `bindable_prop`（即真正的 props）。因此这类组件的 `maybe_runes` 会错误地变为 true，模板表达式被切到 `build_expression` 的 runes 分支（不再拼静态依赖 getter、不再包 `$.untrack`），而组件的其余部分（`$$props` 同步、`$.init`、`$.derived_safe_equal` 记忆化、`$.bind_prop` 静态导出）仍按 legacy 生成，形成 legacy 骨架 + 细粒度表达式的混合产物。失败场景：Svelte 4 风格组件 `<script>export var list = [];</script><p>{render(list)}</p>`（或 `var list; export { list }`），其模板表达式的依赖收集方式与等价的 `export let list` 版本完全不同——模板中函数调用内部读到的状态会被动态收集为依赖，原本「不重跑」的 effect 现在会重跑，行为随 `let`/`var` 写法分叉且没有任何编译期告警。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+      "line": 437,
+      "summary": "maybe_runes 判定过宽：任何无 props 的 legacy 组件（stores、`$:`、无脚本组件）都被切到动态依赖收集",
+      "failure_scenario": "注释声明的目标场景是「组件自身没写 runes，但在外部 `.svelte.js` 模块里用了 runes」，但条件里没有任何「确实引用了 runes/外部 runes 模块」的判断，只排除了 `options.runes === false`、`$$props`/`$$restProps` 引用与 `export let`。结果是所有「没有 legacy props」的老组件——包括只使用 store 订阅、`$:` 反应式语句、甚至完全没有 `<script>` 的组件——都被标记为 `maybe_runes`，模板表达式不再 `$.untrack` 且不再只依赖静态可见绑定。具体失败场景：纯 legacy 组件 `<script>let n = 0; function next(){ n += 1; return n; }</script><p>{next()}</p>`，legacy 下表达式被 untrack、对 `n` 无依赖，因此写入不会使该 render effect 失效；改为动态收集后，effect 内部先读后写同一状态，会持续自我失效，触发运行期的更新深度保护（effect_update_depth_exceeded）而非得到一次性渲染结果。此外所有含 `{fn(state)}` 形式的 legacy 组件都会新增原本不存在的依赖，产生额外重跑。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "REACTIVITY-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\sveltejs__svelte\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\sveltejs__svelte@44bec4c.diff\n  caseId              sveltejs__svelte@44bec4c\n  --issue             (未传)\n  --taskId            sveltejs__svelte@44bec4c\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 8 / not-reached 7（budget=7）\nreview-pi: 覆盖补漏 请求 8（失败 0）/ 覆盖 hunk 8/8 / 新候选 0 / no-issue 8 / 预算跳过 7\n✓ 完成 · 耗时 403.8s · 模型调用 25 次 · token 输入 36,780（未命中） · 输出 39,625 · 缓存命中 929,152（96.2%） · 工具 34 次（主会话 34 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0188\n[time] 阶段耗时 | 总墙钟 408.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 4.4s (1.1%)\n[time] 阶段 | 六阶段审计 294.2s (72.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 109.9s (26.9%)\n[time] 审计明细 | P1 6.1s (2.1%) | P2 5.3s (1.8%) | P3 8.4s (2.9%) | P4 235.9s (80.2%) | P5 32.2s (10.9%) | P6 6.2s (2.1%)\n[usage] 任务总计 | 模型调用 33 次（Agent 25 + 一次性 8） | token 输入 42,517（未命中） | 输出 54,426 | 缓存命中 929,664（95.6%） | $0.0238\n[usage] 一次性明细 | 覆盖补漏 8 次（输入 5,737 / 输出 14,801 / 缓存 512）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\sveltejs__svelte@44bec4c\\audit\\20261127_042112_295.json",
+  "token_usage": {
+    "input_tokens": 42517,
+    "output_tokens": 54426,
+    "cache_read_input_tokens": 929664
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 36780,
+      "output_tokens": 39625,
+      "cache_read_input_tokens": 929152
+    },
+    "coverage_repair": {
+      "input_tokens": 5737,
+      "output_tokens": 14801,
+      "cache_read_input_tokens": 512
+    }
+  }
+}

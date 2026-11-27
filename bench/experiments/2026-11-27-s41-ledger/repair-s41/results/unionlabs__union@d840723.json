@@ -1,0 +1,74 @@
+{
+  "instance_id": "unionlabs__union@d840723",
+  "repo": "unionlabs/union",
+  "base_commit": "efab2bedc6beb4e1bb01906cba9e0dabd3072f13",
+  "head_commit": "d840723278f1d4cecc02ac540385725a1c54ca84",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 297.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "voyager/modules/consensus/ethereum/src/main.rs",
+      "line": 167,
+      "summary": "以太坊秒级时间戳被标成纳秒，`Timestamp` 的单位契约与实际值不符",
+      "failure_scenario": "以太坊 consensus 模块把 beacon API 的 `finalized_header.execution.timestamp`（Unix 秒）与 alloy `header.timestamp`（Unix 秒）直接传给 `Timestamp::from_nanos(...)`，而本次引入 `Timestamp` 的目的正是把“纳秒”这一单位固化到类型里。仓库内同源字段的既有用法可证明其单位是秒：`voyager/modules/client-bootstrap/ethereum/src/main.rs:242-243` 注释 “Normalize to nanos in order to be compliant with cosmos” 并显式 `* 1_000_000_000`，`lib/ethereum-light-client-types/src/consensus_state.rs:10` 也注明以太坊 consensus state 的 timestamp 是“normalized to nanoseconds”。因此在以太坊链上，`VoyagerRpc::queryLatestTimestamp` 会在新类型下返回一个“自称纳秒、实为秒”的值（`as_secs()` 会得到 1，`as_nanos()` 约 1.7e9）；一旦 `Call::WaitForTimestamp`（lib/voyager-message/src/call.rs:238 的 `chain_timestamp >= timestamp`）以以太坊为目标链，就会拿秒级值与插件用 `Timestamp::from_secs` 生成的纳秒值（voyager/plugins/client-update/ethereum/src/main.rs:539）比较，条件永远不成立，`defer(now()+1)` 无限重排、等待永远不会结束。改造前这里是裸 i64，单位只写在 TODO 注释里；本次改为带单位语义的新类型后，错误的单位被固化进 API，后续任何按 `as_secs()`/`from_secs` 使用的人都必然得到错误结果。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "UNIT-001"
+    },
+    {
+      "file": "voyager/modules/consensus/cometbls/src/main.rs",
+      "line": 170,
+      "summary": "`Timestamp::from_nanos(...).try_into().expect(...)` 是对恒不失败转换的无效错误处理",
+      "failure_scenario": "本次把 `i64`/`u64`→`i64` 的真实可失败转换改成 `Timestamp::from_nanos(...)` 后，外层残留的 `.try_into().expect(\"should be fine\")` 已退化为恒等转换：`Timestamp` 没有自定义 `TryFrom`，只能命中标准库的 `impl<T, U> TryFrom<U> for T where U: Into<T>`，其 `Error = Infallible`，因此永远不会失败。同类残留还出现在 ethereum/movement/state-movement 三个模块。后果是读者会误以为这里存在需要处理的溢出/范围错误（改造前 u64→i64 确实可能失败），而实际错误路径已经消失；同时它掩盖了真正需要关注的单位换算问题（见 F001），并在启用 `clippy::unwrap_used` 等严格 lint 时形成无意义的 panic 点。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": "voyager/plugins/client-update/ethereum/src/main.rs",
+      "line": 539,
+      "summary": "改造后 `NANOS_PER_SECOND` 导入变成未使用，遗留构建告警",
+      "failure_scenario": "该处把 `i64::try_from(...) * NANOS_PER_SECOND as i64` 换成 `Timestamp::from_secs(...)` 后，文件中已不存在任何 `NANOS_PER_SECOND` 的使用点，但第 28 行的 `use unionlabs::{constants::metric::NANOS_PER_SECOND, ...}` 没有随之清理，会在每次编译该插件时产生 `unused import` 警告；若 CI 或后续在 crate 级启用 `-D warnings`，会直接失败。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "DEAD-CODE-003"
+    },
+    {
+      "file": "lib/voyager-message/src/rpc.rs",
+      "line": 41,
+      "summary": "返回类型已改为 Timestamp，但上方 TODO 注释仍声称需要更好的类型而未删除",
+      "failure_scenario": "hunk 2 将 query_latest_timestamp 的返回类型由 RpcResult<i64> 改为 RpcResult<Timestamp>，正是为了消除原注释所指的「返回 i64 不够好」问题，但第 41 行的 TODO 注释 `// TODO: Make this return a better type than i64` 仍原样保留。该注释现已与新签名矛盾，会误导后续维护者以为该改进尚未完成，甚至再次重复改造。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "代码注释应与当前签名保持一致，完成改造后需同步移除或更新对应 TODO"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\unionlabs__union\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\unionlabs__union@d840723.diff\n  caseId              unionlabs__union@d840723\n  --issue             (未传)\n  --taskId            unionlabs__union@d840723\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 11 / not-reached 21（no-signal=4 budget=17）\nreview-pi: 覆盖补漏 请求 8（失败 0）/ 覆盖 hunk 12/16 / 新候选 1 / no-issue 11 / 预算跳过 17 / 验证拒绝 2\n✓ 完成 · 耗时 291.7s · 模型调用 26 次 · token 输入 30,083（未命中） · 输出 25,643 · 缓存命中 830,976（96.5%） · 工具 38 次（主会话 38 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0137\n[time] 阶段耗时 | 总墙钟 295.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 3.5s (1.2%)\n[time] 阶段 | 六阶段审计 185.9s (62.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 106.0s (35.9%)\n[time] 审计明细 | P1 120.2s (64.8%) | P2 3.5s (1.9%) | P3 5.7s (3.1%) | P4 19.2s (10.4%) | P5 30.3s (16.3%) | P6 6.5s (3.5%)\n[usage] 任务总计 | 模型调用 37 次（Agent 26 + 一次性 11） | token 输入 40,944（未命中） | 输出 40,116 | 缓存命中 830,976（95.3%） | $0.0193\n[usage] 一次性明细 | 覆盖补漏 11 次（输入 10,861 / 输出 14,473 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\unionlabs__union@d840723\\audit\\20261127_042112_585.json",
+  "token_usage": {
+    "input_tokens": 40944,
+    "output_tokens": 40116,
+    "cache_read_input_tokens": 830976
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 30083,
+      "output_tokens": 25643,
+      "cache_read_input_tokens": 830976
+    },
+    "coverage_repair": {
+      "input_tokens": 10861,
+      "output_tokens": 14473,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "instance_id": "cline__cline@f098af0",
+  "repo": "cline/cline",
+  "base_commit": "b3abbd886e7e693c48b31a0af8046035bf014118",
+  "head_commit": "f098af0f52bf1cdb7eb561c380caef5746b58d40",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 190.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": "src/integrations/terminal/TerminalProcess.ts",
+      "line": 198,
+      "summary": "新增的 getLatestTerminalOutput() 未捕获异常，失败时 run() 中断并导致命令永久挂起",
+      "failure_scenario": "run() 内新增的 `const terminalSnapshot = await getLatestTerminalOutput()` 位于任何 try/catch 之外。getLatestTerminalOutput 会依次执行 readTextFromClipboard → workbench.action.terminal.selectAll/copySelection/clearSelection → 在 finally 中 writeTextToClipboard，而 readTextFromClipboard/writeTextToClipboard 在失败时都会 throw（例如宿主剪贴板不可用、剪贴板为空/写入失败、无活动终端时 terminal 命令失败）。一旦抛错，run() 会在执行 `this.emit(\"completed\")` / `this.emit(\"continue\")` 之前中断：TerminalManager 只 `process.run(...)` 而未 await 或 catch，Promise 仅在 \"continue\" 或 \"error\" 事件上结算，而 TerminalProcess 从不 emit(\"error\")，因此 executeCommandTool 中的 `await process` 永不 settle，命令工具调用卡死、Task 卡在“执行命令”状态，同时 terminalInfo.busy 永远保持 true，该终端被后续 getOrCreateTerminal 跳过；在无 shell integration 分支（第 229 行）同样中断还会跳过 emit(\"no_shell_integration\")，使终端不被 TerminalRegistry 移除。注意原有 returnCurrentTerminalContents（第 30–40 行）正是用 try/catch 包裹该调用的，可见作者本意是容错，新增调用绕过了这层保护。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "RESOURCE-LEAK-001"
+    },
+    {
+      "file": "src/integrations/terminal/TerminalProcess.ts",
+      "line": 229,
+      "summary": "为判定回退是否成功而二次调用 getLatestTerminalOutput，重复执行终端全选/复制与剪贴板读写",
+      "failure_scenario": "无 shell integration 分支先在第 227 行 `await returnCurrentTerminalContents()`，该方法内部（第 32 行）已经调用 getLatestTerminalOutput 拿到快照；随后第 229 行又完整调用了一次 getLatestTerminalOutput。每次调用都会：读剪贴板 → 终端全选 → 复制选中 → 清除选择 → 读剪贴板 → 恢复剪贴板。因此一个命令会在极短时间内两次改写用户剪贴板、两次改变终端选区状态，用户在这段时间内的复制操作可能被覆盖丢失；同时上报的 success 依据的是“第二次快照”，而非第 34–36 行真正发给模型的 `fallbackMessage`，存在第一次为空、第二次非空（或反之）时报错成功/失败的偏差。shell integration 分支第 196–198 行同理。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.78,
+      "rule": "PERF-002"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1578,
+      "summary": "completionTimer 按命令总耗时触发，“等待完成超时”会把正常的长命令误报为 hang",
+      "failure_scenario": "completionTimer 在命令刚开始时就启动，仅在 \"completed\" 事件或 `await process` 之后清理，因此它度量的是命令的**总运行时长**，而非“无进展”的卡死。任何合法地运行超过 60 秒的命令（npm install、构建、`npm run dev`、sleep 120 等）都会上报 WAITING_FOR_COMPLETION。这类命令在有 shell integration 时会持续产生 line 事件，恰恰是最健康的行为，却与真正的卡死无法区分，导致 hang 指标被长期运行命令污染，真实挂起被淹没。计时器也没有随输出活动重置。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "TELEMETRY-003"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1512,
+      "summary": "bufferStuckTimer 把用户思考时间计成 buffer 卡死，30 秒未点按钮即误报 BUFFER_STUCK",
+      "failure_scenario": "bufferStuckTimer 在 `await this.ask(\"command_output\", chunk)` 之前启动，直到 ask 返回后才在 finally 中清除，而 ask 的等待时长完全取决于用户何时点击（用户在阅读输出、离开工位、思考如何反馈时常常超过 30 秒）。因此只要用户 30 秒内没有响应命令输出提示，就会上报一次 BUFFER_STUCK，而这属于完全正常的交互等待，并非缓冲区卡死。真正的“卡死”应当是指缓冲区已满但不再产生新输出的场景。同理，该计时器也无法区分网络/渲染卡顿与用户无响应。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "TELEMETRY-004"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1533,
+      "summary": "ask 抛错统一记为 STREAM_TIMEOUT，会把用户取消/任务中止误报为输出流超时",
+      "failure_scenario": "catch 分支对所有 ask 抛出的异常都上报 TerminalHangStage.STREAM_TIMEOUT。但 ask 在任务已被中止时会主动 `throw new Error(\"Cline instance aborted\")`（见同文件 741–743 行），这与输出流超时是完全不同的语义：用户取消任务或 Task 被 dispose 时都会进入该 catch。结果是取消/中止行为被统计为终端流超时，干扰 hang 与用户干预两类指标的对比分析。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "TELEMETRY-005"
+    },
+    {
+      "file": "src/integrations/terminal/TerminalProcess.ts",
+      "line": 195,
+      "summary": "把“无输出”一律标为 TIMEOUT 失败原因，成功执行的无输出命令被统计成采集失败",
+      "failure_scenario": "判定条件是 `!this.fullOutput.trim()`（第 193 行，本次未修改），但新增代码把该情况标注为 TerminalOutputFailureReason.TIMEOUT。实际上该分支覆盖两种情况：①shell integration 真的失败；②命令本身没有任何输出（`cd`、`mkdir`、`mv`、`git commit -m`、`touch` 等）。后者是成功执行且无需回退，却被打上“timeout”失败标签，并紧接着上报 captureTerminalExecution(true, \"clipboard\")，使同一事件同时被计为失败与回退成功。枚举中为此场景预留的 CLIPBOARD_FAILED 也从未被使用，失败原因维度实际不可用。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.72,
+      "rule": "TELEMETRY-006"
+    },
+    {
+      "file": "src/services/telemetry/TelemetryService.ts",
+      "line": 958,
+      "summary": "captureTerminalExecution 的 method 参数用裸 string 而非受限联合类型，与文档约定不一致",
+      "failure_scenario": "captureTerminalExecution(success: boolean, method: string) 的 JSDoc 明确说明 method 只允许 \"shell_integration\" | \"clipboard\" | \"none\"，但签名声明为 string，调用方可传入任意字符串（含拼写错误或空串），且该值会原样进入 properties.method 上报，导致遥测数据出现不可预期的枚举值、下游统计口径被污染，且编译器无法在调用点拦截错误取值。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.55,
+      "rule": "对外 API 的枚举语义参数应使用字面量联合类型（或枚举）约束，避免无效值流入数据上报链路"
+    },
+    {
+      "file": "src/core/task/index.ts",
+      "line": 1609,
+      "summary": "completionTimer 只在 process 正常完成时清理，拒绝路径会泄漏定时器并可能误报超时",
+      "failure_scenario": "新增的清理逻辑位于 await process 之后，只有 process 正常 resolve 才会执行 clearTimeout。若 process 以 reject 结束，该分支被跳过，completionTimer 仍会保留并在之后触发，造成定时器泄漏，且可能把已失败的流程误报为“等待完成超时”。应使用 try/finally 或在拒绝路径同样清理。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "定时器等资源应在所有退出路径（成功、异常、取消）中释放，避免泄漏和延迟误报"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\cline__cline@f098af0.diff\n  caseId              cline__cline@f098af0\n  --issue             (未传)\n  --taskId            cline__cline@f098af0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 7 / no-issue 6 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 4（失败 0）/ 覆盖 hunk 8/10 / 新候选 2 / no-issue 6 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 188.0s · 模型调用 18 次 · token 输入 20,017（未命中） · 输出 17,306 · 缓存命中 392,960（95.2%） · 工具 22 次（主会话 22 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0087\n[time] 阶段耗时 | 总墙钟 188.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 134.4s (71.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 53.7s (28.5%)\n[time] 审计明细 | P1 4.2s (3.2%) | P2 5.5s (4.1%) | P3 8.0s (5.9%) | P4 54.2s (40.4%) | P5 55.1s (41.0%) | P6 7.3s (5.4%)\n[usage] 任务总计 | 模型调用 24 次（Agent 18 + 一次性 6） | token 输入 27,551（未命中） | 输出 24,541 | 缓存命中 393,472（93.5%） | $0.0118\n[usage] 一次性明细 | 覆盖补漏 6 次（输入 7,534 / 输出 7,235 / 缓存 512）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\cline__cline@f098af0\\audit\\20261127_042902_888.json",
+  "token_usage": {
+    "input_tokens": 27551,
+    "output_tokens": 24541,
+    "cache_read_input_tokens": 393472
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 20017,
+      "output_tokens": 17306,
+      "cache_read_input_tokens": 392960
+    },
+    "coverage_repair": {
+      "input_tokens": 7534,
+      "output_tokens": 7235,
+      "cache_read_input_tokens": 512
+    }
+  }
+}

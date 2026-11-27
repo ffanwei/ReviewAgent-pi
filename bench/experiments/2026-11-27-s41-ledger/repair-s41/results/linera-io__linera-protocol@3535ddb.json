@@ -1,0 +1,64 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 144.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件依赖双方共享的页大小常量，页大小不一致时会静默少拉取 received_log",
+      "failure_scenario": "循环只有在“本页条目数 < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES”时才结束，而每页返回多少条完全由服务端那份常量决定。客户端与验证者是独立部署的二进制，只要两者对页大小理解不同（验证者仍是旧版本按老逻辑返回全量、或按 TODO(#4638) 把该数字调整成更小或更大的值、或未来给验证者做成可配置上限），客户端就会在拿到一个“短页”后立刻 break，把只覆盖前 N 条（N = 服务端上限）的 remote_log 当成完整结果。后果是：heights_per_chain 与证书下载只覆盖部分条目，第 935-945 行的 tracker 推进也只前进到该位置，之后的跨链消息/证书在本轮同步中被静默丢弃，直到下一次同步才可能补上，期间本地链的 inbox 不完整，可能提出与验证者视图不一致的区块。ChainInfo.count_received_log 本来就是为这种分页判断准备的（data_types.rs:213-214 注释明确写明用途），但新循环完全没有使用它。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-PAGINATION-001"
+    },
+    {
+      "file": "linera-core/src/chain_worker/state.rs",
+      "line": 1418,
+      "summary": "服务端无条件下调截断 received_log，旧版客户端会把截断结果当成完整日志",
+      "failure_scenario": "request_received_log_excluding_first_n 这一字段原先的语义是“返回偏移之后全部条目”，本次改动让服务端无条件只返回最多 1000 条，而查询里没有任何“客户端支持分页”的标记或版本协商（ChainInfoQuery 无版本字段，gRPC 层也只透传）。在验证者已升级、客户端仍是旧版本的滚动升级窗口内，旧客户端仍按“一次查询拿到全部剩余条目”实现，会把首批 1000 条当作完整结果：它只为这些条目下载证书、按这些条目推进 received_certificate_trackers，其后的条目既不会被下载也不会被重试到（旧代码里没有任何循环），导致该链漏收跨链消息，且漏收是本地的、不可见的。本仓库已有先例说明向后兼容被视为必须：data_types.rs:79-80 对 request_sent_certificate_hashes_in_range 明确注释 “this field is left and unused to maintain backwards compatibility”。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 853,
+      "summary": "分页循环无迭代上限且全量累积到内存，验证者批量并发调用时开销被放大",
+      "failure_scenario": "循环的唯一出口是“某页短于上限”，因此在积压很多条目的链上，客户端必须串行发起 ⌈N/1000⌉ 次往返请求，并把这些条目全部 `extend` 进同一个 `remote_log`（第 853 行），成功前既不推进 tracker 也不分片处理。而 `synchronize_received_certificates_from_validator` 会被 `communicate_with_quorum` 对每个验证者并发调用（client/mod.rs:2284-2291），于是总请求数约为验证者数乘以页数，同时内存里保留多份完整日志副本。对长期离线后首次同步、或收到大量跨链消息的链，这会把原先一次大响应的开销换成成百上千次串行 RPC，显著拉长同步时间并抬高峰值内存；本次改动对服务端响应大小的收益也被客户端的全量累积部分抵消。用 `count_received_log` 或显式迭代上限即可在不牺牲正确性的前提下给循环加上界。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "PERFORMANCE-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 3 / not-reached 0\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 3/3 / 新候选 0 / no-issue 3 / 预算跳过 0\n✓ 完成 · 耗时 142.7s · 模型调用 14 次 · token 输入 15,641（未命中） · 输出 17,774 · 缓存命中 205,824（92.9%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0077\n[time] 阶段耗时 | 总墙钟 143.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 135.2s (94.2%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 7.6s (5.3%)\n[time] 审计明细 | P1 5.4s (4.0%) | P2 3.5s (2.6%) | P3 7.9s (5.9%) | P4 73.0s (54.0%) | P5 40.7s (30.1%) | P6 4.6s (3.4%)\n[usage] 任务总计 | 模型调用 17 次（Agent 14 + 一次性 3） | token 输入 18,090（未命中） | 输出 18,583 | 缓存命中 205,824（91.9%） | $0.0083\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 2,449 / 输出 809 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261127_042419_506.json",
+  "token_usage": {
+    "input_tokens": 18090,
+    "output_tokens": 18583,
+    "cache_read_input_tokens": 205824
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 15641,
+      "output_tokens": 17774,
+      "cache_read_input_tokens": 205824
+    },
+    "coverage_repair": {
+      "input_tokens": 2449,
+      "output_tokens": 809,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

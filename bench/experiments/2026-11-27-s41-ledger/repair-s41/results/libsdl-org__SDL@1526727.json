@@ -1,0 +1,64 @@
+{
+  "instance_id": "libsdl-org__SDL@1526727",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "71303b41bf89c4bb68dbe1bed12fd2ee1dc0dd41",
+  "head_commit": "15267271865f73c996719238425f1604fc2fa205",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 144.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 259,
+      "summary": "新增接受的 0x04 报文未做长度校验，会按固定偏移读到未初始化的栈内存",
+      "failure_scenario": "HandleStatePacket 的入口校验从 `data[0] != 0x03 && data[0] != 0x01` 放宽为同时接受 0x04，但校验只针对首字节，函数内部仍然按 0x01/0x03 的固定偏移读取 data[1]（hat）、data[8..10]（按键）、data[14]（电量）以及 &data[15] 起的 12 字节 ABITDO_SENSORS。UpdateDevice 中的缓冲区 `Uint8 data[USB_PACKET_LENGTH]` 未初始化，只由 SDL_hid_read_timeout 填充 size 个字节，因此当 0x04 报文短于 16 字节（读电量）或 21 字节（读 IMU）时，data[14] 及 data[15..] 是栈上残留数据，会被当作电量百分比、陀螺仪/加速度原始值上报，表现为电量随机跳变与传感器尖刺。同时该校验放宽对全部 8BitDo 机型生效，此前被过滤掉的 Ultimate 2 Wireless 0x04 报文现在也会被当作状态报文按同一套偏移解析。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "RELIABILITY-PACKET-LENGTH"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 151,
+      "summary": "仅凭 feature report 读取成功就置 sensors/rumble/powerstate 能力位，未解析报文内的能力信息",
+      "failure_scenario": "新增的 InitDevice 分支只使用 ReadFeatureReport 的返回值（size > 0），对读到的 0x06 报文内容不做任何解析，就无条件把 sensors_supported、rumble_supported、powerstate_supported 全部置真。OpenJoystick 会据此调用 SDL_PrivateJoystickAddSensor 注册 125Hz 的 GYRO/ACCEL 传感器，并在 HandleStatePacket 中按 data[14]/data[15] 无条件上报电量与 IMU。如果这五款机型的任一版本（或某种连接模式，例如 BT 变体 0x6101/0x6006）并没有 IMU 或震动，SDK 仍会向应用宣称支持传感器与震动：应用启用传感器后拿到的是无意义数据，震动调用返回成功但无实际效果，问题难以排查。同文件已有 ABITDO_DEVICE_INFO 结构体（含 device_type 与 sensors_supported/rumble_supported 等能力字段），说明设备信息报文本身带有能力位可用于判断。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "RELIABILITY-CAPABILITY-PROBE"
+    },
+    {
+      "file": "src/joystick/SDL_joystick.c",
+      "line": 3181,
+      "summary": "扩大 8BitDo 白名单会连带为无背键机型生成 paddle1~paddle4 映射",
+      "failure_scenario": "SDL_IsJoystick8BitDoController 除了决定 HIDAPI 驱动归属外，还被 SDL_CreateMappingForHIDAPIGamepad 用来为设备追加 paddle1:b12,paddle2:b11,paddle3:b14,paddle4:b13。把 SN30 Pro(0x6001)、SN30 Pro BT(0x6101)、SF30 Pro(0x6000)、Pro 2(0x6003)、Pro 2 BT(0x6006) 纳入同一判定后，这些没有背键或只有 2 个背键的机型也会得到 4 个 paddle 映射，映射与设备实际按键不符（paddle3/paddle4 永远收不到事件），后续按机型补差异支持时容易误判这些按键存在。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.42,
+      "rule": "MAINTAINABILITY-MAPPING-SCOPE"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\libsdl-org__SDL@1526727.diff\n  caseId              libsdl-org__SDL@1526727\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@1526727\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 2 / not-reached 0\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 2/2 / 新候选 0 / no-issue 2 / 预算跳过 0\n✓ 完成 · 耗时 142.7s · 模型调用 15 次 · token 输入 23,548（未命中） · 输出 16,864 · 缓存命中 258,688（91.7%） · 工具 19 次（主会话 19 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0087\n[time] 阶段耗时 | 总墙钟 143.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 125.6s (87.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 17.2s (12.0%)\n[time] 审计明细 | P1 23.2s (18.5%) | P2 3.0s (2.4%) | P3 6.5s (5.1%) | P4 44.6s (35.5%) | P5 37.3s (29.8%) | P6 11.0s (8.7%)\n[usage] 任务总计 | 模型调用 17 次（Agent 15 + 一次性 2） | token 输入 25,505（未命中） | 输出 19,137 | 缓存命中 258,688（91.0%） | $0.0097\n[usage] 一次性明细 | 覆盖补漏 2 次（输入 1,957 / 输出 2,273 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\libsdl-org__SDL@1526727\\audit\\20261127_042923_471.json",
+  "token_usage": {
+    "input_tokens": 25505,
+    "output_tokens": 19137,
+    "cache_read_input_tokens": 258688
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 23548,
+      "output_tokens": 16864,
+      "cache_read_input_tokens": 258688
+    },
+    "coverage_repair": {
+      "input_tokens": 1957,
+      "output_tokens": 2273,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

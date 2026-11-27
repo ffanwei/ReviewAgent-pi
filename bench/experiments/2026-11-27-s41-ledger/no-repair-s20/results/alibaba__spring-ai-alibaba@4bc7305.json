@@ -1,0 +1,62 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@4bc7305",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "71e7eeb27dfe42c5a805da413ef6e9faf84fe9d0",
+  "head_commit": "4bc73055c7b33f53433d9725eab5010b85a59632",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 156.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 51,
+      "summary": "滚动后仍用滚动前的视口坐标点击，导致 move_to_and_click 点到错误位置",
+      "failure_scenario": "execute 收到的 x/y 来自 LLM 透传的 get_element_position 结果，其取值是 Locator.boundingBox() 的视口相对坐标（GetElementPositionByNameAction 第 130-131 行计算中心点，第 145-147 行用 position:'fixed' 渲染该坐标即可佐证），而 Playwright 的 page.mouse().move/click(x, y) 同样按视口坐标解释。本次新增的第 49-52 行在点击前先 window.scrollTo(x - 视口宽/2, y - 视口高/2) 滚动了页面，随后第 69-70 行仍用未调整的 (x, y) 去点，元素在视口中的实际位置已经平移到 (x - scrollX, y - scrollY)，因此点击会落到相邻元素或空白处。失败场景：agent 调用 get_element_position 拿到某按钮中心 (900, 600)，move_to_and_click 计算 scrollY = 600 - 360 = 240 并滚动 240px，按钮上移到视口 y≈360，但鼠标仍点 (900, 600)，点到按钮下方的另一个控件，产生误点击/跳转到错误页面。这属于对既有行为的功能性破坏，且是本次 diff 引入的。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 60,
+      "summary": "debug 红点用 absolute 定位却传入视口坐标，标记点与真实点击位置不一致且异常时残留",
+      "failure_scenario": "新增的调试标记把 (x, y) 写成 `position: 'absolute'` 的 left/top 并挂在 document.body 上，absolute 定位相对文档内容区，而此处传入的 x/y 是视口相对坐标（同上，get_element_position 用 boundingBox 计算、并统一以 position:'fixed' 渲染）。在页面已滚动（第 49-52 行刚滚动过）或本身有滚动偏移时，红点会被画到距真实点击点 scrollX/scrollY 之外的位置，调试者据此判断点击落点会得到错误结论；仓库内同类功能 GetElementPositionByNameAction 用的是 'fixed'，两处不一致。另外红点的清理语句（第 73-77 行）位于 try 内且在鼠标点击之后，只要 mouse().click 抛异常就走到第 79-82 行的 catch 直接 return，红点会永久留在页面上，被后续截图捕获并干扰对页面状态的判断。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java",
+      "line": 200,
+      "summary": "把 systemPrompt 从 null 改成 \" \" 会让废弃字段分支恒为真，掩盖原有条件判断缺陷并产生误导日志",
+      "failure_scenario": "mergePrompts 的进入条件是 `if (entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty())`（第 190 行），这是一个恒真式：非 null 时前半个条件即成立，null 时后半个条件又会 NPE，正确写法应为 `!= null && !...isEmpty()`。本次把清理动作从 `setSystemPrompt(null)` 改为 `setSystemPrompt(\" \")`，并给实体字段加了默认值 `= \" \"`，于是任何 agent 的 systemPrompt 都恒为非 null 的空格串，第 190 行的分支在每次 mapToAgentConfig/updateEntityFromConfig 时都会进入，对每个 agent 都打印『SystemPrompt不为空，但属性已经废弃…本次将agent 的内容合并』的 WARN，并把永不生效的合并结果（`\" \" + \"\\n\" + nextPrompt`）算一遍后丢弃（第 195-200 行只改回 systemPrompt，没有回写 nextStepPrompt）。失败场景：批量加载/保存 agent 时日志被无意义 WARN 刷屏，运维无法据此区分『真的存在历史 systemPrompt 数据』与『所有 agent 都带一个空格默认值』；同时该绕行让第 190 行本应修复的条件缺陷继续潜伏，一旦某行历史数据为 null（列已改为可空）就会在 trim 上抛 NPE。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.66,
+      "rule": "MAINTAINABILITY-001"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+      "line": 43,
+      "summary": "URL 自动补全一律使用 https://，且大小写敏感，会破坏本地 http 服务与非 http 协议的导航",
+      "failure_scenario": "新增逻辑在 url 不以 `http://` / `https://` 开头时一律加 `https://`。这会把常见的内网/本地开发地址（如 `localhost:8080`、`127.0.0.1:3000`、`192.168.1.10:8080`）变成 `https://localhost:8080`，命中这些只提供明文 HTTP 的服务时 navigate 会握手失败/超时，而原来把原始字符串交给 Playwright 至少可能被识别或由上层修正；对 `file:///...`、`about:blank`、`chrome://` 等非 http 协议也会拼成非法 URL（`https://file:///...`）直接抛错。另外判断使用大小写敏感的 startsWith，`HTTP://example.com` 会被拼成 `https://HTTP://example.com`。失败场景：agent 按任务要求打开本地调试服务 `localhost:8080/admin`，工具将其改写为 https 导致浏览器报 ERR_SSL_PROTOCOL_ERROR / 超时，任务卡在导航步骤。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "ROBUSTNESS-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@4bc7305.diff\n  caseId              alibaba__spring-ai-alibaba@4bc7305\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@4bc7305\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 155.1s · 模型调用 18 次 · token 输入 30,863（未命中） · 输出 19,865 · 缓存命中 441,344（93.5%） · 工具 30 次（主会话 30 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0111\n[time] 阶段耗时 | 总墙钟 156.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 155.1s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.4s (0.3%)\n[time] 审计明细 | P1 8.8s (5.7%) | P2 4.3s (2.8%) | P3 7.8s (5.1%) | P4 91.1s (58.7%) | P5 30.6s (19.8%) | P6 12.3s (8.0%)\n[usage] 任务总计 | 模型调用 18 次（Agent 18 + 一次性 0） | token 输入 30,863（未命中） | 输出 19,865 | 缓存命中 441,344（93.5%） | $0.0111\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@4bc7305\\audit\\20261126_123637_325.json",
+  "token_usage": {
+    "input_tokens": 30863,
+    "output_tokens": 19865,
+    "cache_read_input_tokens": 441344
+  }
+}

@@ -216,6 +216,9 @@ def main() -> int:
     sets_def = {
         "iterS10": small_order[:10],
         "iterS20": small_order[:20],
+        # 41 条小 diff：S20 前 20 + 其余 21；rest21 用于分段复跑/补跑。
+        "iterS41": small_order[:41],
+        "iterS41-rest21": small_order[20:41],
         "iterB2": large_order[:2],
         "iterB5": large_order[:5],
         "iterB10": large_order[:10],

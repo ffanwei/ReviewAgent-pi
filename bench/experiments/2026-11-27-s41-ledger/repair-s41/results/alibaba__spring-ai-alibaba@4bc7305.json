@@ -1,0 +1,74 @@
+{
+  "instance_id": "alibaba__spring-ai-alibaba@4bc7305",
+  "repo": "alibaba/spring-ai-alibaba",
+  "base_commit": "71e7eeb27dfe42c5a805da413ef6e9faf84fe9d0",
+  "head_commit": "4bc73055c7b33f53433d9725eab5010b85a59632",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 219.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java",
+      "line": 49,
+      "summary": "新增的滚动居中对齐与后续按原坐标点击冲突，点击会落到错误元素",
+      "failure_scenario": "本次在页面 mouse().move/click 之前新增了 window.scrollTo(x - 视口宽/2, y - 视口高/2) 的滚动逻辑，但随后仍以原始 (x, y) 作为视口坐标移动并点击。而 move_to_and_click 的 position_x/position_y 是视口坐标（get_element_position 用 Locator.boundingBox() 取值，Playwright 该值相对主框架视口，且同方法用 position:'fixed' 绘制高亮），滚动后目标元素在视口中的位置已变为 (x - scrollX, y - scrollY)，即被移到视口中心，而鼠标仍点 (x, y)，二者仅在 x 恰等于视口宽/2 时重合。结果是 move_to_and_click 几乎必然点错位置，可能误点相邻的链接、删除/提交按钮等不可逆操作；若页面含固定（fixed/sticky）头部，错位会进一步放大。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java",
+      "line": 43,
+      "summary": "URL 前缀强制补 https:// 会破坏非 http(s) 协议与大小写不同的 scheme",
+      "failure_scenario": "新增的前缀补全只判断 url 是否以 \"http://\" 或 \"https://\" 开头（区分大小写），否则一律拼成 \"https://\" + url。因此 about:blank、file:///...、data: 等合法 scheme 会被拼成 https://about:blank 之类的非法 URL 而导航失败；模型或用户给出 \"HTTPS://example.com\" 这类大写 scheme 时同样会被二次拼接成 \"https://HTTPS://example.com\"；对只支持 http 的目标（内网裸 IP:端口、本地 http 服务）也会因强制 https 而握手失败。异常经 BrowserUseTool.run 的 catch 转成 \"Browser action 'navigate' failed: ...\"，Agent 只能看到一条含糊的失败信息，且整个导航动作无法完成。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.63,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java",
+      "line": 200,
+      "summary": "改为写入空格后 mergePrompts 的判定恒为真，合并分支与 WARN 在每次读写时都会执行",
+      "failure_scenario": "mergePrompts 的守卫写作 `entity.getSystemPrompt() != null || !entity.getSystemPrompt().trim().isEmpty()`（应为 &&），本次把 setSystemPrompt(null) 改为 setSystemPrompt(\" \") 后，systemPrompt 永远非 null，该守卫恒为真。于是 mapToAgentConfig（被 getAgent/listAgents 调用）与 updateEntityFromConfig（保存 Agent）每次都会进入“合并已废弃 systemPrompt”的分支：一方面每次读写都打印一条 systemPrompt 不为空的 WARN，日志噪声严重且会误导排查；另一方面 mapToAgentConfig 第 157-158 行把合并结果写进返回给前端的 AgentConfig，而合并逻辑是 systemPrompt + \"\\n\" + nextStepPrompt，会把 \" \\n\" 前缀加到 nextStepPrompt 上，使前端看到/提交的 prompt 内容被静默改写。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "CORRECTNESS-004"
+    },
+    {
+      "file": "spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java",
+      "line": 80,
+      "summary": "输入兜底用 JS 直接赋值 el.value 且无条件返回成功，可能静默失败/误报成功",
+      "failure_scenario": "输入逻辑改为三层兜底。最后一层通过 elementLocator.evaluate 直接执行 `el.value = value; el.dispatchEvent(new Event('input'))`：对 React/Vue 等受控组件，直接给 value 赋值会绕过框架的值追踪/原生 setter，仅派发 input 事件通常无法触发 onChange，输入可能不会真正进入组件状态；对 readonly/disabled 元素也能被 JS 强行写入。更关键的是，无论前三层兜底哪一层的异常被捕获并「成功」执行，方法最终都会走到 return \"成功输入...\" 返回成功，既不校验元素实际值，也不区分兜底是否真正生效，导致失败被静默吞掉并误报成功（第一层 catch(Exception e) 也完全未记录被吞的原始异常）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "兜底分支应校验写入结果，避免对受控组件/只读元素静默失败后仍返回成功"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\alibaba__spring-ai-alibaba\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\alibaba__spring-ai-alibaba@4bc7305.diff\n  caseId              alibaba__spring-ai-alibaba@4bc7305\n  --issue             (未传)\n  --taskId            alibaba__spring-ai-alibaba@4bc7305\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 3（no-signal=3）\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 1/4 / 新候选 1 / no-issue 0 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 218.0s · 模型调用 15 次 · token 输入 22,579（未命中） · 输出 17,169 · 缓存命中 282,496（92.6%） · 工具 23 次（主会话 23 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0088\n[time] 阶段耗时 | 总墙钟 218.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.3%)\n[time] 阶段 | 六阶段审计 137.4s (62.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 80.7s (36.9%)\n[time] 审计明细 | P1 5.5s (4.0%) | P2 3.2s (2.3%) | P3 4.8s (3.5%) | P4 93.7s (68.2%) | P5 23.2s (16.9%) | P6 7.0s (5.1%)\n[usage] 任务总计 | 模型调用 20 次（Agent 15 + 一次性 5） | token 输入 28,768（未命中） | 输出 29,253 | 缓存命中 283,008（90.8%） | $0.0130\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 6,189 / 输出 12,084 / 缓存 512）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\alibaba__spring-ai-alibaba@4bc7305\\audit\\20261127_042656_803.json",
+  "token_usage": {
+    "input_tokens": 28768,
+    "output_tokens": 29253,
+    "cache_read_input_tokens": 283008
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 22579,
+      "output_tokens": 17169,
+      "cache_read_input_tokens": 282496
+    },
+    "coverage_repair": {
+      "input_tokens": 6189,
+      "output_tokens": 12084,
+      "cache_read_input_tokens": 512
+    }
+  }
+}

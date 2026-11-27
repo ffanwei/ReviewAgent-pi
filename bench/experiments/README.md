@@ -43,3 +43,17 @@
 | `2026-11-22-f04/old-arm2.json` | 旧 0.6.1 arm2 1489 findings | grounded 1022 / unverified 463 / unverifiable 4 |
 | `2026-11-22-f04/eval_grounding.mjs` | 零模型回放脚本（编译后的 grounding 模块） | 只读审计 + git show head 文件 |
 | `2026-11-22-f04/README.md` | 方法与误杀风险说明 | drop 会排除约 32%，默认 off |
+
+## 2026-11-27 · iterS41 小 diff 四臂对照
+
+| 目录 | 说明 | P / R / B | 成本 |
+|---|---|---|---|
+| `2026-11-27-s41-ledger/no-repair-s20` + `no-repair-rest21` | 当前主线，补漏关；41 = 20 + 21 | 0.417 / 0.280 / 0.335 | 非缓存+output 1.81M；墙钟 7,504s |
+| `2026-11-27-s41-ledger/repair-s41` | 当前主线 + 覆盖补漏，`maxRequests=8` | 0.398 / 0.301 / 0.343 | 非缓存+output 2.27M（+25.5%）；墙钟 9,768s（+30.2%） |
+| `2026-11-27-s41-ledger/README.md` | 四臂口径、旧基线 / OCR 对照与决定 | — | — |
+| `2026-11-27-s41-ledger/combined.json` | 四臂汇总指标与成本 | — | — |
+
+> 补漏带来 +2.1pp recall / +0.8pp balanced，代价 +25.5% 非缓存成本；`maxRequests`
+> 暂维持 8，两候选提示词 A/B 本轮不做。旧基线 0.273 / 0.350 / 0.307，OCR
+> 0.314 / 0.382 / 0.345。
+

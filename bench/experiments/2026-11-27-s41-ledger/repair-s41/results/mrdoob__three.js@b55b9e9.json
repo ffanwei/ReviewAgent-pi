@@ -1,0 +1,84 @@
+{
+  "instance_id": "mrdoob__three.js@b55b9e9",
+  "repo": "mrdoob/three.js",
+  "base_commit": "de413e2112ff1ae80599f145b101354a1476976c",
+  "head_commit": "b55b9e97f6d0f5829e4d8fc364949e72b0d9e98c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 395.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "src/renderers/webgpu/WebGPUBackend.js",
+      "line": 1329,
+      "summary": "回退分支把 dispatchSize 指向 computeNodeData 数据字典，写入与派发落到错误容器",
+      "failure_scenario": "第 1329 行在 dispatchSize 无效时执行 `dispatchSize = isValid ? dispatchSize : computeNodeData;`，把局部变量指向了 `this.get( computeNode )` 返回的通用数据字典，而不是第 1360 行创建的 `computeNodeData.dispatchSize`。于是 else 分支中的 `dispatchSize.x = computeNode.dispatchCount` 写到了 computeNodeData.x 上，`dispatchSize.y` / `dispatchSize.z` 则是字典上并不存在的键（Backend.get 懒创建的是空对象 `{}`），最终 `passEncoderGPU.dispatchWorkgroups( x, undefined, undefined )` 只因为 WebGPU 规范给 y/z 声明了默认值 1 才凑巧正确；同时第 1360 行新建的 `computeNodeData.dispatchSize` 成为无人读取的死代码，且节点数据字典被 x/y/z 污染。这条回退路径正是所有未显式传 dispatchSize 的既有 compute 调用的默认路径（Renderer.compute 默认 [0,0,0] 时 isValid 为 false），一旦运行时对显式 undefined 实参不做默认值处理，或该字典上出现同名键（如未来把 y/z 复用于他处），就会出现 y/z 维度派发 0 或错误尺寸，导致整个 compute 计算静默不执行或少算。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "src/renderers/webgpu/nodes/WGSLNodeBuilder.js",
+      "line": 1903,
+      "summary": "workgroupSize 长度不为 3 直接抛错，破坏既有 [64] 用法且与 GLSL 后端不一致",
+      "failure_scenario": "新增的 `if ( workgroupSize.length !== 3 ) throw new Error( 'workgroupSize must have 3 elements' );` 把此前完全合法的 1~2 元 workgroupSize 变成运行时硬失败。改动前 ComputeNode 的默认值就是 `[ 64 ]`（JSDoc 也写着 `[64]`），因此任何显式传 `compute( node, count, [ 64 ] )` 或 `[ 64, 1 ]` 的既有用户代码，在升级后会在着色器构建阶段（首次 compute 调用/管线创建时）直接抛异常，而不是降级为默认值；更严重的是同仓库的 WebGL 回退后端并不做该限制（GLSLNodeBuilder 用 `workgroupSize.reduce((acc,curr)=>acc*curr,1)` 兼容任意长度），于是同一份用户代码在 WebGPU 后端崩溃、在 WebGL 后端正常工作，形成后端间不一致。正确做法是把不足 3 维的尺寸补齐为 1 再做三维展开，而不是直接抛错。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "API-BREAK-001"
+    },
+    {
+      "file": "src/renderers/webgpu/WebGPUBackend.js",
+      "line": 1327,
+      "summary": "显式 dispatchSize 只做 >0 判断，未校验取值形态也未钳制设备上限",
+      "failure_scenario": "`const isValid = dispatchSize[ 0 ] > 0 && dispatchSize[ 1 ] > 0 && dispatchSize[ 2 ] > 0;` 是新增显式派发分支的唯一守门条件，但它既不校验长度（`[ 64 ]`、`[ 64, 1 ]` 会因 undefined > 0 为 false 而被静默忽略、退回自动派发，用户以为显式尺寸生效），也不校验是否为有限正整数（NaN、Infinity、浮点会通过与失败得很随意），更不与 `maxComputeWorkgroupsPerDimension` 比较。自动分支对超出设备上限的派发做了 min/ceil 拆分保护，而显式分支直接 `dispatchWorkgroups( dispatchSize[0], dispatchSize[1], dispatchSize[2] )`：一旦用户按粒子上限给出超过设备限制的 workgroup 数，会触发 WebGPU 的 dispatch 校验错误，整个 compute pass 失效甚至可能触发设备丢失，而这恰是该特性最主要的使用场景。此外该判断直接读取 `dispatchSize[0]`，若某个后端或调用方未传第 5 个参数（形参无默认值），会立刻抛 TypeError。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "VALIDATION-001"
+    },
+    {
+      "file": "src/renderers/common/Renderer.js",
+      "line": 2314,
+      "summary": "新增的 dispatchSize 未在 computeAsync 透传，未初始化路径静默丢弃显式派发尺寸",
+      "failure_scenario": "compute() 新增了 dispatchSize 形参，但与之配对的异步入口 computeAsync( computeNodes )（第 2412-2416 行）既不接收也不转发该参数；而 compute() 在渲染器尚未初始化时（第 2318-2323 行）会打印告警后转调 `this.computeAsync( computeNodes )`。因此 `renderer.compute( node, [ x, y, z ] )` 在初始化前调用时，显式派发尺寸被无提示丢弃，计算按自动 dispatchCount 派发，与调用者意图不符却毫无报错；同时 API 一致性上，该特性只能通过同步入口使用，而 compute 的告警文案又明确引导用户改用 computeAsync，使异步调用者无法使用新参数。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.66,
+      "rule": "API-CONTRACT-001"
+    },
+    {
+      "file": "src/nodes/gpgpu/ComputeNode.js",
+      "line": 233,
+      "summary": "重载分支把 count 置 null，updateDispatchCount 得到 0 导致计算静默不执行",
+      "failure_scenario": "新的重载逻辑在第二个参数是数组时执行 `count = null;`，随后把 null 传给 ComputeNode；构造器末尾（第 98 行）调用 updateDispatchCount()，其中 `this.dispatchCount = Math.ceil( count / size )` 对 null 求值得到 0。于是 `compute( node, [ 64, 1, 1 ] )` 创建出的节点 dispatchCount 恒为 0；一旦调用方没有在 renderer.compute 上显式传 dispatchSize（包括 ComputeNode.updateBefore 内部固定调用 `renderer.compute( this )` 的自动更新路径，以及上面提到的 computeAsync 路径），WebGPUBackend 回退分支就会用 `dispatchSize.x = computeNode.dispatchCount` 派发 0 个 workgroup。WebGPU 对 0 是合法调用，只会产生零个调用实例，计算静默不执行且没有任何告警或异常；同时该节点的 updateDispatchCount() 之后也无法自行恢复（count 仍为 null），只能靠外部重新设置 count。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "EDGE-CASE-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\mrdoob__three.js\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\mrdoob__three.js@b55b9e9.diff\n  caseId              mrdoob__three.js@b55b9e9\n  --issue             (未传)\n  --taskId            mrdoob__three.js@b55b9e9\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 3 / not-reached 3（no-signal=3）\nreview-pi: 覆盖补漏 请求 4（失败 0）/ 覆盖 hunk 3/6 / 新候选 0 / no-issue 3 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 394.3s · 模型调用 12 次 · token 输入 16,528（未命中） · 输出 23,611 · 缓存命中 199,680（92.4%） · 工具 13 次（主会话 13 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0095\n[time] 阶段耗时 | 总墙钟 395.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.2%)\n[time] 阶段 | 六阶段审计 157.8s (40.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 236.6s (59.9%)\n[time] 审计明细 | P1 8.0s (5.1%) | P2 5.8s (3.7%) | P3 5.7s (3.6%) | P4 79.5s (50.4%) | P5 47.9s (30.4%) | P6 10.8s (6.8%)\n[usage] 任务总计 | 模型调用 19 次（Agent 12 + 一次性 7） | token 输入 22,537（未命中） | 输出 59,197 | 缓存命中 201,984（90.0%） | $0.0203\n[usage] 一次性明细 | 覆盖补漏 7 次（输入 6,009 / 输出 35,586 / 缓存 2,304）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\mrdoob__three.js@b55b9e9\\audit\\20261127_043203_373.json",
+  "token_usage": {
+    "input_tokens": 22537,
+    "output_tokens": 59197,
+    "cache_read_input_tokens": 201984
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 16528,
+      "output_tokens": 23611,
+      "cache_read_input_tokens": 199680
+    },
+    "coverage_repair": {
+      "input_tokens": 6009,
+      "output_tokens": 35586,
+      "cache_read_input_tokens": 2304
+    }
+  }
+}

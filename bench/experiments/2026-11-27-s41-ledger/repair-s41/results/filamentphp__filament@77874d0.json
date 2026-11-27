@@ -1,0 +1,84 @@
+{
+  "instance_id": "filamentphp__filament@77874d0",
+  "repo": "filamentphp/filament",
+  "base_commit": "753ceeac007a0d0aa4423971b01d651288720873",
+  "head_commit": "77874d0c3782a257101c3fb578144a6950f3dc9c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 190.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 79,
+      "summary": "reject/unique 后的 Collection 保留原键，直取 [0] 会取到未定义键导致导出任务失败",
+      "failure_scenario": "$originalOrders 由 collect(...)->reject(...)->unique('column') 得到，而 Laravel 的 reject 与 unique 都会保留原始键，不会重建 0 起的连续索引。因此第 78 行的 ! empty($originalOrders->all()) 只保证元素个数非零，并不保证键 0 存在：当查询的第一条排序项正是被 reject 剔除的 $qualifiedKeyName（例如默认表查询由 applyDefaultSortingToTableQuery 写入 orderBy($model->getQualifiedKeyName())，用户再通过 modifyQueryUsing 追加一条排序），reject 后键变成 [1, 2, ...]，第 79 行的 $originalOrders[0]['column'] 会触发 PHP 8 的 Undefined array key 警告，Laravel 异常处理器将其中转为 ErrorException，整个 CSV 导出 job 直接失败；同时第 80 行的 forget(0) 删不到任何元素，后续 foreach 会把已 reorder 的那条排序项再追加一次，造成排序子句重复。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "CORRECTNESS-COLLECTION-INDEX-001"
+    },
+    {
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 79,
+      "summary": "首条排序项可能是 raw 排序（无 column/direction 键），直接取值会崩溃",
+      "failure_scenario": "同一方法内其它位置都按“排序项可能缺少 column/direction”来防御：第 72 行用 $order['column'] ?? null，第 86 行用 blank($order['column'] ?? null) 跳过不完整项。但新增的第 79 行直接读 $originalOrders[0]['column'] 与 ['direction']，没有任何键存在性判断。当用户通过 Exporter::modifyQuery / modifyQueryUsing 追加 orderByRaw(...)（Laravel 记录的排序项形如 ['type' => 'Raw', 'sql' => ...]，不含 column/direction）且它恰好是首条排序时，第 72 行的 reject 不会剔除它（$order['column'] ?? null 为 null），于是第 79 行触发 Undefined array key \"column\" 警告并转为 ErrorException，导出 job 失败；即使不抛异常，reorder(null, null) 也会因 direction 非法被 Laravel 的 orderBy 校验抛 InvalidArgumentException。改动前这类 raw 排序项会在 foreach 中被 blank(...) 跳过（虽然被丢弃，但不会让整个导出崩掉）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 153,
+      "summary": "distinct 改为按首条排序列条件化，非主键排序时不再去重，导出可能出现重复行",
+      "failure_scenario": "改动前 $baseQuery 无条件 distinct($qualifiedKeyName)；改动后只有当 $query->getQuery()->orders[0]['column'] 为主键列时才去重。对 MySQL/SQLite 等驱动而言，只要表查询按非主键列排序（例如 defaultSort('name') 或点击列头排序后导出），distinct 就完全不生效。对于带 join 的表查询（导出查询来自 getTableQueryForExport，可含用户 join 或关系列子查询），旧逻辑至少能去掉完全重复的行，新逻辑会把这些重复行原样写入 CSV；同时 ExportCsv 侧用 $query->find($records) 按主键取回记录，重复主键会被合并，使 processed_rows 与 total_rows 的口径进一步失真。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-DISTINCT-001"
+    },
+    {
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 82,
+      "summary": "不再追加主键 tiebreaker，非唯一排序下 chunk 偏移分页可能重复或遗漏记录",
+      "failure_scenario": "改动前 pgsql 分支总是先 reorder($qualifiedKeyName)，再追加其余排序项，因此最终 ORDER BY 一定以主键开头，偏移分页是确定性的。改动后只要存在原始排序，就用原始首条排序列作为首排序、其余按序追加，主键不再作为兜底 tiebreaker 出现在任何位置；而后续分块走的是 $baseQuery->chunk()（偏移分页，见 168-173 行）。当排序值存在重复（如按 name/created_at 排序、大量同值行）时，pgsql 对相同排序键的行不保证稳定顺序，多次 chunk 查询之间可能出现某行被返回两次（同一主键进入两个 ExportCsv job）或某些行被跳过，最终 CSV 出现重复或缺行，且与 total_rows 不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-ORDER-001"
+    },
+    {
+      "file": "packages/actions/src/Exports/Jobs/PrepareCsvExport.php",
+      "line": 72,
+      "summary": "不再剔除未限定主键列名排序，join 查询会生成歧义列引用",
+      "failure_scenario": "reject 的过滤集合从 [$keyName, $qualifiedKeyName] 收窄为 [$qualifiedKeyName]，于是用户写的 orderBy('id')（未限定列名）会继续留在 orders 中，并被第 79 行的 reorder('id', $direction) 放到排序首位。当导出查询包含 join（表查询可含用户 join，或多个表都有 id 列）时，生成的 SQL 中 order by id 成为歧义引用，pgsql 报 column reference \"id\" is ambiguous、MySQL 报 Column 'id' in order clause is ambiguous，导出任务直接失败；改动前该排序项会被剔除，查询仍可正常执行。另外第 153 行的 distinct 判定也把未限定的 $keyName 视为主键，pgsql 下生成 distinct on (\"users\".\"id\") ... order by id，歧义时同样报错。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\filamentphp__filament\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\filamentphp__filament@77874d0.diff\n  caseId              filamentphp__filament@77874d0\n  --issue             (未传)\n  --taskId            filamentphp__filament@77874d0\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 188.1s · 模型调用 18 次 · token 输入 14,637（未命中） · 输出 28,206 · 缓存命中 268,800（94.8%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0107\n[time] 阶段耗时 | 总墙钟 188.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.3%)\n[time] 阶段 | 六阶段审计 188.0s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 4.7s (2.5%) | P2 2.4s (1.3%) | P3 12.9s (6.9%) | P4 94.3s (50.2%) | P5 65.9s (35.1%) | P6 7.7s (4.1%)\n[usage] 任务总计 | 模型调用 19 次（Agent 18 + 一次性 1） | token 输入 18,064（未命中） | 输出 31,931 | 缓存命中 268,800（93.7%） | $0.0122\n[usage] 一次性明细 | 解析修复 1 次（输入 3,427 / 输出 3,725 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\filamentphp__filament@77874d0\\audit\\20261127_042351_965.json",
+  "token_usage": {
+    "input_tokens": 14637,
+    "output_tokens": 28206,
+    "cache_read_input_tokens": 268800
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 14637,
+      "output_tokens": 28206,
+      "cache_read_input_tokens": 268800
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

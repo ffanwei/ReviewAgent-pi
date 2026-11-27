@@ -2,7 +2,7 @@
 
 > 分支：`exp-repo-review`（从 `exp-flow` @ `09870c7` 切出）
 > 状态：active
-> 更新：2026-11-24
+> 更新：2026-11-27
 > 设计依据：R-01 待产出 `docs/design/全仓扫描-方案与契约.md`
 > 约定：每个任务一个目录 `issues/<task-id>/`，内含 `ticket.md`（详情票）与 `discussion.md`（讨论归档）；本文件只做索引、状态与验收证据。
 
@@ -84,6 +84,7 @@
 | R-05b | 覆盖账本与结果契约 | R-05 只完成 schema，coverage 仍是 MR hunk 账本 | P0 | DONE | 文件三态；失败 / 跳过 / 超预算归因；三态之和 = selected；`repo-review-result.json` | 2026-11-25 完成：`coverage.ts` 文件级三态 + 稳定 reason + CLI 计数；全包 1280 passed / 1 skipped；真实 smoke selected=2/candidate=2；区域级与 budget 归因留后续 | [票](issues/R-05b-repo-coverage/ticket.md) · [讨论](issues/R-05b-repo-coverage/discussion.md) |
 | R-06 | 全仓评测集与基线 | 现有 iterF91 / AACR 是 MR + diff GT | P1 | DONE | 全仓对照口径成文；precision / 耗时 / token 可复核；不与 MR 结果混报；召回留 R-06b | 2026-11-25 完成：我方 255/255 组（1,390 文件）、OCR 1,388 文件；报告 md/pdf；precision 0.82 vs 0.69（我方 120 条 / OCR 150 条抽样） | [票](issues/R-06-repo-eval/ticket.md) · — |
 | R-06b | 全仓召回评测 | 全仓没有逐行 GT，precision 不能推 recall | P2 | TODO | 冻结注入/回滚清单；recall + 注入文件 precision；不与自然召回混报 | 2026-11-25 决定暂缓：本轮不测 recall，后续可能做 | [票](issues/R-06b-recall/ticket.md) · [讨论](issues/R-06b-recall/discussion.md) |
+| R-06c | 仓级冻结评测集（R-06 v2 建议） | R-06 是单仓一次对照，公开基准只有 MR / diff 级，无法做回归 | P2 | TODO | 冻结仓库/范围/GT/配置/判官/基线；precision + recall + coverage + 成本可复跑；回归门禁可执行 | 2026-11-26 仅登记方案（定义、冻结项、答案来源、三层设计），决定**先不做**；无代码 / 脚本改动 | [票](issues/R-06c-repo-eval-freeze/ticket.md) · [讨论](issues/R-06c-repo-eval-freeze/discussion.md) |
 | R-07 | 增量扫描 | 全仓重扫成本高 | P2 | TODO | 同快照全量 vs 增量结果一致；缓存失效规则明确；审计记录命中 | 依赖 R-02、R-04；2026-11-25 决定暂缓，后续可能做 | [票](issues/R-07-incremental-scan/ticket.md) · [讨论](issues/R-07-incremental-scan/discussion.md) |
 | R-08 | 与多文件实验及主线的合并路径 | 三条实验线共享文件，长期分叉 | P1 | BLOCKED | 集成顺序与冲突面清单；共享文件改动清单；合并前回归范围 | 等 `exp-flow → main` 与 multifile 结论 | [票](issues/R-08-merge-path/ticket.md) · — |
 | R-09 | 持久化编排与总预算 | 单进程；253/255 内存停止后靠人工 `--files` 补跑 | P0 | DONE | `job.json` + `--resume`；kill 后续跑一致；临时 / 永久错误分流；`--max-total-tokens` | 2026-11-25 完成：job 清单 + hash 校验 + resume + 重试 + 总预算；全包 1290 passed / 1 skipped；真实 resume 8.4s 无模型请求；预算超出上界为在飞组数 | [票](issues/R-09-durable-scan-job/ticket.md) · [讨论](issues/R-09-durable-scan-job/discussion.md) |
@@ -95,6 +96,8 @@
 | R-15 | 跳过检视按文件上报 | 跳过路径只报首个文件，平台无法按文件登记 | P1 | DONE | 跳过路径按变更文件全集逐个上报空 tips；全仓零意见组同样逐文件 | 2026-11-25 完成：全包 1328 passed / 1 skipped，build / typecheck 通过；ADR-0119 | [票](issues/R-15-report-every-file-when-skipped/ticket.md) · — |
 | R-16 | Finding 路径修复 | 模型路径少量字符错误 → 读不到源码行，意见丢失 | P0 | DONE | 按已知文件全集修 `Finding.file`；唯一最佳才修；覆盖 / 落盘 / 报文统一用修复值 | 2026-11-25 完成：新增 `finding/path-repair.ts` + 9 单测 + repo 集成测试；ADR-0120 | [票](issues/R-16-finding-path-repair/ticket.md) · — |
 | R-17 | 大文件入口与上限调整 | 60–100k 文件被 selected 后 `group-too-large`，从未送检 | P1 | DONE | 缺省改 5 文件 / 80k 组 / 120k 文件；单文件超组上限时单独成组（soloLarge）；>120k 仍显式跳过 | 2026-11-26 完成：group / dry-run / config 单测；设计文档与流程图更新；ADR-0121 | [票](issues/R-17-large-file-solo/ticket.md) · — |
+| R-18 | LLM 用量账本（单一写入点 + 落盘） | token 统计分散在调用方；repo 漏记一次性 / 失败 attempt，PR reply-repair 双计 | P0 | DONE | 调用边界单点记账；审计 / CLI / repo / job / run.json 只读投影；真实实例总账相等 | 2026-11-27 完成：commit `337889f`；真实 multilang 仓 4 组一致；cline / gofr 日志总账 = `audit.usage + coverageRepair.usage`；全包 1360 passed / 1 skipped | [票](issues/R-18-usage-ledger/ticket.md) · [讨论](issues/R-18-usage-ledger/discussion.md) |
+| R-19 | 离线回放 trace 维护 | 提示词变更后六条 trace 全 miss；长路径规则 Skill 缓存根未归一化 | P1 | DONE | `test:replay` 6/6；trace 响应与期望不变 | 2026-11-27 完成：commit `8653f8b`；旧响应作确定性上游重录；注册 `<rule-skill-cache>` 归一化 | [票](issues/R-19-replay-trace-maintenance/ticket.md) · [讨论](issues/R-19-replay-trace-maintenance/discussion.md) |
 
 ## 当前焦点
 
@@ -116,7 +119,10 @@
 - [x] **R-15 跳过检视按文件上报**：完成；跳过路径按变更文件全集逐个发空 tips，全仓零意见组同样逐文件。
 - [x] **R-16 Finding 路径修复**：完成；按已知文件全集修正少量字符错误，唯一最佳才修；ADR-0120。
 - [x] **R-17 大文件入口与上限调整**：完成；缺省 5 文件 / 80k 组 / 120k 文件，单文件超组上限时单独成组（soloLarge）；ADR-0121。
+- [x] **R-18 LLM 用量账本**：完成；调用边界单点记账，审计 / CLI / repo / job / run.json 只读投影；真实实例总账相等。
+- [x] **R-19 回放 trace 维护**：完成；六条 trace 重录，长路径技能缓存根归一化；`test:replay` 6/6。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
+- [ ] **R-06c 冻结评测集**：方案已记录（定义、冻结项、答案来源、三层设计）；2026-11-26 决定先不做。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
 
 ## 变更记录
@@ -142,3 +148,7 @@
 - 2026-11-26：R-17 完成；缺省调整为 5 文件 / 80k 组 / 120k 文件，单文件超 `maxGroupChars` 时单独成组（`soloLarge`），不再整文件跳过；>120k 仍显式跳过；ADR-0121。
 - 2026-11-26：设计文档 §4.2.1 补 v3 91 条单次文件数依据：1–10 文件稳定，11–20 开始下滑；5 文件缺省不变。
 - 2026-11-26：设计文档新增 §4.5 六阶段 / 规则 Skill 与 §4.6 全仓 token 策略，并补图 5 / 图 6。
+- 2026-11-26：登记 R-06c「仓级冻结评测集（R-06 v2 建议）」；记录冻结项、标准答案来源与三层 GT 设计，决定**先不做**，仅留方案。
+- 2026-11-27：R-18 完成；`UsageLedger` 成为 LLM 调用的唯一写入点，审计 / CLI / repo 组 / job / run.json 只读投影；真实 multilang 仓与 cline / gofr 两个 PR 总账相等；全包 1360 passed / 1 skipped。
+- 2026-11-27：R-19 完成；六条 replay trace 重录，修复 Windows 长路径规则 Skill 缓存根未归一化；`test:replay` 6/6。
+- 2026-11-27：iterS41 四臂归档 `bench/experiments/2026-11-27-s41-ledger/`：no-repair P41.7/R28.0/B33.5，repair P39.8/R30.1/B34.3（非缓存 +25.5%，墙钟 +30.2%）；`maxRequests` 维持 8，两候选提示词 A/B 本轮不做。

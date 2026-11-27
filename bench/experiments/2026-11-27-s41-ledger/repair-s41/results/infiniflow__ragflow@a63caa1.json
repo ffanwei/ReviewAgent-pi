@@ -1,0 +1,64 @@
+{
+  "instance_id": "infiniflow__ragflow@a63caa1",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "0a42e5777eb966b26aaf8f2a7d593ae99a4aa87a",
+  "head_commit": "a63caa1087852ada98964678be26b7c4d8363af6",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 131.1,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "graphrag/entity_resolution.py",
+      "line": 114,
+      "summary": "修复取节点方式后，lambda 晚绑定使多连通分量仍只合并最后一个分组并抛 KeyError",
+      "failure_scenario": "第 114 行把 sub_connect_graph.nodes 改成 list(sub_connect_graph)，确实修掉了 nx.connected_components 返回集合没有 .nodes 属性的 AttributeError，使这段代码第一次真正被执行；但紧随其后的 nursery.start_soon(lambda: self._merge_graph_nodes(graph, merging_nodes, change)) 仍按引用捕获循环变量 merging_nodes。trio 的子任务要等父任务到达 checkpoint（即退出 async with nursery 块）才真正开始执行，而此时 for 循环已结束，所有闭包看到的都是最后一次迭代的分量。结果是：当 resolution_result 形成多个连通分量时，只有最后一个分量会被（多次）合并，其余分量的节点永远不会被归一化；更严重的是第二个及后续任务会再次处理同一批节点，而前一个任务已经在 _merge_graph_nodes 末尾 remove_node 掉 nodes[1:]，再次执行 graph.nodes[node1] 会抛 KeyError，使整个实体归一化/图谱落库流程（index.py:249 处的 change 会进入 set_graph）中断。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "graphrag/utils.py",
+      "line": 442,
+      "summary": "删除已移除关系由并发提交改为循环内逐条 await，图谱落库耗时线性放大且 nursery 变空壳",
+      "failure_scenario": "原实现用 nursery.start_soon 为每条被移除的关系并发提交删除任务（虽然存在闭包晚绑定缺陷），本次改为在 for 循环内 await trio.to_thread.run_sync(...)。由于 await 在循环内逐次完成，N 条 removed_edges 会变成 N 次串行的线程池排队 + 网络往返；而 settings.docStoreConn.delete 是同步阻塞的 ES/Infinity 删除调用，实体归一化后 removed_edges 规模可能很大，set_graph 又是每次文档合并/实体归一化都会走的路径，因此知识库图谱写入的尾部延迟会随归一化规模线性增长。同时第 440 行保留的 async with trio.open_nursery() as nursery 里已经没有任何 start_soon/start 调用，nursery 成为无子任务的空壳，既无并发语义也容易让后续维护者误以为删除仍是并发的。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.72,
+      "rule": "PERF-CONCURRENCY-001"
+    },
+    {
+      "file": "graphrag/general/extractor.py",
+      "line": 204,
+      "summary": "节点合并时漏合并 keywords 字段，导致关键字信息丢失",
+      "failure_scenario": "旧代码在 for attr in [\"keywords\", \"source_id\"] 循环中同时处理 keywords 与 source_id 两个属性；本次修改虽然修正了 list.extend 返回 None 导致 sorted(set(None)) 抛 TypeError 的缺陷，但把循环改成只处理 source_id，node0_attrs[\"keywords\"] 从此不再合并 node1_attrs[\"keywords\"]。合并路径上 node1 被删除（change.removed_edges 等），其 keywords 会随节点删除而永久丢失，同一实体的关键字集合出现数据不一致。若关键词字段确已废弃应同步移除字段定义与下游读取，否则应在修复 extend 语义的同时保留 keywords 的合并。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "合并两个节点时应保证被合并节点的全部业务属性都被归并到保留节点，避免数据丢失"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\infiniflow__ragflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\infiniflow__ragflow@a63caa1.diff\n  caseId              infiniflow__ragflow@a63caa1\n  --issue             (未传)\n  --taskId            infiniflow__ragflow@a63caa1\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 1（失败 0）/ 覆盖 hunk 1/2 / 新候选 1 / no-issue 0 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 129.9s · 模型调用 11 次 · token 输入 13,659（未命中） · 输出 12,531 · 缓存命中 141,056（91.2%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0058\n[time] 阶段耗时 | 总墙钟 130.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 101.0s (77.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 28.9s (22.2%)\n[time] 审计明细 | P1 13.5s (13.4%) | P2 5.8s (5.8%) | P3 7.8s (7.7%) | P4 44.6s (44.1%) | P5 18.3s (18.1%) | P6 11.0s (10.9%)\n[usage] 任务总计 | 模型调用 13 次（Agent 11 + 一次性 2） | token 输入 16,524（未命中） | 输出 16,507 | 缓存命中 141,056（89.5%） | $0.0073\n[usage] 一次性明细 | 覆盖补漏 2 次（输入 2,865 / 输出 3,976 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\infiniflow__ragflow@a63caa1\\audit\\20261127_042952_156.json",
+  "token_usage": {
+    "input_tokens": 16524,
+    "output_tokens": 16507,
+    "cache_read_input_tokens": 141056
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 13659,
+      "output_tokens": 12531,
+      "cache_read_input_tokens": 141056
+    },
+    "coverage_repair": {
+      "input_tokens": 2865,
+      "output_tokens": 3976,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

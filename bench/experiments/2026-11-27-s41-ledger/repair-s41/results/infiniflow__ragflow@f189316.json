@@ -1,0 +1,74 @@
+{
+  "instance_id": "infiniflow__ragflow@f189316",
+  "repo": "infiniflow/ragflow",
+  "base_commit": "8362ab405c35d260dd2328dc207aefcf30778f66",
+  "head_commit": "f189316eae1c199a5891f7a8bc47d53bb1b5c818",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 409.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 580,
+      "summary": "remove 标量分支未从 newValue 中删除 remove 键，导致按不存在的列名执行 update 并跳过连接释放",
+      "failure_scenario": "当 newValue 为 {\"remove\": \"pagerank_fea\"}（标量字符串形式）时，新增的标量分支只把列默认值写回 newValue[v]，但不像字典分支那样执行 del newValue[k]，因此 \"remove\" 键会残留到函数末尾的 table_instance.update(filter, newValue) 中，被当作列名提交给 Infinity 而报“列不存在”异常；异常抛出后第 610 行的 connPool.release_conn(inf_conn) 不会执行，连接池连接被泄漏。唯一走该分支的调用方 api/apps/kb_app.py:122（把知识库 pagerank 改回 0）没有 try/except 包裹，会直接返回 500，且每次重试再泄漏一条连接。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 577,
+      "summary": "用 str.find 的返回值做布尔判断使类型分支恒为真，整型列默认值被改写成空字符串",
+      "failure_scenario": "`if ty.lower().find(\"cha\"):` 中 find 未命中返回 -1（真值）、命中返回下标（varchar 命中 \"cha\" 时为 3，同样真值），条件几乎恒为真，字符/非字符类型判断完全失效。对 integer/float 列（典型如 pagerank_fea，conf/infinity_mapping.json:32 定义为 integer、默认 0），de=0 为假值，会被改写成 \"\"，随后第 580 行把空字符串写入整型列，导致类型校验失败或落库脏值；该分支正是 kb_app.py:122 清零 pagerank 时唯一会走到的路径。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 552,
+      "summary": "update 中重复调用 show_columns 拉取列元数据，每次更新多一次元数据往返",
+      "failure_scenario": "新增代码在 update 开头为收集列默认值再次遍历 table_instance.show_columns().rows()，而紧接着调用的 equivalent_condition_to_str(condition, table_instance) 内部（第 53-56 行）已对同一张表做过完全相同的元数据收集，两次结果一致却互不复用。update 在 rm_tags 这类按标签逐个调用的流程里会被连续触发，每次更新都多一次 Infinity 元数据往返与全列解析，属于本变更引入的重复开销。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.55,
+      "rule": "PERFORMANCE-001"
+    },
+    {
+      "file": "rag/utils/infinity_conn.py",
+      "line": 84,
+      "summary": "标量关键字字段拼入 filter_fulltext 时未转义单引号，而列表分支做了转义",
+      "failure_scenario": "Hunk 2 新增的 field_keyword 分支中，列表路径对每个字符串元素执行 item.replace(\"'\",\"''\") 后再拼接 filter_fulltext，但 else 标量路径直接 f\"filter_fulltext('{k}', '{v}')\" 把 v 原样插入查询串。当 v 为包含单引号或 Infinity 全文检索语法字符（括号、逗号、AND/OR 等）的字符串时，生成的过滤条件会被截断或解析失败，导致查询报错、过滤条件被绕过（注入），以及标量与列表两条路径对同一字段行为不一致。source_id、各种 *_kwd 字段是最常见的标量传入路径，触发概率高。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.75,
+      "rule": "拼接查询/过滤表达式时，所有来自外部的字符串值必须做同等的引号与语法字符转义，不同代码路径的转义策略需保持一致"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\infiniflow__ragflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\diff\\infiniflow__ragflow@f189316.diff\n  caseId              infiniflow__ragflow@f189316\n  --issue             (未传)\n  --taskId            infiniflow__ragflow@f189316\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2-repair.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 5 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 6/8 / 新候选 1 / no-issue 5 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 406.5s · 模型调用 25 次 · token 输入 22,655（未命中） · 输出 37,099 · 缓存命中 925,056（97.6%） · 工具 30 次（主会话 30 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0161\n[time] 阶段耗时 | 总墙钟 407.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.3%)\n[time] 阶段 | 六阶段审计 262.4s (64.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 144.2s (35.4%)\n[time] 审计明细 | P1 206.3s (78.6%) | P2 4.3s (1.6%) | P3 5.4s (2.1%) | P4 15.2s (5.8%) | P5 25.0s (9.5%) | P6 6.2s (2.3%)\n[usage] 任务总计 | 模型调用 30 次（Agent 25 + 一次性 5） | token 输入 29,809（未命中） | 输出 57,862 | 缓存命中 926,848（96.9%） | $0.0230\n[usage] 一次性明细 | 覆盖补漏 5 次（输入 7,154 / 输出 20,763 / 缓存 1,792）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41\\reviewpi\\exp-repo-review-iterS41-repair-20261127\\.reviewpi\\tasks\\infiniflow__ragflow@f189316\\audit\\20261127_042304_274.json",
+  "token_usage": {
+    "input_tokens": 29809,
+    "output_tokens": 57862,
+    "cache_read_input_tokens": 926848
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 22655,
+      "output_tokens": 37099,
+      "cache_read_input_tokens": 925056
+    },
+    "coverage_repair": {
+      "input_tokens": 7154,
+      "output_tokens": 20763,
+      "cache_read_input_tokens": 1792
+    }
+  }
+}

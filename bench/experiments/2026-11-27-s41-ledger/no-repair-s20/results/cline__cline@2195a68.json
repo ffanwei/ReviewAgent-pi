@@ -1,0 +1,52 @@
+{
+  "instance_id": "cline__cline@2195a68",
+  "repo": "cline/cline",
+  "base_commit": "398bc87a64800e021966868243be2f09be72e73c",
+  "head_commit": "2195a689b787a963bdacc35d348f4590c30a2692",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 110.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/extension.ts",
+      "line": 312,
+      "summary": "state 不匹配不再拒绝，认证回调可被构造链接劫持（登录 CSRF/令牌注入）",
+      "failure_scenario": "原实现对 state 与 authNonce 不匹配的回调直接报错并 return，是硬性拒绝；本次改为弹出「Store token returned from /auth」警告后即可继续调用 controller.handleAuthCallback(token, provider)，而该函数会把传入 token 交给 FirebaseAuthProvider.signIn、置 _authenticated=true 并写入全局 apiProvider=cline。攻击者只需诱导用户打开 vscode://saoudrizwan.claude-dev/auth?idToken=<攻击者自备的 Firebase 自定义令牌>&state=anything，用户在弹窗中点击「Store」后，受害者编辑器就会以攻击者身份登录（受害者后续对话、代码片段、API 调用都会进入攻击者账号），或反向破坏用户原有登录态；弹窗文案仅显示固定的 uri.path（恒为 /auth），没有说明风险，用户极易误点确认。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.85,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "src/extension.ts",
+      "line": 318,
+      "summary": "弹窗被 Esc 或关闭时 userConfirmation 为 undefined，state 不匹配仍继续存储令牌",
+      "failure_scenario": "vscode.window.showWarningMessage 在用户关闭通知（Esc 或点右上角关闭）时返回 undefined，而新增代码只用 `userConfirmation === \"Cancel\"` 判断是否中断。因此只要用户不选任何按钮地关掉弹窗，流程就会落入后续 token 存储分支，等价于跳过确认——校验在最常见的交互下自动放行，且日志中只记录用户选择 Cancel 的情况，无法事后审计。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.86,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "src/services/auth/AuthService.ts",
+      "line": 33,
+      "summary": "authNonce 改为构造时生成的固定常量且不再重置，state 失去一次性语义",
+      "failure_scenario": "_authNonce 现在是字段初始化器生成的 readonly 常量，在整个扩展生命周期（AuthService 单例）内保持不变；createAuthRequest 也不再每次登录重新生成，resetAuthNonce 被删除，成功登录后 nonce 永不清空。因此每次登录下发的 state 都是同一个值：该值会随返回给 webview 的 authUrl（createAuthRequest 返回值）以及 extension.ts 中的 console.log 出现在日志/浏览器历史里，一旦泄露即永久有效，任何人拿到它都能让后续回调通过 state 校验；同一 state 也可被重放，无法区分不同登录会话，Controller.validateAuthState 的返回值也不再具备「本次登录有效」的含义。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.78,
+      "rule": "SECURITY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\diff\\cline__cline@2195a68.diff\n  caseId              cline__cline@2195a68\n  --issue             (未传)\n  --taskId            cline__cline@2195a68\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 105.5s · 模型调用 12 次 · token 输入 12,082（未命中） · 输出 14,298 · 缓存命中 141,440（92.1%） · 工具 14 次（主会话 14 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0061\n[time] 阶段耗时 | 总墙钟 106.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.1s (1.1%)\n[time] 阶段 | 六阶段审计 105.5s (98.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.2%)\n[time] 审计明细 | P1 5.2s (4.9%) | P2 2.8s (2.6%) | P3 4.8s (4.6%) | P4 25.5s (24.2%) | P5 59.7s (56.6%) | P6 7.5s (7.1%)\n[usage] 任务总计 | 模型调用 13 次（Agent 12 + 一次性 1） | token 输入 14,003（未命中） | 输出 17,756 | 缓存命中 141,440（91.0%） | $0.0073\n[usage] 一次性明细 | 解析修复 1 次（输入 1,921 / 输出 3,458 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS20\\reviewpi\\exp-repo-review-iterS20-dupfix-20261126\\.reviewpi\\tasks\\cline__cline@2195a68\\audit\\20261126_123433_584.json",
+  "token_usage": {
+    "input_tokens": 12082,
+    "output_tokens": 14298,
+    "cache_read_input_tokens": 141440
+  }
+}

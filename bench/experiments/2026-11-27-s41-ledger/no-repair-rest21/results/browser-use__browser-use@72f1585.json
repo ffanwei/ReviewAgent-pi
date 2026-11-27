@@ -1,0 +1,62 @@
+{
+  "instance_id": "browser-use__browser-use@72f1585",
+  "repo": "browser-use/browser-use",
+  "base_commit": "e85a547378b236c9788802d28e816f10940a7e53",
+  "head_commit": "72f1585f9add5b72e829eaee3b5bff684e0b08d3",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 136.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 202,
+      "summary": "thinking_config 被硬编码为 -1，用户传入的 thinking_budget 完全失效",
+      "failure_scenario": "构造请求 config 时把 thinking_config 固定写成 {'thinking_budget': -1}，不再读取 self.thinking_budget；同时本 MR 把 thinking_budget 默认值由 None 改为 0（0 is not None 恒为真），因此任何 ChatGoogle 实例都会无条件写入并下发该 thinking_config。后果是：调用方 ChatGoogle(thinking_budget=0)（本意关闭思考）实际得到 -1（Gemini 语义为动态思考/开启思考），延迟显著上升且思考 token 会被计入 completion_tokens（_get_usage 中 thoughts_token_count 累加）从而抬高成本；此外用户在 config={'thinking_config': ...} 中显式配置的值被本行无条件覆盖，配置覆盖顺序被破坏。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 78,
+      "summary": "thinking_budget 默认值改为 0 使 thinking_config 对所有模型无条件下发",
+      "failure_scenario": "默认值由 None 变为 0 后，`if self.thinking_budget is not None` 恒成立，任何 ChatGoogle 实例的请求都会携带 thinking_config。但 gemini-2.0-flash、gemini-2.0-flash-exp、gemma-3-* 等不支持思考配置的模型收到该字段后会返回 400 INVALID_ARGUMENT，而这些正是仓库内直接构造的既有用法：CLI 对任意 gemini* 模型名都调用 ChatGoogle 且不传 thinking_budget，测试也使用 ChatGoogle(model='gemini-2.0-flash')。默认路径因此从“不下发”变为“总是下发”，属本次变更引入的兼容性回归。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "COMPAT-001"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 384,
+      "summary": "删除 10 次手动重试且未配置任何替代重试，429/503 将立即失败",
+      "failure_scenario": "本 MR 删除了原有的 10 次重试加指数退避循环（delay = min(60.0, 1.0 * 2**attempt)）与 _is_retryable_error 判定，改为注释所称的“Let Google client handle retries internally / using built-in retry”，但 get_client() / _get_client_params() 只传递 api_key、vertexai、credentials、project、location、http_options，从不设置 retry_options/HttpRetryOptions，仓库内也检索不到任何 retry 配置。上层 Agent 同样没有 provider 错误重试（_get_model_output_with_retry 只在模型返回空 action 时追加澄清消息再次调用，捕获不到 ModelProviderError）。因此原先可自愈的瞬时 429（Resource Exhausted）或 503（Service Unavailable）现在会立刻抛出 ModelProviderError 并中断整个 agent step。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-001"
+    },
+    {
+      "file": "browser_use/llm/google/chat.py",
+      "line": 393,
+      "summary": "except Exception 内的 asyncio.CancelledError 判断永不可达，超时诊断分支为死代码",
+      "failure_scenario": "新增的超时诊断只有在 error_message 含 'timeout'/'cancelled' 且 `isinstance(e, asyncio.CancelledError)` 时生效，但外层是 `except Exception`；Python 3.8+ 的 CancelledError 继承 BaseException，不会被捕获，因此该判断恒为 False，504 诊断文案永不输出。真实超时路径是 Agent 用 asyncio.wait_for(..., timeout=llm_timeout) 取消 LLM 协程，此时 CancelledError 会直接穿过 ainvoke（str(CancelledError()) 为空串，也命中不了 'cancelled' 关键字），本方法只会落到别的分支，因此该诊断代码既不生效又误导维护者以为取消已被处理。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.78,
+      "rule": "MAINTAINABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\diff\\browser-use__browser-use@72f1585.diff\n  caseId              browser-use__browser-use@72f1585\n  --issue             (未传)\n  --taskId            browser-use__browser-use@72f1585\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 134.2s · 模型调用 18 次 · token 输入 23,089（未命中） · 输出 17,650 · 缓存命中 366,848（94.1%） · 工具 20 次（主会话 20 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0092\n[time] 阶段耗时 | 总墙钟 135.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.5%)\n[time] 阶段 | 六阶段审计 134.1s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 6.8s (5.1%) | P2 4.7s (3.5%) | P3 8.5s (6.3%) | P4 92.5s (68.9%) | P5 14.9s (11.1%) | P6 6.8s (5.0%)\n[usage] 任务总计 | 模型调用 18 次（Agent 18 + 一次性 0） | token 输入 23,089（未命中） | 输出 17,650 | 缓存命中 366,848（94.1%） | $0.0092\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\\browser-use__browser-use@72f1585\\audit\\20261127_031110_241.json",
+  "token_usage": {
+    "input_tokens": 23089,
+    "output_tokens": 17650,
+    "cache_read_input_tokens": 366848
+  }
+}

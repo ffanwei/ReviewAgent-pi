@@ -1,0 +1,52 @@
+{
+  "instance_id": "langflow-ai__langflow@9513d15",
+  "repo": "langflow-ai/langflow",
+  "base_commit": "d035e41e631f0da97bdc0e93e7afdae78d5e94da",
+  "head_commit": "9513d152197e5336fbc00eb6b891f1ffb25ad62d",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 122.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/backend/base/langflow/graph/vertex/base.py",
+      "line": 637,
+      "summary": "对已持有的 asyncio.Lock 再次加锁，_log_transaction_async 必然自死锁",
+      "failure_scenario": "`_log_transaction_async` 新增了 `async with self._lock:`（base.py:637），而它的 4 个调用点全部位于 `Vertex.get_result`（base.py:621 先 `async with self._lock` 再 await `_get_result`）的持锁区间内，且这里的 `self` 与 `get_result` 中持锁的 `self` 是同一个 Vertex 实例。`asyncio.Lock`（base.py:62）不可重入，因此只要 `self.graph.flow_id` 非空，`_get_result` 在 base.py:677/683（以及 vertex_types.py:110/149）await `_log_transaction_async` 时就会永久阻塞在第二次 `acquire()` 上，而锁的持有者正是当前协程自己，永不会释放。结果是任何走 `get_result` 的边遍历（`_build_vertex_and_update_params` → `get_result` → `_get_result`）都会挂起，整条 flow 执行卡死且不抛异常，只能等外部超时/取消；由于 flow_id 在图执行时通常非空，这是主干路径上的必现问题。",
+      "severity": "P0",
+      "category": "可靠性",
+      "confidence": 0.93,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "src/backend/base/langflow/graph/vertex/base.py",
+      "line": 643,
+      "summary": "把 fire-and-forget 的日志任务改为在结果读取路径上串行 await，增加每次取结果的延迟",
+      "failure_scenario": "变更前 `_log_transaction_async` 只 `create_task` 后立即返回，`log_transaction`（graph/utils.py:141-167，内部执行 `crud_log_transaction` 的数据库写入）完全在后台跑。变更后在 base.py:643 `await asyncio.gather(*tasks)` 会等待该 Vertex 之前所有未完成的交易日志（每次都是一次 DB 会话 + insert），而 `_log_transaction_async` 的 4 个调用点都在 `_get_result` 的返回路径上（base.py:683、vertex_types.py:149 为 success 分支），且调用时仍持有 `self._lock`。于是一个 Vertex 被多个后继按边反复 `get_result` 时，每次“读结果”都要串行等待前一次事务写入数据库完成，`get_result` 的响应时间被退化为 DB 写延迟，并在此期间阻塞同一 Vertex 的其他并发 `get_result` 调用（如多分支 fan-out 场景），显著拖慢图执行。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.72,
+      "rule": "PERF-ASYNC-002"
+    },
+    {
+      "file": "src/backend/base/langflow/graph/vertex/base.py",
+      "line": 649,
+      "summary": "gather 未隔离子任务的取消状态，历史日志任务的取消会向上传播并中断结果读取",
+      "failure_scenario": "base.py:640-649 先 `tasks = list(self.log_transaction_tasks)`、`clear()`，然后 `await asyncio.gather(*tasks)`；一旦其中任一任务已被取消（例如上一次进入 base.py:656-659 的取消分支时 `pending_task.cancel()` 把这些任务置为 cancelled，而 done 回调尚未把它们从集合中摘除），`gather` 会以 `CancelledError` 结束，被 644 行捕获后在 649 行重新 `raise`。该 `CancelledError` 会直接冒泡出 `_get_result`、`get_result`，使调用方正在进行的、与日志无关的结果读取被当作“被取消”而中断（`ComponentVertex._get_result` 的 success 分支因此拿不到本应返回的 result，上层构建被中止）。日志属于旁路副作用，其取消状态不应影响主流程。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "ASYNC-CANCEL-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\langflow-ai__langflow\n  --mr-diff           D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\diff\\langflow-ai__langflow@9513d15.diff\n  caseId              langflow-ai__langflow@9513d15\n  --issue             (未传)\n  --taskId            langflow-ai__langflow@9513d15\n  --tasks-dir         D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            C:\\Users\\Li\\.PiAgent\\benchmark-aacr-v2.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 105.7s · 模型调用 11 次 · token 输入 15,432（未命中） · 输出 12,192 · 缓存命中 115,456（88.2%） · 工具 12 次（主会话 12 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0059\n[time] 阶段耗时 | 总墙钟 120.1s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 14.4s (12.0%)\n[time] 阶段 | 六阶段审计 105.7s (88.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 10.6s (10.1%) | P2 2.4s (2.3%) | P3 10.1s (9.6%) | P4 33.5s (31.7%) | P5 41.1s (38.9%) | P6 7.8s (7.4%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 15,432（未命中） | 输出 12,192 | 缓存命中 115,456（88.2%） | $0.0059\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\aacr-bench\\evaluation\\results\\iterS41-rest21\\reviewpi\\exp-repo-review-rest21-dupfix-20261127\\.reviewpi\\tasks\\langflow-ai__langflow@9513d15\\audit\\20261127_030705_684.json",
+  "token_usage": {
+    "input_tokens": 15432,
+    "output_tokens": 12192,
+    "cache_read_input_tokens": 115456
+  }
+}
