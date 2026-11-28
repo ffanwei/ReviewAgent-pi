@@ -256,6 +256,20 @@ describe("parseCoverageRepairReply", () => {
     expect(parseCoverageRepairReply("not json", unit!).invalid).toBe(1);
     expect(parseCoverageRepairReply('{"items":[]}', unit!).invalid).toBe(1);
   });
+
+  test("receipts 内重复 kind 键折叠 → 整批 invalid=1，不静默接受少掉的回执", () => {
+    const ledger = buildCoverageLedger(DIFF);
+    const plan = planCoverageRepairUnits({ diff: DIFF, ledger, limits: LIMITS });
+    const unit = plan.units[0];
+    expect(unit).toBeDefined();
+    const collapsed =
+      '{"receipts":[{"kind":"no-issue","hunk":1,"reason":"a","evidence":["x"],' +
+      '"kind":"no-issue","hunk":2,"reason":"b","evidence":["y"]}]}';
+    const parsed = parseCoverageRepairReply(collapsed, unit!);
+    expect(parsed.noIssue).toHaveLength(0);
+    expect(parsed.candidates).toHaveLength(0);
+    expect(parsed.invalid).toBe(1);
+  });
 });
 
 describe("repairCoverageGaps", () => {
@@ -408,6 +422,46 @@ describe("repairCoverageGaps", () => {
       noIssue: 1,
       candidates: 0,
       acceptedFindings: 0,
+    });
+  });
+
+  test("补漏回执重复键折叠 → 重发一次后接受完整回执", async () => {
+    const ledger = buildCoverageLedger(DIFF_A);
+    let repairCalls = 0;
+    const fetch: FetchFunction = async () => {
+      repairCalls += 1;
+      if (repairCalls === 1) {
+        return completion(
+          '{"receipts":[{"kind":"no-issue","hunk":1,"reason":"a","evidence":["x"],' +
+            '"kind":"no-issue","hunk":2,"reason":"b","evidence":["y"]}]}',
+        );
+      }
+      return completion(
+        JSON.stringify({
+          receipts: [
+            {
+              kind: "no-issue",
+              hunk: 1,
+              reason: "纯格式化，行为不变",
+              evidence: ["+const b = 2;"],
+            },
+          ],
+        }),
+      );
+    };
+    const result = await repairCoverageGaps({
+      diff: DIFF_A,
+      ledger,
+      findings: [],
+      limits: { ...LIMITS, maxRequests: 10 },
+      llm: llm(fetch),
+    });
+    expect(repairCalls).toBe(2);
+    expect(result.audit).toMatchObject({
+      requests: 2,
+      failedRequests: 0,
+      hunksCovered: 1,
+      noIssue: 1,
     });
   });
 

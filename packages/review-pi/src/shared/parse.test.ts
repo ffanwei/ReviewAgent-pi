@@ -85,6 +85,26 @@ test("parseVerificationReply 的 complete 仅在严格 false 时请求下一轮�
   expect(parseVerificationReply('{"verdicts":[],"complete":null}').complete).toBe(true);
 });
 
+test("parseVerificationReply 检测重复键折叠：原文 3 个 id、解析 1 条 → duplicate-key", () => {
+  const collapsed =
+    '{"verdicts":[{"id":"F001","pass":true,"id":"F002","pass":false,"id":"F003","pass":true}],"complete":true}';
+  const out = parseVerificationReply(collapsed);
+  expect(out.verdicts.size).toBe(0);
+  expect(out.complete).toBe(false);
+  expect(out.failure).toBe("duplicate-key");
+  expect(out.note).toContain("3 个 id");
+  expect(out.note).toContain("1 条");
+});
+
+test("parseVerificationReply 只统计最后一个 verdicts 块，示例块不误判", () => {
+  const text =
+    '示例：{"verdicts":[{"id":"F001","pass":true},{"id":"F002","pass":true}]}。' +
+    '结果：{"verdicts":[{"id":"F001","pass":true}],"complete":true}';
+  const out = parseVerificationReply(text);
+  expect(out.verdicts.size).toBe(1);
+  expect(out.failure).toBeUndefined();
+});
+
 test("parseVerificationReply 跳过畸形 verdict 条目并留痕", () => {
   const out = parseVerificationReply(
     '{"verdicts":[{"id":"F001","pass":true},{"noId":true},{"id":"F002"}],"complete":true}',

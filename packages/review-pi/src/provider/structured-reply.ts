@@ -17,32 +17,18 @@
 
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
-import type { ModelJsonFailureKind } from "../contracts/run.js";
 import type { LlmUsage } from "../contracts/llm.js";
+import type { StructuredFailure, StructuredParse } from "../contracts/structured.js";
 import type { UsageScope } from "../observability/usage-ledger.js";
 import type { RetryPolicy } from "../shared/llm-retry.js";
 import { addUsage } from "./usage-map.js";
 import { completeOneShot, type OneShotPurpose } from "./one-shot-llm.js";
 
-export type StructuredFailureKind =
-  | "transport"
-  | ModelJsonFailureKind
-  | "schema"
-  | "semantic";
-
-export interface StructuredFailure {
-  readonly kind: StructuredFailureKind;
-  /** 人话诊断（写审计 / stderr；不携带 key） */
-  readonly note: string;
-  /** 最后一次模型回包（截断后）；仅用于诊断与修复提示 */
-  readonly raw?: string;
-}
-
-export interface StructuredParse<T> {
-  readonly ok: boolean;
-  readonly value?: T;
-  readonly failure?: StructuredFailure;
-}
+export type {
+  StructuredFailure,
+  StructuredFailureKind,
+  StructuredParse,
+} from "../contracts/structured.js";
 
 /** 单个 JSON 契约：解析 + 可选修复提示 */
 export interface StructuredCall<T> {
@@ -148,13 +134,13 @@ export async function invokeStructured<T>(
     if (parsed.ok) {
       return {
         ok: true,
-        value: parsed.value as T,
+        value: parsed.value,
         attempts,
         recoveries,
         ...(usage !== undefined ? { usage } : {}),
       };
     }
-    const failure = parsed.failure ?? { kind: "schema", note: "structured reply rejected" };
+    const failure = parsed.failure;
     if (attempt === maxRepairAttempts || failure.kind === "truncated") {
       return {
         ok: false,

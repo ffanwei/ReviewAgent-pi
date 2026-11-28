@@ -104,6 +104,19 @@ export function parseVerificationReply(content: string): VerificationParseResult
   let note: string | undefined;
   let failure: ModelJsonFailureKind | undefined;
   if (Array.isArray(record.verdicts)) {
+    // 重复键防御（与 candidates 同源）：JSON.parse 会把同名键折叠成最后一个，
+    // 造成部分裁决静默丢失。原文 id 数多于数组条数即判重复键，交由阶段重试链。
+    const idCount = countItemKeys(content, "verdicts", "id");
+    if (idCount > record.verdicts.length) {
+      return {
+        verdicts: new Map(),
+        complete: false,
+        note:
+          `证据核验回复把多条裁决写成了重复键对象` +
+          `（原文 ${String(idCount)} 个 id，仅解析出 ${String(record.verdicts.length)} 条）`,
+        failure: "duplicate-key",
+      };
+    }
     for (const entry of record.verdicts) {
       const mapped = mapVerdict(entry);
       if (mapped !== undefined) {
@@ -178,30 +191,38 @@ function mapVerdict(entry: unknown): { id: string; verdict: VerificationVerdict 
 }
 
 /**
- * 统计原文最后一个 `candidates` 键之后出现的 `id` 键数量。
+ * 统计原文最后一个 `blockKey` 键之后出现的 `itemKey` 键数量。
+ *
+ * 用于检测 JSON 重复键折叠：JSON.parse 对同名键保留最后一个值，模型若把多条
+ * 条目写成一个对象（`{"id":"F1","id":"F2"}`），解析结果会静默少条。调用方用
+ * 本函数与解析条数对账，多于解析结果即判重复键。
  *
  * 只扫字符串外的 `"key":`，因此 evidence / tips 文本里的 `"id":` 不计入。
- * 取最后一个 `candidates` 块，避免把模型先给的格式示例算进本次结果。
- * JSON.parse 会折叠同名键；调用方用本函数与解析条数对账，检测静默丢候选。
+ * 取最后一个块，避免把模型先给的格式示例算进本次结果。
  */
-export function countCandidateIds(content: string): number {
+export function countItemKeys(content: string, blockKey: string, itemKey: string): number {
   const keys = scanKeyPositions(content);
-  let lastCandidates = -1;
+  let lastBlock = -1;
   for (const entry of keys) {
-    if (entry.key === "candidates") {
-      lastCandidates = entry.index;
+    if (entry.key === blockKey) {
+      lastBlock = entry.index;
     }
   }
-  if (lastCandidates < 0) {
+  if (lastBlock < 0) {
     return 0;
   }
   let count = 0;
   for (const entry of keys) {
-    if (entry.index > lastCandidates && entry.key === "id") {
+    if (entry.index > lastBlock && entry.key === itemKey) {
       count += 1;
     }
   }
   return count;
+}
+
+/** 统计原文最后一个 `candidates` 块之后的 `id` 键数量 */
+export function countCandidateIds(content: string): number {
+  return countItemKeys(content, "candidates", "id");
 }
 
 /** 扫描 JSON 文本中所有字符串键（仅 `"key":` 形态），忽略字符串值内部内容。 */

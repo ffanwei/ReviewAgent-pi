@@ -12,6 +12,7 @@
 
 import type { LlmUsage } from "../contracts/llm.js";
 import type { VerificationVerdict } from "../shared/parse.js";
+import { countItemKeys } from "../shared/parse.js";
 import { extractJsonObject } from "../provider/one-shot-llm.js";
 import { invokeStructured, type StructuredParse } from "../provider/structured-reply.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
@@ -181,6 +182,10 @@ export function parseVerifierReply(text: string): ReadonlyMap<string, Verificati
   }
   const verdicts = (parsed as { verdicts?: unknown }).verdicts;
   if (!Array.isArray(verdicts)) {
+    return null;
+  }
+  // 重复键折叠会让一部分候选“没有裁决”而被误 reject；整批判不可解析并重发。
+  if (countItemKeys(text, "verdicts", "id") > verdicts.length) {
     return null;
   }
   const byId = new Map<string, VerificationVerdict>();

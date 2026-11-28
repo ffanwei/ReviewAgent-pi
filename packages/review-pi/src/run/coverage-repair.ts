@@ -32,6 +32,7 @@ import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { UsageScope } from "../observability/usage-ledger.js";
 import type { RetryPolicy } from "../shared/llm-retry.js";
 import type { VerificationVerdict } from "../shared/parse.js";
+import { countItemKeys } from "../shared/parse.js";
 import type { CoverageRepairLimits } from "../shared/config-limits.js";
 import { backfillCandidates, markNoIssue, markNotReached } from "./coverage-ledger.js";
 import { verifyRepairCandidates, type PendingRepairCandidate } from "./coverage-repair-verify.js";
@@ -275,6 +276,11 @@ export function parseCoverageRepairReply(
   }
   const receipts = (parsed as { receipts?: unknown }).receipts;
   if (!Array.isArray(receipts)) {
+    return { noIssue: [], candidates: [], candidateHunks: [], coveredHunks: [], invalid: 1 };
+  }
+  // 重复键防御：{"kind":"no-issue","kind":"candidate"} 会把两条回执折叠成一条。
+  // 整批拒绝（invalid=1）交给统一层重发，不静默接受少掉的 hunk 回执。
+  if (countItemKeys(text, "receipts", "kind") > receipts.length) {
     return { noIssue: [], candidates: [], candidateHunks: [], coveredHunks: [], invalid: 1 };
   }
 
