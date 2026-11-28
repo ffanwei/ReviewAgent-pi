@@ -372,6 +372,114 @@ describe("repairCoverageGaps", () => {
     });
   });
 
+  test("补漏回执不可解析 → 有界重发一次；成功后 requests=2、failedRequests=0", async () => {
+    const ledger = buildCoverageLedger(DIFF_A);
+    let repairCalls = 0;
+    const fetch: FetchFunction = async () => {
+      repairCalls += 1;
+      if (repairCalls === 1) {
+        return completion("not json");
+      }
+      return completion(
+        JSON.stringify({
+          receipts: [
+            {
+              kind: "no-issue",
+              hunk: 1,
+              reason: "纯格式化，行为不变",
+              evidence: ["+const b = 2;"],
+            },
+          ],
+        }),
+      );
+    };
+    const result = await repairCoverageGaps({
+      diff: DIFF_A,
+      ledger,
+      findings: [],
+      limits: { ...LIMITS, maxRequests: 10 },
+      llm: llm(fetch),
+    });
+    expect(repairCalls).toBe(2);
+    expect(result.audit).toMatchObject({
+      requests: 2,
+      failedRequests: 0,
+      hunksCovered: 1,
+      noIssue: 1,
+      candidates: 0,
+      acceptedFindings: 0,
+    });
+  });
+
+  test("验证器回执不可解析 → 重发一次后恢复，requests=2", async () => {
+    const ledger = buildCoverageLedger(DIFF_A);
+    let verifierCalls = 0;
+    const fetch: FetchFunction = async (_url, init) => {
+      const body = String(init?.body ?? "");
+      if (isVerifierCall(body)) {
+        verifierCalls += 1;
+        return verifierCalls === 1
+          ? completion("not json")
+          : completion(
+              JSON.stringify({ verdicts: [{ id: "CR001", pass: true, reason: "证据成立" }] }),
+            );
+      }
+      return completion(
+        JSON.stringify({ receipts: [{ kind: "candidate", candidate: candidate(11) }] }),
+      );
+    };
+    const result = await repairCoverageGaps({
+      diff: DIFF_A,
+      ledger,
+      findings: [],
+      limits: { ...LIMITS, maxRequests: 10 },
+      llm: llm(fetch),
+    });
+    expect(verifierCalls).toBe(2);
+    expect(result.findings).toHaveLength(1);
+    expect(result.audit.verification).toMatchObject({
+      requests: 2,
+      failedRequests: 0,
+      accepted: 1,
+      rejected: 0,
+      unverified: 0,
+    });
+  });
+
+  test("验证器回执两次都不可解析 → fail-closed，候选被拒且不计 unverified", async () => {
+    const ledger = buildCoverageLedger(DIFF_A);
+    let verifierCalls = 0;
+    const fetch: FetchFunction = async (_url, init) => {
+      const body = String(init?.body ?? "");
+      if (isVerifierCall(body)) {
+        verifierCalls += 1;
+        return completion("not json");
+      }
+      return completion(
+        JSON.stringify({ receipts: [{ kind: "candidate", candidate: candidate(11) }] }),
+      );
+    };
+    const result = await repairCoverageGaps({
+      diff: DIFF_A,
+      ledger,
+      findings: [],
+      limits: { ...LIMITS, maxRequests: 10 },
+      llm: llm(fetch),
+    });
+    expect(verifierCalls).toBe(2);
+    expect(result.findings).toHaveLength(0);
+    expect(result.audit.rejectedCandidates).toBe(1);
+    expect(result.audit.verification).toMatchObject({
+      requests: 2,
+      failedRequests: 1,
+      accepted: 0,
+      rejected: 1,
+      unverified: 0,
+    });
+    const a = result.ledger.files.find((file) => file.file === "src/a.ts");
+    expect(a?.hunks[1]?.status).toBe("not-reached");
+  });
+
   test("候选与已有意见重复 → 候选门拒绝，hunk 保持未覆盖", async () => {
     const ledger = buildCoverageLedger(DIFF_A);
     const existing = {

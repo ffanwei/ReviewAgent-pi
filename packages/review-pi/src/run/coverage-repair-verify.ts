@@ -12,7 +12,8 @@
 
 import type { LlmUsage } from "../contracts/llm.js";
 import type { VerificationVerdict } from "../shared/parse.js";
-import { completeOneShot, extractJsonObject } from "../provider/one-shot-llm.js";
+import { extractJsonObject } from "../provider/one-shot-llm.js";
+import { invokeStructured, type StructuredParse } from "../provider/structured-reply.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { CoverageRepairLlm, CoverageRepairUnit } from "./coverage-repair.js";
 
@@ -73,37 +74,36 @@ export async function verifyRepairCandidates(input: {
   let usage: LlmUsage = ZERO_USAGE;
 
   for (const [unit, group] of groups) {
-    requests += 1;
-    const completion = await completeOneShot({
-      baseUrl: input.llm.baseUrl,
-      apiKey: input.llm.apiKey,
-      modelId: input.llm.modelId,
+    const outcome = await invokeStructured({
+      llm: input.llm,
+      purpose: "coverage-repair",
       system: VERIFIER_SYSTEM_PROMPT,
       user: buildVerifierUserMessage(unit, group),
-      timeoutMs: input.llm.timeoutMs,
-      ...(input.llm.retry !== undefined ? { retry: input.llm.retry } : {}),
-      maxTokens: input.maxTokens ?? VERIFY_MAX_TOKENS,
       responseFormat: "json_object",
-      purpose: "coverage-repair",
-      ...(input.llm.usageScope !== undefined ? { usageScope: input.llm.usageScope } : {}),
-      ...(input.llm.fetch !== undefined ? { fetch: input.llm.fetch } : {}),
+      maxTokens: input.maxTokens ?? VERIFY_MAX_TOKENS,
+      call: {
+        parse: parseVerifierStructured,
+        maxRepairAttempts: 1,
+      },
     });
-    if (!completion.ok) {
+    requests += outcome.attempts;
+    if (outcome.usage !== undefined) {
+      usage = addUsage(usage, outcome.usage);
+    }
+    if (!outcome.ok) {
       failedRequests += 1;
-      unverified += group.length;
-      markFailOpen(verdicts, group, "verifier request failed");
+      if (outcome.failure.kind === "transport") {
+        // 请求失败仍 fail-open：验证器不可用不吞 recall，但显式计 unverified。
+        unverified += group.length;
+        markFailOpen(verdicts, group, "verifier request failed");
+      } else {
+        // 回包不可解析（重试后）fail-closed：验证门不能把坏 JSON 当成“通过”。
+        rejected += group.length;
+        markRejected(verdicts, group, "verifier reply unparseable");
+      }
       continue;
     }
-    if (completion.usage !== undefined) {
-      usage = addUsage(usage, completion.usage);
-    }
-    const parsed = parseVerifierReply(completion.text);
-    if (parsed === null) {
-      failedRequests += 1;
-      unverified += group.length;
-      markFailOpen(verdicts, group, "verifier reply unparseable");
-      continue;
-    }
+    const parsed = outcome.value;
     for (const pending of group) {
       const id = readId(pending.candidate);
       const verdict = id === undefined ? undefined : parsed.get(id.toLowerCase());
@@ -141,6 +141,20 @@ function markFailOpen(
   }
 }
 
+/** 回包不可解析（重试后）的 fail-closed：整组候选按 reject 记，不冒充通过 */
+function markRejected(
+  verdicts: Map<string, VerificationVerdict>,
+  group: readonly PendingRepairCandidate[],
+  reason: string,
+): void {
+  for (const pending of group) {
+    const id = readId(pending.candidate);
+    if (id !== undefined) {
+      verdicts.set(id, { pass: false, reason });
+    }
+  }
+}
+
 function buildVerifierUserMessage(
   unit: CoverageRepairUnit,
   group: readonly PendingRepairCandidate[],
@@ -159,7 +173,7 @@ function buildVerifierUserMessage(
   ].join("\n");
 }
 
-/** 解析验证回执；无 JSON / 无 verdicts 数组时返回 null（调用方 fail-open） */
+/** 解析验证回执；无 JSON / 无 verdicts 数组时返回 null（由 Structured 层重发后 fail-closed） */
 export function parseVerifierReply(text: string): ReadonlyMap<string, VerificationVerdict> | null {
   const parsed = extractJsonObject(text, { preferKey: "verdicts" });
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -187,6 +201,16 @@ export function parseVerifierReply(text: string): ReadonlyMap<string, Verificati
     });
   }
   return byId;
+}
+
+/** Structured Output 契约：null = 不可解析，交给统一层做一次有界重发 */
+function parseVerifierStructured(
+  text: string,
+): StructuredParse<ReadonlyMap<string, VerificationVerdict>> {
+  const parsed = parseVerifierReply(text);
+  return parsed === null
+    ? { ok: false, failure: { kind: "schema", note: "验证器回执不可解析" } }
+    : { ok: true, value: parsed };
 }
 
 function readId(candidate: Record<string, unknown>): string | undefined {

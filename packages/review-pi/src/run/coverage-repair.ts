@@ -26,7 +26,8 @@ import { addRootCauseKey, findingContentKey } from "../finding/finding-key.js";
 import { applyCandidateGate } from "../gate/candidate-gate.js";
 import { normalizeCandidates } from "../gate/candidate-normalize.js";
 import type { DiffScope } from "../gate/diff-scope.js";
-import { completeOneShot, extractJsonObject } from "../provider/one-shot-llm.js";
+import { extractJsonObject } from "../provider/one-shot-llm.js";
+import { invokeStructured, type StructuredParse } from "../provider/structured-reply.js";
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import type { UsageScope } from "../observability/usage-ledger.js";
 import type { RetryPolicy } from "../shared/llm-retry.js";
@@ -339,6 +340,26 @@ export function parseCoverageRepairReply(
   return { noIssue, candidates, candidateHunks, coveredHunks: [...covered.values()], invalid };
 }
 
+/**
+ * 单次补漏回执的 Structured Output 契约：
+ * - 有至少一条有效 no-issue / candidate 时按部分成功返回（坏条目只计 invalid）；
+ * - 整条回执不可解析、或所有回执都非法时返回失败，交给统一层做一次有界重发；
+ * - 合法但显式空的 `{"receipts":[]}` 视为模型主动省略，不重发。
+ */
+function parseCoverageUnitReply(
+  text: string,
+  unit: CoverageRepairUnit,
+): StructuredParse<ParsedCoverageRepair> {
+  const parsed = parseCoverageRepairReply(text, unit);
+  if (parsed.noIssue.length === 0 && parsed.candidates.length === 0 && parsed.invalid > 0) {
+    return {
+      ok: false,
+      failure: { kind: "schema", note: "补漏回执没有可用的 no-issue/candidate" },
+    };
+  }
+  return { ok: true, value: parsed };
+}
+
 function candidateTargetHunk(
   candidate: unknown,
   unit: CoverageRepairUnit,
@@ -385,30 +406,32 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
   let invalid = 0;
 
   for (const unit of plan.units) {
-    requests += 1;
     hunksSent += unit.hunks.length;
-    const completion = await completeOneShot({
-      baseUrl: input.llm.baseUrl,
-      apiKey: input.llm.apiKey,
-      modelId: input.llm.modelId,
+    const outcome = await invokeStructured({
+      llm: input.llm,
+      purpose: "coverage-repair",
       system: REPAIR_SYSTEM_PROMPT,
       user: buildCoverageRepairUserMessage(unit, input.findings),
-      timeoutMs: input.llm.timeoutMs,
-      ...(input.llm.retry !== undefined ? { retry: input.llm.retry } : {}),
-      maxTokens: input.llm.maxTokens ?? REPAIR_MAX_TOKENS,
       responseFormat: "json_object",
-      purpose: "coverage-repair",
-      ...(input.llm.usageScope !== undefined ? { usageScope: input.llm.usageScope } : {}),
-      ...(input.llm.fetch !== undefined ? { fetch: input.llm.fetch } : {}),
+      maxTokens: input.llm.maxTokens ?? REPAIR_MAX_TOKENS,
+      call: {
+        parse: (text) => parseCoverageUnitReply(text, unit),
+        maxRepairAttempts: 1,
+      },
     });
-    if (!completion.ok) {
+    requests += outcome.attempts;
+    if (outcome.usage !== undefined) {
+      usage = addUsage(usage, outcome.usage);
+    }
+    if (!outcome.ok) {
       failedRequests += 1;
+      // 重试后仍不可解析计入 invalid；传输失败只由 failedRequests 表达。
+      if (outcome.failure.kind !== "transport") {
+        invalid += 1;
+      }
       continue;
     }
-    if (completion.usage !== undefined) {
-      usage = addUsage(usage, completion.usage);
-    }
-    const parsed = parseCoverageRepairReply(completion.text, unit);
+    const parsed = outcome.value;
     invalid += parsed.invalid;
     claims.push(...parsed.noIssue);
     parsed.candidates.forEach((candidate, index) => {
