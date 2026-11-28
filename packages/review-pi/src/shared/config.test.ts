@@ -612,6 +612,51 @@ describe("loadConfig：失败策略", () => {
     ).toThrow(/limits\.genericReview\.suppress\.categories/);
   });
 
+  test("limits.repoScan.historyTips：默认只查 PENDING + 语义裁决开，可配与校验", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.repoScan.historyTips).toEqual({
+      statuses: ["PENDING"],
+      semanticVerdict: { enabled: true },
+    });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"repoScan":{"historyTips":{"statuses":["PENDING","ACCEPTED","REJECTED"],"semanticVerdict":{"enabled":false}}}}`,
+        ),
+      ),
+    }).config;
+    expect(tuned.limits.repoScan.historyTips).toEqual({
+      statuses: ["PENDING", "ACCEPTED", "REJECTED"],
+      semanticVerdict: { enabled: false },
+    });
+    expect(tuned.overridden).toContain("limits.repoScan.historyTips");
+
+    const off = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(`,"limits":{"repoScan":{"historyTips":{"statuses":[]}}}`),
+      ),
+    }).config;
+    expect(off.limits.repoScan.historyTips.statuses).toEqual([]);
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(
+            `,"limits":{"repoScan":{"historyTips":{"statuses":["INVALIDATED"]}}}`,
+          ),
+        ),
+      }),
+    ).toThrow(/must contain only PENDING, ACCEPTED, REJECTED/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(`,"limits":{"repoScan":{"historyTips":{"statuses":["pending"]}}}`),
+        ),
+      }),
+    ).toThrow(/must contain only PENDING, ACCEPTED, REJECTED/);
+  });
+
   test("limits.timeouts 新增 reviewTurnMs / oneShotMs 可配且进 digest", () => {    const { config } = loadConfig({
       configPath: writeConfig(
         minimalConfig(`,"limits":{"timeouts":{"reviewTurnMs":120000,"oneShotMs":45000}}`),

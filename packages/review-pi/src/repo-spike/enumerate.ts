@@ -70,11 +70,14 @@ const SOURCE_EXTENSIONS = new Set([
   ".exs",
 ]);
 
-/** 目录名级排除：spike 不做 glob 解析，按路径段判断，确定性且快。 */
+/** 目录名级排除：spike 不做 glob 解析，按路径段判断，确定性且快。
+ * `.aireview` = 历史意见失效检查（R-21）的输入目录，恒不进检视面——
+ * 无论 trackedOnly / 功能是否启用。 */
 const EXCLUDED_DIRS = new Set([
   ".git",
   ".hg",
   ".svn",
+  ".aireview",
   "node_modules",
   "dist",
   "build",

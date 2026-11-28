@@ -85,7 +85,8 @@ export type OneShotPurpose =
   | "candidate-repair"
   | "reply-repair"
   | "coverage-repair"
-  | "finding-verification";
+  | "finding-verification"
+  | "history-verdict";
 
 /**
  * 一次成功的一次性调用样本（进程级 usage 观测）。

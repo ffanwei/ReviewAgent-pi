@@ -1,6 +1,9 @@
-import { resolve } from "node:path";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import path, { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import type { InvalidatedTip } from "../mcp/task-tools.js";
+import type { Finding } from "../contracts/finding.js";
 import {
   createFullRepoLifecycle,
   createMcpReporter,
@@ -11,9 +14,16 @@ import {
 import { resolveTaskToolSettleMs } from "../mcp/task-lifecycle.js";
 import { resolveReviewerEndpoint } from "../provider/reviewer-endpoint.js";
 import { runRepoSpike } from "../repo-spike/run.js";
+import {
+  createHistoryInvalidationRunner,
+  loadHistoryTips,
+  type HistoryInvalidationRunner,
+  type InvalidationSummary,
+} from "../repo-spike/history-invalidation.js";
 import type { RepoReviewedBatch } from "../repo-spike/types.js";
 import type { ResolvedConfig } from "../shared/config.js";
 import { modelIdForGateway } from "../shared/config-schema.js";
+import { retryPolicyFor } from "../shared/llm-retry.js";
 import { resolveTasksRoot, taskDirPath } from "../shared/tasks-dir.js";
 import { REVIEW_PI_VERSION } from "../shared/version.js";
 import type { RepoSpikeCliArgs } from "./args.js";
@@ -145,6 +155,10 @@ export async function runRepoSpikeCommand(
   const taskToolsOn = reporter !== null && taskToolsConfigured;
   let lifecycle: FullRepoLifecycle | undefined;
   let onGroupReviewed: ((batch: RepoReviewedBatch) => Promise<void>) | undefined;
+  // 历史意见失效检查（R-21）：只在 MCP task 上报可用时启用——判定结果的唯一
+  // 消费者是 currentTips 那次上报，没有目的地不烧裁决 token。建连层判定：
+  // reporter null（未配置 / 建连失败）→ 跳过；无状态降级不算无效。
+  let invalidation: HistoryInvalidationRunner | undefined;
   if (taskToolsOn && reporter !== null) {
     lifecycle = createFullRepoLifecycle({
       tasks: reporter.fullRepo,
@@ -155,22 +169,41 @@ export async function runRepoSpikeCommand(
       log,
     });
     const repoLifecycle = lifecycle;
-    onGroupReviewed = (batch) =>
-      reportFullRepoBatch({
+    invalidation = await prepareHistoryInvalidation({
+      config,
+      repoPath: common.repoPath,
+      outDir,
+      modelId,
+      baseUrl: endpoint.baseUrl,
+      apiKey: endpoint.apiKey,
+      log,
+    });
+    const runner = invalidation;
+    onGroupReviewed = async (batch) => {
+      // 先上报（平台可见优先），再随组入队判定：矩阵同步定案、LLM 候选进
+      // 队列异步跑（不阻塞该 worker 取下一组）。
+      await reportFullRepoBatch({
         taskId: repoTaskId,
         repoPath: common.repoPath,
         batch,
         lifecycle: repoLifecycle,
         log,
       });
+      if (runner !== undefined) {
+        await runner.enqueueBatch(batch);
+      }
+    };
     const started = await lifecycle.start();
     if (!started.ok) {
       log(`review-pi: MCP fullRepoStartTask 失败（${started.reason}），继续检视`);
     }
+  } else {
+    await noteSkippedInvalidation(common.repoPath, log);
   }
 
+  let invalidatedTips: readonly InvalidatedTip[] = [];
   try {
-    return await runRepoSpike(common, {
+    const exitCode = await runRepoSpike(common, {
       apiKey: endpoint.apiKey,
       baseUrl: endpoint.baseUrl,
       ...(modelId !== undefined ? { modelId } : {}),
@@ -180,9 +213,22 @@ export async function runRepoSpikeCommand(
       genericReview: config.limits.genericReview,
       ...(onGroupReviewed !== undefined ? { onGroupReviewed } : {}),
     });
+    if (invalidation !== undefined) {
+      // 判定结果映射成 InvalidatedTip（repo-spike 层不知道 MCP，CLI 单点映射）；
+      // 摘要写进 repo-review-result.json（读改写原子覆盖）。
+      const outcome = await invalidation.finalize(await readRepoReviewResult(outDir));
+      invalidatedTips = outcome.report.map((item) => ({
+        tipsId: item.tipsId,
+        reason: item.reason,
+      }));
+      await writeHistoryTipsSummary(outDir, outcome.summary, log);
+    }
+    return exitCode;
   } finally {
     if (lifecycle !== undefined) {
-      const tips = await lifecycle.reportCurrentTips();
+      const tips = await lifecycle.reportCurrentTips(
+        invalidatedTips.length > 0 ? { invalidatedTips } : undefined,
+      );
       if (!tips.ok) {
         log(`review-pi: MCP fullRepoFilerCurrentTips 失败（${tips.reason}），继续收尾`);
       }
@@ -192,5 +238,110 @@ export async function runRepoSpikeCommand(
       }
     }
     await reporter?.close().catch(() => undefined);
+  }
+}
+
+/**
+ * MCP 未启用时的留痕：历史文件存在才打一行（不存在 = 功能静默关闭，零噪声）。
+ * 判定结果的唯一消费者是 currentTips 上报——没有目的地不烧裁决 token。
+ */
+async function noteSkippedInvalidation(
+  repoPath: string,
+  log: (line: string) => void,
+): Promise<void> {
+  try {
+    await stat(path.join(repoPath, ".aireview", "history_review_tips.json"));
+    log("review-pi: MCP 未启用，跳过历史意见失效检查\n");
+  } catch {
+    // 文件不存在：功能静默关闭
+  }
+}
+
+/** 历史意见失效检查装配：文件在 + 条目非空才建 runner；坏文件一行留痕 */
+async function prepareHistoryInvalidation(input: {
+  readonly config: ResolvedConfig;
+  readonly repoPath: string;
+  readonly outDir: string;
+  readonly modelId: string | undefined;
+  readonly baseUrl: string;
+  readonly apiKey: string | null;
+  readonly log: (line: string) => void;
+}): Promise<HistoryInvalidationRunner | undefined> {
+  const limits = input.config.limits.repoScan.historyTips;
+  const load = await loadHistoryTips({ repoPath: input.repoPath, limits, log: input.log });
+  if (load === null || load.entries.length === 0) {
+    return undefined;
+  }
+  if (input.apiKey === null || input.modelId === undefined) {
+    input.log("review-pi: 历史意见失效检查跳过（模型端点不可用）\n");
+    return undefined;
+  }
+  return createHistoryInvalidationRunner({
+    repoPath: input.repoPath,
+    outDir: input.outDir,
+    limits,
+    load,
+    genericReview: input.config.limits.genericReview,
+    llm: {
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      modelId: input.modelId,
+      timeoutMs: input.config.limits.timeouts.oneShotMs,
+      retry: retryPolicyFor(input.config.limits.retry, "oneShot"),
+      fetch: globalThis.fetch,
+    },
+    log: input.log,
+  });
+}
+
+/** 读 run 层写好的 repo-review-result.json（收尾 sweep 的覆盖门 + findings） */
+async function readRepoReviewResult(outDir: string): Promise<{
+  readonly coverage: { readonly files: readonly { path: string; state: string }[] };
+  readonly findings: readonly Finding[];
+}> {
+  try {
+    const raw = await readFile(path.join(outDir, "repo-review-result.json"), "utf8");
+    const parsed = JSON.parse(raw) as {
+      coverage?: { files?: { path?: unknown; state?: unknown }[] };
+      findings?: unknown;
+    };
+    const files = Array.isArray(parsed.coverage?.files)
+      ? parsed.coverage.files.flatMap((file) =>
+          typeof file?.path === "string" && typeof file?.state === "string"
+            ? [{ path: file.path, state: file.state }]
+            : [],
+        )
+      : [];
+    const findings = Array.isArray(parsed.findings) ? (parsed.findings as readonly Finding[]) : [];
+    return { coverage: { files }, findings };
+  } catch {
+    // 结果文件缺失 / 损坏：覆盖门全闭（保守保留），不阻断收尾
+    return { coverage: { files: [] }, findings: [] };
+  }
+}
+
+/** 把失效检查摘要写进 repo-review-result.json（读改写 + 原子覆盖） */
+async function writeHistoryTipsSummary(
+  outDir: string,
+  summary: InvalidationSummary,
+  log: (line: string) => void,
+): Promise<void> {
+  const target = path.join(outDir, "repo-review-result.json");
+  try {
+    const raw = await readFile(target, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    parsed.historyTips = summary;
+    const dir = path.dirname(target);
+    const tmp = path.join(dir, `.repo-review-result.${process.pid}.${Date.now()}.tmp`);
+    await writeFile(tmp, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+    try {
+      await rename(tmp, target);
+    } catch {
+      await rm(target, { force: true });
+      await rename(tmp, target);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`review-pi: 历史意见摘要写入 repo-review-result.json 失败（${message}）\n`);
   }
 }

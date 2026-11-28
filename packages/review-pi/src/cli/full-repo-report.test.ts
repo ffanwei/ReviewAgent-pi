@@ -59,6 +59,7 @@ function fakeLifecycle(
       return result;
     },
     reportCurrentTips: async () => ({ ok: true }),
+    setInvalidatedTips: () => undefined,
     finish: async () => ({ ok: true, waitedMs: 0 }),
   };
 }

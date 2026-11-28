@@ -112,8 +112,10 @@ function titleBigrams(text: string): ReadonlySet<string> {
   return grams;
 }
 
-/** 标题相似度：字符二元组 Jaccard；完全相同返回 1，空标题返回 0 */
-function titleSimilarity(left: string, right: string): number {
+/** 标题相似度：字符二元组 Jaccard；完全相同返回 1，空标题返回 0。
+ * R-21 历史意见失效的文本匹配（reviewMsg vs finding 标题 / tips 正文）复用
+ * 同一口径——跨系统重复判定的阈值与候选门去重同源，不另造相似度。 */
+export function titleSimilarity(left: string, right: string): number {
   const a = normalizeTitle(left);
   const b = normalizeTitle(right);
   if (a.length === 0 || b.length === 0) {

@@ -41,10 +41,13 @@ export interface FullRepoLifecycle {
   start(): Promise<TaskCallResult>;
   reportFile(args: Omit<MrReviewResultArgs, "taskId">): Promise<TaskCallResult>;
   /**
-   * 发历史意见失效清单。v1 恒发空数组；调用过（无论成功失败）后 `finish()`
-   * 不再重复发。缺省先沉降（最后一批上报 → currentTips）。
+   * 发历史意见失效清单（R-21）。首次调用携带 `invalidatedTips`（之后幂等）；
+   * 未显式调用过时 `finish()` 补发（用最后一次 `setInvalidatedTips` 的清单，
+   * 缺省空数组——v1 行为）。缺省先沉降（最后一批上报 → currentTips）。
    */
-  reportCurrentTips(): Promise<TaskCallResult>;
+  reportCurrentTips(args?: { readonly invalidatedTips: readonly InvalidatedTip[] }): Promise<TaskCallResult>;
+  /** 预登记失效清单（`finish()` 补发时使用）；必须在 currentTips 之前调用 */
+  setInvalidatedTips(invalidatedTips: readonly InvalidatedTip[]): void;
   /** 确保 currentTips 已发 → 第二段沉降 → `endTask`；幂等 */
   finish(): Promise<SettledTaskResult>;
 }
@@ -59,7 +62,7 @@ export interface CreateFullRepoLifecycleOptions {
   readonly log: (line: string) => void;
 }
 
-/** v1 不处理失效逻辑：每次都传空数组（字段形状仍按服务端 schema） */
+/** v1 兼容：未预登记失效清单时发空数组（字段形状仍按服务端 schema） */
 const NO_INVALIDATED_TIPS: readonly InvalidatedTip[] = [];
 
 export function createFullRepoLifecycle(
@@ -69,6 +72,7 @@ export function createFullRepoLifecycle(
   let started = false;
   let currentTips: TaskCallResult | undefined;
   let finished: SettledTaskResult | undefined;
+  let invalidatedTips: readonly InvalidatedTip[] = NO_INVALIDATED_TIPS;
 
   const settle = async (boundary: string): Promise<number> => {
     if (settleMs <= 0) {
@@ -84,7 +88,7 @@ export function createFullRepoLifecycle(
     if (currentTips !== undefined) {
       return currentTips;
     }
-    const result = await tasks.reportCurrentTips({ taskId, invalidatedTips: NO_INVALIDATED_TIPS });
+    const result = await tasks.reportCurrentTips({ taskId, invalidatedTips });
     // 与既有口径一致：只要调用发生过，就视为该边界已跨过（失败也不例外）
     currentTips = result;
     return result;
@@ -104,7 +108,13 @@ export function createFullRepoLifecycle(
     reportFile(args) {
       return tasks.reportFileResult({ taskId, ...args });
     },
-    async reportCurrentTips() {
+    setInvalidatedTips(tips) {
+      invalidatedTips = tips;
+    },
+    async reportCurrentTips(args) {
+      if (args !== undefined) {
+        invalidatedTips = args.invalidatedTips;
+      }
       if (currentTips !== undefined) {
         return currentTips;
       }

@@ -1,6 +1,6 @@
 # ADR 阅读约定
 
-本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0121）。
+本目录是本仓（pi 内核线）的架构决策记录，编号连续（当前至 0122）。
 
 ## 记录纪律
 
@@ -124,6 +124,7 @@
 | [ADR-0119](0119-report-every-file-when-skipped.md) | 跳过检视也按变更文件逐个上报空 tips（取代 ADR-0075 的「只报首个文件」口径）；全仓零意见组同口径 |
 | [ADR-0120](0120-finding-path-repair.md) | Finding 路径修复：按已知文件全集修正少量字符错误（宽松匹配 + 有界编辑距离，唯一最佳才修） |
 | [ADR-0121](0121-repo-review-large-file-solo-and-80k-120k.md) | 全仓上限改为 5 文件 / 80k 组 / 120k 文件；超过组上限的单文件单独成组（soloLarge），不再整文件跳过 |
+| [ADR-0122](0122-history-tips-invalidation.md) | 仓级检视历史意见失效上报：规则层（file-removed / 硬档 duplicate）+ LLM 语义裁决（edited/gone 锚点与配对疑问，四值 verdict）+ 随组流水线与续跑复用；reason 中文枚举；currentTips 携带清单，失败 fail-open 保守保留 |
 
 ## 历史路径口径（ADR-0035，2026-11-03）
 

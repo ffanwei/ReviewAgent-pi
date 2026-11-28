@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -4204,6 +4204,185 @@ test(
       ).toEqual([]);
     } finally {
       await mcp.close();
+      await stub.close();
+    }
+  },
+  30_000,
+);
+
+/** R-21 历史意见失效检查：夹具仓副本 + .aireview/history_review_tips.json */
+function repoWithHistoryTips(): string {
+  const root = makeTempDir("review-pi-cli-repo-hist-");
+  const source = repoFixturePath("multilang");
+  mkdirSync(path.join(root, "service", "cmd"), { recursive: true });
+  copyFileSync(
+    path.join(source, "service", "cmd", "main.go"),
+    path.join(root, "service", "cmd", "main.go"),
+  );
+  mkdirSync(path.join(root, ".aireview"), { recursive: true });
+  const history = [
+    // 文件不在磁盘 → 规则失效「文件已删除」
+    {
+      id: "1",
+      taskId: "1234567",
+      status: "PENDING",
+      filePath: "src/gone.ts",
+      lineNum: 12,
+      patchLine: "+ const legacy = 1;",
+      reviewMsg: "遗留问题",
+      suggestions: "修复",
+      vulnerabilityType: "X",
+      level: "HIGH",
+      subcategory: "c",
+      ruleId: "R1",
+      networkZone: "green",
+      createDate: "2026-11-21T10:26:42",
+    },
+    // 与本次 finding 同文件同行同代码 + 文本过线 → 硬档失效「重复」
+    {
+      id: "2",
+      taskId: "1234567",
+      status: "PENDING",
+      filePath: "service/cmd/main.go",
+      lineNum: 1,
+      patchLine: "+ package main",
+      reviewMsg: "全仓哨兵意见：可靠性问题",
+      suggestions: "修复",
+      vulnerabilityType: "X",
+      level: "HIGH",
+      subcategory: "c",
+      ruleId: "R2",
+      networkZone: "green",
+      createDate: "2026-11-22T10:26:42",
+    },
+    // INVALIDATED 恒跳过；REJECTED 不在默认状态集
+    {
+      id: "3",
+      taskId: "1234567",
+      status: "INVALIDATED",
+      filePath: "service/cmd/main.go",
+      lineNum: 1,
+      patchLine: "+ package main",
+      reviewMsg: "已失效过的意见",
+    },
+    {
+      id: "4",
+      taskId: "1234567",
+      status: "REJECTED",
+      filePath: "service/cmd/main.go",
+      lineNum: 1,
+      patchLine: "+ package main",
+      reviewMsg: "被驳回的意见",
+    },
+  ];
+  writeFileSync(
+    path.join(root, ".aireview", "history_review_tips.json"),
+    JSON.stringify(history, null, 2),
+    "utf8",
+  );
+  return root;
+}
+
+test(
+  "repo-review R-21：历史意见失效检查端到端——currentTips 携带中文 reason 清单 + result 摘要 + sidecar",
+  async () => {
+    const stub = await startLoopbackStub(repoOneFindingCorpus());
+    const mcp = await startMcpStub();
+    try {
+      const outDir = makeTempDir("review-pi-cli-repo-hist-out-");
+      const repoRoot = repoWithHistoryTips();
+      const run = await runBin(
+        [
+          "repo-review",
+          "--repo",
+          repoRoot,
+          "--out",
+          outDir,
+          "--taskId",
+          "repo-hist-1",
+          "--files",
+          "service/cmd/main.go",
+          "--no-progress",
+        ],
+        {
+          ...stubEnv(stub.baseUrl),
+          mcpServerUrl: mcp.url,
+          env: { PIAGENT_TEST_TASK_TOOL_SETTLE_MS: "0" },
+        },
+      );
+
+      expect(run.status).toBe(0);
+      const calls = mcp.toolCalls();
+      expect(calls.map((call) => call.name)).toEqual([
+        "fullRepoStartTask",
+        "fullRepoReportReviewResult",
+        "fullRepoFilerCurrentTips",
+        "fullRepoEndTask",
+      ]);
+      const currentTips = calls[2]?.args as {
+        taskId: string;
+        invalidatedTips: { reason: string; tipsId: number }[];
+      };
+      expect(currentTips.taskId).toBe("repo-hist-1");
+      expect([...currentTips.invalidatedTips].sort((left, right) => left.tipsId - right.tipsId))
+        .toEqual([
+          { reason: "文件已删除", tipsId: 1 },
+          { reason: "重复", tipsId: 2 },
+        ]);
+      // result 摘要 + sidecar 留痕
+      const result = JSON.parse(
+        readFileSync(path.join(outDir, "repo-review-result.json"), "utf8"),
+      ) as {
+        historyTips?: { invalidated: number; kept: number; byReason: Record<string, number> };
+      };
+      expect(result.historyTips).toMatchObject({
+        total: 4,
+        checked: 2,
+        skippedInvalidated: 1,
+        skippedStatus: 1,
+        invalidated: 2,
+        byReason: { 文件已删除: 1, 重复: 1 },
+      });
+      const sidecar = JSON.parse(
+        readFileSync(path.join(outDir, "history-tips-invalidation.json"), "utf8"),
+      ) as { items: { tipsId: number; outcome: string }[] };
+      expect(sidecar.items).toHaveLength(2);
+      expect(run.stderr).toContain("历史意见失效检查完成：失效 2");
+    } finally {
+      await mcp.close();
+      await stub.close();
+    }
+  },
+  30_000,
+);
+
+test(
+  "repo-review R-21：MCP 未启用时整个失效检查跳过（含 LLM 车道）+ 一行留痕",
+  async () => {
+    const stub = await startLoopbackStub(repoOneFindingCorpus());
+    try {
+      const outDir = makeTempDir("review-pi-cli-repo-hist-nomcp-");
+      const repoRoot = repoWithHistoryTips();
+      const run = await runBin(
+        [
+          "repo-review",
+          "--repo",
+          repoRoot,
+          "--out",
+          outDir,
+          "--taskId",
+          "repo-hist-2",
+          "--files",
+          "service/cmd/main.go",
+          "--no-progress",
+        ],
+        { ...stubEnv(stub.baseUrl) },
+      );
+      expect(run.status).toBe(0);
+      expect(run.stderr).toContain("MCP 未启用，跳过历史意见失效检查");
+      // 未产出任何失效产物
+      expect(existsSync(path.join(outDir, "history-tips-invalidation.json"))).toBe(false);
+    } finally {
       await stub.close();
     }
   },

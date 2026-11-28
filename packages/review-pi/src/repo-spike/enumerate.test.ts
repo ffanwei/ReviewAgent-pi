@@ -82,6 +82,27 @@ test("枚举：git 仓库默认只检视已跟踪文件，trackedOnly=false 才�
   expect(all.files.map((file) => file.path)).toEqual(["src/tracked.ts", "src/untracked.ts"]);
 });
 
+test("枚举：.aireview/ 恒排除（历史意见输入目录不进检视面，与 trackedOnly 无关）", async () => {
+  const root = tempRepo();
+  try {
+    execFileSync("git", ["-C", root, "init"], { stdio: "ignore" });
+  } catch {
+    return; // 环境无 git：不把环境限制当产品行为
+  }
+  write(root, "src/tracked.ts", "export const tracked = 1;\n");
+  write(root, ".aireview/history_review_tips.json", "[]\n");
+  execFileSync("git", ["-C", root, "add", "src/tracked.ts", ".aireview/history_review_tips.json"], {
+    stdio: "ignore",
+  });
+
+  const defaults = await enumerateRepoFiles({
+    repoPath: root,
+    maxFiles: 10,
+    maxFileChars: 1_000,
+  });
+  expect(defaults.files.map((file) => file.path)).toEqual(["src/tracked.ts"]);
+});
+
 test("枚举：pathPrefix 只保留前缀内的文件", async () => {
   const root = tempRepo();
   write(root, "src/a.ts", "a\n");

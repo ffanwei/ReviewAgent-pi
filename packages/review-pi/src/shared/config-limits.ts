@@ -260,7 +260,32 @@ export interface RepoScanLimits {
   readonly includeRegex: readonly string[];
   /** 仓库相对 POSIX 路径黑名单；命中即剔除，优先于白名单 */
   readonly excludeRegex: readonly string[];
+  /** 历史意见失效检查（R-21）：`.aireview/history_review_tips.json` */
+  readonly historyTips: HistoryTipsLimits;
 }
+
+/**
+ * 历史意见失效检查（R-21，repo 模式专用）。
+ *
+ * - `statuses`：哪些状态的历史意见参与失效/重复判定。INVALIDATED（已上报过
+ *   失效）恒不参与，写进列表装载期报错。缺省只查 PENDING——ACCEPTED
+ *   （人工采纳，误失效代价最高）与 REJECTED（平台侧可能已不展示）需要显式
+ *   加入。空数组 = 不做任何检查（currentTips 仍发空数组）。
+ * - `semanticVerdict.enabled`：LLM 语义裁决开关。true = 确定性规则无法判定
+ *   的中间地带（锚点变更 / 配对疑问）发一次性结构化裁决；false = 中间地带
+ *   保守保留，只在 sidecar 留痕。
+ */
+export interface HistoryTipsLimits {
+  readonly statuses: readonly string[];
+  readonly semanticVerdict: {
+    readonly enabled: boolean;
+  };
+}
+
+/** 历史意见状态全集（服务端契约）；INVALIDATED 只用于排除，不可配置 */
+export const HISTORY_TIP_STATUSES = ["PENDING", "ACCEPTED", "REJECTED"] as const;
+/** 参与检查的状态缺省：只查待处理意见 */
+export const DEFAULT_HISTORY_TIP_STATUSES: readonly string[] = ["PENDING"];
 
 /**
  * 语言缺陷清单注入（ADR-0118）：MR 与全仓扫描各自独立开关。开启后只在
@@ -394,6 +419,10 @@ export const DEFAULT_LIMITS: Limits = {
     groupAttempts: 2,
     includeTests: false,
     trackedOnly: true,
+    historyTips: {
+      statuses: ["PENDING"],
+      semanticVerdict: { enabled: true },
+    },
     includeRegex: [],
     excludeRegex: [],
   },
@@ -462,9 +491,12 @@ const REPO_SCAN_KEYS = [
   "groupAttempts",
   "includeTests",
   "trackedOnly",
+  "historyTips",
   "includeRegex",
   "excludeRegex",
 ] as const;
+const HISTORY_TIPS_KEYS = ["statuses", "semanticVerdict"] as const;
+const HISTORY_TIPS_SEMANTIC_KEYS = ["enabled"] as const;
 const LANGUAGE_RULES_KEYS = ["mr", "repo"] as const;
 
 
@@ -892,6 +924,7 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
       "limits.repoScan.trackedOnly",
       DEFAULT_LIMITS.repoScan.trackedOnly,
     ),
+    historyTips: parseHistoryTips(repoScanObj.historyTips),
     includeRegex: parseRegexList(
       repoScanObj.includeRegex,
       "limits.repoScan.includeRegex",
@@ -924,6 +957,42 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
   };
 
   return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, genericReview, evidence, boundary, split, archive, micro, retrieval, coverage, repoScan, languageRules };
+}
+
+/** 历史意见失效检查配置：statuses 枚举校验（INVALIDATED 恒非法）+ 裁决开关 */
+function parseHistoryTips(value: unknown): HistoryTipsLimits {
+  const obj = optionalObject(value, "limits.repoScan.historyTips", []);
+  assertKnownKeys(obj, HISTORY_TIPS_KEYS, "limits.repoScan.historyTips", []);
+  // INVALIDATED 不在 HISTORY_TIP_STATUSES 枚举里：写入会在 enumListOr 处
+  // 以 ConfigError 拒绝（「must contain only PENDING, ACCEPTED, REJECTED」）——
+  // 已失效的意见恒不参与检查由枚举本身保证。
+  const statuses = enumListOr(
+    obj.statuses,
+    "limits.repoScan.historyTips.statuses",
+    HISTORY_TIP_STATUSES,
+    DEFAULT_HISTORY_TIP_STATUSES,
+  );
+  const semanticObj = optionalObject(
+    obj.semanticVerdict,
+    "limits.repoScan.historyTips.semanticVerdict",
+    [],
+  );
+  assertKnownKeys(
+    semanticObj,
+    HISTORY_TIPS_SEMANTIC_KEYS,
+    "limits.repoScan.historyTips.semanticVerdict",
+    [],
+  );
+  return {
+    statuses,
+    semanticVerdict: {
+      enabled: boolOr(
+        semanticObj.enabled,
+        "limits.repoScan.historyTips.semanticVerdict.enabled",
+        DEFAULT_LIMITS.repoScan.historyTips.semanticVerdict.enabled,
+      ),
+    },
+  };
 }
 
 /** 枚举字符串数组：去空白、去重、逐项校验；undefined = 用缺省值 */

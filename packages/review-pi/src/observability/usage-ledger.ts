@@ -18,6 +18,7 @@ export type UsageSource =
   | "candidate-repair"
   | "coverage-repair"
   | "finding-verification"
+  | "history-verdict"
   | "tips"
   | "summary"
   | "other";
@@ -92,6 +93,7 @@ export const ONE_SHOT_USAGE_SOURCES: readonly UsageSource[] = [
   "candidate-repair",
   "coverage-repair",
   "finding-verification",
+  "history-verdict",
   "tips",
   "summary",
   "other",

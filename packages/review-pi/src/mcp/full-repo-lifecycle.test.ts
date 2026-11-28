@@ -97,6 +97,38 @@ describe("createFullRepoLifecycle（ADR-0117）", () => {
     expect(done).toEqual({ ok: true, waitedMs: 5_000 });
   });
 
+  test("R-21：reportCurrentTips 携带失效清单；finish 补发用 setInvalidatedTips 的清单", async () => {
+    const tasks = fakeTasks();
+    const { value } = lifecycle(tasks);
+    expect(await value.start()).toEqual({ ok: true });
+
+    // 未显式调用 currentTips：先预登记，finish 补发时携带
+    value.setInvalidatedTips([{ reason: "文件已删除", tipsId: 7 }]);
+    const done = await value.finish();
+    expect(done).toEqual({ ok: true, waitedMs: 10_000 });
+    // finish 补发的 currentTips 是倒数第二个调用（最后是 endTask）
+    expect(tasks.calls.at(-2)?.args).toEqual({
+      taskId: "repo-task-1",
+      invalidatedTips: [{ reason: "文件已删除", tipsId: 7 }],
+    });
+  });
+
+  test("R-21：显式 reportCurrentTips(args) 覆盖预登记清单且幂等", async () => {
+    const tasks = fakeTasks();
+    const { value } = lifecycle(tasks);
+    expect(await value.start()).toEqual({ ok: true });
+    value.setInvalidatedTips([{ reason: "重复", tipsId: 1 }]);
+    expect(
+      await value.reportCurrentTips({ invalidatedTips: [{ reason: "已修复", tipsId: 9 }] }),
+    ).toEqual({ ok: true });
+    expect(await value.reportCurrentTips()).toEqual({ ok: true });
+    await value.finish();
+    expect(tasks.calls.at(-2)?.args).toEqual({
+      taskId: "repo-task-1",
+      invalidatedTips: [{ reason: "已修复", tipsId: 9 }],
+    });
+  });
+
   test("start 失败：不发 currentTips / endTask", async () => {
     const tasks = fakeTasks({ start: { ok: false, reason: "down" } });
     const { value } = lifecycle(tasks);

@@ -31,6 +31,7 @@ export function resolveRepoScanSettings(
     groupAttempts: args.groupAttempts ?? base.groupAttempts,
     includeTests: args.includeTests ?? base.includeTests,
     trackedOnly: base.trackedOnly,
+    historyTips: base.historyTips,
     includeRegex: args.includePatterns ?? base.includeRegex,
     excludeRegex: args.excludePatterns ?? base.excludeRegex,
   };
