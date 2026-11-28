@@ -99,7 +99,7 @@
 | R-18 | LLM 用量账本（单一写入点 + 落盘） | token 统计分散在调用方；repo 漏记一次性 / 失败 attempt，PR reply-repair 双计 | P0 | DONE | 调用边界单点记账；审计 / CLI / repo / job / run.json 只读投影；真实实例总账相等 | 2026-11-27 完成：commit `337889f`；真实 multilang 仓 4 组一致；cline / gofr 日志总账 = `audit.usage + coverageRepair.usage`；全包 1360 passed / 1 skipped | [票](issues/R-18-usage-ledger/ticket.md) · [讨论](issues/R-18-usage-ledger/discussion.md) |
 | R-19 | 离线回放 trace 维护 | 提示词变更后六条 trace 全 miss；长路径规则 Skill 缓存根未归一化 | P1 | DONE | `test:replay` 6/6；trace 响应与期望不变 | 2026-11-27 完成：commit `8653f8b`；旧响应作确定性上游重录；注册 `<rule-skill-cache>` 归一化 | [票](issues/R-19-replay-trace-maintenance/ticket.md) · [讨论](issues/R-19-replay-trace-maintenance/discussion.md) |
 | R-20 | 通用检视建议类抑制与 git 仓 trackedOnly | 用户反馈建议类意见过多；untracked 临时文件可能被检视 | P1 | DONE | 默认压 P3 + 可维护/可读性/可测试性；规则 Skill 候选豁免；git 仓默认只枚举已跟踪文件；`config init` 可生成 | 2026-11-28 完成：commit `ff33194`；全包 127 files / 1388 passed / 1 skipped；`test:replay` 6/6 | [票](issues/R-20-generic-suggestion-suppression/ticket.md) · [讨论](issues/R-20-generic-suggestion-suppression/discussion.md) |
-| R-21 | 历史意见失效上报（repo 模式） | `fullRepoFilerCurrentTips` v1 恒空数组；平台历史意见无失效闭环 | P0 | DOING | 判定矩阵（规则 + LLM 语义裁决）+ 中文 reason 枚举 + 随组流水线 + sidecar 持久化 + 续跑复用；`config init` 生成两新键；验收见票 | 2026-11-28 方案封版（判定矩阵 / LLM 车道 / 时机 / 故障语义 / 全部参数）；实现中 | [票](issues/R-21-history-tips-invalidation/ticket.md) · [讨论](issues/R-21-history-tips-invalidation/discussion.md) |
+| R-21 | 历史意见失效上报（repo 模式） | `fullRepoFilerCurrentTips` v1 恒空数组；平台历史意见无失效闭环 | P0 | DONE | 判定矩阵（规则 + LLM 语义裁决）+ 中文 reason 枚举 + 随组流水线 + sidecar 持久化 + 续跑复用；`config init` 生成两新键；验收见票 | 2026-11-28 完成：commit `7be10d2` / ADR-0122；全包 130 files / 1435 passed / 1 skipped；`test:replay` 6/6；真实 MCP 联调待平台侧 | [票](issues/R-21-history-tips-invalidation/ticket.md) · [讨论](issues/R-21-history-tips-invalidation/discussion.md) |
 
 ## 当前焦点
 
@@ -124,7 +124,7 @@
 - [x] **R-18 LLM 用量账本**：完成；调用边界单点记账，审计 / CLI / repo / job / run.json 只读投影；真实实例总账相等。
 - [x] **R-19 回放 trace 维护**：完成；六条 trace 重录，长路径技能缓存根归一化；`test:replay` 6/6。
 - [x] **R-20 建议类抑制 / trackedOnly**：完成；通用检视缺省压建议类候选，规则 Skill 候选豁免；git 仓缺省只枚举已跟踪文件。
-- [ ] **R-21 历史意见失效上报**：方案封版（矩阵 / LLM 裁决 / 流水线 / 故障语义）；实现中。
+- [x] **R-21 历史意见失效上报**：完成；规则 + LLM 语义裁决 + 随组流水线 + 续跑复用，currentTips 携带中文 reason 清单；ADR-0122。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
 - [ ] **R-06c 冻结评测集**：方案已记录（定义、冻结项、答案来源、三层设计）；2026-11-26 决定先不做。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
@@ -160,4 +160,5 @@
 - 2026-11-28：cap-hit 6 条 `maxRequests` 8 vs 16 归档 `bench/experiments/2026-11-27-cap8-vs-16/`：cap8 P38.7/R24.1/B29.7，cap16 P41.9/R29.6/B34.7（补漏非缓存+output +98.0%，非缓存总成本 +37.9%）；77 个预算跳过 hunk 只换来 1 条明确归因 GT（union state/movement:148），剩余 35 个 `no-signal` 才是下一瓶颈。默认 `maxRequests` 维持 8。
 - 2026-11-28：R-20 完成；新增 `limits.genericReview.suppress`（缺省压 P3 + 可维护/可读性/可测试性，规则 Skill 候选豁免，审计 `genericReview` 留痕）与 `limits.repoScan.trackedOnly`（git 仓缺省只枚举已跟踪文件）；全包 1388 passed / 1 skipped，`test:replay` 6/6；commit `ff33194`。
 - 2026-11-28：R-20 修正口径；`genericReview.suppress` 改为呈现层抑制——被抑制的 finding 仍进 `reviews_all` / stdout / `run.json` 全量，只在中文 tips / MCP 上报隐藏；候选门与覆盖账本仍按全量。补 repo 端到端断言（reviews_all 保留、MCP 回调为空）。
+- 2026-11-28：R-21 完成：`.aireview/history_review_tips.json` 失效检查全链落地——判定矩阵（规则层零模型 + LLM 四值裁决开关）、reason 中文枚举（文件已删除/重复/已修复）、随组流水线 + 原子落盘续跑复用、MCP 关闭整功能跳过、每条候选恰一次裁决（无预算截断）；全包 1435 passed / 1 skipped，replay 6/6；commit `7be10d2`，ADR-0122。
 - 2026-11-28：R-21 方案封版并开工：`.aireview/history_review_tips.json` 历史意见失效检查——判定矩阵（规则层 + LLM 语义裁决开关）、reason 中文枚举（文件已删除/重复/已修复）、随组流水线 + sidecar 持久化 + 续跑复用、无预算截断（每条恰好一次裁决尝试）、MCP 缺失整功能跳过；两新配置键进 config init。

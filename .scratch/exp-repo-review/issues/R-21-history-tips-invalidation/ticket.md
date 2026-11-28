@@ -1,6 +1,6 @@
 # R-21 · 历史意见失效上报（repo 模式）
 
-Status: claimed
+Status: done
 Claimed: 2026-11-28
 Branch: `exp-repo-review`
 
@@ -119,7 +119,29 @@ not-reached（枚举跳过 / 组失败 / 预算 / `--files` 范围外 / resume �
 - 内部常量不进配置面：窗口 ±30 行 / 4k / 6k / 24k / 30 条 / worker 并发 2；
   Jaccard 硬档下限 0.3 / 软阈 0.5（待真实数据回校，sidecar 记分数）。
 
-## 验收
+## 验收（2026-11-28 完成，commit 7be10d2）
+
+- 判定核心单测 26 条：准入归一（INVALIDATED 跳过 / 状态过滤 / id 与
+  lineNum 校验 / filePath 归一）/ 锚点三态 / 配对信号与矩阵 8 行 /
+  reason 映射；
+- 裁决契约单测 6 条：合法 verdicts、duplicate 必须带合法
+  matchedFindingId（否则解析失败 fail-open）、幻觉条目忽略、坏回包
+  重发后失败、超上限拆批（每条都判）、提示词窗口装配；
+- 编排单测 9 条：硬档零模型定案 + sidecar 落盘、fixed/persist 终态、
+  调用失败 fail-open、开关关闭零调用、end-sweep 文件已删除与
+  not-reached、续跑缓存复用（零重付 LLM）、续跑无缓存补判、
+  finalize 异常防御壳；
+- 进程级端到端 2 条：夹具仓副本 + history 文件 → currentTips 携带
+  中文 reason 清单 + result 摘要 + sidecar + stderr 留痕；MCP 未启用
+  → 整个失效检查跳过 + 一行留痕；
+- `config init` 模板含两键且与示例配置字节一致（config.process 既有
+  测试覆盖）；historyTips 配置单测（默认 / 可配 / INVALIDATED 拒绝 /
+  大小写敏感）；
+- `.aireview/` 枚举排除单测；full-repo-lifecycle 携带清单单测；
+- 全包 130 files / 1435 passed / 1 skipped；`pnpm test:replay` 6/6
+  （裁决走 one-shot 车道，agent trace 零影响）。
+
+## 验收（原验收清单）
 
 - 纯函数单测：条目准入 / 锚点分类（exact-edited-gone）/ 矩阵各路径 /
   相似度与编辑距离边界 / reason 映射 / 合并复用（tipsId 去重、组 done 校验）；
