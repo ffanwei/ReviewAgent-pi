@@ -278,7 +278,10 @@ export function sanitizeSummaryMarkdown(
  * 兼容 `</think>## 检视总览` 同一行（没有换行）的形态。
  */
 function stripLeadingReasoningWrapper(text: string): string {
-  const closeTag = /<\/think\s*>/giu;
+  // 宽容匹配网关/模型的标记变体：`</think>`、`</Think>`、`</ think>`、
+  // `< /think  >`（标签内任意空白）；不匹配的形态由「从后往前找标题 +
+  // 只保留到星级行」的结构裁剪兜底——最坏是回落模板，不会外发思考。
+  const closeTag = /<\s*\/\s*think\s*>/giu;
   let lastCloseEnd = -1;
   for (const match of text.matchAll(closeTag)) {
     lastCloseEnd = (match.index ?? 0) + match[0].length;

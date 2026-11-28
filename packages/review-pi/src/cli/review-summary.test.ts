@@ -357,6 +357,39 @@ test("思考草稿的标题在闭合标签之前、正式文档在之后：取�
   expect(result.markdown).toContain("不安全重定向");
 });
 
+test("平台实测泄漏形态（用户报告）：思考 + 闭合标签 + 标题同行 不外发", async () => {
+  // 用户平台实测看到的形态：草稿文本 + 闭合标签 + "## 检视总览" 连在一行
+  const closeTag = ["</thi", "nk>"].join("");
+  const result = await buildReviewSummary({
+    findings: [finding("src/Foo.java", "P1")],
+    runtime: RUNTIME,
+    fetch: async () => modelReply(`xxxxxx。${closeTag}## 检视总览\n${validSummary()}`),
+  });
+  expect(result.markdown.startsWith("## 检视总览")).toBe(true);
+  expect(result.markdown).not.toContain("xxxxxx");
+  expect(result.markdown).not.toContain("我们根据");
+});
+
+test("标记变体带内部空白：同样剥掉思考包装", async () => {
+  const result = await buildReviewSummary({
+    findings: [finding("src/Foo.java", "P1")],
+    runtime: RUNTIME,
+    fetch: async () => modelReply(["思考草稿。</ thi", "nk>", validSummary()].join("\n")),
+  });
+  expect(result.degradedReason).toBeUndefined();
+  expect(result.markdown.startsWith("## 检视总览")).toBe(true);
+  expect(result.markdown).not.toContain("思考草稿");
+
+  const spaced = await buildReviewSummary({
+    findings: [finding("src/Foo.java", "P1")],
+    runtime: RUNTIME,
+    fetch: async () => modelReply(["思考草稿。< /thi", "nk  >", validSummary()].join("\n")),
+  });
+  expect(spaced.degradedReason).toBeUndefined();
+  expect(spaced.markdown.startsWith("## 检视总览")).toBe(true);
+  expect(spaced.markdown).not.toContain("思考草稿");
+});
+
 test("整篇被代码围栏包住：剥围栏后照常通过", async () => {
   const result = await buildReviewSummary({
     findings: [finding("src/Foo.java", "P1")],
