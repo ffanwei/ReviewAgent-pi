@@ -17,6 +17,12 @@ import {
   parseRegexList,
   severityOr,
 } from "./config-schema.js";
+import {
+  REVIEW_CATEGORIES,
+  REVIEW_SEVERITIES,
+  type ReviewCategory,
+  type ReviewSeverity,
+} from "../contracts/finding.js";
 
 export interface TimeoutLimits {
   readonly skillPassMs: number;
@@ -245,6 +251,11 @@ export interface RepoScanLimits {
   readonly maxTotalTokens: number;
   readonly groupAttempts: number;
   readonly includeTests: boolean;
+  /**
+   * git 仓库是否只枚举已跟踪文件（缺省 true）。false = 同时纳入未被 ignore 的
+   * untracked 文件（旧行为）；非 git 仓库此开关不生效，仍走文件系统遍历。
+   */
+  readonly trackedOnly: boolean;
   /** 仓库相对 POSIX 路径白名单；空 = 不过滤 */
   readonly includeRegex: readonly string[];
   /** 仓库相对 POSIX 路径黑名单；命中即剔除，优先于白名单 */
@@ -260,6 +271,21 @@ export interface LanguageRulesLimits {
   readonly repo: boolean;
 }
 
+/**
+ * 通用检视建议类抑制（MR + repo）：只作用于通用检视候选，规则 Skill 候选不走。
+ *
+ * - `severities` 空 = 不过滤；
+ * - `categories` 空 = 不按类别限制（对 `severities` 命中的所有类别生效）；
+ * - 默认只压 P3 且落在「可维护 / 可读性 / 可测试性」的候选，保留 P3 的安全 /
+ *   可靠性 / 性能意见。
+ */
+export interface GenericReviewLimits {
+  readonly suppress: {
+    readonly severities: readonly ReviewSeverity[];
+    readonly categories: readonly ReviewCategory[];
+  };
+}
+
 export interface Limits {
   readonly loop: LoopLimits;
   readonly timeouts: TimeoutLimits;
@@ -269,6 +295,7 @@ export interface Limits {
   readonly testFiles: TestFileLimits;
   readonly mrFilter: MrFilterLimits;
   readonly findingScope: FindingScopeLimits;
+  readonly genericReview: GenericReviewLimits;
   readonly evidence: EvidenceLimits;
   readonly boundary: BoundaryLimits;
   readonly split: SplitLimits;
@@ -312,6 +339,12 @@ export const DEFAULT_LIMITS: Limits = {
     excludeRegex: [],
   },
   findingScope: { enabled: true, contextLines: 10 },
+  genericReview: {
+    suppress: {
+      severities: ["P3"],
+      categories: ["可维护", "可读性", "可测试性"],
+    },
+  },
   evidence: { mode: "warn", minMatchChars: 30 },
   boundary: { maxFiles: 10, maxDiffLines: 2_000, maxDiffChars: 1_000_000 },
   split: { enabled: true, maxShardChars: 120_000, maxShards: 12, contextSummaryChars: 8_000, concurrency: 1 },
@@ -357,6 +390,7 @@ export const DEFAULT_LIMITS: Limits = {
     maxTotalTokens: 0,
     groupAttempts: 2,
     includeTests: false,
+    trackedOnly: true,
     includeRegex: [],
     excludeRegex: [],
   },
@@ -364,7 +398,7 @@ export const DEFAULT_LIMITS: Limits = {
 };
 
 
-const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "evidence", "boundary", "split", "archive", "micro", "retrieval", "coverage", "repoScan", "languageRules"] as const;
+const LIMITS_KEYS = ["loop", "timeouts", "retry", "confidence", "severity", "testFiles", "mrFilter", "findingScope", "genericReview", "evidence", "boundary", "split", "archive", "micro", "retrieval", "coverage", "repoScan", "languageRules"] as const;
 const LOOP_KEYS = ["maxRounds", "phase5Sweep", "stageCompression"] as const;
 const TIMEOUT_KEYS = [
   "skillPassMs",
@@ -392,6 +426,8 @@ const SEVERITY_KEYS = ["min"] as const;
 const TEST_FILES_KEYS = ["skip"] as const;
 const MR_FILTER_KEYS = ["excludeGlobs", "includeRegex", "excludeRegex"] as const;
 const FINDING_SCOPE_KEYS = ["enabled", "contextLines"] as const;
+const GENERIC_REVIEW_KEYS = ["suppress"] as const;
+const GENERIC_REVIEW_SUPPRESS_KEYS = ["severities", "categories"] as const;
 const BOUNDARY_KEYS = ["maxFiles", "maxDiffLines", "maxDiffChars"] as const;
 const EVIDENCE_KEYS = ["mode", "minMatchChars"] as const;
 
@@ -422,6 +458,7 @@ const REPO_SCAN_KEYS = [
   "maxTotalTokens",
   "groupAttempts",
   "includeTests",
+  "trackedOnly",
   "includeRegex",
   "excludeRegex",
 ] as const;
@@ -572,6 +609,40 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
       2_000,
       DEFAULT_LIMITS.findingScope.contextLines,
     ),
+  };
+
+  const genericReviewObj = optionalObject(
+    limits.genericReview,
+    "limits.genericReview",
+    warnings,
+  );
+  assertKnownKeys(genericReviewObj, GENERIC_REVIEW_KEYS, "limits.genericReview", warnings);
+  const genericSuppressObj = optionalObject(
+    genericReviewObj.suppress,
+    "limits.genericReview.suppress",
+    warnings,
+  );
+  assertKnownKeys(
+    genericSuppressObj,
+    GENERIC_REVIEW_SUPPRESS_KEYS,
+    "limits.genericReview.suppress",
+    warnings,
+  );
+  const genericReview: GenericReviewLimits = {
+    suppress: {
+      severities: enumListOr(
+        genericSuppressObj.severities,
+        "limits.genericReview.suppress.severities",
+        REVIEW_SEVERITIES,
+        DEFAULT_LIMITS.genericReview.suppress.severities,
+      ),
+      categories: enumListOr(
+        genericSuppressObj.categories,
+        "limits.genericReview.suppress.categories",
+        REVIEW_CATEGORIES,
+        DEFAULT_LIMITS.genericReview.suppress.categories,
+      ),
+    },
   };
 
   const boundaryObj = optionalObject(limits.boundary, "limits.boundary", warnings);
@@ -813,6 +884,11 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
       "limits.repoScan.includeTests",
       DEFAULT_LIMITS.repoScan.includeTests,
     ),
+    trackedOnly: boolOr(
+      repoScanObj.trackedOnly,
+      "limits.repoScan.trackedOnly",
+      DEFAULT_LIMITS.repoScan.trackedOnly,
+    ),
     includeRegex: parseRegexList(
       repoScanObj.includeRegex,
       "limits.repoScan.includeRegex",
@@ -844,5 +920,36 @@ export function parseLimits(raw: unknown, warnings: string[]): Limits {
     ),
   };
 
-  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, evidence, boundary, split, archive, micro, retrieval, coverage, repoScan, languageRules };
+  return { loop, timeouts, retry, confidence, severity, testFiles, mrFilter, findingScope, genericReview, evidence, boundary, split, archive, micro, retrieval, coverage, repoScan, languageRules };
+}
+
+/** 枚举字符串数组：去空白、去重、逐项校验；undefined = 用缺省值 */
+function enumListOr<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+  fallback: readonly T[],
+): readonly T[] {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (!Array.isArray(value)) {
+    throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must be an array`);
+  }
+  const out: T[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new ConfigError(`${CONFIG_FILE_NAME}: ${path} must contain strings`);
+    }
+    const trimmed = item.trim();
+    if (!(allowed as readonly string[]).includes(trimmed)) {
+      throw new ConfigError(
+        `${CONFIG_FILE_NAME}: ${path} must contain only ${allowed.join(", ")}`,
+      );
+    }
+    if (!out.includes(trimmed as T)) {
+      out.push(trimmed as T);
+    }
+  }
+  return out;
 }

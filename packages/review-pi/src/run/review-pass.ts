@@ -43,6 +43,7 @@ import { retryPolicyFor } from "../shared/llm-retry.js";
 import type { ReviewRuntime } from "../shared/review-runtime.js";
 import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
+import { mergeGenericReviewSuppressions } from "../shared/generic-review-policy.js";
 import { buildReviewToolkit } from "../tools/toolkit.js";
 import { createContextLedger } from "../tools/ledger.js";
 import {
@@ -426,6 +427,7 @@ async function executeReviewPass(
     toolkit,
     apiKey: input.apiKey,
     runtime: input.runtime,
+    genericReview: input.runtime.limits.genericReview,
     ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
     modelId: input.modelId,
     fetch: input.fetch,
@@ -476,6 +478,7 @@ async function executeReviewPass(
           ledger: mainCoverage,
           findings: outcomeFindings,
           limits: repairLimits,
+          genericReview: input.runtime.limits.genericReview,
           ...(scope !== undefined ? { scope } : {}),
           llm: {
             baseUrl: repairModel.baseUrl,
@@ -490,6 +493,10 @@ async function executeReviewPass(
       : undefined;
   const findings =
     repair === undefined ? outcomeFindings : [...outcomeFindings, ...repair.findings];
+  const genericReview = mergeGenericReviewSuppressions(
+    outcome.audit.genericReview,
+    repair?.genericReview,
+  );
   // 补漏是一次性调用：成本记在 `coverageRepair.usage` 与 one-shot 账本，
   // 不并入主会话 usage（避免与 one-shot 汇总重复计数）。
   const usage = outcome.usage;
@@ -526,6 +533,7 @@ async function executeReviewPass(
     ...(outcome.audit.skillPassLog !== undefined ? { skillPassLog: persisted.records } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
     ...(severityFilter !== undefined ? { severityFilter } : {}),
+    ...(genericReview !== undefined ? { genericReview } : {}),
     ...(pathRepair.repairs.length > 0 ? { pathRepairs: pathRepair.repairs } : {}),
     ...(skillReview !== undefined
       ? {

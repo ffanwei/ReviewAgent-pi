@@ -44,6 +44,18 @@ import { buildSkillPassInvocation } from "./skill-pass-brief.js";
 /** 单 skill 会话超时（ADR-0014 决策 11：10 min） */
 export const SKILL_PASS_TIMEOUT_MS = 10 * 60_000;
 
+/**
+ * Skill 会话的 system prompt 尾注：规则 Skill 是用户显式提供的检视重点，
+ * SKILL.md 的要求优先于通用“少提建议类”口径。只追加到 skill 会话，主会话
+ * system prompt 字节不变。
+ */
+export const SKILL_PRIORITY_SUFFIX = [
+  "## 规则 Skill 优先",
+  "本会话是用户提供的规则 Skill 检视。SKILL.md 对规则、证据、严重级和报告范围有最终解释权；",
+  "不要因为候选属于风格、文档、测试或“可不改的建议”类就省略。",
+  "只有 SKILL.md 未要求时才退回通用缺陷口径。",
+].join("\n");
+
 export interface SkillPassOptions {
   readonly round: number;
   readonly skill: RuleSkill;
@@ -166,7 +178,7 @@ export async function runSkillPass(options: SkillPassOptions): Promise<SkillPass
   const model = reviewModelOf(options.modelId, options.baseUrl);
   const agent = new Agent({
     initialState: {
-      systemPrompt: options.systemPrompt,
+      systemPrompt: `${options.systemPrompt}\n\n${SKILL_PRIORITY_SUFFIX}`,
       model,
       messages: [...options.seedMessages],
       tools,

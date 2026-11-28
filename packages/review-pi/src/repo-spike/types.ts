@@ -34,6 +34,11 @@ export interface RepoSpikeOptions {
   readonly groupConcurrency: number;
   /** 是否把测试文件纳入检视（缺省 false，与全仓扫描契约一致） */
   readonly includeTests: boolean;
+  /**
+   * git 仓库是否只枚举已跟踪文件（缺省 true）。false = 同时纳入未被 ignore 的
+   * untracked 文件；非 git 仓库不生效。
+   */
+  readonly trackedOnly?: boolean;
   readonly dryRun: boolean;
   /** 从 `<out>/job.json` 续跑：校验快照 / 配置 / 计划 hash 后跳过已完成组 */
   readonly resume?: boolean;

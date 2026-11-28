@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { CoverageRepairLimits } from "../shared/config-limits.js";
+import { DEFAULT_LIMITS } from "../shared/config-limits.js";
 import type { RetryPolicy } from "../shared/llm-retry.js";
 import { buildCoverageLedger } from "./coverage-ledger.js";
 import {
@@ -342,6 +343,46 @@ describe("repairCoverageGaps", () => {
     expect(verifier.response_format?.type).toBe("json_schema");
     expect(verifier.response_format?.json_schema?.name).toBe("coverage_repair_verdicts");
     expect(verifier.messages?.[0]?.content ?? "").toContain("证伪");
+  });
+
+  test("通用建议类抑制：P3 可维护候选被丢弃，不回填账本", async () => {
+    const ledger = buildCoverageLedger(DIFF_A);
+    const fetch: FetchFunction = async (_url, init) => {
+      const body = String(init?.body ?? "");
+      if (isVerifierCall(body)) {
+        return completion(
+          JSON.stringify({ verdicts: [{ id: "CR001", pass: true, reason: "证据成立" }] }),
+        );
+      }
+      return completion(
+        JSON.stringify({
+          receipts: [
+            {
+              kind: "candidate",
+              hunk: 2,
+              candidate: { ...candidate(11), severity: "P3", category: "可维护" },
+            },
+          ],
+        }),
+      );
+    };
+    const result = await repairCoverageGaps({
+      diff: DIFF_A,
+      ledger,
+      findings: [],
+      limits: { ...LIMITS, maxRequests: 10 },
+      genericReview: DEFAULT_LIMITS.genericReview,
+      llm: llm(fetch),
+    });
+    expect(result.findings).toHaveLength(0);
+    expect(result.audit.acceptedFindings).toBe(0);
+    expect(result.genericReview).toMatchObject({
+      dropped: 1,
+      bySeverity: { P3: 1 },
+      byCategory: { 可维护: 1 },
+    });
+    const a = result.ledger.files.find((file) => file.file === "src/a.ts");
+    expect(a?.hunks[1]?.status).toBe("not-reached");
   });
 
   test("独立验证拒绝的候选不进 findings；hunk 保持未覆盖", async () => {

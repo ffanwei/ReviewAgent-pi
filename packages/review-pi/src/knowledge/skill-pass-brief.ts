@@ -39,9 +39,12 @@ function invocationContract(
   const evidence = docMode
     ? "- 证据必填：代码用符号 + 行号 + 摘录；文档用引文 + 目标文件:行 + review.get_file 的结果。没有证据的候选会被丢弃。"
     : "- 证据必填（符号 + 行号 + 摘录）；没有证据的候选会被丢弃。";
-  const precedence = docMode
-    ? ["- 若本 skill 的 SKILL.md 对证据、示例或严重级有更具体规定，以其为准。"]
-    : [];
+  const precedence = [
+    "- 本会话按用户规则 Skill 检视；SKILL.md 对规则、证据、严重级与报告范围有最终解释权，不受通用“少提建议类”口径限制。",
+    ...(docMode
+      ? ["- 若本 skill 的 SKILL.md 对证据、示例或严重级有更具体规定，以其为准。"]
+      : []),
+  ];
   const closing = docMode
     ? '- 若检查后没有规则违例或文档问题存活，回复 {"candidates": []}。'
     : '- 若检查后没有规则违例存活，回复 {"candidates": []}。';
@@ -151,6 +154,7 @@ export function buildSkillCandidatesBrief(
   lines.push(
     "",
     "上面每条候选 id 都必须出现在你的 verdicts 数组里。只复述候选自身主张的证据不算核验。",
+    "这些候选来自用户规则 Skill，按 Skill 的规则与严重级核验；不要以“只是建议/风格/文档/测试”为由驳回。",
   );
   return lines.join("\n");
 }

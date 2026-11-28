@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
-import type { LanguageRulesLimits } from "../shared/config-limits.js";
+import type { GenericReviewLimits, LanguageRulesLimits } from "../shared/config-limits.js";
 
 import { addUsage, ZERO_USAGE } from "../provider/usage-map.js";
 import {
@@ -64,6 +64,11 @@ export interface RepoSpikeDeps {
    */
   readonly languageRules?: LanguageRulesLimits;
   /**
+   * 通用检视建议类抑制：来自配置 `limits.genericReview`。
+   * 缺席 = 内置缺省（P3 + 可维护 / 可读性 / 可测试性）。
+   */
+  readonly genericReview?: GenericReviewLimits;
+  /**
    * 每批（组）检视完成后的上报缝（ADR-0117）：只在 `status=reviewed` 时、组结果
    * 已落 job 之后触发。回调抛错只留一行进度，绝不影响检视结果与退出码。
    * 续跑跳过的 done 组不会触发。
@@ -99,6 +104,7 @@ export async function runRepoSpike(
     repoPath,
     maxFiles: options.maxFiles,
     maxFileChars: options.maxFileChars,
+    trackedOnly: options.trackedOnly ?? true,
     ...(options.pathPrefix !== undefined ? { pathPrefix: options.pathPrefix } : {}),
     ...(options.files !== undefined ? { files: options.files } : {}),
     ...(options.includeRegexes !== undefined ? { includeRegexes: options.includeRegexes } : {}),
@@ -327,6 +333,7 @@ export async function runRepoSpike(
         toolCallsPerFile,
         maxToolCallsPerGroup,
       ),
+      deps.genericReview,
     );
 
     for (let attempt = 0; attempt < groupAttempts; attempt += 1) {

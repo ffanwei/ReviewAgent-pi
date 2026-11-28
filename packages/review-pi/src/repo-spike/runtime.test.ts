@@ -23,3 +23,17 @@ test("buildSpikeRuntime：工具预算进入运行时", () => {
   expect(runtime.maxToolCalls).toBe(40);
   expect(runtime.maxToolAttempts).toBe(50);
 });
+
+test("buildSpikeRuntime：用户配置的 genericReview 覆盖内置缺省", () => {
+  const genericReview = {
+    suppress: { severities: [], categories: [] },
+  } as const;
+  const runtime = buildSpikeRuntime(
+    1,
+    false,
+    undefined,
+    computeSpikeToolBudget(5, 8, 40),
+    genericReview,
+  );
+  expect(runtime.limits.genericReview).toEqual(genericReview);
+});

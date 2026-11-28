@@ -8,7 +8,7 @@ import { reviewToolSchemas } from "../tools/registry.js";
 import type { ReviewToolkit } from "../tools/toolkit.js";
 import { SYSTEM_PROMPT } from "../loop/system-prompt.js";
 import type { RuleSkill } from "./rule-skill.js";
-import { runSkillPass } from "./skill-pass.js";
+import { runSkillPass, SKILL_PRIORITY_SUFFIX } from "./skill-pass.js";
 
 // 单个 skill 检视会话（ADR-0014 决策 3/4/6/11）：
 // - 独立 Agent，种子 = 主会话 Phase 5 末 messages 快照；
@@ -112,8 +112,11 @@ test("独立会话：复用 system prompt、种子历史原样、可见工具面
     messages: { role: string; content: unknown }[];
     tools?: { function?: { name?: string } }[];
   };
-  // Zone A 复用：同一 SYSTEM_PROMPT（跨会话缓存前缀）
-  expect(body.messages[0]).toEqual({ role: "system", content: SYSTEM_PROMPT });
+  // Zone A 复用：同一 SYSTEM_PROMPT 前缀 + Skill 优先尾注（主会话字节不变）
+  expect(body.messages[0]).toEqual({
+    role: "system",
+    content: `${SYSTEM_PROMPT}\n\n${SKILL_PRIORITY_SUFFIX}`,
+  });
   // 种子 = 主会话 Phase 5 末快照（原样，不改写）
   expect(body.messages[1]).toMatchObject({ role: "user", content: [{ type: "text", text: "seed-1 (initial MR message)" }] });
   expect(body.messages[2]).toMatchObject({ role: "user", content: [{ type: "text", text: "seed-2 (phase 5 instruction)" }] });

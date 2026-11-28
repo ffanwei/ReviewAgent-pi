@@ -123,6 +123,8 @@ test("config init：写到沙箱 home 的 ~/.PiAgent/PiAgent.jsonc，JSONC 模�
   expect(text).toContain("// PiAgent 运行配置");
   expect(text).toContain('"version": 1');
   expect(text).toContain('"callChainHops": 2');
+  expect(text).toContain('"trackedOnly": true');
+  expect(text).toContain('"genericReview"');
 
   // 写出来就能读回去：初始态 apiKey 为空 = missing，show 不炸
   const show = await runCli(["config", "show", "--config", filePath, "--json"]);
@@ -135,6 +137,11 @@ test("config init：写到沙箱 home 的 ~/.PiAgent/PiAgent.jsonc，JSONC 模�
   expect(snapshot.path).toBe(filePath);
   expect(snapshot.secret).toEqual({ "reviewer.apiKey": "missing" });
   expect(snapshot.values["model.default"]).toBe("deepseek-v4-flash");
+  expect(snapshot.values["limits.repoScan.trackedOnly"]).toBe(true);
+  expect(snapshot.values["limits.genericReview.suppress"]).toEqual({
+    severities: ["P3"],
+    categories: ["可维护", "可读性", "可测试性"],
+  });
   // ADR-0091：presentation.engine 配置键已随呈现投影层退役，模板不再包含该键
   expect(snapshot.values["presentation.engine"]).toBeUndefined();
 

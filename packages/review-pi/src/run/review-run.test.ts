@@ -134,6 +134,7 @@ const AUDIT_KEYS = [
   "ledger",
   "ruleSkill",
   "skillPassLog",
+  "genericReview",
   "coverage",
   "usageLedger",
 ];

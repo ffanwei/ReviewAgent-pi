@@ -124,6 +124,8 @@ export interface EnumerateRepoOptions {
   readonly includeRegexes?: readonly RegExp[];
   /** 路径黑名单正则（`--exclude`）：命中即剔除，优先于白名单 */
   readonly excludeRegexes?: readonly RegExp[];
+  /** git 仓库只枚举已跟踪文件（缺省 true）；false = 同时纳入未 ignore 的 untracked */
+  readonly trackedOnly?: boolean;
 }
 
 /**
@@ -140,7 +142,7 @@ export async function enumerateRepoFiles(options: EnumerateRepoOptions): Promise
     throw new Error(`--repo is not a directory: ${repoPath}`);
   }
 
-  const all = [...(await listRepoPaths(repoPath))].sort(compareText);
+  const all = [...(await listRepoPaths(repoPath, options.trackedOnly !== false))].sort(compareText);
   const prefix = normalizePrefix(options.pathPrefix);
   const requested = options.files === undefined ? undefined : new Set(options.files.map(toPosix));
   if (requested !== undefined) {
@@ -212,12 +214,14 @@ export async function enumerateRepoFiles(options: EnumerateRepoOptions): Promise
   };
 }
 
-async function listRepoPaths(repoPath: string): Promise<readonly string[]> {
+async function listRepoPaths(repoPath: string, trackedOnly: boolean): Promise<readonly string[]> {
   if (await isGitRepo(repoPath)) {
     const tracked = await runGit(repoPath, ["ls-files", "-z"]).catch(() => undefined);
-    const untracked = await runGit(repoPath, ["ls-files", "-z", "--others", "--exclude-standard"]).catch(
-      () => undefined,
-    );
+    const untracked = trackedOnly
+      ? ""
+      : await runGit(repoPath, ["ls-files", "-z", "--others", "--exclude-standard"]).catch(
+          () => undefined,
+        );
     if (tracked !== undefined) {
       const seen = new Set<string>();
       for (const raw of [...splitNul(tracked), ...splitNul(untracked ?? "")]) {

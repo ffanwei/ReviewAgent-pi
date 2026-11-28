@@ -7,6 +7,11 @@
 // - 结构化字段（id / severity / file / line / evidence 代码摘录 / rule /
 //   confidence）保持原样；专有名词、代码标识符在中文叙述中保留英文。
 
+/** 严重级（P0 最高；P3 = 建议） */
+export const REVIEW_SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
+
+export type ReviewSeverity = (typeof REVIEW_SEVERITIES)[number];
+
 /** 平台检视意见类别（中文七类；`category` 与 tips 报文同源单源） */
 export const REVIEW_CATEGORIES = [
   "可维护",
@@ -32,7 +37,7 @@ export interface FindingTips {
 
 export interface Finding {
   readonly id: string;
-  readonly severity: "P0" | "P1" | "P2" | "P3";
+  readonly severity: ReviewSeverity;
   readonly category: string;
   readonly file: string;
   readonly line: number;

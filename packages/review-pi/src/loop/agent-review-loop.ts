@@ -9,6 +9,7 @@ import type {
   CandidateNormalizationRecord,
   CandidateRejection,
   CandidateRejectionCounts,
+  GenericReviewSuppressionRecord,
   PhaseParseFailure,
   PhaseRecord,
   RejectionStage,
@@ -29,6 +30,11 @@ import { reviewTurnStreamOptions } from "../provider/review-turn-policy.js";
 import { piUsageToLlmUsage } from "../provider/usage-map.js";
 import { createDetachedUsageScope, type UsageScope } from "../observability/usage-ledger.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
+import type { GenericReviewLimits } from "../shared/config-limits.js";
+import {
+  filterGenericSuggestions,
+  mergeGenericReviewSuppressions,
+} from "../shared/generic-review-policy.js";
 import { classifyCacheBreaks } from "./cache-break.js";
 import {
   MAX_TOOL_CALLS,
@@ -130,6 +136,11 @@ export interface AgentReviewLoopInputs {
    * 证据接地（F-04）：缺省 undefined = 不核对（零行为变化）。
    */
   readonly evidenceGrounding?: EvidenceGateOptions;
+  /**
+   * 通用检视建议类抑制（`limits.genericReview`）：缺省 undefined = 不过滤
+   * （内核直调 / 单测零漂移）。只过滤主会话候选；skill 候选在之后追加，天然豁免。
+   */
+  readonly genericReview?: GenericReviewLimits;
   /**
    * 运行进度投影（ADR-0016）：缺省不注入 = 零输出、零行为变化。事件只投影既有
    * 留痕（阶段推进 / 请求首尾 / 工具首尾 / skill 会话首尾），不改 wire 字节、
@@ -273,6 +284,7 @@ export async function runAgentReviewLoop(
   let skillToolCalls = 0;
   let skillBashCalls = 0;
   let skillLedgerHits = 0;
+  let genericReviewSuppression: GenericReviewSuppressionRecord | undefined;
   let roundSkillBatches: readonly SkillCandidateBatch[] = [];
   // 首次模型请求时刻（唯一新增内核仪器；不是逐请求/逐工具耗时）
   let firstRequestAt: Date | undefined;
@@ -529,6 +541,7 @@ export async function runAgentReviewLoop(
     ...(inputs.skillPass !== undefined ? { skillPassLog } : {}),
     ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
     ...(totalRejections(rejectionCounts) > 0 ? { rejectionCounts } : {}),
+    ...(genericReviewSuppression !== undefined ? { genericReview: genericReviewSuppression } : {}),
     ...(inputs.evidenceGrounding !== undefined && evidenceGroundingCounts.checked > 0
       ? {
           evidenceGrounding: {
@@ -707,6 +720,7 @@ export async function runAgentReviewLoop(
         followUp(phase5SweepMessage());
         return false;
       }
+      applyGenericReviewPolicy();
       await runRoundSkillPasses(seedMessages);
     }
 
@@ -786,6 +800,19 @@ export async function runAgentReviewLoop(
     emitPhase(0);
     followUp(phaseMessage(0));
     return false;
+  }
+
+  /**
+   * 通用检视建议类抑制：在 Phase 5 候选归一完成后、skill 候选追加之前执行。
+   * 主候选被丢弃；skill 候选随后才合并，因此不受影响。
+   */
+  function applyGenericReviewPolicy(): void {
+    const filtered = filterGenericSuggestions(roundCandidates, inputs.genericReview);
+    roundCandidates = filtered.kept;
+    genericReviewSuppression = mergeGenericReviewSuppressions(
+      genericReviewSuppression,
+      filtered.suppression,
+    );
   }
 
   /**

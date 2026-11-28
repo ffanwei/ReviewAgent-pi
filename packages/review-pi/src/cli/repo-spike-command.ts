@@ -94,6 +94,7 @@ export async function runRepoSpikeCommand(
     groupAttempts: settings.groupAttempts,
     resume: args.resume,
     includeTests: settings.includeTests,
+    trackedOnly: settings.trackedOnly,
     dryRun: args.dryRun,
     ...(args.pathPrefix !== undefined ? { pathPrefix: args.pathPrefix } : {}),
     ...(args.files !== undefined ? { files: args.files } : {}),
@@ -176,6 +177,7 @@ export async function runRepoSpikeCommand(
       fetch: globalThis.fetch,
       now: () => new Date(),
       languageRules: config.limits.languageRules,
+      genericReview: config.limits.genericReview,
       ...(onGroupReviewed !== undefined ? { onGroupReviewed } : {}),
     });
   } finally {

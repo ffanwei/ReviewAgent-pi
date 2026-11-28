@@ -1,4 +1,4 @@
-import type { LanguageRulesLimits } from "../shared/config-limits.js";
+import type { GenericReviewLimits, LanguageRulesLimits } from "../shared/config-limits.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 
 /**
@@ -44,6 +44,7 @@ export function buildSpikeRuntime(
   includeTests: boolean,
   languageRules: LanguageRulesLimits | undefined,
   toolBudget: SpikeToolBudget,
+  genericReview?: GenericReviewLimits,
 ): ReviewRuntime {
   const defaults = DEFAULT_REVIEW_RUNTIME;
   const limits = defaults.limits;
@@ -54,6 +55,8 @@ export function buildSpikeRuntime(
     limits: {
       ...limits,
       languageRules: languageRules ?? limits.languageRules,
+      // 通用检视建议类抑制：repo 与 MR 共用用户配置；缺席时沿用内置缺省。
+      ...(genericReview !== undefined ? { genericReview } : {}),
       loop: {
         ...limits.loop,
         maxRounds: Math.max(1, Math.floor(maxRounds)),

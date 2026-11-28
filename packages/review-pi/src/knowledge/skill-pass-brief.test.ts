@@ -69,6 +69,8 @@ test("会话首消息：内核 skill 块（真实 pack 路径）+ 宿主平台�
   expect(prompt).not.toContain("检查本次变更文件（代码与文档）");
   // 规则 Skill 去重软约束：硬去重仍由 category 归一 + candidate-merge 承担
   expect(prompt).toContain("不要重复主会话已报告的同一文件同一行的问题");
+  // 规则 Skill 优先：不受通用“少提建议类”口径限制（代码模式同样生效）
+  expect(prompt).toContain("不受通用“少提建议类”口径限制");
   // 包内文件读取口径（ADR-0107）：get_file 回退包根 / skill:// 强制读包
   expect(prompt).toContain("仓库里找不到时回退到包根");
   expect(prompt).toContain("skill://<包内相对路径> 强制读包");
@@ -127,6 +129,7 @@ test("候选清单：按 skill 分组、固定键序、提示逐条裁定", () =
   // 键序固定：与入参键序无关（id 恒在首位）
   expect(text.indexOf('"id"')).toBeLessThan(text.indexOf('"severity"'));
   expect(text).toContain("上面每条候选 id 都必须出现在你的 verdicts 数组里");
+  expect(text).toContain("不要以“只是建议/风格/文档/测试”为由驳回");
 });
 
 test("schema 非法候选原样序列化（交给候选拦截链的 SCHEMA_INVALID）", () => {

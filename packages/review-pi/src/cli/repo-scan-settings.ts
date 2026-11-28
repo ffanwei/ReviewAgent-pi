@@ -30,6 +30,7 @@ export function resolveRepoScanSettings(
     maxTotalTokens: args.maxTotalTokens ?? base.maxTotalTokens,
     groupAttempts: args.groupAttempts ?? base.groupAttempts,
     includeTests: args.includeTests ?? base.includeTests,
+    trackedOnly: base.trackedOnly,
     includeRegex: args.includePatterns ?? base.includeRegex,
     excludeRegex: args.excludePatterns ?? base.excludeRegex,
   };

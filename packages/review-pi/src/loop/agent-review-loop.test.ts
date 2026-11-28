@@ -643,6 +643,56 @@ test("规则 Skill：Phase 5 文本回合后先跑 skill 会话，Phase 6 一次
   expect(outcome.toolCalls).toBe(0);
 });
 
+test("通用建议类抑制：主会话 P3 被丢弃，规则 Skill 的 P3 保留", async () => {
+  const skill: RuleSkill = {
+    name: "sample-rule",
+    description: "Sample project rule skill",
+    content: "Check every public method for a null guard.",
+    filePath: "C:\\cache\\deadbeef\\sample-rule\\SKILL.md",
+    digest: "deadbeef",
+    source: { kind: "zip", path: ".review-rules/rules.zip" },
+    diagnostics: [],
+  };
+
+  const script = fakeFetch([
+    textReply(phaseText(0), 0),
+    textReply(phaseText(1), 1),
+    textReply(phaseText(2), 2),
+    textReply(phaseText(3), 3),
+    textReply(phaseText(4), 4),
+    textReply(`{"candidates":[${JSON.stringify(SKILL_CANDIDATE)}]}`, 5),
+    textReply(
+      '{"verdicts":[{"id":"F001","pass":true,"reason":"ok"},{"id":"RULE-CHECK@sample-rule@src/main/java/Foo.java:20","pass":true,"reason":"ok"}],"complete":true}',
+      6,
+    ),
+  ]);
+
+  const outcome = await runAgentReviewLoop({
+    systemPrompt: SYSTEM,
+    initialContextMessages: INITIAL,
+    toolkit: buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF }),
+    apiKey: "test-key",
+    fetch: script.fetch,
+    runtime: sixPhaseRuntime(),
+    genericReview: DEFAULT_REVIEW_RUNTIME.limits.genericReview,
+    skillPass: {
+      skills: [skill],
+      toolkitFor: () => buildReviewToolkit({ repoPath: repoFixturePath("sample"), diff: DIFF }),
+    },
+  });
+
+  expect(outcome.findings.map((finding) => finding.id)).toEqual([SKILL_CANDIDATE.id]);
+  expect(outcome.audit.genericReview).toEqual({
+    policy: {
+      severities: ["P3"],
+      categories: ["可维护", "可读性", "可测试性"],
+    },
+    dropped: 1,
+    bySeverity: { P3: 1 },
+    byCategory: { 可维护: 1 },
+  });
+});
+
 test("Phase 5 解析失败：重试与短窗口修复均失败，留痕后本轮 0 候选继续推进", async () => {
   const { run } = scriptedLoop([
     textReply(phaseText(0), 0),

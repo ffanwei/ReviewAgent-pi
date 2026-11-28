@@ -233,11 +233,12 @@ describe("loadConfig：失败策略", () => {
     expect(defaults.limits.repoScan.maxFileChars).toBe(120_000);
     expect(defaults.limits.repoScan.maxToolCallsPerFile).toBe(8);
     expect(defaults.limits.repoScan.maxToolCallsPerGroup).toBe(40);
+    expect(defaults.limits.repoScan.trackedOnly).toBe(true);
 
     const tuned = loadConfig({
       configPath: writeConfig(
         minimalConfig(
-          `,"limits":{"repoScan":{"groupBy":"language","maxFilesPerGroup":8,"maxGroupChars":80000,"maxToolCallsPerFile":6,"maxToolCallsPerGroup":30,"groupConcurrency":3,"includeTests":true,"includeRegex":["^src/"],"excludeRegex":["\\\\.test\\\\.ts$"]}}`,
+          `,"limits":{"repoScan":{"groupBy":"language","maxFilesPerGroup":8,"maxGroupChars":80000,"maxToolCallsPerFile":6,"maxToolCallsPerGroup":30,"groupConcurrency":3,"includeTests":true,"trackedOnly":false,"includeRegex":["^src/"],"excludeRegex":["\\\\.test\\\\.ts$"]}}`,
         ),
       ),
     }).config;
@@ -249,6 +250,7 @@ describe("loadConfig：失败策略", () => {
       maxToolCallsPerGroup: 30,
       groupConcurrency: 3,
       includeTests: true,
+      trackedOnly: false,
       includeRegex: ["^src/"],
       excludeRegex: ["\\.test\\.ts$"],
     });
@@ -558,6 +560,56 @@ describe("loadConfig：失败策略", () => {
         ),
       }),
     ).toThrow(/limits\.findingScope\.contextLines must be in 0…2000/);
+  });
+
+  test("limits.genericReview：默认压 P3 软类别，可配空数组关闭 / 加 P2，非法值 fail fast", () => {
+    const defaults = loadConfig({ configPath: writeConfig(minimalConfig()) }).config;
+    expect(defaults.limits.genericReview).toEqual({
+      suppress: {
+        severities: ["P3"],
+        categories: ["可维护", "可读性", "可测试性"],
+      },
+    });
+
+    const tuned = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"genericReview":{"suppress":{"severities":["P2","P3"],"categories":["可维护"]}}}`,
+        ),
+      ),
+    }).config;
+    expect(tuned.limits.genericReview).toEqual({
+      suppress: { severities: ["P2", "P3"], categories: ["可维护"] },
+    });
+    expect(tuned.overridden).toContain("limits.genericReview.suppress");
+
+    const disabled = loadConfig({
+      configPath: writeConfig(
+        minimalConfig(
+          `,"limits":{"genericReview":{"suppress":{"severities":[],"categories":[]}}}`,
+        ),
+      ),
+    }).config;
+    expect(disabled.limits.genericReview.suppress).toEqual({ severities: [], categories: [] });
+
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(
+            `,"limits":{"genericReview":{"suppress":{"severities":["P4"],"categories":[]}}}`,
+          ),
+        ),
+      }),
+    ).toThrow(/limits\.genericReview\.suppress\.severities must contain only P0, P1, P2, P3/);
+    expect(() =>
+      loadConfig({
+        configPath: writeConfig(
+          minimalConfig(
+            `,"limits":{"genericReview":{"suppress":{"severities":["P3"],"categories":["风格"]}}}`,
+          ),
+        ),
+      }),
+    ).toThrow(/limits\.genericReview\.suppress\.categories/);
   });
 
   test("limits.timeouts 新增 reviewTurnMs / oneShotMs 可配且进 digest", () => {    const { config } = loadConfig({

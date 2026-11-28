@@ -327,6 +327,8 @@ function runtimeWithoutScope(): ReviewRuntime {
       // 六阶段手写脚本：显式钉 off（默认已切 compact，ADR-0113）。
       loop: { ...DEFAULT_REVIEW_RUNTIME.limits.loop, stageCompression: "off" },
       findingScope: { enabled: false, contextLines: 10 },
+      // 护栏用例只关心边界度量；哨兵候选是 P3，显式关掉通用建议类抑制。
+      genericReview: { suppress: { severities: [], categories: [] } },
     },
   };
 }
@@ -402,6 +404,7 @@ test("全链 malformed diff：boundary-unmeasurable 降级标注 + 照常执行"
     fetch: script.fetch,
     runsRoot,
     rep: 1,
+    runtime: runtimeWithoutScope(),
     ruleSkillLoader: async () => [],
   });
 

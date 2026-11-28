@@ -302,6 +302,20 @@ export interface SeverityFilterRecord {
 }
 
 /**
+ * 通用检视建议类抑制留痕（MR + repo）：只统计被过滤的通用候选；
+ * 规则 Skill 候选不走这个过滤器。
+ */
+export interface GenericReviewSuppressionRecord {
+  readonly policy: {
+    readonly severities: readonly string[];
+    readonly categories: readonly string[];
+  };
+  readonly dropped: number;
+  readonly bySeverity: Readonly<Record<string, number>>;
+  readonly byCategory: Readonly<Record<string, number>>;
+}
+
+/**
  * 候选字段归一化的逐条留痕（字段修复；只在真有修复时进审计尾键）。
  * `source` 区分本地确定性修复与有界一次性模型修复；`fields` 是被修复的
  * 字段名（不记录值，避免把模型原文复制进审计）。
@@ -415,6 +429,8 @@ export interface RunAudit {
   readonly tipsFilter?: TipsFilterRecord;
   /** 中文 tips / MCP 上报严重级过滤留痕：配置缺席时省键 */
   readonly severityFilter?: SeverityFilterRecord;
+  /** 通用检视建议类抑制留痕：未配置 / 未丢弃时省键 */
+  readonly genericReview?: GenericReviewSuppressionRecord;
   /** 候选字段归一化留痕（只在真有修复时在场；零漂移纪律） */
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** Finding 路径修复留痕（ADR-0120）：只在真有修复时在场 */

@@ -12,6 +12,7 @@ import type {
   CandidateRejectionCounts,
   CoverageRepairAudit,
   EvidenceGroundingAudit,
+  GenericReviewSuppressionRecord,
   ModelFallbackRecord,
   PathRepairRecord,
   PhaseRecord,
@@ -59,6 +60,8 @@ export interface AuditLight {
   readonly tipsFilter?: TipsFilterRecord;
   /** 中文 tips / MCP 上报严重级过滤留痕：配置缺席时省键 */
   readonly severityFilter?: SeverityFilterRecord;
+  /** 通用检视建议类抑制留痕：未配置 / 未丢弃时省键 */
+  readonly genericReview?: GenericReviewSuppressionRecord;
   /** 候选字段归一化留痕（P1）：只在真有修复时在场 */
   readonly candidateNormalizations?: readonly CandidateNormalizationRecord[];
   /** Finding 路径修复留痕（ADR-0120）：只在真有修复时在场 */
@@ -174,6 +177,7 @@ export function toAuditLight(audit: RunAudit): AuditLight {
     ...(audit.skillPassLog !== undefined ? { skillPassLog: audit.skillPassLog } : {}),
     ...(audit.tipsFilter !== undefined ? { tipsFilter: audit.tipsFilter } : {}),
     ...(audit.severityFilter !== undefined ? { severityFilter: audit.severityFilter } : {}),
+    ...(audit.genericReview !== undefined ? { genericReview: audit.genericReview } : {}),
     ...(audit.candidateNormalizations !== undefined
       ? { candidateNormalizations: audit.candidateNormalizations }
       : {}),

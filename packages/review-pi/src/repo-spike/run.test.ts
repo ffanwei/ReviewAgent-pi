@@ -212,6 +212,56 @@ test("路径修复：候选 file 少数拼写错误 → 修正到真实送检文
   ]);
 });
 
+test("真跑：通用建议类抑制在 repo 模式同样生效，审计留痕", async () => {
+  const root = tempDir("repo-spike-run-root-");
+  const out = tempDir("repo-spike-run-out-");
+  write(root, "src/a.ts", "export const a = 1;\n");
+  const candidate = {
+    id: "F001",
+    severity: "P3",
+    category: "可维护",
+    file: "src/a.ts",
+    line: 1,
+    title: "缺少导出常量注释",
+    description: "导出的常量没有说明用途。",
+    evidence: ["src/a.ts:1 export const a = 1;"],
+    rule: "MAINTAINABILITY-001",
+    confidence: 0.7,
+    tips: {
+      review: "[缺陷类型] 缺少注释。影响评估：可读性下降。",
+      suggestion: "[重构思路] 补充一行注释。代码示例：`// a`",
+      subcategory: "注释",
+    },
+  };
+  const script = fakeFetch([
+    ...sixPhase().slice(0, 4),
+    { text: `{"candidates":[${JSON.stringify(candidate)}]}`, usage: ZERO },
+    {
+      text: '{"verdicts":[{"id":"F001","pass":true,"reason":"ok"}],"complete":true}',
+      usage: ZERO,
+    },
+  ]);
+  const code = await runRepoSpike(options(root, out), {
+    apiKey: "test-key",
+    baseUrl: "http://example.invalid",
+    fetch: script.fetch,
+    now: () => new Date("2026-11-24T00:00:00.000Z"),
+  });
+
+  expect(code).toBe(0);
+  const result = JSON.parse(readFileSync(path.join(out, "repo-review-result.json"), "utf8")) as {
+    findings: unknown[];
+    groups: { auditPath?: string }[];
+  };
+  expect(result.findings).toEqual([]);
+  const auditPath = result.groups[0]?.auditPath;
+  expect(auditPath).toBeDefined();
+  const audit = JSON.parse(readFileSync(auditPath as string, "utf8")) as {
+    genericReview?: { dropped: number; bySeverity: Record<string, number> };
+  };
+  expect(audit.genericReview).toMatchObject({ dropped: 1, bySeverity: { P3: 1 } });
+});
+
 test("真跑：每组一次 runReviewOutcome，findings 合并后写独立结果", async () => {
   const root = tempDir("repo-spike-run-root-");
   const out = tempDir("repo-spike-run-out-");

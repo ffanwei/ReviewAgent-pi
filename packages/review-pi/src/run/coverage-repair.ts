@@ -19,7 +19,7 @@ import type {
 } from "../contracts/coverage.js";
 import type { Finding } from "../contracts/finding.js";
 import type { LlmUsage } from "../contracts/llm.js";
-import type { CoverageRepairAudit } from "../contracts/run.js";
+import type { CoverageRepairAudit, GenericReviewSuppressionRecord } from "../contracts/run.js";
 import { splitDiffIntoFileBlocks } from "./mr-input.js";
 import { parseHunkHeader, type HunkHeader } from "../diff/hunk.js";
 import { addRootCauseKey, findingContentKey } from "../finding/finding-key.js";
@@ -33,6 +33,8 @@ import type { UsageScope } from "../observability/usage-ledger.js";
 import type { RetryPolicy } from "../shared/llm-retry.js";
 import type { VerificationVerdict } from "../shared/parse.js";
 import { countItemKeys } from "../shared/parse.js";
+import type { GenericReviewLimits } from "../shared/config-limits.js";
+import { filterGenericSuggestions } from "../shared/generic-review-policy.js";
 import type { CoverageRepairLimits } from "../shared/config-limits.js";
 import { backfillCandidates, markNoIssue, markNotReached } from "./coverage-ledger.js";
 import { verifyRepairCandidates, type PendingRepairCandidate } from "./coverage-repair-verify.js";
@@ -59,6 +61,8 @@ export interface CoverageRepairInput {
   readonly llm: CoverageRepairLlm;
   /** 与主检视同一套 findingScope；缺省 = 不过滤 */
   readonly scope?: DiffScope;
+  /** 通用检视建议类抑制；缺省 = 不过滤 */
+  readonly genericReview?: GenericReviewLimits;
 }
 
 export interface CoverageRepairResult {
@@ -66,6 +70,8 @@ export interface CoverageRepairResult {
   readonly findings: readonly Finding[];
   readonly audit: CoverageRepairAudit;
   readonly usage: LlmUsage;
+  /** 补漏候选命中的建议类抑制留痕（与主 loop 同口径；无策略/无丢弃时缺席） */
+  readonly genericReview?: GenericReviewSuppressionRecord;
 }
 
 /** 一个可补漏 hunk 的正文 + 定位 */
@@ -498,7 +504,9 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
     round: 0,
     ...(input.scope !== undefined ? { scope: input.scope } : {}),
   });
-  const findings = gate.findings;
+  // 通用检视建议类抑制：补漏候选同一口径；被压制的候选不回填账本。
+  const filtered = filterGenericSuggestions(gate.findings, input.genericReview);
+  const findings = filtered.kept;
   ledger = backfillCandidates(ledger, findings, "repair");
 
   const applicableClaims = claims.filter(
@@ -525,6 +533,7 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
     ledger,
     findings,
     usage,
+    ...(filtered.suppression !== undefined ? { genericReview: filtered.suppression } : {}),
     audit: {
       enabled: true,
       requests,

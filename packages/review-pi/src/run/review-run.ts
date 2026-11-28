@@ -38,6 +38,7 @@ import type { ConfigSnapshot, SplitLimits } from "../shared/config.js";
 import { DEFAULT_REVIEW_RUNTIME, type ReviewRuntime } from "../shared/review-runtime.js";
 import { summarizeSeverityFilter } from "../shared/severity-filter.js";
 import { summarizeTipsFilter } from "../shared/tips-filter.js";
+import { mergeGenericReviewSuppressions } from "../shared/generic-review-policy.js";
 import { guardMrBoundary, type MrBoundaryDecision } from "./mr-boundary-guard.js";
 import { diffTooLargeError, filterDiffForReview, listChangedFilePaths, MrDiffTooLargeError, NoReviewableFilesError, toMrFilterRecord } from "./mr-input.js";
 import {
@@ -663,9 +664,11 @@ async function aggregateShards(
     dropped: 0,
   };
   let evidenceGroundingMode: "warn" | "drop" | undefined;
+  let genericReview: RunAudit["genericReview"];
 
   for (const { pass } of executed) {
     usage = addUsage(usage, pass.usage);
+    genericReview = mergeGenericReviewSuppressions(genericReview, pass.audit.genericReview);
     toolCalls += pass.toolCalls;
     rounds = Math.max(rounds, pass.rounds);
     truncated = truncated || pass.audit.truncated;
@@ -782,6 +785,7 @@ async function aggregateShards(
     ...(skillPassLog.length > 0 ? { skillPassLog } : {}),
     ...(tipsFilter !== undefined ? { tipsFilter } : {}),
     ...(severityFilter !== undefined ? { severityFilter } : {}),
+    ...(genericReview !== undefined ? { genericReview } : {}),
     ...(candidateNormalizations.length > 0 ? { candidateNormalizations } : {}),
     ...(Object.values(rejectionCounts).some((count) => count > 0) ? { rejectionCounts } : {}),
     ...(evidenceGroundingMode !== undefined && evidenceGroundingCounts.checked > 0
