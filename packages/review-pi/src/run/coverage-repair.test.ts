@@ -10,6 +10,7 @@ import {
   planCoverageRepairUnits,
   repairCoverageGaps,
 } from "./coverage-repair.js";
+import { parseVerifierReply } from "./coverage-repair-verify.js";
 
 const NO_WAIT: RetryPolicy = {
   maxAttempts: 1,
@@ -273,6 +274,13 @@ describe("parseCoverageRepairReply", () => {
 });
 
 describe("repairCoverageGaps", () => {
+  test("parseVerifierReply 重复键折叠 → null（整批交给有界重发）", () => {
+    expect(
+      parseVerifierReply(
+        '{"verdicts":[{"id":"CR001","pass":true,"id":"CR002","pass":false}]}',
+      ),
+    ).toBeNull();
+  });
   test("no-issue + candidate 回填账本；候选走独立验证与候选门；审计计数", async () => {
     const ledger = buildCoverageLedger(DIFF_A);
     const bodies: string[] = [];
