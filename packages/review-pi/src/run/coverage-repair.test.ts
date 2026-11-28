@@ -327,7 +327,13 @@ describe("repairCoverageGaps", () => {
     expect(body.response_format).toEqual({ type: "json_object" });
     expect(body.messages?.[0]?.content ?? "").not.toContain("sk-coverage-sentinel");
     expect(body.messages?.[1]?.content ?? "").toContain("### Hunk 1");
-    expect(JSON.parse(bodies[1] ?? "{}").messages?.[0]?.content ?? "").toContain("证伪");
+    const verifier = JSON.parse(bodies[1] ?? "{}") as {
+      response_format?: { type?: string; json_schema?: { name?: string } };
+      messages?: { content?: string }[];
+    };
+    expect(verifier.response_format?.type).toBe("json_schema");
+    expect(verifier.response_format?.json_schema?.name).toBe("coverage_repair_verdicts");
+    expect(verifier.messages?.[0]?.content ?? "").toContain("证伪");
   });
 
   test("独立验证拒绝的候选不进 findings；hunk 保持未覆盖", async () => {

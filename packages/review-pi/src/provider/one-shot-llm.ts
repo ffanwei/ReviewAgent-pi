@@ -1,6 +1,7 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { LlmUsage } from "../contracts/llm.js";
+import type { StructuredResponseFormat } from "../contracts/structured.js";
 import {
   classifyHttpFailure,
   classifyThrownFailure,
@@ -37,9 +38,9 @@ import type { UsageScope, UsageSource } from "../observability/usage-ledger.js";
  * 配额类 429、非 JSON / 缺 content 的确定性非法输出不重试。次数与退避来自
  * `limits.retry.oneShotAttempts` / `limits.retry.*`（经 `ReportLlmRuntime`）。
  *
- * 结构化输出（P1 步骤 4）：可选 `responseFormat: "json_object"`，只在**一次性**
- * 调用（tips / 候选修复）上使用；不碰检视会话的 wire 字节。供应商不支持时
- * （HTTP 400/422）自动**无 response_format 重试一次**，不让结构化选项把调用打死。
+ * 结构化输出（P1 步骤 4）：可选 `responseFormat`，支持 `json_object` 与
+ * `json_schema`。供应商不支持时按 `json_schema → json_object → 无` 有界降级
+ * （只在 HTTP 400/422 时触发，最多两次额外尝试）。
  *
  * 纪律：**绝不抛错**（失败收敛为 `{ok:false, reason}`，调用方决定降级）；
  * key 只进 Authorization 头，绝不进 reason / 任何留痕。
@@ -57,8 +58,8 @@ export interface OneShotLlmInput {
   readonly retry?: RetryPolicy;
   /** 输出预算（生成 Markdown / JSON 的上限；缺席 = 服务端缺省） */
   readonly maxTokens?: number;
-  /** 结构化输出请求（仅 `json_object`；供应商不支持时自动降级） */
-  readonly responseFormat?: "json_object";
+  /** 结构化输出请求（`json_object` 或 `json_schema`；供应商不支持时自动降级） */
+  readonly responseFormat?: StructuredResponseFormat;
   /** 调用用途（进程级 usage 观测用；缺席 = 不分类） */
   readonly purpose?: OneShotPurpose;
   /**
@@ -159,11 +160,8 @@ export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLl
   let result: OneShotLlmResult;
   if (first.ok) {
     result = toResult(first);
-  } else if (input.responseFormat !== undefined && (first.failure.status === 400 || first.failure.status === 422)) {
-    // 结构化输出不被供应商支持：去掉 response_format 再走一轮（同样有界）
-    const { responseFormat: _omit, ...withoutFormat } = input;
-    const fallback = await runAttempts(withoutFormat, policy, timeline);
-    result = toResult(fallback, "after retrying without response_format");
+  } else if (input.responseFormat !== undefined && isUnsupportedFormatStatus(first.failure.status)) {
+    result = await retryWithFallbackFormats(input, policy, timeline);
   } else {
     result = toResult(first);
   }
@@ -191,6 +189,53 @@ export async function completeOneShot(input: OneShotLlmInput): Promise<OneShotLl
   finishOneShotTimeline(timeline, result, first.ok ? undefined : first.failure);
   emitOneShotLifecycle(input, result, startedAt);
   return result;
+}
+
+/** 供应商明确拒绝 response_format 的状态；其余 4xx 不降级，避免掩盖坏请求 */
+function isUnsupportedFormatStatus(status: number | undefined): boolean {
+  return status === 400 || status === 422;
+}
+
+/**
+ * 有界降级：`json_schema → json_object → 无`。
+ *
+ * 只在供应商返回 400/422 时触发；每一档最多一轮（内部传输重试仍按策略），
+ * 一旦成功或换成非格式错误就停止。避免结构化选项把调用直接打死。
+ */
+async function retryWithFallbackFormats(
+  input: OneShotLlmInput,
+  policy: RetryPolicy,
+  timeline: TimelineRecorder | null,
+): Promise<OneShotLlmResult> {
+  let format = input.responseFormat;
+  let result: OneShotLlmResult | undefined;
+  while (format !== undefined) {
+    const nextFormat = format === "json_object" ? undefined : "json_object";
+    const nextInput: OneShotLlmInput =
+      nextFormat === undefined
+        ? withoutResponseFormat(input)
+        : { ...input, responseFormat: nextFormat };
+    const outcome = await runAttempts(nextInput, policy, timeline);
+    const suffix =
+      nextFormat === undefined
+        ? "after retrying without response_format"
+        : "after retrying with json_object";
+    result = toResult(outcome, suffix);
+    if (outcome.ok || !isUnsupportedFormatStatus(outcome.failure.status)) {
+      return result;
+    }
+    format = nextFormat;
+  }
+  // 循环从已声明的 format 进入，至少执行一次；保底返回避免类型上的 undefined。
+  return result ?? toResult(
+    await runAttempts(withoutResponseFormat(input), policy, timeline),
+    "after retrying without response_format",
+  );
+}
+
+function withoutResponseFormat(input: OneShotLlmInput): OneShotLlmInput {
+  const { responseFormat: _omit, ...rest } = input;
+  return rest;
 }
 
 /** 全文留痕（ADR-0073）：成功发 response、失败发 error；仅当 sink 已安装时生效 */
@@ -270,7 +315,12 @@ async function attemptOneShot(
     ],
     ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
     ...(input.responseFormat !== undefined
-      ? { response_format: { type: input.responseFormat } }
+      ? {
+          response_format:
+            typeof input.responseFormat === "string"
+              ? { type: input.responseFormat }
+              : input.responseFormat,
+        }
       : {}),
     stream: false,
   });

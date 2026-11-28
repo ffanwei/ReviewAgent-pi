@@ -18,7 +18,11 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { LlmUsage } from "../contracts/llm.js";
-import type { StructuredFailure, StructuredParse } from "../contracts/structured.js";
+import type {
+  StructuredFailure,
+  StructuredParse,
+  StructuredResponseFormat,
+} from "../contracts/structured.js";
 import type { UsageScope } from "../observability/usage-ledger.js";
 import type { RetryPolicy } from "../shared/llm-retry.js";
 import { addUsage } from "./usage-map.js";
@@ -28,6 +32,7 @@ export type {
   StructuredFailure,
   StructuredFailureKind,
   StructuredParse,
+  StructuredResponseFormat,
 } from "../contracts/structured.js";
 
 /** 单个 JSON 契约：解析 + 可选修复提示 */
@@ -60,7 +65,7 @@ export interface StructuredInvokeInput<T> {
   readonly purpose: OneShotPurpose;
   readonly system: string;
   readonly user: string;
-  readonly responseFormat?: "json_object";
+  readonly responseFormat?: StructuredResponseFormat;
   readonly maxTokens?: number;
   readonly retryOnTruncation?: boolean;
   readonly call: StructuredCall<T>;

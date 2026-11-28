@@ -184,6 +184,93 @@ test("结构化输出不被支持（400）：去掉 response_format 重试一次
   expect(JSON.parse(bodies[1] ?? "{}")).not.toHaveProperty("response_format");
 });
 
+test("json_schema：请求体原样带 schema；未声明时绝不带", async () => {
+  const bodies: string[] = [];
+  const fetch: FetchFunction = async (_url, init) => {
+    bodies.push(String(init?.body ?? ""));
+    return completion("{}");
+  };
+  const responseFormat = {
+    type: "json_schema" as const,
+    json_schema: {
+      name: "verdicts",
+      strict: true,
+      schema: {
+        type: "object",
+        required: ["verdicts"],
+        properties: { verdicts: { type: "array" } },
+      },
+    },
+  };
+  await completeOneShot({ ...BASE_INPUT, fetch, responseFormat });
+  expect(JSON.parse(bodies[0] ?? "{}")).toMatchObject({ response_format: responseFormat });
+  expect(bodies[0] ?? "").not.toContain("sk-oneshot-sentinel");
+});
+
+test("json_schema 被拒（400）→ json_object 再拒（400）→ 无 response_format 成功", async () => {
+  const kinds: string[] = [];
+  const fetch: FetchFunction = async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as {
+      response_format?: { type?: string };
+    };
+    kinds.push(body.response_format?.type ?? "none");
+    return body.response_format === undefined
+      ? completion("recovered")
+      : new Response("unsupported response_format", { status: 400 });
+  };
+  const result = await completeOneShot({
+    ...BASE_INPUT,
+    fetch,
+    responseFormat: {
+      type: "json_schema",
+      json_schema: { name: "verdicts", schema: { type: "object" } },
+    },
+  });
+  expect(result).toEqual({ ok: true, text: "recovered" });
+  expect(kinds).toEqual(["json_schema", "json_object", "none"]);
+});
+
+test("json_schema 被拒（400）→ json_object 成功：只降一档，不丢结构化提示", async () => {
+  const kinds: string[] = [];
+  const fetch: FetchFunction = async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as {
+      response_format?: { type?: string };
+    };
+    kinds.push(body.response_format?.type ?? "none");
+    return body.response_format?.type === "json_object"
+      ? completion("recovered")
+      : new Response("unsupported schema", { status: 400 });
+  };
+  const result = await completeOneShot({
+    ...BASE_INPUT,
+    fetch,
+    responseFormat: {
+      type: "json_schema",
+      json_schema: { name: "verdicts", schema: { type: "object" } },
+    },
+  });
+  expect(result).toEqual({ ok: true, text: "recovered" });
+  expect(kinds).toEqual(["json_schema", "json_object"]);
+});
+
+test("json_schema 遇非 400/422 失败：不降级，避免掩盖坏请求", async () => {
+  let calls = 0;
+  const fetch: FetchFunction = async () => {
+    calls += 1;
+    return new Response("forbidden", { status: 403 });
+  };
+  const result = await completeOneShot({
+    ...BASE_INPUT,
+    fetch,
+    responseFormat: {
+      type: "json_schema",
+      json_schema: { name: "verdicts", schema: { type: "object" } },
+    },
+  });
+  expect(result.ok).toBe(false);
+  expect(calls).toBe(1);
+});
+
 // ---- usage 解析与进程级观测（ADR-0066 的整任务账本数据面） ----
 
 afterEach(() => {

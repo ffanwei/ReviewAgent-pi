@@ -25,3 +25,19 @@ export interface StructuredFailure {
 export type StructuredParse<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly failure: StructuredFailure };
+
+/**
+ * OpenAI 兼容的结构化输出声明。
+ * - `json_object`：只保证是 JSON 对象；
+ * - `json_schema`：供应商支持时按 schema 约束（更严格，但兼容性更差）。
+ */
+export type StructuredResponseFormat =
+  | "json_object"
+  | {
+      readonly type: "json_schema";
+      readonly json_schema: {
+        readonly name: string;
+        readonly schema: Readonly<Record<string, unknown>>;
+        readonly strict?: boolean;
+      };
+    };

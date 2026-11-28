@@ -11,6 +11,7 @@
 // - 回包可解析但某候选没有裁决时，按 reject 处理并留痕。
 
 import type { LlmUsage } from "../contracts/llm.js";
+import type { StructuredResponseFormat } from "../contracts/structured.js";
 import type { VerificationVerdict } from "../shared/parse.js";
 import { countItemKeys } from "../shared/parse.js";
 import { extractJsonObject } from "../provider/one-shot-llm.js";
@@ -53,6 +54,38 @@ const VERIFIER_SYSTEM_PROMPT = [
   "每个候选必须且只能有一条 verdict；不要遗漏候选，不要编造 id。",
 ].join("\n");
 
+/**
+ * 验证器回执的强约束 schema。供应商支持时优先用它；不支持时 one-shot 层会
+ * 自动降级到 `json_object`，再把解析失败交给 Structured 层有界重发。
+ */
+const VERIFIER_RESPONSE_FORMAT: StructuredResponseFormat = {
+  type: "json_schema",
+  json_schema: {
+    name: "coverage_repair_verdicts",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["verdicts"],
+      properties: {
+        verdicts: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "pass", "reason"],
+            properties: {
+              id: { type: "string" },
+              pass: { type: "boolean" },
+              reason: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 /** 执行独立验证；按补漏单元批量，一个单元一次请求 */
 export async function verifyRepairCandidates(input: {
   readonly candidates: readonly PendingRepairCandidate[];
@@ -80,7 +113,7 @@ export async function verifyRepairCandidates(input: {
       purpose: "coverage-repair",
       system: VERIFIER_SYSTEM_PROMPT,
       user: buildVerifierUserMessage(unit, group),
-      responseFormat: "json_object",
+      responseFormat: VERIFIER_RESPONSE_FORMAT,
       maxTokens: input.maxTokens ?? VERIFY_MAX_TOKENS,
       call: {
         parse: parseVerifierStructured,
