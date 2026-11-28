@@ -1,0 +1,114 @@
+{
+  "instance_id": "unionlabs__union@d840723",
+  "repo": "unionlabs/union",
+  "base_commit": "efab2bedc6beb4e1bb01906cba9e0dabd3072f13",
+  "head_commit": "d840723278f1d4cecc02ac540385725a1c54ca84",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 546.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 8,
+  "review_output": [
+    {
+      "file": "voyager/modules/consensus/ethereum/src/main.rs",
+      "line": 167,
+      "summary": "ethereum consensus 模块用 `from_nanos` 包装秒级时间戳，与 `Timestamp` 的纳秒契约及插件侧 `from_secs` 不一致",
+      "failure_scenario": "`ConsensusModule::query_latest_timestamp` 在本 MR 中被统一为返回 `Timestamp`（同一 trait 的其它实现 cometbls/tendermint 均以 `as_unix_nanos()` 构造，即纳秒语义），但 ethereum 实现在 finalized 分支用 `Timestamp::from_nanos(finalized_header.execution.timestamp)`、非 finalized 分支用 `Timestamp::from_nanos(get_block(...).header.timestamp)`，而这两个字段都是**秒**级 Unix 时间戳（仓库内同源字段在 client-bootstrap 里明确 `* 1_000_000_000` 转换为纳秒）。结果：该 RPC 返回值比真实纳秒小 10^9 倍，`Timestamp` 上新增的 `as_secs()`/`from_secs()` 语义被彻底破坏；`Call::WaitForTimestamp` 处理逻辑用该返回值与调用方构造的纳秒阈值比较（plugin 侧同一 MR 中改为 `Timestamp::from_secs(...)`），一旦 ethereum 成为被等待的 counterparty，`chain_timestamp >= timestamp` 永远不成立，队列会每轮 `defer(now() + 1)` 无限重排，客户端更新永远不推进。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "UNIT-001"
+    },
+    {
+      "file": "voyager/modules/consensus/movement/src/main.rs",
+      "line": 165,
+      "summary": "movement 模块把微秒级的 aptos `block_timestamp` 用 `from_nanos` 包装",
+      "failure_scenario": "`Timestamp::from_nanos(timestamp)` 中的 `timestamp` 来自 `block.inner().block_timestamp.0`，aptos 的 `block_timestamp` 是**微秒**（仓库内对同一字段使用 `* 1000` 才换算为纳秒）。该实现同样属于 `ConsensusModule::query_latest_timestamp`，返回类型在本 MR 中已被统一为纳秒语义的 `Timestamp`，因此返回值比契约小 1000 倍；与之配套的 `voyager/modules/state/movement/src/main.rs:148` 也做了同样的错误包装。任何基于该 RPC 的 `WaitForTimestamp`（阈值由 `Timestamp::from_secs` 构造为纳秒）都会立即满足/永不满足地错判，取决于量级差，实际是永不满足。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "UNIT-002"
+    },
+    {
+      "file": "voyager/modules/consensus/cometbls/src/main.rs",
+      "line": 169,
+      "summary": "`Timestamp::from_nanos(...)` 之后残留恒等的 `try_into().expect(...)`，是永不失败的无效转换",
+      "failure_scenario": "构造出 `Timestamp` 后又调用 `.try_into().expect(\"should be fine\")`，目标类型同为 `Timestamp`，该转换由 `From`-blanket 提供的 `TryFrom<Timestamp> for Timestamp` 完成，`Result` 永远是 `Ok`，`expect` 是死代码。这不只是冗余：它会让读者误以为纳秒→`Timestamp` 存在可失败的转换（例如溢出/范围校验），掩盖了真实语义。同一模式在多个文件被复制（tendermint:162、movement:165 用 `unwrap()`、ethereum:179-180 用 `unwrap()`、state/movement:148 用 `unwrap()`），说明是机械替换的遗留物，也会让 `clippy::unwrap_used` 之类的约束被无意义地消耗。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "voyager/plugins/client-update/ethereum/src/main.rs",
+      "line": 539,
+      "summary": "删除 `NANOS_PER_SECOND` 的唯一使用点后未清理 import，遗留未使用导入",
+      "failure_scenario": "该文件中 `NANOS_PER_SECOND` 原本只有 `... * NANOS_PER_SECOND as i64` 这一处使用，被本 MR 的 `Timestamp::from_secs(...)` 取代后，第 28 行的 `use unionlabs::constants::metric::NANOS_PER_SECOND` 在整个文件中再无引用，成为未使用导入。`unused_imports` 默认是警告，任何开启 `-D warnings`（clippy/CI `RUSTFLAGS`）的构建会直接失败；即使不失败也会持续污染 `cargo clippy` 输出，掩盖新增告警。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-004"
+    },
+    {
+      "file": "lib/voyager-core/src/lib.rs",
+      "line": 336,
+      "summary": "Timestamp::from_secs 的乘法未做溢出检查",
+      "failure_scenario": "from_secs 直接执行 secs * 1_000_000_000 转换为纳秒，但入参为任意 u64。当 secs 大于 u64::MAX/1_000_000_000（约 18.4e9 秒）时，debug 构建会因乘方溢出 panic，release 构建则会静默回绕，产生完全错误的时间戳值。该函数为公共 API，缺少边界校验或 checked_mul，存在可靠性隐患。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "对外暴露的数值换算应使用 checked_mul/checked_* 或显式上界校验，避免未检查的整数乘法溢出"
+    },
+    {
+      "file": "lib/voyager-message/src/module.rs",
+      "line": 443,
+      "summary": "query_latest_timestamp 返回类型已改为 Timestamp，但上方 TODO 注释仍要求“改成比 i64 更好的类型”，形成误导",
+      "failure_scenario": "Hunk 2 把 `query_latest_timestamp` 的返回类型从 `RpcResult<i64>` 改成了 `RpcResult<Timestamp>`，说明该 TODO 描述的问题已被本次改动解决；但第 442 行的注释 `// TODO: Make this return a better type than i64` 原样保留。后续维护者读到该注释会误以为方法仍返回裸 i64，从而重复修改或误判签名契约。此外该签名变更会同时影响所有 ConsensusModule 实现方与 RPC 调用方（之前按 i64 处理返回值的代码需要同步调整），应在注释中说明返回类型语义变化并移除过期 TODO。",
+      "severity": "P3",
+      "category": "可维护性",
+      "confidence": 0.62,
+      "rule": "注释必须与代码实际语义保持一致；TODO 描述的问题被修复后应同步删除或更新注释，避免误导后续维护"
+    },
+    {
+      "file": "voyager/modules/state/movement/src/main.rs",
+      "line": 148,
+      "summary": "Timestamp 往返转换后的 try_into().unwrap() 为无意义冗余转换",
+      "failure_scenario": "新的实现先调用 `Timestamp::from_nanos(timestamp)` 构造 Timestamp，紧接着又对该 Timestamp 执行 `try_into()` 再 `unwrap()`。由于函数返回类型已是 `RpcResult<Timestamp>`，这里的 `try_into` 目标类型即 Timestamp 自身，只能通过 `impl<T, U> TryFrom<U> for T where U: Into<T>`（T=Timestamp, U=Timestamp）满足，其 Error 为 Infallible，unwrap 永远不会失败，也不做任何数值校验或单位换算。该写法会误导读者以为存在一次可能失败的转换（例如把纳秒换算成别的单位或做范围检查），实际是空操作；同时若后续作者误以为需要保留 try_into 而把返回值改回 i64，语义会在无编译告警的情况下漂移。",
+      "severity": "P2",
+      "category": "可维护性",
+      "confidence": 0.6,
+      "rule": "避免对同一类型做 try_into().unwrap() 的无意义往返转换，直接返回已构造的值即可"
+    },
+    {
+      "file": "voyager/modules/consensus/movement/src/main.rs",
+      "line": 147,
+      "summary": "query_latest_timestamp 返回类型改为 Timestamp 后，上方 TODO 注释未同步更新",
+      "failure_scenario": "该方法签名已从 `RpcResult<i64>` 改为 `RpcResult<Timestamp>`（新侧第 152 行的 `) -> RpcResult<Timestamp> {`），但上方注释仍写着 `// TODO: Make this return a better type than i64`。这条 TODO 与当前实现不一致，会误导后续维护者，让人以为返回类型仍是 i64。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.7,
+      "rule": "接口签名变更后应同步更新相关 TODO/文档注释，避免注释与代码不一致"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\unionlabs__union\n  --mr-diff           D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\diff\\unionlabs__union@d840723.diff\n  caseId              unionlabs__union@d840723\n  --issue             (未传)\n  --taskId            unionlabs__union@d840723\n  --tasks-dir         D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\cap8-vs-16\\repair16.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 8 / no-issue 25 / not-reached 3（no-signal=3）\nreview-pi: 覆盖补漏 请求 15（失败 0）/ 覆盖 hunk 29/32 / 新候选 4 / no-issue 25 / 预算跳过 0 / 验证拒绝 2\n✓ 完成 · 耗时 543.6s · 模型调用 20 次 · token 输入 24,882（未命中） · 输出 27,597 · 缓存命中 631,808（96.2%） · 工具 35 次（主会话 35 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0130\n[time] 阶段耗时 | 总墙钟 545.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (0.2%)\n[time] 阶段 | 六阶段审计 223.0s (40.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 320.7s (58.8%)\n[time] 审计明细 | P1 12.2s (5.5%) | P2 4.2s (1.9%) | P3 5.7s (2.6%) | P4 151.1s (67.8%) | P5 35.2s (15.8%) | P6 14.5s (6.5%)\n[usage] 任务总计 | 模型调用 42 次（Agent 20 + 一次性 22） | token 输入 38,686（未命中） | 输出 66,310 | 缓存命中 640,128（94.3%） | $0.0258\n[usage] 一次性明细 | 覆盖补漏 22 次（输入 13,804 / 输出 38,713 / 缓存 8,320）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\tasks\\unionlabs__union@d840723\\audit\\20261127_085431_926.json",
+  "token_usage": {
+    "input_tokens": 38686,
+    "output_tokens": 66310,
+    "cache_read_input_tokens": 640128
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 24882,
+      "output_tokens": 27597,
+      "cache_read_input_tokens": 631808
+    },
+    "coverage_repair": {
+      "input_tokens": 13804,
+      "output_tokens": 38713,
+      "cache_read_input_tokens": 8320
+    }
+  }
+}

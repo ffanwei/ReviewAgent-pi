@@ -1,0 +1,124 @@
+{
+  "instance_id": "comfyanonymous__ComfyUI@4dcd698",
+  "repo": "comfyanonymous/ComfyUI",
+  "base_commit": "c7b25784b141a298d8ee5f0d830a29da6e8a3d54",
+  "head_commit": "4dcd698e489da69294ee01de0350a9a02e3e4b41",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 715.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 9,
+  "review_output": [
+    {
+      "file": "comfy_extras/nodes_train.py",
+      "line": 403,
+      "summary": "existing_lora 文件名不含 \"_steps_\" 时 int() 解析抛 ValueError，训练节点直接失败",
+      "failure_scenario": "续训分支用 `int(existing_lora.split(\"_steps_\")[0].split(\"_\")[-1])` 从文件名反推已训练步数，但这个下拉框的候选来自 folder_paths.get_filename_list(\"loras\")，也就是用户 loras 目录里的全部文件。只要用户选择一个不是本节点生成的名字（例如 `add_detail.safetensors`、`style_v2.safetensors`），`split(\"_steps_\")[0]` 会返回整段文件名，`split(\"_\")[-1]` 得到 `detail.safetensors`，`int()` 直接抛 ValueError；由于该语句位于 mp.clone() 之后、训练循环之前且没有 try 包裹，整个 Train LoRA 节点会以异常终止，用户完全无法完成「在已有 LoRA 上继续训练」这一主要路径（即使用本节点产出的文件，只要用户重命名/移动过也会崩）。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.86,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "comfy_extras/nodes_train.py",
+      "line": 346,
+      "summary": "lora_dtype 默认值 \"bf32\" 不在候选列表内，默认配置被校验拒绝或 dtype 被静默丢弃",
+      "failure_scenario": "lora_dtype 的候选只有 `[\"bf16\", \"fp32\"]`，但默认值写成了 `\"bf32\"`（明显是 fp32 的笔误）。两条后果都是缺陷：1) 前端按 default 提交 \"bf32\" 时，execution.py 的 combo 校验会命中 `if val not in combo_options` 并返回 \"Value not in list\"，节点无法执行；2) 即使前端把值纠正为列表首项，node_helpers.string_to_torch_dtype 只识别 fp32/fp16/bf16，其他输入返回 None，随后 `create_train(...).to(lora_dtype)` 与结尾的 `lora_sd[param].to(lora_dtype)` 因为 dtype=None 变成 no-op，用户显式选择的 lora_dtype 被静默忽略，导出的 LoRA 精度与预期不符且没有任何提示。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CONFIG-002"
+    },
+    {
+      "file": "comfy_extras/nodes_train.py",
+      "line": 382,
+      "summary": "训练批次只在循环外采样一次，所有 step 反复训练同一批图片",
+      "failure_scenario": "`indices = torch.randperm(num_images)[:batch_size]` 与 `batch_tensor = image[indices]` 位于训练循环之前、只执行一次，循环体内（第 503 行 `for step in (pbar:=tqdm.trange(steps, ...))`）再没有重新采样或按 epoch 打乱。因此 batch_size=1（默认值）时，无论数据集有多少张图、训练多少步，每一步都在同一张图上计算梯度，数据集其余图片永远不会被使用；即使 batch_size 大于 1 也始终是同一个固定子集。这使训练出的 LoRA 严重偏向单张图像，属于功能层面的正确性缺陷，而不是可调优的性能问题。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "comfy_extras/nodes_train.py",
+      "line": 51,
+      "summary": "loss 计算抛 RuntimeError 被吞掉后仍调用 loss.backward()，抛出误导性的 UnboundLocalError",
+      "failure_scenario": "`try: loss = self.loss_fn(...)` 的 except 分支只做日志记录，既不重新抛出也不设置回退值；随后无条件执行 `loss.backward()`。因此只要 loss_fn 抛 RuntimeError：1) 若消息匹配 \"does not require grad and does not have a grad_fn\"，代码只是 info 日志继续往下走，`loss` 从未赋值 → UnboundLocalError；2) 若不匹配，异常同样被吞掉（该 except 不 re-raise），依旧走到 `loss.backward()` → UnboundLocalError。最终用户看到的是与真实原因（模型处于推理模式 / 无梯度）无关的 UnboundLocalError，原始错误信息与堆栈全部丢失，训练循环里难以定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "RELIABILITY-004"
+    },
+    {
+      "file": "comfy_extras/nodes_train.py",
+      "line": 601,
+      "summary": "Save LoRA 使用硬编码相对路径 models/loras，忽略 folder_paths 与 --base-directory，且不创建目录/不校验前缀",
+      "failure_scenario": "保存路径直接拼接成 `f\"models/loras/{prefix}_{steps}_steps_{date}_lora.safetensors\"`，既不通过 folder_paths.get_folder_paths(\"loras\") 取真实 LoRA 目录（因此不尊重 extra_model_paths.yaml 的额外路径、也不尊重启动参数 --base-directory），也不 os.makedirs 目标目录：当 CWD 不是 ComfyUI 根目录、或模型根目录被重定向、或 loras 目录被用户删除时，safetensors.torch.save_file 会直接 FileNotFoundError，训练成果全部丢失（训练本身已经跑完）。同时 prefix 来自用户自由输入且完全未清洗，包含 `../` 时可把文件写到目标目录之外。对比同仓库 SaveImage 使用 folder_paths.get_save_image_path 的既有做法，这里的实现明显不完整。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "RESOURCE-005"
+    },
+    {
+      "file": "comfy/weight_adapter/lora.py",
+      "line": 35,
+      "summary": "LoraDiff 对含 mid（locon）或 4D 卷积 LoRA 的 to_train 构造出错，续训已有卷积 LoRA 会失败",
+      "failure_scenario": "to_train() 走 LoraDiff.__init__ 时：1) 当 mid 不为 None（locon 的 lora_mid，见 calculate_weight 中 mat3 为 4 维、形状含 kernel 维度），代码执行 `layer(mid, rank, bias=False)`，把 4 维张量当成 Conv 的 in_channels，且没有传 kernel_size（默认 3x3），随后 `self.lora_mid.weight.data.copy_(mid)` 必然形状不匹配，抛 TypeError/RuntimeError；2) 当 mid 为 None 时一律选用 torch.nn.Linear，但卷积层 LoRA 的 lora_up/lora_down 权重是 4 维（如 (out, rank, 1, 1)），对 Linear 的 2 维权重做 copy_ 会因形状不可广播而报错。该路径由 nodes_train.py:431 的 `existing_adapter.to_train()` 直接触发，即用户用 existing_lora 在含卷积/locon 权重的 LoRA 上继续训练时必失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-006"
+    },
+    {
+      "file": "comfy_extras/nodes_train.py",
+      "line": 638,
+      "summary": "Loss 曲线绘制在 loss 恒定或只有一步时除零/空列表崩溃",
+      "failure_scenario": "plot_loss 用 `(l - min_loss) / (max_loss - min_loss)` 做归一化，但没有处理 max_loss == min_loss：steps=1（INPUT_TYPES 中 steps 的 min 就是 1）或 loss 全程不变（例如学习率过小/被 clamp、或最后一次 loss 恰好与上一次相同）时除数为 0，Python 浮点除零抛 ZeroDivisionError，Plot Loss Graph 节点失败。此外 `loss_values = loss[\"loss\"]` 未判空，若上游 Train LoRA 因异常未产生任何 loss 记录，`min([])` 会抛 ValueError。同文件第 208-223 行未被调用的 draw_loss_graph 复制了同样的除零逻辑（且 `min(loss_map.values())` 对 dict-of-list 也不成立），说明该逻辑没有被审视过。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-007"
+    },
+    {
+      "file": "comfy_extras/nodes_train.py",
+      "line": 163,
+      "summary": "LoadImageSetNode 未注册且 INPUT_TYPES 参数名与实际方法不一致，注册后也必然报错",
+      "failure_scenario": "新增的 LoadImageSetNode 声明 `FUNCTION = \"load_images\"`、INPUT_TYPES 的 required 键是 `images`，但它的 `load_images(self, input_files, resize_method)` 形参名是 `input_files`，执行器按 INPUT_TYPES 的键名传参，会因缺少必填参数 images 而失败（除非注册无效所以现在没人发现）。同时该类没有出现在文件末尾的 NODE_CLASS_MAPPINGS 中（只注册了 TrainLoraNode/SaveLoRANode/LoraModelLoader/LoadImageSetFromFolderNode/LossGraphNode），整个类属于死代码；再加上 `INPUT_IS_LIST = True` 会让 resize_method 以列表形式传入，`resize_method == \"Stretch\"` 恒为 False，尺寸不一致的图片不会被缩放，最终 torch.cat 因形状不同报错——即使补上注册也无法正常工作。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "MAINTAIN-008"
+    },
+    {
+      "file": "comfy/ldm/cosmos/blocks.py",
+      "line": 799,
+      "summary": "用 self.training 作为 checkpoint 开关，导致 Cosmos 模型普通推理也走梯度检查点",
+      "failure_scenario": "新增分支以 `self.training` 为条件调用 torch.utils.checkpoint，但 ComfyUI 并不会把 diffusion_model 置为 eval：仓库里只有 StableCascade_C/StableCascade_B 在构造时显式 `self.diffusion_model.eval()`（model_base.py:650/679），Cosmos 的 GeneralDITTransformerBlock 实例保持 nn.Module 默认的 training=True，新增的 TrainLoraNode 也没有调用 .train()/.eval()。因此该 if 分支在普通图片/视频推理（execution.py 整个节点执行处于 torch.inference_mode() 内）同样成立，每个 block 的 forward 都被额外包一层 checkpoint 闭包与 autograd 簿记，而推理阶段没有任何显存收益，属于对既有推理路径的可避免开销；而在检测量训练时又以“模块默认状态”间接生效，开关语义不可控。",
+      "severity": "P2",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "PERF-009"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\comfyanonymous__ComfyUI\n  --mr-diff           D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\diff\\comfyanonymous__ComfyUI@4dcd698.diff\n  caseId              comfyanonymous__ComfyUI@4dcd698\n  --issue             (未传)\n  --taskId            comfyanonymous__ComfyUI@4dcd698\n  --tasks-dir         D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\cap8-vs-16\\repair16.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 12 / not-reached 5（no-signal=5）\nreview-pi: 覆盖补漏 请求 11（失败 0）/ 覆盖 hunk 12/17 / 新候选 0 / no-issue 12 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 712.8s · 模型调用 27 次 · token 输入 35,958（未命中） · 输出 47,404 · 缓存命中 1,457,536（97.6%） · 工具 48 次（主会话 48 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0224\n[time] 阶段耗时 | 总墙钟 714.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (0.2%)\n[time] 阶段 | 六阶段审计 368.4s (51.6%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 344.6s (48.2%)\n[time] 审计明细 | P1 8.4s (2.3%) | P2 6.1s (1.7%) | P3 13.7s (3.7%) | P4 289.4s (78.6%) | P5 41.2s (11.2%) | P6 9.4s (2.6%)\n[usage] 任务总计 | 模型调用 41 次（Agent 27 + 一次性 14） | token 输入 41,502（未命中） | 输出 90,860 | 缓存命中 1,466,624（97.2%） | $0.0354\n[usage] 一次性明细 | 覆盖补漏 14 次（输入 5,544 / 输出 43,456 / 缓存 9,088）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\tasks\\comfyanonymous__ComfyUI@4dcd698\\audit\\20261127_085431_680.json",
+  "token_usage": {
+    "input_tokens": 41502,
+    "output_tokens": 90860,
+    "cache_read_input_tokens": 1466624
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 35958,
+      "output_tokens": 47404,
+      "cache_read_input_tokens": 1457536
+    },
+    "coverage_repair": {
+      "input_tokens": 5544,
+      "output_tokens": 43456,
+      "cache_read_input_tokens": 9088
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "instance_id": "google-gemini__gemini-cli@e7ed0a4",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "7ffe8038efaa5bf263a2a933819bcd4badd37dc2",
+  "head_commit": "e7ed0a410ae510cda8b53ea20f3d758bd90a0f00",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 266.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "packages/core/src/utils/fileUtils.ts",
+      "line": 39,
+      "summary": "isWithinRoot 改用 path.resolve 后对相对路径不再 fail-closed，越界校验可能被静默放行",
+      "failure_scenario": "本次把 isWithinRoot 内部对入参的处理从 path.normalize 改为 path.resolve：path.normalize 会保留相对路径的相对形态，因此相对路径永远无法与绝对根目录前缀匹配（一律判否，fail-closed）；path.resolve 则会把相对路径拼到 process.cwd() 上，再与根目录做前缀比较。该函数被 5 处安全校验复用（EditTool/GlobTool/LSTool/ReadFileTool/WriteFileTool），一旦某个调用点传入模型可控的相对路径（或根目录本身是相对路径，如 '.'），只要进程 cwd 落在 targetDir 内，校验就会返回 true，从而把本应被拒绝的路径当作合法路径放行——这正是越界读写的防线。当前 diff 中的 5 个调用点都先做了 path.isAbsolute 或传入 path.resolve 结果，因此暂未形成可直接利用的漏洞，但该辅助函数原有的「相对路径一定不通过」契约已被移除，且函数自身 JSDoc 仍声明入参为绝对路径，后续新增调用点极易踩坑。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.58,
+      "rule": "SECURITY-PATH-001"
+    },
+    {
+      "file": "packages/core/src/tools/glob.test.ts",
+      "line": 228,
+      "summary": "用例内改写共享变量 tempRootDir 导致 afterEach 清理范围缩小、临时目录残留",
+      "failure_scenario": "为了让 GlobTool 以「更深的根目录」运行，该用例把模块级共享变量 tempRootDir 重新赋值为 `<tempRootDir>/sub`。而 mockConfig 的 getFileService 与 getTargetDir 都是读取 tempRootDir 的闭包，后续 afterEach 执行 `fs.rm(tempRootDir, { recursive: true, force: true })` 时删除的只是 `sub` 子目录，父级 mkdtemp 目录及其中的 fileA.txt、FileB.TXT、older.sortme、newer.sortme 等文件会被永久遗留在系统临时目录中，每次跑测试都会累积；同时该用例已不是通过构造参数验证「工具根目录被收窄」的场景，而是靠修改共享夹具状态达成，若后续在同一 describe 内追加用例或调整执行顺序，极易出现难以定位的连锁失败。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "TESTABILITY-ISOLATION-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\tmp\\cap8-vs-16\\results8\\.reviewpi\\diff\\google-gemini__gemini-cli@e7ed0a4.diff\n  caseId              google-gemini__gemini-cli@e7ed0a4\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@e7ed0a4\n  --tasks-dir         D:\\Project\\bench\\tmp\\cap8-vs-16\\results8\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\cap8-vs-16\\repair8.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 12 / not-reached 37（no-signal=2 budget=35）\nreview-pi: 覆盖补漏 请求 8（失败 0）/ 覆盖 hunk 12/14 / 新候选 0 / no-issue 12 / 预算跳过 35\n✓ 完成 · 耗时 264.9s · 模型调用 18 次 · token 输入 18,231（未命中） · 输出 21,416 · 缓存命中 534,144（96.7%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0100\n[time] 阶段耗时 | 总墙钟 266.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.4%)\n[time] 阶段 | 六阶段审计 174.5s (65.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 90.5s (34.0%)\n[time] 审计明细 | P1 99.0s (56.9%) | P2 4.8s (2.7%) | P3 6.7s (3.8%) | P4 24.4s (14.0%) | P5 35.2s (20.2%) | P6 4.1s (2.4%)\n[usage] 任务总计 | 模型调用 26 次（Agent 18 + 一次性 8） | token 输入 19,819（未命中） | 输出 31,804 | 缓存命中 540,032（96.5%） | $0.0132\n[usage] 一次性明细 | 覆盖补漏 8 次（输入 1,588 / 输出 10,388 / 缓存 5,888）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\cap8-vs-16\\results8\\.reviewpi\\tasks\\google-gemini__gemini-cli@e7ed0a4\\audit\\20261127_084229_540.json",
+  "token_usage": {
+    "input_tokens": 19819,
+    "output_tokens": 31804,
+    "cache_read_input_tokens": 540032
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 18231,
+      "output_tokens": 21416,
+      "cache_read_input_tokens": 534144
+    },
+    "coverage_repair": {
+      "input_tokens": 1588,
+      "output_tokens": 10388,
+      "cache_read_input_tokens": 5888
+    }
+  }
+}

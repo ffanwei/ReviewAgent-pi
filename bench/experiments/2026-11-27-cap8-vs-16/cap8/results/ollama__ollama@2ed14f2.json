@@ -1,0 +1,104 @@
+{
+  "instance_id": "ollama__ollama@2ed14f2",
+  "repo": "ollama/ollama",
+  "base_commit": "4ea4d2b18952a104a47079df00ac0bfe4706f3aa",
+  "head_commit": "2ed14f2a28867c017426b41a9ff6bfc52c981a43",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 593.3,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 487,
+      "summary": "chunksums 迭代错误只写进 trace 不返回，Pull 会把未下载完的模型当作成功提交",
+      "failure_scenario": "新 Pull 遍历 r.chunksums(ctx, name, l) 时，迭代器 yield 的错误（chunksums 端点返回非 200、响应体里 digest/range 解析失败、s.Scan() 出错、ctx 取消等）只调用一次 t.update 记录，然后 break 结束当前 layer 的迭代：错误既没有进 errgroup，也没有保存到局部变量，因此 g.Wait() 仍返回 nil，Pull 继续执行「store the manifest blob」与 c.Link(m.Name, md)，把 manifest 落盘并建立 name→digest 链接。失败场景：某个 layer 的 chunksums 请求返回 500 或被中断，该 layer 完全没下载，Pull 仍返回 nil；上层 handlePull 只推送一条 status 为空的进度事件（不报错），用户看到“拉取成功”、模型出现在本地列表，直到 ollama run 或加载时才因 blob 缺失报错。同理 line 477-481 中 c.Chunked 失败也只 continue，属同一类静默跳过。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "server/internal/cache/blob/chunked.go",
+      "line": 32,
+      "summary": "分块写入不截断、无终态校验，失败后可能留下“大小正确但有空洞”的 blob 并被当作缓存命中",
+      "failure_scenario": "Chunked 用 os.OpenFile(name, os.O_CREATE|os.O_WRONLY, 0o666) 打开 blob（没有 O_TRUNC，也不像 copyNamedFile 那样在既有文件 size 大于目标时截断），Put 通过 io.NewOffsetWriter(c.f, chunk.Start) 在任意偏移写入，而 Pull 中每个 chunk 的 goroutine 是并发提交、完成顺序不确定的。失败场景：一次拉取中最高偏移的 chunk 先成功、中间某个 chunk 因不可重试错误（4xx、chunk 摘要不匹配、io.ErrUnexpectedEOF）失败，Pull 返回错误，但文件 size 已恰好等于 l.Size 且中间存在零填充空洞；下次 Pull 时 exists() 只用 info.Size() == l.Size 判定命中缓存，这个损坏 blob 被永久跳过下载，最终被送入模型加载。此外 defer chunked.Close() 的错误被丢弃，Close 阶段暴露的写错误（如 NFS/EIO）也不会阻断提交。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "DATAINTEGRITY-001"
+    },
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 499,
+      "summary": "blob 下载改用裸 http.NewRequestWithContext，丢失 Authorization 与 User-Agent，需鉴权的模型拉取必然 401",
+      "failure_scenario": "重写后的 Pull 在 chunk goroutine 里用 http.NewRequestWithContext(ctx, \"GET\", cs.URL, nil) 构造下载请求，只额外设置了 Range 头；而旧实现使用 r.newRequest(ctx, \"GET\", blobURL, nil)。newRequest 是唯一注入 Authorization: Bearer token（由 Registry.Key 生成）与 User-Agent 的位置，sendRequest 只做状态码与错误对象处理。对低于分块阈值的 layer，cs.URL 就是 registry 的 /v2/<ns>/<model>/blobs/<digest> 需要鉴权的地址，丢失签名后服务端返回 401/403，而 canRetry 只对 500 及以上重试。失败场景：配置了 Key 的 Registry 拉取私有模型，首个 blob GET 返回 401，canRetry 为 false，Pull 直接失败，该模型完全无法拉取。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.72,
+      "rule": "AUTH-001"
+    },
+    {
+      "file": "server/internal/registry/server.go",
+      "line": 280,
+      "summary": "流式 pull 在真正开始下载前不发送任何字节，首包可能等到 1 小时后 ticker 初值",
+      "failure_scenario": "本次改动删除了原先立即写出的 {\"status\":\"pulling manifest\"}，改为 t := time.NewTicker(time.Hour)，且只有 Trace.Update 收到 n > 0 时才通过 sync.OnceFunc 把 ticker 重置为 100ms。因此在 Resolve 拉取 manifest、以及请求 chunksums 端点期间，服务端不会写入任何字节也不会 Flush（旧实现立即发送状态行并每 100ms flush 保活）。失败场景：manifest 解析被慢网络拖住或 registry 长时间不响应时，ollama pull 在整段解析期没有任何输出，看起来卡死；若期间耗时超过客户端或中间代理的 idle timeout，连接会被提前切断，用户侧表现为无信息的中断。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.58,
+      "rule": "RESOURCE-001"
+    },
+    {
+      "file": "cmd/cmd.go",
+      "line": 800,
+      "summary": "进度条标签改用完整 64 位 digest，宽标签把进度条挤没并造成整行折行",
+      "failure_scenario": "旧代码用 resp.Digest[7:19] 只取 12 位十六进制作为标签；新代码 strings.TrimPrefix(resp.Digest, \"sha256:\") 保留完整 64 位。现有主服务端 server/download.go 的 pull 进度事件中 Digest 仍是 sha256:<64hex> 形式，于是 ollama pull 的标签从 pulling <12hex>... 变成 pulling <64hex>...（长度增加 52）。progress.Bar.String() 用 f := termWidth - pre.Len() - suf.Len() - 5 计算条体宽度，标签过长后 f 变为负数，条体不再绘制，整行长度超过终端宽度而折行。失败场景：在 80 列终端执行 ollama pull llama3，进度行被拆成多行、进度条完全消失，只剩一长串十六进制文本，多行输出互相覆盖导致终端渲染错乱。",
+      "severity": "P2",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "UX-001"
+    },
+    {
+      "file": "server/internal/client/ollama/registry_test.go",
+      "line": 535,
+      "summary": "TestRegistryPullChunking 被 t.Skip 禁用，分块拉取逻辑失去测试覆盖",
+      "failure_scenario": "该 hunk 在 TestRegistryPullChunking 开头新增 t.Skip(\"TODO: BRING BACK BEFORE LANDING\")，使整个分块拉取测试被无条件跳过；TODO 文本也表明这是临时禁用而未在提交前恢复。这会导致 registry 分块拉取行为的回归问题无法被该测试捕获。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.95,
+      "rule": "测试用例不应在提交中通过 t.Skip 被永久禁用；若必须临时跳过，应修复或使用明确的构建条件并在合入前恢复。"
+    },
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 414,
+      "summary": "trackingReader 注释描述的 update 回调与“always calls update with a nil error”在实现中并不存在",
+      "failure_scenario": "新增的 trackingReader 注释声称“calls the update function with the layer, the number of bytes read”，并强调“It always calls update with a nil error”，但结构体只有 r io.Reader 和 n *atomic.Int64 两个字段，Read 实现只是累加 r.n.Add(int64(n))，没有任何 update 回调、也没有 layer 参数。注释是从旧的基于回调的进度上报实现残留下来的，会误导后续维护者以为存在错误传播/回调语义，进而对 Read 的错误处理做出错误假设。",
+      "severity": "P3",
+      "category": "可读性",
+      "confidence": 0.6,
+      "rule": "注释必须与实现一致，残留的回调语义描述会误导对错误处理与进度上报路径的理解"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\tmp\\cap8-vs-16\\results8\\.reviewpi\\diff\\ollama__ollama@2ed14f2.diff\n  caseId              ollama__ollama@2ed14f2\n  --issue             (未传)\n  --taskId            ollama__ollama@2ed14f2\n  --tasks-dir         D:\\Project\\bench\\tmp\\cap8-vs-16\\results8\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\cap8-vs-16\\repair8.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 6 / no-issue 15 / not-reached 23（no-signal=11 budget=12）\nreview-pi: 覆盖补漏 请求 8（失败 0）/ 覆盖 hunk 17/28 / 新候选 2 / no-issue 15 / 预算跳过 12 / 验证拒绝 3\n✓ 完成 · 耗时 591.0s · 模型调用 24 次 · token 输入 26,558（未命中） · 输出 39,740 · 缓存命中 1,062,784（97.6%） · 工具 28 次（主会话 28 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0178\n[time] 阶段耗时 | 总墙钟 592.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.2%)\n[time] 阶段 | 六阶段审计 321.8s (54.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 269.3s (45.5%)\n[time] 审计明细 | P1 18.9s (5.9%) | P2 3.4s (1.1%) | P3 224.0s (69.7%) | P4 13.3s (4.1%) | P5 52.5s (16.3%) | P6 9.4s (2.9%)\n[usage] 任务总计 | 模型调用 36 次（Agent 24 + 一次性 12） | token 输入 36,135（未命中） | 输出 71,363 | 缓存命中 1,070,848（96.7%） | $0.0280\n[usage] 一次性明细 | 覆盖补漏 12 次（输入 9,577 / 输出 31,623 / 缓存 8,064）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\cap8-vs-16\\results8\\.reviewpi\\tasks\\ollama__ollama@2ed14f2\\audit\\20261127_084229_715.json",
+  "token_usage": {
+    "input_tokens": 36135,
+    "output_tokens": 71363,
+    "cache_read_input_tokens": 1070848
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 26558,
+      "output_tokens": 39740,
+      "cache_read_input_tokens": 1062784
+    },
+    "coverage_repair": {
+      "input_tokens": 9577,
+      "output_tokens": 31623,
+      "cache_read_input_tokens": 8064
+    }
+  }
+}

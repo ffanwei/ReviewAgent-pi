@@ -153,3 +153,4 @@
 - 2026-11-27：R-19 完成；六条 replay trace 重录，修复 Windows 长路径规则 Skill 缓存根未归一化；`test:replay` 6/6。
 - 2026-11-27：iterS41 四臂归档 `bench/experiments/2026-11-27-s41-ledger/`：no-repair P41.7/R28.0/B33.5，repair P39.8/R30.1/B34.3（非缓存 +25.5%，墙钟 +30.2%）；`maxRequests` 维持 8，两候选提示词 A/B 本轮不做。
 - 2026-11-28：iterM20 混合 on/off 归档 `bench/experiments/2026-11-27-mixed-onoff/`：off P39.0/R29.1/B33.3，on P41.7/R35.0/B38.1（非缓存 +27.4%，墙钟 +41.7%）；表面 on 更好，但 6 条 `CR*` 仅 2 条命中 GT，去掉 CR 后主检视仍有 B37.2，repair 自身约 +0.8pp。默认值暂维持 off，需多轮重复再决定。
+- 2026-11-28：cap-hit 6 条 `maxRequests` 8 vs 16 归档 `bench/experiments/2026-11-27-cap8-vs-16/`：cap8 P38.7/R24.1/B29.7，cap16 P41.9/R29.6/B34.7（补漏非缓存+output +98.0%，非缓存总成本 +37.9%）；77 个预算跳过 hunk 只换来 1 条明确归因 GT（union state/movement:148），剩余 35 个 `no-signal` 才是下一瓶颈。默认 `maxRequests` 维持 8。

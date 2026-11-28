@@ -1,0 +1,64 @@
+{
+  "instance_id": "google-gemini__gemini-cli@e7ed0a4",
+  "repo": "google-gemini/gemini-cli",
+  "base_commit": "7ffe8038efaa5bf263a2a933819bcd4badd37dc2",
+  "head_commit": "e7ed0a410ae510cda8b53ea20f3d758bd90a0f00",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 473.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/core/src/utils/fileUtils.ts",
+      "line": 39,
+      "summary": "isWithinRoot 改用 path.resolve 后对相对入参按 cwd 解析，越界判定由“必然拒绝”变为“取决于工作目录”",
+      "failure_scenario": "本次把共享越界判断 isWithinRoot 的两侧路径从 path.normalize 改成 path.resolve。对绝对路径二者等价，但对相对入参语义发生了实质变化：normalize 会保留相对形态，后续与“root + 分隔符”做前缀比较必然不匹配，函数返回 false（拒绝）；resolve 则先按 process.cwd() 补全为绝对路径，于是结果取决于进程工作目录——当 cwd 恰好落在 root 内时会把相对入参判为“在根内”。该函数是 edit/read-file/write-file/ls/glob 五个工具共同的路径安全边界（如 edit.ts:137、write-file.ts:106），任何调用方（现有或后续）一旦传入相对路径或形如 '.'、'../x' 的入参，校验结论将随启动目录漂移，出现“本该拒绝却放行”的放行口子；同理在 cwd 与 root 无关时会误判为越界而拒绝合法路径。当前上层工具大多先做 path.isAbsolute 校验，因此暂无直接可利用路径，但这是安全断言被静默放宽。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.52,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "packages/core/src/tools/glob.test.ts",
+      "line": 228,
+      "summary": "用例内重新赋值共享变量 tempRootDir，导致 afterEach 清理指向子目录、外层临时目录与其 fixture 泄漏",
+      "failure_scenario": "为构造“更深 root”的场景，diff 把原来的局部变量 deeperRootDir 改为直接改写用例级共享变量 tempRootDir（`tempRootDir = path.join(tempRootDir, 'sub')`）。afterEach 仍然用 `fs.rm(tempRootDir, { recursive: true, force: true })` 清理，而此时 tempRootDir 已指向 <root>/sub，因此只删除 sub 目录，mkdtemp 创建的父临时目录以及 fileA.txt、FileB.TXT、older.sortme、newer.sortme 等 fixture 全部残留，测试重复运行会持续在系统临时目录堆积垃圾；同时 beforeEach 中创建的 globTool 通过 mockConfig.getTargetDir 闭包读到的根也随之漂移到 sub，后续在该用例里若误用 globTool 会得到与夹具不一致的根，属于共享可变状态带来的脆弱测试。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "TESTABILITY-003"
+    },
+    {
+      "file": "packages/core/src/tools/grep.ts",
+      "line": 105,
+      "summary": "路径包含校验使用 startsWith，可被同前缀兄弟目录绕过",
+      "failure_scenario": "resolveAndValidatePath 用 targetPath.startsWith(this.config.getTargetDir()) 判断是否在根目录内，未追加路径分隔符或使用 path.relative。若根目录为 /repo/app，传入 ../app-secret/file 会解析为 /repo/app-secret/file，仍以 /repo/app 为字符串前缀而通过校验，导致可读取根目录外的同前缀目录内容。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.88,
+      "rule": "路径包含校验必须使用 path.relative 或确保前缀以 path.sep 结尾，不能仅用字符串 startsWith 判断目录归属。"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\google-gemini__gemini-cli\n  --mr-diff           D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\diff\\google-gemini__gemini-cli@e7ed0a4.diff\n  caseId              google-gemini__gemini-cli@e7ed0a4\n  --issue             (未传)\n  --taskId            google-gemini__gemini-cli@e7ed0a4\n  --tasks-dir         D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\cap8-vs-16\\repair16.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 37 / not-reached 11（no-signal=11）\nreview-pi: 覆盖补漏 请求 15（失败 0）/ 覆盖 hunk 38/49 / 新候选 1 / no-issue 37 / 预算跳过 0 / 验证拒绝 2\n✓ 完成 · 耗时 471.7s · 模型调用 20 次 · token 输入 25,604（未命中） · 输出 19,599 · 缓存命中 568,448（95.7%） · 工具 28 次（主会话 28 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0107\n[time] 阶段耗时 | 总墙钟 473.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.2s (0.3%)\n[time] 阶段 | 六阶段审计 166.0s (35.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 305.8s (64.6%)\n[time] 审计明细 | P1 87.5s (52.8%) | P2 5.8s (3.5%) | P3 6.5s (3.9%) | P4 42.0s (25.3%) | P5 15.0s (9.0%) | P6 9.1s (5.5%)\n[usage] 任务总计 | 模型调用 38 次（Agent 20 + 一次性 18） | token 输入 41,704（未命中） | 输出 56,972 | 缓存命中 575,488（93.2%） | $0.0234\n[usage] 一次性明细 | 覆盖补漏 18 次（输入 16,100 / 输出 37,373 / 缓存 7,040）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\tasks\\google-gemini__gemini-cli@e7ed0a4\\audit\\20261127_085431_196.json",
+  "token_usage": {
+    "input_tokens": 41704,
+    "output_tokens": 56972,
+    "cache_read_input_tokens": 575488
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 25604,
+      "output_tokens": 19599,
+      "cache_read_input_tokens": 568448
+    },
+    "coverage_repair": {
+      "input_tokens": 16100,
+      "output_tokens": 37373,
+      "cache_read_input_tokens": 7040
+    }
+  }
+}

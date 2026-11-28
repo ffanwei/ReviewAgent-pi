@@ -70,4 +70,17 @@
 > 去掉 CR 后主检视仍有 B 37.2%（off 33.3%），说明涨幅主要来自主检视波动。
 > repair 自身约 +0.8pp B，默认值暂维持 off。
 
+## 2026-11-27 · cap-hit 6 条 `maxRequests` 8 vs 16
+
+| 目录 | 说明 | P / R / B | 成本 |
+|---|---|---|---|
+| `2026-11-27-cap8-vs-16/cap8` | 6 条高缺口 session，`maxRequests=8` | 0.387 / 0.241 / 0.297 | 非缓存+output 495k；耗时合计 2,622s |
+| `2026-11-27-cap8-vs-16/cap16` | 同集，`maxRequests=16` | 0.419 / 0.296 / 0.347 | 非缓存+output 683k（+37.9%）；耗时合计 3,487s（+33.0%） |
+| `2026-11-27-cap8-vs-16/README.md` | 预算漏斗、CR 归因与逐 session 对比 | — | — |
+| `2026-11-27-cap8-vs-16/combined.json` | 总盘、逐 session、补漏漏斗与成本 | — | — |
+
+> 16 消除了 77 个预算跳过 hunk，但只多 1 条可明确归因的 GT（union
+> state/movement:148）；补漏成本 +98.0%。默认 `maxRequests` 维持 8；下一瓶颈是
+> 35 个模型主动省略的 `no-signal` hunk，不是预算。
+
 

@@ -1,0 +1,104 @@
+{
+  "instance_id": "ollama__ollama@2ed14f2",
+  "repo": "ollama/ollama",
+  "base_commit": "4ea4d2b18952a104a47079df00ac0bfe4706f3aa",
+  "head_commit": "2ed14f2a28867c017426b41a9ff6bfc52c981a43",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 773.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 488,
+      "summary": "层下载准备失败只写进 trace 后被 break 吞掉，Pull 仍返回成功并提交 link",
+      "failure_scenario": "Pull 中每个未缓存层的下载步骤改为先取 Chunked 再遍历 chunksums，但这两处的错误都只在 t.update(...) 上报后分别 continue/break，随后循环正常结束，g.Wait() 返回 nil，函数继续执行 PutBytes + c.Link(m.Name, md)。结果是：chunksums 端点返回 404/500、内容解析失败、或 blob 文件打不开时，该层一个字节都没落盘，但模型仍被标记为已安装（manifest 已写入并建立 link）。更糟的是 server/internal/registry/server.go 的 Trace.Update 只记录 n、完全忽略 err，因此调用方连错误文本都拿不到，用户会得到一个“pull 成功但加载失败/层缺失”的坏模型。改动前这些错误会由 g.Go 返回并经 g.Wait 传播为 Pull 的返回值。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.85,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 499,
+      "summary": "chunk 下载请求绕过 r.newRequest，丢失 Authorization/User-Agent 头",
+      "failure_scenario": "新的 chunk 下载分支用 http.NewRequestWithContext 直接构造请求，而不是像其它请求那样走 r.newRequest（该函数负责设置 User-Agent 和 `Authorization: Bearer <token>`）。改动前的实现复用首次 Range 请求的 `res.Request`，因此保留了由 r.newRequest 签好的认证头。现在对需要鉴权的 registry（OCI Distribution 风格，blob 端点同样要求 Bearer token，例如私有模型或自建 mirror），chunksums 元数据请求能通过，但随后每个 chunk 的 GET 会返回 401；且 canRetry 只对 status>=500 重试，401 会直接让该 chunk 失败并中止整个 pull。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "server/internal/client/ollama/registry.go",
+      "line": 726,
+      "summary": "零尺寸层会生成非法的 Range 头 \"bytes=0--1\"",
+      "failure_scenario": "单 chunk 路径无条件用 `End: l.Size - 1` 构造区间，当某层的 Size 为 0 时 End 变成 -1，chunks.Parse/Chunk.String 会产出 `0--1`，实际发出的请求头是 `Range: bytes=0--1`，多数 registry/CDN 会回 400/416，从而让整个 pull 失败。零尺寸层在本仓库里无法命中缓存（blob.Get 对 size==0 返回 fs.ErrNotExist，因此 exists() 永远为 false），所以每次 pull 都会走到这条路径；改动前该分支是不带 Range 的普通 GET（`c.Put(l.Digest, res.Body, l.Size)`），因此不会失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/internal/cache/blob/chunked.go",
+      "line": 32,
+      "summary": "Chunked 打开 blob 文件不带 O_TRUNC，且整层摘要不再校验",
+      "failure_scenario": "新增的 Chunker 有两个隐患叠加：(1) `os.OpenFile(name, os.O_CREATE|os.O_WRONLY, 0o666)` 没有 O_TRUNC，若同 digest 的 blobs 文件已存在但比预期短（上次下载中断）或被写坏，新内容只会按 chunk 偏移覆盖，未被 chunk 列表覆盖的区域会残留旧字节，最终文件长度/内容都与 digest 不符；(2) Chunker 结构体保留了 digest/size 字段却从未在 Put 中使用，每个 chunk 只用 chunksums 返回的 chunk digest 校验（checkWriter 的 d 被设为 cs.Digest），整层 l.Digest 从未被验证。改动前 `c.Put(l.Digest, ...)` 会用整层 digest 全局校验并在 copyNamedFile 中按需 O_TRUNC。两处叠加后，一旦 chunksums 返回的区间没有完整覆盖 [0, Size)，blobs 目录里就会留下一个长度正确但内容与文件名（即 digest）不符的文件，后续 Get/exists() 仅凭尺寸就判定该层已缓存。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "INTEGRITY-001"
+    },
+    {
+      "file": "server/internal/client/ollama/registry_test.go",
+      "line": 535,
+      "summary": "唯一覆盖分块下载路径的 TestRegistryPullChunking 被 Skip",
+      "failure_scenario": "本次 MR 用 chunksums + Chunker 完全重写了超过阈值层的下载路径（并发 chunk 下载、Range 头、Content-Location 解析、进度累计），而仓库中唯一覆盖该路径的 TestRegistryPullChunking 被 `t.Skip(\"TODO: BRING BACK BEFORE LANDING\")` 关闭。diff 中也没有新增等价测试，因此 F001（错误被吞）、F002（鉴权头丢失）、F003（零尺寸 Range）等问题在 CI 中都无法被发现；期待值 `rc.MaxChunkSize = 3` 现在也指向已被删除语义的配置项。作者自己标注了需要在合入前恢复，这条注释不应随合入进入主干。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.7,
+      "rule": "TESTABILITY-001"
+    },
+    {
+      "file": "server/internal/registry/server.go",
+      "line": 280,
+      "summary": "每个流式 pull 请求创建的 ticker 未 Stop",
+      "failure_scenario": "handlePull 用 `time.NewTicker(time.Hour)` 作为“未启动”计时器，并在首次有进度时 Reset 到 100ms，但整个函数没有任何 `defer t.Stop()`，提前 return 的错误分支（以及正常返回分支）都会留下一个仍在运行的 ticker。高并发 pull 场景下会持续累积定时器资源，也不符合 ticker 必须 Stop 的惯例。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.72,
+      "rule": "RESOURCE-001"
+    },
+    {
+      "file": "cmd/cmd.go",
+      "line": 801,
+      "summary": "进度条标签改用完整 digest 且初始完成量被写死为 0，续传/非 sha256 摘要时显示不正确",
+      "failure_scenario": "原实现用 resp.Digest[7:19] 截取 12 位短摘要作为进度条标签，并把 resp.Completed 作为初始已完成字节数传给 progress.NewBar。新实现改为 strings.TrimPrefix(resp.Digest, \"sha256:\") 后把整个摘要拼入标签，同时把第三个参数硬编码为 0：1）标签长度由 12 位变成完整的 64 位（甚至当 digest 不是 sha256: 前缀时 TrimPrefix 原样返回，标签里还会带上前缀），进度条标题会异常冗长；2）当该响应是断点续传（resp.Completed > 0）时，进度条会从 0 开始，直到后续进度事件才跳变，完成量显示与真实已下载字节不一致。这两处都是该 hunk 引入的可验证行为变化。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "进度展示应保持原有截断长度与真实已完成量，避免重构时改变对用户可见的进度语义；非 sha256 前缀/空 digest 需显式处理"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\diff\\ollama__ollama@2ed14f2.diff\n  caseId              ollama__ollama@2ed14f2\n  --issue             (未传)\n  --taskId            ollama__ollama@2ed14f2\n  --tasks-dir         D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\cap8-vs-16\\repair16.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 6 / no-issue 28 / not-reached 10（no-signal=10）\nreview-pi: 覆盖补漏 请求 11（失败 0）/ 覆盖 hunk 29/39 / 新候选 1 / no-issue 28 / 预算跳过 0 / 验证拒绝 5\n✓ 完成 · 耗时 771.6s · 模型调用 19 次 · token 输入 33,212（未命中） · 输出 30,804 · 缓存命中 762,880（95.8%） · 工具 35 次（主会话 35 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0154\n[time] 阶段耗时 | 总墙钟 773.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.3s (0.2%)\n[time] 阶段 | 六阶段审计 261.0s (33.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 510.8s (66.1%)\n[time] 审计明细 | P1 16.0s (6.1%) | P2 4.6s (1.8%) | P3 6.4s (2.4%) | P4 130.9s (50.2%) | P5 92.4s (35.4%) | P6 10.7s (4.1%)\n[usage] 任务总计 | 模型调用 37 次（Agent 19 + 一次性 18） | token 输入 51,062（未命中） | 输出 94,432 | 缓存命中 773,632（93.8%） | $0.0358\n[usage] 一次性明细 | 覆盖补漏 18 次（输入 17,850 / 输出 63,628 / 缓存 10,752）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\cap8-vs-16\\results16\\.reviewpi\\tasks\\ollama__ollama@2ed14f2\\audit\\20261127_085431_144.json",
+  "token_usage": {
+    "input_tokens": 51062,
+    "output_tokens": 94432,
+    "cache_read_input_tokens": 773632
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 33212,
+      "output_tokens": 30804,
+      "cache_read_input_tokens": 762880
+    },
+    "coverage_repair": {
+      "input_tokens": 17850,
+      "output_tokens": 63628,
+      "cache_read_input_tokens": 10752
+    }
+  }
+}
