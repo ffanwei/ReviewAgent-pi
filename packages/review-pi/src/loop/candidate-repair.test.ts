@@ -69,6 +69,24 @@ test("回包不是合法 JSON → 空数组", async () => {
   await expect(repair({ round: 1, candidates: [{ id: "F001" }] })).resolves.toEqual([]);
 });
 
+test("回包第一次非法、重发后合法 → 返回修复候选，最多两次调用", async () => {
+  let calls = 0;
+  const fetch: FetchFunction = async () => {
+    calls += 1;
+    return calls === 1
+      ? completion("not json at all")
+      : completion(
+          JSON.stringify({
+            candidates: [{ id: "F001", severity: "P1", category: "可靠性" }],
+          }),
+        );
+  };
+  const repair = createCandidateRepair(llm(fetch));
+  const candidates = await repair({ round: 1, candidates: [{ id: "F001" }] });
+  expect(calls).toBe(2);
+  expect(candidates).toEqual([{ id: "F001", severity: "P1", category: "可靠性" }]);
+});
+
 test("回包重复键折叠候选 → 空数组，不静默返回最后一条", async () => {
   const fetch: FetchFunction = async () =>
     completion('{"candidates":[{"id":"F001","id":"F002","id":"F003"}]}');

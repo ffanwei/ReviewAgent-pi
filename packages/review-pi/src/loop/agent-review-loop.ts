@@ -213,7 +213,7 @@ const MAX_PHASE_PARSE_RETRIES = 1;
 /** 离线 salvage 后仍失败时，短窗口 LLM 修复的 run 级上限 */
 const MAX_SHORT_REPAIRS_PER_RUN = 2;
 
-/** 有界候选修复（P1 步骤 3）：整个 run 最多 2 次调用，单次最多 8 条候选 */
+/** 有界候选修复（P1 步骤 3）：整个 run 最多 2 次修复流程（每次至多 1 次解析重发），单次最多 8 条候选 */
 const MAX_REPAIR_CALLS_PER_RUN = 2;
 const MAX_REPAIR_CANDIDATES_PER_CALL = 8;
 

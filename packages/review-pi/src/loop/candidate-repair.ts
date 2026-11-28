@@ -1,7 +1,8 @@
 import type { FetchFunction } from "@earendil-works/pi-ai";
 
 import type { RetryPolicy } from "../shared/llm-retry.js";
-import { completeOneShot, extractJsonObject } from "../provider/one-shot-llm.js";
+import { extractJsonObject } from "../provider/one-shot-llm.js";
+import { invokeStructured, type StructuredParse } from "../provider/structured-reply.js";
 import type { UsageScope } from "../observability/usage-ledger.js";
 import { countCandidateIds } from "../shared/parse.js";
 
@@ -69,37 +70,40 @@ export function createCandidateRepair(llm: CandidateRepairLlm): CandidateRepairF
     if (request.candidates.length === 0) {
       return [];
     }
-    const completion = await completeOneShot({
-      baseUrl: llm.baseUrl,
-      apiKey: llm.apiKey,
-      modelId: llm.modelId,
+    const outcome = await invokeStructured({
+      llm,
+      purpose: "candidate-repair",
       system: REPAIR_SYSTEM_PROMPT,
       user: buildRepairUserMessage(request),
-      timeoutMs: llm.timeoutMs,
-      ...(llm.retry !== undefined ? { retry: llm.retry } : {}),
-      maxTokens: REPAIR_MAX_TOKENS,
       responseFormat: "json_object",
-      purpose: "candidate-repair",
-      ...(llm.usageScope !== undefined ? { usageScope: llm.usageScope } : {}),
-      ...(llm.fetch !== undefined ? { fetch: llm.fetch } : {}),
+      maxTokens: REPAIR_MAX_TOKENS,
+      call: {
+        parse: parseRepairCandidates,
+        maxRepairAttempts: 1,
+      },
     });
-    if (!completion.ok) {
+    if (!outcome.ok) {
       return [];
     }
-    const parsed = extractJsonObject(completion.text, { preferKey: "candidates" });
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return [];
-    }
-    const candidates = (parsed as { candidates?: unknown }).candidates;
-    if (!Array.isArray(candidates)) {
-      return [];
-    }
-    // 重复键会把多条修复结果折叠成一条；宁可整批放弃，也不静默错配。
-    if (countCandidateIds(completion.text) > candidates.length) {
-      return [];
-    }
-    return candidates;
+    return outcome.value;
   };
+}
+
+/** 修复回执契约：candidates 数组 + 重复键检测；任一项不满足即整批放弃 */
+function parseRepairCandidates(text: string): StructuredParse<readonly unknown[]> {
+  const parsed = extractJsonObject(text, { preferKey: "candidates" });
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, failure: { kind: "not-json", note: "候选修复回执不是 JSON 对象" } };
+  }
+  const candidates = (parsed as { candidates?: unknown }).candidates;
+  if (!Array.isArray(candidates)) {
+    return { ok: false, failure: { kind: "missing-key", note: "候选修复回执没有 candidates 数组" } };
+  }
+  // 重复键会把多条修复结果折叠成一条；宁可整批放弃，也不静默错配。
+  if (countCandidateIds(text) > candidates.length) {
+    return { ok: false, failure: { kind: "duplicate-key", note: "候选修复回执含重复键" } };
+  }
+  return { ok: true, value: candidates };
 }
 
 function buildRepairUserMessage(request: CandidateRepairRequest): string {
