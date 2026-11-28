@@ -1,0 +1,54 @@
+{
+  "instance_id": "filamentphp__filament@d47632c",
+  "repo": "filamentphp/filament",
+  "base_commit": "ce4d9d08df41142ff219bb3dc44968084eaae0dc",
+  "head_commit": "d47632c0583bac481d4ce7cc9b6b1711d0f8e0fc",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 226.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 187,
+      "summary": "手工拼出的 json_extract() 缺少 json_unquote()，JSON 字符串值会以带引号的 JSON 文本参与 lower()/LIKE 比较",
+      "failure_scenario": "新增分支直接拼接 `json_extract({$field}{$path})`，没有像 Laravel 的 `MySqlGrammar::wrapJsonSelector()` 那样外包 `json_unquote(...)`。MySQL/MariaDB 的 `json_extract()` 返回 JSON 值，对 JSON 字符串而言其字符串表示是带双引号并做 JSON 转义的文本（如 `\"John\"`、`\"Jo\\\"hn\"`）。随后第 190 行的 `lower(...)` 与所有调用方的 `like '%term%'` 都作用在这个 JSON 文本上，导致：1) 值中包含双引号或反斜杠时（例如 `{\"name\": \"John \\\"JJ\\\" Doe\"}`）搜索 `JJ\"` 之类内容无法匹配；2) 同一列在“强制大小写不敏感搜索”下与普通搜索（Laravel 原生生成的 `json_unquote(json_extract(...))`）语义不一致，也与本仓库 pgsql 分支使用取值即文本的 `->>` 不一致（SpatieLaravelTranslatableContentDriver.php:117/118）。调用方全部走 `where(..., 'like', '%term%')`（InteractsWithTableQuery.php:93/107、Select.php:1087、Resource.php:762/768），会直接继承这个语义偏差。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 185,
+      "summary": "用 invade() 调用 Grammar 的 protected 内部方法 wrapJsonFieldAndPath，复制 Laravel 内部实现且依赖未承诺的私有 API",
+      "failure_scenario": "新增代码通过 `invade($databaseConnection->getQueryGrammar())->wrapJsonFieldAndPath($column)` 访问 `Illuminate\\Database\\Grammar` 的 protected 方法，再用 `/** @phpstan-ignore-line */` 压掉静态分析报错。这等于把 Laravel 内部实现（字段包裹 + JSON path 包裹规则，含 path 前导 \", \" 与 `$.\"name\"` 的引号/转义细节）复制进 filament/support：Laravel 只要调整该 protected 方法（例如历史上 `wrapJsonPath` 增加过参数、不同驱动对路径分隔符的改写），或应用使用自定义 Query Grammar 覆写它，这里就会在运行时抛 BadMethodCallException 或生成错误 path；而静态分析已被注释屏蔽，仓库中也没有覆盖该分支的测试，故障会直接出现在用户搜索路径上（InteractsWithTableQuery.php:93/107、Select.php:1087、Resource.php:762/768）。同一文件第 200 行还依赖“列里含 '(' 就当作原始表达式”的启发式，进一步说明这里本应复用 Grammar 的公开能力而不是复制内部逻辑。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "MAINTAINABILITY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\filamentphp__filament\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\filamentphp__filament@d47632c.diff\n  caseId              filamentphp__filament@d47632c\n  --issue             (未传)\n  --taskId            filamentphp__filament@d47632c\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\nreview-pi: 覆盖补漏 请求 0（失败 0）/ 覆盖 hunk 0/0 / 新候选 0 / no-issue 0 / 预算跳过 0\n✓ 完成 · 耗时 223.3s · 模型调用 12 次 · token 输入 13,786（未命中） · 输出 30,250 · 缓存命中 217,984（94.1%） · 工具 17 次（主会话 17 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0110\n[time] 阶段耗时 | 总墙钟 225.2s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.8s (0.8%)\n[time] 阶段 | 六阶段审计 223.2s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 3.0s (1.4%) | P2 2.0s (0.9%) | P3 3.9s (1.8%) | P4 184.0s (82.5%) | P5 26.3s (11.8%) | P6 3.9s (1.8%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 13,786（未命中） | 输出 30,250 | 缓存命中 217,984（94.1%） | $0.0110\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\filamentphp__filament@d47632c\\audit\\20261127_093341_784.json",
+  "token_usage": {
+    "input_tokens": 13786,
+    "output_tokens": 30250,
+    "cache_read_input_tokens": 217984
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 13786,
+      "output_tokens": 30250,
+      "cache_read_input_tokens": 217984
+    },
+    "coverage_repair": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

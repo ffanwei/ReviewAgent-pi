@@ -1,0 +1,72 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 146.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 37,
+      "summary": "批量写入用 Record<string, any> + `as GlobalStateKey` 断言绕过了键名的编译期校验",
+      "failure_scenario": "新增的 `updateGlobalStateBatch` / `updateSecretsBatch` 把参数声明为 `Record<string, any>` / `Record<string, string | undefined>`，并在内部用 `key as GlobalStateKey` / `key as SecretKey` 强制断言。原实现是 47 次 `updateGlobalState(context, \"apiProvider\", …)` 这样的字面量调用，键名由 TypeScript 对照 `GlobalStateKey`/`SecretKey` 联合类型逐一校验。改动后这个编译期护栏整体消失：任何拼写错误（如把 `requestTimeoutMs` 写成 `requestTimeOutMs`）或误把 `LocalStateKey`（如 `localClineRulesToggles`）放进批量对象，都能通过编译并静默写入一个不存在的 global 键——写入成功、读取时永远是 undefined，配置项表现为“改了但不生效”，而且不会在构建期暴露。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.86,
+      "rule": "TYPE-SAFETY-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 623,
+      "summary": "批量写并行后失去失败隔离：首个写入失败即抛出，其余 70+ 次写入仍在后台继续",
+      "failure_scenario": "`await Promise.all([updateGlobalStateBatch(...), updateSecretsBatch(...)])` 中任一 `globalState.update` 或 `storeSecret` reject，Promise.all 会立刻向上抛出，但其余数十个已发起的写入 promise 并不会被取消，仍会在后台落盘。调用方 `updateApiConfigurationProto`（src/core/controller/models/updateApiConfigurationProto.ts:35）在 catch 里只记录日志并 `throw`，因此不会重建 `controller.task.api`、也不会 `postStateToWebview()`——结果是持久化存储可能已被部分甚至全部改写，而内存中的 API handler 与 webview 状态仍是旧值，二者长期不一致；同时 secrets 与 global state 现在是并行写入，原实现“global 写成功后才会写 secrets”的顺序保证消失，可能出现“apiProvider 已切换但对应 apiKey 未写入”的窗口，用户随后发请求会直接因凭据缺失失败。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-ATOMICITY-001"
+    },
+    {
+      "file": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+      "line": 22,
+      "summary": "逐键触发的热路径加入两条 console.log 计时埋点，会随每次按键刷屏",
+      "failure_scenario": "`handleFieldChange` 被设置页 100+ 处 `onChange` 逐键调用（例如 `AnthropicProvider.tsx:40 handleFieldChange(\"apiKey\", value)`、`BedrockProvider.tsx:58` 的 awsAccessKey），每次按键都会走一次全量配置写入。新增的 `[PERF] Frontend: Starting provider switch for field …` 与 `.then()` 里的完成日志把这条热路径变成了日志源：用户输入一个 API Key 会连续产生 2×N 条 webview DevTools 日志，既冲掉真正有用的错误信息，也让排查线上问题时噪声过大；而且这是临时性能测量代码，不应该随功能一起合入生产。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "PERF-INSTRUMENTATION-001"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 626,
+      "summary": "性能日志中硬编码“was ~535ms, now should be <50ms”的主观结论，且每次状态同步都会输出 6 条埋点",
+      "failure_scenario": "`updateApiConfiguration` 结束时打印 `[PERF] OPTIMIZED updateApiConfiguration took: ${totalTime}ms (was ~535ms, now should be <50ms)`，把一次本地测量的数字写成固定结论合入代码，日志会在任何硬件/机器上断言一个不可验证的预期值，后续阅读日志的人会得到误导信息；同时 `getAllExtensionState` 被 controller 的高频路径反复调用（如 `controller/index.ts:835 getStateToPostToWebview`、`initTask`），这次新增的 6 处计时日志（79-80、230-231、233-235、238、302、305、341、344 行）会在每次状态同步时全量输出，长期噪音可观。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.62,
+      "rule": "MAINTAINABILITY-LOGGING-001"
+    },
+    {
+      "file": "webview-ui/src/components/history/HistoryPreview.tsx",
+      "line": 68,
+      "summary": "历史任务列表项新增 backdrop-filter: blur(8px)，与 hover 缩放动画叠加会持续触发合成层重绘",
+      "failure_scenario": "本次 MR 主题是 provider 切换的存储写入性能优化，`HistoryPreview` 的两处 `backdropFilter: \"blur(8px)\"` 属于无关的视觉调整（另一处为 “No recent tasks” 占位块，line 156）。列表项本身已有 `hover:scale-[1.02]`、`transition-all duration-150` 以及一个渐变遮罩层，再叠加 backdrop-filter 会为该元素建立合成层并对背景做实时模糊采样：在 history 展开/滚动、鼠标在 3 个条目间移动时可能带来可感知的掉帧，在弱性能机器或远程环境中更明显。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.5,
+      "rule": "PERF-RENDER-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 0 / not-reached 10（no-signal=10）\n✓ 完成 · 耗时 145.1s · 模型调用 10 次 · token 输入 21,727（未命中） · 输出 18,474 · 缓存命中 180,480（89.3%） · 工具 16 次（主会话 16 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0087\n[time] 阶段耗时 | 总墙钟 145.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 145.1s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 5.5s (3.8%) | P2 2.6s (1.8%) | P3 7.0s (4.8%) | P4 88.6s (61.1%) | P5 30.2s (20.9%) | P6 11.1s (7.6%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 21,727（未命中） | 输出 18,474 | 缓存命中 180,480（89.3%） | $0.0087\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261127_092552_919.json",
+  "token_usage": {
+    "input_tokens": 21727,
+    "output_tokens": 18474,
+    "cache_read_input_tokens": 180480
+  }
+}

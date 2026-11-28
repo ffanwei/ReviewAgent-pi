@@ -1,0 +1,104 @@
+{
+  "instance_id": "cline__cline@d0a8db8",
+  "repo": "cline/cline",
+  "base_commit": "0262e13ac48bbbc29f6c76b6b9a72e7e2ed2eb4b",
+  "head_commit": "d0a8db831cbe657faf792f00c0e3325de0b75fb4",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 193.2,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 7,
+  "review_output": [
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 623,
+      "summary": "配置写入改为 53 路并发且无串行化，连续切换 provider 会产生新旧混合的持久化状态",
+      "failure_scenario": "原实现对 20+29 个 globalState 键与 24 个 secret 键逐个 `await` 串行写入，键与键之间存在确定的先后关系；本次改为两个 batch 内部 `Promise.all`、两个 batch 之间再 `Promise.all`，53 次写入的完成顺序完全不确定，且函数本身没有任何排队/去抖/版本校验。失败场景：用户在设置页快速切换 provider 或在 API Key 输入框中连续输入，每次字段变更都会触发一次 `handleFieldChange` → `updateApiConfigurationProto` → `updateApiConfiguration`（见 `updateApiConfigurationProto.ts:35`），两次调用的 53 个并发写会相互交错，最终落盘可能是「新的 apiKey + 旧的 apiProvider/apiModelId」这类混合值；而 `controller.task.api` 是用最新一次内存配置构建的（`updateApiConfigurationProto.ts:42`），重启扩展后存储中的混合配置会与用户最后选择的 provider 不一致，表现为模型/密钥错配、请求 401 或调用到错误供应商。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.52,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "src/core/controller/models/updateApiConfigurationProto.ts",
+      "line": 59,
+      "summary": "批量写入部分失败后仍有 50+ 写入在后台继续生效，调用方却直接抛错跳过 handler 与 webview 同步",
+      "failure_scenario": "`Promise.all` 在任意一个键写入失败时立即 reject，但其余已发出的 `globalState.update` / `storeSecret` 并不会被取消，它们仍在后台继续完成并改变持久化状态。失败场景：切换 provider 时某个 secret 写入失败（例如钥匙串被锁/写入超限）或某个 globalState 写入失败，`updateApiConfiguration` reject，`updateApiConfigurationProto` 的 catch 只打印日志后 rethrow，于是 `controller.task.api = buildApiHandler(...)`（L41-43）和 `await controller.postStateToWebview()`（L49）都被跳过：持久化配置已被部分改成新值，而运行中的 handler 与 webview 仍是旧值，且 webview 侧 `handleFieldChange` 只 `console.error` 吞掉错误，用户界面不会提示。此后任意一次 `getAllExtensionState` 读到的是「部分新值」，与界面显示不一致；用户重试后又会以未同步的旧内存配置为基准再次写入，问题持续存在。相比原串行实现（失败点之后不再有任何写入），本次并发批写在错误路径上加重了状态不一致。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "RELIABILITY-002"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 37,
+      "summary": "批写函数用 Record<string, any> + 键名断言，放弃了 GlobalStateKey/SecretKey 的编译期键名校验",
+      "failure_scenario": "新增的 `updateGlobalStateBatch` / `updateSecretsBatch` 参数类型是 `Record<string, any>` / `Record<string, string | undefined>`，内部再用 `key as GlobalStateKey` / `key as SecretKey` 强转，把原本 `updateGlobalState(context, key: GlobalStateKey, ...)`、`storeSecret(context, key: SecretKey, ...)` 提供的字面量联合类型校验完全绕开。失败场景：后续维护者修改 `batchedGlobalUpdates` 时把某个键写错（例如把 `openAiHeaders` 写成 `openAiHeader`、把 `sapAiResourceGroup` 写成 `sapAiCoreResourceGroup`），TypeScript 不会报错，运行时会把值写入一个存储中从未被读取的野键，而对应的真实键保留旧值——切换 provider 看起来成功了，但该配置项（如自定义 Header、SAP resource group）在重启后静默丢失，排查成本很高。同理 `batchedSecretUpdates` 拼错键名会写入一个永远不会被读取的 secret，密钥实际未更新。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 231,
+      "summary": "[PERF] 调试日志遗留在热路径，每次 webview 状态同步都会额外输出近十条日志",
+      "failure_scenario": "`getAllExtensionState` 在每次 `postStateToWebview` 时都会执行（切换 provider 的路径上 `updateApiConfigurationProto.ts:49` 就调用一次），本次在其中插入了开始/第一批/workspace/第二批/处理/总计共 7 条 `console.log`；`updateApiConfiguration` 每执行一次再追加 3 条，前端 `handleFieldChange` 每次字段变更追加 2 条。这些日志把中间量（`conversionStart`、`storageStart`、`apiHandlerStart`、`statePostStart` 等）写进了生产代码，且部分文案带有无依据的断言与硬编码计数（`was ~535ms, now should be <50ms`、`First batch (66 state reads)`、`Second batch (30 state reads)`），一旦读取项增减就会与事实不符，误导后续性能排查。影响评估：每次设置变更会在 Output 通道刷出十余行日志，噪声掩盖真实告警，同时这些常量/字符串在热路径上的拼接也抵消了一部分本次优化收益。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.7,
+      "rule": "PERF-004"
+    },
+    {
+      "file": "webview-ui/src/components/history/HistoryPreview.tsx",
+      "line": 68,
+      "summary": "历史卡片新增 backdrop-filter: blur(8px)，在本次性能优化 MR 中反向引入逐项 GPU 模糊开销",
+      "failure_scenario": "本次 MR 的主题是「优化 provider 切换性能」，但同一次提交给 `HistoryPreview` 的历史任务卡片和空态容器都加上了 `backdropFilter: \"blur(8px)\"`，且这两个改动与 provider 切换没有任何关系（scope creep，难以与性能修复分开回滚）。失败场景：`backdrop-filter` 会为每个卡片单独创建合成层并实时重算其背后的模糊，这些卡片还叠加了 `hover:scale-[1.02] hover:shadow-xl transition-all`（L63）动画，hover 时每帧都要重新采样模糊背景；在低配机器或 webview 中滚动/悬停侧栏历史面板时会出现明显掉帧。同时卡片背景本身已是 `color-mix(... 30%, transparent)` 的半透明色，模糊收益有限。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.42,
+      "rule": "PERF-005"
+    },
+    {
+      "file": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+      "line": 22,
+      "summary": "字段变更处理器中遗留 [PERF] 调试日志与 performance.now 埋点",
+      "failure_scenario": "handleFieldChange 中新增了 `const startTime = performance.now()` 和 `console.log(`[PERF] Frontend: Starting provider switch for field ${field}`)`。该函数是每个 ApiConfiguration 字段更新的通用入口（不限于 provider 切换），在设置界面中很可能随输入/下拉频繁触发，导致控制台被 [PERF] 日志刷屏；同时 `startTime` 仅为配合后续日志埋点而存在，属于临时性能调试代码，若未在合入前移除会长期留在生产 webview 中，增加噪音并误导排障（日志文案称 provider switch，与实际字段变更语义不符）。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.55,
+      "rule": "避免将临时性能调试埋点（performance.now + console.log）随功能代码合入生产；日志文案需与实际行为语义一致"
+    },
+    {
+      "file": "src/core/storage/state.ts",
+      "line": 461,
+      "summary": "updateApiConfiguration 写路径入口新增未受控的 performance.now() 与 console.log 调试日志",
+      "failure_scenario": "在 updateApiConfiguration 函数入口无条件执行 performance.now() 并输出字符串模板 console.log，没有任何 DEBUG 开关或环境判断。该函数用于写入/持久化 API 配置，属于配置保存的高频路径，每一次调用都会在扩展宿主输出通道追加日志行，在长时间运行或频繁切换 provider/模型时会造成日志膨胀与额外字符串拼接开销；同时新增的 startTime 变量若后续未被读取，还会引入无用计时调用。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.6,
+      "rule": "调试/性能埋点日志不应以无条件 console.log 形式遗留在生产写入热路径，应通过统一的 debug 开关或日志级别控制"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\cline__cline@d0a8db8.diff\n  caseId              cline__cline@d0a8db8\n  --issue             (未传)\n  --taskId            cline__cline@d0a8db8\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 7 / no-issue 4 / not-reached 3（no-signal=3）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 6/9 / 新候选 2 / no-issue 4 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 191.3s · 模型调用 9 次 · token 输入 11,123（未命中） · 输出 15,642 · 缓存命中 146,560（92.9%） · 工具 11 次（主会话 11 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0063\n[time] 阶段耗时 | 总墙钟 192.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.0s (0.5%)\n[time] 阶段 | 六阶段审计 116.4s (60.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 74.9s (39.0%)\n[time] 审计明细 | P1 3.7s (3.2%) | P2 2.6s (2.2%) | P3 6.0s (5.2%) | P4 67.1s (57.7%) | P5 26.3s (22.6%) | P6 10.7s (9.2%)\n[usage] 任务总计 | 模型调用 16 次（Agent 9 + 一次性 7） | token 输入 18,402（未命中） | 输出 24,698 | 缓存命中 146,560（88.8%） | $0.0099\n[usage] 一次性明细 | 覆盖补漏 7 次（输入 7,279 / 输出 9,056 / 缓存 0）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\cline__cline@d0a8db8\\audit\\20261127_093615_096.json",
+  "token_usage": {
+    "input_tokens": 18402,
+    "output_tokens": 24698,
+    "cache_read_input_tokens": 146560
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 11123,
+      "output_tokens": 15642,
+      "cache_read_input_tokens": 146560
+    },
+    "coverage_repair": {
+      "input_tokens": 7279,
+      "output_tokens": 9056,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

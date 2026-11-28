@@ -1,0 +1,64 @@
+{
+  "instance_id": "libsdl-org__SDL@1526727",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "71303b41bf89c4bb68dbe1bed12fd2ee1dc0dd41",
+  "head_commit": "15267271865f73c996719238425f1604fc2fa205",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 166.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 150,
+      "summary": "仅凭 feature report 0x06 读取成功即开启传感器/震动/电量能力，未校验内容与长度",
+      "failure_scenario": "新增分支把 ReadFeatureReport 的返回值只与 0 做比较，只要底层返回任意正数字节数，就把 sensors_supported、rumble_supported、powerstate_supported 全部置为 true，而读到的 data 内容随后被完全丢弃、从未被检视。同目录 ps5.c 的同类探测会校验具体长度与特征字节（size == 48 && data[2] == 0x28）才认可结果。失败场景：要么设备返回的是一份长度不足 27 字节或布局不同的 0x06 报告（部分固件/模式下行之），此时 OpenJoystick 仍会通过 SDL_PrivateJoystickAddSensor 注册 GYRO/ACCEL（125Hz），HandleStatePacket 会把 data[15..26] 当作 ABITDO_SENSORS 解析并持续上报虚假运动数据、把 data[14] 当作电量上报随机电量；要么反过来，设备确实支持震动/电量但 0x06 读取因偶发超时失败，控制器就永久失去震动与电量上报能力（同一 ctx 生命周期内不会再重试）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "ROBUSTNESS-003"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 259,
+      "summary": "接收 0x04 报文后按固定偏移解析且不校验报文长度，短报文会送出未初始化数据",
+      "failure_scenario": "白名单新增 0x04 后，所有 8BitDo 设备（包括既有的 Ultimate2 Wireless）的 0x04 报文都会进入后续解析，而解析体对 data[1]、data[8]~data[10]、data[14]（电量）以及 data[15..26]（IMU）使用写死的偏移，完全没有使用入参 size 做边界判断。UpdateDevice 传给它的 data[USB_PACKET_LENGTH] 是未初始化的栈缓冲，SDL_hid_read_timeout 只填充返回的 size 字节。失败场景：设备上报一条短于 27 字节的 0x04 报文（新加入的 SN30/SF30/Pro 2 系列的输入报文长度与 0x01/0x03 并不保证一致）时，例如 size < 15，就会读到栈上残留数据，从而把垃圾值当作摇杆/扳机轴、电量和 IMU 值发送给应用，产生乱跳的轴、随机电池百分比和虚假运动事件；且没有任何日志可定位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "BOUNDS-002"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 145,
+      "summary": "同一组 8BitDo product ID 白名单在驱动与 SDL_joystick.c 两处重复维护，易漂移",
+      "failure_scenario": "is-supported 判定改为在 SDL_joystick.c 的 SDL_IsJoystick8BitDoController() 中枚举 6 个 product ID，而 InitDevice 的新分支又在驱动内以另一份手写列表重复枚举其中 5 个（除 Ultimate2 Wireless 外的型号）。这两份列表没有任何编译期或运行期的一致性保证，且后者用于决定能力标志。失败场景：后续为该驱动新增型号时只改 SDL_IsJoystick8BitDoController()（这是最自然的位置，因为它同时影响 SDL_CreateMappingForHIDAPIGamepad 的映射生成），设备会被识别并接管，但不会进入任何能力初始化分支，导致震动/电量/传感器能力全部静默缺失，且日志里没有任何提示，排查成本高。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\libsdl-org__SDL@1526727.diff\n  caseId              libsdl-org__SDL@1526727\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@1526727\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 2 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 2/3 / 新候选 0 / no-issue 2 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 165.3s · 模型调用 10 次 · token 输入 16,102（未命中） · 输出 14,706 · 缓存命中 139,520（89.7%） · 工具 12 次（主会话 12 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0068\n[time] 阶段耗时 | 总墙钟 166.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.4%)\n[time] 阶段 | 六阶段审计 121.0s (72.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 44.4s (26.8%)\n[time] 审计明细 | P1 4.7s (3.9%) | P2 4.1s (3.4%) | P3 5.8s (4.8%) | P4 80.2s (66.3%) | P5 20.0s (16.6%) | P6 6.3s (5.2%)\n[usage] 任务总计 | 模型调用 14 次（Agent 10 + 一次性 4） | token 输入 18,726（未命中） | 输出 20,317 | 缓存命中 140,928（88.3%） | $0.0087\n[usage] 一次性明细 | 覆盖补漏 4 次（输入 2,624 / 输出 5,611 / 缓存 1,408）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\libsdl-org__SDL@1526727\\audit\\20261127_093605_607.json",
+  "token_usage": {
+    "input_tokens": 18726,
+    "output_tokens": 20317,
+    "cache_read_input_tokens": 140928
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 16102,
+      "output_tokens": 14706,
+      "cache_read_input_tokens": 139520
+    },
+    "coverage_repair": {
+      "input_tokens": 2624,
+      "output_tokens": 5611,
+      "cache_read_input_tokens": 1408
+    }
+  }
+}

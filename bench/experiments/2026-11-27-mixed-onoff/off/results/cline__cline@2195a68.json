@@ -1,0 +1,62 @@
+{
+  "instance_id": "cline__cline@2195a68",
+  "repo": "cline/cline",
+  "base_commit": "398bc87a64800e021966868243be2f09be72e73c",
+  "head_commit": "2195a689b787a963bdacc35d348f4590c30a2692",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 87.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "src/extension.ts",
+      "line": 312,
+      "summary": "OAuth state 不匹配从拒绝降级为用户确认，state 防 CSRF 能力实质失效",
+      "failure_scenario": "变更前 state 与 authNonce 不一致会直接 showErrorMessage 并 return，回调被终止；变更后仅在弹窗中提示用户，只要用户点了 \"Store\"（或误点）就继续执行 handleAuthCallback，把 URL 中的 idToken 写入为当前账号。任何网页或聊天消息只要诱导用户点击 vscode://saoudrizwan.claude-dev/auth?idToken=<攻击者 token>&state=<任意值> 这类深链，就能让受害者扩展登录到攻击者账号（login CSRF / 会话串号），而 AuthService.handleAuthCallback 内部完全不校验 state，链路中已不存在任何强校验点。",
+      "severity": "P1",
+      "category": "安全",
+      "confidence": 0.86,
+      "rule": "SECURITY-002"
+    },
+    {
+      "file": "src/extension.ts",
+      "line": 318,
+      "summary": "警告弹窗被关闭时返回值 undefined 被当作确认，仍然写入 token",
+      "failure_scenario": "vscode.window.showWarningMessage 的返回类型是 Thenable<string | undefined>，用户按 Esc 或点关闭按钮时返回 undefined。当前代码只把 \"Cancel\" 视为拒绝，因此「关闭弹窗」这一最常见的回避操作会落到继续分支，执行 handleAuthCallback 把来源不明的 token 存为当前账号，等于默认放行。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "src/services/auth/AuthService.ts",
+      "line": 33,
+      "summary": "authNonce 改为进程生命周期内固定常量，永不轮换也不失效，失去一次性语义",
+      "failure_scenario": "变更前 nonce 在每次 createAuthRequest 时重新生成、校验通过后由 resetAuthNonce 置空；变更后 _authNonce 是构造时生成一次的 readonly 字段，resetAuthNonce 已被删除且仓库中不再有任何复位入口。由于 AuthService 是单例，整个扩展进程生命周期内所有登录请求共用同一个 state 值：一旦该值出现在日志、终端、浏览器历史或分享的链接中（例如 src/extension.ts:298 会把完整 uri 打进 console），它就一直可用于构造回调链接，nonce 的重放防护与「一次性」语义完全丧失。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.8,
+      "rule": "SECURITY-001"
+    },
+    {
+      "file": "src/extension.ts",
+      "line": 314,
+      "summary": "确认弹窗文案不含「state 不匹配」信息且 uri.path 恒为 /auth，用户无法做出知情决策",
+      "failure_scenario": "提示文案是 `Store token returned from ${uri.path}`，而 /auth 分支下 uri.path 恒为 \"/auth\"，用户实际只看到「Store token returned from /auth」，既没有说明 state 校验失败，也没有给出 token 的真实来源（scheme/host 或 provider）。在被诱导点击深链的场景中，这条措辞反而像一个正常的存储确认，显著提高用户点 \"Store\" 的概率，使 F001 的降级校验形同虚设。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.72,
+      "rule": "SECURITY-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\cline__cline\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\cline__cline@2195a68.diff\n  caseId              cline__cline@2195a68\n  --issue             (未传)\n  --taskId            cline__cline@2195a68\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 83.1s · 模型调用 10 次 · token 输入 8,252（未命中） · 输出 10,635 · 缓存命中 100,992（92.4%） · 工具 10 次（主会话 10 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0044\n[time] 阶段耗时 | 总墙钟 84.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.5s (1.8%)\n[time] 阶段 | 六阶段审计 83.0s (98.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 5.5s (6.6%) | P2 2.6s (3.1%) | P3 6.8s (8.2%) | P4 31.4s (37.8%) | P5 31.2s (37.6%) | P6 5.5s (6.6%)\n[usage] 任务总计 | 模型调用 10 次（Agent 10 + 一次性 0） | token 输入 8,252（未命中） | 输出 10,635 | 缓存命中 100,992（92.4%） | $0.0044\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\cline__cline@2195a68\\audit\\20261127_092428_299.json",
+  "token_usage": {
+    "input_tokens": 8252,
+    "output_tokens": 10635,
+    "cache_read_input_tokens": 100992
+  }
+}

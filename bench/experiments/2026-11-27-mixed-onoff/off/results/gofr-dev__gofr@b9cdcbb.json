@@ -1,0 +1,52 @@
+{
+  "instance_id": "gofr-dev__gofr@b9cdcbb",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "7f1760b083ea23ffd95fdf83467bdfa21735df81",
+  "head_commit": "b9cdcbb2b9fc78499d15d51ffbb7c861592b0efe",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 102.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 100,
+      "summary": "删除 Response 解包后，错误响应状态码退化为 206 Partial Content",
+      "failure_scenario": "本 MR 删除了 `result = resp.Data`，于是 handler 返回 `response.Response` 时，`Responder.Respond` 与 `getStatusCode` 收到的 data 变成恒非 nil 的结构体值。`getStatusCode` 在 `err != nil && !isNil(data)` 时直接返回 http.StatusPartialContent（206），而 `isNil` 对结构体值恒为 false。因此任何形如 `return response.Response{Headers: h}, gofrHTTP.ErrorEntityNotFound{}` 的 handler，错误状态码会从改动前的 404/500 变成 206 Partial Content：客户端拿到成功区间状态码却被塞进 error 对象，重试/告警/网关判定全部失效，属于对外错误契约的静默破坏。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.82,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "pkg/gofr/http/responder.go",
+      "line": 32,
+      "summary": "POST 返回无数据 Response 时状态码由 202 Accepted 变为 201 Created",
+      "failure_scenario": "`handleSuccess` 对 POST 以 `data != nil` 区分 201/202。改动前 handler 会把 `response.Response` 解包成 `resp.Data`，`Data` 为 nil 时得到 202 Accepted；改动后新增的 `case resTypes.Response` 使 data 恒为结构体值（非 nil），因此 `return response.Response{Headers: h}` 这类“仅设头、无请求体”的 POST 响应会变成 201 Created。依赖 202 语义发起轮询的调用方会误判资源已创建。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "pkg/gofr/http/responder.go",
+      "line": 97,
+      "summary": "Metadata 声明为 interface{} 使 omitempty 失效，无元数据时仍输出 metadata:null",
+      "failure_scenario": "`response.Metadata` 被声明为 `interface{}` 且带 `json:\"metadata,omitempty\"`，但传入的是 `Response.Metadata`（`map[string]any`）的 nil 值：nil map 装入 interface{} 后接口本身非 nil，`encoding/json` 的 isEmptyValue 对 interface 只看 `IsNil()`，因此不会省略，最终序列化出 `\"metadata\":null`。结果是所有返回 `response.Response` 的接口（包括本应“只有 data”的响应）都多出一个 null 元数据字段，与本 MR 文档中“If metadata is omitted, the response defaults to {\"data\": {}}”的契约不一致，严格解析或对 schema 做校验的客户端会被多余字段影响。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CONTRACT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\gofr-dev__gofr@b9cdcbb.diff\n  caseId              gofr-dev__gofr@b9cdcbb\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@b9cdcbb\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 3（no-signal=3）\n✓ 完成 · 耗时 100.8s · 模型调用 11 次 · token 输入 12,489（未命中） · 输出 13,024 · 缓存命中 171,008（93.2%） · 工具 10 次（主会话 10 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0059\n[time] 阶段耗时 | 总墙钟 101.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.6s (0.6%)\n[time] 阶段 | 六阶段审计 100.8s (99.3%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 5.1s (5.0%) | P2 3.5s (3.5%) | P3 6.3s (6.2%) | P4 51.8s (51.5%) | P5 28.6s (28.4%) | P6 5.4s (5.4%)\n[usage] 任务总计 | 模型调用 11 次（Agent 11 + 一次性 0） | token 输入 12,489（未命中） | 输出 13,024 | 缓存命中 171,008（93.2%） | $0.0059\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\gofr-dev__gofr@b9cdcbb\\audit\\20261127_092717_802.json",
+  "token_usage": {
+    "input_tokens": 12489,
+    "output_tokens": 13024,
+    "cache_read_input_tokens": 171008
+  }
+}

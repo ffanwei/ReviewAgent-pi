@@ -1,0 +1,52 @@
+{
+  "instance_id": "filamentphp__filament@d47632c",
+  "repo": "filamentphp/filament",
+  "base_commit": "ce4d9d08df41142ff219bb3dc44968084eaae0dc",
+  "head_commit": "d47632c0583bac481d4ce7cc9b6b1711d0f8e0fc",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 330.6,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 184,
+      "summary": "仅凭 '->' 子串就无条件重写列表达式，已带引号的 JSON 选择器会被二次包裹导致搜索静默失效",
+      "failure_scenario": "新增条件 `in_array($driverName, ['mysql','mariadb'], true) && str_contains($column, '->')` 只做纯文本判断：只要列字符串里出现 '->' 就认定它是 `field->path` 形式，交给 `wrapJsonFieldAndPath()` 重组为 `json_extract({$field}{$path})`。但搜索列来自公共 API 传入的任意字符串（`->searchable('data->name')`、InteractsWithTableQuery.php:99-104 的 '.'→'->' 重写、AttachAction.php:232 的 `qualifyColumn()`），用户完全可以写成 `data->'$.name'` / `data->>'$.name'`（Laravel 原生 JSON 选择器写法，`data->name` 只是简写）。此时 `wrapJsonFieldAndPath()` 会把 `'$.name'` 整体当作一个路径段再加 `$.` 和引号，生成 `json_extract(`data`, '$.''$.name''')` 这类非法路径；MySQL/MariaDB 对非法 JSON 路径返回 NULL 而不报错，于是 `lower(json_extract(...)) LIKE '%term%'` 恒不匹配，搜索静默返回空结果，无异常无日志。变更前该输入生成的是 `lower(data->'$.name')`，在这两个驱动下是合法 SQL，属本分支引入的行为回退。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 185,
+      "summary": "用 invade() 反射调用框架 protected 方法 wrapJsonFieldAndPath，缺少兜底",
+      "failure_scenario": "新增代码通过 `invade($databaseConnection->getQueryGrammar())->wrapJsonFieldAndPath($column)` 绕过可见性调用 Laravel 查询语法对象的 protected 方法，并用 `/** @phpstan-ignore-line */` 压掉静态检查。该方法是框架内部实现细节（`MySqlGrammar::wrapJsonSelector()` 的私有拆分步骤），不在公开契约内：应用若通过 `Connection::setQueryGrammar()` 替换自定义 grammar，或框架升级后改名/改签名，这里会直接在运行时抛 `Error: Call to undefined method`；错误发生在用户输入触发的搜索路径上，表现为列表页 500，且当前没有任何 `method_exists()` 兜底。同时该调用使这段代码类型不可静态推断（因此需要 phpstan-ignore），后续重构失去静态保护。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.5,
+      "rule": "MAINTAINABILITY-003"
+    },
+    {
+      "file": "packages/support/src/helpers.php",
+      "line": 187,
+      "summary": "重写为 json_extract 时丢失 json_unquote，MySQL 下变成对带引号的 JSON 文本做匹配",
+      "failure_scenario": "Laravel 自身的 MySQL JSON 选择器编译结果是 `json_unquote(json_extract(`field`, '$.path'))`（去引号后才得到标量文本），而新增分支只生成 `json_extract({$field}{$path})`，随后被包成 `lower(json_extract(...))`。MySQL/MariaDB 的 `json_extract()` 返回 JSON 值：字符串标量保留外层双引号与内部转义（如 `\"say \\\"hi\\\"\"`）。因此强制大小写不敏感后，LIKE 模式实际与 JSON 文本表示比对，而非与真实值比对——库中值为 `say \"hi\"` 时搜索 `say \"hi\"` 命中失败，与未强制大小写不敏感时（走 Laravel 原生 `json_unquote(json_extract(...))`）的匹配结果不一致，同一列出现两种语义。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "CORRECTNESS-004"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\filamentphp__filament\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\filamentphp__filament@d47632c.diff\n  caseId              filamentphp__filament@d47632c\n  --issue             (未传)\n  --taskId            filamentphp__filament@d47632c\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 326.9s · 模型调用 13 次 · token 输入 14,065（未命中） · 输出 47,195 · 缓存命中 212,096（93.8%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0158\n[time] 阶段耗时 | 总墙钟 328.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (0.5%)\n[time] 阶段 | 六阶段审计 326.8s (99.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 7.6s (2.3%) | P2 2.8s (0.9%) | P3 14.3s (4.4%) | P4 161.1s (49.3%) | P5 133.2s (40.8%) | P6 7.9s (2.4%)\n[usage] 任务总计 | 模型调用 15 次（Agent 13 + 一次性 2） | token 输入 14,065（未命中） | 输出 47,195 | 缓存命中 212,096（93.8%） | $0.0158\n[usage] 一次性明细 | 解析修复 2 次（输入 2,316 / 输出 19,681 / 缓存 2,304）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\filamentphp__filament@d47632c\\audit\\20261127_092427_674.json",
+  "token_usage": {
+    "input_tokens": 14065,
+    "output_tokens": 47195,
+    "cache_read_input_tokens": 212096
+  }
+}

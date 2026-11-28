@@ -1,0 +1,74 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 289.9,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "root.OpenFile 探测在父目录不存在时失败，导致合法的嵌套文件路径被误判为非法",
+      "failure_scenario": "新增的包含性探测用 os.Root.OpenFile(fp, O_CREATE|O_WRONLY, 0o644) 直接打开目标路径，但 os.Root 只会创建叶子文件、不会创建缺失的父目录；而当父目录不存在时它返回 ENOENT，被统一包装成 errFilePath。此前 createLink 内部会先 os.MkdirAll(filepath.Dir(dst))，因此诸如 files={\"subdir/model.safetensors\": digest} 这类带目录的键是可用的；本次改动后同一请求会在探测阶段失败，并返回极具误导性的 \"file path must be relative: invalid path subdir/model.safetensors: ...\"。更矛盾的是 validRelative 自身把 \"dir/file.txt\"、\"a/b\" 这类嵌套路径视为合法（新增测试 create_test.go:131 也如此断言），即第一层校验放行、第二层校验却拒绝，形同把合法输入判为路径穿越。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CORRECTNESS-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "errFilePath 只加入 adapter 分支的错误白名单，r.Files 分支仍返回 500",
+      "failure_scenario": "本次改动把 errFilePath 追加到 r.Adapters 转换失败的白名单里，但 r.Files 分支（server/create.go:100）的白名单仍是 {errNoFilesProvided, errOnlyGGUFSupported, errUnknownType}。一旦模型侧的 convertFromSafetensors 因路径问题返回 errFilePath（例如 F001 的嵌套键误拒、或 Windows 反斜杠穿越被 root 探测拦下），该错误会落到 ch <- gin.H{\"error\": err.Error()} 这条无 status 的分支：waitForStream 把缺少 status 的 gin.H 一律当成 http.StatusInternalServerError，流式模式下更是直接输出不带 status 的错误块。结果是同一种“客户端路径非法/不被接受”的输入，adapter 请求得到 400，model 请求得到 500，客户端无法区分“请求有问题”和“服务端故障”。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.8,
+      "rule": "ERROR-HANDLING-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 182,
+      "summary": "validRelative 只按 '/' 判断，Windows 反斜杠穿越序列可通过第一层校验",
+      "failure_scenario": "validRelative 全部用字符串前缀/子串比较（\"/\"、\"./\"、\"../\"、\"/../\"、\"/./\"）来识别绝对路径与向上引用，未考虑 Windows 的 '\\' 分隔符。在 Windows 上，键 \"..\\\\..\\\\evil.safetensors\" 或 \"dir\\\\..\\\\..\\\\..\\\\evil.safetensors\" 既不满足任何前缀判断、也不含 \"/../\"，因此会被 CreateHandler 判为合法，随后 filepath.Clean 仍保留 '\\' 分隔形态并被放入 files map；真正拦住越界写入的只剩 convertFromSafetensors 里的 os.Root 探测。也就是说，此 MR 想作为第一道防线的显式校验在 Windows 上实际失效，且慢速兜底失败时又会走 F002 的 500 路径。",
+      "severity": "P3",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "SECURITY-004"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "r.Files 键经 filepath.Clean 归一化后可能相互覆盖，导致文件条目被静默丢弃",
+      "failure_scenario": "循环只对原始键 k 做 validRelative 校验，随后把 filepath.Clean(k) 作为最终键写入新 map。当请求中的 r.Files 同时包含仅靠路径归一化即可相等的两个键（例如 \"a/b\" 与 \"a/./b\"、\"a//b\"，或末尾带分隔符的形式）时，两个不同条目会落到同一个 files 键上，后写入的覆盖先写入的，最终 r.Files 条目数少于请求条目数，其中一个文件内容被静默丢弃且无任何报错。校验对象（k）与落库对象（Clean(k)）也不一致，Clean 后的结果未再校验，后续按路径查找/落盘时以归一化路径为准，容易出现内容与声明路径错位。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "输入校验后的键须与存储键一致，且不得因归一化导致多条输入静默合并/丢失"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 4 / no-issue 2 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 3/4 / 新候选 1 / no-issue 2 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 287.4s · 模型调用 20 次 · token 输入 20,855（未命中） · 输出 15,775 · 缓存命中 362,368（94.6%） · 工具 23 次（主会话 23 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0084\n[time] 阶段耗时 | 总墙钟 289.0s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (0.5%)\n[time] 阶段 | 六阶段审计 127.5s (44.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 160.0s (55.4%)\n[time] 审计明细 | P1 53.9s (42.3%) | P2 2.5s (2.0%) | P3 4.1s (3.2%) | P4 14.0s (11.0%) | P5 46.8s (36.7%) | P6 6.2s (4.9%)\n[usage] 任务总计 | 模型调用 26 次（Agent 20 + 一次性 6） | token 输入 24,104（未命中） | 输出 39,151 | 缓存命中 370,688（93.9%） | $0.0154\n[usage] 一次性明细 | 覆盖补漏 6 次（输入 3,249 / 输出 23,376 / 缓存 8,320）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261127_093341_493.json",
+  "token_usage": {
+    "input_tokens": 24104,
+    "output_tokens": 39151,
+    "cache_read_input_tokens": 370688
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 20855,
+      "output_tokens": 15775,
+      "cache_read_input_tokens": 362368
+    },
+    "coverage_repair": {
+      "input_tokens": 3249,
+      "output_tokens": 23376,
+      "cache_read_input_tokens": 8320
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "instance_id": "browser-use__browser-use@0b21e50",
+  "repo": "browser-use/browser-use",
+  "base_commit": "fa461585f1fc2d4a430e68e6c115a12f4936fe73",
+  "head_commit": "0b21e50ca640581ecd46990475c8b223eaa05045",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 195.8,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "browser_use/browser/browser.py",
+      "line": 111,
+      "summary": "新增的 chrome_remote_debugging_port 允许 None，但下游全部按非空整数使用，会导致浏览器初始化崩溃",
+      "failure_scenario": "本次新增配置字段 `chrome_remote_debugging_port: int | None = CHROME_DEBUG_PORT` 在类型上允许显式传入 None（同文件的 cdp_url、browser_binary_path 都是 `| None = None` 写法，用户容易照抄），pydantic 也未加端口范围校验。但下游所有使用点都把它当非空整数直接使用：内置浏览器分支把它传给 socket.connect_ex(('localhost', port))，None 会抛 TypeError、超过 65535 会抛 OverflowError，且该调用不在任何 try/except 内，因此 `BrowserConfig(chrome_remote_debugging_port=None)` 或非法端口会让 `get_playwright_browser()` 以非预期异常直接失败；用户自带浏览器分支则把 None 格式化成字符串 'None' 拼进 http://localhost:None/json/version，httpx 抛 InvalidURL，而该分支只捕获 httpx.RequestError（InvalidURL 不是其子类），于是“探测已有实例失败 → 回退到启动新实例”的正常降级路径被跳过，异常直接冒出 _setup_user_provided_browser；同时 CHROME_DEBUGGING_ARG % {...} 还会把 --remote-debugging-port=None 传给 Chrome。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CONFIG-VALIDATION-001"
+    },
+    {
+      "file": "tests/test_browser.py",
+      "line": 180,
+      "summary": "新用例打桩 requests.get，但被测代码用的是 httpx，桩失效并使启动分支的验证依赖真实网络",
+      "failure_scenario": "新增用例 test_user_provided_browser_launch_on_custom_chrome_remote_debugging_port 通过 monkeypatch.setattr(requests, 'get', dummy_get) 伪造“9223 上已有浏览器在跑”的探测结果，但生产代码 _setup_user_provided_browser 用的是 httpx.AsyncClient().get(...)，requests.get 从未被调用。后果有二：一是用例实际发出真实 HTTP 请求，探测结果取决于运行环境，若本机 9223 端口恰好有进程返回 200，流程会走“复用已存在浏览器”分支，dummy_create_subprocess_exec 内对 --remote-debugging-port=9223 的核心断言与整段启动逻辑被静默跳过，用例仍然通过；二是由于 create_subprocess_exec 被打桩、不会有真实 Chrome 监听 9223，_setup_user_provided_browser 的 10 次重试轮询必然全部失败，每次还真实 await asyncio.sleep(1)，单个用例固定多耗约 10 秒（外加探测阶段的连接超时），显著拉长 CI 时间并留下环境相关的偶发失败。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.72,
+      "rule": "TESTABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\browser-use__browser-use\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\browser-use__browser-use@0b21e50.diff\n  caseId              browser-use__browser-use@0b21e50\n  --issue             (未传)\n  --taskId            browser-use__browser-use@0b21e50\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 13（no-signal=13）\n✓ 完成 · 耗时 191.6s · 模型调用 15 次 · token 输入 19,067（未命中） · 输出 27,124 · 缓存命中 339,968（94.7%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0112\n[time] 阶段耗时 | 总墙钟 193.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (0.8%)\n[time] 阶段 | 六阶段审计 191.6s (99.1%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 25.6s (13.4%) | P2 4.9s (2.5%) | P3 5.6s (2.9%) | P4 113.0s (59.0%) | P5 35.6s (18.6%) | P6 6.7s (3.5%)\n[usage] 任务总计 | 模型调用 15 次（Agent 15 + 一次性 0） | token 输入 19,067（未命中） | 输出 27,124 | 缓存命中 339,968（94.7%） | $0.0112\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\browser-use__browser-use@0b21e50\\audit\\20261127_092428_085.json",
+  "token_usage": {
+    "input_tokens": 19067,
+    "output_tokens": 27124,
+    "cache_read_input_tokens": 339968
+  }
+}

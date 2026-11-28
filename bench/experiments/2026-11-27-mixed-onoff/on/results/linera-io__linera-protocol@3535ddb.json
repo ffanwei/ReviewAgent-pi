@@ -1,0 +1,54 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 161.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 848,
+      "summary": "分页拉取缺少迭代与累积条数上限，异常/恶意响应可导致无限循环",
+      "failure_scenario": "新的分页循环只有 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 一个退出条件，且每轮把响应追加到 `remote_log`，既没有迭代次数上限，也没有用响应中的 `count_received_log` 校验进度是否推进。该终止条件完全依赖对端返回条数单调收敛：一旦某个 validator 实现忽略 `request_received_log_excluding_first_n`（例如返回固定首页）、代理/中间层重放同一页，或恶意节点每轮都返回恰好 1000 条，客户端就会永久循环并让 `remote_log` 无界增长直至 OOM，同步任务永远不结束（此前单次请求不可能出现无限循环，这是本次变更引入的新失败模式）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-001"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件依赖客户端常量与服务端截断上限恰好相等",
+      "failure_scenario": "循环以“本次返回条数 < `CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES`”作为“日志已读完”的判据，而这个常量是客户端与服务端各自编译进去的值，两者只在同一次构建中一致。客户端与 validator 版本偏移时（网络中验证者分批升级、旧 validator 完全不截断、或 TODO(#4638) 之后服务端把上限调小）判据就会失真：服务端页比客户端常量小时，客户端在第一页就结束本轮，只处理前若干条，其余条目要等后续同步轮次才补齐（消息投递延迟、同步轮次增多）；服务端页比客户端常量小时反过来的情形（旧节点返回全量且长度 ≥ 1000）则会多发一次必然为空的请求。用响应中已经返回的 `count_received_log` 判断即可与对端实现解耦。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "API-CONTRACT-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 3 / not-reached 1（no-signal=1）\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 3/4 / 新候选 0 / no-issue 3 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 158.7s · 模型调用 13 次 · token 输入 16,863（未命中） · 输出 14,189 · 缓存命中 169,472（91.0%） · 工具 18 次（主会话 18 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0068\n[time] 阶段耗时 | 总墙钟 160.5s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.7s (1.0%)\n[time] 阶段 | 六阶段审计 118.4s (73.8%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 40.4s (25.2%)\n[time] 审计明细 | P1 3.5s (2.9%) | P2 4.1s (3.4%) | P3 5.5s (4.7%) | P4 84.1s (71.1%) | P5 17.3s (14.6%) | P6 3.8s (3.2%)\n[usage] 任务总计 | 模型调用 17 次（Agent 13 + 一次性 4） | token 输入 19,964（未命中） | 输出 19,797 | 缓存命中 170,112（89.5%） | $0.0088\n[usage] 一次性明细 | 覆盖补漏 4 次（输入 3,101 / 输出 5,608 / 缓存 640）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261127_093341_683.json",
+  "token_usage": {
+    "input_tokens": 19964,
+    "output_tokens": 19797,
+    "cache_read_input_tokens": 170112
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 16863,
+      "output_tokens": 14189,
+      "cache_read_input_tokens": 169472
+    },
+    "coverage_repair": {
+      "input_tokens": 3101,
+      "output_tokens": 5608,
+      "cache_read_input_tokens": 640
+    }
+  }
+}

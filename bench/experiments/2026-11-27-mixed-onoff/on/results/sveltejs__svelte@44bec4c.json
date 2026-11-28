@@ -1,0 +1,54 @@
+{
+  "instance_id": "sveltejs__svelte@44bec4c",
+  "repo": "sveltejs/svelte",
+  "base_commit": "2af7ba21563f1b7f011ffa9f0c08e4acb473eef3",
+  "head_commit": "44bec4c8b172a47ff300f754463555bbb694bb05",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 382.0,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "packages/svelte/tests/runtime-runes/samples/legacy-runes-ambiguous-export-let/_config.js",
+      "line": 12,
+      "summary": "export-let 用例的断言与 maybe_runes 判定矛盾，期望值疑似复制错误",
+      "failure_scenario": "该用例的组件 `legacy-runes-ambiguous-export-let/main.svelte` 使用 `let x = 42; export { x };`，恰好命中新增判定里 `specifier.local` 的 `declaration_kind === 'let'` 分支，因此 `maybe_runes` 为 false，组件仍完全按 legacy 编译：`build_expression` 会走「先按静态引用读取、再用 `$.untrack` 包住真实表达式」的路径（shared/utils.js:381-406）。对 `{get()}` 而言，`get` 是 import 绑定，`build_getter(binding.node)` 得到的是函数标识符本身，生成的依赖读取是 `$.deep_read_state(get)`（并未调用 `get`），而 `deep_read_state` 对非 object（函数）直接 return（runtime.js:930-933），真正的 `get()` 调用被 `$.untrack` 包裹不会建立订阅，因此点击按钮后 `<p>` 仍应为 `0`。同一 MR 中与之等价（同为 legacy 编译）的 `legacy-runes-ambiguous-explicit-false/_config.js:12` 正是断言 `'0'`，两个用例对本应一致的编译行为给出了相反期望，说明 export-let 用例的断言很可能是复制自 export-const 用例（二者 `_config.js` 内容完全相同），会使该用例在真实编译产物下失败或掩盖判定逻辑的真实结论。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.6,
+      "rule": "TEST-EXPECTATION-001"
+    },
+    {
+      "file": "packages/svelte/src/compiler/phases/2-analyze/index.js",
+      "line": 447,
+      "summary": "maybe_runes 判定遗漏 var 声明的 legacy prop，导致同一组件被混合编译",
+      "failure_scenario": "新增判定只用 `node.declaration.kind === 'let'`（以及 specifier 分支的 `declaration_kind === 'let'`）来识别「显式 legacy prop」，但同一函数稍后的 legacy props 推导把 `var` 也当作 prop 处理：`bindable_prop` 的判定是 `binding.declaration_kind === 'var' || binding.declaration_kind === 'let'`（index.js:538-546），`export var x = 1` 也会在 index.js:522-527 被赋为 `bindable_prop`。于是 `<script>export var x = 1;</script>` 或 `<script>var x = 1; export { x };</script>` 这类明确属于 legacy prop 的组件仍被标记 `maybe_runes: true`，模板依赖改为细粒度收集：`build_expression` 会跳过对 `bindable_prop` 的 `$.deep_read_state($.get(x))` 粗粒度读取（shared/utils.js:391-399），而组件的 props 仍按 legacy 方式生成（`$.prop` 不带 `PROPS_IS_RUNES`，client/utils.js:189-191）。当 legacy 父组件就地修改传入对象、依赖子组件 `deep_read_state` 触发的深层 props 更新时，子组件模板不再重新渲染，出现「props 按 legacy、模板依赖按 runes」的混合语义。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "CONSISTENCY-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\sveltejs__svelte\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\sveltejs__svelte@44bec4c.diff\n  caseId              sveltejs__svelte@44bec4c\n  --issue             (未传)\n  --taskId            sveltejs__svelte@44bec4c\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 5 / not-reached 9（no-signal=3 budget=6）\nreview-pi: 覆盖补漏 请求 8（失败 0）/ 覆盖 hunk 5/8 / 新候选 0 / no-issue 5 / 预算跳过 6 / 验证拒绝 3\n✓ 完成 · 耗时 380.5s · 模型调用 18 次 · token 输入 26,041（未命中） · 输出 37,326 · 缓存命中 568,192（95.6%） · 工具 24 次（主会话 24 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0157\n[time] 阶段耗时 | 总墙钟 381.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 277.9s (72.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 102.7s (26.9%)\n[time] 审计明细 | P1 9.7s (3.5%) | P2 4.3s (1.5%) | P3 12.5s (4.5%) | P4 206.2s (74.2%) | P5 39.6s (14.2%) | P6 5.6s (2.0%)\n[usage] 任务总计 | 模型调用 29 次（Agent 18 + 一次性 11） | token 输入 30,290（未命中） | 输出 49,087 | 缓存命中 573,184（95.0%） | $0.0196\n[usage] 一次性明细 | 覆盖补漏 11 次（输入 4,249 / 输出 11,761 / 缓存 4,992）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\sveltejs__svelte@44bec4c\\audit\\20261127_093726_672.json",
+  "token_usage": {
+    "input_tokens": 30290,
+    "output_tokens": 49087,
+    "cache_read_input_tokens": 573184
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 26041,
+      "output_tokens": 37326,
+      "cache_read_input_tokens": 568192
+    },
+    "coverage_repair": {
+      "input_tokens": 4249,
+      "output_tokens": 11761,
+      "cache_read_input_tokens": 4992
+    }
+  }
+}

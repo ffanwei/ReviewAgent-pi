@@ -1,0 +1,42 @@
+{
+  "instance_id": "linera-io__linera-protocol@3535ddb",
+  "repo": "linera-io/linera-protocol",
+  "base_commit": "c31634e52d719fdf60694f47812e2f007022ae26",
+  "head_commit": "3535ddb83de7dfae5db1732a7f1535031d31380a",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 172.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 854,
+      "summary": "分页终止条件依赖客户端本地常量而非响应中的 count_received_log，页大小不一致时会静默截断 received_log",
+      "failure_scenario": "新的分页循环用 `received_entries < CHAIN_INFO_MAX_RECEIVED_LOG_ENTRIES` 判断“已经取到日志末尾”，这等价于假定响应方每页恰好返回与该常量相同数量的条目。但该常量位于验证者侧的 chain_worker 内部模块，只是“当前版本两侧恰好同值”：在滚动升级（新客户端连旧验证者、或新验证者只截断而旧客户端仍单次查询）、或按 TODO(#4638) 调整该数值而只在一侧生效时，对端返回的页可能小于本端常量，循环会立刻认为日志已取完，`remote_log` 只是 received_log 的前缀。由于 `synchronize_received_certificates_from_validator` 被 `find_received_certificates`/`synchronize_from_validators` 单次调用、外层没有“取到取完”的重试循环，本次同步就只处理部分接收证书，遗漏的证书要等下一次同步甚至等到出块时 `MissingCrossChainUpdate` 报错才会被间接发现，表现为消息迟迟不进入 inbox、同步进度落后且难以定位。响应中的 `count_received_log` 字段（随 ChainInfo 一起被验证者签名）本就是为该分页查询提供的权威总量，代码却未使用。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "PAGINATION-001"
+    },
+    {
+      "file": "linera-core/src/client/mod.rs",
+      "line": 848,
+      "summary": "分页循环没有页数/总条数上限与进度校验，对端持续返回整页时会不断累积并长时间阻塞客户端",
+      "failure_scenario": "该循环唯一的退出条件是“某页条目数小于上限”，既没有最大页数限制，也没有用响应中的 `count_received_log` 校验 `offset` 是否已越过日志末尾。改动前这里是单次查询，请求次数和响应体积由一次交互决定；改动后同一路径会串行发起任意多次网络请求，并把每页结果 `extend` 进 `remote_log`。因此只要对端持续返回“整页”（例如行为不一致或恶意的验证者节点对任意 `offset` 都回满 1000 条，或其 own received_log 与本端预期不同步），`offset` 会一直增长、`remote_log` 与内存占用无界增长，`synchronize_received_certificates_from_validator` 无法返回，进而阻塞 `prepare_chain`/`synchronize_from_validators` 这条用户操作主路径，只表现为挂住而不报错。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.45,
+      "rule": "PAGINATION-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\linera-io__linera-protocol\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\linera-io__linera-protocol@3535ddb.diff\n  caseId              linera-io__linera-protocol@3535ddb\n  --issue             (未传)\n  --taskId            linera-io__linera-protocol@3535ddb\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 4（no-signal=4）\n✓ 完成 · 耗时 170.1s · 模型调用 20 次 · token 输入 18,218（未命中） · 输出 21,128 · 缓存命中 342,272（94.9%） · 工具 24 次（主会话 24 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0094\n[time] 阶段耗时 | 总墙钟 171.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.7s (1.0%)\n[time] 阶段 | 六阶段审计 170.0s (98.9%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 9.9s (5.9%) | P2 3.8s (2.3%) | P3 6.8s (4.0%) | P4 120.9s (71.1%) | P5 22.3s (13.1%) | P6 6.1s (3.6%)\n[usage] 任务总计 | 模型调用 20 次（Agent 20 + 一次性 0） | token 输入 18,218（未命中） | 输出 21,128 | 缓存命中 342,272（94.9%） | $0.0094\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\linera-io__linera-protocol@3535ddb\\audit\\20261127_092426_814.json",
+  "token_usage": {
+    "input_tokens": 18218,
+    "output_tokens": 21128,
+    "cache_read_input_tokens": 342272
+  }
+}

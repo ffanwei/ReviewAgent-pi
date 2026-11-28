@@ -1,0 +1,94 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@29e03a6",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "7c369e84052aaee15a6dedf8928b5af4c869037b",
+  "head_commit": "29e03a6294edfe43b49eba20fe49099cef601d34",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 155.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "工作流未声明 permissions: contents: write，自动 git push 大概率 403 失败",
+      "failure_scenario": "新工作流在 checkout 时使用 `secrets.GITHUB_TOKEN` 并以持久化凭据执行 `git push`，但整个 job 没有 `permissions:` 声明。GitHub 对新仓库/组织的 GITHUB_TOKEN 默认权限为只读（contents: read），此时 push 会被服务端以 403 `Permission to ... denied` 拒绝，导致每日 cron 与手动触发的同步任务在下载、校验、复制全部成功后仍于最后一步失败，翻译永远不会真正落到仓库。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "CI-PERMISSIONS-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 83,
+      "summary": "下载结果整体覆盖 src/locales/*.json 且无内容合理性校验，异常导出会抹掉既有翻译",
+      "failure_scenario": "脚本把 POEditor 返回的内容原样写入 temp/<lang>.json（数组格式转换失败时得到的是空对象 `{}`，key_value_json 导出为空时也是 `{}`），校验步骤只检查文件非空与 JSON 语法合法，空对象完全能通过；随后 `cp -r temp/* src/locales/` 用整文件覆盖现有 locale，并自动 commit+push。任何一次异常导出（项目 ID 配错、语言在 POEditor 中不存在、导出尚未生成完成、只上传了少量 key）都会把 src/locales/gb.json（现有 178 行 key）或 tr.json（现 105 行）替换成残缺/空的翻译，前端 import.meta.glob 打包后直接表现为界面大量文案消失，而主语言 fallback 也是 gb，会连带影响所有语言。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "DATA-LOSS-002"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 10,
+      "summary": "手动触发默认语言为 tr,en，与应用主语言 gb 不一致，默认运行不会更新主语言翻译",
+      "failure_scenario": "workflow_dispatch 的默认输入是 `tr,en`，但应用 i18n 的主语言与 fallback 都是 `gb`（src/Utils/i18n.js），仓库现有 locale 也只有 gb.json / tr.json，没有 en.json。因此按默认值手动运行一次，只会刷新 tr.json 并新建一个 en.json，gb.json（主语言、fallback 语言）完全不被同步；同时新增的 en.json 会因 `Object.keys(i18n.options.resources)` 自动出现在语言选择器里，多出一个与 gb 重复的英文选项。同一文件第 60 行的 env 回退值是 `'tr,gb'`、README 也写明默认是 tr 与 gb，三者互相矛盾，运维人员很难判断哪种语言实际被同步。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.68,
+      "rule": "CONFIG-CONSISTENCY-003"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 21,
+      "summary": "缺少 concurrency 控制，定时与手动触发的并行运行会互相顶掉 push",
+      "failure_scenario": "同一 job 既受每日 cron 驱动，也可由 workflow_dispatch 随时触发，且没有任何 `concurrency` 组约束或 push 前的 `git pull --rebase`。两个运行重叠时，后完成的一个会基于过期的 origin/main 提交并 push，被服务端以 non-fast-forward 拒绝，任务失败；若开启 force 或有人手工 rebase，则可能丢掉另一批翻译更新。慢任务跨过下一次 cron 触发点时同样会出现该竞争。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CONCURRENCY-004"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 54,
+      "summary": "每次运行临时生成 package.json 并用 caret 版本 npm install，构建不可复现",
+      "failure_scenario": "工作流在运行时现场 `cat >` 出一个 package.json（依赖写成 `^1.6.0` / `^11.1.1`），再执行 `npm install`，没有 lockfile 也没有缓存。每次定时运行解析到的 axios/fs-extra 版本都可能不同，一旦上游发布不兼容的小版本，同步任务会在无任何代码变更的情况下突然失败；同时该临时的 .github/scripts/package.json 会以未跟踪文件形式留在工作区，与仓库依赖管理割裂。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.65,
+      "rule": "SUPPLY-CHAIN-005"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 8,
+      "summary": "LANGUAGES 环境变量切分后未 trim/过滤空值，含空格或空项时请求失败或生成异常文件名",
+      "failure_scenario": "第 8 行直接用 `(process.env.LANGUAGES || 'tr,en').split(',')` 得到语言列表，未做 trim 与空值过滤。当工作流配置为常见的 `LANGUAGES: \"tr, en\"` 时，第二个元素为 `' en'`（带前导空格），该值被直接作为 `language` 传给 POEditor 导出接口（第 28 行 `language: language`），会导致接口返回非 success 并进入第 33 行抛错分支，最终 process.exit(1) 使整个下载任务失败；即使接口容忍，第 66 行 `temp/${language}.json` 也会生成带前导空格的文件名，与下游按标准语言码读取的路径不一致，造成「下载成功但文件不被使用」的静默问题。同理，配置中出现尾随逗号（如 `tr,en,`）会产生空字符串语言项并触发同样的失败。",
+      "severity": "P3",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "外部输入（环境变量）在用于 API 参数与文件路径前必须做规范化与校验（trim、过滤空项、白名单校验）"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\bluewave-labs__Checkmate@29e03a6.diff\n  caseId              bluewave-labs__Checkmate@29e03a6\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@29e03a6\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 1 / not-reached 0\nreview-pi: 覆盖补漏 请求 2（失败 0）/ 覆盖 hunk 2/2 / 新候选 1 / no-issue 1 / 预算跳过 0 / 验证拒绝 0\n✓ 完成 · 耗时 152.7s · 模型调用 14 次 · token 输入 10,250（未命中） · 输出 13,157 · 缓存命中 167,424（94.2%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0056\n[time] 阶段耗时 | 总墙钟 154.6s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.8s (1.2%)\n[time] 阶段 | 六阶段审计 106.0s (68.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 46.8s (30.3%)\n[time] 审计明细 | P1 2.8s (2.6%) | P2 3.1s (3.0%) | P3 41.2s (39.0%) | P4 11.2s (10.6%) | P5 40.9s (38.7%) | P6 6.6s (6.2%)\n[usage] 任务总计 | 模型调用 17 次（Agent 14 + 一次性 3） | token 输入 13,846（未命中） | 输出 18,841 | 缓存命中 168,448（92.4%） | $0.0077\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 3,596 / 输出 5,684 / 缓存 1,024）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\bluewave-labs__Checkmate@29e03a6\\audit\\20261127_093341_760.json",
+  "token_usage": {
+    "input_tokens": 13846,
+    "output_tokens": 18841,
+    "cache_read_input_tokens": 168448
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 10250,
+      "output_tokens": 13157,
+      "cache_read_input_tokens": 167424
+    },
+    "coverage_repair": {
+      "input_tokens": 3596,
+      "output_tokens": 5684,
+      "cache_read_input_tokens": 1024
+    }
+  }
+}

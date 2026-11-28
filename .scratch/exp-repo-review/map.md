@@ -2,7 +2,7 @@
 
 > 分支：`exp-repo-review`（从 `exp-flow` @ `09870c7` 切出）
 > 状态：active
-> 更新：2026-11-27
+> 更新：2026-11-28
 > 设计依据：R-01 待产出 `docs/design/全仓扫描-方案与契约.md`
 > 约定：每个任务一个目录 `issues/<task-id>/`，内含 `ticket.md`（详情票）与 `discussion.md`（讨论归档）；本文件只做索引、状态与验收证据。
 
@@ -152,3 +152,4 @@
 - 2026-11-27：R-18 完成；`UsageLedger` 成为 LLM 调用的唯一写入点，审计 / CLI / repo 组 / job / run.json 只读投影；真实 multilang 仓与 cline / gofr 两个 PR 总账相等；全包 1360 passed / 1 skipped。
 - 2026-11-27：R-19 完成；六条 replay trace 重录，修复 Windows 长路径规则 Skill 缓存根未归一化；`test:replay` 6/6。
 - 2026-11-27：iterS41 四臂归档 `bench/experiments/2026-11-27-s41-ledger/`：no-repair P41.7/R28.0/B33.5，repair P39.8/R30.1/B34.3（非缓存 +25.5%，墙钟 +30.2%）；`maxRequests` 维持 8，两候选提示词 A/B 本轮不做。
+- 2026-11-28：iterM20 混合 on/off 归档 `bench/experiments/2026-11-27-mixed-onoff/`：off P39.0/R29.1/B33.3，on P41.7/R35.0/B38.1（非缓存 +27.4%，墙钟 +41.7%）；表面 on 更好，但 6 条 `CR*` 仅 2 条命中 GT，去掉 CR 后主检视仍有 B37.2，repair 自身约 +0.8pp。默认值暂维持 off，需多轮重复再决定。

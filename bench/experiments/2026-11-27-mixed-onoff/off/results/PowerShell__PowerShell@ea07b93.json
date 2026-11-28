@@ -1,0 +1,42 @@
+{
+  "instance_id": "PowerShell__PowerShell@ea07b93",
+  "repo": "PowerShell/PowerShell",
+  "base_commit": "ce76ae1def6d5b00fff0d855ec01575121268ef3",
+  "head_commit": "ea07b93a40f64274505e3a070c1fd91684ff2959",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 185.4,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 2,
+  "review_output": [
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2238,
+      "summary": "Unix 手工 PATH 查找只判文件存在、不校验可执行性，首个命中即采用",
+      "failure_scenario": "新增的 else 分支按 PATH 顺序逐个 Path.Combine 后用 File.Exists 判断，命中立刻赋值并 break，完全没有校验命中项是否为可执行文件（Unix 的 execvp 语义要求遇到无执行权限的候选时跳过并继续搜索后面的目录）。因此在 Linux/macOS 的 SDK 宿主（TLS 中无 Runspace）场景下，只要 PATH 更靠前的目录里存在一个同名但不可执行的文件（例如遗留的 `ssh` 文本文件、被 chmod -x 的脚本、拷贝留下的占位文件），filePath 就会被锁定到该文件，后续 UNIX 原生 fork/execve 以它为 filename 执行，ForkAndExecProcess 返回非 0 后执行 `throw new Win32Exception()`（该处不带错误码/消息），最终 `New-PSSession -HostName` 报出一个无意义的 Win32 错误，尽管 PATH 后面还有可用的 ssh。本次变更新增了这段查找逻辑，属于新引入的失败场景。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "PORTABILITY-EXEC-LOOKUP-001"
+    },
+    {
+      "file": "src/System.Management.Automation/engine/remoting/common/RunspaceConnectionInfo.cs",
+      "line": 2232,
+      "summary": "手工 PATH 查找跳过相对路径项且不展开 ~，与引擎既有 PATH 解析语义不一致",
+      "failure_scenario": "else 分支用 `Path.IsPathFullyQualified(path)` 直接丢弃非完全限定的 PATH 项，并且不像引擎既有实现那样把以 `~` 开头的项展开为 $HOME。PowerShell 自己的 CommandDiscovery.GetLookupDirectoryPaths 对同一份 PATH 只做 RemoveEmptyEntries、trim 与 `~` 展开，随后由 CommandPathSearch 处理相对项，因此在 TLS 中无 Runspace 的 SDK 宿主里会出现「有 Runspace 时能解析到 ssh、无 Runspace 时判定为找不到」的分裂行为：只要用户的 PATH 含 `~/.local/bin`（未在 shell 赋值时展开）或相对项（如 `./bin`、`tools`）且 ssh 只存在于这些目录，新代码就会走到 2246-2253 的分支，抛出 “The term 'ssh.exe'/'ssh' is not recognized …” 的 CommandNotFoundException，把“SSH 客户端未安装”和“PATH 项被本实现忽略”混为一谈，误导排查方向。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.45,
+      "rule": "PORTABILITY-PATH-SEMANTICS-002"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\PowerShell__PowerShell\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\PowerShell__PowerShell@ea07b93.diff\n  caseId              PowerShell__PowerShell@ea07b93\n  --issue             (未传)\n  --taskId            PowerShell__PowerShell@ea07b93\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 1 / no-issue 0 / not-reached 0\n✓ 完成 · 耗时 182.7s · 模型调用 24 次 · token 输入 26,380（未命中） · 输出 21,608 · 缓存命中 511,744（95.1%） · 工具 33 次（主会话 33 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0112\n[time] 阶段耗时 | 总墙钟 184.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (0.9%)\n[time] 阶段 | 六阶段审计 182.6s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.2s (0.1%)\n[time] 审计明细 | P1 9.4s (5.2%) | P2 4.6s (2.5%) | P3 4.5s (2.5%) | P4 141.9s (77.8%) | P5 17.1s (9.4%) | P6 4.9s (2.7%)\n[usage] 任务总计 | 模型调用 24 次（Agent 24 + 一次性 0） | token 输入 26,380（未命中） | 输出 21,608 | 缓存命中 511,744（95.1%） | $0.0112\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\PowerShell__PowerShell@ea07b93\\audit\\20261127_092426_778.json",
+  "token_usage": {
+    "input_tokens": 26380,
+    "output_tokens": 21608,
+    "cache_read_input_tokens": 511744
+  }
+}

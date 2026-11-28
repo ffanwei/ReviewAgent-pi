@@ -1,0 +1,72 @@
+{
+  "instance_id": "ollama__ollama@af112d6",
+  "repo": "ollama/ollama",
+  "base_commit": "2db96c18e72289928e45704a77f96f7bdfaee30f",
+  "head_commit": "af112d6365207a5a3f65136c7057d6bb98203c35",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 180.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": "server/create.go",
+      "line": 277,
+      "summary": "预创建打开要求父目录已存在，导致带子目录的合法上传路径全部失败",
+      "failure_scenario": "convertFromSafetensors 在新建的空临时目录里对每个 key 执行 root.OpenFile(fp, O_CREATE|O_WRONLY)，但 O_CREATE 不会创建父目录。当客户端提交形如 {\"dir/model.safetensors\": \"sha256:...\"} 的子目录路径时，父目录 dir 尚不存在，OpenFile 返回 ENOENT，被第 279 行统一包装成 errFilePath，请求以 400「file path must be relative」失败。而改动前这一步并不存在：父目录由 createLink 内的 os.MkdirAll(filepath.Dir(dst), 0o755) 负责创建，因此子目录路径原本可以正常转换。这是一处确定性回归，且错误文案与实际原因（父目录不存在 / ENOENT）不符，误导用户。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "CORRECTNESS-001"
+    },
+    {
+      "file": "server/create.go",
+      "line": 118,
+      "summary": "errFilePath 只加进 adapters 分支的 400 列表，base files 分支仍会把路径错误映射成 500",
+      "failure_scenario": "本次只把 errFilePath 追加到 r.Adapters 的 bad-request 列表（第 118 行），而第 100 行处理 r.Files 的列表仍未包含它。因此同一类错误（convertFromSafetensors 通过 errFilePath 包装返回的路径问题）在读基础模型时会被当作非客户端错误，走默认分支返回不带 status 的 gin.H，最终以 500 呈现。触发路径：任何能通过 validRelative 但被 os.Root 拒绝的键，例如 Windows 上的 `..\\..\\x.safetensors`、盘符路径 `C:\\x.safetensors`，或超长文件名导致的 ENAMETOOLONG。结果是同一请求在 adapters 上返回 400、在 files 上返回 500，客户端无法据状态码判断是否为参数错误。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.6,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "server/create.go",
+      "line": 167,
+      "summary": "validRelative 只识别 '/'，Windows 反斜杠与盘符路径绕过 handler 层校验",
+      "failure_scenario": "新增的路径校验全部基于 POSIX 语义：strings.HasPrefix(path, \"/\")、HasPrefix(\"./\"/\"../\")、Contains(\"/../\"/\"/./\")。在 Windows 上，客户端提交 `..\\..\\..\\secret.safetensors`、`C:\\Windows\\x.safetensors` 或 UNC 路径 `\\\\host\\share\\x.safetensors` 时这些判断均不命中，handler 会认为路径合法；同时第 56 行的 filepath.Clean 在 Windows 上会按反斜杠归一化，使校验与归一化使用的是不同分隔符语义。真正的拦截只能落到 os.Root，即 CreateHandler 的第一道防线在 Windows 上形同虚设——一旦后续有人复用 validRelative 或移除 os.Root 防护，就会重新暴露目录穿越。",
+      "severity": "P2",
+      "category": "可移植",
+      "confidence": 0.55,
+      "rule": "PORTABILITY-002"
+    },
+    {
+      "file": "server/create.go",
+      "line": 56,
+      "summary": "filepath.Clean 归一化后写回 map 会静默覆盖同名键，丢失上传文件",
+      "failure_scenario": "CreateHandler 在逐项校验后执行 files[filepath.Clean(k)] = v 重建 map，但对 Clean 之后出现的键冲突没有任何检测。validRelative 明确接受 `a//b`、`a/b/` 这类写法（新增测试把它们列为合法），而它们 Clean 后都等于 `a/b`；当请求同时带上 {\"a/b\": digest1, \"a//b\": digest2} 时，后写入的条目会静默覆盖前一条，其中一个 digest 被丢弃。文件和 digest 是一一对应的，静默丢弃会让 convertFromSafetensors 拿到不完整的文件集合，最终在转换阶段以难以理解的错误失败，或产出缺少 tensor 的模型。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CORRECTNESS-002"
+    },
+    {
+      "file": "server/create_test.go",
+      "line": 18,
+      "summary": "测试优先复用环境里的 OLLAMA_MODELS，会把测试 blob 写进真实模型目录",
+      "failure_scenario": "TestConvertFromSafetensors 用 cmp.Or(os.Getenv(\"OLLAMA_MODELS\"), t.TempDir()) 设置 OLLAMA_MODELS：只要外部环境已导出该变量（开发者机器和部分 CI 都会指向 ~/.ollama/models），NewLayer 就会把测试用的假 blob 直接写进真实的模型存储，并留下垃圾数据；同时也意味着测试结果依赖于外部目录的状态（例如同名 digest 已存在），失去隔离性。t.TempDir() 只在该变量未设置时才生效。",
+      "severity": "P3",
+      "category": "可测试性",
+      "confidence": 0.5,
+      "rule": "TESTABILITY-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\ollama__ollama\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\ollama__ollama@af112d6.diff\n  caseId              ollama__ollama@af112d6\n  --issue             (未传)\n  --taskId            ollama__ollama@af112d6\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 0 / not-reached 2（no-signal=2）\n✓ 完成 · 耗时 177.6s · 模型调用 17 次 · token 输入 14,314（未命中） · 输出 22,536 · 缓存命中 345,600（96.0%） · 工具 23 次（主会话 23 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0093\n[time] 阶段耗时 | 总墙钟 179.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (0.9%)\n[time] 阶段 | 六阶段审计 177.5s (99.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 44.2s (24.9%) | P2 3.0s (1.7%) | P3 6.2s (3.5%) | P4 62.8s (35.4%) | P5 47.8s (26.9%) | P6 13.5s (7.6%)\n[usage] 任务总计 | 模型调用 17 次（Agent 17 + 一次性 0） | token 输入 14,314（未命中） | 输出 22,536 | 缓存命中 345,600（96.0%） | $0.0093\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\ollama__ollama@af112d6\\audit\\20261127_092427_068.json",
+  "token_usage": {
+    "input_tokens": 14314,
+    "output_tokens": 22536,
+    "cache_read_input_tokens": 345600
+  }
+}

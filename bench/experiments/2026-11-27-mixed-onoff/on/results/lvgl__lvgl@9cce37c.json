@@ -1,0 +1,64 @@
+{
+  "instance_id": "lvgl__lvgl@9cce37c",
+  "repo": "lvgl/lvgl",
+  "base_commit": "344ba9fe99b487f7f5164900679d56acf2d8bff2",
+  "head_commit": "9cce37c219f95701fecc44f74595aa9c6effbdba",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 145.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "src/widgets/animimage/lv_animimage.h",
+      "line": 76,
+      "summary": "公开 API lv_animimg_set_src 直接删除参数，缺少兼容/迁移层导致下游编译失败",
+      "failure_scenario": "本次把公开函数 lv_animimg_set_src 的签名从 4 参数（obj, dsc, num, reverse）改为 3 参数，并新增 lv_animimg_set_src_reverse。仓库内调用点（examples、属性表、tests）均已同步，因此本仓库可编译通过；但这是对外破坏性变更：任何依赖 v9.x 既有签名的下游代码（用户工程、绑定生成代码、第三方组件）升级后会直接编译失败 `too many arguments to function 'lv_animimg_set_src'`，且没有过渡期提示，用户只能自行猜测新接口 lv_animimg_set_src_reverse 的存在与语义。仓库已有 lv_api_map_v8.h / lv_api_map_v9_0.h / lv_api_map_v9_1.h 并被 lvgl.h 引入，说明项目对旧 API 是通过 api_map 提供兼容的，本次变更未沿用该惯例。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.6,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "tests/src/test_cases/widgets/test_animimg.c",
+      "line": 57,
+      "summary": "新增的反向接口测试只断言对象非空，未验证反向播放的动画区间",
+      "failure_scenario": "test_animimg_set_src_reverse 调用新接口后唯一的断言是 TEST_ASSERT_NOT_NULL(animimg)，而 animimg 由 setUp 中 lv_animimg_create 创建，必然非空，该断言恒成立。测试完全没有检查新接口的核心效果——动画 start/end 是否被设为 (num, 0)（可通过 lv_animimg_get_anim 读取），以及 pic_count / dsc 是否被正确写入。后果：若把 lv_animimg_set_src_reverse 的实现误写成与正向一致（复制粘贴后忘记改成 (num, 0)），或反向区间写成 (num-1, 0)，该用例仍会通过，反向播放功能回归无法被 CI 捕获。",
+      "severity": "P2",
+      "category": "可测试性",
+      "confidence": 0.66,
+      "rule": "TEST-EFFECTIVE-001"
+    },
+    {
+      "file": "src/widgets/animimage/lv_animimage.c",
+      "line": 119,
+      "summary": "set_src_reverse 完整复制 set_src 的状态写入逻辑，后续修改易漏改一处",
+      "failure_scenario": "lv_animimg_set_src_reverse 与 lv_animimg_set_src 仅有 lv_anim_set_values 的实参不同，其余 LV_ASSERT_OBJ、animimg->dsc = dsc、animimg->pic_count = num 三行完全重复，两函数之间也没有互相调用。这段重复代码是共享的必要状态写入（源指针与帧数），未来任何改动——例如按 pic_count 做非空校验、切换源时重置当前显示帧、记录 dsc 所有权或重绘标记——都必须同时改两处；一旦只改 set_src，就会出现“正向切换正确、反向切换不生效或越界”的不一致缺陷。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.48,
+      "rule": "MAINTAINABILITY-003"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\lvgl__lvgl\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\lvgl__lvgl@9cce37c.diff\n  caseId              lvgl__lvgl@9cce37c\n  --issue             (未传)\n  --taskId            lvgl__lvgl@9cce37c\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 5 / not-reached 0\nreview-pi: 覆盖补漏 请求 3（失败 0）/ 覆盖 hunk 5/5 / 新候选 0 / no-issue 5 / 预算跳过 0\n✓ 完成 · 耗时 143.0s · 模型调用 19 次 · token 输入 17,559（未命中） · 输出 15,585 · 缓存命中 343,040（95.1%） · 工具 26 次（主会话 26 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0078\n[time] 阶段耗时 | 总墙钟 144.7s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.7s (1.2%)\n[time] 阶段 | 六阶段审计 116.4s (80.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 26.7s (18.4%)\n[time] 审计明细 | P1 5.9s (5.0%) | P2 19.3s (16.6%) | P3 5.4s (4.7%) | P4 43.1s (37.1%) | P5 37.5s (32.2%) | P6 5.1s (4.4%)\n[usage] 任务总计 | 模型调用 22 次（Agent 19 + 一次性 3） | token 输入 18,794（未命中） | 输出 18,901 | 缓存命中 344,576（94.8%） | $0.0089\n[usage] 一次性明细 | 覆盖补漏 3 次（输入 1,235 / 输出 3,316 / 缓存 1,536）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\lvgl__lvgl@9cce37c\\audit\\20261127_093341_580.json",
+  "token_usage": {
+    "input_tokens": 18794,
+    "output_tokens": 18901,
+    "cache_read_input_tokens": 344576
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 17559,
+      "output_tokens": 15585,
+      "cache_read_input_tokens": 343040
+    },
+    "coverage_repair": {
+      "input_tokens": 1235,
+      "output_tokens": 3316,
+      "cache_read_input_tokens": 1536
+    }
+  }
+}

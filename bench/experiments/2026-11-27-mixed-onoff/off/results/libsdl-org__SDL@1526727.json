@@ -1,0 +1,62 @@
+{
+  "instance_id": "libsdl-org__SDL@1526727",
+  "repo": "libsdl-org/SDL",
+  "base_commit": "71303b41bf89c4bb68dbe1bed12fd2ee1dc0dd41",
+  "head_commit": "15267271865f73c996719238425f1604fc2fa205",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 138.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 4,
+  "review_output": [
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 259,
+      "summary": "放行 0x04 报告但未校验报文长度，固定偏移解析会读到未初始化或残留缓冲区数据",
+      "failure_scenario": "HandleStatePacket 新增接受 data[0] == 0x04 的输入报告，但函数体仍按 0x01/0x03 的固定布局读取 data[1]（方向键）、data[2..7]（摇杆/扳机）、data[8..10]（按键）、data[14]（电量）以及 data[15..20]（IMU，通过 ABITDO_SENSORS *sensors = (ABITDO_SENSORS *)&data[15] 读取 6 个 short），整段解析从未使用传入的 size 做最小长度校验。UpdateDevice 中的缓冲区 `Uint8 data[USB_PACKET_LENGTH]` 未初始化且在 while 循环内复用，SDL_hid_read_timeout 只填充 size 字节。一旦这些新加入的设备（SN30 Pro / SF30 Pro / Pro 2）在 0x04 报告下的报文短于 21 字节（蓝牙模式使用精简报告是常见情况），data[14]/data[15..20] 就会读到上一个更长报文的残留字节或未初始化栈数据，从而向应用上报错误的电量百分比和不存在的 IMU 读数（且 sensors_supported 已被置真，OpenJoystick 会注册 125Hz 的 gyro/accel 传感器，这些垃圾值会持续进入 SDL_SendJoystickSensor）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CORRECTNESS-REPORT-LENGTH-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 150,
+      "summary": "能力探测仅凭 size > 0 就把 sensors/rumble/powerstate 三项全部置真",
+      "failure_scenario": "新增分支读取 feature report 0x06 后只用 `size > 0` 判定成功，既不校验返回长度、也不校验返回内容，更未按具体型号区分，就把 sensors_supported、rumble_supported、powerstate_supported 一并置 true。SDL_hid_get_feature_report 成功时通常会把 report ID 回填到缓冲区首字节，因此设备即便只返回 1 字节（或返回的不是 0x06 报告）也会满足 `size > 0`；对照同仓库的既有用法 src/joystick/hidapi/SDL_hidapi_ps5.c:308 会校验 `size == 48 && data[2] == 0x28` 才认定第三方设备支持。误判的后果是持续性的：OpenJoystick 会为该设备注册 gyro/accel 传感器（125.0f），而 SN30 Pro / SF30 Pro 这类不带 IMU 的手柄永远不产生传感器数据；powerstate_supported 为真还会让每条状态包的 data[14] 被当作电量上报。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.5,
+      "rule": "CAPABILITY-PROBE-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 115,
+      "summary": "新增的 ReadFeatureReport 与 ps3/ps4/ps5 驱动中的同名静态函数完全重复",
+      "failure_scenario": "本次在 8bitdo 驱动中新增了一个逐行等同于既有实现的 read-feature-report 封装（memset + 写入 report_id + 调用 SDL_hid_get_feature_report），而 src/joystick/hidapi/SDL_hidapi_ps3.c:147、SDL_hidapi_ps4.c:200、SDL_hidapi_ps5.c:290 已经各自存在相同函数。这已经是第四份拷贝，后续若要修正 feature report 语义（例如某些后端要求缓冲区首字节预置 report ID、或需要校验返回长度），必须同时改四处，容易遗漏并产生行为不一致。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.7,
+      "rule": "MAINTAINABILITY-DUP-001"
+    },
+    {
+      "file": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+      "line": 149,
+      "summary": "新增的 feature report 读取位于持锁的设备枚举路径上，可能拉长手柄连接耗时",
+      "failure_scenario": "InitDevice 由 HIDAPI_SetupDeviceDriver 在持有摇杆锁的枚举流程中调用（src/joystick/hidapi/SDL_hidapijoystick.c:492，另见 510 行的 SDL_AssertJoysticksLocked），其中对设备已设置 non-blocking，但 SDL_hid_set_nonblocking 只影响 read 而不影响 get_feature_report 的底层控制传输等待。本次新增的 ReadFeatureReport(device->dev, 0x06, ...) 直接插在这条路径上，若蓝牙设备对该 feature report 响应缓慢（部分后端超时在数百毫秒量级），会阻塞枚举流程并延后其他设备的连接事件。",
+      "severity": "P3",
+      "category": "性能",
+      "confidence": 0.32,
+      "rule": "PERFORMANCE-BLOCKING-INIT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\libsdl-org__SDL\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\libsdl-org__SDL@1526727.diff\n  caseId              libsdl-org__SDL@1526727\n  --issue             (未传)\n  --taskId            libsdl-org__SDL@1526727\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 3 / no-issue 0 / not-reached 2（no-signal=2）\n✓ 完成 · 耗时 137.6s · 模型调用 12 次 · token 输入 20,285（未命中） · 输出 18,083 · 缓存命中 218,624（91.5%） · 工具 15 次（主会话 15 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0085\n[time] 阶段耗时 | 总墙钟 138.3s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.5%)\n[time] 阶段 | 六阶段审计 137.6s (99.5%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 5.3s (3.9%) | P2 3.0s (2.2%) | P3 5.1s (3.7%) | P4 85.0s (61.8%) | P5 31.1s (22.6%) | P6 8.0s (5.8%)\n[usage] 任务总计 | 模型调用 12 次（Agent 12 + 一次性 0） | token 输入 20,285（未命中） | 输出 18,083 | 缓存命中 218,624（91.5%） | $0.0085\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\libsdl-org__SDL@1526727\\audit\\20261127_092613_670.json",
+  "token_usage": {
+    "input_tokens": 20285,
+    "output_tokens": 18083,
+    "cache_read_input_tokens": 218624
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "instance_id": "bluewave-labs__Checkmate@29e03a6",
+  "repo": "bluewave-labs/Checkmate",
+  "base_commit": "7c369e84052aaee15a6dedf8928b5af4c869037b",
+  "head_commit": "29e03a6294edfe43b49eba20fe49099cef601d34",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 108.7,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 5,
+  "review_output": [
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 65,
+      "summary": "翻译同步以整文件覆盖方式写入，POEditor 未包含的 key 会从本地 locale 中永久消失",
+      "failure_scenario": "脚本把 POEditor 导出的对象直接 writeJson 到 `temp/<lang>.json`，工作流随后 `cp -r temp/* src/locales/` 覆盖同名文件，整个链路没有任何“与现有 src/locales/*.json 合并”或“key 集合比对”的步骤。而 `src/Utils/i18n.js` 以 `import.meta.glob(\"../locales/*.json\")` 把该目录文件当作唯一翻译源，`fallbackLng` 也是同一份 gb 资源。因此只要 POEditor 项目里某个 term 未翻译/被删除/导出类型过滤掉了未翻译项，或本地文件里有 POEditor 尚未收录的 key（现状已存在不一致：gb.json 有 `distributedRightCategoryTitle`，tr.json 却是拼写不同的 `distributedRightCatagoryTitle`），每日 cron 一次同步就会把这些 key 从仓库中删掉，UI 上直接退化为显示原始 key 甚至出现空文案，且改动以自动 commit 直接落到主干，无人评审。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "DATA-LOSS-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 65,
+      "summary": "以 2 空格缩进重写 locale 文件，与仓库 TAB 风格冲突，每次同步都会重排整文件",
+      "failure_scenario": "仓库现有 `src/locales/gb.json`、`src/locales/tr.json` 使用 TAB 缩进，而脚本固定 `{ spaces: 2 }` 序列化。结合每日 `cron: \"0 0 * * *\"` 的自动提交，首次运行就会把每个 locale 文件整体重排，之后每次有任意一条翻译变动也会重新格式化整个文件，产生的 diff 覆盖全部行，真实翻译改动被淹没，code review 与 `git blame` 历史被破坏。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-002"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 10,
+      "summary": "workflow_dispatch 默认语言为 tr,en，与主语言 gb 及环境默认 tr,gb 不一致，手动同步不会更新 gb.json",
+      "failure_scenario": "`workflow_dispatch` 的 languages 输入默认值是 `tr,en`，而同一个 workflow 在 env 中的兜底值是 `tr,gb`，README 也写明默认是 `tr` 和 `gb`；应用主语言与 fallback 都是 `gb`（`src/Utils/i18n.js:6/24`）。由于手动触发时 `github.event.inputs.languages` 恒为非空（取到输入默认值），`|| 'tr,gb'` 兜底永远不生效：手动运行会下载并生成 `src/locales/en.json`，把 gb.json 排除在外，而 LanguageSelector 用 `Object.keys(i18n.options.resources)` 生成语言列表，结果下拉里多出一个 `EN` 与 `GB` 并存的英文选项，且主语言 gb 的翻译不会随手动同步更新。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "CONFIG-CONSISTENCY-001"
+    },
+    {
+      "file": ".github/workflows/poeditor-sync.yml",
+      "line": 92,
+      "summary": "自动提交后直接 git push，缺少写权限声明与并发/同步保护，定时任务易推送失败",
+      "failure_scenario": "提交步骤在检出分支上直接 `git push`，但整个 workflow 既没有 `permissions: contents: write`（GITHUB_TOKEN 默认权限在组织/仓库设置为只读时 push 会 403），也没有 `concurrency` 分组或在 push 前 `git pull --rebase`。每日定时任务运行期间主干很可能已有其他提交（人或机器人），此时 push 会被拒绝（non-fast-forward）；两次运行重叠也会互相冲突。失败表现为每日 job 红叉、翻译长期不同步，而脚本本身没有重试或重新拉取逻辑。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.55,
+      "rule": "CI-RELIABILITY-001"
+    },
+    {
+      "file": ".github/scripts/download-translations.js",
+      "line": 64,
+      "summary": "languages 输入未做任何校验就拼进输出路径，可写出 temp 目录之外的文件",
+      "failure_scenario": "`LANGUAGES` 来自 workflow_dispatch 自由文本输入，仅用 `split(',')` 切分，未 trim、未做语言代码白名单校验，随后直接用于 `path.join(process.cwd(), 'temp', `${language}.json`)`。`path.join` 会规范化 `..` 段，因此输入 `../../src/locales/gb` 这类值会把下载内容写到 `temp` 之外的仓库路径；输入带空格（如 `tr, en`）则会生成名为 ` en.json` 的文件，被复制到 `src/locales/` 后变成非法语言代码 ` en`，在 LanguageSelector 中渲染为异常条目且无法与正常资源匹配。",
+      "severity": "P2",
+      "category": "安全",
+      "confidence": 0.6,
+      "rule": "INPUT-VALIDATION-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\bluewave-labs__Checkmate\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\bluewave-labs__Checkmate@29e03a6.diff\n  caseId              bluewave-labs__Checkmate@29e03a6\n  --issue             (未传)\n  --taskId            bluewave-labs__Checkmate@29e03a6\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 1（no-signal=1）\n✓ 完成 · 耗时 105.2s · 模型调用 13 次 · token 输入 11,919（未命中） · 输出 13,410 · 缓存命中 156,032（92.9%） · 工具 13 次（主会话 13 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0059\n[time] 阶段耗时 | 总墙钟 106.9s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 1.6s (1.5%)\n[time] 阶段 | 六阶段审计 105.2s (98.4%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.1s (0.1%)\n[time] 审计明细 | P1 4.9s (4.7%) | P2 2.9s (2.7%) | P3 24.4s (23.2%) | P4 42.0s (39.9%) | P5 24.1s (22.9%) | P6 6.9s (6.5%)\n[usage] 任务总计 | 模型调用 13 次（Agent 13 + 一次性 0） | token 输入 11,919（未命中） | 输出 13,410 | 缓存命中 156,032（92.9%） | $0.0059\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\bluewave-labs__Checkmate@29e03a6\\audit\\20261127_092427_550.json",
+  "token_usage": {
+    "input_tokens": 11919,
+    "output_tokens": 13410,
+    "cache_read_input_tokens": 156032
+  }
+}

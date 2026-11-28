@@ -1,0 +1,52 @@
+{
+  "instance_id": "facebook__react@b045f18",
+  "repo": "facebook/react",
+  "base_commit": "99563e91736e9de473c4865d5cb6fd9eb1a26bcb",
+  "head_commit": "b045f18e378341876ee69e729fc855cab501c3cd",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 343.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 3,
+  "review_output": [
+    {
+      "file": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+      "line": 149,
+      "summary": "DevTools 用编译期 import 的常量 31 替代版本映射，新增的 ActivityComponent 映射条目成为无人读取的死数据",
+      "failure_scenario": "renderer.js 的跨版本兼容设计是：按被调试 React 的版本号在 getInternalReactConstants() 里算出 ReactTypeOfWork，再在 attach() 中解构出本地常量供各处 switch 使用（第 2696 行 `OffscreenComponent === -1` 就是这种用法的直接证据）。本次变更一方面在第 389/426/463/500/537 行为五个版本分支都补了 ActivityComponent 映射，另一方面又在第 149 行从 react-reconciler/src/ReactWorkTags 直接 import 编译期常量，并让第 631 行 getDisplayNameForFiber 与第 1491 行 shouldFilterFiber 的 `case ActivityComponent` 引用这个 import，而不是 attach() 里解构出的版本映射值（第 902-928 行的解构列表里根本没有 ActivityComponent）。结果是：新增的五个映射条目永远不会被读取；DevTools 对 Activity 的识别完全取决于“打包 DevTools 时的 reconciler 源码里 tag 是 31”这一假设，而 DevTools 后端是要对任意版本的 React 运行时的。失败场景：若被调试的 React 版本里 Activity 的 tag 不是 31，或 tag 31 被另一个类型占用，DevTools 会漏判 Activity（显示为未知）或把别的 fiber 误判为 Activity——由于 shouldFilterFiber 对 Activity 返回 true，误判会让该组件直接从组件树里消失。同时该文件顶部明确写着 “Keep it in sync, and add version guards if it changes”，新增的版本守卫实际没有生效。",
+      "severity": "P2",
+      "category": "可维护",
+      "confidence": 0.8,
+      "rule": "MAINTAINABILITY-DEVTOOLS-VERSION-MAP-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+      "line": 897,
+      "summary": "updateActivityComponent 更新分支用 `(current.child: any)` 强转后直接复用，未校验子 fiber 是否存在",
+      "failure_scenario": "新增的 updateActivityComponent 在 current !== null 时假定 `current.child` 一定是上次渲染创建的内部 Offscreen fiber，并用流类型强转 `(current.child: any)` 抹掉可空性，然后把它交给 updateWorkInProgressOffscreenFiber（内部即 `createWorkInProgress(current, offscreenProps)`）。该契约只在 mount 分支（第 885-895 行）里成立：一旦某个 Activity fiber 的 current 树里 child 为 null（例如 fiber 被 createWorkInProgress 复用但其子树在之前的渲染中未进入 begin phase，或后续把 Activity 改为可无子节点渲染），`createWorkInProgress(null, props)` 会立即读取 `current.pendingProps` 抛出 TypeError，整次渲染崩溃而不是给出可诊断的错误。同一函数中 mount/update 两条分支除了创建方式外完全重复（都直接改写 workInProgress.child 并复制 ref），也放大了这种隐式耦合——修改一处很容易漏掉另一处。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.4,
+      "rule": "CORRECTNESS-NULL-CHECK-001"
+    },
+    {
+      "file": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+      "line": 889,
+      "summary": "传给 mountWorkInProgressOffscreenFiber 的 renderLanes 被 helper 内部丢弃，形参与实际行为不一致",
+      "failure_scenario": "新增调用点把 updateActivityComponent 收到的 renderLanes 作为第三个实参传给 mountWorkInProgressOffscreenFiber，但该 helper 的实现是 `return createFiberFromOffscreen(offscreenProps, mode, NoLanes, null);`，形参 renderLanes 完全未使用（现有调用方都显式传 NoLanes）。也就是说 Activity 挂载时传入的渲染优先级被静默丢弃，调用点表达的语义与真实行为不一致：读代码的人会以为 Activity 子 fiber 会带上本次渲染的 lanes。当前因为新 fiber 会在自己的 beginWork 入口被置为 NoLanes，尚未观察到功能差异，但这是一处会误导后续修改（例如有人以为可以靠这个实参控制优先级）的隐患。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.75,
+      "rule": "MAINTAINABILITY-DEAD-ARGUMENT-001"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\facebook__react\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\diff\\facebook__react@b045f18.diff\n  caseId              facebook__react@b045f18\n  --issue             (未传)\n  --taskId            facebook__react@b045f18\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-off.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 2 / no-issue 0 / not-reached 27（no-signal=27）\n✓ 完成 · 耗时 341.5s · 模型调用 24 次 · token 输入 44,211（未命中） · 输出 44,368 · 缓存命中 1,037,952（95.9%） · 工具 44 次（主会话 44 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0215\n[time] 阶段耗时 | 总墙钟 342.4s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 341.4s (99.7%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 0.3s (0.1%)\n[time] 审计明细 | P1 157.3s (46.1%) | P2 5.9s (1.7%) | P3 9.6s (2.8%) | P4 121.3s (35.5%) | P5 39.3s (11.5%) | P6 7.9s (2.3%)\n[usage] 任务总计 | 模型调用 24 次（Agent 24 + 一次性 0） | token 输入 44,211（未命中） | 输出 44,368 | 缓存命中 1,037,952（95.9%） | $0.0215\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-off\\.reviewpi\\tasks\\facebook__react@b045f18\\audit\\20261127_092741_495.json",
+  "token_usage": {
+    "input_tokens": 44211,
+    "output_tokens": 44368,
+    "cache_read_input_tokens": 1037952
+  }
+}

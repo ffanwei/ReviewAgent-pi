@@ -1,0 +1,94 @@
+{
+  "instance_id": "gofr-dev__gofr@5e284ae",
+  "repo": "gofr-dev/gofr",
+  "base_commit": "de79ab765d0d34d78a42ebdd50a21a6f26841b7f",
+  "head_commit": "5e284aec0447be34c96a252e959067c8bcd9cd4c",
+  "status": "ok",
+  "skip_reason": null,
+  "duration_seconds": 310.5,
+  "review_output_source": "review-pi/reviews_all.json",
+  "review_pi_exit_code": 0,
+  "findings_count": 6,
+  "review_output": [
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 73,
+      "summary": "请求级别的 container.Logger 替换在多并发请求下产生数据竞争并导致 trace ID 串号/永久泄漏",
+      "failure_scenario": "ServeHTTP 把共享的 h.container.Logger 字段直接改写为请求作用域的 ContextLogger，并在 defer 中恢复。container.Container 是进程内单例（各 handler 共享同一 *container.Container，且 Container 内 Logger 是匿名嵌入的接口字段，没有任何锁或原子访问器），而 net/http 会为每个请求并发执行 ServeHTTP。并发时会出现两个问题：(1) 对同一接口字段的并发读写是数据竞争，`go test -race`/生产竞态检测可以直接报出；(2) 后进入的请求把 origLogger 读成前一个请求的 ContextLogger，形成包装嵌套且恢复顺序错乱，最终 container.Logger 可能被永久留在某个请求的 ContextLogger 上，导致之后所有后台/其他请求的日志都带上那个请求的 trace ID——恰好与本段注释“restore the original logger to avoid leaking context across requests”的意图相反。",
+      "severity": "P1",
+      "category": "可靠性",
+      "confidence": 0.88,
+      "rule": "CONCURRENCY-001"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 91,
+      "summary": "超时/panic 提前返回后，handler goroutine 仍读取已被恢复的 h.container.Logger",
+      "failure_scenario": "handler goroutine 在第 87 行与第 91 行通过读取 h.container.Logger 现取 logger。但当请求超时或 panic 时，外层 select（第 95-105 行）会先返回，ServeHTTP 的 defer 立即把 container.Logger 恢复成 origLogger，此时 goroutine 仍在执行 h.function/panic 恢复与 logError，于是这些日志要么丢失 trace ID（拿到原始 logger），要么拿到下一个并发请求的 ContextLogger 而打印成别的请求的 trace ID；同时 goroutine 中延迟读取字段本身也加剧了 F001 的竞态。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.75,
+      "rule": "LIFECYCLE-002"
+    },
+    {
+      "file": "pkg/gofr/logging/logger.go",
+      "line": 256,
+      "summary": "__trace_id__ 魔法键的剥离逻辑只处理第一个命中，且会静默丢弃业务 map 参数",
+      "failure_scenario": "extractTraceIDAndFilterArgs 用 `exists && traceID == \"\"` 作为剥离条件：当参数里存在多个携带 __trace_id__ 的 map（ContextLogger 被嵌套包装时会发生，见 F001 的并发场景）时，只有第一个被提取并从参数中移除，其余 map 会落在 filtered 中并作为消息内容被打印（JSON 模式 message 里出现 {\"__trace_id__\":...}，终端模式打印 map[__trace_id__:...]）。反向地，业务代码若打印 map[string]any{\"__trace_id__\": x} 这类数据（例如透传的上游元数据），该参数会被静默吞掉，日志内容缺失。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.62,
+      "rule": "RELIABILITY-003"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 72,
+      "summary": "请求级替换只覆盖 container.Logger 字段，已捕获原始 logger 的数据源日志仍不带 trace_id",
+      "failure_scenario": "容器创建时把 c.Logger 的当前值传给 metrics、Redis、SQL、File 等组件，这些组件在自身字段中长期持有原始 logger 引用。ServeHTTP 只是替换 Container 的 Logger 字段，不会影响这些已捕获的引用，因此在请求处理过程中由 SQL/Redis/文件/指标等组件产生的日志不会携带 trace ID，与注释声明的“inject the trace ID into all logs made during this request's lifecycle”不一致，功能覆盖存在明显缺口（而这些组件日志正是排障时最需要关联 trace 的）。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.7,
+      "rule": "RELIABILITY-004"
+    },
+    {
+      "file": "pkg/gofr/handler.go",
+      "line": 46,
+      "summary": "删除导出字段 ErrorLogEntry.TraceID 属破坏性公共 API 变更",
+      "failure_scenario": "ErrorLogEntry 是 gofr 框架包对外导出的类型，删除其导出字段 TraceID 会让任何引用 `gofr.ErrorLogEntry{TraceID: ...}` 或读取 `el.TraceID` 的外部用户代码编译失败；同时该类型的 PrettyPrint 输出格式也不再包含 trace 前缀，属于可观察的行为变更，且没有迁移说明。",
+      "severity": "P3",
+      "category": "可维护",
+      "confidence": 0.45,
+      "rule": "API-COMPAT-001"
+    },
+    {
+      "file": "pkg/gofr/logging/ctx_logger.go",
+      "line": 38,
+      "summary": "格式化日志方法把 trace 信息当作格式化参数追加，导致输出被污染",
+      "failure_scenario": "withTraceInfo 会把 map[string]any{\"__trace_id__\": ...} 追加到参数末尾（第 31 行），而 Debugf/Logf/Infof/Noticef/Warnf/Errorf/Fatalf（第 38、40、42、44、48、50、52 行）把该结果直接作为 fmt 风格格式串的参数传入。当调用方格式串没有对应占位符时（如 Debugf(\"user login\", userID)），Go 的 fmt 会输出 %!(EXTRA map[string]interface {}{\"__trace_id__\": \"...\"}) 之类的噪声；当格式串以某个动词结尾时（如 Errorf(\"failed: %v\", err)），追加的 trace map 又会被该动词错误吞掉，trace ID 以不可预期的方式混入错误消息，无法被后续格式化/过滤逻辑正确提取。非格式化方法（Debug/Log/Info 等）通常由结构化 logger 处理额外参数，但格式化方法需要单独处理：例如把 trace ID 拼进格式串（f + \" trace_id=%s\"）或以结构化字段方式传递，而不是当作 args 追加。",
+      "severity": "P2",
+      "category": "可靠性",
+      "confidence": 0.78,
+      "rule": "格式化日志接口的变参必须与格式串占位符严格对应，不应把结构化附加字段当作格式参数追加"
+    }
+  ],
+  "stderr_tail": "review-pi: 本次 review 传入参数\n  --repo              D:\\Project\\bench\\aacr-bench\\evaluation\\repo\\gofr-dev__gofr\n  --mr-diff           D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\diff\\gofr-dev__gofr@5e284ae.diff\n  caseId              gofr-dev__gofr@5e284ae\n  --issue             (未传)\n  --taskId            gofr-dev__gofr@5e284ae\n  --tasks-dir         D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\n  --model             (未传)\n  model.default       deepseek-v4.1-flash（生效值）\n  --config            D:\\Project\\bench\\tmp\\mixed-onoff\\repair-on.jsonc\n  --rule-skill-zip    (未传)\n  --rule-skill        (未传)\n  --skill             (未传)\n  --include           (未传)\n  --exclude           (未传)\n  --strict-rule-skill 未启用\n  --no-progress       已启用（进度事件行静默）\nreview-pi: 未装载任何规则包（--rule-skill-zip / --rule-skill / --skill 未传或缺值；ADR-0027 后不再扫描仓库内 .review-rules/），照常检视\nreview-pi: 覆盖账本 candidate 5 / no-issue 7 / not-reached 2（no-signal=2）\nreview-pi: 覆盖补漏 请求 5（失败 0）/ 覆盖 hunk 8/10 / 新候选 1 / no-issue 7 / 预算跳过 0 / 验证拒绝 1\n✓ 完成 · 耗时 309.1s · 模型调用 13 次 · token 输入 15,074（未命中） · 输出 13,965 · 缓存命中 256,128（94.4%） · 工具 13 次（主会话 13 + 规则 Skill 0） · Ledger 命中 0 次（未重复读取原文） · $0.0067\n[time] 阶段耗时 | 总墙钟 309.8s（含总结 / 沉降 / 收尾）\n[time] 阶段 | 准备/建连（配置/规则包/MCP） 0.7s (0.2%)\n[time] 阶段 | 六阶段审计 114.7s (37.0%)\n[time] 阶段 | 报文生成+上报 0.0s (0.0%)\n[time] 阶段 | 中文 tips 组装/落盘 0.0s (0.0%)\n[time] 阶段 | 总结生成 0.0s (0.0%)\n[time] 阶段 | 固定沉降 0.0s (0.0%)\n[time] 阶段 | 其他/收尾（HTTP/落盘/事件 flush） 194.5s (62.8%)\n[time] 审计明细 | P1 3.2s (2.8%) | P2 2.8s (2.4%) | P3 4.9s (4.3%) | P4 75.7s (66.1%) | P5 21.1s (18.4%) | P6 7.0s (6.1%)\n[usage] 任务总计 | 模型调用 22 次（Agent 13 + 一次性 9） | token 输入 29,213（未命中） | 输出 40,182 | 缓存命中 259,584（89.9%） | $0.0161\n[usage] 一次性明细 | 覆盖补漏 9 次（输入 14,139 / 输出 26,217 / 缓存 3,456）\n",
+  "model": "deepseek-v4.1-flash",
+  "audit_path": "D:\\Project\\bench\\tmp\\mixed-onoff\\results-on\\.reviewpi\\tasks\\gofr-dev__gofr@5e284ae\\audit\\20261127_094032_389.json",
+  "token_usage": {
+    "input_tokens": 29213,
+    "output_tokens": 40182,
+    "cache_read_input_tokens": 259584
+  },
+  "token_usage_breakdown": {
+    "agent": {
+      "input_tokens": 15074,
+      "output_tokens": 13965,
+      "cache_read_input_tokens": 256128
+    },
+    "coverage_repair": {
+      "input_tokens": 14139,
+      "output_tokens": 26217,
+      "cache_read_input_tokens": 3456
+    }
+  }
+}
