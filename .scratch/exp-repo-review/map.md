@@ -98,6 +98,7 @@
 | R-17 | 大文件入口与上限调整 | 60–100k 文件被 selected 后 `group-too-large`，从未送检 | P1 | DONE | 缺省改 5 文件 / 80k 组 / 120k 文件；单文件超组上限时单独成组（soloLarge）；>120k 仍显式跳过 | 2026-11-26 完成：group / dry-run / config 单测；设计文档与流程图更新；ADR-0121 | [票](issues/R-17-large-file-solo/ticket.md) · — |
 | R-18 | LLM 用量账本（单一写入点 + 落盘） | token 统计分散在调用方；repo 漏记一次性 / 失败 attempt，PR reply-repair 双计 | P0 | DONE | 调用边界单点记账；审计 / CLI / repo / job / run.json 只读投影；真实实例总账相等 | 2026-11-27 完成：commit `337889f`；真实 multilang 仓 4 组一致；cline / gofr 日志总账 = `audit.usage + coverageRepair.usage`；全包 1360 passed / 1 skipped | [票](issues/R-18-usage-ledger/ticket.md) · [讨论](issues/R-18-usage-ledger/discussion.md) |
 | R-19 | 离线回放 trace 维护 | 提示词变更后六条 trace 全 miss；长路径规则 Skill 缓存根未归一化 | P1 | DONE | `test:replay` 6/6；trace 响应与期望不变 | 2026-11-27 完成：commit `8653f8b`；旧响应作确定性上游重录；注册 `<rule-skill-cache>` 归一化 | [票](issues/R-19-replay-trace-maintenance/ticket.md) · [讨论](issues/R-19-replay-trace-maintenance/discussion.md) |
+| R-20 | 通用检视建议类抑制与 git 仓 trackedOnly | 用户反馈建议类意见过多；untracked 临时文件可能被检视 | P1 | DONE | 默认压 P3 + 可维护/可读性/可测试性；规则 Skill 候选豁免；git 仓默认只枚举已跟踪文件；`config init` 可生成 | 2026-11-28 完成：commit `ff33194`；全包 127 files / 1388 passed / 1 skipped；`test:replay` 6/6 | [票](issues/R-20-generic-suggestion-suppression/ticket.md) · [讨论](issues/R-20-generic-suggestion-suppression/discussion.md) |
 
 ## 当前焦点
 
@@ -121,6 +122,7 @@
 - [x] **R-17 大文件入口与上限调整**：完成；缺省 5 文件 / 80k 组 / 120k 文件，单文件超组上限时单独成组（soloLarge）；ADR-0121。
 - [x] **R-18 LLM 用量账本**：完成；调用边界单点记账，审计 / CLI / repo / job / run.json 只读投影；真实实例总账相等。
 - [x] **R-19 回放 trace 维护**：完成；六条 trace 重录，长路径技能缓存根归一化；`test:replay` 6/6。
+- [x] **R-20 建议类抑制 / trackedOnly**：完成；通用检视缺省压建议类候选，规则 Skill 候选豁免；git 仓缺省只枚举已跟踪文件。
 - [ ] **R-06b 召回**：暂缓（2026-11-25 决定，本轮不测；后续可能做，建议先合成注入再真实修复回滚）。
 - [ ] **R-06c 冻结评测集**：方案已记录（定义、冻结项、答案来源、三层设计）；2026-11-26 决定先不做。
 - [ ] **R-07 增量扫描**：暂缓（2026-11-25 决定，本轮不做；后续可能做）。
@@ -154,3 +156,4 @@
 - 2026-11-27：iterS41 四臂归档 `bench/experiments/2026-11-27-s41-ledger/`：no-repair P41.7/R28.0/B33.5，repair P39.8/R30.1/B34.3（非缓存 +25.5%，墙钟 +30.2%）；`maxRequests` 维持 8，两候选提示词 A/B 本轮不做。
 - 2026-11-28：iterM20 混合 on/off 归档 `bench/experiments/2026-11-27-mixed-onoff/`：off P39.0/R29.1/B33.3，on P41.7/R35.0/B38.1（非缓存 +27.4%，墙钟 +41.7%）；表面 on 更好，但 6 条 `CR*` 仅 2 条命中 GT，去掉 CR 后主检视仍有 B37.2，repair 自身约 +0.8pp。默认值暂维持 off，需多轮重复再决定。
 - 2026-11-28：cap-hit 6 条 `maxRequests` 8 vs 16 归档 `bench/experiments/2026-11-27-cap8-vs-16/`：cap8 P38.7/R24.1/B29.7，cap16 P41.9/R29.6/B34.7（补漏非缓存+output +98.0%，非缓存总成本 +37.9%）；77 个预算跳过 hunk 只换来 1 条明确归因 GT（union state/movement:148），剩余 35 个 `no-signal` 才是下一瓶颈。默认 `maxRequests` 维持 8。
+- 2026-11-28：R-20 完成；新增 `limits.genericReview.suppress`（缺省压 P3 + 可维护/可读性/可测试性，规则 Skill 候选豁免，审计 `genericReview` 留痕）与 `limits.repoScan.trackedOnly`（git 仓缺省只枚举已跟踪文件）；全包 1388 passed / 1 skipped，`test:replay` 6/6；commit `ff33194`。
