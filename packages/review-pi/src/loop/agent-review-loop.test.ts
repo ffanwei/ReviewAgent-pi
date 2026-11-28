@@ -681,7 +681,15 @@ test("通用建议类抑制：主会话 P3 被丢弃，规则 Skill 的 P3 保�
     },
   });
 
-  expect(outcome.findings.map((finding) => finding.id)).toEqual([SKILL_CANDIDATE.id]);
+  // 全量真源保留被抑制的主候选；呈现层只保留规则 Skill 候选。
+  expect(outcome.findings.map((finding) => finding.id)).toEqual([
+    SKILL_CANDIDATE.id,
+    "F001",
+  ]);
+  expect(outcome.presentationFindings.map((finding) => finding.id)).toEqual([
+    SKILL_CANDIDATE.id,
+  ]);
+  expect(outcome.suppressedFindingIds).toEqual(["F001"]);
   expect(outcome.audit.genericReview).toEqual({
     policy: {
       severities: ["P3"],

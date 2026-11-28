@@ -241,11 +241,15 @@ test("真跑：通用建议类抑制在 repo 模式同样生效，审计留痕",
       usage: ZERO,
     },
   ]);
+  let reportedFindings: readonly { id: string }[] = [];
   const code = await runRepoSpike(options(root, out), {
     apiKey: "test-key",
     baseUrl: "http://example.invalid",
     fetch: script.fetch,
     now: () => new Date("2026-11-24T00:00:00.000Z"),
+    onGroupReviewed: async (batch) => {
+      reportedFindings = batch.findings;
+    },
   });
 
   expect(code).toBe(0);
@@ -253,7 +257,14 @@ test("真跑：通用建议类抑制在 repo 模式同样生效，审计留痕",
     findings: unknown[];
     groups: { auditPath?: string }[];
   };
-  expect(result.findings).toEqual([]);
+  expect(result.findings).toHaveLength(1);
+  const groupDir = readdirSync(path.join(out, "runs"))[0] ?? "";
+  const reviews = JSON.parse(
+    readFileSync(path.join(out, "runs", groupDir, "runs", "reviews_all.json"), "utf8"),
+  ) as { findings: { id: string }[] };
+  expect(reviews.findings.map((finding) => finding.id)).toEqual(["F001"]);
+  // MCP 上报走呈现层：被抑制的建议不上报。
+  expect(reportedFindings).toEqual([]);
   const auditPath = result.groups[0]?.auditPath;
   expect(auditPath).toBeDefined();
   const audit = JSON.parse(readFileSync(auditPath as string, "utf8")) as {

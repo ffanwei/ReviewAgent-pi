@@ -399,23 +399,26 @@ interface TipsAssembly {
 async function assembleTips(input: DeliveryInput): Promise<TipsAssembly> {
   const { log } = input.ports;
   const { record } = input.run;
+  // 呈现层 findings：genericReview 抑制命中项不进中文 tips；reviews_all 仍是全量。
+  const presentationFindings =
+    input.run.presentationFindings ?? record.baseline.findings;
   const minConfidence = input.limits.confidenceMin;
   const minSeverity = input.limits.severityMin;
-  const eligible = filterFindingsForTips(record.baseline.findings, {
+  const eligible = filterFindingsForTips(presentationFindings, {
     minConfidence,
     minSeverity,
   });
   const keptFindings = eligible.kept;
   const allFindingsFiltered =
-    record.baseline.findings.length > 0 && keptFindings.length === 0;
-  const codeByFinding = await readCodeLines(input.repoPath, record.baseline.findings);
+    presentationFindings.length > 0 && keptFindings.length === 0;
+  const codeByFinding = await readCodeLines(input.repoPath, presentationFindings);
 
   // ADR-0090：tips 语义字段随 Finding.tips 直接交付（候选阶段产出），
   // 不再有「业务关闭时补一次语义生成」的模型调用。业务开启时片级回调
   // 登记的 semanticByMergeKey 仍优先（source / ruleId 在片级捕获更准）。
 
   const unifiedTips = assembleUnifiedTips({
-    mergedFindings: record.baseline.findings,
+    mergedFindings: presentationFindings,
     semanticByMergeKey: input.tips.semanticByMergeKey,
     codeByFinding,
     minConfidence,
@@ -434,7 +437,7 @@ async function assembleTips(input: DeliveryInput): Promise<TipsAssembly> {
   let tipsDoc: ReviewTipsDocumentLike | undefined;
   if (countTips(unifiedTips.tips) > 0) {
     tipsDoc = unifiedTips.tips;
-  } else if (record.baseline.findings.length === 0 || allFindingsFiltered) {
+  } else if (presentationFindings.length === 0 || allFindingsFiltered) {
     tipsDoc = [];
   } else {
     log("review-pi: 统一生成未覆盖任何意见，本次不产分组意见（不回落英文引擎）\n");
@@ -449,7 +452,7 @@ async function assembleTips(input: DeliveryInput): Promise<TipsAssembly> {
     unreportedTips:
       input.mcp.task === undefined
         ? []
-        : collectUnreportedTips(tipsDoc, record.baseline.findings, input.mcp.submittedFindingKeys),
+        : collectUnreportedTips(tipsDoc, presentationFindings, input.mcp.submittedFindingKeys),
   };
 }
 
@@ -564,12 +567,14 @@ async function publishSummary(
   }
   const { log, clock } = input.ports;
   const { record } = input.run;
+  const presentationFindings =
+    input.run.presentationFindings ?? record.baseline.findings;
   const submittedSourceIds = new Set(
-    record.baseline.findings
+    presentationFindings
       .filter((finding) => input.mcp.submittedFindingKeys.has(findingMergeKey(finding)))
       .map((finding) => finding.id),
   );
-  const summaryFindings = record.baseline.findings.filter((finding) =>
+  const summaryFindings = presentationFindings.filter((finding) =>
     submittedSourceIds.has(finding.id),
   );
   const summaryTips =
@@ -583,7 +588,7 @@ async function publishSummary(
             ),
           }))
           .filter((file) => file.reviewTips.length > 0);
-  const unreported = record.baseline.findings.length - summaryFindings.length;
+  const unreported = presentationFindings.length - summaryFindings.length;
   if (unreported > 0) {
     log(
       `review-pi: 检视总结只覆盖已上报的 ${String(summaryFindings.length)} 条意见` +
@@ -591,7 +596,7 @@ async function publishSummary(
     );
   }
   log(
-    record.baseline.findings.length === 0
+    presentationFindings.length === 0
       ? "review-pi: MCP saveReviewSummary 未发现检视意见，发送结构化模板（不调用模型）\n"
       : summaryFindings.length === 0
         ? "review-pi: MCP saveReviewSummary 无已上报的检视意见，发送结构化模板（不调用模型）\n"

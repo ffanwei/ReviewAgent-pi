@@ -31,10 +31,13 @@ Commit: `ff33194`
 }
 ```
 
-- 在 Phase 5 候选归一完成后、skill 候选追加之前过滤，因此 Skill 候选天然豁免。
+- 在 Phase 5 候选归一完成后标记命中集合；候选仍进入候选门与全量真源
+  `reviews_all` / stdout，只在呈现层（中文 tips / MCP 上报）隐藏。
+- 候选合并时命中主候选不占同根因键，避免遮蔽用户规则 Skill 的候选；Skill
+  候选天然不在命中集合里。
 - `severities` 空数组 = 不过滤；`categories` 空数组 = 只按严重级，不限类别。
-- 覆盖补漏候选同一口径；被抑制的候选不回填覆盖账本。
-- 审计 / `run.json` 增加 `genericReview`：策略、丢弃总数、按严重级 / 类别计数。
+- 覆盖补漏候选同一口径；被抑制的补漏 finding 仍回填覆盖账本。
+- 审计 / `run.json` 增加 `genericReview`：策略、隐藏总数、按严重级 / 类别计数。
 - Skill 会话 system prompt 追加「规则 Skill 优先」尾注；Phase 6 skill 候选核验
   口径明确不得以「只是建议 / 风格 / 文档 / 测试」为由驳回。
 
@@ -52,3 +55,6 @@ Commit: `ff33194`
   因 skill system prompt 变化重录）。
 - 覆盖：generic policy 纯函数、loop 主候选抑制 + Skill 候选保留、补漏抑制、
   repo 模式抑制 + 审计、`trackedOnly` 枚举、config init / parse / 非法值。
+- `reviews_all` / stdout / `run.json` 保留全量；中文 tips 与 MCP 上报使用
+  presentation findings。repo 集成用例直接断言被抑制的 P3 仍在
+  `reviews_all.json`，但 `onGroupReviewed` 上报的 findings 为空。

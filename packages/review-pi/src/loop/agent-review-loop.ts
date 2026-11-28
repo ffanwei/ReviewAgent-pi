@@ -187,6 +187,13 @@ export interface SkillPassRequest {
 
 export interface AgentReviewLoopOutcome {
   readonly findings: readonly Finding[];
+  /**
+   * 呈现层 findings：全量 findings 去掉通用检视建议类抑制命中的条目。
+   * `reviews_all.json` / stdout 用全量；中文 tips / MCP 上报用这一份。
+   */
+  readonly presentationFindings: readonly Finding[];
+  /** 被呈现层抑制的 finding id（`reviews_all` 仍保留）；review-pass 据此重算路径修复后的内容键 */
+  readonly suppressedFindingIds: readonly string[];
   /** 累计 usage：主会话 + skill 会话（skill 的真实成本不隐藏，ADR-0014 负后果一节已明示） */
   readonly usage: LlmUsage;
   readonly rounds: number;
@@ -285,6 +292,9 @@ export async function runAgentReviewLoop(
   let skillBashCalls = 0;
   let skillLedgerHits = 0;
   let genericReviewSuppression: GenericReviewSuppressionRecord | undefined;
+  let suppressedCandidates: ReadonlySet<unknown> = new Set();
+  let suppressedCandidateIds: ReadonlySet<string> = new Set();
+  const suppressedFindingIds = new Set<string>();
   let roundSkillBatches: readonly SkillCandidateBatch[] = [];
   // 首次模型请求时刻（唯一新增内核仪器；不是逐请求/逐工具耗时）
   let firstRequestAt: Date | undefined;
@@ -577,8 +587,13 @@ export async function runAgentReviewLoop(
     scope: usageScope.id,
     sources: ["agent", "skill", "reply-repair"],
   }).usage;
+  const presentationFindings = findings.filter(
+    (finding) => !suppressedFindingIds.has(finding.id),
+  );
   return {
     findings,
+    presentationFindings,
+    suppressedFindingIds: [...suppressedFindingIds],
     usage,
     rounds: round,
     toolCalls: executedToolCalls + skillToolCalls,
@@ -720,7 +735,7 @@ export async function runAgentReviewLoop(
         followUp(phase5SweepMessage());
         return false;
       }
-      applyGenericReviewPolicy();
+      collectGenericReviewSuppression();
       await runRoundSkillPasses(seedMessages);
     }
 
@@ -769,6 +784,16 @@ export async function runAgentReviewLoop(
       }
     }
     findings.push(...gate.findings);
+    const suppressedFindings = gate.findings.filter((finding) =>
+      suppressedCandidateIds.has(finding.id),
+    );
+    for (const finding of suppressedFindings) {
+      suppressedFindingIds.add(finding.id);
+    }
+    genericReviewSuppression = mergeGenericReviewSuppressions(
+      genericReviewSuppression,
+      filterGenericSuggestions(suppressedFindings, inputs.genericReview).suppression,
+    );
     rejections.push(...gate.rejections);
     for (const rejection of gate.rejections) {
       rejectionCounts[rejection.stage] += 1;
@@ -803,16 +828,29 @@ export async function runAgentReviewLoop(
   }
 
   /**
-   * 通用检视建议类抑制：在 Phase 5 候选归一完成后、skill 候选追加之前执行。
-   * 主候选被丢弃；skill 候选随后才合并，因此不受影响。
+   * 通用检视建议类抑制：在 Phase 5 候选归一完成后、skill 候选合并之前标记。
+   *
+   * 不在候选阶段丢弃——被抑制的 finding 仍进入全量真源 `reviews_all`；
+   * 这里只记录命中集合，候选门之后按 id 分出 presentationFindings。
+   * skill 合并时命中的主候选不占同根因键，避免它遮蔽用户规则 Skill 的候选。
    */
-  function applyGenericReviewPolicy(): void {
+  function collectGenericReviewSuppression(): void {
     const filtered = filterGenericSuggestions(roundCandidates, inputs.genericReview);
-    roundCandidates = filtered.kept;
-    genericReviewSuppression = mergeGenericReviewSuppressions(
-      genericReviewSuppression,
-      filtered.suppression,
+    suppressedCandidates = new Set(filtered.suppressed);
+    suppressedCandidateIds = new Set(
+      filtered.suppressed
+        .map((candidate) => candidateIdOf(candidate))
+        .filter((id): id is string => id !== undefined),
     );
+  }
+
+  /** 归一化后的候选一定有 id；缺失时返回 undefined，不参与按 id 分账。 */
+  function candidateIdOf(candidate: unknown): string | undefined {
+    if (typeof candidate !== "object" || candidate === null) {
+      return undefined;
+    }
+    const id = (candidate as { id?: unknown }).id;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
   }
 
   /**
@@ -884,11 +922,20 @@ export async function runAgentReviewLoop(
       return { skill: outcome.record.skill, candidates: normalized.candidates };
     });
 
+    // 被呈现层抑制的主候选不占同根因键：skill 候选先合并，抑制候选追加到
+    // 末尾。候选门看到 skill 在前，同根因时 skill 胜出；抑制候选若存活，只
+    // 进全量真源、不进 presentationFindings。
+    const primaryVisible = roundCandidates.filter(
+      (candidate) => !suppressedCandidates.has(candidate),
+    );
+    const primarySuppressed = roundCandidates.filter((candidate) =>
+      suppressedCandidates.has(candidate),
+    );
     const merged = mergeSkillCandidates({
-      primary: roundCandidates,
+      primary: primaryVisible,
       batches: normalizedBatches,
     });
-    roundCandidates = merged.candidates;
+    roundCandidates = [...merged.candidates, ...primarySuppressed];
     roundSkillBatches = merged.survivingBatches;
     outcomes.forEach((outcome, index) => {
       usageScope.ledger.record({

@@ -979,8 +979,9 @@ ${excludeGlobLines}
     // 关闭 = 同文件远处、甚至未改动文件里的意见也保留。
     // contextLines 取值 0–2000；0 = 只保留 hunk 内。
     "findingScope": { "enabled": true, "contextLines": 10 },
-    // 通用检视建议类抑制（MR + repo）：只作用于通用检视候选，规则 Skill 候选
-    // 不走此过滤。缺省丢弃 P3 且 category 属于可维护/可读性/可测试性的候选；
+    // 通用检视建议类抑制（MR + repo）：只作用于通用检视 findings，规则 Skill
+    // 候选豁免。缺省在中文 tips / MCP 上报中隐藏 P3 且 category 属于
+    // 可维护/可读性/可测试性的意见；reviews_all / stdout 仍保留全量。
     // severities 空数组 = 不过滤；categories 空数组 = 不按类别限制。
     "genericReview": {
       "suppress": {

@@ -272,11 +272,14 @@ export interface LanguageRulesLimits {
 }
 
 /**
- * 通用检视建议类抑制（MR + repo）：只作用于通用检视候选，规则 Skill 候选不走。
+ * 通用检视建议类抑制（MR + repo）：只作用于通用检视 findings，规则 Skill 候选不走。
+ *
+ * 呈现层口径：命中的 finding 仍进 `reviews_all` / stdout 全量真源，只在中文
+ * tips / MCP 上报中隐藏。
  *
  * - `severities` 空 = 不过滤；
  * - `categories` 空 = 不按类别限制（对 `severities` 命中的所有类别生效）；
- * - 默认只压 P3 且落在「可维护 / 可读性 / 可测试性」的候选，保留 P3 的安全 /
+ * - 默认隐藏 P3 且落在「可维护 / 可读性 / 可测试性」的意见，保留 P3 的安全 /
  *   可靠性 / 性能意见。
  */
 export interface GenericReviewLimits {

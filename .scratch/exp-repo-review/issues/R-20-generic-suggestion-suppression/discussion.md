@@ -27,3 +27,15 @@
 
 **结论**：新增 `limits.repoScan.trackedOnly`，git 仓缺省 `true` 只枚举已跟踪
 文件；需要旧口径时配置 `false`。非 git 仓不受影响。
+
+## 2026-11-28 · 修正：reviews_all 保留全量
+
+**修正**：`genericReview.suppress` 是**呈现层**语义，不是候选丢弃。被抑制的
+finding 仍写入 `reviews_all.json` / stdout（全部意见真源恒全量），只在中文
+tips 与 MCP 上报里隐藏；与 `limits.confidence.min` / `limits.severity.min`
+的既有口径一致。
+
+**实现调整**：Phase 5 只标记命中集合，候选照常过候选门；合并 skill 时命中
+主候选不占同根因键；`review-pass` 按 id / 内容键派生 `presentationFindings`，
+`review-run` 分片聚合后重新投影，delivery 与 repo MCP 回调使用呈现层，
+`reviews_all` / `run.json` / stdout 使用全量。

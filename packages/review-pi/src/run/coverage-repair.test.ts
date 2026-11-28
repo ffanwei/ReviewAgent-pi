@@ -345,7 +345,7 @@ describe("repairCoverageGaps", () => {
     expect(verifier.messages?.[0]?.content ?? "").toContain("证伪");
   });
 
-  test("通用建议类抑制：P3 可维护候选被丢弃，不回填账本", async () => {
+  test("通用建议类抑制：P3 可维护候选进全量真源，但不进呈现层", async () => {
     const ledger = buildCoverageLedger(DIFF_A);
     const fetch: FetchFunction = async (_url, init) => {
       const body = String(init?.body ?? "");
@@ -374,15 +374,17 @@ describe("repairCoverageGaps", () => {
       genericReview: DEFAULT_LIMITS.genericReview,
       llm: llm(fetch),
     });
-    expect(result.findings).toHaveLength(0);
-    expect(result.audit.acceptedFindings).toBe(0);
+    expect(result.findings).toHaveLength(1);
+    expect(result.presentationFindings).toHaveLength(0);
+    expect(result.suppressedFindingKeys).toHaveLength(1);
+    expect(result.audit.acceptedFindings).toBe(1);
     expect(result.genericReview).toMatchObject({
       dropped: 1,
       bySeverity: { P3: 1 },
       byCategory: { 可维护: 1 },
     });
     const a = result.ledger.files.find((file) => file.file === "src/a.ts");
-    expect(a?.hunks[1]?.status).toBe("not-reached");
+    expect(a?.hunks[1]?.status).toBe("candidate");
   });
 
   test("独立验证拒绝的候选不进 findings；hunk 保持未覆盖", async () => {

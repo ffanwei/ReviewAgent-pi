@@ -127,6 +127,11 @@ export interface RepoSpikeGroupOutcome {
   readonly findingsCount: number;
   /** 内部合并用；写结果文件时会剥掉，避免 groups[] 重复存整份 findings */
   readonly findings?: readonly Finding[];
+  /**
+   * 呈现层 findings（genericReview 抑制命中项已去掉）：MCP 上报用；
+   * `reviews_all` 仍是全量 `findings`。内部用，写结果文件时同样剥掉。
+   */
+  readonly presentationFindings?: readonly Finding[];
   readonly runId?: string;
   readonly usage?: LlmUsage;
   /** 组账本摘要（含 Agent / 一次性 / 覆盖补漏 / 失败 attempt） */

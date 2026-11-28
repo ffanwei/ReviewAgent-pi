@@ -68,9 +68,13 @@ export interface CoverageRepairInput {
 export interface CoverageRepairResult {
   readonly ledger: CoverageLedger;
   readonly findings: readonly Finding[];
+  /** 呈现层 findings：全量去掉通用检视建议类抑制命中项（reviews_all 仍保留全量） */
+  readonly presentationFindings: readonly Finding[];
+  /** 被呈现层抑制的 finding 内容键（补漏 finding 不经路径修复，键可直接用） */
+  readonly suppressedFindingKeys: readonly string[];
   readonly audit: CoverageRepairAudit;
   readonly usage: LlmUsage;
-  /** 补漏候选命中的建议类抑制留痕（与主 loop 同口径；无策略/无丢弃时缺席） */
+  /** 补漏候选命中的建议类抑制留痕（与主 loop 同口径；无策略/无抑制时缺席） */
   readonly genericReview?: GenericReviewSuppressionRecord;
 }
 
@@ -397,6 +401,8 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
     return {
       ledger: input.ledger,
       findings: [],
+      presentationFindings: [],
+      suppressedFindingKeys: [],
       audit: emptyCoverageRepairAudit(false),
       usage: ZERO_USAGE,
     };
@@ -504,9 +510,10 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
     round: 0,
     ...(input.scope !== undefined ? { scope: input.scope } : {}),
   });
-  // 通用检视建议类抑制：补漏候选同一口径；被压制的候选不回填账本。
+  // 通用检视建议类抑制：呈现层口径；被抑制的补漏 finding 仍进全量真源，
+  // 因此照常回填覆盖账本。
   const filtered = filterGenericSuggestions(gate.findings, input.genericReview);
-  const findings = filtered.kept;
+  const findings = gate.findings;
   ledger = backfillCandidates(ledger, findings, "repair");
 
   const applicableClaims = claims.filter(
@@ -532,6 +539,8 @@ export async function repairCoverageGaps(input: CoverageRepairInput): Promise<Co
   return {
     ledger,
     findings,
+    presentationFindings: filtered.kept,
+    suppressedFindingKeys: filtered.suppressed.map((finding) => findingContentKey(finding)),
     usage,
     ...(filtered.suppression !== undefined ? { genericReview: filtered.suppression } : {}),
     audit: {

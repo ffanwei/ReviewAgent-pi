@@ -472,7 +472,7 @@ export async function runRepoSpike(
             index: outcome.index,
             key: outcome.key,
             files: outcome.files,
-            findings: outcome.findings ?? [],
+            findings: outcome.presentationFindings ?? outcome.findings ?? [],
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -575,7 +575,9 @@ export async function runRepoSpike(
       selected: enumerated.files.length,
       skipped: skippedFiles.length,
     },
-    groups: groupOutcomes.map(({ findings: _findings, ...rest }) => rest),
+    groups: groupOutcomes.map(
+      ({ findings: _findings, presentationFindings: _presentationFindings, ...rest }) => rest,
+    ),
     findings,
     usage,
     ...(usageLedger !== undefined ? { usageLedger } : {}),
@@ -643,6 +645,9 @@ function reviewedOutcome(
     status: "reviewed",
     findingsCount: result.record.baseline.findings.length,
     findings: result.record.baseline.findings,
+    ...(result.presentationFindings !== undefined
+      ? { presentationFindings: result.presentationFindings }
+      : {}),
     runId: result.runId,
     usage: result.record.baseline.usage,
     ...(result.coverage !== undefined ? { coverage: result.coverage } : {}),

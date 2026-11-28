@@ -157,3 +157,4 @@
 - 2026-11-28：iterM20 混合 on/off 归档 `bench/experiments/2026-11-27-mixed-onoff/`：off P39.0/R29.1/B33.3，on P41.7/R35.0/B38.1（非缓存 +27.4%，墙钟 +41.7%）；表面 on 更好，但 6 条 `CR*` 仅 2 条命中 GT，去掉 CR 后主检视仍有 B37.2，repair 自身约 +0.8pp。默认值暂维持 off，需多轮重复再决定。
 - 2026-11-28：cap-hit 6 条 `maxRequests` 8 vs 16 归档 `bench/experiments/2026-11-27-cap8-vs-16/`：cap8 P38.7/R24.1/B29.7，cap16 P41.9/R29.6/B34.7（补漏非缓存+output +98.0%，非缓存总成本 +37.9%）；77 个预算跳过 hunk 只换来 1 条明确归因 GT（union state/movement:148），剩余 35 个 `no-signal` 才是下一瓶颈。默认 `maxRequests` 维持 8。
 - 2026-11-28：R-20 完成；新增 `limits.genericReview.suppress`（缺省压 P3 + 可维护/可读性/可测试性，规则 Skill 候选豁免，审计 `genericReview` 留痕）与 `limits.repoScan.trackedOnly`（git 仓缺省只枚举已跟踪文件）；全包 1388 passed / 1 skipped，`test:replay` 6/6；commit `ff33194`。
+- 2026-11-28：R-20 修正口径；`genericReview.suppress` 改为呈现层抑制——被抑制的 finding 仍进 `reviews_all` / stdout / `run.json` 全量，只在中文 tips / MCP 上报隐藏；候选门与覆盖账本仍按全量。补 repo 端到端断言（reviews_all 保留、MCP 回调为空）。

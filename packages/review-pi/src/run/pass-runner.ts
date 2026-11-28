@@ -264,7 +264,7 @@ async function runPassesSerial(
     // 报文载荷生成是一次性模型调用，续写本片已关闭的时间线（ADR-0076）。
     const reportStartedAt = now();
     await withRequestTimelineAppend(built.runDir, () =>
-      notifyShardFindings(context.onShardFindings, built.label, pass.findings, built.files),
+      notifyShardFindings(context.onShardFindings, built.label, pass.presentationFindings, built.files),
     );
     const callbackMs = Math.max(0, now() - reportStartedAt);
     const hasNext = index < descriptors.length - 1;
@@ -396,7 +396,7 @@ async function runPassesConcurrent(
               notifyShardFindings(
                 context.onShardFindings,
                 built.label,
-                pass.findings,
+                pass.presentationFindings,
                 built.files,
               ),
             );

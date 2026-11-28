@@ -23,6 +23,7 @@ test("命中 severity + category 才丢弃；P3 安全类保留", () => {
     POLICY,
   );
   expect(out.kept.map((item) => item.id)).toEqual(["B", "C"]);
+  expect(out.suppressed.map((item) => item.id)).toEqual(["A", "D"]);
   expect(out.suppression).toMatchObject({
     dropped: 2,
     bySeverity: { P3: 2 },

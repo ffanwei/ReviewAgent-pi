@@ -17,6 +17,7 @@ import type {
   ShardTruncationRecord,
 } from "../contracts/run.js";
 import { buildReviewsExport, writeReviewsAll } from "../export/reviews.js";
+import { findingContentKey } from "../finding/finding-key.js";
 import {
   buildOpenCodeSession,
   writeOpenCodeSession,
@@ -149,6 +150,13 @@ export interface ReviewPassResult {
   readonly startedAt: Date;
   readonly finishedAt: Date;
   readonly findings: readonly Finding[];
+  /**
+   * 呈现层 findings（全量去掉 genericReview 抑制命中项）：中文 tips / MCP
+   * 上报用；`reviews_all.json` 用全量 `findings`。
+   */
+  readonly presentationFindings: readonly Finding[];
+  /** 被呈现层抑制的 finding 内容键：分片聚合后重新投影用 */
+  readonly suppressedFindingKeys: readonly string[];
   readonly usage: LlmUsage;
   readonly rounds: number;
   readonly toolCalls: number;
@@ -466,6 +474,11 @@ async function executeReviewPass(
       : listChangedFilePaths(input.diff);
   const pathRepair = repairFilePaths(outcome.findings, knownFindingFiles);
   const outcomeFindings = pathRepair.items;
+  // 路径修复后才算内容键：抑制集合按 id 回溯到修复后的全量 finding。
+  const suppressedMainIds = new Set(outcome.suppressedFindingIds);
+  const suppressedMainKeys = outcomeFindings
+    .filter((finding) => suppressedMainIds.has(finding.id))
+    .map((finding) => findingContentKey(finding));
 
   // 覆盖收口（F-01a）：finding 按新侧行号回填 candidate；F-01b 启用时再对
   // 仍未覆盖的 hunk 发独立补漏请求，补漏候选仍走同一候选门。
@@ -493,6 +506,16 @@ async function executeReviewPass(
       : undefined;
   const findings =
     repair === undefined ? outcomeFindings : [...outcomeFindings, ...repair.findings];
+  const suppressedFindingKeys = [
+    ...new Set([
+      ...suppressedMainKeys,
+      ...(repair?.suppressedFindingKeys ?? []),
+    ]),
+  ];
+  const suppressedKeySet = new Set(suppressedFindingKeys);
+  const presentationFindings = findings.filter(
+    (finding) => !suppressedKeySet.has(findingContentKey(finding)),
+  );
   const genericReview = mergeGenericReviewSuppressions(
     outcome.audit.genericReview,
     repair?.genericReview,
@@ -602,6 +625,8 @@ async function executeReviewPass(
     startedAt: input.startedAt,
     finishedAt,
     findings,
+    presentationFindings,
+    suppressedFindingKeys,
     usage,
     rounds: outcome.rounds,
     toolCalls: outcome.toolCalls,

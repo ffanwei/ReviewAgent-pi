@@ -203,6 +203,8 @@ function passResult(finishedAt: Date): ReviewPassResult {
     startedAt: new Date("2026-11-14T00:00:00.000Z"),
     finishedAt,
     findings: [],
+    presentationFindings: [],
+    suppressedFindingKeys: [],
     usage: { inputTokens: 0, outputTokens: 0 },
     rounds: 1,
     toolCalls: 0,

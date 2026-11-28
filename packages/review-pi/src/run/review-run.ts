@@ -45,6 +45,7 @@ import {
   detectRepoSnapshotSide,
   type RepoSnapshotSideRecord,
 } from "./repo-side.js";
+import { findingContentKey } from "../finding/finding-key.js";
 import { mergeShardFindings } from "./findings-merge.js";
 import { mergeCoverageLedgers } from "./coverage-ledger.js";
 import { mergeCoverageRepairAudits } from "./coverage-repair.js";
@@ -204,6 +205,12 @@ export interface ReviewRunResult {
   readonly transcriptPaths: readonly string[];
   /** 检视意见导出路径（ADR-0013）：`reviews_en.json` */
   readonly reviewsPath: string;
+  /**
+   * 呈现层 findings（genericReview 抑制命中项已去掉）：中文 tips / MCP 上报
+   * 使用；`reviews_all.json` / stdout 仍用 record 里的全量 findings。
+   * 无抑制时缺席。
+   */
+  readonly presentationFindings?: readonly Finding[];
   /**
    * 收尾摘要用的观测值（**不进审计 / RunRecord 字节**）：
    * Context Ledger 命中次数（重复读取返回 "Already loaded" 引用的次数，
@@ -576,6 +583,9 @@ async function executeSinglePass(
       transcriptPath: pass.transcriptPath,
       transcriptPaths: [pass.transcriptPath],
       reviewsPath: pass.reviewsPath,
+      ...(pass.suppressedFindingKeys.length > 0
+        ? { presentationFindings: pass.presentationFindings }
+        : {}),
       ledgerHitCount: pass.ledgerHitCount,
       modelCalls: pass.modelCalls,
       usageLedger: context.usageLedger,
@@ -621,6 +631,13 @@ async function aggregateShards(
   executed: readonly ExecutedPass[],
 ): Promise<ReviewOutcome> {
   const findings = mergeShardFindings(executed.map((entry) => entry.pass.findings));
+  // 呈现层抑制（genericReview）：内容键跨片合并；reviews_all 仍用全量 findings。
+  const suppressedFindingKeySet = new Set(
+    executed.flatMap((entry) => entry.pass.suppressedFindingKeys),
+  );
+  const presentationFindings = findings.filter(
+    (finding) => !suppressedFindingKeySet.has(findingContentKey(finding)),
+  );
   // 覆盖账本（F-01a）：各片账本合并；结果与片顺序无关。
   const coverage = mergeCoverageLedgers(executed.map((entry) => entry.pass.coverage));
   // 覆盖缺口补漏（F-01b）：各片补漏审计求和；未启用时整键不写。
@@ -883,6 +900,7 @@ async function aggregateShards(
       transcriptPath: executed[0]?.pass.transcriptPath ?? "",
       transcriptPaths: executed.map((entry) => entry.pass.transcriptPath),
       reviewsPath,
+      ...(suppressedFindingKeySet.size > 0 ? { presentationFindings } : {}),
       ledgerHitCount,
       modelCalls,
       usageLedger: context.usageLedger,
